@@ -505,8 +505,8 @@ fn reflect_x(p: vec3) -> vec3 {
 }
 
 /// `p` reflected into x ≥ 0, where a mirrored part is written, and whether it was reflected.
-fn mirrored(p: vec3, mirror: u32) -> (vec3, bool) {
-    if mirror != 0 { (vec3(abs(p.x), p.y, p.z), p.x < 0.0) } else { (p, false) }
+fn mirrored(p: vec3, mirror: bool) -> (vec3, bool) {
+    if mirror { (vec3(abs(p.x), p.y, p.z), p.x < 0.0) } else { (p, false) }
 }
 
 /// A change to the distance of what comes before it in its group: a cape, the ground. It
@@ -685,8 +685,8 @@ pub struct Placed<F>: Copy + GpuData {
     pub bone: u32,
     /// For a mirrored part, its image's bone.
     pub other: u32,
-    /// 1 if it's mirrored in x = 0 (`Placed` is GPU data, which has no `bool`).
-    pub mirror: u32,
+    /// Whether it's mirrored in x = 0.
+    pub mirror: bool,
     pub seam: Seam,
     pub name: Text,
     pub bone_name: Text,
@@ -752,7 +752,7 @@ impl<F: Lipschitz> Placed<F> {
     fn interval_over(self, b: Box3) -> Interval {
         var lo = b.lo
         var hi = b.hi
-        if self.mirror != 0 {
+        if self.mirror {
             // |x| over [lo.x, hi.x].
             let (l, h) = (lo.x, hi.x)
             lo.x = if l >= 0.0 { l } else if h <= 0.0 { -h } else { 0.0 }
@@ -900,7 +900,7 @@ impl<F: Lipschitz> PartList for Placed<F> {
     }
 
     fn leaves(self) -> u32 {
-        1 + self.mirror
+        1 + u32(self.mirror)
     }
 
     fn fold(self, p: vec3, d: f32, k: f32, mask: PartMask, first: u32, fp: f32) -> f32 {
@@ -1022,7 +1022,7 @@ impl<F: Lipschitz> PartList for Placed<F> {
     /// Its field's bound, placed; a mirrored part's holds its image too.
     fn bounds(self, out: mut Vec<Bound>) {
         let b = self.field.bound().moved(self.at)
-        out.push(if self.mirror != 0 { b.and(b.moved(vec3(-2.0 * b.centre.x, 0.0, 0.0))) } else {
+        out.push(if self.mirror { b.and(b.moved(vec3(-2.0 * b.centre.x, 0.0, 0.0))) } else {
             b
         })
     }
@@ -1194,11 +1194,11 @@ impl<A: PartList, B: PartList> PartList for Then<A, B> {
 }
 
 /// Parts joined in a space of their own (`frame`), then joined to what comes before as one,
-/// by `seam`; mirrored in x = 0 if `mirror` is 1.
+/// by `seam`; mirrored in x = 0 if `mirror`.
 pub struct Group<P>: Copy + GpuData {
     pub parts: P,
     pub frame: Frame,
-    pub mirror: u32,
+    pub mirror: bool,
     pub seam: Seam,
     pub name: Text,
 }
@@ -1348,7 +1348,7 @@ impl<P: PartList> PartList for Group<P> {
     }
 
     fn leaves(self) -> u32 {
-        self.parts.leaves() * (1 + self.mirror)
+        self.parts.leaves() * (1 + u32(self.mirror))
     }
 
     fn fold(self, p: vec3, d: f32, k: f32, mask: PartMask, first: u32, fp: f32) -> f32 {
@@ -2541,7 +2541,7 @@ fn place<F: Surface>(
         at: space.local(sk.rest(bone)),
         bone: bone.index,
         other: other.index,
-        mirror: select(if_false: 0, if_true: 1, cond: mirror),
+        mirror,
         seam,
         name,
         bone_name: sk.name(bone),
@@ -2623,7 +2623,7 @@ pub fn group<P>(
     Group {
         parts: take m.parts,
         frame: space,
-        mirror: select(if_false: 0, if_true: 1, cond: mirror),
+        mirror,
         seam,
         name,
     }
