@@ -74,13 +74,17 @@ pub fn init() -> Clearing {
         print(line)
     }
     print(f"history: {h.trees.len()} trees")
-    let f = if HISTORY { forest_of(h) } else { forest() }
+    let f = if HISTORY && !scene::ablated(scene::OLD_FOREST) { forest_of(h) } else { forest() }
     print(f"forest: {f.clumps.len()} clumps, {f.cards.len()} cards, {f.limbs.len()} limbs")
     var cards: GpuBuffer<Card> = buffer(f.cards.len())
     write(mut cards, 0, f.cards)
     var limbs: GpuBuffer<Limb> = buffer(f.limbs.len())
     write(mut limbs, 0, f.limbs)
-    let bs = if HISTORY { plates(h) } else { boulders() }
+    let bs = if HISTORY && !scene::ablated(scene::NO_DEAD_WOOD | scene::OLD_FOREST) {
+        plates(h)
+    } else {
+        boulders()
+    }
     let m = if HISTORY { meadow_of(h, bs) } else { meadow() }
     print(f"meadow: {m.len()} blades")
     var blades: GpuBuffer<Blade> = buffer(m.len())

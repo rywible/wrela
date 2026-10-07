@@ -8,6 +8,19 @@ use noise::{fbm2, noise2, ridged2}
 /// Whether the clearing is the one its history left (spike 16), or spike 15's.
 pub const HISTORY: bool = true
 
+/// Factors turned off or swapped, to see what each does to the picture (spike 16's ablation):
+/// `NO_DEAD_WOOD` hides snags, logs and root plates; `MANTLE` draws shrubs along the forest's
+/// edge; `OLD_FOREST` draws spike 15's trees over the history's ground.
+pub const ABLATE: u32 = 0
+pub const NO_DEAD_WOOD: u32 = 1
+pub const MANTLE: u32 = 2
+pub const OLD_FOREST: u32 = 4
+
+/// Whether factor `f` is ablated in this build.
+pub fn ablated(f: u32) -> bool {
+    (ABLATE & f) != 0
+}
+
 /// The meadow's middle.
 pub const MEADOW = vec2(0.0, 30.0)
 

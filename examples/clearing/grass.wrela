@@ -90,7 +90,8 @@ pub fn meadow_of(h: History, stones: [Boulder]) -> Vec<Blade> {
     var logs: Vec<Tree> = Vec::new()
     let e = eye()
     for t in h.trees {
-        if t.state == LOG && length(t.at - e.xz) < 110.0 {
+        let shown = !scene::ablated(scene::NO_DEAD_WOOD | scene::OLD_FOREST)
+        if t.state == LOG && length(t.at - e.xz) < 110.0 && shown {
             logs.push(t)
         }
     }

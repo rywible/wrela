@@ -136,9 +136,10 @@ pub const OAK: u32 = 0
 pub const BEECH: u32 = 1
 pub const BIRCH: u32 = 2
 pub const THORN: u32 = 3
-const KINDS: u32 = 4
+pub const BLACKTHORN: u32 = 4
+const KINDS: u32 = 5
 /// Seed of each species from the forests beyond the domain: birch's rides the wind.
-const BEYOND = [0.01, 0.005, 0.3, 0.01]
+const BEYOND = [0.01, 0.005, 0.3, 0.4, 0.3]
 
 /// How a species lives.
 pub struct Habit: Copy {
@@ -219,7 +220,27 @@ pub const HABITS = [
         stands: 1.0,
         rots: 1.5,
     },
+    // Blackthorn: a thorny thicket of the edges, which spreads by suckers into the light until
+    // the grazers stop it.
+    Habit {
+        tallest: 4.0,
+        rate: 0.3,
+        need: 0.3,
+        lifespan: 50.0,
+        crown: 0.55,
+        shade: 0.85,
+        palatable: 0.05,
+        reach: 25.0,
+        mature: 6.0,
+        stands: 0.8,
+        rots: 1.0,
+    },
 ]
+
+/// Whether a species is a thorny shrub, whose cover keeps grazers off what grows in it.
+pub fn thorny(kind: u32) -> bool {
+    kind == THORN || kind == BLACKTHORN
+}
 
 // ---- trees --------------------------------------------------------------------------------------
 
@@ -442,6 +463,8 @@ struct Ground {
     light: Vec<f32>,
     thorn: Vec<f32>,
     browse: Vec<f32>,
+    /// How worn by hooves (the herd's trails, on the domain's grid): what grows there is trodden.
+    trodden: Vec<f32>,
     bare: Vec<f32>,
     /// Seed of each species, `KINDS` grids end to end.
     seed: Vec<f32>,
@@ -525,9 +548,9 @@ fn survey() -> Land {
         }
         habitable.push(free)
         exposed.push(smoothstep(-45.0, -2.0, past))
-        low.push(in_gap(p.x, p.y) && length(p - STAND) > 14.0)
+        low.push(in_gap(p.x, p.y) && length(p - STAND) > 8.0)
         // The view through the gap: open to the plateau's edge, where shrubs may stand.
-        let gap = in_gap(p.x, p.y) && length(p - STAND) > 14.0
+        let gap = in_gap(p.x, p.y) && length(p - STAND) > 8.0
         lawn.push(on_lawn(p) || (gap && past < -10.0))
     }
     let wet = water(heights)
@@ -558,7 +581,7 @@ fn canopy(trees: [Tree], ground: mut Ground, year: i32) {
                         if d < r {
                             let w = 1.0 - smoothstep(0.55 * r, r, d)
                             light[k] *= 1.0 - stop * w
-                            if t.kind == THORN {
+                            if thorny(t.kind) {
                                 thorn[k] = max(thorn[k], w)
                             }
                         }
@@ -582,7 +605,14 @@ fn canopy(trees: [Tree], ground: mut Ground, year: i32) {
             }
         }
     }
-    ground.light = blur(light, N, 1)
+    // Light at the ground: what comes down through the crowns, and what comes in from the side
+    // where the sky is open nearby (an edge's ground sees half the sky).
+    let down = blur(light, N, 1)
+    let side = blur(light, N, 4)
+    for k in 0..nn {
+        light[k] = 0.65 * down[k] + 0.35 * side[k]
+    }
+    ground.light = take light
     ground.thorn = take thorn
     for k in 0..nn {
         let l = ground.light[k]
@@ -602,7 +632,7 @@ fn seed_rain(trees: [Tree], ground: mut Ground, year: i32) {
         var total = 0.0
         for t in trees {
             let age = f32(year - t.born)
-            let big = if t.kind == THORN { 1.5 } else { 6.0 }
+            let big = if thorny(t.kind) { 1.5 } else { 6.0 }
             if t.kind == kind && t.state == ALIVE && age >= h.mature && t.tall >= big {
                 let w = 0.04 * t.reach * t.reach
                 crop[cell(t.at)] += w
@@ -621,10 +651,12 @@ fn seed_rain(trees: [Tree], ground: mut Ground, year: i32) {
             if kind == OAK {
                 w *= 0.15 + 1.5 * l
             }
-            if kind == THORN {
-                w *= 0.3 + 2.0 * l * (1.0 - l)
+            // Birds carry thorn and sloe seed and drop it where they perch: at edges.
+            let perch = if thorny(kind) { 0.2 + 4.0 * l * (1.0 - l) } else { 1.0 }
+            if thorny(kind) {
+                w *= perch
             }
-            ground.seed[kind * nn + k] = 1.0 - exp(-(w + wind + BEYOND[kind]))
+            ground.seed[kind * nn + k] = 1.0 - exp(-(w + wind + BEYOND[kind] * perch))
         }
     }
 }
@@ -659,6 +691,7 @@ fn recruit(trees: [Tree], b: Bins, land: Land, ground: Ground, year: i32) -> Vec
                     }
                     let eaten = min(1.0, 3.0 * ground.browse[c] * h.palatable)
                     p *= 1.0 - eaten * (1.0 - ground.thorn[c])
+                    p *= 1.0 - smoothstep(0.1, 0.3, ground.trodden[c])
                     let n = c.wrapping_mul(KINDS) + kind
                     if rand(n, u32(year)) < p {
                         let at = centre(c) +
@@ -721,6 +754,15 @@ fn grow(trees: mut Vec<Tree>, needs: [Need], land: Land, ground: mut Ground, yea
                 max(1.0 - t.girth / 0.9, 0.0)
             let want = max(h.crown * t.tall * (0.6 + 0.4 * n.light), 0.3)
             let target = if t.pinned { want } else { min(want, max(n.space, 0.3)) }
+            // A blackthorn is a thicket: its suckers spread it into the light, and the grazers
+            // hold it back where they feed.
+            let target = if t.kind == BLACKTHORN {
+                let lit = smoothstep(0.25, 0.6, n.light)
+                let held = 1.0 - smoothstep(0.55, 0.95, ground.browse[c])
+                1.0 + 5.0 * lit * held
+            } else {
+                target
+            }
             t.reach += clamp(target - t.reach, -0.4 * STEP_YEARS, 0.2 * STEP_YEARS)
             let pushed = length(n.push)
             let lean = if pushed > 0.001 {
@@ -740,6 +782,14 @@ fn grow(trees: mut Vec<Tree>, needs: [Need], land: Land, ground: mut Ground, yea
             }
             if t.tall < 2.5 {
                 p += 0.6 * h.palatable * min(1.0, 2.5 * ground.browse[c]) * (1.0 - ground.thorn[c])
+            }
+            // The herd's lawn: it crops whatever comes up there short, and it dies. Its trails:
+            // hooves tread down what grows on them.
+            if land.lawn[c] && year >= ARRIVE && t.tall < 4.0 && !t.pinned {
+                p += 0.25
+            }
+            if ground.trodden[c] > 0.25 && t.tall < 3.0 && !t.pinned {
+                p += 0.4
             }
             let gusts = 0.002 * land.exposed[c] * smoothstep(12.0, 25.0, t.tall) * STEP_YEARS
             p *= STEP_YEARS
@@ -850,7 +900,7 @@ fn obstacles(herd: mut Herd, trees: [Tree]) {
     }
     for t in trees {
         if in_fine(t.at) {
-            if t.state == ALIVE && t.kind == THORN && t.tall > 1.0 {
+            if t.state == ALIVE && thorny(t.kind) && t.tall > 1.0 {
                 mark(mut herd.cost, t.at + t.lean, t.reach * 0.9, 0.85)
             } else if t.state != LOG && t.tall > 2.0 {
                 mark(mut herd.cost, t.at, t.girth + 0.45, 1.0)
@@ -1057,6 +1107,13 @@ fn browsing(herd: Herd, ground: mut Ground) {
         }
     }
     ground.browse = blur(b, N, 2)
+    // A trail across a cell treads the whole cell's seedlings and shrubs.
+    var trod: Vec<f32> = Vec::filled(nn, 0.0)
+    for f in 0..(FN * FN) {
+        let d = cell(fcentre(f))
+        trod[d] = max(trod[d], herd.trail[f])
+    }
+    ground.trodden = take trod
 }
 
 // ---- the history --------------------------------------------------------------------------------
@@ -1247,7 +1304,7 @@ fn first_forest(land: Land) -> Vec<Tree> {
 
 /// Counts of the living, standing dead and fallen, by species.
 fn census(trees: [Tree], year: i32, ground: Ground) -> String {
-    var alive = [0, 0, 0, 0]
+    var alive = [0, 0, 0, 0, 0]
     var snags = 0
     var logs = 0
     var big = 0
@@ -1264,7 +1321,7 @@ fn census(trees: [Tree], year: i32, ground: Ground) -> String {
         }
     }
     let m = cell(MEADOW)
-    f"year {year}: oak {alive[0]}, beech {alive[1]}, birch {alive[2]}, thorn {alive[3]}, over 15 m {big}, snags {snags}, logs {logs}; meadow light {ground.light[m]}, browse {ground.browse[m]}"
+    f"year {year}: oak {alive[0]}, beech {alive[1]}, birch {alive[2]}, thorn {alive[3]}, blackthorn {alive[4]}, over 15 m {big}, snags {snags}, logs {logs}; meadow light {ground.light[m]}, browse {ground.browse[m]}"
 }
 
 /// Puts `ch` on the map at `p`.
@@ -1316,7 +1373,11 @@ fn ascii_map(trees: [Tree], ground: Ground, herd: Herd, land: Land) -> String {
             let big = t.tall > 15.0
             let ch = if t.kind == OAK { if big { 79 } else { 111 } } else if t.kind == BEECH {
                 if big { 66 } else { 98 }
-            } else if t.kind == BIRCH { if big { 73 } else { 105 } } else { 116 }
+            } else if t.kind == BIRCH { if big { 73 } else { 105 } } else if t.kind == THORN {
+                116
+            } else {
+                107
+            }
             put(mut grid, t.at, ch)
         } else if t.state == SNAG {
             put(mut grid, t.at, 33)
@@ -1353,6 +1414,7 @@ fn simulate_for(years: i32) -> History {
         light: Vec::filled(nn, 1.0),
         thorn: Vec::filled(nn, 0.0),
         browse: Vec::filled(nn, 0.0),
+        trodden: Vec::filled(nn, 0.0),
         bare: Vec::filled(nn, 0.0),
         seed: Vec::filled(nn * KINDS, 0.0),
         shade_sum: Vec::filled(nn, 0.0),

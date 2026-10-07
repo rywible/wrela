@@ -8,8 +8,8 @@ use camera::{BARK, Cam, GOUACHE, LEAVES}
 use light::{Lit, hazed, shade}
 use noise::{noise2, rand}
 use history::{
-    ALIVE, BEECH, BIRCH, History, LIGHTNING, LOG, OAK, OAK_SOWN, SNAG, SNAPPED, THORN, Tree, WIND,
-    YEARS, HABITS, sample,
+    ALIVE, BEECH, BIRCH, BLACKTHORN, History, LIGHTNING, LOG, OAK, OAK_SOWN, SNAG, SNAPPED, THORN,
+    Tree, WIND, thorny, YEARS, HABITS, sample,
 }
 use scene::{KNOLL, MEADOW, eye, height, in_gap, past_edge}
 use shadow::{Sun, sunlit}
@@ -376,17 +376,45 @@ pub fn forest_of(h: History) -> Forest {
             let side = sample(h.light, t.at + toward * (t.reach + 1.0))
             let sky = 0.32 + 0.35 * sample(h.light, t.at)
             if t.state == ALIVE {
-                if t.kind == THORN {
+                if thorny(t.kind) {
                     thorn_bush(mut f, base, t)
                 } else if t.tall > 1.2 {
                     grown(mut f, base, t, wet, side, sky)
                 } else if length(t.at - e.xz) < 70.0 {
                     seedling(mut f, base, t)
                 }
-            } else if t.state == SNAG {
+            } else if t.state == SNAG && !scene::ablated(scene::NO_DEAD_WOOD) {
                 snag(mut f, base, t, sky)
-            } else if t.state == LOG {
+            } else if t.state == LOG && !scene::ablated(scene::NO_DEAD_WOOD) {
                 fallen(mut f, base, t, wet)
+            }
+        }
+    }
+    // The ablation's mantle: shrubs along the forest's edge, where the light at the ground falls
+    // from the meadow's to the forest's within a few metres.
+    if scene::ablated(scene::MANTLE) {
+        let n = history::N
+        for c in 0..(n * n) {
+            let p = history::centre(c)
+            var a = atan2(p.x - e.x, p.y - e.z) - yaw
+            a = a - TAU * floor((a + PI) / TAU)
+            let d = length(p - e.xz)
+            let l = h.light[c]
+            var darkest = 1.0
+            for k in 0..8 {
+                let q = p + vec2(cos(TAU * f32(k) / 8.0), sin(TAU * f32(k) / 8.0)) * 5.0
+                darkest = min(darkest, sample(h.light, q))
+            }
+            if abs(a) < 1.3 &&
+                d > 14.0 &&
+                l > 0.3 &&
+                darkest < 0.3 &&
+                past_edge(p) < -1.0 &&
+                rand(c, 61) < 0.8 {
+                for k in 0..2 {
+                    let q = p + vec2(rand(c, 62 + k) - 0.5, rand(c, 64 + k) - 0.5) * 2.0
+                    shrub(mut f, vec3(q.x, height(q.x, q.y), q.y), c * 2 + k)
+                }
             }
         }
     }
@@ -432,6 +460,8 @@ fn leaves_of_kind(kind: u32) -> (vec3, f32) {
         (vec3(-0.025, -0.012, 0.012), 0.95)
     } else if kind == BIRCH {
         (vec3(0.06, 0.07, -0.012), 0.72)
+    } else if kind == BLACKTHORN {
+        (vec3(-0.035, -0.03, 0.01), 0.5)
     } else {
         (vec3(-0.03, -0.02, 0.0), 0.6)
     }
@@ -549,7 +579,7 @@ fn thorn_bush(f: mut Forest, base: vec3, t: Tree) {
     let reach = max(t.reach, 0.5)
     let tall = max(t.tall, 0.8)
     let lean = vec3(t.lean.x, 0.0, t.lean.y)
-    let (tint, leaf) = leaves_of_kind(THORN)
+    let (tint, leaf) = leaves_of_kind(t.kind)
     var crown = Crown { clumps: Vec::new(), tint }
     let count = clamp(u32(reach * reach * 1.1), 3, 14)
     for i in 0..count {
@@ -688,8 +718,9 @@ fn fallen(f: mut Forest, base: vec3, t: Tree, wet: f32) {
         let rb = girth * (1.0 - 0.65 * next / len)
         let pa = base + dir * at
         let pb = base + dir * next
-        let sink = 1.0 - 0.55 * rot
-        let kink = vec3(-dir.z, 0.0, dir.x) * (0.25 * (rand(s, 200 + piece) - 0.5))
+        // It settles into the ground, and deeper as it softens.
+        let sink = 0.7 - 0.45 * rot
+        let kink = vec3(-dir.z, 0.0, dir.x) * (0.1 * rot * (rand(s, 200 + piece) - 0.5))
         let wa = 0.85 + 0.3 * rand(s, 210 + u32(at))
         let a3 = vec3(pa.x, height(pa.x, pa.z) + ra * sink, pa.z) + kink * (at / len)
         let b3 = vec3(pb.x, height(pb.x, pb.z) + rb * sink, pb.z) + kink * (next / len)
@@ -1006,11 +1037,11 @@ pub fn bark_shade(
         albedo = mix(vec3(0.17, 0.13, 0.09), vec3(0.32, 0.27, 0.20), vec3(grain))
         // Bark in plates, curling away as it rots.
         let plates = smoothstep(0.35, 0.45, noise2(vec2(b.along.x * 14.0, b.along.y * 3.0)))
-        albedo = mix(albedo * 0.55, albedo, vec3(plates))
+        albedo = mix(albedo * 0.78, albedo, vec3(plates))
         // Moss in cushions on its top, more the older it is.
         let cushions = noise2(b.world.xz * 3.1 + vec2(b.world.y * 2.0)) +
             0.5 * noise2(b.world.xz * 9.0)
-        let top = smoothstep(-0.1, 0.7, n.y) * smoothstep(1.15 - b.moss, 1.3 - b.moss, cushions)
+        let top = smoothstep(-0.1, 0.7, n.y) * smoothstep(1.05 - b.moss, 1.4 - b.moss, cushions)
         albedo = mix(albedo, vec3(0.15, 0.22, 0.04), vec3(top))
         mossy = 0.0
     }
