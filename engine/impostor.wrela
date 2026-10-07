@@ -343,7 +343,7 @@ pub fn far_shade(
     cmp: ComparisonSampler,
     clouds: Texture,
     probes: [Probe],
-    texels: [Texel],
+    grounds: [f32],
 ) -> vec4 {
     let (uv, _) = impostor_uv(f, lt.cam, b)
     let c = colour.sample_level(s, uv)
@@ -355,7 +355,7 @@ pub fn far_shade(
     let ao = exp(-depth / 1.6)
     let albedo = c.rgb * c.rgb + f.tint * 0.5
     let sun = sun_at(lt, f.world, n, near, far, moving, cmp, clouds, s, soft: 1.5)
-    let sky = sky_at(lt, probes, texels, f.world, n) * (0.25 + 0.75 * ao)
+    let sky = sky_at(lt, probes, grounds, f.world, n) * (0.25 + 0.75 * ao)
     let lit = Lit {
         albedo: max(albedo, vec3(0.005)),
         n,

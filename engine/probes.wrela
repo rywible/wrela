@@ -248,6 +248,7 @@ pub fn bake(
     far: DepthTexture,
     cmp: ComparisonSampler,
     probes: mut Slots<Probe>,
+    grounds: mut Slots<f32>,
     id: GlobalId,
 ) {
     let g = t.grid
@@ -259,6 +260,8 @@ pub fn bake(
     }
     let (i, j) = (col % g.cols, col / g.cols)
     let p = probe_at(g, levels, texels, i, j, k)
+    // Each probe's slot holds its column's ground height too (a layer's, all alike).
+    grounds[id] = p.y - LAYER_HEIGHTS[k]
     var r = vec4(0.0)
     var gg = vec4(0.0)
     var b = vec4(0.0)
@@ -278,6 +281,24 @@ pub fn bake(
     probes[id] = Probe { r: r * conv, g: gg * conv, b: b * conv }
 }
 
+/// The ground's height under `xz` as the probes' columns hold it (between the four round it),
+/// or 0 outside the grid.
+pub fn ground_under(grid: ProbeGrid, grounds: [f32], xz: vec2) -> f32 {
+    let g = (xz - grid.corner) / grid.spacing
+    let last = f32(max(grid.cols, 2) - 1)
+    if grid.cols < 2 || g.x < 0.0 || g.y < 0.0 || g.x >= last || g.y >= last {
+        return -1.0e9
+    }
+    let c = floor(g)
+    let f = g - c
+    let (cx, cz) = (u32(c.x), u32(c.y))
+    mix(
+        mix(grounds[grid.index(cx, cz, 0)], grounds[grid.index(cx + 1, cz, 0)], f.x),
+        mix(grounds[grid.index(cx, cz + 1, 0)], grounds[grid.index(cx + 1, cz + 1, 0)], f.x),
+        f.y,
+    )
+}
+
 /// The irradiance a probe holds for a surface facing `n`, over π: the light a white surface
 /// facing that way reflects.
 pub fn probe_light(p: Probe, n: vec3) -> vec3 {
@@ -291,9 +312,8 @@ pub fn probe_light(p: Probe, n: vec3) -> vec3 {
 pub fn sky_light(
     grid: ProbeGrid,
     probes: [Probe],
+    grounds: [f32],
     light: Light,
-    levels: Levels,
-    texels: [Texel],
     world: vec3,
     n: vec3,
 ) -> vec3 {
@@ -302,7 +322,15 @@ pub fn sky_light(
     if grid.cols < 2 || g.x < 0.0 || g.y < 0.0 || g.x >= last || g.y >= last {
         return open_sky(light, n)
     }
-    let above = world.y - height_at(levels, texels, world.xz)
+    // The ground under it, between its four columns' (each column's first layer holds it).
+    let c = floor(g)
+    let cf = g - c
+    let (cx, cz) = (u32(c.x), u32(c.y))
+    let g00 = grounds[grid.index(cx, cz, 0)]
+    let g10 = grounds[grid.index(cx + 1, cz, 0)]
+    let g01 = grounds[grid.index(cx, cz + 1, 0)]
+    let g11 = grounds[grid.index(cx + 1, cz + 1, 0)]
+    let above = world.y - mix(mix(g00, g10, cf.x), mix(g01, g11, cf.x), cf.y)
     // The layer coordinate: between which two layers it is.
     var k = 0
     while k + 2 < LAYERS && above > LAYER_HEIGHTS[k + 1] {
@@ -333,6 +361,7 @@ pub fn sky_light(
 pub struct Baked {
     pub grid: ProbeGrid,
     pub probes: GpuBuffer<Probe>,
+    pub grounds: GpuBuffer<f32>,
     pub volume: GpuBuffer<u32>,
     pub occluders: GpuBuffer<Occluder>,
     pub occluder_count: u32,
@@ -350,6 +379,7 @@ impl Baked {
         Baked {
             grid,
             probes: buffer(grid.probes()),
+            grounds: buffer(grid.probes()),
             volume: buffer(grid.voxels()),
             occluders: take o,
             occluder_count: occluders.len(),
@@ -405,6 +435,7 @@ impl Baked {
                 far: far,
                 cmp: cmp,
                 probes: self.probes.span_mut(start: self.baked * LAYERS, count: n * LAYERS),
+                grounds: self.grounds.span_mut(start: self.baked * LAYERS, count: n * LAYERS),
             ),
             groups: (n * LAYERS + 63) / 64,
         )

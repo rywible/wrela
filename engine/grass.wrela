@@ -18,7 +18,7 @@ use light::{Light, Lit, hazed}
 use lit::{Lighting, sky_at, sun_at}
 use noise::{hash2, rand}
 use plant::{Wind, sway}
-use probes::Probe
+use probes::{Probe, ProbeGrid, sky_light}
 use std::gpu::{
     Append, AppendBuffer, Atomics, ClipPosition, ComparisonSampler, DepthTexture, Flat, GlobalId,
     GpuBuffer, InstanceIndex, Sampler, Slots, Texture, Unorm8x4, VertexIndex, append_buffer, buffer,
@@ -38,6 +38,8 @@ pub struct Blade: Copy + GpuData {
     pub width: f32,
     pub ground: std::gpu::Oct32,
     pub colour: Unorm8x4,
+    /// The sky light at its root, from the probes (over 2), sampled where it's placed.
+    pub sky: Unorm8x4,
 }
 
 /// A flower's head, placed with the grass: where it is, its size, its kind (0 to 2) and seed.
@@ -56,9 +58,22 @@ pub const REACH: f32 = 92.0
 /// The levels of cells: the coarsest's blades reach past REACH.
 pub const LEVELS: u32 = 5
 
-/// Segments along a blade (the tip is the last), and the vertices it draws.
-pub const SEGMENTS: u32 = 4
-pub const BLADE_VERTICES: u32 = SEGMENTS * 6
+/// The blades' tiers: near blades bend along 4 segments, the middle ones along 2, far ones
+/// along 1 (the tip the last); a level's blades are its tier's (`tier_of`). Each tier's curve
+/// morphs to the next tier's shape over the last stretch before it hands over, so no blade's
+/// shape pops.
+pub const TIERS: u32 = 3
+pub const SEGMENTS: [u32; 3] = [4, 2, 1]
+
+/// The tier of level `k`'s blades.
+pub fn tier_of(k: u32) -> u32 {
+    if k == 0 { 0 } else if k < 3 { 1 } else { 2 }
+}
+
+/// Where tier `t` hands over to the next (m from the eye): its last level's outer ring.
+pub fn tier_end(t: u32) -> f32 {
+    if t == 0 { ring(0) } else if t == 1 { ring(2) } else { 1.0e9 }
+}
 
 /// The most blades and flowers a frame places.
 pub const MAX_BLADES: u32 = 196608
@@ -79,6 +94,8 @@ pub fn ring(k: u32) -> f32 {
 /// first, and how many each way), and the stones the grass keeps out of.
 pub struct Place: Copy + GpuData {
     pub cam: Camera,
+    pub light: Light,
+    pub grid: ProbeGrid,
     pub first: vec2,
     pub level: u32,
     pub cols: u32,
@@ -160,6 +177,8 @@ pub fn place(
     at: Place,
     levels: Levels,
     texels: [Texel],
+    probes: [Probe],
+    grounds: [f32],
     blades: mut Append<Blade>,
     flowers: mut Append<Flower>,
     id: GlobalId,
@@ -216,6 +235,8 @@ pub fn place(
     let tall = (0.18 + 0.6 * meadow.x) * (0.6 + 0.8 * rand(seed, 4)) * shrink
     let width = spacing_at(d) * (0.85 + 0.4 * rand(seed, 5)) * 1.15
     let tint = rand(seed, 8)
+    let ground_n = t.normal.decode()
+    let sky = sky_light(at.grid, probes, grounds, at.light, vec3(xz.x, y + 0.1, xz.y), ground_n)
     let _ = blades.push(
         Blade {
             root: vec3(xz.x, y - 0.02, xz.y),
@@ -227,6 +248,7 @@ pub fn place(
             colour: Unorm8x4::encode(
                 vec4(tint, saturate(meadow.y + 0.25 * (tint - 0.5)), meadow.z, 0.0),
             ),
+            sky: Unorm8x4::encode(vec4(saturate(sky * 0.5), 0.0)),
         },
     )
     // A flower on its tip, where the meadow has them: which kind, by their weights here.
@@ -248,14 +270,22 @@ pub fn place(
 /// The blades' and flowers' indirect draws' arguments, from what was placed: each a blade's
 /// vertices (or a flower card's) and the count placed as instances. Eight invocations, one a
 /// word: the blades' four, then the flowers'.
-@compute(8)
-pub fn draw_counts(blades: [u32], flowers: [u32], args: mut Slots<u32>, id: GlobalId) {
+@compute(16)
+pub fn draw_counts(
+    near: [u32],
+    middle: [u32],
+    far: [u32],
+    flowers: [u32],
+    args: mut Slots<u32>,
+    id: GlobalId,
+) {
     let w = id.x % 4
-    let flower = id.x >= 4
-    let count = if flower { min(flowers[0], MAX_FLOWERS) } else { min(blades[0], MAX_BLADES) }
-    args[id] = if w == 0 { if flower { 6 } else { BLADE_VERTICES } } else if w == 1 {
-        count
-    } else { 0 }
+    let which = id.x / 4
+    let count = if which == 0 { min(near[0], MAX_BLADES) } else if which == 1 {
+        min(middle[0], MAX_BLADES)
+    } else if which == 2 { min(far[0], MAX_BLADES) } else { min(flowers[0], MAX_FLOWERS) }
+    let vertices = if which < 3 { SEGMENTS[which] * 6 } else { 6 }
+    args[id] = if w == 0 { vertices } else if w == 1 { count } else { 0 }
 }
 
 /// The grass's colours: at the root, at the tip of young and dry grass, and the light through
@@ -272,9 +302,11 @@ pub struct Blooms: Copy + GpuData {
     pub kinds: [vec3; 3] = [vec3(0.82, 0.82, 0.76), vec3(0.80, 0.62, 0.06), vec3(0.42, 0.30, 0.62)],
 }
 
-/// The grass of a frame: what places it, and what it placed.
+/// The grass of a frame: what places it, and what it placed (each tier's blades).
 pub struct Grass {
-    pub blades: AppendBuffer<Blade>,
+    pub near: AppendBuffer<Blade>,
+    pub middle: AppendBuffer<Blade>,
+    pub far: AppendBuffer<Blade>,
     pub flowers: AppendBuffer<Flower>,
     pub args: GpuBuffer<u32>,
 }
@@ -282,9 +314,11 @@ pub struct Grass {
 impl Grass {
     pub fn new() -> Grass {
         Grass {
-            blades: append_buffer(MAX_BLADES),
+            near: append_buffer(MAX_BLADES / 4),
+            middle: append_buffer(MAX_BLADES / 2),
+            far: append_buffer(MAX_BLADES / 2),
             flowers: append_buffer(MAX_FLOWERS),
-            args: buffer(8),
+            args: buffer(16),
         }
     }
 
@@ -293,11 +327,17 @@ impl Grass {
     pub fn place(
         mut self,
         cam: Camera,
+        light: Light,
+        grid: ProbeGrid,
         levels: Levels,
         texels: std::gpu::GpuSpan<Texel>,
+        probes: std::gpu::GpuSpan<Probe>,
+        grounds: std::gpu::GpuSpan<f32>,
         stones: [vec4],
     ) {
-        self.blades.clear()
+        self.near.clear()
+        self.middle.clear()
+        self.far.clear()
         self.flowers.clear()
         var st = [vec4(0.0); 8]
         let n = min(stones.len(), 8)
@@ -309,15 +349,55 @@ impl Grass {
             if cols == 0 || rows == 0 {
                 continue
             }
-            let at = Place { cam, first, level: k, cols, stones: st, stone_count: n }
-            dispatch(
-                place.bind(at, levels, texels, blades: mut self.blades, flowers: mut self.flowers),
-                groups: ((cols + 7) / 8, (rows + 7) / 8, 1),
-            )
+            let at = Place { cam, light, grid, first, level: k, cols, stones: st, stone_count: n }
+            let groups = ((cols + 7) / 8, (rows + 7) / 8, 1)
+            let tier = tier_of(k)
+            if tier == 0 {
+                dispatch(
+                    place.bind(
+                        at,
+                        levels,
+                        texels,
+                        probes,
+                        grounds,
+                        blades: mut self.near,
+                        flowers: mut self.flowers,
+                    ),
+                    groups: groups,
+                )
+            } else if tier == 1 {
+                dispatch(
+                    place.bind(
+                        at,
+                        levels,
+                        texels,
+                        probes,
+                        grounds,
+                        blades: mut self.middle,
+                        flowers: mut self.flowers,
+                    ),
+                    groups: groups,
+                )
+            } else {
+                dispatch(
+                    place.bind(
+                        at,
+                        levels,
+                        texels,
+                        probes,
+                        grounds,
+                        blades: mut self.far,
+                        flowers: mut self.flowers,
+                    ),
+                    groups: groups,
+                )
+            }
         }
         dispatch(
             draw_counts.bind(
-                blades: self.blades.count(),
+                near: self.near.count(),
+                middle: self.middle.count(),
+                far: self.far.count(),
                 flowers: self.flowers.count(),
                 args: mut self.args,
             ),
@@ -338,16 +418,13 @@ pub struct BladeVertex: Copy {
     pub ground: vec3,
     /// Its tint, dryness and deep green.
     pub colour: vec3,
+    /// The sky light at its root.
+    pub sky: vec3,
 }
 
-/// A blade's vertex `k`: along its curve, at one edge, swayed by the wind.
-fn blade_vertex(b: Blade, k: u32, wind: Wind) -> (vec3, vec2, vec3) {
-    let qx = [0, 1, 1, 0, 1, 0]
-    let qy = [0, 0, 1, 0, 1, 1]
-    let seg = k / 6
-    let c = k % 6
-    let t = f32(seg + qy[c]) / f32(SEGMENTS)
-    let side = f32(qx[c]) * 2.0 - 1.0
+/// A blade's point `t` up its curve (0 its root, 1 its tip), at its edge `side` (−1 or 1),
+/// swayed by the wind.
+fn blade_point(b: Blade, t: f32, side: f32, wind: Wind) -> vec3 {
     let dir = vec2(cos(b.facing), sin(b.facing))
     let lean = dir * b.bend
     // A parabola: up, then over.
@@ -357,10 +434,45 @@ fn blade_vertex(b: Blade, k: u32, wind: Wind) -> (vec3, vec2, vec3) {
     // Tapering to a point.
     let w = b.width * (1.0 - t * t) * 0.5 + 0.0005
     let base = b.root + vec3(over.x + across.x * w * side, up, over.y + across.y * w * side)
-    let pos = base + sway(wind, b.root, t * b.tall) * 0.6
+    base + sway(wind, b.root, t * b.tall) * 0.6
+}
+
+/// A blade's vertex `k` of a curve of `segments`: its point, morphed by `m` toward the next
+/// tier's (half as many segments: its odd points move to the middle of their neighbours).
+fn blade_vertex(b: Blade, k: u32, segments: u32, m: f32, wind: Wind) -> (vec3, vec2, vec3) {
+    let qx = [0, 1, 1, 0, 1, 0]
+    let qy = [0, 0, 1, 0, 1, 1]
+    let seg = k / 6
+    let c = k % 6
+    let i = seg + qy[c]
+    let t = f32(i) / f32(segments)
+    let side = f32(qx[c]) * 2.0 - 1.0
+    var pos = blade_point(b, t, side, wind)
+    if i % 2 == 1 && m > 0.0 {
+        let step = 1.0 / f32(segments)
+        let mid = 0.5 *
+            (blade_point(b, t - step, side, wind) + blade_point(b, t + step, side, wind))
+        pos = mix(pos, mid, vec3(m))
+    }
+    let dir = vec2(cos(b.facing), sin(b.facing))
+    let across = vec2(-dir.y, dir.x)
     let face = normalize(vec3(dir.x, 0.35, dir.y))
     let n = normalize(face + vec3(across.x, 0.0, across.y) * (side * 0.4))
     (pos, vec2(side, t), n)
+}
+
+/// What a tier's blades' draw reads: its segments, and where it morphs to the next tier's shape
+/// (from and to, m from the eye).
+pub struct Tier: Copy + GpuData {
+    pub segments: u32,
+    pub morph_from: f32,
+    pub morph_to: f32,
+}
+
+/// Tier `t`'s draw state.
+pub fn tier(t: u32) -> Tier {
+    let end = tier_end(t)
+    Tier { segments: SEGMENTS[t], morph_from: end * 0.75, morph_to: end * 0.97 }
 }
 
 @vertex
@@ -369,10 +481,13 @@ pub fn blade(
     i: InstanceIndex,
     cam: Camera,
     wind: Wind,
+    tier: Tier,
     blades: [Blade],
 ) -> BladeVertex {
     let b = blades[i.index]
-    let (world, uv, n) = blade_vertex(b, v.index, wind)
+    let d = length(b.root - cam.eye)
+    let m = smoothstep(tier.morph_from, tier.morph_to, d)
+    let (world, uv, n) = blade_vertex(b, v.index, tier.segments, m, wind)
     BladeVertex {
         clip: ClipPosition { position: cam.clip(world) },
         world,
@@ -380,6 +495,7 @@ pub fn blade(
         normal: n,
         ground: b.ground.decode(),
         colour: b.colour.decode().xyz,
+        sky: b.sky.decode().xyz * 2.0,
     }
 }
 
@@ -406,14 +522,14 @@ pub fn blade_shade(
     clouds: Texture,
     s: Sampler,
     probes: [Probe],
-    texels: [Texel],
+    grounds: [f32],
 ) -> vec4 {
     let ground = normalize(b.ground)
     let n = normalize(ground * 0.75 + normalize(b.normal) * 0.25)
     let t = b.uv.y
     let sun = sun_at(lt, b.world, ground, near, far, moving, cmp, clouds, s, soft: 1.5)
     let ao = 0.35 + 0.65 * smoothstep(0.0, 0.8, t)
-    let sky = sky_at(lt, probes, texels, b.world, ground) * ao
+    let sky = b.sky * ao
     let lit = Lit {
         albedo: grass_colour(look, t, b.colour.x, b.colour.y, b.colour.z),
         n,
@@ -493,7 +609,7 @@ pub fn flower_shade(
     clouds: Texture,
     s: Sampler,
     probes: [Probe],
-    texels: [Texel],
+    grounds: [f32],
 ) -> vec4 {
     let (_, centre) = petals(b.uv, b.seed.value, 0.05)
     let kind = b.kind.value
@@ -505,7 +621,7 @@ pub fn flower_shade(
     )
     let n = normalize(vec3(0.0, 1.0, 0.0) + lt.cam.up * 0.3)
     let sun = sun_at(lt, b.world, n, near, far, moving, cmp, clouds, s, soft: 1.0)
-    let sky = sky_at(lt, probes, texels, b.world, n) * 0.9
+    let sky = sky_at(lt, probes, grounds, b.world, n) * 0.9
     let lit = Lit { albedo, n, sun, sky, through: colour * 0.15 }
     let c = hazed(lt.light, light::world(lt.light, lit, b.world, lt.cam.eye), b.world, lt.cam.eye)
     vec4(c, view::FLOWER)
@@ -517,7 +633,7 @@ impl Grass {
         draw(
             flower.bind(cam, wind, flowers: self.flowers.items()),
             flower_cut,
-            indirect: self.args.span(start: 4, count: 4),
+            indirect: self.args.span(start: 12, count: 4),
             depth: view::NEAREST,
         )
     }
@@ -536,18 +652,30 @@ impl Grass {
         clouds: Texture,
         s: Sampler,
         probes: std::gpu::GpuSpan<Probe>,
-        texels: std::gpu::GpuSpan<Texel>,
+        grounds: std::gpu::GpuSpan<f32>,
     ) {
         draw(
-            blade.bind(lt.cam, wind, blades: self.blades.items()),
-            blade_shade.bind(lt, look, near, far, moving, cmp, clouds, s, probes, texels),
+            blade.bind(lt.cam, wind, tier: tier(0), blades: self.near.items()),
+            blade_shade.bind(lt, look, near, far, moving, cmp, clouds, s, probes, grounds),
             indirect: self.args.span(start: 0, count: 4),
             depth: view::NEAREST,
         )
         draw(
-            flower.bind(lt.cam, wind, flowers: self.flowers.items()),
-            flower_shade.bind(lt, blooms, near, far, moving, cmp, clouds, s, probes, texels),
+            blade.bind(lt.cam, wind, tier: tier(1), blades: self.middle.items()),
+            blade_shade.bind(lt, look, near, far, moving, cmp, clouds, s, probes, grounds),
             indirect: self.args.span(start: 4, count: 4),
+            depth: view::NEAREST,
+        )
+        draw(
+            blade.bind(lt.cam, wind, tier: tier(2), blades: self.far.items()),
+            blade_shade.bind(lt, look, near, far, moving, cmp, clouds, s, probes, grounds),
+            indirect: self.args.span(start: 8, count: 4),
+            depth: view::NEAREST,
+        )
+        draw(
+            flower.bind(lt.cam, wind, flowers: self.flowers.items()),
+            flower_shade.bind(lt, blooms, near, far, moving, cmp, clouds, s, probes, grounds),
+            indirect: self.args.span(start: 12, count: 4),
             depth: view::PREPASSED,
         )
     }

@@ -187,13 +187,13 @@ pub fn stone_shade(
     clouds: Texture,
     smp: Sampler,
     probes: [Probe],
-    texels: [Texel],
+    grounds: [f32],
 ) -> vec4 {
     let n = normalize(s.normal)
     let sun = sun_at(lt, s.world, n, near, far, moving, cmp, clouds, smp, soft: 1.0)
-    let ground = height_at(lt.levels, texels, s.world.xz)
+    let ground = probes::ground_under(lt.grid, grounds, s.world.xz)
     let low = 0.4 + 0.6 * smoothstep(0.0, 0.5, s.world.y - ground)
-    let sky = sky_at(lt, probes, texels, s.world, n) * low
+    let sky = sky_at(lt, probes, grounds, s.world, n) * low
     let lit = Lit { albedo: s.albedo, n, sun, sky, through: vec3(0.0) }
     let c = hazed(lt.light, light::world(lt.light, lit, s.world, lt.cam.eye), s.world, lt.cam.eye)
     vec4(c, ROCK + f32(s.seed.value % 63))

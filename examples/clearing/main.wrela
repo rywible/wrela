@@ -14,7 +14,7 @@ use engine::render::MAX_BONES
 use engine::run::run
 use grazer::creature::grazer
 use engine::light::{Light, afternoon}
-use engine::paint::{Develop, Look, develop, glow_blur, glow_down}
+use engine::paint::{Develop, Look, dab_map, develop, glow_blur, glow_down}
 use engine::lit::Lighting
 use engine::plant::{Wind, leaf_atlas}
 use engine::probes::{Baked, Occluder, Probe, ProbeGrid, Trace, grid}
@@ -100,6 +100,8 @@ pub struct Clearing {
     motion: Texture,
     history_a: Texture,
     history_b: Texture,
+    /// The dabs and tooth, at the scene's size.
+    dabs: Texture,
     /// The glow's chain, at a quarter of the output's size.
     glow_a: Texture,
     glow_b: Texture,
@@ -217,6 +219,7 @@ pub fn init() -> Clearing {
         motion: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
         history_a: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
         history_b: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
+        dabs: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
         glow_a: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
         glow_b: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
         linear: sampler(),
@@ -237,7 +240,15 @@ pub fn cover(v: VertexIndex, z: f32) -> ClipPosition {
 
 /// The look's passes: the glow's chain from `image` (a quarter's size, blurred across and
 /// down), then the image developed to the screen.
-fn look(image: Texture, depth: DepthTexture, glow_a: mut Texture, glow_b: mut Texture, d: Develop) {
+fn look(
+    image: Texture,
+    depth: DepthTexture,
+    dabs: Texture,
+    s: Sampler,
+    glow_a: mut Texture,
+    glow_b: mut Texture,
+    d: Develop,
+) {
     let down = begin_pass(mut glow_a)
     draw(cover.bind(z: 0.5), glow_down.bind(image, threshold: 1.1), vertices: 3)
     down.end()
@@ -248,7 +259,11 @@ fn look(image: Texture, depth: DepthTexture, glow_a: mut Texture, glow_b: mut Te
     draw(cover.bind(z: 0.5), glow_blur.bind(src: glow_b, across: 1, spread: 2.0), vertices: 3)
     y.end()
     begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
-    draw(cover.bind(z: 0.5), develop.bind(d, image, depth, glow: glow_a), vertices: 3)
+    draw(
+        cover.bind(z: 0.5),
+        develop.bind(d, image, depth, glow: glow_a, dabs: dabs, s: s),
+        vertices: 3,
+    )
     present()
 }
 
@@ -309,6 +324,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         s.scene = texture(width: w, height: h, format: TextureFormat::Rgba16Float)
         s.depth = depth_texture(width: w, height: h)
         s.motion = texture(width: w, height: h, format: TextureFormat::Rgba16Float)
+        s.dabs = texture(width: w, height: h, format: TextureFormat::Rgba16Float)
         s.history_a = texture(width, height, format: TextureFormat::Rgba16Float)
         s.history_b = texture(width, height, format: TextureFormat::Rgba16Float)
         let (qw, qh) = (max(width / 4, 1), max(height / 4, 1))
@@ -424,7 +440,8 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         levels: s.clipmap.levels(),
     }
     let probes = s.probes.probes.span(start: 0, count: s.probes.grid.probes())
-    s.grass.place(cam, lt.levels, texels, stones: footprints())
+    let grounds = s.probes.grounds.span(start: 0, count: s.probes.grid.probes())
+    s.grass.place(cam, s.light, grid, lt.levels, texels, probes, grounds, stones: footprints())
     s.forest.select(cam)
 
     // The depth prepass: the cut cards and flowers.
@@ -451,7 +468,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             s.cloud_shadow,
             s.linear,
             probes,
-            texels,
+            grounds,
         )
     }
     if on(s.off, GRASS) {
@@ -467,7 +484,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             s.cloud_shadow,
             s.linear,
             probes,
-            texels,
+            grounds,
         )
     }
     for st in s.stones {
@@ -488,7 +505,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
                 s.cloud_shadow,
                 s.linear,
                 probes,
-                texels,
+                grounds,
             ),
             indices: st.mesh.quads.items(),
             indirect: st.mesh.args.span(start: 0, count: 5),
@@ -527,7 +544,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             s.cloud_shadow,
             s.linear,
             probes,
-            texels,
+            grounds,
         ),
         indices: s.mesh.quads.items(),
         indirect: s.mesh.args.span(start: 0, count: 5),
@@ -578,10 +595,17 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     }
     label("look")
     let d = Develop { cam, light: s.light, look: Look {}, out: vec2(f32(width), f32(height)) }
+    let dp = begin_pass(mut s.dabs)
+    draw(
+        cover.bind(z: 0.5),
+        dab_map.bind(cam, look: d.look, scene: s.scene, depth: s.depth),
+        vertices: 3,
+    )
+    dp.end()
     if a == 0 {
-        look(s.history_a, s.depth, mut s.glow_a, mut s.glow_b, d)
+        look(s.history_a, s.depth, s.dabs, s.linear, mut s.glow_a, mut s.glow_b, d)
     } else {
-        look(s.history_b, s.depth, mut s.glow_a, mut s.glow_b, d)
+        look(s.history_b, s.depth, s.dabs, s.linear, mut s.glow_a, mut s.glow_b, d)
     }
     s.frames += 1
 }

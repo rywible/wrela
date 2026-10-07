@@ -88,20 +88,21 @@ pub fn resolve(
     // The samples were taken at their pixels' centres, the image shifted by the jitter: sample
     // (i, j) shows what's at (i + 0.5, j + 0.5) - jitter, unjittered.
     let j = jitter_of(cam.frame)
-    let base = vec2i(floor(q + j))
+    // The four samples round the point, which a bilinear reconstruction would read.
+    let base = vec2i(floor(q + j - vec2(0.5)))
     let lim = vec2i(i32(in_size.x) - 1, i32(in_size.y) - 1)
     var sum = vec3(0.0)
     var weight = 0.0
     var nearest = 0.0
     var tag = 0.0
     var closest = 0.0
-    var at_closest = base
+    var at_closest = clamp(base, vec2i(0), lim)
     var m1 = vec3(0.0)
     var m2 = vec3(0.0)
-    for dy in -1..2 {
-        for dx in -1..2 {
+    for dy in 0..2 {
+        for dx in 0..2 {
             let p = clamp(base + vec2i(dx, dy), vec2i(0), lim)
-            let texel = scene.load(u32(p.x), u32(p.y))
+            let texel = scene.load(x: u32(p.x), y: u32(p.y))
             let c = tamed(max(texel.rgb, vec3(0.0)))
             let pos = vec2(p) + vec2(0.5) - j
             let d2 = dot(pos - q, pos - q)
@@ -116,9 +117,9 @@ pub fn resolve(
             let y = to_ycocg(c)
             m1 += y
             m2 += y * y
-            // The nearest surface among the neighbours (reversed depth: the largest), whose
-            // motion the pixel takes, so a moving edge carries its history.
-            let z = depth.load(u32(p.x), u32(p.y))
+            // The nearest surface among them (reversed depth: the largest), whose motion the
+            // pixel takes, so a moving edge carries its history.
+            let z = depth.load(x: u32(p.x), y: u32(p.y))
             if z > closest {
                 closest = z
                 at_closest = p
@@ -156,11 +157,12 @@ pub fn resolve(
         return vec4(untamed(current), tag)
     }
     let prev = tamed(history_at(history, s, last, r.out))
-    // Clip the history to the box of this frame's neighbourhood (its mean and spread).
-    let mean = m1 / 9.0
-    let sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)))
-    let lo = mean - sigma * 1.25
-    let hi = mean + sigma * 1.25
+    // Clip the history to the box of this frame's neighbourhood (its mean and spread; four
+    // samples' spread is narrow, so the box is wider than three-by-three's would be).
+    let mean = m1 / 4.0
+    let sigma = sqrt(max(m2 / 4.0 - mean * mean, vec3(0.0)))
+    let lo = mean - sigma * 1.6
+    let hi = mean + sigma * 1.6
     let h = to_ycocg(prev)
     let centre = 0.5 * (hi + lo)
     let extent = max(0.5 * (hi - lo), vec3(1.0e-5))
@@ -169,7 +171,7 @@ pub fn resolve(
     let most = max(unit.x, max(unit.y, unit.z))
     let clipped = if most > 1.0 { centre + off / most } else { h }
     // This frame's share: more where a sample fell near the pixel's centre.
-    let a = clamp(r.blend * nearest * 2.0, r.blend * 0.25, 0.5)
+    let a = clamp(r.blend * nearest * 1.6, r.blend * 0.25, 0.5)
     let out = mix(from_ycocg(clipped), current, vec3(a))
     vec4(untamed(max(out, vec3(0.0))), tag)
 }

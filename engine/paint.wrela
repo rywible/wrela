@@ -16,8 +16,8 @@
 
 use light::{Light, display}
 use noise::{hash2, noise3}
-use std::gpu::{DepthTexture, FragCoord, Texture}
-use view::{CREATURE, Camera, class_of}
+use std::gpu::{DepthTexture, FragCoord, Sampler, Texture}
+use view::{CREATURE, Camera, class_of, jitter_of}
 
 /// The look's settings: how strong the dabs are on near surfaces, on broad far ones and on the
 /// sky; the paper's tooth; the bloom; the characters' lines (their width in output pixels, and
@@ -189,8 +189,55 @@ fn line(
     line
 }
 
-/// The output pixel, painted: the dabs on its surface (or its sky direction) and the paper's
-/// tooth, the bloom, the characters' lines, a little sharpening, the tone curve and a vignette.
+/// The dabs and the paper's tooth at a scene pixel (the scene's resolution: the look allows
+/// them there, #28 §7): its surface from its depth and its neighbours' (its world point and
+/// normal, as the jittered sample saw it), or its sky direction; each the amount it moves the
+/// paint, for the output's pass to read between texels.
+@fragment
+pub fn dab_map(
+    pixel: FragCoord,
+    cam: Camera,
+    look: Look,
+    scene: Texture,
+    depth: DepthTexture,
+) -> vec4 {
+    let p = vec2u(pixel.position.xy)
+    let px = pixel.position.xy
+    let class = class_of(scene.load(x: p.x, y: p.y).a)
+    let z = depth.load(x: p.x, y: p.y)
+    if class == 0 || z <= 0.0 {
+        // The sky: dabs anchored to directions, a pixel's angle being its footprint at 1 m.
+        let ray = cam.ray(px)
+        let footprint = 2.0 * cam.tan_half / cam.screen.y
+        let dab = dabs(ray, -ray, footprint, look.dab_px * 0.8)
+        return vec4(look.dabs_sky * dab, 0.0, 0.0, 1.0)
+    }
+    let world = cam.world_at(px, z)
+    let dist = cam.distance_of(z)
+    let footprint = cam.footprint(dist)
+    let size = vec2u(cam.screen) - vec2u(1)
+    let qx = vec2u(min(p.x + 1, size.x), p.y)
+    let qy = vec2u(p.x, min(p.y + 1, size.y))
+    let wx = cam.world_at(vec2(qx) + vec2(0.5), max(depth.load(x: qx.x, y: qx.y), 1.0e-9))
+    let wy = cam.world_at(vec2(qy) + vec2(0.5), max(depth.load(x: qy.x, y: qy.y), 1.0e-9))
+    var n = normalize(cross(wy - world, wx - world) + vec3(0.0, 1.0e-6, 0.0))
+    if dot(n, cam.eye - world) < 0.0 {
+        n = -n
+    }
+    // Broad things take stronger dabs: the far ground, crowns; characters half.
+    let broad = if class == 3 { 1.0 } else { smoothstep(30.0, 250.0, dist) }
+    var strength = mix(look.dabs_near, look.dabs_far, broad)
+    if class == class_of(CREATURE) {
+        strength *= 0.5
+    }
+    // Dabs are measured in output pixels: the scene's are twice as wide.
+    let dab = dabs(world, n, footprint, look.dab_px * 0.5)
+    vec4(strength * dab, look.tooth * tooth(world, footprint * 0.5), 0.0, 1.0)
+}
+
+/// The output pixel, painted: the dabs and the paper's tooth (from the dab map, between its
+/// texels), the bloom, the characters' lines, a little sharpening, the tone curve and a
+/// vignette.
 @fragment
 pub fn develop(
     pixel: FragCoord,
@@ -198,12 +245,13 @@ pub fn develop(
     image: Texture,
     depth: DepthTexture,
     glow: Texture,
+    dabs: Texture,
+    s: Sampler,
 ) -> vec4 {
     let px = pixel.position.xy
     let p = vec2u(px)
     let here = image.load(x: p.x, y: p.y)
     let look = d.look
-    let class = class_of(here.a)
     // A little sharpening against temporal AA's softness: the pixel against its cross.
     let size = vec2u(d.out) - vec2u(1)
     let n1 = image.load(x: min(p.x + 1, size.x), y: p.y).rgb
@@ -214,41 +262,17 @@ pub fn develop(
         here.rgb + (here.rgb * 4.0 - (n1 + n2 + n3 + n4)) * (look.sharpen * 0.25),
         vec3(0.0),
     )
-    let (z, q) = depth_at(d, depth, px)
-    let (world, ray) = world_at(d.cam, q, max(z, 1.0e-9))
-    if class == 0 {
-        // The sky: dabs anchored to directions, a pixel's angle being its footprint at 1 m.
-        let footprint = 2.0 * d.cam.tan_half / d.out.y
-        let n = -ray
-        let dab = dabs(ray * 1.0, n, footprint, look.dab_px * 1.6)
-        paint = paint * (1.0 + look.dabs_sky * dab) * vec3(1.0 + 0.03 * dab, 1.0, 1.0 - 0.03 * dab)
-    } else {
-        let dist = d.cam.distance_of(z)
-        let footprint = dist * 2.0 * d.cam.tan_half / d.out.y
-        // The surface's normal from the scene's depths beside it.
-        let (zx, qx) = depth_at(d, depth, px + vec2(2.0, 0.0))
-        let (zy, qy) = depth_at(d, depth, px + vec2(0.0, 2.0))
-        let (wx, _) = world_at(d.cam, qx, max(zx, 1.0e-9))
-        let (wy, _) = world_at(d.cam, qy, max(zy, 1.0e-9))
-        var n = normalize(cross(wy - world, wx - world) + vec3(0.0, 1.0e-6, 0.0))
-        if dot(n, d.cam.eye - world) < 0.0 {
-            n = -n
-        }
-        // Broad things take stronger dabs: the far ground, crowns.
-        let broad = if class == 3 { 1.0 } else { smoothstep(30.0, 250.0, dist) }
-        var strength = mix(look.dabs_near, look.dabs_far, broad)
-        if class == class_of(CREATURE) {
-            strength *= 0.5
-        }
-        let dab = dabs(world, n, footprint, look.dab_px)
-        paint = paint * (1.0 + strength * dab) * vec3(1.0 + 0.04 * dab, 1.0, 1.0 - 0.05 * dab)
-        paint = paint * (1.0 + look.tooth * tooth(world, footprint))
-    }
+    // The dab map's texel for this point: the scene's samples sat at their pixels' centres less
+    // the jitter, so the unjittered point is read that much over.
+    let q = px * (d.cam.screen / d.out) + jitter_of(d.cam.frame)
+    let m = dabs.sample_level(s, q / d.cam.screen)
+    paint = paint * (1.0 + m.r) * vec3(1.0 + 0.25 * m.r, 1.0, 1.0 - 0.3 * m.r) * (1.0 + m.g)
     // Bloom.
     let gq = min(vec2u(px / 4.0), vec2u(glow.width() - 1, glow.height() - 1))
     paint += glow.load(x: gq.x, y: gq.y).rgb * look.bloom
     var c = display(d.light, paint)
     // The characters' lines: a darker shade of their colour.
+    let (z, _) = depth_at(d, depth, px)
     let l = line(d, image, depth, px, here.a, z)
     if l > 0.0 {
         c = mix(c, c * look.line_dark, vec3(l))
