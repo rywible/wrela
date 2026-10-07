@@ -103,7 +103,9 @@ Spike 14 (#48, branch `spike-14`, 2026-10-06) asked whether music can be a progr
   2. The reference became the whole instrument (the retuned SFZ, in sfizz), the piano gained per-partial phases, beating and stereo, a hammer's contact and phantom partials, and the performance kept the pulse (no rubato, one breath). The performance on the sampled piano: "really good", as was its deadpan. wrela's piano clicked and knocked.
   3. The clicks were the strike's noise (74 to 100 a minute at onsets, found by `wrela audio clicks`; the sampled piano had none there) and stepped dampers; both went (1 to 2.5 marginal clicks a minute, against the sampled piano's 0.3 to 0.8). The owner hasn't ranked round 3 yet.
 - **Agents can't hear,** so the method is measurement: every claim about the sound above is a number a tool reports (`partials`, `model`, `clicks`, the attacks' crest, `sheet`), and the owner's ears judge. Twice a measured target was the wrong one, and the ears caught it: noise matched to a recording's attack peak (too loud a strike), then to the energy between its partials (clicks).
-- **Not modelled yet:** the hammer's contact beyond a 1 to 4 ms swell, longitudinal partials, release and damper noise, a board solved from a field, and any instrument but the piano. Music for the flagship stays the owner's call (#44).
+- **Not modelled yet:** the hammer's contact beyond a 1 to 4 ms swell, longitudinal partials, release and damper noise, a board solved from a field, and any instrument but the piano.
+
+**Decided** (owner, 2026-10-06): the flagship's music is code, with no Suno, and a milestone of its own, M5.5 (#49), comes before the duel, with a piano gate: blind, the owner can't reliably tell wrela's piano from the recorded one, or prefers it.
 
 ## Constraints
 
@@ -125,7 +127,7 @@ The load-bearing rules. Changing one needs the owner, and the change and its rea
 | **One origin per game;** saves stay in the game's origin (D-082, D-101). | A bug in one game can't reach another's saves. |
 | **Reference device:** MacBook Air M4 in Chrome. **Budgets:** 16.7 ms per frame at 1080p, ≤ 1.5 GB per tab, ≤ 64 pipelines per scene, sim ≤ 4 ms per tick (D-068, D-096). | Every claim is measured against these. |
 | **Browsers:** Chrome, Safari and Firefox. The sim computes the same bits in all three and in the native host (owner, 2026-10-05). | The flagship's leaderboards verify replays from any browser on the native host. |
-| **Size budgets:** runtime ≤ 1 MB; time-to-play ≤ 6 MB; cold start ≤ 8 MB, playable within 5 s (D-041, D-069). Each of the flagship's floors ≤ 16 MB, streamed when the player reaches it, music excluded: an estimate until the first floor is measured. This replaces D-083's 32 MB total (owner, 2026-10-05). | "Megabytes, not gigabytes," per world. |
+| **Size budgets:** runtime ≤ 1 MB; time-to-play ≤ 6 MB; cold start ≤ 8 MB, playable within 5 s (D-041, D-069). Each of the flagship's floors ≤ 16 MB, streamed when the player reaches it, music included (it's code: about 12 KB a piece; owner, 2026-10-06): an estimate until the first floor is measured. This replaces D-083's 32 MB total (owner, 2026-10-05). | "Megabytes, not gigabytes," per world. |
 | **A field's declared bounds are checked,** not trusted: a bound is a stdlib method (`Lipschitz`), and debug builds and tests check it against the bound the compiler derives (D-077, D-092; revised by the owner's language review of 2026-10-02, which replaced facts as compiler attributes). | Authors' declared bounds were wrong three times in the spikes. |
 | **The grammar is the spec;** the hand-written parser conforms by test (D-104). | Agents and tools get a machine-checkable definition. |
 | **The source is the truth; every tool is a lens that reads and writes it,** and every tool action is also an API call (D-105). | Agents and humans edit the same thing. |
@@ -164,6 +166,7 @@ Planned in GitHub issues on rywible/wrela, not here. Each milestone has a scope 
 | **M3: the first lens** | Done (October 2026): the lens, a studio tool written in wrela, and the agents' command-line tools; thesis 1 tested blind in authoring rounds 2 to 6 |
 | **M4: the engine's spine** | Spike 01's herd simulated and rendered from wrela source, matching the hand-written numbers; the sim on its own worker, its replays verified with no GPU |
 | **M5: the look** | The Last Green's clearing at 60 fps with a creature walking across it, in the art direction the owner picks from three prototypes |
+| **M5.5: the sound** | The Last Green's sound as code: piano music that follows play, synthesized sounds, one mixed voice, in all three browsers; the piano gate |
 | **M6: the duel** | The masked climber against one creature, in all three browsers; the combat-feel gate |
 | **M7: the Ashstag** | The first Warden and the soul blade's first evolution; the art-quality gate |
 | **M8: the Last Green** | Floor 1 in full, streamed, released free as an offline game |
