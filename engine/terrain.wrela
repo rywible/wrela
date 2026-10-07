@@ -89,10 +89,12 @@ const MORPH_FROM: f32 = 52.0
 const MORPH_TO: f32 = 62.0
 
 /// Where each level is, as the shaders read it: level l's texel (0, 0) at
-/// (`at[l].x`, `at[l].y`), `at[l].z` apart; the levels in use; and where the eye was.
+/// (`at[l].x`, `at[l].y`), `at[l].z` apart; the levels in use; and where the eye is (x, z), which
+/// a level's morph to the next follows (its place moves in steps; the eye doesn't).
 pub struct Levels: Copy + GpuData {
     pub at: [vec4; 12],
     pub count: u32,
+    pub eye: vec2,
 }
 
 /// A terrain's clipmap on the GPU, and where its levels are.
@@ -112,7 +114,7 @@ impl Clipmap {
         let n = min(levels, MAX_LEVELS)
         Clipmap {
             texels: buffer(n * STRIDE),
-            levels: Levels { at: [vec4(0.0); 12], count: n },
+            levels: Levels { at: [vec4(0.0); 12], count: n, eye: vec2(0.0) },
             finest,
             cooked: [false; 12],
             cooks: 0,
@@ -146,6 +148,7 @@ impl Clipmap {
     /// when `again`). Records the cooking passes; returns how many levels were cooked.
     pub fn follow<T: Terrain>(mut self, terrain: T, eye: vec3, again: bool) -> u32 {
         var cooked = 0
+        self.levels.eye = eye.xz
         for l in 0..self.levels.count {
             let at = self.place(l, eye)
             let old = self.levels.at[l]
@@ -211,23 +214,21 @@ pub fn level_height(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> f32 {
     mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y)
 }
 
-/// Where a point is in level `l`, as a fraction of the level's half side from its centre:
-/// the larger of |x| and |z| (1 at its edge).
-fn level_reach(levels: Levels, l: u32, xz: vec2) -> f32 {
-    let a = levels.at[l]
-    let half = f32(QUADS / 2) * a.z
-    let d = abs(xz - (a.xy + vec2(half)))
-    max(d.x, d.y) / half
+/// How far a point is from the eye in level `l`'s cells (the larger of x and z).
+fn eye_cells(levels: Levels, l: u32, xz: vec2) -> f32 {
+    let d = abs(xz - levels.eye)
+    max(d.x, d.y) / levels.at[l].z
 }
 
-/// How far a point of level `l` has morphed to level `l + 1`: 0 inside the band, 1 at the
-/// level's edge (and 0 for the coarsest level, which has none beyond it).
+/// How far a point of level `l` has morphed to level `l + 1`: 0 inside the band, 1 at its end
+/// (and 0 for the coarsest level, which has none beyond it). The band is the eye's distance
+/// in the level's cells, so it moves smoothly with the eye; it ends 62 cells out, within the
+/// level wherever its place has snapped to (its centre is within 2 cells of the eye).
 fn morph(levels: Levels, l: u32, xz: vec2) -> f32 {
     if l + 1 >= levels.count {
         return 0.0
     }
-    let cells = level_reach(levels, l, xz) * f32(QUADS / 2)
-    saturate((cells - MORPH_FROM) / (MORPH_TO - MORPH_FROM))
+    saturate((eye_cells(levels, l, xz) - MORPH_FROM) / (MORPH_TO - MORPH_FROM))
 }
 
 /// What the ground's vertex shader passes on: the world point, and the level it's of.
@@ -329,10 +330,7 @@ pub fn ground(v: VertexIndex, cam: Camera, levels: Levels, texels: [Texel]) -> G
 /// The ground at `xz` as the clipmap holds it: its normal, albedo (linear) and grass, from the
 /// finest level that holds the point, blended to the next where that level morphs.
 pub fn ground_at(levels: Levels, texels: [Texel], xz: vec2) -> (vec3, vec3, f32) {
-    var l = 0
-    while l + 1 < levels.count && level_reach(levels, l, xz) > 0.98 {
-        l += 1
-    }
+    let l = level_at(levels, xz)
     let (n0, c0) = level_cover(levels, texels, l, xz)
     let m = morph(levels, l, xz)
     var n = n0
@@ -369,29 +367,80 @@ fn level_cover(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> (vec3, vec4
     (n, c)
 }
 
-/// The finest level that holds `xz`.
+/// The finest level that holds `xz` before its morph's end (the level it's drawn from, blended
+/// to the next by `morph`).
 pub fn level_at(levels: Levels, xz: vec2) -> u32 {
     var l = 0
-    while l + 1 < levels.count && level_reach(levels, l, xz) > 0.98 {
+    while l + 1 < levels.count && eye_cells(levels, l, xz) >= MORPH_TO {
         l += 1
     }
     l
 }
 
-/// The clipmap's texel nearest `xz` in level `l`: what the grass is placed by.
-pub fn texel_at(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> Texel {
-    let a = levels.at[l]
-    let g = clamp((xz - a.xy) / a.z + vec2(0.5), vec2(0.0), vec2(f32(QUADS)))
-    texels[texel_index(l, u32(g.x), u32(g.y))]
+/// What covers the ground at `xz`, as the clipmap holds it: its normal, cover, meadow and
+/// flowers (each as the texels' encodings decode), between texels and blended from the level
+/// it's drawn from to the next where that level morphs: what the grass is placed by.
+pub struct Covering: Copy {
+    pub normal: vec3,
+    pub cover: vec4,
+    pub meadow: vec4,
+    pub flowers: vec4,
 }
 
-/// The ground's height at `xz` as the clipmap holds it (the finest level holding it).
-pub fn height_at(levels: Levels, texels: [Texel], xz: vec2) -> f32 {
-    var l = 0
-    while l + 1 < levels.count && level_reach(levels, l, xz) > 0.98 {
-        l += 1
+/// Level `l`'s ground at `xz`, between its texels (bilinear).
+fn level_ground(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> Covering {
+    let a = levels.at[l]
+    let g = clamp((xz - a.xy) / a.z, vec2(0.0), vec2(f32(QUADS) - 0.001))
+    let i = floor(g)
+    let f = g - i
+    let (x, y) = (u32(i.x), u32(i.y))
+    var out = Covering {
+        normal: vec3(0.0),
+        cover: vec4(0.0),
+        meadow: vec4(0.0),
+        flowers: vec4(0.0),
     }
-    level_height(levels, texels, l, xz)
+    for dy in 0..2 {
+        for dx in 0..2 {
+            let w = (if dx == 0 { 1.0 - f.x } else { f.x }) * (if dy == 0 { 1.0 - f.y } else {
+                f.y
+            })
+            let t = texels[texel_index(l, x + dx, y + dy)]
+            out.normal += t.normal.decode() * w
+            out.cover += t.cover.decode() * w
+            out.meadow += t.meadow.decode() * w
+            out.flowers += t.flowers.decode() * w
+        }
+    }
+    out
+}
+
+pub fn ground_cover_at(levels: Levels, texels: [Texel], xz: vec2) -> Covering {
+    let l = level_at(levels, xz)
+    let g0 = level_ground(levels, texels, l, xz)
+    let m = morph(levels, l, xz)
+    if m <= 0.0 {
+        return Covering { normal: normalize(g0.normal), ..g0 }
+    }
+    let g1 = level_ground(levels, texels, l + 1, xz)
+    Covering {
+        normal: normalize(mix(g0.normal, g1.normal, vec3(m))),
+        cover: mix(g0.cover, g1.cover, vec4(m)),
+        meadow: mix(g0.meadow, g1.meadow, vec4(m)),
+        flowers: mix(g0.flowers, g1.flowers, vec4(m)),
+    }
+}
+
+/// The ground's height at `xz` as the clipmap holds it, as it's drawn: the level it's drawn
+/// from, blended to the next where that level morphs.
+pub fn height_at(levels: Levels, texels: [Texel], xz: vec2) -> f32 {
+    let l = level_at(levels, xz)
+    let h = level_height(levels, texels, l, xz)
+    let m = morph(levels, l, xz)
+    if m <= 0.0 {
+        return h
+    }
+    mix(h, level_height(levels, texels, l + 1, xz), m)
 }
 
 // ---- raycasts (the sim's) -------------------------------------------------------------------

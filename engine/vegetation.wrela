@@ -12,6 +12,7 @@ use impostor::{Cooked, Impostor, bake, cook, far_cut, far_quad, far_shade, volum
 use light::{Light, Lit, hazed}
 use lit::{Lighting, sky_at, sun_at}
 use noise::{hash2, rand}
+use lod::{IMPOSTOR, Lod, VOLUME, keeps, place, share, ways}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LIMB_VERTICES, Leaves, Plant, Wind, cook_cards, leaf_at,
     leaf_atlas, level_cards, limb_vertex, sway,
@@ -76,16 +77,10 @@ pub struct Placed: Copy {
     pub at: Instance,
 }
 
-/// How an instance is drawn this frame: as cards at a level (0 to 2), as an impostor (`FAR`),
-/// as a volume, or not at all.
-pub const FAR: u32 = 3
-pub const VOLUME: u32 = 4
-pub const HIDDEN: u32 = 5
+/// The ways an instance is drawn: its cards' levels, an impostor, a volume (`lod`).
+const WAYS: u32 = VOLUME + 1
 
-/// The ways an instance is drawn (all but hidden).
-const WAYS: u32 = CARD_LEVELS + 2
-
-/// A list of instances drawn one way: a kind, how (a card level, `FAR` or `VOLUME`), and where its
+/// A list of instances drawn one way: a kind, how (a card level, `IMPOSTOR` or `VOLUME`), and where its
 /// instances start in the frame's buffer and how many.
 pub struct List: Copy {
     pub kind: u32,
@@ -93,13 +88,6 @@ pub struct List: Copy {
     pub first: u32,
     pub count: u32,
 }
-
-/// The width on screen (the scene's pixels) below which a far crown isn't drawn.
-pub const FAINT_PX: f32 = 1.5
-
-/// Where each card level ends, in pixels a card's width: an instance is drawn at the coarsest
-/// level whose cards look no wider than this on screen.
-pub const CARD_PX: f32 = 24.0
 
 /// A forest: its kinds, the instances placed, and each frame's lists and their instances on the
 /// GPU; and every instance by kind, for the static shadows.
@@ -116,6 +104,8 @@ pub struct Forest {
     /// `impostors_to`, as a volume.
     pub cards_to: f32,
     pub impostors_to: f32,
+    /// How wide a card level's cards grow on screen before the next takes over.
+    pub card_px: f32,
     /// Instances drawn as cards and limbs this frame, as impostors, and as volumes.
     pub near_count: u32,
     pub far_count: u32,
@@ -157,7 +147,8 @@ impl Forest {
         cards_to: f32,
         impostors_to: f32,
     ) -> Forest {
-        let room = placed.len() + (kinds.len() * WAYS + 1) * ALIGN
+        // Each instance in up to two lists (between two ways), each list aligned.
+        let room = 2 * placed.len() + (kinds.len() * WAYS + 1) * ALIGN
         let (every, every_lists) = every_of(kinds.len(), placed)
         Forest {
             kinds: take kinds,
@@ -169,6 +160,7 @@ impl Forest {
             atlas: leaf_atlas(6),
             cards_to,
             impostors_to,
+            card_px: lod::CARD_PX,
             near_count: 0,
             far_count: 0,
             volume_count: 0,
@@ -184,20 +176,23 @@ impl Forest {
         self.placed = take placed
     }
 
-    /// This frame's lists, for `cam` (a pixel's footprint from its `screen` and `tan_half`):
-    /// each instance in view by its distance, as cards at the level its cards' size on screen
-    /// asks, as an impostor, or as a volume. Writes them to the GPU.
+    /// This frame's lists, for `cam`: each instance in view drawn the way its size on screen
+    /// and its distance ask (`lod::place`), or both ways it's between. Writes them to the GPU.
     pub fn select(mut self, cam: Camera) {
         let kinds = self.kinds.len()
         let ways = WAYS
-        // Each instance's way, by kind and way; counted first, then laid out.
+        // Each instance's ways (the lower and the upper; HIDDEN for none), counted by kind and
+        // way first, then laid out.
         var counts = Vec::filled(kinds * ways, 0)
-        var ways_of: Vec<u32> = Vec::new()
+        var ways_of: Vec<vec2u> = Vec::new()
         for p in self.placed {
-            let w = way(self.kinds[p.kind], p.at, cam, self.cards_to, self.impostors_to)
+            let w = ways_for(self.kinds[p.kind], p.at, cam, self.lod(p.kind))
             ways_of.push(w)
-            if w != HIDDEN {
-                counts[p.kind * ways + w] += 1
+            if w.x != HIDDEN {
+                counts[p.kind * ways + w.x] += 1
+                if w.y != w.x {
+                    counts[p.kind * ways + w.y] += 1
+                }
             }
         }
         self.lists.clear()
@@ -223,14 +218,21 @@ impl Forest {
         self.volume_count = 0
         for i in 0..self.placed.len() {
             let w = ways_of[i]
-            if w != HIDDEN {
-                let p = self.placed[i]
-                let slot = p.kind * ways + w
+            if w.x == HIDDEN {
+                continue
+            }
+            let p = self.placed[i]
+            for k in 0..2 {
+                let way = if k == 0 { w.x } else { w.y }
+                if k == 1 && w.y == w.x {
+                    break
+                }
+                let slot = p.kind * ways + way
                 out[starts[slot] + fill[slot]] = p.at
                 fill[slot] += 1
-                if w == FAR {
+                if way == IMPOSTOR {
                     self.far_count += 1
-                } else if w == VOLUME {
+                } else if way == VOLUME {
                     self.volume_count += 1
                 } else {
                     self.near_count += 1
@@ -240,16 +242,31 @@ impl Forest {
         write(mut self.instances, 0, out)
     }
 
+    /// How kind `k`'s instances choose their level.
+    pub fn lod(self, k: u32) -> Lod {
+        borrow kind = self.kinds[k]
+        Lod {
+            cards_to: self.cards_to,
+            impostors_to: self.impostors_to,
+            leaf: kind.plant.leaves.size,
+            top: kind.top,
+            reach: kind.reach,
+            card_px: self.card_px,
+        }
+    }
+
     /// A list's instances, to bind.
     pub fn instances(self, l: List) -> GpuSpan<Instance> {
         self.instances.span(start: l.first, count: l.count)
     }
 }
 
-/// How instance `at` of kind `k` is drawn from `cam`: hidden when out of view, as a volume
-/// beyond `impostors_to`, as an impostor beyond `cards_to`, else as cards at the level its size
-/// on screen asks.
-fn way(k: Kind, at: Instance, cam: Camera, cards_to: f32, impostors_to: f32) -> u32 {
+/// A way that isn't drawn.
+const HIDDEN: u32 = 99
+
+/// The ways instance `at` of kind `k` is drawn from `cam` (the lower and the upper of the two it's
+/// between, or one twice): none (`HIDDEN`) when it's out of view or faded out.
+fn ways_for(k: Kind, at: Instance, cam: Camera, l: Lod) -> vec2u {
     let centre = at.at + vec3(0.0, k.top * 0.5 * at.scale, 0.0)
     let r = k.reach * at.scale
     let v = centre - cam.eye
@@ -259,32 +276,15 @@ fn way(k: Kind, at: Instance, cam: Camera, cards_to: f32, impostors_to: f32) -> 
         let corner = atan(cam.tan_half * sqrt(1.0 + cam.aspect * cam.aspect))
         let off = acos(clamp(dot(v / d, cam.forward), -1.0, 1.0))
         if off > corner + asin(min(r / d, 1.0)) + 0.02 {
-            return HIDDEN
+            return vec2u(HIDDEN)
         }
     }
-    // Beyond the cards, a crown smaller on screen than a few output pixels adds nothing to the
-    // terrain's shading under it (#28 §4): it isn't drawn.
-    if d > cards_to && 2.0 * r / max(cam.footprint(d), 1.0e-6) < FAINT_PX {
-        return HIDDEN
+    let (level, faint) = place(l, cam, at.at, at.scale)
+    let (drawn, lower, upper) = ways(level, faint)
+    if !drawn {
+        return vec2u(HIDDEN)
     }
-    if d > impostors_to {
-        return VOLUME
-    }
-    if d > cards_to {
-        return FAR
-    }
-    // A card's width on screen at the nearest level, in pixels; each level doubles it.
-    let px = k.plant.leaves.size * at.scale / max(cam.footprint(max(d - r * 0.5, 0.5)), 1.0e-4)
-    var level = 0
-    while level + 1 < CARD_LEVELS && px * f32(1 << (level + 1)) <= CARD_PX {
-        level += 1
-    }
-    // Near where the impostor takes over, the coarsest level, which it was baked from: the two
-    // show the same cards where they meet.
-    if d > cards_to * 0.75 {
-        level = CARD_LEVELS - 1
-    }
-    level
+    vec2u(lower, upper)
 }
 
 // ---- cards -------------------------------------------------------------------------------------
@@ -298,7 +298,15 @@ pub struct CardDraw: Copy + GpuData {
     pub right: vec3,
     pub per_card: u32,
     pub up: vec3,
+    /// The way drawn (its level; `ALL` for every instance whole: the shadows'), how instances
+    /// choose theirs, and the frame (for each way's share of a pixel, `lod`).
+    pub way: u32,
+    pub lod: Lod,
+    pub frame: u32,
 }
+
+/// A draw of every instance whole, whatever its level (the static shadows').
+pub const ALL: u32 = 99
 
 /// What a card's vertex passes on.
 pub struct LeafVertex: Copy {
@@ -310,6 +318,8 @@ pub struct LeafVertex: Copy {
     pub tint: vec4,
     pub seed: Flat<u32>,
     pub crown: Flat<u32>,
+    /// The part of a pixel's draws its instance keeps this way (`lod::share`).
+    pub keep: Flat<vec2>,
 }
 
 /// The corners of a quad, as two triangles.
@@ -358,6 +368,7 @@ pub fn card(
         tint: vec4(inst.tint + (t.xyz - vec3(0.5)) * vec3(0.04, 0.05, 0.0), t.w),
         seed: Flat { value: card.seed },
         crown: Flat { value: u32(hash2(i32(inst.at.x * 7.0), i32(inst.at.z * 7.0)) * 60.0) },
+        keep: Flat { value: keep_of(d, cam, inst) },
     }
 }
 
@@ -381,6 +392,7 @@ pub fn card_shadow(
         tint: vec4(0.0),
         seed: Flat { value: card.seed },
         crown: Flat { value: 0 },
+        keep: Flat { value: vec2(0.0, 1.0) },
     }
 }
 
@@ -388,9 +400,9 @@ pub fn card_shadow(
 /// (which keep only the first `per_card` of a pattern's leaves, so a crown's shadow is
 /// dappled).
 @fragment
-pub fn leaf_cut(l: LeafVertex, d: CardDraw, atlas: Texture, s: Sampler) -> vec4 {
+pub fn leaf_cut(l: LeafVertex, pixel: FragCoord, d: CardDraw, atlas: Texture, s: Sampler) -> vec4 {
     let (m, which) = leaf_at(atlas, s, l.seed.value, l.uv)
-    if m < 0.5 || which >= d.per_card {
+    if m < 0.5 || which >= d.per_card || !keeps(l.keep.value, pixel.position.xy, d.frame) {
         discard_fragment()
     }
     vec4(0.0)
@@ -450,6 +462,8 @@ pub struct BarkVertex: Copy {
     pub world: vec3,
     pub normal: vec3,
     pub along: vec2,
+    /// The part of a pixel's draws its instance keeps this way (`lod::share`).
+    pub keep: Flat<vec2>,
 }
 
 fn limb_world(v: u32, i: u32, limbs: [Tube<4>], instances: [Instance]) -> (vec3, vec3, vec2) {
@@ -463,11 +477,18 @@ pub fn limb(
     v: VertexIndex,
     i: InstanceIndex,
     cam: Camera,
+    d: CardDraw,
     limbs: [Tube<4>],
     instances: [Instance],
 ) -> BarkVertex {
     let (world, n, along) = limb_world(v.index, i.index, limbs, instances)
-    BarkVertex { clip: ClipPosition { position: cam.clip(world) }, world, normal: n, along }
+    BarkVertex {
+        clip: ClipPosition { position: cam.clip(world) },
+        world,
+        normal: n,
+        along,
+        keep: Flat { value: keep_of(d, cam, instances[i.index]) },
+    }
 }
 
 @vertex
@@ -485,6 +506,7 @@ pub fn limb_shadow(
 @fragment
 pub fn bark_shade(
     b: BarkVertex,
+    pixel: FragCoord,
     lt: Lighting,
     bark: Bark,
     near: DepthTexture,
@@ -496,6 +518,9 @@ pub fn bark_shade(
     probes: [Probe],
     grounds: [f32],
 ) -> vec4 {
+    if !keeps(b.keep.value, pixel.position.xy, lt.cam.frame) {
+        discard_fragment()
+    }
     let n = normalize(b.normal)
     // Bark's ridges run along the limb.
     let ridges = noise::noise2(vec2(b.along.x * 22.0, b.along.y * 1.6))
@@ -521,15 +546,33 @@ pub fn nothing() -> vec4 {
 // ---- drawing a forest ----------------------------------------------------------------------
 
 /// The cards' draw state for a level: they grow 2^level, and face `right` and `up`.
-pub fn card_draw(wind: Wind, level: u32, leaves: Leaves, right: vec3, up: vec3) -> CardDraw {
-    CardDraw { wind, grow: f32(1 << level), right, per_card: leaves.per_card, up }
+pub fn card_draw(
+    wind: Wind,
+    level: u32,
+    leaves: Leaves,
+    right: vec3,
+    up: vec3,
+    lod: Lod,
+    way: u32,
+    frame: u32,
+) -> CardDraw {
+    CardDraw { wind, grow: f32(1 << level), right, per_card: leaves.per_card, up, way, lod, frame }
+}
+
+/// The part of a pixel's draws an instance keeps, drawn way `way` (`lod::share`).
+fn keep_of(d: CardDraw, cam: Camera, inst: Instance) -> vec2 {
+    if d.way == ALL {
+        return vec2(0.0, 1.0)
+    }
+    let (level, faint) = place(d.lod, cam, inst.at, inst.scale)
+    share(level, faint, d.way)
 }
 
 impl Forest {
     /// The depth prepass's draws: each list of cards, cut, into the depth target alone.
     pub fn prepass(self, cam: Camera, wind: Wind, s: Sampler) {
         for l in self.lists {
-            if l.how == FAR {
+            if l.how == IMPOSTOR {
                 borrow k = self.kinds[l.kind]
                 let b = k.impostor.bake
                 draw(
@@ -540,6 +583,8 @@ impl Forest {
                         instances: self.instances(l),
                         first: l.first,
                         front: 0,
+                        lod: self.lod(l.kind),
+                        way: l.how,
                     ),
                     far_cut.bind(
                         cam,
@@ -562,6 +607,8 @@ impl Forest {
                         instances: self.instances(l),
                         first: l.first,
                         front: 0,
+                        lod: self.lod(l.kind),
+                        way: l.how,
                     ),
                     volume_cut.bind(
                         cam,
@@ -578,7 +625,16 @@ impl Forest {
         for l in self.lists {
             if l.how < CARD_LEVELS {
                 borrow k = self.kinds[l.kind]
-                let d = card_draw(wind, l.how, k.plant.leaves, cam.right, cam.up)
+                let d = card_draw(
+                    wind,
+                    l.how,
+                    k.plant.leaves,
+                    cam.right,
+                    cam.up,
+                    self.lod(l.kind),
+                    l.how,
+                    cam.frame,
+                )
                 draw(
                     card.bind(
                         cam,
@@ -616,9 +672,20 @@ impl Forest {
             if l.how < CARD_LEVELS {
                 borrow k = self.kinds[l.kind]
                 if k.limb_count > 0 {
+                    let d = card_draw(
+                        wind,
+                        l.how,
+                        k.plant.leaves,
+                        cam.right,
+                        cam.up,
+                        self.lod(l.kind),
+                        l.how,
+                        cam.frame,
+                    )
                     draw(
                         limb.bind(
                             cam,
+                            d,
                             limbs: k.limbs.span(start: 0, count: k.limb_count),
                             instances: self.instances(l),
                         ),
@@ -643,7 +710,7 @@ impl Forest {
             }
         }
         for l in self.lists {
-            if l.how == FAR {
+            if l.how == IMPOSTOR {
                 borrow k = self.kinds[l.kind]
                 let b = k.impostor.bake
                 draw(
@@ -654,6 +721,8 @@ impl Forest {
                         instances: self.instances(l),
                         first: l.first,
                         front: 1,
+                        lod: self.lod(l.kind),
+                        way: l.how,
                     ),
                     far_shade.bind(
                         lt,
@@ -684,6 +753,8 @@ impl Forest {
                         instances: self.instances(l),
                         first: l.first,
                         front: 1,
+                        lod: self.lod(l.kind),
+                        way: l.how,
                     ),
                     volume_shade.bind(
                         lt,
@@ -709,7 +780,16 @@ impl Forest {
         for l in self.lists {
             if l.how < CARD_LEVELS {
                 borrow k = self.kinds[l.kind]
-                let d = card_draw(wind, l.how, k.plant.leaves, cam.right, cam.up)
+                let d = card_draw(
+                    wind,
+                    l.how,
+                    k.plant.leaves,
+                    cam.right,
+                    cam.up,
+                    self.lod(l.kind),
+                    l.how,
+                    cam.frame,
+                )
                 draw(
                     card.bind(
                         cam,
@@ -747,7 +827,7 @@ impl Forest {
             let instances = self.every.span(start: l.first, count: l.count)
             let level = 1
             let leaves = Leaves { per_card: SHADOW_LEAVES, ..k.plant.leaves }
-            let d = card_draw(wind, level, leaves, sh.right, sh.up)
+            let d = card_draw(wind, level, leaves, sh.right, sh.up, self.lod(l.kind), ALL, 0)
             draw(
                 card_shadow.bind(
                     view,
@@ -834,7 +914,16 @@ impl Forest {
         for l in self.lists {
             if l.how < CARD_LEVELS {
                 borrow k = self.kinds[l.kind]
-                let d = card_draw(wind, l.how, k.plant.leaves, cam.right, cam.up)
+                let d = card_draw(
+                    wind,
+                    l.how,
+                    k.plant.leaves,
+                    cam.right,
+                    cam.up,
+                    self.lod(l.kind),
+                    l.how,
+                    cam.frame,
+                )
                 draw(
                     card.bind(
                         cam,
@@ -863,7 +952,16 @@ impl Forest {
         for l in self.lists {
             if l.how < CARD_LEVELS {
                 borrow k = self.kinds[l.kind]
-                let d = card_draw(wind, l.how, k.plant.leaves, cam.right, cam.up)
+                let d = card_draw(
+                    wind,
+                    l.how,
+                    k.plant.leaves,
+                    cam.right,
+                    cam.up,
+                    self.lod(l.kind),
+                    l.how,
+                    cam.frame,
+                )
                 draw(
                     card.bind(
                         cam,

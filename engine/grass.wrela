@@ -25,7 +25,7 @@ use std::gpu::{
     dispatch, discard, draw,
 }
 use std::math::TAU
-use terrain::{Levels, Texel, height_at, level_at, texel_at, texel_index}
+use terrain::{Levels, Texel, ground_cover_at, height_at, texel_index}
 use view::Camera
 
 /// A blade, as placed: its root, its height, its facing (radians) and bend, its width, its
@@ -55,6 +55,8 @@ pub struct Flower: Copy + GpuData {
 pub const FINEST: f32 = 0.032
 pub const GROWTH: f32 = 0.0085
 pub const REACH: f32 = 92.0
+/// How far flowers reach (m): they shrink away over its last 12.
+pub const FLOWERS_TO: f32 = 60.0
 /// The levels of cells: the coarsest's blades reach past REACH.
 pub const LEVELS: u32 = 5
 
@@ -220,22 +222,23 @@ pub fn place(
             return
         }
     }
-    let l = level_at(levels, xz)
-    let t = texel_at(levels, texels, l, xz)
-    let cover = t.cover.decode()
-    let meadow = t.meadow.decode()
+    let t = ground_cover_at(levels, texels, xz)
+    let cover = t.cover
+    let meadow = t.meadow
     let n = (f.x * 73856093) ^ (f.y * 19349663)
     let seed = u32(n)
     if rand(seed, 3) >= cover.a {
         return
     }
     let y = height_at(levels, texels, xz)
-    // It shrinks away as it's dropped (keep from 0.15 to 0), so nothing pops.
-    let shrink = if k + 1 < LEVELS { smoothstep(0.0, 0.15, keep) } else { 1.0 }
+    // It shrinks away as it's dropped (keep from 0.15 to 0), and over the last stretch of the
+    // grass's reach, into the meadow's ground: nothing pops.
+    let dropped = if k + 1 < LEVELS { smoothstep(0.0, 0.15, keep) } else { 1.0 }
+    let shrink = dropped * (1.0 - smoothstep(REACH - 12.0, REACH, d))
     let tall = (0.18 + 0.6 * meadow.x) * (0.6 + 0.8 * rand(seed, 4)) * shrink
     let width = spacing_at(d) * (0.85 + 0.4 * rand(seed, 5)) * 1.15
     let tint = rand(seed, 8)
-    let ground_n = t.normal.decode()
+    let ground_n = t.normal
     let sky = sky_light(at.grid, probes, grounds, at.light, vec3(xz.x, y + 0.1, xz.y), ground_n)
     let _ = blades.push(
         Blade {
@@ -244,7 +247,7 @@ pub fn place(
             facing: TAU * rand(seed, 6),
             bend: 0.2 + 0.5 * rand(seed, 7),
             width,
-            ground: t.normal,
+            ground: std::gpu::Oct32::encode(t.normal),
             colour: Unorm8x4::encode(
                 vec4(tint, saturate(meadow.y + 0.25 * (tint - 0.5)), meadow.z, 0.0),
             ),
@@ -252,14 +255,16 @@ pub fn place(
         },
     )
     // A flower on its tip, where the meadow has them: which kind, by their weights here.
-    let fw = t.flowers.decode()
-    if rand(seed, 11) < fw.w && d < 60.0 {
+    let fw = t.flowers
+    if rand(seed, 11) < fw.w && d < FLOWERS_TO {
         let r = rand(seed, 12) * (fw.x + fw.y + fw.z)
         let kind = if r < fw.x { 0 } else if r < fw.x + fw.y { 1 } else { 2 }
         let _ = flowers.push(
             Flower {
                 head: vec3(xz.x, y + tall * (0.75 + 0.35 * rand(seed, 13)), xz.y),
-                size: (0.035 + 0.03 * rand(seed, 14)) * shrink,
+                size: (0.035 + 0.03 * rand(seed, 14)) *
+                    shrink *
+                    (1.0 - smoothstep(FLOWERS_TO - 12.0, FLOWERS_TO, d)),
                 kind,
                 seed,
             },

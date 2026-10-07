@@ -1,0 +1,107 @@
+// Levels of detail without popping (the owner's ask, beyond #28's scope for M5): a plant is drawn
+// at a level its size on screen and its distance ask (its cards' levels, then an impostor, then
+// a volume, then nothing), and near a switch it's drawn both ways, each keeping its share of the
+// pixels. The share is drawn from a draw that changes each frame (temporal AA averages it), the
+// same for both ways at a pixel, so the two shares tile the pixel with no gap and no overlap.
+//
+// One function says where an instance is between its levels (`place`), on the CPU (which lists
+// it's drawn in) and on the GPU (each draw's share of it), so the shares always add to one.
+//
+//     level:   0 ──── 1 ──── 2 ═══ impostor ═══ volume ┄┄ nothing
+//              cards, by their size on screen ┊ by distance  ┊ by its size on screen
+//     a switch: the middle 80% of each step, a smoothstep of the shares
+
+use plant::CARD_LEVELS
+use view::Camera
+
+/// The ways an instance is drawn: its cards' levels, an impostor, a volume.
+pub const IMPOSTOR: u32 = 3
+pub const VOLUME: u32 = 4
+
+/// Where each card level ends, in pixels a card's width: an instance is drawn at the coarsest
+/// level whose cards look no wider than this on screen.
+pub const CARD_PX: f32 = 24.0
+/// The width on screen (the scene's pixels) below which a far crown fades out, by half again.
+pub const FAINT_PX: f32 = 1.5
+
+/// What deciding a plant's level reads: where its cards hand over to an impostor and the
+/// impostor to a volume (m), its leaves' size, its height and reach (m, at scale 1), and how
+/// wide on screen a card level's cards grow before the next takes over (`CARD_PX`).
+pub struct Lod: Copy + GpuData {
+    pub cards_to: f32,
+    pub impostors_to: f32,
+    pub leaf: f32,
+    pub top: f32,
+    pub reach: f32,
+    pub card_px: f32,
+}
+
+/// Where an instance at `at` (its base), `scale` large, is between its levels, seen from `cam`:
+/// its level as a number (each whole number a way, `CARD_LEVELS - 1` the coarsest cards, then
+/// `IMPOSTOR` and `VOLUME`), and how far it has faded out (0 to 1, by its size on screen).
+pub fn place(l: Lod, cam: Camera, at: vec3, scale: f32) -> (f32, f32) {
+    let r = l.reach * scale
+    let d = length(at + vec3(0.0, l.top * 0.5 * scale, 0.0) - cam.eye)
+    // A card's width on screen at the nearest level, in pixels (each level doubles it): the
+    // finest level whose cards are no wider than CARD_PX.
+    let px = l.leaf * scale / max(cam.footprint(max(d - r * 0.5, 0.5)), 1.0e-4)
+    var level = clamp(log2(l.card_px / max(px, 1.0e-4)), 0.0, f32(CARD_LEVELS - 1))
+    // Toward the impostors, the coarsest cards (the impostor's): from 60% of the way.
+    level = max(level, f32(CARD_LEVELS - 1) * smoothstep(0.6, 0.75, d / l.cards_to))
+    // Then the impostor, and then the volume, each over a tenth of its distance.
+    level += smoothstep(0.92, 1.08, d / l.cards_to) + smoothstep(0.92, 1.08, d / l.impostors_to)
+    // Beyond the cards, a crown fading as it shrinks to a pixel or two.
+    let crown = 2.0 * r / max(cam.footprint(d), 1.0e-6)
+    let faint = if d > l.cards_to { 1.0 - smoothstep(FAINT_PX, 2.0 * FAINT_PX, crown) } else { 0.0 }
+    (level, faint)
+}
+
+/// The part of [0, 1) that way `way` keeps of an instance at `level`, faded by `faint`: the
+/// lower way of a step keeps its start, the upper its end (each a smoothstep over the step's
+/// middle 80%), so the two tile it; and none of it at all past `1 - faint`.
+pub fn share(level: f32, faint: f32, way: u32) -> vec2 {
+    let k = floor(level)
+    let s = smoothstep(0.1, 0.9, level - k)
+    let kept = 1.0 - faint
+    let w = f32(way)
+    if w == k {
+        return vec2(0.0, (1.0 - s) * kept)
+    }
+    if w == k + 1.0 {
+        return vec2((1.0 - s) * kept, kept)
+    }
+    vec2(0.0)
+}
+
+/// Whether a way's share holds a pixel's draw this frame.
+pub fn keeps(keep: vec2, pixel: vec2, frame: u32) -> bool {
+    let u = draw_at(pixel, frame)
+    u >= keep.x && u < keep.y
+}
+
+/// A pixel's draw in [0, 1) for a frame, ordered (a 4 × 4 Bayer matrix, its thresholds turned
+/// each frame): over temporal AA's cycle of 16 frames each pixel takes every one of 16
+/// thresholds once, and each block of 4 × 4 takes every one each frame, so the blend of two
+/// ways is even in time and in space (a random draw left temporal AA a shimmer to average).
+pub fn draw_at(pixel: vec2, frame: u32) -> f32 {
+    let bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]
+    let p = vec2u(pixel) % vec2u(4)
+    f32((bayer[p.y * 4 + p.x] + frame * 7) % 16) / 16.0 + 1.0 / 32.0
+}
+
+/// Whether an instance is drawn at all, and its ways (the lower, and the upper when it's
+/// between two), at `level`, faded by `faint`.
+pub fn ways(level: f32, faint: f32) -> (bool, u32, u32) {
+    if faint >= 1.0 {
+        return (false, 0, 0)
+    }
+    let k = floor(level)
+    let s = smoothstep(0.1, 0.9, level - k)
+    let lower = u32(k)
+    let upper = if s > 0.0 && lower < VOLUME { lower + 1 } else { lower }
+    let both_kept = s < 1.0
+    if !both_kept {
+        return (true, upper, upper)
+    }
+    (true, lower, upper)
+}

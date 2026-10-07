@@ -253,7 +253,7 @@ pub fn dab_map(
     // A pixel's footprint on the surface, across the slope it's seen at (a surface seen edge on
     // spreads a pixel along it): so a dab is as wide on screen one way as the other, never a
     // streak thinner than a pixel.
-    let facing = max(abs(dot(n, normalize(cam.eye - world))), 0.2)
+    let facing = max(abs(dot(n, normalize(cam.eye - world))), 0.4)
     let dab = dabs(world, n, footprint / facing, look.dab_px * per_out)
     // The tooth's grain, a few output pixels: no finer than two of the scene's pixels at half
     // the output's size, so the map holds it at either.

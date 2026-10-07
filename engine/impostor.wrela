@@ -11,6 +11,7 @@
 //   instance is a quad that marches it.
 
 use light::{Lit, hazed}
+use lod::{Lod, keeps, place, share}
 use lit::{Lighting, sky_at, sun_at}
 use noise::{hash2, rand}
 use plant::{
@@ -325,6 +326,8 @@ pub struct FarVertex: Copy {
     pub weights: Flat<vec4>,
     pub shift: Flat<vec4>,
     pub shift2: Flat<vec4>,
+    /// The part of a pixel's draws its instance keeps this way (`lod::share`).
+    pub keep: Flat<vec2>,
 }
 
 /// A far instance: a quad facing the eye, the plant's reach wide, about its middle; swayed by
@@ -343,8 +346,11 @@ pub fn far_quad(
     instances: [Instance],
     first: u32,
     front: u32,
+    lod: Lod,
+    way: u32,
 ) -> FarVertex {
     let inst = instances[i.index]
+    let (level, faint) = place(lod, cam, inst.at, inst.scale)
     let k = v.index % 6
     let qx = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
     let qy = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
@@ -385,6 +391,7 @@ pub fn far_quad(
         weights: Flat { value: w },
         shift: Flat { value: vec4(shift[0], shift[1]) },
         shift2: Flat { value: vec4(shift[2], shift[3]) },
+        keep: Flat { value: share(level, faint, way) },
     }
 }
 
@@ -535,6 +542,10 @@ pub fn far_cut(
     normal: Texture,
     s: Sampler,
 ) -> WithDepth {
+    // Its share of the pixel, where it's between two ways (`lod`).
+    if !keeps(f.keep.value, pixel.position.xy, cam.frame) {
+        discard()
+    }
     let w = f.weights.value
     var a = vec4(0.0)
     for k in 0..4 {
@@ -545,7 +556,7 @@ pub fn far_cut(
     // Most of the quad is empty: left before its leaves' places are read. The blended coverage
     // is steepened about its middle: blending softens the views' edges into a wider fringe,
     // which the tone curve shows brighter than the crisp edge it stands for.
-    if smoothstep(0.2, 0.8, coverage) <= ordered(pixel.position.xy, cam.frame) {
+    if smoothstep(0.2, 0.8, coverage) <= dither(pixel.position.xy, cam.frame, 1) {
         discard()
     }
     var toward = 0.0
@@ -779,15 +790,6 @@ fn dither(pixel: vec2, frame: u32, k: u32) -> f32 {
     rand(u32(pixel.x) * 7919 + u32(pixel.y) * 104729 + (frame % 16) * 15485863, k)
 }
 
-/// A pixel's threshold for a frame, ordered (a 4 × 4 Bayer matrix, its thresholds turned each
-/// frame): over temporal AA's cycle of 16 frames, each pixel takes every one of 16 thresholds
-/// once, and each block of 4 × 4 every one each frame.
-fn ordered(pixel: vec2, frame: u32) -> f32 {
-    let bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]
-    let p = vec2u(pixel) % vec2u(4)
-    f32((bayer[p.y * 4 + p.x] + frame * 7) % 16) / 16.0 + 1.0 / 32.0
-}
-
 /// A very far instance cut by its volume's opacity, dithered: temporal AA brings it to the
 /// crown's coverage, as it does an impostor's (the depth prepass's).
 @fragment
@@ -799,8 +801,11 @@ pub fn volume_cut(
     voxels: [vec4],
     depths: [f32],
 ) -> WithDepth {
+    if !keeps(f.keep.value, pixel.position.xy, cam.frame) {
+        discard()
+    }
     let met = march_volume(f, cam, v, voxels, depths)
-    if met.opacity <= ordered(pixel.position.xy, cam.frame) {
+    if met.opacity <= dither(pixel.position.xy, cam.frame, 1) {
         discard()
     }
     WithDepth { color: id_colour(f.id.value), depth: depth_of(cam, volume_place(f, v, met.at)) }

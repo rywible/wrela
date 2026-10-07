@@ -794,6 +794,23 @@ pub fn test_solo(s: mut Clearing, kind: u32, at: vec2, cards_to: f32, impostors_
     s.static_drawn = false
 }
 
+/// How wide kind `k`'s cards look on screen at their finest level (the scene's pixels), for an
+/// instance at (x, z) on the ground, from the last frame's camera (`lod::place`'s measure).
+pub fn test_card_px(s: Clearing, k: u32, x: f32, z: f32) -> f32 {
+    borrow kind = s.forest.kinds[k]
+    let at = vec3(x, scene::height(x: x, z: z), z)
+    let d = length(at + vec3(0.0, kind.top * 0.5, 0.0) - s.cam.eye)
+    kind.plant.leaves.size / max(s.cam.footprint(max(d - kind.reach * 0.5, 0.5)), 1.0e-4)
+}
+
+/// Where the forest's levels hand over: its cards to impostors and impostors to volumes (m), and
+/// how wide its cards grow on screen before the next level's take over.
+pub fn test_lod(s: mut Clearing, cards_to: f32, impostors_to: f32, card_px: f32) {
+    s.forest.cards_to = cards_to
+    s.forest.impostors_to = impostors_to
+    s.forest.card_px = card_px
+}
+
 /// The next frame counts its cards' shading and covering (`test_capture` reads them).
 pub fn test_count(s: mut Clearing) {
     s.counting = true
