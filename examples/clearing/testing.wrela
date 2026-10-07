@@ -1,0 +1,67 @@
+// What the clearing's tests read and set (#51's checks, `suite/clearing.rs`): ways to show a
+// frame other than the look, and captures of what a frame drew (copied into buffers, which a
+// test reads back). Each is reached through an export in main.wrela; the clearing itself never
+// uses them.
+
+use engine::light::{Light, display}
+use std::gpu::{DepthTexture, FragCoord, GlobalId, Slots, Texture}
+
+/// How a frame is shown: the look (the clearing as it is), the scene's samples at the output's
+/// size (nearest, before temporal AA), or temporal AA's output with the tone curve alone.
+pub const LOOK: u32 = 0
+pub const SCENE: u32 = 1
+pub const TEMPORAL: u32 = 2
+
+/// What a frame can leave out, past the keys' systems (main.wrela's `TREES` to `TERRAIN`): the
+/// creature, the stones, the sky (a key colour where nothing was drawn), the wind (held at
+/// time 0), temporal AA's history (each frame its own), the clouds' shadows, and the impostors
+/// and volumes (each instance drawn as cards, near or far).
+pub const CREATURE: u32 = 16
+pub const STONES: u32 = 32
+pub const SKY: u32 = 64
+pub const WIND: u32 = 128
+pub const HISTORY: u32 = 256
+pub const CLOUD_SHADOWS: u32 = 512
+
+/// The key colour drawn where the sky would be.
+pub const KEY = vec4(1.0, 0.0, 1.0, 0.0)
+
+/// The scene's samples at the output's size, nearest: what a pass drew, unblended.
+@fragment
+pub fn scene_view(pixel: FragCoord, scene: Texture, scale: u32) -> vec4 {
+    let p = vec2u(pixel.position.xy) / scale
+    vec4(min(scene.load(x: p.x, y: p.y).rgb, vec3(1.0)), 1.0)
+}
+
+/// Temporal AA's output through the tone curve alone (no dabs, glow, lines or vignette).
+@fragment
+pub fn temporal_view(pixel: FragCoord, image: Texture, light: Light) -> vec4 {
+    let p = vec2u(pixel.position.xy)
+    vec4(display(light, image.load(x: p.x, y: p.y).rgb), 1.0)
+}
+
+/// A texture's texels, row by row.
+@compute(64)
+pub fn copy_texture(t: Texture, out: mut Slots<vec4>, id: GlobalId) {
+    let w = t.width()
+    if id.x >= w * t.height() {
+        return
+    }
+    out[id] = t.load(x: id.x % w, y: id.x / w)
+}
+
+/// A depth texture's texels, row by row.
+@compute(64)
+pub fn copy_depth(t: DepthTexture, out: mut Slots<f32>, id: GlobalId) {
+    let w = t.width()
+    if id.x >= w * t.height() {
+        return
+    }
+    out[id] = t.load(x: id.x % w, y: id.x / w)
+}
+
+/// The key colour, where nothing was drawn.
+@fragment
+pub fn key() -> vec4 {
+    KEY
+}

@@ -123,6 +123,30 @@ pub struct Forest {
 /// instances).
 const ALIGN: u32 = 8
 
+/// Every instance of `placed`, by kind, each kind's list from a multiple of `ALIGN`, on the GPU.
+fn every_of(kinds: u32, placed: [Placed]) -> (GpuBuffer<Instance>, Vec<List>) {
+    var lists: Vec<List> = Vec::new()
+    var every: Vec<Instance> = Vec::new()
+    for k in 0..kinds {
+        let first = every.len()
+        for p in placed {
+            if p.kind == k {
+                every.push(p.at)
+            }
+        }
+        let n = every.len() - first
+        if n > 0 {
+            lists.push(List { kind: k, how: 1, first, count: n })
+        }
+        while every.len() % ALIGN != 0 {
+            every.push(Instance { at: vec3(0.0), yaw: 0.0, tint: vec3(0.0), scale: 0.0 })
+        }
+    }
+    var buf: GpuBuffer<Instance> = buffer(max(every.len(), 1))
+    write(mut buf, 0, every)
+    (take buf, lists)
+}
+
 impl Forest {
     pub fn new(
         kinds: take Vec<Kind>,
@@ -131,32 +155,13 @@ impl Forest {
         impostors_to: f32,
     ) -> Forest {
         let room = placed.len() + (kinds.len() * WAYS + 1) * ALIGN
-        // Every instance, by kind, each kind's list from a multiple of ALIGN.
-        var every_lists: Vec<List> = Vec::new()
-        var every: Vec<Instance> = Vec::new()
-        for k in 0..kinds.len() {
-            let first = every.len()
-            for p in placed {
-                if p.kind == k {
-                    every.push(p.at)
-                }
-            }
-            let n = every.len() - first
-            if n > 0 {
-                every_lists.push(List { kind: k, how: 1, first, count: n })
-            }
-            while every.len() % ALIGN != 0 {
-                every.push(Instance { at: vec3(0.0), yaw: 0.0, tint: vec3(0.0), scale: 0.0 })
-            }
-        }
-        var every_buffer: GpuBuffer<Instance> = buffer(max(every.len(), 1))
-        write(mut every_buffer, 0, every)
+        let (every, every_lists) = every_of(kinds.len(), placed)
         Forest {
             kinds: take kinds,
             placed: take placed,
             instances: buffer(room),
             lists: Vec::new(),
-            every: take every_buffer,
+            every: take every,
             every_lists,
             atlas: leaf_atlas(6),
             cards_to,
@@ -165,6 +170,15 @@ impl Forest {
             far_count: 0,
             volume_count: 0,
         }
+    }
+
+    /// Its instances replaced by `placed` (no more than it had): the static shadows read every
+    /// instance, so they're drawn again.
+    pub fn place(mut self, placed: take Vec<Placed>) {
+        let (every, every_lists) = every_of(self.kinds.len(), placed)
+        self.every = take every
+        self.every_lists = take every_lists
+        self.placed = take placed
     }
 
     /// This frame's lists, for `cam` (a pixel's footprint from its `screen` and `tan_half`):

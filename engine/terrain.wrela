@@ -11,7 +11,9 @@
 //
 // No cracks between levels: a level's quads inside the finer level's square are dropped; the
 // finer level's outer band morphs its heights to the coarser level's, so its edge lies on the
-// coarser level's triangles; and a skirt hangs from each level's edge, so no pixel sees past it.
+// coarser level's triangles; and skirts hang from each level's outer edge and from the edge of
+// the hole the finer level fills, each sharing its edge's vertices, so a pixel the seam's
+// T-junctions leave uncovered on either side sees a skirt, never past the ground.
 
 use light::{Light, Lit, hazed, open_sky}
 use noise::noise2
@@ -77,8 +79,9 @@ pub const ROW: u32 = 136
 /// Texels a level takes in the buffer: its SIDE rows, rounded up to a 256-byte span (WebGPU
 /// binds a span from a multiple of 256 bytes; a texel is 20).
 pub const STRIDE: u32 = 17600
-/// Vertices a level draws: its quads and a skirt along each edge.
-pub const LEVEL_VERTICES: u32 = (QUADS * QUADS + 4 * QUADS) * 6
+/// Vertices a level draws: its quads, a skirt along each outer edge, and one along each edge of
+/// the hole the finer level fills.
+pub const LEVEL_VERTICES: u32 = (QUADS * QUADS + 4 * QUADS + 4 * (QUADS / 2)) * 6
 /// How far a skirt hangs below a level's edge, in its cells.
 const SKIRT: f32 = 2.0
 /// The band of a level, in its own cells from its edge, over which it morphs to the next.
@@ -234,8 +237,9 @@ pub struct GroundVertex: Copy {
 }
 
 /// The ground's vertices: level `v / LEVEL_VERTICES`'s quads (those inside the finer level's
-/// square dropped), then its skirts. Each reads its level's texels, morphed in the band at the
-/// level's edge to the coarser level's heights; it never evaluates the field.
+/// square dropped), then its outer skirts, then its inner skirts (round the finer level's
+/// square). Each reads its level's texels, morphed in the band at the level's edge to the
+/// coarser level's heights; it never evaluates the field.
 @vertex
 pub fn ground(v: VertexIndex, cam: Camera, levels: Levels, texels: [Texel]) -> GroundVertex {
     let l = v.index / LEVEL_VERTICES
@@ -265,8 +269,32 @@ pub fn ground(v: VertexIndex, cam: Camera, levels: Levels, texels: [Texel]) -> G
                 z0 >= lo.y - 0.5 &&
                 z0 + 1.0 <= hi.y + 0.5
         }
+    } else if q >= QUADS * QUADS + 4 * QUADS {
+        // The inner skirts: along each edge of the finer level's square, on this level's grid
+        // (the finer level has none inside it).
+        let e = q - QUADS * QUADS - 4 * QUADS
+        let side = e / (QUADS / 2)
+        let i = e % (QUADS / 2) + qx[corner]
+        let down = qz[corner]
+        let lo = if l > 0 { vec2u((levels.at[l - 1].xy - a.xy) / s + vec2(0.5)) } else { vec2u(0) }
+        let hi = lo + vec2u(QUADS / 2)
+        if side == 0 {
+            gx = lo.x + i
+            gz = lo.y
+        } else if side == 1 {
+            gx = lo.x + i
+            gz = hi.y
+        } else if side == 2 {
+            gx = lo.x
+            gz = lo.y + i
+        } else {
+            gx = hi.x
+            gz = lo.y + i
+        }
+        drop = f32(down) * SKIRT * s
+        hidden = l == 0
     } else {
-        // The skirts: a strip of quads along each edge, its far corners hanging below it.
+        // The outer skirts: a strip of quads along each edge, its far corners hanging below it.
         let e = q - QUADS * QUADS
         let side = e / QUADS
         let i = e % QUADS + qx[corner]

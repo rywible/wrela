@@ -81,9 +81,14 @@ pub fn height(x: f32, z: f32) -> f32 {
     // The meadow's gentle swell, tilting down toward the edge.
     var y = 0.9 * (fbm2(p * 0.035, 3) - 0.5) + 0.25 * (noise2(p * 0.21) - 0.5)
     y -= 0.07 * clamp(dot(p - MEADOW, ACROSS), -40.0, 40.0)
-    // The forest floor rising round it, but not toward the edge.
-    let a = atan2(x - STAND.x, z - STAND.y)
-    let open = smoothstep(GAP_TO + 0.1, GAP_TO - 0.1, a)
+    // The forest floor rising round it, but not toward the edge: the gap's directions from
+    // where the camera stands, faded out near that point (where every direction meets, so the
+    // floor would have no one height there).
+    let s = p - STAND
+    let a = atan2(s.x, s.y + 1.0e-4)
+    let within = smoothstep(GAP_FROM - 0.1, GAP_FROM + 0.1, a) *
+        smoothstep(GAP_TO + 0.1, GAP_TO - 0.1, a)
+    let open = within * smoothstep(2.0, 10.0, length(s))
     y += 3.0 * smoothstep(18.0, 60.0, r) * (1.0 - open)
     // The great tree's rise, and the rise the camera starts on.
     let k = p - KNOLL
@@ -108,8 +113,10 @@ pub fn height(x: f32, z: f32) -> f32 {
     let m2 = p - vec2(-1800.0, 7000.0)
     let shoulder = exp(-dot(m2, m2) / 3.0e6)
     let mountain = peak + 0.55 * shoulder
+    // (Faded in where it begins, so the land has no step there.)
     if mountain > 1.0e-3 {
-        y += mountain * (900.0 + 500.0 * ridged2(p * 0.0012 + vec2(3.1, 7.7), 5))
+        let rise = mountain * (900.0 + 500.0 * ridged2(p * 0.0012 + vec2(3.1, 7.7), 5))
+        y += rise * smoothstep(1.0e-3, 2.0e-2, mountain)
     }
     y
 }
