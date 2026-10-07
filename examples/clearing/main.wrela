@@ -289,15 +289,19 @@ fn look(
     glow_b: mut Texture,
     d: Develop,
 ) {
+    label("look glow")
     let down = begin_pass(mut glow_a)
     draw(cover.bind(z: 0.5), glow_down.bind(image, threshold: 1.1), vertices: 3)
     down.end()
+    label("look glow")
     let x = begin_pass(mut glow_b)
     draw(cover.bind(z: 0.5), glow_blur.bind(src: glow_a, across: 0, spread: 2.0), vertices: 3)
     x.end()
+    label("look glow")
     let y = begin_pass(mut glow_a)
     draw(cover.bind(z: 0.5), glow_blur.bind(src: glow_b, across: 1, spread: 2.0), vertices: 3)
     y.end()
+    label("look develop")
     begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         cover.bind(z: 0.5),
