@@ -124,7 +124,7 @@ The load-bearing rules. Changing one needs the owner, and the change and its rea
 
 - **The tower.** When a world ends, something takes the place, frozen at its last moment, and stacks it into the tower. Each floor is a handcrafted world with its own creatures, anchors to free and a Warden that refuses to let its world end. Beating the Warden lets that world's time run again. The tower ends at floor 100 with a final boss. It launches with three floors (the Last Green, a forest; the Titan's Back; the Clockless War) and grows each season.
 - **Skill and knowledge only.** No loot and no power levels: one soul blade that evolves by how you fight, one difficulty, and a discovery loop of echoes cut from the frozen moment.
-- **The look:** storybook anime under real light. The climber is masked; there's no voice acting. Realistic human faces stay out of scope.
+- **The look:** storybook anime under real light. The world is painted in continuous light, with brush dabs anchored on its surfaces and no lines; characters are cel-shaded, with thin lines (picked by the owner from spike 15's three variants, #50; it can evolve). The climber is masked; there's no voice acting. Realistic human faces stay out of scope.
 - **Seasons and leaderboards.** Each three-month season is a fresh race from floor 1. Leaderboards come from deterministic replays, verified on the native host against the season's build. The first verified unassisted climb of a season is its champion, who proposes a floor that the owner builds.
 - **Nothing collected, nothing sold.** No accounts; saves stay in the game's origin and export as files; hosting is on free tiers.
 - **Later:** an MMO in one shared world, once there's money, time and legal advice (#31).
@@ -150,7 +150,7 @@ Planned in GitHub issues on rywible/wrela, not here. Each milestone has a scope 
 | **M2: the language** | Done: the language and stdlib, complete: tiers 0–2, without a compiler in the browser |
 | **M3: the first lens** | Done (October 2026): the lens, a studio tool written in wrela, and the agents' command-line tools; thesis 1 tested blind in authoring rounds 2 to 6 |
 | **M4: the engine's spine** | Done (October 2026): spike 01's herd simulated and rendered from wrela source within 1.25× of the hand-written numbers; the sim on its own worker, its replays verified with no GPU and on x86-64 |
-| **M5: the look** | The Last Green's clearing at 60 fps with a creature walking across it, in the art direction the owner picks from three prototypes |
+| **M5: the look** | The Last Green's clearing at 60 fps with a creature walking across it, in the look the owner picked from spike 15's three: gouache and light for the world, cel for characters |
 | **M6: the duel** | The masked climber against one creature, in all three browsers; the combat-feel gate |
 | **M7: the Ashstag** | The first Warden and the soul blade's first evolution; the art-quality gate |
 | **M8: the Last Green** | Floor 1 in full, streamed, released free as an offline game |
