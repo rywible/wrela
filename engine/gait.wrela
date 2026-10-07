@@ -68,6 +68,11 @@ pub struct Walker: Copy + Eq + Plain + StateHash + Serialize + SimState {
 pub trait Path: Copy {
     /// The point `s` metres along the path (on the plane: x, z).
     fn at(self, s: f32) -> vec2
+
+    /// How long it is (m): a walker stops at its end.
+    fn length(self) -> f32 {
+        1.0e9
+    }
 }
 
 /// What a walker's body is, for its gait: each leg's rest sole (its foot joint's x, z, on the
@@ -77,6 +82,10 @@ pub struct Body: Copy {
     pub soles: [vec3; 4],
     pub foot_height: [f32; 4],
     pub hips: [vec3; 4],
+    /// Each leg's reach (its upper and lower bones' lengths, a little short of straight), and
+    /// its foot joint from its ankle (rest).
+    pub reach: [f32; 4],
+    pub ankle_to_foot: [vec3; 4],
     pub spring_bones: Bounded<u32, 12>,
     pub spring_tips: Bounded<vec3, 12>,
     pub stiffness: Bounded<f32, 12>,
@@ -91,6 +100,8 @@ pub fn body(s: Skeleton, head: [Bone], tail: [Bone], head_k: f32, tail_k: f32) -
         soles: [vec3(0.0); 4],
         foot_height: [0.0; 4],
         hips: [vec3(0.0); 4],
+        reach: [0.0; 4],
+        ankle_to_foot: [vec3(0.0); 4],
         spring_bones: Bounded::new(),
         spring_tips: Bounded::new(),
         stiffness: Bounded::new(),
@@ -102,6 +113,9 @@ pub fn body(s: Skeleton, head: [Bone], tail: [Bone], head_k: f32, tail_k: f32) -
         b.soles[i] = vec3(f.x, 0.0, f.z)
         b.foot_height[i] = f.y
         b.hips[i] = s.rest(j[0])
+        let (h, k, a) = (s.rest(j[0]), s.rest(j[1]), s.rest(j[2]))
+        b.reach[i] = (length(k - h) + length(a - k)) * REACH
+        b.ankle_to_foot[i] = f - a
     }
     for i in 0..head.len() {
         if i + 1 < head.len() && !b.spring_bones.is_full() {
@@ -178,8 +192,33 @@ pub fn stand<T: Terrain>(terrain: T, b: Body, at: vec2, heading: f32) -> Walker 
     w
 }
 
+/// How much of a leg's length its reach is: a leg never straightens fully, so its knee bends
+/// where the IK puts it and the foot is where the gait does.
+const REACH: f32 = 0.995
+
+/// How far the body must come down (m, 0 or less) for leg `i` to reach its foot: its hip moves
+/// along the body's up, and its ankle's target is fixed (by the foot's place and the body's
+/// turn).
+fn drop_to_reach(w: Walker, b: Body, i: u32) -> f32 {
+    let m = body_frame(w)
+    let up = (m * vec4(0.0, 1.0, 0.0, 0.0)).xyz
+    let hip = apply(m, b.hips[i])
+    let ankle = w.feet[i].at + up * b.foot_height[i] - (m * vec4(b.ankle_to_foot[i], 0.0)).xyz
+    let v = ankle - hip
+    let r = b.reach[i]
+    if dot(v, v) <= r * r {
+        return 0.0
+    }
+    // |v - up d|² = r²: the nearest d below 0 (or, past the leg's reach across, the nearest
+    // its hip comes).
+    let along = dot(up, v)
+    let disc = along * along - dot(v, v) + r * r
+    min(if disc >= 0.0 { along + sqrt(disc) } else { along }, 0.0)
+}
+
 /// Its body's height and pitch, eased toward what its feet ask: the pelvis as low as its lowest
-/// plant (so every leg reaches its foot), and pitched by its fore feet's height over its hind's.
+/// plant, and pitched by its fore feet's height over its hind's; then lowered at once as far as
+/// a leg needs to reach its foot, so no planted foot is dragged.
 fn settle_body(w: mut Walker, b: Body, dt: f32) {
     let ground = w.root.pos.y
     var lowest = 1.0e9
@@ -195,6 +234,11 @@ fn settle_body(w: mut Walker, b: Body, dt: f32) {
     let ease = 1.0 - exp(-dt * 8.0)
     w.height += (min(lowest, 0.0) - w.height) * ease
     w.pitch += (want_pitch - w.pitch) * ease
+    var drop = 0.0
+    for i in 0..4 {
+        drop = min(drop, drop_to_reach(w, b, i))
+    }
+    w.height += drop
 }
 
 /// One tick of `dt` seconds of a walker following `path` over `terrain`, its body `b`, walking
@@ -220,7 +264,8 @@ pub fn step<T: Terrain, P: Path>(
     while diff < -PI {
         diff += TAU
     }
-    let speed_to = if go { walk.speed } else { 0.0 }
+    // It stops where the path ends, its look ahead past it.
+    let speed_to = if go && w.along + walk.look_ahead < path.length() { walk.speed } else { 0.0 }
     w.speed += (speed_to - w.speed) * (1.0 - exp(-dt * 2.0))
     w.turn = clamp(diff * walk.steer, -0.8, 0.8) * min(w.speed / max(walk.speed, 0.01), 1.0)
     w.root = w.root.advance(vec3(0.0, w.turn * dt, w.speed * dt))
@@ -305,14 +350,18 @@ fn landing(
 /// Its springs' energy: their motion's and their stretch's, for a stiffness each (a turn puts
 /// energy in; it decays once the body moves steadily).
 pub fn spring_energy(w: Walker, b: Body) -> f32 {
-    let m = body_frame(w)
     var e = 0.0
     for i in 0..b.spring_bones.len() {
-        let sp = w.springs[i]
-        let d = sp.at - apply(m, b.spring_tips[i])
-        e += 0.5 * dot(sp.vel, sp.vel) + 0.5 * b.stiffness[i] * dot(d, d)
+        e += energy_of(w, b, i)
     }
     e
+}
+
+/// Spring `i`'s energy (its motion's and its stretch's).
+pub fn energy_of(w: Walker, b: Body, i: u32) -> f32 {
+    let sp = w.springs[i]
+    let d = sp.at - apply(body_frame(w), b.spring_tips[i])
+    0.5 * dot(sp.vel, sp.vel) + 0.5 * b.stiffness[i] * dot(d, d)
 }
 
 // ---- posing -------------------------------------------------------------------------------------

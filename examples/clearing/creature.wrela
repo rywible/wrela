@@ -64,6 +64,19 @@ impl Path for Trail {
         }
         prev
     }
+
+    fn length(self) -> f32 {
+        var total = 0.0
+        var prev = segment(0, 0.0)
+        for i in 0..(TRAIL.len() - 3) {
+            for k in 1..9 {
+                let p = segment(i, f32(k) / 8.0)
+                total += length(p - prev)
+                prev = p
+            }
+        }
+        total
+    }
 }
 
 /// The creature, its body for walking: springs on its neck (to its head) and its tail.

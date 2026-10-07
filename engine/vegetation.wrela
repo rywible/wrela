@@ -20,8 +20,9 @@ use probes::Probe
 use shadow::Shadows
 use std::field::Tube
 use std::gpu::{
-    ClipPosition, ComparisonSampler, DepthBias, DepthTexture, Flat, GpuBuffer, GpuSpan,
-    InstanceIndex, Sampler, Texture, VertexIndex, buffer, dispatch, draw, label, write,
+    Atomics, ClipPosition, Compare, ComparisonSampler, Depth, DepthBias, DepthTexture, Flat,
+    FragCoord, GpuBuffer, GpuSpan, InstanceIndex, Sampler, Texture, VertexIndex, buffer, dispatch,
+    draw, label, write,
 }
 use std::math::{PI, TAU}
 use terrain::Texel
@@ -700,6 +701,94 @@ impl Forest {
                     vertices: k.limb_count * LIMB_VERTICES,
                     instances: l.count,
                     depth_bias: DepthBias { constant: 2, slope: 1.5, clamp: 0.0 },
+                )
+            }
+        }
+    }
+}
+
+// ---- counting (a test's) ------------------------------------------------------------------------
+
+/// A card's fragment where the prepass left its depth, counted at its pixel (row by row,
+/// `width` to a row) and drawn as nothing: the cards' shading pass's work, pixel by pixel (AC4).
+@fragment
+pub fn leaf_counted(l: LeafVertex, p: FragCoord, width: u32, shaded: mut Atomics<u32>) -> vec4 {
+    let i = u32(p.position.y) * width + u32(p.position.x)
+    let _ = shaded.add(i, 1)
+    vec4(0.0)
+}
+
+/// A card's leaf, counted at its pixel wherever it is, in front or behind: the cards covering
+/// each pixel.
+@fragment
+pub fn leaf_covering(
+    l: LeafVertex,
+    p: FragCoord,
+    d: CardDraw,
+    atlas: Texture,
+    s: Sampler,
+    width: u32,
+    covering: mut Atomics<u32>,
+) -> vec4 {
+    let (m, which) = leaf_at(atlas, s, l.seed.value, l.uv)
+    if m < 0.5 || which >= d.per_card {
+        discard_fragment()
+    }
+    let i = u32(p.position.y) * width + u32(p.position.x)
+    let _ = covering.add(i, 1)
+    vec4(0.0)
+}
+
+impl Forest {
+    /// The cards' shading pass as `shade` draws it (where the prepass left the depth), each
+    /// fragment counted into `shaded` at its pixel instead of shaded (the target is `width`
+    /// wide).
+    pub fn count_shading(self, cam: Camera, wind: Wind, width: u32, shaded: mut GpuBuffer<u32>) {
+        for l in self.lists {
+            if l.how < CARD_LEVELS {
+                borrow k = self.kinds[l.kind]
+                let d = card_draw(wind, l.how, k.plant.leaves, cam.right, cam.up)
+                draw(
+                    card.bind(
+                        cam,
+                        d,
+                        cards: k.cards.span(start: 0, count: level_cards(k.card_count, l.how)),
+                        instances: self.instances(l),
+                    ),
+                    leaf_counted.bind(width, shaded: mut shaded),
+                    vertices: level_cards(k.card_count, l.how) * 6,
+                    instances: l.count,
+                    depth: PREPASSED,
+                )
+            }
+        }
+    }
+
+    /// Every card's leaves counted into `covering` at their pixels, with no depth test: how many
+    /// cards cover each pixel (what spike 15 shaded, with no prepass).
+    pub fn count_covering(
+        self,
+        cam: Camera,
+        wind: Wind,
+        s: Sampler,
+        width: u32,
+        covering: mut GpuBuffer<u32>,
+    ) {
+        for l in self.lists {
+            if l.how < CARD_LEVELS {
+                borrow k = self.kinds[l.kind]
+                let d = card_draw(wind, l.how, k.plant.leaves, cam.right, cam.up)
+                draw(
+                    card.bind(
+                        cam,
+                        d,
+                        cards: k.cards.span(start: 0, count: level_cards(k.card_count, l.how)),
+                        instances: self.instances(l),
+                    ),
+                    leaf_covering.bind(d, self.atlas, s, width, covering: mut covering),
+                    vertices: level_cards(k.card_count, l.how) * 6,
+                    instances: l.count,
+                    depth: Depth { compare: Compare::Always, write: false },
                 )
             }
         }

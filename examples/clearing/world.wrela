@@ -3,7 +3,7 @@
 // input record, `Key::Space`), then walks. Its feet are planted where raycasts against the
 // terrain field meet the ground: the field the clipmap is cooked from.
 
-use creature::{Trail, START, walker_body}
+use creature::{START, Trail, walker_body}
 use engine::gait::{Walk, Walker, stand, step}
 use engine::run::{Asks, TickInput}
 use engine::sim::{Sim, SimState, Tick}
@@ -64,4 +64,103 @@ pub fn tick(w: mut World, input: TickInput<World>) {
 @deterministic
 pub fn present(w: World) -> World {
     w
+}
+
+// ---- the walk's tests (#51 AC8) -----------------------------------------------------------------
+
+/// The walk along the whole trail, a tick at a time as the sim steps it (60 s, past every turn):
+/// a planted foot's sole stays where it landed (within 5 mm) and on the terrain under it
+/// (within 1 cm), as the drawn creature has it (its posed bones); and the legs keep their
+/// bones' lengths (within 1e-4 m).
+@test
+fn the_walk_keeps_its_feet_planted_on_the_terrain() {
+    let s = grazer::creature::grazer().skeleton()
+    let b = walker_body()
+    var w = spawn().walker
+    let legs = s.legs()
+    var landed = [vec3(0.0); 4]
+    var was = [false; 4]
+    var slide = 0.0
+    var off = 0.0
+    var stretched = 0.0
+    var plants = 0
+    for _ in 0..3600 {
+        step(mut w, Ground {}, Trail {}, b, WALK, go: true, dt: 1.0 / 60.0)
+        let p = engine::gait::palette(s, b, w)
+        let m = engine::gait::body_frame(w)
+        let up = (m * vec4(0.0, 1.0, 0.0, 0.0)).xyz
+        for i in 0..s.leg_count() {
+            let j = legs[i].joints
+            let at = |k: u32| (p.bones[j[k].index] * vec4(s.rest(j[k]), 1.0)).xyz
+            let (hip, knee, ankle, foot) = (at(0), at(1), at(2), at(3))
+            let rest = |k: u32| s.rest(j[k])
+            stretched = max(stretched, abs(length(knee - hip) - length(rest(1) - rest(0))))
+            stretched = max(stretched, abs(length(ankle - knee) - length(rest(2) - rest(1))))
+            // The sole: under the foot's joint by its rest height, along the body's up.
+            let sole = foot - up * b.foot_height[i]
+            let planted = w.feet[i].planted
+            if planted && !was[i] {
+                landed[i] = sole
+                plants += 1
+            }
+            if planted {
+                slide = max(slide, length(sole - landed[i]))
+                off = max(off, abs(sole.y - Ground {}.height(sole.x, sole.z)))
+            }
+            was[i] = planted
+        }
+    }
+    assert(plants > 100, f"only {plants} feet were planted over the walk")
+    assert(slide < 5.0e-3, f"a planted foot slid {slide} m")
+    assert(off < 1.0e-2, f"a planted sole was {off} m from the terrain under it")
+    assert(stretched < 1.0e-4, f"a leg bone's length changed by {stretched} m")
+}
+
+/// The head and tail lag behind the trail's turns and settle after them: once the creature has
+/// stopped (its feet planted and its body settled, four seconds after it's told to), each
+/// spring's energy decays to a hundredth of its peak in the walk, never growing over a quarter
+/// of a second (by more than a hundred-thousandth of its peak: rounding).
+@test
+fn the_springs_settle_after_a_turn() {
+    let b = walker_body()
+    var w = spawn().walker
+    let n = b.spring_bones.len()
+    var peak = [0.0; 12]
+    // Through the trail's first turns.
+    for _ in 0..900 {
+        step(mut w, Ground {}, Trail {}, b, WALK, go: true, dt: 1.0 / 60.0)
+        for i in 0..n {
+            peak[i] = max(peak[i], engine::gait::energy_of(w, b, i))
+        }
+    }
+    for i in 0..n {
+        assert(peak[i] > 1.0e-6, f"spring {i} never lagged: its energy peaked at {peak[i]}")
+    }
+    // Stopping: four seconds for the body to come to rest.
+    for _ in 0..240 {
+        step(mut w, Ground {}, Trail {}, b, WALK, go: false, dt: 1.0 / 60.0)
+    }
+    var last = [0.0; 12]
+    for i in 0..n {
+        last[i] = engine::gait::energy_of(w, b, i)
+    }
+    for q in 0..12 {
+        for _ in 0..15 {
+            step(mut w, Ground {}, Trail {}, b, WALK, go: false, dt: 1.0 / 60.0)
+        }
+        for i in 0..n {
+            let e = engine::gait::energy_of(w, b, i)
+            assert(
+                e <= last[i] * 1.01 + peak[i] * 1.0e-5,
+                f"spring {i}'s energy grew from {last[i]} to {e} in quarter {q}",
+            )
+            last[i] = e
+        }
+    }
+    for i in 0..n {
+        assert(
+            last[i] <= peak[i] * 0.01,
+            f"spring {i} kept {last[i]} of its peak {peak[i]} 7 s after stopping",
+        )
+    }
 }

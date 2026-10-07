@@ -17,6 +17,7 @@ use std::gpu::{
 }
 use std::math::{PI, TAU}
 use terrain::{Levels, Texel, ground_at, height_at}
+use view::Camera
 
 /// A probe: the irradiance it holds, as spherical harmonics' first two bands, a vec4 per
 /// colour channel (the constant term, then the x, y and z terms).
@@ -441,4 +442,100 @@ impl Baked {
         )
         self.baked += n
     }
+}
+
+// ---- the reference (a test's) ---------------------------------------------------------------
+
+/// A point of the screen's sky light two ways: from the probes, and traced from the point itself
+/// (the reference); each the light a white surface there reflects, in rgb, with 1 in `w` where
+/// the screen shows a surface (0 for the sky, or a point whose normal the depth doesn't give).
+pub struct Reference: Copy + GpuData {
+    pub probes: vec4,
+    pub traced: vec4,
+}
+
+/// What the reference reads besides the textures and buffers: the tracing, the shadows, the
+/// camera the depth was drawn by, and which points: every `step`th pixel each way, from point
+/// `first`, each traced with `rays` rays.
+pub struct Sampling: Copy + GpuData {
+    pub t: Trace,
+    pub sh: Shadows,
+    pub cam: Camera,
+    pub step: u32,
+    pub first: u32,
+    pub rays: u32,
+}
+
+/// The world point at pixel `p` of `depth`, or none where it shows the sky.
+fn surface_at(cam: Camera, depth: DepthTexture, p: vec2i) -> (vec3, f32) {
+    let lim = vec2i(i32(depth.width()) - 1, i32(depth.height()) - 1)
+    let q = clamp(p, vec2i(0), lim)
+    let z = depth.load(x: u32(q.x), y: u32(q.y))
+    (cam.world_at(vec2(q) + vec2(0.5), z), z)
+}
+
+/// A brute-force reference for the probes (#51 AC5, spike 05's method): at the surface each
+/// sampled pixel shows, its sky light traced from the point itself with `rays` rays over the
+/// sphere (each weighted by its cosine to the normal) through the same occluders, ground and
+/// sky as the probes', beside the probes' estimate there. The normal is the depth's (the same
+/// for both).
+@compute(64)
+pub fn reference(
+    at: Sampling,
+    depth: DepthTexture,
+    volume: [u32],
+    levels: Levels,
+    texels: [Texel],
+    probes: [Probe],
+    grounds: [f32],
+    near: DepthTexture,
+    far: DepthTexture,
+    cmp: ComparisonSampler,
+    out: mut Slots<Reference>,
+    id: GlobalId,
+) {
+    let cols = depth.width() / at.step
+    let k = at.first + id.x
+    let p = vec2i(i32((k % cols) * at.step + at.step / 2), i32((k / cols) * at.step + at.step / 2))
+    let none = Reference { probes: vec4(0.0), traced: vec4(0.0) }
+    if k / cols >= depth.height() / at.step {
+        out[id] = none
+        return
+    }
+    let (w, z) = surface_at(at.cam, depth, p)
+    if z <= 0.0 {
+        out[id] = none
+        return
+    }
+    // The normal from the neighbours on the side nearer in depth each way (not across an edge).
+    let (r, _) = surface_at(at.cam, depth, p + vec2i(1, 0))
+    let (l, _) = surface_at(at.cam, depth, p - vec2i(1, 0))
+    let (d, _) = surface_at(at.cam, depth, p + vec2i(0, 1))
+    let (u, _) = surface_at(at.cam, depth, p - vec2i(0, 1))
+    let dx = if length(r - w) < length(w - l) { r - w } else { w - l }
+    let dy = if length(d - w) < length(w - u) { d - w } else { w - u }
+    var n = normalize(cross(dy, dx))
+    if dot(n, at.cam.eye - w) < 0.0 {
+        n = -n
+    }
+    // An edge: the neighbours both far from the point (a grass blade's side, a leaf's).
+    let span = at.cam.footprint(at.cam.distance_of(z)) * 4.0
+    if length(dx) > span || length(dy) > span {
+        out[id] = none
+        return
+    }
+    let from = w + n * 0.02
+    var sum = vec3(0.0)
+    for i in 0..at.rays {
+        let dir = fibonacci(i, at.rays)
+        let c = dot(dir, n)
+        if c > 0.0 {
+            sum += trace(at.t, volume, levels, texels, from, dir, at.sh, near, far, cmp) * c
+        }
+    }
+    // The irradiance (each ray 4π / rays of the sphere) over π: the light a white surface
+    // reflects.
+    let traced = sum * (4.0 / f32(at.rays))
+    let estimate = sky_light(at.t.grid, probes, grounds, at.t.light, w, n)
+    out[id] = Reference { probes: vec4(estimate, 1.0), traced: vec4(traced, 1.0) }
 }
