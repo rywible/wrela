@@ -6,10 +6,10 @@
 
 use camera::{BARK, Cam, GOUACHE, LEAVES}
 use light::{Lit, hazed, shade}
-use noise::{noise2, rand}
+use noise::{noise2, noise3, rand}
 use history::{
     ALIVE, BEECH, BIRCH, BLACKTHORN, History, LIGHTNING, LOG, OAK, OAK_SOWN, SNAG, SNAPPED, THORN,
-    Tree, WIND, thorny, YEARS, HABITS, sample,
+    Tree, WIND, log_length, log_point, log_radius, log_rot, thorny, YEARS, HABITS, sample,
 }
 use scene::{KNOLL, MEADOW, eye, height, in_gap, past_edge}
 use shadow::{Sun, sunlit}
@@ -387,6 +387,21 @@ pub fn forest_of(h: History) -> Forest {
                 snag(mut f, base, t, sky)
             } else if t.state == LOG && !scene::ablated(scene::NO_DEAD_WOOD) {
                 fallen(mut f, base, t, wet)
+                // Ferns come up beside a log in the shade.
+                let shade = 1.0 - sample(h.light, t.at)
+                if shade > 0.4 && length(t.at - e.xz) < 50.0 {
+                    let r = log_rot(t, YEARS)
+                    let len = log_length(t, r)
+                    for k in 0..3 {
+                        let s = len * (0.2 + 0.3 * f32(k))
+                        let side = vec2(-t.fall.y, t.fall.x) *
+                            select(if_false: -1.0, if_true: 1.0, cond: rand(t.seed, 500 + k) < 0.5)
+                        let q = log_point(t, s, len) + side * (log_radius(t, s, r) + 0.35)
+                        if rand(t.seed, 510 + k) < shade {
+                            fern(mut f, vec3(q.x, height(q.x, q.y), q.y), t.seed * 7 + k)
+                        }
+                    }
+                }
             }
         }
     }
@@ -442,14 +457,27 @@ pub fn forest_of(h: History) -> Forest {
 
 /// A fern: a low, wide spray of small bright leaves.
 fn fern(f: mut Forest, base: vec3, s: u32) {
+    // A low rosette: fronds of small clumps arching out from the crown.
     var crown = Crown { clumps: Vec::new(), tint: vec3(0.06, 0.08, -0.01) }
-    let size = pick(s, 1, vec2(0.35, 0.6))
-    for i in 0..2 {
-        let a = TAU * rand(s, 10 + i)
-        let p = base + vec3(cos(a) * size * 0.4, size * 0.45, sin(a) * size * 0.4)
-        crown.clumps.push(Clump { centre: p, radius: size * 0.55 })
+    let size = pick(s, 1, vec2(0.45, 0.75))
+    let fronds = 5
+    for i in 0..fronds {
+        let a = TAU * (f32(i) + rand(s, 10 + i) * 0.6) / f32(fronds)
+        let out = vec3(cos(a), 0.0, sin(a))
+        crown.clumps.push(
+            Clump {
+                centre: base + out * size * 0.45 + vec3(0.0, size * 0.35, 0.0),
+                radius: size * 0.22,
+            },
+        )
+        crown.clumps.push(
+            Clump {
+                centre: base + out * size * 0.8 + vec3(0.0, size * 0.22, 0.0),
+                radius: size * 0.16,
+            },
+        )
     }
-    add_cards(mut f, crown, size: 0.3, cover: 1.2, seed: s)
+    add_cards(mut f, crown, size: 0.22, cover: 1.3, seed: s)
 }
 
 /// The colour a species' leaves lean to, and its leaf card's size.
@@ -573,6 +601,44 @@ fn seedling(f: mut Forest, base: vec3, t: Tree) {
     add_cards(mut f, crown, size: leaf * 0.5, cover: 1.4, seed: s)
 }
 
+/// A crooked limb: `segs` pieces from `from` toward `dir`, `len` long, its radius from `ra` to
+/// `rb` with a knot at each joint, each piece turned a little off the last (`bend`). Returns
+/// where it ends.
+fn crooked(
+    f: mut Forest,
+    from: vec3,
+    dir: vec3,
+    len: f32,
+    ra: f32,
+    rb: f32,
+    segs: u32,
+    bend: f32,
+    kind: u32,
+    moss: f32,
+    sky: f32,
+    seed: u32,
+) -> vec3 {
+    var p = from
+    var d = normalize(dir)
+    var r = ra
+    for k in 0..segs {
+        let t = f32(k + 1) / f32(segs)
+        let turn = vec3(
+            rand(seed, 400 + k) - 0.5,
+            (rand(seed, 420 + k) - 0.5) * 0.5,
+            rand(seed, 440 + k) - 0.5,
+        )
+        d = normalize(d + turn * (bend * 2.0))
+        let next = p + d * (len / f32(segs))
+        let knot = if k + 1 < segs { 0.9 + 0.2 * rand(seed, 460 + k) } else { 1.0 }
+        let rn = mix(ra, rb, t) * knot
+        f.limbs.push(Limb { a: p, ra: r, b: next, rb: rn, kind, moss, sky })
+        p = next
+        r = rn
+    }
+    p
+}
+
 /// A hawthorn: a dense, low dome of small dark clumps on a few crooked stems.
 fn thorn_bush(f: mut Forest, base: vec3, t: Tree) {
     let s = t.seed
@@ -613,19 +679,35 @@ fn snag(f: mut Forest, base: vec3, t: Tree, sky: f32) {
     let tall = t.tall * keep
     let girth = max(t.girth, 0.05)
     let lean = vec3(t.lean.x, 0.0, t.lean.y) * 0.5
-    let top = base + lean + vec3(0.0, tall, 0.0)
     let sky = max(sky, 0.4)
-    f.limbs.push(
-        Limb {
-            a: base - vec3(0.0, 0.4, 0.0),
-            ra: girth * 1.1,
-            b: top,
-            rb: girth * mix(0.75, 0.45, keep),
-            kind: DEAD,
-            moss: 0.15 + 0.4 * aged,
-            sky,
-        },
+    let up = normalize(vec3(0.0, tall, 0.0) + lean)
+    let top = crooked(
+        mut f,
+        from: base - vec3(0.0, 0.4, 0.0),
+        dir: up,
+        len: tall + 0.4,
+        ra: girth * 1.1,
+        rb: girth * mix(0.75, 0.45, keep),
+        segs: 4,
+        bend: 0.05,
+        kind: DEAD,
+        moss: 0.15 + 0.4 * aged,
+        sky: sky,
+        seed: s,
     )
+    if girth > 0.12 {
+        f.limbs.push(
+            Limb {
+                a: base - vec3(0.0, 0.3, 0.0),
+                ra: girth * 1.5,
+                b: base + vec3(0.0, 0.6, 0.0),
+                rb: girth * 1.08,
+                kind: DEAD,
+                moss: 0.3 + 0.4 * aged,
+                sky,
+            },
+        )
+    }
     // Its broken top: a splinter or two, leaning off true.
     for i in 0..2 {
         let a = TAU * rand(s, 40 + i)
@@ -654,14 +736,14 @@ fn snag(f: mut Forest, base: vec3, t: Tree, sky: f32) {
         let a = if length(t.lean) > 0.2 { toward + pick(s, 20 + i, vec2(-1.3, 1.3)) } else {
             TAU * (f32(i) / f32(limbs) + 0.3 * rand(s, 20 + i))
         }
-        let len = tall * spread * pick(s, 30 + i, vec2(0.16, 0.3))
+        let len = tall * spread * pick(s, 30 + i, vec2(0.12, 0.22))
         var p = from
-        var r = girth * 0.32
+        var r = girth * 0.45
         var heading = a
-        var rise = pick(s, 35 + i, vec2(0.15, 0.6))
+        var rise = pick(s, 35 + i, vec2(0.7, 1.3))
         for k in 0..3 {
-            heading += pick(s, 50 + i * 3 + k, vec2(-0.6, 0.6))
-            rise += pick(s, 70 + i * 3 + k, vec2(-0.25, 0.35))
+            heading += pick(s, 50 + i * 3 + k, vec2(-0.5, 0.5))
+            rise += pick(s, 70 + i * 3 + k, vec2(-0.45, 0.1))
             let step = len / 3.0
             let next = p + normalize(vec3(cos(heading), rise, sin(heading))) * step
             let rn = r * 0.66
@@ -683,79 +765,80 @@ fn snag(f: mut Forest, base: vec3, t: Tree, sky: f32) {
 /// (`rocks::plates` draws the plate); snapped, a jagged stump stands where it broke.
 fn fallen(f: mut Forest, base: vec3, t: Tree, wet: f32) {
     let s = t.seed
-    let h = HABITS[t.kind]
-    let years = f32(YEARS - t.fell)
-    let rot = clamp(years / (h.rots * t.tall + 4.0), 0.0, 1.0)
+    let rot = log_rot(t, YEARS)
     let girth = max(t.girth, 0.05) * (1.0 - 0.25 * rot)
     let dir = vec3(t.fall.x, 0.0, t.fall.y)
     var start = 0.0
     if t.cause == SNAPPED {
         let stump = pick(s, 2, vec2(1.4, 3.0))
-        f.limbs.push(
-            Limb {
-                a: base - vec3(0.0, 0.3, 0.0),
-                ra: girth * 1.2,
-                b: base + vec3(0.0, stump, 0.0),
-                rb: girth * 0.9,
-                kind: DEAD,
-                moss: 0.2,
-            },
+        let top = crooked(
+            mut f,
+            from: base - vec3(0.0, 0.3, 0.0),
+            dir: vec3(0.0, 1.0, 0.0),
+            len: stump + 0.3,
+            ra: girth * 1.2,
+            rb: girth * 0.95,
+            segs: 2,
+            bend: 0.04,
+            kind: DEAD,
+            moss: 0.2,
+            sky: 0.55,
+            seed: s,
         )
+        splinters(mut f, top, vec3(0.0, 1.0, 0.0), girth * 0.9, s)
         start = stump * 0.6
     }
-    let len = t.tall * 0.85 * (1.0 - 0.3 * rot)
+    let len = log_length(t, rot)
     let pieces = if rot > 0.45 { 3 } else if girth < 0.22 { 2 } else { 1 }
-    let seg = 2.5
-    var at = start
-    while at < len {
-        let piece = u32(at / len * f32(pieces))
-        let gap_end = (f32(piece) + 0.12) * len / f32(pieces)
-        if pieces > 1 && at > 0.5 && at < gap_end && piece > 0 {
-            at = gap_end
+    let moss = clamp(rot * 1.4 + 0.3 * wet, 0.0, 1.0)
+    // It settles into the ground, and deeper as it softens.
+    let sink = 0.7 - 0.45 * rot
+    // Joints about a metre apart, each where the log lies: on the ground, following it.
+    for k in 0..pieces {
+        let s0 = if k == 0 { start } else { (f32(k) + 0.12) * len / f32(pieces) }
+        let s1 = (f32(k) + 1.0) * len / f32(pieces)
+        let segs = u32(max(ceil((s1 - s0) / 1.0), 1.0))
+        var at = s0
+        let p0 = log_point(t, at, len)
+        var ra = log_radius(t, at, rot)
+        var pa = vec3(p0.x, height(p0.x, p0.y) + ra * sink, p0.y)
+        for j in 0..segs {
+            let next = s0 + (s1 - s0) * f32(j + 1) / f32(segs)
+            let p1 = log_point(t, next, len)
+            let rb = log_radius(t, next, rot)
+            let pb = vec3(p1.x, height(p1.x, p1.y) + rb * sink, p1.y)
+            f.limbs.push(Limb { a: pa, ra, b: pb, rb, kind: ROTTEN, moss })
+            at = next
+            ra = rb
+            pa = pb
         }
-        let next = min(at + seg, len)
-        let ra = girth * (1.0 - 0.65 * at / len)
-        let rb = girth * (1.0 - 0.65 * next / len)
-        let pa = base + dir * at
-        let pb = base + dir * next
-        // It settles into the ground, and deeper as it softens.
-        let sink = 0.7 - 0.45 * rot
-        let kink = vec3(-dir.z, 0.0, dir.x) * (0.1 * rot * (rand(s, 200 + piece) - 0.5))
-        let wa = 0.85 + 0.3 * rand(s, 210 + u32(at))
-        let a3 = vec3(pa.x, height(pa.x, pa.z) + ra * sink, pa.z) + kink * (at / len)
-        let b3 = vec3(pb.x, height(pb.x, pb.z) + rb * sink, pb.z) + kink * (next / len)
-        let ra = ra * wa
-        f.limbs.push(
-            Limb {
-                a: a3,
-                ra,
-                b: b3,
-                rb,
-                kind: ROTTEN,
-                moss: clamp(rot * 1.4 + 0.3 * wet, 0.0, 1.0),
-            },
-        )
-        at = next
+        // Where it broke in two, the wood is torn.
+        if k + 1 < pieces && rot < 0.85 {
+            splinters(mut f, pa, dir, ra, s + k)
+        }
     }
     // Its broken branches, while they last.
     if rot < 0.4 {
         for i in 0..2 {
             let along = len * pick(s, 50 + i, vec2(0.45, 0.9))
-            let from = base + dir * along
-            let from3 = vec3(from.x, height(from.x, from.z) + girth * 0.8, from.z)
+            let from = log_point(t, along, len)
+            let r = log_radius(t, along, rot)
+            let from3 = vec3(from.x, height(from.x, from.y) + r * (sink + 0.6), from.y)
             let side = vec3(-dir.z, 0.0, dir.x) *
                 select(if_false: -1.0, if_true: 1.0, cond: rand(s, 60 + i) < 0.5)
-            let to = from3 +
-                (side * 0.8 + vec3(0.0, 0.7, 0.0) + dir * 0.3) * pick(s, 70 + i, vec2(0.5, 1.2))
-            f.limbs.push(
-                Limb {
-                    a: from3,
-                    ra: girth * 0.3,
-                    b: to,
-                    rb: girth * 0.12,
-                    kind: ROTTEN,
-                    moss: rot,
-                },
+            let _ = crooked(
+                mut f,
+                from: from3,
+                dir: side * 0.8 + vec3(0.0, 0.7, 0.0) + dir * 0.3,
+                len: pick(s, 70 + i, vec2(0.7, 1.6)),
+                ra: r * 0.35,
+                rb: 0.02,
+                segs: 2,
+                bend: 0.15,
+                kind: ROTTEN,
+                moss: rot,
+                sky: 0.55,
+                seed: s + 90 + i,
             )
         }
     }
@@ -769,12 +852,44 @@ fn fallen(f: mut Forest, base: vec3, t: Tree, wet: f32) {
             let out = side * cos(a) + vec3(0.0, sin(a), 0.0)
             if i % 2 == 0 {
                 let rim = foot + out * plate * 0.85
-                let tip = rim + out * plate * pick(s, 80 + i, vec2(0.1, 0.25)) - dir * 0.25
-                f.limbs.push(
-                    Limb { a: rim, ra: girth * 0.12, b: tip, rb: 0.012, kind: ROTTEN, moss: 0.0 },
+                let _ = crooked(
+                    mut f,
+                    from: rim,
+                    dir: out - dir * 0.6,
+                    len: plate * pick(s, 80 + i, vec2(0.12, 0.3)),
+                    ra: girth * 0.12,
+                    rb: 0.012,
+                    segs: 2,
+                    bend: 0.3,
+                    kind: ROTTEN,
+                    moss: 0.0,
+                    sky: 0.55,
+                    seed: s + 100 + i,
                 )
             }
         }
+    }
+}
+
+/// Torn wood where a trunk broke: a few splinters standing off the break at `at`, along `dir`.
+fn splinters(f: mut Forest, at: vec3, dir: vec3, r: f32, s: u32) {
+    let d = normalize(dir)
+    let t1 = normalize(
+        cross(
+            d,
+            select(
+                if_false: vec3(0.0, 1.0, 0.0),
+                if_true: vec3(1.0, 0.0, 0.0),
+                cond: abs(d.y) > 0.9,
+            ),
+        ),
+    )
+    let t2 = cross(d, t1)
+    for i in 0..3 {
+        let a = TAU * (f32(i) / 3.0 + 0.3 * rand(s, 600 + i))
+        let off = (t1 * cos(a) + t2 * sin(a)) * r * 0.5
+        let tip = at + off * 1.1 + d * (r * pick(s, 610 + i, vec2(0.8, 2.2)))
+        f.limbs.push(Limb { a: at + off, ra: r * 0.32, b: tip, rb: 0.008, kind: DEAD })
     }
 }
 
@@ -964,7 +1079,33 @@ fn limb_vertex(limb: Limb, k: u32) -> (vec3, vec3, vec2) {
     let r = mix(limb.ra, limb.rb, end)
     let centre = mix(limb.a, limb.b, vec3(end))
     let len = length(limb.b - limb.a)
-    (centre + n * r, n, vec2(side / f32(SIDES), end * len))
+    // Dead wood and an oak's bark are gnarled: their surface rises and falls, the same at a
+    // joint from either side (it's a function of where the surface is).
+    let amp = if limb.kind == DEAD { 0.32 } else if limb.kind == ROTTEN {
+        0.26
+    } else if limb.kind == OAK_BARK {
+        0.16
+    } else {
+        0.0
+    }
+    var pos = centre + n * r
+    var normal = n
+    if amp > 0.0 && r > 0.03 {
+        let around = cross(axis, n)
+        let e = 0.04
+        let k = amp * r * 1.6
+        let h = gnarl(pos)
+        let du = (gnarl(pos + around * e) - gnarl(pos - around * e)) / (2.0 * e)
+        let dv = (gnarl(pos + axis * e) - gnarl(pos - axis * e)) / (2.0 * e)
+        pos = centre + n * (r + k * (h - 0.5))
+        normal = normalize(n - (around * du + axis * dv) * k)
+    }
+    (pos, normal, vec2(side / f32(SIDES), end * len))
+}
+
+/// The gnarl of dead wood at `p`, in [0, 1]: two octaves of value noise.
+fn gnarl(p: vec3) -> f32 {
+    (noise3(p * 2.4) * 2.0 + noise3(p * 5.7)) / 3.0
 }
 
 @vertex
@@ -1030,6 +1171,11 @@ pub fn bark_shade(
         // Bark gone; the wood silvered by the weather, split along its grain.
         let grain = noise2(vec2(b.along.x * 40.0, b.along.y * 0.8))
         albedo = mix(vec3(0.24, 0.23, 0.21), vec3(0.44, 0.42, 0.39), vec3(grain))
+        // Bark still clings low on the trunk, in plates.
+        let above = b.world.y - height(b.world.x, b.world.z)
+        let clings = smoothstep(0.5, 0.58, noise2(vec2(b.along.x * 9.0, b.world.y * 1.3))) *
+            (1.0 - smoothstep(0.8, 4.0, above))
+        albedo = mix(albedo, vec3(0.11, 0.09, 0.07), vec3(clings))
         mossy *= 0.25
     } else if kind == ROTTEN {
         // Softening wood under a coat of moss.

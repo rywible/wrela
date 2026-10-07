@@ -12,7 +12,7 @@
 use noise::{noise2, rand}
 use rocks::boulders
 use scene::{ACROSS, KNOLL, MEADOW, STAND, SUN, height, in_gap, past_edge}
-use std::math::TAU
+use std::math::{PI, TAU}
 
 // ---- the grids ----------------------------------------------------------------------------------
 
@@ -236,6 +236,34 @@ pub const HABITS = [
         rots: 1.0,
     },
 ]
+
+/// How far gone a log is in year `year`: 0 fresh, 1 about to go.
+pub fn log_rot(t: Tree, year: i32) -> f32 {
+    let years = f32(year - t.fell)
+    clamp(years / (HABITS[t.kind].rots * t.tall + 4.0), 0.0, 1.0)
+}
+
+/// A log's length on the ground (m), this far gone.
+pub fn log_length(t: Tree, rot: f32) -> f32 {
+    t.tall * 0.85 * (1.0 - 0.3 * rot)
+}
+
+/// A log's radius `s` metres along it from its foot, this far gone: its taper, a flare at its
+/// foot if the wind threw it roots and all, and knots.
+pub fn log_radius(t: Tree, s: f32, rot: f32) -> f32 {
+    let girth = max(t.girth, 0.05) * (1.0 - 0.25 * rot)
+    let len = log_length(t, rot)
+    let flare = if t.cause == WIND { 0.45 * exp(-s / 0.7) } else { 0.0 }
+    let knots = 0.9 + 0.2 * noise2(vec2(s * 1.1, f32(t.seed % 89)))
+    girth * (1.0 - 0.65 * clamp(s / len, 0.0, 1.0)) * (1.0 + flare) * knots
+}
+
+/// A log's point `s` metres along it from its foot (x, z): it lies with a slight bow.
+pub fn log_point(t: Tree, s: f32, len: f32) -> vec2 {
+    let side = vec2(-t.fall.y, t.fall.x)
+    let bow = (rand(t.seed, 300) - 0.5) * 0.12 * t.tall
+    t.at + t.fall * s + side * (bow * sin(PI * clamp(s / len, 0.0, 1.0)))
+}
 
 /// Whether a species is a thorny shrub, whose cover keeps grazers off what grows in it.
 pub fn thorny(kind: u32) -> bool {

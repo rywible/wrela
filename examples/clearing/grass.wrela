@@ -10,7 +10,9 @@ use scene::{MEADOW, eye, height, normal, past_edge, track}
 use shadow::{Sun, sunlit}
 use std::gpu::{ClipPosition, ComparisonSampler, DepthTexture, Flat, VertexIndex}
 use std::math::TAU
-use history::{History, LOG, Tree, fine, in_fine, sample}
+use history::{
+    History, LOG, Tree, YEARS, fine, in_fine, log_length, log_point, log_radius, log_rot, sample,
+}
 use rocks::{Boulder, PLATE, boulders}
 
 /// A blade: its root, its height, width and facing, how far it bends, its colour's variation,
@@ -73,15 +75,26 @@ pub fn growth_of(h: History, p: vec2) -> (f32, f32, f32, f32) {
     (tall, density, dry, deep)
 }
 
-/// Whether `p` is under a log the history left.
-fn under_log(logs: [Tree], p: vec2) -> bool {
-    var under = false
+/// How far `p` is from the nearest log's surface, seen from above (m; negative under it), and
+/// how far gone that log is.
+fn near_log(logs: [Tree], p: vec2) -> (f32, f32) {
+    var best = 1.0e9
+    var rot = 0.0
     for t in logs {
-        let len = t.tall * 0.85
-        let s = clamp(dot(p - t.at, t.fall), 0.0, len)
-        under = under || length(p - (t.at + t.fall * s)) < t.girth * 0.9
+        // A log is no longer than its tree was tall, nor further off its line than 1.5 m.
+        let v = p - t.at
+        if dot(v, v) < (t.tall + 2.0) * (t.tall + 2.0) {
+            let r = log_rot(t, YEARS)
+            let len = log_length(t, r)
+            let s = clamp(dot(v, t.fall), 0.0, len)
+            let d = length(p - log_point(t, s, len)) - log_radius(t, s, r)
+            if d < best {
+                best = d
+                rot = r
+            }
+        }
     }
-    under
+    (best, rot)
 }
 
 /// The blades the history's meadow grows, in view from the eye (spike 16): as `meadow`, from
@@ -113,8 +126,16 @@ pub fn meadow_of(h: History, stones: [Boulder]) -> Vec<Blade> {
                 let x = e.x + d * sin(a)
                 let z = e.z + d * cos(a)
                 let p = vec2(x, z)
-                let (tall, density, dry, deep) = growth_of(h, p)
-                if rand(n, 3) < density && past_edge(p) < 4.0 {
+                let (grown, open, dry, deep) = growth_of(h, p)
+                // Grazers can't crop beside a log: the grass grows long there and hides its
+                // foot. Under a log nothing grows, until it's far gone and sunk.
+                let (d, rot) = near_log(logs, p)
+                let beside = 1.0 - smoothstep(0.0, 0.9, d)
+                let lit = smoothstep(0.3, 0.7, sample(h.light, p))
+                let tall = mix(grown, max(grown, 0.65 * lit), beside)
+                let density = open
+                let covered = d < 0.0 && rot < 0.6
+                if rand(n, 3) < density && past_edge(p) < 4.0 && !covered {
                     var in_stone = false
                     for b in stones {
                         if b.kind != PLATE {
@@ -122,7 +143,7 @@ pub fn meadow_of(h: History, stones: [Boulder]) -> Vec<Blade> {
                             in_stone = in_stone || dot(q, q) < 0.75
                         }
                     }
-                    if !in_stone && !under_log(logs, p) {
+                    if !in_stone {
                         let y = height(x, z)
                         let tint = rand(n, 8)
                         blades.push(
