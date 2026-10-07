@@ -1,0 +1,199 @@
+// The meadow's grass (#50): blades placed at load in rings round the eye, closer together near
+// it and wider apart (and wider) farther out, so the ground is covered at every distance. Each
+// blade is a curved, tapering strip of geometry (the decided renderer's raster vegetation),
+// lit with a normal that leans to the ground's, so the meadow shades as one soft surface.
+
+use camera::{Cam, GRASS}
+use light::{Lit, hazed, shade}
+use noise::{fbm2, noise2, rand}
+use scene::{MEADOW, eye, height, normal, past_edge, track}
+use shadow::{Sun, sunlit}
+use std::gpu::{ClipPosition, ComparisonSampler, DepthTexture, Flat, VertexIndex}
+use std::math::TAU
+use rocks::{Boulder, boulders}
+
+/// A blade: its root, its height, width and facing, how far it bends, its colour's variation,
+/// and its seed.
+pub struct Blade: Copy + GpuData {
+    pub root: vec3,
+    pub tall: f32,
+    /// The ground's normal at the root, cooked at load.
+    pub ground: vec3,
+    pub width: f32,
+    pub facing: f32,
+    pub bend: f32,
+    pub tint: f32,
+    /// How dry and how deep a green the patch it grows in is, cooked at load.
+    pub dry: f32,
+    pub deep: f32,
+}
+
+/// Segments along a blade (the tip is the last, a triangle drawn as a thin quad).
+pub const SEGMENTS: u32 = 4
+pub const BLADE_VERTICES: u32 = SEGMENTS * 6
+
+/// How tall the meadow's grass grows at `p` (m), and how dense it is (0 to 1).
+pub fn growth(p: vec2) -> (f32, f32) {
+    let patches = fbm2(p * 0.09 + vec2(5.0, 1.0), 3)
+    let tall = 0.22 + 0.55 * smoothstep(0.35, 0.75, patches)
+    let worn = track(p)
+    let r = length(p - MEADOW)
+    // Short where the camera stands.
+    let mown = 1.0 - 0.55 * exp(-dot(p - vec2(-1.5, 0.0), p - vec2(-1.5, 0.0)) / 30.0)
+    // The forest floor: sparser and shorter under the trees.
+    let floor = smoothstep(24.0, 34.0, r + 6.0 * noise2(p * 0.07))
+    let density = (1.0 - 0.85 * worn) * (1.0 - 0.6 * floor)
+    (tall * mown * (1.0 - 0.75 * worn) * (1.0 - 0.45 * floor), density)
+}
+
+/// The blades in view from the eye: rings out to 95 m, each ring's spacing half again its
+/// last's.
+pub fn meadow() -> Vec<Blade> {
+    var blades: Vec<Blade> = Vec::new()
+    let stones = boulders()
+    let e = eye()
+    let yaw = 0.07
+    var r = 0.6
+    var spacing = 0.035
+    var n = 1
+    while r < 95.0 {
+        let ring_end = min(r * 1.6 + 2.0, 95.0)
+        // Rings of blades, a spacing apart, across the view's sector (±40°) and its shadows.
+        var rr = r
+        while rr < ring_end {
+            let half = 0.72
+            let steps = u32(2.0 * half * rr / spacing)
+            for k in 0..steps {
+                n += 1
+                let a = yaw - half + (f32(k) + rand(n, 1)) * (2.0 * half / f32(steps))
+                let d = rr + rand(n, 2) * spacing
+                let x = e.x + d * sin(a)
+                let z = e.z + d * cos(a)
+                let p = vec2(x, z)
+                let (tall, density) = growth(p)
+                var in_stone = false
+                for b in stones {
+                    let d = (p - b.at.xz) / (b.radius * b.squash.xz)
+                    in_stone = in_stone || dot(d, d) < 0.75
+                }
+                if rand(n, 3) < density && past_edge(p) < 4.0 && !in_stone {
+                    let y = height(x, z)
+                    let tint = rand(n, 8)
+                    blades.push(
+                        Blade {
+                            root: vec3(x, y - 0.02, z),
+                            tall: tall * (0.6 + 0.8 * rand(n, 4)),
+                            ground: normal(x, z, 0.3),
+                            width: spacing * (0.55 + 0.4 * rand(n, 5)),
+                            facing: TAU * rand(n, 6),
+                            bend: 0.2 + 0.5 * rand(n, 7),
+                            tint,
+                            dry: smoothstep(
+                                0.55,
+                                0.85,
+                                fbm2(p * 0.06 + vec2(11.0, 3.0), 3) + 0.25 * (tint - 0.5),
+                            ),
+                            deep: smoothstep(0.5, 0.8, fbm2(p * 0.11 + vec2(-3.0, 8.0), 2)),
+                        },
+                    )
+                }
+            }
+            rr += spacing
+        }
+        r = ring_end
+        spacing *= 1.5
+    }
+    blades
+}
+
+/// What a blade's vertex passes on.
+pub struct BladeV: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    /// Across (−1 to 1) and up (0 to 1) the blade.
+    pub uv: vec2,
+    pub normal: vec3,
+    pub ground: vec3,
+    /// Its tint, dryness and deep green.
+    pub colour: vec3,
+}
+
+/// The wind's lean: every blade bends a little the same way.
+const WIND = vec2(-0.55, 0.3)
+
+/// A blade's vertex `k`: along its curve, at one edge.
+fn blade_vertex(b: Blade, k: u32) -> (vec3, vec2, vec3) {
+    let qx = [0, 1, 1, 0, 1, 0]
+    let qy = [0, 0, 1, 0, 1, 1]
+    let seg = k / 6
+    let c = k % 6
+    let t = f32(seg + qy[c]) / f32(SEGMENTS)
+    let side = f32(qx[c]) * 2.0 - 1.0
+    let dir = vec2(cos(b.facing), sin(b.facing))
+    let lean = dir * b.bend + WIND * 0.6
+    // A parabola: up, then over.
+    let over = lean * (t * t) * b.tall
+    let up = b.tall * (t - 0.35 * b.bend * t * t)
+    let across = vec2(-dir.y, dir.x)
+    // Tapering to a point.
+    let w = b.width * (1.0 - t * t) * 0.5 + 0.0005
+    let pos = b.root + vec3(over.x + across.x * w * side, up, over.y + across.y * w * side)
+    // The blade's face, rolled across its width.
+    let face = normalize(vec3(dir.x, 0.35, dir.y))
+    let n = normalize(face + vec3(across.x, 0.0, across.y) * (side * 0.4))
+    (pos, vec2(side, t), n)
+}
+
+@vertex
+pub fn blade(v: VertexIndex, cam: Cam, blades: [Blade]) -> BladeV {
+    let b = blades[v.index / BLADE_VERTICES]
+    let (world, uv, n) = blade_vertex(b, v.index % BLADE_VERTICES)
+    BladeV {
+        clip: ClipPosition { position: cam.clip(world) },
+        world,
+        uv,
+        normal: n,
+        ground: b.ground,
+        colour: vec3(b.tint, b.dry, b.deep),
+    }
+}
+
+/// The meadow's greens: at the root, and at the tip of young and dry grass.
+const ROOT = vec3(0.03, 0.055, 0.015)
+const TIP_YOUNG = vec3(0.12, 0.20, 0.05)
+const TIP_DRY = vec3(0.30, 0.28, 0.10)
+const THROUGH = vec3(0.12, 0.17, 0.03)
+
+/// A blade's colour at `t` up it, with variation `tint`, in a patch this `dry` and this
+/// `deep` a green.
+pub fn grass_colour(t: f32, tint: f32, dry: f32, deep: f32) -> vec3 {
+    let tip = mix(TIP_YOUNG, TIP_DRY, vec3(dry * 0.7))
+    let c = mix(ROOT, tip, vec3(smoothstep(0.0, 0.9, t)))
+    // Patches of deeper, bluer green.
+    mix(c, c * vec3(0.7, 0.95, 1.1), vec3(deep)) * (0.8 + 0.4 * tint)
+}
+
+@fragment
+pub fn blade_shade(
+    b: BladeV,
+    cam: Cam,
+    sun: Sun,
+    near: DepthTexture,
+    far: DepthTexture,
+    ss: ComparisonSampler,
+) -> vec4 {
+    let ground = normalize(b.ground)
+    // Mostly the ground's normal: the meadow shades as one surface, the blades break it up.
+    let n = normalize(ground * 0.75 + normalize(b.normal) * 0.25)
+    let t = b.uv.y
+    let lit = sunlit(sun, b.world, ground, near, far, ss, 1.5)
+    let ao = 0.35 + 0.65 * smoothstep(0.0, 0.8, t)
+    let s = Lit {
+        albedo: grass_colour(t, b.colour.x, b.colour.y, b.colour.z),
+        n,
+        sun: lit * (0.5 + 0.5 * ao),
+        sky: ao,
+        through: THROUGH * t,
+    }
+    vec4(hazed(shade(s, b.world, cam), b.world, cam.eye, cam.sun), GRASS)
+}

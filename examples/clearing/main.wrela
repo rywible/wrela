@@ -1,0 +1,394 @@
+// Spike 15 (#50): the Last Green's clearing, in three variants of "storybook anime under real
+// light". Keys choose the variant: A ink and wash, B cel and sky, C gouache and light (the
+// default). The still is the running mean of jittered frames, each drawn as a real-time frame.
+
+use camera::{CEL, Cam, GOUACHE, INK, camera, cover}
+use clouds::{CLOUD_H, CLOUD_W, Puff, STRIPS, cloudscape, cook_clouds, strip}
+use creature::{AT, HEADING, creature_shade}
+use engine::look::CreatureLook
+use engine::realize::{Mesh, realize_once}
+use engine::render::{MAX_BONES, palette, skin, skin_shadow}
+use engine::sim::{GaitState, Mode, Transform}
+use grazer::creature::grazer
+use grass::{BLADE_VERTICES, Blade, blade, blade_shade, meadow}
+use flowers::{Flower, flower, flower_shade, wildflowers}
+use rocks::{BOULDER_VERTICES, Boulder, boulders, stone, stone_shade, stone_shadow}
+use post::{blur, develop, down, show}
+use shadow::{FAR_SIZE, NEAR_SIZE, sun_views}
+use sky::sky_shade
+use std::gpu::{
+    ComparisonSampler, Cull, DepthTexture, Sampler, sampler, GpuBuffer, Texture, TextureFormat,
+    begin_depth_pass, begin_pass, begin_pass_with_depth, begin_screen_pass, buffer,
+    comparison_sampler, depth_texture, draw, present, texture, write,
+}
+use std::input::{Event, Key, events}
+use std::io::print
+use terrain::{RINGS, SEGS, ground, ground_shade}
+use trees::{
+    Card, Limb, SIDES, bark_shade, forest, leaf, leaf_cut, leaf_shade, leaf_shadow, limb,
+    limb_shadow,
+}
+
+pub struct Clearing {
+    hdr: Texture,
+    depth: DepthTexture,
+    still: Texture,
+    scratch: Texture,
+    glow: Texture,
+    glow2: Texture,
+    near: DepthTexture,
+    far: DepthTexture,
+    ss: ComparisonSampler,
+    cards: GpuBuffer<Card>,
+    card_count: u32,
+    far_from: u32,
+    limbs: GpuBuffer<Limb>,
+    limb_count: u32,
+    blades: GpuBuffer<Blade>,
+    blade_count: u32,
+    mesh: Mesh,
+    palettes: GpuBuffer<mat4>,
+    flowers: GpuBuffer<Flower>,
+    flower_count: u32,
+    stones: GpuBuffer<Boulder>,
+    stone_count: u32,
+    clouds: Texture,
+    puffs: GpuBuffer<Puff>,
+    puff_count: u32,
+    linear: Sampler,
+    width: u32,
+    height: u32,
+    frames: u32,
+    style: u32,
+    map: bool,
+    off: u32,
+}
+
+pub fn init() -> Clearing {
+    let f = forest()
+    print(f"forest: {f.clumps.len()} clumps, {f.cards.len()} cards, {f.limbs.len()} limbs")
+    var cards: GpuBuffer<Card> = buffer(f.cards.len())
+    write(mut cards, 0, f.cards)
+    var limbs: GpuBuffer<Limb> = buffer(f.limbs.len())
+    write(mut limbs, 0, f.limbs)
+    let m = meadow()
+    print(f"meadow: {m.len()} blades")
+    var blades: GpuBuffer<Blade> = buffer(m.len())
+    write(mut blades, 0, m)
+    let fl = wildflowers()
+    print(f"flowers: {fl.len()}")
+    var flowers: GpuBuffer<Flower> = buffer(fl.len())
+    write(mut flowers, 0, fl)
+    let bs = boulders()
+    var stones: GpuBuffer<Boulder> = buffer(bs.len())
+    write(mut stones, 0, bs)
+    let sky = cloudscape()
+    print(f"clouds: {sky.len()} puffs")
+    var puffs: GpuBuffer<Puff> = buffer(sky.len())
+    write(mut puffs, 0, sky)
+    // The grazer: realized once at 1 cm (its size on screen asks no finer), posed mid-stride where it stands.
+    let mesh = realize_once(
+        grazer(),
+        CreatureLook { surface: engine::look::Mesh { tolerance: 1cm } },
+    )
+    let gait = GaitState { phase: 0.3, speed: 0.8, turn: 0.0, mode: Mode::Walk }
+    let at = vec3(AT.x, scene::height(x: AT.x, z: AT.y), AT.y)
+    let posed = palette(grazer().skeleton(), gait.pose(), Transform { pos: at, heading: HEADING })
+    var palettes: GpuBuffer<mat4> = buffer(MAX_BONES)
+    write(mut palettes, 0, posed.bones)
+    Clearing {
+        hdr: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
+        depth: depth_texture(width: 1, height: 1),
+        still: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
+        scratch: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
+        glow: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
+        glow2: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
+        near: depth_texture(width: NEAR_SIZE, height: NEAR_SIZE),
+        far: depth_texture(width: FAR_SIZE, height: FAR_SIZE),
+        ss: comparison_sampler(),
+        cards: take cards,
+        card_count: f.cards.len(),
+        far_from: f.far_from,
+        limbs: take limbs,
+        limb_count: f.limbs.len(),
+        blades: take blades,
+        blade_count: m.len(),
+        mesh: take mesh,
+        palettes: take palettes,
+        flowers: take flowers,
+        flower_count: fl.len(),
+        stones: take stones,
+        stone_count: bs.len(),
+        clouds: texture(width: CLOUD_W, height: CLOUD_H, format: TextureFormat::Rgba16Float),
+        puffs: take puffs,
+        puff_count: sky.len(),
+        linear: sampler(),
+        width: 1,
+        height: 1,
+        frames: 0,
+        style: GOUACHE,
+        map: false,
+        off: 0,
+    }
+}
+
+fn keys(s: mut Clearing) {
+    for e in events() {
+        if let Event::KeyDown { key, .. } = e {
+            let style = match key {
+                Key::A => INK,
+                Key::B => CEL,
+                Key::C => GOUACHE,
+                _ => s.style,
+            }
+            if key == Key::M {
+                s.map = !s.map
+                s.frames = 0
+            }
+            let system = match key {
+                Key::L => TERRAIN,
+                Key::T => TREES,
+                Key::G => GRASS,
+                Key::K => BEAST,
+                Key::R => STONES,
+                Key::F => BLOOMS,
+                Key::H => SHADOWS,
+                Key::Y => SKY,
+                Key::U => SHADOWS_EVERY,
+                Key::P => DEVELOP_MORE,
+                _ => 0,
+            }
+            s.off = s.off ^ system
+            if style != s.style {
+                s.style = style
+                s.frames = 0
+            }
+        }
+    }
+}
+
+/// The engine's view for skinning: the camera's jittered view-projection, and the sun's.
+fn grazer_view(cam: Cam, light: mat4) -> engine::render::View {
+    let j = std::transform::translate(vec3(cam.jitter.x, cam.jitter.y, 0.0))
+    engine::render::View { view_proj: j * cam.view_proj, light, eye: cam.eye, sun: cam.sun }
+}
+
+/// A quarter-resolution chain into `a`: `hdr` brought down (its light above `threshold`),
+/// then blurred across and down, `spread` texels a tap.
+fn chain(a: mut Texture, b: mut Texture, hdr: Texture, threshold: f32, spread: f32) {
+    let d = begin_pass(mut a)
+    draw(cover, down.bind(hdr: hdr, threshold: threshold), vertices: 3)
+    d.end()
+    let x = begin_pass(mut b)
+    draw(cover, blur.bind(src: a, across: 0, spread: spread), vertices: 3)
+    x.end()
+    let y = begin_pass(mut a)
+    draw(cover, blur.bind(src: b, across: 1, spread: spread), vertices: 3)
+    y.end()
+}
+
+/// The systems a frame can leave out, for timing each (`off`'s bits): the keys that toggle
+/// them.
+const TERRAIN: u32 = 1
+const TREES: u32 = 2
+const GRASS: u32 = 4
+const BEAST: u32 = 8
+const STONES: u32 = 16
+const BLOOMS: u32 = 32
+const SHADOWS: u32 = 64
+const SKY: u32 = 128
+/// Not systems, but the frame's work: draw the sun's shadow maps every frame (they're static
+/// in this still, so by default they're drawn once and kept), and develop five more times (to
+/// time the style's pass by its slope).
+const SHADOWS_EVERY: u32 = 256
+const DEVELOP_MORE: u32 = 512
+
+fn on(off: u32, system: u32) -> bool {
+    (off & system) == 0
+}
+
+pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
+    keys(mut s)
+    if width != s.width || height != s.height {
+        s.hdr = texture(width, height, format: TextureFormat::Rgba16Float)
+        s.depth = depth_texture(width, height)
+        s.still = texture(width, height, format: TextureFormat::Rgba16Float)
+        s.scratch = texture(width, height, format: TextureFormat::Rgba16Float)
+        let (qw, qh) = (max(width / 4, 1), max(height / 4, 1))
+        s.glow = texture(width: qw, height: qh, format: TextureFormat::Rgba16Float)
+        s.glow2 = texture(width: qw, height: qh, format: TextureFormat::Rgba16Float)
+        s.width = width
+        s.height = height
+        s.frames = 0
+    }
+    let cam = camera(width, height, s.frames, s.style, s.map)
+    // The clouds are cooked first, a strip a frame; the still's mean starts after them.
+    if s.frames < STRIPS {
+        let cook = begin_pass(mut s.clouds, keep: s.frames > 0)
+        draw(
+            strip.bind(k: s.frames),
+            cook_clouds.bind(cam: cam, puffs: s.puffs.span(start: 0, count: s.puff_count)),
+            vertices: 6,
+        )
+        cook.end()
+    }
+    let sun = sun_views(cam)
+    let off = s.off
+    let cards = s.cards.span(start: 0, count: s.card_count)
+    let limbs = s.limbs.span(start: 0, count: s.limb_count)
+    let palettes = s.palettes.span(start: 0, count: MAX_BONES)
+    let stones = s.stones.span(start: 0, count: s.stone_count)
+
+    // The sun's shadow maps: static in this still (the sun, the trees, the stones, the grazer
+    // mid-stride), so drawn once and kept, as a renderer caches static shadows; `U` draws them
+    // every frame, to time them.
+    let shadows_now = s.frames == 0 || !on(off, SHADOWS_EVERY)
+    if shadows_now {
+        let near = begin_depth_pass(mut s.near, clear_depth: 1.0)
+        if on(off, SHADOWS) {
+            if on(off, TREES) {
+                let near_cards = s.cards.span(start: 0, count: s.far_from)
+                draw(
+                    leaf_shadow.bind(light: sun.near, sun: sun, cards: near_cards),
+                    leaf_cut,
+                    vertices: s.far_from * 6,
+                )
+                draw(
+                    limb_shadow.bind(light: sun.near, limbs: limbs),
+                    trees::depth_only,
+                    vertices: s.limb_count * SIDES * 6,
+                )
+            }
+            if on(off, BEAST) {
+                draw(
+                    skin_shadow.bind(
+                        verts: s.mesh.verts.items(),
+                        palettes: palettes,
+                        first: 0,
+                        view: grazer_view(cam, sun.near),
+                    ),
+                    trees::depth_only,
+                    indices: s.mesh.quads.items(),
+                    indirect: s.mesh.args.span(start: 0, count: 5),
+                )
+            }
+            if on(off, STONES) {
+                draw(
+                    stone_shadow.bind(light: sun.near, boulders: stones),
+                    trees::depth_only,
+                    vertices: s.stone_count * BOULDER_VERTICES,
+                )
+            }
+        }
+        near.end()
+        let far = begin_depth_pass(mut s.far, clear_depth: 1.0)
+        if on(off, SHADOWS) && on(off, TREES) {
+            // From the far trees on: a span starts at a multiple of 256 bytes (WebGPU), so it
+            // starts at the card before, rounded down, and a few near cards come with it.
+            let first = s.far_from / 4 * 4
+            let far_cards = s.cards.span(start: first, count: s.card_count - first)
+            draw(
+                leaf_shadow.bind(light: sun.far, sun: sun, cards: far_cards),
+                leaf_cut,
+                vertices: (s.card_count - first) * 6,
+            )
+        }
+        far.end()
+    }
+
+    // The scene, in linear light.
+    let pass = begin_pass_with_depth(mut s.hdr, mut s.depth, clear: vec4(0.0, 0.0, 0.0, 1.0))
+    if on(off, TERRAIN) {
+        draw(
+            ground.bind(cam: cam),
+            ground_shade.bind(cam: cam, sun: sun, near: s.near, far: s.far, ss: s.ss),
+            vertices: RINGS * SEGS * 6,
+        )
+    }
+    if on(off, TREES) {
+        draw(
+            limb.bind(cam: cam, limbs: limbs),
+            bark_shade.bind(cam: cam, sun: sun, near: s.near, far: s.far, ss: s.ss),
+            vertices: s.limb_count * SIDES * 6,
+        )
+        draw(
+            leaf.bind(cam: cam, cards: cards),
+            leaf_shade.bind(cam: cam, sun: sun, near: s.near, far: s.far, ss: s.ss),
+            vertices: s.card_count * 6,
+        )
+    }
+    if on(off, GRASS) {
+        draw(
+            blade.bind(cam: cam, blades: s.blades.span(start: 0, count: s.blade_count)),
+            blade_shade.bind(cam: cam, sun: sun, near: s.near, far: s.far, ss: s.ss),
+            vertices: s.blade_count * BLADE_VERTICES,
+        )
+    }
+    if on(off, BEAST) {
+        draw(
+            skin.bind(
+                verts: s.mesh.verts.items(),
+                palettes: palettes,
+                first: 0,
+                view: grazer_view(cam, sun.near),
+            ),
+            creature_shade.bind(
+                field: grazer().field(),
+                cam: cam,
+                sun: sun,
+                near: s.near,
+                far: s.far,
+                ss: s.ss,
+            ),
+            indices: s.mesh.quads.items(),
+            indirect: s.mesh.args.span(start: 0, count: 5),
+            cull: Cull::Back,
+        )
+    }
+    if on(off, STONES) {
+        draw(
+            stone.bind(cam: cam, boulders: stones),
+            stone_shade.bind(cam: cam, sun: sun, near: s.near, far: s.far, ss: s.ss),
+            vertices: s.stone_count * BOULDER_VERTICES,
+        )
+    }
+    if on(off, BLOOMS) {
+        draw(
+            flower.bind(cam: cam, flowers: s.flowers.span(start: 0, count: s.flower_count)),
+            flower_shade.bind(cam: cam, sun: sun, near: s.near, far: s.far, ss: s.ss),
+            vertices: s.flower_count * 6,
+        )
+    }
+    if on(off, SKY) {
+        draw(cover, sky_shade.bind(cam: cam, clouds: s.clouds, s: s.linear), vertices: 3)
+    }
+    pass.end()
+
+    // The glow's chain (cel's diffusion, gouache's bloom): the scene's bright light, brought
+    // down to a quarter and blurred.
+    if s.style != INK {
+        chain(mut s.glow, mut s.glow2, s.hdr, threshold: 1.1, spread: 2.0)
+    }
+
+    // Developed, over the still's mean.
+    let n = if s.frames < STRIPS { 0 } else { s.frames - STRIPS }
+    let dev = begin_pass(mut s.still, keep: n > 0)
+    draw(cover, develop.bind(cam: cam, hdr: s.hdr, depth: s.depth, glow: s.glow, n: n), vertices: 3)
+    dev.end()
+    if !on(off, DEVELOP_MORE) {
+        for _ in 0..5 {
+            let more = begin_pass(mut s.scratch, keep: true)
+            draw(
+                cover,
+                develop.bind(cam: cam, hdr: s.hdr, depth: s.depth, glow: s.glow, n: 1),
+                vertices: 3,
+            )
+            more.end()
+        }
+    }
+    s.frames += 1
+
+    begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(cover, show.bind(still: s.still), vertices: 3)
+    present()
+}

@@ -1,0 +1,252 @@
+// After the scene (#50): each style's passes over the scene's linear colour, its depth and its
+// tags, then the frame drawn over the still's running mean.
+//
+// - A, ink and wash: ink lines on silhouettes and where things meet, broken and a little
+//   uneven; hatching in shadow, anchored in the world; washes that pool at their edges; paper.
+// - B, cel and sky: thin lines in a darker shade of the colour, on the creature, rocks and
+//   trunks; a soft glow from the light (anime's diffusion); faint paper.
+// - C, gouache and light: no lines; bloom; the filmic curve; faint paper.
+//
+// A quarter-resolution chain feeds B and C: the scene's bright light, blurred (the glow).
+
+use camera::{CEL, Cam, INK}
+use light::{dabs, display}
+use noise::{hash2, noise2}
+use std::gpu::{DepthTexture, FragCoord, Over, Texture}
+
+/// A quarter-resolution texel: the mean of the 4×4 texels under it, or of their light above
+/// `threshold`.
+@fragment
+pub fn down(pixel: FragCoord, hdr: Texture, threshold: f32) -> vec4 {
+    let base = vec2u(pixel.position.xy) * 4
+    var s = vec3(0.0)
+    for j in 0..4 {
+        for i in 0..4 {
+            let c = hdr.load(base.x + i, base.y + j).rgb
+            s += max(c - vec3(threshold), vec3(0.0))
+        }
+    }
+    vec4(s / 16.0, 1.0)
+}
+
+/// A 13-tap Gaussian blur along x (`across` 0) or y (1), `spread` texels a tap.
+@fragment
+pub fn blur(pixel: FragCoord, src: Texture, across: u32, spread: f32) -> vec4 {
+    let p = vec2i(pixel.position.xy)
+    let w = [0.1964, 0.1748, 0.1232, 0.0687, 0.0303, 0.0106, 0.0029]
+    let (wi, hi) = (i32(src.width()) - 1, i32(src.height()) - 1)
+    var s = src.load(u32(p.x), u32(p.y)).rgb * w[0]
+    for k in 1..7 {
+        let o = i32(round(f32(k) * spread))
+        let d = select(if_false: vec2i(o, 0), if_true: vec2i(0, o), cond: across == 1)
+        let a = clamp(p + d, vec2i(0), vec2i(wi, hi))
+        let b = clamp(p - d, vec2i(0), vec2i(wi, hi))
+        s += (src.load(u32(a.x), u32(a.y)).rgb + src.load(u32(b.x), u32(b.y)).rgb) * w[k]
+    }
+    vec4(s, 1.0)
+}
+
+/// A depth buffer's value as the distance along the view (m): the camera's near 0.1 m and
+/// far 12 km.
+fn distance_of(depth: f32) -> f32 {
+    let (near, far) = (0.1, 12000.0)
+    let a = far / (far - near)
+    a * near / max(a - depth, 1.0e-7)
+}
+
+/// The world point a pixel shows, `dist` along the view.
+fn at_pixel(cam: Cam, px: vec2, dist: f32) -> vec3 {
+    let ray = cam.ray(px)
+    cam.eye + ray * (dist / dot(ray, cam.forward))
+}
+
+fn luma(c: vec3) -> f32 {
+    dot(c, vec3(0.299, 0.587, 0.114))
+}
+
+/// What a pixel shows, from its tag: its class (0 the sky).
+fn class_of(tag: f32) -> u32 {
+    u32(max(tag, 0.0) / 64.0)
+}
+
+/// How much of an ink line the pixel at `p` is: where a neighbour `r` pixels away is much
+/// farther (a silhouette), or nearly as near but another thing (where things meet). `lines_on`
+/// says which classes draw lines (a bit each).
+fn ink(hdr: Texture, depth: DepthTexture, p: vec2i, r: f32, lines_on: u32) -> f32 {
+    let size = vec2i(i32(hdr.width()) - 1, i32(hdr.height()) - 1)
+    let q = clamp(p, vec2i(0), size)
+    let here = distance_of(depth.load(u32(q.x), u32(q.y)))
+    let tag = hdr.load(u32(q.x), u32(q.y)).a
+    let class = class_of(tag)
+    if ((lines_on >> class) & 1) == 0 {
+        return 0.0
+    }
+    var line = 0.0
+    for k in 0..4 {
+        let a = f32(k) * 1.5707964 + 0.3
+        let o = vec2i(vec2(cos(a), sin(a)) * r)
+        let n = clamp(p + o, vec2i(0), size)
+        let there = distance_of(depth.load(u32(n.x), u32(n.y)))
+        let other = hdr.load(u32(n.x), u32(n.y)).a
+        // A silhouette: the neighbour is well behind (for leaves, behind and another thing:
+        // a crown's own leaves draw no lines between them).
+        let same = abs(other - tag) < 0.5
+        let leafy = class == 3
+        let behind = smoothstep(0.08, 0.25, (there - here) / here) *
+            select(if_false: 1.0, if_true: 0.0, cond: leafy && same)
+        // Where two things meet at nearly one depth.
+        let differ = select(if_false: 0.0, if_true: 1.0, cond: abs(other - tag) > 0.5) *
+            (1.0 - smoothstep(0.05, 0.3, abs(there - here) / here))
+        line = max(line, max(behind, differ * 0.8))
+    }
+    line
+}
+
+/// World-anchored hatching: stripes on the diagonal, `spacing` pixels apart wherever they're
+/// seen, two octaves blended by distance so they keep their spacing (Bénard et al. 2009).
+fn hatch(world: vec3, footprint: f32, spacing: f32, across: vec3) -> f32 {
+    let s = footprint * spacing
+    let l = log2(s)
+    let f = fract(l)
+    let s0 = exp2(floor(l))
+    let axis = normalize(across)
+    let u0 = dot(world, axis) / s0
+    let u1 = u0 * 0.5
+    let line0 = smoothstep(0.82, 0.95, 1.0 - abs(fract(u0) * 2.0 - 1.0))
+    let line1 = smoothstep(0.82, 0.95, 1.0 - abs(fract(u1) * 2.0 - 1.0))
+    mix(line0, line1, f)
+}
+
+/// Paper: a fine grain and a slower mottle, around 1.
+fn paper(px: vec2) -> f32 {
+    let grain = hash2(i32(px.x), i32(px.y)) - 0.5
+    let tooth = noise2(px * 0.35) - 0.5
+    let mottle = noise2(px * 0.012) - 0.5
+    1.0 + 0.035 * grain + 0.05 * tooth + 0.06 * mottle
+}
+
+/// The colour of paper, warm.
+const PAPER = vec3(0.97, 0.94, 0.86)
+/// Ink: sepia, nearly black.
+const INK_COLOUR = vec3(0.16, 0.11, 0.08)
+
+/// Lines drawn for each class, as bits: A draws them on everything but grass and the sky's
+/// blue; B on the creature, rocks and trunks.
+const INK_LINES: u32 = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6)
+const CEL_LINES: u32 = (1 << 4) | (1 << 5) | (1 << 6)
+
+/// The frame, styled, over the mean of the frames before it: weight 1 / (n + 1) for the
+/// (n + 1)th.
+@fragment
+pub fn develop(
+    pixel: FragCoord,
+    cam: Cam,
+    hdr: Texture,
+    depth: DepthTexture,
+    glow: Texture,
+    n: u32,
+) -> Over {
+    let px = pixel.position.xy
+    let p = vec2i(px)
+    let here = hdr.load(u32(p.x), u32(p.y))
+    let q = min(vec2u(px / 4.0), vec2u(glow.width() - 1, glow.height() - 1))
+    let light = glow.load(q.x, q.y).rgb
+    let dist = distance_of(depth.load(u32(p.x), u32(p.y)))
+    let footprint = dist * 2.0 * cam.tan_half / cam.screen.y
+    let world = at_pixel(cam, px, dist)
+    var c = vec3(0.0)
+    if cam.style == INK {
+        // Washes: transparent colour on paper, laid in three glazes; each glaze's edge pools
+        // darker; the colour granulates in the paper's tooth.
+        let tone = display(here.rgb * 1.25)
+        let l = luma(tone)
+        let wet = 0.07 * (noise2(px * 0.006) - 0.5) + 0.04 * (noise2(px * 0.03) - 0.5)
+        let v = clamp(1.0 - l + wet, 0.0, 1.0) * 3.0
+        let glaze = (floor(v) + smoothstep(0.55, 0.9, fract(v))) / 3.0
+        let pool = smoothstep(0.0, 0.08, fwidth(glaze))
+        // The wash's colour: the scene's, more saturated, as thin pigment.
+        let blue = smoothstep(0.0, 0.15, tone.z - tone.y)
+        let sat = mix(vec3(l), tone, vec3(1.2 + 0.9 * blue))
+        let tooth = 0.85 + 0.3 * noise2(px * 0.7) * noise2(px * 0.17 + vec2(4.0, 9.0))
+        let depth_of_wash = clamp(glaze * 0.85 + pool * 0.12, 0.0, 1.0) * tooth
+        let hue = clamp(sat / max(max(sat.x, sat.y), max(sat.z, 0.05)), vec3(0.0), vec3(1.0))
+        var w = PAPER * mix(vec3(1.0), hue, vec3(0.32 + 0.55 * depth_of_wash + 0.2 * blue))
+        w = w * (1.0 - 0.5 * depth_of_wash * smoothstep(0.4, 1.0, glaze))
+        // Hatching for shade, on what isn't the sky: one set, then across it.
+        let lit = l
+        let on = class_of(here.a) > 0 && dist < 500.0
+        let h1 = hatch(world, footprint, 6.0, vec3(0.7, 1.0, 0.35)) * smoothstep(0.25, 0.15, lit)
+        let h2 = hatch(world, footprint, 6.0, vec3(-0.6, 1.0, 0.5)) * smoothstep(0.12, 0.06, lit)
+        let focal = class_of(here.a) == 5
+        let h = select(
+            if_false: 0.0,
+            if_true: max(h1, h2) * select(if_false: 1.0, if_true: 0.3, cond: focal),
+            cond: on,
+        )
+        // Lines, broken where the pen lifts, their weight varying.
+        let r = 1.5 + 0.8 * (noise2(px * 0.04) - 0.5)
+        let wobble = vec2i(
+            vec2(noise2(px * 0.08) - 0.5, noise2(px * 0.08 + vec2(7.0, 1.0)) - 0.5) * 2.5,
+        )
+        let lifted = smoothstep(0.22, 0.42, noise2(px * 0.025 + vec2(3.0, 5.0)))
+        // Far things get fewer lines, as an illustrator leaves the distance open.
+        let far = select(
+            if_false: 1.0 - smoothstep(90.0, 300.0, dist),
+            if_true: 1.0,
+            cond: class_of(here.a) == 0,
+        )
+        // The creature, the picture's subject, gets a firm, unbroken line.
+        let subject = select(if_false: 0.0, if_true: 1.0, cond: class_of(here.a) == 5)
+        let line = ink(hdr, depth, p + wobble, r + subject * 0.6, INK_LINES) *
+            mix(0.35 + 0.65 * lifted, 1.0, subject) *
+            far
+        w = mix(w, INK_COLOUR, vec3(max(line * 0.9, h * 0.55)))
+        c = w * paper(px)
+    } else if cam.style == CEL {
+        var w = display(here.rgb * 1.05)
+        // Diffusion: the bright light, blurred, screened over.
+        let g = min(display(light * 1.4), vec3(1.0))
+        w = vec3(1.0) - (vec3(1.0) - w) * (vec3(1.0) - g * 0.45)
+        let line = ink(hdr, depth, p, 1.1, CEL_LINES)
+        w = mix(w, w * vec3(0.32, 0.3, 0.36), vec3(line))
+        c = w * (1.0 + 0.4 * (paper(px) - 1.0))
+    } else {
+        // Gouache: dabs anchored on the surface (its position and normal from the depths),
+        // moving the paint's value and hue a little; then bloom and the filmic curve.
+        var paint = here.rgb
+        if class_of(here.a) > 0 {
+            let size = vec2i(i32(hdr.width()) - 1, i32(hdr.height()) - 1)
+            let qx = clamp(p + vec2i(1, 0), vec2i(0), size)
+            let qy = clamp(p + vec2i(0, 1), vec2i(0), size)
+            let wx = at_pixel(
+                cam,
+                vec2(qx) + vec2(0.5),
+                distance_of(depth.load(u32(qx.x), u32(qx.y))),
+            )
+            let wy = at_pixel(
+                cam,
+                vec2(qy) + vec2(0.5),
+                distance_of(depth.load(u32(qy.x), u32(qy.y))),
+            )
+            var nrm = normalize(cross(wy - world, wx - world))
+            if dot(nrm, cam.eye - world) < 0.0 {
+                nrm = -nrm
+            }
+            let d = dabs(world, nrm, footprint)
+            paint = paint * (1.0 + 0.16 * d) * vec3(1.0 + 0.04 * d, 1.0, 1.0 - 0.05 * d)
+        }
+        let w = display(paint + light * 0.18)
+        c = w * (1.0 + 0.3 * (paper(px) - 1.0))
+    }
+    // A soft vignette.
+    let uv = px / cam.screen - vec2(0.5)
+    c = c * (1.0 - 0.28 * dot(uv, uv))
+    Over { color: vec4(c, 1.0 / f32(n + 1)) }
+}
+
+/// The still, to the screen.
+@fragment
+pub fn show(pixel: FragCoord, still: Texture) -> vec4 {
+    let p = vec2u(pixel.position.xy)
+    vec4(still.load(p.x, p.y).rgb, 1.0)
+}

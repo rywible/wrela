@@ -1,0 +1,107 @@
+// The camera, the sun and the frame's jitter: one uniform block every pass reads.
+
+use scene::{FOVY, LOOK_AT, SUN, eye}
+use std::gpu::{ClipPosition, VertexIndex}
+use std::transform::{look_at, perspective}
+
+/// What every pass reads: the camera (its view-projection, unjittered, and its basis), the
+/// sun, this frame's jitter (clip units) and number, the screen, and the style drawn.
+pub struct Cam: Copy + GpuData {
+    pub view_proj: mat4,
+    pub eye: vec3,
+    pub sun: vec3,
+    pub forward: vec3,
+    pub right: vec3,
+    pub up: vec3,
+    pub jitter: vec2,
+    pub screen: vec2,
+    pub tan_half: f32,
+    pub aspect: f32,
+    pub yaw: f32,
+    pub frame: u32,
+    pub style: u32,
+}
+
+/// What a pixel shows, for the styles' lines: its class times 64, plus which one of it (a
+/// crown, a rock), in the scene's alpha. The sky's alpha is its clouds' cover, in [0, 1].
+pub const GROUND: f32 = 64.0
+pub const GRASS: f32 = 128.0
+pub const LEAVES: f32 = 192.0
+pub const BARK: f32 = 256.0
+pub const CREATURE: f32 = 320.0
+pub const ROCK: f32 = 384.0
+pub const FLOWER: f32 = 448.0
+
+/// The styles (#50): A ink and wash, B cel and sky, C gouache and light.
+pub const INK: u32 = 0
+pub const CEL: u32 = 1
+pub const GOUACHE: u32 = 2
+
+/// Element `i` of the Halton sequence of base `b`, in [0, 1).
+fn halton(i: u32, b: u32) -> f32 {
+    var f = 1.0
+    var r = 0.0
+    var n = i
+    while n > 0 {
+        f = f / f32(b)
+        r += f * f32(n % b)
+        n = n / b
+    }
+    r
+}
+
+/// The camera for frame `frame` of a screen `width` by `height`, drawing `style`: jittered
+/// within its pixel by the Halton (2, 3) sequence.
+pub fn camera(width: u32, height: u32, frame: u32, style: u32, map: bool) -> Cam {
+    let e = select(if_false: eye(), if_true: vec3(0.0, 260.0, -60.0), cond: map)
+    let at = select(if_false: LOOK_AT, if_true: vec3(0.0, 0.0, 60.0), cond: map)
+    let aspect = f32(width) / f32(height)
+    let proj = perspective(FOVY, aspect, near: 0.1, far: 12000.0)
+    let forward = normalize(at - e)
+    let right = normalize(cross(forward, vec3(0.0, 1.0, 0.0)))
+    let up = cross(right, forward)
+    let k = frame % 64 + 1
+    let j = vec2(halton(k, 2) - 0.5, halton(k, 3) - 0.5)
+    Cam {
+        view_proj: proj * look_at(e, at),
+        eye: e,
+        sun: normalize(SUN),
+        forward,
+        right,
+        up,
+        jitter: vec2(2.0 * j.x / f32(width), -2.0 * j.y / f32(height)),
+        screen: vec2(f32(width), f32(height)),
+        tan_half: tan(FOVY / 2.0),
+        aspect,
+        yaw: atan2(forward.x, forward.z),
+        frame,
+        style,
+    }
+}
+
+impl Cam {
+    /// A world point's clip position, jittered.
+    pub fn clip(self, world: vec3) -> vec4 {
+        let c = self.view_proj * vec4(world, 1.0)
+        vec4(c.x + self.jitter.x * c.w, c.y + self.jitter.y * c.w, c.z, c.w)
+    }
+
+    /// The ray from the eye through the pixel at `px` (pixels from the top left).
+    pub fn ray(self, px: vec2) -> vec3 {
+        let ndc = vec2(px.x / self.screen.x * 2.0 - 1.0, 1.0 - px.y / self.screen.y * 2.0) -
+            self.jitter
+        normalize(
+            self.forward +
+                self.right * (ndc.x * self.tan_half * self.aspect) +
+                self.up * (ndc.y * self.tan_half),
+        )
+    }
+}
+
+/// A triangle that covers the screen, at the far plane's edge.
+@vertex
+pub fn cover(v: VertexIndex) -> ClipPosition {
+    let x = f32((v.index << 1) & 2) * 2.0 - 1.0
+    let y = f32(v.index & 2) * 2.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.99999, 1.0) }
+}

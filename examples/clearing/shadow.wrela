@@ -1,0 +1,83 @@
+// The sun's shadow maps: a near one over the clearing (2048², about 7 cm a texel) and a far
+// one over the valley (2048²). Soft edges come from a disc of comparison taps, turned each
+// frame, so the still's mean is a soft penumbra.
+
+use camera::Cam
+use clouds::cloud_shadow
+use noise::rand
+use std::gpu::{ComparisonSampler, DepthTexture}
+use std::math::TAU
+use std::transform::{look_at, ortho}
+
+/// The sun's two views (light space to the maps' clip space), and the frame's tap turn.
+pub struct Sun: Copy + GpuData {
+    pub near: mat4,
+    pub far: mat4,
+    /// The basis the sun sees: for cards that face it.
+    pub right: vec3,
+    pub up: vec3,
+    pub toward: vec3,
+    pub turn: f32,
+}
+
+pub const NEAR_SIZE: u32 = 2048
+pub const FAR_SIZE: u32 = 2048
+
+/// The sun's views for the frame `frame`.
+pub fn sun_views(cam: Cam) -> Sun {
+    let s = cam.sun
+    let near_at = vec3(0.0, 4.0, 36.0)
+    let far_at = vec3(-60.0, -40.0, 330.0)
+    let near = ortho(left: -72.0, right: 72.0, bottom: -72.0, top: 72.0, near: 1.0, far: 500.0) *
+        look_at(near_at + s * 250.0, near_at)
+    let far = ortho(
+        left: -520.0,
+        right: 520.0,
+        bottom: -520.0,
+        top: 520.0,
+        near: 1.0,
+        far: 2600.0,
+    ) *
+        look_at(far_at + s * 1300.0, far_at)
+    let fwd = -s
+    let right = normalize(cross(fwd, vec3(0.0, 1.0, 0.0)))
+    let up = cross(right, fwd)
+    Sun { near, far, right, up, toward: s, turn: TAU * rand(cam.frame, 3) }
+}
+
+/// The 4 taps of a disc, in texels, turned each frame: the still's mean is the disc's.
+const TAPS = [vec2(0.5, 0.2), vec2(-0.6, 0.9), vec2(-0.9, -0.7), vec2(0.8, -1.1)]
+
+/// How lit `world` is by the sun (0 to 1), its normal `n`: from the near map if it's inside
+/// it, else the far one; `soft` texels of penumbra.
+pub fn sunlit(
+    sun: Sun,
+    world: vec3,
+    n: vec3,
+    near: DepthTexture,
+    far: DepthTexture,
+    s: ComparisonSampler,
+    soft: f32,
+) -> f32 {
+    let lp = sun.near * vec4(world + n * 0.04, 1.0)
+    let uv = vec2(lp.x * 0.5 + 0.5, lp.y * -0.5 + 0.5)
+    let (c, sn) = (cos(sun.turn), sin(sun.turn))
+    let inside = uv.x > 0.01 && uv.x < 0.99 && uv.y > 0.01 && uv.y < 0.99 && lp.z < 1.0
+    var lit = 0.0
+    if inside {
+        let texel = soft / f32(NEAR_SIZE)
+        for t in TAPS {
+            let o = vec2(c * t.x - sn * t.y, sn * t.x + c * t.y) * texel
+            lit += near.sample_compare_level(s, uv + o, lp.z - 0.0004)
+        }
+    } else {
+        let fp = sun.far * vec4(world + n * 0.4, 1.0)
+        let fuv = vec2(fp.x * 0.5 + 0.5, fp.y * -0.5 + 0.5)
+        let texel = 1.5 / f32(FAR_SIZE)
+        for t in TAPS {
+            let o = vec2(c * t.x - sn * t.y, sn * t.x + c * t.y) * texel
+            lit += far.sample_compare_level(s, fuv + o, fp.z - 0.0006)
+        }
+    }
+    lit / 4.0 * cloud_shadow(world, sun.toward)
+}

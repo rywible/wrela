@@ -1,0 +1,542 @@
+// The forest (#50): the great tree on its rise, the forest round the meadow, and far trees on
+// the valley's slopes. Placed on the CPU at load. Each tree is clumps of leaves (spheres) on
+// limbs (tapered tubes); each clump is leaf cards, each card a cluster of leaves cut by
+// `discard` (the decided renderer's raster foliage). A card's normal and how deep it is in its
+// crown are cooked at load from the crown's field: the smooth union of its clumps.
+
+use camera::{BARK, Cam, GOUACHE, LEAVES}
+use light::{Lit, hazed, shade}
+use noise::{noise2, rand}
+use scene::{KNOLL, MEADOW, eye, height, in_gap, past_edge}
+use shadow::{Sun, sunlit}
+use std::gpu::{ClipPosition, ComparisonSampler, DepthTexture, Flat, VertexIndex, discard}
+use std::math::{PI, TAU}
+
+/// A clump of leaves: a sphere of them.
+pub struct Clump: Copy + GpuData {
+    pub centre: vec3,
+    pub radius: f32,
+}
+
+/// A leaf card: where it is, how big, the crown's normal there and how deep in the crown it is
+/// (m), its colour's variation, and its seed.
+pub struct Card: Copy + GpuData {
+    pub centre: vec3,
+    pub size: f32,
+    pub normal: vec3,
+    pub depth: f32,
+    pub tint: vec3,
+    pub seed: u32,
+    pub crown: u32,
+}
+
+/// A limb: a tapered tube from `a` to `b`.
+pub struct Limb: Copy + GpuData {
+    pub a: vec3,
+    pub ra: f32,
+    pub b: vec3,
+    pub rb: f32,
+}
+
+/// The forest, as the GPU takes it.
+pub struct Forest {
+    pub clumps: Vec<Clump>,
+    pub cards: Vec<Card>,
+    pub limbs: Vec<Limb>,
+    pub crowns: u32,
+    /// Where the far trees' cards start: the near shadow map draws the cards before it, the
+    /// far map those from it.
+    pub far_from: u32,
+}
+
+/// A crown being built: its clumps, and its tint.
+struct Crown {
+    clumps: Vec<Clump>,
+    tint: vec3,
+}
+
+/// The crown's field at `p`: the soft union of its clumps' spheres (an exponential smooth
+/// minimum, `k` per metre), and its gradient.
+fn crown_field(clumps: [Clump], p: vec3) -> (f32, vec3) {
+    let k = 1.1
+    var s = 0.0
+    var g = vec3(0.0)
+    for c in clumps {
+        let v = p - c.centre
+        let l = max(length(v), 1.0e-4)
+        let d = l - c.radius
+        let w = exp(-k * d)
+        s += w
+        g += v / l * w
+    }
+    (-log(max(s, 1.0e-30)) / k, normalize(g))
+}
+
+/// A seeded draw for building: `n`'s `k`th, in [range.x, range.y).
+fn pick(n: u32, k: u32, range: vec2) -> f32 {
+    range.x + (range.y - range.x) * rand(n, k)
+}
+
+/// A random unit vector, from two draws.
+fn direction(u: f32, v: f32) -> vec3 {
+    let z = 2.0 * u - 1.0
+    let a = TAU * v
+    let r = sqrt(max(1.0 - z * z, 0.0))
+    vec3(r * cos(a), z, r * sin(a))
+}
+
+/// The cards of a crown: for each clump, cards over its sphere (most near its surface), each
+/// `size` wide, enough to cover it `cover` times.
+fn add_cards(forest: mut Forest, crown: Crown, size: f32, cover: f32, seed: u32) {
+    var n = seed.wrapping_mul(7919)
+    forest.crowns += 1
+    let id = forest.crowns
+    let e = eye()
+    for c in crown.clumps {
+        // Nearer crowns get smaller leaves, more of them: a card stays a few pixels of leaf.
+        let near = clamp(length(c.centre - e) / 30.0, 0.5, 2.2)
+        let size = size * near
+        let area = 4.0 * PI * c.radius * c.radius
+        let count = u32(max(area * cover / (size * size), 4.0))
+        let tint_c = crown.tint +
+            vec3(pick(n, 1, vec2(-0.04, 0.04)), pick(n, 2, vec2(-0.05, 0.05)), 0.0)
+        for _ in 0..count {
+            n = n.wrapping_add(1)
+            let dir = direction(rand(n, 3), rand(n, 4))
+            let r = c.radius * (0.72 + 0.28 * pow(rand(n, 5), 0.5))
+            let p = c.centre + dir * r
+            let (d, g) = crown_field(crown.clumps, p)
+            // The clump's own normal, mixed in: each clump reads as a lump of light.
+            let normal = normalize(g * 0.45 + dir * 0.55)
+            forest.cards.push(
+                Card {
+                    centre: p,
+                    size: size * pick(n, 6, vec2(0.8, 1.2)),
+                    normal,
+                    depth: max(-d, 0.0),
+                    tint: tint_c + vec3(pick(n, 7, vec2(-0.02, 0.02))),
+                    seed: n,
+                    crown: id,
+                },
+            )
+        }
+        forest.clumps.push(c)
+    }
+}
+
+/// The great tree on the rise: a short, broad trunk; five limbs; a wide dome of clumps.
+fn great_tree(forest: mut Forest) {
+    let base = vec3(KNOLL.x, height(KNOLL.x, KNOLL.y) - 0.3, KNOLL.y)
+    let fork = base + vec3(0.2, 4.2, -0.1)
+    forest.limbs.push(
+        Limb { a: base - vec3(0.0, 0.5, 0.0), ra: 1.25, b: base + vec3(0.0, 1.1, 0.0), rb: 0.7 },
+    )
+    forest.limbs.push(Limb { a: base + vec3(0.0, 0.8, 0.0), ra: 0.72, b: fork, rb: 0.55 })
+    var crown = Crown { clumps: Vec::new(), tint: vec3(0.0, 0.0, 0.0) }
+    let dome = base + vec3(0.0, 9.6, 0.0)
+    let n = 5
+    for i in 0..n {
+        let a = TAU * (f32(i) + 0.3) / f32(n) + pick(31, i, vec2(-0.3, 0.3))
+        let out = vec3(cos(a), 0.0, sin(a))
+        let mid = fork + out * 3.2 + vec3(0.0, 2.6, 0.0)
+        let tip = fork + out * 6.6 + vec3(0.0, 4.4 + pick(33, i, vec2(-0.8, 0.8)), 0.0)
+        forest.limbs.push(Limb { a: fork, rb: 0.3, b: mid, ra: 0.42 })
+        forest.limbs.push(Limb { a: mid, ra: 0.3, b: tip, rb: 0.14 })
+        let side = vec3(-out.z, 0.0, out.x)
+        forest.limbs.push(
+            Limb {
+                a: mid,
+                ra: 0.2,
+                b: mid + side * 2.2 + out * 1.5 + vec3(0.0, 2.0, 0.0),
+                rb: 0.09,
+            },
+        )
+        forest.limbs.push(
+            Limb {
+                a: mid,
+                ra: 0.18,
+                b: mid - side * 2.0 + out * 1.8 + vec3(0.0, 1.4, 0.0),
+                rb: 0.08,
+            },
+        )
+        let low = fork + out * 1.6 + vec3(0.0, 0.8, 0.0)
+        forest.limbs.push(
+            Limb {
+                a: low,
+                ra: 0.2,
+                b: low + out * 3.2 + side * 0.8 + vec3(0.0, 0.9, 0.0),
+                rb: 0.07,
+            },
+        )
+    }
+    for i in 0..34 {
+        let u = rand(41, i)
+        let v = rand(43, i)
+        let a = TAU * v
+        // On a squashed dome: wide and flat-topped, open underneath.
+        let up = 0.15 + 0.85 * u
+        let r = sqrt(1.0 - up * up)
+        let p = dome + vec3(r * cos(a) * 8.0, (up - 0.35) * 5.0, r * sin(a) * 8.0)
+        crown.clumps.push(Clump { centre: p, radius: pick(47, i, vec2(2.3, 3.4)) })
+    }
+    add_cards(mut forest, crown, size: 0.85, cover: 1.9, seed: 5)
+}
+
+/// A forest tree at `base`, seed `s`: a trunk, a few limbs, and a crown of clumps. At the
+/// forest's edge (`edge` 1) the crown comes down low and wide, as edge trees grow toward the
+/// light.
+fn forest_tree(forest: mut Forest, base: vec3, s: u32, edge: f32) {
+    let tall = pick(s, 1, vec2(11.0, 19.0))
+    let width = tall * mix(pick(s, 2, vec2(0.28, 0.42)), pick(s, 2, vec2(0.4, 0.5)), edge)
+    let crown_y = tall * mix(pick(s, 3, vec2(0.6, 0.68)), pick(s, 3, vec2(0.42, 0.52)), edge)
+    let top = base + vec3(0.0, crown_y, 0.0)
+    let lean = vec3(pick(s, 4, vec2(-0.6, 0.6)), 0.0, pick(s, 5, vec2(-0.6, 0.6)))
+    forest.limbs.push(
+        Limb { a: base - vec3(0.0, 0.4, 0.0), ra: tall * 0.028, b: top + lean, rb: tall * 0.012 },
+    )
+    var crown = Crown {
+        clumps: Vec::new(),
+        tint: vec3(pick(s, 6, vec2(-0.05, 0.06)), pick(s, 7, vec2(-0.06, 0.04)), 0.0),
+    }
+    let count = u32(pick(s, 8, vec2(6.0, 12.0)) * (1.0 + 0.6 * edge))
+    let half = tall - crown_y
+    for i in 0..count {
+        let a = TAU * rand(s, 20 + i)
+        let up = pick(s, 40 + i, vec2(-0.5 - 0.4 * edge, 1.0))
+        let r = sqrt(max(1.0 - up * up, 0.0)) * pick(s, 60 + i, vec2(0.5, 1.0))
+        let p = top + lean + vec3(r * cos(a) * width, up * half, r * sin(a) * width)
+        crown.clumps.push(Clump { centre: p, radius: pick(s, 80 + i, vec2(1.6, 2.6)) })
+        if i < 4 {
+            forest.limbs.push(
+                Limb { a: base + vec3(0.0, crown_y * 0.7, 0.0), ra: tall * 0.012, b: p, rb: 0.05 },
+            )
+        }
+    }
+    add_cards(mut forest, crown, size: 1.05, cover: 1.5, seed: s)
+}
+
+/// A shrub at `base`: a low mound of clumps, no trunk to see.
+fn shrub(forest: mut Forest, base: vec3, s: u32) {
+    var crown = Crown {
+        clumps: Vec::new(),
+        tint: vec3(pick(s, 6, vec2(-0.03, 0.06)), pick(s, 7, vec2(-0.05, 0.05)), 0.0),
+    }
+    let size = pick(s, 1, vec2(0.9, 2.2))
+    let count = u32(pick(s, 2, vec2(4.0, 9.0)))
+    for i in 0..count {
+        let a = TAU * rand(s, 10 + i)
+        let r = size * 1.2 * rand(s, 20 + i)
+        let p = base +
+            vec3(r * cos(a) * 1.4, size * pick(s, 30 + i, vec2(0.3, 1.0)), r * sin(a) * 1.4)
+        crown.clumps.push(Clump { centre: p, radius: size * pick(s, 40 + i, vec2(0.5, 1.0)) })
+    }
+    add_cards(mut forest, crown, size: 0.75, cover: 1.6, seed: s)
+}
+
+/// A far tree: one crown of three clumps, coarse cards, no trunk to see.
+fn far_tree(forest: mut Forest, base: vec3, s: u32) {
+    let tall = pick(s, 1, vec2(12.0, 18.0))
+    var crown = Crown {
+        clumps: Vec::new(),
+        tint: vec3(pick(s, 6, vec2(-0.04, 0.05)), pick(s, 7, vec2(-0.05, 0.03)), 0.0),
+    }
+    for i in 0..3 {
+        let p = base +
+            vec3(
+                pick(s, 10 + i, vec2(-2.0, 2.0)),
+                tall * pick(s, 20 + i, vec2(0.55, 0.8)),
+                pick(s, 30 + i, vec2(-2.0, 2.0)),
+            )
+        crown.clumps.push(Clump { centre: p, radius: pick(s, 40 + i, vec2(2.6, 3.6)) })
+    }
+    add_cards(mut forest, crown, size: 2.4, cover: 1.2, seed: s)
+}
+
+/// Builds the forest.
+pub fn forest() -> Forest {
+    var f = Forest {
+        clumps: Vec::new(),
+        cards: Vec::new(),
+        limbs: Vec::new(),
+        crowns: 0,
+        far_from: 0,
+    }
+    great_tree(mut f)
+    let e = eye()
+    // The forest round the meadow, on a jittered 6 m grid; and shrubs along its edge.
+    let cell = 6.0
+    var s = 1000
+    for i in 0..48 {
+        for j in 0..30 {
+            s += 1
+            let x = -150.0 + (f32(i) + pick(s, 90, vec2(0.1, 0.9))) * cell
+            let z = -14.0 + (f32(j) + pick(s, 91, vec2(0.1, 0.9))) * cell
+            let p = vec2(x, z)
+            let r = length(p - MEADOW)
+            let rim = 25.0 + 10.0 * noise2(p * 0.05)
+            let past = past_edge(p)
+            let a = atan2(x - e.x, z - e.z)
+            let gap = in_gap(x, z) && length(p - e.xz) > 14.0
+            let near_great = length(p - KNOLL) < 16.0
+            let near_eye = length(p - e.xz) < 13.0
+            if abs(a) < 1.3 && past < -6.0 && !gap && !near_great && !near_eye {
+                if r > rim && rand(s, 92) < 0.9 {
+                    let edge = 1.0 - smoothstep(rim + 6.0, rim + 22.0, r)
+                    forest_tree(mut f, vec3(x, height(x, z), z), s, edge)
+                }
+                if r > rim - 5.0 && r < rim + 6.0 {
+                    for k in 0..3 {
+                        let q = p +
+                            vec2(pick(s, 96 + k, vec2(-3.0, 3.0)), pick(s, 98 + k, vec2(-3.0, 3.0)))
+                        shrub(mut f, vec3(q.x, height(x: q.x, z: q.y), q.y), s * 3 + k)
+                    }
+                }
+            }
+            // Shrubs along the plateau's edge, in the gap.
+            if gap && past > -10.0 && past < -1.0 && rand(s, 97) < 0.7 {
+                shrub(mut f, vec3(x, height(x, z), z), s * 5)
+            }
+        }
+    }
+    f.far_from = f.cards.len()
+    // The far trees, down the valley's slopes and over its floor.
+    let far_cell = 13.0
+    for i in 0..80 {
+        for j in 0..60 {
+            s += 1
+            let x = -820.0 + (f32(i) + pick(s, 93, vec2(0.0, 1.0))) * far_cell
+            let z = 40.0 + (f32(j) + pick(s, 94, vec2(0.0, 1.0))) * far_cell
+            let past = past_edge(vec2(x, z))
+            let a = atan2(x - e.x, z - e.z)
+            let dense = noise2(vec2(x, z) * 0.01)
+            if past > 14.0 && a < 0.2 && a > -0.95 && rand(s, 95) < smoothstep(0.3, 0.7, dense) {
+                far_tree(mut f, vec3(x, height(x, z), z), s)
+            }
+        }
+    }
+    f
+}
+
+// ---- drawing ------------------------------------------------------------------------------------
+
+/// What a leaf card's vertex passes on.
+pub struct Leaf: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub uv: vec2,
+    pub normal: vec3,
+    pub depth: f32,
+    pub tint: vec3,
+    pub seed: Flat<u32>,
+    pub crown: Flat<u32>,
+}
+
+/// The corners of a quad, as two triangles.
+const QX = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
+const QY = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
+
+/// A card's corner `v % 6`, facing `toward` (the eye's direction, or the sun's), turned by its
+/// seed.
+fn card_corner(card: Card, k: u32, right: vec3, up: vec3) -> (vec3, vec2) {
+    let a = TAU * rand(card.seed, 11)
+    let (s, c) = (sin(a), cos(a))
+    let q = vec2(QX[k], QY[k])
+    let t = vec2(c * q.x - s * q.y, s * q.x + c * q.y)
+    (card.centre + (right * t.x + up * t.y) * (card.size * 0.5), q)
+}
+
+@vertex
+pub fn leaf(v: VertexIndex, cam: Cam, cards: [Card]) -> Leaf {
+    let card = cards[v.index / 6]
+    let (world, uv) = card_corner(card, v.index % 6, cam.right, cam.up)
+    Leaf {
+        clip: ClipPosition { position: cam.clip(world) },
+        world,
+        uv,
+        normal: card.normal,
+        depth: card.depth,
+        tint: card.tint,
+        seed: Flat { value: card.seed },
+        crown: Flat { value: card.crown },
+    }
+}
+
+/// The leaves on a card at `uv` (in [-1, 1]²): how much is leaf (0 to 1, a soft edge `w`
+/// wide), and which leaf.
+pub fn leaves(uv: vec2, seed: u32, w: f32) -> (f32, u32) {
+    leaves_of(uv, seed, w, 6)
+}
+
+/// `leaves`, with `n` leaves on the card.
+fn leaves_of(uv: vec2, seed: u32, w: f32, n: u32) -> (f32, u32) {
+    var best = -1.0
+    var which = 0
+    for i in 0..n {
+        let a = TAU * (f32(i) + rand(seed, 20 + i) * 0.6) / f32(n)
+        let dir = vec2(cos(a), sin(a))
+        let len = 0.55 + 0.3 * rand(seed, 40 + i)
+        let o = dir * (0.18 + 0.1 * rand(seed, 60 + i))
+        let q = uv - o
+        let s = dot(q, dir) / len
+        let t = dot(q, vec2(-dir.y, dir.x))
+        // A pointed leaf: widest a third of the way along.
+        let half = 0.36 * len * sin(PI * clamp(s, 0.0, 1.0)) * (1.15 - 0.5 * s)
+        let inside = min(half - abs(t), min(s, 1.0 - s) * len) / max(len, 0.01)
+        if inside > best {
+            best = inside
+            which = i
+        }
+    }
+    (smoothstep(-w, w, best), which)
+}
+
+/// Leaf colours: young (lit tops) and old (deep), linear.
+const LEAF_YOUNG = vec3(0.17, 0.25, 0.035)
+const LEAF_OLD = vec3(0.045, 0.10, 0.03)
+/// The light leaves pass, as a colour per unit of sun.
+const LEAF_THROUGH = vec3(0.11, 0.16, 0.02)
+
+@fragment
+pub fn leaf_shade(
+    l: Leaf,
+    cam: Cam,
+    sun: Sun,
+    near: DepthTexture,
+    far: DepthTexture,
+    ss: ComparisonSampler,
+) -> vec4 {
+    let w = 1.5 * length(fwidth(l.uv))
+    let (m, which) = leaves(l.uv, l.seed.value, w)
+    // Cut first: a card's empty parts cost nothing more.
+    if m < 0.5 {
+        discard()
+    }
+    let seed = l.seed.value
+    // Each leaf tilts its own way off the crown's normal.
+    let tilt = vec3(
+        rand(seed, 100 + which) - 0.5,
+        rand(seed, 120 + which) - 0.5,
+        rand(seed, 140 + which) - 0.5,
+    )
+    let spread = select(if_false: 0.9, if_true: 0.3, cond: cam.style != GOUACHE)
+    let n = normalize(l.normal + tilt * spread)
+    let lit = sunlit(sun, l.world, n, near, far, ss, 1.5)
+    let ao = exp(-l.depth / 1.6)
+    let age = saturate(0.35 + 0.65 * l.normal.y + 0.3 * (rand(seed, 160 + which) - 0.5))
+    let albedo = max(mix(LEAF_OLD, LEAF_YOUNG, vec3(age)) + l.tint * 0.5, vec3(0.005))
+    let s = Lit {
+        albedo,
+        n,
+        sun: lit * (0.35 + 0.65 * ao),
+        sky: 0.25 + 0.75 * ao,
+        through: LEAF_THROUGH * (0.4 + 0.6 * ao),
+    }
+    let c = hazed(shade(s, l.world, cam), l.world, cam.eye, cam.sun)
+    vec4(c, LEAVES + f32(l.crown.value % 61))
+}
+
+/// A card for the sun's shadow map: facing the sun.
+pub struct LeafShadow: Copy {
+    pub clip: ClipPosition,
+    pub uv: vec2,
+    pub seed: Flat<u32>,
+}
+
+@vertex
+pub fn leaf_shadow(v: VertexIndex, light: mat4, sun: Sun, cards: [Card]) -> LeafShadow {
+    let card = cards[v.index / 6]
+    let (world, uv) = card_corner(card, v.index % 6, sun.right, sun.up)
+    LeafShadow {
+        clip: ClipPosition { position: light * vec4(world, 1.0) },
+        uv,
+        seed: Flat { value: card.seed },
+    }
+}
+
+/// A card's cut in the shadow map: its leaves only.
+@fragment
+pub fn leaf_cut(l: LeafShadow) -> vec4 {
+    let (m, _) = leaves_of(l.uv, l.seed.value, 0.02, 4)
+    if m < 0.5 {
+        discard()
+    }
+    vec4(0.0)
+}
+
+// ---- limbs --------------------------------------------------------------------------------------
+
+/// Sides of a limb's tube.
+pub const SIDES: u32 = 10
+
+pub struct Bark: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+    pub along: vec2,
+}
+
+/// A limb's tube vertex: around and along it.
+fn limb_vertex(limb: Limb, k: u32) -> (vec3, vec3, vec2) {
+    let qx = [0, 1, 1, 0, 1, 0]
+    let qz = [0, 0, 1, 0, 1, 1]
+    let q = k / 6
+    let c = k % 6
+    let side = f32(q + qx[c])
+    let end = f32(qz[c])
+    let axis = normalize(limb.b - limb.a)
+    let t1 = normalize(
+        cross(
+            axis,
+            select(
+                if_false: vec3(0.0, 1.0, 0.0),
+                if_true: vec3(1.0, 0.0, 0.0),
+                cond: abs(axis.y) > 0.9,
+            ),
+        ),
+    )
+    let t2 = cross(axis, t1)
+    let a = TAU * side / f32(SIDES)
+    let n = t1 * cos(a) + t2 * sin(a)
+    let r = mix(limb.ra, limb.rb, end)
+    let centre = mix(limb.a, limb.b, vec3(end))
+    let len = length(limb.b - limb.a)
+    (centre + n * r, n, vec2(side / f32(SIDES), end * len))
+}
+
+@vertex
+pub fn limb(v: VertexIndex, cam: Cam, limbs: [Limb]) -> Bark {
+    let (world, n, along) = limb_vertex(limbs[v.index / (SIDES * 6)], v.index % (SIDES * 6))
+    Bark { clip: ClipPosition { position: cam.clip(world) }, world, normal: n, along }
+}
+
+@vertex
+pub fn limb_shadow(v: VertexIndex, light: mat4, limbs: [Limb]) -> ClipPosition {
+    let (world, _, _) = limb_vertex(limbs[v.index / (SIDES * 6)], v.index % (SIDES * 6))
+    ClipPosition { position: light * vec4(world, 1.0) }
+}
+
+@fragment
+pub fn bark_shade(
+    b: Bark,
+    cam: Cam,
+    sun: Sun,
+    near: DepthTexture,
+    far: DepthTexture,
+    ss: ComparisonSampler,
+) -> vec4 {
+    let n = normalize(b.normal)
+    // Bark's ridges run along the limb.
+    let ridges = noise2(vec2(b.along.x * 22.0, b.along.y * 1.6))
+    let albedo = mix(vec3(0.16, 0.12, 0.09), vec3(0.30, 0.25, 0.19), vec3(ridges))
+    let moss = smoothstep(0.2, 0.7, n.y + 0.4 * noise2(b.world.xz * 3.0)) * 0.6
+    let a = mix(albedo, vec3(0.06, 0.09, 0.02), vec3(moss))
+    let lit = sunlit(sun, b.world, n, near, far, ss, 1.5)
+    let s = Lit { albedo: a, n, sun: lit, sky: 0.55, through: vec3(0.0) }
+    vec4(hazed(shade(s, b.world, cam), b.world, cam.eye, cam.sun), BARK)
+}
+
+/// A depth-only pass's fragment: its colour goes nowhere.
+@fragment
+pub fn depth_only() -> vec4 {
+    vec4(0.0)
+}

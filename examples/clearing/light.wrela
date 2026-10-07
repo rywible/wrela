@@ -1,0 +1,158 @@
+// Light that feels real (#44): a low golden sun, a blue sky, haze. The sky's colour in a
+// direction, the haze between the eye and a point, the tone curve, and shading in each style.
+
+use camera::{CEL, Cam, INK}
+use noise::noise3
+
+/// The sun's light, and the sky's at the zenith and the horizon (linear).
+pub const SUN_LIGHT = vec3(3.3, 2.75, 2.05)
+pub const ZENITH = vec3(0.16, 0.34, 0.78)
+pub const HORIZON = vec3(0.66, 0.78, 0.92)
+
+/// The sky's colour in the direction `dir`, the sun toward `sun`.
+pub fn sky(dir: vec3, sun: vec3) -> vec3 {
+    let up = max(dir.y, 0.0)
+    let base = mix(HORIZON, ZENITH, vec3(pow(up, 0.55)))
+    let c = max(dot(dir, sun), 0.0)
+    // The glow round the sun, warm and wide near the horizon.
+    let glow = vec3(1.0, 0.78, 0.5) * (0.35 * pow(c, 6.0) + 0.9 * pow(c, 48.0)) * (1.0 - 0.6 * up)
+    // Below the horizon: the haze's colour (the ground hides it, but far edges show it).
+    let below = mix(HORIZON * 0.92, HORIZON, vec3(saturate(1.0 + dir.y * 8.0)))
+    let disk = vec3(40.0) * smoothstep(0.99985, 0.99993, c)
+    select(if_false: below, if_true: base, cond: dir.y > 0.0) + glow + disk
+}
+
+/// The haze's colour seen along `dir`: the horizon's, warmed toward the sun.
+pub fn haze_colour(dir: vec3, sun: vec3) -> vec3 {
+    let c = max(dot(dir, sun), 0.0)
+    vec3(0.52, 0.66, 0.90) + vec3(1.0, 0.75, 0.45) * (0.25 * pow(c, 4.0) + 0.5 * pow(c, 24.0))
+}
+
+/// The haze's optical depth from the eye at height `y0` to a point at height `y1`, `d` metres
+/// apart: a density 1/2200 per metre at height 0, falling off over 700 m.
+pub fn optical_depth(y0: f32, y1: f32, d: f32) -> f32 {
+    let h = 700.0
+    let dy = y1 - y0
+    let a = exp(-max(y0, -200.0) / h)
+    let mean = if abs(dy) < 1.0 { a } else { h * (a - exp(-max(y1, -200.0) / h)) / dy }
+    d * mean / 3600.0
+}
+
+/// `colour` at `world` seen from `eye` through the haze, the sun toward `sun`.
+pub fn hazed(colour: vec3, world: vec3, eye: vec3, sun: vec3) -> vec3 {
+    let v = world - eye
+    let d = length(v)
+    let t = exp(-optical_depth(eye.y, world.y, d))
+    mix(haze_colour(v / d, sun), colour, vec3(t))
+}
+
+/// sRGB's encoding of a linear value in [0, 1].
+pub fn srgb(x: vec3) -> vec3 {
+    let lo = x * 12.92
+    let hi = 1.055 * pow(max(x, vec3(0.0)), vec3(1.0 / 2.4)) - vec3(0.055)
+    select(if_false: hi, if_true: lo, cond: x.x <= 0.0031308)
+}
+
+/// The tone curve: a filmic shoulder (an ACES fit), then sRGB.
+pub fn display(c: vec3) -> vec3 {
+    let x = c * 0.62
+    let t = clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), vec3(0.0), vec3(1.0))
+    vec3(srgb(vec3(t.x)).x, srgb(vec3(t.y)).x, srgb(vec3(t.z)).x)
+}
+
+// ---- shading ------------------------------------------------------------------------------------
+
+/// The sky's light on a surface facing straight up, and the ground's bounce on one facing down.
+pub const SKY_LIGHT = vec3(0.42, 0.56, 0.86)
+pub const BOUNCE = vec3(0.30, 0.30, 0.12)
+
+/// A surface to shade: its albedo, its shading normal, how lit it is by the sun (its shadow)
+/// and the sky (its occlusion), and the light that passes through it (leaves, grass: a colour
+/// times how much; zero for what's solid).
+pub struct Lit: Copy {
+    pub albedo: vec3,
+    pub n: vec3,
+    pub sun: f32,
+    pub sky: f32,
+    pub through: vec3,
+}
+
+/// How much of the sun comes through a thin surface seen from `v`: most when the eye looks
+/// toward the sun through it.
+fn backlit(v: vec3, l: vec3) -> f32 {
+    0.25 + 0.75 * pow(max(dot(-v, l), 0.0), 3.0)
+}
+
+/// The colour of `s` at `world`, in the frame's style, before the haze.
+pub fn shade(s: Lit, world: vec3, cam: Cam) -> vec3 {
+    let l = cam.sun
+    let v = normalize(cam.eye - world)
+    let ndl = dot(s.n, l)
+    let sky = mix(BOUNCE, SKY_LIGHT, vec3(0.5 + 0.5 * s.n.y)) * s.sky
+    let through = s.through * SUN_LIGHT * (s.sun * backlit(v, l))
+    if cam.style == CEL {
+        // Two bands and a soft terminator; the shadow side cool, lit by the sky.
+        let t = smoothstep(-0.02, 0.1, ndl) * s.sun
+        let lit = SUN_LIGHT * 0.75 + SKY_LIGHT * 0.5
+        let dark = vec3(0.30, 0.38, 0.62) * (0.45 + 0.55 * s.sky)
+        return s.albedo * mix(dark, lit, vec3(t)) + through * 0.6
+    }
+    if cam.style == INK {
+        // Three soft steps of value.
+        let d = max(ndl, 0.0) * s.sun
+        let t = 0.5 * smoothstep(0.0, 0.18, d) + 0.5 * smoothstep(0.45, 0.65, d)
+        let lit = SUN_LIGHT * 0.8 + SKY_LIGHT * 0.5
+        let dark = vec3(0.36, 0.40, 0.55) * (0.5 + 0.5 * s.sky)
+        return s.albedo * mix(dark, lit, vec3(t)) + through * 0.5
+    }
+    // Continuous light: a little wrap round the terminator, the sky, the bounce. (Gouache's
+    // dabs are laid on in its pass, once a pixel.)
+    let wrap = max((ndl + 0.15) / 1.15, 0.0)
+    s.albedo * (SUN_LIGHT * (wrap * s.sun) + sky) + through
+}
+
+/// Brush dabs on a surface at `world` (normal `n`), about 16 pixels long wherever they're seen:
+/// a value in [-1, 1]. Space is cut into cells in the surface's plane; each cell holds one
+/// stroke, an ellipse at a jittered centre turned near the brush's way, and the stroke that
+/// covers a point most strongly gives its value (spike 12's object-space strokes). Two sizes
+/// are blended by distance (Bénard et al. 2009), so the dabs keep their size on screen and
+/// stay on the surface.
+pub fn dabs(world: vec3, n: vec3, footprint: f32) -> f32 {
+    let s = footprint * 16.0
+    let l = log2(s)
+    let f = fract(l)
+    let s0 = exp2(floor(l))
+    let t1 = normalize(cross(n, vec3(0.3, 0.2, 1.0)))
+    let t2 = cross(n, t1)
+    let q = vec2(dot(world, t1), dot(world, t2) + dot(world, n) * 0.5)
+    mix(strokes(q / s0), strokes(q / (2.0 * s0) + vec2(17.0, 5.0)), f)
+}
+
+/// The strokes at `q` (in cells): the value of the one that covers it most, of the four cells
+/// nearest it (a stroke reaches less than a cell from its centre's cell).
+fn strokes(q: vec2) -> f32 {
+    let c = floor(q - vec2(0.5))
+    var best = 0.0
+    var value = 0.0
+    for j in 0..2 {
+        for i in 0..2 {
+            let cell = c + vec2(f32(i), f32(j))
+            let (x, y) = (i32(cell.x), i32(cell.y))
+            let centre = cell +
+                vec2(0.25, 0.25) +
+                0.5 * vec2(noise::hash2(x, y), noise::hash2(y + 71, x + 13))
+            let a = 0.5 + 0.6 * (noise::hash2(x + 5, y + 9) - 0.5)
+            let dir = vec2(cos(a), sin(a))
+            let d = q - centre
+            let along = dot(d, dir) / 0.62
+            let across = dot(d, vec2(-dir.y, dir.x)) / 0.3
+            let cover = 1.0 - (along * along + across * across)
+            let w = smoothstep(0.0, 0.25, cover) * (0.5 + noise::hash2(x + 3, y + 1))
+            if w > best {
+                best = w
+                value = noise::hash2(x + 31, y + 17) * 2.0 - 1.0
+            }
+        }
+    }
+    value * smoothstep(0.0, 0.4, best)
+}

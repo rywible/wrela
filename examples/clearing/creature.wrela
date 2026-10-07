@@ -1,0 +1,39 @@
+// The grazer walking across the meadow (#50): round 1's grazer as M3 ported it, realized once
+// from its field (`engine::realize`), posed mid-stride by the engine's gait and skinned on the
+// GPU, then shaded per pixel from its field, as the herd is, with this spike's light.
+
+use camera::{CREATURE, Cam}
+use engine::creature::{Parts}
+use engine::render::Skinned
+use grazer::creature::Coat
+use light::{Lit, hazed, shade}
+use shadow::{Sun, sunlit}
+use std::gpu::{ComparisonSampler, DepthTexture}
+
+/// Where the grazer stands, and which way it faces (toward the left and the sun, a little
+/// toward the camera).
+pub const AT = vec2(-3.2, 14.5)
+pub const HEADING: f32 = 1.85
+
+@fragment
+pub fn creature_shade<F: Parts<Coat>>(
+    field: F,
+    s: Skinned,
+    cam: Cam,
+    sun: Sun,
+    near: DepthTexture,
+    far: DepthTexture,
+    ss: ComparisonSampler,
+) -> vec4 {
+    let mask = s.mask.value
+    let fp = length(fwidth(s.rest))
+    let (_, g, coat) = field.sample_masked(s.rest, mask, fp)
+    let n = normalize(s.linear * g)
+    // Round 1's browns, warmed and lifted toward a fawn's.
+    let albedo = vec3(coat.albedo.r, coat.albedo.g, coat.albedo.b) * vec3(2.6, 2.3, 1.8)
+    let lit = sunlit(sun, s.world, n, near, far, ss, 1.0)
+    // The belly and the legs' insides see less sky.
+    let sky = 0.55 + 0.45 * saturate(n.y * 0.5 + 0.5)
+    let l = Lit { albedo, n, sun: lit, sky, through: vec3(0.0) }
+    vec4(hazed(shade(l, s.world, cam), s.world, cam.eye, cam.sun), CREATURE)
+}

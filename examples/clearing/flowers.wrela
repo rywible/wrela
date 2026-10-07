@@ -1,0 +1,113 @@
+// Wildflowers in the meadow (#50): white, yellow and violet heads in drifts, each a card of
+// petals cut by `discard` on a thin stem, placed at load with the grass.
+
+use camera::{Cam, FLOWER}
+use grass::growth
+use light::{Lit, hazed, shade}
+use noise::{fbm2, rand}
+use scene::{MEADOW, eye, height, normal, past_edge}
+use shadow::{Sun, sunlit}
+use std::gpu::{ClipPosition, ComparisonSampler, DepthTexture, Flat, VertexIndex, discard}
+use std::math::TAU
+
+/// A flower: its head's place and size, its colour's kind, and its seed.
+pub struct Flower: Copy + GpuData {
+    pub head: vec3,
+    pub size: f32,
+    pub kind: u32,
+    pub seed: u32,
+}
+
+/// The flowers, in drifts across the meadow.
+pub fn wildflowers() -> Vec<Flower> {
+    var out: Vec<Flower> = Vec::new()
+    let e = eye()
+    for i in 0..60000 {
+        let a = -0.75 + 1.5 * rand(i, 1)
+        let d = 2.0 + 60.0 * pow(rand(i, 2), 1.6)
+        let x = e.x + d * sin(a)
+        let z = e.z + d * cos(a)
+        let p = vec2(x, z)
+        let drift = fbm2(p * 0.07 + vec2(1.0, 4.0), 3)
+        let kind_n = fbm2(p * 0.04 + vec2(8.0, 2.0), 2)
+        let (tall, density) = growth(p)
+        let r = length(p - MEADOW)
+        if rand(i, 3) < smoothstep(0.55, 0.72, drift) * density && r < 30.0 && past_edge(p) < 0.0 {
+            let kind = if kind_n < 0.45 { 0 } else if kind_n < 0.6 { 1 } else { 2 }
+            let y = height(x, z) + tall * (0.75 + 0.35 * rand(i, 4))
+            out.push(Flower { head: vec3(x, y, z), size: 0.035 + 0.03 * rand(i, 5), kind, seed: i })
+        }
+    }
+    out
+}
+
+pub struct Bloom: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub uv: vec2,
+    pub kind: Flat<u32>,
+    pub seed: Flat<u32>,
+}
+
+const QX = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
+const QY = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
+
+/// A flower's head: a card facing up and toward the eye a little.
+@vertex
+pub fn flower(v: VertexIndex, cam: Cam, flowers: [Flower]) -> Bloom {
+    let f = flowers[v.index / 6]
+    let k = v.index % 6
+    let q = vec2(QX[k], QY[k])
+    let tilt = normalize(cam.up * 0.6 + vec3(0.0, 1.0, 0.0))
+    let side = cam.right
+    let fwd = normalize(cross(side, tilt))
+    let world = f.head + (side * q.x + fwd * q.y * 0.8) * f.size
+    Bloom {
+        clip: ClipPosition { position: cam.clip(world) },
+        world,
+        uv: q,
+        kind: Flat { value: f.kind },
+        seed: Flat { value: f.seed },
+    }
+}
+
+@fragment
+pub fn flower_shade(
+    b: Bloom,
+    cam: Cam,
+    sun: Sun,
+    near: DepthTexture,
+    far: DepthTexture,
+    ss: ComparisonSampler,
+) -> vec4 {
+    let w = 1.5 * length(fwidth(b.uv))
+    let r = length(b.uv)
+    let a = atan2(b.uv.y, b.uv.x) + TAU * rand(b.seed.value, 9)
+    // Five petals round a centre.
+    let petal = 0.62 + 0.38 * abs(cos(a * 2.5))
+    let inside = smoothstep(petal + w, petal - w, r)
+    let centre = smoothstep(0.32 + w, 0.32 - w, r)
+    let kind = b.kind.value
+    let petals = select(
+        if_false: select(
+            if_false: vec3(0.42, 0.30, 0.62),
+            if_true: vec3(0.80, 0.62, 0.06),
+            cond: kind == 1,
+        ),
+        if_true: vec3(0.82, 0.82, 0.76),
+        cond: kind == 0,
+    )
+    let albedo = mix(
+        petals,
+        vec3(0.75, 0.52, 0.05),
+        vec3(centre * select(if_false: 0.3, if_true: 1.0, cond: kind == 0)),
+    )
+    let n = normalize(vec3(0.0, 1.0, 0.0) + cam.up * 0.3)
+    let lit = sunlit(sun, b.world, n, near, far, ss, 1.0)
+    let l = Lit { albedo, n, sun: lit, sky: 0.9, through: petals * 0.15 }
+    let c = hazed(shade(l, b.world, cam), b.world, cam.eye, cam.sun)
+    if inside < 0.5 {
+        discard()
+    }
+    vec4(c, FLOWER)
+}

@@ -1,0 +1,10 @@
+// The sky behind everything, with its cooked clouds; its tag is their cover.
+
+use camera::Cam
+use clouds::sky_with_clouds
+use std::gpu::{FragCoord, Sampler, Texture}
+
+@fragment
+pub fn sky_shade(pixel: FragCoord, cam: Cam, clouds: Texture, s: Sampler) -> vec4 {
+    sky_with_clouds(cam.ray(pixel.position.xy), cam, clouds, s)
+}

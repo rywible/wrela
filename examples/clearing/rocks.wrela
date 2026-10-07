@@ -1,0 +1,164 @@
+// Boulders in the meadow (#50): spheres displaced by noise, meshed in the vertex shader on a
+// latitude-longitude grid, shaded per pixel from the field's normal; moss on their tops.
+
+use camera::{Cam, ROCK}
+use light::{Lit, hazed, shade}
+use noise::noise3
+use scene::height
+use shadow::{Sun, sunlit}
+use std::gpu::{ClipPosition, ComparisonSampler, DepthTexture, Flat, VertexIndex}
+use std::math::{PI, TAU}
+
+/// A boulder: where its middle is, its size and squash, its turn, and its seed.
+pub struct Boulder: Copy + GpuData {
+    pub at: vec3,
+    pub radius: f32,
+    pub squash: vec3,
+    pub turn: f32,
+    pub seed: u32,
+}
+
+/// The boulders, placed for the shot: one big and mossy at the right of the foreground, a pair
+/// by the track, a few at the meadow's edge.
+pub fn boulders() -> Vec<Boulder> {
+    let spots = [
+        vec4(-6.8, 9.5, 1.5, 1.0),
+        vec4(-5.2, 10.9, 0.6, 2.0),
+        vec4(2.6, 14.0, 0.95, 3.0),
+        vec4(3.8, 13.1, 0.5, 4.0),
+        vec4(-13.0, 31.0, 1.3, 5.0),
+        vec4(13.0, 22.0, 1.0, 6.0),
+        vec4(-3.0, 41.0, 0.9, 7.0),
+    ]
+    var out: Vec<Boulder> = Vec::new()
+    for s in spots {
+        let seed = u32(s.w)
+        let squash = vec3(
+            1.0 + 0.3 * noise::rand(seed, 1),
+            0.62 + 0.15 * noise::rand(seed, 2),
+            0.9 + 0.3 * noise::rand(seed, 3),
+        )
+        let y = height(x: s.x, z: s.y) + s.z * squash.y * 0.35
+        out.push(
+            Boulder {
+                at: vec3(s.x, y, s.y),
+                radius: s.z,
+                squash,
+                turn: TAU * noise::rand(seed, 4),
+                seed,
+            },
+        )
+    }
+    out
+}
+
+/// Rows and columns of a boulder's grid.
+pub const ROWS: u32 = 24
+pub const COLS: u32 = 40
+pub const BOULDER_VERTICES: u32 = ROWS * COLS * 6
+
+/// A boulder's surface along direction `d` (its own frame): its radius there, lumpy.
+fn lump(b: Boulder, d: vec3) -> f32 {
+    let q = d * 1.7 + vec3(f32(b.seed) * 3.1)
+    let n = 0.6 * noise3(q) + 0.28 * noise3(q * 2.3) + 0.12 * noise3(q * 5.1)
+    var r = 0.88 + 0.3 * n
+    // Facets: the stone split along a few planes, as weathered granite is.
+    for k in 0..7 {
+        let a = std::math::TAU * noise::rand(b.seed, 20 + k)
+        let z = noise::rand(b.seed, 40 + k) * 1.6 - 0.5
+        let pn = normalize(vec3(cos(a), z, sin(a)))
+        let h = 0.78 + 0.18 * noise::rand(b.seed, 60 + k)
+        r = min(r, h / max(dot(d, pn), 0.05))
+    }
+    b.radius * r
+}
+
+/// A point of boulder `b` along its own direction `d`, in the world.
+fn surface(b: Boulder, d: vec3) -> vec3 {
+    let p = d * lump(b, d) * b.squash
+    let (c, s) = (cos(b.turn), sin(b.turn))
+    b.at + vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z)
+}
+
+pub struct Stone: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+    pub up: f32,
+    pub seed: Flat<u32>,
+}
+
+/// Direction `(row, col)` of the grid.
+fn grid_dir(row: u32, col: u32) -> vec3 {
+    let th = PI * f32(row) / f32(ROWS)
+    let ph = TAU * f32(col) / f32(COLS)
+    vec3(sin(th) * cos(ph), cos(th), sin(th) * sin(ph))
+}
+
+fn stone_vertex(b: Boulder, k: u32) -> (vec3, vec3, f32) {
+    let qx = [0, 1, 1, 0, 1, 0]
+    let qy = [0, 0, 1, 0, 1, 1]
+    let q = k / 6
+    let c = k % 6
+    let row = q / COLS + qy[c]
+    let col = q % COLS + qx[c]
+    let d = grid_dir(row, col)
+    let p = surface(b, d)
+    // The normal from neighbouring points of the surface.
+    let e = 0.02
+    let t1 = normalize(cross(d, vec3(0.0, 1.0, 0.001)))
+    let t2 = cross(d, t1)
+    let a = surface(b, normalize(d + t1 * e)) - surface(b, normalize(d - t1 * e))
+    let bb = surface(b, normalize(d + t2 * e)) - surface(b, normalize(d - t2 * e))
+    var n = normalize(cross(a, bb))
+    if dot(n, p - b.at) < 0.0 {
+        n = -n
+    }
+    (p, n, d.y)
+}
+
+@vertex
+pub fn stone(v: VertexIndex, cam: Cam, boulders: [Boulder]) -> Stone {
+    let b = boulders[v.index / BOULDER_VERTICES]
+    let (p, n, up) = stone_vertex(b, v.index % BOULDER_VERTICES)
+    Stone {
+        clip: ClipPosition { position: cam.clip(p) },
+        world: p,
+        normal: n,
+        up,
+        seed: Flat { value: b.seed },
+    }
+}
+
+@vertex
+pub fn stone_shadow(v: VertexIndex, light: mat4, boulders: [Boulder]) -> ClipPosition {
+    let b = boulders[v.index / BOULDER_VERTICES]
+    let (p, _, _) = stone_vertex(b, v.index % BOULDER_VERTICES)
+    ClipPosition { position: light * vec4(p, 1.0) }
+}
+
+@fragment
+pub fn stone_shade(
+    s: Stone,
+    cam: Cam,
+    sun: Sun,
+    near: DepthTexture,
+    far: DepthTexture,
+    ss: ComparisonSampler,
+) -> vec4 {
+    let n = normalize(s.normal)
+    let q = s.world * 6.0
+    let grain = 0.5 * noise3(q) + 0.3 * noise3(q * 3.1) + 0.2 * noise3(q * 9.7)
+    let lichen = smoothstep(0.72, 0.8, noise3(s.world * 3.3 + vec3(5.0, 2.0, 1.0)))
+    var stone_col = mix(vec3(0.22, 0.21, 0.20), vec3(0.36, 0.34, 0.31), vec3(grain))
+    stone_col = mix(stone_col, vec3(0.42, 0.40, 0.22), vec3(lichen * 0.7))
+    let moss = smoothstep(0.55, 0.85, n.y + 0.35 * (noise3(s.world * 2.5) - 0.5)) *
+        smoothstep(0.2, 0.6, s.up)
+    let albedo = mix(stone_col, vec3(0.10, 0.14, 0.035), vec3(moss * 0.6))
+    let lit = sunlit(sun, s.world, n, near, far, ss, 1.0)
+    // Where it meets the ground, the grass and the earth darken it.
+    let ground = height(x: s.world.x, z: s.world.z)
+    let sky = 0.4 + 0.6 * smoothstep(0.0, 0.5, s.world.y - ground)
+    let l = Lit { albedo, n, sun: lit, sky, through: vec3(0.0) }
+    vec4(hazed(shade(l, s.world, cam), s.world, cam.eye, cam.sun), ROCK + f32(s.seed.value))
+}

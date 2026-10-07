@@ -1,0 +1,121 @@
+// The clearing (#50): where things are. A meadow about 50 m across in a broad-leaved forest,
+// a great tree on a low rise, boulders, a worn track; through a gap on the right, the land falls
+// to a valley, with hills and a far mountain in haze. Metres, +y up; the camera looks along +z,
+// so +x is on the screen's left.
+
+use noise::{fbm2, noise2, ridged2}
+
+/// The meadow's middle.
+pub const MEADOW = vec2(0.0, 30.0)
+
+/// The great tree's rise, and the tree on it.
+pub const KNOLL = vec2(7.0, 33.0)
+
+/// Toward the sun: low (24°), from the left and a little behind.
+pub const SUN = vec3(0.900, 0.407, -0.159)
+
+/// The camera: where it stands (on the ground: its eye is 1.6 m above), and where it looks.
+pub const STAND = vec2(-1.5, 0.0)
+pub const EYE_HEIGHT: f32 = 1.6m
+pub const LOOK_AT = vec3(0.0, 7.5, 40.0)
+pub const FOVY: f32 = 42deg
+
+/// The gap in the forest, as angles from the camera (radians, `atan2(x, z)`: the right is
+/// negative): no trees there.
+pub const GAP_FROM: f32 = -0.80
+pub const GAP_TO: f32 = -0.07
+
+/// The worn track: a quadratic Bézier from the foreground to the great tree.
+pub const TRACK = [vec2(-7.0, -2.0), vec2(-4.5, 17.0), vec2(4.0, 27.0)]
+
+/// The track's distance at `p` (m): to its curve, from 16 samples.
+pub fn track_distance(p: vec2) -> f32 {
+    var best = 1.0e9
+    var prev = TRACK[0]
+    for i in 1..17 {
+        let t = f32(i) / 16.0
+        let a = mix(TRACK[0], TRACK[1], vec2(t))
+        let b = mix(TRACK[1], TRACK[2], vec2(t))
+        let q = mix(a, b, vec2(t))
+        let ab = q - prev
+        let h = clamp(dot(p - prev, ab) / dot(ab, ab), 0.0, 1.0)
+        best = min(best, length(p - prev - ab * h))
+        prev = q
+    }
+    best
+}
+
+/// How much of a point is track (0 to 1): its middle bare, its edges worn.
+pub fn track(p: vec2) -> f32 {
+    let d = track_distance(p) + 0.35 * (noise2(p * 1.3) - 0.5)
+    1.0 - smoothstep(0.35, 0.9, d)
+}
+
+/// Where the plateau's edge is, and the direction across it (to the right and ahead): beyond
+/// it, the land falls to the valley.
+pub const EDGE = vec2(-24.0, 66.0)
+pub const ACROSS = vec2(-0.75, 0.66)
+
+/// How far `p` is past the plateau's edge (m; negative on the plateau).
+pub fn past_edge(p: vec2) -> f32 {
+    dot(p - EDGE, ACROSS) + 8.0 * (noise2(p * 0.025) - 0.5)
+}
+
+/// Whether the camera sees (x, z) through the forest's gap.
+pub fn in_gap(x: f32, z: f32) -> bool {
+    let a = atan2(x - STAND.x, z - STAND.y)
+    a > GAP_FROM && a < GAP_TO
+}
+
+/// The ground's height at (x, z).
+pub fn height(x: f32, z: f32) -> f32 {
+    let p = vec2(x, z)
+    let r = length(p - MEADOW)
+    let past = past_edge(p)
+    // The meadow's gentle swell, tilting down toward the edge.
+    var y = 0.9 * (fbm2(p * 0.035, 3) - 0.5) + 0.25 * (noise2(p * 0.21) - 0.5)
+    y -= 0.07 * clamp(dot(p - MEADOW, ACROSS), -40.0, 40.0)
+    // The forest floor rising round it, but not toward the edge.
+    let a = atan2(x - STAND.x, z - STAND.y)
+    let open = smoothstep(GAP_TO + 0.1, GAP_TO - 0.1, a)
+    y += 3.0 * smoothstep(18.0, 60.0, r) * (1.0 - open)
+    // The great tree's rise, and the rise the camera stands on.
+    let k = p - KNOLL
+    y += 2.4 * exp(-dot(k, k) / 120.0)
+    let st = p - STAND
+    y += 3.2 * exp(-dot(st, st) / 260.0)
+    // Past the edge, the land falls to the valley, whose floor rolls.
+    if past > 0.0 {
+        let fall = 1.0 - exp(-past / 55.0)
+        y -= 95.0 * fall
+        y += fall * 14.0 * (fbm2(p * 0.004, 4) - 0.5)
+    }
+    // The valley's far side: soft hills.
+    let d = length(p - STAND)
+    if d > 1100.0 {
+        let hills = fbm2(p * 0.0011 + vec2(7.0, 2.0), 5)
+        y += smoothstep(1100.0, 3200.0, d) * (40.0 + 380.0 * smoothstep(0.3, 0.8, hills))
+    }
+    // The far mountain, on the right: one peak, and a shoulder.
+    let m = p - vec2(-3300.0, 7600.0)
+    let peak = exp(-dot(m, m) / 5.0e6)
+    let m2 = p - vec2(-1800.0, 7000.0)
+    let shoulder = exp(-dot(m2, m2) / 3.0e6)
+    let mountain = peak + 0.55 * shoulder
+    if mountain > 1.0e-3 {
+        y += mountain * (900.0 + 500.0 * ridged2(p * 0.0012 + vec2(3.1, 7.7), 5))
+    }
+    y
+}
+
+/// The ground's normal at (x, z), from central differences `e` apart.
+pub fn normal(x: f32, z: f32, e: f32) -> vec3 {
+    normalize(
+        vec3(height(x - e, z) - height(x + e, z), 2.0 * e, height(x, z - e) - height(x, z + e)),
+    )
+}
+
+/// The eye.
+pub fn eye() -> vec3 {
+    vec3(STAND.x, height(STAND.x, STAND.y) + EYE_HEIGHT, STAND.y)
+}

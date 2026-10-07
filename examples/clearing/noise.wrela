@@ -1,0 +1,89 @@
+// Cheap 2D and 3D value noise for the scene, the same on the CPU and the GPU: std's
+// `value_noise` hashes three times a corner, which the terrain can't afford per pixel.
+
+use std::field::hash_u32
+
+/// A lattice point's value in [0, 1).
+pub fn hash2(x: i32, y: i32) -> f32 {
+    let h = hash_u32(u32(x).wrapping_mul(1597334677) ^ u32(y).wrapping_mul(3812015801))
+    f32(h >> 8) * (1.0 / 16777216.0)
+}
+
+/// A lattice point's value in [0, 1), in 3D.
+pub fn hash3(x: i32, y: i32, z: i32) -> f32 {
+    let h = hash_u32(
+        u32(x).wrapping_mul(1597334677) ^
+            u32(y).wrapping_mul(3812015801) ^
+            u32(z).wrapping_mul(2798796415),
+    )
+    f32(h >> 8) * (1.0 / 16777216.0)
+}
+
+/// A whole number's hash in [0, 1), for placing things: `n`'s `k`th draw.
+pub fn rand(n: u32, k: u32) -> f32 {
+    f32(hash_u32(n.wrapping_mul(2654435761) ^ hash_u32(k)) >> 8) * (1.0 / 16777216.0)
+}
+
+/// Value noise in [0, 1], one cell per unit, with a smooth fade.
+pub fn noise2(p: vec2) -> f32 {
+    let i = floor(p)
+    let f = p - i
+    let u = f * f * (vec2(3.0) - 2.0 * f)
+    let (x, y) = (i32(i.x), i32(i.y))
+    let a = hash2(x, y)
+    let b = hash2(x + 1, y)
+    let c = hash2(x, y + 1)
+    let d = hash2(x + 1, y + 1)
+    mix(mix(a, b, u.x), mix(c, d, u.x), u.y)
+}
+
+/// Value noise in [0, 1], in 3D.
+pub fn noise3(p: vec3) -> f32 {
+    let i = floor(p)
+    let f = p - i
+    let u = f * f * (vec3(3.0) - 2.0 * f)
+    let (x, y, z) = (i32(i.x), i32(i.y), i32(i.z))
+    let a = mix(
+        mix(hash3(x, y, z), hash3(x + 1, y, z), u.x),
+        mix(hash3(x, y + 1, z), hash3(x + 1, y + 1, z), u.x),
+        u.y,
+    )
+    let b = mix(
+        mix(hash3(x, y, z + 1), hash3(x + 1, y, z + 1), u.x),
+        mix(hash3(x, y + 1, z + 1), hash3(x + 1, y + 1, z + 1), u.x),
+        u.y,
+    )
+    mix(a, b, u.z)
+}
+
+/// Fractal value noise in about [0, 1]: `octaves` layers, each turned and at twice the
+/// frequency and half the amplitude of the last.
+pub fn fbm2(p: vec2, octaves: u32) -> f32 {
+    var q = p
+    var s = 0.0
+    var a = 0.5
+    var total = 0.0
+    for _ in 0..octaves {
+        s += a * noise2(q)
+        total += a
+        q = vec2(1.6 * q.x - 1.2 * q.y, 1.2 * q.x + 1.6 * q.y) + vec2(17.3, -9.1)
+        a *= 0.5
+    }
+    s / total
+}
+
+/// Ridged fractal noise in about [0, 1]: sharp crests where the noise crosses its middle.
+pub fn ridged2(p: vec2, octaves: u32) -> f32 {
+    var q = p
+    var s = 0.0
+    var a = 0.5
+    var total = 0.0
+    for _ in 0..octaves {
+        let n = 1.0 - abs(2.0 * noise2(q) - 1.0)
+        s += a * n * n
+        total += a
+        q = vec2(1.6 * q.x - 1.2 * q.y, 1.2 * q.x + 1.6 * q.y) + vec2(-4.7, 13.9)
+        a *= 0.5
+    }
+    s / total
+}

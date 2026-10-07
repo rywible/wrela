@@ -1,0 +1,85 @@
+// The ground: a mesh of rings round the eye, within the view's sector, its height the scene's
+// field; shaded per pixel from the field's normal (the decided renderer's raster terrain; a
+// clipmap would follow the eye the same way).
+
+use camera::{Cam, GROUND}
+use light::{Lit, hazed, shade}
+use noise::{fbm2, noise2}
+use scene::{height, normal, track}
+use shadow::{Sun, sunlit}
+use std::gpu::{ClipPosition, ComparisonSampler, DepthTexture, VertexIndex}
+
+/// The rings and segments, and the radii they span.
+pub const RINGS: u32 = 560
+pub const SEGS: u32 = 320
+const NEAR_R: f32 = 0.3
+const FAR_R: f32 = 12000.0
+/// Half the sector's angle (radians).
+const HALF: f32 = 0.95
+
+pub struct Ground: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+}
+
+/// The ground's vertex `v`: quad `v / 6`, two triangles.
+@vertex
+pub fn ground(v: VertexIndex, cam: Cam) -> Ground {
+    let qx = [0, 1, 1, 0, 1, 0]
+    let qz = [0, 0, 1, 0, 1, 1]
+    let q = v.index / 6
+    let c = v.index % 6
+    let ring = q / SEGS + qz[c]
+    let seg = q % SEGS + qx[c]
+    let r = NEAR_R * pow(FAR_R / NEAR_R, f32(ring) / f32(RINGS))
+    let a = cam.yaw + (f32(seg) / f32(SEGS) - 0.5) * 2.0 * HALF
+    let x = cam.eye.x + r * sin(a)
+    let z = cam.eye.z + r * cos(a)
+    let world = vec3(x, height(x, z), z)
+    // The normal at the vertex, over its own spacing; near the eye, each pixel finds its own.
+    let e = max(0.05, r * 0.012)
+    let n = normalize(vec3(world.y - height(x + e, z), e, world.y - height(x, z + e)))
+    Ground { clip: ClipPosition { position: cam.clip(world) }, world, normal: n }
+}
+
+/// The ground's albedo at `p`: meadow, worn track, forest floor, far slopes, rock and snow.
+pub fn albedo(p: vec3, n: vec3) -> vec3 {
+    let xz = p.xz
+    let patches = fbm2(xz * 0.08, 3)
+    let meadow = mix(vec3(0.10, 0.17, 0.035), vec3(0.20, 0.24, 0.05), vec3(patches))
+    let dirt = mix(vec3(0.24, 0.17, 0.10), vec3(0.30, 0.23, 0.14), vec3(noise2(xz * 2.0)))
+    let worn = if length(xz - vec2(0.0, 20.0)) < 45.0 { track(xz) } else { 0.0 }
+    var a = mix(meadow, dirt, vec3(worn))
+    // The far land: woods and open meadows in patches, fields' lighter greens between.
+    let far = smoothstep(80.0, 260.0, length(xz - vec2(0.0, 30.0)))
+    let patches = fbm2(xz * 0.0035 + vec2(4.0, 2.0), 5)
+    let woods = vec3(0.03, 0.065, 0.03)
+    let open = mix(vec3(0.10, 0.15, 0.045), vec3(0.17, 0.18, 0.07), vec3(fbm2(xz * 0.012, 3)))
+    let land = mix(open, woods, vec3(smoothstep(0.45, 0.55, patches)))
+    a = mix(a, land, vec3(far))
+    // Rock on the mountain's steep slopes, snow high on it.
+    let steep = smoothstep(0.7, 0.5, n.y) * smoothstep(500.0, 800.0, p.y)
+    a = mix(a, vec3(0.22, 0.21, 0.21), vec3(steep))
+    let snow = smoothstep(820.0, 900.0, p.y + 60.0 * noise2(xz * 0.01)) * smoothstep(0.5, 0.7, n.y)
+    mix(a, vec3(0.85, 0.88, 0.92), vec3(snow))
+}
+
+@fragment
+pub fn ground_shade(
+    g: Ground,
+    cam: Cam,
+    sun: Sun,
+    near: DepthTexture,
+    far: DepthTexture,
+    ss: ComparisonSampler,
+) -> vec4 {
+    let d = length(g.world - cam.eye)
+    let n = if d < 50.0 { normal(g.world.x, g.world.z, max(0.02, d * 0.002)) } else {
+        normalize(g.normal)
+    }
+    let a = albedo(g.world, n)
+    let lit = sunlit(sun, g.world, n, near, far, ss, 2.0)
+    let s = Lit { albedo: a, n, sun: lit, sky: 1.0, through: vec3(0.0) }
+    vec4(hazed(shade(s, g.world, cam), g.world, cam.eye, cam.sun), GROUND)
+}
