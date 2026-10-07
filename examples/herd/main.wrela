@@ -372,15 +372,14 @@ pub fn channels(s: u32, x: f32, y: f32, z: f32) -> vec3 {
 
 /// Its skin weights at a point, under the items in the mask given, seen a footprint wide: its
 /// four bones (a byte each) and their weights (a byte each).
-pub fn skin_at(s: u32, x: f32, y: f32, z: f32, lo: u32, hi: u32, fp: f32) -> vec2 {
-    let (bones, weights) = engine::creature::Parts::skin_at(
+pub fn skin_at(s: u32, x: f32, y: f32, z: f32, lo: u32, hi: u32, fp: f32) -> (u32, u32) {
+    engine::creature::Parts::skin_at(
         grazer(s).field(),
         vec3(x, y, z),
         engine::creature::PartMask { lo, hi },
         fp,
         6cm,
     )
-    vec2(bitcast_f32(bones), bitcast_f32(weights))
 }
 
 /// Its mass (kg) by the spike's method, cells down to `finest`.
@@ -388,10 +387,21 @@ pub fn mass(s: u32, finest: f32) -> f32 {
     f32(engine::physique::adaptive_mass(grazer(s).field(), grazer::density, finest).mass)
 }
 
-/// Its physique per bone by the spike's method, cells down to `finest` (#43 §9): the whole's
-/// mass (kg), the bones' masses summed, how many bones have mass, and the least of each bone's
-/// moments' triangle inequalities (I_a + I_b - I_c over the largest moment: never below 0).
-pub fn physique(s: u32, finest: f32) -> vec4 {
+/// A physique, summed up (`physique`).
+pub struct Summary {
+    /// The whole's mass, kg.
+    pub mass: f32,
+    /// The bones' masses summed.
+    pub summed: f32,
+    /// How many bones have mass.
+    pub bones: u32,
+    /// The least of each bone's moments' triangle inequalities (I_a + I_b - I_c over the
+    /// largest moment: never below 0).
+    pub least: f32,
+}
+
+/// Its physique per bone by the spike's method, cells down to `finest` (#43 §9), summed up.
+pub fn physique(s: u32, finest: f32) -> Summary {
     let m = engine::physique::adaptive_physique(grazer(s), grazer::density, finest)
     var sum = 0.0
     var bones = 0
@@ -405,7 +415,7 @@ pub fn physique(s: u32, finest: f32) -> vec4 {
             least = min(least, min(i.x + i.y - i.z, min(i.x + i.z - i.y, i.y + i.z - i.x)) / most)
         }
     }
-    vec4(m.total.mass, sum, f32(bones), least)
+    Summary { mass: m.total.mass, summed: sum, bones, least }
 }
 
 /// The most two physiques' bones differ, for bones over 1 kg (relative to the bone's mass):
@@ -427,16 +437,16 @@ pub fn physique_methods_differ(s: u32, finest: f32) -> f32 {
     most
 }
 
-/// Its grid at level `level` (0 3 cm, 1 2 cm, 2 1.5 cm): origin, cell, and blocks along x, y, z.
-pub fn grid(game: Game, s: u32, level: u32) -> vec4 {
+/// Its grid at level `level` (0 3 cm, 1 2 cm, 2 1.5 cm): blocks along x, y and z, and the cell.
+pub fn grid(game: Game, s: u32, level: u32) -> (vec3u, f32) {
     let g = game.realizer.grid(s - 1, level)
-    vec4(vec3(g.size), g.cell)
+    (g.size, g.cell)
 }
 
 /// What realization has done: realizations, readbacks, holes and overflows found.
-pub fn realized(game: Game) -> vec4 {
+pub fn realized(game: Game) -> (u32, u32, u32, u32) {
     borrow r = game.realizer
-    vec4(f32(r.realizations), f32(r.readbacks), f32(r.holes), f32(r.overflows))
+    (r.realizations, r.readbacks, r.holes, r.overflows)
 }
 
 /// The bytes of mesh memory allocated, in MiB.
@@ -450,8 +460,8 @@ pub fn slab_mib(game: Game, level: u32) -> f32 {
 }
 
 /// The level each grazer draws (`NO_LEVEL` before it has a mesh) and should have.
-pub fn level(game: Game, s: u32) -> vec2 {
-    vec2(f32(game.realizer.drawn(s - 1)), f32(game.realizer.target(s - 1)))
+pub fn level(game: Game, s: u32) -> (u32, u32) {
+    (game.realizer.drawn(s - 1), game.realizer.target(s - 1))
 }
 
 /// Spike 01's evaluation benchmark (`bench_eval`) on seed `s`: `n` points from xorshift 12345
@@ -487,7 +497,6 @@ pub fn bench_eval(
 }
 
 /// Spike 01's raycast benchmark on the sim's terrain: the steps `n` rays took, and how many hit.
-pub fn raycast(n: u32) -> vec2 {
-    let (steps, hits) = terrain::raycast_bench(terrain::Terrain::new(7), n)
-    vec2(f32(steps), f32(hits))
+pub fn raycast(n: u32) -> (u32, u32) {
+    terrain::raycast_bench(terrain::Terrain::new(7), n)
 }
