@@ -366,3 +366,163 @@ pub fn far_shade(
     let out = hazed(lt.light, light::world(lt.light, lit, f.world, lt.cam.eye), f.world, lt.cam.eye)
     vec4(out, LEAVES + f32(u32(hash2(i32(f.centre.x), i32(f.centre.z)) * 60.0)))
 }
+
+// ---- volumes ------------------------------------------------------------------------------------
+
+/// A volume's voxels along each side.
+pub const VOXELS: u32 = 24
+
+/// What a volume holds and is lit by: its box (the impostor's: `mid` ± `half`), how dense its
+/// leaves are (per metre at full density), and its leaves.
+pub struct Volume: Copy + GpuData {
+    pub mid: vec3,
+    pub half: f32,
+    pub density: f32,
+    pub leaves: Leaves,
+}
+
+/// Voxel `id`'s density: the crown's inside (from its field, softly at its edge), where the
+/// cards' leaves are.
+@compute(64)
+pub fn cook_volume(plant: Plant, v: Volume, out: mut Slots<f32>, id: GlobalId) {
+    let n = VOXELS * VOXELS * VOXELS
+    if id.x >= n {
+        return
+    }
+    let c = vec3u(id.x % VOXELS, (id.x / VOXELS) % VOXELS, id.x / (VOXELS * VOXELS))
+    let p = v.mid + ((vec3(c) + vec3(0.5)) / f32(VOXELS) * 2.0 - vec3(1.0)) * v.half
+    let (d, _) = plant.crown(p)
+    // The cards lie within about a third of a clump's radius inside its surface: the crown's
+    // inside is leaves, most near its skin.
+    out[id] = (1.0 - smoothstep(-0.4, 0.6, d)) * (0.55 + 0.45 * smoothstep(-2.5, -0.5, d))
+}
+
+/// A volume's density at a point of its box `q` (in [-1, 1]³), between voxels (trilinear).
+fn density_in(voxels: [f32], q: vec3) -> f32 {
+    let g = (q * 0.5 + vec3(0.5)) * f32(VOXELS) - vec3(0.5)
+    let lim = f32(VOXELS) - 1.001
+    let g2 = clamp(g, vec3(0.0), vec3(lim))
+    let i = floor(g2)
+    let f = g2 - i
+    let v = vec3u(i)
+    let at = |dx: u32, dy: u32, dz: u32| {
+        let w = v + vec3u(dx, dy, dz)
+        voxels[(w.z * VOXELS + w.y) * VOXELS + w.x]
+    }
+    let x00 = mix(at(0, 0, 0), at(1, 0, 0), f.x)
+    let x10 = mix(at(0, 1, 0), at(1, 1, 0), f.x)
+    let x01 = mix(at(0, 0, 1), at(1, 0, 1), f.x)
+    let x11 = mix(at(0, 1, 1), at(1, 1, 1), f.x)
+    mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z)
+}
+
+/// The ray through a far quad's point into its volume: its opacity, how deep it went before it
+/// was mostly stopped (the crown's depth there), and where (the plant's frame).
+fn march_volume(f: FarVertex, cam: Camera, v: Volume, voxels: [f32]) -> (f32, f32, vec3) {
+    let (c, s) = (cos(f.yaw.value), sin(f.yaw.value))
+    let scale = length(f.world - f.centre) / max(length(f.uv), 1.0e-4) / v.half
+    let to_local = |w: vec3| {
+        let q = (w - f.centre) / scale
+        vec3(c * q.x - s * q.z, q.y, s * q.x + c * q.z) + v.mid
+    }
+    let o = to_local(cam.eye)
+    let p = to_local(f.world)
+    let dir = normalize(p - o)
+    // The box's span along the ray.
+    let lo = v.mid - vec3(v.half)
+    let hi = v.mid + vec3(v.half)
+    let inv = vec3(1.0) / (dir + vec3(1.0e-6))
+    let t0 = (lo - o) * inv
+    let t1 = (hi - o) * inv
+    let near = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z))
+    let far = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z))
+    if far <= near {
+        return (0.0, 0.0, p)
+    }
+    let steps = 12
+    let dt = (far - near) / f32(steps)
+    var trans = 1.0
+    var depth = 0.0
+    var hit = o + dir * far
+    var found = false
+    for i in 0..steps {
+        let t = near + (f32(i) + 0.5) * dt
+        let q = o + dir * t
+        let d = density_in(voxels, (q - v.mid) / v.half)
+        trans *= exp(-d * v.density * dt)
+        if !found && trans < 0.5 {
+            found = true
+            hit = q
+            depth = 0.0
+        }
+        if found {
+            depth += dt * d
+        }
+    }
+    (1.0 - trans, depth, hit)
+}
+
+/// A very far instance cut to its volume's coverage: the depth prepass's.
+@fragment
+pub fn volume_cut(f: FarVertex, cam: Camera, v: Volume, voxels: [f32]) -> vec4 {
+    let (a, _, _) = march_volume(f, cam, v, voxels)
+    if a < 0.5 {
+        discard()
+    }
+    vec4(0.0)
+}
+
+/// A very far instance's pixel: its crown's leaves, lit as the cards and impostors are (the sun,
+/// the sky darkened by the depth in the crown, the light through).
+@fragment
+pub fn volume_shade(
+    f: FarVertex,
+    lt: Lighting,
+    v: Volume,
+    voxels: [f32],
+    s: Sampler,
+    near: DepthTexture,
+    far: DepthTexture,
+    moving: DepthTexture,
+    cmp: ComparisonSampler,
+    clouds: Texture,
+    probes: [Probe],
+    grounds: [f32],
+) -> vec4 {
+    let (_, depth, hit) = march_volume(f, lt.cam, v, voxels)
+    // The crown's normal at its surface: from its middle out, as its clumps' are.
+    let local_n = normalize(hit - v.mid + vec3(0.0, v.half * 0.3, 0.0))
+    let (cy, sy) = (cos(f.yaw.value), sin(f.yaw.value))
+    let n = normalize(
+        vec3(cy * local_n.x + sy * local_n.z, local_n.y, -sy * local_n.x + cy * local_n.z),
+    )
+    let ao = exp(-depth * 0.5 / 1.6)
+    let age = saturate(0.35 + 0.65 * local_n.y)
+    let albedo = max(mix(v.leaves.old, v.leaves.young, vec3(age)) + f.tint * 0.5, vec3(0.005))
+    let sun = sun_at(lt, f.world, n, near, far, moving, cmp, clouds, s, soft: 1.5)
+    let sky = sky_at(lt, probes, grounds, f.world, n) * (0.25 + 0.75 * ao)
+    let lit = Lit {
+        albedo,
+        n,
+        sun: sun * (0.35 + 0.65 * ao),
+        sky,
+        through: v.leaves.through * (0.4 + 0.6 * ao),
+    }
+    let out = hazed(lt.light, light::world(lt.light, lit, f.world, lt.cam.eye), f.world, lt.cam.eye)
+    vec4(out, LEAVES + f32(u32(hash2(i32(f.centre.x), i32(f.centre.z)) * 60.0)))
+}
+
+/// A kind's volume, cooked.
+pub struct Cooked {
+    pub volume: Volume,
+    pub voxels: GpuBuffer<f32>,
+}
+
+/// Cooks `plant`'s volume in its impostor's box.
+pub fn cook(plant: Plant, b: Bake) -> Cooked {
+    let v = Volume { mid: b.mid, half: b.half, density: 2.2, leaves: plant.leaves }
+    let n = VOXELS * VOXELS * VOXELS
+    var voxels: GpuBuffer<f32> = buffer(n)
+    dispatch(cook_volume.bind(plant, v, out: mut voxels), groups: (n + 63) / 64)
+    Cooked { volume: v, voxels: take voxels }
+}

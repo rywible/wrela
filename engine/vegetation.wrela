@@ -8,7 +8,7 @@
 // equal and writes none, so only the nearest leaf at each pixel is shaded, and the shading needs
 // no `discard` (which would turn off the GPU's early depth test).
 
-use impostor::{Impostor, bake, far_cut, far_quad, far_shade}
+use impostor::{Cooked, Impostor, bake, cook, far_cut, far_quad, far_shade, volume_cut, volume_shade}
 use light::{Light, Lit, hazed}
 use lit::{Lighting, sky_at, sun_at}
 use noise::{hash2, rand}
@@ -37,8 +37,9 @@ pub struct Kind {
     /// Its height and the radius of a sphere round its middle that holds it.
     pub top: f32,
     pub reach: f32,
-    /// Its impostor, baked from its cards and limbs.
+    /// Its impostor, baked from its cards and limbs, and its volume, cooked from its crown.
     pub impostor: Impostor,
+    pub volume: Cooked,
 }
 
 /// Cooks `plant` as a kind: its cards (by `seed`), and its limbs.
@@ -54,6 +55,7 @@ pub fn kind(plant: Plant, seed: u32, atlas: Texture, s: Sampler) -> Kind {
     }
     write(mut limbs, 0, list)
     let impostor = bake(plant, cards, n, limbs, limb_count, atlas, s)
+    let volume = cook(plant, impostor.bake)
     Kind {
         plant,
         cards: take cards,
@@ -63,6 +65,7 @@ pub fn kind(plant: Plant, seed: u32, atlas: Texture, s: Sampler) -> Kind {
         top: plant.top(),
         reach: plant.reach(),
         impostor: take impostor,
+        volume: take volume,
     }
 }
 
@@ -72,11 +75,16 @@ pub struct Placed: Copy {
     pub at: Instance,
 }
 
-/// How an instance is drawn this frame: as cards at a level (0 to 2), or not at all.
+/// How an instance is drawn this frame: as cards at a level (0 to 2), as an impostor (`FAR`),
+/// as a volume, or not at all.
 pub const FAR: u32 = 3
-pub const HIDDEN: u32 = 4
+pub const VOLUME: u32 = 4
+pub const HIDDEN: u32 = 5
 
-/// A list of instances drawn one way: a kind, how (a card level, or `FAR`), and where its
+/// The ways an instance is drawn (all but hidden).
+const WAYS: u32 = CARD_LEVELS + 2
+
+/// A list of instances drawn one way: a kind, how (a card level, `FAR` or `VOLUME`), and where its
 /// instances start in the frame's buffer and how many.
 pub struct List: Copy {
     pub kind: u32,
@@ -100,11 +108,14 @@ pub struct Forest {
     pub every_lists: Vec<List>,
     /// The leaf patterns cards read, cooked once.
     pub atlas: Texture,
-    /// Beyond this distance (m), an instance is drawn far (by `impostor`), not as cards.
+    /// Beyond this distance (m), an instance is drawn as an impostor, not as cards; and beyond
+    /// `impostors_to`, as a volume.
     pub cards_to: f32,
-    /// Instances drawn as cards and limbs this frame, and far.
+    pub impostors_to: f32,
+    /// Instances drawn as cards and limbs this frame, as impostors, and as volumes.
     pub near_count: u32,
     pub far_count: u32,
+    pub volume_count: u32,
 }
 
 /// Instances' room in a list: a list starts at a multiple of 8 (a 256-byte span of 32-byte
@@ -112,8 +123,13 @@ pub struct Forest {
 const ALIGN: u32 = 8
 
 impl Forest {
-    pub fn new(kinds: take Vec<Kind>, placed: take Vec<Placed>, cards_to: f32) -> Forest {
-        let room = placed.len() + (kinds.len() * (CARD_LEVELS + 1) + 1) * ALIGN
+    pub fn new(
+        kinds: take Vec<Kind>,
+        placed: take Vec<Placed>,
+        cards_to: f32,
+        impostors_to: f32,
+    ) -> Forest {
+        let room = placed.len() + (kinds.len() * WAYS + 1) * ALIGN
         // Every instance, by kind, each kind's list from a multiple of ALIGN.
         var every_lists: Vec<List> = Vec::new()
         var every: Vec<Instance> = Vec::new()
@@ -143,22 +159,24 @@ impl Forest {
             every_lists,
             atlas: leaf_atlas(6),
             cards_to,
+            impostors_to,
             near_count: 0,
             far_count: 0,
+            volume_count: 0,
         }
     }
 
     /// This frame's lists, for `cam` (a pixel's footprint from its `screen` and `tan_half`):
     /// each instance in view by its distance, as cards at the level its cards' size on screen
-    /// asks, or far. Writes them to the GPU.
+    /// asks, as an impostor, or as a volume. Writes them to the GPU.
     pub fn select(mut self, cam: Camera) {
         let kinds = self.kinds.len()
-        let ways = CARD_LEVELS + 1
+        let ways = WAYS
         // Each instance's way, by kind and way; counted first, then laid out.
         var counts = Vec::filled(kinds * ways, 0)
         var ways_of: Vec<u32> = Vec::new()
         for p in self.placed {
-            let w = way(self.kinds[p.kind], p.at, cam, self.cards_to)
+            let w = way(self.kinds[p.kind], p.at, cam, self.cards_to, self.impostors_to)
             ways_of.push(w)
             if w != HIDDEN {
                 counts[p.kind * ways + w] += 1
@@ -184,6 +202,7 @@ impl Forest {
         var fill = Vec::filled(kinds * ways, 0)
         self.near_count = 0
         self.far_count = 0
+        self.volume_count = 0
         for i in 0..self.placed.len() {
             let w = ways_of[i]
             if w != HIDDEN {
@@ -191,7 +210,13 @@ impl Forest {
                 let slot = p.kind * ways + w
                 out[starts[slot] + fill[slot]] = p.at
                 fill[slot] += 1
-                if w == FAR { self.far_count += 1 } else { self.near_count += 1 }
+                if w == FAR {
+                    self.far_count += 1
+                } else if w == VOLUME {
+                    self.volume_count += 1
+                } else {
+                    self.near_count += 1
+                }
             }
         }
         write(mut self.instances, 0, out)
@@ -203,9 +228,10 @@ impl Forest {
     }
 }
 
-/// How instance `at` of kind `k` is drawn from `cam`: hidden when out of view, far beyond
-/// `cards_to`, else as cards at the level its size on screen asks.
-fn way(k: Kind, at: Instance, cam: Camera, cards_to: f32) -> u32 {
+/// How instance `at` of kind `k` is drawn from `cam`: hidden when out of view, as a volume
+/// beyond `impostors_to`, as an impostor beyond `cards_to`, else as cards at the level its size
+/// on screen asks.
+fn way(k: Kind, at: Instance, cam: Camera, cards_to: f32, impostors_to: f32) -> u32 {
     let centre = at.at + vec3(0.0, k.top * 0.5 * at.scale, 0.0)
     let r = k.reach * at.scale
     let v = centre - cam.eye
@@ -217,6 +243,9 @@ fn way(k: Kind, at: Instance, cam: Camera, cards_to: f32) -> u32 {
         if off > corner + asin(min(r / d, 1.0)) + 0.02 {
             return HIDDEN
         }
+    }
+    if d > impostors_to {
+        return VOLUME
     }
     if d > cards_to {
         return FAR
@@ -482,6 +511,15 @@ impl Forest {
                     instances: l.count,
                     depth: view::NEAREST,
                 )
+            } else if l.how == VOLUME {
+                borrow k = self.kinds[l.kind]
+                draw(
+                    far_quad.bind(cam, k.impostor.bake, instances: self.instances(l)),
+                    volume_cut.bind(cam, k.volume.volume, voxels: k.volume.voxels),
+                    vertices: 6,
+                    instances: l.count,
+                    depth: view::NEAREST,
+                )
             }
         }
         for l in self.lists {
@@ -561,6 +599,27 @@ impl Forest {
                         b,
                         colour: k.impostor.colour,
                         normal: k.impostor.normal,
+                        s: s,
+                        near: near,
+                        far: far,
+                        moving: moving,
+                        cmp: cmp,
+                        clouds: clouds,
+                        probes: probes,
+                        grounds: grounds,
+                    ),
+                    vertices: 6,
+                    instances: l.count,
+                    depth: PREPASSED,
+                )
+            } else if l.how == VOLUME {
+                borrow k = self.kinds[l.kind]
+                draw(
+                    far_quad.bind(cam, k.impostor.bake, instances: self.instances(l)),
+                    volume_shade.bind(
+                        lt,
+                        k.volume.volume,
+                        voxels: k.volume.voxels,
                         s: s,
                         near: near,
                         far: far,

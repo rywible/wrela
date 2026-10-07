@@ -24,7 +24,7 @@ use engine::sky::{
     Cook, Puff, SHADOW_SIDE, SKY_H, SKY_W, STRIPS, cook_clouds, cook_shadow, sky_shade, strip,
 }
 use engine::temporal::{Resolve, resolve}
-use engine::terrain::{Clipmap, ground, ground_plain}
+use engine::terrain::{Clipmap, ground, ground_shade}
 use engine::vegetation::{Forest, Kind, kind, nothing}
 use engine::view::{BEHIND, Camera, NEAREST, camera, first_camera}
 use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, start_eye}
@@ -195,7 +195,7 @@ pub fn init() -> Clearing {
         stones: boulders(),
         light: afternoon(SUN),
         cam: first_camera(start_eye(), LOOK_AT, FOVY, width: 960, height: 540),
-        forest: Forest::new(take kinds, take p, cards_to: 150.0),
+        forest: Forest::new(take kinds, take p, cards_to: 150.0, impostors_to: 1000.0),
         grass: Grass::new(),
         near: depth_texture(width: NEAR_CASCADE.side, height: NEAR_CASCADE.side),
         far: depth_texture(width: FAR_CASCADE.side, height: FAR_CASCADE.side),
@@ -443,6 +443,10 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     let grounds = s.probes.grounds.span(start: 0, count: s.probes.grid.probes())
     s.grass.place(cam, s.light, grid, lt.levels, texels, probes, grounds, stones: footprints())
     s.forest.select(cam)
+    if s.frames == 60 {
+        borrow f = s.forest
+        print(f"trees: {f.near_count} cards, {f.far_count} impostors, {f.volume_count} volumes")
+    }
 
     // The depth prepass: the cut cards and flowers.
     label("vegetation prepass")
@@ -519,7 +523,18 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     if on(s.off, TERRAIN) {
         draw(
             ground.bind(cam, lt.levels, texels),
-            ground_plain.bind(cam, s.light, lt.levels, texels),
+            ground_shade.bind(
+                lt,
+                texels,
+                s.near,
+                s.far,
+                s.moving,
+                s.cmp,
+                s.cloud_shadow,
+                s.linear,
+                probes,
+                grounds,
+            ),
             vertices: lt.levels.count * engine::terrain::LEVEL_VERTICES,
             depth: NEAREST,
         )
