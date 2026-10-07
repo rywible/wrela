@@ -1,0 +1,184 @@
+// Temporal AA and upscaling (#28 §2): the scene, drawn at a lower resolution and jittered within
+// its pixel each frame (Halton 2, 3), is brought up to the output's resolution by keeping a
+// history at that resolution. Each output pixel reconstructs this frame's colour from the
+// nearest samples (weighted by how near each falls), reprojects the history to where its point
+// was last frame (by the motion target where something moved, else by its depth and the
+// camera), clips that history to this frame's neighbourhood of colours, and blends.
+//
+// The scene's alpha is a tag (what a pixel shows: its class times 64, plus which one), which
+// can't be blended: the output keeps the nearest sample's.
+
+use std::gpu::{DepthTexture, FragCoord, Sampler, Texture}
+use view::{Camera, jitter_of}
+
+/// What the resolve reads besides the textures: the scene camera (at the scene's size), the
+/// output's size, how much of this frame a pixel takes when a sample falls on it, and whether
+/// there's a history yet.
+pub struct Resolve: Copy + GpuData {
+    pub cam: Camera,
+    pub out: vec2,
+    pub blend: f32,
+    pub fresh: u32,
+}
+
+/// Luma and chroma (YCoCg): colours compared and clipped here, where a box fits them better.
+fn to_ycocg(c: vec3) -> vec3 {
+    vec3(
+        0.25 * c.r + 0.5 * c.g + 0.25 * c.b,
+        0.5 * c.r - 0.5 * c.b,
+        -0.25 * c.r + 0.5 * c.g - 0.25 * c.b,
+    )
+}
+
+fn from_ycocg(c: vec3) -> vec3 {
+    vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z)
+}
+
+/// A colour squashed so a bright sample doesn't dominate its neighbours' mean (Karis).
+fn tamed(c: vec3) -> vec3 {
+    c / (1.0 + max(c.r, max(c.g, c.b)))
+}
+
+fn untamed(c: vec3) -> vec3 {
+    c / max(1.0 - max(c.r, max(c.g, c.b)), 1.0e-4)
+}
+
+/// The history at `px` (output pixels), filtered by a Catmull-Rom spline in 5 taps (bilinear
+/// taps placed to give its weights), so a moving history stays sharp.
+fn history_at(history: Texture, s: Sampler, px: vec2, size: vec2) -> vec3 {
+    let pos = px - vec2(0.5)
+    let c = floor(pos) + vec2(0.5)
+    let f = pos - floor(pos)
+    let w0 = f * (vec2(-0.5) + f * (vec2(1.0) - 0.5 * f))
+    let w1 = vec2(1.0) + f * f * (vec2(-2.5) + 1.5 * f)
+    let w2 = f * (vec2(0.5) + f * (vec2(2.0) - 1.5 * f))
+    let w3 = f * f * (vec2(-0.5) + 0.5 * f)
+    let w12 = w1 + w2
+    let o12 = w2 / w12
+    let t0 = (c - vec2(1.0)) / size
+    let t3 = (c + vec2(2.0)) / size
+    let t12 = (c + o12) / size
+    var r = vec3(0.0)
+    r += history.sample_level(s, vec2(t12.x, t0.y)).rgb * (w12.x * w0.y)
+    r += history.sample_level(s, vec2(t0.x, t12.y)).rgb * (w0.x * w12.y)
+    r += history.sample_level(s, vec2(t12.x, t12.y)).rgb * (w12.x * w12.y)
+    r += history.sample_level(s, vec2(t3.x, t12.y)).rgb * (w3.x * w12.y)
+    r += history.sample_level(s, vec2(t12.x, t3.y)).rgb * (w12.x * w3.y)
+    let total = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y
+    max(r / total, vec3(0.0))
+}
+
+/// The output pixel at `pixel`: this frame's samples reconstructed there, blended with the
+/// history reprojected and clipped. Its alpha is the nearest sample's tag.
+@fragment
+pub fn resolve(
+    pixel: FragCoord,
+    r: Resolve,
+    scene: Texture,
+    depth: DepthTexture,
+    motion: Texture,
+    history: Texture,
+    s: Sampler,
+) -> vec4 {
+    let cam = r.cam
+    let in_size = cam.screen
+    let scale = in_size / r.out
+    // This output pixel's centre in the scene's pixels.
+    let q = pixel.position.xy * scale
+    // The samples were taken at their pixels' centres, the image shifted by the jitter: sample
+    // (i, j) shows what's at (i + 0.5, j + 0.5) - jitter, unjittered.
+    let j = jitter_of(cam.frame)
+    let base = vec2i(floor(q + j))
+    let lim = vec2i(i32(in_size.x) - 1, i32(in_size.y) - 1)
+    var sum = vec3(0.0)
+    var weight = 0.0
+    var nearest = 0.0
+    var tag = 0.0
+    var closest = 0.0
+    var at_closest = base
+    var m1 = vec3(0.0)
+    var m2 = vec3(0.0)
+    for dy in -1..2 {
+        for dx in -1..2 {
+            let p = clamp(base + vec2i(dx, dy), vec2i(0), lim)
+            let texel = scene.load(u32(p.x), u32(p.y))
+            let c = tamed(max(texel.rgb, vec3(0.0)))
+            let pos = vec2(p) + vec2(0.5) - j
+            let d2 = dot(pos - q, pos - q)
+            // A Gaussian about half a scene pixel wide: a sample counts by how near it falls.
+            let w = exp(-2.9 * d2)
+            sum += c * w
+            weight += w
+            if w > nearest {
+                nearest = w
+                tag = texel.a
+            }
+            let y = to_ycocg(c)
+            m1 += y
+            m2 += y * y
+            // The nearest surface among the neighbours (reversed depth: the largest), whose
+            // motion the pixel takes, so a moving edge carries its history.
+            let z = depth.load(u32(p.x), u32(p.y))
+            if z > closest {
+                closest = z
+                at_closest = p
+            }
+        }
+    }
+    let current = sum / max(weight, 1.0e-6)
+    // Where this pixel's point was last frame, in output pixels.
+    let moved = motion.load(u32(at_closest.x), u32(at_closest.y))
+    var last = vec2(0.0)
+    if moved.z > 0.5 {
+        last = (q - moved.xy) / scale
+    } else if closest > 0.0 {
+        // A surface: its world point, from the unjittered ray through this pixel.
+        let ndc = vec2(q.x / in_size.x * 2.0 - 1.0, 1.0 - q.y / in_size.y * 2.0)
+        let ray = normalize(
+            cam.forward +
+                cam.right * (ndc.x * cam.tan_half * cam.aspect) +
+                cam.up * (ndc.y * cam.tan_half),
+        )
+        let world = cam.eye + ray * (cam.distance_of(closest) / dot(ray, cam.forward))
+        last = cam.last_pixel(world) / scale
+    } else {
+        // The sky: a direction, so only the camera's turn moves it.
+        let ndc = vec2(q.x / in_size.x * 2.0 - 1.0, 1.0 - q.y / in_size.y * 2.0)
+        let ray = normalize(
+            cam.forward +
+                cam.right * (ndc.x * cam.tan_half * cam.aspect) +
+                cam.up * (ndc.y * cam.tan_half),
+        )
+        last = cam.last_pixel(cam.eye + ray * 1.0e5) / scale
+    }
+    let inside = last.x >= 0.0 && last.y >= 0.0 && last.x < r.out.x && last.y < r.out.y
+    if r.fresh != 0 || !inside {
+        return vec4(untamed(current), tag)
+    }
+    let prev = tamed(history_at(history, s, last, r.out))
+    // Clip the history to the box of this frame's neighbourhood (its mean and spread).
+    let mean = m1 / 9.0
+    let sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)))
+    let lo = mean - sigma * 1.25
+    let hi = mean + sigma * 1.25
+    let h = to_ycocg(prev)
+    let centre = 0.5 * (hi + lo)
+    let extent = max(0.5 * (hi - lo), vec3(1.0e-5))
+    let off = h - centre
+    let unit = abs(off / extent)
+    let most = max(unit.x, max(unit.y, unit.z))
+    let clipped = if most > 1.0 { centre + off / most } else { h }
+    // This frame's share: more where a sample fell near the pixel's centre.
+    let a = clamp(r.blend * nearest * 2.0, r.blend * 0.25, 0.5)
+    let out = mix(from_ycocg(clipped), current, vec3(a))
+    vec4(untamed(max(out, vec3(0.0))), tag)
+}
+
+/// What the motion target holds: in a pixel something moved in, where it was last frame
+/// relative to now (scene pixels, `now - last`), and 1 in z; elsewhere 0 (the camera's own
+/// motion is found from the depth).
+pub fn motion_of(cam: Camera, world: vec3, last_world: vec3) -> vec4 {
+    let now = cam.pixel(world)
+    let then = cam.last_pixel(last_world)
+    vec4(now - then, 1.0, 1.0)
+}

@@ -1,0 +1,197 @@
+// The clearing's layout (#28 §1): where things are, as functions of the plane. A meadow about
+// 50 m across in a broad-leaved forest, a great tree on a low rise, a worn track; through a gap
+// on the right, the land falls about 95 m to a valley, with hills beyond and one mountain, about
+// 1.4 km high, 8 km away. Metres, +y up; the camera's start looks along +z, so +x is on the
+// screen's left. (Spike 15's shot, #50.)
+
+use engine::noise::{fbm2, noise2, ridged2}
+use engine::terrain::{Cover, Terrain}
+
+/// The meadow's middle.
+pub const MEADOW = vec2(0.0, 30.0)
+
+/// The great tree's rise, where the tree stands.
+pub const KNOLL = vec2(7.0, 33.0)
+
+/// Toward the sun: low (24°), from the left and a little behind the camera's start.
+pub const SUN = vec3(0.900, 0.407, -0.159)
+
+/// Where the camera starts: standing on the ground (its eye 1.6 m above), looking at `LOOK_AT`.
+pub const STAND = vec2(-1.5, 0.0)
+pub const EYE_HEIGHT: f32 = 1.6m
+pub const LOOK_AT = vec3(0.0, 7.5, 40.0)
+pub const FOVY: f32 = 42deg
+
+/// The gap in the forest, as angles from the camera's start (radians, `atan2(x, z)`; the right
+/// is negative): no trees there.
+pub const GAP_FROM: f32 = -0.80
+pub const GAP_TO: f32 = -0.07
+
+/// The worn track: a quadratic Bézier from the foreground to the great tree.
+pub const TRACK = [vec2(-7.0, -2.0), vec2(-4.5, 17.0), vec2(4.0, 27.0)]
+
+/// The track's point at `t` (0 to 1) along its curve.
+pub fn track_at(t: f32) -> vec2 {
+    let a = mix(TRACK[0], TRACK[1], vec2(t))
+    let b = mix(TRACK[1], TRACK[2], vec2(t))
+    mix(a, b, vec2(t))
+}
+
+/// The distance from `p` to the track's curve (m), from 16 straight pieces.
+pub fn track_distance(p: vec2) -> f32 {
+    var best = 1.0e9
+    var prev = TRACK[0]
+    for i in 1..17 {
+        let q = track_at(f32(i) / 16.0)
+        let ab = q - prev
+        let h = clamp(dot(p - prev, ab) / dot(ab, ab), 0.0, 1.0)
+        best = min(best, length(p - prev - ab * h))
+        prev = q
+    }
+    best
+}
+
+/// How much of a point is track (0 to 1): its middle bare, its edges worn.
+pub fn track(p: vec2) -> f32 {
+    let d = track_distance(p) + 0.35 * (noise2(p * 1.3) - 0.5)
+    1.0 - smoothstep(0.35, 0.9, d)
+}
+
+/// Where the plateau's edge is, and the direction across it (to the right and ahead): beyond
+/// it, the land falls to the valley.
+pub const EDGE = vec2(-24.0, 66.0)
+pub const ACROSS = vec2(-0.75, 0.66)
+
+/// How far `p` is past the plateau's edge (m; negative on the plateau).
+pub fn past_edge(p: vec2) -> f32 {
+    dot(p - EDGE, ACROSS) + 8.0 * (noise2(p * 0.025) - 0.5)
+}
+
+/// Whether the camera's start sees (x, z) through the forest's gap.
+pub fn in_gap(x: f32, z: f32) -> bool {
+    let a = atan2(x - STAND.x, z - STAND.y)
+    a > GAP_FROM && a < GAP_TO
+}
+
+/// The ground's height at (x, z).
+pub fn height(x: f32, z: f32) -> f32 {
+    let p = vec2(x, z)
+    let r = length(p - MEADOW)
+    let past = past_edge(p)
+    // The meadow's gentle swell, tilting down toward the edge.
+    var y = 0.9 * (fbm2(p * 0.035, 3) - 0.5) + 0.25 * (noise2(p * 0.21) - 0.5)
+    y -= 0.07 * clamp(dot(p - MEADOW, ACROSS), -40.0, 40.0)
+    // The forest floor rising round it, but not toward the edge.
+    let a = atan2(x - STAND.x, z - STAND.y)
+    let open = smoothstep(GAP_TO + 0.1, GAP_TO - 0.1, a)
+    y += 3.0 * smoothstep(18.0, 60.0, r) * (1.0 - open)
+    // The great tree's rise, and the rise the camera starts on.
+    let k = p - KNOLL
+    y += 2.4 * exp(-dot(k, k) / 120.0)
+    let st = p - STAND
+    y += 3.2 * exp(-dot(st, st) / 260.0)
+    // Past the edge, the land falls to the valley, whose floor rolls.
+    if past > 0.0 {
+        let fall = 1.0 - exp(-past / 55.0)
+        y -= 95.0 * fall
+        y += fall * 14.0 * (fbm2(p * 0.004, 4) - 0.5)
+    }
+    // The valley's far side: soft hills.
+    let d = length(p - STAND)
+    if d > 1100.0 {
+        let hills = fbm2(p * 0.0011 + vec2(7.0, 2.0), 5)
+        y += smoothstep(1100.0, 3200.0, d) * (40.0 + 380.0 * smoothstep(0.3, 0.8, hills))
+    }
+    // The far mountain, on the right: one peak, and a shoulder.
+    let m = p - vec2(-3300.0, 7600.0)
+    let peak = exp(-dot(m, m) / 5.0e6)
+    let m2 = p - vec2(-1800.0, 7000.0)
+    let shoulder = exp(-dot(m2, m2) / 3.0e6)
+    let mountain = peak + 0.55 * shoulder
+    if mountain > 1.0e-3 {
+        y += mountain * (900.0 + 500.0 * ridged2(p * 0.0012 + vec2(3.1, 7.7), 5))
+    }
+    y
+}
+
+/// How tall the meadow's grass grows at `p` (m), and how dense it is (0 to 1).
+pub fn growth(p: vec2) -> (f32, f32) {
+    let patches = fbm2(p * 0.09 + vec2(5.0, 1.0), 3)
+    let tall = 0.22 + 0.55 * smoothstep(0.35, 0.75, patches)
+    let worn = track(p)
+    let r = length(p - MEADOW)
+    // Short where the camera starts.
+    let mown = 1.0 - 0.55 * exp(-dot(p - STAND, p - STAND) / 30.0)
+    // The forest floor: sparser and shorter under the trees.
+    let floor = smoothstep(24.0, 34.0, r + 6.0 * noise2(p * 0.07))
+    let density = (1.0 - 0.85 * worn) * (1.0 - 0.6 * floor)
+    (tall * mown * (1.0 - 0.75 * worn) * (1.0 - 0.45 * floor), density)
+}
+
+/// The clearing's ground: its height and cover, as functions of the plane.
+pub struct Ground: Copy + GpuData {}
+
+impl Terrain for Ground {
+    fn height(self, x: f32, z: f32) -> f32 {
+        height(x, z)
+    }
+
+    fn cover(self, at: vec3, n: vec3) -> Cover {
+        let xz = at.xz
+        let near = length(xz - MEADOW) < 45.0
+        let patches = fbm2(xz * 0.08, 3)
+        let meadow = mix(vec3(0.10, 0.17, 0.035), vec3(0.20, 0.24, 0.05), vec3(patches))
+        let dirt = mix(vec3(0.24, 0.17, 0.10), vec3(0.30, 0.23, 0.14), vec3(noise2(xz * 2.0)))
+        let worn = if near { track(xz) } else { 0.0 }
+        var a = mix(meadow, dirt, vec3(worn))
+        // The far land: woods and open meadows in patches, fields' lighter greens between.
+        let far = smoothstep(80.0, 260.0, length(xz - MEADOW))
+        let woods_at = fbm2(xz * 0.0035 + vec2(4.0, 2.0), 5)
+        let woods = vec3(0.03, 0.065, 0.03)
+        let open = mix(vec3(0.10, 0.15, 0.045), vec3(0.17, 0.18, 0.07), vec3(fbm2(xz * 0.012, 3)))
+        let wooded = smoothstep(0.45, 0.55, woods_at)
+        let land = mix(open, woods, vec3(wooded))
+        a = mix(a, land, vec3(far))
+        // Rock on the mountain's steep slopes, snow high on it.
+        let steep = smoothstep(0.7, 0.5, n.y) * smoothstep(500.0, 800.0, at.y)
+        a = mix(a, vec3(0.22, 0.21, 0.21), vec3(steep))
+        let snow = smoothstep(820.0, 900.0, at.y + 60.0 * noise2(xz * 0.01)) *
+            smoothstep(0.5, 0.7, n.y)
+        a = mix(a, vec3(0.85, 0.88, 0.92), vec3(snow))
+        // Grass where the meadow is, thinning on the track and the forest floor.
+        let (tall, density) = if near { growth(xz) } else { (0.3, 1.0 - wooded) }
+        let grass = density * (1.0 - steep) * (1.0 - snow) * smoothstep(4.0, -2.0, past_edge(xz))
+        // Patches of dry grass and of deeper, bluer green.
+        let dry = smoothstep(0.55, 0.85, fbm2(xz * 0.06 + vec2(11.0, 3.0), 3))
+        let deep = smoothstep(0.5, 0.8, fbm2(xz * 0.11 + vec2(-3.0, 8.0), 2))
+        // Wildflowers in drifts in the meadow: white, yellow and violet, each kind in its own.
+        let drift = fbm2(xz * 0.07 + vec2(1.0, 4.0), 3)
+        let kind = fbm2(xz * 0.04 + vec2(8.0, 2.0), 2)
+        let white = 1.0 - smoothstep(0.4, 0.5, kind)
+        let violet = smoothstep(0.55, 0.65, kind)
+        let yellow = 1.0 - white - violet
+        let bloom = if near && length(xz - MEADOW) < 30.0 && past_edge(xz) < 0.0 {
+            smoothstep(0.55, 0.72, drift)
+        } else {
+            0.0
+        }
+        Cover {
+            albedo: a,
+            grass,
+            tall: saturate((tall - 0.1) / 0.8),
+            dry,
+            deep,
+            flowers: vec4(white, yellow, max(violet, 0.0), bloom * 0.12),
+        }
+    }
+
+    fn steepest(self) -> f32 {
+        // The valley's fall is the steepest, about 95 m over 55: under 2.
+        2.5
+    }
+}
+
+/// The eye where the camera starts.
+pub fn start_eye() -> vec3 {
+    vec3(STAND.x, height(STAND.x, STAND.y) + EYE_HEIGHT, STAND.y)
+}

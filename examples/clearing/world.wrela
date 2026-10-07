@@ -1,0 +1,67 @@
+// The clearing's simulation (#28 §8): the creature walking its trail on the terrain, stepped on
+// the ticker's thread (`engine::run`) at 60 Hz. It stands until the camera's path begins (an
+// input record, `Key::Space`), then walks. Its feet are planted where raycasts against the
+// terrain field meet the ground: the field the clipmap is cooked from.
+
+use creature::{Trail, START, walker_body}
+use engine::gait::{Walk, Walker, stand, step}
+use engine::run::{Asks, TickInput}
+use engine::sim::{Sim, SimState, Tick}
+use scene::Ground
+use std::hash::StateHash
+use std::input::{Event, Key}
+use std::serialize::Serialize
+
+/// The world: the creature, and whether it walks yet.
+pub struct World: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub walker: Walker,
+    pub walking: bool,
+    pub tick: u32,
+}
+
+/// What the frames read: the world itself (it's small).
+pub type Snap = World
+
+impl Asks for World {
+    type Ask = u32
+    type Answer = u32
+
+    @deterministic
+    fn asks(self, tick: Tick) -> Vec<(u32, Tick)> {
+        Vec::new()
+    }
+
+    @deterministic
+    fn work(ask: u32) -> u32 {
+        ask
+    }
+}
+
+/// How the creature walks.
+pub const WALK = Walk { speed: 0.95 }
+
+/// The world at tick 0: the creature standing at its trail's start, facing along it.
+pub fn spawn() -> World {
+    let heading = atan2(0.32, 0.95)
+    World { walker: stand(Ground {}, walker_body(), START, heading), walking: false, tick: 0 }
+}
+
+/// One tick: the space key starts the walk; then the walker steps.
+@deterministic
+pub fn tick(w: mut World, input: TickInput<World>) {
+    for e in input.records {
+        if let Event::KeyDown { key, .. } = e {
+            if key == Key::Space {
+                w.walking = true
+            }
+        }
+    }
+    step(mut w.walker, Ground {}, Trail {}, walker_body(), WALK, w.walking, input.dt)
+    w.tick += 1
+}
+
+/// The snapshot the frames read.
+@deterministic
+pub fn present(w: World) -> World {
+    w
+}

@@ -1,0 +1,462 @@
+// Terrain (#28 §3): one terrain field for a floor, drawn from a clipmap cooked from it on the
+// GPU, and raycast on the CPU by the sim. The drawn ground and the sim's feet read the one field
+// (M4 had two terrains, which differed by metres).
+//
+// The clipmap is LEVELS nested squares of SIDE × SIDE texels round the eye, each texel the
+// field's height, its normal and its cover (albedo, grass) at a point of the level's grid. Level
+// l's spacing is the finest's times 2^l, so the levels reach from centimetres round the eye to
+// kilometres. A level is cooked again when the eye moves it a cell (its centre is snapped to its
+// grid, two cells at a time, so the finer level's edge lies on its lines). The vertex shader
+// reads the texels and never evaluates the field (AC3).
+//
+// No cracks between levels: a level's quads inside the finer level's square are dropped; the
+// finer level's outer band morphs its heights to the coarser level's, so its edge lies on the
+// coarser level's triangles; and a skirt hangs from each level's edge, so no pixel sees past it.
+
+use light::{Light, Lit, hazed, open_sky}
+use noise::noise2
+use sim::Hit
+use std::gpu::{
+    ClipPosition, GlobalId, GpuBuffer, Oct32, Slots, Unorm8x4, VertexIndex, buffer, dispatch, label,
+}
+use view::Camera
+
+/// A terrain: the ground's height over the plane, and what covers it. The game writes it;
+/// the engine cooks it into a clipmap, and the sim raycasts it.
+pub trait Terrain: Copy + GpuData {
+    /// The ground's height at (x, z), in metres.
+    fn height(self, x: f32, z: f32) -> f32
+
+    /// What covers the ground at `at` (a point on it) whose normal is `n`: its albedo and how
+    /// much grass grows there. Cooked into the clipmap, so it can be as costly as it needs.
+    fn cover(self, at: vec3, n: vec3) -> Cover
+
+    /// A bound on the ground's slope, rise over run, which a raycast steps by.
+    fn steepest(self) -> f32 {
+        3.0
+    }
+
+    /// The ground's normal at (x, z), from central differences `e` apart.
+    fn normal(self, x: f32, z: f32, e: f32) -> vec3 {
+        let dx = self.height(x - e, z) - self.height(x + e, z)
+        let dz = self.height(x, z - e) - self.height(x, z + e)
+        normalize(vec3(dx, 2.0 * e, dz))
+    }
+}
+
+/// What covers the ground: its albedo (linear); and its meadow, which the grass reads where
+/// it's placed: how much grass grows there and how tall (each 0 to 1), how dry and how deep a
+/// green it is; and its flowers: how much of each of three kinds (weights), and how many grow.
+pub struct Cover: Copy + GpuData {
+    pub albedo: vec3,
+    pub grass: f32,
+    pub tall: f32 = 0.5,
+    pub dry: f32 = 0.0,
+    pub deep: f32 = 0.0,
+    pub flowers: vec4 = vec4(0.0),
+}
+
+/// One cooked point of the clipmap: the height, the normal (octahedral), the cover (the albedo's
+/// square root, for its dark greens' precision, and the grass), the meadow (tall, dry, deep),
+/// and the flowers (each kind's weight, and how many).
+pub struct Texel: Copy + GpuData {
+    pub height: f32,
+    pub normal: Oct32,
+    pub cover: Unorm8x4,
+    pub meadow: Unorm8x4,
+    pub flowers: Unorm8x4,
+}
+
+/// Texels along each side of a level, and the quads between them.
+pub const SIDE: u32 = 129
+pub const QUADS: u32 = 128
+/// The most levels a clipmap has.
+pub const MAX_LEVELS: u32 = 12
+/// A level's rows in the buffer: as wide as its cooking dispatch's rows, whole groups of 8.
+pub const ROW: u32 = 136
+/// Texels a level takes in the buffer: its SIDE rows, rounded up to a 256-byte span (WebGPU
+/// binds a span from a multiple of 256 bytes; a texel is 20).
+pub const STRIDE: u32 = 17600
+/// Vertices a level draws: its quads and a skirt along each edge.
+pub const LEVEL_VERTICES: u32 = (QUADS * QUADS + 4 * QUADS) * 6
+/// How far a skirt hangs below a level's edge, in its cells.
+const SKIRT: f32 = 2.0
+/// The band of a level, in its own cells from its edge, over which it morphs to the next.
+const MORPH_FROM: f32 = 52.0
+const MORPH_TO: f32 = 62.0
+
+/// Where each level is, as the shaders read it: level l's texel (0, 0) at
+/// (`at[l].x`, `at[l].y`), `at[l].z` apart; the levels in use; and where the eye was.
+pub struct Levels: Copy + GpuData {
+    pub at: [vec4; 12],
+    pub count: u32,
+}
+
+/// A terrain's clipmap on the GPU, and where its levels are.
+pub struct Clipmap {
+    texels: GpuBuffer<Texel>,
+    levels: Levels,
+    finest: f32,
+    /// Whether each level holds what its place asks (false until it's cooked).
+    cooked: [bool; 12],
+    /// Levels cooked since the clipmap was made (each time a level moved).
+    pub cooks: u32,
+}
+
+impl Clipmap {
+    /// A clipmap of `levels` levels (at most `MAX_LEVELS`), the finest `finest` apart.
+    pub fn new(levels: u32, finest: f32) -> Clipmap {
+        let n = min(levels, MAX_LEVELS)
+        Clipmap {
+            texels: buffer(n * STRIDE),
+            levels: Levels { at: [vec4(0.0); 12], count: n },
+            finest,
+            cooked: [false; 12],
+            cooks: 0,
+        }
+    }
+
+    /// Where the levels are, for the shaders.
+    pub fn levels(self) -> Levels {
+        self.levels
+    }
+
+    /// The texels, for the shaders.
+    pub fn texels(self) -> std::gpu::GpuSpan<Texel> {
+        self.texels.span(start: 0, count: self.levels.count * STRIDE)
+    }
+
+    /// Level `l`'s spacing.
+    pub fn spacing(self, l: u32) -> f32 {
+        self.finest * f32(1 << l)
+    }
+
+    /// Where level `l` goes when the eye is at `eye`: its texel (0, 0), the level centred on the
+    /// eye snapped to two of its cells.
+    pub fn place(self, l: u32, eye: vec3) -> vec2 {
+        let s = self.spacing(l)
+        let c = floor(eye.xz / (2.0 * s)) * (2.0 * s)
+        c - vec2(f32(QUADS / 2) * s)
+    }
+
+    /// Moves the levels with the eye, cooking each that moves (or that `terrain` changed for,
+    /// when `again`). Records the cooking passes; returns how many levels were cooked.
+    pub fn follow<T: Terrain>(mut self, terrain: T, eye: vec3, again: bool) -> u32 {
+        var cooked = 0
+        for l in 0..self.levels.count {
+            let at = self.place(l, eye)
+            let old = self.levels.at[l]
+            if again || !self.cooked[l] || old.x != at.x || old.y != at.y {
+                let s = self.spacing(l)
+                self.levels.at[l] = vec4(at.x, at.y, s, 0.0)
+                label("terrain cook")
+                dispatch(
+                    cook_level.bind(
+                        terrain,
+                        at: vec4(at.x, at.y, s, 0.0),
+                        out: self.texels.span_mut(start: l * STRIDE, count: STRIDE),
+                    ),
+                    groups: (ROW / 8, ROW / 8, 1),
+                )
+                self.cooked[l] = true
+                cooked += 1
+            }
+        }
+        self.cooks += cooked
+        cooked
+    }
+}
+
+/// A level's texels: the terrain's height, normal and cover at each point of its grid.
+@compute(8, 8)
+pub fn cook_level<T: Terrain>(terrain: T, at: vec4, out: mut Slots<Texel>, id: GlobalId) {
+    if id.x >= SIDE || id.y >= SIDE {
+        return
+    }
+    let s = at.z
+    let x = at.x + f32(id.x) * s
+    let z = at.y + f32(id.y) * s
+    let h = terrain.height(x, z)
+    let n = terrain.normal(x, z, s * 0.5)
+    let c = terrain.cover(vec3(x, h, z), n)
+    // Slot (i, j) is j * ROW + i: the dispatch's rows are ROW wide (`texel_index`).
+    out[id] = Texel {
+        height: h,
+        normal: Oct32::encode(n),
+        cover: Unorm8x4::encode(vec4(sqrt(saturate(c.albedo)), saturate(c.grass))),
+        meadow: Unorm8x4::encode(saturate(vec4(c.tall, c.dry, c.deep, 0.0))),
+        flowers: Unorm8x4::encode(saturate(c.flowers)),
+    }
+}
+
+/// Texel (i, j) of level `l`, as its cook dispatch wrote it (`ROW` to a row).
+pub fn texel_index(l: u32, i: u32, j: u32) -> u32 {
+    l * STRIDE + j * ROW + i
+}
+
+/// Level `l`'s height at (x, z), between its texels (bilinear), from `texels`.
+pub fn level_height(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> f32 {
+    let a = levels.at[l]
+    let g = clamp((xz - a.xy) / a.z, vec2(0.0), vec2(f32(QUADS) - 0.001))
+    let i = floor(g)
+    let f = g - i
+    let (x, y) = (u32(i.x), u32(i.y))
+    let h00 = texels[texel_index(l, x, y)].height
+    let h10 = texels[texel_index(l, x + 1, y)].height
+    let h01 = texels[texel_index(l, x, y + 1)].height
+    let h11 = texels[texel_index(l, x + 1, y + 1)].height
+    mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y)
+}
+
+/// Where a point is in level `l`, as a fraction of the level's half side from its centre:
+/// the larger of |x| and |z| (1 at its edge).
+fn level_reach(levels: Levels, l: u32, xz: vec2) -> f32 {
+    let a = levels.at[l]
+    let half = f32(QUADS / 2) * a.z
+    let d = abs(xz - (a.xy + vec2(half)))
+    max(d.x, d.y) / half
+}
+
+/// How far a point of level `l` has morphed to level `l + 1`: 0 inside the band, 1 at the
+/// level's edge (and 0 for the coarsest level, which has none beyond it).
+fn morph(levels: Levels, l: u32, xz: vec2) -> f32 {
+    if l + 1 >= levels.count {
+        return 0.0
+    }
+    let cells = level_reach(levels, l, xz) * f32(QUADS / 2)
+    saturate((cells - MORPH_FROM) / (MORPH_TO - MORPH_FROM))
+}
+
+/// What the ground's vertex shader passes on: the world point, and the level it's of.
+pub struct GroundVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+}
+
+/// The ground's vertices: level `v / LEVEL_VERTICES`'s quads (those inside the finer level's
+/// square dropped), then its skirts. Each reads its level's texels, morphed in the band at the
+/// level's edge to the coarser level's heights; it never evaluates the field.
+@vertex
+pub fn ground(v: VertexIndex, cam: Camera, levels: Levels, texels: [Texel]) -> GroundVertex {
+    let l = v.index / LEVEL_VERTICES
+    let k = v.index % LEVEL_VERTICES
+    let a = levels.at[l]
+    let s = a.z
+    let qx = [0, 1, 1, 0, 1, 0]
+    let qz = [0, 0, 1, 0, 1, 1]
+    let corner = k % 6
+    let q = k / 6
+    var gx = 0
+    var gz = 0
+    var drop = 0.0
+    var hidden = false
+    if q < QUADS * QUADS {
+        let (cx, cz) = (q % QUADS, q / QUADS)
+        gx = cx + qx[corner]
+        gz = cz + qz[corner]
+        // Inside the finer level's square: the finer level draws it.
+        if l > 0 {
+            let f = levels.at[l - 1]
+            let lo = (f.xy - a.xy) / s
+            let hi = lo + vec2(f32(QUADS / 2))
+            let (x0, z0) = (f32(cx), f32(cz))
+            hidden = x0 >= lo.x - 0.5 &&
+                x0 + 1.0 <= hi.x + 0.5 &&
+                z0 >= lo.y - 0.5 &&
+                z0 + 1.0 <= hi.y + 0.5
+        }
+    } else {
+        // The skirts: a strip of quads along each edge, its far corners hanging below it.
+        let e = q - QUADS * QUADS
+        let side = e / QUADS
+        let i = e % QUADS + qx[corner]
+        let down = qz[corner]
+        if side == 0 {
+            gx = i
+            gz = 0
+        } else if side == 1 {
+            gx = i
+            gz = QUADS
+        } else if side == 2 {
+            gx = 0
+            gz = i
+        } else {
+            gx = QUADS
+            gz = i
+        }
+        drop = f32(down) * SKIRT * s
+    }
+    let xz = a.xy + vec2(f32(gx), f32(gz)) * s
+    var h = texels[texel_index(l, gx, gz)].height
+    let m = morph(levels, l, xz)
+    if m > 0.0 {
+        h = mix(h, level_height(levels, texels, l + 1, xz), m)
+    }
+    let world = vec3(xz.x, h - drop, xz.y)
+    // A dropped quad is a point: nothing drawn.
+    let position = if hidden { vec4(0.0, 0.0, -1.0, 1.0) } else { cam.clip(world) }
+    GroundVertex { clip: ClipPosition { position }, world }
+}
+
+/// The ground at `xz` as the clipmap holds it: its normal, albedo (linear) and grass, from the
+/// finest level that holds the point, blended to the next where that level morphs.
+pub fn ground_at(levels: Levels, texels: [Texel], xz: vec2) -> (vec3, vec3, f32) {
+    var l = 0
+    while l + 1 < levels.count && level_reach(levels, l, xz) > 0.98 {
+        l += 1
+    }
+    let (n0, c0) = level_cover(levels, texels, l, xz)
+    let m = morph(levels, l, xz)
+    var n = n0
+    var c = c0
+    if m > 0.0 {
+        let (n1, c1) = level_cover(levels, texels, l + 1, xz)
+        n = mix(n0, n1, vec3(m))
+        c = mix(c0, c1, vec4(m))
+    }
+    (normalize(n), c.rgb * c.rgb, c.a)
+}
+
+/// Level `l`'s normal and cover at `xz`, between its texels (bilinear).
+fn level_cover(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> (vec3, vec4) {
+    let a = levels.at[l]
+    let g = clamp((xz - a.xy) / a.z, vec2(0.0), vec2(f32(QUADS) - 0.001))
+    let i = floor(g)
+    let f = g - i
+    let (x, y) = (u32(i.x), u32(i.y))
+    let t00 = texels[texel_index(l, x, y)]
+    let t10 = texels[texel_index(l, x + 1, y)]
+    let t01 = texels[texel_index(l, x, y + 1)]
+    let t11 = texels[texel_index(l, x + 1, y + 1)]
+    let n = mix(
+        mix(t00.normal.decode(), t10.normal.decode(), vec3(f.x)),
+        mix(t01.normal.decode(), t11.normal.decode(), vec3(f.x)),
+        vec3(f.y),
+    )
+    let c = mix(
+        mix(t00.cover.decode(), t10.cover.decode(), vec4(f.x)),
+        mix(t01.cover.decode(), t11.cover.decode(), vec4(f.x)),
+        vec4(f.y),
+    )
+    (n, c)
+}
+
+/// The finest level that holds `xz`.
+pub fn level_at(levels: Levels, xz: vec2) -> u32 {
+    var l = 0
+    while l + 1 < levels.count && level_reach(levels, l, xz) > 0.98 {
+        l += 1
+    }
+    l
+}
+
+/// The clipmap's texel nearest `xz` in level `l`: what the grass is placed by.
+pub fn texel_at(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> Texel {
+    let a = levels.at[l]
+    let g = clamp((xz - a.xy) / a.z + vec2(0.5), vec2(0.0), vec2(f32(QUADS)))
+    texels[texel_index(l, u32(g.x), u32(g.y))]
+}
+
+/// The ground's height at `xz` as the clipmap holds it (the finest level holding it).
+pub fn height_at(levels: Levels, texels: [Texel], xz: vec2) -> f32 {
+    var l = 0
+    while l + 1 < levels.count && level_reach(levels, l, xz) > 0.98 {
+        l += 1
+    }
+    level_height(levels, texels, l, xz)
+}
+
+// ---- raycasts (the sim's) -------------------------------------------------------------------
+
+/// Where the ray from `from` along `dir` (a unit vector) first meets the ground, within
+/// `reach` metres: stepping by the gap over the slope's bound, so it never steps through a
+/// rise, then halving the last step to a millimetre.
+pub fn raycast<T: Terrain>(terrain: T, from: vec3, dir: vec3, reach: f32) -> Hit {
+    let rate = abs(dir.y) + terrain.steepest() * length(dir.xz)
+    var t = 0.0
+    var before = 0.0
+    for _ in 0..256 {
+        let p = from + dir * t
+        let gap = p.y - terrain.height(p.x, p.z)
+        if gap <= 0.0 {
+            // Between `before` (above) and `t` (below).
+            var lo = before
+            var hi = t
+            for _ in 0..32 {
+                if hi - lo < 1.0e-4 {
+                    break
+                }
+                let mid = 0.5 * (lo + hi)
+                let q = from + dir * mid
+                if q.y - terrain.height(q.x, q.z) > 0.0 {
+                    lo = mid
+                } else {
+                    hi = mid
+                }
+            }
+            let at = from + dir * hi
+            let h = terrain.height(at.x, at.z)
+            let point = vec3(at.x, h, at.z)
+            return Hit {
+                point,
+                normal: terrain.normal(at.x, at.z, 0.02),
+                distance: hi,
+                hit: true,
+            }
+        }
+        if t >= reach {
+            break
+        }
+        before = t
+        t = min(t + max(gap / max(rate, 1.0e-3), 1.0e-3), reach)
+    }
+    Hit { point: from, normal: vec3(0.0, 1.0, 0.0), distance: reach, hit: false }
+}
+
+/// The ground straight below (or above) `at`: its point and normal.
+pub fn below<T: Terrain>(terrain: T, at: vec3) -> Hit {
+    let h = terrain.height(at.x, at.z)
+    Hit {
+        point: vec3(at.x, h, at.z),
+        normal: terrain.normal(at.x, at.z, 0.02),
+        distance: at.y - h,
+        hit: true,
+    }
+}
+
+/// A grain to break the far ground's flat cover: value noise at `xz` per metre, about 1.
+pub fn grain(xz: vec2, per_metre: f32) -> f32 {
+    0.9 + 0.2 * noise2(xz * per_metre)
+}
+
+// ---- shading ---------------------------------------------------------------------------------
+
+/// The ground's pixel: the clipmap's normal and cover at its point, lit by the world's light,
+/// through the haze. `sun` is how lit it is (shadows), `sky` its sky light (probes).
+pub fn ground_colour(
+    light: Light,
+    cam: Camera,
+    levels: Levels,
+    texels: [Texel],
+    world: vec3,
+    sun: f32,
+    sky: vec3,
+) -> vec3 {
+    let (n, albedo, _) = ground_at(levels, texels, world.xz)
+    let s = Lit { albedo, n, sun, sky, through: vec3(0.0) }
+    hazed(light, light::world(light, s, world, cam.eye), world, cam.eye)
+}
+
+/// The ground drawn with the open sky and no shadows: for tests of the terrain alone.
+@fragment
+pub fn ground_plain(
+    g: GroundVertex,
+    cam: Camera,
+    light: Light,
+    levels: Levels,
+    texels: [Texel],
+) -> vec4 {
+    let (n, _, _) = ground_at(levels, texels, g.world.xz)
+    let c = ground_colour(light, cam, levels, texels, g.world, sun: 1.0, sky: open_sky(light, n))
+    vec4(c, view::GROUND)
+}

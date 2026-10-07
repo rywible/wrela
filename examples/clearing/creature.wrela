@@ -1,0 +1,100 @@
+// The clearing's creature (#28 §8): until the art-directed round's exists, round 1's grazer, as
+// spike 15 drew it (Q4 of #51). Its walk: a trail along the worn track to the great tree's rise,
+// then round toward the gap; its body for walking (springs on its neck and tail); and its look.
+
+use engine::creature::{Creature, Skeleton}
+use engine::gait::{Body, Path, body}
+use engine::look::{CreatureLook, Mesh}
+use engine::render::Look
+use grazer::creature::{Coat, grazer}
+use scene::height
+
+/// Where it starts (spike 15's grazer stood here), and the trail it follows from there, as
+/// points on the plane a Catmull-Rom curve passes through.
+pub const START = vec2(-3.2, 14.5)
+pub const TRAIL = [
+    vec2(-4.6, 11.0),
+    vec2(-3.2, 14.5),
+    vec2(-1.7, 18.8),
+    vec2(1.2, 23.2),
+    vec2(3.6, 27.0),
+    vec2(3.4, 31.0),
+    vec2(0.2, 34.8),
+    vec2(-5.0, 37.8),
+    vec2(-11.0, 40.8),
+    vec2(-16.5, 44.8),
+    vec2(-20.5, 50.0),
+    vec2(-23.0, 56.0),
+]
+
+/// The trail, by distance along it.
+pub struct Trail: Copy {}
+
+/// Segment `i` of the trail (from point `i + 1` to `i + 2`), at `t`.
+fn segment(i: u32, t: f32) -> vec2 {
+    let n = TRAIL.len()
+    let p0 = TRAIL[min(i, n - 1)]
+    let p1 = TRAIL[min(i + 1, n - 1)]
+    let p2 = TRAIL[min(i + 2, n - 1)]
+    let p3 = TRAIL[min(i + 3, n - 1)]
+    let t2 = t * t
+    let t3 = t2 * t
+    0.5 *
+        (2.0 * p1 +
+            (p2 - p0) * t +
+            (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 +
+            (3.0 * p1 - p0 - 3.0 * p2 + p3) * t3)
+}
+
+impl Path for Trail {
+    /// The point `s` metres along the trail from its start: each segment walked in eighths.
+    fn at(self, s: f32) -> vec2 {
+        var left = max(s, 0.0)
+        var prev = segment(0, 0.0)
+        for i in 0..(TRAIL.len() - 3) {
+            for k in 1..9 {
+                let p = segment(i, f32(k) / 8.0)
+                let l = length(p - prev)
+                if left <= l {
+                    return mix(prev, p, vec2(left / max(l, 1.0e-6)))
+                }
+                left -= l
+                prev = p
+            }
+        }
+        prev
+    }
+}
+
+/// The creature, its body for walking: springs on its neck (to its head) and its tail.
+pub fn walker_body() -> Body {
+    let s = grazer().skeleton()
+    let head = [
+        s.find("neck 0"),
+        s.find("neck 1"),
+        s.find("neck 2"),
+        s.find("neck 3"),
+        s.find("head"),
+    ]
+    let tail = [
+        s.find("tail 0"),
+        s.find("tail 1"),
+        s.find("tail 2"),
+        s.find("tail 3"),
+        s.find("tail 4"),
+        s.find("tail 5"),
+    ]
+    body(s, head, tail, head_k: 70.0, tail_k: 28.0)
+}
+
+/// How it's realized: 1 cm cells (its size on screen asks no finer).
+pub const REALIZED = CreatureLook { surface: Mesh { tolerance: 1cm } }
+
+/// Its colours: round 1's browns, warmed and lifted toward a fawn's (spike 15's).
+pub struct Fawn: Copy + GpuData {}
+
+impl Look<Coat> for Fawn {
+    fn surface(self, c: Coat, rest: vec3, fp: f32) -> (vec3, f32) {
+        (vec3(c.albedo.r, c.albedo.g, c.albedo.b) * vec3(2.6, 2.3, 1.8), 0.7)
+    }
+}

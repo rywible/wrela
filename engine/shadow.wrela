@@ -1,0 +1,151 @@
+// Sun shadows (#28 §5.1): two static cascades, one over the near land and one over the far,
+// drawn only when something static changes (spike 15: drawing them every frame cost 11 ms); and
+// a dynamic map over the space round what moves (the creature), drawn every frame. A lookup
+// reads both and takes the darker. Edges are softened by a disc of comparison taps, turned each
+// frame, which temporal AA averages.
+
+use std::gpu::{ComparisonSampler, DepthTexture}
+use std::math::TAU
+use std::transform::{look_at, ortho}
+use view::Camera
+
+/// The sun's views: each map's light-space-to-clip matrix, the basis the sun sees (for cards
+/// that face it), toward it, the frame's tap turn, and each map's texel size (m).
+pub struct Shadows: Copy + GpuData {
+    pub near: mat4,
+    pub far: mat4,
+    pub moving: mat4,
+    pub right: vec3,
+    pub turn: f32,
+    pub up: vec3,
+    pub near_texel: f32,
+    pub toward: vec3,
+    pub far_texel: f32,
+    pub moving_texel: f32,
+}
+
+/// Where the static cascades are: each a square `span` metres wide round `centre`, seen from
+/// `reach` metres toward the sun, `side` texels a side.
+pub struct Cascade: Copy {
+    pub centre: vec3,
+    pub span: f32,
+    pub reach: f32,
+    pub side: u32,
+}
+
+/// The sun's view of a square round `centre`, `span` wide, from `reach` toward `sun`.
+pub fn sun_view(sun: vec3, centre: vec3, span: f32, reach: f32) -> mat4 {
+    let h = span * 0.5
+    ortho(left: -h, right: h, bottom: -h, top: h, near: 1.0, far: 2.0 * reach) *
+        look_at(centre + sun * reach, centre)
+}
+
+/// The shadows for a frame: the static cascades `near` and `far`, and the moving map round
+/// `moving_at`, `moving_span` wide, `moving_side` texels a side.
+pub fn shadows(
+    sun: vec3,
+    near: Cascade,
+    far: Cascade,
+    moving_at: vec3,
+    moving_span: f32,
+    moving_side: u32,
+    frame: u32,
+) -> Shadows {
+    let s = normalize(sun)
+    let fwd = -s
+    let right = normalize(cross(fwd, vec3(0.0, 1.0, 0.0)))
+    let up = cross(right, fwd)
+    // The moving map's centre snapped to its texels, so its edges don't crawl as it follows.
+    let texel = moving_span / f32(moving_side)
+    let snapped = vec3(
+        floor(dot(moving_at, right) / texel) * texel,
+        floor(dot(moving_at, up) / texel) * texel,
+        dot(moving_at, fwd),
+    )
+    let centre = right * snapped.x + up * snapped.y + fwd * snapped.z
+    Shadows {
+        near: sun_view(s, near.centre, near.span, near.reach),
+        far: sun_view(s, far.centre, far.span, far.reach),
+        moving: sun_view(s, centre, moving_span, 40.0),
+        right,
+        turn: TAU * noise::rand(frame, 3),
+        up,
+        near_texel: near.span / f32(near.side),
+        toward: s,
+        far_texel: far.span / f32(far.side),
+        moving_texel: texel,
+    }
+}
+
+/// The 4 taps of a disc, in texels; turned each frame.
+const TAPS = [vec2(0.5, 0.2), vec2(-0.6, 0.9), vec2(-0.9, -0.7), vec2(0.8, -1.1)]
+
+/// How lit `p` is in one map (`view`'s), `soft` texels of penumbra, biased `bias` in depth.
+fn lookup(
+    sh: Shadows,
+    view: mat4,
+    map: DepthTexture,
+    s: ComparisonSampler,
+    p: vec3,
+    soft: f32,
+    bias: f32,
+) -> (f32, bool) {
+    let lp = view * vec4(p, 1.0)
+    let uv = vec2(lp.x * 0.5 + 0.5, lp.y * -0.5 + 0.5)
+    let inside = uv.x > 0.01 &&
+        uv.x < 0.99 &&
+        uv.y > 0.01 &&
+        uv.y < 0.99 &&
+        lp.z < 1.0 &&
+        lp.z > 0.0
+    if !inside {
+        return (1.0, false)
+    }
+    let (c, sn) = (cos(sh.turn), sin(sh.turn))
+    let texel = soft / f32(map.width())
+    var lit = 0.0
+    for t in TAPS {
+        let o = vec2(c * t.x - sn * t.y, sn * t.x + c * t.y) * texel
+        lit += map.sample_compare_level(s, uv + o, lp.z - bias)
+    }
+    (lit / 4.0, true)
+}
+
+/// How lit `world` is by the sun (0 to 1), its normal `n`: the static cascades (the near one
+/// where it holds the point, else the far) and the moving map, the darker of the two; `soft`
+/// texels of penumbra.
+pub fn sunlit(
+    sh: Shadows,
+    world: vec3,
+    n: vec3,
+    near: DepthTexture,
+    far: DepthTexture,
+    moving: DepthTexture,
+    s: ComparisonSampler,
+    soft: f32,
+) -> f32 {
+    let (a, inside) = lookup(
+        sh,
+        sh.near,
+        near,
+        s,
+        world + n * (sh.near_texel * 1.2),
+        soft,
+        bias: 0.0004,
+    )
+    var lit = a
+    if !inside {
+        let (b, _) = lookup(sh, sh.far, far, s, world + n * (sh.far_texel * 1.2), 1.5, bias: 0.0006)
+        lit = b
+    }
+    let (m, _) = lookup(
+        sh,
+        sh.moving,
+        moving,
+        s,
+        world + n * (sh.moving_texel * 1.5),
+        1.5,
+        bias: 0.0008,
+    )
+    min(lit, m)
+}

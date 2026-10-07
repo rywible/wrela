@@ -1,0 +1,223 @@
+// The clearing's trees (#28 §1, §4): the great tree on its rise, the forest wall round the
+// meadow (broad-leaved trees 11–19 m, their crowns low and wide at the edge), shrubs along it,
+// and trees down the valley. Each is a plant (`engine::plant`), cooked once as a kind; the forest
+// places instances of the kinds, turned, scaled and tinted.
+
+use engine::noise::{noise2, pick, rand}
+use engine::plant::{Bark, Instance, Leaves, Plant, plant}
+use engine::vegetation::Placed
+use scene::{KNOLL, MEADOW, STAND, height, in_gap, past_edge}
+use std::math::TAU
+
+/// The great tree: a short, broad trunk; five limbs; a wide dome of clumps (#28 §1, §9).
+pub fn great_tree() -> Plant {
+    var p = plant(leaves: Leaves { size: 0.85, cover: 1.9 }, bark: Bark {})
+    let base = vec3(0.0, -0.3, 0.0)
+    let fork = base + vec3(0.2, 4.2, -0.1)
+    p.straight(base - vec3(0.0, 0.5, 0.0), base + vec3(0.0, 1.1, 0.0), r_from: 1.25, r_to: 0.7)
+    p.straight(base + vec3(0.0, 0.8, 0.0), fork, r_from: 0.72, r_to: 0.55)
+    let dome = base + vec3(0.0, 9.6, 0.0)
+    for i in 0..5 {
+        let a = TAU * (f32(i) + 0.3) / 5.0 + pick(31, i, lo: -0.3, hi: 0.3)
+        let out = vec3(cos(a), 0.0, sin(a))
+        let mid = fork + out * 3.2 + vec3(0.0, 2.6, 0.0)
+        let tip = fork + out * 6.6 + vec3(0.0, 4.4 + pick(33, i, lo: -0.8, hi: 0.8), 0.0)
+        p.limb(fork, mix(fork, mid, vec3(0.5)) + vec3(0.0, 0.3, 0.0), mid, r_from: 0.42, r_to: 0.3)
+        p.limb(mid, mix(mid, tip, vec3(0.5)) + vec3(0.0, 0.2, 0.0), tip, r_from: 0.3, r_to: 0.14)
+        let side = vec3(-out.z, 0.0, out.x)
+        p.straight(mid, mid + side * 2.2 + out * 1.5 + vec3(0.0, 2.0, 0.0), r_from: 0.2, r_to: 0.09)
+        p.straight(
+            mid,
+            mid - side * 2.0 + out * 1.8 + vec3(0.0, 1.4, 0.0),
+            r_from: 0.18,
+            r_to: 0.08,
+        )
+        let low = fork + out * 1.6 + vec3(0.0, 0.8, 0.0)
+        p.straight(low, low + out * 3.2 + side * 0.8 + vec3(0.0, 0.9, 0.0), r_from: 0.2, r_to: 0.07)
+    }
+    for i in 0..34 {
+        let u = rand(41, i)
+        let a = TAU * rand(43, i)
+        // On a squashed dome: wide and flat-topped, open underneath.
+        let up = 0.15 + 0.85 * u
+        let r = sqrt(1.0 - up * up)
+        let at = dome + vec3(r * cos(a) * 8.0, (up - 0.35) * 5.0, r * sin(a) * 8.0)
+        p.clump(at, radius: pick(47, i, lo: 2.3, hi: 3.4))
+    }
+    p
+}
+
+/// A forest tree, seed `s`: a trunk, a few limbs, and a crown of clumps. At the forest's edge
+/// (`edge` 1) the crown comes down low and wide, as edge trees grow toward the light.
+pub fn forest_tree(s: u32, edge: f32) -> Plant {
+    var p = plant(leaves: Leaves { size: 1.05, cover: 1.5 }, bark: Bark {})
+    let tall = pick(s, 1, lo: 11.0, hi: 19.0)
+    let width = tall * mix(pick(s, 2, lo: 0.28, hi: 0.42), pick(s, 2, lo: 0.4, hi: 0.5), edge)
+    let crown_y = tall * mix(pick(s, 3, lo: 0.6, hi: 0.68), pick(s, 3, lo: 0.42, hi: 0.52), edge)
+    let top = vec3(0.0, crown_y, 0.0)
+    let lean = vec3(pick(s, 4, lo: -0.6, hi: 0.6), 0.0, pick(s, 5, lo: -0.6, hi: 0.6))
+    p.straight(vec3(0.0, -0.4, 0.0), top + lean, r_from: tall * 0.028, r_to: tall * 0.012)
+    let count = u32(pick(s, 8, lo: 6.0, hi: 12.0) * (1.0 + 0.6 * edge))
+    let half = tall - crown_y
+    for i in 0..count {
+        let a = TAU * rand(s, 20 + i)
+        let up = pick(s, 40 + i, lo: -0.5 - 0.4 * edge, hi: 1.0)
+        let r = sqrt(max(1.0 - up * up, 0.0)) * pick(s, 60 + i, lo: 0.5, hi: 1.0)
+        let at = top + lean + vec3(r * cos(a) * width, up * half, r * sin(a) * width)
+        p.clump(at, radius: pick(s, 80 + i, lo: 1.6, hi: 2.6))
+        if i < 4 {
+            let from = vec3(0.0, crown_y * 0.7, 0.0)
+            p.limb(
+                from,
+                mix(from, at, vec3(0.5)) + vec3(0.0, 0.6, 0.0),
+                at,
+                r_from: tall * 0.012,
+                r_to: 0.05,
+            )
+        }
+    }
+    p
+}
+
+/// A shrub, seed `s`: a low mound of clumps, no trunk to see.
+pub fn shrub(s: u32) -> Plant {
+    var p = plant(leaves: Leaves { size: 0.75, cover: 1.6 }, bark: Bark {})
+    let size = pick(s, 1, lo: 0.9, hi: 2.2)
+    let count = u32(pick(s, 2, lo: 4.0, hi: 9.0))
+    for i in 0..count {
+        let a = TAU * rand(s, 10 + i)
+        let r = size * 1.2 * rand(s, 20 + i)
+        let at = vec3(r * cos(a) * 1.4, size * pick(s, 30 + i, lo: 0.3, hi: 1.0), r * sin(a) * 1.4)
+        p.clump(at, radius: size * pick(s, 40 + i, lo: 0.5, hi: 1.0))
+    }
+    p
+}
+
+/// A far tree, seed `s`: one crown of three clumps, no trunk to see.
+pub fn far_tree(s: u32) -> Plant {
+    var p = plant(leaves: Leaves { size: 2.4, cover: 1.2 }, bark: Bark {})
+    let tall = pick(s, 1, lo: 12.0, hi: 18.0)
+    for i in 0..3 {
+        let at = vec3(
+            pick(s, 10 + i, lo: -2.0, hi: 2.0),
+            tall * pick(s, 20 + i, lo: 0.55, hi: 0.8),
+            pick(s, 30 + i, lo: -2.0, hi: 2.0),
+        )
+        p.clump(at, radius: pick(s, 40 + i, lo: 2.6, hi: 3.6))
+    }
+    p
+}
+
+/// The kinds: the great tree, then the forest's trees (three at the edge, three within), the
+/// shrubs, and the far trees.
+pub const GREAT: u32 = 0
+pub const EDGE_TREES: u32 = 1
+pub const INNER_TREES: u32 = 4
+pub const SHRUBS: u32 = 7
+pub const FAR_TREES: u32 = 10
+pub const KINDS: u32 = 12
+
+/// Kind `k`'s plant.
+pub fn kind_plant(k: u32) -> Plant {
+    if k == GREAT {
+        great_tree()
+    } else if k < INNER_TREES {
+        forest_tree(100 + k, edge: 0.85)
+    } else if k < SHRUBS {
+        forest_tree(200 + k, edge: 0.15)
+    } else if k < FAR_TREES {
+        shrub(300 + k)
+    } else {
+        far_tree(400 + k)
+    }
+}
+
+/// A random tint for an instance: its leaves a little warmer or cooler.
+fn tint(s: u32) -> vec3 {
+    vec3(pick(s, 6, lo: -0.05, hi: 0.06), pick(s, 7, lo: -0.06, hi: 0.04), 0.0)
+}
+
+/// An instance of a kind at (x, z) on the ground, seed `s`, scaled about `scale`.
+fn at(kind: u32, x: f32, z: f32, s: u32, scale: f32) -> Placed {
+    Placed {
+        kind,
+        at: Instance {
+            at: vec3(x, height(x, z), z),
+            yaw: TAU * rand(s, 90),
+            tint: tint(s),
+            scale: scale * pick(s, 91, lo: 0.88, hi: 1.12),
+        },
+    }
+}
+
+/// Where the forest's instances stand: the great tree on its rise; trees round the meadow on a
+/// jittered 6 m grid (edge kinds near the meadow, inner kinds behind), shrubs along its edge and
+/// along the plateau's edge in the gap; and far trees down the valley's slopes and floor.
+pub fn placed() -> Vec<Placed> {
+    var out: Vec<Placed> = Vec::new()
+    out.push(
+        Placed {
+            kind: GREAT,
+            at: Instance {
+                at: vec3(KNOLL.x, height(KNOLL.x, KNOLL.y), KNOLL.y),
+                yaw: 0.0,
+                tint: vec3(0.0),
+                scale: 1.0,
+            },
+        },
+    )
+    let e = vec2(STAND.x, STAND.y)
+    let cell = 6.0
+    var s = 1000
+    for i in 0..48 {
+        for j in 0..30 {
+            s += 1
+            let x = -150.0 + (f32(i) + pick(s, 90, lo: 0.1, hi: 0.9)) * cell
+            let z = -14.0 + (f32(j) + pick(s, 91, lo: 0.1, hi: 0.9)) * cell
+            let p = vec2(x, z)
+            let r = length(p - MEADOW)
+            let rim = 25.0 + 10.0 * noise2(p * 0.05)
+            let past = past_edge(p)
+            let a = atan2(x - e.x, z - e.y)
+            let gap = in_gap(x, z) && length(p - e) > 14.0
+            let near_great = length(p - KNOLL) < 16.0
+            let near_eye = length(p - e) < 13.0
+            if abs(a) < 1.3 && past < -6.0 && !gap && !near_great && !near_eye {
+                if r > rim && rand(s, 92) < 0.9 {
+                    let edge = 1.0 - smoothstep(rim + 6.0, rim + 22.0, r)
+                    let first = if edge > 0.5 { EDGE_TREES } else { INNER_TREES }
+                    out.push(at(first + s % 3, x, z, s, scale: 1.0))
+                }
+                if r > rim - 5.0 && r < rim + 6.0 {
+                    for k in 0..3 {
+                        let q = p +
+                            vec2(
+                                pick(s, 96 + k, lo: -3.0, hi: 3.0),
+                                pick(s, 98 + k, lo: -3.0, hi: 3.0),
+                            )
+                        out.push(at(SHRUBS + (s + k) % 3, q.x, q.y, s * 3 + k, scale: 1.0))
+                    }
+                }
+            }
+            if gap && past > -10.0 && past < -1.0 && rand(s, 97) < 0.7 {
+                out.push(at(SHRUBS + s % 3, x, z, s * 5, scale: 1.0))
+            }
+        }
+    }
+    // The far trees, down the valley's slopes and over its floor.
+    let far_cell = 13.0
+    for i in 0..80 {
+        for j in 0..60 {
+            s += 1
+            let x = -820.0 + (f32(i) + rand(s, 93)) * far_cell
+            let z = 40.0 + (f32(j) + rand(s, 94)) * far_cell
+            let past = past_edge(vec2(x, z))
+            let a = atan2(x - e.x, z - e.y)
+            let dense = noise2(vec2(x, z) * 0.01)
+            if past > 14.0 && a < 0.2 && a > -0.95 && rand(s, 95) < smoothstep(0.3, 0.7, dense) {
+                out.push(at(FAR_TREES + s % 2, x, z, s, scale: 1.0))
+            }
+        }
+    }
+    out
+}

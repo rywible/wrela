@@ -1,0 +1,259 @@
+// The look's passes (#28 §7): the owner's pick, gouache and light for the world, cel for
+// characters. They run after temporal AA, at the output's resolution, on its colour, the scene's
+// depth and the tags.
+//
+// - The world: brush dabs anchored on its surfaces (spike 12's stroke cells: space cut into
+//   cells in the surface's plane, each holding one stroke), moving the paint's value and hue a
+//   little; stronger on broad areas (far ground, crowns, the sky, whose dabs are anchored to
+//   directions) so the painted feel shows at a glance. A paper's tooth anchored in the world too
+//   (Q6 of #51: a grain anchored to the screen is a shower door in motion).
+// - Characters: their two bands are their shading's (`light::character`); here, thin lines in a
+//   darker shade of their colour on their silhouettes and where their parts meet (from the
+//   depth and the tags), and the world's dabs at half strength.
+// - Bloom: the bright light, brought down to a quarter and blurred; then the tone curve.
+//
+// Every texture the look lays on is anchored in the world (AC1).
+
+use light::{Light, display}
+use noise::{hash2, noise3}
+use std::gpu::{DepthTexture, FragCoord, Texture}
+use view::{CREATURE, Camera, class_of}
+
+/// The look's settings: how strong the dabs are on near surfaces, on broad far ones and on the
+/// sky; the paper's tooth; the bloom; the characters' lines (their width in output pixels, and
+/// how dark); how much the edges sharpen; and the vignette.
+pub struct Look: Copy + GpuData {
+    pub dabs_near: f32 = 0.16,
+    pub dabs_far: f32 = 0.30,
+    pub dabs_sky: f32 = 0.10,
+    pub dab_px: f32 = 18.0,
+    pub tooth: f32 = 0.06,
+    pub bloom: f32 = 0.18,
+    pub line_px: f32 = 1.6,
+    pub line_dark: f32 = 0.45,
+    pub sharpen: f32 = 0.25,
+    pub vignette: f32 = 0.28,
+}
+
+/// The strokes at `q` (in cells): the value of the one that covers it most, of the four cells
+/// nearest it (a stroke reaches less than a cell from its centre's cell), in [-1, 1].
+fn strokes(q: vec2) -> f32 {
+    let c = floor(q - vec2(0.5))
+    var best = 0.0
+    var value = 0.0
+    for j in 0..2 {
+        for i in 0..2 {
+            let cell = c + vec2(f32(i), f32(j))
+            let (x, y) = (i32(cell.x), i32(cell.y))
+            let centre = cell + vec2(0.25, 0.25) + 0.5 * vec2(hash2(x, y), hash2(y + 71, x + 13))
+            let a = 0.5 + 0.6 * (hash2(x + 5, y + 9) - 0.5)
+            let dir = vec2(cos(a), sin(a))
+            let d = q - centre
+            let along = dot(d, dir) / 0.62
+            let across = dot(d, vec2(-dir.y, dir.x)) / 0.3
+            let cover = 1.0 - (along * along + across * across)
+            let w = smoothstep(0.0, 0.25, cover) * (0.5 + hash2(x + 3, y + 1))
+            if w > best {
+                best = w
+                value = hash2(x + 31, y + 17) * 2.0 - 1.0
+            }
+        }
+    }
+    value * smoothstep(0.0, 0.4, best)
+}
+
+/// Brush dabs on a surface at `world` whose normal is `n`, about `px` pixels long wherever
+/// they're seen (a pixel `footprint` metres wide there): in [-1, 1]. Two sizes of cells, a
+/// power of two apart, blended by distance (Bénard et al. 2009), so the dabs keep their size on
+/// screen and stay on the surface.
+pub fn dabs(world: vec3, n: vec3, footprint: f32, px: f32) -> f32 {
+    let s = max(footprint * px, 1.0e-4)
+    let l = log2(s)
+    let f = fract(l)
+    let s0 = exp2(floor(l))
+    let t1 = normalize(cross(n, vec3(0.3, 0.2, 1.0)))
+    let t2 = cross(n, t1)
+    let q = vec2(dot(world, t1), dot(world, t2) + dot(world, n) * 0.5)
+    mix(strokes(q / s0), strokes(q / (2.0 * s0) + vec2(17.0, 5.0)), f)
+}
+
+/// The paper's tooth at `world`, `footprint` metres a pixel: a fine grain, a few pixels across
+/// wherever it's seen, anchored on the surface (two octaves blended by distance), about 0.
+fn tooth(world: vec3, footprint: f32) -> f32 {
+    let s = max(footprint * 2.5, 1.0e-4)
+    let l = log2(s)
+    let f = fract(l)
+    let s0 = exp2(floor(l))
+    mix(noise3(world / s0), noise3(world / (2.0 * s0) + vec3(9.0, 3.0, 5.0)), f) - 0.5
+}
+
+/// A quarter-resolution texel of the glow: the mean of the 4×4 texels under it of `image`'s
+/// light above `threshold`.
+@fragment
+pub fn glow_down(pixel: FragCoord, image: Texture, threshold: f32) -> vec4 {
+    let base = vec2u(pixel.position.xy) * 4
+    let size = vec2u(image.width() - 1, image.height() - 1)
+    var s = vec3(0.0)
+    for j in 0..4 {
+        for i in 0..4 {
+            let p = min(base + vec2u(i, j), size)
+            let c = image.load(x: p.x, y: p.y).rgb
+            s += max(c - vec3(threshold), vec3(0.0))
+        }
+    }
+    vec4(s / 16.0, 1.0)
+}
+
+/// A 13-tap Gaussian blur along x (`across` 0) or y (1), `spread` texels a tap.
+@fragment
+pub fn glow_blur(pixel: FragCoord, src: Texture, across: u32, spread: f32) -> vec4 {
+    let p = vec2i(pixel.position.xy)
+    let w = [0.1964, 0.1748, 0.1232, 0.0687, 0.0303, 0.0106, 0.0029]
+    let (wi, hi) = (i32(src.width()) - 1, i32(src.height()) - 1)
+    var s = src.load(x: u32(p.x), y: u32(p.y)).rgb * w[0]
+    for k in 1..7 {
+        let o = i32(round(f32(k) * spread))
+        let d = select(if_false: vec2i(o, 0), if_true: vec2i(0, o), cond: across == 1)
+        let a = clamp(p + d, vec2i(0), vec2i(wi, hi))
+        let b = clamp(p - d, vec2i(0), vec2i(wi, hi))
+        s += (src.load(x: u32(a.x), y: u32(a.y)).rgb + src.load(x: u32(b.x), y: u32(b.y)).rgb) *
+            w[k]
+    }
+    vec4(s, 1.0)
+}
+
+/// What the look's pass reads besides its textures: the scene's camera (unjittered: the output
+/// is), the light (its tone curve), the look, and the output's size.
+pub struct Develop: Copy + GpuData {
+    pub cam: Camera,
+    pub light: Light,
+    pub look: Look,
+    pub out: vec2,
+}
+
+/// The scene's depth nearest an output pixel's centre `px`, and where in the scene that is.
+fn depth_at(d: Develop, depth: DepthTexture, px: vec2) -> (f32, vec2) {
+    let scale = d.cam.screen / d.out
+    let q = px * scale
+    let p = min(vec2u(q), vec2u(d.cam.screen) - vec2u(1))
+    (depth.load(x: p.x, y: p.y), q)
+}
+
+/// The world point the unjittered ray through scene point `q` meets at depth `z`, and the ray.
+fn world_at(cam: Camera, q: vec2, z: f32) -> (vec3, vec3) {
+    let ndc = vec2(q.x / cam.screen.x * 2.0 - 1.0, 1.0 - q.y / cam.screen.y * 2.0)
+    let ray = normalize(
+        cam.forward +
+            cam.right * (ndc.x * cam.tan_half * cam.aspect) +
+            cam.up * (ndc.y * cam.tan_half),
+    )
+    (cam.eye + ray * (cam.distance_of(z) / dot(ray, cam.forward)), ray)
+}
+
+/// How much of a character's line the output pixel at `p` is (on the character's own pixels,
+/// so the line is a darker shade of its colour): where a neighbour `line_px` away is well behind
+/// it (its silhouette), or is another of its parts a little behind it (where a part passes in
+/// front of another).
+fn line(
+    d: Develop,
+    image: Texture,
+    depth: DepthTexture,
+    p: vec2,
+    here_tag: f32,
+    here_z: f32,
+) -> f32 {
+    if class_of(here_tag) != class_of(CREATURE) {
+        return 0.0
+    }
+    let r = d.look.line_px
+    let near = d.cam.distance_of(here_z)
+    var line = 0.0
+    for k in 0..4 {
+        let a = f32(k) * 1.5707964 + 0.4
+        let q = clamp(p + vec2(cos(a), sin(a)) * r, vec2(0.0), d.out - vec2(1.0))
+        let other = image.load(x: u32(q.x), y: u32(q.y)).a
+        let (z, _) = depth_at(d, depth, q)
+        let there = d.cam.distance_of(z)
+        let other_char = class_of(other) == class_of(CREATURE)
+        // Its silhouette: the neighbour isn't it, and is well behind it.
+        let behind = if !other_char { smoothstep(0.03, 0.12, (there - near) / near) } else { 0.0 }
+        // Where one of its parts passes in front of another (a leg against its body): another
+        // part, a little behind.
+        let parts = if other_char && abs(other - here_tag) > 0.5 {
+            smoothstep(0.004, 0.02, (there - near) / near)
+        } else {
+            0.0
+        }
+        line = max(line, max(behind, parts * 0.8))
+    }
+    line
+}
+
+/// The output pixel, painted: the dabs on its surface (or its sky direction) and the paper's
+/// tooth, the bloom, the characters' lines, a little sharpening, the tone curve and a vignette.
+@fragment
+pub fn develop(
+    pixel: FragCoord,
+    d: Develop,
+    image: Texture,
+    depth: DepthTexture,
+    glow: Texture,
+) -> vec4 {
+    let px = pixel.position.xy
+    let p = vec2u(px)
+    let here = image.load(x: p.x, y: p.y)
+    let look = d.look
+    let class = class_of(here.a)
+    // A little sharpening against temporal AA's softness: the pixel against its cross.
+    let size = vec2u(d.out) - vec2u(1)
+    let n1 = image.load(x: min(p.x + 1, size.x), y: p.y).rgb
+    let n2 = image.load(x: max(p.x, 1) - 1, y: p.y).rgb
+    let n3 = image.load(x: p.x, y: min(p.y + 1, size.y)).rgb
+    let n4 = image.load(x: p.x, y: max(p.y, 1) - 1).rgb
+    var paint = max(
+        here.rgb + (here.rgb * 4.0 - (n1 + n2 + n3 + n4)) * (look.sharpen * 0.25),
+        vec3(0.0),
+    )
+    let (z, q) = depth_at(d, depth, px)
+    let (world, ray) = world_at(d.cam, q, max(z, 1.0e-9))
+    if class == 0 {
+        // The sky: dabs anchored to directions, a pixel's angle being its footprint at 1 m.
+        let footprint = 2.0 * d.cam.tan_half / d.out.y
+        let n = -ray
+        let dab = dabs(ray * 1.0, n, footprint, look.dab_px * 1.6)
+        paint = paint * (1.0 + look.dabs_sky * dab) * vec3(1.0 + 0.03 * dab, 1.0, 1.0 - 0.03 * dab)
+    } else {
+        let dist = d.cam.distance_of(z)
+        let footprint = dist * 2.0 * d.cam.tan_half / d.out.y
+        // The surface's normal from the scene's depths beside it.
+        let (zx, qx) = depth_at(d, depth, px + vec2(2.0, 0.0))
+        let (zy, qy) = depth_at(d, depth, px + vec2(0.0, 2.0))
+        let (wx, _) = world_at(d.cam, qx, max(zx, 1.0e-9))
+        let (wy, _) = world_at(d.cam, qy, max(zy, 1.0e-9))
+        var n = normalize(cross(wy - world, wx - world) + vec3(0.0, 1.0e-6, 0.0))
+        if dot(n, d.cam.eye - world) < 0.0 {
+            n = -n
+        }
+        // Broad things take stronger dabs: the far ground, crowns.
+        let broad = if class == 3 { 1.0 } else { smoothstep(30.0, 250.0, dist) }
+        var strength = mix(look.dabs_near, look.dabs_far, broad)
+        if class == class_of(CREATURE) {
+            strength *= 0.5
+        }
+        let dab = dabs(world, n, footprint, look.dab_px)
+        paint = paint * (1.0 + strength * dab) * vec3(1.0 + 0.04 * dab, 1.0, 1.0 - 0.05 * dab)
+        paint = paint * (1.0 + look.tooth * tooth(world, footprint))
+    }
+    // Bloom.
+    let gq = min(vec2u(px / 4.0), vec2u(glow.width() - 1, glow.height() - 1))
+    paint += glow.load(x: gq.x, y: gq.y).rgb * look.bloom
+    var c = display(d.light, paint)
+    // The characters' lines: a darker shade of their colour.
+    let l = line(d, image, depth, px, here.a, z)
+    if l > 0.0 {
+        c = mix(c, c * look.line_dark, vec3(l))
+    }
+    let uv = px / d.out - vec2(0.5)
+    c = c * (1.0 - look.vignette * dot(uv, uv))
+    vec4(c, 1.0)
+}

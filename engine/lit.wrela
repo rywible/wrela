@@ -1,0 +1,45 @@
+// What every surface's shading reads (#28 §5): the frame's camera and light, the sun's shadows,
+// the probes' sky light and the clouds' shadows, gathered in one uniform block, with the
+// textures and buffers beside it. A shading pass binds these, and asks `sun_at` and `sky_at`.
+
+use light::Light
+use probes::{Probe, ProbeGrid, sky_light}
+use shadow::{Shadows, sunlit}
+use sky::{Cook, cloud_shadow}
+use std::gpu::{ComparisonSampler, DepthTexture, Sampler, Texture}
+use terrain::{Levels, Texel}
+use view::Camera
+
+/// The frame's lighting, one uniform block: the camera, the light, the shadows, the probes'
+/// grid, the clouds' cooking (for their shadow map), and the clipmap's levels.
+pub struct Lighting: Copy + GpuData {
+    pub cam: Camera,
+    pub light: Light,
+    pub shadows: Shadows,
+    pub grid: ProbeGrid,
+    pub clouds: Cook,
+    pub levels: Levels,
+}
+
+/// How much sun reaches `world` (0 to 1), its normal `n`: the shadow maps', `soft` texels of
+/// penumbra, times the clouds' shadow.
+pub fn sun_at(
+    l: Lighting,
+    world: vec3,
+    n: vec3,
+    near: DepthTexture,
+    far: DepthTexture,
+    moving: DepthTexture,
+    cmp: ComparisonSampler,
+    clouds: Texture,
+    s: Sampler,
+    soft: f32,
+) -> f32 {
+    sunlit(l.shadows, world, n, near, far, moving, cmp, soft) *
+        cloud_shadow(l.clouds, clouds, s, world)
+}
+
+/// The sky light (and bounce) at `world` for a surface facing `n`, from the probes.
+pub fn sky_at(l: Lighting, probes: [Probe], texels: [Texel], world: vec3, n: vec3) -> vec3 {
+    sky_light(l.grid, probes, l.light, l.levels, texels, world, n)
+}

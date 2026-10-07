@@ -1,0 +1,69 @@
+// The camera's path (#51, Method): 60 s, scripted. Spike 15's shot for the first 2 s; then a
+// slow follow of the creature along the track; a turn toward the gap; and a pan up the great
+// tree. Each part eases into the next.
+
+use scene::{KNOLL, LOOK_AT, height, start_eye}
+
+/// The path's length (s), and when each part begins.
+pub const LENGTH: f32 = 60.0
+const FOLLOW: f32 = 2.0
+const GAP: f32 = 36.0
+const TREE: f32 = 47.0
+
+/// An eye and where it looks.
+pub struct Shot: Copy {
+    pub eye: vec3,
+    pub at: vec3,
+}
+
+fn ease(a: f32, b: f32, t: f32) -> f32 {
+    smoothstep(a, b, t)
+}
+
+fn blend(a: Shot, b: Shot, f: f32) -> Shot {
+    Shot { eye: mix(a.eye, b.eye, vec3(f)), at: mix(a.at, b.at, vec3(f)) }
+}
+
+/// Spike 15's shot.
+pub fn opening() -> Shot {
+    Shot { eye: start_eye(), at: LOOK_AT }
+}
+
+/// Following the creature at `c` (its body, on the ground) facing `heading`: from behind it and
+/// to its right, a little above, looking past it along its way.
+fn follow(c: vec3, heading: f32) -> Shot {
+    let f = vec3(sin(heading), 0.0, cos(heading))
+    let right = vec3(f.z, 0.0, -f.x)
+    let eye_xz = c.xz - f.xz * 6.5 - right.xz * 2.6
+    let eye = vec3(eye_xz.x, height(eye_xz.x, eye_xz.y) + 1.9, eye_xz.y)
+    Shot { eye, at: c + f * 3.0 + vec3(0.0, 0.9, 0.0) }
+}
+
+/// Toward the gap: from the meadow's far side, looking down the valley to the mountain.
+fn gap(t: f32) -> Shot {
+    let s = ease(GAP, TREE, t)
+    let from = vec2(-9.0, 34.0)
+    let eye = vec3(from.x, height(from.x, from.y) + 1.8, from.y)
+    let look = mix(vec3(-30.0, 2.0, 60.0), vec3(-600.0, -30.0, 900.0), vec3(s))
+    Shot { eye, at: look }
+}
+
+/// Up the great tree: from near its rise, the look rising from its trunk to its crown.
+fn tree(t: f32) -> Shot {
+    let s = ease(TREE + 1.0, LENGTH, t)
+    let from = vec2(-1.5, 24.0)
+    let eye = vec3(from.x, height(from.x, from.y) + 1.6, from.y)
+    let base = vec3(KNOLL.x, height(KNOLL.x, KNOLL.y), KNOLL.y)
+    Shot { eye, at: mix(base + vec3(0.0, 2.0, 0.0), base + vec3(0.0, 13.0, 0.0), vec3(s)) }
+}
+
+/// The shot `t` seconds into the path, the creature at `c` facing `heading` (each eased by the
+/// frames: `c` and `heading` are smoothed where the camera follows).
+pub fn shot(t: f32, c: vec3, heading: f32) -> Shot {
+    if t < FOLLOW {
+        return opening()
+    }
+    var s = blend(opening(), follow(c, heading), ease(FOLLOW, FOLLOW + 5.0, t))
+    s = blend(s, gap(t), ease(GAP - 3.0, GAP + 3.0, t))
+    blend(s, tree(t), ease(TREE - 3.0, TREE + 3.0, t))
+}

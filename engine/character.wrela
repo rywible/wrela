@@ -1,0 +1,176 @@
+// Characters drawn (#28 §5.4, §7, §8): a creature's realized mesh with its normals and colours
+// cooked in when it's realized, so no pixel evaluates its field; skinned by its palette; shaded
+// in B's cel treatment (two bands, a soft terminator, a rim; `light::character`); drawn a
+// second time into the motion target, from this frame's palette and the last, so temporal AA
+// reprojects it by its own motion; and cast into the moving shadow map every frame.
+
+use creature::{PartMask, Parts}
+use light::{Lit, hazed}
+use lit::{Lighting, sky_at, sun_at}
+use probes::Probe
+use realize::{Mesh, SkinVertex, VERTEX_COUNT}
+use render::{Look, skin_matrix}
+use std::gpu::{
+    ClipPosition, ComparisonSampler, DepthTexture, Flat, GlobalId, GpuBuffer, Sampler, Slots,
+    Texture, Unorm8x4, VertexIndex, buffer, dispatch,
+}
+use temporal::motion_of
+use terrain::Texel
+use view::{CREATURE, Camera}
+
+/// Each vertex's colour, from the field's channels at it (under its mask, seen a cell wide),
+/// as the creature's look turns them into an albedo: cooked once, after the mesh is realized.
+@compute(64)
+pub fn cook_colours<C, F: Parts<C>, L: Look<C>>(
+    field: F,
+    look: L,
+    fp: f32,
+    args: [u32],
+    verts: [SkinVertex],
+    colours: mut Slots<Unorm8x4>,
+    id: GlobalId,
+) {
+    if id.x >= args[VERTEX_COUNT] {
+        return
+    }
+    let v = verts[id.x]
+    let (_, _, c) = field.sample_masked(v.pos, v.mask, fp)
+    let (albedo, rough) = look.surface(c, v.pos, fp)
+    colours[id] = Unorm8x4::encode(vec4(sqrt(saturate(albedo)), saturate(rough)))
+}
+
+/// A realized mesh's colours: a buffer of one per vertex the mesh has room for, cooked from
+/// `field` through `look` (cells `cell` wide).
+pub fn colours<C, F: Parts<C>, L: Look<C>>(
+    mesh: Mesh,
+    field: F,
+    look: L,
+    cell: f32,
+) -> GpuBuffer<Unorm8x4> {
+    let room = mesh.room().vertices
+    var out: GpuBuffer<Unorm8x4> = buffer(room)
+    dispatch(
+        cook_colours.bind(
+            field,
+            look,
+            fp: cell,
+            args: mesh.args.span(start: 0, count: 15),
+            verts: mesh.verts.items(),
+            colours: mut out,
+        ),
+        groups: (room + 63) / 64,
+    )
+    out
+}
+
+/// What a character's vertex passes on: its world point and normal, its colour, and the bone
+/// that moves it most (which part it is, for the lines where its parts meet).
+pub struct CharacterVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+    pub albedo: vec3,
+    pub part: Flat<u32>,
+}
+
+/// Which part each bone is in, for the lines where parts meet: 0 the body (its trunk, its head
+/// and its tail), and each leg its own (1 to 4).
+pub struct PartOf: Copy + GpuData {
+    pub of: [u32; 64],
+}
+
+/// A skeleton's parts: each leg's bones its own part, every other bone the body's.
+pub fn parts_of(s: creature::Skeleton) -> PartOf {
+    var p = PartOf { of: [0; 64] }
+    let legs = s.legs()
+    for i in 0..s.leg_count() {
+        for b in legs[i].joints {
+            p.of[b.index] = i + 1
+        }
+    }
+    p
+}
+
+@vertex
+pub fn character(
+    v: VertexIndex,
+    verts: [SkinVertex],
+    colours: [Unorm8x4],
+    palettes: [mat4],
+    parts: PartOf,
+    cam: Camera,
+) -> CharacterVertex {
+    let sv = verts[v.index]
+    let m = skin_matrix(sv, palettes, 0)
+    let world = (m * vec4(sv.pos, 1.0)).xyz
+    let n = mat3(m[0].xyz, m[1].xyz, m[2].xyz) * sv.normal
+    let c = colours[v.index].decode()
+    CharacterVertex {
+        clip: ClipPosition { position: cam.clip(world) },
+        world,
+        normal: n,
+        albedo: c.rgb * c.rgb,
+        part: Flat { value: parts.of[min(sv.bones & 255, 63)] },
+    }
+}
+
+/// A character's pixel: the cel treatment's bands lit by the sun through the shadows and by the
+/// sky light, through the haze; its tag the character's class and its part.
+@fragment
+pub fn character_shade(
+    c: CharacterVertex,
+    lt: Lighting,
+    near: DepthTexture,
+    far: DepthTexture,
+    moving: DepthTexture,
+    cmp: ComparisonSampler,
+    clouds: Texture,
+    s: Sampler,
+    probes: [Probe],
+    texels: [Texel],
+) -> vec4 {
+    let n = normalize(c.normal)
+    let sun = sun_at(lt, c.world, n, near, far, moving, cmp, clouds, s, soft: 1.0)
+    let sky = sky_at(lt, probes, texels, c.world, n)
+    let lit = Lit { albedo: c.albedo, n, sun, sky, through: vec3(0.0) }
+    let colour = light::character(lt.light, lit, c.world, lt.cam.eye)
+    vec4(hazed(lt.light, colour, c.world, lt.cam.eye), CREATURE + f32(c.part.value % 63))
+}
+
+/// What a character's motion vertex passes on: where its point is now and was last frame.
+pub struct MotionVertex: Copy {
+    pub clip: ClipPosition,
+    pub now: vec3,
+    pub then: vec3,
+}
+
+@vertex
+pub fn character_motion(
+    v: VertexIndex,
+    verts: [SkinVertex],
+    palettes: [mat4],
+    last: [mat4],
+    cam: Camera,
+) -> MotionVertex {
+    let sv = verts[v.index]
+    let now = (skin_matrix(sv, palettes, 0) * vec4(sv.pos, 1.0)).xyz
+    let then = (skin_matrix(sv, last, 0) * vec4(sv.pos, 1.0)).xyz
+    MotionVertex { clip: ClipPosition { position: cam.clip(now) }, now, then }
+}
+
+/// A character's motion: where its point is on the target now against where it was.
+@fragment
+pub fn motion(m: MotionVertex, cam: Camera) -> vec4 {
+    motion_of(cam, m.now, m.then)
+}
+
+@vertex
+pub fn character_shadow(
+    v: VertexIndex,
+    verts: [SkinVertex],
+    palettes: [mat4],
+    view: mat4,
+) -> ClipPosition {
+    let sv = verts[v.index]
+    ClipPosition { position: view * (skin_matrix(sv, palettes, 0) * vec4(sv.pos, 1.0)) }
+}

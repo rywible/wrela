@@ -70,7 +70,7 @@ pub type Tick = u32
 pub const DOWN: vec3 = vec3(0, -1, 0)
 
 /// Where a body is, and which way it faces (radians about +y, 0 facing +z).
-pub struct Transform: SimValue {
+pub struct Transform: SimValue + Plain {
     pub pos: vec3,
     pub heading: f32,
 }

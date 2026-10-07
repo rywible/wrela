@@ -1,0 +1,438 @@
+// Plants (#28 §4, §9): trees and shrubs as fields, authored like creatures. A plant is limbs
+// (tapered tubes along curves) and a crown (clumps of leaves on the limbs, blended into one
+// soft field); its leaf kind, card size and colours are parameters. Its field is a `Surface`, so
+// the lens draws it, probes it and drags its literals.
+//
+// Cooking a plant (once, on the GPU) turns its crown into leaf cards: each a cluster of leaves
+// cut from a square by `discard`, placed over the clumps' spheres, with the crown's normal there
+// and how deep in the crown it is (from the crown's field). The cards come in three nested
+// levels: level L draws the first quarter^L of them, each 2^L times its own size, so every
+// level covers the crown as often (spike 15: 472K cards became 120K with no visible loss). Each
+// level's own share is spread over all the clumps, so the first cards are a coarse crown.
+//
+// A plant is cooked once as a kind; the world places instances of it (where, turned, scaled,
+// tinted). Near instances draw their kind's cards and limbs; impostors and volumes stand in
+// farther away (`vegetation`).
+
+use noise::{direction, hash2, pick, rand}
+use std::field::{Lipschitz, PartName, Surface, Tube, unnamed}
+use std::gpu::{GlobalId, Oct32, Slots, Unorm8x4}
+use std::math::{PI, TAU}
+
+/// A clump of leaves: a sphere of them on a limb.
+pub struct Clump: Copy + GpuData {
+    pub centre: vec3,
+    pub radius: f32,
+}
+
+/// A plant's leaves: a card's width at the nearest level (m), how many times the cards cover
+/// each clump's sphere, the colours of young (lit) and old (deep) leaves and of the light
+/// they pass, linear, and how many leaves a card holds.
+pub struct Leaves: Copy + GpuData {
+    pub size: f32 = 0.9,
+    pub cover: f32 = 1.7,
+    pub young: vec3 = vec3(0.17, 0.25, 0.035),
+    pub per_card: u32 = 6,
+    pub old: vec3 = vec3(0.045, 0.10, 0.03),
+    pub through: vec3 = vec3(0.11, 0.16, 0.02),
+}
+
+/// A plant's bark: its dark and light tones, and its moss, linear.
+pub struct Bark: Copy + GpuData {
+    pub dark: vec3 = vec3(0.16, 0.12, 0.09),
+    pub light: vec3 = vec3(0.30, 0.25, 0.19),
+    pub moss: vec3 = vec3(0.06, 0.09, 0.02),
+}
+
+/// The most limbs and clumps a plant has.
+pub const MAX_LIMBS: u32 = 40
+pub const MAX_CLUMPS: u32 = 64
+
+/// A plant: limbs (tubes through four points each) and a crown of clumps, in the plant's own
+/// frame (its base at the origin, +y up).
+pub struct Plant: Copy + GpuData {
+    pub limbs: Bounded<Tube<4>, 40>,
+    pub clumps: Bounded<Clump, 64>,
+    pub leaves: Leaves,
+    pub bark: Bark,
+    /// How softly the crown's clumps blend (per metre: higher is harder).
+    pub blend: f32,
+}
+
+/// A plant with no limbs or clumps yet, its leaves and bark as given.
+pub fn plant(leaves: Leaves, bark: Bark) -> Plant {
+    Plant { limbs: Bounded::new(), clumps: Bounded::new(), leaves, bark, blend: 1.1 }
+}
+
+impl Plant {
+    /// A limb from `from` to `to`, bending toward `bend` (a quadratic curve), its radius
+    /// `r_from` at its start and `r_to` at its end.
+    pub fn limb(mut self, from: vec3, bend: vec3, to: vec3, r_from: f32, r_to: f32) {
+        var points = [vec3(0.0); 4]
+        var radii = [0.0; 4]
+        for i in 0..4 {
+            let t = f32(i) / 3.0
+            let a = mix(from, bend, vec3(t))
+            let b = mix(bend, to, vec3(t))
+            points[i] = mix(a, b, vec3(t))
+            radii[i] = mix(r_from, r_to, t)
+        }
+        if !self.limbs.is_full() {
+            self.limbs.push(Tube { points, radii })
+        }
+    }
+
+    /// A straight limb from `from` to `to`.
+    pub fn straight(mut self, from: vec3, to: vec3, r_from: f32, r_to: f32) {
+        self.limb(from, mix(from, to, vec3(0.5)), to, r_from, r_to)
+    }
+
+    /// A clump of leaves at `at`, `radius` across.
+    pub fn clump(mut self, at: vec3, radius: f32) {
+        if !self.clumps.is_full() {
+            self.clumps.push(Clump { centre: at, radius })
+        }
+    }
+
+    /// The crown's field at `p`: the soft union of its clumps (an exponential smooth minimum),
+    /// and its gradient. Its gradient is a mean of unit vectors, so it never exceeds 1.
+    pub fn crown(self, p: vec3) -> (f32, vec3) {
+        let k = self.blend
+        var s = 0.0
+        var g = vec3(0.0)
+        for i in 0..self.clumps.len() {
+            let c = self.clumps[i]
+            let v = p - c.centre
+            let l = max(length(v), 1.0e-4)
+            let w = exp(-k * (l - c.radius))
+            s += w
+            g += v / l * w
+        }
+        if s <= 0.0 {
+            return (1.0e9, vec3(0.0, 1.0, 0.0))
+        }
+        (-log(s) / k, g / s)
+    }
+
+    /// The limbs' field at `p`: the nearest limb's distance.
+    pub fn wood(self, p: vec3) -> f32 {
+        var d = 1.0e9
+        for i in 0..self.limbs.len() {
+            d = min(d, self.limbs[i].distance(p))
+        }
+        d
+    }
+
+    /// How tall it stands (m): its crown's top, or its limbs'.
+    pub fn top(self) -> f32 {
+        var top = 0.0
+        for i in 0..self.clumps.len() {
+            top = max(top, self.clumps[i].centre.y + self.clumps[i].radius)
+        }
+        for i in 0..self.limbs.len() {
+            for k in 0..4 {
+                top = max(top, self.limbs[i].points[k].y + self.limbs[i].radii[k])
+            }
+        }
+        top
+    }
+
+    /// The radius of a sphere round its base's axis that holds it all (m).
+    pub fn reach(self) -> f32 {
+        var r = 0.0
+        let mid = vec3(0.0, self.top() * 0.5, 0.0)
+        for i in 0..self.clumps.len() {
+            r = max(r, length(self.clumps[i].centre - mid) + self.clumps[i].radius)
+        }
+        for i in 0..self.limbs.len() {
+            for k in 0..4 {
+                r = max(r, length(self.limbs[i].points[k] - mid) + self.limbs[i].radii[k])
+            }
+        }
+        r
+    }
+
+    /// How many leaf cards its nearest level has: enough to cover each clump `cover` times
+    /// with cards `size` wide, at least 16 a clump, in multiples of 16 (so every level's count
+    /// is whole).
+    pub fn cards(self) -> u32 {
+        var n = 0.0
+        let s = self.leaves.size
+        for i in 0..self.clumps.len() {
+            let r = self.clumps[i].radius
+            n += max(4.0 * PI * r * r * self.leaves.cover / (s * s), 16.0)
+        }
+        (u32(n) + 15) / 16 * 16
+    }
+}
+
+/// A plant's field: its limbs, and its crown as one soft solid. The lens draws it as clay.
+impl Surface for Plant {
+    fn distance(self, p: vec3) -> f32 {
+        let (crown, _) = self.crown(p)
+        min(self.wood(p), crown)
+    }
+
+    fn parts(self) -> u32 {
+        self.limbs.len() + self.clumps.len()
+    }
+
+    fn part_at(self, p: vec3) -> (f32, u32) {
+        var best = 1.0e9
+        var which = 0
+        for i in 0..self.limbs.len() {
+            let d = self.limbs[i].distance(p)
+            if d < best {
+                best = d
+                which = i
+            }
+        }
+        let (crown, _) = self.crown(p)
+        if crown < best {
+            best = crown
+            // The clump nearest the point decides it most.
+            var nearest = 1.0e9
+            for i in 0..self.clumps.len() {
+                let c = self.clumps[i]
+                let d = length(p - c.centre) - c.radius
+                if d < nearest {
+                    nearest = d
+                    which = self.limbs.len() + i
+                }
+            }
+        }
+        (best, which)
+    }
+
+    fn part_distance(self, p: vec3, i: u32) -> f32 {
+        if i < self.limbs.len() {
+            return self.limbs[i].distance(p)
+        }
+        let c = self.clumps[min(i - self.limbs.len(), self.clumps.len() - 1)]
+        length(p - c.centre) - c.radius
+    }
+
+    fn part_name(self, i: u32) -> PartName {
+        if i < self.limbs.len() {
+            PartName { name: "limb", group: "wood", ..unnamed() }
+        } else {
+            PartName { name: "clump", group: "crown", ..unnamed() }
+        }
+    }
+
+    fn part_offset(self, p: vec3, i: u32, by: f32) -> f32 {
+        if i < self.limbs.len() {
+            var d = 1.0e9
+            for k in 0..self.limbs.len() {
+                let x = self.limbs[k].distance(p) + if k == i { by } else { 0.0 }
+                d = min(d, x)
+            }
+            let (crown, _) = self.crown(p)
+            return min(d, crown)
+        }
+        // A clump raised by `by`: its term in the crown's blend, moved.
+        let j = i - self.limbs.len()
+        let k = self.blend
+        var s = 0.0
+        for c in 0..self.clumps.len() {
+            let cl = self.clumps[c]
+            let d = length(p - cl.centre) - cl.radius + if c == j { by } else { 0.0 }
+            s += exp(-k * d)
+        }
+        min(self.wood(p), -log(max(s, 1.0e-30)) / k)
+    }
+}
+
+/// Its tubes are exact, and its crown's gradient is a mean of unit vectors: 1 everywhere.
+impl Lipschitz for Plant {
+    fn lipschitz(self, near: f32) -> f32 {
+        1.0
+    }
+}
+
+// ---- cooking: leaf cards ------------------------------------------------------------------------
+
+/// A leaf card, in its plant's frame: its centre and width (at the nearest level), the crown's
+/// normal there and how deep in the crown it is (m), its seed, and its tint.
+pub struct Card: Copy + GpuData {
+    pub centre: vec3,
+    pub size: f32,
+    pub normal: Oct32,
+    pub depth: f32,
+    pub seed: u32,
+    pub tint: Unorm8x4,
+}
+
+/// The levels of a plant's cards.
+pub const CARD_LEVELS: u32 = 3
+
+/// How many of a plant's `n` cards (`Plant::cards`) level `level` draws: all of them at level
+/// 0, a quarter at 1, a sixteenth at 2.
+pub fn level_cards(n: u32, level: u32) -> u32 {
+    n >> (2 * level)
+}
+
+/// Card `id` of a plant's `n`: which level's own share it's in (the coarsest's first), and its
+/// place in that share as a fraction.
+fn card_share(id: u32, n: u32) -> (u32, f32) {
+    let n2 = level_cards(n, 2)
+    let n1 = level_cards(n, 1)
+    if id < n2 {
+        return (2, (f32(id) + 0.5) / f32(n2))
+    }
+    if id < n1 {
+        return (1, (f32(id - n2) + 0.5) / f32(n1 - n2))
+    }
+    (0, (f32(id - n1) + 0.5) / f32(n - n1))
+}
+
+/// The plant's cards: each level's share spread over the clumps by their areas, each card on
+/// its clump's sphere (most near its surface), its normal the crown's there mixed with the
+/// clump's own (so each clump reads as a lump of light), its depth in the crown.
+@compute(64)
+pub fn cook_cards(plant: Plant, n: u32, seed: u32, out: mut Slots<Card>, id: GlobalId) {
+    if id.x >= n {
+        return
+    }
+    let (_, f) = card_share(id.x, n)
+    // The clump whose share of the total area holds `f`.
+    var total = 0.0
+    for i in 0..plant.clumps.len() {
+        let r = plant.clumps[i].radius
+        total += r * r
+    }
+    var at = f * total
+    var which = plant.clumps.len() - 1
+    for i in 0..plant.clumps.len() {
+        let r = plant.clumps[i].radius
+        if at < r * r {
+            which = i
+            break
+        }
+        at -= r * r
+    }
+    let c = plant.clumps[which]
+    let k = seed.wrapping_mul(7919) ^ id.x.wrapping_mul(2654435761)
+    let dir = direction(rand(k, 3), rand(k, 4))
+    let p = c.centre + dir * (c.radius * (0.72 + 0.28 * sqrt(rand(k, 5))))
+    let (d, g) = plant.crown(p)
+    let normal = normalize(normalize(g) * 0.45 + dir * 0.55)
+    let size = plant.leaves.size * pick(k, 6, lo: 0.8, hi: 1.2)
+    let tint = vec4(rand(k, 7), rand(k, 8), rand(k, 9), rand(which, 10))
+    out[id] = Card {
+        centre: p,
+        size,
+        normal: Oct32::encode(normal),
+        depth: max(-d, 0.0),
+        seed: k,
+        tint: Unorm8x4::encode(tint),
+    }
+}
+
+/// The leaves on a card at `uv` (in [-1, 1]²), `n` of them: how much is leaf (0 to 1, a soft
+/// edge `w` wide), and which leaf. Pointed leaves, widest a third of the way along, round the
+/// card's middle.
+pub fn leaves_on(uv: vec2, seed: u32, w: f32, n: u32) -> (f32, u32) {
+    var best = -1.0
+    var which = 0
+    for i in 0..n {
+        let a = TAU * (f32(i) + rand(seed, 20 + i) * 0.6) / f32(n)
+        let dir = vec2(cos(a), sin(a))
+        let len = 0.55 + 0.3 * rand(seed, 40 + i)
+        let o = dir * (0.18 + 0.1 * rand(seed, 60 + i))
+        let q = uv - o
+        let s = dot(q, dir) / len
+        let t = dot(q, vec2(-dir.y, dir.x))
+        let half = 0.36 * len * sin(PI * clamp(s, 0.0, 1.0)) * (1.15 - 0.5 * s)
+        let inside = min(half - abs(t), min(s, 1.0 - s) * len) / max(len, 0.01)
+        if inside > best {
+            best = inside
+            which = i
+        }
+    }
+    (smoothstep(-w, w, best), which)
+}
+
+// ---- limbs as geometry -----------------------------------------------------------------------
+
+/// Sides round a limb's tube, and rings along each of its three pieces.
+pub const SIDES: u32 = 10
+pub const RINGS: u32 = 3
+/// Vertices a limb draws: each piece's rings of quads round it.
+pub const LIMB_VERTICES: u32 = 3 * RINGS * SIDES * 6
+
+/// A limb's vertex `k` (of `LIMB_VERTICES`): its point, normal, and where it is round and along
+/// the limb (for bark's ridges), in the plant's frame.
+pub fn limb_vertex(limb: Tube<4>, k: u32) -> (vec3, vec3, vec2) {
+    let qx = [0, 1, 1, 0, 1, 0]
+    let qz = [0, 0, 1, 0, 1, 1]
+    let q = k / 6
+    let c = k % 6
+    let piece = q / (RINGS * SIDES)
+    let r = q % (RINGS * SIDES)
+    let side = f32(r % SIDES + qx[c])
+    let along = (f32(r / SIDES + qz[c])) / f32(RINGS)
+    let a = limb.points[piece]
+    let b = limb.points[piece + 1]
+    let axis = normalize(b - a)
+    let ref_axis = if abs(axis.y) > 0.9 { vec3(1.0, 0.0, 0.0) } else { vec3(0.0, 1.0, 0.0) }
+    let t1 = normalize(cross(axis, ref_axis))
+    let t2 = cross(axis, t1)
+    let ang = TAU * side / f32(SIDES)
+    let n = t1 * cos(ang) + t2 * sin(ang)
+    // The last piece closes to a point at the limb's end, so its tip is never an open tube.
+    let closing = if piece == 2 { 1.0 - smoothstep(0.6, 1.0, along) } else { 1.0 }
+    let radius = mix(limb.radii[piece], limb.radii[piece + 1], along) * closing
+    let centre = mix(a, b, vec3(along))
+    let len = length(b - a)
+    (centre + n * radius, n, vec2(side / f32(SIDES), (f32(piece) + along) * len))
+}
+
+// ---- instances ---------------------------------------------------------------------------------
+
+/// A plant placed in the world: where its base is, its turn about +y, its size, and its tint
+/// (added to its leaves' colour).
+pub struct Instance: Copy + GpuData {
+    pub at: vec3,
+    pub yaw: f32,
+    pub tint: vec3,
+    pub scale: f32,
+}
+
+impl Instance {
+    /// A point of the plant's frame in the world.
+    pub fn place(self, p: vec3) -> vec3 {
+        let (c, s) = (cos(self.yaw), sin(self.yaw))
+        let q = p * self.scale
+        self.at + vec3(c * q.x + s * q.z, q.y, -s * q.x + c * q.z)
+    }
+
+    /// A direction of the plant's frame in the world.
+    pub fn turn(self, v: vec3) -> vec3 {
+        let (c, s) = (cos(self.yaw), sin(self.yaw))
+        vec3(c * v.x + s * v.z, v.y, -s * v.x + c * v.z)
+    }
+}
+
+/// The wind (#28 §4, Q5 of #51): a global sway, a function of time and place only. How far a
+/// point `height` metres up its plant at `world` leans at `time`, along the ground: two waves
+/// across the land, and a flutter.
+pub struct Wind: Copy + GpuData {
+    pub dir: vec2,
+    pub strength: f32,
+    pub time: f32,
+}
+
+/// How far a point at `world`, `height` up its plant (or `height` up a blade), sways at the
+/// wind's time: along the wind, more with height, in waves that cross the land; and a flutter
+/// across it. A function of the wind (its time) and the place, nothing else (AC4).
+pub fn sway(wind: Wind, world: vec3, height: f32) -> vec3 {
+    let d = vec3(wind.dir.x, 0.0, wind.dir.y)
+    let across = vec3(-wind.dir.y, 0.0, wind.dir.x)
+    let x = dot(world.xz, wind.dir)
+    let gust = 0.6 + 0.4 * sin(x * 0.07 - wind.time * 0.9) * sin(x * 0.023 + wind.time * 0.31)
+    let wave = sin(x * 0.45 - wind.time * 1.7 + hash2(i32(world.x * 0.5), i32(world.z * 0.5)) * 2.0)
+    let flutter = sin(world.y * 3.1 + world.x * 1.7 + wind.time * 4.3) * 0.3
+    let bend = wind.strength * height * height / (1.0 + height)
+    d * (bend * gust * (0.7 + 0.3 * wave)) + across * (bend * flutter * 0.4)
+}

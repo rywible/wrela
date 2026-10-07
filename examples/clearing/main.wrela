@@ -1,0 +1,482 @@
+// The Last Green's clearing (#28, #51), drawn by the engine's renderer: the scene at half the
+// output's resolution, jittered, into a linear-light target with depth and tags; temporal AA
+// brings it up to the output; the look's passes draw it to the screen.
+
+use creature::{Fawn, REALIZED, walker_body}
+use engine::character::{
+    character, character_motion, character_shade, character_shadow, colours, motion, parts_of,
+}
+use engine::gait::{Body, between, palette}
+use engine::grass::{Blooms, Grass, GrassLook}
+use engine::present::Snapshots
+use engine::realize::{Mesh, realize_once}
+use engine::render::MAX_BONES
+use engine::run::run
+use grazer::creature::grazer
+use engine::light::{Light, afternoon}
+use engine::paint::{Develop, Look, develop, glow_blur, glow_down}
+use engine::lit::Lighting
+use engine::plant::Wind
+use engine::probes::{Probe, ProbeGrid, grid}
+use engine::shadow::{Cascade, Shadows, shadows}
+use engine::sky::{
+    Cook, Puff, SHADOW_SIDE, SKY_H, SKY_W, STRIPS, cook_clouds, cook_shadow, sky_shade, strip,
+}
+use engine::temporal::{Resolve, resolve}
+use engine::terrain::{Clipmap, ground, ground_plain}
+use engine::vegetation::{Forest, Kind, kind, nothing}
+use engine::view::{BEHIND, Camera, NEAREST, camera, first_camera}
+use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, start_eye}
+use std::gpu::{
+    ClipPosition, Compare, ComparisonSampler, Cull, Depth, DepthBias, DepthTexture, FragCoord,
+    GpuBuffer, Sampler, Texture, Unorm8x4, TextureFormat, VertexIndex, begin_depth_pass, begin_pass,
+    begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture, draw,
+    label, present, sampler, texture, write,
+}
+use std::input::{Event, Key, events}
+use std::io::print
+use trees::{KINDS, kind_plant, placed}
+use clouds::cloudscape
+use path::shot
+use world::{World, present as snapshot, spawn, tick}
+
+/// The scene's size against the output's: half each way (Q3 of #51).
+const SCALE: u32 = 2
+
+/// The static cascades: the clearing's (about 7 cm a texel) and the valley's.
+const NEAR_CASCADE = Cascade { centre: vec3(0.0, 4.0, 36.0), span: 144.0, reach: 250.0, side: 2048 }
+const FAR_CASCADE = Cascade {
+    centre: vec3(-60.0, -40.0, 330.0),
+    span: 1040.0,
+    reach: 1300.0,
+    side: 2048,
+}
+
+pub struct Clearing {
+    /// The sim's snapshots, the creature's mesh and colours, its body for walking, and its
+    /// palettes: this frame's and the last.
+    snaps: Snapshots<World>,
+    mesh: Mesh,
+    colours: GpuBuffer<Unorm8x4>,
+    body: Body,
+    palette: GpuBuffer<mat4>,
+    last_palette: GpuBuffer<mat4>,
+    /// When the camera's path began (the frame's time; negative before), and where the camera
+    /// follows the creature from (smoothed).
+    path_from: f32,
+    follow: vec3,
+    follow_heading: f32,
+    clipmap: Clipmap,
+    light: Light,
+    cam: Camera,
+    forest: Forest,
+    grass: Grass,
+    /// The shadow maps: the static cascades (drawn when something static changes), and the
+    /// moving map.
+    near: DepthTexture,
+    far: DepthTexture,
+    moving: DepthTexture,
+    cmp: ComparisonSampler,
+    static_drawn: bool,
+    /// The probes, and their grid.
+    probes: GpuBuffer<Probe>,
+    grid: ProbeGrid,
+    /// The clouds: their puffs, the sky texture they're cooked into and their shadow map, and
+    /// how many of its strips are cooked.
+    puffs: GpuBuffer<Puff>,
+    clouds: Texture,
+    cloud_shadow: Texture,
+    strips: u32,
+    /// The scene: linear colour and tags, depth, motion; and the output's history, two to swap.
+    scene: Texture,
+    depth: DepthTexture,
+    motion: Texture,
+    history_a: Texture,
+    history_b: Texture,
+    /// The glow's chain, at a quarter of the output's size.
+    glow_a: Texture,
+    glow_b: Texture,
+    linear: Sampler,
+    width: u32,
+    height: u32,
+    frames: u32,
+    /// The systems left out of the frame (`off`'s bits), for timing each and for looking.
+    off: u32,
+}
+
+/// The systems a frame can leave out, and the keys that toggle them.
+const TREES: u32 = 1
+const GRASS: u32 = 2
+const SHADOWS: u32 = 4
+const TERRAIN: u32 = 8
+
+fn on(off: u32, system: u32) -> bool {
+    (off & system) == 0
+}
+
+fn keys(s: mut Clearing, time: f32) {
+    for e in events() {
+        if let Event::KeyDown { key, .. } = e {
+            if key == Key::Space && s.path_from < 0.0 {
+                s.path_from = time
+            }
+            let system = match key {
+                Key::T => TREES,
+                Key::G => GRASS,
+                Key::H => SHADOWS,
+                Key::L => TERRAIN,
+                _ => 0,
+            }
+            s.off = s.off ^ system
+            if system == SHADOWS {
+                s.static_drawn = false
+            }
+        }
+    }
+}
+
+pub fn init() -> Clearing {
+    let world = spawn()
+    let latest = run(take world, hz: 60, step: tick, present: snapshot)
+    let mesh = realize_once(grazer(), REALIZED)
+    let colours = colours(mesh, grazer().field(), Fawn {}, cell: 1cm)
+    var kinds: Vec<Kind> = Vec::new()
+    for k in 0..KINDS {
+        kinds.push(kind(kind_plant(k), seed: k + 1))
+    }
+    let p = placed()
+    print(f"forest: {kinds.len()} kinds, {p.len()} instances")
+    let sky = cloudscape()
+    print(f"clouds: {sky.len()} puffs")
+    var puffs: GpuBuffer<Puff> = buffer(sky.len())
+    write(mut puffs, 0, sky)
+    let w = spawn().walker
+    Clearing {
+        snaps: Snapshots::new(take latest, hz: 60),
+        mesh: take mesh,
+        colours: take colours,
+        body: walker_body(),
+        palette: buffer(MAX_BONES),
+        last_palette: buffer(MAX_BONES),
+        path_from: -1.0,
+        follow: w.root.pos,
+        follow_heading: w.root.heading,
+        clipmap: Clipmap::new(levels: 11, finest: 0.125),
+        light: afternoon(SUN),
+        cam: first_camera(start_eye(), LOOK_AT, FOVY, width: 960, height: 540),
+        forest: Forest::new(take kinds, take p, cards_to: 1.0e9),
+        grass: Grass::new(),
+        near: depth_texture(width: NEAR_CASCADE.side, height: NEAR_CASCADE.side),
+        far: depth_texture(width: FAR_CASCADE.side, height: FAR_CASCADE.side),
+        moving: depth_texture(width: 1024, height: 1024),
+        cmp: comparison_sampler(),
+        static_drawn: false,
+        probes: buffer(2 * 2 * 8),
+        grid: grid(MEADOW, cols: 2, spacing: 1.0, low: 0.0, high: 1.0, voxel: 1.0),
+        puffs: take puffs,
+        clouds: texture(width: SKY_W, height: SKY_H, format: TextureFormat::Rgba16Float),
+        cloud_shadow: texture(
+            width: SHADOW_SIDE,
+            height: SHADOW_SIDE,
+            format: TextureFormat::Rgba16Float,
+        ),
+        strips: 0,
+        scene: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
+        depth: depth_texture(width: 1, height: 1),
+        motion: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
+        history_a: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
+        history_b: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
+        glow_a: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
+        glow_b: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
+        linear: sampler(),
+        width: 0,
+        height: 0,
+        frames: 0,
+        off: 0,
+    }
+}
+
+/// A triangle that covers the target, at depth `z`.
+@vertex
+pub fn cover(v: VertexIndex, z: f32) -> ClipPosition {
+    let x = f32((v.index << 1) & 2) * 2.0 - 1.0
+    let y = f32(v.index & 2) * 2.0 - 1.0
+    ClipPosition { position: vec4(x, y, z, 1.0) }
+}
+
+/// The look's passes: the glow's chain from `image` (a quarter's size, blurred across and
+/// down), then the image developed to the screen.
+fn look(image: Texture, depth: DepthTexture, glow_a: mut Texture, glow_b: mut Texture, d: Develop) {
+    let down = begin_pass(mut glow_a)
+    draw(cover.bind(z: 0.5), glow_down.bind(image, threshold: 1.1), vertices: 3)
+    down.end()
+    let x = begin_pass(mut glow_b)
+    draw(cover.bind(z: 0.5), glow_blur.bind(src: glow_a, across: 0, spread: 2.0), vertices: 3)
+    x.end()
+    let y = begin_pass(mut glow_a)
+    draw(cover.bind(z: 0.5), glow_blur.bind(src: glow_b, across: 1, spread: 2.0), vertices: 3)
+    y.end()
+    begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(cover.bind(z: 0.5), develop.bind(d, image, depth, glow: glow_a), vertices: 3)
+    present()
+}
+
+/// Temporal AA's pass: the history `from` resolved with this frame's scene into `into`.
+fn temporal(
+    into: mut Texture,
+    from: Texture,
+    r: Resolve,
+    scene: Texture,
+    depth: DepthTexture,
+    motion: Texture,
+    s: Sampler,
+) {
+    let p = begin_pass(mut into)
+    draw(cover.bind(z: 0.5), resolve.bind(r, scene, depth, motion, from, s), vertices: 3)
+    p.end()
+}
+
+/// Last frame's palette, kept for the motion target.
+fn copy_palette(s: mut Clearing) {
+    std::gpu::copy(
+        from: s.palette.span(start: 0, count: MAX_BONES),
+        to: s.last_palette.span_mut(start: 0, count: MAX_BONES),
+    )
+}
+
+/// The static cascades: the forest, cut to its leaves, into each.
+fn static_shadows(s: mut Clearing, sh: Shadows, wind: Wind) {
+    label("shadows static")
+    let shadows = on(s.off, SHADOWS)
+    let near = begin_depth_pass(mut s.near, clear_depth: 1.0)
+    if shadows {
+        s.forest.shadow(view: sh.near, sh: sh, wind: wind)
+    }
+    near.end()
+    let far = begin_depth_pass(mut s.far, clear_depth: 1.0)
+    if shadows {
+        s.forest.shadow(view: sh.far, sh: sh, wind: wind)
+    }
+    far.end()
+}
+
+pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
+    keys(mut s, time)
+    let (w, h) = (max(width / SCALE, 1), max(height / SCALE, 1))
+    if width != s.width || height != s.height {
+        s.scene = texture(width: w, height: h, format: TextureFormat::Rgba16Float)
+        s.depth = depth_texture(width: w, height: h)
+        s.motion = texture(width: w, height: h, format: TextureFormat::Rgba16Float)
+        s.history_a = texture(width, height, format: TextureFormat::Rgba16Float)
+        s.history_b = texture(width, height, format: TextureFormat::Rgba16Float)
+        let (qw, qh) = (max(width / 4, 1), max(height / 4, 1))
+        s.glow_a = texture(width: qw, height: qh, format: TextureFormat::Rgba16Float)
+        s.glow_b = texture(width: qw, height: qh, format: TextureFormat::Rgba16Float)
+        s.width = width
+        s.height = height
+        s.frames = 0
+    }
+    // The creature, between the two ticks round the frame's sim time, and its palette.
+    s.snaps.update()
+    let b = s.snaps.at(s.snaps.sim_time(time))
+    let walker = between(b.a.walker, b.b.walker, b.alpha)
+    let pose = palette(grazer().skeleton(), s.body, walker)
+    copy_palette(mut s)
+    write(mut s.palette, 0, pose.bones)
+    // The camera on its path, following the creature eased.
+    let ease = 1.0 - exp(-1.0 / 60.0 * 1.2)
+    s.follow = mix(s.follow, walker.root.pos, vec3(ease))
+    s.follow_heading = s.follow_heading +
+        engine::present::lerp_angle(0.0, walker.root.heading - s.follow_heading, ease)
+    let t = if s.path_from < 0.0 { 0.0 } else { time - s.path_from }
+    let at = shot(t, s.follow, s.follow_heading)
+    let eye = at.eye
+    s.cam = camera(eye, at.at, FOVY, width: w, height: h, frame: s.frames, time: time, last: s.cam)
+    let cam = s.cam
+    let wind = Wind { dir: normalize(vec2(-0.55, 0.3)), strength: 0.035, time }
+    s.clipmap.follow(Ground {}, eye, again: false)
+    let sh = shadows(
+        SUN,
+        NEAR_CASCADE,
+        FAR_CASCADE,
+        moving_at: walker.root.pos + vec3(0.0, 1.0, 0.0),
+        moving_span: 6.0,
+        moving_side: 1024,
+        frame: s.frames,
+    )
+    if !s.static_drawn {
+        static_shadows(mut s, sh, wind)
+        s.static_drawn = true
+    }
+    label("shadow moving")
+    let mv = begin_depth_pass(mut s.moving, clear_depth: 1.0)
+    draw(
+        character_shadow.bind(
+            verts: s.mesh.verts.items(),
+            palettes: s.palette.span(start: 0, count: MAX_BONES),
+            view: sh.moving,
+        ),
+        nothing,
+        indices: s.mesh.quads.items(),
+        indirect: s.mesh.args.span(start: 0, count: 5),
+        depth_bias: DepthBias { constant: 2, slope: 1.5, clamp: 0.0 },
+    )
+    mv.end()
+    let cook = Cook { eye: start_eye(), strip: 0, sun: s.light.sun, base: 1500.0 }
+    // The clouds, cooked a strip a frame until they're done (each strip a short submission).
+    if s.strips < STRIPS {
+        label("clouds cook")
+        let pass = begin_pass(mut s.clouds, keep: s.strips > 0, clear: vec4(0.0))
+        let c = Cook { strip: s.strips, ..cook }
+        draw(
+            strip.bind(c),
+            cook_clouds.bind(c, s.light, puffs: s.puffs.span(start: 0, count: s.puffs.len())),
+            vertices: 6,
+        )
+        pass.end()
+        if s.strips == 0 {
+            let shadow = begin_pass(mut s.cloud_shadow)
+            draw(
+                cover.bind(z: 0.5),
+                cook_shadow.bind(cook, puffs: s.puffs.span(start: 0, count: s.puffs.len())),
+                vertices: 3,
+            )
+            shadow.end()
+        }
+        s.strips += 1
+    }
+    let lt = Lighting {
+        cam,
+        light: s.light,
+        shadows: sh,
+        grid: s.grid,
+        clouds: cook,
+        levels: s.clipmap.levels(),
+    }
+    let texels = s.clipmap.texels()
+    let probes = s.probes.span(start: 0, count: s.probes.len())
+    s.grass.place(cam, lt.levels, texels, stones: [vec4(0.0); 0])
+    s.forest.select(cam)
+
+    // The depth prepass: the cut cards and flowers.
+    label("vegetation prepass")
+    let pre = begin_depth_pass(mut s.depth, clear_depth: 0.0)
+    s.forest.prepass(cam, wind)
+    s.grass.prepass(cam, wind)
+    pre.end()
+    // The vegetation: limbs, grass, then the cards and flowers where the prepass left them.
+    label("vegetation")
+    let veg = begin_pass_with_depth(mut s.scene, mut s.depth, clear: vec4(0.0), keep_depth: true)
+    s.forest.shade(
+        lt,
+        wind,
+        s.near,
+        s.far,
+        s.moving,
+        s.cmp,
+        s.cloud_shadow,
+        s.linear,
+        probes,
+        texels,
+    )
+    s.grass.shade(
+        lt,
+        wind,
+        GrassLook {},
+        Blooms {},
+        s.near,
+        s.far,
+        s.moving,
+        s.cmp,
+        s.cloud_shadow,
+        s.linear,
+        probes,
+        texels,
+    )
+    veg.end()
+    label("terrain")
+    let ter = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)
+    draw(
+        ground.bind(cam, lt.levels, texels),
+        ground_plain.bind(cam, s.light, lt.levels, texels),
+        vertices: lt.levels.count * engine::terrain::LEVEL_VERTICES,
+        depth: NEAREST,
+    )
+    ter.end()
+    label("creature")
+    let cr = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)
+    draw(
+        character.bind(
+            verts: s.mesh.verts.items(),
+            colours: s.colours.span(start: 0, count: s.colours.len()),
+            palettes: s.palette.span(start: 0, count: MAX_BONES),
+            parts: parts_of(grazer().skeleton()),
+            cam: cam,
+        ),
+        character_shade.bind(
+            lt,
+            s.near,
+            s.far,
+            s.moving,
+            s.cmp,
+            s.cloud_shadow,
+            s.linear,
+            probes,
+            texels,
+        ),
+        indices: s.mesh.quads.items(),
+        indirect: s.mesh.args.span(start: 0, count: 5),
+        cull: Cull::Back,
+        depth: NEAREST,
+    )
+    cr.end()
+    label("sky")
+    let sky = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)
+    draw(
+        cover.bind(z: 0.0),
+        sky_shade.bind(cam, s.light, clouds: s.clouds, s: s.linear),
+        vertices: 3,
+        depth: BEHIND,
+    )
+    sky.end()
+    // The creature's motion, where it's seen.
+    label("motion")
+    let mo = begin_pass_with_depth(mut s.motion, mut s.depth, clear: vec4(0.0), keep_depth: true)
+    draw(
+        character_motion.bind(
+            verts: s.mesh.verts.items(),
+            palettes: s.palette.span(start: 0, count: MAX_BONES),
+            last: s.last_palette.span(start: 0, count: MAX_BONES),
+            cam: cam,
+        ),
+        motion.bind(cam),
+        indices: s.mesh.quads.items(),
+        indirect: s.mesh.args.span(start: 0, count: 5),
+        cull: Cull::Back,
+        depth: Depth { compare: Compare::GreaterEqual, write: false },
+    )
+    mo.end()
+
+    // Temporal AA, up to the output.
+    let a = s.frames % 2
+    let r = Resolve {
+        cam,
+        out: vec2(f32(width), f32(height)),
+        blend: 0.1,
+        fresh: if s.frames == 0 { 1 } else { 0 },
+    }
+    label("temporal")
+    if a == 0 {
+        temporal(mut s.history_a, s.history_b, r, s.scene, s.depth, s.motion, s.linear)
+    } else {
+        temporal(mut s.history_b, s.history_a, r, s.scene, s.depth, s.motion, s.linear)
+    }
+    label("look")
+    let d = Develop { cam, light: s.light, look: Look {}, out: vec2(f32(width), f32(height)) }
+    if a == 0 {
+        look(s.history_a, s.depth, mut s.glow_a, mut s.glow_b, d)
+    } else {
+        look(s.history_b, s.depth, mut s.glow_a, mut s.glow_b, d)
+    }
+    s.frames += 1
+}
