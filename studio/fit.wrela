@@ -19,7 +19,7 @@
 use drag
 use json::{List, list, obj}
 use lens::source_json
-use solve::{add_row, cholesky, derive, filled, set, value}
+use solve::{add_row, cholesky, derive, set, value}
 use std::collections::Vec
 use std::field::Surface
 use std::gpu::{FragCoord, GlobalId, GpuBuffer, Slots, buffer, dispatch, read}
@@ -421,8 +421,8 @@ pub fn advance<S: Surface>(
             // The next step from the accepted values.
             set_all(f.lits, f.accepted)
             let k = f.lits.len()
-            var a: Vec<f32> = filled(k * k, 0.0)
-            var b: Vec<f32> = filled(k, 0.0)
+            var a: Vec<f32> = Vec::filled(k * k, 0.0)
+            var b: Vec<f32> = Vec::filled(k, 0.0)
             for row in f.rows {
                 let (p, e) = row
                 let (_, j) = derive(grad8, grad16, p, f.lits)

@@ -105,7 +105,7 @@ pub fn init() -> Walker {
 }
 
 pub fn frame(state: mut Walker, time: f32, width: u32, height: u32) {
-    state.frame(wolf(), LOOK, width, height, eye: vec3(2.6, 1.0, 1.0), at: vec3(0.0, 0.45, 0.0))
+    state.frame(wolf(), width, height, eye: vec3(2.6, 1.0, 1.0), at: vec3(0.0, 0.45, 0.0))
 }
 
 /// Sketch 01's cycle for 120 frames: the legs keep their bones' lengths, each foot is where

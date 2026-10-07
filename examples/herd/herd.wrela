@@ -240,12 +240,3 @@ pub fn between(a: Seen, b: Seen, alpha: f32) -> Seen {
         head_down: mix(a.head_down, b.head_down, alpha),
     }
 }
-
-/// The world's hash after each tick: its whole state (`engine::run` reports it).
-pub fn masses(w: World) -> f32 {
-    var m = 0.0
-    for g in w.grazers {
-        m += g.mass
-    }
-    m
-}

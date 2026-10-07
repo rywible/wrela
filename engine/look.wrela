@@ -20,13 +20,6 @@ pub struct Skin: Copy + GpuData {
     pub max_bones: u32 = 4,
 }
 
-pub enum Shading: Copy + Eq + GpuData {
-    /// The field's gradient per pixel: detail finer than the mesh.
-    PerPixel,
-    /// The mesh's normals: the cheap setting.
-    PerVertex,
-}
-
 /// Far away, the creature as bricks of voxels this size, beyond this distance.
 pub struct Bricks: Copy {
     pub voxel: f32,
@@ -81,7 +74,6 @@ pub struct CreatureLook: Copy {
     /// Levels of detail and realization, for a type drawn by `realize::Realizer`.
     pub detail: Detail = Detail {},
     pub deform: Skin = Skin { weights: ByPart { falloff: 5cm }, max_bones: 4 },
-    pub shading: Shading = Shading::PerPixel,
     pub far: Option<Bricks> = None,
     pub shadow: Shadow = Shadow::Map { resolution: 1024 },
     pub eval: Eval = Eval::Compiled,

@@ -58,15 +58,6 @@ fn f32_at(b: Bytes, at: u32) -> f32 {
     bitcast_f32(u32_at(b, at))
 }
 
-/// `n` copies of `value`.
-fn filled<T: Copy>(n: u32, value: T) -> Vec<T> {
-    var out: Vec<T> = Vec::with_capacity(n)
-    for _ in 0..n {
-        out.push(value)
-    }
-    out
-}
-
 impl Font {
     /// Reads a `.wfont` file; panics if it isn't one.
     pub fn read(file: Bytes) -> Font {
@@ -95,7 +86,7 @@ impl Font {
                 index[cp] = i + 1
             }
         }
-        var kerning: Vec<f32> = filled(n * n, 0.0)
+        var kerning: Vec<f32> = Vec::filled(n * n, 0.0)
         let kern_at = 40 + n * 32
         for k in 0..pairs {
             let at = kern_at + k * 4
@@ -283,7 +274,7 @@ impl Fonts {
 
     /// The atlas's texels, RGBA8 with each glyph's field in red, rows from the top.
     pub fn atlas(self) -> Vec<u8> {
-        var bytes: Vec<u8> = filled(self.width * self.height * 4, 0)
+        var bytes: Vec<u8> = Vec::filled(self.width * self.height * 4, 0)
         for f in 0..2 {
             borrow font = self.font(if f == 0 { Face::Sans } else { Face::Mono })
             for i in 0..font.count() {

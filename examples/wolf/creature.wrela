@@ -13,13 +13,10 @@
 // - The cheek ruff's fur is noise at the unmirrored point, and its ellipsoid at the mirrored
 //   one, so it's one part for both sides (`CheekRuff`), not a mirrored part.
 
-use engine::creature::{
-    Bone, Creature, Frame, Group, Inside, Members, Modifier, Skeleton, clip, creature, cut, frame,
-    group, hard, smooth,
-}
+use engine::creature::{Creature, Frame, Modifier, Skeleton, creature, frame, group, hard, smooth}
 use round1::shapes::{
-    Ell, FurredEll, NOISE3_LIPSCHITZ, ell, fbm3, fbm3_lipschitz, fbm3_range, flat_cone, mirror_x,
-    noise3, rot_x, rot_y, rot_z, sd_box, sstep, sstep_slope,
+    FurredEll, NOISE3_LIPSCHITZ, ell, fbm3, fbm3_lipschitz, fbm3_range, flat_cone, mirror_x, noise3,
+    rot_x, rot_y, rot_z, sd_box, sstep, sstep_slope,
 }
 use std::field::{Blend, Color, Lipschitz, Surface, rgb, round_cone, smax, smin, sphere}
 use std::quat::Quat
@@ -271,11 +268,6 @@ impl Modifier for InnerThigh {
     fn widen(self, near: f32) -> f32 {
         near + 1.25 * self.k
     }
-
-    /// The smooth maximum is at least the leg's distance.
-    fn before(self, hi: f32) -> f32 {
-        hi
-    }
 }
 
 /// The tail's fur: three octaves of noise, stretched along the tail, then the whole scaled by
@@ -298,10 +290,6 @@ impl Modifier for TailFur {
 
     fn widen(self, near: f32) -> f32 {
         near / self.scale + self.amp * fbm3_range(3)
-    }
-
-    fn before(self, hi: f32) -> f32 {
-        hi / self.scale + self.amp * fbm3_range(3)
     }
 }
 
@@ -364,10 +352,6 @@ impl<H: Lipschitz> Modifier for Fur<H> {
 
     fn widen(self, near: f32) -> f32 {
         near / 0.9 + FUR * fbm3_range(3) + TUFTS
-    }
-
-    fn before(self, hi: f32) -> f32 {
-        hi / 0.9 + FUR * fbm3_range(3) + TUFTS
     }
 }
 

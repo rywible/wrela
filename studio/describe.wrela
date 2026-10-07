@@ -6,7 +6,6 @@
 
 use diagnose::{Grid, report}
 use json::{List, list, obj}
-use solve::filled
 use std::collections::Vec
 use std::field::Surface
 use std::gpu::{GlobalId, GpuBuffer, Slots, buffer, dispatch}
@@ -74,7 +73,7 @@ pub fn answer<S: Surface>(field: S, grid: Grid, d: [f32], part: [u32]) -> String
     let parts = field.parts()
     let r = report(grid, d)
     let vox = grid.cell * grid.cell * grid.cell
-    var shares = filled(parts, Share { cells: 0, lo: vec3(1.0e9), hi: vec3(-1.0e9) })
+    var shares = Vec::filled(parts, Share { cells: 0, lo: vec3(1.0e9), hi: vec3(-1.0e9) })
     // Contacts: the faces between inside cells decided by different parts, by pair.
     var contacts: Vec<(u32, u32, u32)> = Vec::new()
     var asymmetry = 0.0

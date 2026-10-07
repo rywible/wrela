@@ -3,10 +3,10 @@
 // sphere edits, which the grazers' feet raycast. The two differ by metres; M5 replaces both with
 // one (#28).
 
-use engine::render::{Lights, View}
+use engine::render::View
 use engine::sim::{Sim, SimState}
 use std::field::{smin, value_noise}
-use std::gpu::{ClipPosition, ComparisonSampler, DepthTexture, VertexIndex}
+use std::gpu::{ClipPosition, VertexIndex}
 use std::hash::StateHash
 use std::serialize::Serialize
 
@@ -76,6 +76,15 @@ impl XorShift {
 
     pub fn unit(mut self) -> f32 {
         f32(self.next() >> 8) * (1.0 / 16777216.0)
+    }
+
+    /// A point in the box from `lo` to `hi`: three draws, for x, y and z.
+    pub fn point(mut self, lo: vec3, hi: vec3) -> vec3 {
+        let e = hi - lo
+        let x = self.unit()
+        let y = self.unit()
+        let z = self.unit()
+        lo + vec3(x * e.x, y * e.y, z * e.z)
     }
 }
 

@@ -7,7 +7,6 @@
 // so the lens's report on a port can be checked against fieldview's on its original.
 
 use json::{List, list, obj}
-use solve::filled
 use std::collections::Vec
 use std::derive::Box3
 use std::field::{Lipschitz, Surface}
@@ -245,7 +244,7 @@ pub fn report(grid: Grid, d: [f32]) -> Report {
 fn flood(grid: Grid, d: [f32], level: f32) -> Vec<(u32, vec3)> {
     let n = grid.n
     let total = n * n * n
-    var seen = filled(total, value: false)
+    var seen = Vec::filled(total, value: false)
     var queue: Vec<u32> = Vec::new()
     var found: Vec<(u32, vec3)> = Vec::new()
     for start in 0..total {

@@ -6,19 +6,17 @@
 // field and look: the kernels are monomorphized for their types, and their numbers arrive as
 // uniforms (D-070).
 
-use creature::{Bone, Creature, PartMask, Parts, Skeleton}
+use creature::{Bone, PartMask, Parts, Skeleton}
+pub use creature::MAX_BONES
 use realize::{SkinVertex}
 use sim::{Pose, Transform}
 use std::gpu::{
-    ClipPosition, ComparisonSampler, DepthTexture, Flat, GlobalId, LocalId, Slots, VertexIndex,
-    WorkgroupId,
+    ClipPosition, ComparisonSampler, DepthTexture, Flat, GlobalId, LocalId, Slots, Unorm8x4,
+    VertexIndex, WorkgroupId, begin_depth_pass, depth_texture,
 }
 use std::math::PI
 use std::quat::Quat
 use std::transform::{look_at, ortho, perspective, translate}
-
-/// The most bones a palette holds.
-pub const MAX_BONES: u32 = 64
 
 /// A camera and the sun: the camera's view-projection, the sun's (its shadow map's), the eye,
 /// and the direction toward the sun.
@@ -147,7 +145,7 @@ pub struct Instance: Copy + GpuData {
 /// A skeleton at rest, as the posing pass reads it: each bone's rest position (in `xyz`) and
 /// parent (in `w`, its own number for a root).
 pub struct RestSkeleton: Copy + GpuData {
-    pub bones: Bounded<vec4, 64>,
+    pub bones: Bounded<vec4, MAX_BONES>,
 }
 
 impl RestSkeleton {
@@ -218,19 +216,15 @@ pub struct Skinned: Copy {
     pub mask: Flat<PartMask>,
 }
 
-/// Byte `k` of `w`, as a fraction of 255.
-fn unorm8(w: u32, k: u32) -> f32 {
-    f32((w >> (8 * k)) & 255) / 255.0
-}
-
 /// A vertex's skinning matrix: its four bones' matrices in the palette starting at `first`,
 /// blended by its weights.
 pub fn skin_matrix(v: SkinVertex, palettes: [mat4], first: u32) -> mat4 {
     let b = v.bones
-    palettes[first + (b & 255)] * unorm8(v.weights, 0) +
-        palettes[first + ((b >> 8) & 255)] * unorm8(v.weights, 1) +
-        palettes[first + ((b >> 16) & 255)] * unorm8(v.weights, 2) +
-        palettes[first + (b >> 24)] * unorm8(v.weights, 3)
+    let w = Unorm8x4 { bits: v.weights }.decode()
+    palettes[first + (b & 255)] * w.x +
+        palettes[first + ((b >> 8) & 255)] * w.y +
+        palettes[first + ((b >> 16) & 255)] * w.z +
+        palettes[first + (b >> 24)] * w.w
 }
 
 /// A mesh's vertex, skinned by the palette from `first`, seen from `view`'s camera.
@@ -271,6 +265,13 @@ pub fn skin_shadow(
 @fragment
 pub fn depth_only() -> vec4 {
     vec4(0.0)
+}
+
+/// A shadow map of one texel, all lit: for creatures drawn without shadows.
+pub fn unlit_shadow() -> DepthTexture {
+    var shadow = depth_texture(width: 1, height: 1)
+    begin_depth_pass(mut shadow, clear_depth: 1.0).end()
+    shadow
 }
 
 /// A pixel of a creature: its field at the rest position, under the triangle's mask, seen as
@@ -370,7 +371,7 @@ pub fn palette(skeleton: Skeleton, pose: Pose, root: Transform) -> Palette {
     )
     var bones = [world; MAX_BONES]
     let legs = skeleton.legs()
-    for i in 0..min(skeleton.leg_count(), 4) {
+    for i in 0..skeleton.leg_count() {
         let j = legs[i].joints
         let rest = |b: Bone| skeleton.rest(b)
         let (h, k, a, f) = (rest(j[0]), rest(j[1]), rest(j[2]), rest(j[3]))

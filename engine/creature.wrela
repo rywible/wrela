@@ -19,7 +19,8 @@ use physique
 use physique::{Capsule, Mass, Per}
 use std::derive::{Box3, Interval, interval, value_gradient_with}
 use std::field::{
-    Blend, Bound, Field, Lipschitz, PartName, Surface, UNBOUNDED, smax, smin, smin_weight,
+    Blend, Bound, Field, Lipschitz, PartName, Surface, UNBOUNDED, smin, smin_and_weight,
+    smin_weight,
 }
 use std::hash::StateHash
 use std::quat::Quat
@@ -80,7 +81,7 @@ struct NamedChain: Copy {
     chain: Chain,
 }
 
-/// The most bones a skeleton has: a skinning palette's size (`render::MAX_BONES`).
+/// The most bones a skeleton has: a skinning palette's size too (`render::Palette`).
 pub const MAX_BONES: u32 = 64
 
 /// The most chains a skeleton has.
@@ -454,21 +455,6 @@ impl Seam {
     }
 }
 
-/// `smin(a, b, k)` and `smin_weight(a, b, k)` at once, as spike 01's `smin_h` gives them: the
-/// two share `max(k - |a - b|, 0)`. The same numbers as theirs, bit for bit (`0.5 / k` is twice
-/// `0.25 / k` exactly).
-fn smin_and_weight(a: f32, b: f32, k: f32) -> (f32, f32) {
-    let s = 0.25 / max(k, 1.1754944e-38)
-    let d = b - a
-    if d > 0.0 {
-        let m = max(k - d, 0.0)
-        (a - m * (m * s), m * (2.0 * s))
-    } else {
-        let m = max(k + select(if_false: d, if_true: 0.0, cond: a == b && d != d), 0.0)
-        (b - m * (m * s), 1.0 - m * (2.0 * s))
-    }
-}
-
 /// A group's space: its origin at `at` in the space it's in, turned and scaled. A point `p` is
 /// `to_local * (p - at) / scale` in it, and a distance there is `scale` times larger outside.
 pub struct Frame: Copy + GpuData {
@@ -523,9 +509,6 @@ pub trait Modifier: Copy + GpuData {
     /// How far from the surface `d` can be where the changed distance is within `near` of it.
     fn widen(self, near: f32) -> f32
 
-    /// The most `d` can be where the changed distance is at most `hi`.
-    fn before(self, hi: f32) -> f32
-
     /// The changed distance's interval over `b`, where `d`'s is `d`: what culling folds
     /// (`PartList::cull`). The default holds for a change that rises with `d`: the interval of
     /// the change of its least and of its most.
@@ -558,10 +541,6 @@ impl Modifier for Ground {
 
     fn widen(self, near: f32) -> f32 {
         near
-    }
-
-    fn before(self, hi: f32) -> f32 {
-        hi
     }
 }
 
@@ -776,18 +755,17 @@ impl<F: Lipschitz> Placed<F> {
 }
 
 /// A creature's items (parts, groups and modifiers) in the order they join, each with a bit in
-/// a mask (`render::PartMask`), and its parts: the leaves, the parts in its groups too, each
-/// mirrored one twice (as written, then its image).
+/// a mask (`PartMask`), and its parts: the leaves, the parts in its groups too, each mirrored
+/// one twice (as written, then its image).
 pub trait PartList: Copy + GpuData {
     /// How many items: the same for every value of the type (an array counts on it).
     fn items(self) -> u32
 
     fn leaves(self) -> u32
 
-    /// `d` joined at `p` by each item whose bit is in `mask`, in order (the first item's bit is
-    /// `first`), each seen `fp` wide (`Surface::filtered`). `k` is the creature's width
-    /// (`Body::blend`).
-    fn fold(self, p: vec3, d: f32, k: f32, mask: PartMask, first: u32, fp: f32) -> f32
+    /// `d` joined at `p` by each item, in order, each seen `fp` wide (`Surface::filtered`). `k`
+    /// is the creature's width (`Body::blend`).
+    fn fold(self, p: vec3, d: f32, k: f32, fp: f32) -> f32
 
     /// `d` joined at `p` by every item, each its distance: what `Surface::distance` and its
     /// derived interval read.
@@ -835,32 +813,22 @@ pub trait PartList: Copy + GpuData {
     /// Leaf `i`'s name, in group `group`, as written or as its image (`image`).
     fn leaf_name(self, i: u32, group: Text, image: bool) -> PartName
 
-    /// The four leaves of the items in `mask` nearest `p`, if nearer than those in `best`: their
-    /// distances (times `scale`, this list's space's size) and bones. `image`: `p` was
+    /// The leaf nearest `p`, if nearer than `best`: its distance (times `scale`, this list's
+    /// space's size) and bone; of leaves as near, the first. `image`: `p` was reflected on its
+    /// way here.
+    fn weigh(self, p: vec3, image: bool, scale: f32, best: (f32, u32)) -> (f32, u32)
+
+    /// The smallest own distance at `p` of its parts, each seen `fp` wide and times `scale`
+    /// (this list's space's size), if smaller than `best`.
+    fn nearest(self, p: vec3, fp: f32, scale: f32, best: f32) -> f32
+
+    /// Skin weights at `p`, spike 01's: each of its parts gives the bones its binding names
+    /// (`SkinBinding`) 1 − smoothstep(0, `falloff`, d − `dmin`), where d is its own distance,
+    /// seen `fp` wide, times `scale`, and `dmin` the smallest (`nearest`). `image`: `p` was
     /// reflected on its way here.
-    fn weigh(
-        self,
-        p: vec3,
-        mask: PartMask,
-        first: u32,
-        image: bool,
-        scale: f32,
-        best: Nearest4,
-    ) -> Nearest4
-
-    /// The smallest own distance at `p` of the parts of the items in `mask`, each seen `fp`
-    /// wide and times `scale` (this list's space's size), if smaller than `best`.
-    fn nearest(self, p: vec3, mask: PartMask, first: u32, fp: f32, scale: f32, best: f32) -> f32
-
-    /// Skin weights at `p`, spike 01's: each part of the items in `mask` gives the bones its
-    /// binding names (`SkinBinding`) 1 − smoothstep(0, `falloff`, d − `dmin`), where d is its
-    /// own distance, seen `fp` wide, times `scale`, and `dmin` the smallest (`nearest`).
-    /// `image`: `p` was reflected on its way here.
     fn skin(
         self,
         p: vec3,
-        mask: PartMask,
-        first: u32,
         fp: f32,
         image: bool,
         scale: f32,
@@ -903,8 +871,8 @@ impl<F: Lipschitz> PartList for Placed<F> {
         1 + u32(self.mirror)
     }
 
-    fn fold(self, p: vec3, d: f32, k: f32, mask: PartMask, first: u32, fp: f32) -> f32 {
-        if has(mask, first) { self.seam.apply(d, self.seen(p, fp).0, k) } else { d }
+    fn fold(self, p: vec3, d: f32, k: f32, fp: f32) -> f32 {
+        self.seam.apply(d, self.seen(p, fp).0, k)
     }
 
     fn fold_plain(self, p: vec3, d: f32, k: f32) -> f32 {
@@ -955,7 +923,7 @@ impl<F: Lipschitz> PartList for Placed<F> {
     }
 
     fn leaf_distance(self, p: vec3, i: u32) -> f32 {
-        let q = if i == 1 { vec3(-p.x, p.y, p.z) } else { p }
+        let q = if i == 1 { reflect_x(p) } else { p }
         self.field.distance(q - self.at)
     }
 
@@ -969,31 +937,19 @@ impl<F: Lipschitz> PartList for Placed<F> {
         }
     }
 
-    fn weigh(
-        self,
-        p: vec3,
-        mask: PartMask,
-        first: u32,
-        image: bool,
-        scale: f32,
-        best: Nearest4,
-    ) -> Nearest4 {
-        if !has(mask, first) {
-            return best
-        }
+    fn weigh(self, p: vec3, image: bool, scale: f32, best: (f32, u32)) -> (f32, u32) {
         let (x, reflected) = self.at_point(p)
-        best.with(x * scale, self.bone_for(image != reflected))
+        let d = x * scale
+        if d < best.0 { (d, self.bone_for(image != reflected)) } else { best }
     }
 
-    fn nearest(self, p: vec3, mask: PartMask, first: u32, fp: f32, scale: f32, best: f32) -> f32 {
-        if has(mask, first) { min(best, self.seen(p, fp).0 * scale) } else { best }
+    fn nearest(self, p: vec3, fp: f32, scale: f32, best: f32) -> f32 {
+        min(best, self.seen(p, fp).0 * scale)
     }
 
     fn skin(
         self,
         p: vec3,
-        mask: PartMask,
-        first: u32,
         fp: f32,
         image: bool,
         scale: f32,
@@ -1001,9 +957,6 @@ impl<F: Lipschitz> PartList for Placed<F> {
         falloff: f32,
         acc: mut BoneWeights,
     ) {
-        if !has(mask, first) {
-            return
-        }
         let (d, reflected) = self.seen(p, fp)
         let w = 1.0 - smoothstep(0.0, falloff, d * scale - dmin)
         if w > 0.0 {
@@ -1064,8 +1017,8 @@ impl<A: PartList, B: PartList> PartList for Then<A, B> {
         self.a.leaves() + self.b.leaves()
     }
 
-    fn fold(self, p: vec3, d: f32, k: f32, mask: PartMask, first: u32, fp: f32) -> f32 {
-        self.b.fold(p, self.a.fold(p, d, k, mask, first, fp), k, mask, first + self.a.items(), fp)
+    fn fold(self, p: vec3, d: f32, k: f32, fp: f32) -> f32 {
+        self.b.fold(p, self.a.fold(p, d, k, fp), k, fp)
     }
 
     fn fold_plain(self, p: vec3, d: f32, k: f32) -> f32 {
@@ -1132,29 +1085,17 @@ impl<A: PartList, B: PartList> PartList for Then<A, B> {
         }
     }
 
-    fn weigh(
-        self,
-        p: vec3,
-        mask: PartMask,
-        first: u32,
-        image: bool,
-        scale: f32,
-        best: Nearest4,
-    ) -> Nearest4 {
-        let w = self.a.weigh(p, mask, first, image, scale, best)
-        self.b.weigh(p, mask, first + self.a.items(), image, scale, w)
+    fn weigh(self, p: vec3, image: bool, scale: f32, best: (f32, u32)) -> (f32, u32) {
+        self.b.weigh(p, image, scale, self.a.weigh(p, image, scale, best))
     }
 
-    fn nearest(self, p: vec3, mask: PartMask, first: u32, fp: f32, scale: f32, best: f32) -> f32 {
-        let n = self.a.nearest(p, mask, first, fp, scale, best)
-        self.b.nearest(p, mask, first + self.a.items(), fp, scale, n)
+    fn nearest(self, p: vec3, fp: f32, scale: f32, best: f32) -> f32 {
+        self.b.nearest(p, fp, scale, self.a.nearest(p, fp, scale, best))
     }
 
     fn skin(
         self,
         p: vec3,
-        mask: PartMask,
-        first: u32,
         fp: f32,
         image: bool,
         scale: f32,
@@ -1162,8 +1103,8 @@ impl<A: PartList, B: PartList> PartList for Then<A, B> {
         falloff: f32,
         acc: mut BoneWeights,
     ) {
-        self.a.skin(p, mask, first, fp, image, scale, dmin, falloff, mut acc)
-        self.b.skin(p, mask, first + self.a.items(), fp, image, scale, dmin, falloff, mut acc)
+        self.a.skin(p, fp, image, scale, dmin, falloff, mut acc)
+        self.b.skin(p, fp, image, scale, dmin, falloff, mut acc)
     }
 
     fn cull_hi(self, b: Box3, k: f32, first: u32, best: f32) -> f32 {
@@ -1230,22 +1171,8 @@ impl PartMask {
         }
     }
 
-    /// Whether item `i` is in: its bit, or past the 64th.
-    pub fn has(self, i: u32) -> bool {
-        if i < 32 { (self.lo >> i) & 1 == 1 } else if i < 64 {
-            (self.hi >> (i - 32)) & 1 == 1
-        } else {
-            true
-        }
-    }
-
     pub fn or(self, other: PartMask) -> PartMask {
         PartMask { lo: self.lo | other.lo, hi: self.hi | other.hi }
-    }
-
-    /// How many of the first 64 items are in.
-    pub fn count(self) -> u32 {
-        self.lo.count_ones() + self.hi.count_ones()
     }
 }
 
@@ -1291,11 +1218,6 @@ impl InMask {
     }
 }
 
-/// Whether item `first`'s bit is in `mask` (`PartMask::has`).
-fn has(mask: PartMask, first: u32) -> bool {
-    mask.has(first)
-}
-
 /// Item `first`'s bit in a mask (`PartMask::bit`).
 fn bit(first: u32) -> PartMask {
     PartMask::bit(first)
@@ -1304,7 +1226,7 @@ fn bit(first: u32) -> PartMask {
 /// `PartList::fold_offset`'s leaf where no leaf is raised.
 pub const NO_LEAF: u32 = 0xffffffff
 
-/// No item (`PartChannels::fold_channels_masked`).
+/// No item (`CreatureField::fold_masked_channels`).
 pub const NO_ITEM: u32 = 0xffffffff
 
 impl<P: PartList> Group<P> {
@@ -1318,7 +1240,7 @@ impl<P: PartList> Group<P> {
     pub fn seen(self, p: vec3, k: f32, fp: f32) -> f32 {
         let (m, _) = mirrored(p, self.mirror)
         let s = self.frame.scale
-        self.parts.fold(self.frame.local(m), FAR, k, mask: ALL, first: 0, fp: fp / abs(s)) * s
+        self.parts.fold(self.frame.local(m), FAR, k, fp / abs(s)) * s
     }
 
     /// Its interval over `b`.
@@ -1351,8 +1273,8 @@ impl<P: PartList> PartList for Group<P> {
         self.parts.leaves() * (1 + u32(self.mirror))
     }
 
-    fn fold(self, p: vec3, d: f32, k: f32, mask: PartMask, first: u32, fp: f32) -> f32 {
-        if has(mask, first) { self.seam.apply(d, self.seen(p, k, fp), k) } else { d }
+    fn fold(self, p: vec3, d: f32, k: f32, fp: f32) -> f32 {
+        self.seam.apply(d, self.seen(p, k, fp), k)
     }
 
     fn fold_plain(self, p: vec3, d: f32, k: f32) -> f32 {
@@ -1368,7 +1290,7 @@ impl<P: PartList> PartList for Group<P> {
     }
 
     fn item_own(self, p: vec3, i: u32, fp: f32, scale: f32) -> f32 {
-        self.nearest(p, ALL, 0, fp, scale, FAR)
+        self.nearest(p, fp, scale, FAR)
     }
 
     fn item_skin(
@@ -1383,7 +1305,7 @@ impl<P: PartList> PartList for Group<P> {
         own: f32,
         acc: mut BoneWeights,
     ) {
-        self.skin(p, ALL, 0, fp, image, scale, dmin, falloff, mut acc)
+        self.skin(p, fp, image, scale, dmin, falloff, mut acc)
     }
 
     fn fold_part(self, p: vec3, best: (f32, u32), k: f32, base: u32) -> (f32, u32) {
@@ -1405,7 +1327,7 @@ impl<P: PartList> PartList for Group<P> {
 
     fn leaf_distance(self, p: vec3, i: u32) -> f32 {
         let n = self.parts.leaves()
-        let q = if i >= n { vec3(-p.x, p.y, p.z) } else { p }
+        let q = if i >= n { reflect_x(p) } else { p }
         self.parts.leaf_distance(self.frame.local(q), i % n) * self.frame.scale
     }
 
@@ -1414,43 +1336,21 @@ impl<P: PartList> PartList for Group<P> {
         self.parts.leaf_name(i % n, self.name, image != (i >= n))
     }
 
-    fn weigh(
-        self,
-        p: vec3,
-        mask: PartMask,
-        first: u32,
-        image: bool,
-        scale: f32,
-        best: Nearest4,
-    ) -> Nearest4 {
-        if !has(mask, first) {
-            return best
-        }
+    fn weigh(self, p: vec3, image: bool, scale: f32, best: (f32, u32)) -> (f32, u32) {
         let (m, reflected) = mirrored(p, self.mirror)
-        self.parts.weigh(
-            self.frame.local(m),
-            mask: ALL,
-            first: 0,
-            image: image != reflected,
-            scale: scale * self.frame.scale,
-            best: best,
-        )
+        let s = scale * self.frame.scale
+        self.parts.weigh(self.frame.local(m), image: image != reflected, scale: s, best: best)
     }
 
-    fn nearest(self, p: vec3, mask: PartMask, first: u32, fp: f32, scale: f32, best: f32) -> f32 {
-        if !has(mask, first) {
-            return best
-        }
+    fn nearest(self, p: vec3, fp: f32, scale: f32, best: f32) -> f32 {
         let (m, _) = mirrored(p, self.mirror)
         let s = self.frame.scale
-        self.parts.nearest(self.frame.local(m), ALL, 0, fp / abs(s), scale * s, best)
+        self.parts.nearest(self.frame.local(m), fp / abs(s), scale * s, best)
     }
 
     fn skin(
         self,
         p: vec3,
-        mask: PartMask,
-        first: u32,
         fp: f32,
         image: bool,
         scale: f32,
@@ -1458,15 +1358,10 @@ impl<P: PartList> PartList for Group<P> {
         falloff: f32,
         acc: mut BoneWeights,
     ) {
-        if !has(mask, first) {
-            return
-        }
         let (m, reflected) = mirrored(p, self.mirror)
         let s = self.frame.scale
         self.parts.skin(
             self.frame.local(m),
-            ALL,
-            0,
             fp / abs(s),
             image != reflected,
             scale * s,
@@ -1518,7 +1413,7 @@ impl<M: Modifier> PartList for Modify<M> {
         0
     }
 
-    fn fold(self, p: vec3, d: f32, k: f32, mask: PartMask, first: u32, fp: f32) -> f32 {
+    fn fold(self, p: vec3, d: f32, k: f32, fp: f32) -> f32 {
         self.modifier.apply(d, p)
     }
 
@@ -1534,8 +1429,9 @@ impl<M: Modifier> PartList for Modify<M> {
         bit(first)
     }
 
+    /// A modifier has no parts.
     fn item_own(self, p: vec3, i: u32, fp: f32, scale: f32) -> f32 {
-        self.nearest(p, ALL, 0, fp, scale, FAR)
+        FAR
     }
 
     fn item_skin(
@@ -1549,9 +1445,7 @@ impl<M: Modifier> PartList for Modify<M> {
         falloff: f32,
         own: f32,
         acc: mut BoneWeights,
-    ) {
-        self.skin(p, ALL, 0, fp, image, scale, dmin, falloff, mut acc)
-    }
+    ) {}
 
     fn fold_offset(self, p: vec3, d: f32, k: f32, leaf: u32, by: f32) -> f32 {
         self.modifier.apply(d, p)
@@ -1569,27 +1463,17 @@ impl<M: Modifier> PartList for Modify<M> {
         PartName { name: "", group, frame: "", mirrored: false }
     }
 
-    fn weigh(
-        self,
-        p: vec3,
-        mask: PartMask,
-        first: u32,
-        image: bool,
-        scale: f32,
-        best: Nearest4,
-    ) -> Nearest4 {
+    fn weigh(self, p: vec3, image: bool, scale: f32, best: (f32, u32)) -> (f32, u32) {
         best
     }
 
-    fn nearest(self, p: vec3, mask: PartMask, first: u32, fp: f32, scale: f32, best: f32) -> f32 {
+    fn nearest(self, p: vec3, fp: f32, scale: f32, best: f32) -> f32 {
         best
     }
 
     fn skin(
         self,
         p: vec3,
-        mask: PartMask,
-        first: u32,
         fp: f32,
         image: bool,
         scale: f32,
@@ -1624,36 +1508,6 @@ impl<M: Modifier> PartList for Modify<M> {
     }
 }
 
-/// The four parts nearest a point: their distances, nearest first, and their bones.
-pub struct Nearest4: Copy {
-    pub d: [f32; 4],
-    pub bones: [u32; 4],
-}
-
-impl Nearest4 {
-    pub fn new() -> Nearest4 {
-        Nearest4 { d: [FAR; 4], bones: [0; 4] }
-    }
-
-    /// With a part at distance `d`, on bone `bone`, if it's among the four nearest.
-    pub fn with(self, d: f32, bone: u32) -> Nearest4 {
-        var out = self
-        var i = 4
-        while i > 0 && d < out.d[i - 1] {
-            if i < 4 {
-                out.d[i] = out.d[i - 1]
-                out.bones[i] = out.bones[i - 1]
-            }
-            i -= 1
-        }
-        if i < 4 {
-            out.d[i] = d
-            out.bones[i] = bone
-        }
-        out
-    }
-}
-
 /// Parts whose fields carry channels `C`.
 pub trait PartChannels<C>: PartList {
     /// The first item's distance and channels at `p`.
@@ -1667,8 +1521,10 @@ pub trait PartChannels<C>: PartList {
     /// distance its weight is none): a part's field's channels alone, its distance not needed.
     fn channels_only(self, p: vec3) -> C
 
-    /// `fold_channels_masked` for item `i` alone (counted in this list), its distance `x`
-    /// already if `use_x`.
+    /// `dc` joined at `p` by item `i` alone (counted in this list), seen `fp` wide, its channels
+    /// blended as its seam weighs them: a step of a masked fold
+    /// (`CreatureField::fold_masked_channels`). Its distance is `x` already if `use_x` (as
+    /// spike 01's pruned sample has its nearest part's).
     fn item_fold_channels(
         self,
         p: vec3,
@@ -1677,21 +1533,6 @@ pub trait PartChannels<C>: PartList {
         i: u32,
         fp: f32,
         use_x: bool,
-        x: f32,
-    ) -> (f32, C)
-
-    /// `dc` joined at `p` by each item in `mask` (bits from `first`), each seen `fp` wide, its
-    /// channels blended as its seam weighs them. Item `known`'s distance is `x` already (as
-    /// spike 01's pruned sample has its nearest part's); `NO_ITEM` for none.
-    fn fold_channels_masked(
-        self,
-        p: vec3,
-        dc: take (f32, C),
-        k: f32,
-        mask: PartMask,
-        first: u32,
-        fp: f32,
-        known: u32,
         x: f32,
     ) -> (f32, C)
 }
@@ -1707,7 +1548,9 @@ impl<C: Blend + Copy, F: Field<C> + Lipschitz> PartChannels<C> for Placed<F> {
         use_x: bool,
         x: f32,
     ) -> (f32, C) {
-        self.fold_channels_masked(p, take dc, k, ALL, 0, fp, if use_x { 0 } else { NO_ITEM }, x)
+        let q = mirrored(p, self.mirror).0 - self.at
+        let d = if use_x { x } else { self.field.filtered(q, fp) }
+        self.seam.join_channels(take dc, d, self.field.channels(q), k)
     }
 
     fn first(self, p: vec3, k: f32) -> (f32, C) {
@@ -1727,25 +1570,6 @@ impl<C: Blend + Copy, F: Field<C> + Lipschitz> PartChannels<C> for Placed<F> {
     fn channels_only(self, p: vec3) -> C {
         let (q, _) = mirrored(p, self.mirror)
         self.field.channels(q - self.at)
-    }
-
-    fn fold_channels_masked(
-        self,
-        p: vec3,
-        dc: take (f32, C),
-        k: f32,
-        mask: PartMask,
-        first: u32,
-        fp: f32,
-        known: u32,
-        x: f32,
-    ) -> (f32, C) {
-        if !has(mask, first) {
-            return dc
-        }
-        let q = mirrored(p, self.mirror).0 - self.at
-        let d = if first == known { x } else { self.field.filtered(q, fp) }
-        self.seam.join_channels(take dc, d, self.field.channels(q), k)
     }
 }
 
@@ -1779,24 +1603,10 @@ impl<C, A: PartChannels<C>, B: PartChannels<C>> PartChannels<C> for Then<A, B> {
     fn channels_only(self, p: vec3) -> C {
         self.a.channels_only(p)
     }
-
-    fn fold_channels_masked(
-        self,
-        p: vec3,
-        dc: take (f32, C),
-        k: f32,
-        mask: PartMask,
-        first: u32,
-        fp: f32,
-        known: u32,
-        x: f32,
-    ) -> (f32, C) {
-        let after_a = self.a.fold_channels_masked(p, take dc, k, mask, first, fp, known, x)
-        self.b.fold_channels_masked(p, take after_a, k, mask, first + self.a.items(), fp, known, x)
-    }
 }
 
 impl<C: Blend + Copy, P: PartChannels<C>> PartChannels<C> for Group<P> {
+    /// Its channels are its own fold's, as `first` gives them; its distance is seen `fp` wide.
     fn item_fold_channels(
         self,
         p: vec3,
@@ -1807,7 +1617,9 @@ impl<C: Blend + Copy, P: PartChannels<C>> PartChannels<C> for Group<P> {
         use_x: bool,
         x: f32,
     ) -> (f32, C) {
-        self.fold_channels_masked(p, take dc, k, ALL, 0, fp, if use_x { 0 } else { NO_ITEM }, x)
+        let (_, cx) = self.first(p, k)
+        let d = if use_x { x } else { self.seen(p, k, fp) }
+        self.seam.join_channels(take dc, d, cx, k)
     }
 
     fn first(self, p: vec3, k: f32) -> (f32, C) {
@@ -1828,26 +1640,6 @@ impl<C: Blend + Copy, P: PartChannels<C>> PartChannels<C> for Group<P> {
     fn channels_only(self, p: vec3) -> C {
         let (m, _) = mirrored(p, self.mirror)
         self.parts.channels_only(self.frame.local(m))
-    }
-
-    /// Its channels are its own fold's, as `first` gives them; its distance is seen `fp` wide.
-    fn fold_channels_masked(
-        self,
-        p: vec3,
-        dc: take (f32, C),
-        k: f32,
-        mask: PartMask,
-        first: u32,
-        fp: f32,
-        known: u32,
-        x: f32,
-    ) -> (f32, C) {
-        if !has(mask, first) {
-            return dc
-        }
-        let (_, cx) = self.first(p, k)
-        let d = if first == known { x } else { self.seen(p, k, fp) }
-        self.seam.join_channels(take dc, d, cx, k)
     }
 }
 
@@ -1876,20 +1668,6 @@ impl<C, M: Modifier> PartChannels<C> for Modify<M> {
     fn channels_only(self, p: vec3) -> C {
         panic("a creature's first item is a part or a group, not a modifier")
     }
-
-    fn fold_channels_masked(
-        self,
-        p: vec3,
-        dc: take (f32, C),
-        k: f32,
-        mask: PartMask,
-        first: u32,
-        fp: f32,
-        known: u32,
-        x: f32,
-    ) -> (f32, C) {
-        (self.modifier.apply(dc.0, p), take dc.1)
-    }
 }
 
 /// Items of one type, one after another (`Body::each_leg`'s segments, then its feet).
@@ -1908,12 +1686,10 @@ impl<P: PartList, const N: u32> PartList for [P; N] {
         n
     }
 
-    fn fold(self, p: vec3, d: f32, k: f32, mask: PartMask, first: u32, fp: f32) -> f32 {
+    fn fold(self, p: vec3, d: f32, k: f32, fp: f32) -> f32 {
         var out = d
-        var at = first
         for i in 0..N {
-            out = self[i].fold(p, out, k, mask, at, fp)
-            at += self[i].items()
+            out = self[i].fold(p, out, k, fp)
         }
         out
     }
@@ -2004,30 +1780,18 @@ impl<P: PartList, const N: u32> PartList for [P; N] {
         self[j].leaf_name(leaf, group, image)
     }
 
-    fn weigh(
-        self,
-        p: vec3,
-        mask: PartMask,
-        first: u32,
-        image: bool,
-        scale: f32,
-        best: Nearest4,
-    ) -> Nearest4 {
+    fn weigh(self, p: vec3, image: bool, scale: f32, best: (f32, u32)) -> (f32, u32) {
         var out = best
-        var at = first
         for i in 0..N {
-            out = self[i].weigh(p, mask, at, image, scale, out)
-            at += self[i].items()
+            out = self[i].weigh(p, image, scale, out)
         }
         out
     }
 
-    fn nearest(self, p: vec3, mask: PartMask, first: u32, fp: f32, scale: f32, best: f32) -> f32 {
+    fn nearest(self, p: vec3, fp: f32, scale: f32, best: f32) -> f32 {
         var out = best
-        var at = first
         for i in 0..N {
-            out = self[i].nearest(p, mask, at, fp, scale, out)
-            at += self[i].items()
+            out = self[i].nearest(p, fp, scale, out)
         }
         out
     }
@@ -2035,8 +1799,6 @@ impl<P: PartList, const N: u32> PartList for [P; N] {
     fn skin(
         self,
         p: vec3,
-        mask: PartMask,
-        first: u32,
         fp: f32,
         image: bool,
         scale: f32,
@@ -2044,10 +1806,8 @@ impl<P: PartList, const N: u32> PartList for [P; N] {
         falloff: f32,
         acc: mut BoneWeights,
     ) {
-        var at = first
         for i in 0..N {
-            self[i].skin(p, mask, at, fp, image, scale, dmin, falloff, mut acc)
-            at += self[i].items()
+            self[i].skin(p, fp, image, scale, dmin, falloff, mut acc)
         }
     }
 
@@ -2068,15 +1828,11 @@ impl<P: PartList, const N: u32> PartList for [P; N] {
     }
 
     fn item_distance(self, p: vec3, i: u32, k: f32) -> f32 {
-        var at = 0
-        for j in 0..N {
-            let n = self[j].items()
-            if i < at + n {
-                return self[j].item_distance(p, i - at, k)
-            }
-            at += n
+        if N == 0 {
+            return FAR
         }
-        FAR
+        let per = self[0].items()
+        self[i / per].item_distance(p, i % per, k)
     }
 
     fn cull(self, b: Box3, k: f32, first: u32, min_hi: f32, c: Culled) -> Culled {
@@ -2154,26 +1910,6 @@ impl<C: Copy, P: PartChannels<C>, const N: u32> PartChannels<C> for [P; N] {
 
     fn channels_only(self, p: vec3) -> C {
         self[0].channels_only(p)
-    }
-
-    fn fold_channels_masked(
-        self,
-        p: vec3,
-        dc: take (f32, C),
-        k: f32,
-        mask: PartMask,
-        first: u32,
-        fp: f32,
-        known: u32,
-        x: f32,
-    ) -> (f32, C) {
-        var out = dc
-        var at = first
-        for i in 0..N {
-            out = self[i].fold_channels_masked(p, out, k, mask, at, fp, known, x)
-            at += self[i].items()
-        }
-        out
     }
 }
 
@@ -2292,7 +2028,7 @@ impl<P: PartList> Surface for CreatureField<P> {
     }
 
     fn filtered(self, p: vec3, footprint: f32) -> f32 {
-        self.parts.fold(p, FAR, self.k, mask: ALL, first: 0, fp: footprint)
+        self.parts.fold(p, FAR, self.k, footprint)
     }
 
     fn parts(self) -> u32 {
@@ -2323,9 +2059,6 @@ pub trait Parts<C>: Field<C> + Lipschitz {
     /// Its distance at `p` from the items in `mask` alone, seen `fp` wide: the whole field's,
     /// wherever the others can't change it.
     fn distance_masked(self, p: vec3, mask: PartMask, fp: f32) -> f32
-
-    /// Its channels at `p`, from the items in `mask` alone, seen `fp` wide.
-    fn channels_masked(self, p: vec3, mask: PartMask, fp: f32) -> C
 
     /// Its distance at `p`, its gradient and its channels, from the items in `mask` alone,
     /// seen `fp` wide: one derived evaluation (a pixel's shading, #43 §8.3).
@@ -2362,10 +2095,6 @@ impl<C: Blend + Copy, P: PartChannels<C>> Parts<C> for CreatureField<P> {
             i = items.next()
         }
         d
-    }
-
-    fn channels_masked(self, p: vec3, mask: PartMask, fp: f32) -> C {
-        self.fold_masked_channels(p, mask, fp, NO_ITEM, 0.0).1
     }
 
     fn sample_masked(self, p: vec3, mask: PartMask, fp: f32) -> (f32, vec3, C) {
@@ -2785,15 +2514,6 @@ impl<C: Blend + Copy, P: PartChannels<C>> Creature<C> for Body<P> {
     }
 
     fn nearest_bone(self, p: vec3) -> Bone {
-        Bone {
-            index: self.parts.weigh(
-                p,
-                mask: ALL,
-                first: 0,
-                image: false,
-                scale: 1.0,
-                best: Nearest4::new(),
-            ).bones[0],
-        }
+        Bone { index: self.parts.weigh(p, image: false, scale: 1.0, best: (FAR, 0)).1 }
     }
 }

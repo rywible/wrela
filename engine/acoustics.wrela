@@ -2,6 +2,7 @@
 // its field, shape and density, by an eigenvalue solve that a constant runs when the program is
 // built (`const HOOF_MODES = modal_modes(hoof())`); a strike excites them on the audio thread.
 
+use std::audio::SAMPLE_RATE
 use std::derive::{Box3, interval}
 use std::field::{Blend, Field, Surface}
 use std::hash::StateHash
@@ -162,10 +163,7 @@ fn jacobi_eigenvalues(a: mut Vec<f64>, n: u32) -> Vec<f64> {
             }
         }
     }
-    var values: Vec<f64> = Vec::new()
-    for i in 0..n {
-        values.push(a[i * n + i])
-    }
+    var values = Vec::from_fn(n, |i| a[i * n + i])
     values.sort_by(|x, y| x < y)
     values
 }
@@ -205,7 +203,7 @@ pub fn modal(modes: ModalModes, against: Absorption, impulse: f32) -> Voice {
             Ringing {
                 frequency: m.frequency,
                 amplitude: impulse * m.gain,
-                decay: exp(-per_second / 48000.0),
+                decay: exp(-per_second / f32(SAMPLE_RATE)),
             },
         )
     }
@@ -239,7 +237,7 @@ impl Bank {
     pub fn strike(mut self, v: Voice) {
         for m in v.modes {
             let s = self.next
-            let w = TAU * m.frequency / 48000.0
+            let w = TAU * m.frequency / f32(SAMPLE_RATE)
             self.re[s] = 0.0
             self.im[s] = m.amplitude
             self.cos_w[s] = cos(w)

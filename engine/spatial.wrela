@@ -5,7 +5,7 @@
 // `Vec` (`within`), language.md §6.6. A grid kept in the world and rebuilt each tick
 // (`rebuild`) reuses its buffers, so a steady tick allocates nothing for it (#43 §5.2).
 
-use sim::SimState
+use sim::{Sim, SimState}
 use std::arena::{Arena, Handle}
 use std::hash::StateHash
 use std::serialize::Serialize
@@ -26,7 +26,7 @@ struct Entry<T>: Copy + StateHash + Serialize + SimState {
 
 /// Positions in cells `cell` metres wide, sorted by cell; and the sort's room, which holds no
 /// elements (it hashes, saves and clones empty).
-pub struct SpatialGrid<T>: Clone + StateHash + Serialize + SimState {
+pub struct SpatialGrid<T>: Sim {
     cell: f32,
     entries: Vec<Entry<T>>,
     room: Vec<u8>,

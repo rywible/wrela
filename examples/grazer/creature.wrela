@@ -14,12 +14,10 @@
 //   ported. Each part carries a coat of its own instead (channels per part), from the WGSL's
 //   palette.
 
-use engine::creature::{
-    Bone, Creature, Frame, Modifier, Skeleton, creature, cut, frame, ground, smooth,
-}
+use engine::creature::{Creature, Frame, Modifier, Skeleton, creature, cut, frame, ground, smooth}
 use round1::shapes::{
-    Ell, FlatCone, NOISE3_LIPSCHITZ, ell, fbm3, fbm3_lipschitz, fbm3_range, flat_cone, mirror_x,
-    noise3, rot_x, sd_box, sstep, sstep_slope,
+    FlatCone, NOISE3_LIPSCHITZ, ell, fbm3, fbm3_lipschitz, fbm3_range, flat_cone, mirror_x, noise3,
+    rot_x, sd_box, sstep, sstep_slope,
 }
 use std::field::{Blend, Color, Lipschitz, Surface, cuboid, rgb, round_cone, smax, sphere}
 use std::quat::Quat
@@ -310,10 +308,6 @@ impl Modifier for Cape {
 
     fn widen(self, near: f32) -> f32 {
         1.4 * near + shag_most(self.depth)
-    }
-
-    fn before(self, hi: f32) -> f32 {
-        max(hi, 1.4 * hi) + shag_most(self.depth)
     }
 }
 

@@ -3,7 +3,7 @@
 // derived interval classifies cells as inside, outside or straddling; only straddling cells
 // are refined, so the cost follows the surface's area, not the volume (T3).
 
-use creature::{Bone, Creature, Parts, Skeleton}
+use creature::{Bone, Creature, Parts}
 use std::derive::{Box3, interval}
 use std::field::{Bound, Field, Surface}
 use std::hash::StateHash
@@ -169,11 +169,10 @@ pub fn fit_capsules<C, K: Creature<C>>(c: K, per: Per, tolerance: f32) -> Vec<Ca
     let s = c.skeleton()
     let n = s.len()
     // Each bone's axis: to its first child, or nowhere for a leaf.
-    var axes: Vec<(vec3, vec3)> = Vec::new()
-    for i in 0..n {
+    var axes = Vec::from_fn(n, |i| {
         let a = s.rest(Bone { index: i })
-        axes.push((a, a))
-    }
+        (a, a)
+    })
     for i in 0..n {
         let b = Bone { index: i }
         let parent = s.parent(b).index
@@ -277,6 +276,21 @@ impl<C> Gather<C> for Sums {
 /// half-diagonal times 1.5, spike 01's assumption about the gradient near the surface.
 const CLASSIFY: f32 = 1.5
 
+/// The octree's root: a cube around the items' bounds (those that bound something), its centre
+/// and half-edge.
+fn root_cube(bounds: [Bound]) -> (vec3, f32) {
+    var lo = vec3(1.0e30)
+    var hi = vec3(-1.0e30)
+    for b in bounds {
+        if b.radius < 1.0e29 {
+            lo = min(lo, b.centre - vec3(b.radius))
+            hi = max(hi, b.centre + vec3(b.radius))
+        }
+    }
+    let e = hi - lo
+    ((lo + hi) * 0.5, max(e.x, max(e.y, e.z)) * 0.5)
+}
+
 /// A creature's mass by spike 01's method (#43 §9): an adaptive octree from a cube around the
 /// bounds of its items, each node classified by the distance at its centre (empty where it's
 /// more than 1.5 h √3, whole where it's less than minus that, h the node's half-edge), down to
@@ -287,17 +301,7 @@ const CLASSIFY: f32 = 1.5
 @deterministic
 pub fn adaptive_mass<C, F: Parts<C>>(field: F, density: fn(C) -> f32, finest: f32) -> Weighed {
     let bounds = field.item_bounds()
-    var lo = vec3(1.0e30)
-    var hi = vec3(-1.0e30)
-    for b in bounds {
-        if b.radius < 1.0e29 {
-            lo = min(lo, b.centre - vec3(b.radius))
-            hi = max(hi, b.centre + vec3(b.radius))
-        }
-    }
-    let c = (lo + hi) * 0.5
-    let e = hi - lo
-    let h = max(e.x, max(e.y, e.z)) * 0.5
+    let (c, h) = root_cube(bounds)
     var sums = Sums { mass: 0.0, volume: 0.0, moment: vec3d(0.0), samples: 0 }
     node(field, density, bounds, c, h, finest, mut sums)
     let m = max(sums.mass, 1.0e-30)
@@ -402,17 +406,7 @@ pub fn adaptive_physique<C, K: Creature<C>>(
     let field = creature.field()
     let n = creature.skeleton().len()
     let bounds = field.item_bounds()
-    var lo = vec3(1.0e30)
-    var hi = vec3(-1.0e30)
-    for b in bounds {
-        if b.radius < 1.0e29 {
-            lo = min(lo, b.centre - vec3(b.radius))
-            hi = max(hi, b.centre + vec3(b.radius))
-        }
-    }
-    let c = (lo + hi) * 0.5
-    let e = hi - lo
-    let h = max(e.x, max(e.y, e.z)) * 0.5
+    let (c, h) = root_cube(bounds)
     var sums = BoneSums {
         creature: take creature,
         mass: Vec::filled(n, 0.0),

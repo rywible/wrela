@@ -6,8 +6,7 @@ use diagnose
 use json::{List, list, obj}
 use lens::{derivatives, source_json}
 use solve::{
-    K, W, W_ANCHOR, W_PATCH, add_row, cholesky, derive, derive16, filled, residual, ring, set, snap,
-    value,
+    K, W, W_ANCHOR, W_PATCH, add_row, cholesky, derive, derive16, residual, ring, set, snap, value,
 }
 use std::collections::Vec
 use std::field::{Surface, part_families, part_image}
@@ -191,9 +190,9 @@ fn choose<S: Surface>(
         }
     }
     let n = lits.len()
-    var score: Vec<f32> = filled(n, 0.0)
-    var moving: Vec<f32> = filled(n, 0.0)
-    var held: Vec<f32> = filled(n, 0.0)
+    var score: Vec<f32> = Vec::filled(n, 0.0)
+    var moving: Vec<f32> = Vec::filled(n, 0.0)
+    var held: Vec<f32> = Vec::filled(n, 0.0)
     for pt in drag_points(d, to, images: false) {
         let (dist, g) = f.sample(pt.p)
         let s = max(length(g), 1.0e-3)
@@ -244,13 +243,13 @@ fn anchor<S: Surface>(
     grad16: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
 ) {
     let k = d.lits.len()
-    d.anchored = filled(k * k, 0.0)
+    d.anchored = Vec::filled(k * k, 0.0)
     if k == 0 {
         return
     }
     // Each part's points, and how many to take of them.
     let parts = subject().parts()
-    var count: Vec<u32> = filled(parts, 0)
+    var count: Vec<u32> = Vec::filled(parts, 0)
     for s in d.others {
         if s.part < parts {
             count[s.part] += 1
@@ -262,7 +261,7 @@ fn anchor<S: Surface>(
         let share = if total > 0 { (c * ANCHORS + total - 1) / total } else { 0 }
         take_of.push(min(c, max(PER_PART, share)))
     }
-    var seen: Vec<u32> = filled(parts, 0)
+    var seen: Vec<u32> = Vec::filled(parts, 0)
     var n = 0
     for s in d.others {
         if s.part >= parts {
@@ -381,8 +380,8 @@ fn step(
     to: vec3,
 ) -> Vec<f32> {
     let k = d.lits.len()
-    var a: Vec<f32> = filled(k * k, 0.0)
-    var b: Vec<f32> = filled(k, 0.0)
+    var a: Vec<f32> = Vec::filled(k * k, 0.0)
+    var b: Vec<f32> = Vec::filled(k, 0.0)
     for pt in drag_points(d, to, images: true) {
         let (r, j) = residual(grad8, grad16, pt.p, pt.n, d.lits)
         add_row(mut a, mut b, k, j, r, W * pt.w)

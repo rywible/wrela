@@ -13,17 +13,15 @@
 // alone). O starts the camera's tour of the live herd: a 2-minute loop, from 30 m out to 4, round
 // the herd, again and again (#42 AC4's 10 minutes).
 
-use engine::creature::Creature
 use engine::present::Snapshots
 use engine::look::{ByPart, CreatureLook, Detail, Shadow, Skin}
 use engine::realize::{Eye, NO_LEVEL, Placement, Realizer}
 use engine::render::{
-    Instance, MAX_BONES, RestSkeleton, View, depth_only, pose_instances, shade, skin, skin_shadow,
-    view,
+    Instance, MAX_BONES, RestSkeleton, depth_only, pose_instances, shade, skin, skin_shadow, view,
 }
-use engine::run::{Stamped, run}
-use grazer::{GrazerField, grazer, grazer_field, params}
-use herd::{HERD, Seen, Snap, World, between, snapshot, spawn, step}
+use engine::run::run
+use grazer::{FALLOFF, GrazerField, field_of, grazer, params}
+use herd::{HERD, Seen, Snap, between, snapshot, spawn, step}
 use look::{GrazerLook, LIGHTS, SKY, SUN, ground_shade, transfer}
 use std::gpu::{
     ComparisonSampler, Cull, DepthBias, DepthTexture, GpuBuffer, begin_depth_pass,
@@ -40,7 +38,7 @@ use walk::Walk
 /// 2048² shadow map.
 const LOOK = CreatureLook {
     detail: Detail {},
-    deform: Skin { weights: ByPart { falloff: 6cm } },
+    deform: Skin { weights: ByPart { falloff: FALLOFF } },
     shadow: Shadow::Map { resolution: 2048 },
 }
 
@@ -53,8 +51,16 @@ pub enum Camera: Copy + Eq {
     Tour(f32),
 }
 
-/// A still frame whose levels come from LOD, not one level for every grazer.
-const LOD_STILL: u32 = 99
+/// What a frame draws: the live herd, or a still frame of the spike's placement with every
+/// grazer at one level, or with each at the level its size on screen asks (LOD).
+enum Mode: Copy + Eq {
+    Live,
+    Still(u32),
+    StillLod,
+}
+
+/// The middle of the herd, where its cameras look.
+const HERD_MIDDLE = vec3(0.0, 80cm, 1m)
 
 /// The tour's loop, seconds.
 const TOUR_LOOP: f32 = 120s
@@ -62,7 +68,7 @@ const TOUR_LOOP: f32 = 120s
 /// The tour's camera `t` seconds in: round the herd once a loop, from 30 m out to 4 and back
 /// three times, looking at the herd's middle.
 fn tour(t: f32) -> (vec3, vec3) {
-    let at = vec3(0.0, 80cm, 1m)
+    let at = HERD_MIDDLE
     let a = 2.0 * PI * t / TOUR_LOOP
     let r = 4m + 13m * (1.0 + cos(6.0 * PI * t / TOUR_LOOP))
     (at + vec3(r * sin(a), 80cm + 0.25 * r, -r * cos(a)), at)
@@ -83,11 +89,10 @@ pub struct Game {
     width: u32,
     height: u32,
     camera: Camera,
-    /// A still frame's level, or `NO_LEVEL` for the live herd; and the level it last realized.
-    still: u32,
+    mode: Mode,
+    /// The level a still frame last realized every grazer at (`NO_LEVEL` if none).
     realized: u32,
-    /// The frame when every grazer was first drawn, and when each first reached its target.
-    frames: u32,
+    /// Whether every grazer has been drawn yet.
     all_drawn: bool,
     terrain: bool,
     /// Whether each grazer has been drawn, and reached the level it should have, yet (live).
@@ -104,9 +109,8 @@ pub fn init() -> Game {
     var rests: Vec<RestSkeleton> = Vec::new()
     for i in 0..HERD {
         let g = grazer(i + 1)
-        let _ = realizer.add(grazer_field(i + 1), g.bounds())
-        let p = params(i + 1)
-        looks.push(GrazerLook { offset: vec3(p.offset) })
+        let _ = realizer.add(field_of(g), g.bounds())
+        looks.push(GrazerLook { offset: vec3(params(i + 1).offset) })
         rests.push(RestSkeleton::of(g.skeleton()))
     }
     var skeletons: GpuBuffer<RestSkeleton> = buffer(HERD)
@@ -115,8 +119,6 @@ pub fn init() -> Game {
         Shadow::Map { resolution } => resolution,
         Shadow::None => 1,
     }
-    var shadow = depth_texture(width: side, height: side)
-    begin_depth_pass(mut shadow, clear_depth: 1.0).end()
     Game {
         snaps: Snapshots::new(take latest, hz: 60),
         placed,
@@ -125,15 +127,14 @@ pub fn init() -> Game {
         skeletons: take skeletons,
         instances: buffer(HERD),
         palettes: buffer(HERD * MAX_BONES),
-        shadow: take shadow,
+        shadow: depth_texture(width: side, height: side),
         shadow_sampler: comparison_sampler(),
         depth: depth_texture(width: 1, height: 1),
         width: 1,
         height: 1,
         camera: Camera::Herd,
-        still: NO_LEVEL,
+        mode: Mode::Live,
         realized: NO_LEVEL,
-        frames: 0,
         all_drawn: false,
         terrain: true,
         drawn_yet: Vec::new(),
@@ -148,11 +149,11 @@ fn keys(game: mut Game, time: f32) {
             match key {
                 Key::H => game.camera = Camera::Herd,
                 Key::C => game.camera = Camera::CloseUp,
-                Key::L => game.still = NO_LEVEL,
-                Key::Digit1 => game.still = 0,
-                Key::Digit2 => game.still = 1,
-                Key::Digit3 => game.still = 2,
-                Key::Digit4 => game.still = LOD_STILL,
+                Key::L => game.mode = Mode::Live,
+                Key::Digit1 => game.mode = Mode::Still(0),
+                Key::Digit2 => game.mode = Mode::Still(1),
+                Key::Digit3 => game.mode = Mode::Still(2),
+                Key::Digit4 => game.mode = Mode::StillLod,
                 Key::T => game.terrain = !game.terrain,
                 Key::O => game.camera = Camera::Tour(time),
                 _ => {},
@@ -179,7 +180,7 @@ fn seen(game: mut Game, time: f32) -> Vec<Seen> {
         )
         return out
     }
-    if game.still != NO_LEVEL {
+    if game.mode != Mode::Live {
         for g in game.placed.grazers {
             out.push(Seen { phase: fract(g.phase + 0.9 * time), ..g })
         }
@@ -202,43 +203,30 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
     }
     let aspect = f32(width) / f32(height)
     let fovy = 40deg
-    let v = match game.camera {
-        Camera::Herd => view(
-            eye: vec3(2m, 7.5m, -27m),
-            at: vec3(0.0, 80cm, 1m),
-            fovy: fovy,
-            aspect: aspect,
-            sun: SUN,
-            extent: 26m,
-        ),
-        Camera::CloseUp => view(
-            eye: vec3(85cm, 1.4m, -3.6m),
-            at: vec3(85cm, 1.2m, 0.0),
-            fovy: fovy,
-            aspect: aspect,
-            sun: SUN,
-            extent: 4m,
-        ),
+    let (eye, at, extent) = match game.camera {
+        Camera::Herd => (vec3(2m, 7.5m, -27m), HERD_MIDDLE, 26m),
+        Camera::CloseUp => (vec3(85cm, 1.4m, -3.6m), vec3(85cm, 1.2m, 0.0), 4m),
         Camera::Tour(from) => {
             let (eye, at) = tour(time - from)
-            view(eye: eye, at: at, fovy: fovy, aspect: aspect, sun: SUN, extent: 26m)
+            (eye, at, 26m)
         },
     }
+    let v = view(eye: eye, at: at, fovy: fovy, aspect: aspect, sun: SUN, extent: extent)
     let grazers = seen(mut game, time)
 
     // Realization: a still frame's level for every grazer at once; the live herd's by size on
     // screen, within the frame's budget.
-    var placed: Vec<Placement> = Vec::new()
-    for g in grazers {
-        placed.push(Placement { at: g.pos, heading: g.heading })
-    }
-    if game.still != NO_LEVEL && game.still != LOD_STILL {
-        if game.realized != game.still && game.realizer.realize_all(game.still) {
-            game.realized = game.still
-            print(f"every grazer realized at level {game.still}")
+    if let Mode::Still(level) = game.mode {
+        if game.realized != level && game.realizer.realize_all(level) {
+            game.realized = level
+            print(f"every grazer realized at level {level}")
         }
     } else {
         game.realized = NO_LEVEL
+        var placed: Vec<Placement> = Vec::new()
+        for g in grazers {
+            placed.push(Placement { at: g.pos, heading: g.heading })
+        }
         game.realizer.frame(
             Eye { at: v.eye, view_proj: v.view_proj, height: f32(height), fovy },
             placed,
@@ -263,9 +251,7 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
 
     // Posing: one pass for every grazer drawn.
     var instances: Vec<Instance> = Vec::new()
-    var drawn: Vec<u32> = Vec::new()
-    for k in 0..grazers.len() {
-        let g = grazers[k]
+    for g in grazers {
         let i = g.seed - 1
         if game.realizer.drawn(i) != NO_LEVEL {
             instances.push(
@@ -276,7 +262,6 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
                     skeleton: i,
                 },
             )
-            drawn.push(i)
         }
     }
     let n = instances.len()
@@ -298,14 +283,15 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
     }
 
     // The sun's shadow map: the grazers alone, biased.
+    let palettes = game.palettes.span(start: 0, count: HERD * MAX_BONES)
     let shadow_pass = begin_depth_pass(mut game.shadow, clear_depth: 1.0)
     for k in 0..n {
-        let i = drawn[k]
+        let i = instances[k].skeleton
         borrow mesh = game.realizer.mesh(i)
         draw(
             skin_shadow.bind(
                 verts: mesh.verts.items(),
-                palettes: game.palettes.span(start: 0, count: HERD * MAX_BONES),
+                palettes: palettes,
                 first: k * MAX_BONES,
                 view: v,
             ),
@@ -332,12 +318,12 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
         )
     }
     for k in 0..n {
-        let i = drawn[k]
+        let i = instances[k].skeleton
         borrow mesh = game.realizer.mesh(i)
         draw(
             skin.bind(
                 verts: mesh.verts.items(),
-                palettes: game.palettes.span(start: 0, count: HERD * MAX_BONES),
+                palettes: palettes,
                 first: k * MAX_BONES,
                 view: v,
             ),
@@ -355,30 +341,19 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
         )
     }
     pass.present()
-    game.frames += 1
 }
 
 // ---- for the tests (compiler/tests/tests/suite/herd.rs) ----------------------------------------
 
-/// The grazer of seed `s`'s distance at a point, and its channels there.
-pub fn distance(s: u32, x: f32, y: f32, z: f32) -> f32 {
-    grazer(s).distance(vec3(x, y, z))
-}
-
-pub fn channels(s: u32, x: f32, y: f32, z: f32) -> vec3 {
-    let c = grazer(s).field().channels(vec3(x, y, z))
-    vec3(c.torso, c.hoof, 0.0)
-}
-
-/// Its skin weights at a point, under the items in the mask given, seen a footprint wide: its
-/// four bones (a byte each) and their weights (a byte each).
-pub fn skin_at(s: u32, x: f32, y: f32, z: f32, lo: u32, hi: u32, fp: f32) -> (u32, u32) {
+/// The grazer of seed `s`'s skin weights at `p`, under the items in the mask given, seen a
+/// footprint wide: its four bones (a byte each) and their weights (a byte each).
+pub fn skin_at(s: u32, p: vec3, lo: u32, hi: u32, fp: f32) -> (u32, u32) {
     engine::creature::Parts::skin_at(
         grazer(s).field(),
-        vec3(x, y, z),
+        p,
         engine::creature::PartMask { lo, hi },
         fp,
-        6cm,
+        FALLOFF,
     )
 }
 
@@ -437,12 +412,6 @@ pub fn physique_methods_differ(s: u32, finest: f32) -> f32 {
     most
 }
 
-/// Its grid at level `level` (0 3 cm, 1 2 cm, 2 1.5 cm): blocks along x, y and z, and the cell.
-pub fn grid(game: Game, s: u32, level: u32) -> (vec3u, f32) {
-    let g = game.realizer.grid(s - 1, level)
-    (g.size, g.cell)
-}
-
 /// What realization has done: realizations, readbacks, holes and overflows found.
 pub fn realized(game: Game) -> (u32, u32, u32, u32) {
     borrow r = game.realizer
@@ -467,27 +436,13 @@ pub fn level(game: Game, s: u32) -> (u32, u32) {
 /// Spike 01's evaluation benchmark (`bench_eval`) on seed `s`: `n` points from xorshift 12345
 /// in the box from `lo` to `hi`, the distance at each summed; with `pruned` 1, each sample
 /// leaves out the items that can't matter there.
-pub fn bench_eval(
-    s: u32,
-    n: u32,
-    pruned: u32,
-    lx: f32,
-    ly: f32,
-    lz: f32,
-    hx: f32,
-    hy: f32,
-    hz: f32,
-) -> f64 {
+pub fn bench_eval(s: u32, n: u32, pruned: u32, lo: vec3, hi: vec3) -> f64 {
     let field = grazer(s).field()
     let bounds = engine::creature::Parts::item_bounds(field)
-    let (lo, e) = (vec3(lx, ly, lz), vec3(hx - lx, hy - ly, hz - lz))
     var r = terrain::XorShift { state: 12345 }
     var sum: f64 = 0.0
     for _ in 0..n {
-        let x = r.unit()
-        let y = r.unit()
-        let z = r.unit()
-        let q = lo + vec3(x * e.x, y * e.y, z * e.z)
+        let q = r.point(lo, hi)
         let d = if pruned != 0 { engine::creature::Parts::sample_pruned(field, q, bounds).0 } else {
             field.distance(q)
         }

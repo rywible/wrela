@@ -25,14 +25,21 @@ impl<T: Clone> Ring<T> {
 
     /// The value for the next tick; the oldest falls out when the ring is full.
     pub fn push(mut self, value: take T) {
-        if self.items.len() < self.capacity {
-            self.items.push(take value)
-        } else {
-            let at = self.next % self.capacity
-            self.items[at] = take value
+        match self.claim() {
+            None => self.items.push(take value),
+            Some(at) => self.items[at] = take value,
+        }
+    }
+
+    /// Where the next tick's value goes, that tick counted: once the ring is full, the oldest's
+    /// slot (that value falls out); before, `None`, and the value is pushed.
+    fn claim(mut self) -> Option<u32> {
+        let at = if self.items.len() < self.capacity { None } else {
             self.first += 1
+            Some(self.next % self.capacity)
         }
         self.next += 1
+        at
     }
 
     /// Whether the ring still holds tick `t`'s value.
@@ -72,15 +79,13 @@ impl<W: Clone> Ring<Saved<W>> {
     /// Keeps `world` as tick `tick`'s keyframe: copied into the oldest one's place once the
     /// ring is full (`clone_into`), so a steady timeline allocates nothing for it (#43 §5.2).
     pub fn keep(mut self, tick: Tick, world: W) {
-        if self.items.len() < self.capacity {
-            self.items.push(Saved { tick, world: world.clone() })
-        } else {
-            let at = self.next % self.capacity
-            self.items[at].tick = tick
-            world.clone_into(mut self.items[at].world)
-            self.first += 1
+        match self.claim() {
+            None => self.items.push(Saved { tick, world: world.clone() }),
+            Some(at) => {
+                self.items[at].tick = tick
+                world.clone_into(mut self.items[at].world)
+            },
         }
-        self.next += 1
     }
 
     /// The newest keyframe taken at or before tick `t`.

@@ -7,7 +7,7 @@
 
 use run::Stamped
 use std::handoff::Latest
-use std::math::PI
+use std::math::TAU
 use std::tick::origin
 
 /// How far behind the sim clock a frame draws, in ticks: a tick that's a little late (its
@@ -79,26 +79,25 @@ impl<S: Copy + Plain> Snapshots<S> {
     }
 }
 
+/// `d` the short way round a cycle `period` long: within half a period of 0.
+fn short_way(d: f32, period: f32) -> f32 {
+    var w = d
+    while w > 0.5 * period {
+        w -= period
+    }
+    while w < -0.5 * period {
+        w += period
+    }
+    w
+}
+
 /// From angle `a` to angle `b` (radians) by `t`, the short way round.
 pub fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
-    var d = b - a
-    while d > PI {
-        d -= 2.0 * PI
-    }
-    while d < -PI {
-        d += 2.0 * PI
-    }
-    a + d * t
+    a + short_way(b - a, TAU) * t
 }
 
 /// From phase `a` to phase `b` (each in [0, 1), a cycle's fraction) by `t`, the short way round.
 pub fn lerp_phase(a: f32, b: f32, t: f32) -> f32 {
-    var d = b - a
-    if d > 0.5 {
-        d -= 1.0
-    } else if d < -0.5 {
-        d += 1.0
-    }
-    let p = a + d * t
+    let p = a + short_way(b - a, 1.0) * t
     p - floor(p)
 }

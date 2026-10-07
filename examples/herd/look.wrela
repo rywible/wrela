@@ -46,15 +46,15 @@ pub fn srgb_decode(x: f32) -> f32 {
     if x <= 0.04045 { x / 12.92 } else { pow((x + 0.055) / 1.055, 2.4) }
 }
 
-/// What the spike's screen shows of a colour `c` it shaded: stored in an sRGB target (encoded,
-/// eight bits), read back (decoded), raised to 1/2.2.
+/// A linear value as an sRGB target stores it (encoded, eight bits), read back (decoded).
+fn stored(x: f32) -> f32 {
+    srgb_decode(round(clamp(srgb_encode(x), 0.0, 1.0) * 255.0) / 255.0)
+}
+
+/// What the spike's screen shows of a colour `c` it shaded: each component `stored`, then raised
+/// to 1/2.2.
 pub fn transfer(c: vec3) -> vec3 {
-    let q = vec3(
-        srgb_decode(round(clamp(srgb_encode(c.x), 0.0, 1.0) * 255.0) / 255.0),
-        srgb_decode(round(clamp(srgb_encode(c.y), 0.0, 1.0) * 255.0) / 255.0),
-        srgb_decode(round(clamp(srgb_encode(c.z), 0.0, 1.0) * 255.0) / 255.0),
-    )
-    pow(q, vec3(1.0 / 2.2))
+    pow(vec3(stored(c.x), stored(c.y), stored(c.z)), vec3(1.0 / 2.2))
 }
 
 /// One grazer's look: its noise offset, which places its dapples.
