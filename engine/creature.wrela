@@ -1828,10 +1828,11 @@ impl<P: PartList, const N: u32> PartList for [P; N] {
     }
 
     fn item_distance(self, p: vec3, i: u32, k: f32) -> f32 {
-        if N == 0 {
+        // Every element has as many items as the first (`PartList::items`).
+        let per = if N == 0 { 0 } else { self[0].items() }
+        if i >= N * per {
             return FAR
         }
-        let per = self[0].items()
         self[i / per].item_distance(p, i % per, k)
     }
 
