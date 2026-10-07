@@ -8,12 +8,13 @@
 // equal and writes none, so only the nearest leaf at each pixel is shaded, and the shading needs
 // no `discard` (which would turn off the GPU's early depth test).
 
+use impostor::{Impostor, bake, far_cut, far_quad, far_shade}
 use light::{Light, Lit, hazed}
 use lit::{Lighting, sky_at, sun_at}
 use noise::{hash2, rand}
 use plant::{
-    Bark, CARD_LEVELS, Card, Instance, LIMB_VERTICES, Leaves, Plant, Wind, cook_cards, leaves_on,
-    level_cards, limb_vertex, sway,
+    Bark, CARD_LEVELS, Card, Instance, LIMB_VERTICES, Leaves, Plant, Wind, cook_cards, leaf_at,
+    leaf_atlas, level_cards, limb_vertex, sway,
 }
 use probes::Probe
 use shadow::Shadows
@@ -36,10 +37,12 @@ pub struct Kind {
     /// Its height and the radius of a sphere round its middle that holds it.
     pub top: f32,
     pub reach: f32,
+    /// Its impostor, baked from its cards and limbs.
+    pub impostor: Impostor,
 }
 
 /// Cooks `plant` as a kind: its cards (by `seed`), and its limbs.
-pub fn kind(plant: Plant, seed: u32) -> Kind {
+pub fn kind(plant: Plant, seed: u32, atlas: Texture, s: Sampler) -> Kind {
     let n = plant.cards()
     var cards: GpuBuffer<Card> = buffer(n)
     dispatch(cook_cards.bind(plant, n, seed, out: mut cards), groups: (n + 63) / 64)
@@ -50,6 +53,7 @@ pub fn kind(plant: Plant, seed: u32) -> Kind {
         list.push(plant.limbs[i])
     }
     write(mut limbs, 0, list)
+    let impostor = bake(plant, cards, n, limbs, limb_count, atlas, s)
     Kind {
         plant,
         cards: take cards,
@@ -58,6 +62,7 @@ pub fn kind(plant: Plant, seed: u32) -> Kind {
         limb_count,
         top: plant.top(),
         reach: plant.reach(),
+        impostor: take impostor,
     }
 }
 
@@ -93,6 +98,8 @@ pub struct Forest {
     pub lists: Vec<List>,
     every: GpuBuffer<Instance>,
     pub every_lists: Vec<List>,
+    /// The leaf patterns cards read, cooked once.
+    pub atlas: Texture,
     /// Beyond this distance (m), an instance is drawn far (by `impostor`), not as cards.
     pub cards_to: f32,
     /// Instances drawn as cards and limbs this frame, and far.
@@ -134,6 +141,7 @@ impl Forest {
             lists: Vec::new(),
             every: take every_buffer,
             every_lists,
+            atlas: leaf_atlas(6),
             cards_to,
             near_count: 0,
             far_count: 0,
@@ -319,12 +327,13 @@ pub fn card_shadow(
     }
 }
 
-/// A card cut to its leaves: the depth prepass's, and the shadow maps'.
+/// A card cut to its leaves, from the leaf atlas: the depth prepass's, and the shadow maps'
+/// (which keep only the first `per_card` of a pattern's leaves, so a crown's shadow is
+/// dappled).
 @fragment
-pub fn leaf_cut(l: LeafVertex, d: CardDraw) -> vec4 {
-    let w = 1.5 * length(fwidth(l.uv))
-    let (m, _) = leaves_on(l.uv, l.seed.value, w, d.per_card)
-    if m < 0.5 {
+pub fn leaf_cut(l: LeafVertex, d: CardDraw, atlas: Texture, s: Sampler) -> vec4 {
+    let (m, which) = leaf_at(atlas, s, l.seed.value, l.uv)
+    if m < 0.5 || which >= d.per_card {
         discard_fragment()
     }
     vec4(0.0)
@@ -342,6 +351,7 @@ pub fn leaf_shade(
     l: LeafVertex,
     lt: Lighting,
     leaves: Leaves,
+    atlas: Texture,
     near: DepthTexture,
     far: DepthTexture,
     moving: DepthTexture,
@@ -352,7 +362,7 @@ pub fn leaf_shade(
     texels: [Texel],
 ) -> vec4 {
     let seed = l.seed.value
-    let (_, which) = leaves_on(l.uv, seed, w: 0.02, n: leaves.per_card)
+    let (_, which) = leaf_at(atlas, s, seed, l.uv)
     let tilt = vec3(
         rand(seed, 100 + which) - 0.5,
         rand(seed, 120 + which) - 0.5,
@@ -460,7 +470,20 @@ pub fn card_draw(wind: Wind, level: u32, leaves: Leaves, right: vec3, up: vec3) 
 
 impl Forest {
     /// The depth prepass's draws: each list of cards, cut, into the depth target alone.
-    pub fn prepass(self, cam: Camera, wind: Wind) {
+    pub fn prepass(self, cam: Camera, wind: Wind, s: Sampler) {
+        for l in self.lists {
+            if l.how == FAR {
+                borrow k = self.kinds[l.kind]
+                let b = k.impostor.bake
+                draw(
+                    far_quad.bind(cam, b, instances: self.instances(l)),
+                    far_cut.bind(cam, b, colour: k.impostor.colour, s: s),
+                    vertices: 6,
+                    instances: l.count,
+                    depth: view::NEAREST,
+                )
+            }
+        }
         for l in self.lists {
             if l.how < CARD_LEVELS {
                 borrow k = self.kinds[l.kind]
@@ -472,7 +495,7 @@ impl Forest {
                         cards: k.cards.span(start: 0, count: level_cards(k.card_count, l.how)),
                         instances: self.instances(l),
                     ),
-                    leaf_cut.bind(d),
+                    leaf_cut.bind(d, atlas: self.atlas, s: s),
                     vertices: level_cards(k.card_count, l.how) * 6,
                     instances: l.count,
                     depth: view::NEAREST,
@@ -528,6 +551,32 @@ impl Forest {
             }
         }
         for l in self.lists {
+            if l.how == FAR {
+                borrow k = self.kinds[l.kind]
+                let b = k.impostor.bake
+                draw(
+                    far_quad.bind(cam, b, instances: self.instances(l)),
+                    far_shade.bind(
+                        lt,
+                        b,
+                        colour: k.impostor.colour,
+                        normal: k.impostor.normal,
+                        s: s,
+                        near: near,
+                        far: far,
+                        moving: moving,
+                        cmp: cmp,
+                        clouds: clouds,
+                        probes: probes,
+                        texels: texels,
+                    ),
+                    vertices: 6,
+                    instances: l.count,
+                    depth: PREPASSED,
+                )
+            }
+        }
+        for l in self.lists {
             if l.how < CARD_LEVELS {
                 borrow k = self.kinds[l.kind]
                 let d = card_draw(wind, l.how, k.plant.leaves, cam.right, cam.up)
@@ -541,6 +590,7 @@ impl Forest {
                     leaf_shade.bind(
                         lt,
                         k.plant.leaves,
+                        self.atlas,
                         near,
                         far,
                         moving,
@@ -561,7 +611,7 @@ impl Forest {
     /// The static shadows' draws: every instance, its cards (at level 1, facing the sun) cut to
     /// their leaves and its limbs, seen by `view`. A shadow card holds fewer leaves than a drawn
     /// one (`SHADOW_LEAVES`): a crown's shadow is dappled, as the sun comes through its gaps.
-    pub fn shadow(self, view: mat4, sh: Shadows, wind: Wind) {
+    pub fn shadow(self, view: mat4, sh: Shadows, wind: Wind, s: Sampler) {
         for l in self.every_lists {
             borrow k = self.kinds[l.kind]
             let instances = self.every.span(start: l.first, count: l.count)
@@ -575,7 +625,7 @@ impl Forest {
                     cards: k.cards.span(start: 0, count: level_cards(k.card_count, level)),
                     instances: instances,
                 ),
-                leaf_cut.bind(d),
+                leaf_cut.bind(d, atlas: self.atlas, s: s),
                 vertices: level_cards(k.card_count, level) * 6,
                 instances: l.count,
                 depth_bias: DepthBias { constant: 2, slope: 1.5, clamp: 0.0 },

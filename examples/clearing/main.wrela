@@ -16,9 +16,10 @@ use grazer::creature::grazer
 use engine::light::{Light, afternoon}
 use engine::paint::{Develop, Look, develop, glow_blur, glow_down}
 use engine::lit::Lighting
-use engine::plant::Wind
-use engine::probes::{Probe, ProbeGrid, grid}
+use engine::plant::{Wind, leaf_atlas}
+use engine::probes::{Baked, Occluder, Probe, ProbeGrid, Trace, grid}
 use engine::shadow::{Cascade, Shadows, shadows}
+use engine::stone::{Realized, stone_shade, stone_shadow, stone_vertex}
 use engine::sky::{
     Cook, Puff, SHADOW_SIDE, SKY_H, SKY_W, STRIPS, cook_clouds, cook_shadow, sky_shade, strip,
 }
@@ -35,8 +36,9 @@ use std::gpu::{
 }
 use std::input::{Event, Key, events}
 use std::io::print
-use trees::{KINDS, kind_plant, placed}
+use trees::{KINDS, kind_plant, occluders, placed}
 use clouds::cloudscape
+use rocks::{boulders, footprints}
 use path::shot
 use world::{World, present as snapshot, spawn, tick}
 
@@ -67,6 +69,7 @@ pub struct Clearing {
     follow: vec3,
     follow_heading: f32,
     clipmap: Clipmap,
+    stones: Vec<Realized>,
     light: Light,
     cam: Camera,
     forest: Forest,
@@ -78,9 +81,13 @@ pub struct Clearing {
     moving: DepthTexture,
     cmp: ComparisonSampler,
     static_drawn: bool,
-    /// The probes, and their grid.
-    probes: GpuBuffer<Probe>,
-    grid: ProbeGrid,
+    /// The probes, baked over the first frames, and whether the occluders are cooked.
+    probes: Baked,
+    occluders_cooked: bool,
+    /// Whether everything cooked at load is done, and the frame it was.
+    ready: bool,
+    /// Whether the camera's path was asked for (it starts once the clearing's ready).
+    asked: bool,
     /// The clouds: their puffs, the sky texture they're cooked into and their shadow map, and
     /// how many of its strips are cooked.
     puffs: GpuBuffer<Puff>,
@@ -117,8 +124,8 @@ fn on(off: u32, system: u32) -> bool {
 fn keys(s: mut Clearing, time: f32) {
     for e in events() {
         if let Event::KeyDown { key, .. } = e {
-            if key == Key::Space && s.path_from < 0.0 {
-                s.path_from = time
+            if key == Key::Space {
+                s.asked = true
             }
             let system = match key {
                 Key::T => TREES,
@@ -140,12 +147,33 @@ pub fn init() -> Clearing {
     let latest = run(take world, hz: 60, step: tick, present: snapshot)
     let mesh = realize_once(grazer(), REALIZED)
     let colours = colours(mesh, grazer().field(), Fawn {}, cell: 1cm)
+    let atlas = leaf_atlas(6)
+    let linear = sampler()
     var kinds: Vec<Kind> = Vec::new()
     for k in 0..KINDS {
-        kinds.push(kind(kind_plant(k), seed: k + 1))
+        kinds.push(kind(kind_plant(k), seed: k + 1, atlas: atlas, s: linear))
     }
     let p = placed()
     print(f"forest: {kinds.len()} kinds, {p.len()} instances")
+    var plants: Vec<engine::plant::Plant> = Vec::new()
+    for k in kinds {
+        plants.push(k.plant)
+    }
+    let g = grid(MEADOW, cols: 81, spacing: 2.0, low: -12.0, high: 40.0, voxel: 1.0)
+    var occ = occluders(p, plants, lo: g.corner, hi: g.corner + vec2(160.0))
+    for st in rocks::SPOTS {
+        let y = scene::height(x: st.x, z: st.y) + st.z * 0.25
+        occ.push(
+            Occluder {
+                a: vec3(st.x, y, st.y),
+                radius: st.z * 1.05,
+                b: vec3(st.x, y, st.y),
+                solid: 1.0,
+            },
+        )
+    }
+    print(f"probes: {g.probes()} in {g.cols * g.cols} columns, {occ.len()} occluders")
+    let probes = Baked::new(g, occ)
     let sky = cloudscape()
     print(f"clouds: {sky.len()} puffs")
     var puffs: GpuBuffer<Puff> = buffer(sky.len())
@@ -162,17 +190,20 @@ pub fn init() -> Clearing {
         follow: w.root.pos,
         follow_heading: w.root.heading,
         clipmap: Clipmap::new(levels: 11, finest: 0.125),
+        stones: boulders(),
         light: afternoon(SUN),
         cam: first_camera(start_eye(), LOOK_AT, FOVY, width: 960, height: 540),
-        forest: Forest::new(take kinds, take p, cards_to: 1.0e9),
+        forest: Forest::new(take kinds, take p, cards_to: 150.0),
         grass: Grass::new(),
         near: depth_texture(width: NEAR_CASCADE.side, height: NEAR_CASCADE.side),
         far: depth_texture(width: FAR_CASCADE.side, height: FAR_CASCADE.side),
         moving: depth_texture(width: 1024, height: 1024),
         cmp: comparison_sampler(),
         static_drawn: false,
-        probes: buffer(2 * 2 * 8),
-        grid: grid(MEADOW, cols: 2, spacing: 1.0, low: 0.0, high: 1.0, voxel: 1.0),
+        probes: take probes,
+        occluders_cooked: false,
+        ready: false,
+        asked: false,
         puffs: take puffs,
         clouds: texture(width: SKY_W, height: SKY_H, format: TextureFormat::Rgba16Float),
         cloud_shadow: texture(
@@ -250,12 +281,23 @@ fn static_shadows(s: mut Clearing, sh: Shadows, wind: Wind) {
     let shadows = on(s.off, SHADOWS)
     let near = begin_depth_pass(mut s.near, clear_depth: 1.0)
     if shadows {
-        s.forest.shadow(view: sh.near, sh: sh, wind: wind)
+        s.forest.shadow(view: sh.near, sh: sh, wind: wind, s: s.linear)
+    }
+    if shadows {
+        for st in s.stones {
+            draw(
+                stone_shadow.bind(verts: st.mesh.verts.items(), at: st.at, view: sh.near),
+                nothing,
+                indices: st.mesh.quads.items(),
+                indirect: st.mesh.args.span(start: 0, count: 5),
+                depth_bias: DepthBias { constant: 2, slope: 1.5, clamp: 0.0 },
+            )
+        }
     }
     near.end()
     let far = begin_depth_pass(mut s.far, clear_depth: 1.0)
     if shadows {
-        s.forest.shadow(view: sh.far, sh: sh, wind: wind)
+        s.forest.shadow(view: sh.far, sh: sh, wind: wind, s: s.linear)
     }
     far.end()
 }
@@ -345,63 +387,126 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         }
         s.strips += 1
     }
+    // The probes: their occluders cooked once, then a strip of columns a frame.
+    let texels = s.clipmap.texels()
+    if !s.occluders_cooked {
+        s.probes.cook()
+        s.occluders_cooked = true
+    } else if !s.probes.done() {
+        let t = Trace {
+            light: s.light,
+            grid: s.probes.grid,
+            foliage: vec3(0.035, 0.07, 0.02),
+            reach: 48.0,
+        }
+        s.probes.bake_strip(t, sh, s.clipmap.levels(), texels, s.near, s.far, s.cmp)
+    }
+    if !s.ready && s.probes.done() && s.strips >= STRIPS {
+        s.ready = true
+        print(f"clearing ready at frame {s.frames}")
+    }
+    // The camera's path starts once it's asked for and the clearing's ready.
+    if s.asked && s.ready && s.path_from < 0.0 {
+        s.path_from = time
+        print(f"path begins at frame {s.frames}")
+    }
+    // Until the probes are baked, the open sky lights everything.
+    var grid = s.probes.grid
+    if !s.probes.done() {
+        grid.cols = 0
+    }
     let lt = Lighting {
         cam,
         light: s.light,
         shadows: sh,
-        grid: s.grid,
+        grid,
         clouds: cook,
         levels: s.clipmap.levels(),
     }
-    let texels = s.clipmap.texels()
-    let probes = s.probes.span(start: 0, count: s.probes.len())
-    s.grass.place(cam, lt.levels, texels, stones: [vec4(0.0); 0])
+    let probes = s.probes.probes.span(start: 0, count: s.probes.grid.probes())
+    s.grass.place(cam, lt.levels, texels, stones: footprints())
     s.forest.select(cam)
 
     // The depth prepass: the cut cards and flowers.
     label("vegetation prepass")
     let pre = begin_depth_pass(mut s.depth, clear_depth: 0.0)
-    s.forest.prepass(cam, wind)
-    s.grass.prepass(cam, wind)
+    if on(s.off, TREES) {
+        s.forest.prepass(cam, wind, s.linear)
+    }
+    if on(s.off, GRASS) {
+        s.grass.prepass(cam, wind)
+    }
     pre.end()
     // The vegetation: limbs, grass, then the cards and flowers where the prepass left them.
     label("vegetation")
     let veg = begin_pass_with_depth(mut s.scene, mut s.depth, clear: vec4(0.0), keep_depth: true)
-    s.forest.shade(
-        lt,
-        wind,
-        s.near,
-        s.far,
-        s.moving,
-        s.cmp,
-        s.cloud_shadow,
-        s.linear,
-        probes,
-        texels,
-    )
-    s.grass.shade(
-        lt,
-        wind,
-        GrassLook {},
-        Blooms {},
-        s.near,
-        s.far,
-        s.moving,
-        s.cmp,
-        s.cloud_shadow,
-        s.linear,
-        probes,
-        texels,
-    )
+    if on(s.off, TREES) {
+        s.forest.shade(
+            lt,
+            wind,
+            s.near,
+            s.far,
+            s.moving,
+            s.cmp,
+            s.cloud_shadow,
+            s.linear,
+            probes,
+            texels,
+        )
+    }
+    if on(s.off, GRASS) {
+        s.grass.shade(
+            lt,
+            wind,
+            GrassLook {},
+            Blooms {},
+            s.near,
+            s.far,
+            s.moving,
+            s.cmp,
+            s.cloud_shadow,
+            s.linear,
+            probes,
+            texels,
+        )
+    }
+    for st in s.stones {
+        draw(
+            stone_vertex.bind(
+                verts: st.mesh.verts.items(),
+                colours: st.colours.span(start: 0, count: st.colours.len()),
+                at: st.at,
+                seed: st.seed,
+                cam: cam,
+            ),
+            stone_shade.bind(
+                lt,
+                s.near,
+                s.far,
+                s.moving,
+                s.cmp,
+                s.cloud_shadow,
+                s.linear,
+                probes,
+                texels,
+            ),
+            indices: st.mesh.quads.items(),
+            indirect: st.mesh.args.span(start: 0, count: 5),
+            cull: Cull::Back,
+            depth: NEAREST,
+        )
+    }
     veg.end()
     label("terrain")
     let ter = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)
-    draw(
-        ground.bind(cam, lt.levels, texels),
-        ground_plain.bind(cam, s.light, lt.levels, texels),
-        vertices: lt.levels.count * engine::terrain::LEVEL_VERTICES,
-        depth: NEAREST,
-    )
+    if on(s.off, TERRAIN) {
+        draw(
+            ground.bind(cam, lt.levels, texels),
+            ground_plain.bind(cam, s.light, lt.levels, texels),
+            vertices: lt.levels.count * engine::terrain::LEVEL_VERTICES,
+            depth: NEAREST,
+        )
+    }
     ter.end()
     label("creature")
     let cr = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)

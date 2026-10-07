@@ -10,7 +10,11 @@
 // clipmap) or the sky, a strip of columns at a time, so no submission runs long.
 
 use light::{Light, open_sky, sky}
-use std::gpu::{Atomics, ComparisonSampler, DepthTexture, GlobalId, Slots}
+use shadow::{Shadows, sunlit}
+use std::gpu::{
+    Atomics, ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, GpuSpan, Slots, buffer, dispatch,
+    label, write,
+}
 use std::math::{PI, TAU}
 use terrain::{Levels, Texel, ground_at, height_at}
 
@@ -177,7 +181,10 @@ pub fn trace(
     texels: [Texel],
     from: vec3,
     dir: vec3,
-    sunlit_ground: f32,
+    sh: Shadows,
+    near: DepthTexture,
+    far: DepthTexture,
+    cmp: ComparisonSampler,
 ) -> vec3 {
     let step = t.grid.voxel * 0.75
     var trans = 1.0
@@ -190,7 +197,8 @@ pub fn trace(
         if p.y <= ground {
             // The ground's bounce: its albedo lit by the sun and the open sky.
             let (n, albedo, _) = ground_at(levels, texels, p.xz)
-            let sun = t.light.sun_colour * (max(dot(n, t.light.sun), 0.0) * sunlit_ground)
+            let lit = sunlit(sh, vec3(p.x, ground, p.z), n, near, far, near, cmp, 1.0)
+            let sun = t.light.sun_colour * (max(dot(n, t.light.sun), 0.0) * lit)
             return light + trans * albedo * (sun + open_sky(t.light, n)) / PI
         }
         let d = density_at(t.grid, volume, p)
@@ -231,10 +239,14 @@ pub fn probe_at(grid: ProbeGrid, levels: Levels, texels: [Texel], i: u32, j: u32
 @compute(64)
 pub fn bake(
     t: Trace,
+    sh: Shadows,
     first: u32,
     volume: [u32],
     levels: Levels,
     texels: [Texel],
+    near: DepthTexture,
+    far: DepthTexture,
+    cmp: ComparisonSampler,
     probes: mut Slots<Probe>,
     id: GlobalId,
 ) {
@@ -252,7 +264,7 @@ pub fn bake(
     var b = vec4(0.0)
     for n in 0..RAYS {
         let dir = fibonacci(n, RAYS)
-        let l = trace(t, volume, levels, texels, p, dir, sunlit_ground: 0.8)
+        let l = trace(t, volume, levels, texels, p, dir, sh, near, far, cmp)
         // Project onto Y00 (0.282095) and Y1 (0.488603 times y, z, x).
         let basis = vec4(0.282095, 0.488603 * dir.x, 0.488603 * dir.y, 0.488603 * dir.z)
         r += basis * l.r
@@ -286,8 +298,8 @@ pub fn sky_light(
     n: vec3,
 ) -> vec3 {
     let g = (world.xz - grid.corner) / grid.spacing
-    let last = f32(grid.cols - 1)
-    if g.x < 0.0 || g.y < 0.0 || g.x >= last || g.y >= last {
+    let last = f32(max(grid.cols, 2) - 1)
+    if grid.cols < 2 || g.x < 0.0 || g.y < 0.0 || g.x >= last || g.y >= last {
         return open_sky(light, n)
     }
     let above = world.y - height_at(levels, texels, world.xz)
@@ -314,4 +326,88 @@ pub fn sky_light(
     // Fade to the open sky at the grid's edge.
     let edge = min(min(g.x, g.y), min(last - g.x, last - g.y))
     mix(open_sky(light, n), out, vec3(saturate(edge / 3.0)))
+}
+
+/// The probes the grid holds, baked: their buffer, the occluder volume they're traced through,
+/// and how many columns are baked.
+pub struct Baked {
+    pub grid: ProbeGrid,
+    pub probes: GpuBuffer<Probe>,
+    pub volume: GpuBuffer<u32>,
+    pub occluders: GpuBuffer<Occluder>,
+    pub occluder_count: u32,
+    pub baked: u32,
+}
+
+/// Columns a strip of baking traces, a frame each (a short submission).
+pub const STRIP_COLUMNS: u32 = 640
+
+impl Baked {
+    /// The grid's probes, unbaked, and its occluders, uncooked.
+    pub fn new(grid: ProbeGrid, occluders: [Occluder]) -> Baked {
+        var o: GpuBuffer<Occluder> = buffer(max(occluders.len(), 1))
+        write(mut o, 0, occluders)
+        Baked {
+            grid,
+            probes: buffer(grid.probes()),
+            volume: buffer(grid.voxels()),
+            occluders: take o,
+            occluder_count: occluders.len(),
+            baked: 0,
+        }
+    }
+
+    /// Whether every column is baked.
+    pub fn done(self) -> bool {
+        self.baked >= self.grid.cols * self.grid.cols
+    }
+
+    /// The occluders cooked into the volume (once, first).
+    pub fn cook(mut self) {
+        label("probes occluders")
+        dispatch(
+            cook_occluders.bind(
+                grid: self.grid,
+                occluders: self.occluders.span(start: 0, count: max(self.occluder_count, 1)),
+                volume: mut self.volume,
+            ),
+            groups: max(self.occluder_count, 1),
+        )
+    }
+
+    /// The next strip of columns baked: their probes traced through the volume, the ground's
+    /// bounce lit through `sh`'s maps.
+    pub fn bake_strip(
+        mut self,
+        t: Trace,
+        sh: Shadows,
+        levels: Levels,
+        texels: GpuSpan<Texel>,
+        near: DepthTexture,
+        far: DepthTexture,
+        cmp: ComparisonSampler,
+    ) {
+        if self.done() {
+            return
+        }
+        let total = self.grid.cols * self.grid.cols
+        let n = min(STRIP_COLUMNS, total - self.baked)
+        label("probes bake")
+        dispatch(
+            bake.bind(
+                t,
+                sh,
+                first: self.baked,
+                volume: self.volume.span(start: 0, count: self.grid.voxels()),
+                levels: levels,
+                texels: texels,
+                near: near,
+                far: far,
+                cmp: cmp,
+                probes: self.probes.span_mut(start: self.baked * LAYERS, count: n * LAYERS),
+            ),
+            groups: (n * LAYERS + 63) / 64,
+        )
+        self.baked += n
+    }
 }

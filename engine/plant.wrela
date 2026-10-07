@@ -16,7 +16,10 @@
 
 use noise::{direction, hash2, pick, rand}
 use std::field::{Lipschitz, PartName, Surface, Tube, unnamed}
-use std::gpu::{GlobalId, Oct32, Slots, Unorm8x4}
+use std::gpu::{
+    ClipPosition, FragCoord, GlobalId, Oct32, Sampler, Slots, Texture, TextureFormat, Unorm8x4,
+    VertexIndex, begin_pass, draw, texture,
+}
 use std::math::{PI, TAU}
 
 /// A clump of leaves: a sphere of them on a limb.
@@ -435,4 +438,68 @@ pub fn sway(wind: Wind, world: vec3, height: f32) -> vec3 {
     let flutter = sin(world.y * 3.1 + world.x * 1.7 + wind.time * 4.3) * 0.3
     let bend = wind.strength * height * height / (1.0 + height)
     d * (bend * gust * (0.7 + 0.3 * wave)) + across * (bend * flutter * 0.4)
+}
+
+// ---- the leaf atlas ----------------------------------------------------------------------------
+
+/// The leaf patterns a card can show, and each one's texels a side: cooked once into an atlas
+/// (`LEAF_PATTERNS` side by side, in a square), so cutting a card reads one texel, not its
+/// leaves' shapes (the prepass draws every layer of a crown).
+pub const LEAF_PATTERNS: u32 = 16
+pub const LEAF_TEXELS: u32 = 64
+pub const LEAF_ATLAS: u32 = 256
+
+/// Pattern `k`'s leaves, from a seed of its own, `n` of them.
+fn pattern_seed(k: u32) -> u32 {
+    k.wrapping_mul(2246822519) ^ 3266489917
+}
+
+/// The leaf atlas's texels: each pattern's coverage (a soft edge a texel wide) in red, and which
+/// of its leaves covers it (its index over 8) in green.
+@fragment
+pub fn cook_leaves(pixel: FragCoord, n: u32) -> vec4 {
+    let p = vec2u(pixel.position.xy)
+    let side = LEAF_ATLAS / LEAF_TEXELS
+    let k = (p.y / LEAF_TEXELS) * side + p.x / LEAF_TEXELS
+    let local = (vec2(p % vec2u(LEAF_TEXELS)) + vec2(0.5)) / f32(LEAF_TEXELS)
+    let uv = local * 2.0 - vec2(1.0)
+    let (m, which) = leaves_on(uv, pattern_seed(k), w: 2.0 / f32(LEAF_TEXELS), n: n)
+    vec4(m, (f32(which) + 0.5) / 8.0, 0.0, 1.0)
+}
+
+/// Where a card of seed `seed` reads its pattern at `uv` (in [-1, 1]²): its pattern's cell in
+/// the atlas.
+pub fn leaf_uv(seed: u32, uv: vec2) -> vec2 {
+    let side = LEAF_ATLAS / LEAF_TEXELS
+    let k = seed % LEAF_PATTERNS
+    let cell = vec2(f32(k % side), f32(k / side))
+    let local = clamp(
+        uv * 0.5 + vec2(0.5),
+        vec2(0.5 / f32(LEAF_TEXELS)),
+        vec2(1.0 - 0.5 / f32(LEAF_TEXELS)),
+    )
+    (cell + local) / f32(side)
+}
+
+/// The card of seed `seed` at `uv`, from the atlas: its coverage, and which leaf covers it.
+pub fn leaf_at(atlas: Texture, s: Sampler, seed: u32, uv: vec2) -> (f32, u32) {
+    let t = atlas.sample_level(s, leaf_uv(seed, uv))
+    (t.r, u32(t.g * 8.0))
+}
+
+/// The leaf atlas of `n` leaves a card, cooked.
+pub fn leaf_atlas(n: u32) -> Texture {
+    var atlas = texture(width: LEAF_ATLAS, height: LEAF_ATLAS, format: TextureFormat::Rgba8)
+    let p = begin_pass(mut atlas)
+    draw(full.bind(z: 0.5), cook_leaves.bind(n), vertices: 3)
+    p.end()
+    atlas
+}
+
+/// A triangle that covers the target, at depth `z`.
+@vertex
+pub fn full(v: VertexIndex, z: f32) -> ClipPosition {
+    let x = f32((v.index << 1) & 2) * 2.0 - 1.0
+    let y = f32(v.index & 2) * 2.0 - 1.0
+    ClipPosition { position: vec4(x, y, z, 1.0) }
 }

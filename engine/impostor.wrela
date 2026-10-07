@@ -1,0 +1,368 @@
+// Trees far away (#28 §4): impostors in the mid-distance, density volumes beyond, each cooked
+// at load from a kind's near representation and lit as its cards are, so the levels match where
+// they meet (AC4: the silhouette and the light through it, spike 03).
+//
+// - An impostor is a set of views of the kind, from directions over the upper hemisphere laid
+//   out on a hemi-octahedral grid (VIEWS × VIEWS cells): each cell an orthographic view of its
+//   cards and limbs, holding their colour and coverage, and their normal and depth in the crown.
+//   A far instance is a quad facing the eye that reads the cell of the view nearest the eye's
+//   direction, and lights what it reads as a leaf is lit.
+// - A volume is the kind's crown as densities on a small grid, from its field; a farther
+//   instance is a quad that marches it.
+
+use light::{Lit, hazed}
+use lit::{Lighting, sky_at, sun_at}
+use noise::{hash2, rand}
+use plant::{Bark, Card, Instance, LIMB_VERTICES, Leaves, Plant, leaf_at, level_cards, limb_vertex}
+use probes::Probe
+use std::field::Tube
+use std::gpu::{
+    ClipPosition, Compare, ComparisonSampler, Depth, DepthTexture, Flat, FragCoord, GlobalId,
+    GpuBuffer, InstanceIndex, Sampler, Slots, Texture, TextureFormat, VertexIndex,
+    begin_pass_with_depth, buffer, depth_texture, discard, dispatch, draw, texture,
+}
+use std::math::{PI, TAU}
+use terrain::Texel
+use view::{Camera, LEAVES}
+
+/// The views along each side of an impostor's grid, and each view's texels a side.
+pub const VIEWS: u32 = 12
+pub const CELL: u32 = 64
+pub const ATLAS: u32 = 768
+
+/// The direction a hemi-octahedral grid's point `g` (each in [0, 1]) looks from (unit, y ≥ 0).
+pub fn hemi_dir(g: vec2) -> vec3 {
+    let f = g * 2.0 - vec2(1.0)
+    let x = (f.x + f.y) * 0.5
+    let z = (f.x - f.y) * 0.5
+    let y = 1.0 - abs(x) - abs(z)
+    normalize(vec3(x, max(y, 0.0), z))
+}
+
+/// Where the grid holds direction `d` (y clamped at 0), each in [0, 1].
+pub fn hemi_grid(d: vec3) -> vec2 {
+    let v = vec3(d.x, max(d.y, 0.0), d.z)
+    let s = abs(v.x) + abs(v.y) + abs(v.z)
+    let x = v.x / s
+    let z = v.z / s
+    vec2(x + z, x - z) * 0.5 + vec2(0.5)
+}
+
+/// View `i`'s direction (from the plant toward its viewer), and its basis: right and up.
+pub fn view_basis(i: u32) -> (vec3, vec3, vec3) {
+    let g = (vec2(f32(i % VIEWS), f32(i / VIEWS)) + vec2(0.5)) / f32(VIEWS)
+    let d = hemi_dir(g)
+    let up0 = if d.y > 0.99 { vec3(0.0, 0.0, 1.0) } else { vec3(0.0, 1.0, 0.0) }
+    let right = normalize(cross(up0, d))
+    let up = cross(d, right)
+    (d, right, up)
+}
+
+/// What baking a kind's impostor reads: its middle and the half-width its views hold (the
+/// plant's reach), and its leaves.
+pub struct Bake: Copy + GpuData {
+    pub mid: vec3,
+    pub half: f32,
+    pub leaves: Leaves,
+    pub bark: Bark,
+}
+
+/// What a baked card or limb fragment carries: its place in its view, its normal and depth in
+/// the crown, its uv on its card, its colour, and its view.
+pub struct BakeVertex: Copy {
+    pub clip: ClipPosition,
+    pub uv: vec2,
+    pub normal: vec3,
+    pub depth: f32,
+    pub albedo: vec3,
+    pub seed: Flat<u32>,
+    pub view: Flat<u32>,
+    pub leaf: Flat<u32>,
+}
+
+/// Where a point of the plant (its frame) falls in view `i`'s cell of the atlas, in clip
+/// space, with its depth along the view.
+fn in_cell(b: Bake, i: u32, p: vec3) -> vec4 {
+    let (d, right, up) = view_basis(i)
+    let q = p - b.mid
+    let local = vec2(dot(q, right), dot(q, up)) / b.half
+    let cell = vec2(f32(i % VIEWS), f32(i / VIEWS))
+    let uv = (cell + (local * 0.5 + vec2(0.5))) / f32(VIEWS)
+    // Toward the viewer is nearer: depth 0 at the plant's front, 1 at its back.
+    let z = 0.5 - dot(q, d) / (2.0 * b.half)
+    vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, saturate(z), 1.0)
+}
+
+/// A card for view `i.index`: facing that view.
+@vertex
+pub fn bake_card(v: VertexIndex, i: InstanceIndex, b: Bake, cards: [Card]) -> BakeVertex {
+    let card = cards[v.index / 6]
+    let (_, right, up) = view_basis(i.index)
+    let k = v.index % 6
+    let qx = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
+    let qy = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
+    let a = TAU * rand(card.seed, 11)
+    let (s, c) = (sin(a), cos(a))
+    let q = vec2(qx[k], qy[k])
+    let t = vec2(c * q.x - s * q.y, s * q.x + c * q.y)
+    // The level-1 card's size: the impostor holds a coarse crown.
+    let world = card.centre + (right * t.x + up * t.y) * (card.size * 2.0 * 0.5)
+    let n = card.normal.decode()
+    let tint = card.tint.decode()
+    let age = saturate(0.35 + 0.65 * n.y)
+    let albedo = max(
+        mix(b.leaves.old, b.leaves.young, vec3(age)) +
+            (tint.xyz - vec3(0.5)) * vec3(0.02, 0.025, 0.0),
+        vec3(0.005),
+    )
+    BakeVertex {
+        clip: ClipPosition { position: in_cell(b, i.index, world) },
+        uv: q,
+        normal: n,
+        depth: card.depth,
+        albedo,
+        seed: Flat { value: card.seed },
+        view: Flat { value: i.index },
+        leaf: Flat { value: 1 },
+    }
+}
+
+/// A limb for view `i.index`.
+@vertex
+pub fn bake_limb(v: VertexIndex, i: InstanceIndex, b: Bake, limbs: [Tube<4>]) -> BakeVertex {
+    let (p, n, along) = limb_vertex(limbs[v.index / LIMB_VERTICES], v.index % LIMB_VERTICES)
+    BakeVertex {
+        clip: ClipPosition { position: in_cell(b, i.index, p) },
+        uv: along,
+        normal: n,
+        depth: 0.0,
+        albedo: mix(b.bark.dark, b.bark.light, vec3(0.5)),
+        seed: Flat { value: 0 },
+        view: Flat { value: i.index },
+        leaf: Flat { value: 0 },
+    }
+}
+
+/// Whether a baked fragment lies outside its view's cell (it's another's): cut.
+fn outside_cell(pixel: vec2, view: u32) -> bool {
+    let cell = vec2(f32(view % VIEWS), f32(view / VIEWS)) * f32(CELL)
+    let q = pixel - cell
+    q.x < 0.0 || q.y < 0.0 || q.x >= f32(CELL) || q.y >= f32(CELL)
+}
+
+/// The impostor's colour: each view's leaves' (and limbs') albedo (its square root), and the
+/// coverage in alpha.
+@fragment
+pub fn bake_colour(f: BakeVertex, pixel: FragCoord, b: Bake, atlas: Texture, s: Sampler) -> vec4 {
+    if outside_cell(pixel.position.xy, f.view.value) {
+        discard()
+    }
+    if f.leaf.value == 1 {
+        let (m, which) = leaf_at(atlas, s, f.seed.value, f.uv)
+        if m < 0.5 || which >= b.leaves.per_card {
+            discard()
+        }
+    }
+    vec4(sqrt(saturate(f.albedo)), 1.0)
+}
+
+/// The impostor's normal (in the plant's frame, from 0 to 1) and depth in the crown (m, over 8).
+@fragment
+pub fn bake_normal(f: BakeVertex, pixel: FragCoord, b: Bake, atlas: Texture, s: Sampler) -> vec4 {
+    if outside_cell(pixel.position.xy, f.view.value) {
+        discard()
+    }
+    if f.leaf.value == 1 {
+        let (m, which) = leaf_at(atlas, s, f.seed.value, f.uv)
+        if m < 0.5 || which >= b.leaves.per_card {
+            discard()
+        }
+    }
+    vec4(
+        normalize(f.normal) * 0.5 + vec3(0.5),
+        saturate(f.depth / 8.0) + f32(1 - f.leaf.value) * 0.0,
+    )
+}
+
+/// A kind's impostor: its two atlases, and how it was baked.
+pub struct Impostor {
+    pub colour: Texture,
+    pub normal: Texture,
+    pub bake: Bake,
+}
+
+/// Bakes `plant`'s impostor from its cards (at level 1) and limbs.
+pub fn bake(
+    plant: Plant,
+    cards: GpuBuffer<Card>,
+    n: u32,
+    limbs: GpuBuffer<Tube<4>>,
+    limb_count: u32,
+    atlas: Texture,
+    s: Sampler,
+) -> Impostor {
+    let top = plant.top()
+    let mid = vec3(0.0, top * 0.5, 0.0)
+    let half = plant.reach()
+    let b = Bake { mid, half, leaves: plant.leaves, bark: plant.bark }
+    var colour = texture(width: ATLAS, height: ATLAS, format: TextureFormat::Rgba8)
+    var normal = texture(width: ATLAS, height: ATLAS, format: TextureFormat::Rgba16Float)
+    var depth = depth_texture(width: ATLAS, height: ATLAS)
+    let views = VIEWS * VIEWS
+    let level = level_cards(n, 1)
+    {
+        let p = begin_pass_with_depth(mut colour, mut depth, clear: vec4(0.0), clear_depth: 1.0)
+        draw(
+            bake_card.bind(b, cards: cards.span(start: 0, count: level)),
+            bake_colour.bind(b, atlas, s),
+            vertices: level * 6,
+            instances: views,
+        )
+        if limb_count > 0 {
+            draw(
+                bake_limb.bind(b, limbs: limbs.span(start: 0, count: limb_count)),
+                bake_colour.bind(b, atlas, s),
+                vertices: limb_count * LIMB_VERTICES,
+                instances: views,
+            )
+        }
+        p.end()
+    }
+    {
+        let p = begin_pass_with_depth(
+            mut normal,
+            mut depth,
+            clear: vec4(0.5, 1.0, 0.5, 0.0),
+            clear_depth: 1.0,
+        )
+        draw(
+            bake_card.bind(b, cards: cards.span(start: 0, count: level)),
+            bake_normal.bind(b, atlas, s),
+            vertices: level * 6,
+            instances: views,
+        )
+        if limb_count > 0 {
+            draw(
+                bake_limb.bind(b, limbs: limbs.span(start: 0, count: limb_count)),
+                bake_normal.bind(b, atlas, s),
+                vertices: limb_count * LIMB_VERTICES,
+                instances: views,
+            )
+        }
+        p.end()
+    }
+    Impostor { colour: take colour, normal: take normal, bake: b }
+}
+
+// ---- drawing impostors ----------------------------------------------------------------------
+
+/// What a far instance's quad passes on: its world point, its place on the quad, and the
+/// instance (its centre and turn) to find its view.
+pub struct FarVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub uv: vec2,
+    pub centre: vec3,
+    pub yaw: Flat<f32>,
+    pub tint: vec3,
+}
+
+/// A far instance: a quad facing the eye, the plant's reach wide, about its middle.
+@vertex
+pub fn far_quad(
+    v: VertexIndex,
+    i: InstanceIndex,
+    cam: Camera,
+    b: Bake,
+    instances: [Instance],
+) -> FarVertex {
+    let inst = instances[i.index]
+    let k = v.index % 6
+    let qx = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
+    let qy = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
+    let q = vec2(qx[k], qy[k])
+    let centre = inst.at + vec3(0.0, b.mid.y * inst.scale, 0.0)
+    let to = normalize(cam.eye - centre)
+    let right = normalize(cross(vec3(0.0, 1.0, 0.0), to))
+    let up = cross(to, right)
+    let world = centre + (right * q.x + up * q.y) * (b.half * inst.scale)
+    FarVertex {
+        clip: ClipPosition { position: cam.clip(world) },
+        world,
+        uv: q,
+        centre,
+        yaw: Flat { value: inst.yaw },
+        tint: inst.tint,
+    }
+}
+
+/// The impostor's texel for a far quad's point: the view nearest the eye's direction (in the
+/// plant's frame), at the point's place in that view.
+fn impostor_uv(f: FarVertex, cam: Camera, b: Bake) -> (vec2, u32) {
+    let to = normalize(cam.eye - f.centre)
+    // Into the plant's frame: turned back by its yaw.
+    let (c, s) = (cos(f.yaw.value), sin(f.yaw.value))
+    let local = vec3(c * to.x - s * to.z, to.y, s * to.x + c * to.z)
+    let g = hemi_grid(local)
+    let cell = min(vec2u(g * f32(VIEWS)), vec2u(VIEWS - 1))
+    let view = cell.y * VIEWS + cell.x
+    // The quad's point in that view's basis: the quad faces the eye, the view nearly so.
+    let (_, right, up) = view_basis(view)
+    let world_right = normalize(cross(vec3(0.0, 1.0, 0.0), to))
+    let world_up = cross(to, world_right)
+    let p = (world_right * f.uv.x + world_up * f.uv.y)
+    let lp = vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z)
+    let local_uv = vec2(dot(lp, right), dot(lp, up))
+    let uv = (vec2(cell) + (local_uv * 0.5 + vec2(0.5))) / f32(VIEWS)
+    (vec2(uv.x, uv.y), view)
+}
+
+/// A far instance cut to its impostor's coverage: the depth prepass's.
+@fragment
+pub fn far_cut(f: FarVertex, cam: Camera, b: Bake, colour: Texture, s: Sampler) -> vec4 {
+    let (uv, _) = impostor_uv(f, cam, b)
+    if colour.sample_level(s, uv).a < 0.5 {
+        discard()
+    }
+    vec4(0.0)
+}
+
+/// A far instance's pixel, where the prepass left its depth: the impostor's colour, normal and
+/// depth, lit as a leaf is.
+@fragment
+pub fn far_shade(
+    f: FarVertex,
+    lt: Lighting,
+    b: Bake,
+    colour: Texture,
+    normal: Texture,
+    s: Sampler,
+    near: DepthTexture,
+    far: DepthTexture,
+    moving: DepthTexture,
+    cmp: ComparisonSampler,
+    clouds: Texture,
+    probes: [Probe],
+    texels: [Texel],
+) -> vec4 {
+    let (uv, _) = impostor_uv(f, lt.cam, b)
+    let c = colour.sample_level(s, uv)
+    let nd = normal.sample_level(s, uv)
+    let (cy, sy) = (cos(f.yaw.value), sin(f.yaw.value))
+    let ln = nd.xyz * 2.0 - vec3(1.0)
+    let n = normalize(vec3(cy * ln.x + sy * ln.z, ln.y, -sy * ln.x + cy * ln.z))
+    let depth = nd.w * 8.0
+    let ao = exp(-depth / 1.6)
+    let albedo = c.rgb * c.rgb + f.tint * 0.5
+    let sun = sun_at(lt, f.world, n, near, far, moving, cmp, clouds, s, soft: 1.5)
+    let sky = sky_at(lt, probes, texels, f.world, n) * (0.25 + 0.75 * ao)
+    let lit = Lit {
+        albedo: max(albedo, vec3(0.005)),
+        n,
+        sun: sun * (0.35 + 0.65 * ao),
+        sky,
+        through: b.leaves.through * (0.4 + 0.6 * ao),
+    }
+    let out = hazed(lt.light, light::world(lt.light, lit, f.world, lt.cam.eye), f.world, lt.cam.eye)
+    vec4(out, LEAVES + f32(u32(hash2(i32(f.centre.x), i32(f.centre.z)) * 60.0)))
+}

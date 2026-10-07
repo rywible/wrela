@@ -221,3 +221,45 @@ pub fn placed() -> Vec<Placed> {
     }
     out
 }
+
+/// What the probes' occluder volume is cooked from, within `lo` to `hi` on the plane: each
+/// instance's clumps (leaves) and limbs (wood), placed.
+pub fn occluders(
+    placed: [Placed],
+    plants: [Plant],
+    lo: vec2,
+    hi: vec2,
+) -> Vec<engine::probes::Occluder> {
+    var out: Vec<engine::probes::Occluder> = Vec::new()
+    for p in placed {
+        let at = p.at
+        if at.at.x < lo.x - 20.0 ||
+            at.at.z < lo.y - 20.0 ||
+            at.at.x > hi.x + 20.0 ||
+            at.at.z > hi.y + 20.0 {
+            continue
+        }
+        let plant = plants[p.kind]
+        for i in 0..plant.clumps.len() {
+            let c = plant.clumps[i]
+            let w = at.place(c.centre)
+            out.push(
+                engine::probes::Occluder { a: w, radius: c.radius * at.scale, b: w, solid: 0.0 },
+            )
+        }
+        for i in 0..plant.limbs.len() {
+            let l = plant.limbs[i]
+            for k in 0..3 {
+                out.push(
+                    engine::probes::Occluder {
+                        a: at.place(l.points[k]),
+                        radius: 0.5 * (l.radii[k] + l.radii[k + 1]) * at.scale,
+                        b: at.place(l.points[k + 1]),
+                        solid: 1.0,
+                    },
+                )
+            }
+        }
+    }
+    out
+}

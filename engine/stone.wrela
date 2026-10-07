@@ -1,0 +1,200 @@
+// Stones (#28 §4): fields, a displaced, faceted oval each (spike 15's boulders), realized to
+// meshes at load by the engine's realization, as creatures are, with their normals and colours
+// cooked in; drawn each frame from the meshes, so no field is evaluated per vertex or per pixel
+// (AC4). Each is a creature of one bone, so it realizes as one.
+
+use character::colours
+use creature::{Creature, Skeleton, creature}
+use light::{Lit, hazed}
+use lit::{Lighting, sky_at, sun_at}
+use look::{CreatureLook, Mesh as Tolerance}
+use noise::{noise3, rand}
+use probes::Probe
+use realize::{Mesh, SkinVertex, realize_once}
+use render::{ByChannels, Shaded}
+use std::derive::Box3
+use std::field::{Blend, Lipschitz, Surface, fbm, oval}
+use std::gpu::{
+    ClipPosition, ComparisonSampler, DepthTexture, Flat, GpuBuffer, Sampler, Texture, Unorm8x4,
+    VertexIndex,
+}
+use std::math::TAU
+use terrain::{Texel, height_at}
+use view::{Camera, ROCK}
+
+/// What a point of a stone carries: its colour (linear).
+pub struct Rock: Copy + GpuData + Blend {
+    pub albedo: vec3,
+}
+
+impl Shaded for Rock {
+    fn albedo(self) -> vec3 {
+        self.albedo
+    }
+
+    fn roughness(self) -> f32 {
+        0.8
+    }
+}
+
+/// A stone's flat faces: the half-spaces it's cut by (each `dot(p, n) < w` for `n` in xyz),
+/// their intersection's distance.
+pub struct Facets: Copy + GpuData {
+    pub planes: [vec4; 7],
+}
+
+impl Surface for Facets {
+    fn distance(self, p: vec3) -> f32 {
+        var d = -1.0e9
+        for q in self.planes {
+            d = max(d, dot(p, q.xyz) - q.w)
+        }
+        d
+    }
+}
+
+impl Lipschitz for Facets {
+    fn lipschitz(self, near: f32) -> f32 {
+        1.0
+    }
+}
+
+/// A stone's colour at a point of it, `r` across, seed `seed`: grey granite with a grain,
+/// lichen in patches, and moss on its top.
+pub struct Stain: Copy + GpuData {
+    pub r: f32,
+    pub seed: f32,
+}
+
+impl Stain {
+    pub fn at(self, p: vec3) -> Rock {
+        let q = p * (6.0 / self.r) + vec3(self.seed)
+        let grain = 0.5 * noise3(q) + 0.3 * noise3(q * 3.1) + 0.2 * noise3(q * 9.7)
+        let lichen = smoothstep(0.72, 0.8, noise3(p * 3.3 + vec3(5.0, 2.0, 1.0) + vec3(self.seed)))
+        var c = mix(vec3(0.22, 0.21, 0.20), vec3(0.36, 0.34, 0.31), vec3(grain))
+        c = mix(c, vec3(0.42, 0.40, 0.22), vec3(lichen * 0.7))
+        let top = p.y / self.r
+        let moss = smoothstep(0.25, 0.65, top + 0.35 * (noise3(p * 2.5 + vec3(self.seed)) - 0.5))
+        Rock { albedo: mix(c, vec3(0.10, 0.14, 0.035), vec3(moss * 0.6)) }
+    }
+}
+
+/// A stone's field: an oval `radius` across, squashed by `squash`, lumpy (fractal noise), cut
+/// by seven planes into facets, as weathered granite splits; and its colour.
+pub type StoneField = std::field::Field<Rock> + Lipschitz
+
+/// A stone `radius` across, squashed by `squash`, seed `seed`, as a field.
+pub fn stone_field(radius: f32, squash: vec3, seed: u32) -> StoneField {
+    var planes = [vec4(0.0); 7]
+    for k in 0..7 {
+        let a = TAU * rand(seed, 20 + k)
+        let z = rand(seed, 40 + k) * 1.6 - 0.5
+        let n = normalize(vec3(cos(a), z, sin(a)))
+        let h = radius * (0.78 + 0.18 * rand(seed, 60 + k))
+        planes[k] = vec4(n * squash, h)
+    }
+    let stain = Stain { r: radius, seed: f32(seed) * 3.1 }
+    oval(squash * radius)
+        .displace(
+            fbm(freq: 1.7 / radius, octaves: 3, offset: vec3(f32(seed) * 3.1)),
+            amp: 0.14 * radius,
+        )
+        .intersect(Facets { planes })
+        .with_at(|p| stain.at(p))
+}
+
+/// A stone as a creature of one bone (at its centre), to realize.
+pub type Stone = Creature<Rock>
+
+pub fn stone(radius: f32, squash: vec3, seed: u32) -> Stone {
+    var s = Skeleton::new()
+    let root = s.root("stone", vec3(0.0))
+    // Its box: the oval's, grown by the lumps' reach (its facets bound nothing of their own).
+    let half = squash * radius * 1.2 + vec3(0.02)
+    creature(s).part(root, stone_field(radius, squash, seed)).bounded(Box3 { lo: -half, hi: half })
+}
+
+/// A stone realized: its mesh, its colours, and where it is (its rest space to the world).
+pub struct Realized {
+    pub mesh: Mesh,
+    pub colours: GpuBuffer<Unorm8x4>,
+    pub at: mat4,
+    pub seed: u32,
+}
+
+/// The stone of `radius`, `squash` and `seed`, realized once (cells for an 8 mm tolerance) at
+/// `at` turned by `turn` about +y.
+pub fn realize_stone(radius: f32, squash: vec3, seed: u32, at: vec3, turn: f32) -> Realized {
+    let s = stone(radius, squash, seed)
+    let look = CreatureLook { surface: Tolerance { tolerance: 8mm } }
+    let mesh = realize_once(s, look)
+    let colours = colours(mesh, s.field(), ByChannels {}, cell: 1cm)
+    let (c, sn) = (cos(turn), sin(turn))
+    let m = mat4(
+        vec4(c, 0.0, -sn, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(sn, 0.0, c, 0.0),
+        vec4(at, 1.0),
+    )
+    Realized { mesh: take mesh, colours: take colours, at: m, seed }
+}
+
+/// What a stone's vertex passes on.
+pub struct StoneVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+    pub albedo: vec3,
+    pub seed: Flat<u32>,
+}
+
+@vertex
+pub fn stone_vertex(
+    v: VertexIndex,
+    verts: [SkinVertex],
+    colours: [Unorm8x4],
+    at: mat4,
+    seed: u32,
+    cam: Camera,
+) -> StoneVertex {
+    let sv = verts[v.index]
+    let world = (at * vec4(sv.pos, 1.0)).xyz
+    let c = colours[v.index].decode()
+    StoneVertex {
+        clip: ClipPosition { position: cam.clip(world) },
+        world,
+        normal: mat3(at[0].xyz, at[1].xyz, at[2].xyz) * sv.normal,
+        albedo: c.rgb * c.rgb,
+        seed: Flat { value: seed },
+    }
+}
+
+@vertex
+pub fn stone_shadow(v: VertexIndex, verts: [SkinVertex], at: mat4, view: mat4) -> ClipPosition {
+    ClipPosition { position: view * (at * vec4(verts[v.index].pos, 1.0)) }
+}
+
+/// A stone's pixel: its cooked normal and colour, lit by the world's light, darker where it
+/// meets the ground.
+@fragment
+pub fn stone_shade(
+    s: StoneVertex,
+    lt: Lighting,
+    near: DepthTexture,
+    far: DepthTexture,
+    moving: DepthTexture,
+    cmp: ComparisonSampler,
+    clouds: Texture,
+    smp: Sampler,
+    probes: [Probe],
+    texels: [Texel],
+) -> vec4 {
+    let n = normalize(s.normal)
+    let sun = sun_at(lt, s.world, n, near, far, moving, cmp, clouds, smp, soft: 1.0)
+    let ground = height_at(lt.levels, texels, s.world.xz)
+    let low = 0.4 + 0.6 * smoothstep(0.0, 0.5, s.world.y - ground)
+    let sky = sky_at(lt, probes, texels, s.world, n) * low
+    let lit = Lit { albedo: s.albedo, n, sun, sky, through: vec3(0.0) }
+    let c = hazed(lt.light, light::world(lt.light, lit, s.world, lt.cam.eye), s.world, lt.cam.eye)
+    vec4(c, ROCK + f32(s.seed.value % 63))
+}
