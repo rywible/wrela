@@ -7,6 +7,8 @@ use std::units::{cm, m, mm}
 /// Mesh extraction's error bound: the extracted surface stays within `tolerance` of the field.
 pub struct Mesh: Copy {
     pub tolerance: f32,
+    /// The largest cell the grid has, however gently the surface bends.
+    pub largest: f32 = 2cm,
 }
 
 /// Skin weights from each part's own distance, falling off over `falloff` (D-023).
@@ -81,9 +83,9 @@ pub struct CreatureLook: Copy {
 
 impl Mesh {
     /// The extraction grid's cell for a field whose surface bends no tighter than `radius`:
-    /// a cell's chord stays within `tolerance` (sagitta `c² / 8 r`), at most 2 cm.
+    /// a cell's chord stays within `tolerance` (sagitta `c² / 8 r`), at most `largest`.
     pub fn cell_size(self, radius: f32) -> f32 {
-        min(sqrt(8.0 * radius * self.tolerance), 2cm)
+        min(sqrt(8.0 * radius * self.tolerance), self.largest)
     }
 }
 

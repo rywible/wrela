@@ -235,6 +235,39 @@ pub struct Impostor {
     pub colour: Texture,
     pub normal: Texture,
     pub bake: Bake,
+    /// Each view's bounds: the box round what it covers, in its cell's quad coordinates (each
+    /// in [-1, 1]: low x, low y, high x, high y).
+    pub bounds: GpuBuffer<vec4>,
+}
+
+/// View `id`'s bounds (`Impostor::bounds`), from its cell of the colour atlas's coverage: a
+/// texel past what it covers each way.
+@compute(64)
+pub fn view_bounds(colour: Texture, out: mut Slots<vec4>, id: GlobalId) {
+    if id.x >= VIEWS * VIEWS {
+        return
+    }
+    let cell = vec2u(id.x % VIEWS, id.x / VIEWS) * CELL
+    var lo = vec2(f32(CELL))
+    var hi = vec2(-1.0)
+    for y in 0..CELL {
+        for x in 0..CELL {
+            if colour.load(x: cell.x + x, y: cell.y + y).a > 0.0 {
+                let t = vec2(f32(x), f32(y))
+                lo = min(lo, t)
+                hi = max(hi, t)
+            }
+        }
+    }
+    if hi.x < 0.0 {
+        out[id] = vec4(0.0)
+        return
+    }
+    let to_q = |t: vec2| t / f32(CELL) * 2.0 - vec2(1.0)
+    out[id] = vec4(
+        max(to_q(lo - vec2(1.0)), vec2(-1.0)),
+        min(to_q(hi + vec2(2.0)), vec2(1.0)),
+    )
 }
 
 /// The card level an impostor is baked from: the coarsest, which it takes over from where they
@@ -303,7 +336,9 @@ pub fn bake(
         }
         p.end()
     }
-    Impostor { colour: take colour, normal: take normal, bake: b }
+    var bounds: GpuBuffer<vec4> = buffer(views)
+    dispatch(view_bounds.bind(colour, out: mut bounds), groups: (views + 63) / 64)
+    Impostor { colour: take colour, normal: take normal, bake: b, bounds: take bounds }
 }
 
 // ---- drawing impostors ----------------------------------------------------------------------
@@ -344,6 +379,7 @@ pub fn far_quad(
     wind: Wind,
     b: Bake,
     instances: [Instance],
+    bounds: [vec4],
     first: u32,
     front: u32,
     lod: Lod,
@@ -351,12 +387,24 @@ pub fn far_quad(
 ) -> FarVertex {
     let inst = instances[i.index]
     let (level, faint) = place(lod, cam, inst.at, inst.scale)
-    let k = v.index % 6
-    let qx = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
-    let qy = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
-    let q = vec2(qx[k], qy[k])
     let centre = inst.at + vec3(0.0, b.mid.y * inst.scale, 0.0)
     let to = normalize(cam.eye - centre)
+    // The quad round what the four views blended here cover (and as far again as a leaf's
+    // parallax moves it, a tenth of the half-width): most of the plant's box is empty.
+    let (cells, w) = views_round(into_plant(inst.yaw, to))
+    var lo = vec2(1.0)
+    var hi = vec2(-1.0)
+    for c in cells {
+        let r = bounds[c.y * VIEWS + c.x]
+        lo = min(lo, r.xy)
+        hi = max(hi, r.zw)
+    }
+    lo = max(lo - vec2(0.1), vec2(-1.0))
+    hi = min(max(hi, lo) + vec2(0.1), vec2(1.0))
+    let k = v.index % 6
+    let qx = [0.0, 1.0, 1.0, 0.0, 1.0, 0.0]
+    let qy = [0.0, 0.0, 1.0, 0.0, 1.0, 1.0]
+    let q = mix(lo, hi, vec2(qx[k], qy[k]))
     let right = normalize(cross(vec3(0.0, 1.0, 0.0), to))
     let up = cross(to, right)
     let flat = centre + (right * q.x + up * q.y) * (b.half * inst.scale)
@@ -364,7 +412,6 @@ pub fn far_quad(
     var world = flat + sway(wind, flat, height)
     // The views round the eye's direction, the same for all the quad: each one's place for this
     // corner (between corners, a view's place moves as the quad's point does).
-    let (cells, w) = views_round(into_plant(inst.yaw, to))
     let p = into_plant(inst.yaw, right * q.x + up * q.y)
     let local_to = into_plant(inst.yaw, to)
     var uv = [vec2(0.0); 4]

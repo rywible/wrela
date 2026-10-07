@@ -122,11 +122,12 @@ pub struct Realized {
     pub seed: u32,
 }
 
-/// The stone of `radius`, `squash` and `seed`, realized once (cells for an 8 mm tolerance) at
-/// `at` turned by `turn` about +y.
+/// The stone of `radius`, `squash` and `seed`, realized once (cells for an 8 mm tolerance, at
+/// most 4 cm: a stone bends gently, and its stain varies over a sixth of its radius) at `at`
+/// turned by `turn` about +y.
 pub fn realize_stone(radius: f32, squash: vec3, seed: u32, at: vec3, turn: f32) -> Realized {
     let s = stone(radius, squash, seed)
-    let look = CreatureLook { surface: Tolerance { tolerance: 8mm } }
+    let look = CreatureLook { surface: Tolerance { tolerance: 8mm, largest: 4cm } }
     let mesh = realize_once(s, look)
     let colours = colours(mesh, s.field(), ByChannels {}, cell: 1cm)
     let (c, sn) = (cos(turn), sin(turn))
