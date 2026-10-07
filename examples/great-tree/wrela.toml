@@ -1,0 +1,8 @@
+# The Last Green's great tree, on its rise in the clearing (#28 §1, §9): a plant
+# (`engine::plant`) in a package of its own, so the lens shows it (`wrela studio
+# examples/great-tree`) and the clearing grows it.
+[package]
+name = "great_tree"
+
+[dependencies]
+engine = { path = "../../engine" }

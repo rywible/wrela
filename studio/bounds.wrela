@@ -4,17 +4,43 @@
 use std::derive::{Box3, interval}
 use std::field::Surface
 
-/// The space searched: 8 m around the origin, the ground at the middle of its bottom half.
+/// The space searched first: 8 m around the origin, the ground at the middle of its bottom half
+/// (a creature's). A surface that reaches its faces is searched again in a box twice the size,
+/// up to `GROWTHS` times: a tree's 16 m, a hill's.
 pub const SEARCH: Box3 = Box3 { lo: vec3(-4.0, -2.0, -4.0), hi: vec3(4.0, 6.0, 4.0) }
+pub const GROWTHS: u32 = 5
 
 /// A box holding the surface's inside, each face to a cell of an octree `depth` levels deep
-/// (a cell of `SEARCH` at depth 8 is about 3 cm). Empty (`lo > hi`) if nothing is inside.
+/// (a cell of `SEARCH` at depth 8 is about 3 cm, of a box grown once 6 cm). Empty (`lo > hi`)
+/// if nothing is inside.
 pub fn bounds<S: Surface>(field: S, depth: u32) -> Box3 {
+    var search = SEARCH
+    for g in 0..GROWTHS + 1 {
+        let b = bounds_in(field, depth, search)
+        if b.lo.x > b.hi.x || g == GROWTHS {
+            return b
+        }
+        // A face within a cell of the search's: the surface may reach past it.
+        let cell = (search.hi - search.lo) / f32(1 << depth)
+        let low = b.lo - search.lo
+        let high = search.hi - b.hi
+        let reaches = min(min(min(low.x, low.y), low.z), min(min(high.x, high.y), high.z)) <=
+            max(max(cell.x, cell.y), cell.z) * 1.5
+        if !reaches {
+            return b
+        }
+        search = Box3 { lo: search.lo * 2.0, hi: search.hi * 2.0 }
+    }
+    SEARCH
+}
+
+/// `bounds`, searching `search`.
+fn bounds_in<S: Surface>(field: S, depth: u32, search: Box3) -> Box3 {
     var lo = vec3(1.0e9)
     var hi = vec3(-1.0e9)
     for face in 0..6 {
         let (axis, far) = (face / 2, face % 2 == 1)
-        let (found, at) = extreme(field, depth, axis, far)
+        let (found, at) = extreme(field, depth, axis, far, search)
         if !found {
             return Box3 { lo, hi }
         }
@@ -31,11 +57,11 @@ pub fn bounds<S: Surface>(field: S, depth: u32) -> Box3 {
 /// best-first search of the octree, nearest the face first, so it stops at the first cell of
 /// the deepest level, or the first wholly inside, its interval can't show is outside: every
 /// cell nearer the face has been shown outside by then.
-fn extreme<S: Surface>(field: S, depth: u32, axis: u32, far: bool) -> (bool, f32) {
+fn extreme<S: Surface>(field: S, depth: u32, axis: u32, far: bool, search: Box3) -> (bool, f32) {
     // The cells still to search, at most 512 (past that the search is coarser, never wrong:
     // a cell dropped is kept whole).
     var cells: Vec<(Box3, u32)> = Vec::new()
-    cells.push((SEARCH, 0))
+    cells.push((search, 0))
     while cells.len() > 0 {
         // The cell nearest the face.
         var best = 0

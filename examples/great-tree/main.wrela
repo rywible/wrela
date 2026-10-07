@@ -1,0 +1,12 @@
+// The great tree as a program: its export gives the lens's tests (suite/studio.rs) its distance.
+// The lens draws it (`wrela studio examples/great-tree`); the clearing grows it.
+
+use std::field::Surface
+use tree::great_tree
+
+/// The great tree's distance at a point.
+pub fn distance(x: f32, y: f32, z: f32) -> f32 {
+    great_tree().distance(vec3(x, y, z))
+}
+
+pub fn frame(time: f32, width: u32, height: u32) {}

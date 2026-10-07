@@ -1,0 +1,9 @@
+// What the lens shows of this package (`wrela studio examples/great-tree`): the great tree's
+// field, its limbs and its crown as one soft solid.
+
+use engine::plant::Plant
+use tree::great_tree
+
+pub fn subject() -> Plant {
+    great_tree()
+}

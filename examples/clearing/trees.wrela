@@ -5,47 +5,10 @@
 
 use engine::noise::{noise2, pick, rand}
 use engine::plant::{Bark, Instance, Leaves, Plant, plant}
+use great_tree::tree::great_tree
 use engine::vegetation::Placed
 use scene::{KNOLL, MEADOW, STAND, height, in_gap, past_edge}
 use std::math::TAU
-
-/// The great tree: a short, broad trunk; five limbs; a wide dome of clumps (#28 §1, §9).
-pub fn great_tree() -> Plant {
-    var p = plant(leaves: Leaves { size: 0.85, cover: 1.9 }, bark: Bark {})
-    let base = vec3(0.0, -0.3, 0.0)
-    let fork = base + vec3(0.2, 4.2, -0.1)
-    p.straight(base - vec3(0.0, 0.5, 0.0), base + vec3(0.0, 1.1, 0.0), r_from: 1.25, r_to: 0.7)
-    p.straight(base + vec3(0.0, 0.8, 0.0), fork, r_from: 0.72, r_to: 0.55)
-    let dome = base + vec3(0.0, 9.6, 0.0)
-    for i in 0..5 {
-        let a = TAU * (f32(i) + 0.3) / 5.0 + pick(31, i, lo: -0.3, hi: 0.3)
-        let out = vec3(cos(a), 0.0, sin(a))
-        let mid = fork + out * 3.2 + vec3(0.0, 2.6, 0.0)
-        let tip = fork + out * 6.6 + vec3(0.0, 4.4 + pick(33, i, lo: -0.8, hi: 0.8), 0.0)
-        p.limb(fork, mix(fork, mid, vec3(0.5)) + vec3(0.0, 0.3, 0.0), mid, r_from: 0.42, r_to: 0.3)
-        p.limb(mid, mix(mid, tip, vec3(0.5)) + vec3(0.0, 0.2, 0.0), tip, r_from: 0.3, r_to: 0.14)
-        let side = vec3(-out.z, 0.0, out.x)
-        p.straight(mid, mid + side * 2.2 + out * 1.5 + vec3(0.0, 2.0, 0.0), r_from: 0.2, r_to: 0.09)
-        p.straight(
-            mid,
-            mid - side * 2.0 + out * 1.8 + vec3(0.0, 1.4, 0.0),
-            r_from: 0.18,
-            r_to: 0.08,
-        )
-        let low = fork + out * 1.6 + vec3(0.0, 0.8, 0.0)
-        p.straight(low, low + out * 3.2 + side * 0.8 + vec3(0.0, 0.9, 0.0), r_from: 0.2, r_to: 0.07)
-    }
-    for i in 0..34 {
-        let u = rand(41, i)
-        let a = TAU * rand(43, i)
-        // On a squashed dome: wide and flat-topped, open underneath.
-        let up = 0.15 + 0.85 * u
-        let r = sqrt(1.0 - up * up)
-        let at = dome + vec3(r * cos(a) * 8.0, (up - 0.35) * 5.0, r * sin(a) * 8.0)
-        p.clump(at, radius: pick(47, i, lo: 2.3, hi: 3.4))
-    }
-    p
-}
 
 /// A forest tree, seed `s`: a trunk, a few limbs, and a crown of clumps. At the forest's edge
 /// (`edge` 1) the crown comes down low and wide, as edge trees grow toward the light.

@@ -705,12 +705,15 @@ fn advance_job<S: Surface + Lipschitz>(
     }
 }
 
-/// The first surface hit along the ray from `o` in direction `dir` (within 10 m): the point,
-/// how far, and the part there. Marks it.
+/// The first surface hit along the ray from `o` in direction `dir` (within 10 m, or past the
+/// subject's far side if that's farther: a tree's): the point, how far, and the part there.
+/// Marks it.
 pub fn ray<S: Surface + Lipschitz>(lens: mut Lens, subject: fn() -> S, o: vec3, dir: vec3) {
     let f = subject()
     let d = normalize(dir)
-    let t = trace(f, o, d, 10.0)
+    let centre = 0.5 * (lens.bounds.lo + lens.bounds.hi)
+    let across = length(lens.bounds.hi - lens.bounds.lo)
+    let t = trace(f, o, d, max(10.0, length(o - centre) + across))
     if t < 0.0 {
         let a = obj()
             .text("action", "ray")
