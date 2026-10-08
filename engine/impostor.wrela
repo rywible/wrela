@@ -264,9 +264,6 @@ pub struct Impostor {
 /// texel past what it covers each way.
 @compute(64)
 pub fn view_bounds(colour: Texture<Rgba8>, out: mut Slots<vec4>, id: GlobalId) {
-    if id.x >= VIEWS * VIEWS {
-        return
-    }
     let cell = vec2u(id.x % VIEWS, id.x / VIEWS) * CELL
     var lo = vec2(f32(CELL))
     var hi = vec2(-1.0)
@@ -357,7 +354,7 @@ pub fn bake(
         p.end()
     }
     var bounds: GpuBuffer<vec4> = buffer(views)
-    dispatch(view_bounds.bind(colour, out: mut bounds), groups: (views + 63) / 64)
+    dispatch(view_bounds.bind(colour, out: mut bounds), over: views)
     Impostor { colour: take colour, normal: take normal, bake: b, bounds: take bounds }
 }
 
@@ -735,9 +732,6 @@ pub fn cook_volume(
     depths: mut Texels3d<Rgba16Float>,
     id: GlobalId,
 ) {
-    if id.x >= VOXELS || id.y >= VOXELS || id.z >= VOXELS {
-        return
-    }
     let c = id.xyz()
     let voxel = 2.0 * v.half / f32(VOXELS)
     let p = v.mid + (vec3(c) + vec3(0.5)) * voxel - vec3(v.half)
@@ -964,7 +958,6 @@ pub fn cook(
     )
     var grid = texture3d::<Rgba16Float>(VOXELS, VOXELS, VOXELS)
     var grid_depth = texture3d::<Rgba16Float>(VOXELS, VOXELS, VOXELS)
-    let groups = (VOXELS + 3) / 4
     dispatch(
         cook_volume.bind(
             v,
@@ -974,7 +967,7 @@ pub fn cook(
             out: mut grid,
             depths: mut grid_depth,
         ),
-        groups: (groups, groups, groups),
+        over: grid,
     )
     Cooked { volume: v, grid: take grid, grid_depth: take grid_depth }
 }

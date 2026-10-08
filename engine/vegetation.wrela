@@ -54,7 +54,7 @@ pub struct Kind {
 pub fn kind(plant: Plant, seed: u32, atlas: Texture<Rgba8>, s: Sampler) -> Kind {
     let n = plant.cards()
     var cards: GpuBuffer<Card> = buffer(n)
-    dispatch(cook_cards.bind(plant, n, seed, out: mut cards), groups: (n + 63) / 64)
+    dispatch(cook_cards.bind(plant, n, seed, out: mut cards), over: n)
     var orders: GpuBuffer<u32> = buffer(CORNERS * n)
     write(mut orders, 0, card_orders(plant, n, seed))
     let limb_count = plant.limbs.len()
@@ -201,7 +201,7 @@ impl Forest {
         var outlines: GpuBuffer<vec2> = buffer(LEAF_PATTERNS * OUTLINE)
         dispatch(
             cook_outlines.bind(atlas, mut outlines),
-            groups: (LEAF_PATTERNS * OUTLINE + 63) / 64,
+            over: LEAF_PATTERNS * OUTLINE,
         )
         var most = 1
         var most_limbs = 1

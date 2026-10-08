@@ -574,8 +574,7 @@ fn temporal(
     spreads: mut Texture<Rgba16Float>,
     s: Sampler,
 ) {
-    let groups = ((scene.width() + 7) / 8, (scene.height() + 7) / 8, 1)
-    dispatch(neighbourhoods.bind(scene, mut means, mut spreads), groups: groups)
+    dispatch(neighbourhoods.bind(scene, mut means, mut spreads), over: scene)
     let p = begin_pass(mut into)
     draw(
         cover.bind(z: 0.5),
@@ -1213,22 +1212,22 @@ pub fn test_capture(s: mut Clearing, what: u32) -> u32 {
         if what == 0 {
             dispatch(
                 testing::copy_texture.bind(s.scene, out: mut s.captured),
-                groups: (count + 63) / 64,
+                over: count,
             )
         } else if what == 2 {
             dispatch(
                 testing::copy_texture.bind(s.motion, out: mut s.captured),
-                groups: (count + 63) / 64,
+                over: count,
             )
         } else if (s.frames + 1) % 2 == 0 {
             dispatch(
                 testing::copy_texture.bind(s.history_a, out: mut s.captured),
-                groups: (count + 63) / 64,
+                over: count,
             )
         } else {
             dispatch(
                 testing::copy_texture.bind(s.history_b, out: mut s.captured),
-                groups: (count + 63) / 64,
+                over: count,
             )
         }
         return count
@@ -1237,7 +1236,7 @@ pub fn test_capture(s: mut Clearing, what: u32) -> u32 {
         s.captured_depth = buffer(n)
         dispatch(
             testing::copy_depth.bind(s.depth, out: mut s.captured_depth),
-            groups: (n + 63) / 64,
+            over: n,
         )
         return n
     }

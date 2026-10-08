@@ -393,9 +393,6 @@ fn card_place(plant: Plant, n: u32, seed: u32, id: u32) -> (u32, vec3, vec3, u32
 /// clump's own (so each clump reads as a lump of light), its depth in the crown.
 @compute(64)
 pub fn cook_cards(plant: Plant, n: u32, seed: u32, out: mut Slots<Card>, id: GlobalId) {
-    if id.x >= n {
-        return
-    }
     let (which, p, dir, k) = card_place(plant, n, seed, id.x)
     let (d, g) = plant.crown(p)
     let normal = normalize(normalize(g) * 0.45 + dir * 0.55)
@@ -599,9 +596,6 @@ pub const OUTLINE: u32 = 4
 /// closer but cost more than they save (an octagon's six triangles: 0.75, 0.70).
 @compute(64)
 pub fn cook_outlines(atlas: Texture<Rgba8>, out: mut Slots<vec2>, id: GlobalId) {
-    if id.x >= LEAF_PATTERNS * OUTLINE {
-        return
-    }
     let k = id.x / OUTLINE
     let side = LEAF_ATLAS / LEAF_TEXELS
     let origin = vec2u((k % side) * LEAF_TEXELS, (k / side) * LEAF_TEXELS)

@@ -183,9 +183,6 @@ fn above(x: f32, from: f32) -> f32 {
 /// 0.97], most of it in [0.76, 0.9], where a cover's cut (`field`) would leave it whole.
 @compute(4, 4, 4)
 pub fn cook_shape(out: mut Texels3d<Rgba16Float>, id: GlobalId) {
-    if id.x >= SHAPE_SIDE || id.y >= SHAPE_SIDE || id.z >= SHAPE_SIDE {
-        return
-    }
     let q = (vec3(f32(id.x), f32(id.y), f32(id.z)) + vec3(0.5)) / f32(SHAPE_SIDE)
     var perlin = 0.0
     var amp = 0.5
@@ -205,9 +202,6 @@ pub fn cook_shape(out: mut Texels3d<Rgba16Float>, id: GlobalId) {
 /// The detail noise's texel: Worley noise in three octaves, three ways.
 @compute(4, 4, 4)
 pub fn cook_detail(out: mut Texels3d<Rgba16Float>, id: GlobalId) {
-    if id.x >= DETAIL_SIDE || id.y >= DETAIL_SIDE || id.z >= DETAIL_SIDE {
-        return
-    }
     let q = (vec3(f32(id.x), f32(id.y), f32(id.z)) + vec3(0.5)) / f32(DETAIL_SIDE)
     out.store(id, vec4(worley_fbm(q, 2), worley_fbm(q, 4), worley_fbm(q, 8), 1.0))
 }
@@ -225,9 +219,6 @@ pub fn cook_weather(
     out: mut Texels<Rgba16Float>,
     id: GlobalId,
 ) {
-    if id.x >= WEATHER_SIDE || id.y >= WEATHER_SIDE {
-        return
-    }
     let xz = ((vec2(f32(id.x), f32(id.y)) + vec2(0.5)) / f32(WEATHER_SIDE) - vec2(0.5)) * SPAN
     var cover = 0.0
     var tall = 0.0
@@ -470,9 +461,6 @@ pub fn march_dome(
     out: mut Slots<vec4>,
     id: GlobalId,
 ) {
-    if id.x >= PHASE_TEXELS {
-        return
-    }
     let t = phase_texel(c, id.x)
     let uv = (vec2(t) + vec2(0.5)) / vec2(f32(SKY_W), f32(SKY_H))
     // Interleaved gradient noise (Jimenez's): neighbouring texels' jitters spread evenly, so
@@ -526,9 +514,6 @@ pub fn cook_shadow(
     out: mut Texels<Rgba16Float>,
     id: GlobalId,
 ) {
-    if id.x >= SHADOW_SIDE || id.y >= SHADOW_SIDE {
-        return
-    }
     let xz = ((vec2(f32(id.x), f32(id.y)) + vec2(0.5)) / f32(SHADOW_SIDE) - vec2(0.5)) * SPAN
     let up = max(sun.y, 0.05)
     let (t0, t1) = (BASE / up, TOP / up)
@@ -545,9 +530,6 @@ pub fn cook_shadow(
 /// A shadow map that shadows nothing.
 @compute(8, 8)
 pub fn no_shadow(out: mut Texels<Rgba16Float>, id: GlobalId) {
-    if id.x >= SHADOW_SIDE || id.y >= SHADOW_SIDE {
-        return
-    }
     out.store(id, vec4(1.0))
 }
 
@@ -644,10 +626,8 @@ impl Sky {
     /// The noises cooked (once).
     pub fn cook_noise(mut self) {
         label("clouds noise")
-        let g = (SHAPE_SIDE + 3) / 4
-        dispatch(cook_shape.bind(out: mut self.shape), groups: (g, g, g))
-        let d = (DETAIL_SIDE + 3) / 4
-        dispatch(cook_detail.bind(out: mut self.detail), groups: (d, d, d))
+        dispatch(cook_shape.bind(out: mut self.shape), over: self.shape)
+        dispatch(cook_detail.bind(out: mut self.detail), over: self.detail)
     }
 
     /// The weather map cooked from `cumuli`, `fair` (the fair-weather clouds' share) and `gap`,
@@ -665,7 +645,6 @@ impl Sky {
         label("clouds weather")
         var list: GpuBuffer<Cumulus> = buffer(max(cumuli.len(), 1))
         write(mut list, 0, cumuli)
-        let w = (WEATHER_SIDE + 7) / 8
         dispatch(
             cook_weather.bind(
                 cumuli: list.span(start: 0, count: cumuli.len()),
@@ -673,7 +652,7 @@ impl Sky {
                 gap: gap,
                 out: mut self.weather,
             ),
-            groups: (w, w, 1),
+            over: self.weather,
         )
         self.cook_shadow(sun, rep, shadows)
         self.frames = 0
@@ -682,7 +661,6 @@ impl Sky {
     /// The shadow map cooked for the sun toward `sun`, or none (`shadows` false: all lit).
     pub fn cook_shadow(mut self, sun: vec3, rep: Sampler, shadows: bool) {
         label("clouds shadow")
-        let n = (SHADOW_SIDE + 7) / 8
         if shadows {
             dispatch(
                 cook_shadow.bind(
@@ -693,10 +671,10 @@ impl Sky {
                     rep,
                     out: mut self.shadow,
                 ),
-                groups: (n, n, 1),
+                over: self.shadow,
             )
         } else {
-            dispatch(no_shadow.bind(out: mut self.shadow), groups: (n, n, 1))
+            dispatch(no_shadow.bind(out: mut self.shadow), over: self.shadow)
         }
     }
 
@@ -740,7 +718,7 @@ impl Sky {
                 s,
                 out: mut self.marched,
             ),
-            groups: (PHASE_TEXELS + 63) / 64,
+            over: PHASE_TEXELS,
         )
         let n = ((SKY_W + 7) / 8, (SKY_H + 7) / 8, 1)
         dispatch(

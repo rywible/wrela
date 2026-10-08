@@ -449,9 +449,6 @@ pub fn gather(
     bounces: mut Slots<Probe>,
     id: GlobalId,
 ) {
-    if id.x >= count {
-        return
-    }
     var sky_part = NONE
     var sun_part = NONE
     for i in 0..strip.rays {
@@ -604,9 +601,6 @@ pub fn map_probes(
     id: GlobalId,
 ) {
     let cols = grid.cols
-    if id.x >= PLANES * cols || id.y > cols * LAYERS {
-        return
-    }
     let col = (id.y % cols) * cols + id.x % cols
     let open_row = id.y == cols * LAYERS
     if (open_row && columns.x > 0) || (!open_row && (col < columns.x || col >= columns.y)) {
@@ -864,7 +858,8 @@ impl Baked {
                 open: self.open.span(start: 0, count: 2),
                 out: mut self.maps,
             ),
-            groups: ((PLANES * self.grid.cols + 7) / 8, (self.grid.cols * LAYERS + 8) / 8, 1),
+            // The probes' layers, and the open sky's row below them.
+            over: (PLANES * self.grid.cols, self.grid.cols * LAYERS + 1),
         )
     }
 
@@ -953,7 +948,7 @@ impl Baked {
                 probes: self.probes.span_mut(start: at, count: count),
                 bounces: self.bounces.span_mut(start: at, count: count),
             ),
-            groups: (count + 63) / 64,
+            over: count,
         )
         self.map(self.again, self.again + n)
         self.again = (self.again + n) % total

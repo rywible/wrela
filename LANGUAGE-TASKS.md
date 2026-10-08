@@ -13,7 +13,7 @@ to the result. Decided: pipelines that run only at load count against the 64.
 - [x] 1 Groups of GPU resources: a borrow struct as one parameter, in GPU code too; WebGPU's
       per-stage limits named by field; the engine's lighting inputs as one
 - [x] 4 Texture formats as types: `Texture<F>`, writable by a type-bounded constructor, integer loads
-- [ ] 2 Dispatch over a domain: `over:`; the compiler sizes the groups and checks the bounds
+- [x] 2 Dispatch over a domain: `over:`; the compiler sizes the groups and checks the bounds
       (masked, not returned, where a kernel has barriers)
 - [ ] 3 Kernel outputs: typed indirect arguments; a single-writer output; a span of one field;
       a `Texels` tile

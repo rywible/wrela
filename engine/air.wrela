@@ -403,9 +403,6 @@ fn irradiance(air: Air) -> vec3 {
 
 @compute(8, 8)
 pub fn cook_transmittance(air: Air, out: mut Texels<Rgba16Float>, id: GlobalId) {
-    if id.x >= TRANSMITTANCE_W || id.y >= TRANSMITTANCE_H {
-        return
-    }
     let uv = (vec2(f32(id.x), f32(id.y)) + vec2(0.5)) /
         vec2(f32(TRANSMITTANCE_W), f32(TRANSMITTANCE_H))
     let (r, mu) = transmittance_r_mu(uv)
@@ -424,9 +421,6 @@ pub fn cook_multiple(
     out: mut Texels<Rgba16Float>,
     id: GlobalId,
 ) {
-    if id.x >= MULTIPLE_SIDE || id.y >= MULTIPLE_SIDE {
-        return
-    }
     let (r, mu_s) = multiple_r_mu_s((vec2(f32(id.x), f32(id.y)) + vec2(0.5)) / f32(MULTIPLE_SIDE))
     let o = vec3(0.0, r, 0.0)
     let sun = local_sun(mu_s)
@@ -463,9 +457,6 @@ pub fn cook_view(
     out: mut Texels<Rgba16Float>,
     id: GlobalId,
 ) {
-    if id.x >= VIEW_W || id.y >= VIEW_H {
-        return
-    }
     let r = radius_of(air.eye)
     let uv = (vec2(f32(id.x), f32(id.y)) + vec2(0.5)) / vec2(f32(VIEW_W), f32(VIEW_H))
     let (mu, c) = view_mu_c(r, uv)
@@ -487,9 +478,6 @@ pub fn cook_aerial(
     out: mut Texels3d<Rgba16Float>,
     id: GlobalId,
 ) {
-    if id.x >= AERIAL_W || id.y >= AERIAL_H || id.z >= AERIAL_D {
-        return
-    }
     let at = vec3(f32(id.x), f32(id.y), f32(id.z)) + vec3(0.5)
     let (mu, c, d) = aerial_mu_c_d(at / vec3(f32(AERIAL_W), f32(AERIAL_H), f32(AERIAL_D)))
     let o = vec3(0.0, radius_of(air.eye), 0.0)
@@ -529,19 +517,19 @@ impl Tables {
         label("air")
         dispatch(
             cook_transmittance.bind(air, out: mut self.transmittance),
-            groups: ((TRANSMITTANCE_W + 7) / 8, (TRANSMITTANCE_H + 7) / 8, 1),
+            over: self.transmittance,
         )
         dispatch(
             cook_multiple.bind(air, self.transmittance, s, out: mut self.multiple),
-            groups: ((MULTIPLE_SIDE + 7) / 8, (MULTIPLE_SIDE + 7) / 8, 1),
+            over: self.multiple,
         )
         dispatch(
             cook_view.bind(air, self.transmittance, self.multiple, s, out: mut self.view),
-            groups: ((VIEW_W + 7) / 8, (VIEW_H + 7) / 8, 1),
+            over: self.view,
         )
         dispatch(
             cook_aerial.bind(air, self.transmittance, self.multiple, s, out: mut self.aerial),
-            groups: ((AERIAL_W + 3) / 4, (AERIAL_H + 3) / 4, (AERIAL_D + 3) / 4),
+            over: self.aerial,
         )
     }
 }

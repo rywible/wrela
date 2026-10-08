@@ -88,9 +88,6 @@ pub fn neighbourhoods(
     id: GlobalId,
 ) {
     let size = vec2i(i32(scene.width()), i32(scene.height()))
-    if i32(id.x) >= size.x || i32(id.y) >= size.y {
-        return
-    }
     let at = vec2i(i32(id.x), i32(id.y))
     var m1 = vec3(0.0)
     var m2 = vec3(0.0)

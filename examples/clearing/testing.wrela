@@ -44,9 +44,6 @@ pub fn temporal_view(pixel: FragCoord, image: Texture<Rgba16Float>, light: Light
 @compute(64)
 pub fn copy_texture(t: Texture<Rgba16Float>, out: mut Slots<vec4>, id: GlobalId) {
     let w = t.width()
-    if id.x >= w * t.height() {
-        return
-    }
     out[id] = t.load(x: id.x % w, y: id.x / w)
 }
 
@@ -54,9 +51,6 @@ pub fn copy_texture(t: Texture<Rgba16Float>, out: mut Slots<vec4>, id: GlobalId)
 @compute(64)
 pub fn copy_depth(t: DepthTexture, out: mut Slots<f32>, id: GlobalId) {
     let w = t.width()
-    if id.x >= w * t.height() {
-        return
-    }
     out[id] = t.load(x: id.x % w, y: id.x / w)
 }
 
