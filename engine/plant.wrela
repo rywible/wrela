@@ -297,6 +297,79 @@ fn card_share(id: u32, n: u32) -> (u32, f32) {
     (0, (f32(id - n1) + 0.5) / f32(n - n1))
 }
 
+/// The level share card `id` of a plant's `n` is in (`card_share`): its first card and its end.
+fn share_range(id: u32, n: u32) -> vec2u {
+    let n2 = level_cards(n, 2)
+    let n1 = level_cards(n, 1)
+    if id < n2 {
+        return vec2u(0, n2)
+    }
+    if id < n1 {
+        return vec2u(n2, n1)
+    }
+    vec2u(n1, n)
+}
+
+/// The corners a plant is seen from, for the orders its cards are drawn in: the eight ways round
+/// it, each axis's sign a bit (x, then y, then z).
+pub const CORNERS: u32 = 8
+
+fn corner_dir(o: u32) -> vec3 {
+    vec3(f32(o & 1) * 2.0 - 1.0, f32((o >> 1) & 1) * 2.0 - 1.0, f32((o >> 2) & 1) * 2.0 - 1.0)
+}
+
+/// Which corner a plant at `inst` is seen from by an eye at `eye` (`mid` metres up its middle,
+/// in its own frame).
+pub fn corner_of(inst: Instance, mid: f32, eye: vec3) -> u32 {
+    let v = eye - inst.at
+    let (c, s) = (cos(inst.yaw), sin(inst.yaw))
+    let x = c * v.x - s * v.z
+    let z = s * v.x + c * v.z
+    let y = v.y - mid * inst.scale
+    u32(x > 0.0) | (u32(y > 0.0) << 1) | (u32(z > 0.0) << 2)
+}
+
+/// Card `id % n`'s place among its level's own share seen from corner `id / n`: the nearest
+/// that corner first. A cut fragment behind the depth already written is dropped before it's
+/// cut, so the prepass draws a crown's cards front to back: 0.62 ms, 0.57. (The level shares
+/// keep their places, each a run of its own: a level draws the first of them.)
+@compute(64)
+pub fn card_places(cards: [Card], n: u32, out: mut Slots<u32>, id: GlobalId) {
+    if id.x >= CORNERS * n {
+        return
+    }
+    let dir = corner_dir(id.x / n)
+    let c = id.x % n
+    let range = share_range(c, n)
+    let key = dot(cards[c].centre, dir)
+    var place = range.x
+    for j in range.x..range.y {
+        let k = dot(cards[j].centre, dir)
+        if k > key || k == key && j < c {
+            place += 1
+        }
+    }
+    out[id] = place
+}
+
+/// The cards in corner `id / n`'s order: the one at place `id % n` (`card_places`).
+@compute(64)
+pub fn card_orders(places: [u32], n: u32, out: mut Slots<u32>, id: GlobalId) {
+    if id.x >= CORNERS * n {
+        return
+    }
+    let o = id.x / n
+    let p = id.x % n
+    let range = share_range(p, n)
+    var card = range.x
+    for c in range.x..range.y {
+        if places[o * n + c] == p {
+            card = c
+        }
+    }
+    out[id] = card
+}
+
 /// The plant's cards: each level's share spread over the clumps by their areas, each card on
 /// its clump's sphere (most near its surface), its normal the crown's there mixed with the
 /// clump's own (so each clump reads as a lump of light), its depth in the crown.
@@ -495,6 +568,65 @@ pub fn leaf_uv(seed: u32, uv: vec2) -> vec2 {
 pub fn leaf_at(atlas: Texture, s: Sampler, seed: u32, uv: vec2) -> (f32, u32) {
     let t = atlas.sample_level(s, leaf_uv(seed, uv))
     (t.r, u32(t.g * 8.0))
+}
+
+/// Corners an outline has: a card is drawn as the rectangle round what its cut can keep.
+pub const OUTLINE: u32 = 4
+
+/// Corner `id % OUTLINE` of pattern `id / OUTLINE`'s outline: the smallest rectangle (of 16
+/// turns) round every point of the card where its cut can keep a pixel, about 0.77 of the card.
+/// A bilinear sample reads the texels within one texel of its point, so wherever `leaf_at` is
+/// above 0 is in a square a texel each way round a covered texel's centre (clamped to the card).
+/// A card's corners are shaded once each (an indexed draw) and its cut runs on fewer pixels:
+/// the prepass 0.71 ms, 0.63, the cards' shading 0.65, 0.58. More corners hold the leaves
+/// closer but cost more than they save (an octagon's six triangles: 0.75, 0.70).
+@compute(64)
+pub fn cook_outlines(atlas: Texture, out: mut Slots<vec2>, id: GlobalId) {
+    if id.x >= LEAF_PATTERNS * OUTLINE {
+        return
+    }
+    let k = id.x / OUTLINE
+    let side = LEAF_ATLAS / LEAF_TEXELS
+    let origin = vec2u((k % side) * LEAF_TEXELS, (k / side) * LEAF_TEXELS)
+    let texel = 2.0 / f32(LEAF_TEXELS)
+    // Each turn's bounds: its two axes' least and most.
+    var lo: [vec2; 16] = [vec2(9.0); 16]
+    var hi: [vec2; 16] = [vec2(-9.0); 16]
+    for y in 0..LEAF_TEXELS {
+        for x in 0..LEAF_TEXELS {
+            if atlas.load(x: origin.x + x, y: origin.y + y).r > 0.0 {
+                let centre = (vec2(f32(x), f32(y)) + vec2(0.5)) * texel - vec2(1.0)
+                for j in 0..2 {
+                    for i in 0..2 {
+                        let off = vec2(f32(i) * 2.0 - 1.0, f32(j) * 2.0 - 1.0) * texel
+                        let p = clamp(centre + off, vec2(-1.0), vec2(1.0))
+                        for t in 0..16 {
+                            let a = f32(t) * PI / 32.0
+                            let u = vec2(cos(a), sin(a))
+                            let q = vec2(dot(p, u), dot(p, vec2(-u.y, u.x)))
+                            lo[t] = min(lo[t], q)
+                            hi[t] = max(hi[t], q)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    var best = 0
+    for t in 1..16 {
+        let e = hi[t] - lo[t]
+        let b = hi[best] - lo[best]
+        if e.x * e.y < b.x * b.y {
+            best = t
+        }
+    }
+    let a = f32(best) * PI / 32.0
+    let u = vec2(cos(a), sin(a))
+    let c = id.x % OUTLINE
+    let q = vec2(if c == 1 || c == 2 { hi[best].x } else { lo[best].x }, if c >= 2 {
+        hi[best].y
+    } else { lo[best].y })
+    out[id] = u * q.x + vec2(-u.y, u.x) * q.y
 }
 
 /// The leaf atlas of `n` leaves a card, cooked.

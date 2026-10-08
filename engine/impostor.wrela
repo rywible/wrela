@@ -11,7 +11,7 @@
 //   instance is a quad that marches it.
 
 use light::{Lit, hazed}
-use lod::{Lod, anchor, draw_at, keeps, place, share}
+use lod::{draw_packed, keeps_packed}
 use lit::{Lighting, sky_at, sun_at}
 use noise::{cell_size, hash2, hashed_threshold_of, rand, surface_draw}
 use plant::{
@@ -361,9 +361,8 @@ pub struct FarVertex: Copy {
     pub weights: Flat<vec4>,
     pub shift: Flat<vec4>,
     pub shift2: Flat<vec4>,
-    /// The part of a pixel's draws its instance keeps this way (`lod::share`), and where its
-    /// pattern is anchored (`lod::anchor`).
-    pub keep: Flat<vec4>,
+    /// The part of a pixel's draws its instance keeps this way, packed (`Forest::marks`).
+    pub keep: Flat<u32>,
 }
 
 /// A far instance: a quad facing the eye, the plant's reach wide, about its middle; swayed by
@@ -380,14 +379,12 @@ pub fn far_quad(
     wind: Wind,
     b: Bake,
     instances: [Instance],
+    marks: [vec2u],
     bounds: [vec4],
     first: u32,
     front: u32,
-    lod: Lod,
-    way: u32,
 ) -> FarVertex {
     let inst = instances[i.index]
-    let (level, faint) = place(lod, cam, inst.at, inst.scale)
     let centre = inst.at + vec3(0.0, b.mid.y * inst.scale, 0.0)
     let to = normalize(cam.eye - centre)
     // The quad round what the four views blended here cover (and as far again as a leaf's
@@ -439,9 +436,7 @@ pub fn far_quad(
         weights: Flat { value: w },
         shift: Flat { value: vec4(shift[0], shift[1]) },
         shift2: Flat { value: vec4(shift[2], shift[3]) },
-        keep: Flat {
-            value: vec4(share(level, faint, way), anchor(cam, inst.at, lod.top, inst.scale)),
-        },
+        keep: Flat { value: marks[i.index].x },
     }
 }
 
@@ -504,7 +499,7 @@ fn view_at(f: FarVertex, k: u32) -> (vec2, vec2) {
 /// shading pick the same and temporal AA blends the views as it blends two levels. (Blending
 /// all four in every pixel read four views' texels, in both passes.)
 fn view_of(f: FarVertex, pixel: vec2) -> u32 {
-    let u = draw_at(pixel - f.keep.value.zw + vec2(2.0, 1.0))
+    let u = draw_packed(f.keep.value, pixel, vec2u(2, 1))
     let w = f.weights.value
     if u < w.x {
         return 0
@@ -608,7 +603,7 @@ pub fn far_cut(
     // The cells of a draw that holds still on the quad (hashed alpha), for its coverage.
     let size = cell_size(f.uv, cell)
     // Its share of the pixel, where it's between two ways (`lod`).
-    if !keeps(f.keep.value, pixel.position.xy) {
+    if !keeps_packed(f.keep.value, pixel.position.xy) {
         discard()
     }
     // The view this pixel shows this frame, and its coverage. Most of the quad is empty: left
@@ -886,7 +881,7 @@ pub fn volume_cut(
     cell: f32,
 ) -> WithDepth {
     let size = cell_size(f.uv, cell)
-    if !keeps(f.keep.value, pixel.position.xy) {
+    if !keeps_packed(f.keep.value, pixel.position.xy) {
         discard()
     }
     let met = march_volume(f, cam, v, grid, grid_depth, s)

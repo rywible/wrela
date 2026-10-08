@@ -147,6 +147,13 @@ pub fn keeps_packed(k: u32, pixel: vec2) -> bool {
     u >= start && u < end
 }
 
+/// A pixel's draw (`draw_at`) for a share packed by `packed`, its pattern moved by `shift`
+/// pixels.
+pub fn draw_packed(k: u32, pixel: vec2, shift: vec2u) -> f32 {
+    let c = vec2u((k >> 28) & 3, (k >> 30) & 3)
+    bayer((vec2u(pixel) + c + shift) & vec2u(3))
+}
+
 /// Whether an instance is drawn at all, and its ways (the lower, and the upper when it's
 /// between two), at `level`, faded by `faint`.
 pub fn ways(level: f32, faint: f32) -> (bool, u32, u32) {
