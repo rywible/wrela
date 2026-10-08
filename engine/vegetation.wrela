@@ -15,8 +15,8 @@ use noise::{cell_size, hash2, hashed_threshold_of, rand}
 use lod::{IMPOSTOR, Lod, VOLUME, anchor, keeps, keeps_packed, packed, place, share, ways}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_POINTS, LIMB_VERTICES, Leaves, OUTLINE,
-    Plant, Wind, CORNERS, card_orders, card_places, cook_cards, cook_outlines, corner_of, leaf_at,
-    leaf_atlas, level_cards, limb_corner, limb_point, sway,
+    Plant, Wind, CORNERS, card_orders, cook_cards, cook_outlines, corner_of, leaf_at, leaf_atlas,
+    level_cards, limb_corner, limb_point, sway,
 }
 use probes::Probe
 use shadow::Shadows
@@ -52,10 +52,8 @@ pub fn kind(plant: Plant, seed: u32, atlas: Texture, s: Sampler) -> Kind {
     let n = plant.cards()
     var cards: GpuBuffer<Card> = buffer(n)
     dispatch(cook_cards.bind(plant, n, seed, out: mut cards), groups: (n + 63) / 64)
-    var places: GpuBuffer<u32> = buffer(CORNERS * n)
-    dispatch(card_places.bind(cards, n, out: mut places), groups: (CORNERS * n + 63) / 64)
     var orders: GpuBuffer<u32> = buffer(CORNERS * n)
-    dispatch(card_orders.bind(places, n, out: mut orders), groups: (CORNERS * n + 63) / 64)
+    write(mut orders, 0, card_orders(plant, n, seed))
     let limb_count = plant.limbs.len()
     var limbs: GpuBuffer<Tube<4>> = buffer(max(limb_count, 1))
     var list: Vec<Tube<4>> = Vec::new()
@@ -113,8 +111,9 @@ pub struct Forest {
     /// The leaf patterns cards read, cooked once, and each one's outline (`cook_outlines`).
     pub atlas: Texture,
     outlines: GpuBuffer<vec2>,
-    /// The cards' fans of indices (`fan_indices`), and each list's draw of them: its index
-    /// count, instance count and three 0s (`lists`'s, then `every_lists`'s).
+    /// The cards' and the limbs' triangles (`card_indices`, `limb_indices`), and each list's
+    /// draws of them: each its index count, instance count and three 0s (`lists`'s, then
+    /// `every_lists`'s).
     card_triangles: GpuBuffer<u32>,
     limb_triangles: GpuBuffer<u32>,
     args: GpuBuffer<u32>,
@@ -207,12 +206,8 @@ impl Forest {
             most = max(most, k.card_count)
             most_limbs = max(most_limbs, k.limb_count)
         }
-        let nl = most_limbs * LIMB_VERTICES
-        var limb_triangles: GpuBuffer<u32> = buffer(nl)
-        dispatch(limb_indices.bind(nl, mut limb_triangles), groups: (nl + 63) / 64)
-        let n = most * CARD_INDICES
-        var card_triangles: GpuBuffer<u32> = buffer(n)
-        dispatch(card_indices.bind(n, mut card_triangles), groups: (n + 63) / 64)
+        let limb_triangles = indices_of(limb_indices(most_limbs))
+        let card_triangles = indices_of(card_indices(most))
         var every_args: GpuBuffer<u32> = buffer(kinds.len() * ARGS)
         write(mut every_args, 0, args_of(kinds, every_lists, 1))
         let room_args = kinds.len() * WAYS * ARGS
@@ -409,13 +404,22 @@ pub struct LeafVertex: Copy {
 pub const CARD_INDICES: u32 = 6
 const TRIANGLES: [u32; 6] = [0, 1, 2, 0, 2, 3]
 
-/// Index `id` of the cards' triangles: card `id / CARD_INDICES`'s corners.
-@compute(64)
-pub fn card_indices(n: u32, out: mut Slots<u32>, id: GlobalId) {
-    if id.x >= n {
-        return
+/// `n` cards' triangles: each card's corners.
+fn card_indices(n: u32) -> Vec<u32> {
+    var out: Vec<u32> = Vec::new()
+    for c in 0..n {
+        for k in TRIANGLES {
+            out.push(c * OUTLINE + k)
+        }
     }
-    out[id] = id.x / CARD_INDICES * OUTLINE + TRIANGLES[id.x % CARD_INDICES]
+    out
+}
+
+/// A buffer of `list`.
+fn indices_of(list: Vec<u32>) -> GpuBuffer<u32> {
+    var b: GpuBuffer<u32> = buffer(list.len())
+    write(mut b, 0, list)
+    b
 }
 
 /// Corner `k` of card `c` of the kind's, of instance `i`, facing `d`'s basis, swayed by the wind;
@@ -614,13 +618,15 @@ pub struct BarkVertex: Copy {
     pub keep: Flat<u32>,
 }
 
-/// Index `id` of the limbs' triangles: limb `id / LIMB_VERTICES`'s points (`limb_corner`).
-@compute(64)
-pub fn limb_indices(n: u32, out: mut Slots<u32>, id: GlobalId) {
-    if id.x >= n {
-        return
+/// `n` limbs' triangles: each limb's points (`limb_corner`).
+fn limb_indices(n: u32) -> Vec<u32> {
+    var out: Vec<u32> = Vec::new()
+    for l in 0..n {
+        for k in 0..LIMB_VERTICES {
+            out.push(l * LIMB_POINTS + limb_corner(k))
+        }
     }
-    out[id] = id.x / LIMB_VERTICES * LIMB_POINTS + limb_corner(id.x % LIMB_VERTICES)
+    out
 }
 
 /// Point `v % LIMB_POINTS` of limb `v / LIMB_POINTS`, of instance `i`, in the world.
