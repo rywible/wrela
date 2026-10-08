@@ -13,7 +13,7 @@
 use light::{Lit, hazed}
 use lod::{Lod, anchor, keeps, place, share}
 use lit::{Lighting, sky_at, sun_at}
-use noise::{hash2, hashed_threshold, rand, surface_draw}
+use noise::{cell_size, hash2, hashed_threshold_of, rand, surface_draw}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_VERTICES, Leaves, Plant, Wind, leaf_at,
     level_cards, limb_vertex, sway,
@@ -593,8 +593,8 @@ pub fn far_cut(
     s: Sampler,
     cell: f32,
 ) -> WithDepth {
-    // A draw that holds still on the quad (hashed alpha), for its coverage.
-    let t = hashed_threshold(f.uv, seed_of(f), cell)
+    // The cells of a draw that holds still on the quad (hashed alpha), for its coverage.
+    let size = cell_size(f.uv, cell)
     // Its share of the pixel, where it's between two ways (`lod`).
     if !keeps(f.keep.value, pixel.position.xy) {
         discard()
@@ -609,7 +609,8 @@ pub fn far_cut(
     // Most of the quad is empty: left before its leaves' places are read. The blended coverage
     // is steepened about its middle: blending softens the views' edges into a wider fringe,
     // which the tone curve shows brighter than the crisp edge it stands for.
-    if smoothstep(0.2, 0.8, coverage) < t {
+    let c = smoothstep(0.2, 0.8, coverage)
+    if c <= 0.0 || c < 1.0 && c < hashed_threshold_of(f.uv, seed_of(f), size) {
         discard()
     }
     var toward = 0.0
@@ -855,12 +856,13 @@ pub fn volume_cut(
     depths: [f32],
     cell: f32,
 ) -> WithDepth {
-    let t = hashed_threshold(f.uv, seed_of(f), cell)
+    let size = cell_size(f.uv, cell)
     if !keeps(f.keep.value, pixel.position.xy) {
         discard()
     }
     let met = march_volume(f, cam, v, voxels, depths)
-    if met.opacity < t {
+    let o = met.opacity
+    if o <= 0.0 || o < 1.0 && o < hashed_threshold_of(f.uv, seed_of(f), size) {
         discard()
     }
     WithDepth { color: id_colour(f.id.value), depth: depth_of(cam, volume_place(f, v, met.at)) }

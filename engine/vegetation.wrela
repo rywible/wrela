@@ -11,8 +11,8 @@
 use impostor::{Cooked, Impostor, bake, cook, far_cut, far_quad, far_shade, volume_cut, volume_shade}
 use light::{Light, Lit, hazed}
 use lit::{Lighting, sky_at, sun_at}
-use noise::{hash2, hashed_threshold, rand}
-use lod::{IMPOSTOR, Lod, VOLUME, anchor, keeps, place, share, ways}
+use noise::{cell_size, hash2, hashed_threshold_of, rand}
+use lod::{IMPOSTOR, Lod, VOLUME, anchor, keeps, keeps_packed, packed, place, share, ways}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LIMB_VERTICES, Leaves, Plant, Wind, cook_cards, leaf_at,
     leaf_atlas, level_cards, limb_vertex, sway,
@@ -314,16 +314,14 @@ pub const ALL: u32 = 99
 /// What a card's vertex passes on.
 pub struct LeafVertex: Copy {
     pub clip: ClipPosition,
-    pub world: vec3,
     pub uv: vec2,
-    pub normal: vec3,
-    pub depth: f32,
-    pub tint: vec4,
+    /// The card's seed (its pattern in the low bits: `seed_of`).
     pub seed: Flat<u32>,
-    pub crown: Flat<u32>,
-    /// The part of a pixel's draws its instance keeps this way (`lod::share`), and where its
-    /// pattern is anchored (`lod::anchor`).
-    pub keep: Flat<vec4>,
+    /// The part of a pixel's draws its instance keeps this way, packed (`lod::packed`).
+    pub keep: Flat<u32>,
+    /// Which card of which instance: the shading reads the rest from them.
+    pub card: Flat<u32>,
+    pub instance: Flat<u32>,
 }
 
 /// The corners of a quad, as two triangles.
@@ -352,6 +350,10 @@ fn card_corner(
     (swayed + (d.right * t.x + d.up * t.y) * half, q, card, inst)
 }
 
+/// A card's corner, seen by the camera. Its vertices carry little (a tile-based GPU writes every
+/// vertex's outputs to memory before it draws, and the cards are many: 23 floats a vertex cost
+/// the prepass and the shading 0.4 ms more than 10): the shading reads the card's normal, depth
+/// and tint from the card and its instance, and its point from the depth.
 @vertex
 pub fn card(
     v: VertexIndex,
@@ -362,7 +364,6 @@ pub fn card(
     instances: [Instance],
 ) -> LeafVertex {
     let (world, uv, card, inst) = card_corner(v.index, i.index, d, cards, instances)
-    let t = card.tint.decode()
     // A coarser level draws the same card twice the size in the same plane (a card faces the
     // camera's basis, so it's at one depth), so where two levels cross-fade the prepass's depth
     // would pass both levels' equal test. Each level's cards lie a hundred-thousandth farther
@@ -371,15 +372,23 @@ pub fn card(
     let apart = cam.eye + (world - cam.eye) * (1.0 + 1.0e-5 * f32(min(d.way, CARD_LEVELS)))
     LeafVertex {
         clip: ClipPosition { position: cam.clip(apart) },
-        world,
         uv,
-        normal: inst.turn(card.normal.decode()),
-        depth: card.depth * inst.scale,
-        tint: vec4(inst.tint + (t.xyz - vec3(0.5)) * vec3(0.04, 0.05, 0.0), t.w),
-        seed: Flat { value: card.seed },
-        crown: Flat { value: u32(hash2(i32(inst.at.x * 7.0), i32(inst.at.z * 7.0)) * 60.0) },
-        keep: Flat { value: keep_of(d, cam, inst) },
+        seed: Flat { value: seed_of(card, inst) },
+        keep: Flat { value: packed(keep_of(d, cam, inst)) },
+        card: Flat { value: v.index / 6 },
+        instance: Flat { value: i.index },
     }
+}
+
+/// Which crown an instance is (for its tag: one of 60).
+fn which_crown(inst: Instance) -> u32 {
+    u32(hash2(i32(inst.at.x * 7.0), i32(inst.at.z * 7.0)) * 60.0)
+}
+
+/// A card's seed for its cut: its pattern (the card's seed's low bits, `plant::leaf_uv`), the
+/// rest mixed with its crown's, so the same card of two crowns doesn't cut alike.
+fn seed_of(card: Card, inst: Instance) -> u32 {
+    (card.seed & 15) | ((card.seed ^ which_crown(inst) * 2246822519) & 4294967280)
 }
 
 /// A card in a shadow map: facing the sun.
@@ -395,14 +404,11 @@ pub fn card_shadow(
     let (world, uv, card, _) = card_corner(v.index, i.index, d, cards, instances)
     LeafVertex {
         clip: ClipPosition { position: view * vec4(world, 1.0) },
-        world,
         uv,
-        normal: vec3(0.0, 1.0, 0.0),
-        depth: 0.0,
-        tint: vec4(0.0),
         seed: Flat { value: card.seed },
-        crown: Flat { value: 0 },
-        keep: Flat { value: vec4(0.0, 1.0, 0.0, 0.0) },
+        keep: Flat { value: packed(vec4(0.0, 1.0, 0.0, 0.0)) },
+        card: Flat { value: v.index / 6 },
+        instance: Flat { value: i.index },
     }
 }
 
@@ -414,10 +420,14 @@ pub fn leaf_cut(l: LeafVertex, pixel: FragCoord, d: CardDraw, atlas: Texture, s:
     let (m, which) = leaf_at(atlas, s, l.seed.value, l.uv)
     // How much of the pixel the leaves cover: the atlas's soft edge made a pixel wide.
     let cover = saturate((m - 0.5) / max(fwidth(m), 1.0e-4) + 0.5)
-    // Kept that much of the time, by a draw that holds still on the card (hashed alpha): a fixed
-    // cut left hard, crawling edges for temporal AA, and a draw changing each frame, noise.
-    let t = hashed_threshold(l.uv, l.seed.value ^ l.crown.value * 2246822519, d.lod.cell)
-    if cover < t || which >= d.per_card || !keeps(l.keep.value, pixel.position.xy) {
+    let size = cell_size(l.uv, d.lod.cell)
+    if cover <= 0.0 || which >= d.per_card || !keeps_packed(l.keep.value, pixel.position.xy) {
+        discard_fragment()
+    }
+    // A pixel covered in part is kept that much of the time, by a draw that holds still on the
+    // card (hashed alpha): a fixed cut left hard, crawling edges for temporal AA, and a draw
+    // changing each frame, noise. Most of a card is empty or covered: they draw nothing.
+    if cover < 1.0 && cover < hashed_threshold_of(l.uv, l.seed.value, size) {
         discard_fragment()
     }
     vec4(0.0)
@@ -433,6 +443,9 @@ fn discard_fragment() {
 @fragment
 pub fn leaf_shade(
     l: LeafVertex,
+    pixel: FragCoord,
+    cards: [Card],
+    instances: [Instance],
     lt: Lighting,
     leaves: Leaves,
     atlas: Texture,
@@ -445,20 +458,25 @@ pub fn leaf_shade(
     probes: [Probe],
     grounds: [f32],
 ) -> vec4 {
-    let seed = l.seed.value
+    let card = cards[l.card.value]
+    let inst = instances[l.instance.value]
+    let world = lt.cam.world_at(pixel.position.xy, pixel.position.z)
+    let seed = card.seed
     let (_, which) = leaf_at(atlas, s, seed, l.uv)
     let tilt = vec3(
         rand(seed, 100 + which) - 0.5,
         rand(seed, 120 + which) - 0.5,
         rand(seed, 140 + which) - 0.5,
     )
-    let crown_n = normalize(l.normal)
+    let crown_n = normalize(inst.turn(card.normal.decode()))
     let n = normalize(crown_n + tilt * 0.9)
-    let sun = sun_at(lt, l.world, n, near, far, moving, cmp, clouds, s, soft: 1.5)
-    let ao = exp(-l.depth / 1.6)
+    let sun = sun_at(lt, world, n, near, far, moving, cmp, clouds, s, soft: 1.5)
+    let ao = exp(-card.depth * inst.scale / 1.6)
     let age = saturate(0.35 + 0.65 * crown_n.y + 0.3 * (rand(seed, 160 + which) - 0.5))
-    let albedo = max(mix(leaves.old, leaves.young, vec3(age)) + l.tint.xyz * 0.5, vec3(0.005))
-    let sky = sky_at(lt, probes, grounds, l.world, crown_n) * (0.25 + 0.75 * ao)
+    let t = card.tint.decode()
+    let tint = inst.tint + (t.xyz - vec3(0.5)) * vec3(0.04, 0.05, 0.0)
+    let albedo = max(mix(leaves.old, leaves.young, vec3(age)) + tint * 0.5, vec3(0.005))
+    let sky = sky_at(lt, probes, grounds, world, crown_n) * (0.25 + 0.75 * ao)
     let lit = Lit {
         albedo,
         n,
@@ -466,8 +484,8 @@ pub fn leaf_shade(
         sky,
         through: leaves.through * (0.4 + 0.6 * ao),
     }
-    let c = hazed(lt.light, light::world(lt.light, lit, l.world, lt.cam.eye), l.world, lt.cam.eye)
-    vec4(c, view::LEAVES + f32(l.crown.value))
+    let c = hazed(lt.light, light::world(lt.light, lit, world, lt.cam.eye), world, lt.cam.eye)
+    vec4(c, view::LEAVES + f32(which_crown(inst)))
 }
 
 // ---- limbs -------------------------------------------------------------------------------------
@@ -817,17 +835,19 @@ impl Forest {
                         instances: self.instances(l),
                     ),
                     leaf_shade.bind(
-                        lt,
-                        k.plant.leaves,
-                        self.atlas,
-                        near,
-                        far,
-                        moving,
-                        cmp,
-                        clouds,
-                        s,
-                        probes,
-                        grounds,
+                        cards: k.cards.span(start: 0, count: level_cards(k.card_count, l.how)),
+                        instances: self.instances(l),
+                        lt: lt,
+                        leaves: k.plant.leaves,
+                        atlas: self.atlas,
+                        near: near,
+                        far: far,
+                        moving: moving,
+                        cmp: cmp,
+                        clouds: clouds,
+                        s: s,
+                        probes: probes,
+                        grounds: grounds,
                     ),
                     vertices: level_cards(k.card_count, l.how) * 6,
                     instances: l.count,

@@ -105,7 +105,7 @@ pub fn ridged2(p: vec2, octaves: u32) -> f32 {
 }
 
 /// A cell's draw in [0, 1): the cell at `c` (whole numbers) of a seed's lattice.
-fn cell_draw(c: vec2, seed: u32) -> f32 {
+pub fn cell_draw(c: vec2, seed: u32) -> f32 {
     let h = hash_u32(
         u32(i32(c.x)).wrapping_mul(1597334677) ^ u32(i32(c.y)).wrapping_mul(3812015801) ^ seed,
     )
@@ -119,7 +119,18 @@ fn cell_draw(c: vec2, seed: u32) -> f32 {
 /// pixel's sample over the surface, a pixel a part `c` covered is kept `c` of the time. A
 /// fragment shader's, in uniform control flow (its derivatives).
 pub fn hashed_threshold(p: vec2, seed: u32, cell: f32) -> f32 {
-    let size = max(length(dpdx(p)), length(dpdy(p))) * cell
+    hashed_threshold_of(p, seed, cell_size(p, cell))
+}
+
+/// How wide a cell `cell` pixels wide is in `p`'s units (for `hashed_threshold_of`): a fragment
+/// shader's, in uniform control flow (its derivatives).
+pub fn cell_size(p: vec2, cell: f32) -> f32 {
+    max(length(dpdx(p)), length(dpdy(p))) * cell
+}
+
+/// `hashed_threshold` with its cells `size` wide in `p`'s units (`cell_size`): it takes no
+/// derivatives, so a shader can draw it only where it needs it (a pixel a leaf covers in part).
+pub fn hashed_threshold_of(p: vec2, seed: u32, size: f32) -> f32 {
     let level = log2(max(size, 1.0e-8))
     let lo = exp2(floor(level))
     let a = cell_draw(floor(p / lo), seed)
