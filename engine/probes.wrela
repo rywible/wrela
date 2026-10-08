@@ -17,7 +17,7 @@
 
 use light::{Light, sky}
 use sky::{Clouds, cloud_shadow, clouded_sky}
-use shadow::{Shadows, sunlit}
+use shadow::{Shadows, statically_sunlit}
 use std::gpu::{
     Atomics, ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, GpuSpan, Rgba16Float, Sampler,
     Slots, Texels, Texture, buffer, dispatch, label, texture, writable_texture, write,
@@ -235,7 +235,7 @@ pub fn trace(
         if p.y <= ground {
             // The ground's bounce: its albedo lit by the sun and the open sky.
             let (n, albedo, _) = ground_at(levels, texels, p.xz)
-            let lit = sunlit(sh, vec3(p.x, ground, p.z), n, near, far, near, cmp, 1.0)
+            let lit = statically_sunlit(sh, vec3(p.x, ground, p.z), n, near, far, cmp, 1.0)
             let sun = t.light.sun_colour * (max(dot(n, t.light.sun), 0.0) * lit)
             if t.bounced != 0 {
                 // Lit by the probes there: the sky round it, occluded, and the light off what's
@@ -262,7 +262,7 @@ pub fn trace(
                 // part's mean over every facing) and the sun's through the shadows (half of it:
                 // a crown's leaves face every way).
                 let h = held_at(t.grid, maps, s, p.xz, p.y - ground)
-                let lit = sunlit(sh, p, t.light.sun, near, far, near, cmp, 1.0)
+                let lit = statically_sunlit(sh, p, t.light.sun, near, far, cmp, 1.0)
                 light += t.leaf * mean_light(h.sky) * (a * trans)
                 sun_light += t.leaf *
                     (t.light.sun_colour * (0.5 * lit) + mean_light(h.sun)) *

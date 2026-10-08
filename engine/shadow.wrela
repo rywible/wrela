@@ -125,20 +125,7 @@ pub fn sunlit(
     s: ComparisonSampler,
     soft: f32,
 ) -> f32 {
-    let (a, inside) = lookup(
-        sh,
-        sh.near,
-        near,
-        s,
-        world + n * (sh.near_texel * 1.2),
-        soft,
-        bias: 0.0004,
-    )
-    var lit = a
-    if !inside {
-        let (b, _) = lookup(sh, sh.far, far, s, world + n * (sh.far_texel * 1.2), 1.5, bias: 0.0006)
-        lit = b
-    }
+    let lit = statically_sunlit(sh, world, n, near, far, s, soft)
     let (m, _) = lookup(
         sh,
         sh.moving,
@@ -149,4 +136,32 @@ pub fn sunlit(
         bias: 0.0008,
     )
     min(lit, m)
+}
+
+/// How lit `world` is by the sun through the static cascades alone (`sunlit` without the moving
+/// map): for light kept over many frames, such as the probes', which a moving shadow mustn't
+/// mark.
+pub fn statically_sunlit(
+    sh: Shadows,
+    world: vec3,
+    n: vec3,
+    near: DepthTexture,
+    far: DepthTexture,
+    s: ComparisonSampler,
+    soft: f32,
+) -> f32 {
+    let (a, inside) = lookup(
+        sh,
+        sh.near,
+        near,
+        s,
+        world + n * (sh.near_texel * 1.2),
+        soft,
+        bias: 0.0004,
+    )
+    if inside {
+        return a
+    }
+    let (b, _) = lookup(sh, sh.far, far, s, world + n * (sh.far_texel * 1.2), 1.5, bias: 0.0006)
+    b
 }
