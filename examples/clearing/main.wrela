@@ -33,8 +33,8 @@ use std::collections::{replace, swap}
 use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, start_eye}
 use std::gpu::{
     Address, ClipPosition, Compare, ComparisonSampler, Cull, Depth, DepthBias, DepthTexture,
-    FragCoord, GpuBuffer, GpuSpan, Rgba16Float, Rgba8, Sampler, Texture, Unorm8x4, VertexIndex,
-    begin_depth_pass, begin_pass, begin_pass_with_depth, begin_screen_pass, buffer,
+    FragCoord, FragmentShader, GpuBuffer, GpuSpan, Rgba16Float, Rgba8, Sampler, Texture, Unorm8x4,
+    VertexIndex, begin_depth_pass, begin_pass, begin_pass_with_depth, begin_screen_pass, buffer,
     comparison_sampler, depth_texture, draw, label, present, sampler, texture, writable_texture,
     write,
 }
@@ -527,6 +527,11 @@ pub fn cover(v: VertexIndex, z: f32) -> ClipPosition {
     ClipPosition { position: vec4(x, y, z, 1.0) }
 }
 
+/// Any fragment shader over the whole target: a pass that reads its inputs at each pixel.
+fn fullscreen<F: FragmentShader<ClipPosition>>(fs: F) {
+    draw(cover.bind(z: 0.5), fs, vertices: 3)
+}
+
 /// The look's passes: the glow's chain from `image` (a quarter's size, blurred across and
 /// down), then the image developed to the screen.
 fn look(
@@ -541,27 +546,19 @@ fn look(
 ) {
     label("look glow")
     let down = begin_pass(mut glow_a)
-    draw(
-        cover.bind(z: 0.5),
-        glow_down.bind(image, s: s, threshold: 1.1, base: METERING.base, exposure: exposure),
-        vertices: 3,
-    )
+    fullscreen(glow_down.bind(image, s: s, threshold: 1.1, base: METERING.base, exposure: exposure))
     down.end()
     label("look glow")
     let x = begin_pass(mut glow_b)
-    draw(cover.bind(z: 0.5), glow_blur.bind(src: glow_a, across: 0, spread: 2.0), vertices: 3)
+    fullscreen(glow_blur.bind(src: glow_a, across: 0, spread: 2.0))
     x.end()
     label("look glow")
     let y = begin_pass(mut glow_a)
-    draw(cover.bind(z: 0.5), glow_blur.bind(src: glow_b, across: 1, spread: 2.0), vertices: 3)
+    fullscreen(glow_blur.bind(src: glow_b, across: 1, spread: 2.0))
     y.end()
     label("look develop")
     begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
-    draw(
-        cover.bind(z: 0.5),
-        develop.bind(d, image, depth, glow: glow_a, dabs: dabs, s: s, exposure: exposure),
-        vertices: 3,
-    )
+    fullscreen(develop.bind(d, image, depth, glow: glow_a, dabs: dabs, s: s, exposure: exposure))
     present()
 }
 
@@ -579,11 +576,7 @@ fn temporal(
 ) {
     dispatch(neighbourhoods.bind(scene, mut means, mut spreads), over: scene)
     let p = begin_pass(mut into)
-    draw(
-        cover.bind(z: 0.5),
-        resolve.bind(r, scene, depth, motion, from, means, spreads, s),
-        vertices: 3,
-    )
+    fullscreen(resolve.bind(r, scene, depth, motion, from, means, spreads, s))
     p.end()
 }
 

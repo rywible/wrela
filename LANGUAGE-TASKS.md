@@ -20,11 +20,10 @@ to the result. Decided: pipelines that run only at load count against the 64.
       computed coordinates break invocation safety
 - [x] 5a Test-only entry points and exports out of a shipped build (`@testing`, `test_build()`;
       the clearing ships 72 pipelines, 75 in a test build)
-- [ ] 6 Bound entry points as compile-time values. Design: each entry point has a hidden
-      borrow struct of its arguments (its generics; buffers as spans, textures borrowed, values
-      by value); `k.bind(...)` outside a command is a literal of it; `dispatch`/`draw` take a
-      local of it, or a generic `F: Kernel | Vertex | Fragment` (lang traits it implements),
-      resolved at lowering from the concrete type; args are its fields' places
+- [x] 6 Bound entry points as values: a borrow struct per entry point; `Kernel`,
+      `VertexShader<V>`, `FragmentShader<V>`; the clearing's `fullscreen`, the forest's far
+      binding. Not done: returning one (its type has no name, and an opaque result would lose
+      its loans)
 - [ ] 5b Frame tests on the native host's GPU, in wrela; exports take fieldless enums
 - [ ] 7 Work over several frames
 - [ ] Small: `borrow x = if c { a } else { b }`; packed bitfields; enums to and from `u32`;
