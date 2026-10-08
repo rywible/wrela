@@ -20,9 +20,9 @@ use noise::{hash2, rand}
 use plant::{Wind, sway}
 use probes::{Probe, ProbeGrid, sky_light}
 use std::gpu::{
-    Append, AppendBuffer, Atomics, ClipPosition, ComparisonSampler, DepthTexture, Flat, GlobalId,
-    GpuBuffer, InstanceIndex, Sampler, Slots, Texture, Unorm8x4, VertexIndex, append_buffer, buffer,
-    dispatch, discard, draw,
+    Append, AppendBuffer, Atomics, ClipPosition, ComparisonSampler, DepthTexture, Flat, FragCoord,
+    GlobalId, GpuBuffer, InstanceIndex, Sampler, Slots, Texture, Unorm8x4, VertexIndex,
+    append_buffer, buffer, dispatch, discard, draw,
 }
 use std::math::TAU
 use terrain::{Levels, Texel, ground_cover_at, height_at, texel_index}
@@ -272,9 +272,9 @@ pub fn place(
     }
 }
 
-/// The blades' and flowers' indirect draws' arguments, from what was placed: each a blade's
-/// vertices (or a flower card's) and the count placed as instances. Eight invocations, one a
-/// word: the blades' four, then the flowers'.
+/// The blades' and flowers' indirect draws' arguments, from what was placed: a tier's blades'
+/// vertices all together as one instance, and a flower card's vertices with the flowers placed
+/// as instances. Sixteen invocations, one a word: each tier's four, then the flowers'.
 @compute(16)
 pub fn draw_counts(
     near: [u32],
@@ -289,8 +289,10 @@ pub fn draw_counts(
     let count = if which == 0 { min(near[0], MAX_BLADES) } else if which == 1 {
         min(middle[0], MAX_BLADES)
     } else if which == 2 { min(far[0], MAX_BLADES) } else { min(flowers[0], MAX_FLOWERS) }
-    let vertices = if which < 3 { SEGMENTS[which] * 6 } else { 6 }
-    args[id] = if w == 0 { vertices } else if w == 1 { count } else { 0 }
+    // A tier's blades are one instance of all their vertices; the flowers an instance each.
+    args[id] = if which < 3 {
+        if w == 0 { blade_vertices(SEGMENTS[which]) * count } else if w == 1 { 1 } else { 0 }
+    } else if w == 0 { 6 } else if w == 1 { count } else { 0 }
 }
 
 /// The grass's colours: at the root, at the tip of young and dry grass, and the light through
@@ -413,18 +415,14 @@ impl Grass {
 
 // ---- drawing ----------------------------------------------------------------------------------
 
-/// What a blade's vertex passes on.
+/// What a blade's vertex passes on: where it is across (−1 to 1) and up (0 to 1) the blade, and
+/// which blade. A tile-based GPU writes every vertex's outputs to memory before it draws, and
+/// the grass is millions of vertices, so they carry little: the shading reads the rest from
+/// the blade, and its point from the depth (21 floats a vertex took 1.34 ms, 10 took 0.89).
 pub struct BladeVertex: Copy {
     pub clip: ClipPosition,
-    pub world: vec3,
-    /// Across (−1 to 1) and up (0 to 1) the blade.
     pub uv: vec2,
-    pub normal: vec3,
-    pub ground: vec3,
-    /// Its tint, dryness and deep green.
-    pub colour: vec3,
-    /// The sky light at its root.
-    pub sky: vec3,
+    pub which: Flat<u32>,
 }
 
 /// A blade's point `t` up its curve (0 its root, 1 its tip), at its edge `side` (−1 or 1),
@@ -442,28 +440,55 @@ fn blade_point(b: Blade, t: f32, side: f32, wind: Wind) -> vec3 {
     base + sway(wind, b.root, t * b.tall) * 0.6
 }
 
-/// A blade's vertex `k` of a curve of `segments`: its point, morphed by `m` toward the next
-/// tier's (half as many segments: its odd points move to the middle of their neighbours).
-fn blade_vertex(b: Blade, k: u32, segments: u32, m: f32, wind: Wind) -> (vec3, vec2, vec3) {
-    let qx = [0, 1, 1, 0, 1, 0]
-    let qy = [0, 0, 1, 0, 1, 1]
-    let seg = k / 6
-    let c = k % 6
-    let i = seg + qy[c]
+/// The vertices of a blade of `segments`: two triangles a segment but the last, whose tip is
+/// one vertex (a far blade's one segment is one triangle).
+pub fn blade_vertices(segments: u32) -> u32 {
+    3 * (2 * segments - 1)
+}
+
+/// Corner `c` of a blade's triangles: its point's step up the curve (0 to `segments`) and its
+/// side (−1, 1, or 0 at the tip). A segment's triangles are (lower left, lower right, upper
+/// left) and (lower right, upper right, upper left); the last segment's one is (lower left,
+/// lower right, tip).
+fn corner(c: u32, segments: u32) -> (u32, f32) {
+    let tri = c / 3
+    let k = c % 3
+    if tri == 2 * segments - 2 {
+        if k == 2 {
+            return (segments, 0.0)
+        }
+        return (segments - 1, f32(k) * 2.0 - 1.0)
+    }
+    let seg = tri / 2
+    if tri % 2 == 0 {
+        let up = if k == 2 { 1 } else { 0 }
+        return (seg + up, if k == 1 { 1.0 } else { -1.0 })
+    }
+    let up = if k == 0 { 0 } else { 1 }
+    (seg + up, if k < 2 { 1.0 } else { -1.0 })
+}
+
+/// A blade's point at step `i` of `segments` up its curve, at side `side`, morphed by `m`
+/// toward the next tier's shape (half as many segments: its odd points move to the middle of
+/// their neighbours).
+fn blade_vertex(b: Blade, i: u32, side: f32, segments: u32, m: f32, wind: Wind) -> vec3 {
     let t = f32(i) / f32(segments)
-    let side = f32(qx[c]) * 2.0 - 1.0
-    var pos = blade_point(b, t, side, wind)
+    let pos = blade_point(b, t, side, wind)
     if i % 2 == 1 && m > 0.0 {
         let step = 1.0 / f32(segments)
         let mid = 0.5 *
             (blade_point(b, t - step, side, wind) + blade_point(b, t + step, side, wind))
-        pos = mix(pos, mid, vec3(m))
+        return mix(pos, mid, vec3(m))
     }
+    pos
+}
+
+/// A blade's normal at `side` across it: its face's, turned a little toward its edge.
+fn blade_normal(b: Blade, side: f32) -> vec3 {
     let dir = vec2(cos(b.facing), sin(b.facing))
     let across = vec2(-dir.y, dir.x)
     let face = normalize(vec3(dir.x, 0.35, dir.y))
-    let n = normalize(face + vec3(across.x, 0.0, across.y) * (side * 0.4))
-    (pos, vec2(side, t), n)
+    normalize(face + vec3(across.x, 0.0, across.y) * (side * 0.4))
 }
 
 /// What a tier's blades' draw reads: its segments, and where it morphs to the next tier's shape
@@ -480,27 +505,21 @@ pub fn tier(t: u32) -> Tier {
     Tier { segments: SEGMENTS[t], morph_from: end * 0.75, morph_to: end * 0.97 }
 }
 
+/// A tier's blades, one draw of `blade_vertices(segments)` vertices a blade (an instance a blade
+/// left most of each instance's vertex lanes idle: 10% slower).
 @vertex
-pub fn blade(
-    v: VertexIndex,
-    i: InstanceIndex,
-    cam: Camera,
-    wind: Wind,
-    tier: Tier,
-    blades: [Blade],
-) -> BladeVertex {
-    let b = blades[i.index]
+pub fn blade(v: VertexIndex, cam: Camera, wind: Wind, tier: Tier, blades: [Blade]) -> BladeVertex {
+    let per = blade_vertices(tier.segments)
+    let which = v.index / per
+    let b = blades[which]
     let d = length(b.root - cam.eye)
     let m = smoothstep(tier.morph_from, tier.morph_to, d)
-    let (world, uv, n) = blade_vertex(b, v.index, tier.segments, m, wind)
+    let (i, side) = corner(v.index % per, tier.segments)
+    let world = blade_vertex(b, i, side, tier.segments, m, wind)
     BladeVertex {
         clip: ClipPosition { position: cam.clip(world) },
-        world,
-        uv,
-        normal: n,
-        ground: b.ground.decode(),
-        colour: b.colour.decode().xyz,
-        sky: b.sky.decode().xyz * 2.0,
+        uv: vec2(side, f32(i) / f32(tier.segments)),
+        which: Flat { value: which },
     }
 }
 
@@ -517,7 +536,9 @@ pub fn grass_colour(look: GrassLook, t: f32, tint: f32, dry: f32, deep: f32) -> 
 /// surface that the blades break up; darker at the root; the light through it.
 @fragment
 pub fn blade_shade(
-    b: BladeVertex,
+    v: BladeVertex,
+    pixel: FragCoord,
+    blades: [Blade],
     lt: Lighting,
     look: GrassLook,
     near: DepthTexture,
@@ -529,20 +550,23 @@ pub fn blade_shade(
     probes: [Probe],
     grounds: [f32],
 ) -> vec4 {
-    let ground = normalize(b.ground)
-    let n = normalize(ground * 0.75 + normalize(b.normal) * 0.25)
-    let t = b.uv.y
-    let sun = sun_at(lt, b.world, ground, near, far, moving, cmp, clouds, s, soft: 1.5)
+    let b = blades[v.which.value]
+    let world = lt.cam.world_at(pixel.position.xy, pixel.position.z)
+    let ground = normalize(b.ground.decode())
+    let n = normalize(ground * 0.75 + blade_normal(b, v.uv.x) * 0.25)
+    let t = v.uv.y
+    let sun = sun_at(lt, world, ground, near, far, moving, cmp, clouds, s, soft: 1.5)
     let ao = 0.35 + 0.65 * smoothstep(0.0, 0.8, t)
-    let sky = b.sky * ao
+    let sky = b.sky.decode().xyz * 2.0 * ao
+    let colour = b.colour.decode()
     let lit = Lit {
-        albedo: grass_colour(look, t, b.colour.x, b.colour.y, b.colour.z),
+        albedo: grass_colour(look, t, colour.x, colour.y, colour.z),
         n,
         sun: sun * (0.5 + 0.5 * ao),
         sky,
         through: look.through * t,
     }
-    let c = hazed(lt.light, light::world(lt.light, lit, b.world, lt.cam.eye), b.world, lt.cam.eye)
+    let c = hazed(lt.light, light::world(lt.light, lit, world, lt.cam.eye), world, lt.cam.eye)
     vec4(c, view::GRASS)
 }
 
@@ -661,19 +685,55 @@ impl Grass {
     ) {
         draw(
             blade.bind(lt.cam, wind, tier: tier(0), blades: self.near.items()),
-            blade_shade.bind(lt, look, near, far, moving, cmp, clouds, s, probes, grounds),
+            blade_shade.bind(
+                self.near.items(),
+                lt,
+                look,
+                near,
+                far,
+                moving,
+                cmp,
+                clouds,
+                s,
+                probes,
+                grounds,
+            ),
             indirect: self.args.span(start: 0, count: 4),
             depth: view::NEAREST,
         )
         draw(
             blade.bind(lt.cam, wind, tier: tier(1), blades: self.middle.items()),
-            blade_shade.bind(lt, look, near, far, moving, cmp, clouds, s, probes, grounds),
+            blade_shade.bind(
+                self.middle.items(),
+                lt,
+                look,
+                near,
+                far,
+                moving,
+                cmp,
+                clouds,
+                s,
+                probes,
+                grounds,
+            ),
             indirect: self.args.span(start: 4, count: 4),
             depth: view::NEAREST,
         )
         draw(
             blade.bind(lt.cam, wind, tier: tier(2), blades: self.far.items()),
-            blade_shade.bind(lt, look, near, far, moving, cmp, clouds, s, probes, grounds),
+            blade_shade.bind(
+                self.far.items(),
+                lt,
+                look,
+                near,
+                far,
+                moving,
+                cmp,
+                clouds,
+                s,
+                probes,
+                grounds,
+            ),
             indirect: self.args.span(start: 8, count: 4),
             depth: view::NEAREST,
         )
