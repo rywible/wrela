@@ -516,7 +516,7 @@ fn look(
 ) {
     label("look glow")
     let down = begin_pass(mut glow_a)
-    draw(cover.bind(z: 0.5), glow_down.bind(image, threshold: 1.1), vertices: 3)
+    draw(cover.bind(z: 0.5), glow_down.bind(image, s: s, threshold: 1.1), vertices: 3)
     down.end()
     label("look glow")
     let x = begin_pass(mut glow_b)
