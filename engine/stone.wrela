@@ -5,8 +5,8 @@
 
 use character::colours
 use creature::{Creature, Skeleton, creature}
-use light::{Lit, hazed}
-use lit::{Lighting, sky_gloss, sun_at}
+use light::{Lit}
+use lit::{Lighting, shown, sky_gloss, sun_at}
 use look::{CreatureLook, Mesh as Tolerance}
 use noise::{noise3, rand}
 use probes::Probe
@@ -178,24 +178,12 @@ pub fn stone_shadow(v: VertexIndex, verts: [SkinVertex], at: mat4, view: mat4) -
 /// A stone's pixel: its cooked normal and colour, lit by the world's light, darker where it
 /// meets the ground.
 @fragment
-pub fn stone_shade(
-    s: StoneVertex,
-    lt: Lighting,
-    near: DepthTexture,
-    far: DepthTexture,
-    moving: DepthTexture,
-    cmp: ComparisonSampler,
-    clouds: Texture,
-    smp: Sampler,
-    probes: Texture,
-    grounds: [f32],
-    air: Texture3d,
-) -> vec4 {
+pub fn stone_shade(s: StoneVertex, lt: Lighting) -> vec4 {
     let n = normalize(s.normal)
-    let sun = sun_at(lt, s.world, n, near, far, moving, cmp, clouds, smp, soft: 1.0)
-    let ground = probes::ground_under(lt.grid, grounds, s.world.xz)
+    let sun = sun_at(lt, s.world, n, soft: 1.0)
+    let ground = probes::ground_under(lt.grid, lt.grounds, s.world.xz)
     let low = 0.4 + 0.6 * smoothstep(0.0, 0.5, s.world.y - ground)
-    let (sky, reflected) = sky_gloss(lt, probes, clouds, smp, grounds, s.world, n, lt.cam.eye)
+    let (sky, reflected) = sky_gloss(lt, s.world, n)
     let lit = Lit {
         albedo: s.albedo,
         n,
@@ -206,13 +194,6 @@ pub fn stone_shade(
         reflected: reflected * low,
         glint: 1.0,
     }
-    let c = hazed(
-        air,
-        smp,
-        lt.light,
-        light::world(lt.light, lit, s.world, lt.cam.eye),
-        s.world,
-        lt.cam.eye,
-    )
+    let c = shown(lt, lit, s.world)
     vec4(c, ROCK + f32(s.seed.value % 63))
 }

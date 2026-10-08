@@ -14,8 +14,8 @@
 // A blade's root, height, colour and ground normal are cooked when it's placed, from the
 // clipmap (the terrain's cooked meadow), never from the field.
 
-use light::{Light, Lit, hazed}
-use lit::{Lighting, sky_gloss, sun_at}
+use light::{Light, Lit}
+use lit::{Lighting, shown, sky_gloss, sun_at}
 use noise::{hash2, rand}
 use plant::{Wind, sway}
 use probes::{Probe, ProbeGrid, sky_light}
@@ -640,22 +640,13 @@ pub fn blade_shade(
     blades: [Blade],
     lt: Lighting,
     look: GrassLook,
-    near: DepthTexture,
-    far: DepthTexture,
-    moving: DepthTexture,
-    cmp: ComparisonSampler,
-    clouds: Texture,
-    s: Sampler,
-    probes: Texture,
-    grounds: [f32],
-    air: Texture3d,
 ) -> vec4 {
     let b = blades[v.which.value]
     let world = lt.cam.world_at(pixel.position.xy, pixel.position.z)
     let ground = normalize(b.ground.decode())
     let n = normalize(ground * 0.75 + blade_normal(b, v.uv.x) * 0.25)
     let t = v.uv.y
-    let sun = sun_at(lt, world, ground, near, far, moving, cmp, clouds, s, soft: 1.5)
+    let sun = sun_at(lt, world, ground, soft: 1.5)
     let ao = 0.35 + 0.65 * smoothstep(0.0, 0.8, t)
     let sky = b.sky.decode().xyz * 2.0 * ao
     let colour = b.colour.decode()
@@ -672,14 +663,7 @@ pub fn blade_shade(
         reflected: sky *
             light::gloss_occlusion(ao, abs(dot(n, normalize(lt.cam.eye - world))), 0.75),
     }
-    let c = hazed(
-        air,
-        s,
-        lt.light,
-        light::world(lt.light, lit, world, lt.cam.eye),
-        world,
-        lt.cam.eye,
-    )
+    let c = shown(lt, lit, world)
     vec4(c, view::GRASS)
 }
 
@@ -740,20 +724,7 @@ pub fn flower_cut(b: BloomVertex) -> vec4 {
 
 /// A flower's pixel, where the prepass left its depth.
 @fragment
-pub fn flower_shade(
-    b: BloomVertex,
-    lt: Lighting,
-    blooms: Blooms,
-    near: DepthTexture,
-    far: DepthTexture,
-    moving: DepthTexture,
-    cmp: ComparisonSampler,
-    clouds: Texture,
-    s: Sampler,
-    probes: Texture,
-    grounds: [f32],
-    air: Texture3d,
-) -> vec4 {
+pub fn flower_shade(b: BloomVertex, lt: Lighting, blooms: Blooms) -> vec4 {
     let (_, centre) = petals(b.uv, b.seed.value, 0.05)
     let kind = b.kind.value
     let colour = blooms.kinds[min(kind, 2)]
@@ -763,8 +734,8 @@ pub fn flower_shade(
         vec3(centre * select(if_false: 0.3, if_true: 1.0, cond: kind == 0)),
     )
     let n = normalize(vec3(0.0, 1.0, 0.0) + lt.cam.up * 0.3)
-    let sun = sun_at(lt, b.world, n, near, far, moving, cmp, clouds, s, soft: 1.0)
-    let (sky, reflected) = sky_gloss(lt, probes, clouds, s, grounds, b.world, n, lt.cam.eye)
+    let sun = sun_at(lt, b.world, n, soft: 1.0)
+    let (sky, reflected) = sky_gloss(lt, b.world, n)
     let lit = Lit {
         albedo,
         n,
@@ -775,14 +746,7 @@ pub fn flower_shade(
         glint: 1.0,
         reflected: reflected * 0.9,
     }
-    let c = hazed(
-        air,
-        s,
-        lt.light,
-        light::world(lt.light, lit, b.world, lt.cam.eye),
-        b.world,
-        lt.cam.eye,
-    )
+    let c = shown(lt, lit, b.world)
     vec4(c, view::FLOWER)
 }
 
@@ -798,22 +762,7 @@ impl Grass {
     }
 
     /// The blades' and flowers' shading draws.
-    pub fn shade(
-        self,
-        lt: Lighting,
-        wind: Wind,
-        look: GrassLook,
-        blooms: Blooms,
-        near: DepthTexture,
-        far: DepthTexture,
-        moving: DepthTexture,
-        cmp: ComparisonSampler,
-        clouds: Texture,
-        s: Sampler,
-        probes: Texture,
-        grounds: std::gpu::GpuSpan<f32>,
-        air: Texture3d,
-    ) {
+    pub fn shade(self, lt: Lighting, wind: Wind, look: GrassLook, blooms: Blooms) {
         draw(
             blade.bind(
                 lt.cam,
@@ -822,20 +771,7 @@ impl Grass {
                 blades: self.near.items(),
                 count: self.near.count(),
             ),
-            blade_shade.bind(
-                self.near.items(),
-                lt,
-                look,
-                near,
-                far,
-                moving,
-                cmp,
-                clouds,
-                s,
-                probes,
-                grounds,
-                air,
-            ),
+            blade_shade.bind(self.near.items(), lt, look),
             indices: self.indices,
             indirect: self.args.span(start: 0, count: 5),
             depth: view::NEAREST,
@@ -848,20 +784,7 @@ impl Grass {
                 blades: self.middle.items(),
                 count: self.middle.count(),
             ),
-            blade_shade.bind(
-                self.middle.items(),
-                lt,
-                look,
-                near,
-                far,
-                moving,
-                cmp,
-                clouds,
-                s,
-                probes,
-                grounds,
-                air,
-            ),
+            blade_shade.bind(self.middle.items(), lt, look),
             indices: self.indices,
             indirect: self.args.span(start: 5, count: 5),
             depth: view::NEAREST,
@@ -874,27 +797,14 @@ impl Grass {
                 blades: self.far.items(),
                 count: self.far.count(),
             ),
-            blade_shade.bind(
-                self.far.items(),
-                lt,
-                look,
-                near,
-                far,
-                moving,
-                cmp,
-                clouds,
-                s,
-                probes,
-                grounds,
-                air,
-            ),
+            blade_shade.bind(self.far.items(), lt, look),
             indices: self.indices,
             indirect: self.args.span(start: 10, count: 5),
             depth: view::NEAREST,
         )
         draw(
             flower.bind(lt.cam, wind, flowers: self.flowers.items()),
-            flower_shade.bind(lt, blooms, near, far, moving, cmp, clouds, s, probes, grounds, air),
+            flower_shade.bind(lt, blooms),
             indirect: self.args.span(start: FLOWER_ARGS, count: 4),
             depth: view::PREPASSED,
         )

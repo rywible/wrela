@@ -12,8 +12,8 @@ use impostor::{
     Cooked, Impostor, bake, cook, far_cut, far_quad, far_shade, volume_cut, volume_shade,
     which_crown,
 }
-use light::{Light, Lit, hazed}
-use lit::{Lighting, sky_at, sun_at}
+use light::{Light, Lit}
+use lit::{Lighting, shown, sky_at, sun_at}
 use noise::{cell_size, hash2, hashed_threshold_of, rand}
 use lod::{IMPOSTOR, Lod, VOLUME, anchor, keeps, keeps_packed, packed, place, share, ways}
 use plant::{
@@ -569,21 +569,12 @@ pub fn leaf_shade(
     lt: Lighting,
     leaves: Leaves,
     atlas: Texture,
-    near: DepthTexture,
-    far: DepthTexture,
-    moving: DepthTexture,
-    cmp: ComparisonSampler,
-    clouds: Texture,
-    s: Sampler,
-    probes: Texture,
-    grounds: [f32],
-    air: Texture3d,
 ) -> vec4 {
     let card = cards[l.card.value]
     let inst = instances[l.instance.value & 16777215]
     let world = lt.cam.world_at(pixel.position.xy, pixel.position.z)
     let seed = card.seed
-    let (_, which) = leaf_at(atlas, s, seed, l.uv)
+    let (_, which) = leaf_at(atlas, lt.s, seed, l.uv)
     let tilt = vec3(
         rand(seed, 100 + which) - 0.5,
         rand(seed, 120 + which) - 0.5,
@@ -591,13 +582,13 @@ pub fn leaf_shade(
     )
     let crown_n = normalize(inst.turn(card.normal.decode()))
     let n = normalize(crown_n + tilt * 0.9)
-    let sun = sun_at(lt, world, n, near, far, moving, cmp, clouds, s, soft: 1.5)
+    let sun = sun_at(lt, world, n, soft: 1.5)
     let ao = exp(-card.depth * inst.scale / 1.6)
     let age = saturate(0.35 + 0.65 * crown_n.y + 0.3 * (rand(seed, 160 + which) - 0.5))
     let t = card.tint.decode()
     let tint = inst.tint + (t.xyz - vec3(0.5)) * vec3(0.04, 0.05, 0.0)
     let albedo = max(mix(leaves.old, leaves.young, vec3(age)) + tint * 0.5, vec3(0.005))
-    let sky = sky_at(lt, probes, clouds, s, grounds, world, crown_n) * (0.25 + 0.75 * ao)
+    let sky = sky_at(lt, world, crown_n) * (0.25 + 0.75 * ao)
     let lit = Lit {
         albedo,
         n,
@@ -605,14 +596,7 @@ pub fn leaf_shade(
         sky,
         through: leaves.through * (0.4 + 0.6 * ao),
     }
-    let c = hazed(
-        air,
-        s,
-        lt.light,
-        light::world(lt.light, lit, world, lt.cam.eye),
-        world,
-        lt.cam.eye,
-    )
+    let c = shown(lt, lit, world)
     vec4(c, view::LEAVES + f32(l.instance.value >> 24))
 }
 
@@ -677,21 +661,7 @@ pub fn limb_shadow(
 }
 
 @fragment
-pub fn bark_shade(
-    b: BarkVertex,
-    pixel: FragCoord,
-    lt: Lighting,
-    bark: Bark,
-    near: DepthTexture,
-    far: DepthTexture,
-    moving: DepthTexture,
-    cmp: ComparisonSampler,
-    clouds: Texture,
-    s: Sampler,
-    probes: Texture,
-    grounds: [f32],
-    air: Texture3d,
-) -> vec4 {
+pub fn bark_shade(b: BarkVertex, pixel: FragCoord, lt: Lighting, bark: Bark) -> vec4 {
     if !keeps_packed(b.keep.value, pixel.position.xy) {
         discard_fragment()
     }
@@ -701,18 +671,11 @@ pub fn bark_shade(
     let albedo = mix(bark.dark, bark.light, vec3(ridges))
     let moss = smoothstep(0.2, 0.7, n.y + 0.4 * noise::noise2(b.world.xz * 3.0)) * 0.6
     let a = mix(albedo, bark.moss, vec3(moss))
-    let sun = sun_at(lt, b.world, n, near, far, moving, cmp, clouds, s, soft: 1.5)
+    let sun = sun_at(lt, b.world, n, soft: 1.5)
     // No gloss, as the leaves have none (`leaf_shade`): an impostor bakes the limbs with them.
-    let sky = sky_at(lt, probes, clouds, s, grounds, b.world, n)
+    let sky = sky_at(lt, b.world, n)
     let lit = Lit { albedo: a, n, sun, sky, through: vec3(0.0) }
-    let c = hazed(
-        air,
-        s,
-        lt.light,
-        light::world(lt.light, lit, b.world, lt.cam.eye),
-        b.world,
-        lt.cam.eye,
-    )
+    let c = shown(lt, lit, b.world)
     vec4(c, view::BARK)
 }
 
@@ -844,21 +807,7 @@ impl Forest {
     /// first: a fragment shader that can (the limbs' and the far instances', with `discard`)
     /// keeps a tile-based GPU from hiding what's behind it, so Apple's GPUs draw those last
     /// (the frame's median 4.94 ms against 5.04).
-    pub fn shade(
-        self,
-        lt: Lighting,
-        wind: Wind,
-        near: DepthTexture,
-        far: DepthTexture,
-        moving: DepthTexture,
-        cmp: ComparisonSampler,
-        clouds: Texture,
-        s: Sampler,
-        probes: Texture,
-        grounds: GpuSpan<f32>,
-        air: Texture3d,
-        ids: Texture,
-    ) {
+    pub fn shade(self, lt: Lighting, wind: Wind, ids: Texture) {
         let cam = lt.cam
         for li in 0..self.lists.len() {
             let l = self.lists[li]
@@ -889,15 +838,6 @@ impl Forest {
                         lt: lt,
                         leaves: k.plant.leaves,
                         atlas: self.atlas,
-                        near: near,
-                        far: far,
-                        moving: moving,
-                        cmp: cmp,
-                        clouds: clouds,
-                        s: s,
-                        probes: probes,
-                        grounds: grounds,
-                        air: air,
                     ),
                     indices: self.card_triangles,
                     indirect: self.args.span(start: li * ARGS, count: 5),
@@ -917,19 +857,7 @@ impl Forest {
                             instances: self.instances(l),
                             marks: self.marks(l),
                         ),
-                        bark_shade.bind(
-                            lt,
-                            k.plant.bark,
-                            near,
-                            far,
-                            moving,
-                            cmp,
-                            clouds,
-                            s,
-                            probes,
-                            grounds,
-                            air,
-                        ),
+                        bark_shade.bind(lt, k.plant.bark),
                         indices: self.limb_triangles,
                         indirect: self.args.span(start: li * ARGS + 5, count: 5),
                         cull: std::gpu::Cull::Back,
@@ -959,15 +887,6 @@ impl Forest {
                         b,
                         colour: k.impostor.colour,
                         normal: k.impostor.normal,
-                        s: s,
-                        near: near,
-                        far: far,
-                        moving: moving,
-                        cmp: cmp,
-                        clouds: clouds,
-                        probes: probes,
-                        grounds: grounds,
-                        air: air,
                     ),
                     vertices: 6,
                     instances: l.count,
@@ -992,15 +911,6 @@ impl Forest {
                         k.volume.volume,
                         grid: k.volume.grid,
                         grid_depth: k.volume.grid_depth,
-                        s: s,
-                        near: near,
-                        far: far,
-                        moving: moving,
-                        cmp: cmp,
-                        clouds: clouds,
-                        probes: probes,
-                        grounds: grounds,
-                        air: air,
                         cell: self.cell,
                     ),
                     vertices: 6,

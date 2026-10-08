@@ -15,7 +15,7 @@
 // the hole the finer level fills, each sharing its edge's vertices, so a pixel the seam's
 // T-junctions leave uncovered on either side sees a skirt, never past the ground.
 
-use light::{Light, Lit, hazed}
+use light::{Light, Lit}
 use noise::noise2
 use sim::Hit
 use std::gpu::{
@@ -632,35 +632,15 @@ pub fn grain(xz: vec2, per_metre: f32) -> f32 {
 /// The ground's pixel: the clipmap's normal and cover at its point, lit by the sun through the
 /// shadows and the clouds' shadows, and by the probes' sky light; through the haze.
 @fragment
-pub fn ground_shade(
-    g: GroundVertex,
-    lt: lit::Lighting,
-    texels: [Texel],
-    near: std::gpu::DepthTexture,
-    far: std::gpu::DepthTexture,
-    moving: std::gpu::DepthTexture,
-    cmp: std::gpu::ComparisonSampler,
-    clouds: std::gpu::Texture,
-    s: std::gpu::Sampler,
-    probes: std::gpu::Texture,
-    grounds: [f32],
-    air: std::gpu::Texture3d,
-) -> vec4 {
+pub fn ground_shade(g: GroundVertex, lt: lit::Lighting, texels: [Texel]) -> vec4 {
     let (n, albedo, _) = ground_at(lt.levels, texels, g.world.xz)
-    let sun = lit::sun_at(lt, g.world, n, near, far, moving, cmp, clouds, s, soft: 2.0)
+    let sun = lit::sun_at(lt, g.world, n, soft: 2.0)
     // The sky's reflection, but no glint of the sun: the ground is covered (grass, and far off
     // trees), whose blades and leaves shade each other's glints where the ground's would show
     // (looking toward the sun, at a grazing angle); a crown's levels, where they meet, showed
     // the glint through their silhouettes' differences (5.2/255 against 3.6, bound 4).
-    let (sky, reflected) = lit::sky_gloss(lt, probes, clouds, s, grounds, g.world, n, lt.cam.eye)
+    let (sky, reflected) = lit::sky_gloss(lt, g.world, n)
     let l = Lit { albedo, n, sun, sky, through: vec3(0.0), rough: 0.9, reflected }
-    let c = hazed(
-        air,
-        s,
-        lt.light,
-        light::world(lt.light, l, g.world, lt.cam.eye),
-        g.world,
-        lt.cam.eye,
-    )
+    let c = lit::shown(lt, l, g.world)
     vec4(c, view::GROUND)
 }

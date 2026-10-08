@@ -861,6 +861,8 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     if !s.probes.done() {
         grid.cols = 0
     }
+    borrow probes = s.probes.maps
+    let grounds = s.probes.grounds.span(start: 0, count: s.probes.grid.probes())
     let lt = Lighting {
         cam,
         light: s.light,
@@ -868,9 +870,16 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         grid,
         clouds,
         levels: s.clipmap.levels(),
+        near: s.near,
+        far: s.far,
+        moving: s.moving,
+        cmp: s.cmp,
+        probes,
+        grounds,
+        cloud: s.sky.shadow,
+        air: s.tables.aerial,
+        s: s.linear,
     }
-    borrow probes = s.probes.maps
-    let grounds = s.probes.grounds.span(start: 0, count: s.probes.grid.probes())
     s.grass.place(
         cam,
         s.light,
@@ -914,21 +923,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     label("vegetation")
     let veg = begin_pass_with_depth(mut s.scene, mut s.depth, clear: vec4(0.0), keep_depth: true)
     if on(s.off, GRASS) {
-        s.grass.shade(
-            lt,
-            wind,
-            GrassLook {},
-            Blooms {},
-            s.near,
-            s.far,
-            s.moving,
-            s.cmp,
-            s.sky.shadow,
-            s.linear,
-            probes,
-            grounds,
-            s.tables.aerial,
-        )
+        s.grass.shade(lt, wind, GrassLook {}, Blooms {})
     }
     for st in s.stones {
         if !on(s.off, testing::STONES) {
@@ -942,18 +937,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
                 seed: st.seed,
                 cam: cam,
             ),
-            stone_shade.bind(
-                lt,
-                s.near,
-                s.far,
-                s.moving,
-                s.cmp,
-                s.sky.shadow,
-                s.linear,
-                probes,
-                grounds,
-                s.tables.aerial,
-            ),
+            stone_shade.bind(lt),
             indices: st.mesh.quads.items(),
             indirect: st.mesh.args.span(start: 0, count: 5),
             cull: Cull::Back,
@@ -961,20 +945,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         )
     }
     if on(s.off, TREES) {
-        s.forest.shade(
-            lt,
-            wind,
-            s.near,
-            s.far,
-            s.moving,
-            s.cmp,
-            s.sky.shadow,
-            s.linear,
-            probes,
-            grounds,
-            s.tables.aerial,
-            s.ids,
-        )
+        s.forest.shade(lt, wind, s.ids)
     }
     veg.end()
     // The terrain, the creature and the sky: one render pass outside the serial timing (the
@@ -986,19 +957,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         for l in 0..lt.levels.count {
             draw(
                 ground.bind(cam, lt.levels, texels),
-                ground_shade.bind(
-                    lt,
-                    texels,
-                    s.near,
-                    s.far,
-                    s.moving,
-                    s.cmp,
-                    s.sky.shadow,
-                    s.linear,
-                    probes,
-                    grounds,
-                    s.tables.aerial,
-                ),
+                ground_shade.bind(lt, texels),
                 indices: s.clipmap.indices(),
                 indirect: s.clipmap.draw_args(l),
                 depth: NEAREST,
@@ -1023,18 +982,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
                 parts: parts_of(fawn().skeleton()),
                 cam: cam,
             ),
-            character_shade.bind(
-                lt,
-                s.near,
-                s.far,
-                s.moving,
-                s.cmp,
-                s.sky.shadow,
-                s.linear,
-                probes,
-                grounds,
-                s.tables.aerial,
-            ),
+            character_shade.bind(lt),
             indices: s.creature.mesh.quads.items(),
             indirect: s.creature.mesh.args.span(start: 0, count: 5),
             cull: Cull::Back,

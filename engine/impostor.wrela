@@ -10,9 +10,9 @@
 // - A volume is the kind's crown as densities on a small grid, from its field; a farther
 //   instance is a quad that marches it.
 
-use light::{Lit, hazed}
+use light::{Lit}
 use lod::{draw_packed, keeps_packed}
-use lit::{Lighting, sky_at, sun_at}
+use lit::{Lighting, shown, sky_at, sun_at}
 use noise::{cell_size, hash2, hashed_threshold_of, rand, surface_draw}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_VERTICES, Leaves, Plant, Wind, leaf_at,
@@ -638,20 +638,11 @@ pub fn far_shade(
     b: Bake,
     colour: Texture,
     normal: Texture,
-    s: Sampler,
-    near: DepthTexture,
-    far: DepthTexture,
-    moving: DepthTexture,
-    cmp: ComparisonSampler,
-    clouds: Texture,
-    probes: Texture,
-    grounds: [f32],
-    air: Texture3d,
 ) -> vec4 {
     if id_at(ids, pixel) != f.id.value {
         discard()
     }
-    let leaf = seen(f, view_of(f, pixel.position.xy), colour, normal, s)
+    let leaf = seen(f, view_of(f, pixel.position.xy), colour, normal, lt.s)
     let (cy, sy) = (cos(f.yaw.value), sin(f.yaw.value))
     let lnn = leaf.normal
     let n = normalize(vec3(cy * lnn.x + sy * lnn.z, lnn.y, -sy * lnn.x + cy * lnn.z))
@@ -659,9 +650,9 @@ pub fn far_shade(
     let albedo = leaf.albedo
     let ao = exp(-depth / 1.6)
     let at = leaf_place(f, lt.cam, b, leaf.toward)
-    let sun = sun_at(lt, at, n, near, far, moving, cmp, clouds, s, soft: 1.5)
+    let sun = sun_at(lt, at, n, soft: 1.5)
     // No gloss, as the cards' leaves have none (`vegetation::leaf_shade`).
-    let sky = sky_at(lt, probes, clouds, s, grounds, at, n) * (0.25 + 0.75 * ao)
+    let sky = sky_at(lt, at, n) * (0.25 + 0.75 * ao)
     let lit = Lit {
         albedo: max(albedo + f.tint * 0.5, vec3(0.005)),
         n,
@@ -669,7 +660,7 @@ pub fn far_shade(
         sky,
         through: b.leaves.through * (0.4 + 0.6 * ao),
     }
-    let out = hazed(air, s, lt.light, light::world(lt.light, lit, at, lt.cam.eye), at, lt.cam.eye)
+    let out = shown(lt, lit, at)
     vec4(out, LEAVES + f32(which_crown(f.centre)))
 }
 
@@ -886,15 +877,6 @@ pub fn volume_shade(
     v: Volume,
     grid: Texture3d,
     grid_depth: Texture3d,
-    s: Sampler,
-    near: DepthTexture,
-    far: DepthTexture,
-    moving: DepthTexture,
-    cmp: ComparisonSampler,
-    clouds: Texture,
-    probes: Texture,
-    grounds: [f32],
-    air: Texture3d,
     cell: f32,
 ) -> vec4 {
     // Its leaves' draws, before anything is left (their derivatives).
@@ -908,7 +890,7 @@ pub fn volume_shade(
     if id_at(ids, pixel) != f.id.value {
         discard()
     }
-    let met = march_volume(f, lt.cam, v, grid, grid_depth, s)
+    let met = march_volume(f, lt.cam, v, grid, grid_depth, lt.s)
     let (cy, sy) = (cos(f.yaw.value), sin(f.yaw.value))
     let world_n = |l: vec3| vec3(cy * l.x + sy * l.z, l.y, -sy * l.x + cy * l.z)
     let crown_n = normalize(world_n(met.normal))
@@ -920,9 +902,9 @@ pub fn volume_shade(
     let albedo = max(mix(v.leaves.old, v.leaves.young, vec3(age)) + f.tint * 0.5, vec3(0.005))
     // Lit where its leaves are, not on the quad (which lies in its own shadow).
     let at = volume_place(f, v, met.at)
-    let sun = sun_at(lt, at, n, near, far, moving, cmp, clouds, s, soft: 1.5)
+    let sun = sun_at(lt, at, n, soft: 1.5)
     // No gloss, as the cards' leaves have none (`vegetation::leaf_shade`).
-    let sky = sky_at(lt, probes, clouds, s, grounds, at, crown_n) * (0.25 + 0.75 * ao)
+    let sky = sky_at(lt, at, crown_n) * (0.25 + 0.75 * ao)
     let lit = Lit {
         albedo,
         n,
@@ -930,7 +912,7 @@ pub fn volume_shade(
         sky,
         through: v.leaves.through * (0.4 + 0.6 * ao),
     }
-    let out = hazed(air, s, lt.light, light::world(lt.light, lit, at, lt.cam.eye), at, lt.cam.eye)
+    let out = shown(lt, lit, at)
     vec4(out, LEAVES + f32(which_crown(f.centre)))
 }
 

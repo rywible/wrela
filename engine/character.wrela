@@ -5,8 +5,8 @@
 // reprojects it by its own motion; and cast into the moving shadow map every frame.
 
 use creature::{PartMask, Parts}
-use light::{Lit, hazed}
-use lit::{Lighting, sky_at, sun_at}
+use light::{Lit}
+use lit::{Lighting, sky_at, sun_at, through_air}
 use probes::Probe
 use realize::{Mesh, SkinVertex, VERTEX_COUNT}
 use render::{Look, skin_matrix}
@@ -117,26 +117,14 @@ pub fn character(
 /// A character's pixel: the cel treatment's bands lit by the sun through the shadows and by the
 /// sky light, through the haze; its tag the character's class and its part.
 @fragment
-pub fn character_shade(
-    c: CharacterVertex,
-    lt: Lighting,
-    near: DepthTexture,
-    far: DepthTexture,
-    moving: DepthTexture,
-    cmp: ComparisonSampler,
-    clouds: Texture,
-    s: Sampler,
-    probes: Texture,
-    grounds: [f32],
-    air: Texture3d,
-) -> vec4 {
+pub fn character_shade(c: CharacterVertex, lt: Lighting) -> vec4 {
     let n = normalize(c.normal)
-    let sun = sun_at(lt, c.world, n, near, far, moving, cmp, clouds, s, soft: 1.0)
-    let sky = sky_at(lt, probes, clouds, s, grounds, c.world, n)
+    let sun = sun_at(lt, c.world, n, soft: 1.0)
+    let sky = sky_at(lt, c.world, n)
     let lit = Lit { albedo: c.albedo, n, sun, sky, through: vec3(0.0) }
-    let open = probes::open_light(probes, vec3(0.0, 1.0, 0.0))
+    let open = probes::open_light(lt.probes, vec3(0.0, 1.0, 0.0))
     let colour = light::character(lt.light, lit, open, c.world, lt.cam.eye)
-    vec4(hazed(air, s, lt.light, colour, c.world, lt.cam.eye), CREATURE + f32(c.part.value % 63))
+    vec4(through_air(lt, colour, c.world), CREATURE + f32(c.part.value % 63))
 }
 
 /// What a character's motion vertex passes on: where its point is now and was last frame.
