@@ -11,7 +11,7 @@
 //   instance is a quad that marches it.
 
 use light::{Lit, hazed}
-use lod::{Lod, anchor, keeps, place, share}
+use lod::{Lod, anchor, draw_at, keeps, place, share}
 use lit::{Lighting, sky_at, sun_at}
 use noise::{cell_size, hash2, hashed_threshold_of, rand, surface_draw}
 use plant::{
@@ -22,8 +22,8 @@ use probes::Probe
 use std::field::Tube
 use std::gpu::{
     ClipPosition, Compare, ComparisonSampler, Depth, DepthTexture, Flat, FragCoord, GlobalId,
-    GpuBuffer, InstanceIndex, Sampler, Slots, Texture, TextureFormat, VertexIndex, WithDepth,
-    begin_pass_with_depth, buffer, depth_texture, discard, dispatch, draw, texture,
+    GpuBuffer, InstanceIndex, Sampler, Slots, Texels, Texture, TextureFormat, VertexIndex,
+    WithDepth, begin_pass_with_depth, buffer, depth_texture, discard, dispatch, draw, texture,
 }
 use std::math::{PI, TAU}
 use terrain::Texel
@@ -481,11 +481,41 @@ fn cell_uv(cell: vec2u, q: vec3) -> vec2 {
     (vec2(cell) + (vec2(dot(q, right), dot(q, up)) * 0.5 + vec2(0.5))) / f32(VIEWS)
 }
 
-/// A far quad's point's place in view `k` of its four, and that view's parallax.
+/// A far quad's point's place in view `k` of its four, and that view's parallax. (Chosen, not
+/// read from an array: an array indexed by a pixel's choice is memory, not registers.)
 fn view_at(f: FarVertex, k: u32) -> (vec2, vec2) {
-    let uvs = [f.views.xy, f.views.zw, f.views2.xy, f.views2.zw]
-    let shifts = [f.shift.value.xy, f.shift.value.zw, f.shift2.value.xy, f.shift2.value.zw]
-    (uvs[k], shifts[k])
+    let s = f.shift.value
+    let s2 = f.shift2.value
+    if k == 0 {
+        return (f.views.xy, s.xy)
+    }
+    if k == 1 {
+        return (f.views.zw, s.zw)
+    }
+    if k == 2 {
+        return (f.views2.xy, s2.xy)
+    }
+    (f.views2.zw, s2.zw)
+}
+
+/// Which of a far quad's four views this pixel shows this frame: picked by their weights, by a
+/// draw anchored on the instance and stepped through its pattern each frame (the share's,
+/// `lod::draw_at`, moved by a few pixels so the two don't line up), so the prepass and the
+/// shading pick the same and temporal AA blends the views as it blends two levels. (Blending
+/// all four in every pixel read four views' texels, in both passes.)
+fn view_of(f: FarVertex, pixel: vec2) -> u32 {
+    let u = draw_at(pixel - f.keep.value.zw + vec2(2.0, 1.0))
+    let w = f.weights.value
+    if u < w.x {
+        return 0
+    }
+    if u < w.x + w.y {
+        return 1
+    }
+    if u < w.x + w.y + w.z {
+        return 2
+    }
+    3
 }
 
 /// What an impostor holds at a far quad's point, its four views round the eye's direction
@@ -524,40 +554,22 @@ fn normal_at(normal: Texture, uv: vec2) -> (vec3, vec2) {
     (n, zw)
 }
 
-fn seen(f: FarVertex, colour: Texture, normal: Texture, s: Sampler) -> Seen {
-    let w = f.weights.value
-    var coverage = 0.0
-    var albedo = vec3(0.0)
-    var ln = vec3(0.0)
-    var depth = 0.0
-    var toward = 0.0
-    var total = 0.0
-    for k in 0..4 {
-        // Where the eye's ray through the quad's point meets what view `k` baked: moved along the
-        // ray by how far toward the view the leaf there was (one step).
-        let (at, shift) = view_at(f, k)
-        let uv = at + shift * (normal.sample_level(s, at).z * 2.0 - 1.0)
-        let c = colour.sample_level(s, uv)
-        let (n, zw) = normal_at(normal, uv)
-        let nd = vec4(0.0, 0.0, zw)
-        coverage += c.a * w[k]
-        let wk = w[k] * c.a
-        // Its albedo where its leaves cover it (the texel's colour is filtered with the empty
-        // texels round it).
-        let own = c.rgb / max(c.a, 1.0e-3)
-        albedo += own * own * wk
-        ln += n * wk
-        depth += nd.w * DEEPEST * wk
-        toward += (nd.z * 2.0 - 1.0) * wk
-        total += wk
-    }
-    let inv = 1.0 / max(total, 1.0e-4)
+fn seen(f: FarVertex, k: u32, colour: Texture, normal: Texture, s: Sampler) -> Seen {
+    // Where the eye's ray through the quad's point meets what view `k` baked: moved along the
+    // ray by how far toward the view the leaf there was (one step).
+    let (at, shift) = view_at(f, k)
+    let uv = at + shift * (normal.sample_level(s, at).z * 2.0 - 1.0)
+    let c = colour.sample_level(s, uv)
+    let (n, zw) = normal_at(normal, uv)
+    // Its albedo where its leaves cover it (the texel's colour is filtered with the empty texels
+    // round it).
+    let own = c.rgb / max(c.a, 1.0e-3)
     Seen {
-        coverage,
-        albedo: albedo * inv,
-        normal: normalize(ln + vec3(0.0, 1.0e-4, 0.0)),
-        depth: depth * inv,
-        toward: toward * inv,
+        coverage: c.a,
+        albedo: own * own,
+        normal: normalize(n + vec3(0.0, 1.0e-4, 0.0)),
+        depth: zw.y * DEEPEST,
+        toward: zw.x * 2.0 - 1.0,
     }
 }
 
@@ -599,28 +611,16 @@ pub fn far_cut(
     if !keeps(f.keep.value, pixel.position.xy) {
         discard()
     }
-    let w = f.weights.value
-    var a = vec4(0.0)
-    for k in 0..4 {
-        let (at, _) = view_at(f, k)
-        a[k] = colour.sample_level(s, at).a * w[k]
-    }
-    let coverage = a.x + a.y + a.z + a.w
-    // Most of the quad is empty: left before its leaves' places are read. The blended coverage
-    // is steepened about its middle: blending softens the views' edges into a wider fringe,
-    // which the tone curve shows brighter than the crisp edge it stands for.
-    let c = smoothstep(0.2, 0.8, coverage)
+    // The view this pixel shows this frame, and its coverage. Most of the quad is empty: left
+    // before its leaf's place is read.
+    let k = view_of(f, pixel.position.xy)
+    let (at, _) = view_at(f, k)
+    let c = colour.sample_level(s, at).a
     if c <= 0.0 || c < 1.0 && c < hashed_threshold_of(f.uv, seed_of(f), size) {
         discard()
     }
-    var toward = 0.0
-    for k in 0..4 {
-        if a[k] > 0.0 {
-            let (at, _) = view_at(f, k)
-            toward += (normal.sample_level(s, at).z * 2.0 - 1.0) * a[k]
-        }
-    }
-    let at = leaf_place(f, cam, b, toward / coverage)
+    let toward = normal.sample_level(s, at).z * 2.0 - 1.0
+    let at = leaf_place(f, cam, b, toward)
     WithDepth { color: id_colour(f.id.value), depth: depth_of(cam, at) }
 }
 
@@ -647,7 +647,7 @@ pub fn far_shade(
     if id_at(ids, pixel) != f.id.value {
         discard()
     }
-    let leaf = seen(f, colour, normal, s)
+    let leaf = seen(f, view_of(f, pixel.position.xy), colour, normal, s)
     let (cy, sy) = (cos(f.yaw.value), sin(f.yaw.value))
     let lnn = leaf.normal
     let n = normalize(vec3(cy * lnn.x + sy * lnn.z, lnn.y, -sy * lnn.x + cy * lnn.z))
@@ -748,31 +748,48 @@ pub fn cook_volume(
     depths[id] = depth
 }
 
-/// A volume's voxels at a point of its box `q` (in [-1, 1]³), between voxels (trilinear): the
-/// density and normal (times the density), and the depth (times the density).
-fn voxels_in(voxels: [vec4], depths: [f32], q: vec3) -> (vec4, f32) {
+/// The volume's slices a row of its textures (`slice_volume`): 6 of 24 × 24, four rows.
+pub const SLICES: u32 = 6
+
+/// A volume's voxels at a point of its box `q` (in [-1, 1]³), between voxels: the density and
+/// normal (times the density), and the depth (times the density). The GPU filters between a
+/// slice's texels, and two slices are blended: four samples, where reading the voxels from a
+/// buffer was sixteen loads.
+fn voxels_in(grid: Texture, grid_depth: Texture, s: Sampler, q: vec3) -> (vec4, f32) {
     let g = (q * 0.5 + vec3(0.5)) * f32(VOXELS) - vec3(0.5)
-    let lim = f32(VOXELS) - 1.001
-    let g2 = clamp(g, vec3(0.0), vec3(lim))
-    let i = floor(g2)
-    let f = g2 - i
-    let v = vec3u(i)
-    var out = vec4(0.0)
-    var depth = 0.0
-    for dz in 0..2 {
-        for dy in 0..2 {
-            for dx in 0..2 {
-                let w = (if dx == 0 { 1.0 - f.x } else { f.x }) * (if dy == 0 { 1.0 - f.y } else {
-                    f.y
-                }) * (if dz == 0 { 1.0 - f.z } else { f.z })
-                let at = v + vec3u(dx, dy, dz)
-                let k = (at.z * VOXELS + at.y) * VOXELS + at.x
-                out += voxels[k] * w
-                depth += depths[k] * w
-            }
-        }
+    // A slice's texels' centres, so its filtering never reaches the next slice's.
+    let g2 = clamp(g, vec3(0.0), vec3(f32(VOXELS) - 1.001))
+    let z0 = floor(g2.z)
+    let fz = g2.z - z0
+    let size = vec2(f32(SLICES * VOXELS), f32(VOXELS / SLICES * VOXELS))
+    let at = |z: u32| {
+        let tile = vec2(f32(z % SLICES), f32(z / SLICES)) * f32(VOXELS)
+        (tile + g2.xy + vec2(0.5)) / size
     }
-    (out, depth)
+    let a0 = at(u32(z0))
+    let a1 = at(min(u32(z0) + 1, VOXELS - 1))
+    let v = mix(grid.sample_level(s, a0), grid.sample_level(s, a1), vec4(fz))
+    let d = mix(grid_depth.sample_level(s, a0).r, grid_depth.sample_level(s, a1).r, fz)
+    (v, d)
+}
+
+/// A volume's voxels as slices side by side in two textures (`SLICES` a row), for the march
+/// to sample: the density and normal (times the density), and the depth (times the density).
+@compute(8, 8)
+pub fn slice_volume(
+    voxels: [vec4],
+    depths: [f32],
+    grid: mut Texels,
+    grid_depth: mut Texels,
+    id: GlobalId,
+) {
+    if id.x >= SLICES * VOXELS || id.y >= VOXELS / SLICES * VOXELS {
+        return
+    }
+    let z = (id.y / VOXELS) * SLICES + id.x / VOXELS
+    let k = (z * VOXELS + id.y % VOXELS) * VOXELS + id.x % VOXELS
+    grid.store(id, voxels[k])
+    grid_depth.store(id, vec4(depths[k], 0.0, 0.0, 0.0))
 }
 
 /// What the ray through a far quad's point meets in its volume: its opacity, and, weighted by
@@ -785,12 +802,19 @@ struct Met {
     at: vec3,
 }
 
-fn march_volume(f: FarVertex, cam: Camera, v: Volume, voxels: [vec4], depths: [f32]) -> Met {
-    let (c, s) = (cos(f.yaw.value), sin(f.yaw.value))
+fn march_volume(
+    f: FarVertex,
+    cam: Camera,
+    v: Volume,
+    grid: Texture,
+    grid_depth: Texture,
+    s: Sampler,
+) -> Met {
+    let (c, sn) = (cos(f.yaw.value), sin(f.yaw.value))
     let scale = length(f.world - f.centre) / max(length(f.uv), 1.0e-4) / v.half
     let to_local = |w: vec3| {
         let q = (w - f.centre) / scale
-        vec3(c * q.x - s * q.z, q.y, s * q.x + c * q.z) + v.mid
+        vec3(c * q.x - sn * q.z, q.y, sn * q.x + c * q.z) + v.mid
     }
     let o = to_local(cam.eye)
     let p = to_local(f.world)
@@ -807,7 +831,7 @@ fn march_volume(f: FarVertex, cam: Camera, v: Volume, voxels: [vec4], depths: [f
     if far <= near {
         return met
     }
-    let steps = 16
+    let steps = 12
     let dt = (far - near) / f32(steps)
     var trans = 1.0
     var normal = vec3(0.0)
@@ -816,7 +840,7 @@ fn march_volume(f: FarVertex, cam: Camera, v: Volume, voxels: [vec4], depths: [f
     var shown = 0.0
     for i in 0..steps {
         let q = o + dir * (near + (f32(i) + 0.5) * dt)
-        let (vx, d) = voxels_in(voxels, depths, (q - v.mid) / v.half)
+        let (vx, d) = voxels_in(grid, grid_depth, s, (q - v.mid) / v.half)
         if vx.x > 1.0e-5 {
             let a = 1.0 - exp(-vx.x * dt)
             let w = trans * a
@@ -825,6 +849,10 @@ fn march_volume(f: FarVertex, cam: Camera, v: Volume, voxels: [vec4], depths: [f
             at += q * w
             shown += w
             trans *= 1.0 - a
+            // Nearly opaque: what's behind barely shows.
+            if trans < 0.03 {
+                break
+            }
         }
     }
     if shown > 1.0e-5 {
@@ -852,15 +880,16 @@ pub fn volume_cut(
     pixel: FragCoord,
     cam: Camera,
     v: Volume,
-    voxels: [vec4],
-    depths: [f32],
+    grid: Texture,
+    grid_depth: Texture,
+    s: Sampler,
     cell: f32,
 ) -> WithDepth {
     let size = cell_size(f.uv, cell)
     if !keeps(f.keep.value, pixel.position.xy) {
         discard()
     }
-    let met = march_volume(f, cam, v, voxels, depths)
+    let met = march_volume(f, cam, v, grid, grid_depth, s)
     let o = met.opacity
     if o <= 0.0 || o < 1.0 && o < hashed_threshold_of(f.uv, seed_of(f), size) {
         discard()
@@ -887,8 +916,8 @@ pub fn volume_shade(
     lt: Lighting,
     ids: Texture,
     v: Volume,
-    voxels: [vec4],
-    depths: [f32],
+    grid: Texture,
+    grid_depth: Texture,
     s: Sampler,
     near: DepthTexture,
     far: DepthTexture,
@@ -910,7 +939,7 @@ pub fn volume_shade(
     if id_at(ids, pixel) != f.id.value {
         discard()
     }
-    let met = march_volume(f, lt.cam, v, voxels, depths)
+    let met = march_volume(f, lt.cam, v, grid, grid_depth, s)
     let (cy, sy) = (cos(f.yaw.value), sin(f.yaw.value))
     let world_n = |l: vec3| vec3(cy * l.x + sy * l.z, l.y, -sy * l.x + cy * l.z)
     let crown_n = normalize(world_n(met.normal))
@@ -935,11 +964,12 @@ pub fn volume_shade(
     vec4(out, LEAVES + f32(u32(hash2(i32(f.centre.x), i32(f.centre.z)) * 60.0)))
 }
 
-/// A kind's volume, cooked: its voxels and their depths.
+/// A kind's volume, cooked: its voxels and their depths, as slices in two textures
+/// (`slice_volume`).
 pub struct Cooked {
     pub volume: Volume,
-    pub voxels: GpuBuffer<vec4>,
-    pub depths: GpuBuffer<f32>,
+    pub grid: Texture,
+    pub grid_depth: Texture,
 }
 
 /// Cooks `plant`'s volume in its impostor's box, from its `n` cards (level 0) and the leaf
@@ -972,5 +1002,22 @@ pub fn cook(
         ),
         groups: (total + 63) / 64,
     )
-    Cooked { volume: v, voxels: take voxels, depths: take depths }
+    let (w, h) = (SLICES * VOXELS, VOXELS / SLICES * VOXELS)
+    var grid = texture(width: w, height: h, format: TextureFormat::Rgba16Float, writable: true)
+    var grid_depth = texture(
+        width: w,
+        height: h,
+        format: TextureFormat::Rgba16Float,
+        writable: true,
+    )
+    dispatch(
+        slice_volume.bind(
+            voxels: voxels.span(start: 0, count: total),
+            depths: depths.span(start: 0, count: total),
+            grid: mut grid,
+            grid_depth: mut grid_depth,
+        ),
+        groups: ((w + 7) / 8, (h + 7) / 8, 1),
+    )
+    Cooked { volume: v, grid: take grid, grid_depth: take grid_depth }
 }
