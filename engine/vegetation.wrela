@@ -8,7 +8,10 @@
 // equal and writes none, so only the nearest leaf at each pixel is shaded, and the shading needs
 // no `discard` (which would turn off the GPU's early depth test).
 
-use impostor::{Cooked, Impostor, bake, cook, far_cut, far_quad, far_shade, volume_cut, volume_shade}
+use impostor::{
+    Cooked, Impostor, bake, cook, far_cut, far_quad, far_shade, volume_cut, volume_shade,
+    which_crown,
+}
 use light::{Light, Lit, hazed}
 use lit::{Lighting, sky_at, sun_at}
 use noise::{cell_size, hash2, hashed_threshold_of, rand}
@@ -489,11 +492,6 @@ pub fn card(
     }
 }
 
-/// Which crown an instance is (for its tag: one of 60).
-fn which_crown(inst: Instance) -> u32 {
-    u32(hash2(i32(inst.at.x * 7.0), i32(inst.at.z * 7.0)) * 60.0)
-}
-
 /// A card's seed for its cut: its pattern (the card's seed's low bits, `plant::leaf_uv`), the
 /// rest mixed with its crown's (`which_crown`), so the same card of two crowns doesn't cut alike.
 fn seed_of(card: Card, crown: u32) -> u32 {
@@ -749,7 +747,7 @@ pub fn card_draw(
 fn mark_of(l: Lod, cam: Camera, inst: Instance, way: u32) -> vec2u {
     let (level, faint) = place(l, cam, inst.at, inst.scale)
     let keep = vec4(share(level, faint, way), anchor(cam, inst.at, l.top, inst.scale))
-    vec2u(packed(keep), which_crown(inst) | (corner_of(inst, l.top * 0.5, cam.eye) << 8))
+    vec2u(packed(keep), which_crown(inst.at) | (corner_of(inst, l.top * 0.5, cam.eye) << 8))
 }
 
 impl Forest {

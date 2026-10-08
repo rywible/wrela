@@ -22,9 +22,9 @@ use probes::Probe
 use std::field::Tube
 use std::gpu::{
     ClipPosition, Compare, ComparisonSampler, Depth, DepthTexture, Flat, FragCoord, GlobalId,
-    GpuBuffer, InstanceIndex, Sampler, Slots, Texels, Texture, Texture3d, TextureFormat,
+    GpuBuffer, InstanceIndex, Sampler, Slots, Texels, Texels3d, Texture, Texture3d, TextureFormat,
     VertexIndex, WithDepth, begin_pass_with_depth, buffer, depth_texture, discard, dispatch, draw,
-    texture,
+    texture, texture3d,
 }
 use std::math::{PI, TAU}
 use terrain::Texel
@@ -34,6 +34,13 @@ use view::{Camera, LEAVES}
 pub const VIEWS: u32 = 16
 pub const CELL: u32 = 64
 pub const ATLAS: u32 = 1024
+
+/// Which crown a tree's is (its tag in the look: one of 60), from where it stands (any point on
+/// its axis): the same for its cards, its impostor and its volume, so its tag stays as its
+/// level changes.
+pub fn which_crown(at: vec3) -> u32 {
+    u32(hash2(i32(at.x * 7.0), i32(at.z * 7.0)) * 60.0)
+}
 
 /// The direction a hemi-octahedral grid's point `g` (each in [0, 1]) looks from (unit, y ≥ 0).
 pub fn hemi_dir(g: vec2) -> vec3 {
@@ -663,7 +670,7 @@ pub fn far_shade(
         through: b.leaves.through * (0.4 + 0.6 * ao),
     }
     let out = hazed(air, s, lt.light, light::world(lt.light, lit, at, lt.cam.eye), at, lt.cam.eye)
-    vec4(out, LEAVES + f32(u32(hash2(i32(f.centre.x), i32(f.centre.z)) * 60.0)))
+    vec4(out, LEAVES + f32(which_crown(f.centre)))
 }
 
 // ---- volumes ------------------------------------------------------------------------------------
@@ -709,21 +716,20 @@ pub fn cook_pattern_cover(
 /// their mean normal (times the density); and their mean depth in the crown (times the
 /// density). A card faces the eye, so its whole leaf area stops a ray: the density is the
 /// extinction.
-@compute(64)
+@compute(4, 4, 4)
 pub fn cook_volume(
     v: Volume,
     cards: [Card],
     n: u32,
     covers: [f32],
-    out: mut Slots<vec4>,
-    depths: mut Slots<f32>,
+    out: mut Texels3d,
+    depths: mut Texels3d,
     id: GlobalId,
 ) {
-    let total = VOXELS * VOXELS * VOXELS
-    if id.x >= total {
+    if id.x >= VOXELS || id.y >= VOXELS || id.z >= VOXELS {
         return
     }
-    let c = vec3u(id.x % VOXELS, (id.x / VOXELS) % VOXELS, id.x / (VOXELS * VOXELS))
+    let c = id.xyz()
     let voxel = 2.0 * v.half / f32(VOXELS)
     let p = v.mid + (vec3(c) + vec3(0.5)) * voxel - vec3(v.half)
     var density = 0.0
@@ -742,52 +748,16 @@ pub fn cook_volume(
             depth += card.depth * w
         }
     }
-    out[id] = vec4(density, normal)
-    depths[id] = depth
+    out.store(id, vec4(density, normal))
+    depths.store(id, vec4(depth, 0.0, 0.0, 0.0))
 }
 
-/// The volume's slices a row of its textures (`slice_volume`): 6 of 24 × 24, four rows.
-pub const SLICES: u32 = 6
-
-/// A volume's voxels at a point of its box `q` (in [-1, 1]³), between voxels: the density and
-/// normal (times the density), and the depth (times the density). The GPU filters between a
-/// slice's texels, and two slices are blended: four samples, where reading the voxels from a
-/// buffer was sixteen loads.
-fn voxels_in(grid: Texture, grid_depth: Texture, s: Sampler, q: vec3) -> (vec4, f32) {
-    let g = (q * 0.5 + vec3(0.5)) * f32(VOXELS) - vec3(0.5)
-    // A slice's texels' centres, so its filtering never reaches the next slice's.
-    let g2 = clamp(g, vec3(0.0), vec3(f32(VOXELS) - 1.001))
-    let z0 = floor(g2.z)
-    let fz = g2.z - z0
-    let size = vec2(f32(SLICES * VOXELS), f32(VOXELS / SLICES * VOXELS))
-    let at = |z: u32| {
-        let tile = vec2(f32(z % SLICES), f32(z / SLICES)) * f32(VOXELS)
-        (tile + g2.xy + vec2(0.5)) / size
-    }
-    let a0 = at(u32(z0))
-    let a1 = at(min(u32(z0) + 1, VOXELS - 1))
-    let v = mix(grid.sample_level(s, a0), grid.sample_level(s, a1), vec4(fz))
-    let d = mix(grid_depth.sample_level(s, a0).r, grid_depth.sample_level(s, a1).r, fz)
-    (v, d)
-}
-
-/// A volume's voxels as slices side by side in two textures (`SLICES` a row), for the march
-/// to sample: the density and normal (times the density), and the depth (times the density).
-@compute(8, 8)
-pub fn slice_volume(
-    voxels: [vec4],
-    depths: [f32],
-    grid: mut Texels,
-    grid_depth: mut Texels,
-    id: GlobalId,
-) {
-    if id.x >= SLICES * VOXELS || id.y >= VOXELS / SLICES * VOXELS {
-        return
-    }
-    let z = (id.y / VOXELS) * SLICES + id.x / VOXELS
-    let k = (z * VOXELS + id.y % VOXELS) * VOXELS + id.x % VOXELS
-    grid.store(id, voxels[k])
-    grid_depth.store(id, vec4(depths[k], 0.0, 0.0, 0.0))
+/// A volume's voxels at a point of its box `q` (in [-1, 1]³), filtered between them by the GPU
+/// (the edge voxels' values beyond them): the density and normal (times the density), and the
+/// depth (times the density).
+fn voxels_in(grid: Texture3d, grid_depth: Texture3d, s: Sampler, q: vec3) -> (vec4, f32) {
+    let uvw = q * 0.5 + vec3(0.5)
+    (grid.sample_level(s, uvw), grid_depth.sample_level(s, uvw).r)
 }
 
 /// What the ray through a far quad's point meets in its volume: its opacity, and, weighted by
@@ -804,8 +774,8 @@ fn march_volume(
     f: FarVertex,
     cam: Camera,
     v: Volume,
-    grid: Texture,
-    grid_depth: Texture,
+    grid: Texture3d,
+    grid_depth: Texture3d,
     s: Sampler,
 ) -> Met {
     let (c, sn) = (cos(f.yaw.value), sin(f.yaw.value))
@@ -878,8 +848,8 @@ pub fn volume_cut(
     pixel: FragCoord,
     cam: Camera,
     v: Volume,
-    grid: Texture,
-    grid_depth: Texture,
+    grid: Texture3d,
+    grid_depth: Texture3d,
     s: Sampler,
     cell: f32,
 ) -> WithDepth {
@@ -914,8 +884,8 @@ pub fn volume_shade(
     lt: Lighting,
     ids: Texture,
     v: Volume,
-    grid: Texture,
-    grid_depth: Texture,
+    grid: Texture3d,
+    grid_depth: Texture3d,
     s: Sampler,
     near: DepthTexture,
     far: DepthTexture,
@@ -961,15 +931,14 @@ pub fn volume_shade(
         through: v.leaves.through * (0.4 + 0.6 * ao),
     }
     let out = hazed(air, s, lt.light, light::world(lt.light, lit, at, lt.cam.eye), at, lt.cam.eye)
-    vec4(out, LEAVES + f32(u32(hash2(i32(f.centre.x), i32(f.centre.z)) * 60.0)))
+    vec4(out, LEAVES + f32(which_crown(f.centre)))
 }
 
-/// A kind's volume, cooked: its voxels and their depths, as slices in two textures
-/// (`slice_volume`).
+/// A kind's volume, cooked: its voxels and their depths, in two 3D textures.
 pub struct Cooked {
     pub volume: Volume,
-    pub grid: Texture,
-    pub grid_depth: Texture,
+    pub grid: Texture3d,
+    pub grid_depth: Texture3d,
 }
 
 /// Cooks `plant`'s volume in its impostor's box, from its `n` cards (level 0) and the leaf
@@ -988,36 +957,19 @@ pub fn cook(
         cook_pattern_cover.bind(atlas, s, per_card: plant.leaves.per_card, out: mut covers),
         groups: 1,
     )
-    let total = VOXELS * VOXELS * VOXELS
-    var voxels: GpuBuffer<vec4> = buffer(total)
-    var depths: GpuBuffer<f32> = buffer(total)
+    var grid = texture3d(VOXELS, VOXELS, VOXELS)
+    var grid_depth = texture3d(VOXELS, VOXELS, VOXELS)
+    let groups = (VOXELS + 3) / 4
     dispatch(
         cook_volume.bind(
             v,
             cards: cards.span(start: 0, count: n),
             n: n,
             covers: covers.span(start: 0, count: LEAF_PATTERNS),
-            out: mut voxels,
-            depths: mut depths,
+            out: mut grid,
+            depths: mut grid_depth,
         ),
-        groups: (total + 63) / 64,
-    )
-    let (w, h) = (SLICES * VOXELS, VOXELS / SLICES * VOXELS)
-    var grid = texture(width: w, height: h, format: TextureFormat::Rgba16Float, writable: true)
-    var grid_depth = texture(
-        width: w,
-        height: h,
-        format: TextureFormat::Rgba16Float,
-        writable: true,
-    )
-    dispatch(
-        slice_volume.bind(
-            voxels: voxels.span(start: 0, count: total),
-            depths: depths.span(start: 0, count: total),
-            grid: mut grid,
-            grid_depth: mut grid_depth,
-        ),
-        groups: ((w + 7) / 8, (h + 7) / 8, 1),
+        groups: (groups, groups, groups),
     )
     Cooked { volume: v, grid: take grid, grid_depth: take grid_depth }
 }

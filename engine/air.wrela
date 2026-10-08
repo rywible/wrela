@@ -189,11 +189,29 @@ pub fn transmittance(t: Texture, s: Sampler, r: f32, mu: f32) -> vec3 {
     t.sample_level(s, transmittance_uv(r, mu)).rgb
 }
 
+/// How far inside the ground and the top (km) the multiple scattering table's radii stay, so a
+/// march from each still has a step to take.
+const MULTIPLE_INSET: f32 = 0.005
+
+/// Where the multiple scattering table holds radius `r` and the cosine `mu_s` of the sun's
+/// angle from the zenith.
+pub fn multiple_uv(r: f32, mu_s: f32) -> vec2 {
+    let h = (r - BOTTOM - MULTIPLE_INSET) / (TOP - BOTTOM - 2.0 * MULTIPLE_INSET)
+    vec2(to_texels(mu_s * 0.5 + 0.5, MULTIPLE_SIDE), to_texels(h, MULTIPLE_SIDE))
+}
+
+/// The radius and the sun's cosine the multiple scattering table holds at texel coordinate
+/// `uv`.
+fn multiple_r_mu_s(uv: vec2) -> (f32, f32) {
+    let h = saturate(from_texels(uv.y, MULTIPLE_SIDE))
+    let r = BOTTOM + MULTIPLE_INSET + h * (TOP - BOTTOM - 2.0 * MULTIPLE_INSET)
+    (r, from_texels(uv.x, MULTIPLE_SIDE) * 2.0 - 1.0)
+}
+
 /// The light scattered twice and more at radius `r`, the sun `mu_s` from the zenith, per unit
 /// of scattering, from the table.
 pub fn multiple(m: Texture, s: Sampler, r: f32, mu_s: f32) -> vec3 {
-    let uv = vec2(mu_s * 0.5 + 0.5, (r - BOTTOM) / (TOP - BOTTOM))
-    m.sample_level(s, vec2(to_texels(uv.x, MULTIPLE_SIDE), to_texels(uv.y, MULTIPLE_SIDE))).rgb
+    m.sample_level(s, multiple_uv(r, mu_s)).rgb
 }
 
 /// Where the sky's table holds the direction whose cosine from the zenith is `mu` and whose
@@ -258,6 +276,15 @@ pub fn aerial_uvw(sun: vec3, dir: vec3, d: f32) -> vec3 {
     let v = 0.5 + 0.5 * sign(y) * sqrt(abs(y))
     let w = sqrt(saturate(d / AERIAL_REACH))
     vec3(to_texels(u, AERIAL_W), to_texels(v, AERIAL_H), to_texels(w, AERIAL_D))
+}
+
+/// The cosines from the zenith and from the sun's azimuth, and the distance (km), that the
+/// aerial perspective's table holds at texel coordinate `uvw`.
+fn aerial_mu_c_d(uvw: vec3) -> (f32, f32, f32) {
+    let u = from_texels(uvw.x, AERIAL_W)
+    let k = 2.0 * from_texels(uvw.y, AERIAL_H) - 1.0
+    let w = from_texels(uvw.z, AERIAL_D)
+    (sign(k) * k * k, 1.0 - 2.0 * u * u, w * w * AERIAL_REACH)
 }
 
 // ---- marching ---------------------------------------------------------------------------------
@@ -394,9 +421,7 @@ pub fn cook_multiple(air: Air, trans: Texture, s: Sampler, out: mut Texels, id: 
     if id.x >= MULTIPLE_SIDE || id.y >= MULTIPLE_SIDE {
         return
     }
-    let uv = (vec2(f32(id.x), f32(id.y)) + vec2(0.5)) / f32(MULTIPLE_SIDE)
-    let mu_s = from_texels(uv.x, MULTIPLE_SIDE) * 2.0 - 1.0
-    let r = BOTTOM + saturate(from_texels(uv.y, MULTIPLE_SIDE)) * (TOP - BOTTOM - 0.01) + 0.005
+    let (r, mu_s) = multiple_r_mu_s((vec2(f32(id.x), f32(id.y)) + vec2(0.5)) / f32(MULTIPLE_SIDE))
     let o = vec3(0.0, r, 0.0)
     let sun = local_sun(mu_s)
     var light = vec3(0.0)
@@ -452,13 +477,8 @@ pub fn cook_aerial(
     if id.x >= AERIAL_W || id.y >= AERIAL_H || id.z >= AERIAL_D {
         return
     }
-    let u = from_texels((f32(id.x) + 0.5) / f32(AERIAL_W), AERIAL_W)
-    let v = from_texels((f32(id.y) + 0.5) / f32(AERIAL_H), AERIAL_H)
-    let w = from_texels((f32(id.z) + 0.5) / f32(AERIAL_D), AERIAL_D)
-    let c = 1.0 - 2.0 * u * u
-    let k = 2.0 * v - 1.0
-    let mu = sign(k) * k * k
-    let d = w * w * AERIAL_REACH
+    let at = vec3(f32(id.x), f32(id.y), f32(id.z)) + vec3(0.5)
+    let (mu, c, d) = aerial_mu_c_d(at / vec3(f32(AERIAL_W), f32(AERIAL_H), f32(AERIAL_D)))
     let o = vec3(0.0, radius_of(air.eye), 0.0)
     let sun = local_sun(air.sun.y)
     let marched = march(air, trans, m, s, o, local_dir(mu, c), sun, d, 32, isotropic: false)
@@ -507,6 +527,73 @@ impl Tables {
         dispatch(
             cook_aerial.bind(air, self.transmittance, self.multiple, s, out: mut self.aerial),
             groups: ((AERIAL_W + 3) / 4, (AERIAL_H + 3) / 4, (AERIAL_D + 3) / 4),
+        )
+    }
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+/// How far (in texels) `back` is from `uv`, in a table of `w` × `h` texels.
+fn texels_apart(uv: vec2, back: vec2, w: u32, h: u32) -> f32 {
+    max(abs(uv.x - back.x) * f32(w), abs(uv.y - back.y) * f32(h))
+}
+
+/// Each table's reader finds each texel where its cook wrote it: the coordinates a cook gives
+/// a texel's centre map back to that centre, within a thousandth of a texel (the multiple
+/// scattering table's reader had drifted 5 m over its 100 km, 0.0016 of a texel); the
+/// transmittance table's within a hundredth (its radii near the ground lose f32's precision in
+/// `r * r - BOTTOM * BOTTOM`).
+@test
+fn each_tables_reader_finds_its_cooks_texels() {
+    var worst = [0.0; 4]
+    for j in 0..TRANSMITTANCE_H {
+        for i in 0..TRANSMITTANCE_W {
+            let uv = (vec2(f32(i), f32(j)) + vec2(0.5)) /
+                vec2(f32(TRANSMITTANCE_W), f32(TRANSMITTANCE_H))
+            let (r, mu) = transmittance_r_mu(uv)
+            let back = transmittance_uv(r, mu)
+            worst[0] = max(worst[0], texels_apart(uv, back, TRANSMITTANCE_W, TRANSMITTANCE_H))
+        }
+    }
+    for j in 0..MULTIPLE_SIDE {
+        for i in 0..MULTIPLE_SIDE {
+            let uv = (vec2(f32(i), f32(j)) + vec2(0.5)) / f32(MULTIPLE_SIDE)
+            let (r, mu_s) = multiple_r_mu_s(uv)
+            worst[1] = max(
+                worst[1],
+                texels_apart(uv, multiple_uv(r, mu_s), MULTIPLE_SIDE, MULTIPLE_SIDE),
+            )
+        }
+    }
+    let r = radius_of(10.0)
+    for j in 0..VIEW_H {
+        for i in 0..VIEW_W {
+            let uv = (vec2(f32(i), f32(j)) + vec2(0.5)) / vec2(f32(VIEW_W), f32(VIEW_H))
+            let (mu, c) = view_mu_c(r, uv)
+            worst[2] = max(worst[2], texels_apart(uv, view_uv(r, mu, c), VIEW_W, VIEW_H))
+        }
+    }
+    let sun = local_sun(0.4)
+    for k in 0..AERIAL_D {
+        for j in 0..AERIAL_H {
+            for i in 0..AERIAL_W {
+                let n = vec3(f32(AERIAL_W), f32(AERIAL_H), f32(AERIAL_D))
+                let uvw = (vec3(f32(i), f32(j), f32(k)) + vec3(0.5)) / n
+                let (mu, c, d) = aerial_mu_c_d(uvw)
+                let back = aerial_uvw(sun, local_dir(mu, c), d)
+                let apart = abs(uvw - back) * n
+                // Straight up or down, every azimuth is the same direction.
+                let azimuth = if abs(mu) > 0.9999 { 0.0 } else { apart.x }
+                worst[3] = max(worst[3], max(azimuth, max(apart.y, apart.z)))
+            }
+        }
+    }
+    let names = ["transmittance", "multiple scattering", "sky", "aerial perspective"]
+    let bounds = [0.01, 0.001, 0.001, 0.001]
+    for t in 0..4 {
+        assert(
+            worst[t] < bounds[t],
+            f"the {names[t]} table's reader is {worst[t]} texels from its cook",
         )
     }
 }
