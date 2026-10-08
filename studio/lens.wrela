@@ -23,7 +23,7 @@ use std::collections::Vec
 use std::derive::Box3
 use std::field::{Lipschitz, PartName, Surface}
 use std::gpu::{
-    AppendBuffer, GpuBuffer, Texture, append_buffer, begin_pass, begin_screen_pass, buffer,
+    AppendBuffer, GpuBuffer, Rgba8, Texture, append_buffer, begin_pass, begin_screen_pass, buffer,
     dispatch, draw, present, texture,
 }
 use std::input::{Button, Event, Key, events}
@@ -72,7 +72,7 @@ pub struct Lens {
     /// only when what they show changed (`dirty`), their size, or a literal's value. The
     /// diagnosis's grid of the field (sampled again when a literal changes) guides the views'
     /// rays.
-    pub canvas: Option<Texture>,
+    pub canvas: Option<Texture<Rgba8>>,
     pub drawn: Vec<f32>,
     pub dirty: bool,
     pub coarse: GpuBuffer<f32>,
@@ -1508,7 +1508,7 @@ fn draw_views<S: Colours>(lens: mut Lens, subject: fn() -> S) {
         }
         fit::trace_minima(field, fv, mut lens.mask_rays, mut lens.mask_other)
         if !sized {
-            lens.canvas = Some(texture(width, height))
+            lens.canvas = Some(texture::<Rgba8>(width: width, height: height))
         }
         match mut lens.canvas {
             Some(c) => {
@@ -1550,7 +1550,7 @@ fn draw_views<S: Colours>(lens: mut Lens, subject: fn() -> S) {
     }
     let count = width * height
     if !sized {
-        lens.canvas = Some(texture(width, height))
+        lens.canvas = Some(texture::<Rgba8>(width: width, height: height))
         lens.rays = buffer(count)
         lens.rays_next = buffer(count)
         lens.corners = buffer(4 * count)

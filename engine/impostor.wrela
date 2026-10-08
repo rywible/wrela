@@ -22,9 +22,9 @@ use probes::Probe
 use std::field::Tube
 use std::gpu::{
     ClipPosition, Compare, ComparisonSampler, Depth, DepthTexture, Flat, FragCoord, GlobalId,
-    GpuBuffer, InstanceIndex, Sampler, Slots, Texels, Texels3d, Texture, Texture3d, TextureFormat,
-    VertexIndex, WithDepth, begin_pass_with_depth, buffer, depth_texture, discard, dispatch, draw,
-    texture, texture3d,
+    GpuBuffer, InstanceIndex, Rgba16Float, Rgba8, Sampler, Slots, Texels, Texels3d, Texture,
+    Texture3d, VertexIndex, WithDepth, begin_pass_with_depth, buffer, depth_texture, discard,
+    dispatch, draw, texture, texture3d,
 }
 use std::math::{PI, TAU}
 use terrain::Texel
@@ -194,7 +194,7 @@ fn oct_decode(e: vec2) -> vec3 {
 
 /// A baked leaf's light, as `vegetation::leaf_shade` has it: its leaf's own tilt off the crown's
 /// normal and its own age; cut where the card has no leaf.
-fn baked_leaf(f: BakeVertex, b: Bake, atlas: Texture, s: Sampler) -> (vec3, vec3) {
+fn baked_leaf(f: BakeVertex, b: Bake, atlas: Texture<Rgba8>, s: Sampler) -> (vec3, vec3) {
     if f.leaf.value != 1 {
         return (normalize(f.normal), f.albedo)
     }
@@ -218,7 +218,13 @@ fn baked_leaf(f: BakeVertex, b: Bake, atlas: Texture, s: Sampler) -> (vec3, vec3
 /// The impostor's colour: each view's leaves' (and limbs') albedo (its square root), and the
 /// coverage in alpha.
 @fragment
-pub fn bake_colour(f: BakeVertex, pixel: FragCoord, b: Bake, atlas: Texture, s: Sampler) -> vec4 {
+pub fn bake_colour(
+    f: BakeVertex,
+    pixel: FragCoord,
+    b: Bake,
+    atlas: Texture<Rgba8>,
+    s: Sampler,
+) -> vec4 {
     if outside_cell(pixel.position.xy, f.view.value) {
         discard()
     }
@@ -230,7 +236,13 @@ pub fn bake_colour(f: BakeVertex, pixel: FragCoord, b: Bake, atlas: Texture, s: 
 /// it is (from 0 at the back of the box to 1 at its front), and its depth in the crown (m, over
 /// `DEEPEST`).
 @fragment
-pub fn bake_normal(f: BakeVertex, pixel: FragCoord, b: Bake, atlas: Texture, s: Sampler) -> vec4 {
+pub fn bake_normal(
+    f: BakeVertex,
+    pixel: FragCoord,
+    b: Bake,
+    atlas: Texture<Rgba8>,
+    s: Sampler,
+) -> vec4 {
     if outside_cell(pixel.position.xy, f.view.value) {
         discard()
     }
@@ -240,8 +252,8 @@ pub fn bake_normal(f: BakeVertex, pixel: FragCoord, b: Bake, atlas: Texture, s: 
 
 /// A kind's impostor: its two atlases, and how it was baked.
 pub struct Impostor {
-    pub colour: Texture,
-    pub normal: Texture,
+    pub colour: Texture<Rgba8>,
+    pub normal: Texture<Rgba16Float>,
     pub bake: Bake,
     /// Each view's bounds: the box round what it covers, in its cell's quad coordinates (each
     /// in [-1, 1]: low x, low y, high x, high y).
@@ -251,7 +263,7 @@ pub struct Impostor {
 /// View `id`'s bounds (`Impostor::bounds`), from its cell of the colour atlas's coverage: a
 /// texel past what it covers each way.
 @compute(64)
-pub fn view_bounds(colour: Texture, out: mut Slots<vec4>, id: GlobalId) {
+pub fn view_bounds(colour: Texture<Rgba8>, out: mut Slots<vec4>, id: GlobalId) {
     if id.x >= VIEWS * VIEWS {
         return
     }
@@ -289,7 +301,7 @@ pub fn bake(
     n: u32,
     limbs: GpuBuffer<Tube<4>>,
     limb_count: u32,
-    atlas: Texture,
+    atlas: Texture<Rgba8>,
     s: Sampler,
 ) -> Impostor {
     let top = plant.top()
@@ -298,8 +310,8 @@ pub fn bake(
     // surface (to its corner, the largest a card is, turned any way).
     let half = plant.reach() + plant.leaves.size * 1.2 * f32(1 << BAKED) * 0.5 * 1.415
     let b = Bake { mid, half, leaves: plant.leaves, bark: plant.bark }
-    var colour = texture(width: ATLAS, height: ATLAS, format: TextureFormat::Rgba8)
-    var normal = texture(width: ATLAS, height: ATLAS, format: TextureFormat::Rgba16Float)
+    var colour = texture::<Rgba8>(width: ATLAS, height: ATLAS)
+    var normal = texture::<Rgba16Float>(width: ATLAS, height: ATLAS)
     var depth = depth_texture(width: ATLAS, height: ATLAS)
     let views = VIEWS * VIEWS
     let level = level_cards(n, BAKED)
@@ -453,7 +465,7 @@ fn id_colour(id: u32) -> vec4 {
     vec4(f32(id & 255), f32((id >> 8) & 255), f32((id >> 16) & 255), 0.0) / 255.0
 }
 
-fn id_at(ids: Texture, pixel: FragCoord) -> u32 {
+fn id_at(ids: Texture<Rgba8>, pixel: FragCoord) -> u32 {
     let c = ids.load(x: u32(pixel.position.x), y: u32(pixel.position.y))
     u32(c.r * 255.0 + 0.5) | (u32(c.g * 255.0 + 0.5) << 8) | (u32(c.b * 255.0 + 0.5) << 16)
 }
@@ -535,7 +547,7 @@ struct Seen {
 /// The impostor's normal texture at `uv`, between its texels: each texel's normal unfolded
 /// first (folded normals don't blend: between two that fold to either side, the blend is
 /// neither), and its place and depth blended.
-fn normal_at(normal: Texture, uv: vec2) -> (vec3, vec2) {
+fn normal_at(normal: Texture<Rgba16Float>, uv: vec2) -> (vec3, vec2) {
     let size = vec2(f32(normal.width()), f32(normal.height()))
     let g = uv * size - vec2(0.5)
     let i = floor(g)
@@ -557,7 +569,13 @@ fn normal_at(normal: Texture, uv: vec2) -> (vec3, vec2) {
     (n, zw)
 }
 
-fn seen(f: FarVertex, k: u32, colour: Texture, normal: Texture, s: Sampler) -> Seen {
+fn seen(
+    f: FarVertex,
+    k: u32,
+    colour: Texture<Rgba8>,
+    normal: Texture<Rgba16Float>,
+    s: Sampler,
+) -> Seen {
     // Where the eye's ray through the quad's point meets what view `k` baked: moved along the
     // ray by how far toward the view the leaf there was (one step).
     let (at, shift) = view_at(f, k)
@@ -603,8 +621,8 @@ pub fn far_cut(
     pixel: FragCoord,
     cam: Camera,
     b: Bake,
-    colour: Texture,
-    normal: Texture,
+    colour: Texture<Rgba8>,
+    normal: Texture<Rgba16Float>,
     s: Sampler,
     cell: f32,
 ) -> WithDepth {
@@ -634,10 +652,10 @@ pub fn far_shade(
     f: FarVertex,
     pixel: FragCoord,
     lt: Lighting,
-    ids: Texture,
+    ids: Texture<Rgba8>,
     b: Bake,
-    colour: Texture,
-    normal: Texture,
+    colour: Texture<Rgba8>,
+    normal: Texture<Rgba16Float>,
 ) -> vec4 {
     if id_at(ids, pixel) != f.id.value {
         discard()
@@ -679,7 +697,7 @@ pub struct Volume: Copy + GpuData {
 /// Each leaf pattern's share of its card that its first `per_card` leaves cover (64 samples).
 @compute(16)
 pub fn cook_pattern_cover(
-    atlas: Texture,
+    atlas: Texture<Rgba8>,
     s: Sampler,
     per_card: u32,
     out: mut Slots<f32>,
@@ -713,8 +731,8 @@ pub fn cook_volume(
     cards: [Card],
     n: u32,
     covers: [f32],
-    out: mut Texels3d,
-    depths: mut Texels3d,
+    out: mut Texels3d<Rgba16Float>,
+    depths: mut Texels3d<Rgba16Float>,
     id: GlobalId,
 ) {
     if id.x >= VOXELS || id.y >= VOXELS || id.z >= VOXELS {
@@ -746,7 +764,12 @@ pub fn cook_volume(
 /// A volume's voxels at a point of its box `q` (in [-1, 1]³), filtered between them by the GPU
 /// (the edge voxels' values beyond them): the density and normal (times the density), and the
 /// depth (times the density).
-fn voxels_in(grid: Texture3d, grid_depth: Texture3d, s: Sampler, q: vec3) -> (vec4, f32) {
+fn voxels_in(
+    grid: Texture3d<Rgba16Float>,
+    grid_depth: Texture3d<Rgba16Float>,
+    s: Sampler,
+    q: vec3,
+) -> (vec4, f32) {
     let uvw = q * 0.5 + vec3(0.5)
     (grid.sample_level(s, uvw), grid_depth.sample_level(s, uvw).r)
 }
@@ -765,8 +788,8 @@ fn march_volume(
     f: FarVertex,
     cam: Camera,
     v: Volume,
-    grid: Texture3d,
-    grid_depth: Texture3d,
+    grid: Texture3d<Rgba16Float>,
+    grid_depth: Texture3d<Rgba16Float>,
     s: Sampler,
 ) -> Met {
     let (c, sn) = (cos(f.yaw.value), sin(f.yaw.value))
@@ -839,8 +862,8 @@ pub fn volume_cut(
     pixel: FragCoord,
     cam: Camera,
     v: Volume,
-    grid: Texture3d,
-    grid_depth: Texture3d,
+    grid: Texture3d<Rgba16Float>,
+    grid_depth: Texture3d<Rgba16Float>,
     s: Sampler,
     cell: f32,
 ) -> WithDepth {
@@ -873,10 +896,10 @@ pub fn volume_shade(
     f: FarVertex,
     pixel: FragCoord,
     lt: Lighting,
-    ids: Texture,
+    ids: Texture<Rgba8>,
     v: Volume,
-    grid: Texture3d,
-    grid_depth: Texture3d,
+    grid: Texture3d<Rgba16Float>,
+    grid_depth: Texture3d<Rgba16Float>,
     cell: f32,
 ) -> vec4 {
     // Its leaves' draws, before anything is left (their derivatives).
@@ -919,8 +942,8 @@ pub fn volume_shade(
 /// A kind's volume, cooked: its voxels and their depths, in two 3D textures.
 pub struct Cooked {
     pub volume: Volume,
-    pub grid: Texture3d,
-    pub grid_depth: Texture3d,
+    pub grid: Texture3d<Rgba16Float>,
+    pub grid_depth: Texture3d<Rgba16Float>,
 }
 
 /// Cooks `plant`'s volume in its impostor's box, from its `n` cards (level 0) and the leaf
@@ -930,7 +953,7 @@ pub fn cook(
     b: Bake,
     cards: GpuBuffer<Card>,
     n: u32,
-    atlas: Texture,
+    atlas: Texture<Rgba8>,
     s: Sampler,
 ) -> Cooked {
     let v = Volume { mid: b.mid, half: b.half, leaves: plant.leaves }
@@ -939,8 +962,8 @@ pub fn cook(
         cook_pattern_cover.bind(atlas, s, per_card: plant.leaves.per_card, out: mut covers),
         groups: 1,
     )
-    var grid = texture3d(VOXELS, VOXELS, VOXELS)
-    var grid_depth = texture3d(VOXELS, VOXELS, VOXELS)
+    var grid = texture3d::<Rgba16Float>(VOXELS, VOXELS, VOXELS)
+    var grid_depth = texture3d::<Rgba16Float>(VOXELS, VOXELS, VOXELS)
     let groups = (VOXELS + 3) / 4
     dispatch(
         cook_volume.bind(

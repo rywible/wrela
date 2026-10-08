@@ -16,7 +16,10 @@
 
 use light::{Light, tone}
 use noise::{hash2, noise3}
-use std::gpu::{DepthTexture, FragCoord, GlobalId, LocalId, Sampler, Shared, Slots, Texture, barrier}
+use std::gpu::{
+    DepthTexture, FragCoord, GlobalId, LocalId, Rgba16Float, Sampler, Shared, Slots, Texture,
+    barrier,
+}
 use terrain::{Levels, Texel, ground_at, height_at}
 use view::{CREATURE, Camera, FLOWER, GRASS, GROUND, class_of, jitter_of}
 
@@ -97,7 +100,7 @@ fn tooth(world: vec3, footprint: f32) -> f32 {
 @fragment
 pub fn glow_down(
     pixel: FragCoord,
-    image: Texture,
+    image: Texture<Rgba16Float>,
     s: Sampler,
     threshold: f32,
     base: f32,
@@ -119,7 +122,7 @@ pub fn glow_down(
 
 /// A 13-tap Gaussian blur along x (`across` 0) or y (1), `spread` texels a tap.
 @fragment
-pub fn glow_blur(pixel: FragCoord, src: Texture, across: u32, spread: f32) -> vec4 {
+pub fn glow_blur(pixel: FragCoord, src: Texture<Rgba16Float>, across: u32, spread: f32) -> vec4 {
     let p = vec2i(pixel.position.xy)
     let w = [0.1964, 0.1748, 0.1232, 0.0687, 0.0303, 0.0106, 0.0029]
     let (wi, hi) = (i32(src.width()) - 1, i32(src.height()) - 1)
@@ -157,7 +160,7 @@ pub struct Metering: Copy + GpuData {
 /// each invocation four of the grid's pixels, then their logs summed in workgroup memory.
 @compute(256)
 pub fn meter(
-    scene: Texture,
+    scene: Texture<Rgba16Float>,
     m: Metering,
     sums: mut Shared<f32, 256>,
     exposure: mut Slots<f32>,
@@ -227,7 +230,7 @@ fn world_at(cam: Camera, q: vec2, z: f32) -> (vec3, vec3) {
 /// front of another).
 fn line(
     d: Develop,
-    image: Texture,
+    image: Texture<Rgba16Float>,
     depth: DepthTexture,
     p: vec2,
     here_tag: f32,
@@ -275,7 +278,7 @@ pub fn dab_map(
     out: vec2,
     levels: Levels,
     texels: [Texel],
-    scene: Texture,
+    scene: Texture<Rgba16Float>,
     depth: DepthTexture,
 ) -> vec4 {
     // The scene's pixel, at its unjittered centre: each texel holds the dab of the same point
@@ -372,10 +375,10 @@ pub fn dab_map(
 pub fn develop(
     pixel: FragCoord,
     d: Develop,
-    image: Texture,
+    image: Texture<Rgba16Float>,
     depth: DepthTexture,
-    glow: Texture,
-    dabs: Texture,
+    glow: Texture<Rgba16Float>,
+    dabs: Texture<Rgba16Float>,
     s: Sampler,
     exposure: [f32],
 ) -> vec4 {

@@ -17,7 +17,7 @@
 use noise::{direction, hash2, pick, rand}
 use std::field::{Lipschitz, PartName, Surface, Tube, unnamed}
 use std::gpu::{
-    ClipPosition, FragCoord, GlobalId, Oct32, Sampler, Slots, Texture, TextureFormat, Unorm8x4,
+    ClipPosition, FragCoord, GlobalId, Oct32, Rgba16Float, Rgba8, Sampler, Slots, Texture, Unorm8x4,
     VertexIndex, begin_pass, draw, texture,
 }
 use std::math::{PI, TAU}
@@ -582,7 +582,7 @@ pub fn leaf_uv(seed: u32, uv: vec2) -> vec2 {
 }
 
 /// The card of seed `seed` at `uv`, from the atlas: its coverage, and which leaf covers it.
-pub fn leaf_at(atlas: Texture, s: Sampler, seed: u32, uv: vec2) -> (f32, u32) {
+pub fn leaf_at(atlas: Texture<Rgba8>, s: Sampler, seed: u32, uv: vec2) -> (f32, u32) {
     let t = atlas.sample_level(s, leaf_uv(seed, uv))
     (t.r, u32(t.g * 8.0))
 }
@@ -598,7 +598,7 @@ pub const OUTLINE: u32 = 4
 /// the prepass 0.71 ms, 0.63, the cards' shading 0.65, 0.58. More corners hold the leaves
 /// closer but cost more than they save (an octagon's six triangles: 0.75, 0.70).
 @compute(64)
-pub fn cook_outlines(atlas: Texture, out: mut Slots<vec2>, id: GlobalId) {
+pub fn cook_outlines(atlas: Texture<Rgba8>, out: mut Slots<vec2>, id: GlobalId) {
     if id.x >= LEAF_PATTERNS * OUTLINE {
         return
     }
@@ -647,8 +647,8 @@ pub fn cook_outlines(atlas: Texture, out: mut Slots<vec2>, id: GlobalId) {
 }
 
 /// The leaf atlas of `n` leaves a card, cooked.
-pub fn leaf_atlas(n: u32) -> Texture {
-    var atlas = texture(width: LEAF_ATLAS, height: LEAF_ATLAS, format: TextureFormat::Rgba8)
+pub fn leaf_atlas(n: u32) -> Texture<Rgba8> {
+    var atlas = texture::<Rgba8>(width: LEAF_ATLAS, height: LEAF_ATLAS)
     let p = begin_pass(mut atlas)
     draw(full.bind(z: 0.5), cook_leaves.bind(n), vertices: 3)
     p.end()

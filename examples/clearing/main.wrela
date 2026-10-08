@@ -31,9 +31,10 @@ use std::collections::{replace, swap}
 use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, start_eye}
 use std::gpu::{
     Address, ClipPosition, Compare, ComparisonSampler, Cull, Depth, DepthBias, DepthTexture,
-    FragCoord, GpuBuffer, GpuSpan, Sampler, Texture, Unorm8x4, TextureFormat, VertexIndex,
+    FragCoord, GpuBuffer, GpuSpan, Rgba16Float, Rgba8, Sampler, Texture, Unorm8x4, VertexIndex,
     begin_depth_pass, begin_pass, begin_pass_with_depth, begin_screen_pass, buffer,
-    comparison_sampler, depth_texture, draw, label, present, sampler, texture, write,
+    comparison_sampler, depth_texture, draw, label, present, sampler, texture, writable_texture,
+    write,
 }
 use std::input::{Event, Key, events}
 use std::io::print
@@ -156,7 +157,7 @@ fn ground_source() -> f32 {
 }
 
 /// The forest: each kind's plant (trees.wrela) cooked, and where the trees stand.
-fn forest_of(atlas: Texture, linear: Sampler) -> Forest {
+fn forest_of(atlas: Texture<Rgba8>, linear: Sampler) -> Forest {
     var kinds: Vec<Kind> = Vec::new()
     for k in 0..KINDS {
         kinds.push(kind(kind_plant(k), seed: k + 1, atlas: atlas, s: linear))
@@ -240,7 +241,7 @@ pub struct Clearing {
     next_cooked: bool,
     rebaking: bool,
     /// The leaves' atlas, which the forest's kinds are cooked with.
-    atlas: Texture,
+    atlas: Texture<Rgba8>,
     /// What's cooked from literals (hot reload), and whether this build took over from another:
     /// it shows nothing until it's cooked everything, so the screen keeps the old build's frame.
     watches: Watches,
@@ -257,22 +258,22 @@ pub struct Clearing {
     /// The clouds as the last frame drew them (where their field had drifted).
     clouds: Clouds,
     /// The scene: linear colour and tags, depth, motion; and the output's history, two to swap.
-    scene: Texture,
+    scene: Texture<Rgba16Float>,
     depth: DepthTexture,
     /// Which far tree won each pixel of the prepass (`impostor::far_cut`).
-    ids: Texture,
-    motion: Texture,
+    ids: Texture<Rgba8>,
+    motion: Texture<Rgba16Float>,
     /// Each scene pixel's neighbourhood, for temporal AA: its 3 × 3 samples' mean and spread
     /// (`temporal::neighbourhoods`).
-    means: Texture,
-    spreads: Texture,
-    history_a: Texture,
-    history_b: Texture,
+    means: Texture<Rgba16Float>,
+    spreads: Texture<Rgba16Float>,
+    history_a: Texture<Rgba16Float>,
+    history_b: Texture<Rgba16Float>,
     /// The dabs and tooth, at the scene's size.
-    dabs: Texture,
+    dabs: Texture<Rgba16Float>,
     /// The glow's chain, at a quarter of the output's size.
-    glow_a: Texture,
-    glow_b: Texture,
+    glow_a: Texture<Rgba16Float>,
+    glow_b: Texture<Rgba16Float>,
     /// The metered exposure, and the scene's mean luminance (`paint::meter`).
     exposure: GpuBuffer<f32>,
     linear: Sampler,
@@ -399,17 +400,17 @@ pub fn init() -> Clearing {
             drift: vec2(0.0),
             seed: 0,
         },
-        scene: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
+        scene: texture::<Rgba16Float>(width: 1, height: 1),
         depth: depth_texture(width: 1, height: 1),
-        ids: texture(width: 1, height: 1, format: TextureFormat::Rgba8),
-        motion: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
-        means: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float, writable: true),
-        spreads: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float, writable: true),
-        history_a: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
-        history_b: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
-        dabs: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
-        glow_a: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
-        glow_b: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
+        ids: texture::<Rgba8>(width: 1, height: 1),
+        motion: texture::<Rgba16Float>(width: 1, height: 1),
+        means: writable_texture::<Rgba16Float>(width: 1, height: 1),
+        spreads: writable_texture::<Rgba16Float>(width: 1, height: 1),
+        history_a: texture::<Rgba16Float>(width: 1, height: 1),
+        history_b: texture::<Rgba16Float>(width: 1, height: 1),
+        dabs: texture::<Rgba16Float>(width: 1, height: 1),
+        glow_a: texture::<Rgba16Float>(width: 1, height: 1),
+        glow_b: texture::<Rgba16Float>(width: 1, height: 1),
         exposure: buffer(2),
         linear: sampler(),
         repeat: sampler(address: Address::Repeat),
@@ -526,12 +527,12 @@ pub fn cover(v: VertexIndex, z: f32) -> ClipPosition {
 /// The look's passes: the glow's chain from `image` (a quarter's size, blurred across and
 /// down), then the image developed to the screen.
 fn look(
-    image: Texture,
+    image: Texture<Rgba16Float>,
     depth: DepthTexture,
-    dabs: Texture,
+    dabs: Texture<Rgba16Float>,
     s: Sampler,
-    glow_a: mut Texture,
-    glow_b: mut Texture,
+    glow_a: mut Texture<Rgba16Float>,
+    glow_b: mut Texture<Rgba16Float>,
     exposure: GpuSpan<f32>,
     d: Develop,
 ) {
@@ -563,14 +564,14 @@ fn look(
 
 /// Temporal AA's pass: the history `from` resolved with this frame's scene into `into`.
 fn temporal(
-    into: mut Texture,
-    from: Texture,
+    into: mut Texture<Rgba16Float>,
+    from: Texture<Rgba16Float>,
     r: Resolve,
-    scene: Texture,
+    scene: Texture<Rgba16Float>,
     depth: DepthTexture,
-    motion: Texture,
-    means: mut Texture,
-    spreads: mut Texture,
+    motion: Texture<Rgba16Float>,
+    means: mut Texture<Rgba16Float>,
+    spreads: mut Texture<Rgba16Float>,
     s: Sampler,
 ) {
     let groups = ((scene.width() + 7) / 8, (scene.height() + 7) / 8, 1)
@@ -636,18 +637,18 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     keys(mut s, time)
     let (w, h) = (max(width / s.scale, 1), max(height / s.scale, 1))
     if width != s.width || height != s.height || f32(w) != s.cam.screen.x {
-        s.scene = texture(width: w, height: h, format: TextureFormat::Rgba16Float)
+        s.scene = texture::<Rgba16Float>(width: w, height: h)
         s.depth = depth_texture(width: w, height: h)
-        s.ids = texture(width: w, height: h, format: TextureFormat::Rgba8)
-        s.motion = texture(width: w, height: h, format: TextureFormat::Rgba16Float)
-        s.means = texture(width: w, height: h, format: TextureFormat::Rgba16Float, writable: true)
-        s.spreads = texture(width: w, height: h, format: TextureFormat::Rgba16Float, writable: true)
-        s.dabs = texture(width: w, height: h, format: TextureFormat::Rgba16Float)
-        s.history_a = texture(width, height, format: TextureFormat::Rgba16Float)
-        s.history_b = texture(width, height, format: TextureFormat::Rgba16Float)
+        s.ids = texture::<Rgba8>(width: w, height: h)
+        s.motion = texture::<Rgba16Float>(width: w, height: h)
+        s.means = writable_texture::<Rgba16Float>(width: w, height: h)
+        s.spreads = writable_texture::<Rgba16Float>(width: w, height: h)
+        s.dabs = texture::<Rgba16Float>(width: w, height: h)
+        s.history_a = texture::<Rgba16Float>(width: width, height: height)
+        s.history_b = texture::<Rgba16Float>(width: width, height: height)
         let (qw, qh) = (max(width / 4, 1), max(height / 4, 1))
-        s.glow_a = texture(width: qw, height: qh, format: TextureFormat::Rgba16Float)
-        s.glow_b = texture(width: qw, height: qh, format: TextureFormat::Rgba16Float)
+        s.glow_a = texture::<Rgba16Float>(width: qw, height: qh)
+        s.glow_b = texture::<Rgba16Float>(width: qw, height: qh)
         s.width = width
         s.height = height
         s.frames = 0

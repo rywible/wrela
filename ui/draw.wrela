@@ -4,8 +4,8 @@
 
 use text::{Face, Fonts}
 use std::gpu::{
-    ClipPosition, Flat, GpuBuffer, InstanceIndex, Over, Sampler, Texture, Unorm8x4, VertexIndex,
-    buffer, draw, sampler, texture, write,
+    ClipPosition, Flat, GpuBuffer, InstanceIndex, Over, Rgba8, Sampler, Texture, Unorm8x4,
+    VertexIndex, buffer, draw, sampler, texture, write,
 }
 
 /// A rectangle in pixels from the screen's top left.
@@ -236,7 +236,7 @@ fn quad_corner(
 }
 
 @fragment
-fn quad_color(v: QuadVertex, atlas: Texture, linear: Sampler) -> Over {
+fn quad_color(v: QuadVertex, atlas: Texture<Rgba8>, linear: Sampler) -> Over {
     let s = v.shape.value
     var coverage = 1.0
     if s.x > 0.0 {
@@ -257,7 +257,7 @@ fn quad_color(v: QuadVertex, atlas: Texture, linear: Sampler) -> Over {
 
 /// Draws lists on the GPU: the atlas, and buffers that grow to the largest list.
 pub struct Renderer {
-    atlas: Texture,
+    atlas: Texture<Rgba8>,
     linear: Sampler,
     quads: GpuBuffer<Quad>,
     clips: GpuBuffer<vec4>,
@@ -269,7 +269,7 @@ pub struct Renderer {
 impl Renderer {
     /// Makes the atlas from `fonts`' glyphs.
     pub fn new(fonts: Fonts) -> Renderer {
-        var atlas = texture(fonts.width, fonts.height)
+        var atlas = texture::<Rgba8>(width: fonts.width, height: fonts.height)
         atlas.write(x: 0, y: 0, width: fonts.width, height: fonts.height, bytes: fonts.atlas())
         Renderer {
             atlas,

@@ -18,8 +18,8 @@ use air::{Air, Tables, aerial_uvw, radius_of, transmittance}
 use light::{Light, sky, sun_disc}
 use noise::{fbm2, hash3}
 use std::gpu::{
-    FragCoord, GlobalId, GpuBuffer, Sampler, Slots, Texels, Texels3d, Texture, Texture3d,
-    TextureFormat, buffer, dispatch, label, texture, texture3d, write,
+    FragCoord, GlobalId, GpuBuffer, Rgba16Float, Sampler, Slots, Texels, Texels3d, Texture,
+    Texture3d, buffer, dispatch, label, texture, texture3d, writable_texture, write,
 }
 use std::math::{PI, TAU}
 use view::Camera
@@ -182,7 +182,7 @@ fn above(x: f32, from: f32) -> f32 {
 /// noise in three octaves (Schneider's base shape), spread over [0, 1]: it falls in [0.65,
 /// 0.97], most of it in [0.76, 0.9], where a cover's cut (`field`) would leave it whole.
 @compute(4, 4, 4)
-pub fn cook_shape(out: mut Texels3d, id: GlobalId) {
+pub fn cook_shape(out: mut Texels3d<Rgba16Float>, id: GlobalId) {
     if id.x >= SHAPE_SIDE || id.y >= SHAPE_SIDE || id.z >= SHAPE_SIDE {
         return
     }
@@ -204,7 +204,7 @@ pub fn cook_shape(out: mut Texels3d, id: GlobalId) {
 
 /// The detail noise's texel: Worley noise in three octaves, three ways.
 @compute(4, 4, 4)
-pub fn cook_detail(out: mut Texels3d, id: GlobalId) {
+pub fn cook_detail(out: mut Texels3d<Rgba16Float>, id: GlobalId) {
     if id.x >= DETAIL_SIDE || id.y >= DETAIL_SIDE || id.z >= DETAIL_SIDE {
         return
     }
@@ -218,7 +218,13 @@ pub fn cook_detail(out: mut Texels3d, id: GlobalId) {
 /// fraction of the layer): the cloudscape's cumulus, each covering a disc as wide as it, and
 /// between them fair-weather clouds from noise, `fair` of them; none in `gap`.
 @compute(8, 8)
-pub fn cook_weather(cumuli: [Cumulus], fair: f32, gap: Gap, out: mut Texels, id: GlobalId) {
+pub fn cook_weather(
+    cumuli: [Cumulus],
+    fair: f32,
+    gap: Gap,
+    out: mut Texels<Rgba16Float>,
+    id: GlobalId,
+) {
     if id.x >= WEATHER_SIDE || id.y >= WEATHER_SIDE {
         return
     }
@@ -257,9 +263,9 @@ pub fn cook_weather(cumuli: [Cumulus], fair: f32, gap: Gap, out: mut Texels, id:
 fn field(
     q: vec3,
     h: f32,
-    weather: Texture,
-    shape: Texture3d,
-    detail: Texture3d,
+    weather: Texture<Rgba16Float>,
+    shape: Texture3d<Rgba16Float>,
+    detail: Texture3d<Rgba16Float>,
     rep: Sampler,
     detailed: bool,
 ) -> f32 {
@@ -317,12 +323,12 @@ fn march(
     light: Light,
     dir: vec3,
     jitter: f32,
-    weather: Texture,
-    shape: Texture3d,
-    detail: Texture3d,
-    trans: Texture,
-    view: Texture,
-    aerial: Texture3d,
+    weather: Texture<Rgba16Float>,
+    shape: Texture3d<Rgba16Float>,
+    detail: Texture3d<Rgba16Float>,
+    trans: Texture<Rgba16Float>,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
     rep: Sampler,
     s: Sampler,
 ) -> vec4 {
@@ -452,13 +458,13 @@ pub fn march_dome(
     c: Clouds,
     air: Air,
     light: Light,
-    dome: Texture,
-    weather: Texture,
-    shape: Texture3d,
-    detail: Texture3d,
-    trans: Texture,
-    view: Texture,
-    aerial: Texture3d,
+    dome: Texture<Rgba16Float>,
+    weather: Texture<Rgba16Float>,
+    shape: Texture3d<Rgba16Float>,
+    detail: Texture3d<Rgba16Float>,
+    trans: Texture<Rgba16Float>,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
     rep: Sampler,
     s: Sampler,
     out: mut Slots<vec4>,
@@ -494,7 +500,7 @@ pub fn march_dome(
 
 /// The dome's texels the frame marched (`march_dome`), from where they're packed.
 @compute(8, 8)
-pub fn scatter(c: Clouds, marched: [vec4], out: mut Texels, id: GlobalId) {
+pub fn scatter(c: Clouds, marched: [vec4], out: mut Texels<Rgba16Float>, id: GlobalId) {
     if id.x >= SKY_W || id.y >= SKY_H {
         return
     }
@@ -513,11 +519,11 @@ pub fn scatter(c: Clouds, marched: [vec4], out: mut Texels, id: GlobalId) {
 @compute(8, 8)
 pub fn cook_shadow(
     sun: vec3,
-    weather: Texture,
-    shape: Texture3d,
-    detail: Texture3d,
+    weather: Texture<Rgba16Float>,
+    shape: Texture3d<Rgba16Float>,
+    detail: Texture3d<Rgba16Float>,
     rep: Sampler,
-    out: mut Texels,
+    out: mut Texels<Rgba16Float>,
     id: GlobalId,
 ) {
     if id.x >= SHADOW_SIDE || id.y >= SHADOW_SIDE {
@@ -538,7 +544,7 @@ pub fn cook_shadow(
 
 /// A shadow map that shadows nothing.
 @compute(8, 8)
-pub fn no_shadow(out: mut Texels, id: GlobalId) {
+pub fn no_shadow(out: mut Texels<Rgba16Float>, id: GlobalId) {
     if id.x >= SHADOW_SIDE || id.y >= SHADOW_SIDE {
         return
     }
@@ -548,7 +554,7 @@ pub fn no_shadow(out: mut Texels, id: GlobalId) {
 /// How much of the sun reaches `world` past the clouds: the shadow map, moved with the field.
 /// Read through `s` (clamped): the map's coordinate is wrapped here, its seam half the map
 /// (24 km) from where the field started.
-pub fn cloud_shadow(c: Clouds, shadow: Texture, s: Sampler, world: vec3) -> f32 {
+pub fn cloud_shadow(c: Clouds, shadow: Texture<Rgba16Float>, s: Sampler, world: vec3) -> f32 {
     // Along the sun's direction to the ground plane the map was cooked on.
     let back = world.xz - c.sun.xz * (world.y / max(c.sun.y, 0.05))
     let uv = fract((back - c.drift) / SPAN + vec2(0.5))
@@ -560,7 +566,13 @@ pub fn cloud_shadow(c: Clouds, shadow: Texture, s: Sampler, world: vec3) -> f32 
 /// The sky (the air's sky table, `view`) with the dome's clouds along `dir`, and their cover:
 /// the dome read through a tent three texels wide (four samples), which averages away most of
 /// its march's jitter.
-pub fn sky_with_clouds(view: Texture, light: Light, dir: vec3, dome: Texture, s: Sampler) -> vec4 {
+pub fn sky_with_clouds(
+    view: Texture<Rgba16Float>,
+    light: Light,
+    dir: vec3,
+    dome: Texture<Rgba16Float>,
+    s: Sampler,
+) -> vec4 {
     let base = sky(view, s, light, dir) + sun_disc(light, dir)
     let uv = sky_uv(dir)
     let d = vec2(0.5 / f32(SKY_W), 0.5 / f32(SKY_H))
@@ -574,7 +586,13 @@ pub fn sky_with_clouds(view: Texture, light: Light, dir: vec3, dome: Texture, s:
 
 /// The sky with its clouds along `dir`, one sample of the dome, and no sun's disc: the light a
 /// probe's ray meets there (`probes::trace`).
-pub fn clouded_sky(view: Texture, light: Light, dir: vec3, dome: Texture, s: Sampler) -> vec3 {
+pub fn clouded_sky(
+    view: Texture<Rgba16Float>,
+    light: Light,
+    dir: vec3,
+    dome: Texture<Rgba16Float>,
+    s: Sampler,
+) -> vec3 {
     let c = dome.sample_level(s, sky_uv(dir))
     sky(view, s, light, dir) * (1.0 - c.a) + c.rgb
 }
@@ -586,8 +604,8 @@ pub fn sky_shade(
     pixel: FragCoord,
     cam: Camera,
     light: Light,
-    view: Texture,
-    dome: Texture,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
     s: Sampler,
 ) -> vec4 {
     let c = sky_with_clouds(view, light, cam.ray(pixel.position.xy), dome, s)
@@ -600,24 +618,23 @@ pub fn sky_shade(
 /// marched texels; and how many frames have marched (the first round replaces what the dome
 /// held).
 pub struct Sky {
-    pub shape: Texture3d,
-    pub detail: Texture3d,
-    pub weather: Texture,
-    pub shadow: Texture,
-    pub dome: Texture,
+    pub shape: Texture3d<Rgba16Float>,
+    pub detail: Texture3d<Rgba16Float>,
+    pub weather: Texture<Rgba16Float>,
+    pub shadow: Texture<Rgba16Float>,
+    pub dome: Texture<Rgba16Float>,
     pub marched: GpuBuffer<vec4>,
     pub frames: u32,
 }
 
 /// The clouds' textures, uncooked.
 pub fn new_sky() -> Sky {
-    let f = TextureFormat::Rgba16Float
     Sky {
-        shape: texture3d(SHAPE_SIDE, SHAPE_SIDE, SHAPE_SIDE),
-        detail: texture3d(DETAIL_SIDE, DETAIL_SIDE, DETAIL_SIDE),
-        weather: texture(WEATHER_SIDE, WEATHER_SIDE, format: f, writable: true),
-        shadow: texture(SHADOW_SIDE, SHADOW_SIDE, format: f, writable: true),
-        dome: texture(SKY_W, SKY_H, format: f, writable: true),
+        shape: texture3d::<Rgba16Float>(SHAPE_SIDE, SHAPE_SIDE, SHAPE_SIDE),
+        detail: texture3d::<Rgba16Float>(DETAIL_SIDE, DETAIL_SIDE, DETAIL_SIDE),
+        weather: writable_texture::<Rgba16Float>(width: WEATHER_SIDE, height: WEATHER_SIDE),
+        shadow: writable_texture::<Rgba16Float>(width: SHADOW_SIDE, height: SHADOW_SIDE),
+        dome: writable_texture::<Rgba16Float>(width: SKY_W, height: SKY_H),
         marched: buffer(PHASE_TEXELS),
         frames: 0,
     }

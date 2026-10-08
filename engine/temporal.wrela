@@ -14,7 +14,7 @@
 // output's pixels read their nearest's: at half the output's size four of them share each one,
 // and a resolve gathering its own 3 × 3 took twice as long.
 
-use std::gpu::{DepthTexture, FragCoord, GlobalId, Sampler, Texels, Texture}
+use std::gpu::{DepthTexture, FragCoord, GlobalId, Rgba16Float, Sampler, Texels, Texture}
 use view::{Camera, class_of, jitter_of}
 
 /// What the resolve reads besides the textures: the scene camera (at the scene's size), the
@@ -81,7 +81,12 @@ fn untamed(c: vec3) -> vec3 {
 /// much of them thin geometry covers (grass, leaves, flowers) into `means`, and their spread
 /// and which classes they show (a bit each) into `spreads`. Both the scene's size.
 @compute(8, 8)
-pub fn neighbourhoods(scene: Texture, means: mut Texels, spreads: mut Texels, id: GlobalId) {
+pub fn neighbourhoods(
+    scene: Texture<Rgba16Float>,
+    means: mut Texels<Rgba16Float>,
+    spreads: mut Texels<Rgba16Float>,
+    id: GlobalId,
+) {
     let size = vec2i(i32(scene.width()), i32(scene.height()))
     if i32(id.x) >= size.x || i32(id.y) >= size.y {
         return
@@ -113,7 +118,7 @@ pub fn neighbourhoods(scene: Texture, means: mut Texels, spreads: mut Texels, id
 
 /// The history at `px` (output pixels), filtered by a Catmull-Rom spline in 5 taps (bilinear
 /// taps placed to give its weights), so a moving history stays sharp.
-fn history_at(history: Texture, s: Sampler, px: vec2, size: vec2) -> vec3 {
+fn history_at(history: Texture<Rgba16Float>, s: Sampler, px: vec2, size: vec2) -> vec3 {
     let pos = px - vec2(0.5)
     let c = floor(pos) + vec2(0.5)
     let f = pos - floor(pos)
@@ -142,12 +147,12 @@ fn history_at(history: Texture, s: Sampler, px: vec2, size: vec2) -> vec3 {
 pub fn resolve(
     pixel: FragCoord,
     r: Resolve,
-    scene: Texture,
+    scene: Texture<Rgba16Float>,
     depth: DepthTexture,
-    motion: Texture,
-    history: Texture,
-    means: Texture,
-    spreads: Texture,
+    motion: Texture<Rgba16Float>,
+    history: Texture<Rgba16Float>,
+    means: Texture<Rgba16Float>,
+    spreads: Texture<Rgba16Float>,
     s: Sampler,
 ) -> vec4 {
     let cam = r.cam

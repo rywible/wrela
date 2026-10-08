@@ -5,7 +5,7 @@
 
 use std::derive::Box3
 use std::field::Surface
-use std::gpu::{Append, ClipPosition, FragCoord, GlobalId, Slots, Texture, VertexIndex}
+use std::gpu::{Append, ClipPosition, FragCoord, GlobalId, Rgba8, Slots, Texture, VertexIndex}
 use paint::{CLAY, Colours, pack, unpack}
 
 /// One orthographic view: rays run along `-back`, from a plane `reach` in front of `centre`;
@@ -776,6 +776,6 @@ pub fn colour(
 
 /// A pixel of the views as last drawn (into `canvas`).
 @fragment
-pub fn show_canvas(pixel: FragCoord, canvas: Texture) -> vec4 {
+pub fn show_canvas(pixel: FragCoord, canvas: Texture<Rgba8>) -> vec4 {
     canvas.load(u32(pixel.position.x), u32(pixel.position.y))
 }

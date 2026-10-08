@@ -21,8 +21,8 @@
 // the world's units: a white surface facing the sun reflects `sun_colour`.
 
 use std::gpu::{
-    GlobalId, Sampler, Texels, Texels3d, Texture, Texture3d, TextureFormat, dispatch, label,
-    texture, texture3d,
+    GlobalId, Rgba16Float, Sampler, Texels, Texels3d, Texture, Texture3d, dispatch, label, texture,
+    texture3d, writable_texture,
 }
 use std::math::PI
 
@@ -185,7 +185,7 @@ fn transmittance_r_mu(uv: vec2) -> (f32, f32) {
 
 /// The transmittance from radius `r` along a ray `mu` from the zenith to the top, from the
 /// table.
-pub fn transmittance(t: Texture, s: Sampler, r: f32, mu: f32) -> vec3 {
+pub fn transmittance(t: Texture<Rgba16Float>, s: Sampler, r: f32, mu: f32) -> vec3 {
     t.sample_level(s, transmittance_uv(r, mu)).rgb
 }
 
@@ -210,7 +210,7 @@ fn multiple_r_mu_s(uv: vec2) -> (f32, f32) {
 
 /// The light scattered twice and more at radius `r`, the sun `mu_s` from the zenith, per unit
 /// of scattering, from the table.
-pub fn multiple(m: Texture, s: Sampler, r: f32, mu_s: f32) -> vec3 {
+pub fn multiple(m: Texture<Rgba16Float>, s: Sampler, r: f32, mu_s: f32) -> vec3 {
     m.sample_level(s, multiple_uv(r, mu_s)).rgb
 }
 
@@ -304,8 +304,8 @@ struct Marched: Copy {
 /// phase functions and multiple scattering from `m`.
 fn march(
     air: Air,
-    trans: Texture,
-    m: Texture,
+    trans: Texture<Rgba16Float>,
+    m: Texture<Rgba16Float>,
     s: Sampler,
     o: vec3,
     d: vec3,
@@ -402,7 +402,7 @@ fn irradiance(air: Air) -> vec3 {
 }
 
 @compute(8, 8)
-pub fn cook_transmittance(air: Air, out: mut Texels, id: GlobalId) {
+pub fn cook_transmittance(air: Air, out: mut Texels<Rgba16Float>, id: GlobalId) {
     if id.x >= TRANSMITTANCE_W || id.y >= TRANSMITTANCE_H {
         return
     }
@@ -417,7 +417,13 @@ pub fn cook_transmittance(air: Air, out: mut Texels, id: GlobalId) {
 /// sum of every further scattering (a geometric series of the fraction scattered back,
 /// Hillaire's).
 @compute(8, 8)
-pub fn cook_multiple(air: Air, trans: Texture, s: Sampler, out: mut Texels, id: GlobalId) {
+pub fn cook_multiple(
+    air: Air,
+    trans: Texture<Rgba16Float>,
+    s: Sampler,
+    out: mut Texels<Rgba16Float>,
+    id: GlobalId,
+) {
     if id.x >= MULTIPLE_SIDE || id.y >= MULTIPLE_SIDE {
         return
     }
@@ -449,7 +455,14 @@ pub fn cook_multiple(air: Air, trans: Texture, s: Sampler, out: mut Texels, id: 
 /// The sky's table's texel: the light along its direction from the eye, through the air to the
 /// top (or the ground), 48 samples.
 @compute(8, 8)
-pub fn cook_view(air: Air, trans: Texture, m: Texture, s: Sampler, out: mut Texels, id: GlobalId) {
+pub fn cook_view(
+    air: Air,
+    trans: Texture<Rgba16Float>,
+    m: Texture<Rgba16Float>,
+    s: Sampler,
+    out: mut Texels<Rgba16Float>,
+    id: GlobalId,
+) {
     if id.x >= VIEW_W || id.y >= VIEW_H {
         return
     }
@@ -468,10 +481,10 @@ pub fn cook_view(air: Air, trans: Texture, m: Texture, s: Sampler, out: mut Texe
 @compute(4, 4, 4)
 pub fn cook_aerial(
     air: Air,
-    trans: Texture,
-    m: Texture,
+    trans: Texture<Rgba16Float>,
+    m: Texture<Rgba16Float>,
     s: Sampler,
-    out: mut Texels3d,
+    out: mut Texels3d<Rgba16Float>,
     id: GlobalId,
 ) {
     if id.x >= AERIAL_W || id.y >= AERIAL_H || id.z >= AERIAL_D {
@@ -490,20 +503,22 @@ pub fn cook_aerial(
 
 /// The air's tables (see the module's docs).
 pub struct Tables {
-    pub transmittance: Texture,
-    pub multiple: Texture,
-    pub view: Texture,
-    pub aerial: Texture3d,
+    pub transmittance: Texture<Rgba16Float>,
+    pub multiple: Texture<Rgba16Float>,
+    pub view: Texture<Rgba16Float>,
+    pub aerial: Texture3d<Rgba16Float>,
 }
 
 /// The air's tables, uncooked.
 pub fn tables() -> Tables {
-    let f = TextureFormat::Rgba16Float
     Tables {
-        transmittance: texture(TRANSMITTANCE_W, TRANSMITTANCE_H, format: f, writable: true),
-        multiple: texture(MULTIPLE_SIDE, MULTIPLE_SIDE, format: f, writable: true),
-        view: texture(VIEW_W, VIEW_H, format: f, writable: true),
-        aerial: texture3d(AERIAL_W, AERIAL_H, AERIAL_D),
+        transmittance: writable_texture::<Rgba16Float>(
+            width: TRANSMITTANCE_W,
+            height: TRANSMITTANCE_H,
+        ),
+        multiple: writable_texture::<Rgba16Float>(width: MULTIPLE_SIDE, height: MULTIPLE_SIDE),
+        view: writable_texture::<Rgba16Float>(width: VIEW_W, height: VIEW_H),
+        aerial: texture3d::<Rgba16Float>(AERIAL_W, AERIAL_H, AERIAL_D),
     }
 }
 

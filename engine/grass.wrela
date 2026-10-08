@@ -22,8 +22,8 @@ use probes::{Probe, ProbeGrid, sky_light}
 use sky::{Clouds, cloud_shadow}
 use std::gpu::{
     Append, AppendBuffer, Atomics, ClipPosition, ComparisonSampler, DepthTexture, Flat, FragCoord,
-    GlobalId, GpuBuffer, InstanceIndex, Sampler, Slots, Texture, Texture3d, Unorm8x4, VertexIndex,
-    append_buffer, buffer, discard, dispatch, draw, write,
+    GlobalId, GpuBuffer, InstanceIndex, Rgba16Float, Sampler, Slots, Texture, Texture3d, Unorm8x4,
+    VertexIndex, append_buffer, buffer, discard, dispatch, draw, write,
 }
 use std::math::TAU
 use terrain::{Levels, Texel, ground_cover_at, height_at, texel_index}
@@ -181,8 +181,8 @@ pub fn place(
     at: Place,
     levels: Levels,
     texels: [Texel],
-    probes: Texture,
-    cloud: Texture,
+    probes: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
     linear: Sampler,
     grounds: [f32],
     blades: mut Append<Blade>,
@@ -393,9 +393,9 @@ impl Grass {
         grid: ProbeGrid,
         levels: Levels,
         texels: std::gpu::GpuSpan<Texel>,
-        probes: Texture,
+        probes: Texture<Rgba16Float>,
         clouds: Clouds,
-        cloud: Texture,
+        cloud: Texture<Rgba16Float>,
         linear: Sampler,
         grounds: std::gpu::GpuSpan<f32>,
         stones: [vec4],

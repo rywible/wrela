@@ -19,8 +19,8 @@ use light::{Light, sky}
 use sky::{Clouds, cloud_shadow, clouded_sky}
 use shadow::{Shadows, sunlit}
 use std::gpu::{
-    Atomics, ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, GpuSpan, Sampler, Slots, Texels,
-    Texture, TextureFormat, buffer, dispatch, label, texture, write,
+    Atomics, ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, GpuSpan, Rgba16Float, Sampler,
+    Slots, Texels, Texture, buffer, dispatch, label, texture, writable_texture, write,
 }
 use std::math::{PI, TAU}
 use terrain::{Levels, Texel, ground_at, height_at}
@@ -216,9 +216,9 @@ pub fn trace(
     near: DepthTexture,
     far: DepthTexture,
     cmp: ComparisonSampler,
-    view: Texture,
-    dome: Texture,
-    maps: Texture,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    maps: Texture<Rgba16Float>,
     s: Sampler,
     from_surface: bool = false,
 ) -> (vec3, vec3) {
@@ -322,9 +322,9 @@ pub fn bake(
     near: DepthTexture,
     far: DepthTexture,
     cmp: ComparisonSampler,
-    view: Texture,
-    dome: Texture,
-    maps: Texture,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    maps: Texture<Rgba16Float>,
     s: Sampler,
     probes: mut Slots<Probe>,
     bounces: mut Slots<Probe>,
@@ -408,9 +408,9 @@ pub fn trace_again(
     near: DepthTexture,
     far: DepthTexture,
     cmp: ComparisonSampler,
-    view: Texture,
-    dome: Texture,
-    maps: Texture,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    maps: Texture<Rgba16Float>,
     s: Sampler,
     rays: mut Slots<Ray>,
     id: GlobalId,
@@ -493,7 +493,7 @@ pub fn probe_light(p: Probe, n: vec3) -> vec3 {
 }
 
 /// The open sky as a probe would hold it (`open_sky`): the probes' maps' last row (`PLANES`).
-pub fn open_probe(maps: Texture) -> Held {
+pub fn open_probe(maps: Texture<Rgba16Float>) -> Held {
     let (w, y) = (maps.width() / PLANES, maps.height() - 1)
     let sky = Probe {
         r: maps.load(x: 0, y: y),
@@ -505,7 +505,7 @@ pub fn open_probe(maps: Texture) -> Held {
 
 /// The open sky's light on a surface facing `n`, its sky's part and its sun's: the light a
 /// white one reflects.
-pub fn open_light(maps: Texture, n: vec3) -> vec3 {
+pub fn open_light(maps: Texture<Rgba16Float>, n: vec3) -> vec3 {
     let o = open_probe(maps)
     probe_light(o.sky, n) + probe_light(o.sun, n)
 }
@@ -521,7 +521,7 @@ const OPEN_RAYS: u32 = 512
 pub fn open_sky(
     light: Light,
     ground: vec3,
-    view: Texture,
+    view: Texture<Rgba16Float>,
     s: Sampler,
     out: mut Slots<Probe>,
     id: GlobalId,
@@ -600,7 +600,7 @@ pub fn map_probes(
     probes: [Probe],
     bounces: [Probe],
     open: [Probe],
-    out: mut Texels,
+    out: mut Texels<Rgba16Float>,
     id: GlobalId,
 ) {
     let cols = grid.cols
@@ -635,7 +635,13 @@ pub fn map_probes(
 /// (between columns, and between layers by its height above the ground), from the probes' maps
 /// (`maps`, read through `s`, a linear sampler), or the open sky outside the grid, faded to it at
 /// the grid's edge.
-pub fn sky_sh(grid: ProbeGrid, maps: Texture, s: Sampler, grounds: [f32], world: vec3) -> Held {
+pub fn sky_sh(
+    grid: ProbeGrid,
+    maps: Texture<Rgba16Float>,
+    s: Sampler,
+    grounds: [f32],
+    world: vec3,
+) -> Held {
     let g = (world.xz - grid.corner) / grid.spacing
     let last = f32(max(grid.cols, 2) - 1)
     if grid.cols < 2 || g.x < 0.0 || g.y < 0.0 || g.x >= last || g.y >= last {
@@ -655,7 +661,13 @@ pub fn sky_sh(grid: ProbeGrid, maps: Texture, s: Sampler, grounds: [f32], world:
 
 /// The light round the point over `xz`, `above` metres above the ground, as a probe there
 /// would hold it (`sky_sh`, given its height above the ground).
-pub fn held_at(grid: ProbeGrid, maps: Texture, s: Sampler, xz: vec2, above: f32) -> Held {
+pub fn held_at(
+    grid: ProbeGrid,
+    maps: Texture<Rgba16Float>,
+    s: Sampler,
+    xz: vec2,
+    above: f32,
+) -> Held {
     let g = (xz - grid.corner) / grid.spacing
     let last = f32(max(grid.cols, 2) - 1)
     if grid.cols < 2 || g.x < 0.0 || g.y < 0.0 || g.x >= last || g.y >= last {
@@ -711,7 +723,7 @@ pub fn held_at(grid: ProbeGrid, maps: Texture, s: Sampler, xz: vec2, above: f32)
 /// for a test of it, the light's own (`Light::sky_test`).
 pub fn sky_light(
     grid: ProbeGrid,
-    maps: Texture,
+    maps: Texture<Rgba16Float>,
     s: Sampler,
     grounds: [f32],
     light: Light,
@@ -732,7 +744,7 @@ pub fn sky_light(
 /// reflection of the eye's ray: the light its gloss reflects), from one lookup of the probes.
 pub fn sky_lights(
     grid: ProbeGrid,
-    maps: Texture,
+    maps: Texture<Rgba16Float>,
     s: Sampler,
     grounds: [f32],
     light: Light,
@@ -761,7 +773,7 @@ pub struct Baked {
     pub bounces: GpuBuffer<Probe>,
     /// The probes as the shading reads them (`PLANES`), mapped when the last strip is baked, and
     /// each frame after.
-    pub maps: Texture,
+    pub maps: Texture<Rgba16Float>,
     pub grounds: GpuBuffer<f32>,
     /// The open sky's probe (`open_sky`): its sky's part, then its sun's.
     pub open: GpuBuffer<Probe>,
@@ -797,11 +809,9 @@ impl Baked {
             grid,
             probes: buffer(grid.probes()),
             bounces: buffer(grid.probes()),
-            maps: texture(
+            maps: writable_texture::<Rgba16Float>(
                 width: max(PLANES * grid.cols, 1),
                 height: grid.cols * LAYERS + 1,
-                format: TextureFormat::Rgba16Float,
-                writable: true,
             ),
             grounds: buffer(grid.probes()),
             open: buffer(2),
@@ -836,7 +846,7 @@ impl Baked {
     /// The open sky's probe, from the air's sky table (`view`, through `s`, a linear sampler)
     /// and the ground's albedo, mapped with the probes: so shading reads the open sky before
     /// any column is baked.
-    pub fn open(mut self, light: Light, ground: vec3, view: Texture, s: Sampler) {
+    pub fn open(mut self, light: Light, ground: vec3, view: Texture<Rgba16Float>, s: Sampler) {
         label("probes open sky")
         dispatch(open_sky.bind(light, ground, view, s, out: mut self.open), groups: 1)
         self.map(0, self.grid.cols * self.grid.cols)
@@ -871,8 +881,8 @@ impl Baked {
         near: DepthTexture,
         far: DepthTexture,
         cmp: ComparisonSampler,
-        view: Texture,
-        dome: Texture,
+        view: Texture<Rgba16Float>,
+        dome: Texture<Rgba16Float>,
         s: Sampler,
     ) {
         let total = self.grid.cols * self.grid.cols
@@ -993,19 +1003,19 @@ fn surface_at(cam: Camera, depth: DepthTexture, p: vec2i) -> (vec3, f32) {
 pub fn reference(
     at: Sampling,
     depth: DepthTexture,
-    scene: Texture,
+    scene: Texture<Rgba16Float>,
     volume: [u32],
     levels: Levels,
     texels: [Texel],
-    maps: Texture,
+    maps: Texture<Rgba16Float>,
     s: Sampler,
     grounds: [f32],
     near: DepthTexture,
     far: DepthTexture,
     cmp: ComparisonSampler,
-    view: Texture,
-    dome: Texture,
-    cloud: Texture,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
     out: mut Slots<Reference>,
     id: GlobalId,
 ) {

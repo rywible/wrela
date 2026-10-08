@@ -6,7 +6,7 @@ use light::{Light, Lit}
 use probes::{ProbeGrid, sky_light, sky_lights}
 use shadow::{Shadows, sunlit}
 use sky::{Clouds, cloud_shadow}
-use std::gpu::{ComparisonSampler, DepthTexture, GpuSpan, Sampler, Texture, Texture3d}
+use std::gpu::{ComparisonSampler, DepthTexture, GpuSpan, Rgba16Float, Sampler, Texture, Texture3d}
 use terrain::Levels
 use view::Camera
 
@@ -26,10 +26,10 @@ pub borrow struct Lighting {
     pub far: borrow DepthTexture,
     pub moving: borrow DepthTexture,
     pub cmp: borrow ComparisonSampler,
-    pub probes: borrow Texture,
+    pub probes: borrow Texture<Rgba16Float>,
     pub grounds: GpuSpan<f32>,
-    pub cloud: borrow Texture,
-    pub air: borrow Texture3d,
+    pub cloud: borrow Texture<Rgba16Float>,
+    pub air: borrow Texture3d<Rgba16Float>,
     pub s: borrow Sampler,
 }
 

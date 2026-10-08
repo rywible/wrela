@@ -4,7 +4,7 @@
 // (characters' cel). Every pass that shades reads one `Light`, and the air's tables.
 
 use air::{Air, aerial_uvw, azimuth_cos, radius_of, sun_at, view_uv}
-use std::gpu::{Sampler, Texture, Texture3d}
+use std::gpu::{Rgba16Float, Sampler, Texture, Texture3d}
 use std::math::PI
 
 /// The light a frame is lit by: toward the sun, the sun's light at the ground (a white surface
@@ -33,7 +33,7 @@ pub fn sunlight(air: Air) -> Light {
 
 /// The sky seen along `dir` (a unit vector) from the eye, from the air's sky table (`view`,
 /// through `s`, a linear sampler): no sun's disc.
-pub fn sky(view: Texture, s: Sampler, light: Light, dir: vec3) -> vec3 {
+pub fn sky(view: Texture<Rgba16Float>, s: Sampler, light: Light, dir: vec3) -> vec3 {
     let r = radius_of(light.eye)
     view.sample_level(s, view_uv(r, dir.y, azimuth_cos(light.sun, dir))).rgb
 }
@@ -48,7 +48,7 @@ pub fn sun_disc(light: Light, dir: vec3) -> vec3 {
 /// scatters toward the eye on the way, from the air's aerial perspective table (`air`, through
 /// `s`, a linear sampler).
 pub fn hazed(
-    air: Texture3d,
+    air: Texture3d<Rgba16Float>,
     s: Sampler,
     light: Light,
     colour: vec3,

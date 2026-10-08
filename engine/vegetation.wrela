@@ -26,8 +26,8 @@ use shadow::Shadows
 use std::field::Tube
 use std::gpu::{
     Atomics, ClipPosition, Compare, ComparisonSampler, Depth, DepthBias, DepthTexture, Flat,
-    FragCoord, GlobalId, GpuBuffer, GpuSpan, InstanceIndex, Sampler, Slots, Texture, Texture3d,
-    VertexIndex, buffer, dispatch, draw, label, write,
+    FragCoord, GlobalId, GpuBuffer, GpuSpan, InstanceIndex, Rgba16Float, Rgba8, Sampler, Slots,
+    Texture, Texture3d, VertexIndex, buffer, dispatch, draw, label, write,
 }
 use std::math::{PI, TAU}
 use terrain::Texel
@@ -51,7 +51,7 @@ pub struct Kind {
 }
 
 /// Cooks `plant` as a kind: its cards (by `seed`), and its limbs.
-pub fn kind(plant: Plant, seed: u32, atlas: Texture, s: Sampler) -> Kind {
+pub fn kind(plant: Plant, seed: u32, atlas: Texture<Rgba8>, s: Sampler) -> Kind {
     let n = plant.cards()
     var cards: GpuBuffer<Card> = buffer(n)
     dispatch(cook_cards.bind(plant, n, seed, out: mut cards), groups: (n + 63) / 64)
@@ -112,7 +112,7 @@ pub struct Forest {
     every: GpuBuffer<Instance>,
     pub every_lists: Vec<List>,
     /// The leaf patterns cards read, cooked once, and each one's outline (`cook_outlines`).
-    pub atlas: Texture,
+    pub atlas: Texture<Rgba8>,
     outlines: GpuBuffer<vec2>,
     /// The cards' and the limbs' triangles (`card_indices`, `limb_indices`), and each list's
     /// draws of them: each its index count, instance count and three 0s (`lists`'s, then
@@ -533,7 +533,13 @@ pub fn card_shadow(
 /// (which keep only the first `per_card` of a pattern's leaves, so a crown's shadow is
 /// dappled).
 @fragment
-pub fn leaf_cut(l: LeafVertex, pixel: FragCoord, d: CardDraw, atlas: Texture, s: Sampler) -> vec4 {
+pub fn leaf_cut(
+    l: LeafVertex,
+    pixel: FragCoord,
+    d: CardDraw,
+    atlas: Texture<Rgba8>,
+    s: Sampler,
+) -> vec4 {
     let (m, which) = leaf_at(atlas, s, l.seed.value, l.uv)
     // How much of the pixel the leaves cover: the atlas's soft edge made a pixel wide.
     let cover = saturate((m - 0.5) / max(fwidth(m), 1.0e-4) + 0.5)
@@ -568,7 +574,7 @@ pub fn leaf_shade(
     instances: [Instance],
     lt: Lighting,
     leaves: Leaves,
-    atlas: Texture,
+    atlas: Texture<Rgba8>,
 ) -> vec4 {
     let card = cards[l.card.value]
     let inst = instances[l.instance.value & 16777215]
@@ -807,7 +813,7 @@ impl Forest {
     /// first: a fragment shader that can (the limbs' and the far instances', with `discard`)
     /// keeps a tile-based GPU from hiding what's behind it, so Apple's GPUs draw those last
     /// (the frame's median 4.94 ms against 5.04).
-    pub fn shade(self, lt: Lighting, wind: Wind, ids: Texture) {
+    pub fn shade(self, lt: Lighting, wind: Wind, ids: Texture<Rgba8>) {
         let cam = lt.cam
         for li in 0..self.lists.len() {
             let l = self.lists[li]
@@ -991,7 +997,7 @@ pub fn leaf_covering(
     l: LeafVertex,
     p: FragCoord,
     d: CardDraw,
-    atlas: Texture,
+    atlas: Texture<Rgba8>,
     s: Sampler,
     width: u32,
     covering: mut Atomics<u32>,
