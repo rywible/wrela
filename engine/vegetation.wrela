@@ -10,7 +10,7 @@
 
 use impostor::{Cooked, Impostor, bake, cook, far_cut, far_quad, far_shade, volume_cut, volume_shade}
 use light::{Light, Lit, hazed}
-use lit::{Lighting, sky_gloss, sun_at}
+use lit::{Lighting, sky_at, sun_at}
 use noise::{cell_size, hash2, hashed_threshold_of, rand}
 use lod::{IMPOSTOR, Lod, VOLUME, anchor, keeps, keeps_packed, packed, place, share, ways}
 use plant::{
@@ -556,15 +556,12 @@ fn discard_fragment() {
     std::gpu::discard()
 }
 
-/// A leaf's roughness: a little waxy, and rougher than one leaf is, as a pixel holds many at
-/// many angles. A crown reflects the sky round it, but shows no glint of the sun: on cards each
-/// leaf glints by its own normal, on an impostor by its texels' normals blended, so the glints
-/// changed where its levels meet (4.7/255 against 3.6 between cards and impostors, bound 4).
-pub const LEAF_ROUGH: f32 = 0.6
-
 /// A leaf's pixel, where the prepass left its depth: its leaf's own tilt off the crown's normal,
 /// lit by the sun through its shadows and the crown's depth, the sky light (the probes, darkened
-/// inside the crown) and the light through it; through the haze.
+/// inside the crown) and the light through it; through the haze. No gloss (`light::gloss`): a
+/// crown's level of detail changes it (each leaf's own normal on cards, its texels' normals
+/// blended on an impostor, the crown's on a volume), and the levels differed where they meet by
+/// up to 5.7/255 with it (bound 4); an impostor would need the crown's normal too.
 @fragment
 pub fn leaf_shade(
     l: LeafVertex,
@@ -602,21 +599,13 @@ pub fn leaf_shade(
     let t = card.tint.decode()
     let tint = inst.tint + (t.xyz - vec3(0.5)) * vec3(0.04, 0.05, 0.0)
     let albedo = max(mix(leaves.old, leaves.young, vec3(age)) + tint * 0.5, vec3(0.005))
-    // The light round the crown, and toward a leaf's reflection, by the crown's own facing
-    // there (each leaf's glint is its own normal's).
-    let (sky, reflected) = sky_gloss(lt, probes, clouds, s, grounds, world, crown_n, n, lt.cam.eye)
-    let inside = 0.25 + 0.75 * ao
+    let sky = sky_at(lt, probes, clouds, s, grounds, world, crown_n) * (0.25 + 0.75 * ao)
     let lit = Lit {
         albedo,
         n,
         sun: sun * (0.35 + 0.65 * ao),
-        sky: sky * inside,
+        sky,
         through: leaves.through * (0.4 + 0.6 * ao),
-        rough: LEAF_ROUGH,
-        glint: 0.0,
-        reflected: reflected *
-            inside *
-            light::gloss_occlusion(inside, abs(dot(n, normalize(lt.cam.eye - world))), LEAF_ROUGH),
     }
     let c = hazed(
         air,
@@ -715,18 +704,9 @@ pub fn bark_shade(
     let moss = smoothstep(0.2, 0.7, n.y + 0.4 * noise::noise2(b.world.xz * 3.0)) * 0.6
     let a = mix(albedo, bark.moss, vec3(moss))
     let sun = sun_at(lt, b.world, n, near, far, moving, cmp, clouds, s, soft: 1.5)
-    let (sky, reflected) = sky_gloss(lt, probes, clouds, s, grounds, b.world, n, n, lt.cam.eye)
-    // No glint of the sun, as the leaves' (`LEAF_ROUGH`): an impostor bakes the limbs with them.
-    let lit = Lit {
-        albedo: a,
-        n,
-        sun,
-        sky,
-        through: vec3(0.0),
-        rough: 0.85,
-        reflected,
-        glint: 0.0,
-    }
+    // No gloss, as the leaves have none (`leaf_shade`): an impostor bakes the limbs with them.
+    let sky = sky_at(lt, probes, clouds, s, grounds, b.world, n)
+    let lit = Lit { albedo: a, n, sun, sky, through: vec3(0.0) }
     let c = hazed(
         air,
         s,

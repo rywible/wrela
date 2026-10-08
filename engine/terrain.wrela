@@ -648,7 +648,11 @@ pub fn ground_shade(
 ) -> vec4 {
     let (n, albedo, _) = ground_at(lt.levels, texels, g.world.xz)
     let sun = lit::sun_at(lt, g.world, n, near, far, moving, cmp, clouds, s, soft: 2.0)
-    let (sky, reflected) = lit::sky_gloss(lt, probes, clouds, s, grounds, g.world, n, n, lt.cam.eye)
+    // The sky's reflection, but no glint of the sun: the ground is covered (grass, and far off
+    // trees), whose blades and leaves shade each other's glints where the ground's would show
+    // (looking toward the sun, at a grazing angle); a crown's levels, where they meet, showed
+    // the glint through their silhouettes' differences (5.2/255 against 3.6, bound 4).
+    let (sky, reflected) = lit::sky_gloss(lt, probes, clouds, s, grounds, g.world, n, lt.cam.eye)
     let l = Lit { albedo, n, sun, sky, through: vec3(0.0), rough: 0.9, reflected }
     let c = hazed(
         air,

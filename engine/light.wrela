@@ -66,8 +66,8 @@ pub fn hazed(
 /// (leaves, grass: a colour per unit of sun; zero for what's solid). And its gloss: its
 /// roughness (perceptual: 0 a mirror, 1 matte), and the light round it toward its reflection
 /// of the eye's ray (from the probes too: `lit::sky_gloss`), which a matte surface reflects
-/// little of and a mirror all; and how much of the sun's glint it shows (`glint`: 1, or 0 for a
-/// crown's leaves, whose glints change with its level of detail).
+/// little of and a mirror all; and how much of the sun's glint it shows (`glint`: 1 for a
+/// glossy surface). By default, none: neither glint nor reflection.
 pub struct Lit: Copy {
     pub albedo: vec3,
     pub n: vec3,
@@ -76,7 +76,7 @@ pub struct Lit: Copy {
     pub through: vec3,
     pub rough: f32 = 1.0,
     pub reflected: vec3 = vec3(0.0),
-    pub glint: f32 = 1.0,
+    pub glint: f32 = 0.0,
 }
 
 /// The reflectance of what the world is made of (leaves, bark, stone, soil: dielectrics) seen

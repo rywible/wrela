@@ -12,7 +12,7 @@
 
 use light::{Lit, hazed}
 use lod::{draw_packed, keeps_packed}
-use lit::{Lighting, sky_gloss, sun_at}
+use lit::{Lighting, sky_at, sun_at}
 use noise::{cell_size, hash2, hashed_threshold_of, rand, surface_draw}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_VERTICES, Leaves, Plant, Wind, leaf_at,
@@ -620,10 +620,6 @@ pub fn far_cut(
     WithDepth { color: id_colour(f.id.value), depth: depth_of(cam, at) }
 }
 
-/// A far crown's roughness: its leaves' (`vegetation::LEAF_ROUGH`), so its levels match where
-/// they meet.
-pub const FAR_ROUGH: f32 = vegetation::LEAF_ROUGH
-
 /// A far instance's pixel, where its prepass won (its id there): what its impostor shows
 /// (`seen`), lit as a leaf is, where the leaf is.
 @fragment
@@ -657,19 +653,14 @@ pub fn far_shade(
     let ao = exp(-depth / 1.6)
     let at = leaf_place(f, lt.cam, b, leaf.toward)
     let sun = sun_at(lt, at, n, near, far, moving, cmp, clouds, s, soft: 1.5)
-    let (sky, reflected) = sky_gloss(lt, probes, clouds, s, grounds, at, n, n, lt.cam.eye)
-    let inside = 0.25 + 0.75 * ao
+    // No gloss, as the cards' leaves have none (`vegetation::leaf_shade`).
+    let sky = sky_at(lt, probes, clouds, s, grounds, at, n) * (0.25 + 0.75 * ao)
     let lit = Lit {
         albedo: max(albedo + f.tint * 0.5, vec3(0.005)),
         n,
         sun: sun * (0.35 + 0.65 * ao),
-        sky: sky * inside,
+        sky,
         through: b.leaves.through * (0.4 + 0.6 * ao),
-        rough: FAR_ROUGH,
-        glint: 0.0,
-        reflected: reflected *
-            inside *
-            light::gloss_occlusion(inside, abs(dot(n, normalize(lt.cam.eye - at))), FAR_ROUGH),
     }
     let out = hazed(air, s, lt.light, light::world(lt.light, lit, at, lt.cam.eye), at, lt.cam.eye)
     vec4(out, LEAVES + f32(u32(hash2(i32(f.centre.x), i32(f.centre.z)) * 60.0)))
@@ -960,29 +951,14 @@ pub fn volume_shade(
     // Lit where its leaves are, not on the quad (which lies in its own shadow).
     let at = volume_place(f, v, met.at)
     let sun = sun_at(lt, at, n, near, far, moving, cmp, clouds, s, soft: 1.5)
-    let (sky, reflected) = sky_gloss(
-        lt,
-        probes,
-        clouds,
-        s,
-        grounds,
-        at,
-        crown_n,
-        crown_n,
-        lt.cam.eye,
-    )
-    let inside = 0.25 + 0.75 * ao
+    // No gloss, as the cards' leaves have none (`vegetation::leaf_shade`).
+    let sky = sky_at(lt, probes, clouds, s, grounds, at, crown_n) * (0.25 + 0.75 * ao)
     let lit = Lit {
         albedo,
         n,
         sun: sun * (0.35 + 0.65 * ao),
-        sky: sky * inside,
+        sky,
         through: v.leaves.through * (0.4 + 0.6 * ao),
-        rough: FAR_ROUGH,
-        glint: 0.0,
-        reflected: reflected *
-            inside *
-            light::gloss_occlusion(inside, abs(dot(n, normalize(lt.cam.eye - at))), FAR_ROUGH),
     }
     let out = hazed(air, s, lt.light, light::world(lt.light, lit, at, lt.cam.eye), at, lt.cam.eye)
     vec4(out, LEAVES + f32(u32(hash2(i32(f.centre.x), i32(f.centre.z)) * 60.0)))

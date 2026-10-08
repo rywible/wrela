@@ -667,6 +667,7 @@ pub fn blade_shade(
         sky,
         through: look.through * t,
         rough: 0.75,
+        glint: 1.0,
         reflected: sky *
             light::gloss_occlusion(ao, abs(dot(n, normalize(lt.cam.eye - world))), 0.75),
     }
@@ -762,7 +763,7 @@ pub fn flower_shade(
     )
     let n = normalize(vec3(0.0, 1.0, 0.0) + lt.cam.up * 0.3)
     let sun = sun_at(lt, b.world, n, near, far, moving, cmp, clouds, s, soft: 1.0)
-    let (sky, reflected) = sky_gloss(lt, probes, clouds, s, grounds, b.world, n, n, lt.cam.eye)
+    let (sky, reflected) = sky_gloss(lt, probes, clouds, s, grounds, b.world, n, lt.cam.eye)
     let lit = Lit {
         albedo,
         n,
@@ -770,6 +771,7 @@ pub fn flower_shade(
         sky: sky * 0.9,
         through: colour * 0.15,
         rough: 0.75,
+        glint: 1.0,
         reflected: reflected * 0.9,
     }
     let c = hazed(
