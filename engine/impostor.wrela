@@ -11,9 +11,9 @@
 //   instance is a quad that marches it.
 
 use light::{Lit, hazed}
-use lod::{Lod, keeps, place, share}
+use lod::{Lod, anchor, keeps, place, share}
 use lit::{Lighting, sky_at, sun_at}
-use noise::{hash2, rand}
+use noise::{hash2, hashed_threshold, rand, surface_draw}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_VERTICES, Leaves, Plant, Wind, leaf_at,
     level_cards, limb_vertex, sway,
@@ -361,8 +361,9 @@ pub struct FarVertex: Copy {
     pub weights: Flat<vec4>,
     pub shift: Flat<vec4>,
     pub shift2: Flat<vec4>,
-    /// The part of a pixel's draws its instance keeps this way (`lod::share`).
-    pub keep: Flat<vec2>,
+    /// The part of a pixel's draws its instance keeps this way (`lod::share`), and where its
+    /// pattern is anchored (`lod::anchor`).
+    pub keep: Flat<vec4>,
 }
 
 /// A far instance: a quad facing the eye, the plant's reach wide, about its middle; swayed by
@@ -438,7 +439,9 @@ pub fn far_quad(
         weights: Flat { value: w },
         shift: Flat { value: vec4(shift[0], shift[1]) },
         shift2: Flat { value: vec4(shift[2], shift[3]) },
-        keep: Flat { value: share(level, faint, way) },
+        keep: Flat {
+            value: vec4(share(level, faint, way), anchor(cam, inst.at, lod.top, inst.scale)),
+        },
     }
 }
 
@@ -588,9 +591,12 @@ pub fn far_cut(
     colour: Texture,
     normal: Texture,
     s: Sampler,
+    cell: f32,
 ) -> WithDepth {
+    // A draw that holds still on the quad (hashed alpha), for its coverage.
+    let t = hashed_threshold(f.uv, seed_of(f), cell)
     // Its share of the pixel, where it's between two ways (`lod`).
-    if !keeps(f.keep.value, pixel.position.xy, cam.frame) {
+    if !keeps(f.keep.value, pixel.position.xy) {
         discard()
     }
     let w = f.weights.value
@@ -603,7 +609,7 @@ pub fn far_cut(
     // Most of the quad is empty: left before its leaves' places are read. The blended coverage
     // is steepened about its middle: blending softens the views' edges into a wider fringe,
     // which the tone curve shows brighter than the crisp edge it stands for.
-    if smoothstep(0.2, 0.8, coverage) <= dither(pixel.position.xy, cam.frame, 1) {
+    if smoothstep(0.2, 0.8, coverage) < t {
         discard()
     }
     var toward = 0.0
@@ -831,10 +837,10 @@ fn march_volume(f: FarVertex, cam: Camera, v: Volume, voxels: [vec4], depths: [f
     met
 }
 
-/// A pixel's draw in [0, 1) for a frame: the same each 16 frames (temporal AA's cycle), so a
-/// still frame repeats, and it averages to the crown's coverage and its leaves' light.
-fn dither(pixel: vec2, frame: u32, k: u32) -> f32 {
-    rand(u32(pixel.x) * 7919 + u32(pixel.y) * 104729 + (frame % 16) * 15485863, k)
+/// A far instance's own seed, for its draws that hold still on it: from where it stands (its
+/// quad's middle doesn't sway).
+fn seed_of(f: FarVertex) -> u32 {
+    u32(hash2(i32(floor(f.centre.x * 8.0)), i32(floor(f.centre.z * 8.0))) * 16777216.0)
 }
 
 /// A very far instance cut by its volume's opacity, dithered: temporal AA brings it to the
@@ -847,12 +853,14 @@ pub fn volume_cut(
     v: Volume,
     voxels: [vec4],
     depths: [f32],
+    cell: f32,
 ) -> WithDepth {
-    if !keeps(f.keep.value, pixel.position.xy, cam.frame) {
+    let t = hashed_threshold(f.uv, seed_of(f), cell)
+    if !keeps(f.keep.value, pixel.position.xy) {
         discard()
     }
     let met = march_volume(f, cam, v, voxels, depths)
-    if met.opacity <= dither(pixel.position.xy, cam.frame, 1) {
+    if met.opacity < t {
         discard()
     }
     WithDepth { color: id_colour(f.id.value), depth: depth_of(cam, volume_place(f, v, met.at)) }
@@ -867,8 +875,9 @@ fn volume_place(f: FarVertex, v: Volume, q: vec3) -> vec3 {
 }
 
 /// A very far instance's pixel: its leaves as the cards' are lit (`vegetation::leaf_shade`): the
-/// mean normal the ray met, tilted as one of its leaves (drawn each frame: temporal AA averages
-/// them), their depth in the crown, where they are.
+/// mean normal the ray met, tilted as one of its leaves (a draw that holds still on the quad,
+/// pixel to pixel: temporal AA's jitter averages neighbours, and nothing changes frame to
+/// frame), their depth in the crown, where they are.
 @fragment
 pub fn volume_shade(
     f: FarVertex,
@@ -886,7 +895,16 @@ pub fn volume_shade(
     clouds: Texture,
     probes: [Probe],
     grounds: [f32],
+    cell: f32,
 ) -> vec4 {
+    // Its leaves' draws, before anything is left (their derivatives).
+    let seed = seed_of(f)
+    let tilt = vec3(
+        surface_draw(f.uv, seed, 100, cell) - 0.5,
+        surface_draw(f.uv, seed, 120, cell) - 0.5,
+        surface_draw(f.uv, seed, 140, cell) - 0.5,
+    )
+    let aged = surface_draw(f.uv, seed, 160, cell) - 0.5
     if id_at(ids, pixel) != f.id.value {
         discard()
     }
@@ -894,16 +912,10 @@ pub fn volume_shade(
     let (cy, sy) = (cos(f.yaw.value), sin(f.yaw.value))
     let world_n = |l: vec3| vec3(cy * l.x + sy * l.z, l.y, -sy * l.x + cy * l.z)
     let crown_n = normalize(world_n(met.normal))
-    let px = pixel.position.xy
-    let tilt = vec3(
-        dither(px, lt.cam.frame, 100) - 0.5,
-        dither(px, lt.cam.frame, 120) - 0.5,
-        dither(px, lt.cam.frame, 140) - 0.5,
-    )
     let n = normalize(crown_n + tilt * 0.9)
     let ao = exp(-met.depth / 1.6)
     let age = saturate(
-        0.35 + 0.65 * met.normal.y + 0.3 * (dither(px, lt.cam.frame, 160) - 0.5),
+        0.35 + 0.65 * met.normal.y + 0.3 * aged,
     )
     let albedo = max(mix(v.leaves.old, v.leaves.young, vec3(age)) + f.tint * 0.5, vec3(0.005))
     // Lit where its leaves are, not on the quad (which lies in its own shadow).

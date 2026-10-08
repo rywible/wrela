@@ -11,8 +11,8 @@
 use impostor::{Cooked, Impostor, bake, cook, far_cut, far_quad, far_shade, volume_cut, volume_shade}
 use light::{Light, Lit, hazed}
 use lit::{Lighting, sky_at, sun_at}
-use noise::{hash2, rand}
-use lod::{IMPOSTOR, Lod, VOLUME, keeps, place, share, ways}
+use noise::{hash2, hashed_threshold, rand}
+use lod::{IMPOSTOR, Lod, VOLUME, anchor, keeps, place, share, ways}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LIMB_VERTICES, Leaves, Plant, Wind, cook_cards, leaf_at,
     leaf_atlas, level_cards, limb_vertex, sway,
@@ -104,8 +104,10 @@ pub struct Forest {
     /// `impostors_to`, as a volume.
     pub cards_to: f32,
     pub impostors_to: f32,
-    /// How wide a card level's cards grow on screen before the next takes over.
+    /// How wide a card level's cards grow on screen before the next takes over, and how wide a
+    /// cut's hashed cell is (`Lod::cell`), in the scene's pixels.
     pub card_px: f32,
+    pub cell: f32,
     /// Instances drawn as cards and limbs this frame, as impostors, and as volumes.
     pub near_count: u32,
     pub far_count: u32,
@@ -161,6 +163,7 @@ impl Forest {
             cards_to,
             impostors_to,
             card_px: lod::CARD_PX,
+            cell: 1.0,
             near_count: 0,
             far_count: 0,
             volume_count: 0,
@@ -252,6 +255,7 @@ impl Forest {
             top: kind.top,
             reach: kind.reach,
             card_px: self.card_px,
+            cell: self.cell,
         }
     }
 
@@ -298,11 +302,10 @@ pub struct CardDraw: Copy + GpuData {
     pub right: vec3,
     pub per_card: u32,
     pub up: vec3,
-    /// The way drawn (its level; `ALL` for every instance whole: the shadows'), how instances
-    /// choose theirs, and the frame (for each way's share of a pixel, `lod`).
+    /// The way drawn (its level; `ALL` for every instance whole: the shadows'), and how
+    /// instances choose theirs (each way's share of a pixel, `lod`).
     pub way: u32,
     pub lod: Lod,
-    pub frame: u32,
 }
 
 /// A draw of every instance whole, whatever its level (the static shadows').
@@ -318,8 +321,9 @@ pub struct LeafVertex: Copy {
     pub tint: vec4,
     pub seed: Flat<u32>,
     pub crown: Flat<u32>,
-    /// The part of a pixel's draws its instance keeps this way (`lod::share`).
-    pub keep: Flat<vec2>,
+    /// The part of a pixel's draws its instance keeps this way (`lod::share`), and where its
+    /// pattern is anchored (`lod::anchor`).
+    pub keep: Flat<vec4>,
 }
 
 /// The corners of a quad, as two triangles.
@@ -398,7 +402,7 @@ pub fn card_shadow(
         tint: vec4(0.0),
         seed: Flat { value: card.seed },
         crown: Flat { value: 0 },
-        keep: Flat { value: vec2(0.0, 1.0) },
+        keep: Flat { value: vec4(0.0, 1.0, 0.0, 0.0) },
     }
 }
 
@@ -408,7 +412,12 @@ pub fn card_shadow(
 @fragment
 pub fn leaf_cut(l: LeafVertex, pixel: FragCoord, d: CardDraw, atlas: Texture, s: Sampler) -> vec4 {
     let (m, which) = leaf_at(atlas, s, l.seed.value, l.uv)
-    if m < 0.5 || which >= d.per_card || !keeps(l.keep.value, pixel.position.xy, d.frame) {
+    // How much of the pixel the leaves cover: the atlas's soft edge made a pixel wide.
+    let cover = saturate((m - 0.5) / max(fwidth(m), 1.0e-4) + 0.5)
+    // Kept that much of the time, by a draw that holds still on the card (hashed alpha): a fixed
+    // cut left hard, crawling edges for temporal AA, and a draw changing each frame, noise.
+    let t = hashed_threshold(l.uv, l.seed.value ^ l.crown.value * 2246822519, d.lod.cell)
+    if cover < t || which >= d.per_card || !keeps(l.keep.value, pixel.position.xy) {
         discard_fragment()
     }
     vec4(0.0)
@@ -468,8 +477,8 @@ pub struct BarkVertex: Copy {
     pub world: vec3,
     pub normal: vec3,
     pub along: vec2,
-    /// The part of a pixel's draws its instance keeps this way (`lod::share`).
-    pub keep: Flat<vec2>,
+    /// The part of a pixel's draws its instance keeps this way, and its anchor (`lod`).
+    pub keep: Flat<vec4>,
 }
 
 fn limb_world(v: u32, i: u32, limbs: [Tube<4>], instances: [Instance]) -> (vec3, vec3, vec2) {
@@ -524,7 +533,7 @@ pub fn bark_shade(
     probes: [Probe],
     grounds: [f32],
 ) -> vec4 {
-    if !keeps(b.keep.value, pixel.position.xy, lt.cam.frame) {
+    if !keeps(b.keep.value, pixel.position.xy) {
         discard_fragment()
     }
     let n = normalize(b.normal)
@@ -560,18 +569,18 @@ pub fn card_draw(
     up: vec3,
     lod: Lod,
     way: u32,
-    frame: u32,
 ) -> CardDraw {
-    CardDraw { wind, grow: f32(1 << level), right, per_card: leaves.per_card, up, way, lod, frame }
+    CardDraw { wind, grow: f32(1 << level), right, per_card: leaves.per_card, up, way, lod }
 }
 
-/// The part of a pixel's draws an instance keeps, drawn way `way` (`lod::share`).
-fn keep_of(d: CardDraw, cam: Camera, inst: Instance) -> vec2 {
+/// The part of a pixel's draws an instance keeps, drawn way `way` (`lod::share`), and where its
+/// pattern is anchored (`lod::anchor`).
+fn keep_of(d: CardDraw, cam: Camera, inst: Instance) -> vec4 {
     if d.way == ALL {
-        return vec2(0.0, 1.0)
+        return vec4(0.0, 1.0, 0.0, 0.0)
     }
     let (level, faint) = place(d.lod, cam, inst.at, inst.scale)
-    share(level, faint, d.way)
+    vec4(share(level, faint, d.way), anchor(cam, inst.at, d.lod.top, inst.scale))
 }
 
 impl Forest {
@@ -599,6 +608,7 @@ impl Forest {
                         colour: k.impostor.colour,
                         normal: k.impostor.normal,
                         s: s,
+                        cell: self.cell,
                     ),
                     vertices: 6,
                     instances: l.count,
@@ -623,6 +633,7 @@ impl Forest {
                         k.volume.volume,
                         voxels: k.volume.voxels,
                         depths: k.volume.depths,
+                        cell: self.cell,
                     ),
                     vertices: 6,
                     instances: l.count,
@@ -641,7 +652,6 @@ impl Forest {
                     cam.up,
                     self.lod(l.kind),
                     l.how,
-                    cam.frame,
                 )
                 draw(
                     card.bind(
@@ -688,7 +698,6 @@ impl Forest {
                         cam.up,
                         self.lod(l.kind),
                         l.how,
-                        cam.frame,
                     )
                     draw(
                         limb.bind(
@@ -780,6 +789,7 @@ impl Forest {
                         clouds: clouds,
                         probes: probes,
                         grounds: grounds,
+                        cell: self.cell,
                     ),
                     vertices: 6,
                     instances: l.count,
@@ -798,7 +808,6 @@ impl Forest {
                     cam.up,
                     self.lod(l.kind),
                     l.how,
-                    cam.frame,
                 )
                 draw(
                     card.bind(
@@ -837,7 +846,7 @@ impl Forest {
             let instances = self.every.span(start: l.first, count: l.count)
             let level = 1
             let leaves = Leaves { per_card: SHADOW_LEAVES, ..k.plant.leaves }
-            let d = card_draw(wind, level, leaves, sh.right, sh.up, self.lod(l.kind), ALL, 0)
+            let d = card_draw(wind, level, leaves, sh.right, sh.up, self.lod(l.kind), ALL)
             draw(
                 card_shadow.bind(
                     view,
@@ -889,7 +898,8 @@ pub fn leaf_counted(
 }
 
 /// A card's leaf, counted at its pixel wherever it is, in front or behind: the cards covering
-/// each pixel.
+/// each pixel (any part of it, as the cut keeps a part of a pixel a card covers that part of the
+/// time).
 @fragment
 pub fn leaf_covering(
     l: LeafVertex,
@@ -901,7 +911,8 @@ pub fn leaf_covering(
     covering: mut Atomics<u32>,
 ) -> vec4 {
     let (m, which) = leaf_at(atlas, s, l.seed.value, l.uv)
-    if m < 0.5 || which >= d.per_card {
+    let cover = saturate((m - 0.5) / max(fwidth(m), 1.0e-4) + 0.5)
+    if cover <= 0.0 || which >= d.per_card {
         discard_fragment()
     }
     let i = u32(p.position.y) * width + u32(p.position.x)
@@ -932,7 +943,6 @@ impl Forest {
                     cam.up,
                     self.lod(l.kind),
                     l.how,
-                    cam.frame,
                 )
                 draw(
                     card.bind(
@@ -970,7 +980,6 @@ impl Forest {
                     cam.up,
                     self.lod(l.kind),
                     l.how,
-                    cam.frame,
                 )
                 draw(
                     card.bind(

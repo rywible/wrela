@@ -103,3 +103,48 @@ pub fn ridged2(p: vec2, octaves: u32) -> f32 {
     }
     s / total
 }
+
+/// A cell's draw in [0, 1): the cell at `c` (whole numbers) of a seed's lattice.
+fn cell_draw(c: vec2, seed: u32) -> f32 {
+    let h = hash_u32(
+        u32(i32(c.x)).wrapping_mul(1597334677) ^ u32(i32(c.y)).wrapping_mul(3812015801) ^ seed,
+    )
+    f32(h >> 8) * (1.0 / 16777216.0)
+}
+
+/// Wyman and McGuire's hashed alpha threshold (I3D 2017): a draw in (0, 1] for the point `p` of
+/// a surface's own coordinates, which holds still on the surface. `p` is cut into cells `cell`
+/// pixels wide (at the two powers of two round that size in `p`'s units, the draws blended by
+/// where it falls between them and made uniform again), so as temporal AA's jitter moves a
+/// pixel's sample over the surface, a pixel a part `c` covered is kept `c` of the time. A
+/// fragment shader's, in uniform control flow (its derivatives).
+pub fn hashed_threshold(p: vec2, seed: u32, cell: f32) -> f32 {
+    let size = max(length(dpdx(p)), length(dpdy(p))) * cell
+    let level = log2(max(size, 1.0e-8))
+    let lo = exp2(floor(level))
+    let a = cell_draw(floor(p / lo), seed)
+    let b = cell_draw(floor(p / (lo * 2.0)), seed ^ 2654435769)
+    let f = fract(level)
+    let x = mix(a, b, f)
+    // The blend of two uniform draws is trapezoidal: its distribution maps it back to uniform.
+    let m = max(min(f, 1.0 - f), 1.0e-6)
+    let k = 2.0 * m * (1.0 - m)
+    let t = if x < m {
+        x * x / k
+    } else if x < 1.0 - m {
+        (x - 0.5 * m) / (1.0 - m)
+    } else {
+        1.0 - (1.0 - x) * (1.0 - x) / k
+    }
+    clamp(t, 1.0e-6, 1.0)
+}
+
+/// A draw in [0, 1) that holds still on a surface: the point `p` of its own coordinates cut
+/// into cells `cell` pixels wide (the finer power of two round that size), the `k`th draw of a
+/// seed's. For shading that varies pixel to pixel but not frame to frame. A fragment shader's,
+/// in uniform control flow (its derivatives).
+pub fn surface_draw(p: vec2, seed: u32, k: u32, cell: f32) -> f32 {
+    let size = max(length(dpdx(p)), length(dpdy(p))) * cell
+    let lo = exp2(floor(log2(max(size, 1.0e-8))))
+    cell_draw(floor(p / lo), seed ^ hash_u32(k))
+}

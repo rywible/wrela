@@ -7,9 +7,15 @@
 //
 // The scene's alpha is a tag (what a pixel shows: its class times 64, plus which one), which
 // can't be blended: the output keeps the nearest sample's.
+//
+// The box is a scene pixel's 3 × 3 samples' (two by two's spread is narrow and noisy: its box
+// let through less of a right history and more of a wrong one, the look's flicker 1.61/255
+// against 1.38). Each scene pixel's is found once, by a kernel (`neighbourhoods`), and the
+// output's pixels read their nearest's: at half the output's size four of them share each one,
+// and a resolve gathering its own 3 × 3 took twice as long.
 
-use std::gpu::{DepthTexture, FragCoord, Sampler, Texture}
-use view::{Camera, jitter_of}
+use std::gpu::{DepthTexture, FragCoord, GlobalId, Sampler, Texels, Texture}
+use view::{Camera, class_of, jitter_of}
 
 /// What the resolve reads besides the textures: the scene camera (at the scene's size), the
 /// output's size, how much of this frame a pixel takes when a sample falls on it, and whether
@@ -41,6 +47,40 @@ fn tamed(c: vec3) -> vec3 {
 
 fn untamed(c: vec3) -> vec3 {
     c / max(1.0 - max(c.r, max(c.g, c.b)), 1.0e-4)
+}
+
+/// Each scene pixel's neighbourhood, its 3 × 3 samples (tamed, in YCoCg): their mean and how
+/// much of them thin geometry covers (grass, leaves, flowers) into `means`, and their spread
+/// and which classes they show (a bit each) into `spreads`. Both the scene's size.
+@compute(8, 8)
+pub fn neighbourhoods(scene: Texture, means: mut Texels, spreads: mut Texels, id: GlobalId) {
+    let size = vec2i(i32(scene.width()), i32(scene.height()))
+    if i32(id.x) >= size.x || i32(id.y) >= size.y {
+        return
+    }
+    let at = vec2i(i32(id.x), i32(id.y))
+    var m1 = vec3(0.0)
+    var m2 = vec3(0.0)
+    var thin = 0.0
+    var seen: u32 = 0
+    for dy in 0..3 {
+        for dx in 0..3 {
+            let p = clamp(at + vec2i(dx - 1, dy - 1), vec2i(0), size - vec2i(1))
+            let texel = scene.load(x: u32(p.x), y: u32(p.y))
+            let y = to_ycocg(tamed(max(texel.rgb, vec3(0.0))))
+            m1 += y
+            m2 += y * y
+            let class = class_of(texel.a)
+            seen = seen | (1 << class)
+            if class == 2 || class == 3 || class == 7 {
+                thin += 1.0
+            }
+        }
+    }
+    let mean = m1 / 9.0
+    let sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)))
+    means.store(id, vec4(mean, thin / 9.0))
+    spreads.store(id, vec4(sigma, f32(seen)))
 }
 
 /// The history at `px` (output pixels), filtered by a Catmull-Rom spline in 5 taps (bilinear
@@ -78,6 +118,8 @@ pub fn resolve(
     depth: DepthTexture,
     motion: Texture,
     history: Texture,
+    means: Texture,
+    spreads: Texture,
     s: Sampler,
 ) -> vec4 {
     let cam = r.cam
@@ -97,8 +139,6 @@ pub fn resolve(
     var tag = 0.0
     var closest = 0.0
     var at_closest = clamp(base, vec2i(0), lim)
-    var m1 = vec3(0.0)
-    var m2 = vec3(0.0)
     for dy in 0..2 {
         for dx in 0..2 {
             let p = clamp(base + vec2i(dx, dy), vec2i(0), lim)
@@ -116,9 +156,6 @@ pub fn resolve(
                 nearest = w
                 tag = texel.a
             }
-            let y = to_ycocg(c)
-            m1 += y
-            m2 += y * y
             // The nearest surface among them (reversed depth: the largest), whose motion the
             // pixel takes, so a moving edge carries its history.
             let z = depth.load(x: u32(p.x), y: u32(p.y))
@@ -159,12 +196,21 @@ pub fn resolve(
         return vec4(untamed(current), tag)
     }
     let prev = tamed(history_at(history, s, last, r.out))
-    // Clip the history to the box of this frame's neighbourhood (its mean and spread; four
-    // samples' spread is narrow, so the box is wider than three-by-three's would be).
-    let mean = m1 / 4.0
-    let sigma = sqrt(max(m2 / 4.0 - mean * mean, vec3(0.0)))
-    let lo = mean - sigma * 1.6
-    let hi = mean + sigma * 1.6
+    // The neighbourhood of the scene pixel nearest this one.
+    let near = clamp(vec2i(floor(q + j)), vec2i(0), lim)
+    let hood = means.load(x: u32(near.x), y: u32(near.y))
+    let spread = spreads.load(x: u32(near.x), y: u32(near.y))
+    // What the history showed there: if nothing round the pixel shows it now (a creature that
+    // walked on), it's left behind, and the box isn't widened for it; nor beside anything that
+    // moves (a widened box beside the creature lets its colour into the history, to trail).
+    let was = class_of(history.load(x: u32(last.x), y: u32(last.y)).a)
+    let still_seen = ((u32(spread.w + 0.5) >> was) & 1) != 0 && moved.z < 0.5
+    // Clip the history to the box of this frame's neighbourhood (its mean and spread), wider
+    // where thin geometry covers part of it: up to 1.75 spreads where it's half covered.
+    let cover = hood.w
+    let gamma = 1.0 + if still_seen { 3.0 * cover * (1.0 - cover) } else { 0.0 }
+    let lo = hood.xyz - spread.xyz * gamma
+    let hi = hood.xyz + spread.xyz * gamma
     let h = to_ycocg(prev)
     let centre = 0.5 * (hi + lo)
     let extent = max(0.5 * (hi - lo), vec3(1.0e-5))
@@ -172,8 +218,11 @@ pub fn resolve(
     let unit = abs(off / extent)
     let most = max(unit.x, max(unit.y, unit.z))
     let clipped = if most > 1.0 { centre + off / most } else { h }
-    // This frame's share: more where a sample fell near the pixel's centre.
-    let a = clamp(r.blend * nearest * 1.6, r.blend * 0.25, 0.5)
+    // This frame's share: more where a sample fell near the pixel's centre. Where the history
+    // showed the creature and the pixel doesn't now, the creature walked on: this frame's alone
+    // (the box round an edge holds its colours, which would let it trail).
+    let left = was == 5 && class_of(tag) != 5
+    let a = if left { 1.0 } else { clamp(r.blend * nearest * 1.6, r.blend * 0.25, 0.5) }
     let out = mix(from_ycocg(clipped), current, vec3(a))
     vec4(untamed(max(out, vec3(0.0))), tag)
 }

@@ -23,7 +23,7 @@ use engine::stone::{Realized, stone_shade, stone_shadow, stone_vertex}
 use engine::sky::{
     Cook, Puff, SHADOW_SIDE, SKY_H, SKY_W, STRIPS, cook_clouds, cook_shadow, sky_shade, strip,
 }
-use engine::temporal::{Resolve, resolve}
+use engine::temporal::{Resolve, neighbourhoods, resolve}
 use engine::terrain::{Clipmap, Terrain, Texel, ground, ground_shade}
 use engine::vegetation::{Forest, Kind, kind, nothing}
 use engine::view::{BEHIND, Camera, NEAREST, camera, first_camera}
@@ -250,6 +250,10 @@ pub struct Clearing {
     /// Which far tree won each pixel of the prepass (`impostor::far_cut`).
     ids: Texture,
     motion: Texture,
+    /// Each scene pixel's neighbourhood, for temporal AA: its 3 × 3 samples' mean and spread
+    /// (`temporal::neighbourhoods`).
+    means: Texture,
+    spreads: Texture,
     history_a: Texture,
     history_b: Texture,
     /// The dabs and tooth, at the scene's size.
@@ -380,6 +384,8 @@ pub fn init() -> Clearing {
         depth: depth_texture(width: 1, height: 1),
         ids: texture(width: 1, height: 1, format: TextureFormat::Rgba8),
         motion: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
+        means: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float, writable: true),
+        spreads: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float, writable: true),
         history_a: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
         history_b: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
         dabs: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
@@ -438,6 +444,7 @@ fn cook_again(s: mut Clearing, eye: vec3) {
     if s.watches.forest.changed() {
         s.forest = forest_of(s.atlas, s.linear)
         s.forest.card_px = card_px(s.scale)
+        s.forest.cell = 1.0 / f32(s.scale)
         shadows = true
         probes = true
     }
@@ -537,10 +544,18 @@ fn temporal(
     scene: Texture,
     depth: DepthTexture,
     motion: Texture,
+    means: mut Texture,
+    spreads: mut Texture,
     s: Sampler,
 ) {
+    let groups = ((scene.width() + 7) / 8, (scene.height() + 7) / 8, 1)
+    dispatch(neighbourhoods.bind(scene, mut means, mut spreads), groups: groups)
     let p = begin_pass(mut into)
-    draw(cover.bind(z: 0.5), resolve.bind(r, scene, depth, motion, from, s), vertices: 3)
+    draw(
+        cover.bind(z: 0.5),
+        resolve.bind(r, scene, depth, motion, from, means, spreads, s),
+        vertices: 3,
+    )
     p.end()
 }
 
@@ -592,6 +607,8 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         s.depth = depth_texture(width: w, height: h)
         s.ids = texture(width: w, height: h, format: TextureFormat::Rgba8)
         s.motion = texture(width: w, height: h, format: TextureFormat::Rgba16Float)
+        s.means = texture(width: w, height: h, format: TextureFormat::Rgba16Float, writable: true)
+        s.spreads = texture(width: w, height: h, format: TextureFormat::Rgba16Float, writable: true)
         s.dabs = texture(width: w, height: h, format: TextureFormat::Rgba16Float)
         s.history_a = texture(width, height, format: TextureFormat::Rgba16Float)
         s.history_b = texture(width, height, format: TextureFormat::Rgba16Float)
@@ -602,6 +619,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         s.height = height
         s.frames = 0
         s.forest.card_px = card_px(s.scale)
+        s.forest.cell = 1.0 / f32(s.scale)
     }
     // The creature, between the two ticks round the frame's sim time, and its palette.
     s.snaps.update()
@@ -650,6 +668,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             let kinds = replace(mut s.kinds, Vec::new())
             s.forest = Forest::new(take kinds, placed(), cards_to: 150.0, impostors_to: 1000.0)
             s.forest.card_px = card_px(s.scale)
+            s.forest.cell = 1.0 / f32(s.scale)
             s.forest_done = true
             s.static_drawn = false
         }
@@ -986,9 +1005,29 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     }
     label("temporal")
     if a == 0 {
-        temporal(mut s.history_a, s.history_b, r, s.scene, s.depth, s.motion, s.linear)
+        temporal(
+            mut s.history_a,
+            s.history_b,
+            r,
+            s.scene,
+            s.depth,
+            s.motion,
+            mut s.means,
+            mut s.spreads,
+            s.linear,
+        )
     } else {
-        temporal(mut s.history_b, s.history_a, r, s.scene, s.depth, s.motion, s.linear)
+        temporal(
+            mut s.history_b,
+            s.history_a,
+            r,
+            s.scene,
+            s.depth,
+            s.motion,
+            mut s.means,
+            mut s.spreads,
+            s.linear,
+        )
     }
     label("look")
     if s.view == testing::LOOK {
