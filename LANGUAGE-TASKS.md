@@ -29,7 +29,9 @@ to the result. Decided: pipelines that run only at load count against the 64.
 - [x] Small: enums to and from `u32` (discriminants, `from_u32`, `Fieldless`); flags
       (`Flags<E>`; the clearing's `System`); exports take fieldless enums (`View`)
 - [x] Small: unused-item warning (W0008); GpuData padding (W0007); the engine's fixed
-- [ ] Small: `borrow x = if c { a } else { b }`; packed bitfields; non-square matrices
+- [x] Small: `borrow x = if c { a } else { b }`; packed bitfields (`Packed`, `Bits<N>`; the mesher's
+      cell word)
+- [ ] Small: non-square matrices
 - [x] Budget: 64 pipelines per scene and 256 KiB of WGSL a pipeline, checked in shipped builds
       (E0707); unrecorded pipelines pruned (constant `&&`/`||` folded); load cooks merged (the
       clouds' noise, the shadow map's two kernels); rigid stones skip skinning. The clearing: 64.

@@ -37,8 +37,15 @@ use std::mem::{debug_build, size_of}
 /// A block's cells along each axis: a 4×4×4 workgroup in `place_vertices` and `emit_quads`.
 pub const BLOCK: u32 = 4
 
-/// A cell with no vertex, in the cell map's low 24 bits.
+/// A cell with no vertex (a `CellWord`'s 24 bits all set).
 pub const NO_VERTEX: u32 = 0xffffff
+
+/// A cell's word in the cell map: its vertex (`NO_VERTEX` for none), and which of its eight
+/// corners are inside (a bit each).
+struct CellWord: Packed + Copy {
+    vertex: Bits<24>,
+    signs: Bits<8>,
+}
 
 /// What a realization's passes counted (`Mesh::tally`), which `finish_mesh` writes: its
 /// vertices (within its room), the holes, the overflow flags, the vertices and quads pushed (past
@@ -391,7 +398,7 @@ pub fn place_vertices<C, F: Parts<C>>(
         }
     }
     if signs == 0 || signs == 255 {
-        cells.store(key, (signs << 24) | NO_VERTEX)
+        cells.store(key, u32(CellWord { vertex: NO_VERTEX, signs }))
         return
     }
 
@@ -434,7 +441,7 @@ pub fn place_vertices<C, F: Parts<C>>(
     let normal = normal_at(field, mask, fp, pos)
     // Its skin weights come in their own pass (`skin_vertices`).
     let vi = verts.push(SkinVertex { pos, bones: 0, normal, weights: 255, mask })
-    cells.store(key, (signs << 24) | min(vi, NO_VERTEX))
+    cells.store(key, u32(CellWord { vertex: min(vi, NO_VERTEX), signs }))
 }
 
 // ---- pass 3: a quad for every crossed edge -----------------------------------------------------
@@ -450,7 +457,7 @@ fn vertex_at(grid: Grid, block_map: [u32], cells: [u32], blocks: u32, room: u32,
     if s == 0 {
         return NO_VERTEX
     }
-    let v = cells[cell_key(s - 1, u % BLOCK, blocks)] & NO_VERTEX
+    let v = CellWord::of_bits(cells[cell_key(s - 1, u % BLOCK, blocks)]).vertex
     if v >= room { NO_VERTEX } else { v }
 }
 
@@ -471,12 +478,12 @@ pub fn emit_quads(
 ) {
     let slot = block.x
     let n = cells.len() / (BLOCK * BLOCK * BLOCK)
-    let data = cells[cell_key(slot, lid.xyz(), n)]
-    let v0 = data & NO_VERTEX
+    let cell = CellWord::of_bits(cells[cell_key(slot, lid.xyz(), n)])
+    let v0 = cell.vertex
     if v0 >= room {
         return
     }
-    let signs = data >> 24
+    let signs = cell.signs
     let g = vec3i(grid.block_xyz(blocks[slot].block) * BLOCK + lid.xyz())
     let in0 = signs & 1
     for axis in 0..3 {
