@@ -556,8 +556,10 @@ fn discard_fragment() {
     std::gpu::discard()
 }
 
-/// A leaf's roughness: a little waxy, so a crown in the sun glints, and rougher than one leaf
-/// is, as a pixel holds many at many angles.
+/// A leaf's roughness: a little waxy, and rougher than one leaf is, as a pixel holds many at
+/// many angles. A crown reflects the sky round it, but shows no glint of the sun: on cards each
+/// leaf glints by its own normal, on an impostor by its texels' normals blended, so the glints
+/// changed where its levels meet (4.7/255 against 3.6 between cards and impostors, bound 4).
 pub const LEAF_ROUGH: f32 = 0.6
 
 /// A leaf's pixel, where the prepass left its depth: its leaf's own tilt off the crown's normal,
@@ -602,7 +604,7 @@ pub fn leaf_shade(
     let albedo = max(mix(leaves.old, leaves.young, vec3(age)) + tint * 0.5, vec3(0.005))
     // The light round the crown, and toward a leaf's reflection, by the crown's own facing
     // there (each leaf's glint is its own normal's).
-    let (sky, reflected) = sky_gloss(lt, probes, clouds, s, grounds, world, crown_n, lt.cam.eye)
+    let (sky, reflected) = sky_gloss(lt, probes, clouds, s, grounds, world, crown_n, n, lt.cam.eye)
     let inside = 0.25 + 0.75 * ao
     let lit = Lit {
         albedo,
@@ -611,6 +613,7 @@ pub fn leaf_shade(
         sky: sky * inside,
         through: leaves.through * (0.4 + 0.6 * ao),
         rough: LEAF_ROUGH,
+        glint: 0.0,
         reflected: reflected *
             inside *
             light::gloss_occlusion(inside, abs(dot(n, normalize(lt.cam.eye - world))), LEAF_ROUGH),
@@ -712,8 +715,18 @@ pub fn bark_shade(
     let moss = smoothstep(0.2, 0.7, n.y + 0.4 * noise::noise2(b.world.xz * 3.0)) * 0.6
     let a = mix(albedo, bark.moss, vec3(moss))
     let sun = sun_at(lt, b.world, n, near, far, moving, cmp, clouds, s, soft: 1.5)
-    let (sky, reflected) = sky_gloss(lt, probes, clouds, s, grounds, b.world, n, lt.cam.eye)
-    let lit = Lit { albedo: a, n, sun, sky, through: vec3(0.0), rough: 0.85, reflected }
+    let (sky, reflected) = sky_gloss(lt, probes, clouds, s, grounds, b.world, n, n, lt.cam.eye)
+    // No glint of the sun, as the leaves' (`LEAF_ROUGH`): an impostor bakes the limbs with them.
+    let lit = Lit {
+        albedo: a,
+        n,
+        sun,
+        sky,
+        through: vec3(0.0),
+        rough: 0.85,
+        reflected,
+        glint: 0.0,
+    }
     let c = hazed(
         air,
         s,

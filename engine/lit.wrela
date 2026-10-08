@@ -57,7 +57,9 @@ pub fn sky_at(
 }
 
 /// The sky light at `world` for a surface facing `n` (as `sky_at`), and the light its gloss
-/// reflects: toward its reflection of the ray from `eye` (`light::Lit::reflected`).
+/// reflects: toward its reflection, about `facing`, of the ray from `eye`
+/// (`light::Lit::reflected`). `facing` is `n` but for a leaf, whose sky light is its crown's and
+/// its gloss its own.
 pub fn sky_gloss(
     l: Lighting,
     probes: Texture,
@@ -66,10 +68,11 @@ pub fn sky_gloss(
     grounds: [f32],
     world: vec3,
     n: vec3,
+    facing: vec3,
     eye: vec3,
 ) -> (vec3, vec3) {
     let shade = cloud_shadow(l.clouds, clouds, s, world)
     let v = normalize(eye - world)
-    let r = n * (2.0 * dot(n, v)) - v
+    let r = facing * (2.0 * dot(facing, v)) - v
     sky_lights(l.grid, probes, s, grounds, l.light, world, n, r, shade)
 }

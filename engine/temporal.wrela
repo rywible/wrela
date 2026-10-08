@@ -25,6 +25,34 @@ pub struct Resolve: Copy + GpuData {
     pub out: vec2,
     pub blend: f32,
     pub fresh: u32,
+    /// Where on the output the creature can be, now or last frame (a rectangle, its corners in
+    /// output pixels: `seen_box`; empty for none): where the history is checked for it.
+    pub creature: vec4,
+}
+
+/// The rectangle on the output (`out` pixels) round the world's box `lo` to `hi` as `cam` sees
+/// it now and saw it last frame, `margin` pixels wider each way; the whole output if a corner is
+/// behind the eye either time.
+pub fn seen_box(cam: Camera, out: vec2, lo: vec3, hi: vec3, margin: f32) -> vec4 {
+    let scale = out / cam.screen
+    var a = vec2(1.0e9)
+    var b = vec2(-1.0e9)
+    for i in 0..8 {
+        let p = vec3(
+            if (i & 1) == 0 { lo.x } else { hi.x },
+            if (i & 2) == 0 { lo.y } else { hi.y },
+            if (i & 4) == 0 { lo.z } else { hi.z },
+        )
+        let now = cam.view_proj * vec4(p, 1.0)
+        let then = cam.last_view_proj * vec4(p, 1.0)
+        if now.w <= 1.0e-3 || then.w <= 1.0e-3 {
+            return vec4(0.0, 0.0, out)
+        }
+        let (x, y) = (cam.pixel(p) * scale, cam.last_pixel(p) * scale)
+        a = min(a, min(x, y))
+        b = max(b, max(x, y))
+    }
+    vec4(a - vec2(margin), b + vec2(margin))
 }
 
 /// Luma and chroma (YCoCg): colours compared and clipped here, where a box fits them better.
@@ -85,7 +113,7 @@ pub fn neighbourhoods(scene: Texture, means: mut Texels, spreads: mut Texels, id
 
 /// The history at `px` (output pixels), filtered by a Catmull-Rom spline in 5 taps (bilinear
 /// taps placed to give its weights), so a moving history stays sharp.
-fn history_at(history: Texture, s: Sampler, px: vec2, size: vec2) -> vec4 {
+fn history_at(history: Texture, s: Sampler, px: vec2, size: vec2) -> vec3 {
     let pos = px - vec2(0.5)
     let c = floor(pos) + vec2(0.5)
     let f = pos - floor(pos)
@@ -101,12 +129,11 @@ fn history_at(history: Texture, s: Sampler, px: vec2, size: vec2) -> vec4 {
     var r = vec3(0.0)
     r += history.sample_level(s, vec2(t12.x, t0.y)).rgb * (w12.x * w0.y)
     r += history.sample_level(s, vec2(t0.x, t12.y)).rgb * (w0.x * w12.y)
-    let core = history.sample_level(s, vec2(t12.x, t12.y))
-    r += core.rgb * (w12.x * w12.y)
+    r += history.sample_level(s, vec2(t12.x, t12.y)).rgb * (w12.x * w12.y)
     r += history.sample_level(s, vec2(t3.x, t12.y)).rgb * (w3.x * w12.y)
     r += history.sample_level(s, vec2(t12.x, t3.y)).rgb * (w12.x * w3.y)
     let total = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y
-    vec4(max(r / total, vec3(0.0)), core.a)
+    max(r / total, vec3(0.0))
 }
 
 /// The output pixel at `pixel`: this frame's samples reconstructed there, blended with the
@@ -136,6 +163,8 @@ pub fn resolve(
     let lim = vec2i(i32(in_size.x) - 1, i32(in_size.y) - 1)
     var sum = vec3(0.0)
     var weight = 0.0
+    var sum_else = vec3(0.0)
+    var weight_else = 0.0
     var nearest = 0.0
     var tag = 0.0
     var closest = 0.0
@@ -153,6 +182,10 @@ pub fn resolve(
             let w = exp(-1.4 * dot(d, d))
             sum += c * w
             weight += w
+            // And all but the creature's (see `current`).
+            let other = if class_of(texel.a) != 5 { w } else { 0.0 }
+            sum_else += c * other
+            weight_else += other
             if w > nearest {
                 nearest = w
                 tag = texel.a
@@ -166,7 +199,15 @@ pub fn resolve(
             }
         }
     }
-    let current = sum / max(weight, 1.0e-6)
+    // A pixel that doesn't show the creature (its nearest sample's tag) takes none of its
+    // samples: the creature's colour in a pixel tagged as the ground would trail once the
+    // creature walked on, as the pixel's history says the ground. (The creature's own pixels
+    // take every sample, so its edge stays smooth from within.)
+    let current = if class_of(tag) == 5 {
+        sum / max(weight, 1.0e-6)
+    } else {
+        sum_else / max(weight_else, 1.0e-6)
+    }
     // Where this pixel's point was last frame, in output pixels.
     let moved = motion.load(u32(at_closest.x), u32(at_closest.y))
     var last = vec2(0.0)
@@ -196,8 +237,7 @@ pub fn resolve(
     if r.fresh != 0 || !inside {
         return vec4(untamed(current), tag)
     }
-    let fetched = history_at(history, s, last, r.out)
-    let prev = tamed(fetched.rgb)
+    let prev = tamed(history_at(history, s, last, r.out))
     // The neighbourhood of the scene pixel nearest this one.
     let near = clamp(vec2i(floor(q + j)), vec2i(0), lim)
     let hood = means.load(x: u32(near.x), y: u32(near.y))
@@ -205,8 +245,7 @@ pub fn resolve(
     // What the history showed there: if nothing round the pixel shows it now (a creature that
     // walked on), it's left behind, and the box isn't widened for it; nor beside anything that
     // moves (a widened box beside the creature lets its colour into the history, to trail).
-    let was_tag = history.load(x: u32(last.x), y: u32(last.y)).a
-    let was = class_of(was_tag)
+    let was = class_of(history.load(x: u32(last.x), y: u32(last.y)).a)
     let still_seen = ((u32(spread.w + 0.5) >> was) & 1) != 0 && moved.z < 0.5
     // Clip the history to the box of this frame's neighbourhood (its mean and spread), wider
     // where thin geometry covers part of it: up to 1.75 spreads where it's half covered.
@@ -225,11 +264,13 @@ pub fn resolve(
     // showed the creature and the pixel doesn't now, the creature walked on: this frame's alone
     // (the box round an edge holds its colours, which would let it trail). The history showed
     // it if any of the four texels round the point did: they carry most of its filtered colour
-    // (`history_at`), and at the creature's edge the nearest alone may be the ground. Their
-    // tags filtered together (the history's middle sample, `fetched.a`) are of the nearest's
-    // class where all four are, as nearly everywhere: then the nearest says.
+    // (`history_at`), and at the creature's edge the nearest alone may be the ground. Only
+    // where the creature can be (`Resolve::creature`): the four loads everywhere cost 0.25 ms.
     var showed = was == 5
-    if !showed && class_of(fetched.a) != was {
+    let px = pixel.position.xy
+    let c = r.creature
+    let inside = px.x >= c.x && px.y >= c.y && px.x <= c.z && px.y <= c.w
+    if !showed && inside && class_of(tag) != 5 {
         let core = vec2i(floor(last - vec2(0.5)))
         let edge = vec2i(i32(r.out.x) - 1, i32(r.out.y) - 1)
         for dy in 0..2 {

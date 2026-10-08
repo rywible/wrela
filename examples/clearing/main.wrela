@@ -22,7 +22,7 @@ use engine::probes::{Baked, Occluder, Probe, ProbeGrid, Reference, Sampling, Tra
 use engine::shadow::{Cascade, Shadows, shadows}
 use engine::stone::{Realized, stone_shade, stone_shadow, stone_vertex}
 use engine::sky::{Clouds, Sky, new_sky, sky_shade}
-use engine::temporal::{Resolve, neighbourhoods, resolve}
+use engine::temporal::{Resolve, neighbourhoods, resolve, seen_box}
 use engine::terrain::{Clipmap, Terrain, Texel, ground, ground_shade}
 use engine::vegetation::{Forest, Kind, kind, nothing}
 use engine::view::{BEHIND, Camera, NEAREST, camera, first_camera}
@@ -250,8 +250,9 @@ pub struct Clearing {
     /// Whether the camera's path was asked for (it starts once the clearing's ready).
     asked: bool,
     /// The clouds: their noises, weather and shadow maps and dome (`engine::sky`), and whether
-    /// the maps are cooked (they're cooked again after an edit).
+    /// the noises and the maps are cooked (the maps again after an edit).
     sky: Sky,
+    noise_cooked: bool,
     sky_cooked: bool,
     /// The clouds as the last frame drew them (where their field had drifted).
     clouds: Clouds,
@@ -388,6 +389,7 @@ pub fn init() -> Clearing {
         ready: false,
         asked: false,
         sky: new_sky(),
+        noise_cooked: false,
         sky_cooked: false,
         clouds: Clouds {
             eye: vec3(0.0),
@@ -749,43 +751,48 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     }
     mv.end()
     // The air's tables, cooked at load (and again when the sun moves), and the probes' open sky
-    // from them.
-    if !s.air_cooked {
+    // from them: after the load's first frame, which is full (the forest's first kinds, the
+    // terrain's clipmap).
+    if s.frames == 0 && !s.ready {} else if !s.air_cooked {
         s.tables.cook(s.air, s.linear)
         s.probes.open(s.light, s.air.ground, s.tables.view, s.linear)
         s.air_cooked = true
-    }
-    // The clouds: their noises and maps cooked at load (and again after an edit), then one of
-    // the dome's tiles in 64 marched each frame, the field drifted with the wind.
-    let cloud_shadows = on(s.off, testing::CLOUD_SHADOWS)
-    if !s.sky_cooked {
+    } else if !s.noise_cooked {
+        // The clouds: their noises, then their maps (again after an edit), each cooked in a
+        // frame of its own after the air's (each is tens of milliseconds of the GPU: together,
+        // with the load's other work, a frame took 137 ms); then one of the dome's tiles in 64
+        // marched each frame, the field drifted with the wind.
         s.sky.cook_noise()
+        s.noise_cooked = true
+    } else if !s.sky_cooked {
         s.sky.cook_weather(
             cloudscape(),
             FAIR,
             SUN_GAP,
             s.light.sun,
             s.repeat,
-            shadows: cloud_shadows,
+            shadows: on(s.off, testing::CLOUD_SHADOWS),
         )
         s.sky_cooked = true
         s.clouds_again = false
     }
     // A test left the clouds' shadows out, or put them back.
-    if s.clouds_again {
-        s.sky.cook_shadow(s.light.sun, s.repeat, shadows: cloud_shadows)
+    if s.clouds_again && s.sky_cooked {
+        s.sky.cook_shadow(s.light.sun, s.repeat, shadows: on(s.off, testing::CLOUD_SHADOWS))
         s.clouds_again = false
     }
-    s.clouds = s.sky.march(
-        s.air,
-        s.light,
-        s.tables,
-        eye,
-        drift: CLOUD_WIND * wind.time,
-        rep: s.repeat,
-        s: s.linear,
-        still: !on(s.off, testing::WIND),
-    )
+    if s.sky_cooked {
+        s.clouds = s.sky.march(
+            s.air,
+            s.light,
+            s.tables,
+            eye,
+            drift: CLOUD_WIND * wind.time,
+            rep: s.repeat,
+            s: s.linear,
+            still: !on(s.off, testing::WIND),
+        )
+    }
     let clouds = s.clouds
     // The probes: their occluders cooked once, then a strip of columns a frame; once every
     // column is baked, a strip baked again a frame, while the clouds drift (a test's frames,
@@ -1076,11 +1083,22 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
 
     // Temporal AA, up to the output.
     let a = s.frames % 2
+    // Where the creature can be on the output, now or last frame: a box round it, wider than
+    // it, as the camera sees it each time (temporal AA checks its history for it there).
+    let out = vec2(f32(width), f32(height))
+    // (The creature's root is at its hips: its hooves are below it.)
+    let creature = if on(s.off, testing::CREATURE) && s.creature_done {
+        let at = walker.root.pos
+        seen_box(cam, out, at - vec3(1.4, 1.6, 1.4), at + vec3(1.4, 1.4, 1.4), margin: 6.0)
+    } else {
+        vec4(0.0, 0.0, -1.0, -1.0)
+    }
     let r = Resolve {
         cam,
-        out: vec2(f32(width), f32(height)),
+        out,
         blend: 0.12,
         fresh: if s.frames == 0 || !on(s.off, testing::HISTORY) { 1 } else { 0 },
+        creature,
     }
     label("temporal")
     if a == 0 {
