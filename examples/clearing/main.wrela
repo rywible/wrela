@@ -21,7 +21,8 @@ use engine::probes::{Baked, Occluder, Probe, ProbeGrid, Reference, Sampling, Tra
 use engine::shadow::{Cascade, Shadows, shadows}
 use engine::stone::{Realized, stone_shade, stone_shadow, stone_vertex}
 use engine::sky::{
-    Cook, Puff, SHADOW_SIDE, SKY_H, SKY_W, STRIPS, cook_clouds, cook_shadow, sky_shade, strip,
+    Cook, Puff, SHADOW_SIDE, SKY_H, SKY_W, STRIPS, TILES, TilePuffs, cook_clouds, cook_shadow,
+    cull_puffs, sky_shade, strip,
 }
 use engine::temporal::{Resolve, neighbourhoods, resolve}
 use engine::terrain::{Clipmap, Terrain, Texel, ground, ground_shade}
@@ -237,6 +238,8 @@ pub struct Clearing {
     /// The clouds: their puffs, the sky texture they're cooked into and their shadow map, and
     /// how many of its strips are cooked.
     puffs: GpuBuffer<Puff>,
+    /// Each tile of the sky texture's puffs, for its cook (`sky::cull_puffs`).
+    cloud_tiles: GpuBuffer<TilePuffs>,
     clouds: Texture,
     cloud_shadow: Texture,
     strips: u32,
@@ -371,6 +374,7 @@ pub fn init() -> Clearing {
         ready: false,
         asked: false,
         puffs: take puffs,
+        cloud_tiles: buffer(TILES),
         clouds: texture(width: SKY_W, height: SKY_H, format: TextureFormat::Rgba16Float),
         cloud_shadow: texture(
             width: SHADOW_SIDE,
@@ -572,6 +576,18 @@ fn copy_palette(s: mut Clearing) {
     )
 }
 
+/// Each tile of the sky texture's puffs, before its cook's first strip.
+fn cull_clouds(s: mut Clearing, cook: Cook) {
+    dispatch(
+        cull_puffs.bind(
+            cook,
+            puffs: s.puffs.span(start: 0, count: s.puffs.len()),
+            out: mut s.cloud_tiles,
+        ),
+        groups: (TILES + 63) / 64,
+    )
+}
+
 /// The static cascades: the forest, cut to its leaves, into each.
 fn static_shadows(s: mut Clearing, sh: Shadows, wind: Wind) {
     label("shadows static")
@@ -721,11 +737,19 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     // The clouds, cooked a strip a frame until they're done (each strip a short submission).
     if s.strips < STRIPS {
         label("clouds cook")
+        if s.strips == 0 {
+            cull_clouds(mut s, cook)
+        }
         let pass = begin_pass(mut s.clouds, keep: s.strips > 0, clear: vec4(0.0))
         let c = Cook { strip: s.strips, ..cook }
         draw(
             strip.bind(c),
-            cook_clouds.bind(c, s.light, puffs: s.puffs.span(start: 0, count: s.puffs.len())),
+            cook_clouds.bind(
+                c,
+                s.light,
+                puffs: s.puffs.span(start: 0, count: s.puffs.len()),
+                tiles: s.cloud_tiles,
+            ),
             vertices: 6,
         )
         pass.end()
@@ -743,11 +767,19 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     // After an edit, the clouds cooked again beside the ones shown, which they then replace.
     if s.next_strips < STRIPS {
         label("clouds cook")
+        if s.next_strips == 0 {
+            cull_clouds(mut s, cook)
+        }
         let pass = begin_pass(mut s.next_clouds, keep: s.next_strips > 0, clear: vec4(0.0))
         let c = Cook { strip: s.next_strips, ..cook }
         draw(
             strip.bind(c),
-            cook_clouds.bind(c, s.light, puffs: s.puffs.span(start: 0, count: s.puffs.len())),
+            cook_clouds.bind(
+                c,
+                s.light,
+                puffs: s.puffs.span(start: 0, count: s.puffs.len()),
+                tiles: s.cloud_tiles,
+            ),
             vertices: 6,
         )
         pass.end()
