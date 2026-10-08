@@ -28,6 +28,10 @@ to the result. Decided: pipelines that run only at load count against the 64.
 - [ ] 7 Work over several frames
 - [ ] Small: `borrow x = if c { a } else { b }`; packed bitfields; enums to and from `u32`;
       flags; unused-item warning; GpuData padding; non-square matrices
-- [ ] Budget: 64 pipelines per scene, checked; merged instantiations (opt-in); load cooks merged
+- [x] Budget: 64 pipelines per scene and 256 KiB of WGSL a pipeline, checked in shipped builds
+      (E0707); unrecorded pipelines pruned (constant `&&`/`||` folded); load cooks merged (the
+      clouds' noise, the shadow map's two kernels); rigid stones skip skinning. The clearing: 64.
+      Not built: merged instantiations. The creature kernels' pairs would be 254-308 KiB of WGSL,
+      over the WGSL budget, so a merge doesn't help the case that needs it
 - [ ] Docs: language.md, grammar; vision.md; #26
 - [ ] `--long`; milestone-5 fast-forwarded

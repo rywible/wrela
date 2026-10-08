@@ -178,11 +178,17 @@ fn above(x: f32, from: f32) -> f32 {
     (x - from) / (1.0 - from)
 }
 
+/// A cloud noise's texel: the detail noise's (`detail`) or the shape noise's. Both cook once,
+/// at load, with one pipeline of the scene's 64.
+@compute(4, 4, 4)
+pub fn cook_noise(detail: bool, out: mut Texels3d<Rgba16Float>, id: GlobalId) {
+    out.store(id, if detail { detail_texel(id) } else { shape_texel(id) })
+}
+
 /// The shape noise's texel: Perlin-Worley (Perlin's billows, Worley's cells) eroded by Worley
 /// noise in three octaves (Schneider's base shape), spread over [0, 1]: it falls in [0.65,
 /// 0.97], most of it in [0.76, 0.9], where a cover's cut (`field`) would leave it whole.
-@compute(4, 4, 4)
-pub fn cook_shape(out: mut Texels3d<Rgba16Float>, id: GlobalId) {
+fn shape_texel(id: GlobalId) -> vec4 {
     let q = (vec3(f32(id.x), f32(id.y), f32(id.z)) + vec3(0.5)) / f32(SHAPE_SIDE)
     var perlin = 0.0
     var amp = 0.5
@@ -196,14 +202,13 @@ pub fn cook_shape(out: mut Texels3d<Rgba16Float>, id: GlobalId) {
     let pw = mix(w, 1.0, p01)
     let low = w * 0.625 + worley_fbm(q, 8) * 0.25 + worley_fbm(q, 16) * 0.125
     let base = above(pw, from: low - 1.0)
-    out.store(id, vec4(saturate((base - 0.68) / 0.29), 0.0, 0.0, 1.0))
+    vec4(saturate((base - 0.68) / 0.29), 0.0, 0.0, 1.0)
 }
 
 /// The detail noise's texel: Worley noise in three octaves, three ways.
-@compute(4, 4, 4)
-pub fn cook_detail(out: mut Texels3d<Rgba16Float>, id: GlobalId) {
+fn detail_texel(id: GlobalId) -> vec4 {
     let q = (vec3(f32(id.x), f32(id.y), f32(id.z)) + vec3(0.5)) / f32(DETAIL_SIDE)
-    out.store(id, vec4(worley_fbm(q, 2), worley_fbm(q, 4), worley_fbm(q, 8), 1.0))
+    vec4(worley_fbm(q, 2), worley_fbm(q, 4), worley_fbm(q, 8), 1.0)
 }
 
 // ---- the weather map ------------------------------------------------------------------------
@@ -504,8 +509,11 @@ pub fn scatter(c: Clouds, marched: [vec4], out: mut Texels<Rgba16Float>, id: Glo
 /// The shadow map's texel: how much of the sun reaches the ground (y = 0) there, through the
 /// field above it toward the sun (32 samples, its shape alone). Clouds scatter most of what
 /// they stop forward, so their shadows are paler than their extinction says: a quarter of it.
+/// Without `shadows`, all of it: a map that shadows nothing (one pipeline for both, of the
+/// scene's 64).
 @compute(8, 8)
 pub fn cook_shadow(
+    shadows: bool,
     sun: vec3,
     weather: Texture<Rgba16Float>,
     shape: Texture3d<Rgba16Float>,
@@ -514,6 +522,10 @@ pub fn cook_shadow(
     out: mut Texels<Rgba16Float>,
     id: GlobalId,
 ) {
+    if !shadows {
+        out.store(id, vec4(1.0))
+        return
+    }
     let xz = ((vec2(f32(id.x), f32(id.y)) + vec2(0.5)) / f32(SHADOW_SIDE) - vec2(0.5)) * SPAN
     let up = max(sun.y, 0.05)
     let (t0, t1) = (BASE / up, TOP / up)
@@ -525,12 +537,6 @@ pub fn cook_shadow(
         od += field(p, p.y - BASE, weather, shape, detail, rep, detailed: false) * dt
     }
     out.store(id, vec4(vec3(exp(-od * EXTINCTION * 0.25)), 1.0))
-}
-
-/// A shadow map that shadows nothing.
-@compute(8, 8)
-pub fn no_shadow(out: mut Texels<Rgba16Float>, id: GlobalId) {
-    out.store(id, vec4(1.0))
 }
 
 /// How much of the sun reaches `world` past the clouds: the shadow map, moved with the field.
@@ -626,8 +632,8 @@ impl Sky {
     /// The noises cooked (once).
     pub fn cook_noise(mut self) {
         label("clouds noise")
-        dispatch(cook_shape.bind(out: mut self.shape), over: self.shape)
-        dispatch(cook_detail.bind(out: mut self.detail), over: self.detail)
+        dispatch(cook_noise.bind(detail: false, out: mut self.shape), over: self.shape)
+        dispatch(cook_noise.bind(detail: true, out: mut self.detail), over: self.detail)
     }
 
     /// The weather map cooked from `cumuli`, `fair` (the fair-weather clouds' share) and `gap`,
@@ -661,21 +667,18 @@ impl Sky {
     /// The shadow map cooked for the sun toward `sun`, or none (`shadows` false: all lit).
     pub fn cook_shadow(mut self, sun: vec3, rep: Sampler, shadows: bool) {
         label("clouds shadow")
-        if shadows {
-            dispatch(
-                cook_shadow.bind(
-                    sun,
-                    self.weather,
-                    self.shape,
-                    self.detail,
-                    rep,
-                    out: mut self.shadow,
-                ),
-                over: self.shadow,
-            )
-        } else {
-            dispatch(no_shadow.bind(out: mut self.shadow), over: self.shadow)
-        }
+        dispatch(
+            cook_shadow.bind(
+                shadows,
+                sun,
+                self.weather,
+                self.shape,
+                self.detail,
+                rep,
+                out: mut self.shadow,
+            ),
+            over: self.shadow,
+        )
     }
 
     /// The frame's texels of the dome marched (from the eye at `eye`, the field drifted

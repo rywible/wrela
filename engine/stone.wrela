@@ -10,7 +10,7 @@ use lit::{Lighting, shown, sky_gloss, sun_at}
 use look::{CreatureLook, Mesh as Tolerance}
 use noise::{noise3, rand}
 use probes::Probe
-use realize::{Mesh, SkinVertex, realize_once}
+use realize::{Mesh, SkinVertex, realize_rigid}
 use render::{ByChannels, Shaded}
 use std::derive::Box3
 use std::field::{Blend, Lipschitz, Surface, fbm, oval}
@@ -128,7 +128,7 @@ pub struct Realized {
 pub fn realize_stone(radius: f32, squash: vec3, seed: u32, at: vec3, turn: f32) -> Realized {
     let s = stone(radius, squash, seed)
     let look = CreatureLook { surface: Tolerance { tolerance: 8mm, largest: 4cm } }
-    let mesh = realize_once(s, look)
+    let mesh = realize_rigid(s, look)
     let colours = colours(mesh, s.field(), ByChannels {}, cell: 1cm)
     let (c, sn) = (cos(turn), sin(turn))
     let m = mat4(

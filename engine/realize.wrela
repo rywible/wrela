@@ -671,6 +671,23 @@ pub fn record<C, F: Parts<C>>(
     record_finish(field, grid, falloff, mut scratch, mut mesh)
 }
 
+/// `creature`'s mesh, realized once as `realize_once` does it, but with no skin weights: for a
+/// rigid one of one bone (a stone), whose vertices `place_vertices` gives to that bone whole,
+/// as the skin pass would. A pass less at load, and a pipeline less in the scene's 64.
+pub fn realize_rigid<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Mesh {
+    let grid = Grid::around(
+        grow(creature.bounds(), look.surface.tolerance),
+        look.surface.cell_size(5cm),
+    )
+    var mesh = Mesh::new(Room { vertices: grid.blocks * 8, quads: grid.blocks * 16 })
+    var scratch = Scratch::new(grid.blocks)
+    let field = creature.field()
+    record_cull(field, grid, mut scratch, mut mesh)
+    record_vertices(field, grid, mut scratch, mut mesh)
+    record_mesh(grid, mut scratch, mut mesh)
+    mesh
+}
+
 /// `creature`'s mesh, realized once as `look` says, for a program that keeps one (`walk`,
 /// sketch 02): on the grid around its bounds grown by the look's tolerance, its cells for a
 /// surface that bends no tighter than 5 cm.
@@ -831,6 +848,23 @@ pub fn record_finish<C, F: Parts<C>>(
     scratch: mut Scratch,
     mesh: mut Mesh,
 ) {
+    record_mesh(grid, mut scratch, mut mesh)
+    // The tally bounds it (its vertex count), and the skin pass's arguments drive it.
+    dispatch(
+        skin_vertices.bind(
+            field: field,
+            fp: grid.cell,
+            falloff: falloff,
+            tally: mesh.tally.items(),
+            verts: mesh.verts.items_mut(),
+        ),
+        groups: mesh.skin.items(),
+    )
+}
+
+/// A realization's mesh finished from its placed vertices: its quads, and its tally and draw's
+/// arguments.
+fn record_mesh(grid: Grid, scratch: mut Scratch, mesh: mut Mesh) {
     let room = mesh.room()
     dispatch(
         emit_quads.bind(
@@ -857,17 +891,6 @@ pub fn record_finish<C, F: Parts<C>>(
             tally: mut mesh.tally,
         ),
         groups: 1,
-    )
-    // The tally bounds it (its vertex count), and the skin pass's arguments drive it.
-    dispatch(
-        skin_vertices.bind(
-            field: field,
-            fp: grid.cell,
-            falloff: falloff,
-            tally: mesh.tally.items(),
-            verts: mesh.verts.items_mut(),
-        ),
-        groups: mesh.skin.items(),
     )
 }
 
