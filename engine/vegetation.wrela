@@ -14,9 +14,9 @@ use lit::{Lighting, sky_at, sun_at}
 use noise::{cell_size, hash2, hashed_threshold_of, rand}
 use lod::{IMPOSTOR, Lod, VOLUME, anchor, keeps, keeps_packed, packed, place, share, ways}
 use plant::{
-    Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_VERTICES, Leaves, OUTLINE, Plant, Wind,
-    CORNERS, card_orders, card_places, cook_cards, cook_outlines, corner_of, leaf_at, leaf_atlas,
-    level_cards, limb_vertex, sway,
+    Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_POINTS, LIMB_VERTICES, Leaves, OUTLINE,
+    Plant, Wind, CORNERS, card_orders, card_places, cook_cards, cook_outlines, corner_of, leaf_at,
+    leaf_atlas, level_cards, limb_corner, limb_point, sway,
 }
 use probes::Probe
 use shadow::Shadows
@@ -115,7 +115,8 @@ pub struct Forest {
     outlines: GpuBuffer<vec2>,
     /// The cards' fans of indices (`fan_indices`), and each list's draw of them: its index
     /// count, instance count and three 0s (`lists`'s, then `every_lists`'s).
-    fans: GpuBuffer<u32>,
+    card_triangles: GpuBuffer<u32>,
+    limb_triangles: GpuBuffer<u32>,
     args: GpuBuffer<u32>,
     every_args: GpuBuffer<u32>,
     /// Beyond this distance (m), an instance is drawn as an impostor, not as cards; and beyond
@@ -160,18 +161,26 @@ fn every_of(kinds: u32, placed: [Placed]) -> (GpuBuffer<Instance>, Vec<List>) {
     (take buf, lists)
 }
 
-/// Each list's draw of its cards' fans (at `level`, or each list's own way if `ALL`): its index
-/// count, instance count, and three 0s.
+/// Words a list's draws' arguments take in `Forest::args`: its cards' draw, then its limbs'.
+const ARGS: u32 = 10
+
+/// Each list's indexed draws (at `level`, or each list's own way if `ALL`): its cards' and its
+/// limbs', each its index count, instance count, and three 0s.
 fn args_of(kinds: [Kind], lists: [List], level: u32) -> Vec<u32> {
     var args: Vec<u32> = Vec::new()
     for l in lists {
         let at = if level == ALL { l.how } else { level }
-        let cards = if at < CARD_LEVELS { level_cards(kinds[l.kind].card_count, at) } else { 0 }
-        args.push(cards * CARD_INDICES)
-        args.push(l.count)
-        args.push(0)
-        args.push(0)
-        args.push(0)
+        let near = at < CARD_LEVELS
+        borrow k = kinds[l.kind]
+        let cards = if near { level_cards(k.card_count, at) } else { 0 }
+        let limbs = if near { k.limb_count } else { 0 }
+        for indices in [cards * CARD_INDICES, limbs * LIMB_VERTICES] {
+            args.push(indices)
+            args.push(l.count)
+            args.push(0)
+            args.push(0)
+            args.push(0)
+        }
     }
     args
 }
@@ -193,15 +202,20 @@ impl Forest {
             groups: (LEAF_PATTERNS * OUTLINE + 63) / 64,
         )
         var most = 1
+        var most_limbs = 1
         for k in kinds {
             most = max(most, k.card_count)
+            most_limbs = max(most_limbs, k.limb_count)
         }
+        let nl = most_limbs * LIMB_VERTICES
+        var limb_triangles: GpuBuffer<u32> = buffer(nl)
+        dispatch(limb_indices.bind(nl, mut limb_triangles), groups: (nl + 63) / 64)
         let n = most * CARD_INDICES
-        var fans: GpuBuffer<u32> = buffer(n)
-        dispatch(card_indices.bind(n, mut fans), groups: (n + 63) / 64)
-        var every_args: GpuBuffer<u32> = buffer(kinds.len() * 5)
+        var card_triangles: GpuBuffer<u32> = buffer(n)
+        dispatch(card_indices.bind(n, mut card_triangles), groups: (n + 63) / 64)
+        var every_args: GpuBuffer<u32> = buffer(kinds.len() * ARGS)
         write(mut every_args, 0, args_of(kinds, every_lists, 1))
-        let room_args = kinds.len() * WAYS * 5
+        let room_args = kinds.len() * WAYS * ARGS
         Forest {
             kinds: take kinds,
             placed: take placed,
@@ -212,7 +226,8 @@ impl Forest {
             every_lists,
             atlas,
             outlines: take outlines,
-            fans: take fans,
+            card_triangles: take card_triangles,
+            limb_triangles: take limb_triangles,
             args: buffer(room_args),
             every_args: take every_args,
             cards_to,
@@ -599,8 +614,18 @@ pub struct BarkVertex: Copy {
     pub keep: Flat<u32>,
 }
 
+/// Index `id` of the limbs' triangles: limb `id / LIMB_VERTICES`'s points (`limb_corner`).
+@compute(64)
+pub fn limb_indices(n: u32, out: mut Slots<u32>, id: GlobalId) {
+    if id.x >= n {
+        return
+    }
+    out[id] = id.x / LIMB_VERTICES * LIMB_POINTS + limb_corner(id.x % LIMB_VERTICES)
+}
+
+/// Point `v % LIMB_POINTS` of limb `v / LIMB_POINTS`, of instance `i`, in the world.
 fn limb_world(v: u32, i: u32, limbs: [Tube<4>], instances: [Instance]) -> (vec3, vec3, vec2) {
-    let (p, n, along) = limb_vertex(limbs[v / LIMB_VERTICES], v % LIMB_VERTICES)
+    let (p, n, along) = limb_point(limbs[v / LIMB_POINTS], v % LIMB_POINTS)
     let inst = instances[i]
     (inst.place(p), inst.turn(n), along)
 }
@@ -782,8 +807,8 @@ impl Forest {
                         orders: k.orders,
                     ),
                     leaf_cut.bind(d, atlas: self.atlas, s: s),
-                    indices: self.fans,
-                    indirect: self.args.span(start: li * 5, count: 5),
+                    indices: self.card_triangles,
+                    indirect: self.args.span(start: li * ARGS, count: 5),
                     depth: view::NEAREST,
                 )
             }
@@ -848,13 +873,14 @@ impl Forest {
                         probes: probes,
                         grounds: grounds,
                     ),
-                    indices: self.fans,
-                    indirect: self.args.span(start: li * 5, count: 5),
+                    indices: self.card_triangles,
+                    indirect: self.args.span(start: li * ARGS, count: 5),
                     depth: PREPASSED,
                 )
             }
         }
-        for l in self.lists {
+        for li in 0..self.lists.len() {
+            let l = self.lists[li]
             if l.how < CARD_LEVELS {
                 borrow k = self.kinds[l.kind]
                 if k.limb_count > 0 {
@@ -877,8 +903,8 @@ impl Forest {
                             probes,
                             grounds,
                         ),
-                        vertices: k.limb_count * LIMB_VERTICES,
-                        instances: l.count,
+                        indices: self.limb_triangles,
+                        indirect: self.args.span(start: li * ARGS + 5, count: 5),
                         cull: std::gpu::Cull::Back,
                         depth: view::NEAREST,
                     )
@@ -976,8 +1002,8 @@ impl Forest {
                     outlines: self.outlines,
                 ),
                 leaf_cut.bind(d, atlas: self.atlas, s: s),
-                indices: self.fans,
-                indirect: self.every_args.span(start: li * 5, count: 5),
+                indices: self.card_triangles,
+                indirect: self.every_args.span(start: li * ARGS, count: 5),
                 depth_bias: DepthBias { constant: 2, slope: 1.5, clamp: 0.0 },
             )
             if k.limb_count > 0 {
@@ -988,8 +1014,8 @@ impl Forest {
                         instances: instances,
                     ),
                     nothing,
-                    vertices: k.limb_count * LIMB_VERTICES,
-                    instances: l.count,
+                    indices: self.limb_triangles,
+                    indirect: self.every_args.span(start: li * ARGS + 5, count: 5),
                     depth_bias: DepthBias { constant: 2, slope: 1.5, clamp: 0.0 },
                 )
             }
@@ -1077,8 +1103,8 @@ impl Forest {
                         orders: k.orders,
                     ),
                     leaf_counted.bind(depth, width, shaded: mut shaded),
-                    indices: self.fans,
-                    indirect: self.args.span(start: li * 5, count: 5),
+                    indices: self.card_triangles,
+                    indirect: self.args.span(start: li * ARGS, count: 5),
                 )
             }
         }
@@ -1118,8 +1144,8 @@ impl Forest {
                         orders: k.orders,
                     ),
                     leaf_covering.bind(d, self.atlas, s, width, covering: mut covering),
-                    indices: self.fans,
-                    indirect: self.args.span(start: li * 5, count: 5),
+                    indices: self.card_triangles,
+                    indirect: self.args.span(start: li * ARGS, count: 5),
                     depth: Depth { compare: Compare::Always, write: false },
                 )
             }

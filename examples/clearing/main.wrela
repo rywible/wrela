@@ -918,23 +918,26 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     label("terrain")
     let ter = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)
     if on(s.off, TERRAIN) {
-        draw(
-            ground.bind(cam, lt.levels, texels),
-            ground_shade.bind(
-                lt,
-                texels,
-                s.near,
-                s.far,
-                s.moving,
-                s.cmp,
-                s.cloud_shadow,
-                s.linear,
-                probes,
-                grounds,
-            ),
-            vertices: lt.levels.count * engine::terrain::LEVEL_VERTICES,
-            depth: NEAREST,
-        )
+        for l in 0..lt.levels.count {
+            draw(
+                ground.bind(cam, lt.levels, texels),
+                ground_shade.bind(
+                    lt,
+                    texels,
+                    s.near,
+                    s.far,
+                    s.moving,
+                    s.cmp,
+                    s.cloud_shadow,
+                    s.linear,
+                    probes,
+                    grounds,
+                ),
+                indices: s.clipmap.indices(),
+                indirect: s.clipmap.draw_args(l),
+                depth: NEAREST,
+            )
+        }
     }
     ter.end()
     label("creature")

@@ -19,7 +19,8 @@ use light::{Light, Lit, hazed, open_sky}
 use noise::noise2
 use sim::Hit
 use std::gpu::{
-    ClipPosition, GlobalId, GpuBuffer, Oct32, Slots, Unorm8x4, VertexIndex, buffer, dispatch, label,
+    ClipPosition, GlobalId, GpuBuffer, GpuSpan, Oct32, Slots, Unorm8x4, VertexIndex, buffer,
+    dispatch, label, write,
 }
 use view::Camera
 
@@ -79,9 +80,14 @@ pub const ROW: u32 = 136
 /// Texels a level takes in the buffer: its SIDE rows, rounded up to a 256-byte span (WebGPU
 /// binds a span from a multiple of 256 bytes; a texel is 20).
 pub const STRIDE: u32 = 17600
-/// Vertices a level draws: its quads, a skirt along each outer edge, and one along each edge of
-/// the hole the finer level fills.
-pub const LEVEL_VERTICES: u32 = (QUADS * QUADS + 4 * QUADS + 4 * (QUADS / 2)) * 6
+/// The points a level's triangles join (`ground`): its grid's, then the dropped points of its
+/// skirt along each outer edge (`SIDE` a side), then those of its skirt along each edge of the
+/// hole the finer level fills (`QUADS / 2 + 1` a side).
+pub const LEVEL_POINTS: u32 = SIDE * SIDE + 4 * SIDE + 4 * (QUADS / 2 + 1)
+/// The places the hole can be: its corner 32 or 33 of the level's cells in each way
+/// (`Clipmap::place` snaps a level to two of its cells and the finer level to one). The ground's
+/// indices hold a run for each, then one with no hole, the finest level's.
+const HOLES: u32 = 4
 /// How far a skirt hangs below a level's edge, in its cells.
 const SKIRT: f32 = 2.0
 /// The band of a level, in its own cells from its edge, over which it morphs to the next.
@@ -101,6 +107,10 @@ pub struct Levels: Copy + GpuData {
 pub struct Clipmap {
     texels: GpuBuffer<Texel>,
     levels: Levels,
+    /// The ground's triangles (`ground_indices`), and each level's draw of them this frame: its
+    /// run's index count, one instance, its first index, its first point, and a 0.
+    indices: GpuBuffer<u32>,
+    args: GpuBuffer<u32>,
     finest: f32,
     /// Whether each level holds what its place asks (false until it's cooked).
     cooked: [bool; 12],
@@ -115,6 +125,8 @@ impl Clipmap {
         Clipmap {
             texels: buffer(n * STRIDE),
             levels: Levels { at: [vec4(0.0); 12], count: n, eye: vec2(0.0) },
+            indices: indices_of(),
+            args: buffer(MAX_LEVELS * 5),
             finest,
             cooked: [false; 12],
             cooks: 0,
@@ -169,8 +181,111 @@ impl Clipmap {
             }
         }
         self.cooks += cooked
+        // Each level's draw: its run of the indices, by where its hole is.
+        var args: Vec<u32> = Vec::new()
+        for l in 0..self.levels.count {
+            var run = HOLES
+            if l > 0 {
+                let a = self.levels.at[l]
+                let lo = vec2u((self.levels.at[l - 1].xy - a.xy) / a.z + vec2(0.5))
+                run = min(lo.x - 32, 1) + 2 * min(lo.y - 32, 1)
+            }
+            args.push(run_length(run))
+            args.push(1)
+            args.push(first_index(run))
+            args.push(l * LEVEL_POINTS)
+            args.push(0)
+        }
+        write(mut self.args, 0, args)
         cooked
     }
+
+    /// The ground's indices, to draw with `draw_args`.
+    pub fn indices(self) -> GpuSpan<u32> {
+        self.indices.span(start: 0, count: self.indices.len())
+    }
+
+    /// Level `l`'s draw of the ground's indices this frame.
+    pub fn draw_args(self, l: u32) -> GpuSpan<u32> {
+        self.args.span(start: l * 5, count: 5)
+    }
+}
+
+/// Where the finer level's hole is in run `r` of the ground's indices (`r < HOLES`).
+fn hole_of(r: u32) -> vec2u {
+    vec2u(32 + r % 2, 32 + r / 2)
+}
+
+/// The indices in run `r`: its quads (the hole's left out) and its skirts, two triangles each.
+fn run_length(r: u32) -> u32 {
+    let hole = if r < HOLES { (QUADS / 2) * (QUADS / 2) } else { 0 }
+    let inner = if r < HOLES { 4 * (QUADS / 2) } else { 0 }
+    (QUADS * QUADS - hole + 4 * QUADS + inner) * 6
+}
+
+fn first_index(r: u32) -> u32 {
+    var at = 0
+    for k in 0..r {
+        at += run_length(k)
+    }
+    at
+}
+
+/// The ground's indices: each run's (`HOLES` with a hole, then one without) quads, then its
+/// outer skirts, then its inner skirts, each quad's corners as `ground` once drew them.
+fn ground_indices() -> Vec<u32> {
+    let qx = [0, 1, 1, 0, 1, 0]
+    let qz = [0, 0, 1, 0, 1, 1]
+    var out: Vec<u32> = Vec::new()
+    for r in 0..HOLES + 1 {
+        let lo = if r < HOLES { hole_of(r) } else { vec2u(QUADS) }
+        let hi = lo + vec2u(QUADS / 2)
+        for cz in 0..QUADS {
+            for cx in 0..QUADS {
+                if cx >= lo.x && cx < hi.x && cz >= lo.y && cz < hi.y {
+                    continue
+                }
+                for c in 0..6 {
+                    out.push((cz + qz[c]) * SIDE + cx + qx[c])
+                }
+            }
+        }
+        for side in 0..4 {
+            for i in 0..QUADS {
+                for c in 0..6 {
+                    let j = i + qx[c]
+                    let top = if side == 0 { j } else if side == 1 {
+                        QUADS * SIDE + j
+                    } else if side == 2 {
+                        j * SIDE
+                    } else { j * SIDE + QUADS }
+                    out.push(if qz[c] == 0 { top } else { SIDE * SIDE + side * SIDE + j })
+                }
+            }
+        }
+        if r < HOLES {
+            for side in 0..4 {
+                for i in 0..QUADS / 2 {
+                    for c in 0..6 {
+                        let j = i + qx[c]
+                        let g = if side == 0 { vec2u(lo.x + j, lo.y) } else if side == 1 {
+                            vec2u(lo.x + j, hi.y)
+                        } else if side == 2 { vec2u(lo.x, lo.y + j) } else { vec2u(hi.x, lo.y + j) }
+                        let dropped = SIDE * SIDE + 4 * SIDE + side * (QUADS / 2 + 1) + j
+                        out.push(if qz[c] == 0 { g.y * SIDE + g.x } else { dropped })
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn indices_of() -> GpuBuffer<u32> {
+    let list = ground_indices()
+    var b: GpuBuffer<u32> = buffer(list.len())
+    write(mut b, 0, list)
+    b
 }
 
 /// A level's texels: the terrain's height, normal and cover at each point of its grid.
@@ -237,46 +352,45 @@ pub struct GroundVertex: Copy {
     pub world: vec3,
 }
 
-/// The ground's vertices: level `v / LEVEL_VERTICES`'s quads (those inside the finer level's
-/// square dropped), then its outer skirts, then its inner skirts (round the finer level's
-/// square). Each reads its level's texels, morphed in the band at the level's edge to the
-/// coarser level's heights; it never evaluates the field.
+/// The ground's points: level `v / LEVEL_POINTS`'s (`LEVEL_POINTS`), each shaded once for the
+/// triangles that share it (an indexed draw a level, `Clipmap::draw_args`: six vertices a quad
+/// took 0.52 ms, a point each 0.28). Each reads its level's texels, morphed in the band at the
+/// level's edge to the coarser level's heights; it never evaluates the field.
 @vertex
 pub fn ground(v: VertexIndex, cam: Camera, levels: Levels, texels: [Texel]) -> GroundVertex {
-    let l = v.index / LEVEL_VERTICES
-    let k = v.index % LEVEL_VERTICES
+    let l = v.index / LEVEL_POINTS
+    let p = v.index % LEVEL_POINTS
     let a = levels.at[l]
     let s = a.z
-    let qx = [0, 1, 1, 0, 1, 0]
-    let qz = [0, 0, 1, 0, 1, 1]
-    let corner = k % 6
-    let q = k / 6
     var gx = 0
     var gz = 0
     var drop = 0.0
-    var hidden = false
-    if q < QUADS * QUADS {
-        let (cx, cz) = (q % QUADS, q / QUADS)
-        gx = cx + qx[corner]
-        gz = cz + qz[corner]
-        // Inside the finer level's square: the finer level draws it.
-        if l > 0 {
-            let f = levels.at[l - 1]
-            let lo = (f.xy - a.xy) / s
-            let hi = lo + vec2(f32(QUADS / 2))
-            let (x0, z0) = (f32(cx), f32(cz))
-            hidden = x0 >= lo.x - 0.5 &&
-                x0 + 1.0 <= hi.x + 0.5 &&
-                z0 >= lo.y - 0.5 &&
-                z0 + 1.0 <= hi.y + 0.5
+    if p < SIDE * SIDE {
+        gx = p % SIDE
+        gz = p / SIDE
+    } else if p < SIDE * SIDE + 4 * SIDE {
+        // An outer skirt's: hanging below a point of the level's edge.
+        let e = p - SIDE * SIDE
+        let side = e / SIDE
+        let i = e % SIDE
+        if side == 0 {
+            gx = i
+        } else if side == 1 {
+            gx = i
+            gz = QUADS
+        } else if side == 2 {
+            gz = i
+        } else {
+            gx = QUADS
+            gz = i
         }
-    } else if q >= QUADS * QUADS + 4 * QUADS {
-        // The inner skirts: along each edge of the finer level's square, on this level's grid
-        // (the finer level has none inside it).
-        let e = q - QUADS * QUADS - 4 * QUADS
-        let side = e / (QUADS / 2)
-        let i = e % (QUADS / 2) + qx[corner]
-        let down = qz[corner]
+        drop = SKIRT * s
+    } else {
+        // An inner skirt's: below a point of the edge of the finer level's hole (on this
+        // level's grid; the finer level has none inside it).
+        let e = p - SIDE * SIDE - 4 * SIDE
+        let side = e / (QUADS / 2 + 1)
+        let i = e % (QUADS / 2 + 1)
         let lo = if l > 0 { vec2u((levels.at[l - 1].xy - a.xy) / s + vec2(0.5)) } else { vec2u(0) }
         let hi = lo + vec2u(QUADS / 2)
         if side == 0 {
@@ -292,28 +406,7 @@ pub fn ground(v: VertexIndex, cam: Camera, levels: Levels, texels: [Texel]) -> G
             gx = hi.x
             gz = lo.y + i
         }
-        drop = f32(down) * SKIRT * s
-        hidden = l == 0
-    } else {
-        // The outer skirts: a strip of quads along each edge, its far corners hanging below it.
-        let e = q - QUADS * QUADS
-        let side = e / QUADS
-        let i = e % QUADS + qx[corner]
-        let down = qz[corner]
-        if side == 0 {
-            gx = i
-            gz = 0
-        } else if side == 1 {
-            gx = i
-            gz = QUADS
-        } else if side == 2 {
-            gx = 0
-            gz = i
-        } else {
-            gx = QUADS
-            gz = i
-        }
-        drop = f32(down) * SKIRT * s
+        drop = SKIRT * s
     }
     let xz = a.xy + vec2(f32(gx), f32(gz)) * s
     var h = texels[texel_index(l, gx, gz)].height
@@ -322,9 +415,7 @@ pub fn ground(v: VertexIndex, cam: Camera, levels: Levels, texels: [Texel]) -> G
         h = mix(h, level_height(levels, texels, l + 1, xz), m)
     }
     let world = vec3(xz.x, h - drop, xz.y)
-    // A dropped quad is a point: nothing drawn.
-    let position = if hidden { vec4(0.0, 0.0, -1.0, 1.0) } else { cam.clip(world) }
-    GroundVertex { clip: ClipPosition { position }, world }
+    GroundVertex { clip: ClipPosition { position: cam.clip(world) }, world }
 }
 
 /// The ground at `xz` as the clipmap holds it: its normal, albedo (linear) and grass, from the

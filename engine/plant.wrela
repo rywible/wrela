@@ -447,17 +447,36 @@ pub const RINGS: u32 = 2
 /// Vertices a limb draws: each piece's rings of quads round it.
 pub const LIMB_VERTICES: u32 = 3 * RINGS * SIDES * 6
 
-/// A limb's vertex `k` (of `LIMB_VERTICES`): its point, normal, and where it is round and along
-/// the limb (for bark's ridges), in the plant's frame.
-pub fn limb_vertex(limb: Tube<4>, k: u32) -> (vec3, vec3, vec2) {
+/// Points a limb has: each piece's rings' points round it, the first again at the end (where
+/// the bark's place round the limb comes back to 1).
+pub const LIMB_POINTS: u32 = 3 * (RINGS + 1) * (SIDES + 1)
+
+/// Which point (of `LIMB_POINTS`) a limb's vertex `k` (of `LIMB_VERTICES`) is: each piece's
+/// rings of quads, two triangles each.
+pub fn limb_corner(k: u32) -> u32 {
     let qx = [0, 1, 1, 0, 1, 0]
     let qz = [0, 0, 1, 0, 1, 1]
     let q = k / 6
     let c = k % 6
     let piece = q / (RINGS * SIDES)
     let r = q % (RINGS * SIDES)
-    let side = f32(r % SIDES + qx[c])
-    let along = (f32(r / SIDES + qz[c])) / f32(RINGS)
+    let side = r % SIDES + qx[c]
+    let ring = r / SIDES + qz[c]
+    (piece * (RINGS + 1) + ring) * (SIDES + 1) + side
+}
+
+/// A limb's vertex `k` (of `LIMB_VERTICES`): its point (`limb_point`).
+pub fn limb_vertex(limb: Tube<4>, k: u32) -> (vec3, vec3, vec2) {
+    limb_point(limb, limb_corner(k))
+}
+
+/// A limb's point `p` (of `LIMB_POINTS`): where it is, its normal, and where it is round and
+/// along the limb (for bark's ridges), in the plant's frame.
+pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, vec2) {
+    let piece = p / ((RINGS + 1) * (SIDES + 1))
+    let r = p % ((RINGS + 1) * (SIDES + 1))
+    let side = f32(r % (SIDES + 1))
+    let along = f32(r / (SIDES + 1)) / f32(RINGS)
     let a = limb.points[piece]
     let b = limb.points[piece + 1]
     let axis = normalize(b - a)
