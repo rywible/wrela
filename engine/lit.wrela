@@ -39,8 +39,15 @@ pub fn sun_at(
         cloud_shadow(l.clouds, clouds, s, world)
 }
 
-/// The sky light (and bounce) at `world` for a surface facing `n`, from the probes (`probes`
-/// and their columns' `grounds`).
-pub fn sky_at(l: Lighting, probes: [Probe], grounds: [f32], world: vec3, n: vec3) -> vec3 {
-    sky_light(l.grid, probes, grounds, l.light, world, n)
+/// The sky light (and bounce) at `world` for a surface facing `n`, from the probes (their maps,
+/// `probes`, read through `s`, a linear sampler, and their columns' `grounds`).
+pub fn sky_at(
+    l: Lighting,
+    probes: Texture,
+    s: Sampler,
+    grounds: [f32],
+    world: vec3,
+    n: vec3,
+) -> vec3 {
+    sky_light(l.grid, probes, s, grounds, l.light, world, n)
 }

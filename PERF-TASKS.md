@@ -30,10 +30,17 @@ outputs (21 floats; 10 floats: 1.34 → 0.89 ms), not by shading or the sway's a
 - [ ] 5 Passes: the hosts fuse consecutive passes on the same targets; stores dropped where
       nothing reads them; transient attachments; one pass for the prepass and shading
 - [ ] 6 Compiler: vertex outputs packed and cut (certified f16, recomputed from flat inputs)
+      (measured: f16 outputs by hand for grass, cards, limbs: 0.03 ms in all; each point shaded
+      once, indexed, paid instead, 0c400fd)
 - [ ] 7 Compiler: certified f16 in shaders (ranges from intervals), with an f32 fallback
 - [ ] 8 Compiler: specialization where a shader branches on a draw's uniform data
+      (done instead: small counted loops unrolled, the frame 0.9 ms less, a0e2a46. Measured:
+      grass tiers specialized by hand, no change; the resolve's jitter hoisted, no change)
 - [ ] 9 Compiler: fields band-limited from their gradients (leaf cut, paper grain, dabs)
 - [ ] 10 Compiler: interval-pruned kernels for cooking (load, hot reload); certified culling
+      (done: card outlines certified from the atlas, bd2f904; terrain levels cook only what a
+      move brings in, 0.17 → 0.05 ms, worst 1.1 → 0.28, 86d9d31; realization's edges found
+      once a block, load 0.45 → 0.25 s, 00cba64. Tried: clouds skip empty samples, no change)
 - [ ] 11 Far trees as voxel bricks cooked from their fields, in place of impostors and volumes
 - [ ] 12 4× MSAA on transient attachments (and alpha to coverage), measured; kept if it pays
 - [ ] 13 Numbers before and after; vision.md and #26 updated; this file deleted

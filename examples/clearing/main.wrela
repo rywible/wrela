@@ -819,9 +819,19 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         clouds: cook,
         levels: s.clipmap.levels(),
     }
-    let probes = s.probes.probes.span(start: 0, count: s.probes.grid.probes())
+    borrow probes = s.probes.maps
     let grounds = s.probes.grounds.span(start: 0, count: s.probes.grid.probes())
-    s.grass.place(cam, s.light, grid, lt.levels, texels, probes, grounds, stones: footprints())
+    s.grass.place(
+        cam,
+        s.light,
+        grid,
+        lt.levels,
+        texels,
+        probes,
+        s.linear,
+        grounds,
+        stones: footprints(),
+    )
     s.forest.select(cam)
 
     // The depth prepass: the cut cards and flowers.
@@ -1300,7 +1310,6 @@ pub fn test_sway(time: f32, at: vec3, height: f32) -> vec3 {
 pub fn test_reference(s: mut Clearing, first: u32, count: u32, step: u32, rays: u32) {
     let at = Sampling { t: trace_of(s), sh: s.sh, cam: s.cam, step, first, rays }
     s.references = buffer(count)
-    let probes = s.probes.probes.span(start: 0, count: s.probes.grid.probes())
     let grounds = s.probes.grounds.span(start: 0, count: s.probes.grid.probes())
     dispatch(
         reference.bind(
@@ -1310,7 +1319,8 @@ pub fn test_reference(s: mut Clearing, first: u32, count: u32, step: u32, rays: 
             volume: s.probes.volume.span(start: 0, count: s.probes.grid.voxels()),
             levels: s.clipmap.levels(),
             texels: s.clipmap.texels(),
-            probes: probes,
+            maps: s.probes.maps,
+            s: s.linear,
             grounds: grounds,
             near: s.near,
             far: s.far,

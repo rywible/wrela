@@ -12,8 +12,8 @@
 use light::{Light, open_sky, sky}
 use shadow::{Shadows, sunlit}
 use std::gpu::{
-    Atomics, ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, GpuSpan, Slots, Texture, buffer,
-    dispatch, label, write,
+    Atomics, ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, GpuSpan, Sampler, Slots, Texels,
+    Texture, TextureFormat, buffer, dispatch, label, texture, write,
 }
 use std::math::{PI, TAU}
 use terrain::{Levels, Texel, ground_at, height_at}
@@ -343,12 +343,38 @@ fn plus(a: Probe, b: Probe) -> Probe {
     Probe { r: a.r + b.r, g: a.g + b.g, b: a.b + b.b }
 }
 
+/// The probes as the shading reads them (`Baked::maps`): four planes side by side in one
+/// texture, each the grid's layers one above another (a layer `cols` × `cols` texels, a texel a
+/// column's probe): each colour's spherical harmonics times whether the probe holds light (one
+/// inside a solid holds none), then that (1 or 0). So a bilinear sample of a plane weighs four
+/// columns' probes as `sky_sh` does, in the texture unit: eight samples a point, not eight
+/// probes of 48 bytes from a buffer.
+pub const PLANES: u32 = 4
+
+/// Texel `id` of the probes' maps (`PLANES`), from the baked probes.
+@compute(8, 8)
+pub fn map_probes(grid: ProbeGrid, probes: [Probe], out: mut Texels, id: GlobalId) {
+    let cols = grid.cols
+    if id.x >= PLANES * cols || id.y >= cols * LAYERS {
+        return
+    }
+    let plane = id.x / cols
+    let p = probes[grid.index(id.x % cols, id.y % cols, id.y / cols)]
+    let held = if p.r.x + p.g.x + p.b.x > 0.0 { 1.0 } else { 0.0 }
+    let v = if plane == 0 { p.r * held } else if plane == 1 { p.g * held } else if plane == 2 {
+        p.b * held
+    } else { vec4(held, 0.0, 0.0, 0.0) }
+    out.store(id, v)
+}
+
 /// The light round `world` as a probe there would hold it: the probes round it, trilinear
-/// (between columns, and between layers by its height above the ground), or the open sky
-/// outside the grid, faded to it at the grid's edge.
+/// (between columns, and between layers by its height above the ground), from the probes' maps
+/// (`maps`, read through `s`, a linear sampler), or the open sky outside the grid, faded to it at
+/// the grid's edge.
 pub fn sky_sh(
     grid: ProbeGrid,
-    probes: [Probe],
+    maps: Texture,
+    s: Sampler,
     grounds: [f32],
     light: Light,
     world: vec3,
@@ -374,22 +400,22 @@ pub fn sky_sh(
     }
     let fk = saturate((above - LAYER_HEIGHTS[k]) / (LAYER_HEIGHTS[k + 1] - LAYER_HEIGHTS[k]))
     // The eight round it, weighted by nearness; one inside a solid (which holds no light) left
-    // out, and the others' weights grown to make up for it.
+    // out, and the others' weights grown to make up for it: each layer's four columns, a
+    // bilinear sample of each plane of the maps.
     var out = Probe { r: vec4(0.0), g: vec4(0.0), b: vec4(0.0) }
     var total = 0.0
+    let size = vec2(f32(PLANES * grid.cols), f32(grid.cols * LAYERS))
+    let plane = vec2(f32(grid.cols), 0.0)
     for dk in 0..2 {
-        for dz in 0..2 {
-            for dx in 0..2 {
-                let p = probes[grid.index(cx + dx, cz + dz, k + dk)]
-                let held = if p.r.x + p.g.x + p.b.x > 0.0 { 1.0 } else { 0.0 }
-                let wx = if dx == 0 { 1.0 - cf.x } else { cf.x }
-                let wz = if dz == 0 { 1.0 - cf.y } else { cf.y }
-                let wk = if dk == 0 { 1.0 - fk } else { fk }
-                let w = wx * wz * wk * held
-                out = plus(out, scaled(p, w))
-                total += w
-            }
+        let wk = if dk == 0 { 1.0 - fk } else { fk }
+        let at = (g + vec2(0.5, 0.5 + f32((k + dk) * grid.cols))) / size
+        let p = Probe {
+            r: maps.sample_level(s, at),
+            g: maps.sample_level(s, at + plane / size),
+            b: maps.sample_level(s, at + 2.0 * plane / size),
         }
+        out = plus(out, scaled(p, wk))
+        total += maps.sample_level(s, at + 3.0 * plane / size).x * wk
     }
     let probed = if total > 1.0e-4 { scaled(out, 1.0 / total) } else { open_probe(light) }
     // Faded to the open sky at the grid's edge.
@@ -401,7 +427,8 @@ pub fn sky_sh(
 /// for a test of it, the light's own (`Light::sky_test`).
 pub fn sky_light(
     grid: ProbeGrid,
-    probes: [Probe],
+    maps: Texture,
+    s: Sampler,
     grounds: [f32],
     light: Light,
     world: vec3,
@@ -412,7 +439,7 @@ pub fn sky_light(
             dot(light.sky_sh, vec4(0.282095, 0.488603 * n.x, 0.488603 * n.y, 0.488603 * n.z)),
         )
     }
-    probe_light(sky_sh(grid, probes, grounds, light, world), n)
+    probe_light(sky_sh(grid, maps, s, grounds, light, world), n)
 }
 
 /// The probes the grid holds, baked: their buffer, the occluder volume they're traced through,
@@ -420,6 +447,8 @@ pub fn sky_light(
 pub struct Baked {
     pub grid: ProbeGrid,
     pub probes: GpuBuffer<Probe>,
+    /// The probes as the shading reads them (`PLANES`), mapped when the last strip is baked.
+    pub maps: Texture,
     pub grounds: GpuBuffer<f32>,
     pub volume: GpuBuffer<u32>,
     pub occluders: GpuBuffer<Occluder>,
@@ -438,6 +467,12 @@ impl Baked {
         Baked {
             grid,
             probes: buffer(grid.probes()),
+            maps: texture(
+                width: max(PLANES * grid.cols, 1),
+                height: max(grid.cols * LAYERS, 1),
+                format: TextureFormat::Rgba16Float,
+                writable: true,
+            ),
             grounds: buffer(grid.probes()),
             volume: buffer(grid.voxels()),
             occluders: take o,
@@ -499,6 +534,16 @@ impl Baked {
             groups: (n * LAYERS + 63) / 64,
         )
         self.baked += n
+        if self.done() {
+            dispatch(
+                map_probes.bind(
+                    self.grid,
+                    self.probes.span(start: 0, count: self.grid.probes()),
+                    out: mut self.maps,
+                ),
+                groups: ((PLANES * self.grid.cols + 7) / 8, (self.grid.cols * LAYERS + 7) / 8, 1),
+            )
+        }
     }
 }
 
@@ -547,7 +592,8 @@ pub fn reference(
     volume: [u32],
     levels: Levels,
     texels: [Texel],
-    probes: [Probe],
+    maps: Texture,
+    s: Sampler,
     grounds: [f32],
     near: DepthTexture,
     far: DepthTexture,
@@ -621,7 +667,7 @@ pub fn reference(
     let traced = Probe { r: r * conv, g: gg * conv, b: b * conv }
     let class = f32(view::class_of(scene.load(x: u32(p.x), y: u32(p.y)).a))
     out[id] = Reference {
-        probes: sky_sh(at.t.grid, probes, grounds, at.t.light, w),
+        probes: sky_sh(at.t.grid, maps, s, grounds, at.t.light, w),
         traced,
         at: vec4(class + 1.0, length(w - at.cam.eye), 0.0, 0.0),
     }
