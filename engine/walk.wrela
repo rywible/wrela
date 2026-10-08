@@ -178,7 +178,7 @@ impl Walker {
                 shadow_sampler: self.shadow_sampler,
             ),
             indices: self.mesh.quads.items(),
-            indirect: self.mesh.args.span(start: 0, count: 5),
+            indirect: self.mesh.draw.items(),
             cull: Cull::Back,
         )
         pass.present()

@@ -297,7 +297,7 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
             ),
             depth_only,
             indices: mesh.quads.items(),
-            indirect: mesh.args.span(start: 0, count: 5),
+            indirect: mesh.draw.items(),
             depth_bias: DepthBias { constant: 4, slope: 2.0, clamp: 0.0 },
         )
     }
@@ -336,7 +336,7 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
                 shadow_sampler: game.shadow_sampler,
             ),
             indices: mesh.quads.items(),
-            indirect: mesh.args.span(start: 0, count: 5),
+            indirect: mesh.draw.items(),
             cull: Cull::Back,
         )
     }

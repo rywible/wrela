@@ -8,7 +8,7 @@ use creature::{PartMask, Parts}
 use light::{Lit}
 use lit::{Lighting, sky_at, sun_at, through_air}
 use probes::Probe
-use realize::{Mesh, SkinVertex, VERTEX_COUNT}
+use realize::{Mesh, SkinVertex, Tally}
 use render::{Look, skin_matrix}
 use std::gpu::{
     ClipPosition, ComparisonSampler, DepthTexture, Flat, GlobalId, GpuBuffer, Sampler, Slots,
@@ -25,12 +25,12 @@ pub fn cook_colours<C, F: Parts<C>, L: Look<C>>(
     field: F,
     look: L,
     fp: f32,
-    args: [u32],
+    tally: [Tally],
     verts: [SkinVertex],
     colours: mut Slots<Unorm8x4>,
     id: GlobalId,
 ) {
-    if id.x >= args[VERTEX_COUNT] {
+    if id.x >= tally[0].vertices {
         return
     }
     let v = verts[id.x]
@@ -54,7 +54,7 @@ pub fn colours<C, F: Parts<C>, L: Look<C>>(
             field,
             look,
             fp: cell,
-            args: mesh.args.span(start: 0, count: 15),
+            tally: mesh.tally.items(),
             verts: mesh.verts.items(),
             colours: mut out,
         ),

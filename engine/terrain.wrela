@@ -19,8 +19,8 @@ use light::{Light, Lit}
 use noise::noise2
 use sim::Hit
 use std::gpu::{
-    ClipPosition, GlobalId, GpuBuffer, GpuSpan, Oct32, Slots, Unorm8x4, VertexIndex, buffer,
-    dispatch, label, write,
+    ClipPosition, DrawIndexedArgs, GlobalId, GpuBuffer, GpuSpan, Oct32, Slots, Unorm8x4,
+    VertexIndex, buffer, dispatch, label, write,
 }
 use view::Camera
 
@@ -110,9 +110,9 @@ pub struct Clipmap {
     moving: GpuBuffer<Texel>,
     levels: Levels,
     /// The ground's triangles (`ground_indices`), and each level's draw of them this frame: its
-    /// run's index count, one instance, its first index, its first point, and a 0.
+    /// run of them, one instance, from its first point.
     indices: GpuBuffer<u32>,
-    args: GpuBuffer<u32>,
+    args: GpuBuffer<DrawIndexedArgs>,
     finest: f32,
     /// Whether each level holds what its place asks (false until it's cooked).
     cooked: [bool; 12],
@@ -129,7 +129,7 @@ impl Clipmap {
             moving: buffer(STRIDE),
             levels: Levels { at: [vec4(0.0); 12], count: n, eye: vec2(0.0) },
             indices: indices_of(),
-            args: buffer(MAX_LEVELS * 5),
+            args: buffer(MAX_LEVELS),
             finest,
             cooked: [false; 12],
             cooks: 0,
@@ -196,7 +196,7 @@ impl Clipmap {
         }
         self.cooks += cooked
         // Each level's draw: its run of the indices, by where its hole is.
-        var args: Vec<u32> = Vec::new()
+        var args: Vec<DrawIndexedArgs> = Vec::new()
         for l in 0..self.levels.count {
             var run = HOLES
             if l > 0 {
@@ -204,11 +204,15 @@ impl Clipmap {
                 let lo = vec2u((self.levels.at[l - 1].xy - a.xy) / a.z + vec2(0.5))
                 run = min(lo.x - 32, 1) + 2 * min(lo.y - 32, 1)
             }
-            args.push(run_length(run))
-            args.push(1)
-            args.push(first_index(run))
-            args.push(l * LEVEL_POINTS)
-            args.push(0)
+            args.push(
+                DrawIndexedArgs {
+                    indices: run_length(run),
+                    instances: 1,
+                    first_index: first_index(run),
+                    base_vertex: i32(l * LEVEL_POINTS),
+                    first_instance: 0,
+                },
+            )
         }
         write(mut self.args, 0, args)
         cooked
@@ -220,8 +224,8 @@ impl Clipmap {
     }
 
     /// Level `l`'s draw of the ground's indices this frame.
-    pub fn draw_args(self, l: u32) -> GpuSpan<u32> {
-        self.args.span(start: l * 5, count: 5)
+    pub fn draw_args(self, l: u32) -> GpuSpan<DrawIndexedArgs> {
+        self.args.span(start: l, count: 1)
     }
 }
 

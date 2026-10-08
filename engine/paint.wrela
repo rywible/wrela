@@ -17,7 +17,7 @@
 use light::{Light, tone}
 use noise::{hash2, noise3}
 use std::gpu::{
-    DepthTexture, FragCoord, GlobalId, LocalId, Rgba16Float, Sampler, Shared, Slots, Texture,
+    DepthTexture, FragCoord, GlobalId, LocalId, One, Rgba16Float, Sampler, Shared, Slots, Texture,
     barrier,
 }
 use terrain::{Levels, Texel, ground_at, height_at}
@@ -104,10 +104,10 @@ pub fn glow_down(
     s: Sampler,
     threshold: f32,
     base: f32,
-    exposure: [f32],
+    exposure: [Exposure],
 ) -> vec4 {
     let size = vec2(f32(image.width()), f32(image.height()))
-    let t = threshold * base / max(exposure[0], 1.0e-3)
+    let t = threshold * base / max(exposure[0].value, 1.0e-3)
     let base = floor(pixel.position.xy) * 4.0
     var sum = vec3(0.0)
     for j in 0..2 {
@@ -156,14 +156,20 @@ pub struct Metering: Copy + GpuData {
     pub fresh: u32,
 }
 
-/// The exposure (slot 0), and the scene's mean luminance (slot 1, for tests): one workgroup,
-/// each invocation four of the grid's pixels, then their logs summed in workgroup memory.
+/// The metered exposure (`meter`), and the scene's mean luminance (for tests).
+pub struct Exposure: Copy + GpuData {
+    pub value: f32,
+    pub mean: f32,
+}
+
+/// The exposure, and the scene's mean luminance: one workgroup, each invocation four of the
+/// grid's pixels, then their logs summed in workgroup memory.
 @compute(256)
 pub fn meter(
     scene: Texture<Rgba16Float>,
     m: Metering,
     sums: mut Shared<f32, 256>,
-    exposure: mut Slots<f32>,
+    exposure: mut One<Exposure>,
     id: GlobalId,
     lid: LocalId,
 ) {
@@ -188,12 +194,11 @@ pub fn meter(
         barrier(mut sums)
     }
     let mean = exp2(sums.get(0) / 1024.0)
-    if id.x == 0 {
-        let target = clamp(m.base * pow(m.reference / mean, m.strength), m.lo, m.hi)
-        exposure[id] = if m.fresh != 0 { target } else { mix(exposure[id], target, m.rate) }
-    } else if id.x == 1 {
-        exposure[id] = mean
-    }
+    let target = clamp(m.base * pow(m.reference / mean, m.strength), m.lo, m.hi)
+    exposure.update(id, |old| {
+        let value = if m.fresh != 0 { target } else { mix(old.value, target, m.rate) }
+        Exposure { value, mean }
+    })
 }
 
 /// What the look's pass reads besides its textures: the scene's camera (unjittered: the output
@@ -380,7 +385,7 @@ pub fn develop(
     glow: Texture<Rgba16Float>,
     dabs: Texture<Rgba16Float>,
     s: Sampler,
-    exposure: [f32],
+    exposure: [Exposure],
 ) -> vec4 {
     let px = pixel.position.xy
     let p = vec2u(px)
@@ -404,7 +409,7 @@ pub fn develop(
     // Bloom.
     let gq = min(vec2u(px / 4.0), vec2u(glow.width() - 1, glow.height() - 1))
     paint += glow.load(x: gq.x, y: gq.y).rgb * look.bloom
-    var c = tone(paint, exposure[0])
+    var c = tone(paint, exposure[0].value)
     // The characters' lines: a darker shade of their colour.
     let (z, _) = depth_at(d, depth, px)
     let l = line(d, image, depth, px, here.a, z)

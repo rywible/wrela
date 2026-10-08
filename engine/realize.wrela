@@ -28,11 +28,11 @@ use look::{CreatureLook, Detail}
 use std::derive::{Box3, gradient}
 use std::collections::replace
 use std::gpu::{
-    Append, AppendBuffer, Atomics, GlobalId, GpuBuffer, LocalId, Shared, Slots, WorkgroupId,
-    append_buffer, barrier, buffer, dispatch, read, write,
+    Append, AppendBuffer, Atomics, DispatchArgs, DrawIndexedArgs, GlobalId, GpuBuffer, LocalId, One,
+    Shared, Slots, WorkgroupId, append_buffer, barrier, buffer, dispatch, read, write,
 }
 use std::io::Pending
-use std::mem::debug_build
+use std::mem::{debug_build, size_of}
 
 /// A block's cells along each axis: a 4×4×4 workgroup in `place_vertices` and `emit_quads`.
 pub const BLOCK: u32 = 4
@@ -40,20 +40,17 @@ pub const BLOCK: u32 = 4
 /// A cell with no vertex, in the cell map's low 24 bits.
 pub const NO_VERTEX: u32 = 0xffffff
 
-/// A mesh's draw arguments (`Mesh::args`): an indexed indirect draw's five words (index count,
-/// instances, first index, base vertex, first instance), then what its passes counted: its
+/// What a realization's passes counted (`Mesh::tally`), which `finish_mesh` writes: its
 /// vertices (within its room), the holes, the overflow flags, the vertices and quads pushed (past
-/// its room too), and the live blocks; then the skin pass's group counts. One readback of them
-/// says all a realization did.
-pub const INDEX_COUNT: u32 = 0
-pub const VERTEX_COUNT: u32 = 5
-pub const HOLES: u32 = 6
-pub const FLAGS: u32 = 7
-pub const PUSHED_VERTICES: u32 = 8
-pub const PUSHED_QUADS: u32 = 9
-pub const LIVE_BLOCKS: u32 = 10
-pub const SKIN_GROUPS: u32 = 12
-pub const ARGS: u32 = 15
+/// its room too), and the live blocks. One readback of it says all a realization did.
+pub struct Tally: Copy + GpuData + Plain {
+    pub vertices: u32,
+    pub holes: u32,
+    pub flags: u32,
+    pub pushed_vertices: u32,
+    pub pushed_quads: u32,
+    pub live_blocks: u32,
+}
 
 /// `FLAGS`: the vertices ran past the mesh's room; the quads did.
 pub const VERTICES_FULL: u32 = 2
@@ -468,7 +465,7 @@ pub fn emit_quads(
     block_map: [u32],
     cells: [u32],
     quads: mut Append<Quad>,
-    args: mut Atomics<u32>,
+    holes: mut Atomics<u32>,
     block: WorkgroupId,
     lid: LocalId,
 ) {
@@ -497,7 +494,7 @@ pub fn emit_quads(
         let v2 = vertex_at(grid, block_map, cells, n, room, g - u - w)
         let v3 = vertex_at(grid, block_map, cells, n, room, g - w)
         if v1 == NO_VERTEX || v2 == NO_VERTEX || v3 == NO_VERTEX {
-            let _ = args.add(HOLES, 1)
+            let _ = holes.add(i: 0, value: 1)
             continue
         }
         let _ = quads.push(if in0 == 1 {
@@ -511,38 +508,48 @@ pub fn emit_quads(
 // ---- pass 4: the draw's arguments ---------------------------------------------------------------
 
 /// The draw's arguments from the counts, each clamped to its room (`vroom` vertices, `qroom`
-/// quads), so a draw reads only its own mesh; the overflow flags; the counts as pushed, and the
-/// live blocks; and the skin pass's group count. The holes stay as `emit_quads` counted them,
-/// and the words that never change (the draw's instances and offsets, the skin pass's other
-/// group counts) as `record_cull` wrote them.
-@compute(64)
+/// quads), so a draw reads only its own mesh; the skin pass's group counts; and the tally: the
+/// overflow flags, the counts as pushed, the holes `emit_quads` counted and the live blocks.
+@compute(1)
 pub fn finish_mesh(
     vertices: [u32],
     quads: [u32],
     live: [u32],
+    holes: [u32],
     vroom: u32,
     qroom: u32,
-    args: mut Slots<u32>,
+    draw: mut One<DrawIndexedArgs>,
+    skin: mut One<DispatchArgs>,
+    tally: mut One<Tally>,
     id: GlobalId,
 ) {
     let (v, q) = (vertices[0], quads[0])
-    if id.x == INDEX_COUNT {
-        args[id] = 6 * min(q, qroom)
-    } else if id.x == VERTEX_COUNT {
-        args[id] = min(v, vroom)
-    } else if id.x == FLAGS {
-        args[id] = (if v > vroom { VERTICES_FULL } else { 0 }) | (if q > qroom { QUADS_FULL } else {
-            0
-        })
-    } else if id.x == PUSHED_VERTICES {
-        args[id] = v
-    } else if id.x == PUSHED_QUADS {
-        args[id] = q
-    } else if id.x == LIVE_BLOCKS {
-        args[id] = live[0]
-    } else if id.x == SKIN_GROUPS {
-        args[id] = (min(v, vroom) + 63) / 64
-    }
+    let drawn = min(v, vroom)
+    draw.set(
+        id,
+        DrawIndexedArgs {
+            indices: 6 * min(q, qroom),
+            instances: 1,
+            first_index: 0,
+            base_vertex: 0,
+            first_instance: 0,
+        },
+    )
+    skin.set(id, DispatchArgs { x: (drawn + 63) / 64, y: 1, z: 1 })
+    let flags = (if v > vroom { VERTICES_FULL } else { 0 }) | (if q > qroom { QUADS_FULL } else {
+        0
+    })
+    tally.set(
+        id,
+        Tally {
+            vertices: drawn,
+            holes: holes[0],
+            flags,
+            pushed_vertices: v,
+            pushed_quads: q,
+            live_blocks: live[0],
+        },
+    )
 }
 
 // ---- pass 5: skin weights ------------------------------------------------------------------------
@@ -554,11 +561,11 @@ pub fn skin_vertices<C, F: Parts<C>>(
     field: F,
     fp: f32,
     falloff: f32,
-    args: [u32],
+    tally: [Tally],
     verts: mut Slots<SkinVertex>,
     id: GlobalId,
 ) {
-    if id.x >= args[VERTEX_COUNT] {
+    if id.x >= tally[0].vertices {
         return
     }
     let v = verts[id]
@@ -612,7 +619,12 @@ pub struct Room: Copy + Eq {
 pub struct Mesh {
     pub verts: AppendBuffer<SkinVertex>,
     pub quads: AppendBuffer<Quad>,
-    pub args: GpuBuffer<u32>,
+    /// Its draw's arguments and the skin pass's group counts, which `finish_mesh` writes.
+    pub draw: GpuBuffer<DrawIndexedArgs>,
+    pub skin: GpuBuffer<DispatchArgs>,
+    /// The holes `emit_quads` counts, and what the passes counted.
+    pub holes: GpuBuffer<u32>,
+    pub tally: GpuBuffer<Tally>,
 }
 
 impl Mesh {
@@ -620,7 +632,10 @@ impl Mesh {
         Mesh {
             verts: append_buffer(room.vertices),
             quads: append_buffer(room.quads),
-            args: buffer(ARGS),
+            draw: buffer(1),
+            skin: buffer(1),
+            holes: buffer(1),
+            tally: buffer(1),
         }
     }
 
@@ -633,10 +648,11 @@ impl Mesh {
         Mesh::bytes_for(self.room())
     }
 
-    /// Bytes a mesh with room `room` takes: its vertices, its quads, its arguments and its two
-    /// counts.
+    /// Bytes a mesh with room `room` takes: its vertices, its quads, its arguments, its tally
+    /// and holes, and its two counts.
     pub fn bytes_for(room: Room) -> u64 {
-        u64(room.vertices) * 48 + u64(room.quads) * 24 + u64(ARGS * 4 + 24)
+        let args = size_of::<DrawIndexedArgs>() + size_of::<DispatchArgs>()
+        u64(room.vertices) * 48 + u64(room.quads) * 24 + u64(args + size_of::<Tally>() + 4 + 24)
     }
 }
 
@@ -743,9 +759,8 @@ pub fn record_cull<C, F: Parts<C>>(field: F, grid: Grid, scratch: mut Scratch, m
     scratch.live.clear()
     mesh.verts.clear()
     mesh.quads.clear()
-    // The counts zeroed; the draw's one instance and the skin pass's one group along y and z,
-    // which nothing changes after.
-    write(mut mesh.args, 0, [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1])
+    // The holes counted from 0 (`finish_mesh` writes the rest whole).
+    write(mut mesh.holes, 0, [0])
     dispatch(
         cull_blocks.bind(
             field: field,
@@ -825,7 +840,7 @@ pub fn record_finish<C, F: Parts<C>>(
             block_map: scratch.block_map.span(0, scratch.block_map.len()),
             cells: scratch.cells.span(0, scratch.cells.len()),
             quads: mut mesh.quads,
-            args: mut mesh.args,
+            holes: mut mesh.holes,
         ),
         groups: scratch.live.count(),
     )
@@ -834,22 +849,25 @@ pub fn record_finish<C, F: Parts<C>>(
             vertices: mesh.verts.count(),
             quads: mesh.quads.count(),
             live: scratch.live.count(),
+            holes: mesh.holes.items(),
             vroom: room.vertices,
             qroom: room.quads,
-            args: mut mesh.args,
+            draw: mut mesh.draw,
+            skin: mut mesh.skin,
+            tally: mut mesh.tally,
         ),
         groups: 1,
     )
-    // The arguments bound it (their vertex count) and drive it (their group counts): both reads.
+    // The tally bounds it (its vertex count), and the skin pass's arguments drive it.
     dispatch(
         skin_vertices.bind(
             field: field,
             fp: grid.cell,
             falloff: falloff,
-            args: mesh.args.span(start: 0, count: ARGS),
+            tally: mesh.tally.items(),
             verts: mesh.verts.items_mut(),
         ),
-        groups: mesh.args.span(start: SKIN_GROUPS, count: 3),
+        groups: mesh.skin.items(),
     )
 }
 
@@ -892,7 +910,7 @@ struct Held<F> {
 struct Check {
     instance: u32,
     level: u32,
-    args: Pending<u32>,
+    tally: Pending<Tally>,
     calibration: bool,
 }
 
@@ -1401,7 +1419,7 @@ impl<C, F: Parts<C>> Realizer<F> {
             Check {
                 instance: i,
                 level,
-                args: read(mesh.args.span(start: 0, count: ARGS)),
+                tally: read(mesh.tally.items()),
                 calibration,
             },
         )
@@ -1438,20 +1456,21 @@ impl<C, F: Parts<C>> Realizer<F> {
     fn answer(mut self) {
         var k = 0
         while k < self.checks.len() {
-            let Some(answer) = self.checks[k].args.poll() else {
+            let Some(answer) = self.checks[k].tally.poll() else {
                 k += 1
                 continue
             }
             let c = self.checks.remove(k)
-            let Ok(words) = answer else { continue }
-            if words.len() < ARGS {
+            let Ok(tallies) = answer else { continue }
+            if tallies.len() == 0 {
                 continue
             }
-            self.holes += words[HOLES]
-            let pushed = room_for(words[PUSHED_VERTICES], words[PUSHED_QUADS])
+            let t = tallies[0]
+            self.holes += t.holes
+            let pushed = room_for(t.pushed_vertices, t.pushed_quads)
             if c.calibration {
                 self.rooms[c.level] = LevelRoom::Known(pushed)
-            } else if words[FLAGS] != 0 {
+            } else if t.flags != 0 {
                 self.overflows += 1
                 let had = self.rooms[c.level].room().unwrap()
                 self.rooms[c.level] = LevelRoom::Known(

@@ -15,7 +15,9 @@ use engine::run::run
 use fawn::creature::fawn
 use engine::air::{Air, Tables, hazy, tables}
 use engine::light::{Light, SUN_TOP, sunlight}
-use engine::paint::{Develop, Look, Metering, dab_map, develop, glow_blur, glow_down, meter}
+use engine::paint::{
+    Develop, Exposure, Look, Metering, dab_map, develop, glow_blur, glow_down, meter,
+}
 use engine::lit::Lighting
 use engine::plant::{Wind, leaf_atlas}
 use engine::probes::{Baked, Occluder, Probe, ProbeGrid, Reference, Sampling, Trace, grid, reference}
@@ -275,7 +277,7 @@ pub struct Clearing {
     glow_a: Texture<Rgba16Float>,
     glow_b: Texture<Rgba16Float>,
     /// The metered exposure, and the scene's mean luminance (`paint::meter`).
-    exposure: GpuBuffer<f32>,
+    exposure: GpuBuffer<Exposure>,
     linear: Sampler,
     /// A linear sampler that tiles (the clouds' noises and maps).
     repeat: Sampler,
@@ -411,7 +413,7 @@ pub fn init() -> Clearing {
         dabs: texture::<Rgba16Float>(width: 1, height: 1),
         glow_a: texture::<Rgba16Float>(width: 1, height: 1),
         glow_b: texture::<Rgba16Float>(width: 1, height: 1),
-        exposure: buffer(2),
+        exposure: buffer(1),
         linear: sampler(),
         repeat: sampler(address: Address::Repeat),
         width: 0,
@@ -533,7 +535,7 @@ fn look(
     s: Sampler,
     glow_a: mut Texture<Rgba16Float>,
     glow_b: mut Texture<Rgba16Float>,
-    exposure: GpuSpan<f32>,
+    exposure: GpuSpan<Exposure>,
     d: Develop,
 ) {
     label("look glow")
@@ -619,7 +621,7 @@ fn static_shadows(s: mut Clearing, sh: Shadows, wind: Wind) {
                 stone_shadow.bind(verts: st.mesh.verts.items(), at: st.at, view: sh.near),
                 nothing,
                 indices: st.mesh.quads.items(),
-                indirect: st.mesh.args.span(start: 0, count: 5),
+                indirect: st.mesh.draw.items(),
                 depth_bias: DepthBias { constant: 2, slope: 1.5, clamp: 0.0 },
             )
         }
@@ -745,7 +747,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             ),
             nothing,
             indices: s.creature.mesh.quads.items(),
-            indirect: s.creature.mesh.args.span(start: 0, count: 5),
+            indirect: s.creature.mesh.draw.items(),
             depth_bias: DepthBias { constant: 2, slope: 1.5, clamp: 0.0 },
         )
     }
@@ -939,7 +941,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             ),
             stone_shade.bind(lt),
             indices: st.mesh.quads.items(),
-            indirect: st.mesh.args.span(start: 0, count: 5),
+            indirect: st.mesh.draw.items(),
             cull: Cull::Back,
             depth: NEAREST,
         )
@@ -984,7 +986,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             ),
             character_shade.bind(lt),
             indices: s.creature.mesh.quads.items(),
-            indirect: s.creature.mesh.args.span(start: 0, count: 5),
+            indirect: s.creature.mesh.draw.items(),
             cull: Cull::Back,
             depth: NEAREST,
         )
@@ -1022,7 +1024,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             ),
             motion.bind(cam),
             indices: s.creature.mesh.quads.items(),
-            indirect: s.creature.mesh.args.span(start: 0, count: 5),
+            indirect: s.creature.mesh.draw.items(),
             cull: Cull::Back,
             depth: Depth { compare: Compare::GreaterEqual, write: false },
         )

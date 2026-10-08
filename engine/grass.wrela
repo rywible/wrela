@@ -21,9 +21,10 @@ use plant::{Wind, sway}
 use probes::{Probe, ProbeGrid, sky_light}
 use sky::{Clouds, cloud_shadow}
 use std::gpu::{
-    Append, AppendBuffer, Atomics, ClipPosition, ComparisonSampler, DepthTexture, Flat, FragCoord,
-    GlobalId, GpuBuffer, InstanceIndex, Rgba16Float, Sampler, Slots, Texture, Texture3d, Unorm8x4,
-    VertexIndex, append_buffer, buffer, discard, dispatch, draw, write,
+    Append, AppendBuffer, Atomics, ClipPosition, ComparisonSampler, DepthTexture, DrawArgs,
+    DrawIndexedArgs, Flat, FragCoord, GlobalId, GpuBuffer, InstanceIndex, One, Rgba16Float, Sampler,
+    Slots, Texture, Texture3d, Unorm8x4, VertexIndex, append_buffer, buffer, discard, dispatch,
+    draw, write,
 }
 use std::math::TAU
 use terrain::{Levels, Texel, ground_cover_at, height_at, texel_index}
@@ -278,40 +279,33 @@ pub fn place(
     }
 }
 
-/// The blades' and flowers' indirect draws' arguments, from what was placed: a tier's blades in
-/// groups of `GROUP`, an instance each, drawn indexed (each tier's five words: its group's
-/// indices, its groups, its first index, and two 0s); then a flower card's vertices with the
-/// flowers placed as instances (four words). One invocation a word.
-@compute(32)
+/// The blades' and flowers' indirect draws' arguments, from what was placed: a tier's blades
+/// in groups of `GROUP`, an instance each, drawn indexed (an invocation a tier); and a flower
+/// card's vertices with the flowers placed as instances.
+@compute(4)
 pub fn draw_counts(
     near: [u32],
     middle: [u32],
     far: [u32],
     flowers: [u32],
-    args: mut Slots<u32>,
+    tiers: mut Slots<DrawIndexedArgs>,
+    blooms: mut One<DrawArgs>,
     id: GlobalId,
 ) {
-    if id.x >= 3 * 5 + 4 {
-        return
+    let which = id.x
+    let count = if which == 0 { min(near[0], MAX_BLADES) } else if which == 1 {
+        min(middle[0], MAX_BLADES)
+    } else { min(far[0], MAX_BLADES) }
+    tiers[id] = DrawIndexedArgs {
+        indices: GROUP * blade_indices(SEGMENTS[which]),
+        instances: (count + GROUP - 1) / GROUP,
+        first_index: first_index(which),
+        base_vertex: 0,
+        first_instance: 0,
     }
-    if id.x < 3 * 5 {
-        let which = id.x / 5
-        let w = id.x % 5
-        let count = if which == 0 { min(near[0], MAX_BLADES) } else if which == 1 {
-            min(middle[0], MAX_BLADES)
-        } else { min(far[0], MAX_BLADES) }
-        let segments = SEGMENTS[which]
-        args[id] = if w == 0 { GROUP * blade_indices(segments) } else if w == 1 {
-            (count + GROUP - 1) / GROUP
-        } else if w == 2 { first_index(which) } else { 0 }
-        return
-    }
-    let w = id.x - 3 * 5
-    args[id] = if w == 0 { 6 } else if w == 1 { min(flowers[0], MAX_FLOWERS) } else { 0 }
+    let n = min(flowers[0], MAX_FLOWERS)
+    blooms.set(id, DrawArgs { vertices: 6, instances: n, first_vertex: 0, first_instance: 0 })
 }
-
-/// Where the flowers' draw's arguments start in `Grass::args`.
-const FLOWER_ARGS: u32 = 3 * 5
 
 /// Blades a group: an instance of a tier's draw. A blade's few points an instance left most of
 /// each instance's vertex lanes idle (an instance a blade drew 10% slower).
@@ -360,7 +354,9 @@ pub struct Grass {
     pub middle: AppendBuffer<Blade>,
     pub far: AppendBuffer<Blade>,
     pub flowers: AppendBuffer<Flower>,
-    pub args: GpuBuffer<u32>,
+    /// Each tier's blades' draw, and the flowers'.
+    pub tiers: GpuBuffer<DrawIndexedArgs>,
+    pub blooms: GpuBuffer<DrawArgs>,
     /// Each tier's group of blades' indices (`group_indices`).
     indices: GpuBuffer<u32>,
 }
@@ -379,7 +375,8 @@ impl Grass {
             middle: append_buffer(MAX_BLADES / 2),
             far: append_buffer(MAX_BLADES / 2),
             flowers: append_buffer(MAX_FLOWERS),
-            args: buffer(FLOWER_ARGS + 4),
+            tiers: buffer(3),
+            blooms: buffer(1),
             indices: indices_of(),
         }
     }
@@ -481,9 +478,10 @@ impl Grass {
                 middle: self.middle.count(),
                 far: self.far.count(),
                 flowers: self.flowers.count(),
-                args: mut self.args,
+                tiers: mut self.tiers,
+                blooms: mut self.blooms,
             ),
-            groups: 1,
+            over: 3,
         )
     }
 }
@@ -756,7 +754,7 @@ impl Grass {
         draw(
             flower.bind(cam, wind, flowers: self.flowers.items()),
             flower_cut,
-            indirect: self.args.span(start: FLOWER_ARGS, count: 4),
+            indirect: self.blooms.items(),
             depth: view::NEAREST,
         )
     }
@@ -773,7 +771,7 @@ impl Grass {
             ),
             blade_shade.bind(self.near.items(), lt, look),
             indices: self.indices,
-            indirect: self.args.span(start: 0, count: 5),
+            indirect: self.tiers.span(start: 0, count: 1),
             depth: view::NEAREST,
         )
         draw(
@@ -786,7 +784,7 @@ impl Grass {
             ),
             blade_shade.bind(self.middle.items(), lt, look),
             indices: self.indices,
-            indirect: self.args.span(start: 5, count: 5),
+            indirect: self.tiers.span(start: 1, count: 1),
             depth: view::NEAREST,
         )
         draw(
@@ -799,13 +797,13 @@ impl Grass {
             ),
             blade_shade.bind(self.far.items(), lt, look),
             indices: self.indices,
-            indirect: self.args.span(start: 10, count: 5),
+            indirect: self.tiers.span(start: 2, count: 1),
             depth: view::NEAREST,
         )
         draw(
             flower.bind(lt.cam, wind, flowers: self.flowers.items()),
             flower_shade.bind(lt, blooms),
-            indirect: self.args.span(start: FLOWER_ARGS, count: 4),
+            indirect: self.blooms.items(),
             depth: view::PREPASSED,
         )
     }

@@ -14,11 +14,16 @@ to the result. Decided: pipelines that run only at load count against the 64.
       per-stage limits named by field; the engine's lighting inputs as one
 - [x] 4 Texture formats as types: `Texture<F>`, writable by a type-bounded constructor, integer loads
 - [x] 2 Dispatch over a domain: `over:`; the compiler sizes the groups and checks the bounds
-      (masked, not returned, where a kernel has barriers)
-- [ ] 3 Kernel outputs: typed indirect arguments; a single-writer output; a span of one field;
-      a `Texels` tile
+      (a kernel with workgroup memory can't take `over:`)
+- [x] 3 Kernel outputs: typed indirect arguments; a single-writer output (`One<T>`); a span of
+      one field (`buf.at(i).field`). No `Texels` tile: nothing needs a window yet, and writes at
+      computed coordinates break invocation safety
 - [ ] 5a Test-only entry points and exports out of a shipped build
-- [ ] 6 Bound entry points as compile-time values
+- [ ] 6 Bound entry points as compile-time values. Design: each entry point has a hidden
+      borrow struct of its arguments (its generics; buffers as spans, textures borrowed, values
+      by value); `k.bind(...)` outside a command is a literal of it; `dispatch`/`draw` take a
+      local of it, or a generic `F: Kernel | Vertex | Fragment` (lang traits it implements),
+      resolved at lowering from the concrete type; args are its fields' places
 - [ ] 5b Frame tests on the native host's GPU, in wrela; exports take fieldless enums
 - [ ] 7 Work over several frames
 - [ ] Small: `borrow x = if c { a } else { b }`; packed bitfields; enums to and from `u32`;
