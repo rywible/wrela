@@ -85,7 +85,7 @@ pub fn neighbourhoods(scene: Texture, means: mut Texels, spreads: mut Texels, id
 
 /// The history at `px` (output pixels), filtered by a Catmull-Rom spline in 5 taps (bilinear
 /// taps placed to give its weights), so a moving history stays sharp.
-fn history_at(history: Texture, s: Sampler, px: vec2, size: vec2) -> vec3 {
+fn history_at(history: Texture, s: Sampler, px: vec2, size: vec2) -> vec4 {
     let pos = px - vec2(0.5)
     let c = floor(pos) + vec2(0.5)
     let f = pos - floor(pos)
@@ -101,11 +101,12 @@ fn history_at(history: Texture, s: Sampler, px: vec2, size: vec2) -> vec3 {
     var r = vec3(0.0)
     r += history.sample_level(s, vec2(t12.x, t0.y)).rgb * (w12.x * w0.y)
     r += history.sample_level(s, vec2(t0.x, t12.y)).rgb * (w0.x * w12.y)
-    r += history.sample_level(s, vec2(t12.x, t12.y)).rgb * (w12.x * w12.y)
+    let core = history.sample_level(s, vec2(t12.x, t12.y))
+    r += core.rgb * (w12.x * w12.y)
     r += history.sample_level(s, vec2(t3.x, t12.y)).rgb * (w3.x * w12.y)
     r += history.sample_level(s, vec2(t12.x, t3.y)).rgb * (w12.x * w3.y)
     let total = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y
-    max(r / total, vec3(0.0))
+    vec4(max(r / total, vec3(0.0)), core.a)
 }
 
 /// The output pixel at `pixel`: this frame's samples reconstructed there, blended with the
@@ -195,7 +196,8 @@ pub fn resolve(
     if r.fresh != 0 || !inside {
         return vec4(untamed(current), tag)
     }
-    let prev = tamed(history_at(history, s, last, r.out))
+    let fetched = history_at(history, s, last, r.out)
+    let prev = tamed(fetched.rgb)
     // The neighbourhood of the scene pixel nearest this one.
     let near = clamp(vec2i(floor(q + j)), vec2i(0), lim)
     let hood = means.load(x: u32(near.x), y: u32(near.y))
@@ -203,7 +205,8 @@ pub fn resolve(
     // What the history showed there: if nothing round the pixel shows it now (a creature that
     // walked on), it's left behind, and the box isn't widened for it; nor beside anything that
     // moves (a widened box beside the creature lets its colour into the history, to trail).
-    let was = class_of(history.load(x: u32(last.x), y: u32(last.y)).a)
+    let was_tag = history.load(x: u32(last.x), y: u32(last.y)).a
+    let was = class_of(was_tag)
     let still_seen = ((u32(spread.w + 0.5) >> was) & 1) != 0 && moved.z < 0.5
     // Clip the history to the box of this frame's neighbourhood (its mean and spread), wider
     // where thin geometry covers part of it: up to 1.75 spreads where it's half covered.
@@ -222,14 +225,18 @@ pub fn resolve(
     // showed the creature and the pixel doesn't now, the creature walked on: this frame's alone
     // (the box round an edge holds its colours, which would let it trail). The history showed
     // it if any of the four texels round the point did: they carry most of its filtered colour
-    // (`history_at`), and at the creature's edge the nearest alone may be the ground.
-    let core = vec2i(floor(last - vec2(0.5)))
-    let edge = vec2i(i32(r.out.x) - 1, i32(r.out.y) - 1)
-    var showed = false
-    for dy in 0..2 {
-        for dx in 0..2 {
-            let t = clamp(core + vec2i(dx, dy), vec2i(0), edge)
-            showed = showed || class_of(history.load(x: u32(t.x), y: u32(t.y)).a) == 5
+    // (`history_at`), and at the creature's edge the nearest alone may be the ground. Their
+    // tags filtered together (the history's middle sample, `fetched.a`) are of the nearest's
+    // class where all four are, as nearly everywhere: then the nearest says.
+    var showed = was == 5
+    if !showed && class_of(fetched.a) != was {
+        let core = vec2i(floor(last - vec2(0.5)))
+        let edge = vec2i(i32(r.out.x) - 1, i32(r.out.y) - 1)
+        for dy in 0..2 {
+            for dx in 0..2 {
+                let t = clamp(core + vec2i(dx, dy), vec2i(0), edge)
+                showed = showed || class_of(history.load(x: u32(t.x), y: u32(t.y)).a) == 5
+            }
         }
     }
     let left = showed && class_of(tag) != 5
