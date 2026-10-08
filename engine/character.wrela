@@ -12,7 +12,7 @@ use realize::{Mesh, SkinVertex, VERTEX_COUNT}
 use render::{Look, skin_matrix}
 use std::gpu::{
     ClipPosition, ComparisonSampler, DepthTexture, Flat, GlobalId, GpuBuffer, Sampler, Slots,
-    Texture, Unorm8x4, VertexIndex, buffer, dispatch,
+    Texture, Texture3d, Unorm8x4, VertexIndex, buffer, dispatch,
 }
 use temporal::motion_of
 use terrain::Texel
@@ -128,13 +128,15 @@ pub fn character_shade(
     s: Sampler,
     probes: Texture,
     grounds: [f32],
+    air: Texture3d,
 ) -> vec4 {
     let n = normalize(c.normal)
     let sun = sun_at(lt, c.world, n, near, far, moving, cmp, clouds, s, soft: 1.0)
     let sky = sky_at(lt, probes, s, grounds, c.world, n)
     let lit = Lit { albedo: c.albedo, n, sun, sky, through: vec3(0.0) }
-    let colour = light::character(lt.light, lit, c.world, lt.cam.eye)
-    vec4(hazed(lt.light, colour, c.world, lt.cam.eye), CREATURE + f32(c.part.value % 63))
+    let open = probes::open_light(probes, vec3(0.0, 1.0, 0.0))
+    let colour = light::character(lt.light, lit, open, c.world, lt.cam.eye)
+    vec4(hazed(air, s, lt.light, colour, c.world, lt.cam.eye), CREATURE + f32(c.part.value % 63))
 }
 
 /// What a character's motion vertex passes on: where its point is now and was last frame.

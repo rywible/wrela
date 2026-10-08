@@ -14,9 +14,9 @@
 //
 // Every texture the look lays on is anchored in the world (AC1).
 
-use light::{Light, display}
+use light::{Light, tone}
 use noise::{hash2, noise3}
-use std::gpu::{DepthTexture, FragCoord, Sampler, Texture}
+use std::gpu::{DepthTexture, FragCoord, GlobalId, LocalId, Sampler, Shared, Slots, Texture, barrier}
 use terrain::{Levels, Texel, ground_at, height_at}
 use view::{CREATURE, Camera, FLOWER, GRASS, GROUND, class_of, jitter_of}
 
@@ -91,18 +91,27 @@ fn tooth(world: vec3, footprint: f32) -> f32 {
 }
 
 /// A quarter-resolution texel of the glow: the mean of the 4×4 texels under it of `image`'s
-/// light above `threshold`, each 2×2 of them read as one filtered sample (its mean, then the
-/// threshold): four samples, not sixteen loads.
+/// light above `threshold` (the light at the exposure `base`; so at the metered exposure,
+/// `exposure`'s, it's scaled to the same brightness on the screen), each 2×2 of them read as
+/// one filtered sample (its mean, then the threshold): four samples, not sixteen loads.
 @fragment
-pub fn glow_down(pixel: FragCoord, image: Texture, s: Sampler, threshold: f32) -> vec4 {
+pub fn glow_down(
+    pixel: FragCoord,
+    image: Texture,
+    s: Sampler,
+    threshold: f32,
+    base: f32,
+    exposure: [f32],
+) -> vec4 {
     let size = vec2(f32(image.width()), f32(image.height()))
+    let t = threshold * base / max(exposure[0], 1.0e-3)
     let base = floor(pixel.position.xy) * 4.0
     var sum = vec3(0.0)
     for j in 0..2 {
         for i in 0..2 {
             let at = (base + vec2(f32(i), f32(j)) * 2.0 + vec2(1.0)) / size
             let c = image.sample_level(s, at).rgb
-            sum += max(c - vec3(threshold), vec3(0.0))
+            sum += max(c - vec3(t), vec3(0.0))
         }
     }
     vec4(sum / 4.0, 1.0)
@@ -124,6 +133,64 @@ pub fn glow_blur(pixel: FragCoord, src: Texture, across: u32, spread: f32) -> ve
             w[k]
     }
     vec4(s, 1.0)
+}
+
+// ---- metering -------------------------------------------------------------------------------
+
+/// How the camera meters (the eye adapting): `base`, the exposure of a scene whose mean
+/// luminance (geometric, over a 32 × 32 grid of its pixels) is `reference`, and for another
+/// mean, `base` times (`reference` / mean) to the power `strength` (1 brings every scene to the
+/// same mean, 0 doesn't meter), within `lo` to `hi`; reached a fraction `rate` of the way each
+/// frame, or at once (`fresh` 1). A hazy sky toward a low sun is ten times the rest of it: a
+/// fixed exposure shows it white.
+pub struct Metering: Copy + GpuData {
+    pub base: f32,
+    pub reference: f32,
+    pub strength: f32,
+    pub lo: f32,
+    pub hi: f32,
+    pub rate: f32,
+    pub fresh: u32,
+}
+
+/// The exposure (slot 0), and the scene's mean luminance (slot 1, for tests): one workgroup,
+/// each invocation four of the grid's pixels, then their logs summed in workgroup memory.
+@compute(256)
+pub fn meter(
+    scene: Texture,
+    m: Metering,
+    sums: mut Shared<f32, 256>,
+    exposure: mut Slots<f32>,
+    id: GlobalId,
+    lid: LocalId,
+) {
+    let size = vec2(f32(scene.width()), f32(scene.height()))
+    var sum = 0.0
+    for k in 0..4 {
+        let i = lid.x + 256 * k
+        let at = (vec2(f32(i % 32), f32(i / 32)) + vec2(0.5)) / 32.0 * size
+        let c = scene.load(x: u32(at.x), y: u32(at.y)).rgb
+        sum += log2(max(dot(c, vec3(0.2126, 0.7152, 0.0722)), 1.0e-4))
+    }
+    let mine = sums.chunk(lid)
+    sums.write(mine, 0, sum)
+    barrier(mut sums)
+    // Halved eight times: each round, the first half's invocations add the second half's.
+    for k in 0..8 {
+        let half = 128 >> k
+        let own = sums.get(lid.x)
+        let v = if lid.x < half { own + sums.get(lid.x + half) } else { own }
+        barrier(mut sums)
+        sums.write(mine, 0, v)
+        barrier(mut sums)
+    }
+    let mean = exp2(sums.get(0) / 1024.0)
+    if id.x == 0 {
+        let target = clamp(m.base * pow(m.reference / mean, m.strength), m.lo, m.hi)
+        exposure[id] = if m.fresh != 0 { target } else { mix(exposure[id], target, m.rate) }
+    } else if id.x == 1 {
+        exposure[id] = mean
+    }
 }
 
 /// What the look's pass reads besides its textures: the scene's camera (unjittered: the output
@@ -299,8 +366,8 @@ pub fn dab_map(
 }
 
 /// The output pixel, painted: the dabs and the paper's tooth (from the dab map, between its
-/// texels), the bloom, the characters' lines, a little sharpening, the tone curve and a
-/// vignette.
+/// texels), the bloom, the characters' lines, a little sharpening, the tone curve at the
+/// metered exposure (`meter`) and a vignette.
 @fragment
 pub fn develop(
     pixel: FragCoord,
@@ -310,6 +377,7 @@ pub fn develop(
     glow: Texture,
     dabs: Texture,
     s: Sampler,
+    exposure: [f32],
 ) -> vec4 {
     let px = pixel.position.xy
     let p = vec2u(px)
@@ -333,7 +401,7 @@ pub fn develop(
     // Bloom.
     let gq = min(vec2u(px / 4.0), vec2u(glow.width() - 1, glow.height() - 1))
     paint += glow.load(x: gq.x, y: gq.y).rgb * look.bloom
-    var c = display(d.light, paint)
+    var c = tone(paint, exposure[0])
     // The characters' lines: a darker shade of their colour.
     let (z, _) = depth_at(d, depth, px)
     let l = line(d, image, depth, px, here.a, z)

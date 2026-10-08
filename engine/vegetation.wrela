@@ -23,8 +23,8 @@ use shadow::Shadows
 use std::field::Tube
 use std::gpu::{
     Atomics, ClipPosition, Compare, ComparisonSampler, Depth, DepthBias, DepthTexture, Flat,
-    FragCoord, GlobalId, GpuBuffer, GpuSpan, InstanceIndex, Sampler, Slots, Texture, VertexIndex,
-    buffer, dispatch, draw, label, write,
+    FragCoord, GlobalId, GpuBuffer, GpuSpan, InstanceIndex, Sampler, Slots, Texture, Texture3d,
+    VertexIndex, buffer, dispatch, draw, label, write,
 }
 use std::math::{PI, TAU}
 use terrain::Texel
@@ -576,6 +576,7 @@ pub fn leaf_shade(
     s: Sampler,
     probes: Texture,
     grounds: [f32],
+    air: Texture3d,
 ) -> vec4 {
     let card = cards[l.card.value]
     let inst = instances[l.instance.value & 16777215]
@@ -603,7 +604,14 @@ pub fn leaf_shade(
         sky,
         through: leaves.through * (0.4 + 0.6 * ao),
     }
-    let c = hazed(lt.light, light::world(lt.light, lit, world, lt.cam.eye), world, lt.cam.eye)
+    let c = hazed(
+        air,
+        s,
+        lt.light,
+        light::world(lt.light, lit, world, lt.cam.eye),
+        world,
+        lt.cam.eye,
+    )
     vec4(c, view::LEAVES + f32(l.instance.value >> 24))
 }
 
@@ -681,6 +689,7 @@ pub fn bark_shade(
     s: Sampler,
     probes: Texture,
     grounds: [f32],
+    air: Texture3d,
 ) -> vec4 {
     if !keeps_packed(b.keep.value, pixel.position.xy) {
         discard_fragment()
@@ -694,7 +703,14 @@ pub fn bark_shade(
     let sun = sun_at(lt, b.world, n, near, far, moving, cmp, clouds, s, soft: 1.5)
     let sky = sky_at(lt, probes, s, grounds, b.world, n)
     let lit = Lit { albedo: a, n, sun, sky, through: vec3(0.0) }
-    let c = hazed(lt.light, light::world(lt.light, lit, b.world, lt.cam.eye), b.world, lt.cam.eye)
+    let c = hazed(
+        air,
+        s,
+        lt.light,
+        light::world(lt.light, lit, b.world, lt.cam.eye),
+        b.world,
+        lt.cam.eye,
+    )
     vec4(c, view::BARK)
 }
 
@@ -838,6 +854,7 @@ impl Forest {
         s: Sampler,
         probes: Texture,
         grounds: GpuSpan<f32>,
+        air: Texture3d,
         ids: Texture,
     ) {
         let cam = lt.cam
@@ -878,6 +895,7 @@ impl Forest {
                         s: s,
                         probes: probes,
                         grounds: grounds,
+                        air: air,
                     ),
                     indices: self.card_triangles,
                     indirect: self.args.span(start: li * ARGS, count: 5),
@@ -908,6 +926,7 @@ impl Forest {
                             s,
                             probes,
                             grounds,
+                            air,
                         ),
                         indices: self.limb_triangles,
                         indirect: self.args.span(start: li * ARGS + 5, count: 5),
@@ -946,6 +965,7 @@ impl Forest {
                         clouds: clouds,
                         probes: probes,
                         grounds: grounds,
+                        air: air,
                     ),
                     vertices: 6,
                     instances: l.count,
@@ -978,6 +998,7 @@ impl Forest {
                         clouds: clouds,
                         probes: probes,
                         grounds: grounds,
+                        air: air,
                         cell: self.cell,
                     ),
                     vertices: 6,

@@ -1,80 +1,62 @@
-// Light that feels real (#28 §5, §6; #44): a low sun, a blue sky, bounce from the ground, haze
-// by height. The sky's colour in a direction, the haze between the eye and a point, and how the
-// world's surfaces are lit: continuous light (the world's gouache, #28 §7), or two bands and a
-// soft terminator (characters' cel). Every pass that shades reads one `Light`.
+// Light that feels real (#28 §5, §6; #44): a low sun through the air (`air`), its sky, and the
+// air between the eye and what it sees (aerial perspective); how the world's surfaces are lit:
+// continuous light (the world's gouache, #28 §7), or two bands and a soft terminator
+// (characters' cel). Every pass that shades reads one `Light`, and the air's tables.
 
-use view::Camera
+use air::{Air, aerial_uvw, azimuth_cos, radius_of, sun_at, view_uv}
+use std::gpu::{Sampler, Texture, Texture3d}
 
-/// The light a frame is lit by: toward the sun, its colour, the sky's at the zenith and the
-/// horizon, the sky light on a surface facing up and the bounce on one facing down, and the
-/// haze's density (per metre at height 0) and how fast it thins with height. And for a test of
-/// the sky light (`sky_test` 1): every surface's sky light set to `sky_sh`, spherical
-/// harmonics' first two bands (`probes::sky_light`), so the test learns how each pixel answers
-/// to it.
+/// The light a frame is lit by: toward the sun, the sun's light at the ground (a white surface
+/// facing it reflects this), the tone curve's exposure, and the eye's height (m) the air's
+/// tables were cooked from. And for a test of the sky light (`sky_test` 1): every surface's sky
+/// light set to `sky_sh`, spherical harmonics' first two bands (`probes::sky_light`), so the
+/// test learns how each pixel answers to it.
 pub struct Light: Copy + GpuData {
     pub sun: vec3,
-    pub haze_density: f32,
-    pub sun_colour: vec3,
-    pub haze_height: f32,
-    pub zenith: vec3,
     pub exposure: f32,
-    pub horizon: vec3,
+    pub sun_colour: vec3,
     pub sky_test: u32 = 0,
-    pub sky_light: vec3,
-    pub bounce: vec3,
     pub sky_sh: vec4 = vec4(0.0),
+    pub eye: f32,
 }
 
-/// A late-afternoon light: a warm sun at `sun`, a blue sky, haze over kilometres.
-pub fn afternoon(sun: vec3) -> Light {
-    Light {
-        sun: normalize(sun),
-        haze_density: 1.0 / 3600.0,
-        sun_colour: vec3(3.3, 2.75, 2.05),
-        haze_height: 700.0,
-        zenith: vec3(0.16, 0.34, 0.78),
-        exposure: 0.62,
-        horizon: vec3(0.66, 0.78, 0.92),
-        sky_light: vec3(0.42, 0.56, 0.86),
-        bounce: vec3(0.30, 0.30, 0.12),
-    }
+/// The sun's light above the air: white, as bright as makes a late afternoon's sun through
+/// `air::hazy`'s air what the clearing was lit by before (3.3, 2.75, 2.05).
+pub const SUN_TOP = vec3(5.21)
+
+/// The light of `air`'s sun, at the eye's height.
+pub fn sunlight(air: Air) -> Light {
+    Light { sun: air.sun, exposure: 0.62, sun_colour: sun_at(air, air.eye), eye: air.eye }
 }
 
-/// The sky's colour seen along `dir` (a unit vector): a gradient from the horizon to the zenith,
-/// a glow round the sun, warm and wide near the horizon, and the sun's disc.
-pub fn sky(light: Light, dir: vec3) -> vec3 {
-    let up = max(dir.y, 0.0)
-    let base = mix(light.horizon, light.zenith, vec3(pow(up, 0.55)))
-    let c = max(dot(dir, light.sun), 0.0)
-    let glow = vec3(1.0, 0.78, 0.5) * (0.35 * pow(c, 6.0) + 0.9 * pow(c, 48.0)) * (1.0 - 0.6 * up)
-    // Below the horizon: the haze's colour (the ground hides it; far edges show it).
-    let below = mix(light.horizon * 0.92, light.horizon, vec3(saturate(1.0 + dir.y * 8.0)))
-    let disk = vec3(40.0) * smoothstep(0.99985, 0.99993, c)
-    select(if_false: below, if_true: base, cond: dir.y > 0.0) + glow + disk
+/// The sky seen along `dir` (a unit vector) from the eye, from the air's sky table (`view`,
+/// through `s`, a linear sampler): no sun's disc.
+pub fn sky(view: Texture, s: Sampler, light: Light, dir: vec3) -> vec3 {
+    let r = radius_of(light.eye)
+    view.sample_level(s, view_uv(r, dir.y, azimuth_cos(light.sun, dir))).rgb
 }
 
-/// The haze's colour seen along `dir`: the horizon's, warmed toward the sun.
-pub fn haze_colour(light: Light, dir: vec3) -> vec3 {
-    let c = max(dot(dir, light.sun), 0.0)
-    vec3(0.52, 0.66, 0.90) + vec3(1.0, 0.75, 0.45) * (0.25 * pow(c, 4.0) + 0.5 * pow(c, 24.0))
+/// The sun's disc along `dir`: its light through the air, spread over the disc.
+pub fn sun_disc(light: Light, dir: vec3) -> vec3 {
+    let c = dot(dir, light.sun)
+    light.sun_colour * (12.0 * smoothstep(0.99985, 0.99993, c))
 }
 
-/// The haze's optical depth from the eye at height `y0` to a point at height `y1`, `d` metres
-/// apart: its density thinning exponentially with height.
-pub fn optical_depth(light: Light, y0: f32, y1: f32, d: f32) -> f32 {
-    let h = light.haze_height
-    let dy = y1 - y0
-    let a = exp(-max(y0, -200.0) / h)
-    let mean = if abs(dy) < 1.0 { a } else { h * (a - exp(-max(y1, -200.0) / h)) / dy }
-    d * mean * light.haze_density
-}
-
-/// `colour` at `world` seen from `eye` through the haze (aerial perspective).
-pub fn hazed(light: Light, colour: vec3, world: vec3, eye: vec3) -> vec3 {
+/// `colour` at `world` seen from `eye` through the air: dimmed by it, and with the light it
+/// scatters toward the eye on the way, from the air's aerial perspective table (`air`, through
+/// `s`, a linear sampler).
+pub fn hazed(
+    air: Texture3d,
+    s: Sampler,
+    light: Light,
+    colour: vec3,
+    world: vec3,
+    eye: vec3,
+) -> vec3 {
     let v = world - eye
     let d = max(length(v), 1.0e-3)
-    let t = exp(-optical_depth(light, eye.y, world.y, d))
-    mix(haze_colour(light, v / d), colour, vec3(t))
+    let a = air.sample_level(s, aerial_uvw(light.sun, v / d, d * 0.001))
+    colour * a.a + a.rgb
 }
 
 /// A surface to light: its albedo, its shading normal, how much sun reaches it (its shadow),
@@ -106,21 +88,16 @@ pub fn world(light: Light, s: Lit, world: vec3, eye: vec3) -> vec3 {
 }
 
 /// A character's light (cel): two bands and a soft terminator; the shadow side cool and lit by
-/// the sky; a rim on the side away from the sun. Before the haze.
-pub fn character(light: Light, s: Lit, world: vec3, eye: vec3) -> vec3 {
+/// the sky; a rim on the side away from the sun. `open` is the open sky's light on a surface
+/// facing up (`probes::open_light`). Before the haze.
+pub fn character(light: Light, s: Lit, open: vec3, world: vec3, eye: vec3) -> vec3 {
     let l = light.sun
     let v = normalize(eye - world)
     let t = smoothstep(-0.02, 0.1, dot(s.n, l)) * s.sun
-    let lit = light.sun_colour * 0.75 + light.sky_light * 0.5
+    let lit = light.sun_colour * 0.75 + open * 0.5
     let dark = vec3(0.30, 0.38, 0.62) * (0.45 + 0.55 * saturate(dot(s.sky, vec3(0.6))))
     let rim = smoothstep(0.55, 0.85, 1.0 - max(dot(s.n, v), 0.0)) * (0.35 + 0.65 * (1.0 - t))
-    s.albedo * mix(dark, lit, vec3(t)) + light.sky_light * (rim * 0.35)
-}
-
-/// The sky light on a surface whose normal is `n`, unoccluded: the sky's above it, the
-/// ground's bounce below.
-pub fn open_sky(light: Light, n: vec3) -> vec3 {
-    mix(light.bounce, light.sky_light, vec3(0.5 + 0.5 * n.y))
+    s.albedo * mix(dark, lit, vec3(t)) + open * (rim * 0.35)
 }
 
 /// sRGB's encoding of a linear value in [0, 1].
@@ -128,9 +105,14 @@ pub fn srgb(x: f32) -> f32 {
     if x <= 0.0031308 { x * 12.92 } else { 1.055 * pow(max(x, 0.0), 1.0 / 2.4) - 0.055 }
 }
 
-/// The tone curve: `exposure`, a filmic shoulder (an ACES fit), then sRGB.
+/// The tone curve at the light's exposure (`tone`).
 pub fn display(light: Light, c: vec3) -> vec3 {
-    let x = c * light.exposure
+    tone(c, light.exposure)
+}
+
+/// The tone curve: `exposure`, a filmic shoulder (an ACES fit), then sRGB.
+pub fn tone(c: vec3, exposure: f32) -> vec3 {
+    let x = c * exposure
     let t = clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), vec3(0.0), vec3(1.0))
     vec3(srgb(t.x), srgb(t.y), srgb(t.z))
 }

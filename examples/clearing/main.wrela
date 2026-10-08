@@ -13,8 +13,9 @@ use engine::realize::Realizing
 use engine::render::MAX_BONES
 use engine::run::run
 use fawn::creature::fawn
-use engine::light::{Light, afternoon}
-use engine::paint::{Develop, Look, dab_map, develop, glow_blur, glow_down}
+use engine::air::{Air, Tables, hazy, tables}
+use engine::light::{Light, SUN_TOP, sunlight}
+use engine::paint::{Develop, Look, Metering, dab_map, develop, glow_blur, glow_down, meter}
 use engine::lit::Lighting
 use engine::plant::{Wind, leaf_atlas}
 use engine::probes::{Baked, Occluder, Probe, ProbeGrid, Reference, Sampling, Trace, grid, reference}
@@ -33,9 +34,9 @@ use std::collections::{replace, swap}
 use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, start_eye}
 use std::gpu::{
     ClipPosition, Compare, ComparisonSampler, Cull, Depth, DepthBias, DepthTexture, FragCoord,
-    GpuBuffer, Sampler, Texture, Unorm8x4, TextureFormat, VertexIndex, begin_depth_pass, begin_pass,
-    begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture, draw,
-    label, present, sampler, texture, write,
+    GpuBuffer, GpuSpan, Sampler, Texture, Unorm8x4, TextureFormat, VertexIndex, begin_depth_pass,
+    begin_pass, begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture,
+    draw, label, present, sampler, texture, write,
 }
 use std::input::{Event, Key, events}
 use std::io::print
@@ -50,6 +51,19 @@ use world::{World, present as snapshot, spawn, tick}
 
 /// The scene's size against the output's: half each way (Q3 of #51).
 const SCALE: u32 = 2
+
+/// How the camera meters (`paint::meter`): the start's view, settled (its mean luminance
+/// 0.136), at the exposure the look was picked at; other views half-way (in stops) to the same
+/// mean.
+const METERING = Metering {
+    base: 0.62,
+    reference: 0.136,
+    strength: 0.5,
+    lo: 0.15,
+    hi: 0.75,
+    rate: 0.05,
+    fresh: 0,
+}
 
 /// The forest's card width for its levels, in the scene's pixels (`Lod::card_px`): the levels
 /// are chosen as the game draws them, at `SCALE`, so a scene drawn at another scale (a test's
@@ -110,9 +124,14 @@ impl Watches {
     }
 }
 
+/// The air the clearing's sun shines through, its tables cooked from the eye's start.
+fn air_of() -> Air {
+    hazy(SUN, SUN_TOP, eye: start_eye().y)
+}
+
 /// The sun's light.
 fn sun_light() -> Light {
-    afternoon(SUN)
+    sunlight(air_of())
 }
 
 /// The code that makes the forest: the kinds' plants and where they stand.
@@ -204,6 +223,11 @@ pub struct Clearing {
     clipmap: Clipmap,
     stones: Vec<Realized>,
     light: Light,
+    /// The air the sun shines through, its tables, and whether they're cooked for it (with the
+    /// probes' open sky, from them).
+    air: Air,
+    tables: Tables,
+    air_cooked: bool,
     cam: Camera,
     /// The forest, its kinds cooked a few a frame at load (a short submission each): until
     /// they're all cooked, a forest of none.
@@ -264,6 +288,8 @@ pub struct Clearing {
     /// The glow's chain, at a quarter of the output's size.
     glow_a: Texture,
     glow_b: Texture,
+    /// The metered exposure, and the scene's mean luminance (`paint::meter`).
+    exposure: GpuBuffer<f32>,
     linear: Sampler,
     width: u32,
     height: u32,
@@ -353,6 +379,9 @@ pub fn init() -> Clearing {
         clipmap: Clipmap::new(levels: 11, finest: 0.125),
         stones: Vec::new(),
         light: sun_light(),
+        air: air_of(),
+        tables: tables(),
+        air_cooked: false,
         cam: first_camera(start_eye(), LOOK_AT, FOVY, width: 960, height: 540),
         forest: Forest::new(Vec::new(), Vec::new(), cards_to: 150.0, impostors_to: 1000.0),
         kinds: Vec::new(),
@@ -395,6 +424,7 @@ pub fn init() -> Clearing {
         dabs: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
         glow_a: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
         glow_b: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
+        exposure: buffer(2),
         linear: sampler(),
         width: 0,
         height: 0,
@@ -441,6 +471,8 @@ fn cook_again(s: mut Clearing, eye: vec3) {
     var clouds = false
     if s.watches.light.changed() {
         s.light = sun_light()
+        s.air = air_of()
+        s.air_cooked = false
         shadows = true
         probes = true
         clouds = true
@@ -516,11 +548,16 @@ fn look(
     s: Sampler,
     glow_a: mut Texture,
     glow_b: mut Texture,
+    exposure: GpuSpan<f32>,
     d: Develop,
 ) {
     label("look glow")
     let down = begin_pass(mut glow_a)
-    draw(cover.bind(z: 0.5), glow_down.bind(image, s: s, threshold: 1.1), vertices: 3)
+    draw(
+        cover.bind(z: 0.5),
+        glow_down.bind(image, s: s, threshold: 1.1, base: METERING.base, exposure: exposure),
+        vertices: 3,
+    )
     down.end()
     label("look glow")
     let x = begin_pass(mut glow_b)
@@ -534,7 +571,7 @@ fn look(
     begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         cover.bind(z: 0.5),
-        develop.bind(d, image, depth, glow: glow_a, dabs: dabs, s: s),
+        develop.bind(d, image, depth, glow: glow_a, dabs: dabs, s: s, exposure: exposure),
         vertices: 3,
     )
     present()
@@ -801,6 +838,13 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         shadow.end()
         s.clouds_again = false
     }
+    // The air's tables, cooked at load (and again when the sun moves), and the probes' open sky
+    // from them.
+    if !s.air_cooked {
+        s.tables.cook(s.air, s.linear)
+        s.probes.open(s.light, s.air.ground, s.tables.view, s.linear)
+        s.air_cooked = true
+    }
     // The probes: their occluders cooked once, then a strip of columns a frame.
     // They read the static shadows, so they start once those are drawn.
     let texels = s.clipmap.texels()
@@ -808,16 +852,37 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         s.probes.cook()
         s.occluders_cooked = true
     } else if !s.probes.done() {
-        s.probes.bake_strip(trace_of(s), sh, s.clipmap.levels(), texels, s.near, s.far, s.cmp)
+        s.probes.bake_strip(
+            trace_of(s),
+            sh,
+            s.clipmap.levels(),
+            texels,
+            s.near,
+            s.far,
+            s.cmp,
+            s.tables.view,
+            s.linear,
+        )
     }
     // After an edit, the next probes bake beside these, and replace them when they're done.
     if s.rebaking {
         if !s.next_cooked {
             s.next_probes.cook()
+            s.next_probes.open(s.light, s.air.ground, s.tables.view, s.linear)
             s.next_cooked = true
         } else if !s.next_probes.done() {
             let levels = s.clipmap.levels()
-            s.next_probes.bake_strip(trace_of(s), sh, levels, texels, s.near, s.far, s.cmp)
+            s.next_probes.bake_strip(
+                trace_of(s),
+                sh,
+                levels,
+                texels,
+                s.near,
+                s.far,
+                s.cmp,
+                s.tables.view,
+                s.linear,
+            )
         } else {
             swap(mut s.probes, mut s.next_probes)
             s.rebaking = false
@@ -907,6 +972,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             s.linear,
             probes,
             grounds,
+            s.tables.aerial,
         )
     }
     for st in s.stones {
@@ -931,6 +997,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
                 s.linear,
                 probes,
                 grounds,
+                s.tables.aerial,
             ),
             indices: st.mesh.quads.items(),
             indirect: st.mesh.args.span(start: 0, count: 5),
@@ -950,6 +1017,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             s.linear,
             probes,
             grounds,
+            s.tables.aerial,
             s.ids,
         )
     }
@@ -974,6 +1042,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
                     s.linear,
                     probes,
                     grounds,
+                    s.tables.aerial,
                 ),
                 indices: s.clipmap.indices(),
                 indirect: s.clipmap.draw_args(l),
@@ -1009,6 +1078,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
                 s.linear,
                 probes,
                 grounds,
+                s.tables.aerial,
             ),
             indices: s.creature.mesh.quads.items(),
             indirect: s.creature.mesh.args.span(start: 0, count: 5),
@@ -1028,7 +1098,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     if on(s.off, testing::SKY) {
         draw(
             cover.bind(z: 0.0),
-            sky_shade.bind(cam, s.light, clouds: s.clouds, s: s.linear),
+            sky_shade.bind(cam, s.light, view: s.tables.view, clouds: s.clouds, s: s.linear),
             vertices: 3,
             depth: BEHIND,
         )
@@ -1092,6 +1162,8 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     }
     label("look")
     if s.view == testing::LOOK {
+        let m = Metering { fresh: if s.frames == 0 { 1 } else { 0 }, ..METERING }
+        dispatch(meter.bind(s.scene, m, exposure: mut s.exposure), groups: 1)
         let d = Develop { cam, light: s.light, look: Look {}, out: vec2(f32(width), f32(height)) }
         let dp = begin_pass(mut s.dabs)
         draw(
@@ -1109,9 +1181,11 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         )
         dp.end()
         if a == 0 {
-            look(s.history_a, s.depth, s.dabs, s.linear, mut s.glow_a, mut s.glow_b, d)
+            let e = s.exposure.span(start: 0, count: 1)
+            look(s.history_a, s.depth, s.dabs, s.linear, mut s.glow_a, mut s.glow_b, e, d)
         } else {
-            look(s.history_b, s.depth, s.dabs, s.linear, mut s.glow_a, mut s.glow_b, d)
+            let e = s.exposure.span(start: 0, count: 1)
+            look(s.history_b, s.depth, s.dabs, s.linear, mut s.glow_a, mut s.glow_b, e, d)
         }
     } else {
         begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
@@ -1159,10 +1233,12 @@ pub fn test_hold(s: mut Clearing, eye: vec3, at: vec3) {
 }
 
 /// The sun from `toward` (normalized), its light scaled by `light` (0: the sky light alone):
-/// the static shadows are drawn again.
+/// the air's tables are cooked again and the static shadows drawn again.
 pub fn test_sun(s: mut Clearing, toward: vec3, light: f32) {
-    let l = afternoon(normalize(toward))
+    s.air = hazy(toward, SUN_TOP, eye: start_eye().y)
+    let l = sunlight(s.air)
     s.light = Light { sun_colour: l.sun_colour * light, ..l }
+    s.air_cooked = false
     s.static_drawn = false
 }
 
@@ -1357,6 +1433,7 @@ pub fn test_reference(s: mut Clearing, first: u32, count: u32, step: u32, rays: 
             near: s.near,
             far: s.far,
             cmp: s.cmp,
+            view: s.tables.view,
             out: mut s.references,
         ),
         groups: (count + 63) / 64,

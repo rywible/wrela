@@ -15,7 +15,7 @@
 // the hole the finer level fills, each sharing its edge's vertices, so a pixel the seam's
 // T-junctions leave uncovered on either side sees a skirt, never past the ground.
 
-use light::{Light, Lit, hazed, open_sky}
+use light::{Light, Lit, hazed}
 use noise::noise2
 use sim::Hit
 use std::gpu::{
@@ -629,36 +629,6 @@ pub fn grain(xz: vec2, per_metre: f32) -> f32 {
 
 // ---- shading ---------------------------------------------------------------------------------
 
-/// The ground's pixel: the clipmap's normal and cover at its point, lit by the world's light,
-/// through the haze. `sun` is how lit it is (shadows), `sky` its sky light (probes).
-pub fn ground_colour(
-    light: Light,
-    cam: Camera,
-    levels: Levels,
-    texels: [Texel],
-    world: vec3,
-    sun: f32,
-    sky: vec3,
-) -> vec3 {
-    let (n, albedo, _) = ground_at(levels, texels, world.xz)
-    let s = Lit { albedo, n, sun, sky, through: vec3(0.0) }
-    hazed(light, light::world(light, s, world, cam.eye), world, cam.eye)
-}
-
-/// The ground drawn with the open sky and no shadows: for tests of the terrain alone.
-@fragment
-pub fn ground_plain(
-    g: GroundVertex,
-    cam: Camera,
-    light: Light,
-    levels: Levels,
-    texels: [Texel],
-) -> vec4 {
-    let (n, _, _) = ground_at(levels, texels, g.world.xz)
-    let c = ground_colour(light, cam, levels, texels, g.world, sun: 1.0, sky: open_sky(light, n))
-    vec4(c, view::GROUND)
-}
-
 /// The ground's pixel: the clipmap's normal and cover at its point, lit by the sun through the
 /// shadows and the clouds' shadows, and by the probes' sky light; through the haze.
 @fragment
@@ -674,11 +644,19 @@ pub fn ground_shade(
     s: std::gpu::Sampler,
     probes: std::gpu::Texture,
     grounds: [f32],
+    air: std::gpu::Texture3d,
 ) -> vec4 {
     let (n, albedo, _) = ground_at(lt.levels, texels, g.world.xz)
     let sun = lit::sun_at(lt, g.world, n, near, far, moving, cmp, clouds, s, soft: 2.0)
     let sky = lit::sky_at(lt, probes, s, grounds, g.world, n)
     let l = Lit { albedo, n, sun, sky, through: vec3(0.0) }
-    let c = hazed(lt.light, light::world(lt.light, l, g.world, lt.cam.eye), g.world, lt.cam.eye)
+    let c = hazed(
+        air,
+        s,
+        lt.light,
+        light::world(lt.light, l, g.world, lt.cam.eye),
+        g.world,
+        lt.cam.eye,
+    )
     vec4(c, view::GROUND)
 }

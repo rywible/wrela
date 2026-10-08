@@ -22,8 +22,9 @@ use probes::Probe
 use std::field::Tube
 use std::gpu::{
     ClipPosition, Compare, ComparisonSampler, Depth, DepthTexture, Flat, FragCoord, GlobalId,
-    GpuBuffer, InstanceIndex, Sampler, Slots, Texels, Texture, TextureFormat, VertexIndex,
-    WithDepth, begin_pass_with_depth, buffer, depth_texture, discard, dispatch, draw, texture,
+    GpuBuffer, InstanceIndex, Sampler, Slots, Texels, Texture, Texture3d, TextureFormat,
+    VertexIndex, WithDepth, begin_pass_with_depth, buffer, depth_texture, discard, dispatch, draw,
+    texture,
 }
 use std::math::{PI, TAU}
 use terrain::Texel
@@ -638,6 +639,7 @@ pub fn far_shade(
     clouds: Texture,
     probes: Texture,
     grounds: [f32],
+    air: Texture3d,
 ) -> vec4 {
     if id_at(ids, pixel) != f.id.value {
         discard()
@@ -659,7 +661,7 @@ pub fn far_shade(
         sky,
         through: b.leaves.through * (0.4 + 0.6 * ao),
     }
-    let out = hazed(lt.light, light::world(lt.light, lit, at, lt.cam.eye), at, lt.cam.eye)
+    let out = hazed(air, s, lt.light, light::world(lt.light, lit, at, lt.cam.eye), at, lt.cam.eye)
     vec4(out, LEAVES + f32(u32(hash2(i32(f.centre.x), i32(f.centre.z)) * 60.0)))
 }
 
@@ -921,6 +923,7 @@ pub fn volume_shade(
     clouds: Texture,
     probes: Texture,
     grounds: [f32],
+    air: Texture3d,
     cell: f32,
 ) -> vec4 {
     // Its leaves' draws, before anything is left (their derivatives).
@@ -955,7 +958,7 @@ pub fn volume_shade(
         sky,
         through: v.leaves.through * (0.4 + 0.6 * ao),
     }
-    let out = hazed(lt.light, light::world(lt.light, lit, at, lt.cam.eye), at, lt.cam.eye)
+    let out = hazed(air, s, lt.light, light::world(lt.light, lit, at, lt.cam.eye), at, lt.cam.eye)
     vec4(out, LEAVES + f32(u32(hash2(i32(f.centre.x), i32(f.centre.z)) * 60.0)))
 }
 

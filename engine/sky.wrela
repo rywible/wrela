@@ -1,5 +1,5 @@
-// The sky (#28 §6): its gradient and the sun's glow, per pixel; clouds cooked at load into a
-// sky texture, ray-marched a strip at a time so no submission runs long; and the clouds'
+// The sky (#28 §6): the air's (`air`, its sky table) and the sun's disc, per pixel; clouds
+// cooked at load into a sky texture, ray-marched a strip at a time so no submission runs long; and the clouds'
 // shadows on the land, from a map cooked with them. The sky's pass reads the cooked texture and
 // marches nothing. Clouds that move are #31's (weather).
 //
@@ -7,7 +7,7 @@
 // elevation (from a little below the horizon to near the zenith). The clouds are kilometres
 // away, so a step of the eye doesn't move them.
 
-use light::{Light, sky}
+use light::{Light, sky, sun_disc}
 use noise::{noise3, rand}
 use std::derive::{Box2, interval}
 use std::gpu::{ClipPosition, FragCoord, GlobalId, Sampler, Slots, Texture, VertexIndex}
@@ -323,9 +323,16 @@ pub fn cloud_shadow(cook: Cook, shadow: Texture, s: Sampler, world: vec3) -> f32
     shadow.sample_level(s, uv).r
 }
 
-/// The sky with its cooked clouds along `dir`, and the clouds' cover.
-pub fn sky_with_clouds(light: Light, dir: vec3, clouds: Texture, s: Sampler) -> vec4 {
-    let base = sky(light, dir)
+/// The sky (the air's sky table, `view`) with its cooked clouds along `dir`, and the clouds'
+/// cover.
+pub fn sky_with_clouds(
+    view: Texture,
+    light: Light,
+    dir: vec3,
+    clouds: Texture,
+    s: Sampler,
+) -> vec4 {
+    let base = sky(view, s, light, dir) + sun_disc(light, dir)
     let c = clouds.sample_level(s, sky_uv(dir))
     vec4(base * (1.0 - c.a) + c.rgb, c.a)
 }
@@ -333,7 +340,14 @@ pub fn sky_with_clouds(light: Light, dir: vec3, clouds: Texture, s: Sampler) -> 
 /// The sky's pixel: where nothing else was drawn, the sky and its clouds. Its tag is 0 (the
 /// sky's class), with the clouds' cover below 1 (`view::class_of` reads 0).
 @fragment
-pub fn sky_shade(pixel: FragCoord, cam: Camera, light: Light, clouds: Texture, s: Sampler) -> vec4 {
-    let c = sky_with_clouds(light, cam.ray(pixel.position.xy), clouds, s)
+pub fn sky_shade(
+    pixel: FragCoord,
+    cam: Camera,
+    light: Light,
+    view: Texture,
+    clouds: Texture,
+    s: Sampler,
+) -> vec4 {
+    let c = sky_with_clouds(view, light, cam.ray(pixel.position.xy), clouds, s)
     vec4(c.rgb, c.a * 0.99)
 }

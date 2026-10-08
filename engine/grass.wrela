@@ -21,8 +21,8 @@ use plant::{Wind, sway}
 use probes::{Probe, ProbeGrid, sky_light}
 use std::gpu::{
     Append, AppendBuffer, Atomics, ClipPosition, ComparisonSampler, DepthTexture, Flat, FragCoord,
-    GlobalId, GpuBuffer, InstanceIndex, Sampler, Slots, Texture, Unorm8x4, VertexIndex,
-    append_buffer, buffer, dispatch, discard, draw, write,
+    GlobalId, GpuBuffer, InstanceIndex, Sampler, Slots, Texture, Texture3d, Unorm8x4, VertexIndex,
+    append_buffer, buffer, discard, dispatch, draw, write,
 }
 use std::math::TAU
 use terrain::{Levels, Texel, ground_cover_at, height_at, texel_index}
@@ -635,6 +635,7 @@ pub fn blade_shade(
     s: Sampler,
     probes: Texture,
     grounds: [f32],
+    air: Texture3d,
 ) -> vec4 {
     let b = blades[v.which.value]
     let world = lt.cam.world_at(pixel.position.xy, pixel.position.z)
@@ -652,7 +653,14 @@ pub fn blade_shade(
         sky,
         through: look.through * t,
     }
-    let c = hazed(lt.light, light::world(lt.light, lit, world, lt.cam.eye), world, lt.cam.eye)
+    let c = hazed(
+        air,
+        s,
+        lt.light,
+        light::world(lt.light, lit, world, lt.cam.eye),
+        world,
+        lt.cam.eye,
+    )
     vec4(c, view::GRASS)
 }
 
@@ -725,6 +733,7 @@ pub fn flower_shade(
     s: Sampler,
     probes: Texture,
     grounds: [f32],
+    air: Texture3d,
 ) -> vec4 {
     let (_, centre) = petals(b.uv, b.seed.value, 0.05)
     let kind = b.kind.value
@@ -738,7 +747,14 @@ pub fn flower_shade(
     let sun = sun_at(lt, b.world, n, near, far, moving, cmp, clouds, s, soft: 1.0)
     let sky = sky_at(lt, probes, s, grounds, b.world, n) * 0.9
     let lit = Lit { albedo, n, sun, sky, through: colour * 0.15 }
-    let c = hazed(lt.light, light::world(lt.light, lit, b.world, lt.cam.eye), b.world, lt.cam.eye)
+    let c = hazed(
+        air,
+        s,
+        lt.light,
+        light::world(lt.light, lit, b.world, lt.cam.eye),
+        b.world,
+        lt.cam.eye,
+    )
     vec4(c, view::FLOWER)
 }
 
@@ -768,6 +784,7 @@ impl Grass {
         s: Sampler,
         probes: Texture,
         grounds: std::gpu::GpuSpan<f32>,
+        air: Texture3d,
     ) {
         draw(
             blade.bind(
@@ -789,6 +806,7 @@ impl Grass {
                 s,
                 probes,
                 grounds,
+                air,
             ),
             indices: self.indices,
             indirect: self.args.span(start: 0, count: 5),
@@ -814,6 +832,7 @@ impl Grass {
                 s,
                 probes,
                 grounds,
+                air,
             ),
             indices: self.indices,
             indirect: self.args.span(start: 5, count: 5),
@@ -839,6 +858,7 @@ impl Grass {
                 s,
                 probes,
                 grounds,
+                air,
             ),
             indices: self.indices,
             indirect: self.args.span(start: 10, count: 5),
@@ -846,7 +866,7 @@ impl Grass {
         )
         draw(
             flower.bind(lt.cam, wind, flowers: self.flowers.items()),
-            flower_shade.bind(lt, blooms, near, far, moving, cmp, clouds, s, probes, grounds),
+            flower_shade.bind(lt, blooms, near, far, moving, cmp, clouds, s, probes, grounds, air),
             indirect: self.args.span(start: FLOWER_ARGS, count: 4),
             depth: view::PREPASSED,
         )
