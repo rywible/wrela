@@ -18,5 +18,7 @@ The sun stays where it is.
       half kept), paused when the wind is. 0.25 ms.
 - [x] 5 Bounces: the rebake's rays read the probes where they land (ground) and light the
       crowns' leaves by the sun and the probes. +0.09 ms.
-- [ ] 6 Specular: a GGX sun lobe, the sky's reflection, occluded by the probes; per material
+- [x] 6 Specular: a GGX sun glint, the probes' light toward the reflection (Karis's fit),
+      Lagarde's occlusion from each surface's AO; leaves 0.6, far crowns 0.7, grass and
+      flowers 0.75, stone 0.8, bark 0.85, ground 0.9. +0.09 ms.
 - [ ] Numbers before and after; vision.md and #26; this file deleted

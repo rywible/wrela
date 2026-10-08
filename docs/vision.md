@@ -63,10 +63,11 @@ Decided after spikes 01–12 (2026-10-02). **Cook fields on device; rasterize wh
   - terrain clipmap tiles
   - impostors and density volumes for far vegetation
   - material inputs: thickness, curvature and occlusion
-  - lighting caches: cooked distance fields, and probes baked at load
+  - lighting caches: cooked distance fields, probes baked at load, and the air's scattering tables
 - **Per frame, rasterize what's big on screen:** terrain, near foliage, creatures (skinned extracted meshes), architecture, cloth and hair (GPU-simulated).
 - **Trace fields where it's cheap:** small and distant instances such as herds, crowds and banners (tile binning); far vegetation volumes; eyes.
-- **Light with cooked fields:** sun shadows and sky occlusion traced through cooked fields at reduced resolution, and bounce light from probes baked at load. Per-frame field GI doesn't fit the M4. Interiors are unsolved.
+- **Light with cooked fields:** sun shadows and sky occlusion traced through cooked fields at reduced resolution, and bounce light from probes baked at load, then kept current a strip a frame (each round adding a bounce, and following the drifting clouds). Tracing the fields per pixel for GI doesn't fit the M4. Interiors are unsolved.
+- **A physical sky:** the air's scattering cooked into tables once (the sun stays put), clouds as a drifting field marched a tile a frame into a dome of directions.
 - **Never evaluate an authored field per pixel per frame over a large screen area.** Every spike that did failed by 3–36×.
 - **Levers:** temporal AA with half-resolution upscaling; simpler, stylized content.
 - **Water:** screen-space reflections plus probes; traced reflections are too expensive.

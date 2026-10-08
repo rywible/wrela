@@ -15,7 +15,7 @@
 // clipmap (the terrain's cooked meadow), never from the field.
 
 use light::{Light, Lit, hazed}
-use lit::{Lighting, sky_at, sun_at}
+use lit::{Lighting, sky_gloss, sun_at}
 use noise::{hash2, rand}
 use plant::{Wind, sway}
 use probes::{Probe, ProbeGrid, sky_light}
@@ -658,12 +658,17 @@ pub fn blade_shade(
     let ao = 0.35 + 0.65 * smoothstep(0.0, 0.8, t)
     let sky = b.sky.decode().xyz * 2.0 * ao
     let colour = b.colour.decode()
+    // The light toward a blade's reflection: its root's sky light (placed with it), near enough
+    // for a blade this rough.
     let lit = Lit {
         albedo: grass_colour(look, t, colour.x, colour.y, colour.z),
         n,
         sun: sun * (0.5 + 0.5 * ao),
         sky,
         through: look.through * t,
+        rough: 0.75,
+        reflected: sky *
+            light::gloss_occlusion(ao, abs(dot(n, normalize(lt.cam.eye - world))), 0.75),
     }
     let c = hazed(
         air,
@@ -757,8 +762,16 @@ pub fn flower_shade(
     )
     let n = normalize(vec3(0.0, 1.0, 0.0) + lt.cam.up * 0.3)
     let sun = sun_at(lt, b.world, n, near, far, moving, cmp, clouds, s, soft: 1.0)
-    let sky = sky_at(lt, probes, clouds, s, grounds, b.world, n) * 0.9
-    let lit = Lit { albedo, n, sun, sky, through: colour * 0.15 }
+    let (sky, reflected) = sky_gloss(lt, probes, clouds, s, grounds, b.world, n, lt.cam.eye)
+    let lit = Lit {
+        albedo,
+        n,
+        sun,
+        sky: sky * 0.9,
+        through: colour * 0.15,
+        rough: 0.75,
+        reflected: reflected * 0.9,
+    }
     let c = hazed(
         air,
         s,

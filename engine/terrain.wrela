@@ -648,8 +648,8 @@ pub fn ground_shade(
 ) -> vec4 {
     let (n, albedo, _) = ground_at(lt.levels, texels, g.world.xz)
     let sun = lit::sun_at(lt, g.world, n, near, far, moving, cmp, clouds, s, soft: 2.0)
-    let sky = lit::sky_at(lt, probes, clouds, s, grounds, g.world, n)
-    let l = Lit { albedo, n, sun, sky, through: vec3(0.0) }
+    let (sky, reflected) = lit::sky_gloss(lt, probes, clouds, s, grounds, g.world, n, lt.cam.eye)
+    let l = Lit { albedo, n, sun, sky, through: vec3(0.0), rough: 0.9, reflected }
     let c = hazed(
         air,
         s,

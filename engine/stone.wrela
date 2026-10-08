@@ -6,7 +6,7 @@
 use character::colours
 use creature::{Creature, Skeleton, creature}
 use light::{Lit, hazed}
-use lit::{Lighting, sky_at, sun_at}
+use lit::{Lighting, sky_gloss, sun_at}
 use look::{CreatureLook, Mesh as Tolerance}
 use noise::{noise3, rand}
 use probes::Probe
@@ -195,8 +195,16 @@ pub fn stone_shade(
     let sun = sun_at(lt, s.world, n, near, far, moving, cmp, clouds, smp, soft: 1.0)
     let ground = probes::ground_under(lt.grid, grounds, s.world.xz)
     let low = 0.4 + 0.6 * smoothstep(0.0, 0.5, s.world.y - ground)
-    let sky = sky_at(lt, probes, clouds, smp, grounds, s.world, n) * low
-    let lit = Lit { albedo: s.albedo, n, sun, sky, through: vec3(0.0) }
+    let (sky, reflected) = sky_gloss(lt, probes, clouds, smp, grounds, s.world, n, lt.cam.eye)
+    let lit = Lit {
+        albedo: s.albedo,
+        n,
+        sun,
+        sky: sky * low,
+        through: vec3(0.0),
+        rough: Rock { albedo: s.albedo }.roughness(),
+        reflected: reflected * low,
+    }
     let c = hazed(
         air,
         smp,

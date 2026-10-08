@@ -5,6 +5,7 @@
 
 use air::{Air, aerial_uvw, azimuth_cos, radius_of, sun_at, view_uv}
 use std::gpu::{Sampler, Texture, Texture3d}
+use std::math::PI
 
 /// The light a frame is lit by: toward the sun, the sun's light at the ground (a white surface
 /// facing it reflects this), the tone curve's exposure, and the eye's height (m) the air's
@@ -61,14 +62,23 @@ pub fn hazed(
 
 /// A surface to light: its albedo, its shading normal, how much sun reaches it (its shadow),
 /// its sky light (from the probes, occluded) and bounce, and the light that passes through it
-/// (leaves, grass: a colour per unit of sun; zero for what's solid).
+/// (leaves, grass: a colour per unit of sun; zero for what's solid). And its gloss: its
+/// roughness (perceptual: 0 a mirror, 1 matte), and the light round it toward its reflection
+/// of the eye's ray (from the probes too: `lit::sky_gloss`), which a matte surface reflects
+/// little of and a mirror all.
 pub struct Lit: Copy {
     pub albedo: vec3,
     pub n: vec3,
     pub sun: f32,
     pub sky: vec3,
     pub through: vec3,
+    pub rough: f32 = 1.0,
+    pub reflected: vec3 = vec3(0.0),
 }
+
+/// The reflectance of what the world is made of (leaves, bark, stone, soil: dielectrics) seen
+/// head on: Fresnel's F0.
+const F0: f32 = 0.04
 
 /// How much sun comes through a thin surface seen from `v`: most when the eye looks toward the
 /// sun through it.
@@ -76,15 +86,49 @@ fn backlit(v: vec3, l: vec3) -> f32 {
     0.25 + 0.75 * pow(max(dot(-v, l), 0.0), 3.0)
 }
 
+/// How much of the light toward a surface's reflection reaches it past what hides its own
+/// light (`ao`, the share of its sky light it keeps): Lagarde's fit, from its roughness and
+/// how square on it's seen (`nv`).
+pub fn gloss_occlusion(ao: f32, nv: f32, rough: f32) -> f32 {
+    saturate(pow(nv + ao, exp2(-16.0 * rough - 1.0)) - 1.0 + ao)
+}
+
 /// The world's light (gouache's continuous light): a little wrap round the terminator, the sky
-/// and bounce from the probes, and the light through thin things. Before the haze.
+/// and bounce from the probes, the light through thin things, and its gloss (`gloss`). Before
+/// the haze.
 pub fn world(light: Light, s: Lit, world: vec3, eye: vec3) -> vec3 {
     let l = light.sun
     let v = normalize(eye - world)
     let ndl = dot(s.n, l)
     let wrap = max((ndl + 0.15) / 1.15, 0.0)
     let through = s.through * light.sun_colour * (s.sun * backlit(v, l))
-    s.albedo * (light.sun_colour * (wrap * s.sun) + s.sky) + through
+    s.albedo * (light.sun_colour * (wrap * s.sun) + s.sky) + through + gloss(light, s, v)
+}
+
+/// The light a surface reflects as a glossy one does, seen along `v` (toward the eye): the sun's
+/// glint through its shadow (GGX's distribution of facets, Smith's height-correlated
+/// visibility, Schlick's Fresnel), and the light round it toward its reflection, by the split
+/// sum's scale and bias for its roughness (Karis's analytic fit, for F0 of 0.04).
+pub fn gloss(light: Light, s: Lit, v: vec3) -> vec3 {
+    let n = s.n
+    let l = light.sun
+    let nv = max(dot(n, v), 1.0e-4)
+    let nl = max(dot(n, l), 0.0)
+    let h = normalize(l + v)
+    let nh = max(dot(n, h), 0.0)
+    let a = max(s.rough * s.rough, 0.002)
+    let a2 = a * a
+    let dd = nh * nh * (a2 - 1.0) + 1.0
+    let facets = a2 / (PI * dd * dd)
+    let k = nl * sqrt(nv * nv * (1.0 - a2) + a2) + nv * sqrt(nl * nl * (1.0 - a2) + a2)
+    let seen = 0.5 / max(k, 1.0e-5)
+    let fresnel = F0 + (1.0 - F0) * pow(1.0 - max(dot(v, h), 0.0), 5.0)
+    // `sun_colour` is what a white surface facing the sun reflects: π times a BRDF of 1/π.
+    let glint = light.sun_colour * (PI * facets * seen * fresnel * nl * s.sun)
+    let c = vec4(-1.0, -0.0275, -0.572, 0.022) * s.rough + vec4(1.0, 0.0425, 1.04, -0.04)
+    let bias = min(c.x * c.x, exp2(-9.28 * nv)) * c.x + c.y
+    let ab = vec2(-1.04, 1.04) * bias + c.zw
+    glint + s.reflected * (F0 * ab.x + ab.y)
 }
 
 /// A character's light (cel): two bands and a soft terminator; the shadow side cool and lit by

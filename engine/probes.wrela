@@ -11,7 +11,9 @@
 // (a volume of densities cooked from the crowns, limbs and stones) to the ground (the terrain's
 // clipmap) or the sky, a strip of columns at a time, so no submission runs long. Once every
 // column is baked, a strip a frame is baked again, blended with what it held: the sky's clouds
-// drift, and the probes follow them.
+// drift, and the probes follow them. Those rays read the probes where they land (the ground's
+// light, the crowns' leaves lit by the sun and the probes round them), so each round of them
+// adds a bounce of light.
 
 use light::{Light, sky}
 use sky::{Clouds, cloud_shadow, clouded_sky}
@@ -724,6 +726,30 @@ pub fn sky_light(
     }
     let h = sky_sh(grid, maps, s, grounds, world)
     probe_light(h.sky, n) + probe_light(h.sun, n) * sun
+}
+
+/// The sky light at `world` for a surface facing `n` (as `sky_light`), and toward `r` (its
+/// reflection of the eye's ray: the light its gloss reflects), from one lookup of the probes.
+pub fn sky_lights(
+    grid: ProbeGrid,
+    maps: Texture,
+    s: Sampler,
+    grounds: [f32],
+    light: Light,
+    world: vec3,
+    n: vec3,
+    r: vec3,
+    sun: f32,
+) -> (vec3, vec3) {
+    if light.sky_test != 0 {
+        let at = |d: vec3| {
+            vec3(dot(light.sky_sh, vec4(0.282095, 0.488603 * d.x, 0.488603 * d.y, 0.488603 * d.z)))
+        }
+        return (at(n), at(r))
+    }
+    let h = sky_sh(grid, maps, s, grounds, world)
+    let light_at = |d: vec3| probe_light(h.sky, d) + probe_light(h.sun, d) * sun
+    (light_at(n), light_at(r))
 }
 
 /// The probes the grid holds, baked: their buffer, the occluder volume they're traced through,

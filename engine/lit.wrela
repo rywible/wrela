@@ -3,7 +3,7 @@
 // textures and buffers beside it. A shading pass binds these, and asks `sun_at` and `sky_at`.
 
 use light::Light
-use probes::{Probe, ProbeGrid, sky_light}
+use probes::{Probe, ProbeGrid, sky_light, sky_lights}
 use shadow::{Shadows, sunlit}
 use sky::{Clouds, cloud_shadow}
 use std::gpu::{ComparisonSampler, DepthTexture, Sampler, Texture}
@@ -54,4 +54,22 @@ pub fn sky_at(
 ) -> vec3 {
     let shade = cloud_shadow(l.clouds, clouds, s, world)
     sky_light(l.grid, probes, s, grounds, l.light, world, n, shade)
+}
+
+/// The sky light at `world` for a surface facing `n` (as `sky_at`), and the light its gloss
+/// reflects: toward its reflection of the ray from `eye` (`light::Lit::reflected`).
+pub fn sky_gloss(
+    l: Lighting,
+    probes: Texture,
+    clouds: Texture,
+    s: Sampler,
+    grounds: [f32],
+    world: vec3,
+    n: vec3,
+    eye: vec3,
+) -> (vec3, vec3) {
+    let shade = cloud_shadow(l.clouds, clouds, s, world)
+    let v = normalize(eye - world)
+    let r = n * (2.0 * dot(n, v)) - v
+    sky_lights(l.grid, probes, s, grounds, l.light, world, n, r, shade)
 }
