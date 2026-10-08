@@ -688,8 +688,11 @@ impl Forest {
         }
     }
 
-    /// The shading pass's draws: the limbs (which write depth), then each list of cards where
-    /// the prepass left its depth.
+    /// The shading pass's draws: each list of cards where the prepass left its depth, then the
+    /// limbs (which write depth), then the far instances. What can't drop a fragment comes
+    /// first: a fragment shader that can (the limbs' and the far instances', with `discard`)
+    /// keeps a tile-based GPU from hiding what's behind it, so Apple's GPUs draw those last
+    /// (the frame's median 4.94 ms against 5.04).
     pub fn shade(
         self,
         lt: Lighting,
@@ -705,6 +708,46 @@ impl Forest {
         ids: Texture,
     ) {
         let cam = lt.cam
+        for l in self.lists {
+            if l.how < CARD_LEVELS {
+                borrow k = self.kinds[l.kind]
+                let d = card_draw(
+                    wind,
+                    l.how,
+                    k.plant.leaves,
+                    cam.right,
+                    cam.up,
+                    self.lod(l.kind),
+                    l.how,
+                )
+                draw(
+                    card.bind(
+                        cam,
+                        d,
+                        cards: k.cards.span(start: 0, count: level_cards(k.card_count, l.how)),
+                        instances: self.instances(l),
+                    ),
+                    leaf_shade.bind(
+                        cards: k.cards.span(start: 0, count: level_cards(k.card_count, l.how)),
+                        instances: self.instances(l),
+                        lt: lt,
+                        leaves: k.plant.leaves,
+                        atlas: self.atlas,
+                        near: near,
+                        far: far,
+                        moving: moving,
+                        cmp: cmp,
+                        clouds: clouds,
+                        s: s,
+                        probes: probes,
+                        grounds: grounds,
+                    ),
+                    vertices: level_cards(k.card_count, l.how) * 6,
+                    instances: l.count,
+                    depth: PREPASSED,
+                )
+            }
+        }
         for l in self.lists {
             if l.how < CARD_LEVELS {
                 borrow k = self.kinds[l.kind]
@@ -813,46 +856,6 @@ impl Forest {
                     vertices: 6,
                     instances: l.count,
                     depth: impostor::SHADED,
-                )
-            }
-        }
-        for l in self.lists {
-            if l.how < CARD_LEVELS {
-                borrow k = self.kinds[l.kind]
-                let d = card_draw(
-                    wind,
-                    l.how,
-                    k.plant.leaves,
-                    cam.right,
-                    cam.up,
-                    self.lod(l.kind),
-                    l.how,
-                )
-                draw(
-                    card.bind(
-                        cam,
-                        d,
-                        cards: k.cards.span(start: 0, count: level_cards(k.card_count, l.how)),
-                        instances: self.instances(l),
-                    ),
-                    leaf_shade.bind(
-                        cards: k.cards.span(start: 0, count: level_cards(k.card_count, l.how)),
-                        instances: self.instances(l),
-                        lt: lt,
-                        leaves: k.plant.leaves,
-                        atlas: self.atlas,
-                        near: near,
-                        far: far,
-                        moving: moving,
-                        cmp: cmp,
-                        clouds: clouds,
-                        s: s,
-                        probes: probes,
-                        grounds: grounds,
-                    ),
-                    vertices: level_cards(k.card_count, l.how) * 6,
-                    instances: l.count,
-                    depth: PREPASSED,
                 )
             }
         }

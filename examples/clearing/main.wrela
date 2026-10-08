@@ -847,24 +847,10 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         covering.end()
         s.counting = false
     }
-    // The vegetation: limbs, grass, then the cards and flowers where the prepass left them.
+    // The vegetation: the grass and stones, then the trees (`Forest::shade`), the flowers and
+    // the cards where the prepass left them.
     label("vegetation")
     let veg = begin_pass_with_depth(mut s.scene, mut s.depth, clear: vec4(0.0), keep_depth: true)
-    if on(s.off, TREES) {
-        s.forest.shade(
-            lt,
-            wind,
-            s.near,
-            s.far,
-            s.moving,
-            s.cmp,
-            s.cloud_shadow,
-            s.linear,
-            probes,
-            grounds,
-            s.ids,
-        )
-    }
     if on(s.off, GRASS) {
         s.grass.shade(
             lt,
@@ -910,7 +896,25 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             depth: NEAREST,
         )
     }
+    if on(s.off, TREES) {
+        s.forest.shade(
+            lt,
+            wind,
+            s.near,
+            s.far,
+            s.moving,
+            s.cmp,
+            s.cloud_shadow,
+            s.linear,
+            probes,
+            grounds,
+            s.ids,
+        )
+    }
     veg.end()
+    // The terrain, the creature and the sky: one render pass outside the serial timing (the
+    // creature and the sky `join` it: light passes, whose targets needn't be stored and loaded
+    // again between them; the vegetation's is heavy, and joined to it the frame took longer).
     label("terrain")
     let ter = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)
     if on(s.off, TERRAIN) {
@@ -934,7 +938,13 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     }
     ter.end()
     label("creature")
-    let cr = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)
+    let cr = begin_pass_with_depth(
+        mut s.scene,
+        mut s.depth,
+        keep: true,
+        keep_depth: true,
+        join: true,
+    )
     if on(s.off, testing::CREATURE) && s.creature_done {
         draw(
             character.bind(
@@ -963,7 +973,13 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     }
     cr.end()
     label("sky")
-    let sky = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)
+    let sky = begin_pass_with_depth(
+        mut s.scene,
+        mut s.depth,
+        keep: true,
+        keep_depth: true,
+        join: true,
+    )
     if on(s.off, testing::SKY) {
         draw(
             cover.bind(z: 0.0),
