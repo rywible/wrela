@@ -218,17 +218,6 @@ fn depth_at(d: Develop, depth: DepthTexture, px: vec2) -> (f32, vec2) {
     (depth.load(x: p.x, y: p.y), q)
 }
 
-/// The world point the unjittered ray through scene point `q` meets at depth `z`, and the ray.
-fn world_at(cam: Camera, q: vec2, z: f32) -> (vec3, vec3) {
-    let ndc = vec2(q.x / cam.screen.x * 2.0 - 1.0, 1.0 - q.y / cam.screen.y * 2.0)
-    let ray = normalize(
-        cam.forward +
-            cam.right * (ndc.x * cam.tan_half * cam.aspect) +
-            cam.up * (ndc.y * cam.tan_half),
-    )
-    (cam.eye + ray * (cam.distance_of(z) / dot(ray, cam.forward)), ray)
-}
-
 /// How much of a character's line the output pixel at `p` is (on the character's own pixels,
 /// so the line is a darker shade of its colour): where a neighbour `line_px` away is well behind
 /// it (its silhouette), or is another of its parts a little behind it (where a part passes in

@@ -380,14 +380,14 @@ fn ways_for(k: Kind, at: Instance, cam: Camera, l: Lod) -> vec2u {
 /// level drawn, the leaves (their count per card), and the basis the cards face (the camera's,
 /// or the sun's for shadows).
 pub struct CardDraw: Copy + GpuData {
-    pub wind: Wind,
-    pub grow: f32,
     pub right: vec3,
     pub per_card: u32,
     pub up: vec3,
     /// The way drawn (its level; `ALL` for every instance whole: the shadows'), and how
     /// instances choose theirs (each way's share of a pixel, `lod`).
     pub way: u32,
+    pub wind: Wind,
+    pub grow: f32,
     pub lod: Lod,
 }
 

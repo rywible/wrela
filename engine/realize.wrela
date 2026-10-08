@@ -303,7 +303,7 @@ pub fn place_vertices<C, F: Parts<C>>(
     block_map: [u32],
     near: mut Shared<PartMask, 27>,
     corners: mut Shared<f32, 125>,
-    crossings: mut Shared<Crossing, 300>,
+    crossings: mut Shared<Crossing, EDGES>,
     probe: mut Slots<CornerProbe>,
     cells: mut Atomics<u32>,
     verts: mut Append<SkinVertex>,

@@ -141,13 +141,13 @@ fn bone_space(p: vec3, a: vec3, b: vec3) -> vec3 {
 /// the point in the creature's space (`origin` is where this space's origin is there).
 pub struct Muscle: Copy + GpuData {
     pub a: vec3,
-    pub b: vec3,
     pub t: f32,
-    pub off: vec2,
-    pub r: vec3,
+    pub b: vec3,
     pub noise: f32,
+    pub r: vec3,
     pub freq: f32,
     pub origin: vec3,
+    pub off: vec2,
 }
 
 /// A muscle of radii `r` on the bone from `a` to `b` (in the space of the bone it moves

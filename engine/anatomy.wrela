@@ -242,25 +242,6 @@ pub struct CanidEar: Copy + GpuData {
     pub out: f32,
 }
 
-/// The exact distance to an isosceles triangle in the plane, its apex at the origin, its base
-/// `half` wide either side at depth `height` (+y down from the apex) (Inigo Quilez's).
-fn triangle(p: vec2, half: f32, height: f32) -> f32 {
-    let q = vec2(half, height)
-    let px = vec2(abs(p.x), p.y)
-    let a = px - q * clamp(dot(px, q) / dot(q, q), 0.0, 1.0)
-    let b = px - q * vec2(clamp(px.x / q.x, 0.0, 1.0), 1.0)
-    let k = -sign(q.y)
-    let d = min(vec2(dot(a, a), k * (px.x * q.y - px.y * q.x)), vec2(dot(b, b), k * (px.y - q.y)))
-    -sqrt(d.x) * sign(d.y)
-}
-
-/// A plane shape (its distance `d2`) given thickness `t` across z about `z0`, its edges
-/// rounded by `r`: exact.
-fn extrude(d2: f32, z: f32, t: f32, r: f32) -> f32 {
-    let w = vec2(d2 + r, abs(z) - t)
-    min(max(w.x, w.y), 0.0) + length(max(w, vec2(0.0))) - r
-}
-
 impl Surface for CanidEar {
     fn distance(self, p: vec3) -> f32 {
         let a = -self.out * deg

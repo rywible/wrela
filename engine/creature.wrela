@@ -458,8 +458,8 @@ impl Seam {
 /// A group's space: its origin at `at` in the space it's in, turned and scaled. A point `p` is
 /// `to_local * (p - at) / scale` in it, and a distance there is `scale` times larger outside.
 pub struct Frame: Copy + GpuData {
-    pub at: vec3,
     pub to_local: mat3,
+    pub at: vec3,
     pub scale: f32,
 }
 

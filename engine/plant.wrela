@@ -32,12 +32,12 @@ pub struct Clump: Copy + GpuData {
 /// each clump's sphere, the colours of young (lit) and old (deep) leaves and of the light
 /// they pass, linear, and how many leaves a card holds.
 pub struct Leaves: Copy + GpuData {
-    pub size: f32 = 0.9,
-    pub cover: f32 = 1.7,
     pub young: vec3 = vec3(0.17, 0.25, 0.035),
-    pub per_card: u32 = 6,
+    pub size: f32 = 0.9,
     pub old: vec3 = vec3(0.045, 0.10, 0.03),
+    pub cover: f32 = 1.7,
     pub through: vec3 = vec3(0.11, 0.16, 0.02),
+    pub per_card: u32 = 6,
 }
 
 /// A plant's bark: its dark and light tones, and its moss, linear.
