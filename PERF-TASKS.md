@@ -19,10 +19,11 @@ outputs (21 floats; 10 floats: 1.34 → 0.89 ms), not by shading or the sway's a
       vertex (a far blade one triangle); one draw per tier (1.57 → 0.69 ms, 80b8a4d)
 - [x] 2 Hashed alpha in object space: the cards' cut, the levels' cross-fades anchored on the
       plant, the impostors' and volumes' cuts and tilts (flicker -15%, popping -26%, 4972ac2)
-- [ ] 3 Fewer cut fragments: cards trimmed to their leaves' outline; the prepass front to back
-      (done: cards' vertices 23 → 10 floats, the cut hashing only partial cover, 3bc568d;
-      measured: order changes nothing, a cut fragment isn't dropped early; deep and far-side
-      cards are few. Left: the far trees' prepass, 0.4-0.96 ms, is half the prepass)
+- [x] 3 Fewer cut fragments: cards trimmed to their leaves' outline (a rectangle; octagons cost
+      more vertices than they save); the prepass front to back (8 orders a kind); each corner
+      shaded once (indexed); per-instance marks on the CPU. Prepass 0.71 → 0.57, shading 0.65 →
+      0.58 (bd2f904). Then grass 0.68 → 0.45, limbs 0.30 → 0.18, terrain 0.52 → 0.28 indexed
+      (0c400fd). Compiler: per-stage storage buffers, and a binding bug fixed (f87f9a3)
 - [x] 4 Temporal AA: a 3×3 variance box (statistics at the scene's resolution, a kernel), the
       clamp relaxed where foliage covers part of a pixel (from the tags): 1.11 ms (0.87), 4972ac2
 - [x] 4b Language: kernels write textures (`std::gpu::Texels`), 0391c9a
