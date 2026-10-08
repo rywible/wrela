@@ -24,8 +24,9 @@ to the result. Decided: pipelines that run only at load count against the 64.
       `VertexShader<V>`, `FragmentShader<V>`; the clearing's `fullscreen`, the forest's far
       binding. Not done: returning one (its type has no name, and an opaque result would lose
       its loans)
-- [ ] 5b Frame tests on the native host's GPU, in wrela; exports take fieldless enums
-- [ ] 7 Work over several frames
+- [x] 5b Frame tests on the native host's GPU, in wrela (`@test(frames: n, gpu: true)`); exports
+      take fieldless enums (with the enums item)
+- [x] 7 Work over several frames: designed (language.md §6.18), decided before M8; not built
 - [x] Small: enums to and from `u32` (discriminants, `from_u32`, `Fieldless`); flags
       (`Flags<E>`; the clearing's `System`); exports take fieldless enums (`View`)
 - [x] Small: unused-item warning (W0008); GpuData padding (W0007); the engine's fixed
