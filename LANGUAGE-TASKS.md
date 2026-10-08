@@ -26,8 +26,10 @@ to the result. Decided: pipelines that run only at load count against the 64.
       its loans)
 - [ ] 5b Frame tests on the native host's GPU, in wrela; exports take fieldless enums
 - [ ] 7 Work over several frames
-- [ ] Small: `borrow x = if c { a } else { b }`; packed bitfields; enums to and from `u32`;
-      flags; unused-item warning; GpuData padding; non-square matrices
+- [x] Small: enums to and from `u32` (discriminants, `from_u32`, `Fieldless`); flags
+      (`Flags<E>`; the clearing's `System`); exports take fieldless enums (`View`)
+- [ ] Small: `borrow x = if c { a } else { b }`; packed bitfields; unused-item warning; GpuData
+      padding; non-square matrices
 - [x] Budget: 64 pipelines per scene and 256 KiB of WGSL a pipeline, checked in shipped builds
       (E0707); unrecorded pipelines pruned (constant `&&`/`||` folded); load cooks merged (the
       clouds' noise, the shadow map's two kernels); rigid stones skip skinning. The clearing: 64.

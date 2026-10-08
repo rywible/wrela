@@ -29,7 +29,7 @@ use engine::terrain::{Clipmap, Terrain, Texel, ground, ground_shade}
 use engine::vegetation::{Forest, Kind, kind, nothing}
 use engine::view::{BEHIND, Camera, NEAREST, camera, first_camera}
 use std::gpu::dispatch
-use std::collections::{replace, swap}
+use std::collections::{Flags, replace, swap}
 use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, start_eye}
 use std::gpu::{
     Address, ClipPosition, Compare, ComparisonSampler, Cull, Depth, DepthBias, DepthTexture,
@@ -42,6 +42,7 @@ use std::input::{Event, Key, events}
 use std::io::print
 use std::lift::{Watch, reads}
 use std::mem::test_build
+use testing::View
 use std::reload::{keep, kept}
 use std::serialize::{LoadError, Serialize, load, save}
 use trees::{KINDS, kind_plant, occluders, placed}
@@ -285,13 +286,13 @@ pub struct Clearing {
     width: u32,
     height: u32,
     frames: u32,
-    /// The systems left out of the frame (`off`'s bits), for timing each and for looking.
-    off: u32,
+    /// The systems left out of the frame, for timing each and for looking.
+    off: Flags<System>,
     /// What the tests set (testing.wrela): how a frame is shown, the scene's scale against the
     /// output, a camera held in place, whether the clouds' shadow map needs cooking again (for
     /// one left out or back), whether the next frame counts the cards' shading, and the
     /// shadows the last frame drew by.
-    view: u32,
+    view: View,
     scale: u32,
     held: bool,
     held_eye: vec3,
@@ -309,15 +310,26 @@ pub struct Clearing {
     references: GpuBuffer<Reference>,
 }
 
-/// The systems a frame can leave out, and the keys that toggle them.
-const TREES: u32 = 1
-const GRASS: u32 = 2
-const SHADOWS: u32 = 4
-const TERRAIN: u32 = 8
+/// The systems a frame can leave out: the keys toggle the first four, and tests the rest
+/// (`test_off`): the creature, the stones, the sky (a key colour where nothing was drawn), the
+/// wind (held at time 0), temporal AA's history (each frame its own) and the clouds' shadows. A
+/// system's bit in `off` is its discriminant's, which the tests' `off` numbers too.
+enum System: Copy + Eq + Fieldless {
+    Trees,
+    Grass,
+    Shadows,
+    Terrain,
+    Creature,
+    Stones,
+    Sky,
+    Wind,
+    History,
+    CloudShadows,
+}
 
 /// Whether a system is in the frame.
-fn on(off: u32, system: u32) -> bool {
-    (off & system) == 0
+fn on(off: Flags<System>, system: System) -> bool {
+    !off.has(system)
 }
 
 fn keys(s: mut Clearing, time: f32) {
@@ -327,15 +339,17 @@ fn keys(s: mut Clearing, time: f32) {
                 s.asked = true
             }
             let system = match key {
-                Key::T => TREES,
-                Key::G => GRASS,
-                Key::H => SHADOWS,
-                Key::L => TERRAIN,
-                _ => 0,
+                Key::T => Some(System::Trees),
+                Key::G => Some(System::Grass),
+                Key::H => Some(System::Shadows),
+                Key::L => Some(System::Terrain),
+                _ => None,
             }
-            s.off = s.off ^ system
-            if system == SHADOWS {
-                s.static_drawn = false
+            if let Some(system) = system {
+                s.off = s.off.toggled(system)
+                if system == System::Shadows {
+                    s.static_drawn = false
+                }
             }
         }
     }
@@ -420,8 +434,8 @@ pub fn init() -> Clearing {
         width: 0,
         height: 0,
         frames: 0,
-        off: 0,
-        view: testing::LOOK,
+        off: Flags::none(),
+        view: View::Look,
         scale: SCALE,
         held: false,
         held_eye: vec3(0.0),
@@ -443,8 +457,8 @@ pub fn init() -> Clearing {
         s.asked = c.asked
         s.follow = c.follow
         s.follow_heading = c.follow_heading
-        s.off = c.off
-        s.view = c.view
+        s.off = Flags::of_bits(c.off)
+        s.view = View::from_u32(c.view).unwrap_or(View::Look)
         s.scale = c.scale
         s.held = c.held
         s.held_eye = c.held_eye
@@ -508,8 +522,8 @@ fn keep_carried(s: Clearing) {
         asked: s.asked,
         follow: s.follow,
         follow_heading: s.follow_heading,
-        off: s.off,
-        view: s.view,
+        off: s.off.bits(),
+        view: u32(s.view),
         scale: s.scale,
         held: s.held,
         held_eye: s.held_eye,
@@ -604,7 +618,7 @@ fn copy_palette(s: mut Clearing) {
 /// The static cascades: the forest, cut to its leaves, into each.
 fn static_shadows(s: mut Clearing, sh: Shadows, wind: Wind) {
     label("shadows static")
-    let shadows = on(s.off, SHADOWS)
+    let shadows = on(s.off, System::Shadows)
     let near = begin_depth_pass(mut s.near, clear_depth: 1.0)
     if shadows {
         s.forest.shadow(view: sh.near, sh: sh, wind: wind, s: s.linear)
@@ -675,13 +689,13 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         time: time,
         last: s.cam,
         // A frame drawn with no history (a test's) isn't jittered: plain rendering.
-        still: !on(s.off, testing::HISTORY),
+        still: !on(s.off, System::History),
     )
     let cam = s.cam
     let wind = Wind {
         dir: normalize(vec2(-0.55, 0.3)),
         strength: 0.035,
-        time: if on(s.off, testing::WIND) { time } else { 0.0 },
+        time: if on(s.off, System::Wind) { time } else { 0.0 },
     }
     s.clipmap.follow(Ground {}, eye, again: false)
     cook_again(mut s, eye)
@@ -732,7 +746,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     }
     label("shadow moving")
     let mv = begin_depth_pass(mut s.moving, clear_depth: 1.0)
-    if on(s.off, testing::CREATURE) && s.creature_done {
+    if on(s.off, System::Creature) && s.creature_done {
         draw(
             character_shadow.bind(
                 verts: s.creature.mesh.verts.items(),
@@ -767,14 +781,14 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             SUN_GAP,
             s.light.sun,
             s.repeat,
-            shadows: on(s.off, testing::CLOUD_SHADOWS),
+            shadows: on(s.off, System::CloudShadows),
         )
         s.sky_cooked = true
         s.clouds_again = false
     }
     // A test left the clouds' shadows out, or put them back.
     if s.clouds_again && s.sky_cooked {
-        s.sky.cook_shadow(s.light.sun, s.repeat, shadows: on(s.off, testing::CLOUD_SHADOWS))
+        s.sky.cook_shadow(s.light.sun, s.repeat, shadows: on(s.off, System::CloudShadows))
         s.clouds_again = false
     }
     if s.sky_cooked {
@@ -786,7 +800,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             drift: CLOUD_WIND * wind.time,
             rep: s.repeat,
             s: s.linear,
-            still: !on(s.off, testing::WIND),
+            still: !on(s.off, System::Wind),
         )
     }
     let clouds = s.clouds
@@ -798,7 +812,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     if !s.static_drawn {} else if !s.occluders_cooked {
         s.probes.cook()
         s.occluders_cooked = true
-    } else if !s.probes.done() || on(s.off, testing::WIND) {
+    } else if !s.probes.done() || on(s.off, System::Wind) {
         s.probes.bake_strip(
             trace_of(s),
             sh,
@@ -894,10 +908,10 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     // The depth prepass: the cut cards and flowers.
     label("vegetation prepass")
     let pre = begin_pass_with_depth(mut s.ids, mut s.depth, clear: vec4(0.0), clear_depth: 0.0)
-    if on(s.off, TREES) {
+    if on(s.off, System::Trees) {
         s.forest.prepass(cam, wind, s.linear)
     }
-    if on(s.off, GRASS) {
+    if on(s.off, System::Grass) {
         s.grass.prepass(cam, wind)
     }
     pre.end()
@@ -919,11 +933,11 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     // the cards where the prepass left them.
     label("vegetation")
     let veg = begin_pass_with_depth(mut s.scene, mut s.depth, clear: vec4(0.0), keep_depth: true)
-    if on(s.off, GRASS) {
+    if on(s.off, System::Grass) {
         s.grass.shade(lt, wind, GrassLook {}, Blooms {})
     }
     for st in s.stones {
-        if !on(s.off, testing::STONES) {
+        if !on(s.off, System::Stones) {
             break
         }
         draw(
@@ -941,7 +955,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             depth: NEAREST,
         )
     }
-    if on(s.off, TREES) {
+    if on(s.off, System::Trees) {
         s.forest.shade(lt, wind, s.ids)
     }
     veg.end()
@@ -950,7 +964,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     // again between them; the vegetation's is heavy, and joined to it the frame took longer).
     label("terrain")
     let ter = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)
-    if on(s.off, TERRAIN) {
+    if on(s.off, System::Terrain) {
         for l in 0..lt.levels.count {
             draw(
                 ground.bind(cam, lt.levels, texels),
@@ -970,7 +984,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         keep_depth: true,
         join: true,
     )
-    if on(s.off, testing::CREATURE) && s.creature_done {
+    if on(s.off, System::Creature) && s.creature_done {
         draw(
             character.bind(
                 verts: s.creature.mesh.verts.items(),
@@ -996,7 +1010,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         join: true,
     )
     // A test's key colour in place of the sky (`test_off`), in a test build only.
-    if !test_build() || on(s.off, testing::SKY) {
+    if !test_build() || on(s.off, System::Sky) {
         draw(
             cover.bind(z: 0.0),
             sky_shade.bind(cam, s.light, view: s.tables.view, dome: s.sky.dome, s: s.linear),
@@ -1010,7 +1024,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     // The creature's motion, where it's seen.
     label("motion")
     let mo = begin_pass_with_depth(mut s.motion, mut s.depth, clear: vec4(0.0), keep_depth: true)
-    if on(s.off, testing::CREATURE) && s.creature_done {
+    if on(s.off, System::Creature) && s.creature_done {
         draw(
             character_motion.bind(
                 verts: s.creature.mesh.verts.items(),
@@ -1033,7 +1047,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     // it, as the camera sees it each time (temporal AA checks its history for it there).
     let out = vec2(f32(width), f32(height))
     // (The creature's root is at its hips: its hooves are below it.)
-    let creature = if on(s.off, testing::CREATURE) && s.creature_done {
+    let creature = if on(s.off, System::Creature) && s.creature_done {
         let at = walker.root.pos
         seen_box(cam, out, at - vec3(1.4, 1.6, 1.4), at + vec3(1.4, 1.4, 1.4), margin: 6.0)
     } else {
@@ -1043,7 +1057,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         cam,
         out,
         blend: 0.12,
-        fresh: if s.frames == 0 || !on(s.off, testing::HISTORY) { 1 } else { 0 },
+        fresh: if s.frames == 0 || !on(s.off, System::History) { 1 } else { 0 },
         creature,
     }
     label("temporal")
@@ -1074,7 +1088,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     }
     label("look")
     // A test's views of the scene and the history (`test_view`), in a test build only.
-    if !test_build() || s.view == testing::LOOK {
+    if !test_build() || s.view == View::Look {
         let m = Metering { fresh: if s.frames == 0 { 1 } else { 0 }, ..METERING }
         dispatch(meter.bind(s.scene, m, exposure: mut s.exposure), groups: 1)
         let d = Develop { cam, light: s.light, look: Look {}, out: vec2(f32(width), f32(height)) }
@@ -1102,7 +1116,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         }
     } else {
         begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
-        if s.view == testing::SCENE {
+        if s.view == View::Scene {
             draw(cover.bind(z: 0.5), testing::scene_view.bind(s.scene, s.scale), vertices: 3)
         } else if a == 0 {
             draw(cover.bind(z: 0.5), testing::temporal_view.bind(s.history_a, s.light), vertices: 3)
@@ -1117,19 +1131,21 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
 
 // ---- for tests (testing.wrela; suite/clearing.rs) -------------------------------------------
 
-/// How frames are shown (`testing::LOOK`, `SCENE` or `TEMPORAL`).
+/// How frames are shown.
 @testing
-pub fn test_view(s: mut Clearing, view: u32) {
+pub fn test_view(s: mut Clearing, view: View) {
     s.view = view
 }
 
-/// The systems frames leave out (`TREES` to `TERRAIN`, and testing.wrela's).
+/// The systems frames leave out, by their bits (`System`).
 @testing
 pub fn test_off(s: mut Clearing, off: u32) {
-    if (off ^ s.off) & SHADOWS != 0 {
+    let off = Flags::of_bits(off)
+    let changed = off.changed(s.off)
+    if changed.has(System::Shadows) {
         s.static_drawn = false
     }
-    if (off ^ s.off) & testing::CLOUD_SHADOWS != 0 {
+    if changed.has(System::CloudShadows) {
         s.clouds_again = true
     }
     s.off = off

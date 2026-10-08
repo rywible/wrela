@@ -8,20 +8,11 @@ use std::gpu::{DepthTexture, FragCoord, GlobalId, Rgba16Float, Slots, Texture}
 
 /// How a frame is shown: the look (the clearing as it is), the scene's samples at the output's
 /// size (nearest, before temporal AA), or temporal AA's output with the tone curve alone.
-pub const LOOK: u32 = 0
-pub const SCENE: u32 = 1
-pub const TEMPORAL: u32 = 2
-
-/// What a frame can leave out, past the keys' systems (main.wrela's `TREES` to `TERRAIN`): the
-/// creature, the stones, the sky (a key colour where nothing was drawn), the wind (held at
-/// time 0), temporal AA's history (each frame its own), the clouds' shadows, and the impostors
-/// and volumes (each instance drawn as cards, near or far).
-pub const CREATURE: u32 = 16
-pub const STONES: u32 = 32
-pub const SKY: u32 = 64
-pub const WIND: u32 = 128
-pub const HISTORY: u32 = 256
-pub const CLOUD_SHADOWS: u32 = 512
+pub enum View: Copy + Eq + Fieldless {
+    Look,
+    Scene,
+    Temporal,
+}
 
 /// The key colour drawn where the sky would be.
 pub const KEY = vec4(1.0, 0.0, 1.0, 0.0)
