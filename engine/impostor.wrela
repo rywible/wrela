@@ -653,7 +653,7 @@ pub fn far_shade(
     let ao = exp(-depth / 1.6)
     let at = leaf_place(f, lt.cam, b, leaf.toward)
     let sun = sun_at(lt, at, n, near, far, moving, cmp, clouds, s, soft: 1.5)
-    let sky = sky_at(lt, probes, s, grounds, at, n) * (0.25 + 0.75 * ao)
+    let sky = sky_at(lt, probes, clouds, s, grounds, at, n) * (0.25 + 0.75 * ao)
     let lit = Lit {
         albedo: max(albedo + f.tint * 0.5, vec3(0.005)),
         n,
@@ -950,7 +950,7 @@ pub fn volume_shade(
     // Lit where its leaves are, not on the quad (which lies in its own shadow).
     let at = volume_place(f, v, met.at)
     let sun = sun_at(lt, at, n, near, far, moving, cmp, clouds, s, soft: 1.5)
-    let sky = sky_at(lt, probes, s, grounds, at, crown_n) * (0.25 + 0.75 * ao)
+    let sky = sky_at(lt, probes, clouds, s, grounds, at, crown_n) * (0.25 + 0.75 * ao)
     let lit = Lit {
         albedo,
         n,

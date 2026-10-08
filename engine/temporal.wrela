@@ -220,8 +220,19 @@ pub fn resolve(
     let clipped = if most > 1.0 { centre + off / most } else { h }
     // This frame's share: more where a sample fell near the pixel's centre. Where the history
     // showed the creature and the pixel doesn't now, the creature walked on: this frame's alone
-    // (the box round an edge holds its colours, which would let it trail).
-    let left = was == 5 && class_of(tag) != 5
+    // (the box round an edge holds its colours, which would let it trail). The history showed
+    // it if any of the four texels round the point did: they carry most of its filtered colour
+    // (`history_at`), and at the creature's edge the nearest alone may be the ground.
+    let core = vec2i(floor(last - vec2(0.5)))
+    let edge = vec2i(i32(r.out.x) - 1, i32(r.out.y) - 1)
+    var showed = false
+    for dy in 0..2 {
+        for dx in 0..2 {
+            let t = clamp(core + vec2i(dx, dy), vec2i(0), edge)
+            showed = showed || class_of(history.load(x: u32(t.x), y: u32(t.y)).a) == 5
+        }
+    }
+    let left = showed && class_of(tag) != 5
     let a = if left { 1.0 } else { clamp(r.blend * nearest * 1.6, r.blend * 0.25, 0.5) }
     let out = mix(from_ycocg(clipped), current, vec3(a))
     vec4(untamed(max(out, vec3(0.0))), tag)

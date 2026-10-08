@@ -1,27 +1,39 @@
 // The clearing's clouds (#28 §6): a few great cumulus heaped over the valley and behind the
-// forest, placed for the shot, and fair-weather puffs between them (spike 15's cloudscape).
+// forest, placed for the shot, and fair-weather clouds between them (spike 15's cloudscape),
+// drifting with the wind (`engine::sky`).
 
 use engine::noise::rand
-use engine::sky::{BASE, Puff, cumulus}
+use engine::sky::{Cumulus, Gap}
 
-pub fn cloudscape() -> Vec<Puff> {
-    var p: Vec<Puff> = Vec::new()
-    cumulus(mut p, vec2(-4600.0, 12500.0), wide: 4200.0, tall: 3600.0, seed: 1, base: BASE)
-    cumulus(mut p, vec2(-10800.0, 14500.0), wide: 3400.0, tall: 2600.0, seed: 2, base: BASE)
-    cumulus(mut p, vec2(3400.0, 16000.0), wide: 3800.0, tall: 3000.0, seed: 3, base: BASE)
-    cumulus(mut p, vec2(9500.0, 11000.0), wide: 2600.0, tall: 1900.0, seed: 4, base: BASE)
+/// How much of the sky beyond the cloudscape's cumulus fair-weather clouds cover (`fair` of
+/// `engine::sky::cook_weather`).
+pub const FAIR: f32 = 0.3
+
+/// How the clouds drift (m/s): with the grass's wind, a little faster.
+pub const CLOUD_WIND = vec2(-5.5, 3.0)
+
+/// The sky kept clear toward the sun from the meadow, so the start's shot is sunlit: where a
+/// cloud's shadow on the clearing would come from, at the layer's base (1.5 km up) and top
+/// (5.5 km), 3.4 and 12.4 km out toward the sun (`scene::SUN`), wide enough for the path's
+/// drift.
+pub const SUN_GAP = Gap { a: vec2(3300.0, -590.0), b: vec2(12200.0, -2150.0), radius: 2500.0 }
+
+pub fn cloudscape() -> Vec<Cumulus> {
+    var c: Vec<Cumulus> = Vec::new()
+    c.push(Cumulus { at: vec2(-4600.0, 12500.0), wide: 4200.0, tall: 3600.0 })
+    c.push(Cumulus { at: vec2(-10800.0, 14500.0), wide: 3400.0, tall: 2600.0 })
+    c.push(Cumulus { at: vec2(3400.0, 16000.0), wide: 3800.0, tall: 3000.0 })
+    c.push(Cumulus { at: vec2(9500.0, 11000.0), wide: 2600.0, tall: 1900.0 })
     for k in 0..26 {
         let a = -1.0 + 2.0 * rand(500 + k, 1)
         let d = 3500.0 + 9000.0 * rand(500 + k, 2)
-        let at = vec2(sin(a) * d, cos(a) * d)
-        cumulus(
-            mut p,
-            at,
-            wide: 700.0 + 900.0 * rand(500 + k, 3),
-            tall: 500.0 + 600.0 * rand(500 + k, 4),
-            seed: 10 + k,
-            base: BASE,
+        c.push(
+            Cumulus {
+                at: vec2(sin(a) * d, cos(a) * d),
+                wide: 700.0 + 900.0 * rand(500 + k, 3),
+                tall: 500.0 + 600.0 * rand(500 + k, 4),
+            },
         )
     }
-    p
+    c
 }

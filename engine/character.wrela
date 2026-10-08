@@ -132,7 +132,7 @@ pub fn character_shade(
 ) -> vec4 {
     let n = normalize(c.normal)
     let sun = sun_at(lt, c.world, n, near, far, moving, cmp, clouds, s, soft: 1.0)
-    let sky = sky_at(lt, probes, s, grounds, c.world, n)
+    let sky = sky_at(lt, probes, clouds, s, grounds, c.world, n)
     let lit = Lit { albedo: c.albedo, n, sun, sky, through: vec3(0.0) }
     let open = probes::open_light(probes, vec3(0.0, 1.0, 0.0))
     let colour = light::character(lt.light, lit, open, c.world, lt.cam.eye)

@@ -1,340 +1,582 @@
-// The sky (#28 §6): the air's (`air`, its sky table) and the sun's disc, per pixel; clouds
-// cooked at load into a sky texture, ray-marched a strip at a time so no submission runs long; and the clouds'
-// shadows on the land, from a map cooked with them. The sky's pass reads the cooked texture and
-// marches nothing. Clouds that move are #31's (weather).
+// The sky's clouds (#28 §6, #31): a field of cloud that drifts with the wind, marched each frame,
+// lit by the air (`air`'s tables), and its shadows on the land.
 //
-// The sky texture holds every direction round the eye's start, by azimuth (all round) and
-// elevation (from a little below the horizon to near the zenith). The clouds are kilometres
-// away, so a step of the eye doesn't move them.
+// The field: a weather map (where the sky is covered, and how tall the clouds are there) cooked
+// from a cloudscape (cumulus placed by hand, and fair-weather clouds from noise), eroded by
+// noise cooked into two 3D textures (Schneider's for Horizon Zero Dawn: Perlin-Worley shapes,
+// Worley detail). It drifts whole: the clouds at time t are the field moved by the wind, so
+// their shadows are a map cooked once (in the field's frame) and moved with it.
+//
+// The dome: every direction round the eye, by azimuth (all round) and elevation (from a little
+// below the horizon to the zenith). The clouds are kilometres away, so a step of the eye moves
+// nothing in it, and turning looks elsewhere in it. Each frame marches one in 64 of its 32 × 32
+// tiles (whole tiles, so neighbouring invocations march neighbouring rays, and read the noise
+// together), each texel blended with what it held; the clouds drift a few metres (well under
+// half a texel at 5 km) while a tile waits its turn.
 
+use air::{Air, Tables, aerial_uvw, radius_of, transmittance}
 use light::{Light, sky, sun_disc}
-use noise::{noise3, rand}
-use std::derive::{Box2, interval}
-use std::gpu::{ClipPosition, FragCoord, GlobalId, Sampler, Slots, Texture, VertexIndex}
+use noise::{fbm2, hash3}
+use std::gpu::{
+    FragCoord, GlobalId, GpuBuffer, Sampler, Slots, Texels, Texels3d, Texture, Texture3d,
+    TextureFormat, buffer, dispatch, label, texture, texture3d, write,
+}
 use std::math::{PI, TAU}
 use view::Camera
 
-/// A puff of cloud: a sphere of it.
-pub struct Puff: Copy + GpuData {
-    pub centre: vec3,
+/// The cloud layer: its base and the tallest clouds' tops (m above the world's y = 0).
+pub const BASE: f32 = 1500.0
+pub const TOP: f32 = 5500.0
+
+/// The weather map: `WEATHER_SIDE` texels a side over `SPAN` m round the world's origin, tiled;
+/// the shadow map, over the same square.
+pub const WEATHER_SIDE: u32 = 1024
+pub const SHADOW_SIDE: u32 = 1024
+pub const SPAN: f32 = 48000.0
+
+/// The shape noise (`SHAPE_SIDE` texels a side over `SHAPE_SPAN` m) and the detail noise, both
+/// tiled.
+pub const SHAPE_SIDE: u32 = 128
+pub const SHAPE_SPAN: f32 = 3600.0
+pub const DETAIL_SIDE: u32 = 32
+pub const DETAIL_SPAN: f32 = 480.0
+
+/// The dome's size, and the elevations it holds (radians).
+pub const SKY_W: u32 = 3072
+pub const SKY_H: u32 = 960
+pub const EL_LO: f32 = -0.08
+pub const EL_HI: f32 = 1.5708
+
+/// The dome's tiles (`TILE` texels a side, `TILES_W` across), and a frame's share: one in
+/// `PHASES`.
+pub const TILE: u32 = 32
+pub const TILES_W: u32 = SKY_W / TILE
+pub const PHASES: u32 = 64
+pub const PHASE_TEXELS: u32 = (TILES_W * (SKY_H / TILE) / PHASES) * TILE * TILE
+
+/// How far the dome's rays look for clouds (m), and how far through the layer they march.
+const REACH: f32 = 60000.0
+const THROUGH: f32 = 30000.0
+
+/// Extinction per metre where the field is densest.
+const EXTINCTION: f32 = 0.06
+
+/// The dome's march's samples in each of a ray's cells that may hold cloud.
+const FINE: u32 = 4
+
+/// A cumulus of a cloudscape: its middle (x, z), how wide and how tall (m).
+pub struct Cumulus: Copy + GpuData {
+    pub at: vec2,
+    pub wide: f32,
+    pub tall: f32,
+}
+
+/// A stretch of sky kept clear: within `radius` (m) of the segment from `a` to `b` (x, z).
+pub struct Gap: Copy + GpuData {
+    pub a: vec2,
+    pub b: vec2,
     pub radius: f32,
 }
 
-/// The sky texture's size, how many strips it's cooked in, and the elevations it holds
-/// (radians).
-pub const SKY_W: u32 = 3072
-pub const SKY_H: u32 = 864
-pub const STRIPS: u32 = 48
-pub const EL_LO: f32 = -0.08
-pub const EL_HI: f32 = 1.45
-
-/// The cloud shadow map's size, and the square of land it covers round the eye's start (m).
-pub const SHADOW_SIDE: u32 = 512
-pub const SHADOW_SPAN: f32 = 16000.0
-
-/// The clouds' base (m), and the height the shadow map projects from.
-pub const BASE: f32 = 1500.0
-
-/// What cooking the clouds reads: where the eye is, toward the sun, and the strip.
-pub struct Cook: Copy + GpuData {
+/// What the dome's march and the clouds' shadows read: where the eye is, which of the dome's
+/// tiles the frame marches (`phase`: those whose number is it, modulo `PHASES`), toward the sun, how much of a texel the march
+/// replaces (`blend`: 1 on the first, less after), how far the field has drifted (m), and the
+/// march's jitter's seed.
+pub struct Clouds: Copy + GpuData {
     pub eye: vec3,
-    pub strip: u32,
+    pub phase: u32,
     pub sun: vec3,
-    pub base: f32,
+    pub blend: f32,
+    pub drift: vec2,
+    pub seed: u32,
 }
 
-/// Where the sky texture holds direction `dir`: azimuth all round from +z, elevation up.
+/// Where the dome holds direction `dir`: azimuth all round from +z, elevation up.
 pub fn sky_uv(dir: vec3) -> vec2 {
     let az = atan2(dir.x, dir.z)
     let el = asin(clamp(dir.y, -1.0, 1.0))
     vec2(0.5 + az / TAU, 1.0 - (el - EL_LO) / (EL_HI - EL_LO))
 }
 
-/// The direction the sky texture holds at `uv`.
+/// The direction the dome holds at `uv`.
 pub fn sky_dir(uv: vec2) -> vec3 {
     let az = (uv.x - 0.5) * TAU
     let el = EL_LO + (1.0 - uv.y) * (EL_HI - EL_LO)
     vec3(cos(el) * sin(az), sin(el), cos(el) * cos(az))
 }
 
-/// A cumulus at `at` (its base's middle, on the ground plane), `wide` across and `tall`: a flat
-/// base of wide puffs, then layers of rounder, smaller ones heaped toward one side, `seed`'s.
-pub fn cumulus(puffs: mut Vec<Puff>, at: vec2, wide: f32, tall: f32, seed: u32, base: f32) {
-    var n = seed.wrapping_mul(977)
-    for _ in 0..9 {
-        n += 1
-        let a = TAU * rand(n, 1)
-        let r = wide * 0.45 * sqrt(rand(n, 2))
-        let size = wide * (0.16 + 0.08 * rand(n, 3))
-        puffs.push(
-            Puff {
-                centre: vec3(at.x + r * cos(a), base + size * 0.55, at.y + r * sin(a)),
-                radius: size,
-            },
-        )
+// ---- tiled noise ----------------------------------------------------------------------------
+
+fn wrap(x: i32, period: i32) -> i32 {
+    ((x % period) + period) % period
+}
+
+/// One of the twelve cube edges' directions, by a draw in [0, 1).
+fn edge(h: f32) -> vec3 {
+    let k = u32(h * 12.0) % 12
+    let a = if (k & 1) == 0 { 1.0 } else { -1.0 }
+    let b = if (k & 2) == 0 { 1.0 } else { -1.0 }
+    if k < 4 { vec3(a, b, 0.0) } else if k < 8 { vec3(a, 0.0, b) } else { vec3(0.0, a, b) }
+}
+
+/// Gradient noise (Perlin's), about [-1, 1], one cell a unit, tiled every `period` cells.
+fn perlin3(p: vec3, period: i32) -> f32 {
+    let i = floor(p)
+    let f = p - i
+    let u = f * f * f * (f * (f * 6.0 - vec3(15.0)) + vec3(10.0))
+    let (x, y, z) = (i32(i.x), i32(i.y), i32(i.z))
+    let corner = |dx: i32, dy: i32, dz: i32| {
+        let h = hash3(wrap(x + dx, period), wrap(y + dy, period), wrap(z + dz, period))
+        dot(edge(h), f - vec3(f32(dx), f32(dy), f32(dz)))
     }
-    for l in 1..6 {
-        let f = f32(l) / 5.0
-        for _ in 0..(7 - l) {
-            n += 1
-            let a = TAU * rand(n, 4)
-            let spread = wide * (0.36 - 0.26 * f)
-            let r = spread * sqrt(rand(n, 5))
-            let size = wide * (0.2 - 0.09 * f) * (0.8 + 0.4 * rand(n, 6))
-            let lean = vec2(-0.12, 0.05) * wide * f
-            puffs.push(
-                Puff {
-                    centre: vec3(
-                        at.x + lean.x + r * cos(a),
-                        base + tall * f * 0.85,
-                        at.y + lean.y + r * sin(a),
-                    ),
-                    radius: size,
-                },
-            )
+    let x00 = mix(corner(0, 0, 0), corner(1, 0, 0), u.x)
+    let x10 = mix(corner(0, 1, 0), corner(1, 1, 0), u.x)
+    let x01 = mix(corner(0, 0, 1), corner(1, 0, 1), u.x)
+    let x11 = mix(corner(0, 1, 1), corner(1, 1, 1), u.x)
+    mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z)
+}
+
+/// Worley noise: 1 at a cell's feature point, falling to 0 a cell away; tiled every `period`
+/// cells. The distance to the nearest feature point is a smooth minimum of the 27 nearest
+/// (`-ln Σ e^(-10 d) / 10`): the nearest's own slope jumps across each border between two
+/// cells, a plane, which the clouds' contrast showed as facets.
+fn worley3(p: vec3, period: i32) -> f32 {
+    let i = floor(p)
+    let f = p - i
+    let (x, y, z) = (i32(i.x), i32(i.y), i32(i.z))
+    var sum = 0.0
+    for dz in 0..3 {
+        for dy in 0..3 {
+            for dx in 0..3 {
+                let d = vec3i(dx - 1, dy - 1, dz - 1)
+                let cx = wrap(x + d.x, period)
+                let cy = wrap(y + d.y, period)
+                let cz = wrap(z + d.z, period)
+                let feature = vec3(
+                    hash3(cx, cy, cz),
+                    hash3(cx + 1013, cy + 71, cz + 389),
+                    hash3(cx + 457, cy + 1291, cz + 23),
+                )
+                sum += exp(-10.0 * length(vec3(d) + feature - f))
+            }
         }
     }
+    1.0 - saturate(-log(sum) * 0.1)
 }
 
-/// The most puffs one ray marches through: those near it (`near_ray`).
-const NEAR_PUFFS: u32 = 64
-
-/// How near a ray a puff counts as near it (m): its samples' samples toward the sun reach it.
-const MARGIN: f32 = 760.0
-
-/// The sky texture's tiles: `TILE` texels a side, `TILES_W` across.
-pub const TILE: u32 = 32
-pub const TILES_W: u32 = SKY_W / TILE
-pub const TILES: u32 = TILES_W * (SKY_H / TILE)
-
-/// A tile's puffs: those that some ray through it passes within `MARGIN` of, in order, at
-/// most `TILE_PUFFS`; or `ALL_PUFFS` for more.
-pub const TILE_PUFFS: u32 = 255
-pub const ALL_PUFFS: u32 = 4294967295
-
-pub struct TilePuffs: Copy + GpuData {
-    pub count: u32,
-    pub ids: [u32; 255],
+/// Worley noise in three octaves from `cells` a side over the unit cube (tiled), weighted as
+/// Schneider's.
+fn worley_fbm(q: vec3, cells: i32) -> f32 {
+    let a = worley3(q * f32(cells), cells)
+    let b = worley3(q * f32(cells * 2), cells * 2)
+    let c = worley3(q * f32(cells * 4), cells * 4)
+    a * 0.625 + b * 0.25 + c * 0.125
 }
 
-/// How far the ray from `eye` through the sky texture's `uv` passes from `centre`, ahead of
-/// the eye (from the eye, for a point behind it): what `span` measures.
-fn passes(eye: vec3, centre: vec3, uv: vec2) -> f32 {
-    let dir = sky_dir(uv)
-    let oc = eye - centre
-    let along = max(-dot(oc, dir), 0.0)
-    length(oc + dir * along)
+/// Where `x` is between `from` and 1, as a fraction (Schneider's remap to [0, 1]).
+fn above(x: f32, from: f32) -> f32 {
+    (x - from) / (1.0 - from)
 }
 
-/// Tile `id`'s puffs (`TilePuffs`): those `passes` can bring within `MARGIN` of some ray
-/// through the tile, by its derived interval over the tile's texels. Each texel's march then
-/// reads its tile's few, not every puff: the clouds' cook at load 0.16 s of the GPU, now 0.09
-/// (every texel tried all 870 puffs, half its time).
-@compute(64)
-pub fn cull_puffs(cook: Cook, puffs: [Puff], out: mut Slots<TilePuffs>, id: GlobalId) {
-    if id.x >= TILES {
+/// The shape noise's texel: Perlin-Worley (Perlin's billows, Worley's cells) eroded by Worley
+/// noise in three octaves (Schneider's base shape), spread over [0, 1]: it falls in [0.65,
+/// 0.97], most of it in [0.76, 0.9], where a cover's cut (`field`) would leave it whole.
+@compute(4, 4, 4)
+pub fn cook_shape(out: mut Texels3d, id: GlobalId) {
+    if id.x >= SHAPE_SIDE || id.y >= SHAPE_SIDE || id.z >= SHAPE_SIDE {
         return
     }
-    let t = vec2(f32(id.x % TILES_W), f32(id.x / TILES_W)) * f32(TILE)
-    let size = vec2(f32(SKY_W), f32(SKY_H))
-    let tile = Box2 { lo: t / size, hi: (t + vec2(f32(TILE))) / size }
-    var listed = TilePuffs { count: 0, ids: [0; 255] }
-    for i in 0..puffs.len() {
-        let q = puffs[i]
-        let off = interval(|uv: vec2| passes(cook.eye, q.centre, uv), tile)
-        if off.lo < q.radius + MARGIN {
-            if listed.count == TILE_PUFFS {
-                listed.count = ALL_PUFFS
-                break
-            }
-            listed.ids[listed.count] = i
-            listed.count += 1
-        }
+    let q = (vec3(f32(id.x), f32(id.y), f32(id.z)) + vec3(0.5)) / f32(SHAPE_SIDE)
+    var perlin = 0.0
+    var amp = 0.5
+    for o in 0..3 {
+        let cells = 4 << o
+        perlin += perlin3(q * f32(cells), cells) * amp
+        amp *= 0.5
     }
-    out[id] = listed
+    let p01 = saturate(perlin * 0.9 + 0.5)
+    let w = worley_fbm(q, 4)
+    let pw = mix(w, 1.0, p01)
+    let low = w * 0.625 + worley_fbm(q, 8) * 0.25 + worley_fbm(q, 16) * 0.125
+    let base = above(pw, from: low - 1.0)
+    out.store(id, vec4(saturate((base - 0.68) / 0.29), 0.0, 0.0, 1.0))
 }
 
-/// The cloud's shape at `p`, among the `n` puffs listed in `near` (indices into `puffs`): 1 deep
-/// inside a puff, falling to 0 at its edge; with `detail`, eroded into billows.
-fn density(p: vec3, puffs: [Puff], near: [u32; 64], n: u32, base: f32, detail: bool) -> f32 {
-    var shape = 0.0
-    for i in 0..n {
-        let q = puffs[near[i]]
-        let d = length(p - q.centre) / q.radius
-        shape = max(shape, 1.0 - d)
+/// The detail noise's texel: Worley noise in three octaves, three ways.
+@compute(4, 4, 4)
+pub fn cook_detail(out: mut Texels3d, id: GlobalId) {
+    if id.x >= DETAIL_SIDE || id.y >= DETAIL_SIDE || id.z >= DETAIL_SIDE {
+        return
     }
-    if shape <= 0.0 {
+    let q = (vec3(f32(id.x), f32(id.y), f32(id.z)) + vec3(0.5)) / f32(DETAIL_SIDE)
+    out.store(id, vec4(worley_fbm(q, 2), worley_fbm(q, 4), worley_fbm(q, 8), 1.0))
+}
+
+// ---- the weather map ------------------------------------------------------------------------
+
+/// The weather map's texel: how covered the sky is there (r) and how tall its clouds are (g, a
+/// fraction of the layer): the cloudscape's cumulus, each covering a disc as wide as it, and
+/// between them fair-weather clouds from noise, `fair` of them; none in `gap`.
+@compute(8, 8)
+pub fn cook_weather(cumuli: [Cumulus], fair: f32, gap: Gap, out: mut Texels, id: GlobalId) {
+    if id.x >= WEATHER_SIDE || id.y >= WEATHER_SIDE {
+        return
+    }
+    let xz = ((vec2(f32(id.x), f32(id.y)) + vec2(0.5)) / f32(WEATHER_SIDE) - vec2(0.5)) * SPAN
+    var cover = 0.0
+    var tall = 0.0
+    for k in 0..cumuli.len() {
+        let c = cumuli[k]
+        var d = xz - c.at
+        d -= vec2(SPAN) * round(d / SPAN)
+        let r = length(d) / (0.6 * c.wide)
+        cover = max(cover, 0.72 * smoothstep(1.0, 0.35, r))
+        tall = max(tall, c.tall * smoothstep(1.1, 0.3, r))
+    }
+    // Fair-weather clouds: low and scattered.
+    let n = fbm2(xz * (16.0 / SPAN) + vec2(37.0, 11.0), 4)
+    let small = smoothstep(0.56, 0.7, n) * fair * 1.8
+    if small > cover {
+        cover = small
+        tall = max(tall, 900.0 + 900.0 * n)
+    }
+    // Broken a little, so no cloud is a disc; and clear in the gap.
+    let ab = gap.b - gap.a
+    let along = saturate(dot(xz - gap.a, ab) / max(dot(ab, ab), 1.0))
+    let clear = smoothstep(gap.radius * 0.7, gap.radius, length(xz - gap.a - ab * along))
+    let broken = cover * clear * (0.8 + 0.4 * fbm2(xz * (64.0 / SPAN) + vec2(5.0, 3.0), 3))
+    out.store(id, vec4(saturate(broken), saturate(tall / (TOP - BASE)), 0.0, 1.0))
+}
+
+// ---- the field --------------------------------------------------------------------------------
+
+/// The field at `q` (the field's frame: the world less the drift; m), `h` metres above the
+/// layer's base, in [0, 1]: the weather map's cover, rounded off toward its clouds' tops and
+/// flat at the base, eroded by the shape noise, and (with `detailed`) the detail noise: wisps
+/// at the base, billows at the top. `rep` samples tiled.
+fn field(
+    q: vec3,
+    h: f32,
+    weather: Texture,
+    shape: Texture3d,
+    detail: Texture3d,
+    rep: Sampler,
+    detailed: bool,
+) -> f32 {
+    let w = weather.sample_level(rep, q.xz / SPAN + vec2(0.5))
+    let top = w.g * (TOP - BASE)
+    if h <= 0.0 || h >= top || w.r <= 0.001 {
         return 0.0
     }
-    // A flat base.
-    shape *= smoothstep(base - 20.0, base + 160.0, p.y)
-    if detail {
-        let q = p * 0.0019
-        let billow = 0.55 * noise3(q) +
-            0.3 * noise3(q * 2.6 + vec3(5.0, 1.0, 3.0)) +
-            0.15 * noise3(q * 6.1 + vec3(1.0, 7.0, 2.0))
-        return saturate((shape * 2.2 - (1.0 - billow) * 0.9) * 2.0)
+    let hf = h / top
+    let profile = smoothstep(0.0, 0.07, hf) * smoothstep(1.0, 0.55, hf)
+    let base = shape.sample_level(rep, q / SHAPE_SPAN).r
+    let cover = w.r * profile
+    var s = saturate(above(base, from: 1.0 - cover)) * cover
+    if detailed && s > 0.0 {
+        let d = detail.sample_level(rep, q / DETAIL_SPAN)
+        let fine = d.r * 0.625 + d.g * 0.25 + d.b * 0.125
+        let wisp = mix(fine, 1.0 - fine, saturate(hf * 4.0))
+        s = saturate(above(s, from: wisp * 0.35))
     }
-    saturate(shape * 2.5)
+    // Dense a little way in: a cloud's edge is sharp.
+    min(s * 3.0, 1.0)
 }
 
-/// Where the ray from `o` along `dir` is inside any puff: its first entry and last exit; and
-/// the puffs within `margin` of it ahead (the ones its samples, and their samples toward the
-/// sun, can be in), at most `NEAR_PUFFS`, and how many. Of the puffs `listed`: its tile's
-/// (`cull_puffs`), in order, so the same as of all of them.
-fn span(
-    o: vec3,
-    dir: vec3,
-    puffs: [Puff],
-    listed: TilePuffs,
-    margin: f32,
-) -> (vec2, [u32; 64], u32) {
-    var lo = 1.0e9
-    var hi = -1.0e9
-    var near = [0; 64]
-    var n = 0
-    let all = listed.count == ALL_PUFFS
-    let count = if all { puffs.len() } else { listed.count }
-    for k in 0..count {
-        let i = if all { k } else { listed.ids[k] }
-        let q = puffs[i]
-        let oc = o - q.centre
-        let b = dot(oc, dir)
-        let c = dot(oc, oc) - q.radius * q.radius
-        let h = b * b - c
-        if h > 0.0 {
-            let s = sqrt(h)
-            lo = min(lo, -b - s)
-            hi = max(hi, -b + s)
-        }
-        // Its distance from the ray (behind the origin, from the origin).
-        let along = max(-b, 0.0)
-        let off = length(oc + dir * along)
-        if off < q.radius + margin && n < NEAR_PUFFS {
-            near[n] = i
-            n += 1
-        }
-    }
-    (vec2(max(lo, 0.0), hi), near, n)
+/// The planet's radius under the world's y = 0 (m).
+const R: f32 = 6360200.0
+
+/// How far along a ray from height `y` (m), its sine of elevation `dy`, it reaches height `z`
+/// above it (the planet's curve: the layer falls away toward the horizon).
+fn reach(y: f32, dy: f32, z: f32) -> f32 {
+    let r0 = R + y
+    let b = r0 * dy
+    // (r0² − (R + z)²) as a product: the difference of two large squares loses precision.
+    let c = (y - z) * (2.0 * R + y + z)
+    -b + sqrt(max(b * b - c, 0.0))
 }
 
-/// The clouds seen along `dir` from `eye`: their light (premultiplied) and cover.
+/// The height (m) at distance `t` along the ray from height `y`, its sine of elevation `dy`.
+fn height_along(y: f32, dy: f32, t: f32) -> f32 {
+    let up = R + y + dy * t
+    let across = t * sqrt(max(1.0 - dy * dy, 0.0))
+    sqrt(up * up + across * across) - R
+}
+
+/// Henyey-Greenstein's phase function.
+fn hg(g: f32, c: f32) -> f32 {
+    (1.0 - g * g) / (4.0 * PI * pow(max(1.0 + g * g - 2.0 * g * c, 1.0e-4), 1.5))
+}
+
+/// The clouds along `dir` from `c.eye`: their light (premultiplied, through the air in front of
+/// them) and cover. Lit by the sun (through the air above them: `trans`, the air's
+/// transmittance table), the sky round them (`view`, the air's sky table) and the ground below.
 fn march(
-    cook: Cook,
-    sun_colour: vec3,
+    c: Clouds,
+    air: Air,
+    light: Light,
     dir: vec3,
-    puffs: [Puff],
-    listed: TilePuffs,
     jitter: f32,
+    weather: Texture,
+    shape: Texture3d,
+    detail: Texture3d,
+    trans: Texture,
+    view: Texture,
+    aerial: Texture3d,
+    rep: Sampler,
+    s: Sampler,
 ) -> vec4 {
-    let (range, near, n) = span(cook.eye, dir, puffs, listed, margin: MARGIN)
-    if range.y <= range.x {
+    let y = c.eye.y
+    let enter = reach(y, dir.y, BASE)
+    if dir.y < -0.02 || enter > REACH {
         return vec4(0.0)
     }
-    let steps = 64
-    let dt = (range.y - range.x) / f32(steps)
-    var trans = 1.0
-    var light = vec3(0.0)
-    let cos_sun = dot(dir, cook.sun)
-    // Henyey-Greenstein, forward, beside an even part: a silver lining toward the sun.
-    let g = 0.5
-    let hg = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * cos_sun, 1.5) / (4.0 * PI)
-    let phase = 0.5 * hg + 0.5 / (4.0 * PI)
-    for i in 0..steps {
-        let t = range.x + (f32(i) + jitter) * dt
-        let p = cook.eye + dir * t
-        let d = density(p, puffs, near, n, cook.base, detail: true)
-        if d > 0.0 {
-            var od = 0.0
-            for k in 1..4 {
-                let q = p + cook.sun * (f32(k) * 240.0)
-                od += density(q, puffs, near, n, cook.base, detail: false) * 240.0
-            }
-            let to_sun = exp(-od * 0.006)
-            let powder = 1.0 - exp(-d * 3.0)
-            let h = saturate((p.y - cook.base) / 3500.0)
-            let ambient = mix(vec3(0.30, 0.33, 0.52), vec3(0.62, 0.70, 0.92), vec3(h))
-            let s = sun_colour * (to_sun * phase * 20.0 * (0.3 + 0.7 * powder)) + ambient * 0.75
-            let a = 1.0 - exp(-d * dt * 0.03)
-            light += s * (a * trans)
-            trans *= 1.0 - a
-            if trans < 0.01 {
-                break
+    let exit = min(reach(y, dir.y, TOP), enter + THROUGH)
+    // Where along the ray any cloud can be: 24 cells, each tested at its middle on the weather
+    // map alone (its cover, and its clouds' tops), marked with its neighbours (the map's
+    // samples are a cell apart); a ray through clear sky stops here.
+    let cells = 24
+    let ct = (exit - enter) / f32(cells)
+    var marked = 0
+    for i in 0..cells {
+        let t = enter + (f32(i) + 0.5) * ct
+        let p = c.eye + dir * t
+        let w = weather.sample_level(rep, (p.xz - c.drift) / SPAN + vec2(0.5))
+        if w.r > 0.001 && height_along(y, dir.y, t) - BASE < w.g * (TOP - BASE) {
+            marked = marked | (7 << i)
+        }
+    }
+    marked = marked >> 1
+    if marked == 0 {
+        return vec4(0.0)
+    }
+    // The light round the clouds: the sun's above the air through it at the layer's middle, the
+    // sky's (a few of its directions' mean) and the ground's.
+    let sun_light = air.sun_top * PI * transmittance(trans, s, radius_of(BASE + 1500.0), c.sun.y)
+    var round = vec3(0.0)
+    for k in 0..4 {
+        let a = f32(k) * 0.5 * PI
+        round += sky(view, s, light, normalize(vec3(cos(a), 0.6, sin(a))))
+    }
+    let above = round * 0.175 + sky(view, s, light, vec3(0.0, 1.0, 0.0)) * 0.3
+    let below = light.sun_colour * (max(c.sun.y, 0.0) * 0.18) + above * 0.15
+    let cos_sun = dot(dir, c.sun)
+    // Seen with the sun behind the eye, a cloud's thin sunward skin is darker than its depths
+    // (the powder effect: light scattered back out of it has met little cloud on the way in).
+    let powder = saturate(0.5 - 0.5 * cos_sun)
+    var through = 1.0
+    var lit = vec3(0.0)
+    var depth_sum = 0.0
+    var weight = 0.0
+    // The marked cells, each `FINE` samples a step: the same steps on every ray of a cell.
+    let dt = ct / f32(FINE)
+    for i in 0..cells {
+        if ((marked >> i) & 1) == 0 || through < 0.01 {
+            continue
+        }
+        for j in 0..FINE {
+            let t = enter + (f32(i) + (f32(j) + jitter) / f32(FINE)) * ct
+            let h = height_along(y, dir.y, t) - BASE
+            let p = c.eye + dir * t
+            let q = vec3(p.x - c.drift.x, h + BASE, p.z - c.drift.y)
+            let dens = field(q, h, weather, shape, detail, rep, detailed: true)
+            if dens > 0.0 && through >= 0.01 {
+                // Toward the sun: five samples within 750 m, then one about 2 km out (the
+                // shadows of clouds farther off), each placed in its stretch by the ray's
+                // jitter: a sample at a fixed place, a stretch apart, cut a far cloud's shadow
+                // with a hard edge.
+                var od = 0.0
+                for k in 0..6 {
+                    let (at, step) = if k < 5 {
+                        ((f32(k) + jitter) * 150.0, 150.0)
+                    } else {
+                        (750.0 + jitter * 2400.0, 2400.0)
+                    }
+                    let ql = q + c.sun * at
+                    od += field(ql, ql.y - BASE, weather, shape, detail, rep, detailed: false) *
+                        step
+                }
+                od *= EXTINCTION
+                // Scattering many times (Wrenninge's octaves): each fainter, less forward and
+                // reaching deeper; four, so a thick cloud's sunlit side reflects as a white
+                // surface would (an albedo of about 0.8).
+                var to_sun = 0.0
+                var a = 1.0
+                var b = 1.0
+                var g = 1.0
+                for _ in 0..4 {
+                    let phase = mix(hg(0.8 * g, cos_sun), hg(-0.3 * g, cos_sun), 0.3)
+                    to_sun += b * phase * exp(-od * a)
+                    a *= 0.3
+                    b *= 0.7
+                    g *= 0.5
+                }
+                to_sun *= mix(1.0, 1.0 - exp(-2.0 * od - dens * 0.6), powder)
+                let hf = saturate(h / (TOP - BASE))
+                let ambient = mix(below, above, vec3(saturate(hf * 1.5)))
+                let source = sun_light * to_sun + ambient
+                let step_t = exp(-dens * EXTINCTION * dt)
+                let absorbed = through * (1.0 - step_t)
+                lit += source * absorbed
+                depth_sum += t * absorbed
+                weight += absorbed
+                through *= step_t
             }
         }
     }
-    vec4(light, 1.0 - trans)
+    let cover = 1.0 - through
+    if cover <= 0.0 {
+        return vec4(0.0)
+    }
+    // Through the air in front of them, from their mean depth.
+    let d = depth_sum / max(weight, 1.0e-6)
+    let ap = aerial.sample_level(s, aerial_uvw(c.sun, dir, d * 0.001))
+    vec4(lit * ap.a + ap.rgb * cover, cover)
 }
 
-/// The sky texture's texels: one strip's rows (the strip's quad), each a ray from the eye.
-@fragment
-pub fn cook_clouds(
-    pixel: FragCoord,
-    cook: Cook,
+/// Where the frame's `k`th texel of the dome is: its tile, `k` / `TILE`² of the frame's (the
+/// tiles numbered `phase` modulo `PHASES`), and in it, rows of `TILE`.
+fn phase_texel(c: Clouds, k: u32) -> vec2u {
+    let tile = (k / (TILE * TILE)) * PHASES + c.phase % PHASES
+    let within = k % (TILE * TILE)
+    vec2u(
+        TILE * (tile % TILES_W) + within % TILE,
+        TILE * (tile / TILES_W) + within / TILE,
+    )
+}
+
+/// The frame's texels of the dome, marched: each blended with what the dome held there, into
+/// `out` (packed: `scatter` puts them in the dome).
+@compute(64)
+pub fn march_dome(
+    c: Clouds,
+    air: Air,
     light: Light,
-    puffs: [Puff],
-    tiles: [TilePuffs],
-) -> vec4 {
-    let uv = pixel.position.xy / vec2(f32(SKY_W), f32(SKY_H))
-    let jitter = noise::hash2(i32(pixel.position.x), i32(pixel.position.y))
-    let tile = vec2u(pixel.position.xy) / TILE
-    march(cook, light.sun_colour, sky_dir(uv), puffs, tiles[tile.y * TILES_W + tile.x], jitter)
-}
-
-/// Strip `strip` of `STRIPS`, as a quad in clip space.
-@vertex
-pub fn strip(v: VertexIndex, cook: Cook) -> ClipPosition {
-    let xs = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
-    let ys = [0.0, 0.0, 1.0, 0.0, 1.0, 1.0]
-    let top = 1.0 - 2.0 * f32(cook.strip) / f32(STRIPS)
-    let bottom = 1.0 - 2.0 * f32(cook.strip + 1) / f32(STRIPS)
-    ClipPosition { position: vec4(xs[v.index], mix(bottom, top, ys[v.index]), 0.5, 1.0) }
-}
-
-/// The cloud shadow map's texels: how much sun reaches the land at each point of the square
-/// round the eye's start, through the clouds above it toward the sun (their optical depth,
-/// coarsely, from the puffs' shapes).
-@fragment
-pub fn cook_shadow(pixel: FragCoord, cook: Cook, puffs: [Puff]) -> vec4 {
-    let uv = pixel.position.xy / f32(SHADOW_SIDE)
-    let ground = cook.eye.xz + (uv - vec2(0.5)) * SHADOW_SPAN
-    // From the ground, toward the sun, through the cloud layer.
-    let from = vec3(ground.x, 0.0, ground.y)
-    let every = TilePuffs { count: ALL_PUFFS, ids: [0; 255] }
-    let (range, near, n) = span(from, cook.sun, puffs, every, margin: 0.0)
-    if range.y <= range.x {
-        return vec4(1.0)
+    dome: Texture,
+    weather: Texture,
+    shape: Texture3d,
+    detail: Texture3d,
+    trans: Texture,
+    view: Texture,
+    aerial: Texture3d,
+    rep: Sampler,
+    s: Sampler,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= PHASE_TEXELS {
+        return
     }
+    let t = phase_texel(c, id.x)
+    let uv = (vec2(t) + vec2(0.5)) / vec2(f32(SKY_W), f32(SKY_H))
+    // Interleaved gradient noise (Jimenez's): neighbouring texels' jitters spread evenly, so
+    // their errors cancel when the sky pass blends them; moved by the golden ratio each round.
+    let ign = fract(52.9829189 * fract(0.06711056 * f32(t.x) + 0.00583715 * f32(t.y)))
+    let jitter = fract(ign + f32(c.seed) * 0.618034)
+    let new = march(
+        c,
+        air,
+        light,
+        sky_dir(uv),
+        jitter,
+        weather,
+        shape,
+        detail,
+        trans,
+        view,
+        aerial,
+        rep,
+        s,
+    )
+    let old = dome.load(x: t.x, y: t.y)
+    out[id] = mix(old, new, vec4(c.blend))
+}
+
+/// The dome's texels the frame marched (`march_dome`), from where they're packed.
+@compute(8, 8)
+pub fn scatter(c: Clouds, marched: [vec4], out: mut Texels, id: GlobalId) {
+    if id.x >= SKY_W || id.y >= SKY_H {
+        return
+    }
+    let tile = (id.y / TILE) * TILES_W + id.x / TILE
+    if tile % PHASES != c.phase % PHASES {
+        return
+    }
+    out.store(id, marched[(tile / PHASES) * TILE * TILE + (id.y % TILE) * TILE + id.x % TILE])
+}
+
+// ---- shadows ------------------------------------------------------------------------------------
+
+/// The shadow map's texel: how much of the sun reaches the ground (y = 0) there, through the
+/// field above it toward the sun (32 samples, its shape alone). Clouds scatter most of what
+/// they stop forward, so their shadows are paler than their extinction says: a quarter of it.
+@compute(8, 8)
+pub fn cook_shadow(
+    sun: vec3,
+    weather: Texture,
+    shape: Texture3d,
+    detail: Texture3d,
+    rep: Sampler,
+    out: mut Texels,
+    id: GlobalId,
+) {
+    if id.x >= SHADOW_SIDE || id.y >= SHADOW_SIDE {
+        return
+    }
+    let xz = ((vec2(f32(id.x), f32(id.y)) + vec2(0.5)) / f32(SHADOW_SIDE) - vec2(0.5)) * SPAN
+    let up = max(sun.y, 0.05)
+    let (t0, t1) = (BASE / up, TOP / up)
+    let steps = 32
+    let dt = (t1 - t0) / f32(steps)
     var od = 0.0
-    let steps = 24
-    let dt = (range.y - range.x) / f32(steps)
     for i in 0..steps {
-        let p = from + cook.sun * (range.x + (f32(i) + 0.5) * dt)
-        od += density(p, puffs, near, n, cook.base, detail: false) * dt
+        let p = vec3(xz.x, 0.0, xz.y) + sun * (t0 + (f32(i) + 0.5) * dt)
+        od += field(p, p.y - BASE, weather, shape, detail, rep, detailed: false) * dt
     }
-    vec4(vec3(exp(-od * 0.004)), 1.0)
+    out.store(id, vec4(vec3(exp(-od * EXTINCTION * 0.25)), 1.0))
 }
 
-/// How much of the sun reaches `world` past the clouds, from the cooked shadow map.
-pub fn cloud_shadow(cook: Cook, shadow: Texture, s: Sampler, world: vec3) -> f32 {
-    // Moved along the sun's direction to the ground plane the map was cooked on.
-    let back = world.xz - cook.sun.xz * (world.y / max(cook.sun.y, 0.05))
-    let uv = (back - cook.eye.xz) / SHADOW_SPAN + vec2(0.5)
+/// A shadow map that shadows nothing.
+@compute(8, 8)
+pub fn no_shadow(out: mut Texels, id: GlobalId) {
+    if id.x >= SHADOW_SIDE || id.y >= SHADOW_SIDE {
+        return
+    }
+    out.store(id, vec4(1.0))
+}
+
+/// How much of the sun reaches `world` past the clouds: the shadow map, moved with the field.
+/// Read through `s` (clamped): the map's coordinate is wrapped here, its seam half the map
+/// (24 km) from where the field started.
+pub fn cloud_shadow(c: Clouds, shadow: Texture, s: Sampler, world: vec3) -> f32 {
+    // Along the sun's direction to the ground plane the map was cooked on.
+    let back = world.xz - c.sun.xz * (world.y / max(c.sun.y, 0.05))
+    let uv = fract((back - c.drift) / SPAN + vec2(0.5))
     shadow.sample_level(s, uv).r
 }
 
-/// The sky (the air's sky table, `view`) with its cooked clouds along `dir`, and the clouds'
-/// cover.
-pub fn sky_with_clouds(
-    view: Texture,
-    light: Light,
-    dir: vec3,
-    clouds: Texture,
-    s: Sampler,
-) -> vec4 {
+// ---- the sky's pass -----------------------------------------------------------------------------
+
+/// The sky (the air's sky table, `view`) with the dome's clouds along `dir`, and their cover:
+/// the dome read through a tent three texels wide (four samples), which averages away most of
+/// its march's jitter.
+pub fn sky_with_clouds(view: Texture, light: Light, dir: vec3, dome: Texture, s: Sampler) -> vec4 {
     let base = sky(view, s, light, dir) + sun_disc(light, dir)
-    let c = clouds.sample_level(s, sky_uv(dir))
+    let uv = sky_uv(dir)
+    let d = vec2(0.5 / f32(SKY_W), 0.5 / f32(SKY_H))
+    let c = (dome.sample_level(s, uv + d) +
+        dome.sample_level(s, uv - d) +
+        dome.sample_level(s, uv + vec2(d.x, -d.y)) +
+        dome.sample_level(s, uv + vec2(-d.x, d.y))) *
+        0.25
     vec4(base * (1.0 - c.a) + c.rgb, c.a)
+}
+
+/// The sky with its clouds along `dir`, one sample of the dome, and no sun's disc: the light a
+/// probe's ray meets there (`probes::trace`).
+pub fn clouded_sky(view: Texture, light: Light, dir: vec3, dome: Texture, s: Sampler) -> vec3 {
+    let c = dome.sample_level(s, sky_uv(dir))
+    sky(view, s, light, dir) * (1.0 - c.a) + c.rgb
 }
 
 /// The sky's pixel: where nothing else was drawn, the sky and its clouds. Its tag is 0 (the
@@ -345,9 +587,159 @@ pub fn sky_shade(
     cam: Camera,
     light: Light,
     view: Texture,
-    clouds: Texture,
+    dome: Texture,
     s: Sampler,
 ) -> vec4 {
-    let c = sky_with_clouds(view, light, cam.ray(pixel.position.xy), clouds, s)
+    let c = sky_with_clouds(view, light, cam.ray(pixel.position.xy), dome, s)
     vec4(c.rgb, c.a * 0.99)
+}
+
+// ---- the clouds on the GPU ----------------------------------------------------------------------
+
+/// The clouds' textures: the noises, the weather map, the shadow map and the dome; the frame's
+/// marched texels; and how many frames have marched (the first round replaces what the dome
+/// held).
+pub struct Sky {
+    pub shape: Texture3d,
+    pub detail: Texture3d,
+    pub weather: Texture,
+    pub shadow: Texture,
+    pub dome: Texture,
+    pub marched: GpuBuffer<vec4>,
+    pub frames: u32,
+}
+
+/// The clouds' textures, uncooked.
+pub fn new_sky() -> Sky {
+    let f = TextureFormat::Rgba16Float
+    Sky {
+        shape: texture3d(SHAPE_SIDE, SHAPE_SIDE, SHAPE_SIDE),
+        detail: texture3d(DETAIL_SIDE, DETAIL_SIDE, DETAIL_SIDE),
+        weather: texture(WEATHER_SIDE, WEATHER_SIDE, format: f, writable: true),
+        shadow: texture(SHADOW_SIDE, SHADOW_SIDE, format: f, writable: true),
+        dome: texture(SKY_W, SKY_H, format: f, writable: true),
+        marched: buffer(PHASE_TEXELS),
+        frames: 0,
+    }
+}
+
+impl Sky {
+    /// The noises cooked (once).
+    pub fn cook_noise(mut self) {
+        label("clouds noise")
+        let g = (SHAPE_SIDE + 3) / 4
+        dispatch(cook_shape.bind(out: mut self.shape), groups: (g, g, g))
+        let d = (DETAIL_SIDE + 3) / 4
+        dispatch(cook_detail.bind(out: mut self.detail), groups: (d, d, d))
+    }
+
+    /// The weather map cooked from `cumuli`, `fair` (the fair-weather clouds' share) and `gap`,
+    /// and the shadow map from it for the sun toward `sun` (or none: `shadows` false). The dome
+    /// marches afresh.
+    pub fn cook_weather(
+        mut self,
+        cumuli: [Cumulus],
+        fair: f32,
+        gap: Gap,
+        sun: vec3,
+        rep: Sampler,
+        shadows: bool,
+    ) {
+        label("clouds weather")
+        var list: GpuBuffer<Cumulus> = buffer(max(cumuli.len(), 1))
+        write(mut list, 0, cumuli)
+        let w = (WEATHER_SIDE + 7) / 8
+        dispatch(
+            cook_weather.bind(
+                cumuli: list.span(start: 0, count: cumuli.len()),
+                fair: fair,
+                gap: gap,
+                out: mut self.weather,
+            ),
+            groups: (w, w, 1),
+        )
+        self.cook_shadow(sun, rep, shadows)
+        self.frames = 0
+    }
+
+    /// The shadow map cooked for the sun toward `sun`, or none (`shadows` false: all lit).
+    pub fn cook_shadow(mut self, sun: vec3, rep: Sampler, shadows: bool) {
+        label("clouds shadow")
+        let n = (SHADOW_SIDE + 7) / 8
+        if shadows {
+            dispatch(
+                cook_shadow.bind(
+                    sun,
+                    self.weather,
+                    self.shape,
+                    self.detail,
+                    rep,
+                    out: mut self.shadow,
+                ),
+                groups: (n, n, 1),
+            )
+        } else {
+            dispatch(no_shadow.bind(out: mut self.shadow), groups: (n, n, 1))
+        }
+    }
+
+    /// The frame's texels of the dome marched (from the eye at `eye`, the field drifted
+    /// `drift`), and put in the dome. The first round (64 frames) replaces what the dome held;
+    /// after, each march is 0.3 of the blend with it. `still`: the march's jitter stays the same
+    /// round to round (a test's frames alike once the dome is whole).
+    pub fn march(
+        mut self,
+        air: Air,
+        light: Light,
+        tables: Tables,
+        eye: vec3,
+        drift: vec2,
+        rep: Sampler,
+        s: Sampler,
+        still: bool,
+    ) -> Clouds {
+        let c = Clouds {
+            eye,
+            phase: self.frames % PHASES,
+            sun: light.sun,
+            blend: if self.frames < PHASES { 1.0 } else { 0.3 },
+            drift,
+            seed: if still { 0 } else { self.frames / PHASES },
+        }
+        label("clouds")
+        dispatch(
+            march_dome.bind(
+                c,
+                air,
+                light,
+                self.dome,
+                self.weather,
+                self.shape,
+                self.detail,
+                tables.transmittance,
+                tables.view,
+                tables.aerial,
+                rep,
+                s,
+                out: mut self.marched,
+            ),
+            groups: (PHASE_TEXELS + 63) / 64,
+        )
+        let n = ((SKY_W + 7) / 8, (SKY_H + 7) / 8, 1)
+        dispatch(
+            scatter.bind(
+                c,
+                marched: self.marched.span(start: 0, count: PHASE_TEXELS),
+                out: mut self.dome,
+            ),
+            groups: n,
+        )
+        self.frames += 1
+        c
+    }
+
+    /// Whether every texel of the dome has been marched.
+    pub fn done(self) -> bool {
+        self.frames >= PHASES
+    }
 }

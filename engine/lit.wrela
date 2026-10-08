@@ -5,19 +5,20 @@
 use light::Light
 use probes::{Probe, ProbeGrid, sky_light}
 use shadow::{Shadows, sunlit}
-use sky::{Cook, cloud_shadow}
+use sky::{Clouds, cloud_shadow}
 use std::gpu::{ComparisonSampler, DepthTexture, Sampler, Texture}
 use terrain::{Levels, Texel}
 use view::Camera
 
 /// The frame's lighting, one uniform block: the camera, the light, the shadows, the probes'
-/// grid, the clouds' cooking (for their shadow map), and the clipmap's levels.
+/// grid, the clouds (where their field has drifted, for their shadow map), and the clipmap's
+/// levels.
 pub struct Lighting: Copy + GpuData {
     pub cam: Camera,
     pub light: Light,
     pub shadows: Shadows,
     pub grid: ProbeGrid,
-    pub clouds: Cook,
+    pub clouds: Clouds,
     pub levels: Levels,
 }
 
@@ -40,14 +41,17 @@ pub fn sun_at(
 }
 
 /// The sky light (and bounce) at `world` for a surface facing `n`, from the probes (their maps,
-/// `probes`, read through `s`, a linear sampler, and their columns' `grounds`).
+/// `probes`, read through `s`, a linear sampler, and their columns' `grounds`): the bounce of
+/// the sun dimmed by the clouds' shadow there (their map, `clouds`).
 pub fn sky_at(
     l: Lighting,
     probes: Texture,
+    clouds: Texture,
     s: Sampler,
     grounds: [f32],
     world: vec3,
     n: vec3,
 ) -> vec3 {
-    sky_light(l.grid, probes, s, grounds, l.light, world, n)
+    let shade = cloud_shadow(l.clouds, clouds, s, world)
+    sky_light(l.grid, probes, s, grounds, l.light, world, n, shade)
 }

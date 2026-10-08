@@ -195,7 +195,7 @@ pub fn stone_shade(
     let sun = sun_at(lt, s.world, n, near, far, moving, cmp, clouds, smp, soft: 1.0)
     let ground = probes::ground_under(lt.grid, grounds, s.world.xz)
     let low = 0.4 + 0.6 * smoothstep(0.0, 0.5, s.world.y - ground)
-    let sky = sky_at(lt, probes, smp, grounds, s.world, n) * low
+    let sky = sky_at(lt, probes, clouds, smp, grounds, s.world, n) * low
     let lit = Lit { albedo: s.albedo, n, sun, sky, through: vec3(0.0) }
     let c = hazed(
         air,

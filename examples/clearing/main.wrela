@@ -21,10 +21,7 @@ use engine::plant::{Wind, leaf_atlas}
 use engine::probes::{Baked, Occluder, Probe, ProbeGrid, Reference, Sampling, Trace, grid, reference}
 use engine::shadow::{Cascade, Shadows, shadows}
 use engine::stone::{Realized, stone_shade, stone_shadow, stone_vertex}
-use engine::sky::{
-    Cook, Puff, SHADOW_SIDE, SKY_H, SKY_W, STRIPS, TILES, TilePuffs, cook_clouds, cook_shadow,
-    cull_puffs, sky_shade, strip,
-}
+use engine::sky::{Clouds, Sky, new_sky, sky_shade}
 use engine::temporal::{Resolve, neighbourhoods, resolve}
 use engine::terrain::{Clipmap, Terrain, Texel, ground, ground_shade}
 use engine::vegetation::{Forest, Kind, kind, nothing}
@@ -33,10 +30,10 @@ use std::gpu::dispatch
 use std::collections::{replace, swap}
 use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, start_eye}
 use std::gpu::{
-    ClipPosition, Compare, ComparisonSampler, Cull, Depth, DepthBias, DepthTexture, FragCoord,
-    GpuBuffer, GpuSpan, Sampler, Texture, Unorm8x4, TextureFormat, VertexIndex, begin_depth_pass,
-    begin_pass, begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture,
-    draw, label, present, sampler, texture, write,
+    Address, ClipPosition, Compare, ComparisonSampler, Cull, Depth, DepthBias, DepthTexture,
+    FragCoord, GpuBuffer, GpuSpan, Sampler, Texture, Unorm8x4, TextureFormat, VertexIndex,
+    begin_depth_pass, begin_pass, begin_pass_with_depth, begin_screen_pass, buffer,
+    comparison_sampler, depth_texture, draw, label, present, sampler, texture, write,
 }
 use std::input::{Event, Key, events}
 use std::io::print
@@ -44,7 +41,7 @@ use std::lift::{Watch, reads}
 use std::reload::{keep, kept}
 use std::serialize::{LoadError, Serialize, load, save}
 use trees::{KINDS, kind_plant, occluders, placed}
-use clouds::cloudscape
+use clouds::{CLOUD_WIND, FAIR, SUN_GAP, cloudscape}
 use rocks::{BOULDERS, boulder, boulders, footprints}
 use path::shot
 use world::{World, present as snapshot, spawn, tick}
@@ -148,7 +145,8 @@ fn stones_source() -> u32 {
 }
 
 fn clouds_source() -> u32 {
-    cloudscape().len()
+    // The cloudscape, its fair-weather clouds' share and its gap.
+    cloudscape().len() + u32(FAIR * 1000.0) + u32(SUN_GAP.radius)
 }
 
 /// The ground's field, as the clipmap cooks it.
@@ -193,14 +191,6 @@ fn probes_of() -> Baked {
 fn no_probes() -> Baked {
     let none: Vec<Occluder> = Vec::new()
     Baked::new(grid(MEADOW, cols: 1, spacing: 1.0, low: 0.0, high: 1.0, voxel: 1.0), none)
-}
-
-/// The clouds' puffs, in a buffer.
-fn puffs_of() -> GpuBuffer<Puff> {
-    let sky = cloudscape()
-    var puffs: GpuBuffer<Puff> = buffer(sky.len())
-    write(mut puffs, 0, sky)
-    puffs
 }
 
 pub struct Clearing {
@@ -259,18 +249,12 @@ pub struct Clearing {
     ready: bool,
     /// Whether the camera's path was asked for (it starts once the clearing's ready).
     asked: bool,
-    /// The clouds: their puffs, the sky texture they're cooked into and their shadow map, and
-    /// how many of its strips are cooked.
-    puffs: GpuBuffer<Puff>,
-    /// Each tile of the sky texture's puffs, for its cook (`sky::cull_puffs`).
-    cloud_tiles: GpuBuffer<TilePuffs>,
-    clouds: Texture,
-    cloud_shadow: Texture,
-    strips: u32,
-    /// After an edit: the clouds cooked again into the next texture, a strip a frame, which takes
-    /// over when it's done.
-    next_clouds: Texture,
-    next_strips: u32,
+    /// The clouds: their noises, weather and shadow maps and dome (`engine::sky`), and whether
+    /// the maps are cooked (they're cooked again after an edit).
+    sky: Sky,
+    sky_cooked: bool,
+    /// The clouds as the last frame drew them (where their field had drifted).
+    clouds: Clouds,
     /// The scene: linear colour and tags, depth, motion; and the output's history, two to swap.
     scene: Texture,
     depth: DepthTexture,
@@ -291,6 +275,8 @@ pub struct Clearing {
     /// The metered exposure, and the scene's mean luminance (`paint::meter`).
     exposure: GpuBuffer<f32>,
     linear: Sampler,
+    /// A linear sampler that tiles (the clouds' noises and maps).
+    repeat: Sampler,
     width: u32,
     height: u32,
     frames: u32,
@@ -361,8 +347,7 @@ pub fn init() -> Clearing {
     print(
         f"probes: {probes.grid.probes()} in {probes.grid.cols * probes.grid.cols} columns, {probes.occluder_count} occluders",
     )
-    let puffs = puffs_of()
-    print(f"clouds: {puffs.len()} puffs")
+    print(f"clouds: {cloudscape().len()} cumulus")
     let w = spawn().walker
     let back: Result<Carried, LoadError> = load(kept())
     var s = Clearing {
@@ -402,17 +387,16 @@ pub fn init() -> Clearing {
         restored: false,
         ready: false,
         asked: false,
-        puffs: take puffs,
-        cloud_tiles: buffer(TILES),
-        clouds: texture(width: SKY_W, height: SKY_H, format: TextureFormat::Rgba16Float),
-        cloud_shadow: texture(
-            width: SHADOW_SIDE,
-            height: SHADOW_SIDE,
-            format: TextureFormat::Rgba16Float,
-        ),
-        strips: 0,
-        next_clouds: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
-        next_strips: STRIPS,
+        sky: new_sky(),
+        sky_cooked: false,
+        clouds: Clouds {
+            eye: vec3(0.0),
+            phase: 0,
+            sun: SUN,
+            blend: 1.0,
+            drift: vec2(0.0),
+            seed: 0,
+        },
         scene: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
         depth: depth_texture(width: 1, height: 1),
         ids: texture(width: 1, height: 1, format: TextureFormat::Rgba8),
@@ -426,6 +410,7 @@ pub fn init() -> Clearing {
         glow_b: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
         exposure: buffer(2),
         linear: sampler(),
+        repeat: sampler(address: Address::Repeat),
         width: 0,
         height: 0,
         frames: 0,
@@ -464,7 +449,7 @@ pub fn init() -> Clearing {
 
 /// What's cooked from a literal an edit changed (hot reload), cooked again: the sky, the
 /// forest, the boulders, the clouds, the ground; then the shadows and the probes they light.
-/// The probes and the clouds bake beside the ones in use, which stay until they're done.
+/// The probes bake beside the ones in use, which stay until they're done.
 fn cook_again(s: mut Clearing, eye: vec3) {
     var shadows = false
     var probes = false
@@ -490,7 +475,6 @@ fn cook_again(s: mut Clearing, eye: vec3) {
         probes = true
     }
     if s.watches.clouds.changed() {
-        s.puffs = puffs_of()
         clouds = true
     }
     if s.watches.ground.changed() {
@@ -507,9 +491,7 @@ fn cook_again(s: mut Clearing, eye: vec3) {
         s.rebaking = true
     }
     if clouds {
-        s.next_clouds = texture(width: SKY_W, height: SKY_H, format: TextureFormat::Rgba16Float)
-        s.next_strips = 0
-        s.clouds_again = true
+        s.sky_cooked = false
     }
 }
 
@@ -600,9 +582,17 @@ fn temporal(
     p.end()
 }
 
-/// How the probes trace: through the occluders, the crowns' dim green, 48 m.
+/// How the probes trace: through the occluders, the crowns' dim green (and, bounced, their
+/// leaves' albedo), 48 m.
 fn trace_of(s: Clearing) -> Trace {
-    Trace { light: s.light, grid: s.probes.grid, foliage: vec3(0.035, 0.07, 0.02), reach: 48.0 }
+    Trace {
+        light: s.light,
+        grid: s.probes.grid,
+        foliage: vec3(0.035, 0.07, 0.02),
+        reach: 48.0,
+        leaf: vec3(0.10, 0.18, 0.04),
+        bounced: 0,
+    }
 }
 
 /// Last frame's palette, kept for the motion target.
@@ -610,18 +600,6 @@ fn copy_palette(s: mut Clearing) {
     std::gpu::copy(
         from: s.palette.span(start: 0, count: MAX_BONES),
         to: s.last_palette.span_mut(start: 0, count: MAX_BONES),
-    )
-}
-
-/// Each tile of the sky texture's puffs, before its cook's first strip.
-fn cull_clouds(s: mut Clearing, cook: Cook) {
-    dispatch(
-        cull_puffs.bind(
-            cook,
-            puffs: s.puffs.span(start: 0, count: s.puffs.len()),
-            out: mut s.cloud_tiles,
-        ),
-        groups: (TILES + 63) / 64,
     )
 }
 
@@ -770,74 +748,6 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         )
     }
     mv.end()
-    let cook = Cook { eye: start_eye(), strip: 0, sun: s.light.sun, base: 1500.0 }
-    // The clouds, cooked a strip a frame until they're done (each strip a short submission).
-    if s.strips < STRIPS {
-        label("clouds cook")
-        if s.strips == 0 {
-            cull_clouds(mut s, cook)
-        }
-        let pass = begin_pass(mut s.clouds, keep: s.strips > 0, clear: vec4(0.0))
-        let c = Cook { strip: s.strips, ..cook }
-        draw(
-            strip.bind(c),
-            cook_clouds.bind(
-                c,
-                s.light,
-                puffs: s.puffs.span(start: 0, count: s.puffs.len()),
-                tiles: s.cloud_tiles,
-            ),
-            vertices: 6,
-        )
-        pass.end()
-        if s.strips == 0 {
-            let shadow = begin_pass(mut s.cloud_shadow)
-            draw(
-                cover.bind(z: 0.5),
-                cook_shadow.bind(cook, puffs: s.puffs.span(start: 0, count: s.puffs.len())),
-                vertices: 3,
-            )
-            shadow.end()
-        }
-        s.strips += 1
-    }
-    // After an edit, the clouds cooked again beside the ones shown, which they then replace.
-    if s.next_strips < STRIPS {
-        label("clouds cook")
-        if s.next_strips == 0 {
-            cull_clouds(mut s, cook)
-        }
-        let pass = begin_pass(mut s.next_clouds, keep: s.next_strips > 0, clear: vec4(0.0))
-        let c = Cook { strip: s.next_strips, ..cook }
-        draw(
-            strip.bind(c),
-            cook_clouds.bind(
-                c,
-                s.light,
-                puffs: s.puffs.span(start: 0, count: s.puffs.len()),
-                tiles: s.cloud_tiles,
-            ),
-            vertices: 6,
-        )
-        pass.end()
-        s.next_strips += 1
-        if s.next_strips == STRIPS {
-            swap(mut s.clouds, mut s.next_clouds)
-        }
-    }
-    // A test left the clouds' shadows out, or put them back.
-    if s.clouds_again && s.strips > 0 {
-        let shadow = begin_pass(mut s.cloud_shadow, clear: vec4(1.0))
-        if on(s.off, testing::CLOUD_SHADOWS) {
-            draw(
-                cover.bind(z: 0.5),
-                cook_shadow.bind(cook, puffs: s.puffs.span(start: 0, count: s.puffs.len())),
-                vertices: 3,
-            )
-        }
-        shadow.end()
-        s.clouds_again = false
-    }
     // The air's tables, cooked at load (and again when the sun moves), and the probes' open sky
     // from them.
     if !s.air_cooked {
@@ -845,13 +755,47 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         s.probes.open(s.light, s.air.ground, s.tables.view, s.linear)
         s.air_cooked = true
     }
-    // The probes: their occluders cooked once, then a strip of columns a frame.
-    // They read the static shadows, so they start once those are drawn.
+    // The clouds: their noises and maps cooked at load (and again after an edit), then one of
+    // the dome's tiles in 64 marched each frame, the field drifted with the wind.
+    let cloud_shadows = on(s.off, testing::CLOUD_SHADOWS)
+    if !s.sky_cooked {
+        s.sky.cook_noise()
+        s.sky.cook_weather(
+            cloudscape(),
+            FAIR,
+            SUN_GAP,
+            s.light.sun,
+            s.repeat,
+            shadows: cloud_shadows,
+        )
+        s.sky_cooked = true
+        s.clouds_again = false
+    }
+    // A test left the clouds' shadows out, or put them back.
+    if s.clouds_again {
+        s.sky.cook_shadow(s.light.sun, s.repeat, shadows: cloud_shadows)
+        s.clouds_again = false
+    }
+    s.clouds = s.sky.march(
+        s.air,
+        s.light,
+        s.tables,
+        eye,
+        drift: CLOUD_WIND * wind.time,
+        rep: s.repeat,
+        s: s.linear,
+        still: !on(s.off, testing::WIND),
+    )
+    let clouds = s.clouds
+    // The probes: their occluders cooked once, then a strip of columns a frame; once every
+    // column is baked, a strip baked again a frame, while the clouds drift (a test's frames,
+    // still, keep the probes as they are). They read the static shadows, so they start once
+    // those are drawn.
     let texels = s.clipmap.texels()
     if !s.static_drawn {} else if !s.occluders_cooked {
         s.probes.cook()
         s.occluders_cooked = true
-    } else if !s.probes.done() {
+    } else if !s.probes.done() || on(s.off, testing::WIND) {
         s.probes.bake_strip(
             trace_of(s),
             sh,
@@ -861,6 +805,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             s.far,
             s.cmp,
             s.tables.view,
+            s.sky.dome,
             s.linear,
         )
     }
@@ -881,6 +826,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
                 s.far,
                 s.cmp,
                 s.tables.view,
+                s.sky.dome,
                 s.linear,
             )
         } else {
@@ -888,7 +834,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             s.rebaking = false
         }
     }
-    if !s.ready && s.probes.done() && s.strips >= STRIPS && s.creature_done {
+    if !s.ready && s.probes.done() && s.sky.done() && s.creature_done {
         s.ready = true
         print(f"clearing ready at frame {s.frames}")
     }
@@ -913,7 +859,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         light: s.light,
         shadows: sh,
         grid,
-        clouds: cook,
+        clouds,
         levels: s.clipmap.levels(),
     }
     borrow probes = s.probes.maps
@@ -925,6 +871,8 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         lt.levels,
         texels,
         probes,
+        clouds,
+        s.sky.shadow,
         s.linear,
         grounds,
         stones: footprints(),
@@ -968,7 +916,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             s.far,
             s.moving,
             s.cmp,
-            s.cloud_shadow,
+            s.sky.shadow,
             s.linear,
             probes,
             grounds,
@@ -993,7 +941,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
                 s.far,
                 s.moving,
                 s.cmp,
-                s.cloud_shadow,
+                s.sky.shadow,
                 s.linear,
                 probes,
                 grounds,
@@ -1013,7 +961,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             s.far,
             s.moving,
             s.cmp,
-            s.cloud_shadow,
+            s.sky.shadow,
             s.linear,
             probes,
             grounds,
@@ -1038,7 +986,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
                     s.far,
                     s.moving,
                     s.cmp,
-                    s.cloud_shadow,
+                    s.sky.shadow,
                     s.linear,
                     probes,
                     grounds,
@@ -1074,7 +1022,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
                 s.far,
                 s.moving,
                 s.cmp,
-                s.cloud_shadow,
+                s.sky.shadow,
                 s.linear,
                 probes,
                 grounds,
@@ -1098,7 +1046,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     if on(s.off, testing::SKY) {
         draw(
             cover.bind(z: 0.0),
-            sky_shade.bind(cam, s.light, view: s.tables.view, clouds: s.clouds, s: s.linear),
+            sky_shade.bind(cam, s.light, view: s.tables.view, dome: s.sky.dome, s: s.linear),
             vertices: 3,
             depth: BEHIND,
         )
@@ -1416,7 +1364,7 @@ pub fn test_sway(time: f32, at: vec3, height: f32) -> vec3 {
 /// screen (each `step`th pixel each way), each traced with `rays` rays: into a new buffer of
 /// `Reference`s (the newest).
 pub fn test_reference(s: mut Clearing, first: u32, count: u32, step: u32, rays: u32) {
-    let at = Sampling { t: trace_of(s), sh: s.sh, cam: s.cam, step, first, rays }
+    let at = Sampling { t: trace_of(s), sh: s.sh, cam: s.cam, clouds: s.clouds, step, first, rays }
     s.references = buffer(count)
     let grounds = s.probes.grounds.span(start: 0, count: s.probes.grid.probes())
     dispatch(
@@ -1434,6 +1382,8 @@ pub fn test_reference(s: mut Clearing, first: u32, count: u32, step: u32, rays: 
             far: s.far,
             cmp: s.cmp,
             view: s.tables.view,
+            dome: s.sky.dome,
+            cloud: s.sky.shadow,
             out: mut s.references,
         ),
         groups: (count + 63) / 64,

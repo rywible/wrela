@@ -596,7 +596,7 @@ pub fn leaf_shade(
     let t = card.tint.decode()
     let tint = inst.tint + (t.xyz - vec3(0.5)) * vec3(0.04, 0.05, 0.0)
     let albedo = max(mix(leaves.old, leaves.young, vec3(age)) + tint * 0.5, vec3(0.005))
-    let sky = sky_at(lt, probes, s, grounds, world, crown_n) * (0.25 + 0.75 * ao)
+    let sky = sky_at(lt, probes, clouds, s, grounds, world, crown_n) * (0.25 + 0.75 * ao)
     let lit = Lit {
         albedo,
         n,
@@ -701,7 +701,7 @@ pub fn bark_shade(
     let moss = smoothstep(0.2, 0.7, n.y + 0.4 * noise::noise2(b.world.xz * 3.0)) * 0.6
     let a = mix(albedo, bark.moss, vec3(moss))
     let sun = sun_at(lt, b.world, n, near, far, moving, cmp, clouds, s, soft: 1.5)
-    let sky = sky_at(lt, probes, s, grounds, b.world, n)
+    let sky = sky_at(lt, probes, clouds, s, grounds, b.world, n)
     let lit = Lit { albedo: a, n, sun, sky, through: vec3(0.0) }
     let c = hazed(
         air,
