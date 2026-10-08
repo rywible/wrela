@@ -18,7 +18,8 @@ to the result. Decided: pipelines that run only at load count against the 64.
 - [x] 3 Kernel outputs: typed indirect arguments; a single-writer output (`One<T>`); a span of
       one field (`buf.at(i).field`). No `Texels` tile: nothing needs a window yet, and writes at
       computed coordinates break invocation safety
-- [ ] 5a Test-only entry points and exports out of a shipped build
+- [x] 5a Test-only entry points and exports out of a shipped build (`@testing`, `test_build()`;
+      the clearing ships 72 pipelines, 75 in a test build)
 - [ ] 6 Bound entry points as compile-time values. Design: each entry point has a hidden
       borrow struct of its arguments (its generics; buffers as spans, textures borrowed, values
       by value); `k.bind(...)` outside a command is a literal of it; `dispatch`/`draw` take a

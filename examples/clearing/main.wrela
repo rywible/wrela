@@ -41,6 +41,7 @@ use std::gpu::{
 use std::input::{Event, Key, events}
 use std::io::print
 use std::lift::{Watch, reads}
+use std::mem::test_build
 use std::reload::{keep, kept}
 use std::serialize::{LoadError, Serialize, load, save}
 use trees::{KINDS, kind_plant, occluders, placed}
@@ -907,7 +908,8 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         s.grass.prepass(cam, wind)
     }
     pre.end()
-    if s.counting {
+    // A test's only (`test_count`): a shipped build has no trace of it.
+    if test_build() && s.counting {
         // The cards' shading counted, pixel by pixel, where the prepass left the depth; and the
         // cards covering each pixel (for a test, `test_count`).
         s.shaded = buffer(w * h)
@@ -1000,7 +1002,8 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         keep_depth: true,
         join: true,
     )
-    if on(s.off, testing::SKY) {
+    // A test's key colour in place of the sky (`test_off`), in a test build only.
+    if !test_build() || on(s.off, testing::SKY) {
         draw(
             cover.bind(z: 0.0),
             sky_shade.bind(cam, s.light, view: s.tables.view, dome: s.sky.dome, s: s.linear),
@@ -1077,7 +1080,8 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         )
     }
     label("look")
-    if s.view == testing::LOOK {
+    // A test's views of the scene and the history (`test_view`), in a test build only.
+    if !test_build() || s.view == testing::LOOK {
         let m = Metering { fresh: if s.frames == 0 { 1 } else { 0 }, ..METERING }
         dispatch(meter.bind(s.scene, m, exposure: mut s.exposure), groups: 1)
         let d = Develop { cam, light: s.light, look: Look {}, out: vec2(f32(width), f32(height)) }
@@ -1121,11 +1125,13 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
 // ---- for tests (testing.wrela; suite/clearing.rs) -------------------------------------------
 
 /// How frames are shown (`testing::LOOK`, `SCENE` or `TEMPORAL`).
+@testing
 pub fn test_view(s: mut Clearing, view: u32) {
     s.view = view
 }
 
 /// The systems frames leave out (`TREES` to `TERRAIN`, and testing.wrela's).
+@testing
 pub fn test_off(s: mut Clearing, off: u32) {
     if (off ^ s.off) & SHADOWS != 0 {
         s.static_drawn = false
@@ -1137,11 +1143,13 @@ pub fn test_off(s: mut Clearing, off: u32) {
 }
 
 /// The scene's size against the output's: 1 (native) or 2.
+@testing
 pub fn test_scale(s: mut Clearing, scale: u32) {
     s.scale = max(scale, 1)
 }
 
 /// The camera held at `eye`, looking at `at` (instead of on its path).
+@testing
 pub fn test_hold(s: mut Clearing, eye: vec3, at: vec3) {
     s.held = true
     s.held_eye = eye
@@ -1150,6 +1158,7 @@ pub fn test_hold(s: mut Clearing, eye: vec3, at: vec3) {
 
 /// The sun from `toward` (normalized), its light scaled by `light` (0: the sky light alone):
 /// the air's tables are cooked again and the static shadows drawn again.
+@testing
 pub fn test_sun(s: mut Clearing, toward: vec3, light: f32) {
     s.air = hazy(toward, SUN_TOP, eye: start_eye().y)
     let l = sunlight(s.air)
@@ -1160,6 +1169,7 @@ pub fn test_sun(s: mut Clearing, toward: vec3, light: f32) {
 
 /// The forest replaced by one instance of kind `kind` at `at` (on the ground there), drawn as
 /// cards within `cards_to` and as an impostor within `impostors_to` (a volume beyond).
+@testing
 pub fn test_solo(s: mut Clearing, kind: u32, at: vec2, cards_to: f32, impostors_to: f32) {
     let y = scene::height(x: at.x, z: at.y)
     let one = engine::vegetation::Placed {
@@ -1181,6 +1191,7 @@ pub fn test_solo(s: mut Clearing, kind: u32, at: vec2, cards_to: f32, impostors_
 
 /// How wide kind `k`'s cards look on screen at their finest level (the scene's pixels), for an
 /// instance at (x, z) on the ground, from the last frame's camera (`lod::place`'s measure).
+@testing
 pub fn test_card_px(s: Clearing, k: u32, x: f32, z: f32) -> f32 {
     borrow kind = s.forest.kinds[k]
     let at = vec3(x, scene::height(x: x, z: z), z)
@@ -1190,6 +1201,7 @@ pub fn test_card_px(s: Clearing, k: u32, x: f32, z: f32) -> f32 {
 
 /// Where the forest's levels hand over: its cards to impostors and impostors to volumes (m), and
 /// how wide its cards grow on screen before the next level's take over.
+@testing
 pub fn test_lod(s: mut Clearing, cards_to: f32, impostors_to: f32, card_px: f32) {
     s.forest.cards_to = cards_to
     s.forest.impostors_to = impostors_to
@@ -1197,6 +1209,7 @@ pub fn test_lod(s: mut Clearing, cards_to: f32, impostors_to: f32, card_px: f32)
 }
 
 /// The next frame counts its cards' shading and covering (`test_capture` reads them).
+@testing
 pub fn test_count(s: mut Clearing) {
     s.counting = true
 }
@@ -1205,6 +1218,7 @@ pub fn test_count(s: mut Clearing) {
 /// 0, the scene (colour and tag, a vec4 a pixel); 1, its depth (an f32); 2, its motion (a
 /// vec4); 3, temporal AA's output (a vec4, at the output's size); 4, the cards' shading count
 /// and 5, the cards covering (a u32 each, from a `test_count` frame); 6, the clipmap's texels.
+@testing
 pub fn test_capture(s: mut Clearing, what: u32) -> u32 {
     let scene = s.cam.screen
     let n = u32(scene.x) * u32(scene.y)
@@ -1280,6 +1294,7 @@ pub struct CameraReport: Copy {
     pub frame: u32,
 }
 
+@testing
 pub fn test_camera(s: Clearing) -> CameraReport {
     let c = s.cam
     CameraReport {
@@ -1297,12 +1312,14 @@ pub fn test_camera(s: Clearing) -> CameraReport {
 }
 
 /// Clipmap level `l`: its texel (0, 0) at (x, y), z apart; and in w, how many levels.
+@testing
 pub fn test_level(s: Clearing, l: u32) -> vec4 {
     let levels = s.clipmap.levels()
     vec4(levels.at[l].xyz, f32(levels.count))
 }
 
 /// The terrain field's height at (x, z), and its slope there (rise over run).
+@testing
 pub fn test_height(x: f32, z: f32) -> vec2 {
     let e = 0.01
     let g = Ground {}
@@ -1313,6 +1330,7 @@ pub fn test_height(x: f32, z: f32) -> vec2 {
 
 /// The sim's raycast against the terrain field (the creature's feet's): the point it meets, and
 /// 1 in w if it met the ground within 100 m.
+@testing
 pub fn test_raycast(from: vec3, dir: vec3) -> vec4 {
     let hit = engine::terrain::raycast(Ground {}, from, normalize(dir), reach: 100.0)
     vec4(hit.point, if hit.hit { 1.0 } else { 0.0 })
@@ -1320,6 +1338,7 @@ pub fn test_raycast(from: vec3, dir: vec3) -> vec4 {
 
 /// The wind's sway at `time`, at `at`, `height` up its plant (`engine::plant::sway`, as the
 /// clearing's wind blows).
+@testing
 pub fn test_sway(time: f32, at: vec3, height: f32) -> vec3 {
     engine::plant::sway(
         Wind { dir: normalize(vec2(-0.55, 0.3)), strength: 0.035, time },
@@ -1331,6 +1350,7 @@ pub fn test_sway(time: f32, at: vec3, height: f32) -> vec3 {
 /// The probes' brute-force reference at points `first` to `first + count` of the last frame's
 /// screen (each `step`th pixel each way), each traced with `rays` rays: into a new buffer of
 /// `Reference`s (the newest).
+@testing
 pub fn test_reference(s: mut Clearing, first: u32, count: u32, step: u32, rays: u32) {
     let at = Sampling { t: trace_of(s), sh: s.sh, cam: s.cam, clouds: s.clouds, step, first, rays }
     s.references = buffer(count)
@@ -1360,6 +1380,7 @@ pub fn test_reference(s: mut Clearing, first: u32, count: u32, step: u32, rays: 
 
 /// Whether everything cooked at load is done (1), and how far along its path the camera is (s;
 /// negative before it starts).
+@testing
 pub fn test_ready(s: Clearing) -> vec2 {
     vec2(if s.ready { 1.0 } else { 0.0 }, if s.path_from < 0.0 { -1.0 } else {
         s.cam.time - s.path_from
@@ -1368,17 +1389,20 @@ pub fn test_ready(s: Clearing) -> vec2 {
 
 /// Every surface's sky light set to `sh` (spherical harmonics' first two bands: `Light`'s
 /// `sky_sh`), or back to the probes' (`on` 0).
+@testing
 pub fn test_sky(s: mut Clearing, on: u32, sh: vec4) {
     s.light = Light { sky_test: on, sky_sh: sh, ..s.light }
 }
 
 /// `c` (linear light) as the tone curve shows it (in [0, 1]).
+@testing
 pub fn test_display(s: Clearing, c: vec3) -> vec3 {
     engine::light::display(s.light, c)
 }
 
 /// Kind `k`'s far levels' sizes: its impostor's box (its half-width), one texel of its
 /// impostor's views and one voxel of its volume (m).
+@testing
 pub fn test_kind(s: Clearing, k: u32) -> vec3 {
     let b = s.forest.kinds[k].impostor.bake
     vec3(
@@ -1389,6 +1413,7 @@ pub fn test_kind(s: Clearing, k: u32) -> vec3 {
 }
 
 /// The instances drawn the last frame as cards, as impostors and as volumes.
+@testing
 pub fn test_trees(s: Clearing) -> vec3 {
     vec3(f32(s.forest.near_count), f32(s.forest.far_count), f32(s.forest.volume_count))
 }
