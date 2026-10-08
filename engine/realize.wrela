@@ -231,6 +231,37 @@ fn corner_mask(near: Shared<PartMask, 27>, own: PartMask, c: vec3u) -> PartMask 
         .or(near.get(x1 + y1 + z1))
 }
 
+/// Where the surface crosses an edge of a block's corners, and the gradient's direction there.
+pub struct Crossing: Copy {
+    pub at: vec3,
+    pub normal: vec3,
+}
+
+/// The edges between a block's 5³ corners: 100 along each axis.
+const EDGES: u32 = 300
+
+/// The corner (each axis 0 to 4) whose place along axis `a` is `u`, and along the next two
+/// axes (in turn) `v` and `w`.
+fn turned(a: u32, u: u32, v: u32, w: u32) -> vec3u {
+    if a == 0 { vec3u(u, v, w) } else if a == 1 { vec3u(w, u, v) } else { vec3u(v, w, u) }
+}
+
+/// Edge `e` of a block's (`EDGES`): its axis, and its low corner (its place along the axis 0 to
+/// 3, the others 0 to 4). Edge `a × 100 + u + 4 (v + 5 w)` (`turned`).
+fn edge_of(e: u32) -> (u32, vec3u) {
+    let a = e / 100
+    let r = e % 100
+    (a, turned(a, u: r % 4, v: (r / 4) % 5, w: r / 20))
+}
+
+/// The edge of a block's (`edge_of`) along axis `a` from corner `c`.
+fn edge_at(a: u32, c: vec3u) -> u32 {
+    let (u, v, w) = if a == 0 { (c.x, c.y, c.z) } else if a == 1 { (c.y, c.z, c.x) } else {
+        (c.z, c.x, c.y)
+    }
+    a * 100 + u + 4 * (v + 5 * w)
+}
+
 fn det3(a: vec3, b: vec3, c: vec3) -> f32 {
     dot(a, cross(b, c))
 }
@@ -278,6 +309,7 @@ pub fn place_vertices<C, F: Parts<C>>(
     block_map: [u32],
     near: mut Shared<PartMask, 27>,
     corners: mut Shared<f32, 125>,
+    crossings: mut Shared<Crossing, 300>,
     probe: mut Slots<CornerProbe>,
     cells: mut Atomics<u32>,
     verts: mut Append<SkinVertex>,
@@ -324,6 +356,37 @@ pub fn place_vertices<C, F: Parts<C>>(
     }
     barrier(mut corners)
 
+    // Where the surface crosses each edge of the block's corners it crosses, and the gradient
+    // there, found once (by any invocation: `crossings`' chunks). An edge inside the block is
+    // four cells', and each cell found it again, while the cells the surface misses waited:
+    // the clearing's first 50 frames' realizations took 0.45 s of the GPU, now 0.25.
+    let mask = lb.mask
+    let edges = crossings.chunk(lid)
+    for k in 0..edges.len() {
+        let (axis, low) = edge_of(edges.index(k))
+        let high = low + turned(axis, u: 1, v: 0, w: 0)
+        var fa = corners.get(low.x + low.y * 5 + low.z * 25)
+        var fb = corners.get(high.x + high.y * 5 + high.z * 25)
+        if (fa < 0.0) != (fb < 0.0) {
+            var pa = grid.corner(g + low)
+            var pb = grid.corner(g + high)
+            for _ in 0..ROOT_STEPS {
+                let x = pa + (pb - pa) * (fa / (fa - fb))
+                let fx = field.distance_masked(x, mask, fp)
+                if (fx < 0.0) == (fa < 0.0) {
+                    pa = x
+                    fa = fx
+                } else {
+                    pb = x
+                    fb = fx
+                }
+            }
+            let x = pa + (pb - pa) * (fa / (fa - fb))
+            crossings.write(edges, k, Crossing { at: x, normal: normal_at(field, mask, fp, x) })
+        }
+    }
+    barrier(mut crossings)
+
     var vals = [0.0; 8]
     var signs = 0
     for j in 0..8 {
@@ -338,8 +401,7 @@ pub fn place_vertices<C, F: Parts<C>>(
         return
     }
 
-    // Where the surface crosses each of the 12 edges, and its normal there.
-    let mask = lb.mask
+    // The crossings of the cell's 12 edges.
     let cc = g + lid.xyz()
     let cmin = grid.corner(cc)
     var pts = [vec3(0.0); 12]
@@ -354,25 +416,10 @@ pub fn place_vertices<C, F: Parts<C>>(
         if ((signs >> ja) & 1) == ((signs >> jb) & 1) {
             continue
         }
-        var pa = grid.corner(cc + corner_offset(ja))
-        var pb = grid.corner(cc + corner_offset(jb))
-        var fa = vals[ja]
-        var fb = vals[jb]
-        for _ in 0..ROOT_STEPS {
-            let x = pa + (pb - pa) * (fa / (fa - fb))
-            let fx = field.distance_masked(x, mask, fp)
-            if (fx < 0.0) == (fa < 0.0) {
-                pa = x
-                fa = fx
-            } else {
-                pb = x
-                fb = fx
-            }
-        }
-        let x = pa + (pb - pa) * (fa / (fa - fb))
-        pts[n] = x
-        nrm[n] = normal_at(field, mask, fp, x)
-        mass += x
+        let c = crossings.get(edge_at(axis, lid.xyz() + corner_offset(ja)))
+        pts[n] = c.at
+        nrm[n] = c.normal
+        mass += c.at
         n += 1
     }
 
