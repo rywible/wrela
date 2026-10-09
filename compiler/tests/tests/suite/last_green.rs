@@ -78,14 +78,14 @@ pub fn frame(time: f32, width: u32, height: u32) {}
 fn grown_from(name: &str, edit: &str) -> PathBuf {
     let main = format!(
         r#"
-use engine::grow::{{History, NoClock, PREVIEW, simulate}}
+use engine::grow::{{History, PREVIEW, simulate}}
 
 const GROWN: u32 = grown()
 
 fn grown() -> u32 {{
     var m = map::map()
     {edit}
-    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, map::LO, map::HI, stones::stones(m), NoClock {{}})
+    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, map::LO, map::HI, stones::stones(m))
     h.trees.len()
 }}
 
@@ -308,7 +308,7 @@ fn the_bake_is_small_and_a_file_a_tile() {
 fn the_previews_check_agrees_with_the_bakes() {
     let main = r#"
 use engine::footing::obstacles_of
-use engine::grow::{NoClock, PREVIEW, simulate}
+use engine::grow::{PREVIEW, simulate}
 use engine::interest::{Evidence, FULL, check, report}
 use std::io::{Shipped, ship}
 
@@ -320,7 +320,7 @@ fn previewed() -> Vec<(String, Vec<u8>)> {
     let lo = map::LO - vec2(64.0)
     let hi = map::HI + vec2(64.0)
     let st = stones::stones(m)
-    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st, NoClock {})
+    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st)
     let o = obstacles_of(h.trees, species::habits(), h.streams, st, stones::walls(m), lo, hi)
     let c = check(ground::ground(), m, species::habits(), Evidence::of(h), o, st, FULL)
     let text = report(ground::ground(), m, c)

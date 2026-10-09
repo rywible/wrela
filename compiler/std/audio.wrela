@@ -31,7 +31,7 @@ pub(package) struct Voice<S, R> {
 /// program has one voice: a second `play` traps.
 pub fn play<S, R: @audio fn(mut S, mut [f32])>(state: take S, render: R) {
     unsafe {
-        let voice = place(Voice { state: take state, render, out: [0.0; QUANTUM] })
+        let voice = place(Voice { state, render, out: [0.0; QUANTUM] })
         start_voice(task(render_quantum::<S, R>), voice)
     }
 }

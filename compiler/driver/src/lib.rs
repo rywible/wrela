@@ -293,6 +293,8 @@ pub struct TestResult {
     pub name: String,
     pub at: String,
     pub failure: Option<Diagnostic>,
+    /// What it printed (each line shown as it was made) and the phases it timed (§8's `trace`).
+    pub traced: wrela_host::Traced,
 }
 
 impl TestOutput {
@@ -311,16 +313,28 @@ pub fn test(root: &Path, filter: Option<&str>) -> TestOutput {
 /// [`test`], each test stopped after `fuel` (wasmtime's, about a WASM instruction each) rather
 /// than [`consts::TEST_FUEL`]: for the compiler's own tests of tests that never end.
 pub fn test_with_fuel(root: &Path, filter: Option<&str>, fuel: u64) -> TestOutput {
-    on_compiler_thread(|| run_tests(root, filter, PackageKind::Program, fuel))
+    on_compiler_thread(|| run_tests(root, filter, PackageKind::Program, fuel, false))
+}
+
+/// [`test`], writing each GPU frame test's golden (`golden: "frame.png"`, §10) from this
+/// machine's screen before comparing with it: `wrela test --bless`.
+pub fn test_blessing(root: &Path, filter: Option<&str>) -> TestOutput {
+    on_compiler_thread(|| run_tests(root, filter, PackageKind::Program, consts::TEST_FUEL, true))
 }
 
 /// [`test`] for std's own tests, with the package at `root` as the program: how std's
 /// tests run (the suite's `std_tests_pass`), since only a program package's tests run.
 pub fn test_std(root: &Path, filter: Option<&str>) -> TestOutput {
-    on_compiler_thread(|| run_tests(root, filter, PackageKind::Std, consts::TEST_FUEL))
+    on_compiler_thread(|| run_tests(root, filter, PackageKind::Std, consts::TEST_FUEL, false))
 }
 
-fn run_tests(root: &Path, filter: Option<&str>, kind: PackageKind, fuel: u64) -> TestOutput {
+fn run_tests(
+    root: &Path,
+    filter: Option<&str>,
+    kind: PackageKind,
+    fuel: u64,
+    bless: bool,
+) -> TestOutput {
     let (sources, mut diagnostics, loaded) = load(root);
     let Some(Loaded { units, packages, dirs, .. }) = loaded else {
         split_std_warnings(&sources, &mut diagnostics);
@@ -362,16 +376,16 @@ fn run_tests(root: &Path, filter: Option<&str>, kind: PackageKind, fuel: u64) ->
             diagnostics.extend(d);
         }
         if !framed.is_empty() && !has_errors(&diagnostics) {
-            let (r, d) = frames::run(&checked, &sources, &data, &framed, root, fuel);
+            let (r, d) = frames::run(&checked, &sources, &data, &framed, root, fuel, bless);
             ran.extend(r);
             diagnostics.extend(d);
         }
         // In the order written.
-        ran.sort_by_key(|&(f, _)| tests.iter().position(|&t| t == f));
-        for (f, failure) in ran {
+        ran.sort_by_key(|&(f, _, _)| tests.iter().position(|&t| t == f));
+        for (f, failure, traced) in ran {
             let def = p.func(f);
             let at = sources.file(def.name_span.file).location(def.name_span.start);
-            results.push(TestResult { name: def.name.clone(), at, failure });
+            results.push(TestResult { name: def.name.clone(), at, failure, traced });
         }
     }
     sort_and_dedup(&mut diagnostics);

@@ -4,7 +4,19 @@
 
 use engine::grow::Habit
 
-pub fn habits() -> [Habit; 7] {
+/// The floor's species: each one's `u32` is its index in the history's tables, and `habits()`
+/// has one habit for each, in this order.
+pub enum Species: Copy + Eq + Fieldless {
+    Oak,
+    Beech,
+    Birch,
+    Thorn,
+    Sloe,
+    Pine,
+    Alder,
+}
+
+pub fn habits() -> [Habit; Species] {
     [
         // Oak: light-hungry, slow, long-lived and broad; jays carry its acorns to open edges.
         Habit {

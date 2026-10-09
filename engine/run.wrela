@@ -5,7 +5,7 @@
 // ticks run.
 //
 // A job's answer enters the world at its due tick, never earlier: if it isn't ready then, the
-// ticker's thread waits for it (`Job::join`). So the tick it enters on doesn't depend on the
+// ticker's thread waits for it (`Task::join`). So the tick it enters on doesn't depend on the
 // helpers' timing, and every tick's state hash is fixed by the first world and the records.
 
 use sim::{Sim, Tick}
@@ -13,7 +13,7 @@ use timeline::Timeline
 use std::handoff::{Latest, Publisher, handoff}
 use std::hash::state_hash
 use std::input::Event
-use std::par::{Job, job}
+use std::par::{Task, spawn}
 use std::tick::{Ticked, start}
 
 /// How a world asks for work off the ticker's thread (§9): a job runs on a helper, from its ask
@@ -64,15 +64,15 @@ pub struct Stamped<S: Copy + Plain>: Copy + Plain {
 struct Pending<W: Asks> {
     ask: W::Ask,
     due: Tick,
-    job: Job<W::Answer>,
+    task: Task<W::Answer>,
 }
 
 /// What the ticker's thread owns: the timeline, the step and the presenter, the hand-off's
 /// publishing end, and the jobs in flight, oldest asked first.
-struct Driver<W: Sim + Asks, S, P, Snap: Copy + Plain> {
+struct Driver<W: Sim + Asks, Snap: Copy + Plain> {
     timeline: Timeline<W, TickInput<W>>,
-    step: S,
-    present: P,
+    step: @deterministic fn(mut W, TickInput<W>),
+    present: @deterministic fn(W) -> Snap,
     out: Publisher<Stamped<Snap>>,
     pending: Vec<Pending<W>>,
 }
@@ -83,11 +83,11 @@ const HISTORY: u32 = 64
 /// Runs `world` on the ticker's thread at `hz` ticks a second, from `init` (std::tick's
 /// `start`): each tick, `step(mut world, input)`, then the jobs it asked for start, then
 /// `present(world)` goes to the frames. The frames read it from what this returns.
-pub fn run<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @deterministic fn(W) -> Snap, Snap: Copy + Plain>(
+pub fn run<W: Sim + Asks, Snap: Copy + Plain>(
     world: take W,
     hz: u32,
-    step: S,
-    present: P,
+    step: take @deterministic fn(mut W, TickInput<W>),
+    present: take @deterministic fn(W) -> Snap,
 ) -> Latest<Stamped<Snap>> {
     let first = Stamped { ticks: 0, snap: present(world) }
     let (out, latest) = handoff(first)
@@ -95,25 +95,22 @@ pub fn run<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @determi
         timeline: Timeline::new(take world, HISTORY),
         step,
         present,
-        out: take out,
+        out,
         pending: Vec::new(),
     }
-    start(take driver, hz, step: drive::<W, S, P, Snap>, hash: hash_of::<W, S, P, Snap>)
+    start(take driver, hz, step: drive, hash: hash_of)
     take latest
 }
 
 /// One tick: the answers due, the step, the new asks, the snapshot.
 @deterministic
-fn drive<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @deterministic fn(W) -> Snap, Snap: Copy + Plain>(
-    d: mut Driver<W, S, P, Snap>,
-    t: Ticked,
-) {
+fn drive<W: Sim + Asks, Snap: Copy + Plain>(d: mut Driver<W, Snap>, t: Ticked) {
     var answers: Vec<Answered<W::Ask, W::Answer>> = Vec::new()
     var i = 0
     while i < d.pending.len() {
         if d.pending[i].due <= t.tick {
             let p = d.pending.remove(i)
-            answers.push(Answered { ask: p.ask, answer: take p.job.join() })
+            answers.push(Answered { ask: p.ask, answer: take p.task.join() })
         } else {
             i += 1
         }
@@ -122,12 +119,12 @@ fn drive<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @determini
         tick: t.tick,
         dt: t.dt,
         records: t.records.clone(),
-        answers: take answers,
+        answers,
     }
     d.timeline.advance(take input, d.step)
     for (ask, due) in d.timeline.world().asks(t.tick) {
         assert(due > t.tick, "a job's answer is due after the tick that asks for it")
-        d.pending.push(Pending { ask, due, job: job(ask, |a| W::work(a)) })
+        d.pending.push(Pending { ask, due, task: spawn(ask, |a| W::work(a)) })
     }
     borrow present = d.present
     d.out.publish(Stamped { ticks: t.tick + 1, snap: present(d.timeline.world()) })
@@ -135,6 +132,6 @@ fn drive<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @determini
 
 /// The world's hash, for the host's tick log.
 @deterministic
-fn hash_of<W: Sim + Asks, S, P, Snap: Copy + Plain>(d: Driver<W, S, P, Snap>) -> u64 {
+fn hash_of<W: Sim + Asks, Snap: Copy + Plain>(d: Driver<W, Snap>) -> u64 {
     state_hash(d.timeline.world())
 }

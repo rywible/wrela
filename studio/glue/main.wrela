@@ -1,0 +1,119 @@
+// The lens's program (§22's `wrela studio`): the lens (the `studio` package) on a subject. Each
+// action is an export, and a command the lens reads as typed text (the compiler's `ACTIONS`
+// lists them, for its headless runner). What the lens needs of the subject is
+// `subject.wrela`'s: `wrela studio <package>` writes one for the package's `subject()`.
+
+use studio::lens::Lens
+use subject::{channels, grad, grad8, outline, painted, part_reads, reached, spec_report}
+
+pub fn init() -> Lens {
+    studio::lens::open(painted)
+}
+
+pub fn frame(state: mut Lens, time: f32, width: u32, height: u32) {
+    studio::lens::frame(
+        mut state,
+        painted,
+        grad,
+        grad8,
+        reached,
+        part_reads,
+        channels,
+        spec_report,
+        outline,
+        width,
+        height,
+    )
+}
+
+pub fn busy(state: Lens) -> u32 {
+    if studio::lens::busy(state) { 1 } else { 0 }
+}
+
+pub fn view(state: mut Lens, facing: u32) {
+    studio::lens::show(mut state, facing)
+}
+
+pub fn zoom(state: mut Lens, x: f32, y: f32, z: f32, half: f32) {
+    studio::lens::zoom(mut state, vec3(x, y, z), half)
+}
+
+pub fn spec(state: mut Lens) {
+    studio::lens::spec_answer(mut state, spec_report)
+}
+
+pub fn blueprint(state: mut Lens, facing: u32) {
+    studio::lens::show_blueprint(mut state, painted, outline, facing)
+}
+
+pub fn fit_blueprint(state: mut Lens, facing: u32, res: u32) {
+    studio::lens::fit_blueprint(mut state, outline, facing, res)
+}
+
+pub fn mode(state: mut Lens, mode: u32, part: u32) {
+    studio::lens::set_mode(mut state, mode, part)
+}
+
+pub fn parts(state: mut Lens) {
+    studio::lens::parts(mut state, painted)
+}
+
+pub fn probe(state: mut Lens, x: f32, y: f32, z: f32) {
+    studio::lens::probe(mut state, painted, channels, vec3(x, y, z))
+}
+
+pub fn project(state: mut Lens, x: f32, y: f32, z: f32) {
+    studio::lens::project(mut state, vec3(x, y, z))
+}
+
+pub fn ray(state: mut Lens, x: f32, y: f32, z: f32, dx: f32, dy: f32, dz: f32) {
+    studio::lens::ray(mut state, painted, vec3(x, y, z), vec3(dx, dy, dz))
+}
+
+pub fn measure(state: mut Lens, x0: f32, y0: f32, z0: f32, x1: f32, y1: f32, z1: f32) {
+    studio::lens::measure(mut state, vec3(x0, y0, z0), vec3(x1, y1, z1))
+}
+
+pub fn diagnose(state: mut Lens, x: f32, y: f32, z: f32, radius: f32) {
+    studio::lens::diagnose(mut state, painted, vec3(x, y, z), radius)
+}
+
+pub fn literals(state: mut Lens) {
+    studio::lens::literals(mut state)
+}
+
+pub fn describe(state: mut Lens) {
+    studio::lens::describe_subject(mut state, painted)
+}
+
+pub fn set(state: mut Lens, literal: u32, value: f32) {
+    studio::lens::set(mut state, literal, value)
+}
+
+pub fn click(state: mut Lens, x: f32, y: f32) {
+    studio::lens::click(mut state, painted, grad, reached, part_reads, x, y)
+}
+
+pub fn write(state: mut Lens) {
+    studio::lens::write(mut state)
+}
+
+pub fn move(state: mut Lens, x0: f32, y0: f32, z0: f32, x1: f32, y1: f32, z1: f32) {
+    studio::lens::move_point(mut state, painted, vec3(x0, y0, z0), vec3(x1, y1, z1))
+}
+
+pub fn choose(state: mut Lens, literal: u32) {
+    studio::lens::choose(mut state, literal, none: false)
+}
+
+pub fn choose_none(state: mut Lens) {
+    studio::lens::choose(mut state, 0, none: true)
+}
+
+pub fn silhouette(state: mut Lens, facing: u32, x: f32, y: f32, z: f32, half: f32, res: u32) {
+    studio::lens::silhouette(mut state, facing, vec3(x, y, z), half, res)
+}
+
+pub fn fit(state: mut Lens, facing: u32, x: f32, y: f32, z: f32, half: f32, res: u32) {
+    studio::lens::fit_reference(mut state, facing, vec3(x, y, z), half, res)
+}

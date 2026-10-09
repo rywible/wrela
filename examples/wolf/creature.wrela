@@ -18,7 +18,7 @@ use round1::shapes::{
     FurredEll, NOISE3_LIPSCHITZ, ell, fbm3, fbm3_lipschitz, fbm3_range, flat_cone, mirror_x, noise3,
     rot_x, rot_y, rot_z, sd_box, sstep, sstep_slope,
 }
-use std::field::{Blend, Color, Lipschitz, Surface, rgb, round_cone, smax, smin, sphere}
+use std::field::{Blend, Color, Surface, rgb, round_cone, smax, smin, sphere}
 use std::quat::Quat
 
 // ---- channels: a coat per part ------------------------------------------------------------------
@@ -117,9 +117,7 @@ impl Surface for Paw {
         d = smin(d, ell(vec3(0.0115, 0.014, 0.016) * s).distance(mq - TOE_OUT * s), 0.006 * s)
         smax(d, -q.y, 0.004)
     }
-}
 
-impl Lipschitz for Paw {
     /// Blends of the three ellipsoids and the ground plane (1): their largest bound, each
     /// within `near` plus the blends' reach.
     fn lipschitz(self, near: f32) -> f32 {
@@ -152,9 +150,7 @@ impl Surface for Muzzle {
         let c = vec3(q.x, q.y - cy, q.z - 0.5 * (z0 + z1))
         sd_box(c, vec3(hx - r, hy - r, 0.5 * (z1 - z0) - r)) - r
     }
-}
 
-impl Lipschitz for Muzzle {
     /// The box's distance is 1-Lipschitz in the point and in its half-extents. Along z, over
     /// the taper (t' = 1 / (z1 - z0)), the centre moves by 0.009 t', the half-extents less
     /// the radius by (0.012, 0.005, 0.009) t' (at most 0.0158 t' long), and the radius by
@@ -203,9 +199,7 @@ impl Surface for Ear {
             1.45
         smax(outer, -ear_cavity(e), 0.004)
     }
-}
 
-impl Lipschitz for Ear {
     /// Two cones in spaces stretched by at most 1.45 along one axis, divided by 1.45, so
     /// 1-Lipschitz each, turned, and joined by a smooth maximum: 1.
     fn lipschitz(self, near: f32) -> f32 {
@@ -224,9 +218,7 @@ impl Surface for CheekRuff {
     fn distance(self, q: vec3) -> f32 {
         ell(self.r).distance(mirror_x(q) - self.centre) - 0.004 * fbm3(q * 40.0, 2)
     }
-}
 
-impl Lipschitz for CheekRuff {
     fn lipschitz(self, near: f32) -> f32 {
         ell(self.r).lipschitz(near + 0.004 * fbm3_range(2)) + 0.004 * 40.0 * fbm3_lipschitz(2)
     }
@@ -304,7 +296,7 @@ pub struct Fur<H>: Copy + GpuData {
 const FUR: f32 = 0.0045
 const TUFTS: f32 = 0.010
 
-impl<H: Lipschitz> Modifier for Fur<H> {
+impl<H: Surface> Modifier for Fur<H> {
     fn apply(self, d: f32, p: vec3) -> f32 {
         let dh = self.head.distance(p)
         let fur = fbm3(p * vec3(34.0, 30.0, 13.0), 3)

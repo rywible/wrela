@@ -1,7 +1,7 @@
 // Generated from the wrela-abi crate (runtime/abi): the one definition of the
 // command stream and manifest. Don't edit; run `cargo run -p wrela-abi --bin generate`.
 
-export const STREAM_VERSION = 7;
+export const STREAM_VERSION = 8;
 export const MANIFEST_VERSION = 8;
 /** The bytes `WRCS`, read as a little-endian u32. */
 export const STREAM_MAGIC = 0x53435257;
@@ -37,7 +37,6 @@ export const Opcode = {
   StorageRead: 19,
   StorageWrite: 20,
   Fetch: 21,
-  Log: 22,
   Post: 23,
   DrawIndexedIndirect: 24,
   Label: 25,
@@ -81,6 +80,10 @@ export const IMPORT_KEEP = "keep";
 export const IMPORT_KEPT = "kept";
 /** The clock (`std::time`): seconds on the host's clock, an `f64` written at an address. */
 export const IMPORT_CLOCK = "clock";
+/** A line printed (`std::io::print`) and a phase timed (`std::time::phase`): each a UTF-8 run,
+ * shown or noted as it's made. */
+export const IMPORT_PRINT = "print";
+export const IMPORT_PHASE = "phase";
 /** Input (runtime/abi `input`): an event is EVENT_SIZE bytes, six words: its kind, its
  * modifiers, then four words that depend on the kind. */
 export const EVENT_SIZE = 24;
@@ -114,6 +117,8 @@ export const HOST_FUNCTIONS = [
   ["keep", "(i32, i32) -> ()"],
   ["kept", "(i32, i32) -> (i32)"],
   ["clock", "(i32) -> ()"],
+  ["print", "(i32, i32) -> ()"],
+  ["phase", "(i32, i32) -> ()"],
 ] as const;
 export const EXPORT_AUDIO = "__audio";
 /** The audio thread's rate and render quantum, and where `__audio` leaves a quantum's samples. */
@@ -134,8 +139,8 @@ export const JOB_DONE = 20;
 export const JOB_FAILED = 24;
 export const JOB_DONE_FAILED = 2147483648;
 export const RUNNING = 32;
-export const JOB_SLOTS = 1212416;
-export const JOB_SLOTS_END = 1216512;
+export const TASK_SLOTS = 1212416;
+export const TASK_SLOTS_END = 1216512;
 export const SLOT_STATE = 0;
 export const SLOT_THREAD = 12;
 export const SLOT_FAILED = 5;

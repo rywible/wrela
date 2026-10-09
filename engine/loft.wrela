@@ -9,7 +9,7 @@
 // exact (the radius is measured in each section's plane, not to the nearest point), so
 // `Lipschitz` bounds its gradient from the table's slopes.
 
-use std::field::{Lipschitz, Surface}
+use std::field::Surface
 use std::math::TAU
 
 /// A loft of `N` radii: `stations` sections of `angles` radii each (`radii[i * angles + j]` is
@@ -111,9 +111,7 @@ impl<const N: u32> Surface for Loft<N> {
         let c = self.section(s / len, theta)
         max((rho - c.r) / slope(c, rho), max(-s, s - len))
     }
-}
 
-impl<const N: u32> Lipschitz for Loft<N> {
     /// The caps are exact (1). The side is D = d / k, with d = ρ − r and k = |∇d| =
     /// √(1 + A² + (B / ρ)²) (A = r_s, B = r_θ) where ρ is at least half the radius. Where
     /// |D| < `near`, |d| < k `near`, so |∇D| ≤ 1 + `near` |∇k| / k ≤ 1 + `near` (|∇A| + |∇(B/ρ)|);

@@ -9,7 +9,7 @@
 use json::{List, list, obj}
 use std::collections::Vec
 use std::derive::Box3
-use std::field::{Lipschitz, Surface}
+use std::field::Surface
 use std::gpu::{GlobalId, GpuBuffer, Slots, buffer, dispatch, read}
 use std::io::Pending
 use std::string::String
@@ -84,7 +84,7 @@ pub fn start<S: Surface>(field: S, grid: Grid) -> Sampling {
         groups: (grid.count() + 255) / 256,
     )
     let pending = read(samples.span(start: 0, count: grid.count()))
-    Sampling { grid, samples: take samples, pending }
+    Sampling { grid, samples, pending }
 }
 
 /// What the grid shows.

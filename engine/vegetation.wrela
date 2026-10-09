@@ -66,15 +66,15 @@ pub fn kind(plant: Plant, seed: u32, atlas: Texture<Rgba8>, s: Sampler) -> Kind 
     let volume = cook(impostor.bake, cards, n, atlas, s)
     Kind {
         plant,
-        cards: take cards,
+        cards,
         card_count: n,
-        orders: take orders,
-        limbs: take limbs,
+        orders,
+        limbs,
         limb_count,
         top: plant.top(),
         reach: plant.reach(),
-        impostor: take impostor,
-        volume: take volume,
+        impostor,
+        volume,
     }
 }
 
@@ -221,21 +221,21 @@ impl Forest {
         write(mut every_args, 0, args_of(kinds, every_lists, 1))
         let room_args = kinds.len() * WAYS
         Forest {
-            kinds: take kinds,
-            placed: take placed,
+            kinds,
+            placed,
             instances: buffer(room),
             marks: buffer(room),
             lists: Vec::new(),
-            every: take every,
+            every,
             every_lists,
-            atlas: take atlas,
-            outlines: take outlines,
+            atlas,
+            outlines,
             ridges: plant::cook_ridges(),
             repeat: std::gpu::sampler(address: std::gpu::Address::Repeat),
-            card_triangles: take card_triangles,
-            limb_triangles: take limb_triangles,
+            card_triangles,
+            limb_triangles,
             args: buffer(room_args),
-            every_args: take every_args,
+            every_args,
             cards_to,
             impostors_to,
             card_px: lod::CARD_PX,

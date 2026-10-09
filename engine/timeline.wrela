@@ -115,7 +115,7 @@ impl<W: Clone + StateHash, I: Clone> Timeline<W, I> {
     /// replay them).
     pub fn new(world: take W, history: u32) -> Timeline<W, I> {
         Timeline {
-            world: take world,
+            world,
             tick: 0,
             inputs: Ring::new(history),
             saved: Ring::new(history / KEYFRAME_TICKS + 2),

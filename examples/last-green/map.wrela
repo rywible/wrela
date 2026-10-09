@@ -8,6 +8,7 @@
 // Metres; +y up. The clearing (M5's) is at the origin; the plateau's edge cuts the square's
 // north-west corner off, past which the land falls to the valley.
 
+use species::Species
 use engine::place::{
     Character, Event, EventKind, Feature, Herd, Keeper, Kept, Kind, Land, Map, Opening, Region,
     Relation, Route, RouteKind, Site, SiteKind, Water,
@@ -19,15 +20,6 @@ pub const PRESENT: i32 = 900
 /// The authored square.
 pub const LO = vec2(-350.0, -1300.0)
 pub const HI = vec2(1700.0, 250.0)
-
-/// The species' indices (species.wrela).
-pub const OAK: u32 = 0
-pub const BEECH: u32 = 1
-pub const BIRCH: u32 = 2
-pub const THORN: u32 = 3
-pub const SLOE: u32 = 4
-pub const PINE: u32 = 5
-pub const ALDER: u32 = 6
 
 /// The great oak's knoll, the clearing's (M5's `KNOLL`).
 pub const KNOLL = vec2(7.0, 33.0)
@@ -42,21 +34,12 @@ pub fn land() -> Land {
             vec4(560.0, -470.0, 150.0, 40.0),
             vec4(1300.0, -700.0, 260.0, 22.0),
             vec4(700.0, -1050.0, 220.0, 9.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
+            ..vec4(0.0),
         ],
         hollows: [
             vec4(255.0, -385.0, 95.0, 9.0),
             vec4(1450.0, -1150.0, 70.0, 3.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
+            ..vec4(0.0),
         ],
         ridges: [
             vec4(90.0, -230.0, 5.0, 38.0),
@@ -67,22 +50,7 @@ pub fn land() -> Land {
             vec4(1050.0, -320.0, 4.0, 50.0),
             vec4(1300.0, -650.0, 14.0, 70.0),
             vec4(1500.0, -950.0, 6.0, 60.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
+            ..vec4(0.0),
         ],
         ravines: [
             vec4(185.0, -392.0, 7.0, 11.0),
@@ -91,16 +59,7 @@ pub fn land() -> Land {
             vec4(-60.0, -262.0, 7.0, 11.0),
             vec4(-150.0, -205.0, 7.0, 11.0),
             vec4(-235.0, -150.0, 7.0, 11.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
-            vec4(0.0),
+            ..vec4(0.0),
         ],
         ravine_fall: 5.0,
         crags: [
@@ -1268,7 +1227,7 @@ pub fn map() -> Map {
             kind: EventKind::Fall {
                 at: vec2(40.0, -322.0),
                 reach: 30.0,
-                kind: BEECH,
+                kind: u32(Species::Beech),
                 toward: vec2(40.0, -322.0),
             },
             name: "the giant's fall",
@@ -1291,7 +1250,9 @@ pub fn map() -> Map {
     )
 
     var kept: Vec<Kept> = Vec::new()
-    kept.push(Kept { at: KNOLL, kind: OAK, year: PRESENT - 380, name: "the great oak" })
+    kept.push(
+        Kept { at: KNOLL, kind: u32(Species::Oak), year: PRESENT - 380, name: "the great oak" },
+    )
 
     var regions: Vec<Region> = Vec::new()
     regions.push(

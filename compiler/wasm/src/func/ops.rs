@@ -1412,6 +1412,12 @@ pub(super) fn host(
             let h = fe.at.helpers;
             fe.ins.extend([I::LocalGet(fe.v(args[0])), I::Call(h.clock)]);
         }
+        ir::HostOp::Print | ir::HostOp::Phase => {
+            let h = fe.at.helpers;
+            let helper = if matches!(op, ir::HostOp::Print) { h.print } else { h.phase };
+            fe.ins.extend([I::LocalGet(fe.v(args[0])), I::LocalGet(fe.v(args[1]))]);
+            fe.ins.push(I::Call(helper));
+        }
         ir::HostOp::Input | ir::HostOp::Kept => {
             let h = fe.at.helpers;
             fe.ins.extend([I::LocalGet(fe.v(args[0])), I::LocalGet(fe.v(args[1]))]);

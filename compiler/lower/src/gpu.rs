@@ -1112,7 +1112,9 @@ pub(crate) fn intrinsic(
             | Lang::InputTake
             | Lang::Keep
             | Lang::Kept
-            | Lang::ReadClock),
+            | Lang::ReadClock
+            | Lang::PrintCommand
+            | Lang::PhaseCommand),
         ) if fl.is_gpu() => {
             let name = fl.cx.checked.program.func(func).name.clone();
             fl.cx.err(Diagnostic::new(
@@ -1158,6 +1160,16 @@ pub(crate) fn intrinsic(
             fl.emit(ir::Stmt::Eval(ir::Expr::Host(ir::HostOp::Clock, vec![at])));
             None
         }
+        Some(l @ (Lang::PrintCommand | Lang::PhaseCommand)) => {
+            let run = fl.str_arg(&c.args[0])?;
+            let u = fl.mb.m.types.u32();
+            let at = fl.value(u, ir::Expr::Extract(run, 0));
+            let len = fl.value(u, ir::Expr::Extract(run, 1));
+            fl.mb.m.trace = true;
+            let op = if l == Lang::PrintCommand { ir::HostOp::Print } else { ir::HostOp::Phase };
+            fl.emit(ir::Stmt::Eval(ir::Expr::Host(op, vec![at, len])));
+            None
+        }
         Some(Lang::InputTake) => {
             let at = fl.arg_value(&c.args[0])?;
             let cap = fl.arg_value(&c.args[1])?;
@@ -1176,7 +1188,6 @@ pub(crate) fn intrinsic(
             | Lang::StorageReadCommand
             | Lang::StorageWriteCommand
             | Lang::FetchCommand
-            | Lang::PrintCommand
             | Lang::LabelCommand
             | Lang::PostCommand),
         ) => {
@@ -1186,7 +1197,6 @@ pub(crate) fn intrinsic(
                 Lang::ReadBufferCommand => (Opcode::ReadBuffer, 4),
                 Lang::StorageReadCommand => (Opcode::StorageRead, 1),
                 Lang::StorageWriteCommand => (Opcode::StorageWrite, 1),
-                Lang::PrintCommand => (Opcode::Log, 0),
                 Lang::LabelCommand => (Opcode::Label, 0),
                 Lang::PostCommand => (Opcode::Post, 1),
                 _ => (Opcode::Fetch, 1),

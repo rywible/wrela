@@ -1465,8 +1465,7 @@ impl Executor for Gpu {
             | Command::StorageRead { .. }
             | Command::StorageWrite { .. }
             | Command::Fetch { .. }
-            | Command::Post { .. }
-            | Command::Log { .. } => {}
+            | Command::Post { .. } => {}
             // The passes and dispatches after it share it; a name given again is kept.
             Command::Label { name } => {
                 if self.label.as_deref() != Some(*name) {

@@ -2,8 +2,8 @@
 
 use creature::{Coat, wolf}
 use engine::creature::Creature
-use std::field::{Field, Lipschitz}
+use std::field::Field
 
-pub fn subject() -> Field<Coat> + Lipschitz {
+pub fn subject() -> Field<Coat> {
     wolf().field()
 }

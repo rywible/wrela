@@ -14,7 +14,7 @@ use engine::realize::realize_rigid
 use engine::render::ByChannels
 use engine::stone::{Realized, Rock, Stain, realize_stone}
 use std::derive::Box3
-use std::field::{Lipschitz, Surface, cuboid}
+use std::field::{Surface, cuboid}
 use std::math::TAU
 use std::transform::{rotate_y, translate}
 
@@ -72,10 +72,8 @@ impl Surface for Tower {
         // Weathered: the stones' faces stand a little proud of the mortar.
         d - 0.03 * noise3(p * 2.0)
     }
-}
 
-/// The break's raggedness and the cuts bend the field a little: within 1.6 a metre.
-impl Lipschitz for Tower {
+    /// The break's raggedness and the cuts bend the field a little: within 1.6 a metre.
     fn lipschitz(self, near: f32) -> f32 {
         1.6
     }
@@ -123,7 +121,7 @@ pub fn realize_tower(at: vec3) -> Realized {
     let look = CreatureLook { surface: Tolerance { tolerance: 2cm, largest: 12cm } }
     let mesh = realize_rigid(c, look)
     let colours = colours(mesh, c.field(), ByChannels {}, cell: 4cm)
-    Realized { mesh: take mesh, colours: take colours, at: translate(at), seed: 77 }
+    Realized { mesh, colours, at: translate(at), seed: 77 }
 }
 
 // ---- standing stones ----------------------------------------------------------------------------
@@ -148,9 +146,7 @@ impl Surface for Slab {
         d = max(d, q.y + 0.25 * q.x / self.half.x * self.half.y * 0.3 - self.half.y * 0.92)
         d - 0.04 * noise3(p * 3.0 + vec3(self.seed))
     }
-}
 
-impl Lipschitz for Slab {
     fn lipschitz(self, near: f32) -> f32 {
         1.5
     }
@@ -174,8 +170,8 @@ pub fn realize_slab(at: vec3, half: vec3, seed: u32, turn: f32) -> Realized {
     let mesh = realize_rigid(c, look)
     let colours = colours(mesh, c.field(), ByChannels {}, cell: 1cm)
     Realized {
-        mesh: take mesh,
-        colours: take colours,
+        mesh,
+        colours,
         at: translate(at - vec3(0.0, 0.25, 0.0)) * rotate_y(turn),
         seed,
     }
@@ -198,9 +194,7 @@ impl Surface for Wall {
         )
         d - 0.03 * noise3(p * 2.0)
     }
-}
 
-impl Lipschitz for Wall {
     fn lipschitz(self, near: f32) -> f32 {
         1.4
     }
@@ -234,8 +228,8 @@ pub fn realize_wall(a: vec3, b: vec3, tall: f32, seed: u32) -> Realized {
     let mid = (a + b) * 0.5
     let turn = -atan2(along.y, along.x)
     Realized {
-        mesh: take mesh,
-        colours: take colours,
+        mesh,
+        colours,
         at: translate(vec3(mid.x, min(a.y, b.y) - 0.15, mid.z)) * rotate_y(turn),
         seed,
     }

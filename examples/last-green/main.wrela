@@ -193,7 +193,7 @@ fn cook_tile(input: take TileInput) -> Cooked {
 /// A tile being cooked, with its bytes and which neighbours' trees it's cooked with.
 struct Cooking {
     tile: vec2i,
-    job: std::par::Job<Cooked>,
+    job: std::par::Task<Cooked>,
     bytes: Vec<u8>,
     with: u32,
     fields_only: bool,
@@ -350,7 +350,7 @@ pub fn init() -> Floor {
         cam: first_camera(eye, eye + vec3(0.0, 0.0, 1.0), 0.82, width: 960, height: 540),
         plants: trees::plants(),
         kinds: Vec::new(),
-        atlas: take atlas,
+        atlas,
         wood: None,
         fetching: Vec::new(),
         cooking: Vec::new(),
@@ -500,13 +500,13 @@ fn stream(s: mut Floor, eye: vec2) {
                 let input = TileInput {
                     tile: t,
                     bytes: Vec::from(bytes),
-                    others: take others,
+                    others,
                     fields_only: false,
                 }
                 s.cooking.push(
                     Cooking {
                         tile: t,
-                        job: std::par::job(take input, cook_tile),
+                        job: std::par::spawn(take input, cook_tile),
                         bytes: Vec::from(bytes),
                         with,
                         fields_only: false,
@@ -555,13 +555,13 @@ fn stream(s: mut Floor, eye: vec2) {
                     let input = TileInput {
                         tile: n,
                         bytes: s.grounds[g].bytes.clone(),
-                        others: take others,
+                        others,
                         fields_only: true,
                     }
                     s.cooking.push(
                         Cooking {
                             tile: n,
-                            job: std::par::job(take input, cook_tile),
+                            job: std::par::spawn(take input, cook_tile),
                             bytes: Vec::new(),
                             with,
                             fields_only: true,

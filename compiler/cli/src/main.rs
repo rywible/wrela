@@ -17,6 +17,10 @@
 //!                                         has it and the program fixed
 //! wrela doc <item> [<package-dir>]        an item's signature, doc comment and examples
 //! wrela pipelines <package-dir> [--json]  each GPU entry point's instantiations (§7)
+//! wrela profile <package-dir> [--frames n] [--size WxH] [--input <script.json>] [--serial]
+//!     [--json]                            where a frame's time goes on this machine: the GPU's
+//!                                         by label, the CPU's and its phases, each
+//!                                         pipeline's WGSL
 //! wrela test <package-dir> [<filter>] [--json]
 //!                                         run the package's `@test` functions (§10), or
 //!                                         those whose names contain `filter`; exit 1 if one
@@ -66,6 +70,7 @@ mod fmt;
 mod mesh;
 mod pipelines;
 mod primer;
+mod profile;
 mod query;
 mod refactor;
 mod reference;
@@ -86,7 +91,8 @@ pub(crate) fn usage() -> ExitCode {
         "wrela explain <code>",
         "wrela doc <item> [<package-dir>]",
         "wrela pipelines <package-dir> [--json]",
-        "wrela test <package-dir> [<filter>] [--json]",
+        "wrela profile <package-dir> [--frames n] [--size WxH] [--input <script.json>] [--serial] [--json]",
+        "wrela test <package-dir> [<filter>] [--bless] [--json]",
         "wrela primer [area]",
         "wrela solve <package-dir> (--minimize <module>::<function> | --spec) --free <file>[:<lines>]... [--steps n] [--exact] [--write] [--json]",
         "wrela query <package-dir> [<query>...] [--json]",
@@ -119,6 +125,7 @@ fn main() -> ExitCode {
         "explain" => explain::run(rest),
         "doc" => doc::run(rest),
         "pipelines" => pipelines::run(rest),
+        "profile" => profile::run(rest),
         "test" => test::run(rest),
         "studio" => studio::run(rest),
         "run" => run::run(rest),

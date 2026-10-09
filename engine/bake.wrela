@@ -447,7 +447,7 @@ pub fn decode_streams(b: [u8]) -> Vec<Stream> {
             }
             points.push(p)
         }
-        out.push(Stream { points: take points })
+        out.push(Stream { points })
     }
     out
 }

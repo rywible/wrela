@@ -10,10 +10,19 @@ use engine::plant::{Bark, Instance, Leaves, Plant, plant}
 use std::field::Tube
 use engine::vegetation::Placed
 use great_tree::tree::great_tree
-use map::{ALDER, BEECH, BIRCH, OAK, PINE, PRESENT, SLOE as BLACKTHORN, THORN}
+use map::PRESENT
+use species::Species
 use std::math::TAU
 
 // ---- the kinds ---------------------------------------------------------------------------------
+
+/// The history's species, by their index (`species::Species`).
+const OAK: u32 = u32(Species::Oak)
+const BEECH: u32 = u32(Species::Beech)
+const BIRCH: u32 = u32(Species::Birch)
+const THORN: u32 = u32(Species::Thorn)
+const BLACKTHORN: u32 = u32(Species::Sloe)
+const PINE: u32 = u32(Species::Pine)
 
 pub const GREAT: u32 = 0
 pub const OAK_OPEN: u32 = 1

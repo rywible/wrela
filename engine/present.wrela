@@ -33,7 +33,7 @@ impl<S: Copy + Plain> Snapshots<S> {
     pub fn new(latest: take Latest<Stamped<S>>, hz: u32) -> Snapshots<S> {
         var l = take latest
         let first = l.read()
-        Snapshots { latest: take l, kept: Bounded::from([first]), hz: f32(hz) }
+        Snapshots { latest: l, kept: Bounded::from([first]), hz: f32(hz) }
     }
 
     /// Reads the newest snapshot, and keeps it if it's newer than those kept: the hand-off reuses

@@ -6,7 +6,7 @@
 
 use engine::bake::{bake, unbake}
 use engine::footing::{Obstacles, obstacles_of}
-use engine::grow::{BAKE, Grain, Grid, History, NoClock, PREVIEW, simulate}
+use engine::grow::{BAKE, Grain, Grid, History, PREVIEW, simulate}
 use engine::interest::{Evidence, FULL, check, nearest_first, report, tour, views_bytes, walk_bytes}
 use engine::place::{TILE, tile_of}
 use engine::water::{Laid, laid}
@@ -48,7 +48,6 @@ pub fn grown(grain: Grain) -> History {
         domain_lo(),
         domain_hi(),
         rocks(),
-        NoClock {},
     )
 }
 

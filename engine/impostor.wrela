@@ -374,7 +374,7 @@ pub fn bake(
     }
     var bounds: GpuBuffer<vec4> = buffer(views)
     dispatch(view_bounds.bind(colour, out: mut bounds), over: views)
-    Impostor { colour: take colour, normal: take normal, bake: b, bounds: take bounds }
+    Impostor { colour, normal, bake: b, bounds }
 }
 
 // ---- drawing impostors ----------------------------------------------------------------------
@@ -958,5 +958,5 @@ pub fn cook(b: Bake, cards: GpuBuffer<Card>, n: u32, atlas: Texture<Rgba8>, s: S
         ),
         over: grid,
     )
-    Cooked { grid: take grid, grid_depth: take grid_depth }
+    Cooked { grid, grid_depth }
 }

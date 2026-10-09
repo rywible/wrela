@@ -15,7 +15,7 @@
 // farther away (`vegetation`).
 
 use noise::{direction, hash2, pick, rand}
-use std::field::{Lipschitz, PartName, Surface, Tube, unnamed}
+use std::field::{Surface, PartName, Tube, unnamed}
 use std::gpu::{
     ClipPosition, FragCoord, GlobalId, Oct32, Rgba8, Sampler, Slots, Texture, Unorm8x4, VertexIndex,
     begin_pass, draw, texture,
@@ -252,10 +252,7 @@ impl Surface for Plant {
         }
         min(self.wood(p), -log(max(s, 1.0e-30)) / k)
     }
-}
 
-/// Its tubes are exact, and its crown's gradient is a mean of unit vectors: 1 everywhere.
-impl Lipschitz for Plant {
     fn lipschitz(self, near: f32) -> f32 {
         1.0
     }

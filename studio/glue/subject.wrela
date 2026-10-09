@@ -1,0 +1,63 @@
+// What the lens needs of its subject. `wrela studio <package>` writes this module for the
+// package's `subject()`: its colours from its channels, its channels' numbers for the probe, its
+// spec and its blueprint's outlines. This one's subject is a sphere, coloured as clay, with no
+// channels, spec or blueprint.
+
+use std::collections::Vec
+use std::field::{Surface, sphere}
+use std::lift::{Literal, gradient, reads}
+use std::string::String
+use studio::paint::{Clay, Colours}
+
+fn subject() -> Surface {
+    sphere(0.5)
+}
+
+/// The subject as the views see it.
+pub fn painted() -> Colours {
+    Clay { field: subject() }
+}
+
+/// The distance at `p`, and its derivative by each literal of `which`.
+pub fn grad(p: vec3, which: [Literal; 16]) -> (f32, [f32; 16]) {
+    gradient(|| subject().distance(p), which)
+}
+
+pub fn grad8(p: vec3, which: [Literal; 8]) -> (f32, [f32; 8]) {
+    gradient(|| subject().distance(p), which)
+}
+
+/// The literals the distance reads.
+pub fn reached() -> Vec<Literal> {
+    var out: Vec<Literal> = Vec::new()
+    for l in reads(|| subject().distance(vec3(0.0))) {
+        out.push(l)
+    }
+    out
+}
+
+/// The literals part `part`'s distance at `p` reads.
+pub fn part_reads(p: vec3, part: u32) -> Vec<Literal> {
+    var out: Vec<Literal> = Vec::new()
+    for l in reads(|| subject().part_distance(p, part)) {
+        out.push(l)
+    }
+    out
+}
+
+/// The channels at `p`, as JSON: none.
+pub fn channels(p: vec3) -> String {
+    String::new()
+}
+
+/// The spec's report, as JSON: there's none.
+pub fn spec_report() -> String {
+    String::from(
+        "{\"error\":\"the package has no spec: write `pub fn spec<C: Checks>(c: mut C)` in spec.wrela\"}",
+    )
+}
+
+/// The blueprint's outline from a side (0 side, 1 front, 2 top): none.
+pub fn outline(facing: u32) -> Vec<vec2> {
+    Vec::new()
+}

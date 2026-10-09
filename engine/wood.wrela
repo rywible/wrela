@@ -578,17 +578,17 @@ impl Wood {
         write(mut kind_of, 0, Vec::filled(slots * SLOT, NO_KIND))
         let n = kinds.len() + far_kinds.len()
         var w = Wood {
-            kinds: take kinds,
-            far_kinds: take far_kinds,
-            atlas: take atlas,
-            outlines: take outlines,
+            kinds,
+            far_kinds,
+            atlas,
+            outlines,
             ridges: plant::cook_ridges(),
             repeat: std::gpu::sampler(address: std::gpu::Address::Repeat),
             card_triangles: buffer_of(card_indices(most)),
             limb_triangles: buffer_of(limb_indices(most_limbs)),
             lods: buffer(max(n, 1)),
             every: buffer(slots * SLOT),
-            kind_of: take kind_of,
+            kind_of,
             slots: Vec::from_fn(
                 slots,
                 |_| Slot { tile: None, far: false, count: 0, kinds: Vec::filled(n, 0) },
@@ -689,7 +689,7 @@ impl Wood {
         }
         write(mut self.every, free * SLOT, at)
         write(mut self.kind_of, free * SLOT, kinds)
-        self.slots[free] = Slot { tile: Some(t), far, count: n, kinds: take per }
+        self.slots[free] = Slot { tile: Some(t), far, count: n, kinds: per }
         self.laid = false
         true
     }

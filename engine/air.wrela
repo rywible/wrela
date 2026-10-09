@@ -49,7 +49,7 @@ pub const AERIAL_REACH: f32 = 40.0
 
 /// The air: what scatters and absorbs, the sun, and the eye's height the sky's tables are
 /// cooked for.
-pub struct Air: Copy + GpuData {
+pub struct Air: Copy + GpuData + Eq {
     /// Rayleigh scattering at the planet's surface (per km), and its density's scale height
     /// (km).
     pub rayleigh: vec3,

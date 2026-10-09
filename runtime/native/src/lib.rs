@@ -32,11 +32,13 @@ pub mod image;
 pub mod lock;
 mod program;
 mod shared;
+mod trace;
 
 pub use cache::compiled_code_prefix;
 pub use error::{Error, Result};
 #[cfg(feature = "gpu")]
 pub use gpu::{GpuTiming, frame_spans, map_read, open_device, read_timestamps, submission_spans};
+pub use trace::{Phase, Trace, Traced};
 /// Build-time code's shared memory (constants, language.md §10), read and written by the
 /// build's thread while its helpers wait or have stopped.
 pub mod build_memory {
@@ -530,6 +532,12 @@ impl Host {
         self.p().take_logs()
     }
 
+    /// What the program printed and timed (`std::io::print`, `std::time::phase`), which its
+    /// threads share.
+    pub fn trace(&mut self) -> Trace {
+        self.p().trace()
+    }
+
     /// The handles of the GPU buffers the program holds, oldest first: for tests, to find a
     /// buffer to read back. A buffer the program dropped is gone.
     pub fn buffers(&mut self) -> Vec<u32> {
@@ -733,6 +741,12 @@ impl CpuHost {
         self.program.take_logs()
     }
 
+    /// What the program printed and timed (`std::io::print`, `std::time::phase`), which its
+    /// threads share.
+    pub fn trace(&self) -> Trace {
+        self.program.trace()
+    }
+
     /// How many chunks of parallel jobs the workers (not the program's own thread) have run.
     pub fn worker_chunks(&self) -> u32 {
         self.program.helped()
@@ -814,7 +828,7 @@ impl CpuHost {
         self.program.lockstep_frame(i, fps, width, height, script, None)
     }
 
-    /// Makes each helper hold back a long job's result for `micros` microseconds once it's
+    /// Makes each helper hold back a task's result for `micros` microseconds once it's
     /// ready: tests slow jobs down, so the threads that take them wait.
     pub fn hold_jobs(&self, micros: u32) {
         self.program.hold_jobs(micros);

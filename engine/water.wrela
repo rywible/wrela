@@ -325,7 +325,7 @@ pub fn courses<G: Ground>(g: G, w: Water, streams: [Stream]) -> (Vec<Course>, Ve
         pts[0] = end
         let p = pts[pts.len() - 1].xy
         pools.push(vec3(p.x, p.y, 5.0))
-        out.push(Course { points: take pts, falls: true })
+        out.push(Course { points: pts, falls: true })
     }
     (out, pools)
 }

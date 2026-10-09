@@ -12,7 +12,7 @@ use noise::{noise3, rand}
 use realize::{Mesh, SkinVertex, realize_rigid}
 use render::{ByChannels, Shaded}
 use std::derive::Box3
-use std::field::{Blend, Lipschitz, Surface, fbm, oval}
+use std::field::{Blend, Surface, fbm, oval}
 use std::gpu::{ClipPosition, Flat, GpuBuffer, Unorm8x4, VertexIndex}
 use std::math::TAU
 use std::transform::{rotate_y, translate}
@@ -47,9 +47,7 @@ impl Surface for Facets {
         }
         d
     }
-}
 
-impl Lipschitz for Facets {
     fn lipschitz(self, near: f32) -> f32 {
         1.0
     }
@@ -77,7 +75,7 @@ impl Stain {
 
 /// A stone's field: an oval `radius` across, squashed by `squash`, lumpy (fractal noise), cut
 /// by seven planes into facets, as weathered granite splits; and its colour.
-pub type StoneField = std::field::Field<Rock> + Lipschitz
+pub type StoneField = std::field::Field<Rock>
 
 /// A stone `radius` across, squashed by `squash`, seed `seed`, as a field.
 pub fn stone_field(radius: f32, squash: vec3, seed: u32) -> StoneField {
@@ -126,7 +124,7 @@ pub fn realize_stone(radius: f32, squash: vec3, seed: u32, at: vec3, turn: f32) 
     let look = CreatureLook { surface: Tolerance { tolerance: 8mm, largest: 4cm } }
     let mesh = realize_rigid(s, look)
     let colours = colours(mesh, s.field(), ByChannels {}, cell: 1cm)
-    Realized { mesh: take mesh, colours: take colours, at: translate(at) * rotate_y(turn), seed }
+    Realized { mesh, colours, at: translate(at) * rotate_y(turn), seed }
 }
 
 /// What a stone's vertex passes on.

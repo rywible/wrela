@@ -108,6 +108,10 @@ export const IMPORT_KEEP = {import_keep:?};
 export const IMPORT_KEPT = {import_kept:?};
 /** The clock (`std::time`): seconds on the host's clock, an `f64` written at an address. */
 export const IMPORT_CLOCK = {import_clock:?};
+/** A line printed (`std::io::print`) and a phase timed (`std::time::phase`): each a UTF-8 run,
+ * shown or noted as it's made. */
+export const IMPORT_PRINT = {import_print:?};
+export const IMPORT_PHASE = {import_phase:?};
 /** Input (runtime/abi `input`): an event is EVENT_SIZE bytes, six words: its kind, its
  * modifiers, then four words that depend on the kind. */
 export const EVENT_SIZE = {event_size};
@@ -144,8 +148,8 @@ export const JOB_DONE = {job_done};
 export const JOB_FAILED = {job_failed};
 export const JOB_DONE_FAILED = {job_done_failed};
 export const RUNNING = {running};
-export const JOB_SLOTS = {job_slots};
-export const JOB_SLOTS_END = {job_slots_end};
+export const TASK_SLOTS = {task_slots};
+export const TASK_SLOTS_END = {task_slots_end};
 export const SLOT_STATE = {slot_state};
 export const SLOT_THREAD = {slot_thread};
 export const SLOT_FAILED = {slot_failed};
@@ -223,6 +227,8 @@ export const PANIC_CAP = {panic_cap};
         import_keep = crate::IMPORT_KEEP,
         import_kept = crate::IMPORT_KEPT,
         import_clock = crate::IMPORT_CLOCK,
+        import_print = crate::IMPORT_PRINT,
+        import_phase = crate::IMPORT_PHASE,
         event_size = input::EVENT_SIZE,
         shift = input::SHIFT,
         control = input::CONTROL,
@@ -244,8 +250,8 @@ export const PANIC_CAP = {panic_cap};
         job_failed = crate::memory::JOB_FAILED,
         job_done_failed = crate::memory::JOB_DONE_FAILED,
         running = crate::memory::RUNNING,
-        job_slots = crate::memory::JOB_SLOTS,
-        job_slots_end = crate::memory::JOB_SLOTS_END,
+        task_slots = crate::memory::TASK_SLOTS,
+        task_slots_end = crate::memory::TASK_SLOTS_END,
         slot_state = crate::memory::SLOT_STATE,
         slot_thread = crate::memory::SLOT_THREAD,
         slot_failed = crate::memory::SLOT_FAILED,

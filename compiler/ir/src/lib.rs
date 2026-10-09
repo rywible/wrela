@@ -328,6 +328,10 @@ pub enum HostOp {
     Kept,
     /// `wrela.clock(address)`: writes the seconds since the program started, an `f64`.
     Clock,
+    /// `wrela.print(address, length)`: a line for the host's console, shown now.
+    Print,
+    /// `wrela.phase(address, length)`: this thread's time from now counts under that name.
+    Phase,
     /// Args: vertices, instances (or, `indirect`, the handle and byte offset of a buffer
     /// holding the counts, after the index buffer's handle, byte offset and size when
     /// `indexed`), each binding's handle, offset and size, then the uniform block value.
@@ -801,6 +805,9 @@ pub struct Module {
     /// CPU only: whether the program reads the clock (`std::time`), so the module imports
     /// `wrela.clock`.
     pub clock: bool,
+    /// CPU only: whether the program prints or times a phase (`std::io::print`,
+    /// `std::time::phase`), so the module imports `wrela.print` and `wrela.phase`.
+    pub trace: bool,
 }
 
 impl Module {
@@ -899,6 +906,13 @@ impl Module {
 /// starting with a digit or an underscore (WGSL reserves names starting with `__`). The WGSL
 /// writer may still rename one (a WGSL keyword, a name ending in a digit, a name used twice),
 /// so the manifest takes entry points' names from the written shader (`wrela_wgsl::emit`).
+/// The name of a tuple's element `i`, or a closure's capture: a letter (`a` to `z`), short
+/// because a nested tuple's paths repeat it at each level (a creature's parts are pairs of
+/// pairs: `u.field.parts.a.a.a.b` in every read of its uniform data, on the GPU), then `e26` on.
+pub fn element_name(i: usize) -> String {
+    if i < 26 { char::from(b'a' + i as u8).to_string() } else { format!("e{i}") }
+}
+
 pub fn ident(name: &str) -> String {
     let mut s = String::with_capacity(name.len());
     for c in name.chars() {

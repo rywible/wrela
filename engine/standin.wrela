@@ -69,9 +69,7 @@ impl Surface for HeadAt {
     fn distance(self, p: vec3) -> f32 {
         self.s.distance(p - self.at)
     }
-}
 
-impl std::field::Lipschitz for HeadAt {
     fn lipschitz(self, near: f32) -> f32 {
         1.0
     }
@@ -88,7 +86,7 @@ pub fn realize_standin() -> Realized {
     let look = CreatureLook { surface: Tolerance { tolerance: 5mm, largest: 3cm } }
     let mesh = realize_rigid(s, look)
     let colours = colours(mesh, s.field(), ByChannels {}, cell: 1cm)
-    Realized { mesh: take mesh, colours: take colours }
+    Realized { mesh, colours }
 }
 
 /// The stand-in's one bone where it stands: its feet at `feet`, facing `heading` (radians from
