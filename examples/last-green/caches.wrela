@@ -4,7 +4,8 @@
 // of its trees a frame (the wood chooses each strip's on the GPU), and the two swap when the last
 // strip is drawn.
 
-use engine::shadow::{Cascade, Shadows, sun_view}
+use engine::shadow::{CASTER, Cascade, Shadows, sun_view}
+use engine::stone::{Realized, stone_shadow}
 use engine::plant::Wind
 use engine::view::Camera
 use engine::wood::Wood
@@ -84,11 +85,13 @@ impl Kept {
     }
 
     /// A strip of the next map, if one's being drawn: the trees standing in the strip's part of
-    /// its square (and a shadow's reach past it), chosen and drawn into the map (cleared first);
-    /// after the last, the maps swap. `sh` gives the sun's basis.
+    /// its square (and a shadow's reach past it), chosen and drawn into the map (cleared first),
+    /// and with the first strip the built things (`built`: stones, the tower, walls); after the
+    /// last, the maps swap. `sh` gives the sun's basis.
     pub fn draw_strip(
         mut self,
         wood: mut Option<Wood>,
+        built: [Realized],
         sun: vec3,
         sh: Shadows,
         wind: Wind,
@@ -121,6 +124,18 @@ impl Kept {
                 }
             },
             None => {},
+        }
+        if on && self.strip == 0 {
+            for st in built {
+                std::gpu::draw(
+                    pass,
+                    stone_shadow.bind(verts: st.mesh.verts.items(), at: st.at, view: view),
+                    engine::vegetation::nothing,
+                    indices: st.mesh.quads.items(),
+                    indirect: st.mesh.draw.items(),
+                    depth_bias: CASTER,
+                )
+            }
         }
         pass.end()
         self.strip += 1

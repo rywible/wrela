@@ -9,6 +9,7 @@ use engine::character::{
     PartOf, character, character_motion, character_shade, character_shadow, motion,
 }
 use engine::standin::{placed as standin_at, realize_standin}
+use engine::stone::{Realized, stone_shade, stone_vertex}
 use engine::bake::{Decisions, Far, decode_far, decode_tile, tile_name}
 use engine::grass::{Blooms, Grass, GrassLook}
 use engine::light::{Light, SUN_TOP, sunlight}
@@ -35,7 +36,7 @@ use std::gpu::{
     Address, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer, GpuSpan,
     R32Uint, RenderPass, Rgba16Float, Rgba8, Sampler, Texture, begin_depth_pass, begin_pass,
     begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture, dispatch,
-    draw, label, sampler, texture, writable_texture, write,
+    buffer_of, draw, label, sampler, texture, writable_texture, write,
 }
 use std::input::{Event, Key, events}
 use std::io::{Pending, print}
@@ -206,6 +207,11 @@ pub struct Floor {
     /// The stand-in: its realized mesh (at the first frame), and its one bone's place this frame
     /// and the last (its palettes, for the motion target).
     standin: Option<engine::standin::Realized>,
+    /// The built things (`blockouts`) to realize, one a frame at load, and those realized; and
+    /// where the grass keeps out of the stones (each one's place and reach).
+    to_build: Vec<blockouts::Built>,
+    built: Vec<Realized>,
+    footprints: GpuBuffer<vec4>,
     palette: GpuBuffer<mat4>,
     last_palette: GpuBuffer<mat4>,
 }
@@ -306,9 +312,21 @@ pub fn init() -> Floor {
         typing_shot: false,
         shot_digits: 0,
         standin: None,
+        to_build: blockouts::built(map::map()),
+        built: Vec::new(),
+        footprints: buffer_of(footprints(), at_least: 1),
         palette: buffer(1),
         last_palette: buffer(1),
     }
+}
+
+/// Where the grass keeps out of the floor's stones: each one's place and reach.
+fn footprints() -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for st in stones::stones(map::map()) {
+        out.push(vec4(st.x, st.y, st.z * 1.1, 0.0))
+    }
+    out
 }
 
 /// The ground's height at a point of the plane.
@@ -455,6 +473,14 @@ fn stream(s: mut Floor, eye: vec2) {
 /// cooked.
 fn cook_load(s: mut Floor) {
     if s.wood.is_some() {
+        if s.to_build.len() > 0 {
+            let b = s.to_build.remove(0)
+            s.built.push(blockouts::realize(b, height_at))
+            if s.to_build.is_empty() {
+                s.near.changed()
+                s.far.changed()
+            }
+        }
         return
     }
     for _ in 0..KINDS_PER_FRAME {
@@ -564,9 +590,9 @@ fn resize(s: mut Floor, width: u32, height: u32, w: u32, h: u32) {
 fn static_shadows(s: mut Floor, sh: Shadows, wind: Wind) {
     let on = on(s.off, System::Shadows)
     if s.near.drawing() {
-        s.near.draw_strip(mut s.wood, SUN, sh, wind, s.linear, s.cam, on, "shadows near")
+        s.near.draw_strip(mut s.wood, s.built, SUN, sh, wind, s.linear, s.cam, on, "shadows near")
     } else if s.far.drawing() {
-        s.far.draw_strip(mut s.wood, SUN, sh, wind, s.linear, s.cam, on, "shadows far")
+        s.far.draw_strip(mut s.wood, s.built, SUN, sh, wind, s.linear, s.cam, on, "shadows far")
     }
 }
 
@@ -735,7 +761,6 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         air: s.tables.aerial,
         s: s.linear,
     }
-    let stones: GpuBuffer<vec4> = buffer(1)
     s.grass.place(
         cam,
         s.light,
@@ -747,7 +772,7 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         s.sky.shadow,
         s.linear,
         grounds,
-        stones: stones.items(),
+        stones: s.footprints.items(),
     )
     let trees = on(off, System::Trees)
     match mut s.wood {
@@ -797,6 +822,23 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
     let veg = begin_pass_with_depth(mut s.scene, mut s.depth, clear: vec4(0.0), keep_depth: true)
     if on(off, System::Grass) {
         s.grass.shade(veg, lt, wind, GrassLook {}, Blooms {})
+    }
+    for st in s.built {
+        draw(
+            veg,
+            stone_vertex.bind(
+                verts: st.mesh.verts.items(),
+                colours: st.colours.items(),
+                at: st.at,
+                seed: st.seed,
+                cam: cam,
+            ),
+            stone_shade.bind(lt),
+            indices: st.mesh.quads.items(),
+            indirect: st.mesh.draw.items(),
+            cull: std::gpu::Cull::Back,
+            depth: NEAREST,
+        )
     }
     match s.wood {
         Some(w) => {
@@ -1007,9 +1049,12 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     )
     let cam = s.cam
     let wind = wind(time)
-    // The leaves between the camera and the player fade (#54 §5).
+    // The leaves between the camera and the player fade (#54 §5); on a shot, those round the eye.
+    let clear_to = if s.shot.is_some() { eye + cam.forward * 1.5 } else {
+        feet + vec3(0.0, s.framing.target, 0.0)
+    }
     match mut s.wood {
-        Some(w) => w.clear = vec4(feet + vec3(0.0, s.framing.target, 0.0), 1.1),
+        Some(w) => w.clear = vec4(clear_to, 1.1),
         None => {},
     }
     s.clipmap.follow(GROUND, eye, again: false)

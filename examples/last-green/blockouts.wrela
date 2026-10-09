@@ -1,0 +1,341 @@
+// The floor's built things (#54 §1, §9): a simple form at each site, a field realized at load as
+// the stones are (`engine::stone`'s way, each a creature of one bone): the tower's ruin on the
+// Watch (developed: dressed granite in courses, moss, a broken top falling toward the approach,
+// rubble at its foot), the ring's and the Warden's arena's standing stones, waystones, rests'
+// seats and the echoes' small stones, and the ruins' walls (blockouts: judged as composition).
+// Where each stands is the map's (`stones.wrela` gives what a player walks round: the same).
+
+use engine::character::colours
+use engine::creature::{Creature, Skeleton, creature}
+use engine::look::{CreatureLook, Mesh as Tolerance}
+use engine::noise::{noise3, rand}
+use engine::place::{Feature, Map, SiteKind}
+use engine::realize::realize_rigid
+use engine::render::ByChannels
+use engine::stone::{Realized, Rock, Stain, realize_stone}
+use std::derive::Box3
+use std::field::{Lipschitz, Surface, cuboid}
+use std::math::TAU
+use std::transform::{rotate_y, translate}
+
+// ---- the tower ----------------------------------------------------------------------------------
+
+/// The tower's shape: its outer radius, its wall's thickness and its height (m).
+pub struct Tower: Copy + GpuData {
+    pub radius: f32,
+    pub wall: f32,
+    pub tall: f32,
+}
+
+/// The slits: (angle round the tower, height) of each.
+const SLITS = [
+    vec2(0.4, 6.0),
+    vec2(2.2, 8.5),
+    vec2(4.1, 11.0),
+    vec2(1.3, 13.5),
+    vec2(3.3, 16.0),
+    vec2(5.2, 18.0),
+]
+
+/// The door's angle round the tower, and the break's (lowest toward the old road's approach,
+/// from the north-west).
+const DOOR: f32 = 2.4
+const BREAK: f32 = 2.2
+
+impl Tower {
+    /// How high the wall stands at angle `a`: broken off lower toward the approach, ragged.
+    fn top(self, a: f32) -> f32 {
+        self.tall - 8.0 * (0.5 + 0.5 * cos(a - BREAK)) - 1.4 * noise3(vec3(a * 2.5, 0.0, 3.0))
+    }
+}
+
+/// The angular distance between `a` and `b`.
+fn apart(a: f32, b: f32) -> f32 {
+    let d = abs(a - b) % TAU
+    min(d, TAU - d)
+}
+
+impl Surface for Tower {
+    fn distance(self, p: vec3) -> f32 {
+        let r = length(p.xz)
+        let a = atan2(p.z, p.x) + TAU * 0.5
+        var d = max(r - self.radius, (self.radius - self.wall) - r)
+        d = max(d, p.y - self.top(a))
+        d = max(d, -(p.y + 3.0))
+        // The door and the slits, cut through the wall.
+        let door = max(apart(a, DOOR) * r - 0.75, p.y - 2.6)
+        d = max(d, -door)
+        for s in SLITS {
+            let slit = max(apart(a, s.x) * r - 0.18, abs(p.y - s.y) - 0.85)
+            d = max(d, -slit)
+        }
+        // Weathered: the stones' faces stand a little proud of the mortar.
+        d - 0.03 * noise3(p * 2.0)
+    }
+}
+
+/// The break's raggedness and the cuts bend the field a little: within 1.6 a metre.
+impl Lipschitz for Tower {
+    fn lipschitz(self, near: f32) -> f32 {
+        1.6
+    }
+}
+
+/// Dressed stone's colour at `p`: granite in courses `course` high, dark mortar between, moss low on
+/// its north side and high where the wall's top is broken (`top`, the height moss reaches from).
+pub struct Courses: Copy + GpuData {
+    pub top: f32,
+    pub course: f32,
+}
+
+impl Courses {
+    pub fn at(self, p: vec3) -> Rock {
+        let base = Stain { r: 4.0, seed: 11.0 }.at(p)
+        let course = (p.y + 0.11 * noise3(p * 0.7)) / self.course
+        let mortar = smoothstep(0.88, 0.97, course - floor(course))
+        let block = noise3(vec3(floor(course), floor(atan2(p.z, p.x) * 6.0 + p.x * 1.3), 1.0))
+        var c = base.albedo * (0.85 + 0.3 * block)
+        c = mix(c, vec3(0.12, 0.11, 0.10), vec3(mortar * 0.7))
+        let north = smoothstep(-0.2, 0.8, p.z / max(length(p.xz), 0.1))
+        let moss = max(
+            smoothstep(2.5, 0.0, p.y) * north,
+            smoothstep(self.top - 9.0, self.top - 5.0, p.y) * 0.7,
+        )
+        Rock { albedo: mix(c, vec3(0.08, 0.12, 0.03), vec3(moss * 0.75)) }
+    }
+}
+
+/// The tower as a creature of one bone.
+pub fn tower_creature(t: Tower) -> Creature<Rock> {
+    var s = Skeleton::new()
+    let root = s.root("tower", vec3(0.0))
+    let c = Courses { top: t.tall, course: 0.42 }
+    let half = vec3(t.radius + 0.2, 0.0, t.radius + 0.2)
+    creature(s)
+        .part(root, t.with_at(|p| c.at(p)))
+        .bounded(Box3 { lo: vec3(-half.x, -3.2, -half.z), hi: vec3(half.x, t.tall + 0.5, half.z) })
+}
+
+/// The tower, realized at `at` (its foot on the ground).
+pub fn realize_tower(at: vec3) -> Realized {
+    let t = Tower { radius: stones::TOWER_RADIUS, wall: 1.3, tall: 22.0 }
+    let c = tower_creature(t)
+    let look = CreatureLook { surface: Tolerance { tolerance: 2cm, largest: 12cm } }
+    let mesh = realize_rigid(c, look)
+    let colours = colours(mesh, c.field(), ByChannels {}, cell: 4cm)
+    Realized { mesh: take mesh, colours: take colours, at: translate(at), seed: 77 }
+}
+
+// ---- standing stones ----------------------------------------------------------------------------
+
+/// A standing stone or a waystone: a slab `half` its size each way (taller than it's wide),
+/// rounded, leaning a little, its top worn to a slope, its faces lumpy.
+pub struct Slab: Copy + GpuData {
+    pub half: vec3,
+    pub seed: f32,
+}
+
+impl Surface for Slab {
+    fn distance(self, p: vec3) -> f32 {
+        let lean = vec3(0.06 * sin(self.seed), 0.0, 0.05 * cos(self.seed * 1.7)) * p.y
+        let q = p - lean - vec3(0.0, self.half.y, 0.0)
+        // Narrower toward the top.
+        let taper = 1.0 - 0.18 * saturate(q.y / self.half.y)
+        let h = vec3(self.half.x * taper, self.half.y, self.half.z * taper)
+        let r = min(h.x, h.z) * 0.35
+        var d = cuboid(h - vec3(r)).distance(q) - r
+        // The top worn to a slope.
+        d = max(d, q.y + 0.25 * q.x / self.half.x * self.half.y * 0.3 - self.half.y * 0.92)
+        d - 0.04 * noise3(p * 3.0 + vec3(self.seed))
+    }
+}
+
+impl Lipschitz for Slab {
+    fn lipschitz(self, near: f32) -> f32 {
+        1.5
+    }
+}
+
+/// A slab as a creature of one bone.
+pub fn slab_creature(s: Slab) -> Creature<Rock> {
+    var sk = Skeleton::new()
+    let root = sk.root("slab", vec3(0.0))
+    let stain = Stain { r: s.half.y, seed: s.seed }
+    let m = max(s.half.x, s.half.z) + 0.3
+    creature(sk)
+        .part(root, s.with_at(|p| stain.at(p)))
+        .bounded(Box3 { lo: vec3(-m, -0.6, -m), hi: vec3(m, 2.0 * s.half.y + 0.3, m) })
+}
+
+/// A slab standing at `at` (its foot on the ground, sunk a little), turned by `turn`, realized.
+pub fn realize_slab(at: vec3, half: vec3, seed: u32, turn: f32) -> Realized {
+    let c = slab_creature(Slab { half, seed: f32(seed % 97) * 0.37 })
+    let look = CreatureLook { surface: Tolerance { tolerance: 8mm, largest: 4cm } }
+    let mesh = realize_rigid(c, look)
+    let colours = colours(mesh, c.field(), ByChannels {}, cell: 1cm)
+    Realized {
+        mesh: take mesh,
+        colours: take colours,
+        at: translate(at - vec3(0.0, 0.25, 0.0)) * rotate_y(turn),
+        seed,
+    }
+}
+
+// ---- walls ----------------------------------------------------------------------------------------
+
+/// A wall's stretch: a box `half` its size each way (its length along +x), dressed stone.
+pub struct Wall: Copy + GpuData {
+    pub half: vec3,
+}
+
+impl Surface for Wall {
+    fn distance(self, p: vec3) -> f32 {
+        // Its top ragged where it's fallen.
+        let q = p - vec3(0.0, self.half.y, 0.0)
+        let top = self.half.y * (0.65 + 0.35 * noise3(vec3(p.x * 0.4, 1.0, 2.0)))
+        let d = cuboid(vec3(self.half.x, top, self.half.z)).distance(
+            q - vec3(0.0, top - self.half.y, 0.0),
+        )
+        d - 0.03 * noise3(p * 2.0)
+    }
+}
+
+impl Lipschitz for Wall {
+    fn lipschitz(self, near: f32) -> f32 {
+        1.4
+    }
+}
+
+/// A wall's stretch as a creature of one bone.
+pub fn wall_creature(w: Wall, tall: f32) -> Creature<Rock> {
+    var s = Skeleton::new()
+    let root = s.root("wall", vec3(0.0))
+    let c = Courses { top: tall, course: 0.3 }
+    creature(s)
+        .part(root, w.with_at(|p| c.at(p)))
+        .bounded(
+            Box3 {
+                lo: vec3(-w.half.x - 0.2, -0.2, -0.7),
+                hi: vec3(w.half.x + 0.2, tall + 0.3, 0.7),
+            },
+        )
+}
+
+/// A wall from `a` to `b` on the ground (x, z; `ya` and `yb` its ends' ground), `tall` high,
+/// realized.
+pub fn realize_wall(a: vec3, b: vec3, tall: f32, seed: u32) -> Realized {
+    let along = b.xz - a.xz
+    let len = length(along)
+    let w = Wall { half: vec3(len * 0.5 + 0.4, tall * 0.5, 0.45) }
+    let c = wall_creature(w, tall)
+    let look = CreatureLook { surface: Tolerance { tolerance: 2cm, largest: 10cm } }
+    let mesh = realize_rigid(c, look)
+    let colours = colours(mesh, c.field(), ByChannels {}, cell: 4cm)
+    let mid = (a + b) * 0.5
+    let turn = -atan2(along.y, along.x)
+    Realized {
+        mesh: take mesh,
+        colours: take colours,
+        at: translate(vec3(mid.x, min(a.y, b.y) - 0.15, mid.z)) * rotate_y(turn),
+        seed,
+    }
+}
+
+// ---- what's built where --------------------------------------------------------------------------
+
+/// A thing to realize: a stone (at, radius, squash, seed), the tower, or a wall (two ends).
+pub enum Built: Copy {
+    Stone { at: vec2, radius: f32, squash: vec3, seed: u32 },
+    Slab { at: vec2, half: vec3, seed: u32 },
+    Tower { at: vec2 },
+    Wall { a: vec2, b: vec2, tall: f32, seed: u32 },
+}
+
+/// Everything built on the floor's map, from its sites: a ring's standing stones (tall slabs), a
+/// waystone (an upright slab), a seat or a cairn (a squat stone), the tower, a ruin's walls, and
+/// rubble at the tower's foot and in the ruins.
+pub fn built(m: Map) -> Vec<Built> {
+    var out: Vec<Built> = Vec::new()
+    var seed = 500
+    for k in m.sites {
+        seed += 17
+        match k.feature {
+            Feature::Ring => {
+                let n = if k.kind == SiteKind::Arena { stones::RING_STONES + 6 } else {
+                    stones::RING_STONES
+                }
+                for i in 0..n {
+                    let a = TAU * f32(i) / f32(n) + 0.2
+                    let at = k.at + vec2(cos(a), sin(a)) * k.reach * stones::RING_AT
+                    let tall = k.tall * (0.7 + 0.5 * rand(seed + i, 1))
+                    out.push(Built::Slab { at, half: vec3(0.5, tall * 0.5, 0.28), seed: seed + i })
+                }
+            },
+            Feature::Tower => {
+                out.push(Built::Tower { at: k.at })
+                // Rubble at its foot, toward the break.
+                for i in 0..9 {
+                    let a = 2.2 + 1.6 * (rand(seed + i, 2) - 0.5) + TAU * 0.5
+                    let r = stones::TOWER_RADIUS + 1.0 + 4.0 * rand(seed + i, 3)
+                    out.push(
+                        Built::Stone {
+                            at: k.at + vec2(cos(a), sin(a)) * r,
+                            radius: 0.35 + 0.4 * rand(seed + i, 4),
+                            squash: vec3(1.2, 0.7, 1.0),
+                            seed: seed + 40 + i,
+                        },
+                    )
+                }
+            },
+            Feature::Stone => {
+                if k.tall <= 2.5 {
+                    let r = 0.3 + 0.15 * k.tall
+                    if k.kind == SiteKind::Waystone {
+                        out.push(
+                            Built::Slab { at: k.at, half: vec3(0.28, k.tall * 0.5, 0.18), seed },
+                        )
+                    } else {
+                        out.push(
+                            Built::Stone { at: k.at, radius: r, squash: vec3(1.3, 0.8, 1.1), seed },
+                        )
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+    for w in stones::walls(m) {
+        seed += 3
+        out.push(Built::Wall { a: w.xy, b: w.zw, tall: 2.2, seed })
+    }
+    out
+}
+
+/// Built thing `b` realized, standing on the ground (`height`).
+pub fn realize(b: Built, height: fn(vec2) -> f32) -> Realized {
+    match b {
+        Built::Stone { at, radius, squash, seed } => {
+            let y = height(at) + radius * squash.y * (if squash.y > 1.5 { 0.85 } else { 0.35 })
+            realize_stone(
+                radius: radius,
+                squash: squash,
+                seed: seed,
+                at: vec3(at.x, y, at.y),
+                turn: TAU * rand(seed, 4),
+            )
+        },
+        Built::Slab { at, half, seed } => realize_slab(
+            vec3(at.x, height(at), at.y),
+            half,
+            seed,
+            TAU * rand(seed, 5),
+        ),
+        Built::Tower { at } => realize_tower(vec3(at.x, height(at), at.y)),
+        Built::Wall { a, b, tall, seed } => realize_wall(
+            vec3(a.x, height(a), a.y),
+            vec3(b.x, height(b), b.y),
+            tall,
+            seed,
+        ),
+    }
+}
