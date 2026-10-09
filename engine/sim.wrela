@@ -3,10 +3,9 @@
 // trait with a structural check (D-078): every field of a type that declares it must have it,
 // so presentation data can't slip into what's rolled back. The engine writes its message.
 
-use creature::{Bone, Chain, Leg, Skeleton}
+use creature::{Bone, Chain, Skeleton}
 use rng::{Rng, Seed}
 use std::arena::{Arena, Handle, SortedMap}
-use std::field::Surface
 use std::hash::StateHash
 use std::serialize::Serialize
 use std::units::{cm, m}

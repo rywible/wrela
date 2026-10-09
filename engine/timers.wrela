@@ -3,9 +3,7 @@
 // closure couldn't be: each closure has its own type, there's no `dyn` to put two in one `Vec`,
 // and a closure has no `Serialize` (§6.7).
 
-use sim::{Sim, SimState, Tick}
-use std::hash::StateHash
-use std::serialize::Serialize
+use sim::{Sim, Tick}
 
 pub struct Timers<A>: Sim {
     /// Sorted by when they're due, then by the order they were set.

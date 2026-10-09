@@ -214,12 +214,22 @@ pub fn multiple(m: Texture<Rgba16Float>, s: Sampler, r: f32, mu_s: f32) -> vec3 
     m.sample_level(s, multiple_uv(r, mu_s)).rgb
 }
 
+/// The angle from straight down to the planet's horizon, seen from radius `r`.
+pub fn horizon_of(r: f32) -> f32 {
+    let horizon = sqrt(max(r * r - BOTTOM * BOTTOM, 0.0))
+    acos(clamp(horizon / r, -1.0, 1.0))
+}
+
 /// Where the sky's table holds the direction whose cosine from the zenith is `mu` and whose
 /// azimuth's cosine from the sun's is `c`, from radius `r`: elevations crowded toward the
 /// horizon, azimuths toward the sun (Hillaire's mapping).
 pub fn view_uv(r: f32, mu: f32, c: f32) -> vec2 {
-    let horizon = sqrt(max(r * r - BOTTOM * BOTTOM, 0.0))
-    let beta = acos(clamp(horizon / r, -1.0, 1.0))
+    view_uv_at(horizon_of(r), mu, c)
+}
+
+/// `view_uv` from where the horizon is (`horizon_of` the radius: `beta`), which a frame's sky
+/// finds once (`light::Light::horizon`).
+pub fn view_uv_at(beta: f32, mu: f32, c: f32) -> vec2 {
     let zenith_horizon = PI - beta
     let a = acos(clamp(mu, -1.0, 1.0))
     let v = if a < zenith_horizon {
@@ -235,8 +245,7 @@ pub fn view_uv(r: f32, mu: f32, c: f32) -> vec2 {
 /// coordinate `uv`, from radius `r`.
 fn view_mu_c(r: f32, uv: vec2) -> (f32, f32) {
     let (u, v) = (from_texels(uv.x, VIEW_W), from_texels(uv.y, VIEW_H))
-    let horizon = sqrt(max(r * r - BOTTOM * BOTTOM, 0.0))
-    let beta = acos(clamp(horizon / r, -1.0, 1.0))
+    let beta = horizon_of(r)
     let zenith_horizon = PI - beta
     let mu = if v < 0.5 {
         let k = 1.0 - 2.0 * v

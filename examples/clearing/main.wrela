@@ -1058,6 +1058,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         out,
         blend: 0.12,
         fresh: if s.frames == 0 || !on(s.off, System::History) { 1 } else { 0 },
+        jitter: engine::view::jitter_of(cam.frame),
         creature,
     }
     label("temporal")

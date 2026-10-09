@@ -3,13 +3,14 @@
 // continuous light (the world's gouache, #28 §7), or two bands and a soft terminator
 // (characters' cel). Every pass that shades reads one `Light`, and the air's tables.
 
-use air::{Air, aerial_uvw, azimuth_cos, radius_of, sun_at, view_uv}
+use air::{Air, aerial_uvw, azimuth_cos, horizon_of, radius_of, sun_at, view_uv_at}
 use std::gpu::{Rgba16Float, Sampler, Texture, Texture3d}
 use std::math::PI
 
 /// The light a frame is lit by: toward the sun, the sun's light at the ground (a white surface
 /// facing it reflects this), the tone curve's exposure, and the eye's height (m) the air's
-/// tables were cooked from. And for a test of the sky light, `sky_test`: 1, every surface's sky
+/// tables were cooked from, and the planet's horizon from there (`air::horizon_of`, which the
+/// sky's table is read by). And for a test of the sky light, `sky_test`: 1, every surface's sky
 /// light set to `sky_sh`, spherical harmonics' first two bands (`probes::sky_light`), so the
 /// test learns how each pixel answers to it; 2, the probes' as usual. Either way, no gloss
 /// reflects it (`probes::sky_lights`): the test measures the light a surface scatters.
@@ -20,6 +21,7 @@ pub struct Light: Copy + GpuData {
     pub sky_test: u32 = 0,
     pub sky_sh: vec4 = vec4(0.0),
     pub eye: f32,
+    pub horizon: f32,
 }
 
 /// Luminance's weights (linear Rec. 709).
@@ -31,14 +33,19 @@ pub const SUN_TOP = vec3(5.21)
 
 /// The light of `air`'s sun, at the eye's height.
 pub fn sunlight(air: Air) -> Light {
-    Light { sun: air.sun, exposure: 0.62, sun_colour: sun_at(air, air.eye), eye: air.eye }
+    Light {
+        sun: air.sun,
+        exposure: 0.62,
+        sun_colour: sun_at(air, air.eye),
+        eye: air.eye,
+        horizon: horizon_of(radius_of(air.eye)),
+    }
 }
 
 /// The sky seen along `dir` (a unit vector) from the eye, from the air's sky table (`view`,
 /// through `s`, a linear sampler): no sun's disc.
 pub fn sky(view: Texture<Rgba16Float>, s: Sampler, light: Light, dir: vec3) -> vec3 {
-    let r = radius_of(light.eye)
-    view.sample_level(s, view_uv(r, dir.y, azimuth_cos(light.sun, dir))).rgb
+    view.sample_level(s, view_uv_at(light.horizon, dir.y, azimuth_cos(light.sun, dir))).rgb
 }
 
 /// The sun's disc along `dir`: its light through the air, spread over the disc.
@@ -68,7 +75,7 @@ pub fn hazed(
 /// its sky light (from the probes, occluded) and bounce, and the light that passes through it
 /// (leaves, grass: a colour per unit of sun; zero for what's solid). And its gloss: its
 /// roughness (perceptual: 0 a mirror, 1 matte), and the light round it toward its reflection
-/// of the eye's ray (from the probes too: `lit::sky_gloss`), which a matte surface reflects
+/// of the eye's ray (from the probes too: `lit::sun_and_gloss`), which a matte surface reflects
 /// little of and a mirror all; and how much of the sun's glint it shows (`glint`: 1 for a
 /// glossy surface). By default, none: neither glint nor reflection.
 pub struct Lit: Copy {

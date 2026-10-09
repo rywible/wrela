@@ -11,9 +11,8 @@
 // and mirrored. Every block is a union of exact distances (round cones, spheres, ovals inside),
 // blended smoothly, so the whole has a gradient near 1 (`diagnose`).
 
-use creature::{Body, Bone, Group, Inside, Modify, Placed, Skeleton, Then, creature, group, smooth}
+use creature::{Body, Group, Inside, Modify, Placed, Skeleton, Then, creature, group, smooth}
 pub use creature::{Ground, ground}
-use std::derive::Box3
 use std::field::{
     Blend, Field, Lipschitz, Oval, PartName, Rotate, SmoothUnionAll, Surface, Translate, Tube, oval,
     round_cone, smax, smin, tube,

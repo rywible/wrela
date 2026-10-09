@@ -5,7 +5,7 @@
 
 use creature::{Bone, Creature, Parts}
 use std::derive::{Box3, interval}
-use std::field::{Bound, Field, Surface}
+use std::field::Bound
 use std::hash::StateHash
 
 /// What a quantity is gathered per.

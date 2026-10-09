@@ -13,7 +13,7 @@
 use light::{Lit}
 use lod::{draw_packed, keeps_packed}
 use lit::{Lighting, shown, sun_and_sky}
-use noise::{cell_size, hash2, hashed_threshold_of, surface_draw}
+use noise::{cell_size, hash2, hash2u, hashed_threshold_of, surface_draw}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_VERTICES, Leaves, Plant, Wind, card_tint,
     card_turn, leaf_age, leaf_at, leaf_draws, leaf_normal, level_cards, limb_vertex, sway, tinted,
@@ -833,9 +833,9 @@ fn march_volume(
 }
 
 /// A far instance's own seed, for its draws that hold still on it: from where it stands (its
-/// quad's middle doesn't sway).
+/// quad's middle doesn't sway), the 24 bits of its lattice's hash that `noise::hash2` reads.
 fn seed_of(f: FarVertex) -> u32 {
-    u32(hash2(i32(floor(f.centre.x * 8.0)), i32(floor(f.centre.z * 8.0))) * 16777216.0)
+    hash2u(i32(floor(f.centre.x * 8.0)), i32(floor(f.centre.z * 8.0)), 0) >> 8
 }
 
 /// A very far instance cut by its volume's opacity, dithered: temporal AA brings it to the

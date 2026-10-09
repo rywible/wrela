@@ -11,10 +11,7 @@
 // rest in step. Every part is an exact distance (`round_cone`, `tube`) or an `oval`, so the
 // whole has a gradient near 1 (`diagnose`).
 
-use creature::{
-    Body, Bone, Group, Inside, Members, Placed, Skeleton, Then, creature, group, hard, smooth,
-}
-use std::derive::Box3
+use creature::{Body, Group, Inside, Placed, Skeleton, Then, creature, group, hard, smooth}
 use std::field::{
     Cuboid, Intersect, Lipschitz, Oval, Rotate, RoundCone, Sphere, Surface, Translate, Tube, With,
     cuboid, oval, round_cone, smin, sphere, tube,

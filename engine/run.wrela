@@ -11,7 +11,7 @@
 use sim::{Sim, Tick}
 use timeline::Timeline
 use std::handoff::{Latest, Publisher, handoff}
-use std::hash::{StateHash, state_hash}
+use std::hash::state_hash
 use std::input::Event
 use std::par::{Job, job}
 use std::tick::{Ticked, start}

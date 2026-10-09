@@ -6,25 +6,35 @@
 use std::field::hash_u32
 use std::math::TAU
 
+/// A hash's top 24 bits as a value in [0, 1).
+fn unit(h: u32) -> f32 {
+    f32(h >> 8) * (1.0 / 16777216.0)
+}
+
+/// A lattice point's hash, of a seed's lattice (`hash2`'s is seed 0).
+pub fn hash2u(x: i32, y: i32, seed: u32) -> u32 {
+    hash_u32(u32(x).wrapping_mul(1597334677) ^ u32(y).wrapping_mul(3812015801) ^ seed)
+}
+
 /// A lattice point's value in [0, 1).
 pub fn hash2(x: i32, y: i32) -> f32 {
-    let h = hash_u32(u32(x).wrapping_mul(1597334677) ^ u32(y).wrapping_mul(3812015801))
-    f32(h >> 8) * (1.0 / 16777216.0)
+    unit(hash2u(x, y, 0))
 }
 
 /// A lattice point's value in [0, 1), in 3D.
 pub fn hash3(x: i32, y: i32, z: i32) -> f32 {
-    let h = hash_u32(
-        u32(x).wrapping_mul(1597334677) ^
-            u32(y).wrapping_mul(3812015801) ^
-            u32(z).wrapping_mul(2798796415),
+    unit(
+        hash_u32(
+            u32(x).wrapping_mul(1597334677) ^
+                u32(y).wrapping_mul(3812015801) ^
+                u32(z).wrapping_mul(2798796415),
+        ),
     )
-    f32(h >> 8) * (1.0 / 16777216.0)
 }
 
 /// A whole number's draw in [0, 1), for placing things: `n`'s `k`th.
 pub fn rand(n: u32, k: u32) -> f32 {
-    f32(hash_u32(n.wrapping_mul(2654435761) ^ hash_u32(k)) >> 8) * (1.0 / 16777216.0)
+    unit(hash_u32(n.wrapping_mul(2654435761) ^ hash_u32(k)))
 }
 
 /// `n`'s `k`th draw, in [lo, hi).
@@ -106,20 +116,7 @@ pub fn ridged2(p: vec2, octaves: u32) -> f32 {
 
 /// A cell's draw in [0, 1): the cell at `c` (whole numbers) of a seed's lattice.
 pub fn cell_draw(c: vec2, seed: u32) -> f32 {
-    let h = hash_u32(
-        u32(i32(c.x)).wrapping_mul(1597334677) ^ u32(i32(c.y)).wrapping_mul(3812015801) ^ seed,
-    )
-    f32(h >> 8) * (1.0 / 16777216.0)
-}
-
-/// Wyman and McGuire's hashed alpha threshold (I3D 2017): a draw in (0, 1] for the point `p` of
-/// a surface's own coordinates, which holds still on the surface. `p` is cut into cells `cell`
-/// pixels wide (at the two powers of two round that size in `p`'s units, the draws blended by
-/// where it falls between them and made uniform again), so as temporal AA's jitter moves a
-/// pixel's sample over the surface, a pixel a part `c` covered is kept `c` of the time. A
-/// fragment shader's, in uniform control flow (its derivatives).
-pub fn hashed_threshold(p: vec2, seed: u32, cell: f32) -> f32 {
-    hashed_threshold_of(p, seed, cell_size(p, cell))
+    unit(hash2u(i32(c.x), i32(c.y), seed))
 }
 
 /// How wide a cell `cell` pixels wide is in `p`'s units (for `hashed_threshold_of`): a fragment
@@ -128,14 +125,24 @@ pub fn cell_size(p: vec2, cell: f32) -> f32 {
     max(length(dpdx(p)), length(dpdy(p))) * cell
 }
 
-/// `hashed_threshold` with its cells `size` wide in `p`'s units (`cell_size`): it takes no
-/// derivatives, so a shader can draw it only where it needs it (a pixel a leaf covers in part).
-pub fn hashed_threshold_of(p: vec2, seed: u32, size: f32) -> f32 {
+/// The finer of the two powers of two round `size`, and how far `size` is from it toward the
+/// coarser (in [0, 1), in octaves).
+fn octave_of(size: f32) -> (f32, f32) {
     let level = log2(max(size, 1.0e-8))
-    let lo = exp2(floor(level))
+    (exp2(floor(level)), fract(level))
+}
+
+/// Wyman and McGuire's hashed alpha threshold (I3D 2017): a draw in (0, 1] for the point `p` of
+/// a surface's own coordinates, which holds still on the surface. `p` is cut into cells `size`
+/// wide in its units (`cell_size`: a few pixels; at the two powers of two round that size, the
+/// draws blended by where it falls between them and made uniform again), so as temporal AA's
+/// jitter moves a pixel's sample over the surface, a pixel a part `c` covered is kept `c` of the
+/// time. It takes no derivatives, so a shader can draw it only where it needs it (a pixel a leaf
+/// covers in part).
+pub fn hashed_threshold_of(p: vec2, seed: u32, size: f32) -> f32 {
+    let (lo, f) = octave_of(size)
     let a = cell_draw(floor(p / lo), seed)
     let b = cell_draw(floor(p / (lo * 2.0)), seed ^ 2654435769)
-    let f = fract(level)
     let x = mix(a, b, f)
     // The blend of two uniform draws is trapezoidal: its distribution maps it back to uniform.
     let m = max(min(f, 1.0 - f), 1.0e-6)
@@ -155,7 +162,6 @@ pub fn hashed_threshold_of(p: vec2, seed: u32, size: f32) -> f32 {
 /// seed's. For shading that varies pixel to pixel but not frame to frame. A fragment shader's,
 /// in uniform control flow (its derivatives).
 pub fn surface_draw(p: vec2, seed: u32, k: u32, cell: f32) -> f32 {
-    let size = max(length(dpdx(p)), length(dpdy(p))) * cell
-    let lo = exp2(floor(log2(max(size, 1.0e-8))))
+    let (lo, _) = octave_of(cell_size(p, cell))
     cell_draw(floor(p / lo), seed ^ hash_u32(k))
 }

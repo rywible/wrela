@@ -15,7 +15,7 @@
 // and a resolve gathering its own 3 × 3 took twice as long.
 
 use std::gpu::{DepthTexture, FragCoord, GlobalId, Rgba16Float, Sampler, Texels, Texture}
-use view::{CREATURE, Camera, class_of, jitter_of, thin}
+use view::{CREATURE, Camera, class_of, thin}
 
 /// What the resolve reads besides the textures: the scene camera (at the scene's size), the
 /// output's size, how much of this frame a pixel takes when a sample falls on it, and whether
@@ -25,6 +25,9 @@ pub struct Resolve: Copy + GpuData {
     pub out: vec2,
     pub blend: f32,
     pub fresh: u32,
+    /// How the jitter shifted the scene's samples in their pixels (in the scene's pixels:
+    /// `view::jitter_of` the camera's frame, a still camera's too), found once a frame.
+    pub jitter: vec2,
     /// Where on the output the creature can be, now or last frame (a rectangle, its corners in
     /// output pixels: `seen_box`; empty for none): where the history is checked for it.
     pub creature: vec4,
@@ -160,7 +163,7 @@ pub fn resolve(
     let q = pixel.position.xy * scale
     // The samples were taken at their pixels' centres, the image shifted by the jitter: sample
     // (i, j) shows what's at (i + 0.5, j + 0.5) - jitter, unjittered.
-    let j = jitter_of(cam.frame)
+    let j = r.jitter
     // The four samples round the point, which a bilinear reconstruction would read.
     let base = vec2i(floor(q + j - vec2(0.5)))
     let lim = vec2i(i32(in_size.x) - 1, i32(in_size.y) - 1)

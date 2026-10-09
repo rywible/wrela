@@ -41,7 +41,7 @@ pub struct Lod: Copy + GpuData {
     pub top: f32,
     pub reach: f32,
     pub card_px: f32,
-    /// How wide a cut's hashed cell is, in the scene's pixels (`noise::hashed_threshold`): an
+    /// How wide a cut's hashed cell is, in the scene's pixels (`noise::hashed_threshold_of`): an
     /// output pixel, so a scene drawn at half the output's size and one drawn at its size cut
     /// the same cells, and temporal AA's jitter sweeps a sample over several.
     pub cell: f32,

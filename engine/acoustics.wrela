@@ -4,7 +4,7 @@
 
 use std::audio::SAMPLE_RATE
 use std::derive::{Box3, interval}
-use std::field::{Blend, Field, Surface}
+use std::field::{Blend, Field}
 use std::hash::StateHash
 use std::math::{TAU, cos, exp, sin}
 use std::serialize::Serialize
