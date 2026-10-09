@@ -1,10 +1,25 @@
-// Text: two fonts as signed distance fields (Inter for the UI, JetBrains Mono for source), made
-// by tools/wfont from ui/fonts, and laid out a line at a time. A glyph's field is sampled at
-// 32 pixels per em; the GPU reads it at any size (draw.wrela), from 10 to 72 pixels.
+// Text: two fonts as signed distance fields (Inter for the UI, JetBrains Mono for source), baked
+// from ui/fonts when the program is built (ttf.wrela), and laid out a line at a time. A glyph's
+// field is sampled at 32 pixels per em; the GPU reads it at any size (draw.wrela), from 10 to
+// 72 pixels.
 
-/// The `.wfont` files (tools/wfont's format): embedded, so they're in the build's data.
-const SANS_FILE: Bytes = embed("fonts/inter.wfont")
-const MONO_FILE: Bytes = embed("fonts/mono.wfont")
+use ttf::{Baked, bake}
+
+/// The fonts, baked from their files: constants, so a build holds each once, and the build's
+/// cache keeps them while the files and the baker are as they were.
+@fuel(2 ** 38)
+const SANS: Baked = bake(embed("fonts/Inter-Regular-Latin1.ttf"), em: 32.0, spread: 4.0)
+
+@fuel(2 ** 38)
+const MONO: Baked = bake(embed("fonts/JetBrainsMono-Regular-Latin1.ttf"), em: 32.0, spread: 4.0)
+
+/// A face's baked font.
+fn baked(face: Face) -> borrow Baked {
+    match face {
+        Face::Sans => SANS,
+        Face::Mono => MONO,
+    }
+}
 
 /// Which font.
 pub enum Face: Copy + Eq {
@@ -22,14 +37,14 @@ pub struct Glyph: Copy {
     pub top: f32,
     pub width: u32,
     pub height: u32,
-    /// Into the file's fields.
+    /// Into the baked font's fields.
     offset: u32,
     /// Its top-left texel in the atlas.
     pub atlas_x: u32,
     pub atlas_y: u32,
 }
 
-/// A font, read from its file when the program starts.
+/// A font, from its baked constant when the program starts.
 pub struct Font: Clone {
     /// The pixels per em its fields were sampled at, and the distance (in those pixels) that
     /// the field's 0 and 255 stand for.
@@ -44,77 +59,63 @@ pub struct Font: Clone {
     index: [u32; 256],
     /// The advance's change between two glyphs, by `left * count + right`: ems.
     kerning: Vec<f32>,
-    file: Bytes,
-    fields_at: u32,
+    /// Whose fields its glyphs' are.
+    face: Face,
     /// `?`'s glyph: what a character the font hasn't shows.
     missing: u32,
 }
 
-fn u32_at(b: Bytes, at: u32) -> u32 {
-    u32(b.at(at)) | (u32(b.at(at + 1)) << 8) | (u32(b.at(at + 2)) << 16) | (u32(b.at(at + 3)) << 24)
-}
-
-fn f32_at(b: Bytes, at: u32) -> f32 {
-    bitcast_f32(u32_at(b, at))
-}
-
 impl Font {
-    /// Reads a `.wfont` file; panics if it isn't one.
-    pub fn read(file: Bytes) -> Font {
-        assert(file.len() > 40 && file.at(0) == 87 && file.at(3) == 84, "not a .wfont file")
-        assert(u32_at(file, 4) == 1, "a .wfont file of another version")
-        let n = u32_at(file, 28)
-        let pairs = u32_at(file, 32)
+    /// The font of `face`: its glyphs, each code point's, and its kerning by glyph.
+    pub fn of(face: Face) -> Font {
+        borrow b = baked(face)
+        let n = b.glyphs.len()
         var glyphs: Vec<Glyph> = Vec::with_capacity(n)
         var index = [0; 256]
         for i in 0..n {
-            let at = 40 + i * 32
-            let cp = u32_at(file, at)
+            let g = b.glyphs[i]
             glyphs.push(
                 Glyph {
-                    advance: f32_at(file, at + 4),
-                    left: f32_at(file, at + 8),
-                    top: f32_at(file, at + 12),
-                    width: u32_at(file, at + 16),
-                    height: u32_at(file, at + 20),
-                    offset: u32_at(file, at + 24),
+                    advance: g.advance,
+                    left: g.left,
+                    top: g.top,
+                    width: g.width,
+                    height: g.height,
+                    offset: g.offset,
                     atlas_x: 0,
                     atlas_y: 0,
                 },
             )
-            if cp < 256 {
-                index[cp] = i + 1
+            if g.codepoint < 256 {
+                index[g.codepoint] = i + 1
             }
         }
         var kerning: Vec<f32> = Vec::filled(n * n, 0.0)
-        let kern_at = 40 + n * 32
-        for k in 0..pairs {
-            let at = kern_at + k * 4
-            let a = u32(file.at(at))
-            let b = u32(file.at(at + 1))
-            let bits = u32(file.at(at + 2)) | (u32(file.at(at + 3)) << 8)
-            // An i16 in 1/8192 ems.
-            let v = if bits >= 32768 { f32(bits) - 65536.0 } else { f32(bits) }
-            kerning[a * n + b] = v / 8192.0
+        for k in b.kerning {
+            kerning[k.left * n + k.right] = f32(k.units) / 8192.0
         }
         let missing = if index[63] > 0 { index[63] - 1 } else { 0 }
         Font {
-            em: f32_at(file, 8),
-            spread: f32_at(file, 12),
-            ascender: f32_at(file, 16),
-            descender: f32_at(file, 20),
-            line_gap: f32_at(file, 24),
+            em: b.em,
+            spread: b.spread,
+            ascender: b.ascender,
+            descender: b.descender,
+            line_gap: b.line_gap,
             glyphs,
             index,
             kerning,
-            file,
-            fields_at: kern_at + pairs * 4,
+            face,
             missing,
         }
     }
 
     pub fn count(self) -> u32 {
         self.glyphs.len()
+    }
+
+    /// The bytes of its glyphs' fields, all of them.
+    pub fn field_bytes(self) -> u32 {
+        baked(self.face).fields.len()
     }
 
     /// The index of the glyph for code point `cp`: `?`'s for one the font hasn't.
@@ -128,7 +129,7 @@ impl Font {
 
     /// Byte `k` of glyph `i`'s field (rows from the top).
     pub fn field_byte(self, i: u32, k: u32) -> u8 {
-        self.file.at(self.fields_at + self.glyphs[i].offset + k)
+        baked(self.face).fields[self.glyphs[i].offset + k]
     }
 
     /// The kerning between glyphs `a` and `b`: ems added to `a`'s advance.
@@ -255,10 +256,10 @@ fn pack(font: mut Font, width: u32, start: u32) -> u32 {
 }
 
 impl Fonts {
-    /// Reads both fonts, and places their glyphs in an atlas 1024 texels wide.
+    /// Both fonts, their glyphs placed in an atlas 1024 texels wide.
     pub fn load() -> Fonts {
-        var sans = Font::read(SANS_FILE)
-        var mono = Font::read(MONO_FILE)
+        var sans = Font::of(Face::Sans)
+        var mono = Font::of(Face::Mono)
         let width = 1024
         let mid = pack(mut sans, width, 1)
         let height = pack(mut mono, width, mid)
