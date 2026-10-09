@@ -1426,6 +1426,14 @@ pub fn test_reference(s: mut Clearing, first: u32, count: u32, step: u32, rays: 
 
 /// Whether everything cooked at load is done (1), and how far along its path the camera is (s;
 /// negative before it starts).
+/// The clipmap's layout (`engine::terrain`), which a capture of its texels has: a level's texels
+/// a side, its quads a side, a row's texels in the buffer, and a level's.
+@testing
+pub fn test_clip_layout() -> vec4 {
+    let t = (engine::terrain::SIDE, engine::terrain::QUADS, engine::terrain::ROW)
+    vec4(f32(t.0), f32(t.1), f32(t.2), f32(engine::terrain::STRIDE))
+}
+
 /// How many of the last frame's blades (every tier's) are rooted well under a boulder
 /// (`testing::under_boulders`), in a new buffer (the newest).
 @testing
