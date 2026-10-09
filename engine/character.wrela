@@ -4,18 +4,15 @@
 // second time into the motion target, from this frame's palette and the last, so temporal AA
 // reprojects it by its own motion; and cast into the moving shadow map every frame.
 
-use creature::{PartMask, Parts}
+use creature::Parts
 use light::{Lit}
-use lit::{Lighting, sky_at, sun_at, through_air}
-use probes::Probe
+use lit::{Lighting, sun_and_sky, through_air}
 use realize::{Mesh, SkinVertex, Tally}
 use render::{Look, skin_matrix}
 use std::gpu::{
-    ClipPosition, ComparisonSampler, DepthTexture, Flat, GlobalId, GpuBuffer, Sampler, Slots,
-    Texture, Texture3d, Unorm8x4, VertexIndex, buffer, dispatch,
+    ClipPosition, Flat, GlobalId, GpuBuffer, Slots, Unorm8x4, VertexIndex, buffer, dispatch,
 }
 use temporal::motion_of
-use terrain::Texel
 use view::{CREATURE, Camera}
 
 /// Each vertex's colour, from the field's channels at it (under its mask, seen a cell wide),
@@ -119,8 +116,7 @@ pub fn character(
 @fragment
 pub fn character_shade(c: CharacterVertex, lt: Lighting) -> vec4 {
     let n = normalize(c.normal)
-    let sun = sun_at(lt, c.world, n, soft: 1.0)
-    let sky = sky_at(lt, c.world, n)
+    let (sun, sky) = sun_and_sky(lt, c.world, n, sky_n: n, soft: 1.0)
     let lit = Lit { albedo: c.albedo, n, sun, sky, through: vec3(0.0) }
     let open = probes::open_light(lt.probes, vec3(0.0, 1.0, 0.0))
     let colour = light::character(lt.light, lit, open, c.world, lt.cam.eye)

@@ -14,14 +14,13 @@
 //
 // Every texture the look lays on is anchored in the world (AC1).
 
-use light::{Light, tone}
+use light::{LUMA, tone}
 use noise::{hash2, noise3}
 use std::gpu::{
-    DepthTexture, FragCoord, GlobalId, LocalId, One, Rgba16Float, Sampler, Shared, Slots, Texture,
-    barrier,
+    DepthTexture, FragCoord, GlobalId, LocalId, One, Rgba16Float, Sampler, Shared, Texture, barrier,
 }
-use terrain::{Levels, Texel, ground_at, height_at}
-use view::{CREATURE, Camera, FLOWER, GRASS, GROUND, class_of, jitter_of}
+use terrain::{Levels, Texel, ground_at}
+use view::{CREATURE, Camera, FLOWER, GRASS, GROUND, LEAVES, class_of}
 
 /// The look's settings: how strong the dabs are on near surfaces, on broad far ones and on the
 /// sky; the paper's tooth; the bloom; the characters' lines (their width in output pixels, and
@@ -179,7 +178,7 @@ pub fn meter(
         let i = lid.x + 256 * k
         let at = (vec2(f32(i % 32), f32(i / 32)) + vec2(0.5)) / 32.0 * size
         let c = scene.load(x: u32(at.x), y: u32(at.y)).rgb
-        sum += log2(max(dot(c, vec3(0.2126, 0.7152, 0.0722)), 1.0e-4))
+        sum += log2(max(dot(c, LUMA), 1.0e-4))
     }
     let mine = sums.chunk(lid)
     sums.write(mine, 0, sum)
@@ -202,46 +201,42 @@ pub fn meter(
 }
 
 /// What the look's pass reads besides its textures: the scene's camera (unjittered: the output
-/// is), the light (its tone curve), the look, and the output's size.
+/// is), the look, and the output's size. (The tone curve's exposure is the metered one:
+/// `meter`.)
 pub struct Develop: Copy + GpuData {
     pub cam: Camera,
-    pub light: Light,
     pub look: Look,
     pub out: vec2,
 }
 
-/// The scene's depth nearest an output pixel's centre `px`, and where in the scene that is.
-fn depth_at(d: Develop, depth: DepthTexture, px: vec2) -> (f32, vec2) {
-    let scale = d.cam.screen / d.out
-    let q = px * scale
-    let p = min(vec2u(q), vec2u(d.cam.screen) - vec2u(1))
-    (depth.load(x: p.x, y: p.y), q)
+/// The scene's depth nearest an output pixel's centre `px`.
+fn depth_at(d: Develop, depth: DepthTexture, px: vec2) -> f32 {
+    let p = min(vec2u(px * (d.cam.screen / d.out)), vec2u(d.cam.screen) - vec2u(1))
+    depth.load(x: p.x, y: p.y)
 }
 
 /// How much of a character's line the output pixel at `p` is (on the character's own pixels,
 /// so the line is a darker shade of its colour): where a neighbour `line_px` away is well behind
 /// it (its silhouette), or is another of its parts a little behind it (where a part passes in
-/// front of another).
+/// front of another). Its depth is read only on a character's pixels.
 fn line(
     d: Develop,
     image: Texture<Rgba16Float>,
     depth: DepthTexture,
     p: vec2,
     here_tag: f32,
-    here_z: f32,
 ) -> f32 {
     if class_of(here_tag) != class_of(CREATURE) {
         return 0.0
     }
     let r = d.look.line_px
-    let near = d.cam.distance_of(here_z)
+    let near = d.cam.distance_of(depth_at(d, depth, p))
     var line = 0.0
     for k in 0..4 {
         let a = f32(k) * 1.5707964 + 0.4
         let q = clamp(p + vec2(cos(a), sin(a)) * r, vec2(0.0), d.out - vec2(1.0))
         let other = image.load(x: u32(q.x), y: u32(q.y)).a
-        let (z, _) = depth_at(d, depth, q)
-        let there = d.cam.distance_of(z)
+        let there = d.cam.distance_of(depth_at(d, depth, q))
         let other_char = class_of(other) == class_of(CREATURE)
         // Its silhouette: the neighbour isn't it, and is well behind it.
         let behind = if !other_char { smoothstep(0.03, 0.12, (there - near) / near) } else { 0.0 }
@@ -284,7 +279,7 @@ pub fn dab_map(
     let p = min(vec2u(px), size)
     // An output pixel's share of a scene pixel.
     let per_out = cam.screen.y / out.y
-    let still = Camera { jitter: vec2(0.0), ..cam }
+    let still = cam.unjittered()
     let class = class_of(scene.load(x: p.x, y: p.y).a)
     let z = depth.load(x: p.x, y: p.y)
     if class == 0 || z <= 0.0 {
@@ -327,13 +322,13 @@ pub fn dab_map(
         n = -n
     }
     if class == class_of(GROUND) || class == class_of(GRASS) || class == class_of(FLOWER) {
-        let (ground_n, _, _) = ground_at(levels, texels, world.xz)
+        let (ground_n, _, ground_y) = ground_at(levels, texels, world.xz)
         n = ground_n
         // Grass and flowers are painted on the ground they grow from: where the texel's
         // unjittered ray meets the terrain's plane there, which the blades' jittered samples
         // don't move.
         if class != class_of(GROUND) {
-            let ground = vec3(world.x, height_at(levels, texels, world.xz), world.z)
+            let ground = vec3(world.x, ground_y, world.z)
             let ray = still.ray(px)
             let across = dot(ray, n)
             if abs(across) > 0.05 {
@@ -343,11 +338,11 @@ pub fn dab_map(
     }
     // A crown is a mass of leaves, each tilted its own way: its dabs lie across the line of
     // sight, as a painter lays a crown's.
-    if class == 3 {
+    if class == class_of(LEAVES) {
         n = normalize(cam.eye - world)
     }
     // Broad things take stronger dabs: the far ground, crowns; characters half.
-    let broad = if class == 3 { 1.0 } else { smoothstep(30.0, 250.0, dist) }
+    let broad = if class == class_of(LEAVES) { 1.0 } else { smoothstep(30.0, 250.0, dist) }
     var strength = mix(look.dabs_near, look.dabs_far, broad)
     if class == class_of(CREATURE) {
         strength *= 0.5
@@ -400,8 +395,7 @@ pub fn develop(
     paint += glow.load(x: gq.x, y: gq.y).rgb * look.bloom
     var c = tone(paint, exposure[0].value)
     // The characters' lines: a darker shade of their colour.
-    let (z, _) = depth_at(d, depth, px)
-    let l = line(d, image, depth, px, here.a, z)
+    let l = line(d, image, depth, px, here.a)
     if l > 0.0 {
         c = mix(c, c * look.line_dark, vec3(l))
     }

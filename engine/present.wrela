@@ -80,7 +80,7 @@ impl<S: Copy + Plain> Snapshots<S> {
 }
 
 /// `d` the short way round a cycle `period` long: within half a period of 0.
-fn short_way(d: f32, period: f32) -> f32 {
+pub fn short_way(d: f32, period: f32) -> f32 {
     var w = d
     while w > 0.5 * period {
         w -= period

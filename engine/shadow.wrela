@@ -7,20 +7,21 @@
 use std::gpu::{ComparisonSampler, DepthTexture}
 use std::math::TAU
 use std::transform::{look_at, ortho}
-use view::Camera
 
 /// The sun's views: each map's light-space-to-clip matrix, the basis the sun sees (for cards
-/// that face it), toward it, the frame's tap turn, and each map's texel size (m).
+/// that face it), each map's texel size (m), the disc's taps turned by the frame's turn (`TAPS`,
+/// two to a vec4, in texels), and each map's texel in its uv (the near map's, the far's, the
+/// moving one's).
 pub struct Shadows: Copy + GpuData {
     pub near: mat4,
     pub far: mat4,
     pub moving: mat4,
     pub right: vec3,
-    pub turn: f32,
-    pub up: vec3,
     pub near_texel: f32,
-    pub toward: vec3,
+    pub up: vec3,
     pub far_texel: f32,
+    pub taps: [vec4; 2],
+    pub texel_uv: vec3,
     pub moving_texel: f32,
 }
 
@@ -40,8 +41,9 @@ pub fn sun_view(sun: vec3, centre: vec3, span: f32, reach: f32) -> mat4 {
         look_at(centre + sun * reach, centre)
 }
 
-/// The shadows for a frame: the static cascades `near` and `far`, and the moving map round
-/// `moving_at`, `moving_span` wide, `moving_side` texels a side.
+/// The shadows for a frame: the static cascades `near` and `far` (their maps each `side` texels
+/// a side), and the moving map round `moving_at`, `moving_span` wide, `moving_side` texels a
+/// side.
 pub fn shadows(
     sun: vec3,
     near: Cascade,
@@ -63,17 +65,24 @@ pub fn shadows(
         dot(moving_at, fwd),
     )
     let centre = right * snapped.x + up * snapped.y + fwd * snapped.z
+    // The taps turned with temporal AA's jitter, whose cycle is 16 frames: a still frame repeats.
+    let turn = TAU * noise::rand(frame % 16, 3)
+    let (c, sn) = (cos(turn), sin(turn))
+    var t = [vec2(0.0); 4]
+    for i in 0..4 {
+        let p = TAPS[i]
+        t[i] = vec2(c * p.x - sn * p.y, sn * p.x + c * p.y)
+    }
     Shadows {
         near: sun_view(s, near.centre, near.span, near.reach),
         far: sun_view(s, far.centre, far.span, far.reach),
         moving: sun_view(s, centre, moving_span, 40.0),
         right,
-        // Turned with temporal AA's jitter, whose cycle is 16 frames: a still frame repeats.
-        turn: TAU * noise::rand(frame % 16, 3),
-        up,
         near_texel: near.span / f32(near.side),
-        toward: s,
+        up,
         far_texel: far.span / f32(far.side),
+        taps: [vec4(t[0], t[1]), vec4(t[2], t[3])],
+        texel_uv: vec3(1.0) / vec3(f32(near.side), f32(far.side), f32(moving_side)),
         moving_texel: texel,
     }
 }
@@ -81,11 +90,13 @@ pub fn shadows(
 /// The 4 taps of a disc, in texels; turned each frame (16 turns, over and over).
 const TAPS = [vec2(0.5, 0.2), vec2(-0.6, 0.9), vec2(-0.9, -0.7), vec2(0.8, -1.1)]
 
-/// How lit `p` is in one map (`view`'s), `soft` texels of penumbra, biased `bias` in depth.
+/// How lit `p` is in one map (`view`'s, one of its texels `texel_uv` of its uv), `soft` texels
+/// of penumbra, biased `bias` in depth.
 fn lookup(
     sh: Shadows,
     view: mat4,
     map: DepthTexture,
+    texel_uv: f32,
     s: ComparisonSampler,
     p: vec3,
     soft: f32,
@@ -102,13 +113,9 @@ fn lookup(
     if !inside {
         return (1.0, false)
     }
-    let (c, sn) = (cos(sh.turn), sin(sh.turn))
-    let texel = soft / f32(map.width())
-    var lit = 0.0
-    for t in TAPS {
-        let o = vec2(c * t.x - sn * t.y, sn * t.x + c * t.y) * texel
-        lit += map.sample_compare_level(s, uv + o, lp.z - bias)
-    }
+    let texel = soft * texel_uv
+    let at = |o: vec2| map.sample_compare_level(s, uv + o * texel, lp.z - bias)
+    let lit = at(sh.taps[0].xy) + at(sh.taps[0].zw) + at(sh.taps[1].xy) + at(sh.taps[1].zw)
     (lit / 4.0, true)
 }
 
@@ -130,6 +137,7 @@ pub fn sunlit(
         sh,
         sh.moving,
         moving,
+        sh.texel_uv.z,
         s,
         world + n * (sh.moving_texel * 1.5),
         1.5,
@@ -154,6 +162,7 @@ pub fn statically_sunlit(
         sh,
         sh.near,
         near,
+        sh.texel_uv.x,
         s,
         world + n * (sh.near_texel * 1.2),
         soft,
@@ -162,6 +171,15 @@ pub fn statically_sunlit(
     if inside {
         return a
     }
-    let (b, _) = lookup(sh, sh.far, far, s, world + n * (sh.far_texel * 1.2), 1.5, bias: 0.0006)
+    let (b, _) = lookup(
+        sh,
+        sh.far,
+        far,
+        sh.texel_uv.y,
+        s,
+        world + n * (sh.far_texel * 1.2),
+        1.5,
+        bias: 0.0006,
+    )
     b
 }

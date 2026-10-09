@@ -15,14 +15,14 @@
 // light, the crowns' leaves lit by the sun and the probes round them), so each round of them
 // adds a bounce of light.
 
-use light::{Light, sky}
+use light::{LUMA, Light, sky}
 use sky::{Clouds, cloud_shadow, clouded_sky}
 use shadow::{Shadows, statically_sunlit}
 use std::gpu::{
     Atomics, ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, GpuSpan, Rgba16Float, Sampler,
-    Slots, Texels, Texture, buffer, dispatch, label, texture, writable_texture, write,
+    Slots, Texels, Texture, buffer, buffer_of, dispatch, label, writable_texture,
 }
-use std::math::{PI, TAU}
+use std::math::PI
 use terrain::{Levels, Texel, ground_at, height_at}
 use view::Camera
 
@@ -42,9 +42,61 @@ pub struct Held: Copy {
 
 const NONE = Probe { r: vec4(0.0), g: vec4(0.0), b: vec4(0.0) }
 
+/// Spherical harmonics' first two bands in direction `d` (a unit vector): Y00 (0.282095), and
+/// Y1 (0.488603 times x, y and z).
+fn sh_basis(d: vec3) -> vec4 {
+    vec4(0.282095, 0.488603 * d.x, 0.488603 * d.y, 0.488603 * d.z)
+}
+
+/// Light `l` arriving along a direction whose basis is `basis` (`sh_basis`), projected onto it.
+fn projected(basis: vec4, l: vec3) -> Probe {
+    Probe { r: basis * l.r, g: basis * l.g, b: basis * l.b }
+}
+
+/// `rays` rays' light projected and summed, as irradiance: each ray stands for 4π / rays of the
+/// sphere; then the cosine's convolution (π, 2π/3).
+fn convolved(p: Probe, rays: u32) -> Probe {
+    let w = 4.0 * PI / f32(rays)
+    let conv = vec4(PI, 2.0 * PI / 3.0, 2.0 * PI / 3.0, 2.0 * PI / 3.0) * w
+    Probe { r: p.r * conv, g: p.g * conv, b: p.b * conv }
+}
+
+/// What a probe baked again holds: `keep` of what it held (`old`), and the rest of what it was
+/// baked to (`new`).
+fn blend(old: Probe, new: Probe, keep: f32) -> Probe {
+    plus(scaled(old, keep), scaled(new, 1.0 - keep))
+}
+
 /// The layers of a column: heights above the ground (m).
 pub const LAYERS: u32 = 8
 pub const LAYER_HEIGHTS = [0.25, 1.0, 2.2, 4.0, 6.5, 10.0, 15.0, 22.0]
+
+/// Which two of a column's layers a point `above` metres over the ground is between: the lower
+/// (0 to `LAYERS - 2`: the first below them all, the last but one above them) and the two
+/// heights. Chosen, not looked up: `LAYER_HEIGHTS[k]` for a pixel's `k` is memory, not
+/// registers.
+fn layers_round(above: f32) -> (u32, f32, f32) {
+    let h = LAYER_HEIGHTS
+    if above > h[6] {
+        return (6, h[6], h[7])
+    }
+    if above > h[5] {
+        return (5, h[5], h[6])
+    }
+    if above > h[4] {
+        return (4, h[4], h[5])
+    }
+    if above > h[3] {
+        return (3, h[3], h[4])
+    }
+    if above > h[2] {
+        return (2, h[2], h[3])
+    }
+    if above > h[1] {
+        return (1, h[1], h[2])
+    }
+    (0, h[0], h[1])
+}
 
 /// Where the probes are: the square's corner (x, z), the spacing between columns, how many
 /// columns each way; and where the occluder volume is (its corner, its voxel's size, its
@@ -99,6 +151,10 @@ impl ProbeGrid {
 }
 
 // ---- the occluder volume ------------------------------------------------------------------------
+
+/// A density at which the volume is solid: a stone's or a limb's (`cook_occluders`: 20 inside),
+/// denser than any crown (1 at most).
+const SOLID: f32 = 1.5
 
 /// An occluder to cook into the volume: a sphere (a clump of leaves: `solid` 0; or a stone: 1)
 /// or a capsule from `a` to `b` (a limb: solid), `radius` wide.
@@ -249,15 +305,14 @@ pub fn trace(
             return (light + trans * albedo * open_light(maps, n), trans * albedo * sun)
         }
         var d = density_at(t.grid, volume, p)
-        // Solid is denser than any crown (`cook_occluders`).
-        if leaving && d > 1.5 {
+        if leaving && d > SOLID {
             d = 0.0
         } else {
             leaving = false
         }
         if d > 0.0 {
             let a = 1.0 - exp(-d * t.grid.extinction * step)
-            if t.bounced != 0 && d <= 1.5 {
+            if t.bounced != 0 && d <= SOLID {
                 // The leaves' light: their albedo times the light round them (the probes', each
                 // part's mean over every facing) and the sun's through the shadows (half of it:
                 // a crown's leaves face every way).
@@ -287,6 +342,13 @@ pub fn fibonacci(i: u32, n: u32) -> vec3 {
     let r = sqrt(max(1.0 - y * y, 0.0))
     let a = f32(i) * 2.399963
     vec3(r * cos(a), y, r * sin(a))
+}
+
+/// Ray `i` of a strip's probe: the spiral of `strip.rays` turned `strip.turn` about the vertical.
+fn turned_ray(i: u32, strip: Strip) -> vec3 {
+    let (c, sn) = (cos(strip.turn), sin(strip.turn))
+    let f = fibonacci(i, strip.rays)
+    vec3(f.x * c - f.z * sn, f.y, f.x * sn + f.z * c)
 }
 
 /// The rays a probe traces.
@@ -344,17 +406,15 @@ pub fn bake(
     grounds[id] = p.y - LAYER_HEIGHTS[k]
     // A probe inside a solid (a stone, a trunk) sees nothing of the light round the surface
     // beside it: it holds none, and the surfaces round it read the probes outside (`sky_sh`).
-    if density_at(g, volume, p) > 1.5 {
+    if density_at(g, volume, p) > SOLID {
         probes[id] = NONE
         bounces[id] = NONE
         return
     }
     var sky_part = NONE
     var sun_part = NONE
-    let (c, sn) = (cos(strip.turn), sin(strip.turn))
     for n in 0..strip.rays {
-        let f = fibonacci(n, strip.rays)
-        let dir = vec3(f.x * c - f.z * sn, f.y, f.x * sn + f.z * c)
+        let dir = turned_ray(n, strip)
         let (l, sun) = trace(
             t,
             volume,
@@ -371,19 +431,13 @@ pub fn bake(
             maps,
             s,
         )
-        // Project onto Y00 (0.282095) and Y1 (0.488603 times y, z, x).
-        let basis = vec4(0.282095, 0.488603 * dir.x, 0.488603 * dir.y, 0.488603 * dir.z)
-        sky_part = plus(sky_part, Probe { r: basis * l.r, g: basis * l.g, b: basis * l.b })
-        sun_part = plus(sun_part, Probe { r: basis * sun.r, g: basis * sun.g, b: basis * sun.b })
+        let basis = sh_basis(dir)
+        sky_part = plus(sky_part, projected(basis, l))
+        sun_part = plus(sun_part, projected(basis, sun))
     }
-    // Each ray stands for 4π / rays of the sphere; then the cosine's convolution (π, 2π/3).
-    let w = 4.0 * PI / f32(strip.rays)
-    let conv = vec4(PI, 2.0 * PI / 3.0, 2.0 * PI / 3.0, 2.0 * PI / 3.0) * w
     // Slot: the strip's probes in order of their invocation.
-    let new_sky = Probe { r: sky_part.r * conv, g: sky_part.g * conv, b: sky_part.b * conv }
-    let new_sun = Probe { r: sun_part.r * conv, g: sun_part.g * conv, b: sun_part.b * conv }
-    probes[id] = plus(scaled(probes[id], strip.keep), scaled(new_sky, 1.0 - strip.keep))
-    bounces[id] = plus(scaled(bounces[id], strip.keep), scaled(new_sun, 1.0 - strip.keep))
+    probes[id] = blend(probes[id], convolved(sky_part, strip.rays), strip.keep)
+    bounces[id] = blend(bounces[id], convolved(sun_part, strip.rays), strip.keep)
 }
 
 /// One ray's share of a probe baked again: its light projected, the sky's part and the sun's
@@ -423,19 +477,14 @@ pub fn trace_again(
         return
     }
     let p = probe_at(g, levels, texels, col % g.cols, col / g.cols, k)
-    if density_at(g, volume, p) > 1.5 {
+    if density_at(g, volume, p) > SOLID {
         rays[id] = Ray { sky: NONE, sun: NONE }
         return
     }
-    let (c, sn) = (cos(strip.turn), sin(strip.turn))
-    let f = fibonacci(id.x % strip.rays, strip.rays)
-    let dir = vec3(f.x * c - f.z * sn, f.y, f.x * sn + f.z * c)
+    let dir = turned_ray(id.x % strip.rays, strip)
     let (l, sun) = trace(t, volume, levels, texels, p, dir, sh, near, far, cmp, view, dome, maps, s)
-    let basis = vec4(0.282095, 0.488603 * dir.x, 0.488603 * dir.y, 0.488603 * dir.z)
-    rays[id] = Ray {
-        sky: Probe { r: basis * l.r, g: basis * l.g, b: basis * l.b },
-        sun: Probe { r: basis * sun.r, g: basis * sun.g, b: basis * sun.b },
-    }
+    let basis = sh_basis(dir)
+    rays[id] = Ray { sky: projected(basis, l), sun: projected(basis, sun) }
 }
 
 /// A strip's probes baked again, from their rays (`trace_again`): summed, convolved, and
@@ -443,7 +492,6 @@ pub fn trace_again(
 @compute(64)
 pub fn gather(
     strip: Strip,
-    count: u32,
     rays: [Ray],
     probes: mut Slots<Probe>,
     bounces: mut Slots<Probe>,
@@ -456,12 +504,8 @@ pub fn gather(
         sky_part = plus(sky_part, r.sky)
         sun_part = plus(sun_part, r.sun)
     }
-    let w = 4.0 * PI / f32(strip.rays)
-    let conv = vec4(PI, 2.0 * PI / 3.0, 2.0 * PI / 3.0, 2.0 * PI / 3.0) * w
-    let new_sky = Probe { r: sky_part.r * conv, g: sky_part.g * conv, b: sky_part.b * conv }
-    let new_sun = Probe { r: sun_part.r * conv, g: sun_part.g * conv, b: sun_part.b * conv }
-    probes[id] = plus(scaled(probes[id], strip.keep), scaled(new_sky, 1.0 - strip.keep))
-    bounces[id] = plus(scaled(bounces[id], strip.keep), scaled(new_sun, 1.0 - strip.keep))
+    probes[id] = blend(probes[id], convolved(sky_part, strip.rays), strip.keep)
+    bounces[id] = blend(bounces[id], convolved(sun_part, strip.rays), strip.keep)
 }
 
 /// The ground's height under `xz` as the probes' columns hold it (between the four round it),
@@ -485,7 +529,7 @@ pub fn ground_under(grid: ProbeGrid, grounds: [f32], xz: vec2) -> f32 {
 /// The irradiance a probe holds for a surface facing `n`, over π: the light a white surface
 /// facing that way reflects.
 pub fn probe_light(p: Probe, n: vec3) -> vec3 {
-    let basis = vec4(0.282095, 0.488603 * n.x, 0.488603 * n.y, 0.488603 * n.z)
+    let basis = sh_basis(n)
     max(vec3(dot(p.r, basis), dot(p.g, basis), dot(p.b, basis)) / PI, vec3(0.0))
 }
 
@@ -523,21 +567,18 @@ pub fn open_sky(
     out: mut Slots<Probe>,
     id: GlobalId,
 ) {
-    var up = Probe { r: vec4(0.0), g: vec4(0.0), b: vec4(0.0) }
-    var down = Probe { r: vec4(0.0), g: vec4(0.0), b: vec4(0.0) }
+    var up = NONE
+    var down = NONE
     for i in 0..OPEN_RAYS {
         let dir = fibonacci(i, OPEN_RAYS)
-        let basis = vec4(0.282095, 0.488603 * dir.x, 0.488603 * dir.y, 0.488603 * dir.z)
+        let basis = sh_basis(dir)
         if dir.y > 0.0 {
-            let l = sky(view, s, light, dir)
-            up = plus(up, Probe { r: basis * l.r, g: basis * l.g, b: basis * l.b })
+            up = plus(up, projected(basis, sky(view, s, light, dir)))
         } else {
             down = plus(down, Probe { r: basis, g: basis, b: basis })
         }
     }
-    let w = 4.0 * PI / f32(OPEN_RAYS)
-    let conv = vec4(PI, 2.0 * PI / 3.0, 2.0 * PI / 3.0, 2.0 * PI / 3.0) * w
-    let sky_up = Probe { r: up.r * conv, g: up.g * conv, b: up.b * conv }
+    let sky_up = convolved(up, OPEN_RAYS)
     // The ground below: even light, its albedo times the sky on it, or (the sun's part) the
     // sun.
     let lit = if id.x == 0 {
@@ -545,11 +586,8 @@ pub fn open_sky(
     } else {
         ground * light.sun_colour * max(light.sun.y, 0.0)
     }
-    let below = Probe {
-        r: down.r * conv * lit.x,
-        g: down.g * conv * lit.y,
-        b: down.b * conv * lit.z,
-    }
+    let even = convolved(down, OPEN_RAYS)
+    let below = Probe { r: even.r * lit.x, g: even.g * lit.y, b: even.b * lit.z }
     out[id] = if id.x == 0 { plus(sky_up, below) } else { below }
 }
 
@@ -571,9 +609,6 @@ fn plus(a: Probe, b: Probe) -> Probe {
 /// plane weighs four columns' probes as `sky_sh` does, in the texture unit: ten samples a point,
 /// not eight probes of 96 bytes from buffers.
 pub const PLANES: u32 = 5
-
-/// Luminance's weights.
-const LUMA = vec3(0.2126, 0.7152, 0.0722)
 
 /// The sun's part from its two planes: the constant terms, and the shared directional terms
 /// (the luminance's), each colour's scaled by its share of the luminance.
@@ -636,21 +671,8 @@ pub fn sky_sh(
     grounds: [f32],
     world: vec3,
 ) -> Held {
-    let g = (world.xz - grid.corner) / grid.spacing
-    let last = f32(max(grid.cols, 2) - 1)
-    if grid.cols < 2 || g.x < 0.0 || g.y < 0.0 || g.x >= last || g.y >= last {
-        return open_probe(maps)
-    }
-    // The ground under it, between its four columns' (each column's first layer holds it).
-    let c = floor(g)
-    let cf = g - c
-    let (cx, cz) = (u32(c.x), u32(c.y))
-    let g00 = grounds[grid.index(cx, cz, 0)]
-    let g10 = grounds[grid.index(cx + 1, cz, 0)]
-    let g01 = grounds[grid.index(cx, cz + 1, 0)]
-    let g11 = grounds[grid.index(cx + 1, cz + 1, 0)]
-    let above = world.y - mix(mix(g00, g10, cf.x), mix(g01, g11, cf.x), cf.y)
-    held_at(grid, maps, s, world.xz, above)
+    // Outside the grid, its height above the ground isn't read (`held_at`).
+    held_at(grid, maps, s, world.xz, world.y - ground_under(grid, grounds, world.xz))
 }
 
 /// The light round the point over `xz`, `above` metres above the ground, as a probe there
@@ -668,11 +690,8 @@ pub fn held_at(
         return open_probe(maps)
     }
     // The layer coordinate: between which two layers it is.
-    var k = 0
-    while k + 2 < LAYERS && above > LAYER_HEIGHTS[k + 1] {
-        k += 1
-    }
-    let fk = saturate((above - LAYER_HEIGHTS[k]) / (LAYER_HEIGHTS[k + 1] - LAYER_HEIGHTS[k]))
+    let (k, lo, hi) = layers_round(above)
+    let fk = saturate((above - lo) / (hi - lo))
     // The eight round it, weighted by nearness; one inside a solid (which holds no light) left
     // out, and the others' weights grown to make up for it: each layer's four columns, a
     // bilinear sample of each plane of the maps.
@@ -693,19 +712,22 @@ pub fn held_at(
         constant += maps.sample_level(s, at + 3.0 * plane) * wk
         direction += maps.sample_level(s, at + 4.0 * plane) * wk
     }
-    let open = open_probe(maps)
-    // The sun's part's constant terms' fourth is how much of the weight held light.
+    // The sun's part's constant terms' fourth is how much of the weight held light: the open
+    // sky where none of it did. (The open sky is read only where it's needed.)
     let total = constant.w
-    let probed = if total > 1.0e-4 {
-        Held {
-            sky: scaled(sky_part, 1.0 / total),
-            sun: sun_part(constant / total, direction / total),
-        }
-    } else {
-        open
+    if total <= 1.0e-4 {
+        return open_probe(maps)
+    }
+    let probed = Held {
+        sky: scaled(sky_part, 1.0 / total),
+        sun: sun_part(constant / total, direction / total),
     }
     // Faded to the open sky at the grid's edge.
     let edge = saturate(min(min(g.x, g.y), min(last - g.x, last - g.y)) / 3.0)
+    if edge >= 1.0 {
+        return probed
+    }
+    let open = open_probe(maps)
     Held {
         sky: plus(scaled(open.sky, 1.0 - edge), scaled(probed.sky, edge)),
         sun: plus(scaled(open.sun, 1.0 - edge), scaled(probed.sun, edge)),
@@ -726,9 +748,7 @@ pub fn sky_light(
     sun: f32,
 ) -> vec3 {
     if light.sky_test == 1 {
-        return vec3(
-            dot(light.sky_sh, vec4(0.282095, 0.488603 * n.x, 0.488603 * n.y, 0.488603 * n.z)),
-        )
+        return vec3(dot(light.sky_sh, sh_basis(n)))
     }
     let h = sky_sh(grid, maps, s, grounds, world)
     probe_light(h.sky, n) + probe_light(h.sun, n) * sun
@@ -748,8 +768,7 @@ pub fn sky_lights(
     sun: f32,
 ) -> (vec3, vec3) {
     if light.sky_test == 1 {
-        let at = vec4(0.282095, 0.488603 * n.x, 0.488603 * n.y, 0.488603 * n.z)
-        return (vec3(dot(light.sky_sh, at)), vec3(0.0))
+        return (vec3(dot(light.sky_sh, sh_basis(n))), vec3(0.0))
     }
     let h = sky_sh(grid, maps, s, grounds, world)
     let light_at = |d: vec3| probe_light(h.sky, d) + probe_light(h.sun, d) * sun
@@ -797,8 +816,7 @@ pub const AGAIN_KEEP: f32 = 0.5
 impl Baked {
     /// The grid's probes, unbaked, and its occluders, uncooked.
     pub fn new(grid: ProbeGrid, occluders: [Occluder]) -> Baked {
-        var o: GpuBuffer<Occluder> = buffer(max(occluders.len(), 1))
-        write(mut o, 0, occluders)
+        let o = buffer_of(occluders, at_least: 1)
         Baked {
             grid,
             probes: buffer(grid.probes()),
@@ -943,7 +961,6 @@ impl Baked {
         dispatch(
             gather.bind(
                 strip,
-                count,
                 rays: self.rays.span(start: 0, count: count * AGAIN_RAYS),
                 probes: self.probes.span_mut(start: at, count: count),
                 bounces: self.bounces.span_mut(start: at, count: count),
@@ -1017,8 +1034,7 @@ pub fn reference(
     let cols = depth.width() / at.step
     let k = at.first + id.x
     let p = vec2i(i32((k % cols) * at.step + at.step / 2), i32((k / cols) * at.step + at.step / 2))
-    let zero = Probe { r: vec4(0.0), g: vec4(0.0), b: vec4(0.0) }
-    let none = Reference { probes: zero, traced: zero, at: vec4(0.0) }
+    let none = Reference { probes: NONE, traced: NONE, at: vec4(0.0) }
     if k / cols >= depth.height() / at.step {
         out[id] = none
         return
@@ -1053,9 +1069,7 @@ pub fn reference(
     // the solid it starts in.
     // The sun's part as the shading takes it: times the clouds' shadow there.
     let shade = cloud_shadow(at.clouds, cloud, s, w)
-    var r = vec4(0.0)
-    var gg = vec4(0.0)
-    var b = vec4(0.0)
+    var sum = NONE
     for i in 0..at.rays {
         let dir = fibonacci(i, at.rays)
         let front = dot(dir, n) > 0.0
@@ -1076,15 +1090,9 @@ pub fn reference(
             s,
             from_surface: front,
         )
-        let l = sky_part + sun_part * shade
-        let basis = vec4(0.282095, 0.488603 * dir.x, 0.488603 * dir.y, 0.488603 * dir.z)
-        r += basis * l.r
-        gg += basis * l.g
-        b += basis * l.b
+        sum = plus(sum, projected(sh_basis(dir), sky_part + sun_part * shade))
     }
-    let wr = 4.0 * PI / f32(at.rays)
-    let conv = vec4(PI, 2.0 * PI / 3.0, 2.0 * PI / 3.0, 2.0 * PI / 3.0) * wr
-    let traced = Probe { r: r * conv, g: gg * conv, b: b * conv }
+    let traced = convolved(sum, at.rays)
     let class = f32(view::class_of(scene.load(x: u32(p.x), y: u32(p.y)).a))
     let h = sky_sh(at.t.grid, maps, s, grounds, w)
     out[id] = Reference {

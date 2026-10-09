@@ -7,6 +7,7 @@
 // hills 10 km away don't fight. Passes clear depth to 0 and keep the greater.
 
 use std::gpu::{Compare, Depth}
+use std::transform::identity
 
 /// The draw state of a pass that keeps the nearest fragment, in reversed depth.
 pub const NEAREST = Depth { compare: Compare::Greater, write: true }
@@ -34,14 +35,12 @@ pub struct Camera: Copy + GpuData {
     pub up: vec3,
     /// Seconds since the program began.
     pub time: f32,
-    /// This frame's offset within its pixel, in clip units, and the last frame's.
+    /// This frame's offset within its pixel, in clip units.
     pub jitter: vec2,
-    pub last_jitter: vec2,
     /// The target's size, in pixels.
     pub screen: vec2,
-    /// The frame's number, and its place in the jitter's cycle.
+    /// The frame's number.
     pub frame: u32,
-    pub phase: u32,
 }
 
 /// The jitter's cycle: 16 points of the Halton (2, 3) sequence.
@@ -114,34 +113,22 @@ pub fn camera(
         up,
         time,
         jitter: vec2(2.0 * j.x / f32(width), -2.0 * j.y / f32(height)),
-        last_jitter: last.jitter,
         screen: vec2(f32(width), f32(height)),
         frame,
-        phase: frame % JITTER_CYCLE,
     }
 }
 
 /// A camera for frame 0 with no frame before it: its own last.
 pub fn first_camera(eye: vec3, at: vec3, fovy: f32, width: u32, height: u32) -> Camera {
     let c = camera(eye, at, fovy, width, height, frame: 0, time: 0.0, last: blank())
-    Camera { last_view_proj: c.view_proj, last_jitter: c.jitter, ..c }
+    Camera { last_view_proj: c.view_proj, ..c }
 }
 
 /// A camera that sees nothing: the start of a chain of cameras.
 pub fn blank() -> Camera {
     Camera {
-        view_proj: mat4(
-            vec4(1.0, 0.0, 0.0, 0.0),
-            vec4(0.0, 1.0, 0.0, 0.0),
-            vec4(0.0, 0.0, 1.0, 0.0),
-            vec4(0.0, 0.0, 0.0, 1.0),
-        ),
-        last_view_proj: mat4(
-            vec4(1.0, 0.0, 0.0, 0.0),
-            vec4(0.0, 1.0, 0.0, 0.0),
-            vec4(0.0, 0.0, 1.0, 0.0),
-            vec4(0.0, 0.0, 0.0, 1.0),
-        ),
+        view_proj: identity(),
+        last_view_proj: identity(),
         eye: vec3(0.0),
         near: 0.1,
         forward: vec3(0.0, 0.0, 1.0),
@@ -151,10 +138,8 @@ pub fn blank() -> Camera {
         up: vec3(0.0, 1.0, 0.0),
         time: 0.0,
         jitter: vec2(0.0),
-        last_jitter: vec2(0.0),
         screen: vec2(1.0),
         frame: 0,
-        phase: 0,
     }
 }
 
@@ -165,10 +150,10 @@ impl Camera {
         vec4(c.x + self.jitter.x * c.w, c.y + self.jitter.y * c.w, c.z, c.w)
     }
 
-    /// A world point's clip position last frame, jittered as it was then.
-    pub fn last_clip(self, world: vec3) -> vec4 {
-        let c = self.last_view_proj * vec4(world, 1.0)
-        vec4(c.x + self.last_jitter.x * c.w, c.y + self.last_jitter.y * c.w, c.z, c.w)
+    /// The camera without its jitter: its rays (`ray`, `world_at`) through pixels' own points,
+    /// where the output and the history hold them.
+    pub fn unjittered(self) -> Camera {
+        Camera { jitter: vec2(0.0), ..self }
     }
 
     /// The ray from the eye through the point `px` of the target (pixels from its top left),
@@ -231,4 +216,13 @@ pub const FLOWER: f32 = 448.0
 /// A tag's class (0 the sky, 1 the ground, ... 7 flowers).
 pub fn class_of(tag: f32) -> u32 {
     u32(max(tag, 0.0) / 64.0 + 0.001)
+}
+
+/// The classes of thin geometry, which covers part of a pixel (a bit each: grass, leaves and
+/// flowers).
+const THIN: u32 = (1 << class_of(GRASS)) | (1 << class_of(LEAVES)) | (1 << class_of(FLOWER))
+
+/// Whether a class (`class_of`) is thin geometry (`THIN`).
+pub fn thin(class: u32) -> bool {
+    ((THIN >> class) & 1) != 0
 }

@@ -14,12 +14,12 @@
 // together), each texel blended with what it held; the clouds drift a few metres (well under
 // half a texel at 5 km) while a tile waits its turn.
 
-use air::{Air, Tables, aerial_uvw, radius_of, transmittance}
+use air::{ALTITUDE, Air, BOTTOM, Tables, aerial_uvw, irradiance, radius_of, transmittance}
 use light::{Light, sky, sun_disc}
 use noise::{fbm2, hash3}
 use std::gpu::{
     FragCoord, GlobalId, GpuBuffer, Rgba16Float, Sampler, Slots, Texels, Texels3d, Texture,
-    Texture3d, buffer, dispatch, label, texture, texture3d, writable_texture, write,
+    Texture3d, buffer, buffer_of, dispatch, label, texture3d, writable_texture,
 }
 use std::math::{PI, TAU}
 use view::Camera
@@ -286,7 +286,7 @@ fn field(
 }
 
 /// The planet's radius under the world's y = 0 (m).
-const R: f32 = 6360200.0
+const R: f32 = (BOTTOM + ALTITUDE) * 1000.0
 
 /// How far along a ray from height `y` (m), its sine of elevation `dy`, it reaches height `z`
 /// above it (the planet's curve: the layer falls away toward the horizon).
@@ -354,7 +354,7 @@ fn march(
     }
     // The light round the clouds: the sun's above the air through it at the layer's middle, the
     // sky's (a few of its directions' mean) and the ground's.
-    let sun_light = air.sun_top * PI * transmittance(trans, s, radius_of(BASE + 1500.0), c.sun.y)
+    let sun_light = irradiance(air) * transmittance(trans, s, radius_of(BASE + 1500.0), c.sun.y)
     var round = vec3(0.0)
     for k in 0..4 {
         let a = f32(k) * 0.5 * PI
@@ -363,6 +363,13 @@ fn march(
     let above = round * 0.175 + sky(view, s, light, vec3(0.0, 1.0, 0.0)) * 0.3
     let below = light.sun_colour * (max(c.sun.y, 0.0) * 0.18) + above * 0.15
     let cos_sun = dot(dir, c.sun)
+    // Each octave's phase (`to_sun`'s below), the same all along the ray.
+    var phases = vec4(0.0)
+    var g = 1.0
+    for o in 0..4 {
+        phases[o] = mix(hg(0.8 * g, cos_sun), hg(-0.3 * g, cos_sun), 0.3)
+        g *= 0.5
+    }
     // Seen with the sun behind the eye, a cloud's thin sunward skin is darker than its depths
     // (the powder effect: light scattered back out of it has met little cloud on the way in).
     let powder = saturate(0.5 - 0.5 * cos_sun)
@@ -405,13 +412,10 @@ fn march(
                 var to_sun = 0.0
                 var a = 1.0
                 var b = 1.0
-                var g = 1.0
-                for _ in 0..4 {
-                    let phase = mix(hg(0.8 * g, cos_sun), hg(-0.3 * g, cos_sun), 0.3)
-                    to_sun += b * phase * exp(-od * a)
+                for o in 0..4 {
+                    to_sun += b * phases[o] * exp(-od * a)
                     a *= 0.3
                     b *= 0.7
-                    g *= 0.5
                 }
                 to_sun *= mix(1.0, 1.0 - exp(-2.0 * od - dens * 0.6), powder)
                 let hf = saturate(h / (TOP - BASE))
@@ -649,8 +653,7 @@ impl Sky {
         shadows: bool,
     ) {
         label("clouds weather")
-        var list: GpuBuffer<Cumulus> = buffer(max(cumuli.len(), 1))
-        write(mut list, 0, cumuli)
+        let list = buffer_of(cumuli, at_least: 1)
         dispatch(
             cook_weather.bind(
                 cumuli: list.span(start: 0, count: cumuli.len()),

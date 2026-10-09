@@ -15,19 +15,18 @@
 // clipmap (the terrain's cooked meadow), never from the field.
 
 use light::{Light, Lit}
-use lit::{Lighting, shown, sky_gloss, sun_at}
+use lit::{Lighting, shown, sun_and_gloss, sun_at}
 use noise::{hash2, rand}
 use plant::{Wind, sway}
-use probes::{Probe, ProbeGrid, sky_light}
+use probes::{ProbeGrid, sky_light}
 use sky::{Clouds, cloud_shadow}
 use std::gpu::{
-    Append, AppendBuffer, Atomics, ClipPosition, ComparisonSampler, DepthTexture, DrawArgs,
-    DrawIndexedArgs, Flat, FragCoord, GlobalId, GpuBuffer, InstanceIndex, One, Rgba16Float, Sampler,
-    Slots, Texture, Texture3d, Unorm8x4, VertexIndex, append_buffer, buffer, discard, dispatch,
-    draw, write,
+    Append, AppendBuffer, ClipPosition, DrawArgs, DrawIndexedArgs, Flat, FragCoord, GlobalId,
+    GpuBuffer, InstanceIndex, One, Rgba16Float, Sampler, Slots, Texture, Unorm8x4, VertexIndex,
+    append_buffer, buffer, buffer_of, discard, dispatch, draw,
 }
 use std::math::TAU
-use terrain::{Levels, Texel, ground_cover_at, height_at, texel_index}
+use terrain::{Levels, Texel, ground_cover_at}
 use view::Camera
 
 /// A blade, as placed: its root, its height, its facing (radians) and bend, its width, its
@@ -67,7 +66,7 @@ pub const LEVELS: u32 = 5
 /// morphs to the next tier's shape over the last stretch before it hands over, so no blade's
 /// shape pops.
 pub const TIERS: u32 = 3
-pub const SEGMENTS: [u32; 3] = [4, 2, 1]
+pub const SEGMENTS: [u32; TIERS] = [4, 2, 1]
 
 /// The tier of level `k`'s blades.
 pub fn tier_of(k: u32) -> u32 {
@@ -95,7 +94,9 @@ pub fn ring(k: u32) -> f32 {
 }
 
 /// What a level's placement reads: the camera, the level, the cells it covers this frame (their
-/// first, and how many each way), and the stones the grass keeps out of.
+/// first, and how many each way), the stones the grass keeps out of, and how far ahead a blade
+/// must be to be in view (`ahead`: the cosine of the view's half angle, widened, from its
+/// direction; found once for the frame).
 pub struct Place: Copy + GpuData {
     pub cam: Camera,
     pub light: Light,
@@ -106,6 +107,7 @@ pub struct Place: Copy + GpuData {
     pub cols: u32,
     pub stones: [vec4; 8],
     pub stone_count: u32,
+    pub ahead: f32,
 }
 
 /// The cells level `k` covers when the eye is at `eye`, looking along `forward`: its first
@@ -208,9 +210,8 @@ pub fn place(
     }
     // In view: within the view's sector, or near enough the eye to lean into it.
     let to = normalize(vec3(xz.x, at.cam.eye.y - 0.5, xz.y) - at.cam.eye)
-    let half = atan(at.cam.tan_half * at.cam.aspect) + 0.15
     let ahead = dot(to, at.cam.forward)
-    if d > 1.0 && ahead < cos(half + 0.35) && ahead < 0.2 {
+    if d > 1.0 && ahead < at.ahead && ahead < 0.2 {
         return
     }
     // Kept while its rank is under the density this distance asks (from 1 at the level's
@@ -235,7 +236,7 @@ pub fn place(
     if rand(seed, 3) >= cover.a {
         return
     }
-    let y = height_at(levels, texels, xz)
+    let y = t.height
     // It shrinks away as it's dropped (keep from 0.15 to 0), and over the last stretch of the
     // grass's reach, into the meadow's ground: nothing pops.
     let dropped = if k + 1 < LEVELS { smoothstep(0.0, 0.15, keep) } else { 1.0 }
@@ -323,7 +324,7 @@ fn first_index(t: u32) -> u32 {
 /// Each tier's group of blades' indices (`blade_corner`), one after another.
 fn group_indices() -> Vec<u32> {
     var out: Vec<u32> = Vec::new()
-    for t in 0..3 {
+    for t in 0..TIERS {
         let segments = SEGMENTS[t]
         for b in 0..GROUP {
             for c in 0..blade_indices(segments) {
@@ -361,13 +362,6 @@ pub struct Grass {
     indices: GpuBuffer<u32>,
 }
 
-fn indices_of() -> GpuBuffer<u32> {
-    let list = group_indices()
-    var b: GpuBuffer<u32> = buffer(list.len())
-    write(mut b, 0, list)
-    b
-}
-
 impl Grass {
     pub fn new() -> Grass {
         Grass {
@@ -375,9 +369,9 @@ impl Grass {
             middle: append_buffer(MAX_BLADES / 2),
             far: append_buffer(MAX_BLADES / 2),
             flowers: append_buffer(MAX_FLOWERS),
-            tiers: buffer(3),
+            tiers: buffer(TIERS),
             blooms: buffer(1),
-            indices: indices_of(),
+            indices: buffer_of(group_indices()),
         }
     }
 
@@ -407,6 +401,8 @@ impl Grass {
         for i in 0..n {
             st[i] = stones[i]
         }
+        let half = atan(cam.tan_half * cam.aspect) + 0.15
+        let ahead = cos(half + 0.35)
         for k in 0..LEVELS {
             let (first, cols, rows) = cells(k, cam)
             if cols == 0 || rows == 0 {
@@ -422,55 +418,28 @@ impl Grass {
                 cols,
                 stones: st,
                 stone_count: n,
+                ahead,
             }
             let groups = ((cols + 7) / 8, (rows + 7) / 8, 1)
+            // The level's blades go to its tier's buffer.
             let tier = tier_of(k)
-            if tier == 0 {
-                dispatch(
-                    place.bind(
-                        at,
-                        levels,
-                        texels,
-                        probes,
-                        cloud,
-                        linear,
-                        grounds,
-                        blades: mut self.near,
-                        flowers: mut self.flowers,
-                    ),
-                    groups: groups,
-                )
-            } else if tier == 1 {
-                dispatch(
-                    place.bind(
-                        at,
-                        levels,
-                        texels,
-                        probes,
-                        cloud,
-                        linear,
-                        grounds,
-                        blades: mut self.middle,
-                        flowers: mut self.flowers,
-                    ),
-                    groups: groups,
-                )
-            } else {
-                dispatch(
-                    place.bind(
-                        at,
-                        levels,
-                        texels,
-                        probes,
-                        cloud,
-                        linear,
-                        grounds,
-                        blades: mut self.far,
-                        flowers: mut self.flowers,
-                    ),
-                    groups: groups,
-                )
+            mut blades = if tier == 0 { self.near } else if tier == 1 { self.middle } else {
+                self.far
             }
+            dispatch(
+                place.bind(
+                    at,
+                    levels,
+                    texels,
+                    probes,
+                    cloud,
+                    linear,
+                    grounds,
+                    blades: mut blades,
+                    flowers: mut self.flowers,
+                ),
+                groups: groups,
+            )
         }
         dispatch(
             draw_counts.bind(
@@ -481,7 +450,7 @@ impl Grass {
                 tiers: mut self.tiers,
                 blooms: mut self.blooms,
             ),
-            over: 3,
+            over: TIERS,
         )
     }
 }
@@ -732,8 +701,7 @@ pub fn flower_shade(b: BloomVertex, lt: Lighting, blooms: Blooms) -> vec4 {
         vec3(centre * select(if_false: 0.3, if_true: 1.0, cond: kind == 0)),
     )
     let n = normalize(vec3(0.0, 1.0, 0.0) + lt.cam.up * 0.3)
-    let sun = sun_at(lt, b.world, n, soft: 1.0)
-    let (sky, reflected) = sky_gloss(lt, b.world, n)
+    let (sun, sky, reflected) = sun_and_gloss(lt, b.world, n, soft: 1.0)
     let lit = Lit {
         albedo,
         n,
@@ -761,45 +729,24 @@ impl Grass {
 
     /// The blades' and flowers' shading draws.
     pub fn shade(self, lt: Lighting, wind: Wind, look: GrassLook, blooms: Blooms) {
-        draw(
-            blade.bind(
-                lt.cam,
-                wind,
-                tier: tier(0),
-                blades: self.near.items(),
-                count: self.near.count(),
-            ),
-            blade_shade.bind(self.near.items(), lt, look),
-            indices: self.indices,
-            indirect: self.tiers.span(start: 0, count: 1),
-            depth: view::NEAREST,
-        )
-        draw(
-            blade.bind(
-                lt.cam,
-                wind,
-                tier: tier(1),
-                blades: self.middle.items(),
-                count: self.middle.count(),
-            ),
-            blade_shade.bind(self.middle.items(), lt, look),
-            indices: self.indices,
-            indirect: self.tiers.span(start: 1, count: 1),
-            depth: view::NEAREST,
-        )
-        draw(
-            blade.bind(
-                lt.cam,
-                wind,
-                tier: tier(2),
-                blades: self.far.items(),
-                count: self.far.count(),
-            ),
-            blade_shade.bind(self.far.items(), lt, look),
-            indices: self.indices,
-            indirect: self.tiers.span(start: 2, count: 1),
-            depth: view::NEAREST,
-        )
+        for t in 0..TIERS {
+            borrow blades = if t == 0 { self.near } else if t == 1 { self.middle } else {
+                self.far
+            }
+            draw(
+                blade.bind(
+                    lt.cam,
+                    wind,
+                    tier: tier(t),
+                    blades: blades.items(),
+                    count: blades.count(),
+                ),
+                blade_shade.bind(blades.items(), lt, look),
+                indices: self.indices,
+                indirect: self.tiers.span(start: t, count: 1),
+                depth: view::NEAREST,
+            )
+        }
         draw(
             flower.bind(lt.cam, wind, flowers: self.flowers.items()),
             flower_shade.bind(lt, blooms),

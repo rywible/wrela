@@ -13,7 +13,7 @@ use impostor::{
     volume_shade, which_crown,
 }
 use light::Lit
-use lit::{Lighting, shown, sky_at, sun_at}
+use lit::{Lighting, shown, sun_and_sky}
 use noise::{cell_size, hashed_threshold_of}
 use lod::{IMPOSTOR, Lod, VOLUME, anchor, keeps_packed, packed, place, share, ways}
 use plant::{
@@ -675,9 +675,8 @@ pub fn bark_shade(b: BarkVertex, pixel: FragCoord, lt: Lighting, bark: Bark) -> 
     let albedo = mix(bark.dark, bark.light, vec3(ridges))
     let moss = smoothstep(0.2, 0.7, n.y + 0.4 * noise::noise2(b.world.xz * 3.0)) * 0.6
     let a = mix(albedo, bark.moss, vec3(moss))
-    let sun = sun_at(lt, b.world, n, soft: 1.5)
     // No gloss, as the leaves have none (`leaf_shade`): an impostor bakes the limbs with them.
-    let sky = sky_at(lt, b.world, n)
+    let (sun, sky) = sun_and_sky(lt, b.world, n, sky_n: n, soft: 1.5)
     let lit = Lit { albedo: a, n, sun, sky, through: vec3(0.0) }
     let c = shown(lt, lit, b.world)
     vec4(c, view::BARK)

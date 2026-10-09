@@ -1,6 +1,7 @@
 // What every surface's shading reads (#28 §5), as one parameter (a group, language.md §12): the
 // frame's camera and light, the sun's shadows, the probes' sky light, the clouds' shadows and
-// the air. A shading pass binds it, and asks `sun_at`, `sky_at` and `shown`.
+// the air. A shading pass binds it, and asks `sun_at` (or `sun_and_sky`, `sun_and_gloss`) and
+// `shown`.
 
 use light::{Light, Lit}
 use probes::{ProbeGrid, sky_light, sky_lights}
@@ -36,24 +37,34 @@ pub borrow struct Lighting {
 /// How much sun reaches `world` (0 to 1), its normal `n`: the shadow maps', `soft` texels of
 /// penumbra, times the clouds' shadow.
 pub fn sun_at(l: Lighting, world: vec3, n: vec3, soft: f32) -> f32 {
-    sunlit(l.shadows, world, n, l.near, l.far, l.moving, l.cmp, soft) *
-        cloud_shadow(l.clouds, l.cloud, l.s, world)
+    sun_through(l, world, n, soft, cloud_shadow(l.clouds, l.cloud, l.s, world))
 }
 
-/// The sky light (and bounce) at `world` for a surface facing `n`, from the probes: the bounce
-/// of the sun dimmed by the clouds' shadow there.
-pub fn sky_at(l: Lighting, world: vec3, n: vec3) -> vec3 {
+/// `sun_at` through the clouds' shadow `shade`.
+fn sun_through(l: Lighting, world: vec3, n: vec3, soft: f32, shade: f32) -> f32 {
+    sunlit(l.shadows, world, n, l.near, l.far, l.moving, l.cmp, soft) * shade
+}
+
+/// How much sun reaches `world` (as `sun_at`), and the sky light (and bounce) there for a
+/// surface facing `sky_n`, from the probes: the bounce of the sun dimmed by the clouds' shadow
+/// there, which is read once for both.
+pub fn sun_and_sky(l: Lighting, world: vec3, n: vec3, sky_n: vec3, soft: f32) -> (f32, vec3) {
     let shade = cloud_shadow(l.clouds, l.cloud, l.s, world)
-    sky_light(l.grid, l.probes, l.s, l.grounds, l.light, world, n, shade)
+    (
+        sun_through(l, world, n, soft, shade),
+        sky_light(l.grid, l.probes, l.s, l.grounds, l.light, world, sky_n, shade),
+    )
 }
 
-/// The sky light at `world` for a surface facing `n` (as `sky_at`), and the light its gloss
-/// reflects: toward its reflection of the ray from the eye (`light::Lit::reflected`).
-pub fn sky_gloss(l: Lighting, world: vec3, n: vec3) -> (vec3, vec3) {
+/// How much sun reaches `world` (as `sun_at`), the sky light there for a surface facing `n` (as
+/// `sun_and_sky`), and the light its gloss reflects: toward its reflection of the ray from the
+/// eye (`light::Lit::reflected`).
+pub fn sun_and_gloss(l: Lighting, world: vec3, n: vec3, soft: f32) -> (f32, vec3, vec3) {
     let shade = cloud_shadow(l.clouds, l.cloud, l.s, world)
     let v = normalize(l.cam.eye - world)
     let r = n * (2.0 * dot(n, v)) - v
-    sky_lights(l.grid, l.probes, l.s, l.grounds, l.light, world, n, r, shade)
+    let (sky, reflected) = sky_lights(l.grid, l.probes, l.s, l.grounds, l.light, world, n, r, shade)
+    (sun_through(l, world, n, soft, shade), sky, reflected)
 }
 
 /// `colour`, at `world`, as the eye sees it through the air between them (`light::hazed`).

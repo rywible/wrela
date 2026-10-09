@@ -15,7 +15,7 @@
 // and a resolve gathering its own 3 × 3 took twice as long.
 
 use std::gpu::{DepthTexture, FragCoord, GlobalId, Rgba16Float, Sampler, Texels, Texture}
-use view::{Camera, class_of, jitter_of}
+use view::{CREATURE, Camera, class_of, jitter_of, thin}
 
 /// What the resolve reads besides the textures: the scene camera (at the scene's size), the
 /// output's size, how much of this frame a pixel takes when a sample falls on it, and whether
@@ -91,7 +91,7 @@ pub fn neighbourhoods(
     let at = vec2i(i32(id.x), i32(id.y))
     var m1 = vec3(0.0)
     var m2 = vec3(0.0)
-    var thin = 0.0
+    var covered = 0.0
     var seen: u32 = 0
     for dy in 0..3 {
         for dx in 0..3 {
@@ -102,14 +102,14 @@ pub fn neighbourhoods(
             m2 += y * y
             let class = class_of(texel.a)
             seen = seen | (1 << class)
-            if class == 2 || class == 3 || class == 7 {
-                thin += 1.0
+            if thin(class) {
+                covered += 1.0
             }
         }
     }
     let mean = m1 / 9.0
     let sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)))
-    means.store(id, vec4(mean, thin / 9.0))
+    means.store(id, vec4(mean, covered / 9.0))
     spreads.store(id, vec4(sigma, f32(seen)))
 }
 
@@ -153,6 +153,7 @@ pub fn resolve(
     s: Sampler,
 ) -> vec4 {
     let cam = r.cam
+    let creature = class_of(CREATURE)
     let in_size = cam.screen
     let scale = in_size / r.out
     // This output pixel's centre in the scene's pixels.
@@ -185,7 +186,7 @@ pub fn resolve(
             sum += c * w
             weight += w
             // And all but the creature's (see `current`).
-            let other = if class_of(texel.a) != 5 { w } else { 0.0 }
+            let other = if class_of(texel.a) != creature { w } else { 0.0 }
             sum_else += c * other
             weight_else += other
             if w > nearest {
@@ -205,7 +206,7 @@ pub fn resolve(
     // samples: the creature's colour in a pixel tagged as the ground would trail once the
     // creature walked on, as the pixel's history says the ground. (The creature's own pixels
     // take every sample, so its edge stays smooth from within.)
-    let current = if class_of(tag) == 5 {
+    let current = if class_of(tag) == creature {
         sum / max(weight, 1.0e-6)
     } else {
         sum_else / max(weight_else, 1.0e-6)
@@ -217,23 +218,10 @@ pub fn resolve(
         last = (q - moved.xy) / scale
     } else if closest > 0.0 {
         // A surface: its world point, from the unjittered ray through this pixel.
-        let ndc = vec2(q.x / in_size.x * 2.0 - 1.0, 1.0 - q.y / in_size.y * 2.0)
-        let ray = normalize(
-            cam.forward +
-                cam.right * (ndc.x * cam.tan_half * cam.aspect) +
-                cam.up * (ndc.y * cam.tan_half),
-        )
-        let world = cam.eye + ray * (cam.distance_of(closest) / dot(ray, cam.forward))
-        last = cam.last_pixel(world) / scale
+        last = cam.last_pixel(cam.unjittered().world_at(q, closest)) / scale
     } else {
         // The sky: a direction, so only the camera's turn moves it.
-        let ndc = vec2(q.x / in_size.x * 2.0 - 1.0, 1.0 - q.y / in_size.y * 2.0)
-        let ray = normalize(
-            cam.forward +
-                cam.right * (ndc.x * cam.tan_half * cam.aspect) +
-                cam.up * (ndc.y * cam.tan_half),
-        )
-        last = cam.last_pixel(cam.eye + ray * 1.0e5) / scale
+        last = cam.last_pixel(cam.eye + cam.unjittered().ray(q) * 1.0e5) / scale
     }
     let inside = last.x >= 0.0 && last.y >= 0.0 && last.x < r.out.x && last.y < r.out.y
     if r.fresh != 0 || !inside {
@@ -268,21 +256,21 @@ pub fn resolve(
     // it if any of the four texels round the point did: they carry most of its filtered colour
     // (`history_at`), and at the creature's edge the nearest alone may be the ground. Only
     // where the creature can be (`Resolve::creature`): the four loads everywhere cost 0.25 ms.
-    var showed = was == 5
+    var showed = was == creature
     let px = pixel.position.xy
     let c = r.creature
     let inside = px.x >= c.x && px.y >= c.y && px.x <= c.z && px.y <= c.w
-    if !showed && inside && class_of(tag) != 5 {
+    if !showed && inside && class_of(tag) != creature {
         let core = vec2i(floor(last - vec2(0.5)))
         let edge = vec2i(i32(r.out.x) - 1, i32(r.out.y) - 1)
         for dy in 0..2 {
             for dx in 0..2 {
                 let t = clamp(core + vec2i(dx, dy), vec2i(0), edge)
-                showed = showed || class_of(history.load(x: u32(t.x), y: u32(t.y)).a) == 5
+                showed = showed || class_of(history.load(x: u32(t.x), y: u32(t.y)).a) == creature
             }
         }
     }
-    let left = showed && class_of(tag) != 5
+    let left = showed && class_of(tag) != creature
     let a = if left { 1.0 } else { clamp(r.blend * nearest * 1.6, r.blend * 0.25, 0.5) }
     let out = mix(from_ycocg(clipped), current, vec3(a))
     vec4(untamed(max(out, vec3(0.0))), tag)

@@ -21,7 +21,7 @@
 // the world's units: a white surface facing the sun reflects `sun_colour`.
 
 use std::gpu::{
-    GlobalId, Rgba16Float, Sampler, Texels, Texels3d, Texture, Texture3d, dispatch, label, texture,
+    GlobalId, Rgba16Float, Sampler, Texels, Texels3d, Texture, Texture3d, dispatch, label,
     texture3d, writable_texture,
 }
 use std::math::PI
@@ -397,7 +397,7 @@ pub fn sun_at(air: Air, y: f32) -> vec3 {
 
 /// The sun's irradiance above the air: what the tables' light (marched for an irradiance of 1)
 /// is scaled by. `sun_top` is the light a white surface facing the sun reflects, so π times it.
-fn irradiance(air: Air) -> vec3 {
+pub fn irradiance(air: Air) -> vec3 {
     air.sun_top * PI
 }
 

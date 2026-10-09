@@ -8,6 +8,7 @@
 
 use creature::{Bone, PartMask, Parts, Skeleton}
 pub use creature::MAX_BONES
+use light::aces
 use realize::{SkinVertex}
 use sim::{Pose, Transform}
 use std::gpu::{
@@ -46,10 +47,9 @@ pub struct Lights: Copy + GpuData {
 }
 
 impl Lights {
-    /// The ACES fit (Narkowicz) of `exposure` times `x`.
+    /// The ACES fit (`light::aces`) of `exposure` times `x`.
     pub fn tonemap(self, x: vec3) -> vec3 {
-        let c = x * self.exposure
-        clamp((c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14), vec3(0.0), vec3(1.0))
+        aces(x * self.exposure)
     }
 
     /// A surface of `albedo` and roughness `rough`, its normal `n`, at `world`, seen from `view`'s
@@ -319,7 +319,7 @@ pub struct Palette: Copy + GpuData {
 }
 
 /// The rotation that turns the unit vector `a` to the unit vector `b`, the short way.
-fn turn(a: vec3, b: vec3) -> Quat {
+pub fn turn(a: vec3, b: vec3) -> Quat {
     let c = dot(a, b)
     if c < -0.9999 {
         // Opposite: half a turn about any axis across `a`.
@@ -331,7 +331,7 @@ fn turn(a: vec3, b: vec3) -> Quat {
 
 /// A bone's matrix: rest space to posed, turned by `r` about the bone's rest position `rest`,
 /// which moves to `posed`.
-fn bone_matrix(r: Quat, rest: vec3, posed: vec3) -> mat4 {
+pub fn bone_matrix(r: Quat, rest: vec3, posed: vec3) -> mat4 {
     let m = r.to_mat3()
     mat4(vec4(m[0], 0.0), vec4(m[1], 0.0), vec4(m[2], 0.0), vec4(posed - m * rest, 1.0))
 }
@@ -339,7 +339,7 @@ fn bone_matrix(r: Quat, rest: vec3, posed: vec3) -> mat4 {
 /// Where a two-bone limb's middle joint goes, its root at `h` and its rest middle joint and end
 /// at `k` and `a`, when its end goes to `to`: in the plane of the rest bend, each bone keeping
 /// its length, and the end pulled no farther than the limb reaches.
-fn bend(h: vec3, k: vec3, a: vec3, to: vec3) -> (vec3, vec3) {
+pub fn bend(h: vec3, k: vec3, a: vec3, to: vec3) -> (vec3, vec3) {
     let (l1, l2) = (length(k - h), length(a - k))
     let span = to - h
     let d = clamp(length(span), abs(l1 - l2) + 1.0e-4, (l1 + l2) * 0.9999)

@@ -303,8 +303,9 @@ pub trait Layer {
     fn apply(self, pose: mut Pose)
 }
 
-/// A damped spring: presentation only, never rolled back.
-pub struct Spring: Copy {
+/// A damped spring: where it is, and how fast it's moving. A layer's are presentation only,
+/// never rolled back; a walker's (`gait::Walker`) are its sim's state.
+pub struct Spring: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub pos: vec3,
     pub vel: vec3,
 }

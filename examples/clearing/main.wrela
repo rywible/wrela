@@ -1091,7 +1091,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     if !test_build() || s.view == View::Look {
         let m = Metering { fresh: if s.frames == 0 { 1 } else { 0 }, ..METERING }
         dispatch(meter.bind(s.scene, m, exposure: mut s.exposure), groups: 1)
-        let d = Develop { cam, light: s.light, look: Look {}, out: vec2(f32(width), f32(height)) }
+        let d = Develop { cam, look: Look {}, out: vec2(f32(width), f32(height)) }
         let dp = begin_pass(mut s.dabs)
         draw(
             cover.bind(z: 0.5),

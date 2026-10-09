@@ -8,13 +8,15 @@
 // hind, right fore), each on the ground for most of its cycle. A foot lands ahead of its hip by
 // half its stance's travel, so it's under the hip mid-stance, and lifts as far behind.
 
-use creature::{Bone, Chain, Skeleton}
-use render::{MAX_BONES, Palette}
-use sim::{Hit, SimState, Transform}
+use creature::{Bone, Skeleton}
+use present::short_way
+use render::{MAX_BONES, Palette, bend, bone_matrix, turn}
+use sim::{SimState, Spring, Transform}
 use std::hash::StateHash
 use std::math::{PI, TAU}
 use std::quat::Quat
 use std::serialize::Serialize
+use std::transform::{identity, rotate_x, rotate_y, translate}
 use terrain::{Terrain, below}
 
 /// How a walk goes: its speed (m/s), the fraction of a cycle a foot is planted, how high a
@@ -39,13 +41,8 @@ pub struct Foot: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub from: vec3,
 }
 
-/// A spring: where its bone's tip is (world), and how fast it's moving. Its bone follows it.
-pub struct Spring: Copy + Eq + Plain + StateHash + Serialize + SimState {
-    pub at: vec3,
-    pub vel: vec3,
-}
-
-/// The most springs a walker has: its head's and tail's chains.
+/// The most springs a walker has: its head's and tail's chains. Each is where its bone's tip is
+/// (world), and how fast it's moving (`sim::Spring`); its bone follows it.
 pub const SPRINGS: u32 = 12
 
 /// A walker as the sim has it: its root (on the ground: where its rest feet stand, and which way
@@ -56,7 +53,7 @@ pub struct Walker: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub speed: f32,
     pub turn: f32,
     pub feet: [Foot; 4],
-    pub springs: [Spring; 12],
+    pub springs: [Spring; SPRINGS],
     pub along: f32,
     /// Its body's height over its root's ground (the pelvis, lowered to the lowest plant), and
     /// its pitch (radians, nose up), each eased.
@@ -86,9 +83,9 @@ pub struct Body: Copy {
     /// its foot joint from its ankle (rest).
     pub reach: [f32; 4],
     pub ankle_to_foot: [vec3; 4],
-    pub spring_bones: Bounded<u32, 12>,
-    pub spring_tips: Bounded<vec3, 12>,
-    pub stiffness: Bounded<f32, 12>,
+    pub spring_bones: Bounded<u32, SPRINGS>,
+    pub spring_tips: Bounded<vec3, SPRINGS>,
+    pub stiffness: Bounded<f32, SPRINGS>,
 }
 
 /// The body a skeleton has for walking: its legs' rest soles and hips, and springs on the
@@ -117,42 +114,27 @@ pub fn body(s: Skeleton, head: [Bone], tail: [Bone], head_k: f32, tail_k: f32) -
         b.reach[i] = (length(k - h) + length(a - k)) * REACH
         b.ankle_to_foot[i] = f - a
     }
-    for i in 0..head.len() {
-        if i + 1 < head.len() && !b.spring_bones.is_full() {
-            b.spring_bones.push(head[i].index)
-            b.spring_tips.push(s.rest(head[i + 1]))
-            b.stiffness.push(head_k)
-        }
-    }
-    for i in 0..tail.len() {
-        if i + 1 < tail.len() && !b.spring_bones.is_full() {
-            b.spring_bones.push(tail[i].index)
-            b.spring_tips.push(s.rest(tail[i + 1]))
-            b.stiffness.push(tail_k)
-        }
-    }
+    add_chain(mut b, s, head, head_k)
+    add_chain(mut b, s, tail, tail_k)
     b
 }
 
-/// The body's frame in the world: its root's place, turned by its heading and pitched, raised
-/// to its height.
+/// Springs on the bones of `chain` (listed from its root), each `k` stiff: one at the tip of
+/// each bone but the last (the next bone's joint), while the body has room.
+fn add_chain(b: mut Body, s: Skeleton, chain: [Bone], k: f32) {
+    for i in 0..chain.len() {
+        if i + 1 < chain.len() && !b.spring_bones.is_full() {
+            b.spring_bones.push(chain[i].index)
+            b.spring_tips.push(s.rest(chain[i + 1]))
+            b.stiffness.push(k)
+        }
+    }
+}
+
+/// The body's frame in the world: its root's place, turned by its heading and pitched (nose up
+/// turns +z toward +y: about the body's +x), raised to its height.
 pub fn body_frame(w: Walker) -> mat4 {
-    let (c, s) = (cos(w.root.heading), sin(w.root.heading))
-    let yaw = mat4(
-        vec4(c, 0.0, -s, 0.0),
-        vec4(0.0, 1.0, 0.0, 0.0),
-        vec4(s, 0.0, c, 0.0),
-        vec4(w.root.pos.x, w.root.pos.y + w.height, w.root.pos.z, 1.0),
-    )
-    let (cp, sp) = (cos(w.pitch), sin(w.pitch))
-    // Nose up turns +z toward +y: about the body's +x.
-    let pitch = mat4(
-        vec4(1.0, 0.0, 0.0, 0.0),
-        vec4(0.0, cp, sp, 0.0),
-        vec4(0.0, -sp, cp, 0.0),
-        vec4(0.0, 0.0, 0.0, 1.0),
-    )
-    yaw * pitch
+    translate(w.root.pos + vec3(0.0, w.height, 0.0)) * rotate_y(w.root.heading) * rotate_x(w.pitch)
 }
 
 fn apply(m: mat4, p: vec3) -> vec3 {
@@ -173,7 +155,7 @@ pub fn stand<T: Terrain>(terrain: T, b: Body, at: vec2, heading: f32) -> Walker 
             normal: vec3(0.0, 1.0, 0.0),
             from: vec3(0.0),
         }; 4],
-        springs: [Spring { at: vec3(0.0), vel: vec3(0.0) }; 12],
+        springs: [Spring { pos: vec3(0.0), vel: vec3(0.0) }; SPRINGS],
         along: 0.0,
         height: 0.0,
         pitch: 0.0,
@@ -187,7 +169,7 @@ pub fn stand<T: Terrain>(terrain: T, b: Body, at: vec2, heading: f32) -> Walker 
     settle_body(mut w, b, dt: 1.0)
     let m = body_frame(w)
     for i in 0..b.spring_bones.len() {
-        w.springs[i] = Spring { at: apply(m, b.spring_tips[i]), vel: vec3(0.0) }
+        w.springs[i] = Spring { pos: apply(m, b.spring_tips[i]), vel: vec3(0.0) }
     }
     w
 }
@@ -257,13 +239,7 @@ pub fn step<T: Terrain, P: Path>(
     let target = path.at(w.along + walk.look_ahead)
     let to = target - w.root.pos.xz
     let want = atan2(to.x, to.y)
-    var diff = want - w.root.heading
-    while diff > PI {
-        diff -= TAU
-    }
-    while diff < -PI {
-        diff += TAU
-    }
+    let diff = short_way(want - w.root.heading, TAU)
     // It stops where the path ends, its look ahead past it.
     let speed_to = if go && w.along + walk.look_ahead < path.length() { walk.speed } else { 0.0 }
     w.speed += (speed_to - w.speed) * (1.0 - exp(-dt * 2.0))
@@ -319,13 +295,7 @@ pub fn step<T: Terrain, P: Path>(
     // The springs: each bone's tip follows where its rigid pose puts it, critically damped.
     let m = body_frame(w)
     for i in 0..b.spring_bones.len() {
-        let target = apply(m, b.spring_tips[i])
-        let k = b.stiffness[i]
-        var sp = w.springs[i]
-        let a = (target - sp.at) * k - sp.vel * (2.0 * sqrt(k))
-        sp.vel += a * dt
-        sp.at += sp.vel * dt
-        w.springs[i] = sp
+        w.springs[i].follow(apply(m, b.spring_tips[i]), b.stiffness[i], dt)
     }
 }
 
@@ -347,20 +317,11 @@ fn landing(
     apply(m, b.soles[i]) + forward * (w.speed * until + travel * 0.5)
 }
 
-/// Its springs' energy: their motion's and their stretch's, for a stiffness each (a turn puts
-/// energy in; it decays once the body moves steadily).
-pub fn spring_energy(w: Walker, b: Body) -> f32 {
-    var e = 0.0
-    for i in 0..b.spring_bones.len() {
-        e += energy_of(w, b, i)
-    }
-    e
-}
-
-/// Spring `i`'s energy (its motion's and its stretch's).
+/// Spring `i`'s energy (its motion's and its stretch's, for its stiffness): a turn puts energy
+/// in, and it decays once the body moves steadily.
 pub fn energy_of(w: Walker, b: Body, i: u32) -> f32 {
     let sp = w.springs[i]
-    let d = sp.at - apply(body_frame(w), b.spring_tips[i])
+    let d = sp.pos - apply(body_frame(w), b.spring_tips[i])
     0.5 * dot(sp.vel, sp.vel) + 0.5 * b.stiffness[i] * dot(d, d)
 }
 
@@ -378,44 +339,10 @@ pub fn between(a: Walker, b: Walker, alpha: f32) -> Walker {
     for i in 0..4 {
         out.feet[i].at = mix(a.feet[i].at, b.feet[i].at, vec3(alpha))
     }
-    for i in 0..12 {
-        out.springs[i].at = mix(a.springs[i].at, b.springs[i].at, vec3(alpha))
+    for i in 0..SPRINGS {
+        out.springs[i].pos = mix(a.springs[i].pos, b.springs[i].pos, vec3(alpha))
     }
     out
-}
-
-/// The rotation that turns the unit vector `a` to the unit vector `b`, the short way.
-fn turn(a: vec3, b: vec3) -> Quat {
-    let c = dot(a, b)
-    if c < -0.9999 {
-        let across = if abs(a.x) < 0.9 { vec3(1.0, 0.0, 0.0) } else { vec3(0.0, 1.0, 0.0) }
-        return Quat::axis_angle(cross(a, across), PI)
-    }
-    Quat { v: normalize(vec4(cross(a, b), 1.0 + c)) }
-}
-
-/// A bone's matrix in the body's space: rest space to posed, turned by `r` about the bone's rest
-/// joint `rest`, which moves to `posed`.
-fn bone_matrix(r: Quat, rest: vec3, posed: vec3) -> mat4 {
-    let m = r.to_mat3()
-    mat4(vec4(m[0], 0.0), vec4(m[1], 0.0), vec4(m[2], 0.0), vec4(posed - m * rest, 1.0))
-}
-
-/// Where a two-bone limb's middle joint goes, its root at `h`, its rest middle joint and end at
-/// `k` and `a`, when its end goes to `to`: in the plane of its rest bend, each bone keeping its
-/// length, the end pulled no farther than the limb reaches.
-fn bend(h: vec3, k: vec3, a: vec3, to: vec3) -> (vec3, vec3) {
-    let (l1, l2) = (length(k - h), length(a - k))
-    let span = to - h
-    let d = clamp(length(span), abs(l1 - l2) + 1.0e-4, (l1 + l2) * 0.9999)
-    let dir = if length(span) > 1.0e-6 { normalize(span) } else { normalize(a - h) }
-    let rest_out = (k - h) - dir * dot(k - h, dir)
-    let out = if length(rest_out) > 1.0e-6 { normalize(rest_out) } else {
-        normalize(cross(dir, vec3(1.0, 0.0, 0.0)))
-    }
-    let along = (l1 * l1 - l2 * l2 + d * d) / (2.0 * d)
-    let knee = h + dir * along + out * sqrt(max(l1 * l1 - along * along, 0.0))
-    (knee, h + dir * d)
 }
 
 /// The inverse of a rigid transform.
@@ -428,16 +355,6 @@ fn rigid_inverse(m: mat4) -> mat4 {
         vec4(x.y, y.y, z.y, 0.0),
         vec4(x.z, y.z, z.z, 0.0),
         vec4(-dot(x, p), -dot(y, p), -dot(z, p), 1.0),
-    )
-}
-
-/// The identity matrix.
-fn identity() -> mat4 {
-    mat4(
-        vec4(1.0, 0.0, 0.0, 0.0),
-        vec4(0.0, 1.0, 0.0, 0.0),
-        vec4(0.0, 0.0, 1.0, 0.0),
-        vec4(0.0, 0.0, 0.0, 1.0),
     )
 }
 
@@ -491,7 +408,7 @@ pub fn palette(s: Skeleton, b: Body, w: Walker) -> Palette {
             if b.spring_bones[k] == i {
                 let at = apply(pm, s.rest(bone))
                 let tip = apply(pm, b.spring_tips[k])
-                let want = apply(inv, w.springs[k].at)
+                let want = apply(inv, w.springs[k].pos)
                 mm = about(turn(normalize(tip - at), normalize(want - at)), at) * pm
             }
         }

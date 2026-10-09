@@ -6,20 +6,16 @@
 use character::colours
 use creature::{Creature, Skeleton, creature}
 use light::{Lit}
-use lit::{Lighting, shown, sky_gloss, sun_at}
+use lit::{Lighting, shown, sun_and_gloss}
 use look::{CreatureLook, Mesh as Tolerance}
 use noise::{noise3, rand}
-use probes::Probe
 use realize::{Mesh, SkinVertex, realize_rigid}
 use render::{ByChannels, Shaded}
 use std::derive::Box3
 use std::field::{Blend, Lipschitz, Surface, fbm, oval}
-use std::gpu::{
-    ClipPosition, ComparisonSampler, DepthTexture, Flat, GpuBuffer, Sampler, Texture, Texture3d,
-    Unorm8x4, VertexIndex,
-}
+use std::gpu::{ClipPosition, Flat, GpuBuffer, Unorm8x4, VertexIndex}
 use std::math::TAU
-use terrain::{Texel, height_at}
+use std::transform::{rotate_y, translate}
 use view::{Camera, ROCK}
 
 /// What a point of a stone carries: its colour (linear).
@@ -130,14 +126,7 @@ pub fn realize_stone(radius: f32, squash: vec3, seed: u32, at: vec3, turn: f32) 
     let look = CreatureLook { surface: Tolerance { tolerance: 8mm, largest: 4cm } }
     let mesh = realize_rigid(s, look)
     let colours = colours(mesh, s.field(), ByChannels {}, cell: 1cm)
-    let (c, sn) = (cos(turn), sin(turn))
-    let m = mat4(
-        vec4(c, 0.0, -sn, 0.0),
-        vec4(0.0, 1.0, 0.0, 0.0),
-        vec4(sn, 0.0, c, 0.0),
-        vec4(at, 1.0),
-    )
-    Realized { mesh: take mesh, colours: take colours, at: m, seed }
+    Realized { mesh: take mesh, colours: take colours, at: translate(at) * rotate_y(turn), seed }
 }
 
 /// What a stone's vertex passes on.
@@ -180,10 +169,9 @@ pub fn stone_shadow(v: VertexIndex, verts: [SkinVertex], at: mat4, view: mat4) -
 @fragment
 pub fn stone_shade(s: StoneVertex, lt: Lighting) -> vec4 {
     let n = normalize(s.normal)
-    let sun = sun_at(lt, s.world, n, soft: 1.0)
+    let (sun, sky, reflected) = sun_and_gloss(lt, s.world, n, soft: 1.0)
     let ground = probes::ground_under(lt.grid, lt.grounds, s.world.xz)
     let low = 0.4 + 0.6 * smoothstep(0.0, 0.5, s.world.y - ground)
-    let (sky, reflected) = sky_gloss(lt, s.world, n)
     let lit = Lit {
         albedo: s.albedo,
         n,

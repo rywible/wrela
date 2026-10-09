@@ -15,12 +15,11 @@
 // the hole the finer level fills, each sharing its edge's vertices, so a pixel the seam's
 // T-junctions leave uncovered on either side sees a skirt, never past the ground.
 
-use light::{Light, Lit}
-use noise::noise2
+use light::Lit
 use sim::Hit
 use std::gpu::{
     ClipPosition, DrawIndexedArgs, GlobalId, GpuBuffer, GpuSpan, Oct32, Slots, Unorm8x4,
-    VertexIndex, buffer, dispatch, label, write,
+    VertexIndex, buffer, buffer_of, dispatch, label, write,
 }
 use view::Camera
 
@@ -72,22 +71,26 @@ pub struct Texel: Copy + GpuData {
 
 /// Texels along each side of a level, and the quads between them.
 pub const SIDE: u32 = 129
-pub const QUADS: u32 = 128
+pub const QUADS: u32 = SIDE - 1
 /// The most levels a clipmap has.
 pub const MAX_LEVELS: u32 = 12
 /// A level's rows in the buffer: as wide as its cooking dispatch's rows, whole groups of 8.
-pub const ROW: u32 = 136
+pub const ROW: u32 = (SIDE + 7) / 8 * 8
 /// Texels a level takes in the buffer: its SIDE rows, rounded up to a 256-byte span (WebGPU
-/// binds a span from a multiple of 256 bytes; a texel is 20).
-pub const STRIDE: u32 = 17600
+/// binds a span from a multiple of 256 bytes; a texel is 20, so 64 texels are a whole number of
+/// spans).
+pub const STRIDE: u32 = (SIDE * ROW + 63) / 64 * 64
 /// The points a level's triangles join (`ground`): its grid's, then the dropped points of its
 /// skirt along each outer edge (`SIDE` a side), then those of its skirt along each edge of the
 /// hole the finer level fills (`QUADS / 2 + 1` a side).
 pub const LEVEL_POINTS: u32 = SIDE * SIDE + 4 * SIDE + 4 * (QUADS / 2 + 1)
-/// The places the hole can be: its corner 32 or 33 of the level's cells in each way
+/// The places the hole can be: its corner `HOLE` or one more of the level's cells in each way
 /// (`Clipmap::place` snaps a level to two of its cells and the finer level to one). The ground's
 /// indices hold a run for each, then one with no hole, the finest level's.
 const HOLES: u32 = 4
+/// The nearest the hole's corner can be, in the level's cells: the finer level, half as wide,
+/// centred in it.
+const HOLE: u32 = QUADS / 4
 /// How far a skirt hangs below a level's edge, in its cells.
 const SKIRT: f32 = 2.0
 /// The band of a level, in its own cells from its edge, over which it morphs to the next.
@@ -98,7 +101,7 @@ const MORPH_TO: f32 = 62.0
 /// (`at[l].x`, `at[l].y`), `at[l].z` apart; the levels in use; and where the eye is (x, z), which
 /// a level's morph to the next follows (its place moves in steps; the eye doesn't).
 pub struct Levels: Copy + GpuData {
-    pub at: [vec4; 12],
+    pub at: [vec4; MAX_LEVELS],
     pub count: u32,
     pub eye: vec2,
 }
@@ -115,7 +118,7 @@ pub struct Clipmap {
     args: GpuBuffer<DrawIndexedArgs>,
     finest: f32,
     /// Whether each level holds what its place asks (false until it's cooked).
-    cooked: [bool; 12],
+    cooked: [bool; MAX_LEVELS],
     /// Levels cooked since the clipmap was made (each time a level moved).
     pub cooks: u32,
 }
@@ -127,11 +130,11 @@ impl Clipmap {
         Clipmap {
             texels: buffer(n * STRIDE),
             moving: buffer(STRIDE),
-            levels: Levels { at: [vec4(0.0); 12], count: n, eye: vec2(0.0) },
-            indices: indices_of(),
+            levels: Levels { at: [vec4(0.0); MAX_LEVELS], count: n, eye: vec2(0.0) },
+            indices: buffer_of(ground_indices()),
             args: buffer(MAX_LEVELS),
             finest,
-            cooked: [false; 12],
+            cooked: [false; MAX_LEVELS],
             cooks: 0,
         }
     }
@@ -202,7 +205,7 @@ impl Clipmap {
             if l > 0 {
                 let a = self.levels.at[l]
                 let lo = vec2u((self.levels.at[l - 1].xy - a.xy) / a.z + vec2(0.5))
-                run = min(lo.x - 32, 1) + 2 * min(lo.y - 32, 1)
+                run = min(lo.x - HOLE, 1) + 2 * min(lo.y - HOLE, 1)
             }
             args.push(
                 DrawIndexedArgs {
@@ -231,7 +234,7 @@ impl Clipmap {
 
 /// Where the finer level's hole is in run `r` of the ground's indices (`r < HOLES`).
 fn hole_of(r: u32) -> vec2u {
-    vec2u(32 + r % 2, 32 + r / 2)
+    vec2u(HOLE + r % 2, HOLE + r / 2)
 }
 
 /// The indices in run `r`: its quads (the hole's left out) and its skirts, two triangles each.
@@ -299,13 +302,6 @@ fn ground_indices() -> Vec<u32> {
     out
 }
 
-fn indices_of() -> GpuBuffer<u32> {
-    let list = ground_indices()
-    var b: GpuBuffer<u32> = buffer(list.len())
-    write(mut b, 0, list)
-    b
-}
-
 /// A level's texels: the terrain's height, normal and cover at each point of its grid. A
 /// level that moved `moved` cells keeps the texels of the points it held, from where they were
 /// in `from` (its texels before), and cooks only those it brings in: a move of two cells cooks
@@ -349,18 +345,38 @@ pub fn texel_index(l: u32, i: u32, j: u32) -> u32 {
     l * STRIDE + j * ROW + i
 }
 
-/// Level `l`'s height at (x, z), between its texels (bilinear), from `texels`.
-pub fn level_height(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> f32 {
+/// The cell of level `l` that holds `xz` (clamped to the level): its four texels' indices
+/// (`texel_index`: its corner (i, j), then (i + 1, j), (i, j + 1) and (i + 1, j + 1)), and how
+/// far across it `xz` is.
+fn level_cell(levels: Levels, l: u32, xz: vec2) -> (vec4u, vec2) {
     let a = levels.at[l]
     let g = clamp((xz - a.xy) / a.z, vec2(0.0), vec2(f32(QUADS) - 0.001))
     let i = floor(g)
-    let f = g - i
     let (x, y) = (u32(i.x), u32(i.y))
-    let h00 = texels[texel_index(l, x, y)].height
-    let h10 = texels[texel_index(l, x + 1, y)].height
-    let h01 = texels[texel_index(l, x, y + 1)].height
-    let h11 = texels[texel_index(l, x + 1, y + 1)].height
-    mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y)
+    let at = vec4u(
+        texel_index(l, x, y),
+        texel_index(l, x + 1, y),
+        texel_index(l, x, y + 1),
+        texel_index(l, x + 1, y + 1),
+    )
+    (at, g - i)
+}
+
+/// A bilinear blend of a cell's four corners' values (as `level_cell` orders them), `f` across.
+fn bilinear(v: vec4, f: vec2) -> f32 {
+    mix(mix(v.x, v.y, f.x), mix(v.z, v.w, f.x), f.y)
+}
+
+/// Level `l`'s height at (x, z), between its texels (bilinear), from `texels`.
+pub fn level_height(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> f32 {
+    let (at, f) = level_cell(levels, l, xz)
+    let h = vec4(
+        texels[at.x].height,
+        texels[at.y].height,
+        texels[at.z].height,
+        texels[at.w].height,
+    )
+    bilinear(h, f)
 }
 
 /// How far a point is from the eye in level `l`'s cells (the larger of x and z).
@@ -380,7 +396,7 @@ fn morph(levels: Levels, l: u32, xz: vec2) -> f32 {
     saturate((eye_cells(levels, l, xz) - MORPH_FROM) / (MORPH_TO - MORPH_FROM))
 }
 
-/// What the ground's vertex shader passes on: the world point, and the level it's of.
+/// What the ground's vertex shader passes on: the world point.
 pub struct GroundVertex: Copy {
     pub clip: ClipPosition,
     pub world: vec3,
@@ -452,33 +468,32 @@ pub fn ground(v: VertexIndex, cam: Camera, levels: Levels, texels: [Texel]) -> G
     GroundVertex { clip: ClipPosition { position: cam.clip(world) }, world }
 }
 
-/// The ground at `xz` as the clipmap holds it: its normal, albedo (linear) and grass, from the
-/// finest level that holds the point, blended to the next where that level morphs.
+/// The ground at `xz` as the clipmap holds it: its normal, albedo (linear) and height (as
+/// `height_at` has it), from the finest level that holds the point, blended to the next where
+/// that level morphs.
 pub fn ground_at(levels: Levels, texels: [Texel], xz: vec2) -> (vec3, vec3, f32) {
     let l = level_at(levels, xz)
-    let (n0, c0) = level_cover(levels, texels, l, xz)
+    let (n0, c0, h0) = level_cover(levels, texels, l, xz)
     let m = morph(levels, l, xz)
     var n = n0
     var c = c0
+    var h = h0
     if m > 0.0 {
-        let (n1, c1) = level_cover(levels, texels, l + 1, xz)
+        let (n1, c1, h1) = level_cover(levels, texels, l + 1, xz)
         n = mix(n0, n1, vec3(m))
         c = mix(c0, c1, vec4(m))
+        h = mix(h0, h1, m)
     }
-    (normalize(n), c.rgb * c.rgb, c.a)
+    (normalize(n), c.rgb * c.rgb, h)
 }
 
-/// Level `l`'s normal and cover at `xz`, between its texels (bilinear).
-fn level_cover(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> (vec3, vec4) {
-    let a = levels.at[l]
-    let g = clamp((xz - a.xy) / a.z, vec2(0.0), vec2(f32(QUADS) - 0.001))
-    let i = floor(g)
-    let f = g - i
-    let (x, y) = (u32(i.x), u32(i.y))
-    let t00 = texels[texel_index(l, x, y)]
-    let t10 = texels[texel_index(l, x + 1, y)]
-    let t01 = texels[texel_index(l, x, y + 1)]
-    let t11 = texels[texel_index(l, x + 1, y + 1)]
+/// Level `l`'s normal, cover and height at `xz`, between its texels (bilinear).
+fn level_cover(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> (vec3, vec4, f32) {
+    let (at, f) = level_cell(levels, l, xz)
+    let t00 = texels[at.x]
+    let t10 = texels[at.y]
+    let t01 = texels[at.z]
+    let t11 = texels[at.w]
     let n = mix(
         mix(t00.normal.decode(), t10.normal.decode(), vec3(f.x)),
         mix(t01.normal.decode(), t11.normal.decode(), vec3(f.x)),
@@ -489,7 +504,7 @@ fn level_cover(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> (vec3, vec4
         mix(t01.cover.decode(), t11.cover.decode(), vec4(f.x)),
         vec4(f.y),
     )
-    (n, c)
+    (n, c, bilinear(vec4(t00.height, t10.height, t01.height, t11.height), f))
 }
 
 /// The finest level that holds `xz` before its morph's end (the level it's drawn from, blended
@@ -503,10 +518,12 @@ pub fn level_at(levels: Levels, xz: vec2) -> u32 {
 }
 
 /// What covers the ground at `xz`, as the clipmap holds it: its normal, cover, meadow and
-/// flowers (each as the texels' encodings decode), between texels and blended from the level
-/// it's drawn from to the next where that level morphs: what the grass is placed by.
+/// flowers (each as the texels' encodings decode), and its height (as `height_at` has it),
+/// between texels and blended from the level it's drawn from to the next where that level
+/// morphs: what the grass is placed by.
 pub struct Covering: Copy {
     pub normal: vec3,
+    pub height: f32,
     pub cover: vec4,
     pub meadow: vec4,
     pub flowers: vec4,
@@ -514,29 +531,29 @@ pub struct Covering: Copy {
 
 /// Level `l`'s ground at `xz`, between its texels (bilinear).
 fn level_ground(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> Covering {
-    let a = levels.at[l]
-    let g = clamp((xz - a.xy) / a.z, vec2(0.0), vec2(f32(QUADS) - 0.001))
-    let i = floor(g)
-    let f = g - i
-    let (x, y) = (u32(i.x), u32(i.y))
+    let (at, f) = level_cell(levels, l, xz)
     var out = Covering {
         normal: vec3(0.0),
+        height: 0.0,
         cover: vec4(0.0),
         meadow: vec4(0.0),
         flowers: vec4(0.0),
     }
+    var heights = vec4(0.0)
     for dy in 0..2 {
         for dx in 0..2 {
             let w = (if dx == 0 { 1.0 - f.x } else { f.x }) * (if dy == 0 { 1.0 - f.y } else {
                 f.y
             })
-            let t = texels[texel_index(l, x + dx, y + dy)]
+            let t = texels[at[dy * 2 + dx]]
             out.normal += t.normal.decode() * w
             out.cover += t.cover.decode() * w
             out.meadow += t.meadow.decode() * w
             out.flowers += t.flowers.decode() * w
+            heights[dy * 2 + dx] = t.height
         }
     }
+    out.height = bilinear(heights, f)
     out
 }
 
@@ -550,6 +567,7 @@ pub fn ground_cover_at(levels: Levels, texels: [Texel], xz: vec2) -> Covering {
     let g1 = level_ground(levels, texels, l + 1, xz)
     Covering {
         normal: normalize(mix(g0.normal, g1.normal, vec3(m))),
+        height: mix(g0.height, g1.height, m),
         cover: mix(g0.cover, g1.cover, vec4(m)),
         meadow: mix(g0.meadow, g1.meadow, vec4(m)),
         flowers: mix(g0.flowers, g1.flowers, vec4(m)),
@@ -626,11 +644,6 @@ pub fn below<T: Terrain>(terrain: T, at: vec3) -> Hit {
     }
 }
 
-/// A grain to break the far ground's flat cover: value noise at `xz` per metre, about 1.
-pub fn grain(xz: vec2, per_metre: f32) -> f32 {
-    0.9 + 0.2 * noise2(xz * per_metre)
-}
-
 // ---- shading ---------------------------------------------------------------------------------
 
 /// The ground's pixel: the clipmap's normal and cover at its point, lit by the sun through the
@@ -638,12 +651,11 @@ pub fn grain(xz: vec2, per_metre: f32) -> f32 {
 @fragment
 pub fn ground_shade(g: GroundVertex, lt: lit::Lighting, texels: [Texel]) -> vec4 {
     let (n, albedo, _) = ground_at(lt.levels, texels, g.world.xz)
-    let sun = lit::sun_at(lt, g.world, n, soft: 2.0)
     // The sky's reflection, but no glint of the sun: the ground is covered (grass, and far off
     // trees), whose blades and leaves shade each other's glints where the ground's would show
     // (looking toward the sun, at a grazing angle); a crown's levels, where they meet, showed
     // the glint through their silhouettes' differences (5.2/255 against 3.6, bound 4).
-    let (sky, reflected) = lit::sky_gloss(lt, g.world, n)
+    let (sun, sky, reflected) = lit::sun_and_gloss(lt, g.world, n, soft: 2.0)
     let l = Lit { albedo, n, sun, sky, through: vec3(0.0), rough: 0.9, reflected }
     let c = lit::shown(lt, l, g.world)
     vec4(c, view::GROUND)

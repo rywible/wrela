@@ -59,7 +59,7 @@ pub struct Tally: Copy + GpuData + Plain {
     pub live_blocks: u32,
 }
 
-/// `FLAGS`: the vertices ran past the mesh's room; the quads did.
+/// `Tally::flags`: the vertices ran past the mesh's room; the quads did.
 pub const VERTICES_FULL: u32 = 2
 pub const QUADS_FULL: u32 = 4
 
@@ -682,31 +682,51 @@ pub fn record<C, F: Parts<C>>(
 /// rigid one of one bone (a stone), whose vertices `place_vertices` gives to that bone whole,
 /// as the skin pass would. A pass less at load, and a pipeline less in the scene's 64.
 pub fn realize_rigid<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Mesh {
+    var p = prepare(creature, look)
+    let field = creature.field()
+    record_cull(field, p.grid, mut p.scratch, mut p.mesh)
+    record_vertices(field, p.grid, mut p.scratch, mut p.mesh)
+    record_mesh(p.grid, mut p.scratch, mut p.mesh)
+    take p.mesh
+}
+
+/// What realizing `creature` once as `look` says starts from: the grid round its bounds grown
+/// by the look's tolerance, its cells for a surface that bends no tighter than 5 cm; a mesh with
+/// room for what the grid's blocks can hold; and their scratch.
+struct Prepared {
+    grid: Grid,
+    mesh: Mesh,
+    scratch: Scratch,
+}
+
+fn prepare<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Prepared {
     let grid = Grid::around(
         grow(creature.bounds(), look.surface.tolerance),
         look.surface.cell_size(5cm),
     )
-    var mesh = Mesh::new(Room { vertices: grid.blocks * 8, quads: grid.blocks * 16 })
-    var scratch = Scratch::new(grid.blocks)
-    let field = creature.field()
-    record_cull(field, grid, mut scratch, mut mesh)
-    record_vertices(field, grid, mut scratch, mut mesh)
-    record_mesh(grid, mut scratch, mut mesh)
-    mesh
+    Prepared {
+        grid,
+        mesh: Mesh::new(Room { vertices: grid.blocks * 8, quads: grid.blocks * 16 }),
+        scratch: Scratch::new(grid.blocks),
+    }
+}
+
+/// The slices realizing over frames takes for `grid` (as the realizer counts them,
+/// `Realizer::advance`): live blocks go as the grid's surface, about 6 × blocks^(2/3) (spike
+/// 01's grazers at every level); a quarter more, so the last slice, which takes the rest, is
+/// seldom more than one.
+fn slices_for(grid: Grid) -> u32 {
+    let expected = 7.5 * pow(f32(grid.blocks), 2.0 / 3.0)
+    clamp(u32(ceil(expected / f32(SLICE_BLOCKS))), 1, MAX_SLICES)
 }
 
 /// `creature`'s mesh, realized once as `look` says, for a program that keeps one (`walk`,
 /// sketch 02): on the grid around its bounds grown by the look's tolerance, its cells for a
 /// surface that bends no tighter than 5 cm.
 pub fn realize_once<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Mesh {
-    let grid = Grid::around(
-        grow(creature.bounds(), look.surface.tolerance),
-        look.surface.cell_size(5cm),
-    )
-    var mesh = Mesh::new(Room { vertices: grid.blocks * 8, quads: grid.blocks * 16 })
-    var scratch = Scratch::new(grid.blocks)
-    record(creature.field(), grid, look.deform.weights.falloff, mut scratch, mut mesh)
-    mesh
+    var p = prepare(creature, look)
+    record(creature.field(), p.grid, look.deform.weights.falloff, mut p.scratch, mut p.mesh)
+    take p.mesh
 }
 
 /// `creature`'s mesh, realized as `realize_once` does it, but over frames: `start` culls, and
@@ -725,24 +745,15 @@ pub struct Realizing {
 
 impl Realizing {
     pub fn start<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Realizing {
-        let grid = Grid::around(
-            grow(creature.bounds(), look.surface.tolerance),
-            look.surface.cell_size(5cm),
-        )
-        var mesh = Mesh::new(Room { vertices: grid.blocks * 8, quads: grid.blocks * 16 })
-        var scratch = Scratch::new(grid.blocks)
-        record_cull(creature.field(), grid, mut scratch, mut mesh)
-        // As the realizer counts them (`Realizer::advance`): live blocks go as the grid's
-        // surface, about 6 × blocks^(2/3), and a quarter more.
-        let expected = 7.5 * pow(f32(grid.blocks), 2.0 / 3.0)
-        let slices = clamp(u32(ceil(expected / f32(SLICE_BLOCKS))), 1, MAX_SLICES)
+        var p = prepare(creature, look)
+        record_cull(creature.field(), p.grid, mut p.scratch, mut p.mesh)
         Realizing {
-            mesh: take mesh,
-            grid,
-            scratch: take scratch,
+            mesh: take p.mesh,
+            grid: p.grid,
+            scratch: take p.scratch,
             falloff: look.deform.weights.falloff,
             at: 0,
-            slices,
+            slices: slices_for(p.grid),
         }
     }
 
@@ -1376,11 +1387,7 @@ impl<C, F: Parts<C>> Realizer<F> {
         if calibration {
             self.rooms[level] = LevelRoom::Calibrating
         }
-        // Live blocks go as the grid's surface, about 6 × blocks^(2/3) (spike 01's grazers at
-        // every level); a quarter more, so the last slice, which takes the rest, is seldom more
-        // than one.
-        let expected = 7.5 * pow(f32(grid.blocks), 2.0 / 3.0)
-        let slices = clamp(u32(ceil(expected / f32(SLICE_BLOCKS))), 1, MAX_SLICES)
+        let slices = slices_for(grid)
         self.slicing = Some(
             Slicing { instance: best, level, grid, mesh: take mesh, at: 0, slices, calibration },
         )
