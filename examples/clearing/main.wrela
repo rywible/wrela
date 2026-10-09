@@ -1091,8 +1091,11 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     let pose = palette(SKELETON, WALKER_BODY, walker)
     copy_palette(mut s)
     write(mut s.palette, 0, pose.bones)
-    // The camera on its path, following the creature eased.
-    let ease = 1.0 - exp(-1.0 / 60.0 * 1.2)
+    // The camera on its path, following the creature eased at one rate whatever the frame
+    // rate: a frame of `dt` seconds closes 1 - e^(-1.2 dt) of the gap (a frame after a stall,
+    // or the first after a hot reload, at most 0.1 s's).
+    let dt = clamp(time - s.cam.time, 0.0, 0.1)
+    let ease = 1.0 - exp(-1.2 * dt)
     s.carried.follow = mix(s.carried.follow, walker.root.pos, vec3(ease))
     s.carried.follow_heading = lerp_angle(s.carried.follow_heading, walker.root.heading, ease)
     let t = if s.carried.path_from < 0.0 { 0.0 } else { time - s.carried.path_from }
