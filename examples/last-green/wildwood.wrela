@@ -83,3 +83,39 @@ pub fn egg_stones() -> Vec<vec4> {
     }
     out
 }
+
+/// How far round the player the sim reads the wildwood's trunks (m), and the most it holds.
+pub const REACH: f32 = 60.0
+pub const MOST_TRUNKS: u32 = 512
+
+/// What the sim walks round in the wildwood within `REACH` of `p`: each standing tree's trunk (as
+/// it's drawn at a chest's height: `trees::as_drawn`) and each of the egg's stones, as (x, z,
+/// radius, 0), the nearest first, at most `MOST_TRUNKS`. Worked out as a job (the world's `work`):
+/// the tiles it touches grown again.
+pub fn trunks_round(p: vec2, reach: f32) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    let lo = engine::place::tile_of(p - vec2(reach))
+    let hi = engine::place::tile_of(p + vec2(reach))
+    for j in lo.y..(hi.y + 1) {
+        for i in lo.x..(hi.x + 1) {
+            let t = vec2i(i, j)
+            if !is_wild(t) {
+                continue
+            }
+            let d = decisions(t, Vec::new())
+            for tr in trees::as_drawn(d.trees) {
+                if tr.tall > 2.0 && length(tr.at - p) < reach {
+                    out.push(vec4(tr.at, max(tr.girth, 0.04), 0.0))
+                }
+            }
+        }
+    }
+    for s in egg_stones() {
+        if length(s.xy - p) < reach {
+            out.push(vec4(s.xy, s.z, 0.0))
+        }
+    }
+    out.sort_by(|a, b| length(a.xy - p) < length(b.xy - p))
+    out.truncate(MOST_TRUNKS)
+    out
+}

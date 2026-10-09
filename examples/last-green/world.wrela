@@ -35,11 +35,33 @@ fn sites() -> Vec<vec3> {
     out
 }
 
-/// The world: the player, and where it is on the floor's walk when it's walking it.
+/// The world: the player, where it is on the floor's walk when it's walking it, and the
+/// wildwood's trunks round it when it's past the floor.
 pub struct World: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub player: Player,
     pub tour: Tour,
+    pub wild: Wildside,
 }
+
+/// The wildwood's trunks round the player (`wildwood::trunks_round`), as the sim walks round
+/// them: asked for as a job where the player nears or is past the floor's tiles, round where it
+/// is, and kept until it's moved on (`ASK_AGAIN`): how many, each (x, z, radius, 0), and where
+/// they were asked round; whether this tick asks again, where, and whether an answer's on its way.
+pub struct Wildside: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub count: u32,
+    pub trunks: [vec4; 512],
+    pub around: vec2,
+    pub asking: bool,
+    pub ask_at: vec2,
+    pub pending: bool,
+}
+
+/// How far the player moves from where the wildwood's trunks were asked round before it asks
+/// again (m), how near the floor's tiles' edge it starts asking (m), and the ticks an answer is
+/// due in.
+const ASK_AGAIN: f32 = 20.0
+const WILD_NEAR: f32 = 80.0
+const ASK_DUE: u32 = 30
 
 /// The floor's walk (`history::TOUR`), walked by the sim when P is pressed: whether it's on, the
 /// point it's making for, the nearest it's come to it and the ticks since it came nearer; and a
@@ -68,17 +90,17 @@ const GIVE_UP: u32 = 480
 const REACHED: f32 = 1.5
 
 impl Asks for World {
-    type Ask = u32
-    type Answer = u32
+    type Ask = vec2
+    type Answer = Vec<vec4>
 
     @deterministic
-    fn asks(self, tick: Tick) -> Vec<(u32, Tick)> {
-        Vec::new()
+    fn asks(self, tick: Tick) -> Vec<(vec2, Tick)> {
+        if self.wild.asking { Vec::from([(self.wild.ask_at, tick + ASK_DUE)]) } else { Vec::new() }
     }
 
     @deterministic
-    fn work(ask: u32) -> u32 {
-        ask
+    fn work(ask: vec2) -> Vec<vec4> {
+        wildwood::trunks_round(ask, wildwood::REACH)
     }
 }
 
@@ -98,6 +120,14 @@ pub fn spawn_world() -> World {
             side: 1.0,
             skipped: 0,
             ticks: 0,
+        },
+        wild: Wildside {
+            count: 0,
+            trunks: [vec4(0.0); 512],
+            around: vec2(1.0e9),
+            asking: false,
+            ask_at: vec2(0.0),
+            pending: false,
         },
     }
 }
@@ -123,10 +153,64 @@ pub fn tick(w: mut World, input: TickInput<World>) {
     if asked != NONE {
         if asked < SITES.len() {
             travel(mut w.player, SITES[asked])
+        } else if asked == SITES.len() {
+            // One past the sites: the egg's place.
+            travel(mut w.player, vec3(wildwood::EGG, 16.0))
         }
         w.player.controls.travel = NONE
     }
-    step(mut w.player, GROUND, WATER, OBSTACLES, input.dt)
+    // The wildwood's trunks: an answer come; asked for again where the player has moved on.
+    w.wild.asking = false
+    for a in input.answers {
+        let n = min(a.answer.len(), wildwood::MOST_TRUNKS)
+        for i in 0..n {
+            w.wild.trunks[i] = a.answer[i]
+        }
+        w.wild.count = n
+        w.wild.around = a.ask
+        w.wild.pending = false
+    }
+    let at = w.player.at.world()
+    if near_wild(at, WILD_NEAR) && !w.wild.pending && length(at - w.wild.around) > ASK_AGAIN {
+        w.wild.asking = true
+        w.wild.ask_at = at
+        w.wild.pending = true
+    }
+    if near_wild(at, 0.0) {
+        let o = wild_obstacles(w.wild)
+        step(mut w.player, GROUND, WATER, o, input.dt)
+    } else {
+        step(mut w.player, GROUND, WATER, OBSTACLES, input.dt)
+    }
+}
+
+/// Whether the wildwood is within `d` of `p`: past the bake's tiles.
+fn near_wild(p: vec2, d: f32) -> bool {
+    let lo = vec2(history::tiles_lo()) * engine::place::TILE + vec2(d)
+    let hi = vec2(history::tiles_hi() + vec2i(1)) * engine::place::TILE - vec2(d)
+    p.x < lo.x || p.y < lo.y || p.x >= hi.x || p.y >= hi.y
+}
+
+/// The wildwood's trunks the world holds, as obstacles (`footing`'s).
+fn wild_obstacles(w: Wildside) -> engine::footing::Obstacles {
+    var all: Vec<engine::footing::Obstacle> = Vec::with_capacity(w.count)
+    for i in 0..w.count {
+        let t = w.trunks[i]
+        all.push(
+            engine::footing::Obstacle {
+                a: t.xy,
+                b: t.xy,
+                r: t.z,
+                thing: engine::footing::Thing::Trunk,
+                depth: 0.0,
+            },
+        )
+    }
+    engine::footing::Obstacles::of(
+        all,
+        w.around - vec2(wildwood::REACH + 16.0),
+        w.around + vec2(wildwood::REACH + 16.0),
+    )
 }
 
 /// A tick of the floor's walk: the look turned to the point it's making for, forward held at a
@@ -219,7 +303,9 @@ pub fn report(w: World, ticks: u32) -> String {
         }
     }
     let site = MAP.sites[near]
-    let region = MAP.regions[MAP.region_of(at)].name
+    let region = if near_wild(at, 0.0) { "the wildwood" } else {
+        MAP.regions[MAP.region_of(at)].name
+    }
     let water = max(
         engine::footing::mere_depth(WATER, at, GROUND.at(at.x, at.y)),
         OBSTACLES.depth(at),

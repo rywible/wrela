@@ -632,3 +632,38 @@ fn the_camera_is_never_inside_a_thing() {
     )
     assert(frames > 600, f"only {frames} frames of the walk")
 }
+
+/// AC7's wildwood (Q9): a wild tile grown alone with its margin (`engine::wild::MARGIN` cells)
+/// is the same tile cut from a wood grown three tiles wide round it, to 3% of its cells' species
+/// and 0.3 m of their heights on average (spike 17's seam test), at the egg's road and away from
+/// it.
+@test
+@fuel(2 ** 42)
+fn a_wild_tile_grown_alone_matches_the_wider_wood() {
+    for t in [vec2i(9, -9), vec2i(14, -14), vec2i(-12, 6)] {
+        let e = engine::wild::seam_error(
+            t,
+            engine::wild::MARGIN,
+            wildwood::road_distance,
+            wildwood::kept_clear,
+        )
+        print(
+            f"wild tile {t}: {e.x * 100.0}% of its cells' species differ, heights {e.y} m apart on average",
+        )
+        assert(
+            e.x <= 0.03 && e.y <= 0.3,
+            f"wild tile {t} grown alone differs from the wider wood: {e}",
+        )
+    }
+    // With no margin, its edge shows (the margin is what keeps the seam out).
+    let bare = engine::wild::seam_error(
+        vec2i(9, -9),
+        0,
+        wildwood::road_distance,
+        wildwood::kept_clear,
+    )
+    assert(
+        bare.x > 0.01,
+        f"with no margin, only {bare.x * 100.0}% of the cells differ: the test can't see a seam",
+    )
+}

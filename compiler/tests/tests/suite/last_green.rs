@@ -380,14 +380,16 @@ pub fn frame(time: f32, width: u32, height: u32) {
     assert_eq!(rels(&preview), rels(&bake), "a relation's verdict differs");
 }
 
-/// The floor's own tests (`wrela test examples/last-green`): AC2's head room over the baked
-/// trees (tests.wrela), AC11's ground cover against the history's light (no meadow grass under a
-/// closed canopy; the fields hold every tile kept), and its first frames on the GPU.
+/// The floor's own tests (`wrela test examples/last-green`, tests.wrela and main.wrela): AC2's
+/// head room over the baked trees; AC11's ground cover against the history's light; AC9's water,
+/// one surface and where the map and the flow put it; AC4's player walking into each thing, its
+/// trunks as drawn, and its camera over the floor's walk; the floor's walk walked to its end;
+/// AC7's wildwood tiles matching the wider wood; and its first frames on the GPU.
 #[test]
 #[ignore = "long: bakes the floor (minutes when the constants' cache is cold)"]
 fn the_floors_own_tests_pass() {
     let _ = floor();
-    assert_eq!(super::tests_pass(&repo_root().join("examples/last-green")), 6);
+    assert_eq!(super::tests_pass(&repo_root().join("examples/last-green")), 11);
 }
 
 /// The body of WGSL function `name` in `text` (to its closing brace at the line's start).

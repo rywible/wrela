@@ -344,6 +344,18 @@ pub struct Floor {
     reported: u32,
 }
 
+/// The built things to realize: the floor's (`blockouts::built`), and the egg's place's ring of
+/// stones out in the wildwood.
+fn to_build() -> Vec<blockouts::Built> {
+    var out = blockouts::built(map::map())
+    var seed = 900
+    for st in wildwood::egg_stones() {
+        out.push(blockouts::Built::Slab { at: st.xy, half: vec3(0.5, st.w * 0.5, 0.28), seed })
+        seed += 1
+    }
+    out
+}
+
 /// The probes round `at`, unbaked, and what occludes them: the trees standing round it.
 fn probes_at(at: vec2, occluders: take Vec<engine::probes::Occluder>) -> Baked {
     let y = height_at(at)
@@ -442,7 +454,7 @@ pub fn init() -> Floor {
         typing_shot: false,
         shot_digits: 0,
         standin: None,
-        to_build: blockouts::built(map::map()),
+        to_build: to_build(),
         built: Vec::new(),
         footprints: buffer_of(footprints(), at_least: 1),
         palette: buffer(1),
