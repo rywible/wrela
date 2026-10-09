@@ -240,10 +240,14 @@ fn corner_mask(near: Shared<PartMask, 27>, own: PartMask, c: vec3u) -> PartMask 
         .or(near.get(x1 + y1 + z1))
 }
 
-/// Where the surface crosses an edge of a block's corners, and the gradient's direction there.
-pub struct Crossing: Copy {
-    pub at: vec3,
-    pub normal: vec3,
+/// Coordinate `a` of `v` (0 for x, 1 for y, 2 for z).
+fn coordinate(v: vec3, a: u32) -> f32 {
+    if a == 0 { v.x } else if a == 1 { v.y } else { v.z }
+}
+
+/// `v` with coordinate `a` (`coordinate`) set to `x`.
+fn with_coordinate(v: vec3, a: u32, x: f32) -> vec3 {
+    if a == 0 { vec3(x, v.y, v.z) } else if a == 1 { vec3(v.x, x, v.z) } else { vec3(v.x, v.y, x) }
 }
 
 /// The edges between a block's 5³ corners: 100 along each axis.
@@ -315,7 +319,7 @@ pub fn place_vertices<C, F: Parts<C>>(
     block_map: [u32],
     near: mut Shared<PartMask, 27>,
     corners: mut Shared<f32, 125>,
-    crossings: mut Shared<Crossing, EDGES>,
+    crossings: mut Shared<vec4, EDGES>,
     probe: mut Slots<CornerProbe>,
     cells: mut Atomics<u32>,
     verts: mut Append<SkinVertex>,
@@ -365,7 +369,11 @@ pub fn place_vertices<C, F: Parts<C>>(
     // Where the surface crosses each edge of the block's corners it crosses, and the gradient
     // there, found once (by any invocation: `crossings`' chunks). An edge inside the block is
     // four cells', and each cell found it again, while the cells the surface misses waited:
-    // the clearing's first 50 frames' realizations took 0.45 s of the GPU, now 0.25.
+    // the clearing's first 50 frames' realizations took 0.45 s of the GPU, now 0.25. Each is
+    // kept as the normal and the crossing's coordinate along its edge (its others are the
+    // edge's, exactly: the root's steps move along it alone), in a vec4. Kept as a struct of
+    // two vec3s, the table made this pass 7 times slower on the herd's grazers at 3 cm (Apple
+    // M-series, in wgpu); two tables of vec4s, the same 9.6 KB, cost a fifth more than one.
     let mask = lb.mask
     let edges = crossings.chunk(lid)
     for k in 0..edges.len() {
@@ -388,7 +396,7 @@ pub fn place_vertices<C, F: Parts<C>>(
                 }
             }
             let x = pa + (pb - pa) * (fa / (fa - fb))
-            crossings.write(edges, k, Crossing { at: x, normal: normal_at(field, mask, fp, x) })
+            crossings.write(edges, k, vec4(normal_at(field, mask, fp, x), coordinate(x, axis)))
         }
     }
     barrier(mut crossings)
@@ -422,10 +430,12 @@ pub fn place_vertices<C, F: Parts<C>>(
         if ((signs >> ja) & 1) == ((signs >> jb) & 1) {
             continue
         }
-        let c = crossings.get(edge_at(axis, lid.xyz() + corner_offset(ja)))
-        pts[n] = c.at
-        nrm[n] = c.normal
-        mass += c.at
+        let low = lid.xyz() + corner_offset(ja)
+        let c = crossings.get(edge_at(axis, low))
+        let at = with_coordinate(grid.corner(g + low), axis, c.w)
+        pts[n] = at
+        nrm[n] = c.xyz
+        mass += at
         n += 1
     }
 
