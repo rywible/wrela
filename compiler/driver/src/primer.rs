@@ -155,6 +155,7 @@ pub const RULES: &[(&str, &str)] = &[
     ),
     ("eff.derived", "a derived interpretation needs a function with no host effect"),
     ("eff.input", "reading input is `nondet`, so `@deterministic` code takes events as data"),
+    ("eff.clock", "reading the clock is `nondet`, so `@deterministic` code takes its time as data"),
     (
         "eff.requests",
         "`@deterministic` code neither makes requests (`io`) nor polls them (`nondet`)",

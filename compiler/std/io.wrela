@@ -103,9 +103,18 @@ pub fn load(path: str) -> Pending<u8> {
 }
 
 /// Stores `bytes` at `path` in the program's storage, replacing what was there. The answer is
+/// The most bytes a request's path and data (or URL and body) hold together: a command is at most
+/// the host's command buffer (1 MiB, wrela_abi `CMD_CAP`), less its words.
+const MOST_BYTES: u32 = 1048576 - 64
+
 /// no bytes.
 pub fn store(path: str, bytes: [u8]) -> Pending<u8> {
     check_path("store", path)
+    if bytes.len() + path.len() > MOST_BYTES {
+        panic(
+            "store: the bytes and the path are more than one request carries (1 MiB): store the file in pieces",
+        )
+    }
     let request = next_request()
     storage_write_command(request, path, bytes)
     Pending::new(request)
@@ -124,6 +133,11 @@ pub fn fetch(url: str) -> Pending<u8> {
 /// answers with what its user gives it, and fails the request otherwise.
 pub fn post(url: str, bytes: [u8]) -> Pending<u8> {
     check_path("post", url)
+    if bytes.len() + url.len() > MOST_BYTES {
+        panic(
+            "post: the body and the URL are more than one request carries (1 MiB): post it in pieces",
+        )
+    }
     let request = next_request()
     post_command(request, url, bytes)
     Pending::new(request)
@@ -140,6 +154,9 @@ pub fn post(url: str, bytes: [u8]) -> Pending<u8> {
 /// print(f"{n} grazers, {0.5:.2} m apart")
 /// ```
 pub fn print(line: str) {
+    if line.len() > MOST_BYTES {
+        panic("print: the line is longer than the host's command buffer (1 MiB)")
+    }
     print_command(line)
 }
 

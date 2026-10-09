@@ -75,3 +75,8 @@ pub(crate) fn or_u32(m: &SharedMemory, at: u32, bits: u32) {
 pub(crate) fn add_u32(m: &SharedMemory, at: u32, v: u32) {
     word(m, at as usize).fetch_add(v, Ordering::SeqCst);
 }
+
+/// Stores `new` at `at` atomically if the word there is `expected`: whether it did.
+pub(crate) fn cas_u32(m: &SharedMemory, at: u32, expected: u32, new: u32) -> bool {
+    word(m, at as usize).compare_exchange(expected, new, Ordering::SeqCst, Ordering::SeqCst).is_ok()
+}

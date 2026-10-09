@@ -1322,6 +1322,34 @@ fn static_shadows_are_drawn_once_and_again_when_the_sun_moves() {
     assert_eq!(after, 0, "frames after the sun moved still draw static shadows");
 }
 
+/// The camera held inside a crown, exactly at a plant's middle (where its levels' patterns are
+/// anchored, `lod::anchor`) and a step either side, looking each way, and inside a trunk: every
+/// frame draws (M6 AC4, AC15). Playing spike 17, a camera there made `engine::lod::packed`
+/// convert an infinite pixel to an integer, which trapped (`lod.wrela:125`).
+#[test]
+#[ignore = "needs a GPU"]
+fn the_camera_inside_a_crown_draws_its_frames() {
+    let mut c = Clearing::load("clearing-inside-a-crown");
+    c.until_ready(1);
+    let trees = c.call("test_trees", &[]);
+    assert!(trees[0] > 0.0, "the forest is drawn");
+    for i in [0, 1, 7, 40] {
+        let m = c.call("test_middle", &[Value::I32(i)]);
+        let middle = [m[0] as f32, m[1] as f32, m[2] as f32];
+        for (dx, dy) in [(0.0, 0.0), (0.05, 0.0), (0.0, -0.05)] {
+            let eye = [middle[0] + dx, middle[1] + dy, middle[2]];
+            for (x, z) in [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)] {
+                c.hold(eye, [eye[0] + x, eye[1], eye[2] + z]);
+                c.steps(2);
+            }
+        }
+        // Inside its trunk, a metre up, looking along the ground.
+        let foot = [m[0] as f32, m[1] as f32 - m[3] as f32 * 0.5 + 1.0, m[2] as f32];
+        c.hold(foot, [foot[0] + 3.0, foot[1], foot[2] + 1.0]);
+        c.steps(2);
+    }
+}
+
 /// The scene at the start's shot (camera held, the wind still), and its depth.
 fn shot_scene(c: &mut Clearing) -> (Vec<[f32; 4]>, Vec<f32>, Cam) {
     let cam = c.camera();

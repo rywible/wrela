@@ -1495,6 +1495,15 @@ pub fn test_kind(s: Clearing, k: u32) -> vec3 {
     )
 }
 
+/// Instance `i`'s middle, where its levels' patterns are anchored (`lod::anchor`), and its
+/// trunk's foot (in w, its height above the ground).
+@testing
+pub fn test_middle(s: Clearing, i: u32) -> vec4 {
+    let p = s.forest.placed[i % s.forest.placed.len()]
+    let top = s.forest.kinds[p.kind].top * p.at.scale
+    vec4(p.at.at + vec3(0.0, top * 0.5, 0.0), top)
+}
+
 /// The instances drawn the last frame as cards, as impostors and as volumes.
 @testing
 pub fn test_trees(s: Clearing) -> vec3 {

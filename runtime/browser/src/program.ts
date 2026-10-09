@@ -37,6 +37,7 @@ import {
   IMPORT_INPUT,
   IMPORT_KEEP,
   IMPORT_KEPT,
+  IMPORT_CLOCK,
   IMPORT_LIMIT,
   IMPORT_MODULE,
   IMPORT_REQUEST_STATUS,
@@ -52,7 +53,7 @@ import {
 import { type Checker, CommandError } from "./check.ts";
 import { errorMessage } from "./errors.ts";
 import { StateHash } from "./hash.ts";
-import { refusingImports } from "./imports.ts";
+import { clockImport, refusingImports } from "./imports.ts";
 import { Lines, LINES_SECTION, wasmOffsets } from "./lines.ts";
 import { type Bytes, type Command, decode, type OpcodeName, Sequencer } from "./stream.ts";
 import type { TickerOptions, VoiceOptions } from "./messages.ts";
@@ -224,8 +225,9 @@ function helperTrapped(memory: WebAssembly.Memory, thread: number): void {
   const words = new Int32Array(memory.buffer);
   const running = Atomics.load(words, (threadBlock(thread) + RUNNING) / 4) >>> 0;
   if (running >= THREAD_BLOCKS && running < THREAD_BLOCKS_END) {
-    // A thread's parallel job: its starting thread waits on its count of done chunks.
-    Atomics.store(words, (running + JOB_FAILED) / 4, thread + 1);
+    // A thread's parallel job: its starting thread waits on its count of done chunks. The first
+    // helper to trap is the one whose message the program reports.
+    Atomics.compareExchange(words, (running + JOB_FAILED) / 4, 0, thread + 1);
     Atomics.or(words, (running + JOB_DONE) / 4, JOB_DONE_FAILED | 0);
     Atomics.notify(words, (running + JOB_DONE) / 4);
   } else if (running >= JOB_SLOTS && running < JOB_SLOTS_END) {
@@ -364,6 +366,7 @@ export class Program {
         [IMPORT_TICK]: (task: number, context: number, hz: number) => program.#tickImport(task >>> 0, context >>> 0, hz >>> 0),
         [IMPORT_KEEP]: (ptr: number, len: number) => program.#keepImport(ptr >>> 0, len >>> 0),
         [IMPORT_KEPT]: (ptr: number, cap: number) => program.#keptImport(ptr >>> 0, cap >>> 0),
+        [IMPORT_CLOCK]: clockImport(memory),
       },
     };
     // As the native host words it: a module that can't be instantiated isn't a valid program.

@@ -141,3 +141,26 @@ pub fn allocations_while_helping(n: u32) -> u32 {
 }
 
 pub fn frame(time: f32, width: u32, height: u32) {}
+
+/// Fills the heap with blocks of 4 MB until it runs out (a job's panic), as long as `n` blocks.
+@deterministic
+fn fill_heap(n: take u32) -> u32 {
+    var held: Vec<Vec<u8>> = Vec::new()
+    for _ in 0..n {
+        held.push(Vec::filled(4000000, 1))
+    }
+    held.len()
+}
+
+/// A job fills the heap while this thread makes and drops small blocks, until the job is done,
+/// then joins it: the job's panic (the heap is full) is the program's, whichever thread ran
+/// out first (`threads::a_job_that_fills_the_heap_panics_at_its_join`).
+pub fn fill_the_heap_while_allocating() -> u32 {
+    let j = job(1000, fill_heap)
+    var made: u32 = 0
+    while !j.done() {
+        let v: Vec<u32> = Vec::filled(16, made)
+        made = made.wrapping_add(v.len())
+    }
+    take j.join()
+}

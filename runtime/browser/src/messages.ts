@@ -18,8 +18,9 @@ export type ToWorker =
       /** The ring the main thread writes input events into (input.ts). */
       input: SharedArrayBuffer;
       /** The page is served by `wrela run`: new literals and new builds come while it runs
-       * (hot reload, live.ts). */
-      live: boolean;
+       * (hot reload, live.ts), after the change numbered here, the last its build holds; null
+       * otherwise. */
+      live: number | null;
     }
   | { type: "resize"; width: number; height: number }
   | { type: "visibility"; visible: boolean }

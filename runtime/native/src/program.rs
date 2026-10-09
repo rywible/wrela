@@ -22,9 +22,9 @@ use wrela_abi::stream::{self, Command, Sequencer};
 use wrela_abi::ticks::{Tick, TickLog, frame_time, lockstep_ticks};
 use wrela_abi::{
     AUDIO_QUANTUM, EXPORT_AUDIO, EXPORT_FRAME, EXPORT_INIT, EXPORT_MEMORY, EXPORT_TICK,
-    EXPORT_WORKER, HOST_FUNCTIONS, IMPORT_AUDIO, IMPORT_INPUT, IMPORT_KEEP, IMPORT_KEPT,
-    IMPORT_LIMIT, IMPORT_MEMORY, IMPORT_MODULE, IMPORT_REQUEST_STATUS, IMPORT_REQUEST_TAKE,
-    IMPORT_SUBMIT, IMPORT_TICK, Manifest, REQUEST_FAILED, REQUEST_PENDING,
+    EXPORT_WORKER, HOST_FUNCTIONS, IMPORT_AUDIO, IMPORT_CLOCK, IMPORT_INPUT, IMPORT_KEEP,
+    IMPORT_KEPT, IMPORT_LIMIT, IMPORT_MEMORY, IMPORT_MODULE, IMPORT_REQUEST_STATUS,
+    IMPORT_REQUEST_TAKE, IMPORT_SUBMIT, IMPORT_TICK, Manifest, REQUEST_FAILED, REQUEST_PENDING,
 };
 
 /// The process's one wasmtime engine: every program compiles and runs under it, as wasmtime
@@ -675,6 +675,7 @@ impl<E: Executor> Program<E> {
         linker.func_wrap(IMPORT_MODULE, IMPORT_TICK, tick::<E>).map_err(wrap)?;
         linker.func_wrap(IMPORT_MODULE, IMPORT_KEEP, keep::<E>).map_err(wrap)?;
         linker.func_wrap(IMPORT_MODULE, IMPORT_KEPT, self::kept::<E>).map_err(wrap)?;
+        linker.func_wrap(IMPORT_MODULE, IMPORT_CLOCK, clock::<E>).map_err(wrap)?;
         let state = State {
             memory: memory.clone(),
             checker: Checker::with_limits(manifest, executor.limits()),
@@ -1191,7 +1192,10 @@ fn other_instance(
     }
     let mut linker = Linker::new(engine);
     linker.define(&store, IMPORT_MODULE, IMPORT_MEMORY, memory.clone())?;
-    for f in HOST_FUNCTIONS {
+    // The clock answers on every thread (an `@audio` voice may read it).
+    let m = memory.clone();
+    linker.func_wrap(IMPORT_MODULE, IMPORT_CLOCK, move |ptr: u32| write_clock(&m, ptr))?;
+    for f in HOST_FUNCTIONS.iter().filter(|f| f.name != IMPORT_CLOCK) {
         let i32s = |n| std::iter::repeat_n(ValType::I32, n);
         let ty = FuncType::new(engine, i32s(f.params), i32s(f.results));
         linker.func_new(IMPORT_MODULE, f.name, ty, move |_, _, _| {
@@ -1321,8 +1325,9 @@ fn helper_trapped(m: &SharedMemory, thread: u32) {
     let blocks = memory::THREAD_BLOCKS..memory::THREAD_BLOCKS_END;
     let slots = memory::JOB_SLOTS..memory::JOB_SLOTS_END;
     if blocks.contains(&running) {
-        // A thread's parallel job: its starting thread waits on DONE.
-        shared::store_u32(m, running + memory::JOB_FAILED, thread + 1);
+        // A thread's parallel job: its starting thread waits on DONE. The first helper to trap
+        // is the one whose message the program reports.
+        shared::cas_u32(m, running + memory::JOB_FAILED, 0, thread + 1);
         shared::or_u32(m, running + memory::JOB_DONE, memory::JOB_DONE_FAILED);
         let _ = m.atomic_notify(u64::from(running + memory::JOB_DONE), u32::MAX);
     } else if slots.contains(&running) {
@@ -1463,6 +1468,26 @@ fn kept<E: Executor>(
         ));
     }
     Ok(state.kept.len() as i32)
+}
+
+/// When the host started its first program: `wrela.clock`'s zero, the same for every thread
+/// and every build a hot reload swaps in, so the clock never goes back.
+static CLOCK_ZERO: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
+
+/// Writes the clock (`wrela.clock`): the seconds since [`CLOCK_ZERO`], an `f64`, at `ptr`.
+fn write_clock(memory: &SharedMemory, ptr: u32) -> wasmtime::Result<()> {
+    let seconds = CLOCK_ZERO.elapsed().as_secs_f64();
+    if !shared::write(memory, ptr as usize, &seconds.to_le_bytes()) {
+        return Err(wasmtime::format_err!(
+            "clock({ptr}) reaches past the end of the program's memory"
+        ));
+    }
+    Ok(())
+}
+
+/// `wrela.clock(ptr)`: the seconds since the host started its first program, at `ptr`.
+fn clock<E: Executor>(caller: wasmtime::Caller<'_, State<E>>, ptr: u32) -> wasmtime::Result<()> {
+    write_clock(&caller.data().memory, ptr)
 }
 
 /// `wrela.limit(index) -> i32`: one of the device's limits ([`wrela_abi::Limits`]), as a `u32`'s

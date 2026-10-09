@@ -353,7 +353,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
     screen.present()
 }
 ";
-    let w = all_warnings("unused", src);
+    let w = all_warnings("unused-items", src);
     let found: Vec<(&str, usize)> =
         w.iter().filter(|(c, _)| c == "W0008").map(|(c, l)| (c.as_str(), *l)).collect();
     assert_eq!(found, [("W0008", 2), ("W0008", 12), ("W0008", 16)], "{w:?}");

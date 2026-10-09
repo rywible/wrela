@@ -166,7 +166,8 @@ function start(): void {
     const sized = { width, height };
     listen(canvas, ring, epochNow, () => sized);
     // `wrela run` serves the page with this mark: it sends new literals and builds (hot reload).
-    const live = document.querySelector('meta[name="wrela-live"]') !== null;
+    const mark = document.querySelector<HTMLMetaElement>('meta[name="wrela-live"]');
+    const live = mark === null ? null : Number(mark.content ?? "0") || 0;
     const msg: ToWorker = { type: "start", canvas: offscreen, base: document.baseURI, width, height, test, input: ring.buffer, live };
     worker.postMessage(msg, [offscreen]);
     if (!test) {

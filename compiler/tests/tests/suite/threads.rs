@@ -46,6 +46,39 @@ fn a_trapping_job_traps_at_its_join() {
     }
 }
 
+/// A job that fills the heap panics at its join with its own message, every time, while the
+/// joining thread makes and drops blocks of its own (M6, AC15). Before the allocator let its lock
+/// go to panic, the job's thread ran out of memory holding the lock, and the joining thread spun
+/// on it until its count of tries overflowed, 66 s later, with a trap that hid the job's panic
+/// (spike 17's bake, 2 runs of 11). 100 runs, two threads each, four at a time.
+#[test]
+#[ignore = "long: fills a gigabyte of heap 100 times"]
+fn a_job_that_fills_the_heap_panics_at_its_join() {
+    let build = CpuBuild::load(built("jobs")).expect("load");
+    let runs = sized(100, 1000);
+    let next = std::sync::atomic::AtomicU32::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..4 {
+            s.spawn(|| {
+                while next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < runs {
+                    let t = std::time::Instant::now();
+                    let mut host = build.start_with(2).expect("start");
+                    let e = host
+                        .call_export("fill_the_heap_while_allocating", &[])
+                        .expect_err("the heap runs out");
+                    let failure = host.last_failure().expect("a trap");
+                    let took = t.elapsed().as_secs_f64();
+                    assert!(
+                        failure.panic.as_deref().is_some_and(|m| m.starts_with("out of memory")),
+                        "the run failed otherwise, after {took:.1} s: {e}"
+                    );
+                    assert!(took < 20.0, "a run took {took:.1} s");
+                }
+            });
+        }
+    });
+}
+
 /// Parallel work started inside a parallel closure runs on that thread alone, chunk after
 /// chunk: the results are the same with any helpers, and nothing deadlocks.
 #[test]

@@ -79,6 +79,8 @@ export const EXPORT_TICK = "__tick";
 export const EXPORT_LIFT_SET = "__lift_set";
 export const IMPORT_KEEP = "keep";
 export const IMPORT_KEPT = "kept";
+/** The clock (`std::time`): seconds on the host's clock, an `f64` written at an address. */
+export const IMPORT_CLOCK = "clock";
 /** Input (runtime/abi `input`): an event is EVENT_SIZE bytes, six words: its kind, its
  * modifiers, then four words that depend on the kind. */
 export const EVENT_SIZE = 24;
@@ -111,6 +113,7 @@ export const HOST_FUNCTIONS = [
   ["tick", "(i32, i32, i32) -> ()"],
   ["keep", "(i32, i32) -> ()"],
   ["kept", "(i32, i32) -> (i32)"],
+  ["clock", "(i32) -> ()"],
 ] as const;
 export const EXPORT_AUDIO = "__audio";
 /** The audio thread's rate and render quantum, and where `__audio` leaves a quantum's samples. */

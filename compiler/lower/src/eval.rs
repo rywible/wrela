@@ -468,6 +468,13 @@ impl Cx<'_> {
             let (Value::Bytes(bs), Value::Scalar(len)) = (ps.first()?, ps.get(1)?) else {
                 return None;
             };
+            // GPU code has no addresses: a text there is its length alone (`gpu_run`).
+            if mb.target() == ir::Target::Gpu {
+                return Some(ir::ConstValue::Parts(vec![
+                    ir::ConstValue::Scalar(ir::Const::U32(0)),
+                    ir::ConstValue::Scalar(len.clone()),
+                ]));
+            }
             let d = self.bytes_data(mb, bs);
             return Some(ir::ConstValue::Parts(vec![
                 ir::ConstValue::Addr(d),

@@ -230,6 +230,7 @@ macro_rules! lang_items {
                         | Lang::Limit
                         | Lang::InputTake
                         | Lang::Kept
+                        | Lang::ReadClock
                 )
             }
 
@@ -354,6 +355,7 @@ lang_items! {
     InputTake = "std::mem::take_input",
     Keep = "std::mem::keep_bytes",
     Kept = "std::mem::kept_bytes",
+    ReadClock = "std::mem::read_clock",
     StorageReadCommand = "std::io::storage_read_command",
     StorageWriteCommand = "std::io::storage_write_command",
     FetchCommand = "std::io::fetch_command",
@@ -685,7 +687,7 @@ pub enum TestRun {
 /// std's unsafe core (language.md §17, §6.14): the only modules that use `unsafe`, and the
 /// only ones whose functions may state `@effects` or be a `@thread_entry`.
 pub const UNSAFE_CORE: &[&str] =
-    &["mem", "alloc", "collections", "string", "par", "audio", "tick", "handoff"];
+    &["mem", "alloc", "collections", "string", "par", "audio", "tick", "handoff", "time"];
 
 #[derive(Clone, Debug)]
 pub struct FnDef {

@@ -83,3 +83,72 @@ fn step(n: u32) -> u32 {
     let codes: Vec<&str> = built.diagnostics.iter().map(|d| d.code.as_str()).collect();
     assert_eq!(codes, ["E0600"]);
 }
+
+/// The clock (`std::time`, M6): it never goes back, and work takes time on it. In a constant it's
+/// the `nondet` effect's error (and in `@deterministic` code: `eff.clock`; parallel work can't
+/// read it either, as it can't be `nondet`).
+#[test]
+fn the_clock_goes_forward() {
+    let text = "use std::time::{now, since}
+
+fn spin(n: u32) -> u32 {
+    var x: u32 = 1
+    for i in 0..n {
+        x = x.wrapping_mul(1664525).wrapping_add(i)
+    }
+    x
+}
+
+/// The seconds in all, the seconds a loop took, and the seconds between two readings in a row.
+pub fn laps() -> vec3 {
+    let a = now()
+    let t = now()
+    let x = spin(4000000)
+    let took = since(t) + f32(x % 2) * 0.0
+    let b = now()
+    let c = now()
+    vec3(f32(b - a), took, f32(c - b))
+}
+
+pub fn frame(time: f32, width: u32, height: u32) {}
+";
+    let dir = crate::package("requests-clock", text);
+    let out = dir.join("build");
+    wrela_tests::must_build(&dir, &out);
+    let mut host = wrela_host::CpuHost::load(&out).expect("load");
+    let [total, took, between] = wrela_tests::one_vec3(&mut host, "laps", &[]);
+    assert!(took > 0.0, "work takes time: {took} s");
+    assert!(total >= took && between >= 0.0, "the clock went back: {total}, {took}, {between}");
+    let in_const = "use std::time::now\n\nconst AT: f64 = now()\n\npub fn frame(time: f32, width: u32, height: u32) {}\n";
+    let built = wrela_driver::check(&crate::package("requests-clock-const", in_const));
+    let codes: Vec<&str> = built.diagnostics.iter().map(|d| d.code.as_str()).collect();
+    assert_eq!(codes, ["E0600"], "a constant can't read the clock");
+}
+
+/// Commands larger than the host's command buffer (1 MiB, M6 AC15), in both hosts: a texture
+/// and a buffer written whole (4 MB each) go in pieces; a store of 2 MB panics, naming `store`;
+/// and any other command over it (a label 2 MB long) panics with the backstop's message. Spike 17
+/// found a texture's write trapped with no message (`unreachable`).
+const STORE_TOO_LARGE: &str = "store: the bytes and the path are more than one request carries";
+const COMMAND_TOO_LARGE: &str = "a GPU or IO command larger than the host's command buffer";
+
+#[test]
+#[ignore = "needs a GPU"]
+fn a_command_over_the_buffer_is_split_or_named() {
+    let (dir, _) = page("compiler/tests/large-commands", "large-commands-native");
+    let mut host = Host::load(&dir).expect("load");
+    host.run_frames(&[0.0, 1.0 / 60.0], 4, 4).expect("large writes go in pieces");
+    let err = host.run_frames(&[2.0 / 60.0], 4, 4).expect_err("the store is too large");
+    assert!(err.to_string().contains(STORE_TOO_LARGE), "{err}");
+    let mut cpu = wrela_host::CpuHost::load(&dir).expect("load");
+    let err = cpu.call_export("big_label", &[]).expect_err("the label is too large");
+    assert!(err.to_string().contains(COMMAND_TOO_LARGE), "{err}");
+}
+
+#[test]
+#[ignore = "long: needs Chrome and a GPU"]
+fn chrome_splits_or_names_a_command_over_the_buffer() {
+    let (_, rel) = page("compiler/tests/large-commands", "large-commands-chrome");
+    let failure = wrela_tests::chrome_failure(&rel, wrela_tests::ChromeRun::new(4, 4, 4, 60.0));
+    assert!(failure.contains(STORE_TOO_LARGE), "{failure}");
+}

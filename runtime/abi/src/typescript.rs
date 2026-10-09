@@ -106,6 +106,8 @@ export const EXPORT_TICK = {export_tick:?};
 export const EXPORT_LIFT_SET = {export_lift_set:?};
 export const IMPORT_KEEP = {import_keep:?};
 export const IMPORT_KEPT = {import_kept:?};
+/** The clock (`std::time`): seconds on the host's clock, an `f64` written at an address. */
+export const IMPORT_CLOCK = {import_clock:?};
 /** Input (runtime/abi `input`): an event is EVENT_SIZE bytes, six words: its kind, its
  * modifiers, then four words that depend on the kind. */
 export const EVENT_SIZE = {event_size};
@@ -220,6 +222,7 @@ export const PANIC_CAP = {panic_cap};
         export_lift_set = crate::EXPORT_LIFT_SET,
         import_keep = crate::IMPORT_KEEP,
         import_kept = crate::IMPORT_KEPT,
+        import_clock = crate::IMPORT_CLOCK,
         event_size = input::EVENT_SIZE,
         shift = input::SHIFT,
         control = input::CONTROL,

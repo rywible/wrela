@@ -562,7 +562,7 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
       size = { width: msg.width, height: msg.height };
       const test = msg.test;
       // The device and the build are fetched at once.
-      const live = msg.live ? new Live(base) : null;
+      const live = msg.live !== null ? new Live(base, msg.live) : null;
       live?.start();
       Promise.all([openDevice((test?.timestamps ?? 0) > 0), loadBuild(base)])
         .then(([device, build]) => (test ? runTest(msg.canvas, device, build, test, live) : run(msg.canvas, device, build, live)))

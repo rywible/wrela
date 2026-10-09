@@ -76,6 +76,9 @@ pub(package) const LOCK_WAITS: u32 = 44
 /// How many tries a thread spun on the allocator's lock.
 pub(package) const LOCK_SPINS: u32 = 48
 
+/// Where `wrela.clock` writes a thread's clock: an `f64`, seconds.
+pub(package) const CLOCK: u32 = 56
+
 /// Where in a block a panic's message is: a `u32` byte count, then UTF-8.
 pub(package) const PANIC: u32 = 4096
 

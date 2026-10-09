@@ -100,6 +100,9 @@ pub const IMPORT_KEEP: &str = "keep";
 /// `kept(address, cap) -> length`: copies up to `cap` bytes of what the replaced build last
 /// kept to the address, and gives how many it kept, all of them (0 if nothing).
 pub const IMPORT_KEPT: &str = "kept";
+/// `clock(address)`: writes the seconds since the host started the program, an `f64` that never
+/// goes back, to the address (`std::time::now`). Reading it is `nondet` (language.md §8).
+pub const IMPORT_CLOCK: &str = "clock";
 /// The audio thread's sample rate, in hertz, and how many samples one `__audio` call renders
 /// (a Web Audio render quantum). Both hosts render at this rate; the browser resamples to the
 /// device's.
@@ -127,7 +130,7 @@ impl HostFunction {
 }
 
 /// Every function a program may import besides its memory ([`IMPORT_MEMORY`]).
-pub const HOST_FUNCTIONS: [HostFunction; 9] = [
+pub const HOST_FUNCTIONS: [HostFunction; 10] = [
     HostFunction { name: IMPORT_SUBMIT, params: 2, results: 0 },
     HostFunction { name: IMPORT_REQUEST_STATUS, params: 1, results: 1 },
     HostFunction { name: IMPORT_REQUEST_TAKE, params: 2, results: 0 },
@@ -137,6 +140,7 @@ pub const HOST_FUNCTIONS: [HostFunction; 9] = [
     HostFunction { name: IMPORT_TICK, params: 3, results: 0 },
     HostFunction { name: IMPORT_KEEP, params: 2, results: 0 },
     HostFunction { name: IMPORT_KEPT, params: 2, results: 1 },
+    HostFunction { name: IMPORT_CLOCK, params: 1, results: 0 },
 ];
 
 /// The export the host calls each frame.

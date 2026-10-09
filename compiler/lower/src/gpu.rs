@@ -1111,7 +1111,8 @@ pub(crate) fn intrinsic(
             | Lang::Limit
             | Lang::InputTake
             | Lang::Keep
-            | Lang::Kept),
+            | Lang::Kept
+            | Lang::ReadClock),
         ) if fl.is_gpu() => {
             let name = fl.cx.checked.program.func(func).name.clone();
             fl.cx.err(Diagnostic::new(
@@ -1150,6 +1151,12 @@ pub(crate) fn intrinsic(
             fl.mb.m.reload = true;
             let u = fl.mb.m.types.u32();
             Some(fl.value(u, ir::Expr::Host(ir::HostOp::Kept, vec![at, cap])))
+        }
+        Some(Lang::ReadClock) => {
+            let at = fl.arg_value(&c.args[0])?;
+            fl.mb.m.clock = true;
+            fl.emit(ir::Stmt::Eval(ir::Expr::Host(ir::HostOp::Clock, vec![at])));
+            None
         }
         Some(Lang::InputTake) => {
             let at = fl.arg_value(&c.args[0])?;

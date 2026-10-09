@@ -252,3 +252,47 @@ fn wrela_run_reloads_the_page_in_place() {
     }
     assert_eq!(lines, expected.iter().map(String::as_str).collect::<Vec<_>>());
 }
+
+/// A page opened after hot reloads loads the newest build, and starts after the changes that
+/// build holds (M6 AC15). Three structural edits are built with no page open; a page opened
+/// then draws the third's clear colour. Playing spike 17, such a page replayed the server's
+/// changes from the first, and asked for a build the server had deleted (`/2/manifest.json`,
+/// 404), and stopped.
+#[test]
+#[ignore = "long: needs Chrome and a GPU"]
+fn a_page_opened_after_hot_reloads_loads_the_newest_build() {
+    let pkg = edited("reload-late-page-src", |src| src.to_string() + "\n");
+    let out = super::scratch("reload-late-page");
+    let server =
+        wrela_driver::live::serve(&pkg, &out, 0, &["main".into()], Default::default(), true)
+            .expect("serve");
+    let builds = |server: &wrela_driver::live::Server| {
+        server.changes().iter().filter(|c| c["kind"] == "build").count()
+    };
+    let clears = ["tint().zyx * 0.5", "tint().yzx * 0.5", "tint().xzy * 0.5"];
+    let mut last = "tint() * 0.5";
+    for (k, clear) in clears.into_iter().enumerate() {
+        write_edit(&pkg, "main.wrela", |s| {
+            s.replace(&format!("clear: vec4({last}, 1.0)"), &format!("clear: vec4({clear}, 1.0)"))
+        });
+        last = clear;
+        let began = std::time::Instant::now();
+        while builds(&server) < k + 1 {
+            assert!(
+                began.elapsed().as_secs() < 60,
+                "edit {k} wasn't built: {:?}",
+                server.changes()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+    let url = format!(
+        "http://127.0.0.1:{}/#test&frames=20&width={SIZE}&height={SIZE}&fps=60&nohash=1",
+        server.port
+    );
+    wrela_tests::run_url_in_chrome(&url, &out, 120);
+    // The last frame's clear: the third edit's, `tint().xzy * 0.5` of (0.25, 0.5, 0.75).
+    let frame = std::fs::read(out.join("results/frame.rgba")).expect("frame.rgba");
+    let i = ((32 * SIZE + 56) * 4) as usize;
+    assert_eq!([frame[i], frame[i + 1], frame[i + 2]], [32, 96, 64], "the newest build's clear");
+}

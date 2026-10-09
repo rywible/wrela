@@ -34,6 +34,7 @@ const NUMBERS: &[(&str, u32, &str)] = &[
     ("JOIN_WAITS", JOIN_WAITS, "How many times a thread waited at a join for a job a helper ran."),
     ("LOCK_WAITS", LOCK_WAITS, "How many times a thread found the allocator's lock taken."),
     ("LOCK_SPINS", LOCK_SPINS, "How many tries a thread spun on the allocator's lock."),
+    ("CLOCK", CLOCK, "Where `wrela.clock` writes a thread's clock: an `f64`, seconds."),
     ("PANIC", PANIC, "Where in a block a panic's message is: a `u32` byte count, then UTF-8."),
     ("JOB_SLOTS", JOB_SLOTS, "The long jobs' slots."),
     ("JOB_SLOT_COUNT", JOB_SLOT_COUNT, "How many slots there are."),

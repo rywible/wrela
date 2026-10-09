@@ -152,6 +152,9 @@ pub const JOIN_WAITS: u32 = 40;
 pub const LOCK_WAITS: u32 = 44;
 /// How many tries this thread spun on the allocator's lock, over all its waits.
 pub const LOCK_SPINS: u32 = 48;
+/// The clock as `wrela.clock` last wrote it for this thread: an `f64`, seconds since the host
+/// started the program (`std::time::now`).
+pub const CLOCK: u32 = 56;
 /// A panic's message: a `u32` byte count, then the message's UTF-8, cut to [`PANIC_CAP`] bytes.
 /// A host reads it after a trap on the thread; the count is 0 when the trap wasn't a panic.
 pub const PANIC: u32 = 4096;

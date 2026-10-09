@@ -326,6 +326,8 @@ pub enum HostOp {
     /// `wrela.kept(address, cap)`: copies up to `cap` of the bytes the replaced build kept to
     /// the address; how many it kept, a `u32`.
     Kept,
+    /// `wrela.clock(address)`: writes the seconds since the program started, an `f64`.
+    Clock,
     /// Args: vertices, instances (or, `indirect`, the handle and byte offset of a buffer
     /// holding the counts, after the index buffer's handle, byte offset and size when
     /// `indexed`), each binding's handle, offset and size, then the uniform block value.
@@ -768,6 +770,9 @@ pub struct Module {
     /// CPU only, in a debug build: the text a float operation that creates a NaN panics with
     /// (language.md §11). A release build has none, and no such checks.
     pub nan_message: Option<(DataId, u32)>,
+    /// CPU only: the message a command too large for the host's command buffer panics with
+    /// (std splits its own large commands; this is the backstop), as `nan_message` is held.
+    pub command_message: Option<(DataId, u32)>,
     /// CPU only: the program's state, which lasts across calls (language.md §12): data the
     /// program changes, unlike the rest, which is constant.
     pub state: Option<DataId>,
@@ -793,6 +798,9 @@ pub struct Module {
     /// CPU only: whether the program keeps bytes across a hot reload (`std::reload`), so the
     /// module imports `wrela.keep` and `wrela.kept`.
     pub reload: bool,
+    /// CPU only: whether the program reads the clock (`std::time`), so the module imports
+    /// `wrela.clock`.
+    pub clock: bool,
 }
 
 impl Module {

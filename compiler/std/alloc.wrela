@@ -16,7 +16,7 @@
 use std::abi::{ALLOCATIONS, ALLOC_STATE, LOCK_SPINS, LOCK_WAITS}
 use std::mem::{
     align_of, compare_swap, copy, count, heap_base, load_u32, memory_grow, memory_pages, size_of,
-    store_u32, thread_block, write,
+    store_u32, thread_block, wait_for, write,
 }
 
 // The allocator's words, from ALLOC_STATE on.
@@ -28,15 +28,26 @@ const HEADS: u32 = ALLOC_STATE + 16
 const CLASSES: u32 = 17
 const SMALLEST: u32 = 16
 const PAGE: u32 = 65536
+/// The largest block there can be: the memory's most (1 GiB), so a size's rounding to a page
+/// can't overflow.
+const MOST: u32 = 1073741824
 
 /// A block of at least `size` bytes, aligned to `align` (at most 16), or 0 when `size` is 0.
 /// Running out of memory panics.
+///
+/// Nothing panics or traps while the lock is held: a thread that did would hold it for good,
+/// and every other thread would wait on it forever (spike 17's bake: a job ran out of memory,
+/// and the thread that would have joined it spun until its count of tries overflowed, which hid
+/// the job's panic). A request that can't be met is found under the lock and panics after it.
 pub fn alloc(size: u32, align: u32) -> u32 {
     if size == 0 {
         return 0
     }
     if align > SMALLEST {
         panic("std's allocator aligns blocks to at most 16 bytes")
+    }
+    if size > MOST {
+        panic("out of memory: a block larger than the heap can grow to (1 GiB)")
     }
     lock()
     let k = class(size)
@@ -54,6 +65,9 @@ pub fn alloc(size: u32, align: u32) -> u32 {
         large(round_up(size, PAGE))
     }
     unlock()
+    if block == 0 {
+        panic("out of memory: the heap can't grow past 1 GiB")
+    }
     unsafe {
         count(ALLOCATIONS, 1)
     }
@@ -147,7 +161,8 @@ fn large(n: u32) -> u32 {
     carve(n)
 }
 
-/// `n` fresh bytes from the bump pointer, growing the memory if it must.
+/// `n` fresh bytes from the bump pointer, growing the memory if it must; 0 if it can't grow (the
+/// caller panics, once it has let the lock go).
 fn carve(n: u32) -> u32 {
     unsafe {
         var bump = load_u32(BUMP)
@@ -159,7 +174,7 @@ fn carve(n: u32) -> u32 {
         if n > end - bump {
             let pages = (n - (end - bump) + PAGE - 1) / PAGE
             if memory_grow(pages) == 4294967295 {
-                panic("out of memory: the heap can't grow past 1 GiB")
+                return 0
             }
             store_u32(END, end + pages * PAGE)
         }
@@ -169,19 +184,27 @@ fn carve(n: u32) -> u32 {
 }
 
 /// Takes the allocator's lock: workers share the heap. A thread that finds it taken counts the
-/// wait and its tries (only this thread writes its counts).
+/// wait and its tries (only this thread writes its counts, wrapping); after many tries it waits
+/// a little between them (`SPINS_BEFORE_WAITING`) rather than spin, so a long hold (a large
+/// block's memory growing) doesn't keep a core busy.
 fn lock() {
     unsafe {
         if compare_swap(LOCK, expected: 0, new: 1) != 0 {
             var spins: u32 = 1
             while compare_swap(LOCK, expected: 0, new: 1) != 0 {
-                spins += 1
+                spins = spins.wrapping_add(1)
+                if spins % SPINS_BEFORE_WAITING == 0 {
+                    let _ = wait_for(LOCK, expected: 1, micros: 20)
+                }
             }
             count(LOCK_WAITS, 1)
             count(LOCK_SPINS, spins)
         }
     }
 }
+
+/// How many tries a thread spins on the lock before it waits between tries.
+const SPINS_BEFORE_WAITING: u32 = 4096
 
 fn unlock() {
     unsafe {

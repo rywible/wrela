@@ -570,3 +570,17 @@ fn gpu_frame_tests_read_back_what_the_gpu_wrote() {
     let why = out.results[1].failure.as_ref().map(|d| d.message.clone()).unwrap_or_default();
     assert!(why.contains("9"), "{why}");
 }
+
+/// Constants that hold `Text`, read by GPU code (M6, AC15): compiler/tests/gpu-constants has a
+/// kernel read a table of sites, each a place, a height and a name, written as a literal and
+/// computed by the build; it reads back what the CPU computes from the same tables. Spike 17
+/// found this an internal error (I0001).
+#[test]
+#[ignore = "needs a GPU"]
+fn the_gpu_reads_constants_that_hold_text() {
+    let dir = wrela_tests::repo_root().join("compiler/tests/gpu-constants");
+    let out = wrela_driver::test(&dir, None);
+    assert!(out.diagnostics.iter().all(|d| !d.is_error()), "{:?}", out.diagnostics);
+    let ran: Vec<_> = out.results.iter().map(|r| (r.name.as_str(), r.failure.is_none())).collect();
+    assert_eq!(ran, [("the_gpu_reads_constants_that_hold_text", true)], "{:?}", out.results);
+}

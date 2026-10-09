@@ -96,6 +96,11 @@ pub fn share(level: f32, faint: f32, way: u32) -> vec2 {
 /// on the target (`keeps_packed`) this frame: where its middle falls (pixels, unjittered), moved
 /// by a few whole pixels by a draw of its own, so neighbours' patterns don't line up, and by the
 /// frame's place in the pattern's cycle.
+///
+/// A middle at or behind the eye's plane (the camera inside the crown) falls on no pixel: its
+/// anchor is the screen's corner, as good as any, since the plant is drawn whole there. (A
+/// player's camera went inside a crown within ten minutes of playing spike 17, and the infinite
+/// pixel trapped where the CPU made it an integer: `packed`.)
 pub fn anchor(cam: Camera, at: vec3, top: f32, scale: f32) -> vec2 {
     let own = vec2(
         hash2(i32(floor(at.x * 8.0)), i32(floor(at.z * 8.0))),
@@ -103,7 +108,10 @@ pub fn anchor(cam: Camera, at: vec3, top: f32, scale: f32) -> vec2 {
     )
     let k = (cam.frame * 7) % 16
     let step = vec2(f32(k % 4), f32(k / 4))
-    cam.pixel(at + vec3(0.0, top * 0.5 * scale, 0.0)) - floor(own * 4.0) - step
+    let middle = at + vec3(0.0, top * 0.5 * scale, 0.0)
+    let ahead = dot(middle - cam.eye, cam.forward) > cam.near
+    let on = if ahead { clamp(cam.pixel(middle), vec2(-1.0e6), vec2(1.0e6)) } else { vec2(0.0) }
+    on - floor(own * 4.0) - step
 }
 
 /// The 4 × 4 Bayer matrix's threshold at `o` (each in 0 to 3), over 16, at its step's middle:
