@@ -76,7 +76,7 @@ pub struct Reader: Clone {
 impl Reader {
     /// A reader at the start of `bytes`.
     pub fn new(bytes: take Vec<u8>) -> Reader {
-        Reader { bytes: take bytes, at: 0 }
+        Reader { bytes, at: 0 }
     }
 
     /// How many bytes are left.

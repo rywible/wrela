@@ -1056,6 +1056,7 @@ impl<'p> Checker<'p> {
                 fields: Vec::new(),
                 order: Vec::new(),
                 base: None,
+                literal: false,
             },
         };
         Ok(Expr { ty: bool_ty, span, kind: ExprKind::Binary(test, Box::new(call), Box::new(k)) })
@@ -1927,6 +1928,7 @@ impl<'p> Checker<'p> {
             fields: vec![word],
             order: vec![0],
             base: None,
+            literal: false,
         };
         Expr { ty, span, kind }
     }
@@ -2136,7 +2138,11 @@ impl<'p> Checker<'p> {
             self.err(d);
         }
         let base = base_expr.map(Box::new);
-        Expr { ty, span, kind: ExprKind::Adt { adt, args, variant, fields: out, order, base } }
+        Expr {
+            ty,
+            span,
+            kind: ExprKind::Adt { adt, args, variant, fields: out, order, base, literal: true },
+        }
     }
 
     /// The source text of a zero of a scalar or vector type, for fixes.
@@ -2383,6 +2389,7 @@ impl<'p> Checker<'p> {
                             ],
                             order: (0..6).collect(),
                             base: None,
+                            literal: false,
                         },
                     };
                     let callee = Callee::TraitMethod {
@@ -2561,6 +2568,7 @@ impl<'p> Checker<'p> {
                 fields: ret_fields,
                 order,
                 base: None,
+                literal: false,
             },
         };
         let never = self.p.types.never;
@@ -2714,7 +2722,15 @@ pub(super) fn variant_expr(
     Expr {
         ty,
         span,
-        kind: ExprKind::Adt { adt, args, variant: Some(v), fields, order, base: None },
+        kind: ExprKind::Adt {
+            adt,
+            args,
+            variant: Some(v),
+            fields,
+            order,
+            base: None,
+            literal: false,
+        },
     }
 }
 

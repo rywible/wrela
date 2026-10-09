@@ -628,6 +628,49 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// A struct literal's field that names an owned local whose type isn't `Copy`: moved into
+    /// the literal, as `take` moves it (`mem.literal-moves`). A use after it is a use after a
+    /// move. `take` written there says what's implied (W0009).
+    fn literal_move(&mut self, f: &thir::Expr) -> Option<Operand> {
+        match &f.kind {
+            ExprKind::Local(l) if self.owned(*l) && !self.is_copy(f.ty) => {
+                let kind = OperandKind::Move(Place::local(*l), MoveKind::Take);
+                Some(self.materialize(kind, f.ty, f.span))
+            }
+            ExprKind::Take(inner)
+                if matches!(&inner.kind, ExprKind::Local(l) if self.owned(*l))
+                    && !self.is_copy(inner.ty) =>
+            {
+                let at = Span { end: inner.span.start, ..f.span };
+                // `name: take name` becomes the shorthand `name`; anything else loses `take`.
+                let name = self.p.text(inner.span).unwrap_or("");
+                let before = self.p.texts.get(&f.span.file).and_then(|t| {
+                    let head = t.get(..f.span.start as usize)?.trim_end();
+                    let head = head.strip_suffix(':')?.trim_end();
+                    head.ends_with(name).then(|| head.len() - name.len()).filter(|&s| {
+                        !head[..s].ends_with(|c: char| c.is_alphanumeric() || c == '_')
+                    })
+                });
+                let (fix_at, fix) = match before {
+                    Some(s) if !name.is_empty() => {
+                        (Span { start: s as u32, end: inner.span.end, ..f.span }, name.to_string())
+                    }
+                    _ => (at, String::new()),
+                };
+                self.diags.push(
+                    Diagnostic::new(
+                        codes::W0009,
+                        at,
+                        "`take` is implied: a struct literal moves a local it names",
+                    )
+                    .with_fix("remove `take`", fix_at, fix),
+                );
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// The value of a named place, as `want` uses it.
     fn place_value(&mut self, e: &thir::Expr, want: Want) -> Option<Operand> {
         let place = self.place(e)?;
@@ -824,7 +867,7 @@ impl<'a> Builder<'a> {
                 let b = self.value(b, Want::Read)?;
                 Rvalue::Binary(*op, a, b)
             }
-            ExprKind::Adt { adt, args, variant: None, fields, order, base: None }
+            ExprKind::Adt { adt, args, variant: None, fields, order, base: None, .. }
                 if self.p.adt(*adt).borrow =>
             {
                 // Each field's place where it's written, or its value.
@@ -857,13 +900,32 @@ impl<'a> Builder<'a> {
                 let fields = out.into_iter().collect::<Option<Vec<Arg>>>()?;
                 Rvalue::BorrowStruct { adt: *adt, args: args.clone(), fields }
             }
-            ExprKind::Adt { adt, args, variant, fields, order, base } => {
+            ExprKind::Adt { adt, args, variant, fields, order, base, literal } => {
                 let mut vals: Vec<Option<Operand>> = vec![None; fields.len()];
                 for &i in order {
-                    let v = self.value(&fields[i as usize], part)?;
+                    let f = &fields[i as usize];
+                    // A local the literal names moves into it, as `take` would move it: a
+                    // struct literal is where a value's parts are given up (`mem.literal-moves`).
+                    let moved = if *literal { self.literal_move(f) } else { None };
+                    let v = match moved {
+                        Some(v) => v,
+                        None => self.value(f, part)?,
+                    };
                     vals[i as usize] = Some(self.consume(v));
                 }
+                // `..base` naming a local moves the fields it gives, as `..take base` does.
                 let base_place = match base {
+                    Some(b)
+                        if matches!(&b.kind, ExprKind::Local(l) if self.owned(*l))
+                            && !self.is_copy(b.ty) =>
+                    {
+                        let taken = thir::Expr {
+                            ty: b.ty,
+                            span: b.span,
+                            kind: ExprKind::Take(Box::new((**b).clone())),
+                        };
+                        Some((self.scrutinee(&taken)?, false))
+                    }
                     Some(b) => Some((self.scrutinee(b)?, self.is_named_place(b))),
                     None => None,
                 };
@@ -876,10 +938,16 @@ impl<'a> Builder<'a> {
                             let kind = if *named && !self.is_copy(f.ty) {
                                 self.unmarked_move(&fp, f.ty, f.span, None);
                                 OperandKind::Move(fp, MoveKind::Unmarked)
+                            } else if !*named && self.needs_drop(f.ty) && self.owning_temp(bp.local)
+                            {
+                                // A field of a temporary base is the new value's now: moved
+                                // out, so the temporary's drop leaves it alone.
+                                OperandKind::Move(fp, MoveKind::Temp)
                             } else {
                                 OperandKind::Copy(fp)
                             };
-                            out.push(self.materialize(kind, f.ty, f.span));
+                            let op = self.materialize(kind, f.ty, f.span);
+                            out.push(self.consume(op));
                         }
                         (None, ..) => {
                             let v = self.value(f, part)?;

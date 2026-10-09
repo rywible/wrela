@@ -858,7 +858,7 @@ impl Baked {
                 grid.volume_dims.y,
                 grid.volume_dims.z,
             ),
-            occluders: take o,
+            occluders: o,
             occluder_count: occluders.len(),
             baked: 0,
             again: 0,

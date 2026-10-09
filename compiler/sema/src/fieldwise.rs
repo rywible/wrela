@@ -537,6 +537,7 @@ impl Builder<'_> {
                 fields: vec![self.moved(self.var(x))],
                 order: vec![0],
                 base: None,
+                literal: false,
             },
         );
         let never = self.p.types.never;
@@ -571,6 +572,7 @@ impl Builder<'_> {
                 fields: vec![x],
                 order: vec![0],
                 base: None,
+                literal: false,
             },
         )
     }
@@ -586,6 +588,7 @@ impl Builder<'_> {
                     fields: Vec::new(),
                     order: Vec::new(),
                     base: None,
+                    literal: false,
                 },
             ),
             None => self.e(self.p.types.error, ExprKind::Error),
@@ -728,6 +731,7 @@ impl Builder<'_> {
                             fields: vals,
                             order: (0..n).collect(),
                             base: None,
+                            literal: false,
                         }
                     }
                 };

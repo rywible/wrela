@@ -179,6 +179,8 @@ pub enum ExprKind {
         fields: Vec<Expr>,
         order: Vec<u32>,
         base: Option<Box<Expr>>,
+        /// Written as a struct literal, `S { .. }`, where a local named moves (§6.1).
+        literal: bool,
     },
     /// A field of the enclosing struct literal that its `..base` supplies.
     FromBase,

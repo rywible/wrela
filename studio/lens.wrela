@@ -217,7 +217,7 @@ pub fn open<S: Surface + Lipschitz>(subject: fn() -> S) -> Lens {
         outline_buf: buffer(1),
         mask_rays: buffer(1),
         mask_other: buffer(1),
-        ui: take ui,
+        ui,
         renderer,
         part_names: names(subject()),
         part_pick: -1,

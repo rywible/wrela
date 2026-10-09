@@ -1048,9 +1048,9 @@ impl<F> Realizer<F> {
         let meshes: Vec<Option<Mesh>> = Vec::from_fn(self.detail.levels.len(), |_| None)
         self.held.push(
             Held {
-                field: take field,
+                field,
                 bounds,
-                meshes: take meshes,
+                meshes,
                 drawn: NO_LEVEL,
                 target: NO_LEVEL,
                 priority: 0.0,
@@ -1378,7 +1378,7 @@ impl<C, F: Parts<C>> Realizer<F> {
         }
         let slices = slices_for(grid)
         self.slicing = Some(
-            Slicing { instance: best, level, grid, mesh: take mesh, at: 0, slices, calibration },
+            Slicing { instance: best, level, grid, mesh, at: 0, slices, calibration },
         )
         true
     }

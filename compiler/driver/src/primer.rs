@@ -123,6 +123,10 @@ pub const RULES: &[(&str, &str)] = &[
     // §6 memory
     ("mem.copy", "Copy types copy implicitly; other values move only with `take`"),
     ("mem.take", "moving out of a named place is `take`; a moved value can't be used"),
+    (
+        "mem.literal-moves",
+        "a struct literal moves an owned local it names, without `take`; a use after it is a use after a move",
+    ),
     ("mem.clone", "deep copies are `.clone()` of a `Clone` type"),
     ("mem.modes", "`mut` and `take` parameters are marked at the call site"),
     ("mem.receivers", "a `mut self` call isn't marked; a `take self` call on a named place is"),

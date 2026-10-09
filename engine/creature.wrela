@@ -2396,7 +2396,7 @@ pub fn group<P>(
 impl Bare {
     /// The first item: a group made on its own (`group`).
     pub fn add<P>(take self, g: take Group<P>) -> Body<Group<P>> {
-        Body { skeleton: self.skeleton, parts: take g, k: 0.0, own_bounds: None }
+        Body { skeleton: self.skeleton, parts: g, k: 0.0, own_bounds: None }
     }
 
     /// The first part: `field`, written in `bone`'s space, named by the bone.
@@ -2479,7 +2479,7 @@ impl<P> Body<P> {
     pub fn add<Q>(take self, g: take Group<Q>) -> Body<Then<P, Group<Q>>> {
         Body {
             skeleton: self.skeleton,
-            parts: Then { a: take self.parts, b: take g },
+            parts: Then { a: take self.parts, b: g },
             k: self.k,
             own_bounds: self.own_bounds,
         }

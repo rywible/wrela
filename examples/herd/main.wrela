@@ -122,9 +122,9 @@ pub fn init() -> Game {
     Game {
         snaps: Snapshots::new(take latest, hz: 60),
         placed,
-        realizer: take realizer,
+        realizer,
         looks,
-        skeletons: take skeletons,
+        skeletons,
         instances: buffer(HERD),
         palettes: buffer(HERD * MAX_BONES),
         shadow: depth_texture(width: side, height: side),

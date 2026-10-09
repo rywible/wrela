@@ -809,7 +809,7 @@ fn a_vec_sorts_stably_whatever_its_length() {
             s = s.wrapping_mul(1664525).wrapping_add(1013904223)
             var owned = Vec::new()
             owned.push(i)
-            v.push(Keyed { key: (s >> 16) % 50, order: i, owned: take owned })
+            v.push(Keyed { key: (s >> 16) % 50, order: i, owned })
         }
         v.sort_by(|a, b| a.key < b.key)
         assert(v.len() == n)

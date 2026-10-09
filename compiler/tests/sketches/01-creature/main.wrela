@@ -94,13 +94,13 @@ pub fn init() -> Game {
         )
     }
     let (writer, reader) = ring::<Contact>(64)
-    play(Hooves { bank: bank(), strikes: take reader }, ring_hooves)
+    play(Hooves { bank: bank(), strikes: reader }, ring_hooves)
     let terrain = Terrain { hill: vec3(4, 0, 6), height: 0.8, width: 3.0 }
     Game {
         world: World { terrain, grazers },
         looks,
         frame: Frame::new(),
-        strikes: take writer,
+        strikes: writer,
         ticks: 0,
         planted: 0,
     }

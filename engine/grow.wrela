@@ -1896,7 +1896,7 @@ pub fn streams<G: Ground>(ground: G, m: Map, land: Land) -> Vec<Stream> {
             p += best * 4.0
             gathered += 0.01
         }
-        out.push(Stream { points: take pts })
+        out.push(Stream { points: pts })
         si += 1
     }
     out
@@ -2205,14 +2205,14 @@ pub fn simulate<G: Ground, C: Clock>(
         litter[k] = smoothstep(0.35, 0.85, f.shade_sum[k])
     }
     History {
-        land: take land,
-        trees: take trees,
+        land,
+        trees,
         herd_grid: herd.grid,
         wear: herd.trail.clone(),
         streams: ss,
         light: take f.light,
         litter,
         thorn: take f.thorn,
-        log: take log,
+        log,
     }
 }

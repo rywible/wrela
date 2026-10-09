@@ -103,7 +103,7 @@ The load-bearing rules. Changing one needs the owner, and the change and its rea
 | **The compiler runs ahead of time on desktop**; nothing is compiled in the browser (D-069). | Whole-program monomorphization; a small runtime. |
 | **Structure is types; values are data** (D-070). Generics are monomorphized; a seed changes data, never structure. | One pipeline serves every individual of a type. |
 | **Value semantics, no GC; parameter modes instead of references; no lifetimes** (D-014, D-064). | Predictable frames; nothing for agents to misuse. |
-| **Every transfer is visible:** `take`, `.clone()`, `mut` at the call site (D-064). | Costs and mutations show where they happen. |
+| **Every transfer is visible:** `take`, `.clone()`, `mut` at the call site (D-064), except that a struct literal moves the owned locals it names (owner, 2026-10-09: building a value from its parts is where they're given up, and the word was noise in 63 places). | Costs and mutations show where they happen. |
 | **Determinism:** simulation code is `@deterministic`, with strict CPU floats; GPU results never feed the sim (D-015, D-052, D-074). | Multiplayer, replays and agent testing stay possible. |
 | **Multiplayer must never be precluded;** the first target is server-authoritative (D-042). | The flagship may grow into it. |
 | **Effects are named and checked per context; staging is guaranteed or rejected** (D-072). | No silent fallbacks on the GPU or audio thread. |

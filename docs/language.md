@@ -132,7 +132,7 @@ let leg = leg_segment(0.45, r_top: 0.09)   // positional first, then named
 
 - **Fields may have defaults**, as parameters may (§3's functions, §10, D-048). A struct literal may omit defaulted fields (`struct.defaults`).
 - **A struct opts in to traits in its declaration:** `struct Tissue: Blend { ... }` (D-026, D-078). `Copy`, `Clone`, `GpuData` and `Plain` are structural: every field must have the trait (`struct.opt-in`). Declaring `Copy` implies `Clone`, so declaring both is a warning with a fix (W0004). A trait set names several traits at once: `struct Gate: Sim` (§7, `trait.sets`). A `@fieldwise` trait is derived (below); any other trait a type declares needs an `impl` (E0401). A generic type's declared trait holds for the instantiations whose type arguments have it: the prelude's `Option<T>: Copy` makes `Option<f32>` `Copy`, and `Option<Log>` isn't when `Log` isn't.
-- **`..base`** fills the remaining fields from another value of the same type, as if each were written `field: base.field` (`struct.base`): a `Copy` field is copied, and any other moves, so `..take base` or `..base.clone()` is written for a value that isn't all `Copy` (E0501, E0502).
+- **`..base`** fills the remaining fields from another value of the same type, as if each were written `field: base.field` (`struct.base`): a `Copy` field is copied, and any other moves. A base that's an owned local moves as a field does (§6.1's struct literals); one that's another named place is written `..take base` or `..base.clone()` when it isn't all `Copy` (E0501, E0502).
 
 ```wrela
 pub struct Look {
@@ -345,7 +345,8 @@ log.push(edit)                 // error: `log` was moved, so it can't be used he
 
 - **`Copy` types copy implicitly.** These are small plain types, like numbers, vectors, `Transform` and `Handle<T>`, that declare `Copy`. Their implementation is structural (D-060).
 - **Everything else is copied only with `.clone()`** (the `Clone` trait), **or moved with `take`.** The two words mean what they mean in Rust (D-083).
-- **No marker is needed for:** temporaries, as in `archive(EditLog::new())`, or returning a local variable.
+- **No marker is needed for:** temporaries, as in `archive(EditLog::new())`, returning a local variable, or an owned local that a struct literal names.
+- **A struct literal moves the owned locals it names** (`mem.literal-moves`, owner's review of 2026-10-09): `Impostor { colour, normal, bounds }`, or `..base` for a local `base`, moves each local whose type isn't `Copy` into the value it builds, as `take` would. Building a value from its parts is where they're given up, so the word added nothing there (63 places wrote `field: take local` with the local never used again). A use after it is a use after a move (E0500, with the literal shown as where it moved), and `take` written there is W0009. Calls, bindings and assignments still mark every move.
 - **Destruction is deterministic:** at the end of scope, in reverse declaration order. A value that was moved out isn't destroyed again.
 - **There is no null.** Use `Option<T>`.
 

@@ -2728,7 +2728,15 @@ impl<'p> Checker<'p> {
         let fields: Vec<Expr> =
             held.into_iter().map(|x| x.unwrap_or_else(|| self.error_expr(span))).collect();
         let ty = self.p.types.adt(adt, gen_args.clone());
-        let kind = ExprKind::Adt { adt, args: gen_args, variant: None, fields, order, base: None };
+        let kind = ExprKind::Adt {
+            adt,
+            args: gen_args,
+            variant: None,
+            fields,
+            order,
+            base: None,
+            literal: false,
+        };
         Expr { ty, span, kind }
     }
 

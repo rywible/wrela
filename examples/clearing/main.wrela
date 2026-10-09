@@ -394,8 +394,8 @@ pub fn init() -> Clearing {
     print(f"clouds: {cloudscape().len()} cumulus")
     var s = Clearing {
         snaps: Snapshots::new(take latest, hz: 60),
-        fawn: take fawn,
-        realizing: take realize,
+        fawn,
+        realizing: realize,
         creature: None,
         colours: buffer(1),
         palette: buffer(MAX_BONES),
@@ -419,7 +419,7 @@ pub fn init() -> Clearing {
         tables: tables(),
         air_cooked: false,
         cam: first_camera(start_eye(), LOOK_AT, FOVY, width: 960, height: 540),
-        woods: take woods,
+        woods,
         forest: Forest::new(
             Vec::new(),
             Vec::new(),
@@ -435,7 +435,7 @@ pub fn init() -> Clearing {
         moving: depth_texture(width: MOVING_SIDE, height: MOVING_SIDE),
         cmp: comparison_sampler(),
         static_drawn: false,
-        probes: take probes,
+        probes,
         occluders_cooked: false,
         next_probes: None,
         next_cooked: false,

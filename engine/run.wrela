@@ -95,7 +95,7 @@ pub fn run<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @determi
         timeline: Timeline::new(take world, HISTORY),
         step,
         present,
-        out: take out,
+        out,
         pending: Vec::new(),
     }
     start(take driver, hz, step: drive::<W, S, P, Snap>, hash: hash_of::<W, S, P, Snap>)
@@ -122,7 +122,7 @@ fn drive<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @determini
         tick: t.tick,
         dt: t.dt,
         records: t.records.clone(),
-        answers: take answers,
+        answers,
     }
     d.timeline.advance(take input, d.step)
     for (ask, due) in d.timeline.world().asks(t.tick) {

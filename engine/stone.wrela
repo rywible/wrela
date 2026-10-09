@@ -126,7 +126,7 @@ pub fn realize_stone(radius: f32, squash: vec3, seed: u32, at: vec3, turn: f32) 
     let look = CreatureLook { surface: Tolerance { tolerance: 8mm, largest: 4cm } }
     let mesh = realize_rigid(s, look)
     let colours = colours(mesh, s.field(), ByChannels {}, cell: 1cm)
-    Realized { mesh: take mesh, colours: take colours, at: translate(at) * rotate_y(turn), seed }
+    Realized { mesh, colours, at: translate(at) * rotate_y(turn), seed }
 }
 
 /// What a stone's vertex passes on.

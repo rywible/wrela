@@ -408,7 +408,7 @@ pub fn adaptive_physique<C, K: Creature<C>>(
     let bounds = field.item_bounds()
     let (c, h) = root_cube(bounds)
     var sums = BoneSums {
-        creature: take creature,
+        creature,
         mass: Vec::filled(n, 0.0),
         first: Vec::filled(n, vec3d(0.0)),
         second: Vec::filled(n, vec3d(0.0)),
