@@ -81,7 +81,7 @@ const CARDS_TO: f32 = 150.0
 const IMPOSTORS_TO: f32 = 1000.0
 
 /// What's cooked a frame at load, so each frame's GPU work stays short (the GPU safety rule,
-/// AC6): a slice of the creature's mesh (`Realizing`), two of the forest's kinds, and a
+/// AC6): a slice of the creature's mesh (`realizing`), two of the forest's kinds, and a
 /// boulder.
 const CREATURE_SLICES: u32 = 1
 const KINDS_PER_FRAME: u32 = 2
@@ -107,11 +107,12 @@ const PARTS: PartOf = parts_of(SKELETON)
 struct Carried: Copy + Serialize {
     /// When the camera's path began (the frame's time; negative before), whether it was asked
     /// for (it starts once the clearing's ready), and where the camera follows the creature
-    /// from (smoothed).
+    /// from (smoothed), as of the frame at `follow_time`.
     path_from: f32,
     asked: bool,
     follow: vec3,
     follow_heading: f32,
+    follow_time: f32,
     /// The systems left out of the frame, for timing each and for looking.
     off: Flags<System>,
     /// What the tests set (testing.wrela): how a frame is shown, the scene's scale against the
@@ -404,6 +405,7 @@ pub fn init() -> Clearing {
             asked: false,
             follow: w.root.pos,
             follow_heading: w.root.heading,
+            follow_time: 0.0,
             off: Flags::none(),
             view: View::Look,
             scale: SCALE,
@@ -1115,10 +1117,11 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     copy_palette(mut s)
     write(mut s.palette, 0, pose.bones)
     // The camera on its path, following the creature eased at one rate whatever the frame
-    // rate: a frame of `dt` seconds closes 1 - e^(-1.2 dt) of the gap (a frame after a stall,
-    // or the first after a hot reload, at most 0.1 s's).
-    let dt = clamp(time - s.cam.time, 0.0, 0.1)
+    // rate: a frame of `dt` seconds closes 1 - e^(-1.2 dt) of the gap (a frame after a stall at
+    // most 0.1 s's). The time it last eased is carried, so a hot reload doesn't change it.
+    let dt = clamp(time - s.carried.follow_time, 0.0, 0.1)
     let ease = 1.0 - exp(-1.2 * dt)
+    s.carried.follow_time = time
     s.carried.follow = mix(s.carried.follow, walker.root.pos, vec3(ease))
     s.carried.follow_heading = lerp_angle(s.carried.follow_heading, walker.root.heading, ease)
     let t = if s.carried.path_from < 0.0 { 0.0 } else { time - s.carried.path_from }
