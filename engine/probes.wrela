@@ -333,7 +333,7 @@ pub fn trace(
         x += step
     }
     // The sky and its clouds, without the sun's disc (the sun's light is the shadows').
-    (light + trans * min(clouded_sky(view, t.light, dir, dome, s), vec3(4.0)), sun_light)
+    (light + trans * min(clouded_sky(view, t.light, dir, dome, s), SKY_MOST), sun_light)
 }
 
 /// Directions over the sphere for baking: a Fibonacci spiral of `n`.
@@ -554,6 +554,12 @@ pub fn open_light(maps: Texture<Rgba16Float>, n: vec3) -> vec3 {
 /// How many directions `open_sky` reads the sky in.
 const OPEN_RAYS: u32 = 512
 
+/// The most light a direction of the sky gives a probe. The glow round the sun is far brighter
+/// than the rest of the sky, and the few rays that see it in a frame would make the probes
+/// flicker. The traced rays that leave the grid and the open sky's take the same limit, so the
+/// two agree where they meet at the grid's edge.
+const SKY_MOST = vec3(4.0)
+
 /// The open sky as a probe at the eye would hold it, with nothing round it: the air's sky
 /// (`view`; not its clouds) above, and below, the ground (`ground`, its albedo) lit by the sun
 /// and that sky. Two invocations: the sky's part (slot 0), and the sun's (slot 1, the ground's
@@ -573,7 +579,7 @@ pub fn open_sky(
         let dir = fibonacci(i, OPEN_RAYS)
         let basis = sh_basis(dir)
         if dir.y > 0.0 {
-            up = plus(up, projected(basis, sky(view, s, light, dir)))
+            up = plus(up, projected(basis, min(sky(view, s, light, dir), SKY_MOST)))
         } else {
             down = plus(down, Probe { r: basis, g: basis, b: basis })
         }

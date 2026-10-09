@@ -28,6 +28,10 @@ use view::Camera
 pub const BASE: f32 = 1500.0
 pub const TOP: f32 = 5500.0
 
+/// The height the clouds' sunlight is taken at, through the air: 1.5 km above the base, about
+/// halfway up a great cumulus (most clouds end far below `TOP`).
+const LIT_AT: f32 = BASE + 1500.0
+
 /// The weather map: `WEATHER_SIDE` texels a side over `SPAN` m round the world's origin, tiled;
 /// the shadow map, over the same square.
 pub const WEATHER_SIDE: u32 = 1024
@@ -352,9 +356,9 @@ fn march(
     if marked == 0 {
         return vec4(0.0)
     }
-    // The light round the clouds: the sun's above the air through it at the layer's middle, the
-    // sky's (a few of its directions' mean) and the ground's.
-    let sun_light = irradiance(air) * transmittance(trans, s, radius_of(BASE + 1500.0), c.sun.y)
+    // The light round the clouds: the sun's above the air through it at `LIT_AT`, the sky's (a
+    // few of its directions' mean) and the ground's.
+    let sun_light = irradiance(air) * transmittance(trans, s, radius_of(LIT_AT), c.sun.y)
     var round = vec3(0.0)
     for k in 0..4 {
         let a = f32(k) * 0.5 * PI
