@@ -34,7 +34,7 @@ use std::derive::Box3
 use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, on_ground, start_eye}
 use std::gpu::{
     Address, ClipPosition, ComparisonSampler, Cull, DepthTexture, FragmentShader, GpuBuffer,
-    GpuSpan, RenderPass, Rgba16Float, Rgba8, Sampler, Texture, Unorm8x4, begin_depth_pass,
+    GpuSpan, R32Uint, RenderPass, Rgba16Float, Rgba8, Sampler, Texture, Unorm8x4, begin_depth_pass,
     begin_pass, begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture,
     draw, label, sampler, texture, writable_texture, write,
 }
@@ -280,7 +280,7 @@ pub struct Clearing {
     scene: Texture<Rgba16Float>,
     depth: DepthTexture,
     /// Which far tree won each pixel of the prepass (`impostor::far_cut`).
-    ids: Texture<Rgba8>,
+    ids: Texture<R32Uint>,
     motion: Texture<Rgba16Float>,
     last_motion: Texture<Rgba16Float>,
     /// Where on the output what moves can be this frame (temporal AA's `Resolve::moving`).
@@ -444,7 +444,7 @@ pub fn init() -> Clearing {
         },
         scene: texture::<Rgba16Float>(width: 1, height: 1),
         depth: depth_texture(width: 1, height: 1),
-        ids: texture::<Rgba8>(width: 1, height: 1),
+        ids: texture::<R32Uint>(width: 1, height: 1),
         motion: texture::<Rgba16Float>(width: 1, height: 1),
         last_motion: texture::<Rgba16Float>(width: 1, height: 1),
         moves_in: vec4(0.0, 0.0, -1.0, -1.0),
@@ -621,7 +621,7 @@ fn copy_palette(s: mut Clearing) {
 fn resize(s: mut Clearing, width: u32, height: u32, w: u32, h: u32) {
     s.scene = texture::<Rgba16Float>(width: w, height: h)
     s.depth = depth_texture(width: w, height: h)
-    s.ids = texture::<Rgba8>(width: w, height: h)
+    s.ids = texture::<R32Uint>(width: w, height: h)
     s.motion = texture::<Rgba16Float>(width: w, height: h)
     s.last_motion = texture::<Rgba16Float>(width: w, height: h)
     s.means = writable_texture::<Rgba16Float>(width: w, height: h)

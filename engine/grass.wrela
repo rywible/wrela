@@ -679,14 +679,15 @@ fn petals(uv: vec2, seed: u32, w: f32) -> (f32, f32) {
     (smoothstep(petal + w, petal - w, r), smoothstep(0.32 + w, 0.32 - w, r))
 }
 
-/// A flower cut to its petals: the depth prepass's.
+/// A flower cut to its petals: the depth prepass's (its id 0: no far tree's,
+/// `impostor::far_cut`).
 @fragment
-pub fn flower_cut(b: BloomVertex) -> vec4 {
+pub fn flower_cut(b: BloomVertex) -> u32 {
     let (inside, _) = petals(b.uv, b.seed.value, 1.5 * length(fwidth(b.uv)))
     if inside < 0.5 {
         discard()
     }
-    vec4(0.0)
+    0
 }
 
 /// A flower's pixel, where the prepass left its depth.

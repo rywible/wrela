@@ -25,8 +25,8 @@ use shadow::{CASTER, Shadows}
 use std::field::Tube
 use std::gpu::{
     Atomics, ClipPosition, Compare, Depth, DepthTexture, DrawIndexedArgs, Flat, FragCoord,
-    GpuBuffer, GpuSpan, InstanceIndex, RenderPass, Rgba8, Sampler, Texture, VertexIndex, buffer,
-    buffer_of, discard, dispatch, draw, write,
+    GpuBuffer, GpuSpan, InstanceIndex, R32Uint, RenderPass, Rgba8, Sampler, Texture, VertexIndex,
+    buffer, buffer_of, discard, dispatch, draw, write,
 }
 use view::{Camera, PREPASSED}
 
@@ -539,9 +539,9 @@ pub fn card_shadow(
     }
 }
 
-/// A card cut to its leaves, from the leaf atlas: the depth prepass's, and the shadow maps'
-/// (which keep only the first `per_card` of a pattern's leaves, so a crown's shadow is
-/// dappled).
+/// A card cut to its leaves, from the leaf atlas: the depth prepass's (its id 0: no far
+/// instance's, `impostor::far_cut`), and the shadow maps' (which keep only the first `per_card`
+/// of a pattern's leaves, so a crown's shadow is dappled).
 @fragment
 pub fn leaf_cut(
     l: LeafVertex,
@@ -549,7 +549,7 @@ pub fn leaf_cut(
     d: CardDraw,
     atlas: Texture<Rgba8>,
     s: Sampler,
-) -> vec4 {
+) -> u32 {
     let (m, which) = leaf_at(atlas, s, l.seed.value, l.uv)
     let cover = leaf_cover(m)
     let size = cell_size(l.uv, d.cell)
@@ -562,7 +562,7 @@ pub fn leaf_cut(
     if cover < 1.0 && cover < hashed_threshold_of(l.uv, l.seed.value, size) {
         discard()
     }
-    vec4(0.0)
+    0
 }
 
 /// How much of the pixel a card's leaves cover where the atlas reads `m`: the atlas's soft edge
@@ -799,7 +799,7 @@ impl Forest {
     /// first: a fragment shader that can (the limbs' and the far instances', with `discard`)
     /// keeps a tile-based GPU from hiding what's behind it, so Apple's GPUs draw those last
     /// (the frame's median 4.94 ms against 5.04).
-    pub fn shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<Rgba8>) {
+    pub fn shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
         let cam = lt.cam
         for li in 0..self.lists.len() {
             let l = self.lists[li]

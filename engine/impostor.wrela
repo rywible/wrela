@@ -21,8 +21,8 @@ use plant::{
 }
 use std::field::Tube
 use std::gpu::{
-    ClipPosition, Compare, Depth, Flat, FragCoord, GlobalId, GpuBuffer, InstanceIndex, Rgba16Float,
-    Rgba8, Sampler, Slots, Texels3d, Texture, Texture3d, Unorm8x4, VertexIndex, WithDepth,
+    ClipPosition, Compare, Depth, Flat, FragCoord, GlobalId, GpuBuffer, InstanceIndex, R32Uint,
+    Rgba16Float, Rgba8, Sampler, Slots, Texels3d, Texture, Texture3d, VertexIndex, WithDepth,
     begin_pass_with_depth, buffer, depth_texture, discard, dispatch, draw, texture, texture3d,
 }
 use view::{Camera, LEAVES}
@@ -472,14 +472,9 @@ pub fn far_quad(
     }
 }
 
-/// A far instance's id as the prepass writes it (its low 24 bits, a byte a channel, as
-/// `Unorm8x4` holds them), and back.
-fn id_colour(id: u32) -> vec4 {
-    Unorm8x4 { bits: id & 16777215 }.decode()
-}
-
-fn id_at(ids: Texture<Rgba8>, pixel: FragCoord) -> u32 {
-    Unorm8x4::encode(ids.load(x: u32(pixel.position.x), y: u32(pixel.position.y))).bits & 16777215
+/// The id of the far instance that won the prepass at `pixel` (0 where none did).
+fn id_at(ids: Texture<R32Uint>, pixel: FragCoord) -> u32 {
+    ids.load(x: u32(pixel.position.x), y: u32(pixel.position.y))
 }
 
 /// The impostor's views round the eye's direction `local` (in the plant's frame): the four
@@ -618,7 +613,7 @@ pub const SHADED = Depth { compare: Compare::GreaterEqual, write: false }
 
 /// A far instance cut to its impostor's coverage, dithered (temporal AA brings it to the
 /// coverage: blending the views softens their edges, and a fixed cut would wear them away), at
-/// the depth of the leaf it shows, its id in the colour: the depth prepass's. (The four views'
+/// the depth of the leaf it shows, its id the texel: the depth prepass's. (The four views'
 /// coverage and place, without their parallax: the shading pass reads which instance won.)
 @fragment
 pub fn far_cut(
@@ -630,7 +625,7 @@ pub fn far_cut(
     normal: Texture<Rgba16Float>,
     s: Sampler,
     cell: f32,
-) -> WithDepth {
+) -> WithDepth<u32> {
     // The cells of a draw that holds still on the quad (hashed alpha), for its coverage.
     let size = cell_size(f.uv, cell)
     // Its share of the pixel, where it's between two ways (`lod`).
@@ -647,7 +642,7 @@ pub fn far_cut(
     }
     let toward = normal.sample_level(s, at).z * 2.0 - 1.0
     let at = leaf_place(f, cam, b, toward)
-    WithDepth { color: id_colour(f.id.value), depth: depth_of(cam, at) }
+    WithDepth { color: f.id.value, depth: depth_of(cam, at) }
 }
 
 /// The crown's normal at `at` (the world), as a far instance's volume holds it (`grid`, its
@@ -677,7 +672,7 @@ pub fn far_shade(
     f: FarVertex,
     pixel: FragCoord,
     lt: Lighting,
-    ids: Texture<Rgba8>,
+    ids: Texture<R32Uint>,
     b: Bake,
     colour: Texture<Rgba8>,
     normal: Texture<Rgba16Float>,
@@ -872,7 +867,7 @@ pub fn volume_cut(
     grid_depth: Texture3d<Rgba16Float>,
     s: Sampler,
     cell: f32,
-) -> WithDepth {
+) -> WithDepth<u32> {
     let size = cell_size(f.uv, cell)
     if !keeps_packed(f.keep.value, pixel.position.xy) {
         discard()
@@ -882,7 +877,7 @@ pub fn volume_cut(
     if o <= 0.0 || o < 1.0 && o < hashed_threshold_of(f.uv, seed_of(f), size) {
         discard()
     }
-    WithDepth { color: id_colour(f.id.value), depth: depth_of(cam, volume_place(f, b, met.at)) }
+    WithDepth { color: f.id.value, depth: depth_of(cam, volume_place(f, b, met.at)) }
 }
 
 /// Where a point of a volume's plant's frame is in the world.
@@ -899,7 +894,7 @@ pub fn volume_shade(
     f: FarVertex,
     pixel: FragCoord,
     lt: Lighting,
-    ids: Texture<Rgba8>,
+    ids: Texture<R32Uint>,
     b: Bake,
     grid: Texture3d<Rgba16Float>,
     grid_depth: Texture3d<Rgba16Float>,
