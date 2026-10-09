@@ -21,12 +21,12 @@ use plant::{
     Plant, Wind, CORNERS, card_orders, card_tint, card_turn, cook_cards, cook_outlines, corner_of,
     leaf_age, leaf_at, leaf_draws, leaf_normal, level_cards, limb_corner, limb_point, sway, tinted,
 }
-use shadow::Shadows
+use shadow::{CASTER, Shadows}
 use std::field::Tube
 use std::gpu::{
-    Atomics, ClipPosition, Compare, Depth, DepthBias, DepthTexture, DrawIndexedArgs, Flat,
-    FragCoord, GpuBuffer, GpuSpan, InstanceIndex, Rgba8, Sampler, Texture, VertexIndex, buffer,
-    buffer_of, discard, dispatch, draw, write,
+    Atomics, ClipPosition, Compare, Depth, DepthTexture, DrawIndexedArgs, Flat, FragCoord,
+    GpuBuffer, GpuSpan, InstanceIndex, Rgba8, Sampler, Texture, VertexIndex, buffer, buffer_of,
+    discard, dispatch, draw, write,
 }
 use view::{Camera, PREPASSED}
 
@@ -916,7 +916,7 @@ impl Forest {
                 leaf_cut.bind(d, atlas: self.atlas, s: s),
                 indices: self.card_triangles,
                 indirect: self.every_args.at(li).cards,
-                depth_bias: DepthBias { constant: 2, slope: 1.5, clamp: 0.0 },
+                depth_bias: CASTER,
             )
             if k.limb_count > 0 {
                 draw(
@@ -928,7 +928,7 @@ impl Forest {
                     nothing,
                     indices: self.limb_triangles,
                     indirect: self.every_args.at(li).limbs,
-                    depth_bias: DepthBias { constant: 2, slope: 1.5, clamp: 0.0 },
+                    depth_bias: CASTER,
                 )
             }
         }
