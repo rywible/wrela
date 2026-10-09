@@ -29,11 +29,6 @@ pub struct Coat: Copy + GpuData + Blend {
     pub albedo: Color,
 }
 
-/// A coat of albedo (`r`, `g`, `b`).
-pub fn coat(r: f32, g: f32, b: f32) -> Coat {
-    Coat { albedo: rgb(r, g, b) }
-}
-
 const HIDE = Coat { albedo: rgb(r: 0.12, g: 0.062, b: 0.030) }
 const WOOL = Coat { albedo: rgb(r: 0.058, g: 0.035, b: 0.02) }
 const PALE = Coat { albedo: rgb(r: 0.20, g: 0.13, b: 0.08) }

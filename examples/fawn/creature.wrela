@@ -15,24 +15,24 @@ use engine::creature::{Creature, Skeleton, creature, cut, ground, smooth}
 use grazer::creature::{
     CHEST, Cape, EAR_BASE, ELBOW, EYE_AT, Ear, FFETLOCK, HEAD, HFETLOCK, HIP, HOCK, HORN0, Hoof,
     KNEE, Muscle, NECK0, NECK1, NECK2, NECK3, PELVIS, SCAPULA, SHOULDER, SPINE, STIFLE, TAIL0,
-    TAIL1, TAIL2, TAIL3, TAIL4, TAIL5, TAIL_END, coat, head_frame, muscle, neck_cone,
+    TAIL1, TAIL2, TAIL3, TAIL4, TAIL5, TAIL_END, head_frame, muscle, neck_cone,
 }
 use round1::shapes::{ell, fbm3, flat_cone, mirror_x, noise3, rot_x, sd_box, sstep}
-use std::field::{cuboid, round_cone, sphere}
+use std::field::{cuboid, rgb, round_cone, sphere}
 
 // ---- the coat ------------------------------------------------------------------------------------
 
 /// What each part carries: the grazer's channels.
 pub type Coat = grazer::creature::Coat
 
-const HIDE = coat(r: 0.312, g: 0.1426, b: 0.054)
-const WOOL = coat(r: 0.1508, g: 0.0805, b: 0.036)
-const PALE = coat(r: 0.52, g: 0.299, b: 0.144)
-const SOCK = coat(r: 0.13, g: 0.0736, b: 0.0396)
-const HOOF = coat(r: 0.0572, g: 0.0437, b: 0.0306)
-const EYE = coat(r: 0.0208, g: 0.0138, b: 0.009)
-const HORN = coat(r: 0.091, g: 0.069, b: 0.0468)
-const TUFT = coat(r: 0.078, g: 0.046, b: 0.0234)
+const HIDE = Coat { albedo: rgb(r: 0.312, g: 0.1426, b: 0.054) }
+const WOOL = Coat { albedo: rgb(r: 0.1508, g: 0.0805, b: 0.036) }
+const PALE = Coat { albedo: rgb(r: 0.52, g: 0.299, b: 0.144) }
+const SOCK = Coat { albedo: rgb(r: 0.13, g: 0.0736, b: 0.0396) }
+const HOOF = Coat { albedo: rgb(r: 0.0572, g: 0.0437, b: 0.0306) }
+const EYE = Coat { albedo: rgb(r: 0.0208, g: 0.0138, b: 0.009) }
+const HORN = Coat { albedo: rgb(r: 0.091, g: 0.069, b: 0.0468) }
+const TUFT = Coat { albedo: rgb(r: 0.078, g: 0.046, b: 0.0234) }
 
 // ---- its own joints -------------------------------------------------------------------------------
 
