@@ -7,7 +7,7 @@ use engine::noise::{noise2, pick, rand}
 use engine::plant::{Bark, Instance, Leaves, Plant, plant}
 use great_tree::tree::great_tree
 use engine::vegetation::Placed
-use scene::{KNOLL, MEADOW, STAND, height, in_gap, past_edge}
+use scene::{KNOLL, MEADOW, STAND, in_gap, on_ground, past_edge}
 use std::math::TAU
 
 /// A forest tree, seed `s`: a trunk, a few limbs, and a crown of clumps. At the forest's edge
@@ -100,17 +100,23 @@ fn tint(s: u32) -> vec3 {
     vec3(pick(s, 6, lo: -0.05, hi: 0.06), pick(s, 7, lo: -0.06, hi: 0.04), 0.0)
 }
 
-/// An instance of a kind at (x, z) on the ground, seed `s`, scaled about `scale`.
-fn at(kind: u32, x: f32, z: f32, s: u32, scale: f32) -> Placed {
+/// An instance of a kind at (x, z) on the ground, turned, tinted and scaled by seed `s`.
+fn at(kind: u32, x: f32, z: f32, s: u32) -> Placed {
     Placed {
         kind,
         at: Instance {
-            at: vec3(x, height(x, z), z),
+            at: on_ground(vec2(x, z)),
             yaw: TAU * rand(s, 90),
             tint: tint(s),
-            scale: scale * pick(s, 91, lo: 0.88, hi: 1.12),
+            scale: pick(s, 91, lo: 0.88, hi: 1.12),
         },
     }
+}
+
+/// An instance of a kind standing at `p` on the ground as it was grown: not turned, tinted or
+/// scaled.
+pub fn standing(kind: u32, p: vec2) -> Placed {
+    Placed { kind, at: Instance { at: on_ground(p), yaw: 0.0, tint: vec3(0.0), scale: 1.0 } }
 }
 
 /// Where the forest's instances stand: the great tree on its rise; trees round the meadow on a
@@ -118,18 +124,7 @@ fn at(kind: u32, x: f32, z: f32, s: u32, scale: f32) -> Placed {
 /// along the plateau's edge in the gap; and far trees down the valley's slopes and floor.
 pub fn placed() -> Vec<Placed> {
     var out: Vec<Placed> = Vec::new()
-    out.push(
-        Placed {
-            kind: GREAT,
-            at: Instance {
-                at: vec3(KNOLL.x, height(KNOLL.x, KNOLL.y), KNOLL.y),
-                yaw: 0.0,
-                tint: vec3(0.0),
-                scale: 1.0,
-            },
-        },
-    )
-    let e = vec2(STAND.x, STAND.y)
+    out.push(standing(GREAT, KNOLL))
     let cell = 6.0
     var s = 1000
     for i in 0..48 {
@@ -141,15 +136,15 @@ pub fn placed() -> Vec<Placed> {
             let r = length(p - MEADOW)
             let rim = 25.0 + 10.0 * noise2(p * 0.05)
             let past = past_edge(p)
-            let a = atan2(x - e.x, z - e.y)
-            let gap = in_gap(x, z) && length(p - e) > 14.0
+            let a = atan2(x - STAND.x, z - STAND.y)
+            let gap = in_gap(x, z) && length(p - STAND) > 14.0
             let near_great = length(p - KNOLL) < 16.0
-            let near_eye = length(p - e) < 13.0
+            let near_eye = length(p - STAND) < 13.0
             if abs(a) < 1.3 && past < -6.0 && !gap && !near_great && !near_eye {
                 if r > rim && rand(s, 92) < 0.9 {
                     let edge = 1.0 - smoothstep(rim + 6.0, rim + 22.0, r)
                     let first = if edge > 0.5 { EDGE_TREES } else { INNER_TREES }
-                    out.push(at(first + s % 3, x, z, s, scale: 1.0))
+                    out.push(at(first + s % 3, x, z, s))
                 }
                 if r > rim - 5.0 && r < rim + 6.0 {
                     for k in 0..3 {
@@ -158,12 +153,12 @@ pub fn placed() -> Vec<Placed> {
                                 pick(s, 96 + k, lo: -3.0, hi: 3.0),
                                 pick(s, 98 + k, lo: -3.0, hi: 3.0),
                             )
-                        out.push(at(SHRUBS + (s + k) % 3, q.x, q.y, s * 3 + k, scale: 1.0))
+                        out.push(at(SHRUBS + (s + k) % 3, q.x, q.y, s * 3 + k))
                     }
                 }
             }
             if gap && past > -10.0 && past < -1.0 && rand(s, 97) < 0.7 {
-                out.push(at(SHRUBS + s % 3, x, z, s * 5, scale: 1.0))
+                out.push(at(SHRUBS + s % 3, x, z, s * 5))
             }
         }
     }
@@ -175,14 +170,29 @@ pub fn placed() -> Vec<Placed> {
             let x = -820.0 + (f32(i) + rand(s, 93)) * far_cell
             let z = 40.0 + (f32(j) + rand(s, 94)) * far_cell
             let past = past_edge(vec2(x, z))
-            let a = atan2(x - e.x, z - e.y)
+            let a = atan2(x - STAND.x, z - STAND.y)
             let dense = noise2(vec2(x, z) * 0.01)
             if past > 14.0 && a < 0.2 && a > -0.95 && rand(s, 95) < smoothstep(0.3, 0.7, dense) {
-                out.push(at(FAR_TREES + s % 2, x, z, s, scale: 1.0))
+                out.push(at(FAR_TREES + s % 2, x, z, s))
             }
         }
     }
     out
+}
+
+/// What the forest is made from: each kind's plant, and where its instances stand.
+pub struct Woods {
+    pub plants: Vec<Plant>,
+    pub placed: Vec<Placed>,
+}
+
+/// The woods: the kinds' plants, and where they stand (`placed`).
+pub fn woods() -> Woods {
+    var plants: Vec<Plant> = Vec::new()
+    for k in 0..KINDS {
+        plants.push(kind_plant(k))
+    }
+    Woods { plants, placed: placed() }
 }
 
 /// What the probes' occluder volume is cooked from, within `lo` to `hi` on the plane: each

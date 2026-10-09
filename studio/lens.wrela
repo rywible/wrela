@@ -17,7 +17,7 @@ use describe
 use fit
 use panel
 use paint::Colours
-use diagnose::{Report, Sampling, grid, report, start}
+use diagnose::{PIECES, Report, Sampling, grid, report, start}
 use json::{List, list, obj}
 use std::collections::Vec
 use std::derive::Box3
@@ -1753,7 +1753,7 @@ fn poll_diagnosis<S: Surface>(lens: mut Lens, subject: fn() -> S) {
                 names.push(part_label(field.part_name(field.part_at(r.worst[i]).1), " in "))
             }
             var pieces_at: Vec<String> = Vec::new()
-            for i in 0..min(r.pieces, 8) {
+            for i in 0..min(r.pieces, PIECES) {
                 pieces_at.push(part_label(field.part_name(field.part_at(r.centres[i]).1), " in "))
             }
             let a = r.json(lens.stated, names, pieces_at)

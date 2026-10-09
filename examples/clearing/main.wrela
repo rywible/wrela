@@ -2,53 +2,52 @@
 // output's resolution, jittered, into a linear-light target with depth and tags; temporal AA
 // brings it up to the output; the look's passes draw it to the screen.
 
-use creature::{Fawn, REALIZED, walker_body}
+use creature::{Fawn, Grown, REALIZED, SKELETON, WALKER_BODY, grown}
 use engine::character::{
-    character, character_motion, character_shade, character_shadow, colours, motion, parts_of,
+    PartOf, character, character_motion, character_shade, character_shadow, colours, motion,
+    parts_of,
 }
-use engine::gait::{Body, between, palette}
+use engine::gait::{between, palette}
 use engine::grass::{Blooms, Grass, GrassLook}
-use engine::present::Snapshots
+use engine::present::{Snapshots, lerp_angle}
 use engine::realize::Realizing
 use engine::render::MAX_BONES
 use engine::run::run
-use fawn::creature::fawn
 use engine::air::{Air, Tables, hazy, tables}
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::paint::{
     Develop, Exposure, Look, Metering, dab_map, develop, glow_blur, glow_down, meter,
 }
 use engine::lit::Lighting
-use engine::plant::{Wind, leaf_atlas}
-use engine::probes::{Baked, Occluder, Probe, ProbeGrid, Reference, Sampling, Trace, grid, reference}
-use engine::shadow::{Cascade, Shadows, shadows}
+use engine::plant::{Plant, Wind, leaf_atlas}
+use engine::probes::{Baked, Occluder, Reference, Sampling, Trace, grid, reference}
+use engine::shadow::{CASTER, Cascade, Shadows, shadows}
 use engine::stone::{Realized, stone_shade, stone_shadow, stone_vertex}
 use engine::sky::{Clouds, Sky, new_sky, sky_shade}
 use engine::temporal::{Resolve, neighbourhoods, resolve, seen_box}
 use engine::terrain::{Clipmap, Terrain, Texel, ground, ground_shade}
 use engine::vegetation::{Forest, Kind, kind, nothing}
-use engine::view::{BEHIND, Camera, NEAREST, camera, first_camera}
+use engine::view::{BEHIND, Camera, NEAREST, SEEN, camera, first_camera}
 use std::gpu::dispatch
 use std::collections::{Flags, replace, swap}
-use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, start_eye}
+use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, on_ground, start_eye}
 use std::gpu::{
-    Address, ClipPosition, Compare, ComparisonSampler, Cull, Depth, DepthBias, DepthTexture,
-    FragCoord, FragmentShader, GpuBuffer, GpuSpan, Rgba16Float, Rgba8, Sampler, Texture, Unorm8x4,
-    VertexIndex, begin_depth_pass, begin_pass, begin_pass_with_depth, begin_screen_pass, buffer,
-    comparison_sampler, depth_texture, draw, label, present, sampler, texture, writable_texture,
-    write,
+    Address, ClipPosition, ComparisonSampler, Cull, DepthTexture, FragmentShader, GpuBuffer,
+    GpuSpan, Rgba16Float, Rgba8, Sampler, Texture, Unorm8x4, VertexIndex, begin_depth_pass,
+    begin_pass, begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture,
+    draw, label, present, sampler, texture, writable_texture, write,
 }
 use std::input::{Event, Key, events}
 use std::io::print
 use std::lift::{Watch, reads}
 use std::mem::test_build
-use testing::View
+use testing::{Capture, View}
 use std::reload::{keep, kept}
-use std::serialize::{LoadError, Serialize, load, save}
-use trees::{KINDS, kind_plant, occluders, placed}
-use clouds::{CLOUD_WIND, FAIR, SUN_GAP, cloudscape}
+use std::serialize::{Serialize, load, save}
+use trees::{KINDS, Woods, standing, woods}
+use clouds::{CLOUD_WIND, cloudscape, weather}
 use rocks::{BOULDERS, boulder, boulders, footprints}
-use path::shot
+use path::{Shot, shot}
 use world::{World, present as snapshot, spawn, tick}
 
 /// The scene's size against the output's: half each way (Q3 of #51).
@@ -74,6 +73,10 @@ fn card_px(scale: u32) -> f32 {
     engine::lod::CARD_PX * f32(SCALE) / f32(scale)
 }
 
+/// Where the forest's levels hand over: its cards to impostors, and impostors to volumes (m).
+const CARDS_TO: f32 = 150.0
+const IMPOSTORS_TO: f32 = 1000.0
+
 /// What's cooked a frame at load, so each frame's GPU work stays short (the GPU safety rule,
 /// AC6): a slice of the creature's mesh (`Realizing`), two of the forest's kinds, and a
 /// boulder.
@@ -89,19 +92,30 @@ const FAR_CASCADE = Cascade {
     side: 2048,
 }
 
+/// The moving map: its texels a side, and how wide it is round the creature (m).
+const MOVING_SIDE: u32 = 1024
+const MOVING_SPAN: f32 = 6.0
+
+/// Which part of the creature each of its bones is in, for its lines (`parts_of`).
+const PARTS: PartOf = parts_of(SKELETON)
+
 /// What a build carries across a hot reload (`std::reload`): where the camera's path is, and
 /// how the clearing is shown. The rest is made again, as at load.
-struct Carried: Clone + Serialize {
+struct Carried: Copy + Serialize {
+    /// When the camera's path began (the frame's time; negative before), whether it was asked
+    /// for (it starts once the clearing's ready), and where the camera follows the creature
+    /// from (smoothed).
     path_from: f32,
     asked: bool,
     follow: vec3,
     follow_heading: f32,
-    off: u32,
-    view: u32,
+    /// The systems left out of the frame, for timing each and for looking.
+    off: Flags<System>,
+    /// What the tests set (testing.wrela): how a frame is shown, the scene's scale against the
+    /// output, and a camera held in place (instead of on its path).
+    view: View,
     scale: u32,
-    held: bool,
-    held_eye: vec3,
-    held_at: vec3,
+    held: Option<Shot>,
 }
 
 /// What's cooked at load from the clearing's own literals, each watched by the literals its
@@ -118,9 +132,9 @@ impl Watches {
     fn new() -> Watches {
         Watches {
             light: Watch::new(reads(sun_light)),
-            forest: Watch::new(reads(forest_source)),
-            stones: Watch::new(reads(stones_source)),
-            clouds: Watch::new(reads(clouds_source)),
+            forest: Watch::new(reads(woods)),
+            stones: Watch::new(reads(boulders)),
+            clouds: Watch::new(reads(weather)),
             ground: Watch::new(reads(ground_source)),
         }
     }
@@ -136,59 +150,51 @@ fn sun_light() -> Light {
     sunlight(air_of())
 }
 
-/// The code that makes the forest: the kinds' plants and where they stand.
-fn forest_source() -> u32 {
-    var cards = placed().len()
-    for k in 0..KINDS {
-        cards += kind_plant(k).cards()
-    }
-    cards
-}
-
-fn stones_source() -> u32 {
-    boulders().len()
-}
-
-fn clouds_source() -> u32 {
-    // The cloudscape, its fair-weather clouds' share and its gap.
-    cloudscape().len() + u32(FAIR * 1000.0) + u32(SUN_GAP.radius)
-}
-
-/// The ground's field, as the clipmap cooks it.
+/// The ground's field, as the clipmap cooks it: on the GPU, whose code reads its own literals,
+/// so this calls the field's height and cover on the CPU for `reads` to find theirs.
 fn ground_source() -> f32 {
     let g = Ground {}
     g.height(x: 0.0, z: 0.0) + g.cover(at: vec3(0.0), n: vec3(0.0, 1.0, 0.0)).grass
 }
 
-/// The forest: each kind's plant (trees.wrela) cooked, and where the trees stand.
-fn forest_of(atlas: Texture<Rgba8>, linear: Sampler) -> Forest {
-    var kinds: Vec<Kind> = Vec::new()
-    for k in 0..KINDS {
-        kinds.push(kind(kind_plant(k), seed: k + 1, atlas: atlas, s: linear))
-    }
-    Forest::new(take kinds, placed(), cards_to: 150.0, impostors_to: 1000.0)
+/// Kind `k` of the forest, cooked from its plant (trees.wrela).
+fn kind_of(k: u32, plant: Plant, atlas: Texture<Rgba8>, s: Sampler) -> Kind {
+    kind(plant, seed: k + 1, atlas: atlas, s: s)
 }
 
-/// The probes over the meadow, unbaked, and what occludes them: the trees and the boulders.
-fn probes_of() -> Baked {
-    var plants: Vec<engine::plant::Plant> = Vec::new()
+/// The forest of `kinds`, placed, its levels chosen for a scene drawn at `scale` (`fit`).
+fn new_forest(
+    kinds: take Vec<Kind>,
+    placed: take Vec<engine::vegetation::Placed>,
+    scale: u32,
+) -> Forest {
+    var f = Forest::new(take kinds, take placed, cards_to: CARDS_TO, impostors_to: IMPOSTORS_TO)
+    fit(mut f, scale)
+    f
+}
+
+/// The forest's levels chosen, and its cuts' cells sized, for a scene drawn at `scale`.
+fn fit(forest: mut Forest, scale: u32) {
+    forest.card_px = card_px(scale)
+    forest.cell = 1.0 / f32(scale)
+}
+
+/// The forest of the woods (trees.wrela), its kinds all cooked at once.
+fn forest_of(w: Woods, atlas: Texture<Rgba8>, linear: Sampler, scale: u32) -> Forest {
+    var kinds: Vec<Kind> = Vec::new()
     for k in 0..KINDS {
-        plants.push(kind_plant(k))
+        kinds.push(kind_of(k, w.plants[k], atlas, linear))
     }
-    let p = placed()
+    new_forest(take kinds, w.placed.clone(), scale)
+}
+
+/// The probes over the meadow, unbaked, and what occludes them: the woods' trees and the
+/// boulders.
+fn probes_of(w: Woods) -> Baked {
     let g = grid(MEADOW, cols: 81, spacing: 2.0, low: -12.0, high: 40.0, voxel: 1.0)
-    var occ = occluders(p, plants, lo: g.corner, hi: g.corner + vec2(160.0))
-    for st in rocks::SPOTS {
-        let y = scene::height(x: st.x, z: st.y) + st.z * 0.25
-        occ.push(
-            Occluder {
-                a: vec3(st.x, y, st.y),
-                radius: st.z * 1.05,
-                b: vec3(st.x, y, st.y),
-                solid: 1.0,
-            },
-        )
-    }
+    var occ = trees::occluders(w.placed, w.plants, lo: g.corner, hi: g.corner + vec2(160.0))
+    var stones = rocks::occluders()
+    occ.append(mut stones)
     Baked::new(g, occ)
 }
 
@@ -198,23 +204,23 @@ fn no_probes() -> Baked {
     Baked::new(grid(MEADOW, cols: 1, spacing: 1.0, low: 0.0, high: 1.0, voxel: 1.0), none)
 }
 
+/// The clearing's wind at `time`.
+fn wind(time: f32) -> Wind {
+    Wind { dir: normalize(vec2(-0.55, 0.3)), strength: 0.035, time }
+}
+
 pub struct Clearing {
-    /// The sim's snapshots, the creature's mesh and colours, its body for walking, and its
-    /// palettes: this frame's and the last.
+    /// The sim's snapshots.
     snaps: Snapshots<World>,
-    /// The creature's mesh, realized a few slices a frame (a short submission each), and its
-    /// colours, once it's whole.
+    /// The creature, its mesh realized a few slices a frame (a short submission each), and its
+    /// colours once it's whole; and its palettes: this frame's and the last.
+    fawn: Grown,
     creature: Realizing,
-    creature_done: bool,
     colours: GpuBuffer<Unorm8x4>,
-    body: Body,
     palette: GpuBuffer<mat4>,
     last_palette: GpuBuffer<mat4>,
-    /// When the camera's path began (the frame's time; negative before), and where the camera
-    /// follows the creature from (smoothed).
-    path_from: f32,
-    follow: vec3,
-    follow_heading: f32,
+    /// What's carried across a hot reload.
+    carried: Carried,
     clipmap: Clipmap,
     stones: Vec<Realized>,
     light: Light,
@@ -224,8 +230,9 @@ pub struct Clearing {
     tables: Tables,
     air_cooked: bool,
     cam: Camera,
-    /// The forest, its kinds cooked a few a frame at load (a short submission each): until
-    /// they're all cooked, a forest of none.
+    /// What the forest is made from; and the forest, its kinds cooked a few a frame at load (a
+    /// short submission each): until they're all cooked, a forest of none.
+    woods: Woods,
     forest: Forest,
     kinds: Vec<Kind>,
     forest_done: bool,
@@ -250,10 +257,8 @@ pub struct Clearing {
     /// it shows nothing until it's cooked everything, so the screen keeps the old build's frame.
     watches: Watches,
     restored: bool,
-    /// Whether everything cooked at load is done, and the frame it was.
+    /// Whether everything cooked at load is done.
     ready: bool,
-    /// Whether the camera's path was asked for (it starts once the clearing's ready).
-    asked: bool,
     /// The clouds: their noises, weather and shadow maps and dome (`engine::sky`), and whether
     /// the noises and the maps are cooked (the maps again after an edit).
     sky: Sky,
@@ -271,8 +276,10 @@ pub struct Clearing {
     /// (`temporal::neighbourhoods`).
     means: Texture<Rgba16Float>,
     spreads: Texture<Rgba16Float>,
-    history_a: Texture<Rgba16Float>,
-    history_b: Texture<Rgba16Float>,
+    /// Temporal AA's output, the history, swapped each frame: the last frame's, and this
+    /// frame's (which the look reads).
+    last_history: Texture<Rgba16Float>,
+    history: Texture<Rgba16Float>,
     /// The dabs and tooth, at the scene's size.
     dabs: Texture<Rgba16Float>,
     /// The glow's chain, at a quarter of the output's size.
@@ -286,17 +293,9 @@ pub struct Clearing {
     width: u32,
     height: u32,
     frames: u32,
-    /// The systems left out of the frame, for timing each and for looking.
-    off: Flags<System>,
-    /// What the tests set (testing.wrela): how a frame is shown, the scene's scale against the
-    /// output, a camera held in place, whether the clouds' shadow map needs cooking again (for
-    /// one left out or back), whether the next frame counts the cards' shading, and the
+    /// What the tests set (testing.wrela): whether the clouds' shadow map needs cooking again
+    /// (for one left out or back), whether the next frame counts the cards' shading, and the
     /// shadows the last frame drew by.
-    view: View,
-    scale: u32,
-    held: bool,
-    held_eye: vec3,
-    held_at: vec3,
     clouds_again: bool,
     counting: bool,
     sh: Shadows,
@@ -304,7 +303,7 @@ pub struct Clearing {
     shaded: GpuBuffer<u32>,
     covering: GpuBuffer<u32>,
     captured: GpuBuffer<vec4>,
-    captured_depth: GpuBuffer<f32>,
+    captured_floats: GpuBuffer<f32>,
     captured_counts: GpuBuffer<u32>,
     captured_texels: GpuBuffer<Texel>,
     references: GpuBuffer<Reference>,
@@ -332,11 +331,11 @@ fn on(off: Flags<System>, system: System) -> bool {
     !off.has(system)
 }
 
-fn keys(s: mut Clearing, time: f32) {
+fn keys(s: mut Clearing) {
     for e in events() {
         if let Event::KeyDown { key, .. } = e {
             if key == Key::Space {
-                s.asked = true
+                s.carried.asked = true
             }
             let system = match key {
                 Key::T => Some(System::Trees),
@@ -346,7 +345,7 @@ fn keys(s: mut Clearing, time: f32) {
                 _ => None,
             }
             if let Some(system) = system {
-                s.off = s.off.toggled(system)
+                s.carried.off = s.carried.off.toggled(system)
                 if system == System::Shadows {
                     s.static_drawn = false
                 }
@@ -357,29 +356,35 @@ fn keys(s: mut Clearing, time: f32) {
 
 pub fn init() -> Clearing {
     let world = spawn()
+    let w = world.walker
     let latest = run(take world, hz: 60, step: tick, present: snapshot)
-    let creature = Realizing::start(fawn(), REALIZED)
+    let fawn = grown()
+    let creature = Realizing::start(fawn, REALIZED)
     let atlas = leaf_atlas(6)
-
-    print(f"forest: {KINDS} kinds, {placed().len()} instances")
-    let probes = probes_of()
+    let woods = woods()
+    print(f"forest: {KINDS} kinds, {woods.placed.len()} instances")
+    let probes = probes_of(woods)
     print(
         f"probes: {probes.grid.probes()} in {probes.grid.cols * probes.grid.cols} columns, {probes.occluder_count} occluders",
     )
     print(f"clouds: {cloudscape().len()} cumulus")
-    let w = spawn().walker
-    let back: Result<Carried, LoadError> = load(kept())
     var s = Clearing {
         snaps: Snapshots::new(take latest, hz: 60),
+        fawn: take fawn,
         creature: take creature,
-        creature_done: false,
         colours: buffer(1),
-        body: walker_body(),
         palette: buffer(MAX_BONES),
         last_palette: buffer(MAX_BONES),
-        path_from: -1.0,
-        follow: w.root.pos,
-        follow_heading: w.root.heading,
+        carried: Carried {
+            path_from: -1.0,
+            asked: false,
+            follow: w.root.pos,
+            follow_heading: w.root.heading,
+            off: Flags::none(),
+            view: View::Look,
+            scale: SCALE,
+            held: None,
+        },
         clipmap: Clipmap::new(levels: 11, finest: 0.125),
         stones: Vec::new(),
         light: sun_light(),
@@ -387,13 +392,14 @@ pub fn init() -> Clearing {
         tables: tables(),
         air_cooked: false,
         cam: first_camera(start_eye(), LOOK_AT, FOVY, width: 960, height: 540),
-        forest: Forest::new(Vec::new(), Vec::new(), cards_to: 150.0, impostors_to: 1000.0),
+        woods: take woods,
+        forest: Forest::new(Vec::new(), Vec::new(), cards_to: CARDS_TO, impostors_to: IMPOSTORS_TO),
         kinds: Vec::new(),
         forest_done: false,
         grass: Grass::new(),
         near: depth_texture(width: NEAR_CASCADE.side, height: NEAR_CASCADE.side),
         far: depth_texture(width: FAR_CASCADE.side, height: FAR_CASCADE.side),
-        moving: depth_texture(width: 1024, height: 1024),
+        moving: depth_texture(width: MOVING_SIDE, height: MOVING_SIDE),
         cmp: comparison_sampler(),
         static_drawn: false,
         probes: take probes,
@@ -405,7 +411,6 @@ pub fn init() -> Clearing {
         watches: Watches::new(),
         restored: false,
         ready: false,
-        asked: false,
         sky: new_sky(),
         noise_cooked: false,
         sky_cooked: false,
@@ -423,8 +428,8 @@ pub fn init() -> Clearing {
         motion: texture::<Rgba16Float>(width: 1, height: 1),
         means: writable_texture::<Rgba16Float>(width: 1, height: 1),
         spreads: writable_texture::<Rgba16Float>(width: 1, height: 1),
-        history_a: texture::<Rgba16Float>(width: 1, height: 1),
-        history_b: texture::<Rgba16Float>(width: 1, height: 1),
+        last_history: texture::<Rgba16Float>(width: 1, height: 1),
+        history: texture::<Rgba16Float>(width: 1, height: 1),
         dabs: texture::<Rgba16Float>(width: 1, height: 1),
         glow_a: texture::<Rgba16Float>(width: 1, height: 1),
         glow_b: texture::<Rgba16Float>(width: 1, height: 1),
@@ -434,35 +439,28 @@ pub fn init() -> Clearing {
         width: 0,
         height: 0,
         frames: 0,
-        off: Flags::none(),
-        view: View::Look,
-        scale: SCALE,
-        held: false,
-        held_eye: vec3(0.0),
-        held_at: vec3(0.0),
         clouds_again: false,
         counting: false,
-        sh: shadows(SUN, NEAR_CASCADE, FAR_CASCADE, vec3(0.0), 6.0, moving_side: 1024, frame: 0),
+        sh: shadows(
+            SUN,
+            NEAR_CASCADE,
+            FAR_CASCADE,
+            vec3(0.0),
+            MOVING_SPAN,
+            moving_side: MOVING_SIDE,
+            frame: 0,
+        ),
         shaded: buffer(1),
         covering: buffer(1),
         captured: buffer(1),
-        captured_depth: buffer(1),
+        captured_floats: buffer(1),
         captured_counts: buffer(1),
         captured_texels: buffer(1),
         references: buffer(1),
     }
-    if let Ok(c) = back {
+    if let Ok(c) = load(kept()) {
+        s.carried = c
         s.restored = true
-        s.path_from = c.path_from
-        s.asked = c.asked
-        s.follow = c.follow
-        s.follow_heading = c.follow_heading
-        s.off = Flags::of_bits(c.off)
-        s.view = View::from_u32(c.view).unwrap_or(View::Look)
-        s.scale = c.scale
-        s.held = c.held
-        s.held_eye = c.held_eye
-        s.held_at = c.held_at
     }
     s
 }
@@ -483,9 +481,8 @@ fn cook_again(s: mut Clearing, eye: vec3) {
         clouds = true
     }
     if s.watches.forest.changed() {
-        s.forest = forest_of(s.atlas, s.linear)
-        s.forest.card_px = card_px(s.scale)
-        s.forest.cell = 1.0 / f32(s.scale)
+        s.woods = woods()
+        s.forest = forest_of(s.woods, s.atlas, s.linear, s.carried.scale)
         shadows = true
         probes = true
     }
@@ -506,7 +503,7 @@ fn cook_again(s: mut Clearing, eye: vec3) {
         s.static_drawn = false
     }
     if probes {
-        s.next_probes = probes_of()
+        s.next_probes = probes_of(s.woods)
         s.next_cooked = false
         s.rebaking = true
     }
@@ -517,20 +514,7 @@ fn cook_again(s: mut Clearing, eye: vec3) {
 
 /// What the clearing carries across a hot reload, kept each frame.
 fn keep_carried(s: Clearing) {
-    let c = Carried {
-        path_from: s.path_from,
-        asked: s.asked,
-        follow: s.follow,
-        follow_heading: s.follow_heading,
-        off: s.off.bits(),
-        view: u32(s.view),
-        scale: s.scale,
-        held: s.held,
-        held_eye: s.held_eye,
-        held_at: s.held_at,
-    }
-    let bytes = save(c)
-    keep(bytes)
+    keep(save(s.carried))
 }
 
 /// A triangle that covers the target, at depth `z`.
@@ -609,28 +593,75 @@ fn trace_of(s: Clearing) -> Trace {
 
 /// Last frame's palette, kept for the motion target.
 fn copy_palette(s: mut Clearing) {
-    std::gpu::copy(
-        from: s.palette.span(start: 0, count: MAX_BONES),
-        to: s.last_palette.span_mut(start: 0, count: MAX_BONES),
-    )
+    std::gpu::copy(from: s.palette.items(), to: s.last_palette.items_mut())
 }
 
-/// The static cascades: the forest, cut to its leaves, into each.
+/// The targets made again for an output of `width` × `height`, the scene's `w` × `h`, and the
+/// forest's levels fitted to the scene's scale.
+fn resize(s: mut Clearing, width: u32, height: u32, w: u32, h: u32) {
+    s.scene = texture::<Rgba16Float>(width: w, height: h)
+    s.depth = depth_texture(width: w, height: h)
+    s.ids = texture::<Rgba8>(width: w, height: h)
+    s.motion = texture::<Rgba16Float>(width: w, height: h)
+    s.means = writable_texture::<Rgba16Float>(width: w, height: h)
+    s.spreads = writable_texture::<Rgba16Float>(width: w, height: h)
+    s.dabs = texture::<Rgba16Float>(width: w, height: h)
+    s.last_history = texture::<Rgba16Float>(width: width, height: height)
+    s.history = texture::<Rgba16Float>(width: width, height: height)
+    let (qw, qh) = (max(width / 4, 1), max(height / 4, 1))
+    s.glow_a = texture::<Rgba16Float>(width: qw, height: qh)
+    s.glow_b = texture::<Rgba16Float>(width: qw, height: qh)
+    s.width = width
+    s.height = height
+    s.frames = 0
+    fit(mut s.forest, s.carried.scale)
+}
+
+/// The load's work this frame: the forest's kinds, a few a frame, and the forest once they're
+/// all cooked; a boulder; and a slice of the creature's mesh, until it's whole, then its
+/// colours.
+fn cook_load(s: mut Clearing) {
+    if !s.forest_done {
+        for _ in 0..KINDS_PER_FRAME {
+            let k = s.kinds.len()
+            if k < KINDS {
+                s.kinds.push(kind_of(k, s.woods.plants[k], s.atlas, s.linear))
+            }
+        }
+        if s.kinds.len() == KINDS {
+            let kinds = replace(mut s.kinds, Vec::new())
+            s.forest = new_forest(take kinds, s.woods.placed.clone(), s.carried.scale)
+            s.forest_done = true
+            s.static_drawn = false
+        }
+    }
+    if s.stones.len() < BOULDERS {
+        s.stones.push(boulder(s.stones.len()))
+        s.static_drawn = false
+    }
+    if !s.creature.done() {
+        s.creature.step(s.fawn, n: CREATURE_SLICES)
+        if s.creature.done() {
+            s.colours = colours(s.creature.mesh, s.fawn.field(), Fawn {}, cell: 1cm)
+        }
+    }
+}
+
+/// The static cascades: the forest, cut to its leaves, into each, and the boulders into the
+/// near one.
 fn static_shadows(s: mut Clearing, sh: Shadows, wind: Wind) {
     label("shadows static")
-    let shadows = on(s.off, System::Shadows)
+    let shadows = on(s.carried.off, System::Shadows)
     let near = begin_depth_pass(mut s.near, clear_depth: 1.0)
     if shadows {
         s.forest.shadow(view: sh.near, sh: sh, wind: wind, s: s.linear)
-    }
-    if shadows {
         for st in s.stones {
             draw(
                 stone_shadow.bind(verts: st.mesh.verts.items(), at: st.at, view: sh.near),
                 nothing,
                 indices: st.mesh.quads.items(),
                 indirect: st.mesh.draw.items(),
-                depth_bias: DepthBias { constant: 2, slope: 1.5, clamp: 0.0 },
+                depth_bias: CASTER,
             )
         }
     }
@@ -642,153 +673,59 @@ fn static_shadows(s: mut Clearing, sh: Shadows, wind: Wind) {
     far.end()
 }
 
-pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
-    keys(mut s, time)
-    let (w, h) = (max(width / s.scale, 1), max(height / s.scale, 1))
-    if width != s.width || height != s.height || f32(w) != s.cam.screen.x {
-        s.scene = texture::<Rgba16Float>(width: w, height: h)
-        s.depth = depth_texture(width: w, height: h)
-        s.ids = texture::<Rgba8>(width: w, height: h)
-        s.motion = texture::<Rgba16Float>(width: w, height: h)
-        s.means = writable_texture::<Rgba16Float>(width: w, height: h)
-        s.spreads = writable_texture::<Rgba16Float>(width: w, height: h)
-        s.dabs = texture::<Rgba16Float>(width: w, height: h)
-        s.history_a = texture::<Rgba16Float>(width: width, height: height)
-        s.history_b = texture::<Rgba16Float>(width: width, height: height)
-        let (qw, qh) = (max(width / 4, 1), max(height / 4, 1))
-        s.glow_a = texture::<Rgba16Float>(width: qw, height: qh)
-        s.glow_b = texture::<Rgba16Float>(width: qw, height: qh)
-        s.width = width
-        s.height = height
-        s.frames = 0
-        s.forest.card_px = card_px(s.scale)
-        s.forest.cell = 1.0 / f32(s.scale)
-    }
-    // The creature, between the two ticks round the frame's sim time, and its palette.
-    s.snaps.update()
-    let b = s.snaps.at(s.snaps.sim_time(time))
-    let walker = between(b.a.walker, b.b.walker, b.alpha)
-    let pose = palette(fawn().skeleton(), s.body, walker)
-    copy_palette(mut s)
-    write(mut s.palette, 0, pose.bones)
-    // The camera on its path, following the creature eased.
-    let ease = 1.0 - exp(-1.0 / 60.0 * 1.2)
-    s.follow = mix(s.follow, walker.root.pos, vec3(ease))
-    s.follow_heading = s.follow_heading +
-        engine::present::lerp_angle(0.0, walker.root.heading - s.follow_heading, ease)
-    let t = if s.path_from < 0.0 { 0.0 } else { time - s.path_from }
-    let path = shot(t, s.follow, s.follow_heading)
-    let (eye, look_at) = if s.held { (s.held_eye, s.held_at) } else { (path.eye, path.at) }
-    s.cam = camera(
-        eye,
-        look_at,
-        FOVY,
-        width: w,
-        height: h,
-        frame: s.frames,
-        time: time,
-        last: s.cam,
-        // A frame drawn with no history (a test's) isn't jittered: plain rendering.
-        still: !on(s.off, System::History),
-    )
-    let cam = s.cam
-    let wind = Wind {
-        dir: normalize(vec2(-0.55, 0.3)),
-        strength: 0.035,
-        time: if on(s.off, System::Wind) { time } else { 0.0 },
-    }
-    s.clipmap.follow(Ground {}, eye, again: false)
-    cook_again(mut s, eye)
-    // The forest's kinds, a few a frame; the forest once they're all cooked.
-    if !s.forest_done {
-        for _ in 0..KINDS_PER_FRAME {
-            let k = s.kinds.len()
-            if k < KINDS {
-                s.kinds.push(kind(kind_plant(k), seed: k + 1, atlas: s.atlas, s: s.linear))
-            }
-        }
-        if s.kinds.len() == KINDS {
-            let kinds = replace(mut s.kinds, Vec::new())
-            s.forest = Forest::new(take kinds, placed(), cards_to: 150.0, impostors_to: 1000.0)
-            s.forest.card_px = card_px(s.scale)
-            s.forest.cell = 1.0 / f32(s.scale)
-            s.forest_done = true
-            s.static_drawn = false
-        }
-    }
-    // The boulders, one a frame.
-    if s.stones.len() < BOULDERS {
-        s.stones.push(boulder(s.stones.len()))
-        s.static_drawn = false
-    }
-    // The creature's mesh, a few slices a frame until it's whole; then its colours.
-    if !s.creature_done {
-        s.creature.step(fawn(), n: CREATURE_SLICES)
-        if s.creature.done() {
-            s.colours = colours(s.creature.mesh, fawn().field(), Fawn {}, cell: 1cm)
-            s.creature_done = true
-        }
-    }
-    let sh = shadows(
-        s.light.sun,
-        NEAR_CASCADE,
-        FAR_CASCADE,
-        moving_at: walker.root.pos + vec3(0.0, 1.0, 0.0),
-        moving_span: 6.0,
-        moving_side: 1024,
-        frame: s.frames,
-    )
-    s.sh = sh
-    // The static shadows, once the forest that casts them is cooked.
-    if !s.static_drawn && s.forest_done && s.stones.len() == BOULDERS {
-        static_shadows(mut s, sh, wind)
-        s.static_drawn = true
-    }
+/// The moving map: the creature, if it's in the frame.
+fn moving_shadow(s: mut Clearing, sh: Shadows, creature_on: bool) {
     label("shadow moving")
     let mv = begin_depth_pass(mut s.moving, clear_depth: 1.0)
-    if on(s.off, System::Creature) && s.creature_done {
+    if creature_on {
         draw(
             character_shadow.bind(
                 verts: s.creature.mesh.verts.items(),
-                palettes: s.palette.span(start: 0, count: MAX_BONES),
+                palettes: s.palette.items(),
                 view: sh.moving,
             ),
             nothing,
             indices: s.creature.mesh.quads.items(),
             indirect: s.creature.mesh.draw.items(),
-            depth_bias: DepthBias { constant: 2, slope: 1.5, clamp: 0.0 },
+            depth_bias: CASTER,
         )
     }
     mv.end()
-    // The air's tables, cooked at load (and again when the sun moves), and the probes' open sky
-    // from them: after the load's first frame, which is full (the forest's first kinds, the
-    // terrain's clipmap).
-    if s.frames == 0 && !s.ready {} else if !s.air_cooked {
-        s.tables.cook(s.air, s.linear)
-        s.probes.open(s.light, s.air.ground, s.tables.view, s.linear)
-        s.air_cooked = true
-    } else if !s.noise_cooked {
-        // The clouds: their noises, then their maps (again after an edit), each cooked in a
-        // frame of its own after the air's (each is tens of milliseconds of the GPU: together,
-        // with the load's other work, a frame took 137 ms); then one of the dome's tiles in 64
-        // marched each frame, the field drifted with the wind.
-        s.sky.cook_noise()
-        s.noise_cooked = true
-    } else if !s.sky_cooked {
-        s.sky.cook_weather(
-            cloudscape(),
-            FAIR,
-            SUN_GAP,
-            s.light.sun,
-            s.repeat,
-            shadows: on(s.off, System::CloudShadows),
-        )
-        s.sky_cooked = true
-        s.clouds_again = false
+}
+
+/// The sky, cooked a step a frame. The air's tables, cooked at load (and again when the sun
+/// moves), and the probes' open sky from them: after the load's first frame, which is full (the
+/// forest's first kinds, the terrain's clipmap). Then the clouds: their noises, then their maps
+/// (again after an edit), each cooked in a frame of its own after the air's (each is tens of
+/// milliseconds of the GPU: together, with the load's other work, a frame took 137 ms); then
+/// one of the dome's tiles in 64 marched each frame, from `eye`, the field drifted with `wind`.
+fn cook_sky(s: mut Clearing, eye: vec3, wind: Wind) {
+    let off = s.carried.off
+    if s.frames > 0 || s.ready {
+        if !s.air_cooked {
+            s.tables.cook(s.air, s.linear)
+            s.probes.open(s.light, s.air.ground, s.tables.view, s.linear)
+            s.air_cooked = true
+        } else if !s.noise_cooked {
+            s.sky.cook_noise()
+            s.noise_cooked = true
+        } else if !s.sky_cooked {
+            let w = weather()
+            s.sky.cook_weather(
+                w.clouds,
+                w.fair,
+                w.gap,
+                s.light.sun,
+                s.repeat,
+                shadows: on(off, System::CloudShadows),
+            )
+            s.sky_cooked = true
+            s.clouds_again = false
+        }
     }
     // A test left the clouds' shadows out, or put them back.
     if s.clouds_again && s.sky_cooked {
-        s.sky.cook_shadow(s.light.sun, s.repeat, shadows: on(s.off, System::CloudShadows))
+        s.sky.cook_shadow(s.light.sun, s.repeat, shadows: on(off, System::CloudShadows))
         s.clouds_again = false
     }
     if s.sky_cooked {
@@ -800,33 +737,37 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             drift: CLOUD_WIND * wind.time,
             rep: s.repeat,
             s: s.linear,
-            still: !on(s.off, System::Wind),
+            still: !on(off, System::Wind),
         )
     }
-    let clouds = s.clouds
-    // The probes: their occluders cooked once, then a strip of columns a frame; once every
-    // column is baked, a strip baked again a frame, while the clouds drift (a test's frames,
-    // still, keep the probes as they are). They read the static shadows, so they start once
-    // those are drawn.
+}
+
+/// The probes, lit by `sh`: their occluders cooked once, then a strip of columns a frame; once
+/// every column is baked, a strip baked again a frame, while the clouds drift (a test's frames,
+/// still, keep the probes as they are). They read the static shadows, so they start once those
+/// are drawn. After an edit, the next probes bake beside these, and replace them when they're
+/// done.
+fn bake_probes(s: mut Clearing, sh: Shadows) {
     let texels = s.clipmap.texels()
-    if !s.static_drawn {} else if !s.occluders_cooked {
-        s.probes.cook()
-        s.occluders_cooked = true
-    } else if !s.probes.done() || on(s.off, System::Wind) {
-        s.probes.bake_strip(
-            trace_of(s),
-            sh,
-            s.clipmap.levels(),
-            texels,
-            s.near,
-            s.far,
-            s.cmp,
-            s.tables.view,
-            s.sky.dome,
-            s.linear,
-        )
+    if s.static_drawn {
+        if !s.occluders_cooked {
+            s.probes.cook()
+            s.occluders_cooked = true
+        } else if !s.probes.done() || on(s.carried.off, System::Wind) {
+            s.probes.bake_strip(
+                trace_of(s),
+                sh,
+                s.clipmap.levels(),
+                texels,
+                s.near,
+                s.far,
+                s.cmp,
+                s.tables.view,
+                s.sky.dome,
+                s.linear,
+            )
+        }
     }
-    // After an edit, the next probes bake beside these, and replace them when they're done.
     if s.rebaking {
         if !s.next_cooked {
             s.next_probes.cook()
@@ -851,34 +792,27 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             s.rebaking = false
         }
     }
-    if !s.ready && s.probes.done() && s.sky.done() && s.creature_done {
-        s.ready = true
-        print(f"clearing ready at frame {s.frames}")
-    }
-    // A build that took over from another (hot reload) shows nothing until it's cooked
-    // everything: the screen keeps the old build's last frame meanwhile.
-    if s.restored && !s.ready {
-        keep_carried(s)
-        return
-    }
-    // The camera's path starts once it's asked for and the clearing's ready.
-    if s.asked && s.ready && s.path_from < 0.0 {
-        s.path_from = time
-        print(f"path begins at frame {s.frames}")
-    }
+}
+
+/// The scene's passes, lit by `sh`, the probes and the clouds: the vegetation's depth prepass
+/// (and a test's counts), the vegetation, then the terrain, the creature and the sky, and the
+/// creature's motion.
+fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on: bool) {
+    let off = s.carried.off
     // Until the probes are baked, the open sky lights everything.
     var grid = s.probes.grid
     if !s.probes.done() {
         grid.cols = 0
     }
     borrow probes = s.probes.maps
+    let texels = s.clipmap.texels()
     let grounds = s.probes.grounds.span(start: 0, count: s.probes.grid.probes())
     let lt = Lighting {
         cam,
         light: s.light,
         shadows: sh,
         grid,
-        clouds,
+        clouds: s.clouds,
         levels: s.clipmap.levels(),
         near: s.near,
         far: s.far,
@@ -897,7 +831,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         lt.levels,
         texels,
         probes,
-        clouds,
+        s.clouds,
         s.sky.shadow,
         s.linear,
         grounds,
@@ -908,10 +842,10 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     // The depth prepass: the cut cards and flowers.
     label("vegetation prepass")
     let pre = begin_pass_with_depth(mut s.ids, mut s.depth, clear: vec4(0.0), clear_depth: 0.0)
-    if on(s.off, System::Trees) {
+    if on(off, System::Trees) {
         s.forest.prepass(cam, wind, s.linear)
     }
-    if on(s.off, System::Grass) {
+    if on(off, System::Grass) {
         s.grass.prepass(cam, wind)
     }
     pre.end()
@@ -919,6 +853,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     if test_build() && s.counting {
         // The cards' shading counted, pixel by pixel, where the prepass left the depth; and the
         // cards covering each pixel (for a test, `test_count`).
+        let (w, h) = (u32(cam.screen.x), u32(cam.screen.y))
         s.shaded = buffer(w * h)
         s.covering = buffer(w * h)
         let shading = begin_pass(mut s.scene, clear: vec4(0.0))
@@ -933,29 +868,28 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     // the cards where the prepass left them.
     label("vegetation")
     let veg = begin_pass_with_depth(mut s.scene, mut s.depth, clear: vec4(0.0), keep_depth: true)
-    if on(s.off, System::Grass) {
+    if on(off, System::Grass) {
         s.grass.shade(lt, wind, GrassLook {}, Blooms {})
     }
-    for st in s.stones {
-        if !on(s.off, System::Stones) {
-            break
+    if on(off, System::Stones) {
+        for st in s.stones {
+            draw(
+                stone_vertex.bind(
+                    verts: st.mesh.verts.items(),
+                    colours: st.colours.items(),
+                    at: st.at,
+                    seed: st.seed,
+                    cam: cam,
+                ),
+                stone_shade.bind(lt),
+                indices: st.mesh.quads.items(),
+                indirect: st.mesh.draw.items(),
+                cull: Cull::Back,
+                depth: NEAREST,
+            )
         }
-        draw(
-            stone_vertex.bind(
-                verts: st.mesh.verts.items(),
-                colours: st.colours.span(start: 0, count: st.colours.len()),
-                at: st.at,
-                seed: st.seed,
-                cam: cam,
-            ),
-            stone_shade.bind(lt),
-            indices: st.mesh.quads.items(),
-            indirect: st.mesh.draw.items(),
-            cull: Cull::Back,
-            depth: NEAREST,
-        )
     }
-    if on(s.off, System::Trees) {
+    if on(off, System::Trees) {
         s.forest.shade(lt, wind, s.ids)
     }
     veg.end()
@@ -964,7 +898,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     // again between them; the vegetation's is heavy, and joined to it the frame took longer).
     label("terrain")
     let ter = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)
-    if on(s.off, System::Terrain) {
+    if on(off, System::Terrain) {
         for l in 0..lt.levels.count {
             draw(
                 ground.bind(cam, lt.levels, texels),
@@ -984,13 +918,13 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         keep_depth: true,
         join: true,
     )
-    if on(s.off, System::Creature) && s.creature_done {
+    if creature_on {
         draw(
             character.bind(
                 verts: s.creature.mesh.verts.items(),
-                colours: s.colours.span(start: 0, count: s.colours.len()),
-                palettes: s.palette.span(start: 0, count: MAX_BONES),
-                parts: parts_of(fawn().skeleton()),
+                colours: s.colours.items(),
+                palettes: s.palette.items(),
+                parts: PARTS,
                 cam: cam,
             ),
             character_shade.bind(lt),
@@ -1010,7 +944,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         join: true,
     )
     // A test's key colour in place of the sky (`test_off`), in a test build only.
-    if !test_build() || on(s.off, System::Sky) {
+    if !test_build() || on(off, System::Sky) {
         draw(
             cover.bind(z: 0.0),
             sky_shade.bind(cam, s.light, view: s.tables.view, dome: s.sky.dome, s: s.linear),
@@ -1024,31 +958,40 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     // The creature's motion, where it's seen.
     label("motion")
     let mo = begin_pass_with_depth(mut s.motion, mut s.depth, clear: vec4(0.0), keep_depth: true)
-    if on(s.off, System::Creature) && s.creature_done {
+    if creature_on {
         draw(
             character_motion.bind(
                 verts: s.creature.mesh.verts.items(),
-                palettes: s.palette.span(start: 0, count: MAX_BONES),
-                last: s.last_palette.span(start: 0, count: MAX_BONES),
+                palettes: s.palette.items(),
+                last: s.last_palette.items(),
                 cam: cam,
             ),
             motion.bind(cam),
             indices: s.creature.mesh.quads.items(),
             indirect: s.creature.mesh.draw.items(),
             cull: Cull::Back,
-            depth: Depth { compare: Compare::GreaterEqual, write: false },
+            depth: SEEN,
         )
     }
     mo.end()
+}
 
-    // Temporal AA, up to the output.
-    let a = s.frames % 2
+/// Temporal AA, up to the output (`width` × `height`), the creature at `creature_at`; then the
+/// look's passes to the screen, or a test's view.
+fn finish(
+    s: mut Clearing,
+    cam: Camera,
+    creature_at: vec3,
+    creature_on: bool,
+    width: u32,
+    height: u32,
+) {
     // Where the creature can be on the output, now or last frame: a box round it, wider than
     // it, as the camera sees it each time (temporal AA checks its history for it there).
     let out = vec2(f32(width), f32(height))
     // (The creature's root is at its hips: its hooves are below it.)
-    let creature = if on(s.off, System::Creature) && s.creature_done {
-        let at = walker.root.pos
+    let creature = if creature_on {
+        let at = creature_at
         seen_box(cam, out, at - vec3(1.4, 1.6, 1.4), at + vec3(1.4, 1.4, 1.4), margin: 6.0)
     } else {
         vec4(0.0, 0.0, -1.0, -1.0)
@@ -1057,42 +1000,30 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         cam,
         out,
         blend: 0.12,
-        fresh: if s.frames == 0 || !on(s.off, System::History) { 1 } else { 0 },
+        fresh: if s.frames == 0 || !on(s.carried.off, System::History) { 1 } else { 0 },
         jitter: engine::view::jitter_of(cam.frame),
         creature,
     }
     label("temporal")
-    if a == 0 {
-        temporal(
-            mut s.history_a,
-            s.history_b,
-            r,
-            s.scene,
-            s.depth,
-            s.motion,
-            mut s.means,
-            mut s.spreads,
-            s.linear,
-        )
-    } else {
-        temporal(
-            mut s.history_b,
-            s.history_a,
-            r,
-            s.scene,
-            s.depth,
-            s.motion,
-            mut s.means,
-            mut s.spreads,
-            s.linear,
-        )
-    }
+    // This frame's history is drawn over the older one: the last frame's is read.
+    swap(mut s.history, mut s.last_history)
+    temporal(
+        mut s.history,
+        s.last_history,
+        r,
+        s.scene,
+        s.depth,
+        s.motion,
+        mut s.means,
+        mut s.spreads,
+        s.linear,
+    )
     label("look")
     // A test's views of the scene and the history (`test_view`), in a test build only.
-    if !test_build() || s.view == View::Look {
+    if !test_build() || s.carried.view == View::Look {
         let m = Metering { fresh: if s.frames == 0 { 1 } else { 0 }, ..METERING }
         dispatch(meter.bind(s.scene, m, exposure: mut s.exposure), groups: 1)
-        let d = Develop { cam, look: Look {}, out: vec2(f32(width), f32(height)) }
+        let d = Develop { cam, look: Look {}, out }
         let dp = begin_pass(mut s.dabs)
         draw(
             cover.bind(z: 0.5),
@@ -1108,24 +1039,97 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             vertices: 3,
         )
         dp.end()
-        if a == 0 {
-            let e = s.exposure.span(start: 0, count: 1)
-            look(s.history_a, s.depth, s.dabs, s.linear, mut s.glow_a, mut s.glow_b, e, d)
-        } else {
-            let e = s.exposure.span(start: 0, count: 1)
-            look(s.history_b, s.depth, s.dabs, s.linear, mut s.glow_a, mut s.glow_b, e, d)
-        }
+        let e = s.exposure.items()
+        look(s.history, s.depth, s.dabs, s.linear, mut s.glow_a, mut s.glow_b, e, d)
     } else {
         begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
-        if s.view == View::Scene {
-            draw(cover.bind(z: 0.5), testing::scene_view.bind(s.scene, s.scale), vertices: 3)
-        } else if a == 0 {
-            draw(cover.bind(z: 0.5), testing::temporal_view.bind(s.history_a, s.light), vertices: 3)
+        if s.carried.view == View::Scene {
+            draw(
+                cover.bind(z: 0.5),
+                testing::scene_view.bind(s.scene, s.carried.scale),
+                vertices: 3,
+            )
         } else {
-            draw(cover.bind(z: 0.5), testing::temporal_view.bind(s.history_b, s.light), vertices: 3)
+            draw(cover.bind(z: 0.5), testing::temporal_view.bind(s.history, s.light), vertices: 3)
         }
         present()
     }
+}
+
+pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
+    keys(mut s)
+    let off = s.carried.off
+    let (w, h) = (max(width / s.carried.scale, 1), max(height / s.carried.scale, 1))
+    if width != s.width || height != s.height || f32(w) != s.cam.screen.x {
+        resize(mut s, width, height, w, h)
+    }
+    // The creature, between the two ticks round the frame's sim time, and its palette.
+    s.snaps.update()
+    let b = s.snaps.at(s.snaps.sim_time(time))
+    let walker = between(b.a.walker, b.b.walker, b.alpha)
+    let pose = palette(SKELETON, WALKER_BODY, walker)
+    copy_palette(mut s)
+    write(mut s.palette, 0, pose.bones)
+    // The camera on its path, following the creature eased.
+    let ease = 1.0 - exp(-1.0 / 60.0 * 1.2)
+    s.carried.follow = mix(s.carried.follow, walker.root.pos, vec3(ease))
+    s.carried.follow_heading = lerp_angle(s.carried.follow_heading, walker.root.heading, ease)
+    let t = if s.carried.path_from < 0.0 { 0.0 } else { time - s.carried.path_from }
+    let aim = s.carried.held.unwrap_or(shot(t, s.carried.follow, s.carried.follow_heading))
+    let eye = aim.eye
+    s.cam = camera(
+        eye,
+        aim.at,
+        FOVY,
+        width: w,
+        height: h,
+        frame: s.frames,
+        time: time,
+        last: s.cam,
+        // A frame drawn with no history (a test's) isn't jittered: plain rendering.
+        still: !on(off, System::History),
+    )
+    let cam = s.cam
+    let wind = wind(if on(off, System::Wind) { time } else { 0.0 })
+    s.clipmap.follow(Ground {}, eye, again: false)
+    cook_again(mut s, eye)
+    cook_load(mut s)
+    let creature_on = on(off, System::Creature) && s.creature.done()
+    let sh = shadows(
+        s.light.sun,
+        NEAR_CASCADE,
+        FAR_CASCADE,
+        moving_at: walker.root.pos + vec3(0.0, 1.0, 0.0),
+        moving_span: MOVING_SPAN,
+        moving_side: MOVING_SIDE,
+        frame: s.frames,
+    )
+    s.sh = sh
+    // The static shadows, once the forest and the boulders that cast them are cooked.
+    if !s.static_drawn && s.forest_done && s.stones.len() == BOULDERS {
+        static_shadows(mut s, sh, wind)
+        s.static_drawn = true
+    }
+    moving_shadow(mut s, sh, creature_on)
+    cook_sky(mut s, eye, wind)
+    bake_probes(mut s, sh)
+    if !s.ready && s.probes.done() && s.sky.done() && s.creature.done() {
+        s.ready = true
+        print(f"clearing ready at frame {s.frames}")
+    }
+    // A build that took over from another (hot reload) shows nothing until it's cooked
+    // everything: the screen keeps the old build's last frame meanwhile.
+    if s.restored && !s.ready {
+        keep_carried(s)
+        return
+    }
+    // The camera's path starts once it's asked for and the clearing's ready.
+    if s.carried.asked && s.ready && s.carried.path_from < 0.0 {
+        s.carried.path_from = time
+        print(f"path begins at frame {s.frames}")
+    }
+    draw_scene(mut s, cam, sh, wind, creature_on)
+    finish(mut s, cam, walker.root.pos, creature_on, width, height)
     s.frames += 1
     keep_carried(s)
 }
@@ -1135,35 +1139,33 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
 /// How frames are shown.
 @testing
 pub fn test_view(s: mut Clearing, view: View) {
-    s.view = view
+    s.carried.view = view
 }
 
 /// The systems frames leave out, by their bits (`System`).
 @testing
 pub fn test_off(s: mut Clearing, off: u32) {
     let off = Flags::of_bits(off)
-    let changed = off.changed(s.off)
+    let changed = off.changed(s.carried.off)
     if changed.has(System::Shadows) {
         s.static_drawn = false
     }
     if changed.has(System::CloudShadows) {
         s.clouds_again = true
     }
-    s.off = off
+    s.carried.off = off
 }
 
 /// The scene's size against the output's: 1 (native) or 2.
 @testing
 pub fn test_scale(s: mut Clearing, scale: u32) {
-    s.scale = max(scale, 1)
+    s.carried.scale = max(scale, 1)
 }
 
 /// The camera held at `eye`, looking at `at` (instead of on its path).
 @testing
 pub fn test_hold(s: mut Clearing, eye: vec3, at: vec3) {
-    s.held = true
-    s.held_eye = eye
-    s.held_at = at
+    s.carried.held = Some(Shot { eye, at })
 }
 
 /// The sun from `toward` (normalized), its light scaled by `light` (0: the sky light alone):
@@ -1181,18 +1183,8 @@ pub fn test_sun(s: mut Clearing, toward: vec3, light: f32) {
 /// cards within `cards_to` and as an impostor within `impostors_to` (a volume beyond).
 @testing
 pub fn test_solo(s: mut Clearing, kind: u32, at: vec2, cards_to: f32, impostors_to: f32) {
-    let y = scene::height(x: at.x, z: at.y)
-    let one = engine::vegetation::Placed {
-        kind,
-        at: engine::plant::Instance {
-            at: vec3(at.x, y, at.y),
-            yaw: 0.0,
-            tint: vec3(0.0),
-            scale: 1.0,
-        },
-    }
     var placed: Vec<engine::vegetation::Placed> = Vec::new()
-    placed.push(one)
+    placed.push(standing(kind, at))
     s.forest.place(take placed)
     s.forest.cards_to = cards_to
     s.forest.impostors_to = impostors_to
@@ -1203,10 +1195,7 @@ pub fn test_solo(s: mut Clearing, kind: u32, at: vec2, cards_to: f32, impostors_
 /// instance at (x, z) on the ground, from the last frame's camera (`lod::place`'s measure).
 @testing
 pub fn test_card_px(s: Clearing, k: u32, x: f32, z: f32) -> f32 {
-    borrow kind = s.forest.kinds[k]
-    let at = vec3(x, scene::height(x: x, z: z), z)
-    let d = length(at + vec3(0.0, kind.top * 0.5, 0.0) - s.cam.eye)
-    kind.plant.leaves.size / max(s.cam.footprint(max(d - kind.reach * 0.5, 0.5)), 1.0e-4)
+    engine::lod::card_width(s.forest.lod(k), s.cam, on_ground(vec2(x, z)), scale: 1.0)
 }
 
 /// Where the forest's levels hand over: its cards to impostors and impostors to volumes (m), and
@@ -1224,70 +1213,65 @@ pub fn test_count(s: mut Clearing) {
     s.counting = true
 }
 
-/// What the last frame drew, copied into a new buffer (the newest), and how many elements:
-/// 0, the scene (colour and tag, a vec4 a pixel); 1, its depth (an f32); 2, its motion (a
-/// vec4); 3, temporal AA's output (a vec4, at the output's size); 4, the cards' shading count
-/// and 5, the cards covering (a u32 each, from a `test_count` frame); 6, the clipmap's texels.
+/// `t`'s first `count` texels, row by row, in a new buffer.
+fn texels_of(t: Texture<Rgba16Float>, count: u32) -> GpuBuffer<vec4> {
+    var out: GpuBuffer<vec4> = buffer(count)
+    dispatch(testing::copy_texture.bind(t, out: mut out), over: count)
+    out
+}
+
+/// The first `n` of `counts`, in a new buffer.
+fn counts_of(counts: GpuBuffer<u32>, n: u32) -> GpuBuffer<u32> {
+    var out: GpuBuffer<u32> = buffer(n)
+    std::gpu::copy(from: counts.span(start: 0, count: n), to: out.items_mut())
+    out
+}
+
+/// What the last frame drew (`Capture`), copied into a new buffer (the newest), and how many
+/// elements.
 @testing
-pub fn test_capture(s: mut Clearing, what: u32) -> u32 {
+pub fn test_capture(s: mut Clearing, what: Capture) -> u32 {
     let scene = s.cam.screen
     let n = u32(scene.x) * u32(scene.y)
-    if what == 0 || what == 2 || what == 3 {
-        let count = if what == 3 { s.width * s.height } else { n }
-        s.captured = buffer(count)
-        if what == 0 {
-            dispatch(
-                testing::copy_texture.bind(s.scene, out: mut s.captured),
-                over: count,
-            )
-        } else if what == 2 {
-            dispatch(
-                testing::copy_texture.bind(s.motion, out: mut s.captured),
-                over: count,
-            )
-        } else if (s.frames + 1) % 2 == 0 {
-            dispatch(
-                testing::copy_texture.bind(s.history_a, out: mut s.captured),
-                over: count,
-            )
-        } else {
-            dispatch(
-                testing::copy_texture.bind(s.history_b, out: mut s.captured),
-                over: count,
-            )
-        }
-        return count
+    let out = s.width * s.height
+    match what {
+        Capture::Scene => {
+            s.captured = texels_of(s.scene, n)
+            n
+        },
+        Capture::Depth => {
+            s.captured_floats = buffer(n)
+            dispatch(testing::copy_depth.bind(s.depth, out: mut s.captured_floats), over: n)
+            n
+        },
+        Capture::Motion => {
+            s.captured = texels_of(s.motion, n)
+            n
+        },
+        Capture::Output => {
+            s.captured = texels_of(s.history, out)
+            out
+        },
+        Capture::Shaded => {
+            s.captured_counts = counts_of(s.shaded, n)
+            n
+        },
+        Capture::Covering => {
+            s.captured_counts = counts_of(s.covering, n)
+            n
+        },
+        Capture::Texels => {
+            let texels = s.clipmap.levels().count * engine::terrain::STRIDE
+            s.captured_texels = buffer(texels)
+            std::gpu::copy(from: s.clipmap.texels(), to: s.captured_texels.items_mut())
+            texels
+        },
+        Capture::Tags => {
+            s.captured_floats = buffer(out)
+            dispatch(testing::copy_tags.bind(s.history, out: mut s.captured_floats), over: out)
+            out
+        },
     }
-    if what == 1 {
-        s.captured_depth = buffer(n)
-        dispatch(
-            testing::copy_depth.bind(s.depth, out: mut s.captured_depth),
-            over: n,
-        )
-        return n
-    }
-    if what == 4 || what == 5 {
-        s.captured_counts = buffer(n)
-        if what == 4 {
-            std::gpu::copy(
-                from: s.shaded.span(start: 0, count: n),
-                to: s.captured_counts.span_mut(start: 0, count: n),
-            )
-        } else {
-            std::gpu::copy(
-                from: s.covering.span(start: 0, count: n),
-                to: s.captured_counts.span_mut(start: 0, count: n),
-            )
-        }
-        return n
-    }
-    let texels = s.clipmap.levels().count * engine::terrain::STRIDE
-    s.captured_texels = buffer(texels)
-    std::gpu::copy(
-        from: s.clipmap.texels(),
-        to: s.captured_texels.span_mut(start: 0, count: texels),
-    )
-    texels
 }
 
 /// The camera the last frame was drawn by.
@@ -1350,11 +1334,7 @@ pub fn test_raycast(from: vec3, dir: vec3) -> vec4 {
 /// clearing's wind blows).
 @testing
 pub fn test_sway(time: f32, at: vec3, height: f32) -> vec3 {
-    engine::plant::sway(
-        Wind { dir: normalize(vec2(-0.55, 0.3)), strength: 0.035, time },
-        at,
-        height,
-    )
+    engine::plant::sway(wind(time), at, height)
 }
 
 /// The probes' brute-force reference at points `first` to `first + count` of the last frame's
@@ -1392,8 +1372,8 @@ pub fn test_reference(s: mut Clearing, first: u32, count: u32, step: u32, rays: 
 /// negative before it starts).
 @testing
 pub fn test_ready(s: Clearing) -> vec2 {
-    vec2(if s.ready { 1.0 } else { 0.0 }, if s.path_from < 0.0 { -1.0 } else {
-        s.cam.time - s.path_from
+    vec2(if s.ready { 1.0 } else { 0.0 }, if s.carried.path_from < 0.0 { -1.0 } else {
+        s.cam.time - s.carried.path_from
     })
 }
 

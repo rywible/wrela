@@ -2,7 +2,7 @@
 // forest, placed for the shot, and fair-weather clouds between them (spike 15's cloudscape),
 // drifting with the wind (`engine::sky`).
 
-use engine::noise::rand
+use engine::noise::{pick, rand}
 use engine::sky::{Cumulus, Gap}
 
 /// How much of the sky beyond the cloudscape's cumulus fair-weather clouds cover (`fair` of
@@ -18,6 +18,7 @@ pub const CLOUD_WIND = vec2(-5.5, 3.0)
 /// drift.
 pub const SUN_GAP = Gap { a: vec2(3300.0, -590.0), b: vec2(12200.0, -2150.0), radius: 2500.0 }
 
+/// The cloudscape's great cumulus, placed, and its fair-weather clouds.
 pub fn cloudscape() -> Vec<Cumulus> {
     var c: Vec<Cumulus> = Vec::new()
     c.push(Cumulus { at: vec2(-4600.0, 12500.0), wide: 4200.0, tall: 3600.0 })
@@ -25,15 +26,27 @@ pub fn cloudscape() -> Vec<Cumulus> {
     c.push(Cumulus { at: vec2(3400.0, 16000.0), wide: 3800.0, tall: 3000.0 })
     c.push(Cumulus { at: vec2(9500.0, 11000.0), wide: 2600.0, tall: 1900.0 })
     for k in 0..26 {
-        let a = -1.0 + 2.0 * rand(500 + k, 1)
-        let d = 3500.0 + 9000.0 * rand(500 + k, 2)
+        let a = pick(500 + k, 1, lo: -1.0, hi: 1.0)
+        let d = pick(500 + k, 2, lo: 3500.0, hi: 12500.0)
         c.push(
             Cumulus {
                 at: vec2(sin(a) * d, cos(a) * d),
-                wide: 700.0 + 900.0 * rand(500 + k, 3),
-                tall: 500.0 + 600.0 * rand(500 + k, 4),
+                wide: pick(500 + k, 3, lo: 700.0, hi: 1600.0),
+                tall: pick(500 + k, 4, lo: 500.0, hi: 1100.0),
             },
         )
     }
     c
+}
+
+/// The weather the sky is cooked with (`engine::sky::Sky::cook_weather`): the cloudscape, the
+/// share of the sky beyond it fair-weather clouds cover, and the gap kept toward the sun.
+pub struct Weather {
+    pub clouds: Vec<Cumulus>,
+    pub fair: f32,
+    pub gap: Gap,
+}
+
+pub fn weather() -> Weather {
+    Weather { clouds: cloudscape(), fair: FAIR, gap: SUN_GAP }
 }

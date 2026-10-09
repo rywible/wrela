@@ -15,9 +15,9 @@ pub const GROWTHS: u32 = 5
 /// if nothing is inside.
 pub fn bounds<S: Surface>(field: S, depth: u32) -> Box3 {
     var search = SEARCH
-    for g in 0..GROWTHS + 1 {
+    for _ in 0..GROWTHS {
         let b = bounds_in(field, depth, search)
-        if b.lo.x > b.hi.x || g == GROWTHS {
+        if b.lo.x > b.hi.x {
             return b
         }
         // A face within a cell of the search's: the surface may reach past it.
@@ -31,7 +31,7 @@ pub fn bounds<S: Surface>(field: S, depth: u32) -> Box3 {
         }
         search = Box3 { lo: search.lo * 2.0, hi: search.hi * 2.0 }
     }
-    SEARCH
+    bounds_in(field, depth, search)
 }
 
 /// `bounds`, searching `search`.

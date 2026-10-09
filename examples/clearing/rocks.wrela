@@ -2,12 +2,16 @@
 // by the track, a few at the meadow's edge (spike 15's).
 
 use engine::noise::rand
+use engine::probes::Occluder
 use engine::stone::{Realized, realize_stone}
-use scene::height
+use scene::{height, on_ground}
 use std::math::TAU
 
+/// How many boulders there are.
+pub const BOULDERS: u32 = 7
+
 /// Each boulder: its place on the plane (x, z), its size (m), and its seed.
-pub const SPOTS = [
+pub const SPOTS: [vec4; BOULDERS] = [
     vec4(-6.8, 9.5, 1.5, 1.0),
     vec4(-5.2, 10.9, 0.6, 2.0),
     vec4(2.6, 14.0, 0.95, 3.0),
@@ -22,15 +26,12 @@ fn squash(seed: u32) -> vec3 {
     vec3(1.0 + 0.3 * rand(seed, 1), 0.62 + 0.15 * rand(seed, 2), 0.9 + 0.3 * rand(seed, 3))
 }
 
-/// How many boulders there are.
-pub const BOULDERS: u32 = 7
-
 /// Boulder `i`, realized: sunk a third of its height into the ground.
 pub fn boulder(i: u32) -> Realized {
     let s = SPOTS[i]
     let seed = u32(s.w)
     let q = squash(seed)
-    let at = vec3(s.x, height(x: s.x, z: s.y) + s.z * q.y * 0.35, s.y)
+    let at = on_ground(s.xy, up: s.z * q.y * 0.35)
     realize_stone(radius: s.z, squash: q, seed: seed, at: at, turn: TAU * rand(seed, 4))
 }
 
@@ -44,12 +45,30 @@ pub fn boulders() -> Vec<Realized> {
 }
 
 /// Where the grass keeps out of the boulders: each one's place and reach on the plane.
-pub fn footprints() -> [vec4; 7] {
-    var out = [vec4(0.0); 7]
-    for i in 0..7 {
+pub fn footprints() -> [vec4; BOULDERS] {
+    var out = [vec4(0.0); BOULDERS]
+    for i in 0..BOULDERS {
         let s = SPOTS[i]
         let q = squash(u32(s.w))
         out[i] = vec4(s.x, s.y, s.z * max(q.x, q.z) * 0.85, 0.0)
+    }
+    out
+}
+
+/// What the boulders occlude the probes' light with (`engine::probes`): each a solid ball a
+/// little larger than it, its middle a quarter of its size above the ground.
+pub fn occluders() -> Vec<Occluder> {
+    var out: Vec<Occluder> = Vec::new()
+    for st in SPOTS {
+        let y = height(x: st.x, z: st.y) + st.z * 0.25
+        out.push(
+            Occluder {
+                a: vec3(st.x, y, st.y),
+                radius: st.z * 1.05,
+                b: vec3(st.x, y, st.y),
+                solid: 1.0,
+            },
+        )
     }
     out
 }

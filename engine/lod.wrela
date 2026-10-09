@@ -53,9 +53,8 @@ pub struct Lod: Copy + GpuData {
 pub fn place(l: Lod, cam: Camera, at: vec3, scale: f32) -> (f32, f32) {
     let r = l.reach * scale
     let d = length(at + vec3(0.0, l.top * 0.5 * scale, 0.0) - cam.eye)
-    // A card's width on screen at the nearest level, in pixels (each level doubles it): the
-    // finest level whose cards are no wider than CARD_PX.
-    let px = l.leaf * scale / max(cam.footprint(max(d - r * 0.5, 0.5)), 1.0e-4)
+    // The finest level whose cards look no wider than CARD_PX (each level doubles them).
+    let px = card_width(l, cam, at, scale)
     var level = clamp(log2(l.card_px / max(px, 1.0e-4)), 0.0, f32(CARD_LEVELS - 1))
     // Toward the impostors, the coarsest cards (the impostor's): from 60% of the way.
     level = max(level, f32(CARD_LEVELS - 1) * smoothstep(0.6, 0.75, d / l.cards_to))
@@ -66,6 +65,14 @@ pub fn place(l: Lod, cam: Camera, at: vec3, scale: f32) -> (f32, f32) {
     let fp = FAINT_PX * l.card_px / CARD_PX
     let faint = if d > l.cards_to { 1.0 - smoothstep(fp, 2.0 * fp, crown) } else { 0.0 }
     (level, faint)
+}
+
+/// How wide the cards of an instance at `at`, `scale` large, look from `cam` at its nearest
+/// level, in pixels (each level doubles it): `place`'s measure.
+pub fn card_width(l: Lod, cam: Camera, at: vec3, scale: f32) -> f32 {
+    let r = l.reach * scale
+    let d = length(at + vec3(0.0, l.top * 0.5 * scale, 0.0) - cam.eye)
+    l.leaf * scale / max(cam.footprint(max(d - r * 0.5, 0.5)), 1.0e-4)
 }
 
 /// The part of [0, 1) that way `way` keeps of an instance at `level`, faded by `faint`: the

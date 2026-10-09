@@ -2,7 +2,8 @@
 // slow follow of the creature along the track; a turn toward the gap; and a pan up the great
 // tree. Each part eases into the next.
 
-use scene::{KNOLL, LOOK_AT, height, start_eye}
+use scene::{KNOLL, LOOK_AT, on_ground, start_eye}
+use std::serialize::Serialize
 
 /// The path's length (s), and when each part begins.
 pub const LENGTH: f32 = 60.0
@@ -11,7 +12,7 @@ const GAP: f32 = 36.0
 const TREE: f32 = 47.0
 
 /// An eye and where it looks.
-pub struct Shot: Copy {
+pub struct Shot: Copy + Serialize {
     pub eye: vec3,
     pub at: vec3,
 }
@@ -35,7 +36,7 @@ fn follow(c: vec3, heading: f32) -> Shot {
     let f = vec3(sin(heading), 0.0, cos(heading))
     let right = vec3(f.z, 0.0, -f.x)
     let eye_xz = c.xz - f.xz * 6.5 - right.xz * 2.6
-    let eye = vec3(eye_xz.x, height(eye_xz.x, eye_xz.y) + 1.9, eye_xz.y)
+    let eye = on_ground(eye_xz, up: 1.9)
     Shot { eye, at: c + f * 3.0 + vec3(0.0, 0.9, 0.0) }
 }
 
@@ -43,7 +44,7 @@ fn follow(c: vec3, heading: f32) -> Shot {
 fn gap(t: f32) -> Shot {
     let s = ease(GAP, TREE, t)
     let from = vec2(-9.0, 34.0)
-    let eye = vec3(from.x, height(from.x, from.y) + 1.8, from.y)
+    let eye = on_ground(from, up: 1.8)
     let look = mix(vec3(-30.0, 2.0, 60.0), vec3(-600.0, -30.0, 900.0), vec3(s))
     Shot { eye, at: look }
 }
@@ -52,8 +53,8 @@ fn gap(t: f32) -> Shot {
 fn tree(t: f32) -> Shot {
     let s = ease(TREE + 1.0, LENGTH, t)
     let from = vec2(-1.5, 24.0)
-    let eye = vec3(from.x, height(from.x, from.y) + 1.6, from.y)
-    let base = vec3(KNOLL.x, height(KNOLL.x, KNOLL.y), KNOLL.y)
+    let eye = on_ground(from, up: 1.6)
+    let base = on_ground(KNOLL)
     Shot { eye, at: mix(base + vec3(0.0, 2.0, 0.0), base + vec3(0.0, 13.0, 0.0), vec3(s)) }
 }
 

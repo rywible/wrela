@@ -4,9 +4,13 @@
 // reads both and takes the darker. Edges are softened by a disc of comparison taps, turned each
 // frame, which temporal AA averages.
 
-use std::gpu::{ComparisonSampler, DepthTexture}
+use std::gpu::{ComparisonSampler, DepthBias, DepthTexture}
 use std::math::TAU
 use std::transform::{look_at, ortho}
+
+/// The depth bias a caster draws into a shadow map with: enough that a lit surface doesn't
+/// shadow itself.
+pub const CASTER = DepthBias { constant: 2, slope: 1.5, clamp: 0.0 }
 
 /// The sun's views: each map's light-space-to-clip matrix, the basis the sun sees (for cards
 /// that face it), each map's texel size (m), the disc's taps turned by the frame's turn (`TAPS`,

@@ -17,6 +17,9 @@ use std::string::String
 /// Cells per edge (fieldview's `GRID`).
 pub const CELLS: u32 = 96
 
+/// The most pieces a report keeps (`Report::sizes`), largest first.
+pub const PIECES: u32 = 8
+
 /// The grid: a cube of `CELLS`³ cells, `cell` wide, from `origin`.
 pub struct Grid: Copy + GpuData {
     pub origin: vec3,
@@ -95,10 +98,10 @@ pub struct Report {
     /// The inside cells' centres' box.
     pub lo: vec3,
     pub hi: vec3,
-    /// The pieces, largest first: their cells and their centres (up to 8).
+    /// The pieces, largest first: their cells and their centres (up to `PIECES`).
     pub pieces: u32,
-    pub sizes: [u32; 8],
-    pub centres: [vec3; 8],
+    pub sizes: [u32; PIECES],
+    pub centres: [vec3; PIECES],
     /// The volume below y = 0.
     pub below: f32,
     /// The cube's faces an inside cell touches: -x, +x, -y, +y, -z, +z.
@@ -174,8 +177,8 @@ pub fn report(grid: Grid, d: [f32]) -> Report {
         lo: vec3(3.4e38),
         hi: vec3(-3.4e38),
         pieces: 0,
-        sizes: [0; 8],
-        centres: [vec3(); 8],
+        sizes: [0; PIECES],
+        centres: [vec3(); PIECES],
         below: 0.0,
         cut: [false; 6],
         gradient: 0.0,
@@ -296,15 +299,15 @@ fn flood(grid: Grid, d: [f32], level: f32) -> Vec<(u32, vec3)> {
 fn count_pieces(r: mut Report, d: [f32]) {
     let found = flood(r.grid, d, 0.0)
     r.pieces = found.len()
-    // The largest eight, largest first; of equal sizes, the first found.
+    // The largest `PIECES`, largest first; of equal sizes, the first found.
     for item in found {
         let (size, centre) = item
-        var at = 8
+        var at = PIECES
         while at > 0 && size > r.sizes[at - 1] {
             at -= 1
         }
-        if at < 8 {
-            var s = 7
+        if at < PIECES {
+            var s = PIECES - 1
             while s > at {
                 r.sizes[s] = r.sizes[s - 1]
                 r.centres[s] = r.centres[s - 1]
@@ -335,7 +338,7 @@ impl Report {
         let worst = take worst.done()
         let vox = self.grid.cell * self.grid.cell * self.grid.cell
         var pieces = list()
-        for i in 0..min(self.pieces, 8) {
+        for i in 0..min(self.pieces, PIECES) {
             var piece = obj()
                 .num("volume", f32(self.sizes[i]) * vox)
                 .vec("centre", self.centres[i])

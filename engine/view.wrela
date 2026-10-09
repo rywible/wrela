@@ -19,6 +19,10 @@ pub const PREPASSED = Depth { compare: Compare::Equal, write: false }
 /// The draw state of what's drawn behind everything (the sky): where nothing was drawn.
 pub const BEHIND = Depth { compare: Compare::Equal, write: false }
 
+/// The draw state of what's drawn again over a pass with depth (a creature's motion): where
+/// nothing in front of it was drawn, nothing written.
+pub const SEEN = Depth { compare: Compare::GreaterEqual, write: false }
+
 pub struct Camera: Copy + GpuData {
     /// World to clip space, without the jitter: this frame's, and the last frame's.
     pub view_proj: mat4,

@@ -121,11 +121,16 @@ pub fn height(x: f32, z: f32) -> f32 {
     y
 }
 
-/// How tall the meadow's grass grows at `p` (m), and how dense it is (0 to 1).
-pub fn growth(p: vec2) -> (f32, f32) {
+/// The point on the ground at `p` on the plane, or `up` above it.
+pub fn on_ground(p: vec2, up: f32 = 0.0) -> vec3 {
+    vec3(p.x, height(p.x, p.y) + up, p.y)
+}
+
+/// How tall the meadow's grass grows at `p` (m), and how dense it is (0 to 1), where `worn` of
+/// it is track (`track`).
+pub fn growth(p: vec2, worn: f32) -> (f32, f32) {
     let patches = fbm2(p * 0.09 + vec2(5.0, 1.0), 3)
     let tall = 0.22 + 0.55 * smoothstep(0.35, 0.75, patches)
-    let worn = track(p)
     let r = length(p - MEADOW)
     // Short where the camera starts.
     let mown = 1.0 - 0.55 * exp(-dot(p - STAND, p - STAND) / 30.0)
@@ -145,20 +150,29 @@ impl Terrain for Ground {
 
     fn cover(self, at: vec3, n: vec3) -> Cover {
         let xz = at.xz
-        let near = length(xz - MEADOW) < 45.0
+        let r = length(xz - MEADOW)
+        let near = r < 45.0
+        let past = past_edge(xz)
         let patches = fbm2(xz * 0.08, 3)
         let meadow = mix(vec3(0.10, 0.17, 0.035), vec3(0.20, 0.24, 0.05), vec3(patches))
         let dirt = mix(vec3(0.24, 0.17, 0.10), vec3(0.30, 0.23, 0.14), vec3(noise2(xz * 2.0)))
         let worn = if near { track(xz) } else { 0.0 }
         var a = mix(meadow, dirt, vec3(worn))
-        // The far land: woods and open meadows in patches, fields' lighter greens between.
-        let far = smoothstep(80.0, 260.0, length(xz - MEADOW))
-        let woods_at = fbm2(xz * 0.0035 + vec2(4.0, 2.0), 5)
-        let woods = vec3(0.03, 0.065, 0.03)
-        let open = mix(vec3(0.10, 0.15, 0.045), vec3(0.17, 0.18, 0.07), vec3(fbm2(xz * 0.012, 3)))
-        let wooded = smoothstep(0.45, 0.55, woods_at)
-        let land = mix(open, woods, vec3(wooded))
-        a = mix(a, land, vec3(far))
+        // The far land: woods and open meadows in patches, fields' lighter greens between. (Near
+        // the meadow there's none of it: it starts 80 m out.)
+        var wooded = 0.0
+        if !near {
+            let far = smoothstep(80.0, 260.0, r)
+            let woods = vec3(0.03, 0.065, 0.03)
+            let open = mix(
+                vec3(0.10, 0.15, 0.045),
+                vec3(0.17, 0.18, 0.07),
+                vec3(fbm2(xz * 0.012, 3)),
+            )
+            wooded = smoothstep(0.45, 0.55, fbm2(xz * 0.0035 + vec2(4.0, 2.0), 5))
+            let land = mix(open, woods, vec3(wooded))
+            a = mix(a, land, vec3(far))
+        }
         // Rock on the mountain's steep slopes, snow high on it.
         let steep = smoothstep(0.7, 0.5, n.y) * smoothstep(500.0, 800.0, at.y)
         a = mix(a, vec3(0.22, 0.21, 0.21), vec3(steep))
@@ -166,8 +180,8 @@ impl Terrain for Ground {
             smoothstep(0.5, 0.7, n.y)
         a = mix(a, vec3(0.85, 0.88, 0.92), vec3(snow))
         // Grass where the meadow is, thinning on the track and the forest floor.
-        let (tall, density) = if near { growth(xz) } else { (0.3, 1.0 - wooded) }
-        let grass = density * (1.0 - steep) * (1.0 - snow) * smoothstep(4.0, -2.0, past_edge(xz))
+        let (tall, density) = if near { growth(xz, worn) } else { (0.3, 1.0 - wooded) }
+        let grass = density * (1.0 - steep) * (1.0 - snow) * smoothstep(4.0, -2.0, past)
         // Patches of dry grass and of deeper, bluer green.
         let dry = smoothstep(0.55, 0.85, fbm2(xz * 0.06 + vec2(11.0, 3.0), 3))
         let deep = smoothstep(0.5, 0.8, fbm2(xz * 0.11 + vec2(-3.0, 8.0), 2))
@@ -177,7 +191,7 @@ impl Terrain for Ground {
         let white = 1.0 - smoothstep(0.4, 0.5, kind)
         let violet = smoothstep(0.55, 0.65, kind)
         let yellow = 1.0 - white - violet
-        let bloom = if near && length(xz - MEADOW) < 30.0 && past_edge(xz) < 0.0 {
+        let bloom = if near && r < 30.0 && past < 0.0 {
             smoothstep(0.55, 0.72, drift)
         } else {
             0.0
@@ -200,5 +214,5 @@ impl Terrain for Ground {
 
 /// The eye where the camera starts.
 pub fn start_eye() -> vec3 {
-    vec3(STAND.x, height(STAND.x, STAND.y) + EYE_HEIGHT, STAND.y)
+    on_ground(STAND, up: EYE_HEIGHT)
 }

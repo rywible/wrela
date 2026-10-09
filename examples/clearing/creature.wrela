@@ -7,12 +7,10 @@ use engine::creature::{Creature, Skeleton}
 use engine::gait::{Body, Path, body}
 use engine::look::{CreatureLook, Mesh}
 use engine::render::Look
-use fawn::creature::{Coat, fawn}
-use scene::height
+use fawn::creature::{Coat, fawn, skeleton}
 
-/// Where it starts (spike 15's grazer stood here), and the trail it follows from there, as
-/// points on the plane a Catmull-Rom curve passes through.
-pub const START = vec2(-3.2, 14.5)
+/// The trail it follows, as points on the plane a Catmull-Rom curve passes through: from the
+/// second point to the last but one.
 pub const TRAIL = [
     vec2(-4.6, 11.0),
     vec2(-3.2, 14.5),
@@ -27,6 +25,9 @@ pub const TRAIL = [
     vec2(-20.5, 50.0),
     vec2(-23.0, 56.0),
 ]
+
+/// Where it starts (spike 15's grazer stood here): the trail's start.
+pub const START = TRAIL[1]
 
 /// The trail, by distance along it.
 pub struct Trail: Copy {}
@@ -47,42 +48,68 @@ fn segment(i: u32, t: f32) -> vec2 {
             (3.0 * p1 - p0 - 3.0 * p2 + p3) * t3)
 }
 
+/// A step of the trail, each segment walked in eighths: the point it reaches, and its length.
+struct Step: Copy {
+    to: vec2,
+    length: f32,
+}
+
+/// The trail's steps from its start (where segment 0 begins), walked once, by the build.
+const STEPS: Vec<Step> = steps()
+
+/// The trail's length (m): its steps', added in order.
+const TRAIL_LENGTH: f32 = trail_length()
+
+fn steps() -> Vec<Step> {
+    var out: Vec<Step> = Vec::new()
+    var prev = START
+    for i in 0..(TRAIL.len() - 3) {
+        for k in 1..9 {
+            let p = segment(i, f32(k) / 8.0)
+            out.push(Step { to: p, length: length(p - prev) })
+            prev = p
+        }
+    }
+    out
+}
+
+fn trail_length() -> f32 {
+    var total = 0.0
+    for st in STEPS {
+        total += st.length
+    }
+    total
+}
+
 impl Path for Trail {
-    /// The point `s` metres along the trail from its start: each segment walked in eighths.
+    /// The point `s` metres along the trail from its start: on the step it falls in.
     fn at(self, s: f32) -> vec2 {
         var left = max(s, 0.0)
-        var prev = segment(0, 0.0)
-        for i in 0..(TRAIL.len() - 3) {
-            for k in 1..9 {
-                let p = segment(i, f32(k) / 8.0)
-                let l = length(p - prev)
-                if left <= l {
-                    return mix(prev, p, vec2(left / max(l, 1.0e-6)))
-                }
-                left -= l
-                prev = p
+        var prev = START
+        for st in STEPS {
+            if left <= st.length {
+                return mix(prev, st.to, vec2(left / max(st.length, 1.0e-6)))
             }
+            left -= st.length
+            prev = st.to
         }
         prev
     }
 
     fn length(self) -> f32 {
-        var total = 0.0
-        var prev = segment(0, 0.0)
-        for i in 0..(TRAIL.len() - 3) {
-            for k in 1..9 {
-                let p = segment(i, f32(k) / 8.0)
-                total += length(p - prev)
-                prev = p
-            }
-        }
-        total
+        TRAIL_LENGTH
     }
 }
 
-/// The creature, its body for walking: springs on its neck (to its head) and its tail.
-pub fn walker_body() -> Body {
-    let s = fawn().skeleton()
+/// The fawn's skeleton: the one its creature is built on (`fawn::creature::fawn`).
+pub const SKELETON: Skeleton = skeleton()
+
+/// The creature, its body for walking: springs on its neck (to its head) and its tail. Found
+/// once, by the build.
+pub const WALKER_BODY: Body = walker_body()
+
+fn walker_body() -> Body {
+    let s = SKELETON
     let head = [
         s.find("neck 0"),
         s.find("neck 1"),
@@ -99,6 +126,14 @@ pub fn walker_body() -> Body {
         s.find("tail 5"),
     ]
     body(s, head, tail, head_k: 70.0, tail_k: 28.0)
+}
+
+/// The fawn, as the clearing keeps it while its mesh is realized (`engine::realize`).
+pub type Grown = Creature<Coat>
+
+/// The fawn, built.
+pub fn grown() -> Grown {
+    fawn()
 }
 
 /// How it's realized: 1 cm cells (its size on screen asks no finer).
