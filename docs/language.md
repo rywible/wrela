@@ -333,7 +333,7 @@ If dimension bugs show up in practice, the first remedy is distinct types, as Go
 | **Moving out of a named place is written `take`.** Deep copies are `.clone()`; small `Copy` types copy implicitly. Temporaries and returned locals need no marker. | T0 |
 | **Bindings:** `let` owns, `var` owns mutably, `borrow` projects a place read-only, and `mut` projects it mutably (§6.3). (`mem.let-owns`) | T0 / M2 |
 | **Projections:** a function may return `-> borrow T` or `-> mut T` of one of its parameters. Projections never outlive the caller's scope. | T0 |
-| **Exclusivity:** while a `mut` access is live, nothing may touch an overlapping place. Disjoint fields don't overlap; every element of a container overlaps every other (`pair_mut` and `split_at_mut` check at runtime). Checked within each function, over its control flow: a loan or a move reaches every path that can follow it, through branches, loops and `continue`. | T0 |
+| **Exclusivity:** while a `mut` access is live, nothing may touch an overlapping place. Disjoint fields don't overlap; every element of a container overlaps every other (`pair_mut` checks at runtime that two differ). Checked within each function, over its control flow: a loan or a move reaches every path that can follow it, through branches, loops and `continue`. | T0 |
 | **No mutable globals, and no interior mutability** like `Cell` or `RefCell`. Shared mutable state lives in an arena. | T0 |
 | **A projection must come from a `borrow` or `mut` parameter.** The caller treats a `-> borrow T` result as borrowing every such argument, and a `-> mut T` result as borrowing only the `mut` ones (§6.4). | T0 / M2 |
 | **Projections are parameters, results and local bindings only:** `borrow T`, `mut T`, runs, borrow structs and closures that capture projections. They're never fields of ordinary types, or type arguments (§6.6). | T0 / T1 |
@@ -443,7 +443,7 @@ let both = world.grazers.pair_mut(h1, h2)     // two elements at once (`both.a`,
 
 - **The check is static and stays within one function.** It never needs to look inside another function, because signatures say everything.
 - **A `match` borrows the place it matches until an arm is chosen.** So a guard can't change what a later arm tests (E0507), and an exhaustive match always finds its arm.
-- **The only runtime checks are explicit library calls** like `pair_mut` and `split_at_mut`.
+- **The only runtime checks are explicit library calls** like `pair_mut` (a `Vec`'s and an `Arena`'s).
 - **To move a value out of a borrowed place, swap something in.** std's `swap(mut a, mut b)` exchanges two places, and `replace(mut place, value)` returns the old value: `let stack = replace(mut inv.slots[i], None)`.
 - **There are no mutable globals.** State is passed in explicitly. Constants are fine.
 - **There's no interior mutability** like Rust's `Cell` or `RefCell`. Shared mutable state lives in an arena and is reached through `mut` access to that arena.
