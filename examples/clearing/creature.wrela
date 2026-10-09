@@ -139,11 +139,11 @@ pub fn grown() -> Grown {
 /// How it's realized: 1 cm cells (its size on screen asks no finer).
 pub const REALIZED = CreatureLook { surface: Mesh { tolerance: 1cm } }
 
-/// Its colours: round 1's browns, warmed and lifted toward a fawn's (spike 15's).
+/// Its colours: its coat's, as the fawn has them (`fawn::creature`).
 pub struct Fawn: Copy + GpuData {}
 
 impl Look<Coat> for Fawn {
     fn surface(self, c: Coat, rest: vec3, fp: f32) -> (vec3, f32) {
-        (vec3(c.albedo.r, c.albedo.g, c.albedo.b) * vec3(2.6, 2.3, 1.8), 0.7)
+        (vec3(c.albedo.r, c.albedo.g, c.albedo.b), 0.7)
     }
 }

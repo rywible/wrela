@@ -29,6 +29,11 @@ pub struct Coat: Copy + GpuData + Blend {
     pub albedo: Color,
 }
 
+/// A coat of albedo (`r`, `g`, `b`).
+pub fn coat(r: f32, g: f32, b: f32) -> Coat {
+    Coat { albedo: rgb(r, g, b) }
+}
+
 const HIDE = Coat { albedo: rgb(r: 0.12, g: 0.062, b: 0.030) }
 const WOOL = Coat { albedo: rgb(r: 0.058, g: 0.035, b: 0.02) }
 const PALE = Coat { albedo: rgb(r: 0.20, g: 0.13, b: 0.08) }
@@ -137,18 +142,18 @@ fn bone_space(p: vec3, a: vec3, b: vec3) -> vec3 {
 /// the point in the creature's space (`origin` is where this space's origin is there).
 pub struct Muscle: Copy + GpuData {
     pub a: vec3,
-    pub b: vec3,
     pub t: f32,
-    pub off: vec2,
-    pub r: vec3,
+    pub b: vec3,
     pub noise: f32,
+    pub r: vec3,
     pub freq: f32,
     pub origin: vec3,
+    pub off: vec2,
 }
 
 /// A muscle of radii `r` on the bone from `a` to `b` (in the space of the bone it moves
 /// with, at `at`), `t` along it, offset by `off`.
-fn muscle(a: vec3, b: vec3, at: vec3, t: f32, off: vec2, r: vec3) -> Muscle {
+pub fn muscle(a: vec3, b: vec3, at: vec3, t: f32, off: vec2, r: vec3) -> Muscle {
     Muscle { a: a - at, b: b - at, t, off, r, noise: 0.0, freq: 0.0, origin: at }
 }
 
@@ -313,7 +318,7 @@ impl Modifier for Cape {
 
 /// A neck cone of round 1's (`cone_sq`), on the neck's base bone: squashed across x by `sx`,
 /// its ends on the midline.
-fn neck_cone(a: vec3, c: vec3, r1: f32, r2: f32, sx: f32) -> FlatCone {
+pub fn neck_cone(a: vec3, c: vec3, r1: f32, r2: f32, sx: f32) -> FlatCone {
     flat_cone(a - NECK0, c - NECK0, r1, r2, sx, scale_ends: false)
 }
 
