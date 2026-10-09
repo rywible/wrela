@@ -18,8 +18,9 @@
 use light::Lit
 use sim::Hit
 use std::gpu::{
-    ClipPosition, DrawIndexedArgs, GlobalId, GpuBuffer, GpuSpan, Oct32, Slots, Unorm8x4,
-    VertexIndex, buffer, buffer_of, dispatch, label, write,
+    Address, ClipPosition, DrawIndexedArgs, GlobalId, GpuBuffer, GpuSpan, Oct32, Rgba8, Sampler,
+    Slots, Texture, Unorm8x4, VertexIndex, buffer, buffer_of, dispatch, label, sampler, texture,
+    write,
 }
 use view::Camera
 
@@ -32,6 +33,14 @@ pub trait Terrain: Copy + GpuData {
     /// What covers the ground at `at` (a point on it) whose normal is `n`: its albedo and how
     /// much grass grows there. Cooked into the clipmap, so it can be as costly as it needs.
     fn cover(self, at: vec3, n: vec3) -> Cover
+
+    /// What covers the ground at `at`, given the ground's fields there (`Clipmap::write_fields`:
+    /// four numbers a game keeps over the plane, such as a history's light at the ground and its
+    /// trails' wear, each 0 to 1), or -1 in each where they aren't known. By default, `cover`
+    /// (spike 17's `cover_with`).
+    fn cover_with(self, at: vec3, n: vec3, fields: vec4) -> Cover {
+        self.cover(at, n)
+    }
 
     /// A bound on the ground's slope, rise over run, which a raycast steps by.
     fn steepest(self) -> f32 {
@@ -106,6 +115,51 @@ pub struct Levels: Copy + GpuData {
     pub eye: vec2,
 }
 
+/// How the ground's fields lie (`Clipmap::fields_on`): a texture that wraps round the plane every
+/// `period` metres, each texel `texel` metres, in `blocks` blocks a side, each a tile `tile`
+/// metres across (a block holds the fields of whichever tile it wraps to that's written there,
+/// and `tiles` says which); `on` 0 until a game turns them on.
+pub struct FieldsAt: Copy + GpuData {
+    pub period: f32,
+    pub texel: f32,
+    pub tile: f32,
+    pub blocks: u32,
+    pub on: u32,
+}
+
+/// The ground's fields at (x, z): the block it wraps to, if the tile it's in is the one written
+/// there; else -1 in each.
+pub fn fields_here(
+    fields: Texture<Rgba8>,
+    s: Sampler,
+    at: FieldsAt,
+    tiles: [vec4],
+    x: f32,
+    z: f32,
+) -> vec4 {
+    if at.on == 0 {
+        return vec4(-1.0)
+    }
+    let t = vec2i(floor(vec2(x, z) / at.tile))
+    let b = vec2i(
+        ((t.x % i32(at.blocks)) + i32(at.blocks)) % i32(at.blocks),
+        ((t.y % i32(at.blocks)) + i32(at.blocks)) % i32(at.blocks),
+    )
+    let held = tiles[u32(b.y) * at.blocks + u32(b.x)]
+    if held.z == 0.0 || i32(held.x) != t.x || i32(held.y) != t.y {
+        return vec4(-1.0)
+    }
+    // Sampled within the tile's own block (clamped half a texel in): a neighbour's block may hold
+    // another tile.
+    let local = clamp(
+        vec2(x, z) - vec2(t) * at.tile,
+        vec2(at.texel * 0.5),
+        vec2(at.tile - at.texel * 0.5),
+    )
+    let uv = (vec2(b) * at.tile + local) / at.period
+    fields.sample_level(s, uv)
+}
+
 /// A terrain's clipmap on the GPU, and where its levels are.
 pub struct Clipmap {
     texels: GpuBuffer<Texel>,
@@ -121,6 +175,13 @@ pub struct Clipmap {
     cooked: [bool; MAX_LEVELS],
     /// Levels cooked since the clipmap was made (each time a level moved).
     pub cooks: u32,
+    /// The ground's fields (`fields_on`): the texture, how it's read and lies, and which tile
+    /// each block holds (x, z, and 1 if any), on the GPU and here.
+    fields: Texture<Rgba8>,
+    fields_s: Sampler,
+    fields_at: FieldsAt,
+    field_tiles: GpuBuffer<vec4>,
+    held: Vec<vec4>,
 }
 
 impl Clipmap {
@@ -136,6 +197,71 @@ impl Clipmap {
             finest,
             cooked: [false; MAX_LEVELS],
             cooks: 0,
+            fields: texture::<Rgba8>(width: 1, height: 1),
+            fields_s: sampler(),
+            fields_at: FieldsAt { period: 1.0, texel: 1.0, tile: 1.0, blocks: 1, on: 0 },
+            field_tiles: buffer(1),
+            held: Vec::from([vec4(0.0)]),
+        }
+    }
+
+    /// Turns the ground's fields on: `blocks` blocks a side, each a tile `tile` metres across of
+    /// `side` texels a side (RGBA, each 0 to 1), which `Terrain::cover_with` reads as it cooks.
+    pub fn fields_on(mut self, tile: f32, side: u32, blocks: u32) {
+        self.fields = texture::<Rgba8>(width: side * blocks, height: side * blocks)
+        self.fields_s = sampler(address: Address::Repeat)
+        self.fields_at = FieldsAt {
+            period: tile * f32(blocks),
+            texel: tile / f32(side),
+            tile,
+            blocks,
+            on: 1,
+        }
+        self.held = Vec::filled(blocks * blocks, vec4(0.0))
+        self.field_tiles = buffer_of(self.held)
+        self.cooked = [false; MAX_LEVELS]
+    }
+
+    /// Tile `t`'s fields (`side` × `side` texels, 4 bytes each, rows from its corner) written
+    /// into the block it wraps to; the levels over it cook again.
+    pub fn write_fields(mut self, t: vec2i, bytes: [u8]) {
+        let at = self.fields_at
+        if at.on == 0 {
+            return
+        }
+        let n = i32(at.blocks)
+        let b = vec2u(u32(((t.x % n) + n) % n), u32(((t.y % n) + n) % n))
+        let side = u32(round(at.tile / at.texel))
+        self.fields.write(b.x * side, b.y * side, side, side, bytes)
+        self.held[b.y * at.blocks + b.x] = vec4(f32(t.x), f32(t.y), 1.0, 0.0)
+        write(mut self.field_tiles, 0, self.held)
+        self.touched(vec2(t) * at.tile, vec2(t + vec2i(1)) * at.tile)
+    }
+
+    /// Tile `t`'s fields forgotten (its block holds nothing): the levels over it cook again.
+    pub fn drop_fields(mut self, t: vec2i) {
+        let at = self.fields_at
+        if at.on == 0 {
+            return
+        }
+        let n = i32(at.blocks)
+        let b = vec2u(u32(((t.x % n) + n) % n), u32(((t.y % n) + n) % n))
+        let k = b.y * at.blocks + b.x
+        if self.held[k].z != 0.0 && i32(self.held[k].x) == t.x && i32(self.held[k].y) == t.y {
+            self.held[k] = vec4(0.0)
+            write(mut self.field_tiles, 0, self.held)
+            self.touched(vec2(t) * at.tile, vec2(t + vec2i(1)) * at.tile)
+        }
+    }
+
+    /// The levels whose squares reach from `lo` to `hi` cook again whole.
+    fn touched(mut self, lo: vec2, hi: vec2) {
+        for l in 0..self.levels.count {
+            let a = self.levels.at[l]
+            let end = a.xy + vec2(f32(QUADS) * a.z)
+            if a.x < hi.x && a.y < hi.y && end.x > lo.x && end.y > lo.y {
+                self.cooked[l] = false
+            }
         }
     }
 
@@ -182,6 +308,10 @@ impl Clipmap {
                 dispatch(
                     cook_level.bind(
                         terrain,
+                        fields: self.fields,
+                        fs: self.fields_s,
+                        fields_at: self.fields_at,
+                        tiles: self.field_tiles,
                         at: vec4(at.x, at.y, s, 0.0),
                         moved: moved,
                         from: self.texels.span(start: l * STRIDE, count: STRIDE),
@@ -310,6 +440,10 @@ fn ground_indices() -> Vec<u32> {
 @compute(8, 8)
 pub fn cook_level<T: Terrain>(
     terrain: T,
+    fields: Texture<Rgba8>,
+    fs: Sampler,
+    fields_at: FieldsAt,
+    tiles: [vec4],
     at: vec4,
     moved: vec2i,
     from: [Texel],
@@ -329,7 +463,8 @@ pub fn cook_level<T: Terrain>(
     let z = at.y + f32(id.y) * s
     let h = terrain.height(x, z)
     let n = terrain.normal(x, z, s * 0.5)
-    let c = terrain.cover(vec3(x, h, z), n)
+    let f = fields_here(fields, fs, fields_at, tiles, x, z)
+    let c = terrain.cover_with(vec3(x, h, z), n, f)
     // Slot (i, j) is j * ROW + i: the dispatch's rows are ROW wide (`texel_index`).
     out[id] = Texel {
         height: h,

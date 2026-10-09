@@ -14,9 +14,10 @@
 // And a far layer of the whole floor, in the first frame's payload: each 8 m cell's tallest crown
 // (its height and kind), for what lies past the tiles streamed in.
 
-use grow::{Cause, Grid, History, State, Stream, Tree}
+use grow::{Cause, Grid, Habit, History, State, Stream, Tree}
 use std::io::Shipped
-use place::{TILE, tile_of}
+use noise::noise2
+use place::{Route, RouteKind, TILE, tile_of}
 use std::math::TAU
 
 /// The bytes' first word, and their version.
@@ -469,6 +470,183 @@ pub fn unbake(files: Shipped, lo: vec2i, hi: vec2i) -> Unbaked {
                     out.water.push(p)
                 }
             }
+        }
+    }
+    out
+}
+
+// ---- the consequences, a tile at a time -----------------------------------------------------------
+
+/// How far past a tile's edge a tree's crown can reach over it (m): an oak's reaches 10 m, and a
+/// crown leans.
+pub const CROWN_MARGIN: f32 = 16.0
+
+/// The trees of `trees` (a neighbour's) whose crowns may reach over tile `t`'s edge, added to
+/// `into`.
+pub fn reaching(t: vec2i, trees: [Tree], into: mut Vec<Tree>) {
+    let lo = vec2(t) * TILE - vec2(CROWN_MARGIN)
+    let hi = vec2(t + vec2i(1)) * TILE + vec2(CROWN_MARGIN)
+    for tr in trees {
+        if tr.at.x > lo.x && tr.at.y > lo.y && tr.at.x < hi.x && tr.at.y < hi.y {
+            into.push(tr)
+        }
+    }
+}
+
+/// Which of tile `t`'s eight neighbours tile `n` is (a bit each): `0` when it's no neighbour.
+pub fn neighbour_bit(t: vec2i, n: vec2i) -> u32 {
+    let d = n - t
+    if (d.x == 0 && d.y == 0) || abs(d.x) > 1 || abs(d.y) > 1 {
+        0
+    } else {
+        u32(1) << u32((d.y + 1) * 3 + d.x + 1)
+    }
+}
+
+/// How a route's path is trodden: its tread's half width (m) by kind, and how far it wanders
+/// from the route's line (m), over about `WANDER_OVER` m along it.
+fn tread_half(k: RouteKind) -> f32 {
+    match k {
+        RouteKind::Road => 1.3,
+        RouteKind::Herd => 0.6,
+        RouteKind::Trail => 0.5,
+    }
+}
+
+const WANDER: f32 = 1.4
+const WANDER_OVER: f32 = 30.0
+
+/// How trodden point `p` is by the routes' paths (0 to 1): the path down a route's line,
+/// wandering from it and its width changing along it. `used` gives how much the route is walked
+/// (the history's wear round the point; a road is made, and shows unwalked); `near`, which
+/// routes may come near.
+fn path_at(routes: [Route], near: [u32], p: vec2, used: f32) -> f32 {
+    var best = 0.0
+    for k in near {
+        borrow r = routes[k]
+        var walked = 0.0
+        for i in 0..r.points.len() - 1 {
+            let a = r.points[i]
+            let b = r.points[i + 1]
+            let ab = b - a
+            let len = length(ab)
+            let t = clamp(dot(p - a, ab) / max(len * len, 1.0e-6), 0.0, 1.0)
+            let side = (p - a).x * ab.y - (p - a).y * ab.x
+            let dist = length(p - (a + ab * t)) * sign(side)
+            if abs(dist) < WANDER + 3.0 {
+                let along = walked + t * len
+                let w = noise2(vec2(along / WANDER_OVER, f32(k) * 7.3))
+                let half = tread_half(r.kind) *
+                    (0.75 + 0.5 * noise2(vec2(along / 11.0, f32(k) * 3.1 + 40.0)))
+                let off = abs(dist - WANDER * (2.0 * w - 1.0))
+                let made = if r.kind == RouteKind::Road { 0.6 } else { 0.0 }
+                best = max(best, (1.0 - smoothstep(half * 0.6, half, off)) * max(used, made))
+            }
+            walked += len
+        }
+    }
+    best
+}
+
+/// The fields a tile's ground is covered by (`terrain::Terrain::cover_with`), each 2 m: the light
+/// at the ground (the history's: its crowns' shade, `grow::canopy`'s rule), how trodden it is,
+/// its wetness and its thorn, worked out again where the tile streams in from its decisions: its
+/// own trees and those of its neighbours whose crowns reach over its edge (`others`). Trodden is
+/// the routes' paths (`routes`), as walked as the history's wear round them says, and the
+/// broader ground the herd wears (up to 0.45). Four bytes a texel (light, trodden, wet, thorn),
+/// `WEAR_N` a side, rows from the tile's corner.
+pub fn tile_fields(
+    d: Decisions,
+    others: [Tree],
+    habits: [Habit],
+    routes: [Route],
+    year: i32,
+) -> Vec<u8> {
+    let n = WEAR_N
+    let cell = TILE / f32(n)
+    // The routes near the tile, and the wear round each point (8 m) that says how walked they are.
+    let corner = vec2(d.tile) * TILE
+    var near: Vec<u32> = Vec::new()
+    for k in 0..routes.len() {
+        borrow r = routes[k]
+        var lo = vec2(1.0e9)
+        var hi = vec2(-1.0e9)
+        for q in r.points {
+            lo = min(lo, q)
+            hi = max(hi, q)
+        }
+        let a = corner - vec2(8.0)
+        let b = corner + vec2(TILE + 8.0)
+        if hi.x > a.x && hi.y > a.y && lo.x < b.x && lo.y < b.y {
+            near.push(k)
+        }
+    }
+    let tg = Grid { lo: corner, nx: n, nz: n, cell }
+    let worn = tg.blur(d.wear, 4)
+    // The light's grid: the tile and 8 m round it, where crowns from beyond its edge shade it.
+    let m = 8
+    let lo = vec2(d.tile) * TILE - vec2(f32(m) * cell)
+    let g = Grid { lo, nx: n + 2 * m, nz: n + 2 * m, cell }
+    let nn = g.cells()
+    var light: Vec<f32> = Vec::filled(nn, 1.0)
+    var thorn: Vec<f32> = Vec::filled(nn, 0.0)
+    for k in 0..(d.trees.len() + others.len()) {
+        let t = if k < d.trees.len() { d.trees[k] } else { others[k - d.trees.len()] }
+        if t.state == State::Alive && t.tall > 0.8 {
+            let h = habits[t.kind]
+            let c = t.at + t.lean
+            let r = t.reach + 0.5
+            let stop = h.shade * min(t.tall / 3.0, 1.0)
+            let a = g.ij(c - vec2(r))
+            let span = i32(ceil(2.0 * r / cell)) + 1
+            for dj in 0..span {
+                for di in 0..span {
+                    let i = a.x + di
+                    let j = a.y + dj
+                    if i >= 0 && j >= 0 && i < i32(g.nx) && j < i32(g.nz) {
+                        let q = u32(j) * g.nx + u32(i)
+                        let dist = length(g.centre(q) - c)
+                        if dist < r {
+                            let w = 1.0 - smoothstep(0.55 * r, r, dist)
+                            light[q] *= 1.0 - stop * w
+                            if h.thorny {
+                                thorn[q] = max(thorn[q], w)
+                            }
+                        }
+                    }
+                }
+            }
+        } else if t.state == State::Log && year - t.fell < 25 && t.tall > 6.0 {
+            let len = t.tall * 0.85
+            var s = 0.0
+            while s < len {
+                let p = t.at + t.fall * s
+                if g.holds(p) {
+                    let q = g.cell_at(p)
+                    thorn[q] = max(thorn[q], 0.9)
+                }
+                s += cell * 0.7
+            }
+        }
+    }
+    let down = g.blur(light, 2)
+    let side = g.blur(light, 4)
+    var out: Vec<u8> = Vec::with_capacity(n * n * 4)
+    for j in 0..n {
+        for i in 0..n {
+            let q = (j + m) * g.nx + i + m
+            let l = 0.65 * down[q] + 0.35 * side[q]
+            let p = vec2(d.tile) * TILE + (vec2(f32(i), f32(j)) + vec2(0.5)) * cell
+            out.push(u8(clamp(l, 0.0, 1.0) * 255.0 + 0.5))
+            let k = j * n + i
+            let used = smoothstep(0.01, 0.05, worn[k])
+            let trodden = max(
+                path_at(routes, near, p, used),
+                0.45 * smoothstep(0.03, 0.15, d.wear[k]),
+            )
+            out.push(u8(clamp(trodden, 0.0, 1.0) * 255.0 + 0.5))
+            out.push(u8(clamp(d.wet_at(p), 0.0, 1.0) * 255.0 + 0.5))
+            out.push(u8(clamp(thorn[q], 0.0, 1.0) * 255.0 + 0.5))
         }
     }
     out

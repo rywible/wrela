@@ -478,8 +478,59 @@ fn instance(
     }
 }
 
+/// The lowest a plant's branches or leaves come (m, as it's built): its limbs' (not its trunk's,
+/// the first) and its clumps'.
+fn lowest(p: Plant) -> f32 {
+    var low = 1.0e9
+    for i in 1..p.limbs.len() {
+        let l = p.limbs[i]
+        for k in 0..4 {
+            low = min(low, l.points[k].y - l.radii[k])
+        }
+    }
+    for i in 0..p.clumps.len() {
+        let c = p.clumps[i]
+        low = min(low, c.centre.y - c.radius)
+    }
+    low
+}
+
+/// Each kind's lowest branch (`lowest`), as it's built (the great oak's isn't needed: it's kept).
+pub const LOWEST: [f32; 22] = lowest_of_kinds()
+
+fn lowest_of_kinds() -> [f32; 22] {
+    var out = [0.0; 22]
+    for k in 1..KINDS {
+        out[k] = lowest(kind_plant(k))
+    }
+    out
+}
+
+/// The lowest branch of kind `k` placed `tall` high (m).
+pub fn lowest_placed(k: u32, tall: f32) -> f32 {
+    LOWEST[k] * clamp(tall / BUILT[k], 0.15, 1.8)
+}
+
 /// The kind a living tree is drawn as: its species, grown in the open or in the forest (by the
-/// light its crown had), or young.
+/// light its crown had), or young; and where browsing keeps its branches above a line (its
+/// `lift`), the forest's form when the open one's would come below it.
+pub fn drawn_kind(t: Tree) -> u32 {
+    let k = living_kind(t)
+    if t.lift <= 0.0 || lowest_placed(k, t.tall) >= t.lift {
+        k
+    } else if k == OAK_OPEN {
+        OAK_FOREST
+    } else if k == BEECH_OPEN {
+        BEECH_FOREST
+    } else if k == BIRCH_OPEN {
+        BIRCH_FOREST
+    } else if k == PINE_OPEN {
+        PINE_FOREST
+    } else {
+        k
+    }
+}
+
 fn living_kind(t: Tree) -> u32 {
     let open = t.light > 0.55
     if t.kind == THORN {
@@ -521,7 +572,7 @@ pub fn placed(trees: [Tree], height: fn(vec2) -> f32) -> Vec<Placed> {
             )
         } else if t.state == State::Alive {
             if t.tall > 1.2 {
-                let k = living_kind(t)
+                let k = drawn_kind(t)
                 let tall = if k == HAWTHORN || k == SLOE { max(t.tall, 1.5) } else { t.tall }
                 out.push(instance(k, t.at, y, tall, t.lean, t.seed, 0.0))
             }

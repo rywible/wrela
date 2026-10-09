@@ -1,0 +1,155 @@
+// The floor's own tests (`wrela test examples/last-green`, #55): what the bake leaves, read back
+// as the program reads it. They read the bake, so they're long (`suite/last_green.rs`).
+
+use engine::bake::{WEAR_N, decode_tile, reaching, tile_fields, tile_name}
+use engine::grow::{BAKE, BESIDE_PATH, Grid, HEAD_ROOM, State, Tree}
+use engine::place::{Keeper, Map, TILE}
+use engine::terrain::Terrain
+use history::{BAKED, decisions, domain_hi, domain_lo, tiles_hi, tiles_lo}
+
+/// The line browsing keeps where tree `t` stands (m; 0 for none), judged as the history judges
+/// it: at the middle of the history's cell that holds it, a region's browse line or the head
+/// room beside a herd's path.
+fn line_at(m: Map, g: Grid, t: Tree) -> f32 {
+    let p = g.centre(g.cell_at(t.at))
+    let line = m.regions[m.region_of(p)].character.browse_line
+    if line > 0.0 {
+        return line
+    }
+    for r in m.routes {
+        if r.keeper == Keeper::Grazing && r.distance(p).x < 0.5 * r.width + BESIDE_PATH {
+            return HEAD_ROOM
+        }
+    }
+    0.0
+}
+
+/// AC2's head room: along the herd's paths (their width and 4 m each side) and in wood pasture
+/// (a region with a browse line), no shrub of the history's stands, and no living tree's branch
+/// comes below the line: not in the history (its lift), and not as it's drawn (its kind's lowest
+/// branch, placed at its height).
+@test
+fn nothing_grows_into_the_head_room() {
+    let m = map::map()
+    let g = Grid::over(domain_lo(), domain_hi(), BAKE.cell)
+    let habits = species::habits()
+    let u = decisions()
+    var zoned = 0
+    for t in u.trees {
+        if t.state != State::Alive || t.pinned {
+            continue
+        }
+        let line = line_at(m, g, t)
+        if line <= 0.0 {
+            continue
+        }
+        zoned += 1
+        let h = habits[t.kind]
+        let at = t.at
+        assert(
+            !h.thorny && !h.suckers,
+            f"a shrub (kind {t.kind}) stands at {at} under a {line} m line",
+        )
+        assert(t.lift >= line, f"a tree at {at} keeps branches to {t.lift} m under a {line} m line")
+        let k = trees::drawn_kind(t)
+        let low = trees::lowest_placed(k, t.tall)
+        assert(
+            low >= line - 0.01,
+            f"a tree at {at}, {t.tall} m, drawn as kind {k}: branches to {low} m",
+        )
+    }
+    assert(zoned > 200, f"only {zoned} trees stand where browsing keeps a line")
+}
+
+/// AC11's ground cover: over every tile the floor streams, its ground's fields worked out as the
+/// program works them out once its neighbours are in (`tile_fields`, with their trees whose
+/// crowns reach over its edge), no meadow grass or flowers grow where the history's canopy is
+/// closed (the light at the ground under `ground::CLOSED`); and the beech wood's floor is closed
+/// over most of it.
+@test
+fn no_meadow_grass_under_a_closed_canopy() {
+    let lo = tiles_lo()
+    let hi = tiles_hi()
+    let habits = species::habits()
+    let m = map::map()
+    let g = ground::ground()
+    var trees: Vec<Vec<Tree>> = Vec::new()
+    for j in lo.y..(hi.y + 1) {
+        for i in lo.x..(hi.x + 1) {
+            trees.push(
+                decode_tile(
+                    BAKED.bytes(BAKED.find(tile_name(vec2i(i, j)).as_str()).unwrap()),
+                ).trees,
+            )
+        }
+    }
+    let nx = hi.x - lo.x + 1
+    var closed = 0
+    var texels = 0
+    var beech_closed = 0
+    var beech = 0
+    var beech_wood = 0
+    for r in 0..m.regions.len() {
+        if m.regions[r].name == "the beech wood" {
+            beech_wood = r
+        }
+    }
+    for j in lo.y..(hi.y + 1) {
+        for i in lo.x..(hi.x + 1) {
+            let t = vec2i(i, j)
+            let d = decode_tile(BAKED.bytes(BAKED.find(tile_name(t).as_str()).unwrap()))
+            var others: Vec<Tree> = Vec::new()
+            for dj in -1..2 {
+                for di in -1..2 {
+                    let n = t + vec2i(di, dj)
+                    if (di != 0 || dj != 0) &&
+                        n.x >= lo.x &&
+                        n.y >= lo.y &&
+                        n.x <= hi.x &&
+                        n.y <= hi.y {
+                        reaching(t, trees[u32((n.y - lo.y) * nx + n.x - lo.x)], mut others)
+                    }
+                }
+            }
+            let f = tile_fields(d, others, habits, m.routes, map::PRESENT)
+            let cell = TILE / f32(WEAR_N)
+            for k in 0..(WEAR_N * WEAR_N) {
+                let p = vec2(t) * TILE + (vec2(f32(k % WEAR_N), f32(k / WEAR_N)) + vec2(0.5)) * cell
+                if !m.inside(p) {
+                    continue
+                }
+                let fields = vec4(
+                    f32(f[4 * k]),
+                    f32(f[4 * k + 1]),
+                    f32(f[4 * k + 2]),
+                    f32(f[4 * k + 3]),
+                ) /
+                    255.0
+                texels += 1
+                let in_beech = m.region_of(p) == beech_wood
+                if in_beech {
+                    beech += 1
+                }
+                if fields.x < ground::CLOSED {
+                    closed += 1
+                    if in_beech {
+                        beech_closed += 1
+                    }
+                    let c = g.cover_with(
+                        vec3(p.x, g.at(p.x, p.y), p.y),
+                        vec3(0.0, 1.0, 0.0),
+                        fields,
+                    )
+                    let flowers = c.flowers.x + c.flowers.y + c.flowers.z + c.flowers.w
+                    assert(
+                        c.grass == 0.0 && flowers == 0.0,
+                        f"meadow grass ({c.grass}) under a closed canopy at {p}, its light {fields.x}",
+                    )
+                }
+            }
+        }
+    }
+    assert(closed > 0 && texels > 0, "no texel of the floor's ground")
+    let in_beech = f32(beech_closed) / f32(max(beech, 1))
+    assert(in_beech > 0.5, f"the beech wood's canopy is closed over only {in_beech * 100.0}% of it")
+}

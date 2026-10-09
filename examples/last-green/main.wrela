@@ -52,9 +52,9 @@ pub const SUN = vec3(0.900, 0.407, -0.159)
 const METERING = Metering {
     base: 0.62,
     reference: 0.136,
-    strength: 0.5,
+    strength: 0.75,
     lo: 0.15,
-    hi: 0.75,
+    hi: 3.0,
     rate: 0.05,
     fresh: 0,
 }
@@ -134,6 +134,91 @@ struct Arrived {
     placed: Vec<Placed>,
 }
 
+/// A tile cooked and kept while it's near: its bytes as they came and its trees (the history's
+/// records: for its neighbours' fields, and provenance), and which of its neighbours' trees its
+/// ground's fields were worked out with (`engine::bake::neighbour_bit`).
+struct Ground {
+    tile: vec2i,
+    bytes: Vec<u8>,
+    trees: Vec<engine::grow::Tree>,
+    with: u32,
+}
+
+/// What cooking a tile on a helper is given: the tile, its bytes as they came, its neighbours'
+/// trees whose crowns may reach over its edge, and whether only its ground's fields are wanted
+/// (a neighbour came after it).
+struct TileInput {
+    tile: vec2i,
+    bytes: Vec<u8>,
+    others: Vec<engine::grow::Tree>,
+    fields_only: bool,
+}
+
+/// A tile cooked: its trees, its instances placed, and its ground's fields.
+struct Cooked {
+    tile: vec2i,
+    trees: Vec<engine::grow::Tree>,
+    placed: Vec<Placed>,
+    fields: Vec<u8>,
+}
+
+/// A tile cooked on a helper (#54 §6: "round the player, as jobs on the helpers"): decoded, its
+/// trees placed, its ground's fields worked out (`engine::bake::tile_fields`).
+@deterministic
+fn cook_tile(input: take TileInput) -> Cooked {
+    let d = decode_tile(input.bytes)
+    let fields = engine::bake::tile_fields(
+        d,
+        input.others,
+        species::habits(),
+        map::map().routes,
+        map::PRESENT,
+    )
+    if input.fields_only {
+        return Cooked { tile: input.tile, trees: Vec::new(), placed: Vec::new(), fields }
+    }
+    Cooked {
+        tile: input.tile,
+        placed: trees::placed(d.trees, height_at),
+        trees: d.trees.clone(),
+        fields,
+    }
+}
+
+/// A tile being cooked, with its bytes and which neighbours' trees it's cooked with.
+struct Cooking {
+    tile: vec2i,
+    job: std::par::Job<Cooked>,
+    bytes: Vec<u8>,
+    with: u32,
+    fields_only: bool,
+}
+
+/// Whether tile `t` is among `grounds`.
+fn has_ground(grounds: [Ground], t: vec2i) -> bool {
+    for g in grounds {
+        if g.tile == t {
+            return true
+        }
+    }
+    false
+}
+
+/// The trees of the cooked tiles round tile `t` whose crowns may reach over its edge, and which
+/// of its neighbours they're from.
+fn others_round(grounds: [Ground], t: vec2i) -> (Vec<engine::grow::Tree>, u32) {
+    var others: Vec<engine::grow::Tree> = Vec::new()
+    var with: u32 = 0
+    for g in grounds {
+        let bit = engine::bake::neighbour_bit(t, g.tile)
+        if bit != 0 {
+            engine::bake::reaching(t, g.trees, mut others)
+            with |= bit
+        }
+    }
+    (others, with)
+}
+
 pub struct Floor {
     snaps: Snapshots<World>,
     clipmap: Clipmap,
@@ -149,7 +234,11 @@ pub struct Floor {
     atlas: Texture<Rgba8>,
     wood: Option<Wood>,
     fetching: Vec<Fetching>,
+    cooking: Vec<Cooking>,
     arrived: Vec<Arrived>,
+    /// The tiles cooked and near: their ground's fields are worked out again as their
+    /// neighbours come, so a tile's ground is the same whatever order they came in.
+    grounds: Vec<Ground>,
     tiles_in: u32,
     /// The far layer: fetched first (the first frame's payload), then each tile's instances,
     /// loaded where the tile's own trees aren't.
@@ -239,7 +328,7 @@ pub fn init() -> Floor {
     let eye = vec3(start.x, height_at(start) + 2.0, start.y)
     Floor {
         snaps: Snapshots::new(take latest, hz: 60),
-        clipmap: Clipmap::new(levels: 12, finest: 0.125),
+        clipmap: fields_clipmap(),
         light: sun_light(),
         air: air_of(),
         tables: tables(),
@@ -250,6 +339,8 @@ pub fn init() -> Floor {
         atlas: take atlas,
         wood: None,
         fetching: Vec::new(),
+        cooking: Vec::new(),
+        grounds: Vec::new(),
         arrived: Vec::new(),
         tiles_in: 0,
         far_fetch: match BAKED.find("far.bin") {
@@ -329,6 +420,17 @@ fn footprints() -> Vec<vec4> {
     out
 }
 
+/// The clipmap's blocks of the ground's fields a side: each a tile, wrapping (the tiles kept
+/// round the eye are at most five across: `the_fields_hold_every_tile_kept`).
+const FIELD_BLOCKS: u32 = 6
+
+/// The clipmap, its ground's fields on: a tile a block, 128 texels (2 m) a side.
+fn fields_clipmap() -> Clipmap {
+    var c = Clipmap::new(levels: 12, finest: 0.125)
+    c.fields_on(TILE, side: 128, blocks: FIELD_BLOCKS)
+    c
+}
+
 /// The ground's height at a point of the plane.
 fn height_at(p: vec2) -> f32 {
     GROUND.at(x: p.x, z: p.y)
@@ -345,6 +447,11 @@ fn tile_distance(t: vec2i, p: vec2) -> f32 {
 fn known(s: Floor, t: vec2i) -> bool {
     for f in s.fetching {
         if f.tile == t {
+            return true
+        }
+    }
+    for c in s.cooking {
+        if c.tile == t {
             return true
         }
     }
@@ -367,9 +474,23 @@ fn stream(s: mut Floor, eye: vec2) {
         var done = false
         match s.fetching[i].pending.poll() {
             Some(Ok(bytes)) => {
-                let d = decode_tile(bytes)
-                s.arrived.push(
-                    Arrived { tile: s.fetching[i].tile, placed: trees::placed(d.trees, height_at) },
+                // Cooked on a helper, with the trees of its neighbours that are in.
+                let t = s.fetching[i].tile
+                let (others, with) = others_round(s.grounds, t)
+                let input = TileInput {
+                    tile: t,
+                    bytes: Vec::from(bytes),
+                    others: take others,
+                    fields_only: false,
+                }
+                s.cooking.push(
+                    Cooking {
+                        tile: t,
+                        job: std::par::job(take input, cook_tile),
+                        bytes: Vec::from(bytes),
+                        with,
+                        fields_only: false,
+                    },
                 )
                 s.tiles_in += 1
                 done = true
@@ -384,6 +505,53 @@ fn stream(s: mut Floor, eye: vec2) {
             let _ = s.fetching.remove(i)
         } else {
             i += 1
+        }
+    }
+    // Those cooked: their fields to the ground, their trees to place.
+    var c = 0
+    while c < s.cooking.len() {
+        if s.cooking[c].job.done() {
+            let k = s.cooking.remove(c)
+            let cooked = take k.job.join()
+            let t = cooked.tile
+            if k.fields_only {
+                // Unless it's been dropped while its fields were cooked.
+                if has_ground(s.grounds, t) {
+                    s.clipmap.write_fields(t, cooked.fields)
+                }
+                continue
+            }
+            s.clipmap.write_fields(t, cooked.fields)
+            s.grounds.push(
+                Ground { tile: t, bytes: take k.bytes, trees: take cooked.trees, with: k.with },
+            )
+            s.arrived.push(Arrived { tile: t, placed: take cooked.placed })
+            // Its neighbours' ground worked out again with its trees, where theirs weren't.
+            for g in 0..s.grounds.len() {
+                let n = s.grounds[g].tile
+                let bit = engine::bake::neighbour_bit(n, t)
+                if bit != 0 && (s.grounds[g].with & bit) == 0 {
+                    let (others, with) = others_round(s.grounds, n)
+                    let input = TileInput {
+                        tile: n,
+                        bytes: s.grounds[g].bytes.clone(),
+                        others: take others,
+                        fields_only: true,
+                    }
+                    s.cooking.push(
+                        Cooking {
+                            tile: n,
+                            job: std::par::job(take input, cook_tile),
+                            bytes: Vec::new(),
+                            with,
+                            fields_only: true,
+                        },
+                    )
+                    s.grounds[g].with = with
+                }
+            }
+        } else {
+            c += 1
         }
     }
     if s.fetching.len() < IN_FLIGHT {
@@ -449,6 +617,8 @@ fn stream(s: mut Floor, eye: vec2) {
                     if !w.slots[k].far && tile_distance(t, eye) > DROP {
                         w.drop(t)
                         s.own.retain(|a| a.tile != t)
+                        s.grounds.retain(|g| g.tile != t)
+                        s.clipmap.drop_fields(t)
                         changed = true
                     }
                 }
@@ -1099,6 +1269,15 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
 }
 
 // ---- tests ---------------------------------------------------------------------------------------
+
+/// AC11's cover within its reach: a tile's ground's fields are written as it's cooked, with its
+/// trees, so no tree stands on ground with none; and the clipmap's blocks hold every tile kept
+/// round the eye at once (those within `DROP` of it), wrapping with no two in one block.
+@test
+fn the_fields_hold_every_tile_kept() {
+    let across = u32(ceil(2.0 * DROP / TILE)) + 1
+    assert(across <= FIELD_BLOCKS, f"{across} tiles across are kept, in {FIELD_BLOCKS} blocks")
+}
 
 /// The floor's first frames run on the native host's GPU, its tiles fetched.
 @test(frames: 40, gpu: true)

@@ -99,6 +99,10 @@ impl Ground {
     }
 }
 
+/// The light at the ground (the history's, `engine::bake::tile_fields`) under which the canopy is
+/// closed: no meadow grass grows, and the floor is litter and moss.
+pub const CLOSED: f32 = 0.45
+
 impl Terrain for Ground {
     fn height(self, x: f32, z: f32) -> f32 {
         self.at(x, z)
@@ -128,6 +132,45 @@ impl Terrain for Ground {
             deep: smoothstep(0.5, 0.8, fbm2(xz * 0.11 + vec2(-3.0, 8.0), 2)),
             flowers: vec4(0.0),
         }
+    }
+
+    /// The cover over the history's fields (#54 §9, `engine::bake::tile_fields`): where the
+    /// canopy closes, no meadow grass but the wood's floor (leaf litter, moss in patches); where
+    /// the herd's trails wear it, bare earth and worn grass; darker where it's wet.
+    fn cover_with(self, at: vec3, n: vec3, fields: vec4) -> Cover {
+        var c = self.cover(at, n)
+        if fields.x < 0.0 {
+            return c
+        }
+        let xz = at.xz
+        let (light, trodden, wet, thorn) = (fields.x, fields.y, fields.z, fields.w)
+        // How open the canopy is over the ground: grass from about half the sky's light.
+        let open = smoothstep(CLOSED, 0.85, light)
+        let leaves = fbm2(xz * 0.21 + vec2(5.0, 1.0), 3)
+        let litter = mix(vec3(0.075, 0.048, 0.027), vec3(0.13, 0.075, 0.036), vec3(leaves))
+        let mossy = smoothstep(0.55, 0.8, fbm2(xz * 0.09 + vec2(-7.0, 2.0), 3)) * (1.0 - open)
+        var floor = mix(litter, vec3(0.045, 0.075, 0.02), vec3(mossy * 0.7))
+        // Under thorn, darker and bare.
+        floor = floor * (1.0 - 0.3 * thorn)
+        c.albedo = mix(floor, c.albedo, vec3(open))
+        // Thinning faster than it fades: a few blades in a gap's half light, a meadow in the open.
+        c.grass *= open * open
+        c.flowers *= open * open
+        // The trails: bare earth down a path's middle, the grass worn short and thin on the ground
+        // the herd wears beside it.
+        let bare = smoothstep(0.5, 0.8, trodden)
+        let short = smoothstep(0.1, 0.45, trodden)
+        let earth = mix(vec3(0.15, 0.11, 0.075), vec3(0.2, 0.15, 0.1), vec3(noise2(xz * 0.7)))
+        c.albedo = mix(c.albedo, earth, vec3(bare * 0.9))
+        c.albedo = mix(c.albedo, c.albedo * vec3(1.05, 1.0, 0.85), vec3(short * 0.5))
+        c.grass *= (1.0 - bare) * (1.0 - 0.5 * short)
+        c.flowers *= 1.0 - short
+        c.tall *= 1.0 - max(bare, short * 0.8)
+        // Wet ground darker, its grass a deeper green.
+        let soaked = smoothstep(0.6, 0.95, wet)
+        c.albedo *= 1.0 - 0.35 * soaked
+        c.deep = max(c.deep, soaked)
+        c
     }
 
     fn steepest(self) -> f32 {

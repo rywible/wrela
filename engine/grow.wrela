@@ -546,15 +546,40 @@ pub struct Land {
     /// The year of the event whose opening holds each cell (`NEVER` for none): nothing takes
     /// there for `RECENT` years after it (the event's keeper).
     pub opened: Vec<i32>,
-    /// Whether a herd's route passes within a crown's reach: its trees are browsed to the head
-    /// room (`HEAD_ROOM`).
-    pub browsed: Vec<bool>,
+    /// How near a herd's route passes: within a crown's reach (`REACHED`), its trees are browsed
+    /// to the head room (`HEAD_ROOM`); beside its path (`BESIDE`), nothing grows below it.
+    pub browsed: Vec<u8>,
     pub water: Vec<bool>,
     pub region: Vec<u32>,
 }
 
 /// The head room the herd browses along its routes (m): no branch below it.
 pub const HEAD_ROOM: f32 = 2.0
+
+/// How near a herd's route a cell is (`Land::browsed`): not near, within a crown's reach of its
+/// path (10 m past its edge), or beside it (`BESIDE_PATH` past its edge).
+pub const UNBROWSED: u8 = 0
+pub const REACHED: u8 = 1
+pub const BESIDE: u8 = 2
+pub const BESIDE_PATH: f32 = 4.0
+
+/// The share of its height a tree has no branches below (its crown's base, as the trees are drawn
+/// at their least: one grown among others): a tree stands where browsing keeps a line only once
+/// its crown is above it.
+pub const PRUNED: f32 = 0.28
+
+/// The line browsing keeps at cell `c` in `year` (m; 0 for none): a region's browse line, or the
+/// head room beside a herd's path once the herd walks it.
+pub fn browse_line(m: Map, land: Land, c: u32, year: i32) -> f32 {
+    let ch = m.regions[land.region[c]].character
+    if ch.browse_line > 0.0 {
+        ch.browse_line
+    } else if land.browsed[c] == BESIDE && year >= m.herd.arrives {
+        HEAD_ROOM
+    } else {
+        0.0
+    }
+}
 
 /// The water the history finds: each stream's course from a spring, or a mere's outlet, down the
 /// land to where it falls off it or pools; its width and depth at each point.
@@ -732,7 +757,7 @@ pub fn survey<G: Ground>(ground: G, m: Map, g: Grid) -> Land {
     var lawn: Vec<bool> = Vec::with_capacity(nn)
     var kept: Vec<u32> = Vec::with_capacity(nn)
     var opened: Vec<i32> = Vec::with_capacity(nn)
-    var browsed: Vec<bool> = Vec::with_capacity(nn)
+    var browsed: Vec<u8> = Vec::with_capacity(nn)
     var open_water: Vec<bool> = Vec::with_capacity(nn)
     var region: Vec<u32> = Vec::with_capacity(nn)
     for mut r in rows {
@@ -805,7 +830,7 @@ struct SurveyRow {
     lawn: Vec<bool>,
     kept: Vec<u32>,
     opened: Vec<i32>,
-    browsed: Vec<bool>,
+    browsed: Vec<u8>,
     water: Vec<bool>,
     region: Vec<u32>,
 }
@@ -855,7 +880,7 @@ fn survey_row<G: Ground>(
         // Routes kept clear: a road by its people; a route the herd walks by the herd, as a lawn
         // its width and a stride each side, and browsed a crown's reach beyond.
         var ri = 0
-        var browsed = false
+        var browsed = UNBROWSED
         for route in m.routes {
             let bx = boxes[ri]
             let near = p.x > bx.x && p.y > bx.y && p.x < bx.z && p.y < bx.w
@@ -868,7 +893,11 @@ fn survey_row<G: Ground>(
                 },
                 Keeper::Grazing => {
                     on_lawn = on_lawn || d < 0.5 * route.width + 1.5
-                    browsed = browsed || d < 0.5 * route.width + 10.0
+                    if d < 0.5 * route.width + BESIDE_PATH {
+                        browsed = BESIDE
+                    } else if d < 0.5 * route.width + 10.0 && browsed == UNBROWSED {
+                        browsed = REACHED
+                    }
                 },
                 _ => {},
             }
@@ -1137,6 +1166,10 @@ fn recruit_row(row: mut Row, cx: Cx, b: Bins, f: Fields, year: i32) {
         if people_keep(cx.map, cx.land, c, year) {
             continue
         }
+        // Where browsing keeps a line, no seedling gets up.
+        if browse_line(cx.map, cx.land, c, year) > 0.0 {
+            continue
+        }
         let l = f.light[c]
         let ch = cx.map.regions[cx.land.region[c]].character
         // The region's mix favours its own species where their seed falls (what the soil and
@@ -1173,10 +1206,6 @@ fn recruit_row(row: mut Row, cx: Cx, b: Bins, f: Fields, year: i32) {
             let eaten = min(1.0, 3.0 * f.browse[c] * h.palatable)
             p *= 1.0 - eaten * (1.0 - f.thorn[c])
             p *= 1.0 - smoothstep(0.1, 0.3, f.trodden[c])
-            // A browse line: a region whose browsing keeps head room lets few seedlings up.
-            if ch.browse_line > 0.0 {
-                p *= 0.25
-            }
             if mixed > 0.0 {
                 p *= 0.25 + 3.0 * ch.mix[kind] / mixed
             }
@@ -1300,7 +1329,9 @@ fn live(l: mut Life, cx: Cx, f: Fields, year: i32) {
         if ch.browse_line > 0.0 && t.tall > ch.browse_line + 1.0 {
             t.lift = max(t.lift, ch.browse_line)
         }
-        if cx.land.browsed[c] && year >= cx.map.herd.arrives && t.tall > HEAD_ROOM + 1.0 {
+        if cx.land.browsed[c] != UNBROWSED &&
+            year >= cx.map.herd.arrives &&
+            t.tall > HEAD_ROOM + 1.0 {
             t.lift = max(t.lift, HEAD_ROOM)
         }
         var p = if h.windborne { 0.004 } else { 0.002 }
@@ -1337,11 +1368,12 @@ fn live(l: mut Life, cx: Cx, f: Fields, year: i32) {
         if was < 2.5 {
             p += 0.6 * h.palatable * min(1.0, 2.5 * f.browse[c]) * (1.0 - f.thorn[c])
         }
-        // A browse line keeps no shrub below it, and no sapling that would grow through it.
-        if ch.browse_line > 0.0 &&
-            !t.pinned &&
-            (h.thorny || h.suckers || was < ch.browse_line + 1.0) {
-            p += 0.3
+        // A browse line keeps no shrub below it, and no tree whose crown comes below it (one
+        // growing up through it is browsed back to nothing): where a region's browsing keeps
+        // one, and beside a herd's paths.
+        let line = browse_line(cx.map, cx.land, c, year)
+        if line > 0.0 && !t.pinned && (h.thorny || h.suckers || was * PRUNED < line) {
+            p = 1.0
             cause = Cause::Browsed
         }
         if cx.land.lawn[c] && year >= cx.map.herd.arrives && was < 4.0 && !t.pinned {

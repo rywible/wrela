@@ -1,6 +1,6 @@
-//! The Last Green's floor (M6: #54, #55's AC1–AC3): its map's anatomy, area and keepers, what
-//! the interest check says of its bake, the preview's check beside the bake's, and its build
-//! from the constants' cache.
+//! The Last Green's floor (M6: #54, #55): its map's anatomy, area and keepers, what the
+//! interest check says of its bake, the preview's check beside the bake's, its build from the
+//! constants' cache, and the floor's own tests (head room, ground cover).
 //!
 //! The map alone (map.wrela and what it reads) is tested in a scratch package of its own, so
 //! those tests don't bake: they're the gate's. The bake's tests build the floor, which bakes
@@ -362,4 +362,14 @@ pub fn frame(time: f32, width: u32, height: u32) {
             .collect()
     };
     assert_eq!(rels(&preview), rels(&bake), "a relation's verdict differs");
+}
+
+/// The floor's own tests (`wrela test examples/last-green`): AC2's head room over the baked
+/// trees (tests.wrela), AC11's ground cover against the history's light (no meadow grass under a
+/// closed canopy; the fields hold every tile kept), and its first frames on the GPU.
+#[test]
+#[ignore = "long: bakes the floor (minutes when the constants' cache is cold)"]
+fn the_floors_own_tests_pass() {
+    let _ = floor();
+    assert_eq!(super::tests_pass(&repo_root().join("examples/last-green")), 4);
 }

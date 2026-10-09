@@ -57,7 +57,7 @@ pub fn grown(grain: Grain) -> History {
 pub const BAKED: Shipped = ship("floor", bake(grown(BAKE), tiles_lo(), tiles_hi()))
 
 /// The bake read back: the floor's decisions.
-fn decisions() -> engine::bake::Unbaked {
+pub fn decisions() -> engine::bake::Unbaked {
     unbake(BAKED, tiles_lo(), tiles_hi())
 }
 
