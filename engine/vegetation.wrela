@@ -19,8 +19,7 @@ use lod::{IMPOSTOR, Lod, VOLUME, anchor, keeps_packed, packed, place, share, way
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_POINTS, LIMB_VERTICES, Leaves, OUTLINE,
     Plant, Wind, CORNERS, card_orders, card_tint, card_turn, cook_cards, cook_outlines, corner_of,
-    leaf_age, leaf_at, leaf_atlas, leaf_draws, leaf_normal, level_cards, limb_corner, limb_point,
-    sway, tinted,
+    leaf_age, leaf_at, leaf_draws, leaf_normal, level_cards, limb_corner, limb_point, sway, tinted,
 }
 use shadow::Shadows
 use std::field::Tube
@@ -187,16 +186,18 @@ fn args_of(kinds: [Kind], lists: [List], level: u32) -> Vec<ListDraws> {
 }
 
 impl Forest {
+    /// A forest of `kinds`, `placed`, its cards cut from `atlas`: the leaves' atlas the kinds
+    /// were cooked with (`kind`).
     pub fn new(
         kinds: take Vec<Kind>,
         placed: take Vec<Placed>,
+        atlas: take Texture<Rgba8>,
         cards_to: f32,
         impostors_to: f32,
     ) -> Forest {
         // Each instance in up to two lists (between two ways), each list aligned.
         let room = 2 * placed.len() + (kinds.len() * WAYS + 1) * ALIGN
         let (every, every_lists) = every_of(kinds.len(), placed)
-        let atlas = leaf_atlas(6)
         var outlines: GpuBuffer<vec2> = buffer(LEAF_PATTERNS * OUTLINE)
         dispatch(
             cook_outlines.bind(atlas, mut outlines),
@@ -221,7 +222,7 @@ impl Forest {
             lists: Vec::new(),
             every: take every,
             every_lists,
-            atlas,
+            atlas: take atlas,
             outlines: take outlines,
             card_triangles: take card_triangles,
             limb_triangles: take limb_triangles,

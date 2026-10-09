@@ -19,8 +19,8 @@ use engine::paint::{
     Develop, Exposure, Look, Metering, dab_map, develop, glow_blur, glow_down, meter,
 }
 use engine::lit::Lighting
-use engine::plant::{Plant, Wind, leaf_atlas}
-use engine::probes::{Baked, Occluder, Reference, Sampling, Trace, grid, reference}
+use engine::plant::{Plant, Wind, full, leaf_atlas}
+use engine::probes::{Baked, Reference, Sampling, Trace, grid, reference}
 use engine::shadow::{CASTER, Cascade, Shadows, shadows}
 use engine::stone::{Realized, stone_shade, stone_shadow, stone_vertex}
 use engine::sky::{Clouds, Sky, new_sky, sky_shade}
@@ -33,9 +33,9 @@ use std::collections::{Flags, replace, swap}
 use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, on_ground, start_eye}
 use std::gpu::{
     Address, ClipPosition, ComparisonSampler, Cull, DepthTexture, FragmentShader, GpuBuffer,
-    GpuSpan, Rgba16Float, Rgba8, Sampler, Texture, Unorm8x4, VertexIndex, begin_depth_pass,
-    begin_pass, begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture,
-    draw, label, present, sampler, texture, writable_texture, write,
+    GpuSpan, Rgba16Float, Rgba8, Sampler, Texture, Unorm8x4, begin_depth_pass, begin_pass,
+    begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture, draw,
+    label, present, sampler, texture, writable_texture, write,
 }
 use std::input::{Event, Key, events}
 use std::io::print
@@ -162,15 +162,29 @@ fn kind_of(k: u32, plant: Plant, atlas: Texture<Rgba8>, s: Sampler) -> Kind {
     kind(plant, seed: k + 1, atlas: atlas, s: s)
 }
 
-/// The forest of `kinds`, placed, its levels chosen for a scene drawn at `scale` (`fit`).
+/// The forest of `kinds`, placed, its cards cut from `atlas` (the kinds'), its levels chosen
+/// for a scene drawn at `scale` (`fit`).
 fn new_forest(
     kinds: take Vec<Kind>,
     placed: take Vec<engine::vegetation::Placed>,
+    atlas: take Texture<Rgba8>,
     scale: u32,
 ) -> Forest {
-    var f = Forest::new(take kinds, take placed, cards_to: CARDS_TO, impostors_to: IMPOSTORS_TO)
+    var f = Forest::new(
+        take kinds,
+        take placed,
+        take atlas,
+        cards_to: CARDS_TO,
+        impostors_to: IMPOSTORS_TO,
+    )
     fit(mut f, scale)
     f
+}
+
+/// The leaves' atlas `forest`'s kinds were cooked with, taken for the forest that replaces it:
+/// a texture of one texel is left in its place.
+fn take_atlas(forest: mut Forest) -> Texture<Rgba8> {
+    replace(mut forest.atlas, texture::<Rgba8>(width: 1, height: 1))
 }
 
 /// The forest's levels chosen, and its cuts' cells sized, for a scene drawn at `scale`.
@@ -179,13 +193,14 @@ fn fit(forest: mut Forest, scale: u32) {
     forest.cell = 1.0 / f32(scale)
 }
 
-/// The forest of the woods (trees.wrela), its kinds all cooked at once.
-fn forest_of(w: Woods, atlas: Texture<Rgba8>, linear: Sampler, scale: u32) -> Forest {
+/// The forest of the woods (trees.wrela), its kinds all cooked at once with the leaves' atlas
+/// of `old`, the forest it replaces.
+fn forest_of(w: Woods, old: mut Forest, linear: Sampler, scale: u32) -> Forest {
     var kinds: Vec<Kind> = Vec::new()
     for k in 0..KINDS {
-        kinds.push(kind_of(k, w.plants[k], atlas, linear))
+        kinds.push(kind_of(k, w.plants[k], old.atlas, linear))
     }
-    new_forest(take kinds, w.placed.clone(), scale)
+    new_forest(take kinds, w.placed.clone(), take_atlas(mut old), scale)
 }
 
 /// The probes over the meadow, unbaked, and what occludes them: the woods' trees and the
@@ -196,12 +211,6 @@ fn probes_of(w: Woods) -> Baked {
     var stones = rocks::occluders()
     occ.append(mut stones)
     Baked::new(g, occ)
-}
-
-/// A grid of one probe, for the next probes before an edit asks for them.
-fn no_probes() -> Baked {
-    let none: Vec<Occluder> = Vec::new()
-    Baked::new(grid(MEADOW, cols: 1, spacing: 1.0, low: 0.0, high: 1.0, voxel: 1.0), none)
 }
 
 /// The clearing's wind at `time`.
@@ -231,7 +240,8 @@ pub struct Clearing {
     air_cooked: bool,
     cam: Camera,
     /// What the forest is made from; and the forest, its kinds cooked a few a frame at load (a
-    /// short submission each): until they're all cooked, a forest of none.
+    /// short submission each) with its leaves' atlas: until they're all cooked, a forest of
+    /// none.
     woods: Woods,
     forest: Forest,
     kinds: Vec<Kind>,
@@ -245,14 +255,12 @@ pub struct Clearing {
     cmp: ComparisonSampler,
     static_drawn: bool,
     /// The probes, baked over the first frames, and whether the occluders are cooked. After an
-    /// edit, the next probes bake beside them, and take over when they're done.
+    /// edit, the next probes bake beside them (their occluders cooked first), and take over when
+    /// they're done.
     probes: Baked,
     occluders_cooked: bool,
-    next_probes: Baked,
+    next_probes: Option<Baked>,
     next_cooked: bool,
-    rebaking: bool,
-    /// The leaves' atlas, which the forest's kinds are cooked with.
-    atlas: Texture<Rgba8>,
     /// What's cooked from literals (hot reload), and whether this build took over from another:
     /// it shows nothing until it's cooked everything, so the screen keeps the old build's frame.
     watches: Watches,
@@ -393,7 +401,13 @@ pub fn init() -> Clearing {
         air_cooked: false,
         cam: first_camera(start_eye(), LOOK_AT, FOVY, width: 960, height: 540),
         woods: take woods,
-        forest: Forest::new(Vec::new(), Vec::new(), cards_to: CARDS_TO, impostors_to: IMPOSTORS_TO),
+        forest: Forest::new(
+            Vec::new(),
+            Vec::new(),
+            take atlas,
+            cards_to: CARDS_TO,
+            impostors_to: IMPOSTORS_TO,
+        ),
         kinds: Vec::new(),
         forest_done: false,
         grass: Grass::new(),
@@ -404,10 +418,8 @@ pub fn init() -> Clearing {
         static_drawn: false,
         probes: take probes,
         occluders_cooked: false,
-        next_probes: no_probes(),
+        next_probes: None,
         next_cooked: false,
-        rebaking: false,
-        atlas: take atlas,
         watches: Watches::new(),
         restored: false,
         ready: false,
@@ -482,7 +494,7 @@ fn cook_again(s: mut Clearing, eye: vec3) {
     }
     if s.watches.forest.changed() {
         s.woods = woods()
-        s.forest = forest_of(s.woods, s.atlas, s.linear, s.carried.scale)
+        s.forest = forest_of(s.woods, mut s.forest, s.linear, s.carried.scale)
         shadows = true
         probes = true
     }
@@ -503,9 +515,8 @@ fn cook_again(s: mut Clearing, eye: vec3) {
         s.static_drawn = false
     }
     if probes {
-        s.next_probes = probes_of(s.woods)
+        s.next_probes = Some(probes_of(s.woods))
         s.next_cooked = false
-        s.rebaking = true
     }
     if clouds {
         s.sky_cooked = false
@@ -517,17 +528,10 @@ fn keep_carried(s: Clearing) {
     keep(save(s.carried))
 }
 
-/// A triangle that covers the target, at depth `z`.
-@vertex
-pub fn cover(v: VertexIndex, z: f32) -> ClipPosition {
-    let x = f32((v.index << 1) & 2) * 2.0 - 1.0
-    let y = f32(v.index & 2) * 2.0 - 1.0
-    ClipPosition { position: vec4(x, y, z, 1.0) }
-}
-
-/// Any fragment shader over the whole target: a pass that reads its inputs at each pixel.
+/// Any fragment shader over the whole target (`engine::plant::full`'s triangle): a pass that
+/// reads its inputs at each pixel.
 fn fullscreen<F: FragmentShader<ClipPosition>>(fs: F) {
-    draw(cover.bind(z: 0.5), fs, vertices: 3)
+    draw(full.bind(z: 0.5), fs, vertices: 3)
 }
 
 /// The look's passes: the glow's chain from `image` (a quarter's size, blurred across and
@@ -546,11 +550,9 @@ fn look(
     let down = begin_pass(mut glow_a)
     fullscreen(glow_down.bind(image, s: s, threshold: 1.1, base: METERING.base, exposure: exposure))
     down.end()
-    label("look glow")
     let x = begin_pass(mut glow_b)
     fullscreen(glow_blur.bind(src: glow_a, across: 0, spread: 2.0))
     x.end()
-    label("look glow")
     let y = begin_pass(mut glow_a)
     fullscreen(glow_blur.bind(src: glow_b, across: 1, spread: 2.0))
     y.end()
@@ -625,12 +627,13 @@ fn cook_load(s: mut Clearing) {
         for _ in 0..KINDS_PER_FRAME {
             let k = s.kinds.len()
             if k < KINDS {
-                s.kinds.push(kind_of(k, s.woods.plants[k], s.atlas, s.linear))
+                s.kinds.push(kind_of(k, s.woods.plants[k], s.forest.atlas, s.linear))
             }
         }
         if s.kinds.len() == KINDS {
             let kinds = replace(mut s.kinds, Vec::new())
-            s.forest = new_forest(take kinds, s.woods.placed.clone(), s.carried.scale)
+            let atlas = take_atlas(mut s.forest)
+            s.forest = new_forest(take kinds, s.woods.placed.clone(), take atlas, s.carried.scale)
             s.forest_done = true
             s.static_drawn = false
         }
@@ -749,13 +752,14 @@ fn cook_sky(s: mut Clearing, eye: vec3, wind: Wind) {
 /// done.
 fn bake_probes(s: mut Clearing, sh: Shadows) {
     let texels = s.clipmap.texels()
+    let trace = trace_of(s)
     if s.static_drawn {
         if !s.occluders_cooked {
             s.probes.cook()
             s.occluders_cooked = true
         } else if !s.probes.done() || on(s.carried.off, System::Wind) {
             s.probes.bake_strip(
-                trace_of(s),
+                trace,
                 sh,
                 s.clipmap.levels(),
                 texels,
@@ -768,29 +772,34 @@ fn bake_probes(s: mut Clearing, sh: Shadows) {
             )
         }
     }
-    if s.rebaking {
-        if !s.next_cooked {
-            s.next_probes.cook()
-            s.next_probes.open(s.light, s.air.ground, s.tables.view, s.linear)
-            s.next_cooked = true
-        } else if !s.next_probes.done() {
-            let levels = s.clipmap.levels()
-            s.next_probes.bake_strip(
-                trace_of(s),
-                sh,
-                levels,
-                texels,
-                s.near,
-                s.far,
-                s.cmp,
-                s.tables.view,
-                s.sky.dome,
-                s.linear,
-            )
-        } else {
-            swap(mut s.probes, mut s.next_probes)
-            s.rebaking = false
-        }
+    var baked = false
+    match mut s.next_probes {
+        Some(next) => {
+            if !s.next_cooked {
+                next.cook()
+                next.open(s.light, s.air.ground, s.tables.view, s.linear)
+                s.next_cooked = true
+            } else if !next.done() {
+                next.bake_strip(
+                    trace,
+                    sh,
+                    s.clipmap.levels(),
+                    texels,
+                    s.near,
+                    s.far,
+                    s.cmp,
+                    s.tables.view,
+                    s.sky.dome,
+                    s.linear,
+                )
+            } else {
+                baked = true
+            }
+        },
+        None => {},
+    }
+    if baked {
+        s.probes = replace(mut s.next_probes, None).unwrap()
     }
 }
 
@@ -946,13 +955,13 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
     // A test's key colour in place of the sky (`test_off`), in a test build only.
     if !test_build() || on(off, System::Sky) {
         draw(
-            cover.bind(z: 0.0),
+            full.bind(z: 0.0),
             sky_shade.bind(cam, s.light, view: s.tables.view, dome: s.sky.dome, s: s.linear),
             vertices: 3,
             depth: BEHIND,
         )
     } else {
-        draw(cover.bind(z: 0.0), testing::key, vertices: 3, depth: BEHIND)
+        draw(full.bind(z: 0.0), testing::key, vertices: 3, depth: BEHIND)
     }
     sky.end()
     // The creature's motion, where it's seen.
@@ -1025,8 +1034,7 @@ fn finish(
         dispatch(meter.bind(s.scene, m, exposure: mut s.exposure), groups: 1)
         let d = Develop { cam, look: Look {}, out }
         let dp = begin_pass(mut s.dabs)
-        draw(
-            cover.bind(z: 0.5),
+        fullscreen(
             dab_map.bind(
                 cam,
                 look: d.look,
@@ -1036,7 +1044,6 @@ fn finish(
                 scene: s.scene,
                 depth: s.depth,
             ),
-            vertices: 3,
         )
         dp.end()
         let e = s.exposure.items()
@@ -1044,13 +1051,9 @@ fn finish(
     } else {
         begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
         if s.carried.view == View::Scene {
-            draw(
-                cover.bind(z: 0.5),
-                testing::scene_view.bind(s.scene, s.carried.scale),
-                vertices: 3,
-            )
+            fullscreen(testing::scene_view.bind(s.scene, s.carried.scale))
         } else {
-            draw(cover.bind(z: 0.5), testing::temporal_view.bind(s.history, s.light), vertices: 3)
+            fullscreen(testing::temporal_view.bind(s.history, s.light))
         }
         present()
     }
