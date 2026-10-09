@@ -578,6 +578,55 @@ impl SkinBinding {
     pub fn axis(self) -> (vec3, vec3) {
         (point3(self.a), point3(self.b))
     }
+
+    /// Its weight at `p`, `w`, on the bones it names; `bone` is its part's, as seen at `p` (its
+    /// image's at a reflected point).
+    pub fn share(self, bone: u32, p: vec3, w: f32) -> Share {
+        let (a, b) = self.axis()
+        share_along(self.kind, self.first, self.count, a, b, bone, p, w)
+    }
+}
+
+/// What a binding gives the bones at a point (`SkinBinding::share`): `wa` on bone `a`, and `wb`
+/// on bone `b` unless it's `NO_BONE`.
+pub struct Share: Copy {
+    pub a: u32,
+    pub wa: f32,
+    pub b: u32,
+    pub wb: f32,
+}
+
+/// No bone: a share's second, where it has one bone only.
+pub const NO_BONE: u32 = 0xffffffff
+
+/// `SkinBinding::share`, given only what a call passes in registers (the binding's axis is
+/// an array, which a call would copy): one function a creature's skinning calls at each part,
+/// rather than its body at each, and two writes to the weights there rather than five.
+fn share_along(
+    kind: u32,
+    first: u32,
+    count: u32,
+    a: vec3,
+    b: vec3,
+    bone: u32,
+    p: vec3,
+    w: f32,
+) -> Share {
+    if kind == 0 {
+        return Share { a: bone, wa: w, b: NO_BONE, wb: 0.0 }
+    }
+    let axis = b - a
+    let t = clamp(dot(p - a, axis) / dot(axis, axis), 0.0, 1.0)
+    if kind == 2 {
+        return Share { a: first, wa: w * (1.0 - t), b: count, wb: w * t }
+    }
+    // Along a chain: between the two joints around its place, each joint's span centred on it.
+    let n = f32(count)
+    let u = clamp(t * n - 0.5, 0.0, n - 1.0)
+    let j = floor(u)
+    let fr = u - j
+    let b0 = first + u32(j)
+    Share { a: b0, wa: w * (1.0 - fr), b: if fr > 0.0 { b0 + 1 } else { NO_BONE }, wb: w * fr }
 }
 
 /// On the part's own bone: what a part has unless it says.
@@ -613,6 +662,14 @@ impl BoneWeights {
     pub fn add(mut self, bone: u32, w: f32) {
         self.w[bone] += w
         self.top = max(self.top, bone + 1)
+    }
+
+    /// What a binding gives (`SkinBinding::share`).
+    pub fn add_share(mut self, s: Share) {
+        self.add(s.a, s.wa)
+        if s.b != NO_BONE {
+            self.add(s.b, s.wb)
+        }
     }
 
     /// The four heaviest bones (ties to the lower bone), then, where fewer have weight, the
@@ -693,30 +750,7 @@ impl<F: Surface> Placed<F> {
 
     /// Its weight at `p`, `w`, onto the bones its binding names (`PartList::skin`).
     fn bind(self, p: vec3, image: bool, w: f32, acc: mut BoneWeights) {
-        let s = self.skin
-        if s.kind == 0 {
-            acc.add(self.bone_for(image), w)
-            return
-        }
-        let (a, b) = s.axis()
-        let axis = b - a
-        let t = clamp(dot(p - a, axis) / dot(axis, axis), 0.0, 1.0)
-        if s.kind == 2 {
-            acc.add(s.first, w * (1.0 - t))
-            acc.add(s.count, w * t)
-            return
-        }
-        // Along a chain: between the two joints around its place, each joint's span centred on
-        // it.
-        let n = f32(s.count)
-        let u = clamp(t * n - 0.5, 0.0, n - 1.0)
-        let j = floor(u)
-        let fr = u - j
-        let b0 = s.first + u32(j)
-        acc.add(b0, w * (1.0 - fr))
-        if fr > 0.0 {
-            acc.add(b0 + 1, w * fr)
-        }
+        acc.add_share(self.skin.share(self.bone_for(image), p, w))
     }
 
     /// The bone that moves it at a point reflected (`image`) or not.
