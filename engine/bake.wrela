@@ -14,6 +14,7 @@
 // (its height and kind), for what lies past the tiles streamed in.
 
 use grow::{Cause, Grid, History, State, Stream, Tree}
+use std::io::Shipped
 use place::{TILE, tile_of}
 use std::math::TAU
 
@@ -381,5 +382,66 @@ pub fn bake(h: History, lo: vec2i, hi: vec2i) -> Vec<(String, Vec<u8>)> {
         }
     }
     out.push((String::from("far.bin"), encode_far(h, lo, hi)))
+    out
+}
+
+/// A bake read back whole: every tile's trees; the trails' wear and the ground's wetness on
+/// grids over all the tiles; and the streams' points, each once.
+pub struct Unbaked {
+    pub trees: Vec<Tree>,
+    pub wear_grid: Grid,
+    pub wear: Vec<f32>,
+    pub wet_grid: Grid,
+    pub wet: Vec<f32>,
+    pub water: Vec<vec4>,
+}
+
+/// The tiles from `lo` to `hi` (inclusive) of a bake shipped as `files`, read in place (in
+/// build-time code: a constant computed from the bake, or a test).
+pub fn unbake(files: Shipped, lo: vec2i, hi: vec2i) -> Unbaked {
+    let n = vec2u(hi - lo + vec2i(1))
+    let corner = vec2(lo) * TILE
+    let wear_grid = Grid {
+        lo: corner,
+        nx: n.x * WEAR_N,
+        nz: n.y * WEAR_N,
+        cell: TILE / f32(WEAR_N),
+    }
+    let wet_grid = Grid { lo: corner, nx: n.x * WET_N, nz: n.y * WET_N, cell: TILE / f32(WET_N) }
+    var out = Unbaked {
+        trees: Vec::new(),
+        wear_grid,
+        wear: Vec::filled(wear_grid.cells(), 0.0),
+        wet_grid,
+        wet: Vec::filled(wet_grid.cells(), 0.0),
+        water: Vec::new(),
+    }
+    for j in lo.y..(hi.y + 1) {
+        for i in lo.x..(hi.x + 1) {
+            let t = vec2i(i, j)
+            var d = decode_tile(files.bytes(files.find(tile_name(t).as_str()).unwrap()))
+            let at = vec2u(t - lo)
+            out.trees.append(mut d.trees)
+            for y in 0..WEAR_N {
+                for x in 0..WEAR_N {
+                    out.wear[(at.y * WEAR_N + y) * wear_grid.nx + at.x * WEAR_N + x] = d.wear[y *
+                        WEAR_N +
+                        x]
+                }
+            }
+            for y in 0..WET_N {
+                for x in 0..WET_N {
+                    out.wet[(at.y * WET_N + y) * wet_grid.nx + at.x * WET_N + x] = d.wet[y * WET_N +
+                        x]
+                }
+            }
+            // A stream's points within the tile (each tile also holds those a cell past it).
+            for p in d.water {
+                if tile_of(p.xy) == t {
+                    out.water.push(p)
+                }
+            }
+        }
+    }
     out
 }

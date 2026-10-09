@@ -1,0 +1,69 @@
+// What's built or set on the floor, where a player walks round it (#54 §5): the standing stones of
+// the ring and the Warden's arena, the waystones, the rests' seats and the small stones of the
+// echoes' sites as stones (x, z, radius); the tower as a stone of its own breadth; the ruins'
+// walls (each two points: a wall's line). From the map's sites, so each is where the map puts it:
+// the renderer draws the same ones (`engine::footing`'s obstacles, the check's walking).
+
+use engine::place::{Feature, Map, SiteKind}
+use std::math::TAU
+
+/// The tower's radius at its foot (m).
+pub const TOWER_RADIUS: f32 = 4.6
+
+/// A ring's stones: how many, and how far round from its middle (a share of the site's reach).
+pub const RING_STONES: u32 = 11
+pub const RING_AT: f32 = 0.8
+
+/// The floor's stones: each (x, z, radius).
+pub fn stones(m: Map) -> Vec<vec3> {
+    var out: Vec<vec3> = Vec::new()
+    for k in m.sites {
+        match k.feature {
+            Feature::Ring => {
+                let n = if k.kind == SiteKind::Arena { RING_STONES + 6 } else { RING_STONES }
+                for i in 0..n {
+                    let a = TAU * f32(i) / f32(n) + 0.2
+                    out.push(
+                        vec3(
+                            k.at.x + cos(a) * k.reach * RING_AT,
+                            k.at.y + sin(a) * k.reach * RING_AT,
+                            0.55,
+                        ),
+                    )
+                }
+            },
+            Feature::Tower => out.push(vec3(k.at.x, k.at.y, TOWER_RADIUS)),
+            // A stone a player stands beside (a waystone, a seat, a cairn); a taller "stone" is
+            // the land's own rock (the quarry's face).
+            Feature::Stone => {
+                if k.tall <= 2.5 {
+                    out.push(vec3(k.at.x, k.at.y, 0.3 + 0.15 * k.tall))
+                }
+            },
+            _ => {},
+        }
+    }
+    out
+}
+
+/// The ruins' walls: each a line (a, b); a ruin's walls are a rectangle round its site, its long
+/// side across the x axis, with a doorway in its south wall.
+pub fn walls(m: Map) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for k in m.sites {
+        if k.feature == Feature::Ruin && k.tall > 1.0 {
+            let h = vec2(k.reach * 0.7, k.reach * 0.45)
+            let a = k.at + vec2(-h.x, -h.y)
+            let b = k.at + vec2(h.x, -h.y)
+            let c = k.at + vec2(h.x, h.y)
+            let d = k.at + vec2(-h.x, h.y)
+            let door = 1.2
+            out.push(vec4(a.x, a.y, k.at.x - door, a.y))
+            out.push(vec4(k.at.x + door, a.y, b.x, b.y))
+            out.push(vec4(b.x, b.y, c.x, c.y))
+            out.push(vec4(c.x, c.y, d.x, d.y))
+            out.push(vec4(d.x, d.y, a.x, a.y))
+        }
+    }
+    out
+}

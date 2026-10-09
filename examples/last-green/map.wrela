@@ -897,7 +897,7 @@ pub fn map() -> Map {
     openings.push(
         Opening {
             at: vec2(40.0, -455.0),
-            radius: 16.0,
+            radius: 20.0,
             keeper: Keeper::Grazing,
             name: "the ring's glade",
         },
@@ -1112,9 +1112,9 @@ pub fn map() -> Map {
             year: PRESENT - 38,
             kind: EventKind::Storm {
                 at: vec2(420.0, 160.0),
-                reach: 48.0,
+                reach: 56.0,
                 dir: vec2(-0.6, -0.8),
-                share: 0.85,
+                share: 0.99,
             },
             name: "the gale",
         },
@@ -1157,7 +1157,12 @@ pub fn map() -> Map {
             kind: Kind::WoodPasture,
             at: vec2(80.0, -40.0),
             weight: 1.3,
-            character: Character { deer: 0.12, seedlings: 0.35, browse_line: 2.0 },
+            character: Character {
+                deer: 0.12,
+                seedlings: 0.35,
+                browse_line: 2.0,
+                mix: [0.55, 0.1, 0.15, 0.15, 0.05, 0.0, 0.0, 0.0],
+            },
         },
     )
     regions.push(
@@ -1166,7 +1171,12 @@ pub fn map() -> Map {
             kind: Kind::HighForest,
             at: vec2(550.0, -950.0),
             weight: 1.7,
-            character: Character { deer: 0.03, seedlings: 0.02, browse_line: 0.0 },
+            character: Character {
+                deer: 0.1,
+                seedlings: 0.05,
+                browse_line: 1.8,
+                mix: [0.12, 0.8, 0.08, 0.0, 0.0, 0.0, 0.0, 0.0],
+            },
         },
     )
     regions.push(
@@ -1175,7 +1185,11 @@ pub fn map() -> Map {
             kind: Kind::Carr,
             at: vec2(255.0, -385.0),
             weight: 0.65,
-            character: Character { deer: 0.06, seedlings: 0.1 },
+            character: Character {
+                deer: 0.06,
+                seedlings: 0.1,
+                mix: [0.1, 0.0, 0.25, 0.0, 0.05, 0.0, 0.6, 0.0],
+            },
         },
     )
     regions.push(
@@ -1184,7 +1198,12 @@ pub fn map() -> Map {
             kind: Kind::Pine,
             at: vec2(1330.0, -720.0),
             weight: 1.4,
-            character: Character { deer: 0.05, seedlings: 0.05 },
+            character: Character {
+                deer: 0.08,
+                seedlings: 0.05,
+                browse_line: 1.5,
+                mix: [0.05, 0.05, 0.15, 0.0, 0.0, 0.75, 0.0, 0.0],
+            },
         },
     )
     regions.push(
@@ -1193,7 +1212,11 @@ pub fn map() -> Map {
             kind: Kind::Pine,
             at: vec2(380.0, -120.0),
             weight: 0.55,
-            character: Character { deer: 0.08, seedlings: 0.15 },
+            character: Character {
+                deer: 0.08,
+                seedlings: 0.15,
+                mix: [0.25, 0.0, 0.2, 0.05, 0.0, 0.5, 0.0, 0.0],
+            },
         },
     )
     regions.push(
@@ -1202,7 +1225,11 @@ pub fn map() -> Map {
             kind: Kind::Burn,
             at: vec2(900.0, -200.0),
             weight: 0.55,
-            character: Character { deer: 0.08, seedlings: 0.05 },
+            character: Character {
+                deer: 0.08,
+                seedlings: 0.05,
+                mix: [0.3, 0.0, 0.2, 0.0, 0.0, 0.5, 0.0, 0.0],
+            },
         },
     )
     regions.push(
@@ -1211,7 +1238,11 @@ pub fn map() -> Map {
             kind: Kind::Windthrow,
             at: vec2(420.0, 160.0),
             weight: 0.45,
-            character: Character { deer: 0.06, seedlings: 0.05 },
+            character: Character {
+                deer: 0.06,
+                seedlings: 0.05,
+                mix: [0.3, 0.6, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0],
+            },
         },
     )
     regions.push(
@@ -1220,7 +1251,11 @@ pub fn map() -> Map {
             kind: Kind::Ravine,
             at: vec2(-20.0, -290.0),
             weight: 0.5,
-            character: Character { deer: 0.05, seedlings: 0.05 },
+            character: Character {
+                deer: 0.05,
+                seedlings: 0.05,
+                mix: [0.3, 0.3, 0.1, 0.0, 0.0, 0.0, 0.3, 0.0],
+            },
         },
     )
     regions.push(
@@ -1229,7 +1264,12 @@ pub fn map() -> Map {
             kind: Kind::Edge,
             at: vec2(-240.0, -420.0),
             weight: 0.6,
-            character: Character { deer: 0.12, seedlings: 0.35, browse_line: 2.0 },
+            character: Character {
+                deer: 0.12,
+                seedlings: 0.35,
+                browse_line: 2.0,
+                mix: [0.4, 0.0, 0.3, 0.2, 0.0, 0.1, 0.0, 0.0],
+            },
         },
     )
     regions.push(
@@ -1238,7 +1278,12 @@ pub fn map() -> Map {
             kind: Kind::HighForest,
             at: vec2(640.0, -520.0),
             weight: 0.8,
-            character: Character { deer: 0.12, seedlings: 0.3, browse_line: 2.0 },
+            character: Character {
+                deer: 0.12,
+                seedlings: 0.3,
+                browse_line: 2.0,
+                mix: [0.5, 0.0, 0.3, 0.1, 0.0, 0.1, 0.0, 0.0],
+            },
         },
     )
 

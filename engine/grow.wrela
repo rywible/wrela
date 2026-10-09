@@ -206,8 +206,8 @@ fn blur_column(l: mut Line, a: [f32], nx: u32, nz: u32, r: i32) {
 }
 
 /// The eight neighbours' offsets.
-const DI = [-1, 0, 1, -1, 1, -1, 0, 1]
-const DJ = [-1, -1, -1, 0, 0, 1, 1, 1]
+pub const DI = [-1, 0, 1, -1, 1, -1, 0, 1]
+pub const DJ = [-1, -1, -1, 0, 0, 1, 1, 1]
 
 // ---- the ground --------------------------------------------------------------------------------
 
@@ -324,6 +324,9 @@ pub struct Tree: Copy {
 
 /// No pin or keeper.
 pub const NONE: u32 = 4294967295
+
+/// No year: a cell no event opened.
+pub const NEVER: i32 = -2147483648
 
 fn sapling(at: vec2, kind: u32, year: i32, tall: f32, seed: u32, h: Habit) -> Tree {
     Tree {
@@ -512,9 +515,18 @@ pub struct Land {
     pub lawn: Vec<bool>,
     /// The opening or route people keep clear at each cell (`NONE` for none), and its years.
     pub kept: Vec<u32>,
+    /// The year of the event whose opening holds each cell (`NEVER` for none): nothing takes
+    /// there for `RECENT` years after it (the event's keeper).
+    pub opened: Vec<i32>,
+    /// Whether a herd's route passes within a crown's reach: its trees are browsed to the head
+    /// room (`HEAD_ROOM`).
+    pub browsed: Vec<bool>,
     pub water: Vec<bool>,
     pub region: Vec<u32>,
 }
+
+/// The head room the herd browses along its routes (m): no branch below it.
+pub const HEAD_ROOM: f32 = 2.0
 
 /// The water the history finds: each stream's course from a spring, or a mere's outlet, down the
 /// land to where it falls off it or pools; its width and depth at each point.
@@ -678,6 +690,8 @@ pub fn survey<G: Ground>(ground: G, m: Map, g: Grid) -> Land {
             capped_by: Vec::new(),
             lawn: Vec::new(),
             kept: Vec::new(),
+            opened: Vec::new(),
+            browsed: Vec::new(),
             water: Vec::new(),
             region: Vec::new(),
         },
@@ -689,6 +703,8 @@ pub fn survey<G: Ground>(ground: G, m: Map, g: Grid) -> Land {
     var capped_by: Vec<u32> = Vec::with_capacity(nn)
     var lawn: Vec<bool> = Vec::with_capacity(nn)
     var kept: Vec<u32> = Vec::with_capacity(nn)
+    var opened: Vec<i32> = Vec::with_capacity(nn)
+    var browsed: Vec<bool> = Vec::with_capacity(nn)
     var open_water: Vec<bool> = Vec::with_capacity(nn)
     var region: Vec<u32> = Vec::with_capacity(nn)
     for mut r in rows {
@@ -698,6 +714,8 @@ pub fn survey<G: Ground>(ground: G, m: Map, g: Grid) -> Land {
         capped_by.append(mut r.capped_by)
         lawn.append(mut r.lawn)
         kept.append(mut r.kept)
+        opened.append(mut r.opened)
+        browsed.append(mut r.browsed)
         open_water.append(mut r.water)
         region.append(mut r.region)
     }
@@ -716,6 +734,8 @@ pub fn survey<G: Ground>(ground: G, m: Map, g: Grid) -> Land {
         capped_by: by,
         lawn,
         kept,
+        opened,
+        browsed,
         water: open_water,
         region,
     }
@@ -756,6 +776,8 @@ struct SurveyRow {
     capped_by: Vec<u32>,
     lawn: Vec<bool>,
     kept: Vec<u32>,
+    opened: Vec<i32>,
+    browsed: Vec<bool>,
     water: Vec<bool>,
     region: Vec<u32>,
 }
@@ -788,6 +810,7 @@ fn survey_row<G: Ground>(
         // The openings the herd keeps (lawns), their rims ragged.
         var on_lawn = false
         var keeper = NONE
+        var opened = NEVER
         var k = 0
         for o in m.openings {
             let inside = length(p - o.at) + 6.0 * (noise2(p * 0.08) - 0.5) < o.radius
@@ -795,28 +818,38 @@ fn survey_row<G: Ground>(
                 match o.keeper {
                     Keeper::Grazing => on_lawn = true,
                     Keeper::People { .. } => keeper = k,
+                    Keeper::Event { year } => opened = year,
                     _ => {},
                 }
             }
             k += 1
         }
-        // Routes kept clear: a road by its people; a herd's route by the herd, as a narrow lawn.
+        // Routes kept clear: a road by its people; a route the herd walks by the herd, as a lawn
+        // its width and a stride each side, and browsed a crown's reach beyond.
         var ri = 0
+        var browsed = false
         for route in m.routes {
             let bx = boxes[ri]
             let near = p.x > bx.x && p.y > bx.y && p.x < bx.z && p.y < bx.w
             let d = if near { route.distance(p).x } else { 1.0e9 }
-            if d < 0.5 * route.width {
-                match route.keeper {
-                    Keeper::People { .. } => keeper = 1000 + ri,
-                    Keeper::Grazing => on_lawn = on_lawn || d < 0.25 * route.width,
-                    _ => {},
-                }
+            match route.keeper {
+                Keeper::People { .. } => {
+                    if d < 0.5 * route.width {
+                        keeper = 1000 + ri
+                    }
+                },
+                Keeper::Grazing => {
+                    on_lawn = on_lawn || d < 0.5 * route.width + 1.5
+                    browsed = browsed || d < 0.5 * route.width + 10.0
+                },
+                _ => {},
             }
             ri += 1
         }
+        r.browsed.push(browsed)
         r.lawn.push(on_lawn)
         r.kept.push(keeper)
+        r.opened.push(opened)
         r.region.push(m.region_of(p))
     }
 }
@@ -1067,11 +1100,24 @@ fn recruit_row(row: mut Row, cx: Cx, b: Bins, f: Fields, year: i32) {
         if !cx.land.habitable[c] || (cx.land.lawn[c] && year >= cx.map.herd.arrives) {
             continue
         }
+        // An event's opening: nothing takes in the step it happens (its year may come after the
+        // step's first), nor for `RECENT` years after.
+        let opened = cx.land.opened[c]
+        if opened != NEVER && year + cx.grain.step > opened && year < opened + place::RECENT {
+            continue
+        }
         if people_keep(cx.map, cx.land, c, year) {
             continue
         }
         let l = f.light[c]
         let ch = cx.map.regions[cx.land.region[c]].character
+        // The region's mix favours its own species where their seed falls (what the soil and
+        // its people's ways do, which the history doesn't model): a species out of the mix takes
+        // a quarter as well.
+        var mixed = 0.0
+        for k in 0..cx.habits.len() {
+            mixed += ch.mix[k]
+        }
         // Each species' chance to take here this step; at most one sapling a cell a step, its
         // species drawn by their chances (several in one step would crowd a cell the room check
         // can't see yet).
@@ -1102,6 +1148,9 @@ fn recruit_row(row: mut Row, cx: Cx, b: Bins, f: Fields, year: i32) {
             // A browse line: a region whose browsing keeps head room lets few seedlings up.
             if ch.browse_line > 0.0 {
                 p *= 0.25
+            }
+            if mixed > 0.0 {
+                p *= 0.25 + 3.0 * ch.mix[kind] / mixed
             }
             odds[kind] = p
             total += p
@@ -1219,6 +1268,9 @@ fn live(l: mut Life, cx: Cx, f: Fields, year: i32) {
         // reach (wood pasture, and along the trails).
         if ch.browse_line > 0.0 && t.tall > ch.browse_line + 1.0 {
             t.lift = max(t.lift, ch.browse_line)
+        }
+        if cx.land.browsed[c] && year >= cx.map.herd.arrives && t.tall > HEAD_ROOM + 1.0 {
+            t.lift = max(t.lift, HEAD_ROOM)
         }
         var p = if h.windborne { 0.004 } else { 0.002 }
         var cause = Cause::Old
@@ -1673,6 +1725,15 @@ fn throw(
             if g.holds(t.at) {
                 bare[g.cell_at(t.at)] = 1.0
             }
+        } else if t.state == State::Alive &&
+            !t.pinned &&
+            t.tall <= 6.0 &&
+            d < reach &&
+            rand(t.seed, 13) < share {
+            // The young under the thrown: crushed as the big trees come down.
+            t.state = State::Gone
+            t.died = year
+            t.cause = Cause::Wind
         }
     }
 }
@@ -2003,17 +2064,29 @@ fn first_row(row: mut Row, cx: Cx, year: i32) {
     let young = area / 12.0
     for i in 0..g.nx {
         let c = row.j * g.nx + i
-        if !cx.land.habitable[c] {
+        // The herd's lawns are open when the history begins: the herd has grazed them since.
+        if !cx.land.habitable[c] || cx.land.lawn[c] {
             continue
         }
         let wet = cx.land.wet[c]
         let thin = cx.land.thin[c]
-        // The species whose ground this suits best, by a draw weighted by how well it takes.
+        // The species whose ground this suits best, by a draw weighted by how well it takes; or
+        // the region's mix, each species as its ground suits it.
+        let mix = cx.map.regions[cx.land.region[c]].character.mix
+        var mixed = 0.0
+        for k in 0..cx.habits.len() {
+            mixed += mix[k]
+        }
         var weights = [0.0; 8]
         var total = 0.0
         for k in 0..cx.habits.len() {
             let h = cx.habits[k]
-            weights[k] = takes(h, wet, thin) * (if h.thorny { 0.15 } else { 1.0 })
+            let suits = takes(h, wet, thin)
+            weights[k] = if mixed > 0.0 {
+                mix[k] * max(suits, 0.3)
+            } else {
+                suits * (if h.thorny { 0.15 } else { 1.0 })
+            }
             total += weights[k]
         }
         var pick = rand(c, 2) * total

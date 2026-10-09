@@ -462,12 +462,13 @@ pub struct Kept: Copy {
 
 /// How a region's forest grows: what browses it (deer through it, and seedlings eaten), the
 /// head room browsing keeps (the browse line, m), and the share of each of up to eight species
-/// its first trees are.
+/// its first trees are (`mix`, by the floor's species' indices; all 0: as the ground suits each).
 pub struct Character: Copy {
     pub deer: f32 = 0.12,
     pub seedlings: f32 = 0.0,
     pub browse_line: f32 = 0.0,
     pub thinned: f32 = 0.0,
+    pub mix: [f32; 8] = [0.0; 8],
 }
 
 /// What a region's forest is like, by name (#54 §1).
