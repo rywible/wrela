@@ -59,7 +59,7 @@ const METERING = Metering {
 }
 
 /// Where the forest's levels hand over: its cards to impostors, and impostors to volumes (m).
-const CARDS_TO: f32 = 150.0
+const CARDS_TO: f32 = 100.0
 const IMPOSTORS_TO: f32 = 1000.0
 
 /// The forest's kinds cooked a frame at load.
@@ -68,8 +68,8 @@ const KINDS_PER_FRAME: u32 = 2
 /// The tiles streamed round the player: those within `WANT` of the eye are fetched (the nearest
 /// first, `IN_FLIGHT` at a time) and placed (one a frame), those past `DROP` dropped; room for
 /// `SLOTS` at once.
-const WANT: f32 = 1000.0
-const DROP: f32 = 1200.0
+const WANT: f32 = 350.0
+const DROP: f32 = 450.0
 const IN_FLIGHT: u32 = 4
 const SLOTS: u32 = 160
 
@@ -403,7 +403,7 @@ fn stream(s: mut Floor, eye: vec2) {
             var k = 0
             while k < w.slots.len() {
                 if let Some(t) = w.slots[k].tile {
-                    if tile_distance(t, eye) > DROP {
+                    if !w.slots[k].far && tile_distance(t, eye) > DROP {
                         w.drop(t)
                         changed = true
                     }
@@ -681,12 +681,14 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         },
         None => {},
     }
+    // The depth prepass: the near crowns' cards and the grass; then the far crowns behind them put
+    // out (`Wood::occlude`), and the rest drawn.
     label("vegetation prepass")
     let pre = begin_pass_with_depth(mut s.ids, mut s.depth, clear: vec4(0.0), clear_depth: 0.0)
     match s.wood {
         Some(w) => {
             if trees {
-                w.prepass(pre, cam, wind, s.linear)
+                w.prepass_cards(pre, cam, wind, s.linear)
             }
         },
         None => {},
@@ -695,6 +697,25 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         s.grass.prepass(pre, cam, wind)
     }
     pre.end()
+    match mut s.wood {
+        Some(w) => {
+            if trees {
+                w.occlude(cam, s.depth)
+            }
+        },
+        None => {},
+    }
+    label("vegetation far")
+    let far = begin_pass_with_depth(mut s.ids, mut s.depth, keep: true, keep_depth: true)
+    match s.wood {
+        Some(w) => {
+            if trees {
+                w.prepass_far(far, cam, wind, s.linear)
+            }
+        },
+        None => {},
+    }
+    far.end()
     label("vegetation")
     let veg = begin_pass_with_depth(mut s.scene, mut s.depth, clear: vec4(0.0), keep_depth: true)
     if on(off, System::Grass) {
