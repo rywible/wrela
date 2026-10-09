@@ -17,6 +17,100 @@ fn shader_tys(sh: &mut Shader, f: &mut impl FnMut(&mut TyId)) {
     }
 }
 
+/// Calls `f` on each expression directly inside `e`, but those in blocks: a block's, an
+/// `if`'s branch, which its callers walk statement by statement.
+pub(crate) fn for_each_child_mut(e: &mut Expr, f: &mut impl FnMut(&mut Expr)) {
+    let shader = |s: &mut Shader, f: &mut dyn FnMut(&mut Expr)| {
+        if let Shader::Value(v) = s {
+            f(v);
+        }
+    };
+    match &mut e.kind {
+        ExprKind::Lit(_)
+        | ExprKind::Text(_)
+        | ExprKind::Embed(_)
+        | ExprKind::ConstParam(_)
+        | ExprKind::Local(_)
+        | ExprKind::Const(_)
+        | ExprKind::Closure(_)
+        | ExprKind::FromBase
+        | ExprKind::Break
+        | ExprKind::Continue
+        | ExprKind::Yield
+        | ExprKind::Error
+        | ExprKind::FnRef(..)
+        | ExprKind::Block(_) => {}
+        ExprKind::Unary(_, x)
+        | ExprKind::Field(x, _)
+        | ExprKind::Swizzle(x, _)
+        | ExprKind::ArrayRepeat(x, _)
+        | ExprKind::Convert(x)
+        | ExprKind::Discriminant(x)
+        | ExprKind::Take(x)
+        | ExprKind::MutArg(x)
+        | ExprKind::PackedField { base: x, .. } => f(x),
+        ExprKind::Binary(_, a, b) | ExprKind::Index(a, b) => {
+            f(a);
+            f(b);
+        }
+        ExprKind::Call(c) => {
+            if let Callee::Value(v) = &mut c.callee {
+                f(v);
+            }
+            c.args.iter_mut().for_each(&mut *f);
+        }
+        ExprKind::Adt { fields, base, .. } => {
+            fields.iter_mut().for_each(&mut *f);
+            if let Some(b) = base {
+                f(b);
+            }
+        }
+        ExprKind::Tuple(xs) | ExprKind::Array(xs) | ExprKind::Construct(xs) => {
+            xs.iter_mut().for_each(&mut *f)
+        }
+        ExprKind::ArrayFill(xs, fill, _) => {
+            xs.iter_mut().for_each(&mut *f);
+            f(fill);
+        }
+        ExprKind::If { cond, else_, .. } => {
+            f(cond);
+            if let Some(x) = else_ {
+                f(x);
+            }
+        }
+        ExprKind::Match { scrutinee, arms, .. } => {
+            f(scrutinee);
+            for a in arms {
+                if let Some(g) = &mut a.guard {
+                    f(g);
+                }
+                f(&mut a.body);
+            }
+        }
+        ExprKind::Return(v) => {
+            if let Some(v) = v {
+                f(v);
+            }
+        }
+        ExprKind::Dispatch(d) => {
+            shader(&mut d.kernel, f);
+            f(&mut d.groups);
+            d.args.iter_mut().for_each(|(_, a)| f(a));
+        }
+        ExprKind::Draw(d) => {
+            f(&mut d.pass);
+            shader(&mut d.vertex, f);
+            shader(&mut d.fragment, f);
+            f(&mut d.vertices);
+            f(&mut d.instances);
+            for i in d.indirect.iter_mut().chain(&mut d.indices) {
+                f(i);
+            }
+            d.args.iter_mut().for_each(|(_, _, a)| f(a));
+        }
+    }
+}
+
 /// Applies `f` to every type in an expression tree.
 pub fn walk_tys(e: &mut Expr, f: &mut impl FnMut(&mut TyId)) {
     f(&mut e.ty);
@@ -156,6 +250,7 @@ fn walk_block(b: &mut Block, f: &mut impl FnMut(&mut TyId)) {
                 walk_tys(array, f);
                 walk_block(body, f);
             }
+            StmtKind::ForFields { body, .. } => walk_block(body, f),
         }
     }
     if let Some(t) = &mut b.tail {
@@ -638,6 +733,7 @@ impl Markers<'_> {
                     self.expr(array, false, out);
                     self.block(body, false, out);
                 }
+                StmtKind::ForFields { body, .. } => self.block(body, false, out),
             }
         }
         if let Some(t) = &b.tail {
@@ -773,6 +869,7 @@ fn stored_callables_block(p: &Program, own: &Own, b: &Block, out: &mut Vec<Diagn
             StmtKind::Loop { body } => (&[], Some(body)),
             StmtKind::ForRange { start, end, body, .. } => (&[start, end], Some(body)),
             StmtKind::ForEach { array, body, .. } => (&[array], Some(body)),
+            StmtKind::ForFields { body, .. } => (&[], Some(body)),
         };
         exprs.iter().for_each(|e| stored_callables(p, own, e, out));
         if let Some(body) = body {

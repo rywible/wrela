@@ -360,6 +360,14 @@ pub enum StmtKind {
         mutable: bool,
         body: Block,
     },
+    /// `for f in fields(self)` in a `@fieldwise` trait's method: `var` projects each field of
+    /// `self` in turn, of the trait's field type (`trait.fieldwise-walk`). Only in the trait's
+    /// own body: each type that declares the trait gets the loop unrolled over its fields.
+    ForFields {
+        var: LocalId,
+        mutable: bool,
+        body: Block,
+    },
 }
 
 #[derive(Clone, Debug)]

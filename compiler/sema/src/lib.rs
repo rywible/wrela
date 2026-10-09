@@ -198,8 +198,11 @@ fn check(
                 hidden.push((f, h));
             }
             // The memory checker needs a well-typed, whole body; it would only add noise
-            // otherwise.
-            if typed && !incomplete {
+            // otherwise. A `@fieldwise` trait's walk has no memory IR of its own: each type that
+            // declares the trait has it unrolled, and that's checked (`trait.fieldwise-walk`).
+            let walk = matches!(p.func(f).owner, defs::FnOwner::Trait(t) if p.trait_(t).fieldwise)
+                && fieldwise::walks_fields(p, f);
+            if typed && !incomplete && !walk {
                 let (m, d) = mir::build::build(p, &consts, f, &b);
                 diags.extend(d);
                 if memory_check(f) {

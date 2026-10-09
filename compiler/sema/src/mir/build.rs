@@ -1948,6 +1948,9 @@ impl<'a> Builder<'a> {
             StmtKind::ForEach { var, array, mutable, body } => {
                 self.for_each(*var, array, *mutable, body, s.span)
             }
+            // Only in a `@fieldwise` trait's own body, which has no memory IR: each type that
+            // declares the trait gets it unrolled (`crate::fieldwise`).
+            StmtKind::ForFields { .. } => {}
         }
     }
 

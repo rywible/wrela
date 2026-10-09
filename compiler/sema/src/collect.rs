@@ -458,7 +458,21 @@ impl<'d, 'u> Collector<'d, 'u> {
                     lang: None,
                     fieldwise,
                     diagnostic,
+                    field_param: None,
                 });
+                // A field a method's walk visits: any type with this trait (its bound is set
+                // with the trait's header).
+                if fieldwise {
+                    let g = self.p.new_param(ParamDef {
+                        name: "field".into(),
+                        bounds: Vec::new(),
+                        span: t.name.span,
+                        is_self: false,
+                        is_const: false,
+                        fn_bound: None,
+                    });
+                    self.p.traits[id.index()].field_param = Some(g);
+                }
                 let mut methods = Vec::new();
                 for member in &t.members {
                     if let ast::TraitMemberKind::Type { .. } = &member.kind {
@@ -1868,6 +1882,10 @@ impl<'d, 'u> Collector<'d, 'u> {
             TraitRef { trait_: id, args: gens.iter().map(|&g| self.p.types.param(g)).collect() };
         let mut self_bounds = vec![own];
         self_bounds.extend(supers);
+        // A field a walk visits has the trait, as `Self` does (`trait.fieldwise-walk`).
+        if let Some(g) = self.p.trait_(id).field_param {
+            self.p.params[g.index()].bounds = self_bounds.clone();
+        }
         self.p.params[self_param.index()].bounds = self_bounds;
         let mut assoc = Vec::new();
         for member in &t.members {
@@ -3061,7 +3079,21 @@ fn check_members(
     for &tm in &tr.methods {
         let tdef = p.func(tm);
         let found = imp.methods.iter().copied().find(|&f| p.func(f).name == tdef.name);
+        // A method that walks the fields is derived for a type that declares the trait; an impl
+        // written by hand gives it (`trait.fieldwise-walk`).
+        let walks = tr.fieldwise && crate::fieldwise::walks_fields(p, tm);
         match found {
+            None if walks && !imp.from_opt_in => {
+                diags.push(
+                    Diagnostic::new(
+                        codes::E0401,
+                        imp.span,
+                        format!("this impl of `{}` is missing `fn {}`", tr.name, tdef.name),
+                    )
+                    .with_secondary(tdef.sig_span, "declared here")
+                    .with_note("its body walks the fields of a type that declares the trait, so an impl written by hand gives its own (§3)"),
+                );
+            }
             None if tdef.body.is_none() && !imp.from_opt_in => {
                 diags.push(
                     Diagnostic::new(

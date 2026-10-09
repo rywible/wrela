@@ -61,6 +61,10 @@ pub const RULES: &[(&str, &str)] = &[
         "trait.fieldwise",
         "a `@fieldwise` trait is derived field by field for each type that declares it",
     ),
+    (
+        "trait.fieldwise-walk",
+        "a `@fieldwise` trait's method can walk `for f in fields(self)`: derived from that body, the walk unrolled over each declaring type's fields",
+    ),
     ("trait.eq-ord", "`==` and `<` come from declared `Eq` and `Ord`"),
     (
         "trait.sets",

@@ -168,6 +168,7 @@ codes! {
     E0334 = "E0334", "an enum discriminant that isn't valid";
     E0335 = "E0335", "`yield` outside a job";
     E0336 = "E0336", "a `@job fn` that can't be a job, or a job used as a function";
+    E0337 = "E0337", "a walk over `fields(self)` outside a `@fieldwise` trait, or one it can't unroll";
 
     // ---- E04xx: traits and generics --------------------------------------------------------
     E0400 = "E0400", "a type that doesn't implement a trait";

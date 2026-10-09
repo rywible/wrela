@@ -591,6 +591,9 @@ pub struct TraitDef {
     pub fieldwise: bool,
     /// `@diagnostic("...")`: the message when a type doesn't have it (§7).
     pub diagnostic: Option<String>,
+    /// A `@fieldwise` trait's field: the type of `f` in a method's `for f in fields(self)`,
+    /// any type with the trait (`trait.fieldwise-walk`).
+    pub field_param: Option<ParamId>,
 }
 
 #[derive(Clone, Debug)]

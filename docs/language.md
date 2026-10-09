@@ -186,6 +186,22 @@ let word = u32(c)                     // the vertex in bits 0 to 23, the signs i
 - **Method syntax finds a trait's methods only where the trait is visible:** it's `pub`, or the calling module declares it. A private method is private to its module (E0203). T0.
 - **Coherence follows Rust's orphan rule:** an `impl` lives in the package of the trait or of the type; std is another package (D-071). T0 (`trait.orphan`). `Copy`, `Clone` and `GpuData` aren't implemented with an `impl`; a type opts in to them in its declaration. An impl for every closure or function of one signature, `impl<F: Copy + GpuData + fn(vec3) -> f32> Shape for F`, applies to just those: a closure whose signature doesn't fit, or a struct, doesn't have the trait, so the impl doesn't conflict with one for a struct.
 - **Fieldwise traits** (T1, `trait.fieldwise`). A trait declared `@fieldwise` is derived for every type that declares it, field by field. For a struct, the trait's method is applied to each field in order. A parameter of type `Self` is taken field by field too: `blend(self, other: Self, t: f32)` blends each field with the same field of `other`. A method that returns `Self` builds the struct from its fields' results, and one that returns `Result<Self, E>` does the same, stopping at the first error. For an enum, the variant comes first, then its fields; a method that builds an enum chooses the variant through the trait, which is how loading works. The trait chooses the variant and learns each field's name through its hooks (§21). Tuples of up to 12 elements and arrays have every `@fieldwise` trait their elements have, derived element by element, in order: an array's in a loop, so a method that builds one needs `Copy` elements (it copies the first element's result, then replaces the rest; an empty one is built without a call). Their elements have no names, so the field hooks aren't called for them. `Clone`, `Eq`, `Ord`, `StateHash`, `Serialize` and `std::field`'s `Blend` work this way, and so can a library's own traits. There's no reflection (§18).
+- **A method's body can walk the fields** (`trait.fieldwise-walk`, the owner's review of 2026-10-09). In a `@fieldwise` trait, a method whose default body has `for f in fields(self) { ... }` is derived from that body for each type that declares the trait, for tuples and for arrays: the walk runs once for each field (a struct's in order, a tuple's elements in order; an array's elements in a loop), `f` a projection of it of the field's own type, which has the trait (`for mut f in fields(self)` with `mut self`). So the trait decides how its fields' results combine where the shapes above don't: a sum, a fold that threads a value through them, the field that holds an index.
+
+  ```text
+  @fieldwise
+  pub trait Parts: Copy {
+      fn count(self) -> u32 {
+          var n = 0
+          for part in fields(self) {
+              n += part.count()
+          }
+          n
+      }
+  }
+  ```
+
+  The body is checked once, with `f` of the trait's field type (any type with the trait); its memory rules are checked where it's derived. It's the fields one after another, not a loop, so it can't `break` or `continue` (`return` leaves the method), and it can't hold a closure (its body is written again for each field): E0337, as is `fields(self)` anywhere else. An impl written by hand gives the method itself (E0401). engine::creature's `PartList` and `PartChannels` are derived this way for pairs and arrays of parts, each of whose 24 methods was written by hand for each.
 - **`==` and ordering come from declared traits** (T1, `trait.eq-ord`). A type that declares `Eq` gets `==` and `!=`, and one that declares `Ord` gets `<`, `<=`, `>` and `>=`. Both are `@fieldwise`: fields compare in order, and an enum's variants compare in the order they're declared. Without `Eq`, `==` works only on numbers, `bool`, vectors and enums whose variants hold nothing, which compare by variant (E0305).
 
   ```wrela
