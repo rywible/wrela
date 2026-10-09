@@ -1486,6 +1486,42 @@ fn empty_walk() -> Walk {
     }
 }
 
+/// A tour of `stops` on foot, in their order: the quickest way between each two (`way`), a point
+/// every 6 m or so (each way's cells thinned, its corners kept).
+pub fn tour(s: Sight, stops: [vec2]) -> Vec<vec2> {
+    var out: Vec<vec2> = Vec::new()
+    for i in 0..max(stops.len(), 1) - 1 {
+        let w = way(s, stops[i], stops[i + 1])
+        for p in w {
+            if out.is_empty() || length(p - out[out.len() - 1]) >= 6.0 {
+                out.push(p)
+            }
+        }
+    }
+    out
+}
+
+/// `stops` in the order a walker from the first would take them, each the nearest not yet taken.
+pub fn nearest_first(stops: [vec2]) -> Vec<vec2> {
+    var left: Vec<vec2> = Vec::from(stops)
+    var out: Vec<vec2> = Vec::new()
+    if left.is_empty() {
+        return out
+    }
+    out.push(left.remove(0))
+    while !left.is_empty() {
+        let at = out[out.len() - 1]
+        var best = 0
+        for i in 0..left.len() {
+            if length(left[i] - at) < length(left[best] - at) {
+                best = i
+            }
+        }
+        out.push(left.remove(best))
+    }
+    out
+}
+
 /// The map's gate (its first `Gate` site), or the origin.
 pub fn gate_of(m: Map) -> vec2 {
     for k in m.sites {

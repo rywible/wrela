@@ -7,6 +7,7 @@
 use engine::grow::{Cause, State, Tree, log_rot}
 use engine::noise::{pick, rand}
 use engine::plant::{Bark, Instance, Leaves, Plant, plant}
+use std::field::Tube
 use engine::vegetation::Placed
 use great_tree::tree::great_tree
 use map::{ALDER, BEECH, BIRCH, OAK, PINE, PRESENT, SLOE as BLACKTHORN, THORN}
@@ -472,7 +473,7 @@ fn instance(
             at: vec3(p.x, ground_y - sink, p.y),
             yaw,
             tint: tint(s),
-            scale: clamp(tall / BUILT[kind], 0.15, 1.8),
+            scale: scale_of(kind, tall),
         },
     }
 }
@@ -507,7 +508,77 @@ fn lowest_of_kinds() -> [f32; 22] {
 
 /// The lowest branch of kind `k` placed `tall` high (m).
 pub fn lowest_placed(k: u32, tall: f32) -> f32 {
-    LOWEST[k] * clamp(tall / BUILT[k], 0.15, 1.8)
+    LOWEST[k] * scale_of(k, tall)
+}
+
+/// Each kind's trunk (its first limb), as it's built (the great oak's isn't needed: it's kept).
+const TRUNKS: [Tube<4>; 22] = trunks_of_kinds()
+
+fn trunks_of_kinds() -> [Tube<4>; 22] {
+    var out = [Tube { points: [vec3(0.0); 4], radii: [0.0; 4] }; 22]
+    for k in 1..KINDS {
+        let p = kind_plant(k)
+        if p.limbs.len() > 0 {
+            out[k] = p.limbs[0]
+        }
+    }
+    out
+}
+
+/// The radius kind `k`'s trunk is drawn at `h` m over the ground, placed `tall` high: between its
+/// trunk's points, scaled to the tree.
+pub fn trunk_at(k: u32, tall: f32, h: f32) -> f32 {
+    let t = TRUNKS[k]
+    let s = scale_of(k, tall)
+    let y = h / s
+    var r = t.radii[3]
+    for i in 0..3 {
+        if y >= t.points[i].y && y <= t.points[i + 1].y {
+            let f = (y - t.points[i].y) / max(t.points[i + 1].y - t.points[i].y, 1.0e-4)
+            r = mix(t.radii[i], t.radii[i + 1], f)
+        }
+    }
+    r * s
+}
+
+/// What a player walks round of the history's trees, as they're drawn: each standing tree's
+/// girth the larger of the history's and its drawn trunk's at a chest's height (1.2 m), so the
+/// player stops where the trunk is seen.
+pub fn as_drawn(trees: [Tree]) -> Vec<Tree> {
+    var out: Vec<Tree> = Vec::with_capacity(trees.len())
+    for t in trees {
+        var d = t
+        if (t.state == State::Alive || t.state == State::Snag) && !t.pinned && t.tall > 2.0 {
+            d.girth = max(t.girth, trunk_at(kind_of(t), t.tall, 1.2))
+        }
+        out.push(d)
+    }
+    out
+}
+
+/// The scale an instance of kind `k` is placed at to stand `tall` high.
+pub fn scale_of(k: u32, tall: f32) -> f32 {
+    clamp(tall / BUILT[k], 0.15, 1.8)
+}
+
+/// The kind a standing tree (living, or a snag) is drawn as.
+pub fn kind_of(t: Tree) -> u32 {
+    if t.state == State::Snag {
+        snag_kind(t)
+    } else {
+        drawn_kind(t)
+    }
+}
+
+/// The kind a snag is drawn as: burnt, a pine's, or a broad-leaved tree's.
+fn snag_kind(t: Tree) -> u32 {
+    if t.cause == Cause::Fire {
+        SNAG_BURNT
+    } else if t.kind == PINE {
+        SNAG_PINE
+    } else {
+        SNAG_BROAD
+    }
 }
 
 /// The kind a living tree is drawn as: its species, grown in the open or in the forest (by the
@@ -576,11 +647,7 @@ pub fn placed(trees: [Tree], height: fn(vec2) -> f32) -> Vec<Placed> {
                 out.push(instance(k, t.at, y, tall, t.lean, t.seed, 0.0))
             }
         } else if t.state == State::Snag {
-            let k = if t.cause == Cause::Fire { SNAG_BURNT } else if t.kind == PINE {
-                SNAG_PINE
-            } else {
-                SNAG_BROAD
-            }
+            let k = snag_kind(t)
             out.push(instance(k, t.at, y, t.tall, vec2(0.0), t.seed, 0.0))
         } else if t.state == State::Log {
             let rot = clamp(f32(PRESENT - t.fell) / (2.0 * t.tall + 4.0), 0.0, 1.0)

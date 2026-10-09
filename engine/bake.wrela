@@ -40,7 +40,7 @@ fn put_u16(out: mut Vec<u8>, x: u32) {
     out.push(u8((x >> 8) & 255))
 }
 
-fn put_u32(out: mut Vec<u8>, x: u32) {
+pub fn put_u32(out: mut Vec<u8>, x: u32) {
     for k in 0..4 {
         out.push(u8((x >> (8 * k)) & 255))
     }

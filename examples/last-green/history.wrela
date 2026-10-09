@@ -7,7 +7,7 @@
 use engine::bake::{bake, unbake}
 use engine::footing::{Obstacles, obstacles_of}
 use engine::grow::{BAKE, Grain, Grid, History, NoClock, PREVIEW, simulate}
-use engine::interest::{Evidence, FULL, check, report, views_bytes, walk_bytes}
+use engine::interest::{Evidence, FULL, check, nearest_first, report, tour, views_bytes, walk_bytes}
 use engine::place::{TILE, tile_of}
 use engine::water::{Laid, laid}
 use std::io::{Shipped, ship}
@@ -62,15 +62,15 @@ pub fn decisions() -> engine::bake::Unbaked {
     unbake(BAKED, tiles_lo(), tiles_hi())
 }
 
-/// What a player walks round, from the bake: its trunks, thorn, big logs and streams, and the
-/// floor's stones and walls. In the program (the sim's collision is the same in every host and
+/// What a player walks round, from the bake: its trunks (as they're drawn: `trees::as_drawn`),
+/// thorn, big logs and streams, and the floor's stones and walls. In the program (the sim's collision is the same in every host and
 /// every replay, wherever the tiles have streamed to).
 pub const OBSTACLES: Obstacles = obstacles(decisions())
 
 fn obstacles(u: engine::bake::Unbaked) -> Obstacles {
     let m = map::map()
     obstacles_of(
-        u.trees,
+        trees::as_drawn(u.trees),
         species::habits(),
         u.streams,
         stones::stones(m),
@@ -109,11 +109,66 @@ fn checked() -> Vec<(String, Vec<u8>)> {
     )
     let c = check(ground::ground(), m, species::habits(), e, OBSTACLES, stones::stones(m), FULL)
     let text = report(ground::ground(), m, c)
+    var tour_bytes: Vec<u8> = Vec::new()
+    for p in tour(c.sight, nearest_first(tour_stops())) {
+        engine::bake::put_u32(mut tour_bytes, bitcast_u32(p.x))
+        engine::bake::put_u32(mut tour_bytes, bitcast_u32(p.y))
+    }
     Vec::from(
         [
             (String::from("report.json"), Vec::from(text.as_bytes())),
             (String::from("views.bin"), views_bytes(m, c, FULL)),
             (String::from("walk.bin"), walk_bytes(c)),
+            (String::from("tour.bin"), take tour_bytes),
         ],
     )
+}
+
+/// What the floor's walk passes (#55's Method): the gate first; the critical path's sites,
+/// each region's middle, the water (the mere's shore, the stream, the fall's lip) and each
+/// lookbook place.
+fn tour_stops() -> Vec<vec2> {
+    let m = map::map()
+    var out: Vec<vec2> = Vec::from([engine::interest::gate_of(m)])
+    for k in m.sites {
+        if engine::interest::critical(k) {
+            out.push(k.at)
+        }
+    }
+    for r in m.regions {
+        out.push(r.at)
+    }
+    let mere = m.water.meres[0]
+    out.push(mere.xy + vec2(0.0, mere.z * 1.15))
+    out.push(m.water.falls[0] + vec2(18.0, -12.0))
+    for s in lookbook::SHOTS {
+        out.push(s.eye.xz)
+    }
+    var inside: Vec<vec2> = Vec::new()
+    for p in out {
+        if m.inside(p) {
+            inside.push(p)
+        }
+    }
+    inside
+}
+
+/// The floor's walk (#55's Method): a point every 6 m or so on the way from the gate past
+/// `tour_stops`, worked out on the check's walkable grid (shipped with the check, `tour.bin`).
+pub const TOUR: Vec<vec2> = tour_of(CHECKED)
+
+fn tour_of(files: Shipped) -> Vec<vec2> {
+    borrow b = files.bytes(files.find("tour.bin").unwrap())
+    var out: Vec<vec2> = Vec::new()
+    var k = 0
+    while k + 8 <= b.len() {
+        out.push(
+            vec2(
+                bitcast_f32(engine::bake::get_u32(b, k)),
+                bitcast_f32(engine::bake::get_u32(b, k + 4)),
+            ),
+        )
+        k += 8
+    }
+    out
 }

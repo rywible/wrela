@@ -9,10 +9,12 @@ use engine::player::{NONE, Player, control, spawn, step}
 use engine::run::{Asks, TickInput}
 use engine::sim::{SimState, Tick}
 use ground::Ground
-use history::OBSTACLES
+use history::{OBSTACLES, TOUR}
+use std::input::{Event, Key}
 use std::hash::StateHash
 use std::math::TAU
 use std::serialize::Serialize
+use std::string::String
 
 /// The floor's ground and water, as the sim reads them.
 pub const GROUND: Ground = ground::ground()
@@ -33,10 +35,34 @@ fn sites() -> Vec<vec3> {
     out
 }
 
-/// The world: the player.
+/// The world: the player, and where it is on the floor's walk when it's walking it.
 pub struct World: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub player: Player,
+    pub tour: Tour,
 }
+
+/// The floor's walk (`history::TOUR`), walked by the sim when P is pressed: whether it's on, the
+/// point it's making for, the nearest it's come to it and the ticks since it came nearer; and a
+/// way round what's in its way: the ticks left of it, and which side it goes round by.
+pub struct Tour: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub on: bool,
+    pub leg: u32,
+    pub best: f32,
+    pub since: u32,
+    pub around: u32,
+    pub side: f32,
+}
+
+/// How long the walk goes no nearer its point before it goes round what's in its way (ticks),
+/// how long it goes round (ticks), how far it turns from the point (radians: 75°), and how long
+/// before it gives the point up for the next.
+const HELD: u32 = 120
+const AROUND: u32 = 180
+const AROUND_TURN: f32 = 1.31
+const GIVE_UP: u32 = 480
+
+/// How near a point of the walk the player comes before it makes for the next (m).
+const REACHED: f32 = 3.0
 
 impl Asks for World {
     type Ask = u32
@@ -58,7 +84,10 @@ pub const GATE = vec2(-1.5, -2.0)
 
 /// The world at tick 0: the player at the gate.
 pub fn spawn_world() -> World {
-    World { player: spawn(GROUND, Place::of(GATE), 0.0) }
+    World {
+        player: spawn(GROUND, Place::of(GATE), 0.0),
+        tour: Tour { on: false, leg: 0, best: 1.0e9, since: 0, around: 0, side: 1.0 },
+    }
 }
 
 /// One tick: the input's records turn the controls; a travel asked for moves the player; then
@@ -67,6 +96,16 @@ pub fn spawn_world() -> World {
 pub fn tick(w: mut World, input: TickInput<World>) {
     for e in input.records {
         control(mut w.player.controls, e)
+        if let Event::KeyDown { key, repeat, .. } = e {
+            if key == Key::P && !repeat {
+                w.tour.on = !w.tour.on
+                w.player.controls.forward = w.tour.on
+                w.player.controls.run_held = w.tour.on
+            }
+        }
+    }
+    if w.tour.on {
+        walk_the_tour(mut w)
     }
     let asked = w.player.controls.travel
     if asked != NONE {
@@ -76,6 +115,54 @@ pub fn tick(w: mut World, input: TickInput<World>) {
         w.player.controls.travel = NONE
     }
     step(mut w.player, GROUND, WATER, OBSTACLES, input.dt)
+}
+
+/// A tick of the floor's walk: the look turned to the point it's making for, forward held at a
+/// run; on to the next point once it's within `REACHED`. Coming no nearer it for `HELD` ticks
+/// (something's in its way), it goes round, turned `AROUND_TURN` to one side for `AROUND` ticks
+/// (the other side the next time); after `GIVE_UP`, it makes for the next point. Off at the
+/// walk's end.
+@deterministic
+fn walk_the_tour(w: mut World) {
+    let at = w.player.at.world()
+    while w.tour.leg < TOUR.len() && length(TOUR[w.tour.leg] - at) < REACHED {
+        w.tour.leg += 1
+        w.tour.best = 1.0e9
+        w.tour.since = 0
+    }
+    if w.tour.leg < TOUR.len() {
+        let dist = length(TOUR[w.tour.leg] - at)
+        if dist < w.tour.best - 0.5 {
+            w.tour.best = dist
+            w.tour.since = 0
+        } else {
+            w.tour.since += 1
+        }
+        if w.tour.since == HELD {
+            w.tour.around = AROUND
+            w.tour.side = -w.tour.side
+        }
+        if w.tour.since >= GIVE_UP {
+            w.tour.leg += 1
+            w.tour.best = 1.0e9
+            w.tour.since = 0
+        }
+    }
+    if w.tour.leg >= TOUR.len() {
+        w.tour.on = false
+        w.player.controls.forward = false
+        w.player.controls.run_held = false
+        return
+    }
+    let d = TOUR[w.tour.leg] - at
+    var yaw = atan2(d.x, d.y)
+    if w.tour.around > 0 {
+        w.tour.around -= 1
+        yaw += w.tour.side * AROUND_TURN
+    }
+    w.player.controls.yaw = yaw
+    w.player.controls.forward = true
+    w.player.controls.run_held = true
 }
 
 /// The player moved beside site `s` (x, z, reach): the first place a player can stand round it,
@@ -99,6 +186,34 @@ fn travel(p: mut Player, s: vec3) {
             }
         }
     }
+}
+
+/// The floor's map, for the frames' reports.
+pub const MAP: engine::place::Map = map::map()
+
+/// The play harness's report on world `w` after `ticks` ticks (#55 AC5: every 2 s, the same in
+/// both hosts): one line of JSON, from the sim's state alone: the time, where the player is and
+/// how it goes, the region it's in, the nearest site and how far, the water it stands in, and the
+/// floor's walk.
+pub fn report(w: World, ticks: u32) -> String {
+    let p = w.player
+    let at = p.at.world()
+    var near = 0
+    for i in 0..MAP.sites.len() {
+        if length(MAP.sites[i].at - at) < length(MAP.sites[near].at - at) {
+            near = i
+        }
+    }
+    let site = MAP.sites[near]
+    let region = MAP.regions[MAP.region_of(at)].name
+    let water = max(
+        engine::footing::mere_depth(WATER, at, GROUND.at(at.x, at.y)),
+        OBSTACLES.depth(at),
+    )
+    let t = f32(ticks) / 60.0
+    let heading = p.heading * 57.29578
+    let site_m = length(site.at - at)
+    f"{{\"report\": {t}, \"at\": [{at.x}, {at.y}], \"y\": {p.y}, \"heading\": {heading}, \"pace\": {p.pace}, \"speed\": {length(p.velocity)}, \"region\": \"{region}\", \"site\": \"{site.name}\", \"site_m\": {site_m}, \"water\": {water}, \"tour\": [{w.tour.on}, {w.tour.leg}, {TOUR.len()}]}}"
 }
 
 /// The snapshot the frames read.

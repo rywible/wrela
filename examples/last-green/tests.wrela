@@ -283,3 +283,205 @@ fn in_course(laid: engine::water::Laid, p: vec2) -> bool {
     }
     false
 }
+
+// ---- the player (AC4) ---------------------------------------------------------------------------
+
+/// What a walk found: the least room the player's body had from any solid obstacle (m, from its
+/// surface: under `BODY` is through it), the least the ground let it go anywhere it stood (its
+/// `stands`: 0 is off the walkable mask), how near it came to its target's surface, its pace in
+/// the deepest water it stood in, and that water's depth.
+struct Walked {
+    room: f32,
+    stood: f32,
+    closest: f32,
+    wading_pace: f32,
+    deepest: f32,
+}
+
+/// The player walked from `from` toward `to` for `seconds` as the sim steps it (60 Hz, forward
+/// held, the look on `to`, running if `run`), measured against a target: a capsule from `a` to
+/// `b` (a point where they're the same), `r` across.
+fn walk_toward(from: vec2, to: vec2, seconds: f32, run: bool, a: vec2, b: vec2, r: f32) -> Walked {
+    let w = map::map().water
+    let d = to - from
+    var p = engine::player::spawn(world::GROUND, engine::place::Place::of(from), atan2(d.x, d.y))
+    p.controls.forward = true
+    p.controls.run_held = run
+    p.controls.yaw = atan2(d.x, d.y)
+    let target = engine::footing::Obstacle {
+        a,
+        b,
+        r,
+        thing: engine::footing::Thing::Stone,
+        depth: 0.0,
+    }
+    var out = Walked { room: 1.0e9, stood: 1.0e9, closest: 1.0e9, wading_pace: 1.0, deepest: 0.0 }
+    for _ in 0..u32(seconds * 60.0) {
+        engine::player::step(mut p, world::GROUND, w, history::OBSTACLES, 1.0 / 60.0)
+        let at = p.at.world()
+        history::OBSTACLES.near(at, |o| {
+            if o.thing != engine::footing::Thing::Stream {
+                out.room = min(out.room, o.reach(at).0)
+            }
+        })
+        out.stood = min(
+            out.stood,
+            engine::footing::stands(world::GROUND, w, history::OBSTACLES, at),
+        )
+        out.closest = min(out.closest, target.reach(at).0)
+        let deep = max(
+            engine::footing::mere_depth(w, at, world::GROUND.at(at.x, at.y)),
+            history::OBSTACLES.depth(at),
+        )
+        if deep > out.deepest {
+            out.deepest = deep
+            out.wading_pace = p.pace
+        }
+    }
+    out
+}
+
+/// A start `away` m from `at` (beyond a thing `r` across) on walkable ground, clear of every
+/// solid obstacle, looked for round it (`NONE`'s x for none).
+fn start_near(at: vec2, r: f32, away: f32) -> vec2 {
+    let w = map::map().water
+    for k in 0..16 {
+        let a = 6.2831853 * f32(k) / 16.0
+        let s = at + vec2(cos(a), sin(a)) * (r + away)
+        if engine::footing::stands(world::GROUND, w, history::OBSTACLES, s) > 0.0 &&
+            !history::OBSTACLES.blocked(s, engine::footing::BODY + 0.2) {
+            return s
+        }
+    }
+    vec2(1.0e9)
+}
+
+/// AC4's collision: the stand-in walks into a trunk, a stone, a wall and a shrub (the first of
+/// each it can reach from 4 m), and into the mere: each stops it at its surface, it never
+/// passes into one (its body never less than `BODY` from a solid obstacle, to a millimetre), it
+/// never stands where the walkable mask doesn't let it, deep water stops it short of `DEEP`, and
+/// a stream's shallows slow it to wading.
+@test
+fn the_player_walks_into_each_thing_and_never_through_it() {
+    let m = map::map()
+    let body = engine::footing::BODY
+    // Each thing's candidates: its middle, its radius (a wall: its ends).
+    var trunks: Vec<vec3> = Vec::new()
+    var shrubs: Vec<vec3> = Vec::new()
+    for t in decisions().trees {
+        if t.state == State::Alive && m.inside(t.at) {
+            if species::habits()[t.kind].thorny {
+                if t.tall > 0.8 && shrubs.len() < 40 {
+                    shrubs.push(vec3(t.at + t.lean, 0.7 * t.reach))
+                }
+            } else if t.tall > 2.0 && t.girth > 0.2 && trunks.len() < 40 {
+                trunks.push(vec3(t.at, t.girth))
+            }
+        }
+    }
+    let stones = stones::stones(m)
+    let walls = stones::walls(m)
+    var reached = [false; 4]
+    var room = 1.0e9
+    var stood = 1.0e9
+    for kind in 0..4 {
+        let count = if kind == 0 { trunks.len() } else if kind == 1 { stones.len() } else if kind ==
+            2 { walls.len() } else { shrubs.len() }
+        for i in 0..min(count, 40) {
+            if reached[kind] {
+                break
+            }
+            // The thing as a capsule: its ends, and its radius.
+            let (a, b, r) = if kind == 0 {
+                (trunks[i].xy, trunks[i].xy, trunks[i].z)
+            } else if kind == 1 {
+                (stones[i].xy, stones[i].xy, stones[i].z)
+            } else if kind == 2 {
+                (walls[i].xy, walls[i].zw, 0.5)
+            } else {
+                (shrubs[i].xy, shrubs[i].xy, shrubs[i].z)
+            }
+            let centre = (a + b) * 0.5
+            let from = start_near(centre, r + 0.5 * length(b - a), 4.0)
+            if from.x > 1.0e8 {
+                continue
+            }
+            let w = walk_toward(from, centre, 6.0, run: false, a: a, b: b, r: r)
+            room = min(room, w.room)
+            stood = min(stood, w.stood)
+            reached[kind] = w.closest < body + 0.25
+        }
+    }
+    let (trunk, stone, wall, shrub) = (reached[0], reached[1], reached[2], reached[3])
+    assert(
+        trunk && stone && wall && shrub,
+        f"walked into a trunk {trunk}, a stone {stone}, a wall {wall}, a shrub {shrub}",
+    )
+    // Into the mere, running, from its shore.
+    let mere = m.water.meres[0]
+    let shore = mere.xy + vec2(0.0, 1.0) * mere.z * 1.25
+    let into = walk_toward(shore, mere.xy, 20.0, run: true, a: mere.xy, b: mere.xy, r: 0.0)
+    room = min(room, into.room)
+    stood = min(stood, into.stood)
+    let deepest = into.deepest
+    assert(
+        deepest > engine::footing::WADE && deepest <= engine::footing::DEEP,
+        f"walking into the mere it stood in {deepest} m of water",
+    )
+    assert(
+        room >= body - 1.0e-3,
+        f"the player's body came {room} m from an obstacle's surface (its radius {body})",
+    )
+    assert(stood > 0.0, "the player stood where the walkable mask doesn't let it")
+    // Across a stream's shallows: the course's middle, walked across.
+    borrow c = history::WATERS.courses[0]
+    let mid = c.points[c.points.len() / 2]
+    let next = c.points[c.points.len() / 2 + 1]
+    let across = normalize(vec2(next.y - mid.y, mid.x - next.x))
+    let wade = walk_toward(
+        mid.xy - across * 5.0,
+        mid.xy + across * 5.0,
+        6.0,
+        run: false,
+        a: mid.xy,
+        b: mid.xy,
+        r: 0.0,
+    )
+    let pace = wade.wading_pace
+    let wading_depth = wade.deepest
+    assert(
+        wading_depth > engine::footing::WADE && pace <= engine::footing::WADING + 1.0e-4,
+        f"in a stream {wading_depth} m deep, its pace was {pace}",
+    )
+}
+
+/// AC4's trunks: each standing tree's obstacle (`history::OBSTACLES`, the sim's) holds its trunk
+/// as it's drawn at a player's chest (1.2 m), to 5 cm: the player stops where the trunk is seen.
+@test
+fn a_trunk_stops_the_player_where_it_is_drawn() {
+    var worst = 0.0
+    var at = vec2(0.0)
+    var n = 0
+    for t in decisions().trees {
+        if (t.state == State::Alive || t.state == State::Snag) &&
+            t.tall > 2.0 &&
+            !species::habits()[t.kind].thorny &&
+            !t.pinned &&
+            map::map().inside(t.at) {
+            var r = 0.0
+            history::OBSTACLES.near(t.at, |o| {
+                if o.thing == engine::footing::Thing::Trunk && length(o.a - t.at) < 0.05 {
+                    r = max(r, o.r)
+                }
+            })
+            let over = trees::trunk_at(trees::kind_of(t), t.tall, 1.2) - r
+            if over > worst {
+                worst = over
+                at = t.at
+            }
+            n += 1
+        }
+    }
+    assert(n > 1000, f"only {n} trunks")
+    assert(worst <= 0.05, f"a trunk at {at} is drawn {worst} m past its obstacle")
+}

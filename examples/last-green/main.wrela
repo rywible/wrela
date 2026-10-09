@@ -43,6 +43,9 @@ use std::input::{Event, Key, events}
 use std::io::{Pending, print}
 use world::{GROUND, World, present as snapshot, spawn_world, tick}
 
+/// The ticks between the play harness's reports (2 s at 60 Hz).
+const REPORT_TICKS: u32 = 120
+
 /// The scene's size against the output's: half each way (#51 Q3).
 const SCALE: u32 = 2
 
@@ -312,6 +315,8 @@ pub struct Floor {
     water_count: u32,
     below: Texture<Rgba16Float>,
     water_look: u32,
+    /// The last report's number (`REPORT_TICKS` apart).
+    reported: u32,
 }
 
 /// The probes round `at`, unbaked, and what occludes them: the trees standing round it.
@@ -422,6 +427,7 @@ pub fn init() -> Floor {
         water_count: WATERS.mesh.tris.len(),
         below: texture::<Rgba16Float>(width: 1, height: 1),
         water_look: 0,
+        reported: 0,
     }
 }
 
@@ -1218,6 +1224,12 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         resize(mut s, width, height, w, h)
     }
     s.snaps.update()
+    // The play harness's report, each 2 s of the sim's time (`world::report`).
+    let newest = s.snaps.newest()
+    if newest.ticks / REPORT_TICKS != s.reported {
+        s.reported = newest.ticks / REPORT_TICKS
+        print(world::report(newest.snap, newest.ticks))
+    }
     let b = s.snaps.at(s.snaps.sim_time(time))
     let pa = b.a.player
     let pb = b.b.player
