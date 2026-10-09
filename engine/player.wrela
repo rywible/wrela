@@ -1,0 +1,352 @@
+// The stand-in player and its camera (M6 §5): a body the climber's height that walks at 1.4 m/s
+// and runs at about 5 m/s over a floor's ground, in the sim's tick, where `footing`'s one rule
+// lets it; and the third-person camera that follows it, pulled in when a trunk, a stone or a
+// wall comes between them.
+//
+// Its position is a place (a tile and an offset, `place::Place`), so a walk keeps its precision
+// however far it goes. Its controls are the keyboard and the mouse, held as a person holds them,
+// and taps for an agent, whose key presses don't hold (spike 17's play: taps worked where held
+// keys didn't): a tap turns walking on and off, running on and off, and the look by a step.
+//
+//     W S A D, the arrows   walk forward, back, to the side (held); the arrows turn the look
+//     Shift                 run while held
+//     drag (left button)    look round
+//     T                     walk on or off (a tap)
+//     R                     run on or off (a tap)
+//     Q E                   turn the look 20° left or right (a tap)
+//     Z X                   look down or up a step (a tap)
+//     G, digits, Enter      travel to a site by its number (the floor's sim moves the player)
+
+use footing::{BODY, Obstacles, stands}
+use grow::Ground
+use place::{Place, Water}
+use sim::SimState
+use std::hash::StateHash
+use std::input::{Button, Event, Key}
+use std::math::{PI, TAU}
+use std::serialize::Serialize
+
+/// A walk's and a run's pace on open level ground (m/s).
+pub const WALK: f32 = 1.4
+pub const RUN: f32 = 5.0
+/// How quickly the player gets up to its pace, and stops (m/s²).
+pub const ACCELERATION: f32 = 10.0
+/// A tap's turn of the look (radians: 20°), and a step of its pitch.
+pub const TURN_STEP: f32 = 0.34906585
+pub const PITCH_STEP: f32 = 0.12
+/// How fast the arrows turn the look (radians a second), and a dragged pixel's turn.
+pub const TURN_RATE: f32 = 2.2
+pub const DRAG_TURN: f32 = 0.005
+/// The pitch's limits (radians: down is negative).
+pub const PITCH_LO: f32 = -0.9
+pub const PITCH_HI: f32 = 0.35
+
+/// What the player holds and has turned on: the keys held, the taps' toggles, the look (its yaw
+/// from +z toward +x, and its pitch), the pointer while it drags, and a travel being typed.
+pub struct Controls: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub forward: bool,
+    pub back: bool,
+    pub left: bool,
+    pub right: bool,
+    pub turn_left: bool,
+    pub turn_right: bool,
+    pub run_held: bool,
+    pub walk_on: bool,
+    pub run_on: bool,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub dragging: bool,
+    pub pointer: vec2,
+    /// A travel's digits so far (`typing`), and the site the last Enter asked for (`NONE` for
+    /// none: the floor's sim reads it and sets it back).
+    pub typing: bool,
+    pub digits: u32,
+    pub travel: u32,
+}
+
+/// The player: where it stands (and the ground's height there), which way it faces, how fast it
+/// goes, the pace the ground lets it, and its controls.
+pub struct Player: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub at: Place,
+    pub y: f32,
+    pub heading: f32,
+    pub velocity: vec2,
+    pub pace: f32,
+    pub controls: Controls,
+}
+
+/// No travel asked for.
+pub const NONE: u32 = 4294967295
+
+/// A player standing at `at` on `ground`, facing and looking along `yaw`.
+pub fn spawn<G: Ground>(ground: G, at: Place, yaw: f32) -> Player {
+    let p = at.world()
+    Player {
+        at,
+        y: ground.height(p.x, p.y),
+        heading: yaw,
+        velocity: vec2(0.0),
+        pace: 1.0,
+        controls: Controls {
+            forward: false,
+            back: false,
+            left: false,
+            right: false,
+            turn_left: false,
+            turn_right: false,
+            run_held: false,
+            walk_on: false,
+            run_on: false,
+            yaw,
+            pitch: -0.18,
+            dragging: false,
+            pointer: vec2(0.0),
+            typing: false,
+            digits: 0,
+            travel: NONE,
+        },
+    }
+}
+
+/// The direction a yaw faces on the plane (from +z toward +x).
+pub fn facing(yaw: f32) -> vec2 {
+    vec2(sin(yaw), cos(yaw))
+}
+
+/// The digit a key types, if it's one.
+fn digit(k: Key) -> Option<u32> {
+    match k {
+        Key::Digit0 => Some(0),
+        Key::Digit1 => Some(1),
+        Key::Digit2 => Some(2),
+        Key::Digit3 => Some(3),
+        Key::Digit4 => Some(4),
+        Key::Digit5 => Some(5),
+        Key::Digit6 => Some(6),
+        Key::Digit7 => Some(7),
+        Key::Digit8 => Some(8),
+        Key::Digit9 => Some(9),
+        _ => None,
+    }
+}
+
+/// The controls after input event `e`.
+@deterministic
+pub fn control(c: mut Controls, e: Event) {
+    match e {
+        Event::KeyDown { key, repeat, .. } => {
+            if c.typing {
+                if let Some(d) = digit(key) {
+                    c.digits = c.digits * 10 + d
+                    return
+                }
+                if key == Key::Enter {
+                    c.travel = c.digits
+                }
+                c.typing = false
+                return
+            }
+            match key {
+                Key::W => c.forward = true,
+                Key::Up => c.forward = true,
+                Key::S => c.back = true,
+                Key::Down => c.back = true,
+                Key::A => c.left = true,
+                Key::D => c.right = true,
+                Key::Left => c.turn_left = true,
+                Key::Right => c.turn_right = true,
+                Key::ShiftLeft => c.run_held = true,
+                Key::ShiftRight => c.run_held = true,
+                _ => {},
+            }
+            if !repeat {
+                match key {
+                    Key::T => c.walk_on = !c.walk_on,
+                    Key::R => c.run_on = !c.run_on,
+                    Key::Q => c.yaw -= TURN_STEP,
+                    Key::E => c.yaw += TURN_STEP,
+                    Key::Z => c.pitch = max(c.pitch - PITCH_STEP, PITCH_LO),
+                    Key::X => c.pitch = min(c.pitch + PITCH_STEP, PITCH_HI),
+                    Key::G => {
+                        c.typing = true
+                        c.digits = 0
+                    },
+                    _ => {},
+                }
+            }
+        },
+        Event::KeyUp { key, .. } => {
+            match key {
+                Key::W => c.forward = false,
+                Key::Up => c.forward = false,
+                Key::S => c.back = false,
+                Key::Down => c.back = false,
+                Key::A => c.left = false,
+                Key::D => c.right = false,
+                Key::Left => c.turn_left = false,
+                Key::Right => c.turn_right = false,
+                Key::ShiftLeft => c.run_held = false,
+                Key::ShiftRight => c.run_held = false,
+                _ => {},
+            }
+        },
+        Event::PointerDown { at, button, .. } => {
+            if button == Button::Primary {
+                c.dragging = true
+                c.pointer = at
+            }
+        },
+        Event::PointerUp { button, .. } => {
+            if button == Button::Primary {
+                c.dragging = false
+            }
+        },
+        Event::PointerMove { at, .. } => {
+            if c.dragging {
+                let d = at - c.pointer
+                c.yaw += d.x * DRAG_TURN
+                c.pitch = clamp(c.pitch - d.y * DRAG_TURN, PITCH_LO, PITCH_HI)
+            }
+            c.pointer = at
+        },
+        _ => {},
+    }
+    c.yaw = wrap(c.yaw)
+}
+
+/// An angle in (-π, π].
+fn wrap(a: f32) -> f32 {
+    var x = a
+    while x > PI {
+        x -= TAU
+    }
+    while x <= -PI {
+        x += TAU
+    }
+    x
+}
+
+/// Where the controls ask the player to go, as a direction on the plane (length 0 or 1), and
+/// whether at a run.
+pub fn wish(c: Controls) -> (vec2, bool) {
+    let f = facing(c.yaw)
+    let side = vec2(f.y, -f.x)
+    var d = vec2(0.0)
+    if c.forward || c.walk_on {
+        d += f
+    }
+    if c.back {
+        d -= f
+    }
+    if c.right {
+        d -= side
+    }
+    if c.left {
+        d += side
+    }
+    let len = length(d)
+    (if len > 1.0e-4 { d / len } else { vec2(0.0) }, c.run_held || c.run_on)
+}
+
+/// A tick of `dt` seconds: the look turns with the arrows held, the player speeds up toward its
+/// wish (at its pace, the ground's: slopes and shallow water slow it) and steps as `footing`
+/// lets it, and turns to face the way it goes.
+@deterministic
+pub fn step<G: Ground>(p: mut Player, ground: G, water: Water, o: Obstacles, dt: f32) {
+    var c = p.controls
+    if c.turn_left {
+        c.yaw = wrap(c.yaw - TURN_RATE * dt)
+    }
+    if c.turn_right {
+        c.yaw = wrap(c.yaw + TURN_RATE * dt)
+    }
+    p.controls = c
+    let (dir, running) = wish(c)
+    let at = p.at.world()
+    let pace = stands(ground, water, o, at)
+    let target = dir * (if running { RUN } else { WALK }) * max(pace, 0.2)
+    let dv = target - p.velocity
+    let most = ACCELERATION * dt
+    p.velocity += if length(dv) > most { dv * (most / length(dv)) } else { dv }
+    let d = p.velocity * dt
+    if length(d) > 1.0e-6 {
+        let (moved, k) = footing::step(ground, water, o, at, d, BODY)
+        p.at = p.at.moved(moved)
+        p.pace = k
+        // Blocked: what it walked into stops it.
+        if length(moved) < 0.25 * length(d) {
+            p.velocity = vec2(0.0)
+        }
+        if length(moved) > 1.0e-4 {
+            let want = atan2(moved.x, moved.y)
+            p.heading = wrap(p.heading + wrap(want - p.heading) * min(12.0 * dt, 1.0))
+        }
+    } else {
+        p.pace = pace
+    }
+    let q = p.at.world()
+    p.y = ground.height(q.x, q.y)
+}
+
+// ---- the camera -----------------------------------------------------------------------------------
+
+/// The third person's framing (#54 Q4, the duel's): the point it looks at (above the feet), how
+/// far behind and how far to the right of it the eye is, and the field of view.
+pub struct Framing: Copy {
+    pub target: f32 = 1.45,
+    pub behind: f32 = 4.2,
+    pub shoulder: f32 = 0.45,
+    pub fovy: f32 = 0.82,
+}
+
+/// The closest an eye comes to a trunk, a stone or a wall (m), and to the ground.
+pub const CLEARANCE: f32 = 0.35
+pub const ABOVE_GROUND: f32 = 0.45
+
+/// The camera's eye and what it looks at, for a player standing at `feet` (render space), its
+/// look `yaw` and `pitch`: the eye on the framing's arm, pulled in along it where a trunk, a
+/// stone or a wall (`o`, in the same space as `feet`, offset by `o_from`) or the ground comes
+/// between it and the target. `height(p)` is the ground's height at a point of render space.
+pub fn third_person(
+    f: Framing,
+    feet: vec3,
+    yaw: f32,
+    pitch: f32,
+    o: Obstacles,
+    o_from: vec2,
+    height: fn(vec2) -> f32,
+) -> (vec3, vec3) {
+    let target = feet + vec3(0.0, f.target, 0.0)
+    let ahead = facing(yaw)
+    let right = vec2(-ahead.y, ahead.x) * -1.0
+    let back = vec3(-ahead.x * cos(pitch), -sin(pitch), -ahead.y * cos(pitch))
+    let side = vec3(right.x, 0.0, right.y) * f.shoulder
+    let want = target + back * f.behind + side
+    // March from the target out along the arm; stop before what's in the way.
+    let arm = want - target
+    let len = length(arm)
+    let steps = 24
+    var reach = len
+    for k in 1..(steps + 1) {
+        let t = len * f32(k) / f32(steps)
+        let p = target + arm * (t / len)
+        var hit = height(p.xz) + ABOVE_GROUND > p.y
+        if !hit {
+            o.near(p.xz + o_from, |ob| {
+                if ob.thing == footing::Thing::Trunk ||
+                    ob.thing == footing::Thing::Stone ||
+                    ob.thing == footing::Thing::Wall {
+                    let (d, _) = ob.reach(p.xz + o_from)
+                    hit = hit || d < CLEARANCE
+                }
+            })
+        }
+        if hit {
+            reach = max(len * f32(k - 1) / f32(steps), 0.4)
+            break
+        }
+    }
+    let eye = target + arm * (reach / len)
+    // Look a little over the target, so the player sits low in the frame.
+    (eye, target + vec3(ahead.x, 0.0, ahead.y) * 2.0 + vec3(0.0, 0.25, 0.0))
+}

@@ -28,6 +28,15 @@ Deleted when the milestone closes.
 
 | AC | State | Notes |
 |---|---|---|
+| AC1 | tests pass | map in source with engine types; anatomy, area, keepers (2), reach: suite/last_green.rs |
+| AC2 | mostly | cached (test), 0.65 MB/km² (test), preview vs bake (test); head room in the history, its test to write; same bytes both hosts to write; preview ≤ 3 s and bake ≤ 2 min to measure |
+| AC3 | partly | dead, relations, openings, lost, critical path pass (long test); calibration and landmark tags need the renderer |
+| AC4 | started | player, footing, third-person camera, card fade, stand-in drawn; tests to write |
+| AC7 | started | tiles fetched and placed round the player (engine::wood, GPU-chosen); far layer, wildwood, jobs to do |
+| AC8 | to do | vegetation's slice, caches that follow without hitches |
+| AC9–AC12 | to do | |
+| AC13 | to do | |
+| AC15 | done | 5817067, b08cb06 |
 
 ## Play rounds (AC5)
 

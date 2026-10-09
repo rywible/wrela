@@ -5,10 +5,11 @@
 // a tile: `std::io::Shipped`), fetched as a tile streams in, and read back; what follows from it
 // (light, litter, thorn) is worked out again where the tile is cooked (`grow::canopy`).
 //
-// A tile's bytes are its own, so it streams alone: a header; its trees, 24 bytes each (a place to
+// A tile's bytes are its own, so it streams alone: a header; its trees, 22 bytes each (a place to
 // 4 mm within the tile, kind, state and cause, height, crown, trunk, lean, light, fall, years, what
-// shaped it, its seed); its trails' wear, a byte each 2 m, runs of nothing coded short; its
-// ground's wetness, a byte each 4 m; and the streams' points within it.
+// shaped it), sorted by place and laid out a byte plane at a time; its trails' wear, a byte each
+// 2 m, runs of nothing coded short; its ground's wetness, a byte each 4 m; and the streams' points
+// within it.
 //
 // And a far layer of the whole floor, in the first frame's payload: each 8 m cell's tallest crown
 // (its height and kind), for what lies past the tiles streamed in.
@@ -20,10 +21,10 @@ use std::math::TAU
 
 /// The bytes' first word, and their version.
 const MAGIC: u32 = 0x5754_4c47
-pub const VERSION: u32 = 2
+pub const VERSION: u32 = 4
 
 /// Bytes a tree takes.
-pub const TREE_BYTES: u32 = 24
+pub const TREE_BYTES: u32 = 22
 
 /// The least height of a living tree the bake keeps: a seedling shorter isn't drawn, and the
 /// check doesn't see it (its undergrowth is over 0.8 m).
@@ -75,11 +76,12 @@ fn qyear(y: i32) -> u32 {
     u32(clamp(y + 10000, 0, 65535))
 }
 
-/// A tree as 24 bytes, its place from tile `t`'s corner: its place (two `u16`s), its kind, state
+/// A tree as 22 bytes, its place from tile `t`'s corner: its place (two `u16`s), its kind, state
 /// and cause (a byte: 3, 2 and 3 bits) and whether it's pinned (a byte with its browse line, in
 /// 2 cm steps to 2.5 m, and its pin in the top bit), its height (cm), crown (5 cm) and trunk (4 mm),
 /// lean (each way, 10 cm), light, fall's direction, years (born; died and fell as years after it),
-/// what shaped it (`grow::shaped`'s code, a `u16`) and a seed (a `u16`, its own draws).
+/// and what shaped it (`grow::shaped`'s code, a `u16`). Its seed isn't kept: it's drawn again
+/// from its place (`get_tree`).
 fn put_tree(out: mut Vec<u8>, tr: Tree, t: vec2i) {
     let local = tr.at - vec2(t) * TILE
     put_u16(mut out, q16(local.x))
@@ -98,10 +100,9 @@ fn put_tree(out: mut Vec<u8>, tr: Tree, t: vec2i) {
     put_u16(mut out, u32(clamp(tr.died - tr.born, 0, 65535)))
     put_u16(mut out, u32(clamp(tr.fell - tr.born, 0, 65535)))
     put_u16(mut out, if tr.shaped == grow::NONE { 65535 } else { tr.shaped & 65535 })
-    put_u16(mut out, tr.seed & 65535)
 }
 
-/// The tree whose 24 bytes are at `at` in `b`, its place from tile `t`'s corner.
+/// The tree whose 22 bytes are at `at` in `b`, its place from tile `t`'s corner.
 pub fn get_tree(b: [u8], at: u32, t: vec2i) -> Tree {
     let fall = TAU * f32(b[at + 13]) / 256.0
     let packed = u32(b[at + 4])
@@ -126,7 +127,13 @@ pub fn get_tree(b: [u8], at: u32, t: vec2i) -> Tree {
         died: born + i32(get_u16(b, at + 16)),
         fell: born + i32(get_u16(b, at + 18)),
         shaped: if shaped == 65535 { grow::NONE } else { shaped },
-        seed: get_u16(b, at + 22) | ((u32(t.x) & 255) << 16) | ((u32(t.y) & 255) << 24),
+        // Its own draws' seed, from where it stands (a stored seed is random bytes, which don't
+        // compress: 12% of the bake).
+        seed: noise::hash2u(
+            i32(get_u16(b, at)) ^ (t.x << 16),
+            i32(get_u16(b, at + 2)) ^ (t.y << 16),
+            1103,
+        ),
     }
 }
 
@@ -217,9 +224,24 @@ pub fn encode_tile(h: History, t: vec2i) -> Vec<u8> {
         }
         i += 1
     }
+    // The trees in rows, south to north, each tree's record laid out a byte plane at a time (every
+    // tree's first byte, then every tree's second, ...): neighbours' records are alike, byte by
+    // byte, so the planes compress (spike 17's records, one after another: half again larger).
+    mine.sort_by(|a, b| {
+        let pa = h.trees[a].at
+        let pb = h.trees[b].at
+        pa.y < pb.y || (pa.y == pb.y && pa.x < pb.x)
+    })
     put_u32(mut out, mine.len())
+    var records: Vec<u8> = Vec::with_capacity(mine.len() * TREE_BYTES)
     for k in mine {
-        put_tree(mut out, h.trees[k], t)
+        put_tree(mut records, h.trees[k], t)
+    }
+    let n = mine.len()
+    for byte in 0..TREE_BYTES {
+        for i in 0..n {
+            out.push(records[i * TREE_BYTES + byte])
+        }
     }
     // The trails: the herd's wear at each 2 m of the tile.
     var wear: Vec<u8> = Vec::with_capacity(WEAR_N * WEAR_N)
@@ -271,12 +293,18 @@ pub fn decode_tile(b: [u8]) -> Decisions {
     assert(get_u32(b, 4) == VERSION, "a baked tile of another version: bake it again")
     let t = vec2i(i32(get_u32(b, 8)), i32(get_u32(b, 12)))
     let count = get_u32(b, 16)
-    var at = 20
-    var trees: Vec<Tree> = Vec::with_capacity(count)
-    for _ in 0..count {
-        trees.push(get_tree(b, at, t))
-        at += TREE_BYTES
+    // The records' byte planes, back into records.
+    var records: Vec<u8> = Vec::filled(count * TREE_BYTES, 0)
+    for byte in 0..TREE_BYTES {
+        for i in 0..count {
+            records[i * TREE_BYTES + byte] = b[20 + byte * count + i]
+        }
     }
+    var trees: Vec<Tree> = Vec::with_capacity(count)
+    for i in 0..count {
+        trees.push(get_tree(records, i * TREE_BYTES, t))
+    }
+    let at = 20 + count * TREE_BYTES
     let (wear8, k) = get_runs(b, at, WEAR_N * WEAR_N)
     let (wet8, k2) = get_runs(b, k, WET_N * WET_N)
     var wear: Vec<f32> = Vec::with_capacity(WEAR_N * WEAR_N)

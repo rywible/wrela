@@ -914,6 +914,81 @@ pub fn map() -> Map {
         },
     )
 
+    // Glades on the herd's ways through the beech wood and over the pines' heath (grazed), and
+    // the blowdowns (recent gales).
+    openings.push(
+        Opening {
+            at: vec2(-200.0, -650.0),
+            radius: 24.0,
+            keeper: Keeper::Grazing,
+            name: "the hollow glade",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(-150.0, -1000.0),
+            radius: 28.0,
+            keeper: Keeper::Grazing,
+            name: "the stone glade",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(150.0, -1130.0),
+            radius: 30.0,
+            keeper: Keeper::Grazing,
+            name: "the long glade",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(1000.0, -1100.0),
+            radius: 22.0,
+            keeper: Keeper::Grazing,
+            name: "the giant's glade",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(1600.0, -900.0),
+            radius: 34.0,
+            keeper: Keeper::Grazing,
+            name: "the heath",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(1560.0, -500.0),
+            radius: 24.0,
+            keeper: Keeper::Grazing,
+            name: "the cairn glade",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(1400.0, -360.0),
+            radius: 24.0,
+            keeper: Keeper::Grazing,
+            name: "the high glade",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(320.0, -1250.0),
+            radius: 30.0,
+            keeper: Keeper::Event { year: PRESENT - 22 },
+            name: "the blowdown",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(1500.0, -650.0),
+            radius: 30.0,
+            keeper: Keeper::Event { year: PRESENT - 30 },
+            name: "the pine blowdown",
+        },
+    )
+
     var routes: Vec<Route> = Vec::new()
     // The old road, from the clearing up to the tower: people laid it out along the knoll's
     // sightline, over the Spine at its waystone; the herd keeps it now they've gone.
@@ -1068,6 +1143,49 @@ pub fn map() -> Map {
             name: "the south path",
         },
     )
+    // The herd's ways through the beech wood's far side, from the edge round to the south path,
+    // and over the pines' heath: each with its glades (the composition's second round: the
+    // check found these woods dead at a run, and #54 adds places, not area).
+    routes.push(
+        Route {
+            kind: RouteKind::Herd,
+            points: Vec::from(
+                [
+                    vec2(-260.0, -330.0),
+                    vec2(-230.0, -480.0),
+                    vec2(-200.0, -650.0),
+                    vec2(-230.0, -850.0),
+                    vec2(-150.0, -1000.0),
+                    vec2(-60.0, -1110.0),
+                    vec2(150.0, -1130.0),
+                    vec2(330.0, -1180.0),
+                    vec2(450.0, -1080.0),
+                    vec2(600.0, -1150.0),
+                ],
+            ),
+            width: 3.0,
+            keeper: Keeper::Grazing,
+            name: "the beech path",
+        },
+    )
+    routes.push(
+        Route {
+            kind: RouteKind::Herd,
+            points: Vec::from(
+                [
+                    vec2(1450.0, -1150.0),
+                    vec2(1600.0, -1000.0),
+                    vec2(1610.0, -760.0),
+                    vec2(1560.0, -500.0),
+                    vec2(1400.0, -360.0),
+                    vec2(1150.0, -200.0),
+                ],
+            ),
+            width: 3.0,
+            keeper: Keeper::Grazing,
+            name: "the heath path",
+        },
+    )
 
     let water = Water {
         meres: [vec4(255.0, -385.0, 62.0, 0.0), vec4(0.0)],
@@ -1086,6 +1204,31 @@ pub fn map() -> Map {
     }
 
     var events: Vec<Event> = Vec::new()
+    // The blowdowns: two recent gales, in the beech wood's far side and in the pines.
+    events.push(
+        Event {
+            year: PRESENT - 22,
+            kind: EventKind::Storm {
+                at: vec2(320.0, -1250.0),
+                reach: 40.0,
+                dir: vec2(0.7, -0.7),
+                share: 0.99,
+            },
+            name: "the beech wood's gale",
+        },
+    )
+    events.push(
+        Event {
+            year: PRESENT - 30,
+            kind: EventKind::Storm {
+                at: vec2(1500.0, -650.0),
+                reach: 40.0,
+                dir: vec2(-0.5, -0.85),
+                share: 0.99,
+            },
+            name: "the pines' gale",
+        },
+    )
     // A storm out of the valley throws the trees where the clearing's meadow is now.
     events.push(
         Event {
@@ -1172,9 +1315,8 @@ pub fn map() -> Map {
             at: vec2(550.0, -950.0),
             weight: 1.7,
             character: Character {
-                deer: 0.1,
-                seedlings: 0.05,
-                browse_line: 1.8,
+                deer: 0.03,
+                seedlings: 0.01,
                 mix: [0.12, 0.8, 0.08, 0.0, 0.0, 0.0, 0.0, 0.0],
             },
         },
@@ -1188,7 +1330,7 @@ pub fn map() -> Map {
             character: Character {
                 deer: 0.06,
                 seedlings: 0.1,
-                mix: [0.1, 0.0, 0.25, 0.0, 0.05, 0.0, 0.6, 0.0],
+                mix: [0.05, 0.0, 0.2, 0.0, 0.0, 0.0, 0.75, 0.0],
             },
         },
     )
@@ -1199,9 +1341,8 @@ pub fn map() -> Map {
             at: vec2(1330.0, -720.0),
             weight: 1.4,
             character: Character {
-                deer: 0.08,
-                seedlings: 0.05,
-                browse_line: 1.5,
+                deer: 0.05,
+                seedlings: 0.03,
                 mix: [0.05, 0.05, 0.15, 0.0, 0.0, 0.75, 0.0, 0.0],
             },
         },

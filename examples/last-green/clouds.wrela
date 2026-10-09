@@ -1,0 +1,52 @@
+// The floor's clouds (the clearing's, #28 §6): a few great cumulus heaped over the valley and behind the
+// forest, placed for the shot, and fair-weather clouds between them (spike 15's cloudscape),
+// drifting with the wind (`engine::sky`).
+
+use engine::noise::{pick, rand}
+use engine::sky::{Cumulus, Gap}
+
+/// How much of the sky beyond the cloudscape's cumulus fair-weather clouds cover (`fair` of
+/// `engine::sky::cook_weather`).
+pub const FAIR: f32 = 0.3
+
+/// How the clouds drift (m/s): with the grass's wind, a little faster.
+pub const CLOUD_WIND = vec2(-5.5, 3.0)
+
+/// The sky kept clear toward the sun from the meadow, so the start's shot is sunlit: where a
+/// cloud's shadow on the clearing would come from, at the layer's base (1.5 km up) and top
+/// (5.5 km), 3.4 and 12.4 km out toward the sun (`scene::SUN`), wide enough for the path's
+/// drift.
+pub const SUN_GAP = Gap { a: vec2(3300.0, -590.0), b: vec2(12200.0, -2150.0), radius: 2500.0 }
+
+/// The cloudscape's great cumulus, placed, and its fair-weather clouds.
+pub fn cloudscape() -> Vec<Cumulus> {
+    var c: Vec<Cumulus> = Vec::new()
+    c.push(Cumulus { at: vec2(-4600.0, 12500.0), wide: 4200.0, tall: 3600.0 })
+    c.push(Cumulus { at: vec2(-10800.0, 14500.0), wide: 3400.0, tall: 2600.0 })
+    c.push(Cumulus { at: vec2(3400.0, 16000.0), wide: 3800.0, tall: 3000.0 })
+    c.push(Cumulus { at: vec2(9500.0, 11000.0), wide: 2600.0, tall: 1900.0 })
+    for k in 0..26 {
+        let a = pick(500 + k, 1, lo: -1.0, hi: 1.0)
+        let d = pick(500 + k, 2, lo: 3500.0, hi: 12500.0)
+        c.push(
+            Cumulus {
+                at: vec2(sin(a) * d, cos(a) * d),
+                wide: pick(500 + k, 3, lo: 700.0, hi: 1600.0),
+                tall: pick(500 + k, 4, lo: 500.0, hi: 1100.0),
+            },
+        )
+    }
+    c
+}
+
+/// The weather the sky is cooked with (`engine::sky::Sky::cook_weather`): the cloudscape, the
+/// share of the sky beyond it fair-weather clouds cover, and the gap kept toward the sun.
+pub struct Weather {
+    pub clouds: Vec<Cumulus>,
+    pub fair: f32,
+    pub gap: Gap,
+}
+
+pub fn weather() -> Weather {
+    Weather { clouds: cloudscape(), fair: FAIR, gap: SUN_GAP }
+}

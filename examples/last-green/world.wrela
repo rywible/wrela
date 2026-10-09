@@ -1,0 +1,108 @@
+// The floor's simulation (#54 §5): the stand-in player walking and running over the floor, in the
+// sim's tick (`engine::run`) at 60 Hz, colliding with what the bake left (`history::OBSTACLES`)
+// and stopped by deep water and steep ground (`engine::footing`'s one rule). Its input records
+// are the walk's replay. A travel (the play harness's) moves the player beside a site.
+
+use engine::footing::{BODY, stands}
+use engine::place::{Place, Water}
+use engine::player::{NONE, Player, control, spawn, step}
+use engine::run::{Asks, TickInput}
+use engine::sim::{SimState, Tick}
+use ground::Ground
+use history::OBSTACLES
+use std::hash::StateHash
+use std::math::TAU
+use std::serialize::Serialize
+
+/// The floor's ground and water, as the sim reads them.
+pub const GROUND: Ground = ground::ground()
+pub const WATER: Water = water()
+
+fn water() -> Water {
+    map::map().water
+}
+
+/// The sites' places and reaches, for travel: (x, z, reach).
+pub const SITES: Vec<vec3> = sites()
+
+fn sites() -> Vec<vec3> {
+    var out: Vec<vec3> = Vec::new()
+    for s in map::map().sites {
+        out.push(vec3(s.at.x, s.at.y, s.reach))
+    }
+    out
+}
+
+/// The world: the player.
+pub struct World: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub player: Player,
+}
+
+impl Asks for World {
+    type Ask = u32
+    type Answer = u32
+
+    @deterministic
+    fn asks(self, tick: Tick) -> Vec<(u32, Tick)> {
+        Vec::new()
+    }
+
+    @deterministic
+    fn work(ask: u32) -> u32 {
+        ask
+    }
+}
+
+/// Where a player arrives: the gate (the clearing's foot), facing the meadow.
+pub const GATE = vec2(-1.5, -2.0)
+
+/// The world at tick 0: the player at the gate.
+pub fn spawn_world() -> World {
+    World { player: spawn(GROUND, Place::of(GATE), 0.0) }
+}
+
+/// One tick: the input's records turn the controls; a travel asked for moves the player; then
+/// it steps.
+@deterministic
+pub fn tick(w: mut World, input: TickInput<World>) {
+    for e in input.records {
+        control(mut w.player.controls, e)
+    }
+    let asked = w.player.controls.travel
+    if asked != NONE {
+        if asked < SITES.len() {
+            travel(mut w.player, SITES[asked])
+        }
+        w.player.controls.travel = NONE
+    }
+    step(mut w.player, GROUND, WATER, OBSTACLES, input.dt)
+}
+
+/// The player moved beside site `s` (x, z, reach): the first place a player can stand round it,
+/// just outside its reach, facing it.
+@deterministic
+fn travel(p: mut Player, s: vec3) {
+    let at = s.xy
+    for ring in 0..6 {
+        let r = s.z + 3.0 + 4.0 * f32(ring)
+        for k in 0..16 {
+            let a = TAU * f32(k) / 16.0
+            let q = at + vec2(sin(a), cos(a)) * r
+            if stands(GROUND, WATER, OBSTACLES, q) > 0.0 && !OBSTACLES.blocked(q, BODY) {
+                p.at = Place::of(q)
+                p.y = GROUND.at(q.x, q.y)
+                p.velocity = vec2(0.0)
+                let to = at - q
+                p.heading = atan2(to.x, to.y)
+                p.controls.yaw = p.heading
+                return
+            }
+        }
+    }
+}
+
+/// The snapshot the frames read.
+@deterministic
+pub fn present(w: World) -> World {
+    w
+}

@@ -82,7 +82,7 @@ pub struct Placed: Copy {
 }
 
 /// The ways an instance is drawn: its cards' levels, an impostor, a volume (`lod`).
-const WAYS: u32 = VOLUME + 1
+pub const WAYS: u32 = VOLUME + 1
 
 /// A list of instances drawn one way: a kind, how (a card level, `IMPOSTOR` or `VOLUME`), and where its
 /// instances start in the frame's buffer and how many.
@@ -156,9 +156,9 @@ fn every_of(kinds: u32, placed: [Placed]) -> (GpuBuffer<Instance>, Vec<List>) {
 }
 
 /// A list's indexed draws (`Forest::args`): its cards' and its limbs'.
-struct ListDraws: Copy + GpuData {
-    cards: DrawIndexedArgs,
-    limbs: DrawIndexedArgs,
+pub struct ListDraws: Copy + GpuData {
+    pub cards: DrawIndexedArgs,
+    pub limbs: DrawIndexedArgs,
 }
 
 /// Each list's draws (at `level`, or each list's own way if `ALL`): its cards' and its limbs',
@@ -362,13 +362,13 @@ impl Kind {
 }
 
 /// A way that isn't drawn.
-const HIDDEN: u32 = 99
+pub const HIDDEN: u32 = 99
 
 /// The ways instance `at` of kind `k` is drawn from `cam` (the lower and the upper of the two it's
 /// between, or one twice): none (`HIDDEN`) when it's out of view (the view's cone, `corner` its
 /// corner's angle) or faded out. And where it is between its levels, its level and how far it
 /// has faded (`lod::place`), when it's in view.
-fn ways_for(k: Kind, at: Instance, cam: Camera, l: Lod, corner: f32) -> (vec2u, vec2) {
+pub fn ways_for(k: Kind, at: Instance, cam: Camera, l: Lod, corner: f32) -> (vec2u, vec2) {
     let centre = at.at + vec3(0.0, k.top * 0.5 * at.scale, 0.0)
     let r = k.reach * at.scale
     let v = centre - cam.eye
@@ -403,6 +403,22 @@ pub struct CardDraw: Copy + GpuData {
     pub grow: f32,
     /// How wide a cut's hashed cell is, in the scene's pixels (`Lod::cell`).
     pub cell: f32,
+    /// What a third person's camera keeps clear of leaves: the point it looks at (the player)
+    /// and, in `w`, how far round the line from the eye to it a card fades (0: none). M6 §5: the
+    /// camera never shows the inside of foliage.
+    pub clear: vec4 = vec4(0.0),
+}
+
+/// How much of a card centred at `c` fades for an eye at `eye` keeping `clear` clear (0 to 1):
+/// those near the line from the eye to the point it looks at, and those round the eye itself.
+pub fn faded(c: vec3, eye: vec3, clear: vec4) -> f32 {
+    if clear.w <= 0.0 {
+        return 0.0
+    }
+    let ab = clear.xyz - eye
+    let t = clamp(dot(c - eye, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
+    let d = length(c - (eye + ab * t))
+    1.0 - smoothstep(clear.w, clear.w * 1.8, d)
 }
 
 /// A draw of every instance whole, whatever its level (the static shadows').
@@ -427,7 +443,7 @@ pub const CARD_INDICES: u32 = 6
 const TRIANGLES: [u32; 6] = [0, 1, 2, 0, 2, 3]
 
 /// `n` cards' triangles: each card's corners.
-fn card_indices(n: u32) -> Vec<u32> {
+pub fn card_indices(n: u32) -> Vec<u32> {
     var out: Vec<u32> = Vec::new()
     for c in 0..n {
         for k in TRIANGLES {
@@ -492,14 +508,29 @@ pub fn card(
     // along the eye's ray than the level before's: each corner stays on its pixel, and the
     // depth is one level's (some hundred steps of a float apart, in reversed depth).
     let apart = cam.eye + (world - cam.eye) * (1.0 + 1.0e-5 * f32(min(d.way, CARD_LEVELS)))
+    // A card in the camera's way fades: its share of the pixels' draws shrinks (the same dither
+    // the levels hand over by, which temporal AA settles).
+    let fade = faded(instances[i.index].place(card.centre), cam.eye, d.clear)
+    let keep = if fade > 0.0 { fade_packed(mark.x, fade) } else { mark.x }
     LeafVertex {
         clip: ClipPosition { position: cam.clip(apart) },
         uv,
         seed: Flat { value: seed_of(card, mark.y & 255) },
-        keep: Flat { value: mark.x },
+        keep: Flat { value: keep },
         card: Flat { value: c },
         instance: Flat { value: i.index | ((mark.y & 255) << 24) },
     }
+}
+
+/// A share packed by `lod::packed` with `fade` of it taken away (its end moved toward its
+/// start): all of it at 1.
+fn fade_packed(k: u32, fade: f32) -> u32 {
+    let start = f32(k & 16383) / 16383.0
+    let end = f32((k >> 14) & 16383) / 16383.0
+    let e = mix(end, start, fade)
+    let s = u32(round(saturate(start) * 16383.0))
+    let q = u32(round(saturate(e) * 16383.0))
+    (k & 4026531840) | s | (q << 14)
 }
 
 /// A card's seed for its cut: its pattern (the card's seed's low bits, `plant::leaf_uv`), the
@@ -617,7 +648,7 @@ pub struct BarkVertex: Copy {
 }
 
 /// `n` limbs' triangles: each limb's points (`limb_corner`).
-fn limb_indices(n: u32) -> Vec<u32> {
+pub fn limb_indices(n: u32) -> Vec<u32> {
     var out: Vec<u32> = Vec::new()
     for l in 0..n {
         for k in 0..LIMB_VERTICES {
@@ -713,7 +744,7 @@ pub fn card_draw(
 /// `lod::place`), anchored where its pattern is (`lod::anchor`), packed (`lod::packed`); and
 /// which crown it is (the low 8 bits) and which corner it's seen from (the next 8,
 /// `plant::corner_of`).
-fn mark_of(l: Lod, cam: Camera, inst: Instance, way: u32, at: vec2) -> vec2u {
+pub fn mark_of(l: Lod, cam: Camera, inst: Instance, way: u32, at: vec2) -> vec2u {
     let keep = vec4(share(at.x, at.y, way), anchor(cam, inst.at, l.top, inst.scale))
     vec2u(packed(keep), which_crown(inst.at) | (corner_of(inst, l.top * 0.5, cam.eye) << 8))
 }

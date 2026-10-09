@@ -4,8 +4,33 @@
     {
       "name": "pages",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["tools/serve.py", "8417"],
+      "runtimeArgs": [
+        "tools/serve.py",
+        "8417"
+      ],
       "port": 8417
+    },
+    {
+      "name": "floor",
+      "runtimeExecutable": "./target/release/wrela",
+      "runtimeArgs": [
+        "run",
+        "examples/last-green",
+        "--port",
+        "8420"
+      ],
+      "port": 8420
+    },
+    {
+      "name": "clearing",
+      "runtimeExecutable": "./target/release/wrela",
+      "runtimeArgs": [
+        "run",
+        "examples/clearing",
+        "--port",
+        "8421"
+      ],
+      "port": 8421
     }
   ]
 }

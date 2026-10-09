@@ -1,0 +1,825 @@
+// A wood that streams (M6 §6, §7): the forest of a floor, its instances loaded a tile at a time
+// into slots and dropped when their tile is, and chosen each frame on the GPU, not the CPU.
+//
+// `vegetation::Forest` chooses each instance's way (its cards' level, an impostor, a volume) on
+// the CPU and writes the frame's lists; that was the clearing's few thousand. A floor streams
+// tens of thousands round the player, and a moving player changes them every frame. Here every
+// loaded instance stays on the GPU, in its tile's slot; each frame a kernel chooses each one's
+// ways (`lod::place`, the same function the draws read its shares by) and writes its index and
+// marks into its list's room, counted with atomics; a second gathers each list's instances into
+// place, and a third writes each list's indirect draws. The draws are `vegetation`'s own shaders,
+// unchanged: the same cards, limbs, impostors and volumes as the clearing's.
+//
+// A list is a kind drawn one way. Its room is the kind's loaded instances (an instance is in at
+// most two ways), laid out on the CPU when tiles come and go.
+//
+// The static shadows choose the same way, for the sun's view of a cascade: every instance in
+// its square, drawn whole.
+
+use impostor::{far_cut, far_quad, far_shade, volume_cut, volume_shade, which_crown}
+use lit::Lighting
+use lod::{IMPOSTOR, Lod, VOLUME, anchor, packed, place, share, ways}
+use plant::{CARD_LEVELS, CORNERS, Instance, Leaves, Wind, cook_outlines, corner_of, level_cards}
+use shadow::{CASTER, Shadows}
+use std::gpu::{
+    Atomics, DrawArgs, DrawIndexedArgs, GlobalId, GpuBuffer, R32Uint, RenderPass, Rgba8, Sampler,
+    Slots, Texture, buffer, buffer_of, dispatch, draw, write,
+}
+use vegetation::{
+    CARD_INDICES, CardDraw, Kind, ListDraws, SHADOW_LEAVES, WAYS, ALL, bark_shade, card, card_draw,
+    card_indices, card_shadow, leaf_cut, leaf_shade, limb, limb_indices, limb_shadow, nothing,
+}
+use view::{Camera, NEAREST, PREPASSED}
+
+/// Instances a slot holds: a tile's trees (the floor's densest tile holds fewer).
+pub const SLOT: u32 = 4096
+
+/// No kind: an empty place in a slot.
+pub const NO_KIND: u32 = 4294967295
+
+/// A slot: the tile its instances are of (none: free), whether they're its far layer's (drawn
+/// only far: impostors and volumes) or its own trees, and how many of each kind it holds.
+pub struct Slot {
+    pub tile: Option<vec2i>,
+    pub far: bool,
+    pub count: u32,
+    pub kinds: Vec<u32>,
+}
+
+/// A list: a kind drawn one way, and its room in the frame's buffers (its first place and how
+/// many it can hold).
+pub struct List: Copy + GpuData {
+    pub kind: u32,
+    pub how: u32,
+    pub first: u32,
+    pub room: u32,
+}
+
+/// What choosing reads besides the instances: the camera, the view's cone (its corner's angle),
+/// where the levels hand over, the lists' count, and whether it chooses for a shadow (every
+/// instance within `square`, drawn whole: the cards' level 1) or for the camera.
+pub struct Choose: Copy + GpuData {
+    pub cam: Camera,
+    pub corner: f32,
+    pub kinds: u32,
+    pub shadow: u32,
+    pub instances: u32,
+    pub square: vec4,
+}
+
+/// Chooses instance `id`'s ways (`lod::place`), and puts its index and marks in each way's list:
+/// a place taken from the list's count (`counts`), its index into `picked` and its marks into
+/// `marks` (two words a place). For a shadow, its one list is its kind's, at level 1, if it
+/// stands in the cascade's square.
+@compute(64)
+pub fn choose(
+    c: Choose,
+    every: [Instance],
+    kind_of: [u32],
+    lods: [Lod],
+    lists: [List],
+    counts: mut Atomics<u32>,
+    picked: mut Atomics<u32>,
+    marks: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    let i = id.x
+    if i >= c.instances {
+        return
+    }
+    let k = kind_of[i]
+    if k == NO_KIND {
+        return
+    }
+    let inst = every[i]
+    if c.shadow != 0 {
+        let p = inst.at.xz
+        if p.x < c.square.x || p.y < c.square.y || p.x > c.square.z || p.y > c.square.w {
+            return
+        }
+        let l = lists[k]
+        let at = counts.add(k, 1)
+        if at < l.room {
+            picked.store(l.first + at, i)
+        }
+        return
+    }
+    let l = lods[k]
+    let centre = inst.at + vec3(0.0, l.top * 0.5 * inst.scale, 0.0)
+    let r = l.reach * inst.scale
+    let v = centre - c.cam.eye
+    let d = length(v)
+    // Outside the view's cone by more than its own angular radius.
+    if d > r {
+        let off = acos(clamp(dot(v / d, c.cam.forward), -1.0, 1.0))
+        if off > c.corner + asin(min(r / d, 1.0)) + 0.02 {
+            return
+        }
+    }
+    let (level, faint) = place(l, c.cam, inst.at, inst.scale)
+    let (drawn, lower, upper) = ways(level, faint)
+    if !drawn {
+        return
+    }
+    for n in 0..2 {
+        let way = if n == 0 { lower } else { upper }
+        if n == 1 && upper == lower {
+            return
+        }
+        let slot = k * WAYS + way
+        let list = lists[slot]
+        let at = counts.add(slot, 1)
+        if at < list.room {
+            let to = list.first + at
+            picked.store(to, i)
+            let keep = vec4(share(level, faint, way), anchor(c.cam, inst.at, l.top, inst.scale))
+            marks.store(2 * to, packed(keep))
+            marks.store(
+                2 * to + 1,
+                which_crown(inst.at) | (corner_of(inst, l.top * 0.5, c.cam.eye) << 8),
+            )
+        }
+    }
+}
+
+/// The instances and marks the choosing put in each place, gathered: place `id` gets the
+/// instance whose index is there (a place past its list's count holds an old one, which no draw
+/// reads).
+@compute(64)
+pub fn gather(
+    every: [Instance],
+    picked: [u32],
+    from: [u32],
+    places: u32,
+    out: mut Slots<Instance>,
+    marks: mut Slots<vec2u>,
+    id: GlobalId,
+) {
+    if id.x >= places {
+        return
+    }
+    let i = picked[id.x]
+    out[id] = if i < every.len() { every[i] } else {
+        Instance { at: vec3(0.0), yaw: 0.0, tint: vec3(0.0), scale: 0.0 }
+    }
+    marks[id] = vec2u(from[2 * id.x], from[2 * id.x + 1])
+}
+
+/// Each list's draws: its cards' and limbs' (`templates`, with its count of instances), and its
+/// far quads' (`far`: six vertices an instance).
+@compute(64)
+pub fn draws_of(
+    templates: [ListDraws],
+    counts: [u32],
+    lists: [List],
+    n: u32,
+    args: mut Slots<ListDraws>,
+    far: mut Slots<DrawArgs>,
+    id: GlobalId,
+) {
+    if id.x >= n {
+        return
+    }
+    let count = min(counts[id.x], lists[id.x].room)
+    var t = templates[id.x]
+    t.cards.instances = count
+    t.limbs.instances = count
+    args[id] = t
+    far[id] = DrawArgs { vertices: 6, instances: count, first_vertex: 0, first_instance: 0 }
+}
+
+/// What a choosing writes: its lists (and their rooms), the counts, the places' instance indices
+/// and marks, the gathered instances and marks, and each list's draws.
+pub struct Chosen {
+    pub lists: Vec<List>,
+    lists_gpu: GpuBuffer<List>,
+    templates: GpuBuffer<ListDraws>,
+    counts: GpuBuffer<u32>,
+    picked: GpuBuffer<u32>,
+    raw_marks: GpuBuffer<u32>,
+    pub instances: GpuBuffer<Instance>,
+    pub marks: GpuBuffer<vec2u>,
+    pub args: GpuBuffer<ListDraws>,
+    pub far: GpuBuffer<DrawArgs>,
+    places: u32,
+}
+
+/// Room for `n` places, at least one.
+fn room(n: u32) -> u32 {
+    max(n, 1)
+}
+
+impl Chosen {
+    fn empty() -> Chosen {
+        Chosen {
+            lists: Vec::new(),
+            lists_gpu: buffer(1),
+            templates: buffer(1),
+            counts: buffer(1),
+            picked: buffer(1),
+            raw_marks: buffer(2),
+            instances: buffer(1),
+            marks: buffer(1),
+            args: buffer(1),
+            far: buffer(1),
+            places: 0,
+        }
+    }
+
+    /// Lists laid out for `per_kind` instances of each kind loaded (`kinds`, then each far kind,
+    /// `far_kinds` its own), `ways` lists a kind (the camera's every way, or a shadow's one), each
+    /// list's draws' template from its kind.
+    fn lay_out(mut self, kinds: [Kind], far_kinds: [u32], per_kind: [u32], ways: u32) {
+        self.lists.clear()
+        var first = 0
+        var templates: Vec<ListDraws> = Vec::new()
+        for k in 0..(kinds.len() + far_kinds.len()) {
+            for way in 0..ways {
+                let how = if ways == 1 { 1 } else { way }
+                let n = per_kind[k]
+                self.lists.push(List { kind: k, how, first, room: n })
+                first += (n + 31) / 32 * 32
+                let near = how < CARD_LEVELS
+                borrow kd = kinds[if k < kinds.len() { k } else { far_kinds[k - kinds.len()] }]
+                let cards = if near { level_cards(kd.card_count, how) } else { 0 }
+                let limbs = if near { kd.limb_count } else { 0 }
+                let d = |indices: u32| DrawIndexedArgs {
+                    indices,
+                    instances: 0,
+                    first_index: 0,
+                    base_vertex: 0,
+                    first_instance: 0,
+                }
+                templates.push(
+                    ListDraws {
+                        cards: d(cards * CARD_INDICES),
+                        limbs: d(limbs * plant::LIMB_VERTICES),
+                    },
+                )
+            }
+        }
+        let places = room(first)
+        if places > self.places {
+            // Room to grow into, so a tile more doesn't make them again.
+            let grown = places + places / 2
+            self.picked = buffer(grown)
+            self.raw_marks = buffer(2 * grown)
+            self.instances = buffer(grown)
+            self.marks = buffer(grown)
+            self.places = grown
+        }
+        self.lists_gpu = buffer_of(self.lists, at_least: 1)
+        self.templates = buffer_of(templates, at_least: 1)
+        self.counts = buffer(room(self.lists.len()))
+        self.args = buffer(room(self.lists.len()))
+        self.far = buffer(room(self.lists.len()))
+    }
+
+    /// Chooses from `every` for `c`, then gathers and writes the draws.
+    fn run(
+        mut self,
+        c: Choose,
+        every: GpuBuffer<Instance>,
+        kind_of: GpuBuffer<u32>,
+        lods: GpuBuffer<Lod>,
+    ) {
+        let n = self.lists.len()
+        write(mut self.counts, 0, Vec::filled(room(n), 0))
+        dispatch(
+            choose.bind(
+                c,
+                every,
+                kind_of,
+                lods,
+                lists: self.lists_gpu,
+                counts: mut self.counts,
+                picked: mut self.picked,
+                marks: mut self.raw_marks,
+            ),
+            over: c.instances,
+        )
+        dispatch(
+            gather.bind(
+                every,
+                picked: self.picked,
+                from: self.raw_marks,
+                places: self.places,
+                out: mut self.instances,
+                marks: mut self.marks,
+            ),
+            over: self.places,
+        )
+        dispatch(
+            draws_of.bind(
+                templates: self.templates,
+                counts: self.counts,
+                lists: self.lists_gpu,
+                n: n,
+                args: mut self.args,
+                far: mut self.far,
+            ),
+            over: room(n),
+        )
+    }
+
+    /// List `l`'s instances, and their marks, to bind.
+    fn instances_of(self, l: List) -> std::gpu::GpuSpan<Instance> {
+        self.instances.span(start: l.first, count: room(l.room))
+    }
+
+    fn marks_of(self, l: List) -> std::gpu::GpuSpan<vec2u> {
+        self.marks.span(start: l.first, count: room(l.room))
+    }
+}
+
+/// A wood: its kinds and their leaves' atlas, the instances loaded (in slots, a tile each, and
+/// each one's kind), the camera's and the shadows' choosings, and where its levels hand over.
+pub struct Wood {
+    pub kinds: Vec<Kind>,
+    /// Each far kind's own kind: instances name the wood's own kinds, then its far kinds, each one
+    /// of its own drawn only far (a far layer's: never as cards, nor in the shadows).
+    pub far_kinds: Vec<u32>,
+    pub atlas: Texture<Rgba8>,
+    outlines: GpuBuffer<vec2>,
+    card_triangles: GpuBuffer<u32>,
+    limb_triangles: GpuBuffer<u32>,
+    lods: GpuBuffer<Lod>,
+    every: GpuBuffer<Instance>,
+    kind_of: GpuBuffer<u32>,
+    pub slots: Vec<Slot>,
+    seen: Chosen,
+    shadowed: Chosen,
+    /// Whether the lists need laying out again (a tile came or went).
+    laid: bool,
+    pub cards_to: f32,
+    pub impostors_to: f32,
+    pub card_px: f32,
+    pub cell: f32,
+    /// What the camera keeps clear of leaves (`vegetation::CardDraw::clear`).
+    pub clear: vec4,
+}
+
+impl Wood {
+    /// A wood of `kinds` (cooked with `atlas`) and far kinds (`far_kinds`: each its own kind's
+    /// index), with room for `slots` tiles.
+    pub fn new(
+        kinds: take Vec<Kind>,
+        far_kinds: take Vec<u32>,
+        atlas: take Texture<Rgba8>,
+        slots: u32,
+        cards_to: f32,
+        impostors_to: f32,
+    ) -> Wood {
+        var outlines: GpuBuffer<vec2> = buffer(plant::LEAF_PATTERNS * plant::OUTLINE)
+        dispatch(
+            cook_outlines.bind(atlas, mut outlines),
+            over: plant::LEAF_PATTERNS * plant::OUTLINE,
+        )
+        var most = 1
+        var most_limbs = 1
+        for k in kinds {
+            most = max(most, k.card_count)
+            most_limbs = max(most_limbs, k.limb_count)
+        }
+        var kind_of: GpuBuffer<u32> = buffer(slots * SLOT)
+        write(mut kind_of, 0, Vec::filled(slots * SLOT, NO_KIND))
+        let n = kinds.len() + far_kinds.len()
+        var w = Wood {
+            kinds: take kinds,
+            far_kinds: take far_kinds,
+            atlas: take atlas,
+            outlines: take outlines,
+            card_triangles: buffer_of(card_indices(most)),
+            limb_triangles: buffer_of(limb_indices(most_limbs)),
+            lods: buffer(max(n, 1)),
+            every: buffer(slots * SLOT),
+            kind_of: take kind_of,
+            slots: Vec::from_fn(
+                slots,
+                |_| Slot { tile: None, far: false, count: 0, kinds: Vec::filled(n, 0) },
+            ),
+            seen: Chosen::empty(),
+            shadowed: Chosen::empty(),
+            laid: false,
+            cards_to,
+            impostors_to,
+            card_px: lod::CARD_PX,
+            cell: 1.0,
+            clear: vec4(0.0),
+        }
+        w.write_lods()
+        w
+    }
+
+    /// All the kinds its instances name: its own and its far ones.
+    pub fn all_kinds(self) -> u32 {
+        self.kinds.len() + self.far_kinds.len()
+    }
+
+    /// The kind kind `k` is drawn as: its own, or a far kind's own.
+    pub fn own(self, k: u32) -> u32 {
+        if k < self.kinds.len() { k } else { self.far_kinds[k - self.kinds.len()] }
+    }
+
+    /// How kind `k`'s instances choose their level: a far kind's are past their cards from the
+    /// first metre.
+    pub fn lod(self, k: u32) -> Lod {
+        borrow kind = self.kinds[self.own(k)]
+        Lod {
+            cards_to: if k < self.kinds.len() { self.cards_to } else { 1.0e-3 },
+            impostors_to: self.impostors_to,
+            leaf: kind.plant.leaves.size,
+            top: kind.top,
+            reach: kind.reach,
+            card_px: self.card_px,
+            cell: self.cell,
+        }
+    }
+
+    /// The kinds' levels, to the GPU (after a change of where they hand over).
+    pub fn write_lods(mut self) {
+        var l: Vec<Lod> = Vec::new()
+        for k in 0..self.all_kinds() {
+            l.push(self.lod(k))
+        }
+        if l.len() > 0 {
+            write(mut self.lods, 0, l)
+        }
+    }
+
+    /// The slot holding tile `t`'s own trees (or its far layer's, `far`), if they're loaded.
+    pub fn slot_of(self, t: vec2i, far: bool = false) -> Option<u32> {
+        for i in 0..self.slots.len() {
+            if self.slots[i].tile == Some(t) && self.slots[i].far == far {
+                return Some(i)
+            }
+        }
+        None
+    }
+
+    /// Whether a slot is free.
+    pub fn has_room(self) -> bool {
+        for s in self.slots {
+            if s.tile.is_none() {
+                return true
+            }
+        }
+        false
+    }
+
+    /// Loads tile `t`'s instances (at most `SLOT`; each an instance and its kind) into a free slot:
+    /// false if there's none. A far layer's (`far`) name far kinds.
+    pub fn load(mut self, t: vec2i, placed: [vegetation::Placed], far: bool = false) -> bool {
+        var free = self.slots.len()
+        for i in 0..self.slots.len() {
+            if self.slots[i].tile.is_none() && free == self.slots.len() {
+                free = i
+            }
+        }
+        if free == self.slots.len() {
+            return false
+        }
+        let n = min(placed.len(), SLOT)
+        var at: Vec<Instance> = Vec::with_capacity(SLOT)
+        var kinds: Vec<u32> = Vec::with_capacity(SLOT)
+        var per: Vec<u32> = Vec::filled(self.all_kinds(), 0)
+        for i in 0..n {
+            at.push(placed[i].at)
+            kinds.push(placed[i].kind)
+            per[placed[i].kind] += 1
+        }
+        while kinds.len() < SLOT {
+            at.push(Instance { at: vec3(0.0), yaw: 0.0, tint: vec3(0.0), scale: 0.0 })
+            kinds.push(NO_KIND)
+        }
+        write(mut self.every, free * SLOT, at)
+        write(mut self.kind_of, free * SLOT, kinds)
+        self.slots[free] = Slot { tile: Some(t), far, count: n, kinds: take per }
+        self.laid = false
+        true
+    }
+
+    /// Drops tile `t`'s instances (or its far layer's, `far`), if they're loaded.
+    pub fn drop(mut self, t: vec2i, far: bool = false) {
+        if let Some(i) = self.slot_of(t, far) {
+            write(mut self.kind_of, i * SLOT, Vec::filled(SLOT, NO_KIND))
+            self.slots[i] = Slot {
+                tile: None,
+                far: false,
+                count: 0,
+                kinds: Vec::filled(self.all_kinds(), 0),
+            }
+            self.laid = false
+        }
+    }
+
+    /// Every kind's loaded instances.
+    fn per_kind(self) -> Vec<u32> {
+        var out: Vec<u32> = Vec::filled(self.all_kinds(), 0)
+        for s in self.slots {
+            for k in 0..self.all_kinds() {
+                out[k] += s.kinds[k]
+            }
+        }
+        out
+    }
+
+    /// The instances loaded (the tiles' own, not the far layer's).
+    pub fn loaded(self) -> u32 {
+        var n = 0
+        for s in self.slots {
+            if !s.far {
+                n += s.count
+            }
+        }
+        n
+    }
+
+    fn lay_out(mut self) {
+        if !self.laid {
+            var per = self.per_kind()
+            self.seen.lay_out(self.kinds, self.far_kinds, per, WAYS)
+            // The far layer casts no shadow of its own (the cascades' trees are the tiles').
+            for k in self.kinds.len()..self.all_kinds() {
+                per[k] = 0
+            }
+            self.shadowed.lay_out(self.kinds, self.far_kinds, per, 1)
+            self.laid = true
+        }
+    }
+
+    /// This frame's lists for `cam`, chosen on the GPU.
+    pub fn select(mut self, cam: Camera) {
+        self.lay_out()
+        let corner = atan(cam.tan_half * sqrt(1.0 + cam.aspect * cam.aspect))
+        let c = Choose {
+            cam,
+            corner,
+            kinds: self.all_kinds(),
+            shadow: 0,
+            instances: self.slots.len() * SLOT,
+            square: vec4(0.0),
+        }
+        self.seen.run(c, self.every, self.kind_of, self.lods)
+    }
+
+    /// The lists for a shadow cascade: every instance within the square `lo` to `hi` (x, z).
+    pub fn select_shadow(mut self, cam: Camera, lo: vec2, hi: vec2) {
+        self.lay_out()
+        let c = Choose {
+            cam,
+            corner: 0.0,
+            kinds: self.all_kinds(),
+            shadow: 1,
+            instances: self.slots.len() * SLOT,
+            square: vec4(lo, hi),
+        }
+        self.shadowed.run(c, self.every, self.kind_of, self.lods)
+    }
+
+    fn card_draw_of(self, l: List, cam: Camera, wind: Wind) -> CardDraw {
+        let d = card_draw(
+            wind,
+            l.how,
+            self.kinds[self.own(l.kind)].plant.leaves,
+            cam.right,
+            cam.up,
+            self.cell,
+            l.how,
+        )
+        CardDraw { clear: self.clear, ..d }
+    }
+
+    /// The depth prepass's draws (`Forest::prepass`): the far instances' cut quads, then each
+    /// list of cards, cut, into the depth target alone.
+    pub fn prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
+        borrow lists = self.seen.lists
+        for li in 0..lists.len() {
+            let l = lists[li]
+            if l.room == 0 || !(l.how == IMPOSTOR || l.how == VOLUME) {
+                continue
+            }
+            borrow k = self.kinds[self.own(l.kind)]
+            let far = far_quad.bind(
+                cam,
+                wind,
+                k.impostor.bake,
+                instances: self.seen.instances_of(l),
+                marks: self.seen.marks_of(l),
+                bounds: k.impostor.bounds,
+                first: l.first,
+                front: 0,
+            )
+            if l.how == IMPOSTOR {
+                draw(
+                    pass,
+                    far,
+                    far_cut.bind(
+                        cam,
+                        k.impostor.bake,
+                        colour: k.impostor.colour,
+                        normal: k.impostor.normal,
+                        s: s,
+                        cell: self.cell,
+                    ),
+                    indirect: self.seen.far.at(li),
+                    depth: NEAREST,
+                )
+            } else {
+                draw(
+                    pass,
+                    far,
+                    volume_cut.bind(
+                        cam,
+                        k.impostor.bake,
+                        grid: k.volume.grid,
+                        grid_depth: k.volume.grid_depth,
+                        s: s,
+                        cell: self.cell,
+                    ),
+                    indirect: self.seen.far.at(li),
+                    depth: NEAREST,
+                )
+            }
+        }
+        for li in 0..lists.len() {
+            let l = lists[li]
+            if l.room == 0 || l.how >= CARD_LEVELS || self.kinds[self.own(l.kind)].card_count == 0 {
+                continue
+            }
+            borrow k = self.kinds[self.own(l.kind)]
+            let d = self.card_draw_of(l, cam, wind)
+            draw(
+                pass,
+                card.bind(
+                    cam,
+                    d,
+                    cards: k.cards_at(l.how),
+                    instances: self.seen.instances_of(l),
+                    marks: self.seen.marks_of(l),
+                    outlines: self.outlines,
+                    orders: k.orders,
+                ),
+                leaf_cut.bind(d, atlas: self.atlas, s: s),
+                indices: self.card_triangles,
+                indirect: self.seen.args.at(li).cards,
+                depth: NEAREST,
+            )
+        }
+    }
+
+    /// The shading pass's draws (`Forest::shade`): the cards where the prepass left their depth,
+    /// the limbs, then the far instances.
+    pub fn shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+        let cam = lt.cam
+        borrow lists = self.seen.lists
+        for li in 0..lists.len() {
+            let l = lists[li]
+            if l.room == 0 || l.how >= CARD_LEVELS || self.kinds[self.own(l.kind)].card_count == 0 {
+                continue
+            }
+            borrow k = self.kinds[self.own(l.kind)]
+            let d = self.card_draw_of(l, cam, wind)
+            draw(
+                pass,
+                card.bind(
+                    cam,
+                    d,
+                    cards: k.cards_at(l.how),
+                    instances: self.seen.instances_of(l),
+                    marks: self.seen.marks_of(l),
+                    outlines: self.outlines,
+                    orders: k.orders,
+                ),
+                leaf_shade.bind(
+                    cards: k.cards_at(l.how),
+                    instances: self.seen.instances_of(l),
+                    lt: lt,
+                    leaves: k.plant.leaves,
+                    atlas: self.atlas,
+                ),
+                indices: self.card_triangles,
+                indirect: self.seen.args.at(li).cards,
+                depth: PREPASSED,
+            )
+        }
+        for li in 0..lists.len() {
+            let l = lists[li]
+            if l.room == 0 || l.how >= CARD_LEVELS {
+                continue
+            }
+            borrow k = self.kinds[self.own(l.kind)]
+            if k.limb_count > 0 {
+                draw(
+                    pass,
+                    limb.bind(
+                        cam,
+                        limbs: k.limbs.span(start: 0, count: k.limb_count),
+                        instances: self.seen.instances_of(l),
+                        marks: self.seen.marks_of(l),
+                    ),
+                    bark_shade.bind(lt, k.plant.bark),
+                    indices: self.limb_triangles,
+                    indirect: self.seen.args.at(li).limbs,
+                    cull: std::gpu::Cull::Back,
+                    depth: NEAREST,
+                )
+            }
+        }
+        for li in 0..lists.len() {
+            let l = lists[li]
+            if l.room == 0 || !(l.how == IMPOSTOR || l.how == VOLUME) {
+                continue
+            }
+            borrow k = self.kinds[self.own(l.kind)]
+            let far = far_quad.bind(
+                cam,
+                wind,
+                k.impostor.bake,
+                instances: self.seen.instances_of(l),
+                marks: self.seen.marks_of(l),
+                bounds: k.impostor.bounds,
+                first: l.first,
+                front: 1,
+            )
+            if l.how == IMPOSTOR {
+                draw(
+                    pass,
+                    far,
+                    far_shade.bind(
+                        lt,
+                        ids,
+                        k.impostor.bake,
+                        colour: k.impostor.colour,
+                        normal: k.impostor.normal,
+                        grid: k.volume.grid,
+                    ),
+                    indirect: self.seen.far.at(li),
+                    depth: impostor::SHADED,
+                )
+            } else {
+                draw(
+                    pass,
+                    far,
+                    volume_shade.bind(
+                        lt,
+                        ids,
+                        k.impostor.bake,
+                        grid: k.volume.grid,
+                        grid_depth: k.volume.grid_depth,
+                        cell: self.cell,
+                    ),
+                    indirect: self.seen.far.at(li),
+                    depth: impostor::SHADED,
+                )
+            }
+        }
+    }
+
+    /// A shadow cascade's draws (`Forest::shadow`), of what `select_shadow` chose: each kind's
+    /// cards at level 1, facing the sun, cut to their leaves, and its limbs.
+    pub fn shadow<P: RenderPass>(self, pass: P, view: mat4, sh: Shadows, wind: Wind, s: Sampler) {
+        borrow lists = self.shadowed.lists
+        for li in 0..lists.len() {
+            let l = lists[li]
+            if l.room == 0 {
+                continue
+            }
+            borrow k = self.kinds[self.own(l.kind)]
+            let instances = self.shadowed.instances_of(l)
+            let level = 1
+            if k.card_count > 0 {
+                let leaves = Leaves { per_card: SHADOW_LEAVES, ..k.plant.leaves }
+                let d = card_draw(wind, level, leaves, sh.right, sh.up, self.cell, ALL)
+                draw(
+                    pass,
+                    card_shadow.bind(
+                        view,
+                        d,
+                        cards: k.cards_at(level),
+                        instances: instances,
+                        outlines: self.outlines,
+                    ),
+                    leaf_cut.bind(d, atlas: self.atlas, s: s),
+                    indices: self.card_triangles,
+                    indirect: self.shadowed.args.at(li).cards,
+                    depth_bias: CASTER,
+                )
+            }
+            if k.limb_count > 0 {
+                draw(
+                    pass,
+                    limb_shadow.bind(
+                        view,
+                        limbs: k.limbs.span(start: 0, count: k.limb_count),
+                        instances: instances,
+                    ),
+                    nothing,
+                    indices: self.limb_triangles,
+                    indirect: self.shadowed.args.at(li).limbs,
+                    depth_bias: CASTER,
+                )
+            }
+        }
+    }
+}

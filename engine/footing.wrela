@@ -222,16 +222,24 @@ impl Obstacles {
     /// `p` pushed out of every solid obstacle (not a stream) a body of radius `body` overlaps,
     /// and whether it overlapped any.
     pub fn push(self, p: vec2, body: f32) -> (vec2, bool) {
-        var q = p
+        let (by, hit) = self.push_by(p, body)
+        (p + by, hit)
+    }
+
+    /// How far `push` moves `p`, and whether it overlapped any: the push alone, so a body far
+    /// from the origin (whose world point is coarse in `f32`) moves by exactly its step when
+    /// nothing is in its way.
+    pub fn push_by(self, p: vec2, body: f32) -> (vec2, bool) {
+        var by = vec2(0.0)
         var hit = false
         for _ in 0..3 {
             var moved = false
-            let at = q
+            let at = p + by
             self.near(at, |o| {
                 if o.thing != Thing::Stream {
-                    let (d, out) = o.reach(q)
+                    let (d, out) = o.reach(p + by)
                     if d < body {
-                        q += out * (body - d + 1.0e-3)
+                        by += out * (body - d + 1.0e-3)
                         moved = true
                     }
                 }
@@ -241,7 +249,7 @@ impl Obstacles {
                 break
             }
         }
-        (q, hit)
+        (by, hit)
     }
 
     /// Whether a body of radius `body` at `p` overlaps a solid obstacle.
@@ -342,23 +350,26 @@ pub fn obstacles_of(
 
 // ---- a step -------------------------------------------------------------------------------------
 
-/// Where a body of radius `body` stepping from `p` by `d` ends: pushed out of the obstacles, and
-/// held back from ground it can't stand on (it slides along the way it can go, or stays). And
-/// how fast it goes there against open level ground (`pace`, with the streams' water).
+/// How far a body of radius `body` stepping from `p` by `d` moves: pushed out of the obstacles,
+/// and held back from ground it can't stand on (it slides along the way it can go, or stays).
+/// And how fast it goes where it ends against open level ground (`pace`, with the streams'
+/// water). The move, not the end: with nothing in its way it's `d` exactly.
 pub fn step<G: Ground>(g: G, w: Water, o: Obstacles, p: vec2, d: vec2, body: f32) -> (vec2, f32) {
     let tries = [d, vec2(d.x, 0.0), vec2(0.0, d.y)]
     for t in tries {
-        let (q, _) = o.push(p + t, body)
-        if length(q - p) > 2.0 * length(d) + 0.05 {
+        let (by, _) = o.push_by(p + t, body)
+        let moved = t + by
+        if length(moved) > 2.0 * length(d) + 0.05 {
             // Pushed further than it stepped: squeezed between two obstacles.
             continue
         }
+        let q = p + moved
         let k = stands(g, w, o, q)
         if k > 0.0 && !o.blocked(q, body) {
-            return (q, k)
+            return (moved, k)
         }
     }
-    (p, stands(g, w, o, p))
+    (vec2(0.0), stands(g, w, o, p))
 }
 
 /// How fast a player goes at `p` (0 can't stand there): the ground's `pace`, slowed in a stream's

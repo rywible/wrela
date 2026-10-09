@@ -1,18 +1,953 @@
-// The Last Green's floor (#54): the program. (Built up in steps: the map, its history, its bake,
-// the check on the bake.)
+// The Last Green's floor (#54): the program. The player at the gate, the sim stepping it on the
+// ticker's thread (world.wrela); the floor drawn by the engine's renderer as M5 drew the clearing
+// (the scene at half the output's resolution, jittered, into a linear-light target with depth and
+// tags; temporal AA up to the output; the look's passes to the screen), seen by the third
+// person's camera; its trees from the bake's tiles, fetched as files the build shipped.
 
-use history::{BAKED, CHECKED, OBSTACLES}
-use std::io::print
+use engine::air::{Air, Tables, hazy, tables}
+use engine::character::{
+    PartOf, character, character_motion, character_shade, character_shadow, motion,
+}
+use engine::standin::{placed as standin_at, realize_standin}
+use engine::bake::{Decisions, Far, decode_far, decode_tile, tile_name}
+use engine::grass::{Blooms, Grass, GrassLook}
+use engine::light::{Light, SUN_TOP, sunlight}
+use engine::lit::Lighting
+use engine::paint::{
+    Develop, Exposure, Look, Metering, dab_map, develop, glow_blur, glow_down, meter,
+}
+use engine::place::{Place, TILE}
+use engine::plant::{Plant, Wind, full, leaf_atlas}
+use engine::player::{Framing, third_person}
+use engine::present::Snapshots
+use engine::probes::{Baked, Trace, grid}
+use engine::run::run
+use engine::shadow::{CASTER, Cascade, Shadows, shadows}
+use engine::sky::{Clouds, Sky, new_sky, sky_shade}
+use engine::temporal::{Resolve, neighbourhoods, resolve}
+use engine::terrain::{Clipmap, Terrain, ground, ground_shade}
+use engine::vegetation::{Kind, Placed, kind}
+use engine::wood::Wood
+use engine::view::{BEHIND, Camera, NEAREST, camera, first_camera}
+use history::{BAKED, OBSTACLES, tiles_hi, tiles_lo}
+use std::collections::{Flags, replace, swap}
+use std::gpu::{
+    Address, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer, GpuSpan,
+    R32Uint, RenderPass, Rgba16Float, Rgba8, Sampler, Texture, begin_depth_pass, begin_pass,
+    begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture, dispatch,
+    draw, label, sampler, texture, writable_texture, write,
+}
+use std::input::{Event, Key, events}
+use std::io::{Pending, print}
+use world::{GROUND, World, present as snapshot, spawn_world, tick}
 
-pub fn init() -> u32 {
-    var total = 0
-    for i in 0..BAKED.len() {
-        total += BAKED.size(i)
-    }
-    print(
-        f"the bake: {BAKED.len()} files, {total} bytes; {OBSTACLES.len()} obstacles; the check: {CHECKED.len()} files",
-    )
-    0
+/// The scene's size against the output's: half each way (#51 Q3).
+const SCALE: u32 = 2
+
+/// Toward the sun: the clearing's (low, 24°).
+pub const SUN = vec3(0.900, 0.407, -0.159)
+
+/// How the camera meters (`paint::meter`), the clearing's rule.
+const METERING = Metering {
+    base: 0.62,
+    reference: 0.136,
+    strength: 0.5,
+    lo: 0.15,
+    hi: 0.75,
+    rate: 0.05,
+    fresh: 0,
 }
 
-pub fn frame(s: mut u32, time: f32, width: u32, height: u32) {}
+/// Where the forest's levels hand over: its cards to impostors, and impostors to volumes (m).
+const CARDS_TO: f32 = 150.0
+const IMPOSTORS_TO: f32 = 1000.0
+
+/// The forest's kinds cooked a frame at load.
+const KINDS_PER_FRAME: u32 = 2
+
+/// The tiles streamed round the player: those within `WANT` of the eye are fetched (the nearest
+/// first, `IN_FLIGHT` at a time) and placed (one a frame), those past `DROP` dropped; room for
+/// `SLOTS` at once.
+const WANT: f32 = 1000.0
+const DROP: f32 = 1200.0
+const IN_FLIGHT: u32 = 4
+const SLOTS: u32 = 160
+
+/// The static cascades: round the player (about 7 cm a texel), and the floor's.
+const NEAR_SPAN: f32 = 144.0
+const FAR_CASCADE = Cascade {
+    centre: vec3(650.0, 0.0, -500.0),
+    span: 2400.0,
+    reach: 2600.0,
+    side: 2048,
+}
+
+/// How far the player goes from the near cascade's middle before it's drawn again round it (m).
+const NEAR_MOVES: f32 = 40.0
+
+/// The moving map: its texels a side, and how wide it is round the player (m).
+const MOVING_SIDE: u32 = 1024
+const MOVING_SPAN: f32 = 6.0
+
+/// The probes round the player: their columns each way and spacing (spike 17: 160 m, 2 m).
+const PROBE_COLS: u32 = 81
+const PROBE_SPACING: f32 = 2.0
+
+/// The systems a frame can leave out (the keys F1–F4 toggle them).
+enum System: Copy + Eq + Fieldless {
+    Trees,
+    Grass,
+    Shadows,
+    Terrain,
+}
+
+fn on(off: Flags<System>, system: System) -> bool {
+    !off.has(system)
+}
+
+/// The air the sun shines through, cooked from the gate's eye.
+fn air_of() -> Air {
+    hazy(SUN, SUN_TOP, eye: GROUND.at(x: 0.0, z: 0.0) + 2.0)
+}
+
+fn sun_light() -> Light {
+    sunlight(air_of())
+}
+
+/// The wind at `time`.
+fn wind(time: f32) -> Wind {
+    Wind { dir: normalize(vec2(-0.55, 0.3)), strength: 0.035, time }
+}
+
+/// A tile being fetched: which, and its request.
+struct Fetching {
+    tile: vec2i,
+    pending: Pending<u8>,
+}
+
+/// A tile come and decoded: its instances, to place.
+struct Arrived {
+    tile: vec2i,
+    placed: Vec<Placed>,
+}
+
+pub struct Floor {
+    snaps: Snapshots<World>,
+    clipmap: Clipmap,
+    light: Light,
+    air: Air,
+    tables: Tables,
+    air_cooked: bool,
+    cam: Camera,
+    /// The kinds' plants, the kinds cooked so far and their leaves' atlas, the wood (once
+    /// they're all cooked), the tiles being fetched, and those come but not yet placed.
+    plants: Vec<Plant>,
+    kinds: Vec<Kind>,
+    atlas: Texture<Rgba8>,
+    wood: Option<Wood>,
+    fetching: Vec<Fetching>,
+    arrived: Vec<Arrived>,
+    tiles_in: u32,
+    /// The far layer: fetched first (the first frame's payload), then each tile's instances,
+    /// loaded where the tile's own trees aren't.
+    far_fetch: Option<Pending<u8>>,
+    far_layer: Vec<Arrived>,
+    grass: Grass,
+    near: DepthTexture,
+    far: DepthTexture,
+    moving: DepthTexture,
+    cmp: ComparisonSampler,
+    /// Where the near cascade was drawn round, and whether each is drawn for what's placed.
+    near_at: vec3,
+    near_drawn: bool,
+    far_drawn: bool,
+    probes: Baked,
+    occluders_cooked: bool,
+    ready: bool,
+    sky: Sky,
+    noise_cooked: bool,
+    sky_cooked: bool,
+    clouds: Clouds,
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    ids: Texture<R32Uint>,
+    motion: Texture<Rgba16Float>,
+    last_motion: Texture<Rgba16Float>,
+    means: Texture<Rgba16Float>,
+    spreads: Texture<Rgba16Float>,
+    last_history: Texture<Rgba16Float>,
+    history: Texture<Rgba16Float>,
+    dabs: Texture<Rgba16Float>,
+    glow_a: Texture<Rgba16Float>,
+    glow_b: Texture<Rgba16Float>,
+    exposure: GpuBuffer<Exposure>,
+    linear: Sampler,
+    repeat: Sampler,
+    width: u32,
+    height: u32,
+    frames: u32,
+    off: Flags<System>,
+    framing: Framing,
+    /// The stand-in: its realized mesh (at the first frame), and its one bone's place this frame
+    /// and the last (its palettes, for the motion target).
+    standin: Option<engine::standin::Realized>,
+    palette: GpuBuffer<mat4>,
+    last_palette: GpuBuffer<mat4>,
+}
+
+/// The probes round `at`, unbaked, and what occludes them: none yet (the trees come with the
+/// tiles).
+fn probes_at(at: vec2) -> Baked {
+    let y = height_at(at)
+    let g = grid(
+        at,
+        cols: PROBE_COLS,
+        spacing: PROBE_SPACING,
+        low: y - 30.0,
+        high: y + 40.0,
+        voxel: 1.0,
+    )
+    let none: Vec<engine::probes::Occluder> = Vec::new()
+    Baked::new(g, none)
+}
+
+pub fn init() -> Floor {
+    let world = spawn_world()
+    let start = world.player.at.world()
+    let latest = run(take world, hz: 60, step: tick, present: snapshot)
+    print(f"the floor: {BAKED.len()} files baked, {OBSTACLES.len()} obstacles")
+    let atlas = leaf_atlas(6)
+    let eye = vec3(start.x, height_at(start) + 2.0, start.y)
+    Floor {
+        snaps: Snapshots::new(take latest, hz: 60),
+        clipmap: Clipmap::new(levels: 12, finest: 0.125),
+        light: sun_light(),
+        air: air_of(),
+        tables: tables(),
+        air_cooked: false,
+        cam: first_camera(eye, eye + vec3(0.0, 0.0, 1.0), 0.82, width: 960, height: 540),
+        plants: trees::plants(),
+        kinds: Vec::new(),
+        atlas: take atlas,
+        wood: None,
+        fetching: Vec::new(),
+        arrived: Vec::new(),
+        tiles_in: 0,
+        far_fetch: match BAKED.find("far.bin") {
+            Some(f) => Some(BAKED.fetch(f)),
+            None => None,
+        },
+        far_layer: Vec::new(),
+        grass: Grass::new(),
+        near: depth_texture(width: 2048, height: 2048),
+        far: depth_texture(width: FAR_CASCADE.side, height: FAR_CASCADE.side),
+        moving: depth_texture(width: MOVING_SIDE, height: MOVING_SIDE),
+        cmp: comparison_sampler(),
+        near_at: eye,
+        near_drawn: false,
+        far_drawn: false,
+        probes: probes_at(start),
+        occluders_cooked: false,
+        ready: false,
+        sky: new_sky(),
+        noise_cooked: false,
+        sky_cooked: false,
+        clouds: Clouds {
+            eye: vec3(0.0),
+            phase: 0,
+            sun: SUN,
+            blend: 1.0,
+            drift: vec2(0.0),
+            seed: 0,
+        },
+        scene: texture::<Rgba16Float>(width: 1, height: 1),
+        depth: depth_texture(width: 1, height: 1),
+        ids: texture::<R32Uint>(width: 1, height: 1),
+        motion: texture::<Rgba16Float>(width: 1, height: 1),
+        last_motion: texture::<Rgba16Float>(width: 1, height: 1),
+        means: writable_texture::<Rgba16Float>(width: 1, height: 1),
+        spreads: writable_texture::<Rgba16Float>(width: 1, height: 1),
+        last_history: texture::<Rgba16Float>(width: 1, height: 1),
+        history: texture::<Rgba16Float>(width: 1, height: 1),
+        dabs: texture::<Rgba16Float>(width: 1, height: 1),
+        glow_a: texture::<Rgba16Float>(width: 1, height: 1),
+        glow_b: texture::<Rgba16Float>(width: 1, height: 1),
+        exposure: buffer(1),
+        linear: sampler(),
+        repeat: sampler(address: Address::Repeat),
+        width: 0,
+        height: 0,
+        frames: 0,
+        off: Flags::none(),
+        framing: Framing {},
+        standin: None,
+        palette: buffer(1),
+        last_palette: buffer(1),
+    }
+}
+
+/// The ground's height at a point of the plane.
+fn height_at(p: vec2) -> f32 {
+    GROUND.at(x: p.x, z: p.y)
+}
+
+/// How far tile `t` is from `p` (m): to its nearest point.
+fn tile_distance(t: vec2i, p: vec2) -> f32 {
+    let lo = vec2(t) * TILE
+    let q = clamp(p, lo, lo + vec2(TILE))
+    length(p - q)
+}
+
+/// Whether tile `t` is coming or here.
+fn known(s: Floor, t: vec2i) -> bool {
+    for f in s.fetching {
+        if f.tile == t {
+            return true
+        }
+    }
+    for a in s.arrived {
+        if a.tile == t {
+            return true
+        }
+    }
+    match s.wood {
+        Some(w) => w.slot_of(t).is_some(),
+        None => false,
+    }
+}
+
+/// The tiles round `eye`: the nearest wanted one not yet known fetched; those come decoded and
+/// their trees placed (one a frame, once the wood is cooked); those far behind dropped.
+fn stream(s: mut Floor, eye: vec2) {
+    var i = 0
+    while i < s.fetching.len() {
+        var done = false
+        match s.fetching[i].pending.poll() {
+            Some(Ok(bytes)) => {
+                let d = decode_tile(bytes)
+                s.arrived.push(
+                    Arrived { tile: s.fetching[i].tile, placed: trees::placed(d.trees, height_at) },
+                )
+                s.tiles_in += 1
+                done = true
+            },
+            Some(Err(_)) => {
+                print(f"a tile didn't come: {s.fetching[i].tile.x}, {s.fetching[i].tile.y}")
+                done = true
+            },
+            None => {},
+        }
+        if done {
+            let _ = s.fetching.remove(i)
+        } else {
+            i += 1
+        }
+    }
+    if s.fetching.len() < IN_FLIGHT {
+        let lo = tiles_lo()
+        let hi = tiles_hi()
+        var best = vec2i(0)
+        var near = 1.0e9
+        for j in lo.y..(hi.y + 1) {
+            for x in lo.x..(hi.x + 1) {
+                let t = vec2i(x, j)
+                let d = tile_distance(t, eye)
+                if d < WANT && d < near && !known(s, t) {
+                    near = d
+                    best = t
+                }
+            }
+        }
+        if near < WANT {
+            match BAKED.find(tile_name(best).as_str()) {
+                Some(f) => s.fetching.push(Fetching { tile: best, pending: BAKED.fetch(f) }),
+                None => {},
+            }
+        }
+    }
+    // The far layer, once it's come: each tile's instances, kept to load where the tile's own
+    // trees aren't.
+    var far_came: Option<Far> = None
+    match mut s.far_fetch {
+        Some(p) => {
+            if let Some(Ok(bytes)) = p.poll() {
+                far_came = Some(decode_far(bytes))
+            }
+        },
+        None => {},
+    }
+    if let Some(far) = far_came {
+        s.far_fetch = None
+        let lo = tiles_lo()
+        let hi = tiles_hi()
+        for j in lo.y..(hi.y + 1) {
+            for x in lo.x..(hi.x + 1) {
+                let t = vec2i(x, j)
+                s.far_layer.push(Arrived { tile: t, placed: trees::far_placed(far, t, height_at) })
+            }
+        }
+    }
+    var changed = false
+    match mut s.wood {
+        Some(w) => {
+            // Each tile's far layer where its own trees aren't loaded.
+            for f in s.far_layer {
+                let own = w.slot_of(f.tile).is_some()
+                let far = w.slot_of(f.tile, far: true).is_some()
+                if own && far {
+                    w.drop(f.tile, far: true)
+                } else if !own && !far && w.has_room() {
+                    let _ = w.load(f.tile, f.placed, far: true)
+                }
+            }
+            var k = 0
+            while k < w.slots.len() {
+                if let Some(t) = w.slots[k].tile {
+                    if tile_distance(t, eye) > DROP {
+                        w.drop(t)
+                        changed = true
+                    }
+                }
+                k += 1
+            }
+            if s.arrived.len() > 0 && w.has_room() {
+                let a = s.arrived.remove(0)
+                let _ = w.load(a.tile, a.placed)
+                changed = true
+            }
+        },
+        None => {},
+    }
+    if changed {
+        s.near_drawn = false
+        s.far_drawn = false
+    }
+}
+
+/// The load's work this frame: the forest's kinds, a few a frame; the wood once they're all
+/// cooked.
+fn cook_load(s: mut Floor) {
+    if s.wood.is_some() {
+        return
+    }
+    for _ in 0..KINDS_PER_FRAME {
+        let k = s.kinds.len()
+        if k < s.plants.len() {
+            s.kinds.push(kind(s.plants[k], seed: k + 1, atlas: s.atlas, s: s.linear))
+        }
+    }
+    if s.kinds.len() == s.plants.len() {
+        let kinds = replace(mut s.kinds, Vec::new())
+        let atlas = replace(mut s.atlas, texture::<Rgba8>(width: 1, height: 1))
+        var w = Wood::new(
+            take kinds,
+            trees::far_kinds(),
+            take atlas,
+            slots: SLOTS,
+            cards_to: CARDS_TO,
+            impostors_to: IMPOSTORS_TO,
+        )
+        w.card_px = engine::lod::CARD_PX
+        w.cell = 1.0 / f32(SCALE)
+        w.write_lods()
+        s.wood = Some(take w)
+        print(f"the wood: {s.plants.len()} kinds cooked at frame {s.frames}")
+    }
+}
+
+fn keys(s: mut Floor) {
+    for e in events() {
+        if let Event::KeyDown { key, .. } = e {
+            let system = match key {
+                Key::F1 => Some(System::Trees),
+                Key::F2 => Some(System::Grass),
+                Key::F3 => Some(System::Shadows),
+                Key::F4 => Some(System::Terrain),
+                _ => None,
+            }
+            if let Some(system) = system {
+                s.off = s.off.toggled(system)
+                s.near_drawn = false
+                s.far_drawn = false
+            }
+        }
+    }
+}
+
+fn fullscreen<P: RenderPass, F: FragmentShader<ClipPosition>>(pass: P, fs: F) {
+    draw(pass, full.bind(z: 0.5), fs, vertices: 3)
+}
+
+/// The targets made again for an output of `width` × `height`, the scene's `w` × `h`.
+fn resize(s: mut Floor, width: u32, height: u32, w: u32, h: u32) {
+    s.scene = texture::<Rgba16Float>(width: w, height: h)
+    s.depth = depth_texture(width: w, height: h)
+    s.ids = texture::<R32Uint>(width: w, height: h)
+    s.motion = texture::<Rgba16Float>(width: w, height: h)
+    s.last_motion = texture::<Rgba16Float>(width: w, height: h)
+    s.means = writable_texture::<Rgba16Float>(width: w, height: h)
+    s.spreads = writable_texture::<Rgba16Float>(width: w, height: h)
+    s.dabs = texture::<Rgba16Float>(width: w, height: h)
+    s.last_history = texture::<Rgba16Float>(width: width, height: height)
+    s.history = texture::<Rgba16Float>(width: width, height: height)
+    let (qw, qh) = (max(width / 4, 1), max(height / 4, 1))
+    s.glow_a = texture::<Rgba16Float>(width: qw, height: qh)
+    s.glow_b = texture::<Rgba16Float>(width: qw, height: qh)
+    s.width = width
+    s.height = height
+    s.frames = 0
+}
+
+/// The static cascades, drawn when what casts them has changed (a tile came or went) or the near
+/// one's middle has moved: one a frame, the near first.
+fn static_shadows(s: mut Floor, sh: Shadows, wind: Wind) {
+    let shadows = on(s.off, System::Shadows)
+    let near = !s.near_drawn
+    if !near && s.far_drawn {
+        return
+    }
+    let (c, h) = if near {
+        (s.near_at.xz, vec2(NEAR_SPAN))
+    } else {
+        (FAR_CASCADE.centre.xz, vec2(FAR_CASCADE.span * 0.5))
+    }
+    match mut s.wood {
+        Some(w) => {
+            if shadows {
+                w.select_shadow(s.cam, c - h, c + h)
+            }
+        },
+        None => {},
+    }
+    label(if near { "shadows near" } else { "shadows far" })
+    let pass = if near {
+        begin_depth_pass(mut s.near, clear_depth: 1.0)
+    } else {
+        begin_depth_pass(mut s.far, clear_depth: 1.0)
+    }
+    match s.wood {
+        Some(w) => {
+            if shadows {
+                w.shadow(pass, view: if near { sh.near } else {
+                    sh.far
+                }, sh: sh, wind: wind, s: s.linear)
+            }
+        },
+        None => {},
+    }
+    pass.end()
+    if near {
+        s.near_drawn = true
+    } else {
+        s.far_drawn = true
+    }
+}
+
+/// The moving map: the stand-in, every frame.
+fn moving_shadow(s: mut Floor, sh: Shadows) {
+    label("shadow moving")
+    let mv = begin_depth_pass(mut s.moving, clear_depth: 1.0)
+    if let Some(c) = s.standin {
+        draw(
+            mv,
+            character_shadow.bind(
+                verts: c.mesh.verts.items(),
+                palettes: s.palette.items(),
+                view: sh.moving,
+            ),
+            engine::vegetation::nothing,
+            indices: c.mesh.quads.items(),
+            indirect: c.mesh.draw.items(),
+            depth_bias: CASTER,
+        )
+    }
+    mv.end()
+}
+
+/// The sky, cooked a step a frame (the clearing's order), then marched a tile a frame.
+fn cook_sky(s: mut Floor, eye: vec3, wind: Wind) {
+    if s.frames > 0 {
+        if !s.air_cooked {
+            s.tables.cook(s.air, s.linear)
+            s.probes.open(s.light, s.air.ground, s.tables.view, s.linear)
+            s.air_cooked = true
+        } else if !s.noise_cooked {
+            s.sky.cook_noise()
+            s.noise_cooked = true
+        } else if !s.sky_cooked {
+            let w = clouds::weather()
+            s.sky.cook_weather(w.clouds, w.fair, w.gap, s.light.sun, s.repeat, shadows: true)
+            s.sky_cooked = true
+        }
+    }
+    if s.sky_cooked {
+        s.clouds = s.sky.march(
+            s.air,
+            s.light,
+            s.tables,
+            eye,
+            drift: clouds::CLOUD_WIND * wind.time,
+            rep: s.repeat,
+            s: s.linear,
+            still: false,
+        )
+    }
+}
+
+fn trace_of(s: Floor) -> Trace {
+    Trace {
+        light: s.light,
+        grid: s.probes.grid,
+        foliage: vec3(0.035, 0.07, 0.02),
+        reach: 48.0,
+        leaf: vec3(0.10, 0.18, 0.04),
+        bounced: 0,
+    }
+}
+
+/// The probes: their occluders cooked once, then a strip of columns a frame, once the static
+/// shadows are drawn.
+fn bake_probes(s: mut Floor, sh: Shadows) {
+    if !s.near_drawn || !s.air_cooked {
+        return
+    }
+    if !s.occluders_cooked {
+        s.probes.cook()
+        s.occluders_cooked = true
+    } else if !s.probes.done() {
+        let trace = trace_of(s)
+        s.probes.bake_strip(
+            trace,
+            sh,
+            s.clipmap.levels(),
+            s.clipmap.texels(),
+            s.near,
+            s.far,
+            s.cmp,
+            s.tables.view,
+            s.sky.dome,
+            s.linear,
+        )
+    }
+}
+
+/// The scene's passes: the vegetation's depth prepass, the vegetation, the terrain and the sky.
+fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
+    let off = s.off
+    var grid = s.probes.grid
+    if !s.probes.done() {
+        grid.cols = 0
+    }
+    borrow probes = s.probes.maps
+    let texels = s.clipmap.texels()
+    let grounds = s.probes.grounds.span(start: 0, count: s.probes.grid.probes())
+    let lt = Lighting {
+        cam,
+        light: s.light,
+        shadows: sh,
+        grid,
+        clouds: s.clouds,
+        levels: s.clipmap.levels(),
+        near: s.near,
+        far: s.far,
+        moving: s.moving,
+        cmp: s.cmp,
+        probes,
+        grounds,
+        cloud: s.sky.shadow,
+        air: s.tables.aerial,
+        s: s.linear,
+    }
+    let stones: GpuBuffer<vec4> = buffer(1)
+    s.grass.place(
+        cam,
+        s.light,
+        grid,
+        lt.levels,
+        texels,
+        probes,
+        s.clouds,
+        s.sky.shadow,
+        s.linear,
+        grounds,
+        stones: stones.items(),
+    )
+    let trees = on(off, System::Trees)
+    match mut s.wood {
+        Some(w) => {
+            if trees {
+                w.select(cam)
+            }
+        },
+        None => {},
+    }
+    label("vegetation prepass")
+    let pre = begin_pass_with_depth(mut s.ids, mut s.depth, clear: vec4(0.0), clear_depth: 0.0)
+    match s.wood {
+        Some(w) => {
+            if trees {
+                w.prepass(pre, cam, wind, s.linear)
+            }
+        },
+        None => {},
+    }
+    if on(off, System::Grass) {
+        s.grass.prepass(pre, cam, wind)
+    }
+    pre.end()
+    label("vegetation")
+    let veg = begin_pass_with_depth(mut s.scene, mut s.depth, clear: vec4(0.0), keep_depth: true)
+    if on(off, System::Grass) {
+        s.grass.shade(veg, lt, wind, GrassLook {}, Blooms {})
+    }
+    match s.wood {
+        Some(w) => {
+            if trees {
+                w.shade(veg, lt, wind, s.ids)
+            }
+        },
+        None => {},
+    }
+    veg.end()
+    label("terrain")
+    let ter = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)
+    if on(off, System::Terrain) {
+        for l in 0..lt.levels.count {
+            draw(
+                ter,
+                ground.bind(cam, lt.levels, texels),
+                ground_shade.bind(lt, texels),
+                indices: s.clipmap.indices(),
+                indirect: s.clipmap.draw_args(l),
+                depth: NEAREST,
+            )
+        }
+    }
+    ter.end()
+    label("creature")
+    let cr = begin_pass_with_depth(
+        mut s.scene,
+        mut s.depth,
+        keep: true,
+        keep_depth: true,
+        join: true,
+    )
+    if let Some(c) = s.standin {
+        draw(
+            cr,
+            character.bind(
+                verts: c.mesh.verts.items(),
+                colours: c.colours.items(),
+                palettes: s.palette.items(),
+                parts: PartOf { of: [0; 64] },
+                cam: cam,
+            ),
+            character_shade.bind(lt),
+            indices: c.mesh.quads.items(),
+            indirect: c.mesh.draw.items(),
+            cull: std::gpu::Cull::Back,
+            depth: NEAREST,
+        )
+    }
+    cr.end()
+    label("sky")
+    let sky = begin_pass_with_depth(
+        mut s.scene,
+        mut s.depth,
+        keep: true,
+        keep_depth: true,
+        join: true,
+    )
+    draw(
+        sky,
+        full.bind(z: 0.0),
+        sky_shade.bind(cam, s.light, view: s.tables.view, dome: s.sky.dome, s: s.linear),
+        vertices: 3,
+        depth: BEHIND,
+    )
+    sky.end()
+    // The stand-in's motion, where it's seen, over the older target: the last frame's is kept.
+    label("motion")
+    swap(mut s.motion, mut s.last_motion)
+    let mo = begin_pass_with_depth(mut s.motion, mut s.depth, clear: vec4(0.0), keep_depth: true)
+    if let Some(c) = s.standin {
+        draw(
+            mo,
+            character_motion.bind(
+                verts: c.mesh.verts.items(),
+                palettes: s.palette.items(),
+                last: s.last_palette.items(),
+                cam: cam,
+            ),
+            motion.bind(cam),
+            indices: c.mesh.quads.items(),
+            indirect: c.mesh.draw.items(),
+            cull: std::gpu::Cull::Back,
+            depth: engine::view::SEEN,
+        )
+    }
+    mo.end()
+}
+
+/// Temporal AA up to the output, then the look's passes to the screen.
+fn finish(s: mut Floor, cam: Camera, width: u32, height: u32) {
+    let out = vec2(f32(width), f32(height))
+    let r = Resolve {
+        cam,
+        out,
+        blend: 0.12,
+        fresh: if s.frames == 0 { 1 } else { 0 },
+        jitter: engine::view::jitter_of(cam.frame),
+        last_jitter: engine::view::jitter_of(max(cam.frame, 1) - 1),
+        moving: vec4(0.0, 0.0, -1.0, -1.0),
+    }
+    label("temporal")
+    swap(mut s.history, mut s.last_history)
+    dispatch(neighbourhoods.bind(s.scene, mut s.means, mut s.spreads), over: s.scene)
+    let p = begin_pass(mut s.history)
+    fullscreen(
+        p,
+        resolve.bind(
+            r,
+            s.scene,
+            s.depth,
+            s.motion,
+            s.last_motion,
+            s.last_history,
+            s.means,
+            s.spreads,
+            s.linear,
+        ),
+    )
+    p.end()
+    label("look")
+    let m = Metering { fresh: if s.frames == 0 { 1 } else { 0 }, ..METERING }
+    dispatch(meter.bind(s.scene, m, exposure: mut s.exposure), groups: 1)
+    let d = Develop { cam, look: Look {}, out }
+    let dp = begin_pass(mut s.dabs)
+    fullscreen(
+        dp,
+        dab_map.bind(
+            cam,
+            look: d.look,
+            out: d.out,
+            levels: s.clipmap.levels(),
+            texels: s.clipmap.texels(),
+            scene: s.scene,
+            depth: s.depth,
+        ),
+    )
+    dp.end()
+    let e = s.exposure.items()
+    let down = begin_pass(mut s.glow_a)
+    fullscreen(
+        down,
+        glow_down.bind(s.history, s: s.linear, threshold: 1.1, base: METERING.base, exposure: e),
+    )
+    down.end()
+    let x = begin_pass(mut s.glow_b)
+    fullscreen(x, glow_blur.bind(src: s.glow_a, across: 0, spread: 2.0))
+    x.end()
+    let y = begin_pass(mut s.glow_a)
+    fullscreen(y, glow_blur.bind(src: s.glow_b, across: 1, spread: 2.0))
+    y.end()
+    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    fullscreen(
+        screen,
+        develop.bind(d, s.history, s.depth, glow: s.glow_a, dabs: s.dabs, s: s.linear, exposure: e),
+    )
+    screen.present()
+}
+
+pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
+    keys(mut s)
+    let (w, h) = (max(width / SCALE, 1), max(height / SCALE, 1))
+    if width != s.width || height != s.height || f32(w) != s.cam.screen.x {
+        resize(mut s, width, height, w, h)
+    }
+    s.snaps.update()
+    let b = s.snaps.at(s.snaps.sim_time(time))
+    let pa = b.a.player
+    let pb = b.b.player
+    let feet2 = mix(pa.at.world(), pa.at.world() + pa.at.to(pb.at), vec2(b.alpha))
+    let feet = vec3(feet2.x, mix(pa.y, pb.y, b.alpha), feet2.y)
+    let c = pb.controls
+    if s.standin.is_none() {
+        s.standin = Some(realize_standin())
+    }
+    let heading = engine::present::lerp_angle(pa.heading, pb.heading, b.alpha)
+    std::gpu::copy(from: s.palette.items(), to: s.last_palette.items_mut())
+    write(mut s.palette, 0, [standin_at(feet, heading)])
+    let (eye, at) = third_person(s.framing, feet, c.yaw, c.pitch, OBSTACLES, vec2(0.0), height_at)
+    s.cam = camera(
+        eye,
+        at,
+        s.framing.fovy,
+        width: w,
+        height: h,
+        frame: s.frames,
+        time: time,
+        last: s.cam,
+    )
+    let cam = s.cam
+    let wind = wind(time)
+    // The leaves between the camera and the player fade (#54 §5).
+    match mut s.wood {
+        Some(w) => w.clear = vec4(feet + vec3(0.0, s.framing.target, 0.0), 1.1),
+        None => {},
+    }
+    s.clipmap.follow(GROUND, eye, again: false)
+    cook_load(mut s)
+    stream(mut s, eye.xz)
+    if length(eye.xz - s.near_at.xz) > NEAR_MOVES {
+        s.near_at = eye
+        s.near_drawn = false
+    }
+    let near = Cascade {
+        centre: vec3(s.near_at.x, height_at(s.near_at.xz), s.near_at.z),
+        span: NEAR_SPAN,
+        reach: 250.0,
+        side: 2048,
+    }
+    let sh = shadows(
+        s.light.sun,
+        near,
+        FAR_CASCADE,
+        moving_at: feet + vec3(0.0, 1.0, 0.0),
+        moving_span: MOVING_SPAN,
+        moving_side: MOVING_SIDE,
+        frame: s.frames,
+    )
+    static_shadows(mut s, sh, wind)
+    moving_shadow(mut s, sh)
+    cook_sky(mut s, eye, wind)
+    bake_probes(mut s, sh)
+    if !s.ready &&
+        s.wood.is_some() &&
+        s.fetching.is_empty() &&
+        s.arrived.is_empty() &&
+        s.sky.done() {
+        s.ready = true
+        print(f"the floor ready at frame {s.frames}")
+    }
+    let loaded = match s.wood {
+        Some(w) => w.loaded(),
+        None => 0,
+    }
+    if s.frames % 60 == 0 {
+        print(
+            f"frame {s.frames}: the player at {feet.x:.1}, {feet.z:.1}; {s.tiles_in} tiles come, {loaded} instances loaded",
+        )
+    }
+    draw_scene(mut s, cam, sh, wind)
+    finish(mut s, cam, width, height)
+    s.frames += 1
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// The floor's first frames run on the native host's GPU, its tiles fetched.
+@test(frames: 40, gpu: true)
+fn the_first_frames_run(s: Floor) {
+    assert(s.frames == 40, f"{s.frames} frames drawn")
+}

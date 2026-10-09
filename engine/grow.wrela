@@ -78,7 +78,9 @@ impl Grid {
     }
 
     /// A box blur of a field over this grid, `r` cells each way, across then down: running sums,
-    /// the edges clamped; its rows, then its columns, in parallel.
+    /// the edges clamped; its rows, then strips of its columns (each strip's running sums go down
+    /// it a row at a time, so it reads and writes memory in order), then its rows put together
+    /// from the strips, each step in parallel.
     pub fn blur(self, g: [f32], r: i32) -> Vec<f32> {
         let (nx, nz) = (self.nx, self.nz)
         var rows: Vec<Line> = Vec::from_fn(nz, |j| Line { k: j, out: Vec::new() })
@@ -87,13 +89,23 @@ impl Grid {
         for mut l in rows {
             a.append(mut l.out)
         }
-        var cols: Vec<Line> = Vec::from_fn(nx, |i| Line { k: i, out: Vec::new() })
-        cols.par_each_mut(|l| blur_column(mut l, a, nx, nz, r))
-        var b: Vec<f32> = Vec::filled(nx * nz, 0.0)
-        for l in cols {
-            for j in 0..nz {
-                b[j * nx + l.k] = l.out[j]
+        let strips = (nx + STRIP - 1) / STRIP
+        var cols: Vec<Line> = Vec::from_fn(strips, |i| Line { k: i, out: Vec::new() })
+        cols.par_each_mut(|l| blur_strip(mut l, a, nx, nz, r))
+        var back: Vec<Line> = Vec::from_fn(nz, |j| Line { k: j, out: Vec::new() })
+        back.par_each_mut(|l| {
+            l.out = Vec::with_capacity(nx)
+            for c in cols {
+                let w = min(STRIP, nx - c.k * STRIP)
+                let at = l.k * w
+                for i in 0..w {
+                    l.out.push(c.out[at + i])
+                }
             }
+        })
+        var b: Vec<f32> = Vec::with_capacity(nx * nz)
+        for mut l in back {
+            b.append(mut l.out)
         }
         b
     }
@@ -188,20 +200,35 @@ fn blur_row(l: mut Line, g: [f32], nx: u32, r: i32) {
     }
 }
 
-fn blur_column(l: mut Line, a: [f32], nx: u32, nz: u32, r: i32) {
+/// The columns a strip of a blur holds.
+const STRIP: u32 = 32
+
+/// Strip `l.k`'s columns blurred down, `r` cells each way: its rows one after another, each the
+/// strip's width.
+fn blur_strip(l: mut Line, a: [f32], nx: u32, nz: u32, r: i32) {
     let w = 1.0 / f32(2 * r + 1)
-    let i = l.k
+    let i0 = l.k * STRIP
+    let n = min(STRIP, nx - i0)
     let last = i32(nz) - 1
-    l.out = Vec::filled(nz, 0.0)
-    var s = 0.0
+    l.out = Vec::filled(nz * n, 0.0)
+    var s = [0.0; 32]
     for k in 0..(2 * r + 1) {
-        s += a[u32(clamp(k - r, 0, last)) * nx + i]
+        let row = u32(clamp(k - r, 0, last)) * nx + i0
+        for i in 0..n {
+            s[i] += a[row + i]
+        }
     }
-    l.out[0] = s * w
+    for i in 0..n {
+        l.out[i] = s[i] * w
+    }
     for j in 1..nz {
-        s += a[u32(clamp(i32(j) + r, 0, last)) * nx + i] -
-            a[u32(clamp(i32(j) - r - 1, 0, last)) * nx + i]
-        l.out[j] = s * w
+        let add = u32(clamp(i32(j) + r, 0, last)) * nx + i0
+        let sub = u32(clamp(i32(j) - r - 1, 0, last)) * nx + i0
+        let at = j * n
+        for i in 0..n {
+            s[i] += a[add + i] - a[sub + i]
+            l.out[at + i] = s[i] * w
+        }
     }
 }
 
@@ -487,8 +514,9 @@ pub struct Grain: Copy {
     pub seed_every: i32,
 }
 
-/// The bake's grain: 2 m cells, 2-year steps, the herd on 1 m.
-pub const BAKE = Grain { cell: 2.0, step: 2, herd_cell: 2.0, years: 500, trips: 8, seed_every: 10 }
+/// The bake's grain: 2 m cells, 2-year steps, the herd on 2 m; three centuries, which the
+/// forest's numbers settle within (a stand of the first forest's is gone or old by then).
+pub const BAKE = Grain { cell: 2.0, step: 2, herd_cell: 2.0, years: 300, trips: 8, seed_every: 10 }
 /// The preview's: 4 m cells, 10-year steps, the herd on 2 m.
 pub const PREVIEW = Grain {
     cell: 4.0,
@@ -989,7 +1017,7 @@ pub fn canopy(g: Grid, trees: [Tree], habits: [Habit], year: i32) -> (Vec<f32>, 
     }
     // Light at the ground: what comes down through the crowns, and what comes in from the side
     // where the sky is open nearby (an edge's ground sees half the sky).
-    let down = g.blur(light, 1)
+    let down = g.blur(light, i32(max(round(4.0 / g.cell), 1.0)))
     let side = g.blur(light, i32(max(round(8.0 / g.cell), 1.0)))
     for k in 0..nn {
         light[k] = 0.65 * down[k] + 0.35 * side[k]
@@ -1022,15 +1050,11 @@ fn rain_of(r: mut Rain, g: Grid, trees: [Tree], habits: [Habit], light: [f32], y
     }
     let rad = i32(max(round(h.reach / SEED_CELL / 2.0), 1.0))
     let spread = coarse.blur(coarse.blur(crop, rad), rad)
-    // A tent's peak holds 1 / (2r + 1)² of the crop: scaled so a tree's own 2 m cell sees about
-    // what the disk's centre did in the bake's grain.
-    let gain = f32((2 * rad + 1) * (2 * rad + 1)) *
-        0.25 *
-        (2.0 / SEED_CELL) *
-        (2.0 / SEED_CELL) *
-        (g.cell / 2.0) *
-        (g.cell / 2.0)
-    let wind = if h.windborne { 0.00003 * total * (g.cell / 2.0) * (g.cell / 2.0) } else { 0.0 }
+    // A tent's peak holds 1 / (2r + 1)² of the crop: scaled so a 2 m cell sees about what the
+    // disk's centre did. The seed is what falls on 2 m whatever the grain: a coarser cell's
+    // chance of a seedling is its area's (`recruit_row`), so it isn't counted twice.
+    let gain = f32((2 * rad + 1) * (2 * rad + 1)) * 0.25 * (2.0 / SEED_CELL) * (2.0 / SEED_CELL)
+    let wind = if h.windborne { 0.00003 * total } else { 0.0 }
     r.out = Vec::filled(nn, 0.0)
     for k in 0..nn {
         let l = light[k]
@@ -1046,6 +1070,10 @@ fn rain_of(r: mut Rain, g: Grid, trees: [Tree], habits: [Habit], light: [f32], y
 
 /// The grid the seed's spread is worked out on (m).
 const SEED_CELL: f32 = 8.0
+
+/// A seedling's chance to take on 2 m of ground a year where seed falls on it all, in full light
+/// and the soil it likes.
+const RECRUITS: f32 = 0.048
 
 fn seed_rain(g: Grid, trees: [Tree], habits: [Habit], fields: mut Fields, year: i32) {
     let nn = g.cells()
@@ -1133,7 +1161,7 @@ fn recruit_row(row: mut Row, cx: Cx, b: Bins, f: Fields, year: i32) {
             if est <= 0.0 {
                 continue
             }
-            var p = 0.012 *
+            var p = RECRUITS *
                 f32(cx.grain.step) *
                 area *
                 s *
@@ -1235,6 +1263,9 @@ fn live(l: mut Life, cx: Cx, f: Fields, year: i32) {
     let people = people_keep(cx.map, cx.land, c, year)
     if t.state == State::Alive {
         let age = f32(year - t.born)
+        // What threatens a tree is judged at the height it starts the step at, so a coarse step
+        // doesn't carry a sapling past browsing and shade in one jump.
+        let was = t.tall
         t.light = n.light
         let fl = clamp((n.light - h.need) / (0.9 - h.need), 0.0, 1.0)
         let soil = 1.0 - 0.6 * cx.land.thin[c]
@@ -1279,42 +1310,45 @@ fn live(l: mut Life, cx: Cx, f: Fields, year: i32) {
             let o = (old - 0.7) / 0.3
             p += 0.04 * o * o
         }
-        if t.vigour < 0.06 {
-            p += if h.need > 0.2 { 0.08 } else { 0.012 }
+        // Suppressed under its neighbours' crowns, a tree thins out of the stand (the shade-tolerant
+        // last): a pole stage of hundreds a hectare comes down to the canopy's tens.
+        if t.vigour < 0.3 && !t.pinned {
+            let suppressed = 1.0 - smoothstep(0.03, 0.3, t.vigour)
+            p += suppressed * if h.need > 0.2 { 0.08 } else { 0.05 }
             cause = Cause::Shade
         }
         // Deer browse the saplings everywhere; and where a region crops its seedlings, all of
         // them (wood pasture).
-        if t.tall < 2.0 && !t.pinned {
+        if was < 2.0 && !t.pinned {
             p += ch.deer * h.palatable * (1.0 - f.thorn[c])
-            if t.tall < 1.0 {
+            if was < 1.0 {
                 p += ch.seedlings
             }
             cause = Cause::Browsed
         }
         // Saplings starve in deep shade (the shade-tolerant least): an old stand opens beneath.
-        if t.tall < 4.0 && n.light < 0.2 {
+        if was < 4.0 && n.light < 0.25 {
             p += if h.need < 0.1 { 0.03 } else { 0.07 }
             cause = Cause::Shade
         }
         // Drought on thin soil for the deep-rooted, drowned roots in the wet for the rest.
         p += 0.015 * cx.land.thin[c] * h.deep +
             0.03 * smoothstep(0.5, 0.8, cx.land.wet[c]) * (1.0 - h.wet)
-        if t.tall < 2.5 {
+        if was < 2.5 {
             p += 0.6 * h.palatable * min(1.0, 2.5 * f.browse[c]) * (1.0 - f.thorn[c])
         }
         // A browse line keeps no shrub below it, and no sapling that would grow through it.
         if ch.browse_line > 0.0 &&
             !t.pinned &&
-            (h.thorny || h.suckers || t.tall < ch.browse_line + 1.0) {
+            (h.thorny || h.suckers || was < ch.browse_line + 1.0) {
             p += 0.3
             cause = Cause::Browsed
         }
-        if cx.land.lawn[c] && year >= cx.map.herd.arrives && t.tall < 4.0 && !t.pinned {
+        if cx.land.lawn[c] && year >= cx.map.herd.arrives && was < 4.0 && !t.pinned {
             p += 0.25
             cause = Cause::Browsed
         }
-        if f.trodden[c] > 0.25 && t.tall < 3.0 && !t.pinned {
+        if f.trodden[c] > 0.25 && was < 3.0 && !t.pinned {
             p += 0.4
             cause = Cause::Browsed
         }
@@ -1322,7 +1356,7 @@ fn live(l: mut Life, cx: Cx, f: Fields, year: i32) {
             p += 0.45
             cause = Cause::Felled
         }
-        let gusts = 0.002 * cx.land.exposed[c] * smoothstep(12.0, 25.0, t.tall) * step
+        let gusts = 0.002 * cx.land.exposed[c] * smoothstep(12.0, 25.0, was) * step
         p *= step
         if !t.pinned && draw < p + gusts {
             t.died = year
@@ -1340,6 +1374,11 @@ fn live(l: mut Life, cx: Cx, f: Fields, year: i32) {
                 t.shaped = if k >= 1000 { shaped(Shaper::Route, k - 1000) } else {
                     shaped(Shaper::Opening, k)
                 }
+            } else if (cause == Cause::Shade || cause == Cause::Browsed) && t.tall < 12.0 {
+                // A suppressed pole or a browsed sapling rots where it stands in a few years: gone
+                // before it would show as a snag.
+                t.state = State::Gone
+                t.cause = cause
             } else {
                 t.state = State::Snag
                 t.cause = cause
@@ -1602,7 +1641,13 @@ fn trip(t: mut Trip, cx: Cx, h: Herd) {
     let _ = leg(mut t, h, p, home, t.seed + 90)
 }
 
-/// A year of the herd: its trips, in parallel; then their wear and grazing, in order.
+/// The trips a year whose wear and grazing a trip's are measured against: a grain that walks the
+/// herd more often (the bake's) counts each trip for less, so every grain's herd wears and
+/// grazes the same.
+const HERD_TRIPS: f32 = 2.0
+
+/// A year of the herd (or a step's: `trips` of them): its trips, in parallel; then their wear and
+/// grazing, in order, each trip's weighed by `HERD_TRIPS` over the grain's trips a year.
 fn herd_year(herd: mut Herd, cx: Cx, routes: [u32], year: i32, trips: u32) {
     if routes.len() == 0 {
         return
@@ -1621,20 +1666,21 @@ fn herd_year(herd: mut Herd, cx: Cx, routes: [u32], year: i32, trips: u32) {
     borrow h = herd
     walks.par_each_mut(|t| trip(mut t, cx, h))
     let g = herd.grid
-    let wear = WEAR * g.cell
+    let weight = HERD_TRIPS / f32(max(cx.grain.trips, 1))
+    let wear = WEAR * g.cell * weight
     for w in walks {
         for c in w.worn {
             let x = herd.trail[c]
             herd.trail[c] = x + 2.0 * wear * (1.0 - x)
-            herd.graze[c] += 0.04
+            herd.graze[c] += 0.04 * weight
         }
         for p in w.grazed {
-            spread(g, mut herd.graze, p, r: 9.0, amount: 0.6)
+            spread(g, mut herd.graze, p, r: 9.0, amount: 0.6 * weight)
         }
         herd.steps += w.steps
         herd.lost += w.lost
     }
-    spread(g, mut herd.rest, cx.map.herd.rest, r: 6.0, amount: 0.25 * f32(trips) / 24.0)
+    spread(g, mut herd.rest, cx.map.herd.rest, r: 6.0, amount: 0.25 * f32(trips) * weight / 24.0)
 }
 
 /// Adds `amount`, fading to nothing at `r`, to `g`'s cells round `p`.
@@ -2192,6 +2238,23 @@ pub fn simulate<G: Ground, C: Clock>(
     {
         let cx = Cx { map: m, habits, land, grain }
         trees = first_forest(cx, year)
+    }
+    // The kept trees planted before the history begins, standing at its start as their years
+    // have grown them.
+    var ki = 0
+    for k in m.kept {
+        if k.year < year {
+            let h = habits[k.kind]
+            let age = f32(year - k.year)
+            let tall = h.tallest * (1.0 - exp(-age * h.rate / h.tallest))
+            var t = sapling(k.at, k.kind, k.year, tall, 51111 + ki, h)
+            t.reach = h.crown * tall
+            t.girth = min(0.9, 0.0011 * h.girth * age)
+            t.pinned = true
+            t.shaped = shaped(Shaper::Kept, ki)
+            trees.push(t)
+        }
+        ki += 1
     }
     // The herd's trips over a step, as one bookkeeping (its years' share each).
     let book = max(4, step)

@@ -826,6 +826,8 @@ pub struct Walk {
     pub found: Vec<vec2>,
     pub lost: f32,
     pub time: f32,
+    /// Of the time lost, how much was spent turning back from what it couldn't walk.
+    pub blocked: f32,
 }
 
 /// How far a walker goes between looks (m), and the visited map's cells (m).
@@ -878,7 +880,14 @@ pub fn walk<G: Ground>(
         s.grid.lo + vec2(f32(s.grid.nx), f32(s.grid.nz)) * s.grid.cell,
         SEEN_CELL,
     )
-    var w = Walk { path: Vec::new(), arrivals: Vec::new(), found: Vec::new(), lost: 0.0, time: 0.0 }
+    var w = Walk {
+        path: Vec::new(),
+        arrivals: Vec::new(),
+        found: Vec::new(),
+        lost: 0.0,
+        time: 0.0,
+        blocked: 0.0,
+    }
     var seen: Vec<bool> = Vec::filled(seen_grid.cells(), value: false)
     var found_sites: Vec<bool> = Vec::filled(m.sites.len(), value: false)
     var wanted = 0
@@ -958,6 +967,7 @@ pub fn walk<G: Ground>(
         for i in 0..v.draws.len() {
             let d = v.draws[i]
             if d.strength >= FAINT &&
+                m.inside(d.target) &&
                 !seen[seen_grid.cell_at(d.target)] &&
                 allowed(m, who, d, major_in_view) {
                 let to = normalize(d.target - p + vec2(1.0e-4))
@@ -1047,11 +1057,15 @@ pub fn walk<G: Ground>(
         }
         let next = p + go * STRIDE
         if easiest < 0.1 || !m.inside(next) {
-            // Blocked: turn about.
+            // Blocked: turn about, and give up what it was making for (the way to it is shut).
             heading += 2.0
+            if has && seen_grid.holds(target.target) {
+                seen[seen_grid.cell_at(target.target)] = true
+            }
             has = false
             w.time += 2.0
             w.lost += 2.0
+            w.blocked += 2.0
             continue
         }
         let rise = ground_at(s, next) - ground_at(s, p)
@@ -1262,6 +1276,8 @@ pub struct Cadence: Copy {
     pub longest_gap: f32,
     pub lost: f32,
     pub keystones_per_hour: f32,
+    /// The share of time lost turning back from what can't be walked.
+    pub blocked: f32,
 }
 
 /// The cadence of `walks`, of the arrivals in region `region` (`NONE` for all), against the time
@@ -1271,6 +1287,7 @@ pub fn cadence(m: Map, walks: [Walk], region: u32) -> Cadence {
     var arrivals = 0
     var found = 0
     var lost = 0.0
+    var blocked = 0.0
     var time = 0.0
     var longest = 0.0
     for w in walks {
@@ -1302,6 +1319,7 @@ pub fn cadence(m: Map, walks: [Walk], region: u32) -> Cadence {
             }
         }
         lost += w.lost * share
+        blocked += w.blocked * share
         time += w.time * share
     }
     gaps.sort_by(|a, b| a < b)
@@ -1312,6 +1330,7 @@ pub fn cadence(m: Map, walks: [Walk], region: u32) -> Cadence {
         longest_gap: longest,
         lost: lost / max(time, 1.0e-3),
         keystones_per_hour: f32(found) / max(hours, 1.0e-3),
+        blocked: blocked / max(time, 1.0e-3),
     }
 }
 
@@ -1504,7 +1523,14 @@ pub fn check<G: Ground>(
 }
 
 fn empty_walk() -> Walk {
-    Walk { path: Vec::new(), arrivals: Vec::new(), found: Vec::new(), lost: 0.0, time: 0.0 }
+    Walk {
+        path: Vec::new(),
+        arrivals: Vec::new(),
+        found: Vec::new(),
+        lost: 0.0,
+        time: 0.0,
+        blocked: 0.0,
+    }
 }
 
 /// The map's gate (its first `Gate` site), or the origin.
@@ -1609,7 +1635,7 @@ pub fn floor_area<G: Ground>(ground: G, m: Map) -> f32 {
 }
 
 fn cadence_json(c: Cadence) -> String {
-    f"{{\"draws_per_hour\": {c.arrivals_per_hour:.2}, \"median_gap\": {c.median_gap:.1}, \"longest_gap\": {c.longest_gap:.1}, \"lost\": {c.lost:.4}, \"keystones_per_hour\": {c.keystones_per_hour:.2}}}"
+    f"{{\"draws_per_hour\": {c.arrivals_per_hour:.2}, \"median_gap\": {c.median_gap:.1}, \"longest_gap\": {c.longest_gap:.1}, \"lost\": {c.lost:.4}, \"blocked\": {c.blocked:.4}, \"keystones_per_hour\": {c.keystones_per_hour:.2}}}"
 }
 
 fn coverage_json(c: Coverage) -> String {
@@ -1689,8 +1715,20 @@ pub fn report<G: Ground>(ground: G, m: Map, c: Checked) -> String {
             found.push_str(f"\"{m.sites[i].name}\": {n}")
         }
     }
+    // Each pilgrim's start, and its time lost and blocked: for finding where walkers get stuck.
+    var walks = String::new()
+    for w in c.pilgrims {
+        if !walks.is_empty() {
+            walks.push_str(", ")
+        }
+        let p0 = if w.path.is_empty() { vec2(0.0) } else { w.path[0] }
+        let pn = if w.path.is_empty() { vec2(0.0) } else { w.path[w.path.len() - 1] }
+        walks.push_str(
+            f"[{p0.x:.0}, {p0.y:.0}, {pn.x:.0}, {pn.y:.0}, {w.lost:.0}, {w.blocked:.0}, {w.time:.0}]",
+        )
+    }
     out.push_str(
-        f"  ],\n  \"critical\": {{\"median_s\": {median:.0}, \"reached\": {all}, \"of\": {c.trail.len()}, \"found\": {{{found}}}}}\n}}\n",
+        f"  ],\n  \"critical\": {{\"median_s\": {median:.0}, \"reached\": {all}, \"of\": {c.trail.len()}, \"found\": {{{found}}}}},\n  \"pilgrim_walks\": [{walks}]\n}}\n",
     )
     out
 }
@@ -1708,6 +1746,22 @@ pub fn views_bytes(m: Map, c: Checked, set: Settings) -> Vec<u8> {
     }
     for v in c.views {
         out.push(if v.walkable { u8(clamp(v.best, 0.0, 1.0) * 254.0) } else { 255 })
+    }
+    out
+}
+
+/// The check's walking grid (`Sight::walk`): each cell's pace a byte (0 to 1 as 0 to 255), rows
+/// from the grid's corner, after its size (two `u32`s) and its corner and cell (three `f32`s).
+pub fn walk_bytes(c: Checked) -> Vec<u8> {
+    let g = c.sight.grid
+    var out: Vec<u8> = Vec::new()
+    for x in [g.nx, g.nz, bitcast_u32(g.lo.x), bitcast_u32(g.lo.y), bitcast_u32(g.cell)] {
+        for k in 0..4 {
+            out.push(u8((x >> (8 * k)) & 255))
+        }
+    }
+    for w in c.sight.walk {
+        out.push(u8(clamp(w, 0.0, 1.0) * 255.0))
     }
     out
 }

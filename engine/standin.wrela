@@ -1,0 +1,98 @@
+// The stand-in player (M6 §5): a shape the climber's height (1.7 m), until the climber (the
+// duel's): a body, a head, arms and legs as rounded cones, joined smoothly, in a traveller's
+// colours. A field realized once at load, as a creature of one bone (as a stone is), and drawn
+// as the characters are (`character`: B's cel treatment, the motion target, the moving shadow
+// map), its one bone placed where the player stands each frame.
+
+use character::colours
+use creature::{Creature, Skeleton, creature}
+use look::{CreatureLook, Mesh as Tolerance}
+use realize::{Mesh, realize_rigid}
+use render::{ByChannels, Shaded}
+use std::derive::Box3
+use std::field::{Blend, Surface, round_cone, sphere}
+use std::gpu::{GpuBuffer, Unorm8x4}
+use std::transform::{rotate_y, translate}
+
+/// What a point of the stand-in carries: its colour (linear).
+pub struct Cloth: Copy + GpuData + Blend {
+    pub albedo: vec3,
+}
+
+impl Shaded for Cloth {
+    fn albedo(self) -> vec3 {
+        self.albedo
+    }
+
+    fn roughness(self) -> f32 {
+        0.85
+    }
+}
+
+/// The stand-in's colours at a point of it (its feet at the origin, +z ahead): a dark cloak over
+/// the body, a pale face, brown boots.
+fn dyed(p: vec3) -> Cloth {
+    let face = smoothstep(1.45, 1.52, p.y) * smoothstep(0.02, 0.09, p.z)
+    let boots = 1.0 - smoothstep(0.24, 0.3, p.y)
+    var c = vec3(0.07, 0.10, 0.16)
+    c = mix(c, vec3(0.28, 0.17, 0.10), vec3(boots))
+    c = mix(c, vec3(0.55, 0.38, 0.28), vec3(face))
+    Cloth { albedo: c }
+}
+
+/// The stand-in as a creature of one bone (at its feet).
+pub fn standin() -> Creature<Cloth> {
+    var s = Skeleton::new()
+    let root = s.root("stand-in", vec3(0.0))
+    let body = [
+        round_cone(vec3(0.0, 0.85, 0.0), vec3(0.0, 1.38, 0.0), r_top: 0.17, r_bottom: 0.2),
+        round_cone(vec3(-0.1, 0.1, 0.0), vec3(-0.11, 0.86, 0.0), r_top: 0.08, r_bottom: 0.06),
+        round_cone(vec3(0.1, 0.1, 0.0), vec3(0.11, 0.86, 0.0), r_top: 0.08, r_bottom: 0.06),
+        round_cone(vec3(-0.24, 0.85, 0.02), vec3(-0.22, 1.35, 0.0), r_top: 0.06, r_bottom: 0.05),
+        round_cone(vec3(0.24, 0.85, 0.02), vec3(0.22, 1.35, 0.0), r_top: 0.06, r_bottom: 0.05),
+    ].smooth_union(k: 0.06)
+    let head = sphere(0.12)
+    let shape = body.smooth_union(HeadAt { at: vec3(0.0, 1.56, 0.0), s: head }, k: 0.05)
+    let half = vec3(0.45, 0.0, 0.35)
+    creature(s)
+        .part(root, shape.with_at(|p| dyed(p)))
+        .bounded(Box3 { lo: vec3(-0.45, -0.05, -0.35), hi: vec3(0.45, 1.8, 0.35) + half * 0.0 })
+}
+
+/// A sphere moved to `at`.
+pub struct HeadAt: Copy + GpuData {
+    pub at: vec3,
+    pub s: std::field::Sphere,
+}
+
+impl Surface for HeadAt {
+    fn distance(self, p: vec3) -> f32 {
+        self.s.distance(p - self.at)
+    }
+}
+
+impl std::field::Lipschitz for HeadAt {
+    fn lipschitz(self, near: f32) -> f32 {
+        1.0
+    }
+}
+
+/// The stand-in realized: its mesh and colours (cells for a 5 mm tolerance).
+pub struct Realized {
+    pub mesh: Mesh,
+    pub colours: GpuBuffer<Unorm8x4>,
+}
+
+pub fn realize_standin() -> Realized {
+    let s = standin()
+    let look = CreatureLook { surface: Tolerance { tolerance: 5mm, largest: 3cm } }
+    let mesh = realize_rigid(s, look)
+    let colours = colours(mesh, s.field(), ByChannels {}, cell: 1cm)
+    Realized { mesh: take mesh, colours: take colours }
+}
+
+/// The stand-in's one bone where it stands: its feet at `feet`, facing `heading` (radians from
+/// +z toward +x).
+pub fn placed(feet: vec3, heading: f32) -> mat4 {
+    translate(feet) * rotate_y(heading)
+}
