@@ -32,6 +32,10 @@ pub const RULES: &[(&str, &str)] = &[
     ("fn.return-trait", "a trait in return position names one inferred concrete type"),
     ("fn.values", "a named function is a value, and so is a type's associated function: `W::work`"),
     (
+        "fn.fields",
+        "a struct's field of a function type, or a `take` parameter of one, makes the struct or the function generic over it",
+    ),
+    (
         "fn.jobs",
         "a `@job fn` runs over several frames, to each `yield`: `f.start(...)` takes its `take` parameters, `job.resume(...)` its `borrow` and `mut` ones",
     ),

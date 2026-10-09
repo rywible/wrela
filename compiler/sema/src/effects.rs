@@ -231,7 +231,75 @@ fn typed_callables(p: &Program, f: FnId, body: &Body) -> Vec<TypedArg> {
             });
         }
     });
+    // A struct's function fields: each bounded by its field's type (`fn.fields`).
+    adts_with_held(f, body, |adt, fields, held| {
+        let def = p.adt(adt);
+        let AdtKind::Struct(decl) = &def.kind else { return };
+        for (field, op) in decl.iter().zip(fields) {
+            let TyKind::Param(g) = p.types.kind(field.ty) else { continue };
+            let Some(bound) = p.param(*g).fn_bound else { continue };
+            let TyKind::FnPtr(_, _, flags) = p.types.kind(bound) else { continue };
+            if !(flags.deterministic || flags.parallel || flags.audio) {
+                continue;
+            }
+            let held_by = match &op.kind {
+                mir::OperandKind::Copy(pl) | mir::OperandKind::Move(pl, _) => held.get(&pl.local),
+                mir::OperandKind::Const(_) => None,
+            };
+            let Some(&target) = held_by else { continue };
+            out.push(TypedArg {
+                body: target,
+                span: op.span,
+                flags: *flags,
+                callee: format!("{}.{}", def.name, field.name),
+            });
+        }
+    });
     out
+}
+
+/// Calls `visit` on each struct a body builds (in its closures too), with its fields'
+/// operands and what each local holds at that point: a closure or a named function.
+fn adts_with_held(
+    f: FnId,
+    body: &Body,
+    mut visit: impl FnMut(AdtId, &[mir::Operand], &HashMap<mir::Local, BodyId>),
+) {
+    let mut held: HashMap<mir::Local, BodyId> = HashMap::new();
+    for code in &body.fns {
+        for b in &code.blocks {
+            for s in &b.stmts {
+                let (StatementKind::Assign(_, r) | StatementKind::Eval(r)) = &s.kind else {
+                    continue;
+                };
+                if let StatementKind::Assign(place, r) = &s.kind
+                    && place.proj.is_empty()
+                {
+                    match r {
+                        Rvalue::Closure(id) => {
+                            held.insert(place.local, BodyId { func: f, closure: Some(*id) });
+                        }
+                        Rvalue::FnRef(g, _) => {
+                            held.insert(place.local, BodyId { func: *g, closure: None });
+                        }
+                        Rvalue::Use(op) => {
+                            if let mir::OperandKind::Copy(from) | mir::OperandKind::Move(from, _) =
+                                &op.kind
+                                && from.proj.is_empty()
+                                && let Some(&b) = held.get(&from.local)
+                            {
+                                held.insert(place.local, b);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if let Rvalue::Adt { adt, variant: None, fields, .. } = r {
+                    visit(*adt, fields, &held);
+                }
+            }
+        }
+    }
 }
 
 /// Calls `visit` on each call in `body` (in its closures too), with what each local holds at

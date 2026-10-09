@@ -704,6 +704,16 @@ impl Own<'_> {
 /// code could return or keep it). A closure that captures only `Copy` values can: it holds
 /// copies of them. `resolve_type` checks the types written; this checks the types inferred.
 fn stored_callables(p: &Program, own: &Own, e: &Expr, out: &mut Vec<Diagnostic>) {
+    // The innermost place a closure is kept is the one reported: a struct literal that holds
+    // it, not the call that the struct is then passed to.
+    let before = out.len();
+    e.for_each_child(&mut |c| match c {
+        Child::Expr(x) => stored_callables(p, own, x, out),
+        Child::Block(b) => stored_callables_block(p, own, b, out),
+    });
+    if out.len() > before {
+        return;
+    }
     let bad = |t: TyId| own.unstorable(p, t);
     let what = match &e.kind {
         ExprKind::Tuple(_) => bad(e.ty).map(|c| ("stored in a tuple", c)),
@@ -751,10 +761,6 @@ fn stored_callables(p: &Program, own: &Own, e: &Expr, out: &mut Vec<Diagnostic>)
         };
         out.push(d);
     }
-    e.for_each_child(&mut |c| match c {
-        Child::Expr(x) => stored_callables(p, own, x, out),
-        Child::Block(b) => stored_callables_block(p, own, b, out),
-    });
 }
 
 fn stored_callables_block(p: &Program, own: &Own, b: &Block, out: &mut Vec<Diagnostic>) {

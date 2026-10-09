@@ -521,9 +521,18 @@ pub struct AdtDef {
     /// which the compiler makes. Its generics are the entry point's, and its fields its
     /// parameters that a command binds (`gpu::bound_fields`), in order.
     pub entry: Option<FnId>,
+    /// The fields of a function type (`step: fn(mut W, f32)`), each with the generic parameter
+    /// it's a value of: the last of `generics`, which a use of the type never writes. Where
+    /// the type is a parameter's, the function is generic over them (`fn.fields`).
+    pub fn_fields: Vec<(String, ParamId)>,
 }
 
 impl AdtDef {
+    /// How many of its generic parameters are written where it's named: all but its
+    /// function fields'.
+    pub fn written_generics(&self) -> usize {
+        self.generics.len() - self.fn_fields.len()
+    }
     pub fn is_enum(&self) -> bool {
         matches!(self.kind, AdtKind::Enum(_))
     }

@@ -314,11 +314,14 @@ impl Program {
                 s.push('>');
             }
             TyKind::Adt(a, args) => {
-                s.push_str(&self.adt(*a).name);
+                let def = self.adt(*a);
+                s.push_str(&def.name);
                 // A bound entry point's type shows as its entry point bound: `shade.bind(...)`.
-                if !args.is_empty() && self.adt(*a).entry.is_none() {
+                // Its function fields' parameters aren't written (`fn.fields`).
+                let written = &args[..args.len().min(def.written_generics())];
+                if !written.is_empty() && def.entry.is_none() {
                     s.push('<');
-                    self.write_list(args, s);
+                    self.write_list(written, s);
                     s.push('>');
                 }
             }

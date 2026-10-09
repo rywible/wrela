@@ -102,6 +102,11 @@ impl ImplicitParams {
     }
 
     fn add(&mut self, def: ParamDef) -> ParamId {
+        self.add_def(def)
+    }
+
+    /// A parameter of the signature's own: a `take` parameter's function type's.
+    pub fn add_def(&mut self, def: ParamDef) -> ParamId {
         self.defs.push(def);
         ParamId(self.first + self.defs.len() as u32 - 1)
     }
@@ -679,9 +684,9 @@ pub fn resolve_type(
             // Only a written type; a body's inferred types are checked once it's finished.
             if !matches!(pos, TyPos::Param(_) | TyPos::FnBound) {
                 diags.push(
-                    Diagnostic::new(codes::E0510, te.span, "a function type can only be a parameter's type")
-                        .with_note("a closure that captures only values can be stored, but its type is its own and inferred (§6.7)")
-                        .with_help("to keep work for later, store an enum of actions and `match` on it"),
+                    Diagnostic::new(codes::E0510, te.span, "a function type can only be a parameter's type or a struct field's")
+                        .with_note("a struct with a field of a function type is generic over it, and so is a function with a `take` parameter of one (§6.7)")
+                        .with_help("hold it in a struct's field, or keep work for later as an enum of actions you `match` on"),
                 );
                 return p.types.error;
             }
@@ -1072,12 +1077,44 @@ fn resolve_type_path(
             b.ty(&p.types)
         }
         Res::Adt(a) => {
-            let want = p.adt(a).generics.len();
+            let def = p.adt(a);
+            let want = def.written_generics();
             if args.len() != want {
-                diags.push(wrong_generic_count(te.span, &p.adt(a).name, want, args.len()));
+                diags.push(wrong_generic_count(te.span, &def.name, want, args.len()));
                 return p.types.error;
             }
-            p.types.adt(a, args)
+            if def.fn_fields.is_empty() {
+                return p.types.adt(a, args);
+            }
+            // Its function fields' parameters: a parameter's type makes the function generic
+            // over each, bounded by the field's function type (`fn.fields`).
+            let TyPos::Param(implicit) = pos else {
+                diags.push(
+                    Diagnostic::new(
+                        codes::E0410,
+                        te.span,
+                        format!("`{}` holds functions, so it's named here only as a parameter's type", def.name),
+                    )
+                    .with_note("a field of a function type makes its struct generic over the function, and a parameter's type makes the function generic over it, as a trait does (§6.7); a field's or a result's type would need the function written, which nothing names")
+                    .with_help("pass it as a parameter, or build it where it's used"),
+                );
+                return p.types.error;
+            };
+            let written = Subst::from_pairs(&def.generics[..want], &args);
+            let mut all = args;
+            for (field, g) in &def.fn_fields {
+                let bound = p.param(*g).fn_bound.map(|b| p.types.subst(b, &written));
+                let id = implicit.add(ParamDef {
+                    name: format!("{}.{field}", def.name),
+                    bounds: Vec::new(),
+                    span: te.span,
+                    is_self: false,
+                    is_const: false,
+                    fn_bound: bound,
+                });
+                all.push(p.types.param(id));
+            }
+            p.types.adt(a, all)
         }
         Res::Alias(a) => {
             let def = &p.aliases[a.index()];

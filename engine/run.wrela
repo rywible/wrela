@@ -69,10 +69,10 @@ struct Pending<W: Asks> {
 
 /// What the ticker's thread owns: the timeline, the step and the presenter, the hand-off's
 /// publishing end, and the jobs in flight, oldest asked first.
-struct Driver<W: Sim + Asks, S, P, Snap: Copy + Plain> {
+struct Driver<W: Sim + Asks, Snap: Copy + Plain> {
     timeline: Timeline<W, TickInput<W>>,
-    step: S,
-    present: P,
+    step: @deterministic fn(mut W, TickInput<W>),
+    present: @deterministic fn(W) -> Snap,
     out: Publisher<Stamped<Snap>>,
     pending: Vec<Pending<W>>,
 }
@@ -83,11 +83,11 @@ const HISTORY: u32 = 64
 /// Runs `world` on the ticker's thread at `hz` ticks a second, from `init` (std::tick's
 /// `start`): each tick, `step(mut world, input)`, then the jobs it asked for start, then
 /// `present(world)` goes to the frames. The frames read it from what this returns.
-pub fn run<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @deterministic fn(W) -> Snap, Snap: Copy + Plain>(
+pub fn run<W: Sim + Asks, Snap: Copy + Plain>(
     world: take W,
     hz: u32,
-    step: S,
-    present: P,
+    step: take @deterministic fn(mut W, TickInput<W>),
+    present: take @deterministic fn(W) -> Snap,
 ) -> Latest<Stamped<Snap>> {
     let first = Stamped { ticks: 0, snap: present(world) }
     let (out, latest) = handoff(first)
@@ -98,16 +98,13 @@ pub fn run<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @determi
         out,
         pending: Vec::new(),
     }
-    start(take driver, hz, step: drive::<W, S, P, Snap>, hash: hash_of::<W, S, P, Snap>)
+    start(take driver, hz, step: drive, hash: hash_of)
     take latest
 }
 
 /// One tick: the answers due, the step, the new asks, the snapshot.
 @deterministic
-fn drive<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @deterministic fn(W) -> Snap, Snap: Copy + Plain>(
-    d: mut Driver<W, S, P, Snap>,
-    t: Ticked,
-) {
+fn drive<W: Sim + Asks, Snap: Copy + Plain>(d: mut Driver<W, Snap>, t: Ticked) {
     var answers: Vec<Answered<W::Ask, W::Answer>> = Vec::new()
     var i = 0
     while i < d.pending.len() {
@@ -135,6 +132,6 @@ fn drive<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @determini
 
 /// The world's hash, for the host's tick log.
 @deterministic
-fn hash_of<W: Sim + Asks, S, P, Snap: Copy + Plain>(d: Driver<W, S, P, Snap>) -> u64 {
+fn hash_of<W: Sim + Asks, Snap: Copy + Plain>(d: Driver<W, Snap>) -> u64 {
     state_hash(d.timeline.world())
 }

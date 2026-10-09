@@ -2069,17 +2069,38 @@ impl<'p> Checker<'p> {
                 continue;
             }
             let fty = field_tys[i];
+            // A function field takes a closure or a function of its type, as a parameter of a
+            // function type does (`fn.fields`).
+            let fn_bound = match self.p.types.kind(decls[i].ty) {
+                TyKind::Param(g) if self.p.adt(adt).fn_fields.iter().any(|(_, h)| h == g) => {
+                    let gens = self.p.adt(adt).generics.clone();
+                    self.p
+                        .param(*g)
+                        .fn_bound
+                        .map(|b| self.p.types.subst(b, &crate::ty::Subst::from_pairs(&gens, &args)))
+                }
+                _ => None,
+            };
+            let expect = fn_bound.unwrap_or(fty);
             let value = match &f.value {
-                Some(v) => self.check_expr(v, Some(fty)),
+                Some(v) => self.check_expr(v, Some(expect)),
                 None => {
                     // `S { time }`: the local `time`.
                     let p = ast::Path {
                         segments: vec![ast::PathSegment { ident: f.name.clone(), generics: None }],
                         span: f.name.span,
                     };
-                    self.check_path_expr(&p, Some(fty), f.name.span)
+                    self.check_path_expr(&p, Some(expect), f.name.span)
                 }
             };
+            if let Some(b) = fn_bound {
+                match *self.kind(value.ty) {
+                    TyKind::Param(g) if let Some(have) = self.p.param(g).fn_bound => {
+                        self.pass_bounded(have, b, value.span);
+                    }
+                    _ => self.coerce_arg(&value, b),
+                }
+            }
             if self.p.adt(adt).borrow {
                 self.borrow_field(&decls[i], &value);
             }

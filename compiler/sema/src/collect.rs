@@ -729,7 +729,29 @@ impl<'d, 'u> Collector<'d, 'u> {
             diagnostic: None,
             borrow: matches!(&item.kind, ast::ItemKind::Struct(s) if s.borrow),
             entry: None,
+            fn_fields: Vec::new(),
         });
+        // Each field of a function type is a value of a parameter of its own, after those
+        // written (`fn.fields`).
+        if let ast::ItemKind::Struct(s) = &item.kind {
+            for f in &s.fields {
+                if matches!(f.ty.kind, ast::TypeExprKind::Fn(_))
+                    && !self.p.adts[id.index()].fn_fields.iter().any(|(n, _)| *n == f.name.name)
+                {
+                    let g = self.p.new_param(ParamDef {
+                        name: format!("fn {}", f.name.name),
+                        bounds: Vec::new(),
+                        span: f.ty.span,
+                        is_self: false,
+                        is_const: false,
+                        fn_bound: None,
+                    });
+                    let def = &mut self.p.adts[id.index()];
+                    def.generics.push(g);
+                    def.fn_fields.push((f.name.name.clone(), g));
+                }
+            }
+        }
         self.bind(m, name, Res::Adt(id), vis);
         self.pending.push((m, PendingItem::Adt(id, item)));
         id
@@ -1388,6 +1410,7 @@ impl<'d, 'u> Collector<'d, 'u> {
                 diagnostic: None,
                 borrow: true,
                 entry: Some(f),
+                fn_fields: Vec::new(),
             });
             self.p.bound_types.insert(f, id);
         }
@@ -1923,6 +1946,14 @@ impl<'d, 'u> Collector<'d, 'u> {
             _ => return,
         };
         self.set_param_bounds(&scope, &gens, ast_generics);
+        // A function field's type bounds its parameter: what the field holds is called as it.
+        if let ast::ItemKind::Struct(s) = &item.kind {
+            for (name, g) in self.p.adt(id).fn_fields.clone() {
+                let Some(f) = s.fields.iter().find(|f| f.name.name == name) else { continue };
+                let t = resolve::resolve_type(&self.p, self.diags, &scope, &f.ty, TyPos::FnBound);
+                self.p.params[g.index()].fn_bound = Some(t);
+            }
+        }
     }
 
     fn adt_body(&mut self, m: ModuleId, id: AdtId, item: &ast::Item) {
@@ -2147,7 +2178,21 @@ impl<'d, 'u> Collector<'d, 'u> {
             // A borrow struct's field may be a run or a projection (§6.6).
             let borrow = scope.self_ty.is_some_and(|t| self.p.is_borrow_struct(t));
             let pos = if borrow { TyPos::Local } else { TyPos::Normal };
-            let ty = resolve::resolve_type(&self.p, self.diags, scope, &f.ty, pos);
+            // A function field holds a value of its own parameter (`fn.fields`).
+            let fn_param = match scope.self_ty.map(|t| self.p.types.kind(t)) {
+                Some(TyKind::Adt(a, _)) => self
+                    .p
+                    .adt(*a)
+                    .fn_fields
+                    .iter()
+                    .find(|(n, _)| *n == f.name.name)
+                    .map(|&(_, g)| g),
+                _ => None,
+            };
+            let ty = match fn_param {
+                Some(g) if matches!(f.ty.kind, ast::TypeExprKind::Fn(_)) => self.p.types.param(g),
+                _ => resolve::resolve_type(&self.p, self.diags, scope, &f.ty, pos),
+            };
             if f.mode != RetMode::Owned && !borrow {
                 let mode = if f.mode == RetMode::Mut { "mut" } else { "borrow" };
                 self.diags.push(
@@ -2278,13 +2323,29 @@ impl<'d, 'u> Collector<'d, 'u> {
                         );
                         continue;
                     }
-                    let t = resolve::resolve_type(
-                        &self.p,
-                        self.diags,
-                        &scope,
-                        ty,
-                        TyPos::Param(&mut implicit),
-                    );
+                    // A `take` parameter of a function type is kept, so it's a generic
+                    // parameter's value, as a struct's function field is (`fn.fields`).
+                    let t = if *mode == Mode::Take && matches!(ty.kind, ast::TypeExprKind::Fn(_)) {
+                        let bound =
+                            resolve::resolve_type(&self.p, self.diags, &scope, ty, TyPos::FnBound);
+                        let g = implicit.add_def(ParamDef {
+                            name: format!("take {}", name.name),
+                            bounds: Vec::new(),
+                            span: ty.span,
+                            is_self: false,
+                            is_const: false,
+                            fn_bound: Some(bound),
+                        });
+                        self.p.types.param(g)
+                    } else {
+                        resolve::resolve_type(
+                            &self.p,
+                            self.diags,
+                            &scope,
+                            ty,
+                            TyPos::Param(&mut implicit),
+                        )
+                    };
                     let default = default
                         .as_ref()
                         .map(|d| self.default_value(scope.module, &name.name, d, t));
