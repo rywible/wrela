@@ -21,7 +21,7 @@ use diagnose::{PIECES, Report, Sampling, grid, report, start}
 use json::{List, list, obj}
 use std::collections::Vec
 use std::derive::Box3
-use std::field::{Lipschitz, PartName, Surface}
+use std::field::{Surface, PartName}
 use std::gpu::{
     AppendBuffer, GpuBuffer, Rgba8, Texture, append_buffer, begin_pass, begin_screen_pass, buffer,
     dispatch, draw, texture,
@@ -172,7 +172,7 @@ fn names<S: Surface>(field: S) -> Vec<String> {
 }
 
 /// The lens on `subject`, the function that builds the subject's field.
-pub fn open<S: Surface + Lipschitz>(subject: fn() -> S) -> Lens {
+pub fn open<S: Surface>(subject: fn() -> S) -> Lens {
     let fonts = Fonts::load()
     let renderer = Renderer::new(fonts)
     var ui = Ui::new(take fonts)
@@ -562,7 +562,7 @@ fn part_json<S: Surface>(field: S, i: u32) -> String {
 
 /// The subject's parts: each one's index, name, group, frame (a creature's bone) and whether
 /// it's a mirror image.
-pub fn parts<S: Surface + Lipschitz>(lens: mut Lens, subject: fn() -> S) {
+pub fn parts<S: Surface>(lens: mut Lens, subject: fn() -> S) {
     let f = subject()
     var all = list()
     for i in 0..f.parts() {
@@ -576,7 +576,7 @@ pub fn parts<S: Surface + Lipschitz>(lens: mut Lens, subject: fn() -> S) {
 
 /// What the field is at `p`: its distance, its gradient, whether `p` is inside, the part that
 /// decides it, and the channels there. Marks `p` in the views.
-pub fn probe<S: Surface + Lipschitz>(
+pub fn probe<S: Surface>(
     lens: mut Lens,
     subject: fn() -> S,
     channels: fn(vec3) -> String,
@@ -631,12 +631,7 @@ pub fn project(lens: mut Lens, p: vec3) {
 /// target moving there in eight steps, each checked whole on the GPU before the next (a drag
 /// job, which frames carry on). Its answer is the literals changed and what moved; `write`
 /// writes them to the source.
-pub fn move_point<S: Surface + Lipschitz>(
-    lens: mut Lens,
-    subject: fn() -> S,
-    from: vec3,
-    to: vec3,
-) {
+pub fn move_point<S: Surface>(lens: mut Lens, subject: fn() -> S, from: vec3, to: vec3) {
     lens.mark(to)
     start_drag(mut lens, subject, from, Some(to))
 }
@@ -684,7 +679,7 @@ pub fn choose(lens: mut Lens, literal_index: u32, none: bool) {
 }
 
 /// Carries a drag job on, a frame at a time: its answer when it finishes.
-fn advance_job<S: Surface + Lipschitz>(
+fn advance_job<S: Surface>(
     lens: mut Lens,
     subject: fn() -> S,
     grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
@@ -708,7 +703,7 @@ fn advance_job<S: Surface + Lipschitz>(
 /// The first surface hit along the ray from `o` in direction `dir` (within 10 m, or past the
 /// subject's far side if that's farther: a tree's): the point, how far, and the part there.
 /// Marks it.
-pub fn ray<S: Surface + Lipschitz>(lens: mut Lens, subject: fn() -> S, o: vec3, dir: vec3) {
+pub fn ray<S: Surface>(lens: mut Lens, subject: fn() -> S, o: vec3, dir: vec3) {
     let f = subject()
     let d = normalize(dir)
     let centre = 0.5 * (lens.bounds.lo + lens.bounds.hi)
@@ -754,12 +749,7 @@ pub fn measure(lens: mut Lens, a: vec3, b: vec3) {
 
 /// Samples the field on fieldview's grid over the cube at `centre`, `radius` to each face (0:
 /// around the subject's box), on the GPU; the report comes on a later frame.
-pub fn diagnose<S: Surface + Lipschitz>(
-    lens: mut Lens,
-    subject: fn() -> S,
-    centre: vec3,
-    radius: f32,
-) {
+pub fn diagnose<S: Surface>(lens: mut Lens, subject: fn() -> S, centre: vec3, radius: f32) {
     let f = subject()
     let g = if radius > 0.0 { grid(centre, radius) } else { diagnose::around(lens.bounds) }
     lens.stated = f.lipschitz(near: 0.1)
@@ -1029,7 +1019,7 @@ pub fn ranked(all: [(u32, f32)]) -> Vec<(u32, f32)> {
 /// the field there, and every literal that reaches the field there, ranked by its influence
 /// (the distance's derivative by it), most first, each with its source line, and whether the
 /// part's own distance reads it (`own`: the part's code, or a constant it uses; `part_reads`).
-pub fn click<S: Surface + Lipschitz>(
+pub fn click<S: Surface>(
     lens: mut Lens,
     subject: fn() -> S,
     grad: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
@@ -1151,7 +1141,7 @@ fn numbers(args: str) -> Vec<f32> {
 
 /// Runs a command line: the actions by name, their arguments numbers (`view` and `mode` take
 /// names too).
-pub fn command<S: Surface + Lipschitz>(
+pub fn command<S: Surface>(
     lens: mut Lens,
     subject: fn() -> S,
     grad: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
@@ -1280,7 +1270,7 @@ pub fn command<S: Surface + Lipschitz>(
 
 /// One frame: reads input (typed commands, a click in a view), takes a diagnosis the GPU has
 /// finished, and draws the views.
-pub fn frame<S: Colours + Lipschitz>(
+pub fn frame<S: Colours + Surface>(
     lens: mut Lens,
     subject: fn() -> S,
     grad: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
@@ -1462,7 +1452,7 @@ fn pointer_moved<S: Surface>(lens: mut Lens, subject: fn() -> S, at: vec2) {
 /// The pointer was released at `at`: a drag finishes (its literals rounded, checked whole, and
 /// what moved measured: its answer comes when done; `write` writes it); a press that didn't
 /// move is a click.
-fn released<S: Surface + Lipschitz>(
+fn released<S: Surface>(
     lens: mut Lens,
     subject: fn() -> S,
     grad: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),

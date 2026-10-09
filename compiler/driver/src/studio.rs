@@ -6,7 +6,7 @@
 //! The glue goes in `<subject>/build/studio/lens/`, beside copies of the `studio` and `ui`
 //! packages (embedded in the compiler, so the command works from any directory); the build in
 //! `<subject>/build/studio/page/`. A subject package has a module `subject.wrela` with
-//! `pub fn subject()`, which returns a `Surface + Lipschitz`; if it's a `Field<C>` too, the glue
+//! `pub fn subject()`, which returns a `Surface`; if it's a `Field<C>` too, the glue
 //! writes each of the channels' public float fields into the lens's probes.
 
 use crate::live::Files;
@@ -91,12 +91,12 @@ fn subject(pkg: &Path) -> Result<Subject, String> {
             .map(|(i, _)| wrela_sema::ty::FnId(i as u32))
             .ok_or_else(|| {
                 format!(
-                    "`{}` has no `pub fn subject()` in a module `subject` (subject.wrela): the lens shows what it returns, a `Surface + Lipschitz`",
+                    "`{}` has no `pub fn subject()` in a module `subject` (subject.wrela): the lens shows what it returns, a `Surface`",
                     pkg.display()
                 )
             })?;
         let ty = checked.reveal(p.func(f).ret);
-        // The channels' type: as `subject()` declares it (`-> Field<Coat> + Lipschitz`), or as
+        // The channels' type: as `subject()` declares it (`-> Field<Coat>`), or as
         // its type implements `Field`.
         // std's `Field<C>`: an ordinary trait, found by its path.
         let field_trait = p
@@ -222,11 +222,13 @@ fn glue(s: &Subject) -> String {
     if !s.channels.is_empty() {
         g.push_str("use std::field::Field\n");
     }
-    g.push_str("use std::field::Lipschitz\nuse studio::paint::Colours\n");
+    g.push_str("use studio::paint::Colours\n");
     // The subject as the views see it: coloured by its channels' albedo where they hold one.
     match &s.albedo {
         Some((ty, prefix)) => {
-            let at = |c: &str| if prefix.is_empty() { format!("c.{c}") } else { format!("c.{prefix}.{c}") };
+            let at = |c: &str| {
+                if prefix.is_empty() { format!("c.{c}") } else { format!("c.{prefix}.{c}") }
+            };
             let _ = write!(
                 g,
                 "use std::field::{{PartName, Surface}}\n\n\
@@ -238,19 +240,18 @@ fn glue(s: &Subject) -> String {
                  fn parts(self) -> u32 {{\n        self.field.parts()\n    }}\n\n    \
                  fn part_at(self, p: vec3) -> (f32, u32) {{\n        self.field.part_at(p)\n    }}\n\n    \
                  fn part_distance(self, p: vec3, i: u32) -> f32 {{\n        self.field.part_distance(p, i)\n    }}\n\n    \
-                 fn part_name(self, i: u32) -> PartName {{\n        self.field.part_name(i)\n    }}\n}}\n\n\
-                 impl<F: Field<{ty}> + Lipschitz> Lipschitz for Painted<F> {{\n    \
+                 fn part_name(self, i: u32) -> PartName {{\n        self.field.part_name(i)\n    }}\n\n    \
                  fn lipschitz(self, near: f32) -> f32 {{\n        self.field.lipschitz(near)\n    }}\n}}\n\n\
                  impl<F: Field<{ty}>> Colours for Painted<F> {{\n    \
                  fn colour_at(self, p: vec3) -> vec3 {{\n        let c = self.field.channels(p)\n        vec3({}, {}, {})\n    }}\n}}\n\n\
-                 fn painted() -> Colours + Lipschitz {{\n    Painted {{ field: subject() }}\n}}\n",
+                 fn painted() -> Colours {{\n    Painted {{ field: subject() }}\n}}\n",
                 at("r"),
                 at("g"),
                 at("b")
             );
         }
         None => g.push_str(
-            "\nfn painted() -> Colours + Lipschitz {\n    studio::paint::Clay { field: subject() }\n}\n",
+            "\nfn painted() -> Colours {\n    studio::paint::Clay { field: subject() }\n}\n",
         ),
     }
     g.push_str(

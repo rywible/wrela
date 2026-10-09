@@ -9,7 +9,7 @@
 use json::{List, list, obj}
 use std::collections::Vec
 use std::derive::Box3
-use std::field::{Lipschitz, Surface}
+use std::field::Surface
 use std::gpu::{GlobalId, GpuBuffer, Slots, buffer, dispatch, read}
 use std::io::Pending
 use std::string::String

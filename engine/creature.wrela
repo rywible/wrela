@@ -19,8 +19,7 @@ use physique
 use physique::{Capsule, Mass, Per}
 use std::derive::{Box3, Interval, interval, value_gradient_with}
 use std::field::{
-    Blend, Bound, Field, Lipschitz, PartName, Surface, UNBOUNDED, smin, smin_and_weight,
-    smin_weight,
+    Blend, Bound, Field, Surface, PartName, UNBOUNDED, smin, smin_and_weight, smin_weight,
 }
 use std::hash::StateHash
 use std::quat::Quat
@@ -759,7 +758,7 @@ impl<F: Surface> Placed<F> {
     }
 }
 
-impl<F: Lipschitz> Placed<F> {
+impl<F: Surface> Placed<F> {
     /// Its distance's interval over `b` (`Lipschitz::interval_near`): its field's over `b`
     /// reflected, where it's mirrored, and moved to its origin.
     fn interval_over(self, b: Box3) -> Interval {
@@ -1052,7 +1051,7 @@ pub trait PartList: Copy + GpuData {
     }
 }
 
-impl<F: Lipschitz> PartList for Placed<F> {
+impl<F: Surface> PartList for Placed<F> {
     fn items(self) -> u32 {
         1
     }
@@ -1317,9 +1316,7 @@ impl<P: PartList> Surface for Group<P> {
     fn distance(self, p: vec3) -> f32 {
         self.value(p, 0.0)
     }
-}
 
-impl<P: PartList> Lipschitz for Group<P> {
     fn lipschitz(self, near: f32) -> f32 {
         let s = abs(self.frame.scale)
         self.parts.bound(self.parts.reach(near / s, k: 0.0), k: 0.0, bound: 0.0)
@@ -1627,7 +1624,7 @@ pub trait PartChannels<C>: PartList {
     }
 }
 
-impl<C: Blend + Copy, F: Field<C> + Lipschitz> PartChannels<C> for Placed<F> {
+impl<C: Blend + Copy, F: Field<C>> PartChannels<C> for Placed<F> {
     fn item_fold_channels(
         self,
         p: vec3,
@@ -2112,12 +2109,18 @@ impl<P: PartList> Surface for CreatureField<P> {
     fn part_offset(self, p: vec3, i: u32, by: f32) -> f32 {
         self.parts.fold_offset(p, FAR, self.k, i, by)
     }
+
+    /// The largest bound of any part, within the band its distance can be in where the
+    /// creature's is within `near`, changed by each modifier.
+    fn lipschitz(self, near: f32) -> f32 {
+        self.parts.bound(self.parts.reach(near, self.k), self.k, 0.0)
+    }
 }
 
 /// A field made of items (parts, groups and modifiers), as the renderer reads it (D-080, #43
 /// §7): its distance and channels from some of its items, culling over a block, and skin
 /// weights. The compiler knows nothing of parts: this is ordinary code.
-pub trait Parts<C>: Field<C> + Lipschitz {
+pub trait Parts<C>: Field<C> {
     /// Its distance at `p` from the items in `mask` alone, seen `fp` wide: the whole field's,
     /// wherever the others can't change it.
     fn distance_masked(self, p: vec3, mask: PartMask, fp: f32) -> f32
@@ -2282,14 +2285,6 @@ impl<C: Blend + Copy, P: PartChannels<C>> Field<C> for CreatureField<P> {
 
     fn distance_and_channels(self, p: vec3) -> (f32, C) {
         self.parts.fold_channels(p, self.parts.first(p, self.k), self.k, 1)
-    }
-}
-
-impl<P: PartList> Lipschitz for CreatureField<P> {
-    /// The largest bound of any part, within the band its distance can be in where the
-    /// creature's is within `near`, changed by each modifier.
-    fn lipschitz(self, near: f32) -> f32 {
-        self.parts.bound(self.parts.reach(near, self.k), self.k, 0.0)
     }
 }
 

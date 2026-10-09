@@ -116,7 +116,7 @@ let total = base +                      // a continued line ends with the operat
 - **A function that returns a value** ends with it, or returns it, on every path (`fn.return`; E0314). One that returns nothing ends with a statement or a `()`.
 - **Properties are attributes** (§9): `@deterministic fn step(...)`.
 - **A trait in parameter position** (`fn d(field: Surface, p: vec3)`) makes the function generic over that parameter. It's the usual way to write a generic parameter (§7); write `<F: Surface>` only when the type is named twice.
-- **A trait in return position** (`-> Surface`; `Field<C>` in tier 1) names one concrete, inferred type, like Rust's `impl Trait` (D-070, `fn.return-trait`). Callers see only its traits. Several traits can be joined with `+`, in return position or parameter position: `-> Field<Tissue> + Lipschitz`, `f: Field<C> + Lipschitz` (milestone 2; sketch 01's parts needed both).
+- **A trait in return position** (`-> Surface`; `Field<C>` in tier 1) names one concrete, inferred type, like Rust's `impl Trait` (D-070, `fn.return-trait`). Callers see only its traits. Several traits can be joined with `+`, in return position or parameter position: `-> Surface + Colours`, `f: Field<C> + Eq` (milestone 2; sketch 01's parts needed two).
 
 ```wrela
 fn leg_segment(len: f32, r_top: f32, r_bottom: f32 = 0.06) -> Surface {
@@ -126,7 +126,7 @@ fn leg_segment(len: f32, r_top: f32, r_bottom: f32 = 0.06) -> Surface {
 let leg = leg_segment(0.45, r_top: 0.09)   // positional first, then named
 ```
 
-(Sketch 01 writes this with unit suffixes, `6cm`, and a field type with channels, `Field<Tissue>`: both tier 1. Its kind parameter, `Exact`, became the `Lipschitz` trait: §17.)
+(Sketch 01 writes this with unit suffixes, `6cm`, and a field type with channels, `Field<Tissue>`: both tier 1. Its kind parameter, `Exact`, became `Surface`'s `lipschitz` method: §17.)
 
 ### Structs (T0)
 
@@ -1112,7 +1112,7 @@ The sim/presentation split is an engine pattern built on this, not a language fe
 | `std::math` | The transcendentals for CPU code, compiled to WASM (§11), and `PI`, `TAU` |
 | `std::hash` | `StateHash` (`@fieldwise`), `Hasher`, `state_hash` (§6.11) |
 | `std::serialize` | `Serialize` (`@fieldwise`), `Writer`, `Reader`, `save`, `load`, `LoadError` (§6.11) |
-| `std::field` | `Surface`, `Field<C>`, `Lipschitz`, `Noise`, `Blend`, `Color`, `UnitVec3`, `Cat<T>`; primitives (`sphere`, `ellipsoid`, `round_cone`, `cuboid`, `half_space`), combinators (`union`, `smooth_union`, `intersect`, `translate`, `displace`, `with`, and `union`/`smooth_union` of an array), noise (`value_noise`, `fbm`); provenance (`parts`, `part_at`, `part_distance`, `part_name`, `part_offset`, `named`, `mirror_x`, `PartName`, `part_share`), certified checks (`certify_positive`, `certify_clear`, `certify_apart`, `Certified`), `oval`, `tube`, and measures (`hit`, `top`, `bottom`, `width`, `front`, `back`, `farthest`, `part_named`) (§22) |
+| `std::field` | `Surface`, `Field<C>`, `Noise`, `Blend`, `Color`, `UnitVec3`, `Cat<T>`; primitives (`sphere`, `ellipsoid`, `round_cone`, `cuboid`, `half_space`), combinators (`union`, `smooth_union`, `intersect`, `translate`, `displace`, `with`, and `union`/`smooth_union` of an array), noise (`value_noise`, `fbm`); provenance (`parts`, `part_at`, `part_distance`, `part_name`, `part_offset`, `named`, `mirror_x`, `PartName`, `part_share`), certified checks (`certify_positive`, `certify_clear`, `certify_apart`, `Certified`), `oval`, `tube`, and measures (`hit`, `top`, `bottom`, `width`, `front`, `back`, `farthest`, `part_named`) (§22) |
 | `std::quat` | `Quat`: rotations as unit quaternions, on the CPU and the GPU |
 | `std::derive` | `gradient`, `value_and_gradient`, `interval`, and the boxes they range over (§13), each with `sample(seed, i)`: points that spread evenly through it, for checking a property at many points (§10) |
 | `std::stage` | `Tape`, `Op`, `Reg` and `interpret`: fields built at runtime (§13) |
@@ -1150,25 +1150,32 @@ The sim/presentation split is an engine pattern built on this, not a language fe
       Cuboid { half: vec3(0.5, 0.3, 0.2) }.smooth_union(sphere(0.4), k: 0.05)
   }
   ```
-- **A closure of a point is a surface:** `let both = |p| min(ball(p), slab(p))` is a `Surface`, written where it's used, with the derived gradient and interval and every combinator (std's `impl<F: Copy + GpuData + fn(vec3) -> f32> Surface for F`). It has no Lipschitz bound of its own (below), so a field that's sphere traced states one.
+- **A closure of a point is a surface:** `let both = |p| min(ball(p), slab(p))` is a `Surface`, written where it's used, with the derived gradient and interval and every combinator (std's `impl<F: Copy + GpuData + fn(vec3) -> f32> Surface for F`). It states no Lipschitz bound (below): its `lipschitz` is infinite, which composes as unbounded wherever it's a part, so a field that's sphere traced is built from primitives, which state theirs.
 - **The field trait is `std::field::Surface`:** a signed distance (`distance(self, p: vec3) -> f32`), with `gradient`, `sample` and `interval` derived, primitives (`sphere`, `ellipsoid`, `round_cone`, `half_space`), combinators (`union`, `smooth_union`, `intersect`, `translate`, `displace`) and noise (`value_noise`, `fbm`).
 - **A field returns a distance plus channels** (D-002). Channel structs opt in to `Blend`, a fieldwise trait, so each member's type decides how it blends: `Color` in linear space, `f32` linearly, `UnitVec3` renormalized, `Cat<T>` from the winner (D-026).
-- **A field's step safety is a method, not a kind or a fact the compiler knows** (§13, §18). A field that can be sphere traced implements std's `Lipschitz` trait:
+- **A field's step safety is a method, not a kind or a fact the compiler knows** (§13, §18). `Surface`'s `lipschitz(near)` bounds its gradient where |distance| < `near`:
 
   ```wrela
-  pub trait Lipschitz: Surface {
-      /// A bound on |∇distance| wherever |distance| < near.
-      fn lipschitz(self, near: f32) -> f32
+  use std::field::{Noise, Surface}
+
+  /// A bump on a sphere: its bound is the sphere's, plus the bump's steepness.
+  struct Bumpy<N>: Copy + GpuData {
+      noise: N,
+      amp: f32,
   }
 
-  impl<S: Lipschitz, N: Noise> Lipschitz for Displace<S, N> {
+  impl<N: Noise> Surface for Bumpy<N> {
+      fn distance(self, p: vec3) -> f32 {
+          length(p) - 1.0 + self.amp * self.noise.value(p)
+      }
+
       fn lipschitz(self, near: f32) -> f32 {
-          self.inner.lipschitz(near) + self.amp * self.noise.lipschitz()
+          1.0 + self.amp * self.noise.lipschitz()
       }
   }
   ```
 
-  Primitives state their bound, and combinators compose it in ordinary code. The result is data, computed for each individual. `.to_bound()` divides a field by it. Debug builds and tests check each bound against the derived local bound, the `interval` of the `gradient` (spike 13). A separate trait leaves tier 0's `Surface` unchanged.
+  Primitives state their bound, and combinators compose it in ordinary code (`Displace`'s is its surface's plus its amplitude times its noise's). The result is data, computed for each individual. `.to_bound()` divides a field by it: an unbounded one (a closure of a point, whose `lipschitz` is infinite by default, or an ellipsoid with its centre in scope) gives 0, which no tracer can step by. Debug builds and tests check each bound against the derived local bound, the `interval` of the `gradient` (spike 13). It was a trait of its own, `Lipschitz`, so that tier 0's `Surface` stayed as it was; with the tiers done it's one of `Surface`'s methods (the owner's review of 2026-10-09), and every bound that said `Surface + Lipschitz`, `Field<C> + Lipschitz` or `F: Lipschitz` (135 of them) says `Surface` or `Field<C>`.
 - **Combinators are methods** (D-028): `a.smooth_union(b, k: 15cm)`, and n-ary over a fixed array of one type of part, `legs.smooth_union(k: 6cm)` and `legs.union()`, which fold the parts in order, as the binary ones chained would (`run/nary_union`). There's no operator overloading on fields; vectors and units do get operators.
 - **Fields built at runtime** from an unbounded space use `stage::interpret` (D-029, D-053). T2.
 
@@ -1192,7 +1199,7 @@ The sim/presentation split is an engine pattern built on this, not a language fe
 - **`async` and `await`** (revises D-087). IO and readback are polled requests instead (§6.15).
 - **`dyn Trait`** (revises D-071). Enums cover structure chosen from a finite set, generics cover static structure, and `stage::interpret` covers fields built at runtime. `dyn` stays a reserved word, so the compiler can say what to use instead.
 - **Auto traits** (revises D-054). Every trait a type has is declared (§7), as D-078 already decided for `SimState`, so no guarantee depends on someone remembering to opt out.
-- **Field kinds** `Exact`, `Bound` and `Lipschitz` (revises D-077). The `Lipschitz` trait's bound says the same thing (§17), and the derived interval of a gradient checks it.
+- **Field kinds** `Exact`, `Bound` and `Lipschitz` (revises D-077). `Surface`'s `lipschitz` bound says the same thing (§17), and the derived interval of a gradient checks it.
 - **Facts as compiler attributes**, `@assume` and `@assert` (revises D-057, D-077, D-092). A field's bound depends on per-individual data, so it's a stdlib method (§13, §17). The compiler keeps only what it alone can do: the derived bound that checks it.
 - **Angle as its own dimension** (revises D-076). It rejected `sin` of a plain number, which tier 0's code does everywhere. Angles are dimensionless, as in SI (§5).
 - **`Span<T>`.** Runs, `[T]`, are the one view type (§4).
@@ -1387,7 +1394,7 @@ fn two_balls_rest_above_the_ground_apart() {
 
 ### The lens: `wrela studio`
 
-A subject package has a module `subject.wrela` with `pub fn subject()`, which returns a `Surface + Lipschitz` (a `Field<C>` too, for its channels). `wrela studio <package>` writes a small program around the lens (the `studio` package, generic over any such surface), builds it with the subject's literals lifted, and serves it on 127.0.0.1 (port 8417 unless `--port`).
+A subject package has a module `subject.wrela` with `pub fn subject()`, which returns a `Surface` (a `Field<C>` too, for its channels). `wrela studio <package>` writes a small program around the lens (the `studio` package, generic over any such surface), builds it with the subject's literals lifted, and serves it on 127.0.0.1 (port 8417 unless `--port`).
 
 - **Every action is an export and a command,** and answers with one line of JSON. `wrela studio <package> <action> [args...] [--png file] [--size WxH]` runs one headless on the native host; `run <script>` runs a session, a command a line; the same session typed into Chrome gives the same answers, files and frames (`suite/studio.rs`).
 
