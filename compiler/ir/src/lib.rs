@@ -899,6 +899,13 @@ impl Module {
 /// starting with a digit or an underscore (WGSL reserves names starting with `__`). The WGSL
 /// writer may still rename one (a WGSL keyword, a name ending in a digit, a name used twice),
 /// so the manifest takes entry points' names from the written shader (`wrela_wgsl::emit`).
+/// The name of a tuple's element `i`, or a closure's capture: a letter (`a` to `z`), short
+/// because a nested tuple's paths repeat it at each level (a creature's parts are pairs of
+/// pairs: `u.field.parts.a.a.a.b` in every read of its uniform data, on the GPU), then `e26` on.
+pub fn element_name(i: usize) -> String {
+    if i < 26 { char::from(b'a' + i as u8).to_string() } else { format!("e{i}") }
+}
+
 pub fn ident(name: &str) -> String {
     let mut s = String::with_capacity(name.len());
     for c in name.chars() {
