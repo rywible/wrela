@@ -63,7 +63,13 @@ pub fn run(args: &[String]) -> ExitCode {
     match written {
         Ok(()) => {
             if !args.json {
-                eprintln!("built {} ({} files)", out.display(), output.files.len());
+                let c = output.consts;
+                let consts = if c.computed + c.cached == 0 {
+                    String::new()
+                } else {
+                    format!("; constants: {} computed, {} from the cache", c.computed, c.cached)
+                };
+                eprintln!("built {} ({} files{consts})", out.display(), output.files.len());
             }
             ExitCode::SUCCESS
         }

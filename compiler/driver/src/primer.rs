@@ -66,6 +66,10 @@ pub const RULES: &[(&str, &str)] = &[
         "const.build",
         "the build computes a `const`; a panic, a trap or running past its fuel is an error",
     ),
+    (
+        "const.fuel",
+        "`@fuel(n)` on a `const` sets the work its computation may do, its threads' together",
+    ),
     ("const.places", "a constant is a place: read and projected, never moved out of or changed"),
     (
         "const.tests",

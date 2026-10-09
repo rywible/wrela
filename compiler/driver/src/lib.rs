@@ -9,6 +9,7 @@
 //! the deepest tree the parser accepts (`wrela_syntax::MAX_NESTING`, `MAX_EXPR_DEPTH`).
 
 pub mod build;
+pub mod const_cache;
 pub mod consts;
 pub mod edit;
 pub mod explain;
@@ -52,6 +53,8 @@ pub struct Output {
     /// The program package's own files (not std's or a dependency's), and where each is: what
     /// `wrela fix` may edit.
     pub program_files: ProgramFiles,
+    /// How many constants the build computed, and how many it read from the cache (§10).
+    pub consts: consts::ConstStats,
 }
 
 /// One pipeline: an instantiation of its entry points, and why it exists.
@@ -251,7 +254,8 @@ fn with_lowered_in<T: Send>(
             return Ok(f(&checked, &sources, None));
         }
         let mut data = wrela_lower::BuildData::default();
-        prepare(&checked, &sources, &dirs, &mut data, &mut diagnostics);
+        let cache = const_cache::dir_of(root);
+        prepare(&checked, &sources, &dirs, &mut data, &mut diagnostics, cache.as_deref());
         if has_errors(&diagnostics) {
             return Err(wrela_diag::render::render_all(&sources, &diagnostics));
         }
@@ -330,7 +334,8 @@ fn run_tests(root: &Path, filter: Option<&str>, kind: PackageKind, fuel: u64) ->
     // A debug build's checks, as `wrela build --debug` makes them (§11).
     let mut data = wrela_lower::BuildData { debug: true, testing: true, ..Default::default() };
     let mut filtered_out = 0;
-    prepare(&checked, &sources, &dirs, &mut data, &mut diagnostics);
+    let cache = const_cache::dir_of(root);
+    prepare(&checked, &sources, &dirs, &mut data, &mut diagnostics, cache.as_deref());
     let mut results = Vec::new();
     if !has_errors(&diagnostics) {
         // The package's tests, in the order written.
@@ -439,6 +444,7 @@ fn compile_loaded(
             files: Vec::new(),
             pipelines: Vec::new(),
             program_files: Vec::new(),
+            consts: consts::ConstStats::default(),
         };
     };
     // The program package's own files: package 1's (std is 0).
@@ -465,7 +471,8 @@ fn compile_loaded(
         testing: mode.testing,
         ..Default::default()
     };
-    prepare(&checked, &sources, &dirs, &mut data, &mut diagnostics);
+    let cache = const_cache::dir_of(root);
+    let stats = prepare(&checked, &sources, &dirs, &mut data, &mut diagnostics, cache.as_deref());
     if !lift.is_empty() && !has_errors(&diagnostics) {
         data.lift = Some(lift::table(&checked, &sources, &lifted_files));
     }
@@ -492,27 +499,32 @@ fn compile_loaded(
         files.clear();
     }
     let std_warnings = split_std_warnings(&sources, &mut diagnostics);
-    Output { sources, diagnostics, std_warnings, files, pipelines, program_files }
+    Output { sources, diagnostics, std_warnings, files, pipelines, program_files, consts: stats }
 }
 
 /// Reads the files `embed` reads, then computes the constants the build computes, into `data`,
-/// before what reads them is lowered (§10): each step only if no errors came before it.
+/// before what reads them is lowered (§10): each step only if no errors came before it. With
+/// `cache`, constants whose inputs are unchanged are read from it ([`const_cache`]).
 fn prepare(
     checked: &wrela_sema::Checked,
     sources: &SourceMap,
     dirs: &[std::path::PathBuf],
     data: &mut wrela_lower::BuildData,
     diagnostics: &mut Vec<Diagnostic>,
-) {
+    cache: Option<&Path>,
+) -> consts::ConstStats {
     if has_errors(diagnostics) {
-        return;
+        return consts::ConstStats::default();
     }
     let (embeds, d) = consts::read_embeds(checked, dirs);
     data.embeds = embeds;
     diagnostics.extend(d);
-    if !has_errors(diagnostics) {
-        diagnostics.extend(consts::compute(checked, sources, data));
+    if has_errors(diagnostics) {
+        return consts::ConstStats::default();
     }
+    let (d, stats) = consts::compute(checked, sources, data, cache);
+    diagnostics.extend(d);
+    stats
 }
 
 /// Takes the warnings in std's own code out of `diags`, and returns them.

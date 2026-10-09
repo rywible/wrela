@@ -37,7 +37,15 @@ pub use cache::compiled_code_prefix;
 pub use error::{Error, Result};
 #[cfg(feature = "gpu")]
 pub use gpu::{GpuTiming, frame_spans, map_read, open_device, read_timestamps, submission_spans};
-pub use program::{Failure, PostHandler, Ticked, Value, metered_engine};
+/// Build-time code's shared memory (constants, language.md §10), read and written by the
+/// build's thread while its helpers wait or have stopped.
+pub mod build_memory {
+    pub use crate::shared::{slice, write};
+}
+pub use program::{
+    BuildHelpers, Failure, HelperRun, PostHandler, Ticked, Value, metered_engine,
+    refuse_host_functions,
+};
 pub use wrela_abi::input::{Event, Scripted, parse_script};
 pub use wrela_abi::ticks::{TickLog, frame_time, lockstep_ticks};
 

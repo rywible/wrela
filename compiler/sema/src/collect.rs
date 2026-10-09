@@ -375,6 +375,8 @@ impl<'d, 'u> Collector<'d, 'u> {
             ast::ItemKind::Struct(_) | ast::ItemKind::Enum(_) => {
                 self.type_attrs(&item.attrs, false)
             }
+            // A constant's only attribute is its fuel, read with it.
+            ast::ItemKind::Const(_) => (false, None),
             _ => {
                 self.attrs_not_on_fn(&item.attrs);
                 (false, None)
@@ -506,6 +508,7 @@ impl<'d, 'u> Collector<'d, 'u> {
             }
             ast::ItemKind::Const(c) => {
                 let id = ConstId(self.p.consts.len() as u32);
+                let fuel = self.const_attrs(&item.attrs);
                 // Its type, once it's known, is the function's result (`check_program`).
                 self.p.fns.push(FnDef {
                     name: c.name.name.clone(),
@@ -536,6 +539,7 @@ impl<'d, 'u> Collector<'d, 'u> {
                     span: item.span,
                     eval,
                     default: false,
+                    fuel,
                 });
                 self.bind(m, &c.name, Res::Const(id), vis);
                 self.pending.push((m, PendingItem::Const(id, c)));
@@ -637,6 +641,42 @@ impl<'d, 'u> Collector<'d, 'u> {
             }
         }
         (fieldwise, diagnostic)
+    }
+
+    /// A constant's attributes: `@fuel(n)`, the work its computation may do (§10), at most
+    /// once; any other is E0108.
+    fn const_attrs(&mut self, attrs: &[ast::Attribute]) -> Option<u64> {
+        let mut fuel = None;
+        for a in attrs {
+            if a.name.name != "fuel" {
+                self.attrs_not_on_fn(std::slice::from_ref(a));
+                continue;
+            }
+            if fuel.is_some() {
+                self.diags.push(
+                    Diagnostic::new(codes::E0108, a.span, "a constant's fuel is set once")
+                        .with_fix("remove it", a.span, ""),
+                );
+                continue;
+            }
+            let value = match a.args.as_deref() {
+                Some([arg]) if arg.name.is_none() => fuel_value(&arg.value),
+                _ => None,
+            };
+            match value {
+                Some(v) if (1..=MAX_FUEL).contains(&v) => fuel = Some(v),
+                _ => self.diags.push(
+                    Diagnostic::new(
+                        codes::E0108,
+                        a.span,
+                        "`@fuel` takes one whole number of fuel units, at most 2 ** 46",
+                    )
+                    .with_note("a unit is about one WASM instruction; the build's own limit is 2 ** 34 (§10)")
+                    .with_help("write it as a literal or a power of two: `@fuel(2 ** 40)`"),
+                ),
+            }
+        }
+        fuel
     }
 
     /// E0108 for each attribute on something that isn't a function: an item, or an associated
@@ -774,14 +814,18 @@ impl<'d, 'u> Collector<'d, 'u> {
                         out.audio = Some(a.span);
                     }
                 }
-                "fieldwise" | "diagnostic" => {
+                "fieldwise" | "diagnostic" | "fuel" => {
                     self.diags.push(
                         Diagnostic::new(
                             codes::E0108,
                             a.span,
                             format!(
                                 "`@{name}` goes on a {}, not a function",
-                                if name == "fieldwise" { "trait" } else { "trait or a type" }
+                                match name {
+                                    "fieldwise" => "trait",
+                                    "fuel" => "`const`",
+                                    _ => "trait or a type",
+                                }
                             ),
                         )
                         .with_fix("remove it", a.span, ""),
@@ -2060,6 +2104,7 @@ impl<'d, 'u> Collector<'d, 'u> {
             span: d.span,
             eval,
             default: true,
+            fuel: None,
         });
         self.bind(m, &name, Res::Const(id), Vis::PRIVATE);
         let segment = ast::PathSegment { ident: name, generics: None };
@@ -3422,5 +3467,29 @@ fn alias_refs(p: &Program, m: ModuleId, t: &ast::TypeExpr, f: &mut impl FnMut(Al
             }
         }
         ast::TypeExprKind::Int(_) | ast::TypeExprKind::Error => {}
+    }
+}
+
+/// The most fuel a constant may set (`@fuel`, §10): 2 ** 46 units, some hours of one core.
+pub const MAX_FUEL: u64 = 1 << 46;
+
+/// The value of `@fuel`'s argument: a whole number written as a literal, a power (`2 ** 40`) or
+/// a product of them.
+fn fuel_value(e: &ast::Expr) -> Option<u64> {
+    match &e.kind {
+        ast::ExprKind::Lit(ast::Lit { kind: ast::LitKind::Int(v), .. }) => v.ok(),
+        ast::ExprKind::Paren(inner) => fuel_value(inner),
+        ast::ExprKind::Binary(op, a, b) => {
+            let (a, b) = (fuel_value(a)?, fuel_value(b)?);
+            match op {
+                ast::BinOp::Pow => a.checked_pow(u32::try_from(b).ok()?),
+                ast::BinOp::Mul => a.checked_mul(b),
+                ast::BinOp::Shl => {
+                    u32::try_from(b).ok().and_then(|b| a.checked_shl(b)).filter(|_| b < 64)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }

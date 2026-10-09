@@ -767,6 +767,9 @@ pub struct ConstDef {
     pub eval: FnId,
     /// Whether it's a parameter's or field's default (named by `name`), not a `const` item.
     pub default: bool,
+    /// The fuel its computation may use, if its declaration sets it (`@fuel(n)`, §10): in place
+    /// of the build's limit.
+    pub fuel: Option<u64>,
 }
 
 impl ConstDef {

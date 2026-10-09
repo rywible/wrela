@@ -15,7 +15,7 @@ use wasmtime::SharedMemory;
 
 /// Bytes `at..at + len`, if they're inside the memory: read in place, so only while no other
 /// thread writes them (above).
-pub(crate) fn slice(m: &SharedMemory, at: usize, len: usize) -> Option<&[u8]> {
+pub fn slice(m: &SharedMemory, at: usize, len: usize) -> Option<&[u8]> {
     let data = m.data();
     let end = at.checked_add(len).filter(|&e| e <= data.len())?;
     let cells = &data[at..end];
@@ -30,7 +30,7 @@ pub(crate) fn read(m: &SharedMemory, at: usize, len: usize) -> Option<Vec<u8>> {
 }
 
 /// Writes `bytes` at `at`: whether they fit.
-pub(crate) fn write(m: &SharedMemory, at: usize, bytes: &[u8]) -> bool {
+pub fn write(m: &SharedMemory, at: usize, bytes: &[u8]) -> bool {
     let data = m.data();
     let Some(end) = at.checked_add(bytes.len()).filter(|&e| e <= data.len()) else {
         return false;

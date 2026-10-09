@@ -1202,6 +1202,102 @@ fn other_instance(
     Ok((store, instance))
 }
 
+/// Helper threads for code the build runs (constants, language.md §10): each an instance of a
+/// module built with shared memory, on a thread of its own, running `__worker` until
+/// [`BuildHelpers::finish`]. Each has `fuel` (as the call it helps does), and what each used is
+/// counted, so the build bounds a constant's work across its threads.
+pub struct BuildHelpers {
+    memory: SharedMemory,
+    threads: Vec<std::thread::JoinHandle<HelperRun>>,
+}
+
+/// What a build's helper did: the fuel it used, and whether it ran out.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HelperRun {
+    pub used: u64,
+    pub out_of_fuel: bool,
+}
+
+impl BuildHelpers {
+    /// `count` helpers for `module`'s instances on `memory` (none if it has no `__worker`: it
+    /// runs no parallel jobs), each with `fuel`.
+    pub fn start(module: &Module, memory: &SharedMemory, count: u32, fuel: u64) -> BuildHelpers {
+        let n = if module.get_export(EXPORT_WORKER).is_some() { count.min(MAX_WORKERS) } else { 0 };
+        let threads = (0..n)
+            .map(|i| {
+                let (module, memory) = (module.clone(), memory.clone());
+                let thread = memory::THREAD_HELPER0 + i;
+                std::thread::spawn(move || {
+                    let mut used = HelperRun::default();
+                    let run = |used: &mut HelperRun| -> wasmtime::Result<()> {
+                        let (mut store, instance) =
+                            other_instance(&module, &memory, "build-time code")?;
+                        let metered = store.engine().get_consume_fuel();
+                        if metered {
+                            store.set_fuel(fuel)?;
+                        }
+                        let worker =
+                            instance.get_typed_func::<u32, ()>(&mut store, EXPORT_WORKER)?;
+                        let result = worker.call(&mut store, thread);
+                        if metered {
+                            used.used = fuel - store.get_fuel().unwrap_or(0);
+                        }
+                        if let Err(e) = &result {
+                            used.out_of_fuel = e.downcast_ref::<wasmtime::Trap>()
+                                == Some(&wasmtime::Trap::OutOfFuel);
+                        }
+                        result
+                    };
+                    if run(&mut used).is_err() {
+                        helper_trapped(&memory, thread);
+                    }
+                    used
+                })
+            })
+            .collect();
+        BuildHelpers { memory: memory.clone(), threads }
+    }
+
+    /// Stops the helpers and waits for them: what each did.
+    pub fn finish(mut self) -> Vec<HelperRun> {
+        self.stop()
+    }
+
+    fn stop(&mut self) -> Vec<HelperRun> {
+        if self.threads.is_empty() {
+            return Vec::new();
+        }
+        shared::store_u32(&self.memory, memory::PAR_SHUTDOWN, 1);
+        shared::add_u32(&self.memory, memory::PAR_WAKE, 1);
+        let _ = self.memory.atomic_notify(u64::from(memory::PAR_WAKE), u32::MAX);
+        self.threads.drain(..).map(|t| t.join().unwrap_or_default()).collect()
+    }
+}
+
+impl Drop for BuildHelpers {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// The host functions build-time code imports, each refusing as `why` says: constants and
+/// tests record no GPU work and make no requests (their effects are checked, §8).
+pub fn refuse_host_functions<T: 'static>(
+    linker: &mut Linker<T>,
+    engine: &Engine,
+    why: fn(results: u32) -> &'static str,
+) -> wasmtime::Result<()> {
+    for f in HOST_FUNCTIONS.iter().filter(|f| f.name != IMPORT_AUDIO) {
+        let why = why(f.results as u32);
+        let i32s = |n| std::iter::repeat_n(ValType::I32, n);
+        let ty = FuncType::new(engine, i32s(f.params), i32s(f.results));
+        linker.func_new(IMPORT_MODULE, f.name, ty, move |_, _, _| {
+            Err(wasmtime::format_err!("{why}"))
+        })?;
+    }
+    Ok(())
+}
+
 /// A helper: an instance of the program on a thread of its own, number `thread`, running
 /// `__worker(thread)` until the program shuts it down. If it traps, it tells the thread that
 /// waits for what it ran (wrela_abi `memory`'s helpers), and runs nothing more.
