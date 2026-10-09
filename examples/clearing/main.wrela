@@ -1383,7 +1383,7 @@ pub fn test_reference(s: mut Clearing, first: u32, count: u32, step: u32, rays: 
             at,
             s.depth,
             s.scene,
-            volume: s.probes.volume.span(start: 0, count: s.probes.grid.voxels()),
+            density: s.probes.density,
             levels: s.clipmap.levels(),
             texels: s.clipmap.texels(),
             maps: s.probes.maps,

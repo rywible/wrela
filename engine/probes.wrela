@@ -8,7 +8,8 @@
 //
 // The probes stand in columns over a square of the land, each column's layers at heights above
 // the ground there, so they follow it. Baking traces rays from each probe through the occluders
-// (a volume of densities cooked from the crowns, limbs and stones) to the ground (the terrain's
+// (a volume of densities cooked from the crowns, limbs and stones, which the GPU filters as it
+// reads them) to the ground (the terrain's
 // clipmap) or the sky, a strip of columns at a time, so no submission runs long. Once every
 // column is baked, a strip a frame is baked again, blended with what it held: the sky's clouds
 // drift, and the probes follow them. Those rays read the probes where they land (the ground's
@@ -20,7 +21,8 @@ use sky::{Clouds, cloud_shadow, clouded_sky}
 use shadow::{Shadows, statically_sunlit}
 use std::gpu::{
     Atomics, ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, GpuSpan, Rgba16Float, Sampler,
-    Slots, Texels, Texture, buffer, buffer_of, dispatch, label, writable_texture,
+    Slots, Texels, Texels3d, Texture, Texture3d, buffer, buffer_of, dispatch, label, texture3d,
+    writable_texture,
 }
 use std::math::PI
 use terrain::{Levels, Texel, ground_at, height_at}
@@ -207,29 +209,32 @@ pub fn cook_occluders(
     }
 }
 
-/// The occluders' density at `p` (per unit of extinction), between voxels (trilinear).
-pub fn density_at(grid: ProbeGrid, volume: [u32], p: vec3) -> f32 {
-    let g = (p - grid.volume_corner) / grid.voxel - vec3(0.5)
+/// The cooked voxels (`cook_occluders`'s fixed point) as densities in `density`'s red, which the
+/// GPU filters between voxels as it reads them (`density_at`).
+@compute(4, 4, 4)
+pub fn filterable(
+    grid: ProbeGrid,
+    volume: [u32],
+    density: mut Texels3d<Rgba16Float>,
+    id: GlobalId,
+) {
+    density.store(id, vec4(f32(volume[grid.voxel_index(id.xyz())]) * 0.001, 0.0, 0.0, 0.0))
+}
+
+/// The occluders' density at `p` (per unit of extinction), between voxels (trilinear, through
+/// `s`, a linear sampler); none outside the voxels' middles.
+pub fn density_at(grid: ProbeGrid, density: Texture3d<Rgba16Float>, s: Sampler, p: vec3) -> f32 {
     let dims = vec3(grid.volume_dims)
-    if g.x < 0.0 ||
-        g.y < 0.0 ||
-        g.z < 0.0 ||
-        g.x >= dims.x - 1.0 ||
-        g.y >= dims.y - 1.0 ||
-        g.z >= dims.z - 1.0 {
+    let g = (p - grid.volume_corner) / grid.voxel
+    if g.x < 0.5 ||
+        g.y < 0.5 ||
+        g.z < 0.5 ||
+        g.x >= dims.x - 0.5 ||
+        g.y >= dims.y - 0.5 ||
+        g.z >= dims.z - 0.5 {
         return 0.0
     }
-    let i = floor(g)
-    let f = g - i
-    let v = vec3u(i)
-    let at = |dx: u32, dy: u32, dz: u32| {
-        f32(volume[grid.voxel_index(v + vec3u(dx, dy, dz))]) * 0.001
-    }
-    let x00 = mix(at(0, 0, 0), at(1, 0, 0), f.x)
-    let x10 = mix(at(0, 1, 0), at(1, 1, 0), f.x)
-    let x01 = mix(at(0, 0, 1), at(1, 0, 1), f.x)
-    let x11 = mix(at(0, 1, 1), at(1, 1, 1), f.x)
-    mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z)
+    density.sample_level(s, g / dims).r
 }
 
 // ---- tracing and baking ---------------------------------------------------------------------
@@ -263,7 +268,7 @@ fn mean_light(p: Probe) -> vec3 {
 /// solids stop it: the surface's own back is its cosine's business.
 pub fn trace(
     t: Trace,
-    volume: [u32],
+    density: Texture3d<Rgba16Float>,
     levels: Levels,
     texels: [Texel],
     from: vec3,
@@ -304,7 +309,7 @@ pub fn trace(
             }
             return (light + trans * albedo * open_light(maps, n), trans * albedo * sun)
         }
-        var d = density_at(t.grid, volume, p)
+        var d = density_at(t.grid, density, s, p)
         if leaving && d > SOLID {
             d = 0.0
         } else {
@@ -378,7 +383,7 @@ pub fn bake(
     t: Trace,
     sh: Shadows,
     strip: Strip,
-    volume: [u32],
+    density: Texture3d<Rgba16Float>,
     levels: Levels,
     texels: [Texel],
     near: DepthTexture,
@@ -406,7 +411,7 @@ pub fn bake(
     grounds[id] = p.y - LAYER_HEIGHTS[k]
     // A probe inside a solid (a stone, a trunk) sees nothing of the light round the surface
     // beside it: it holds none, and the surfaces round it read the probes outside (`sky_sh`).
-    if density_at(g, volume, p) > SOLID {
+    if density_at(g, density, s, p) > SOLID {
         probes[id] = NONE
         bounces[id] = NONE
         return
@@ -417,7 +422,7 @@ pub fn bake(
         let dir = turned_ray(n, strip)
         let (l, sun) = trace(
             t,
-            volume,
+            density,
             levels,
             texels,
             p,
@@ -456,7 +461,7 @@ pub fn trace_again(
     t: Trace,
     sh: Shadows,
     strip: Strip,
-    volume: [u32],
+    density: Texture3d<Rgba16Float>,
     levels: Levels,
     texels: [Texel],
     near: DepthTexture,
@@ -477,12 +482,27 @@ pub fn trace_again(
         return
     }
     let p = probe_at(g, levels, texels, col % g.cols, col / g.cols, k)
-    if density_at(g, volume, p) > SOLID {
+    if density_at(g, density, s, p) > SOLID {
         rays[id] = Ray { sky: NONE, sun: NONE }
         return
     }
     let dir = turned_ray(id.x % strip.rays, strip)
-    let (l, sun) = trace(t, volume, levels, texels, p, dir, sh, near, far, cmp, view, dome, maps, s)
+    let (l, sun) = trace(
+        t,
+        density,
+        levels,
+        texels,
+        p,
+        dir,
+        sh,
+        near,
+        far,
+        cmp,
+        view,
+        dome,
+        maps,
+        s,
+    )
     let basis = sh_basis(dir)
     rays[id] = Ray { sky: projected(basis, l), sun: projected(basis, sun) }
 }
@@ -796,7 +816,7 @@ pub struct Baked {
     pub grounds: GpuBuffer<f32>,
     /// The open sky's probe (`open_sky`): its sky's part, then its sun's.
     pub open: GpuBuffer<Probe>,
-    pub volume: GpuBuffer<u32>,
+    pub density: Texture3d<Rgba16Float>,
     pub occluders: GpuBuffer<Occluder>,
     pub occluder_count: u32,
     /// How many columns are baked; once all are, the next column to bake again, and how many
@@ -833,7 +853,11 @@ impl Baked {
             ),
             grounds: buffer(grid.probes()),
             open: buffer(2),
-            volume: buffer(grid.voxels()),
+            density: texture3d::<Rgba16Float>(
+                grid.volume_dims.x,
+                grid.volume_dims.y,
+                grid.volume_dims.z,
+            ),
             occluders: take o,
             occluder_count: occluders.len(),
             baked: 0,
@@ -848,16 +872,22 @@ impl Baked {
         self.baked >= self.grid.cols * self.grid.cols
     }
 
-    /// The occluders cooked into the volume (once, first).
+    /// The occluders cooked into the volume (once, first): into a buffer of voxels, which they
+    /// share by an atomic max, then read into `density`.
     pub fn cook(mut self) {
         label("probes occluders")
+        var volume: GpuBuffer<u32> = buffer(self.grid.voxels())
         dispatch(
             cook_occluders.bind(
                 grid: self.grid,
                 occluders: self.occluders.span(start: 0, count: max(self.occluder_count, 1)),
-                volume: mut self.volume,
+                volume: mut volume,
             ),
             groups: max(self.occluder_count, 1),
+        )
+        dispatch(
+            filterable.bind(self.grid, volume.items(), density: mut self.density),
+            over: self.density,
         )
     }
 
@@ -905,7 +935,6 @@ impl Baked {
         s: Sampler,
     ) {
         let total = self.grid.cols * self.grid.cols
-        let volume = self.volume.span(start: 0, count: self.grid.voxels())
         if !self.done() {
             label("probes bake")
             let n = min(STRIP_COLUMNS, total - self.baked)
@@ -916,7 +945,7 @@ impl Baked {
                     t,
                     sh,
                     strip,
-                    volume: volume,
+                    density: self.density,
                     levels: levels,
                     texels: texels,
                     near: near,
@@ -949,7 +978,7 @@ impl Baked {
                 Trace { bounced: 1, ..t },
                 sh,
                 strip,
-                volume: volume,
+                density: self.density,
                 levels: levels,
                 texels: texels,
                 near: near,
@@ -1022,7 +1051,7 @@ pub fn reference(
     at: Sampling,
     depth: DepthTexture,
     scene: Texture<Rgba16Float>,
-    volume: [u32],
+    density: Texture3d<Rgba16Float>,
     levels: Levels,
     texels: [Texel],
     maps: Texture<Rgba16Float>,
@@ -1081,7 +1110,7 @@ pub fn reference(
         let front = dot(dir, n) > 0.0
         let (sky_part, sun_part) = trace(
             at.t,
-            volume,
+            density,
             levels,
             texels,
             from,
