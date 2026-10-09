@@ -13,7 +13,7 @@
 
 use engine::noise::{noise2, rand}
 use map::{
-    HILLS, RIDGE, DRINK, FIRE_AT, FIRE_REACH, FIRE_YEAR, GIANT_KEY, GIANT_YEAR, KEYSTONES, PEOPLE_FROM,
+    CUT_PATH, LAWNS, ROUND_2, SPINE_PATH, HILLS, RIDGE, DRINK, FIRE_AT, FIRE_REACH, FIRE_YEAR, GIANT_KEY, GIANT_YEAR, KEYSTONES, PEOPLE_FROM,
     PEOPLE_TO, REGION_HI, REGION_LO, RELATIONS, RING_KEY, ROAD, ROAD_WIDTH, SIGHT, SIGHT_CLEAR,
     SIGHT_WIDTH, TOWER_KEY, WATCH_CLEAR, WINDTHROW_AT, WINDTHROW_REACH, WINDTHROW_YEAR, to_road,
     to_segment,
@@ -509,7 +509,14 @@ fn on_lawn(p: vec2) -> bool {
     let a = vec2(-1.5, 3.0)
     let b = KNOLL + vec2(-4.0, -9.0)
     let t = clamp(dot(p - a, b - a) / dot(b - a, b - a), 0.0, 1.0)
-    length(p - a - (b - a) * t) < 9.0 + 5.0 * t
+    var on = length(p - a - (b - a) * t) < 9.0 + 5.0 * t
+    // Round 2: the map's lawns, their edges ragged.
+    if ROUND_2 {
+        for l in LAWNS {
+            on = on || length(p - l.xy) + 6.0 * (noise2(p * 0.08) - 0.5) < l.z
+        }
+    }
+    on
 }
 
 /// What does: light at the ground, thorn cover (which shelters seedlings from grazers), browsing,
@@ -624,10 +631,14 @@ fn thinness(heights: [f32], wet: [f32]) -> Vec<f32> {
 fn sight_cap(p: vec2, ground: f32) -> f32 {
     var cap = 1.0e9
     for r in RELATIONS {
-        if r.kind == SIGHT {
+        // A reveal is a sightline too, from where it's revealed (round 2).
+        if r.kind == SIGHT || (ROUND_2 && r.kind == map::REVEAL) {
             let k = KEYSTONES[r.to]
             let eye = vec3(r.from.x, height(r.from.x, r.from.y) + EYE_HEIGHT, r.from.y)
-            let top = vec3(k.at.x, height(k.at.x, k.at.y) + max(k.tall, 1.0), k.at.y)
+            // The line runs to the keystone's middle in round 2, so half of it shows over the
+            // trees, not only its tip.
+            let aim = if ROUND_2 { 0.55 } else { 1.0 }
+            let top = vec3(k.at.x, height(k.at.x, k.at.y) + max(k.tall * aim, 1.0), k.at.y)
             let (d, t) = to_segment(p, eye.xz, top.xz)
             let half = mix(2.0, 0.5 * SIGHT_WIDTH, t) + 0.5 * k.reach * t
             if t > 0.02 && t < 0.97 && d < half {
@@ -680,7 +691,36 @@ pub fn survey(stones: [Spot]) -> Land {
         lawn.push(on_lawn(p) || (gap && past < -10.0))
         kept.push(to_road(p) < 0.5 * ROAD_WIDTH || length(p - tower) < WATCH_CLEAR)
     }
+    // Round 2: a tree is held by the lowest cap its crown can reach, not only its trunk's:
+    // an edge tree leans into a ride's light, and an oak's crown reaches 10 m.
+    let cap = if ROUND_2 { reach_min(cap, 6) } else { take cap }
     Land { heights, habitable, wet, thin, exposed, cap, lawn, kept }
+}
+
+/// Each cell's least value of `g` within `r` cells each way (a square's minimum: across, then
+/// down).
+fn reach_min(g: [f32], r: i32) -> Vec<f32> {
+    var a: Vec<f32> = Vec::filled(N * N, 1.0e9)
+    for j in 0..N {
+        for i in 0..N {
+            var m = 1.0e9
+            for k in 0..(2 * r + 1) {
+                m = min(m, g[index(i32(i) + k - r, i32(j), N)])
+            }
+            a[j * N + i] = m
+        }
+    }
+    var b: Vec<f32> = Vec::filled(N * N, 1.0e9)
+    for j in 0..N {
+        for i in 0..N {
+            var m = 1.0e9
+            for k in 0..(2 * r + 1) {
+                m = min(m, a[index(i32(i), i32(j) + k - r, N)])
+            }
+            b[j * N + i] = m
+        }
+    }
+    b
 }
 
 /// Light at the ground (each crown stops its share, softened a cell each way), thorn cover from
@@ -902,7 +942,9 @@ fn grow(trees: mut Vec<Tree>, needs: [Need], land: Land, ground: mut Ground, yea
             let age = f32(year - t.born)
             t.light = n.light
             let f = clamp((n.light - h.need) / (0.9 - h.need), 0.0, 1.0)
-            let tallest = if t.pinned { h.tallest } else { min(h.tallest, max(land.cap[c], 1.0)) }
+            // Thin soil stunts (round 2): a crest's trees stay low.
+            let soil = if ROUND_2 { 1.0 - 0.6 * land.thin[c] } else { 1.0 }
+            let tallest = if t.pinned { h.tallest } else { min(h.tallest * soil, max(land.cap[c], 1.0)) }
             let potential = h.rate * max(1.0 - t.tall / tallest, 0.0) + 0.01
             t.tall += potential * f * STEP_YEARS
             // A pin's cap holds: what grows past it is cut back (a ride kept open).
@@ -943,6 +985,11 @@ fn grow(trees: mut Vec<Tree>, needs: [Need], land: Land, ground: mut Ground, yea
             }
             if t.vigour < 0.06 {
                 p += if h.need > 0.2 { 0.08 } else { 0.012 }
+            }
+            // Round 2: saplings starve in deep shade (beech, the most shade-tolerant, least), so
+            // an old stand opens beneath its crowns.
+            if ROUND_2 && t.tall < 4.0 && n.light < 0.2 {
+                p += if t.kind == BEECH { 0.03 } else { 0.07 }
             }
             // Beech: drought on thin soil, and drowned roots in the wet.
             if t.kind == BEECH {
@@ -1203,6 +1250,16 @@ fn along(herd: mut Herd, from: vec2, points: [vec2], seed: u32) -> vec2 {
     p
 }
 
+/// A walk along a polyline's points from its last to its first.
+fn along_back(herd: mut Herd, from: vec2, points: [vec2], seed: u32) -> vec2 {
+    var p = from
+    let n = points.len()
+    for k in 0..n {
+        p = leg(mut herd, p, points[n - 1 - k], seed + k)
+    }
+    p
+}
+
 /// Somewhere to graze: the best of a few places in the open round `near`, the lusher the
 /// better.
 fn pasture(herd: Herd, land: Land, ground: Ground, near: vec2, wide: f32, seed: u32) -> vec2 {
@@ -1253,7 +1310,28 @@ fn herd_year(herd: mut Herd, land: Land, ground: Ground, year: i32) {
         let out = if rand(s, 3) < 0.45 { DESCENT + j * 0.5 } else { entry }
         var p = leg(mut herd, entry, first, s)
         spread(mut herd.graze, p, r: 7.0, amount: 0.5)
-        if rand(s, 4) < TO_WATER {
+        let route = rand(s, 4)
+        if ROUND_2 && route >= TO_WATER && route < TO_WATER + 0.15 {
+            // Up the old road to the Watch's heath, and back.
+            p = along(mut herd, p, [ROAD[0], ROAD[1], ROAD[2], ROAD[3], ROAD[4], ROAD[5]], s + 50)
+            let top = pasture(herd, land, ground, LAWNS[2].xy, 25.0, s + 51)
+            p = leg(mut herd, p, top, s + 52)
+            spread(mut herd.graze, p, r: 10.0, amount: 0.6)
+            p = along(mut herd, p, [ROAD[5], ROAD[4], ROAD[3], ROAD[2], ROAD[1], ROAD[0]], s + 53)
+        } else if ROUND_2 && route >= TO_WATER + 0.15 && route < TO_WATER + 0.33 {
+            // Along the Spine over the tor to the burn, and back.
+            p = along(mut herd, p, SPINE_PATH, s + 60)
+            spread(mut herd.graze, p, r: 12.0, amount: 0.6)
+            p = along_back(mut herd, p, SPINE_PATH, s + 61)
+        } else if ROUND_2 && route >= TO_WATER + 0.33 && route < TO_WATER + 0.45 {
+            // Down the road to the Sink, past the ring and over the giant, down the Cut to the
+            // Lip, and out to the valley.
+            p = along(mut herd, p, [ROAD[0], ROAD[1], ROAD[2], ROAD[3]], s + 70)
+            p = leg(mut herd, p, DRINK + j, s + 71)
+            p = along(mut herd, p, CUT_PATH, s + 72)
+            continue
+        }
+        if route < TO_WATER {
             // Down the old road to the water, a while on its shore, and back.
             p = along(mut herd, p, [ROAD[0], ROAD[1], ROAD[2], ROAD[3]], s + 10)
             p = leg(mut herd, p, DRINK + j, s + 20)

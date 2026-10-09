@@ -113,8 +113,9 @@ struct Shot {
 const TOUR: &[Shot] = &[
     Shot { name: "opening", eye: [-1.5, 0.0], at: [0.0, 40.0], above: 6.0 },
     Shot { name: "knoll-to-tower", eye: [4.0, 26.0], at: [560.0, -470.0], above: 18.0 },
-    Shot { name: "tor-to-tower", eye: [330.0, -150.0], at: [560.0, -470.0], above: 18.0 },
-    Shot { name: "tor-to-sink", eye: [330.0, -150.0], at: [255.0, -385.0], above: 2.0 },
+    Shot { name: "tor-to-tower", eye: [333.0, -153.0], at: [560.0, -470.0], above: 18.0 },
+    Shot { name: "tor-to-sink", eye: [328.0, -155.0], at: [255.0, -385.0], above: 2.0 },
+    Shot { name: "tor-from-spine", eye: [255.0, -160.0], at: [330.0, -150.0], above: 14.0 },
     Shot { name: "crest-to-sink", eye: [300.0, -200.0], at: [255.0, -385.0], above: 2.0 },
     Shot { name: "beechwood", eye: [420.0, -580.0], at: [380.0, -520.0], above: 2.0 },
     Shot { name: "sink-shore", eye: [215.0, -370.0], at: [290.0, -390.0], above: 2.0 },
@@ -206,7 +207,7 @@ fn region_calibrate() {
         let x = -150.0 + 900.0 * rng.next();
         let z = -650.0 + 900.0 * rng.next();
         let (_, walk) = r.stand(x, z);
-        if walk < 0.5 {
+        if walk < 0.5 || r.call("test_brush", &[Value::F32(x), Value::F32(z)])[0] > 0.08 {
             continue;
         }
         let yaw = std::f32::consts::TAU * rng.next();
@@ -286,7 +287,8 @@ fn region_blind() {
         let x = -150.0 + 900.0 * rng.next();
         let z = -650.0 + 900.0 * rng.next();
         let (_, walk) = r.stand(x, z);
-        if walk < 0.5 {
+        // Where a player stands: walkable, and not in a thicket or a sapling's crown.
+        if walk < 0.5 || r.call("test_brush", &[Value::F32(x), Value::F32(z)])[0] > 0.08 {
             continue;
         }
         let yaw = std::f32::consts::TAU * rng.next();
@@ -323,4 +325,22 @@ fn region_blind() {
     std::fs::write(repo_root().join("target/tmp/region").join(format!("{dir_name}-key.csv")), key)
         .expect("write the key");
     eprintln!("blind: {} stills ({tried} places tried)", all.len());
+}
+
+/// Where each relation's sightline loses its light.
+#[test]
+#[ignore = "spike 17: prints numbers"]
+fn region_lines() {
+    let mut r = Region::load("region-lines");
+    for (name, x, z, key) in [
+        ("knoll to tower", 4.0f32, 26.0f32, 1i32),
+        ("tor to tower", 330.0, -150.0, 1),
+        ("tor to sink", 330.0, -150.0, 7),
+        ("crest to sink", 300.0, -200.0, 7),
+        ("clearing to tor", 14.0, 18.0, 2),
+    ] {
+        let v = r.call("test_line", &[Value::F32(x), Value::F32(z), Value::I32(key)]);
+        let t: Vec<String> = v[..10].iter().map(|x| format!("{x:.2}")).collect();
+        eprintln!("line {name}: light at each tenth {}; least clearance over the crowns {:.1} m", t.join(" "), v[10]);
+    }
 }

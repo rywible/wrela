@@ -1,0 +1,274 @@
+// The endless forest (spike 17): what lies past the authored square, without end.
+//
+// - Coordinates: an f32 position loses precision far from the origin. A walk stepped at 60 Hz
+//   in f32, and the same in a tile plus an offset in it (`Place`), show by how much.
+// - The wildwood: a forest grown tile by tile, each 256 m square, from the place alone. It's
+//   cheap where the authored square's history is costly: a cell of 4 m holds one canopy tree (its
+//   species, age and height), and three hundred years run in thirty steps. Gaps open where wind
+//   throws trees; pioneers fill them; the shade-tolerant take over. Every random draw is keyed by
+//   the world's cell and the step, so two tiles that both hold a cell (in their margins) draw the
+//   same for it; what differs is only what each can see past its own edge. A margin of cells
+//   round each tile, run and thrown away, keeps the seam's error out of the tile.
+// - The egg's road: an old road, straight for kilometres with slow bends, still a faint ride
+//   through the wildwood, its stones and a game trail along it.
+// Throwaway code: it answers the spike's question.
+
+use engine::noise::{fbm2, noise2, rand}
+
+// ---- coordinates ------------------------------------------------------------------------------
+
+/// A walk's step at 60 Hz: 1.4 m/s along `heading`, for `ticks` ticks from `start`, in f32 as a
+/// sim steps it. Returns how far its end is from the true end (m), and its shortest and longest
+/// step (m), where a true step is 0.02333 m.
+pub fn walk_f32(start: vec2, heading: f32, ticks: u32) -> vec3 {
+    let v = vec2(cos(heading), sin(heading)) * 1.4
+    let dt = 1.0 / 60.0
+    var p = start
+    var lo = 1.0e9
+    var hi = 0.0
+    for _ in 0..ticks {
+        let q = p + v * dt
+        let step = length(q - p)
+        lo = min(lo, step)
+        hi = max(hi, step)
+        p = q
+    }
+    // The true end, in f64.
+    let t = f64(ticks) / 60.0
+    let ex = f64(start.x) + f64(v.x) * t
+    let ez = f64(start.y) + f64(v.y) * t
+    let err = sqrt((f64(p.x) - ex) * (f64(p.x) - ex) + (f64(p.y) - ez) * (f64(p.y) - ez))
+    vec3(f32(err), lo, hi)
+}
+
+/// A place: a tile (1024 m square) and where in it, so a position keeps its precision however
+/// far it goes.
+pub struct Place: Copy {
+    pub tile: vec2i,
+    pub local: vec2,
+}
+
+pub const TILE: f32 = 1024.0
+
+/// `p` moved by `d`, its tile changed when it leaves the tile.
+pub fn moved(p: Place, d: vec2) -> Place {
+    var local = p.local + d
+    var tile = p.tile
+    let shift = vec2i(floor(local / TILE))
+    tile += shift
+    local -= vec2(shift) * TILE
+    Place { tile, local }
+}
+
+/// The same walk as `walk_f32`, stepped as a `Place`.
+pub fn walk_tiled(start: Place, heading: f32, ticks: u32) -> vec3 {
+    let v = vec2(cos(heading), sin(heading)) * 1.4
+    let dt = 1.0 / 60.0
+    var p = start
+    var lo = 1.0e9
+    var hi = 0.0
+    for _ in 0..ticks {
+        let q = moved(p, v * dt)
+        // The step, worked out in the tile of `p`.
+        let d = q.local + vec2(q.tile - p.tile) * TILE - p.local
+        let step = length(d)
+        lo = min(lo, step)
+        hi = max(hi, step)
+        p = q
+    }
+    let t = f64(ticks) / 60.0
+    let ex = f64(start.local.x) + f64(v.x) * t
+    let ez = f64(start.local.y) + f64(v.y) * t
+    let px = f64(p.local.x) + f64(p.tile.x - start.tile.x) * f64(TILE)
+    let pz = f64(p.local.y) + f64(p.tile.y - start.tile.y) * f64(TILE)
+    let err = sqrt((px - ex) * (px - ex) + (pz - ez) * (pz - ez))
+    vec3(f32(err), lo, hi)
+}
+
+/// How many different values a grass-scale noise (20 cycles a metre) takes across 10 cm at `at`,
+/// sampled every millimetre: 100 when its input keeps its precision, fewer as it steps.
+pub fn noise_steps(at: vec2) -> u32 {
+    var last = -1.0
+    var n = 0
+    for i in 0..100 {
+        let p = at + vec2(f32(i) * 0.001, 0.0)
+        let v = noise2(p * 20.0)
+        if v != last {
+            n += 1
+            last = v
+        }
+    }
+    n
+}
+
+// ---- the wildwood ------------------------------------------------------------------------------
+
+/// The wildwood's cell (m), a tile's side in cells, and the steps (each `STEP` years).
+pub const WCELL: f32 = 4.0
+pub const WTILE: u32 = 64
+pub const STEPS: u32 = 30
+const STEP: f32 = 10.0
+
+/// Species: none, beech, oak, birch, pine.
+pub const NONE: u32 = 0
+pub const W_BEECH: u32 = 1
+pub const W_OAK: u32 = 2
+pub const W_BIRCH: u32 = 3
+pub const W_PINE: u32 = 4
+
+/// Each species' tallest (m), growth in full light (m a step), lifespan (years) and the light it
+/// needs to take (0 to 1).
+const W_TALLEST = [0.0, 24.0, 21.0, 17.0, 23.0]
+const W_RATE = [0.0, 2.6, 2.4, 5.0, 3.6]
+const W_LIFE = [0.0, 280.0, 450.0, 90.0, 260.0]
+const W_NEED = [0.0, 0.05, 0.35, 0.6, 0.45]
+
+/// A cell of the wildwood: its tree (species, age, height), or none.
+pub struct Wild: Copy {
+    pub kind: u32,
+    pub age: f32,
+    pub tall: f32,
+}
+
+/// A draw keyed by the world's cell (i, j), the step and a salt: the same for every tile that
+/// holds the cell.
+fn draw(i: i32, j: i32, step: u32, salt: u32) -> f32 {
+    let h = u32(i).wrapping_mul(73856093) ^ u32(j).wrapping_mul(19349663) ^ step.wrapping_mul(83492791)
+    rand(h, salt)
+}
+
+/// How wet and how thin the soil is at a world cell (from the land: a slow noise here).
+fn soil(i: i32, j: i32) -> vec2 {
+    let p = vec2(f32(i), f32(j)) * WCELL
+    vec2(fbm2(p * 0.004 + vec2(3.0, 1.0), 3), smoothstep(0.55, 0.8, fbm2(p * 0.003 + vec2(9.0, 4.0), 3)))
+}
+
+/// Whether the egg's road passes through world cell (i, j): its line, and how near (m).
+pub fn road_distance(p: vec2) -> f32 {
+    // Westward (+x) from the region's west edge, bending slowly, for 24 km.
+    if p.x < 790.0 || p.x > 25000.0 {
+        return 1.0e9
+    }
+    let z = -250.0 + 180.0 * sin(p.x * 0.0009) + 60.0 * sin(p.x * 0.0031 + 1.0)
+    abs(p.y - z)
+}
+
+/// A wildwood of `n` by `n` cells from world cell (i0, j0), grown from nothing for `steps` steps.
+/// A road (`road`) keeps its ride: no tree taller than 4 m within 3 m of its line.
+pub fn grow_wild(i0: i32, j0: i32, n: u32, steps: u32, road: bool) -> Vec<Wild> {
+    var cells: Vec<Wild> = Vec::filled(n * n, Wild { kind: NONE, age: 0.0, tall: 0.0 })
+    var next: Vec<Wild> = Vec::filled(n * n, Wild { kind: NONE, age: 0.0, tall: 0.0 })
+    for step in 0..steps {
+        for j in 0..n {
+            for i in 0..n {
+                let wi = i0 + i32(i)
+                let wj = j0 + i32(j)
+                let c = cells[j * n + i]
+                // Neighbours within two cells: their seed, and the shade they cast.
+                var seed = [0.0, 0.0, 0.0, 0.0, 0.0]
+                var taller = 0.0
+                for dj in 0..5 {
+                    for di in 0..5 {
+                        let x = i32(i) + di - 2
+                        let y = i32(j) + dj - 2
+                        if x >= 0 && y >= 0 && x < i32(n) && y < i32(n) && !(di == 2 && dj == 2) {
+                            let o = cells[u32(y) * n + u32(x)]
+                            if o.kind != NONE && o.age > 20.0 {
+                                seed[o.kind] += 1.0
+                            }
+                            if o.tall > c.tall + 2.0 {
+                                taller += 1.0
+                            }
+                        }
+                    }
+                }
+                let light = exp(-0.12 * taller)
+                let s = soil(wi, wj)
+                var out = c
+                // Wind: gaps from a coarse grid of events (64 m cells), keyed by the world.
+                let ei = (wi - ((wi % 16) + 16) % 16) / 16
+                let ej = (wj - ((wj % 16) + 16) % 16) / 16
+                var thrown = false
+                if draw(ei, ej, step, 7) < 0.03 {
+                    let centre = (vec2(f32(ei), f32(ej)) + vec2(draw(ei, ej, step, 8), draw(ei, ej, step, 9))) * 64.0
+                    let r = 8.0 + 14.0 * draw(ei, ej, step, 10)
+                    thrown = length(vec2(f32(wi), f32(wj)) * WCELL - centre) < r
+                }
+                if c.kind != NONE {
+                    let dies = c.age > W_LIFE[c.kind] * (0.75 + 0.5 * draw(wi, wj, 0, 3)) ||
+                        (light < W_NEED[c.kind] * 0.5 && draw(wi, wj, step, 4) < 0.3) ||
+                        thrown
+                    if dies {
+                        out = Wild { kind: NONE, age: 0.0, tall: 0.0 }
+                    } else {
+                        out.age += STEP
+                        let room = max(1.0 - c.tall / W_TALLEST[c.kind], 0.0)
+                        out.tall += W_RATE[c.kind] * room * clamp(light * 1.5, 0.15, 1.0)
+                    }
+                } else {
+                    // A seed takes by what's near, the light and the soil.
+                    var total = 0.0
+                    var best = NONE
+                    var best_w = 0.0
+                    for k in 1..5 {
+                        let fit = if k == W_BEECH { (1.0 - s.y) * (1.0 - smoothstep(0.6, 0.8, s.x)) } else if k == W_PINE { 0.1 + s.y } else if k == W_BIRCH { 1.0 } else { 0.6 + 0.4 * s.x }
+                        let takes = if light >= W_NEED[k] { 1.0 } else { 0.1 }
+                        let w = (seed[k] + 0.15) * fit * takes * (0.5 + draw(wi, wj, step, 20 + k))
+                        total += w
+                        if w > best_w {
+                            best_w = w
+                            best = k
+                        }
+                    }
+                    if draw(wi, wj, step, 5) < min(total * 0.15, 0.9) {
+                        out = Wild { kind: best, age: 0.0, tall: 0.6 }
+                    }
+                }
+                if road && road_distance(vec2(f32(wi) + 0.5, f32(wj) + 0.5) * WCELL) < 3.0 {
+                    out.tall = min(out.tall, 4.0)
+                }
+                next[j * n + i] = out
+            }
+        }
+        swap(mut cells, mut next)
+    }
+    cells
+}
+
+/// A tile of the wildwood: tile (ti, tj)'s 64 by 64 cells, grown with `margin` cells round it,
+/// which are thrown away.
+pub fn tile(ti: i32, tj: i32, margin: u32) -> Vec<Wild> {
+    let n = WTILE + 2 * margin
+    let all = grow_wild(ti * i32(WTILE) - i32(margin), tj * i32(WTILE) - i32(margin), n, STEPS, road: true)
+    var out: Vec<Wild> = Vec::with_capacity(WTILE * WTILE)
+    for j in 0..WTILE {
+        for i in 0..WTILE {
+            out.push(all[(j + margin) * n + i + margin])
+        }
+    }
+    out
+}
+
+/// How much of a tile grown with `margin` differs from the same tile cut from a wood grown three
+/// tiles wide round it (the truth, as far as its own edges go): the share of cells whose species
+/// differs, and the mean height difference (m).
+pub fn seam_error(ti: i32, tj: i32, margin: u32) -> vec2 {
+    let alone = tile(ti, tj, margin)
+    let wide = grow_wild((ti - 1) * i32(WTILE) - 32, (tj - 1) * i32(WTILE) - 32, 3 * WTILE + 64, STEPS, road: true)
+    let n = 3 * WTILE + 64
+    var differ = 0
+    var dh = 0.0
+    for j in 0..WTILE {
+        for i in 0..WTILE {
+            let a = alone[j * WTILE + i]
+            let b = wide[(j + WTILE + 32) * n + i + WTILE + 32]
+            if a.kind != b.kind {
+                differ += 1
+            }
+            dh += abs(a.tall - b.tall)
+        }
+    }
+    vec2(f32(differ) / f32(WTILE * WTILE), dh / f32(WTILE * WTILE))
+}
+
+use std::collections::swap

@@ -142,7 +142,13 @@ pub fn shapes(p: vec2) -> f32 {
     y += ridge
     // The tor: a knob of granite on the Spine's high point.
     let k = p - TOR_AT
-    y += 5.0 * exp(-dot(k, k) / 500.0)
+    y += if map::ROUND_2 {
+        // A crag: steep-sided, flat-ish on top, above the Spine's trees.
+        let r = length(k) + 2.5 * (noise2(p * 0.2) - 0.5)
+        map::CRAG * (1.0 - smoothstep(0.35 * map::CRAG_FOOT, map::CRAG_FOOT, r)) + 3.0 * exp(-dot(k, k) / 900.0)
+    } else {
+        5.0 * exp(-dot(k, k) / 500.0)
+    }
     for h in HILLS {
         let r = length(p - h.xy) / h.z
         y += h.w * (1.0 - smoothstep(0.1, 1.0, r))
@@ -160,7 +166,13 @@ pub fn shapes(p: vec2) -> f32 {
 
 /// How rocky the ground is at `p` (0 to 1): the tor's knob and the ravine's walls.
 pub fn rocky(p: vec2, n: vec3) -> f32 {
-    let bald = 1.0 - smoothstep(16.0, 26.0, length(p - TOR_AT) + 6.0 * noise2(p * 0.12))
+    let reach = if map::ROUND_2 { 28.0 } else { 16.0 }
+    var bald = 1.0 - smoothstep(reach, reach + 10.0, length(p - TOR_AT) + 6.0 * noise2(p * 0.12))
+    // The Watch's top: granite under thin turf (round 2).
+    if map::ROUND_2 {
+        let w = length(p - map::TOWER_AT) + 8.0 * noise2(p * 0.09)
+        bald = max(bald, 0.75 * (1.0 - smoothstep(26.0, 40.0, w)))
+    }
     let steep = smoothstep(0.82, 0.62, n.y)
     max(bald, steep)
 }

@@ -202,6 +202,43 @@ pub const WINDTHROW_REACH: f32 = 48.0
 /// Where the herd drinks: the Sink's west shore.
 pub const DRINK = vec2(215.0, -370.0)
 
+// ---- round 2: every opening has a keeper ------------------------------------------------------
+
+/// Lawns: (x, z, radius), where the herd crops hardest, so nothing taller than its bite lasts:
+/// the clearing's meadow, the Sink's shore, the Watch's heathy top. (Round 1 kept only the view
+/// from the camera's rise to the great oak; the history closed the rest.)
+pub const LAWNS = [vec4(2.0, 24.0, 24.0, 0.0), vec4(225.0, -372.0, 30.0, 0.0), vec4(560.0, -470.0, 34.0, 0.0)]
+
+/// The herd's routes, besides the old road: along the Spine from the clearing over the tor to
+/// the burn; and from the Sink past the ring, over the giant and down the Cut to the Lip.
+pub const SPINE_PATH = [
+    vec2(30.0, 10.0),
+    vec2(150.0, -120.0),
+    vec2(255.0, -160.0),
+    vec2(318.0, -146.0),
+    vec2(420.0, -95.0),
+    vec2(520.0, -45.0),
+    vec2(610.0, -150.0),
+    vec2(650.0, -190.0),
+]
+pub const CUT_PATH = [
+    vec2(215.0, -370.0),
+    vec2(130.0, -425.0),
+    vec2(52.0, -452.0),
+    vec2(30.0, -400.0),
+    vec2(40.0, -330.0),
+    vec2(-20.0, -295.0),
+    vec2(-110.0, -235.0),
+    vec2(-190.0, -178.0),
+]
+
+/// The tor as a crag: how far it stands above the Spine (m), and how wide its foot is (m).
+pub const CRAG: f32 = 14.0
+pub const CRAG_FOOT: f32 = 22.0
+
+/// Whether round 2's keepers are on: the lawns, the routes, the crag, the forest's thinning.
+pub const ROUND_2: bool = true
+
 // ---- helpers ----------------------------------------------------------------------------------
 
 /// The distance from `p` to the segment `a`–`b`, and how far along it the nearest point is (0

@@ -1616,3 +1616,24 @@ pub fn test_seen(s: Clearing, x: f32, z: f32, yaw: f32, half: f32) -> vec4 {
         interest::seen_beyond(sight, at, yaw, half, 120.0),
     )
 }
+
+/// The sightline from (x, z) at eye height to keystone `key`'s top: its transmittance at each
+/// tenth of the way, and the least clearance over the crowns under it (m).
+@testing
+pub fn test_line(s: Clearing, x: f32, z: f32, key: u32) -> [f32; 11] {
+    let k = map::KEYSTONES[key]
+    let from = vec3(x, scene::height(x, z) + scene::EYE_HEIGHT, z)
+    let to = vec3(k.at.x, scene::height(k.at.x, k.at.y) + max(k.tall, 1.0) * 0.95, k.at.y)
+    let d = interest::diagnose(s.checked.sight, from, to)
+    var out = [0.0; 11]
+    for i in 0..11 {
+        out[i] = d[i]
+    }
+    out
+}
+
+/// What stops a sightline under the crowns at (x, z): the extinction at eye height there (1/m).
+@testing
+pub fn test_brush(s: Clearing, x: f32, z: f32) -> f32 {
+    s.checked.sight.under[interest::icell(vec2(x, z))]
+}

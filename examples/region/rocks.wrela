@@ -54,8 +54,8 @@ pub fn spots() -> Vec<Spot> {
     let tor = KEYSTONES[TOR_KEY].at
     for k in 0..9 {
         let a = TAU * (f32(k) / 9.0 + 0.13 * rand(900 + k, 1))
-        let r = if k == 0 { 0.0 } else { 4.0 + 6.0 * rand(900 + k, 2) }
-        let size = if k == 0 { 4.2 } else { 1.8 + 1.6 * rand(900 + k, 3) }
+        let r = if map::ROUND_2 { 7.0 + 7.0 * rand(900 + k, 2) } else if k == 0 { 0.0 } else { 4.0 + 6.0 * rand(900 + k, 2) }
+        let size = if k == 0 && !map::ROUND_2 { 4.2 } else { 1.8 + 1.6 * rand(900 + k, 3) }
         out.push(Spot { at: tor + vec2(cos(a), sin(a)) * r, size, seed: 900 + k, kind: GRANITE })
     }
     // The ring: standing stones round a glade, one fallen gap on its south side.
