@@ -75,6 +75,10 @@ pub fn walk_tys(e: &mut Expr, f: &mut impl FnMut(&mut TyId)) {
         ExprKind::Tuple(xs) | ExprKind::Array(xs) | ExprKind::Construct(xs) => {
             xs.iter_mut().for_each(|x| walk_tys(x, f))
         }
+        ExprKind::ArrayFill(xs, fill, _) => {
+            xs.iter_mut().for_each(|x| walk_tys(x, f));
+            walk_tys(fill, f);
+        }
         ExprKind::Block(b) => walk_block(b, f),
         ExprKind::If { cond, then, else_ } => {
             walk_tys(cond, f);
@@ -703,7 +707,7 @@ fn stored_callables(p: &Program, own: &Own, e: &Expr, out: &mut Vec<Diagnostic>)
     let bad = |t: TyId| own.unstorable(p, t);
     let what = match &e.kind {
         ExprKind::Tuple(_) => bad(e.ty).map(|c| ("stored in a tuple", c)),
-        ExprKind::Array(_) | ExprKind::ArrayRepeat(..) => {
+        ExprKind::Array(_) | ExprKind::ArrayRepeat(..) | ExprKind::ArrayFill(..) => {
             bad(e.ty).map(|c| ("stored in an array", c))
         }
         ExprKind::Adt { .. } => bad(e.ty).map(|c| ("stored in a struct or enum", c)),
@@ -856,6 +860,9 @@ pub fn non_literal(e: &Expr) -> Option<&Expr> {
             xs.iter().find_map(non_literal)
         }
         ExprKind::ArrayRepeat(x, _) => non_literal(x),
+        ExprKind::ArrayFill(xs, fill, _) => {
+            xs.iter().find_map(non_literal).or_else(|| non_literal(fill))
+        }
         _ => Some(e),
     }
 }

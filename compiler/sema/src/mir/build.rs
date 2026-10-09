@@ -103,6 +103,9 @@ pub fn is_literal(consts: &Consts, e: &thir::Expr) -> bool {
             xs.iter().all(|x| is_literal(consts, x))
         }
         ExprKind::ArrayRepeat(x, _) => is_literal(consts, x),
+        ExprKind::ArrayFill(xs, fill, _) => {
+            xs.iter().all(|x| is_literal(consts, x)) && is_literal(consts, fill)
+        }
         _ => false,
     }
 }
@@ -893,6 +896,15 @@ impl<'a> Builder<'a> {
             ExprKind::Array(xs) => {
                 let vs = self.values(xs, part)?;
                 Rvalue::Array(vs.into_iter().map(|v| self.consume(v)).collect())
+            }
+            ExprKind::ArrayFill(xs, fill, n) => {
+                // The elements in order, then the fill once: a `Copy` value, so each place it
+                // fills reads the same operand.
+                let vs = self.values(xs, part)?;
+                let mut ops: Vec<Operand> = vs.into_iter().map(|v| self.consume(v)).collect();
+                let f = self.value(fill, Want::Read)?;
+                ops.resize(*n as usize, f);
+                Rvalue::Array(ops)
             }
             ExprKind::Construct(xs) => Rvalue::Construct(self.values(xs, Want::Read)?),
             ExprKind::ArrayRepeat(x, n) => Rvalue::ArrayRepeat(self.value(x, Want::Read)?, *n),

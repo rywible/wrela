@@ -128,6 +128,19 @@ fn walk<'a, B: Build<'a>>(b: &mut B, e: &wrela_sema::thir::Expr) -> Option<B::V>
             }
             b.parts(t, parts)
         }
+        ExprKind::ArrayFill(xs, fill, n) => {
+            let mut parts = Vec::new();
+            let (cx, mb) = b.cx();
+            if cx.lower_ty(mb, fill.ty, fill.span).is_none() {
+                return Some(b.parts(t, parts));
+            }
+            for x in xs {
+                parts.push(walk(b, x)?);
+            }
+            let f = walk(b, fill)?;
+            parts.resize(*n as usize, f);
+            b.parts(t, parts)
+        }
         ExprKind::ArrayRepeat(x, n) => {
             let v = walk(b, x)?;
             b.parts(t, vec![v; *n as usize])

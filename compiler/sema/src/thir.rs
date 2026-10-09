@@ -185,6 +185,8 @@ pub enum ExprKind {
     Tuple(Vec<Expr>),
     Array(Vec<Expr>),
     ArrayRepeat(Box<Expr>, u32),
+    /// `[a, b, ..fill]`: the elements, then `fill`, evaluated once, to the length.
+    ArrayFill(Vec<Expr>, Box<Expr>, u32),
     /// A vector or matrix built from components; the type says which.
     Construct(Vec<Expr>),
     /// A scalar conversion to this expression's type.
@@ -515,6 +517,10 @@ impl Expr {
             }
             ExprKind::Tuple(xs) | ExprKind::Array(xs) | ExprKind::Construct(xs) => {
                 xs.iter().for_each(|x| f(Child::Expr(x)))
+            }
+            ExprKind::ArrayFill(xs, fill, _) => {
+                xs.iter().for_each(|x| f(Child::Expr(x)));
+                f(Child::Expr(fill));
             }
             ExprKind::Block(b) => f(Child::Block(b)),
             ExprKind::If { cond, then, else_ } => {

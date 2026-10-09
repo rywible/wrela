@@ -34,6 +34,7 @@ impl<'p> Checker<'p> {
             ast::ExprKind::Tuple(_)
                 | ast::ExprKind::Array(_)
                 | ast::ExprKind::ArrayRepeat { .. }
+                | ast::ExprKind::ArrayFill { .. }
                 | ast::ExprKind::StructLit { .. }
                 | ast::ExprKind::Call { .. }
                 | ast::ExprKind::MethodCall { .. }
@@ -129,6 +130,56 @@ impl<'p> Checker<'p> {
                 }
                 let ty = self.p.types.array(elem, xs.len() as u32);
                 Expr { ty, span, kind: ExprKind::Array(xs) }
+            }
+            ast::ExprKind::ArrayFill { items, fill } => {
+                // The length is the expected array's: `[a, b, ..fill]` fills it out.
+                let (elem_exp, len) = match expected.map(|t| self.kind(t)) {
+                    Some(TyKind::Array(t, n)) => (Some(*t), Some(*n)),
+                    Some(TyKind::ArrayN(t, _)) => (Some(*t), None),
+                    _ => (None, None),
+                };
+                let elem = elem_exp.unwrap_or_else(|| self.new_var(VarKind::General, span));
+                let xs: Vec<Expr> = items.iter().map(|x| self.check_expect(x, elem)).collect();
+                let f = self.check_expect(fill, elem);
+                let n = match len {
+                    Some(n) if (xs.len() as u32) <= n => n,
+                    Some(n) => {
+                        self.err(Diagnostic::new(
+                            codes::E0300,
+                            span,
+                            format!("this array is `[_; {n}]`, and {} elements are written before its fill", xs.len()),
+                        ));
+                        xs.len() as u32
+                    }
+                    None => {
+                        self.err(
+                            Diagnostic::new(
+                                codes::E0306,
+                                span,
+                                "`..fill` fills an array to its length, and no length is known here",
+                            )
+                            .with_note("the length comes from the type the array is used as: a field's, a parameter's or a binding's `[T; N]`, with `N` a number")
+                            .with_help("write the type: `let xs: [T; N] = [a, b, ..fill]`, or the elements in full"),
+                        );
+                        xs.len() as u32
+                    }
+                };
+                let ft = self.infer.resolve(&self.p.types, f.ty);
+                if self.p.types.has_vars(ft) {
+                    if let Some(copy) = self.p.lang_trait(Lang::Copy) {
+                        let r = crate::defs::TraitRef { trait_: copy, args: Vec::new() };
+                        self.obligation(ft, r, f.span, "`..fill`, which copies the fill,".into());
+                    }
+                } else if !crate::traits::implements_builtin(self.p, ft, Lang::Copy) {
+                    let shown = self.display(f.ty);
+                    self.err(Diagnostic::new(
+                        codes::E0400,
+                        f.span,
+                        format!("`..fill` copies the fill to each place left, so it must be `Copy`, and `{shown}` isn't"),
+                    ));
+                }
+                let ty = self.p.types.array(elem, n);
+                Expr { ty, span, kind: ExprKind::ArrayFill(xs, Box::new(f), n) }
             }
             ast::ExprKind::ArrayRepeat { value, count } => {
                 let elem_exp = match expected.map(|t| self.kind(t)) {
