@@ -88,6 +88,10 @@ pub const RULES: &[(&str, &str)] = &[
     ("ty.vectors", "vectors and matrices: constructors and swizzles"),
     ("ty.arrays", "fixed-size arrays `[T; N]` with constant lengths"),
     (
+        "ty.enum-arrays",
+        "`[T; E]` has an element for each variant of an enum numbered 0, 1, 2 and on, indexed by it",
+    ),
+    (
         "ty.array-fill",
         "`[a, b, ..fill]` fills an array to the length its type gives, with a `Copy` fill",
     ),

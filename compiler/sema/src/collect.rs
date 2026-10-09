@@ -402,10 +402,20 @@ impl<'d, 'u> Collector<'d, 'u> {
                 // The variants' names now, for imports (`use E::B`); their fields come with
                 // the signatures. A name declared twice is reported then; the first one counts.
                 let mut variants: Vec<VariantDef> = Vec::new();
+                // Each discriminant as written, or one past the one before (§3): checked with
+                // the signatures, and known now for an enum that's an array's length (`[T; E]`).
+                let mut next: u32 = 0;
                 for v in &e.variants {
                     if variants.iter().any(|p| p.name == v.name.name) {
                         continue;
                     }
+                    let discriminant = match v.discriminant.as_ref().map(|l| &l.kind) {
+                        Some(ast::LitKind::Int(v)) => {
+                            v.ok().and_then(|n| u32::try_from(n).ok()).unwrap_or(u32::MAX)
+                        }
+                        _ => next,
+                    };
+                    next = discriminant.saturating_add(1);
                     let shape = match &v.kind {
                         ast::VariantKind::Unit => VariantShape::Unit,
                         ast::VariantKind::Tuple(_) => VariantShape::Tuple,
@@ -417,7 +427,7 @@ impl<'d, 'u> Collector<'d, 'u> {
                         shape,
                         fields: Vec::new(),
                         span: v.span,
-                        discriminant: 0,
+                        discriminant,
                     });
                 }
                 let kind = AdtKind::Enum(variants);

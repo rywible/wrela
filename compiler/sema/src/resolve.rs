@@ -782,6 +782,25 @@ pub fn length_error(p: &Program, module: ModuleId, len: &ast::Expr) -> Diagnosti
         }
         ast::ExprKind::Path(path) => {
             let name = &path.segments[0].ident.name;
+            if let Some(Res::Adt(a)) = lookup_name(p, module, name) {
+                let def = p.adt(a);
+                return if def.is_enum() {
+                    Diagnostic::new(
+                        codes::E0325,
+                        len.span,
+                        format!("`{name}` can't be an array's length: an enum is one when its variants hold nothing and its discriminants are 0, 1, 2 and on"),
+                    )
+                    .with_note("each variant's discriminant is its element's index (§4)")
+                } else {
+                    Diagnostic::new(
+                        codes::E0325,
+                        len.span,
+                        format!(
+                            "`{name}` is a struct; an array's length is a number, a constant holding one, or an enum (one element a variant)"
+                        ),
+                    )
+                };
+            }
             if lookup_name(p, module, name).is_none() && !is_broken(p, module, name) {
                 return Diagnostic::new(
                     codes::E0200,
@@ -805,6 +824,19 @@ pub fn length_error(p: &Program, module: ModuleId, len: &ast::Expr) -> Diagnosti
         "an array length is an integer literal or a constant holding one",
     )
     .with_note("evaluating expressions at compile time is tier 1")
+}
+
+/// How many variants enum `a` has, when it can be an array's length: its variants hold nothing
+/// and their discriminants are 0, 1, 2 and on, so each is its own element's index.
+pub fn enum_length(p: &Program, a: AdtId) -> Option<u32> {
+    let def = p.adt(a);
+    let dense = def.is_enum()
+        && def
+            .variants()
+            .iter()
+            .enumerate()
+            .all(|(i, v)| v.shape == VariantShape::Unit && v.discriminant == i as u32);
+    dense.then_some(def.variants().len() as u32)
 }
 
 /// The value of an array length: an integer literal, or a constant holding one, resolved in
@@ -833,7 +865,12 @@ fn length(
         }
         ast::ExprKind::Paren(inner) => length(p, module, inner, visiting),
         ast::ExprKind::Path(path) => {
-            let Res::Const(c) = resolve_value_item(p, module, path)? else { return None };
+            let c = match resolve_value_item(p, module, path)? {
+                Res::Const(c) => c,
+                // `[T; E]`: one element for each of an enum's variants (`ty.enum-arrays`).
+                Res::Adt(a) => return enum_length(p, a),
+                _ => return None,
+            };
             if visiting.contains(&c) {
                 return None;
             }

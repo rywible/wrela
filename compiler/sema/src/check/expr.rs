@@ -1600,7 +1600,16 @@ impl<'p> Checker<'p> {
             }
             return Expr { ty: elem, span, kind: ExprKind::Index(Box::new(b), Box::new(i)) };
         }
-        let i = self.check_expr(index, None);
+        let mut i = self.check_expr(index, None);
+        // An enum that can be an array's length indexes by its discriminant: `xs[Species::Oak]`
+        // for a `[T; Species]` (`ty.enum-arrays`).
+        if let &TyKind::Adt(a, _) = self.kind(i.ty)
+            && resolve::enum_length(self.p, a).is_some()
+        {
+            let u = self.p.types.u32;
+            let at = i.span;
+            i = Expr { ty: u, span: at, kind: ExprKind::Discriminant(Box::new(i)) };
+        }
         // An integer literal is a `u32` index. A value whose literal type isn't settled yet
         // (`let i = 1`) can be either index type: it's checked once it's settled.
         let open = self.infer.var_kind(&self.p.types, i.ty) == Some(VarKind::Int);
@@ -1619,7 +1628,9 @@ impl<'p> Checker<'p> {
             let d = Diagnostic::new(
                 codes::E0312,
                 i.span,
-                format!("an index must be a `u32` or `i32`, not `{shown}`"),
+                format!(
+                    "an index must be a `u32`, an `i32` or an enum whose variants are numbered 0, 1, 2 and on, not `{shown}`"
+                ),
             );
             // A number converts; a vector has components to choose from.
             self.err(match self.kind(i.ty) {
