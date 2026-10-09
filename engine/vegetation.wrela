@@ -9,28 +9,26 @@
 // no `discard` (which would turn off the GPU's early depth test).
 
 use impostor::{
-    Cooked, Impostor, bake, cook, far_cut, far_quad, far_shade, volume_cut, volume_shade,
-    which_crown,
+    Cooked, Impostor, bake, cook, far_cut, far_quad, far_shade, leaf_light, volume_cut,
+    volume_shade, which_crown,
 }
-use light::{Light, Lit}
+use light::Lit
 use lit::{Lighting, shown, sky_at, sun_at}
-use noise::{cell_size, hash2, hashed_threshold_of, rand}
-use lod::{IMPOSTOR, Lod, VOLUME, anchor, keeps, keeps_packed, packed, place, share, ways}
+use noise::{cell_size, hashed_threshold_of}
+use lod::{IMPOSTOR, Lod, VOLUME, anchor, keeps_packed, packed, place, share, ways}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_POINTS, LIMB_VERTICES, Leaves, OUTLINE,
-    Plant, Wind, CORNERS, card_orders, cook_cards, cook_outlines, corner_of, leaf_at, leaf_atlas,
-    level_cards, limb_corner, limb_point, sway,
+    Plant, Wind, CORNERS, card_orders, card_tint, card_turn, cook_cards, cook_outlines, corner_of,
+    leaf_age, leaf_at, leaf_atlas, leaf_draws, leaf_normal, level_cards, limb_corner, limb_point,
+    sway, tinted,
 }
-use probes::Probe
 use shadow::Shadows
 use std::field::Tube
 use std::gpu::{
-    Atomics, ClipPosition, Compare, ComparisonSampler, Depth, DepthBias, DepthTexture,
-    DrawIndexedArgs, Flat, FragCoord, GlobalId, GpuBuffer, GpuSpan, InstanceIndex, Rgba16Float,
-    Rgba8, Sampler, Slots, Texture, Texture3d, VertexIndex, buffer, dispatch, draw, label, write,
+    Atomics, ClipPosition, Compare, Depth, DepthBias, DepthTexture, DrawIndexedArgs, Flat,
+    FragCoord, GpuBuffer, GpuSpan, InstanceIndex, Rgba8, Sampler, Texture, VertexIndex, buffer,
+    buffer_of, discard, dispatch, draw, write,
 }
-use std::math::{PI, TAU}
-use terrain::Texel
 use view::{Camera, PREPASSED}
 
 /// A kind of plant, cooked: the plant, its cards and limbs on the GPU, and its size.
@@ -55,17 +53,15 @@ pub fn kind(plant: Plant, seed: u32, atlas: Texture<Rgba8>, s: Sampler) -> Kind 
     let n = plant.cards()
     var cards: GpuBuffer<Card> = buffer(n)
     dispatch(cook_cards.bind(plant, n, seed, out: mut cards), over: n)
-    var orders: GpuBuffer<u32> = buffer(CORNERS * n)
-    write(mut orders, 0, card_orders(plant, n, seed))
+    let orders = buffer_of(card_orders(plant, n, seed))
     let limb_count = plant.limbs.len()
-    var limbs: GpuBuffer<Tube<4>> = buffer(max(limb_count, 1))
     var list: Vec<Tube<4>> = Vec::new()
     for i in 0..limb_count {
         list.push(plant.limbs[i])
     }
-    write(mut limbs, 0, list)
+    let limbs = buffer_of(list, at_least: 1)
     let impostor = bake(plant, cards, n, limbs, limb_count, atlas, s)
-    let volume = cook(plant, impostor.bake, cards, n, atlas, s)
+    let volume = cook(impostor.bake, cards, n, atlas, s)
     Kind {
         plant,
         cards: take cards,
@@ -157,9 +153,7 @@ fn every_of(kinds: u32, placed: [Placed]) -> (GpuBuffer<Instance>, Vec<List>) {
             every.push(Instance { at: vec3(0.0), yaw: 0.0, tint: vec3(0.0), scale: 0.0 })
         }
     }
-    var buf: GpuBuffer<Instance> = buffer(max(every.len(), 1))
-    write(mut buf, 0, every)
-    (take buf, lists)
+    (buffer_of(every, at_least: 1), lists)
 }
 
 /// A list's indexed draws (`Forest::args`): its cards' and its limbs'.
@@ -214,8 +208,8 @@ impl Forest {
             most = max(most, k.card_count)
             most_limbs = max(most_limbs, k.limb_count)
         }
-        let limb_triangles = indices_of(limb_indices(most_limbs))
-        let card_triangles = indices_of(card_indices(most))
+        let limb_triangles = buffer_of(limb_indices(most_limbs))
+        let card_triangles = buffer_of(card_indices(most))
         var every_args: GpuBuffer<ListDraws> = buffer(kinds.len())
         write(mut every_args, 0, args_of(kinds, every_lists, 1))
         let room_args = kinds.len() * WAYS
@@ -258,13 +252,18 @@ impl Forest {
     pub fn select(mut self, cam: Camera) {
         let kinds = self.kinds.len()
         let ways = WAYS
-        // Each instance's ways (the lower and the upper; HIDDEN for none), counted by kind and
-        // way first, then laid out.
+        // The view's cone: its corner's angle.
+        let corner = atan(cam.tan_half * sqrt(1.0 + cam.aspect * cam.aspect))
+        // Each instance's ways (the lower and the upper; HIDDEN for none) and where it is
+        // between its levels (`lod::place`, found once for its ways and its marks), counted by
+        // kind and way first, then laid out.
         var counts = Vec::filled(kinds * ways, 0)
         var ways_of: Vec<vec2u> = Vec::new()
+        var places: Vec<vec2> = Vec::new()
         for p in self.placed {
-            let w = ways_for(self.kinds[p.kind], p.at, cam, self.lod(p.kind))
+            let (w, at) = ways_for(self.kinds[p.kind], p.at, cam, self.lod(p.kind), corner)
             ways_of.push(w)
+            places.push(at)
             if w.x != HIDDEN {
                 counts[p.kind * ways + w.x] += 1
                 if w.y != w.x {
@@ -306,8 +305,9 @@ impl Forest {
                     break
                 }
                 let slot = p.kind * ways + way
-                out[starts[slot] + fill[slot]] = p.at
-                marks[starts[slot] + fill[slot]] = mark_of(self.lod(p.kind), cam, p.at, way)
+                let to = starts[slot] + fill[slot]
+                out[to] = p.at
+                marks[to] = mark_of(self.lod(p.kind), cam, p.at, way, places[i])
                 fill[slot] += 1
                 if way == IMPOSTOR {
                     self.far_count += 1
@@ -346,32 +346,45 @@ impl Forest {
     fn marks(self, l: List) -> GpuSpan<vec2u> {
         self.marks.span(start: l.first, count: l.count)
     }
+
+    /// The draw state of a list of cards (`l.how`, a card level) facing `cam`.
+    fn card_draw_of(self, l: List, cam: Camera, wind: Wind) -> CardDraw {
+        card_draw(wind, l.how, self.kinds[l.kind].plant.leaves, cam.right, cam.up, self.cell, l.how)
+    }
+}
+
+impl Kind {
+    /// Its cards that level `level` draws (`level_cards`), to bind.
+    pub fn cards_at(self, level: u32) -> GpuSpan<Card> {
+        self.cards.span(start: 0, count: level_cards(self.card_count, level))
+    }
 }
 
 /// A way that isn't drawn.
 const HIDDEN: u32 = 99
 
 /// The ways instance `at` of kind `k` is drawn from `cam` (the lower and the upper of the two it's
-/// between, or one twice): none (`HIDDEN`) when it's out of view or faded out.
-fn ways_for(k: Kind, at: Instance, cam: Camera, l: Lod) -> vec2u {
+/// between, or one twice): none (`HIDDEN`) when it's out of view (the view's cone, `corner` its
+/// corner's angle) or faded out. And where it is between its levels, its level and how far it
+/// has faded (`lod::place`), when it's in view.
+fn ways_for(k: Kind, at: Instance, cam: Camera, l: Lod, corner: f32) -> (vec2u, vec2) {
     let centre = at.at + vec3(0.0, k.top * 0.5 * at.scale, 0.0)
     let r = k.reach * at.scale
     let v = centre - cam.eye
     let d = length(v)
-    // Outside the view's cone (its corner's angle) by more than its own angular radius.
+    // Outside the view's cone by more than its own angular radius.
     if d > r {
-        let corner = atan(cam.tan_half * sqrt(1.0 + cam.aspect * cam.aspect))
         let off = acos(clamp(dot(v / d, cam.forward), -1.0, 1.0))
         if off > corner + asin(min(r / d, 1.0)) + 0.02 {
-            return vec2u(HIDDEN)
+            return (vec2u(HIDDEN), vec2(0.0))
         }
     }
     let (level, faint) = place(l, cam, at.at, at.scale)
     let (drawn, lower, upper) = ways(level, faint)
     if !drawn {
-        return vec2u(HIDDEN)
+        return (vec2u(HIDDEN), vec2(level, faint))
     }
-    vec2u(lower, upper)
+    (vec2u(lower, upper), vec2(level, faint))
 }
 
 // ---- cards -------------------------------------------------------------------------------------
@@ -383,12 +396,12 @@ pub struct CardDraw: Copy + GpuData {
     pub right: vec3,
     pub per_card: u32,
     pub up: vec3,
-    /// The way drawn (its level; `ALL` for every instance whole: the shadows'), and how
-    /// instances choose theirs (each way's share of a pixel, `lod`).
+    /// The way drawn (its level; `ALL` for every instance whole: the shadows').
     pub way: u32,
     pub wind: Wind,
     pub grow: f32,
-    pub lod: Lod,
+    /// How wide a cut's hashed cell is, in the scene's pixels (`Lod::cell`).
+    pub cell: f32,
 }
 
 /// A draw of every instance whole, whatever its level (the static shadows').
@@ -423,13 +436,6 @@ fn card_indices(n: u32) -> Vec<u32> {
     out
 }
 
-/// A buffer of `list`.
-fn indices_of(list: Vec<u32>) -> GpuBuffer<u32> {
-    var b: GpuBuffer<u32> = buffer(list.len())
-    write(mut b, 0, list)
-    b
-}
-
 /// Corner `k` of card `c` of the kind's, of instance `i`, facing `d`'s basis, swayed by the wind;
 /// seen by `view` (the camera's jittered view-projection, or the sun's).
 fn card_corner(
@@ -443,10 +449,8 @@ fn card_corner(
 ) -> (vec3, vec2, Card, Instance) {
     let card = cards[c]
     let inst = instances[i]
-    let a = TAU * rand(card.seed, 11)
-    let (s, c) = (sin(a), cos(a))
     let q = outlines[(card.seed % LEAF_PATTERNS) * OUTLINE + k]
-    let t = vec2(c * q.x - s * q.y, s * q.x + c * q.y)
+    let t = card_turn(card, q)
     let centre = inst.place(card.centre)
     let swayed = centre + sway(d.wind, centre, card.centre.y * inst.scale)
     let half = card.size * d.grow * inst.scale * 0.5
@@ -546,23 +550,24 @@ pub fn leaf_cut(
     s: Sampler,
 ) -> vec4 {
     let (m, which) = leaf_at(atlas, s, l.seed.value, l.uv)
-    // How much of the pixel the leaves cover: the atlas's soft edge made a pixel wide.
-    let cover = saturate((m - 0.5) / max(fwidth(m), 1.0e-4) + 0.5)
-    let size = cell_size(l.uv, d.lod.cell)
+    let cover = leaf_cover(m)
+    let size = cell_size(l.uv, d.cell)
     if cover <= 0.0 || which >= d.per_card || !keeps_packed(l.keep.value, pixel.position.xy) {
-        discard_fragment()
+        discard()
     }
     // A pixel covered in part is kept that much of the time, by a draw that holds still on the
     // card (hashed alpha): a fixed cut left hard, crawling edges for temporal AA, and a draw
     // changing each frame, noise. Most of a card is empty or covered: they draw nothing.
     if cover < 1.0 && cover < hashed_threshold_of(l.uv, l.seed.value, size) {
-        discard_fragment()
+        discard()
     }
     vec4(0.0)
 }
 
-fn discard_fragment() {
-    std::gpu::discard()
+/// How much of the pixel a card's leaves cover where the atlas reads `m`: the atlas's soft edge
+/// made a pixel wide. A fragment shader's, in uniform control flow (its derivatives).
+fn leaf_cover(m: f32) -> f32 {
+    saturate((m - 0.5) / max(fwidth(m), 1.0e-4) + 0.5)
 }
 
 /// A leaf's pixel, where the prepass left its depth: its leaf's own tilt off the crown's normal,
@@ -584,30 +589,18 @@ pub fn leaf_shade(
     let card = cards[l.card.value]
     let inst = instances[l.instance.value & 16777215]
     let world = lt.cam.world_at(pixel.position.xy, pixel.position.z)
-    let seed = card.seed
-    let (_, which) = leaf_at(atlas, lt.s, seed, l.uv)
-    let tilt = vec3(
-        rand(seed, 100 + which) - 0.5,
-        rand(seed, 120 + which) - 0.5,
-        rand(seed, 140 + which) - 0.5,
-    )
+    let (_, which) = leaf_at(atlas, lt.s, card.seed, l.uv)
+    let (tilt, aged) = leaf_draws(card.seed, which)
     let crown_n = normalize(inst.turn(card.normal.decode()))
-    let n = normalize(crown_n + tilt * 0.9)
-    let sun = sun_at(lt, world, n, soft: 1.5)
-    let ao = exp(-card.depth * inst.scale / 1.6)
-    let age = saturate(0.35 + 0.65 * crown_n.y + 0.3 * (rand(seed, 160 + which) - 0.5))
-    let t = card.tint.decode()
-    let tint = inst.tint + (t.xyz - vec3(0.5)) * vec3(0.04, 0.05, 0.0)
-    let albedo = max(mix(leaves.old, leaves.young, vec3(age)) + tint * 0.5, vec3(0.005))
-    let sky = sky_at(lt, world, crown_n) * (0.25 + 0.75 * ao)
-    let lit = Lit {
-        albedo,
-        n,
-        sun: sun * (0.35 + 0.65 * ao),
-        sky,
-        through: leaves.through * (0.4 + 0.6 * ao),
-    }
-    let c = shown(lt, lit, world)
+    let c = leaf_light(
+        lt,
+        world,
+        leaf_normal(crown_n, tilt),
+        sky_n: crown_n,
+        depth: card.depth * inst.scale,
+        albedo: tinted(leaf_age(leaves, crown_n.y, aged), inst.tint + card_tint(card)),
+        through: leaves.through,
+    )
     vec4(c, view::LEAVES + f32(l.instance.value >> 24))
 }
 
@@ -674,7 +667,7 @@ pub fn limb_shadow(
 @fragment
 pub fn bark_shade(b: BarkVertex, pixel: FragCoord, lt: Lighting, bark: Bark) -> vec4 {
     if !keeps_packed(b.keep.value, pixel.position.xy) {
-        discard_fragment()
+        discard()
     }
     let n = normalize(b.normal)
     // Bark's ridges run along the limb.
@@ -701,26 +694,27 @@ pub fn nothing() -> vec4 {
 
 // ---- drawing a forest ----------------------------------------------------------------------
 
-/// The cards' draw state for a level: they grow 2^level, and face `right` and `up`.
+/// The cards' draw state for a level: they grow 2^level, and face `right` and `up`; their cut's
+/// cells are `cell` pixels wide.
 pub fn card_draw(
     wind: Wind,
     level: u32,
     leaves: Leaves,
     right: vec3,
     up: vec3,
-    lod: Lod,
+    cell: f32,
     way: u32,
 ) -> CardDraw {
-    CardDraw { wind, grow: f32(1 << level), right, per_card: leaves.per_card, up, way, lod }
+    CardDraw { wind, grow: f32(1 << level), right, per_card: leaves.per_card, up, way, cell }
 }
 
 /// What the draws of an instance drawn way `way` read of it this frame (`Forest::marks`): the
-/// part of a pixel's draws it keeps (`lod::share`), anchored where its pattern is
-/// (`lod::anchor`), packed (`lod::packed`); and which crown it is (the low 8 bits) and which
-/// corner it's seen from (the next 8, `plant::corner_of`).
-fn mark_of(l: Lod, cam: Camera, inst: Instance, way: u32) -> vec2u {
-    let (level, faint) = place(l, cam, inst.at, inst.scale)
-    let keep = vec4(share(level, faint, way), anchor(cam, inst.at, l.top, inst.scale))
+/// part of a pixel's draws it keeps (`lod::share`, from `at`: its level and how far it has faded,
+/// `lod::place`), anchored where its pattern is (`lod::anchor`), packed (`lod::packed`); and
+/// which crown it is (the low 8 bits) and which corner it's seen from (the next 8,
+/// `plant::corner_of`).
+fn mark_of(l: Lod, cam: Camera, inst: Instance, way: u32, at: vec2) -> vec2u {
+    let keep = vec4(share(at.x, at.y, way), anchor(cam, inst.at, l.top, inst.scale))
     vec2u(packed(keep), which_crown(inst.at) | (corner_of(inst, l.top * 0.5, cam.eye) << 8))
 }
 
@@ -760,7 +754,7 @@ impl Forest {
                         far,
                         volume_cut.bind(
                             cam,
-                            k.volume.volume,
+                            k.impostor.bake,
                             grid: k.volume.grid,
                             grid_depth: k.volume.grid_depth,
                             s: s,
@@ -777,20 +771,12 @@ impl Forest {
             let l = self.lists[li]
             if l.how < CARD_LEVELS {
                 borrow k = self.kinds[l.kind]
-                let d = card_draw(
-                    wind,
-                    l.how,
-                    k.plant.leaves,
-                    cam.right,
-                    cam.up,
-                    self.lod(l.kind),
-                    l.how,
-                )
+                let d = self.card_draw_of(l, cam, wind)
                 draw(
                     card.bind(
                         cam,
                         d,
-                        cards: k.cards.span(start: 0, count: level_cards(k.card_count, l.how)),
+                        cards: k.cards_at(l.how),
                         instances: self.instances(l),
                         marks: self.marks(l),
                         outlines: self.outlines,
@@ -816,27 +802,19 @@ impl Forest {
             let l = self.lists[li]
             if l.how < CARD_LEVELS {
                 borrow k = self.kinds[l.kind]
-                let d = card_draw(
-                    wind,
-                    l.how,
-                    k.plant.leaves,
-                    cam.right,
-                    cam.up,
-                    self.lod(l.kind),
-                    l.how,
-                )
+                let d = self.card_draw_of(l, cam, wind)
                 draw(
                     card.bind(
                         cam,
                         d,
-                        cards: k.cards.span(start: 0, count: level_cards(k.card_count, l.how)),
+                        cards: k.cards_at(l.how),
                         instances: self.instances(l),
                         marks: self.marks(l),
                         outlines: self.outlines,
                         orders: k.orders,
                     ),
                     leaf_shade.bind(
-                        cards: k.cards.span(start: 0, count: level_cards(k.card_count, l.how)),
+                        cards: k.cards_at(l.how),
                         instances: self.instances(l),
                         lt: lt,
                         leaves: k.plant.leaves,
@@ -902,7 +880,7 @@ impl Forest {
                         volume_shade.bind(
                             lt,
                             ids,
-                            k.volume.volume,
+                            k.impostor.bake,
                             grid: k.volume.grid,
                             grid_depth: k.volume.grid_depth,
                             cell: self.cell,
@@ -926,12 +904,12 @@ impl Forest {
             let instances = self.every.span(start: l.first, count: l.count)
             let level = 1
             let leaves = Leaves { per_card: SHADOW_LEAVES, ..k.plant.leaves }
-            let d = card_draw(wind, level, leaves, sh.right, sh.up, self.lod(l.kind), ALL)
+            let d = card_draw(wind, level, leaves, sh.right, sh.up, self.cell, ALL)
             draw(
                 card_shadow.bind(
                     view,
                     d,
-                    cards: k.cards.span(start: 0, count: level_cards(k.card_count, level)),
+                    cards: k.cards_at(level),
                     instances: instances,
                     outlines: self.outlines,
                 ),
@@ -992,9 +970,8 @@ pub fn leaf_covering(
     covering: mut Atomics<u32>,
 ) -> vec4 {
     let (m, which) = leaf_at(atlas, s, l.seed.value, l.uv)
-    let cover = saturate((m - 0.5) / max(fwidth(m), 1.0e-4) + 0.5)
-    if cover <= 0.0 || which >= d.per_card {
-        discard_fragment()
+    if leaf_cover(m) <= 0.0 || which >= d.per_card {
+        discard()
     }
     let i = u32(p.position.y) * width + u32(p.position.x)
     let _ = covering.add(i, 1)
@@ -1017,20 +994,12 @@ impl Forest {
             let l = self.lists[li]
             if l.how < CARD_LEVELS {
                 borrow k = self.kinds[l.kind]
-                let d = card_draw(
-                    wind,
-                    l.how,
-                    k.plant.leaves,
-                    cam.right,
-                    cam.up,
-                    self.lod(l.kind),
-                    l.how,
-                )
+                let d = self.card_draw_of(l, cam, wind)
                 draw(
                     card.bind(
                         cam,
                         d,
-                        cards: k.cards.span(start: 0, count: level_cards(k.card_count, l.how)),
+                        cards: k.cards_at(l.how),
                         instances: self.instances(l),
                         marks: self.marks(l),
                         outlines: self.outlines,
@@ -1058,20 +1027,12 @@ impl Forest {
             let l = self.lists[li]
             if l.how < CARD_LEVELS {
                 borrow k = self.kinds[l.kind]
-                let d = card_draw(
-                    wind,
-                    l.how,
-                    k.plant.leaves,
-                    cam.right,
-                    cam.up,
-                    self.lod(l.kind),
-                    l.how,
-                )
+                let d = self.card_draw_of(l, cam, wind)
                 draw(
                     card.bind(
                         cam,
                         d,
-                        cards: k.cards.span(start: 0, count: level_cards(k.card_count, l.how)),
+                        cards: k.cards_at(l.how),
                         instances: self.instances(l),
                         marks: self.marks(l),
                         outlines: self.outlines,

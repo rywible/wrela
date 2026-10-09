@@ -17,8 +17,8 @@
 use noise::{direction, hash2, pick, rand}
 use std::field::{Lipschitz, PartName, Surface, Tube, unnamed}
 use std::gpu::{
-    ClipPosition, FragCoord, GlobalId, Oct32, Rgba16Float, Rgba8, Sampler, Slots, Texture, Unorm8x4,
-    VertexIndex, begin_pass, draw, texture,
+    ClipPosition, FragCoord, GlobalId, Oct32, Rgba8, Sampler, Slots, Texture, Unorm8x4, VertexIndex,
+    begin_pass, draw, texture,
 }
 use std::math::{PI, TAU}
 
@@ -54,8 +54,8 @@ pub const MAX_CLUMPS: u32 = 64
 /// A plant: limbs (tubes through four points each) and a crown of clumps, in the plant's own
 /// frame (its base at the origin, +y up).
 pub struct Plant: Copy + GpuData {
-    pub limbs: Bounded<Tube<4>, 40>,
-    pub clumps: Bounded<Clump, 64>,
+    pub limbs: Bounded<Tube<4>, MAX_LIMBS>,
+    pub clumps: Bounded<Clump, MAX_CLUMPS>,
     pub leaves: Leaves,
     pub bark: Bark,
     /// How softly the crown's clumps blend (per metre: higher is harder).
@@ -321,12 +321,9 @@ fn corner_dir(o: u32) -> vec3 {
 /// Which corner a plant at `inst` is seen from by an eye at `eye` (`mid` metres up its middle,
 /// in its own frame).
 pub fn corner_of(inst: Instance, mid: f32, eye: vec3) -> u32 {
-    let v = eye - inst.at
-    let (c, s) = (cos(inst.yaw), sin(inst.yaw))
-    let x = c * v.x - s * v.z
-    let z = s * v.x + c * v.z
+    let v = unturned(inst.yaw, eye - inst.at)
     let y = v.y - mid * inst.scale
-    u32(x > 0.0) | (u32(y > 0.0) << 1) | (u32(z > 0.0) << 2)
+    u32(v.x > 0.0) | (u32(y > 0.0) << 1) | (u32(v.z > 0.0) << 2)
 }
 
 /// The plant's `n` cards (cooked by `seed`) in each corner's order (`CORNERS`, one after
@@ -406,6 +403,50 @@ pub fn cook_cards(plant: Plant, n: u32, seed: u32, out: mut Slots<Card>, id: Glo
         seed: k,
         tint: Unorm8x4::encode(tint),
     }
+}
+
+/// A card's corner `q` (on its square, each in [-1, 1]) turned by the card's own turn, a draw of
+/// its seed: the same for every way a card is drawn (`vegetation::card_corner`, and the cards an
+/// impostor is baked from).
+pub fn card_turn(card: Card, q: vec2) -> vec2 {
+    let a = TAU * rand(card.seed, 11)
+    let (s, c) = (sin(a), cos(a))
+    vec2(c * q.x - s * q.y, s * q.x + c * q.y)
+}
+
+/// A card's own tint, added to its instance's: a little more or less red and green.
+pub fn card_tint(card: Card) -> vec3 {
+    (card.tint.decode().xyz - vec3(0.5)) * vec3(0.04, 0.05, 0.0)
+}
+
+// ---- a leaf's look (its cards', its impostor's and its volume's alike) -------------------------
+
+/// Leaf `which` of a card of seed `seed`: its tilt off the crown's normal (each part in
+/// [-0.5, 0.5)), and the draw that changes its age (`leaf_age`, in [-0.5, 0.5)).
+pub fn leaf_draws(seed: u32, which: u32) -> (vec3, f32) {
+    let tilt = vec3(
+        rand(seed, 100 + which) - 0.5,
+        rand(seed, 120 + which) - 0.5,
+        rand(seed, 140 + which) - 0.5,
+    )
+    (tilt, rand(seed, 160 + which) - 0.5)
+}
+
+/// A leaf's normal: its crown's, `crown_n`, tilted by its draws (`leaf_draws`).
+pub fn leaf_normal(crown_n: vec3, tilt: vec3) -> vec3 {
+    normalize(crown_n + tilt * 0.9)
+}
+
+/// A leaf's colour by its age: young where its crown faces up (`up`, the y of the crown's
+/// normal), old deep down, and moved by its own draw (`aged`, in [-0.5, 0.5); 0 for none).
+pub fn leaf_age(leaves: Leaves, up: f32, aged: f32) -> vec3 {
+    mix(leaves.old, leaves.young, vec3(saturate(0.35 + 0.65 * up + 0.3 * aged)))
+}
+
+/// A leaf's albedo: its colour (`leaf_age`) and half its tint (its instance's and its card's,
+/// `card_tint`), never black.
+pub fn tinted(colour: vec3, tint: vec3) -> vec3 {
+    max(colour + tint * 0.5, vec3(0.005))
 }
 
 /// The leaves on a card at `uv` (in [-1, 1]²), `n` of them: how much is leaf (0 to 1, a soft
@@ -502,16 +543,25 @@ pub struct Instance: Copy + GpuData {
 impl Instance {
     /// A point of the plant's frame in the world.
     pub fn place(self, p: vec3) -> vec3 {
-        let (c, s) = (cos(self.yaw), sin(self.yaw))
-        let q = p * self.scale
-        self.at + vec3(c * q.x + s * q.z, q.y, -s * q.x + c * q.z)
+        self.at + turned(self.yaw, p * self.scale)
     }
 
     /// A direction of the plant's frame in the world.
     pub fn turn(self, v: vec3) -> vec3 {
-        let (c, s) = (cos(self.yaw), sin(self.yaw))
-        vec3(c * v.x + s * v.z, v.y, -s * v.x + c * v.z)
+        turned(self.yaw, v)
     }
+}
+
+/// A direction of a plant's frame in the world, the plant turned `yaw` about +y.
+pub fn turned(yaw: f32, v: vec3) -> vec3 {
+    let (c, s) = (cos(yaw), sin(yaw))
+    vec3(c * v.x + s * v.z, v.y, -s * v.x + c * v.z)
+}
+
+/// A direction of the world in the frame of a plant turned `yaw` about +y: turned back.
+pub fn unturned(yaw: f32, v: vec3) -> vec3 {
+    let (c, s) = (cos(yaw), sin(yaw))
+    vec3(c * v.x - s * v.z, v.y, s * v.x + c * v.z)
 }
 
 /// The wind (#28 §4, Q5 of #51): a global sway, a function of time and place only. How far a
@@ -545,6 +595,8 @@ pub fn sway(wind: Wind, world: vec3, height: f32) -> vec3 {
 pub const LEAF_PATTERNS: u32 = 16
 pub const LEAF_TEXELS: u32 = 64
 pub const LEAF_ATLAS: u32 = 256
+/// The patterns along each side of the atlas.
+const LEAF_SIDE: u32 = LEAF_ATLAS / LEAF_TEXELS
 
 /// Pattern `k`'s leaves, from a seed of its own, `n` of them.
 fn pattern_seed(k: u32) -> u32 {
@@ -556,8 +608,7 @@ fn pattern_seed(k: u32) -> u32 {
 @fragment
 pub fn cook_leaves(pixel: FragCoord, n: u32) -> vec4 {
     let p = vec2u(pixel.position.xy)
-    let side = LEAF_ATLAS / LEAF_TEXELS
-    let k = (p.y / LEAF_TEXELS) * side + p.x / LEAF_TEXELS
+    let k = (p.y / LEAF_TEXELS) * LEAF_SIDE + p.x / LEAF_TEXELS
     let local = (vec2(p % vec2u(LEAF_TEXELS)) + vec2(0.5)) / f32(LEAF_TEXELS)
     let uv = local * 2.0 - vec2(1.0)
     let (m, which) = leaves_on(uv, pattern_seed(k), w: 2.0 / f32(LEAF_TEXELS), n: n)
@@ -567,15 +618,14 @@ pub fn cook_leaves(pixel: FragCoord, n: u32) -> vec4 {
 /// Where a card of seed `seed` reads its pattern at `uv` (in [-1, 1]²): its pattern's cell in
 /// the atlas.
 pub fn leaf_uv(seed: u32, uv: vec2) -> vec2 {
-    let side = LEAF_ATLAS / LEAF_TEXELS
     let k = seed % LEAF_PATTERNS
-    let cell = vec2(f32(k % side), f32(k / side))
+    let cell = vec2(f32(k % LEAF_SIDE), f32(k / LEAF_SIDE))
     let local = clamp(
         uv * 0.5 + vec2(0.5),
         vec2(0.5 / f32(LEAF_TEXELS)),
         vec2(1.0 - 0.5 / f32(LEAF_TEXELS)),
     )
-    (cell + local) / f32(side)
+    (cell + local) / f32(LEAF_SIDE)
 }
 
 /// The card of seed `seed` at `uv`, from the atlas: its coverage, and which leaf covers it.
@@ -597,8 +647,7 @@ pub const OUTLINE: u32 = 4
 @compute(64)
 pub fn cook_outlines(atlas: Texture<Rgba8>, out: mut Slots<vec2>, id: GlobalId) {
     let k = id.x / OUTLINE
-    let side = LEAF_ATLAS / LEAF_TEXELS
-    let origin = vec2u((k % side) * LEAF_TEXELS, (k / side) * LEAF_TEXELS)
+    let origin = vec2u((k % LEAF_SIDE) * LEAF_TEXELS, (k / LEAF_SIDE) * LEAF_TEXELS)
     let texel = 2.0 / f32(LEAF_TEXELS)
     // Each turn's bounds: its two axes' least and most.
     var lo: [vec2; 16] = [vec2(9.0); 16]

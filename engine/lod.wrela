@@ -86,8 +86,8 @@ pub fn share(level: f32, faint: f32, way: u32) -> vec2 {
 }
 
 /// Where the shares of an instance at `at`, `scale` large, its plant `top` tall, are anchored
-/// on the target (`keeps`) this frame: where its middle falls (pixels, unjittered), moved by a
-/// few whole pixels by a draw of its own, so neighbours' patterns don't line up, and by the
+/// on the target (`keeps_packed`) this frame: where its middle falls (pixels, unjittered), moved
+/// by a few whole pixels by a draw of its own, so neighbours' patterns don't line up, and by the
 /// frame's place in the pattern's cycle.
 pub fn anchor(cam: Camera, at: vec3, top: f32, scale: f32) -> vec2 {
     let own = vec2(
@@ -97,22 +97,6 @@ pub fn anchor(cam: Camera, at: vec3, top: f32, scale: f32) -> vec2 {
     let k = (cam.frame * 7) % 16
     let step = vec2(f32(k % 4), f32(k / 4))
     cam.pixel(at + vec3(0.0, top * 0.5 * scale, 0.0)) - floor(own * 4.0) - step
-}
-
-/// Whether a way's share holds a pixel: `keep` is the share (its start and end in [0, 1)) and
-/// the instance's anchor. A whole share holds every pixel, with no draw.
-pub fn keeps(keep: vec4, pixel: vec2) -> bool {
-    if keep.x <= 0.0 && keep.y >= 1.0 {
-        return true
-    }
-    let u = draw_at(pixel - keep.zw)
-    u >= keep.x && u < keep.y
-}
-
-/// A pixel's draw in [0, 1), `offset` pixels from its instance's anchor: a 4 × 4 Bayer matrix,
-/// so each block of 4 × 4 takes every one of 16 thresholds and the blend of two ways is even.
-pub fn draw_at(offset: vec2) -> f32 {
-    bayer(vec2u(vec2i(floor(offset)) & vec2i(3)))
 }
 
 /// The 4 × 4 Bayer matrix's threshold at `o` (each in 0 to 3), over 16, at its step's middle:
@@ -125,17 +109,19 @@ fn bayer(o: vec2u) -> f32 {
     f32(v) / 16.0 + 1.0 / 32.0
 }
 
-/// A share and its anchor (`keeps`) in one word, for a vertex to pass on: the share's start and
-/// end in 14 bits each, and of the anchor only what a pixel's draw depends on (a pixel centre's
-/// offset from it is its whole pixel plus `floor(0.5 - anchor)`, and the pattern repeats every
-/// 4 pixels), 2 bits each way.
+/// A way's share (its start and end in [0, 1), `share`) and the instance's anchor (`anchor`) in
+/// one word, for a vertex to pass on: the share's start and end in 14 bits each, and of the
+/// anchor only what a pixel's draw depends on (a pixel centre's offset from it is its whole pixel
+/// plus `floor(0.5 - anchor)`, and the pattern repeats every 4 pixels), 2 bits each way.
 pub fn packed(keep: vec4) -> u32 {
     let s = vec2u(round(saturate(keep.xy) * 16383.0))
     let c = vec2u(vec2i(floor(vec2(0.5) - keep.zw)) & vec2i(3))
     s.x | (s.y << 14) | (c.x << 28) | (c.y << 30)
 }
 
-/// Whether a share packed by `packed` holds the pixel at `pixel` (a fragment's position).
+/// Whether a share packed by `packed` holds the pixel at `pixel` (a fragment's position): where
+/// the pixel's draw (`draw_packed`) is in the share. A whole share holds every pixel, with no
+/// draw.
 pub fn keeps_packed(k: u32, pixel: vec2) -> bool {
     let start = f32(k & 16383) / 16383.0
     let end = f32((k >> 14) & 16383) / 16383.0
@@ -147,8 +133,9 @@ pub fn keeps_packed(k: u32, pixel: vec2) -> bool {
     u >= start && u < end
 }
 
-/// A pixel's draw (`draw_at`) for a share packed by `packed`, its pattern moved by `shift`
-/// pixels.
+/// A pixel's draw in [0, 1) for a share packed by `packed`, its pattern moved by `shift` pixels:
+/// a 4 × 4 Bayer matrix anchored on the instance, so each block of 4 × 4 takes every one of 16
+/// thresholds and the blend of two ways is even.
 pub fn draw_packed(k: u32, pixel: vec2, shift: vec2u) -> f32 {
     let c = vec2u((k >> 28) & 3, (k >> 30) & 3)
     bayer((vec2u(pixel) + c + shift) & vec2u(3))
