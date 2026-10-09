@@ -341,22 +341,10 @@ pub const FAR_CELL: f32 = 8.0
 /// tallest living crown, its height (a quarter metre a step) and its kind, two bytes, rows from
 /// the first tile's corner. Small enough for the first frame's payload (a byte each 32 m² a kind).
 pub fn encode_far(h: History, lo: vec2i, hi: vec2i) -> Vec<u8> {
-    let n = vec2u(hi - lo + vec2i(1)) * u32(TILE / FAR_CELL)
-    let corner = vec2(lo) * TILE
-    var tall: Vec<f32> = Vec::filled(n.x * n.y, 0.0)
-    var kind: Vec<u32> = Vec::filled(n.x * n.y, 255)
-    for t in h.trees {
-        if t.state == State::Alive && t.tall > 3.0 {
-            let c = vec2i(floor((t.at - corner) / FAR_CELL))
-            if c.x >= 0 && c.y >= 0 && u32(c.x) < n.x && u32(c.y) < n.y {
-                let k = u32(c.y) * n.x + u32(c.x)
-                if t.tall > tall[k] {
-                    tall[k] = t.tall
-                    kind[k] = t.kind
-                }
-            }
-        }
-    }
+    let f = far_of(h.trees, lo, hi)
+    let n = vec2u(f.nx, f.nz)
+    borrow tall = f.tall
+    borrow kind = f.kind
     var out: Vec<u8> = Vec::new()
     put_u32(mut out, MAGIC)
     put_u32(mut out, VERSION)
@@ -373,6 +361,28 @@ pub fn encode_far(h: History, lo: vec2i, hi: vec2i) -> Vec<u8> {
     put_runs(mut out, heights)
     put_runs(mut out, kinds)
     out
+}
+
+/// The far layer of `trees` over tiles `lo` to `hi` (inclusive): each `FAR_CELL` cell's tallest
+/// living crown over 3 m, its height and kind (255 for none).
+pub fn far_of(trees: [Tree], lo: vec2i, hi: vec2i) -> Far {
+    let n = vec2u(hi - lo + vec2i(1)) * u32(TILE / FAR_CELL)
+    let corner = vec2(lo) * TILE
+    var tall: Vec<f32> = Vec::filled(n.x * n.y, 0.0)
+    var kind: Vec<u32> = Vec::filled(n.x * n.y, 255)
+    for t in trees {
+        if t.state == State::Alive && t.tall > 3.0 {
+            let c = vec2i(floor((t.at - corner) / FAR_CELL))
+            if c.x >= 0 && c.y >= 0 && u32(c.x) < n.x && u32(c.y) < n.y {
+                let k = u32(c.y) * n.x + u32(c.x)
+                if t.tall > tall[k] {
+                    tall[k] = t.tall
+                    kind[k] = t.kind
+                }
+            }
+        }
+    }
+    Far { lo, nx: n.x, nz: n.y, tall, kind }
 }
 
 /// The far layer, read back: each cell's tallest crown's height and kind (255 for none).

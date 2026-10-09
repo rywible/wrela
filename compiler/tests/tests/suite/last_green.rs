@@ -172,7 +172,8 @@ fn named(v: &Value) -> &str {
 }
 
 /// AC1's reach and AC3's verdicts, from the check on the bake: every anchor's site, the town's
-/// site, the Warden's arena and every relation's viewpoint reached on foot from the gate; the
+/// site, the Warden's arena and every relation's viewpoint reached on foot from the gate (on the
+/// check's grid, and on the walkable mask a metre a cell, as the sim walks); the
 /// dead share ≤ 15% of the walkable floor; every relation holds; every opening is open in the
 /// present; walkers lost ≤ 25%; the critical path's pilgrims reach every anchor. And measured,
 /// not gated: the share with no draw of the map's own, draws an hour and the median gap, and
@@ -240,6 +241,21 @@ fn what_the_check_says_of_the_floor() {
             named(o),
             f(&o["cover"])
         );
+    }
+    // On foot as the sim walks: the walkable mask a metre a cell, its logs, walls and thickets
+    // closed (`footing::Walkable`; the check's own grid is 4 m a cell).
+    let text = std::fs::read_to_string(super::last_green::floor().join("files/check/reach.json"))
+        .expect("reach.json");
+    let on_foot: Value = serde_json::from_str(&text).expect("reach.json is JSON");
+    for part in ["sites", "relations"] {
+        for s in on_foot[part].as_array().expect("its list") {
+            assert_eq!(
+                s["reached"].as_bool(),
+                Some(true),
+                "{} can't be walked to from the gate (the walkable mask)",
+                named(s)
+            );
+        }
     }
     let c = &r["critical"];
     eprintln!(

@@ -75,6 +75,10 @@ const KINDS_PER_FRAME: u32 = 2
 /// `SLOTS` at once.
 const WANT: f32 = 350.0
 const DROP: f32 = 450.0
+
+/// How far out the wildwood's far layer is grown (m), and how many of its tiles at a time.
+const WILD_FAR: f32 = 900.0
+const FAR_IN_FLIGHT: u32 = 2
 const IN_FLIGHT: u32 = 4
 const SLOTS: u32 = 160
 
@@ -149,29 +153,47 @@ struct Ground {
     with: u32,
 }
 
-/// What cooking a tile on a helper is given: the tile, its bytes as they came, its neighbours'
-/// trees whose crowns may reach over its edge, and whether only its ground's fields are wanted
-/// (a neighbour came after it).
+/// What cooking a tile on a helper is given: the tile, its bytes as they came (a baked tile's),
+/// or whether it's the wildwood's (grown, or its trees `own` when it's been grown before); its
+/// neighbours' trees whose crowns may reach over its edge; and whether only its ground's fields
+/// are wanted (a neighbour came after it), or only its far layer (a wild tile beyond `WANT`).
 struct TileInput {
     tile: vec2i,
     bytes: Vec<u8>,
+    wild: bool,
+    own: Vec<engine::grow::Tree>,
     others: Vec<engine::grow::Tree>,
     fields_only: bool,
+    far_only: bool,
 }
 
-/// A tile cooked: its trees, its instances placed, and its ground's fields.
+/// A tile cooked: its trees, its instances placed, its ground's fields, and a wild tile's far
+/// layer (a baked tile's is the bake's `far.bin`).
 struct Cooked {
     tile: vec2i,
     trees: Vec<engine::grow::Tree>,
     placed: Vec<Placed>,
     fields: Vec<u8>,
+    far: Vec<Placed>,
 }
 
-/// A tile cooked on a helper (#54 §6: "round the player, as jobs on the helpers"): decoded, its
-/// trees placed, its ground's fields worked out (`engine::bake::tile_fields`).
+/// A tile cooked on a helper (#54 §6: "round the player, as jobs on the helpers"): decoded (or a
+/// wild tile grown: `wildwood::decisions`), its trees placed, its ground's fields worked out
+/// (`engine::bake::tile_fields`).
 @deterministic
 fn cook_tile(input: take TileInput) -> Cooked {
-    let d = decode_tile(input.bytes)
+    let t = input.tile
+    let d = if input.wild { wildwood::decisions(t, take input.own) } else {
+        decode_tile(input.bytes)
+    }
+    let far = if input.wild && !input.fields_only {
+        trees::far_placed(engine::bake::far_of(d.trees, t, t), t, height_at)
+    } else {
+        Vec::new()
+    }
+    if input.far_only {
+        return Cooked { tile: t, trees: Vec::new(), placed: Vec::new(), fields: Vec::new(), far }
+    }
     let fields = engine::bake::tile_fields(
         d,
         input.others,
@@ -180,23 +202,26 @@ fn cook_tile(input: take TileInput) -> Cooked {
         map::PRESENT,
     )
     if input.fields_only {
-        return Cooked { tile: input.tile, trees: Vec::new(), placed: Vec::new(), fields }
+        return Cooked { tile: t, trees: Vec::new(), placed: Vec::new(), fields, far }
     }
     Cooked {
-        tile: input.tile,
+        tile: t,
         placed: trees::placed(d.trees, height_at),
         trees: d.trees.clone(),
         fields,
+        far,
     }
 }
 
-/// A tile being cooked, with its bytes and which neighbours' trees it's cooked with.
+/// A tile being cooked, with its bytes and which neighbours' trees it's cooked with, and what of
+/// it is cooked (`TileInput`).
 struct Cooking {
     tile: vec2i,
     job: std::par::Task<Cooked>,
     bytes: Vec<u8>,
     with: u32,
     fields_only: bool,
+    far_only: bool,
 }
 
 /// Whether tile `t` is among `grounds`.
@@ -463,6 +488,48 @@ fn tile_distance(t: vec2i, p: vec2) -> f32 {
     length(p - q)
 }
 
+/// Whether tile `t` is in the far layer.
+fn has_far(far: [Arrived], t: vec2i) -> bool {
+    for a in far {
+        if a.tile == t {
+            return true
+        }
+    }
+    false
+}
+
+/// Whether tile `t` is being cooked (anything of it).
+fn cooking(s: Floor, t: vec2i) -> bool {
+    for c in s.cooking {
+        if c.tile == t {
+            return true
+        }
+    }
+    false
+}
+
+/// How many tiles are being cooked whole (wild ones grown, baked ones decoded), and how many for
+/// their far layer alone.
+fn near_cooking(s: Floor) -> u32 {
+    var n = 0
+    for c in s.cooking {
+        if !c.fields_only && !c.far_only {
+            n += 1
+        }
+    }
+    n
+}
+
+fn far_cooking(s: Floor) -> u32 {
+    var n = 0
+    for c in s.cooking {
+        if c.far_only {
+            n += 1
+        }
+    }
+    n
+}
+
 /// Whether tile `t` is coming or here.
 fn known(s: Floor, t: vec2i) -> bool {
     for f in s.fetching {
@@ -500,8 +567,11 @@ fn stream(s: mut Floor, eye: vec2) {
                 let input = TileInput {
                     tile: t,
                     bytes: Vec::from(bytes),
+                    wild: false,
+                    own: Vec::new(),
                     others,
                     fields_only: false,
+                    far_only: false,
                 }
                 s.cooking.push(
                     Cooking {
@@ -510,6 +580,7 @@ fn stream(s: mut Floor, eye: vec2) {
                         bytes: Vec::from(bytes),
                         with,
                         fields_only: false,
+                        far_only: false,
                     },
                 )
                 s.tiles_in += 1
@@ -534,6 +605,13 @@ fn stream(s: mut Floor, eye: vec2) {
             let k = s.cooking.remove(c)
             let cooked = take k.job.join()
             let t = cooked.tile
+            // A wild tile's far layer, for when it's beyond `WANT`.
+            if !cooked.far.is_empty() && !has_far(s.far_layer, t) {
+                s.far_layer.push(Arrived { tile: t, placed: cooked.far.clone() })
+            }
+            if k.far_only {
+                continue
+            }
             if k.fields_only {
                 // Unless it's been dropped while its fields were cooked.
                 if has_ground(s.grounds, t) {
@@ -552,11 +630,15 @@ fn stream(s: mut Floor, eye: vec2) {
                 let bit = engine::bake::neighbour_bit(n, t)
                 if bit != 0 && (s.grounds[g].with & bit) == 0 {
                     let (others, with) = others_round(s.grounds, n)
+                    let wild = wildwood::is_wild(n)
                     let input = TileInput {
                         tile: n,
                         bytes: s.grounds[g].bytes.clone(),
+                        wild,
+                        own: if wild { s.grounds[g].trees.clone() } else { Vec::new() },
                         others,
                         fields_only: true,
+                        far_only: false,
                     }
                     s.cooking.push(
                         Cooking {
@@ -565,6 +647,7 @@ fn stream(s: mut Floor, eye: vec2) {
                             bytes: Vec::new(),
                             with,
                             fields_only: true,
+                            far_only: false,
                         },
                     )
                     s.grounds[g].with = with
@@ -574,13 +657,14 @@ fn stream(s: mut Floor, eye: vec2) {
             c += 1
         }
     }
-    if s.fetching.len() < IN_FLIGHT {
-        let lo = tiles_lo()
-        let hi = tiles_hi()
+    // The nearest wanted tile not yet known: a baked one fetched, a wild one grown.
+    let at = engine::place::tile_of(eye)
+    let r = i32(ceil(WILD_FAR / TILE)) + 1
+    if s.fetching.len() + near_cooking(s) < IN_FLIGHT {
         var best = vec2i(0)
         var near = 1.0e9
-        for j in lo.y..(hi.y + 1) {
-            for x in lo.x..(hi.x + 1) {
+        for j in (at.y - r)..(at.y + r + 1) {
+            for x in (at.x - r)..(at.x + r + 1) {
                 let t = vec2i(x, j)
                 let d = tile_distance(t, eye)
                 if d < WANT && d < near && !known(s, t) {
@@ -590,10 +674,87 @@ fn stream(s: mut Floor, eye: vec2) {
             }
         }
         if near < WANT {
-            match BAKED.find(tile_name(best).as_str()) {
-                Some(f) => s.fetching.push(Fetching { tile: best, pending: BAKED.fetch(f) }),
+            if wildwood::is_wild(best) {
+                let (others, with) = others_round(s.grounds, best)
+                let input = TileInput {
+                    tile: best,
+                    bytes: Vec::new(),
+                    wild: true,
+                    own: Vec::new(),
+                    others,
+                    fields_only: false,
+                    far_only: false,
+                }
+                s.cooking.push(
+                    Cooking {
+                        tile: best,
+                        job: std::par::spawn(take input, cook_tile),
+                        bytes: Vec::new(),
+                        with,
+                        fields_only: false,
+                        far_only: false,
+                    },
+                )
+                s.tiles_in += 1
+            } else {
+                match BAKED.find(tile_name(best).as_str()) {
+                    Some(f) => s.fetching.push(Fetching { tile: best, pending: BAKED.fetch(f) }),
+                    None => {},
+                }
+            }
+        }
+    }
+    // The wildwood's far layer, a tile at a time, out to `WILD_FAR`; dropped past it.
+    if far_cooking(s) < FAR_IN_FLIGHT {
+        var best = vec2i(0)
+        var near = 1.0e9
+        for j in (at.y - r)..(at.y + r + 1) {
+            for x in (at.x - r)..(at.x + r + 1) {
+                let t = vec2i(x, j)
+                let d = tile_distance(t, eye)
+                if wildwood::is_wild(t) &&
+                    d < WILD_FAR &&
+                    d < near &&
+                    !has_far(s.far_layer, t) &&
+                    !cooking(s, t) {
+                    near = d
+                    best = t
+                }
+            }
+        }
+        if near < WILD_FAR {
+            let input = TileInput {
+                tile: best,
+                bytes: Vec::new(),
+                wild: true,
+                own: Vec::new(),
+                others: Vec::new(),
+                fields_only: false,
+                far_only: true,
+            }
+            s.cooking.push(
+                Cooking {
+                    tile: best,
+                    job: std::par::spawn(take input, cook_tile),
+                    bytes: Vec::new(),
+                    with: 0,
+                    fields_only: false,
+                    far_only: true,
+                },
+            )
+        }
+    }
+    var f = 0
+    while f < s.far_layer.len() {
+        let t = s.far_layer[f].tile
+        if wildwood::is_wild(t) && tile_distance(t, eye) > WILD_FAR + TILE {
+            let _ = s.far_layer.remove(f)
+            match mut s.wood {
+                Some(w) => w.drop(t, far: true),
                 None => {},
             }
+        } else {
+            f += 1
         }
     }
     // The far layer, once it's come: each tile's instances, kept to load where the tile's own

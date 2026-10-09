@@ -1,0 +1,85 @@
+// The wildwood past the floor (#55 AC7, Q9): `engine::wild`'s forest, grown a tile at a time where
+// the player walks, in the floor's species; and the egg's road, an old road from the floor's
+// south-east corner, straight for kilometres with slow bends, to the egg's place 10 km from the
+// gate, still a ride through the wildwood. What the egg is stays the owner's: its place is marked
+// by a ring of standing stones.
+
+use engine::bake::{Decisions, WEAR_N, WET_N}
+use engine::grow::Tree
+use species::Species
+
+/// The egg's place: 10 km from the gate, south-east over the plateau.
+pub const EGG = vec2(7070.0, -7070.0)
+
+/// Where the egg's road leaves the floor: its south-east corner.
+const ROAD_FROM = vec2(1650.0, -1250.0)
+
+/// How far `p` is from the egg's road (m): from the floor's corner to the egg's place, bending
+/// slowly either side of the straight line.
+pub fn road_distance(p: vec2) -> f32 {
+    let d = EGG - ROAD_FROM
+    let len = length(d)
+    let along = d / len
+    let side = vec2(-along.y, along.x)
+    let t = clamp(dot(p - ROAD_FROM, along), 0.0, len)
+    let bend = 120.0 * sin(t * 0.0011) + 40.0 * sin(t * 0.0037 + 1.0)
+    // The bend fades out at both ends, so the road meets the floor and the egg's place.
+    let fade = smoothstep(0.0, 300.0, t) * smoothstep(0.0, 300.0, len - t)
+    length(p - (ROAD_FROM + along * t + side * bend * fade))
+}
+
+/// Where the wildwood grows no tree: the floor's own square (its history's), and the egg's place.
+pub fn kept_clear(p: vec2) -> bool {
+    (p.x >= map::LO.x && p.y >= map::LO.y && p.x < map::HI.x && p.y < map::HI.y) ||
+        length(p - EGG) < 30.0
+}
+
+/// The history's species the wildwood's beech, oak, birch and pine are.
+const SPECIES = [u32(Species::Beech), u32(Species::Oak), u32(Species::Birch), u32(Species::Pine)]
+
+/// Whether tile `t` is the wildwood's: past the bake's tiles.
+pub fn is_wild(t: vec2i) -> bool {
+    let lo = history::tiles_lo()
+    let hi = history::tiles_hi()
+    t.x < lo.x || t.y < lo.y || t.x > hi.x || t.y > hi.y
+}
+
+/// Wild tile `t`'s decisions, as a baked tile's: its trees (`own`, or grown when it's empty), no
+/// trails, damp ground, no streams.
+pub fn decisions(t: vec2i, own: take Vec<Tree>) -> Decisions {
+    let trees = if own.is_empty() {
+        engine::wild::tile_trees(
+            t,
+            SPECIES,
+            species::habits(),
+            map::PRESENT,
+            road_distance,
+            kept_clear,
+        )
+    } else {
+        take own
+    }
+    Decisions {
+        tile: t,
+        trees,
+        wear: Vec::filled(WEAR_N * WEAR_N, 0.0),
+        wet: Vec::filled(WET_N * WET_N, 0.3),
+        water: Vec::new(),
+    }
+}
+
+/// The egg's place's stones: a ring of eleven, 12 m across (x, z, radius, height).
+pub fn egg_stones() -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for i in 0..11 {
+        let a = 6.2831853 * f32(i) / 11.0
+        out.push(
+            vec4(
+                EGG + vec2(cos(a), sin(a)) * 12.0,
+                0.6,
+                2.6 + 0.8 * engine::noise::rand(900 + i, 1),
+            ),
+        )
+    }
+    out
+}

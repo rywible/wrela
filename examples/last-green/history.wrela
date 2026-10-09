@@ -5,12 +5,13 @@
 // cells, 10-year steps), for the map lens after each edit.
 
 use engine::bake::{bake, unbake}
-use engine::footing::{Obstacles, obstacles_of}
+use engine::footing::{Obstacles, obstacles_of, walkable_of}
 use engine::grow::{BAKE, Grain, Grid, History, PREVIEW, simulate}
-use engine::interest::{Evidence, FULL, check, nearest_first, report, tour, views_bytes, walk_bytes}
+use engine::interest::{Evidence, FULL, check, nearest_first, report, views_bytes, walk_bytes}
 use engine::place::{TILE, tile_of}
 use engine::water::{Laid, laid}
-use std::io::{Shipped, ship}
+use std::io::{Shipped, print, ship}
+use std::string::String
 
 /// The history's domain: the authored square and a margin, so the square's edges grow as its
 /// middle does.
@@ -108,8 +109,39 @@ fn checked() -> Vec<(String, Vec<u8>)> {
     )
     let c = check(ground::ground(), m, species::habits(), e, OBSTACLES, stones::stones(m), FULL)
     let text = report(ground::ground(), m, c)
+    // The floor's walk, on a walkable mask a metre a cell that knows the logs, walls and
+    // thickets (the check's sight grid, 4 m a cell, doesn't).
+    let mask = walkable_of(ground::ground(), m.water, OBSTACLES, map::LO, map::HI, 1.0)
+    let (walk, missed) = mask.tour(nearest_first(tour_stops()), 2.0)
+    print(f"the floor's walk: {walk.len()} points; {missed.len()} stops it can't reach")
+    for p in missed {
+        print(f"  can't reach {p}")
+    }
+    // What a player can walk to from the gate on the fine mask: each critical site (within its
+    // reach) and each relation's viewpoint (within its reach).
+    let gate = engine::interest::gate_of(m)
+    let reached = mask.reached_from(gate)
+    var reach = String::from("{\n  \"sites\": [\n")
+    var first = true
+    for k in m.sites {
+        if engine::interest::critical(k) {
+            let ok = mask.reaches(reached, k.at, k.reach + 2.0)
+            let sep = if first { "" } else { ",\n" }
+            reach.push_str(f"{sep}    {{\"name\": \"{k.name}\", \"reached\": {ok}}}")
+            first = false
+        }
+    }
+    reach.push_str("\n  ],\n  \"relations\": [\n")
+    first = true
+    for r in m.relations {
+        let ok = mask.reaches(reached, r.from(), r.within())
+        let sep = if first { "" } else { ",\n" }
+        reach.push_str(f"{sep}    {{\"name\": \"{r.name()}\", \"reached\": {ok}}}")
+        first = false
+    }
+    reach.push_str("\n  ]\n}\n")
     var tour_bytes: Vec<u8> = Vec::new()
-    for p in tour(c.sight, nearest_first(tour_stops())) {
+    for p in walk {
         engine::bake::put_u32(mut tour_bytes, bitcast_u32(p.x))
         engine::bake::put_u32(mut tour_bytes, bitcast_u32(p.y))
     }
@@ -119,6 +151,7 @@ fn checked() -> Vec<(String, Vec<u8>)> {
             (String::from("views.bin"), views_bytes(m, c, FULL)),
             (String::from("walk.bin"), walk_bytes(c)),
             (String::from("tour.bin"), take tour_bytes),
+            (String::from("reach.json"), Vec::from(reach.as_bytes())),
         ],
     )
 }
@@ -152,8 +185,8 @@ fn tour_stops() -> Vec<vec2> {
     inside
 }
 
-/// The floor's walk (#55's Method): a point every 6 m or so on the way from the gate past
-/// `tour_stops`, worked out on the check's walkable grid (shipped with the check, `tour.bin`).
+/// The floor's walk (#55's Method): a point every 2 m or so on the way from the gate past
+/// `tour_stops`, worked out on the walkable mask (shipped with the check, `tour.bin`).
 pub const TOUR: Vec<vec2> = tour_of(CHECKED)
 
 fn tour_of(files: Shipped) -> Vec<vec2> {

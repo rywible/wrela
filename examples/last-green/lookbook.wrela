@@ -124,6 +124,13 @@ pub const SHOTS = [
         at: vec3(1460.0, 3.0, -1160.0),
         moves: vec2(2.0, -2.0),
     },
+    // Past the floor: the wildwood, the egg's road a ride through it.
+    Shot {
+        name: "the wildwood",
+        eye: vec3(2300.0, 1.7, -1900.0),
+        at: vec3(2500.0, 4.0, -2120.0),
+        moves: vec2(2.0, -2.0),
+    },
 ]
 
 /// Where shot `s`'s eye is and what it looks at, `t` seconds after it was chosen (it holds still

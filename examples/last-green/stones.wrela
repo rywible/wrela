@@ -57,7 +57,8 @@ pub fn walls(m: Map) -> Vec<vec4> {
             let b = k.at + vec2(h.x, -h.y)
             let c = k.at + vec2(h.x, h.y)
             let d = k.at + vec2(-h.x, h.y)
-            let door = 1.2
+            // Its doorway, wide enough for a player past the walls' rubble (4 m).
+            let door = 2.0
             out.push(vec4(a.x, a.y, k.at.x - door, a.y))
             out.push(vec4(k.at.x + door, a.y, b.x, b.y))
             out.push(vec4(b.x, b.y, c.x, c.y))

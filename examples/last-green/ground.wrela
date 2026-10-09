@@ -72,10 +72,12 @@ impl Ground {
         // shore rising past it, the land round it kept where it's lower.
         let q = (length(p - MERE.xy) + 5.0 * (noise2(p * 0.05) - 0.5)) / MERE.z
         if q < 2.0 {
+            // Past the shore the basin's side rises ever steeper, well over the land long before
+            // it ends (no step at its edge).
             let basin = if q < 1.0 {
                 MERE.w - MERE_DEEP * (1.0 - q * q)
             } else {
-                MERE.w + (q - 1.0) * MERE.z * SHORE_RISE
+                MERE.w + (q - 1.0) * MERE.z * SHORE_RISE + (q - 1.0) * (q - 1.0) * MERE.z * 0.5
             }
             y = smin(y, basin, k: 0.6)
         }

@@ -5,6 +5,8 @@ use engine::bake::{WEAR_N, decode_tile, reaching, tile_fields, tile_name}
 use engine::grow::{BAKE, BESIDE_PATH, Grid, HEAD_ROOM, State, Tree}
 use engine::place::{Keeper, Map, TILE}
 use engine::terrain::Terrain
+use std::io::print
+use std::string::String
 use history::{BAKED, decisions, domain_hi, domain_lo, tiles_hi, tiles_lo}
 
 /// The line browsing keeps where tree `t` stands (m; 0 for none), judged as the history judges
@@ -484,4 +486,149 @@ fn a_trunk_stops_the_player_where_it_is_drawn() {
     }
     assert(n > 1000, f"only {n} trunks")
     assert(worst <= 0.05, f"a trunk at {at} is drawn {worst} m past its obstacle")
+}
+
+/// AC5's harness and #55's Method: the floor's walk, pressed once (P), is walked to its end by
+/// the sim, at a run, round what's in its way, giving up no more than one point in fifty; and it
+/// takes the time the record states (its length on foot).
+@test
+@fuel(2 ** 40)
+fn the_floors_walk_is_walked_to_its_end() {
+    var w = world::spawn_world()
+    var k = 0
+    while k < 60 * 60 * 60 && (k == 0 || w.tour.on) {
+        var records: Vec<std::input::Event> = Vec::new()
+        if k == 0 {
+            records.push(
+                std::input::Event::KeyDown {
+                    key: std::input::Key::P,
+                    repeat: false,
+                    mods: std::input::Mods {},
+                },
+            )
+        }
+        world::tick(
+            mut w,
+            engine::run::TickInput { tick: k, dt: 1.0 / 60.0, records, answers: Vec::new() },
+        )
+        k += 1
+    }
+    let (leg, of, skipped) = (w.tour.leg, history::TOUR.len(), w.tour.skipped)
+    let minutes = f32(w.tour.ticks) / 3600.0
+    print(f"the floor's walk: {of} points, {minutes} min at a run, {skipped} given up")
+    assert(leg >= of, f"the walk stopped at point {leg} of {of} after {minutes} min")
+    assert(skipped * 50 <= of, f"the walk gave up {skipped} of its {of} points")
+}
+
+/// The camera's near plane (m: `view::camera`'s).
+const NEAR: f32 = 0.1
+
+/// AC4's camera: over the floor's walk (its frames each half second, the camera as the floor
+/// frames it: `player::third_person`), the eye is never in the ground or in a trunk, a stone or a
+/// wall, and every leaf card its near plane could meet (its middle within its half-width of the
+/// eye) is faded away (`vegetation::faded`, the leaves between the camera and the player kept
+/// clear): no frame's camera is inside foliage.
+@test
+@fuel(2 ** 44)
+fn the_camera_is_never_inside_a_thing() {
+    // Each kind's cards, as cooked (`main.wrela` cooks kind `k` with seed `k + 1`).
+    var cards: Vec<Vec<vec4>> = Vec::new()
+    for k in 0..trees::KINDS {
+        cards.push(engine::plant::card_centres(trees::kind_plant(k), k + 1))
+    }
+    // The trees, binned 16 m a bin over the floor.
+    let all = decisions().trees
+    let bins = Grid::over(map::LO - vec2(64.0), map::HI + vec2(64.0), 16.0)
+    var in_bin: Vec<Vec<u32>> = Vec::from_fn(bins.cells(), |_| Vec::new())
+    for i in 0..all.len() {
+        if bins.holds(all[i].at) {
+            in_bin[bins.cell_at(all[i].at)].push(i)
+        }
+    }
+    let framing = engine::player::Framing {}
+    var w = world::spawn_world()
+    var frames = 0
+    var seen = 0
+    var k = 0
+    while k < 60 * 60 * 60 && (k == 0 || w.tour.on) {
+        var records: Vec<std::input::Event> = Vec::new()
+        if k == 0 {
+            records.push(
+                std::input::Event::KeyDown {
+                    key: std::input::Key::P,
+                    repeat: false,
+                    mods: std::input::Mods {},
+                },
+            )
+        }
+        world::tick(
+            mut w,
+            engine::run::TickInput { tick: k, dt: 1.0 / 60.0, records, answers: Vec::new() },
+        )
+        k += 1
+        if k % 30 != 0 {
+            continue
+        }
+        frames += 1
+        let at = w.player.at.world()
+        let feet = vec3(at.x, w.player.y, at.y)
+        let c = w.player.controls
+        let (eye, _) = engine::player::third_person(
+            framing,
+            feet,
+            c.yaw,
+            c.pitch,
+            history::OBSTACLES,
+            vec2(0.0),
+            |p: vec2| world::GROUND.at(p.x, p.y),
+        )
+        let target = feet + vec3(0.0, framing.target, 0.0)
+        let ground = world::GROUND.at(eye.x, eye.z)
+        assert(eye.y - ground >= NEAR, f"at {at} the eye is {eye.y - ground} m over the ground")
+        history::OBSTACLES.near(eye.xz, |o| {
+            let solid = o.thing == engine::footing::Thing::Trunk ||
+                o.thing == engine::footing::Thing::Stone ||
+                o.thing == engine::footing::Thing::Wall
+            let (d, _) = o.reach(eye.xz)
+            assert(
+                !solid || d >= NEAR || eye.y - ground > 3.0,
+                f"at {at} the eye {eye} is in a trunk, a stone or a wall",
+            )
+        })
+        // The leaves round the eye.
+        let clear = vec4(target, 1.1)
+        let b = bins.cell_at(eye.xz)
+        let bi = vec2i(i32(b % bins.nx), i32(b / bins.nx))
+        for dj in -1..2 {
+            for di in -1..2 {
+                let q = bi + vec2i(di, dj)
+                if q.x < 0 || q.y < 0 || q.x >= i32(bins.nx) || q.y >= i32(bins.nz) {
+                    continue
+                }
+                for ti in in_bin[u32(q.y) * bins.nx + u32(q.x)] {
+                    for pl in trees::placed([all[ti]], |p: vec2| world::GROUND.at(p.x, p.y)) {
+                        if length(pl.at.at - eye) > 40.0 {
+                            continue
+                        }
+                        for card in cards[pl.kind] {
+                            let centre = pl.at.place(card.xyz)
+                            let half = card.w * pl.at.scale * 0.75
+                            if length(centre - eye) - half < NEAR {
+                                seen += 1
+                                let fade = engine::vegetation::faded(centre, eye, clear)
+                                assert(
+                                    fade >= 0.999,
+                                    f"at {at} a leaf card {length(centre - eye)} m from the eye is drawn ({fade} faded)",
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    print(
+        f"the camera over the floor's walk: {frames} frames, {seen} cards at its near plane, all faded",
+    )
+    assert(frames > 600, f"only {frames} frames of the walk")
 }

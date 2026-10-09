@@ -1431,8 +1431,27 @@ fn live(l: mut Life, cx: Cx, f: Fields, year: i32) {
     } else if t.state == State::Log {
         if f32(year - t.fell) > h.rots * t.tall * (0.7 + 0.6 * rand(t.seed, 7)) + 4.0 {
             t.state = State::Gone
+        } else if across_kept(cx, t, year) {
+            // A log across a place people keep is cut up and carried off.
+            t.state = State::Gone
+            t.cause = Cause::Felled
         }
     }
+}
+
+/// Whether log `t` lies across a place people keep in `year` (a cell under it, each 2 m along).
+fn across_kept(cx: Cx, t: Tree, year: i32) -> bool {
+    let g = cx.land.grid
+    let len = t.tall * 0.85
+    var s = 0.0
+    while s < len {
+        let p = t.at + t.fall * s
+        if g.holds(p) && people_keep(cx.map, cx.land, g.cell_at(p), year) {
+            return true
+        }
+        s += 2.0
+    }
+    false
 }
 
 /// The wind of the storms: off the floor's edge, into the forest (the floor sets it; `simulate`).
@@ -2171,17 +2190,18 @@ impl Heap {
 fn water_courses(land: mut Land, ss: [Stream]) {
     let g = land.grid
     for s in ss {
-        for p in s.points {
+        for n in 0..s.points.len() {
+            // The stretch from this point to the next (the last point alone).
+            let p = s.points[n]
+            let q = s.points[min(n + 1, s.points.len() - 1)]
             let r = p.z * 0.5
-            let lo = g.ij(p.xy - vec2(r + 6.0))
-            let span = i32(ceil(2.0 * (r + 6.0) / g.cell)) + 1
-            for dj in 0..span {
-                for di in 0..span {
-                    let i = lo.x + di
-                    let j = lo.y + dj
+            let lo = g.ij(min(p.xy, q.xy) - vec2(r + 6.0))
+            let hi = g.ij(max(p.xy, q.xy) + vec2(r + 6.0))
+            for j in lo.y..(hi.y + 1) {
+                for i in lo.x..(hi.x + 1) {
                     if i >= 0 && j >= 0 && i < i32(g.nx) && j < i32(g.nz) {
                         let k = u32(j) * g.nx + u32(i)
-                        let d = length(g.centre(k) - p.xy)
+                        let (d, _) = place::to_segment(g.centre(k), p.xy, q.xy)
                         if d < r + 0.5 * g.cell {
                             land.water[k] = true
                             land.habitable[k] = false

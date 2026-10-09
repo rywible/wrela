@@ -382,6 +382,18 @@ fn card_place(plant: Plant, n: u32, seed: u32, id: u32) -> (u32, vec3, vec3, u32
     (which, c.centre + dir * (c.radius * (0.72 + 0.28 * sqrt(rand(k, 5)))), dir, k)
 }
 
+/// Each of a plant's cards' middle and size as `cook_cards` places them (seed `seed`), on
+/// the CPU: for tests of what a camera's near plane meets.
+pub fn card_centres(plant: Plant, seed: u32) -> Vec<vec4> {
+    let n = plant.cards()
+    var out: Vec<vec4> = Vec::with_capacity(n)
+    for c in 0..n {
+        let (_, p, _, k) = card_place(plant, n, seed, c)
+        out.push(vec4(p, plant.leaves.size * pick(k, 6, lo: 0.8, hi: 1.2)))
+    }
+    out
+}
+
 /// The plant's cards: each level's share spread over the clumps by their areas, each card on
 /// its clump's sphere (most near its surface), its normal the crown's there mixed with the
 /// clump's own (so each clump reads as a lump of light), its depth in the crown.
@@ -512,8 +524,16 @@ pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, vec2) {
     let along = f32(r / (SIDES + 1)) / f32(RINGS)
     let a = limb.points[piece]
     let b = limb.points[piece + 1]
-    let axis = normalize(b - a)
-    let ref_axis = if abs(axis.y) > 0.9 { vec3(1.0, 0.0, 0.0) } else { vec3(0.0, 1.0, 0.0) }
+    // A ring at a joint lies across both pieces it joins (their axes' mean), and every ring's
+    // frame turns from one reference for the whole limb: no crack or twist where pieces meet.
+    var axis = normalize(b - a)
+    if along == 0.0 && piece > 0 {
+        axis = normalize(axis + normalize(a - limb.points[piece - 1]))
+    } else if along == 1.0 && piece < 2 {
+        axis = normalize(axis + normalize(limb.points[piece + 2] - b))
+    }
+    let whole = normalize(limb.points[3] - limb.points[0] + vec3(0.0, 1.0e-4, 0.0))
+    let ref_axis = if abs(whole.y) > 0.9 { vec3(1.0, 0.0, 0.0) } else { vec3(0.0, 1.0, 0.0) }
     let t1 = normalize(cross(axis, ref_axis))
     let t2 = cross(axis, t1)
     let ang = TAU * side / f32(SIDES)
@@ -522,8 +542,12 @@ pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, vec2) {
     let closing = if piece == 2 { 1.0 - smoothstep(0.6, 1.0, along) } else { 1.0 }
     let radius = mix(limb.radii[piece], limb.radii[piece + 1], along) * closing
     let centre = mix(a, b, vec3(along))
-    let len = length(b - a)
-    (centre + n * radius, n, vec2(side / f32(SIDES), (f32(piece) + along) * len))
+    // How far along the limb (m), from its start: the bark's ridges run on across the joints.
+    var walked = 0.0
+    for k in 0..piece {
+        walked += length(limb.points[k + 1] - limb.points[k])
+    }
+    (centre + n * radius, n, vec2(side / f32(SIDES), walked + along * length(b - a)))
 }
 
 // ---- instances ---------------------------------------------------------------------------------

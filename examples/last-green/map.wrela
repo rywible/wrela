@@ -781,6 +781,16 @@ pub fn map() -> Map {
             name: "the clearing's meadow",
         },
     )
+    // Where a player arrives, at the clearing's foot: kept clear by the woodcutters who work the
+    // clearing's edge (no tree stands in it, no log lies across it).
+    openings.push(
+        Opening {
+            at: vec2(-1.5, -2.0),
+            radius: 14.0,
+            keeper: Keeper::People { from: PRESENT - 150, to: PRESENT + 1 },
+            name: "the gate's clearing",
+        },
+    )
     openings.push(
         Opening {
             at: vec2(225.0, -372.0),

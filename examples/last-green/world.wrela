@@ -51,6 +51,9 @@ pub struct Tour: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub since: u32,
     pub around: u32,
     pub side: f32,
+    /// The points it gave up (`GIVE_UP`), and the ticks it's walked.
+    pub skipped: u32,
+    pub ticks: u32,
 }
 
 /// How long the walk goes no nearer its point before it goes round what's in its way (ticks),
@@ -62,7 +65,7 @@ const AROUND_TURN: f32 = 1.31
 const GIVE_UP: u32 = 480
 
 /// How near a point of the walk the player comes before it makes for the next (m).
-const REACHED: f32 = 3.0
+const REACHED: f32 = 1.5
 
 impl Asks for World {
     type Ask = u32
@@ -86,7 +89,16 @@ pub const GATE = vec2(-1.5, -2.0)
 pub fn spawn_world() -> World {
     World {
         player: spawn(GROUND, Place::of(GATE), 0.0),
-        tour: Tour { on: false, leg: 0, best: 1.0e9, since: 0, around: 0, side: 1.0 },
+        tour: Tour {
+            on: false,
+            leg: 0,
+            best: 1.0e9,
+            since: 0,
+            around: 0,
+            side: 1.0,
+            skipped: 0,
+            ticks: 0,
+        },
     }
 }
 
@@ -124,6 +136,7 @@ pub fn tick(w: mut World, input: TickInput<World>) {
 /// walk's end.
 @deterministic
 fn walk_the_tour(w: mut World) {
+    w.tour.ticks += 1
     let at = w.player.at.world()
     while w.tour.leg < TOUR.len() && length(TOUR[w.tour.leg] - at) < REACHED {
         w.tour.leg += 1
@@ -144,6 +157,7 @@ fn walk_the_tour(w: mut World) {
         }
         if w.tour.since >= GIVE_UP {
             w.tour.leg += 1
+            w.tour.skipped += 1
             w.tour.best = 1.0e9
             w.tour.since = 0
         }

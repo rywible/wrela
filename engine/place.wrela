@@ -119,6 +119,9 @@ pub struct Land: Copy + GpuData {
     pub tilt: vec4,
 }
 
+/// How far apart a ravine's slumped walls are along it (m).
+pub const SLUMP_EVERY: f32 = 150.0
+
 /// The distance from `p` to segment `a`–`b`, and how far along it the nearest point is (0 to 1).
 pub fn to_segment(p: vec2, a: vec2, b: vec2) -> (f32, f32) {
     let ab = b - a
@@ -169,7 +172,7 @@ impl Land {
     }
 
     /// How deep the ravines cut at `p`, and how far along the nearest one it is (m from its first
-    /// point), and how far from its course.
+    /// point), and how far from its course. Its walls are steep but where they've slumped.
     pub fn ravine_at(self, p: vec2) -> vec3 {
         var best = 1.0e9
         var along = 0.0
@@ -185,7 +188,14 @@ impl Land {
                 if d < best {
                     best = d
                     along = walked + t * len
-                    let w = mix(a.w, b.w, t)
+                    // Its walls slumped to a slope a player can walk down for 20 m or so every
+                    // `SLUMP_EVERY`, where it's wider.
+                    let slump = smoothstep(
+                        0.7,
+                        0.9,
+                        0.5 + 0.5 * cos(along * 6.2831853 / SLUMP_EVERY),
+                    )
+                    let w = mix(a.w, b.w, t) * (1.0 + 3.5 * slump)
                     let depth = mix(a.z, b.z, t)
                     cut = depth * (1.0 - smoothstep(w * 0.3, w, d + 1.5 * (noise2(p * 0.15) - 0.5)))
                 }
@@ -237,10 +247,12 @@ pub fn crag(p: vec2, c: vec4, ramp: f32) -> f32 {
     let along = dot(k, dir)
     let across = abs(dot(k, vec2(-dir.y, dir.x)))
     let reach = 3.2 * c.w
-    let ramp_h = c.z *
-        (1.0 - smoothstep(0.35 * c.w, reach, along)) *
+    // Its top as high as the crag's top at the rim (the body's crown there), so the climb has no
+    // step where it meets it.
+    let ramp_h = (c.z + 3.0) *
+        (1.0 - smoothstep(0.2 * c.w, reach, along)) *
         (1.0 - smoothstep(4.0, 9.0, across)) *
-        smoothstep(-2.0, 0.35 * c.w, along)
+        smoothstep(-2.0, 0.2 * c.w, along)
     max(body, ramp_h)
 }
 

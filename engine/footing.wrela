@@ -9,7 +9,7 @@
 // the sim can hold every one of a floor's in its program (a build's constant), and test a step
 // against those near it.
 
-use grow::{Ground, Habit, State, Stream, Tree}
+use grow::{Grid, Ground, Habit, Heap, State, Stream, Tree}
 use place::{Map, Water}
 use std::math::TAU
 
@@ -386,5 +386,238 @@ pub fn stands<G: Ground>(g: G, w: Water, o: Obstacles, p: vec2) -> f32 {
         min(k, WADING)
     } else {
         k
+    }
+}
+
+// ---- ways on foot -------------------------------------------------------------------------------
+
+/// Where a player can stand on a grid of `cell` m (`walkable_of`): each cell's middle stands
+/// (`stands`) with room for a body a little wider than a player's (logs, walls and thickets
+/// close the cells along them).
+pub struct Walkable {
+    pub grid: Grid,
+    pub ok: Vec<bool>,
+}
+
+/// How much wider than a player a walkable cell's room is (m): a way planned on the mask keeps
+/// clear of what it passes.
+const CLEAR: f32 = 0.15
+
+/// The walkable mask over `lo` to `hi`, `cell` m a cell.
+pub fn walkable_of<G: Ground>(
+    g: G,
+    w: Water,
+    o: Obstacles,
+    lo: vec2,
+    hi: vec2,
+    cell: f32,
+) -> Walkable {
+    let grid = Grid::over(lo, hi, cell)
+    var rows: Vec<Row> = Vec::from_fn(grid.nz, |j| Row { j, ok: Vec::new() })
+    rows.par_each_mut(|r| {
+        r.ok = Vec::with_capacity(grid.nx)
+        for i in 0..grid.nx {
+            let p = grid.centre(r.j * grid.nx + i)
+            r.ok.push(stands(g, w, o, p) > 0.0 && !o.blocked(p, BODY + CLEAR))
+        }
+    })
+    var ok: Vec<bool> = Vec::with_capacity(grid.cells())
+    for mut r in rows {
+        ok.append(mut r.ok)
+    }
+    Walkable { grid, ok }
+}
+
+/// A row of the mask, as a helper works it out.
+struct Row {
+    j: u32,
+    ok: Vec<bool>,
+}
+
+/// A cell's eight neighbours, and the two it passes between on a diagonal (0 for none).
+const STEPS = [
+    vec2i(1, 0),
+    vec2i(-1, 0),
+    vec2i(0, 1),
+    vec2i(0, -1),
+    vec2i(1, 1),
+    vec2i(1, -1),
+    vec2i(-1, 1),
+    vec2i(-1, -1),
+]
+
+impl Walkable {
+    /// The walkable cell nearest `p` (looked for within 20 cells), or `grow::NONE`.
+    pub fn nearest(self, p: vec2) -> u32 {
+        let g = self.grid
+        let c = vec2i(floor((p - g.lo) / g.cell))
+        for r in 0..20 {
+            var best = grow::NONE
+            var d = 1.0e9
+            for dj in -r..(r + 1) {
+                for di in -r..(r + 1) {
+                    let q = c + vec2i(di, dj)
+                    if (abs(di) == r || abs(dj) == r) &&
+                        q.x >= 0 &&
+                        q.y >= 0 &&
+                        q.x < i32(g.nx) &&
+                        q.y < i32(g.nz) {
+                        let k = u32(q.y) * g.nx + u32(q.x)
+                        if self.ok[k] && length(g.centre(k) - p) < d {
+                            d = length(g.centre(k) - p)
+                            best = k
+                        }
+                    }
+                }
+            }
+            if best != grow::NONE {
+                return best
+            }
+        }
+        grow::NONE
+    }
+
+    /// The quickest way on the mask from `from` to `to` (A*: eight neighbours, no corner cut
+    /// between two closed cells), as cell middles; empty if there's none.
+    pub fn way(self, from: vec2, to: vec2) -> Vec<vec2> {
+        let g = self.grid
+        var out: Vec<vec2> = Vec::new()
+        let start = self.nearest(from)
+        let goal = self.nearest(to)
+        if start == grow::NONE || goal == grow::NONE {
+            return out
+        }
+        let nn = g.cells()
+        var cost: Vec<f32> = Vec::filled(nn, 1.0e30)
+        var came: Vec<u32> = Vec::filled(nn, grow::NONE)
+        var open = Heap { items: Vec::new() }
+        cost[start] = 0.0
+        open.push(length(g.centre(goal) - g.centre(start)), start)
+        while !open.items.is_empty() {
+            let c = open.pop().y
+            if c == goal {
+                break
+            }
+            let here = vec2i(i32(c % g.nx), i32(c / g.nx))
+            for k in 0..8 {
+                let q = here + STEPS[k]
+                if q.x < 0 || q.y < 0 || q.x >= i32(g.nx) || q.y >= i32(g.nz) {
+                    continue
+                }
+                let n = u32(q.y) * g.nx + u32(q.x)
+                if !self.ok[n] {
+                    continue
+                }
+                // A diagonal step only between two open cells.
+                if k >= 4 {
+                    let a = u32(here.y) * g.nx + u32(q.x)
+                    let b = u32(q.y) * g.nx + u32(here.x)
+                    if !self.ok[a] || !self.ok[b] {
+                        continue
+                    }
+                }
+                let step = if k >= 4 { 1.41421 } else { 1.0 }
+                let c2 = cost[c] + step * g.cell
+                if c2 < cost[n] {
+                    cost[n] = c2
+                    came[n] = c
+                    open.push(c2 + length(g.centre(goal) - g.centre(n)), n)
+                }
+            }
+        }
+        if came[goal] == grow::NONE && goal != start {
+            return out
+        }
+        var c = goal
+        while c != start && c != grow::NONE {
+            out.push(g.centre(c))
+            c = came[c]
+        }
+        out.push(g.centre(start))
+        var back: Vec<vec2> = Vec::with_capacity(out.len())
+        var k = out.len()
+        while k > 0 {
+            k -= 1
+            back.push(out[k])
+        }
+        back
+    }
+
+    /// The cells a player can walk to from `from` (as `way` steps: eight neighbours, no corner
+    /// cut between two closed cells).
+    pub fn reached_from(self, from: vec2) -> Vec<bool> {
+        let g = self.grid
+        var seen: Vec<bool> = Vec::filled(g.cells(), value: false)
+        let start = self.nearest(from)
+        if start == grow::NONE {
+            return seen
+        }
+        var todo: Vec<u32> = Vec::from([start])
+        seen[start] = true
+        while !todo.is_empty() {
+            let c = todo.pop().unwrap()
+            let here = vec2i(i32(c % g.nx), i32(c / g.nx))
+            for k in 0..8 {
+                let q = here + STEPS[k]
+                if q.x < 0 || q.y < 0 || q.x >= i32(g.nx) || q.y >= i32(g.nz) {
+                    continue
+                }
+                let n = u32(q.y) * g.nx + u32(q.x)
+                if seen[n] || !self.ok[n] {
+                    continue
+                }
+                if k >= 4 {
+                    let a = u32(here.y) * g.nx + u32(q.x)
+                    let b = u32(q.y) * g.nx + u32(here.x)
+                    if !self.ok[a] || !self.ok[b] {
+                        continue
+                    }
+                }
+                seen[n] = true
+                todo.push(n)
+            }
+        }
+        seen
+    }
+
+    /// Whether a cell `reached` (`reached_from`) is within `reach` of `at`.
+    pub fn reaches(self, reached: [bool], at: vec2, reach: f32) -> bool {
+        let g = self.grid
+        let lo = vec2i(floor((at - vec2(reach) - g.lo) / g.cell))
+        let n = i32(ceil(2.0 * reach / g.cell)) + 1
+        for dj in 0..n {
+            for di in 0..n {
+                let q = lo + vec2i(di, dj)
+                if q.x >= 0 && q.y >= 0 && q.x < i32(g.nx) && q.y < i32(g.nz) {
+                    let c = u32(q.y) * g.nx + u32(q.x)
+                    if reached[c] && length(g.centre(c) - at) <= reach {
+                        return true
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// A tour of `stops` on foot, in their order: the quickest way between each two (`way`), a
+    /// point every `every` m or so; and the stops no way was found to (skipped).
+    pub fn tour(self, stops: [vec2], every: f32) -> (Vec<vec2>, Vec<vec2>) {
+        var out: Vec<vec2> = Vec::new()
+        var missed: Vec<vec2> = Vec::new()
+        var from = if stops.len() == 0 { vec2(0.0) } else { stops[0] }
+        for i in 1..stops.len() {
+            let w = self.way(from, stops[i])
+            if w.is_empty() {
+                missed.push(stops[i])
+                continue
+            }
+            for p in w {
+                if out.is_empty() || length(p - out[out.len() - 1]) >= every {
+                    out.push(p)
+                }
+            }
+            from = stops[i]
+        }
+        (out, missed)
     }
 }
