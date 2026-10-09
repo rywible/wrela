@@ -163,6 +163,7 @@ impl Walker {
         )
         let pass = begin_screen_pass_with_depth(mut self.depth, clear: vec4(0.55, 0.7, 0.85, 1.0))
         draw(
+            pass,
             skin.bind(
                 verts: self.mesh.verts.items(),
                 palettes: self.palettes.span(start: 0, count: MAX_BONES),

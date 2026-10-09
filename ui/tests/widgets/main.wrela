@@ -1,7 +1,7 @@
 // Every widget of the ui package on one screen, for frame tests that drive them with scripts of
 // input (`@test(frames: n, input: "...")`), as a person would.
 
-use std::gpu::{begin_screen_pass, present}
+use std::gpu::{begin_screen_pass}
 use std::input::events
 use ui::draw::Renderer
 use ui::text::Fonts
@@ -78,9 +78,9 @@ pub fn frame(state: mut Game, time: f32, width: u32, height: u32) {
     ui.end_split()
     ui.end()
     state.renderer.upload(ui.draw)
-    begin_screen_pass(clear: vec4(0.05, 0.05, 0.06, 1.0))
-    state.renderer.draw(screen)
-    present()
+    let screen_pass = begin_screen_pass(clear: vec4(0.05, 0.05, 0.06, 1.0))
+    state.renderer.draw(screen_pass, screen)
+    screen_pass.present()
 }
 
 // ---- the tests: each a script of input (scripts/), and what it should leave ------------------

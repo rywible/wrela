@@ -33,9 +33,9 @@ use std::collections::{Flags, replace, swap}
 use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, on_ground, start_eye}
 use std::gpu::{
     Address, ClipPosition, ComparisonSampler, Cull, DepthTexture, FragmentShader, GpuBuffer,
-    GpuSpan, Rgba16Float, Rgba8, Sampler, Texture, Unorm8x4, begin_depth_pass, begin_pass,
-    begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture, draw,
-    label, present, sampler, texture, writable_texture, write,
+    GpuSpan, RenderPass, Rgba16Float, Rgba8, Sampler, Texture, Unorm8x4, begin_depth_pass,
+    begin_pass, begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture,
+    draw, label, sampler, texture, writable_texture, write,
 }
 use std::input::{Event, Key, events}
 use std::io::print
@@ -534,8 +534,8 @@ fn keep_carried(s: Clearing) {
 
 /// Any fragment shader over the whole target (`engine::plant::full`'s triangle): a pass that
 /// reads its inputs at each pixel.
-fn fullscreen<F: FragmentShader<ClipPosition>>(fs: F) {
-    draw(full.bind(z: 0.5), fs, vertices: 3)
+fn fullscreen<P: RenderPass, F: FragmentShader<ClipPosition>>(pass: P, fs: F) {
+    draw(pass, full.bind(z: 0.5), fs, vertices: 3)
 }
 
 /// The look's passes: the glow's chain from `image` (a quarter's size, blurred across and
@@ -552,18 +552,24 @@ fn look(
 ) {
     label("look glow")
     let down = begin_pass(mut glow_a)
-    fullscreen(glow_down.bind(image, s: s, threshold: 1.1, base: METERING.base, exposure: exposure))
+    fullscreen(
+        down,
+        glow_down.bind(image, s: s, threshold: 1.1, base: METERING.base, exposure: exposure),
+    )
     down.end()
     let x = begin_pass(mut glow_b)
-    fullscreen(glow_blur.bind(src: glow_a, across: 0, spread: 2.0))
+    fullscreen(x, glow_blur.bind(src: glow_a, across: 0, spread: 2.0))
     x.end()
     let y = begin_pass(mut glow_a)
-    fullscreen(glow_blur.bind(src: glow_b, across: 1, spread: 2.0))
+    fullscreen(y, glow_blur.bind(src: glow_b, across: 1, spread: 2.0))
     y.end()
     label("look develop")
-    begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
-    fullscreen(develop.bind(d, image, depth, glow: glow_a, dabs: dabs, s: s, exposure: exposure))
-    present()
+    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    fullscreen(
+        screen,
+        develop.bind(d, image, depth, glow: glow_a, dabs: dabs, s: s, exposure: exposure),
+    )
+    screen.present()
 }
 
 /// Temporal AA's pass: the history `from` resolved with this frame's scene into `into`.
@@ -580,7 +586,7 @@ fn temporal(
 ) {
     dispatch(neighbourhoods.bind(scene, mut means, mut spreads), over: scene)
     let p = begin_pass(mut into)
-    fullscreen(resolve.bind(r, scene, depth, motion, from, means, spreads, s))
+    fullscreen(p, resolve.bind(r, scene, depth, motion, from, means, spreads, s))
     p.end()
 }
 
@@ -661,9 +667,10 @@ fn static_shadows(s: mut Clearing, sh: Shadows, wind: Wind) {
     let shadows = on(s.carried.off, System::Shadows)
     let near = begin_depth_pass(mut s.near, clear_depth: 1.0)
     if shadows {
-        s.forest.shadow(view: sh.near, sh: sh, wind: wind, s: s.linear)
+        s.forest.shadow(near, view: sh.near, sh: sh, wind: wind, s: s.linear)
         for st in s.stones {
             draw(
+                near,
                 stone_shadow.bind(verts: st.mesh.verts.items(), at: st.at, view: sh.near),
                 nothing,
                 indices: st.mesh.quads.items(),
@@ -675,7 +682,7 @@ fn static_shadows(s: mut Clearing, sh: Shadows, wind: Wind) {
     near.end()
     let far = begin_depth_pass(mut s.far, clear_depth: 1.0)
     if shadows {
-        s.forest.shadow(view: sh.far, sh: sh, wind: wind, s: s.linear)
+        s.forest.shadow(far, view: sh.far, sh: sh, wind: wind, s: s.linear)
     }
     far.end()
 }
@@ -686,6 +693,7 @@ fn moving_shadow(s: mut Clearing, sh: Shadows, creature_on: bool) {
     let mv = begin_depth_pass(mut s.moving, clear_depth: 1.0)
     if creature_on {
         draw(
+            mv,
             character_shadow.bind(
                 verts: s.creature.mesh.verts.items(),
                 palettes: s.palette.items(),
@@ -856,10 +864,10 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
     label("vegetation prepass")
     let pre = begin_pass_with_depth(mut s.ids, mut s.depth, clear: vec4(0.0), clear_depth: 0.0)
     if on(off, System::Trees) {
-        s.forest.prepass(cam, wind, s.linear)
+        s.forest.prepass(pre, cam, wind, s.linear)
     }
     if on(off, System::Grass) {
-        s.grass.prepass(cam, wind)
+        s.grass.prepass(pre, cam, wind)
     }
     pre.end()
     // A test's only (`test_count`): a shipped build has no trace of it.
@@ -870,10 +878,10 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
         s.shaded = buffer(w * h)
         s.covering = buffer(w * h)
         let shading = begin_pass(mut s.scene, clear: vec4(0.0))
-        s.forest.count_shading(cam, wind, s.depth, w, mut s.shaded)
+        s.forest.count_shading(shading, cam, wind, s.depth, w, mut s.shaded)
         shading.end()
         let covering = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)
-        s.forest.count_covering(cam, wind, s.linear, w, mut s.covering)
+        s.forest.count_covering(covering, cam, wind, s.linear, w, mut s.covering)
         covering.end()
         s.counting = false
     }
@@ -882,11 +890,12 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
     label("vegetation")
     let veg = begin_pass_with_depth(mut s.scene, mut s.depth, clear: vec4(0.0), keep_depth: true)
     if on(off, System::Grass) {
-        s.grass.shade(lt, wind, GrassLook {}, Blooms {})
+        s.grass.shade(veg, lt, wind, GrassLook {}, Blooms {})
     }
     if on(off, System::Stones) {
         for st in s.stones {
             draw(
+                veg,
                 stone_vertex.bind(
                     verts: st.mesh.verts.items(),
                     colours: st.colours.items(),
@@ -903,7 +912,7 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
         }
     }
     if on(off, System::Trees) {
-        s.forest.shade(lt, wind, s.ids)
+        s.forest.shade(veg, lt, wind, s.ids)
     }
     veg.end()
     // The terrain, the creature and the sky: one render pass outside the serial timing (the
@@ -914,6 +923,7 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
     if on(off, System::Terrain) {
         for l in 0..lt.levels.count {
             draw(
+                ter,
                 ground.bind(cam, lt.levels, texels),
                 ground_shade.bind(lt, texels),
                 indices: s.clipmap.indices(),
@@ -933,6 +943,7 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
     )
     if creature_on {
         draw(
+            cr,
             character.bind(
                 verts: s.creature.mesh.verts.items(),
                 colours: s.colours.items(),
@@ -959,13 +970,14 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
     // A test's key colour in place of the sky (`test_off`), in a test build only.
     if !test_build() || on(off, System::Sky) {
         draw(
+            sky,
             full.bind(z: 0.0),
             sky_shade.bind(cam, s.light, view: s.tables.view, dome: s.sky.dome, s: s.linear),
             vertices: 3,
             depth: BEHIND,
         )
     } else {
-        draw(full.bind(z: 0.0), testing::key, vertices: 3, depth: BEHIND)
+        draw(sky, full.bind(z: 0.0), testing::key, vertices: 3, depth: BEHIND)
     }
     sky.end()
     // The creature's motion, where it's seen.
@@ -973,6 +985,7 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
     let mo = begin_pass_with_depth(mut s.motion, mut s.depth, clear: vec4(0.0), keep_depth: true)
     if creature_on {
         draw(
+            mo,
             character_motion.bind(
                 verts: s.creature.mesh.verts.items(),
                 palettes: s.palette.items(),
@@ -1039,6 +1052,7 @@ fn finish(
         let d = Develop { cam, look: Look {}, out }
         let dp = begin_pass(mut s.dabs)
         fullscreen(
+            dp,
             dab_map.bind(
                 cam,
                 look: d.look,
@@ -1053,13 +1067,13 @@ fn finish(
         let e = s.exposure.items()
         look(s.history, s.depth, s.dabs, s.linear, mut s.glow_a, mut s.glow_b, e, d)
     } else {
-        begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+        let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
         if s.carried.view == View::Scene {
-            fullscreen(testing::scene_view.bind(s.scene, s.carried.scale))
+            fullscreen(screen, testing::scene_view.bind(s.scene, s.carried.scale))
         } else {
-            fullscreen(testing::temporal_view.bind(s.history, s.light))
+            fullscreen(screen, testing::temporal_view.bind(s.history, s.light))
         }
-        present()
+        screen.present()
     }
 }
 

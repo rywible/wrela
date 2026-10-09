@@ -693,7 +693,7 @@ pub fn cook_outlines(atlas: Texture<Rgba8>, out: mut Slots<vec2>, id: GlobalId) 
 pub fn leaf_atlas(n: u32) -> Texture<Rgba8> {
     var atlas = texture::<Rgba8>(width: LEAF_ATLAS, height: LEAF_ATLAS)
     let p = begin_pass(mut atlas)
-    draw(full.bind(z: 0.5), cook_leaves.bind(n), vertices: 3)
+    draw(p, full.bind(z: 0.5), cook_leaves.bind(n), vertices: 3)
     p.end()
     atlas
 }

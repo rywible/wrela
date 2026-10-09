@@ -289,6 +289,7 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
         let i = instances[k].skeleton
         borrow mesh = game.realizer.mesh(i)
         draw(
+            shadow_pass,
             skin_shadow.bind(
                 verts: mesh.verts.items(),
                 palettes: palettes,
@@ -307,6 +308,7 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
     let pass = begin_screen_pass_with_depth(mut game.depth, clear: vec4(transfer(SKY), 1.0))
     if game.terrain {
         draw(
+            pass,
             ground.bind(view: v),
             ground_shade.bind(
                 view: v,
@@ -321,6 +323,7 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
         let i = instances[k].skeleton
         borrow mesh = game.realizer.mesh(i)
         draw(
+            pass,
             skin.bind(
                 verts: mesh.verts.items(),
                 palettes: palettes,

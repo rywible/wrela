@@ -328,6 +328,7 @@ pub fn bake(
     {
         let p = begin_pass_with_depth(mut colour, mut depth, clear: vec4(0.0), clear_depth: 1.0)
         draw(
+            p,
             bake_card.bind(b, cards: cards.span(start: 0, count: level)),
             bake_colour.bind(b, atlas, s),
             vertices: level * 6,
@@ -335,6 +336,7 @@ pub fn bake(
         )
         if limb_count > 0 {
             draw(
+                p,
                 bake_limb.bind(b, limbs: limbs.span(start: 0, count: limb_count)),
                 bake_colour.bind(b, atlas, s),
                 vertices: limb_count * LIMB_VERTICES,
@@ -351,6 +353,7 @@ pub fn bake(
             clear_depth: 1.0,
         )
         draw(
+            p,
             bake_card.bind(b, cards: cards.span(start: 0, count: level)),
             bake_normal.bind(b, atlas, s),
             vertices: level * 6,
@@ -358,6 +361,7 @@ pub fn bake(
         )
         if limb_count > 0 {
             draw(
+                p,
                 bake_limb.bind(b, limbs: limbs.span(start: 0, count: limb_count)),
                 bake_normal.bind(b, atlas, s),
                 vertices: limb_count * LIMB_VERTICES,

@@ -22,8 +22,8 @@ use probes::{ProbeGrid, sky_light}
 use sky::{Clouds, cloud_shadow}
 use std::gpu::{
     Append, AppendBuffer, ClipPosition, DrawArgs, DrawIndexedArgs, Flat, FragCoord, GlobalId,
-    GpuBuffer, InstanceIndex, One, Rgba16Float, Sampler, Slots, Texture, Unorm8x4, VertexIndex,
-    append_buffer, buffer, buffer_of, discard, dispatch, draw,
+    GpuBuffer, InstanceIndex, One, RenderPass, Rgba16Float, Sampler, Slots, Texture, Unorm8x4,
+    VertexIndex, append_buffer, buffer, buffer_of, discard, dispatch, draw,
 }
 use std::math::TAU
 use terrain::{Levels, Texel, ground_cover_at}
@@ -718,8 +718,9 @@ pub fn flower_shade(b: BloomVertex, lt: Lighting, blooms: Blooms) -> vec4 {
 
 impl Grass {
     /// The flowers' prepass draw: cut, depth only.
-    pub fn prepass(self, cam: Camera, wind: Wind) {
+    pub fn prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind) {
         draw(
+            pass,
             flower.bind(cam, wind, flowers: self.flowers.items()),
             flower_cut,
             indirect: self.blooms.items(),
@@ -728,12 +729,20 @@ impl Grass {
     }
 
     /// The blades' and flowers' shading draws.
-    pub fn shade(self, lt: Lighting, wind: Wind, look: GrassLook, blooms: Blooms) {
+    pub fn shade<P: RenderPass>(
+        self,
+        pass: P,
+        lt: Lighting,
+        wind: Wind,
+        look: GrassLook,
+        blooms: Blooms,
+    ) {
         for t in 0..TIERS {
             borrow blades = if t == 0 { self.near } else if t == 1 { self.middle } else {
                 self.far
             }
             draw(
+                pass,
                 blade.bind(
                     lt.cam,
                     wind,
@@ -748,6 +757,7 @@ impl Grass {
             )
         }
         draw(
+            pass,
             flower.bind(lt.cam, wind, flowers: self.flowers.items()),
             flower_shade.bind(lt, blooms),
             indirect: self.blooms.items(),

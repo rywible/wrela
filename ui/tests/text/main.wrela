@@ -1,7 +1,7 @@
 // Test strings at 10 to 72 pixels per em, in both fonts, white on a dark grey, each line's top
 // at a known place (compiler/tests/tests/suite/text.rs lays the same lines out and compares).
 
-use std::gpu::{begin_screen_pass, present}
+use std::gpu::{begin_screen_pass}
 use ui::draw::{DrawList, Renderer}
 use ui::text::{Face, Fonts}
 
@@ -49,7 +49,7 @@ pub fn frame(state: mut Scene, time: f32, width: u32, height: u32) {
         }
     }
     state.renderer.upload(state.list)
-    begin_screen_pass(clear: vec4(0.1, 0.1, 0.12, 1.0))
-    state.renderer.draw(screen)
-    present()
+    let screen_pass = begin_screen_pass(clear: vec4(0.1, 0.1, 0.12, 1.0))
+    state.renderer.draw(screen_pass, screen)
+    screen_pass.present()
 }

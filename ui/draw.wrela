@@ -4,8 +4,8 @@
 
 use text::{Face, Fonts}
 use std::gpu::{
-    ClipPosition, Flat, GpuBuffer, InstanceIndex, Over, Rgba8, Sampler, Texture, Unorm8x4,
-    VertexIndex, buffer, draw, sampler, texture, write,
+    ClipPosition, Flat, GpuBuffer, InstanceIndex, Over, RenderPass, Rgba8, Sampler, Texture,
+    Unorm8x4, VertexIndex, buffer, draw, sampler, texture, write,
 }
 
 /// A rectangle in pixels from the screen's top left.
@@ -301,10 +301,11 @@ impl Renderer {
         self.count = list.quads.len()
     }
 
-    /// Draws what was uploaded, in a pass on a target `screen` pixels wide and high.
-    pub fn draw(self, screen: vec2) {
+    /// Draws what was uploaded, in `pass`, on a target `screen` pixels wide and high.
+    pub fn draw<P: RenderPass>(self, pass: P, screen: vec2) {
         if self.count > 0 {
             draw(
+                pass,
                 quad_corner.bind(quads: self.quads, clips: self.clips, screen: screen),
                 quad_color.bind(atlas: self.atlas, linear: self.linear),
                 vertices: 6,

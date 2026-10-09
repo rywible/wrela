@@ -1,7 +1,7 @@
 // A screen of source code in the monospace font at 13 pixels per em, 10,000 glyphs at 1080p,
 // drawn each frame (compiler/tests/tests/suite/text.rs times it).
 
-use std::gpu::{begin_screen_pass, present}
+use std::gpu::{begin_screen_pass}
 use ui::draw::{DrawList, Renderer}
 use ui::text::{Face, Fonts}
 
@@ -50,9 +50,9 @@ pub fn frame(state: mut Scene, time: f32, width: u32, height: u32) {
     }
     state.glyphs = state.list.quads.len()
     state.renderer.upload(state.list)
-    begin_screen_pass(clear: vec4(0.08, 0.08, 0.09, 1.0))
-    state.renderer.draw(screen)
-    present()
+    let screen_pass = begin_screen_pass(clear: vec4(0.08, 0.08, 0.09, 1.0))
+    state.renderer.draw(screen_pass, screen)
+    screen_pass.present()
 }
 
 /// How many glyphs the last frame drew.

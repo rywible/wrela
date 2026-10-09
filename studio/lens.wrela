@@ -24,7 +24,7 @@ use std::derive::Box3
 use std::field::{Lipschitz, PartName, Surface}
 use std::gpu::{
     AppendBuffer, GpuBuffer, Rgba8, Texture, append_buffer, begin_pass, begin_screen_pass, buffer,
-    dispatch, draw, present, texture,
+    dispatch, draw, texture,
 }
 use std::input::{Button, Event, Key, events}
 use std::io::print
@@ -1353,18 +1353,19 @@ pub fn frame<S: Colours + Lipschitz>(
         return
     }
     // The canvas over the views' part of the screen, then the panel.
-    begin_screen_pass(clear: view::BACKGROUND)
+    let screen_pass = begin_screen_pass(clear: view::BACKGROUND)
     let area = vec4(0.0, 0.0, screen.x - panel::width(width), screen.y)
     match lens.canvas {
         Some(c) => draw(
+            screen_pass,
             view::cover_area.bind(area: area, screen: screen),
             show_canvas.bind(canvas: c),
             vertices: 6,
         ),
         None => {},
     }
-    lens.renderer.draw(screen)
-    present()
+    lens.renderer.draw(screen_pass, screen)
+    screen_pass.present()
     lens.shown = true
 }
 
@@ -1513,7 +1514,7 @@ fn draw_views<S: Colours>(lens: mut Lens, subject: fn() -> S) {
         match mut lens.canvas {
             Some(c) => {
                 let pass = begin_pass(mut c, clear: view::BACKGROUND)
-                draw(cover, fit::draw_minima.bind(fv: fv, rays: lens.mask_rays), vertices: 3)
+                draw(pass, cover, fit::draw_minima.bind(fv: fv, rays: lens.mask_rays), vertices: 3)
                 pass.end()
             },
             None => {},
@@ -1599,6 +1600,7 @@ fn draw_views<S: Colours>(lens: mut Lens, subject: fn() -> S) {
         Some(c) => {
             let pass = begin_pass(mut c, clear: view::BACKGROUND)
             draw(
+                pass,
                 cover,
                 colour.bind(
                     sheet: sheet,
