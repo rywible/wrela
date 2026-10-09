@@ -3,6 +3,7 @@
 // brings it up to the output; the look's passes draw it to the screen.
 
 use creature::{Fawn, Grown, REALIZED, SKELETON, WALKER_BODY, grown}
+use fawn::creature::Coat
 use engine::character::{
     PartOf, character, character_motion, character_shade, character_shadow, colours, motion,
     parts_of,
@@ -10,7 +11,7 @@ use engine::character::{
 use engine::gait::{between, palette, posed_bounds}
 use engine::grass::{Blooms, Grass, GrassLook}
 use engine::present::{Snapshots, lerp_angle}
-use engine::realize::Realizing
+use engine::realize::{Whole, realizing}
 use engine::render::MAX_BONES
 use engine::run::run
 use engine::air::{Air, Tables, hazy, tables}
@@ -31,6 +32,7 @@ use engine::view::{BEHIND, Camera, NEAREST, SEEN, camera, first_camera}
 use std::gpu::dispatch
 use std::collections::{Flags, replace, swap}
 use std::derive::Box3
+use std::job::{Job, Step}
 use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, on_ground, start_eye}
 use std::gpu::{
     Address, ClipPosition, ComparisonSampler, Cull, DepthTexture, FragmentShader, GpuBuffer,
@@ -222,10 +224,11 @@ fn wind(time: f32) -> Wind {
 pub struct Clearing {
     /// The sim's snapshots.
     snaps: Snapshots<World>,
-    /// The creature, its mesh realized a few slices a frame (a short submission each), and its
-    /// colours once it's whole; and its palettes: this frame's and the last.
+    /// The creature: its mesh realized a few slices a frame (a short submission each) by its
+    /// job, then whole, with its colours; and its palettes: this frame's and the last.
     fawn: Grown,
-    creature: Realizing,
+    realizing: Job<realizing<Coat, Grown>>,
+    creature: Option<Whole>,
     colours: GpuBuffer<Unorm8x4>,
     palette: GpuBuffer<mat4>,
     last_palette: GpuBuffer<mat4>,
@@ -377,7 +380,9 @@ pub fn init() -> Clearing {
     let w = world.walker
     let latest = run(take world, hz: 60, step: tick, present: snapshot)
     let fawn = grown()
-    let creature = Realizing::start(fawn, REALIZED)
+    // Its live blocks found now, as the load starts: its slices from the first frame on.
+    var realize = realizing.start(REALIZED)
+    let _ = realize.resume(fawn, CREATURE_SLICES)
     let atlas = leaf_atlas(6)
     let woods = woods()
     print(f"forest: {KINDS} kinds, {woods.placed.len()} instances")
@@ -389,7 +394,8 @@ pub fn init() -> Clearing {
     var s = Clearing {
         snaps: Snapshots::new(take latest, hz: 60),
         fawn: take fawn,
-        creature: take creature,
+        realizing: take realize,
+        creature: None,
         colours: buffer(1),
         palette: buffer(MAX_BONES),
         last_palette: buffer(MAX_BONES),
@@ -665,10 +671,13 @@ fn cook_load(s: mut Clearing) {
         s.stones.push(boulder(s.stones.len()))
         s.static_drawn = false
     }
-    if !s.creature.done() {
-        s.creature.step(s.fawn, n: CREATURE_SLICES)
-        if s.creature.done() {
-            s.colours = colours(s.creature.mesh, s.fawn.field(), Fawn {}, cell: 1cm)
+    if s.creature.is_none() {
+        match s.realizing.resume(s.fawn, CREATURE_SLICES) {
+            Step::Yielded => {},
+            Step::Done(whole) => {
+                s.colours = colours(whole.mesh, s.fawn.field(), Fawn {}, cell: 1cm)
+                s.creature = Some(take whole)
+            },
         }
     }
 }
@@ -705,18 +714,20 @@ fn moving_shadow(s: mut Clearing, sh: Shadows, creature_on: bool) {
     label("shadow moving")
     let mv = begin_depth_pass(mut s.moving, clear_depth: 1.0)
     if creature_on {
-        draw(
-            mv,
-            character_shadow.bind(
-                verts: s.creature.mesh.verts.items(),
-                palettes: s.palette.items(),
-                view: sh.moving,
-            ),
-            nothing,
-            indices: s.creature.mesh.quads.items(),
-            indirect: s.creature.mesh.draw.items(),
-            depth_bias: CASTER,
-        )
+        if let Some(c) = s.creature {
+            draw(
+                mv,
+                character_shadow.bind(
+                    verts: c.mesh.verts.items(),
+                    palettes: s.palette.items(),
+                    view: sh.moving,
+                ),
+                nothing,
+                indices: c.mesh.quads.items(),
+                indirect: c.mesh.draw.items(),
+                depth_bias: CASTER,
+            )
+        }
     }
     mv.end()
 }
@@ -955,21 +966,23 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
         join: true,
     )
     if creature_on {
-        draw(
-            cr,
-            character.bind(
-                verts: s.creature.mesh.verts.items(),
-                colours: s.colours.items(),
-                palettes: s.palette.items(),
-                parts: PARTS,
-                cam: cam,
-            ),
-            character_shade.bind(lt),
-            indices: s.creature.mesh.quads.items(),
-            indirect: s.creature.mesh.draw.items(),
-            cull: Cull::Back,
-            depth: NEAREST,
-        )
+        if let Some(c) = s.creature {
+            draw(
+                cr,
+                character.bind(
+                    verts: c.mesh.verts.items(),
+                    colours: s.colours.items(),
+                    palettes: s.palette.items(),
+                    parts: PARTS,
+                    cam: cam,
+                ),
+                character_shade.bind(lt),
+                indices: c.mesh.quads.items(),
+                indirect: c.mesh.draw.items(),
+                cull: Cull::Back,
+                depth: NEAREST,
+            )
+        }
     }
     cr.end()
     label("sky")
@@ -998,20 +1011,22 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
     swap(mut s.motion, mut s.last_motion)
     let mo = begin_pass_with_depth(mut s.motion, mut s.depth, clear: vec4(0.0), keep_depth: true)
     if creature_on {
-        draw(
-            mo,
-            character_motion.bind(
-                verts: s.creature.mesh.verts.items(),
-                palettes: s.palette.items(),
-                last: s.last_palette.items(),
-                cam: cam,
-            ),
-            motion.bind(cam),
-            indices: s.creature.mesh.quads.items(),
-            indirect: s.creature.mesh.draw.items(),
-            cull: Cull::Back,
-            depth: SEEN,
-        )
+        if let Some(c) = s.creature {
+            draw(
+                mo,
+                character_motion.bind(
+                    verts: c.mesh.verts.items(),
+                    palettes: s.palette.items(),
+                    last: s.last_palette.items(),
+                    cam: cam,
+                ),
+                motion.bind(cam),
+                indices: c.mesh.quads.items(),
+                indirect: c.mesh.draw.items(),
+                cull: Cull::Back,
+                depth: SEEN,
+            )
+        }
     }
     mo.end()
 }
@@ -1126,7 +1141,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     s.clipmap.follow(Ground {}, eye, again: false)
     cook_again(mut s, eye)
     cook_load(mut s)
-    let creature_on = on(off, System::Creature) && s.creature.done()
+    let creature_on = on(off, System::Creature) && s.creature.is_some()
     let sh = shadows(
         s.light.sun,
         NEAR_CASCADE,
@@ -1145,7 +1160,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     moving_shadow(mut s, sh, creature_on)
     cook_sky(mut s, eye, wind)
     bake_probes(mut s, sh)
-    if !s.ready && s.probes.done() && s.sky.done() && s.creature.done() {
+    if !s.ready && s.probes.done() && s.sky.done() && s.creature.is_some() {
         s.ready = true
         print(f"clearing ready at frame {s.frames}")
     }
@@ -1164,7 +1179,11 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     draw_scene(mut s, cam, sh, wind, creature_on)
     // The creature's box: its mesh's at rest, posed, 15 cm wider for what its pose reaches past
     // that and for where it was last frame.
-    let body = posed_bounds(walker, s.creature.bounds(), slack: 0.15)
+    let rest = match s.creature {
+        Some(c) => c.bounds,
+        None => Box3 { lo: vec3(0.0), hi: vec3(0.0) },
+    }
+    let body = posed_bounds(walker, rest, slack: 0.15)
     finish(mut s, cam, body, creature_on, width, height)
     s.frames += 1
     s.ran += 1

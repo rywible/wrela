@@ -734,68 +734,37 @@ pub fn realize_once<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Mesh 
     take p.mesh
 }
 
-/// `creature`'s mesh, realized as `realize_once` does it, but over frames: `start` culls, and
-/// each `step` places the vertices of a few slices of the live blocks (`SLICE_BLOCKS` each),
-/// the last finishing the mesh. So no submission runs long (the GPU safety rule: under 100 ms,
-/// #51 AC6): realized at 1 cm in one submission, the clearing's creature took 0.4 s.
-pub struct Realizing {
+/// A creature's mesh, whole, and a box it lies in at rest (its grid's).
+pub struct Whole {
     pub mesh: Mesh,
-    grid: Grid,
-    scratch: Scratch,
-    falloff: f32,
-    /// The next slice, and how many: past the last, the finish; past that, done.
-    at: u32,
-    slices: u32,
+    pub bounds: Box3,
 }
 
-impl Realizing {
-    pub fn start<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Realizing {
-        var p = prepare(creature, look)
-        record_cull(creature.field(), p.grid, mut p.scratch, mut p.mesh)
-        Realizing {
-            mesh: take p.mesh,
-            grid: p.grid,
-            scratch: take p.scratch,
-            falloff: look.deform.weights.falloff,
-            at: 0,
-            slices: slices_for(p.grid),
-        }
-    }
-
-    /// A box its mesh lies in, at rest: its grid's.
-    pub fn bounds(self) -> Box3 {
-        self.grid.extent()
-    }
-
-    /// Whether the mesh is whole.
-    pub fn done(self) -> bool {
-        self.at > self.slices
-    }
-
-    /// The next `n` slices, or the finish after the last: once a frame until `done`.
-    pub fn step<C, K: Creature<C>>(mut self, creature: K, n: u32) {
-        for _ in 0..n {
-            if self.at < self.slices {
-                record_slice(
-                    creature.field(),
-                    self.grid,
-                    self.at,
-                    self.slices,
-                    mut self.scratch,
-                    mut self.mesh,
-                )
-            } else if self.at == self.slices {
-                record_finish(
-                    creature.field(),
-                    self.grid,
-                    self.falloff,
-                    mut self.scratch,
-                    mut self.mesh,
-                )
+/// Realizes `creature` as `look` says, as `realize_once` does but over frames (§6.18), so no
+/// submission runs long (the GPU safety rule: under 100 ms, #51 AC6; realized at 1 cm in one
+/// submission, the clearing's creature took 0.4 s): its first `resume` finds its live blocks,
+/// each after places the vertices of `per_frame` slices of them (`SLICE_BLOCKS` blocks each),
+/// then the last finishes the mesh. Its result is the whole mesh; its scratch goes with it.
+@job
+pub fn realizing<C, K: Creature<C>>(look: take CreatureLook, creature: K, per_frame: u32) -> Whole {
+    var p = prepare(creature, look)
+    record_cull(creature.field(), p.grid, mut p.scratch, mut p.mesh)
+    let slices = slices_for(p.grid)
+    let falloff = look.deform.weights.falloff
+    // The next slice: past the last, the finish; past that, done.
+    var at = 0
+    while at <= slices {
+        yield
+        for _ in 0..per_frame {
+            if at < slices {
+                record_slice(creature.field(), p.grid, at, slices, mut p.scratch, mut p.mesh)
+            } else if at == slices {
+                record_finish(creature.field(), p.grid, falloff, mut p.scratch, mut p.mesh)
             }
-            self.at = min(self.at + 1, self.slices + 1)
+            at = min(at + 1, slices + 1)
         }
     }
+    Whole { mesh: take p.mesh, bounds: p.grid.extent() }
 }
 
 /// A realization's first part: `mesh` emptied, and the live blocks of `grid` found.
