@@ -67,12 +67,15 @@ pub fn read_embeds(checked: &Checked, dirs: &[std::path::PathBuf]) -> (Embeds, V
 
 /// What computing the constants did: how many the build computed, and how many it read from
 /// the cache (§10).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ConstStats {
     pub computed: u32,
     pub cached: u32,
     /// How many chunks of the computed constants' parallel jobs the build's helpers ran.
     pub helped: u64,
+    /// What each computed constant that printed or timed a phase did (§8's `trace`), by name:
+    /// its lines were shown as they were made.
+    pub traced: Vec<(String, wrela_host::Traced)>,
 }
 
 /// Computes the program's computed constants into `data` (whose files `embed` reads are
@@ -136,12 +139,21 @@ pub fn compute(
                         None => {
                             stats.computed += 1;
                             let export = &module.exports[0].1;
-                            let r = run_one(checked, sources, &compiled, export, c, fuel)
+                            let name = checked.program.const_(c).name.clone();
+                            let trace = wrela_host::Trace::new(Some(format!("{name}: ")));
+                            let r = run_one(checked, sources, &compiled, export, c, fuel, &trace)
                                 .map(|(v, helped)| {
                                     stats.helped += u64::from(helped);
                                     v
                                 })
                                 .map_err(|d| *d);
+                            let traced = trace.take();
+                            if !traced.phases.is_empty() {
+                                eprintln!("{name}'s phases: {}", traced.phases_line());
+                            }
+                            if !traced.is_empty() {
+                                stats.traced.push((name, traced));
+                            }
                             if let (Ok(v), Some(dir)) = (&r, cache) {
                                 const_cache::put(dir, &key, v);
                             }
@@ -259,14 +271,15 @@ fn refusal(results: u32) -> &'static str {
 }
 
 impl Compiled {
-    /// An instance on new memory: its own, or (`shared`) memory it shares with helpers.
-    fn start(&self, engine: &wasmtime::Engine, shared: bool) -> Result<Running, String> {
+    /// An instance on new memory: its own, or (`shared`) memory it shares with helpers. What
+    /// it prints and times goes to `trace`.
+    fn start(
+        &self,
+        engine: &wasmtime::Engine,
+        shared: bool,
+        trace: &wrela_host::Trace,
+    ) -> Result<Running, String> {
         let mut linker = wasmtime::Linker::new(engine);
-        // Effects keep constants and tests from recording GPU work and making requests (§8):
-        // nothing calls these. Only a program that starts a voice imports `audio`, and they
-        // can't.
-        wrela_host::refuse_host_functions(&mut linker, engine, refusal)
-            .map_err(|e| format!("{e:#}"))?;
         let mut store = wasmtime::Store::new(engine, ());
         store.set_fuel(FUEL).map_err(|e| format!("{e:#}"))?;
         let mut shared_memory = None;
@@ -282,6 +295,17 @@ impl Compiled {
                 .map_err(|e| format!("{e:#}"))?;
             shared_memory = Some(m);
         }
+        // Effects keep constants and tests from recording GPU work and making requests (§8):
+        // nothing calls these. Only a program that starts a voice imports `audio`, and they
+        // can't. A line printed and a phase timed go to the trace.
+        wrela_host::refuse_host_functions(
+            &mut linker,
+            engine,
+            refusal,
+            trace,
+            shared_memory.as_ref(),
+        )
+        .map_err(|e| format!("{e:#}"))?;
         let instance = linker
             .instantiate(&mut store, &self.module)
             .map_err(|e| format!("the build's code didn't start: {e:#}"))?;
@@ -351,14 +375,15 @@ fn run_one(
     export: &str,
     c: ConstId,
     fuel: u64,
+    trace: &wrela_host::Trace,
 ) -> Result<(wrela_lower::Value, u32), Box<Diagnostic>> {
     let mut running =
-        compiled.start(engine(), true).map_err(|m| Box::new(Diagnostic::internal(m)))?;
+        compiled.start(engine(), true, trace).map_err(|m| Box::new(Diagnostic::internal(m)))?;
     let Mem::Shared(shared) = &running.memory else {
         return Err(Box::new(Diagnostic::internal("a constant's code runs on shared memory")));
     };
     let helpers =
-        wrela_host::BuildHelpers::start(&compiled.module, shared, const_threads() - 1, fuel);
+        wrela_host::BuildHelpers::start(&compiled.module, shared, const_threads() - 1, fuel, trace);
     let result = running.call(export, fuel);
     let main_used = running.used(fuel);
     let ran = helpers.finish();
@@ -417,15 +442,19 @@ fn run_one(
 }
 
 /// Runs the program package's `@test` functions (§10), after its constants are computed into
-/// `data`: each test's name and, if it failed, why (E0706, E0705), with the errors lowering
-/// them found. Each test runs on new memory, so one test can't change what another sees.
+/// A test that ran: which, why it failed if it did, and what it printed and timed.
+pub type Ran = (wrela_sema::ty::FnId, Option<Diagnostic>, wrela_host::Traced);
+
+/// `data`: each test that ran (what it printed shown as it was made), with the errors lowering
+/// them found. A failure is E0706 or E0705. Each test runs on new memory, so one test can't
+/// change what another sees.
 pub fn run_tests(
     checked: &Checked,
     sources: &SourceMap,
     data: &BuildData,
     tests: &[wrela_sema::ty::FnId],
     fuel: u64,
-) -> (Vec<(wrela_sema::ty::FnId, Option<Diagnostic>)>, Vec<Diagnostic>) {
+) -> (Vec<Ran>, Vec<Diagnostic>) {
     let (module, diags) = wrela_lower::lower_tests(checked, tests, data);
     let Some(module) = module.filter(|_| !wrela_diag::has_errors(&diags)) else {
         return (Vec::new(), diags);
@@ -435,15 +464,21 @@ pub fn run_tests(
         Ok((c, _)) => c,
         Err(msg) => return (Vec::new(), vec![Diagnostic::internal(msg)]),
     };
-    let names: Vec<&str> = module.exports.iter().map(|(_, name)| name.as_str()).collect();
-    let ran = each_at_once(&names, |name| {
-        compiled.start(engine(), false).map(|mut r| r.call(name, fuel))
+    let exports: Vec<(&str, String)> = module
+        .exports
+        .iter()
+        .map(|(f, name)| (name.as_str(), checked.program.func(*f).name.clone()))
+        .collect();
+    let ran = each_at_once(&exports, |(export, test)| {
+        let trace = wrela_host::Trace::new(Some(format!("{test}: ")));
+        let ran = compiled.start(engine(), false, &trace).map(|mut r| r.call(export, fuel));
+        (ran, trace.take())
     });
     let results = module
         .exports
         .iter()
         .zip(ran)
-        .map(|((f, _), ran)| {
+        .map(|((f, _), (ran, traced))| {
             let failed = match ran {
                 Ok(Ok(_)) => None,
                 Err(msg) => Some(Diagnostic::internal(msg)),
@@ -454,7 +489,7 @@ pub fn run_tests(
                     Some(failure(checked, sources, &compiled.lines, item, &fault, None))
                 }
             };
-            (*f, failed)
+            (*f, failed, traced)
         })
         .collect();
     (results, diags)

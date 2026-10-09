@@ -6,6 +6,7 @@
 
 use crate::error::{Error, Result};
 use crate::shared;
+use crate::trace::Trace;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
@@ -23,8 +24,9 @@ use wrela_abi::ticks::{Tick, TickLog, frame_time, lockstep_ticks};
 use wrela_abi::{
     AUDIO_QUANTUM, EXPORT_AUDIO, EXPORT_FRAME, EXPORT_INIT, EXPORT_MEMORY, EXPORT_TICK,
     EXPORT_WORKER, HOST_FUNCTIONS, IMPORT_AUDIO, IMPORT_CLOCK, IMPORT_INPUT, IMPORT_KEEP,
-    IMPORT_KEPT, IMPORT_LIMIT, IMPORT_MEMORY, IMPORT_MODULE, IMPORT_REQUEST_STATUS,
-    IMPORT_REQUEST_TAKE, IMPORT_SUBMIT, IMPORT_TICK, Manifest, REQUEST_FAILED, REQUEST_PENDING,
+    IMPORT_KEPT, IMPORT_LIMIT, IMPORT_MEMORY, IMPORT_MODULE, IMPORT_PHASE, IMPORT_PRINT,
+    IMPORT_REQUEST_STATUS, IMPORT_REQUEST_TAKE, IMPORT_SUBMIT, IMPORT_TICK, Manifest,
+    REQUEST_FAILED, REQUEST_PENDING,
 };
 
 /// The process's one wasmtime engine: every program compiles and runs under it, as wasmtime
@@ -156,8 +158,9 @@ struct State<E> {
     voice: Option<(u32, u32)>,
     /// The ticker `wrela.tick` started: its task, context and rate.
     ticker: Option<(u32, u32, u32)>,
-    /// The lines the program printed (`std::io::print`), each also shown on stderr unless quiet.
-    logs: Vec<String>,
+    /// What the program printed and timed, on any of its threads (`std::io::print`,
+    /// `std::time::phase`): each line also shown on stderr unless quiet.
+    trace: Trace,
     /// Input events not yet read (`wrela.input`).
     input: Queue,
     /// What the build this one replaced kept (`wrela.kept`), and what this one keeps
@@ -315,12 +318,6 @@ impl<E: Executor> State<E> {
                 | Command::StorageWrite { .. }
                 | Command::Fetch { .. }
                 | Command::Post { .. } => self.requests.io(&cmd)?,
-                Command::Log { text } => {
-                    if !self.requests.io.quiet {
-                        eprintln!("wrela: {text}");
-                    }
-                    self.logs.push(text.to_string());
-                }
                 _ => {}
             }
         }
@@ -341,6 +338,7 @@ struct TickThread {
     task: u32,
     context: u32,
     fuel: Option<u64>,
+    trace: Trace,
 }
 
 impl TickThread {
@@ -366,6 +364,8 @@ impl TickThread {
         let before = counts();
         let result =
             self.tick.call(&mut self.store, (memory::THREAD_TICK, self.task, self.context, k));
+        // The tick's phase ends with it.
+        self.trace.end_phase();
         self.next += 1;
         result.map_err(|e| (k, e))?;
         let after = counts();
@@ -451,7 +451,7 @@ pub(crate) struct Retired<E> {
     ran: Option<Vec<(u32, Vec<[u8; EVENT_SIZE as usize]>)>>,
     input: Queue,
     records: std::collections::VecDeque<[u8; EVENT_SIZE as usize]>,
-    logs: Vec<String>,
+    trace: Option<Trace>,
     batches: Option<Vec<Vec<u8>>>,
 }
 
@@ -642,7 +642,7 @@ impl<E: Executor> Program<E> {
             ran: None,
             input: Queue::default(),
             records: Default::default(),
-            logs: Vec::new(),
+            trace: None,
             batches: record.then(Vec::new),
         };
         Program::instantiate_carrying(compiled, manifest, carried, io, workers, run_init)
@@ -659,7 +659,8 @@ impl<E: Executor> Program<E> {
         workers: u32,
         run_init: bool,
     ) -> Result<Program<E>> {
-        let Retired { executor, kept, ticks, ran, input, records, logs, batches } = carried;
+        let Retired { executor, kept, ticks, ran, input, records, trace, batches } = carried;
+        let trace = trace.unwrap_or_else(|| Trace::new((!io.quiet).then(|| "wrela: ".to_string())));
         let engine = compiled.module.engine();
         let mut linker = Linker::new(engine);
         let wrap = |e: wasmtime::Error| Error::Program(format!("{e:#}"));
@@ -676,6 +677,7 @@ impl<E: Executor> Program<E> {
         linker.func_wrap(IMPORT_MODULE, IMPORT_KEEP, keep::<E>).map_err(wrap)?;
         linker.func_wrap(IMPORT_MODULE, IMPORT_KEPT, self::kept::<E>).map_err(wrap)?;
         linker.func_wrap(IMPORT_MODULE, IMPORT_CLOCK, clock::<E>).map_err(wrap)?;
+        trace.link(&mut linker, Some(&memory)).map_err(wrap)?;
         let state = State {
             memory: memory.clone(),
             checker: Checker::with_limits(manifest, executor.limits()),
@@ -690,7 +692,7 @@ impl<E: Executor> Program<E> {
             started: false,
             voice: None,
             ticker: None,
-            logs,
+            trace: trace.clone(),
             input,
             kept,
             keeping: Vec::new(),
@@ -710,7 +712,8 @@ impl<E: Executor> Program<E> {
         let n = if has_worker { workers.clamp(1, MAX_WORKERS + 1) - 1 } else { 0 };
         let threads = (0..n)
             .map(|i| {
-                spawn_worker(compiled.module.clone(), memory.clone(), memory::THREAD_HELPER0 + i)
+                let thread = memory::THREAD_HELPER0 + i;
+                spawn_worker(compiled.module.clone(), memory.clone(), thread, trace.clone())
             })
             .collect();
         let helpers = Helpers { memory: memory.clone(), threads };
@@ -777,7 +780,7 @@ impl<E: Executor> Program<E> {
             ran,
             input: state.input,
             records,
-            logs: state.logs,
+            trace: Some(state.trace),
             batches: state.batches,
         }
     }
@@ -867,8 +870,10 @@ impl<E: Executor> Program<E> {
 
     /// Turns a call's outcome into ours, preferring the typed error `submit` recorded.
     fn settle(&mut self, result: wasmtime::Result<()>) -> Result<()> {
-        // What the call's requests got, the program sees from its next call on.
+        // What the call's requests got, the program sees from its next call on. The call's
+        // phase ends with it.
         self.store.data_mut().requests.settle();
+        self.store.data().trace.end_phase();
         self.last_failure = None;
         let failure = self.store.data_mut().failure.take();
         match (result, failure) {
@@ -937,7 +942,8 @@ impl<E: Executor> Program<E> {
         let wrap = |e: wasmtime::Error| Error::Program(format!("{e:#}"));
         if self.audio.is_none() {
             let (mut store, instance) =
-                other_instance(&self.module, &self.memory, "the audio thread").map_err(wrap)?;
+                other_instance(&self.module, &self.memory, "the audio thread", &self.trace())
+                    .map_err(wrap)?;
             let render = instance
                 .get_typed_func::<(u32, u32, u32), ()>(&mut store, EXPORT_AUDIO)
                 .map_err(wrap)?;
@@ -1039,7 +1045,7 @@ impl<E: Executor> Program<E> {
         let t = result.map_err(|(k, trap)| self.tick_trapped(k, &trap))?;
         if t.waited > 0 {
             let line = format!("tick {}: the sim waited for a job due ({}×)", t.tick, t.waited);
-            self.store.data_mut().logs.push(line);
+            self.store.data().trace.keep(line);
         }
         Ok(t)
     }
@@ -1098,12 +1104,14 @@ impl<E: Executor> Program<E> {
         }
         let wrap = |e: wasmtime::Error| Error::Program(format!("{e:#}"));
         let (mut store, instance) =
-            other_instance(&self.module, &self.memory, "the ticker").map_err(wrap)?;
+            other_instance(&self.module, &self.memory, "the ticker", &self.trace())
+                .map_err(wrap)?;
         let tick = instance
             .get_typed_func::<(u32, u32, u32, u32), ()>(&mut store, EXPORT_TICK)
             .map_err(wrap)?;
         let memory = self.memory.clone();
-        Ok(TickThread { store, tick, next: 0, memory, task, context, fuel: self.fuel })
+        let trace = self.trace();
+        Ok(TickThread { store, tick, next: 0, memory, task, context, fuel: self.fuel, trace })
     }
 
     /// Runs `ticks` ticks (with no records, each asked for its hash) on an OS thread of their
@@ -1163,7 +1171,12 @@ impl<E: Executor> Program<E> {
 
     /// The lines printed since the last call.
     pub(crate) fn take_logs(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.store.data_mut().logs)
+        self.store.data().trace.take_lines()
+    }
+
+    /// What the program printed and timed, which its threads share.
+    pub(crate) fn trace(&self) -> Trace {
+        self.store.data().trace.clone()
     }
 
     pub(crate) fn take_batches(&mut self) -> Vec<Vec<u8>> {
@@ -1183,6 +1196,7 @@ fn other_instance(
     module: &Module,
     memory: &SharedMemory,
     who: &'static str,
+    trace: &Trace,
 ) -> wasmtime::Result<(Store<()>, Instance)> {
     let engine = module.engine();
     let mut store = Store::new(engine, ());
@@ -1192,10 +1206,13 @@ fn other_instance(
     }
     let mut linker = Linker::new(engine);
     linker.define(&store, IMPORT_MODULE, IMPORT_MEMORY, memory.clone())?;
-    // The clock answers on every thread (an `@audio` voice may read it).
+    // The clock answers on every thread (an `@audio` voice may read it), and so do a line
+    // printed and a phase (a tick or a parallel job's chunk may print).
     let m = memory.clone();
     linker.func_wrap(IMPORT_MODULE, IMPORT_CLOCK, move |ptr: u32| write_clock(&m, ptr))?;
-    for f in HOST_FUNCTIONS.iter().filter(|f| f.name != IMPORT_CLOCK) {
+    trace.link(&mut linker, Some(memory))?;
+    let answered = [IMPORT_CLOCK, IMPORT_PRINT, IMPORT_PHASE];
+    for f in HOST_FUNCTIONS.iter().filter(|f| !answered.contains(&f.name)) {
         let i32s = |n| std::iter::repeat_n(ValType::I32, n);
         let ty = FuncType::new(engine, i32s(f.params), i32s(f.results));
         linker.func_new(IMPORT_MODULE, f.name, ty, move |_, _, _| {
@@ -1224,18 +1241,24 @@ pub struct HelperRun {
 
 impl BuildHelpers {
     /// `count` helpers for `module`'s instances on `memory` (none if it has no `__worker`: it
-    /// runs no parallel jobs), each with `fuel`.
-    pub fn start(module: &Module, memory: &SharedMemory, count: u32, fuel: u64) -> BuildHelpers {
+    /// runs no parallel jobs), each with `fuel`, printing and timing into `trace`.
+    pub fn start(
+        module: &Module,
+        memory: &SharedMemory,
+        count: u32,
+        fuel: u64,
+        trace: &Trace,
+    ) -> BuildHelpers {
         let n = if module.get_export(EXPORT_WORKER).is_some() { count.min(MAX_WORKERS) } else { 0 };
         let threads = (0..n)
             .map(|i| {
-                let (module, memory) = (module.clone(), memory.clone());
+                let (module, memory, trace) = (module.clone(), memory.clone(), trace.clone());
                 let thread = memory::THREAD_HELPER0 + i;
                 std::thread::spawn(move || {
                     let mut used = HelperRun::default();
                     let run = |used: &mut HelperRun| -> wasmtime::Result<()> {
                         let (mut store, instance) =
-                            other_instance(&module, &memory, "build-time code")?;
+                            other_instance(&module, &memory, "build-time code", &trace)?;
                         let metered = store.engine().get_consume_fuel();
                         if metered {
                             store.set_fuel(fuel)?;
@@ -1285,13 +1308,18 @@ impl Drop for BuildHelpers {
 }
 
 /// The host functions build-time code imports, each refusing as `why` says: constants and
-/// tests record no GPU work and make no requests (their effects are checked, §8).
+/// tests record no GPU work and make no requests (their effects are checked, §8). What they
+/// print and time, `trace` answers.
 pub fn refuse_host_functions<T: 'static>(
     linker: &mut Linker<T>,
     engine: &Engine,
     why: fn(results: u32) -> &'static str,
+    trace: &Trace,
+    memory: Option<&SharedMemory>,
 ) -> wasmtime::Result<()> {
-    for f in HOST_FUNCTIONS.iter().filter(|f| f.name != IMPORT_AUDIO) {
+    trace.link(linker, memory)?;
+    let answered = [IMPORT_AUDIO, IMPORT_PRINT, IMPORT_PHASE];
+    for f in HOST_FUNCTIONS.iter().filter(|f| !answered.contains(&f.name)) {
         let why = why(f.results as u32);
         let i32s = |n| std::iter::repeat_n(ValType::I32, n);
         let ty = FuncType::new(engine, i32s(f.params), i32s(f.results));
@@ -1305,10 +1333,15 @@ pub fn refuse_host_functions<T: 'static>(
 /// A helper: an instance of the program on a thread of its own, number `thread`, running
 /// `__worker(thread)` until the program shuts it down. If it traps, it tells the thread that
 /// waits for what it ran (wrela_abi `memory`'s helpers), and runs nothing more.
-fn spawn_worker(module: Module, memory: SharedMemory, thread: u32) -> std::thread::JoinHandle<()> {
+fn spawn_worker(
+    module: Module,
+    memory: SharedMemory,
+    thread: u32,
+    trace: Trace,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let run = || -> wasmtime::Result<()> {
-            let (mut store, instance) = other_instance(&module, &memory, "a helper")?;
+            let (mut store, instance) = other_instance(&module, &memory, "a helper", &trace)?;
             let worker = instance.get_typed_func::<u32, ()>(&mut store, EXPORT_WORKER)?;
             worker.call(&mut store, thread)
         };

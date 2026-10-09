@@ -51,6 +51,9 @@ pub(crate) struct Helpers {
     pub kept: u32,
     /// `wrela.clock`, when the program reads the clock.
     pub clock: u32,
+    /// `wrela.print` and `wrela.phase`, when the program prints or times a phase.
+    pub print: u32,
+    pub phase: u32,
     /// The import `wrela.tick(task, context, hz)`, in a module that starts a ticker.
     pub tick: u32,
     /// The type of a task function ([`ir::MemOp::RunTask`]): (context, chunk) -> ().
@@ -240,6 +243,12 @@ pub fn emit_with(m: &ir::Module, options: Options) -> Result<Emitted, String> {
         let ty = types.get(vec![ValType::I32], vec![]);
         imports.import(wrela_abi::IMPORT_MODULE, wrela_abi::IMPORT_CLOCK, EntityType::Function(ty));
     }
+    let print = imports.len();
+    if m.trace {
+        let ty = EntityType::Function(submit_ty);
+        imports.import(wrela_abi::IMPORT_MODULE, wrela_abi::IMPORT_PRINT, ty);
+        imports.import(wrela_abi::IMPORT_MODULE, wrela_abi::IMPORT_PHASE, ty);
+    }
     let tick = imports.len();
     if m.tick {
         let ty = types.get(vec![ValType::I32; 3], vec![]);
@@ -271,6 +280,8 @@ pub fn emit_with(m: &ir::Module, options: Options) -> Result<Emitted, String> {
         keep,
         kept: keep + 1,
         clock,
+        print,
+        phase: print + 1,
         tick,
         flush: nimports,
         reserve: nimports + 1,

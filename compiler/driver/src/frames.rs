@@ -33,7 +33,7 @@ pub fn run(
     tests: &[FnId],
     root: &Path,
     fuel: u64,
-) -> (Vec<(FnId, Option<Diagnostic>)>, Vec<Diagnostic>) {
+) -> (Vec<crate::consts::Ran>, Vec<Diagnostic>) {
     let mut roots = wrela_lower::Roots::of(checked);
     roots.tests = tests.to_vec();
     let (lowered, mut diags) = wrela_lower::lower(checked, &roots, data, true);
@@ -76,13 +76,13 @@ pub fn run(
                         format!("the test's input `{path}` {why}"),
                     )
                     .with_note("a script is a JSON array of input events, by the frame each arrives before or the tick it's a record of (runtime/abi `input`); a tick test's input may be a tick log instead (runtime/abi `ticks`)");
-                    results.push((f, Some(d)));
+                    results.push((f, Some(d), wrela_host::Traced::default()));
                     continue;
                 }
             },
         };
         let storage = dir.0.join(format!("storage.{i}"));
-        let ran = match (attrs.test_gpu, run, &input) {
+        let (ran, traced) = match (attrs.test_gpu, run, &input) {
             (true, TestRun::Frames(n), Input::Script(script)) => {
                 run_gpu(&mut gpu, &dir.0, &storage, i, n, script)
             }
@@ -102,7 +102,7 @@ pub fn run(
                 .with_note("a frame test passes unless its frames or the test fail (§10)"),
             }
         });
-        results.push((f, failed));
+        results.push((f, failed, traced));
     }
     (results, diags)
 }
@@ -162,7 +162,8 @@ struct GpuHost(#[cfg(feature = "gpu")] Option<wrela_host::Host>);
 /// `init`, its `frames` with `script`'s events, each frame's readbacks answered before the next,
 /// then the test. Why it failed, if it did. The GPU host meters no fuel: it runs the program as
 /// `wrela run` does. Each test is a new program, nothing of the last one's left; the host is
-/// `gpu`'s, loaded for the first, and loaded again after one that failed.
+/// `gpu`'s, loaded for the first, and loaded again after one that failed. What it printed and
+/// timed comes with it.
 #[cfg(feature = "gpu")]
 fn run_gpu(
     gpu: &mut GpuHost,
@@ -171,7 +172,7 @@ fn run_gpu(
     i: usize,
     frames: u32,
     script: &[wrela_host::Scripted],
-) -> Option<Failed> {
+) -> (Option<Failed>, wrela_host::Traced) {
     let _ = std::fs::create_dir_all(storage);
     let options = wrela_host::Options {
         storage: Some(storage.to_path_buf()),
@@ -186,13 +187,14 @@ fn run_gpu(
     };
     let mut host = match started {
         Ok(h) => h,
-        Err(e) => return failed(e, None, "as it started".to_string()),
+        Err(e) => return (failed(e, None, "as it started".to_string()), Default::default()),
     };
     let ran = run_gpu_frames(&mut host, i, frames, script);
+    let traced = host.trace().take();
     if ran.is_none() {
         gpu.0 = Some(host);
     }
-    ran
+    (ran, traced)
 }
 
 /// [`run_gpu`]'s test, on its host.
@@ -226,30 +228,35 @@ fn run_gpu(
     _: usize,
     _: u32,
     _: &[wrela_host::Scripted],
-) -> Option<Failed> {
+) -> (Option<Failed>, wrela_host::Traced) {
     let why = "its frames run on the GPU, and this build of the compiler has no GPU host";
-    Some(Failed {
-        error: wrela_host::Error::Program(why.into()),
-        fault: None,
-        phase: String::new(),
-    })
+    let failed =
+        Failed { error: wrela_host::Error::Program(why.into()), fault: None, phase: String::new() };
+    (Some(failed), Default::default())
 }
 
 /// Runs test `i`: `init`, its frames (and ticks in lockstep) or its ticks, with `input`, then
-/// the test. Why it failed, if it did.
+/// the test. Why it failed, if it did, and what it printed and timed.
 fn run_one(
     built: &wrela_host::CpuBuild,
     storage: &Path,
     i: usize,
     run: TestRun,
     input: &Input,
-) -> Option<Failed> {
+) -> (Option<Failed>, wrela_host::Traced) {
     let _ = std::fs::create_dir_all(storage);
     // One thread: a parallel job's chunks all run on it, and the result is the same (§6.12).
-    let mut host = match built.instantiate_in(1, Some(storage)) {
-        Ok(h) => h,
-        Err(e) => return failed(e, None, "as it started".to_string()),
-    };
+    match built.instantiate_in(1, Some(storage)) {
+        Ok(mut host) => {
+            let failed = run_on(&mut host, i, run, input);
+            (failed, host.trace().take())
+        }
+        Err(e) => (failed(e, None, "as it started".to_string()), Default::default()),
+    }
+}
+
+/// [`run_one`] on its host.
+fn run_on(host: &mut wrela_host::CpuHost, i: usize, run: TestRun, input: &Input) -> Option<Failed> {
     let (log, script): (_, &[wrela_host::Scripted]) = match input {
         Input::Log(log) => (Some(log), &[]),
         Input::Script(s) => (None, s),

@@ -23,7 +23,7 @@ struct Ticker {
 }
 
 fn noisy(x: f32) -> f32 {
-    std::io::print("tick") //~ E0600
+    let _ = std::io::load("tick") //~ E0600
     x
 }
 

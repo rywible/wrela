@@ -5,7 +5,7 @@
 // cells, 10-year steps), for the map lens after each edit.
 
 use engine::bake::bake
-use engine::grow::{BAKE, Grain, History, NoClock, PREVIEW, simulate}
+use engine::grow::{BAKE, Grain, History, PREVIEW, simulate}
 use engine::place::{TILE, tile_of}
 use std::io::{Shipped, ship}
 
@@ -45,7 +45,6 @@ pub fn grown(grain: Grain) -> History {
         domain_lo(),
         domain_hi(),
         rocks(),
-        NoClock {},
     )
 }
 

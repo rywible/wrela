@@ -601,9 +601,11 @@ A game already has a suspension point, the tick or the frame, so the language do
 **Input** (`std::input`) is the pointer and the keyboard. `events()` gives the events the host has queued since the program last read them, oldest first: the pointer moving, a button going down or up, the wheel, a key going down or up (a physical key, `Key::A`), and the text a key types (`Event::Text`, a Unicode scalar value). Positions are in the same pixels as `frame`'s width and height. `Input` keeps what's held and where the pointer is, from the events it's given (`input.read()` reads them, `input.update(events)` takes them as data). A call reads only the events that arrived before it started, in the same order on both hosts: the native host plays a script of them (`wrela-host --input script.json`, and a frame test's `@test(frames: n, input: "script.json")`, §10), and a browser delivers each to the program's next frame.
 - **Reading input is `nondet`** (§8), as polling a request is: what a call reads depends on when a person moved the mouse. So `@deterministic` code takes input as data, the events a tick is given, as it takes the time (`eff.input`).
 
-`std::io::print(line)` isn't a request: it shows a line on the host's console (the terminal that runs the native host, a browser's developer console), for whoever is writing the program; a player doesn't see it. It's the `io` effect too, so `@deterministic` code doesn't print (`requests.rs`).
+`std::io::print(line)` isn't a request: it shows a line on the host's console now (the terminal that runs the native host or the build, a browser's developer console), for whoever is writing the program; a player doesn't see it. The program never reads it back, so it's the `trace` effect, not `io` (§8): a constant, a test, `@deterministic` code and a parallel job's chunk print too, and a tick run again prints again. The line goes through its own import, `wrela.print`, which every thread's instance has, not through the command stream, so it's shown as it's made: a frame that traps after it, or a constant that runs for an hour, has shown it (`eff.trace`; the stream's `Log` was this until version 8).
 
-**The clock** (`std::time`, M6) is how long the program's work takes: `now()` is seconds on the host's clock, an `f64` that never goes back, the same clock on every thread, and `since(t)` the seconds from a time `now` gave. Where it starts is the host's (the native host's first program; a page's time origin), so a time is only for comparing with another the program read. Reading it is `nondet` (§8), so `@deterministic` code, a constant and a test can't (`eff.clock`): a simulation's time is its ticks' (§6.17), and spikes 16 and 17 timed their phases from the Rust driver for want of it (`requests::the_clock_goes_forward`).
+**The clock** (`std::time`, M6) is how long the program's work takes: `now()` is seconds on the host's clock, an `f64` that never goes back, the same clock on every thread, and `since(t)` the seconds from a time `now` gave. Where it starts is the host's (the native host's first program; a page's time origin), so a time is only for comparing with another the program read. Reading it is `nondet` (§8), so `@deterministic` code, a constant and a test can't (`eff.clock`): a simulation's time is its ticks' (§6.17).
+
+**Timing work is an output** (`std::time::phase(name)`, `eff.trace`): the time from a `phase` to the same thread's next one, or to the end of the call the host made on it (a frame, a tick, a constant, a test), counts under `name`, summed over every time it's timed; an empty name times nothing until the next. The host reads the clock, through `wrela.phase`, and the program never reads what it read, so it's the `trace` effect and not `nondet`: a constant and a test time their phases too. `wrela build` shows each constant's phases when it's computed, `wrela test` each test's, and the native host a program's when its run ends (`wrela-host`); the browser host times none, since a page has its browser's profiler. A history computed in a constant for an hour (M6's floor) prints its census each century and times its eight phases with no clock passed in: it had a `Clock` parameter, a `NoClock` for the build and a `lap` after each phase, until the owner's review of 2026-10-09 (spikes 16 and 17 timed their phases from the Rust driver for want of either).
 
 ### 6.16 Diagnostics
 
@@ -823,7 +825,8 @@ fn cull<F: Surface>(field: F, grid: Grid, live: mut Slots<u32>, id: GlobalId) {
 
 ## 8. Effects and contexts
 
-**Effects** (D-072): `alloc`, `io`, `nondet`, `recursion`, `host`, `panic`.
+**Effects** (D-072): `alloc`, `io`, `trace`, `nondet`, `recursion`, `host`, `panic`.
+- **`trace`** is an output the program never reads back: a line printed (`std::io::print`) or a phase timed (`std::time::phase`, §6.15). It changes no value the program computes, so only GPU code (which can't call the host), `@audio` code (whose thread mustn't wait on the host) and derived interpretations (which run in another form) forbid it (`eff.trace`).
 - **`panic`** is an explicit panic, a failed `assert`, or a failed unwrap. A target's trap isn't one: §11's table says what each target does on overflow, division by zero and an index out of range, so GPU code can index.
 - **`recursion`** is a cycle in the call graph after monomorphization. GPU and `@audio` code forbid it. `@deterministic` code allows it to a fixed depth of 256 calls: the compiler counts the depth, and the 257th call panics on every engine the same way, with "recursion deeper than 256 calls". Engines' stack limits differ (D-015), and a counted limit far below all of them makes the depth the same everywhere. What's counted is every function in a cycle that `@deterministic` code reaches, wherever it's called from; drop and clone glue, which follow the data, aren't. Other recursion on the CPU is limited only by the 8 MiB stack (`run/deterministic_recursion`).
 
@@ -831,12 +834,12 @@ fn cull<F: Surface>(field: F, grid: Grid, live: mut Slots<u32>, id: GlobalId) {
 
 | Context | Forbidden | Tier |
 |---|---|---|
-| GPU entry points (`@compute`, `@vertex`, `@fragment`) | `alloc`, `io`, `nondet`, `recursion`, `host`, `panic` (E0600, `eff.gpu`). | T0 |
-| `@audio` | `alloc`, `io`, `recursion`, `host` (E0600, `eff.audio`) | T2 |
+| GPU entry points (`@compute`, `@vertex`, `@fragment`) | `alloc`, `io`, `trace`, `nondet`, `recursion`, `host`, `panic` (E0600, `eff.gpu`). | T0 |
+| `@audio` | `alloc`, `io`, `trace`, `recursion`, `host` (E0600, `eff.audio`) | T2 |
 | A function passed as an `@audio fn` (§6.13) | as `@audio`; a closure captures nothing (E0600 and E0510, `eff.audio`) | T2 |
 | A function passed as a `@parallel fn` (§6.12) | `io`, `nondet`, `host`, and writes to data it captures (E0600 and E0520, `eff.parallel`) | T2 |
 | `@deterministic` | `io`, `nondet`, `host` (except declared deterministic host calls), and recursion deeper than 256 calls (D-094). A request is `io` to make and `nondet` to poll, and reading input is `nondet` (§6.15). | T1 |
-| Derived interpretations (gradient, interval) | `alloc`, `io`, `nondet`, `host` (E0700, `eff.derived`) | T0 |
+| Derived interpretations (gradient, interval) | `alloc`, `io`, `trace`, `nondet`, `host` (E0700, `eff.derived`) | T0 |
 | A function passed as a `@deterministic fn` | as `@deterministic` (E0600, `eff.deterministic-fn`) | T1 |
 | Build-time constants | `io` (except `embed`), `host`, `nondet` | T1 |
 
@@ -1073,7 +1076,7 @@ The sim/presentation split is an engine pattern built on this, not a language fe
 ## 17. The stdlib boundary
 
 - **The compiler knows three things** (D-050): the language, a closed list of stdlib items, and the execution targets.
-- **The closed list** (D-081) is every std item the compiler knows by its path, and nothing else: the traits it derives or checks by structure, the types its code has a shape for, the GPU, IO and memory operations it lowers itself (`@intrinsic` in std), and the transcendentals it compiles from std's code. A program can't add to it. `Plain`, `StateHash`, `Serialize`, `Blend`, `Surface` and `Lipschitz` aren't on it: they're ordinary std traits, `@fieldwise` or written by hand (`closed_list.rs` checks this list against the compiler's):
+- **The closed list** (D-081) is every std item the compiler knows by its path, and nothing else: the traits it derives or checks by structure, the types its code has a shape for, the GPU, IO and memory operations it lowers itself (`@intrinsic` in std), and the transcendentals it compiles from std's code. A program can't add to it. `Plain`, `StateHash`, `Serialize`, `Blend` and `Surface` aren't on it: they're ordinary std traits, `@fieldwise` or written by hand (`closed_list.rs` checks this list against the compiler's):
   - `std::prelude`: `Option`, `Result`, `Copy`, `Clone`, `GpuData`, `Fieldless`, `Packed`, `Bits`, `packed_fit`, `is_discriminant`, `of_discriminant`, `packed_of`
   - `std::gpu`: `GpuBuffer`, `Slots`, `GlobalId`, `LocalId`, `WorkgroupId`, `VertexIndex`, `InstanceIndex`, `FragCoord`, `ClipPosition`, `Flat`, `Over`, `WithDepth`, `Cull`, `DepthBias`, `Depth`, `dispatch`, `draw`, `buffer`, `write_buffer`, `destroy_buffer`, `copy_buffer`, `GpuSpan`, `GpuSpanMut`, `GpuField`, `field_at`, `begin_screen_pass_command`, `RenderPass`, `Pass`, `DepthPass`, `DepthOnlyPass`, `ScreenPass`, `ScreenDepthPass`, `present`, `Texture`, `DepthTexture`, `Sampler`, `ComparisonSampler`, `create_texture`, `write_texture_rows`, `destroy_texture`, `create_sampler`, `destroy_sampler`, `begin_pass_command`, `end_pass_command`, `label_command`, `texture_sample`, `texture_sample_level`, `texture_sample_compare`, `texture_sample_compare_level`, `texture_load`, `depth_load`, `Texture3d`, `Rgba8`, `Rgba16Float`, `R16Float`, `Rg16Float`, `R32Float`, `R32Uint`, `create_texture_3d`, `texture3d_sample_level`, `texture3d_load`, `texture_width`, `texture_height`, `texture_depth`, `span_len`, `read_buffer_command`, `limit`, `Shared`, `Atomics`, `Append`, `AtomicMap`, `AppendBuffer`, `AtomicMapBuffer`, `local_index`, `workgroup_invocations`, `shared_get`, `shared_set`, `workgroup_barrier`, `discard`, `atomic_len`, `atomic_load`, `atomic_store`, `atomic_add`, `atomic_sub`, `atomic_min`, `atomic_max`, `atomic_and`, `atomic_or`, `atomic_xor`, `atomic_exchange`, `atomic_compare_exchange`, `append_push`, `One`, `one_get`, `one_set`, `DrawArgs`, `DrawIndexedArgs`, `DispatchArgs`, `Texels`, `texels_store`, `Texels3d`, `texels3d_store`, `Kernel`, `VertexShader`, `FragmentShader`
   - `std::io`: `next_request`, `request_status`, `storage_read_command`, `storage_write_command`, `fetch_command`, `print_command`, `post_command`, `Shipped`
@@ -1082,6 +1085,7 @@ The sim/presentation split is an engine pattern built on this, not a language fe
   - `std::math`: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `exp`, `exp2`, `log`, `log2`, `pow`
   - `std::par`: `par_each`, `par_each_chunk`, `par_map_reduce`, `par_map_reduce_chunk`, `run_chunks`
   - `std::audio`: `start_voice`
+  - `std::time`: `phase_command`
   - `std::tick`: `start_ticker`
   - `std::collections`: `Vec`, `Bounded`, `Box`, `swap`, `replace`
   - `std::string`: `Text`, `Bytes`, `String`, `str_addr`, `str_len`, `str_part`
@@ -1119,7 +1123,7 @@ The sim/presentation split is an engine pattern built on this, not a language fe
 | `std::gpu` | Buffers (`GpuBuffer<T>`, `GpuSpan<T>`, `buffer`, `write`, `copy`, `read`), textures and samplers, passes, `dispatch` and `draw`, kernels' outputs (`Slots<T>`, `Shared<T, N>`, `Atomics<T>`, `Append<T>`, `AtomicMap`, `Texels`, `Texels3d`), typed builtins, lossy encodings, `limits()` (§12) |
 | `std::io` | `load`, `store`, `fetch` and `post`, polled through `Pending<T>`; `print` (§6.15) |
 | `std::input` | `events`, `Event`, `Key`, `Button`, `Mods`, and `Input`, what's held (§6.15) |
-| `std::time` | `now`, seconds on the host's clock, and `since`: how long work takes, read while the program runs; `nondet`, so not in `@deterministic` code, a constant or a test (§6.15, M6) |
+| `std::time` | `now`, seconds on the host's clock, and `since`: how long work takes, read while the program runs; `nondet`, so not in `@deterministic` code, a constant or a test (§6.15, M6). `phase(name)`: a phase of the thread's work, which the host times and reports (`trace`, everywhere but GPU, `@audio` and derived code) |
 | `std::lift` | A lifted build's literals: `Literal`, `count`, `literal`, their values, sources and files, `set`, `generation` and `Watch`; `gradient` by literals and `reads`; specs' `Checks`, `Loss` and `Report` (§22) |
 | `std::reload` | Hot reload: `keep` bytes for the build that replaces this one, which its `kept` gives (§22) |
 | `std::job` | Work over several frames: `Job<f>`, a `@job fn` started and resumed to each `yield`, and `Step`, what a `resume` did (§6.18) |

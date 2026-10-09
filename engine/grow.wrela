@@ -15,7 +15,9 @@
 
 use noise::{noise2, rand}
 use place::{Event, EventKind, Keeper, Map, Relation, RouteKind, to_segment}
+use std::io::print
 use std::math::TAU
+use std::time::phase
 
 // ---- the grid -----------------------------------------------------------------------------------
 
@@ -1934,30 +1936,6 @@ fn water_courses(land: mut Land, ss: [Stream]) {
 
 // ---- the history ------------------------------------------------------------------------------------
 
-/// A clock the history reads its phases' times from: none in a build's constant (which can't
-/// read the clock, §8), the host's (`std::time`) where it's timed at run time.
-pub trait Clock: Copy {
-    fn now(self) -> f64
-
-    /// A line of progress (a century's census and its phases' times so far); none by default.
-    fn report(self, line: String) {}
-}
-
-/// No clock: every phase takes no time.
-pub struct NoClock: Copy {}
-
-impl Clock for NoClock {
-    fn now(self) -> f64 {
-        0.0
-    }
-}
-
-/// Seconds spent in each of the history's phases, by a `Clock`.
-struct Phases {
-    names: [Text; 8],
-    spent: [f64; 8],
-}
-
 /// What a history leaves: its decisions (the trees, the trails' wear on the herd's grid, the
 /// streams), the land it surveyed, and its consequences on its grid (light, litter, thorn), and
 /// a census each century.
@@ -1971,13 +1949,6 @@ pub struct History {
     pub litter: Vec<f32>,
     pub thorn: Vec<f32>,
     pub log: Vec<String>,
-}
-
-/// Adds the time since `t0` to phase `i`, and starts the next from now.
-fn lap<C: Clock>(ph: mut Phases, i: u32, clock: C, t0: mut f64) {
-    let t = clock.now()
-    ph.spent[i] += t - t0
-    t0 = t
 }
 
 /// The first forest: a wood grown in a stroke, each tree where its ground suits it, of an age
@@ -2076,7 +2047,7 @@ fn census(trees: [Tree], kinds: u32, year: i32) -> String {
 /// The history of `m` over the land from `lo` to `hi`, its species `habits` (at most 8), at
 /// `grain`: from year `grain.from` to the map's present. `rocks` are what the herd walks round
 /// (x, z, radius). `trips` is the herd's trips a year.
-pub fn simulate<G: Ground, C: Clock>(
+pub fn simulate<G: Ground>(
     ground: G,
     m: Map,
     habits: [Habit],
@@ -2084,20 +2055,13 @@ pub fn simulate<G: Ground, C: Clock>(
     lo: vec2,
     hi: vec2,
     rocks: [vec3],
-    clock: C,
 ) -> History {
-    var ph = Phases {
-        names: ["survey", "events", "competition", "growth", "canopy", "seed", "recruit", "herd"],
-        spent: [0.0; 8],
-    }
-    var t0 = clock.now()
-    clock.report(String::from("surveying"))
+    phase("survey")
     place::refuse(m)
     let g = Grid::over(lo, hi, grain.cell)
     var land = survey(ground, m, g)
     let ss = streams(ground, m, land)
     water_courses(mut land, ss)
-    lap(mut ph, 0, clock, mut t0)
     let nn = g.cells()
     var f = Fields {
         light: Vec::filled(nn, 1.0),
@@ -2124,10 +2088,11 @@ pub fn simulate<G: Ground, C: Clock>(
     let book = max(4, step)
     while year < m.present {
         let cx = Cx { map: m, habits, land, grain }
+        phase("events")
         for y in 0..step {
             events(mut trees, cx, mut f, year + y)
         }
-        lap(mut ph, 1, clock, mut t0)
+        phase("competition")
         rebin(mut b, trees, habits)
         needs.clear()
         for t in trees {
@@ -2140,7 +2105,7 @@ pub fn simulate<G: Ground, C: Clock>(
             )
         }
         needs.par_each_mut(|l| measure(mut l.need, trees, b))
-        lap(mut ph, 2, clock, mut t0)
+        phase("growth")
         needs.par_each_mut(|l| live(mut l, cx, f, year))
         var k = 0
         for l in needs {
@@ -2151,7 +2116,7 @@ pub fn simulate<G: Ground, C: Clock>(
             k += 1
         }
         trees.retain(|t| t.state != State::Gone && !(t.state != State::Alive && t.tall < 4.0))
-        lap(mut ph, 3, clock, mut t0)
+        phase("canopy")
         let (light, thorn) = canopy(g, trees, habits, year)
         f.light = take light
         f.thorn = take thorn
@@ -2159,15 +2124,15 @@ pub fn simulate<G: Ground, C: Clock>(
         for c in 0..nn {
             f.shade_sum[c] = f.shade_sum[c] * kept_shade + (1.0 - f.light[c]) * (1.0 - kept_shade)
         }
-        lap(mut ph, 4, clock, mut t0)
+        phase("seed")
         if (year / step) % max(grain.seed_every / step, 1) == 0 {
             seed_rain(g, trees, habits, mut f, year)
         }
-        lap(mut ph, 5, clock, mut t0)
+        phase("recruit")
         rebin(mut b, trees, habits)
         var young = recruit(cx, b, f, year)
         trees.append(mut young)
-        lap(mut ph, 6, clock, mut t0)
+        phase("herd")
         if year >= m.herd.arrives {
             if (year / step) % max(10 / step, 1) == 0 {
                 obstacles(mut herd, trees, habits, rocks)
@@ -2178,28 +2143,20 @@ pub fn simulate<G: Ground, C: Clock>(
                 herd_book(mut herd, f32(book))
             }
         }
-        lap(mut ph, 7, clock, mut t0)
+        phase("")
         let kept_bare = pow(0.9, f32(step))
         for c in 0..nn {
             f.bare[c] *= kept_bare
         }
         if year % 100 < step {
-            log.push(census(trees, habits.len(), year))
-            var times = census(trees, habits.len(), year)
-            for i in 0..8 {
-                times.push_str(f" {ph.names[i]} {ph.spent[i]:.1}")
-            }
-            clock.report(take times)
+            let line = census(trees, habits.len(), year)
+            print(line)
+            log.push(take line)
         }
         year += step
     }
     log.push(census(trees, habits.len(), year))
     log.push(f"herd: {herd.steps} steps, {herd.lost} legs lost")
-    var times = String::from("phases (s):")
-    for i in 0..8 {
-        times.push_str(f" {ph.names[i]} {ph.spent[i]:.2}")
-    }
-    log.push(take times)
     var litter: Vec<f32> = Vec::filled(nn, 0.0)
     for k in 0..nn {
         litter[k] = smoothstep(0.35, 0.85, f.shade_sum[k])

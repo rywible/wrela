@@ -293,6 +293,8 @@ pub struct TestResult {
     pub name: String,
     pub at: String,
     pub failure: Option<Diagnostic>,
+    /// What it printed (each line shown as it was made) and the phases it timed (§8's `trace`).
+    pub traced: wrela_host::Traced,
 }
 
 impl TestOutput {
@@ -367,11 +369,11 @@ fn run_tests(root: &Path, filter: Option<&str>, kind: PackageKind, fuel: u64) ->
             diagnostics.extend(d);
         }
         // In the order written.
-        ran.sort_by_key(|&(f, _)| tests.iter().position(|&t| t == f));
-        for (f, failure) in ran {
+        ran.sort_by_key(|&(f, _, _)| tests.iter().position(|&t| t == f));
+        for (f, failure, traced) in ran {
             let def = p.func(f);
             let at = sources.file(def.name_span.file).location(def.name_span.start);
-            results.push(TestResult { name: def.name.clone(), at, failure });
+            results.push(TestResult { name: def.name.clone(), at, failure, traced });
         }
     }
     sort_and_dedup(&mut diagnostics);

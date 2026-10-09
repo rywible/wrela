@@ -103,6 +103,14 @@ pub const IMPORT_KEPT: &str = "kept";
 /// `clock(address)`: writes the seconds since the host started the program, an `f64` that never
 /// goes back, to the address (`std::time::now`). Reading it is `nondet` (language.md §8).
 pub const IMPORT_CLOCK: &str = "clock";
+/// `print(address, length)`: shows that UTF-8 line on the host's console now, from any thread
+/// (`std::io::print`). The program never reads it back (the `trace` effect, language.md §8).
+pub const IMPORT_PRINT: &str = "print";
+/// `phase(address, length)`: this thread's time from now to its next `phase`, or to the end of
+/// the call the host made (a frame, a tick, a constant, a test), counts under that UTF-8 name;
+/// an empty name counts it under none (`std::time::phase`). The host reports it, and the
+/// program never reads it back (the `trace` effect).
+pub const IMPORT_PHASE: &str = "phase";
 /// The audio thread's sample rate, in hertz, and how many samples one `__audio` call renders
 /// (a Web Audio render quantum). Both hosts render at this rate; the browser resamples to the
 /// device's.
@@ -130,7 +138,7 @@ impl HostFunction {
 }
 
 /// Every function a program may import besides its memory ([`IMPORT_MEMORY`]).
-pub const HOST_FUNCTIONS: [HostFunction; 10] = [
+pub const HOST_FUNCTIONS: [HostFunction; 12] = [
     HostFunction { name: IMPORT_SUBMIT, params: 2, results: 0 },
     HostFunction { name: IMPORT_REQUEST_STATUS, params: 1, results: 1 },
     HostFunction { name: IMPORT_REQUEST_TAKE, params: 2, results: 0 },
@@ -141,6 +149,8 @@ pub const HOST_FUNCTIONS: [HostFunction; 10] = [
     HostFunction { name: IMPORT_KEEP, params: 2, results: 0 },
     HostFunction { name: IMPORT_KEPT, params: 2, results: 1 },
     HostFunction { name: IMPORT_CLOCK, params: 1, results: 0 },
+    HostFunction { name: IMPORT_PRINT, params: 2, results: 0 },
+    HostFunction { name: IMPORT_PHASE, params: 2, results: 0 },
 ];
 
 /// The export the host calls each frame.

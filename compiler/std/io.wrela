@@ -143,9 +143,12 @@ pub fn post(url: str, bytes: [u8]) -> Pending<u8> {
     Pending::new(request)
 }
 
-/// Shows `line` on the host's console: the terminal that runs the native host, the browser's
-/// developer console. For finding out what a program does while writing it; a player doesn't
-/// see it. It's the `io` effect, so `@deterministic` code doesn't print.
+/// Shows `line` on the host's console now: the terminal that runs the native host or the build,
+/// the browser's developer console. For finding out what a program does while writing it; a
+/// player doesn't see it. The program never reads it back, so it's the `trace` effect, not `io`
+/// (§8): a constant, a test, `@deterministic` code and a parallel job's chunk print too (a tick
+/// run again prints again), and GPU and `@audio` code don't. A constant's lines are shown as it
+/// runs, after its name: the progress of a computation that takes hours.
 ///
 /// ```wrela
 /// use std::io::print
@@ -154,9 +157,6 @@ pub fn post(url: str, bytes: [u8]) -> Pending<u8> {
 /// print(f"{n} grazers, {0.5:.2} m apart")
 /// ```
 pub fn print(line: str) {
-    if line.len() > MOST_BYTES {
-        panic("print: the line is longer than the host's command buffer (1 MiB)")
-    }
     print_command(line)
 }
 

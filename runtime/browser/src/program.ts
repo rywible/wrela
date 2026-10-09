@@ -38,6 +38,8 @@ import {
   IMPORT_KEEP,
   IMPORT_KEPT,
   IMPORT_CLOCK,
+  IMPORT_PHASE,
+  IMPORT_PRINT,
   IMPORT_LIMIT,
   IMPORT_MODULE,
   IMPORT_REQUEST_STATUS,
@@ -53,7 +55,7 @@ import {
 import { type Checker, CommandError } from "./check.ts";
 import { errorMessage } from "./errors.ts";
 import { StateHash } from "./hash.ts";
-import { clockImport, refusingImports } from "./imports.ts";
+import { clockImport, ignorePhase, printed, refusingImports } from "./imports.ts";
 import { Lines, LINES_SECTION, wasmOffsets } from "./lines.ts";
 import { type Bytes, type Command, decode, type OpcodeName, Sequencer } from "./stream.ts";
 import type { TickerOptions, VoiceOptions } from "./messages.ts";
@@ -367,6 +369,12 @@ export class Program {
         [IMPORT_KEEP]: (ptr: number, len: number) => program.#keepImport(ptr >>> 0, len >>> 0),
         [IMPORT_KEPT]: (ptr: number, cap: number) => program.#keptImport(ptr >>> 0, cap >>> 0),
         [IMPORT_CLOCK]: clockImport(memory),
+        // `std::io::print`: a line for whoever runs the program, shown as it's made.
+        [IMPORT_PRINT]: (ptr: number, len: number) => {
+          const line = printed(memory, ptr, len);
+          program.#onPrint?.(line);
+        },
+        [IMPORT_PHASE]: ignorePhase,
       },
     };
     // As the native host words it: a module that can't be instantiated isn't a valid program.
@@ -448,11 +456,6 @@ export class Program {
         this.#requests.start(cmd.op, cmd.request, io ? () => io.post(cmd.url, body) : none("server to post to"));
         return;
       }
-      case "Log":
-        // `std::io::print`: a line for whoever runs the program, prefixed so it's found.
-        console.log(`wrela: ${cmd.text}`);
-        this.#onPrint?.(cmd.text);
-        return;
       default:
         return;
     }

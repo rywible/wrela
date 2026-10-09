@@ -1,5 +1,6 @@
-//! Effects (language.md §8): what a function may do besides compute its result. There are six:
-//! `alloc` (the heap), `io`, `nondet` (anything whose result isn't a function of the inputs),
+//! Effects (language.md §8): what a function may do besides compute its result. There are
+//! seven: `alloc` (the heap), `io`, `trace` (an output the program never reads back: a line
+//! printed, a phase timed), `nondet` (anything whose result isn't a function of the inputs),
 //! `recursion` (a cycle in the call graph), `host` (recording GPU work), and `panic`. They're
 //! inferred from each body and everything it calls, never written, and checked against the
 //! contexts that forbid some: GPU entry points and `@gpu` functions, `@audio`, `@deterministic`,
@@ -23,6 +24,7 @@ use wrela_diag::{Diagnostic, Span, codes};
 pub enum Effect {
     Alloc,
     Io,
+    Trace,
     Nondet,
     Recursion,
     Host,
@@ -30,8 +32,15 @@ pub enum Effect {
 }
 
 impl Effect {
-    pub const ALL: [Effect; 6] =
-        [Effect::Alloc, Effect::Io, Effect::Nondet, Effect::Recursion, Effect::Host, Effect::Panic];
+    pub const ALL: [Effect; 7] = [
+        Effect::Alloc,
+        Effect::Io,
+        Effect::Trace,
+        Effect::Nondet,
+        Effect::Recursion,
+        Effect::Host,
+        Effect::Panic,
+    ];
 
     /// The effect `@effects(...)` names `name`.
     pub fn named(name: &str) -> Option<Effect> {
@@ -42,6 +51,7 @@ impl Effect {
         match self {
             Effect::Alloc => "alloc",
             Effect::Io => "io",
+            Effect::Trace => "trace",
             Effect::Nondet => "nondet",
             Effect::Recursion => "recursion",
             Effect::Host => "host",
@@ -54,6 +64,7 @@ impl Effect {
         match self {
             Effect::Alloc => "allocates",
             Effect::Io => "does IO",
+            Effect::Trace => "writes to the host's trace",
             Effect::Nondet => "is non-deterministic",
             Effect::Recursion => "recurses",
             Effect::Host => "records GPU work",
@@ -393,15 +404,26 @@ fn parallel_writes(body: &Body, arg: &TypedArg) -> Vec<Diagnostic> {
     ]
 }
 
-// What each context forbids.
-const GPU: &[Effect] =
-    &[Effect::Alloc, Effect::Io, Effect::Nondet, Effect::Recursion, Effect::Host, Effect::Panic];
-const AUDIO: &[Effect] = &[Effect::Io, Effect::Host, Effect::Recursion, Effect::Alloc];
+// What each context forbids. A line printed or a phase timed changes no value the program
+// computes, so only code that can't call the host (the GPU's), the audio thread (which mustn't
+// wait on the host) and what's derived (which runs in another form) forbid `trace`.
+const GPU: &[Effect] = &[
+    Effect::Alloc,
+    Effect::Io,
+    Effect::Trace,
+    Effect::Nondet,
+    Effect::Recursion,
+    Effect::Host,
+    Effect::Panic,
+];
+const AUDIO: &[Effect] =
+    &[Effect::Io, Effect::Trace, Effect::Host, Effect::Recursion, Effect::Alloc];
 /// `@deterministic` code, a constant, and what runs on several workers at once. A replayed tick
 /// mustn't touch storage either: requests are `io` (§6.15).
 const DETERMINISTIC: &[Effect] = &[Effect::Io, Effect::Nondet, Effect::Host];
 /// What's derived can't allocate, do IO, be non-deterministic or call the host (§13).
-const DERIVED: &[Effect] = &[Effect::Alloc, Effect::Io, Effect::Nondet, Effect::Host];
+const DERIVED: &[Effect] =
+    &[Effect::Alloc, Effect::Io, Effect::Trace, Effect::Nondet, Effect::Host];
 
 /// The bodies a function hands to `gradient`, `value_and_gradient` or `interval`, and where.
 fn derived_callables(p: &Program, f: FnId, body: &Body) -> Vec<(BodyId, Span)> {
@@ -614,6 +636,7 @@ impl<'p> Effects<'p> {
                 match e {
                     Effect::Alloc => "using the heap (a `Vec`, a `String`, a `Box`, an f-string)",
                     Effect::Io => "reading or writing outside the program",
+                    Effect::Trace => "printing a line or timing a phase",
                     Effect::Nondet => "depending on something besides the inputs (the clock, randomness, readback)",
                     Effect::Recursion => "a cycle of calls",
                     Effect::Host => "recording GPU work",
@@ -691,6 +714,10 @@ fn node(
         }
         if def.lang.is_some_and(Lang::requests_io) {
             n.direct.push((Effect::Io, span, format!("`{}` asks the host for IO", def.name)));
+            return;
+        }
+        if def.lang.is_some_and(Lang::traces) {
+            n.direct.push((Effect::Trace, span, format!("`{}` tells the host", def.name)));
             return;
         }
         if def.lang == Some(Lang::LiftSet) {

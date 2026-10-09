@@ -56,7 +56,8 @@ fn the_browser_gives_the_same_answers() {
 }
 
 /// `std::io::print` puts its line on the host's console: the native host prints it, and keeps it
-/// for a test to read. In `@deterministic` code, it's the `io` effect's error.
+/// for a test to read. `@deterministic` code prints too (`trace`, not `io`); `@audio` code
+/// doesn't.
 #[test]
 fn a_printed_line_reaches_the_host() {
     let text = "use std::io::print
@@ -78,10 +79,18 @@ fn step(n: u32) -> u32 {
     print(\"step\")
     n + 1
 }
+
+@audio
+fn render(level: mut f32, out: mut [f32]) {
+    print(\"quantum\")
+}
 ";
     let built = wrela_driver::check(&crate::package("requests-log-det", det));
-    let codes: Vec<&str> = built.diagnostics.iter().map(|d| d.code.as_str()).collect();
-    assert_eq!(codes, ["E0600"]);
+    let errors: Vec<&wrela_diag::Diagnostic> =
+        built.diagnostics.iter().filter(|d| d.is_error()).collect();
+    assert_eq!(errors.len(), 1, "only the audio thread's print is an error: {errors:?}");
+    assert_eq!(errors[0].code.as_str(), "E0600");
+    assert!(errors[0].message.contains("`render`"), "{}", errors[0].message);
 }
 
 /// The clock (`std::time`, M6): it never goes back, and work takes time on it. In a constant it's
@@ -123,6 +132,63 @@ pub fn frame(time: f32, width: u32, height: u32) {}
     let built = wrela_driver::check(&crate::package("requests-clock-const", in_const));
     let codes: Vec<&str> = built.diagnostics.iter().map(|d| d.code.as_str()).collect();
     assert_eq!(codes, ["E0600"], "a constant can't read the clock");
+}
+
+/// A line printed and a phase timed are outputs (`trace`, §8, `eff.trace`): a constant's and a
+/// test's come back with the build's and the run's reports (their lines shown as they were
+/// made), and a program's line reaches the host though the call traps right after it, which the
+/// stream's `Log` (until version 8) didn't.
+#[test]
+fn prints_and_phases_are_outputs() {
+    let text = "use std::io::print
+use std::time::phase
+
+fn summed(n: u32) -> u32 {
+    var total = 0
+    for i in 0..n {
+        phase(\"sum\")
+        total += i
+    }
+    phase(\"report\")
+    print(f\"summed {total}\")
+    total
+}
+
+const SUMMED: u32 = summed(10)
+
+@test
+fn sums() {
+    phase(\"check\")
+    print(\"checking\")
+    assert(SUMMED == 45)
+}
+
+pub fn shout() {
+    print(\"before the trap\")
+    panic(\"after it\")
+}
+
+pub fn frame(time: f32, width: u32, height: u32) {}
+";
+    let dir = crate::package("requests-trace", text);
+    let built = wrela_tests::build(&dir).unwrap_or_else(|e| panic!("{e}"));
+    let traced = &built.consts.traced;
+    assert_eq!(traced.len(), 1, "one constant traced: {traced:?}");
+    let (name, summed) = &traced[0];
+    assert_eq!(name, "SUMMED");
+    assert_eq!(summed.lines, ["summed 45"]);
+    let phases: Vec<(&str, u32)> =
+        summed.phases.iter().map(|p| (p.name.as_str(), p.times)).collect();
+    assert_eq!(phases, [("sum", 10), ("report", 1)]);
+    let tested = wrela_driver::test(&dir, None);
+    assert!(tested.passed(), "{:?}", tested.results);
+    assert_eq!(tested.results[0].traced.lines, ["checking"]);
+    assert_eq!(tested.results[0].traced.phases[0].name, "check");
+    let out = dir.join("build");
+    built.write_to(&out).expect("write the build");
+    let mut host = wrela_host::CpuHost::load(&out).expect("load");
+    assert!(host.call_export("shout", &[]).is_err(), "it panics");
+    assert_eq!(host.take_logs(), ["before the trap"]);
 }
 
 /// Commands larger than the host's command buffer (1 MiB, M6 AC15), in both hosts: a texture

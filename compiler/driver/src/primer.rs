@@ -181,6 +181,10 @@ pub const RULES: &[(&str, &str)] = &[
     ("eff.input", "reading input is `nondet`, so `@deterministic` code takes events as data"),
     ("eff.clock", "reading the clock is `nondet`, so `@deterministic` code takes its time as data"),
     (
+        "eff.trace",
+        "a line printed or a phase timed is `trace`: everywhere but GPU, `@audio` and derived code",
+    ),
+    (
         "eff.requests",
         "`@deterministic` code neither makes requests (`io`) nor polls them (`nondet`)",
     ),

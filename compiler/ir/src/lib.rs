@@ -328,6 +328,10 @@ pub enum HostOp {
     Kept,
     /// `wrela.clock(address)`: writes the seconds since the program started, an `f64`.
     Clock,
+    /// `wrela.print(address, length)`: a line for the host's console, shown now.
+    Print,
+    /// `wrela.phase(address, length)`: this thread's time from now counts under that name.
+    Phase,
     /// Args: vertices, instances (or, `indirect`, the handle and byte offset of a buffer
     /// holding the counts, after the index buffer's handle, byte offset and size when
     /// `indexed`), each binding's handle, offset and size, then the uniform block value.
@@ -801,6 +805,9 @@ pub struct Module {
     /// CPU only: whether the program reads the clock (`std::time`), so the module imports
     /// `wrela.clock`.
     pub clock: bool,
+    /// CPU only: whether the program prints or times a phase (`std::io::print`,
+    /// `std::time::phase`), so the module imports `wrela.print` and `wrela.phase`.
+    pub trace: bool,
 }
 
 impl Module {

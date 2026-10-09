@@ -44,12 +44,16 @@ pub fn run(args: &[String]) -> ExitCode {
     if out.passed() { ExitCode::SUCCESS } else { ExitCode::from(1) }
 }
 
-/// The report for people: a line for each test, why each failed one failed, and a count.
+/// The report for people: a line for each test (and its phases, if it timed any), why each
+/// failed one failed, and a count. What tests printed was shown as they ran.
 pub fn text(out: &TestOutput) -> String {
     let mut s = String::new();
     for r in &out.results {
         let verdict = if r.failure.is_some() { "FAILED" } else { "ok" };
         s.push_str(&format!("{verdict} {} ({})\n", r.name, r.at));
+        if !r.traced.phases.is_empty() {
+            s.push_str(&format!("  phases: {}\n", r.traced.phases_line()));
+        }
     }
     let failed: Vec<&Diagnostic> = out.results.iter().filter_map(|r| r.failure.as_ref()).collect();
     for d in &failed {
@@ -73,7 +77,8 @@ pub fn text(out: &TestOutput) -> String {
 }
 
 /// The report for tools: the diagnostics that kept the tests from running, and each test with
-/// its result. A failed test's `failure` is a diagnostic in the format of `wrela check --json`.
+/// its result, the lines it printed and the phases it timed (seconds). A failed test's
+/// `failure` is a diagnostic in the format of `wrela check --json`.
 pub fn json(out: &TestOutput) -> String {
     let diagnostics: Vec<_> =
         out.diagnostics.iter().map(|d| diagnostic_json(&out.sources, d)).collect();
@@ -86,6 +91,12 @@ pub fn json(out: &TestOutput) -> String {
                 "at": r.at,
                 "passed": r.failure.is_none(),
                 "failure": r.failure.as_ref().map(|d| diagnostic_json(&out.sources, d)),
+                "printed": r.traced.lines,
+                "phases": r.traced.phases.iter().map(|p| serde_json::json!({
+                    "name": p.name,
+                    "seconds": p.seconds,
+                    "times": p.times,
+                })).collect::<Vec<_>>(),
             })
         })
         .collect();

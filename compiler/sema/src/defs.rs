@@ -204,19 +204,23 @@ macro_rules! lang_items {
                 )
             }
 
-            /// Whether it's a request to the host for IO, or a line for its console (the `io`
-            /// effect, §6.15).
+            /// Whether it's a request to the host for IO (the `io` effect, §6.15).
             pub fn requests_io(self) -> bool {
                 matches!(
                     self,
                     Lang::StorageReadCommand
                         | Lang::StorageWriteCommand
                         | Lang::FetchCommand
-                        | Lang::PrintCommand
                         | Lang::PostCommand
                         | Lang::Keep
                         | Lang::Kept
                 )
+            }
+
+            /// Whether it's an output the program never reads back: a line for the host's
+            /// console, or a phase of its time (the `trace` effect, §8).
+            pub fn traces(self) -> bool {
+                matches!(self, Lang::PrintCommand | Lang::PhaseCommand)
             }
 
             /// Whether what it gives depends on when the host answers (the `nondet` effect):
@@ -360,6 +364,7 @@ lang_items! {
     StorageWriteCommand = "std::io::storage_write_command",
     FetchCommand = "std::io::fetch_command",
     PrintCommand = "std::io::print_command",
+    PhaseCommand = "std::time::phase_command",
     PostCommand = "std::io::post_command",
     Shipped = "std::io::Shipped",
     Limit = "std::gpu::limit",

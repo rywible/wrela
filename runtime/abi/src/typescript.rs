@@ -108,6 +108,10 @@ export const IMPORT_KEEP = {import_keep:?};
 export const IMPORT_KEPT = {import_kept:?};
 /** The clock (`std::time`): seconds on the host's clock, an `f64` written at an address. */
 export const IMPORT_CLOCK = {import_clock:?};
+/** A line printed (`std::io::print`) and a phase timed (`std::time::phase`): each a UTF-8 run,
+ * shown or noted as it's made. */
+export const IMPORT_PRINT = {import_print:?};
+export const IMPORT_PHASE = {import_phase:?};
 /** Input (runtime/abi `input`): an event is EVENT_SIZE bytes, six words: its kind, its
  * modifiers, then four words that depend on the kind. */
 export const EVENT_SIZE = {event_size};
@@ -223,6 +227,8 @@ export const PANIC_CAP = {panic_cap};
         import_keep = crate::IMPORT_KEEP,
         import_kept = crate::IMPORT_KEPT,
         import_clock = crate::IMPORT_CLOCK,
+        import_print = crate::IMPORT_PRINT,
+        import_phase = crate::IMPORT_PHASE,
         event_size = input::EVENT_SIZE,
         shift = input::SHIFT,
         control = input::CONTROL,
