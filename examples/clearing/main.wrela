@@ -35,8 +35,8 @@ use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, on_ground, start_eye}
 use std::gpu::{
     Address, ClipPosition, ComparisonSampler, Cull, DepthTexture, FragmentShader, GpuBuffer,
     GpuSpan, R32Uint, RenderPass, Rgba16Float, Rgba8, Sampler, Texture, Unorm8x4, begin_depth_pass,
-    begin_pass, begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture,
-    draw, label, sampler, texture, writable_texture, write,
+    begin_pass, begin_pass_with_depth, begin_screen_pass, buffer, buffer_of, comparison_sampler,
+    depth_texture, draw, label, sampler, texture, writable_texture, write,
 }
 use std::input::{Event, Key, events}
 use std::io::print
@@ -233,6 +233,8 @@ pub struct Clearing {
     carried: Carried,
     clipmap: Clipmap,
     stones: Vec<Realized>,
+    /// Where the grass keeps out of the stones: each one's place and reach on the plane.
+    footprints: GpuBuffer<vec4>,
     light: Light,
     /// The air the sun shines through, its tables, and whether they're cooked for it (with the
     /// probes' open sky, from them).
@@ -403,6 +405,7 @@ pub fn init() -> Clearing {
         },
         clipmap: Clipmap::new(levels: 11, finest: 0.125),
         stones: Vec::new(),
+        footprints: buffer_of(footprints(), at_least: 1),
         light: sun_light(),
         air: air_of(),
         tables: tables(),
@@ -511,6 +514,7 @@ fn cook_again(s: mut Clearing, eye: vec3) {
     }
     if s.watches.stones.changed() {
         s.stones = boulders()
+        s.footprints = buffer_of(footprints(), at_least: 1)
         shadows = true
         probes = true
     }
@@ -865,7 +869,7 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
         s.sky.shadow,
         s.linear,
         grounds,
-        stones: footprints(),
+        stones: s.footprints.items(),
     )
     s.forest.select(cam)
 
@@ -1403,6 +1407,26 @@ pub fn test_reference(s: mut Clearing, first: u32, count: u32, step: u32, rays: 
 
 /// Whether everything cooked at load is done (1), and how far along its path the camera is (s;
 /// negative before it starts).
+/// How many of the last frame's blades (every tier's) are rooted well under a boulder
+/// (`testing::under_boulders`), in a new buffer (the newest).
+@testing
+pub fn test_under_boulders(s: mut Clearing) {
+    s.captured_counts = buffer(1)
+    count_under_boulders(s.grass.near, mut s.captured_counts)
+    count_under_boulders(s.grass.middle, mut s.captured_counts)
+    count_under_boulders(s.grass.far, mut s.captured_counts)
+}
+
+fn count_under_boulders(
+    tier: std::gpu::AppendBuffer<engine::grass::Blade>,
+    out: mut GpuBuffer<u32>,
+) {
+    dispatch(
+        testing::under_boulders.bind(blades: tier.items(), count: tier.count(), out: mut out),
+        over: tier.capacity(),
+    )
+}
+
 /// Where on the output what moves can be, the last frame (`Resolve::moving`): its corners.
 @testing
 pub fn test_moving(s: Clearing) -> vec4 {

@@ -3,8 +3,10 @@
 // test reads back). Each is reached through an export in main.wrela; the clearing itself never
 // uses them.
 
+use engine::grass::Blade
 use engine::light::{Light, display}
-use std::gpu::{DepthTexture, FragCoord, GlobalId, Rgba16Float, Slots, Texture}
+use rocks::under_boulder
+use std::gpu::{Atomics, DepthTexture, FragCoord, GlobalId, Rgba16Float, Slots, Texture}
 use std::serialize::Serialize
 
 /// How a frame is shown: the look (the clearing as it is), the scene's samples at the output's
@@ -79,4 +81,16 @@ pub fn copy_depth(t: DepthTexture, out: mut Slots<f32>, id: GlobalId) {
 @fragment
 pub fn key() -> vec4 {
     KEY
+}
+
+/// How many of `blades` (the first `count[0]`) are rooted well under a boulder (within 0.8 of
+/// its reach), added to `out[0]`.
+@compute(64)
+pub fn under_boulders(blades: [Blade], count: [u32], out: mut Atomics<u32>, id: GlobalId) {
+    if id.x >= min(count[0], blades.len()) {
+        return
+    }
+    if under_boulder(blades[id.x].root.xz, 0.8) {
+        let _ = out.add(i: 0, value: 1)
+    }
 }

@@ -55,6 +55,15 @@ pub fn footprints() -> [vec4; BOULDERS] {
     out
 }
 
+/// Whether `p` on the plane is within `share` of a boulder's reach (`footprints`).
+pub fn under_boulder(p: vec2, share: f32) -> bool {
+    var under = false
+    for f in footprints() {
+        under = under || length(p - f.xy) < f.z * share
+    }
+    under
+}
+
 /// What the boulders occlude the probes' light with (`engine::probes`): each a solid ball a
 /// little larger than it, its middle a quarter of its size above the ground.
 pub fn occluders() -> Vec<Occluder> {

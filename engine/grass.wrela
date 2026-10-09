@@ -94,9 +94,8 @@ pub fn ring(k: u32) -> f32 {
 }
 
 /// What a level's placement reads: the camera, the level, the cells it covers this frame (their
-/// first, and how many each way), the stones the grass keeps out of, and how far ahead a blade
-/// must be to be in view (`ahead`: the cosine of the view's half angle, widened, from its
-/// direction; found once for the frame).
+/// first, and how many each way), and how far ahead a blade must be to be in view (`ahead`: the
+/// cosine of the view's half angle, widened, from its direction; found once for the frame).
 pub struct Place: Copy + GpuData {
     pub cam: Camera,
     pub light: Light,
@@ -105,8 +104,6 @@ pub struct Place: Copy + GpuData {
     pub first: vec2,
     pub level: u32,
     pub cols: u32,
-    pub stones: [vec4; 8],
-    pub stone_count: u32,
     pub ahead: f32,
 }
 
@@ -188,6 +185,7 @@ pub fn place(
     cloud: Texture<Rgba16Float>,
     linear: Sampler,
     grounds: [f32],
+    stones: [vec4],
     blades: mut Append<Blade>,
     flowers: mut Append<Flower>,
     id: GlobalId,
@@ -222,8 +220,7 @@ pub fn place(
         return
     }
     // Out of the stones.
-    for i in 0..at.stone_count {
-        let st = at.stones[i]
+    for st in stones {
         if length(xz - st.xy) < st.z {
             return
         }
@@ -376,7 +373,8 @@ impl Grass {
     }
 
     /// Places this frame's blades and flowers round `cam`, on the clipmap, out of `stones`
-    /// (each its centre's x, z and its radius).
+    /// (each its centre's x and z, and its reach: as many as there are, each blade tested
+    /// against every one).
     pub fn place(
         mut self,
         cam: Camera,
@@ -389,18 +387,13 @@ impl Grass {
         cloud: Texture<Rgba16Float>,
         linear: Sampler,
         grounds: std::gpu::GpuSpan<f32>,
-        stones: [vec4],
+        stones: std::gpu::GpuSpan<vec4>,
     ) {
         std::gpu::label("grass")
         self.near.clear()
         self.middle.clear()
         self.far.clear()
         self.flowers.clear()
-        var st = [vec4(0.0); 8]
-        let n = min(stones.len(), 8)
-        for i in 0..n {
-            st[i] = stones[i]
-        }
         let half = atan(cam.tan_half * cam.aspect) + 0.15
         let ahead = cos(half + 0.35)
         for k in 0..LEVELS {
@@ -416,8 +409,6 @@ impl Grass {
                 first,
                 level: k,
                 cols,
-                stones: st,
-                stone_count: n,
                 ahead,
             }
             let groups = ((cols + 7) / 8, (rows + 7) / 8, 1)
@@ -435,6 +426,7 @@ impl Grass {
                     cloud,
                     linear,
                     grounds,
+                    stones,
                     blades: mut blades,
                     flowers: mut self.flowers,
                 ),
