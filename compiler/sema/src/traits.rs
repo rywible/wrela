@@ -545,6 +545,14 @@ fn implements_builtin_uncached(p: &Program, ty: TyId, lang: Lang) -> bool {
         // holds the same loans, which the memory checker tracks per holder (§6.6). It never
         // crosses to the GPU.
         TyKind::Adt(a, _) if p.adt(*a).borrow => lang != Lang::GpuData,
+        // A job's value is `Clone` when every part of it is: where it stopped, and each local it
+        // holds (`fn.job-values`). It's never `Copy`, `Plain` or `GpuData`: its layout is this
+        // build's.
+        TyKind::Adt(a, args) if p.is_lang_adt(*a, Lang::Job) => {
+            lang == Lang::Clone
+                && p.job_parts(*a, args)
+                    .is_some_and(|parts| parts.iter().all(|&(_, t)| implements_builtin(p, t, lang)))
+        }
         TyKind::Adt(a, args) => {
             let Some(want) = p.lang_trait(lang) else { return false };
             let adt = p.adt(*a);

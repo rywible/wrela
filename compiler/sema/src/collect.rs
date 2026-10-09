@@ -2763,7 +2763,31 @@ impl<'d, 'u> Collector<'d, 'u> {
                 });
             }
         }
+        // A job's value's traits are its parts', which depend on the job: `Job<F>` declares
+        // them, and each `@job fn` gets an impl of its own, derived from its parts
+        // (`fn.job-values`).
+        let job = self.p.lang_adt(Lang::Job);
+        let mut each_job = Vec::new();
         for imp in implied {
+            let of_job =
+                matches!(self.p.types.kind(imp.self_ty), TyKind::Adt(a, _) if Some(*a) == job);
+            if !of_job {
+                self.push_derived_impl(imp);
+                continue;
+            }
+            for f in 0..self.p.fns.len() as u32 {
+                let f = FnId(f);
+                if self.p.func(f).attrs.job.is_none() {
+                    continue;
+                }
+                let generics = self.p.fn_all_generics(f);
+                let args = generics.iter().map(|&g| self.p.types.param(g)).collect();
+                let fn_ty = self.p.types.intern(TyKind::FnDef(f, args));
+                let self_ty = self.p.types.adt(job.expect("a job"), vec![fn_ty]);
+                each_job.push(ImplDef { generics, self_ty, ..imp.clone() });
+            }
+        }
+        for imp in each_job {
             self.push_derived_impl(imp);
         }
         self.tuple_and_array_impls();
@@ -3354,6 +3378,11 @@ fn check_structural_opt_in(p: &Program, diags: &mut Vec<Diagnostic>, imp: &ImplD
         if p.types.has_params(f.ty) {
             continue; // conditional on the arguments; checked where it's used
         }
+        // A job's value: its parts are its locals, checked once its body is
+        // (`check_job_fields`).
+        if is_job(p, f.ty) {
+            continue;
+        }
         let ok = crate::traits::implements_builtin(p, f.ty, lang.unwrap_or(Lang::Clone));
         if !ok {
             let why = match lang {
@@ -3378,6 +3407,62 @@ fn check_structural_opt_in(p: &Program, diags: &mut Vec<Diagnostic>, imp: &ImplD
             );
         }
     }
+}
+
+/// Whether `t` is a job's value (`Job<f>`), whose parts are known once its body is checked.
+fn is_job(p: &Program, t: TyId) -> bool {
+    matches!(p.types.kind(t), TyKind::Adt(a, _) if p.is_lang_adt(*a, Lang::Job))
+}
+
+/// E0407 for a struct that declares `Clone` or a `@fieldwise` trait whose field is a job's value
+/// without it: a part of the job (a local it holds) lacks it. Checked once the jobs' bodies
+/// are, since a job's parts are its locals (`fn.job-values`).
+pub fn check_job_fields(p: &Program) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for imp in &p.impls {
+        let Some(r) = &imp.trait_ref else { continue };
+        if !imp.from_opt_in {
+            continue;
+        }
+        let tr = p.trait_(r.trait_);
+        let structural = tr.lang == Some(Lang::Clone);
+        if !structural && !tr.fieldwise {
+            continue;
+        }
+        let TyKind::Adt(a, _) = *p.types.kind(imp.self_ty) else { continue };
+        for f in p.adt(a).all_fields() {
+            let TyKind::Adt(j, args) = p.types.kind(f.ty) else { continue };
+            if !p.is_lang_adt(*j, Lang::Job) || p.types.has_params(f.ty) {
+                continue;
+            }
+            let Some(parts) = p.job_parts(*j, args) else { continue };
+            let lacks = parts.iter().skip(1).find(|&&(_, t)| {
+                if structural {
+                    !crate::traits::implements_builtin(p, t, Lang::Clone)
+                } else {
+                    !crate::traits::implements(p, t, r)
+                }
+            });
+            if let Some((name, t)) = lacks {
+                out.push(
+                    Diagnostic::new(
+                        codes::E0407,
+                        f.span,
+                        format!(
+                            "`{}` can't be `{}`: the field `{}` is a job, which holds `{name}`, a `{}`, and that isn't",
+                            p.adt(a).name,
+                            tr.name,
+                            f.name,
+                            p.display_ty(*t)
+                        ),
+                    )
+                    .with_secondary(imp.span, format!("`{}` opted in here", tr.name))
+                    .with_note("a job's value holds its body's locals, and has a trait when they do (§6.18)"),
+                );
+            }
+        }
+    }
+    out
 }
 
 /// A declared `@fieldwise` trait is derived from the fields, so every field must have it too

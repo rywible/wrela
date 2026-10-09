@@ -688,6 +688,48 @@ pub struct FnAttrs {
     pub job: Option<Span>,
 }
 
+/// What a job's value holds (§6.18): where it stopped, and each local of its memory IR that owns
+/// a value (its body's owned locals, its `take` parameters, and the temporaries a loop or an
+/// expression keeps, such as a range's bound): its fields to the traits derived field by field
+/// (`fn.job-values`), as they're the job's value's fields in lowering.
+#[derive(Clone, Debug, Default)]
+pub struct JobHeld {
+    /// Each local: its name (made unique with `#2`, `#3`, ... where two share one), its index
+    /// in the memory IR, and its type (in the job's generics).
+    pub locals: Vec<(String, u32, TyId)>,
+    /// A hash of the job's code: a saved job loads only into a build whose job is the same,
+    /// since where it stopped is a place in that code.
+    pub code: u64,
+}
+
+impl JobHeld {
+    /// What job `f`'s value holds, from its memory IR.
+    pub fn of(p: &crate::program::Program, f: FnId, body: &crate::mir::Body) -> JobHeld {
+        let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut locals = Vec::new();
+        for (i, d) in body.locals.iter().enumerate() {
+            // A value with nothing in it (`()`, a function named as a value) has no field.
+            let empty =
+                matches!(p.types.kind(d.ty), TyKind::Never | TyKind::Error | TyKind::FnDef(..))
+                    || matches!(p.types.kind(d.ty), TyKind::Tuple(ts) if ts.is_empty());
+            if !d.kind.owns_value() || d.closure.is_some() || empty {
+                continue;
+            }
+            let n = seen.entry(d.name.clone()).or_insert(0);
+            *n += 1;
+            let name = if *n == 1 { d.name.clone() } else { format!("{}#{n}", d.name) };
+            locals.push((name, i as u32, d.ty));
+        }
+        // FNV-1a 64 of the job's text: its signature and its body.
+        let text = p.text(p.func(f).span).unwrap_or("");
+        let mut code: u64 = 0xcbf29ce484222325;
+        for b in text.bytes() {
+            code = (code ^ u64::from(b)).wrapping_mul(0x100000001b3);
+        }
+        JobHeld { locals, code }
+    }
+}
+
 /// What of the program a test runs before it (§10).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TestRun {

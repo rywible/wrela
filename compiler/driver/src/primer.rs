@@ -39,6 +39,10 @@ pub const RULES: &[(&str, &str)] = &[
         "fn.jobs",
         "a `@job fn` runs over several frames, to each `yield`: `f.start(...)` takes its `take` parameters, `job.resume(...)` its `borrow` and `mut` ones",
     ),
+    (
+        "fn.job-values",
+        "a job's value is `Clone`, `StateHash` and `Serialize` when the locals it holds are, so a simulation's state can hold one",
+    ),
     ("struct.defaults", "struct fields may have constant defaults a literal may omit"),
     ("struct.opt-in", "a struct opts in to Copy, Clone and GpuData in its declaration"),
     ("struct.base", "`..base` fills the remaining fields from another value"),

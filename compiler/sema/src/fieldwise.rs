@@ -1154,6 +1154,11 @@ impl Builder<'_> {
     fn body(&mut self) -> Option<Expr> {
         let (fields, names) = match &self.of {
             Of::Adt(a, _) if self.p.adt(*a).is_enum() => return self.enum_body(),
+            // A job's parts: where it stopped, and each local it holds (`fn.job-values`).
+            Of::Adt(a, args) if let Some(parts) = self.p.job_parts(*a, args) => {
+                let (names, tys) = parts.into_iter().unzip();
+                (tys, Some(names))
+            }
             Of::Adt(a, args) => {
                 let names: Vec<String> =
                     self.p.adt_fields(*a, None).iter().map(|f| f.name.clone()).collect();
