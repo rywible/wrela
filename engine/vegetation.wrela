@@ -875,6 +875,7 @@ impl Forest {
                             k.impostor.bake,
                             colour: k.impostor.colour,
                             normal: k.impostor.normal,
+                            grid: k.volume.grid,
                         ),
                         vertices: 6,
                         instances: l.count,

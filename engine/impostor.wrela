@@ -104,7 +104,8 @@ pub struct Bake: Copy + GpuData {
 
 /// What a baked card or limb fragment carries: its place in its view, its normal and depth in
 /// the crown, how far toward the viewer it is from the plant's middle (over the half-width),
-/// its uv on its card, its colour, and its view.
+/// its uv on its card, a limb's colour or a card's own tint (`card_tint`: its leaves' colour is
+/// `baked_leaf`'s), and its view.
 pub struct BakeVertex: Copy {
     pub clip: ClipPosition,
     pub uv: vec2,
@@ -112,6 +113,7 @@ pub struct BakeVertex: Copy {
     pub depth: f32,
     pub toward: f32,
     pub albedo: vec3,
+    pub tint: vec3,
     pub seed: Flat<u32>,
     pub view: Flat<u32>,
     pub leaf: Flat<u32>,
@@ -142,18 +144,15 @@ pub fn bake_card(v: VertexIndex, i: InstanceIndex, b: Bake, cards: [Card]) -> Ba
     let t = card_turn(card, q)
     // The coarsest level's card (`BAKED`): the impostor holds what it takes over from.
     let world = card.centre + (right * t.x + up * t.y) * (card.size * f32(1 << BAKED) * 0.5)
-    let n = card.normal.decode()
-    // The card's age and its own tint (its instance's is added where it's drawn, `far_shade`):
-    // no leaf's own draws, which `baked_leaf` adds.
-    let albedo = tinted(leaf_age(b.leaves, n.y, 0.0), card_tint(card))
     let (d, _, _) = view_basis(i.index)
     BakeVertex {
         clip: ClipPosition { position: in_cell(b, i.index, world) },
         uv: q,
-        normal: n,
+        normal: card.normal.decode(),
         depth: card.depth,
         toward: dot(world - b.mid, d) / b.half,
-        albedo,
+        albedo: vec3(0.0),
+        tint: card_tint(card),
         seed: Flat { value: card.seed },
         view: Flat { value: i.index },
         leaf: Flat { value: 1 },
@@ -172,6 +171,7 @@ pub fn bake_limb(v: VertexIndex, i: InstanceIndex, b: Bake, limbs: [Tube<4>]) ->
         depth: 0.0,
         toward: dot(p - b.mid, d) / b.half,
         albedo: mix(b.bark.dark, b.bark.light, vec3(0.5)),
+        tint: vec3(0.0),
         seed: Flat { value: 0 },
         view: Flat { value: i.index },
         leaf: Flat { value: 0 },
@@ -209,8 +209,9 @@ fn oct_decode(e: vec2) -> vec3 {
     normalize(vec3(x, y, z))
 }
 
-/// A baked leaf's light, as `vegetation::leaf_shade` has it: its leaf's own tilt off the crown's
-/// normal and its own age; cut where the card has no leaf.
+/// A baked leaf's normal and albedo, as `vegetation::leaf_shade` has them: its leaf's own tilt
+/// off the crown's normal, and its own age and its card's tint (its instance's is added where
+/// it's drawn, `far_shade`); cut where the card has no leaf.
 fn baked_leaf(f: BakeVertex, b: Bake, atlas: Texture<Rgba8>, s: Sampler) -> (vec3, vec3) {
     if f.leaf.value != 1 {
         return (normalize(f.normal), f.albedo)
@@ -222,10 +223,7 @@ fn baked_leaf(f: BakeVertex, b: Bake, atlas: Texture<Rgba8>, s: Sampler) -> (vec
     }
     let crown_n = normalize(f.normal)
     let (tilt, aged) = leaf_draws(seed, which)
-    // The card's tint: its vertex's albedo less its age's colour without the leaf's draw.
-    let tint = f.albedo - leaf_age(b.leaves, crown_n.y, 0.0)
-    let albedo = max(leaf_age(b.leaves, crown_n.y, aged) + tint, vec3(0.005))
-    (leaf_normal(crown_n, tilt), albedo)
+    (leaf_normal(crown_n, tilt), tinted(leaf_age(b.leaves, crown_n.y, aged), f.tint))
 }
 
 /// The impostor's colour: each view's leaves' (and limbs') albedo (its square root), and the
@@ -652,8 +650,28 @@ pub fn far_cut(
     WithDepth { color: id_colour(f.id.value), depth: depth_of(cam, at) }
 }
 
+/// The crown's normal at `at` (the world), as a far instance's volume holds it (`grid`, its
+/// kind's): its cards' mean normal round there. `otherwise` where no card is near.
+fn volume_normal(
+    f: FarVertex,
+    b: Bake,
+    grid: Texture3d<Rgba16Float>,
+    s: Sampler,
+    at: vec3,
+    otherwise: vec3,
+) -> vec3 {
+    let (yaw, scale) = (f.yaw_scale.value.x, f.yaw_scale.value.y)
+    let q = unturned(yaw, (at - f.centre) / scale) / b.half
+    let v = grid.sample_level(s, q * 0.5 + vec3(0.5))
+    if length(v.yzw) <= 1.0e-4 * v.x || v.x <= 1.0e-5 {
+        return otherwise
+    }
+    normalize(turned(yaw, v.yzw))
+}
+
 /// A far instance's pixel, where its prepass won (its id there): what its impostor shows
-/// (`seen`), lit as a leaf is, where the leaf is.
+/// (`seen`), lit as a leaf is, where the leaf is. The sky light is for the crown's normal there,
+/// as a card's is: its kind's volume holds it (`grid`).
 @fragment
 pub fn far_shade(
     f: FarVertex,
@@ -663,6 +681,7 @@ pub fn far_shade(
     b: Bake,
     colour: Texture<Rgba8>,
     normal: Texture<Rgba16Float>,
+    grid: Texture3d<Rgba16Float>,
 ) -> vec4 {
     if id_at(ids, pixel) != f.id.value {
         discard()
@@ -670,13 +689,12 @@ pub fn far_shade(
     let leaf = seen(f, view_of(f, pixel.position.xy), colour, normal, lt.s)
     let n = normalize(turned(f.yaw_scale.value.x, leaf.normal))
     let at = leaf_place(f, lt.cam, b, leaf.toward)
-    // The sky light for the leaves' own normal: the impostor holds no crown's normal.
     let out = leaf_light(
         lt,
         at,
         n,
-        sky_n: n,
-        depth: leaf.depth,
+        sky_n: volume_normal(f, b, grid, lt.s, at, otherwise: n),
+        depth: leaf.depth * f.yaw_scale.value.y,
         albedo: tinted(leaf.albedo, f.tint),
         through: b.leaves.through,
     )
@@ -907,8 +925,8 @@ pub fn volume_shade(
         volume_place(f, b, met.at),
         leaf_normal(crown_n, tilt),
         sky_n: crown_n,
-        depth: met.depth,
-        albedo: tinted(leaf_age(b.leaves, met.normal.y, aged), f.tint),
+        depth: met.depth * f.yaw_scale.value.y,
+        albedo: tinted(leaf_age(b.leaves, crown_n.y, aged), f.tint),
         through: b.leaves.through,
     )
     vec4(out, LEAVES + f32(which_crown(f.centre)))
