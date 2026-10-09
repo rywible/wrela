@@ -366,20 +366,20 @@ pub fn mass(s: u32, finest: f32) -> f32 {
 }
 
 /// A physique, summed up (`physique`).
-pub struct Summary {
+struct Summary {
     /// The whole's mass, kg.
-    pub mass: f32,
+    mass: f32,
     /// The bones' masses summed.
-    pub summed: f32,
+    summed: f32,
     /// How many bones have mass.
-    pub bones: u32,
+    bones: u32,
     /// The least of each bone's moments' triangle inequalities (I_a + I_b - I_c over the
     /// largest moment: never below 0).
-    pub least: f32,
+    least: f32,
 }
 
 /// Its physique per bone by the spike's method, cells down to `finest` (#43 §9), summed up.
-pub fn physique(s: u32, finest: f32) -> Summary {
+fn physique(s: u32, finest: f32) -> Summary {
     let m = engine::physique::adaptive_physique(grazer(s), grazer::density, finest)
     var sum = 0.0
     var bones = 0
@@ -398,7 +398,7 @@ pub fn physique(s: u32, finest: f32) -> Summary {
 
 /// The most two physiques' bones differ, for bones over 1 kg (relative to the bone's mass):
 /// the spike's method's against the derived interval's (`integrate`), cells down to `finest`.
-pub fn physique_methods_differ(s: u32, finest: f32) -> f32 {
+fn physique_methods_differ(s: u32, finest: f32) -> f32 {
     let a = engine::physique::adaptive_physique(grazer(s), grazer::density, finest)
     let b = engine::physique::integrate(
         grazer(s),
@@ -457,4 +457,34 @@ pub fn bench_eval(s: u32, n: u32, pruned: u32, lo: vec3, hi: vec3) -> f64 {
 /// Spike 01's raycast benchmark on the sim's terrain: the steps `n` rays took, and how many hit.
 pub fn raycast(n: u32) -> (u32, u32) {
     terrain::raycast_bench(terrain::Terrain::new(7), n)
+}
+
+// ---- tests (`wrela test examples/herd`) -----------------------------------------------------
+
+/// AC6's physique: seed 1's mass at a 2 cm finest cell within 0.05% of the spike's ground truth
+/// (1,119.26 kg, a uniform 1 cm grid of 25M samples; the spike's own: 1,118.94).
+@test
+fn seed_1s_mass_is_the_ground_truths() {
+    let truth = 1119.26
+    let m = mass(1, 0.02)
+    let off = (m - truth) / truth * 100.0
+    assert(abs(off) <= 0.05, f"{m:.2} kg is {off:.3}% from {truth} kg")
+}
+
+/// #43 §9: the physique per bone, by the spike's method: the bones' masses sum to the whole,
+/// which is `adaptive_mass`'s; every bone's moments of inertia meet the triangle inequality;
+/// and each bone over 1 kg is within 5% of the derived interval's method (`integrate`). The two
+/// lay their cells on different grids, and a cell where two bones meet counts wholly for the
+/// bone nearest its centre, so they differ by a share of a cell at each bone's ends: 20% at
+/// 4 cm, 3.6% at 2 cm and 2.4% at 1 cm.
+@test
+fn the_physique_gives_each_bone_its_mass_and_moments() {
+    let p = physique(1, 0.02)
+    let whole = mass(1, 0.02)
+    assert(abs(p.mass - whole) <= 1.0e-6 * whole, f"{p.mass} kg against {whole}")
+    assert(abs(p.mass - p.summed) <= 1.0e-4 * p.mass, f"{p.summed} kg summed against {p.mass}")
+    assert(p.bones >= 20, f"only {p.bones} bones have mass")
+    assert(p.least >= -1.0e-4, f"a bone's moments break the triangle inequality: {p.least}")
+    let differ = physique_methods_differ(1, 0.02)
+    assert(differ <= 0.05, f"a bone is {differ * 100.0:.2}% from integrate's")
 }

@@ -676,31 +676,36 @@ impl<'d, 'u> Collector<'d, 'u> {
                 self.attrs_not_on_fn(std::slice::from_ref(a));
                 continue;
             }
-            if fuel.is_some() {
-                self.diags.push(
-                    Diagnostic::new(codes::E0108, a.span, "a constant's fuel is set once")
-                        .with_fix("remove it", a.span, ""),
-                );
-                continue;
-            }
-            let value = match a.args.as_deref() {
-                Some([arg]) if arg.name.is_none() => fuel_value(&arg.value),
-                _ => None,
-            };
-            match value {
-                Some(v) if (1..=MAX_FUEL).contains(&v) => fuel = Some(v),
-                _ => self.diags.push(
-                    Diagnostic::new(
-                        codes::E0108,
-                        a.span,
-                        "`@fuel` takes one whole number of fuel units, at most 2 ** 46",
-                    )
-                    .with_note("a unit is about one WASM instruction; the build's own limit is 2 ** 34 (§10)")
-                    .with_help("write it as a literal or a power of two: `@fuel(2 ** 40)`"),
-                ),
-            }
+            self.fuel_attr(a, &mut fuel, "a constant's");
         }
         fuel
+    }
+
+    /// `@fuel(n)` into `fuel`, once (`whose`: "a constant's"); else E0108.
+    fn fuel_attr(&mut self, a: &ast::Attribute, fuel: &mut Option<u64>, whose: &str) {
+        if fuel.is_some() {
+            self.diags.push(
+                Diagnostic::new(codes::E0108, a.span, format!("{whose} fuel is set once"))
+                    .with_fix("remove it", a.span, ""),
+            );
+            return;
+        }
+        let value = match a.args.as_deref() {
+            Some([arg]) if arg.name.is_none() => fuel_value(&arg.value),
+            _ => None,
+        };
+        match value {
+            Some(v) if (1..=MAX_FUEL).contains(&v) => *fuel = Some(v),
+            _ => self.diags.push(
+                Diagnostic::new(
+                    codes::E0108,
+                    a.span,
+                    "`@fuel` takes one whole number of fuel units, at most 2 ** 46",
+                )
+                .with_note("a unit is about one WASM instruction; the build's own limit is 2 ** 34, a test's 2 ** 37 (§10)")
+                .with_help("write it as a literal or a power of two: `@fuel(2 ** 40)`"),
+            ),
+        }
     }
 
     /// E0108 for each attribute on something that isn't a function: an item, or an associated
@@ -861,18 +866,19 @@ impl<'d, 'u> Collector<'d, 'u> {
                         out.audio = Some(a.span);
                     }
                 }
-                "fieldwise" | "diagnostic" | "fuel" => {
+                "fuel" => {
+                    let mut fuel = out.fuel.map(|(v, _)| v);
+                    self.fuel_attr(a, &mut fuel, "a test's");
+                    out.fuel = fuel.map(|v| (v, a.span));
+                }
+                "fieldwise" | "diagnostic" => {
                     self.diags.push(
                         Diagnostic::new(
                             codes::E0108,
                             a.span,
                             format!(
                                 "`@{name}` goes on a {}, not a function",
-                                match name {
-                                    "fieldwise" => "trait",
-                                    "fuel" => "`const`",
-                                    _ => "trait or a type",
-                                }
+                                if name == "fieldwise" { "trait" } else { "trait or a type" }
                             ),
                         )
                         .with_fix("remove it", a.span, ""),
@@ -918,6 +924,21 @@ impl<'d, 'u> Collector<'d, 'u> {
                     self.diags.push(d);
                 }
             }
+        }
+        // A test of code may set its fuel; a frame test's calls each get a test's.
+        if let Some((_, at)) = out.fuel
+            && (out.test.is_none() || out.test_run.is_some())
+        {
+            out.fuel = None;
+            self.diags.push(
+                Diagnostic::new(
+                    codes::E0108,
+                    at,
+                    "`@fuel` goes on a `const` or a `@test` of code, not this function",
+                )
+                .with_note("a frame test's calls each get a test's fuel, 2 ** 37 (§10)")
+                .with_fix("remove it", at, ""),
+            );
         }
         out
     }

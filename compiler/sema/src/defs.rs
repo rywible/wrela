@@ -695,6 +695,9 @@ pub struct FnAttrs {
     /// `@test(frames: n, gpu: true)`: the frames run on the native host's GPU, which answers
     /// their readbacks (§10).
     pub test_gpu: bool,
+    /// `@fuel(n)` on a `@test` of code: the work it may do, in place of a test's limit, and
+    /// where it's written (§10).
+    pub fuel: Option<(u64, Span)>,
     /// `@test(frames: n, gpu: true, golden: "frame.png", within: m)`: the screen after the
     /// frames is within a mean difference `m` of that PNG in the package (§10).
     pub test_golden: Option<Golden>,

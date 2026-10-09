@@ -464,14 +464,17 @@ pub fn run_tests(
         Ok((c, _)) => c,
         Err(msg) => return (Vec::new(), vec![Diagnostic::internal(msg)]),
     };
-    let exports: Vec<(&str, String)> = module
+    // Each test's fuel: its own (`@fuel`), or a test's.
+    let fuel_of =
+        |f: wrela_sema::ty::FnId| checked.program.func(f).attrs.fuel.map_or(fuel, |(v, _)| v);
+    let exports: Vec<(&str, String, u64)> = module
         .exports
         .iter()
-        .map(|(f, name)| (name.as_str(), checked.program.func(*f).name.clone()))
+        .map(|(f, name)| (name.as_str(), checked.program.func(*f).name.clone(), fuel_of(*f)))
         .collect();
-    let ran = each_at_once(&exports, |(export, test)| {
+    let ran = each_at_once(&exports, |(export, test, fuel)| {
         let trace = wrela_host::Trace::new(Some(format!("{test}: ")));
-        let ran = compiled.start(engine(), false, &trace).map(|mut r| r.call(export, fuel));
+        let ran = compiled.start(engine(), false, &trace).map(|mut r| r.call(export, *fuel));
         (ran, trace.take())
     });
     let results = module
@@ -485,7 +488,7 @@ pub fn run_tests(
                 Ok(Err(CallError::Internal(e))) => Some(Diagnostic::internal(format!("{e:#}"))),
                 Ok(Err(CallError::Failed(e, panic))) => {
                     let fault = Fault::of(&e, panic);
-                    let item = Item::Test(*f, fuel);
+                    let item = Item::Test(*f, fuel_of(*f));
                     Some(failure(checked, sources, &compiled.lines, item, &fault, None))
                 }
             };
