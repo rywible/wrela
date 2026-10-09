@@ -1,0 +1,134 @@
+// Caches that follow the player (#54 §7): a static shadow cascade kept round a moving middle with
+// no frame drawing it whole. Playing spike 17, each time the probes and the shadows re-centred one
+// frame took 67–300 ms; here the cascade in use stays while the next is drawn beside it, a strip
+// of its trees a frame (the wood chooses each strip's on the GPU), and the two swap when the last
+// strip is drawn.
+
+use engine::shadow::{Cascade, Shadows, sun_view}
+use engine::plant::Wind
+use engine::view::Camera
+use engine::wood::Wood
+use std::collections::swap
+use std::gpu::{DepthTexture, Sampler, begin_depth_pass, depth_texture, label}
+
+/// How far past a cascade's square a tree's shadow can reach into it (m): a 25 m tree's at the
+/// clearing's sun (24° up) is 56 m long.
+pub const REACH_IN: f32 = 60.0
+
+/// A cascade kept round a moving middle: the map in use and its middle; the map being drawn
+/// beside it and its middle, and the strip it's at; its square's size and reach, its texels a
+/// side and its strips; and whether what casts into it changed (it's drawn again in place).
+pub struct Kept {
+    pub front: DepthTexture,
+    back: DepthTexture,
+    pub centre: vec3,
+    next: Option<vec3>,
+    strip: u32,
+    pub span: f32,
+    pub reach: f32,
+    pub side: u32,
+    pub strips: u32,
+    stale: bool,
+    /// Whether the map in use has been drawn at all (the first is drawn before it's used).
+    pub ready: bool,
+}
+
+impl Kept {
+    /// A cascade `span` wide round `centre`, `side` texels a side, drawn in `strips` strips.
+    pub fn new(centre: vec3, span: f32, reach: f32, side: u32, strips: u32) -> Kept {
+        Kept {
+            front: depth_texture(width: side, height: side),
+            back: depth_texture(width: side, height: side),
+            centre,
+            next: Some(centre),
+            strip: 0,
+            span,
+            reach,
+            side,
+            strips,
+            stale: false,
+            ready: false,
+        }
+    }
+
+    /// The cascade in use.
+    pub fn cascade(self) -> Cascade {
+        Cascade { centre: self.centre, span: self.span, reach: self.reach, side: self.side }
+    }
+
+    /// What casts into it changed: drawn again where it is, once the drawing under way ends.
+    pub fn changed(mut self) {
+        self.stale = true
+    }
+
+    /// Follows `at`: once it's `moves` from the middle in use (or what casts changed), the next
+    /// map starts round it, unless one is being drawn.
+    pub fn follow(mut self, at: vec3, moves: f32) {
+        if self.next.is_some() {
+            return
+        }
+        if length(at.xz - self.centre.xz) > moves {
+            self.next = Some(at)
+            self.strip = 0
+            self.stale = false
+        } else if self.stale {
+            self.next = Some(self.centre)
+            self.strip = 0
+            self.stale = false
+        }
+    }
+
+    /// Whether a map is being drawn beside the one in use.
+    pub fn drawing(self) -> bool {
+        self.next.is_some()
+    }
+
+    /// A strip of the next map, if one's being drawn: the trees standing in the strip's part of
+    /// its square (and a shadow's reach past it), chosen and drawn into the map (cleared first);
+    /// after the last, the maps swap. `sh` gives the sun's basis.
+    pub fn draw_strip(
+        mut self,
+        wood: mut Option<Wood>,
+        sun: vec3,
+        sh: Shadows,
+        wind: Wind,
+        s: Sampler,
+        cam: Camera,
+        on: bool,
+        name: Text,
+    ) {
+        let Some(c) = self.next else { return }
+        let half = self.span * 0.5 + REACH_IN
+        let lo = c.xz - vec2(half)
+        let step = 2.0 * half / f32(self.strips)
+        let a = vec2(lo.x, lo.y + step * f32(self.strip))
+        let b = vec2(lo.x + 2.0 * half, a.y + step)
+        let view = sun_view(normalize(sun), c, self.span, self.reach)
+        match mut wood {
+            Some(w) => {
+                if on {
+                    w.select_shadow(cam, a, b)
+                }
+            },
+            None => {},
+        }
+        label(name)
+        let pass = begin_depth_pass(mut self.back, clear_depth: 1.0, keep_depth: self.strip > 0)
+        match wood {
+            Some(w) => {
+                if on {
+                    w.shadow(pass, view, sh, wind, s)
+                }
+            },
+            None => {},
+        }
+        pass.end()
+        self.strip += 1
+        if self.strip >= self.strips {
+            swap(mut self.front, mut self.back)
+            self.centre = c
+            self.next = None
+            self.ready = true
+        }
+    }
+}

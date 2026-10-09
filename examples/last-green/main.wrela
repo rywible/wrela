@@ -89,9 +89,11 @@ const NEAR_MOVES: f32 = 40.0
 const MOVING_SIDE: u32 = 1024
 const MOVING_SPAN: f32 = 6.0
 
-/// The probes round the player: their columns each way and spacing (spike 17: 160 m, 2 m).
+/// The probes round the player: their columns each way and spacing (spike 17: 160 m, 2 m); how
+/// far the eye goes from their middle before the next are baked round it.
 const PROBE_COLS: u32 = 81
 const PROBE_SPACING: f32 = 2.0
+const PROBES_MOVE: f32 = 30.0
 
 /// The systems a frame can leave out (the keys F1–F4 toggle them).
 enum System: Copy + Eq + Fieldless {
@@ -153,16 +155,23 @@ pub struct Floor {
     far_fetch: Option<Pending<u8>>,
     far_layer: Vec<Arrived>,
     grass: Grass,
-    near: DepthTexture,
-    far: DepthTexture,
+    /// The static cascades, kept round the eye (the near) and the floor (the far), each drawn
+    /// beside the one in use a strip a frame (`caches::Kept`).
+    near: caches::Kept,
+    far: caches::Kept,
     moving: DepthTexture,
     cmp: ComparisonSampler,
     /// Where the near cascade was drawn round, and whether each is drawn for what's placed.
-    near_at: vec3,
-    near_drawn: bool,
-    far_drawn: bool,
+    /// The probes round the eye in use, and the next, baked beside them once the eye has moved
+    /// `PROBES_MOVE` (their occluders from the tiles' trees in `own`); `own` keeps each loaded
+    /// tile's instances on the CPU for them.
     probes: Baked,
     occluders_cooked: bool,
+    probes_at: vec2,
+    next_probes: Option<Baked>,
+    next_at: vec2,
+    next_cooked: bool,
+    own: Vec<Arrived>,
     ready: bool,
     sky: Sky,
     noise_cooked: bool,
@@ -188,6 +197,12 @@ pub struct Floor {
     frames: u32,
     off: Flags<System>,
     framing: Framing,
+    /// The lookbook's shot the camera's held on (none: the player's), since when, and one being
+    /// typed (`keys`).
+    shot: Option<u32>,
+    shot_from: f32,
+    typing_shot: bool,
+    shot_digits: u32,
     /// The stand-in: its realized mesh (at the first frame), and its one bone's place this frame
     /// and the last (its palettes, for the motion target).
     standin: Option<engine::standin::Realized>,
@@ -195,9 +210,8 @@ pub struct Floor {
     last_palette: GpuBuffer<mat4>,
 }
 
-/// The probes round `at`, unbaked, and what occludes them: none yet (the trees come with the
-/// tiles).
-fn probes_at(at: vec2) -> Baked {
+/// The probes round `at`, unbaked, and what occludes them: the trees standing round it.
+fn probes_at(at: vec2, occluders: take Vec<engine::probes::Occluder>) -> Baked {
     let y = height_at(at)
     let g = grid(
         at,
@@ -207,8 +221,7 @@ fn probes_at(at: vec2) -> Baked {
         high: y + 40.0,
         voxel: 1.0,
     )
-    let none: Vec<engine::probes::Occluder> = Vec::new()
-    Baked::new(g, none)
+    Baked::new(g, occluders)
 }
 
 pub fn init() -> Floor {
@@ -239,15 +252,23 @@ pub fn init() -> Floor {
         },
         far_layer: Vec::new(),
         grass: Grass::new(),
-        near: depth_texture(width: 2048, height: 2048),
-        far: depth_texture(width: FAR_CASCADE.side, height: FAR_CASCADE.side),
+        near: caches::Kept::new(eye, NEAR_SPAN, reach: 250.0, side: 2048, strips: 6),
+        far: caches::Kept::new(
+            FAR_CASCADE.centre,
+            FAR_CASCADE.span,
+            reach: FAR_CASCADE.reach,
+            side: FAR_CASCADE.side,
+            strips: 12,
+        ),
         moving: depth_texture(width: MOVING_SIDE, height: MOVING_SIDE),
         cmp: comparison_sampler(),
-        near_at: eye,
-        near_drawn: false,
-        far_drawn: false,
-        probes: probes_at(start),
+        probes: probes_at(start, Vec::new()),
         occluders_cooked: false,
+        probes_at: start,
+        next_probes: None,
+        next_at: start,
+        next_cooked: false,
+        own: Vec::new(),
         ready: false,
         sky: new_sky(),
         noise_cooked: false,
@@ -280,6 +301,10 @@ pub fn init() -> Floor {
         frames: 0,
         off: Flags::none(),
         framing: Framing {},
+        shot: None,
+        shot_from: 0.0,
+        typing_shot: false,
+        shot_digits: 0,
         standin: None,
         palette: buffer(1),
         last_palette: buffer(1),
@@ -405,6 +430,7 @@ fn stream(s: mut Floor, eye: vec2) {
                 if let Some(t) = w.slots[k].tile {
                     if !w.slots[k].far && tile_distance(t, eye) > DROP {
                         w.drop(t)
+                        s.own.retain(|a| a.tile != t)
                         changed = true
                     }
                 }
@@ -413,14 +439,15 @@ fn stream(s: mut Floor, eye: vec2) {
             if s.arrived.len() > 0 && w.has_room() {
                 let a = s.arrived.remove(0)
                 let _ = w.load(a.tile, a.placed)
+                s.own.push(take a)
                 changed = true
             }
         },
         None => {},
     }
     if changed {
-        s.near_drawn = false
-        s.far_drawn = false
+        s.near.changed()
+        s.far.changed()
     }
 }
 
@@ -455,9 +482,43 @@ fn cook_load(s: mut Floor) {
     }
 }
 
-fn keys(s: mut Floor) {
+/// The keys the frames read (the sim reads the player's): F1–F4 leave a system out; L, a shot's
+/// number and Enter hold the camera on a lookbook shot (Escape lets it go).
+fn keys(s: mut Floor, time: f32) {
     for e in events() {
         if let Event::KeyDown { key, .. } = e {
+            if s.typing_shot {
+                let d = match key {
+                    Key::Digit0 => Some(0),
+                    Key::Digit1 => Some(1),
+                    Key::Digit2 => Some(2),
+                    Key::Digit3 => Some(3),
+                    Key::Digit4 => Some(4),
+                    Key::Digit5 => Some(5),
+                    Key::Digit6 => Some(6),
+                    Key::Digit7 => Some(7),
+                    Key::Digit8 => Some(8),
+                    Key::Digit9 => Some(9),
+                    _ => None,
+                }
+                if let Some(d) = d {
+                    s.shot_digits = s.shot_digits * 10 + d
+                    continue
+                }
+                if key == Key::Enter && s.shot_digits < lookbook::SHOTS.len() {
+                    s.shot = Some(s.shot_digits)
+                    s.shot_from = time
+                }
+                s.typing_shot = false
+                continue
+            }
+            if key == Key::L {
+                s.typing_shot = true
+                s.shot_digits = 0
+            }
+            if key == Key::Escape {
+                s.shot = None
+            }
             let system = match key {
                 Key::F1 => Some(System::Trees),
                 Key::F2 => Some(System::Grass),
@@ -467,8 +528,8 @@ fn keys(s: mut Floor) {
             }
             if let Some(system) = system {
                 s.off = s.off.toggled(system)
-                s.near_drawn = false
-                s.far_drawn = false
+                s.near.changed()
+                s.far.changed()
             }
         }
     }
@@ -498,48 +559,14 @@ fn resize(s: mut Floor, width: u32, height: u32, w: u32, h: u32) {
     s.frames = 0
 }
 
-/// The static cascades, drawn when what casts them has changed (a tile came or went) or the near
-/// one's middle has moved: one a frame, the near first.
+/// The static cascades: a strip of whichever is being drawn beside the one in use (the near
+/// first), a strip a frame.
 fn static_shadows(s: mut Floor, sh: Shadows, wind: Wind) {
-    let shadows = on(s.off, System::Shadows)
-    let near = !s.near_drawn
-    if !near && s.far_drawn {
-        return
-    }
-    let (c, h) = if near {
-        (s.near_at.xz, vec2(NEAR_SPAN))
-    } else {
-        (FAR_CASCADE.centre.xz, vec2(FAR_CASCADE.span * 0.5))
-    }
-    match mut s.wood {
-        Some(w) => {
-            if shadows {
-                w.select_shadow(s.cam, c - h, c + h)
-            }
-        },
-        None => {},
-    }
-    label(if near { "shadows near" } else { "shadows far" })
-    let pass = if near {
-        begin_depth_pass(mut s.near, clear_depth: 1.0)
-    } else {
-        begin_depth_pass(mut s.far, clear_depth: 1.0)
-    }
-    match s.wood {
-        Some(w) => {
-            if shadows {
-                w.shadow(pass, view: if near { sh.near } else {
-                    sh.far
-                }, sh: sh, wind: wind, s: s.linear)
-            }
-        },
-        None => {},
-    }
-    pass.end()
-    if near {
-        s.near_drawn = true
-    } else {
-        s.far_drawn = true
+    let on = on(s.off, System::Shadows)
+    if s.near.drawing() {
+        s.near.draw_strip(mut s.wood, SUN, sh, wind, s.linear, s.cam, on, "shadows near")
+    } else if s.far.drawing() {
+        s.far.draw_strip(mut s.wood, SUN, sh, wind, s.linear, s.cam, on, "shadows far")
     }
 }
 
@@ -605,29 +632,79 @@ fn trace_of(s: Floor) -> Trace {
     }
 }
 
-/// The probes: their occluders cooked once, then a strip of columns a frame, once the static
-/// shadows are drawn.
-fn bake_probes(s: mut Floor, sh: Shadows) {
-    if !s.near_drawn || !s.air_cooked {
+/// The probes: the first baked round the start, then the next round the eye once it has moved
+/// `PROBES_MOVE`, baked beside them (its occluders cooked first, then a strip of columns a
+/// frame), and swapped when it's done. They read the near cascade, so they wait for it.
+fn bake_probes(s: mut Floor, sh: Shadows, eye: vec2) {
+    if !s.near.ready || !s.air_cooked {
         return
     }
+    let trace = trace_of(s)
     if !s.occluders_cooked {
         s.probes.cook()
         s.occluders_cooked = true
-    } else if !s.probes.done() {
-        let trace = trace_of(s)
+        return
+    }
+    if !s.probes.done() {
         s.probes.bake_strip(
             trace,
             sh,
             s.clipmap.levels(),
             s.clipmap.texels(),
-            s.near,
-            s.far,
+            s.near.front,
+            s.far.front,
             s.cmp,
             s.tables.view,
             s.sky.dome,
             s.linear,
         )
+        return
+    }
+    if s.next_probes.is_none() && length(eye - s.probes_at) > PROBES_MOVE {
+        var placed: Vec<Placed> = Vec::new()
+        for a in s.own {
+            if tile_distance(a.tile, eye) < 200.0 {
+                var more = a.placed.clone()
+                placed.append(mut more)
+            }
+        }
+        let half = vec2(0.5 * f32(PROBE_COLS - 1) * PROBE_SPACING)
+        s.next_probes = Some(
+            probes_at(eye, trees::occluders(placed, s.plants, eye - half, eye + half)),
+        )
+        s.next_at = eye
+        s.next_cooked = false
+    }
+    var swap_now = false
+    match mut s.next_probes {
+        Some(next) => {
+            if !s.next_cooked {
+                next.cook()
+                next.open(s.light, s.air.ground, s.tables.view, s.linear)
+                s.next_cooked = true
+            } else if !next.done() {
+                let t = Trace { grid: next.grid, ..trace }
+                next.bake_strip(
+                    t,
+                    sh,
+                    s.clipmap.levels(),
+                    s.clipmap.texels(),
+                    s.near.front,
+                    s.far.front,
+                    s.cmp,
+                    s.tables.view,
+                    s.sky.dome,
+                    s.linear,
+                )
+            } else {
+                swap_now = true
+            }
+        },
+        None => {},
+    }
+    if swap_now {
+        s.probes = replace(mut s.next_probes, None).unwrap()
+        s.probes_at = s.next_at
     }
 }
 
@@ -648,8 +725,8 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         grid,
         clouds: s.clouds,
         levels: s.clipmap.levels(),
-        near: s.near,
-        far: s.far,
+        near: s.near.front,
+        far: s.far.front,
         moving: s.moving,
         cmp: s.cmp,
         probes,
@@ -881,7 +958,7 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32) {
 }
 
 pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
-    keys(mut s)
+    keys(mut s, time)
     let (w, h) = (max(width / SCALE, 1), max(height / SCALE, 1))
     if width != s.width || height != s.height || f32(w) != s.cam.screen.x {
         resize(mut s, width, height, w, h)
@@ -899,11 +976,29 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     let heading = engine::present::lerp_angle(pa.heading, pb.heading, b.alpha)
     std::gpu::copy(from: s.palette.items(), to: s.last_palette.items_mut())
     write(mut s.palette, 0, [standin_at(feet, heading)])
-    let (eye, at) = third_person(s.framing, feet, c.yaw, c.pitch, OBSTACLES, vec2(0.0), height_at)
+    let (eye, at, fovy) = match s.shot {
+        Some(i) => {
+            let shot = lookbook::SHOTS[i]
+            let (e, a) = lookbook::place(shot, time - s.shot_from, height_at)
+            (e, a, shot.fovy)
+        },
+        None => {
+            let (e, a) = third_person(
+                s.framing,
+                feet,
+                c.yaw,
+                c.pitch,
+                OBSTACLES,
+                vec2(0.0),
+                height_at,
+            )
+            (e, a, s.framing.fovy)
+        },
+    }
     s.cam = camera(
         eye,
         at,
-        s.framing.fovy,
+        fovy,
         width: w,
         height: h,
         frame: s.frames,
@@ -920,20 +1015,13 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     s.clipmap.follow(GROUND, eye, again: false)
     cook_load(mut s)
     stream(mut s, eye.xz)
-    if length(eye.xz - s.near_at.xz) > NEAR_MOVES {
-        s.near_at = eye
-        s.near_drawn = false
-    }
-    let near = Cascade {
-        centre: vec3(s.near_at.x, height_at(s.near_at.xz), s.near_at.z),
-        span: NEAR_SPAN,
-        reach: 250.0,
-        side: 2048,
-    }
+    // The near cascade round where the eye will be (a little ahead), the far round the floor.
+    s.near.follow(vec3(eye.x, height_at(eye.xz), eye.z), NEAR_MOVES)
+    s.far.follow(FAR_CASCADE.centre, 1.0e9)
     let sh = shadows(
         s.light.sun,
-        near,
-        FAR_CASCADE,
+        s.near.cascade(),
+        s.far.cascade(),
         moving_at: feet + vec3(0.0, 1.0, 0.0),
         moving_span: MOVING_SPAN,
         moving_side: MOVING_SIDE,
@@ -942,7 +1030,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     static_shadows(mut s, sh, wind)
     moving_shadow(mut s, sh)
     cook_sky(mut s, eye, wind)
-    bake_probes(mut s, sh)
+    bake_probes(mut s, sh, eye.xz)
     if !s.ready &&
         s.wood.is_some() &&
         s.fetching.is_empty() &&

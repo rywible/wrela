@@ -1,0 +1,137 @@
+// The lookbook (#54 §9): named shots of the floor, each a place, an eye, what it looks at and a
+// 10 s move, which the look is developed against. `tools/lookbook.py` renders each one settled
+// at 1080p and records it in motion; each round's stills sit beside the last round's and spike
+// 17's. Heights are above the ground under each point.
+
+/// A shot: its name, where the eye is and what it looks at (x, height above the ground, z), how
+/// far the eye moves over the shot's 10 s (m, on the plane), and the field of view (radians).
+pub struct Shot: Copy {
+    pub name: Text,
+    pub eye: vec3,
+    pub at: vec3,
+    pub moves: vec2,
+    pub fovy: f32 = 0.82,
+}
+
+/// How long a shot's move takes (s), and how long it holds still first while the floor round it
+/// streams in and its caches settle (its still is taken as the move starts).
+pub const MOVE: f32 = 10.0
+pub const SETTLE: f32 = 5.0
+
+pub const SHOTS = [
+    // The fixed reference: the clearing's start (M5's), the look as M5 left it.
+    Shot {
+        name: "the clearing",
+        eye: vec3(-1.5, 1.6, 0.0),
+        at: vec3(0.0, 4.0, 40.0),
+        moves: vec2(0.0, 3.0),
+        fovy: 0.733,
+    },
+    // Oaks over beech, the browse line, a sunlit glade ahead.
+    Shot {
+        name: "wood pasture",
+        eye: vec3(150.0, 1.7, 40.0),
+        at: vec3(30.0, 3.0, 25.0),
+        moves: vec2(-3.0, 0.0),
+    },
+    // Grey trunks, a litter floor, light falling through the canopy.
+    Shot {
+        name: "beech high forest",
+        eye: vec3(380.0, 1.7, -960.0),
+        at: vec3(250.0, 5.0, -1060.0),
+        moves: vec2(-2.4, -1.8),
+    },
+    // A road under the trees, worn stones, a waystone that reads.
+    Shot {
+        name: "the old road",
+        eye: vec3(118.0, 1.7, -78.0),
+        at: vec3(268.0, 2.0, -180.0),
+        moves: vec2(2.5, -1.7),
+    },
+    // The canopy from above in its species' colours, the tower on its hill.
+    Shot {
+        name: "the crag's top",
+        eye: vec3(330.0, 1.8, -150.0),
+        at: vec3(560.0, 20.0, -470.0),
+        moves: vec2(1.0, -1.4),
+    },
+    // Masonry, moss, rubble, the break in the wall.
+    Shot {
+        name: "the tower's foot",
+        eye: vec3(538.0, 1.7, -446.0),
+        at: vec3(560.0, 9.0, -470.0),
+        moves: vec2(-2.0, 1.0),
+    },
+    // Standing stones in their glade.
+    Shot {
+        name: "the ring",
+        eye: vec3(22.0, 1.7, -432.0),
+        at: vec3(42.0, 1.2, -457.0),
+        moves: vec2(-2.0, -2.0),
+    },
+    // Still water, the alder carr round it, reflections of sky and canopy.
+    Shot {
+        name: "the mere",
+        eye: vec3(210.0, 1.7, -335.0),
+        at: vec3(285.0, 0.5, -420.0),
+        moves: vec2(3.0, 0.0),
+    },
+    // Moving water in dappled light, wet stones, the ravine it keeps open.
+    Shot {
+        name: "the stream in the wood",
+        eye: vec3(60.0, 1.7, -325.0),
+        at: vec3(-30.0, 0.5, -270.0),
+        moves: vec2(-2.0, 1.2),
+    },
+    // The stream leaving the plateau, mist, the valley beyond.
+    Shot {
+        name: "the waterfall",
+        eye: vec3(-190.0, 1.7, -130.0),
+        at: vec3(-260.0, -15.0, -175.0),
+        moves: vec2(-1.5, -1.0),
+    },
+    // Silver snags over young birch.
+    Shot {
+        name: "the burn",
+        eye: vec3(840.0, 1.7, -140.0),
+        at: vec3(920.0, 8.0, -220.0),
+        moves: vec2(2.0, -2.0),
+    },
+    // Root plates, and logs that lie one way.
+    Shot {
+        name: "the windthrow",
+        eye: vec3(380.0, 1.7, 115.0),
+        at: vec3(440.0, 2.0, 170.0),
+        moves: vec2(2.0, 1.5),
+    },
+    // The view out over the valley.
+    Shot {
+        name: "the plateau's edge",
+        eye: vec3(-285.0, 1.7, -335.0),
+        at: vec3(-700.0, -90.0, -100.0),
+        moves: vec2(0.0, 2.0),
+    },
+    // Blockouts, judged as composition.
+    Shot {
+        name: "the town's site",
+        eye: vec3(395.0, 1.7, -800.0),
+        at: vec3(460.0, 3.0, -860.0),
+        moves: vec2(2.0, -2.0),
+    },
+    Shot {
+        name: "the warden's arena",
+        eye: vec3(1395.0, 1.7, -1100.0),
+        at: vec3(1460.0, 3.0, -1160.0),
+        moves: vec2(2.0, -2.0),
+    },
+]
+
+/// Where shot `s`'s eye is and what it looks at, `t` seconds after it was chosen (it holds still
+/// `SETTLE` seconds, then moves), the ground's height given by `height`.
+pub fn place(s: Shot, t: f32, height: fn(vec2) -> f32) -> (vec3, vec3) {
+    let k = clamp((t - SETTLE) / MOVE, 0.0, 1.0)
+    let e = s.eye.xz + s.moves * k
+    let eye = vec3(e.x, height(e) + s.eye.y, e.y)
+    let at = vec3(s.at.x, height(s.at.xz) + s.at.y, s.at.z)
+    (eye, at)
+}
