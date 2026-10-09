@@ -15,8 +15,8 @@
 
 use std::abi::{ALLOCATIONS, ALLOC_STATE, LOCK_SPINS, LOCK_WAITS}
 use std::mem::{
-    align_of, compare_swap, copy, count, heap_base, load_u32, memory_grow, memory_pages, size_of,
-    store_u32, thread_block, wait_for, write,
+    align_of, atomic_load, compare_swap, copy, count, heap_base, load_u32, memory_grow,
+    memory_pages, notify, size_of, store_u32, thread_block, wait, write,
 }
 
 // The allocator's words, from ALLOC_STATE on.
@@ -183,31 +183,56 @@ fn carve(n: u32) -> u32 {
     }
 }
 
-/// Takes the allocator's lock: workers share the heap. A thread that finds it taken counts the
-/// wait and its tries (only this thread writes its counts, wrapping); after many tries it waits
-/// a little between them (`SPINS_BEFORE_WAITING`) rather than spin, so a long hold (a large
-/// block's memory growing) doesn't keep a core busy.
+/// Takes the allocator's lock: workers share the heap. The lock's word is 0 when it's free, 1
+/// when a thread holds it, and 2 when a thread holds it and another may be asleep on it. A thread
+/// that finds it taken spins a while (holds are short), then marks it 2 and sleeps until the
+/// holder lets go (`unlock` wakes a sleeper). It counts the wait and its tries (only this thread
+/// writes its counts, wrapping).
 fn lock() {
     unsafe {
-        if compare_swap(LOCK, expected: 0, new: 1) != 0 {
-            var spins: u32 = 1
-            while compare_swap(LOCK, expected: 0, new: 1) != 0 {
-                spins = spins.wrapping_add(1)
-                if spins % SPINS_BEFORE_WAITING == 0 {
-                    let _ = wait_for(LOCK, expected: 1, micros: 20)
+        if compare_swap(LOCK, expected: 0, new: 1) == 0 {
+            return
+        }
+        var spins: u32 = 1
+        loop {
+            if spins < SPINS_BEFORE_SLEEPING {
+                if compare_swap(LOCK, expected: 0, new: 1) == 0 {
+                    break
                 }
+            } else {
+                // Taken with the mark of a sleeper on it: whoever lets it go wakes one.
+                if exchange_lock(2) == 0 {
+                    break
+                }
+                let _ = wait(LOCK, 2)
             }
-            count(LOCK_WAITS, 1)
-            count(LOCK_SPINS, spins)
+            spins = spins.wrapping_add(1)
+        }
+        count(LOCK_WAITS, 1)
+        count(LOCK_SPINS, spins)
+    }
+}
+
+/// Lets the allocator's lock go, waking a thread asleep on it if one may be.
+fn unlock() {
+    unsafe {
+        if exchange_lock(0) == 2 {
+            let _ = notify(LOCK, 1)
         }
     }
 }
 
-/// How many tries a thread spins on the lock before it waits between tries.
-const SPINS_BEFORE_WAITING: u32 = 4096
-
-fn unlock() {
+/// Puts `new` in the lock's word, atomically: what was there.
+fn exchange_lock(new: u32) -> u32 {
     unsafe {
-        store_u32(LOCK, 0)
+        loop {
+            let old = atomic_load(LOCK)
+            if compare_swap(LOCK, expected: old, new: new) == old {
+                return old
+            }
+        }
     }
 }
+
+/// How many tries a thread spins on the lock before it sleeps on it.
+const SPINS_BEFORE_SLEEPING: u32 = 2048

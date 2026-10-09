@@ -71,6 +71,8 @@ pub fn read_embeds(checked: &Checked, dirs: &[std::path::PathBuf]) -> (Embeds, V
 pub struct ConstStats {
     pub computed: u32,
     pub cached: u32,
+    /// How many chunks of the computed constants' parallel jobs the build's helpers ran.
+    pub helped: u64,
 }
 
 /// Computes the program's computed constants into `data` (whose files `embed` reads are
@@ -135,6 +137,10 @@ pub fn compute(
                             stats.computed += 1;
                             let export = &module.exports[0].1;
                             let r = run_one(checked, sources, &compiled, export, c, fuel)
+                                .map(|(v, helped)| {
+                                    stats.helped += u64::from(helped);
+                                    v
+                                })
                                 .map_err(|d| *d);
                             if let (Ok(v), Some(dir)) = (&r, cache) {
                                 const_cache::put(dir, &key, v);
@@ -345,7 +351,7 @@ fn run_one(
     export: &str,
     c: ConstId,
     fuel: u64,
-) -> Result<wrela_lower::Value, Box<Diagnostic>> {
+) -> Result<(wrela_lower::Value, u32), Box<Diagnostic>> {
     let mut running =
         compiled.start(engine(), true).map_err(|m| Box::new(Diagnostic::internal(m)))?;
     let Mem::Shared(shared) = &running.memory else {
@@ -356,6 +362,10 @@ fn run_one(
     let result = running.call(export, fuel);
     let main_used = running.used(fuel);
     let ran = helpers.finish();
+    let helped = running.read(|bytes| {
+        let at = wrela_abi::memory::PAR_HELPED as usize;
+        bytes.get(at..at + 4).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    });
     let used: u64 = main_used + ran.iter().map(|r| r.used).sum::<u64>();
     let helper_out_of_fuel = ran.iter().any(|r| r.out_of_fuel);
     let out_of_fuel = |frames| Fault {
@@ -367,7 +377,7 @@ fn run_one(
     match result {
         Ok(addr) if used <= fuel => running.read(|bytes| {
             let mem = Memory { bytes };
-            wrela_lower::read_value(checked, c, &mem, addr).map_err(|e| {
+            wrela_lower::read_value(checked, c, &mem, addr).map(|v| (v, helped)).map_err(|e| {
                 Box::new(Diagnostic::internal(format!(
                     "reading the value of `{}`: {e}",
                     checked.program.const_(c).name

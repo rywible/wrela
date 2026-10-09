@@ -914,7 +914,7 @@ fn the_walks_own_tests_pass() {
 /// The engine's own tests (`@test`s in engine/), on the CPU.
 #[test]
 fn the_engines_own_tests_pass() {
-    assert_eq!(super::tests_pass(&repo_root().join("engine")), 1);
+    assert_eq!(super::tests_pass(&repo_root().join("engine")), 2);
 }
 
 /// AC4: the grass is placed on the GPU round the eye and follows it: over the camera's path

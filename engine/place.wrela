@@ -1,0 +1,715 @@
+// A floor's map (M6 §2): what its author decides, as types. The land's big shapes, the sites and
+// keystones, what each must do for a player (relations), the openings and what keeps each open in
+// the present (keepers), the water, the routes, the events by year, and the regions with the
+// character of their forest. A history (`grow`) grows the floor round it, and the interest check
+// (`interest`) measures what a player standing anywhere would see.
+//
+// And positions that keep their precision however far a player walks: a tile and an offset in it
+// (`Place`), the unit a floor streams in.
+//
+//     map ──refuse──▶ (every opening kept in the present) ──grow──▶ history ──interest──▶ check
+//
+// Names are `Text` in the map's tables, which only CPU code reads (the GPU reads a site's place).
+
+use noise::{fbm2, noise2}
+use sim::SimState
+use std::hash::StateHash
+use std::serialize::Serialize
+
+// ---- tiles and places ---------------------------------------------------------------------------
+
+/// A tile's side (m): the unit a floor streams in, and the grain of a place's tile.
+pub const TILE: f32 = 256.0
+
+/// A place on the plane: a tile and where in it (from its corner, each in [0, TILE)), so a
+/// position keeps its precision however far it is from the origin. An `f32` world position is a
+/// metre wrong after a minute's walk 10 km out (spike 17); a place's offset is never larger than a
+/// tile.
+pub struct Place: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub tile: vec2i,
+    pub local: vec2,
+}
+
+impl Place {
+    /// The place at world point `p` (x, z).
+    pub fn of(p: vec2) -> Place {
+        Place { tile: vec2i(0), local: vec2(0.0) }.moved(p)
+    }
+
+    /// The place at world point `p` given in `f64`s, exact to far beyond a floor.
+    pub fn of_f64(x: f64, z: f64) -> Place {
+        let t = vec2i(i32(floor(x / f64(TILE))), i32(floor(z / f64(TILE))))
+        let local = vec2(f32(x - f64(t.x) * f64(TILE)), f32(z - f64(t.y) * f64(TILE)))
+        Place { tile: t, local }.moved(vec2(0.0))
+    }
+
+    /// This place moved by `d` (m): its tile changes as it leaves the tile.
+    pub fn moved(self, d: vec2) -> Place {
+        var local = self.local + d
+        let shift = vec2i(floor(local / TILE))
+        var tile = self.tile + shift
+        local -= vec2(shift) * TILE
+        // Rounding can leave an offset of exactly TILE: the next tile's corner.
+        if local.x >= TILE {
+            local.x -= TILE
+            tile.x += 1
+        }
+        if local.y >= TILE {
+            local.y -= TILE
+            tile.y += 1
+        }
+        Place { tile, local }
+    }
+
+    /// Where `other` is from this place (m): exact while they're within a few tiles.
+    pub fn to(self, other: Place) -> vec2 {
+        vec2(other.tile - self.tile) * TILE + (other.local - self.local)
+    }
+
+    /// Where this place is from the corner of tile `origin` (m): render space, whose origin is a
+    /// tile near the camera, so what's drawn near the camera keeps its precision.
+    pub fn from_tile(self, origin: vec2i) -> vec2 {
+        vec2(self.tile - origin) * TILE + self.local
+    }
+
+    /// The world point, as an `f32` (a millimetre wrong 10 km out; for the floor near the origin).
+    pub fn world(self) -> vec2 {
+        vec2(self.tile) * TILE + self.local
+    }
+
+    /// The world point in `f64`s.
+    pub fn world_f64(self) -> vec2d {
+        vec2d(
+            f64(self.tile.x) * f64(TILE) + f64(self.local.x),
+            f64(self.tile.y) * f64(TILE) + f64(self.local.y),
+        )
+    }
+}
+
+impl SimState for vec2i {}
+
+/// The tile that holds world point `p`.
+pub fn tile_of(p: vec2) -> vec2i {
+    vec2i(floor(p / TILE))
+}
+
+// ---- the land's big shapes ----------------------------------------------------------------------
+
+/// The land's big shapes, as fields over the plane that a floor's terrain composes (on the CPU,
+/// for the history and the sim, and on the GPU, as the clipmap cooks it: one field). Each list
+/// ends at its first entry whose size is 0.
+pub struct Land: Copy + GpuData {
+    /// Hills: (x, z, radius, height): a broad top falling to nothing at the radius.
+    pub hills: [vec4; 8],
+    /// Hollows: (x, z, radius, depth).
+    pub hollows: [vec4; 8],
+    /// Ridges: each a run of points (x, z, height, half-width), a point of half-width 0 ending a
+    /// ridge; a bell across each segment, the highest of them.
+    pub ridges: [vec4; 24],
+    /// Ravines: each a run of points (x, z, depth, half-width at the rim), ended as ridges are;
+    /// a bed a third as wide, falling `fall` metres more toward its last point (`ravine_fall`).
+    pub ravines: [vec4; 16],
+    pub ravine_fall: f32,
+    /// Crags: (x, z, height, foot radius): steep-sided, flat-ish on top, rock. A ramp of scree
+    /// climbs each from the direction `ramps[i]` (radians from +x toward +z), so its top can be
+    /// reached on foot.
+    pub crags: [vec4; 4],
+    pub ramps: vec4,
+    /// The plateau's tilt: rising `tilt.z` metres along (x, y), over `tilt.w` metres.
+    pub tilt: vec4,
+}
+
+/// The distance from `p` to segment `a`–`b`, and how far along it the nearest point is (0 to 1).
+pub fn to_segment(p: vec2, a: vec2, b: vec2) -> (f32, f32) {
+    let ab = b - a
+    let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
+    (length(p - a - ab * t), t)
+}
+
+impl Land {
+    /// The shapes' height at `p` (m), over a gentle roll.
+    pub fn height(self, p: vec2) -> f32 {
+        let t = self.tilt
+        var y = t.z * clamp(dot(p, t.xy) / max(t.w, 1.0), 0.0, 1.0)
+        y += 3.0 * (fbm2(p * 0.006 + vec2(3.0, 9.0), 3) - 0.5)
+        y += self.ridge(p)
+        for h in self.hills {
+            if h.z > 0.0 {
+                y += h.w * (1.0 - smoothstep(0.1, 1.0, length(p - h.xy) / h.z))
+            }
+        }
+        for h in self.hollows {
+            if h.z > 0.0 {
+                y -= h.w * (1.0 - smoothstep(0.3 * h.z, h.z, length(p - h.xy)))
+            }
+        }
+        for i in 0..4 {
+            let c = self.crags[i]
+            if c.w > 0.0 {
+                y += crag(p, c, self.ramps[i])
+            }
+        }
+        y - self.ravine(p)
+    }
+
+    /// The ridges' height at `p`: each segment's bell across it, the highest.
+    pub fn ridge(self, p: vec2) -> f32 {
+        var best = 0.0
+        for i in 0..23 {
+            let a = self.ridges[i]
+            let b = self.ridges[i + 1]
+            if a.w > 0.0 && b.w > 0.0 {
+                let (d, t) = to_segment(p, a.xy, b.xy)
+                let h = mix(a.z, b.z, t)
+                let w = mix(a.w, b.w, t)
+                best = max(best, h * exp(-(d * d) / (w * w)))
+            }
+        }
+        best
+    }
+
+    /// How deep the ravines cut at `p`, and how far along the nearest one it is (m from its first
+    /// point), and how far from its course.
+    pub fn ravine_at(self, p: vec2) -> vec3 {
+        var best = 1.0e9
+        var along = 0.0
+        var cut = 0.0
+        var walked = 0.0
+        var length_of = 0.0
+        for i in 0..15 {
+            let a = self.ravines[i]
+            let b = self.ravines[i + 1]
+            if a.w > 0.0 && b.w > 0.0 {
+                let (d, t) = to_segment(p, a.xy, b.xy)
+                let len = length(b.xy - a.xy)
+                if d < best {
+                    best = d
+                    along = walked + t * len
+                    let w = mix(a.w, b.w, t)
+                    let depth = mix(a.z, b.z, t)
+                    cut = depth * (1.0 - smoothstep(w * 0.3, w, d + 1.5 * (noise2(p * 0.15) - 0.5)))
+                }
+                walked += len
+            } else if a.w > 0.0 {
+                length_of = walked
+                walked = 0.0
+            }
+        }
+        if length_of == 0.0 {
+            length_of = walked
+        }
+        vec3(cut, along, best)
+    }
+
+    /// How deep the ravines cut at `p`: its depth, its bed falling `ravine_fall` more toward its
+    /// end.
+    pub fn ravine(self, p: vec2) -> f32 {
+        let r = self.ravine_at(p)
+        if r.x <= 0.0 {
+            return 0.0
+        }
+        r.x * (1.0 + self.ravine_fall / max(self.ravines[0].z, 1.0) * clamp(r.y / 600.0, 0.0, 1.0))
+    }
+
+    /// How much of `p` is a crag's rock (0 to 1): its faces and its top.
+    pub fn crag_rock(self, p: vec2) -> f32 {
+        var r = 0.0
+        for c in self.crags {
+            if c.w > 0.0 {
+                let d = length(p - c.xy) + 2.5 * (noise2(p * 0.2) - 0.5)
+                r = max(r, 1.0 - smoothstep(c.w * 0.9, c.w * 1.25, d))
+            }
+        }
+        r
+    }
+}
+
+/// A crag at `c` (x, z, height, foot radius): steep-sided, its top flat-ish, with a ramp of scree
+/// up from the direction `ramp` (radians), so a player can climb it.
+pub fn crag(p: vec2, c: vec4, ramp: f32) -> f32 {
+    let k = p - c.xy
+    let r = length(k) + 2.5 * (noise2(p * 0.2) - 0.5)
+    let body = c.z * (1.0 - smoothstep(0.35 * c.w, c.w, r)) +
+        3.0 * exp(-dot(k, k) / (c.w * c.w * 2.0))
+    // The ramp: a wedge whose top meets the crag's at its rim, falling to the ground over three
+    // feet's widths.
+    let dir = vec2(cos(ramp), sin(ramp))
+    let along = dot(k, dir)
+    let across = abs(dot(k, vec2(-dir.y, dir.x)))
+    let reach = 3.2 * c.w
+    let ramp_h = c.z *
+        (1.0 - smoothstep(0.35 * c.w, reach, along)) *
+        (1.0 - smoothstep(4.0, 9.0, across)) *
+        smoothstep(-2.0, 0.35 * c.w, along)
+    max(body, ramp_h)
+}
+
+// ---- sites, relations, openings and keepers ----------------------------------------------------
+
+/// What a site is for (#44's anatomy): where a player arrives, the town's site, an anchor (room
+/// for an elite's fight), the Warden's arena, a rest point, a waystone, an echo's site, a view, or
+/// a landmark seen from afar.
+pub enum SiteKind: Copy + Eq + Fieldless {
+    Gate,
+    Town,
+    Anchor,
+    Arena,
+    Rest,
+    Waystone,
+    Echo,
+    View,
+    Landmark,
+}
+
+/// What stands at a site, for the history (what it does to the forest), the check (how it draws
+/// the eye) and the floor (what's built there).
+pub enum Feature: Copy + Eq + Fieldless {
+    /// Nothing built: the place itself (a glade, a shore, a bend of a trail).
+    Ground,
+    Tree,
+    Tower,
+    Crag,
+    Ring,
+    Stone,
+    Ruin,
+    Glade,
+    Vista,
+    Water,
+    Fall,
+}
+
+/// A site: what it's for and what stands there, where (x, z), how tall it stands above the
+/// ground and how far it reaches on the plane (m), and how strongly it draws the eye (0 to 1).
+pub struct Site: Copy {
+    pub kind: SiteKind,
+    pub feature: Feature,
+    pub at: vec2,
+    pub tall: f32 = 0.0,
+    pub reach: f32 = 6.0,
+    pub salience: f32 = 0.4,
+    pub name: Text,
+}
+
+impl Site {
+    /// Whether the check draws a player to it as a keystone (an echo's site is small, found by
+    /// coming near; its features draw where it's lit).
+    pub fn keystone(self) -> bool {
+        self.kind != SiteKind::Rest && (self.kind != SiteKind::Echo || self.salience >= 0.5)
+    }
+
+    /// Whether it opens the forest round it (a glade, a view, water): the check sees it across
+    /// its breadth, not up its height.
+    pub fn open(self) -> bool {
+        self.feature == Feature::Glade ||
+            self.feature == Feature::Vista ||
+            self.feature == Feature::Water
+    }
+}
+
+/// What a relation asks of a site: to be seen from a place (a sightline the history keeps open),
+/// or to stay hidden until a player reaches it (a reveal: the land hides it before).
+pub enum Relation: Copy + Eq {
+    Seen { from: vec2, within: f32, to: u32, landmark: bool, name: Text },
+    Hidden { from: vec2, within: f32, to: u32, name: Text },
+}
+
+impl Relation {
+    pub fn to(self) -> u32 {
+        match self {
+            Relation::Seen { to, .. } => to,
+            Relation::Hidden { to, .. } => to,
+        }
+    }
+
+    pub fn from(self) -> vec2 {
+        match self {
+            Relation::Seen { from, .. } => from,
+            Relation::Hidden { from, .. } => from,
+        }
+    }
+
+    pub fn within(self) -> f32 {
+        match self {
+            Relation::Seen { within, .. } => within,
+            Relation::Hidden { within, .. } => within,
+        }
+    }
+
+    pub fn name(self) -> Text {
+        match self {
+            Relation::Seen { name, .. } => name,
+            Relation::Hidden { name, .. } => name,
+        }
+    }
+
+    /// Whether its site must be made out as a landmark: its visible part at least 1° tall.
+    pub fn landmark(self) -> bool {
+        match self {
+            Relation::Seen { landmark, .. } => landmark,
+            Relation::Hidden { .. } => false,
+        }
+    }
+}
+
+/// What keeps an opening open in the present: grazing (a herd's route reaches it), people (while
+/// they live there), bare rock, water, a recent event, or nothing.
+pub enum Keeper: Copy + Eq {
+    Nothing,
+    Grazing,
+    People { from: i32, to: i32 },
+    Rock,
+    Water,
+    Event { year: i32 },
+}
+
+/// How recent an event's opening is in the present to be kept by it: a history closes a gap in
+/// some decades.
+pub const RECENT: i32 = 60
+
+/// An opening the author wants in the forest: a lawn, a hilltop kept clear, a glade, and what
+/// keeps it open.
+pub struct Opening: Copy {
+    pub at: vec2,
+    pub radius: f32,
+    pub keeper: Keeper,
+    pub name: Text,
+}
+
+/// What a route is: an old road (people laid it), a herd's route, or a trail of the critical
+/// path (worn by the herd and the deer, as a herd's route is).
+pub enum RouteKind: Copy + Eq + Fieldless {
+    Road,
+    Herd,
+    Trail,
+}
+
+/// A route over the plane: its points, how wide it's kept clear (m), and what keeps it.
+pub struct Route {
+    pub kind: RouteKind,
+    pub points: Vec<vec2>,
+    pub width: f32,
+    pub keeper: Keeper,
+    pub name: Text,
+}
+
+impl Route {
+    /// The distance from `p` to the route (m), and how far along it the nearest point is (m).
+    pub fn distance(self, p: vec2) -> vec2 {
+        var best = 1.0e9
+        var along = 0.0
+        var walked = 0.0
+        for i in 0..self.points.len() - 1 {
+            let a = self.points[i]
+            let b = self.points[i + 1]
+            let (d, t) = to_segment(p, a, b)
+            let len = length(b - a)
+            if d < best {
+                best = d
+                along = walked + t * len
+            }
+            walked += len
+        }
+        vec2(best, along)
+    }
+
+    /// Its length (m).
+    pub fn length(self) -> f32 {
+        var l = 0.0
+        for i in 0..self.points.len() - 1 {
+            l += length(self.points[i + 1] - self.points[i])
+        }
+        l
+    }
+}
+
+/// The water the author places: meres (x, z, radius, level: the water's height), springs where
+/// streams rise, and the points where water falls off the land. The history's flow decides the
+/// streams' courses between.
+pub struct Water: Copy {
+    pub meres: [vec4; 2],
+    pub springs: [vec2; 8],
+    pub spring_count: u32,
+    pub falls: [vec2; 2],
+}
+
+/// What happens in a year of the history.
+pub enum EventKind: Copy + Eq {
+    /// Wind throws the tall trees in a swath round `at`, toward `dir`.
+    Storm { at: vec2, reach: f32, dir: vec2, share: f32 },
+    /// A fire kills every tree within reach; they stand, silvered.
+    Fire { at: vec2, reach: f32 },
+    /// The tallest tree of species `kind` within `reach` of `at` falls across toward `toward`.
+    Fall { at: vec2, reach: f32, kind: u32, toward: vec2 },
+    /// Lightning kills the tallest tree within reach; it stands.
+    Strike { at: vec2, reach: f32 },
+    /// Small gaps through the whole wood, each decade, block by block (the wind's).
+    Gaps { block: f32, chance: f32, radius: f32 },
+}
+
+pub struct Event: Copy {
+    pub year: i32,
+    pub kind: EventKind,
+    pub name: Text,
+}
+
+/// A tree the author keeps (a pin): planted in `year`, of species `kind`, kept alive.
+pub struct Kept: Copy {
+    pub at: vec2,
+    pub kind: u32,
+    pub year: i32,
+    pub name: Text,
+}
+
+/// How a region's forest grows: what browses it (deer through it, and seedlings eaten), the
+/// head room browsing keeps (the browse line, m), and the share of each of up to eight species
+/// its first trees are.
+pub struct Character: Copy {
+    pub deer: f32 = 0.12,
+    pub seedlings: f32 = 0.0,
+    pub browse_line: f32 = 0.0,
+    pub thinned: f32 = 0.0,
+}
+
+/// What a region's forest is like, by name (#54 §1).
+pub enum Kind: Copy + Eq + Fieldless {
+    WoodPasture,
+    HighForest,
+    Carr,
+    Pine,
+    Burn,
+    Windthrow,
+    Ravine,
+    Edge,
+}
+
+/// A region: its name, what it's like and how its forest grows, and its seed on the plane (a
+/// point belongs to the region whose seed is nearest, each seed's distance divided by its
+/// `weight`).
+pub struct Region: Copy {
+    pub name: Text,
+    pub kind: Kind,
+    pub at: vec2,
+    pub weight: f32 = 1.0,
+    pub character: Character,
+}
+
+/// The herd: when it comes, how many trips it makes a year, and where it drinks.
+pub struct Herd: Copy {
+    pub arrives: i32,
+    pub trips: u32,
+    pub drink: vec2,
+    pub rest: vec2,
+}
+
+/// A floor's map: everything its author decides, and nothing else.
+pub struct Map {
+    /// The authored land's square on the plane, and the history's last year (the present).
+    pub lo: vec2,
+    pub hi: vec2,
+    pub present: i32,
+    pub land: Land,
+    pub sites: Vec<Site>,
+    pub relations: Vec<Relation>,
+    pub openings: Vec<Opening>,
+    pub routes: Vec<Route>,
+    pub water: Water,
+    pub events: Vec<Event>,
+    pub kept: Vec<Kept>,
+    pub regions: Vec<Region>,
+    pub herd: Herd,
+}
+
+impl Map {
+    /// The region that holds `p` (its index): the one whose seed is nearest, by weight.
+    pub fn region_of(self, p: vec2) -> u32 {
+        var best = 0
+        var d = 1.0e12
+        var i = 0
+        for r in self.regions {
+            let e = length(p - r.at) / max(r.weight, 1.0e-3)
+            if e < d {
+                d = e
+                best = i
+            }
+            i += 1
+        }
+        best
+    }
+
+    /// The distance from `p` to the nearest route of `kind`, and that route's index.
+    pub fn to_route(self, p: vec2, kind: RouteKind) -> (f32, u32) {
+        var best = 1.0e9
+        var which = 0
+        var i = 0
+        for r in self.routes {
+            if r.kind == kind {
+                let d = r.distance(p).x
+                if d < best {
+                    best = d
+                    which = i
+                }
+            }
+            i += 1
+        }
+        (best, which)
+    }
+
+    /// Whether `p` is in the authored square.
+    pub fn inside(self, p: vec2) -> bool {
+        p.x >= self.lo.x && p.y >= self.lo.y && p.x < self.hi.x && p.y < self.hi.y
+    }
+
+    /// The site named `name`'s index (a misspelled name panics: in a constant, the build fails).
+    pub fn site(self, name: str) -> u32 {
+        var i = 0
+        for s in self.sites {
+            if s.name == name {
+                return i
+            }
+            i += 1
+        }
+        panic(f"the map has no site named `{name}`")
+    }
+
+    /// How many sites of kind `k` it has.
+    pub fn count(self, k: SiteKind) -> u32 {
+        var n = 0
+        for s in self.sites {
+            if s.kind == k {
+                n += 1
+            }
+        }
+        n
+    }
+}
+
+// ---- keepers: what's refused before the history runs ------------------------------------------
+
+/// Why the map can't be grown: an opening (or a route kept clear) with no keeper, or with one
+/// not at work in the present, by its index among the openings (or the routes) and its name.
+pub enum Refusal: Copy + Eq {
+    NoKeeper { opening: u32, name: Text },
+    KeeperGone { opening: u32, name: Text, why: Text },
+    RouteNotKept { route: u32, name: Text, why: Text },
+}
+
+impl Refusal {
+    /// What's wrong, in words.
+    pub fn say(self) -> String {
+        match self {
+            Refusal::NoKeeper { name, .. } => {
+                f"the opening `{name}` has no keeper: nothing keeps it open in the present, so the history closes it (name its keeper: grazing, rock, water, a recent event)"
+            },
+            Refusal::KeeperGone { name, why, .. } => {
+                f"the opening `{name}`'s keeper isn't at work in the present: {why}"
+            },
+            Refusal::RouteNotKept { name, why, .. } => {
+                f"the route `{name}` isn't kept in the present: {why}"
+            },
+        }
+    }
+}
+
+/// Whether `k`, keeping a place at `p` `radius` across, is at work in the map's present: why not,
+/// or nothing.
+fn keeper_gone(m: Map, k: Keeper, p: vec2, radius: f32) -> Option<Text> {
+    match k {
+        Keeper::Nothing => Some("it has none"),
+        Keeper::People { to, .. } => if to < m.present {
+            Some("its people left before the present")
+        } else { None },
+        Keeper::Event { year } => if m.present - year > RECENT {
+            Some("its event is too long before the present: the forest has closed it again")
+        } else { None },
+        Keeper::Grazing => {
+            if m.herd.arrives > m.present {
+                return Some("no herd grazes there in the present")
+            }
+            // A herd's route (or a trail it wears) reaches it.
+            var reached = false
+            for r in m.routes {
+                if r.kind != RouteKind::Road || r.keeper == Keeper::Grazing {
+                    reached = reached || r.distance(p).x < radius + 30.0
+                }
+            }
+            if reached { None } else { Some("no herd route reaches it") }
+        },
+        Keeper::Rock => if m.land.crag_rock(p) > 0.3 { None } else {
+            Some("there's no rock there: rock keeps a crag's top open")
+        },
+        Keeper::Water => {
+            var wet = false
+            for w in m.water.meres {
+                wet = wet || (w.z > 0.0 && length(p - w.xy) < w.z + radius)
+            }
+            for i in 0..m.water.spring_count {
+                wet = wet || length(p - m.water.springs[i]) < radius + 20.0
+            }
+            for f in m.water.falls {
+                wet = wet || length(p - f) < radius + 20.0
+            }
+            if wet { None } else { Some("no water the map places reaches it") }
+        },
+    }
+}
+
+/// Every reason the map can't be grown: each opening with no keeper, or one not at work in the
+/// present; each route kept clear by people who left (an old road with no herd on it). Checked
+/// before the history runs, which would otherwise close them (spike 17's first round lost three
+/// openings this way, found only after a 34 s history).
+pub fn refusals(m: Map) -> Vec<Refusal> {
+    var out: Vec<Refusal> = Vec::new()
+    var i = 0
+    for o in m.openings {
+        if o.keeper == Keeper::Nothing {
+            out.push(Refusal::NoKeeper { opening: i, name: o.name })
+        } else if let Some(why) = keeper_gone(m, o.keeper, o.at, o.radius) {
+            out.push(Refusal::KeeperGone { opening: i, name: o.name, why })
+        }
+        i += 1
+    }
+    var r = 0
+    for route in m.routes {
+        let p = route.points[route.points.len() / 2]
+        if let Some(why) = keeper_gone(m, route.keeper, p, route.width) {
+            out.push(Refusal::RouteNotKept { route: r, name: route.name, why })
+        }
+        r += 1
+    }
+    out
+}
+
+/// Refuses the map if it has a refusal (`refusals`): a panic naming every one, so a build that
+/// grows it fails before the history runs.
+pub fn refuse(m: Map) {
+    let r = refusals(m)
+    if r.len() > 0 {
+        var text = String::new()
+        for x in r {
+            text.push_str(x.say().as_str())
+            text.push_str("; ")
+        }
+        panic(f"the map can't be grown: {text}")
+    }
+}
+
+// ---- tests -----------------------------------------------------------------------------------------
+
+/// A place stepped a minute at a walk, 60 Hz, ends where an `f64` walk does within 5 cm, 10 km and
+/// 1,000 km out; `f32` positions drift a metre at 10 km (spike 17: 1.03 m).
+@test
+fn a_place_keeps_its_precision_far_out() {
+    for far in [0.0, 10000.0, 1000000.0] {
+        let start = Place::of_f64(far, -0.5 * far)
+        let v = vec2(cos(0.7), sin(0.7)) * 1.4
+        var p = start
+        for _ in 0..3600 {
+            p = p.moved(v * (1.0 / 60.0))
+        }
+        let end = p.world_f64()
+        let s = start.world_f64()
+        let want = s + vec2d(f64(v.x), f64(v.y)) * 60.0
+        let off = length(end - want)
+        assert(off < 0.05, f"{far} m out, a minute's walk ends {off} m off")
+    }
+}

@@ -23,6 +23,7 @@ pub mod primer;
 pub mod query;
 pub mod refactor;
 pub mod serve;
+pub mod shipped;
 pub mod studio;
 
 /// std's modules: each one's path and source.
@@ -476,6 +477,14 @@ fn compile_loaded(
     if !lift.is_empty() && !has_errors(&diagnostics) {
         data.lift = Some(lift::table(&checked, &sources, &lifted_files));
     }
+    // A build that's emitted ships its shipped constants' files; one that's only checked, or run
+    // as tests, keeps their bytes.
+    let mut shipped_files = Vec::new();
+    if mode.emit && !has_errors(&diagnostics) {
+        let (f, d) = shipped::take(&checked, &mut data);
+        shipped_files = f;
+        diagnostics.extend(d);
+    }
     if !has_errors(&diagnostics) {
         let roots = roots(&checked);
         let (lowered, d) = wrela_lower::lower(&checked, &roots, &data, mode.emit);
@@ -489,6 +498,7 @@ fn compile_loaded(
             let out = build::emit(&lowered, &sources, !data.no_simd, budgets);
             diagnostics.extend(out.diagnostics);
             files = out.files;
+            files.append(&mut shipped_files);
             if let Some(t) = &data.lift {
                 files.push(("lift.json".into(), lift::report(&checked, &sources, t).into_bytes()));
             }

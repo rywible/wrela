@@ -1,0 +1,1265 @@
+// The Last Green's floor, as its author decides it (#54 §1, §2): the land's big shapes, its sites
+// (#44's anatomy: a gate, a town's site, four anchors, a Warden's arena, rest points, waystones,
+// echoes' sites, views), what each must do for a player, the openings and what keeps each open in
+// the present, the water, the routes, the events by year, and the regions with the character of
+// their forest. Nothing else: the history grows the forest round it (`engine::grow`), and the
+// interest check measures it (`engine::interest`). A literal here is what the map lens drags.
+//
+// Metres; +y up. The clearing (M5's) is at the origin; the plateau's edge cuts the square's
+// north-west corner off, past which the land falls to the valley.
+
+use engine::place::{
+    Character, Event, EventKind, Feature, Herd, Keeper, Kept, Kind, Land, Map, Opening, Region,
+    Relation, Route, RouteKind, Site, SiteKind, Water,
+}
+
+/// The history's present: its last year, the floor as a player finds it.
+pub const PRESENT: i32 = 900
+
+/// The authored square.
+pub const LO = vec2(-350.0, -1300.0)
+pub const HI = vec2(1700.0, 250.0)
+
+/// The species' indices (species.wrela).
+pub const OAK: u32 = 0
+pub const BEECH: u32 = 1
+pub const BIRCH: u32 = 2
+pub const THORN: u32 = 3
+pub const SLOE: u32 = 4
+pub const PINE: u32 = 5
+pub const ALDER: u32 = 6
+
+/// The great oak's knoll, the clearing's (M5's `KNOLL`).
+pub const KNOLL = vec2(7.0, 33.0)
+
+/// The land's big shapes: the Spine, a ridge across the floor's north with the crag on its high
+/// point; the Watch, the tower's hill; the Sink, a hollow the mere fills; the Cut, a ravine from
+/// the mere to the plateau's edge, where its stream falls; the Fang, a second crag over the pines
+/// in the east; the quarry's face; and the rock at the edge's view.
+pub fn land() -> Land {
+    Land {
+        hills: [
+            vec4(560.0, -470.0, 150.0, 40.0),
+            vec4(1300.0, -700.0, 260.0, 22.0),
+            vec4(700.0, -1050.0, 220.0, 9.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+        ],
+        hollows: [
+            vec4(255.0, -385.0, 95.0, 9.0),
+            vec4(1450.0, -1150.0, 70.0, 3.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+        ],
+        ridges: [
+            vec4(90.0, -230.0, 5.0, 38.0),
+            vec4(330.0, -150.0, 17.0, 46.0),
+            vec4(520.0, -40.0, 12.0, 44.0),
+            vec4(740.0, 60.0, 5.0, 40.0),
+            vec4(0.0),
+            vec4(1050.0, -320.0, 4.0, 50.0),
+            vec4(1300.0, -650.0, 14.0, 70.0),
+            vec4(1500.0, -950.0, 6.0, 60.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+        ],
+        ravines: [
+            vec4(185.0, -392.0, 7.0, 11.0),
+            vec4(110.0, -352.0, 7.0, 11.0),
+            vec4(40.0, -322.0, 7.0, 11.0),
+            vec4(-60.0, -262.0, 7.0, 11.0),
+            vec4(-150.0, -205.0, 7.0, 11.0),
+            vec4(-235.0, -150.0, 7.0, 11.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+            vec4(0.0),
+        ],
+        ravine_fall: 5.0,
+        crags: [
+            vec4(330.0, -150.0, 14.0, 22.0),
+            vec4(1310.0, -660.0, 16.0, 20.0),
+            vec4(1225.0, -925.0, 8.0, 16.0),
+            vec4(-300.0, -345.0, 4.0, 12.0),
+        ],
+        ramps: vec4(3.6, 2.4, 0.9, 0.3),
+        tilt: vec4(0.74, -0.67, 12.0, 800.0),
+    }
+}
+
+/// The map.
+pub fn map() -> Map {
+    var sites: Vec<Site> = Vec::new()
+    // The gate, where a player arrives: the clearing's foot.
+    sites.push(
+        Site {
+            kind: SiteKind::Gate,
+            feature: Feature::Ground,
+            at: vec2(-1.5, -2.0),
+            reach: 8.0,
+            salience: 0.2,
+            name: "the gate",
+        },
+    )
+    // The anchors, each with room for an elite's fight; the Warden's arena; the town's site.
+    sites.push(
+        Site {
+            kind: SiteKind::Anchor,
+            feature: Feature::Tower,
+            at: vec2(560.0, -470.0),
+            tall: 22.0,
+            reach: 6.0,
+            salience: 1.0,
+            name: "the tower",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Anchor,
+            feature: Feature::Ring,
+            at: vec2(40.0, -455.0),
+            tall: 2.6,
+            reach: 9.0,
+            salience: 0.6,
+            name: "the ring",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Anchor,
+            feature: Feature::Ruin,
+            at: vec2(900.0, -200.0),
+            tall: 4.0,
+            reach: 12.0,
+            salience: 0.5,
+            name: "the burnt hall",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Anchor,
+            feature: Feature::Stone,
+            at: vec2(1200.0, -900.0),
+            tall: 8.0,
+            reach: 18.0,
+            salience: 0.5,
+            name: "the old quarry",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Arena,
+            feature: Feature::Ring,
+            at: vec2(1450.0, -1150.0),
+            tall: 3.5,
+            reach: 30.0,
+            salience: 0.7,
+            name: "the warden's arena",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Town,
+            feature: Feature::Glade,
+            at: vec2(450.0, -850.0),
+            reach: 45.0,
+            salience: 0.5,
+            name: "the town's site",
+        },
+    )
+    // The landmarks: the crag on the Spine, and the Fang over the pines.
+    sites.push(
+        Site {
+            kind: SiteKind::Landmark,
+            feature: Feature::Crag,
+            at: vec2(330.0, -150.0),
+            tall: 21.0,
+            reach: 14.0,
+            salience: 0.8,
+            name: "the crag",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Landmark,
+            feature: Feature::Crag,
+            at: vec2(1310.0, -660.0),
+            tall: 22.0,
+            reach: 14.0,
+            salience: 0.8,
+            name: "the fang",
+        },
+    )
+    // Views out and down.
+    sites.push(
+        Site {
+            kind: SiteKind::View,
+            feature: Feature::Vista,
+            at: vec2(-22.0, 60.0),
+            reach: 15.0,
+            salience: 0.6,
+            name: "the gap",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::View,
+            feature: Feature::Fall,
+            at: vec2(-205.0, -168.0),
+            reach: 12.0,
+            salience: 0.6,
+            name: "the lip",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::View,
+            feature: Feature::Vista,
+            at: vec2(-300.0, -345.0),
+            reach: 12.0,
+            salience: 0.5,
+            name: "the edge",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::View,
+            feature: Feature::Water,
+            at: vec2(255.0, -385.0),
+            reach: 55.0,
+            salience: 0.6,
+            name: "the mere",
+        },
+    )
+    // Rest points.
+    sites.push(
+        Site {
+            kind: SiteKind::Rest,
+            feature: Feature::Stone,
+            at: vec2(-6.0, 10.0),
+            tall: 1.0,
+            reach: 2.0,
+            name: "the clearing's rest",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Rest,
+            feature: Feature::Stone,
+            at: vec2(520.0, -420.0),
+            tall: 1.0,
+            reach: 2.0,
+            name: "the watch's rest",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Rest,
+            feature: Feature::Stone,
+            at: vec2(215.0, -360.0),
+            tall: 1.0,
+            reach: 2.0,
+            name: "the shore's rest",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Rest,
+            feature: Feature::Stone,
+            at: vec2(480.0, -805.0),
+            tall: 1.0,
+            reach: 2.0,
+            name: "the town's rest",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Rest,
+            feature: Feature::Stone,
+            at: vec2(1340.0, -1075.0),
+            tall: 1.0,
+            reach: 2.0,
+            name: "the last rest",
+        },
+    )
+    // Waystones along the old road and the trails.
+    sites.push(
+        Site {
+            kind: SiteKind::Waystone,
+            feature: Feature::Stone,
+            at: vec2(150.0, -104.0),
+            tall: 1.8,
+            reach: 1.0,
+            salience: 0.35,
+            name: "the first waystone",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Waystone,
+            feature: Feature::Stone,
+            at: vec2(271.0, -176.0),
+            tall: 1.8,
+            reach: 1.0,
+            salience: 0.35,
+            name: "the spine's waystone",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Waystone,
+            feature: Feature::Stone,
+            at: vec2(473.0, -396.0),
+            tall: 1.8,
+            reach: 1.0,
+            salience: 0.35,
+            name: "the watch's waystone",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Waystone,
+            feature: Feature::Stone,
+            at: vec2(104.0, -596.0),
+            tall: 1.8,
+            reach: 1.0,
+            salience: 0.35,
+            name: "the wood's waystone",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Waystone,
+            feature: Feature::Stone,
+            at: vec2(804.0, -446.0),
+            tall: 1.8,
+            reach: 1.0,
+            salience: 0.35,
+            name: "the burn's waystone",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Waystone,
+            feature: Feature::Stone,
+            at: vec2(1104.0, -596.0),
+            tall: 1.8,
+            reach: 1.0,
+            salience: 0.35,
+            name: "the pines' waystone",
+        },
+    )
+    // Echoes' sites: small things to find, through every region.
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Tree,
+            at: vec2(7.0, 33.0),
+            tall: 16.0,
+            reach: 9.0,
+            salience: 0.8,
+            name: "the great oak",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Tree,
+            at: vec2(40.0, -322.0),
+            tall: 1.5,
+            reach: 16.0,
+            salience: 0.5,
+            name: "the fallen giant",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Glade,
+            at: vec2(420.0, 160.0),
+            reach: 45.0,
+            salience: 0.4,
+            name: "the windthrow",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Stone,
+            at: vec2(-80.0, -60.0),
+            tall: 1.4,
+            name: "the boundary stone",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Tree,
+            at: vec2(60.0, 90.0),
+            tall: 9.0,
+            name: "the hollow oak",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Ruin,
+            at: vec2(200.0, 40.0),
+            tall: 1.2,
+            reach: 8.0,
+            name: "the old fold",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Stone,
+            at: vec2(380.0, 20.0),
+            tall: 1.6,
+            name: "the shepherd's cairn",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Tree,
+            at: vec2(620.0, 80.0),
+            tall: 3.0,
+            name: "the root plate",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Ruin,
+            at: vec2(750.0, -50.0),
+            tall: 0.8,
+            name: "the charcoal hearth",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Stone,
+            at: vec2(1000.0, -40.0),
+            tall: 2.0,
+            name: "the burn's cross",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Tree,
+            at: vec2(860.0, -160.0),
+            tall: 14.0,
+            name: "the silver snags",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Tree,
+            at: vec2(1150.0, -200.0),
+            tall: 2.0,
+            name: "the pine stump",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Water,
+            at: vec2(1400.0, -360.0),
+            reach: 8.0,
+            name: "the high pool",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Stone,
+            at: vec2(1560.0, -500.0),
+            tall: 2.2,
+            name: "the edge cairn",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Tree,
+            at: vec2(1500.0, -800.0),
+            tall: 2.0,
+            name: "the fallen pine",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Stone,
+            at: vec2(1600.0, -1050.0),
+            tall: 2.4,
+            name: "the far stones",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Stone,
+            at: vec2(1260.0, -1190.0),
+            tall: 2.0,
+            name: "the arena's gate stone",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Tree,
+            at: vec2(1000.0, -1100.0),
+            tall: 24.0,
+            name: "the beech giant",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Glade,
+            at: vec2(800.0, -1200.0),
+            reach: 20.0,
+            name: "the bowl",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Ruin,
+            at: vec2(600.0, -1150.0),
+            tall: 1.2,
+            reach: 10.0,
+            name: "the moss wall",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Glade,
+            at: vec2(350.0, -1100.0),
+            reach: 15.0,
+            name: "the dry pond",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Ruin,
+            at: vec2(150.0, -950.0),
+            tall: 1.0,
+            reach: 12.0,
+            name: "the woodbank",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Stone,
+            at: vec2(-200.0, -520.0),
+            tall: 1.5,
+            name: "the rock seat",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Water,
+            at: vec2(-40.0, -260.0),
+            reach: 6.0,
+            name: "the cut's pool",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Stone,
+            at: vec2(100.0, -650.0),
+            tall: 2.2,
+            name: "the ring's outlier",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Tree,
+            at: vec2(700.0, -650.0),
+            tall: 12.0,
+            name: "the pollard",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Tree,
+            at: vec2(900.0, -450.0),
+            tall: 6.0,
+            name: "the burnt stump",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Glade,
+            at: vec2(1050.0, -350.0),
+            reach: 12.0,
+            name: "the pine knoll",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Water,
+            at: vec2(420.0, -330.0),
+            reach: 4.0,
+            name: "the watch's spring",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Water,
+            at: vec2(300.0, -250.0),
+            reach: 4.0,
+            name: "the spine's spring",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Glade,
+            at: vec2(250.0, -560.0),
+            reach: 10.0,
+            name: "the deer's lie",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Ruin,
+            at: vec2(500.0, -1000.0),
+            tall: 2.5,
+            reach: 6.0,
+            name: "the woodman's hut",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Tree,
+            at: vec2(850.0, -850.0),
+            tall: 26.0,
+            name: "the beech hall",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Stone,
+            at: vec2(1300.0, -950.0),
+            tall: 3.0,
+            reach: 8.0,
+            name: "the quarry's spoil",
+        },
+    )
+    sites.push(
+        Site {
+            kind: SiteKind::Echo,
+            feature: Feature::Stone,
+            at: vec2(100.0, -350.0),
+            tall: 0.8,
+            reach: 6.0,
+            name: "the stream's stones",
+        },
+    )
+
+    let tower = 1
+    let crag = 7
+    let fang = 8
+    let mere = 12
+    var relations: Vec<Relation> = Vec::new()
+    // The tower: from the knoll (the clearing's promise of the floor), from the crag's top, and
+    // from the town's site in the beech wood.
+    relations.push(
+        Relation::Seen {
+            from: vec2(4.0, 26.0),
+            within: 6.0,
+            to: tower,
+            landmark: true,
+            name: "the tower from the knoll",
+        },
+    )
+    relations.push(
+        Relation::Seen {
+            from: vec2(330.0, -150.0),
+            within: 8.0,
+            to: tower,
+            landmark: true,
+            name: "the tower from the crag",
+        },
+    )
+    relations.push(
+        Relation::Seen {
+            from: vec2(450.0, -850.0),
+            within: 20.0,
+            to: tower,
+            landmark: true,
+            name: "the tower from the town's site",
+        },
+    )
+    // The crag: from the clearing's south side, from the mere's shore, from the Watch's top.
+    relations.push(
+        Relation::Seen {
+            from: vec2(14.0, 18.0),
+            within: 8.0,
+            to: crag,
+            landmark: true,
+            name: "the crag from the clearing",
+        },
+    )
+    relations.push(
+        Relation::Seen {
+            from: vec2(220.0, -372.0),
+            within: 12.0,
+            to: crag,
+            landmark: true,
+            name: "the crag from the shore",
+        },
+    )
+    relations.push(
+        Relation::Seen {
+            from: vec2(545.0, -455.0),
+            within: 12.0,
+            to: crag,
+            landmark: true,
+            name: "the crag from the watch",
+        },
+    )
+    // The Fang: from the burn, from the town's site, from the Warden's arena.
+    relations.push(
+        Relation::Seen {
+            from: vec2(900.0, -200.0),
+            within: 20.0,
+            to: fang,
+            landmark: true,
+            name: "the fang from the burn",
+        },
+    )
+    relations.push(
+        Relation::Seen {
+            from: vec2(470.0, -840.0),
+            within: 20.0,
+            to: fang,
+            landmark: true,
+            name: "the fang from the town's site",
+        },
+    )
+    relations.push(
+        Relation::Seen {
+            from: vec2(1440.0, -1140.0),
+            within: 20.0,
+            to: fang,
+            landmark: true,
+            name: "the fang from the arena",
+        },
+    )
+    // The mere: seen from the crag's top; hidden until the Spine's crest is crossed.
+    relations.push(
+        Relation::Seen {
+            from: vec2(330.0, -150.0),
+            within: 8.0,
+            to: mere,
+            landmark: false,
+            name: "the mere from the crag",
+        },
+    )
+    relations.push(
+        Relation::Hidden {
+            from: vec2(300.0, -200.0),
+            within: 30.0,
+            to: mere,
+            name: "the mere revealed at the crest",
+        },
+    )
+
+    var openings: Vec<Opening> = Vec::new()
+    openings.push(
+        Opening {
+            at: vec2(2.0, 24.0),
+            radius: 24.0,
+            keeper: Keeper::Grazing,
+            name: "the clearing's meadow",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(225.0, -372.0),
+            radius: 30.0,
+            keeper: Keeper::Grazing,
+            name: "the mere's shore",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(560.0, -470.0),
+            radius: 34.0,
+            keeper: Keeper::Grazing,
+            name: "the watch's top",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(450.0, -850.0),
+            radius: 45.0,
+            keeper: Keeper::Grazing,
+            name: "the town's site",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(900.0, -200.0),
+            radius: 70.0,
+            keeper: Keeper::Event { year: PRESENT - 45 },
+            name: "the burn",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(420.0, 160.0),
+            radius: 45.0,
+            keeper: Keeper::Event { year: PRESENT - 38 },
+            name: "the windthrow",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(1450.0, -1150.0),
+            radius: 35.0,
+            keeper: Keeper::Grazing,
+            name: "the warden's arena",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(1225.0, -925.0),
+            radius: 16.0,
+            keeper: Keeper::Rock,
+            name: "the quarry's floor",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(330.0, -150.0),
+            radius: 14.0,
+            keeper: Keeper::Rock,
+            name: "the crag's top",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(1310.0, -660.0),
+            radius: 12.0,
+            keeper: Keeper::Rock,
+            name: "the fang's top",
+        },
+    )
+    openings.push(
+        Opening {
+            at: vec2(40.0, -455.0),
+            radius: 16.0,
+            keeper: Keeper::Grazing,
+            name: "the ring's glade",
+        },
+    )
+    openings.push(
+        Opening { at: vec2(-218.0, -160.0), radius: 14.0, keeper: Keeper::Water, name: "the lip" },
+    )
+    openings.push(
+        Opening {
+            at: vec2(-300.0, -345.0),
+            radius: 12.0,
+            keeper: Keeper::Rock,
+            name: "the edge's view",
+        },
+    )
+
+    var routes: Vec<Route> = Vec::new()
+    // The old road, from the clearing up to the tower: people laid it out along the knoll's
+    // sightline, over the Spine at its waystone; the herd keeps it now they've gone.
+    routes.push(
+        Route {
+            kind: RouteKind::Road,
+            points: Vec::from(
+                [
+                    vec2(16.0, 14.0),
+                    vec2(150.0, -108.0),
+                    vec2(268.0, -180.0),
+                    vec2(370.0, -300.0),
+                    vec2(470.0, -400.0),
+                    vec2(545.0, -455.0),
+                ],
+            ),
+            width: 7.0,
+            keeper: Keeper::Grazing,
+            name: "the old road",
+        },
+    )
+    // The critical path's trails: from the tower down to the mere and the ring; through the
+    // beech wood to the town's site; north-east to the burn; south-east through the pines to the
+    // quarry and the Warden's arena.
+    routes.push(
+        Route {
+            kind: RouteKind::Trail,
+            points: Vec::from(
+                [
+                    vec2(545.0, -455.0),
+                    vec2(420.0, -420.0),
+                    vec2(300.0, -395.0),
+                    vec2(215.0, -372.0),
+                    vec2(130.0, -425.0),
+                    vec2(52.0, -452.0),
+                ],
+            ),
+            width: 4.0,
+            keeper: Keeper::Grazing,
+            name: "the shore trail",
+        },
+    )
+    routes.push(
+        Route {
+            kind: RouteKind::Trail,
+            points: Vec::from(
+                [vec2(40.0, -455.0), vec2(100.0, -600.0), vec2(250.0, -720.0), vec2(450.0, -850.0)],
+            ),
+            width: 4.0,
+            keeper: Keeper::Grazing,
+            name: "the wood trail",
+        },
+    )
+    routes.push(
+        Route {
+            kind: RouteKind::Trail,
+            points: Vec::from(
+                [
+                    vec2(450.0, -850.0),
+                    vec2(650.0, -700.0),
+                    vec2(800.0, -450.0),
+                    vec2(900.0, -200.0),
+                ],
+            ),
+            width: 4.0,
+            keeper: Keeper::Grazing,
+            name: "the burn trail",
+        },
+    )
+    routes.push(
+        Route {
+            kind: RouteKind::Trail,
+            points: Vec::from(
+                [
+                    vec2(900.0, -200.0),
+                    vec2(1050.0, -350.0),
+                    vec2(1100.0, -600.0),
+                    vec2(1200.0, -900.0),
+                    vec2(1300.0, -1050.0),
+                    vec2(1450.0, -1150.0),
+                ],
+            ),
+            width: 4.0,
+            keeper: Keeper::Grazing,
+            name: "the pine trail",
+        },
+    )
+    // The herd's own routes: along the Spine over the crag's foot to the burn, and from the mere
+    // down the Cut to the lip.
+    routes.push(
+        Route {
+            kind: RouteKind::Herd,
+            points: Vec::from(
+                [
+                    vec2(30.0, 10.0),
+                    vec2(150.0, -120.0),
+                    vec2(255.0, -160.0),
+                    vec2(318.0, -146.0),
+                    vec2(420.0, -95.0),
+                    vec2(520.0, -45.0),
+                    vec2(610.0, -150.0),
+                    vec2(900.0, -200.0),
+                ],
+            ),
+            width: 3.0,
+            keeper: Keeper::Grazing,
+            name: "the spine path",
+        },
+    )
+    routes.push(
+        Route {
+            kind: RouteKind::Herd,
+            points: Vec::from(
+                [
+                    vec2(215.0, -370.0),
+                    vec2(130.0, -425.0),
+                    vec2(52.0, -452.0),
+                    vec2(30.0, -400.0),
+                    vec2(40.0, -330.0),
+                    vec2(-20.0, -295.0),
+                    vec2(-110.0, -235.0),
+                    vec2(-190.0, -178.0),
+                ],
+            ),
+            width: 3.0,
+            keeper: Keeper::Grazing,
+            name: "the cut path",
+        },
+    )
+    routes.push(
+        Route {
+            kind: RouteKind::Herd,
+            points: Vec::from([vec2(-20.0, -10.0), vec2(-120.0, -200.0), vec2(-260.0, -330.0)]),
+            width: 3.0,
+            keeper: Keeper::Grazing,
+            name: "the edge path",
+        },
+    )
+    routes.push(
+        Route {
+            kind: RouteKind::Herd,
+            points: Vec::from(
+                [
+                    vec2(450.0, -850.0),
+                    vec2(600.0, -1150.0),
+                    vec2(800.0, -1200.0),
+                    vec2(1000.0, -1100.0),
+                ],
+            ),
+            width: 3.0,
+            keeper: Keeper::Grazing,
+            name: "the south path",
+        },
+    )
+
+    let water = Water {
+        meres: [vec4(255.0, -385.0, 62.0, 0.0), vec4(0.0)],
+        springs: [
+            vec2(420.0, -330.0),
+            vec2(300.0, -250.0),
+            vec2(0.0),
+            vec2(0.0),
+            vec2(0.0),
+            vec2(0.0),
+            vec2(0.0),
+            vec2(0.0),
+        ],
+        spring_count: 2,
+        falls: [vec2(-235.0, -150.0), vec2(0.0)],
+    }
+
+    var events: Vec<Event> = Vec::new()
+    // A storm out of the valley throws the trees where the clearing's meadow is now.
+    events.push(
+        Event {
+            year: PRESENT - 400,
+            kind: EventKind::Storm {
+                at: vec2(0.0, 18.0),
+                reach: 34.0,
+                dir: vec2(0.75, -0.66),
+                share: 0.9,
+            },
+            name: "the meadow's storm",
+        },
+    )
+    // A fire makes the burn; a gale the windthrow; the giant falls across the Cut.
+    events.push(
+        Event {
+            year: PRESENT - 45,
+            kind: EventKind::Fire { at: vec2(900.0, -200.0), reach: 85.0 },
+            name: "the fire",
+        },
+    )
+    events.push(
+        Event {
+            year: PRESENT - 38,
+            kind: EventKind::Storm {
+                at: vec2(420.0, 160.0),
+                reach: 48.0,
+                dir: vec2(-0.6, -0.8),
+                share: 0.85,
+            },
+            name: "the gale",
+        },
+    )
+    events.push(
+        Event {
+            year: PRESENT - 50,
+            kind: EventKind::Fall {
+                at: vec2(40.0, -322.0),
+                reach: 30.0,
+                kind: BEECH,
+                toward: vec2(40.0, -322.0),
+            },
+            name: "the giant's fall",
+        },
+    )
+    events.push(
+        Event {
+            year: PRESENT - 70,
+            kind: EventKind::Strike { at: vec2(-10.0, 54.0), reach: 8.0 },
+            name: "the lightning",
+        },
+    )
+    // The wind's small gaps through the whole wood, each decade.
+    events.push(
+        Event {
+            year: 0,
+            kind: EventKind::Gaps { block: 100.0, chance: 0.35, radius: 8.0 },
+            name: "the wind's gaps",
+        },
+    )
+
+    var kept: Vec<Kept> = Vec::new()
+    kept.push(Kept { at: KNOLL, kind: OAK, year: PRESENT - 380, name: "the great oak" })
+
+    var regions: Vec<Region> = Vec::new()
+    regions.push(
+        Region {
+            name: "the wood pasture",
+            kind: Kind::WoodPasture,
+            at: vec2(80.0, -40.0),
+            weight: 1.3,
+            character: Character { deer: 0.12, seedlings: 0.35, browse_line: 2.0 },
+        },
+    )
+    regions.push(
+        Region {
+            name: "the beech wood",
+            kind: Kind::HighForest,
+            at: vec2(550.0, -950.0),
+            weight: 1.7,
+            character: Character { deer: 0.03, seedlings: 0.02, browse_line: 0.0 },
+        },
+    )
+    regions.push(
+        Region {
+            name: "the alder carr",
+            kind: Kind::Carr,
+            at: vec2(255.0, -385.0),
+            weight: 0.65,
+            character: Character { deer: 0.06, seedlings: 0.1 },
+        },
+    )
+    regions.push(
+        Region {
+            name: "the pines",
+            kind: Kind::Pine,
+            at: vec2(1330.0, -720.0),
+            weight: 1.4,
+            character: Character { deer: 0.05, seedlings: 0.05 },
+        },
+    )
+    regions.push(
+        Region {
+            name: "the spine",
+            kind: Kind::Pine,
+            at: vec2(380.0, -120.0),
+            weight: 0.55,
+            character: Character { deer: 0.08, seedlings: 0.15 },
+        },
+    )
+    regions.push(
+        Region {
+            name: "the burn",
+            kind: Kind::Burn,
+            at: vec2(900.0, -200.0),
+            weight: 0.55,
+            character: Character { deer: 0.08, seedlings: 0.05 },
+        },
+    )
+    regions.push(
+        Region {
+            name: "the windthrow",
+            kind: Kind::Windthrow,
+            at: vec2(420.0, 160.0),
+            weight: 0.45,
+            character: Character { deer: 0.06, seedlings: 0.05 },
+        },
+    )
+    regions.push(
+        Region {
+            name: "the cut",
+            kind: Kind::Ravine,
+            at: vec2(-20.0, -290.0),
+            weight: 0.5,
+            character: Character { deer: 0.05, seedlings: 0.05 },
+        },
+    )
+    regions.push(
+        Region {
+            name: "the edge",
+            kind: Kind::Edge,
+            at: vec2(-240.0, -420.0),
+            weight: 0.6,
+            character: Character { deer: 0.12, seedlings: 0.35, browse_line: 2.0 },
+        },
+    )
+    regions.push(
+        Region {
+            name: "the watch",
+            kind: Kind::HighForest,
+            at: vec2(640.0, -520.0),
+            weight: 0.8,
+            character: Character { deer: 0.12, seedlings: 0.3, browse_line: 2.0 },
+        },
+    )
+
+    Map {
+        lo: LO,
+        hi: HI,
+        present: PRESENT,
+        land: land(),
+        sites,
+        relations,
+        openings,
+        routes,
+        water,
+        events,
+        kept,
+        regions,
+        herd: Herd {
+            arrives: PRESENT - 397,
+            trips: 24,
+            drink: vec2(215.0, -370.0),
+            rest: vec2(0.0, 30.0),
+        },
+    }
+}

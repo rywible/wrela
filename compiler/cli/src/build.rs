@@ -87,7 +87,13 @@ fn written_by_build(name: &str) -> bool {
         .strip_prefix("pipeline_")
         .and_then(|n| n.strip_suffix(".wgsl"))
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    // A shipped constant's files (`std::io::Shipped`): `files/<dir>/<name>`.
+    let shipped = name.strip_prefix("files/").is_some_and(|rest| {
+        let parts: Vec<&str> = rest.split('/').collect();
+        parts.len() == 2 && parts.iter().all(|p| !p.is_empty() && *p != "." && *p != "..")
+    });
     pipeline
+        || shipped
         || name == "game.wasm"
         || name == "manifest.json"
         || name == "lift.json"

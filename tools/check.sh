@@ -12,7 +12,8 @@
 #                           `#[ignore]` reason starts `long:` (headless Chrome against the native
 #                           host, the clearing's camera path, soak runs, images against spike
 #                           01's), sharing the GPU; the grammar's 10^6 programs and 200,000 GBNF
-#                           samples; 20,000 fuzz cases from a new seed; and two of the
+#                           samples; the WGSL size budgets of the packages that bake a
+#                           history (the floor); 20,000 fuzz cases from a new seed; and two of the
 #                           measurements, in turn, reported but not gated. About ten minutes,
 #                           plus the two: before a branch is merged, in the background.
 #   tools/check.sh --full   also everything at full size, and the measurements: the long checks
@@ -217,6 +218,7 @@ if [ "$long" = 1 ]; then
   side_jobs=()
   step "long: the long checks$( [ "$full" = 1 ] && echo ", at full size"), sharing the GPU (one headless Chrome at a time); beside them, the grammar's 10^6 generated programs against the oracle and the formatter, and 200,000 GBNF samples (seed $seed)"
   side differential cargo run -q --release -p wrela-grammar --bin differential -- 1000000 --seed "$seed"
+  side wgsl_baked python3 tools/wgsl_budgets.py "$wrela" --baked
   side gbnf cargo run -q --release -p wrela-grammar --bin gbnf-sample -- 200000 --seed "$seed"
   # More threads than cores: a test waiting for its turn at Chrome (one at a time) holds one.
   # With --full, at full size.
@@ -225,6 +227,7 @@ if [ "$long" = 1 ]; then
   unset WRELA_FULL
   side_results
   [ "$tests" = 0 ] || exit 1
+  grep -h "largest pipeline" "$logs/wgsl_baked" || true
 
   fuzz=$( [ "$full" = 1 ] && echo 1000000 || echo 20000 )
   step "long: fuzz: $fuzz mutated programs of tiers 1 and 2, one worker per core (seed $seed)"

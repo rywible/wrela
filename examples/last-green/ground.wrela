@@ -1,0 +1,154 @@
+// The floor's ground (#54 §1): one field, which the history reads on the CPU, the sim raycasts and
+// the clipmap cooks on the GPU. The clearing's layout (M5's #28 §1) at the origin, and round it the
+// map's big shapes (`map::land`): the Spine and its crag, the Watch, the Sink and the Cut, the Fang
+// and the pines, on a plateau that rises gently to the south-east. Past the plateau's edge the land
+// falls about 95 m to the valley, with hills beyond and the far mountain.
+
+use engine::noise::{fbm2, noise2, ridged2}
+use engine::place::Land
+use engine::terrain::{Cover, Terrain}
+
+/// The meadow's middle, the great tree's rise, and where the clearing's camera started (M5).
+pub const MEADOW = vec2(0.0, 30.0)
+pub const KNOLL = vec2(7.0, 33.0)
+pub const STAND = vec2(-1.5, 0.0)
+
+/// The gap in the forest at the clearing's edge, as angles from `STAND` (radians,
+/// `atan2(x, z)`).
+pub const GAP_FROM: f32 = -0.80
+pub const GAP_TO: f32 = -0.07
+
+/// Where the plateau's edge is, and the direction across it: beyond it, the land falls away.
+pub const EDGE = vec2(-24.0, 66.0)
+pub const ACROSS = vec2(-0.75, 0.66)
+
+/// The worn track: a quadratic Bézier from the clearing's foot to the great tree (M5's).
+pub const TRACK = [vec2(-7.0, -2.0), vec2(-4.5, 17.0), vec2(4.0, 27.0)]
+
+/// How far `p` is past the plateau's edge (m; negative on the plateau).
+pub fn past_edge(p: vec2) -> f32 {
+    dot(p - EDGE, ACROSS) + 8.0 * (noise2(p * 0.025) - 0.5)
+}
+
+/// The floor's ground: the map's land, and the clearing's.
+pub struct Ground: Copy + GpuData {
+    pub land: Land,
+}
+
+/// The ground of the floor's map.
+pub fn ground() -> Ground {
+    Ground { land: map::land() }
+}
+
+impl Ground {
+    /// The ground's height at (x, z).
+    pub fn at(self, x: f32, z: f32) -> f32 {
+        let p = vec2(x, z)
+        let r = length(p - MEADOW)
+        let past = past_edge(p)
+        // The meadow's gentle swell, tilting down toward the edge.
+        var y = 0.9 * (fbm2(p * 0.035, 3) - 0.5) + 0.25 * (noise2(p * 0.21) - 0.5)
+        y -= 0.07 * clamp(dot(p - MEADOW, ACROSS), -40.0, 40.0)
+        // The forest floor rising round it, but not toward the gap: faded out where the camera
+        // started, where every direction meets.
+        let s = p - STAND
+        let a = atan2(s.x, s.y + 1.0e-4)
+        let within = smoothstep(GAP_FROM - 0.1, GAP_FROM + 0.1, a) *
+            smoothstep(GAP_TO + 0.1, GAP_TO - 0.1, a)
+        let open = within * smoothstep(2.0, 10.0, length(s))
+        y += 3.0 * smoothstep(18.0, 60.0, r) * (1.0 - open)
+        // The great tree's rise, and the rise the clearing's camera started on.
+        let k = p - KNOLL
+        y += 2.4 * exp(-dot(k, k) / 120.0)
+        y += 3.2 * exp(-dot(s, s) / 260.0)
+        // The map's shapes, faded out round the clearing, whose own layout holds there.
+        y += smoothstep(70.0, 140.0, r) * self.land.height(p)
+        // Past the edge, the land falls to the valley, whose floor rolls.
+        if past > 0.0 {
+            let fall = 1.0 - exp(-past / 55.0)
+            y -= 95.0 * fall
+            y += fall * 14.0 * (fbm2(p * 0.004, 4) - 0.5)
+        }
+        // The valley's far side: soft hills.
+        let d = length(p - STAND)
+        if d > 1100.0 && past > 0.0 {
+            let hills = fbm2(p * 0.0011 + vec2(7.0, 2.0), 5)
+            y += smoothstep(1100.0, 3200.0, d) * (40.0 + 380.0 * smoothstep(0.3, 0.8, hills))
+        }
+        // The far mountain, across the valley: one peak, and a shoulder.
+        let m = p - vec2(-3300.0, 7600.0)
+        let peak = exp(-dot(m, m) / 5.0e6)
+        let m2 = p - vec2(-1800.0, 7000.0)
+        let shoulder = exp(-dot(m2, m2) / 3.0e6)
+        let mountain = peak + 0.55 * shoulder
+        if mountain > 1.0e-3 {
+            let rise = mountain * (900.0 + 500.0 * ridged2(p * 0.0012 + vec2(3.1, 7.7), 5))
+            y += rise * smoothstep(1.0e-3, 2.0e-2, mountain)
+        }
+        y
+    }
+
+    /// How rocky the ground is at `p` (0 to 1): the crags and their scree, the Watch's granite top,
+    /// and the ravine's walls (where `n`, the ground's normal, is steep).
+    pub fn rocky(self, p: vec2, n: vec3) -> f32 {
+        var bald = self.land.crag_rock(p)
+        let w = length(p - vec2(560.0, -470.0)) + 8.0 * noise2(p * 0.09)
+        bald = max(bald, 0.75 * (1.0 - smoothstep(26.0, 40.0, w)))
+        let steep = smoothstep(0.82, 0.62, n.y)
+        max(bald, steep)
+    }
+}
+
+impl Terrain for Ground {
+    fn height(self, x: f32, z: f32) -> f32 {
+        self.at(x, z)
+    }
+
+    fn cover(self, at: vec3, n: vec3) -> Cover {
+        let xz = at.xz
+        let past = past_edge(xz)
+        let patches = fbm2(xz * 0.08, 3)
+        let meadow = mix(vec3(0.10, 0.17, 0.035), vec3(0.20, 0.24, 0.05), vec3(patches))
+        var a = meadow
+        // Rock on the crags and the ravine's walls.
+        let rock = self.rocky(xz, n)
+        a = mix(a, vec3(0.20, 0.19, 0.17), vec3(rock))
+        // Rock on the mountain's steep slopes, snow high on it.
+        let steep = smoothstep(0.7, 0.5, n.y) * smoothstep(500.0, 800.0, at.y)
+        a = mix(a, vec3(0.22, 0.21, 0.21), vec3(steep))
+        let snow = smoothstep(820.0, 900.0, at.y + 60.0 * noise2(xz * 0.01)) *
+            smoothstep(0.5, 0.7, n.y)
+        a = mix(a, vec3(0.85, 0.88, 0.92), vec3(snow))
+        let grass = (1.0 - rock) * (1.0 - steep) * (1.0 - snow) * smoothstep(4.0, -2.0, past)
+        Cover {
+            albedo: a,
+            grass,
+            tall: 0.4,
+            dry: smoothstep(0.55, 0.85, fbm2(xz * 0.06 + vec2(11.0, 3.0), 3)),
+            deep: smoothstep(0.5, 0.8, fbm2(xz * 0.11 + vec2(-3.0, 8.0), 2)),
+            flowers: vec4(0.0),
+        }
+    }
+
+    fn steepest(self) -> f32 {
+        // The valley's fall, about 95 m over 55, and the crags' faces.
+        3.0
+    }
+}
+
+impl engine::grow::Ground for Ground {
+    fn height(self, x: f32, z: f32) -> f32 {
+        self.at(x, z)
+    }
+
+    fn past_edge(self, p: vec2) -> f32 {
+        past_edge(p)
+    }
+
+    fn rock(self, p: vec2) -> f32 {
+        let e = 1.0
+        let dx = self.at(p.x - e, p.y) - self.at(p.x + e, p.y)
+        let dz = self.at(p.x, p.y - e) - self.at(p.x, p.y + e)
+        self.rocky(p, normalize(vec3(dx, 2.0 * e, dz)))
+    }
+}

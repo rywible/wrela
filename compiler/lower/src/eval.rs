@@ -133,6 +133,9 @@ pub fn lower_consts(
     cx.drain(&mut mb);
     crate::rewrite_cpu_math(&mut cx, &mut mb);
     cx.drain(&mut mb);
+    // A constant's parallel jobs run on the build's threads (§10): its module exports the
+    // helpers' entry when it runs any.
+    crate::thread_entries(&mut cx, &mut mb);
     if !cx.missing.is_empty() {
         return (ConstLowering::Needs(cx.missing), Vec::new());
     }

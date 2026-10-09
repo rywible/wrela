@@ -152,3 +152,49 @@ fn chrome_splits_or_names_a_command_over_the_buffer() {
     let failure = wrela_tests::chrome_failure(&rel, wrela_tests::ChromeRun::new(4, 4, 4, 60.0));
     assert!(failure.contains(STORE_TOO_LARGE), "{failure}");
 }
+
+/// The frames the shipped-files program runs: it fetches on the first, writes on the 40th.
+const SHIPPED_FRAMES: u32 = 41;
+
+fn shipped_native(dir: &Path) -> (String, [f32; 4]) {
+    let mut host = Host::load_with(dir, &Options::default()).expect("load");
+    let times: Vec<f32> = (0..SHIPPED_FRAMES).map(|i| frame_time(i, 60.0)).collect();
+    let run = host.run_frames(&times, 16, 16).expect("run");
+    let answers = wrela_tests::one_vec4(&mut host, "answers", &[]);
+    (run.hash_hex(), answers)
+}
+
+/// Files a build ships (`std::io::Shipped`, M6): compiler/tests/shipped's constant is two files
+/// under the build's `files/data/`, not in its WASM; the program knows their names and sizes,
+/// fetches each, and gets its bytes; a constant computed from it read them in place.
+#[test]
+#[ignore = "needs a GPU"]
+fn shipped_files_are_beside_the_program_and_fetched() {
+    let (dir, _) = page("compiler/tests/shipped", "shipped-native");
+    let big: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
+    assert_eq!(std::fs::read(dir.join("files/data/big.bin")).expect("big.bin"), big);
+    assert_eq!(
+        std::fs::read(dir.join("files/data/small.bin")).expect("small.bin"),
+        [3, 1, 4, 1, 5]
+    );
+    let wasm = std::fs::read(dir.join("game.wasm")).expect("game.wasm");
+    assert!(
+        !wasm.windows(256).any(|w| w == &big[1000..1256]),
+        "the program's WASM holds the shipped file's bytes"
+    );
+    let (_, [small, fetched, counts, first]) = shipped_native(&dir);
+    assert_eq!(small, 15.0, "small.bin fetched: 1 + 3 + 1 + 4 + 1 + 5");
+    let big_sum: u32 = big.iter().map(|&b| u32::from(b)).sum();
+    assert_eq!(fetched, (1 + big_sum) as f32, "big.bin fetched");
+    assert_eq!(counts, (2 * 100_000 + 5 + 5000) as f32, "two files, their sizes known");
+    assert_eq!(first, 14.0, "build-time code read small.bin in place");
+}
+
+#[test]
+#[ignore = "long: needs Chrome, python3 and a GPU"]
+fn chrome_fetches_shipped_files_alike() {
+    let (dir, rel) = page("compiler/tests/shipped", "shipped-browser");
+    let browser = run_in_chrome(&rel, SHIPPED_FRAMES, 16, 16, 60.0);
+    let (hash, _) = shipped_native(&dir);
+    assert_eq!(browser.hash, hash, "the hosts' answers differ (their state hashes do)");
+}

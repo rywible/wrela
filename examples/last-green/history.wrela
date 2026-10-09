@@ -1,0 +1,55 @@
+// The floor's history (#54 §3): the map grown by `engine::grow`, at the bake's grain (2 m cells,
+// 2-year steps), over the authored square and a margin; baked as a file a tile (`engine::bake`),
+// shipped beside the program, and cached by the build while the map and the code it runs are
+// unchanged (language.md §10). And the preview, the same history at the preview's grain (4 m
+// cells, 10-year steps), for the map lens after each edit.
+
+use engine::bake::bake
+use engine::grow::{BAKE, Grain, History, NoClock, PREVIEW, simulate}
+use engine::place::{TILE, tile_of}
+use std::io::{Shipped, ship}
+
+/// The history's domain: the authored square and a margin, so the square's edges grow as its
+/// middle does.
+pub const MARGIN: f32 = 64.0
+
+pub fn domain_lo() -> vec2 {
+    map::LO - vec2(MARGIN)
+}
+
+pub fn domain_hi() -> vec2 {
+    map::HI + vec2(MARGIN)
+}
+
+/// The tiles the floor streams in: those the authored square touches.
+pub fn tiles_lo() -> vec2i {
+    tile_of(map::LO)
+}
+
+pub fn tiles_hi() -> vec2i {
+    tile_of(map::HI - vec2(0.01))
+}
+
+/// What the herd walks round: the floor's stones (none yet besides the land's own rock).
+pub fn rocks() -> [vec3; 1] {
+    [vec3(1.0e6, 1.0e6, 0.0)]
+}
+
+/// The history at a grain.
+pub fn grown(grain: Grain) -> History {
+    simulate(
+        ground::ground(),
+        map::map(),
+        species::habits(),
+        grain,
+        domain_lo(),
+        domain_hi(),
+        rocks(),
+        NoClock {},
+    )
+}
+
+/// The bake: the floor's decisions, a file a tile and the far layer. Computed when the game is
+/// built, on every core, and kept between builds while nothing it reads changes.
+@fuel(2 ** 43)
+pub const BAKED: Shipped = ship("floor", bake(grown(BAKE), tiles_lo(), tiles_hi()))

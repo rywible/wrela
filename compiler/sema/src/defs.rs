@@ -361,6 +361,7 @@ lang_items! {
     FetchCommand = "std::io::fetch_command",
     PrintCommand = "std::io::print_command",
     PostCommand = "std::io::post_command",
+    Shipped = "std::io::Shipped",
     Limit = "std::gpu::limit",
     Shared = "std::gpu::Shared",
     Atomics = "std::gpu::Atomics",

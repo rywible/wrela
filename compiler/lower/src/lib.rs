@@ -194,7 +194,7 @@ fn on_gpu_in(p: &Program, t: TyId, known: &mut HashMap<TyId, bool>) -> bool {
 /// uses, by any of the module's other functions (std's `std::par` for the helpers' `worker`,
 /// `std::audio` for `audio`, `std::tick` for `tick`). Each is lowered and exported as `__` and
 /// its name (wrela_abi `memory`'s threads).
-fn thread_entries(cx: &mut Cx, cpu: &mut ModuleBuilder) {
+pub(crate) fn thread_entries(cx: &mut Cx, cpu: &mut ModuleBuilder) {
     let p = &cx.checked.program;
     let entries: Vec<(FnId, String, wrela_sema::ty::ModuleId)> = (0..p.fns.len() as u32)
         .map(FnId)

@@ -1,0 +1,15 @@
+// The Last Green's floor (#54): the program. (Built up in steps: the map, its history, its bake.)
+
+use history::BAKED
+use std::io::print
+
+pub fn init() -> u32 {
+    var total = 0
+    for i in 0..BAKED.len() {
+        total += BAKED.size(i)
+    }
+    print(f"the bake: {BAKED.len()} files, {total} bytes")
+    0
+}
+
+pub fn frame(s: mut u32, time: f32, width: u32, height: u32) {}
