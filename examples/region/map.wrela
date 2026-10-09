@@ -239,6 +239,23 @@ pub const CRAG_FOOT: f32 = 22.0
 /// Whether round 2's keepers are on: the lawns, the routes, the crag, the forest's thinning.
 pub const ROUND_2: bool = true
 
+// ---- round 3: the forest's gaps ---------------------------------------------------------------
+
+/// The wind's small gaps through the whole forest: each decade, each block `GAP_BLOCK` m square
+/// gets one with this chance, `GAP_RADIUS` to twice that across at its widest. (The blind test of
+/// round 2 found light the one thing a player walks toward inside the wood.)
+pub const ROUND_3: bool = true
+pub const GAP_BLOCK: f32 = 100.0
+pub const GAP_CHANCE: f32 = 0.4
+pub const GAP_RADIUS: f32 = 8.0
+/// Deer through the whole wood (round 3b): each sapling under 2 m has this chance a year of being
+/// browsed to death, by how palatable it is, unless thorn shelters it. They keep the wind's gaps
+/// grassy for decades, where round 3's filled with saplings.
+pub const DEER: f32 = 0.12
+/// How hard the deer browse every species' seedlings under a metre, thorn too (round 3c: wood
+/// pasture, the understory kept sparse).
+pub const SEEDLINGS: f32 = 0.35
+
 // ---- helpers ----------------------------------------------------------------------------------
 
 /// The distance from `p` to the segment `a`–`b`, and how far along it the nearest point is (0

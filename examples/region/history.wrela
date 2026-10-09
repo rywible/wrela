@@ -986,6 +986,14 @@ fn grow(trees: mut Vec<Tree>, needs: [Need], land: Land, ground: mut Ground, yea
             if t.vigour < 0.06 {
                 p += if h.need > 0.2 { 0.08 } else { 0.012 }
             }
+            // Round 3b: deer browse the saplings everywhere.
+            if map::ROUND_3 && t.tall < 2.0 && !t.pinned {
+                p += map::DEER * h.palatable * (1.0 - ground.thorn[c])
+                // Round 3c: seedlings of every kind, thorn's too.
+                if t.tall < 1.0 {
+                    p += map::SEEDLINGS
+                }
+            }
             // Round 2: saplings starve in deep shade (beech, the most shade-tolerant, least), so
             // an old stand opens beneath its crowns.
             if ROUND_2 && t.tall < 4.0 && n.light < 0.2 {
@@ -1580,6 +1588,21 @@ fn events(trees: mut Vec<Tree>, ground: mut Ground, year: i32) {
     if year == SNAP_YEAR {
         strike(mut trees, SNAP_AT, 8.0, year, SNAPPED)
     }
+    // Round 3: the wind's small gaps, a decade at a time, block by block.
+    if map::ROUND_3 && year % 10 == 5 && year > 100 {
+        let blocks = u32(f32(N) * CELL / map::GAP_BLOCK)
+        for b in 0..(blocks * blocks) {
+            let s = b.wrapping_mul(2654435761) ^ u32(year).wrapping_mul(40503)
+            if rand(s, 1) < map::GAP_CHANCE {
+                let corner = vec2(X0, Z0) + vec2(f32(b % blocks), f32(b / blocks)) * map::GAP_BLOCK
+                let at = corner + vec2(rand(s, 2), rand(s, 3)) * map::GAP_BLOCK
+                let reach = map::GAP_RADIUS * (1.0 + rand(s, 4))
+                let dir = rotate(wind(), (rand(s, 5) - 0.5) * 1.2)
+                throw(mut trees, mut ground, at, reach, 0.9, dir, year)
+                tear(mut ground, at, reach * 0.7)
+            }
+        }
+    }
 }
 
 /// Kills the tallest living tree within `r` of `p`, oaks first for lightning: struck, it stands;
@@ -1652,7 +1675,7 @@ fn census(trees: [Tree], year: i32) -> String {
 }
 
 /// The most trees, living and dead, the history keeps room for.
-const MOST_TREES: u32 = 1500000
+const MOST_TREES: u32 = 400000
 
 /// The history's first `years` years.
 pub fn simulate(years: i32, stones: [Spot]) -> History {
@@ -1706,7 +1729,8 @@ pub fn simulate(years: i32, stones: [Spot]) -> History {
         }
         if year % 100 == 0 {
             let line = census(trees, year)
-            log.push(f"{line} ({trees.len()} in all)")
+            let mb = unsafe { std::mem::memory_pages() } / 16
+            log.push(f"{line} ({trees.len()} in all; memory {mb} MB)")
         }
         year += 1
     }

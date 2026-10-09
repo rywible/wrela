@@ -33,18 +33,36 @@ use std::math::TAU
 pub const ICELL: f32 = 4.0
 pub const IN: u32 = 250
 
-pub fn icell(p: vec2) -> u32 {
-    let i = clamp(i32(floor((p.x - REGION_LO.x) / ICELL)), 0, i32(IN) - 1)
-    let j = clamp(i32(floor((p.y - REGION_LO.y) / ICELL)), 0, i32(IN) - 1)
+/// The sight grid's cell at `p`, for a grid whose corner is `lo` (a window a kilometre square:
+/// the authored square's, or one in the endless forest past it).
+pub fn cell_in(lo: vec2, p: vec2) -> u32 {
+    let i = clamp(i32(floor((p.x - lo.x) / ICELL)), 0, i32(IN) - 1)
+    let j = clamp(i32(floor((p.y - lo.y) / ICELL)), 0, i32(IN) - 1)
     u32(j) * IN + u32(i)
 }
 
+pub fn centre_in(lo: vec2, c: u32) -> vec2 {
+    lo + (vec2(f32(c % IN), f32(c / IN)) + vec2(0.5)) * ICELL
+}
+
+/// The authored square's.
+pub fn icell(p: vec2) -> u32 {
+    cell_in(REGION_LO, p)
+}
+
 pub fn icentre(c: u32) -> vec2 {
-    REGION_LO + (vec2(f32(c % IN), f32(c / IN)) + vec2(0.5)) * ICELL
+    centre_in(REGION_LO, c)
+}
+
+/// A window's far corner.
+pub fn hi_of(lo: vec2) -> vec2 {
+    lo + vec2(f32(IN) * ICELL)
 }
 
 /// What the eye needs of the place, cell by cell.
 pub struct Sight {
+    /// The window's corner.
+    pub lo: vec2,
     /// The ground's height (m).
     pub ground: Vec<f32>,
     /// The crowns' top and base, above the ground (m; 0 where there's no crown).
@@ -78,14 +96,14 @@ pub struct Feature: Copy {
 const FBIN: f32 = 40.0
 const FB: u32 = 25
 
-fn fbin(p: vec2) -> u32 {
-    let i = clamp(i32(floor((p.x - REGION_LO.x) / FBIN)), 0, i32(FB) - 1)
-    let j = clamp(i32(floor((p.y - REGION_LO.y) / FBIN)), 0, i32(FB) - 1)
+fn fbin(lo: vec2, p: vec2) -> u32 {
+    let i = clamp(i32(floor((p.x - lo.x) / FBIN)), 0, i32(FB) - 1)
+    let j = clamp(i32(floor((p.y - lo.y) / FBIN)), 0, i32(FB) - 1)
     u32(j) * FB + u32(i)
 }
 
 /// The features the history and the stones leave, sorted into their bins.
-fn features_of(h: History, stones: [Spot]) -> (Vec<Feature>, Vec<u32>) {
+fn features_of(lo: vec2, h: History, stones: [Spot]) -> (Vec<Feature>, Vec<u32>) {
     var all: Vec<Feature> = Vec::new()
     for t in h.trees {
         if t.state == SNAG && t.tall > 8.0 {
@@ -103,7 +121,7 @@ fn features_of(h: History, stones: [Spot]) -> (Vec<Feature>, Vec<u32>) {
     }
     var count: Vec<u32> = Vec::filled(FB * FB + 1, 0)
     for f in all {
-        count[fbin(f.at) + 1] += 1
+        count[fbin(lo, f.at) + 1] += 1
     }
     for k in 0..(FB * FB) {
         let before = count[k]
@@ -112,7 +130,7 @@ fn features_of(h: History, stones: [Spot]) -> (Vec<Feature>, Vec<u32>) {
     var cursor = count.clone()
     var sorted: Vec<Feature> = Vec::filled(all.len(), Feature { at: vec2(0.0), tall: 0.0, wide: 0.0, salience: 0.0 })
     for f in all {
-        let b = fbin(f.at)
+        let b = fbin(lo, f.at)
         sorted[cursor[b]] = f
         cursor[b] += 1
     }
@@ -121,8 +139,8 @@ fn features_of(h: History, stones: [Spot]) -> (Vec<Feature>, Vec<u32>) {
 
 /// The ground's height at `p`, bilinear on the sight grid.
 fn ground_at(s: Sight, p: vec2) -> f32 {
-    let u = (p.x - REGION_LO.x) / ICELL - 0.5
-    let v = (p.y - REGION_LO.y) / ICELL - 0.5
+    let u = (p.x - s.lo.x) / ICELL - 0.5
+    let v = (p.y - s.lo.y) / ICELL - 0.5
     let i = clamp(i32(floor(u)), 0, i32(IN) - 2)
     let j = clamp(i32(floor(v)), 0, i32(IN) - 2)
     let a = clamp(u - f32(i), 0.0, 1.0)
@@ -132,17 +150,17 @@ fn ground_at(s: Sight, p: vec2) -> f32 {
 }
 
 /// Adds `v` to every cell of `g` within `r` of `p` (a crown's or a trunk's share).
-fn disk(g: mut Vec<f32>, p: vec2, r: f32, v: f32, take_max: bool) {
+fn disk(lo: vec2, g: mut Vec<f32>, p: vec2, r: f32, v: f32, take_max: bool) {
     let span = i32(ceil(2.0 * r / ICELL)) + 1
-    let i0 = i32(floor((p.x - r - REGION_LO.x) / ICELL))
-    let j0 = i32(floor((p.y - r - REGION_LO.y) / ICELL))
+    let i0 = i32(floor((p.x - r - lo.x) / ICELL))
+    let j0 = i32(floor((p.y - r - lo.y) / ICELL))
     for dj in 0..span {
         for di in 0..span {
             let i = i0 + di
             let j = j0 + dj
             if i >= 0 && j >= 0 && i < i32(IN) && j < i32(IN) {
                 let k = u32(j) * IN + u32(i)
-                if length(icentre(k) - p) < r + 0.5 * ICELL {
+                if length(centre_in(lo, k) - p) < r + 0.5 * ICELL {
                     g[k] = if take_max { max(g[k], v) } else { g[k] + v }
                 }
             }
@@ -152,10 +170,11 @@ fn disk(g: mut Vec<f32>, p: vec2, r: f32, v: f32, take_max: bool) {
 
 /// The sight grid, from what the history left: the consequences of its trees and its ground.
 pub fn sight_of(h: History, stones: [Spot]) -> Sight {
+    let lo = REGION_LO
     let nn = IN * IN
     var ground: Vec<f32> = Vec::with_capacity(nn)
     for c in 0..nn {
-        let p = icentre(c)
+        let p = centre_in(lo, c)
         ground.push(height(p.x, p.y))
     }
     var top: Vec<f32> = Vec::filled(nn, 0.0)
@@ -168,41 +187,41 @@ pub fn sight_of(h: History, stones: [Spot]) -> Sight {
     for t in h.trees {
         if t.state == ALIVE && t.tall > 4.0 && !(t.kind == THORN || t.kind == BLACKTHORN) {
             let c = t.at + t.lean
-            disk(mut top, c, t.reach, t.tall, take_max: true)
+            disk(lo, mut top, c, t.reach, t.tall, take_max: true)
             // The crown's base: lower for a tree grown in the open.
             let low = t.tall * if t.light > 0.55 { 0.3 } else { 0.55 }
             let span = i32(ceil(2.0 * t.reach / ICELL)) + 1
-            let i0 = i32(floor((c.x - t.reach - REGION_LO.x) / ICELL))
-            let j0 = i32(floor((c.y - t.reach - REGION_LO.y) / ICELL))
+            let i0 = i32(floor((c.x - t.reach - lo.x) / ICELL))
+            let j0 = i32(floor((c.y - t.reach - lo.y) / ICELL))
             for dj in 0..span {
                 for di in 0..span {
                     let i = i0 + di
                     let j = j0 + dj
                     if i >= 0 && j >= 0 && i < i32(IN) && j < i32(IN) {
                         let k = u32(j) * IN + u32(i)
-                        if length(icentre(k) - c) < t.reach + 0.5 * ICELL {
+                        if length(centre_in(lo, k) - c) < t.reach + 0.5 * ICELL {
                             base[k] = min(base[k], low)
                         }
                     }
                 }
             }
-            disk(mut crown, c, t.reach, 0.32 * HABITS[t.kind].shade, take_max: true)
+            disk(lo, mut crown, c, t.reach, 0.32 * HABITS[t.kind].shade, take_max: true)
         }
         // Trunks at eye height, alive or dead: a stem's width over the cell's area.
         if (t.state == ALIVE || t.state == SNAG) && t.tall > 2.0 {
-            stems[icell(t.at)] += 2.0 * t.girth / area
+            stems[cell_in(lo, t.at)] += 2.0 * t.girth / area
         }
         // Undergrowth: saplings and thorn below the crowns.
         if t.state == ALIVE &&
             (t.tall <= 4.0 || t.kind == THORN || t.kind == BLACKTHORN) &&
             t.tall > 0.8 {
             let thick = if t.kind == THORN || t.kind == BLACKTHORN { 0.22 } else { 0.1 }
-            disk(mut brush, t.at + t.lean, t.reach, thick * min(t.tall / 2.0, 1.0), take_max: false)
+            disk(lo, mut brush, t.at + t.lean, t.reach, thick * min(t.tall / 2.0, 1.0), take_max: false)
         }
         if t.state == LOG && t.tall > 4.0 {
             var s = 0.0
             while s < t.tall * 0.85 {
-                logs[icell(t.at + t.fall * s)] += 0.3
+                logs[cell_in(lo, t.at + t.fall * s)] += 0.3
                 s += ICELL * 0.5
             }
         }
@@ -216,7 +235,7 @@ pub fn sight_of(h: History, stones: [Spot]) -> Sight {
             base[c] = 0.0
         }
         under[c] = stems[c] + min(brush[c], 0.35)
-        let p = icentre(c)
+        let p = centre_in(lo, c)
         open[c] = sample(h.light, p)
         var w = 0.0
         for k in 0..4 {
@@ -234,7 +253,7 @@ pub fn sight_of(h: History, stones: [Spot]) -> Sight {
         let gz = ground[u32(clamp(j + 1, 0, i32(IN) - 1)) * IN + u32(i)] -
             ground[u32(clamp(j - 1, 0, i32(IN) - 1)) * IN + u32(i)]
         let slope = length(vec2(gx, gz)) / (2.0 * ICELL)
-        let p = icentre(c)
+        let p = centre_in(lo, c)
         var w = 1.0 - smoothstep(0.55, 0.95, slope)
         if past_edge(p) > -2.0 {
             w = 0.0
@@ -250,11 +269,11 @@ pub fn sight_of(h: History, stones: [Spot]) -> Sight {
         walk[c] = w
     }
     for st in stones {
-        disk(mut walk, st.at, reach(st) * 0.8, 0.0, take_max: false)
-        walk[icell(st.at)] = 0.0
+        disk(lo, mut walk, st.at, reach(st) * 0.8, 0.0, take_max: false)
+        walk[cell_in(lo, st.at)] = 0.0
     }
-    let (features, feature_bins) = if map::ROUND_2 { features_of(h, stones) } else { (Vec::new(), Vec::filled(FB * FB + 1, 0)) }
-    Sight { ground, top, base, crown, under, open, trail, walk, features, feature_bins }
+    let (features, feature_bins) = if map::ROUND_2 { features_of(lo, h, stones) } else { (Vec::new(), Vec::filled(FB * FB + 1, 0)) }
+    Sight { lo, ground, top, base, crown, under, open, trail, walk, features, feature_bins }
 }
 
 /// How much light gets from `from` to `to` (0 to 1): what the sightline passes through, crowns
@@ -274,7 +293,7 @@ pub fn transmit(s: Sight, from: vec3, to: vec3, skip: f32) -> f32 {
         if p.y < g - 0.2 {
             return 0.0
         }
-        let c = icell(p.xz)
+        let c = cell_in(s.lo, p.xz)
         let h = p.y - g
         let step = clamp(0.02 * t, 1.5, 8.0)
         if h < s.top[c] {
@@ -301,11 +320,11 @@ fn skyline(s: Sight, from: vec3, to: vec3) -> bool {
     var clear = true
     while t < run + 900.0 && clear {
         let p = from.xz + dir * t
-        if p.x < REGION_LO.x || p.y < REGION_LO.y || p.x >= REGION_HI.x || p.y >= REGION_HI.y {
+        if p.x < s.lo.x || p.y < s.lo.y || p.x >= hi_of(s.lo).x || p.y >= hi_of(s.lo).y {
             // Past the region: the far land is lower than anything on the plateau seen from it.
             break
         }
-        let c = icell(p)
+        let c = cell_in(s.lo, p)
         let h = s.ground[c] + s.top[c]
         clear = (h - from.y) / t < angle
         t += clamp(0.03 * t, 3.0, 12.0)
@@ -349,14 +368,18 @@ pub const FAINT: f32 = 0.12
 pub const VSTEP: f32 = 8.0
 pub const VN: u32 = 125
 
-pub fn vcell(p: vec2) -> u32 {
-    let i = clamp(i32(floor((p.x - REGION_LO.x) / VSTEP)), 0, i32(VN) - 1)
-    let j = clamp(i32(floor((p.y - REGION_LO.y) / VSTEP)), 0, i32(VN) - 1)
+pub fn vcell_in(lo: vec2, p: vec2) -> u32 {
+    let i = clamp(i32(floor((p.x - lo.x) / VSTEP)), 0, i32(VN) - 1)
+    let j = clamp(i32(floor((p.y - lo.y) / VSTEP)), 0, i32(VN) - 1)
     u32(j) * VN + u32(i)
 }
 
-pub fn vcentre(v: u32) -> vec2 {
-    REGION_LO + (vec2(f32(v % VN), f32(v / VN)) + vec2(0.5)) * VSTEP
+pub fn vcentre_in(lo: vec2, v: u32) -> vec2 {
+    lo + (vec2(f32(v % VN), f32(v / VN)) + vec2(0.5)) * VSTEP
+}
+
+pub fn vcell(p: vec2) -> u32 {
+    vcell_in(REGION_LO, p)
 }
 
 /// A keystone's points the eye might see: its top, its middle and its foot (above the
@@ -413,7 +436,7 @@ const AZIMUTHS: u32 = 48
 
 /// What draws a player standing at `at`.
 pub fn view_at(s: Sight, at: vec2) -> View {
-    let c = icell(at)
+    let c = cell_in(s.lo, at)
     var v = View { at, walkable: s.walk[c] > 0.15, draws: Bounded::new(), best: 0.0, count: 0 }
     let eye = vec3(at.x, ground_at(s, at) + EYE_HEIGHT, at.y)
     var draws: Vec<Draw> = Vec::new()
@@ -427,7 +450,7 @@ pub fn view_at(s: Sight, at: vec2) -> View {
         ki += 1
     }
     // Features within reach of the eye (round 2).
-    let (bi, bj) = (i32(fbin(at) % FB), i32(fbin(at) / FB))
+    let (bi, bj) = (i32(fbin(s.lo, at) % FB), i32(fbin(s.lo, at) / FB))
     for dj in 0..5 {
         for di in 0..5 {
             let i = bi + di - 2
@@ -441,7 +464,10 @@ pub fn view_at(s: Sight, at: vec2) -> View {
                         let g = ground_at(s, f.at)
                         let seen = transmit(s, eye, vec3(f.at.x, g + min(f.tall * 0.5, 2.5), f.at.y), skip: 1.0)
                         let size = max(min(f.tall, 6.0), f.wide * 0.5) / d
-                        let st = f.salience * seen * smoothstep(0.02, 0.12, size)
+                        // In shade, a small thing doesn't stand out (the blind test, round 2: the
+                        // rater named none of them); lit, in a gap, it does.
+                        let lit = 0.3 + 0.7 * smoothstep(0.35, 0.7, s.open[cell_in(s.lo, f.at)])
+                        let st = f.salience * lit * seen * smoothstep(0.02, 0.12, size)
                         if st > 0.02 {
                             draws.push(Draw { kind: FEATURE, key: 0, target: f.at, strength: st })
                         }
@@ -469,10 +495,10 @@ pub fn view_at(s: Sight, at: vec2) -> View {
         var hidden = 0.0
         while t < 260.0 && !shut {
             let p = at + dir * t
-            if p.x < REGION_LO.x || p.y < REGION_LO.y || p.x >= REGION_HI.x || p.y >= REGION_HI.y {
+            if p.x < s.lo.x || p.y < s.lo.y || p.x >= hi_of(s.lo).x || p.y >= hi_of(s.lo).y {
                 break
             }
-            let q = icell(p)
+            let q = cell_in(s.lo, p)
             let g = ground_at(s, p)
             let step = if t < 60.0 { 2.0 } else { 4.0 }
             // The ground's profile: the highest it rises in view, and how far beyond that it
@@ -487,13 +513,15 @@ pub fn view_at(s: Sight, at: vec2) -> View {
                 hidden += step
             }
             let tr = exp(-tau)
-            // Light ahead, seen from under the crowns.
-            if s.open[q] > 0.7 && s.top[q] < 4.0 && tr > 0.12 {
+            // Light ahead, seen from under the crowns: open sky over the ground (no crown), which
+            // the renderer lights as a bright shaft (the blind test of round 2 named small gaps;
+            // the history's ground light, blurred over 8 m, left them dim).
+            if s.top[q] < 4.0 && tr > 0.12 {
                 if opening_from == 0.0 {
                     opening_from = t
                 }
                 opening_run += step
-            } else if opening_run > 0.0 && opening_run < 12.0 {
+            } else if opening_run > 0.0 && opening_run < 8.0 {
                 opening_from = 0.0
                 opening_run = 0.0
             }
@@ -514,9 +542,9 @@ pub fn view_at(s: Sight, at: vec2) -> View {
             }
             t += step
         }
-        if under && opening_run >= 12.0 && opening_from > 15.0 {
+        if under && opening_run >= 8.0 && opening_from > 12.0 {
             let st = 0.55 *
-                smoothstep(12.0, 40.0, opening_run) *
+                smoothstep(6.0, 30.0, opening_run) *
                 exp(-0.004 * opening_from) *
                 (1.0 - 0.7 * here_open)
             draws.push(
@@ -575,14 +603,14 @@ pub fn view_at(s: Sight, at: vec2) -> View {
 pub fn views_of(s: Sight) -> Vec<View> {
     var out: Vec<View> = Vec::from_fn(
         VN * VN,
-        |v| View { at: vcentre(v), walkable: false, draws: Bounded::new(), best: 0.0, count: 0 },
+        |v| View { at: vcentre_in(s.lo, v), walkable: false, draws: Bounded::new(), best: 0.0, count: 0 },
     )
     out.par_each_mut(|v| fill(mut v, s))
     out
 }
 
 fn fill(v: mut View, s: Sight) {
-    if past_edge(v.at) < -2.0 && s.walk[icell(v.at)] > 0.15 {
+    if past_edge(v.at) < -2.0 && s.walk[cell_in(s.lo, v.at)] > 0.15 {
         v = view_at(s, v.at)
     }
 }
@@ -710,15 +738,15 @@ const WALK_FOR: f32 = 3600.0
 const SEEN_CELL: f32 = 25.0
 const SEEN_N: u32 = 40
 
-fn seen_cell(p: vec2) -> u32 {
-    let i = clamp(i32(floor((p.x - REGION_LO.x) / SEEN_CELL)), 0, i32(SEEN_N) - 1)
-    let j = clamp(i32(floor((p.y - REGION_LO.y) / SEEN_CELL)), 0, i32(SEEN_N) - 1)
+fn seen_cell(lo: vec2, p: vec2) -> u32 {
+    let i = clamp(i32(floor((p.x - lo.x) / SEEN_CELL)), 0, i32(SEEN_N) - 1)
+    let j = clamp(i32(floor((p.y - lo.y) / SEEN_CELL)), 0, i32(SEEN_N) - 1)
     u32(j) * SEEN_N + u32(i)
 }
 
 /// Whether a target is new: no cell within its reach the walker has been in.
-fn novel(seen: [bool], t: vec2) -> bool {
-    !seen[seen_cell(t)]
+fn novel(lo: vec2, seen: [bool], t: vec2) -> bool {
+    !seen[seen_cell(lo, t)]
 }
 
 /// A curious player from `start`: at each look, they follow the strongest draw to somewhere
@@ -743,10 +771,10 @@ pub fn walk(s: Sight, views: [View], start: vec2, seed: u32, pilgrim: bool) -> W
     var k = 0
     while w.time < WALK_FOR {
         if has && w.time - since > 2.0 * due + 60.0 {
-            seen[seen_cell(target.target)] = true
+            seen[seen_cell(s.lo, target.target)] = true
             has = false
         }
-        seen[seen_cell(p)] = true
+        seen[seen_cell(s.lo, p)] = true
         if k % 2 == 0 {
             w.path.push(p)
         }
@@ -765,23 +793,23 @@ pub fn walk(s: Sight, views: [View], start: vec2, seed: u32, pilgrim: bool) -> W
             let r = if target.kind == KEY { KEYSTONES[target.key].reach + 12.0 } else if target.kind == FEATURE { 6.0 } else { 12.0 }
             if length(target.target - p) < r {
                 w.arrivals.push(vec2(f32(target.kind), w.time))
-                seen[seen_cell(target.target)] = true
+                seen[seen_cell(s.lo, target.target)] = true
                 has = false
             }
         }
         // Look round.
-        let v = views[vcell(p)]
+        let v = views[vcell_in(s.lo, p)]
         var best = Draw { kind: KEY, key: 99, target: p, strength: 0.0 }
         var best_score = 0.0
         var major_in_view = false
         for i in 0..v.draws.len() {
             let d = v.draws[i]
-            major_in_view = major_in_view || (d.kind != FEATURE && d.strength >= FAINT && novel(seen, d.target))
+            major_in_view = major_in_view || (d.kind != FEATURE && d.strength >= FAINT && novel(s.lo, seen, d.target))
         }
         for i in 0..v.draws.len() {
             let d = v.draws[i]
             let allowed = !pilgrim || d.kind != FEATURE || !major_in_view
-            if d.strength >= FAINT && novel(seen, d.target) && allowed {
+            if d.strength >= FAINT && novel(s.lo, seen, d.target) && allowed {
                 let to = normalize(d.target - p + vec2(1.0e-4))
                 let ahead = 0.75 + 0.25 * dot(to, vec2(cos(heading), sin(heading)))
                 let score = d.strength * ahead
@@ -792,11 +820,11 @@ pub fn walk(s: Sight, views: [View], start: vec2, seed: u32, pilgrim: bool) -> W
             }
         }
         // A pilgrim keeps to a big target while it's still somewhere new.
-        let committed = pilgrim && has && target.kind != FEATURE && novel(seen, target.target)
+        let committed = pilgrim && has && target.kind != FEATURE && novel(s.lo, seen, target.target)
         if committed && best.kind == FEATURE {
             best_score = 0.0
         }
-        if !has || !novel(seen, target.target) {
+        if !has || !novel(s.lo, seen, target.target) {
             if best_score > 0.0 {
                 target = best
                 has = true
@@ -818,13 +846,13 @@ pub fn walk(s: Sight, views: [View], start: vec2, seed: u32, pilgrim: bool) -> W
             dir = normalize(dir + vec2(rand(seed, k) - 0.5, rand(seed, k + 7) - 0.5) * 0.5)
         }
         var go = dir
-        var easiest = s.walk[icell(p + dir * STRIDE)]
+        var easiest = s.walk[cell_in(s.lo, p + dir * STRIDE)]
         if easiest < 0.3 {
             for f in 1..8 {
                 for side in 0..2 {
                     let a = f32(f) * 0.35 * if side == 0 { 1.0 } else { -1.0 }
                     let d = vec2(cos(a) * dir.x - sin(a) * dir.y, sin(a) * dir.x + cos(a) * dir.y)
-                    let e = s.walk[icell(p + d * STRIDE)]
+                    let e = s.walk[cell_in(s.lo, p + d * STRIDE)]
                     if e > easiest + 0.05 {
                         easiest = e
                         go = d
@@ -833,10 +861,10 @@ pub fn walk(s: Sight, views: [View], start: vec2, seed: u32, pilgrim: bool) -> W
             }
         }
         let next = p + go * STRIDE
-        let inside = next.x > REGION_LO.x + 2.0 &&
-            next.y > REGION_LO.y + 2.0 &&
-            next.x < REGION_HI.x - 2.0 &&
-            next.y < REGION_HI.y - 2.0
+        let inside = next.x > s.lo.x + 2.0 &&
+            next.y > s.lo.y + 2.0 &&
+            next.x < hi_of(s.lo).x - 2.0 &&
+            next.y < hi_of(s.lo).y - 2.0
         if easiest < 0.1 || !inside {
             // Blocked: turn about.
             heading += 2.0
@@ -1001,9 +1029,208 @@ pub fn diagnose(s: Sight, from: vec3, to: vec3) -> Vec<f32> {
     var lowest = 1.0e9
     for k in 1..100 {
         let p = from + d * (f32(k) / 100.0)
-        let c = icell(p.xz)
+        let c = cell_in(s.lo, p.xz)
         lowest = min(lowest, p.y - (s.ground[c] + s.top[c]))
     }
     out.push(lowest)
     out
+}
+
+// ---- the endless forest's window (endless.wrela) ------------------------------------------------
+
+/// The sight grid of a window of the wildwood: its cells' trees as crowns and stems, with the
+/// trunks at eye height as dense as the authored forest's mature stands (`under_mature`); a
+/// faint path along the egg's road, and its milestones, the oldest trees and a few boulders as
+/// features.
+pub fn sight_of_wild(lo: vec2, wild: [endless::Wild], under_mature: f32) -> Sight {
+    let nn = IN * IN
+    var ground: Vec<f32> = Vec::with_capacity(nn)
+    var top: Vec<f32> = Vec::filled(nn, 0.0)
+    var base: Vec<f32> = Vec::filled(nn, 0.0)
+    var crown: Vec<f32> = Vec::filled(nn, 0.0)
+    var under: Vec<f32> = Vec::filled(nn, 0.0)
+    var open: Vec<f32> = Vec::filled(nn, 0.0)
+    var trail: Vec<f32> = Vec::filled(nn, 0.0)
+    var walk: Vec<f32> = Vec::filled(nn, 1.0)
+    var features: Vec<Feature> = Vec::new()
+    for c in 0..nn {
+        let p = centre_in(lo, c)
+        ground.push(height(p.x, p.y))
+        let w = wild[c]
+        if w.tall > 4.0 {
+            top[c] = w.tall
+            base[c] = w.tall * 0.55
+            crown[c] = 0.26
+            under[c] = under_mature
+        } else if w.tall > 0.8 {
+            under[c] = 0.15
+        }
+        if w.kind != endless::NONE && w.age > 220.0 && rand(c, 77) < 0.5 {
+            features.push(Feature { at: p, tall: w.tall, wide: 8.0, salience: 0.25 })
+        }
+        if rand(c, 78) < 0.0016 {
+            features.push(Feature { at: p, tall: 1.6, wide: 3.0, salience: 0.25 })
+        }
+        if endless::road_distance(p) < 2.5 {
+            trail[c] = 0.4
+        }
+    }
+    for c in 0..nn {
+        let i = i32(c % IN)
+        let j = i32(c / IN)
+        var gap = 0.0
+        for dj in 0..5 {
+            for di in 0..5 {
+                let x = clamp(i + di - 2, 0, i32(IN) - 1)
+                let y = clamp(j + dj - 2, 0, i32(IN) - 1)
+                if top[u32(y) * IN + u32(x)] < 4.0 {
+                    gap += 1.0
+                }
+            }
+        }
+        open[c] = gap / 25.0
+    }
+    // The milestones.
+    var x = lo.x + 0.5 * endless::MILESTONE
+    while x < lo.x + f32(IN) * ICELL {
+        let z = endless::road_z(x) + 3.0
+        if z > lo.y && z < lo.y + f32(IN) * ICELL {
+            features.push(Feature { at: vec2(x, z), tall: 1.4, wide: 0.8, salience: 0.3 })
+        }
+        x += endless::MILESTONE
+    }
+    // Into their bins.
+    var count: Vec<u32> = Vec::filled(FB * FB + 1, 0)
+    for f in features {
+        count[fbin(lo, f.at) + 1] += 1
+    }
+    for k in 0..(FB * FB) {
+        let before = count[k]
+        count[k + 1] += before
+    }
+    var cursor = count.clone()
+    var sorted: Vec<Feature> = Vec::filled(features.len(), Feature { at: vec2(0.0), tall: 0.0, wide: 0.0, salience: 0.0 })
+    for f in features {
+        let b = fbin(lo, f.at)
+        sorted[cursor[b]] = f
+        cursor[b] += 1
+    }
+    Sight { lo, ground, top, base, crown, under, open, trail, walk, features: sorted, feature_bins: count }
+}
+
+/// The mean extinction at eye height under the authored forest's tall crowns.
+pub fn under_mature(s: Sight) -> f32 {
+    var sum = 0.0
+    var n = 0
+    for c in 0..(IN * IN) {
+        if s.top[c] > 15.0 {
+            sum += s.under[c]
+            n += 1
+        }
+    }
+    sum / f32(max(n, 1))
+}
+
+/// What the endless window says: its dead share, the share where the tower draws (a way home in
+/// sight), the share where the road's path draws; and of walkers who meet the road, the share of
+/// their steps after on it and how many leave the window along it.
+pub struct Window: Copy {
+    pub dead: f32,
+    pub quiet: f32,
+    pub home: f32,
+    pub road: f32,
+    pub met: u32,
+    pub kept: f32,
+    pub followed: u32,
+    pub walkers: u32,
+}
+
+pub fn window_check(s: Sight) -> Window {
+    var views: Vec<View> = Vec::from_fn(
+        VN * VN,
+        |v| View { at: vcentre_in(s.lo, v), walkable: false, draws: Bounded::new(), best: 0.0, count: 0 },
+    )
+    views.par_each_mut(|v| fill_any(mut v, s))
+    var n = 0
+    var dead = 0
+    var quiet = 0
+    var home = 0
+    var road = 0
+    for v in views {
+        if v.walkable {
+            n += 1
+            if v.best < FAINT {
+                dead += 1
+            }
+            var major = 0.0
+            for i in 0..v.draws.len() {
+                let d = v.draws[i]
+                if d.kind != FEATURE {
+                    major = max(major, d.strength)
+                }
+                if d.kind == KEY && d.key == map::TOWER_KEY && d.strength >= FAINT {
+                    home += 1
+                }
+                if d.kind == TRAIL && d.strength >= FAINT {
+                    road += 1
+                }
+            }
+            if major < FAINT {
+                quiet += 1
+            }
+        }
+    }
+    // Walkers from a grid of starts, pilgrims, an hour each.
+    var met = 0
+    var kept_sum = 0.0
+    var followed = 0
+    var walkers = 0
+    for k in 0..16 {
+        let st = s.lo + vec2(120.0 + 250.0 * f32(k % 4), 120.0 + 250.0 * f32(k / 4))
+        let w = walk(s, views, st, 500 + k, pilgrim: true)
+        walkers += 1
+        var first = w.path.len()
+        for i in 0..w.path.len() {
+            if first == w.path.len() && endless::road_distance(w.path[i]) < 6.0 {
+                first = i
+            }
+        }
+        if first < w.path.len() {
+            met += 1
+            var on = 0
+            for i in first..w.path.len() {
+                if endless::road_distance(w.path[i]) < 15.0 {
+                    on += 1
+                }
+            }
+            kept_sum += f32(on) / f32(max(w.path.len() - first, 1))
+            // Reached the window's west edge along the road.
+            var out = false
+            for i in first..w.path.len() {
+                let q = w.path[i]
+                out = out || (q.x > s.lo.x + f32(IN) * ICELL - 40.0 && endless::road_distance(q) < 20.0)
+            }
+            if out {
+                followed += 1
+            }
+        }
+    }
+    let total = f32(max(n, 1))
+    Window {
+        dead: f32(dead) / total,
+        quiet: f32(quiet) / total,
+        home: f32(home) / total,
+        road: f32(road) / total,
+        met,
+        kept: kept_sum / f32(max(met, 1)),
+        followed,
+        walkers,
+    }
+}
+
+/// A view anywhere a player can walk (not only on the authored plateau).
+fn fill_any(v: mut View, s: Sight) {
+    if s.walk[cell_in(s.lo, v.at)] > 0.15 && past_edge(v.at) < -2.0 {
+        v = view_at(s, v.at)
+    }
 }

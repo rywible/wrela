@@ -272,3 +272,33 @@ pub fn seam_error(ti: i32, tj: i32, margin: u32) -> vec2 {
 }
 
 use std::collections::swap
+
+// ---- the wildwood, seen ----------------------------------------------------------------------
+
+/// The window of the wildwood the check looks at: a kilometre square west of the authored one.
+pub const WINDOW_LO = vec2(800.0, -700.0)
+
+/// The milestones on the egg's road: one every 250 m, a carved stone by its side.
+pub const MILESTONE: f32 = 250.0
+
+pub fn road_z(x: f32) -> f32 {
+    -250.0 + 180.0 * sin(x * 0.0009) + 60.0 * sin(x * 0.0031 + 1.0)
+}
+
+/// The wildwood over the window (and a margin of 32 cells), grown, as the sight grid's cells:
+/// `IN` by `IN` from `lo`.
+pub fn wild_window(lo: vec2) -> Vec<Wild> {
+    let n = interest::IN
+    let m = 32
+    let i0 = i32(floor(lo.x / WCELL))
+    let j0 = i32(floor(lo.y / WCELL))
+    let all = grow_wild(i0 - m, j0 - m, n + 2 * u32(m), STEPS, road: true)
+    var out: Vec<Wild> = Vec::with_capacity(n * n)
+    let w = n + 2 * u32(m)
+    for j in 0..n {
+        for i in 0..n {
+            out.push(all[(j + u32(m)) * w + i + u32(m)])
+        }
+    }
+    out
+}

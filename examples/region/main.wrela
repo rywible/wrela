@@ -1637,3 +1637,41 @@ pub fn test_line(s: Clearing, x: f32, z: f32, key: u32) -> [f32; 11] {
 pub fn test_brush(s: Clearing, x: f32, z: f32) -> f32 {
     s.checked.sight.under[interest::icell(vec2(x, z))]
 }
+
+// ---- spike 17: the endless forest ---------------------------------------------------------------
+
+/// A walk stepped at 60 Hz for a minute, `km` kilometres from the origin: in f32 (its end's
+/// error, its shortest and longest step) and as a tile and an offset (the same three).
+@testing
+pub fn test_precision(km: f32) -> [f32; 7] {
+    let start = vec2(km * 1000.0, km * 300.0)
+    let a = endless::walk_f32(start, 0.52, 3600)
+    let tile = vec2i(floor(start / endless::TILE))
+    let local = start - vec2(tile) * endless::TILE
+    let b = endless::walk_tiled(endless::Place { tile, local }, 0.52, 3600)
+    [a.x, a.y, a.z, b.x, b.y, b.z, f32(endless::noise_steps(start))]
+}
+
+/// How far a wildwood tile grown with `margin` cells round it is from the truth (the share of
+/// cells of another species, the mean height difference).
+@testing
+pub fn test_seam(margin: u32) -> vec2 {
+    endless::seam_error(5, 3, margin)
+}
+
+/// One wildwood tile grown, for timing.
+@testing
+pub fn test_tile(margin: u32) -> f32 {
+    let t = endless::tile(5, 3, margin)
+    f32(t.len())
+}
+
+/// The endless window's check (`interest::window_check`).
+@testing
+pub fn test_window(s: Clearing) -> [f32; 8] {
+    let wild = endless::wild_window(endless::WINDOW_LO)
+    let under = interest::under_mature(s.checked.sight)
+    let sight = interest::sight_of_wild(endless::WINDOW_LO, wild, under)
+    let w = interest::window_check(sight)
+    [w.dead, w.quiet, w.home, w.road, f32(w.met), w.kept, f32(w.followed), f32(w.walkers)]
+}

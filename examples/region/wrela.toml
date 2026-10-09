@@ -3,6 +3,8 @@
 # the clearing's renderer. Throwaway code: it answers the spike's question.
 [package]
 name = "region"
+# For the spike's memory census only (history.wrela).
+unsafe = true
 
 [dependencies]
 engine = { path = "../../engine" }
