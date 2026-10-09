@@ -300,7 +300,10 @@ pub struct Clearing {
     repeat: Sampler,
     width: u32,
     height: u32,
+    /// The frames shown since the last resize, and the frames run: a build that took over from
+    /// another (hot reload) shows none until it's ready, but its load goes on a step a frame.
     frames: u32,
+    ran: u32,
     /// What the tests set (testing.wrela): whether the clouds' shadow map needs cooking again
     /// (for one left out or back), whether the next frame counts the cards' shading, and the
     /// shadows the last frame drew by.
@@ -451,6 +454,7 @@ pub fn init() -> Clearing {
         width: 0,
         height: 0,
         frames: 0,
+        ran: 0,
         clouds_again: false,
         counting: false,
         sh: shadows(
@@ -697,14 +701,14 @@ fn moving_shadow(s: mut Clearing, sh: Shadows, creature_on: bool) {
 }
 
 /// The sky, cooked a step a frame. The air's tables, cooked at load (and again when the sun
-/// moves), and the probes' open sky from them: after the load's first frame, which is full (the
+/// moves), and the probes' open sky from them: after the load's first frame run, which is full (the
 /// forest's first kinds, the terrain's clipmap). Then the clouds: their noises, then their maps
 /// (again after an edit), each cooked in a frame of its own after the air's (each is tens of
 /// milliseconds of the GPU: together, with the load's other work, a frame took 137 ms); then
 /// one of the dome's tiles in 64 marched each frame, from `eye`, the field drifted with `wind`.
 fn cook_sky(s: mut Clearing, eye: vec3, wind: Wind) {
     let off = s.carried.off
-    if s.frames > 0 || s.ready {
+    if s.ran > 0 {
         if !s.air_cooked {
             s.tables.cook(s.air, s.linear)
             s.probes.open(s.light, s.air.ground, s.tables.view, s.linear)
@@ -1123,6 +1127,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     // A build that took over from another (hot reload) shows nothing until it's cooked
     // everything: the screen keeps the old build's last frame meanwhile.
     if s.restored && !s.ready {
+        s.ran += 1
         keep_carried(s)
         return
     }
@@ -1134,6 +1139,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     draw_scene(mut s, cam, sh, wind, creature_on)
     finish(mut s, cam, walker.root.pos, creature_on, width, height)
     s.frames += 1
+    s.ran += 1
     keep_carried(s)
 }
 
