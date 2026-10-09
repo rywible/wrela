@@ -371,5 +371,58 @@ pub fn frame(time: f32, width: u32, height: u32) {
 #[ignore = "long: bakes the floor (minutes when the constants' cache is cold)"]
 fn the_floors_own_tests_pass() {
     let _ = floor();
-    assert_eq!(super::tests_pass(&repo_root().join("examples/last-green")), 4);
+    assert_eq!(super::tests_pass(&repo_root().join("examples/last-green")), 6);
+}
+
+/// The body of WGSL function `name` in `text` (to its closing brace at the line's start).
+fn wgsl_body<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let start = text.find(&format!("fn {name}("))?;
+    let end = text[start..].find("\n}\n").map_or(text.len(), |e| start + e + 3);
+    Some(&text[start..end])
+}
+
+/// AC9's bounds (spike 08's): the water's pass traces no ray through the scene. Its pipeline
+/// binds no buffer of the scene's geometry: its storage is the water's mesh and the probes'
+/// columns alone, so what it reflects comes from the screen (the scene under it, `below`), the
+/// probes and the sky. And AC12's cooked materials: the fragments of bark (the trees', the
+/// snags' and the logs' limbs), rock and masonry (the stones, the tower, the walls) evaluate no
+/// field: none holds the value noise's lattice hash (`engine::noise`'s, which their fields'
+/// noise is made of). Bark reads its ridges from a cooked tile, stone its cooked colours.
+#[test]
+#[ignore = "long: bakes the floor (minutes when the constants' cache is cold)"]
+fn the_floors_pipelines_keep_their_bounds() {
+    let build = floor();
+    let (mut water, mut cooked) = (0, 0);
+    for entry in std::fs::read_dir(&build).expect("the build") {
+        let path = entry.expect("an entry").path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !(name.starts_with("pipeline_") && name.ends_with(".wgsl")) {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("the pipeline's WGSL");
+        if text.contains("fn water_shade(") {
+            water += 1;
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if line.starts_with("var<storage") {
+                    let bound = line.split_whitespace().nth(1).unwrap_or("").trim_end_matches(':');
+                    assert!(
+                        ["verts", "tris", "lt_grounds"].contains(&bound),
+                        "{name}: the water's pass binds `{bound}` ({}), not its mesh or the probes'",
+                        lines[i]
+                    );
+                }
+            }
+        }
+        for f in ["bark_shade", "stone_shade"] {
+            if let Some(body) = wgsl_body(&text, f) {
+                cooked += 1;
+                for hash in ["1597334677u", "3812015801u", "2798796415u"] {
+                    assert!(!body.contains(hash), "{name}: `{f}` evaluates value noise ({hash})");
+                }
+            }
+        }
+    }
+    assert_eq!(water, 1, "the water's pipelines");
+    assert!(cooked >= 2, "only {cooked} of bark's and stone's pipelines");
 }

@@ -6,9 +6,10 @@
 
 use engine::bake::{bake, unbake}
 use engine::footing::{Obstacles, obstacles_of}
-use engine::grow::{BAKE, Grain, Grid, History, NoClock, PREVIEW, Stream, simulate}
+use engine::grow::{BAKE, Grain, Grid, History, NoClock, PREVIEW, simulate}
 use engine::interest::{Evidence, FULL, check, report, views_bytes, walk_bytes}
 use engine::place::{TILE, tile_of}
+use engine::water::{Laid, laid}
 use std::io::{Shipped, ship}
 
 /// The history's domain: the authored square and a margin, so the square's edges grow as its
@@ -71,7 +72,7 @@ fn obstacles(u: engine::bake::Unbaked) -> Obstacles {
     obstacles_of(
         u.trees,
         species::habits(),
-        streams_of(u.water),
+        u.streams,
         stones::stones(m),
         stones::walls(m),
         domain_lo(),
@@ -79,25 +80,9 @@ fn obstacles(u: engine::bake::Unbaked) -> Obstacles {
     )
 }
 
-/// The streams' points as runs: a point more than 6 m from the one before starts a new run (the
-/// bake keeps each tile's points, the streams one after another).
-fn streams_of(points: [vec4]) -> Vec<Stream> {
-    var out: Vec<Stream> = Vec::new()
-    var run: Vec<vec4> = Vec::new()
-    for p in points {
-        if !run.is_empty() && length(run[run.len() - 1].xy - p.xy) > 6.0 {
-            if run.len() > 1 {
-                out.push(Stream { points: run.clone() })
-            }
-            run.clear()
-        }
-        run.push(p)
-    }
-    if run.len() > 1 {
-        out.push(Stream { points: run.clone() })
-    }
-    out
-}
+/// The water laid (`engine::water`): the map's meres, springs and falls, and the bake's streams;
+/// the sim's surface and the drawn mesh.
+pub const WATERS: Laid = laid(ground::ground(), map::map().water, decisions().streams)
 
 /// The interest check on the bake (#54 §4): its report (`report.json`) and its views
 /// (`views.bin`), shipped for the map lens and the floor's tests.

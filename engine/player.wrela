@@ -284,8 +284,9 @@ pub fn step<G: Ground>(p: mut Player, ground: G, water: Water, o: Obstacles, dt:
     } else {
         p.pace = pace
     }
+    // On the ground; in a stream, on its bed, its depth under the water's skin.
     let q = p.at.world()
-    p.y = ground.height(q.x, q.y)
+    p.y = ground.height(q.x, q.y) - o.depth(q)
 }
 
 // ---- the camera -----------------------------------------------------------------------------------

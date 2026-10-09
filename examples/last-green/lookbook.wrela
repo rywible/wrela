@@ -72,23 +72,23 @@ pub const SHOTS = [
     // Still water, the alder carr round it, reflections of sky and canopy.
     Shot {
         name: "the mere",
-        eye: vec3(210.0, 1.7, -335.0),
-        at: vec3(285.0, 0.5, -420.0),
-        moves: vec2(3.0, 0.0),
+        eye: vec3(207.0, 1.7, -337.0),
+        at: vec3(300.0, 1.0, -430.0),
+        moves: vec2(3.0, -1.0),
     },
     // Moving water in dappled light, wet stones, the ravine it keeps open.
     Shot {
         name: "the stream in the wood",
-        eye: vec3(60.0, 1.7, -325.0),
-        at: vec3(-30.0, 0.5, -270.0),
-        moves: vec2(-2.0, 1.2),
+        eye: vec3(-50.6, 1.7, -263.8),
+        at: vec3(-10.0, 1.0, -293.5),
+        moves: vec2(1.6, -1.2),
     },
-    // The stream leaving the plateau, mist, the valley beyond.
+    // The stream falling from the plateau's lip, from the valley's floor at its foot.
     Shot {
         name: "the waterfall",
-        eye: vec3(-190.0, 1.7, -130.0),
-        at: vec3(-260.0, -15.0, -175.0),
-        moves: vec2(-1.5, -1.0),
+        eye: vec3(-329.0, 1.7, -40.0),
+        at: vec3(-245.0, 0.0, -142.0),
+        moves: vec2(1.5, -1.0),
     },
     // Silver snags over young birch.
     Shot {

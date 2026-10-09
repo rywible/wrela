@@ -1,0 +1,732 @@
+// Water (#54 §8): the meres, the streams, the waterfalls and the springs, as one surface. Its
+// mesh is laid when the game is built, where the map and the history's flow put the water: a
+// mere at its level, out past its shore (the ground hides what's under it); a stream as a ribbon
+// down its course, a skin over the ground (`SKIN`); a waterfall the same ribbon over the edge
+// and down the slope to a pool at its foot; a spring a pool where it rises. The sim reads its
+// water's height from the same mesh (`WaterMesh::height_at`), so what's drawn is where it is. A stream's
+// bed is under its skin by the history's depth (the sim's player stands on it): the ground isn't
+// cut, and the water's colour gives the depth.
+//
+// Drawn after the scene, over a copy of it (`below`: its colour and each pixel's distance):
+// what's under the water seen through it, bent by its ripples and dimmed by its depth; the world
+// reflected from the screen where the reflection is on it, and from the probes and the sky where
+// it isn't (spike 08's bounds: no ray is traced through the scene); the sun's glints, and foam
+// at the banks and where it falls. No vertex moves: the ripples are the shading's. Three looks
+// (`WaterLook`): clear, peat-dark, and painted.
+
+use grow::{Ground, Heap, Stream}
+use light::{LUMA, Light}
+use lit::{Lighting, sun_and_gloss, through_air}
+use noise::noise2
+use place::Water
+use sky::sky_with_clouds
+use std::gpu::{ClipPosition, FragCoord, Rgba16Float, Sampler, Texture, VertexIndex}
+use std::math::TAU
+use view::{Camera, WATER}
+
+/// How far a stream's or a pool's surface lies over the ground (m), and a fall's (white water,
+/// thick over the rocks).
+pub const SKIN: f32 = 0.04
+pub const FALL_SKIN: f32 = 0.25
+
+/// What a point of the water is: still (a mere, a pool), flowing (a stream) or falling.
+pub const STILL: f32 = 0.0
+pub const FLOWING: f32 = 1.0
+pub const FALLING: f32 = 2.0
+
+/// How far past its basin a mere's surface is laid (its radius times this): the sim's reach of it
+/// (`footing::mere_depth`).
+pub const MERE_REACH: f32 = 1.3
+
+/// A point of the water's mesh: where it is, how deep the water is under it (m: a mere's over its
+/// basin, a stream's over its bed), how it flows (m/s, on the plane), what it is (`STILL`,
+/// `FLOWING`, `FALLING`) and how near a stream's bank it is (0 its middle, 1 its bank).
+pub struct WaterVert: Copy + GpuData {
+    pub at: vec3,
+    pub depth: f32,
+    pub flow: vec2,
+    pub kind: f32,
+    pub bank: f32,
+}
+
+/// The water's mesh: its points, and its triangles (three indices each); and its triangles
+/// binned on a grid of `BIN` m from `lo`, `nx` × `nz` (each bin's first in `items` at `start`,
+/// a triangle by its first index in `tris`), for the sim's reads (`height_at`).
+pub struct WaterMesh: Clone {
+    pub verts: Vec<WaterVert>,
+    pub tris: Vec<u32>,
+    pub lo: vec2,
+    pub nx: u32,
+    pub nz: u32,
+    pub start: Vec<u32>,
+    pub items: Vec<u32>,
+}
+
+/// The bins' size (m).
+const BIN: f32 = 8.0
+
+/// A stream's course as the water lays it: its points (x, z, width, depth), and whether it falls.
+pub struct Course: Clone {
+    pub points: Vec<vec4>,
+    pub falls: bool,
+}
+
+/// No water: a height's answer where there's none.
+pub const NONE: f32 = -1.0e9
+
+// ---- laying the mesh ----------------------------------------------------------------------------
+
+/// How far apart a course's sections are along it (m: a fall's closer, its ground steeper and
+/// more curved), and how many points each has across; and how far apart a disc's rings and its
+/// points round them are (m: a pool's closer, over the ground).
+const ALONG: f32 = 0.33
+const FALL_ALONG: f32 = 0.25
+const ACROSS: u32 = 9
+const MERE_STEP: f32 = 2.5
+const POOL_STEP: f32 = 0.4
+
+/// The water's mesh over `g`: the meres of `w` at their levels, each course a ribbon (`ALONG`
+/// apart, `ACROSS` points wide), and each pool (x, z, radius) a disc over the ground.
+pub fn lay<G: Ground>(g: G, w: Water, courses: [Course], pools: [vec3]) -> WaterMesh {
+    var m = WaterMesh {
+        verts: Vec::new(),
+        tris: Vec::new(),
+        lo: vec2(0.0),
+        nx: 0,
+        nz: 0,
+        start: Vec::new(),
+        items: Vec::new(),
+    }
+    for mere in w.meres {
+        if mere.z > 0.0 {
+            disc(mut m, g, mere.xy, mere.z * MERE_REACH, mere.w, still: true)
+        }
+    }
+    for c in courses {
+        ribbon(mut m, g, c)
+    }
+    for q in pools {
+        disc(mut m, g, q.xy, q.z, 0.0, still: false)
+    }
+    binned(mut m)
+    m
+}
+
+/// The mesh's triangles binned (`WaterMesh`'s bins): each in every bin its bounds touch.
+fn binned(m: mut WaterMesh) {
+    var lo = vec2(1.0e9)
+    var hi = vec2(-1.0e9)
+    for v in m.verts {
+        lo = min(lo, v.at.xz)
+        hi = max(hi, v.at.xz)
+    }
+    if m.verts.is_empty() {
+        lo = vec2(0.0)
+        hi = vec2(0.0)
+    }
+    m.lo = lo
+    m.nx = u32(ceil((hi.x - lo.x) / BIN)) + 1
+    m.nz = u32(ceil((hi.y - lo.y) / BIN)) + 1
+    let n = m.nx * m.nz
+    var count: Vec<u32> = Vec::filled(n + 1, 0)
+    var k = 0
+    while k + 2 < m.tris.len() {
+        let (a, b) = tri_bins(m, k)
+        for j in a.y..(b.y + 1) {
+            for i in a.x..(b.x + 1) {
+                count[j * m.nx + i] += 1
+            }
+        }
+        k += 3
+    }
+    var start: Vec<u32> = Vec::filled(n + 1, 0)
+    for c in 0..n {
+        start[c + 1] = start[c] + count[c]
+    }
+    var items: Vec<u32> = Vec::filled(start[n], 0)
+    var fill = start.clone()
+    k = 0
+    while k + 2 < m.tris.len() {
+        let (a, b) = tri_bins(m, k)
+        for j in a.y..(b.y + 1) {
+            for i in a.x..(b.x + 1) {
+                let c = j * m.nx + i
+                items[fill[c]] = k
+                fill[c] += 1
+            }
+        }
+        k += 3
+    }
+    m.start = take start
+    m.items = take items
+}
+
+/// The bins triangle `k` (its first index) touches: the lowest and the highest, each way.
+fn tri_bins(m: WaterMesh, k: u32) -> (vec2u, vec2u) {
+    let a = m.verts[m.tris[k]].at.xz
+    let b = m.verts[m.tris[k + 1]].at.xz
+    let c = m.verts[m.tris[k + 2]].at.xz
+    let lo = (min(min(a, b), c) - m.lo) / BIN
+    let hi = (max(max(a, b), c) - m.lo) / BIN
+    (vec2u(max(floor(lo), vec2(0.0))), min(vec2u(floor(hi)), vec2u(m.nx - 1, m.nz - 1)))
+}
+
+/// A disc round `at`, `r` across: at `level` (`still`, a mere's: its depth over the ground
+/// under it), or a skin over the ground (a pool's: a spring's, a fall's foot; its depth a
+/// stream's). Its rings and points `MERE_STEP` or `POOL_STEP` apart, at least 12 round.
+fn disc<G: Ground>(m: mut WaterMesh, g: G, at: vec2, r: f32, level: f32, still: bool) {
+    let step = if still { MERE_STEP } else { POOL_STEP }
+    let rings = max(u32(ceil(r / step)), 2)
+    let round = clamp(u32(ceil(TAU * r / step)), 12, 160)
+    let first = m.verts.len()
+    m.verts.push(disc_point(g, at, at, r, level, still))
+    for k in 1..(rings + 1) {
+        for i in 0..round {
+            let a = TAU * f32(i) / f32(round)
+            m.verts.push(
+                disc_point(
+                    g,
+                    at + vec2(cos(a), sin(a)) * r * f32(k) / f32(rings),
+                    at,
+                    r,
+                    level,
+                    still,
+                ),
+            )
+        }
+    }
+    for i in 0..round {
+        m.tris.push(first)
+        m.tris.push(ring_point(first, round, 1, i + 1))
+        m.tris.push(ring_point(first, round, 1, i))
+    }
+    for k in 1..rings {
+        for i in 0..round {
+            let a = ring_point(first, round, k, i)
+            let b = ring_point(first, round, k, i + 1)
+            let c = ring_point(first, round, k + 1, i)
+            let d = ring_point(first, round, k + 1, i + 1)
+            m.tris.push(a)
+            m.tris.push(b)
+            m.tris.push(c)
+            m.tris.push(b)
+            m.tris.push(d)
+            m.tris.push(c)
+        }
+    }
+}
+
+/// A disc's point at `p` (its middle `at`, its radius `r`; `disc`'s level and stillness).
+fn disc_point<G: Ground>(g: G, p: vec2, at: vec2, r: f32, level: f32, still: bool) -> WaterVert {
+    let ground = g.height(p.x, p.y)
+    let y = if still { level } else { ground + SKIN }
+    let depth = if still { max(level - ground, 0.0) } else { 0.3 * (1.0 - length(p - at) / r) }
+    WaterVert { at: vec3(p.x, y, p.y), depth, flow: vec2(0.0), kind: STILL, bank: 0.0 }
+}
+
+/// A disc's point `i` round on ring `k` (1 the innermost; `round` a ring), its first `first`.
+fn ring_point(first: u32, round: u32, k: u32, i: u32) -> u32 {
+    first + 1 + (k - 1) * round + i % round
+}
+
+/// A course's ribbon: a section each `ALONG` down it, `ACROSS` points across its width, each a
+/// skin over the ground; deepest in its middle (the course's depth), flowing down it faster where
+/// it's steeper.
+fn ribbon<G: Ground>(m: mut WaterMesh, g: G, c: Course) {
+    let n = c.points.len()
+    if n < 2 {
+        return
+    }
+    // The sections: the course's points, and between each two, enough to be `ALONG` apart.
+    var sections: Vec<vec4> = Vec::new()
+    for i in 0..n - 1 {
+        let a = c.points[i]
+        let b = c.points[i + 1]
+        let along = if c.falls { FALL_ALONG } else { ALONG }
+        let k = max(u32(ceil(length(b.xy - a.xy) / along)), 1)
+        for j in 0..k {
+            sections.push(mix(a, b, vec4(f32(j) / f32(k))))
+        }
+    }
+    sections.push(c.points[n - 1])
+    let kind = if c.falls { FALLING } else { FLOWING }
+    let first = m.verts.len()
+    let count = sections.len()
+    for i in 0..count {
+        let s = sections[i]
+        let prev = sections[if i > 0 { i - 1 } else { 0 }].xy
+        let next = sections[min(i + 1, count - 1)].xy
+        let along = normalize(next - prev + vec2(1.0e-6, 0.0))
+        let side = vec2(-along.y, along.x)
+        let fall = g.height(prev.x, prev.y) - g.height(next.x, next.y)
+        let slope = max(fall, 0.0) / max(length(next - prev), 0.1)
+        let speed = if c.falls { 4.0 + 6.0 * min(slope, 1.0) } else { 0.35 + 2.5 * min(slope, 0.5) }
+        for k in 0..ACROSS {
+            let u = 2.0 * f32(k) / f32(ACROSS - 1) - 1.0
+            let p = s.xy + side * (u * 0.5 * s.z)
+            m.verts.push(
+                WaterVert {
+                    at: vec3(p.x, g.height(p.x, p.y) + (if c.falls { FALL_SKIN } else {
+                        SKIN
+                    }), p.y),
+                    depth: s.w * (1.0 - u * u),
+                    flow: along * speed * (1.0 - 0.5 * u * u),
+                    kind,
+                    bank: abs(u),
+                },
+            )
+        }
+    }
+    for i in 0..count - 1 {
+        for k in 0..ACROSS - 1 {
+            let a = first + i * ACROSS + k
+            let b = a + 1
+            let c = a + ACROSS
+            let d = c + 1
+            m.tris.push(a)
+            m.tris.push(c)
+            m.tris.push(b)
+            m.tris.push(b)
+            m.tris.push(c)
+            m.tris.push(d)
+        }
+    }
+}
+
+/// The courses the water lays: the history's streams (`streams`), and where one ends at a fall
+/// of the map's or at the plateau's edge, its fall: on down the slope past the edge to its foot
+/// (`fall_path`); and a pool
+/// at each spring and at each fall's foot (x, z, radius).
+pub fn courses<G: Ground>(g: G, w: Water, streams: [Stream]) -> (Vec<Course>, Vec<vec3>) {
+    var out: Vec<Course> = Vec::new()
+    var pools: Vec<vec3> = Vec::new()
+    for i in 0..w.spring_count {
+        pools.push(vec3(w.springs[i].x, w.springs[i].y, 1.6))
+    }
+    for s in streams {
+        out.push(Course { points: s.points.clone(), falls: false })
+        let n = s.points.len()
+        if n < 2 {
+            continue
+        }
+        let end = s.points[n - 1]
+        var at_fall = g.past_edge(end.xy) > 0.0
+        for f in w.falls {
+            at_fall = at_fall || (length(f) > 0.0 && length(end.xy - f) < 8.0)
+        }
+        if !at_fall {
+            continue
+        }
+        // Over the edge and on down (`fall_path`), to its foot.
+        var pts: Vec<vec4> = Vec::new()
+        for q in fall_path(g, end.xy) {
+            pts.push(vec4(q.x, q.y, max(end.z, 3.0), 0.3))
+        }
+        pts[0] = end
+        let p = pts[pts.len() - 1].xy
+        pools.push(vec3(p.x, p.y, 5.0))
+        out.push(Course { points: take pts, falls: true })
+    }
+    (out, pools)
+}
+
+/// How far round a fall's lip its way down is looked for (m), and the cells it's looked for on.
+const FALL_REACH: f32 = 220.0
+const FALL_CELL: f32 = 1.0
+
+/// A fall's way down from `from`: the ground round it on a grid (`FALL_REACH` each way), its
+/// hollows filled by flooding from the grid's border (as `grow::drainage`), so the water spills
+/// out of a hollow on the slope by its lowest rim; then down it steepest first, smoothed, to its
+/// foot: where the ground under its last 20 steps fell less than a metre.
+fn fall_path<G: Ground>(g: G, from: vec2) -> Vec<vec2> {
+    let n = u32(2.0 * FALL_REACH / FALL_CELL)
+    let lo = from - vec2(FALL_REACH)
+    let at = |c: u32| lo + (vec2(f32(c % n), f32(c / n)) + vec2(0.5)) * FALL_CELL
+    var heights: Vec<f32> = Vec::with_capacity(n * n)
+    for c in 0..(n * n) {
+        let p = at(c)
+        heights.push(g.height(p.x, p.y))
+    }
+    var filled: Vec<f32> = Vec::filled(n * n, 0.0)
+    var done: Vec<bool> = Vec::filled(n * n, value: false)
+    var heap = Heap { items: Vec::new() }
+    for c in 0..(n * n) {
+        let (i, j) = (c % n, c / n)
+        if i == 0 || j == 0 || i == n - 1 || j == n - 1 {
+            filled[c] = heights[c]
+            done[c] = true
+            heap.push(filled[c], c)
+        }
+    }
+    while !heap.items.is_empty() {
+        let top = heap.pop()
+        let h = bitcast_f32(top.x)
+        let c = top.y
+        for k in 0..8 {
+            let q = vec2i(i32(c % n), i32(c / n)) + EIGHT[k]
+            if q.x >= 0 && q.y >= 0 && q.x < i32(n) && q.y < i32(n) {
+                let d = u32(q.y) * n + u32(q.x)
+                if !done[d] {
+                    done[d] = true
+                    filled[d] = max(heights[d], h + 1.0e-3)
+                    heap.push(filled[d], d)
+                }
+            }
+        }
+    }
+    var out: Vec<vec2> = Vec::from([from])
+    var drops: Vec<f32> = Vec::from([g.height(from.x, from.y)])
+    var c = u32(FALL_REACH / FALL_CELL) * (n + 1)
+    for _ in 0..(4 * n) {
+        var next = c
+        var best = 0.0
+        for k in 0..8 {
+            let q = vec2i(i32(c % n), i32(c / n)) + EIGHT[k]
+            if q.x >= 0 && q.y >= 0 && q.x < i32(n) && q.y < i32(n) {
+                let d = u32(q.y) * n + u32(q.x)
+                let fall = (filled[c] - filled[d]) / length(vec2(EIGHT[k]))
+                if fall > best {
+                    best = fall
+                    next = d
+                }
+            }
+        }
+        if next == c {
+            break
+        }
+        c = next
+        out.push(at(c))
+        drops.push(heights[c])
+        // At its foot: the ground under its last 20 steps fell less than a metre.
+        let k = drops.len()
+        if k > 20 && drops[k - 21] - drops[k - 1] < 1.0 {
+            break
+        }
+    }
+    // Its cells' steps smoothed out, its ends where they are.
+    for _ in 0..3 {
+        let was = out.clone()
+        for k in 1..(max(was.len(), 2) - 1) {
+            out[k] = mix(was[k], (was[k - 1] + was[k + 1]) * 0.5, vec2(0.5))
+        }
+    }
+    out
+}
+
+/// A cell's eight neighbours.
+const EIGHT = [
+    vec2i(-1, -1),
+    vec2i(0, -1),
+    vec2i(1, -1),
+    vec2i(-1, 0),
+    vec2i(1, 0),
+    vec2i(-1, 1),
+    vec2i(0, 1),
+    vec2i(1, 1),
+]
+
+/// The water laid: its courses and pools (the sim's, `surface`) and its mesh (the drawing's).
+pub struct Laid: Clone {
+    pub courses: Vec<Course>,
+    pub pools: Vec<vec3>,
+    pub mesh: WaterMesh,
+}
+
+/// The water over `g`: the map's (`w`) and the history's `streams`, laid (`courses`, `lay`).
+pub fn laid<G: Ground>(g: G, w: Water, streams: [Stream]) -> Laid {
+    let (courses, pools) = courses(g, w, streams)
+    let mesh = lay(g, w, courses, pools)
+    Laid { courses, pools, mesh }
+}
+
+impl Laid {
+    /// The sim's water height at `p` (`NONE` for none): the drawn mesh's (`WaterMesh::height_at`).
+    pub fn surface(self, p: vec2) -> f32 {
+        self.mesh.height_at(p)
+    }
+}
+
+impl WaterMesh {
+    /// The water's height at `p`, as the sim reads it: its highest triangle over `p` (`NONE` for
+    /// none), from the triangles binned there.
+    pub fn height_at(self, p: vec2) -> f32 {
+        let q = (p - self.lo) / BIN
+        if q.x < 0.0 || q.y < 0.0 || q.x >= f32(self.nx) || q.y >= f32(self.nz) {
+            return NONE
+        }
+        let c = u32(q.y) * self.nx + u32(q.x)
+        var top = NONE
+        for i in self.start[c]..self.start[c + 1] {
+            top = max(top, self.on_triangle(self.items[i], p))
+        }
+        top
+    }
+
+    /// The drawn surface's height over `p`: its highest triangle there, every triangle read (the
+    /// rasterizer's: `NONE` for none).
+    pub fn height_over(self, p: vec2) -> f32 {
+        var top = NONE
+        var k = 0
+        while k + 2 < self.tris.len() {
+            top = max(top, self.on_triangle(k, p))
+            k += 3
+        }
+        top
+    }
+
+    /// Triangle `k`'s (its first index's) height over `p`: its plane through its corners, where
+    /// `p` is over it (`NONE` where it isn't).
+    fn on_triangle(self, k: u32, p: vec2) -> f32 {
+        let a = self.verts[self.tris[k]].at
+        let b = self.verts[self.tris[k + 1]].at
+        let c = self.verts[self.tris[k + 2]].at
+        let e1 = b.xz - a.xz
+        let e2 = c.xz - a.xz
+        let det = e1.x * e2.y - e1.y * e2.x
+        if abs(det) <= 1.0e-9 {
+            return NONE
+        }
+        let q = p - a.xz
+        let u = (q.x * e2.y - q.y * e2.x) / det
+        let v = (e1.x * q.y - e1.y * q.x) / det
+        if u >= -1.0e-5 && v >= -1.0e-5 && u + v <= 1.0 + 1.0e-5 {
+            a.y + u * (b.y - a.y) + v * (c.y - a.y)
+        } else {
+            NONE
+        }
+    }
+}
+
+// ---- drawing ------------------------------------------------------------------------------------
+
+/// What the water's pass reads of the scene drawn before it: its colour, and each pixel's
+/// distance along the view (m; the sky's 60 km), written by `copy_below`.
+@fragment
+pub fn copy_below(
+    pixel: FragCoord,
+    scene: Texture<Rgba16Float>,
+    depth: std::gpu::DepthTexture,
+    cam: Camera,
+) -> vec4 {
+    let p = vec2u(pixel.position.xy)
+    let d = depth.load(x: p.x, y: p.y)
+    vec4(scene.load(x: p.x, y: p.y).rgb, min(cam.distance_of(d), 60000.0))
+}
+
+/// A look of the water: its colour deep (what light it scatters back, per metre of sky light),
+/// how fast it dims what's under it (per metre, each channel), its ripples' strength, still and
+/// flowing, how much the reflection shows (1 Fresnel's), its foam's colour, and how many bands
+/// its light is cut into (0: none: the painted look's cel treatment).
+pub struct WaterLook: Copy + GpuData {
+    pub deep: vec3,
+    pub ripple: f32,
+    pub dims: vec3,
+    pub flow_ripple: f32,
+    pub foam: vec3,
+    pub mirror: f32,
+    pub bands: f32,
+    pub refract: f32,
+}
+
+/// The clear look: brown-green clear water over its bed, a sky that shows at a glancing angle.
+pub const CLEAR = WaterLook {
+    deep: vec3(0.010, 0.022, 0.018),
+    ripple: 0.06,
+    dims: vec3(0.45, 0.22, 0.20),
+    flow_ripple: 0.22,
+    foam: vec3(0.80, 0.82, 0.80),
+    mirror: 1.0,
+    bands: 0.0,
+    refract: 0.05,
+}
+
+/// The peat look: dark as tea, little seen under it, a mirror of the sky and the trees.
+pub const PEAT = WaterLook {
+    deep: vec3(0.006, 0.004, 0.002),
+    ripple: 0.035,
+    dims: vec3(2.2, 3.0, 4.2),
+    flow_ripple: 0.18,
+    foam: vec3(0.75, 0.70, 0.60),
+    mirror: 1.5,
+    bands: 0.0,
+    refract: 0.03,
+}
+
+/// The painted look: flat colours in bands, as the creatures' cel treatment, its foam a line.
+pub const PAINTED = WaterLook {
+    deep: vec3(0.012, 0.030, 0.034),
+    ripple: 0.05,
+    dims: vec3(0.9, 0.5, 0.4),
+    flow_ripple: 0.2,
+    foam: vec3(0.85, 0.90, 0.92),
+    mirror: 1.0,
+    bands: 3.0,
+    refract: 0.0,
+}
+
+/// The looks, in the order the floor switches them.
+pub const LOOKS = [CLEAR, PEAT, PAINTED]
+
+/// What the water's pixel is given of its point.
+pub struct WaterPoint: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub depth: f32,
+    pub flow: vec2,
+    pub kind: f32,
+    pub bank: f32,
+}
+
+/// A point of the water's mesh, as it's laid (`at`: no vertex moves).
+@vertex
+pub fn water_vertex(v: VertexIndex, verts: [WaterVert], tris: [u32], cam: Camera) -> WaterPoint {
+    let w = verts[tris[v.index]]
+    WaterPoint {
+        clip: ClipPosition { position: cam.clip(w.at) },
+        world: w.at,
+        depth: w.depth,
+        flow: w.flow,
+        kind: w.kind,
+        bank: w.bank,
+    }
+}
+
+/// The ripples' slope at `p` (on the plane), `t` seconds in: two layers of noise drifting with
+/// the flow (and a breeze across still water), their slopes by differences.
+fn ripples(p: vec2, flow: vec2, t: f32) -> vec2 {
+    let drift = flow + vec2(0.08, 0.05)
+    let e = 0.05
+    let h = wave(p, drift, t)
+    vec2(wave(p + vec2(e, 0.0), drift, t) - h, wave(p + vec2(0.0, e), drift, t) - h) / e
+}
+
+/// The ripples' height at `q`, drifting at `drift`, `t` seconds in.
+fn wave(q: vec2, drift: vec2, t: f32) -> f32 {
+    noise2(q * 1.3 - drift * t * 1.3) * 0.6 +
+        noise2(q * 3.7 + vec2(4.0, 1.0) - drift * t * 2.6) * 0.4
+}
+
+/// How far a reflection from the screen marches, in steps, and how far each goes (m, growing).
+const MARCH: u32 = 24
+const FIRST: f32 = 0.4
+
+/// The world the water's reflection meets from the screen: marched from `world` along `r` in
+/// view space against `below`'s distances, the colour where the ray goes behind what's there
+/// (within the step's length), and how much to trust it (fading at the screen's edges, and to
+/// nothing where it leaves the screen or comes back toward the eye).
+fn reflected_on_screen(cam: Camera, below: Texture<Rgba16Float>, world: vec3, r: vec3) -> vec4 {
+    var len = FIRST
+    var at = world
+    for _ in 0..MARCH {
+        at += r * len
+        // Under the water's surface: nothing there is reflected.
+        if at.y < world.y {
+            return vec4(0.0)
+        }
+        let px = cam.pixel(at)
+        if px.x < 0.0 || px.y < 0.0 || px.x >= cam.screen.x || px.y >= cam.screen.y {
+            return vec4(0.0)
+        }
+        let seen = below.load(x: u32(px.x), y: u32(px.y))
+        let d = dot(at - cam.eye, cam.forward)
+        if d <= cam.near {
+            return vec4(0.0)
+        }
+        if seen.a < d && d - seen.a < len * 1.5 + 0.2 {
+            let edge = min(min(px.x, cam.screen.x - px.x), min(px.y, cam.screen.y - px.y))
+            let trust = smoothstep(0.0, 0.08 * cam.screen.y, edge)
+            return vec4(seen.rgb, trust)
+        }
+        len *= 1.18
+    }
+    vec4(0.0)
+}
+
+/// The water's pixel: what's under it through it, the world reflected, the sun's glint, foam.
+@fragment
+pub fn water_shade(
+    w: WaterPoint,
+    pixel: FragCoord,
+    lt: Lighting,
+    below: Texture<Rgba16Float>,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    look: WaterLook,
+) -> vec4 {
+    let cam = lt.cam
+    let t = cam.time
+    let flowing = w.kind > 0.5
+    let falling = w.kind > 1.5
+    let strength = if flowing { look.flow_ripple } else { look.ripple }
+    let slope = ripples(w.world.xz, w.flow, t) * strength * (if falling { 3.0 } else { 1.0 })
+    let n = normalize(vec3(-slope.x, 1.0, -slope.y))
+    let v = normalize(cam.eye - w.world)
+    let distance = dot(w.world - cam.eye, cam.forward)
+    // Under it: the scene through it, bent by its ripples where that's still under the water.
+    let px = pixel.position.xy
+    let size = vec2(f32(below.width()), f32(below.height()))
+    let bent = clamp(
+        px + n.xz * (look.refract * size.y / max(distance, 1.0)),
+        vec2(0.0),
+        size - vec2(1.0),
+    )
+    var under = below.load(x: u32(bent.x), y: u32(bent.y))
+    if under.a < distance {
+        under = below.load(x: u32(px.x), y: u32(px.y))
+    }
+    // How much water the eye sees through: what's under it, or the stream's bed under its skin.
+    let thick = max(under.a - distance, 0.0) + w.depth / max(v.y, 0.2)
+    let through = exp(-look.dims * thick)
+    let (sun, sky, probe) = sun_and_gloss(lt, w.world, n, soft: 1.0)
+    let deep = look.deep * (sky + vec3(sun) * lt.light.sun_colour * 0.25)
+    let seen = under.rgb * through + deep * (vec3(1.0) - through)
+    // The world reflected: from the screen where it's on it; else from the probes, and the sky
+    // with its clouds where the probe sees the sky's light that way.
+    let r = n * (2.0 * dot(n, v)) - v
+    let up = vec3(r.x, max(r.y, 0.02), r.z)
+    let open = sky_with_clouds(view, lt.light, normalize(up), dome, lt.s).rgb
+    let opens = clamp(dot(probe, LUMA) / max(dot(open, LUMA), 1.0e-4), 0.0, 1.0)
+    var reflected = mix(probe, open, vec3(opens * opens))
+    let screen = reflected_on_screen(cam, below, w.world, r)
+    reflected = mix(reflected, screen.rgb, vec3(screen.a))
+    let fresnel = clamp((0.02 + 0.98 * pow(1.0 - max(dot(n, v), 0.0), 5.0)) * look.mirror, 0.0, 1.0)
+    var c = mix(seen, reflected, vec3(fresnel))
+    // The sun's glint off the ripples.
+    let h = normalize(lt.light.sun + v)
+    let glint = pow(max(dot(n, h), 0.0), if flowing { 160.0 } else { 600.0 }) * (if flowing {
+        6.0
+    } else { 30.0 })
+    c += lt.light.sun_colour * (sun * glint * fresnel * 4.0)
+    // Foam: at a stream's banks and where it runs fast, all over where it falls, and on a still
+    // pool's shallows.
+    let churn = noise2(w.world.xz * 2.1 - w.flow * t * 1.5) * 0.6 +
+        noise2(w.world.xz * 5.3 - w.flow * t * 2.4) * 0.4
+    var foam = 0.0
+    if falling {
+        // White water in streaks down the fall, running with it.
+        let down = normalize(w.flow + vec2(1.0e-4, 0.0))
+        let across = vec2(-down.y, down.x)
+        let u = dot(w.world.xz, across)
+        let a = dot(w.world.xz, down) - t * length(w.flow)
+        let streak = noise2(vec2(u * 2.2, a * 0.3)) * 0.7 +
+            noise2(vec2(u * 6.0, a * 0.8 + 3.0)) * 0.3
+        foam = smoothstep(0.3, 0.8, streak + 0.1 * churn)
+    } else if flowing {
+        foam = smoothstep(0.55, 0.85, churn * 0.7 + w.bank * 0.45 + 0.15 * length(w.flow))
+    } else {
+        foam = smoothstep(0.75, 0.95, churn) * (1.0 - smoothstep(0.02, 0.12, w.depth)) * 0.6
+    }
+    let lit_foam = look.foam * (sky + vec3(sun) * lt.light.sun_colour)
+    // Painted: the light in bands, the foam a hard edge.
+    if look.bands > 0.0 {
+        let l = max(dot(c, LUMA), 1.0e-4)
+        let stops = 2.0 / look.bands
+        let banded = exp2(floor(log2(l) / stops + 0.5) * stops)
+        c = c * (banded / l)
+        foam = step(0.5, foam)
+    }
+    c = mix(c, lit_foam, vec3(foam))
+    // A stream's and a fall's edges thin to what's under them.
+    c = mix(c, under.rgb, vec3(smoothstep(0.8, 1.0, w.bank) * (1.0 - foam)))
+    vec4(through_air(lt, c, w.world), WATER)
+}

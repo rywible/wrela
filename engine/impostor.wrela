@@ -325,13 +325,15 @@ pub fn bake(
     let level = level_cards(n, BAKED)
     {
         let p = begin_pass_with_depth(mut colour, mut depth, clear: vec4(0.0), clear_depth: 1.0)
-        draw(
-            p,
-            bake_card.bind(b, cards: cards.span(start: 0, count: level)),
-            bake_colour.bind(b, atlas, s),
-            vertices: level * 6,
-            instances: views,
-        )
+        if level > 0 {
+            draw(
+                p,
+                bake_card.bind(b, cards: cards.span(start: 0, count: level)),
+                bake_colour.bind(b, atlas, s),
+                vertices: level * 6,
+                instances: views,
+            )
+        }
         if limb_count > 0 {
             draw(
                 p,
@@ -350,13 +352,15 @@ pub fn bake(
             clear: vec4(0.0, 0.0, 0.5, 0.0),
             clear_depth: 1.0,
         )
-        draw(
-            p,
-            bake_card.bind(b, cards: cards.span(start: 0, count: level)),
-            bake_normal.bind(b, atlas, s),
-            vertices: level * 6,
-            instances: views,
-        )
+        if level > 0 {
+            draw(
+                p,
+                bake_card.bind(b, cards: cards.span(start: 0, count: level)),
+                bake_normal.bind(b, atlas, s),
+                vertices: level * 6,
+                instances: views,
+            )
+        }
         if limb_count > 0 {
             draw(
                 p,
@@ -946,7 +950,7 @@ pub fn cook(b: Bake, cards: GpuBuffer<Card>, n: u32, atlas: Texture<Rgba8>, s: S
     dispatch(
         cook_volume.bind(
             b,
-            cards: cards.span(start: 0, count: n),
+            cards: cards.span(start: 0, count: max(n, 1)),
             n: n,
             covers: covers.span(start: 0, count: LEAF_PATTERNS),
             out: mut grid,

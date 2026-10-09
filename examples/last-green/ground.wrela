@@ -7,6 +7,7 @@
 use engine::noise::{fbm2, noise2, ridged2}
 use engine::place::Land
 use engine::terrain::{Cover, Terrain}
+use std::field::smin
 
 /// The meadow's middle, the great tree's rise, and where the clearing's camera started (M5).
 pub const MEADOW = vec2(0.0, 30.0)
@@ -21,6 +22,28 @@ pub const GAP_TO: f32 = -0.07
 /// Where the plateau's edge is, and the direction across it: beyond it, the land falls away.
 pub const EDGE = vec2(-24.0, 66.0)
 pub const ACROSS = vec2(-0.75, 0.66)
+
+/// The mere (`map`'s water): its middle (x, z), its radius and its water's level (m: under the
+/// land round it, `mere`); and how deep its basin is in the middle, and how steeply its shore
+/// rises past it.
+pub const MERE: vec4 = mere(vec2(255.0, -385.0), 62.0)
+const MERE_DEEP: f32 = 3.0
+const SHORE_RISE: f32 = 0.06
+
+/// A mere round `at`, `r` across: its level 40 cm under the lowest of the land round it (to 1.3
+/// of its radius, where the sim reads its water), so it holds its water and spills nowhere.
+fn mere(at: vec2, r: f32) -> vec4 {
+    let g = ground()
+    var low = 1.0e9
+    for k in 0..96 {
+        let a = 6.2831853 * f32(k) / 96.0
+        for f in [1.0, 1.1, 1.2, 1.3] {
+            let p = at + vec2(cos(a), sin(a)) * r * f
+            low = min(low, g.natural(p.x, p.y))
+        }
+    }
+    vec4(at.x, at.y, r, low - 0.4)
+}
 
 /// The worn track: a quadratic Bézier from the clearing's foot to the great tree (M5's).
 pub const TRACK = [vec2(-7.0, -2.0), vec2(-4.5, 17.0), vec2(4.0, 27.0)]
@@ -41,8 +64,26 @@ pub fn ground() -> Ground {
 }
 
 impl Ground {
-    /// The ground's height at (x, z).
+    /// The ground's height at (x, z): the land, and the mere's basin in it.
     pub fn at(self, x: f32, z: f32) -> f32 {
+        let p = vec2(x, z)
+        var y = self.natural(x, z)
+        // The mere's basin: under its level within its radius (its shore a little ragged), the
+        // shore rising past it, the land round it kept where it's lower.
+        let q = (length(p - MERE.xy) + 5.0 * (noise2(p * 0.05) - 0.5)) / MERE.z
+        if q < 2.0 {
+            let basin = if q < 1.0 {
+                MERE.w - MERE_DEEP * (1.0 - q * q)
+            } else {
+                MERE.w + (q - 1.0) * MERE.z * SHORE_RISE
+            }
+            y = smin(y, basin, k: 0.6)
+        }
+        y
+    }
+
+    /// The land's height at (x, z), before the mere's basin.
+    pub fn natural(self, x: f32, z: f32) -> f32 {
         let p = vec2(x, z)
         let r = length(p - MEADOW)
         let past = past_edge(p)
@@ -123,7 +164,15 @@ impl Terrain for Ground {
         let snow = smoothstep(820.0, 900.0, at.y + 60.0 * noise2(xz * 0.01)) *
             smoothstep(0.5, 0.7, n.y)
         a = mix(a, vec3(0.85, 0.88, 0.92), vec3(snow))
-        let grass = (1.0 - rock) * (1.0 - steep) * (1.0 - snow) * smoothstep(4.0, -2.0, past)
+        // The mere's bed: mud, no grass under its water.
+        let bed = smoothstep(MERE.w - 0.02, MERE.w - 0.12, at.y) *
+            smoothstep(MERE.z * 1.5, MERE.z * 1.2, length(xz - MERE.xy))
+        a = mix(a, mix(vec3(0.07, 0.06, 0.04), vec3(0.1, 0.09, 0.06), vec3(patches)), vec3(bed))
+        let grass = (1.0 - rock) *
+            (1.0 - steep) *
+            (1.0 - snow) *
+            (1.0 - bed) *
+            smoothstep(4.0, -2.0, past)
         Cover {
             albedo: a,
             grass,
@@ -170,6 +219,13 @@ impl Terrain for Ground {
         let soaked = smoothstep(0.6, 0.95, wet)
         c.albedo *= 1.0 - 0.35 * soaked
         c.deep = max(c.deep, soaked)
+        // Under a stream: its bed of gravel and wet stones; no grass (the mere's bed is `cover`'s).
+        let stones = noise2(xz * 1.7)
+        if wet > engine::bake::STREAM_BED {
+            c.albedo = mix(vec3(0.09, 0.08, 0.06), vec3(0.2, 0.18, 0.15), vec3(stones))
+            c.grass = 0.0
+            c.flowers = vec4(0.0)
+        }
         c
     }
 

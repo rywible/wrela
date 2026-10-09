@@ -153,3 +153,133 @@ fn no_meadow_grass_under_a_closed_canopy() {
     let in_beech = f32(beech_closed) / f32(max(beech, 1))
     assert(in_beech > 0.5, f"the beech wood's canopy is closed over only {in_beech * 100.0}% of it")
 }
+
+/// AC9's one surface: the sim's water height (`Laid::surface`: the mesh's triangles binned) and
+/// the drawn mesh's (every triangle's plane, as the rasterizer draws it) agree within 1 cm: down
+/// every course, across its width (to 0.6 of it each way: a bend's ribbon turns), and over the
+/// mere's water. And it lies where it should: a stream's within 10 cm of a skin over the ground
+/// (`SKIN`), the mere's at its level.
+@test
+fn the_water_is_one_surface() {
+    let w = map::map().water
+    borrow laid = history::WATERS
+    var worst = 0.0
+    var worst_at = vec2(0.0)
+    var samples = 0
+    for c in laid.courses {
+        var k = 0
+        while k + 1 < c.points.len() {
+            let a = c.points[k]
+            let b = c.points[k + 1]
+            let along = normalize(b.xy - a.xy + vec2(1.0e-6, 0.0))
+            let side = vec2(-along.y, along.x)
+            for i in 0..5 {
+                let u = 0.6 * (f32(i) / 2.0 - 1.0)
+                let p = mix(a.xy, b.xy, vec2(0.37)) + side * (u * 0.5 * a.z)
+                let sim = laid.surface(p)
+                let drawn = laid.mesh.height_over(p)
+                assert(
+                    sim > engine::water::NONE && drawn > engine::water::NONE,
+                    f"no water at {p} down a course",
+                )
+                let skin = sim - world::GROUND.at(p.x, p.y) - engine::water::SKIN
+                let ground = world::GROUND.at(p.x, p.y)
+                let in_mere = length(p - w.meres[0].xy) <
+                    w.meres[0].z * engine::water::MERE_REACH &&
+                    ground < w.meres[0].w
+                assert(
+                    c.falls || in_mere || abs(skin) < 0.1,
+                    f"a stream's water at {p} is {skin} m off its skin",
+                )
+                if abs(sim - drawn) > worst {
+                    worst = abs(sim - drawn)
+                    worst_at = p
+                }
+                samples += 1
+            }
+            k += 7
+        }
+    }
+    for m in w.meres {
+        if m.z > 0.0 {
+            for i in 0..200 {
+                let a = f32(i) * 2.399963
+                let p = m.xy + vec2(cos(a), sin(a)) * m.z * sqrt(f32(i) / 200.0)
+                if world::GROUND.at(p.x, p.y) < m.w {
+                    let sim = laid.surface(p)
+                    assert(
+                        abs(sim - m.w) < 1.0e-4,
+                        f"the mere's water at {p} is at {sim}, not its level {m.w}",
+                    )
+                    let drawn = laid.mesh.height_over(p)
+                    if abs(sim - drawn) > worst {
+                        worst = abs(sim - drawn)
+                        worst_at = p
+                    }
+                    samples += 1
+                }
+            }
+        }
+    }
+    assert(samples > 200, f"only {samples} points of the water")
+    assert(worst <= 0.01, f"the sim's water and the drawn are {worst} m apart at {worst_at}")
+}
+
+/// AC9's where it is: a course rises at each spring and at the mere's outlet, and one falls from
+/// the map's fall, to a pool at its foot; and open water keeps its opening: no tree stands in a
+/// mere's water or a stream's course (but at its very edge, as the history's cells judge it:
+/// `SHORE`, `BANK`).
+@test
+fn the_water_is_where_the_map_and_the_flow_put_it() {
+    let m = map::map()
+    let w = m.water
+    borrow laid = history::WATERS
+    for i in 0..w.spring_count {
+        var rises = false
+        for c in laid.courses {
+            rises = rises || length(c.points[0].xy - w.springs[i]) < 1.0
+        }
+        let s = w.springs[i]
+        assert(rises, f"no stream rises at the spring at {s}")
+    }
+    var falls = false
+    for c in laid.courses {
+        falls = falls || (c.falls && length(c.points[0].xy - w.falls[0]) < 10.0)
+    }
+    let f = w.falls[0]
+    assert(falls, f"no water falls at the map's fall at {f}")
+    for t in decisions().trees {
+        if t.state == State::Alive || t.state == State::Snag {
+            let at = t.at
+            let deep = laid.surface(at) - world::GROUND.at(at.x, at.y)
+            assert(
+                deep <= SHORE && !in_course(laid, at),
+                f"a tree stands in the water at {at}, {deep} m deep",
+            )
+        }
+    }
+}
+
+/// The water a tree may stand in at a shore or a stream's bank (m deep, or m in from its edge):
+/// the history judges a cell of 2 m by its middle.
+const SHORE: f32 = 0.1
+const BANK: f32 = 1.5
+
+/// Whether `p` is within a stream's course, more than `BANK` in from its edge (not a fall's:
+/// past the edge, where no tree is read).
+fn in_course(laid: engine::water::Laid, p: vec2) -> bool {
+    for c in laid.courses {
+        if !c.falls {
+            for i in 0..c.points.len() - 1 {
+                let a = c.points[i]
+                let b = c.points[i + 1]
+                let ab = b.xy - a.xy
+                let t = clamp(dot(p - a.xy, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
+                if length(p - (a.xy + ab * t)) < 0.5 * a.z - BANK {
+                    return true
+                }
+            }
+        }
+    }
+    false
+}

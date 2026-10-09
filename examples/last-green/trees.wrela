@@ -170,9 +170,8 @@ fn snag(s: u32, tall: f32, burnt: bool, conifer: bool) -> Plant {
         // Weathered to silver.
         Bark { dark: vec3(0.20, 0.19, 0.17), light: vec3(0.48, 0.46, 0.42) }
     }
+    // No leaves: its limbs alone.
     var p = plant(leaves: Leaves { size: 0.2 }, bark: bark)
-    // A kind needs leaves to be drawn: one tiny clump, out of sight below the ground.
-    p.clump(vec3(0.0, -0.6, 0.0), radius: 0.05)
     let girth = if conifer { 0.32 } else { 0.4 }
     let lean = vec3(pick(s, 4, lo: -0.4, hi: 0.4), 0.0, pick(s, 5, lo: -0.4, hi: 0.4))
     let broke = tall * pick(s, 6, lo: 0.75, hi: 0.95)
@@ -213,8 +212,8 @@ fn log(s: u32, long: f32, girth: f32) -> Plant {
         light: vec3(0.30, 0.26, 0.20),
         moss: vec3(0.07, 0.11, 0.03),
     }
+    // No leaves: its trunk and its root plate alone.
     var p = plant(leaves: Leaves { size: 0.2 }, bark: bark)
-    p.clump(vec3(0.0, -0.6, long * 0.5), radius: 0.05)
     let bow = pick(s, 1, lo: -0.6, hi: 0.6)
     p.tube(
         [

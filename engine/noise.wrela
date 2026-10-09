@@ -63,6 +63,26 @@ pub fn noise2(p: vec2) -> f32 {
     mix(mix(a, b, u.x), mix(c, d, u.x), u.y)
 }
 
+/// `noise2` repeating every `period` cells each way (a tile that wraps: a cooked texture's).
+pub fn noise2_wrapped(p: vec2, period: vec2i) -> f32 {
+    let i = floor(p)
+    let f = p - i
+    let u = f * f * (vec2(3.0) - 2.0 * f)
+    let (x, y) = (i32(i.x), i32(i.y))
+    let (x0, x1) = (wrapped(x, period.x), wrapped(x + 1, period.x))
+    let (y0, y1) = (wrapped(y, period.y), wrapped(y + 1, period.y))
+    let a = hash2(x0, y0)
+    let b = hash2(x1, y0)
+    let c = hash2(x0, y1)
+    let d = hash2(x1, y1)
+    mix(mix(a, b, u.x), mix(c, d, u.x), u.y)
+}
+
+/// `v` wrapped into 0 to `n`.
+fn wrapped(v: i32, n: i32) -> i32 {
+    ((v % n) + n) % n
+}
+
 /// Value noise in [0, 1], in 3D.
 pub fn noise3(p: vec3) -> f32 {
     let i = floor(p)

@@ -216,8 +216,9 @@ pub const BARK: f32 = 256.0
 pub const CREATURE: f32 = 320.0
 pub const ROCK: f32 = 384.0
 pub const FLOWER: f32 = 448.0
+pub const WATER: f32 = 512.0
 
-/// A tag's class (0 the sky, 1 the ground, ... 7 flowers).
+/// A tag's class (0 the sky, 1 the ground, ... 7 flowers, 8 water).
 pub fn class_of(tag: f32) -> u32 {
     u32(max(tag, 0.0) / 64.0 + 0.001)
 }

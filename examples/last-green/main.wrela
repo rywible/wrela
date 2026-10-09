@@ -30,7 +30,8 @@ use engine::terrain::{Clipmap, Terrain, ground, ground_shade}
 use engine::vegetation::{Kind, Placed, kind}
 use engine::wood::Wood
 use engine::view::{BEHIND, Camera, NEAREST, camera, first_camera}
-use history::{BAKED, OBSTACLES, tiles_hi, tiles_lo}
+use engine::water::{LOOKS, WaterVert, copy_below, water_shade, water_vertex}
+use history::{BAKED, OBSTACLES, WATERS, tiles_hi, tiles_lo}
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
     Address, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer, GpuSpan,
@@ -96,12 +97,13 @@ const PROBE_COLS: u32 = 81
 const PROBE_SPACING: f32 = 2.0
 const PROBES_MOVE: f32 = 30.0
 
-/// The systems a frame can leave out (the keys F1–F4 toggle them).
+/// The systems a frame can leave out (the keys F1–F5 toggle them).
 enum System: Copy + Eq + Fieldless {
     Trees,
     Grass,
     Shadows,
     Terrain,
+    Water,
 }
 
 fn on(off: Flags<System>, system: System) -> bool {
@@ -303,6 +305,13 @@ pub struct Floor {
     footprints: GpuBuffer<vec4>,
     palette: GpuBuffer<mat4>,
     last_palette: GpuBuffer<mat4>,
+    /// The water's mesh (`history::WATERS`), the scene under it as its pass reads it, and which
+    /// of its looks is drawn (`engine::water::LOOKS`; F6 the next).
+    water_verts: GpuBuffer<WaterVert>,
+    water_tris: GpuBuffer<u32>,
+    water_count: u32,
+    below: Texture<Rgba16Float>,
+    water_look: u32,
 }
 
 /// The probes round `at`, unbaked, and what occludes them: the trees standing round it.
@@ -408,6 +417,11 @@ pub fn init() -> Floor {
         footprints: buffer_of(footprints(), at_least: 1),
         palette: buffer(1),
         last_palette: buffer(1),
+        water_verts: buffer_of(WATERS.mesh.verts, at_least: 1),
+        water_tris: buffer_of(WATERS.mesh.tris, at_least: 1),
+        water_count: WATERS.mesh.tris.len(),
+        below: texture::<Rgba16Float>(width: 1, height: 1),
+        water_look: 0,
     }
 }
 
@@ -678,7 +692,8 @@ fn cook_load(s: mut Floor) {
     }
 }
 
-/// The keys the frames read (the sim reads the player's): F1–F4 leave a system out; L, a shot's
+/// The keys the frames read (the sim reads the player's): F1–F5 leave a system out, F6 draws the
+/// water's next look; L, a shot's
 /// number and Enter hold the camera on a lookbook shot (Escape lets it go).
 fn keys(s: mut Floor, time: f32) {
     for e in events() {
@@ -720,7 +735,11 @@ fn keys(s: mut Floor, time: f32) {
                 Key::F2 => Some(System::Grass),
                 Key::F3 => Some(System::Shadows),
                 Key::F4 => Some(System::Terrain),
+                Key::F5 => Some(System::Water),
                 _ => None,
+            }
+            if key == Key::F6 {
+                s.water_look = (s.water_look + 1) % LOOKS.len()
             }
             if let Some(system) = system {
                 s.off = s.off.toggled(system)
@@ -741,6 +760,7 @@ fn resize(s: mut Floor, width: u32, height: u32, w: u32, h: u32) {
     s.depth = depth_texture(width: w, height: h)
     s.ids = texture::<R32Uint>(width: w, height: h)
     s.motion = texture::<Rgba16Float>(width: w, height: h)
+    s.below = texture::<Rgba16Float>(width: w, height: h)
     s.last_motion = texture::<Rgba16Float>(width: w, height: h)
     s.means = writable_texture::<Rgba16Float>(width: w, height: h)
     s.spreads = writable_texture::<Rgba16Float>(width: w, height: h)
@@ -1076,6 +1096,28 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         depth: BEHIND,
     )
     sky.end()
+    // The water, over a copy of the scene under it.
+    if on(off, System::Water) {
+        label("water")
+        let bp = begin_pass(mut s.below)
+        fullscreen(bp, copy_below.bind(scene: s.scene, depth: s.depth, cam: cam))
+        bp.end()
+        let wp = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)
+        draw(
+            wp,
+            water_vertex.bind(verts: s.water_verts.items(), tris: s.water_tris.items(), cam: cam),
+            water_shade.bind(
+                lt,
+                below: s.below,
+                view: s.tables.view,
+                dome: s.sky.dome,
+                look: LOOKS[s.water_look],
+            ),
+            vertices: s.water_count,
+            depth: NEAREST,
+        )
+        wp.end()
+    }
     // The stand-in's motion, where it's seen, over the older target: the last frame's is kept.
     label("motion")
     swap(mut s.motion, mut s.last_motion)

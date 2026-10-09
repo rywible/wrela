@@ -411,11 +411,49 @@ pub fn bake(h: History, lo: vec2i, hi: vec2i) -> Vec<(String, Vec<u8>)> {
         }
     }
     out.push((String::from("far.bin"), encode_far(h, lo, hi)))
+    out.push((String::from("streams.bin"), encode_streams(h.streams)))
+    out
+}
+
+/// The streams whole (the water's courses: `water::laid`), each its count of points then its
+/// points (x, z, width, depth), as f32s.
+pub fn encode_streams(ss: [Stream]) -> Vec<u8> {
+    var out: Vec<u8> = Vec::new()
+    put_u32(mut out, ss.len())
+    for st in ss {
+        put_u32(mut out, st.points.len())
+        for p in st.points {
+            for k in 0..4 {
+                put_u32(mut out, bitcast_u32(p[k]))
+            }
+        }
+    }
+    out
+}
+
+/// The streams `encode_streams` wrote.
+pub fn decode_streams(b: [u8]) -> Vec<Stream> {
+    var out: Vec<Stream> = Vec::new()
+    var at = 4
+    for _ in 0..get_u32(b, 0) {
+        let n = get_u32(b, at)
+        at += 4
+        var points: Vec<vec4> = Vec::with_capacity(n)
+        for _ in 0..n {
+            var p = vec4(0.0)
+            for k in 0..4 {
+                p[k] = bitcast_f32(get_u32(b, at))
+                at += 4
+            }
+            points.push(p)
+        }
+        out.push(Stream { points: take points })
+    }
     out
 }
 
 /// A bake read back whole: every tile's trees; the trails' wear and the ground's wetness on
-/// grids over all the tiles; and the streams' points, each once.
+/// grids over all the tiles; and the streams' points, each once, and the streams whole.
 pub struct Unbaked {
     pub trees: Vec<Tree>,
     pub wear_grid: Grid,
@@ -423,6 +461,8 @@ pub struct Unbaked {
     pub wet_grid: Grid,
     pub wet: Vec<f32>,
     pub water: Vec<vec4>,
+    /// The streams whole (`encode_streams`).
+    pub streams: Vec<Stream>,
 }
 
 /// The tiles from `lo` to `hi` (inclusive) of a bake shipped as `files`, read in place (in
@@ -444,6 +484,7 @@ pub fn unbake(files: Shipped, lo: vec2i, hi: vec2i) -> Unbaked {
         wet_grid,
         wet: Vec::filled(wet_grid.cells(), 0.0),
         water: Vec::new(),
+        streams: decode_streams(files.bytes(files.find("streams.bin").unwrap())),
     }
     for j in lo.y..(hi.y + 1) {
         for i in lo.x..(hi.x + 1) {
@@ -548,12 +589,33 @@ fn path_at(routes: [Route], near: [u32], p: vec2, used: f32) -> f32 {
     best
 }
 
+/// Whether `p` is in a stream's bed: within half its width of the line between two of its points
+/// (`water`: a tile's, the streams one after another, 4 m apart; a gap over 6 m starts another).
+fn in_stream(water: [vec4], p: vec2) -> bool {
+    for i in 0..max(water.len(), 1) - 1 {
+        let a = water[i]
+        let b = water[i + 1]
+        let ab = b.xy - a.xy
+        if dot(ab, ab) < 36.0 {
+            let t = clamp(dot(p - a.xy, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
+            if length(p - (a.xy + ab * t)) < 0.5 * mix(a.z, b.z, t) {
+                return true
+            }
+        }
+    }
+    false
+}
+
+/// The wet field's value on a stream's bed (`tile_fields`): any wetter than 0.98 is one.
+pub const STREAM_BED: f32 = 0.99
+
 /// The fields a tile's ground is covered by (`terrain::Terrain::cover_with`), each 2 m: the light
 /// at the ground (the history's: its crowns' shade, `grow::canopy`'s rule), how trodden it is,
 /// its wetness and its thorn, worked out again where the tile streams in from its decisions: its
 /// own trees and those of its neighbours whose crowns reach over its edge (`others`). Trodden is
 /// the routes' paths (`routes`), as walked as the history's wear round them says, and the
-/// broader ground the herd wears (up to 0.45). Four bytes a texel (light, trodden, wet, thorn),
+/// broader ground the herd wears (up to 0.45); wet is a stream's bed over `STREAM_BED`. Four
+/// bytes a texel (light, trodden, wet, thorn),
 /// `WEAR_N` a side, rows from the tile's corner.
 pub fn tile_fields(
     d: Decisions,
@@ -645,7 +707,9 @@ pub fn tile_fields(
                 0.45 * smoothstep(0.03, 0.15, d.wear[k]),
             )
             out.push(u8(clamp(trodden, 0.0, 1.0) * 255.0 + 0.5))
-            out.push(u8(clamp(d.wet_at(p), 0.0, 1.0) * 255.0 + 0.5))
+            // Wet to 0.98 of the byte; its whole (`STREAM_BED`) a stream's bed.
+            let wet = if in_stream(d.water, p) { 1.0 } else { min(d.wet_at(p), 0.98) }
+            out.push(u8(clamp(wet, 0.0, 1.0) * 255.0 + 0.5))
             out.push(u8(clamp(thorn[q], 0.0, 1.0) * 255.0 + 0.5))
         }
     }

@@ -1958,8 +1958,10 @@ fn matches_gaps(e: Event) -> bool {
 // ---- water -----------------------------------------------------------------------------------------
 
 /// The streams: from each spring, and from each mere's outlet (the lowest point of its rim), down
-/// the land a cell at a time, steepest first, to where the water falls off the land, leaves the
-/// grid, or reaches a mere. Each point is (x, z, width, depth); a stream widens as it gathers.
+/// the land to where the water falls off it (a fall of the map's, or past the plateau's edge),
+/// leaves the grid, reaches a mere, or joins a stream traced before it: a cell at a time along its drainage (`drainage`: the land
+/// with its pits filled, so the water always finds a way out). Each point is (x, z, width, depth),
+/// 4 m apart, smoothed; a stream widens as it gathers.
 pub fn streams<G: Ground>(ground: G, m: Map, land: Land) -> Vec<Stream> {
     let g = land.grid
     var starts: Vec<vec2> = Vec::new()
@@ -1983,23 +1985,31 @@ pub fn streams<G: Ground>(ground: G, m: Map, land: Land) -> Vec<Stream> {
             starts.push(best)
         }
     }
+    let down = drainage(land)
     var out: Vec<Stream> = Vec::new()
+    // The cells a course already runs through: a stream that reaches one joins it there.
+    var taken: Vec<bool> = Vec::filled(g.cells(), value: false)
     var si = 0
     for s in starts {
         var pts: Vec<vec4> = Vec::new()
-        var p = s
         var gathered = if si < m.water.spring_count { 1.0 } else { 3.0 }
-        for step in 0..4000 {
-            let h = ground.height(p.x, p.y)
-            let width = clamp(1.2 + 0.9 * gathered, 1.2, 4.0)
-            let depth = 0.18 + 0.1 * min(gathered, 3.0)
-            pts.push(vec4(p.x, p.y, width, depth))
+        var c = g.cell_at(s)
+        var p = s
+        var last = s
+        var steps = 0
+        loop {
+            if pts.is_empty() || length(p - last) >= 4.0 {
+                let width = clamp(1.2 + 0.9 * gathered, 1.2, 4.0)
+                let depth = 0.18 + 0.1 * min(gathered, 3.0)
+                pts.push(vec4(p.x, p.y, width, depth))
+                last = p
+            }
             // A fall: off the land, past its edge.
             var fell = false
             for f in m.water.falls {
-                fell = fell || length(p - f) < 6.0
+                fell = fell || (length(f) > 0.0 && length(p - f) < 6.0)
             }
-            if fell || !g.holds(p) || ground.past_edge(p) > 2.0 {
+            if fell || ground.past_edge(p) > 2.0 {
                 break
             }
             // Into a mere (a spring's stream feeding it).
@@ -2007,38 +2017,151 @@ pub fn streams<G: Ground>(ground: G, m: Map, land: Land) -> Vec<Stream> {
             for w in m.water.meres {
                 into = into ||
                     (w.z > 0.0 &&
-                        step > 3 &&
+                        steps > 3 &&
                         length(p - w.xy) < w.z * 0.9 &&
                         si < m.water.spring_count)
             }
-            if into {
+            let next = down[c]
+            if into || next == NONE || steps > 20000 || taken[c] {
                 break
             }
-            // The steepest way down over 4 m, or the least rise (a pit, crossed).
-            var best = vec2(0.0)
-            var drop = -1.0e9
-            for k in 0..16 {
-                let a = TAU * f32(k) / 16.0
-                let d = vec2(cos(a), sin(a))
-                let q = p + d * 4.0
-                let fall = h - ground.height(q.x, q.y)
-                // Onward: not straight back up its own course.
-                let back = if pts.len() > 2 {
-                    let prev = pts[pts.len() - 3].xy
-                    dot(normalize(p - prev + vec2(1.0e-4)), d) < -0.2
-                } else { false }
-                if !back && fall > drop {
-                    drop = fall
-                    best = d
-                }
+            taken[c] = true
+            c = next
+            p = g.centre(c)
+            gathered += 0.005 * g.cell
+            steps += 1
+        }
+        if length(p - last) > 0.5 {
+            pts.push(vec4(p.x, p.y, pts[pts.len() - 1].z, pts[pts.len() - 1].w))
+        }
+        // The grid's steps smoothed out of the course: its points moved toward their
+        // neighbours' middle, twice, its ends where they are.
+        for _ in 0..2 {
+            let was = pts.clone()
+            for k in 1..(max(was.len(), 2) - 1) {
+                let mid = (was[k - 1].xy + was[k + 1].xy) * 0.5
+                pts[k] = vec4(mix(was[k].xy, mid, vec2(0.5)), was[k].z, was[k].w)
             }
-            p += best * 4.0
-            gathered += 0.01
         }
         out.push(Stream { points: take pts })
         si += 1
     }
     out
+}
+
+/// Where the water at each cell of the land goes next: the neighbour it falls to most steeply
+/// over the land with its pits filled (`NONE` at an outlet: the grid's border). The pits are
+/// filled by flooding from the border, lowest first, each cell raised to a little over the cell
+/// it's reached from (Barnes, Lehman and Mulla's priority flood, with an epsilon), so every cell
+/// drains to the border, across a pit by the way it would spill.
+fn drainage(land: Land) -> Vec<u32> {
+    let g = land.grid
+    let nn = g.cells()
+    let (nx, nz) = (g.nx, g.nz)
+    var filled: Vec<f32> = Vec::filled(nn, 0.0)
+    var done: Vec<bool> = Vec::filled(nn, value: false)
+    var heap = Heap { items: Vec::new() }
+    for c in 0..nn {
+        let (i, j) = (c % nx, c / nx)
+        if i == 0 || j == 0 || i == nx - 1 || j == nz - 1 {
+            filled[c] = land.heights[c]
+            done[c] = true
+            heap.push(filled[c], c)
+        }
+    }
+    while !heap.items.is_empty() {
+        let top = heap.pop()
+        let h = bitcast_f32(top.x)
+        let c = top.y
+        let (i, j) = (i32(c % nx), i32(c / nx))
+        for k in 0..8 {
+            let n = vec2i(i, j) + NEIGHBOURS[k]
+            if n.x >= 0 && n.y >= 0 && n.x < i32(nx) && n.y < i32(nz) {
+                let q = u32(n.y) * nx + u32(n.x)
+                if !done[q] {
+                    done[q] = true
+                    filled[q] = max(land.heights[q], h + 1.0e-3)
+                    heap.push(filled[q], q)
+                }
+            }
+        }
+    }
+    var down: Vec<u32> = Vec::filled(nn, NONE)
+    for c in 0..nn {
+        let (i, j) = (i32(c % nx), i32(c / nx))
+        var best = 0.0
+        for k in 0..8 {
+            let n = vec2i(i, j) + NEIGHBOURS[k]
+            if n.x >= 0 && n.y >= 0 && n.x < i32(nx) && n.y < i32(nz) {
+                let q = u32(n.y) * nx + u32(n.x)
+                let fall = (filled[c] - filled[q]) / length(vec2(NEIGHBOURS[k]))
+                if fall > best {
+                    best = fall
+                    down[c] = q
+                }
+            }
+        }
+    }
+    down
+}
+
+/// A cell's eight neighbours.
+const NEIGHBOURS = [
+    vec2i(-1, -1),
+    vec2i(0, -1),
+    vec2i(1, -1),
+    vec2i(-1, 0),
+    vec2i(1, 0),
+    vec2i(-1, 1),
+    vec2i(0, 1),
+    vec2i(1, 1),
+]
+
+/// A min-heap of cells by cost: each entry (cost, cell).
+pub struct Heap {
+    pub items: Vec<vec2u>,
+}
+
+impl Heap {
+    pub fn push(mut self, cost: f32, cell: u32) {
+        self.items.push(vec2u(bitcast_u32(cost), cell))
+        var i = self.items.len() - 1
+        while i > 0 {
+            let up = (i - 1) / 2
+            if bitcast_f32(self.items[up].x) <= cost {
+                break
+            }
+            self.items.swap(i, up)
+            i = up
+        }
+    }
+
+    pub fn pop(mut self) -> vec2u {
+        let top = self.items[0]
+        let last = self.items.pop().unwrap()
+        let n = self.items.len()
+        if n > 0 {
+            self.items[0] = last
+            var i = 0
+            loop {
+                let l = 2 * i + 1
+                let r = l + 1
+                var m = i
+                if l < n && bitcast_f32(self.items[l].x) < bitcast_f32(self.items[m].x) {
+                    m = l
+                }
+                if r < n && bitcast_f32(self.items[r].x) < bitcast_f32(self.items[m].x) {
+                    m = r
+                }
+                if m == i {
+                    break
+                }
+                self.items.swap(i, m)
+                i = m
+            }
+        }
+        top
+    }
 }
 
 /// Marks the streams' courses as open water on the land (no tree stands in them), and wets their

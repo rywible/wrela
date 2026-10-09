@@ -698,6 +698,32 @@ pub fn leaf_atlas(n: u32) -> Texture<Rgba8> {
     atlas
 }
 
+/// Bark's ridges, cooked once (#55 AC12: no field per pixel per frame for bark): a tile of them
+/// round a limb (across, once round: 22 ridges) and along it (down, `RIDGES_ALONG` m, 1.6 a
+/// metre), read through a repeating sampler.
+pub const RIDGES_ALONG: f32 = 40.0
+const RIDGES_W: u32 = 256
+const RIDGES_H: u32 = 1024
+
+pub fn cook_ridges() -> Texture<Rgba8> {
+    var t = texture::<Rgba8>(width: RIDGES_W, height: RIDGES_H)
+    let p = begin_pass(mut t)
+    draw(p, full.bind(z: 0.5), ridge_texel, vertices: 3)
+    p.end()
+    t
+}
+
+/// A texel of the ridges' tile: value noise, 22 cells round and 64 along, wrapping.
+@fragment
+fn ridge_texel(pixel: FragCoord) -> vec4 {
+    let uv = pixel.position.xy / vec2(f32(RIDGES_W), f32(RIDGES_H))
+    let r = noise::noise2_wrapped(
+        vec2(uv.x * 22.0, uv.y * RIDGES_ALONG * 1.6),
+        period: vec2i(22, 64),
+    )
+    vec4(r, r, r, 1.0)
+}
+
 /// A triangle that covers the target, at depth `z`.
 @vertex
 pub fn full(v: VertexIndex, z: f32) -> ClipPosition {

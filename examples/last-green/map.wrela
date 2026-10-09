@@ -1188,7 +1188,7 @@ pub fn map() -> Map {
     )
 
     let water = Water {
-        meres: [vec4(255.0, -385.0, 62.0, 0.0), vec4(0.0)],
+        meres: [ground::MERE, vec4(0.0)],
         springs: [
             vec2(420.0, -330.0),
             vec2(300.0, -250.0),
@@ -1200,7 +1200,7 @@ pub fn map() -> Map {
             vec2(0.0),
         ],
         spring_count: 2,
-        falls: [vec2(-235.0, -150.0), vec2(0.0)],
+        falls: [vec2(-221.0, -155.0), vec2(0.0)],
     }
 
     var events: Vec<Event> = Vec::new()
