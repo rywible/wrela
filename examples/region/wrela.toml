@@ -1,0 +1,10 @@
+# Spike 17: a square kilometre of the Last Green round the clearing, composed as a map (keystones,
+# relations, routes, events), grown by a history, measured by an interest check, and drawn by
+# the clearing's renderer. Throwaway code: it answers the spike's question.
+[package]
+name = "region"
+
+[dependencies]
+engine = { path = "../../engine" }
+fawn = { path = "../fawn" }
+great_tree = { path = "../great-tree" }

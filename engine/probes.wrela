@@ -170,6 +170,9 @@ pub struct Occluder: Copy + GpuData {
 /// One occluder's voxels: each voxel in its box gets the larger of what it has and the
 /// occluder's density there (fixed point, 1/1000s), so they cook in any order. One workgroup
 /// an occluder, its invocations taking the box's voxels in turn.
+/// The occluders a row of `cook_occluders`'s groups cooks.
+const OCCLUDER_ROW: u32 = 32768
+
 @compute(64)
 pub fn cook_occluders(
     grid: ProbeGrid,
@@ -178,7 +181,12 @@ pub fn cook_occluders(
     group: std::gpu::WorkgroupId,
     lid: std::gpu::LocalId,
 ) {
-    let o = occluders[group.x]
+    // Groups run (x, y): a dispatch has at most 65535 a dimension, a dense wood more occluders.
+    let k = group.y * OCCLUDER_ROW + group.x
+    if k >= occluders.len() {
+        return
+    }
+    let o = occluders[k]
     let lo = min(o.a, o.b) - vec3(o.radius)
     let hi = max(o.a, o.b) + vec3(o.radius)
     let v0 = vec3i(floor((lo - grid.volume_corner) / grid.voxel))
@@ -883,7 +891,7 @@ impl Baked {
                 occluders: self.occluders.span(start: 0, count: max(self.occluder_count, 1)),
                 volume: mut volume,
             ),
-            groups: max(self.occluder_count, 1),
+            groups: (min(max(self.occluder_count, 1), OCCLUDER_ROW), (max(self.occluder_count, 1) + OCCLUDER_ROW - 1) / OCCLUDER_ROW, 1),
         )
         dispatch(
             filterable.bind(self.grid, volume.items(), density: mut self.density),

@@ -18,8 +18,8 @@
 use light::Lit
 use sim::Hit
 use std::gpu::{
-    ClipPosition, DrawIndexedArgs, GlobalId, GpuBuffer, GpuSpan, Oct32, Slots, Unorm8x4,
-    VertexIndex, buffer, buffer_of, dispatch, label, write,
+    ClipPosition, DrawIndexedArgs, GlobalId, GpuBuffer, GpuSpan, Oct32, Rgba8, Sampler, Slots,
+    Texture, Unorm8x4, VertexIndex, buffer, buffer_of, dispatch, label, sampler, texture, write,
 }
 use view::Camera
 
@@ -32,6 +32,13 @@ pub trait Terrain: Copy + GpuData {
     /// What covers the ground at `at` (a point on it) whose normal is `n`: its albedo and how
     /// much grass grows there. Cooked into the clipmap, so it can be as costly as it needs.
     fn cover(self, at: vec3, n: vec3) -> Cover
+
+    /// What covers the ground at `at`, given the ground's fields there (`Clipmap::set_fields`:
+    /// four numbers a game keeps over the plane, such as a history's light and wear), or -1 in
+    /// each where the fields don't reach. By default, `cover`.
+    fn cover_with(self, at: vec3, n: vec3, fields: vec4) -> Cover {
+        self.cover(at, n)
+    }
 
     /// A bound on the ground's slope, rise over run, which a raycast steps by.
     fn steepest(self) -> f32 {
@@ -121,6 +128,11 @@ pub struct Clipmap {
     cooked: [bool; MAX_LEVELS],
     /// Levels cooked since the clipmap was made (each time a level moved).
     pub cooks: u32,
+    /// The ground's fields (`set_fields`), where they lie on the plane (x, z of their corner,
+    /// then their size), and how they're read: a texel of nothing until a game sets them.
+    fields: Texture<Rgba8>,
+    fields_at: vec4,
+    fields_s: Sampler,
 }
 
 impl Clipmap {
@@ -136,7 +148,18 @@ impl Clipmap {
             finest,
             cooked: [false; MAX_LEVELS],
             cooks: 0,
+            fields: texture::<Rgba8>(width: 1, height: 1),
+            fields_at: vec4(0.0),
+            fields_s: sampler(),
         }
+    }
+
+    /// The ground's fields, which `Terrain::cover_with` reads as it cooks: `fields` lies on the
+    /// plane from `corner` (x, z), `size` across each way. The levels cook again.
+    pub fn set_fields(mut self, fields: take Texture<Rgba8>, corner: vec2, size: vec2) {
+        self.fields = take fields
+        self.fields_at = vec4(corner, size)
+        self.cooked = [false; MAX_LEVELS]
     }
 
     /// Where the levels are, for the shaders.
@@ -182,6 +205,9 @@ impl Clipmap {
                 dispatch(
                     cook_level.bind(
                         terrain,
+                        fields: self.fields,
+                        fields_at: self.fields_at,
+                        fs: self.fields_s,
                         at: vec4(at.x, at.y, s, 0.0),
                         moved: moved,
                         from: self.texels.span(start: l * STRIDE, count: STRIDE),
@@ -310,6 +336,9 @@ fn ground_indices() -> Vec<u32> {
 @compute(8, 8)
 pub fn cook_level<T: Terrain>(
     terrain: T,
+    fields: Texture<Rgba8>,
+    fields_at: vec4,
+    fs: Sampler,
     at: vec4,
     moved: vec2i,
     from: [Texel],
@@ -329,7 +358,10 @@ pub fn cook_level<T: Terrain>(
     let z = at.y + f32(id.y) * s
     let h = terrain.height(x, z)
     let n = terrain.normal(x, z, s * 0.5)
-    let c = terrain.cover(vec3(x, h, z), n)
+    let uv = (vec2(x, z) - fields_at.xy) / max(fields_at.zw, vec2(1.0e-6))
+    let inside = fields_at.z > 0.0 && uv.x >= 0.0 && uv.y >= 0.0 && uv.x <= 1.0 && uv.y <= 1.0
+    let f = if inside { fields.sample_level(fs, uv) } else { vec4(-1.0) }
+    let c = terrain.cover_with(vec3(x, h, z), n, f)
     // Slot (i, j) is j * ROW + i: the dispatch's rows are ROW wide (`texel_index`).
     out[id] = Texel {
         height: h,

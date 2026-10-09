@@ -1,0 +1,625 @@
+// The region's trees (spike 17): what the history left, drawn. Each species is cooked as a few
+// kinds (`engine::plant`): grown in the open (crown low and wide) or in the forest (crown high
+// and narrow), young, standing dead, burnt, fallen. The forest places an instance of a kind for
+// each tree the history kept, scaled to its height, turned so its crown leans the way the history
+// leaned it. Far trees stand down the valley.
+
+use engine::noise::{noise2, pick, rand}
+use engine::plant::{Bark, Instance, Leaves, Plant, plant}
+use engine::vegetation::Placed
+use great_tree::tree::great_tree
+use history::{
+    ALDER, ALIVE, BEECH, BIRCH, BLACKTHORN, FIRE, History, LOG, OAK, PINE, SNAG, THORN, Tree,
+    log_rot,
+}
+use map::REGION_LO
+use scene::{KNOLL, on_ground, past_edge}
+use std::math::TAU
+
+// ---- the kinds ---------------------------------------------------------------------------------
+
+pub const GREAT: u32 = 0
+pub const OAK_OPEN: u32 = 1
+pub const OAK_FOREST: u32 = 2
+pub const BEECH_OPEN: u32 = 3
+pub const BEECH_FOREST: u32 = 4
+pub const BIRCH_OPEN: u32 = 5
+pub const BIRCH_FOREST: u32 = 6
+pub const PINE_OPEN: u32 = 7
+pub const PINE_FOREST: u32 = 8
+pub const ALDER_A: u32 = 9
+pub const ALDER_B: u32 = 10
+pub const HAWTHORN: u32 = 11
+pub const SLOE: u32 = 12
+pub const YOUNG_BROAD: u32 = 13
+pub const YOUNG_PINE: u32 = 14
+pub const SNAG_BROAD: u32 = 15
+pub const SNAG_BURNT: u32 = 16
+pub const SNAG_PINE: u32 = 17
+pub const LOG_SHORT: u32 = 18
+pub const LOG_LONG: u32 = 19
+pub const FAR_A: u32 = 20
+pub const FAR_B: u32 = 21
+pub const KINDS: u32 = 22
+
+/// Each kind's height as it's built (m): an instance is scaled to its tree's.
+const BUILT = [
+    16.0, 18.0, 18.0, 20.0, 20.0, 15.0, 15.0, 22.0, 22.0, 15.0, 15.0, 5.0, 3.0, 3.0, 3.0, 16.0,
+    16.0, 18.0, 12.0, 20.0, 15.0, 15.0,
+]
+
+/// A broad-leaved tree, seed `s`, `tall` high: a trunk leaning a little toward +z (the light,
+/// once placed), limbs, and a crown of clumps from `base` (a share of its height) to its top,
+/// `width` (a share of its height) across each way, its clumps `clump` across.
+fn broadleaf(
+    s: u32,
+    tall: f32,
+    base: f32,
+    width: f32,
+    clump: f32,
+    count: u32,
+    limbs: u32,
+    girth: f32,
+    leaves: Leaves,
+    bark: Bark,
+) -> Plant {
+    var p = plant(leaves, bark)
+    let crown_y = tall * base
+    let lean = vec3(pick(s, 4, lo: -0.3, hi: 0.3), 0.0, tall * 0.05)
+    let top = vec3(0.0, crown_y, 0.0) + lean
+    p.tube(
+        [vec3(0.0, -0.6, 0.0), vec3(0.0, 0.5, 0.0), top * 0.6, top + vec3(0.0, tall * 0.08, 0.0)],
+        [girth * 1.5, girth * 1.15, girth * 0.8, girth * 0.45],
+    )
+    let half = (tall - crown_y) * 0.5
+    let mid = vec3(0.0, crown_y + half, 0.0) + lean * 1.3
+    for i in 0..count {
+        let a = TAU * rand(s, 20 + i)
+        let up = pick(s, 40 + i, lo: -0.75, hi: 1.0)
+        let r = sqrt(max(1.0 - up * up, 0.0)) * pick(s, 60 + i, lo: 0.45, hi: 1.0)
+        let w = tall * width
+        let at = mid + vec3(r * cos(a) * w, up * (half - clump * 0.4), r * sin(a) * w)
+        p.clump(at, radius: clump * pick(s, 80 + i, lo: 0.8, hi: 1.2))
+        if i < limbs {
+            let from = top * pick(s, 100 + i, lo: 0.55, hi: 0.95)
+            p.limb(
+                from,
+                mix(from, at, vec3(0.5)) + vec3(0.0, tall * 0.03, 0.0),
+                at,
+                r_from: girth * 0.45,
+                r_to: 0.04,
+            )
+        }
+    }
+    p
+}
+
+/// A pine, seed `s`, `tall` high: a straight trunk, bare low, and a flat-topped crown of dark
+/// clumps; grown in the open (`open`), its crown reaches lower and wider.
+fn pine(s: u32, tall: f32, open: bool) -> Plant {
+    let leaves = Leaves {
+        young: vec3(0.07, 0.12, 0.06),
+        old: vec3(0.02, 0.045, 0.03),
+        through: vec3(0.05, 0.08, 0.03),
+        size: 0.75,
+        cover: 1.5,
+    }
+    let bark = Bark { dark: vec3(0.16, 0.09, 0.05), light: vec3(0.48, 0.27, 0.13) }
+    var p = plant(leaves, bark)
+    let lean = vec3(0.0, 0.0, tall * 0.03)
+    p.tube(
+        [
+            vec3(0.0, -0.6, 0.0),
+            vec3(0.0, 0.5, 0.0),
+            vec3(0.0, tall * 0.5, 0.0) + lean * 0.5,
+            vec3(0.0, tall * 0.92, 0.0) + lean,
+        ],
+        [0.42, 0.3, 0.22, 0.08],
+    )
+    let from = if open { 0.45 } else { 0.68 }
+    let width = if open { 0.3 } else { 0.2 }
+    let count = if open { 22 } else { 16 }
+    for i in 0..count {
+        let h = pick(s, 10 + i, lo: from, hi: 0.97)
+        // Wider in the crown's upper middle, flat on top.
+        let w = tall *
+            width *
+            (0.5 + 0.5 * sin(3.1 * (h - from) / (1.0 - from))) *
+            pick(s, 30 + i, lo: 0.4, hi: 1.0)
+        let a = TAU * rand(s, 50 + i)
+        let at = vec3(w * cos(a), tall * h, w * sin(a)) + lean * h
+        p.clump(at, radius: pick(s, 70 + i, lo: 1.1, hi: 1.7))
+        if i < 10 {
+            let stem = vec3(0.0, tall * h, 0.0) + lean * h
+            p.straight(stem, at, r_from: 0.06, r_to: 0.025)
+        }
+    }
+    p
+}
+
+/// A shrub, seed `s`: a mound of clumps on a few crooked stems.
+fn shrub(s: u32, size: f32, count: u32, leaves: Leaves, stems: u32) -> Plant {
+    var p = plant(
+        leaves,
+        bark: Bark { dark: vec3(0.10, 0.08, 0.06), light: vec3(0.22, 0.18, 0.13) },
+    )
+    for i in 0..count {
+        let a = TAU * rand(s, 10 + i)
+        let r = size * 0.9 * sqrt(rand(s, 20 + i))
+        let at = vec3(r * cos(a), size * pick(s, 30 + i, lo: 0.35, hi: 0.95), r * sin(a))
+        p.clump(at, radius: size * pick(s, 40 + i, lo: 0.4, hi: 0.65))
+        if i < stems {
+            p.limb(
+                vec3(0.0, -0.2, 0.0),
+                vec3(r * 0.3 * cos(a), size * 0.3, r * 0.3 * sin(a)),
+                at * 0.8,
+                r_from: 0.07,
+                r_to: 0.03,
+            )
+        }
+    }
+    p
+}
+
+/// A dead tree standing, seed `s`, `tall` high: a trunk broken off below its old top and a few
+/// bare limbs; burnt (`burnt`), black and nearly bare.
+fn snag(s: u32, tall: f32, burnt: bool, conifer: bool) -> Plant {
+    let bark = if burnt {
+        Bark {
+            dark: vec3(0.03, 0.028, 0.025),
+            light: vec3(0.12, 0.11, 0.10),
+            moss: vec3(0.05, 0.05, 0.04),
+        }
+    } else {
+        // Weathered to silver.
+        Bark { dark: vec3(0.20, 0.19, 0.17), light: vec3(0.48, 0.46, 0.42) }
+    }
+    var p = plant(leaves: Leaves { size: 0.2 }, bark: bark)
+    // A kind needs leaves to be drawn: one tiny clump, out of sight below the ground.
+    p.clump(vec3(0.0, -0.6, 0.0), radius: 0.05)
+    let girth = if conifer { 0.32 } else { 0.4 }
+    let lean = vec3(pick(s, 4, lo: -0.4, hi: 0.4), 0.0, pick(s, 5, lo: -0.4, hi: 0.4))
+    let broke = tall * pick(s, 6, lo: 0.75, hi: 0.95)
+    p.tube(
+        [
+            vec3(0.0, -0.6, 0.0),
+            vec3(0.0, 0.5, 0.0),
+            vec3(0.0, broke * 0.5, 0.0) + lean * 0.5,
+            vec3(0.0, broke, 0.0) + lean,
+        ],
+        [girth * 1.4, girth * 1.1, girth * 0.75, girth * 0.4],
+    )
+    let n = if burnt { 3 } else if conifer { 6 } else { 5 }
+    for i in 0..n {
+        let h = pick(s, 10 + i, lo: 0.45, hi: 0.9) * broke
+        let a = TAU * rand(s, 20 + i)
+        let out = vec3(cos(a), 0.0, sin(a))
+        let from = vec3(0.0, h, 0.0) + lean * (h / broke)
+        let len = if conifer { tall * 0.08 } else { tall * pick(s, 30 + i, lo: 0.12, hi: 0.25) }
+        let rise = if conifer { -0.2 } else { pick(s, 40 + i, lo: 0.4, hi: 1.0) }
+        let tip = from + out * len + vec3(0.0, len * rise, 0.0)
+        p.limb(
+            from,
+            mix(from, tip, vec3(0.5)) + vec3(0.0, len * 0.15, 0.0),
+            tip,
+            r_from: girth * 0.3,
+            r_to: 0.03,
+        )
+    }
+    p
+}
+
+/// A fallen trunk `long` metres along +z from its foot, lying on the ground, `girth` its
+/// radius at the foot: crooked a little, its torn roots or stump at the foot.
+fn log(s: u32, long: f32, girth: f32) -> Plant {
+    let bark = Bark {
+        dark: vec3(0.11, 0.09, 0.07),
+        light: vec3(0.30, 0.26, 0.20),
+        moss: vec3(0.07, 0.11, 0.03),
+    }
+    var p = plant(leaves: Leaves { size: 0.2 }, bark: bark)
+    p.clump(vec3(0.0, -0.6, long * 0.5), radius: 0.05)
+    let bow = pick(s, 1, lo: -0.6, hi: 0.6)
+    p.tube(
+        [
+            vec3(0.0, girth, 0.0),
+            vec3(bow * 0.5, girth * 0.9, long * 0.33),
+            vec3(bow, girth * 0.75, long * 0.66),
+            vec3(bow * 0.6, girth * 0.5, long),
+        ],
+        [girth, girth * 0.85, girth * 0.65, girth * 0.4],
+    )
+    // The root plate's stubs at the foot.
+    for i in 0..4 {
+        let a = TAU * (f32(i) + rand(s, 10 + i)) / 4.0
+        let tip = vec3(cos(a) * girth * 2.4, girth + sin(a) * girth * 2.4, -girth * 0.6)
+        p.straight(vec3(0.0, girth, 0.2), tip, r_from: girth * 0.35, r_to: girth * 0.1)
+    }
+    p
+}
+
+/// A far tree, seed `s`: one crown of three clumps, no trunk to see.
+fn far_tree(s: u32) -> Plant {
+    var p = plant(leaves: Leaves { size: 2.4, cover: 1.2 }, bark: Bark {})
+    let tall = pick(s, 1, lo: 12.0, hi: 18.0)
+    for i in 0..3 {
+        let at = vec3(
+            pick(s, 10 + i, lo: -2.0, hi: 2.0),
+            tall * pick(s, 20 + i, lo: 0.55, hi: 0.8),
+            pick(s, 30 + i, lo: -2.0, hi: 2.0),
+        )
+        p.clump(at, radius: pick(s, 40 + i, lo: 2.6, hi: 3.6))
+    }
+    p
+}
+
+/// Kind `k`'s plant.
+pub fn kind_plant(k: u32) -> Plant {
+    let oak_leaves = Leaves {
+        young: vec3(0.14, 0.21, 0.035),
+        old: vec3(0.035, 0.085, 0.025),
+        size: 1.0,
+        cover: 1.6,
+    }
+    let oak_bark = Bark { dark: vec3(0.09, 0.07, 0.05), light: vec3(0.22, 0.18, 0.13) }
+    let beech_leaves = Leaves {
+        young: vec3(0.20, 0.28, 0.05),
+        old: vec3(0.05, 0.11, 0.03),
+        size: 0.95,
+        cover: 1.7,
+    }
+    let beech_bark = Bark { dark: vec3(0.18, 0.18, 0.17), light: vec3(0.40, 0.39, 0.36) }
+    let birch_leaves = Leaves {
+        young: vec3(0.25, 0.31, 0.06),
+        old: vec3(0.08, 0.14, 0.03),
+        size: 0.6,
+        cover: 1.2,
+    }
+    let birch_bark = Bark { dark: vec3(0.16, 0.15, 0.14), light: vec3(0.78, 0.77, 0.72) }
+    let alder_leaves = Leaves {
+        young: vec3(0.09, 0.17, 0.04),
+        old: vec3(0.025, 0.07, 0.02),
+        size: 0.8,
+        cover: 1.6,
+    }
+    let alder_bark = Bark { dark: vec3(0.10, 0.09, 0.08), light: vec3(0.24, 0.21, 0.19) }
+    if k == GREAT {
+        great_tree()
+    } else if k == OAK_OPEN {
+        broadleaf(
+            101,
+            tall: 18.0,
+            base: 0.28,
+            width: 0.52,
+            clump: 2.6,
+            count: 30,
+            limbs: 8,
+            girth: 0.55,
+            leaves: oak_leaves,
+            bark: oak_bark,
+        )
+    } else if k == OAK_FOREST {
+        broadleaf(
+            102,
+            tall: 18.0,
+            base: 0.52,
+            width: 0.36,
+            clump: 2.3,
+            count: 22,
+            limbs: 6,
+            girth: 0.42,
+            leaves: oak_leaves,
+            bark: oak_bark,
+        )
+    } else if k == BEECH_OPEN {
+        broadleaf(
+            103,
+            tall: 20.0,
+            base: 0.22,
+            width: 0.5,
+            clump: 2.5,
+            count: 32,
+            limbs: 6,
+            girth: 0.45,
+            leaves: beech_leaves,
+            bark: beech_bark,
+        )
+    } else if k == BEECH_FOREST {
+        broadleaf(
+            104,
+            tall: 20.0,
+            base: 0.6,
+            width: 0.3,
+            clump: 2.2,
+            count: 20,
+            limbs: 5,
+            girth: 0.36,
+            leaves: beech_leaves,
+            bark: beech_bark,
+        )
+    } else if k == BIRCH_OPEN {
+        broadleaf(
+            105,
+            tall: 15.0,
+            base: 0.35,
+            width: 0.24,
+            clump: 1.5,
+            count: 22,
+            limbs: 5,
+            girth: 0.17,
+            leaves: birch_leaves,
+            bark: birch_bark,
+        )
+    } else if k == BIRCH_FOREST {
+        broadleaf(
+            106,
+            tall: 15.0,
+            base: 0.6,
+            width: 0.18,
+            clump: 1.4,
+            count: 14,
+            limbs: 4,
+            girth: 0.14,
+            leaves: birch_leaves,
+            bark: birch_bark,
+        )
+    } else if k == PINE_OPEN {
+        pine(107, 22.0, open: true)
+    } else if k == PINE_FOREST {
+        pine(108, 22.0, open: false)
+    } else if k == ALDER_A {
+        broadleaf(
+            109,
+            tall: 15.0,
+            base: 0.3,
+            width: 0.26,
+            clump: 1.7,
+            count: 20,
+            limbs: 5,
+            girth: 0.22,
+            leaves: alder_leaves,
+            bark: alder_bark,
+        )
+    } else if k == ALDER_B {
+        broadleaf(
+            110,
+            tall: 15.0,
+            base: 0.42,
+            width: 0.22,
+            clump: 1.6,
+            count: 16,
+            limbs: 4,
+            girth: 0.2,
+            leaves: alder_leaves,
+            bark: alder_bark,
+        )
+    } else if k == HAWTHORN {
+        shrub(
+            111,
+            5.0,
+            12,
+            Leaves {
+                young: vec3(0.11, 0.18, 0.04),
+                old: vec3(0.03, 0.07, 0.02),
+                size: 0.6,
+                cover: 1.8,
+            },
+            4,
+        )
+    } else if k == SLOE {
+        shrub(
+            112,
+            3.0,
+            14,
+            Leaves {
+                young: vec3(0.07, 0.12, 0.03),
+                old: vec3(0.02, 0.05, 0.02),
+                size: 0.5,
+                cover: 2.0,
+            },
+            3,
+        )
+    } else if k == YOUNG_BROAD {
+        broadleaf(
+            113,
+            tall: 3.0,
+            base: 0.3,
+            width: 0.3,
+            clump: 0.7,
+            count: 6,
+            limbs: 0,
+            girth: 0.04,
+            leaves: beech_leaves,
+            bark: beech_bark,
+        )
+    } else if k == YOUNG_PINE {
+        pine(114, 3.0, open: true)
+    } else if k == SNAG_BROAD {
+        snag(115, 16.0, burnt: false, conifer: false)
+    } else if k == SNAG_BURNT {
+        snag(116, 16.0, burnt: true, conifer: false)
+    } else if k == SNAG_PINE {
+        snag(117, 18.0, burnt: false, conifer: true)
+    } else if k == LOG_SHORT {
+        log(118, long: 12.0, girth: 0.28)
+    } else if k == LOG_LONG {
+        log(119, long: 20.0, girth: 0.5)
+    } else if k == FAR_A {
+        far_tree(120)
+    } else {
+        far_tree(121)
+    }
+}
+
+// ---- placing the history's trees ---------------------------------------------------------------
+
+/// A small tint for an instance: its leaves a little warmer or cooler.
+fn tint(s: u32) -> vec3 {
+    vec3(pick(s, 6, lo: -0.05, hi: 0.06), pick(s, 7, lo: -0.06, hi: 0.04), 0.0)
+}
+
+/// An instance of kind `kind` at `p` on the ground, scaled to `tall`, its +z turned toward
+/// `toward` (or turned at random by seed `s`, if `toward` is nothing).
+fn instance(kind: u32, p: vec2, tall: f32, toward: vec2, s: u32, sink: f32) -> Placed {
+    let yaw = if length(toward) > 0.05 { atan2(toward.x, toward.y) } else { TAU * rand(s, 90) }
+    Placed {
+        kind,
+        at: Instance {
+            at: on_ground(p, up: -sink),
+            yaw,
+            tint: tint(s),
+            scale: clamp(tall / BUILT[kind], 0.15, 1.8),
+        },
+    }
+}
+
+/// The kind a living tree is drawn as: its species, grown in the open or in the forest (by the
+/// light its crown had), or young.
+fn living_kind(t: Tree) -> u32 {
+    let open = t.light > 0.55
+    if t.kind == THORN {
+        HAWTHORN
+    } else if t.kind == BLACKTHORN {
+        SLOE
+    } else if t.tall < 3.5 {
+        if t.kind == PINE { YOUNG_PINE } else { YOUNG_BROAD }
+    } else if t.kind == OAK {
+        if open { OAK_OPEN } else { OAK_FOREST }
+    } else if t.kind == BEECH {
+        if open { BEECH_OPEN } else { BEECH_FOREST }
+    } else if t.kind == BIRCH {
+        if open { BIRCH_OPEN } else { BIRCH_FOREST }
+    } else if t.kind == PINE {
+        if open { PINE_OPEN } else { PINE_FOREST }
+    } else {
+        if t.seed % 2 == 0 { ALDER_A } else { ALDER_B }
+    }
+}
+
+/// The year the history ended in, for the logs' rot.
+const NOW: i32 = history::YEARS
+
+/// Where the forest's instances stand: the great oak, each tree the history kept (living,
+/// standing dead, fallen), and far trees down the valley.
+pub fn placed(h: History) -> Vec<Placed> {
+    var out: Vec<Placed> = Vec::new()
+    for t in h.trees {
+        if t.pinned {
+            out.push(
+                Placed {
+                    kind: GREAT,
+                    at: Instance { at: on_ground(KNOLL), yaw: 0.0, tint: vec3(0.0), scale: 1.0 },
+                },
+            )
+        } else if t.state == ALIVE {
+            if t.tall > 1.2 {
+                let k = living_kind(t)
+                let tall = if k == HAWTHORN || k == SLOE { max(t.tall, 1.5) } else { t.tall }
+                out.push(instance(k, t.at, tall, t.lean, t.seed, 0.0))
+            }
+        } else if t.state == SNAG {
+            let k = if t.cause == FIRE { SNAG_BURNT } else if t.kind == PINE { SNAG_PINE } else {
+                SNAG_BROAD
+            }
+            out.push(instance(k, t.at, t.tall, vec2(0.0), t.seed, 0.0))
+        } else if t.state == LOG {
+            let rot = log_rot(t, NOW)
+            let len = t.tall * 0.85 * (1.0 - 0.3 * rot)
+            let k = if t.girth > 0.35 { LOG_LONG } else { LOG_SHORT }
+            let built = BUILT[k]
+            // Scaled by length; sunk as it rots.
+            var p = instance(k, t.at, len * BUILT[k] / built, t.fall, t.seed, 0.3 * rot * t.girth)
+            p.at.scale = clamp(len / built, 0.25, 1.8)
+            out.push(p)
+        }
+    }
+    // The far trees, down the valley's slopes and over its floor, along the whole edge.
+    let far_cell = 15.0
+    var s = 7000
+    for i in 0..110 {
+        for j in 0..120 {
+            s += 1
+            let x = -1300.0 + (f32(i) + rand(s, 93)) * far_cell
+            let z = -900.0 + (f32(j) + rand(s, 94)) * far_cell
+            let past = past_edge(vec2(x, z))
+            let dense = noise2(vec2(x, z) * 0.01)
+            if past > 14.0 && rand(s, 95) < smoothstep(0.3, 0.7, dense) {
+                out.push(
+                    Placed {
+                        kind: FAR_A + s % 2,
+                        at: Instance {
+                            at: on_ground(vec2(x, z)),
+                            yaw: TAU * rand(s, 90),
+                            tint: tint(s),
+                            scale: pick(s, 91, lo: 0.88, hi: 1.12),
+                        },
+                    },
+                )
+            }
+        }
+    }
+    out
+}
+
+/// An instance of a kind standing at `p` on the ground as it was grown: not turned, tinted or
+/// scaled.
+pub fn standing(kind: u32, p: vec2) -> Placed {
+    Placed { kind, at: Instance { at: on_ground(p), yaw: 0.0, tint: vec3(0.0), scale: 1.0 } }
+}
+
+/// What the forest is made from: each kind's plant, and where its instances stand.
+pub struct Woods {
+    pub plants: Vec<Plant>,
+    pub placed: Vec<Placed>,
+}
+
+/// The woods of a history.
+pub fn woods_of(h: History) -> Woods {
+    var plants: Vec<Plant> = Vec::new()
+    for k in 0..KINDS {
+        plants.push(kind_plant(k))
+    }
+    Woods { plants, placed: placed(h) }
+}
+
+/// What the probes' occluder volume is cooked from, within `lo` to `hi` on the plane: each
+/// instance's clumps (leaves) and limbs (wood), placed.
+pub fn occluders(
+    placed: [Placed],
+    plants: [Plant],
+    lo: vec2,
+    hi: vec2,
+) -> Vec<engine::probes::Occluder> {
+    var out: Vec<engine::probes::Occluder> = Vec::new()
+    for p in placed {
+        let at = p.at
+        if at.at.x < lo.x - 20.0 ||
+            at.at.z < lo.y - 20.0 ||
+            at.at.x > hi.x + 20.0 ||
+            at.at.z > hi.y + 20.0 {
+            continue
+        }
+        let plant = plants[p.kind]
+        for i in 0..plant.clumps.len() {
+            let c = plant.clumps[i]
+            let w = at.place(c.centre)
+            out.push(
+                engine::probes::Occluder { a: w, radius: c.radius * at.scale, b: w, solid: 0.0 },
+            )
+        }
+        for i in 0..plant.limbs.len() {
+            let l = plant.limbs[i]
+            for k in 0..3 {
+                out.push(
+                    engine::probes::Occluder {
+                        a: at.place(l.points[k]),
+                        radius: 0.5 * (l.radii[k] + l.radii[k + 1]) * at.scale,
+                        b: at.place(l.points[k + 1]),
+                        solid: 1.0,
+                    },
+                )
+            }
+        }
+    }
+    out
+}

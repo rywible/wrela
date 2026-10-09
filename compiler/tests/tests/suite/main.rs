@@ -36,6 +36,7 @@ mod noise;
 mod numerics;
 mod parallel;
 mod queries;
+mod region;
 mod reload;
 mod render;
 mod renderer;

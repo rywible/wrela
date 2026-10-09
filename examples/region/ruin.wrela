@@ -1,0 +1,116 @@
+// The tower on the Watch (spike 17): a broken round tower of dressed granite, as a field, realized
+// once at load as the stones are (`engine::stone`'s way: a creature of one bone). Its wall is a
+// thick shell, broken off lower on its south side and ragged along the break; a door faces the
+// clearing, and slits climb the wall. Courses of stone, mortar lines and moss come from its
+// colour.
+
+use engine::character::colours
+use engine::creature::{Creature, Skeleton, creature}
+use engine::look::{CreatureLook, Mesh as Tolerance}
+use engine::noise::noise3
+use engine::realize::realize_rigid
+use engine::render::ByChannels
+use engine::stone::{Realized, Rock, Stain}
+use std::derive::Box3
+use std::field::{Lipschitz, Surface}
+use std::math::TAU
+use std::transform::{rotate_y, translate}
+
+/// The tower's shape: its outer radius, its wall's thickness and its height (m).
+pub struct Tower: Copy + GpuData {
+    pub radius: f32,
+    pub wall: f32,
+    pub tall: f32,
+}
+
+/// The slits: (angle round the tower, height) of each.
+const SLITS = [
+    vec2(0.4, 6.0),
+    vec2(2.2, 8.5),
+    vec2(4.1, 11.0),
+    vec2(1.3, 13.5),
+    vec2(3.3, 16.0),
+    vec2(5.2, 18.0),
+]
+/// The door's angle round the tower: toward the clearing (north-west).
+const DOOR: f32 = 2.4
+
+impl Tower {
+    /// How high the wall stands at angle `a`: broken off lower on one side, ragged.
+    fn top(self, a: f32, p: vec3) -> f32 {
+        self.tall - 7.0 * (0.5 + 0.5 * sin(a + 0.9)) - 1.4 * noise3(vec3(a * 2.5, 0.0, 3.0))
+    }
+}
+
+/// The angular distance between `a` and `b`.
+fn apart(a: f32, b: f32) -> f32 {
+    let d = abs(a - b) % TAU
+    min(d, TAU - d)
+}
+
+impl Surface for Tower {
+    fn distance(self, p: vec3) -> f32 {
+        let r = length(p.xz)
+        let a = atan2(p.z, p.x) + TAU * 0.5
+        var d = max(r - self.radius, (self.radius - self.wall) - r)
+        d = max(d, p.y - self.top(a, p))
+        d = max(d, -(p.y + 3.0))
+        // The door and the slits, cut through the wall.
+        let door = max(apart(a, DOOR) * r - 0.75, p.y - 2.6)
+        d = max(d, -door)
+        for s in SLITS {
+            let slit = max(apart(a, s.x) * r - 0.18, abs(p.y - s.y) - 0.85)
+            d = max(d, -slit)
+        }
+        // Weathered: the stones' faces stand a little proud of the mortar.
+        d - 0.03 * noise3(p * 2.0)
+    }
+}
+
+/// The break's raggedness and the cuts bend the field a little: within 1.6 per metre.
+impl Lipschitz for Tower {
+    fn lipschitz(self, near: f32) -> f32 {
+        1.6
+    }
+}
+
+/// The tower's colour at `p`: granite in courses, dark mortar lines between them, moss low on
+/// its north side and on its broken top.
+pub struct Courses: Copy + GpuData {
+    pub tall: f32,
+}
+
+impl Courses {
+    pub fn at(self, p: vec3) -> Rock {
+        let base = Stain { r: 4.0, seed: 11.0 }.at(p)
+        let course = (p.y + 0.11 * noise3(p * 0.7)) / 0.42
+        let mortar = smoothstep(0.88, 0.97, course - floor(course))
+        let block = noise3(vec3(floor(course), floor(atan2(p.z, p.x) * 6.0), 1.0))
+        var c = base.albedo * (0.85 + 0.3 * block)
+        c = mix(c, vec3(0.12, 0.11, 0.10), vec3(mortar * 0.7))
+        let north = smoothstep(-0.2, 0.8, p.z / max(length(p.xz), 0.1))
+        let moss = max(smoothstep(2.5, 0.0, p.y) * north, smoothstep(self.tall - 9.0, self.tall - 5.0, p.y) * 0.7)
+        Rock { albedo: mix(c, vec3(0.08, 0.12, 0.03), vec3(moss * 0.75)) }
+    }
+}
+
+/// The tower as a creature of one bone, to realize.
+pub fn tower_creature(t: Tower) -> Creature<Rock> {
+    var s = Skeleton::new()
+    let root = s.root("tower", vec3(0.0))
+    let c = Courses { tall: t.tall }
+    let half = vec3(t.radius + 0.2, 0.0, t.radius + 0.2)
+    creature(s)
+        .part(root, t.with_at(|p| c.at(p)))
+        .bounded(Box3 { lo: vec3(-half.x, -3.2, -half.z), hi: vec3(half.x, t.tall + 0.5, half.z) })
+}
+
+/// The tower, realized at `at` (its foot on the ground), turned by `turn`.
+pub fn realize_tower(at: vec3, turn: f32) -> Realized {
+    let t = Tower { radius: 4.6, wall: 1.3, tall: 22.0 }
+    let c = tower_creature(t)
+    let look = CreatureLook { surface: Tolerance { tolerance: 2cm, largest: 12cm } }
+    let mesh = realize_rigid(c, look)
+    let colours = colours(mesh, c.field(), ByChannels {}, cell: 4cm)
+    Realized { mesh: take mesh, colours: take colours, at: translate(at) * rotate_y(turn), seed: 77 }
+}

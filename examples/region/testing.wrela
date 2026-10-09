@@ -1,0 +1,84 @@
+// What the clearing's tests read and set (#51's checks, `suite/clearing.rs`): ways to show a
+// frame other than the look, and captures of what a frame drew (copied into buffers, which a
+// test reads back). Each is reached through an export in main.wrela; the clearing itself never
+// uses them.
+
+use engine::grass::Blade
+use engine::light::{Light, display}
+use std::gpu::{Atomics, DepthTexture, FragCoord, GlobalId, Rgba16Float, Slots, Texture}
+use std::serialize::Serialize
+
+/// How a frame is shown: the look (the clearing as it is), the scene's samples at the output's
+/// size (nearest, before temporal AA), or temporal AA's output with the tone curve alone.
+pub enum View: Copy + Eq + Fieldless + Serialize {
+    Look,
+    Scene,
+    Temporal,
+    Map,
+}
+
+/// What a test captures of the last frame (`test_capture`, which the tests call with each
+/// variant's discriminant), copied into a new buffer, row by row, at the scene's size unless it
+/// says otherwise:
+/// - `Scene`, its colour and tag (a `vec4` a pixel); `Depth`, its depth (an `f32`); `Motion`,
+///   its motion (a `vec4`);
+/// - `Output`, temporal AA's output (a `vec4` a pixel, at the output's size: linear colour, and
+///   the nearest sample's tag in `w`);
+/// - `Shaded` and `Covering`, the cards' shading count and the cards covering each pixel (a
+///   `u32` each, from a `test_count` frame);
+/// - `Texels`, the clipmap's texels (a `engine::terrain::Texel` each, `STRIDE` a level);
+/// - `Tags`, temporal AA's output's tags alone (its `w`: an `f32` a pixel, at the output's size).
+pub enum Capture: Copy + Eq + Fieldless {
+    Scene,
+    Depth,
+    Motion,
+    Output,
+    Shaded,
+    Covering,
+    Texels,
+    Tags,
+}
+
+/// The key colour drawn where the sky would be.
+pub const KEY = vec4(1.0, 0.0, 1.0, 0.0)
+
+/// The scene's samples at the output's size, nearest: what a pass drew, unblended.
+@fragment
+pub fn scene_view(pixel: FragCoord, scene: Texture<Rgba16Float>, scale: u32) -> vec4 {
+    let p = vec2u(pixel.position.xy) / scale
+    vec4(min(scene.load(x: p.x, y: p.y).rgb, vec3(1.0)), 1.0)
+}
+
+/// Temporal AA's output through the tone curve alone (no dabs, glow, lines or vignette).
+@fragment
+pub fn temporal_view(pixel: FragCoord, image: Texture<Rgba16Float>, light: Light) -> vec4 {
+    let p = vec2u(pixel.position.xy)
+    vec4(display(light, image.load(x: p.x, y: p.y).rgb), 1.0)
+}
+
+/// A texture's texels, row by row.
+@compute(64)
+pub fn copy_texture(t: Texture<Rgba16Float>, out: mut Slots<vec4>, id: GlobalId) {
+    let w = t.width()
+    out[id] = t.load(x: id.x % w, y: id.x / w)
+}
+
+/// A texture's texels' `w`s (temporal AA's output's tags), row by row.
+@compute(64)
+pub fn copy_tags(t: Texture<Rgba16Float>, out: mut Slots<f32>, id: GlobalId) {
+    let w = t.width()
+    out[id] = t.load(x: id.x % w, y: id.x / w).w
+}
+
+/// A depth texture's texels, row by row.
+@compute(64)
+pub fn copy_depth(t: DepthTexture, out: mut Slots<f32>, id: GlobalId) {
+    let w = t.width()
+    out[id] = t.load(x: id.x % w, y: id.x / w)
+}
+
+/// The key colour, where nothing was drawn.
+@fragment
+pub fn key() -> vec4 {
+    KEY
+}

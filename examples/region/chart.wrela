@@ -1,0 +1,287 @@
+// The region's map, drawn (spike 17): the little map an author draws, and what the interest
+// check says about it. A metre a pixel over the map's square, from above, north up:
+// - the land: shaded relief, contours every 5 m, the valley past the edge;
+// - what the history left: each crown coloured by its species (oak a warm green, beech a fresh
+//   one, birch yellow-green, pine blue-green, alder dark, thorn olive), darker as it's taller;
+//   snags as grey dots, logs as brown strokes; open ground pale, trails tan, wet ground teal;
+// - the author's map: the old road (dashed), each keystone (a ring coloured by its kind), each
+//   sightline (yellow) and reveal (magenta);
+// - with the check: where nothing draws (red), and the walkers' paths (each its own colour) with
+//   a dot where each arrived somewhere.
+// Drawn on the CPU into a texture, which a pass shows. Throwaway code: it answers the spike's
+// question.
+
+use history::{
+    ALDER, ALIVE, BEECH, BIRCH, BLACKTHORN, History, LOG, OAK, PINE, SNAG, THORN, sample,
+}
+use interest::{Checked, FAINT, VN, VSTEP, View, vcell, icell}
+use map::{
+    GIANT, GLADE, KEYSTONES, REGION_LO, RELATIONS, REVEAL, RING, ROAD, SIGHT, TOR, TOWER, TREE,
+    VISTA, WAYSTONE,
+}
+use scene::past_edge
+use std::gpu::{FragCoord, Rgba8, Sampler, Texture, texture}
+
+/// The map's side, in pixels (a metre each).
+pub const SIDE: u32 = 1000
+
+/// A colour as four bytes in a word: r, g, b, a from the low byte up.
+fn pack(c: vec3) -> u32 {
+    let q = vec3u(clamp(c, vec3(0.0), vec3(1.0)) * 255.0 + vec3(0.5))
+    q.x | (q.y << 8) | (q.z << 16) | (255 << 24)
+}
+
+fn unpack(w: u32) -> vec3 {
+    vec3(f32(w & 255), f32((w >> 8) & 255), f32((w >> 16) & 255)) / 255.0
+}
+
+/// A canvas: the map's pixels, row 0 at the north (the far +z), column 0 at the west (+x is
+/// west, so the map's +x runs right to left).
+struct Canvas {
+    px: Vec<u32>,
+}
+
+/// The pixel of a point on the plane, if it's on the map.
+fn pixel(p: vec2) -> Option<vec2u> {
+    let x = SIDE - 1 - u32(clamp(floor(p.x - REGION_LO.x), 0.0, f32(SIDE - 1)))
+    let y = SIDE - 1 - u32(clamp(floor(p.y - REGION_LO.y), 0.0, f32(SIDE - 1)))
+    let inside = p.x >= REGION_LO.x && p.y >= REGION_LO.y &&
+        p.x < REGION_LO.x + f32(SIDE) && p.y < REGION_LO.y + f32(SIDE)
+    if inside { Some(vec2u(x, y)) } else { None }
+}
+
+/// The point on the plane at the middle of pixel (x, y).
+fn point(x: u32, y: u32) -> vec2 {
+    vec2(REGION_LO.x + f32(SIDE - 1 - x) + 0.5, REGION_LO.y + f32(SIDE - 1 - y) + 0.5)
+}
+
+impl Canvas {
+    fn blend(mut self, x: u32, y: u32, c: vec3, a: f32) {
+        let i = y * SIDE + x
+        self.px[i] = pack(mix(unpack(self.px[i]), c, vec3(a)))
+    }
+
+    /// A disc of colour `c` at `p` (m), `r` across, `a` opaque.
+    fn disc(mut self, p: vec2, r: f32, c: vec3, a: f32) {
+        let n = i32(ceil(r)) + 1
+        for dy in 0..(2 * n + 1) {
+            for dx in 0..(2 * n + 1) {
+                let q = p + vec2(f32(dx - n), f32(dy - n))
+                if length(q - p) <= r {
+                    if let Some(px) = pixel(q) {
+                        self.blend(px.x, px.y, c, a)
+                    }
+                }
+            }
+        }
+    }
+
+    /// A line from `a` to `b` (m), `w` wide, dashed every `dash` metres if `dash` isn't 0.
+    fn line(mut self, a: vec2, b: vec2, w: f32, c: vec3, alpha: f32, dash: f32) {
+        let len = length(b - a)
+        let steps = u32(ceil(len / 0.5)) + 1
+        for i in 0..steps {
+            let t = f32(i) / f32(max(steps - 1, 1))
+            let along = t * len
+            if dash == 0.0 || (along / dash) % 2.0 < 1.0 {
+                self.disc(mix(a, b, vec2(t)), w * 0.5, c, alpha)
+            }
+        }
+    }
+
+    /// A ring at `p`, `r` across, `w` wide.
+    fn ring(mut self, p: vec2, r: f32, w: f32, c: vec3) {
+        let n = i32(ceil(r + w)) + 1
+        for dy in 0..(2 * n + 1) {
+            for dx in 0..(2 * n + 1) {
+                let q = p + vec2(f32(dx - n), f32(dy - n))
+                let d = abs(length(q - p) - r)
+                if d <= w * 0.5 {
+                    if let Some(px) = pixel(q) {
+                        self.blend(px.x, px.y, c, 1.0)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A species' colour on the map.
+fn species(kind: u32) -> vec3 {
+    if kind == OAK {
+        vec3(0.36, 0.48, 0.16)
+    } else if kind == BEECH {
+        vec3(0.30, 0.55, 0.22)
+    } else if kind == BIRCH {
+        vec3(0.62, 0.70, 0.30)
+    } else if kind == PINE {
+        vec3(0.16, 0.38, 0.36)
+    } else if kind == ALDER {
+        vec3(0.14, 0.30, 0.16)
+    } else {
+        vec3(0.45, 0.45, 0.20)
+    }
+}
+
+/// A keystone kind's colour on the map.
+fn key_colour(kind: u32) -> vec3 {
+    if kind == TOWER {
+        vec3(0.95, 0.35, 0.15)
+    } else if kind == TOR {
+        vec3(0.75, 0.75, 0.80)
+    } else if kind == RING || kind == WAYSTONE {
+        vec3(0.85, 0.80, 0.55)
+    } else if kind == TREE || kind == GIANT {
+        vec3(0.95, 0.85, 0.25)
+    } else if kind == VISTA {
+        vec3(0.55, 0.80, 1.0)
+    } else {
+        vec3(1.0, 1.0, 1.0)
+    }
+}
+
+/// The walkers' colours.
+const WALKER_COLOURS = [
+    vec3(1.0, 0.25, 0.85),
+    vec3(0.2, 0.9, 1.0),
+    vec3(1.0, 0.95, 0.2),
+    vec3(1.0, 0.55, 0.1),
+    vec3(0.6, 0.4, 1.0),
+    vec3(0.3, 1.0, 0.4),
+    vec3(1.0, 1.0, 1.0),
+    vec3(0.95, 0.4, 0.4),
+]
+
+/// The map: the land and the history; with `check`, what the interest check found over it.
+pub fn chart(h: History, c: Checked, check: bool) -> Vec<u32> {
+    var cv = Canvas { px: Vec::filled(SIDE * SIDE, 0) }
+    borrow s = c.sight
+    // The land: open ground's colour, wet and worn, shaded by the slope toward the north-west.
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            let p = point(x, y)
+            let i = icell(p)
+            let g = s.ground[i]
+            let gx = s.ground[icell(p + vec2(4.0, 0.0))] - s.ground[icell(p - vec2(4.0, 0.0))]
+            let gz = s.ground[icell(p + vec2(0.0, 4.0))] - s.ground[icell(p - vec2(0.0, 4.0))]
+            let shade = clamp(0.8 + 0.12 * (gx + gz), 0.45, 1.15)
+            var col = vec3(0.70, 0.76, 0.52)
+            if past_edge(p) > 0.0 {
+                col = vec3(0.72, 0.76, 0.80)
+            } else {
+                let wet = sample(h.wet, p)
+                col = mix(col, vec3(0.42, 0.62, 0.62), vec3(smoothstep(0.6, 0.9, wet)))
+                let worn = s.trail[i]
+                col = mix(col, vec3(0.80, 0.66, 0.44), vec3(smoothstep(0.25, 0.6, worn)))
+                col = mix(col, vec3(0.62, 0.60, 0.56), vec3(scene::rocky(p, vec3(0.0, 1.0, 0.0))))
+            }
+            // Contours every 5 m.
+            let band = floor(g / 5.0)
+            let east = floor(s.ground[icell(p - vec2(1.5, 0.0))] / 5.0)
+            let south = floor(s.ground[icell(p - vec2(0.0, 1.5))] / 5.0)
+            let contour = band != east || band != south
+            var out = col * shade
+            if contour && x % 2 == 0 {
+                out *= 0.82
+            }
+            cv.px[y * SIDE + x] = pack(out)
+        }
+    }
+    // The history's trees: logs, then crowns (the tallest last, on top), then snags.
+    for t in h.trees {
+        if t.state == LOG && t.tall > 4.0 {
+            cv.line(t.at, t.at + t.fall * t.tall * 0.85, max(t.girth * 2.0, 0.6), vec3(0.45, 0.30, 0.18), 0.9, 0.0)
+        }
+    }
+    for pass in 0..3 {
+        for t in h.trees {
+            if t.state == ALIVE && t.tall > 1.5 {
+                let band = if t.tall < 6.0 { 0 } else if t.tall < 15.0 { 1 } else { 2 }
+                if band == pass {
+                    let dark = 1.0 - 0.35 * smoothstep(4.0, 24.0, t.tall)
+                    cv.disc(t.at + t.lean, max(t.reach, 0.8), species(t.kind) * dark, 0.85)
+                }
+            }
+        }
+    }
+    for t in h.trees {
+        if t.state == SNAG {
+            cv.disc(t.at, 1.2, vec3(0.80, 0.80, 0.78), 1.0)
+        }
+    }
+    if check {
+        // Where nothing draws: red, over the walkable views.
+        for y in 0..SIDE {
+            for x in 0..SIDE {
+                let p = point(x, y)
+                let v = c.views[vcell(p)]
+                if v.walkable && past_edge(p) < -2.0 {
+                    if v.best < FAINT {
+                        cv.blend(x, y, vec3(0.9, 0.05, 0.05), 0.45)
+                    } else if v.count >= 2 {
+                        cv.blend(x, y, vec3(1.0, 1.0, 0.6), 0.12)
+                    }
+                }
+            }
+        }
+    }
+    // The author's map: the road, the relations, the keystones.
+    for i in 0..5 {
+        cv.line(ROAD[i], ROAD[i + 1], 2.0, vec3(0.45, 0.22, 0.08), 1.0, 6.0)
+    }
+    for r in RELATIONS {
+        let k = KEYSTONES[r.to]
+        let col = if r.kind == SIGHT { vec3(1.0, 0.9, 0.1) } else { vec3(1.0, 0.2, 0.8) }
+        cv.line(r.from, k.at, 1.5, col, 0.9, if r.kind == REVEAL { 4.0 } else { 0.0 })
+        cv.ring(r.from, max(r.within, 3.0), 1.5, col)
+    }
+    for k in KEYSTONES {
+        cv.ring(k.at, max(k.reach, 6.0), 3.0, vec3(0.05))
+        cv.ring(k.at, max(k.reach, 6.0), 1.8, key_colour(k.kind))
+    }
+    if check {
+        var wi = 0
+        for w in c.walks {
+            let col = WALKER_COLOURS[wi % 8]
+            for i in 1..w.path.len() {
+                cv.line(w.path[i - 1], w.path[i], 1.6, col, 0.9, 0.0)
+            }
+            cv.disc(w.path[0], 6.0, col, 1.0)
+            wi += 1
+        }
+    }
+    take cv.px
+}
+
+/// The map as a texture: its pixels written in bands (a command can't be larger than the host's
+/// command buffer).
+pub fn texture_of(px: [u32]) -> Texture<Rgba8> {
+    var tex = texture::<Rgba8>(width: SIDE, height: SIDE)
+    let band = 200
+    var row = 0
+    while row < SIDE {
+        let rows = min(band, SIDE - row)
+        var bytes: Vec<u8> = Vec::with_capacity(rows * SIDE * 4)
+        for i in (row * SIDE)..((row + rows) * SIDE) {
+            let w = px[i]
+            for k in 0..4 {
+                bytes.push(u8((w >> (8 * k)) & 255))
+            }
+        }
+        tex.write(x: 0, y: row, width: SIDE, height: rows, bytes: bytes)
+        row += rows
+    }
+    tex
+}
+
+/// The map on the screen: a square in its middle, as tall as the screen; dark round it.
+@fragment
+pub fn chart_view(pixel: FragCoord, map: Texture<Rgba8>, s: Sampler, screen: vec2) -> vec4 {
+    let side = min(screen.x, screen.y)
+    let corner = (screen - vec2(side)) * 0.5
+    let uv = (pixel.position.xy - corner) / side
+    if uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0 {
+        return vec4(0.08, 0.08, 0.09, 1.0)
+    }
+    vec4(map.sample_level(s, uv).rgb, 1.0)
+}

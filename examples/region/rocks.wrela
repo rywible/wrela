@@ -1,0 +1,200 @@
+// The region's stones (spike 17): the clearing's boulders (spike 15's), the tor's granite on the
+// Spine, the ring's standing stones, the waystone on the old road, and boulders scattered through
+// the forest. Each is a stone field (`engine::stone`), realized once at load.
+
+use engine::noise::rand
+use engine::probes::Occluder
+use engine::stone::{Realized, realize_stone}
+use map::{CUT_WIDTH, KEYSTONES, REGION_HI, REGION_LO, RING_KEY, TOR_KEY, WAYSTONE_KEY, to_cut, to_road}
+use scene::{MEADOW, height, on_ground, past_edge}
+use std::math::TAU
+
+/// What a stone is: a boulder (squat, half sunk), a standing stone (tall and narrow, set
+/// upright), or the tor's granite (big, blocky, sunk to its shoulders).
+pub const BOULDER: u32 = 0
+pub const STANDING: u32 = 1
+pub const GRANITE: u32 = 2
+/// The tower's ruin (ruin.wrela), drawn as a stone is.
+pub const RUIN: u32 = 3
+
+/// A stone: where it is on the plane, its size (m), its seed and its kind.
+pub struct Spot: Copy {
+    pub at: vec2,
+    pub size: f32,
+    pub seed: u32,
+    pub kind: u32,
+}
+
+/// The clearing's boulders: (x, z, size, seed).
+const CLEARING = [
+    vec4(-6.8, 9.5, 1.5, 1.0),
+    vec4(-5.2, 10.9, 0.6, 2.0),
+    vec4(2.6, 14.0, 0.95, 3.0),
+    vec4(3.8, 13.1, 0.5, 4.0),
+    vec4(-13.0, 31.0, 1.3, 5.0),
+    vec4(13.0, 22.0, 1.0, 6.0),
+    vec4(-3.0, 41.0, 0.9, 7.0),
+]
+
+/// How many stones the ring has, and its radius (m).
+const RING_STONES: u32 = 9
+const RING_RADIUS: f32 = 7.0
+
+/// The scattered boulders: tried on a jittered grid this far apart (m), kept where the ground
+/// suits them.
+const SCATTER: f32 = 120.0
+
+/// Every stone.
+pub fn spots() -> Vec<Spot> {
+    var out: Vec<Spot> = Vec::new()
+    for c in CLEARING {
+        out.push(Spot { at: c.xy, size: c.z, seed: u32(c.w), kind: BOULDER })
+    }
+    // The tor: granite blocks heaped on the Spine's high point, the biggest in the middle.
+    let tor = KEYSTONES[TOR_KEY].at
+    for k in 0..9 {
+        let a = TAU * (f32(k) / 9.0 + 0.13 * rand(900 + k, 1))
+        let r = if k == 0 { 0.0 } else { 4.0 + 6.0 * rand(900 + k, 2) }
+        let size = if k == 0 { 4.2 } else { 1.8 + 1.6 * rand(900 + k, 3) }
+        out.push(Spot { at: tor + vec2(cos(a), sin(a)) * r, size, seed: 900 + k, kind: GRANITE })
+    }
+    // The ring: standing stones round a glade, one fallen gap on its south side.
+    let ring = KEYSTONES[RING_KEY].at
+    for k in 0..RING_STONES {
+        if k != 6 {
+            let a = TAU * f32(k) / f32(RING_STONES)
+            out.push(
+                Spot {
+                    at: ring + vec2(cos(a), sin(a)) * RING_RADIUS,
+                    size: 1.1 + 0.4 * rand(950 + k, 1),
+                    seed: 950 + k,
+                    kind: STANDING,
+                },
+            )
+        }
+    }
+    // The tower.
+    out.push(Spot { at: map::TOWER_AT, size: 4.6, seed: 77, kind: RUIN })
+    // The waystone.
+    out.push(Spot { at: KEYSTONES[WAYSTONE_KEY].at + vec2(3.5, 1.0), size: 0.8, seed: 990, kind: STANDING })
+    // Boulders through the forest, kept off the road, the ravine, the clearing and the edge.
+    var s = 2000
+    let cols = u32((REGION_HI.x - REGION_LO.x) / SCATTER)
+    let rows = u32((REGION_HI.y - REGION_LO.y) / SCATTER)
+    for j in 0..rows {
+        for i in 0..cols {
+            s += 1
+            let p = REGION_LO + (vec2(f32(i), f32(j)) + vec2(rand(s, 1), rand(s, 2))) * SCATTER
+            let (cut, _) = to_cut(p)
+            let ok = past_edge(p) < -8.0 &&
+                to_road(p) > 6.0 &&
+                cut > CUT_WIDTH + 3.0 &&
+                length(p - MEADOW) > 60.0 &&
+                rand(s, 3) < 0.6
+            if ok {
+                // Sometimes two or three together.
+                let n = 1 + u32(rand(s, 4) * 2.4)
+                for k in 0..n {
+                    let q = p + vec2(rand(s, 10 + k) - 0.5, rand(s, 20 + k) - 0.5) * 6.0
+                    out.push(Spot { at: q, size: 0.6 + 1.3 * rand(s, 30 + k), seed: s * 4 + k, kind: BOULDER })
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A stone's squash, from its kind and seed.
+fn squash(kind: u32, seed: u32) -> vec3 {
+    if kind == RUIN {
+        vec3(1.0, 22.0 / 4.6, 1.0)
+    } else if kind == STANDING {
+        vec3(0.42 + 0.1 * rand(seed, 1), 1.55 + 0.3 * rand(seed, 2), 0.3 + 0.08 * rand(seed, 3))
+    } else if kind == GRANITE {
+        vec3(1.0 + 0.25 * rand(seed, 1), 0.7 + 0.2 * rand(seed, 2), 0.95 + 0.25 * rand(seed, 3))
+    } else {
+        vec3(1.0 + 0.3 * rand(seed, 1), 0.62 + 0.15 * rand(seed, 2), 0.9 + 0.3 * rand(seed, 3))
+    }
+}
+
+/// How far into the ground a stone of this kind is sunk, as a share of its height.
+fn sunk(kind: u32) -> f32 {
+    if kind == RUIN { 0.0 } else if kind == STANDING { 0.82 } else if kind == GRANITE { 0.45 } else { 0.35 }
+}
+
+/// Stone `s`, realized: sunk into the ground by its kind.
+pub fn realize(s: Spot) -> Realized {
+    if s.kind == RUIN {
+        return ruin::realize_tower(on_ground(s.at, up: -0.3), 0.0)
+    }
+    let q = squash(s.kind, s.seed)
+    let at = on_ground(s.at, up: s.size * q.y * sunk(s.kind))
+    let turn = if s.kind == STANDING {
+        // Each standing stone faces the ring's middle (its broad side toward it).
+        let d = KEYSTONES[RING_KEY].at - s.at
+        atan2(d.x, d.y)
+    } else {
+        TAU * rand(s.seed, 4)
+    }
+    realize_stone(radius: s.size, squash: q, seed: s.seed, at: at, turn: turn)
+}
+
+/// Where the grass keeps out of the stones near `centre`: each one's place and reach on the
+/// plane (at most `MAX_FOOTPRINTS`, the nearest).
+pub const MAX_FOOTPRINTS: u32 = 64
+
+pub fn footprints(stones: [Spot], centre: vec2) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for s in stones {
+        let q = squash(s.kind, s.seed)
+        if length(s.at - centre) < 160.0 && out.len() < MAX_FOOTPRINTS {
+            out.push(vec4(s.at.x, s.at.y, s.size * max(q.x, q.z) * 0.85, 0.0))
+        }
+    }
+    if out.is_empty() {
+        out.push(vec4(1.0e6, 1.0e6, 0.0, 0.0))
+    }
+    out
+}
+
+/// How tall a stone stands above the ground (m).
+pub fn standing_height(s: Spot) -> f32 {
+    let q = squash(s.kind, s.seed)
+    s.size * q.y * (1.0 + sunk(s.kind))
+}
+
+/// How far a stone reaches on the plane (m).
+pub fn reach(s: Spot) -> f32 {
+    let q = squash(s.kind, s.seed)
+    s.size * max(q.x, q.z)
+}
+
+/// What the stones within `lo` to `hi` occlude the probes' light with: each a solid ball a
+/// little larger than it, its middle a quarter of its height above the ground.
+pub fn occluders(stones: [Spot], lo: vec2, hi: vec2) -> Vec<Occluder> {
+    var out: Vec<Occluder> = Vec::new()
+    for st in stones {
+        if st.at.x > lo.x - 10.0 && st.at.y > lo.y - 10.0 && st.at.x < hi.x + 10.0 && st.at.y < hi.y + 10.0 {
+            let tall = standing_height(st)
+            let y = height(x: st.at.x, z: st.at.y) + tall * 0.25
+            out.push(
+                Occluder {
+                    a: vec3(st.at.x, y, st.at.y),
+                    radius: max(reach(st), tall * 0.5) * 1.05,
+                    b: vec3(st.at.x, y + tall * 0.5, st.at.y),
+                    solid: 1.0,
+                },
+            )
+        }
+    }
+    out
+}
+
+/// Whether `p` on the plane is within `share` of a stone's reach.
+pub fn under_stone(stones: [Spot], p: vec2, share: f32) -> bool {
+    var under = false
+    for s in stones {
+        under = under || length(p - s.at) < reach(s) * share
+    }
+    under
+}

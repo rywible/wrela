@@ -1,0 +1,172 @@
+// The history baked (spike 17): "bake the decisions, recompute the consequences". The history's
+// nine hundred years are the costly part, and what they decide is short: which trees stand where,
+// of what kind, how tall, how they died and fell, and where the herd wore its trails. That's
+// written once (a bake run stores it), shipped as bytes (`embed`), and read back at load. What
+// follows from it (the light through the crowns, the wetness and soil, the thorn cover, the
+// forest floor's litter) is worked out again from the land and the trees, in one pass.
+//
+// A tree is 28 bytes: its place to 1.5 cm over the region, its kind, state and cause, its height,
+// crown and trunk to a centimetre or a millimetre, its lean, light and fall, its years and its
+// seed. The trails are a byte a metre, their runs of nothing run-length coded.
+
+use history::{FN, History, Tree, X0, Z0, consequences}
+use rocks::Spot
+use std::math::TAU
+
+/// The bytes' first word, and their version.
+const MAGIC: u32 = 0x57524c48
+const VERSION: u32 = 1
+
+fn put_u16(out: mut Vec<u8>, x: u32) {
+    out.push(u8(x & 255))
+    out.push(u8((x >> 8) & 255))
+}
+
+fn put_u32(out: mut Vec<u8>, x: u32) {
+    for k in 0..4 {
+        out.push(u8((x >> (8 * k)) & 255))
+    }
+}
+
+fn get_u16(b: [u8], at: u32) -> u32 {
+    u32(b[at]) | (u32(b[at + 1]) << 8)
+}
+
+fn get_u32(b: [u8], at: u32) -> u32 {
+    u32(b[at]) | (u32(b[at + 1]) << 8) | (u32(b[at + 2]) << 16) | (u32(b[at + 3]) << 24)
+}
+
+/// A number in [lo, hi] as a `u16`.
+fn q16(x: f32, lo: f32, hi: f32) -> u32 {
+    u32(clamp((x - lo) / (hi - lo), 0.0, 1.0) * 65535.0 + 0.5)
+}
+
+fn unq16(q: u32, lo: f32, hi: f32) -> f32 {
+    lo + (hi - lo) * f32(q) / 65535.0
+}
+
+/// A signed number as a byte, `step` a unit, held to ±127 steps.
+fn q8s(x: f32, step: f32) -> u8 {
+    u8(u32(clamp(round(x / step), -127.0, 127.0) + 128.0))
+}
+
+fn unq8s(b: u8, step: f32) -> f32 {
+    (f32(b) - 128.0) * step
+}
+
+/// A year as a `u16` (years from -1000).
+fn qyear(y: i32) -> u32 {
+    u32(clamp(y + 1000, 0, 65535))
+}
+
+/// The history's decisions, as bytes: its trees, then its trails.
+pub fn encode(h: History) -> Vec<u8> {
+    var out: Vec<u8> = Vec::new()
+    put_u32(mut out, MAGIC)
+    put_u32(mut out, VERSION)
+    put_u32(mut out, h.trees.len())
+    let span = f32(FN)
+    for t in h.trees {
+        put_u16(mut out, q16(t.at.x, X0, X0 + span))
+        put_u16(mut out, q16(t.at.y, Z0, Z0 + span))
+        out.push(u8(t.kind))
+        out.push(u8(t.state))
+        out.push(u8(t.cause))
+        out.push(if t.pinned { 1 } else { 0 })
+        put_u16(mut out, u32(clamp(t.tall * 100.0, 0.0, 65535.0)))
+        put_u16(mut out, u32(clamp(t.reach * 100.0, 0.0, 65535.0)))
+        put_u16(mut out, u32(clamp(t.girth * 1000.0, 0.0, 65535.0)))
+        out.push(q8s(t.lean.x, 0.1))
+        out.push(q8s(t.lean.y, 0.1))
+        out.push(u8(clamp(t.light, 0.0, 1.0) * 255.0 + 0.5))
+        let fall = atan2(t.fall.y, t.fall.x)
+        out.push(u8(u32(round((fall / TAU + 1.0) * 256.0)) % 256))
+        put_u16(mut out, qyear(t.born))
+        put_u16(mut out, qyear(t.died))
+        put_u16(mut out, qyear(t.fell))
+        put_u32(mut out, t.seed)
+    }
+    // The trails: a byte a metre; a run of zeros is a zero, then its length (a u16).
+    let n = FN * FN
+    var i = 0
+    while i < n {
+        let w = u8(clamp(h.wear[i], 0.0, 1.0) * 255.0 + 0.5)
+        if w == 0 {
+            var run = 0
+            while i < n && run < 65535 && u8(clamp(h.wear[i], 0.0, 1.0) * 255.0 + 0.5) == 0 {
+                run += 1
+                i += 1
+            }
+            out.push(0)
+            put_u16(mut out, run)
+        } else {
+            out.push(w)
+            i += 1
+        }
+    }
+    out
+}
+
+/// The trees and trails `bytes` hold.
+pub struct Decisions {
+    pub trees: Vec<Tree>,
+    pub wear: Vec<f32>,
+}
+
+pub fn decode(b: [u8]) -> Decisions {
+    assert(get_u32(b, 0) == MAGIC, "the baked history's bytes aren't a history")
+    assert(get_u32(b, 4) == VERSION, "the baked history is of another version: bake it again")
+    let count = get_u32(b, 8)
+    var at = 12
+    let span = f32(FN)
+    var trees: Vec<Tree> = Vec::with_capacity(count)
+    for _ in 0..count {
+        let fall = TAU * f32(b[at + 17]) / 256.0
+        trees.push(
+            Tree {
+                at: vec2(
+                    unq16(get_u16(b, at), X0, X0 + span),
+                    unq16(get_u16(b, at + 2), Z0, Z0 + span),
+                ),
+                kind: u32(b[at + 4]),
+                state: u32(b[at + 5]),
+                cause: u32(b[at + 6]),
+                pinned: b[at + 7] != 0,
+                tall: f32(get_u16(b, at + 8)) / 100.0,
+                reach: f32(get_u16(b, at + 10)) / 100.0,
+                girth: f32(get_u16(b, at + 12)) / 1000.0,
+                lean: vec2(unq8s(b[at + 14], 0.1), unq8s(b[at + 15], 0.1)),
+                light: f32(b[at + 16]) / 255.0,
+                vigour: 0.5,
+                fall: vec2(cos(fall), sin(fall)),
+                born: i32(get_u16(b, at + 18)) - 1000,
+                died: i32(get_u16(b, at + 20)) - 1000,
+                fell: i32(get_u16(b, at + 22)) - 1000,
+                seed: get_u32(b, at + 24),
+            },
+        )
+        at += 28
+    }
+    let n = FN * FN
+    var wear: Vec<f32> = Vec::with_capacity(n)
+    while wear.len() < n {
+        let w = b[at]
+        at += 1
+        if w == 0 {
+            let run = get_u16(b, at)
+            at += 2
+            for _ in 0..run {
+                wear.push(0.0)
+            }
+        } else {
+            wear.push(f32(w) / 255.0)
+        }
+    }
+    Decisions { trees, wear }
+}
+
+/// The history the baked bytes hold: its decisions read, its consequences worked out again.
+pub fn past(bytes: [u8], stones: [Spot]) -> History {
+    let d = decode(bytes)
+    consequences(take d.trees, take d.wear, stones)
+}

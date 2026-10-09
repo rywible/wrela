@@ -1,0 +1,248 @@
+// The map (spike 17): a square kilometre of the Last Green round the clearing, composed as its
+// author would draw it. It holds only what an author decides:
+// - the land's big shapes: a ridge with a tor, a hill with a tower, a hollow, a ravine;
+// - the keystones: the places a player should find;
+// - relations: what each keystone should do for a player (be seen from somewhere, stay hidden
+//   until somewhere);
+// - the routes people and herds made, and the events of the place's history.
+// The history (history.wrela) grows the forest round them, holding each relation as a pin; the
+// interest check (interest.wrela) measures what a player standing anywhere sees. Throwaway code:
+// it answers the spike's question.
+
+use std::math::TAU
+
+// ---- the authored space ----------------------------------------------------------------------
+
+/// The authored space: a square kilometre, the clearing near its north-west corner (+z is
+/// north, +x west). The plateau's edge cuts that corner off: past it the land falls to the
+/// valley, which is far land, not authored space.
+pub const REGION_LO = vec2(-200.0, -700.0)
+pub const REGION_HI = vec2(800.0, 300.0)
+
+/// Whether `p` is in the authored square.
+pub fn in_square(p: vec2) -> bool {
+    p.x >= REGION_LO.x && p.y >= REGION_LO.y && p.x < REGION_HI.x && p.y < REGION_HI.y
+}
+
+// ---- the land's big shapes ---------------------------------------------------------------------
+
+/// The plateau rises gently from the clearing toward the south-east: `TILT` metres over the
+/// region, along `TILT_DIR`.
+pub const TILT: f32 = 12.0
+pub const TILT_DIR = vec2(0.74, -0.67)
+
+/// Hills: (x, z, radius, height). A hill's top is broad; it falls to nothing at its radius.
+/// The Watch, where the tower stands.
+pub const HILLS = [vec4(560.0, -470.0, 150.0, 40.0)]
+
+/// The Spine: a ridge across the region's middle, each point (x, z, height, half-width), its
+/// high point the tor's.
+pub const RIDGE = [
+    vec4(90.0, -230.0, 5.0, 38.0),
+    vec4(330.0, -150.0, 17.0, 46.0),
+    vec4(520.0, -40.0, 12.0, 44.0),
+    vec4(740.0, 60.0, 5.0, 40.0),
+]
+
+/// Hollows: (x, z, radius, depth). The Sink, south of the ridge, where the water gathers.
+pub const HOLLOWS = [vec4(255.0, -385.0, 95.0, 9.0)]
+
+/// The Cut: a ravine from the Sink's west side to the plateau's edge, where its water falls to
+/// the valley (the Lip).
+pub const CUT = [
+    vec2(185.0, -392.0),
+    vec2(110.0, -352.0),
+    vec2(40.0, -322.0),
+    vec2(-60.0, -262.0),
+    vec2(-150.0, -205.0),
+    vec2(-235.0, -150.0),
+]
+pub const CUT_DEPTH: f32 = 7.0
+/// The ravine's half-width at its rim (m); its bed is a third of it.
+pub const CUT_WIDTH: f32 = 11.0
+
+// ---- the keystones -------------------------------------------------------------------------------
+
+/// What a keystone is, for the history (what it does to the forest), the interest check (how
+/// it draws the eye) and the renderer (what's drawn).
+pub const TREE: u32 = 0
+pub const TOWER: u32 = 1
+pub const TOR: u32 = 2
+pub const RING: u32 = 3
+pub const WAYSTONE: u32 = 4
+pub const GIANT: u32 = 5
+pub const VISTA: u32 = 6
+pub const GLADE: u32 = 7
+
+/// A keystone: where it is, what it is, how tall it stands above the ground (m), how far it
+/// reaches on the plane (m), and how strongly it draws the eye where it's seen (0 to 1).
+pub struct Keystone: Copy {
+    pub at: vec2,
+    pub kind: u32,
+    pub tall: f32,
+    pub reach: f32,
+    pub salience: f32,
+    pub name: Text,
+}
+
+/// Where the keystones whose places the land's shapes need stand (GPU code reads these, so
+/// they're plain numbers).
+pub const TOWER_AT = vec2(560.0, -470.0)
+pub const TOR_AT = vec2(330.0, -150.0)
+
+/// The keystones, in the order the relations name them.
+pub const KEYSTONES = [
+    // The clearing's great oak, on its knoll (scene::KNOLL).
+    Keystone { at: vec2(7.0, 33.0), kind: TREE, tall: 16.0, reach: 9.0, salience: 0.8, name: "the great oak" },
+    // The tower on the Watch: a broken round tower, the region's landmark.
+    Keystone { at: vec2(560.0, -470.0), kind: TOWER, tall: 22.0, reach: 6.0, salience: 1.0, name: "the tower" },
+    // The tor, on the Spine's high point: granite above the trees.
+    Keystone { at: vec2(330.0, -150.0), kind: TOR, tall: 7.0, reach: 14.0, salience: 0.7, name: "the tor" },
+    // The ring of standing stones, in a glade deep in the south-west.
+    Keystone { at: vec2(40.0, -455.0), kind: RING, tall: 2.6, reach: 9.0, salience: 0.6, name: "the ring" },
+    // A waystone where the old road crosses the Spine.
+    Keystone { at: vec2(268.0, -180.0), kind: WAYSTONE, tall: 1.8, reach: 1.0, salience: 0.35, name: "the waystone" },
+    // The fallen giant: a beech across the Cut, a bridge.
+    Keystone { at: vec2(40.0, -322.0), kind: GIANT, tall: 1.5, reach: 16.0, salience: 0.5, name: "the fallen giant" },
+    // The Lip: where the Cut's water falls to the valley, a view out.
+    Keystone { at: vec2(-205.0, -168.0), kind: VISTA, tall: 0.0, reach: 12.0, salience: 0.6, name: "the lip" },
+    // The Sink's open water-meadow.
+    Keystone { at: vec2(255.0, -385.0), kind: GLADE, tall: 0.0, reach: 45.0, salience: 0.5, name: "the sink" },
+    // The burn: a stand the fire killed, silver snags over young birch.
+    Keystone { at: vec2(650.0, -190.0), kind: GLADE, tall: 0.0, reach: 70.0, salience: 0.5, name: "the burn" },
+    // The windthrow on the north side: a gale's opening, its logs all one way.
+    Keystone { at: vec2(420.0, 160.0), kind: GLADE, tall: 0.0, reach: 45.0, salience: 0.4, name: "the windthrow" },
+    // The gap at the clearing's edge: the valley and the far mountain.
+    Keystone { at: vec2(-22.0, 60.0), kind: VISTA, tall: 0.0, reach: 15.0, salience: 0.6, name: "the gap" },
+]
+
+pub const OAK_KEY: u32 = 0
+pub const TOWER_KEY: u32 = 1
+pub const TOR_KEY: u32 = 2
+pub const RING_KEY: u32 = 3
+pub const WAYSTONE_KEY: u32 = 4
+pub const GIANT_KEY: u32 = 5
+pub const LIP_KEY: u32 = 6
+pub const SINK_KEY: u32 = 7
+pub const BURN_KEY: u32 = 8
+pub const WINDTHROW_KEY: u32 = 9
+pub const GAP_KEY: u32 = 10
+
+// ---- relations -----------------------------------------------------------------------------------
+
+/// What a relation asks: `to` seen from `from` (a sightline the history keeps open); `to`
+/// hidden until a player reaches `from` (a reveal: the land hides it before).
+pub const SIGHT: u32 = 0
+pub const REVEAL: u32 = 1
+
+/// A relation: its kind, the place it's judged from (a point on the plane, and how far round
+/// it a player may stand), and the keystone it's about.
+pub struct Relation: Copy {
+    pub kind: u32,
+    pub from: vec2,
+    pub within: f32,
+    pub to: u32,
+    pub name: Text,
+}
+
+pub const RELATIONS = [
+    // From the great oak's knoll, the tower over the trees: the clearing's promise of the
+    // region. The old road was laid out along it.
+    Relation { kind: SIGHT, from: vec2(4.0, 26.0), within: 6.0, to: TOWER_KEY, name: "the tower from the knoll" },
+    // From the tor, the tower, and the Sink below.
+    Relation { kind: SIGHT, from: vec2(330.0, -150.0), within: 10.0, to: TOWER_KEY, name: "the tower from the tor" },
+    Relation { kind: SIGHT, from: vec2(330.0, -150.0), within: 10.0, to: SINK_KEY, name: "the sink from the tor" },
+    // The Sink stays hidden until the Spine's crest.
+    Relation { kind: REVEAL, from: vec2(300.0, -200.0), within: 30.0, to: SINK_KEY, name: "the sink revealed at the crest" },
+    // The tor seen from the clearing's south side, over the trees: a second promise.
+    Relation { kind: SIGHT, from: vec2(14.0, 18.0), within: 8.0, to: TOR_KEY, name: "the tor from the clearing" },
+]
+
+/// How far below a sightline the history keeps the trees' tops (m), and how wide the cone is
+/// at its far end (m): a ride through the forest, not a cut.
+pub const SIGHT_CLEAR: f32 = 1.5
+pub const SIGHT_WIDTH: f32 = 14.0
+
+// ---- routes --------------------------------------------------------------------------------------
+
+/// The old road, from the clearing to the tower: people laid it out along the sightline from
+/// the knoll, then over the Spine at the waystone, down past the Sink's east side and up the
+/// Watch. They kept it clear `ROAD_WIDTH` wide from `PEOPLE_FROM` until they left.
+pub const ROAD = [
+    vec2(16.0, 14.0),
+    vec2(150.0, -108.0),
+    vec2(268.0, -180.0),
+    vec2(370.0, -300.0),
+    vec2(470.0, -400.0),
+    vec2(545.0, -455.0),
+]
+pub const ROAD_WIDTH: f32 = 7.0
+
+// ---- the history's events ---------------------------------------------------------------------
+
+/// The years people lived here: they built the tower, laid the road and kept both clear.
+pub const PEOPLE_FROM: i32 = 180
+pub const PEOPLE_TO: i32 = 420
+/// How far round the tower they kept the Watch's top clear (m).
+pub const WATCH_CLEAR: f32 = 38.0
+
+/// A fire, which kills every tree within its reach: the burn.
+pub const FIRE_YEAR: i32 = 770
+pub const FIRE_AT = vec2(650.0, -190.0)
+pub const FIRE_REACH: f32 = 85.0
+
+/// The giant: the tallest beech near the Cut falls across it.
+pub const GIANT_YEAR: i32 = 850
+
+/// A gale out of the north-west throws the tall trees in the windthrow.
+pub const WINDTHROW_YEAR: i32 = 862
+pub const WINDTHROW_AT = vec2(420.0, 160.0)
+pub const WINDTHROW_REACH: f32 = 48.0
+
+/// Where the herd drinks: the Sink's west shore.
+pub const DRINK = vec2(215.0, -370.0)
+
+// ---- helpers ----------------------------------------------------------------------------------
+
+/// The distance from `p` to the segment `a`–`b`, and how far along it the nearest point is (0
+/// to 1).
+pub fn to_segment(p: vec2, a: vec2, b: vec2) -> (f32, f32) {
+    let ab = b - a
+    let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
+    (length(p - a - ab * t), t)
+}
+
+/// The distance from `p` to the road (m).
+pub fn to_road(p: vec2) -> f32 {
+    var best = 1.0e9
+    for i in 0..5 {
+        let (d, _) = to_segment(p, ROAD[i], ROAD[i + 1])
+        best = min(best, d)
+    }
+    best
+}
+
+/// The distance from `p` to the Cut's course (m), and how far along it (m from the Sink).
+pub fn to_cut(p: vec2) -> (f32, f32) {
+    var best = 1.0e9
+    var along = 0.0
+    var walked = 0.0
+    for i in 0..5 {
+        let (d, t) = to_segment(p, CUT[i], CUT[i + 1])
+        let len = length(CUT[i + 1] - CUT[i])
+        if d < best {
+            best = d
+            along = walked + t * len
+        }
+        walked += len
+    }
+    (best, along)
+}
+
+/// A direction on the plane at angle `a` (radians, from +x toward +z).
+pub fn heading(a: f32) -> vec2 {
+    vec2(cos(a), sin(a))
+}
+
+/// A full turn, for code that sweeps round a point.
+pub const TURN: f32 = TAU
