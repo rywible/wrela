@@ -92,7 +92,7 @@ pub(crate) fn usage() -> ExitCode {
         "wrela doc <item> [<package-dir>]",
         "wrela pipelines <package-dir> [--json]",
         "wrela profile <package-dir> [--frames n] [--size WxH] [--input <script.json>] [--serial] [--json]",
-        "wrela test <package-dir> [<filter>] [--json]",
+        "wrela test <package-dir> [<filter>] [--bless] [--json]",
         "wrela primer [area]",
         "wrela solve <package-dir> (--minimize <module>::<function> | --spec) --free <file>[:<lines>]... [--steps n] [--exact] [--write] [--json]",
         "wrela query <package-dir> [<query>...] [--json]",

@@ -657,6 +657,18 @@ impl Entry {
 /// The most frames a frame test runs (§10): ten minutes at 60 frames a second.
 pub const MAX_TEST_FRAMES: u32 = 36_000;
 
+/// A GPU frame test's golden (§10): a PNG in the package, by its path, where the path is
+/// written, and how far the screen may be from it: a mean difference, in 8-bit steps.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Golden {
+    pub path: String,
+    pub span: Span,
+    pub within: f64,
+}
+
+/// A golden's `within` unless the test says: half an 8-bit step, on average.
+pub const GOLDEN_WITHIN: f64 = 0.5;
+
 #[derive(Clone, Debug, Default)]
 pub struct FnAttrs {
     pub entry: Option<(Entry, Span)>,
@@ -683,6 +695,9 @@ pub struct FnAttrs {
     /// `@test(frames: n, gpu: true)`: the frames run on the native host's GPU, which answers
     /// their readbacks (§10).
     pub test_gpu: bool,
+    /// `@test(frames: n, gpu: true, golden: "frame.png", within: m)`: the screen after the
+    /// frames is within a mean difference `m` of that PNG in the package (§10).
+    pub test_golden: Option<Golden>,
     /// `@thread_entry` (std's unsafe core): a host calls it on a thread of its own, with that
     /// thread's number first (wrela_abi `memory`'s threads); exported as `__` and its name.
     pub thread_entry: Option<Span>,

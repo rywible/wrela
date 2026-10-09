@@ -1,7 +1,9 @@
-//! `wrela test <package-dir> [<filter>] [--json]`: runs the package's `@test` functions
-//! (language.md §10), or those whose names contain `filter`. Each runs as a debug build's
-//! constants are computed, on memory of its own; a test passes unless it panics. Exit status 1
-//! if a test failed or the package has errors.
+//! `wrela test <package-dir> [<filter>] [--bless] [--json]`: runs the package's `@test`
+//! functions (language.md §10), or those whose names contain `filter`. Each runs as a debug
+//! build's constants are computed, on memory of its own; a test passes unless it panics, and a
+//! GPU frame test with a golden unless its screen is too far from it. `--bless` writes each
+//! golden from this machine's screen first. Exit status 1 if a test failed or the package has
+//! errors.
 
 use std::process::ExitCode;
 use wrela_diag::Diagnostic;
@@ -20,13 +22,18 @@ pub fn run(args: &[String]) -> ExitCode {
             words == 2
         })
     };
-    let rest: Vec<String> = rest.into_iter().cloned().collect();
+    let bless = rest.iter().any(|a| *a == "--bless");
+    let rest: Vec<String> = rest.into_iter().filter(|a| *a != "--bless").cloned().collect();
     let args = match crate::package_args(&rest, false) {
         Ok(a) => a,
         Err(status) => return status,
     };
     let filter = filter.first().map(|f| f.as_str());
-    let out = wrela_driver::test(&args.dir, filter);
+    let out = if bless {
+        wrela_driver::test_blessing(&args.dir, filter)
+    } else {
+        wrela_driver::test(&args.dir, filter)
+    };
     // A filter that chose nothing is an error, so a misspelt name can't look like a pass.
     if let Some(f) = filter
         && out.results.is_empty()

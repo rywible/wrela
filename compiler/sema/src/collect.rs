@@ -840,7 +840,8 @@ impl<'d, 'u> Collector<'d, 'u> {
                 "intrinsic" if is_std => out.intrinsic = true,
                 "test" => {
                     if let Some(args) = &a.args {
-                        (out.test_run, out.test_input, out.test_gpu) = self.test_run(a, args);
+                        (out.test_run, out.test_input, out.test_gpu, out.test_golden) =
+                            self.test_run(a, args);
                     }
                     out.test = Some(a.span);
                 }
@@ -965,18 +966,24 @@ impl<'d, 'u> Collector<'d, 'u> {
 
     /// `@test(frames: n)` or `@test(ticks: n)` (§10), `n` from 1 to [`MAX_TEST_FRAMES`], and,
     /// with `input: "path"`, the script of input events (or the tick log) they get; with
-    /// `gpu: true`, frames that run on the native host's GPU. Anything else is E0222.
+    /// `gpu: true`, frames that run on the native host's GPU, and with `golden: "frame.png"`
+    /// too, the PNG the screen after them is compared with, `within` a mean difference.
+    /// Anything else is E0222.
+    #[allow(clippy::type_complexity)]
     fn test_run(
         &mut self,
         a: &ast::Attribute,
         args: &[ast::Arg],
-    ) -> (Option<TestRun>, Option<(String, Span)>, bool) {
+    ) -> (Option<TestRun>, Option<(String, Span)>, bool, Option<Golden>) {
         let named =
             |name: &str| args.iter().find(|x| x.name.as_ref().is_some_and(|n| n.name == name));
         let others = args.iter().any(|x| {
-            !x.name
-                .as_ref()
-                .is_some_and(|n| matches!(n.name.as_str(), "frames" | "ticks" | "input" | "gpu"))
+            !x.name.as_ref().is_some_and(|n| {
+                matches!(
+                    n.name.as_str(),
+                    "frames" | "ticks" | "input" | "gpu" | "golden" | "within"
+                )
+            })
         });
         let count = |name: &str| match named(name).map(|x| &x.value.kind) {
             Some(ast::ExprKind::Lit(ast::Lit { kind: ast::LitKind::Int(v), .. })) => {
@@ -990,7 +997,7 @@ impl<'d, 'u> Collector<'d, 'u> {
             (false, true) => count("ticks"),
             _ => None,
         };
-        let input = match named("input") {
+        let path = |name: &str| match named(name) {
             None => Ok(None),
             Some(x) => match &x.value.kind {
                 ast::ExprKind::Lit(l @ ast::Lit { kind: ast::LitKind::Str, .. }) => {
@@ -999,6 +1006,7 @@ impl<'d, 'u> Collector<'d, 'u> {
                 _ => Err(()),
             },
         };
+        let input = path("input");
         // `gpu: true`: frames on the GPU (not ticks, which draw nothing).
         let gpu = match named("gpu").map(|x| &x.value.kind) {
             None => Ok(false),
@@ -1007,10 +1015,29 @@ impl<'d, 'u> Collector<'d, 'u> {
             }
             Some(_) => Err(()),
         };
-        match (n, input, gpu) {
-            (Some(n), Ok(input), Ok(gpu)) if !others => {
+        // `golden: "frame.png"` on a GPU frame test, `within` a mean difference from 0 to 255.
+        let within = match named("within").map(|x| &x.value.kind) {
+            None => Ok(GOLDEN_WITHIN),
+            Some(ast::ExprKind::Lit(ast::Lit { kind: ast::LitKind::Float(v), .. })) => {
+                Some(*v).filter(|v| (0.0..=255.0).contains(v)).ok_or(())
+            }
+            Some(ast::ExprKind::Lit(ast::Lit { kind: ast::LitKind::Int(v), .. })) => {
+                v.ok().filter(|&v| v <= 255).map(|v| v as f64).ok_or(())
+            }
+            Some(_) => Err(()),
+        };
+        let golden = match (path("golden"), within, gpu) {
+            (Ok(None), _, _) if named("within").is_none() => Ok(None),
+            (Ok(Some((path, span))), Ok(within), Ok(true)) => {
+                Ok(Some(Golden { path, span, within }))
+            }
+            _ => Err(()),
+        };
+        match (n, input, gpu, golden) {
+            (Some(n), Ok(input), Ok(gpu), Ok(golden)) if !others => {
                 let n = n as u32;
-                (Some(if frames { TestRun::Frames(n) } else { TestRun::Ticks(n) }), input, gpu)
+                let run = if frames { TestRun::Frames(n) } else { TestRun::Ticks(n) };
+                (Some(run), input, gpu, golden)
             }
             _ => {
                 self.diags.push(
@@ -1019,9 +1046,9 @@ impl<'d, 'u> Collector<'d, 'u> {
                         a.span,
                         format!("`@test` takes `frames: n` or `ticks: n`, from 1 to {MAX_TEST_FRAMES}: how many of the program's frames, or ticks, run before the test; and may take `input: \"script.json\"`, a script of input events for them (or, with `ticks`, a tick log to check them against)"),
                     )
-                    .with_note("`@test` alone is a test of code; `@test(frames: 600)` runs the program for 600 frames, then the test with its state; `gpu: true` runs them on the GPU (§10)"),
+                    .with_note("`@test` alone is a test of code; `@test(frames: 600)` runs the program for 600 frames, then the test with its state; `gpu: true` runs them on the GPU (§10), and `golden: \"frame.png\", within: 0.5` with it compares the screen after them with that PNG, within a mean difference in 8-bit steps"),
                 );
-                (None, None, false)
+                (None, None, false, None)
             }
         }
     }
