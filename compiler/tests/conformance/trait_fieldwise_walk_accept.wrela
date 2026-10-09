@@ -21,6 +21,15 @@ trait Parts: Copy {
         }
         0.0
     }
+
+    /// A fold from the right: the last field first.
+    fn reach(self, near: f32) -> f32 {
+        var r = near
+        for part in fields(self).rev() {
+            r = part.reach(r)
+        }
+        r
+    }
 }
 
 struct Ball: Copy {
@@ -35,6 +44,10 @@ impl Parts for Ball {
     fn item(self, i: u32) -> f32 {
         self.r
     }
+
+    fn reach(self, near: f32) -> f32 {
+        near + self.r
+    }
 }
 
 struct Pair: Copy + Parts {
@@ -45,5 +58,5 @@ struct Pair: Copy + Parts {
 pub fn frame(time: f32, width: u32, height: u32) {
     let pair = Pair { a: Ball { r: 1.0 }, b: Ball { r: 2.0 } }
     let all = (pair, [Ball { r: 3.0 }, Ball { r: 4.0 }])
-    let _ = all.count() + u32(all.item(3))
+    let _ = all.count() + u32(all.item(3)) + u32(all.reach(1.0))
 }

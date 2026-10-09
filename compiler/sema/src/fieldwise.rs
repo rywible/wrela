@@ -52,6 +52,23 @@ pub enum Shape {
     Walk,
 }
 
+/// Whether `e` is a walk's fields, and whether it goes backwards: `fields(self)`, or
+/// `fields(self).rev()` (the last field first).
+pub fn fields_walk(e: &wrela_syntax::ast::Expr) -> Option<bool> {
+    use wrela_syntax::ast::ExprKind as A;
+    if is_fields_of_self(e) {
+        return Some(false);
+    }
+    match &e.kind {
+        A::MethodCall { receiver, name, generics: None, args, .. }
+            if name.name == "rev" && args.is_empty() && is_fields_of_self(receiver) =>
+        {
+            Some(true)
+        }
+        _ => None,
+    }
+}
+
 /// Whether `e` is `fields(self)`: the fields of `self`, which a `@fieldwise` trait's method
 /// walks (`for f in fields(self)`, `trait.fieldwise-walk`).
 pub fn is_fields_of_self(e: &wrela_syntax::ast::Expr) -> bool {
@@ -505,8 +522,8 @@ impl Walker<'_> {
         let stmts = std::mem::take(&mut b.stmts);
         for mut s in stmts {
             match s.kind {
-                StmtKind::ForFields { var, mutable, body } => {
-                    for one in self.unroll(var, mutable, body, me, s.span) {
+                StmtKind::ForFields { var, mutable, reverse, body } => {
+                    for one in self.unroll(var, mutable, reverse, body, me, s.span) {
                         b.stmts.push(one);
                     }
                 }
@@ -549,30 +566,109 @@ impl Walker<'_> {
     }
 
     /// One walk's statements: for each field, its projection bound and the body for its type.
+    #[allow(clippy::too_many_arguments)]
     fn unroll(
         &mut self,
         var: LocalId,
         mutable: bool,
+        reverse: bool,
         body: Block,
         me: LocalId,
         span: Span,
     ) -> Vec<Stmt> {
         let p = self.p;
         let me_expr = Expr { ty: self.self_ty, span, kind: ExprKind::Local(me) };
+        // A walk whose body always returns returns from its first field: that field's body
+        // alone (an array's first element's), since nothing after it runs.
+        let first_only = matches!(p.types.kind(body.ty), TyKind::Never);
+        if first_only && let &Of::Array(elem, _) = &self.of {
+            let u = p.types.u32;
+            let (v, mut b) = self.instance(var, &body, elem, me);
+            let zero = Expr { ty: u, span, kind: ExprKind::Lit(Lit::Int(0)) };
+            let init =
+                Expr { ty: elem, span, kind: ExprKind::Index(Box::new(me_expr), Box::new(zero)) };
+            let pat = Pat { ty: elem, kind: PatKind::Bind(v), span };
+            b.stmts.insert(0, Stmt { kind: StmtKind::Bind { pat, init, else_: None }, span });
+            let ty = b.ty;
+            return vec![Stmt {
+                kind: StmtKind::Expr(Expr { ty, span, kind: ExprKind::Block(b) }),
+                span,
+            }];
+        }
         let fields: Vec<TyId> = match &self.of {
             Of::Adt(a, args) => p.fields_of(*a, args, None),
             Of::Tuple(ts) => ts.clone(),
-            &Of::Array(elem, _) => {
+            &Of::Array(elem, n) if !reverse => {
                 // An array's elements are of one type: a loop over them.
+                let _ = n;
                 let (v, b) = self.instance(var, &body, elem, me);
                 return vec![Stmt {
                     kind: StmtKind::ForEach { var: v, array: me_expr, mutable, body: b },
                     span,
                 }];
             }
+            &Of::Array(elem, n) => {
+                // Backwards: `for j in 0..N`, element `N - 1 - j`.
+                let u = p.types.u32;
+                let j = LocalId(self.locals.len() as u32);
+                self.locals.push(LocalDecl {
+                    name: "j".into(),
+                    ty: u,
+                    kind: LocalKind::Owned { mutable: false },
+                    span,
+                    keyword: None,
+                    shorthand: false,
+                    closure: None,
+                });
+                let (v, mut b) = self.instance(var, &body, elem, me);
+                let lit = |x: i128| Expr { ty: u, span, kind: ExprKind::Lit(Lit::Int(x)) };
+                let len = Expr { ty: u, span, kind: ExprKind::ConstParam(n) };
+                let last = Expr {
+                    ty: u,
+                    span,
+                    kind: ExprKind::Binary(
+                        wrela_syntax::ast::BinOp::Sub,
+                        Box::new(len.clone()),
+                        Box::new(lit(1)),
+                    ),
+                };
+                let at = Expr {
+                    ty: u,
+                    span,
+                    kind: ExprKind::Binary(
+                        wrela_syntax::ast::BinOp::Sub,
+                        Box::new(last),
+                        Box::new(Expr { ty: u, span, kind: ExprKind::Local(j) }),
+                    ),
+                };
+                let elem_at =
+                    Expr { ty: elem, span, kind: ExprKind::Index(Box::new(me_expr), Box::new(at)) };
+                let pat = Pat { ty: elem, kind: PatKind::Bind(v), span };
+                b.stmts.insert(
+                    0,
+                    Stmt { kind: StmtKind::Bind { pat, init: elem_at, else_: None }, span },
+                );
+                return vec![Stmt {
+                    kind: StmtKind::ForRange {
+                        var: j,
+                        start: lit(0),
+                        end: len,
+                        inclusive: false,
+                        body: b,
+                    },
+                    span,
+                }];
+            }
         };
         let mut out = Vec::new();
-        for (i, fty) in fields.into_iter().enumerate() {
+        let mut order: Vec<(usize, TyId)> = fields.into_iter().enumerate().collect();
+        if reverse {
+            order.reverse();
+        }
+        if first_only {
+            order.truncate(1);
+        }
+        for (i, fty) in order {
             let (v, b) = self.instance(var, &body, fty, me);
             let init =
                 Expr { ty: fty, span, kind: ExprKind::Field(Box::new(me_expr.clone()), i as u32) };

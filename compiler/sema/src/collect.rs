@@ -2635,8 +2635,25 @@ impl<'d, 'u> Collector<'d, 'u> {
             {
                 continue;
             }
+            // An impl written for arrays, or for tuples of an arity, replaces the derived one:
+            // a list can say better than a walk how to find its element (an array's, by
+            // dividing).
+            let written = |p: &Program, arity: Option<usize>| {
+                p.impls.iter().any(|imp| {
+                    !imp.from_opt_in
+                        && imp.trait_ref.as_ref().is_some_and(|r| r.trait_ == TraitId(t as u32))
+                        && match (p.types.kind(imp.self_ty), arity) {
+                            (TyKind::ArrayN(..) | TyKind::Array(..), None) => true,
+                            (TyKind::Tuple(ts), Some(k)) => ts.len() == k,
+                            _ => false,
+                        }
+                })
+            };
             // `None` for the array.
             for arity in std::iter::once(None).chain((2..=MAX_DERIVED_TUPLE).map(Some)) {
+                if written(&self.p, arity) {
+                    continue;
+                }
                 let param = |p: &mut Program, name: String, is_const: bool| {
                     p.new_param(ParamDef {
                         name,

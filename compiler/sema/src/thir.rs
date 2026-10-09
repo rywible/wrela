@@ -366,6 +366,8 @@ pub enum StmtKind {
     ForFields {
         var: LocalId,
         mutable: bool,
+        /// `fields(self).rev()`: the last field first.
+        reverse: bool,
         body: Block,
     },
 }

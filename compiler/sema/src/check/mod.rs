@@ -419,6 +419,8 @@ impl<'p> Checker<'p> {
         match &s.kind {
             StmtKind::Expr(e) => matches!(self.kind(e.ty), TyKind::Never),
             StmtKind::Loop { body } => !has_break(body),
+            // A walk whose body always returns returns from its first field (§3).
+            StmtKind::ForFields { body, .. } => matches!(self.kind(body.ty), TyKind::Never),
             _ => false,
         }
     }
@@ -692,10 +694,12 @@ impl<'p> Checker<'p> {
     /// `for f in fields(self)` in a `@fieldwise` trait's method: `f` projects each field in
     /// turn, any type with the trait (`trait.fieldwise-walk`). The body is checked once, here;
     /// each type that declares the trait unrolls it over its own fields.
+    #[allow(clippy::too_many_arguments)]
     fn check_walk(
         &mut self,
         name: Option<&ast::Ident>,
         mutable: bool,
+        reverse: bool,
         pat: &ast::Pat,
         e: &ast::Expr,
         body: &ast::Block,
@@ -749,7 +753,7 @@ impl<'p> Checker<'p> {
                     .with_help("call a function, or do the work in the walk's body"),
             );
         }
-        Some(StmtKind::ForFields { var, mutable, body: b })
+        Some(StmtKind::ForFields { var, mutable, reverse, body: b })
     }
 
     fn check_loop_body(&mut self, body: &ast::Block) -> Block {
@@ -907,8 +911,8 @@ impl<'p> Checker<'p> {
                 let b = self.check_loop_body(body);
                 StmtKind::ForRange { var, start: s, end: e, inclusive: *inclusive, body: b }
             }
-            ast::ForIter::Expr(e) if crate::fieldwise::is_fields_of_self(e) => {
-                match self.check_walk(name, mutable, pat, e, body) {
+            ast::ForIter::Expr(e) if let Some(reverse) = crate::fieldwise::fields_walk(e) => {
+                match self.check_walk(name, mutable, reverse, pat, e, body) {
                     Some(k) => k,
                     None => {
                         self.env.truncate(env_len);
