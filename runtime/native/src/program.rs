@@ -962,7 +962,7 @@ impl<E: Executor> Program<E> {
         crate::shared::load_u32(&self.memory, memory::PAR_HELPED)
     }
 
-    /// Makes each helper hold back a long job's result for `micros` microseconds once it's
+    /// Makes each helper hold back a task's result for `micros` microseconds once it's
     /// ready (`wrela_abi::memory::PAR_HOLD`): for tests, which slow jobs down so the threads
     /// that take them wait.
     pub(crate) fn hold_jobs(&self, micros: u32) {
@@ -1323,7 +1323,7 @@ fn spawn_worker(module: Module, memory: SharedMemory, thread: u32) -> std::threa
 fn helper_trapped(m: &SharedMemory, thread: u32) {
     let running = shared::load_u32(m, memory::thread_block(thread) + memory::RUNNING);
     let blocks = memory::THREAD_BLOCKS..memory::THREAD_BLOCKS_END;
-    let slots = memory::JOB_SLOTS..memory::JOB_SLOTS_END;
+    let slots = memory::TASK_SLOTS..memory::TASK_SLOTS_END;
     if blocks.contains(&running) {
         // A thread's parallel job: its starting thread waits on DONE. The first helper to trap
         // is the one whose message the program reports.
@@ -1331,7 +1331,7 @@ fn helper_trapped(m: &SharedMemory, thread: u32) {
         shared::or_u32(m, running + memory::JOB_DONE, memory::JOB_DONE_FAILED);
         let _ = m.atomic_notify(u64::from(running + memory::JOB_DONE), u32::MAX);
     } else if slots.contains(&running) {
-        // A long job: whoever takes it waits on its state.
+        // A task: whoever takes it waits on its state.
         shared::store_u32(m, running + memory::SLOT_THREAD, thread);
         shared::store_u32(m, running + memory::SLOT_STATE, memory::SLOT_FAILED);
         let _ = m.atomic_notify(u64::from(running + memory::SLOT_STATE), u32::MAX);

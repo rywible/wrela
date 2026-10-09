@@ -814,7 +814,7 @@ impl CpuHost {
         self.program.lockstep_frame(i, fps, width, height, script, None)
     }
 
-    /// Makes each helper hold back a long job's result for `micros` microseconds once it's
+    /// Makes each helper hold back a task's result for `micros` microseconds once it's
     /// ready: tests slow jobs down, so the threads that take them wait.
     pub fn hold_jobs(&self, micros: u32) {
         self.program.hold_jobs(micros);

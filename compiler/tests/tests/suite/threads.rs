@@ -1,4 +1,4 @@
-//! The program's threads (#43 §2–§3, AC6): long jobs (`std::par::job`), parallel work started
+//! The program's threads (#43 §2–§3, AC6): tasks (`std::par::spawn`), parallel work started
 //! inside parallel work, hand-offs (`std::handoff`) and per-thread allocation counts, natively
 //! with 1, 2 and 8 threads (the program's own and its helpers). compiler/tests/jobs is the
 //! program.

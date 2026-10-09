@@ -16,8 +16,8 @@ import {
   JOB_DONE,
   JOB_DONE_FAILED,
   JOB_FAILED,
-  JOB_SLOTS,
-  JOB_SLOTS_END,
+  TASK_SLOTS,
+  TASK_SLOTS_END,
   MAX_WORKERS,
   PAR_HELPED,
   PAR_SHUTDOWN,
@@ -230,8 +230,8 @@ function helperTrapped(memory: WebAssembly.Memory, thread: number): void {
     Atomics.compareExchange(words, (running + JOB_FAILED) / 4, 0, thread + 1);
     Atomics.or(words, (running + JOB_DONE) / 4, JOB_DONE_FAILED | 0);
     Atomics.notify(words, (running + JOB_DONE) / 4);
-  } else if (running >= JOB_SLOTS && running < JOB_SLOTS_END) {
-    // A long job: whoever joins it waits on its state.
+  } else if (running >= TASK_SLOTS && running < TASK_SLOTS_END) {
+    // A task: whoever joins it waits on its state.
     Atomics.store(words, (running + SLOT_THREAD) / 4, thread);
     Atomics.store(words, (running + SLOT_STATE) / 4, SLOT_FAILED);
     Atomics.notify(words, (running + SLOT_STATE) / 4);

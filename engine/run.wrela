@@ -5,7 +5,7 @@
 // ticks run.
 //
 // A job's answer enters the world at its due tick, never earlier: if it isn't ready then, the
-// ticker's thread waits for it (`Job::join`). So the tick it enters on doesn't depend on the
+// ticker's thread waits for it (`Task::join`). So the tick it enters on doesn't depend on the
 // helpers' timing, and every tick's state hash is fixed by the first world and the records.
 
 use sim::{Sim, Tick}
@@ -13,7 +13,7 @@ use timeline::Timeline
 use std::handoff::{Latest, Publisher, handoff}
 use std::hash::state_hash
 use std::input::Event
-use std::par::{Job, job}
+use std::par::{Task, spawn}
 use std::tick::{Ticked, start}
 
 /// How a world asks for work off the ticker's thread (§9): a job runs on a helper, from its ask
@@ -64,7 +64,7 @@ pub struct Stamped<S: Copy + Plain>: Copy + Plain {
 struct Pending<W: Asks> {
     ask: W::Ask,
     due: Tick,
-    job: Job<W::Answer>,
+    task: Task<W::Answer>,
 }
 
 /// What the ticker's thread owns: the timeline, the step and the presenter, the hand-off's
@@ -110,7 +110,7 @@ fn drive<W: Sim + Asks, Snap: Copy + Plain>(d: mut Driver<W, Snap>, t: Ticked) {
     while i < d.pending.len() {
         if d.pending[i].due <= t.tick {
             let p = d.pending.remove(i)
-            answers.push(Answered { ask: p.ask, answer: take p.job.join() })
+            answers.push(Answered { ask: p.ask, answer: take p.task.join() })
         } else {
             i += 1
         }
@@ -124,7 +124,7 @@ fn drive<W: Sim + Asks, Snap: Copy + Plain>(d: mut Driver<W, Snap>, t: Ticked) {
     d.timeline.advance(take input, d.step)
     for (ask, due) in d.timeline.world().asks(t.tick) {
         assert(due > t.tick, "a job's answer is due after the tick that asks for it")
-        d.pending.push(Pending { ask, due, job: job(ask, |a| W::work(a)) })
+        d.pending.push(Pending { ask, due, task: spawn(ask, |a| W::work(a)) })
     }
     borrow present = d.present
     d.out.publish(Stamped { ticks: t.tick + 1, snap: present(d.timeline.world()) })

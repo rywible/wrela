@@ -651,7 +651,7 @@ A value used after it moved is §6.1's example, and a `mut` borrow that another 
 
 ---
 
-### 6.17 Ticks, hand-offs and long jobs (milestone 4)
+### 6.17 Ticks, hand-offs and tasks (milestone 4)
 
 A program can run a fixed-rate step on a thread of its own, hand its newest result to the frames, and send long work to a helper. All three are std, built on the unsafe core (§6.14); the engine's `run` (a world on a timeline, #43) is ordinary code on top of them. None of them is specific to games.
 
@@ -727,10 +727,10 @@ A program can run a fixed-rate step on a thread of its own, hand its newest resu
       }
   }
   ```
-- **`std::par::job(input, f)`** starts `f(input)` on a helper, a long job that holds it while it runs, and gives a `Job<O>`; `join()` gives the result, waiting if a helper is still running it. `f` is `@deterministic`, so the result is a function of `input` alone, whichever thread runs it and whenever. A job no helper has started runs inside `join`: with no helpers every job runs there, and a job that joins another can't deadlock. A trap in a job is the program's panic at its `join`. `done()` says whether it has finished, and is `nondet`. A parallel job (`par_each_mut`) inside a job, or inside a `@parallel fn`, runs on its thread alone (`threads/`).
+- **`std::par::spawn(input, f)`** starts `f(input)` on a helper, a task that holds it while it runs, and gives a `Task<O>` (it was `job` and `Job<O>`, until `Job` named the work over several frames, §6.18, too: the owner's review of 2026-10-09); `join()` gives the result, waiting if a helper is still running it. `f` is `@deterministic`, so the result is a function of `input` alone, whichever thread runs it and whenever. A job no helper has started runs inside `join`: with no helpers every job runs there, and a job that joins another can't deadlock. A trap in a job is the program's panic at its `join`. `done()` says whether it has finished, and is `nondet`. A parallel job (`par_each_mut`) inside a job, or inside a `@parallel fn`, runs on its thread alone (`threads/`).
 
   ```wrela
-  use std::par::job
+  use std::par::spawn
 
   fn checksum(data: take Vec<u32>) -> u32 {
       var h: u32 = 2166136261
@@ -745,7 +745,7 @@ A program can run a fixed-rate step on a thread of its own, hand its newest resu
       for i in 0..100000 {
           data.push(i)
       }
-      let pending = job(take data, checksum)   // a helper hashes while this thread goes on
+      let pending = spawn(take data, checksum)   // a helper hashes while this thread goes on
       take pending.join()
   }
   ```
