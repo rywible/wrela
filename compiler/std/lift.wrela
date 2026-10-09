@@ -119,6 +119,7 @@ pub struct Watch {
     literals: Vec<Literal>,
     values: Vec<f32>,
     generation: u32,
+    changes: u32,
 }
 
 impl Watch {
@@ -128,7 +129,14 @@ impl Watch {
             literals: Vec::from(literals),
             values: Vec::from_fn(literals.len(), |i| literals[i].value()),
             generation: generation(),
+            changes: 0,
         }
+    }
+
+    /// How many times a literal it watches has had a new value, as of its last `changed`: a
+    /// key for what's cooked from them (`std::cache::Stale`), which a change makes stale.
+    pub fn version(self) -> u32 {
+        self.changes
     }
 
     /// Whether a literal it watches has a new value since it was made or last changed: then it
@@ -146,6 +154,9 @@ impl Watch {
                 self.values[i] = v
                 any = true
             }
+        }
+        if any {
+            self.changes += 1
         }
         any
     }

@@ -14,7 +14,7 @@ use std::math::PI
 /// light set to `sky_sh`, spherical harmonics' first two bands (`probes::sky_light`), so the
 /// test learns how each pixel answers to it; 2, the probes' as usual. Either way, no gloss
 /// reflects it (`probes::sky_lights`): the test measures the light a surface scatters.
-pub struct Light: Copy + GpuData {
+pub struct Light: Copy + GpuData + Eq {
     pub sun: vec3,
     pub exposure: f32,
     pub sun_colour: vec3,

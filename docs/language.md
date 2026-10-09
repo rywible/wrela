@@ -772,6 +772,23 @@ A program can run a fixed-rate step on a thread of its own, hand its newest resu
 
 **Why it fits wrela.** Projections can't be stored, so a stopped job holds only owned values, and its value is plain data. The frame is already the suspension point (§6.15). Against the decision about `async` (§18, 2026-10-02): a job has no futures, no executor and no IO; it's a loop body that the compiler splits at its `yield`s, and the program calls it.
 
+### 6.19 Results cached by their inputs (std::cache)
+
+**The problem.** A program that cooks results over frames (a sky's tables from its air, shadows from a forest, probes from the shadows) kept a flag a cache, and when an input changed (an edit, a test, a key) it set each flag cooked from it back by hand: the clearing's `cook_again` passed a change to the light on to the shadows, the probes and the clouds. Miss one and a cache stays stale; set one too many and it cooks for nothing.
+
+**A cache names what it's cooked from** (`std::cache`, the owner's review of 2026-10-09). `Stale<K>` holds the key a result was cooked from: `stale(key)` is whether it must be cooked again (never cooked, or cooked from other inputs), `cooked(key)` records it, and `version()` counts its cooks. A key is the inputs themselves (`Stale<(Air, Light)>`, anything `Eq` and `Clone`), or the versions of what they come from: another cache's `version()`, or a `std::lift::Watch`'s `version()` (how many times the literals a function's code reads have changed; `Watch::new(reads(|| f(x)))` watches any function's). So a change reaches every cache cooked from it, through as many steps as there are, and a cache cooked from another names that one's version. `forget()` is for an input the program changed by hand, which no key names. `Cached<K, V>` keeps the value too: `get(key, make)` gives it, made again only when the key changes.
+
+```text
+cook_again: the light's literals change ──► s.light, s.air reloaded
+  air's tables:    Stale<(Air, Light)>               stale ──► cooked
+  weather's maps:  Stale<(light's version, clouds')>  stale ──► cooked ──► version + 1
+  clouds' shadow:  Stale<(on, weather's version)>     stale ──► cooked
+  static shadows:  Stale<(Light, on, versions...)>    stale ──► drawn  ──► version + 1
+  probes:          Stale<(versions...)>               stale ──► the next probes bake
+```
+
+It's a library, not a language feature: the inputs a key names are the program's choice, as a function's arguments are, and the compiler's part is what it already knows, the literals a function reads (`reads`). The clearing's five cooked flags are caches (`examples/clearing`): its `cook_again` only reloads what changed.
+
 ## 7. Generics and traits
 
 | Rule | Tier | Decisions |
@@ -1106,6 +1123,7 @@ The sim/presentation split is an engine pattern built on this, not a language fe
 | `std::lift` | A lifted build's literals: `Literal`, `count`, `literal`, their values, sources and files, `set`, `generation` and `Watch`; `gradient` by literals and `reads`; specs' `Checks`, `Loss` and `Report` (§22) |
 | `std::reload` | Hot reload: `keep` bytes for the build that replaces this one, which its `kept` gives (§22) |
 | `std::job` | Work over several frames: `Job<f>`, a `@job fn` started and resumed to each `yield`, and `Step`, what a `resume` did (§6.18) |
+| `std::cache` | Results cooked from inputs, cooked again when they change: `Stale<K>`, what a result was cooked from, and `Cached<K, V>`, a value kept until its key changes (§6.19) |
 | `std::audio` | `play`, the program's voice, and `ring`, a queue to it (§6.13) |
 | `std::par` | The workers' protocol behind `par_each_mut` and `par_map_reduce` (§6.12); nothing public |
 | `std::mem`, `std::alloc` | The unsafe core: raw memory and the allocator (§6.14) |
