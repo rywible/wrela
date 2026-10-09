@@ -225,7 +225,19 @@ pub fn chart(h: History, c: Checked, check: bool) -> Vec<u32> {
             }
         }
     }
-    // The author's map: the road, the relations, the keystones.
+    // The author's map: the lawns and the herd's routes (round 2), the road, the relations,
+    // the keystones.
+    if map::ROUND_2 {
+        for l in map::LAWNS {
+            cv.ring(l.xy, l.z, 1.5, vec3(0.55, 0.95, 0.45))
+        }
+        for i in 1..map::SPINE_PATH.len() {
+            cv.line(map::SPINE_PATH[i - 1], map::SPINE_PATH[i], 1.5, vec3(0.75, 0.55, 0.25), alpha: 1.0, dash: 4.0)
+        }
+        for i in 1..map::CUT_PATH.len() {
+            cv.line(map::CUT_PATH[i - 1], map::CUT_PATH[i], 1.5, vec3(0.75, 0.55, 0.25), alpha: 1.0, dash: 4.0)
+        }
+    }
     for i in 0..5 {
         cv.line(ROAD[i], ROAD[i + 1], 2.0, vec3(0.45, 0.22, 0.08), 1.0, 6.0)
     }

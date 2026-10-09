@@ -154,7 +154,7 @@ pub fn road_distance(p: vec2) -> f32 {
 }
 
 /// A wildwood of `n` by `n` cells from world cell (i0, j0), grown from nothing for `steps` steps.
-/// A road (`road`) keeps its ride: no tree taller than 4 m within 3 m of its line.
+/// A road (`road`) keeps its line clear: no tree within 3 m of it.
 pub fn grow_wild(i0: i32, j0: i32, n: u32, steps: u32, road: bool) -> Vec<Wild> {
     var cells: Vec<Wild> = Vec::filled(n * n, Wild { kind: NONE, age: 0.0, tall: 0.0 })
     var next: Vec<Wild> = Vec::filled(n * n, Wild { kind: NONE, age: 0.0, tall: 0.0 })
@@ -224,8 +224,9 @@ pub fn grow_wild(i0: i32, j0: i32, n: u32, steps: u32, road: bool) -> Vec<Wild> 
                         out = Wild { kind: best, age: 0.0, tall: 0.6 }
                     }
                 }
+                // The road is clear underfoot: game and the odd walker keep its line open.
                 if road && road_distance(vec2(f32(wi) + 0.5, f32(wj) + 0.5) * WCELL) < 3.0 {
-                    out.tall = min(out.tall, 4.0)
+                    out = Wild { kind: NONE, age: 0.0, tall: 0.0 }
                 }
                 next[j * n + i] = out
             }

@@ -1675,3 +1675,33 @@ pub fn test_window(s: Clearing) -> [f32; 8] {
     let w = interest::window_check(sight)
     [w.dead, w.quiet, w.home, w.road, f32(w.met), w.kept, f32(w.followed), f32(w.walkers)]
 }
+
+// ---- spike 17: what each part costs (timed by the driver) --------------------------------------
+
+/// The history run again, whole: its trees.
+@testing
+pub fn test_time_history(s: Clearing) -> f32 {
+    let h = simulate(YEARS, s.spots)
+    f32(h.trees.len())
+}
+
+/// The baked history's decisions read: its trees.
+@testing
+pub fn test_time_decode() -> f32 {
+    let d = bake::decode(PAST)
+    f32(d.trees.len())
+}
+
+/// The baked history read and its consequences worked out again: its trees.
+@testing
+pub fn test_time_consequences(s: Clearing) -> f32 {
+    let h = bake::past(PAST, s.spots)
+    f32(h.trees.len())
+}
+
+/// The interest check over the region, again: the dead share.
+@testing
+pub fn test_time_check(s: Clearing) -> f32 {
+    let c = check(s.past, s.spots)
+    c.coverage.dead
+}

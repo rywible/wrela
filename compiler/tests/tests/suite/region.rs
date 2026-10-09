@@ -344,3 +344,123 @@ fn region_lines() {
         eprintln!("line {name}: light at each tenth {}; least clearance over the crowns {:.1} m", t.join(" "), v[10]);
     }
 }
+
+/// The endless forest's numbers: precision at distances, the wildwood's seams and cost, and the
+/// endless window's check.
+#[test]
+#[ignore = "spike 17: prints numbers"]
+fn region_endless() {
+    let mut r = Region::load("region-endless");
+    for km in [0.0f32, 1.0, 10.0, 50.0, 200.0, 1000.0, 5000.0] {
+        let v = r.call("test_precision", &[Value::F32(km)]);
+        eprintln!(
+            "precision at {km} km: f32 walk off by {:.4} m, steps {:.5} to {:.5} m; tiled off by {:.6} m, steps {:.5} to {:.5} m; grass noise {} values in 10 cm",
+            v[0], v[1], v[2], v[3], v[4], v[5], v[6]
+        );
+    }
+    for margin in [0u32, 8, 16, 32, 64] {
+        let t = Instant::now();
+        let v = r.call("test_seam", &[Value::I32(margin as i32)]);
+        eprintln!(
+            "seam with a margin of {margin} cells ({} m): {:.1}% of cells another species, height off by {:.2} m on average ({:.1} s with the truth's wood)",
+            margin * 4,
+            v[0] * 100.0,
+            v[1],
+            t.elapsed().as_secs_f64()
+        );
+    }
+    for margin in [0u32, 32, 64] {
+        let t = Instant::now();
+        r.call("test_tile", &[Value::I32(margin as i32)]);
+        eprintln!("a 256 m tile with a margin of {margin} cells grows in {:.3} s", t.elapsed().as_secs_f64());
+    }
+    let t = Instant::now();
+    let w = r.call("test_window", &[]);
+    eprintln!(
+        "endless window ({:.1} s): dead {:.1}% (no draw but features {:.1}%); the tower in sight from {:.1}%; the road's path draws from {:.1}%; {} of {} walkers met the road, kept to it {:.0}% of their steps after, {} left the window along it",
+        t.elapsed().as_secs_f64(),
+        w[0] * 100.0,
+        w[1] * 100.0,
+        w[2] * 100.0,
+        w[3] * 100.0,
+        w[4],
+        w[7],
+        w[5] * 100.0,
+        w[6]
+    );
+}
+
+/// Seeded random views where a player could stand, not chosen by the check: for a blind
+/// comparison of two rounds. Writes `<REGION_BLIND>/NN.png` and a key with the check's values.
+#[test]
+#[ignore = "spike 17: writes images to judge"]
+fn region_random() {
+    let dir_name = std::env::var("REGION_BLIND").unwrap_or_else(|_| "random".to_string());
+    let mut r = Region::load("region-random");
+    r.settle(4);
+    let mut rng = Rng(4242);
+    let dir = repo_root().join("target/tmp/region").join(&dir_name);
+    std::fs::create_dir_all(&dir).expect("make the directory");
+    let mut key = String::from("id,x,z,yaw,ahead,kind,best,count\n");
+    let mut n = 0;
+    let mut tried = 0;
+    while n < 20 && tried < 2000 {
+        tried += 1;
+        let x = -150.0 + 900.0 * rng.next();
+        let z = -650.0 + 900.0 * rng.next();
+        let yaw = std::f32::consts::TAU * rng.next();
+        let (_, walk) = r.stand(x, z);
+        if walk < 0.5 || r.call("test_brush", &[Value::F32(x), Value::F32(z)])[0] > 0.08 {
+            continue;
+        }
+        n += 1;
+        let d = r.call("test_draw", &[Value::F32(x), Value::F32(z), Value::F32(yaw), Value::F32(0.55)]);
+        r.look(x, z, yaw, 0.0);
+        r.settle(24);
+        r.save(&format!("{dir_name}/{n:02}.png"));
+        key.push_str(&format!("{n:02},{x:.1},{z:.1},{yaw:.3},{:.3},{},{:.3},{}\n", d[0], d[1], d[4], d[5]));
+    }
+    std::fs::write(repo_root().join("target/tmp/region").join(format!("{dir_name}-key.csv")), key)
+        .expect("write the key");
+    eprintln!("random: {n} stills ({tried} places tried)");
+}
+
+/// What each part costs: the history whole, the bake's decisions read, their consequences, the
+/// check.
+#[test]
+#[ignore = "spike 17: prints numbers"]
+fn region_costs() {
+    let mut r = Region::load("region-costs");
+    for name in ["test_time_decode", "test_time_consequences", "test_time_check", "test_time_history"] {
+        let t = Instant::now();
+        let v = r.call(name, &[]);
+        eprintln!("cost {name}: {:.2} s ({:.3})", t.elapsed().as_secs_f64(), v[0]);
+    }
+}
+
+/// The endless window's check alone.
+#[test]
+#[ignore = "spike 17: prints numbers"]
+fn region_window() {
+    let mut r = Region::load("region-window");
+    let t = Instant::now();
+    let w = r.call("test_window", &[]);
+    eprintln!(
+        "endless window ({:.1} s): dead {:.1}% (no draw but features {:.1}%); the tower in sight from {:.1}%; the road's path draws from {:.1}%; {} of {} walkers met the road, kept to it {:.0}% of their steps after, {} left the window along it",
+        t.elapsed().as_secs_f64(), w[0] * 100.0, w[1] * 100.0, w[2] * 100.0, w[3] * 100.0, w[4], w[7], w[5] * 100.0, w[6]
+    );
+}
+
+/// The map and the check's map alone.
+#[test]
+#[ignore = "spike 17: writes images to judge"]
+fn region_maps() {
+    let mut r = Region::load("region-maps");
+    r.settle(2);
+    r.call("test_chart", &[Value::I32(0)]);
+    r.steps(2);
+    r.save("map.png");
+    r.call("test_chart", &[Value::I32(1)]);
+    r.steps(2);
+    r.save("map-check.png");
+}

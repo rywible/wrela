@@ -272,7 +272,7 @@ pub fn sight_of(h: History, stones: [Spot]) -> Sight {
         disk(lo, mut walk, st.at, reach(st) * 0.8, 0.0, take_max: false)
         walk[cell_in(lo, st.at)] = 0.0
     }
-    let (features, feature_bins) = if map::ROUND_2 { features_of(lo, h, stones) } else { (Vec::new(), Vec::filled(FB * FB + 1, 0)) }
+    let (features, feature_bins) = features_of(lo, h, stones)
     Sight { lo, ground, top, base, crown, under, open, trail, walk, features, feature_bins }
 }
 

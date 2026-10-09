@@ -274,8 +274,14 @@ fn run(
         }
     };
     let mut results = Vec::new();
+    // Spike 17 (throwaway): `WRELA_CONST_FUEL` raises a constant's fuel, and
+    // `WRELA_FUEL_REPORT` prints each constant's fuel and time, to measure a history baked at
+    // build time.
+    let fuel = std::env::var("WRELA_CONST_FUEL").ok().and_then(|v| v.parse().ok()).unwrap_or(FUEL);
+    let report = std::env::var("WRELA_FUEL_REPORT").is_ok();
     for (c, name) in &m.exports {
-        let result = match running.call(name, FUEL) {
+        let started = std::time::Instant::now();
+        let result = match running.call(name, fuel) {
             Ok(addr) => {
                 let mem = Memory { bytes: running.memory.data(&running.store) };
                 wrela_lower::read_value(checked, *c, &mem, addr).map_err(|e| {
@@ -291,6 +297,15 @@ fn run(
                 Err(failure(checked, sources, &compiled.lines, Item::Const(*c), &fault, None))
             }
         };
+        if report {
+            let left = running.store.get_fuel().unwrap_or(0);
+            eprintln!(
+                "const `{}`: {} units of fuel, {:.2} s",
+                checked.program.const_(*c).name,
+                fuel - left,
+                started.elapsed().as_secs_f64()
+            );
+        }
         results.push((*c, result));
     }
     results
