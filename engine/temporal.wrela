@@ -5,6 +5,11 @@
 // was last frame (by the motion target where something moved, else by its depth and the
 // camera), clips that history to this frame's neighbourhood of colours, and blends.
 //
+// What moves is what the motion targets say moved, this frame's and the last's: a pixel that
+// doesn't move takes none of a moving sample's colour, and where something moved off a pixel
+// its history is left behind. Nothing here knows what moves (a creature, a herd, a rolling
+// stone): what draws motion is treated as moving.
+//
 // The scene's alpha is a tag (what a pixel shows: its class times 64, plus which one), which
 // can't be blended: the output keeps the nearest sample's.
 //
@@ -15,7 +20,7 @@
 // and a resolve gathering its own 3 × 3 took twice as long.
 
 use std::gpu::{DepthTexture, FragCoord, GlobalId, Rgba16Float, Sampler, Texels, Texture}
-use view::{CREATURE, Camera, class_of, thin}
+use view::{Camera, class_of, thin}
 
 /// What the resolve reads besides the textures: the scene camera (at the scene's size), the
 /// output's size, how much of this frame a pixel takes when a sample falls on it, and whether
@@ -26,11 +31,14 @@ pub struct Resolve: Copy + GpuData {
     pub blend: f32,
     pub fresh: u32,
     /// How the jitter shifted the scene's samples in their pixels (in the scene's pixels:
-    /// `view::jitter_of` the camera's frame, a still camera's too), found once a frame.
+    /// `view::jitter_of` the camera's frame, a still camera's too), found once a frame; and
+    /// how it shifted the frame before's.
     pub jitter: vec2,
-    /// Where on the output the creature can be, now or last frame (a rectangle, its corners in
-    /// output pixels: `seen_box`; empty for none): where the history is checked for it.
-    pub creature: vec4,
+    pub last_jitter: vec2,
+    /// Where on the output anything that moves can be, now or last frame (a rectangle, its
+    /// corners in output pixels: `seen_box` of the moving things' bounds; empty for none):
+    /// where last frame's motion is checked for what moved off a pixel.
+    pub moving: vec4,
 }
 
 /// The rectangle on the output (`out` pixels) round the world's box `lo` to `hi` as `cam` sees
@@ -142,7 +150,8 @@ fn history_at(history: Texture<Rgba16Float>, s: Sampler, px: vec2, size: vec2) -
 }
 
 /// The output pixel at `pixel`: this frame's samples reconstructed there, blended with the
-/// history reprojected and clipped. Its alpha is the nearest sample's tag.
+/// history reprojected and clipped. Its alpha is the nearest sample's tag. `motion` is this
+/// frame's motion target and `last_motion` the frame before's (`motion_of`).
 @fragment
 pub fn resolve(
     pixel: FragCoord,
@@ -150,13 +159,13 @@ pub fn resolve(
     scene: Texture<Rgba16Float>,
     depth: DepthTexture,
     motion: Texture<Rgba16Float>,
+    last_motion: Texture<Rgba16Float>,
     history: Texture<Rgba16Float>,
     means: Texture<Rgba16Float>,
     spreads: Texture<Rgba16Float>,
     s: Sampler,
 ) -> vec4 {
     let cam = r.cam
-    let creature = class_of(CREATURE)
     let in_size = cam.screen
     let scale = in_size / r.out
     // This output pixel's centre in the scene's pixels.
@@ -173,8 +182,9 @@ pub fn resolve(
     var weight_else = 0.0
     var nearest = 0.0
     var tag = 0.0
+    var moving = false
     var closest = 0.0
-    var at_closest = clamp(base, vec2i(0), lim)
+    var moved = vec4(0.0)
     for dy in 0..2 {
         for dx in 0..2 {
             let p = clamp(base + vec2i(dx, dy), vec2i(0), lim)
@@ -188,34 +198,36 @@ pub fn resolve(
             let w = exp(-1.4 * dot(d, d))
             sum += c * w
             weight += w
-            // And all but the creature's (see `current`).
-            let other = if class_of(texel.a) != creature { w } else { 0.0 }
-            sum_else += c * other
-            weight_else += other
+            // And all but the moving ones' (see `current`).
+            let m = motion.load(x: u32(p.x), y: u32(p.y))
+            let moves = m.z > 0.5
+            let still = if moves { 0.0 } else { w }
+            sum_else += c * still
+            weight_else += still
             if w > nearest {
                 nearest = w
                 tag = texel.a
+                moving = moves
             }
             // The nearest surface among them (reversed depth: the largest), whose motion the
             // pixel takes, so a moving edge carries its history.
             let z = depth.load(x: u32(p.x), y: u32(p.y))
             if z > closest {
                 closest = z
-                at_closest = p
+                moved = m
             }
         }
     }
-    // A pixel that doesn't show the creature (its nearest sample's tag) takes none of its
-    // samples: the creature's colour in a pixel tagged as the ground would trail once the
-    // creature walked on, as the pixel's history says the ground. (The creature's own pixels
-    // take every sample, so its edge stays smooth from within.)
-    let current = if class_of(tag) == creature {
+    // A pixel whose nearest sample doesn't move takes none of the moving samples: a creature's
+    // colour in a pixel of the ground would trail once the creature walked on, as the pixel's
+    // history says the ground. (A moving thing's own pixels take every sample, so its edge
+    // stays smooth from within.)
+    let current = if moving {
         sum / max(weight, 1.0e-6)
     } else {
         sum_else / max(weight_else, 1.0e-6)
     }
     // Where this pixel's point was last frame, in output pixels.
-    let moved = motion.load(u32(at_closest.x), u32(at_closest.y))
     var last = vec2(0.0)
     if moved.z > 0.5 {
         last = (q - moved.xy) / scale
@@ -254,26 +266,26 @@ pub fn resolve(
     let most = max(unit.x, max(unit.y, unit.z))
     let clipped = if most > 1.0 { centre + off / most } else { h }
     // This frame's share: more where a sample fell near the pixel's centre. Where the history
-    // showed the creature and the pixel doesn't now, the creature walked on: this frame's alone
+    // showed something moving and the pixel doesn't move now, it moved off: this frame's alone
     // (the box round an edge holds its colours, which would let it trail). The history showed
     // it if any of the four texels round the point did: they carry most of its filtered colour
-    // (`history_at`), and at the creature's edge the nearest alone may be the ground. Only
-    // where the creature can be (`Resolve::creature`): the four loads everywhere cost 0.25 ms.
-    var showed = was == creature
+    // (`history_at`). A history texel showed what its nearest sample showed last frame (as
+    // `tag` here), so last frame's motion there says whether that moved. Only where something
+    // moving can be (`Resolve::moving`), so the other pixels don't pay for the loads.
+    var left = false
     let px = pixel.position.xy
-    let c = r.creature
+    let c = r.moving
     let inside = px.x >= c.x && px.y >= c.y && px.x <= c.z && px.y <= c.w
-    if !showed && inside && class_of(tag) != creature {
+    if inside && !moving {
         let core = vec2i(floor(last - vec2(0.5)))
-        let edge = vec2i(i32(r.out.x) - 1, i32(r.out.y) - 1)
         for dy in 0..2 {
             for dx in 0..2 {
-                let t = clamp(core + vec2i(dx, dy), vec2i(0), edge)
-                showed = showed || class_of(history.load(x: u32(t.x), y: u32(t.y)).a) == creature
+                let t = vec2(core + vec2i(dx, dy)) + vec2(0.5)
+                let sample = clamp(vec2i(floor(t * scale + r.last_jitter)), vec2i(0), lim)
+                left = left || last_motion.load(x: u32(sample.x), y: u32(sample.y)).z > 0.5
             }
         }
     }
-    let left = showed && class_of(tag) != creature
     let a = if left { 1.0 } else { clamp(r.blend * nearest * 1.6, r.blend * 0.25, 0.5) }
     let out = mix(from_ycocg(clipped), current, vec3(a))
     vec4(untamed(max(out, vec3(0.0))), tag)

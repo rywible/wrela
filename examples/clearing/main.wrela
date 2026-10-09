@@ -7,7 +7,7 @@ use engine::character::{
     PartOf, character, character_motion, character_shade, character_shadow, colours, motion,
     parts_of,
 }
-use engine::gait::{between, palette}
+use engine::gait::{between, palette, posed_bounds}
 use engine::grass::{Blooms, Grass, GrassLook}
 use engine::present::{Snapshots, lerp_angle}
 use engine::realize::Realizing
@@ -30,6 +30,7 @@ use engine::vegetation::{Forest, Kind, kind, nothing}
 use engine::view::{BEHIND, Camera, NEAREST, SEEN, camera, first_camera}
 use std::gpu::dispatch
 use std::collections::{Flags, replace, swap}
+use std::derive::Box3
 use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, on_ground, start_eye}
 use std::gpu::{
     Address, ClipPosition, ComparisonSampler, Cull, DepthTexture, FragmentShader, GpuBuffer,
@@ -274,12 +275,16 @@ pub struct Clearing {
     sky_cooked: bool,
     /// The clouds as the last frame drew them (where their field had drifted).
     clouds: Clouds,
-    /// The scene: linear colour and tags, depth, motion; and the output's history, two to swap.
+    /// The scene: linear colour and tags, depth, motion (this frame's and the last's, swapped
+    /// each frame); and the output's history, two to swap.
     scene: Texture<Rgba16Float>,
     depth: DepthTexture,
     /// Which far tree won each pixel of the prepass (`impostor::far_cut`).
     ids: Texture<Rgba8>,
     motion: Texture<Rgba16Float>,
+    last_motion: Texture<Rgba16Float>,
+    /// Where on the output what moves can be this frame (temporal AA's `Resolve::moving`).
+    moves_in: vec4,
     /// Each scene pixel's neighbourhood, for temporal AA: its 3 × 3 samples' mean and spread
     /// (`temporal::neighbourhoods`).
     means: Texture<Rgba16Float>,
@@ -441,6 +446,8 @@ pub fn init() -> Clearing {
         depth: depth_texture(width: 1, height: 1),
         ids: texture::<Rgba8>(width: 1, height: 1),
         motion: texture::<Rgba16Float>(width: 1, height: 1),
+        last_motion: texture::<Rgba16Float>(width: 1, height: 1),
+        moves_in: vec4(0.0, 0.0, -1.0, -1.0),
         means: writable_texture::<Rgba16Float>(width: 1, height: 1),
         spreads: writable_texture::<Rgba16Float>(width: 1, height: 1),
         last_history: texture::<Rgba16Float>(width: 1, height: 1),
@@ -580,13 +587,14 @@ fn temporal(
     scene: Texture<Rgba16Float>,
     depth: DepthTexture,
     motion: Texture<Rgba16Float>,
+    last_motion: Texture<Rgba16Float>,
     means: mut Texture<Rgba16Float>,
     spreads: mut Texture<Rgba16Float>,
     s: Sampler,
 ) {
     dispatch(neighbourhoods.bind(scene, mut means, mut spreads), over: scene)
     let p = begin_pass(mut into)
-    fullscreen(p, resolve.bind(r, scene, depth, motion, from, means, spreads, s))
+    fullscreen(p, resolve.bind(r, scene, depth, motion, last_motion, from, means, spreads, s))
     p.end()
 }
 
@@ -615,6 +623,7 @@ fn resize(s: mut Clearing, width: u32, height: u32, w: u32, h: u32) {
     s.depth = depth_texture(width: w, height: h)
     s.ids = texture::<Rgba8>(width: w, height: h)
     s.motion = texture::<Rgba16Float>(width: w, height: h)
+    s.last_motion = texture::<Rgba16Float>(width: w, height: h)
     s.means = writable_texture::<Rgba16Float>(width: w, height: h)
     s.spreads = writable_texture::<Rgba16Float>(width: w, height: h)
     s.dabs = texture::<Rgba16Float>(width: w, height: h)
@@ -980,8 +989,9 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
         draw(sky, full.bind(z: 0.0), testing::key, vertices: 3, depth: BEHIND)
     }
     sky.end()
-    // The creature's motion, where it's seen.
+    // The creature's motion, where it's seen, over the older target: the last frame's is kept.
     label("motion")
+    swap(mut s.motion, mut s.last_motion)
     let mo = begin_pass_with_depth(mut s.motion, mut s.depth, clear: vec4(0.0), keep_depth: true)
     if creature_on {
         draw(
@@ -1002,23 +1012,15 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
     mo.end()
 }
 
-/// Temporal AA, up to the output (`width` × `height`), the creature at `creature_at`; then the
-/// look's passes to the screen, or a test's view.
-fn finish(
-    s: mut Clearing,
-    cam: Camera,
-    creature_at: vec3,
-    creature_on: bool,
-    width: u32,
-    height: u32,
-) {
-    // Where the creature can be on the output, now or last frame: a box round it, wider than
-    // it, as the camera sees it each time (temporal AA checks its history for it there).
+/// Temporal AA, up to the output (`width` × `height`), the creature (when it's drawn) within
+/// `body`; then the look's passes to the screen, or a test's view.
+fn finish(s: mut Clearing, cam: Camera, body: Box3, creature_on: bool, width: u32, height: u32) {
+    // Where what moves can be on the output, now or last frame: the creature's box as the
+    // camera sees it each time, a few pixels wider (temporal AA checks last frame's motion
+    // there).
     let out = vec2(f32(width), f32(height))
-    // (The creature's root is at its hips: its hooves are below it.)
-    let creature = if creature_on {
-        let at = creature_at
-        seen_box(cam, out, at - vec3(1.4, 1.6, 1.4), at + vec3(1.4, 1.4, 1.4), margin: 6.0)
+    s.moves_in = if creature_on {
+        seen_box(cam, out, body.lo, body.hi, margin: 6.0)
     } else {
         vec4(0.0, 0.0, -1.0, -1.0)
     }
@@ -1028,7 +1030,8 @@ fn finish(
         blend: 0.12,
         fresh: if s.frames == 0 || !on(s.carried.off, System::History) { 1 } else { 0 },
         jitter: engine::view::jitter_of(cam.frame),
-        creature,
+        last_jitter: engine::view::jitter_of(max(cam.frame, 1) - 1),
+        moving: s.moves_in,
     }
     label("temporal")
     // This frame's history is drawn over the older one: the last frame's is read.
@@ -1040,6 +1043,7 @@ fn finish(
         s.scene,
         s.depth,
         s.motion,
+        s.last_motion,
         mut s.means,
         mut s.spreads,
         s.linear,
@@ -1154,7 +1158,10 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         print(f"path begins at frame {s.frames}")
     }
     draw_scene(mut s, cam, sh, wind, creature_on)
-    finish(mut s, cam, walker.root.pos, creature_on, width, height)
+    // The creature's box: its mesh's at rest, posed, 15 cm wider for what its pose reaches past
+    // that and for where it was last frame.
+    let body = posed_bounds(walker, s.creature.bounds(), slack: 0.15)
+    finish(mut s, cam, body, creature_on, width, height)
     s.frames += 1
     s.ran += 1
     keep_carried(s)
@@ -1396,6 +1403,12 @@ pub fn test_reference(s: mut Clearing, first: u32, count: u32, step: u32, rays: 
 
 /// Whether everything cooked at load is done (1), and how far along its path the camera is (s;
 /// negative before it starts).
+/// Where on the output what moves can be, the last frame (`Resolve::moving`): its corners.
+@testing
+pub fn test_moving(s: Clearing) -> vec4 {
+    s.moves_in
+}
+
 @testing
 pub fn test_ready(s: Clearing) -> vec2 {
     vec2(if s.ready { 1.0 } else { 0.0 }, if s.carried.path_from < 0.0 { -1.0 } else {

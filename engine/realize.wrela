@@ -117,6 +117,11 @@ impl Grid {
         let lo = self.block_corner(b)
         Box3 { lo, hi: lo + vec3(self.cell * f32(BLOCK)) }
     }
+
+    /// The whole grid, as a box.
+    pub fn extent(self) -> Box3 {
+        Box3 { lo: self.origin, hi: self.origin + vec3(self.size) * (f32(BLOCK) * self.cell) }
+    }
 }
 
 /// `b` grown by `by` on every side.
@@ -755,6 +760,11 @@ impl Realizing {
             at: 0,
             slices: slices_for(p.grid),
         }
+    }
+
+    /// A box its mesh lies in, at rest: its grid's.
+    pub fn bounds(self) -> Box3 {
+        self.grid.extent()
     }
 
     /// Whether the mesh is whole.

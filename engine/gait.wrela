@@ -12,6 +12,7 @@ use creature::{Bone, Skeleton}
 use present::short_way
 use render::{MAX_BONES, Palette, bend, bone_matrix, turn}
 use sim::{SimState, Spring, Transform}
+use std::derive::Box3
 use std::hash::StateHash
 use std::math::{PI, TAU}
 use std::quat::Quat
@@ -135,6 +136,28 @@ fn add_chain(b: mut Body, s: Skeleton, chain: [Bone], k: f32) {
 /// turns +z toward +y: about the body's +x), raised to its height.
 pub fn body_frame(w: Walker) -> mat4 {
     translate(w.root.pos + vec3(0.0, w.height, 0.0)) * rotate_y(w.root.heading) * rotate_x(w.pitch)
+}
+
+/// A box holding the walker's body posed: `rest` (a box holding it at rest) carried by its
+/// body's frame, `slack` wider each way for what the pose moves past it (a leg's reach, a
+/// spring's sway).
+pub fn posed_bounds(w: Walker, rest: Box3, slack: f32) -> Box3 {
+    let m = body_frame(w)
+    var lo = vec3(1.0e9)
+    var hi = vec3(-1.0e9)
+    for i in 0..8 {
+        let p = apply(
+            m,
+            vec3(
+                if (i & 1) == 0 { rest.lo.x } else { rest.hi.x },
+                if (i & 2) == 0 { rest.lo.y } else { rest.hi.y },
+                if (i & 4) == 0 { rest.lo.z } else { rest.hi.z },
+            ),
+        )
+        lo = min(lo, p)
+        hi = max(hi, p)
+    }
+    Box3 { lo: lo - vec3(slack), hi: hi + vec3(slack) }
 }
 
 fn apply(m: mat4, p: vec3) -> vec3 {
