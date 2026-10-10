@@ -42,6 +42,13 @@ pub trait Terrain: Copy + GpuData {
         self.cover(at, n)
     }
 
+    /// What covers the ground at `at` (as `cover_with`), as a cooked texel `footprint` metres
+    /// across sees it: a terrain whose cover has detail finer than a far level's texels fades
+    /// it out there, so the far land doesn't alias. By default, `cover_with`.
+    fn cover_seen(self, at: vec3, n: vec3, fields: vec4, footprint: f32) -> Cover {
+        self.cover_with(at, n, fields)
+    }
+
     /// A bound on the ground's slope, rise over run, which a raycast steps by.
     fn steepest(self) -> f32 {
         3.0
@@ -492,7 +499,7 @@ pub fn cook_level<T: Terrain>(
     let h = terrain.height(x, z)
     let n = terrain.normal(x, z, s * 0.5)
     let f = fields_here(fields, fs, fields_at, tiles, x, z)
-    let c = terrain.cover_with(vec3(x, h, z), n, f)
+    let c = terrain.cover_seen(vec3(x, h, z), n, f, s)
     // Slot (i, j) is j * ROW + i: the dispatch's rows are ROW wide (`texel_index`).
     out[id] = Texel {
         height: h,

@@ -70,15 +70,41 @@ fn strokes(q: vec2) -> f32 {
 /// Brush dabs on a surface at `world` whose normal is `n`, about `px` pixels long wherever
 /// they're seen (a pixel `footprint` metres wide there): in [-1, 1]. Two sizes of cells, a
 /// power of two apart, blended by distance (Bénard et al. 2009), so the dabs keep their size on
-/// screen and stay on the surface.
+/// screen and stay on the surface. They lie on the world's planes across the normal's strongest
+/// axes (the ground's on its plane, a wall's on its own), blended where two are near alike, so
+/// they don't follow the surface's curvature: anchored to a frame turned with the normal, a
+/// small turn moved them by metres where the world's coordinates are hundreds (the far hills'
+/// and the crag's contour-like marbling, playing spike 17 and M6).
 pub fn dabs(world: vec3, n: vec3, footprint: f32, px: f32) -> f32 {
     let s = max(footprint * px, 1.0e-4)
     let l = log2(s)
     let f = fract(l)
     let s0 = exp2(floor(l))
+    let a = abs(n)
+    let w8 = a * a * a * a * a * a * a * a
+    let w = w8 / max(w8.x + w8.y + w8.z, 1.0e-6)
+    var v = 0.0
+    for axis in 0..3 {
+        if w[axis] > 0.02 {
+            let q = if axis == 0 { world.zy } else if axis == 1 { world.xz } else { world.xy }
+            v += w[axis] * mix(strokes(q / s0), strokes(q / (2.0 * s0) + vec2(17.0, 5.0)), f)
+        }
+    }
+    v
+}
+
+/// Brush dabs anchored to directions (the sky's: `dir` a unit vector, a pixel's angle its
+/// `footprint`), on the plane across the direction: a direction's frame turns with it, but its
+/// coordinates are under 1, so a turn moves them little.
+pub fn sky_dabs(dir: vec3, footprint: f32, px: f32) -> f32 {
+    let s = max(footprint * px, 1.0e-4)
+    let l = log2(s)
+    let f = fract(l)
+    let s0 = exp2(floor(l))
+    let n = -dir
     let t1 = normalize(cross(n, vec3(0.3, 0.2, 1.0)))
     let t2 = cross(n, t1)
-    let q = vec2(dot(world, t1), dot(world, t2) + dot(world, n) * 0.5)
+    let q = vec2(dot(dir, t1), dot(dir, t2) + dot(dir, n) * 0.5)
     mix(strokes(q / s0), strokes(q / (2.0 * s0) + vec2(17.0, 5.0)), f)
 }
 
@@ -291,7 +317,7 @@ pub fn dab_map(
         // The sky: dabs anchored to directions, a pixel's angle being its footprint at 1 m.
         let ray = still.ray(px)
         let footprint = 2.0 * cam.tan_half / cam.screen.y
-        let dab = dabs(ray, -ray, footprint, look.dab_px * 1.6 * per_out)
+        let dab = sky_dabs(ray, footprint, look.dab_px * 1.6 * per_out)
         return vec4(look.dabs_sky * dab, 0.0, 0.0, 1.0)
     }
     // The surface at the pixel's own (unjittered) point, not at the jittered sample the scene

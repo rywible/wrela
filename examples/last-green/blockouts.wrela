@@ -42,10 +42,24 @@ const SLITS = [
 const DOOR: f32 = 2.4
 const BREAK: f32 = 2.2
 
+/// A course's height and a block's length round the tower (m).
+const COURSE: f32 = 0.42
+const BLOCK: f32 = 0.8
+
 impl Tower {
-    /// How high the wall stands at angle `a`: broken off lower toward the approach, ragged.
+    /// How high the wall stands at angle `a`: broken off lower toward the approach, ragged, and
+    /// in whole blocks where it's broken: each block's top a course or more below its
+    /// neighbour's, stepped (the steps a few centimetres wide, so the field stays continuous).
     fn top(self, a: f32) -> f32 {
-        self.tall - 8.0 * (0.5 + 0.5 * cos(a - BREAK)) - 1.4 * noise3(vec3(a * 2.5, 0.0, 3.0))
+        let broken = self.tall -
+            8.0 * (0.5 + 0.5 * cos(a - BREAK)) -
+            1.4 * noise3(vec3(a * 2.5, 0.0, 3.0))
+        let arc = a * self.radius / BLOCK
+        let i = floor(arc)
+        let f = arc - i
+        let here = floor((broken + 1.2 * rand(u32(i + 1000.0), 3)) / COURSE) * COURSE
+        let next = floor((broken + 1.2 * rand(u32(i + 1001.0), 3)) / COURSE) * COURSE
+        mix(here, next, smoothstep(0.94, 1.0, f))
     }
 }
 
@@ -69,13 +83,22 @@ impl Surface for Tower {
             let slit = max(apart(a, s.x) * r - 0.18, abs(p.y - s.y) - 0.85)
             d = max(d, -slit)
         }
-        // Weathered: the stones' faces stand a little proud of the mortar.
-        d - 0.03 * noise3(p * 2.0)
+        // Weathered: the stones' faces stand proud of the mortar, which is pointed back in its
+        // joints (courses and the blocks' ends, staggered a half block each course).
+        let course = p.y / COURSE
+        let row = floor(course)
+        let arc = a * self.radius / BLOCK + 0.5 * (row % 2.0)
+        let joint = max(
+            smoothstep(0.86, 0.97, course - row),
+            smoothstep(0.9, 0.99, arc - floor(arc)),
+        )
+        d + 0.035 * joint - 0.03 * noise3(p * 2.0)
     }
 
-    /// The break's raggedness and the cuts bend the field a little: within 1.6 a metre.
+    /// The break's steps (a course over a few centimetres) and the joints bend the field: within
+    /// 4.5 a metre.
     fn lipschitz(self, near: f32) -> f32 {
-        1.6
+        4.5
     }
 }
 
@@ -88,12 +111,24 @@ pub struct Courses: Copy + GpuData {
 
 impl Courses {
     pub fn at(self, p: vec3) -> Rock {
-        let base = Stain { r: 4.0, seed: 11.0 }.at(p)
-        let course = (p.y + 0.11 * noise3(p * 0.7)) / self.course
-        let mortar = smoothstep(0.88, 0.97, course - floor(course))
-        let block = noise3(vec3(floor(course), floor(atan2(p.z, p.x) * 6.0 + p.x * 1.3), 1.0))
-        var c = base.albedo * (0.85 + 0.3 * block)
-        c = mix(c, vec3(0.12, 0.11, 0.10), vec3(mortar * 0.7))
+        // Weathered granite, paler than a boulder's: dressed faces bleached by the weather, grey
+        // (a boulder's lichen, carried over, turned the whole tower yellow-green).
+        let stain = Stain { r: 4.0, seed: 11.0 }.at(p).albedo
+        let grey = dot(stain, vec3(0.3, 0.5, 0.2))
+        let base = Rock { albedo: mix(vec3(grey), stain, vec3(0.35)) }
+        let course = p.y / self.course
+        let row = floor(course)
+        let mortar = smoothstep(0.84, 0.95, course - row)
+        // Each block its own stone, a little warmer or cooler, paler or darker (the blocks
+        // staggered half a block each course, round the tower or along a wall).
+        let along = (atan2(p.z, p.x) * 3.2 + p.x * 0.4) / 0.8 + 0.5 * (row % 2.0)
+        let b = vec3(row, floor(along), 1.0)
+        let block = noise3(b * 3.7)
+        let warm = noise3(b * 5.1 + vec3(7.0))
+        var c = base.albedo * (1.15 + 0.5 * block)
+        c = mix(c, c * vec3(1.08, 1.0, 0.88), vec3(warm))
+        let end = smoothstep(0.9, 0.99, along - floor(along))
+        c = mix(c, vec3(0.10, 0.095, 0.085), vec3(max(mortar, end) * 0.8))
         let north = smoothstep(-0.2, 0.8, p.z / max(length(p.xz), 0.1))
         let moss = max(
             smoothstep(2.5, 0.0, p.y) * north,

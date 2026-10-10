@@ -257,7 +257,9 @@ fn the_ticker_in_chrome_agrees_with_the_native_host() {
 /// A job that traps does so at the tick that takes it (AC6): `engine::run`'s world asks at tick
 /// 2 for a job due at tick 10, and at tick 5 for one due at tick 20 whose work panics; the ticks
 /// before 20 run, and tick 20 traps with the job's message. With no helpers, one or seven, and
-/// with jobs slowed (each result held 100 ms, so tick 10 waits for its job). The ticks are 2 ms
+/// with jobs slowed (each result held 100 ms, so tick 10 waits for its job: it ends no sooner
+/// than 100 ms after tick 2 asked for it, however long the ticks between took; a machine loaded
+/// by other work slowed them, and a bound on tick 10's own wait failed). The ticks are 2 ms
 /// apart, so a helper takes each job before its due tick does.
 #[test]
 fn a_trapping_job_traps_at_the_tick_that_takes_it() {
@@ -268,12 +270,18 @@ fn a_trapping_job_traps_at_the_tick_that_takes_it() {
         let mut host = build.instantiate_in(workers, None).expect("instantiate");
         host.hold_jobs(hold);
         host.init().expect("init");
+        let mut asked = std::time::Instant::now();
         for k in 0..20 {
-            let t = std::time::Instant::now();
+            if k == 2 {
+                asked = std::time::Instant::now();
+            }
             host.tick().unwrap_or_else(|e| panic!("{workers} threads, held {hold}: tick {k}: {e}"));
             if k == 10 && hold > 0 {
-                let waited = t.elapsed().as_secs_f64() * 1000.0;
-                assert!(waited > 50.0, "{workers} threads: tick 10 took {waited:.1} ms");
+                let since = asked.elapsed().as_secs_f64() * 1000.0;
+                assert!(
+                    since >= 95.0,
+                    "{workers} threads: tick 10 ended {since:.1} ms after the ask"
+                );
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }

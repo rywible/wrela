@@ -453,7 +453,7 @@ pub struct GrassLook: Copy + GpuData {
     /// past its prime), a herb's leaf; each from a darker stalk.
     pub fern: vec3 = vec3(0.055, 0.11, 0.025),
     pub bracken: vec3 = vec3(0.11, 0.15, 0.035),
-    pub bracken_dry: vec3 = vec3(0.24, 0.13, 0.05),
+    pub bracken_dry: vec3 = vec3(0.17, 0.115, 0.055),
     pub herb: vec3 = vec3(0.075, 0.13, 0.04),
 }
 
@@ -757,7 +757,9 @@ pub fn blade_shade(
         n,
         sun: sun * (0.5 + 0.5 * ao),
         sky,
-        through: look.through * t,
+        // A frond or a herb's leaf is thicker than a blade: less light through it (sunlit fronds
+        // through which as much shone as through grass read as white zigzags).
+        through: look.through * t * (if kind > 0.1 { 0.35 } else { 1.0 }),
         rough: 0.75,
         glint: 1.0,
         reflected: sky *

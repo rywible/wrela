@@ -249,7 +249,6 @@ fn ribbon<G: Ground>(m: mut WaterMesh, g: G, c: Course) {
         }
     }
     sections.push(c.points[n - 1])
-    let kind = if c.falls { FALLING } else { FLOWING }
     let first = m.verts.len()
     let count = sections.len()
     for i in 0..count {
@@ -260,7 +259,10 @@ fn ribbon<G: Ground>(m: mut WaterMesh, g: G, c: Course) {
         let side = vec2(-along.y, along.x)
         let fall = g.height(prev.x, prev.y) - g.height(next.x, next.y)
         let slope = max(fall, 0.0) / max(length(next - prev), 0.1)
-        let speed = if c.falls { 4.0 + 6.0 * min(slope, 1.0) } else { 0.35 + 2.5 * min(slope, 0.5) }
+        // A fall's water is white and fast where it falls (steep), and runs on as a stream below.
+        let falling = c.falls && slope > 0.7
+        let kind = if falling { FALLING } else { FLOWING }
+        let speed = if falling { 4.0 + 6.0 * min(slope, 1.0) } else { 0.35 + 2.5 * min(slope, 0.5) }
         for k in 0..ACROSS {
             let u = 2.0 * f32(k) / f32(ACROSS - 1) - 1.0
             let p = s.xy + side * (u * 0.5 * s.z)
@@ -319,8 +321,9 @@ pub fn courses<G: Ground>(g: G, w: Water, streams: [Stream]) -> (Vec<Course>, Ve
         }
         // Over the edge and on down (`fall_path`), to its foot.
         var pts: Vec<vec4> = Vec::new()
+        // A fall spreads over its lip: wider than the stream that feeds it.
         for q in fall_path(g, end.xy) {
-            pts.push(vec4(q.x, q.y, max(end.z, 3.0), 0.3))
+            pts.push(vec4(q.x, q.y, max(end.z * 1.8, 5.0), 0.3))
         }
         pts[0] = end
         let p = pts[pts.len() - 1].xy
@@ -734,4 +737,98 @@ pub fn water_shade(
     // A stream's and a fall's edges thin to what's under them.
     c = mix(c, under.rgb, vec3(smoothstep(0.8, 1.0, w.bank) * (1.0 - foam)))
     vec4(through_air(lt, c, w.world), WATER)
+}
+
+// ---- mist ---------------------------------------------------------------------------------------
+
+/// Where a fall's mist hangs: at the foot of its steepest drop (where the water lands) and at its
+/// foot, each (x, y, z, radius), in the world: from the courses that fall.
+pub fn mists<G: Ground>(g: G, courses: [Course]) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for c in courses {
+        if !c.falls || c.points.len() < 3 {
+            continue
+        }
+        // The steepest stretch's lower end: where the most height is lost over the least ground.
+        var best = 0.0
+        var landing = 1
+        for k in 1..c.points.len() {
+            let a = c.points[k - 1].xy
+            let b = c.points[k].xy
+            let drop = g.height(a.x, a.y) - g.height(b.x, b.y)
+            let steep = drop / max(length(b - a), 0.5)
+            if steep > best {
+                best = steep
+                landing = k
+            }
+        }
+        let l = c.points[landing].xy
+        out.push(vec4(l.x, g.height(l.x, l.y) + 4.0, l.y, 12.0))
+        let f = c.points[c.points.len() - 1].xy
+        out.push(vec4(f.x, g.height(f.x, f.y) + 2.0, f.y, 6.0))
+    }
+    out
+}
+
+/// What the mist's pass reads besides its textures: the camera, the light, how many mists there
+/// are, and the time (s).
+pub struct MistAt: Copy + GpuData {
+    pub cam: Camera,
+    pub light: Light,
+    pub count: u32,
+    pub time: f32,
+}
+
+/// The scene's pixel seen through the falls' mist (#54 §8: "the waterfall is cards with mist";
+/// cards that blend would blend the scene's tags too, so the mist is a volume): along the pixel's
+/// ray to what it meets, each mist's sphere of drifting, rising noise, the light it scatters (the
+/// sun's, forward most, and the sky's) over what's behind it, the tag kept.
+@fragment
+pub fn mist_over(
+    pixel: FragCoord,
+    at: MistAt,
+    scene: Texture<Rgba16Float>,
+    below: Texture<Rgba16Float>,
+    mists: [vec4],
+) -> vec4 {
+    let p = vec2u(pixel.position.xy)
+    let c = scene.load(x: p.x, y: p.y)
+    let cam = at.cam
+    let dir = cam.unjittered().ray(pixel.position.xy)
+    // The distance to what the pixel shows (the copy under the water holds it).
+    let far = below.load(x: p.x, y: p.y).a
+    var through = 1.0
+    var lit = vec3(0.0)
+    let keyed = cam.keyed()
+    for i in 0..min(at.count, mists.len()) {
+        let m = mists[i]
+        let centre = m.xyz - cam.origin
+        let oc = cam.eye - centre
+        let b = dot(oc, dir)
+        let disc = b * b - (dot(oc, oc) - m.w * m.w)
+        if disc <= 0.0 {
+            continue
+        }
+        let h = sqrt(disc)
+        let t0 = max(-b - h, 0.0)
+        let t1 = min(-b + h, far)
+        if t1 <= t0 {
+            continue
+        }
+        // Four samples along the chord: the noise drifting up and away, thinning to the edge.
+        var d = 0.0
+        for k in 0..4 {
+            let t = mix(t0, t1, (f32(k) + 0.5) / 4.0)
+            let q = cam.eye + dir * t
+            let r = length(q - centre) / m.w
+            let n = noise::noise3((q + keyed) * 0.45 + vec3(0.0, -at.time * 0.9, at.time * 0.2))
+            d += smoothstep(1.0, 0.2, r) * smoothstep(0.35, 0.8, n)
+        }
+        let a = 1.0 - exp(-0.8 * d * (t1 - t0) / 4.0)
+        let forward = pow(max(dot(dir, at.light.sun), 0.0), 6.0)
+        let light = at.light.sun_colour * (0.08 + 0.5 * forward) + vec3(0.5, 0.55, 0.6)
+        lit += through * a * light
+        through *= 1.0 - a
+    }
+    vec4(c.rgb * through + lit * 0.5, c.a)
 }

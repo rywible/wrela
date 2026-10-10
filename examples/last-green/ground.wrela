@@ -4,7 +4,7 @@
 // and the pines, on a plateau that rises gently to the south-east. Past the plateau's edge the land
 // falls about 95 m to the valley, with hills beyond and the far mountain.
 
-use engine::noise::{fbm2, noise2, ridged2}
+use engine::noise::{fbm2, fbm2_seen, noise2, noise2_seen, ridged2}
 use engine::place::Land
 use engine::terrain::{Cover, Terrain}
 use std::field::smin
@@ -105,11 +105,26 @@ impl Ground {
         y += 2.4 * exp(-dot(k, k) / 120.0)
         y += 3.2 * exp(-dot(s, s) / 260.0)
         // The map's shapes, faded out round the clearing, whose own layout holds there.
-        y += smoothstep(70.0, 140.0, r) * self.land.height(p)
-        // Past the edge, the land falls to the valley, whose floor rolls.
+        let shaped = smoothstep(70.0, 140.0, r)
+        y += shaped * self.land.height(p)
+        // Rock's own relief on the map's steep faces (the crags' flanks, the ravine's walls) and on
+        // the plateau's scarp: knobs and ledges a metre or two high, so close up they read as rock
+        // and not as a smooth slope (playing spike 17, the crag was a mound).
+        let scarp = smoothstep(-1.0, 1.5, past) * (1.0 - smoothstep(8.0, 12.0, past))
+        let face = max(shaped * self.land.faces(p), scarp)
+        if face > 0.0 {
+            let knobs = ridged2(p * 0.21 + vec2(1.0, 7.0), 3) - 0.5
+            let ledges = fbm2(p * 0.09 + vec2(-4.0, 2.0), 2) - 0.5
+            y += face * (2.4 * knobs + 1.6 * ledges)
+        }
+        // Past the edge, the land falls to the valley, whose floor rolls: first a cliff of rock
+        // (about a third of the fall, over its first 9 m, taller and lower along the edge), which
+        // the stream falls over at the lip; then the rest of the way down, gently.
         if past > 0.0 {
-            let fall = 1.0 - exp(-past / 55.0)
-            y -= 95.0 * fall
+            let scarp = 34.0 * (0.45 + 0.9 * noise2(p * 0.012 + vec2(5.0, 2.0)))
+            let cliff = scarp * smoothstep(0.0, 9.0, past)
+            let fall = 1.0 - exp(-past / 70.0)
+            y -= cliff + (95.0 - scarp) * fall
             y += fall * 14.0 * (fbm2(p * 0.004, 4) - 0.5)
         }
         // The valley's far side: soft hills.
@@ -152,18 +167,51 @@ impl Terrain for Ground {
     }
 
     fn cover(self, at: vec3, n: vec3) -> Cover {
+        self.cover_at(at, n, 0.0)
+    }
+
+    fn cover_with(self, at: vec3, n: vec3, fields: vec4) -> Cover {
+        self.covered(at, n, fields, 0.0)
+    }
+
+    fn cover_seen(self, at: vec3, n: vec3, fields: vec4, footprint: f32) -> Cover {
+        self.covered(at, n, fields, footprint)
+    }
+
+    fn steepest(self) -> f32 {
+        // The valley's fall, about 95 m over 55, and the crags' faces.
+        3.0
+    }
+}
+
+impl Ground {
+    /// What covers the ground at `at` (its normal `n`), as a sample `footprint` metres across
+    /// sees it (a far texel of the clipmap: the meadow's patches, its dryness and its deep
+    /// greens fade to their means where they're finer than it, so the far land doesn't marble).
+    pub fn cover_at(self, at: vec3, n: vec3, footprint: f32) -> Cover {
+        let w = footprint
         let xz = at.xz
         let past = past_edge(xz)
-        let patches = fbm2(xz * 0.08, 3)
+        let patches = fbm2_seen(xz * 0.08, 3, w * 0.08)
         let meadow = mix(vec3(0.10, 0.17, 0.035), vec3(0.20, 0.24, 0.05), vec3(patches))
         var a = meadow
-        // Rock on the crags and the ravine's walls.
+        // Down past the plateau's edge: the valley's fields on its floor, the woods of the hills
+        // above it (no grass is drawn down there: it's land seen from far off).
+        let down = smoothstep(10.0, 60.0, past)
+        if down > 0.0 {
+            let valley = valley_land(xz, at.y, w)
+            a = mix(a, valley, vec3(down))
+        }
+        // Rock on the crags and the ravine's walls (`rock_albedo`: its greys, beds, cracks,
+        // lichen and moss, cooked).
         let rock = self.rocky(xz, n)
-        a = mix(a, vec3(0.20, 0.19, 0.17), vec3(rock))
+        if rock > 0.0 {
+            a = mix(a, rock_albedo(at, n, w), vec3(rock))
+        }
         // Rock on the mountain's steep slopes, snow high on it.
         let steep = smoothstep(0.7, 0.5, n.y) * smoothstep(500.0, 800.0, at.y)
         a = mix(a, vec3(0.22, 0.21, 0.21), vec3(steep))
-        let snow = smoothstep(820.0, 900.0, at.y + 60.0 * noise2(xz * 0.01)) *
+        let snow = smoothstep(820.0, 900.0, at.y + 60.0 * noise2_seen(xz * 0.01, w * 0.01)) *
             smoothstep(0.5, 0.7, n.y)
         a = mix(a, vec3(0.85, 0.88, 0.92), vec3(snow))
         // The mere's bed: mud, no grass under its water.
@@ -179,17 +227,19 @@ impl Terrain for Ground {
             albedo: a,
             grass,
             tall: 0.4,
-            dry: smoothstep(0.55, 0.85, fbm2(xz * 0.06 + vec2(11.0, 3.0), 3)),
-            deep: smoothstep(0.5, 0.8, fbm2(xz * 0.11 + vec2(-3.0, 8.0), 2)),
+            dry: smoothstep(0.55, 0.85, fbm2_seen(xz * 0.06 + vec2(11.0, 3.0), 3, w * 0.06)),
+            deep: smoothstep(0.5, 0.8, fbm2_seen(xz * 0.11 + vec2(-3.0, 8.0), 2, w * 0.11)),
             flowers: vec4(0.0),
         }
     }
 
     /// The cover over the history's fields (#54 §9, `engine::bake::tile_fields`): where the
     /// canopy closes, no meadow grass but the wood's floor (leaf litter, moss in patches); where
-    /// the herd's trails wear it, bare earth and worn grass; darker where it's wet.
-    fn cover_with(self, at: vec3, n: vec3, fields: vec4) -> Cover {
-        var c = self.cover(at, n)
+    /// the herd's trails wear it, bare earth and worn grass; darker where it's wet. As a sample
+    /// `footprint` metres across sees it (`cover_at`).
+    pub fn covered(self, at: vec3, n: vec3, fields: vec4, footprint: f32) -> Cover {
+        let w = footprint
+        var c = self.cover_at(at, n, w)
         if fields.x < 0.0 {
             return c
         }
@@ -197,9 +247,10 @@ impl Terrain for Ground {
         let (light, trodden, wet, thorn) = (fields.x, fields.y, fields.z, fields.w)
         // How open the canopy is over the ground: grass from about half the sky's light.
         let open = smoothstep(CLOSED, 0.85, light)
-        let leaves = fbm2(xz * 0.21 + vec2(5.0, 1.0), 3)
+        let leaves = fbm2_seen(xz * 0.21 + vec2(5.0, 1.0), 3, w * 0.21)
         let litter = mix(vec3(0.075, 0.048, 0.027), vec3(0.13, 0.075, 0.036), vec3(leaves))
-        let mossy = smoothstep(0.55, 0.8, fbm2(xz * 0.09 + vec2(-7.0, 2.0), 3)) * (1.0 - open)
+        let mossy = smoothstep(0.55, 0.8, fbm2_seen(xz * 0.09 + vec2(-7.0, 2.0), 3, w * 0.09)) *
+            (1.0 - open)
         var floor = mix(litter, vec3(0.045, 0.075, 0.02), vec3(mossy * 0.7))
         // Under thorn, darker and bare.
         floor = floor * (1.0 - 0.3 * thorn)
@@ -212,7 +263,11 @@ impl Terrain for Ground {
         // round it in the wood (a path shows from 20 m: #55 AC10).
         let bare = smoothstep(0.5, 0.8, trodden)
         let short = smoothstep(0.1, 0.45, trodden)
-        let earth = mix(vec3(0.21, 0.16, 0.105), vec3(0.27, 0.21, 0.14), vec3(noise2(xz * 0.7)))
+        let earth = mix(
+            vec3(0.21, 0.16, 0.105),
+            vec3(0.27, 0.21, 0.14),
+            vec3(noise2_seen(xz * 0.7, w * 0.7)),
+        )
         c.albedo = mix(c.albedo, earth, vec3(bare * 0.9))
         c.albedo = mix(c.albedo, c.albedo * vec3(1.05, 1.0, 0.85), vec3(short * 0.5))
         c.grass *= (1.0 - bare) * (1.0 - 0.5 * short)
@@ -226,9 +281,13 @@ impl Terrain for Ground {
         // it, ferns in patches in the deep shade, bracken in patches where light comes through
         // in gaps; thinner under thorn and in the wet, none on a path. Where the meadow opens,
         // the grass takes over.
-        let fern = smoothstep(0.45, 0.62, fbm2(xz * 0.09 + vec2(13.0, 7.0), 3)) *
+        let fern = smoothstep(0.45, 0.62, fbm2_seen(xz * 0.09 + vec2(13.0, 7.0), 3, w * 0.09)) *
             (1.0 - smoothstep(0.2, 0.6, light))
-        let bracken = smoothstep(0.48, 0.66, fbm2(xz * 0.045 + vec2(-21.0, 4.0), 3)) *
+        let bracken = smoothstep(
+            0.48,
+            0.66,
+            fbm2_seen(xz * 0.045 + vec2(-21.0, 4.0), 3, w * 0.045),
+        ) *
             smoothstep(0.12, 0.4, light)
         let herbs = 0.3
         let shade = 1.0 - open
@@ -243,7 +302,7 @@ impl Terrain for Ground {
             herbs,
         )
         // Under a stream: its bed of gravel and wet stones; no grass (the mere's bed is `cover`'s).
-        let stones = noise2(xz * 1.7)
+        let stones = noise2_seen(xz * 1.7, w * 1.7)
         if wet > engine::bake::STREAM_BED {
             c.albedo = mix(vec3(0.09, 0.08, 0.06), vec3(0.2, 0.18, 0.15), vec3(stones))
             c.grass = 0.0
@@ -251,11 +310,6 @@ impl Terrain for Ground {
             c.under = vec4(0.0)
         }
         c
-    }
-
-    fn steepest(self) -> f32 {
-        // The valley's fall, about 95 m over 55, and the crags' faces.
-        3.0
     }
 }
 
@@ -274,4 +328,76 @@ impl engine::grow::Ground for Ground {
         let dz = self.at(p.x, p.y - e) - self.at(p.x, p.y + e)
         self.rocky(p, normalize(vec3(dx, 2.0 * e, dz)))
     }
+}
+
+/// The valley's land as it's seen from the plateau, at `xz`, `y` high, by a sample `w` metres
+/// across (#54 §9's far land; playing spike 17, a flat lime-green field): on its floor, fields,
+/// plots of a turned grid warped a little, each its own crop (pasture, hay, ploughed earth,
+/// meadow), edged by hedges; up the hills, woods in patches of their species' greens, with
+/// clearings. A hedge finer than the sample fades to its share of the plot.
+fn valley_land(xz: vec2, y: f32, w: f32) -> vec3 {
+    // The fields: a grid of plots 110 by 75 m, turned 20°, its lines bent by a broad warp.
+    let (c, sn) = (cos(0.35), sin(0.35))
+    let r = vec2(c * xz.x - sn * xz.y, sn * xz.x + c * xz.y)
+    let warp = vec2(
+        fbm2_seen(xz * 0.004, 2, w * 0.004) - 0.5,
+        fbm2_seen(xz * 0.004 + vec2(31.0, 7.0), 2, w * 0.004) - 0.5,
+    ) *
+        40.0
+    let size = vec2(110.0, 75.0)
+    let g = (r + warp) / size
+    let cell = floor(g)
+    let f = g - cell
+    let ci = vec2i(cell)
+    let h = engine::noise::hash2(ci.x, ci.y)
+    let h2 = engine::noise::hash2(ci.y + 17, ci.x - 5)
+    let crop = if h < 0.4 {
+        mix(vec3(0.07, 0.13, 0.03), vec3(0.11, 0.17, 0.04), vec3(h2))
+    } else if h < 0.62 {
+        mix(vec3(0.20, 0.18, 0.07), vec3(0.26, 0.22, 0.09), vec3(h2))
+    } else if h < 0.78 {
+        mix(vec3(0.10, 0.07, 0.045), vec3(0.15, 0.10, 0.06), vec3(h2))
+    } else { mix(vec3(0.12, 0.17, 0.05), vec3(0.16, 0.20, 0.06), vec3(h2)) }
+    // Its hedges: 3 m either side of its edges; where the sample is wider, their share of it.
+    let edge = min(min(f.x, 1.0 - f.x) * size.x, min(f.y, 1.0 - f.y) * size.y)
+    let hedge = mix(1.0 - smoothstep(2.0, 4.0, edge), 0.08, smoothstep(2.0, 10.0, w))
+    let hedged = mix(crop, vec3(0.035, 0.06, 0.02), vec3(hedge))
+    // Up the hills: woods, darker and mottled by their species, with clearings.
+    let trees = fbm2_seen(xz * 0.012 + vec2(3.0, 19.0), 3, w * 0.012)
+    let wood = mix(vec3(0.035, 0.07, 0.025), vec3(0.06, 0.09, 0.03), vec3(trees))
+    let clearing = smoothstep(0.62, 0.7, fbm2_seen(xz * 0.006 + vec2(-9.0, 4.0), 3, w * 0.006))
+    let hills = mix(wood, crop, vec3(clearing))
+    mix(hedged, hills, vec3(smoothstep(-60.0, -10.0, y)))
+}
+
+/// Rock's colour at `at` (its normal `n`), as a sample `w` metres across sees it (#54 §9:
+/// the crag's faces, the ravine's walls, the plateau's lip; playing spike 17 the crag was a
+/// smooth mound): grey stone, warmer and cooler in broad patches; its beds, bands a metre or so
+/// apart along its height, the softer ones darker; cracks across them; pale lichen where it faces
+/// the sky, and moss in its hollows and on its ledges. Each detail finer than the sample fades to
+/// its share, so a far texel of the clipmap doesn't alias. Cooked into the clipmap: nothing
+/// here runs per pixel per frame (AC12).
+pub fn rock_albedo(at: vec3, n: vec3, w: f32) -> vec3 {
+    let xz = at.xz
+    let tone = fbm2_seen(xz * 0.05 + vec2(4.0, -2.0), 3, w * 0.05)
+    var c = mix(vec3(0.19, 0.18, 0.165), vec3(0.27, 0.255, 0.23), vec3(tone))
+    c = mix(c, c * vec3(0.92, 0.96, 1.04), vec3(fbm2_seen(xz * 0.13, 2, w * 0.13)))
+    // The beds: along the height, bent a little by the rock's own lie.
+    let lie = at.y + 1.6 * (fbm2_seen(xz * 0.07 + vec2(9.0, 1.0), 2, w * 0.07) - 0.5)
+    let bed = 1.15
+    let f = fract(lie / bed)
+    let soft = smoothstep(0.0, 0.18, f) * smoothstep(0.42, 0.24, f)
+    let beds = mix(soft, 0.17, smoothstep(0.25 * bed, 0.75 * bed, w))
+    c *= 1.0 - 0.38 * beds
+    // Cracks: thin dark lines where the noise crosses its middle.
+    let crack = 1.0 - abs(engine::noise::noise2(xz * 0.9 + vec2(at.y * 0.6, 0.0)) - 0.5) * 2.0
+    let cracks = mix(smoothstep(0.9, 0.97, crack), 0.06, smoothstep(0.3, 1.0, w))
+    c *= 1.0 - 0.45 * cracks
+    // Lichen where it faces the sky, in spots; moss in its hollows and on what's near level.
+    let spots = smoothstep(0.6, 0.72, fbm2_seen(xz * 0.8 + vec2(-3.0, 5.0), 2, w * 0.8))
+    let lichen = spots * smoothstep(0.3, 0.8, n.y)
+    c = mix(c, vec3(0.42, 0.42, 0.33), vec3(0.6 * lichen))
+    let hollow = fbm2_seen(xz * 0.35 + vec2(12.0, 3.0), 3, w * 0.35)
+    let moss = smoothstep(0.55, 0.75, hollow + 0.3 * smoothstep(0.75, 0.95, n.y))
+    mix(c, vec3(0.06, 0.09, 0.03), vec3(0.65 * moss))
 }

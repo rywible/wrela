@@ -31,7 +31,7 @@ use engine::terrain::{Clipmap, Terrain, ground, ground_shade}
 use engine::vegetation::{Kind, Placed, kind}
 use engine::wood::Wood
 use engine::view::{BEHIND, Camera, NEAREST, camera, first_camera}
-use engine::water::{LOOKS, WaterVert, copy_below, water_shade, water_vertex}
+use engine::water::{LOOKS, MistAt, WaterVert, copy_below, mist_over, water_shade, water_vertex}
 use history::{BAKED, OBSTACLES, tiles_hi, tiles_lo}
 use provenance::NearTile
 use std::collections::{Flags, replace, swap}
@@ -63,9 +63,11 @@ pub const SUN = vec3(0.900, 0.407, -0.159)
 const METERING = Metering {
     base: 0.62,
     reference: 0.136,
-    strength: 0.75,
+    // A dark interior brightened most of the way to the open's (the clearing's rule, 0.75 and 3,
+    // left the beech wood near black).
+    strength: 0.85,
     lo: 0.15,
-    hi: 3.0,
+    hi: 4.0,
     rate: 0.05,
     flash: 1.25,
     fresh: 0,
@@ -401,6 +403,8 @@ pub struct Floor {
     shafts_on: bool,
     shafts: Texture<Rgba16Float>,
     scene_b: Texture<Rgba16Float>,
+    /// The falls' mist (`history::MISTS`, in the world).
+    mists: GpuBuffer<vec4>,
 }
 
 /// The built things to realize: the floor's (`blockouts::built`), and the egg's place's ring of
@@ -548,6 +552,7 @@ pub fn init() -> Floor {
         shafts_on: false,
         shafts: writable_texture::<Rgba16Float>(width: 1, height: 1),
         scene_b: texture::<Rgba16Float>(width: 1, height: 1),
+        mists: buffer_of(history::MISTS, at_least: 1),
     }
 }
 
@@ -1307,9 +1312,11 @@ fn trace_of(s: Floor) -> Trace {
     Trace {
         light: s.light,
         grid: s.probes.grid,
-        foliage: vec3(0.035, 0.07, 0.02),
+        // The leaves' light, less saturated than the clearing's: under a closed canopy it bounces
+        // from leaf to leaf, and each bounce greened the wood's interior further.
+        foliage: vec3(0.045, 0.065, 0.03),
         reach: 48.0,
-        leaf: vec3(0.10, 0.18, 0.04),
+        leaf: vec3(0.11, 0.155, 0.06),
         bounced: 0,
     }
 }
@@ -1587,6 +1594,23 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
             depth: NEAREST,
         )
         wp.end()
+        // The falls' mist, where one's near enough to see (it reads the distances the water's
+        // copy holds), into the scene's second target, which becomes the scene.
+        var near_mist = false
+        for m in history::MISTS {
+            near_mist = near_mist || length(m.xyz - cam.origin - cam.eye) < 500.0
+        }
+        if near_mist {
+            label("water")
+            let at = MistAt { cam, light: s.light, count: history::MISTS.len(), time: cam.time }
+            let mp = begin_pass(mut s.scene_b)
+            fullscreen(
+                mp,
+                mist_over.bind(at, scene: s.scene, below: s.below, mists: s.mists.items()),
+            )
+            mp.end()
+            swap(mut s.scene, mut s.scene_b)
+        }
     }
     // Sun shafts, if they're on: marched at a quarter of the scene's pixels, added into the
     // scene's second target, which becomes the scene.
@@ -1792,12 +1816,13 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     let wind = Wind { origin: cam.keyed(), ..wind(time) }
     // Where the eye is in the world, for what's kept by tiles.
     let eye_w = eye + o
-    // The leaves between the camera and the player fade (#54 §5); on a shot, those round the eye.
-    let clear_to = if s.shot.is_some() { eye + cam.forward * 1.5 } else {
-        feet + vec3(0.0, s.framing.target, 0.0)
+    // The leaves between the camera and the player fade (#54 §5); on a shot, those along the first
+    // 6 m of its view (a shot's eye is authored, and may stand in a bush).
+    let (clear_to, clear_r) = if s.shot.is_some() { (eye + cam.forward * 3.0, 3.2) } else {
+        (feet + vec3(0.0, s.framing.target, 0.0), 1.1)
     }
     match mut s.wood {
-        Some(w) => w.clear = vec4(clear_to, 1.1),
+        Some(w) => w.clear = vec4(clear_to, clear_r),
         None => {},
     }
     s.clipmap.follow(GROUND, eye, again: false)

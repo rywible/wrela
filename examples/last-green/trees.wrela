@@ -178,8 +178,9 @@ fn snag(s: u32, tall: f32, burnt: bool, conifer: bool) -> Plant {
             moss: vec3(0.05, 0.05, 0.04),
         }
     } else {
-        // Weathered to silver.
-        Bark { dark: vec3(0.20, 0.19, 0.17), light: vec3(0.48, 0.46, 0.42) }
+        // Weathered to silver-grey (paler than living bark, but no white: at 0.48 a sunlit snag
+        // read as a white post).
+        Bark { dark: vec3(0.13, 0.125, 0.115), light: vec3(0.31, 0.30, 0.27) }
     }
     // No leaves: its limbs alone.
     var p = plant(leaves: Leaves { size: 0.2 }, bark: bark)
@@ -274,14 +275,14 @@ pub fn kind_plant(k: u32) -> Plant {
         size: 0.95,
         cover: 1.7,
     }
-    let beech_bark = Bark { dark: vec3(0.18, 0.18, 0.17), light: vec3(0.40, 0.39, 0.36) }
+    let beech_bark = Bark { dark: vec3(0.12, 0.12, 0.115), light: vec3(0.29, 0.29, 0.27) }
     let birch_leaves = Leaves {
         young: vec3(0.25, 0.31, 0.06),
         old: vec3(0.08, 0.14, 0.03),
         size: 0.6,
         cover: 1.2,
     }
-    let birch_bark = Bark { dark: vec3(0.16, 0.15, 0.14), light: vec3(0.78, 0.77, 0.72) }
+    let birch_bark = Bark { dark: vec3(0.09, 0.085, 0.08), light: vec3(0.62, 0.60, 0.56) }
     let alder_leaves = Leaves {
         young: vec3(0.09, 0.17, 0.04),
         old: vec3(0.025, 0.07, 0.02),

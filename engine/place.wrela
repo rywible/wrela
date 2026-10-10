@@ -211,6 +211,46 @@ impl Land {
         vec3(cut, along, best)
     }
 
+    /// How much of `p` is a steep face of rock (0 to 1): a crag's flank (not its ramp, nor its
+    /// flat-ish top) and a ravine's walls (not where they've slumped to a walkable slope). A floor
+    /// gives these faces rock's own relief, so close up they read as rock.
+    pub fn faces(self, p: vec2) -> f32 {
+        var f = 0.0
+        for i in 0..4 {
+            let c = self.crags[i]
+            if c.w > 0.0 {
+                let k = p - c.xy
+                let r = length(k)
+                let flank = smoothstep(0.3 * c.w, 0.45 * c.w, r) *
+                    (1.0 - smoothstep(0.85 * c.w, 1.05 * c.w, r))
+                let dir = vec2(cos(self.ramps[i]), sin(self.ramps[i]))
+                let along = dot(k, dir)
+                let across = abs(dot(k, vec2(-dir.y, dir.x)))
+                let ramp = (1.0 - smoothstep(6.0, 12.0, across)) * smoothstep(0.0, 0.2 * c.w, along)
+                f = max(f, flank * (1.0 - ramp))
+            }
+        }
+        var walked = 0.0
+        for i in 0..15 {
+            let a = self.ravines[i]
+            let b = self.ravines[i + 1]
+            if a.w > 0.0 && b.w > 0.0 {
+                let (d, t) = to_segment(p, a.xy, b.xy)
+                let len = length(b.xy - a.xy)
+                let along = walked + t * len
+                let slump = smoothstep(0.55, 0.8, 0.5 + 0.5 * cos(along * 6.2831853 / SLUMP_EVERY))
+                let w = mix(a.w, b.w, t)
+                let wall = smoothstep(0.3 * w, 0.42 * w, d) *
+                    (1.0 - smoothstep(0.85 * w, 1.0 * w, d))
+                f = max(f, wall * (1.0 - slump))
+                walked += len
+            } else if a.w > 0.0 {
+                walked = 0.0
+            }
+        }
+        f
+    }
+
     /// How deep the ravines cut at `p`: its depth, its bed falling `ravine_fall` more toward its
     /// end.
     pub fn ravine(self, p: vec2) -> f32 {

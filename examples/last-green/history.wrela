@@ -101,6 +101,9 @@ fn courses_of(u: engine::bake::Unbaked) -> Courses {
     Courses { courses, pools }
 }
 
+/// Where the falls' mist hangs (`engine::water::mists`).
+pub const MISTS: Vec<vec4> = engine::water::mists(ground::ground(), COURSES.courses)
+
 /// The water laid (`engine::water`): its courses and pools, and its mesh, laid over the ground.
 pub fn waters() -> Laid {
     let mesh = engine::water::lay(
