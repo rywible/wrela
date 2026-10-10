@@ -232,6 +232,9 @@ impl Watcher {
 
 // ---- the server ---------------------------------------------------------------------------------
 
+/// The browser runtime's scripts a build holds, the same in every build.
+const RUNTIME_SCRIPTS: [&str; 3] = ["main.js", "worker.js", "worklet.js"];
+
 /// A change as the page gets it, numbered (its `seq`, from 1: its place in [`Live::events`]).
 struct Event {
     json: serde_json::Value,
@@ -265,6 +268,8 @@ struct Live {
     version: u64,
     events: Vec<Event>,
     shown: Vec<Shown>,
+    /// How many long polls pages have made: a page asks as soon as it runs.
+    polls: u64,
 }
 
 impl Live {
@@ -297,6 +302,13 @@ impl Server {
     /// Each change the page has shown so far.
     pub fn shown(&self) -> Vec<Shown> {
         self.state.live.lock().expect("the state").shown.clone()
+    }
+
+    /// How many times pages have asked for changes (`/live/next`): one is running once it's
+    /// asked (a test edits after that, so the page sees its edits as changes, not as part of
+    /// the build it loaded).
+    pub fn polls(&self) -> u64 {
+        self.state.live.lock().expect("the state").polls
     }
 
     /// The changes so far, as the page gets them.
@@ -339,6 +351,7 @@ pub fn serve(
             version: watcher.version(),
             events: Vec::new(),
             shown: Vec::new(),
+            polls: 0,
         }),
         changed: Condvar::new(),
     });
@@ -422,6 +435,7 @@ fn handle(
             let after: u64 = req.param("after").and_then(|v| v.parse().ok()).unwrap_or(0);
             let deadline = Instant::now() + LONG_POLL;
             let mut s = state.live.lock().expect("the state");
+            s.polls += 1;
             while s.events.len() as u64 <= after && !stopping.load(Ordering::SeqCst) {
                 let left = deadline.saturating_duration_since(Instant::now());
                 if left.is_zero() {
@@ -481,6 +495,13 @@ fn handle(
                 (s.version, s.events.len() as u64)
             };
             let (dir, rel, version, seq) = match trimmed.split_once('/') {
+                // The runtime's own scripts are the same in every build, and a page's threads
+                // start from the script its render worker came from: a build the server has
+                // since deleted (it keeps two) still gives them, from the newest. (A page open
+                // through three hot reloads stopped: its next ticker's script was gone.)
+                Some((v, rest)) if v.parse::<u64>().is_ok() && RUNTIME_SCRIPTS.contains(&rest) => {
+                    (state.out.join(version.to_string()), rest, version, seq)
+                }
                 Some((v, rest)) if v.parse::<u64>().is_ok() => {
                     let v: u64 = v.parse().unwrap_or(0);
                     // The change that made build `v`, or none (the first build).

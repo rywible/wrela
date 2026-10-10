@@ -854,6 +854,14 @@ pub const AGAIN_RAYS: u32 = 64
 pub const AGAIN_KEEP: f32 = 0.5
 
 impl Baked {
+    /// The grid moved by `d` with render space (the render origin moved by `-d`): what it baked
+    /// stays, since it moves with the world. Its occluders must be cooked already (they're cooked
+    /// once, into the volume, which moves with the grid).
+    pub fn shift(mut self, d: vec2) {
+        self.grid.corner += d
+        self.grid.volume_corner += vec3(d.x, 0.0, d.y)
+    }
+
     /// The grid's probes, unbaked, and its occluders, uncooked.
     pub fn new(grid: ProbeGrid, occluders: [Occluder]) -> Baked {
         let o = buffer_of(occluders, at_least: 1)

@@ -57,6 +57,16 @@ impl Kept {
         Cascade { centre: self.centre, span: self.span, reach: self.reach, side: self.side }
     }
 
+    /// Moved by `d` with render space (the render origin moved by `-d`): its maps hold what they
+    /// held, since nothing snaps a static cascade's view.
+    pub fn shift(mut self, d: vec3) {
+        self.centre += d
+        self.next = match self.next {
+            Some(n) => Some(n + d),
+            None => None,
+        }
+    }
+
     /// What casts into it changed: drawn again where it is, once the drawing under way ends.
     pub fn changed(mut self) {
         self.stale = true

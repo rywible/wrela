@@ -102,9 +102,11 @@ pub fn share(level: f32, faint: f32, way: u32) -> vec2 {
 /// player's camera went inside a crown within ten minutes of playing spike 17, and the infinite
 /// pixel trapped where the CPU made it an integer: `packed`.)
 pub fn anchor(cam: Camera, at: vec3, top: f32, scale: f32) -> vec2 {
+    // Its own draw, keyed to where it stands in the world.
+    let w = at + cam.keyed()
     let own = vec2(
-        hash2(i32(floor(at.x * 8.0)), i32(floor(at.z * 8.0))),
-        hash2(i32(floor(at.z * 8.0)) + 17, i32(floor(at.x * 8.0)) - 5),
+        hash2(i32(floor(w.x * 8.0)), i32(floor(w.z * 8.0))),
+        hash2(i32(floor(w.z * 8.0)) + 17, i32(floor(w.x * 8.0)) - 5),
     )
     let k = (cam.frame * 7) % 16
     let step = vec2(f32(k % 4), f32(k / 4))

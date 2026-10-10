@@ -44,6 +44,11 @@ use std::input::{Button, Event, Key, events}
 use std::io::{Pending, print}
 use world::{GROUND, World, present as snapshot, spawn_world, tick}
 
+/// How far the player goes from the render origin before it moves (m), and the tiles it moves by
+/// (a whole number of the clipmap's coarsest snaps and of its fields' blocks: what's cooked stays).
+const RECENTRE: f32 = 3072.0
+const RECENTRE_STEP: i32 = 6
+
 /// The ticks between the play harness's reports (2 s at 60 Hz).
 const REPORT_TICKS: u32 = 120
 
@@ -385,6 +390,11 @@ pub struct Floor {
     clicked: Option<vec2>,
     /// The play harness's map with the check (M).
     map: harness::HarnessMap,
+    /// The render origin's tile (`engine::view::Camera::origin`): what's drawn is the world less
+    /// it, so what's near the eye keeps its precision however far the player goes. It moves by
+    /// whole blocks of `RECENTRE_STEP` tiles once the player is `RECENTRE` from it (never on the
+    /// floor itself), and everything drawn moves with it (`recentre`).
+    origin: vec2i,
 }
 
 /// The built things to realize: the floor's (`blockouts::built`), and the egg's place's ring of
@@ -399,9 +409,10 @@ fn to_build() -> Vec<blockouts::Built> {
     out
 }
 
-/// The probes round `at`, unbaked, and what occludes them: the trees standing round it.
-fn probes_at(at: vec2, occluders: take Vec<engine::probes::Occluder>) -> Baked {
-    let y = height_at(at)
+/// The probes round `at` (render space, the render origin `o` taken off), unbaked, and what
+/// occludes them: the trees standing round it.
+fn probes_at(at: vec2, occluders: take Vec<engine::probes::Occluder>, o: vec2) -> Baked {
+    let y = height_at(at + o)
     let g = grid(
         at,
         cols: PROBE_COLS,
@@ -461,7 +472,7 @@ pub fn init() -> Floor {
         ),
         moving: depth_texture(width: MOVING_SIDE, height: MOVING_SIDE),
         cmp: comparison_sampler(),
-        probes: probes_at(start, Vec::new()),
+        probes: probes_at(start, Vec::new(), vec2(0.0)),
         occluders_cooked: false,
         probes_at: start,
         next_probes: None,
@@ -510,7 +521,7 @@ pub fn init() -> Floor {
         standin: None,
         to_build: to_build(),
         built: Vec::new(),
-        footprints: buffer_of(footprints(), at_least: 1),
+        footprints: buffer_of(footprints_in(vec3(0.0)), at_least: 1),
         palette: buffer(1),
         last_palette: buffer(1),
         water_verts: buffer_of(waters.mesh.verts, at_least: 1),
@@ -527,14 +538,16 @@ pub fn init() -> Floor {
         press: None,
         clicked: None,
         map: harness::HarnessMap::new(),
+        origin: vec2i(0),
     }
 }
 
-/// Where the grass keeps out of the floor's stones: each one's place and reach.
-fn footprints() -> Vec<vec4> {
+/// Where the grass keeps out of the floor's stones: each one's place (in render space, the
+/// render origin `o` taken off) and reach.
+fn footprints_in(o: vec3) -> Vec<vec4> {
     var out: Vec<vec4> = Vec::new()
     for st in stones::stones(map::map()) {
-        out.push(vec4(st.x, st.y, st.z * 1.1, 0.0))
+        out.push(vec4(st.x - o.x, st.y - o.z, st.z * 1.1, 0.0))
     }
     out
 }
@@ -553,6 +566,50 @@ fn fields_clipmap() -> Clipmap {
 /// The ground's height at a point of the plane.
 fn height_at(p: vec2) -> f32 {
     GROUND.at(x: p.x, z: p.y)
+}
+
+/// The render origin's world point (m; y 0).
+fn origin_of(s: Floor) -> vec3 {
+    let o = vec2(s.origin) * TILE
+    vec3(o.x, 0.0, o.y)
+}
+
+/// Instances placed in the world, in render space: each moved by `d` (the render origin taken
+/// off).
+fn rendered(placed: [Placed], d: vec3) -> Vec<Placed> {
+    var out: Vec<Placed> = Vec::with_capacity(placed.len())
+    for p in placed {
+        out.push(Placed { kind: p.kind, at: engine::plant::Instance { at: p.at.at + d, ..p.at } })
+    }
+    out
+}
+
+/// The render origin moved to tile `to`: everything drawn moves with render space (by `d`, the
+/// old origin less the new), keeping what it cooked: the wood's instances, the clipmap's levels,
+/// the probes, the shadows' cascades, the built things and the grass's footprints. Probes being
+/// baked for a new place are dropped (baked again where the eye is).
+fn recentre(s: mut Floor, to: vec2i) {
+    if to == s.origin {
+        return
+    }
+    let d2 = vec2(s.origin - to) * TILE
+    let d = vec3(d2.x, 0.0, d2.y)
+    s.origin = to
+    match mut s.wood {
+        Some(w) => w.shift(d),
+        None => {},
+    }
+    s.clipmap.set_origin(vec2(to) * TILE)
+    s.probes.shift(d2)
+    s.probes_at += d2
+    s.next_probes = None
+    s.near.shift(d)
+    s.far.shift(d)
+    for mut b in s.built {
+        b.at[3] = vec4(b.at[3].xyz + d, 1.0)
+    }
+    s.footprints = buffer_of(footprints_in(origin_of(s)), at_least: 1)
+    print(f"the render origin moved to tile {to.x}, {to.y}")
 }
 
 /// How far tile `t` is from `p` (m): to its nearest point.
@@ -918,6 +975,8 @@ fn stream(s: mut Floor, eye: vec2) {
         }
     }
     var changed = false
+    // What's loaded into the wood is in render space.
+    let o = origin_of(s)
     match mut s.wood {
         Some(w) => {
             // Each tile's far layer where its own trees aren't loaded: fine within `FAR_FINE`,
@@ -936,9 +995,9 @@ fn stream(s: mut Floor, eye: vec2) {
                 }
                 if !own && w.slot_of(f.tile, far: true).is_none() && w.has_room() {
                     let _ = if coarse {
-                        w.load(f.tile, f.coarse, far: true)
+                        w.load(f.tile, rendered(f.coarse, -o), far: true)
                     } else {
-                        w.load(f.tile, f.fine, far: true)
+                        w.load(f.tile, rendered(f.fine, -o), far: true)
                     }
                     f.loaded = want
                 }
@@ -958,7 +1017,7 @@ fn stream(s: mut Floor, eye: vec2) {
             }
             if s.arrived.len() > 0 && w.has_room() {
                 let a = s.arrived.remove(0)
-                let _ = w.load(a.tile, a.placed)
+                let _ = w.load(a.tile, rendered(a.placed, -o))
                 s.own.push(take a)
                 changed = true
             }
@@ -979,7 +1038,10 @@ fn cook_load(s: mut Floor) {
     if s.wood.is_some() {
         if s.to_build.len() > 0 {
             let b = s.to_build.remove(0)
-            s.built.push(blockouts::realize(b, height_at))
+            var r = blockouts::realize(b, height_at)
+            let o = origin_of(s)
+            r.at[3] = vec4(r.at[3].xyz - o, 1.0)
+            s.built.push(take r)
             if s.to_build.is_empty() {
                 s.near.changed()
                 s.far.changed()
@@ -1218,7 +1280,8 @@ fn cook_sky(s: mut Floor, eye: vec3, wind: Wind) {
             s.light,
             s.tables,
             eye,
-            drift: clouds::CLOUD_WIND * wind.time,
+            // The field's drift, less the render origin (`Clouds::drift`).
+            drift: clouds::CLOUD_WIND * wind.time - s.cam.keyed().xz,
             rep: s.repeat,
             s: s.linear,
             still: false,
@@ -1266,16 +1329,18 @@ fn bake_probes(s: mut Floor, sh: Shadows, eye: vec2) {
         return
     }
     if s.next_probes.is_none() && length(eye - s.probes_at) > PROBES_MOVE {
+        // The eye and the trees in render space; the tiles by the world's eye.
+        let o = origin_of(s)
         var placed: Vec<Placed> = Vec::new()
         for a in s.own {
-            if tile_distance(a.tile, eye) < 200.0 {
-                var more = a.placed.clone()
+            if tile_distance(a.tile, eye + o.xz) < 200.0 {
+                var more = rendered(a.placed, -o)
                 placed.append(mut more)
             }
         }
         let half = vec2(0.5 * f32(PROBE_COLS - 1) * PROBE_SPACING)
         s.next_probes = Some(
-            probes_at(eye, trees::occluders(placed, s.plants, eye - half, eye + half)),
+            probes_at(eye, trees::occluders(placed, s.plants, eye - half, eye + half), o.xz),
         )
         s.next_at = eye
         s.next_cooked = false
@@ -1621,7 +1686,22 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     let b = s.snaps.at(s.snaps.sim_time(time))
     let pa = b.a.player
     let pb = b.b.player
-    let feet2 = mix(pa.at.world(), pa.at.world() + pa.at.to(pb.at), vec2(b.alpha))
+    // The render origin follows the player (or a test's held camera), in whole blocks of tiles.
+    let near_tile = match s.held {
+        Some(h) => engine::place::tile_of(h.0.xz),
+        None => pa.at.tile,
+    }
+    let from = vec2(near_tile - s.origin) * TILE
+    let before = s.origin
+    if max(abs(from.x), abs(from.y)) > RECENTRE {
+        let k = f32(RECENTRE_STEP)
+        let t = vec2i(round(vec2(near_tile) / k) * k)
+        recentre(mut s, t)
+    }
+    let o = origin_of(s)
+    let o2 = o.xz
+    // The player's feet in render space, exact however far it is (`Place::from_tile`).
+    let feet2 = pa.at.from_tile(s.origin) + pa.at.to(pb.at) * b.alpha
     let feet = vec3(feet2.x, mix(pa.y, pb.y, b.alpha), feet2.y)
     let c = pb.controls
     if s.standin.is_none() {
@@ -1630,28 +1710,25 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     let heading = engine::present::lerp_angle(pa.heading, pb.heading, b.alpha)
     std::gpu::copy(from: s.palette.items(), to: s.last_palette.items_mut())
     write(mut s.palette, 0, [standin_at(feet, heading)])
+    if s.origin != before {
+        // Last frame's place is in the old render space: no motion this frame.
+        std::gpu::copy(from: s.palette.items(), to: s.last_palette.items_mut())
+    }
+    let ground_r = |p: vec2| height_at(p + o2)
     let (eye, at, fovy) = match s.shot {
         Some(i) => {
             let shot = lookbook::SHOTS[i]
             let (e, a) = lookbook::place(shot, time - s.shot_from, height_at)
-            (e, a, shot.fovy)
+            (e - o, a - o, shot.fovy)
         },
         None => {
-            let (e, a) = third_person(
-                s.framing,
-                feet,
-                c.yaw,
-                c.pitch,
-                OBSTACLES,
-                vec2(0.0),
-                height_at,
-            )
+            let (e, a) = third_person(s.framing, feet, c.yaw, c.pitch, OBSTACLES, o2, ground_r)
             (e, a, s.framing.fovy)
         },
     }
-    // A test's held camera.
+    // A test's held camera (given in the world).
     let (eye, at) = match s.held {
-        Some(h) => h,
+        Some(h) => (h.0 - o, h.1 - o),
         None => (eye, at),
     }
     s.cam = camera(
@@ -1663,6 +1740,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         frame: s.frames,
         time: time,
         last: s.cam,
+        origin: o,
     )
     let cam = s.cam
     // A click names what's under it: a tree's kind and history, or the ground's cover and fields.
@@ -1670,7 +1748,10 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         let size = vec2(f32(width), f32(height))
         print(provenance::click(s.grounds, cam, px, size, height_at))
     }
-    let wind = wind(time)
+    // The wind's waves cross the world: keyed to it, as the render origin moves.
+    let wind = Wind { origin: cam.keyed(), ..wind(time) }
+    // Where the eye is in the world, for what's kept by tiles.
+    let eye_w = eye + o
     // The leaves between the camera and the player fade (#54 §5); on a shot, those round the eye.
     let clear_to = if s.shot.is_some() { eye + cam.forward * 1.5 } else {
         feet + vec3(0.0, s.framing.target, 0.0)
@@ -1681,10 +1762,10 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     }
     s.clipmap.follow(GROUND, eye, again: false)
     cook_load(mut s)
-    stream(mut s, eye.xz)
+    stream(mut s, eye_w.xz)
     // The near cascade round where the eye will be (a little ahead), the far round the floor.
-    s.near.follow(vec3(eye.x, height_at(eye.xz), eye.z), NEAR_MOVES)
-    s.far.follow(FAR_CASCADE.centre, 1.0e9)
+    s.near.follow(vec3(eye.x, height_at(eye_w.xz), eye.z), NEAR_MOVES)
+    s.far.follow(FAR_CASCADE.centre - o, 1.0e9)
     let sh = shadows(
         s.light.sun,
         s.near.cascade(),
@@ -1712,22 +1793,22 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     }
     if s.frames % 60 == 0 {
         print(
-            f"frame {s.frames}: the player at {feet.x:.1}, {feet.z:.1}; {s.tiles_in} tiles come, {loaded} instances loaded",
+            f"frame {s.frames}: the player at {feet.x + o.x:.1}, {feet.z + o.z:.1}; {s.tiles_in} tiles come, {loaded} instances loaded",
         )
     }
     // A tile the player can see whose own trees aren't placed yet (#55 AC7's tiles on time):
     // within the cards' reach of the eye (past it, the far layer's crowns stand for them).
     if s.playable {
-        late_tiles(mut s, eye.xz)
+        late_tiles(mut s, eye_w.xz)
     }
     // The first full frame (#55 AC7's time to play): the wood cooked, every tile within 120 m of
     // the eye placed, the near shadows drawn and the probes baked.
-    if !s.playable && playable(s, eye.xz) {
+    if !s.playable && playable(s, eye_w.xz) {
         s.playable = true
         print(f"playable at frame {s.frames}")
     }
     draw_scene(mut s, cam, sh, wind)
-    finish(mut s, cam, width, height, feet.xz, heading)
+    finish(mut s, cam, width, height, feet.xz + o2, heading)
     s.frames += 1
 }
 
@@ -1735,6 +1816,13 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
 
 /// The camera held at `eye`, looking at `at` (instead of the player's or a shot's).
 @testing
+/// The render origin moved to tile (`x`, `z`) (it follows the player only once the player is
+/// `RECENTRE` from it).
+@testing
+pub fn test_origin(s: mut Floor, x: i32, z: i32) {
+    recentre(mut s, vec2i(x, z))
+}
+
 pub fn test_hold(s: mut Floor, eye: vec3, at: vec3) {
     s.held = Some((eye, at))
 }
@@ -1781,7 +1869,8 @@ pub struct CameraReport: Copy {
 pub fn test_camera(s: Floor) -> CameraReport {
     let c = s.cam
     CameraReport {
-        eye: c.eye,
+        // In the world (the render origin added back).
+        eye: c.eye + c.origin,
         forward: c.forward,
         right: c.right,
         up: c.up,
@@ -1810,7 +1899,7 @@ pub fn test_settled(s: Floor) -> f32 {
         s.arrived.is_empty() &&
         s.next_probes.is_none() &&
         length(eye - s.probes_at) <= PROBES_MOVE
-    if still && playable(s, eye) { 1.0 } else { 0.0 }
+    if still && playable(s, eye + s.cam.origin.xz) { 1.0 } else { 0.0 }
 }
 
 /// Whether the floor's ready: its kinds cooked and the tiles round the player in and placed.

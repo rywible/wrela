@@ -2,12 +2,17 @@
 // pixel each frame by the Halton (2, 3) sequence, which temporal AA averages, and it keeps last
 // frame's matrix, so a pixel's world point is found where it was (reprojection).
 //
+// Rendering is camera-relative (#54 §5, Q3): what's drawn is in render space, the world less the
+// render origin (`Camera::origin`), a whole number of tiles near the eye that a game moves as
+// the eye travels. So what's near the camera keeps its precision however far it is from the
+// world's origin; what's keyed to the world (noise, a ground's height) adds the origin back.
+//
 // Depth is reversed and the far plane infinite: a fragment's depth is near / distance along the
 // view, 1 at the near plane and 0 at infinity. A float's precision is then even in distance, so
 // hills 10 km away don't fight. Passes clear depth to 0 and keep the greater.
 
 use std::gpu::{Compare, Depth}
-use std::transform::identity
+use std::transform::{identity, translate}
 
 /// The draw state of a pass that keeps the nearest fragment, in reversed depth.
 pub const NEAREST = Depth { compare: Compare::Greater, write: true }
@@ -39,12 +44,15 @@ pub struct Camera: Copy + GpuData {
     pub up: vec3,
     /// Seconds since the program began.
     pub time: f32,
+    /// The render origin: the world point (whole tiles, y 0) that render space's origin stands
+    /// for. Every position a pass reads is the world's less this.
+    pub origin: vec3,
+    /// The frame's number.
+    pub frame: u32,
     /// This frame's offset within its pixel, in clip units.
     pub jitter: vec2,
     /// The target's size, in pixels.
     pub screen: vec2,
-    /// The frame's number.
-    pub frame: u32,
 }
 
 /// The jitter's cycle: 16 points of the Halton (2, 3) sequence.
@@ -96,6 +104,7 @@ pub fn camera(
     time: f32,
     last: Camera,
     still: bool = false,
+    origin: vec3 = vec3(0.0),
 ) -> Camera {
     let aspect = f32(width) / f32(height)
     let near = 0.1
@@ -105,9 +114,15 @@ pub fn camera(
     let right = normalize(cross(forward, vec3(0.0, 1.0, 0.0)))
     let up = cross(right, forward)
     let j = if still { vec2(0.0) } else { jitter_of(frame) }
+    // Last frame's matrix takes this frame's render space: a point here was `moved` further
+    // from the last frame's origin.
+    let moved = origin - last.origin
+    let last_view_proj = if moved == vec3(0.0) { last.view_proj } else {
+        last.view_proj * translate(moved)
+    }
     Camera {
         view_proj: proj * view,
-        last_view_proj: last.view_proj,
+        last_view_proj,
         eye,
         near,
         forward,
@@ -119,6 +134,7 @@ pub fn camera(
         jitter: vec2(2.0 * j.x / f32(width), -2.0 * j.y / f32(height)),
         screen: vec2(f32(width), f32(height)),
         frame,
+        origin,
     }
 }
 
@@ -144,10 +160,24 @@ pub fn blank() -> Camera {
         jitter: vec2(0.0),
         screen: vec2(1.0),
         frame: 0,
+        origin: vec3(0.0),
     }
 }
 
+/// The period that what's keyed to the world repeats over (m): the render origin is kept within
+/// half of it either way for noise and hashes (`Camera::keyed`), whose inputs then stay small.
+/// Within 32 km of the world's origin it's the origin itself; a pattern jumps where a game's
+/// origin wraps, 32 km out and every 65 km after.
+pub const KEYED_PERIOD: f32 = 65536.0
+
 impl Camera {
+    /// The render origin wrapped to within half `KEYED_PERIOD` either way: added to a
+    /// render-space point, the point that noise and hashes keyed to the world read (the same
+    /// before and after the origin moves).
+    pub fn keyed(self) -> vec3 {
+        self.origin - round(self.origin / KEYED_PERIOD) * KEYED_PERIOD
+    }
+
     /// A world point's clip position, jittered.
     pub fn clip(self, world: vec3) -> vec4 {
         let c = self.view_proj * vec4(world, 1.0)

@@ -58,6 +58,8 @@ pub trait Terrain: Copy + GpuData {
 /// What covers the ground: its albedo (linear); and its meadow, which the grass reads where
 /// it's placed: how much grass grows there and how tall (each 0 to 1), how dry and how deep a
 /// green it is; and its flowers: how much of each of three kinds (weights), and how many grow.
+/// And the wood's floor's own plants, where the grass doesn't grow (#54 §9): how many (0 to 1),
+/// then how much of each kind (weights): ferns, bracken, low herbs.
 pub struct Cover: Copy + GpuData {
     pub albedo: vec3,
     pub grass: f32,
@@ -65,17 +67,19 @@ pub struct Cover: Copy + GpuData {
     pub dry: f32 = 0.0,
     pub deep: f32 = 0.0,
     pub flowers: vec4 = vec4(0.0),
+    pub under: vec4 = vec4(0.0),
 }
 
 /// One cooked point of the clipmap: the height, the normal (octahedral), the cover (the albedo's
 /// square root, for its dark greens' precision, and the grass), the meadow (tall, dry, deep),
-/// and the flowers (each kind's weight, and how many).
+/// the flowers (each kind's weight, and how many), and the wood's floor's plants (`Cover::under`).
 pub struct Texel: Copy + GpuData {
     pub height: f32,
     pub normal: Oct32,
     pub cover: Unorm8x4,
     pub meadow: Unorm8x4,
     pub flowers: Unorm8x4,
+    pub under: Unorm8x4,
 }
 
 /// Texels along each side of a level, and the quads between them.
@@ -182,6 +186,9 @@ pub struct Clipmap {
     fields_at: FieldsAt,
     field_tiles: GpuBuffer<vec4>,
     held: Vec<vec4>,
+    /// The render origin (`view::Camera::origin`): the levels lie in render space, and cook the
+    /// ground at the world's points.
+    origin: vec2,
 }
 
 impl Clipmap {
@@ -202,7 +209,24 @@ impl Clipmap {
             fields_at: FieldsAt { period: 1.0, texel: 1.0, tile: 1.0, blocks: 1, on: 0 },
             field_tiles: buffer(1),
             held: Vec::from([vec4(0.0)]),
+            origin: vec2(0.0),
         }
+    }
+
+    /// The render origin moved to `o` (world, x and z): the levels move with render space and
+    /// keep what they cooked, so long as `o` moved by whole cells of the coarsest level's snap
+    /// (twice its spacing: a game moves its origin by whole blocks of tiles).
+    pub fn set_origin(mut self, o: vec2) {
+        let d = o - self.origin
+        if d == vec2(0.0) {
+            return
+        }
+        for l in 0..self.levels.count {
+            let a = self.levels.at[l]
+            self.levels.at[l] = vec4(a.xy - d, a.z, a.w)
+        }
+        self.levels.eye -= d
+        self.origin = o
     }
 
     /// Turns the ground's fields on: `blocks` blocks a side, each a tile `tile` metres across of
@@ -254,8 +278,9 @@ impl Clipmap {
         }
     }
 
-    /// The levels whose squares reach from `lo` to `hi` cook again whole.
+    /// The levels whose squares reach from `lo` to `hi` (the world's) cook again whole.
     fn touched(mut self, lo: vec2, hi: vec2) {
+        let (lo, hi) = (lo - self.origin, hi - self.origin)
         for l in 0..self.levels.count {
             let a = self.levels.at[l]
             let end = a.xy + vec2(f32(QUADS) * a.z)
@@ -313,6 +338,7 @@ impl Clipmap {
                         fields_at: self.fields_at,
                         tiles: self.field_tiles,
                         at: vec4(at.x, at.y, s, 0.0),
+                        origin: self.origin,
                         moved: moved,
                         from: self.texels.span(start: l * STRIDE, count: STRIDE),
                         out: mut self.moving,
@@ -445,6 +471,7 @@ pub fn cook_level<T: Terrain>(
     fields_at: FieldsAt,
     tiles: [vec4],
     at: vec4,
+    origin: vec2,
     moved: vec2i,
     from: [Texel],
     out: mut Slots<Texel>,
@@ -458,9 +485,10 @@ pub fn cook_level<T: Terrain>(
         out[id] = from[u32(was.y) * ROW + u32(was.x)]
         return
     }
+    // The texel's world point: its render-space point and the render origin.
     let s = at.z
-    let x = at.x + f32(id.x) * s
-    let z = at.y + f32(id.y) * s
+    let x = (at.x + f32(id.x) * s) + origin.x
+    let z = (at.y + f32(id.y) * s) + origin.y
     let h = terrain.height(x, z)
     let n = terrain.normal(x, z, s * 0.5)
     let f = fields_here(fields, fs, fields_at, tiles, x, z)
@@ -472,6 +500,7 @@ pub fn cook_level<T: Terrain>(
         cover: Unorm8x4::encode(vec4(sqrt(saturate(c.albedo)), saturate(c.grass))),
         meadow: Unorm8x4::encode(saturate(vec4(c.tall, c.dry, c.deep, 0.0))),
         flowers: Unorm8x4::encode(saturate(c.flowers)),
+        under: Unorm8x4::encode(saturate(c.under)),
     }
 }
 
@@ -662,6 +691,7 @@ pub struct Covering: Copy {
     pub cover: vec4,
     pub meadow: vec4,
     pub flowers: vec4,
+    pub under: vec4,
 }
 
 /// Level `l`'s ground at `xz`, between its texels (bilinear).
@@ -673,6 +703,7 @@ fn level_ground(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> Covering {
         cover: vec4(0.0),
         meadow: vec4(0.0),
         flowers: vec4(0.0),
+        under: vec4(0.0),
     }
     var heights = vec4(0.0)
     for dy in 0..2 {
@@ -685,6 +716,7 @@ fn level_ground(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> Covering {
             out.cover += t.cover.decode() * w
             out.meadow += t.meadow.decode() * w
             out.flowers += t.flowers.decode() * w
+            out.under += t.under.decode() * w
             heights[dy * 2 + dx] = t.height
         }
     }
@@ -706,6 +738,7 @@ pub fn ground_cover_at(levels: Levels, texels: [Texel], xz: vec2) -> Covering {
         cover: mix(g0.cover, g1.cover, vec4(m)),
         meadow: mix(g0.meadow, g1.meadow, vec4(m)),
         flowers: mix(g0.flowers, g1.flowers, vec4(m)),
+        under: mix(g0.under, g1.under, vec4(m)),
     }
 }
 

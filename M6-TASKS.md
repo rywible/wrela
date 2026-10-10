@@ -29,17 +29,17 @@ Deleted when the milestone closes.
 | AC | State | Notes |
 |---|---|---|
 | AC1 | tests pass | map in source with engine types; anatomy, area, keepers (2), reach: suite/last_green.rs |
-| AC2 | mostly | cached (test), 0.65 MB/km² (test), preview vs bake (test, with drawn crowns), head room (tests.wrela); same bytes in both hosts (F9 hashes the bake: test); preview ≤ 3 s and bake ≤ 2 min to measure (bake ~1:30 with the check) |
+| AC2 | mostly | cached (test), 0.65 MB/km² (test), preview vs bake (test, with drawn crowns), head room (tests.wrela); same bytes in both hosts (F9 hashes the bake: test); preview 2.38 s (measure); bake ≤ 2 min after an edit to measure |
 | AC3 | tests written | calibrated: 24 places all round within 0.1 (0.032 mean); landmarks ≥ 1° from the renderer's tags and depth (9 relations); dead 14.3%; every relation holds; openings open |
 | AC4 | started | collision into each thing, trunks as drawn (tests.wrela); camera near plane, no trap, replays both hosts; camera-relative rendering to do |
-| AC5 | started | the floor's walk (P) and the report every 2 s; both-hosts test; rounds to do |
+| AC5 | started | taps, travel (G), the walk (P), the report every 2 s (both-hosts test), the map with the check (M); rounds to do |
 | AC7 | measured | cold: playable 1.09 s, 3.51 MB before (gzip, as a host serves); 5 Mbit/s walk: 0 late; glide pace (over the ground's things) and memory (allocator fixed) to measure again |
 | AC8 | to measure | systems' slices test written (serial, native); the walk's frames in Chrome; crowns now drawn as wide as the history grew them |
 | AC9 | mostly | mere, streams, fall, springs; one surface, where it is, WGSL bounds (tests); three looks (F6); slice in the systems test |
 | AC10 | started | lookbook: stills and 10 s clips in Chrome (test mode's `clip`); trails' contrast test written; flicker to do |
 | AC11 | started | no grass under closed canopy (test); one metering rule; exposure settles in 2 s, no flash (cap at 1.25× its target: test); sun shafts to do |
 | AC12 | started | cooked bark and stone (WGSL test), leafless kinds; trunks differ (a fork per tree, test); tower relations made out (AC3); far land to do |
-| AC13 | to do | map lens, provenance |
+| AC13 | done | map lens: session in both hosts, 3.5 s drag to map (test); provenance: click in Chrome 5 ms (test) |
 | AC15 | done | 5817067, b08cb06 |
 | AC16–18 | to do | speed, record |
 
@@ -69,7 +69,20 @@ Deleted when the milestone closes.
 - **Metering caps a flash**: a scene that brightens at once shows at most 1.25 times its settled
   brightness.
 
-## Plan for what's left
+## Session 2 (2026-10-10): order of work
+
+1. Done: gate fixed (layering), map lens tested both hosts, Chrome heap-growth trap fixed, polled
+   tasks with no helpers, provenance, the harness map.
+2. Camera-relative rendering (AC4) and its test.
+3. Ground cover plants: ferns, bracken, herbs from the history's fields (§9, AC11).
+4. Sun shafts as a candidate, switchable (AC11, Q6).
+5. The far land: the marbled pattern, the valley's fields (AC12, polish list).
+6. Flicker on the walk (AC10); the fawn and the stand-in in three shots (AC10).
+7. Measures: AC7 memory, AC8 three runs and slices, AC9 water slice, AC16 speed, AC2 bake time.
+8. Play rounds (AC5), the lookbook each round, the polish list.
+9. The record (AC18).
+
+## Plan for what's left (session 1's)
 
 1. AC7: memory measure; commit (gate first).
 2. AC12: a fork per tree (`Instance::fork`, a bend of the plant's height; chosen in the bake so

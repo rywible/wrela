@@ -544,8 +544,9 @@ struct Clip {
 }
 
 /// A texel's bytes as the test reads them (`engine::terrain::Texel`): its height (an `f32`) in
-/// the first four, its cover's grass (a `Unorm8x4`'s last byte) in byte 11.
-const TEXEL_BYTES: usize = 20;
+/// the first four, its cover's grass (a `Unorm8x4`'s last byte) in byte 11; the wood's floor's
+/// plants (`under`) last.
+const TEXEL_BYTES: usize = 24;
 const GRASS_BYTE: usize = 11;
 
 impl Clip {
@@ -2717,6 +2718,7 @@ fn hot_reload_in_chrome() {
     let page = out.clone();
     let chrome = std::thread::spawn(move || wrela_tests::run_url_in_chrome(&url, &page, 240));
     let limit = std::time::Duration::from_secs(60);
+    wrela_tests::wait_polling(&server, std::time::Duration::from_secs(120));
     // A first edit, shown once the page draws: temporal AA's blend, read each frame.
     edit_file(&pkg, "main.wrela", "blend: 0.12,", "blend: 0.121,");
     wrela_tests::wait_shown(&server, 1, limit);

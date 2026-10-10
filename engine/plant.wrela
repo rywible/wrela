@@ -674,12 +674,16 @@ pub struct Wind: Copy + GpuData {
     pub dir: vec2,
     pub strength: f32,
     pub time: f32,
+    /// The render origin within `view::KEYED_PERIOD` (`Camera::keyed`): its waves cross the
+    /// world, not render space, so they don't jump when the origin moves.
+    pub origin: vec3 = vec3(0.0),
 }
 
-/// How far a point at `world`, `height` up its plant (or `height` up a blade), sways at the
+/// How far a point at `at` (render space), `height` up its plant (or `height` up a blade), sways at the
 /// wind's time: along the wind, more with height, in waves that cross the land; and a flutter
 /// across it. A function of the wind (its time) and the place, nothing else (AC4).
-pub fn sway(wind: Wind, world: vec3, height: f32) -> vec3 {
+pub fn sway(wind: Wind, at: vec3, height: f32) -> vec3 {
+    let world = at + wind.origin
     let d = vec3(wind.dir.x, 0.0, wind.dir.y)
     let across = vec3(-wind.dir.y, 0.0, wind.dir.x)
     let x = dot(world.xz, wind.dir)

@@ -203,6 +203,7 @@ fn wrela_run_reloads_the_page_in_place() {
     let page = out.clone();
     let chrome = std::thread::spawn(move || wrela_tests::run_url_in_chrome(&url, &page, 180));
     let limit = std::time::Duration::from_secs(60);
+    wrela_tests::wait_polling(&server, std::time::Duration::from_secs(120));
     // A first edit, shown once the page runs.
     write_edit(&pkg, "main.wrela", |s| {
         s.replacen("vec3(0.25, 0.5, 0.75)", "vec3(0.3, 0.5, 0.75)", 1)
@@ -295,4 +296,40 @@ fn a_page_opened_after_hot_reloads_loads_the_newest_build() {
     let frame = std::fs::read(out.join("results/frame.rgba")).expect("frame.rgba");
     let i = ((32 * SIZE + 56) * 4) as usize;
     assert_eq!([frame[i], frame[i + 1], frame[i + 2]], [32, 96, 64], "the newest build's clear");
+}
+
+/// A page kept open through three structural hot reloads keeps running, and draws the third's
+/// clear colour. Each new build's ticker starts from the script the page's render worker came
+/// from (`/1/worker.js`), and the server keeps only two builds: a page open through three
+/// stopped, "the ticker's thread couldn't start" (playing the floor, M6). The runtime's own
+/// scripts are now served for a build that's gone.
+#[test]
+#[ignore = "long: needs Chrome and a GPU"]
+fn a_page_open_through_hot_reloads_keeps_running() {
+    let pkg = edited("reload-open-page-src", |src| src.to_string() + "\n");
+    let out = super::scratch("reload-open-page");
+    let server =
+        wrela_driver::live::serve(&pkg, &out, 0, &["main".into()], Default::default(), true)
+            .expect("serve");
+    let url = format!(
+        "http://127.0.0.1:{}/#test&frames=1500&width={SIZE}&height={SIZE}&fps=60&nohash=1",
+        server.port
+    );
+    let page = out.clone();
+    let chrome = std::thread::spawn(move || wrela_tests::run_url_in_chrome(&url, &page, 180));
+    let limit = std::time::Duration::from_secs(60);
+    wrela_tests::wait_polling(&server, std::time::Duration::from_secs(120));
+    let clears = ["tint().zyx * 0.5", "tint().yzx * 0.5", "tint().xzy * 0.5"];
+    let mut last = "tint() * 0.5";
+    for (k, clear) in clears.into_iter().enumerate() {
+        write_edit(&pkg, "main.wrela", |s| {
+            s.replace(&format!("clear: vec4({last}, 1.0)"), &format!("clear: vec4({clear}, 1.0)"))
+        });
+        last = clear;
+        wait_shown(&server, k + 1, limit);
+    }
+    chrome.join().expect("the page ran its frames");
+    let frame = std::fs::read(out.join("results/frame.rgba")).expect("frame.rgba");
+    let i = ((32 * SIZE + 56) * 4) as usize;
+    assert_eq!([frame[i], frame[i + 1], frame[i + 2]], [32, 96, 64], "the third build's clear");
 }

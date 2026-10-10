@@ -690,7 +690,8 @@ pub fn limb(
         world,
         normal: n,
         along,
-        moss: smoothstep(0.2, 0.7, n.y + 0.4 * noise::noise2(world.xz * 3.0)) * 0.6,
+        moss: smoothstep(0.2, 0.7, n.y + 0.4 * noise::noise2((world.xz + cam.keyed().xz) * 3.0)) *
+            0.6,
         keep: Flat { value: marks[i.index].x },
     }
 }
@@ -765,7 +766,10 @@ pub fn card_draw(
 /// `plant::corner_of`).
 pub fn mark_of(l: Lod, cam: Camera, inst: Instance, way: u32, at: vec2) -> vec2u {
     let keep = vec4(share(at.x, at.y, way), anchor(cam, inst.at, l.top, inst.scale))
-    vec2u(packed(keep), which_crown(inst.at) | (corner_of(inst, l.top * 0.5, cam.eye) << 8))
+    vec2u(
+        packed(keep),
+        which_crown(inst.at + cam.keyed()) | (corner_of(inst, l.top * 0.5, cam.eye) << 8),
+    )
 }
 
 impl Forest {

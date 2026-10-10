@@ -66,8 +66,9 @@ fn nothing_grows_into_the_head_room() {
 /// AC11's ground cover: over every tile the floor streams, its ground's fields worked out as the
 /// program works them out once its neighbours are in (`tile_fields`, with their trees whose
 /// crowns reach over its edge), no meadow grass or flowers grow where the history's canopy is
-/// closed (the light at the ground under `ground::CLOSED`); and the beech wood's floor is closed
-/// over most of it.
+/// closed (the light at the ground under `ground::CLOSED`), and no ground there is bare: the
+/// wood's floor's plants (ferns, bracken, herbs: `Cover::under`) grow on all of it but a path's
+/// earth, a stream's bed and rock; and the beech wood's floor is closed over most of it.
 @test
 fn no_meadow_grass_under_a_closed_canopy() {
     let lo = tiles_lo()
@@ -91,6 +92,8 @@ fn no_meadow_grass_under_a_closed_canopy() {
     var beech_closed = 0
     var beech = 0
     var beech_wood = 0
+    var covered_texels = 0
+    var bare = 0
     for r in 0..m.regions.len() {
         if m.regions[r].name == "the beech wood" {
             beech_wood = r
@@ -147,11 +150,25 @@ fn no_meadow_grass_under_a_closed_canopy() {
                         c.grass == 0.0 && flowers == 0.0,
                         f"meadow grass ({c.grass}) under a closed canopy at {p}, its light {fields.x}",
                     )
+                    let n = g.normal(p.x, p.y, 1.0)
+                    let path = fields.y > 0.5
+                    let bed = fields.z > engine::bake::STREAM_BED
+                    let rock = g.rocky(p, n) > 0.5
+                    if !path && !bed && !rock {
+                        covered_texels += 1
+                        if c.under.x < 0.12 {
+                            bare += 1
+                        }
+                    }
                 }
             }
         }
     }
     assert(closed > 0 && texels > 0, "no texel of the floor's ground")
+    print(
+        f"under a closed canopy: {covered_texels} texels the wood's plants may cover, {bare} bare",
+    )
+    assert(bare == 0, f"{bare} of {covered_texels} texels under a closed canopy are bare ground")
     let in_beech = f32(beech_closed) / f32(max(beech, 1))
     assert(in_beech > 0.5, f"the beech wood's canopy is closed over only {in_beech * 100.0}% of it")
 }

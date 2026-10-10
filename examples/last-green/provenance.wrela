@@ -392,7 +392,8 @@ pub fn click(
     let began = std::time::now()
     let c = cam.unjittered()
     let dir = c.ray(px / size * c.screen)
-    let picked = pick(tiles, c.eye, dir, height, trees::drawn_crowns)
+    // The near tiles' records are the world's: the eye there (the render origin added back).
+    let picked = pick(tiles, c.eye + c.origin, dir, height, trees::drawn_crowns)
     let ms = 1000.0 * (std::time::now() - began)
     match picked {
         Picked::Tree { tile, i, distance } => {

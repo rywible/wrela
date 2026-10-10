@@ -195,11 +195,16 @@ pub fn place(
     }
     let k = at.level
     let s = FINEST * f32(1 << k)
-    let c = vec2i(i32(at.first.x) + i32(id.x), i32(at.first.y) + i32(id.y))
-    // The blade's place: its finest cell's, jittered in it.
+    // The cell keyed to the world (the render origin in this level's cells added: a whole
+    // number of them, as the origin moves by whole tiles), so the blades stay where they are
+    // when the origin moves.
+    let keyed = at.cam.keyed().xz
+    let c = vec2i(i32(at.first.x) + i32(id.x), i32(at.first.y) + i32(id.y)) +
+        vec2i(round(keyed / s))
+    // The blade's place: its finest cell's, jittered in it, in render space.
     let f = finest_cell(c, k)
     let jitter = vec2(hash2(f.x, f.y), hash2(f.y + 31, f.x - 17))
-    let xz = (vec2(f) + jitter) * FINEST
+    let xz = (vec2(f) + jitter) * FINEST - keyed
     let d = length(xz - at.cam.eye.xz)
     // Its level places it only within its ring (the next level places it beyond).
     let inner = if k == 0 { 0.0 } else { ring(k - 1) }
@@ -230,14 +235,17 @@ pub fn place(
     let meadow = t.meadow
     let n = (f.x * 73856093) ^ (f.y * 19349663)
     let seed = u32(n)
-    if rand(seed, 3) >= cover.a {
-        return
-    }
     let y = t.height
     // It shrinks away as it's dropped (keep from 0.15 to 0), and over the last stretch of the
     // grass's reach, into the meadow's ground: nothing pops.
     let dropped = if k + 1 < LEVELS { smoothstep(0.0, 0.15, keep) } else { 1.0 }
     let shrink = dropped * (1.0 - smoothstep(REACH - 12.0, REACH, d))
+    if rand(seed, 3) >= cover.a {
+        // No grass: perhaps one of the wood's floor's own plants.
+        let p = WoodPlant { xz, y, d, seed, shrink }
+        under_plant(at, t, p, levels, texels, probes, cloud, linear, grounds, mut blades)
+        return
+    }
     let tall = (0.18 + 0.6 * meadow.x) * (0.6 + 0.8 * rand(seed, 4)) * shrink
     let width = spacing_at(d) * (0.85 + 0.4 * rand(seed, 5)) * 1.15
     let tint = rand(seed, 8)
@@ -275,6 +283,98 @@ pub fn place(
             },
         )
     }
+}
+
+/// Where a plant of the wood's floor might stand: its place, the ground's height there, its
+/// distance from the eye, its cell's seed, and how far it's shrunk away (as a blade there is).
+struct WoodPlant: Copy {
+    xz: vec2,
+    y: f32,
+    d: f32,
+    seed: u32,
+    shrink: f32,
+}
+
+/// The ground a frond of a fern or of bracken covers (m²): the wood's floor's plants' density
+/// (`Cover::under`) is fronds this far apart.
+pub const FROND_AREA: f32 = 0.18
+
+/// The grid a fern's fronds gather to its crown on (m).
+pub const FERN_CROWN: f32 = 1.1
+
+/// A blade's kind (`Blade::colour`'s fourth part): grass, a fern's frond, bracken's, a herb's
+/// leaf.
+pub const GRASS_BLADE: f32 = 0.0
+pub const FERN: f32 = 0.34
+pub const BRACKEN: f32 = 0.67
+pub const HERB: f32 = 1.0
+
+/// One of the wood's floor's plants (#54 §9: ferns, bracken and low herbs where the grass
+/// doesn't grow, as the ground's `under` says), as a blade of its own kind: kept with the chance
+/// its density over a blade's spacing here asks, its kind by the weights.
+fn under_plant(
+    at: Place,
+    t: terrain::Covering,
+    p: WoodPlant,
+    levels: Levels,
+    texels: [Texel],
+    probes: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    linear: Sampler,
+    grounds: [f32],
+    blades: mut Append<Blade>,
+) {
+    let u = t.under
+    let spacing = spacing_at(p.d)
+    if u.x <= 0.0 || rand(p.seed, 9) >= u.x * spacing * spacing / FROND_AREA {
+        return
+    }
+    let r = rand(p.seed, 10) * (u.y + u.z + u.w)
+    let kind = if r < u.y { FERN } else if r < u.y + u.z { BRACKEN } else { HERB }
+    let v = rand(p.seed, 4)
+    // Each kind's size: a fern's arching frond, bracken's taller and flatter, a herb's low leaf;
+    // never narrower than a blade's spacing here, so the far ones still cover.
+    let (tall, wide, bend) = if kind == FERN {
+        (0.45 + 0.35 * v, 0.2, 0.75 + 0.2 * rand(p.seed, 7))
+    } else if kind == BRACKEN {
+        (0.75 + 0.45 * v, 0.32, 0.5 + 0.2 * rand(p.seed, 7))
+    } else {
+        (0.12 + 0.12 * v, 0.09, 0.35 + 0.3 * rand(p.seed, 7))
+    }
+    // A fern's fronds rise from its crown and arch out from it: each frond's foot is drawn to
+    // the crown of its cell of a coarser grid (keyed to the world), facing away from it. Bracken
+    // and herbs stand where they fall.
+    var xz = p.xz
+    var y = p.y
+    var facing = TAU * rand(p.seed, 6)
+    if kind == FERN {
+        let keyed = at.cam.keyed().xz
+        let w = p.xz + keyed
+        let c = floor(w / FERN_CROWN)
+        let ci = vec2i(c)
+        let crown = (c + vec2(0.25) + 0.5 * vec2(hash2(ci.x + 3, ci.y), hash2(ci.y + 9, ci.x))) *
+            FERN_CROWN
+        let away = w - crown
+        facing = atan2(away.y, away.x)
+        xz = crown + normalize(away + vec2(1.0e-4)) * 0.06 - keyed
+        y = terrain::height_at(levels, texels, xz)
+    }
+    let root = vec3(xz.x, y + 0.05, xz.y)
+    let shade = cloud_shadow(at.clouds, cloud, linear, root)
+    let sky = sky_light(at.grid, probes, linear, grounds, at.light, root, t.normal, shade)
+    let _ = blades.push(
+        Blade {
+            root: vec3(xz.x, y - 0.02, xz.y),
+            tall: tall * p.shrink,
+            facing,
+            bend,
+            width: max(wide, spacing * 1.2) * (0.8 + 0.4 * rand(p.seed, 5)),
+            ground: std::gpu::Oct32::encode(t.normal),
+            // Its tint, and how brown (bracken past its prime, in patches).
+            colour: Unorm8x4::encode(vec4(rand(p.seed, 8), rand(p.seed, 11), 0.0, kind)),
+            sky: Unorm8x4::encode(vec4(saturate(sky * 0.5), 0.0)),
+        },
+    )
 }
 
 /// The blades' and flowers' indirect draws' arguments, from what was placed: a tier's blades
@@ -339,6 +439,21 @@ pub struct GrassLook: Copy + GpuData {
     pub tip_young: vec3 = vec3(0.12, 0.20, 0.05),
     pub tip_dry: vec3 = vec3(0.30, 0.28, 0.10),
     pub through: vec3 = vec3(0.12, 0.17, 0.03),
+    /// The wood's floor's plants: a fern's frond (deep green), bracken's (yellower, and brown
+    /// past its prime), a herb's leaf; each from a darker stalk.
+    pub fern: vec3 = vec3(0.055, 0.11, 0.025),
+    pub bracken: vec3 = vec3(0.11, 0.15, 0.035),
+    pub bracken_dry: vec3 = vec3(0.24, 0.13, 0.05),
+    pub herb: vec3 = vec3(0.075, 0.13, 0.04),
+}
+
+/// A frond's or a herb leaf's colour at `t` up it: its kind's, darker at its stalk, varied by
+/// `tint`; bracken browner where `brown` is high.
+pub fn under_colour(look: GrassLook, kind: f32, t: f32, tint: f32, brown: f32) -> vec3 {
+    let tip = if kind < 0.5 { look.fern } else if kind < 0.8 {
+        mix(look.bracken, look.bracken_dry, vec3(smoothstep(0.7, 0.95, brown)))
+    } else { look.herb }
+    mix(tip * 0.45, tip, vec3(smoothstep(0.0, 0.35, t))) * (0.8 + 0.4 * tint)
 }
 
 /// The flowers' colours, by kind (linear).
@@ -468,8 +583,11 @@ fn blade_point(b: Blade, t: f32, side: f32, wind: Wind) -> vec3 {
     let over = lean * (t * t) * b.tall
     let up = b.tall * (t - 0.35 * b.bend * t * t)
     let across = vec2(-dir.y, dir.x)
-    // Tapering to a point.
-    let w = b.width * (1.0 - t * t) * 0.5 + 0.0005
+    // Tapering to a point; a frond or a leaf widest along its middle, from a narrow stalk.
+    let frond = b.colour.decode().w > 0.1
+    let w = if frond { b.width * pow(sin(3.14159 * min(t * 1.08, 1.0)), 0.7) * 0.5 + 0.0005 } else {
+        b.width * (1.0 - t * t) * 0.5 + 0.0005
+    }
     let base = b.root + vec3(over.x + across.x * w * side, up, over.y + across.y * w * side)
     base + sway(wind, b.root, t * b.tall) * 0.6
 }
@@ -601,6 +719,17 @@ pub fn blade_shade(
     look: GrassLook,
 ) -> vec4 {
     let b = blades[v.which.value]
+    let colour = b.colour.decode()
+    let kind = colour.w
+    // A frond is cut into its leaflets: solid along its stalk, gaps between them toward its
+    // edges (a herb's leaf is whole).
+    if kind > 0.1 && kind < 0.8 {
+        let n = if kind < 0.5 { 13.0 } else { 9.0 }
+        let leaflet = 1.0 - abs(fract(v.uv.y * n) - 0.5) * 2.0
+        if abs(v.uv.x) > 0.18 + 0.82 * leaflet {
+            discard()
+        }
+    }
     let world = lt.cam.world_at(pixel.position.xy, pixel.position.z)
     let ground = normalize(b.ground.decode())
     let n = normalize(ground * 0.75 + blade_normal(b, v.uv.x) * 0.25)
@@ -608,11 +737,13 @@ pub fn blade_shade(
     let sun = sun_at(lt, world, ground, soft: 1.5)
     let ao = 0.35 + 0.65 * smoothstep(0.0, 0.8, t)
     let sky = b.sky.decode().xyz * 2.0 * ao
-    let colour = b.colour.decode()
+    let albedo = if kind > 0.1 { under_colour(look, kind, t, colour.x, colour.y) } else {
+        grass_colour(look, t, colour.x, colour.y, colour.z)
+    }
     // The light toward a blade's reflection: its root's sky light (placed with it), near enough
     // for a blade this rough.
     let lit = Lit {
-        albedo: grass_colour(look, t, colour.x, colour.y, colour.z),
+        albedo,
         n,
         sun: sun * (0.5 + 0.5 * ao),
         sky,

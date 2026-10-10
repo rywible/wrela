@@ -577,13 +577,16 @@ pub struct WaterPoint: Copy {
     pub bank: f32,
 }
 
-/// A point of the water's mesh, as it's laid (`at`: no vertex moves).
+/// A point of the water's mesh, as it's laid (`at`, in the world: no vertex moves), in render
+/// space (the render origin taken off: the floor's water lies near the world's origin, where
+/// that's exact).
 @vertex
 pub fn water_vertex(v: VertexIndex, verts: [WaterVert], tris: [u32], cam: Camera) -> WaterPoint {
     let w = verts[tris[v.index]]
+    let at = w.at - cam.origin
     WaterPoint {
-        clip: ClipPosition { position: cam.clip(w.at) },
-        world: w.at,
+        clip: ClipPosition { position: cam.clip(at) },
+        world: at,
         depth: w.depth,
         flow: w.flow,
         kind: w.kind,
@@ -658,7 +661,9 @@ pub fn water_shade(
     let flowing = w.kind > 0.5
     let falling = w.kind > 1.5
     let strength = if flowing { look.flow_ripple } else { look.ripple }
-    let slope = ripples(w.world.xz, w.flow, t) * strength * (if falling { 3.0 } else { 1.0 })
+    // The ripples, foam and streaks keyed to the world, not render space.
+    let keyed = w.world.xz + cam.keyed().xz
+    let slope = ripples(keyed, w.flow, t) * strength * (if falling { 3.0 } else { 1.0 })
     let n = normalize(vec3(-slope.x, 1.0, -slope.y))
     let v = normalize(cam.eye - w.world)
     let distance = dot(w.world - cam.eye, cam.forward)
@@ -699,15 +704,15 @@ pub fn water_shade(
     c += lt.light.sun_colour * (sun * glint * fresnel * 4.0)
     // Foam: at a stream's banks and where it runs fast, all over where it falls, and on a still
     // pool's shallows.
-    let churn = noise2(w.world.xz * 2.1 - w.flow * t * 1.5) * 0.6 +
-        noise2(w.world.xz * 5.3 - w.flow * t * 2.4) * 0.4
+    let churn = noise2(keyed * 2.1 - w.flow * t * 1.5) * 0.6 +
+        noise2(keyed * 5.3 - w.flow * t * 2.4) * 0.4
     var foam = 0.0
     if falling {
         // White water in streaks down the fall, running with it.
         let down = normalize(w.flow + vec2(1.0e-4, 0.0))
         let across = vec2(-down.y, down.x)
-        let u = dot(w.world.xz, across)
-        let a = dot(w.world.xz, down) - t * length(w.flow)
+        let u = dot(keyed, across)
+        let a = dot(keyed, down) - t * length(w.flow)
         let streak = noise2(vec2(u * 2.2, a * 0.3)) * 0.7 +
             noise2(vec2(u * 6.0, a * 0.8 + 3.0)) * 0.3
         foam = smoothstep(0.3, 0.8, streak + 0.1 * churn)

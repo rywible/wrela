@@ -356,10 +356,12 @@ pub fn dab_map(
     // spreads a pixel along it): so a dab is as wide on screen one way as the other, never a
     // streak thinner than a pixel.
     let facing = max(abs(dot(n, normalize(cam.eye - world))), 0.4)
-    let dab = dabs(world, n, footprint / facing, look.dab_px * per_out)
+    // Anchored to the world, not render space: they stay put when the render origin moves.
+    let keyed = world + cam.keyed()
+    let dab = dabs(keyed, n, footprint / facing, look.dab_px * per_out)
     // The tooth's grain, a few output pixels: no finer than two of the scene's pixels at half
     // the output's size, so the map holds it at either.
-    vec4(strength * dab, look.tooth * tooth(world, footprint * per_out * 2.0), 0.0, 1.0)
+    vec4(strength * dab, look.tooth * tooth(keyed, footprint * per_out * 2.0), 0.0, 1.0)
 }
 
 /// The output pixel, painted: the dabs and the paper's tooth (from the dab map, between its

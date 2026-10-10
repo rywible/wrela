@@ -91,6 +91,8 @@ pub struct Clouds: Copy + GpuData {
     pub phase: u32,
     pub sun: vec3,
     pub blend: f32,
+    /// How far the field has drifted, less the render origin (`view::Camera::keyed`): the
+    /// field's frame is render space plus the origin less its drift.
     pub drift: vec2,
     pub seed: u32,
 }

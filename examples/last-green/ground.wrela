@@ -222,12 +222,33 @@ impl Terrain for Ground {
         let soaked = smoothstep(0.6, 0.95, wet)
         c.albedo *= 1.0 - 0.35 * soaked
         c.deep = max(c.deep, soaked)
+        // The wood's floor's own plants where the canopy closes (#54 §9): low herbs all through
+        // it, ferns in patches in the deep shade, bracken in patches where light comes through
+        // in gaps; thinner under thorn and in the wet, none on a path. Where the meadow opens,
+        // the grass takes over.
+        let fern = smoothstep(0.45, 0.62, fbm2(xz * 0.09 + vec2(13.0, 7.0), 3)) *
+            (1.0 - smoothstep(0.2, 0.6, light))
+        let bracken = smoothstep(0.48, 0.66, fbm2(xz * 0.045 + vec2(-21.0, 4.0), 3)) *
+            smoothstep(0.12, 0.4, light)
+        let herbs = 0.3
+        let shade = 1.0 - open
+        c.under = vec4(
+            shade *
+                (0.35 + 0.65 * max(fern, bracken)) *
+                (1.0 - bare) *
+                (1.0 - 0.4 * thorn) *
+                (1.0 - 0.4 * soaked),
+            fern,
+            bracken,
+            herbs,
+        )
         // Under a stream: its bed of gravel and wet stones; no grass (the mere's bed is `cover`'s).
         let stones = noise2(xz * 1.7)
         if wet > engine::bake::STREAM_BED {
             c.albedo = mix(vec3(0.09, 0.08, 0.06), vec3(0.2, 0.18, 0.15), vec3(stones))
             c.grass = 0.0
             c.flowers = vec4(0.0)
+            c.under = vec4(0.0)
         }
         c
     }

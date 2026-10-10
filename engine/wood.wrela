@@ -26,7 +26,7 @@ use plant::{
 use shadow::{CASTER, Shadows}
 use std::gpu::{
     Atomics, DepthTexture, DrawArgs, DrawIndexedArgs, GlobalId, GpuBuffer, R32Uint, RenderPass,
-    Rgba8, Sampler, Slots, Texture, buffer, buffer_of, dispatch, draw, write,
+    Rgba8, Sampler, Slots, Texture, buffer, buffer_of, dispatch, draw, label, write,
 }
 use vegetation::{
     CARD_INDICES, CardDraw, Kind, ListDraws, SHADOW_LEAVES, WAYS, ALL, bark_shade, card, card_draw,
@@ -139,7 +139,8 @@ pub fn choose(
             marks.store(2 * to, packed(keep))
             marks.store(
                 2 * to + 1,
-                which_crown(inst.at) | (corner_of(inst, l.top * 0.5, c.cam.eye) << 8),
+                which_crown(inst.at + c.cam.keyed()) |
+                    (corner_of(inst, l.top * 0.5, c.cam.eye) << 8),
             )
         }
     }
@@ -148,6 +149,19 @@ pub fn choose(
 /// The instances and marks the choosing put in each place, gathered: place `id` gets the
 /// instance whose index is there (a place past its list's count holds an old one, which no draw
 /// reads).
+/// Every instance moved by `d` (the render origin moved by `-d`); an empty one (`scale` 0)
+/// stays.
+@compute(64)
+pub fn shift_instances(every: mut Slots<Instance>, d: vec3, n: u32, id: GlobalId) {
+    if id.x >= n {
+        return
+    }
+    let inst = every[id]
+    if inst.scale > 0.0 {
+        every[id] = Instance { at: inst.at + d, ..inst }
+    }
+}
+
 @compute(64)
 pub fn gather(
     every: [Instance],
@@ -695,6 +709,17 @@ impl Wood {
         self.slots[free] = Slot { tile: Some(t), far, count: n, kinds: per }
         self.laid = false
         true
+    }
+
+    /// Every loaded instance moved by `d`: render space moved (the render origin by `-d`, whole
+    /// tiles), so they stand where they stood in the world.
+    pub fn shift(mut self, d: vec3) {
+        if d == vec3(0.0) {
+            return
+        }
+        label("wood shift")
+        let n = self.slots.len() * SLOT
+        dispatch(shift_instances.bind(mut self.every, d, n), over: n)
     }
 
     /// Drops tile `t`'s instances (or its far layer's, `far`), if they're loaded.

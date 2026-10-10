@@ -107,6 +107,17 @@ pub fn write_edit(pkg: &Path, file: &str, edit: impl Fn(&str) -> String) -> std:
 
 /// Waits until the `wrela run` server has had `n` changes shown: the `n`th. Panics after
 /// `limit`.
+/// Waits until a page is running on the `wrela run` server: it has asked for changes. Panics
+/// after `limit`. A test edits after this, so its page sees each edit as a change, not as part of
+/// the build it loaded (Chrome opens after the machine's Chrome lock, and a build is quicker).
+pub fn wait_polling(server: &wrela_driver::live::Server, limit: std::time::Duration) {
+    let began = std::time::Instant::now();
+    while server.polls() == 0 {
+        assert!(began.elapsed() < limit, "no page asked for changes in {}s", limit.as_secs());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 pub fn wait_shown(
     server: &wrela_driver::live::Server,
     n: usize,

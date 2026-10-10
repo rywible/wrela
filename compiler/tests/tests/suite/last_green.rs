@@ -1813,3 +1813,52 @@ fn a_click_names_a_trees_kind_and_history_and_the_grounds_cover() {
         assert!(ms <= 50.0, "the click's frame took {ms:.1} ms");
     }
 }
+
+/// AC4's camera-relative rendering: the floor drawn from one camera (held in the world, by the
+/// mere looking at the ring: trees, grass, stones, water, the ground), once with the render
+/// origin at the world's and once six tiles east and twelve north of it, the scene moved in
+/// render space by whole tiles, gives the same frame: a mean within 0.5/255, and no more than
+/// 0.5% of the pixels off by more than 8/255 (edges, where a position rounds the other way by a
+/// tenth of a millimetre). Both runs draw the same frames at the same times.
+#[test]
+#[ignore = "long: bakes the floor, needs a GPU"]
+fn a_scene_moved_by_whole_tiles_draws_the_same_frame() {
+    let eye_at = |f: &mut Floor| {
+        let eye = f.eye([232.0, -452.0]);
+        let at = [40.0, f.ground([40.0, -455.0]) + 1.5, -455.0];
+        (eye, at)
+    };
+    let out = scratch("last-green/origin");
+    let mut a = Floor::load_sized("last-green-origin-a", (480, 270));
+    let (eye, at) = eye_at(&mut a);
+    a.look(eye, at, 180);
+    let frames = a.frame;
+    let first = a.host.read_screen().expect("the screen");
+    let cam_a = a.camera();
+    a.save(&out.join("origin-0.png"));
+    drop(a);
+    let mut b = Floor::load_sized("last-green-origin-b", (480, 270));
+    b.call("test_origin", &[wrela_host::Value::I32(6), wrela_host::Value::I32(-12)]);
+    b.hold(eye, at);
+    b.steps(frames);
+    assert!(b.call("test_settled", &[])[0] > 0.5, "the second run settled by frame {frames}");
+    let second = b.host.read_screen().expect("the screen");
+    let cam_b = b.camera();
+    b.save(&out.join("origin-6-12.png"));
+    let d = wrela_host::image::compare(&first, &second).expect("the same size");
+    let off = first
+        .chunks_exact(4)
+        .zip(second.chunks_exact(4))
+        .filter(|(p, q)| (0..3).any(|c| p[c].abs_diff(q[c]) > 8))
+        .count();
+    let share = 100.0 * off as f64 / (first.len() / 4) as f64;
+    eprintln!(
+        "the same camera, the origin moved by whole tiles: mean {:.3}/255, {share:.2}% of pixels off by more than 8/255, most {}; the eyes {:?} and {:?}",
+        d.mean, d.max, cam_a.eye, cam_b.eye
+    );
+    for k in 0..3 {
+        assert!((cam_a.eye[k] - cam_b.eye[k]).abs() < 1.0e-3, "the camera's eye in the world");
+    }
+    assert!(d.mean <= 0.5, "the frames differ by a mean of {}/255", d.mean);
+    assert!(share <= 0.5, "{share:.2}% of the pixels differ by more than 8/255");
+}
