@@ -35,6 +35,7 @@ fn first_record(log: &wrela_host::TickLog) -> usize {
 }
 
 #[test]
+#[ignore = "long: 14 s alone"]
 fn a_keyed_run_replays_and_a_changed_record_fails_at_its_tick() {
     let built = CpuBuild::load(built("sketches/03-keys")).expect("load");
     let script = wrela_host::parse_script(&script(TICKS)).expect("a script");

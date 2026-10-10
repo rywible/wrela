@@ -1798,6 +1798,7 @@ fn the_studio_server_answers_only_this_machine() {
 /// AC10: nothing of the studio is in a game's build: the wolf's (its own program, which the
 /// lens is built around) holds none of the lens's code, kernels or strings.
 #[test]
+#[ignore = "long: 9 s alone"]
 fn nothing_of_the_studio_is_in_a_games_build() {
     let dir = super::scratch("studio-not-in-game");
     wrela_tests::must_build(&repo_root().join("examples/wolf"), &dir);
@@ -2069,7 +2070,7 @@ pub fn front() -> Vec<vec2> {
 /// fits a literal to it; `zoom` frames a close-up and the colour mode draws (clay, for a
 /// subject without channels).
 #[test]
-#[ignore = "needs a GPU"]
+#[ignore = "long: needs a GPU (11 s alone)"]
 fn specs_blueprints_and_close_ups_answer_on_a_ball() {
     let ball = Subject::made("ball", &BALL);
     let mut lens = ball.lens();

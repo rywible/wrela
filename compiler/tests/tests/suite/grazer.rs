@@ -98,7 +98,7 @@ fn run_on(
 }
 
 #[test]
-#[ignore = "needs a GPU"]
+#[ignore = "long: needs a GPU (8 s alone)"]
 fn the_compiled_grazer_matches_the_hand_written_one() {
     let c = compiled();
 
@@ -224,7 +224,7 @@ fn the_compiled_grazer_is_as_fast_as_the_hand_written_one() {
 /// each of the herd's 40 grazers) that the derived interval keeps, against the spike's
 /// hand-written Lipschitz bound, computed here on the same grid.
 #[test]
-#[ignore = "needs a GPU"]
+#[ignore = "long: needs a GPU (11 s alone)"]
 fn block_culling_on_the_spikes_grid() {
     let mut host = load();
     let mut kept = [0u64; 2];

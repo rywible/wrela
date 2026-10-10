@@ -216,6 +216,7 @@ fn moves_on_many_paths_check_quickly() {
 }
 
 #[test]
+#[ignore = "long: 7 s alone"]
 fn many_temporaries_given_places_lower_quickly() {
     // Each call borrows a temporary vector, which so gets a local, stored where the vector is
     // made: that once searched the block from its start each time.
@@ -234,6 +235,7 @@ fn many_temporaries_given_places_lower_quickly() {
 }
 
 #[test]
+#[ignore = "long: 12 s alone"]
 fn matches_hard_to_check_are_checked_quickly() {
     // `n` bools, an arm with each one `true` and one with it `false`: the first two cover
     // everything, and the checks of the rest once took time exponential in `n`.

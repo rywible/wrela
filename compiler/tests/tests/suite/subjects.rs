@@ -94,7 +94,7 @@ fn matches_its_original(name: &str) {
 }
 
 #[test]
-#[ignore = "needs a GPU"]
+#[ignore = "long: needs a GPU (11 s alone)"]
 fn the_wolf_matches_round_1s() {
     matches_its_original("wolf");
 }
@@ -317,11 +317,13 @@ fn gradients_agree(name: &str) {
 }
 
 #[test]
+#[ignore = "long: 8 s alone"]
 fn the_wolfs_literals_are_lifted_or_have_reasons() {
     lifts_every_literal("wolf");
 }
 
 #[test]
+#[ignore = "long: 10 s alone"]
 fn the_grazers_literals_are_lifted_or_have_reasons() {
     lifts_every_literal("grazer");
 }

@@ -161,24 +161,27 @@ import json, os, re, subprocess, sys, time
 logs, native_cache, *args = sys.argv[1:]
 native_cache = os.path.abspath(native_cache)
 runs = []
+programs = []
 for line in open(f"{logs}/tests.json"):
     m = json.loads(line)
     if m.get("reason") == "compiler-artifact" and m.get("executable") and m["profile"]["test"]:
-        # As cargo runs a test program: in its package's directory.
-        pkg = os.path.dirname(m["manifest_path"])
-        # Compiled code is kept across runs (wrela_host's cache): a test's build is made afresh
-        # each run, and its WASM is mostly the same.
-        env = {**os.environ, "CARGO_MANIFEST_DIR": pkg, "WRELA_NATIVE_CACHE": native_cache,
-               "WRELA_GPU_SHARED": "4", "WRELA_GPU_WAITS": f"{logs}/gpu-waits"}
-        out = open(f"{logs}/run-{len(runs)}", "w+")
-        name = f"{m['target']['name']} ({m['target']['kind'][0]})"
-        # The end-to-end suite is the longest program, so the gate's time: the others yield to
-        # it (with all at one priority, it took half as long again as alone).
-        first = pkg.endswith("compiler/tests")
-        proc = subprocess.Popen([m["executable"], "-q", *args], cwd=pkg, env=env,
-                                stdout=out, stderr=subprocess.STDOUT,
-                                preexec_fn=None if first else (lambda: os.nice(10)))
-        runs.append((name, proc, out, time.monotonic()))
+        programs.append(m)
+# The end-to-end suite is the longest program, so the gate's time: it starts first, and the
+# others yield to it (`nice`: with all at one priority, it took half as long again as alone).
+programs.sort(key=lambda m: not os.path.dirname(m["manifest_path"]).endswith("compiler/tests"))
+for m in programs:
+    # As cargo runs a test program: in its package's directory.
+    pkg = os.path.dirname(m["manifest_path"])
+    # Compiled code is kept across runs (wrela_host's cache): a test's build is made afresh
+    # each run, and its WASM is mostly the same.
+    env = {**os.environ, "CARGO_MANIFEST_DIR": pkg, "WRELA_NATIVE_CACHE": native_cache,
+           "WRELA_GPU_SHARED": "4", "WRELA_GPU_WAITS": f"{logs}/gpu-waits"}
+    out = open(f"{logs}/run-{len(runs)}", "w+")
+    name = f"{m['target']['name']} ({m['target']['kind'][0]})"
+    first = pkg.endswith("compiler/tests")
+    proc = subprocess.Popen([*([] if first else ["nice", "-n", "10"]), m["executable"], "-q", *args],
+                            cwd=pkg, env=env, stdout=out, stderr=subprocess.STDOUT)
+    runs.append((name, proc, out, time.monotonic()))
 failed, ran = False, 0
 waiting = list(runs)
 while waiting:
@@ -239,18 +242,23 @@ step "wrela fmt --check"
 
 step "tests, on the CPU and the GPU, but the long ones and the measurements, every test program at once; beside them, the doc tests and the WGSL size budgets (every example's, sketch's and lens's pipelines)"
 tests_started=$SECONDS
+ps -A -o pid=,ppid=,time= > "$logs/ps-before"
 side doc cargo test -q --release --workspace --doc
 side wgsl python3 tools/wgsl_budgets.py "$wrela"
 tests=0
 run_tests --include-ignored "${skips[@]}" || tests=1
 side_results
+ps -A -o pid=,ppid=,time= > "$logs/ps-after"
 [ "$tests" = 0 ] || exit 1
 grep -h "pipelines in" "$logs/wgsl" || true
 took=$((SECONDS - tests_started))
 echo "  the tests took ${took}s; built and tested in $((SECONDS - started))s"
 # The budget that keeps the gate quick: a test that takes seconds belongs in the long checks.
-# While another process held the GPU alone (a measurement, a test run outside the checks), the
-# tests waited for it: they're over budget only if they are without their longest wait.
+# It's an idle machine's. While another process held the GPU alone (a measurement, a test run
+# outside the checks), the tests waited for it: they're over budget only if they are without
+# their longest wait. And the cores other processes kept busy meanwhile (another session's
+# checks, Spotlight indexing what the builds wrote: 2.5 of 10 cores on 2026-10-10) weren't the
+# tests': the budget grows by the share they took.
 if [ "$took" -gt 60 ]; then
   waited=0
   if [ -s "$logs/gpu-waits" ]; then
@@ -258,11 +266,39 @@ if [ "$took" -gt 60 ]; then
     echo "  the tests waited for the GPU (at most ${waited}s), held alone by:"
     cut -d' ' -f2- "$logs/gpu-waits" | sort -u | sed 's/^/    /'
   fi
-  if [ $((took - waited)) -gt 60 ]; then
-    echo "the tests took ${took}s, over their 60 s budget: tag the slow ones \`#[ignore = \"long: ...\"]\`" >&2
+  budget=$(python3 - "$logs" "$$" "$took" <<'PY'
+import os, sys
+logs, me, took = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+def read(name):
+    ps = {}
+    for line in open(f"{logs}/{name}"):
+        pid, ppid, t = line.split()
+        parts = [float(x) for x in t.split(":")]
+        secs = sum(v * 60 ** (len(parts) - 1 - i) for i, v in enumerate(parts))
+        ps[int(pid)] = (int(ppid), secs)
+    return ps
+before, after = read("ps-before"), read("ps-after")
+def ours(pid):
+    while pid > 1:
+        if pid == me:
+            return True
+        pid = after.get(pid, before.get(pid, (1, 0)))[0]
+    return False
+# The CPU each process outside the checks used while they ran (one that started or ended
+# meanwhile isn't counted: the share is a lower bound).
+other = sum(after[p][1] - before[p][1] for p in after if p in before and not ours(p))
+cores = os.cpu_count()
+busy = min(other / max(took, 1), cores - 1)
+print(f"{busy:.1f} {60 * cores / (cores - busy):.0f}")
+PY
+)
+  busy=${budget% *}; budget=${budget#* }
+  echo "  other processes kept ${busy} of the machine's cores busy meanwhile: the budget is ${budget}s"
+  if [ $((took - waited)) -gt "$budget" ]; then
+    echo "the tests took ${took}s, over their budget (${budget}s): tag the slow ones \`#[ignore = \"long: ...\"]\`" >&2
     exit 1
   fi
-  echo "  over the 60 s budget by the wait alone: not a failure"
+  echo "  within the budget for the cores the tests had: not a failure"
 fi
 
 if [ "$long" = 1 ]; then

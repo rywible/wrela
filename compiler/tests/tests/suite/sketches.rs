@@ -25,6 +25,7 @@ fn one(host: &mut CpuHost, name: &str, args: &[Value]) -> Vec<Value> {
 /// each frame, and their hooves rung on the audio thread. The world's hash is the same on two
 /// runs, and the voice sounds.
 #[test]
+#[ignore = "long: 7 s alone"]
 fn sketch_01s_herd_walks_and_rings() {
     let run = || {
         let mut host = cpu("sketches/01-creature");

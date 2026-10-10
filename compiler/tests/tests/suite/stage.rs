@@ -13,6 +13,7 @@ const TOLERANCE: f32 = 1e-5;
 
 /// On the CPU, each tape is within 1e-5 of its compiled field at 10⁶ points in [-2, 2]³.
 #[test]
+#[ignore = "long: 12 s alone"]
 fn tapes_match_their_compiled_fields_on_the_cpu() {
     let dir = built("fields");
     let mut host = CpuBuild::load(&dir).expect("load").start_with(1).expect("start");
