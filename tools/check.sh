@@ -31,6 +31,8 @@
 #                           as last built (tools/hooks.py runs it before the gate).
 #
 # Needs: the Rust toolchain in rust-toolchain.toml, bun, python3, a GPU; Chrome stable for --long.
+# A cloud machine has them from tools/cloud.sh (the GPU is the CPU's Vulkan, and the gate takes
+# about 20 minutes there).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -295,10 +297,17 @@ PY
   busy=${budget% *}; budget=${budget#* }
   echo "  other processes kept ${busy} of the machine's cores busy meanwhile: the budget is ${budget}s"
   if [ $((took - waited)) -gt "$budget" ]; then
-    echo "the tests took ${took}s, over their budget (${budget}s): tag the slow ones \`#[ignore = \"long: ...\"]\`" >&2
-    exit 1
+    # The budget is a GPU's: on the CPU's Vulkan (a cloud machine, tools/cloud.sh), the GPU
+    # tests take many times as long. It's reported there, not gated.
+    if [ -n "${WRELA_SOFTWARE_GPU:-}" ]; then
+      echo "  over the budget (${budget}s), on a software GPU (WRELA_SOFTWARE_GPU): reported, not gated"
+    else
+      echo "the tests took ${took}s, over their budget (${budget}s): tag the slow ones \`#[ignore = \"long: ...\"]\`" >&2
+      exit 1
+    fi
+  else
+    echo "  within the budget for the cores the tests had: not a failure"
   fi
-  echo "  within the budget for the cores the tests had: not a failure"
 fi
 
 if [ "$long" = 1 ]; then

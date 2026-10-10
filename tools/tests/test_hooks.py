@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
@@ -19,10 +20,13 @@ sys.path.insert(0, TOOLS)
 import hooks  # noqa: E402
 
 
-def run(hook, event):
-    """Runs a hook as Claude Code does: the event's JSON on stdin."""
+def run(hook, event, env=None):
+    """Runs a hook as Claude Code does: the event's JSON on stdin; on a machine of one's own (not
+    a cloud machine) unless `env` says otherwise."""
+    base = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CODE_REMOTE", "CLAUDE_ENV_FILE")}
     return subprocess.run([sys.executable, os.path.join(TOOLS, "hooks.py"), hook],
-                          input=json.dumps(event), capture_output=True, text=True, timeout=60)
+                          input=json.dumps(event), capture_output=True, text=True, timeout=60,
+                          env={**base, **(env or {})})
 
 
 class Checkout:
@@ -188,6 +192,68 @@ class SessionTest(Checkout, unittest.TestCase):
         self.assertIn(head, out)
         self.assertNotIn("## Decisions", out)
         self.assertTrue(out.endswith("(The rest is in M7-TASKS.md.)\n"))
+
+
+class CloudTest(Checkout, unittest.TestCase):
+    """A session on a cloud machine, with a stand-in for tools/cloud.sh that notes each run."""
+
+    def setUp(self):
+        super().setUp()
+        self.runs = os.path.join(self.root, "runs")
+        self.env_file = os.path.join(self.root, "env")
+        self.write("tools/cloud.sh", f"""#!/bin/sh
+echo "$1" >> {self.runs}
+case "$1" in
+  --env) echo WRELA_SOFTWARE_GPU=1; echo "WRELA_CHROME_ARGS=--a --b" ;;
+  --check) [ -e {self.root}/provisioned ] ;;
+esac
+""", 0o755)
+
+    def session(self, source):
+        out = run("session", {"cwd": self.root, "source": source},
+                  {"CLAUDE_CODE_REMOTE": "true", "CLAUDE_ENV_FILE": self.env_file})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout
+
+    def ran(self, warm):
+        """The stand-in's runs, once `--warm` (which runs in the background) has, if `warm`."""
+        for _ in range(100):
+            with open(self.runs) as f:
+                lines = f.read().split()
+            if not warm or "--warm" in lines:
+                return lines
+            time.sleep(0.05)
+        return lines
+
+    def test_a_new_session_is_told_and_its_builds_start(self):
+        open(os.path.join(self.root, "provisioned"), "w").close()
+        out = self.session("startup")
+        self.assertIn("Its GPU is the CPU", out)
+        self.assertIn("building in the background", out)
+        self.assertNotIn("provisioned now", out)
+        self.assertEqual(sorted(self.ran(True)), ["--check", "--env", "--warm"])
+        with open(self.env_file) as f:
+            self.assertEqual(f.read(), "export WRELA_SOFTWARE_GPU=1\nexport WRELA_CHROME_ARGS='--a --b'\n")
+
+    def test_a_machine_not_provisioned_is_provisioned_in_the_background(self):
+        for source in ("startup", "resume"):
+            if os.path.exists(self.runs):
+                os.remove(self.runs)
+            out = self.session(source)
+            self.assertIn("run `tools/cloud.sh` before anything that builds or renders", out)
+            self.assertIn("--warm", self.ran(True))
+
+    def test_a_resumed_session_on_a_provisioned_machine_builds_nothing(self):
+        open(os.path.join(self.root, "provisioned"), "w").close()
+        out = self.session("resume")
+        self.assertIn("Its GPU is the CPU", out)
+        self.assertNotIn("background", out)
+        self.assertEqual(self.ran(False), ["--env", "--check"])
+
+    def test_a_machine_of_ones_own_is_left_alone(self):
+        out = run("session", {"cwd": self.root, "source": "startup"})
+        self.assertEqual((out.returncode, out.stdout), (0, ""))
+        self.assertFalse(os.path.exists(self.runs))
 
 
 class MainTest(unittest.TestCase):
