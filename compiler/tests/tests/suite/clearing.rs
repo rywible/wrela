@@ -443,6 +443,23 @@ fn ps_path(entry: &str) -> String {
     format!("engine::{module}::{entry}")
 }
 
+/// AC5: a crown's three levels light their leaves alike, so they match where they meet (as
+/// `a_crown_matches_where_its_levels_meet` measures): the cards', the impostors' and the
+/// volumes' shading each light them by one function, `impostor::leaf_light`, with its gloss
+/// as rough as a leaf's size on the screen makes it (`impostor::leaf_rough`). No level gains or
+/// loses the gloss alone.
+#[test]
+fn a_crowns_levels_light_their_leaves_by_one_light_with_gloss() {
+    for f in ["leaf_shade", "far_shade", "volume_shade"] {
+        let calls = callees(&ps_path(f));
+        for want in
+            ["engine::impostor::leaf_light", "engine::impostor::leaf_rough", "engine::light::gloss"]
+        {
+            assert!(calls.contains(want), "{f} doesn't call {want}");
+        }
+    }
+}
+
 /// AC6: the sky's pass reads the clouds' dome and marches nothing (its WGSL, with the functions
 /// it calls, has no loop), where the dome's kernel marches.
 #[test]
@@ -1924,6 +1941,77 @@ fn the_look_doesnt_flicker() {
         look_share <= real_share + 0.005,
         "{look_share} of the look's pixels over 8/255, {real_share} of real's"
     );
+}
+
+/// The leaves facing the tree alone (`face_tree`) from each of `distances`, the wind blowing or
+/// still: temporal AA's output (`real`: plain rendering, at the output's size, with no history
+/// and no jitter), at 8 frames 7 apart after 64 to settle, and their tags.
+fn swaying(real: bool, wind: bool, distances: &[f32]) -> Vec<Vec<(Vec<u8>, Vec<f32>)>> {
+    let mut c = Clearing::load(if real { "clearing-sway-real" } else { "clearing-sway" });
+    let (dir, _) = built("clearing-sway-cpu");
+    let mut cpu = wrela_host::CpuHost::load(&dir).expect("load on the CPU");
+    c.until_ready(0);
+    c.call("test_scale", &[Value::I32(if real { 1 } else { 2 })]);
+    c.view(VIEW_TEMPORAL);
+    c.off(off::CREATURE | if wind { 0 } else { off::WIND } | if real { off::HISTORY } else { 0 });
+    let mut out = Vec::new();
+    for &d in distances {
+        face_tree(&mut c, &mut cpu, d);
+        c.steps(64);
+        let mut frames = Vec::new();
+        for _ in 0..8 {
+            c.steps(7);
+            let tags = c.tags();
+            frames.push((c.screen(), tags));
+        }
+        out.push(frames);
+    }
+    out
+}
+
+/// What the wind costs temporal AA on the leaves: its output against plain rendering at the
+/// same frames, over the pixels both show leaves, the wind blowing and still, the camera held
+/// (reported, not gated). The still wind's difference is temporal AA's own (its edges, the
+/// upscaling); what the wind adds is the history lagging the leaves it reprojects as if they
+/// stood still.
+#[test]
+#[ignore = "measure: reported, not gated: the swaying leaves' detail; needs a GPU"]
+fn what_the_wind_costs_the_leaves() {
+    let distances = [8.0f32, 14.0, 24.0];
+    for wind in [false, true] {
+        let taa = swaying(false, wind, &distances);
+        let real = swaying(true, wind, &distances);
+        for (k, d) in distances.iter().enumerate() {
+            let (mut sum, mut over, mut n) = (0.0, 0.0, 0usize);
+            for ((a, ta), (b, tb)) in taa[k].iter().zip(&real[k]) {
+                let leaves =
+                    (0..ta.len()).filter(|&i| class(ta[i]) == LEAVES && class(tb[i]) == LEAVES);
+                let (m, o, count) = image_difference_over(a, b, leaves);
+                sum += m * count as f64;
+                over += o * count as f64;
+                n += count;
+            }
+            let nf = n.max(1) as f64;
+            println!(
+                "wind {}: {d} m: temporal AA against plain over {} leaf pixels a frame: mean {:.3}/255, {:.2}% over 8/255",
+                if wind { "blowing" } else { "still" },
+                n / 8,
+                sum / nf,
+                100.0 * over / nf
+            );
+            let dir = repo_root().join("target/tmp");
+            let name = format!("sway-{}-{d}", if wind { "wind" } else { "still" });
+            wrela_host::image::write_png(&dir.join(format!("{name}-taa.png")), W, H, &taa[k][7].0)
+                .expect("write");
+            wrela_host::image::write_png(
+                &dir.join(format!("{name}-real.png")),
+                W,
+                H,
+                &real[k][7].0,
+            )
+            .expect("write");
+        }
+    }
 }
 
 /// AC7's motion: the creature's pixels are reprojected by its motion target, the rest by depth

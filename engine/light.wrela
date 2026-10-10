@@ -110,12 +110,17 @@ pub fn gloss_occlusion(ao: f32, nv: f32, rough: f32) -> f32 {
 /// and bounce from the probes, the light through thin things, and its gloss (`gloss`). Before
 /// the haze.
 pub fn world(light: Light, s: Lit, world: vec3, eye: vec3) -> vec3 {
+    matte(light, s, world, eye) + gloss(light, s, normalize(eye - world))
+}
+
+/// `world`'s light without its gloss: what a matte surface shows.
+pub fn matte(light: Light, s: Lit, world: vec3, eye: vec3) -> vec3 {
     let l = light.sun
     let v = normalize(eye - world)
     let ndl = dot(s.n, l)
     let wrap = max((ndl + 0.15) / 1.15, 0.0)
     let through = s.through * light.sun_colour * (s.sun * backlit(v, l))
-    s.albedo * (light.sun_colour * (wrap * s.sun) + s.sky) + through + gloss(light, s, v)
+    s.albedo * (light.sun_colour * (wrap * s.sun) + s.sky) + through
 }
 
 /// The light a surface reflects as a glossy one does, seen along `v` (toward the eye): the sun's
