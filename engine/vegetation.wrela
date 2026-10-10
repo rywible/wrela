@@ -612,10 +612,8 @@ fn leaf_cover(m: f32) -> f32 {
 
 /// A leaf's pixel, where the prepass left its depth: its leaf's own tilt off the crown's normal,
 /// lit by the sun through its shadows and the crown's depth, the sky light (the probes, darkened
-/// inside the crown) and the light through it; through the haze. No gloss (`light::gloss`): a
-/// crown's level of detail changes it (each leaf's own normal on cards, its texels' normals
-/// blended on an impostor, the crown's on a volume), and the levels differed where they meet by
-/// up to 5.7/255 with it (bound 4); an impostor would need the crown's normal too.
+/// inside the crown) and the light through it, and its gloss (`impostor::leaf_light`, as its
+/// impostor and volume have them); through the haze.
 @fragment
 pub fn leaf_shade(
     l: LeafVertex,
@@ -640,6 +638,7 @@ pub fn leaf_shade(
         depth: card.depth * inst.scale,
         albedo: tinted(leaf_age(leaves, crown_n.y, aged), inst.tint + card_tint(card)),
         through: leaves.through,
+        leaf: leaves.leaf_width() * inst.scale,
     )
     vec4(c, view::LEAVES + f32(l.instance.value >> 24))
 }
@@ -726,7 +725,7 @@ pub fn bark_shade(
     let ridge = ridges.sample_level(rs, vec2(b.along.x, b.along.y / plant::RIDGES_ALONG)).r
     let albedo = mix(bark.dark, bark.light, vec3(ridge))
     let a = mix(albedo, bark.moss, vec3(b.moss))
-    // No gloss, as the leaves have none (`leaf_shade`): an impostor bakes the limbs with them.
+    // No gloss: bark is rough, and its impostor lights it as its leaves (`leaf_light`).
     let (sun, sky) = sun_and_sky(lt, b.world, n, sky_n: n, soft: 1.5)
     let lit = Lit { albedo: a, n, sun, sky, through: vec3(0.0) }
     let c = shown(lt, lit, b.world)

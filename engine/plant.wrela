@@ -40,6 +40,13 @@ pub struct Leaves: Copy + GpuData {
     pub per_card: u32 = 6,
 }
 
+impl Leaves {
+    /// About how wide one of its leaves is (m): a card's width over its leaves along a side.
+    pub fn leaf_width(self) -> f32 {
+        self.size / sqrt(f32(self.per_card))
+    }
+}
+
 /// A plant's bark: its dark and light tones, and its moss, linear.
 pub struct Bark: Copy + GpuData {
     pub dark: vec3 = vec3(0.16, 0.12, 0.09),

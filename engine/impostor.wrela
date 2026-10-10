@@ -10,9 +10,9 @@
 // - A volume is the kind's crown as densities on a small grid, from its field; a farther
 //   instance is a quad that marches it.
 
-use light::{Lit}
+use light::{Lit, gloss, gloss_occlusion, matte}
 use lod::{draw_packed, keeps_packed}
-use lit::{Lighting, shown, sun_and_sky}
+use lit::{Lighting, sun_sky_and_gloss, through_air}
 use noise::{cell_size, hash2, hash2u, hashed_threshold_of, surface_draw}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_VERTICES, Leaves, Plant, Wind, card_tint,
@@ -39,11 +39,24 @@ pub fn which_crown(at: vec3) -> u32 {
     u32(hash2(i32(at.x * 7.0), i32(at.z * 7.0)) * 60.0)
 }
 
+/// A leaf's roughness, where a leaf covers several pixels: a little waxy.
+pub const LEAF_ROUGH: f32 = 0.6
+
+/// A leaf's roughness where it's `px` of the scene's pixels wide: `LEAF_ROUGH` down to 8, then
+/// rougher, to the roughest (1) at 2 and under. A pixel then holds several leaves at several angles,
+/// and their glints merge into a broad sheen; each level of a crown holds them in different
+/// places (its own leaves on cards, its views' on an impostor, drawn on a volume), and where
+/// they glinted apart the levels differed by up to 5.1/255 where they meet (bound 4).
+pub fn leaf_rough(px: f32) -> f32 {
+    mix(LEAF_ROUGH, 1.0, 1.0 - smoothstep(2.0, 8.0, px))
+}
+
 /// A leaf's light at `at`, the same for its cards (`vegetation::leaf_shade`), its impostor and
 /// its volume: its normal `n`, the sky light for a surface facing `sky_n` (its crown's normal,
 /// where that's known), and `depth` metres inside its crown, which darkens the sun, the sky
-/// light and the light through it (`through`, its leaves'); through the haze. No gloss
-/// (`vegetation::leaf_shade` says why).
+/// light and the light through it (`through`, its leaves'); through the haze. Its gloss is its
+/// side's that faces the eye (a leaf has two), as rough as a leaf `leaf` metres wide is there
+/// (`leaf_rough`).
 pub fn leaf_light(
     lt: Lighting,
     at: vec3,
@@ -52,17 +65,29 @@ pub fn leaf_light(
     depth: f32,
     albedo: vec3,
     through: vec3,
+    leaf: f32,
 ) -> vec3 {
     let ao = exp(-depth / 1.6)
-    let (sun, sky) = sun_and_sky(lt, at, n, sky_n, soft: 1.5)
+    let v = normalize(lt.cam.eye - at)
+    let facing = if dot(n, v) < 0.0 { -n } else { n }
+    let (sun, sky, reflected) = sun_sky_and_gloss(lt, at, n, sky_n, facing, soft: 1.5)
+    let inside = 0.25 + 0.75 * ao
     let lit = Lit {
         albedo,
         n,
         sun: sun * (0.35 + 0.65 * ao),
-        sky: sky * (0.25 + 0.75 * ao),
+        sky: sky * inside,
         through: through * (0.4 + 0.6 * ao),
     }
-    shown(lt, lit, at)
+    let rough = leaf_rough(leaf / lt.cam.footprint(max(dot(at - lt.cam.eye, lt.cam.forward), 0.1)))
+    let glossy = Lit {
+        n: facing,
+        rough,
+        glint: 1.0,
+        reflected: reflected * inside * gloss_occlusion(inside, dot(facing, v), rough),
+        ..lit,
+    }
+    through_air(lt, matte(lt.light, lit, at, lt.cam.eye) + gloss(lt.light, glossy, v), at)
 }
 
 /// The direction a hemi-octahedral grid's point `g` (each in [0, 1]) looks from (unit, y ≥ 0).
@@ -723,6 +748,7 @@ pub fn far_shade(
         depth: leaf.depth * f.yaw_scale.value.y,
         albedo: tinted(leaf.albedo, f.tint),
         through: b.leaves.through,
+        leaf: b.leaves.leaf_width() * f.yaw_scale.value.y,
     )
     vec4(out, LEAVES + f32(which_crown(f.centre)))
 }
@@ -954,6 +980,7 @@ pub fn volume_shade(
         depth: met.depth * f.yaw_scale.value.y,
         albedo: tinted(leaf_age(b.leaves, crown_n.y, aged), f.tint),
         through: b.leaves.through,
+        leaf: b.leaves.leaf_width() * f.yaw_scale.value.y,
     )
     vec4(out, LEAVES + f32(which_crown(f.centre)))
 }

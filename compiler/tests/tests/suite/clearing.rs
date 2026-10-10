@@ -513,6 +513,23 @@ fn ps_path(entry: &str) -> String {
     format!("engine::{module}::{entry}")
 }
 
+/// AC5: a crown's three levels light their leaves alike, so they match where they meet (as
+/// `a_crown_matches_where_its_levels_meet` measures): the cards', the impostors' and the
+/// volumes' shading each light them by one function, `impostor::leaf_light`, with its gloss
+/// as rough as a leaf's size on the screen makes it (`impostor::leaf_rough`). No level gains or
+/// loses the gloss alone.
+#[test]
+fn a_crowns_levels_light_their_leaves_by_one_light_with_gloss() {
+    for f in ["leaf_shade", "far_shade", "volume_shade"] {
+        let calls = callees(&ps_path(f));
+        for want in
+            ["engine::impostor::leaf_light", "engine::impostor::leaf_rough", "engine::light::gloss"]
+        {
+            assert!(calls.contains(want), "{f} doesn't call {want}");
+        }
+    }
+}
+
 /// AC6: the sky's pass reads the clouds' dome and marches nothing (its WGSL, with the functions
 /// it calls, has no loop), where the dome's kernel marches.
 #[test]
