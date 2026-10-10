@@ -1,0 +1,801 @@
+// The map lens (#55 AC13, #54 §4): a floor's map over its ground, its water and the interest
+// check on its preview. A click names the line of source a site, a route's point, an opening or
+// a relation's viewpoint comes from; a drag moves it there (the literals that place it set, as
+// a lifted build sets them) and the preview's history and its check run again; `write` writes
+// the moved literals back to the source through `wrela edit`.
+//
+// Each action is an export and a command, and answers with one line of JSON (`std::io::print`),
+// as the field lens's do (M3's rule): an agent calls them headless, a person clicks, drags and
+// types. What the lens needs of the floor comes as functions (the program `wrela studio`
+// writes round it passes them): the map, the ground's height, and the preview.
+
+use engine::interest::{FAINT, Preview, views_grid}
+use engine::place::{Map, Relation}
+use std::collections::Vec
+use std::gpu::{Rgba8, Texture, begin_screen_pass, draw, texture}
+use std::input::{Button, Event, Key, events}
+use std::io::print
+use std::lift::{Literal, file_name, file_text, gradient, reads}
+use std::par::Task
+use std::string::String
+use std::time::now
+use studio::json::{List, list, obj}
+use studio::view::{BACKGROUND, cover_area, show_canvas}
+use ui::draw::{Rect, Renderer}
+use ui::text::{Face, Fonts}
+use ui::widgets::Ui
+
+/// What the lens draws (`show`'s bits): the ground (its relief, the light at it, the trails),
+/// the water, the map's sites, routes, openings and relations, and where the check finds
+/// nothing that draws (dead) and how strongly the rest draws.
+pub const GROUND: u32 = 1
+pub const WATER: u32 = 2
+pub const MAP: u32 = 4
+pub const CHECK: u32 = 8
+pub const ALL: u32 = 15
+
+/// Something on the map a click names and a drag moves: a site, a route's point, an opening, or
+/// a relation's viewpoint.
+pub enum Item: Copy + Eq {
+    Site { i: u32 },
+    Point { route: u32, i: u32 },
+    Opening { i: u32 },
+    View { relation: u32 },
+}
+
+/// The map lens's state.
+pub struct MapLens {
+    pub width: u32,
+    pub height: u32,
+    /// What the screen shows: its middle (x, z) and half the screen's width across (m).
+    pub view: vec3,
+    pub layers: u32,
+    /// The preview, and the one on its way, with when it began (s).
+    pub preview: Option<Preview>,
+    pub job: Option<Task<Preview>>,
+    pub began: f64,
+    /// The answer that waits for the preview (a check's, a move's), its first part.
+    pub due: Option<String>,
+    /// The image of the ground, the water and the check, as last drawn, and whether it's to be
+    /// drawn again (the view, the layers or the preview changed).
+    pub image: Option<Texture<Rgba8>>,
+    pub dirty: bool,
+    /// The literals moved since the build, and the write of them on its way.
+    pub moved: Vec<Literal>,
+    pub writing: Option<std::io::Pending<u8>>,
+    /// Where the pointer went down, and the item there.
+    pub press: Option<(vec2, Item)>,
+    /// The command being typed, the labels' toolkit and its renderer, and how many answers.
+    pub line: String,
+    pub ui: Ui,
+    pub renderer: Renderer,
+    pub answers: u32,
+}
+
+/// The lens on a floor whose map `map` gives; its preview starts at once.
+pub fn open(map: fn() -> Map, start: fn() -> Task<Preview>) -> MapLens {
+    let fonts = Fonts::load()
+    let renderer = Renderer::new(fonts)
+    let m = map()
+    let middle = 0.5 * (m.lo + m.hi)
+    var lens = MapLens {
+        width: 1,
+        height: 1,
+        view: vec3(middle.x, middle.y, 0.5 * max(m.hi.x - m.lo.x, m.hi.y - m.lo.y) * 1.05),
+        layers: ALL,
+        preview: None,
+        job: None,
+        began: 0.0,
+        due: None,
+        image: None,
+        dirty: true,
+        moved: Vec::new(),
+        writing: None,
+        press: None,
+        line: String::new(),
+        ui: Ui::new(take fonts),
+        renderer,
+        answers: 0,
+    }
+    start_preview(mut lens, start)
+    lens
+}
+
+impl MapLens {
+    /// Prints one answer.
+    pub fn answer(mut self, a: str) {
+        print(a)
+        self.answers += 1
+    }
+
+    /// Metres a pixel.
+    fn scale(self) -> f32 {
+        2.0 * self.view.z / f32(max(self.width, 1))
+    }
+
+    /// The world point (x, z) under pixel `px`.
+    pub fn world(self, px: vec2) -> vec2 {
+        let mid = vec2(f32(self.width), f32(self.height)) * 0.5
+        // North (-z) up the screen: x right, z down it.
+        self.view.xy + (px - mid) * self.scale()
+    }
+
+    /// The pixel over world point `p`.
+    pub fn pixel(self, p: vec2) -> vec2 {
+        let mid = vec2(f32(self.width), f32(self.height)) * 0.5
+        mid + (p - self.view.xy) / self.scale()
+    }
+}
+
+// ---- the items -----------------------------------------------------------------------------------
+
+/// Where item `it` is on the plane.
+pub fn item_at(m: Map, it: Item) -> vec2 {
+    match it {
+        Item::Site { i } => m.sites[i].at,
+        Item::Point { route, i } => m.routes[route].points[i],
+        Item::Opening { i } => m.openings[i].at,
+        Item::View { relation } => m.relations[relation].from(),
+    }
+}
+
+/// What item `it` is, as JSON's words: its kind and its name.
+pub fn item_kind(it: Item) -> Text {
+    match it {
+        Item::Site { .. } => "site",
+        Item::Point { .. } => "route point",
+        Item::Opening { .. } => "opening",
+        Item::View { .. } => "viewpoint",
+    }
+}
+
+pub fn item_name(m: Map, it: Item) -> String {
+    match it {
+        Item::Site { i } => String::from(m.sites[i].name),
+        Item::Point { route, i } => f"{m.routes[route].name}, point {i}",
+        Item::Opening { i } => String::from(m.openings[i].name),
+        Item::View { relation } => String::from(m.relations[relation].name()),
+    }
+}
+
+/// Every item of the map.
+pub fn items(m: Map) -> Vec<Item> {
+    var out: Vec<Item> = Vec::new()
+    for i in 0..m.sites.len() {
+        out.push(Item::Site { i })
+    }
+    for r in 0..m.routes.len() {
+        for i in 0..m.routes[r].points.len() {
+            out.push(Item::Point { route: r, i })
+        }
+    }
+    for i in 0..m.openings.len() {
+        out.push(Item::Opening { i })
+    }
+    for r in 0..m.relations.len() {
+        out.push(Item::View { relation: r })
+    }
+    out
+}
+
+/// The item nearest pixel `px`, within `within` pixels.
+pub fn item_under(lens: MapLens, m: Map, px: vec2, within: f32) -> Option<Item> {
+    var best: Option<Item> = None
+    var d = within
+    for it in items(m) {
+        let e = length(lens.pixel(item_at(m, it)) - px)
+        if e < d {
+            d = e
+            best = Some(it)
+        }
+    }
+    best
+}
+
+/// A literal that places an item, and how the item moves with it (its x and z, a unit each).
+pub struct Placing: Copy {
+    pub literal: Literal,
+    pub moves: vec2,
+}
+
+/// The literals that place item `it`, of those the map reads: each whose change moves it, found
+/// by changing it a unit and reading the map again (the map is built in vectors, which a
+/// derivative can't follow). Those whose value is the item's x or z are tried first; if none
+/// moves it, every literal the map reads is.
+pub fn placing(map: fn() -> Map, it: Item) -> Vec<Placing> {
+    borrow all = reads(map)
+    let at = item_at(map(), it)
+    var out: Vec<Placing> = Vec::new()
+    for l in all {
+        let v = l.value()
+        if abs(abs(v) - abs(at.x)) < 1.0e-3 || abs(abs(v) - abs(at.y)) < 1.0e-3 {
+            try_literal(map, it, at, l, mut out)
+        }
+    }
+    if out.is_empty() {
+        for l in all {
+            try_literal(map, it, at, l, mut out)
+        }
+    }
+    out
+}
+
+/// Literal `l` changed a unit and back: if item `it` (at `at`) moved, it's one that places it.
+fn try_literal(map: fn() -> Map, it: Item, at: vec2, l: Literal, out: mut Vec<Placing>) {
+    let v = l.value()
+    l.set(v + 1.0)
+    let moved = item_at(map(), it) - at
+    l.set(v)
+    if length(moved) > 1.0e-4 {
+        out.push(Placing { literal: l, moves: moved })
+    }
+}
+
+/// A literal as JSON: its file, line, column and text, and its value.
+fn literal_json(l: Literal) -> String {
+    let s = l.source()
+    let text = file_text(s.file)
+    obj()
+        .text("file", file_name(s.file))
+        .int("line", s.line)
+        .int("column", s.column)
+        .text("text", text.slice(s.start, s.end))
+        .num("value", l.value())
+        .done()
+}
+
+/// An item as JSON: its kind, name and place, and the literals that place it.
+fn item_json(map: fn() -> Map, m: Map, it: Item) -> String {
+    var lits = list()
+    for p in placing(map, it) {
+        let j = obj().raw("literal", literal_json(p.literal).as_str()).vec2("moves", p.moves).done()
+        lits.add(j.as_str())
+    }
+    obj()
+        .text("kind", item_kind(it))
+        .text("name", item_name(m, it).as_str())
+        .vec2("at", item_at(m, it))
+        .raw("literals", (take lits).done().as_str())
+        .done()
+}
+
+// ---- the preview -----------------------------------------------------------------------------------
+
+/// Starts the preview of the map as its literals are now, on a helper (`start`: the program's,
+/// which knows the floor's preview by name).
+fn start_preview(lens: mut MapLens, start: fn() -> Task<Preview>) {
+    lens.job = Some(start())
+    lens.began = now()
+}
+
+/// The check's summary as JSON: the dead share, how many relations hold, each that doesn't,
+/// and the openings not open.
+fn check_json(m: Map, p: Preview) -> String {
+    borrow c = p.checked
+    var failing = list()
+    var holding = 0
+    for i in 0..c.held.len() {
+        if c.held[i].holds {
+            holding += 1
+        } else {
+            let name = obj()
+                .text("relation", m.relations[i].name())
+                .num("draw", c.held[i].at)
+                .done()
+            failing.add(name.as_str())
+        }
+    }
+    var shut = list()
+    for i in 0..c.openings.len() {
+        if c.openings[i] > engine::interest::OPEN {
+            let o = obj().text("opening", m.openings[i].name).num("cover", c.openings[i]).done()
+            shut.add(o.as_str())
+        }
+    }
+    obj()
+        .num("dead", c.coverage.dead)
+        .int("relations", c.held.len())
+        .int("holding", holding)
+        .raw("failing", (take failing).done().as_str())
+        .raw("shut", (take shut).done().as_str())
+        .done()
+}
+
+/// The preview, once it's in: kept, the image to draw again, and the answer that waited for it.
+fn poll_preview(lens: mut MapLens, map: fn() -> Map) {
+    let ready = match lens.job {
+        Some(j) => j.done(),
+        None => false,
+    }
+    if !ready {
+        return
+    }
+    let job = std::collections::replace(mut lens.job, None)
+    let Some(j) = take job else { return }
+    {
+        let p = take j.join()
+        let ms = 1000.0 * (now() - lens.began)
+        let m = map()
+        let summary = check_json(m, p)
+        lens.preview = Some(take p)
+        lens.dirty = true
+        let due = std::collections::replace(mut lens.due, None)
+        if let Some(head) = due {
+            let a = obj()
+                .raw("answer", head.as_str())
+                .raw("check", summary.as_str())
+                .num("ms", f32(ms))
+                .done()
+            lens.answer(a.as_str())
+        }
+    }
+}
+
+/// Whether the lens waits for something: the preview, an answer that waits for it, or a write.
+pub fn busy(lens: MapLens) -> bool {
+    lens.job.is_some() || lens.due.is_some() || lens.writing.is_some()
+}
+
+// ---- the actions -----------------------------------------------------------------------------------
+
+/// `show l`: what the lens draws (`GROUND`, `WATER`, `MAP`, `CHECK`, together).
+pub fn show(lens: mut MapLens, layers: u32) {
+    lens.layers = layers & ALL
+    lens.dirty = true
+    let a = obj().text("action", "show").int("layers", lens.layers).done()
+    lens.answer(a.as_str())
+}
+
+/// `zoom x z h`: the view `2 h` metres across at (x, z).
+pub fn zoom(lens: mut MapLens, x: f32, z: f32, half: f32) {
+    lens.view = vec3(x, z, max(half, 10.0))
+    lens.dirty = true
+    let a = obj().text("action", "zoom").vec("view", lens.view).done()
+    lens.answer(a.as_str())
+}
+
+/// `items`: every item of the map, its kind, name and place.
+pub fn list_items(lens: mut MapLens, map: fn() -> Map) {
+    let m = map()
+    var out = list()
+    for it in items(m) {
+        let j = obj()
+            .text("kind", item_kind(it))
+            .text("name", item_name(m, it).as_str())
+            .vec2("at", item_at(m, it))
+            .done()
+        out.add(j.as_str())
+    }
+    let a = obj().text("action", "items").raw("items", (take out).done().as_str()).done()
+    lens.answer(a.as_str())
+}
+
+/// `click x y`: the item under the pixel and the literals that place it, with their source (its
+/// file, line and column, and its text); or the ground there.
+pub fn click(lens: mut MapLens, map: fn() -> Map, x: f32, y: f32) {
+    let m = map()
+    let px = vec2(x, y)
+    let a = match item_under(lens, m, px, 12.0) {
+        Some(it) => obj()
+            .text("action", "click")
+            .raw("item", item_json(map, m, it).as_str())
+            .done(),
+        None => {
+            let w = lens.world(px)
+            obj()
+                .text("action", "click")
+                .vec2("at", w)
+                .text("region", m.regions[m.region_of(w)].name)
+                .done()
+        },
+    }
+    lens.answer(a.as_str())
+}
+
+/// `move x0 y0 x1 y1`: the item under pixel (x0, y0) moved to (x1, y1): each literal that moves
+/// it most along x and z set so the item stands there; then the preview again, and the answer
+/// with its check once that's in (`poll_preview`).
+pub fn drag(
+    lens: mut MapLens,
+    map: fn() -> Map,
+    start: fn() -> Task<Preview>,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+) {
+    let m = map()
+    let Some(it) = item_under(lens, m, vec2(x0, y0), 12.0) else {
+        let a = obj().text("action", "move").text("error", "nothing there to move").done()
+        lens.answer(a.as_str())
+        return
+    }
+    let from = item_at(m, it)
+    let to = lens.world(vec2(x1, y1))
+    let lits = placing(map, it)
+    var set = list()
+    for axis in 0..2 {
+        // The literal that moves it most this way, and how far it must change.
+        var best: Option<Placing> = None
+        for p in lits {
+            let k = abs(p.moves[axis])
+            let had = match best {
+                Some(b) => abs(b.moves[axis]),
+                None => 0.0,
+            }
+            if k > max(had, 0.5) {
+                best = Some(p)
+            }
+        }
+        if let Some(p) = best {
+            let old = p.literal.value()
+            let new = old + (to[axis] - from[axis]) / p.moves[axis]
+            p.literal.set(new)
+            var known = false
+            for l in lens.moved {
+                known = known || l == p.literal
+            }
+            if !known {
+                lens.moved.push(p.literal)
+            }
+            let j = obj().raw("literal", literal_json(p.literal).as_str()).num("was", old).done()
+            set.add(j.as_str())
+        }
+    }
+    let head = obj()
+        .text("action", "move")
+        .text("item", item_name(m, it).as_str())
+        .vec2("to", item_at(map(), it))
+        .raw("set", (take set).done().as_str())
+        .done()
+    lens.due = Some(take head)
+    start_preview(mut lens, start)
+}
+
+/// `check`: the preview of the map as it is now, and its check's summary once it's in.
+pub fn check(lens: mut MapLens, start: fn() -> Task<Preview>) {
+    lens.due = Some(obj().text("action", "check").done())
+    if lens.job.is_none() {
+        start_preview(mut lens, start)
+    }
+}
+
+/// `write`: the moved literals written to the source, through the server (`wrela edit`): a post
+/// of `{"edits": [[literal, value], ...]}` to `studio/edit`, its answer a later frame's.
+pub fn write(lens: mut MapLens) {
+    var edits = list()
+    for l in lens.moved {
+        let e = f"[{l.index},{l.value()}]"
+        edits.add(e.as_str())
+    }
+    if lens.moved.is_empty() {
+        let a = obj().text("action", "write").int("edits", 0).flag("written", b: false).done()
+        lens.answer(a.as_str())
+        return
+    }
+    let body = obj().raw("edits", (take edits).done().as_str()).done()
+    lens.writing = Some(std::io::post("studio/edit", body.as_bytes()))
+}
+
+fn poll_write(lens: mut MapLens) {
+    let answer = match mut lens.writing {
+        Some(w) => w.poll(),
+        None => None,
+    }
+    if answer.is_none() {
+        return
+    }
+    lens.writing = None
+    var text = String::from("null")
+    match take answer {
+        Some(Ok(bytes)) => {
+            if let Some(s) = String::from_utf8(take bytes) {
+                text = take s
+            }
+            if text.as_str().find("\"written\":true").is_some() {
+                lens.moved.clear()
+            }
+        },
+        _ => {},
+    }
+    let a = obj().text("action", "write").raw("answer", text.as_str()).done()
+    lens.answer(a.as_str())
+}
+
+// ---- drawing -------------------------------------------------------------------------------------------
+
+/// The ground's colour at a cell of the sight grid: its relief shaded, darker under the crowns
+/// (the light at it), a trail's earth.
+fn ground_colour(p: Preview, c: u32, shade: f32) -> vec3 {
+    borrow s = p.checked.sight
+    let open = s.open[c]
+    let wood = mix(vec3(0.09, 0.17, 0.07), vec3(0.42, 0.52, 0.26), vec3(open))
+    let trail = mix(wood, vec3(0.55, 0.42, 0.28), vec3(s.trail[c] * 0.8))
+    let unwalkable = if s.walk[c] <= 0.0 { 0.55 } else { 1.0 }
+    trail * shade * unwalkable
+}
+
+/// The image of the layers below the map's marks (the ground, the water, the check), the
+/// screen's size.
+fn draw_image(lens: mut MapLens, m: Map) {
+    let w = lens.width
+    let h = lens.height
+    var px: Vec<u8> = Vec::filled(w * h * 4, 0)
+    if let Some(p) = lens.preview {
+        borrow s = p.checked.sight
+        let g = s.grid
+        let vg = views_grid(m, engine::interest::QUICK)
+        for y in 0..h {
+            for x in 0..w {
+                let q = lens.world(vec2(f32(x) + 0.5, f32(y) + 0.5))
+                var col = vec3(0.12, 0.12, 0.14)
+                if g.holds(q) {
+                    let c = g.cell_at(q)
+                    if (lens.layers & GROUND) != 0 {
+                        // The relief, lit from the north-west.
+                        let e = g.cell
+                        let dx = g.sample(s.ground, q + vec2(e, 0.0)) -
+                            g.sample(s.ground, q - vec2(e, 0.0))
+                        let dz = g.sample(s.ground, q + vec2(0.0, e)) -
+                            g.sample(s.ground, q - vec2(0.0, e))
+                        let n = normalize(vec3(-dx, 2.0 * e, -dz))
+                        let shade = 0.55 + 0.45 * max(dot(n, normalize(vec3(-1.0, 1.4, -1.0))), 0.0)
+                        col = ground_colour(p, c, shade)
+                    } else {
+                        col = vec3(0.3)
+                    }
+                    if (lens.layers & CHECK) != 0 && vg.holds(q) {
+                        let v = p.checked.views[vg.cell_at(q)]
+                        if v.walkable && v.best < FAINT {
+                            col = mix(col, vec3(0.85, 0.12, 0.1), vec3(0.55))
+                        }
+                    }
+                }
+                if (lens.layers & WATER) != 0 {
+                    for mere in m.water.meres {
+                        if mere.z > 0.0 && length(q - mere.xy) < mere.z {
+                            col = vec3(0.12, 0.25, 0.42)
+                        }
+                    }
+                }
+                let o = (y * w + x) * 4
+                let rgb = sqrt(clamp(col, vec3(0.0), vec3(1.0)))
+                px[o] = u8(rgb.x * 255.0)
+                px[o + 1] = u8(rgb.y * 255.0)
+                px[o + 2] = u8(rgb.z * 255.0)
+                px[o + 3] = 255
+            }
+        }
+        if (lens.layers & WATER) != 0 {
+            for st in p.streams {
+                for k in 0..st.points.len() {
+                    let at = lens.pixel(st.points[k].xy)
+                    let r = max(st.points[k].z * 0.5 / lens.scale(), 1.0)
+                    dot_into(mut px, w, h, at, r, vec3(0.18, 0.4, 0.62))
+                }
+            }
+        }
+    }
+    var t = texture::<Rgba8>(width: w, height: h)
+    t.write(x: 0, y: 0, width: w, height: h, bytes: px)
+    lens.image = Some(take t)
+    lens.dirty = false
+}
+
+/// A filled dot of radius `r` pixels at `at` in an RGBA8 image `w` by `h`.
+fn dot_into(px: mut Vec<u8>, w: u32, h: u32, at: vec2, r: f32, col: vec3) {
+    let rgb = sqrt(clamp(col, vec3(0.0), vec3(1.0)))
+    let lo = vec2i(floor(at - vec2(r)))
+    let hi = vec2i(ceil(at + vec2(r)))
+    for y in max(lo.y, 0)..min(hi.y + 1, i32(h)) {
+        for x in max(lo.x, 0)..min(hi.x + 1, i32(w)) {
+            if length(vec2(f32(x) + 0.5, f32(y) + 0.5) - at) <= r {
+                let o = (u32(y) * w + u32(x)) * 4
+                px[o] = u8(rgb.x * 255.0)
+                px[o + 1] = u8(rgb.y * 255.0)
+                px[o + 2] = u8(rgb.z * 255.0)
+            }
+        }
+    }
+}
+
+/// The map's marks over the image: the routes, the openings' rims, the relations (green that
+/// hold, red that don't), the sites and their names.
+fn draw_marks(lens: mut MapLens, m: Map, screen: vec2) {
+    let none: Vec<Event> = Vec::new()
+    lens.ui.begin(screen, none)
+    if (lens.layers & MAP) != 0 {
+        let line = vec4(0.95, 0.85, 0.55, 0.9)
+        for r in m.routes {
+            for k in 0..r.points.len() - 1 {
+                let a = lens.pixel(r.points[k])
+                let b = lens.pixel(r.points[k + 1])
+                let n = u32(ceil(length(b - a) / 3.0)) + 1
+                for s in 0..n {
+                    let p = mix(a, b, vec2(f32(s) / f32(n)))
+                    lens.ui.draw.rect(Rect::new(p.x - 1.0, p.y - 1.0, w: 2.0, h: 2.0), line)
+                }
+            }
+        }
+        for o in m.openings {
+            let c = lens.pixel(o.at)
+            let r = o.radius / lens.scale()
+            let n = u32(max(ceil(r), 8.0))
+            for s in 0..n {
+                let a = 6.2831855 * f32(s) / f32(n)
+                let p = c + vec2(cos(a), sin(a)) * r
+                lens.ui.draw.rect(
+                    Rect::new(p.x - 1.0, p.y - 1.0, w: 2.0, h: 2.0),
+                    vec4(0.6, 0.95, 0.6, 0.8),
+                )
+            }
+        }
+        var ri = 0
+        for rel in m.relations {
+            let holds = match lens.preview {
+                Some(p) => ri < p.checked.held.len() && p.checked.held[ri].holds,
+                None => true,
+            }
+            let col = if holds { vec4(0.4, 0.95, 0.5, 0.8) } else { vec4(1.0, 0.3, 0.25, 0.9) }
+            let a = lens.pixel(rel.from())
+            let b = lens.pixel(m.sites[rel.to()].at)
+            let n = u32(ceil(length(b - a) / 6.0)) + 1
+            for s in 0..n {
+                let p = mix(a, b, vec2(f32(s) / f32(n)))
+                lens.ui.draw.rect(Rect::new(p.x - 1.0, p.y - 1.0, w: 2.0, h: 2.0), col)
+            }
+            ri += 1
+        }
+        for k in m.sites {
+            let p = lens.pixel(k.at)
+            lens.ui.draw.rect(
+                Rect::new(p.x - 3.0, p.y - 3.0, w: 6.0, h: 6.0),
+                vec4(1.0, 1.0, 1.0, 1.0),
+                radius: 3.0,
+            )
+            let _ = lens.ui.draw.text(
+                lens.ui.fonts,
+                Face::Sans,
+                k.name,
+                11.0,
+                p + vec2(5.0, -7.0),
+                vec4(1.0, 1.0, 1.0, 0.9),
+            )
+        }
+    }
+    let status = match lens.preview {
+        Some(p) => f"dead {p.checked.coverage.dead * 100.0:.1}%",
+        None => String::from("the preview runs..."),
+    }
+    let _ = lens.ui.draw.text(
+        lens.ui.fonts,
+        Face::Mono,
+        f"{status}   > {lens.line}".as_str(),
+        13.0,
+        vec2(8.0, screen.y - 22.0),
+        vec4(1.0, 1.0, 1.0, 1.0),
+    )
+    lens.ui.end()
+    lens.renderer.upload(lens.ui.draw)
+}
+
+// ---- a frame -----------------------------------------------------------------------------------------
+
+/// A frame: typed commands and the pointer, the preview and the write when they come, the
+/// image when it's to be drawn again, and the marks over it.
+pub fn frame(
+    lens: mut MapLens,
+    map: fn() -> Map,
+    start: fn() -> Task<Preview>,
+    width: u32,
+    height: u32,
+) {
+    if width != lens.width || height != lens.height {
+        lens.width = width
+        lens.height = height
+        lens.dirty = true
+    }
+    for e in events() {
+        match e {
+            Event::Text { char } => lens.line.push_char(char),
+            Event::KeyDown { key, .. } => {
+                if key == Key::Enter {
+                    let line = std::collections::replace(mut lens.line, String::new())
+                    command(mut lens, map, start, line.as_str())
+                } else if key == Key::Backspace && !lens.line.is_empty() {
+                    let n = lens.line.len()
+                    lens.line.truncate(n - 1)
+                }
+            },
+            Event::PointerDown { at, button, .. } => {
+                if button == Button::Primary {
+                    lens.press = match item_under(lens, map(), at, 12.0) {
+                        Some(it) => Some((at, it)),
+                        None => Some((at, Item::Site { i: 4294967295 })),
+                    }
+                }
+            },
+            Event::PointerUp { at, button, .. } => {
+                if button == Button::Primary {
+                    if let Some((from, it)) = std::collections::replace(mut lens.press, None) {
+                        let held = match it {
+                            Item::Site { i } => i != 4294967295,
+                            _ => true,
+                        }
+                        if held && length(at - from) > 3.0 {
+                            drag(mut lens, map, start, from.x, from.y, at.x, at.y)
+                        } else {
+                            click(mut lens, map, from.x, from.y)
+                        }
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+    poll_preview(mut lens, map)
+    poll_write(mut lens)
+    let m = map()
+    if lens.dirty {
+        draw_image(mut lens, m)
+    }
+    let screen = vec2(f32(width), f32(height))
+    draw_marks(mut lens, m, screen)
+    let pass = begin_screen_pass(clear: BACKGROUND)
+    if let Some(img) = lens.image {
+        draw(
+            pass,
+            cover_area.bind(area: vec4(0.0, 0.0, screen.x, screen.y), screen: screen),
+            show_canvas.bind(canvas: img),
+            vertices: 6,
+        )
+    }
+    lens.renderer.draw(pass, screen)
+    pass.present()
+}
+
+/// A typed command: an action's name and its numbers.
+pub fn command(lens: mut MapLens, map: fn() -> Map, start: fn() -> Task<Preview>, line: str) {
+    var words: Vec<String> = Vec::new()
+    var word = String::new()
+    for i in 0..line.len() {
+        let b = line.byte(i)
+        if b == 32 {
+            if !word.is_empty() {
+                words.push(std::collections::replace(mut word, String::new()))
+            }
+        } else {
+            word.push_byte(b)
+        }
+    }
+    if !word.is_empty() {
+        words.push(take word)
+    }
+    if words.is_empty() {
+        return
+    }
+    var n: Vec<f32> = Vec::new()
+    for i in 1..words.len() {
+        n.push(words[i].as_str().parse_f32().unwrap_or(0.0))
+    }
+    borrow name = words[0].as_str()
+    let arg = |i: u32| if i < n.len() { n[i] } else { 0.0 }
+    if name == "show" {
+        show(mut lens, u32(arg(0)))
+    } else if name == "zoom" {
+        zoom(mut lens, arg(0), arg(1), arg(2))
+    } else if name == "items" {
+        list_items(mut lens, map)
+    } else if name == "click" {
+        click(mut lens, map, arg(0), arg(1))
+    } else if name == "move" {
+        drag(mut lens, map, start, arg(0), arg(1), arg(2), arg(3))
+    } else if name == "check" {
+        check(mut lens, start)
+    } else if name == "write" {
+        write(mut lens)
+    } else {
+        let a = obj().text("error", f"no action `{name}`".as_str()).done()
+        lens.answer(a.as_str())
+    }
+}

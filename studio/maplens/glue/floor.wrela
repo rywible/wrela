@@ -1,0 +1,13 @@
+// What the map lens needs of its floor: its map (as its literals say now), and its preview.
+// `wrela studio <floor>` writes one for the floor's `lens` module; this one is the Last Green's.
+
+use engine::interest::Preview
+use engine::place::Map
+
+pub fn map() -> Map {
+    last_green::lens::map()
+}
+
+pub fn preview() -> Preview {
+    last_green::lens::preview()
+}

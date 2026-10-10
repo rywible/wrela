@@ -1,0 +1,10 @@
+# The map lens's program (`wrela studio` on a floor): the map lens on a floor. `wrela studio
+# <floor>` builds a copy of it whose `floor.wrela` is the floor's; this one's is the Last Green's,
+# so it checks alone.
+[package]
+name = "map"
+
+[dependencies]
+maplens = { path = ".." }
+engine = { path = "../../../engine" }
+last_green = { path = "../../../examples/last-green" }

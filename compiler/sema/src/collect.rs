@@ -1755,6 +1755,15 @@ impl<'d, 'u> Collector<'d, 'u> {
     fn testing_export(&mut self, id: FnId) {
         let def = self.p.func(id);
         let Some(at) = def.attrs.testing else { return };
+        // A dependency's own program's test exports (in its `main.wrela`) are about that program,
+        // checked when it's the package checked: here they're functions no test build exports
+        // (the map lens depends on a floor, a program).
+        let module = self.p.module(def.module);
+        if self.p.package_of(def.module).kind != PackageKind::Program
+            && module.path.last().is_some_and(|m| m == "main")
+        {
+            return;
+        }
         let export = Some(def.module) == self.p.main
             && def.public
             && def.owner == FnOwner::Free

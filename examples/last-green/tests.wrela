@@ -54,7 +54,7 @@ fn nothing_grows_into_the_head_room() {
         )
         assert(t.lift >= line, f"a tree at {at} keeps branches to {t.lift} m under a {line} m line")
         let k = trees::drawn_kind(t)
-        let low = trees::lowest_placed(k, t.tall)
+        let low = trees::lowest_placed(k, t.tall, t.fork)
         assert(
             low >= line - 0.01,
             f"a tree at {at}, {t.tall} m, drawn as kind {k}: branches to {low} m",
@@ -164,7 +164,7 @@ fn no_meadow_grass_under_a_closed_canopy() {
 @test
 fn the_water_is_one_surface() {
     let w = map::map().water
-    borrow laid = history::WATERS
+    let laid = history::waters()
     var worst = 0.0
     var worst_at = vec2(0.0)
     var samples = 0
@@ -235,7 +235,7 @@ fn the_water_is_one_surface() {
 fn the_water_is_where_the_map_and_the_flow_put_it() {
     let m = map::map()
     let w = m.water
-    borrow laid = history::WATERS
+    let laid = history::waters()
     for i in 0..w.spring_count {
         var rises = false
         for c in laid.courses {
@@ -436,7 +436,7 @@ fn the_player_walks_into_each_thing_and_never_through_it() {
     )
     assert(stood > 0.0, "the player stood where the walkable mask doesn't let it")
     // Across a stream's shallows: the course's middle, walked across.
-    borrow c = history::WATERS.courses[0]
+    borrow c = history::COURSES.courses[0]
     let mid = c.points[c.points.len() / 2]
     let next = c.points[c.points.len() / 2 + 1]
     let across = normalize(vec2(next.y - mid.y, mid.x - next.x))
@@ -476,7 +476,7 @@ fn a_trunk_stops_the_player_where_it_is_drawn() {
                     r = max(r, o.r)
                 }
             })
-            let over = trees::trunk_at(trees::kind_of(t), t.tall, 1.2) - r
+            let over = trees::trunk_at(trees::kind_of(t), t.tall, 1.2, t.fork) - r
             if over > worst {
                 worst = over
                 at = t.at
@@ -700,4 +700,99 @@ fn a_walk_far_from_the_origin_ends_where_it_should() {
         walk_error(x: 10000.0, z: -5000.0, tiled: false) > 0.1,
         "in f32 the walk 10 km out should show its error",
     )
+}
+
+/// Each species' tree kinds (kinds 1 to 10: the open and the forest form of oak, beech, birch,
+/// pine and alder), by species.
+const KIND_SPECIES = [0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4]
+
+/// AC12's trunks differ: each species' trunks differ from every other's in form (where its kind
+/// first forks, as a share of its height, or how thick its trunk is for its height) and in bark;
+/// and over the floor's trees, no two standing neighbours of a kind (their crowns touch:
+/// `trees::neighbours`) first fork at the same height (`trees::forks_apart`), as they're
+/// placed: each with its own fork (`trees::forked`).
+@test
+fn neighbouring_trees_of_a_kind_fork_at_different_heights() {
+    for a in 1..11 {
+        for b in (a + 1)..11 {
+            if KIND_SPECIES[a] == KIND_SPECIES[b] {
+                continue
+            }
+            let share = |k: u32| trees::fork_height(k, tall: 10.0, fork: 0.0) / 10.0
+            let thick = |k: u32| trees::trunk_at(k, tall: 10.0, h: 1.2, fork: 0.0) / 10.0
+            let form = abs(share(a) - share(b)) >= 0.03 ||
+                abs(thick(a) - thick(b)) >= 0.1 * max(thick(a), thick(b))
+            assert(form, f"kinds {a} and {b} (two species) fork alike and are as thick")
+            let (pa, pb) = (trees::kind_plant(a), trees::kind_plant(b))
+            let bark = max(abs(pa.bark.light - pb.bark.light), abs(pa.bark.dark - pb.bark.dark))
+            assert(
+                max(max(bark.x, bark.y), bark.z) >= 0.02,
+                f"kinds {a} and {b} (two species) have the same bark",
+            )
+        }
+    }
+    // Each standing tree whose fork is chosen, its kind and its first fork's height.
+    var all: Vec<Tree> = Vec::new()
+    var kinds: Vec<u32> = Vec::new()
+    var forks: Vec<f32> = Vec::new()
+    for t in decisions().trees {
+        if trees::forks(t) {
+            let k = trees::kind_of(t)
+            all.push(t)
+            kinds.push(k)
+            forks.push(trees::fork_height(k, t.tall, t.fork))
+        }
+    }
+    let g = Grid::over(domain_lo(), domain_hi(), trees::NEIGHBOURS_WITHIN)
+    var bins: Vec<Vec<u32>> = Vec::filled(g.cells(), Vec::new())
+    for i in 0..all.len() {
+        bins[g.cell_at(all[i].at)].push(i)
+    }
+    var pairs = 0
+    var alike = 0
+    for i in 0..all.len() {
+        let a = all[i]
+        let c = g.ij(a.at)
+        for dj in 0..3 {
+            for di in 0..3 {
+                let x = c.x + di - 1
+                let z = c.y + dj - 1
+                if x >= 0 && z >= 0 && x < i32(g.nx) && z < i32(g.nz) {
+                    for j in bins[u32(z) * g.nx + u32(x)] {
+                        let b = all[j]
+                        if j > i && kinds[j] == kinds[i] && trees::neighbours(a, b) {
+                            pairs += 1
+                            // The bake keeps a height to the centimetre: a little under.
+                            let (fa, fb) = (forks[i], forks[j])
+                            if abs(fb - fa) < 0.9 * trees::FORK_APART * max(fa, fb) {
+                                if alike < 5 {
+                                    let (pa, pb, k) = (a.at, b.at, kinds[i])
+                                    print(f"kind {k} at {pa} and {pb} fork at {fa} and {fb} m")
+                                }
+                                alike += 1
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    print(f"{pairs} neighbouring pairs of a kind among {all.len()} trees; {alike} fork alike")
+    assert(pairs > 1000, f"only {pairs} neighbouring pairs of a kind")
+    assert(alike == 0, f"{alike} of {pairs} neighbouring pairs of a kind fork alike")
+}
+
+@fuel(2 ** 42)
+const ZZ_PREVIEW: f32 = zz_preview_dead()
+
+fn zz_preview_dead() -> f32 {
+    std::time::phase("preview start")
+    let p = lens::preview()
+    std::time::phase("preview done")
+    p.checked.coverage.dead
+}
+
+@test
+fn zz_preview_time() {
+    print(f"{ZZ_PREVIEW}")
 }

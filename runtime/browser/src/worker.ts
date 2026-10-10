@@ -447,6 +447,8 @@ async function runTest(canvas: OffscreenCanvas, device: GPUDevice, build: Build,
       if (control.failed) return;
     }
     for (const e of frameEvents.get(i) ?? []) program.queueInput(e);
+    if (params.clip > 0 && i === params.clipfrom) self.postMessage({ type: "clip-start" } satisfies FromWorker);
+    if (params.clip > 0 && i === params.clipfrom + params.clip) self.postMessage({ type: "clip-stop" } satisfies FromWorker);
     latency.frames.push(epochNow());
     for (const sent of deliverInput(program)) latency.delivered.push({ sent, frame: i });
     const began = performance.now();
@@ -508,6 +510,10 @@ async function runTest(canvas: OffscreenCanvas, device: GPUDevice, build: Build,
     await latencySent.promise;
     await putResult(base, "latency.json", JSON.stringify(latency));
   }
+  if (params.clip > 0) {
+    if (params.clipfrom + params.clip >= frames) self.postMessage({ type: "clip-stop" } satisfies FromWorker);
+    await clipSaved.promise;
+  }
   self.postMessage({ type: "load-query" } satisfies FromWorker);
   const page = await pageLoaded.promise;
   const resources = [...page.resources, ...loaded(["resource"])];
@@ -530,6 +536,9 @@ const audioRendered = Promise.withResolvers<void>();
 /** Test mode, `latency`: resolved when the main thread has sent its events. */
 const latencySent = Promise.withResolvers<void>();
 
+/** Test mode, `clip`: resolved when the main thread has saved the clip. */
+const clipSaved = Promise.withResolvers<void>();
+
 /** Test mode: resolved with what the page loaded, when the main thread answers. */
 const pageLoaded = Promise.withResolvers<{ opened_ms: number; resources: Loaded[] }>();
 
@@ -550,6 +559,9 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
       return;
     case "latency-sent":
       latencySent.resolve();
+      return;
+    case "clip-saved":
+      clipSaved.resolve();
       return;
     case "thread":
       // It runs until the program shuts it down, or the page goes away.

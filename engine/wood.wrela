@@ -19,7 +19,10 @@
 use impostor::{far_cut_flat, far_quad, far_shade, volume_cut, volume_shade, which_crown}
 use lit::Lighting
 use lod::{IMPOSTOR, Lod, VOLUME, anchor, packed, place, share, ways}
-use plant::{CARD_LEVELS, CORNERS, Instance, Leaves, Wind, cook_outlines, corner_of, level_cards}
+use plant::{
+    CARD_LEVELS, CORNERS, Instance, Leaves, NO_INSTANCE, Wind, cook_outlines, corner_of,
+    level_cards,
+}
 use shadow::{CASTER, Shadows}
 use std::gpu::{
     Atomics, DepthTexture, DrawArgs, DrawIndexedArgs, GlobalId, GpuBuffer, R32Uint, RenderPass,
@@ -160,7 +163,7 @@ pub fn gather(
     }
     let i = picked[id.x]
     out[id] = if i < every.len() { every[i] } else {
-        Instance { at: vec3(0.0), yaw: 0.0, tint: vec3(0.0), scale: 0.0 }
+        NO_INSTANCE
     }
     marks[id] = vec2u(from[2 * id.x], from[2 * id.x + 1])
 }
@@ -684,7 +687,7 @@ impl Wood {
             per[placed[i].kind] += 1
         }
         while kinds.len() < SLOT {
-            at.push(Instance { at: vec3(0.0), yaw: 0.0, tint: vec3(0.0), scale: 0.0 })
+            at.push(NO_INSTANCE)
             kinds.push(NO_KIND)
         }
         write(mut self.every, free * SLOT, at)

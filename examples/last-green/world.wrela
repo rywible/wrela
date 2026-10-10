@@ -68,6 +68,8 @@ const ASK_DUE: u32 = 30
 /// way round what's in its way: the ticks left of it, and which side it goes round by.
 pub struct Tour: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub on: bool,
+    /// Which walk: the floor's (`TOUR`), or the egg's road (`EGG_ROAD`, Y).
+    pub road: bool,
     pub leg: u32,
     pub best: f32,
     pub since: u32,
@@ -85,6 +87,9 @@ const HELD: u32 = 120
 const AROUND: u32 = 180
 const AROUND_TURN: f32 = 1.31
 const GIVE_UP: u32 = 480
+
+/// The egg's road, a point every 40 m (`wildwood::road_points`): Y walks it.
+pub const EGG_ROAD: Vec<vec2> = wildwood::road_points(40.0)
 
 /// How near a point of the walk the player comes before it makes for the next (m).
 const REACHED: f32 = 1.5
@@ -113,6 +118,7 @@ pub fn spawn_world() -> World {
         player: spawn(GROUND, Place::of(GATE), 0.0),
         tour: Tour {
             on: false,
+            road: false,
             leg: 0,
             best: 1.0e9,
             since: 0,
@@ -139,8 +145,21 @@ pub fn tick(w: mut World, input: TickInput<World>) {
     for e in input.records {
         control(mut w.player.controls, e)
         if let Event::KeyDown { key, repeat, .. } = e {
-            if key == Key::P && !repeat {
+            if (key == Key::P || key == Key::Y) && !repeat {
                 w.tour.on = !w.tour.on
+                w.tour.road = key == Key::Y
+                // The egg's road from its point nearest the player; the floor's walk from its start.
+                w.tour.leg = 0
+                if w.tour.road {
+                    let at = w.player.at.world()
+                    for k in 0..EGG_ROAD.len() {
+                        if length(EGG_ROAD[k] - at) < length(EGG_ROAD[w.tour.leg] - at) {
+                            w.tour.leg = k
+                        }
+                    }
+                }
+                w.tour.best = 1.0e9
+                w.tour.since = 0
                 w.player.controls.forward = w.tour.on
                 w.player.controls.run_held = w.tour.on
             }
@@ -154,8 +173,10 @@ pub fn tick(w: mut World, input: TickInput<World>) {
         if asked < SITES.len() {
             travel(mut w.player, SITES[asked])
         } else if asked == SITES.len() {
-            // One past the sites: the egg's place.
+            // One past the sites: the egg's place; two past, its road in the wildwood.
             travel(mut w.player, vec3(wildwood::EGG, 16.0))
+        } else if asked == SITES.len() + 1 {
+            travel(mut w.player, vec3(wildwood::ROAD_START, 0.0))
         }
         w.player.controls.travel = NONE
     }
@@ -220,15 +241,16 @@ fn wild_obstacles(w: Wildside) -> engine::footing::Obstacles {
 /// walk's end.
 @deterministic
 fn walk_the_tour(w: mut World) {
+    borrow points = if w.tour.road { EGG_ROAD } else { TOUR }
     w.tour.ticks += 1
     let at = w.player.at.world()
-    while w.tour.leg < TOUR.len() && length(TOUR[w.tour.leg] - at) < REACHED {
+    while w.tour.leg < points.len() && length(points[w.tour.leg] - at) < REACHED {
         w.tour.leg += 1
         w.tour.best = 1.0e9
         w.tour.since = 0
     }
-    if w.tour.leg < TOUR.len() {
-        let dist = length(TOUR[w.tour.leg] - at)
+    if w.tour.leg < points.len() {
+        let dist = length(points[w.tour.leg] - at)
         if dist < w.tour.best - 0.5 {
             w.tour.best = dist
             w.tour.since = 0
@@ -246,13 +268,13 @@ fn walk_the_tour(w: mut World) {
             w.tour.since = 0
         }
     }
-    if w.tour.leg >= TOUR.len() {
+    if w.tour.leg >= points.len() {
         w.tour.on = false
         w.player.controls.forward = false
         w.player.controls.run_held = false
         return
     }
-    let d = TOUR[w.tour.leg] - at
+    let d = points[w.tour.leg] - at
     var yaw = atan2(d.x, d.y)
     if w.tour.around > 0 {
         w.tour.around -= 1

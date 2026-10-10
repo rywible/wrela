@@ -14,7 +14,9 @@
 // the frame it's for; with `latency=n`, the main thread sends n pointer events through the DOM at
 // random times while the frames run in real time, and saves when each reached the program
 // (`latency.json`); with `keylatency=n`, n presses of the right arrow key instead, at least
-// 250 ms apart.
+// 250 ms apart; with `clip=n` (and `clipfrom=i`), the canvas recorded from frame i (0 unless
+// given) for n frames, as a video (`clip.webm`: the main thread's MediaRecorder; paced frames
+// play at their speed).
 //
 // A program with a ticker (`std::tick::start`) runs it on the lockstep schedule (#43 §2.3):
 // before frame i, the ticks up to ⌊(i + 1)·hz/fps⌋ run, and the frame waits for them, as on
@@ -63,6 +65,9 @@ export interface TestParams {
   salt: number;
   /** 1: each frame as soon as the last is done, not at its time. */
   saturate: number;
+  /** Frames of the canvas to record as a video (0: none), and the frame it starts at. */
+  clip: number;
+  clipfrom: number;
 }
 
 export const TEST_DEFAULTS: TestParams = {
@@ -82,6 +87,8 @@ export const TEST_DEFAULTS: TestParams = {
   framedelay: 0,
   salt: 0,
   saturate: 0,
+  clip: 0,
+  clipfrom: 0,
 };
 /** Every parameter's name, in order. */
 const NAMES = Object.keys(TEST_DEFAULTS) as (keyof TestParams)[];

@@ -1,0 +1,30 @@
+// What the floor's tests read (#55's checks that need the renderer, `suite/last_green.rs`):
+// captures of what a frame drew, copied into buffers a test reads back, as the clearing's are.
+// Each is reached through an export in main.wrela; the floor itself never uses them.
+
+use std::gpu::{DepthTexture, GlobalId, Rgba16Float, Slots, Texture}
+
+/// What a test captures of the last frame (`test_capture`, called with each variant's
+/// discriminant), copied into a new buffer, row by row:
+/// - `Depth`, the scene's depth (an `f32` a pixel, reversed, at the scene's size);
+/// - `Tags`, temporal AA's output's tags (an `f32` a pixel, at the output's size);
+/// - `Exposure`, the metering's exposure (`engine::look::Exposure`, as the frame left it).
+pub enum Capture: Copy + Eq + Fieldless {
+    Depth,
+    Tags,
+    Exposure,
+}
+
+/// A texture's texels' `w`s (temporal AA's output's tags), row by row.
+@compute(64)
+pub fn copy_tags(t: Texture<Rgba16Float>, out: mut Slots<f32>, id: GlobalId) {
+    let w = t.width()
+    out[id] = t.load(x: id.x % w, y: id.x / w).w
+}
+
+/// A depth texture's texels, row by row.
+@compute(64)
+pub fn copy_depth(t: DepthTexture, out: mut Slots<f32>, id: GlobalId) {
+    let w = t.width()
+    out[id] = t.load(x: id.x % w, y: id.x / w)
+}

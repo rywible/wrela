@@ -14,19 +14,42 @@ pub const EGG = vec2(7070.0, -7070.0)
 /// Where the egg's road leaves the floor: its south-east corner.
 const ROAD_FROM = vec2(1650.0, -1250.0)
 
-/// How far `p` is from the egg's road (m): from the floor's corner to the egg's place, bending
-/// slowly either side of the straight line.
-pub fn road_distance(p: vec2) -> f32 {
+/// The egg's road's line `t` m along the straight line from the floor's corner to the egg's
+/// place: bending slowly either side of it, the bend fading out at both ends, so the road meets
+/// the floor and the egg's place.
+fn road_at(t: f32) -> vec2 {
     let d = EGG - ROAD_FROM
     let len = length(d)
     let along = d / len
     let side = vec2(-along.y, along.x)
-    let t = clamp(dot(p - ROAD_FROM, along), 0.0, len)
     let bend = 120.0 * sin(t * 0.0011) + 40.0 * sin(t * 0.0037 + 1.0)
-    // The bend fades out at both ends, so the road meets the floor and the egg's place.
     let fade = smoothstep(0.0, 300.0, t) * smoothstep(0.0, 300.0, len - t)
-    length(p - (ROAD_FROM + along * t + side * bend * fade))
+    ROAD_FROM + along * t + side * bend * fade
 }
+
+/// How far `p` is from the egg's road (m).
+pub fn road_distance(p: vec2) -> f32 {
+    let d = EGG - ROAD_FROM
+    let t = clamp(dot(p - ROAD_FROM, d / length(d)), 0.0, length(d))
+    length(p - road_at(t))
+}
+
+/// The egg's road from the floor's corner to the egg's place, a point every `every` m along it.
+pub fn road_points(every: f32) -> Vec<vec2> {
+    let len = length(EGG - ROAD_FROM)
+    var out: Vec<vec2> = Vec::new()
+    var t = 0.0
+    while t < len {
+        out.push(road_at(t))
+        t += every
+    }
+    out.push(EGG + vec2(0.0, 14.0))
+    out
+}
+
+/// Where the play harness's travel starts the egg's road: 300 m along it, past the floor's
+/// tiles, in the wildwood.
+pub const ROAD_START: vec2 = road_at(300.0)
 
 /// Where the wildwood grows no tree: the floor's own square (its history's), and the egg's place.
 pub fn kept_clear(p: vec2) -> bool {

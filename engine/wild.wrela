@@ -201,6 +201,12 @@ pub fn tile_cells(
     out
 }
 
+/// The most a wild tree's fork is moved (`grow::Tree::fork`), and the 4 × 4 pattern, repeated
+/// over the cells, its cell's fork is taken from: cells side by side or corner to corner differ
+/// by at least 2 of its 16 steps (the most a 4 × 4 pattern allows; found by a search).
+const FORK: f32 = 0.24
+const ORDERED = [5, 7, 9, 15, 12, 14, 4, 2, 8, 6, 0, 10, 1, 11, 13, 3]
+
 /// Tile `t`'s trees as the history's records (`grow::Tree`), so the floor places and draws them as
 /// its own: each cell's tree over 1.2 m, a little off its cell's middle, its species the history's
 /// (`species`: the history's index of beech, oak, birch and pine), its crown and girth by its
@@ -229,6 +235,8 @@ pub fn tile_trees(
                 0.6
             let kind = species[c.kind - 1]
             let h = habits[kind]
+            // Its fork by its cell's place in the pattern: neighbours' differ (#54 §9).
+            let order = ORDERED[u32(wi & 3) + 4 * u32(wj & 3)]
             let seed = u32(wi).wrapping_mul(2654435761) ^ u32(wj).wrapping_mul(40503)
             out.push(
                 Tree {
@@ -250,6 +258,7 @@ pub fn tile_trees(
                     pinned: false,
                     shaped: NO_PIN,
                     lift: 0.0,
+                    fork: FORK * (f32(order) / 7.5 - 1.0),
                     seed,
                 },
             )

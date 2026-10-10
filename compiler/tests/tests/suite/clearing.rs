@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use wrela_abi::manifest::{Compare, DepthState, Stage};
 use wrela_host::{GpuTiming, Host, Options, Scripted, Timing, Value, parse_script};
+use wrela_tests::camera::{Cam, add_scaled, len, sub};
 use wrela_tests::{f32s, image_difference_over, page, repo_root, u32s};
 
 /// The output's size, and the scene's (half each way).
@@ -46,65 +47,6 @@ fn built(name: &str) -> (PathBuf, String) {
 }
 
 // ---- the program, frame by frame --------------------------------------------------------------
-
-/// The camera a frame was drawn by (main.wrela's `CameraReport`).
-#[derive(Clone, Copy, Debug)]
-struct Cam {
-    eye: [f64; 3],
-    forward: [f64; 3],
-    right: [f64; 3],
-    up: [f64; 3],
-    tan_half: f64,
-    aspect: f64,
-    near: f64,
-    jitter: [f64; 2],
-    screen: [f64; 2],
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn add_scaled(a: [f64; 3], b: [f64; 3], k: f64) -> [f64; 3] {
-    [a[0] + b[0] * k, a[1] + b[1] * k, a[2] + b[2] * k]
-}
-
-fn len(a: [f64; 3]) -> f64 {
-    dot(a, a).sqrt()
-}
-
-impl Cam {
-    /// The world point at pixel `px` (scene pixels, its centre at +0.5) of depth `z` (reversed).
-    fn world_at(&self, px: [f64; 2], z: f64) -> [f64; 3] {
-        let ndc = [
-            px[0] / self.screen[0] * 2.0 - 1.0 - self.jitter[0],
-            1.0 - px[1] / self.screen[1] * 2.0 - self.jitter[1],
-        ];
-        let mut ray = add_scaled(self.forward, self.right, ndc[0] * self.tan_half * self.aspect);
-        ray = add_scaled(ray, self.up, ndc[1] * self.tan_half);
-        let l = len(ray);
-        ray = ray.map(|x| x / l);
-        let dist = self.near / z.max(1e-12);
-        add_scaled(self.eye, ray, dist / dot(ray, self.forward))
-    }
-
-    /// Where `p` falls on a target `size` wide and high (pixels, jittered as this frame drew),
-    /// and its depth there (reversed); none behind the eye.
-    fn project(&self, p: [f64; 3], size: [f64; 2]) -> Option<([f64; 2], f64)> {
-        let v = sub(p, self.eye);
-        let z = dot(v, self.forward);
-        if z <= self.near {
-            return None;
-        }
-        let x = dot(v, self.right) / (z * self.tan_half * self.aspect) + self.jitter[0];
-        let y = dot(v, self.up) / (z * self.tan_half) + self.jitter[1];
-        Some(([(x + 1.0) * 0.5 * size[0], (1.0 - y) * 0.5 * size[1]], self.near / z))
-    }
-}
 
 /// The clearing, loaded on the native host and driven a frame at a time, `fps` frames a second
 /// (60 unless a test walks the path more coarsely).
@@ -203,19 +145,7 @@ impl Clearing {
     }
 
     fn camera(&mut self) -> Cam {
-        let v = self.call("test_camera", &[]);
-        let v3 = |i: usize| [v[i], v[i + 1], v[i + 2]];
-        Cam {
-            eye: v3(0),
-            forward: v3(3),
-            right: v3(6),
-            up: v3(9),
-            tan_half: v[12],
-            aspect: v[13],
-            near: v[14],
-            jitter: [v[15], v[16]],
-            screen: [v[17], v[18]],
-        }
+        Cam::of(&self.call("test_camera", &[]))
     }
 
     /// What the last frame drew (`test_capture`'s `what`), from the newest buffer.

@@ -1,0 +1,9 @@
+# The map lens (#55 AC13): a floor's map over its ground, its water and the interest check on its
+# preview. `wrela studio <floor>` builds it with the floor's literals lifted and serves it.
+[package]
+name = "maplens"
+
+[dependencies]
+studio = { path = ".." }
+ui = { path = "../../ui" }
+engine = { path = "../../engine" }

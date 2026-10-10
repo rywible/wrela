@@ -143,8 +143,10 @@ pub fn glow_blur(pixel: FragCoord, src: Texture<Rgba16Float>, across: u32, sprea
 /// luminance (geometric, over a 32 × 32 grid of its pixels) is `reference`, and for another
 /// mean, `base` times (`reference` / mean) to the power `strength` (1 brings every scene to the
 /// same mean, 0 doesn't meter), within `lo` to `hi`; reached a fraction `rate` of the way each
-/// frame, or at once (`fresh` 1). A hazy sky toward a low sun is ten times the rest of it: a
-/// fixed exposure shows it white.
+/// frame, or at once (`fresh` 1); but never more than `flash` times it, so a scene that
+/// brightens at once (a turn from the wood's shade to a sunlit clearing) shows no more than that
+/// over its settled brightness, while one that darkens adapts at `rate` (#55 AC11: no flash). A
+/// hazy sky toward a low sun is ten times the rest of it: a fixed exposure shows it white.
 pub struct Metering: Copy + GpuData {
     pub base: f32,
     pub reference: f32,
@@ -152,6 +154,7 @@ pub struct Metering: Copy + GpuData {
     pub lo: f32,
     pub hi: f32,
     pub rate: f32,
+    pub flash: f32,
     pub fresh: u32,
 }
 
@@ -195,7 +198,9 @@ pub fn meter(
     let mean = exp2(sums.get(0) / 1024.0)
     let target = clamp(m.base * pow(m.reference / mean, m.strength), m.lo, m.hi)
     exposure.update(id, |old| {
-        let value = if m.fresh != 0 { target } else { mix(old.value, target, m.rate) }
+        let value = if m.fresh != 0 { target } else {
+            min(mix(old.value, target, m.rate), target * m.flash)
+        }
         Exposure { value, mean }
     })
 }

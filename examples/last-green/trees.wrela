@@ -5,8 +5,9 @@
 // its crown leans the way the history leaned it.
 
 use engine::grow::{Cause, State, Tree, log_rot}
+use engine::interest::Drawn
 use engine::noise::{pick, rand}
-use engine::plant::{Bark, Instance, Leaves, Plant, plant}
+use engine::plant::{Bark, Instance, Leaves, Plant, bend, plant, tint_of, unbend}
 use std::field::Tube
 use engine::vegetation::Placed
 use great_tree::tree::great_tree
@@ -459,13 +460,14 @@ pub fn kind_plant(k: u32) -> Plant {
 // ---- placing the history's trees ---------------------------------------------------------------
 
 /// A small tint for an instance: its leaves a little warmer or cooler.
-fn tint(s: u32) -> vec3 {
-    vec3(pick(s, 6, lo: -0.05, hi: 0.06), pick(s, 7, lo: -0.06, hi: 0.04), 0.0)
+fn tint(s: u32) -> vec2 {
+    vec2(pick(s, 6, lo: -0.05, hi: 0.06), pick(s, 7, lo: -0.06, hi: 0.04))
 }
 
 /// An instance of kind `kind` at `p` on the ground (`ground_y` high there), scaled to `tall`, its
 /// +z turned toward `toward` (or turned at random by seed `s`, if `toward` is nothing), sunk
-/// `sink` into the ground.
+/// `sink` into the ground, forking `fork` higher than its kind (`engine::plant::bend`), its crown
+/// `wide` of its kind's across (`crown_wide`).
 fn instance(
     kind: u32,
     p: vec2,
@@ -474,6 +476,8 @@ fn instance(
     toward: vec2,
     s: u32,
     sink: f32,
+    fork: f32,
+    wide: f32,
 ) -> Placed {
     let yaw = if length(toward) > 0.05 { atan2(toward.x, toward.y) } else { TAU * rand(s, 90) }
     Placed {
@@ -481,8 +485,10 @@ fn instance(
         at: Instance {
             at: vec3(p.x, ground_y - sink, p.y),
             yaw,
-            tint: tint(s),
+            tint: tint_of(tint(s)),
             scale: scale_of(kind, tall),
+            fork,
+            wide,
         },
     }
 }
@@ -515,9 +521,9 @@ fn lowest_of_kinds() -> [f32; 22] {
     out
 }
 
-/// The lowest branch of kind `k` placed `tall` high (m).
-pub fn lowest_placed(k: u32, tall: f32) -> f32 {
-    LOWEST[k] * scale_of(k, tall)
+/// The lowest branch of kind `k` placed `tall` high and forking `fork` higher (m).
+pub fn lowest_placed(k: u32, tall: f32, fork: f32) -> f32 {
+    bend(LOWEST[k], fork) * scale_of(k, tall)
 }
 
 /// Each kind's trunk (its first limb), as it's built (the great oak's isn't needed: it's kept).
@@ -534,12 +540,12 @@ fn trunks_of_kinds() -> [Tube<4>; 22] {
     out
 }
 
-/// The radius kind `k`'s trunk is drawn at `h` m over the ground, placed `tall` high: between its
-/// trunk's points, scaled to the tree.
-pub fn trunk_at(k: u32, tall: f32, h: f32) -> f32 {
+/// The radius kind `k`'s trunk is drawn at `h` m over the ground, placed `tall` high and forking
+/// `fork` higher: between its trunk's points, scaled to the tree.
+pub fn trunk_at(k: u32, tall: f32, h: f32, fork: f32) -> f32 {
     let t = TRUNKS[k]
     let s = scale_of(k, tall)
-    let y = h / s
+    let y = unbend(h / s, fork)
     var r = t.radii[3]
     for i in 0..3 {
         if y >= t.points[i].y && y <= t.points[i + 1].y {
@@ -550,6 +556,299 @@ pub fn trunk_at(k: u32, tall: f32, h: f32) -> f32 {
     r * s
 }
 
+// ---- the crowns as they're drawn ---------------------------------------------------------------
+
+/// Each kind's crown as it's built (m), as the eye sees it: its radius, the farthest its clumps'
+/// middles stand from its trunk and half a clump; its base, halfway between its lowest leaves
+/// and the lowest middle less half a clump; and its top, the highest middle and half a clump (a
+/// clump's edge is leaves with gaps between, which the eye sees through: calibrated against the
+/// renderer's depth, #55 AC3).
+const CROWN_R: [f32; 22] = crowns_of_kinds(0)
+const CROWN_BASE: [f32; 22] = crowns_of_kinds(1)
+const CROWN_TOP: [f32; 22] = crowns_of_kinds(2)
+
+fn crowns_of_kinds(which: u32) -> [f32; 22] {
+    var out = [0.0; 22]
+    for k in 0..KINDS {
+        let p = kind_plant(k)
+        var reach = 0.0
+        var low = 1.0e9
+        var high = 0.0
+        for i in 0..p.clumps.len() {
+            let c = p.clumps[i]
+            reach = max(reach, length(c.centre.xz) + 0.5 * c.radius)
+            low = min(low, c.centre.y - 0.5 * c.radius)
+            high = max(high, c.centre.y + 0.5 * c.radius)
+        }
+        out[k] = if p.clumps.len() == 0 { 0.0 } else if which == 0 { reach } else if which == 1 {
+            0.5 * (low + lowest(p))
+        } else { high }
+    }
+    out
+}
+
+/// How tall a living tree of the history `tall` high is drawn as kind `k`: a thorn at least
+/// 1.5 m.
+pub fn drawn_tall(k: u32, tall: f32) -> f32 {
+    if k == HAWTHORN || k == SLOE { max(tall, 1.5) } else { tall }
+}
+
+/// How wide a living tree's crown is drawn against its kind's (`Instance::wide`), drawn as kind
+/// `k`, `tall` high: by how wide the history grew it (its reach, held by its neighbours'), its
+/// leaves spreading half as far again (crowns interlock), to half its kind's at the least.
+pub fn crown_wide(t: Tree, k: u32, tall: f32) -> f32 {
+    clamp(SPREAD * t.reach / max(CROWN_R[k] * scale_of(k, tall), 0.1), 0.5, 1.0)
+}
+
+/// How far past the history's reach a crown's leaves spread (`crown_wide`).
+const SPREAD: f32 = 1.5
+
+/// Each tree as it's drawn, for the interest check (`interest::Evidence::crowns`): its crown as
+/// the eye sees it (`CROWN_BASE`, `CROWN_TOP`, `CROWN_R`: its kind's, placed at its height and
+/// fork and as wide as it's drawn, denser for being narrower; the kept tree's as it's built;
+/// none for a snag or a log), and its trunk's radius at the eye (`as_drawn`'s girth, at 2 m).
+pub fn drawn_crowns(trees: [Tree]) -> Vec<Drawn> {
+    var out: Vec<Drawn> = Vec::with_capacity(trees.len())
+    for t in trees {
+        let standing = t.state == State::Alive || t.state == State::Snag
+        let trunk = if standing && !t.pinned && t.tall > 2.0 {
+            max(t.girth, trunk_at(kind_of(t), t.tall, h: 2.0, fork: t.fork))
+        } else { t.girth }
+        if t.state != State::Alive {
+            out.push(Drawn { base: 0.0, top: 0.0, reach: 0.0, dense: 1.0, trunk })
+        } else if t.pinned {
+            out.push(
+                Drawn {
+                    base: CROWN_BASE[GREAT],
+                    top: CROWN_TOP[GREAT],
+                    reach: CROWN_R[GREAT],
+                    dense: 1.0,
+                    trunk,
+                },
+            )
+        } else {
+            let k = drawn_kind(t)
+            let tall = drawn_tall(k, t.tall)
+            let s = scale_of(k, tall)
+            let wide = crown_wide(t, k, tall)
+            out.push(
+                Drawn {
+                    base: bend(CROWN_BASE[k], t.fork) * s,
+                    top: bend(CROWN_TOP[k], t.fork) * s,
+                    reach: CROWN_R[k] * s * wide,
+                    dense: 1.0 / wide,
+                    trunk,
+                },
+            )
+        }
+    }
+    out
+}
+
+// ---- each tree's fork --------------------------------------------------------------------------
+
+/// Where each kind's trunk first forks, as it's built (m): its lowest limb's foot (its first
+/// limb is its trunk); 0 for a kind with no limbs.
+const FORK_Y: [f32; 22] = forks_of_kinds()
+
+fn forks_of_kinds() -> [f32; 22] {
+    var out = [0.0; 22]
+    for k in 1..KINDS {
+        let p = kind_plant(k)
+        for i in 1..p.limbs.len() {
+            let y = p.limbs[i].points[0].y
+            out[k] = if out[k] == 0.0 { y } else { min(out[k], y) }
+        }
+    }
+    out
+}
+
+/// How high a tree of kind `k`, placed `tall` high and forking `fork` higher than its kind,
+/// first forks (m over the ground).
+pub fn fork_height(k: u32, tall: f32, fork: f32) -> f32 {
+    bend(FORK_Y[k], fork) * scale_of(k, tall)
+}
+
+/// The forks a standing tree may take (`Tree::fork`), and how far apart the first fork's heights
+/// of neighbours of a kind are kept (a share of the higher).
+const FORKS = [
+    -0.48, -0.42, -0.36, -0.30, -0.24, -0.18, -0.12, -0.06, 0.0, 0.06, 0.12, 0.18, 0.24, 0.30, 0.36,
+    0.42, 0.48,
+]
+pub const FORK_APART: f32 = 0.05
+
+/// Whether two trees are neighbours: their crowns touch (their trunks are nearer than their
+/// crowns' radii together).
+pub fn neighbours(a: Tree, b: Tree) -> bool {
+    length(a.at - b.at) < a.reach + b.reach
+}
+
+/// The farthest apart two neighbours' trunks stand (m): twice the widest crown a history grows.
+pub const NEIGHBOURS_WITHIN: f32 = 24.0
+
+/// Whether two first forks' heights are apart (`FORK_APART`).
+pub fn forks_apart(a: f32, b: f32) -> bool {
+    abs(a - b) >= FORK_APART * max(a, b)
+}
+
+/// No kind chosen yet.
+const UNCHOSEN: u32 = 4294967295
+
+/// Whether a tree's fork is chosen: a standing tree's (living or dead) drawn as a kind with limbs.
+pub fn forks(t: Tree) -> bool {
+    !t.pinned &&
+        (t.state == State::Alive || t.state == State::Snag) &&
+        t.tall > 1.2 &&
+        FORK_Y[kind_of(t)] > 0.0
+}
+
+/// How many times the choice goes over the trees again, each tree whose fork is still at a
+/// neighbour's taking the fork that stands farthest from all of its neighbours'.
+const FORK_PASSES: u32 = 24
+
+/// The trees with each standing tree's fork chosen (#54 §9: no two neighbours of a kind fork at
+/// the same height). In their order, each takes the first of `FORKS` (from one its seed picks)
+/// whose height is apart (`forks_apart`) from those of its neighbours of its kind that chose
+/// before it; or, if none is, the one that stands farthest from them (as a share). Then, over
+/// `FORK_PASSES` passes, each tree whose fork isn't apart from a neighbour's chooses again among
+/// all its neighbours. Each tree is judged as the bake will keep it (`bake::as_baked`): its kind
+/// is then the one it's drawn as.
+pub fn forked(trees: take Vec<Tree>) -> Vec<Tree> {
+    var kept = take trees
+    var out: Vec<Tree> = Vec::with_capacity(kept.len())
+    for t in kept {
+        out.push(engine::bake::as_baked(t))
+    }
+    let n = out.len()
+    if n == 0 {
+        return out
+    }
+    var lo = out[0].at
+    var hi = out[0].at
+    for t in out {
+        lo = min(lo, t.at)
+        hi = max(hi, t.at)
+    }
+    let g = engine::grow::Grid::over(lo, hi + vec2(0.01), NEIGHBOURS_WITHIN)
+    // The trees' indices sorted by cell: cell `c`'s from `start[c]` to `start[c + 1]`.
+    let cells = g.cells()
+    var start: Vec<u32> = Vec::filled(cells + 1, 0)
+    for t in out {
+        start[g.cell_at(t.at) + 1] += 1
+    }
+    for c in 0..cells {
+        let before = start[c]
+        start[c + 1] += before
+    }
+    var cursor = start.clone()
+    var sorted: Vec<u32> = Vec::filled(n, 0)
+    for i in 0..n {
+        let c = g.cell_at(out[i].at)
+        sorted[cursor[c]] = i
+        cursor[c] += 1
+    }
+    let near = Near { g, start, sorted }
+    // Each tree's kind and fork's height, once it has chosen.
+    var kinds: Vec<u32> = Vec::filled(n, UNCHOSEN)
+    var heights: Vec<f32> = Vec::filled(n, 0.0)
+    for i in 0..n {
+        if forks(out[i]) {
+            choose_fork(mut out, mut kinds, mut heights, near, i, first: true)
+        }
+    }
+    for _ in 0..FORK_PASSES {
+        var moved = 0
+        for i in 0..n {
+            if kinds[i] != UNCHOSEN &&
+                fork_gap(out, kinds, heights, near, i, kinds[i], heights[i]) < FORK_APART {
+                choose_fork(mut out, mut kinds, mut heights, near, i, first: false)
+                moved += 1
+            }
+        }
+        if moved == 0 {
+            break
+        }
+    }
+    for i in 0..n {
+        kept[i].fork = out[i].fork
+    }
+    kept
+}
+
+/// The trees' places sorted by cell, for finding a tree's neighbours.
+struct Near {
+    g: engine::grow::Grid,
+    start: Vec<u32>,
+    sorted: Vec<u32>,
+}
+
+/// The least gap (a share of the higher) between a first fork at `h` of tree `i` drawn as kind
+/// `k` and those of its neighbours of that kind that have chosen; a large number for none.
+fn fork_gap(
+    trees: [Tree],
+    kinds: [u32],
+    heights: [f32],
+    near: Near,
+    i: u32,
+    k: u32,
+    h: f32,
+) -> f32 {
+    let t = trees[i]
+    let c = near.g.ij(t.at)
+    var gap = 1.0e9
+    for dj in 0..3 {
+        for di in 0..3 {
+            let x = c.x + di - 1
+            let z = c.y + dj - 1
+            if x >= 0 && z >= 0 && x < i32(near.g.nx) && z < i32(near.g.nz) {
+                let b = u32(z) * near.g.nx + u32(x)
+                for q in near.start[b]..near.start[b + 1] {
+                    let j = near.sorted[q]
+                    if j != i && kinds[j] == k && neighbours(trees[j], t) {
+                        gap = min(gap, abs(heights[j] - h) / max(max(heights[j], h), 0.01))
+                    }
+                }
+            }
+        }
+    }
+    gap
+}
+
+/// Tree `i` chooses its fork: the first of `FORKS` (from one its seed picks) apart from its
+/// neighbours' (`first`: the first choice, when it takes the first that is), else the one
+/// farthest from them.
+fn choose_fork(
+    trees: mut Vec<Tree>,
+    kinds: mut Vec<u32>,
+    heights: mut Vec<f32>,
+    near: Near,
+    i: u32,
+    first: bool,
+) {
+    let t = trees[i]
+    let from = t.seed % FORKS.len()
+    var best = t.fork
+    var best_gap = -1.0
+    for m in 0..FORKS.len() {
+        let f = FORKS[(from + m) % FORKS.len()]
+        var tf = t
+        tf.fork = f
+        let k = kind_of(tf)
+        let gap = fork_gap(trees, kinds, heights, near, i, k, fork_height(k, t.tall, f))
+        if gap > best_gap {
+            best_gap = gap
+            best = f
+        }
+        if first && gap >= FORK_APART {
+            break
+        }
+    }
+    trees[i].fork = best
+    let k = kind_of(trees[i])
+    kinds[i] = k
+    heights[i] = fork_height(k, t.tall, best)
+}
+
 /// What a player walks round of the history's trees, as they're drawn: each standing tree's
 /// girth the larger of the history's and its drawn trunk's at a chest's height (1.2 m), so the
 /// player stops where the trunk is seen.
@@ -558,7 +857,7 @@ pub fn as_drawn(trees: [Tree]) -> Vec<Tree> {
     for t in trees {
         var d = t
         if (t.state == State::Alive || t.state == State::Snag) && !t.pinned && t.tall > 2.0 {
-            d.girth = max(t.girth, trunk_at(kind_of(t), t.tall, 1.2))
+            d.girth = max(t.girth, trunk_at(kind_of(t), t.tall, 1.2, t.fork))
         }
         out.push(d)
     }
@@ -595,7 +894,7 @@ fn snag_kind(t: Tree) -> u32 {
 /// `lift`), the forest's form when the open one's would come below it.
 pub fn drawn_kind(t: Tree) -> u32 {
     let k = living_kind(t)
-    if t.lift <= 0.0 || lowest_placed(k, t.tall) >= t.lift {
+    if t.lift <= 0.0 || lowest_placed(k, t.tall, t.fork) >= t.lift {
         k
     } else if k == OAK_OPEN {
         OAK_FOREST
@@ -644,26 +943,43 @@ pub fn placed(trees: [Tree], height: fn(vec2) -> f32) -> Vec<Placed> {
                     at: Instance {
                         at: vec3(t.at.x, y, t.at.y),
                         yaw: 0.0,
-                        tint: vec3(0.0),
+                        tint: tint_of(vec2(0.0)),
                         scale: 1.0,
+                        fork: 0.0,
+                        wide: 1.0,
                     },
                 },
             )
         } else if t.state == State::Alive {
             if t.tall > 1.2 {
                 let k = drawn_kind(t)
-                let tall = if k == HAWTHORN || k == SLOE { max(t.tall, 1.5) } else { t.tall }
-                out.push(instance(k, t.at, y, tall, t.lean, t.seed, 0.0))
+                let tall = drawn_tall(k, t.tall)
+                let wide = crown_wide(t, k, tall)
+                out.push(
+                    instance(k, t.at, y, tall, t.lean, t.seed, sink: 0.0, fork: t.fork, wide: wide),
+                )
             }
         } else if t.state == State::Snag {
             let k = snag_kind(t)
-            out.push(instance(k, t.at, y, t.tall, vec2(0.0), t.seed, 0.0))
+            out.push(
+                instance(k, t.at, y, t.tall, vec2(0.0), t.seed, sink: 0.0, fork: t.fork, wide: 1.0),
+            )
         } else if t.state == State::Log {
             let rot = clamp(f32(PRESENT - t.fell) / (2.0 * t.tall + 4.0), 0.0, 1.0)
             let len = t.tall * 0.85 * (1.0 - 0.3 * rot)
             let k = if t.girth > 0.35 { LOG_LONG } else { LOG_SHORT }
             // Scaled by length; sunk as it rots.
-            var p = instance(k, t.at, y, len, t.fall, t.seed, 0.3 * rot * t.girth)
+            var p = instance(
+                k,
+                t.at,
+                y,
+                len,
+                t.fall,
+                t.seed,
+                sink: 0.3 * rot * t.girth,
+                fork: 0.0,
+                wide: 1.0,
+            )
             p.at.scale = clamp(len / BUILT[k], 0.25, 1.8)
             out.push(p)
         }
@@ -742,8 +1058,10 @@ pub fn far_placed(
                     at: Instance {
                         at: vec3(p.x, height(p), p.y),
                         yaw: TAU * rand(s, 3),
-                        tint: tint(s),
+                        tint: tint_of(tint(s)),
                         scale: clamp(far.tall[k] * widen / BUILT[kind], 0.15, 2.4),
+                        fork: 0.0,
+                        wide: 1.0,
                     },
                 },
             )

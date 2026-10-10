@@ -305,6 +305,29 @@ pub fn built(m: Map) -> Vec<Built> {
     out
 }
 
+/// What's built, as the interest check sees it (`interest::Evidence::solids`): each thing's
+/// place, radius and height (x, z, radius, height): a stone or a slab, the tower, and a wall as
+/// a post each metre along it.
+pub fn solids(m: Map) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for b in built(m) {
+        match b {
+            Built::Stone { at, radius, squash, .. } => {
+                out.push(vec4(at, radius * max(squash.x, squash.z), 2.0 * radius * squash.y))
+            },
+            Built::Slab { at, half, .. } => out.push(vec4(at, max(half.x, half.z), 2.0 * half.y)),
+            Built::Tower { at } => out.push(vec4(at, stones::TOWER_RADIUS, 22.0)),
+            Built::Wall { a, b, tall, .. } => {
+                let n = u32(ceil(length(b - a)))
+                for i in 0..(n + 1) {
+                    out.push(vec4(mix(a, b, vec2(f32(i) / f32(max(n, 1)))), 0.45, tall))
+                }
+            },
+        }
+    }
+    out
+}
+
 /// Built thing `b` realized, standing on the ground (`height`).
 pub fn realize(b: Built, height: fn(vec2) -> f32) -> Realized {
     match b {

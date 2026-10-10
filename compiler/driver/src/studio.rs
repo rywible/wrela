@@ -320,6 +320,94 @@ pub fn dir(pkg: &Path) -> PathBuf {
     pkg.join("build").join("studio")
 }
 
+/// Whether the package at `pkg` is a floor, which the map lens shows (#55 AC13): a module
+/// `lens` (lens.wrela) with `pub fn map()` and `pub fn preview()`.
+pub fn is_floor(pkg: &Path) -> bool {
+    std::fs::read_to_string(pkg.join("lens.wrela"))
+        .is_ok_and(|t| t.contains("pub fn map(") && t.contains("pub fn preview("))
+}
+
+/// The map lens's exported actions, as `ACTIONS` lists the field lens's.
+pub const MAP_ACTIONS: &[(&str, &str)] = &[
+    ("show", "u"),
+    ("zoom", "fff"),
+    ("items", ""),
+    ("click", "ff"),
+    ("move", "ffff"),
+    ("check", ""),
+    ("write", ""),
+];
+
+/// The actions of the lens on the package at `pkg`: the map lens's on a floor, else the field
+/// lens's.
+pub fn actions(pkg: &Path) -> &'static [(&'static str, &'static str)] {
+    if is_floor(pkg) { MAP_ACTIONS } else { ACTIONS }
+}
+
+/// The lens's program's directory for the package at `pkg`: the map lens's (`map`) on a floor,
+/// the field lens's (`lens`) on a subject.
+pub fn program_dir(pkg: &Path) -> PathBuf {
+    dir(pkg).join(if is_floor(pkg) { "map" } else { "lens" })
+}
+
+/// The path of dependency `dep` the floor's manifest at `pkg` gives, made absolute.
+fn dependency_path(pkg: &Path, dep: &str) -> Result<PathBuf, String> {
+    let text = std::fs::read_to_string(pkg.join("wrela.toml"))
+        .map_err(|e| format!("can't read {}/wrela.toml: {e}", pkg.display()))?;
+    let m = crate::manifest::parse(wrela_diag::FileId(0), &text)
+        .map_err(|_| format!("{}/wrela.toml doesn't read", pkg.display()))?;
+    let d = m
+        .deps
+        .iter()
+        .find(|d| d.name == dep)
+        .ok_or_else(|| format!("the floor at {} doesn't depend on `{dep}`", pkg.display()))?;
+    pkg.join(&d.path).canonicalize().map_err(|e| format!("{}: {e}", d.path))
+}
+
+/// Writes the map lens's program for the floor at `pkg` (studio/maplens/glue with a `floor`
+/// module for the floor's `lens`, and the `maplens`, `studio` and `ui` packages beside it): the
+/// program's directory.
+fn write_map_lens(pkg: &Path, name: &str) -> Result<PathBuf, String> {
+    let io = |e: std::io::Error| format!("can't write the map lens's program: {e}");
+    let engine = dependency_path(pkg, "engine")?;
+    let engine = engine.display().to_string();
+    let base = dir(pkg);
+    let program = base.join("map");
+    for (rel, bytes) in embedded::STUDIO {
+        if let Some(rest) = rel.strip_prefix("maplens/") {
+            match rest {
+                "glue/main.wrela" => {
+                    write_if_changed(&program.join("main.wrela"), bytes).map_err(io)?
+                }
+                "wrela.toml" => {}
+                _ if rest.starts_with("glue/") => {}
+                _ => write_if_changed(&base.join("maplens").join(rest), bytes).map_err(io)?,
+            }
+        } else if !rel.starts_with("glue/") {
+            write_if_changed(&base.join("studio").join(rel), bytes).map_err(io)?;
+        }
+    }
+    for (rel, bytes) in embedded::UI {
+        write_if_changed(&base.join("ui").join(rel), bytes).map_err(io)?;
+    }
+    let maplens = format!(
+        "# Written by `wrela studio`: the map lens, for the floor `{name}`.\n[package]\nname = \"maplens\"\n\n[dependencies]\nstudio = {{ path = \"../studio\" }}\nui = {{ path = \"../ui\" }}\nengine = {{ path = {engine:?} }}\n"
+    );
+    write_if_changed(&base.join("maplens").join("wrela.toml"), maplens.as_bytes()).map_err(io)?;
+    let manifest = format!(
+        "# Written by `wrela studio`: the map lens on `{name}`.\n[package]\nname = \"map\"\n\n[dependencies]\nmaplens = {{ path = \"../maplens\" }}\nengine = {{ path = {engine:?} }}\n{name} = {{ path = \"../../..\" }}\n"
+    );
+    write_if_changed(&program.join("wrela.toml"), manifest.as_bytes()).map_err(io)?;
+    let floor = format!(
+        "// Written by `wrela studio`: what the map lens needs of the floor `{name}` (its `lens`).\n\n\
+         use engine::interest::Preview\nuse engine::place::Map\n\n\
+         pub fn map() -> Map {{\n    {name}::lens::map()\n}}\n\n\
+         pub fn preview() -> Preview {{\n    {name}::lens::preview()\n}}\n"
+    );
+    write_if_changed(&program.join("floor.wrela"), floor.as_bytes()).map_err(io)?;
+    Ok(program)
+}
+
 /// Writes the lens's program for the subject at `pkg` (studio/glue with the subject's `subject`
 /// module, and the `studio` and `ui` packages beside it), leaving files that are already as
 /// they'd be: the program's directory.
@@ -359,10 +447,19 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Builds the lens on the subject at `pkg`, lifting the subject's literals, into
 /// `<pkg>/build/studio/page/`: the build's output, and that directory.
 pub fn build(pkg: &Path, debug: bool) -> Result<(crate::Output, PathBuf), String> {
-    let s = subject(pkg)?;
-    let lens = write_lens(pkg, &s).map_err(|e| format!("can't write the lens's program: {e}"))?;
     let kind = crate::BuildKind { debug, testing: false };
-    let out = crate::build_lifted(&lens, std::slice::from_ref(&s.name), kind)?;
+    let out = if is_floor(pkg) {
+        let name = crate::manifest::name_in(pkg).unwrap_or_else(|| {
+            pkg.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        });
+        let program = write_map_lens(pkg, &name)?;
+        crate::build_lifted(&program, std::slice::from_ref(&name), kind)?
+    } else {
+        let s = subject(pkg)?;
+        let lens =
+            write_lens(pkg, &s).map_err(|e| format!("can't write the lens's program: {e}"))?;
+        crate::build_lifted(&lens, std::slice::from_ref(&s.name), kind)?
+    };
     let page = dir(pkg).join("page");
     if !out.has_errors() {
         let wasm = out.files.iter().find(|(p, _)| p == "game.wasm").map(|(_, w)| w.as_slice());
@@ -541,7 +638,7 @@ fn plan_edits(
     let r = report(page).map_err(refused)?;
     // The lens's build is of the program around the subject, so paths are from the lens's
     // package: `../../..` is the subject's.
-    let lens = dir(pkg).join("lens");
+    let lens = program_dir(pkg);
     // Each file an edit is in, by its index in the build: its text then and now, each lexed once.
     let mut lexed: BTreeMap<u32, (Numbers, Numbers)> = BTreeMap::new();
     let mut out = Vec::new();
@@ -609,7 +706,7 @@ pub fn apply(pkg: &Path, page: &Path, body: &[u8]) -> serde_json::Value {
         return serde_json::json!({ "written": false, "why": "the edits aren't [[literal, value], ...]" });
     };
     match plan_edits(pkg, page, &edits) {
-        Ok(planned) => match crate::edit::write(&dir(pkg).join("lens"), &planned) {
+        Ok(planned) => match crate::edit::write(&program_dir(pkg), &planned) {
             Ok(_) => crate::edit::to_value(&planned, true),
             Err(e) => serde_json::json!({ "written": false, "why": e.to_string() }),
         },

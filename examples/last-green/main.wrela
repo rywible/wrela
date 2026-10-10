@@ -31,7 +31,7 @@ use engine::vegetation::{Kind, Placed, kind}
 use engine::wood::Wood
 use engine::view::{BEHIND, Camera, NEAREST, camera, first_camera}
 use engine::water::{LOOKS, WaterVert, copy_below, water_shade, water_vertex}
-use history::{BAKED, OBSTACLES, WATERS, tiles_hi, tiles_lo}
+use history::{BAKED, OBSTACLES, tiles_hi, tiles_lo}
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
     Address, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer, GpuSpan,
@@ -60,6 +60,7 @@ const METERING = Metering {
     lo: 0.15,
     hi: 3.0,
     rate: 0.05,
+    flash: 1.25,
     fresh: 0,
 }
 
@@ -341,6 +342,9 @@ pub struct Floor {
     glow_a: Texture<Rgba16Float>,
     glow_b: Texture<Rgba16Float>,
     exposure: GpuBuffer<Exposure>,
+    /// What a test captured of the last frame (`test_capture`).
+    captured: GpuBuffer<f32>,
+    captured_exposure: GpuBuffer<Exposure>,
     linear: Sampler,
     repeat: Sampler,
     width: u32,
@@ -366,7 +370,7 @@ pub struct Floor {
     footprints: GpuBuffer<vec4>,
     palette: GpuBuffer<mat4>,
     last_palette: GpuBuffer<mat4>,
-    /// The water's mesh (`history::WATERS`), the scene under it as its pass reads it, and which
+    /// The water's mesh (`history::waters`, laid as the program starts), the scene under it as its pass reads it, and which
     /// of its looks is drawn (`engine::water::LOOKS`; F6 the next).
     water_verts: GpuBuffer<WaterVert>,
     water_tris: GpuBuffer<u32>,
@@ -377,6 +381,13 @@ pub struct Floor {
     reported: u32,
     /// Whether a frame's been full yet (`playable`).
     playable: bool,
+    /// The tiles that were late (`late_tiles`), each told once.
+    late: Vec<vec2i>,
+    /// The bake's files on their way, to be hashed (F9: `hash_bake`), and their hashes' sum,
+    /// bytes and count so far.
+    hashing: Vec<Pending<u8>>,
+    hashed: vec3u,
+    hash_sum: u64,
 }
 
 /// The built things to realize: the floor's (`blockouts::built`), and the egg's place's ring of
@@ -411,6 +422,7 @@ fn probes_at(at: vec2, occluders: take Vec<engine::probes::Occluder>) -> Baked {
 }
 
 pub fn init() -> Floor {
+    let waters = history::waters()
     let world = spawn_world()
     let start = world.player.at.world()
     let latest = run(take world, hz: 60, step: tick, present: snapshot)
@@ -484,6 +496,8 @@ pub fn init() -> Floor {
         glow_a: texture::<Rgba16Float>(width: 1, height: 1),
         glow_b: texture::<Rgba16Float>(width: 1, height: 1),
         exposure: buffer(1),
+        captured: buffer(1),
+        captured_exposure: buffer(1),
         linear: sampler(),
         repeat: sampler(address: Address::Repeat),
         width: 0,
@@ -502,13 +516,17 @@ pub fn init() -> Floor {
         footprints: buffer_of(footprints(), at_least: 1),
         palette: buffer(1),
         last_palette: buffer(1),
-        water_verts: buffer_of(WATERS.mesh.verts, at_least: 1),
-        water_tris: buffer_of(WATERS.mesh.tris, at_least: 1),
-        water_count: WATERS.mesh.tris.len(),
+        water_verts: buffer_of(waters.mesh.verts, at_least: 1),
+        water_tris: buffer_of(waters.mesh.tris, at_least: 1),
+        water_count: waters.mesh.tris.len(),
         below: texture::<Rgba16Float>(width: 1, height: 1),
         water_look: 0,
         reported: 0,
         playable: false,
+        late: Vec::new(),
+        hashing: Vec::new(),
+        hashed: vec3u(0),
+        hash_sum: 0,
     }
 }
 
@@ -561,6 +579,25 @@ fn playable(s: Floor, eye: vec2) -> bool {
         }
     }
     true
+}
+
+/// Prints each tile within `CARDS_TO` of the eye whose own trees aren't placed: late (once).
+fn late_tiles(s: mut Floor, eye: vec2) {
+    let Some(w) = s.wood else { return }
+    let at = engine::place::tile_of(eye)
+    for j in (at.y - 1)..(at.y + 2) {
+        for i in (at.x - 1)..(at.x + 2) {
+            let t = vec2i(i, j)
+            var told = false
+            for l in s.late {
+                told = told || l == t
+            }
+            if tile_distance(t, eye) < CARDS_TO && w.slot_of(t).is_none() && !told {
+                s.late.push(t)
+                print(f"late tile {t.x}, {t.y} at frame {s.frames}")
+            }
+        }
+    }
 }
 
 /// Whether tile `t` is in the far layer.
@@ -1013,12 +1050,61 @@ fn keys(s: mut Floor, time: f32) {
             if key == Key::F6 {
                 s.water_look = (s.water_look + 1) % LOOKS.len()
             }
+            if key == Key::F9 && s.hashing.is_empty() {
+                for i in 0..BAKED.len() {
+                    s.hashing.push(BAKED.fetch(i))
+                }
+                s.hashed = vec3u(0)
+                s.hash_sum = 0
+            }
             if let Some(system) = system {
                 s.off = s.off.toggled(system)
                 s.near.changed()
                 s.far.changed()
             }
         }
+    }
+}
+
+/// The bake as this host reads it (#55 AC2's same bytes in both hosts), once F9 has fetched all
+/// its files: each file's hash (`std::hash::Hasher`: its name, then its length and its bytes,
+/// eight to a word), summed, printed.
+fn hash_bake(s: mut Floor) {
+    for i in 0..s.hashing.len() {
+        match s.hashing[i].poll() {
+            Some(Ok(b)) => {
+                var h = std::hash::Hasher::new()
+                h.write_str(BAKED.name(i))
+                h.write_u32(b.len())
+                var word: u64 = 0
+                var k = 0
+                for j in 0..b.len() {
+                    word = word | (u64(b[j]) << (8 * k))
+                    k += 1
+                    if k == 8 {
+                        h.write_u64(word)
+                        word = 0
+                        k = 0
+                    }
+                }
+                if k > 0 {
+                    h.write_u64(word)
+                }
+                s.hash_sum = s.hash_sum.wrapping_add(h.finish())
+                s.hashed += vec3u(1, b.len(), 0)
+            },
+            Some(Err(_)) => {
+                print(f"a file of the bake didn't come: {BAKED.name(i)}")
+                s.hashed += vec3u(1, 0, 1)
+            },
+            None => {},
+        }
+    }
+    if !s.hashing.is_empty() && s.hashed.x == s.hashing.len() {
+        print(
+            f"the bake's bytes: {s.hashed.x} files, {s.hashed.y} bytes, hash {s.hash_sum}, {s.hashed.z} missing",
+        )
+        s.hashing = Vec::new()
     }
 }
 
@@ -1487,6 +1573,7 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32) {
 
 pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     keys(mut s, time)
+    hash_bake(mut s)
     let (w, h) = (max(width / SCALE, 1), max(height / SCALE, 1))
     if width != s.width || height != s.height || f32(w) != s.cam.screen.x {
         resize(mut s, width, height, w, h)
@@ -1590,6 +1677,11 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
             f"frame {s.frames}: the player at {feet.x:.1}, {feet.z:.1}; {s.tiles_in} tiles come, {loaded} instances loaded",
         )
     }
+    // A tile the player can see whose own trees aren't placed yet (#55 AC7's tiles on time):
+    // within the cards' reach of the eye (past it, the far layer's crowns stand for them).
+    if s.playable {
+        late_tiles(mut s, eye.xz)
+    }
     // The first full frame (#55 AC7's time to play): the wood cooked, every tile within 120 m of
     // the eye placed, the near shadows drawn and the probes baked.
     if !s.playable && playable(s, eye.xz) {
@@ -1607,6 +1699,80 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
 @testing
 pub fn test_hold(s: mut Floor, eye: vec3, at: vec3) {
     s.held = Some((eye, at))
+}
+
+/// What the last frame drew (`testing::Capture`), copied into a new buffer (the newest), and how
+/// many elements.
+@testing
+pub fn test_capture(s: mut Floor, what: testing::Capture) -> u32 {
+    match what {
+        testing::Capture::Depth => {
+            let n = u32(s.cam.screen.x) * u32(s.cam.screen.y)
+            s.captured = buffer(n)
+            dispatch(testing::copy_depth.bind(s.depth, out: mut s.captured), over: n)
+            n
+        },
+        testing::Capture::Tags => {
+            let n = s.width * s.height
+            s.captured = buffer(n)
+            dispatch(testing::copy_tags.bind(s.history, out: mut s.captured), over: n)
+            n
+        },
+        testing::Capture::Exposure => {
+            s.captured_exposure = buffer(1)
+            std::gpu::copy(from: s.exposure.items(), to: s.captured_exposure.items_mut())
+            1
+        },
+    }
+}
+
+/// The camera the last frame was drawn by.
+pub struct CameraReport: Copy {
+    pub eye: vec3,
+    pub forward: vec3,
+    pub right: vec3,
+    pub up: vec3,
+    pub tan_half: f32,
+    pub aspect: f32,
+    pub near: f32,
+    pub jitter: vec2,
+    pub screen: vec2,
+}
+
+@testing
+pub fn test_camera(s: Floor) -> CameraReport {
+    let c = s.cam
+    CameraReport {
+        eye: c.eye,
+        forward: c.forward,
+        right: c.right,
+        up: c.up,
+        tan_half: c.tan_half,
+        aspect: c.aspect,
+        near: c.near,
+        jitter: c.jitter,
+        screen: c.screen,
+    }
+}
+
+/// The ground's height at (x, z), as the floor draws it.
+@testing
+pub fn test_ground(x: f32, z: f32) -> f32 {
+    height_at(vec2(x, z))
+}
+
+/// Whether the floor round the camera's eye has settled: a full frame there (`playable`: the
+/// tiles round it placed, the near shadows drawn, the probes baked), nothing streaming in, and
+/// the probes baked round where the eye is (not where it was).
+@testing
+pub fn test_settled(s: Floor) -> f32 {
+    let eye = s.cam.eye.xz
+    let still = s.fetching.is_empty() &&
+        s.cooking.is_empty() &&
+        s.arrived.is_empty() &&
+        s.next_probes.is_none() &&
+        length(eye - s.probes_at) <= PROBES_MOVE
+    if still && playable(s, eye) { 1.0 } else { 0.0 }
 }
 
 /// Whether the floor's ready: its kinds cooked and the tiles round the player in and placed.

@@ -1,0 +1,35 @@
+// What the map lens (`wrela studio examples/last-green`, #55 AC13) reads of the floor: its map as
+// its literals say now, its ground, and its preview (the history at the preview's grain, checked
+// as the bake is: with the crowns as they're drawn and the built things). The game never calls
+// these, so none of it is in its build.
+
+use engine::footing::obstacles_of
+use engine::grow::{Ground, PREVIEW, simulate}
+use engine::interest::{Evidence, Preview, QUICK, check}
+use engine::place::Map
+
+/// The floor's map.
+pub fn map() -> Map {
+    map::map()
+}
+
+/// The ground's height at `p`.
+pub fn height(p: vec2) -> f32 {
+    Ground::height(ground::ground(), p.x, p.y)
+}
+
+/// The preview: the history at the preview's grain over the history's domain, and the check on
+/// it (`interest::QUICK`), with the streams it found.
+pub fn preview() -> Preview {
+    let m = map::map()
+    let lo = history::domain_lo()
+    let hi = history::domain_hi()
+    let st = stones::stones(m)
+    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st)
+    let streams = h.streams.clone()
+    let o = obstacles_of(h.trees, species::habits(), h.streams, st, stones::walls(m), lo, hi)
+    var e = Evidence::of(h)
+    e.crowns = trees::drawn_crowns(e.trees)
+    e.solids = blockouts::solids(m)
+    Preview { checked: check(ground::ground(), m, species::habits(), e, o, st, QUICK), streams }
+}

@@ -510,14 +510,17 @@ pub fn limb_corner(k: u32) -> u32 {
     (piece * (RINGS + 1) + ring) * (SIDES + 1) + side
 }
 
-/// A limb's vertex `k` (of `LIMB_VERTICES`): its point (`limb_point`).
+/// A limb's vertex `k` (of `LIMB_VERTICES`): where it is, its normal, and where it is round and
+/// along the limb (`limb_point`).
 pub fn limb_vertex(limb: Tube<4>, k: u32) -> (vec3, vec3, vec2) {
-    limb_point(limb, limb_corner(k))
+    let (centre, n, radius, along) = limb_point(limb, limb_corner(k))
+    (centre + n * radius, n, along)
 }
 
-/// A limb's point `p` (of `LIMB_POINTS`): where it is, its normal, and where it is round and
-/// along the limb (for bark's ridges), in the plant's frame.
-pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, vec2) {
+/// A limb's point `p` (of `LIMB_POINTS`), in the plant's frame: the point of its axis it's
+/// round, its normal and its distance out from the axis (the point is `centre + n * radius`),
+/// and where it is round and along the limb (for bark's ridges).
+pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, f32, vec2) {
     let piece = p / ((RINGS + 1) * (SIDES + 1))
     let r = p % ((RINGS + 1) * (SIDES + 1))
     let side = f32(r % (SIDES + 1))
@@ -547,30 +550,102 @@ pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, vec2) {
     for k in 0..piece {
         walked += length(limb.points[k + 1] - limb.points[k])
     }
-    (centre + n * radius, n, vec2(side / f32(SIDES), walked + along * length(b - a)))
+    (centre, n, radius, vec2(side / f32(SIDES), walked + along * length(b - a)))
 }
 
 // ---- instances ---------------------------------------------------------------------------------
 
-/// A plant placed in the world: where its base is, its turn about +y, its size, and its tint
-/// (added to its leaves' colour).
+/// A plant placed in the world: where its base is, its turn about +y, its tint (added to its
+/// leaves' red and green, packed: `tint_of`), its size, its fork: how much higher its trunk
+/// forks than its kind's (below 0, lower), as a share of the height there (`bend`), so two trees
+/// of a kind don't fork at the same height (#54 §9); and how wide its crown is drawn against its
+/// kind's (0 to 1: as wide as its history grew it among its neighbours; its trunk and limbs keep
+/// their girth).
 pub struct Instance: Copy + GpuData {
     pub at: vec3,
     pub yaw: f32,
-    pub tint: vec3,
+    pub tint: Unorm8x4,
     pub scale: f32,
+    pub fork: f32,
+    pub wide: f32,
+}
+
+/// No plant: an empty place in an instances' buffer.
+pub const NO_INSTANCE = Instance {
+    at: vec3(0.0),
+    yaw: 0.0,
+    tint: tint_of(vec2(0.0)),
+    scale: 0.0,
+    fork: 0.0,
+    wide: 1.0,
+}
+
+/// An instance's tint (its leaves' red and green, each within ±0.08), packed.
+pub fn tint_of(t: vec2) -> Unorm8x4 {
+    let u = clamp((t + vec2(0.08)) / 0.16, vec2(0.0), vec2(1.0))
+    Unorm8x4::encode(vec4(u, 0.0, 0.0))
 }
 
 impl Instance {
-    /// A point of the plant's frame in the world.
+    /// A point of the plant's frame in the world: its crown narrowed (`wide`), bent at its fork,
+    /// sized and turned.
     pub fn place(self, p: vec3) -> vec3 {
-        self.at + turned(self.yaw, p * self.scale)
+        self.at +
+            turned(
+                self.yaw,
+                vec3(p.x * self.wide, bend(p.y, self.fork), p.z * self.wide) * self.scale,
+            )
+    }
+
+    /// A point of a limb's surface in the world: its axis's point `centre` placed, and the
+    /// surface's offset `off` from it sized and turned (a limb keeps its girth where its crown
+    /// is narrowed).
+    pub fn place_round(self, centre: vec3, off: vec3) -> vec3 {
+        self.place(centre) + turned(self.yaw, off * self.scale)
     }
 
     /// A direction of the plant's frame in the world.
     pub fn turn(self, v: vec3) -> vec3 {
         turned(self.yaw, v)
     }
+
+    /// A normal of the plant's frame at height `y` in it, in the world: bent as `place` bends
+    /// the plant there.
+    pub fn turn_normal(self, n: vec3, y: f32) -> vec3 {
+        turned(self.yaw, normalize(vec3(n.x, n.y / bend_slope(y, self.fork), n.z)))
+    }
+
+    /// Its tint (`tint_of`), as added to its leaves' colour.
+    pub fn tint_rgb(self) -> vec3 {
+        vec3(self.tint.decode().xy * 0.16 - vec2(0.08), 0.0)
+    }
+}
+
+/// How far up a plant's frame (m) the bend of its fork reaches: nothing above it moves.
+pub const BEND_TO: f32 = 32.0
+
+/// A height `y` of a plant's frame bent by `fork`: its trunk and what's low on it stretched (or,
+/// below 0, squeezed) by up to `fork` of their height, the stretch fading to nothing at
+/// `BEND_TO`; its foot stays where it is. The bend keeps its order (its slope over 0) for a
+/// `fork` between -1 and 3.
+pub fn bend(y: f32, fork: f32) -> f32 {
+    let u = clamp(y / BEND_TO, 0.0, 1.0)
+    y + fork * y * (1.0 - u) * (1.0 - u)
+}
+
+/// `bend`'s slope at `y`.
+pub fn bend_slope(y: f32, fork: f32) -> f32 {
+    let u = clamp(y / BEND_TO, 0.0, 1.0)
+    1.0 + fork * (1.0 - u) * (1.0 - 3.0 * u)
+}
+
+/// The height of a plant's frame that `bend` takes to `h` (Newton's method).
+pub fn unbend(h: f32, fork: f32) -> f32 {
+    var y = h
+    for _ in 0..5 {
+        y -= (bend(y, fork) - h) / bend_slope(y, fork)
+    }
+    y
 }
 
 /// A direction of a plant's frame in the world, the plant turned `yaw` about +y.

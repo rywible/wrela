@@ -348,6 +348,10 @@ pub struct Tree: Copy {
     pub shaped: u32,
     /// The lowest a branch of it comes (m): browsing keeps a line below which few grow.
     pub lift: f32,
+    /// How much higher (below 0, lower) its trunk forks than its kind's, as a share of the
+    /// height there (`plant::bend`): chosen among its neighbours once it's grown (a floor's own
+    /// choice), 0 until then.
+    pub fork: f32,
     pub seed: u32,
 }
 
@@ -376,6 +380,7 @@ fn sapling(at: vec2, kind: u32, year: i32, tall: f32, seed: u32, h: Habit) -> Tr
         pinned: false,
         shaped: NONE,
         lift: 0.0,
+        fork: 0.0,
         seed,
     }
 }
@@ -699,10 +704,24 @@ pub const SIGHT_WIDTH: f32 = 16.0
 /// stand, and the pins.
 pub fn survey<G: Ground>(ground: G, m: Map, g: Grid) -> Land {
     let nn = g.cells()
+    // The ground's height and rock at each cell, a row each on a helper (the ground's the
+    // costliest part of the land to read).
+    var grounds: Vec<GroundRow> = Vec::from_fn(
+        g.nz,
+        |j| GroundRow { j, heights: Vec::new(), rock: Vec::new() },
+    )
+    grounds.par_each_mut(|r| {
+        for i in 0..g.nx {
+            let p = g.centre(r.j * g.nx + i)
+            r.heights.push(ground.height(p.x, p.y))
+            r.rock.push(ground.rock(p))
+        }
+    })
     var heights: Vec<f32> = Vec::with_capacity(nn)
-    for c in 0..nn {
-        let p = g.centre(c)
-        heights.push(ground.height(p.x, p.y))
+    var rock: Vec<f32> = Vec::with_capacity(nn)
+    for mut r in grounds {
+        heights.append(mut r.heights)
+        rock.append(mut r.rock)
     }
     let (wet, _) = water(g, heights)
     // Thin soil: on crests (where the ground is convex over ten metres), on rock, on the ridges.
@@ -719,7 +738,7 @@ pub fn survey<G: Ground>(ground: G, m: Map, g: Grid) -> Land {
         let convex = (h - 0.25 * around) * 5.0 / (f32(r) * g.cell)
         let p = g.centre(c)
         let crest = smoothstep(4.0, 16.0, m.land.ridge(p)) * 0.6
-        thin[c] = max(max(smoothstep(0.15, 0.8, convex), crest) * (1.0 - wet[c]), ground.rock(p))
+        thin[c] = max(max(smoothstep(0.15, 0.8, convex), crest) * (1.0 - wet[c]), rock[c])
     }
     let thin = g.blur(thin, 1)
     let lines = sightlines(ground, m)
@@ -751,7 +770,7 @@ pub fn survey<G: Ground>(ground: G, m: Map, g: Grid) -> Land {
             region: Vec::new(),
         },
     )
-    rows.par_each_mut(|r| survey_row(mut r, ground, m, g, heights, lines, boxes))
+    rows.par_each_mut(|r| survey_row(mut r, ground, m, g, heights, rock, lines, boxes))
     var habitable: Vec<bool> = Vec::with_capacity(nn)
     var exposed: Vec<f32> = Vec::with_capacity(nn)
     var cap: Vec<f32> = Vec::with_capacity(nn)
@@ -822,6 +841,13 @@ pub fn shaper(code: u32) -> Option<(Shaper, u32)> {
     }
 }
 
+/// A row of the ground's heights and rock, as a helper works them out.
+struct GroundRow {
+    j: u32,
+    heights: Vec<f32>,
+    rock: Vec<f32>,
+}
+
 /// A row of the survey's cells, as a helper works them out.
 struct SurveyRow {
     j: u32,
@@ -843,6 +869,7 @@ fn survey_row<G: Ground>(
     m: Map,
     g: Grid,
     heights: [f32],
+    rock: [f32],
     lines: [Sightline],
     boxes: [vec4],
 ) {
@@ -856,8 +883,7 @@ fn survey_row<G: Ground>(
                 (w.z > 0.0 && length(p - w.xy) < w.z * 1.3 && heights[c] < w.w)
         }
         r.water.push(under_water)
-        let rock = ground.rock(p) > 0.6
-        r.habitable.push(past < -2.0 && !under_water && !rock)
+        r.habitable.push(past < -2.0 && !under_water && rock[c] <= 0.6)
         r.exposed.push(smoothstep(-45.0, -2.0, past))
         let (pinned, by) = sight_cap(lines, p, heights[c])
         r.cap.push(pinned)

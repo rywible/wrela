@@ -85,7 +85,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 }
             }
         }
-        name => match parse_action(name, &rest[2..]) {
+        name => match parse_action(studio::actions(&pkg), name, &rest[2..]) {
             Ok(a) => finish(one_action(&pkg, &page, &a, size, png.as_deref(), mask)),
             Err(code) => code,
         },
@@ -375,9 +375,13 @@ struct Action<'a> {
 
 /// `name` and `args` read as one of the lens's actions, or the exit status after printing why
 /// not.
-fn parse_action<'a>(name: &'a str, args: &[String]) -> Result<Action<'a>, ExitCode> {
-    let Some((_, kinds)) = studio::ACTIONS.iter().find(|(n, _)| *n == name) else {
-        let names: Vec<&str> = studio::ACTIONS.iter().map(|(n, _)| *n).collect();
+fn parse_action<'a>(
+    actions: &[(&str, &str)],
+    name: &'a str,
+    args: &[String],
+) -> Result<Action<'a>, ExitCode> {
+    let Some((_, kinds)) = actions.iter().find(|(n, _)| *n == name) else {
+        let names: Vec<&str> = actions.iter().map(|(n, _)| *n).collect();
         eprintln!(
             "error: the lens has no action `{name}` (it has serve, build, run, {})",
             names.join(", ")

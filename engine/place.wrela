@@ -224,10 +224,20 @@ impl Land {
     /// How much of `p` is a crag's rock (0 to 1): its faces and its top.
     pub fn crag_rock(self, p: vec2) -> f32 {
         var r = 0.0
-        for c in self.crags {
+        for i in 0..4 {
+            let c = self.crags[i]
             if c.w > 0.0 {
                 let d = length(p - c.xy) + 2.5 * (noise2(p * 0.2) - 0.5)
                 r = max(r, 1.0 - smoothstep(c.w * 0.9, c.w * 1.25, d))
+                // Its ramp's scree, where no tree stands (so the way up stays open).
+                let dir = vec2(cos(self.ramps[i]), sin(self.ramps[i]))
+                let k = p - c.xy
+                let along = dot(k, dir)
+                let across = abs(dot(k, vec2(-dir.y, dir.x))) + 1.5 * (noise2(p * 0.3) - 0.5)
+                let scree = (1.0 - smoothstep(5.0, 8.0, across)) *
+                    smoothstep(0.0, 0.2 * c.w, along) *
+                    (1.0 - smoothstep(2.6 * c.w, 3.2 * c.w, along))
+                r = max(r, 0.75 * scree)
             }
         }
         r
@@ -431,6 +441,22 @@ impl Route {
             l += length(self.points[i + 1] - self.points[i])
         }
         l
+    }
+
+    /// The point `s` m along it (held to its ends), and the way it goes there: (x, z, dx, dz).
+    pub fn along(self, s: f32) -> vec4 {
+        var walked = 0.0
+        let n = self.points.len()
+        for i in 0..n - 1 {
+            let ab = self.points[i + 1] - self.points[i]
+            let len = length(ab)
+            if s <= walked + len || i == n - 2 {
+                let t = clamp((s - walked) / max(len, 1.0e-6), 0.0, 1.0)
+                return vec4(self.points[i] + ab * t, ab / max(len, 1.0e-6))
+            }
+            walked += len
+        }
+        vec4(self.points[0], 1.0, 0.0)
     }
 }
 

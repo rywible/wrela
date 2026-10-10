@@ -9,7 +9,7 @@ use engine::footing::{Obstacles, obstacles_of, walkable_of}
 use engine::grow::{BAKE, Grain, Grid, History, PREVIEW, simulate}
 use engine::interest::{Evidence, FULL, check, nearest_first, report, views_bytes, walk_bytes}
 use engine::place::{TILE, tile_of}
-use engine::water::{Laid, laid}
+use engine::water::Laid
 use std::io::{Shipped, print, ship}
 use std::string::String
 
@@ -55,7 +55,13 @@ pub fn grown(grain: Grain) -> History {
 /// The bake: the floor's decisions, a file a tile and the far layer. Computed when the game is
 /// built, on every core, and kept between builds while nothing it reads changes.
 @fuel(2 ** 43)
-pub const BAKED: Shipped = ship("floor", bake(grown(BAKE), tiles_lo(), tiles_hi()))
+pub const BAKED: Shipped = ship("floor", bake(forked(grown(BAKE)), tiles_lo(), tiles_hi()))
+
+/// The history with each standing tree's fork chosen among its neighbours (`trees::forked`).
+fn forked(h: take History) -> History {
+    let all = h.trees.clone()
+    History { trees: trees::forked(take all), ..h }
+}
 
 /// The bake read back: the floor's decisions.
 pub fn decisions() -> engine::bake::Unbaked {
@@ -80,9 +86,31 @@ fn obstacles(u: engine::bake::Unbaked) -> Obstacles {
     )
 }
 
-/// The water laid (`engine::water`): the map's meres, springs and falls, and the bake's streams;
-/// the sim's surface and the drawn mesh.
-pub const WATERS: Laid = laid(ground::ground(), map::map().water, decisions().streams)
+/// The water (`engine::water`): the map's meres, springs and falls, and the bake's streams.
+pub const COURSES: Courses = courses_of(decisions())
+
+/// The water's courses and pools (`engine::water::courses`): small, so the program holds them;
+/// its mesh is laid from them when the program starts (`waters`), not shipped in it.
+pub struct Courses: Clone {
+    pub courses: Vec<engine::water::Course>,
+    pub pools: Vec<vec3>,
+}
+
+fn courses_of(u: engine::bake::Unbaked) -> Courses {
+    let (courses, pools) = engine::water::courses(ground::ground(), map::map().water, u.streams)
+    Courses { courses, pools }
+}
+
+/// The water laid (`engine::water`): its courses and pools, and its mesh, laid over the ground.
+pub fn waters() -> Laid {
+    let mesh = engine::water::lay(
+        ground::ground(),
+        map::map().water,
+        COURSES.courses,
+        COURSES.pools,
+    )
+    Laid { courses: COURSES.courses.clone(), pools: COURSES.pools.clone(), mesh }
+}
 
 /// The interest check on the bake (#54 §4): its report (`report.json`) and its views
 /// (`views.bin`), shipped for the map lens and the floor's tests.
@@ -97,7 +125,7 @@ fn checked() -> Vec<(String, Vec<u8>)> {
         u.wear_grid.lo + vec2(f32(u.wear_grid.nx), f32(u.wear_grid.nz)) * u.wear_grid.cell,
         2.0,
     )
-    let e = Evidence::of_decisions(
+    var e = Evidence::of_decisions(
         take u.trees,
         species::habits(),
         map::PRESENT,
@@ -107,6 +135,9 @@ fn checked() -> Vec<(String, Vec<u8>)> {
         u.wear_grid,
         take u.wear,
     )
+    // The crowns the renderer draws, and what's built (AC3's calibration).
+    e.crowns = trees::drawn_crowns(e.trees)
+    e.solids = blockouts::solids(m)
     let c = check(ground::ground(), m, species::habits(), e, OBSTACLES, stones::stones(m), FULL)
     let text = report(ground::ground(), m, c)
     // The floor's walk, on a walkable mask a metre a cell that knows the logs, walls and
@@ -140,6 +171,7 @@ fn checked() -> Vec<(String, Vec<u8>)> {
         first = false
     }
     reach.push_str("\n  ]\n}\n")
+    let cal = calibration(c, m, mask)
     var tour_bytes: Vec<u8> = Vec::new()
     for p in walk {
         engine::bake::put_u32(mut tour_bytes, bitcast_u32(p.x))
@@ -152,9 +184,146 @@ fn checked() -> Vec<(String, Vec<u8>)> {
             (String::from("walk.bin"), walk_bytes(c)),
             (String::from("tour.bin"), take tour_bytes),
             (String::from("reach.json"), Vec::from(reach.as_bytes())),
+            (String::from("calibration.json"), Vec::from(cal.as_bytes())),
         ],
     )
 }
+
+/// AC3's calibration: how many places, how far out the model's sight is judged (m), and the views
+/// all round each place it's judged in (each a sixth of the circle).
+const CAL_PLACES: u32 = 24
+const CAL_DIST: f32 = 40.0
+const CAL_VIEWS: u32 = 6
+
+/// What the renderer checks the model against (`calibration.json`, suite/last_green.rs): at
+/// `CAL_PLACES` places spread over the floor (a lattice over its square, each point moved to the
+/// nearest place a player can stand: the same places from one edit of the map to the next), how
+/// much of the level view all round at the check's eye gets `CAL_DIST` out
+/// (`interest::seen_beyond`, in `CAL_VIEWS` views); and for each landmark relation, the eye it's
+/// judged from (`interest::relation_view`), its draw there, and its site (a crag's, its rock as
+/// wide as its foot).
+fn calibration(
+    c: engine::interest::Checked,
+    m: engine::place::Map,
+    mask: engine::footing::Walkable,
+) -> String {
+    let g = ground::ground()
+    var out = String::from(
+        f"{{\n  \"eye\": {FULL.eye},\n  \"dist\": {CAL_DIST},\n  \"views\": {CAL_VIEWS},\n  \"places\": [\n",
+    )
+    var found = 0
+    for k in 0..CAL_PLACES {
+        // A point of a 6 by 4 lattice; off the floor, moved toward its middle until it's on.
+        var q = map::LO +
+            (map::HI - map::LO) * (vec2(f32(k % 6), f32(k / 6)) + vec2(0.5)) / vec2(6.0, 4.0)
+        var cell = mask.nearest(q)
+        var tries = 0
+        while (cell == engine::grow::NONE || !m.inside(mask.grid.centre(cell))) && tries < 8 {
+            q = mix(q, 0.5 * (map::LO + map::HI), vec2(0.25))
+            cell = mask.nearest(q)
+            tries += 1
+        }
+        let p = mask.grid.centre(cell)
+        // Its views' ways, turned from one place to the next (the golden angle).
+        let yaw = 2.3999632 * f32(found)
+        let half = 3.1415927 / f32(CAL_VIEWS)
+        var seen = 0.0
+        for v in 0..CAL_VIEWS {
+            let a = yaw + 2.0 * half * f32(v)
+            seen += engine::interest::seen_beyond(c.sight, p, a, half, CAL_DIST, FULL.eye)
+        }
+        seen = seen / f32(CAL_VIEWS)
+        let y = engine::grow::Ground::height(g, p.x, p.y)
+        let sep = if found == 0 { "" } else { ",\n" }
+        out.push_str(
+            f"{sep}    {{\"at\": [{p.x}, {p.y}], \"ground\": {y}, \"yaw\": {yaw}, \"seen\": {seen}}}",
+        )
+        found += 1
+    }
+    out.push_str("\n  ],\n  \"landmarks\": [\n")
+    var first = true
+    for r in m.relations {
+        let landmark = match r {
+            engine::place::Relation::Seen { landmark, .. } => landmark,
+            _ => false,
+        }
+        if !landmark {
+            continue
+        }
+        let (eye, draw) = engine::interest::relation_view(c.sight, m, FULL, r)
+        let k = m.sites[r.to()]
+        let e = vec3(eye.x, engine::grow::Ground::height(g, eye.x, eye.z) + FULL.eye, eye.z)
+        let base = engine::grow::Ground::height(g, k.at.x, k.at.y)
+        // Where the eye looks: a crag's top (its relief is the ground's), another's middle.
+        let aim = if k.feature == engine::place::Feature::Crag { base + 1.0 } else {
+            base + 0.6 * k.tall
+        }
+        // A crag's rock reaches as wide as its foot: the land's crag there.
+        var reach = k.reach
+        for cr in m.land.crags {
+            if cr.w > 0.0 && length(cr.xy - k.at) < 5.0 {
+                reach = cr.w
+            }
+        }
+        let sep = if first { "" } else { ",\n" }
+        out.push_str(
+            f"{sep}    {{\"name\": \"{r.name()}\", \"eye\": [{e.x}, {e.y}, {e.z}], \"draw\": {draw}, \"site\": [{k.at.x}, {k.at.y}], \"aim\": {aim}, \"reach\": {reach}}}",
+        )
+        first = false
+    }
+    // AC10's trails: along the critical path's routes (the road and the trails), a place every
+    // `TRAIL_EVERY` m, its eye on the route, and 20 m on, where the trodden line runs across it
+    // (`bake::path_at`: the route's line, wandering) and the way across.
+    out.push_str("\n  ],\n  \"trails\": [\n")
+    first = true
+    var all: Vec<u32> = Vec::new()
+    for k in 0..m.routes.len() {
+        all.push(k)
+    }
+    for k in 0..m.routes.len() {
+        borrow r = m.routes[k]
+        if r.kind == engine::place::RouteKind::Herd {
+            continue
+        }
+        let len = r.length()
+        var s = 30.0
+        while s + 20.0 < len - 10.0 {
+            let eye = r.along(s)
+            let on = r.along(s + 20.0)
+            let across = vec2(-on.w, on.z)
+            // The trodden line's middle across the route's there: the middle of where it's most
+            // trodden (its tread).
+            var best = 0.0
+            for i in 0..81 {
+                let q = on.xy + across * (f32(i) * 0.1 - 4.0)
+                best = max(best, engine::bake::path_at(m.routes, all, q, used: 1.0))
+            }
+            var sum = vec2(0.0)
+            var n = 0.0
+            for i in 0..81 {
+                let q = on.xy + across * (f32(i) * 0.1 - 4.0)
+                if engine::bake::path_at(m.routes, all, q, used: 1.0) >= 0.95 * best {
+                    sum += q
+                    n += 1.0
+                }
+            }
+            let centre = sum / max(n, 1.0)
+            if best > 0.5 && m.inside(eye.xy) && m.inside(centre) {
+                let sep = if first { "" } else { ",\n" }
+                out.push_str(
+                    f"{sep}    {{\"route\": \"{r.name}\", \"eye\": [{eye.x}, {eye.y}], \"centre\": [{centre.x}, {centre.y}], \"across\": [{across.x}, {across.y}]}}",
+                )
+                first = false
+            }
+            s += TRAIL_EVERY
+        }
+    }
+    out.push_str("\n  ]\n}\n")
+    out
+}
+
+/// How far apart the trails' places are (m) along each route.
+const TRAIL_EVERY: f32 = 80.0
 
 /// What the floor's walk passes (#55's Method): the gate first; the critical path's sites,
 /// each region's middle, the water (the mere's shore, the stream, the fall's lip) and each

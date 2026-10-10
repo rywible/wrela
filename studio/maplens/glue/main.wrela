@@ -1,0 +1,58 @@
+// The map lens's program (#55 AC13): the map lens (the `maplens` package) on a floor. Each action
+// is an export, and a command the lens reads as typed text (the compiler's `MAP_ACTIONS` lists
+// them, for its headless runner). What the lens needs of the floor is `floor.wrela`'s:
+// `wrela studio <floor>` writes one for the floor's `lens` module.
+
+use engine::interest::Preview
+use floor::{map, preview}
+use maplens::lens::MapLens
+use std::par::Task
+
+/// The floor's preview, on a helper.
+fn start() -> Task<Preview> {
+    std::par::spawn((), run)
+}
+
+fn run(_nothing: take ()) -> Preview {
+    preview()
+}
+
+pub fn init() -> MapLens {
+    maplens::lens::open(map, start)
+}
+
+pub fn frame(state: mut MapLens, time: f32, width: u32, height: u32) {
+    maplens::lens::frame(mut state, map, start, width, height)
+}
+
+pub fn busy(state: MapLens) -> u32 {
+    if maplens::lens::busy(state) { 1 } else { 0 }
+}
+
+pub fn show(state: mut MapLens, layers: u32) {
+    maplens::lens::show(mut state, layers)
+}
+
+pub fn zoom(state: mut MapLens, x: f32, z: f32, half: f32) {
+    maplens::lens::zoom(mut state, x, z, half)
+}
+
+pub fn items(state: mut MapLens) {
+    maplens::lens::list_items(mut state, map)
+}
+
+pub fn click(state: mut MapLens, x: f32, y: f32) {
+    maplens::lens::click(mut state, map, x, y)
+}
+
+pub fn move(state: mut MapLens, x0: f32, y0: f32, x1: f32, y1: f32) {
+    maplens::lens::drag(mut state, map, start, x0, y0, x1, y1)
+}
+
+pub fn check(state: mut MapLens) {
+    maplens::lens::check(mut state, start)
+}
+
+pub fn write(state: mut MapLens) {
+    maplens::lens::write(mut state)
+}

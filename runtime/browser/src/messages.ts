@@ -30,6 +30,8 @@ export type ToWorker =
   | { type: "audio-rendered" }
   /** Test mode, `latency` or `keylatency`: the main thread has sent its events. */
   | { type: "latency-sent" }
+  /** Test mode, `clip`: the main thread has saved the clip (`clip.webm`). */
+  | { type: "clip-saved" }
   /** To the ticker's thread the render worker starts: run the program's ticks (ticker.ts). */
   | ({ type: "ticker" } & TickerStart)
   /** Test mode: what the page loaded, for `load.json`. */
@@ -50,6 +52,9 @@ export type FromWorker =
   | { type: "latency-start"; ms: number }
   /** Test mode: the main thread answers with what the page loaded (`load`). */
   | { type: "load-query" }
+  /** Test mode, `clip`: start recording the canvas, or stop and save the recording. */
+  | { type: "clip-start" }
+  | { type: "clip-stop" }
   /** The program started its voice: the main thread plays it in an AudioWorklet. */
   | { type: "audio"; voice: VoiceOptions }
   /** Hot reload of a program whose voice plays: the page reloads. */

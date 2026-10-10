@@ -441,7 +441,9 @@ pub fn far_quad(
     let q = mix(lo, hi, vec2(qx[k], qy[k]))
     let right = normalize(cross(vec3(0.0, 1.0, 0.0), to))
     let up = cross(to, right)
-    let flat = centre + (right * q.x + up * q.y) * (b.half * inst.scale)
+    // Its crown as wide as the instance's (`Instance::wide`): the quad narrowed across, the
+    // views read as the kind's.
+    let flat = centre + (right * (q.x * inst.wide) + up * q.y) * (b.half * inst.scale)
     let height = max(flat.y - inst.at.y, 0.0)
     var world = flat + sway(wind, flat, height)
     // The views round the eye's direction, the same for all the quad: each one's place for this
@@ -465,7 +467,7 @@ pub fn far_quad(
         uv: q,
         centre,
         yaw_scale: Flat { value: vec2(inst.yaw, inst.scale) },
-        tint: inst.tint,
+        tint: inst.tint_rgb(),
         id: Flat { value: first + i.index + 1 },
         views: vec4(uv[0], uv[1]),
         views2: vec4(uv[2], uv[3]),

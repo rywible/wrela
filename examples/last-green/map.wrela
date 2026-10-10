@@ -63,8 +63,8 @@ pub fn land() -> Land {
         ],
         ravine_fall: 5.0,
         crags: [
-            vec4(330.0, -150.0, 14.0, 22.0),
-            vec4(1310.0, -660.0, 16.0, 20.0),
+            vec4(330.0, -150.0, 45.0, 30.0),
+            vec4(1310.0, -660.0, 72.0, 36.0),
             vec4(1225.0, -925.0, 8.0, 16.0),
             vec4(-300.0, -345.0, 4.0, 12.0),
         ],
@@ -159,7 +159,7 @@ pub fn map() -> Map {
             kind: SiteKind::Landmark,
             feature: Feature::Crag,
             at: vec2(330.0, -150.0),
-            tall: 21.0,
+            tall: 45.0,
             reach: 14.0,
             salience: 0.8,
             name: "the crag",
@@ -170,7 +170,7 @@ pub fn map() -> Map {
             kind: SiteKind::Landmark,
             feature: Feature::Crag,
             at: vec2(1310.0, -660.0),
-            tall: 22.0,
+            tall: 72.0,
             reach: 14.0,
             salience: 0.8,
             name: "the fang",
@@ -709,8 +709,8 @@ pub fn map() -> Map {
     )
     relations.push(
         Relation::Seen {
-            from: vec2(220.0, -372.0),
-            within: 12.0,
+            from: vec2(232.0, -452.0),
+            within: 10.0,
             to: crag,
             landmark: true,
             name: "the crag from the shore",
@@ -725,11 +725,11 @@ pub fn map() -> Map {
             name: "the crag from the watch",
         },
     )
-    // The Fang: from the burn, from the town's site, from the Warden's arena.
+    // The Fang: from the burn, from the Watch's top, from the Warden's arena.
     relations.push(
         Relation::Seen {
-            from: vec2(900.0, -200.0),
-            within: 20.0,
+            from: vec2(863.0, -159.0),
+            within: 10.0,
             to: fang,
             landmark: true,
             name: "the fang from the burn",
@@ -737,17 +737,17 @@ pub fn map() -> Map {
     )
     relations.push(
         Relation::Seen {
-            from: vec2(470.0, -840.0),
-            within: 20.0,
+            from: vec2(586.0, -478.0),
+            within: 8.0,
             to: fang,
             landmark: true,
-            name: "the fang from the town's site",
+            name: "the fang from the watch",
         },
     )
     relations.push(
         Relation::Seen {
-            from: vec2(1440.0, -1140.0),
-            within: 20.0,
+            from: vec2(1446.0, -1162.0),
+            within: 8.0,
             to: fang,
             landmark: true,
             name: "the fang from the arena",
@@ -765,8 +765,8 @@ pub fn map() -> Map {
     )
     relations.push(
         Relation::Hidden {
-            from: vec2(300.0, -200.0),
-            within: 30.0,
+            from: vec2(205.0, -200.0),
+            within: 25.0,
             to: mere,
             name: "the mere revealed at the crest",
         },
@@ -786,16 +786,16 @@ pub fn map() -> Map {
     openings.push(
         Opening {
             at: vec2(-1.5, -2.0),
-            radius: 14.0,
+            radius: 20.0,
             keeper: Keeper::People { from: PRESENT - 150, to: PRESENT + 1 },
             name: "the gate's clearing",
         },
     )
     openings.push(
         Opening {
-            at: vec2(225.0, -372.0),
-            radius: 30.0,
-            keeper: Keeper::Grazing,
+            at: vec2(232.0, -452.0),
+            radius: 26.0,
+            keeper: Keeper::People { from: PRESENT - 150, to: PRESENT + 1 },
             name: "the mere's shore",
         },
     )
@@ -957,6 +957,30 @@ pub fn map() -> Map {
             name: "the pine blowdown",
         },
     )
+    // The rides: the town's people kept a way cut east from the town's site, and one north from
+    // the arena, which opens the Fang's view along it (AC3: the Fang made out from the arena).
+    for i in 0..4 {
+        let d = 95.0 + 40.0 * f32(i)
+        openings.push(
+            Opening {
+                at: vec2(433.0, -848.0) + vec2(0.978, 0.21) * d,
+                radius: 20.0,
+                keeper: Keeper::People { from: PRESENT - 150, to: PRESENT + 1 },
+                name: "the town's ride",
+            },
+        )
+    }
+    for i in 0..3 {
+        let d = 80.0 + 40.0 * f32(i)
+        openings.push(
+            Opening {
+                at: vec2(1446.0, -1162.0) + vec2(-0.26, 0.966) * d,
+                radius: 20.0,
+                keeper: Keeper::People { from: PRESENT - 150, to: PRESENT + 1 },
+                name: "the warden's ride",
+            },
+        )
+    }
 
     var routes: Vec<Route> = Vec::new()
     // The old road, from the clearing up to the tower: people laid it out along the knoll's

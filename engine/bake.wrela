@@ -63,6 +63,9 @@ fn unq16(q: u32) -> f32 {
     (f32(q) + 0.5) * (TILE / 65536.0)
 }
 
+/// The unit a standing tree's fork is kept in: to ±0.508.
+pub const FORK_STEP: f32 = 0.004
+
 /// A signed number as a byte, `step` a unit, held to ±127 steps.
 fn q8s(x: f32, step: f32) -> u8 {
     u8(u32(clamp(round(x / step), -127.0, 127.0) + 128.0))
@@ -80,9 +83,9 @@ fn qyear(y: i32) -> u32 {
 /// A tree as 22 bytes, its place from tile `t`'s corner: its place (two `u16`s), its kind, state
 /// and cause (a byte: 3, 2 and 3 bits) and whether it's pinned (a byte with its browse line, in
 /// 2 cm steps to 2.5 m, and its pin in the top bit), its height (cm), crown (5 cm) and trunk (4 mm),
-/// lean (each way, 10 cm), light, fall's direction, years (born; died and fell as years after it),
-/// and what shaped it (`grow::shaped`'s code, a `u16`). Its seed isn't kept: it's drawn again
-/// from its place (`get_tree`).
+/// lean (each way, 10 cm), light, a log's fall's direction or a standing tree's fork (`FORK_STEP`
+/// a unit), years (born; died and fell as years after it), and what shaped it (`grow::shaped`'s
+/// code, a `u16`). Its seed isn't kept: it's drawn again from its place (`get_tree`).
 fn put_tree(out: mut Vec<u8>, tr: Tree, t: vec2i) {
     let local = tr.at - vec2(t) * TILE
     put_u16(mut out, q16(local.x))
@@ -95,8 +98,12 @@ fn put_tree(out: mut Vec<u8>, tr: Tree, t: vec2i) {
     out.push(q8s(tr.lean.x, 0.1))
     out.push(q8s(tr.lean.y, 0.1))
     out.push(u8(clamp(tr.light, 0.0, 1.0) * 255.0 + 0.5))
-    let fall = atan2(tr.fall.y, tr.fall.x)
-    out.push(u8(u32(round((fall / TAU + 1.0) * 256.0)) % 256))
+    if tr.state == State::Log {
+        let fall = atan2(tr.fall.y, tr.fall.x)
+        out.push(u8(u32(round((fall / TAU + 1.0) * 256.0)) % 256))
+    } else {
+        out.push(q8s(tr.fork, FORK_STEP))
+    }
     put_u16(mut out, qyear(tr.born))
     put_u16(mut out, u32(clamp(tr.died - tr.born, 0, 65535)))
     put_u16(mut out, u32(clamp(tr.fell - tr.born, 0, 65535)))
@@ -105,15 +112,17 @@ fn put_tree(out: mut Vec<u8>, tr: Tree, t: vec2i) {
 
 /// The tree whose 22 bytes are at `at` in `b`, its place from tile `t`'s corner.
 pub fn get_tree(b: [u8], at: u32, t: vec2i) -> Tree {
-    let fall = TAU * f32(b[at + 13]) / 256.0
     let packed = u32(b[at + 4])
+    let state = State::from_u32((packed >> 3) & 3).unwrap_or(State::Alive)
+    // A log's byte 13 is its fall's direction; a standing tree's, its fork.
+    let fall = if state == State::Log { TAU * f32(b[at + 13]) / 256.0 } else { 0.0 }
     let flags = u32(b[at + 5])
     let born = i32(get_u16(b, at + 14)) - 10000
     let shaped = get_u16(b, at + 20)
     Tree {
         at: vec2(t) * TILE + vec2(unq16(get_u16(b, at)), unq16(get_u16(b, at + 2))),
         kind: packed & 7,
-        state: State::from_u32((packed >> 3) & 3).unwrap_or(State::Alive),
+        state,
         cause: Cause::from_u32((packed >> 5) & 7).unwrap_or(Cause::Old),
         pinned: flags >= 128,
         lift: f32(flags & 127) / 50.0,
@@ -128,6 +137,7 @@ pub fn get_tree(b: [u8], at: u32, t: vec2i) -> Tree {
         died: born + i32(get_u16(b, at + 16)),
         fell: born + i32(get_u16(b, at + 18)),
         shaped: if shaped == 65535 { grow::NONE } else { shaped },
+        fork: if state == State::Log { 0.0 } else { unq8s(b[at + 13], FORK_STEP) },
         // Its own draws' seed, from where it stands (a stored seed is random bytes, which don't
         // compress: 12% of the bake).
         seed: noise::hash2u(
@@ -136,6 +146,17 @@ pub fn get_tree(b: [u8], at: u32, t: vec2i) -> Tree {
             1103,
         ),
     }
+}
+
+/// A tree as the bake keeps it: its record written and read back (its place, height, crown,
+/// light and the rest rounded as `put_tree` rounds them; its seed drawn from its place, as
+/// `get_tree` draws it). What's chosen from a tree before it's baked (a floor's forks) is chosen
+/// from this, so the bake read back agrees with it.
+pub fn as_baked(tr: Tree) -> Tree {
+    let t = tile_of(tr.at)
+    var b: Vec<u8> = Vec::with_capacity(TREE_BYTES)
+    put_tree(mut b, tr, t)
+    get_tree(b, 0, t)
 }
 
 /// Bytes with runs of zeros coded short: a zero, then the run's length (a `u16`).
@@ -554,24 +575,38 @@ pub fn neighbour_bit(t: vec2i, n: vec2i) -> u32 {
     }
 }
 
-/// How a route's path is trodden: its tread's half width (m) by kind, and how far it wanders
-/// from the route's line (m), over about `WANDER_OVER` m along it.
+/// How a route's path is trodden: its tread's half width (m) by kind, how worn it is however
+/// little the history's herd walks it (people keep a road made and a trail trodden; the herd's
+/// own way is as worn as it's walked, at least half), and how far it wanders from the route's
+/// line (m), over about `WANDER_OVER` m along it.
 fn tread_half(k: RouteKind) -> f32 {
     match k {
         RouteKind::Road => 1.3,
         RouteKind::Herd => 0.6,
-        RouteKind::Trail => 0.5,
+        RouteKind::Trail => 0.8,
+    }
+}
+
+fn made(k: RouteKind) -> f32 {
+    match k {
+        RouteKind::Road => 0.9,
+        RouteKind::Herd => 0.5,
+        RouteKind::Trail => 0.85,
     }
 }
 
 const WANDER: f32 = 1.4
 const WANDER_OVER: f32 = 30.0
 
+/// How far beside a path's tread its feet wear the grass short (m): so the path shows from a
+/// walker's eye over the grass, and on the fields' 2 m grid.
+const HALO: f32 = 2.5
+
 /// How trodden point `p` is by the routes' paths (0 to 1): the path down a route's line,
-/// wandering from it and its width changing along it. `used` gives how much the route is walked
-/// (the history's wear round the point; a road is made, and shows unwalked); `near`, which
-/// routes may come near.
-fn path_at(routes: [Route], near: [u32], p: vec2, used: f32) -> f32 {
+/// wandering from it and its width changing along it, and the grass worn short beside it
+/// (`HALO`). `used` gives how much the route is walked (the history's wear round the point; a
+/// route is worn as `made` says at least); `near`, which routes may come near.
+pub fn path_at(routes: [Route], near: [u32], p: vec2, used: f32) -> f32 {
     var best = 0.0
     for k in near {
         borrow r = routes[k]
@@ -584,14 +619,17 @@ fn path_at(routes: [Route], near: [u32], p: vec2, used: f32) -> f32 {
             let t = clamp(dot(p - a, ab) / max(len * len, 1.0e-6), 0.0, 1.0)
             let side = (p - a).x * ab.y - (p - a).y * ab.x
             let dist = length(p - (a + ab * t)) * sign(side)
-            if abs(dist) < WANDER + 3.0 {
+            if abs(dist) < WANDER + HALO + 2.0 {
                 let along = walked + t * len
                 let w = noise2(vec2(along / WANDER_OVER, f32(k) * 7.3))
                 let half = tread_half(r.kind) *
                     (0.75 + 0.5 * noise2(vec2(along / 11.0, f32(k) * 3.1 + 40.0)))
                 let off = abs(dist - WANDER * (2.0 * w - 1.0))
-                let made = if r.kind == RouteKind::Road { 0.6 } else { 0.0 }
-                best = max(best, (1.0 - smoothstep(half * 0.6, half, off)) * max(used, made))
+                let worn = max(used, made(r.kind))
+                // Worn to its half width, fading over a metre (the fields' 2 m grid holds it).
+                let tread = 1.0 - smoothstep(half, half + 1.0, off)
+                let beside = 0.4 * (1.0 - smoothstep(half, half + HALO, off))
+                best = max(best, max(tread, beside) * worn)
             }
             walked += len
         }

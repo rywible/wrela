@@ -21,7 +21,8 @@ Exit status: 0 the page wrote `ok`; 1 it failed, timed out, or Chrome exited; 2 
 3 the GPU lock (or the Chrome lock) wasn't free within an hour.
 
 Environment: WRELA_CHROME overrides the Chrome binary; WRELA_GPU_SHARED (2 or more) shares the
-GPU with native runs (below).
+GPU with native runs (below); WRELA_THROTTLE (bits a second) slows the server's sending, every
+request sharing the rate (tools/serve.py).
 """
 
 import fcntl

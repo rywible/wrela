@@ -208,10 +208,11 @@ impl Terrain for Ground {
         c.grass *= open * open
         c.flowers *= open * open
         // The trails: bare earth down a path's middle, the grass worn short and thin on the ground
-        // the herd wears beside it.
+        // the herd wears beside it. The earth is packed and dry, lighter than the leaf litter
+        // round it in the wood (a path shows from 20 m: #55 AC10).
         let bare = smoothstep(0.5, 0.8, trodden)
         let short = smoothstep(0.1, 0.45, trodden)
-        let earth = mix(vec3(0.15, 0.11, 0.075), vec3(0.2, 0.15, 0.1), vec3(noise2(xz * 0.7)))
+        let earth = mix(vec3(0.21, 0.16, 0.105), vec3(0.27, 0.21, 0.14), vec3(noise2(xz * 0.7)))
         c.albedo = mix(c.albedo, earth, vec3(bare * 0.9))
         c.albedo = mix(c.albedo, c.albedo * vec3(1.05, 1.0, 0.85), vec3(short * 0.5))
         c.grass *= (1.0 - bare) * (1.0 - 0.5 * short)

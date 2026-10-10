@@ -19,7 +19,8 @@ use lod::{IMPOSTOR, Lod, VOLUME, anchor, keeps_packed, packed, place, share, way
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_POINTS, LIMB_VERTICES, Leaves, OUTLINE,
     Plant, Wind, CORNERS, card_orders, card_tint, card_turn, cook_cards, cook_outlines, corner_of,
-    leaf_age, leaf_at, leaf_draws, leaf_normal, level_cards, limb_corner, limb_point, sway, tinted,
+    leaf_age, leaf_at, leaf_draws, leaf_normal, level_cards, limb_corner, limb_point, NO_INSTANCE,
+    sway, tinted,
 }
 use shadow::{CASTER, Shadows}
 use std::field::Tube
@@ -155,7 +156,7 @@ fn every_of(kinds: u32, placed: [Placed]) -> (GpuBuffer<Instance>, Vec<List>) {
             lists.push(List { kind: k, how: 1, first, count: n })
         }
         while every.len() % ALIGN != 0 {
-            every.push(Instance { at: vec3(0.0), yaw: 0.0, tint: vec3(0.0), scale: 0.0 })
+            every.push(NO_INSTANCE)
         }
     }
     (buffer_of(every, at_least: 1), lists)
@@ -295,7 +296,7 @@ impl Forest {
         }
         var out = Vec::filled(
             max(first, 1),
-            Instance { at: vec3(0.0), yaw: 0.0, tint: vec3(0.0), scale: 0.0 },
+            NO_INSTANCE,
         )
         var marks = Vec::filled(max(first, 1), vec2u(0))
         var fill = Vec::filled(kinds * ways, 0)
@@ -638,7 +639,7 @@ pub fn leaf_shade(
         leaf_normal(crown_n, tilt),
         sky_n: crown_n,
         depth: card.depth * inst.scale,
-        albedo: tinted(leaf_age(leaves, crown_n.y, aged), inst.tint + card_tint(card)),
+        albedo: tinted(leaf_age(leaves, crown_n.y, aged), inst.tint_rgb() + card_tint(card)),
         through: leaves.through,
     )
     vec4(c, view::LEAVES + f32(l.instance.value >> 24))
@@ -670,9 +671,9 @@ pub fn limb_indices(n: u32) -> Vec<u32> {
 
 /// Point `v % LIMB_POINTS` of limb `v / LIMB_POINTS`, of instance `i`, in the world.
 fn limb_world(v: u32, i: u32, limbs: [Tube<4>], instances: [Instance]) -> (vec3, vec3, vec2) {
-    let (p, n, along) = limb_point(limbs[v / LIMB_POINTS], v % LIMB_POINTS)
+    let (centre, n, radius, along) = limb_point(limbs[v / LIMB_POINTS], v % LIMB_POINTS)
     let inst = instances[i]
-    (inst.place(p), inst.turn(n), along)
+    (inst.place_round(centre, n * radius), inst.turn_normal(n, centre.y), along)
 }
 
 @vertex

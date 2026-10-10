@@ -4,7 +4,7 @@
 // places instances of the kinds, turned, scaled and tinted.
 
 use engine::noise::{noise2, pick, rand}
-use engine::plant::{Bark, Instance, Leaves, Plant, plant}
+use engine::plant::{Bark, Instance, Leaves, Plant, plant, tint_of}
 use great_tree::tree::great_tree
 use engine::vegetation::Placed
 use scene::{KNOLL, MEADOW, STAND, in_gap, on_ground, past_edge}
@@ -96,8 +96,8 @@ pub fn kind_plant(k: u32) -> Plant {
 }
 
 /// A random tint for an instance: its leaves a little warmer or cooler.
-fn tint(s: u32) -> vec3 {
-    vec3(pick(s, 6, lo: -0.05, hi: 0.06), pick(s, 7, lo: -0.06, hi: 0.04), 0.0)
+fn tint(s: u32) -> vec2 {
+    vec2(pick(s, 6, lo: -0.05, hi: 0.06), pick(s, 7, lo: -0.06, hi: 0.04))
 }
 
 /// An instance of a kind at (x, z) on the ground, turned, tinted and scaled by seed `s`.
@@ -107,8 +107,10 @@ fn at(kind: u32, x: f32, z: f32, s: u32) -> Placed {
         at: Instance {
             at: on_ground(vec2(x, z)),
             yaw: TAU * rand(s, 90),
-            tint: tint(s),
+            tint: tint_of(tint(s)),
             scale: pick(s, 91, lo: 0.88, hi: 1.12),
+            fork: 0.0,
+            wide: 1.0,
         },
     }
 }
@@ -116,7 +118,17 @@ fn at(kind: u32, x: f32, z: f32, s: u32) -> Placed {
 /// An instance of a kind standing at `p` on the ground as it was grown: not turned, tinted or
 /// scaled.
 pub fn standing(kind: u32, p: vec2) -> Placed {
-    Placed { kind, at: Instance { at: on_ground(p), yaw: 0.0, tint: vec3(0.0), scale: 1.0 } }
+    Placed {
+        kind,
+        at: Instance {
+            at: on_ground(p),
+            yaw: 0.0,
+            tint: tint_of(vec2(0.0)),
+            scale: 1.0,
+            fork: 0.0,
+            wide: 1.0,
+        },
+    }
 }
 
 /// Where the forest's instances stand: the great tree on its rise; trees round the meadow on a
