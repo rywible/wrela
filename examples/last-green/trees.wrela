@@ -6,7 +6,7 @@
 
 use engine::grow::{Cause, State, Tree, log_rot}
 use engine::interest::Drawn
-use engine::noise::{pick, rand}
+use engine::noise::{noise2, pick, rand}
 use engine::plant::{Bark, Instance, Leaves, Plant, bend, plant, tint_of, unbend}
 use std::field::Tube
 use engine::vegetation::Placed
@@ -161,10 +161,17 @@ fn broadleaf(
             )
         }
     }
-    // The clumps: in masses round the scaffolds' ends (the tree's own top too), each branch from
-    // a point along its scaffold; a sapling's round its trunk's top.
+    // The clumps: a mass round each scaffold's end and one at the tree's own top (4 to 6 masses,
+    // the crown's 3 to 7 lit masses with the low limbs'), each a large core with smaller clumps
+    // bulging from its top and sides, so it reads as one lump of light with a shaded underside
+    // and gaps of sky between the masses; each branch from a point along its scaffold. A
+    // sapling's round its trunk's top. (Pass 1 of M6's lookdev: clumps spread along each
+    // scaffold, each its own small lump of light, read as confetti, not as masses.)
     let half = (tall - crown_y) * 0.5
     let mid = vec3(0.0, crown_y + half, 0.0) + lean * 1.3
+    if scaffolds > 0 {
+        p.blend = MASS_BLEND
+    }
     for i in 0..count {
         let r_clump = clump * pick(s, 80 + i, lo: 0.6, hi: 1.35)
         if scaffolds == 0 {
@@ -179,22 +186,27 @@ fn broadleaf(
         }
         // Which mass: a scaffold's, or (one in five) the leader's at the top.
         let j = i % (scaffolds + 1)
+        let core = clump * MASS_CORE
         let (centre, foot) = if j == scaffolds {
-            (vec3(0.0, tall - clump * 0.8, 0.0) + lean * 1.4, top)
+            (vec3(0.0, tall - core * 0.9, 0.0) + lean * 1.4, top)
         } else {
-            // Along the scaffold's outer half, not only round its end: bare limbs to a ball of
-            // leaves at the top read as a broom (round 5's quick round).
-            (mix(feet[j], tips[j], vec3(pick(s, 310 + i, lo: 0.45, hi: 1.0))), feet[j])
+            // A little in from the scaffold's end, so its outer clumps hang over it and the
+            // limb shows leaving the trunk under the mass (bare limbs to a ball of leaves read
+            // as a broom: round 5's quick round).
+            (mix(feet[j], tips[j], vec3(0.85)), feet[j])
         }
-        let spread = clump * 1.4
-        let off = vec3(
-            pick(s, 210 + i, lo: -1.0, hi: 1.0),
-            pick(s, 230 + i, lo: -0.6, hi: 0.8),
-            pick(s, 250 + i, lo: -1.0, hi: 1.0),
-        ) *
-            spread
-        let at = centre + off
-        p.clump(at, radius: r_clump)
+        // The mass's first clump is its core; the rest bulge from its top and sides, few from
+        // below, so the mass's underside is broad and in shade.
+        let (at, r) = if i <= scaffolds {
+            (centre, core)
+        } else {
+            let a = TAU * rand(s, 210 + i)
+            let up = pick(s, 230 + i, lo: -0.25, hi: 0.9)
+            let out = sqrt(max(1.0 - up * up, 0.0))
+            let dir = vec3(out * cos(a), up, out * sin(a))
+            (centre + dir * (core * pick(s, 250 + i, lo: 0.6, hi: 0.85)), r_clump * 0.8)
+        }
+        p.clump(at, radius: r)
         if i < limbs + scaffolds && i >= scaffolds {
             let from = mix(foot, centre, vec3(pick(s, 100 + i, lo: 0.45, hi: 0.85)))
             p.limb(
@@ -208,6 +220,12 @@ fn broadleaf(
     }
     p
 }
+
+/// A broad-leaved crown's mass: its core's radius against the kind's clump, and how softly its
+/// clumps blend (per metre, `Plant::blend`: softer than a plant's own, so a mass's clumps merge
+/// into one lump and its light turns over it as one form).
+const MASS_CORE: f32 = 1.45
+const MASS_BLEND: f32 = 0.75
 
 /// A pine, seed `s`, `tall` high: a straight trunk, bare low, and a flat-topped crown of dark
 /// clumps; grown in the open (`open`), its crown reaches lower and wider.
@@ -395,28 +413,28 @@ pub fn kind_plant(k: u32) -> Plant {
     let oak_leaves = Leaves {
         young: vec3(0.14, 0.21, 0.035),
         old: vec3(0.035, 0.085, 0.025),
-        size: 1.0,
+        size: 0.5,
         cover: 1.6,
     }
     let oak_bark = Bark { dark: vec3(0.09, 0.07, 0.05), light: vec3(0.22, 0.18, 0.13) }
     let beech_leaves = Leaves {
         young: vec3(0.20, 0.28, 0.05),
         old: vec3(0.05, 0.11, 0.03),
-        size: 0.95,
+        size: 0.48,
         cover: 1.7,
     }
     let beech_bark = Bark { dark: vec3(0.12, 0.12, 0.115), light: vec3(0.29, 0.29, 0.27) }
     let birch_leaves = Leaves {
         young: vec3(0.25, 0.31, 0.06),
         old: vec3(0.08, 0.14, 0.03),
-        size: 0.6,
+        size: 0.36,
         cover: 1.2,
     }
     let birch_bark = Bark { dark: vec3(0.09, 0.085, 0.08), light: vec3(0.62, 0.60, 0.56) }
     let alder_leaves = Leaves {
         young: vec3(0.09, 0.17, 0.04),
         old: vec3(0.025, 0.07, 0.02),
-        size: 0.8,
+        size: 0.42,
         cover: 1.6,
     }
     let alder_bark = Bark { dark: vec3(0.10, 0.09, 0.08), light: vec3(0.24, 0.21, 0.19) }
@@ -538,7 +556,7 @@ pub fn kind_plant(k: u32) -> Plant {
             Leaves {
                 young: vec3(0.11, 0.18, 0.04),
                 old: vec3(0.03, 0.07, 0.02),
-                size: 0.6,
+                size: 0.36,
                 cover: 1.8,
             },
             4,
@@ -551,7 +569,7 @@ pub fn kind_plant(k: u32) -> Plant {
             Leaves {
                 young: vec3(0.07, 0.12, 0.03),
                 old: vec3(0.02, 0.05, 0.02),
-                size: 0.5,
+                size: 0.32,
                 cover: 2.0,
             },
             3,
@@ -595,6 +613,33 @@ fn tint(s: u32) -> vec2 {
     vec2(pick(s, 6, lo: -0.05, hi: 0.06), pick(s, 7, lo: -0.06, hi: 0.04))
 }
 
+/// A living tree's tint at `p` (seed `s`), `height(p)` the ground's height: its wood's by the
+/// landform, woods on a rise lighter and warmer (sunlit, thinner), woods in a hollow cooler, the
+/// woods' greens varying from yellow to blue over stands about `STAND` m across; and a little of
+/// its own (`tint`). (M6's lookdev pass 1: each tree's own tint, drawn at random, read as noise
+/// over the far forest, not as woods grouped by the land.)
+fn stand_tint(p: vec2, height: fn(vec2) -> f32, s: u32) -> vec2 {
+    var ring = 0.0
+    for k in 0..4 {
+        let a = TAU * (f32(k) + 0.125) / 4.0
+        ring += height(p + vec2(cos(a), sin(a)) * RELIEF_R)
+    }
+    let relief = clamp((height(p) - ring * 0.25) / RELIEF_H, -1.0, 1.0)
+    // In a hollow, cooler, not much darker (darker, the mere's woods went murk: round 1).
+    let land = if relief > 0.0 { vec2(0.035, 0.03) * relief } else { vec2(0.03, 0.01) * relief }
+    let stand = noise2(p / STAND + vec2(17.3, 5.1)) * 2.0 - 1.0
+    land + vec2(0.04, 0.012) * stand + tint(s) * 0.3
+}
+
+/// How far round a tree `stand_tint` reads the land (m), and the rise or fall over it (m) that
+/// is a full ridge or hollow; how wide a stand of one green is (m).
+const RELIEF_R: f32 = 60.0
+const RELIEF_H: f32 = 8.0
+const STAND: f32 = 220.0
+
+/// How wide a group of far crowns of about one size is (m, `far_placed`).
+const GROUP: f32 = 60.0
+
 /// An instance of kind `kind` at `p` on the ground (`ground_y` high there), scaled to `tall`, its
 /// +z turned toward `toward` (or turned at random by seed `s`, if `toward` is nothing), sunk
 /// `sink` into the ground, forking `fork` higher than its kind (`engine::plant::bend`), its crown
@@ -609,6 +654,7 @@ fn instance(
     sink: f32,
     fork: f32,
     wide: f32,
+    tint: vec2,
 ) -> Placed {
     let yaw = if length(toward) > 0.05 { atan2(toward.x, toward.y) } else { TAU * rand(s, 90) }
     Placed {
@@ -616,7 +662,7 @@ fn instance(
         at: Instance {
             at: vec3(p.x, ground_y - sink, p.y),
             yaw,
-            tint: tint_of(tint(s)),
+            tint: tint_of(tint),
             scale: scale_of(kind, tall),
             fork,
             wide,
@@ -625,11 +671,16 @@ fn instance(
 }
 
 /// The lowest a plant's branches or leaves come (m, as it's built): its limbs' (not its trunk's,
-/// the first) and its clumps'.
+/// the first, nor its roots', which reach into the ground) and its clumps'. (Its roots counted,
+/// every broad-leaved kind's lowest branch was under the ground, and a browsed tree was always
+/// drawn in its forest form.)
 fn lowest(p: Plant) -> f32 {
     var low = 1.0e9
     for i in 1..p.limbs.len() {
         let l = p.limbs[i]
+        if l.points[3].y < 0.0 {
+            continue
+        }
         for k in 0..4 {
             low = min(low, l.points[k].y - l.radii[k])
         }
@@ -1086,14 +1137,37 @@ pub fn placed(trees: [Tree], height: fn(vec2) -> f32) -> Vec<Placed> {
                 let k = drawn_kind(t)
                 let tall = drawn_tall(k, t.tall)
                 let wide = crown_wide(t, k, tall)
+                let tint = stand_tint(t.at, height, t.seed)
                 out.push(
-                    instance(k, t.at, y, tall, t.lean, t.seed, sink: 0.0, fork: t.fork, wide: wide),
+                    instance(
+                        k,
+                        t.at,
+                        y,
+                        tall,
+                        t.lean,
+                        t.seed,
+                        sink: 0.0,
+                        fork: t.fork,
+                        wide: wide,
+                        tint: tint,
+                    ),
                 )
             }
         } else if t.state == State::Snag {
             let k = snag_kind(t)
             out.push(
-                instance(k, t.at, y, t.tall, vec2(0.0), t.seed, sink: 0.0, fork: t.fork, wide: 1.0),
+                instance(
+                    k,
+                    t.at,
+                    y,
+                    t.tall,
+                    vec2(0.0),
+                    t.seed,
+                    sink: 0.0,
+                    fork: t.fork,
+                    wide: 1.0,
+                    tint: tint(t.seed),
+                ),
             )
         } else if t.state == State::Log {
             let rot = clamp(f32(PRESENT - t.fell) / (2.0 * t.tall + 4.0), 0.0, 1.0)
@@ -1110,6 +1184,7 @@ pub fn placed(trees: [Tree], height: fn(vec2) -> f32) -> Vec<Placed> {
                 sink: 0.3 * rot * t.girth,
                 fork: 0.0,
                 wide: 1.0,
+                tint: tint(t.seed),
             )
             p.at.scale = clamp(len / BUILT[k], 0.25, 1.8)
             out.push(p)
@@ -1182,14 +1257,17 @@ pub fn far_placed(
                 vec2(f32(x), f32(z)) * engine::bake::FAR_CELL +
                 vec2(0.25 + 0.5 * rand(s, 1), 0.25 + 0.5 * rand(s, 2)) * size
             let kind = kinds[species]
-            let widen = if step > 1 { 1.35 } else { 1.0 }
+            // Crowns in groups: larger together in some places, smaller in others, over about
+            // `GROUP` m (even in size, the far crowns read as an orchard: round 1).
+            let group = 0.85 + 0.3 * noise2(p / GROUP + vec2(3.7, 11.2))
+            let widen = group * if step > 1 { 1.35 } else { 1.0 }
             out.push(
                 Placed {
                     kind: KINDS + species,
                     at: Instance {
                         at: vec3(p.x, height(p), p.y),
                         yaw: TAU * rand(s, 3),
-                        tint: tint_of(tint(s)),
+                        tint: tint_of(stand_tint(p, height, s)),
                         scale: clamp(far.tall[k] * widen / BUILT[kind], 0.15, 2.4),
                         fork: 0.0,
                         wide: 1.0,

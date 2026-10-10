@@ -9,7 +9,7 @@
 // no `discard` (which would turn off the GPU's early depth test).
 
 use impostor::{
-    Cooked, Impostor, bake, cook, far_cut, far_quad, far_shade, leaf_light, volume_cut,
+    Cooked, Impostor, TILT, bake, cook, far_cut, far_quad, far_shade, leaf_light, volume_cut,
     volume_shade, which_crown,
 }
 use light::Lit
@@ -645,7 +645,7 @@ pub fn leaf_shade(
     let c = leaf_light(
         lt,
         world,
-        leaf_normal(crown_n, tilt),
+        leaf_normal(crown_n, tilt * TILT),
         sky_n: crown_n,
         depth: card.depth * inst.scale,
         albedo: tinted(leaf_age(leaves, crown_n.y, aged), inst.tint_rgb() + card_tint(card)),
