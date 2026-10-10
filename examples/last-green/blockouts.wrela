@@ -50,6 +50,11 @@ pub const BREAK: f32 = 2.85
 const BITE: f32 = 12.5
 const BITE_WIDE: vec2 = vec2(0.65, 1.2)
 
+/// A smaller notch out of the rim across the tower from the break (toward the old road): its
+/// angle round the tower and its depth (m).
+const CHIP_AT: f32 = 5.6
+const CHIP: f32 = 4.5
+
 /// A course's mean height, and how many blocks round the tower (each about 0.8 m along its outer
 /// face; a whole number, so the courses close).
 const COURSE: f32 = 0.42
@@ -155,7 +160,11 @@ impl Tower {
         let s = turned(a, BREAK)
         let x = if s > 0.0 { s / BITE_WIDE.y } else { -s / BITE_WIDE.x }
         let bite = BITE * (1.0 - smoothstep(0.1, 1.0, x)) * (0.75 + 0.5 * rand(n, 8))
-        joint_below(rim - bite, COURSE)
+        // And a smaller notch across the tower, so its crown reads broken from the far side too.
+        let notch = CHIP *
+            (1.0 - smoothstep(0.1, 1.0, stones::apart(a, CHIP_AT) / 0.4)) *
+            (0.6 + 0.8 * rand(n, 10))
+        joint_below(rim - max(bite, notch), COURSE)
     }
 
     /// The broken top over angle `a`: the column's there.
@@ -421,7 +430,7 @@ pub struct Waystone: Copy + GpuData {
 impl Waystone {
     /// The shaft's half breadth (x) and half depth (z) at height `y`.
     fn breadth(self, y: f32) -> vec2 {
-        let w = mix(0.23, 0.18, saturate(y / self.tall))
+        let w = mix(0.3, 0.24, saturate(y / self.tall))
         vec2(w, 0.8 * w)
     }
 
@@ -464,7 +473,7 @@ impl Surface for Waystone {
         let mark = max(min(ring, stroke), 0.05 - q.z)
         d = max(d, -max(min(band, mark), skin))
         // Its plinth.
-        let plinth = cuboid(vec3(0.34, 0.17, 0.29)).distance(q - vec3(0.0, -0.05, 0.0)) - 0.04
+        let plinth = cuboid(vec3(0.4, 0.17, 0.34)).distance(q - vec3(0.0, -0.05, 0.0)) - 0.04
         min(d, plinth) - 0.01 * noise3(p * 4.0 + vec3(self.seed))
     }
 
@@ -678,7 +687,8 @@ pub fn built(m: Map) -> Vec<Built> {
                 if k.tall <= 2.5 {
                     let r = 0.3 + 0.15 * k.tall
                     if k.kind == SiteKind::Waystone {
-                        out.push(Built::Waystone { at: k.at, tall: k.tall, seed })
+                        // Squat: a broad stone a little shorter than the site's mark.
+                        out.push(Built::Waystone { at: k.at, tall: 0.8 * k.tall, seed })
                     } else {
                         out.push(
                             Built::Stone { at: k.at, radius: r, squash: vec3(1.3, 0.8, 1.1), seed },
