@@ -2,8 +2,9 @@ wrela is a new language, compiler, engine and agent-native studio for AAA-ambiti
 
 docs/language.md has the current language spec
 docs/vision.md has the vision for the project
+docs/process.md is the public record of how wrela is made: what AI does and what people do, and every outside work used
 
-Don't add any more docs besides the grammar and the lexical spec. Don't add CI; the one exception is the flagship's separate leaderboard repository, which verifies replays in GitHub Actions (#46). Work fully locally.
+Don't add any more docs besides the grammar, the lexical spec and docs/process.md. Don't add CI; the one exception is the flagship's separate leaderboard repository, which verifies replays in GitHub Actions (#46). Work fully locally.
 
 Checks (tools/check.sh; its header says what each tier runs). Never wait on a check with sleep or polling: run it in the background, keep working, and read its result when it ends.
 - While you work, run only the tests you touch: `tools/check.sh <filter>` takes seconds.
@@ -17,3 +18,5 @@ Full milestones with AC are stored in github. When you're working on a milestone
 Go 80% of the way on ASD-STE100 when communicating technical details (and strive for clear english in all communication)
 
 If a diagram is a better way to communicate an idea, use a diagram.
+
+Keep docs/process.md true, in the same change: when you use a reference (an image, a photo, a recording, a score, a model, a dataset), add its row (source, rights, what it teaches, how you used it); the same for a new outside asset or algorithm, a new AI tool or model, or AI doing a new kind of work. A style reference stays out of the repo; only its row goes in. Never trace, sample or recreate a specific shot, character or design from a reference, and never make an asset with a generative image, audio, music, voice or video model.
