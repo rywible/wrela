@@ -2070,9 +2070,10 @@ const POLES: f32 = 12.0
 const GUSTS: i32 = 2
 const LATER_GUSTS: f32 = 0.5
 
-/// A fire (`EventKind::Fire`) lit at `at` in `year`. It runs over the land as fast as its fuel,
-/// dryness, slope and the wind let it (uphill and with the wind, faster), no further than `reach`
-/// (the weather that ends it), round what won't burn: open water, wet hollows, the trodden
+/// A fire (`EventKind::Fire`) in `year` over `reach` round `at`, lit on its upwind side (`UPWIND`
+/// of `reach` from `at`), so that its head runs through the middle. It runs over the land as fast
+/// as its fuel, dryness, slope and the wind let it (uphill and with the wind, faster), no further
+/// than `reach` from `at` (the weather that ends it), round what won't burn: open water, wet hollows, the trodden
 /// trails, rock. It burns each place as hot as its fuel and the way it runs there make it: hot
 /// running with the wind through dead wood and resinous crowns, which it climbs into (a crown
 /// fire); cool where it backs into the wind. A ground fire kills the young, and the trees whose
@@ -2145,13 +2146,14 @@ fn fire(trees: mut Vec<Tree>, cx: Cx, f: mut Fields, at: vec2, reach: f32, year:
     var when: Vec<f32> = Vec::filled(nn, 1.0e9)
     var done: Vec<bool> = Vec::filled(nn, value: false)
     var heap = Heap { items: Vec::new() }
+    let wind = WIND_FROM
+    let lit = at - wind * (UPWIND * reach)
     for k in 0..nn {
-        if length(g.centre(k) - at) < LIT {
+        if length(g.centre(k) - lit) < LIT {
             when[k] = 0.0
             heap.push(0.0, k)
         }
     }
-    let wind = WIND_FROM
     while !heap.items.is_empty() {
         let top = heap.pop()
         let c = top.y
@@ -2197,7 +2199,7 @@ fn fire(trees: mut Vec<Tree>, cx: Cx, f: mut Fields, at: vec2, reach: f32, year:
         let p = g.centre(k)
         let fuel = ground[k] * dry[k]
         // Its head (1), running with the wind, its flanks, or its back (0), backing into it.
-        let head = 0.5 + 0.5 * dot(normalize(p - at + vec2(1.0e-3)), wind)
+        let head = 0.5 + 0.5 * dot(normalize(p - lit + vec2(1.0e-3)), wind)
         let gusty = 0.7 + 0.6 * noise2(p * 0.05 + vec2(57.0))
         var hot = clamp(1.4 * fuel * (0.65 + 0.75 * head) * gusty, 0.0, 1.0)
         if crowns[k] * dry[k] * (0.4 + 0.6 * head) * (fuel + 0.3) > CROWNS {
@@ -2245,6 +2247,9 @@ fn fire(trees: mut Vec<Tree>, cx: Cx, f: mut Fields, at: vec2, reach: f32, year:
         }
     }
 }
+
+/// How far upwind of a fire's middle it is lit (a share of its reach).
+const UPWIND: f32 = 0.6
 
 /// How near the fire's lighting a cell burns whatever its fuel (m); the least fuel a cell must
 /// have, dry, to take a fire; and the crowns' fuel past which the fire climbs into them.
