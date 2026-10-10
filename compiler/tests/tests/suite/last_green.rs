@@ -960,13 +960,20 @@ const SYSTEMS: [(&str, f64, &[&str]); 9] = [
         ],
     ),
     ("characters", 1.5, &["creature", "motion"]),
-    ("light", 2.0, &["shadow moving", "probes again", "probes open sky"]),
+    ("light", 2.0, &["shadow moving", "probes again", "probes open sky", "shafts"]),
     ("water", 1.5, &["water"]),
     ("sky", 1.0, &["sky", "clouds", "air", "clouds noise", "clouds weather", "clouds shadow"]),
     (
         "cooking",
         1.0,
-        &["terrain cook", "shadows near", "shadows far", "probes occluders", "probes bake"],
+        &[
+            "terrain cook",
+            "shadows near",
+            "shadows far",
+            "probes occluders",
+            "probes bake",
+            "wood shift",
+        ],
     ),
     ("temporal AA", 1.0, &["temporal"]),
     ("look", 2.0, &["look"]),
@@ -1861,4 +1868,54 @@ fn a_scene_moved_by_whole_tiles_draws_the_same_frame() {
     }
     assert!(d.mean <= 0.5, "the frames differ by a mean of {}/255", d.mean);
     assert!(share <= 0.5, "{share:.2}% of the pixels differ by more than 8/255");
+}
+
+/// AC11's sun shafts (Q6, a candidate): their pass's GPU time at 1080p output (the scene at
+/// 960×540, the shafts at a quarter of its pixels), each pass alone (serial), ≤ 0.5 ms; and the
+/// frames with and without them, from inside the wood pasture looking toward the sun, saved for
+/// the owner's blind comparison (`target/tmp/last-green/shafts`), with how much they brighten.
+#[test]
+#[ignore = "measure: the shafts' pass in serial timing, needs a GPU"]
+fn the_sun_shafts_cost_half_a_millisecond_or_less() {
+    let options = wrela_host::Options {
+        timing: wrela_host::Timing::Serial,
+        ..wrela_host::Options::default()
+    };
+    let mut f = Floor::load_with("last-green-shafts", (1920, 1080), &options);
+    let out = scratch("last-green/shafts");
+    let eye = f.eye([-12.0, -470.0]);
+    let at = [eye[0] + 20.0, eye[1] + 5.0, eye[2] - 3.0];
+    f.look(eye, at, 120);
+    let off = f.host.read_screen().expect("the screen");
+    f.save(&out.join("without.png"));
+    f.call("test_shafts", &[wrela_host::Value::I32(1)]);
+    f.steps(64);
+    let _ = f.host.take_timings();
+    let from = f.frame as usize;
+    f.steps(60);
+    let timings = f.host.take_timings().expect("timings");
+    let mut per: std::collections::BTreeMap<usize, f64> =
+        (from..f.frame as usize).map(|k| (k, 0.0)).collect();
+    for t in &timings {
+        if t.label == "shafts"
+            && let Some(ms) = per.get_mut(&t.frame)
+        {
+            *ms += t.nanos / 1e6;
+        }
+    }
+    let ms = wrela_tests::median(&per.into_values().collect::<Vec<_>>());
+    let on = f.host.read_screen().expect("the screen");
+    f.save(&out.join("with.png"));
+    let luma = |rgba: &[u8]| -> f64 {
+        rgba.chunks_exact(4)
+            .map(|p| 0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2]))
+            .sum::<f64>()
+            / (rgba.len() / 4) as f64
+    };
+    eprintln!(
+        "sun shafts: {ms:.3} ms a frame (≤ 0.5); the frame's mean display luminance {:.1} without, {:.1} with",
+        luma(&off),
+        luma(&on)
+    );
+    assert!(ms <= 0.5, "the shafts took {ms:.3} ms");
 }

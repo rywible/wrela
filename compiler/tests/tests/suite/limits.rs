@@ -280,7 +280,9 @@ fn matches_hard_to_check_are_checked_quickly() {
     assert_eq!(codes, ["E0309"]);
     let (codes, _) = compile("hard_match_wild", &hard("        _ => 0,\n"));
     assert!(codes.is_empty(), "{codes:?}");
-    assert!(started.elapsed().as_secs() < 10, "took {:?}", started.elapsed());
+    // About 2 s alone; an exponential check would take hours. The bound is wall-clock time on a
+    // machine other work shares (11.6 s at a load of 29), so it's loose.
+    assert!(started.elapsed().as_secs() < 30, "took {:?}", started.elapsed());
 }
 
 #[test]

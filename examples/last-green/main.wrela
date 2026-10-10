@@ -24,6 +24,7 @@ use engine::present::Snapshots
 use engine::probes::{Baked, Trace, grid}
 use engine::run::run
 use engine::shadow::{CASTER, Cascade, Shadows, shadows}
+use engine::shafts::{Shafts, add_shafts, march_shafts}
 use engine::sky::{Clouds, Sky, new_sky, sky_shade}
 use engine::temporal::{Resolve, neighbourhoods, resolve}
 use engine::terrain::{Clipmap, Terrain, ground, ground_shade}
@@ -395,6 +396,11 @@ pub struct Floor {
     /// whole blocks of `RECENTRE_STEP` tiles once the player is `RECENTRE` from it (never on the
     /// floor itself), and everything drawn moves with it (`recentre`).
     origin: vec2i,
+    /// Sun shafts (`engine::shafts`, a candidate: B), their texture (a quarter of the scene's
+    /// pixels) and the scene's second target, which the shafts are added into.
+    shafts_on: bool,
+    shafts: Texture<Rgba16Float>,
+    scene_b: Texture<Rgba16Float>,
 }
 
 /// The built things to realize: the floor's (`blockouts::built`), and the egg's place's ring of
@@ -539,6 +545,9 @@ pub fn init() -> Floor {
         clicked: None,
         map: harness::HarnessMap::new(),
         origin: vec2i(0),
+        shafts_on: false,
+        shafts: writable_texture::<Rgba16Float>(width: 1, height: 1),
+        scene_b: texture::<Rgba16Float>(width: 1, height: 1),
     }
 }
 
@@ -1143,6 +1152,9 @@ fn keys(s: mut Floor, time: f32) {
             if key == Key::F6 {
                 s.water_look = (s.water_look + 1) % LOOKS.len()
             }
+            if key == Key::B {
+                s.shafts_on = !s.shafts_on
+            }
             if key == Key::F9 && s.hashing.is_empty() {
                 for i in 0..BAKED.len() {
                     s.hashing.push(BAKED.fetch(i))
@@ -1208,6 +1220,8 @@ fn fullscreen<P: RenderPass, F: FragmentShader<ClipPosition>>(pass: P, fs: F) {
 /// The targets made again for an output of `width` × `height`, the scene's `w` × `h`.
 fn resize(s: mut Floor, width: u32, height: u32, w: u32, h: u32) {
     s.scene = texture::<Rgba16Float>(width: w, height: h)
+    s.scene_b = texture::<Rgba16Float>(width: w, height: h)
+    s.shafts = writable_texture::<Rgba16Float>(width: max(w / 2, 1), height: max(h / 2, 1))
     s.depth = depth_texture(width: w, height: h)
     s.ids = texture::<R32Uint>(width: w, height: h)
     s.motion = texture::<Rgba16Float>(width: w, height: h)
@@ -1574,6 +1588,32 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         )
         wp.end()
     }
+    // Sun shafts, if they're on: marched at a quarter of the scene's pixels, added into the
+    // scene's second target, which becomes the scene.
+    if s.shafts_on {
+        label("shafts")
+        dispatch(
+            march_shafts.bind(
+                cam,
+                s.light,
+                sh,
+                near: s.near.front,
+                far: s.far.front,
+                cmp: s.cmp,
+                clouds: s.clouds,
+                cloud: s.sky.shadow,
+                s: s.linear,
+                depth: s.depth,
+                look: Shafts {},
+                out: mut s.shafts,
+            ),
+            over: s.shafts,
+        )
+        let ap = begin_pass(mut s.scene_b)
+        fullscreen(ap, add_shafts.bind(scene: s.scene, shafts: s.shafts, s: s.linear))
+        ap.end()
+        swap(mut s.scene, mut s.scene_b)
+    }
     // The stand-in's motion, where it's seen, over the older target: the last frame's is kept.
     label("motion")
     swap(mut s.motion, mut s.last_motion)
@@ -1816,6 +1856,12 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
 
 /// The camera held at `eye`, looking at `at` (instead of the player's or a shot's).
 @testing
+/// Sun shafts on (`on` 1) or off.
+@testing
+pub fn test_shafts(s: mut Floor, on: u32) {
+    s.shafts_on = on != 0
+}
+
 /// The render origin moved to tile (`x`, `z`) (it follows the player only once the player is
 /// `RECENTRE` from it).
 @testing

@@ -49,6 +49,9 @@ class GpuError extends Error {
 }
 
 let base = "";
+/** The build that's running's base: the page's, until a hot reload swaps another in. Its files
+ * are fetched from there (the server deletes old builds, the page's among them). */
+let buildBase = "";
 let testing = false;
 let failed = false;
 /** Input events from the main thread (input.ts). */
@@ -176,7 +179,7 @@ interface Carried {
  * on (`carried`). */
 function programOptions(b: Build, ticks: TickSettings, carried: Carried | null): ProgramOptions {
   return {
-    io: browserIo(base),
+    io: browserIo(base, undefined, buildBase),
     spawnWorker,
     startVoice,
     startTicker: tickerStarter(b.wasm, ticks, carried?.replay ?? null),
@@ -195,6 +198,7 @@ async function swap(
   start: (build: Build, carried: Carried) => Promise<Program>,
 ): Promise<Program> {
   const build = await loadBuild(base);
+  buildBase = base;
   let replay: Replay | null = null;
   if (old.ticker !== null && ticker.report !== null) {
     const stopped = ticker.report;
@@ -569,6 +573,7 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
       return;
     case "start": {
       base = msg.base;
+      buildBase = msg.base;
       testing = msg.test !== null;
       ring = new InputRing(msg.input);
       size = { width: msg.width, height: msg.height };

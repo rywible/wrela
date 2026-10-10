@@ -298,11 +298,13 @@ fn a_page_opened_after_hot_reloads_loads_the_newest_build() {
     assert_eq!([frame[i], frame[i + 1], frame[i + 2]], [32, 96, 64], "the newest build's clear");
 }
 
-/// A page kept open through three structural hot reloads keeps running, and draws the third's
-/// clear colour. Each new build's ticker starts from the script the page's render worker came
-/// from (`/1/worker.js`), and the server keeps only two builds: a page open through three
-/// stopped, "the ticker's thread couldn't start" (playing the floor, M6). The runtime's own
-/// scripts are now served for a build that's gone.
+/// A page kept open through three structural hot reloads keeps running, draws the third's clear
+/// colour, and fetches the file its build ships each time. Each new build's ticker starts from
+/// the script the page's render worker came from (`/1/worker.js`), and the program fetched its
+/// files from the page's build; the server keeps only two builds: a page open through three
+/// stopped, "the ticker's thread couldn't start", and the floor's tiles didn't come (playing the
+/// floor, M6). The runtime's own scripts are served for a build that's gone, and a new build's
+/// files are fetched from its own.
 #[test]
 #[ignore = "long: needs Chrome and a GPU"]
 fn a_page_open_through_hot_reloads_keeps_running() {
@@ -332,4 +334,10 @@ fn a_page_open_through_hot_reloads_keeps_running() {
     let frame = std::fs::read(out.join("results/frame.rgba")).expect("frame.rgba");
     let i = ((32 * SIZE + 56) * 4) as usize;
     assert_eq!([frame[i], frame[i + 1], frame[i + 2]], [32, 96, 64], "the third build's clear");
+    // The shipped file, fetched every two seconds, came each time: a new build's from its own
+    // files (the page's first build's are deleted by the third).
+    let log = std::fs::read_to_string(out.join("results/log.txt")).expect("log.txt");
+    let fetched = log.lines().filter(|l| l.starts_with("fetched 14 bytes")).count();
+    assert!(!log.contains("didn't come"), "a fetch failed after a hot reload:\n{log}");
+    assert!(fetched >= 10, "only {fetched} fetches came:\n{log}");
 }

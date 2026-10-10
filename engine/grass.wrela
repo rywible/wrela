@@ -299,6 +299,9 @@ struct WoodPlant: Copy {
 /// (`Cover::under`) is fronds this far apart.
 pub const FROND_AREA: f32 = 0.18
 
+/// How near the eye no frond grows (m, on the plane).
+pub const CLEAR_EYE: f32 = 1.5
+
 /// The grid a fern's fronds gather to its crown on (m).
 pub const FERN_CROWN: f32 = 1.1
 
@@ -331,6 +334,13 @@ fn under_plant(
     }
     let r = rand(p.seed, 10) * (u.y + u.z + u.w)
     let kind = if r < u.y { FERN } else if r < u.y + u.z { BRACKEN } else { HERB }
+    // A frond taller than the eye's ground clearance would fill a low camera's view: none within
+    // `CLEAR_EYE` of the eye (on the plane), and they grow back to full size over as far again.
+    let near = length(p.xz - at.cam.eye.xz)
+    if kind != HERB && near < CLEAR_EYE {
+        return
+    }
+    let grown = if kind == HERB { 1.0 } else { smoothstep(CLEAR_EYE, 2.0 * CLEAR_EYE, near) }
     let v = rand(p.seed, 4)
     // Each kind's size: a fern's arching frond, bracken's taller and flatter, a herb's low leaf;
     // never narrower than a blade's spacing here, so the far ones still cover.
@@ -365,7 +375,7 @@ fn under_plant(
     let _ = blades.push(
         Blade {
             root: vec3(xz.x, y - 0.02, xz.y),
-            tall: tall * p.shrink,
+            tall: tall * p.shrink * max(grown, 0.35),
             facing,
             bend,
             width: max(wide, spacing * 1.2) * (0.8 + 0.4 * rand(p.seed, 5)),
