@@ -40,11 +40,11 @@ pub const SHOTS = [
         moves: vec2(0.0, 3.0),
         fovy: 0.733,
     },
-    // Oaks over beech, the browse line, a sunlit glade ahead.
+    // Oaks over beech, the browse line: a path through the glade leads to a lone oak.
     Shot {
         name: "wood pasture",
-        eye: vec3(150.0, 1.7, 40.0),
-        at: vec3(30.0, 3.0, 25.0),
+        eye: vec3(135.0, 1.7, 40.0),
+        at: vec3(60.0, 3.0, 30.0),
         moves: vec2(-3.0, 0.0),
     },
     // Grey trunks, a litter floor, light falling through the canopy.
@@ -62,12 +62,14 @@ pub const SHOTS = [
         at: vec3(268.0, 2.0, -180.0),
         moves: vec2(2.5, -1.7),
     },
-    // The canopy from above in its species' colours, the tower on its hill.
+    // The canopy from above in its species' colours, the tower on its hill: a long lens, so the
+    // tower reads over the wood.
     Shot {
         name: "the crag's top",
         eye: vec3(330.0, 1.8, -150.0),
-        at: vec3(560.0, 20.0, -470.0),
+        at: vec3(560.0, 14.0, -470.0),
         moves: vec2(1.0, -1.4),
+        fovy: 0.4,
         reach: 8.0,
     },
     // Masonry, moss, rubble, the break in the wall.
@@ -78,12 +80,12 @@ pub const SHOTS = [
         moves: vec2(1.0, 2.0),
         reach: 8.0,
     },
-    // Standing stones in their glade.
+    // Standing stones in their glade, near, a path leading in.
     Shot {
         name: "the ring",
-        eye: vec3(68.2, 1.7, -447.4),
+        eye: vec3(45.0, 1.7, -475.0),
         at: vec3(40.0, 1.5, -455.0),
-        moves: vec2(-2.0, -2.0),
+        moves: vec2(-2.0, 1.0),
         reach: 9.0,
     },
     // Still water, the alder carr round it, reflections of sky and canopy.
@@ -100,12 +102,14 @@ pub const SHOTS = [
         at: vec3(-10.0, 1.0, -293.5),
         moves: vec2(1.6, -1.2),
     },
-    // The stream falling from the plateau's lip, from the valley's floor at its foot.
+    // The stream falling from the plateau's lip, from the valley's floor: the stream leads to it.
     Shot {
         name: "the waterfall",
-        eye: vec3(-329.0, 1.7, -40.0),
-        at: vec3(-245.0, 0.0, -142.0),
+        eye: vec3(-290.0, 1.7, -110.0),
+        at: vec3(-222.0, 14.0, -152.0),
         moves: vec2(1.5, -1.0),
+        fovy: 0.7,
+        reach: 8.0,
     },
     // Silver snags over young birch.
     Shot {
