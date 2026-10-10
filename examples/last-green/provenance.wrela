@@ -1,12 +1,13 @@
 // Provenance in the running floor (#55 AC13, #54 §4): a click names what's under it. A tree: its
 // species and the line of species.wrela that says how it lives, the kind it's drawn as and the
 // line of trees.wrela that builds it, and the history's record of it (born, how it died and
-// fell, the pin or keeper that shaped it). The ground: its region, what covers it and the
-// history's fields there (light, trodden, wet, thorn). From the near tiles' records, which the
+// fell, the pin or keeper that shaped it, and what a living one lived through). The ground: its
+// region, what covers it, the history's fields there (light, trodden, wet, thorn) and what it
+// remembers (the last fire or gale there, its year and how hard). From the near tiles' records, which the
 // program keeps as they stream (`NearTile`): no GPU readback, so the answer is the click's frame.
 
 use engine::bake::WEAR_N
-use engine::grow::{Cause, NONE, Shaper, State, Tree, shaper}
+use engine::grow::{Cause, Mark, NONE, Shaper, State, Tree, shaper}
 use engine::interest::Drawn
 use engine::place::TILE
 use engine::terrain::raycast
@@ -307,8 +308,14 @@ pub fn tree_json(t: Tree, drawn_kind: u32, distance: f32, ms: f64) -> String {
     let age = (if alive { present } else { t.died }) - t.born
     let fell = year_json(t.fell, t.state == State::Log)
     let cause = if alive { String::from("null") } else { f"\"{cause_name(t.cause)}\"" }
+    // What a living tree lived through: a fire that scarred it, a gale that broke its top.
+    let marked = if alive && (t.cause == Cause::Fire || t.cause == Cause::Snapped) {
+        f"{{\"by\": \"{cause_name(t.cause)}\", \"year\": {t.died}}}"
+    } else {
+        String::from("null")
+    }
     let shaped = shaped_json(m, t.shaped)
-    f"{{\"provenance\": \"tree\", \"at\": [{t.at.x}, {t.at.y}], \"distance\": {distance}, \"species\": \"{species}\", \"habit\": \"species.wrela:{habit}\", \"drawn_as\": \"{kind}\", \"kind\": \"trees.wrela:{built}\", \"born\": {t.born}, \"age\": {age}, \"state\": \"{state_name(t.state)}\", \"died\": {died}, \"fell\": {fell}, \"cause\": {cause}, \"shaped\": {shaped}, \"pinned\": {t.pinned}, \"tall\": {t.tall}, \"girth\": {t.girth}, \"ms\": {ms}}}"
+    f"{{\"provenance\": \"tree\", \"at\": [{t.at.x}, {t.at.y}], \"distance\": {distance}, \"species\": \"{species}\", \"habit\": \"species.wrela:{habit}\", \"drawn_as\": \"{kind}\", \"kind\": \"trees.wrela:{built}\", \"born\": {t.born}, \"age\": {age}, \"state\": \"{state_name(t.state)}\", \"died\": {died}, \"fell\": {fell}, \"cause\": {cause}, \"marked\": {marked}, \"shaped\": {shaped}, \"pinned\": {t.pinned}, \"tall\": {t.tall}, \"girth\": {t.girth}, \"ms\": {ms}}}"
 }
 
 /// The history's fields at world point `p` from the near tile that holds it (light, trodden, wet,
@@ -377,7 +384,27 @@ pub fn ground_json(tiles: [NearTile], point: vec3, normal: vec3, distance: f32, 
     let fields = if f.x < 0.0 { String::from("null") } else {
         f"{{\"light\": {f.x}, \"trodden\": {f.y}, \"wet\": {f.z}, \"thorn\": {f.w}}}"
     }
-    f"{{\"provenance\": \"ground\", \"at\": [{p.x}, {p.y}], \"y\": {point.y}, \"distance\": {distance}, \"region\": \"{region}\", \"cover\": \"{cover}\", \"fields\": {fields}, \"ms\": {ms}}}"
+    let remembers = memory_json(tiles, p)
+    f"{{\"provenance\": \"ground\", \"at\": [{p.x}, {p.y}], \"y\": {point.y}, \"distance\": {distance}, \"region\": \"{region}\", \"cover\": \"{cover}\", \"fields\": {fields}, \"remembers\": {remembers}, \"ms\": {ms}}}"
+}
+
+/// What the ground remembers at `p` (`engine::bake::memory_in_tile`, from the near tile that
+/// holds it), as JSON: the last fire or gale there, its year and how hard; null for nothing, or
+/// where no near tile holds it.
+fn memory_json(tiles: [NearTile], p: vec2) -> String {
+    let t = engine::place::tile_of(p)
+    for nt in tiles {
+        if nt.tile == t && !nt.bytes.is_empty() {
+            let m = engine::bake::memory_in_tile(nt.bytes, p)
+            let what = match m.mark {
+                Mark::Fire => "fire",
+                Mark::Wind => "wind",
+                Mark::None => return String::from("null"),
+            }
+            return f"{{\"by\": \"{what}\", \"year\": {m.year}, \"strength\": {m.strength}}}"
+        }
+    }
+    String::from("null")
 }
 
 /// A click at screen point `px` (of a screen `size` pixels) through camera `cam`: what's under it,

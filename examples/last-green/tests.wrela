@@ -2,7 +2,7 @@
 // as the program reads it. They read the bake, so they're long (`suite/last_green.rs`).
 
 use engine::bake::{WEAR_N, decode_tile, reaching, tile_fields, tile_name}
-use engine::grow::{BAKE, BESIDE_PATH, Grid, HEAD_ROOM, State, Tree}
+use engine::grow::{BAKE, BESIDE_PATH, Cause, Grid, HEAD_ROOM, Mark, State, Tree}
 use engine::place::{Keeper, Map, TILE}
 use engine::terrain::Terrain
 use std::io::print
@@ -797,4 +797,82 @@ fn neighbouring_trees_of_a_kind_fork_at_different_heights() {
     print(f"{pairs} neighbouring pairs of a kind among {all.len()} trees; {alike} fork alike")
     assert(pairs > 1000, f"only {pairs} neighbouring pairs of a kind")
     assert(alike == 0, f"{alike} of {pairs} neighbouring pairs of a kind fork alike")
+}
+
+/// Stage 0 of a deeper history: the fire and the gales are processes, and the land remembers
+/// them. In the burn, most of the ground the fire reached is remembered as burnt in its year, the
+/// fire killed most of its trees, and some thick-barked trees lived through it, scarred; it left
+/// ground unburnt within its reach (wet hollows, trails). In each gale, the ground it threw trees
+/// on is remembered as wind in its year, some trees snapped and stand, and some stood through it.
+@test
+fn the_fire_and_the_gales_leave_what_they_did() {
+    let m = map::map()
+    let u = decisions()
+    for e in m.events {
+        match e.kind {
+            engine::place::EventKind::Fire { at, reach } => {
+                let (marked, cells) = remembered(u, at, reach, Mark::Fire, e.year)
+                var killed = 0
+                var scarred = 0
+                for t in u.trees {
+                    if length(t.at - at) < reach && t.cause == Cause::Fire && t.died == e.year {
+                        if t.state == State::Alive { scarred += 1 } else { killed += 1 }
+                    }
+                }
+                let name = e.name
+                print(
+                    f"{name}: {marked} of {cells} cells within its reach burnt; {killed} trees killed, {scarred} scarred and living",
+                )
+                assert(f32(marked) > 0.6 * f32(cells), f"{name}: only {marked} of {cells} burnt")
+                assert(marked < cells, f"{name}: every cell burnt, none spared")
+                assert(killed > 3 * scarred, f"{name}: {scarred} lived through it, {killed} died")
+                assert(scarred > 0, f"{name}: no tree lived through it")
+            },
+            engine::place::EventKind::Storm { at, reach, .. } => {
+                let (marked, cells) = remembered(u, at, 0.6 * reach, Mark::Wind, e.year)
+                // A snapped stem stands as a snag, then falls and rots; a living tree's broken top
+                // is remembered too.
+                var snapped = 0
+                var stood = 0
+                for t in u.trees {
+                    if length(t.at - at) < 0.6 * reach {
+                        if t.cause == Cause::Snapped && t.died == e.year {
+                            snapped += 1
+                        }
+                        if t.state == State::Alive && t.born < e.year - 30 && t.tall > 6.0 {
+                            stood += 1
+                        }
+                    }
+                }
+                let name = e.name
+                print(
+                    f"{name}: {marked} of {cells} cells near its middle thrown on; {snapped} snapped, {stood} stood through it",
+                )
+                // A gale before the bake's first year (the meadow's) never blew.
+                if e.year < m.present - BAKE.years {
+                    continue
+                }
+                assert(f32(marked) > 0.4 * f32(cells), f"{name}: only {marked} of {cells} marked")
+                assert(snapped > 0, f"{name}: no trunk snapped")
+            },
+            _ => {},
+        }
+    }
+}
+
+/// How many of the bake's 4 m cells within `reach` of `at` remember `mark` in `year`, of how many.
+fn remembered(u: engine::bake::Unbaked, at: vec2, reach: f32, mark: Mark, year: i32) -> (u32, u32) {
+    let g = u.wet_grid
+    var marked = 0
+    var cells = 0
+    for c in 0..g.cells() {
+        if length(g.centre(c) - at) < reach {
+            cells += 1
+            let r = engine::bake::memory_at(u, g.centre(c))
+            if r.mark == mark && r.year == year {
+                marked += 1
+            }
+        }
+    }
+    (marked, cells)
 }
