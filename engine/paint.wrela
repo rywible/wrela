@@ -396,6 +396,12 @@ pub fn dab_map(
     // Broad things take stronger dabs: the far ground, crowns; characters half.
     let broad = if class == class_of(LEAVES) { 1.0 } else { smoothstep(30.0, 250.0, dist) }
     var strength = mix(look.dabs_near, look.dabs_far, broad)
+    // The far ground's dabs softer than a crown's: on the world's planes they lie flat on a
+    // slope or a rock face, and at the crowns' strength read as dots (the crag, the plateau's
+    // lip, the fall's cliff: round 1's lookbook).
+    if class == class_of(GROUND) {
+        strength = mix(look.dabs_near, look.dabs_far * 0.6, broad)
+    }
     if class == class_of(CREATURE) {
         strength *= 0.5
     }

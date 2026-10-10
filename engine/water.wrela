@@ -321,9 +321,15 @@ pub fn courses<G: Ground>(g: G, w: Water, streams: [Stream]) -> (Vec<Course>, Ve
         }
         // Over the edge and on down (`fall_path`), to its foot.
         var pts: Vec<vec4> = Vec::new()
-        // A fall spreads over its lip: wider than the stream that feeds it.
-        for q in fall_path(g, end.xy) {
-            pts.push(vec4(q.x, q.y, max(end.z * 1.8, 5.0), 0.3))
+        // A fall spreads over its lip where it falls (steep): wider than the stream that feeds
+        // it; below, on the valley's gentler slope, it narrows to the stream's width.
+        let path = fall_path(g, end.xy)
+        for k in 0..path.len() {
+            let q = path[k]
+            let r = path[min(k + 1, path.len() - 1)]
+            let drop = g.height(q.x, q.y) - g.height(r.x, r.y)
+            let steep = smoothstep(0.3, 0.7, max(drop, 0.0) / max(length(r - q), 0.1))
+            pts.push(vec4(q.x, q.y, mix(max(end.z, 1.5), max(end.z * 1.8, 5.0), steep), 0.3))
         }
         pts[0] = end
         let p = pts[pts.len() - 1].xy
@@ -720,7 +726,7 @@ pub fn water_shade(
             noise2(vec2(u * 6.0, a * 0.8 + 3.0)) * 0.3
         foam = smoothstep(0.3, 0.8, streak + 0.1 * churn)
     } else if flowing {
-        foam = smoothstep(0.55, 0.85, churn * 0.7 + w.bank * 0.45 + 0.15 * length(w.flow))
+        foam = smoothstep(0.6, 0.9, churn * 0.7 + w.bank * 0.4 + 0.08 * length(w.flow))
     } else {
         foam = smoothstep(0.75, 0.95, churn) * (1.0 - smoothstep(0.02, 0.12, w.depth)) * 0.6
     }

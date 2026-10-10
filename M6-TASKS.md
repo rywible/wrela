@@ -79,10 +79,14 @@ Deleted when the milestone closes.
   frames only when a shot casts it: M6 judges the cel treatment in the wood, not its gait.
 - **Flicker is measured against plain rendering on the floor's walk** (M5's Q8), with the wind
   stilled and water, sky and the stand-in left out (#55's Method).
-- **The gate's slow checks went long** (179 s to 70 s): its end-to-end suite alone took 100 s.
-  The budget is an idle machine's: check.sh scales it by the cores other processes took during
-  the tests (Spotlight's indexing of what the builds write: 2.1-2.5 of 10 cores), as it already
-  forgave a wait on another process's GPU hold. The long tier runs only after the gate passes.
+- **The gate stays as it was; check.sh's budget allows for other processes' cores.** The gate
+  took 175 s because the floor was still running in a hidden browser page from earlier play,
+  holding the GPU: closed, the gate takes 52 s. (Moving its slow checks to the long tier was
+  reverted.) check.sh keeps its fixes: the suite starts first, side jobs say their time, a unit
+  test's long name is libtest's, and the budget scales by the cores other processes took.
+- **One moving cache's work a frame** (AC8): a terrain cook, a shadow strip or a probe strip;
+  at a coarse level's step (every level moves) the clouds' tile waits too. The near cascade in
+  12 strips; the first full frame waits for the built things.
 - **Rounds are played through the harness in headless Chrome** (tools/round.py): the walk, the
   shots held, the wildwood's road; the replay, the frames' intervals, late tiles, regions and
   sites, and the lookbook each round. Spike 17's stills are in target/spike17-stills.
@@ -120,7 +124,42 @@ Deleted when the milestone closes.
 
 ## Play rounds (AC5)
 
-None yet.
+Each round: `tools/round.py <n>` (Chrome, 1080p, paced at 60 Hz, eight threads): the floor's walk
+from the gate (P, 25 min at a run, through every region and the water and past each lookbook
+place), then each lookbook shot held 15 s; the replay, the summary and the lookbook in
+target/rounds/round-<n>/ (spike 17's stills in target/spike17-stills, round 0's lookbook in
+target/lookbook/round0).
+
+### Round 1 (2026-10-10, 30 min of play, 58 min of wall time)
+
+- **Route:** the walk from the gate through all ten regions (the wood pasture, the beech wood,
+  the alder carr, the pines, the spine, the burn, the windthrow, the cut, the edge, the watch),
+  18 sites within 25 m (the gate, the windthrow, the spine's waystone, the crag, the shore's
+  rest, the ring, the fallen giant, the cut's pool, the lip, the edge, the ring's outlier, the
+  town's site, the tower, the silver snags, the burnt hall, the old quarry, the last rest, the
+  warden's arena); water to 0.48 m (waded). Then the 19 shots.
+- **What drew:** the check's report ahead mostly features (0.2-0.3); the tower over the canopy
+  from the crag's top; the Fang from the old road.
+- **What failed (blocker):** the frames. Paced, the floor ran at 30 fps: frames every 33.3 ms
+  (median), 51,740 over 33 ms, worst 129. Back to back it was 10 ms a frame, but the M4's GPU
+  lowers its clock under a paced load until a frame fills about three quarters of its interval,
+  and the floor's frame missed 16.7 ms at that clock and settled at 30 Hz. Nearly half of it
+  was every built thing (the tower at 2 cm, about a million vertices, every stone on the floor)
+  drawn every frame from anywhere: Apple's GPUs run a pass's vertex work before its first
+  timestamp, so it hid as a 3-4 ms gap between timed passes.
+  **Fixed** (aa9babb): built things only in view and near enough to show, the tower's far mesh
+  past 80 m: back to back 5.74 ms median, paced 60 Hz (16.9 ms median, GPU spans 12.3).
+- **Late tiles:** 18, every one in the 3 s after a lookbook shot moved the camera to a new place
+  (a jump, not a pace streaming holds). **Fixed:** the floor counts none in the 3 s after a jump.
+- **What looked wrong** (the lookbook): dabs on far ground and rock read as dark dots (the old
+  road's crag, the fall's cliff, the plateau's lip); the crag a smooth dome; the stream below the
+  fall a wide white ribbon across the valley; herbs under the beeches upright and narrow, like
+  grass; a green cast on the beech trunks; the tower stands in a mown lawn.
+  **Fixed for round 2:** ground dabs at 60% of a crown's far strength; rock faces in ledges 3 m
+  tall and stronger knobs; a fall wide and white only where it falls steeply, the stream below
+  at its own width and less foam; herbs broad, low leaves in rosettes. **Left:** the trunks'
+  green cast and the tower's lawn (next round).
+- **Stills:** target/rounds/round-1/lookbook beside target/lookbook/round0.
 
 ## The retrospective (draft, for a comment on #55; the owner posts it)
 

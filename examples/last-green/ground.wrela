@@ -115,7 +115,13 @@ impl Ground {
         if face > 0.0 {
             let knobs = ridged2(p * 0.21 + vec2(1.0, 7.0), 3) - 0.5
             let ledges = fbm2(p * 0.09 + vec2(-4.0, 2.0), 2) - 0.5
-            y += face * (2.4 * knobs + 1.6 * ledges)
+            y += face * (3.2 * knobs + 1.6 * ledges)
+            // The rock's beds as ledges: the face drawn a third of the way toward steps 3 m tall
+            // (each riser over the last 40% of its step), so a crag reads as rock in tiers and
+            // not as a dome (round 1's lookbook: the old road's crag).
+            let t = y / 3.0
+            let stepped = (floor(t) + smoothstep(0.6, 1.0, fract(t))) * 3.0
+            y = mix(y, stepped, 0.35 * face)
         }
         // Past the edge, the land falls to the valley, whose floor rolls: first a cliff of rock
         // (about a third of the fall, over its first 9 m, taller and lower along the edge), which
@@ -179,8 +185,8 @@ impl Terrain for Ground {
     }
 
     fn steepest(self) -> f32 {
-        // The valley's fall, about 95 m over 55, and the crags' faces.
-        3.0
+        // The valley's fall, about 95 m over 55, and the crags' faces with their ledges' risers.
+        4.5
     }
 }
 
@@ -218,6 +224,19 @@ impl Ground {
         let bed = smoothstep(MERE.w - 0.02, MERE.w - 0.12, at.y) *
             smoothstep(MERE.z * 1.5, MERE.z * 1.2, length(xz - MERE.xy))
         a = mix(a, mix(vec3(0.07, 0.06, 0.04), vec3(0.1, 0.09, 0.06), vec3(patches)), vec3(bed))
+        // The Watch's top round the tower: rough grass and heather, not a lawn (the polish
+        // list), fading out down its slopes.
+        let heath = 1.0 -
+            smoothstep(
+                30.0,
+                55.0,
+                length(xz - vec2(560.0, -470.0)) + 10.0 * noise2_seen(xz * 0.07, w * 0.07),
+            )
+        a = mix(
+            a,
+            mix(vec3(0.13, 0.11, 0.07), vec3(0.19, 0.15, 0.10), vec3(patches)),
+            vec3(0.6 * heath),
+        )
         let grass = (1.0 - rock) *
             (1.0 - steep) *
             (1.0 - snow) *
@@ -226,10 +245,13 @@ impl Ground {
         Cover {
             albedo: a,
             grass,
-            tall: 0.4,
-            dry: smoothstep(0.55, 0.85, fbm2_seen(xz * 0.06 + vec2(11.0, 3.0), 3, w * 0.06)),
+            tall: mix(0.4, 0.8, heath),
+            dry: max(
+                smoothstep(0.55, 0.85, fbm2_seen(xz * 0.06 + vec2(11.0, 3.0), 3, w * 0.06)),
+                0.65 * heath,
+            ),
             deep: smoothstep(0.5, 0.8, fbm2_seen(xz * 0.11 + vec2(-3.0, 8.0), 2, w * 0.11)),
-            flowers: vec4(0.0),
+            flowers: vec4(0.0, 0.1, 0.9, 0.35 * heath),
         }
     }
 

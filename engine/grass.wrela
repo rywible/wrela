@@ -302,8 +302,9 @@ pub const FROND_AREA: f32 = 0.18
 /// How near the eye no frond grows (m, on the plane).
 pub const CLEAR_EYE: f32 = 1.5
 
-/// The grid a fern's fronds gather to its crown on (m).
+/// The grid a fern's fronds gather to its crown on (m), and a herb's leaves to its rosette.
 pub const FERN_CROWN: f32 = 1.1
+pub const HERB_ROSETTE: f32 = 0.35
 
 /// A blade's kind (`Blade::colour`'s fourth part): grass, a fern's frond, bracken's, a herb's
 /// leaf.
@@ -349,21 +350,24 @@ fn under_plant(
     } else if kind == BRACKEN {
         (0.75 + 0.45 * v, 0.32, 0.5 + 0.2 * rand(p.seed, 7))
     } else {
-        (0.12 + 0.12 * v, 0.09, 0.35 + 0.3 * rand(p.seed, 7))
+        // A broad leaf, low and spreading (wood sorrel, dog's mercury): upright and narrow, it
+        // read as grass under the beeches (round 1's lookbook).
+        (0.07 + 0.06 * v, 0.13, 0.65 + 0.25 * rand(p.seed, 7))
     }
     // A fern's fronds rise from its crown and arch out from it: each frond's foot is drawn to
-    // the crown of its cell of a coarser grid (keyed to the world), facing away from it. Bracken
-    // and herbs stand where they fall.
+    // the crown of its cell of a coarser grid (keyed to the world), facing away from it; a
+    // herb's leaves spread so from a rosette. Bracken stands where it falls.
     var xz = p.xz
     var y = p.y
     var facing = TAU * rand(p.seed, 6)
-    if kind == FERN {
+    if kind == FERN || kind == HERB {
+        let crown_size = if kind == FERN { FERN_CROWN } else { HERB_ROSETTE }
         let keyed = at.cam.keyed().xz
         let w = p.xz + keyed
-        let c = floor(w / FERN_CROWN)
+        let c = floor(w / crown_size)
         let ci = vec2i(c)
         let crown = (c + vec2(0.25) + 0.5 * vec2(hash2(ci.x + 3, ci.y), hash2(ci.y + 9, ci.x))) *
-            FERN_CROWN
+            crown_size
         let away = w - crown
         facing = atan2(away.y, away.x)
         xz = crown + normalize(away + vec2(1.0e-4)) * 0.06 - keyed
