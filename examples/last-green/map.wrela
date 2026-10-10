@@ -1193,7 +1193,7 @@ pub fn map() -> Map {
             vec2(0.0),
         ],
         spring_count: 2,
-        falls: [vec2(-221.0, -155.0), vec2(0.0)],
+        falls: [ground::FALL, vec2(0.0)],
     }
 
     var events: Vec<Event> = Vec::new()
