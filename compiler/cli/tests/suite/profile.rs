@@ -68,4 +68,37 @@ fn profile_reports_the_gpu_by_label_the_cpu_and_the_wgsl() {
     assert_eq!(wgsl.len(), 1, "{text}");
     assert_eq!(wgsl[0]["pipeline"], "fill");
     assert!(wgsl[0]["bytes"].as_u64().unwrap() > 0);
+    // The slow frames beside the median: a 95th percentile is never under it.
+    let each = label("each frame");
+    assert!(each["p95_ms"].as_f64().unwrap() >= each["median_ms"].as_f64().unwrap(), "{text}");
+    assert!(p["cpu"]["frame_p95_ms"].as_f64().unwrap() >= p["cpu"]["frame_ms"].as_f64().unwrap());
+
+    // Compared with a baseline, each time says what it was, and a label the baseline ran that
+    // this run didn't is listed.
+    let mut before = p.clone();
+    before["gpu"]["labels"].as_array_mut().unwrap().push(serde_json::json!({
+        "label": "removed since", "median_ms": 1.5, "p95_ms": 2.0, "total_ms": 6.0, "frames": 4,
+    }));
+    let baseline = dir.join("before.json");
+    std::fs::write(&baseline, before.to_string()).unwrap();
+    let b = baseline.to_str().unwrap();
+    let out = common::wrela()
+        .args(["profile", d, "--frames", "4", "--json", "--baseline", b])
+        .output()
+        .expect("run wrela");
+    let compared: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    let each = compared["gpu"]["labels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["label"] == "each frame")
+        .unwrap()
+        .clone();
+    assert_eq!(each["was_median_ms"], label("each frame")["median_ms"], "{compared}");
+    assert_eq!(compared["cpu"]["was_frame_ms"], p["cpu"]["frame_ms"]);
+    assert_eq!(compared["baseline"]["gone"], serde_json::json!(["removed since"]));
+    let report = common::stdout(
+        common::wrela().args(["profile", d, "--frames", "4"]).args(["--baseline", b]),
+    );
+    assert!(report.contains("was ") && report.contains("no longer run: removed since"), "{report}");
 }

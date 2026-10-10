@@ -729,8 +729,10 @@ impl<'a> Builder<'a> {
             if let Some((a, h)) = &arena {
                 d = d.with_help(format!("`{a}.remove({h})` takes it out of the arena"));
             }
+            // A copy costs what the value holds on the heap, and an index, `remove` or a
+            // parameter that borrows may be what was meant: the author's choice.
             if traits::implements_builtin(self.p, ty, Lang::Clone) {
-                d.with_fix("copy it: `.clone()`", span.shrink_to_end(), ".clone()")
+                d.with_choice("copy it: `.clone()`", span.shrink_to_end(), ".clone()")
             } else {
                 d
             }
@@ -2034,7 +2036,8 @@ impl<'a> Builder<'a> {
             LocalKind::User(thir::LocalKind::Owned { mutable: true })
                 if self.is_named_place(init) && !self.is_copy(init.ty) =>
             {
-                // `var` owns its value: from a temporary, `take place`, or `.clone()`.
+                // `var` owns its value: from a temporary, `take place`, or `.clone()`, the
+                // author's choice: a copy costs, and a move leaves the place without a value.
                 let Some(p) = self.place(init) else { return };
                 let what = self.describe(&p);
                 let d = Diagnostic::new(
@@ -2049,7 +2052,7 @@ impl<'a> Builder<'a> {
                     d.with_help(format!(
                         "copy it with `{what}.clone()`: a constant can't be moved out of"
                     ))
-                    .with_fix(
+                    .with_choice(
                         format!("copy it: `{what}.clone()`"),
                         init.span.shrink_to_end(),
                         ".clone()",
@@ -2060,13 +2063,13 @@ impl<'a> Builder<'a> {
                     d.with_help(format!(
                         "move it with `take {what}`, or copy it with `{what}.clone()`"
                     ))
-                    .with_fix(
+                    .with_choice(
                         format!("copy it: `{what}.clone()`"),
                         init.span.shrink_to_end(),
                         ".clone()",
                     )
                 } else {
-                    d.with_fix(
+                    d.with_choice(
                         format!("move it: `take {what}`"),
                         init.span.shrink_to_start(),
                         "take ",

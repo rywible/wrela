@@ -127,10 +127,12 @@ pub fn compute(
         }
         for (c, module, _) in ready {
             let fuel = checked.program.const_(c).fuel.unwrap_or(FUEL);
-            let result = match compile(engine(), &module.module, simd, true) {
+            // The key is the module's WASM, so the cache is read before wasmtime compiles it:
+            // a constant read from the cache isn't compiled at all.
+            let result = match emit(&module.module, simd, true) {
                 Err(msg) => Err(Diagnostic::internal(msg)),
-                Ok((compiled, wasm)) => {
-                    let key = const_cache::key(&wasm, fuel);
+                Ok(out) => {
+                    let key = const_cache::key(&out.wasm, fuel);
                     match cache.and_then(|dir| const_cache::get(dir, &key)) {
                         Some(v) => {
                             stats.cached += 1;
@@ -141,7 +143,11 @@ pub fn compute(
                             let export = &module.exports[0].1;
                             let name = checked.program.const_(c).name.clone();
                             let trace = wrela_host::Trace::new(Some(format!("{name}: ")));
-                            let r = run_one(checked, sources, &compiled, export, c, fuel, &trace)
+                            let r = Compiled::of(engine(), out)
+                                .map_err(|msg| Box::new(Diagnostic::internal(msg)))
+                                .and_then(|compiled| {
+                                    run_one(checked, sources, &compiled, export, c, fuel, &trace)
+                                })
                                 .map(|(v, helped)| {
                                     stats.helped += u64::from(helped);
                                     v
@@ -246,20 +252,22 @@ struct Compiled {
     lines: Vec<(u32, Option<Span>)>,
 }
 
-/// The build's code, compiled for wasmtime, and its WASM. With `shared`, its memory is shared
-/// and imported, so helpers can run its parallel jobs.
+/// The build's code as WASM, with where each offset is in the source. With `shared`, its memory
+/// is shared and imported, so helpers can run its parallel jobs.
+fn emit(m: &wrela_ir::Module, simd: bool, shared: bool) -> Result<wrela_wasm::Emitted, String> {
+    let options = wrela_wasm::Options { shared_memory: shared, simd };
+    wrela_wasm::emit_with(m, options)
+        .map_err(|e| format!("the WASM back end failed on the build's code: {e}"))
+}
+
+/// The build's code, compiled for wasmtime ([`emit`]'s options).
 fn compile(
     engine: &wasmtime::Engine,
     m: &wrela_ir::Module,
     simd: bool,
     shared: bool,
-) -> Result<(Compiled, Vec<u8>), String> {
-    let options = wrela_wasm::Options { shared_memory: shared, simd };
-    let out = wrela_wasm::emit_with(m, options)
-        .map_err(|e| format!("the WASM back end failed on the build's code: {e}"))?;
-    let module = wasmtime::Module::new(engine, &out.wasm)
-        .map_err(|e| format!("wasmtime refused the build's code: {e:#}"))?;
-    Ok((Compiled { module, lines: out.lines }, out.wasm))
+) -> Result<Compiled, String> {
+    Compiled::of(engine, emit(m, simd, shared)?)
 }
 
 fn refusal(results: u32) -> &'static str {
@@ -271,6 +279,14 @@ fn refusal(results: u32) -> &'static str {
 }
 
 impl Compiled {
+    /// `out`'s WASM, compiled for wasmtime: the costly step, which a constant read from the
+    /// cache skips.
+    fn of(engine: &wasmtime::Engine, out: wrela_wasm::Emitted) -> Result<Compiled, String> {
+        let module = wasmtime::Module::new(engine, &out.wasm)
+            .map_err(|e| format!("wasmtime refused the build's code: {e:#}"))?;
+        Ok(Compiled { module, lines: out.lines })
+    }
+
     /// An instance on new memory: its own, or (`shared`) memory it shares with helpers. What
     /// it prints and times goes to `trace`.
     fn start(
@@ -461,7 +477,7 @@ pub fn run_tests(
     };
     // Its own memory, unshared: each test runs on one thread.
     let compiled = match compile(engine(), &module.module, !data.no_simd, false) {
-        Ok((c, _)) => c,
+        Ok(c) => c,
         Err(msg) => return (Vec::new(), vec![Diagnostic::internal(msg)]),
     };
     // Each test's fuel: its own (`@fuel`), or a test's.
