@@ -151,6 +151,43 @@ Deleted when the milestone closes.
 9. AC11: sun shafts as a candidate (≤ 0.5 ms, switchable).
 10. AC5: play rounds (logged here), the polish list; AC18: the record.
 
+## The lookdev reviews (2026-10-10, two independent reviews of the 10:16 / 10:19 build)
+
+Review A (36 findings, A1–A36) and review B (C1–C5, F1–F10, P1–P8, T1–T3, W1–W6, A1–A4 as
+BA1–BA4, H1–H6) overlap; merged here by stage. Each: reproduced on today's build (r8 stills),
+then fixed, improved, or left with a reason. State: [ ] open, [x] done, [~] improved, [-] left.
+
+Stage 1, valid views and no exposed machinery:
+- [ ] Town eye inside a trunk (A34, B13): critical. A test: each shot's eye clear and its subject seen at start, middle, end.
+- [ ] Ring, arena, burn, windthrow, plateau screened by near trees (A4, A27, A28, C1, C2).
+- [ ] Fawn's head behind a trunk; stand-in overlaps; feet hidden (A32, A33, H3, H5).
+- [ ] Ordered fade patterns visible after settling: LOD cross-fade, near-camera fade, leaf hash, TAA (A1, P3, P4).
+- [ ] The mere's half-faded sapling and snag in frame (A24, B07).
+Stage 2, forest shape:
+- [ ] Hero oak: abrupt fork at one height, dome crown, clipped (F3).
+- [ ] Species architectures distinct in silhouette (A9, F2); saplings, snags (F9).
+- [ ] Crowns as masses, not plates; undersides with depth (A10, A11, F1).
+- [ ] Roots grown into the ground, not radial wedges (A12, F4); bark per species (A13).
+- [ ] Ground cover: wedge carpet at distance, tiers continuous (A14, F5); drifts and quiet gaps (A2, A15, F6).
+- [ ] Ferns, herbs, flowers: rosettes, colonies, fewer confetti flowers (A16, F7, F8).
+- [ ] Far forest grouped by landform; less crown-to-crown contrast (A7, C3, F10).
+Stage 3, water and rock:
+- [ ] Waterfall: lip, fall, pool, channel as one feature; vertical sheet's normal (A22, W3); mist at impact (A25, W4).
+- [ ] Stream: marbled white and bronze; quiet water; foam where it belongs (A23, W1); banks (W5).
+- [ ] Mere: far sparkle; broad calm reflection (A24, W2).
+- [ ] Rock forms: planes, ledges, talus (A17, T1); cracks as fractures, not loops (A18, T2); mountains' ridges (A21, T3).
+- [ ] Material boundaries: scree, broken turf, wet margins (A19); old road's wear and waystone (A20, BA4).
+Stage 4, light, paint, colour:
+- [ ] Backlit grass near white (A5, P7).
+- [ ] Beech shade one olive; bark green cast (A6, P5).
+- [ ] Paint marks per material (A3, P1, P2); sky grouping and haze (A8, P8); metering (P6).
+Stage 5, architecture and characters:
+- [ ] Tower: one strong break, thickness, entry, rubble; courses registered (A26, BA1, BA2).
+- [ ] Ring and arena: centre, threshold, dominant stones (A27, BA3).
+- [ ] Characters: bright rims, cutout cel bands (A31, H1, H2); fawn's silhouette (A30, H4).
+- [ ] Regional identity: burn, windthrow, beech, alder, heath (A28, A29, C5).
+Stage 6: walk and measure again (AC7, AC8, cold start); A36: the check's numbers beside the views.
+
 ## Play rounds (AC5)
 
 Each round: `tools/round.py <n>` (Chrome, 1080p, paced at 60 Hz, eight threads): the floor's walk
@@ -210,6 +247,27 @@ target/lookbook/round0).
   black), the ring (white sponge-like stones on green plates), the tower from a height (a few
   pixels in the spike) and the old road (the path and its waystone read) are better; the
   opening's far hills were dotted in round 1 and are soft now.
+
+### Rounds 3 to 6 (2026-10-10, quick: 1.3 to 1.8 min of play, about 2 min of wall time each)
+
+The owner's direction moved the rounds to `--quick` (see the decisions). Each: a travel to every
+fourth site, a run and a look round at each, six shots held; a screen every 130 frames.
+
+- **Round 3** (the tool's first run): 10 sites, 5 regions; 37 frames over 33 ms, each the frame
+  after a saved screen (the readback). **Fixed in the tool:** those frames aren't counted.
+- **Round 4:** 15 sites, 6 regions, no tile late, 1 frame over 33 ms (a jump). Found: the camera
+  inside a crown's leaves, the stand-in filling the frame when the camera met it, trunks ending
+  in stumps at the crown. **Fixed:** leaf cards fade within 2 m of the eye, the stand-in dithers
+  out within 1.25 m, the trunk carried into the crown as its leader.
+- **The owner's notes** between rounds 4 and 5 (wind, trees and roots, plants, geology and
+  textures): see the decisions; stills checked natively (target/lookbook/r5 to r7).
+- **Round 5:** as round 4; 1 frame over 33 ms (47 ms, after a jump to the beech hall). Found: a
+  maze of crack lines on the crag's top (the rock tile's cracks at the coarser scale), young
+  trees as brooms (bare scaffolds to a ball of leaves), a white ring at a log's open foot, grass
+  standing in the streams, polka dots on paths and leopard spots on rock. **Fixed** (1095912).
+- **Round 6:** as round 4; 1 frame over 33 ms (35 ms, after the same jump). **Left:** a thin pale
+  line at a fallen log's joints (its tube's pieces meet with a crease the look picks out); near
+  trees show bare limbs where their leaves fade out for the camera.
 
 ## The retrospective (draft, for a comment on #55; the owner posts it)
 

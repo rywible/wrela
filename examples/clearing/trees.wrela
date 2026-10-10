@@ -238,7 +238,10 @@ pub fn occluders(
                 out.push(
                     engine::probes::Occluder {
                         a: at.place(l.points[k]),
-                        radius: 0.5 * (l.radii[k] + l.radii[k + 1]) * at.scale,
+                        // Inside the limb it stands for, so no bark lies within its own occluder (a
+                        // mean radius bulged past it at the joints' end spheres: the reviews'
+                        // pale rings on logs, where the bark's sky light changed).
+                        radius: 0.6 * min(l.radii[k], l.radii[k + 1]) * at.scale,
                         b: at.place(l.points[k + 1]),
                         solid: 1.0,
                     },

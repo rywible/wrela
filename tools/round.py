@@ -3,11 +3,12 @@
 1080p, paced at 60 Hz as in play, eight threads, through the play harness's keys, then its
 lookbook rendered again. Everything goes to target/rounds/round-<n>/.
 
-    tools/round.py <n> [--quick | --minutes 30|60] [--no-lookbook] [--frames <n>]
+    tools/round.py <n> [--quick [--every <k>] | --minutes 30|60] [--no-lookbook] [--frames <n>]
 
 `--quick` (about two minutes, the edit loop's round): a travel to every fourth site (each
 region's), at each a run of 2 s and a look round, then six lookbook shots held, the screen saved
-at each (`snaps/`); no lookbook render after.
+at each (`snaps/`); no lookbook render after. `--every 1` travels to every site (every region:
+about five minutes), as the last round does.
 
 The floor must be built (`wrela build examples/last-green`). The round plays, as a player would
 through the harness's taps: the floor's walk (P: from the gate, along the critical path, through
@@ -83,12 +84,12 @@ QUICK_SHOTS = [1, 2, 3, 5, 7, 12]
 SNAP = 130
 
 
-def quick_script():
+def quick_script(every=4):
     """The quick round's events, how many frames, and the frames whose screens are saved
     (every `SNAP` frames: each site's block is two, each shot's three)."""
     events = []
     f = SNAP
-    for site in range(0, sites(), 4):
+    for site in range(0, sites(), every):
         events += keys_at(f + 5, ["KeyG", *["Digit" + d for d in str(site)], "Enter"])
         events += keys_at(f + SNAP + 5, ["KeyT", "KeyR"])
         events += keys_at(f + 2 * SNAP - 25, ["KeyT", "KeyR", "KeyE", "KeyE", "KeyE"])
@@ -172,7 +173,8 @@ def main():
     events, frames = script(minutes)
     snaps = []
     if quick:
-        events, frames, snaps = quick_script()
+        every = int(args[args.index("--every") + 1]) if "--every" in args else 4
+        events, frames, snaps = quick_script(every)
     if "--frames" in args:
         frames = int(args[args.index("--frames") + 1])
     with open(os.path.join(page, "round-keys.json"), "w") as f:

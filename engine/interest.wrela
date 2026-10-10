@@ -538,6 +538,26 @@ fn meets_trunk(s: Sight, a: vec2, b: vec2) -> bool {
     false
 }
 
+/// How far `p` is from the nearest trunk's surface at the eye (m; 99 with none within a cell).
+pub fn trunk_clearance(s: Sight, p: vec2) -> f32 {
+    let c = s.grid.ij(p)
+    var best = 99.0
+    for dj in 0..3 {
+        for di in 0..3 {
+            let i = c.x + di - 1
+            let j = c.y + dj - 1
+            if i >= 0 && j >= 0 && i < i32(s.grid.nx) && j < i32(s.grid.nz) {
+                let k = u32(j) * s.grid.nx + u32(i)
+                for q in s.trunk_start[k]..s.trunk_start[k + 1] {
+                    let tr = s.trunks[q]
+                    best = min(best, length(p - tr.xy) - tr.z)
+                }
+            }
+        }
+    }
+    best
+}
+
 /// How much light gets from `from` to `to` (0 to 1): what the sightline passes through, crowns
 /// and trunks and undergrowth, as extinction; nothing if the ground's in the way. Its last
 /// `skip` metres are the target's own (a keystone's foot among its own grass). Within

@@ -550,8 +550,13 @@ pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, f32, vec2) {
     let n = t1 * cos(ang) + t2 * sin(ang)
     // The last piece closes to a point at the limb's end, so its tip is never an open tube.
     let closing = if piece == 2 { 1.0 - smoothstep(0.6, 1.0, along) } else { 1.0 }
-    let radius = mix(limb.radii[piece], limb.radii[piece + 1], along) * closing
-    let centre = mix(a, b, vec3(along))
+    // A joint's ring is worked out twice, as one piece's end and the next's start: exactly the
+    // same both times (`mix(a, b, 1.0)` isn't always `b` on the GPU, and the two rings a rounding
+    // apart left a dotted crack round the limb: the lookdev reviews' pale rings on logs).
+    let radius = if along >= 1.0 { limb.radii[piece + 1] } else {
+        mix(limb.radii[piece], limb.radii[piece + 1], along)
+    } * closing
+    let centre = if along >= 1.0 { b } else { mix(a, b, vec3(along)) }
     // How far along the limb (m), from its start: the bark's ridges run on across the joints.
     var walked = 0.0
     for k in 0..piece {

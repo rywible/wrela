@@ -13,7 +13,7 @@
 //
 //     level:   0 ──── 1 ──── 2 ═══ impostor ═══ volume ┄┄ nothing
 //              cards, by their size on screen ┊ by distance  ┊ by its size on screen
-//     a switch: the middle 80% of each step, a smoothstep of the shares
+//     a switch: the middle 20% of each step, a smoothstep of the shares (`SWITCH`)
 
 use noise::hash2
 use plant::CARD_LEVELS
@@ -75,12 +75,24 @@ pub fn card_width(l: Lod, cam: Camera, at: vec3, scale: f32) -> f32 {
     l.leaf * scale / max(cam.footprint(max(d - r * 0.5, 0.5)), 1.0e-4)
 }
 
+/// How much of each step between two ways an instance is drawn both ways (its middle): over
+/// 80%, a tree was between two of its card levels most of the time, and temporal AA (a fifth of
+/// a pixel from each frame) left their dither as a screen over most crowns (the lookdev
+/// reviews).
+pub const SWITCH: f32 = 0.2
+
+/// How far through a step's switch an instance at `level` is (0 to 1).
+fn switched(level: f32) -> f32 {
+    let f = level - floor(level)
+    smoothstep(0.5 - 0.5 * SWITCH, 0.5 + 0.5 * SWITCH, f)
+}
+
 /// The part of [0, 1) that way `way` keeps of an instance at `level`, faded by `faint`: the
 /// lower way of a step keeps its start, the upper its end (each a smoothstep over the step's
-/// middle 80%), so the two tile it; and none of it at all past `1 - faint`.
+/// middle `SWITCH`), so the two tile it; and none of it at all past `1 - faint`.
 pub fn share(level: f32, faint: f32, way: u32) -> vec2 {
     let k = floor(level)
-    let s = smoothstep(0.1, 0.9, level - k)
+    let s = switched(level)
     let kept = 1.0 - faint
     let w = f32(way)
     if w == k {
@@ -165,7 +177,7 @@ pub fn ways(level: f32, faint: f32) -> (bool, u32, u32) {
         return (false, 0, 0)
     }
     let k = floor(level)
-    let s = smoothstep(0.1, 0.9, level - k)
+    let s = switched(level)
     let lower = u32(k)
     let upper = if s > 0.0 && lower < VOLUME { lower + 1 } else { lower }
     let both_kept = s < 1.0

@@ -7,7 +7,7 @@
 use engine::bake::{bake, unbake}
 use engine::footing::{Obstacles, obstacles_of, walkable_of}
 use engine::grow::{BAKE, Grain, Grid, History, PREVIEW, simulate}
-use engine::interest::{Evidence, FULL, check, nearest_first, report, views_bytes, walk_bytes}
+use engine::interest::{Evidence, FULL, Sight, check, nearest_first, report, views_bytes, walk_bytes}
 use engine::place::{TILE, tile_of}
 use engine::water::Laid
 use std::io::{Shipped, print, ship}
@@ -184,10 +184,18 @@ fn checked() -> Vec<(String, Vec<u8>)> {
     for i in 0..lookbook::SHOTS.len() {
         let shot = lookbook::SHOTS[i]
         let v = engine::interest::view_at(c.sight, m, FULL, shot.eye.xz)
+        let (seen, clear) = shot_valid(c.sight, shot)
         let sep = if i == 0 { "" } else { ",\n" }
         shots.push_str(
-            f"{sep}  {{\"shot\": \"{shot.name}\", \"view\": {engine::interest::view_json(m, v)}}}",
+            f"{sep}  {{\"shot\": \"{shot.name}\", \"seen\": {seen}, \"clear\": {clear}, \"view\": {engine::interest::view_json(m, v)}}}",
         )
+        if seen < SHOT_SEEN || clear < SHOT_CLEAR {
+            print(
+                f"shot {i} ({shot.name}): its subject {seen} seen, the eye {clear} m from a trunk",
+            )
+            let (eye, best) = clearest_eye(c.sight, shot)
+            print(f"  the clearest eye near: ({eye.x}, {eye.y}), its subject {best} seen")
+        }
     }
     shots.push_str("\n]\n")
     var tour_bytes: Vec<u8> = Vec::new()
@@ -207,6 +215,62 @@ fn checked() -> Vec<(String, Vec<u8>)> {
             (String::from("shots.json"), Vec::from(shots.as_bytes())),
         ],
     )
+}
+
+/// A shot's least share of its subject seen (`interest::transmit` from its eye to what it looks
+/// at, through the crowns and trunks as drawn) and its eye's least clearance from a trunk (m), at
+/// its move's start, middle and end. (The town's eye stood inside a trunk: the lookdev reviews.)
+pub fn shot_valid(s: Sight, shot: lookbook::Shot) -> (f32, f32) {
+    eye_valid(s, shot, shot.eye.xz)
+}
+
+/// `shot_valid` for `shot` with its eye moved to `from` (its move the same).
+fn eye_valid(s: Sight, shot: lookbook::Shot, from: vec2) -> (f32, f32) {
+    var seen = 1.0
+    var clear = 99.0
+    for k in 0..3 {
+        let e = from + shot.moves * (f32(k) * 0.5)
+        let eye = vec3(e.x, engine::interest::ground_at(s, e) + shot.eye.y, e.y)
+        let at = vec3(shot.at.x, engine::interest::ground_at(s, shot.at.xz) + shot.at.y, shot.at.z)
+        seen = min(seen, engine::interest::transmit(s, eye, at, shot.reach))
+        clear = min(clear, engine::interest::trunk_clearance(s, e))
+    }
+    (seen, clear)
+}
+
+/// The least a shot's subject is seen, and the least its eye clears a trunk by (m).
+pub const SHOT_SEEN: f32 = 0.35
+pub const SHOT_CLEAR: f32 = 1.0
+
+/// The eye for `shot` that sees its subject best through its move, at 0.6 to 1.4 times its
+/// distance from it, all round, clear of trunks by 2.5 m; nearer its own distance on a tie.
+fn clearest_eye(s: Sight, shot: lookbook::Shot) -> (vec2, f32) {
+    let at = shot.at.xz
+    let dist = max(length(shot.eye.xz - at), 8.0)
+    var best = vec2(0.0)
+    var score = -1.0
+    var got = 0.0
+    for r in 0..5 {
+        let d = dist * (0.6 + 0.2 * f32(r))
+        for a in 0..48 {
+            let ang = 6.2831855 * f32(a) / 48.0
+            let e = at + vec2(cos(ang), sin(ang)) * d
+            if !s.grid.holds(e) {
+                continue
+            }
+            let (seen, clear) = eye_valid(s, shot, e)
+            if clear < 2.5 {
+                continue
+            }
+            let sc = seen - 0.05 * abs(d - dist) / dist
+            if sc > score {
+                score = sc
+                best = e
+                got = seen
+            }
+        }
+    }
+    (best, got)
 }
 
 /// AC3's calibration: how many places, how far out the model's sight is judged (m), and the views

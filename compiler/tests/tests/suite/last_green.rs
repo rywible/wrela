@@ -311,6 +311,29 @@ fn each_lookbook_shot_has_the_checks_numbers() {
     }
 }
 
+/// The lookdev reviews (2026-10-10): every lookbook shot is a valid view through its move. At its
+/// start, middle and end, its eye stands at least 1 m clear of a trunk, and at least 35% of the
+/// light from its subject reaches the eye through the crowns and trunks as drawn
+/// (`history::shot_valid`: the town's eye had stood inside a trunk, and near trees and logs hid
+/// the ring, the arena, the burn and the windthrow).
+#[test]
+#[ignore = "long: bakes the floor (minutes when the constants' cache is cold)"]
+fn every_lookbook_shot_sees_its_subject() {
+    let text = std::fs::read_to_string(floor().join("files/check/shots.json")).expect("shots.json");
+    let views: Value = serde_json::from_str(&text).expect("shots.json is JSON");
+    let mut bad = Vec::new();
+    for v in views.as_array().expect("an array") {
+        let name = v["shot"].as_str().expect("a name");
+        let seen = v["seen"].as_f64().expect("seen");
+        let clear = v["clear"].as_f64().expect("clear");
+        eprintln!("{name}: its subject {seen:.2} seen, the eye {clear:.1} m from a trunk");
+        if seen < 0.35 || clear < 1.0 {
+            bad.push(format!("{name}: {seen:.2} seen, {clear:.1} m clear"));
+        }
+    }
+    assert!(bad.is_empty(), "shots that don't see their subjects: {bad:?}");
+}
+
 /// AC2: the bake is ≤ 0.7 MB a km² compressed (each file gzipped, over the floor's area), each
 /// tile a file read alone (`bake::decode_tile` reads one with no other).
 #[test]
@@ -2119,3 +2142,4 @@ fn the_sun_shafts_cost_half_a_millisecond_or_less() {
     );
     assert!(ms <= 0.5, "the shafts took {ms:.3} ms");
 }
+

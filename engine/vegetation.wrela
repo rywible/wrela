@@ -431,7 +431,8 @@ pub fn faded(c: vec3, half: f32, eye: vec3, clear: vec4) -> f32 {
     let t = clamp(dot(c - eye, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
     let d = length(c - (eye + ab * t))
     let reach = length(c - eye) - half
-    max(1.0 - smoothstep(clear.w, clear.w * 1.8, d), 1.0 - smoothstep(0.8, 2.0, reach))
+    // Over a short way (a card part faded for long reads as a curtain of dots: the reviews).
+    max(1.0 - smoothstep(clear.w, clear.w * 1.25, d), 1.0 - smoothstep(1.0, 1.4, reach))
 }
 
 /// A draw of every instance whole, whatever its level (the static shadows').
