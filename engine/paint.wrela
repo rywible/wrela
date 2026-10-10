@@ -20,7 +20,7 @@ use std::gpu::{
     DepthTexture, FragCoord, GlobalId, LocalId, One, Rgba16Float, Sampler, Shared, Texture, barrier,
 }
 use terrain::{Levels, Texel, ground_at}
-use view::{CREATURE, Camera, FLOWER, GRASS, GROUND, LEAVES, WATER, class_of}
+use view::{BARK, CREATURE, Camera, FLOWER, GRASS, GROUND, LEAVES, ROCK, WATER, class_of}
 
 /// The look's settings: how strong the dabs are on near surfaces, on broad far ones and on the
 /// sky; the paper's tooth; the bloom; the characters' lines (their width in output pixels, and
@@ -33,7 +33,7 @@ pub struct Look: Copy + GpuData {
     pub tooth: f32 = 0.06,
     pub bloom: f32 = 0.18,
     pub line_px: f32 = 1.6,
-    pub line_dark: f32 = 0.45,
+    pub line_dark: f32 = 0.65,
     pub sharpen: f32 = 0.2,
     pub vignette: f32 = 0.28,
 }
@@ -424,6 +424,22 @@ pub fn dab_map(
     if class == class_of(GROUND) {
         strength = mix(look.dabs_near, look.dabs_far * 0.6, broad)
     }
+    // No dabs and no tooth on rock, stone and bark, near or far: the owner picked clean, solid
+    // form over a painted surface (carved light and one line), and on a rock face the dabs read
+    // as dark ovals. A steep slope of the ground is a rock face.
+    var grain = 1.0
+    if class == class_of(ROCK) || class == class_of(BARK) {
+        grain = 0.0
+    } else if class == class_of(GROUND) {
+        grain = smoothstep(0.55, 0.85, n.y)
+    }
+    strength *= grain
+    // No dabs on crowns: `dabs_across`'s plane takes the pixel's depth (`dot(world, n)`), and
+    // the leaf cards' depths differ pixel to pixel, so each pixel took another stroke along the
+    // plane's second axis: vertical streaks over the near canopy (08, 18).
+    if class == class_of(LEAVES) {
+        strength = 0.0
+    }
     if class == class_of(CREATURE) {
         strength *= 0.5
     }
@@ -440,7 +456,7 @@ pub fn dab_map(
     }
     // The tooth's grain, a few output pixels: no finer than two of the scene's pixels at half
     // the output's size, so the map holds it at either.
-    vec4(strength * dab, look.tooth * tooth(keyed, footprint * per_out * 2.0), 0.0, 1.0)
+    vec4(strength * dab, grain * look.tooth * tooth(keyed, footprint * per_out * 2.0), 0.0, 1.0)
 }
 
 /// The output pixel, painted: the dabs and the paper's tooth (from the dab map, between its
