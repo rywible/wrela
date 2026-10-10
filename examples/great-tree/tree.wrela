@@ -1,6 +1,7 @@
-// The great tree (#28 §1, §9): a short, broad trunk on its rise, five limbs, and a wide dome of
-// clumps. Limbs along curves and clumps of leaves, as `engine::plant` grows a plant; its cards,
-// impostor and volume are cooked from this, as the clearing loads.
+// The great tree (#28 §1, §9): a short, broad trunk on its rise, roots grown into it, five limbs
+// leaving it at their own heights, and a crown in masses at their ends. Limbs along curves and
+// clumps of leaves, as `engine::plant` grows a plant; its cards, impostor and volume are cooked
+// from this, as the clearing loads.
 
 use engine::noise::{pick, rand}
 use engine::plant::{Bark, Leaves, Plant, plant}
@@ -8,45 +9,98 @@ use std::math::TAU
 
 /// The great tree, its base at the origin.
 pub fn great_tree() -> Plant {
-    // Old bark: darker than a young tree's, so the trunk stays a shape in shade under the crown.
-    let bark = Bark { dark: vec3(0.085, 0.065, 0.05), light: vec3(0.19, 0.155, 0.115) }
+    // Old bark: darker than a young tree's, so the trunk stays a shape in shade under the crown;
+    // deep furrows broken into blocks, as an old oak's.
+    let bark = Bark {
+        dark: vec3(0.06, 0.047, 0.036),
+        light: vec3(0.21, 0.17, 0.125),
+        grain: vec3(0.65, 0.35, 0.0),
+        relief: 1.5,
+    }
     var p = plant(leaves: Leaves { size: 0.85, cover: 1.9 }, bark: bark)
     let base = vec3(0.0, -0.3, 0.0)
     let fork = base + vec3(0.215, 4.2, -0.1)
     // The trunk, one tube: from below the ground (its rounded end out of sight), flared at its
-    // root, tapering to past the fork, where the limbs hide its closing tip.
-    let top = fork + vec3(0.0, 1.4, 0.0)
+    // root, tapering to past the highest limb, where the crown hides its closing tip.
+    let top = fork + vec3(0.0, 2.2, 0.0)
     p.tube(
         [base - vec3(0.0, 0.9, 0.0), base + vec3(0.0, 0.6, 0.0), mix(base, top, vec3(0.45)), top],
-        [1.6, 1.2, 0.9, 0.62],
+        [1.6, 1.2, 0.9, 0.5],
     )
-    let dome = base + vec3(0.0, 9.6, 0.0)
+    // Roots: buttresses swelling down from the trunk in hollow curves, along the ground a
+    // little way, and under it.
+    for k in 0..6 {
+        let a = TAU * (f32(k) + 0.5 * rand(29, k)) / 6.0
+        let dir = vec3(cos(a), 0.0, sin(a))
+        let out = pick(29, 10 + k, lo: 3.2, hi: 4.8)
+        let across = vec3(-dir.z, 0.0, dir.x) * pick(29, 20 + k, lo: -0.8, hi: 0.8)
+        let r = pick(29, 30 + k, lo: 0.6, hi: 0.85)
+        p.tube(
+            [
+                base + vec3(0.0, 1.9, 0.0) + dir * 0.5,
+                base + dir * 1.55 + vec3(0.0, 0.55, 0.0),
+                base + dir * (out * 0.62) + across * 0.5 + vec3(0.0, 0.05, 0.0),
+                base + dir * out + across + vec3(0.0, -0.4, 0.0),
+            ],
+            [r * 0.8, r * 0.7, r * 0.4, 0.15],
+        )
+    }
+    // The limbs: each leaves the trunk at its own height, the lowest reaching farthest and
+    // flattest (an oak grown in the open); each one tube that bends at an elbow and tapers
+    // into its mass of leaves, forking twice on the way. (All five leaving at one height read as
+    // an abrupt fork, the lookdev reviews' F3; two tubes a limb left a blunt, rounded end at the
+    // elbow, round 1's blind judges.)
+    let heights = [2.6, 4.6, 3.3, 5.4, 3.9]
+    var tips = [vec3(0.0); 5]
     for i in 0..5 {
         let a = TAU * (f32(i) + 0.3) / 5.0 + pick(31, i, lo: -0.3, hi: 0.3)
         let out = vec3(cos(a), 0.0, sin(a))
-        let mid = fork + out * 3.2 + vec3(0.0, 2.6, 0.0)
-        let tip = fork + out * 6.6 + vec3(0.0, 4.4 + pick(33, i, lo: -0.8, hi: 0.8), 0.0)
-        p.limb(fork, mix(fork, mid, vec3(0.5)) + vec3(0.0, 0.3, 0.0), mid, r_from: 0.6, r_to: 0.4)
-        p.limb(mid, mix(mid, tip, vec3(0.5)) + vec3(0.0, 0.2, 0.0), tip, r_from: 0.4, r_to: 0.18)
         let side = vec3(-out.z, 0.0, out.x)
-        p.straight(mid, mid + side * 2.2 + out * 1.5 + vec3(0.0, 2.0, 0.0), r_from: 0.2, r_to: 0.09)
-        p.straight(
-            mid,
-            mid - side * 2.0 + out * 1.8 + vec3(0.0, 1.4, 0.0),
-            r_from: 0.18,
-            r_to: 0.08,
+        let h = heights[i]
+        let low = 1.0 - (h - 2.6) / 2.8
+        let foot = base + mix(vec3(0.0), top - base, vec3(h / (top.y - base.y))) + out * 0.4
+        let elbow = foot +
+            out * (2.2 + 1.2 * low) +
+            side * pick(32, i, lo: -0.9, hi: 0.9) +
+            vec3(0.0, 1.2 + 1.2 * (1.0 - low), 0.0)
+        let tip = foot +
+            out * (5.0 + 1.6 * low) +
+            side * pick(34, i, lo: -0.8, hi: 0.8) +
+            vec3(0.0, 3.6 + 1.4 * (1.0 - low) + pick(33, i, lo: -0.6, hi: 0.6), 0.0)
+        let r0 = 0.6 - 0.12 * (1.0 - low)
+        p.tube(
+            [foot - out * 0.3, mix(foot, elbow, vec3(0.55)) - vec3(0.0, 0.2, 0.0), elbow, tip],
+            [r0, r0 * 0.8, r0 * 0.55, 0.12],
         )
-        let low = fork + out * 1.6 + vec3(0.0, 0.8, 0.0)
-        p.straight(low, low + out * 3.2 + side * 0.8 + vec3(0.0, 0.9, 0.0), r_from: 0.2, r_to: 0.07)
+        // Two forks, from the elbow and from halfway on, each ending in a clump of its own (bare,
+        // their tips stood out of the crown as spikes).
+        let on = mix(elbow, tip, vec3(0.5))
+        let left = elbow + side * 2.2 + out * 1.4 + vec3(0.0, 2.0, 0.0)
+        let right = on - side * 1.9 + out * 1.2 + vec3(0.0, 1.4, 0.0)
+        p.limb(
+            elbow,
+            mix(elbow, left, vec3(0.5)) + vec3(0.0, 0.3, 0.0),
+            left,
+            r_from: 0.22,
+            r_to: 0.06,
+        )
+        p.limb(on, mix(on, right, vec3(0.5)) + vec3(0.0, 0.3, 0.0), right, r_from: 0.18, r_to: 0.05)
+        p.clump(left + vec3(0.0, 0.5, 0.0), radius: pick(49, i, lo: 1.8, hi: 2.4))
+        p.clump(right + vec3(0.0, 0.5, 0.0), radius: pick(51, i, lo: 1.8, hi: 2.4))
+        tips[i] = tip
     }
+    // The crown: a mass of clumps round each limb's end, raised over it, and one over the
+    // trunk's top; gaps of sky between the masses, their undersides open.
     for i in 0..34 {
-        let u = rand(41, i)
+        let mass = i % 6
+        let centre = if mass == 5 { top + vec3(0.0, 7.0, 0.0) } else {
+            tips[mass] + vec3(0.0, 0.8, 0.0)
+        }
+        let spread = if mass == 5 { 2.6 } else { 2.2 }
         let a = TAU * rand(43, i)
-        // On a squashed dome: wide and flat-topped, open underneath.
-        let up = 0.15 + 0.85 * u
-        let r = sqrt(1.0 - up * up)
-        let at = dome + vec3(r * cos(a) * 8.0, (up - 0.35) * 5.0, r * sin(a) * 8.0)
-        p.clump(at, radius: pick(47, i, lo: 2.3, hi: 3.4))
+        let r = spread * sqrt(rand(41, i))
+        let at = centre + vec3(r * cos(a), pick(45, i, lo: -0.6, hi: 1.4), r * sin(a))
+        p.clump(at, radius: pick(47, i, lo: 2.1, hi: 3.1))
     }
     p
 }
