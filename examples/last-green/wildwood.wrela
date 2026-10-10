@@ -68,7 +68,7 @@ pub fn is_wild(t: vec2i) -> bool {
 }
 
 /// Wild tile `t`'s decisions, as a baked tile's: its trees (`own`, or grown when it's empty), no
-/// trails, damp ground, no streams.
+/// trails, damp ground, nothing remembered, no streams.
 pub fn decisions(t: vec2i, own: take Vec<Tree>) -> Decisions {
     let trees = if own.is_empty() {
         engine::wild::tile_trees(
@@ -87,6 +87,7 @@ pub fn decisions(t: vec2i, own: take Vec<Tree>) -> Decisions {
         trees,
         wear: Vec::filled(WEAR_N * WEAR_N, 0.0),
         wet: Vec::filled(WET_N * WET_N, 0.3),
+        memory: Vec::filled(WET_N * WET_N, engine::grow::UNMARKED),
         water: Vec::new(),
     }
 }
