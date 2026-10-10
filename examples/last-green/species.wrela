@@ -39,6 +39,9 @@ pub fn habits() -> [Habit; Species] {
             thorny: false,
             suckers: false,
             girth: 1.7,
+            bark: 0.85,
+            resin: 0.3,
+            roots: 0.8,
         },
         // Beech: shade-tolerant, tall and deep-shading, on deep soil; its nuts fall near it.
         Habit {
@@ -60,6 +63,9 @@ pub fn habits() -> [Habit; Species] {
             windborne: false,
             thorny: false,
             suckers: false,
+            bark: 0.1,
+            resin: 0.25,
+            roots: 0.3,
         },
         // Birch: the pioneer, fast, short-lived and airy; its seed goes everywhere on the wind.
         Habit {
@@ -81,6 +87,9 @@ pub fn habits() -> [Habit; Species] {
             windborne: true,
             thorny: false,
             suckers: false,
+            bark: 0.35,
+            resin: 0.5,
+            roots: 0.4,
         },
         // Hawthorn: a thorny shrub of the edges, which grazers leave alone and birds sow.
         Habit {
@@ -102,6 +111,9 @@ pub fn habits() -> [Habit; Species] {
             windborne: false,
             thorny: true,
             suckers: false,
+            bark: 0.2,
+            resin: 0.5,
+            roots: 0.6,
         },
         // Blackthorn: a thicket of the edges, which spreads by suckers into the light until the
         // grazers stop it.
@@ -124,6 +136,9 @@ pub fn habits() -> [Habit; Species] {
             windborne: false,
             thorny: true,
             suckers: true,
+            bark: 0.15,
+            resin: 0.5,
+            roots: 0.6,
         },
         // Pine: light-hungry and tall, on thin dry soil where beech can't hold; its seed rides the
         // wind.
@@ -146,6 +161,9 @@ pub fn habits() -> [Habit; Species] {
             windborne: true,
             thorny: false,
             suckers: false,
+            bark: 0.75,
+            resin: 1.0,
+            roots: 0.5,
         },
         // Alder: fast in wet ground, its seed carried by water.
         Habit {
@@ -167,6 +185,9 @@ pub fn habits() -> [Habit; Species] {
             windborne: false,
             thorny: false,
             suckers: false,
+            bark: 0.2,
+            resin: 0.15,
+            roots: 0.3,
         },
     ]
 }
