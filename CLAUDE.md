@@ -1,7 +1,7 @@
 wrela is a new language, compiler, engine and agent-native studio for AAA-ambition games played from a browser link. Content is authored as fields: functions over space. It's MIT-licensed and built in spare time, but run with business-grade discipline: high code quality and honest engineering claims.
 
 docs/language.md has the current language spec. It is about 50k tokens: find a section with `grep -n '^#' docs/language.md` and read only that section.
-docs/vision.md has the vision for the project
+docs/vision.md has the vision for the project. Its section "The lore" is the flagship's canonical lore: read it before you write anything that touches the story, and add no lore the owner hasn't stated
 docs/process.md is the public record of how wrela is made: what AI does and what people do, and every outside work used
 
 In wrela code, prefer the compiler's tools to grep: `wrela context <item> <package>`, `wrela query`, `wrela doc`, `wrela primer <area>` (target/release/wrela; language.md §22). When a tool can't answer your question, note it: that gap is a finding for the studio.
