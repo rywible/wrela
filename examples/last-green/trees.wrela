@@ -92,20 +92,26 @@ fn broadleaf(
         ],
         [girth * 1.6, girth * 1.1, girth * 0.82, girth * 0.16],
     )
-    // Roots: buttresses flaring from the trunk's foot into the ground, uneven in size and
-    // spacing (a sapling has none).
+    // Roots: buttresses grown out of the trunk's foot, each swelling down from it in a
+    // hollow curve, running a little way along the ground, winding, and diving under it; uneven
+    // in size and spacing (a sapling has none). (As straight ramps from the trunk into the
+    // ground, all alike, they read as radial wedges: the lookdev reviews' A12, F4.)
     if girth > 0.1 {
         let roots = 4 + s % 3
         for k in 0..roots {
             let a = TAU * (f32(k) + 0.6 * rand(s, 140 + k)) / f32(roots)
-            let out = girth * pick(s, 150 + k, lo: 2.2, hi: 3.8)
+            let out = girth * pick(s, 150 + k, lo: 1.8, hi: 3.4)
             let dir = vec3(cos(a), 0.0, sin(a))
-            p.limb(
-                vec3(0.0, girth * 1.3, 0.0),
-                dir * (out * 0.35) + vec3(0.0, girth * 0.35, 0.0),
-                dir * out + vec3(0.0, -0.3, 0.0),
-                r_from: girth * pick(s, 160 + k, lo: 0.45, hi: 0.65),
-                r_to: girth * 0.1,
+            let across = vec3(-dir.z, 0.0, dir.x) * (out * pick(s, 155 + k, lo: -0.25, hi: 0.25))
+            let r = girth * pick(s, 160 + k, lo: 0.5, hi: 0.7)
+            p.tube(
+                [
+                    vec3(0.0, girth * 1.7, 0.0) + dir * (girth * 0.3),
+                    dir * (girth * 0.95) + vec3(0.0, girth * 0.5, 0.0),
+                    dir * (out * 0.62) + across * 0.5 + vec3(0.0, girth * 0.02, 0.0),
+                    dir * out + across + vec3(0.0, -0.35, 0.0),
+                ],
+                [r * 0.8, r * 0.72, r * 0.42, girth * 0.12],
             )
         }
     }
@@ -219,7 +225,13 @@ fn pine(s: u32, tall: f32, open: bool) -> Plant {
         size: 0.75,
         cover: 1.5,
     }
-    let bark = Bark { dark: vec3(0.16, 0.09, 0.05), light: vec3(0.48, 0.27, 0.13) }
+    // Scales: warm plates with dark cracks between.
+    let bark = Bark {
+        dark: vec3(0.11, 0.065, 0.045),
+        light: vec3(0.50, 0.28, 0.14),
+        grain: vec3(0.2, 0.8, 0.0),
+        relief: 1.1,
+    }
     var p = plant(leaves, bark)
     let lean = vec3(0.0, 0.0, tall * 0.03)
     p.tube(
@@ -280,21 +292,33 @@ fn shrub(s: u32, size: f32, count: u32, leaves: Leaves, stems: u32) -> Plant {
 /// bare limbs; burnt (`burnt`), black and nearly bare.
 fn snag(s: u32, tall: f32, burnt: bool, conifer: bool) -> Plant {
     let bark = if burnt {
+        // Charcoal: near black, in blocks of different tones (in even tones, the burn's snags
+        // read as brown poles).
         Bark {
-            dark: vec3(0.03, 0.028, 0.025),
-            light: vec3(0.12, 0.11, 0.10),
+            dark: vec3(0.006, 0.006, 0.007),
+            light: vec3(0.035, 0.033, 0.036),
             moss: vec3(0.05, 0.05, 0.04),
+            grain: vec3(0.35, 0.4, 0.25),
+            relief: 1.2,
         }
     } else {
         // Weathered to silver-grey (paler than living bark, but no white: at 0.48 a sunlit snag
-        // read as a white post).
-        Bark { dark: vec3(0.13, 0.125, 0.115), light: vec3(0.31, 0.30, 0.27) }
+        // read as a white post), split along its grain.
+        Bark {
+            dark: vec3(0.11, 0.105, 0.10),
+            light: vec3(0.31, 0.30, 0.27),
+            grain: vec3(0.8, 0.0, 0.2),
+            relief: 1.2,
+        }
     }
     // No leaves: its limbs alone.
     var p = plant(leaves: Leaves { size: 0.2 }, bark: bark)
     let girth = if conifer { 0.32 } else { 0.4 }
     let lean = vec3(pick(s, 4, lo: -0.4, hi: 0.4), 0.0, pick(s, 5, lo: -0.4, hi: 0.4))
-    let broke = tall * pick(s, 6, lo: 0.75, hi: 0.95)
+    // Fire takes a crown lower than rot does.
+    let broke = tall * if burnt { pick(s, 6, lo: 0.55, hi: 0.85) } else {
+        pick(s, 6, lo: 0.75, hi: 0.95)
+    }
     // The trunk, snapped: its last piece short, so it closes over a hand's width (a blunt
     // break, not a spike: round 5's stills read the old tapered tops as tridents).
     let top = vec3(0.0, broke, 0.0) + lean
@@ -307,23 +331,38 @@ fn snag(s: u32, tall: f32, burnt: bool, conifer: bool) -> Plant {
         ],
         [girth * 1.4, girth * 1.1, girth * 0.6, girth * 0.55],
     )
-    // Splinters standing from the break.
-    for i in 0..(2 + s % 2) {
-        let a = TAU * rand(s, 60 + i)
-        let side = vec3(cos(a), 0.0, sin(a)) * girth * 0.35
-        let from = top - vec3(0.0, 0.3, 0.0) + side
-        let tip = from + vec3(side.x * 0.6, pick(s, 70 + i, lo: 0.5, hi: 1.3), side.z * 0.6)
-        p.straight(from, tip, r_from: girth * 0.22, r_to: 0.02)
-    }
+    // The break: one shard of the trunk's side standing from it, wide and flattened against
+    // the trunk's rim, and a short one beside it. (Two or three thin spikes from its middle read
+    // as tridents, and in the beech wood as living trunks ending in splinters: the lookdev
+    // reviews' 02.)
+    let a = TAU * rand(s, 60)
+    let rim = vec3(cos(a), 0.0, sin(a)) * girth * 0.3
+    let shard = if burnt { pick(s, 70, lo: 0.3, hi: 0.7) } else { pick(s, 70, lo: 0.6, hi: 1.4) }
+    p.limb(
+        top - vec3(0.0, 0.4, 0.0) + rim,
+        top + rim * 1.15 + vec3(0.0, shard * 0.4, 0.0),
+        top + rim * 1.4 + vec3(0.0, shard, 0.0),
+        r_from: girth * 0.3,
+        r_to: girth * 0.06,
+    )
+    let b = a + pick(s, 61, lo: 1.6, hi: 2.6)
+    let rim2 = vec3(cos(b), 0.0, sin(b)) * girth * 0.3
+    p.straight(
+        top - vec3(0.0, 0.3, 0.0) + rim2,
+        top + rim2 * 1.2 + vec3(0.0, shard * 0.35, 0.0),
+        r_from: girth * 0.2,
+        r_to: girth * 0.05,
+    )
     // Its limbs: what's left of them, short and crooked, some snapped to stubs.
-    let n = if burnt { 3 } else if conifer { 6 } else { 5 }
+    let n = if burnt { 5 } else if conifer { 6 } else { 5 }
     for i in 0..n {
         let h = pick(s, 10 + i, lo: 0.4, hi: 0.9) * broke
         let a = TAU * rand(s, 20 + i)
         let out = vec3(cos(a), 0.0, sin(a))
         let across = vec3(-out.z, 0.0, out.x)
         let from = vec3(0.0, h, 0.0) + lean * (h / broke)
-        let stub = rand(s, 50 + i) < 0.4
+        // A burnt one's limbs are all burnt back to stubs (long and thin, they read as thorns).
+        let stub = burnt || rand(s, 50 + i) < 0.4
         let len = if conifer { tall * 0.06 } else if stub {
             tall * pick(s, 30 + i, lo: 0.03, hi: 0.06)
         } else {
@@ -351,6 +390,7 @@ fn log(s: u32, long: f32, girth: f32) -> Plant {
         dark: vec3(0.11, 0.09, 0.07),
         light: vec3(0.30, 0.26, 0.20),
         moss: vec3(0.07, 0.11, 0.03),
+        grain: vec3(0.6, 0.2, 0.2),
     }
     // No leaves: its trunk and its root plate alone.
     var p = plant(leaves: Leaves { size: 0.2 }, bark: bark)
@@ -398,28 +438,53 @@ pub fn kind_plant(k: u32) -> Plant {
         size: 1.0,
         cover: 1.6,
     }
-    let oak_bark = Bark { dark: vec3(0.09, 0.07, 0.05), light: vec3(0.22, 0.18, 0.13) }
+    // Bark per species (the lookdev reviews' A13): oak's deep furrows broken into blocks;
+    // beech's smooth silver-grey, mottled, a little cool so a green wood's light doesn't turn it
+    // olive (A6, P5); birch's white, banded with dark lenticels; alder's dark fissures.
+    let oak_bark = Bark {
+        dark: vec3(0.07, 0.055, 0.042),
+        light: vec3(0.25, 0.205, 0.155),
+        grain: vec3(0.7, 0.3, 0.0),
+        relief: 1.4,
+    }
     let beech_leaves = Leaves {
         young: vec3(0.20, 0.28, 0.05),
         old: vec3(0.05, 0.11, 0.03),
         size: 0.95,
         cover: 1.7,
     }
-    let beech_bark = Bark { dark: vec3(0.12, 0.12, 0.115), light: vec3(0.29, 0.29, 0.27) }
+    let beech_bark = Bark {
+        dark: vec3(0.10, 0.085, 0.10),
+        light: vec3(0.31, 0.275, 0.30),
+        moss: vec3(0.13, 0.13, 0.10),
+        grain: vec3(0.25, 0.0, 0.75),
+        relief: 0.45,
+    }
     let birch_leaves = Leaves {
         young: vec3(0.25, 0.31, 0.06),
         old: vec3(0.08, 0.14, 0.03),
         size: 0.6,
         cover: 1.2,
     }
-    let birch_bark = Bark { dark: vec3(0.09, 0.085, 0.08), light: vec3(0.62, 0.60, 0.56) }
+    let birch_bark = Bark {
+        dark: vec3(0.05, 0.045, 0.045),
+        light: vec3(0.64, 0.62, 0.58),
+        grain: vec3(0.1, 0.0, 0.9),
+        bands: 0.95,
+        relief: 0.2,
+    }
     let alder_leaves = Leaves {
         young: vec3(0.09, 0.17, 0.04),
         old: vec3(0.025, 0.07, 0.02),
         size: 0.8,
         cover: 1.6,
     }
-    let alder_bark = Bark { dark: vec3(0.10, 0.09, 0.08), light: vec3(0.24, 0.21, 0.19) }
+    let alder_bark = Bark {
+        dark: vec3(0.07, 0.063, 0.058),
+        light: vec3(0.24, 0.215, 0.195),
+        grain: vec3(0.7, 0.3, 0.0),
+        relief: 1.1,
+    }
     if k == GREAT {
         great_tree()
     } else if k == OAK_OPEN {
