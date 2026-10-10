@@ -996,6 +996,15 @@ fn fork_gap(
     gap
 }
 
+/// Whether tree `t`, forking `f` higher than its kind, keeps its branches above its browse line
+/// (`Tree::lift`) as it's drawn.
+fn clears(t: Tree, f: f32) -> bool {
+    var tf = t
+    tf.fork = f
+    let k = kind_of(tf)
+    t.lift <= 0.0 || t.state != State::Alive || lowest_placed(k, t.tall, f) >= t.lift
+}
+
 /// Tree `i` chooses its fork: the first of `FORKS` (from one its seed picks) apart from its
 /// neighbours' (`first`: the first choice, when it takes the first that is), else the one
 /// farthest from them.
@@ -1009,10 +1018,19 @@ fn choose_fork(
 ) {
     let t = trees[i]
     let from = t.seed % FORKS.len()
+    // Under a browse line, only the forks whose branches clear it, if any do (a small tree's
+    // forest form can still come below it: AC2's head room).
+    var any_clear = false
+    for f in FORKS {
+        any_clear = any_clear || clears(t, f)
+    }
     var best = t.fork
     var best_gap = -1.0
     for m in 0..FORKS.len() {
         let f = FORKS[(from + m) % FORKS.len()]
+        if any_clear && !clears(t, f) {
+            continue
+        }
         var tf = t
         tf.fork = f
         let k = kind_of(tf)
