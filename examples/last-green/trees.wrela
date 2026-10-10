@@ -838,6 +838,10 @@ fn forks_of_kinds() -> [f32; 22] {
     for k in 1..KINDS {
         let p = kind_plant(k)
         for i in 1..p.limbs.len() {
+            // Not a root (a limb into the ground).
+            if p.limbs[i].points[3].y < 0.0 {
+                continue
+            }
             let y = p.limbs[i].points[0].y
             out[k] = if out[k] == 0.0 { y } else { min(out[k], y) }
         }
@@ -858,6 +862,10 @@ const FORKS = [
     0.42, 0.48,
 ]
 pub const FORK_APART: f32 = 0.05
+
+/// The forks a browsed tree may take as well (`choose_fork`): between the high ones, to the
+/// highest the bake keeps (`engine::bake`'s ±0.508).
+const LIFTED_FORKS = [0.27, 0.33, 0.39, 0.45, 0.508]
 
 /// Whether two trees are neighbours: their crowns touch (their trunks are nearer than their
 /// crowns' radii together).
@@ -1017,17 +1025,26 @@ fn choose_fork(
     first: bool,
 ) {
     let t = trees[i]
-    let from = t.seed % FORKS.len()
     // Under a browse line, only the forks whose branches clear it, if any do (a small tree's
-    // forest form can still come below it: AC2's head room).
+    // forest form can still come below it: AC2's head room); and between the high forks too,
+    // so two browsed neighbours that clear it only high still have heights apart to choose from.
+    let from = t.seed % FORKS.len()
+    var choices: Vec<f32> = Vec::new()
+    for m in 0..FORKS.len() {
+        choices.push(FORKS[(from + m) % FORKS.len()])
+    }
+    if t.lift > 0.0 {
+        for f in LIFTED_FORKS {
+            choices.push(f)
+        }
+    }
     var any_clear = false
-    for f in FORKS {
+    for f in choices {
         any_clear = any_clear || clears(t, f)
     }
     var best = t.fork
     var best_gap = -1.0
-    for m in 0..FORKS.len() {
-        let f = FORKS[(from + m) % FORKS.len()]
+    for f in choices {
         if any_clear && !clears(t, f) {
             continue
         }
