@@ -93,7 +93,7 @@ pub const COURSES: Courses = courses_of(decisions())
 /// its mesh is laid from them when the program starts (`waters`), not shipped in it.
 pub struct Courses: Clone {
     pub courses: Vec<engine::water::Course>,
-    pub pools: Vec<vec3>,
+    pub pools: Vec<vec4>,
 }
 
 fn courses_of(u: engine::bake::Unbaked) -> Courses {
