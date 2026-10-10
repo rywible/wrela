@@ -216,15 +216,54 @@ pub fn with_checked<T: Send>(
     with_checked_in(root, &Overlay::new(), f)
 }
 
-/// [`with_checked`], and if `lower`, with what lowering every function of the package that
-/// can be lowered on its own instantiates (`wrela query`'s instantiations): lowering's own
-/// errors (a library package has no `frame`) don't stop it.
-pub fn with_lowered<T: Send>(
+/// What checking a program with errors still knows, for the tools that answer what they can
+/// (`wrela query`, `wrela context`): the checked program, its sources, its errors (none when it
+/// checks), and, if asked for and the program has no errors, what lowering every function of
+/// the package that can be lowered on its own instantiates.
+pub struct Partial<'a> {
+    pub checked: &'a wrela_sema::Checked,
+    pub sources: &'a SourceMap,
+    pub errors: Vec<&'a Diagnostic>,
+    pub lowered: Option<&'a wrela_lower::Lowered>,
+}
+
+impl Partial<'_> {
+    /// The errors, rendered as `wrela check` shows them; `None` if there are none.
+    pub fn rendered(&self) -> Option<String> {
+        let errors: Vec<Diagnostic> = self.errors.iter().map(|d| (*d).clone()).collect();
+        (!errors.is_empty()).then(|| wrela_diag::render::render_all(self.sources, &errors))
+    }
+}
+
+/// Loads and checks the package at `root`, and runs `f` on what checking found, errors or not.
+/// A function whose body has an error has no memory IR (`Checked::mir`), so what it calls,
+/// borrows and does isn't known; the rest of the program is. With `lower`, a program with no
+/// errors is lowered too (`wrela query`'s instantiations): lowering's own errors (a library
+/// package has no `frame`) don't stop it. The rendered errors if the package doesn't load.
+pub fn with_partial<T: Send>(
     root: &Path,
     lower: bool,
-    f: impl FnOnce(&wrela_sema::Checked, &SourceMap, Option<&wrela_lower::Lowered>) -> T + Send,
+    f: impl FnOnce(Partial<'_>) -> T + Send,
 ) -> Result<T, String> {
-    with_lowered_in(root, &Overlay::new(), lower, f)
+    on_compiler_thread(|| {
+        let (sources, mut diagnostics, loaded) = load_with(root, &Overlay::new());
+        let Some(Loaded { units, packages, dirs, .. }) = loaded else {
+            return Err(wrela_diag::render::render_all(&sources, &diagnostics));
+        };
+        let checked = wrela_sema::check_packages(units, &packages, &mut diagnostics);
+        let mut lowered = None;
+        if lower && !has_errors(&diagnostics) {
+            let mut data = wrela_lower::BuildData::default();
+            let cache = const_cache::dir_of(root);
+            prepare(&checked, &sources, &dirs, &mut data, &mut diagnostics, cache.as_deref());
+            if !has_errors(&diagnostics) {
+                let roots = wrela_lower::Roots::every_fn(&checked);
+                lowered = Some(wrela_lower::lower(&checked, &roots, &data, false).0);
+            }
+        }
+        let errors = diagnostics.iter().filter(|d| d.is_error()).collect();
+        Ok(f(Partial { checked: &checked, sources: &sources, errors, lowered: lowered.as_ref() }))
+    })
 }
 
 /// [`with_checked`], with `overlay`'s texts in place of those files' on disk.
@@ -233,36 +272,16 @@ pub fn with_checked_in<T: Send>(
     overlay: &Overlay,
     f: impl FnOnce(&wrela_sema::Checked, &SourceMap) -> T + Send,
 ) -> Result<T, String> {
-    with_lowered_in(root, overlay, false, |c, s, _| f(c, s))
-}
-
-fn with_lowered_in<T: Send>(
-    root: &Path,
-    overlay: &Overlay,
-    lower: bool,
-    f: impl FnOnce(&wrela_sema::Checked, &SourceMap, Option<&wrela_lower::Lowered>) -> T + Send,
-) -> Result<T, String> {
     on_compiler_thread(|| {
         let (sources, mut diagnostics, loaded) = load_with(root, overlay);
-        let Some(Loaded { units, packages, dirs, .. }) = loaded else {
+        let Some(Loaded { units, packages, .. }) = loaded else {
             return Err(wrela_diag::render::render_all(&sources, &diagnostics));
         };
         let checked = wrela_sema::check_packages(units, &packages, &mut diagnostics);
         if has_errors(&diagnostics) {
             return Err(wrela_diag::render::render_all(&sources, &diagnostics));
         }
-        if !lower {
-            return Ok(f(&checked, &sources, None));
-        }
-        let mut data = wrela_lower::BuildData::default();
-        let cache = const_cache::dir_of(root);
-        prepare(&checked, &sources, &dirs, &mut data, &mut diagnostics, cache.as_deref());
-        if has_errors(&diagnostics) {
-            return Err(wrela_diag::render::render_all(&sources, &diagnostics));
-        }
-        let roots = wrela_lower::Roots::every_fn(&checked);
-        let (lowered, _) = wrela_lower::lower(&checked, &roots, &data, false);
-        Ok(f(&checked, &sources, Some(&lowered)))
+        Ok(f(&checked, &sources))
     })
 }
 

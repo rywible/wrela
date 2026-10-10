@@ -36,9 +36,12 @@
 //!                                         the first frame at which a condition holds
 //! wrela query <package-dir> [<query>...] [--json]
 //!                                         types, callers, callees, impls, effects, borrows,
-//!                                         instantiations and signatures, from one check
+//!                                         instantiations and signatures, from one check;
+//!                                         with errors, what's known, and what they make
+//!                                         unsure
 //! wrela context <item> [<package-dir>] [--budget n]
-//!                                         an item's source and what's around it, in a budget
+//!                                         an item's source and what's around it, in a budget,
+//!                                         with errors too
 //! wrela refactor <package-dir> <change> [--dry-run] [--json]
 //!                                         rename, move, add-param, change-mode: checked
 //!                                         before written, refused on a stale plan
