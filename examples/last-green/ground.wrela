@@ -45,6 +45,41 @@ fn mere(at: vec2, r: f32) -> vec4 {
     vec4(at.x, at.y, r, low - 0.4)
 }
 
+/// Where the stream falls off the plateau's lip (`map`'s water), and the plunge pool the fall
+/// has worn at the cliff's foot (`plunge`): its middle (x, z), its radius, and its rim's height.
+pub const FALL = vec2(-221.0, -155.0)
+pub const PLUNGE: vec4 = plunge_site(FALL, 7.0)
+const PLUNGE_DEEP: f32 = 2.2
+
+/// The plunge pool below the lip at `lip`, `r` across: out from the lip, straight across the
+/// edge, to where the cliff's foot is 4 m behind (13 m past the edge), its rim at the land's
+/// height there.
+fn plunge_site(lip: vec2, r: f32) -> vec4 {
+    let g = ground()
+    var at = lip
+    for _ in 0..6 {
+        at += ACROSS * (13.0 - past_edge(at))
+    }
+    vec4(at.x, at.y, r, g.natural(at.x, at.y))
+}
+
+/// The ground at `p` (`y` high) with the plunge pool cut into it (`PLUNGE`): a level bowl,
+/// deepest in its middle, cut into the slope on the uphill side; round it a low sill of rock,
+/// notched where the pool spills on down the slope (across the edge); the land beyond it kept,
+/// blended in over most of a radius.
+fn plunge(p: vec2, y: f32) -> f32 {
+    let d = p - PLUNGE.xy
+    let q = length(d) / PLUNGE.z
+    if q >= 1.9 {
+        return y
+    }
+    let bowl = PLUNGE.w - PLUNGE_DEEP * max(1.0 - q * q, 0.0)
+    let toward = dot(d / max(length(d), 1.0e-3), ACROSS)
+    let notch = 1.0 - 0.75 * smoothstep(0.75, 0.97, toward)
+    let sill = 0.6 * notch * exp(-(q - 1.12) * (q - 1.12) / 0.02)
+    mix(bowl + sill, y, smoothstep(1.1, 1.9, q))
+}
+
 /// The worn track: a quadratic Bézier from the clearing's foot to the great tree (M5's).
 pub const TRACK = [vec2(-7.0, -2.0), vec2(-4.5, 17.0), vec2(4.0, 27.0)]
 
@@ -81,7 +116,7 @@ impl Ground {
             }
             y = smin(y, basin, k: 0.6)
         }
-        y
+        plunge(p, y)
     }
 
     /// The land's height at (x, z), before the mere's basin.
@@ -388,7 +423,9 @@ impl Ground {
             mix(vec3(0.09, 0.08, 0.06), vec3(0.2, 0.18, 0.15), vec3(stones)),
             vec3(bed),
         )
-        c.grass *= (1.0 - bed) * (1.0 - 0.6 * smoothstep(0.75, 0.9, wet))
+        // No blade stands in the water: the grass is gone a texel's half before the bed shows
+        // (between a stream's texel, 1, and its bank's, 0.98 at most).
+        c.grass *= (1.0 - smoothstep(0.93, 0.97, wet)) * (1.0 - 0.6 * smoothstep(0.75, 0.9, wet))
         c.flowers *= 1.0 - bed
         c.tall *= 1.0 - bed
         c.under *= 1.0 - bed

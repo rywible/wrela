@@ -5,12 +5,12 @@
 // map), its one bone placed where the player stands each frame.
 
 use character::colours
-use creature::{Creature, Skeleton, creature}
+use creature::{Creature, Skeleton, creature, smooth}
 use look::{CreatureLook, Mesh as Tolerance}
 use realize::{Mesh, realize_rigid}
 use render::{ByChannels, Shaded}
 use std::derive::Box3
-use std::field::{Blend, Surface, round_cone, sphere}
+use std::field::{Blend, Surface, cuboid, ellipsoid, round_cone, sphere}
 use std::gpu::{GpuBuffer, Unorm8x4}
 use std::transform::{rotate_y, translate}
 
@@ -29,50 +29,128 @@ impl Shaded for Cloth {
     }
 }
 
-/// The stand-in's colours at a point of it (its feet at the origin, +z ahead): a dark cloak over
-/// the body, a pale face, brown boots.
-fn dyed(p: vec3) -> Cloth {
-    let face = smoothstep(1.45, 1.52, p.y) * smoothstep(0.02, 0.09, p.z)
-    let boots = 1.0 - smoothstep(0.24, 0.3, p.y)
-    var c = vec3(0.07, 0.10, 0.16)
-    c = mix(c, vec3(0.28, 0.17, 0.10), vec3(boots))
-    c = mix(c, vec3(0.55, 0.38, 0.28), vec3(face))
-    Cloth { albedo: c }
-}
+// The traveller's colours: a madder cloak, warm against the wood's greens; an ochre scarf by the
+// face, where the eye goes; dark trousers and boots; a leather pack; an ash staff.
+const CLOAK = Cloth { albedo: vec3(0.26, 0.085, 0.05) }
+const SCARF = Cloth { albedo: vec3(0.50, 0.33, 0.09) }
+const FACE = Cloth { albedo: vec3(0.55, 0.36, 0.25) }
+const TROUSERS = Cloth { albedo: vec3(0.055, 0.062, 0.075) }
+const BOOTS = Cloth { albedo: vec3(0.10, 0.055, 0.03) }
+const PACK = Cloth { albedo: vec3(0.12, 0.075, 0.04) }
+const STAFF = Cloth { albedo: vec3(0.24, 0.16, 0.08) }
 
-/// The stand-in as a creature of one bone (at its feet).
+/// The stand-in as a creature of one bone (at its feet, +z ahead): a traveller in a hooded
+/// cloak, designed by its silhouette, which reads from any side: the hood's point, the cloak's
+/// flare, the staff above the head, the pack behind, the boots at the hem.
 pub fn standin() -> Creature<Cloth> {
     var s = Skeleton::new()
     let root = s.root("stand-in", vec3(0.0))
-    let body = [
-        round_cone(vec3(0.0, 0.85, 0.0), vec3(0.0, 1.38, 0.0), r_top: 0.17, r_bottom: 0.2),
-        round_cone(vec3(-0.1, 0.1, 0.0), vec3(-0.11, 0.86, 0.0), r_top: 0.08, r_bottom: 0.06),
-        round_cone(vec3(0.1, 0.1, 0.0), vec3(0.11, 0.86, 0.0), r_top: 0.08, r_bottom: 0.06),
-        round_cone(vec3(-0.24, 0.85, 0.02), vec3(-0.22, 1.35, 0.0), r_top: 0.06, r_bottom: 0.05),
-        round_cone(vec3(0.24, 0.85, 0.02), vec3(0.22, 1.35, 0.0), r_top: 0.06, r_bottom: 0.05),
-    ].smooth_union(k: 0.06)
-    let head = sphere(0.12)
-    let shape = body.smooth_union(HeadAt { at: vec3(0.0, 1.56, 0.0), s: head }, k: 0.05)
-    let half = vec3(0.45, 0.0, 0.35)
+    // The cloak: a cone from the shoulders to a hem at the knees, flattened front to back.
+    let cloak = round_cone(
+        vec3(0.0, 0.50, -0.03),
+        vec3(0.0, 1.36, 0.0),
+        r_top: 0.31,
+        r_bottom: 0.15,
+    )
+        .smooth_intersect(cuboid(vec3(0.5, 1.0, 0.19)).translate(vec3(0.0, 1.0, -0.02)), k: 0.06)
     creature(s)
-        .part(root, shape.with_at(|p| dyed(p)))
-        .bounded(Box3 { lo: vec3(-0.45, -0.05, -0.35), hi: vec3(0.45, 1.8, 0.35) + half * 0.0 })
-}
-
-/// A sphere moved to `at`.
-pub struct HeadAt: Copy + GpuData {
-    pub at: vec3,
-    pub s: std::field::Sphere,
-}
-
-impl Surface for HeadAt {
-    fn distance(self, p: vec3) -> f32 {
-        self.s.distance(p - self.at)
-    }
-
-    fn lipschitz(self, near: f32) -> f32 {
-        1.0
-    }
+        .join("cloak", root, cloak.with(CLOAK))
+        .join(
+            "shoulders",
+            root,
+            ellipsoid(vec3(0.24, 0.11, 0.15)).translate(vec3(0.0, 1.37, -0.01)).with(CLOAK),
+            seam: smooth(0.06),
+        )
+        .join(
+            "hood",
+            root,
+            sphere(0.15).translate(vec3(0.0, 1.58, -0.03)).with(CLOAK),
+            seam: smooth(0.05),
+        )
+        .join(
+            "hood's point",
+            root,
+            round_cone(vec3(0.0, 1.61, -0.08), vec3(0.0, 1.79, -0.22), r_top: 0.12, r_bottom: 0.025)
+                .with(CLOAK),
+            seam: smooth(0.04),
+        )
+        .join(
+            "face",
+            root,
+            sphere(0.1).translate(vec3(0.0, 1.555, 0.06)).with(FACE),
+            seam: smooth(0.01),
+        )
+        .join(
+            "scarf",
+            root,
+            ellipsoid(vec3(0.15, 0.065, 0.14)).translate(vec3(0.0, 1.45, 0.02)).with(SCARF),
+            seam: smooth(0.015),
+        )
+        .join(
+            "scarf's tail",
+            root,
+            round_cone(
+                vec3(0.07, 1.42, 0.12),
+                vec3(0.11, 1.08, 0.17),
+                r_top: 0.045,
+                r_bottom: 0.035,
+            )
+                .with(SCARF),
+            seam: smooth(0.015),
+        )
+        .join(
+            "leg",
+            root,
+            round_cone(vec3(0.09, 0.14, 0.0), vec3(0.1, 0.6, 0.0), r_top: 0.065, r_bottom: 0.085)
+                .with(TROUSERS),
+            seam: smooth(0.02),
+            mirror: true,
+        )
+        .join(
+            "boot",
+            root,
+            round_cone(vec3(0.095, 0.075, -0.03), vec3(0.1, 0.3, 0.0), r_top: 0.07, r_bottom: 0.07)
+                .smooth_union(
+                    round_cone(
+                        vec3(0.095, 0.065, -0.02),
+                        vec3(0.1, 0.055, 0.14),
+                        r_top: 0.065,
+                        r_bottom: 0.05,
+                    ),
+                    k: 0.03,
+                )
+                .with(BOOTS),
+            seam: smooth(0.015),
+            mirror: true,
+        )
+        .join(
+            "sleeve",
+            root,
+            round_cone(vec3(0.21, 1.33, 0.0), vec3(0.28, 1.03, 0.1), r_top: 0.08, r_bottom: 0.065)
+                .with(CLOAK),
+            seam: smooth(0.04),
+        )
+        .join(
+            "hand",
+            root,
+            sphere(0.045).translate(vec3(0.3, 0.98, 0.14)).with(FACE),
+            seam: smooth(0.015),
+        )
+        .join(
+            "staff",
+            root,
+            round_cone(vec3(0.33, 0.0, 0.22), vec3(0.29, 1.86, 0.1), r_top: 0.02, r_bottom: 0.026)
+                .smooth_union(sphere(0.04).translate(vec3(0.29, 1.87, 0.1)), k: 0.02)
+                .with(STAFF),
+            seam: smooth(0.01),
+        )
+        .join(
+            "pack",
+            root,
+            ellipsoid(vec3(0.14, 0.18, 0.07)).translate(vec3(0.0, 1.12, -0.24)).with(PACK),
+            seam: smooth(0.04),
+        )
+        .bounded(Box3 { lo: vec3(-0.45, -0.05, -0.45), hi: vec3(0.45, 1.95, 0.4) })
 }
 
 /// The stand-in realized: its mesh and colours (cells for a 5 mm tolerance).

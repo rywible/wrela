@@ -95,6 +95,13 @@ images from them.
 | Studio Ghibli's films, Kazuo Oga's backgrounds | Painted light and colour in forests and fields (the rubric's "hero" bar) |
 | Real light | Sun, sky, bounce light and fog in the renderer |
 
+The lore (vision.md, "The lore") names one comparison, the owner's. It sets a feeling in words;
+we don't copy the game's story, characters or designs.
+
+| Influence | What it stands for |
+|---|---|
+| *Clair Obscur: Expedition 33* (Sandfall Interactive, 2025) | A world as a dying, preserved piece of itself |
+
 ### Lookdev references (private, for judging the look)
 
 The lookdev loop (milestone 6) judges each still against a rubric whose scale has anchor
