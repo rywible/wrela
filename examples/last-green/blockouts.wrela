@@ -13,7 +13,7 @@ use engine::noise::{noise3, rand}
 use engine::place::{Feature, Map, SiteKind}
 use engine::realize::realize_rigid
 use engine::render::ByChannels
-use engine::stone::{Realized, Rock, Stain, realize_stone}
+use engine::stone::{Realized, Rock, realize_stone}
 use std::derive::Box3
 use std::field::{Surface, cuboid}
 use std::math::TAU
@@ -520,6 +520,11 @@ impl Surface for Slab {
         var d = cuboid(h - vec3(r)).distance(q) - r
         // The top worn to a slope.
         d = max(d, q.y + 0.25 * q.x / self.half.x * self.half.y * 0.3 - self.half.y * 0.92)
+        // A corner of its top split off, on one side or the other, a little or a lot.
+        let side = if sin(self.seed * 5.3) > 0.0 { 1.0 } else { -1.0 }
+        let n = normalize(vec3(side * 0.8, 1.0, 0.25 * cos(self.seed * 2.9)))
+        let chip = 0.35 + 0.3 * (0.5 + 0.5 * sin(self.seed * 3.7))
+        d = max(d, dot(q - vec3(side * self.half.x, self.half.y, 0.0) * (1.0 - chip), n))
         d - 0.04 * noise3(p * 3.0 + vec3(self.seed))
     }
 
@@ -528,14 +533,29 @@ impl Surface for Slab {
     }
 }
 
+/// A standing stone's colour at `p`: grey granite with a grain, pale lichen in patches on its
+/// upper half, and moss only at its foot (a boulder's `Stain` puts moss on its top, which on a
+/// tall stone covered most of it and cast it green).
+fn weathered(p: vec3, s: Slab) -> Rock {
+    let q = p * 1.2 + vec3(s.seed)
+    let grain = 0.5 * noise3(q) + 0.3 * noise3(q * 3.1) + 0.2 * noise3(q * 9.7)
+    var c = mix(vec3(0.19, 0.185, 0.18), vec3(0.31, 0.295, 0.27), vec3(grain))
+    c *= 0.92 + 0.16 * noise3(p * 9.0 + vec3(s.seed))
+    let up = saturate(p.y / (2.0 * s.half.y))
+    let lichen = smoothstep(0.66, 0.74, noise3(p * 3.3 + vec3(5.0, 2.0, s.seed))) *
+        smoothstep(0.3, 0.7, up)
+    c = mix(c, vec3(0.42, 0.41, 0.33), vec3(lichen * 0.6))
+    let moss = smoothstep(0.6, 0.0, p.y) * (0.5 + 0.5 * noise3(p * 2.5 + vec3(s.seed)))
+    Rock { albedo: mix(c, vec3(0.08, 0.12, 0.03), vec3(moss * 0.7)) }
+}
+
 /// A slab as a creature of one bone.
 pub fn slab_creature(s: Slab) -> Creature<Rock> {
     var sk = Skeleton::new()
     let root = sk.root("slab", vec3(0.0))
-    let stain = Stain { r: s.half.y, seed: s.seed }
     let m = max(s.half.x, s.half.z) + 0.3
     creature(sk)
-        .part(root, s.with_at(|p| stain.at(p)))
+        .part(root, s.with_at(|p| weathered(p, s)))
         .bounded(Box3 { lo: vec3(-m, -0.6, -m), hi: vec3(m, 2.0 * s.half.y + 0.3, m) })
 }
 
