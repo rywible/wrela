@@ -320,6 +320,8 @@ pub struct Floor {
     /// The lookbook's shot the camera's held on (none: the player's), since when, and one being
     /// typed (`keys`).
     shot: Option<u32>,
+    /// The camera a test holds (eye, what it looks at), if one does.
+    held: Option<(vec3, vec3)>,
     shot_from: f32,
     typing_shot: bool,
     shot_digits: u32,
@@ -450,6 +452,7 @@ pub fn init() -> Floor {
         off: Flags::none(),
         framing: Framing {},
         shot: None,
+        held: None,
         shot_from: 0.0,
         typing_shot: false,
         shot_digits: 0,
@@ -1434,6 +1437,11 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
             (e, a, s.framing.fovy)
         },
     }
+    // A test's held camera.
+    let (eye, at) = match s.held {
+        Some(h) => h,
+        None => (eye, at),
+    }
     s.cam = camera(
         eye,
         at,
@@ -1496,6 +1504,42 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
 }
 
 // ---- tests ---------------------------------------------------------------------------------------
+
+/// The camera held at `eye`, looking at `at` (instead of the player's or a shot's).
+@testing
+pub fn test_hold(s: mut Floor, eye: vec3, at: vec3) {
+    s.held = Some((eye, at))
+}
+
+/// Whether the floor's ready: its kinds cooked and the tiles round the player in and placed.
+@testing
+pub fn test_ready(s: Floor) -> f32 {
+    let placed = s.wood.is_some() &&
+        s.tiles_in > 0 &&
+        s.fetching.is_empty() &&
+        s.cooking.is_empty() &&
+        s.arrived.is_empty()
+    if placed { 1.0 } else { 0.0 }
+}
+
+/// The `i`th living tree placed near the player (of the tiles' own, not the far layer): its
+/// crown's middle (where its levels' patterns are anchored), and its height.
+@testing
+pub fn test_crown(s: Floor, i: u32) -> vec4 {
+    var k = 0
+    for a in s.own {
+        for p in a.placed {
+            if p.kind < trees::KINDS && p.kind != trees::GREAT {
+                if k == i {
+                    let top = s.plants[p.kind].top() * p.at.scale
+                    return vec4(p.at.at + vec3(0.0, top * 0.5, 0.0), top)
+                }
+                k += 1
+            }
+        }
+    }
+    vec4(0.0, 0.0, 0.0, -1.0)
+}
 
 /// AC11's cover within its reach: a tile's ground's fields are written as it's cooked, with its
 /// trees, so no tree stands on ground with none; and the clipmap's blocks hold every tile kept

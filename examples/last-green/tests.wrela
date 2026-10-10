@@ -667,3 +667,37 @@ fn a_wild_tile_grown_alone_matches_the_wider_wood() {
         f"with no margin, only {bare.x * 100.0}% of the cells differ: the test can't see a seam",
     )
 }
+
+/// A minute's walk at a run (5 m/s on a heading, stepped at 60 Hz) from world point (x, z):
+/// stepped as the sim steps a player (`place::Place::moved`), or in `f32` world points; how far
+/// its end is from the true end (worked out in `f64`), m.
+fn walk_error(x: f64, z: f64, tiled: bool) -> f64 {
+    let v = vec2(cos(0.7), sin(0.7)) * 5.0
+    let dt = 1.0 / 60.0
+    var p = engine::place::Place::of_f64(x, z)
+    var q = vec2(f32(x), f32(z))
+    for _ in 0..3600 {
+        p = p.moved(v * dt)
+        q += v * dt
+    }
+    let end = if tiled { p.world_f64() } else { vec2d(f64(q.x), f64(q.y)) }
+    let truth = vec2d(x + f64(v.x) * 60.0, z + f64(v.y) * 60.0)
+    sqrt((end.x - truth.x) * (end.x - truth.x) + (end.y - truth.y) * (end.y - truth.y))
+}
+
+/// AC4's positions (Q3): a minute's walk stepped 10 km and 1,000 km from the origin ends within
+/// 5 cm of its true end, as the sim steps a player (a tile and an offset in it); in `f32` world
+/// points it's a metre off 10 km out (spike 17's 1.03 m), as the test shows beside it.
+@test
+fn a_walk_far_from_the_origin_ends_where_it_should() {
+    for d in [0.0, 10000.0, 1000000.0] {
+        let e = walk_error(x: d, z: -d * 0.5, tiled: true)
+        let f = walk_error(x: d, z: -d * 0.5, tiled: false)
+        print(f"a minute's walk {d / 1000.0} km out: {e} m off as the sim steps it, {f} m in f32")
+        assert(e <= 0.05, f"a minute's walk {d / 1000.0} km out ends {e} m from its true end")
+    }
+    assert(
+        walk_error(x: 10000.0, z: -5000.0, tiled: false) > 0.1,
+        "in f32 the walk 10 km out should show its error",
+    )
+}

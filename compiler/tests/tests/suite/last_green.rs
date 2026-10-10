@@ -389,7 +389,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
 #[ignore = "long: bakes the floor (minutes when the constants' cache is cold)"]
 fn the_floors_own_tests_pass() {
     let _ = floor();
-    assert_eq!(super::tests_pass(&repo_root().join("examples/last-green")), 11);
+    assert_eq!(super::tests_pass(&repo_root().join("examples/last-green")), 12);
 }
 
 /// The body of WGSL function `name` in `text` (to its closing brace at the line's start).
@@ -443,4 +443,132 @@ fn the_floors_pipelines_keep_their_bounds() {
     }
     assert_eq!(water, 1, "the water's pipelines");
     assert!(cooked >= 2, "only {cooked} of bark's and stone's pipelines");
+}
+
+// ---- the floor, frame by frame ---------------------------------------------------------------
+
+/// The floor's test build (its `@testing` exports), loaded on the native host and driven a frame
+/// at a time at 60 frames a second.
+struct Floor {
+    host: wrela_host::Host,
+    frame: u32,
+}
+
+impl Floor {
+    fn load(name: &str) -> Floor {
+        let _ = floor();
+        let (dir, _) = wrela_tests::page("examples/last-green", name);
+        Floor { host: wrela_host::Host::load(&dir).expect("load the floor"), frame: 0 }
+    }
+
+    fn step(&mut self) {
+        self.host
+            .lockstep_frame(self.frame, 60.0, 320, 180, &[])
+            .unwrap_or_else(|e| panic!("frame {}: {e}", self.frame));
+        self.frame += 1;
+    }
+
+    fn steps(&mut self, n: u32) {
+        for _ in 0..n {
+            self.step();
+        }
+    }
+
+    fn call(&mut self, name: &str, args: &[wrela_host::Value]) -> Vec<f64> {
+        let v = self.host.call_export(name, args).unwrap_or_else(|e| panic!("{name}: {e}"));
+        v.iter()
+            .map(|x| match x {
+                wrela_host::Value::F32(f) => f64::from(*f),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect()
+    }
+
+    /// Frames until the kinds are cooked and the tiles round the player placed.
+    fn until_ready(&mut self) {
+        while self.call("test_ready", &[])[0] < 0.5 {
+            assert!(self.frame < 900, "the floor isn't ready after {} frames", self.frame);
+            self.step();
+        }
+    }
+
+    fn hold(&mut self, eye: [f32; 3], at: [f32; 3]) {
+        let args: Vec<wrela_host::Value> =
+            eye.iter().chain(&at).map(|&x| wrela_host::Value::F32(x)).collect();
+        self.call("test_hold", &args);
+    }
+}
+
+/// AC4's no trap: the camera held inside a tree's crown, exactly at its middle (where its
+/// levels' patterns are anchored, `lod::anchor`) and a step either side, looking each way, and
+/// inside its trunk: every frame draws, with the floor's streamed wood (`engine::wood`'s marks).
+/// Playing spike 17, a camera there trapped (`lod.wrela:125`).
+#[test]
+#[ignore = "long: bakes the floor, needs a GPU"]
+fn the_camera_inside_a_crown_of_the_floor_draws_its_frames() {
+    let mut f = Floor::load("last-green-inside-a-crown");
+    f.until_ready();
+    for i in [0, 3, 17, 60] {
+        let m = f.call("test_crown", &[wrela_host::Value::I32(i)]);
+        assert!(m[3] > 0.0, "no tree {i} near the player");
+        let middle = [m[0] as f32, m[1] as f32, m[2] as f32];
+        for (dx, dy) in [(0.0, 0.0), (0.05, 0.0), (0.0, -0.05)] {
+            let eye = [middle[0] + dx, middle[1] + dy, middle[2]];
+            for (x, z) in [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)] {
+                f.hold(eye, [eye[0] + x, eye[1], eye[2] + z]);
+                f.steps(2);
+            }
+        }
+        // Inside its trunk, a metre up, looking along the ground.
+        let foot = [m[0] as f32, m[1] as f32 - m[3] as f32 * 0.5 + 1.0, m[2] as f32];
+        f.hold(foot, [foot[0] + 3.0, foot[1], foot[2] + 1.0]);
+        f.steps(2);
+    }
+}
+
+/// AC4's replays and AC5's harness: the floor's walk (P pressed at the first frame) in Chrome's
+/// test mode and in the native host, frame for frame at 60 a second: the play harness's reports,
+/// each 2 s, the same lines in both hosts; and Chrome's tick log replays natively, every tick to
+/// the same state hash.
+#[test]
+#[ignore = "long: bakes the floor, needs Chrome, python3 and a GPU"]
+fn the_floors_walk_replays_and_reports_the_same_in_both_hosts() {
+    let _ = floor();
+    let (dir, rel) = wrela_tests::page("examples/last-green", "last-green-hosts");
+    let text = r#"[{"frame": 1, "type": "key", "key": "KeyP"}]"#;
+    let script = wrela_host::parse_script(text).expect("a script");
+    let frames = 720;
+    let run = wrela_tests::ChromeRun {
+        script: Some(text.into()),
+        workers: 4,
+        ..wrela_tests::ChromeRun::new(frames, 320, 180, 60.0)
+    };
+    let chrome = wrela_tests::run_in_chrome_with(&rel, run);
+    let reports = |lines: Vec<&str>| -> Vec<String> {
+        lines.into_iter().filter(|l| l.contains("\"report\"")).map(String::from).collect()
+    };
+    let in_chrome = reports(chrome.printed.iter().map(|(_, l)| l.as_str()).collect());
+    let mut native = wrela_host::Host::load(&dir).expect("load the floor");
+    for i in 0..frames {
+        native
+            .lockstep_frame(i, 60.0, 320, 180, &script)
+            .unwrap_or_else(|e| panic!("frame {i}: {e}"));
+    }
+    let logs = native.take_logs();
+    let natively = reports(logs.iter().map(String::as_str).collect());
+    println!(
+        "{} reports in Chrome, {} natively; the last: {:?}",
+        in_chrome.len(),
+        natively.len(),
+        natively.last()
+    );
+    assert!(natively.len() >= 5, "only {} reports natively", natively.len());
+    assert_eq!(in_chrome, natively, "the hosts' reports differ");
+    // The ticks: Chrome's log (its records and every tick's state hash) replays natively, each
+    // tick to the same hash (a hash that differs fails the replay at its tick).
+    let ticks = chrome.ticks.expect("the ticker's ticks");
+    let log = ticks.log.expect("a tick log");
+    assert!(log.ticks.len() > 600, "{} ticks", log.ticks.len());
+    let built = wrela_host::CpuBuild::load(&dir).expect("load on the CPU");
+    assert_eq!(built.replay(&log, 2).expect("replays") as usize, log.ticks.len());
 }
