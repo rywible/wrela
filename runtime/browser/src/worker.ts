@@ -364,6 +364,8 @@ async function runTest(canvas: OffscreenCanvas, device: GPUDevice, build: Build,
   const script: Scripted[] = params.input ? parseScript(await (await fetch(new URL(params.input, base))).text()) : [];
   const frameEvents = arrivals(script).frames;
   const hashes = params.nohash === 0;
+  // The tick log needs only the ticks' hashes (the sim's state, cheap), not the frames'.
+  const tickHashes = hashes || params.ticklog > 0;
   let pipelinesMs: number | null = null;
   const salted = params.salt > 0 ? salt(build, params.salt) : build;
   const target = {
@@ -384,10 +386,14 @@ async function runTest(canvas: OffscreenCanvas, device: GPUDevice, build: Build,
       b,
       target,
       {
-        ...programOptions(b, { script, hashes, timing: true, delay: params.tickdelay, replayable: live !== null }, carried),
+        ...programOptions(
+          b,
+          { script, hashes: tickHashes, timing: true, delay: params.tickdelay, replayable: live !== null },
+          carried,
+        ),
         hash: hashes,
         workers: params.workers,
-        tickHashes: hashes,
+        tickHashes,
         onPrint: (line) => {
           printed.push(line);
           printed_in.push(frameNow);
@@ -473,9 +479,9 @@ async function runTest(canvas: OffscreenCanvas, device: GPUDevice, build: Build,
       drains.push(draining);
       if (drains.length > 2) await drains.shift()!.catch(() => {});
     }
-    if (params.saturate > 0) {
+    if (params.saturate > 0 || params.inflight > 0) {
       inFlight.push(device.queue.onSubmittedWorkDone());
-      if (inFlight.length > 2) await inFlight.shift();
+      if (inFlight.length > (params.saturate > 0 ? 2 : params.inflight)) await inFlight.shift();
     } else await device.queue.onSubmittedWorkDone();
     await executor.checkDebugFlag();
     if (executor.presented) live?.drawn(i);

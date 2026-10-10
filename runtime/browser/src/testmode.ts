@@ -22,12 +22,16 @@
 // before frame i, the ticks up to ⌊(i + 1)·hz/fps⌋ run, and the frame waits for them, as on
 // the native host. With `paced=1`, ticks run on the ticker's own clock instead and neither waits
 // for the other, as in normal play: for time budgets. Either way, `ticks.json` has each tick's
-// CPU time, and, unless `nohash=1`, `ticks.log` is the tick log (runtime/abi `ticks`: each
-// tick's records and state hash), which `wrela-host --replay` replays. With `tickdelay=ms`, each tick is
+// CPU time, and, unless `nohash=1` (or with `ticklog=1` beside it: the tick log without the
+// frames' hash, for a paced run that's also a replay), `ticks.log` is the tick log (runtime/abi
+// `ticks`: each tick's records and state hash), which `wrela-host --replay` replays. With `tickdelay=ms`, each tick is
 // held that much longer; with `framedelay=ms`, each frame. With `saturate=1`, each frame starts
 // as soon as the last is recorded, not at its time, with at most two frames on the GPU and the
 // canvas left alone (it would pace them by the display): a GPU that sets its clock by its load
-// stays busy, so a frame's GPU time is its work (GPU budgets). With `salt=n`, each pipeline's entry points
+// stays busy, so a frame's GPU time is its work (GPU budgets). With `inflight=n` (paced), each
+// frame still begins at its time, but up to n frames' GPU work may be in flight, as a browser
+// lets a page's (without it, each waits for the last to finish on the GPU, so a paced frame's
+// interval is its CPU time and its GPU time). With `salt=n`, each pipeline's entry points
 // store n first, so no cache serves its pipelines (worker.ts `salt`), and `pipelines.json` has how
 // long creating them all, at once, took (#42 AC4's cold pipelines). `load.json` has when the page opened
 // and each file it loaded; `memory.json` the bytes of the program's GPU buffers and textures (at
@@ -49,6 +53,10 @@ export interface TestParams {
   timestamps: number;
   /** 1: keep no state hash. */
   nohash: number;
+  /** 1: keep the tick log (its ticks' state hashes) even with `nohash`. */
+  ticklog: number;
+  /** Paced, how many frames' GPU work may be in flight (0: each frame waits for the last's). */
+  inflight: number;
   /** A script of input events, relative to the page; "" for none. */
   input: string;
   /** Pointer events to send through the DOM while the frames run (0: none). */
@@ -79,6 +87,8 @@ export const TEST_DEFAULTS: TestParams = {
   audio: 0,
   timestamps: 0,
   nohash: 0,
+  ticklog: 0,
+  inflight: 0,
   input: "",
   latency: 0,
   keylatency: 0,

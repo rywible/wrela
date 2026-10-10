@@ -24,6 +24,8 @@ test("reads every parameter", () => {
     latency: 0,
     keylatency: 0,
     nohash: 0,
+    ticklog: 0,
+    inflight: 0,
     paced: 0,
     tickdelay: 0,
     framedelay: 0,

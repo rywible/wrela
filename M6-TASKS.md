@@ -161,6 +161,27 @@ target/lookbook/round0).
   green cast and the tower's lawn (next round).
 - **Stills:** target/rounds/round-1/lookbook beside target/lookbook/round0.
 
+### Round 2 (2026-10-10, 30 min of play, 40 min of wall time)
+
+- **Route:** as round 1's: all ten regions, the same 18 sites, water to 0.51 m; the 19 shots.
+- **Late tiles:** none.
+- **Frames:** every 21.9 ms (median), 410 over 33 ms, the same in every region and from the
+  first minute. Not the floor's: test mode's paced runs hashed every submitted byte (for the
+  replay's state hashes) and waited for each frame's GPU work before the next could begin, so
+  a frame's interval was its CPU time (4.9 ms with the hashing) and its GPU time (13.4) in a
+  row. A page in play does neither. **Fixed in the harness:** `ticklog=1` keeps the tick log
+  (the replay) without hashing the frames' commands, and `inflight=2` lets two frames' GPU work
+  be in flight while each still begins at its time. The same 30 s paced: 16.6 ms median, p99
+  18.5, none over 33.
+- **What looked wrong:** the burn's shot stood behind two trunks that filled the frame; the
+  mere's shot had a shrub over half of it. **Fixed:** both shots' eyes moved (the mere's now
+  across open water, a faded sapling's stem at its left third). The far hills' dots are much
+  softer; the tower stands in rough grass and heather; the stream below the fall narrows.
+- **Spike 17's stills beside them** (my comparison, not blind): the beech wood (the spike's near
+  black), the ring (white sponge-like stones on green plates), the tower from a height (a few
+  pixels in the spike) and the old road (the path and its waystone read) are better; the
+  opening's far hills were dotted in round 1 and are soft now.
+
 ## The retrospective (draft, for a comment on #55; the owner posts it)
 
 **What M6 built.** The Last Green's floor: about 3 km² composed as a map in wrela source with the

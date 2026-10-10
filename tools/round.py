@@ -145,7 +145,7 @@ def main():
     with open(os.path.join(page, "round-keys.json"), "w") as f:
         json.dump(events, f)
     timeout = frames // FPS * 2 + 600
-    hash_ = (f"#test&frames={frames}&width=1920&height=1080&fps={FPS}&workers=8&paced=1"
+    hash_ = (f"#test&frames={frames}&width=1920&height=1080&fps={FPS}&workers=8&paced=1&nohash=1&ticklog=1&inflight=2"
              f"&input=round-keys.json")
     print(f"round {n}: {frames} frames ({frames / FPS / 60:.1f} min) in Chrome", flush=True)
     r = subprocess.run([sys.executable, HEADLESS, os.path.relpath(page, ROOT), hash_, str(timeout)],
