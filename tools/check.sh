@@ -12,8 +12,11 @@
 #                           `#[ignore]` reason starts `long:` (headless Chrome against the native
 #                           host, the clearing's camera path, soak runs, images against spike
 #                           01's), sharing the GPU; the grammar's 10^6 programs and 200,000 GBNF
-#                           samples; 20,000 fuzz cases from a new seed; and two of the
-#                           measurements, in turn, reported but not gated. About ten minutes,
+#                           samples; the compiler's crates built for wasm32 (all but the
+#                           driver, the CLI and the tests: the compiler is to run in the
+#                           browser too, so none may need what wasm32 doesn't have); 20,000 fuzz
+#                           cases from a new seed; and two of the measurements, in turn,
+#                           reported but not gated. About ten minutes,
 #                           plus the two: before a branch is merged, in the background.
 #   tools/check.sh --full   also everything at full size, and the measurements: the long checks
 #                           with `WRELA_FULL`, every test at full size, the tests whose reason
@@ -215,9 +218,20 @@ if [ "$long" = 1 ]; then
   # A new seed each run, so the runs between them cover more cases; a failure names its seed.
   seed=$(( (RANDOM << 15 | RANDOM) + 1 ))
   side_jobs=()
-  step "long: the long checks$( [ "$full" = 1 ] && echo ", at full size"), sharing the GPU (one headless Chrome at a time); beside them, the grammar's 10^6 generated programs against the oracle and the formatter, and 200,000 GBNF samples (seed $seed)"
+  step "long: the long checks$( [ "$full" = 1 ] && echo ", at full size"), sharing the GPU (one headless Chrome at a time); beside them, the grammar's 10^6 generated programs against the oracle and the formatter, 200,000 GBNF samples (seed $seed), and the compiler's crates built for wasm32"
   side differential cargo run -q --release -p wrela-grammar --bin differential -- 1000000 --seed "$seed"
   side gbnf cargo run -q --release -p wrela-grammar --bin gbnf-sample -- 200000 --seed "$seed"
+  # Each crate under compiler/ but the driver (it runs wasmtime), the CLI and the tests, so a
+  # new compiler crate is in it; their libraries only (the grammar's command-line tools don't
+  # run in a browser).
+  wasm32_crates=()
+  while read -r name; do wasm32_crates+=(-p "$name"); done < <(cargo metadata -q --no-deps --format-version 1 | python3 -c '
+import json, os, sys
+for p in json.load(sys.stdin)["packages"]:
+    d = os.path.relpath(os.path.dirname(p["manifest_path"])).split(os.sep)
+    if d[0] == "compiler" and d[1] not in ("driver", "cli", "tests"):
+        print(p["name"])')
+  side wasm32 cargo build -q --release --target wasm32-unknown-unknown --lib "${wasm32_crates[@]}"
   # More threads than cores: a test waiting for its turn at Chrome (one at a time) holds one.
   # With --full, at full size.
   if [ "$full" = 1 ]; then export WRELA_FULL=1; fi
