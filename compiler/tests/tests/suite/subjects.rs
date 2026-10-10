@@ -94,7 +94,7 @@ fn matches_its_original(name: &str) {
 }
 
 #[test]
-#[ignore = "long: needs a GPU (11 s alone)"]
+#[ignore = "needs a GPU"]
 fn the_wolf_matches_round_1s() {
     matches_its_original("wolf");
 }
@@ -317,37 +317,31 @@ fn gradients_agree(name: &str) {
 }
 
 #[test]
-#[ignore = "long: 8 s alone"]
 fn the_wolfs_literals_are_lifted_or_have_reasons() {
     lifts_every_literal("wolf");
 }
 
 #[test]
-#[ignore = "long: 10 s alone"]
 fn the_grazers_literals_are_lifted_or_have_reasons() {
     lifts_every_literal("grazer");
 }
 
 #[test]
-#[ignore = "long: lifts the wolf and compares it point by point (25 s with the gate)"]
 fn a_lifted_wolf_computes_what_the_wolf_does() {
     computes_what_the_normal_build_does("wolf");
 }
 
 #[test]
-#[ignore = "long: lifts the grazer and compares it point by point (34 s with the gate)"]
 fn a_lifted_grazer_computes_what_the_grazer_does() {
     computes_what_the_normal_build_does("grazer");
 }
 
 #[test]
-#[ignore = "long: the wolf's gradients against central differences (19 s with the gate)"]
 fn the_wolfs_parameter_gradients_agree_with_central_differences() {
     gradients_agree("wolf");
 }
 
 #[test]
-#[ignore = "long: the grazer's gradients against central differences (26 s with the gate)"]
 fn the_grazers_parameter_gradients_agree_with_central_differences() {
     gradients_agree("grazer");
 }

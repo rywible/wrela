@@ -127,7 +127,6 @@ fn a_long_chain_of_plain_calls_builds() {
 }
 
 #[test]
-#[ignore = "long: compiles a function past an engine's locals (7 s alone)"]
 fn more_lets_than_an_engine_has_locals_load() {
     // Engines take 50,000 locals in a function; each `let` lives only until its last use, and
     // one in a loop until the loop ends, so their locals are used again.
@@ -216,7 +215,6 @@ fn moves_on_many_paths_check_quickly() {
 }
 
 #[test]
-#[ignore = "long: 7 s alone"]
 fn many_temporaries_given_places_lower_quickly() {
     // Each call borrows a temporary vector, which so gets a local, stored where the vector is
     // made: that once searched the block from its start each time.
@@ -235,7 +233,6 @@ fn many_temporaries_given_places_lower_quickly() {
 }
 
 #[test]
-#[ignore = "long: 12 s alone"]
 fn matches_hard_to_check_are_checked_quickly() {
     // `n` bools, an arm with each one `true` and one with it `false`: the first two cover
     // everything, and the checks of the rest once took time exponential in `n`.

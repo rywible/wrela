@@ -7,7 +7,6 @@ use crate::scratch;
 use wrela_tests::{build, copy_dir, repo_root};
 
 #[test]
-#[ignore = "long: builds the examples twice (21 s with the gate)"]
 fn builds_are_reproducible() {
     let tmp = scratch("reproducible");
     // (what's copied, the package inside it): a package with path dependencies is copied

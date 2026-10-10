@@ -29,7 +29,7 @@ fn studio(pkg: &Path, args: &[&str]) -> serde_json::Value {
 }
 
 #[test]
-#[ignore = "long: needs a GPU (11 s alone)"]
+#[ignore = "needs a GPU"]
 fn a_ball_beside_its_own_photo_covers_it() {
     let pkg = package("compare-ball", BALL);
     // The photo: 400×300 pixels, 2 mm a pixel, the ground on row 280, z = 0 on column 200; a
@@ -75,7 +75,7 @@ fn a_ball_beside_its_own_photo_covers_it() {
 }
 
 #[test]
-#[ignore = "long: needs a GPU (15 s alone)"]
+#[ignore = "needs a GPU"]
 fn variants_and_sweeps_are_numbered_panels() {
     let a = package("compare-variant-a", BALL);
     let b = package("compare-variant-b", &BALL.replace("sphere(0.30)", "sphere(0.20)"));

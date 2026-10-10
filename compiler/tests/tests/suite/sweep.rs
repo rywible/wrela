@@ -8,7 +8,6 @@
 //! apart from each other, their tips where they're placed, their gradient near 1.
 
 #[test]
-#[ignore = "long: samples the sweep densely (18 s with the gate)"]
 fn the_sweep_is_a_distance_its_bound_and_interval_hold() {
     let dir = super::engine_package("sweep", "sweeps", PROGRAM);
     assert_eq!(super::tests_pass(&dir), 11);

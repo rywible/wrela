@@ -106,8 +106,11 @@ const FAR_CASCADE = Cascade {
     side: 2048,
 }
 
-/// How far the player goes from the near cascade's middle before it's drawn again round it (m).
+/// How far the player goes from the near cascade's middle before it's drawn again round it (m),
+/// in how many strips (a strip a frame: 6 cost 1.3-1.5 ms each, and one with a terrain cook
+/// passed 16.7 ms on the walk).
 const NEAR_MOVES: f32 = 40.0
+const NEAR_STRIPS: u32 = 12
 
 /// The moving map: its texels a side, and how wide it is round the player (m).
 const MOVING_SIDE: u32 = 1024
@@ -421,6 +424,11 @@ pub struct Floor {
     /// temporal history and no look: `test_plain`), and the wind stilled (`test_wind`).
     plain: bool,
     still: bool,
+    /// How many of the clipmap's levels this frame cooked (a frame that cooks the ground draws
+    /// no strip of shadows or probes).
+    terrain_cooked: u32,
+    /// Whether this frame drew a strip of a static cascade (then no strip of the probes).
+    strip_drawn: bool,
 }
 
 /// The built things to realize: the floor's (`blockouts::built`), and the egg's place's ring of
@@ -486,7 +494,7 @@ pub fn init() -> Floor {
         },
         far_layer: Vec::new(),
         grass: Grass::new(),
-        near: caches::Kept::new(eye, NEAR_SPAN, reach: 250.0, side: 2048, strips: 6),
+        near: caches::Kept::new(eye, NEAR_SPAN, reach: 250.0, side: 2048, strips: NEAR_STRIPS),
         far: caches::Kept::new(
             FAR_CASCADE.centre,
             FAR_CASCADE.span,
@@ -578,6 +586,8 @@ pub fn init() -> Floor {
         mists: buffer_of(history::MISTS, at_least: 1),
         plain: false,
         still: false,
+        terrain_cooked: 0,
+        strip_drawn: false,
     }
 }
 
@@ -658,11 +668,12 @@ fn tile_distance(t: vec2i, p: vec2) -> f32 {
     length(p - q)
 }
 
-/// Whether a frame from `eye` is full: the wood cooked, every tile within 120 m placed, the near
-/// shadows drawn, the probes baked.
+/// Whether a frame from `eye` is full: the wood cooked, the built things realized, every tile
+/// within 120 m placed, the near shadows drawn, the probes baked.
 fn playable(s: Floor, eye: vec2) -> bool {
     let Some(w) = s.wood else { return false }
-    if !s.near.ready || !s.probes.done() {
+    // The built things too: realized a frame each at load, the tower among them.
+    if !s.near.ready || !s.probes.done() || !s.to_build.is_empty() {
         return false
     }
     let at = engine::place::tile_of(eye)
@@ -1077,6 +1088,7 @@ fn cook_load(s: mut Floor) {
     if s.wood.is_some() {
         if s.to_build.len() > 0 {
             let b = s.to_build.remove(0)
+            label("built things")
             var r = blockouts::realize(b, height_at)
             let o = origin_of(s)
             r.at[3] = vec4(r.at[3].xyz - o, 1.0)
@@ -1271,9 +1283,16 @@ fn resize(s: mut Floor, width: u32, height: u32, w: u32, h: u32) {
 }
 
 /// The static cascades: a strip of whichever is being drawn beside the one in use (the near
-/// first), a strip a frame.
+/// first), a strip a frame; none in a frame that cooks the ground (`terrain_cooked`: a level's
+/// cook and a strip together passed 16.7 ms on the walk), unless the near map isn't ready.
+/// (One moving cache's work a frame: the probes skip a frame that draws a strip.)
 fn static_shadows(s: mut Floor, sh: Shadows, wind: Wind) {
     let on = on(s.off, System::Shadows)
+    s.strip_drawn = false
+    if s.terrain_cooked > 0 && s.near.ready {
+        return
+    }
+    s.strip_drawn = s.near.drawing() || s.far.drawing()
     if s.near.drawing() {
         s.near.draw_strip(mut s.wood, s.built, SUN, sh, wind, s.linear, s.cam, on, "shadows near")
     } else if s.far.drawing() {
@@ -1334,7 +1353,9 @@ fn cook_sky(s: mut Floor, eye: vec3, wind: Wind) {
             s.sky_cooked = true
         }
     }
-    if s.sky_cooked {
+    // (Not in a frame that cooks two or more of the ground's levels: at a coarse level's step
+    // every finer one moves with it, and its tile of the clouds waits a frame.)
+    if s.sky_cooked && !(s.playable && s.terrain_cooked >= 2) {
         s.clouds = s.sky.march(
             s.air,
             s.light,
@@ -1366,7 +1387,9 @@ fn trace_of(s: Floor) -> Trace {
 /// `PROBES_MOVE`, baked beside them (its occluders cooked first, then a strip of columns a
 /// frame), and swapped when it's done. They read the near cascade, so they wait for it.
 fn bake_probes(s: mut Floor, sh: Shadows, eye: vec2) {
-    if !s.near.ready || !s.air_cooked {
+    // (Once the floor's playable, not in a frame that cooks the ground or draws a strip of the
+    // static cascades: one moving cache's work a frame. Before, the first bake comes first.)
+    if !s.near.ready || !s.air_cooked || (s.playable && (s.terrain_cooked > 0 || s.strip_drawn)) {
         return
     }
     let trace = trace_of(s)
@@ -1950,7 +1973,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         Some(w) => w.clear = vec4(clear_to, clear_r),
         None => {},
     }
-    s.clipmap.follow(GROUND, eye, again: false)
+    s.terrain_cooked = s.clipmap.follow(GROUND, eye, again: false)
     cook_load(mut s)
     stream(mut s, eye_w.xz)
     // The near cascade round where the eye will be (a little ahead), the far round the floor.

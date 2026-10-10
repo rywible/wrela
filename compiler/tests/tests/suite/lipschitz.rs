@@ -29,7 +29,6 @@ fn host() -> CpuHost {
 }
 
 #[test]
-#[ignore = "long: samples every composed bound densely (39 s with the gate)"]
 fn composed_bounds_hold_where_consumers_look() {
     let mut host = host();
     for (i, name) in NAMES.iter().enumerate() {

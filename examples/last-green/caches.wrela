@@ -117,6 +117,8 @@ impl Kept {
         let a = vec2(lo.x, lo.y + step * f32(self.strip))
         let b = vec2(lo.x + 2.0 * half, a.y + step)
         let view = sun_view(normalize(sun), c, self.span, self.reach)
+        // (Its choice of trees is the strip's work too.)
+        label(name)
         match mut wood {
             Some(w) => {
                 if on {
@@ -125,7 +127,6 @@ impl Kept {
             },
             None => {},
         }
-        label(name)
         let pass = begin_depth_pass(mut self.back, clear_depth: 1.0, keep_depth: self.strip > 0)
         match wood {
             Some(w) => {

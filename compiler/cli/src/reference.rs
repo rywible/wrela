@@ -2448,7 +2448,6 @@ mod tests {
     /// measured, it's the ball within 1.5 mm on average (0.7 mm when written), nothing to see
     /// through.
     #[test]
-    #[ignore = "long: fits a sweep by Levenberg-Marquardt on one thread (6 s alone, 45 s beside the gate's suite)"]
     fn a_sphere_s_sweep_replica_builds_and_matches() {
         let (dir, file, solid) = ball(
             "sweep",

@@ -60,7 +60,6 @@ fn every_code_is_explained() {
 }
 
 #[test]
-#[ignore = "long: builds and runs every explanation's program (19 s with the gate)"]
 fn explanations_programs_do_what_they_say() {
     let all: Vec<_> =
         wrela_driver::explain::all().into_iter().filter(|e| e.untested.is_none()).collect();

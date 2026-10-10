@@ -157,7 +157,6 @@ fn alternate(rounds: usize, mut a: impl FnMut(), mut b: impl FnMut()) -> (f64, f
 
 /// AC6's physique and #43 §9's per bone: the herd's own tests (examples/herd's `@test`s).
 #[test]
-#[ignore = "long: the herd's own tests (33 s with the gate)"]
 fn the_herds_own_tests_pass() {
     assert_eq!(super::tests_pass(&wrela_tests::repo_root().join("examples/herd")), 2);
 }
@@ -950,7 +949,7 @@ fn moving_to_the_herd_keeps_the_frames_in_chrome() {
 /// first (`cull_blocks`) and its last (`skin_vertices`); and there are as many as the realizer
 /// counts for its room calibrations and overflow checks (#43 §7.8).
 #[test]
-#[ignore = "long: needs a GPU (8 s alone)"]
+#[ignore = "needs a GPU"]
 fn realization_reads_nothing_back_between_its_passes() {
     use wrela_abi::stream::{Command, decode};
     let dir = herd();
@@ -1370,7 +1369,7 @@ fn the_herds_ticks_beside_frames_allocate_and_wait() {
 /// creature API's skin bindings, `Parts::skin_at` under the vertex's mask, a cell wide, falling
 /// off over 6 cm) pick the same four bones, each weight within 1/255.
 #[test]
-#[ignore = "long: needs a GPU and bun (7 s alone)"]
+#[ignore = "needs a GPU and bun"]
 fn the_herds_skin_weights_are_the_spikes() {
     let (vertices, cell) = {
         let spike = wrela_tests::spike01::Spike::new();

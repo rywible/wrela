@@ -140,7 +140,6 @@ fn the_numerics_corpus_is_the_same_with_simd() {
 
 /// Programs run for some frames, both ways: the same bytes submitted, frame by frame.
 #[test]
-#[ignore = "long: builds and runs programs twice, with and without SIMD (20 s with the gate)"]
 fn command_streams_are_the_same_with_simd() {
     let programs = [
         ("examples/hello-field", 30),
@@ -177,7 +176,6 @@ fn command_streams_are_the_same_with_simd() {
 
 /// Sketch 03's world, ticked both ways: the same `StateHash` at every tick.
 #[test]
-#[ignore = "long: builds and runs programs twice, with and without SIMD (12 s with the gate)"]
 fn world_hashes_are_the_same_with_simd() {
     let (simd, scalar) = both("compiler/tests/sketches/03-simulation", "world");
     let hashes = |dir: &Path| -> Vec<Vec<Value>> {
