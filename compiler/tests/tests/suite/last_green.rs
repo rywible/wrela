@@ -2142,4 +2142,3 @@ fn the_sun_shafts_cost_half_a_millisecond_or_less() {
     );
     assert!(ms <= 0.5, "the shafts took {ms:.3} ms");
 }
-

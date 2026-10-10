@@ -37,7 +37,10 @@ mod trace;
 pub use cache::compiled_code_prefix;
 pub use error::{Error, Result};
 #[cfg(feature = "gpu")]
-pub use gpu::{GpuTiming, frame_spans, map_read, open_device, read_timestamps, submission_spans};
+pub use gpu::{
+    GpuPiece, GpuTiming, GpuWork, frame_spans, map_read, open_device, read_timestamps,
+    submission_spans,
+};
 pub use trace::{Phase, Trace, Traced};
 /// Build-time code's shared memory (constants, language.md §10), read and written by the
 /// build's thread while its helpers wait or have stopped.
@@ -80,6 +83,10 @@ pub enum Timing {
 pub struct Options {
     /// Whether every dispatch and pass is timed on the GPU, and how.
     pub timing: Timing,
+    /// With a timing: each timed dispatch and pass's work is counted too, by the GPU's pipeline
+    /// statistics ([`Host::take_work`]): for a cost model, such as `wrela estimate`'s. A load
+    /// fails if the adapter can't count.
+    pub counts: bool,
     /// Keep a copy of every batch the program submits ([`Host::take_batches`]): for tests
     /// that look at what a program recorded, such as a dispatch's uniform bytes.
     pub record: bool,
@@ -356,7 +363,7 @@ impl Host {
         // Everything that can be checked without the GPU is, before taking it.
         let Build { manifest, shaders, wasm_hash, compiled } = compile_build(dir, None)?;
         let lock = lock::GpuLock::acquire(&format!("wrela-host {}", dir.display()))?;
-        let gpu = Gpu::new(&manifest, &shaders, options.timing)?;
+        let gpu = Gpu::new(&manifest, &shaders, options.timing, options.counts)?;
         let n = workers(options.workers);
         let mut program = Program::instantiate_with(
             &compiled,
@@ -561,6 +568,20 @@ impl Host {
         let gpu = self.p().executor();
         gpu.flush()?;
         Ok(gpu.take_timings())
+    }
+
+    /// The GPU this host runs on: its adapter's name and driver.
+    pub fn adapter(&mut self) -> String {
+        self.p().executor().adapter()
+    }
+
+    /// The work each dispatch and pass did, counted since the last call (or load), with
+    /// [`Options::counts`]: in the order of [`Host::take_timings`]' timings, so take both after
+    /// the same frames. It waits for the GPU.
+    pub fn take_work(&mut self) -> Result<Vec<GpuWork>> {
+        let gpu = self.p().executor();
+        gpu.flush()?;
+        Ok(gpu.take_work())
     }
 }
 
