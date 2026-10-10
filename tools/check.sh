@@ -25,7 +25,10 @@
 #   tools/check.sh <filter>...
 #                           the edit loop's check: only the gate's tests whose names hold a
 #                           filter (`clearing::`, `lock`), from every test program, the GPU
-#                           shared; with --long, the long checks' too. Seconds.
+#                           shared; with --long, the long checks' too; with --nocapture, each
+#                           program's output, passed or not. Seconds.
+#   tools/check.sh --fmt    formats what the gate checks: rustfmt, and `wrela fmt` with the CLI
+#                           as last built (tools/hooks.py runs it before the gate).
 #
 # Needs: the Rust toolchain in rust-toolchain.toml, bun, python3, a GPU; Chrome stable for --long.
 set -euo pipefail
@@ -34,19 +37,26 @@ cd "$(dirname "$0")/.."
 # The gate runs everything, the same way each time: a variable that narrows the tests, rewrites
 # goldens or picks a fuzz seed (left set in the shell by an earlier run) doesn't apply here.
 unset WRELA_RUN_ONLY WRELA_BLESS WRELA_FUZZ_ITERS WRELA_FUZZ_SEED WRELA_FUZZ_WORKER WRELA_FUZZ_JOBS \
-  WRELA_FUZZ_TIERS WRELA_FULL WRELA_GPU_SHARED
+  WRELA_FUZZ_TIERS WRELA_FULL WRELA_GPU_SHARED WRELA_GPU_WAITS
 
-long=0 full=0 filters=()
+usage="usage: tools/check.sh [--long | --full] | [--long] [--nocapture] <filter>... | --fmt"
+long=0 full=0 fmt=0 nocapture=() filters=()
 for arg in "$@"; do
   case "$arg" in
     --long) long=1 ;;
     --full) long=1 full=1 ;;
-    -*) echo "usage: tools/check.sh [--long | --full] | [--long] <filter>..." >&2; exit 2 ;;
+    --fmt) fmt=1 ;;
+    --nocapture) nocapture=(--nocapture) ;;
+    -*) echo "$usage" >&2; exit 2 ;;
     *) filters+=("$arg") ;;
   esac
 done
 if [ "$full" = 1 ] && [ "${#filters[@]}" -gt 0 ]; then
   echo "a measurement runs alone: cargo test --release --workspace -- --ignored --exact <name>" >&2
+  exit 2
+fi
+if { [ "${#nocapture[@]}" -gt 0 ] && [ "${#filters[@]}" = 0 ]; } || { [ "$fmt" = 1 ] && [ "$#" -gt 1 ]; }; then
+  echo "$usage" >&2
   exit 2
 fi
 
@@ -77,6 +87,19 @@ PY
 WRELA_SOURCES=(examples engine compiler/std compiler/tests/fields compiler/tests/math compiler/tests/sketches
   compiler/tests/numerics compiler/tests/render compiler/tests/queries compiler/tests/simd
   compiler/tests/input compiler/tests/lift compiler/tests/texels compiler/tests/shader_params compiler/tests/unroll ui studio)
+
+# Formats what the gate checks, and names what it changed. `wrela fmt` is the CLI as last built:
+# the gate builds it afresh and checks again.
+if [ "$fmt" = 1 ]; then
+  cargo fmt --all -- -l
+  wrela="${CARGO_TARGET_DIR:-target}/release/wrela"
+  if [ -x "$wrela" ]; then
+    # The files it would change, on stdout (its count is on stderr).
+    "$wrela" fmt --check "${WRELA_SOURCES[@]}" 2>/dev/null || true
+    "$wrela" fmt "${WRELA_SOURCES[@]}"
+  fi
+  exit 0
+fi
 
 logs=$(mktemp -d)
 side_jobs=()
@@ -116,9 +139,11 @@ TOOLS
 }
 
 # Runs every test program at once, each with `args` (its tests filtered and skipped), in its
-# package's directory as cargo does; prints each one's time, and the output of each that fails,
-# and fails if no test ran. Four of a program's GPU tests share the GPU at a time: they check
-# what the GPU computes, not how long it takes (the measurements run alone, below).
+# package's directory as cargo does; prints each one's time, and the output of each that fails
+# (with --nocapture, of each that ran a test), and fails if no test ran. Four of a program's GPU
+# tests share the GPU at a time: they check what the GPU computes, not how long it takes (the
+# measurements run alone, below). A program that waits for another process's hold on the GPU
+# notes how long in `gpu-waits` (`WRELA_GPU_WAITS`), for the gate's budget.
 run_tests() { # args...
   python3 - "$logs" "${CARGO_TARGET_DIR:-target}/native-cache" "$@" <<'PY'
 import json, os, re, subprocess, sys, time
@@ -133,7 +158,7 @@ for line in open(f"{logs}/tests.json"):
         # Compiled code is kept across runs (wrela_host's cache): a test's build is made afresh
         # each run, and its WASM is mostly the same.
         env = {**os.environ, "CARGO_MANIFEST_DIR": pkg, "WRELA_NATIVE_CACHE": native_cache,
-               "WRELA_GPU_SHARED": "4"}
+               "WRELA_GPU_SHARED": "4", "WRELA_GPU_WAITS": f"{logs}/gpu-waits"}
         out = open(f"{logs}/run-{len(runs)}", "w+")
         name = f"{m['target']['name']} ({m['target']['kind'][0]})"
         proc = subprocess.Popen([m["executable"], "-q", *args], cwd=pkg, env=env,
@@ -154,6 +179,8 @@ while waiting:
             failed = True
             print(text)
             print(f"{name} failed")
+        elif passed and "--nocapture" in args:
+            print(text)
         elif passed and time.monotonic() - start >= 1:
             print(f"  {name}: {time.monotonic() - start:.1f}s")
 print(f"  {ran} tests passed")
@@ -175,7 +202,7 @@ if [ "${#filters[@]}" -gt 0 ]; then
     for t in "${measures[@]}"; do skips+=(--skip "$t"); done
   fi
   step "the tests whose names hold ${filters[*]}"
-  run_tests --include-ignored "${skips[@]}" "${filters[@]}"
+  run_tests --include-ignored "${skips[@]}" "${nocapture[@]}" "${filters[@]}"
   rm -rf "$logs"
   exit 0
 fi
@@ -207,9 +234,20 @@ grep -h "pipelines in" "$logs/wgsl" || true
 took=$((SECONDS - tests_started))
 echo "  the tests took ${took}s; built and tested in $((SECONDS - started))s"
 # The budget that keeps the gate quick: a test that takes seconds belongs in the long checks.
+# While another process held the GPU alone (a measurement, a test run outside the checks), the
+# tests waited for it: they're over budget only if they are without their longest wait.
 if [ "$took" -gt 60 ]; then
-  echo "the tests took ${took}s, over their 60 s budget: tag the slow ones \`#[ignore = \"long: ...\"]\`" >&2
-  exit 1
+  waited=0
+  if [ -s "$logs/gpu-waits" ]; then
+    waited=$(awk '$1 > m { m = $1 } END { printf "%d", m }' "$logs/gpu-waits")
+    echo "  the tests waited for the GPU (at most ${waited}s), held alone by:"
+    cut -d' ' -f2- "$logs/gpu-waits" | sort -u | sed 's/^/    /'
+  fi
+  if [ $((took - waited)) -gt 60 ]; then
+    echo "the tests took ${took}s, over their 60 s budget: tag the slow ones \`#[ignore = \"long: ...\"]\`" >&2
+    exit 1
+  fi
+  echo "  over the 60 s budget by the wait alone: not a failure"
 fi
 
 if [ "$long" = 1 ]; then
