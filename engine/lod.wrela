@@ -120,12 +120,23 @@ pub fn anchor(cam: Camera, at: vec3, top: f32, scale: f32) -> vec2 {
         hash2(i32(floor(w.x * 8.0)), i32(floor(w.z * 8.0))),
         hash2(i32(floor(w.z * 8.0)) + 17, i32(floor(w.x * 8.0)) - 5),
     )
-    let k = (cam.frame * 7) % 16
+    // Each cycle takes the 16 places in another order (`cycle_shift`): in one order, a pixel
+    // was kept at the same frames of the jitter's cycle each time, so it was kept with the
+    // same few of the jitter's offsets, and a settled still kept a fixed pattern of stripes.
+    let k = (cam.frame * 7 + cycle_shift(cam.frame / 16)) % 16
     let step = vec2(f32(k % 4), f32(k / 4))
     let middle = at + vec3(0.0, top * 0.5 * scale, 0.0)
     let ahead = dot(middle - cam.eye, cam.forward) > cam.near
     let on = if ahead { clamp(cam.pixel(middle), vec2(-1.0e6), vec2(1.0e6)) } else { vec2(0.0) }
     on - floor(own * 4.0) - step
+}
+
+/// How far cycle `c` of the pattern's 16 places is shifted from the first: `c`'s low 4 bits
+/// reversed (0, 8, 4, 12, 2, ...), so 16 cycles in a row pair each of the jitter's offsets
+/// with each of the pattern's places once, and four from a multiple of four already spread
+/// them over the pattern.
+fn cycle_shift(c: u32) -> u32 {
+    ((c & 1) << 3) | ((c & 2) << 1) | ((c & 4) >> 1) | ((c & 8) >> 3)
 }
 
 /// The 4 × 4 Bayer matrix's threshold at `o` (each in 0 to 3), over 16, at its step's middle:
@@ -146,6 +157,29 @@ pub fn packed(keep: vec4) -> u32 {
     let s = vec2u(round(saturate(keep.xy) * 16383.0))
     let c = vec2u(vec2i(floor(vec2(0.5) - keep.zw)) & vec2i(3))
     s.x | (s.y << 14) | (c.x << 28) | (c.y << 30)
+}
+
+/// How much of the switch between its share's start and end a card fades in, by its own draw
+/// (`by_card`).
+pub const CARD_BAND: f32 = 0.1
+
+/// A share packed by `packed`, taken by one card of the instance whose draw in [0, 1) is `h`:
+/// the card is whole where `h` falls inside the share, gone where it falls outside, and in
+/// part only within `CARD_BAND` of its ends. A crown between two levels, or fading near the
+/// eye, then shows most of its cards whole and the rest gone. (Every card kept the same part
+/// of the pixels, so in a settled still, whose history evens the pattern, each was a
+/// see-through leaf, two levels' leaves over each other: the lookdev reviews.)
+pub fn by_card(k: u32, h: f32) -> u32 {
+    let start = f32(k & 16383) / 16383.0
+    let end = f32((k >> 14) & 16383) / 16383.0
+    if start <= 0.0 && end >= 1.0 {
+        return k
+    }
+    let after = if start <= 0.0 { 1.0 } else { saturate((h - start) / CARD_BAND + 0.5) }
+    let before = if end >= 1.0 { 1.0 } else { saturate((end - h) / CARD_BAND + 0.5) }
+    let kept = after * before
+    let q = u32(round(saturate(kept) * 16383.0))
+    (k & 4026531840) | (q << 14)
 }
 
 /// Whether a share packed by `packed` holds the pixel at `pixel` (a fragment's position): where
