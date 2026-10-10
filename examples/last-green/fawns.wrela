@@ -36,7 +36,7 @@ impl Look<Coat> for FawnLook {
         let throat = smoothstep(1.2, 1.5, rest.z) *
             smoothstep(1.0, 1.15, rest.y) *
             smoothstep(1.62, 1.5, rest.y)
-        let under = max(belly, throat * 0.7)
+        let under = max(belly * smoothstep(0.24, 0.14, abs(rest.x)), throat) * 0.6
         (mix(coat, vec3(0.62, 0.48, 0.34), vec3(under)), 0.7)
     }
 }
