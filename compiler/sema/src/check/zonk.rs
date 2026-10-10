@@ -340,9 +340,9 @@ pub(super) fn finish_common(c: &mut Checker) {
         .with_note("`let x = place` copies only a `Copy` value (§6.3)")
         .with_fix("read it in place: `borrow`", keyword, "borrow");
         if crate::traits::implements_builtin(c.p, ty, crate::defs::Lang::Clone) {
-            d = d.with_fix("copy it: `.clone()`", at.shrink_to_end(), ".clone()");
+            d = d.with_choice("copy it: `.clone()`", at.shrink_to_end(), ".clone()");
         }
-        d = d.with_fix("move it: `take`", at.shrink_to_start(), "take ");
+        d = d.with_choice("move it: `take`", at.shrink_to_start(), "take ");
         c.err(d);
         // Read as a projection, so nothing else is reported about it.
         c.locals[id.index()].kind = LocalKind::Projection { mutable: false };

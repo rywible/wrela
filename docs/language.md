@@ -609,7 +609,7 @@ A game already has a suspension point, the tick or the frame, so the language do
 
 ### 6.16 Diagnostics
 
-The errors agents will hit most, and what they say. Each block is checked (`language.rs`): it gives exactly the errors its comments name, with those helps and fixes. A fix is an edit a tool can make, and `wrela fix` makes it when it's the only one (§17).
+The errors agents will hit most, and what they say. Each block is checked (`language.rs`): it gives exactly the errors its comments name, with those helps and fixes. A fix is an edit a tool can make, and `wrela fix` makes it when it's the only one (§17), unless it's the author's choice: a fix that changes what the program owns or costs, such as `.clone()` (it copies heap memory, and an index, `remove` or a parameter that borrows may be what was meant), is listed and left, and its JSON says `"choice": true`.
 
 ```wrela
 pub struct Herd: Clone {
