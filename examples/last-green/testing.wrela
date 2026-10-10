@@ -1,8 +1,11 @@
 // What the floor's tests read (#55's checks that need the renderer, `suite/last_green.rs`):
-// captures of what a frame drew, copied into buffers a test reads back, as the clearing's are.
-// Each is reached through an export in main.wrela; the floor itself never uses them.
+// captures of what a frame drew, copied into buffers a test reads back, as the clearing's are,
+// and plain rendering's view (the flicker test's reference). Each is reached through an export
+// in main.wrela; the floor itself never uses them.
 
-use std::gpu::{DepthTexture, GlobalId, Rgba16Float, Slots, Texture}
+use engine::light::tone
+use engine::paint::Exposure
+use std::gpu::{DepthTexture, FragCoord, GlobalId, Rgba16Float, Slots, Texture}
 
 /// What a test captures of the last frame (`test_capture`, called with each variant's
 /// discriminant), copied into a new buffer, row by row:
@@ -27,4 +30,12 @@ pub fn copy_tags(t: Texture<Rgba16Float>, out: mut Slots<f32>, id: GlobalId) {
 pub fn copy_depth(t: DepthTexture, out: mut Slots<f32>, id: GlobalId) {
     let w = t.width()
     out[id] = t.load(x: id.x % w, y: id.x / w)
+}
+
+/// Temporal AA's output through the tone curve alone, at the metered exposure (no dabs, glow,
+/// lines or vignette).
+@fragment
+pub fn plain_view(pixel: FragCoord, image: Texture<Rgba16Float>, exposure: [Exposure]) -> vec4 {
+    let p = vec2u(pixel.position.xy)
+    vec4(tone(image.load(x: p.x, y: p.y).rgb, exposure[0].value), 1.0)
 }

@@ -66,6 +66,10 @@ impl Stain {
         let grain = 0.5 * noise3(q) + 0.3 * noise3(q * 3.1) + 0.2 * noise3(q * 9.7)
         let lichen = smoothstep(0.72, 0.8, noise3(p * 3.3 + vec3(5.0, 2.0, 1.0) + vec3(self.seed)))
         var c = mix(vec3(0.22, 0.21, 0.20), vec3(0.36, 0.34, 0.31), vec3(grain))
+        // A fixed-scale speckle and cracks, whatever the stone's size.
+        c *= 0.9 + 0.2 * noise3(p * 9.0 + vec3(self.seed))
+        let crack = 1.0 - abs(noise3(p * 1.4 + vec3(self.seed * 0.7)) - 0.5) * 2.0
+        c *= 1.0 - 0.4 * smoothstep(0.9, 0.97, crack)
         c = mix(c, vec3(0.42, 0.40, 0.22), vec3(lichen * 0.7))
         let top = p.y / self.r
         let moss = smoothstep(0.25, 0.65, top + 0.35 * (noise3(p * 2.5 + vec3(self.seed)) - 0.5))
@@ -88,11 +92,14 @@ pub fn stone_field(radius: f32, squash: vec3, seed: u32) -> StoneField {
         planes[k] = vec4(n * squash, h)
     }
     let stain = Stain { r: radius, seed: f32(seed) * 3.1 }
+    // Lumps at its own scale, and the rock's own roughness at a fixed one (a big stone, smooth
+    // at its own scale alone, read as clay in the lookbook).
     oval(squash * radius)
         .displace(
             fbm(freq: 1.7 / radius, octaves: 3, offset: vec3(f32(seed) * 3.1)),
             amp: 0.14 * radius,
         )
+        .displace(fbm(freq: 2.2, octaves: 2, offset: vec3(f32(seed) * 1.7)), amp: 0.045)
         .intersect(Facets { planes })
         .with_at(|p| stain.at(p))
 }

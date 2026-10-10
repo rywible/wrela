@@ -418,16 +418,19 @@ pub struct CardDraw: Copy + GpuData {
     pub clear: vec4 = vec4(0.0),
 }
 
-/// How much of a card centred at `c` fades for an eye at `eye` keeping `clear` clear (0 to 1):
-/// those near the line from the eye to the point it looks at, and those round the eye itself.
-pub fn faded(c: vec3, eye: vec3, clear: vec4) -> f32 {
+/// How much of a card centred at `c`, reaching `half` from it, fades for an eye at `eye` keeping
+/// `clear` clear (0 to 1): those whose centres are near the line from the eye to the point it
+/// looks at, and those that reach within half a metre of the eye itself (a wide card's centre
+/// can be off the line while its edge meets the near plane).
+pub fn faded(c: vec3, half: f32, eye: vec3, clear: vec4) -> f32 {
     if clear.w <= 0.0 {
         return 0.0
     }
     let ab = clear.xyz - eye
     let t = clamp(dot(c - eye, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
     let d = length(c - (eye + ab * t))
-    1.0 - smoothstep(clear.w, clear.w * 1.8, d)
+    let reach = length(c - eye) - half
+    max(1.0 - smoothstep(clear.w, clear.w * 1.8, d), 1.0 - smoothstep(0.5, 1.0, reach))
 }
 
 /// A draw of every instance whole, whatever its level (the static shadows').
@@ -519,7 +522,13 @@ pub fn card(
     let apart = cam.eye + (world - cam.eye) * (1.0 + 1.0e-5 * f32(min(d.way, CARD_LEVELS)))
     // A card in the camera's way fades: its share of the pixels' draws shrinks (the same dither
     // the levels hand over by, which temporal AA settles).
-    let fade = faded(instances[i.index].place(card.centre), cam.eye, d.clear)
+    let inst = instances[i.index]
+    let fade = faded(
+        inst.place(card.centre),
+        card.size * d.grow * inst.scale * 0.75,
+        cam.eye,
+        d.clear,
+    )
     let keep = if fade > 0.0 { fade_packed(mark.x, fade) } else { mark.x }
     LeafVertex {
         clip: ClipPosition { position: cam.clip(apart) },

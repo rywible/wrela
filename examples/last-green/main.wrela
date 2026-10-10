@@ -405,6 +405,10 @@ pub struct Floor {
     scene_b: Texture<Rgba16Float>,
     /// The falls' mist (`history::MISTS`, in the world).
     mists: GpuBuffer<vec4>,
+    /// A test's: frames drawn as plain rendering (the scene at the output's size, no jitter, no
+    /// temporal history and no look: `test_plain`), and the wind stilled (`test_wind`).
+    plain: bool,
+    still: bool,
 }
 
 /// The built things to realize: the floor's (`blockouts::built`), and the egg's place's ring of
@@ -553,6 +557,8 @@ pub fn init() -> Floor {
         shafts: writable_texture::<Rgba16Float>(width: 1, height: 1),
         scene_b: texture::<Rgba16Float>(width: 1, height: 1),
         mists: buffer_of(history::MISTS, at_least: 1),
+        plain: false,
+        still: false,
     }
 }
 
@@ -1668,7 +1674,7 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
         cam,
         out,
         blend: 0.12,
-        fresh: if s.frames == 0 { 1 } else { 0 },
+        fresh: if s.frames == 0 || s.plain { 1 } else { 0 },
         jitter: engine::view::jitter_of(cam.frame),
         last_jitter: engine::view::jitter_of(max(cam.frame, 1) - 1),
         moving: vec4(0.0, 0.0, -1.0, -1.0),
@@ -1695,6 +1701,14 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
     label("look")
     let m = Metering { fresh: if s.frames == 0 { 1 } else { 0 }, ..METERING }
     dispatch(meter.bind(s.scene, m, exposure: mut s.exposure), groups: 1)
+    // A test's plain rendering: temporal AA's output (with no history: the scene alone) through
+    // the tone curve at the metered exposure, with no look.
+    if s.plain {
+        let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+        fullscreen(screen, testing::plain_view.bind(s.history, s.exposure.items()))
+        screen.present()
+        return
+    }
     let d = Develop { cam, look: Look {}, out }
     let dp = begin_pass(mut s.dabs)
     fullscreen(
@@ -1736,7 +1750,8 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     keys(mut s, time)
     hash_bake(mut s)
     s.map.poll()
-    let (w, h) = (max(width / SCALE, 1), max(height / SCALE, 1))
+    let scale = if s.plain { 1 } else { SCALE }
+    let (w, h) = (max(width / scale, 1), max(height / scale, 1))
     if width != s.width || height != s.height || f32(w) != s.cam.screen.x {
         resize(mut s, width, height, w, h)
     }
@@ -1804,6 +1819,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         frame: s.frames,
         time: time,
         last: s.cam,
+        still: s.plain,
         origin: o,
     )
     let cam = s.cam
@@ -1813,7 +1829,11 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         print(provenance::click(s.grounds, cam, px, size, height_at))
     }
     // The wind's waves cross the world: keyed to it, as the render origin moves.
-    let wind = Wind { origin: cam.keyed(), ..wind(time) }
+    let wind = Wind {
+        origin: cam.keyed(),
+        strength: if s.still { 0.0 } else { wind(time).strength },
+        ..wind(time),
+    }
     // Where the eye is in the world, for what's kept by tiles.
     let eye_w = eye + o
     // The leaves between the camera and the player fade (#54 §5); on a shot, those along the first
@@ -1879,12 +1899,23 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
 
 // ---- tests ---------------------------------------------------------------------------------------
 
-/// The camera held at `eye`, looking at `at` (instead of the player's or a shot's).
-@testing
 /// Sun shafts on (`on` 1) or off.
 @testing
 pub fn test_shafts(s: mut Floor, on: u32) {
     s.shafts_on = on != 0
+}
+
+/// Frames drawn as plain rendering (`on` 1: the scene at the output's size, no jitter, no
+/// temporal history, no look), for the flicker test's reference.
+@testing
+pub fn test_plain(s: mut Floor, on: u32) {
+    s.plain = on != 0
+}
+
+/// The wind blowing (`on` 1) or still.
+@testing
+pub fn test_wind(s: mut Floor, on: u32) {
+    s.still = on == 0
 }
 
 /// The render origin moved to tile (`x`, `z`) (it follows the player only once the player is
@@ -1894,6 +1925,8 @@ pub fn test_origin(s: mut Floor, x: i32, z: i32) {
     recentre(mut s, vec2i(x, z))
 }
 
+/// The camera held at `eye`, looking at `at` (instead of the player's or a shot's).
+@testing
 pub fn test_hold(s: mut Floor, eye: vec3, at: vec3) {
     s.held = Some((eye, at))
 }

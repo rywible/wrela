@@ -49,7 +49,8 @@ const BLOCK: f32 = 0.8
 impl Tower {
     /// How high the wall stands at angle `a`: broken off lower toward the approach, ragged, and
     /// in whole blocks where it's broken: each block's top a course or more below its
-    /// neighbour's, stepped (the steps a few centimetres wide, so the field stays continuous).
+    /// neighbour's, stepped (each step over the last half of a block, so the field stays
+    /// continuous: a step is at most 1.4 m, over 0.4 m).
     fn top(self, a: f32) -> f32 {
         let broken = self.tall -
             8.0 * (0.5 + 0.5 * cos(a - BREAK)) -
@@ -57,9 +58,9 @@ impl Tower {
         let arc = a * self.radius / BLOCK
         let i = floor(arc)
         let f = arc - i
-        let here = floor((broken + 1.2 * rand(u32(i + 1000.0), 3)) / COURSE) * COURSE
-        let next = floor((broken + 1.2 * rand(u32(i + 1001.0), 3)) / COURSE) * COURSE
-        mix(here, next, smoothstep(0.94, 1.0, f))
+        let here = floor((broken + 0.8 * rand(u32(i + 1000.0), 3)) / COURSE) * COURSE
+        let next = floor((broken + 0.8 * rand(u32(i + 1001.0), 3)) / COURSE) * COURSE
+        mix(here, next, smoothstep(0.5, 1.0, f))
     }
 }
 
@@ -89,16 +90,16 @@ impl Surface for Tower {
         let row = floor(course)
         let arc = a * self.radius / BLOCK + 0.5 * (row % 2.0)
         let joint = max(
-            smoothstep(0.86, 0.97, course - row),
-            smoothstep(0.9, 0.99, arc - floor(arc)),
+            smoothstep(0.8, 0.97, course - row),
+            smoothstep(0.84, 0.99, arc - floor(arc)),
         )
         d + 0.035 * joint - 0.03 * noise3(p * 2.0)
     }
 
-    /// The break's steps (a course over a few centimetres) and the joints bend the field: within
-    /// 4.5 a metre.
+    /// The break's steps (1.4 m over 0.4 m, smoothstepped: 5.3), the joints (3.5 cm over 7 cm:
+    /// 0.5) and the weathering bend the field: within 6 a metre.
     fn lipschitz(self, near: f32) -> f32 {
-        4.5
+        6.0
     }
 }
 

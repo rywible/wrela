@@ -632,7 +632,7 @@ fn the_camera_is_never_inside_a_thing() {
                             let half = card.w * pl.at.scale * 0.75
                             if length(centre - eye) - half < NEAR {
                                 seen += 1
-                                let fade = engine::vegetation::faded(centre, eye, clear)
+                                let fade = engine::vegetation::faded(centre, half, eye, clear)
                                 assert(
                                     fade >= 0.999,
                                     f"at {at} a leaf card {length(centre - eye)} m from the eye is drawn ({fade} faded)",
