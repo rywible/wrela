@@ -155,7 +155,7 @@ fn cel(
 ) -> vec3 {
     let l = light.sun
     let v = normalize(eye - world)
-    let t = smoothstep(0.0, 0.08, dot(n, l)) * sun
+    let t = smoothstep(0.0, 0.03, dot(n, l)) * sun
     let lit = light.sun_colour * 0.75 + open * 0.5
     let dark = vec3(0.36, 0.40, 0.54) * (0.45 + 0.55 * saturate(dot(sky, vec3(0.6))))
     let facing = dot(n, v)
@@ -163,7 +163,7 @@ fn cel(
     let rim = smoothstep(0.72, 0.9, 1.0 - max(facing, 0.0)) * behind * sun
     let banded = albedo * (mix(dark, lit, vec3(t)) + light.sun_colour * (rim * 0.6))
     let edge = 1.0 - smoothstep(1.0, 2.0, facing / max(fwidth(facing), 1.0e-4))
-    banded * (1.0 - 0.5 * edge)
+    banded * (1.0 - 0.3 * edge)
 }
 
 /// What a character's motion vertex passes on: where its point is now and was last frame.

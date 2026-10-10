@@ -343,24 +343,34 @@ pub fn third_person(
     var reach = len
     for k in 1..(steps + 1) {
         let t = len * f32(k) / f32(steps)
-        let p = target + arm * (t / len)
-        var hit = height(p.xz) + ABOVE_GROUND > p.y
-        if !hit {
-            o.near(p.xz + o_from, |ob| {
-                if ob.thing == footing::Thing::Trunk ||
-                    ob.thing == footing::Thing::Stone ||
-                    ob.thing == footing::Thing::Wall {
-                    let (d, _) = ob.reach(p.xz + o_from)
-                    hit = hit || d < CLEARANCE
-                }
-            })
-        }
-        if hit {
-            reach = max(len * f32(k - 1) / f32(steps), 0.4)
+        if in_the_way(target + arm * (t / len), o, o_from, height) {
+            // At least 0.4 m from the target where that's clear; where it isn't, the last point
+            // that was (with the 0.4 m always kept, a player against a trunk had the eye inside
+            // the trunk).
+            reach = len * f32(k - 1) / f32(steps)
+            if reach < 0.4 && !in_the_way(target + arm * (0.4 / len), o, o_from, height) {
+                reach = 0.4
+            }
             break
         }
     }
     let eye = target + arm * (reach / len)
     // Look a little over the target, so the player sits low in the frame.
     (eye, target + vec3(ahead.x, 0.0, ahead.y) * 2.0 + vec3(0.0, 0.25, 0.0))
+}
+
+/// Whether an eye at `p` would be too near the ground, a trunk, a stone or a wall (`third_person`).
+fn in_the_way(p: vec3, o: Obstacles, o_from: vec2, height: fn(vec2) -> f32) -> bool {
+    var hit = height(p.xz) + ABOVE_GROUND > p.y
+    if !hit {
+        o.near(p.xz + o_from, |ob| {
+            if ob.thing == footing::Thing::Trunk ||
+                ob.thing == footing::Thing::Stone ||
+                ob.thing == footing::Thing::Wall {
+                let (d, _) = ob.reach(p.xz + o_from)
+                hit = hit || d < CLEARANCE
+            }
+        })
+    }
+    hit
 }
