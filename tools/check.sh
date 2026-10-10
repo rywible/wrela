@@ -77,8 +77,16 @@ for f in sorted([*pathlib.Path("compiler").rglob("*.rs"), *pathlib.Path("runtime
     for i, line in enumerate(lines):
         if m := re.search(r'#\[ignore = "(long|measure):', line):
             name = next(re.search(r"fn (\w+)\(", l).group(1) for l in lines[i + 1:] if re.search(r"fn (\w+)\(", l))
-            # A test file at the top of `tests/` is a test program of its own (no module).
-            print(m[1], name if f.parent.name == "tests" else f"{f.stem}::{name}")
+            # A test file at the top of `tests/` is a test program of its own (no module). A unit
+            # test in `src/` is in its file's `mod tests` (a crate's root file names no module).
+            if f.parent.name == "tests":
+                print(m[1], name)
+            elif "src" in f.parts:
+                module = "" if f.stem in ("lib", "main") else f"{f.stem}::"
+                inside = any(re.match(r"\s*mod tests\b", l) for l in lines[:i])
+                print(m[1], f"{module}{'tests::' if inside else ''}{name}")
+            else:
+                print(m[1], f"{f.stem}::{name}")
 PY
 )
 
@@ -103,17 +111,20 @@ fi
 
 logs=$(mktemp -d)
 side_jobs=()
-side() { # name, command...: runs in the background, its output and status kept
+side() { # name, command...: runs in the background, its output, status and time kept
   local name=$1; shift
   side_jobs+=("$name")
-  (set +e; "$@" > "$logs/$name" 2>&1; echo $? > "$logs/$name.status") &
+  (set +e; s=$SECONDS; "$@" > "$logs/$name" 2>&1; echo $? > "$logs/$name.status"; echo $((SECONDS - s)) > "$logs/$name.took") &
 }
-# Waits for the side jobs: each that failed shows its output and fails the checks (`tests`).
+# Waits for the side jobs: each that failed shows its output and fails the checks (`tests`);
+# each that took 10 s or more says how long.
 side_results() {
   wait
   for job in "${side_jobs[@]}"; do
     if [ "$(cat "$logs/$job.status")" != 0 ]; then cat "$logs/$job"; echo "the $job checks failed" >&2; tests=1; fi
+    if [ "$(cat "$logs/$job.took")" -ge 10 ]; then echo "  beside them, $job: $(cat "$logs/$job.took")s"; fi
   done
+  side_jobs=()
 }
 # The tools' tests (the dev server, the headless-Chrome driver with a fake Chrome, the agent
 # test's scorer) mostly wait on processes, so each runs in a process of its own, all at once.
@@ -161,8 +172,12 @@ for line in open(f"{logs}/tests.json"):
                "WRELA_GPU_SHARED": "4", "WRELA_GPU_WAITS": f"{logs}/gpu-waits"}
         out = open(f"{logs}/run-{len(runs)}", "w+")
         name = f"{m['target']['name']} ({m['target']['kind'][0]})"
+        # The end-to-end suite is the longest program, so the gate's time: the others yield to
+        # it (with all at one priority, it took half as long again as alone).
+        first = pkg.endswith("compiler/tests")
         proc = subprocess.Popen([m["executable"], "-q", *args], cwd=pkg, env=env,
-                                stdout=out, stderr=subprocess.STDOUT)
+                                stdout=out, stderr=subprocess.STDOUT,
+                                preexec_fn=None if first else (lambda: os.nice(10)))
         runs.append((name, proc, out, time.monotonic()))
 failed, ran = False, 0
 waiting = list(runs)

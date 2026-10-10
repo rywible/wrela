@@ -8,6 +8,7 @@ use engine::air::{Air, Tables, hazy, tables}
 use engine::character::{
     PartOf, character, character_motion, character_shade, character_shadow, motion,
 }
+use engine::realize::realizing
 use engine::standin::{placed as standin_at, realize_standin}
 use engine::stone::{Realized, stone_shade, stone_vertex}
 use engine::bake::{Decisions, Far, decode_far, decode_tile, tile_name}
@@ -42,6 +43,7 @@ use std::gpu::{
     buffer_of, draw, label, sampler, texture, writable_texture, write,
 }
 use std::input::{Button, Event, Key, events}
+use std::job::{Job, Step}
 use std::io::{Pending, print}
 use world::{GROUND, World, present as snapshot, spawn_world, tick}
 
@@ -369,6 +371,12 @@ pub struct Floor {
     footprints: GpuBuffer<vec4>,
     palette: GpuBuffer<mat4>,
     last_palette: GpuBuffer<mat4>,
+    /// The fawn (`fawns`): realized over frames once a shot that casts it is held (its job, and
+    /// the creature it realizes), then its mesh and colours, and its palette where it stands.
+    fawn_job: Option<Job<realizing<fawn::creature::Coat, fawns::Grown>>>,
+    fawn_grown: fawns::Grown,
+    fawn: Option<engine::standin::Realized>,
+    fawn_palette: GpuBuffer<mat4>,
     /// The water's mesh (`history::waters`, laid as the program starts), the scene under it as its pass reads it, and which
     /// of its looks is drawn (`engine::water::LOOKS`; F6 the next).
     water_verts: GpuBuffer<WaterVert>,
@@ -538,6 +546,10 @@ pub fn init() -> Floor {
         footprints: buffer_of(footprints_in(vec3(0.0)), at_least: 1),
         palette: buffer(1),
         last_palette: buffer(1),
+        fawn_job: None,
+        fawn_grown: fawns::grown(),
+        fawn: None,
+        fawn_palette: buffer(engine::creature::MAX_BONES),
         water_verts: buffer_of(waters.mesh.verts, at_least: 1),
         water_tris: buffer_of(waters.mesh.tris, at_least: 1),
         water_count: waters.mesh.tris.len(),
@@ -1280,6 +1292,22 @@ fn moving_shadow(s: mut Floor, sh: Shadows) {
             depth_bias: CASTER,
         )
     }
+    if let Some(c) = s.fawn {
+        if fawn_shown(s.shot) {
+            draw(
+                mv,
+                character_shadow.bind(
+                    verts: c.mesh.verts.items(),
+                    palettes: s.fawn_palette.items(),
+                    view: sh.moving,
+                ),
+                engine::vegetation::nothing,
+                indices: c.mesh.quads.items(),
+                indirect: c.mesh.draw.items(),
+                depth_bias: CASTER,
+            )
+        }
+    }
     mv.end()
 }
 
@@ -1562,6 +1590,25 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
             depth: NEAREST,
         )
     }
+    if let Some(c) = s.fawn {
+        if fawn_shown(s.shot) {
+            draw(
+                cr,
+                character.bind(
+                    verts: c.mesh.verts.items(),
+                    colours: c.colours.items(),
+                    palettes: s.fawn_palette.items(),
+                    parts: PartOf { of: [0; 64] },
+                    cam: cam,
+                ),
+                character_shade.bind(lt),
+                indices: c.mesh.quads.items(),
+                indirect: c.mesh.draw.items(),
+                cull: std::gpu::Cull::Back,
+                depth: NEAREST,
+            )
+        }
+    }
     cr.end()
     label("sky")
     let sky = begin_pass_with_depth(
@@ -1663,6 +1710,25 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
             cull: std::gpu::Cull::Back,
             depth: engine::view::SEEN,
         )
+    }
+    // The fawn stands still: its palette is its last.
+    if let Some(c) = s.fawn {
+        if fawn_shown(s.shot) {
+            draw(
+                mo,
+                character_motion.bind(
+                    verts: c.mesh.verts.items(),
+                    palettes: s.fawn_palette.items(),
+                    last: s.fawn_palette.items(),
+                    cam: cam,
+                ),
+                motion.bind(cam),
+                indices: c.mesh.quads.items(),
+                indirect: c.mesh.draw.items(),
+                cull: std::gpu::Cull::Back,
+                depth: engine::view::SEEN,
+            )
+        }
     }
     mo.end()
 }
@@ -1788,7 +1854,23 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     }
     let heading = engine::present::lerp_angle(pa.heading, pb.heading, b.alpha)
     std::gpu::copy(from: s.palette.items(), to: s.last_palette.items_mut())
-    write(mut s.palette, 0, [standin_at(feet, heading)])
+    // A shot that casts the characters stands them where it says (in render space), and the
+    // moving shadow map goes round them.
+    let cast = held_cast(s.shot)
+    let on_ground = |c: vec3| vec3(c.x, height_at(c.xy), c.y) - o
+    let (stood, facing) = match cast {
+        Some(c) => (on_ground(c.player), c.player.z),
+        None => (feet, heading),
+    }
+    write(mut s.palette, 0, [standin_at(stood, facing)])
+    if let Some(c) = cast {
+        cast_fawn(mut s)
+        write(mut s.fawn_palette, 0, fawns::at_rest(on_ground(c.fawn), c.fawn.z))
+    }
+    let moving_at = match cast {
+        Some(c) => 0.5 * (on_ground(c.player) + on_ground(c.fawn)),
+        None => feet,
+    }
     if s.origin != before {
         // Last frame's place is in the old render space: no motion this frame.
         std::gpu::copy(from: s.palette.items(), to: s.last_palette.items_mut())
@@ -1855,7 +1937,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         s.light.sun,
         s.near.cascade(),
         s.far.cascade(),
-        moving_at: feet + vec3(0.0, 1.0, 0.0),
+        moving_at: moving_at + vec3(0.0, 1.0, 0.0),
         moving_span: MOVING_SPAN,
         moving_side: MOVING_SIDE,
         frame: s.frames,
@@ -1895,6 +1977,47 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     draw_scene(mut s, cam, sh, wind)
     finish(mut s, cam, width, height, feet.xz + o2, heading)
     s.frames += 1
+}
+
+/// The cast of the lookbook's shot the camera's held on (`shot`), if it casts the characters.
+fn held_cast(shot: Option<u32>) -> Option<lookbook::Cast> {
+    match shot {
+        Some(i) if i < lookbook::SHOTS.len() && lookbook::SHOTS[i].cast.on => Some(
+            lookbook::SHOTS[i].cast,
+        ),
+        _ => None,
+    }
+}
+
+/// Whether the fawn's drawn: a shot that casts it is held.
+fn fawn_shown(shot: Option<u32>) -> bool {
+    held_cast(shot).is_some()
+}
+
+/// The fawn's realization, a slice a frame (started the first time it's cast).
+fn cast_fawn(s: mut Floor) {
+    if s.fawn.is_some() {
+        return
+    }
+    if s.fawn_job.is_none() {
+        s.fawn_job = Some(realizing.start(fawns::REALIZED))
+    }
+    match mut s.fawn_job {
+        Some(job) => match job.resume(s.fawn_grown, fawns::SLICES) {
+            Step::Yielded => {},
+            Step::Done(whole) => {
+                let colours = engine::character::colours(
+                    whole.mesh,
+                    s.fawn_grown.field(),
+                    fawns::FawnLook {},
+                    cell: 1cm,
+                )
+                s.fawn = Some(engine::standin::Realized { mesh: take whole.mesh, colours })
+                s.fawn_job = None
+            },
+        },
+        None => {},
+    }
 }
 
 // ---- tests ---------------------------------------------------------------------------------------
@@ -2002,7 +2125,8 @@ pub fn test_settled(s: Floor) -> f32 {
         s.cooking.is_empty() &&
         s.arrived.is_empty() &&
         s.next_probes.is_none() &&
-        length(eye - s.probes_at) <= PROBES_MOVE
+        length(eye - s.probes_at) <= PROBES_MOVE &&
+        (!fawn_shown(s.shot) || s.fawn.is_some())
     if still && playable(s, eye + s.cam.origin.xz) { 1.0 } else { 0.0 }
 }
 

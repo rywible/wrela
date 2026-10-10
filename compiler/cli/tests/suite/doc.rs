@@ -43,6 +43,7 @@ fn std_items() -> Vec<String> {
 }
 
 #[test]
+#[ignore = "long: renders every std page (8 s alone)"]
 fn every_public_std_item_has_a_page() {
     let paths = std_items();
     // A process per page, several at once.

@@ -2119,7 +2119,7 @@ fn specs_blueprints_and_close_ups_answer_on_a_ball() {
 /// ten times a creature's size: the lens searches for its bounds in a box that grows until it
 /// holds the subject, and its rays reach past the subject's far side.
 #[test]
-#[ignore = "needs a GPU"]
+#[ignore = "long: needs a GPU (15 s alone)"]
 fn the_lens_draws_probes_and_drags_the_great_tree() {
     let subject = Subject::new("great-tree", "lens");
     let mut lens = subject.lens();

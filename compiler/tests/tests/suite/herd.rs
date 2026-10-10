@@ -157,6 +157,7 @@ fn alternate(rounds: usize, mut a: impl FnMut(), mut b: impl FnMut()) -> (f64, f
 
 /// AC6's physique and #43 §9's per bone: the herd's own tests (examples/herd's `@test`s).
 #[test]
+#[ignore = "long: the herd's own tests (33 s with the gate)"]
 fn the_herds_own_tests_pass() {
     assert_eq!(super::tests_pass(&wrela_tests::repo_root().join("examples/herd")), 2);
 }

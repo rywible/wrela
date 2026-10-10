@@ -639,7 +639,7 @@ fn field(host: &mut wrela_host::CpuHost, x: f64, z: f64) -> (f64, f64) {
 /// within the same bounds. And one terrain: the sim's raycasts (the feet's) meet the field
 /// where the drawn clipmap is, within the same accuracy.
 #[test]
-#[ignore = "needs a GPU"]
+#[ignore = "long: needs a GPU (19 s alone)"]
 fn the_clipmap_holds_the_fields_heights_and_the_raycasts_meet_it() {
     let mut c = Clearing::load("clearing-clipmap");
     c.until_ready(2);
@@ -1236,7 +1236,7 @@ fn draws_after(batch: &[u8], name: &str) -> usize {
 /// frame, at load), one frame draws them into the static cascades, a steady frame draws nothing
 /// into them, and moving the sun draws them again (counted in the frames' command streams).
 #[test]
-#[ignore = "needs a GPU"]
+#[ignore = "long: needs a GPU (19 s alone)"]
 fn static_shadows_are_drawn_once_and_again_when_the_sun_moves() {
     // The draws into the static cascades in each batch since the last call.
     let statics = |c: &mut Clearing| -> Vec<usize> {
@@ -1275,7 +1275,7 @@ fn static_shadows_are_drawn_once_and_again_when_the_sun_moves() {
 /// frame draws (M6 AC4, AC15). Playing spike 17, a camera there made `engine::lod::packed`
 /// convert an infinite pixel to an integer, which trapped (`lod.wrela:125`).
 #[test]
-#[ignore = "needs a GPU"]
+#[ignore = "long: needs a GPU (25 s alone)"]
 fn the_camera_inside_a_crown_draws_its_frames() {
     let mut c = Clearing::load("clearing-inside-a-crown");
     c.until_ready(1);
@@ -1338,7 +1338,7 @@ fn darkened(
 /// wind still) with the creature and without: the pixels of ground and grass it darkens; then
 /// again after it has walked.
 #[test]
-#[ignore = "needs a GPU"]
+#[ignore = "long: needs a GPU (36 s alone)"]
 fn the_creatures_shadow_falls_on_terrain_and_grass_and_moves() {
     let mut c = Clearing::load("clearing-creature-shadow");
     c.until_ready(0);
@@ -1677,7 +1677,7 @@ fn longest_submission(timings: &[GpuTiming]) -> (f64, String) {
 /// map and with it all lit (the same jitter, the wind still): over 3% of the valley's ground
 /// (beyond 150 m) is darker by over 15% with it (the cumulus over it, as the sun casts them).
 #[test]
-#[ignore = "needs a GPU"]
+#[ignore = "long: needs a GPU (13 s alone)"]
 fn the_clouds_shadows_fall_on_the_valley() {
     let mut c = Clearing::load("clearing-cloud-shadows");
     c.until_ready(0);
@@ -1770,84 +1770,6 @@ fn the_upscaled_frame_matches_the_native_one() {
     }
 }
 
-/// Frame `b` warped into frame `a` (spike 12's flicker measure): each output pixel of `b`, at
-/// its depth (the scene's sample nearest it), seen by `a`'s camera, against `a` there; pixels
-/// of the sky, of the creature, or disoccluded (its depth in `a` not within 1%) are left out.
-/// The mean warp error (/255), the share over 8/255, the pixels compared, and the mean motion
-/// (output pixels).
-fn warp_error(
-    a: (&[u8], &[f32], &Cam, &[f32]),
-    b: (&[u8], &[f32], &Cam, &[f32]),
-    by: &mut [(f64, usize); 8],
-) -> (f64, f64, usize, f64) {
-    let (sa, da, ca, ta) = a;
-    let (sb, db, cb, tb) = b;
-    let (sw, sh) = (cb.screen[0] as usize, cb.screen[1] as usize);
-    let scale = W as f64 / cb.screen[0];
-    let unjittered = |c: &Cam| Cam { jitter: [0.0, 0.0], ..*c };
-    let (ua, ub) = (unjittered(ca), unjittered(cb));
-    let (mut sum, mut over, mut n, mut motion) = (0.0, 0usize, 0usize, 0.0);
-    for y in (0..H as usize).step_by(2) {
-        for x in (0..W as usize).step_by(2) {
-            let o = y * W as usize + x;
-            if class(tb[o]) == CREATURE || class(tb[o]) == SKY {
-                continue;
-            }
-            // The output pixel's point in b: its unjittered ray at the nearest sample's depth.
-            let (qx, qy) =
-                (((x as f64 + 0.5) / scale) as usize, ((y as f64 + 0.5) / scale) as usize);
-            let z = f64::from(db[qy.min(sh - 1) * sw + qx.min(sw - 1)]);
-            if z <= 0.0 {
-                continue;
-            }
-            let p = ub.world_at([(x as f64 + 0.5) / scale, (y as f64 + 0.5) / scale], z);
-            let Some((pa, za)) = ua.project(p, [f64::from(W), f64::from(H)]) else { continue };
-            let (ax, ay) = (pa[0].floor(), pa[1].floor());
-            if ax < 0.0 || ay < 0.0 || ax >= f64::from(W) || ay >= f64::from(H) {
-                continue;
-            }
-            let ia = ay as usize * W as usize + ax as usize;
-            if class(ta[ia]) == CREATURE || class(ta[ia]) == SKY {
-                continue;
-            }
-            // A sees the same surface there (its depth within 2%), as spike 12 asks.
-            let (sx, sy) = ((pa[0] / scale) as usize, (pa[1] / scale) as usize);
-            let zs = f64::from(da[sy.min(sh - 1) * sw + sx.min(sw - 1)]);
-            if (zs - za).abs() > za * 0.02 {
-                continue;
-            }
-            // A sampled bilinearly, as spike 12 samples it: the measure includes resampling's
-            // blur, the same floor for every look.
-            let (fx, fy) = ((pa[0] - 0.5).max(0.0), (pa[1] - 0.5).max(0.0));
-            let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
-            let (x1, y1) = ((x0 + 1).min(W as usize - 1), (y0 + 1).min(H as usize - 1));
-            let (tx, ty) = (fx - fx.floor(), fy - fy.floor());
-            let at = |x: usize, y: usize, ch: usize| f64::from(sa[4 * (y * W as usize + x) + ch]);
-            let mut most = 0.0f64;
-            let mut d3 = 0.0;
-            for ch in 0..3 {
-                let top = at(x0, y0, ch) * (1.0 - tx) + at(x1, y0, ch) * tx;
-                let bottom = at(x0, y1, ch) * (1.0 - tx) + at(x1, y1, ch) * tx;
-                let a = top * (1.0 - ty) + bottom * ty;
-                let d = (a - f64::from(sb[4 * o + ch])).abs();
-                d3 += d;
-                most = most.max(d);
-            }
-            sum += d3 / 3.0;
-            if most > 8.0 {
-                over += 1;
-            }
-            let k = class(tb[o]) as usize;
-            by[k].0 += d3 / 3.0;
-            by[k].1 += 1;
-            n += 1;
-            motion += ((pa[0] - x as f64 - 0.5).powi(2) + (pa[1] - y as f64 - 0.5).powi(2)).sqrt();
-        }
-    }
-    let nf = n.max(1) as f64;
-    (sum / nf, over as f64 / nf, n, motion / nf)
-}
-
 /// The look's flicker over the camera path's first 10 s (the wind still): each frame warped
 /// into the one before it (spike 12's measure: the earlier frame sampled bilinearly where it
 /// sees the same surface, its depth within 2%, the creature and the sky left out). `real`: the
@@ -1887,11 +1809,15 @@ fn flicker(real: bool) -> (f64, f64, [f64; 8]) {
             continue;
         }
         let now = grab(&mut c);
-        let (m, o, n, mv) = warp_error(
-            (&last.0, &last.1, &last.2, &last.3),
-            (&now.0, &now.1, &now.2, &now.3),
+        let seen = wrela_tests::camera::Seen::of;
+        let warp = wrela_tests::camera::warp_error(
+            &seen(&last),
+            &seen(&now),
+            (W as usize, H as usize),
+            &[CREATURE, SKY],
             &mut by,
         );
+        let (m, o, n, mv) = (warp.mean, warp.over, warp.n, warp.motion);
         if n > 10000 {
             sum += m;
             over += o;
@@ -2018,7 +1944,7 @@ fn what_the_wind_costs_the_leaves() {
 /// AC7's motion: the creature's pixels are reprojected by its motion target, the rest by depth
 /// and the camera: as it walks, the motion target marks exactly the pixels that show it.
 #[test]
-#[ignore = "needs a GPU"]
+#[ignore = "long: needs a GPU (33 s alone)"]
 fn the_motion_target_marks_the_creature() {
     let mut c = Clearing::load("clearing-motion");
     c.until_ready(0);
@@ -2056,7 +1982,7 @@ fn the_motion_target_marks_the_creature() {
 /// pixel of the creature is within the box where temporal AA looks for what moved
 /// (`Resolve::moving`, from the creature's bounds).
 #[test]
-#[ignore = "needs a GPU"]
+#[ignore = "long: needs a GPU (56 s alone)"]
 fn the_walking_creature_leaves_no_trail() {
     let frames = [150u32, 200, 250, 300, 350];
     let run = |name: &str, creature: bool| {

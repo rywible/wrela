@@ -75,6 +75,7 @@ fn centrals(host: &mut CpuHost, fi: u32, p: [f32; 3], axis: usize) -> [f64; 6] {
 }
 
 #[test]
+#[ignore = "long: every derived gradient against central differences (13 s with the gate)"]
 fn gradients_agree_with_central_differences() {
     let corpus = CpuBuild::load(built("fields")).expect("load the corpus");
     let report = Mutex::new(Vec::new());
@@ -149,6 +150,7 @@ enum Job {
 }
 
 #[test]
+#[ignore = "long: samples every derived interval on the CPU (19 s with the gate)"]
 fn intervals_enclose_every_sample_on_the_cpu() {
     let corpus = CpuBuild::load(built("fields")).expect("load the corpus");
     let (boxes, points) = (sized(20_000, BOXES), sized(10_000, 100_000));
@@ -198,7 +200,7 @@ fn intervals_enclose_every_sample_on_the_cpu() {
 }
 
 #[test]
-#[ignore = "needs a GPU"]
+#[ignore = "long: needs a GPU (21 s alone)"]
 fn intervals_enclose_every_sample_on_the_gpu() {
     let mut host = Host::load(built("fields")).expect("load the corpus");
     let mut report = Vec::new();
@@ -223,7 +225,7 @@ fn intervals_enclose_every_sample_on_the_gpu() {
 /// AC12: on the GPU, the box of a vector's interval (the creature's gradient) is the three
 /// components' intervals, over 10⁴ random boxes. (The CPU's: run/interval_vectors.)
 #[test]
-#[ignore = "needs a GPU"]
+#[ignore = "long: needs a GPU (18 s alone)"]
 fn the_interval_of_a_vector_is_its_components_on_the_gpu() {
     let mut host = Host::load(built("fields")).expect("load");
     let n = 10_000;

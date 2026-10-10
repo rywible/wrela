@@ -127,6 +127,7 @@ fn a_long_chain_of_plain_calls_builds() {
 }
 
 #[test]
+#[ignore = "long: compiles a function past an engine's locals (7 s alone)"]
 fn more_lets_than_an_engine_has_locals_load() {
     // Engines take 50,000 locals in a function; each `let` lives only until its last use, and
     // one in a loop until the loop ends, so their locals are used again.

@@ -1,0 +1,39 @@
+// The fawn in the floor (#54 §9's characters in the wood: the fawn and the stand-in in three
+// shots, so the cel treatment is judged against the wood's dark and dappled light): M5's fawn
+// (examples/fawn), realized over frames as the clearing realizes it, once a shot that casts it
+// is held, and drawn standing at rest where the shot puts it.
+
+use engine::creature::{Creature, MAX_BONES}
+use engine::look::{CreatureLook, Mesh}
+use engine::render::Look
+use engine::standin::placed
+use fawn::creature::{Coat, fawn}
+
+/// The fawn, as the floor keeps it while its mesh is realized (`engine::realize`).
+pub type Grown = Creature<Coat>
+
+/// The fawn, built.
+pub fn grown() -> Grown {
+    fawn()
+}
+
+/// How it's realized: 1 cm cells, as the clearing's.
+pub const REALIZED = CreatureLook { surface: Mesh { tolerance: 1cm } }
+
+/// The frames a slice of its realization takes each.
+pub const SLICES: u32 = 1
+
+/// Its colours: its coat's.
+pub struct FawnLook: Copy + GpuData {}
+
+impl Look<Coat> for FawnLook {
+    fn surface(self, c: Coat, rest: vec3, fp: f32) -> (vec3, f32) {
+        (vec3(c.albedo.r, c.albedo.g, c.albedo.b), 0.7)
+    }
+}
+
+/// Its palette standing at rest, its feet at `feet`, facing `heading` (radians from +z toward
+/// +x): every bone the same placement.
+pub fn at_rest(feet: vec3, heading: f32) -> [mat4; MAX_BONES] {
+    [placed(feet, heading); MAX_BONES]
+}

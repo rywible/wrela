@@ -119,22 +119,9 @@ fn sketch_03s_tick_doesnt_depend_on_the_workers() {
     assert_eq!(run(4), one_thread);
 }
 
-/// The programs' own tests (`@test`, `wrela test`): sketch 01's torso bound, hoof modes and
-/// physique, and its creature against M1's grazer, sketch 03's timeline replays and saves, the gameplay paper test's scripted player (a frame
-/// test of 360 frames), the examples': hello field's, and the wolf's and the grazer's walks
-/// (frame tests of 120 frames, AC7).
-#[test]
-fn the_programs_own_tests_pass() {
-    let programs = [
-        "compiler/tests/sketches/01-creature",
-        "compiler/tests/sketches/01-check",
-        "compiler/tests/sketches/03-simulation",
-        "compiler/tests/sketches/gameplay",
-        "examples/hello-field",
-        "examples/wolf",
-        "examples/grazer",
-    ];
-    let outs = wrela_tests::par_map(&programs, |pkg| {
+/// `programs`' own tests (`@test`, `wrela test`) pass, each with tests.
+fn own_tests_pass(programs: &[&str]) {
+    let outs = wrela_tests::par_map(programs, |pkg| {
         wrela_driver::test(&wrela_tests::repo_root().join(pkg), None)
     });
     for (pkg, out) in programs.iter().zip(outs) {
@@ -148,6 +135,31 @@ fn the_programs_own_tests_pass() {
         assert!(failed.is_empty(), "{pkg}:\n{}", shown(&failed));
         assert!(!out.results.is_empty(), "{pkg}: no tests ran");
     }
+}
+
+/// The quick programs' own tests: sketch 03's timeline replays and saves, the gameplay paper
+/// test's scripted player (a frame test of 360 frames), and hello field's.
+#[test]
+fn the_programs_own_tests_pass() {
+    own_tests_pass(&[
+        "compiler/tests/sketches/03-simulation",
+        "compiler/tests/sketches/gameplay",
+        "examples/hello-field",
+    ]);
+}
+
+/// The heavier programs' own tests: sketch 01's torso bound, hoof modes and physique (28 s on
+/// its own), and its creature against M1's grazer, and the wolf's and the grazer's walks (frame
+/// tests of 120 frames, AC7).
+#[test]
+#[ignore = "long: sketch 01's physique alone takes 28 s"]
+fn the_heavier_programs_own_tests_pass() {
+    own_tests_pass(&[
+        "compiler/tests/sketches/01-creature",
+        "compiler/tests/sketches/01-check",
+        "examples/wolf",
+        "examples/grazer",
+    ]);
 }
 
 const GAMEPLAY_FRAMES: u32 = 360;

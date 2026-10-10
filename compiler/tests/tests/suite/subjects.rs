@@ -327,21 +327,25 @@ fn the_grazers_literals_are_lifted_or_have_reasons() {
 }
 
 #[test]
+#[ignore = "long: lifts the wolf and compares it point by point (25 s with the gate)"]
 fn a_lifted_wolf_computes_what_the_wolf_does() {
     computes_what_the_normal_build_does("wolf");
 }
 
 #[test]
+#[ignore = "long: lifts the grazer and compares it point by point (34 s with the gate)"]
 fn a_lifted_grazer_computes_what_the_grazer_does() {
     computes_what_the_normal_build_does("grazer");
 }
 
 #[test]
+#[ignore = "long: the wolf's gradients against central differences (19 s with the gate)"]
 fn the_wolfs_parameter_gradients_agree_with_central_differences() {
     gradients_agree("wolf");
 }
 
 #[test]
+#[ignore = "long: the grazer's gradients against central differences (26 s with the gate)"]
 fn the_grazers_parameter_gradients_agree_with_central_differences() {
     gradients_agree("grazer");
 }
