@@ -747,11 +747,11 @@ pub fn bark_shade(
     }
     // Bark's ridges run along the limb, and turn its surface: a furrow's sides face round the
     // limb, so the light falls across them (smooth, the trunks read as plastic).
-    let ridge = ridges.sample_level(rs, vec2(b.along.x, b.along.y / plant::RIDGES_ALONG)).r
+    let t = ridges.sample_level(rs, vec2(b.along.x, b.along.y / plant::RIDGES_ALONG))
     let smooth_n = normalize(b.normal)
     let round = normalize(cross(vec3(0.0, 1.0, 0.0), smooth_n) + vec3(1.0e-4, 0.0, 0.0))
-    let n = normalize(smooth_n + round * ((ridge - 0.5) * 0.9))
-    let albedo = mix(bark.dark, bark.light, vec3(ridge))
+    let n = normalize(smooth_n + round * bark.raised(t))
+    let albedo = mix(bark.dark, bark.light, vec3(bark.tone(t)))
     let a = mix(albedo, bark.moss, vec3(b.moss))
     // No gloss: bark is rough, and its impostor lights it as its leaves (`leaf_light`).
     let (sun, sky) = sun_and_sky(lt, b.world, n, sky_n: n, soft: 1.5)
