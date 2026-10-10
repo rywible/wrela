@@ -20,7 +20,7 @@ use std::gpu::{
     DepthTexture, FragCoord, GlobalId, LocalId, One, Rgba16Float, Sampler, Shared, Texture, barrier,
 }
 use terrain::{Levels, Texel, ground_at}
-use view::{CREATURE, Camera, FLOWER, GRASS, GROUND, LEAVES, class_of}
+use view::{BARK, CREATURE, Camera, FLOWER, GRASS, GROUND, LEAVES, ROCK, class_of}
 
 /// The look's settings: how strong the dabs are on near surfaces, on broad far ones and on the
 /// sky; the paper's tooth; the bloom; the characters' lines (their width in output pixels, and
@@ -36,6 +36,10 @@ pub struct Look: Copy + GpuData {
     pub line_dark: f32 = 0.45,
     pub sharpen: f32 = 0.2,
     pub vignette: f32 = 0.28,
+    /// Which style direction the pass draws (the owner's pick between them, 2026-10-10): 0 the
+    /// picked look as it is, 1 painted masses, 2 carved light, 3 one line, 4 carved light and one
+    /// line together (`develop`).
+    pub style: u32 = 0,
 }
 
 /// The strokes at `q` (in cells): the value of the one that covers it most, of the four cells
@@ -421,6 +425,105 @@ pub fn dab_map(
     vec4(strength * dab, look.tooth * tooth(keyed, footprint * per_out * 2.0), 0.0, 1.0)
 }
 
+/// The scene's depth (reversed) at the output pixel `p`, clamped to the output: 0 is the sky.
+fn depth_px(d: Develop, depth: DepthTexture, p: vec2) -> f32 {
+    depth_at(d, depth, clamp(p, vec2(0.0), d.out - vec2(1.0)))
+}
+
+/// The surface's relief at the output pixel `p`, from the depth `r` pixels round it: the second
+/// difference of the reversed depth (linear on screen across a plane, so 0 there), over the
+/// depth. Below 0 where the surface bulges toward the eye (a ridge, a crown's clump), above 0 in
+/// a hollow; a neighbour across an edge (more than 8% apart) is left out.
+fn relief(d: Develop, depth: DepthTexture, p: vec2, r: f32) -> f32 {
+    let c = depth_px(d, depth, p)
+    if c <= 0.0 {
+        return 0.0
+    }
+    var sum = 0.0
+    var count = 0.0
+    for k in 0..4 {
+        let a = f32(k) * 0.7853982
+        let o = vec2(cos(a), sin(a)) * r
+        let e1 = depth_px(d, depth, p + o)
+        let e2 = depth_px(d, depth, p - o)
+        if abs(e1 - c) < 0.08 * c && abs(e2 - c) < 0.08 * c {
+            sum += (e1 + e2 - 2.0 * c) / c
+            count += 1.0
+        }
+    }
+    // Only where every pair stays on the surface: at a crown's cards, which overlap at small
+    // depth steps, some pairs cross and the rest read a step as a hollow (a dotted fringe).
+    if count < 4.0 { 0.0 } else { sum / 4.0 }
+}
+
+/// How much of a world line the output pixel at `p` is (direction 3): where a neighbour a line's
+/// width away is well behind it (a silhouette against what's behind), the width falling with
+/// distance so near forms are drawn and far ones aren't. No lines on grass and flowers (a line
+/// round every blade is noise), and a crown's only against the sky or something far behind it.
+fn world_line(
+    d: Develop,
+    image: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    p: vec2,
+    tag: f32,
+) -> f32 {
+    // Lines on solid forms only: bark, rock, the ground's ridges and what's built. A crown's
+    // silhouette is its cards' edges (a jagged fringe drawn); water's is the far shore.
+    let class = class_of(tag)
+    if class != class_of(BARK) && class != class_of(ROCK) && class != class_of(GROUND) {
+        return 0.0
+    }
+    let c = depth_px(d, depth, p)
+    if c <= 0.0 {
+        return 0.0
+    }
+    let near = d.cam.distance_of(c)
+    let width = clamp(2.2 * sqrt(12.0 / near), 0.8, 2.4)
+    let gap = 0.06
+    var line = 0.0
+    for k in 0..8 {
+        let a = f32(k) * 0.7853982 + 0.2
+        let q = p + vec2(cos(a), sin(a)) * width
+        let z = depth_px(d, depth, q)
+        let there = if z <= 0.0 { 1.0e9 } else { d.cam.distance_of(z) }
+        line = max(line, smoothstep(gap, gap * 2.0, (there - near) / near))
+    }
+    // Fading out by 300 m: the far land stays paint.
+    line * (1.0 - smoothstep(120.0, 300.0, near))
+}
+
+/// Direction 1's simplified colour at `p`: of the four squares of 3 × 3 texels (2 apart) that
+/// meet at the pixel, the mean of the one whose light varies least (Kuwahara's filter), so
+/// small marks merge into masses and edges between masses stay.
+fn masses(image: Texture<Rgba16Float>, p: vec2, out: vec2) -> vec3 {
+    var best = vec3(0.0)
+    var least = 1.0e9
+    for k in 0..4 {
+        let sx = if k % 2 == 0 { -1.0 } else { 1.0 }
+        let sy = if k < 2 { -1.0 } else { 1.0 }
+        var sum = vec3(0.0)
+        var sq = 0.0
+        var lum = 0.0
+        for j in 0..3 {
+            for i in 0..3 {
+                let q = clamp(p + vec2(sx * f32(i), sy * f32(j)) * 2.0, vec2(0.0), out - vec2(1.0))
+                let c = image.load(x: u32(q.x), y: u32(q.y)).rgb
+                let l = log2(max(dot(c, LUMA), 1.0e-4))
+                sum += c
+                lum += l
+                sq += l * l
+            }
+        }
+        let mean = lum / 9.0
+        let v = sq / 9.0 - mean * mean
+        if v < least {
+            least = v
+            best = sum / 9.0
+        }
+    }
+    best
+}
+
 /// The output pixel, painted: the dabs and the paper's tooth (from the dab map, between its
 /// texels), the bloom, the characters' lines, a little sharpening, the tone curve at the
 /// metered exposure (`meter`) and a vignette.
@@ -445,15 +548,36 @@ pub fn develop(
     let n2 = image.load(x: max(p.x, 1) - 1, y: p.y).rgb
     let n3 = image.load(x: p.x, y: min(p.y + 1, size.y)).rgb
     let n4 = image.load(x: p.x, y: max(p.y, 1) - 1).rgb
+    let base = if look.style == 1 { masses(image, px, d.out) } else { here.rgb }
     var paint = max(
-        here.rgb + (here.rgb * 4.0 - (n1 + n2 + n3 + n4)) * (look.sharpen * 0.25),
+        base + (here.rgb * 4.0 - (n1 + n2 + n3 + n4)) * (look.sharpen * 0.25),
         vec3(0.0),
     )
+    // Direction 2: the form's relief lights it, as a carved and painted model is lit: a ridge
+    // catches a warm, pale edge, a hollow gathers cool, dark pigment.
+    let class = class_of(here.a)
+    if (look.style == 2 || look.style == 4) &&
+        class != class_of(GRASS) &&
+        class != class_of(FLOWER) {
+        // Near forms only: past 150 m the depth's steps read as contour lines.
+        let z = depth_px(d, depth, px)
+        let reach = if z > 0.0 { 1.0 - smoothstep(60.0, 150.0, d.cam.distance_of(z)) } else { 0.0 }
+        let k = relief(d, depth, px, 3.0) * reach
+        let ridge = clamp(-k * 60.0, 0.0, 1.0)
+        let hollow = clamp(k * 60.0, 0.0, 1.0)
+        paint = paint *
+            (vec3(1.0) + vec3(0.30, 0.24, 0.12) * ridge) *
+            (vec3(1.0) - vec3(0.42, 0.36, 0.22) * hollow)
+    }
     // The dab map's texel for this point: its texels hold their unjittered centres' points
     // (`dab_map`), so the same place each frame.
     let q = px * (d.cam.screen / d.out)
     let m = dabs.sample_level(s, q / d.cam.screen)
-    paint = paint * (1.0 + m.r) * vec3(1.0 + 0.25 * m.r, 1.0, 1.0 - 0.3 * m.r) * (1.0 + m.g)
+    // Each direction's paint: masses lay it on thicker, carved light and lines thinner.
+    let dab = m.r * (if look.style == 1 { 1.6 } else if look.style == 2 {
+        0.5
+    } else if look.style >= 3 { 0.7 } else { 1.0 })
+    paint = paint * (1.0 + dab) * vec3(1.0 + 0.25 * dab, 1.0, 1.0 - 0.3 * dab) * (1.0 + m.g)
     // Bloom.
     let gq = min(vec2u(px / 4.0), vec2u(glow.width() - 1, glow.height() - 1))
     paint += glow.load(x: gq.x, y: gq.y).rgb * look.bloom
@@ -462,6 +586,21 @@ pub fn develop(
     let l = line(d, image, depth, px, here.a)
     if l > 0.0 {
         c = mix(c, c * look.line_dark, vec3(l))
+    }
+    // Direction 1: the values keyed into a few steps (light, half, shade, accent), softly; warm
+    // light and cool shade.
+    if look.style == 1 {
+        let l = max(dot(c, LUMA), 1.0e-4)
+        let steps = 4.0
+        let keyed = (floor(l * steps) + smoothstep(0.3, 0.7, fract(l * steps))) / steps
+        c = c * mix(1.0, keyed / l, 0.55)
+        let shade = 1.0 - smoothstep(0.15, 0.55, l)
+        c = c * mix(vec3(1.05, 1.0, 0.93), vec3(0.88, 0.95, 1.12), shade)
+    }
+    // Direction 3: the world drawn in the characters' line, a darker shade of its colour.
+    if look.style >= 3 {
+        let w = world_line(d, image, depth, px, here.a)
+        c = mix(c, c * 0.42, vec3(w))
     }
     let uv = px / d.out - vec2(0.5)
     c = c * (1.0 - look.vignette * dot(uv, uv))

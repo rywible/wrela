@@ -394,6 +394,9 @@ pub struct Floor {
     water_count: u32,
     below: Texture<Rgba16Float>,
     water_look: u32,
+    /// Which of the look's style directions is drawn (`engine::paint::Look`'s `style`; F7 the
+    /// next).
+    style: u32,
     /// The last report's number (`REPORT_TICKS` apart); the last frame's time, and since the
     /// last report the longest between two frames (ms) and how many over 33 ms.
     reported: u32,
@@ -580,6 +583,7 @@ pub fn init() -> Floor {
         water_count: waters.mesh.tris.len(),
         below: texture::<Rgba16Float>(width: 1, height: 1),
         water_look: 0,
+        style: 0,
         reported: 0,
         last_time: 0.0,
         longest: 0.0,
@@ -1219,6 +1223,9 @@ fn keys(s: mut Floor, time: f32) {
                 Key::F5 => Some(System::Water),
                 _ => None,
             }
+            if key == Key::F7 {
+                s.style = (s.style + 1) % 5
+            }
             if key == Key::F6 {
                 s.water_look = (s.water_look + 1) % LOOKS.len()
             }
@@ -1847,7 +1854,7 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
         screen.present()
         return
     }
-    let d = Develop { cam, look: Look {}, out }
+    let d = Develop { cam, look: Look { style: s.style }, out }
     let dp = begin_pass(mut s.dabs)
     fullscreen(
         dp,
