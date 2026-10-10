@@ -1,0 +1,413 @@
+// Provenance in the running floor (#55 AC13, #54 §4): a click names what's under it. A tree: its
+// species and the line of species.wrela that says how it lives, the kind it's drawn as and the
+// line of trees.wrela that builds it, and the history's record of it (born, how it died and
+// fell, the pin or keeper that shaped it). The ground: its region, what covers it and the
+// history's fields there (light, trodden, wet, thorn). From the near tiles' records, which the
+// program keeps as they stream (`NearTile`): no GPU readback, so the answer is the click's frame.
+
+use engine::bake::WEAR_N
+use engine::grow::{Cause, NONE, Shaper, State, Tree, shaper}
+use engine::interest::Drawn
+use engine::place::TILE
+use engine::terrain::raycast
+use engine::view::Camera
+use std::string::String
+
+/// A tile cooked and kept while it's near: its bytes as they came and its trees (the history's
+/// records: for its neighbours' fields, and provenance), its ground's fields as last worked out
+/// (`engine::bake::tile_fields`: light, trodden, wet, thorn, a byte each, `WEAR_N` a side), and
+/// which of its neighbours' trees they were worked out with (`engine::bake::neighbour_bit`).
+pub struct NearTile {
+    pub tile: vec2i,
+    pub bytes: Vec<u8>,
+    pub trees: Vec<Tree>,
+    pub fields: Vec<u8>,
+    pub with: u32,
+}
+
+/// The drawn kinds' names in trees.wrela (`k == NAME`), by kind.
+const KIND_KEYS = [
+    "GREAT",
+    "OAK_OPEN",
+    "OAK_FOREST",
+    "BEECH_OPEN",
+    "BEECH_FOREST",
+    "BIRCH_OPEN",
+    "BIRCH_FOREST",
+    "PINE_OPEN",
+    "PINE_FOREST",
+    "ALDER_A",
+    "ALDER_B",
+    "HAWTHORN",
+    "SLOE",
+    "YOUNG_BROAD",
+    "YOUNG_PINE",
+    "SNAG_BROAD",
+    "SNAG_BURNT",
+    "SNAG_PINE",
+    "LOG_SHORT",
+    "LOG_LONG",
+    "FAR_A",
+    "FAR_B",
+]
+
+/// The species' names, and the words their habits' comments in species.wrela begin with.
+const SPECIES_NAMES = ["oak", "beech", "birch", "hawthorn", "blackthorn", "pine", "alder"]
+const SPECIES_KEYS = [
+    "// Oak:",
+    "// Beech:",
+    "// Birch:",
+    "// Hawthorn:",
+    "// Blackthorn:",
+    "// Pine:",
+    "// Alder:",
+]
+
+/// The line of trees.wrela that builds each drawn kind, and of species.wrela that gives each
+/// species' habit: found in the files as the build reads them, so they follow an edit.
+pub const KIND_LINES: [u32; 22] = kind_lines()
+pub const SPECIES_LINES: [u32; 7] = species_lines()
+
+fn kind_lines() -> [u32; 22] {
+    let text = embed("trees.wrela")
+    var out = [0; 22]
+    for k in 0..22 {
+        out[k] = line_of(text, f"k == {KIND_KEYS[k]} {{".as_str())
+    }
+    out
+}
+
+fn species_lines() -> [u32; 7] {
+    let text = embed("species.wrela")
+    var out = [0; 7]
+    for k in 0..7 {
+        out[k] = line_of(text, SPECIES_KEYS[k])
+    }
+    out
+}
+
+/// The first line of `text` (from 1) that holds `pattern`; 0 if none does.
+fn line_of(text: Bytes, pattern: str) -> u32 {
+    var line: u32 = 1
+    let n = pattern.len()
+    var i: u32 = 0
+    while i + n <= text.len() {
+        var same = true
+        var k: u32 = 0
+        while same && k < n {
+            same = text.at(i + k) == pattern.byte(k)
+            k += 1
+        }
+        if same {
+            return line
+        }
+        if text.at(i) == 10 {
+            line += 1
+        }
+        i += 1
+    }
+    0
+}
+
+/// What a click's ray met first: a tree (its tile and its index there) at `distance`, or the
+/// ground at `point`, or nothing within reach.
+pub enum Picked: Copy {
+    Tree { tile: u32, i: u32, distance: f32 },
+    Ground { point: vec3, normal: vec3, distance: f32 },
+    Nothing,
+}
+
+/// How far a click reaches (m).
+pub const REACH: f32 = 600.0
+
+/// What the ray from `eye` along `dir` (a unit vector) meets first: the near tiles' trees, each as
+/// it's drawn (`drawn`: its trunk a cylinder to its crown's top, its crown an ellipsoid from its
+/// base to its top; a log along the ground where it fell), or the ground.
+pub fn pick(
+    tiles: [NearTile],
+    eye: vec3,
+    dir: vec3,
+    height: fn(vec2) -> f32,
+    drawn: fn([Tree]) -> Vec<Drawn>,
+) -> Picked {
+    let g = raycast(world::GROUND, eye, dir, REACH)
+    var best = if g.hit { g.distance } else { REACH }
+    var out = if g.hit {
+        Picked::Ground { point: g.point, normal: g.normal, distance: g.distance }
+    } else {
+        Picked::Nothing
+    }
+    for ti in 0..tiles.len() {
+        // A tile the ray passes nowhere near is skipped whole.
+        let lo = vec2(tiles[ti].tile) * TILE - vec2(40.0)
+        let hi = lo + vec2(TILE + 80.0)
+        if !ray_meets_box(eye.xz, dir.xz, best, lo, hi) {
+            continue
+        }
+        borrow trees = tiles[ti].trees
+        let crowns = drawn(trees)
+        for i in 0..trees.len() {
+            let t = trees[i]
+            let c = crowns[i]
+            let y = height(t.at)
+            var d = 1.0e9
+            if t.state == State::Log {
+                // A log: a cylinder along the ground from its foot, the way it fell.
+                let len = t.tall * 0.85
+                let a = vec3(t.at.x, y + t.girth, t.at.y)
+                let b = a + vec3(t.fall.x, 0.0, t.fall.y) * len
+                d = ray_capsule(eye, dir, a, b, max(t.girth, 0.15))
+            } else {
+                let top = if c.top > 0.0 { c.top } else { t.tall }
+                d = ray_cylinder(eye, dir, t.at, y, y + top, max(c.trunk, 0.05))
+                if c.reach > 0.0 {
+                    let mid = vec3(t.at.x, y + 0.5 * (c.base + c.top), t.at.y)
+                    let radii = vec3(c.reach, max(0.5 * (c.top - c.base), 0.3), c.reach)
+                    d = min(d, ray_ellipsoid(eye, dir, mid, radii))
+                }
+            }
+            if d < best {
+                best = d
+                out = Picked::Tree { tile: ti, i, distance: d }
+            }
+        }
+    }
+    out
+}
+
+/// Whether the ray from `o` along `d` (on the plane; not unit) passes within the box `lo`..`hi`
+/// before `reach` (along the full ray).
+fn ray_meets_box(o: vec2, d: vec2, reach: f32, lo: vec2, hi: vec2) -> bool {
+    var t0 = 0.0
+    var t1 = reach
+    for a in 0..2 {
+        if abs(d[a]) < 1.0e-6 {
+            if o[a] < lo[a] || o[a] > hi[a] {
+                return false
+            }
+        } else {
+            let u = (lo[a] - o[a]) / d[a]
+            let v = (hi[a] - o[a]) / d[a]
+            t0 = max(t0, min(u, v))
+            t1 = min(t1, max(u, v))
+        }
+    }
+    t0 <= t1
+}
+
+/// Where the ray meets a vertical cylinder of radius `r` round `at`, from `y0` to `y1` (1e9:
+/// it doesn't).
+fn ray_cylinder(o: vec3, d: vec3, at: vec2, y0: f32, y1: f32, r: f32) -> f32 {
+    let p = o.xz - at
+    let a = dot(d.xz, d.xz)
+    if a < 1.0e-9 {
+        return 1.0e9
+    }
+    let b = dot(p, d.xz)
+    let c = dot(p, p) - r * r
+    let disc = b * b - a * c
+    if disc < 0.0 {
+        return 1.0e9
+    }
+    let t = (-b - sqrt(disc)) / a
+    let y = o.y + d.y * t
+    if t > 0.0 && y >= y0 && y <= y1 { t } else { 1.0e9 }
+}
+
+/// Where the ray meets the ellipsoid round `mid` with half-axes `radii` (1e9: it doesn't).
+fn ray_ellipsoid(o: vec3, d: vec3, mid: vec3, radii: vec3) -> f32 {
+    let p = (o - mid) / radii
+    let q = d / radii
+    let a = dot(q, q)
+    let b = dot(p, q)
+    let c = dot(p, p) - 1.0
+    let disc = b * b - a * c
+    if disc < 0.0 {
+        return 1.0e9
+    }
+    let t = (-b - sqrt(disc)) / a
+    if t > 0.0 { t } else if c < 0.0 { 0.0 } else { 1.0e9 }
+}
+
+/// Where the ray meets the capsule from `a` to `b` of radius `r`, roughly: the nearest point of
+/// the ray to the segment, if it passes within `r` (1e9: it doesn't).
+fn ray_capsule(o: vec3, d: vec3, a: vec3, b: vec3, r: f32) -> f32 {
+    let u = b - a
+    let w = o - a
+    let uu = dot(u, u)
+    let ud = dot(u, d)
+    let den = uu - ud * ud
+    var t = 0.0
+    var s = 0.0
+    if den > 1.0e-6 {
+        s = clamp((dot(u, w) - ud * dot(d, w)) / den, 0.0, 1.0)
+    }
+    t = max(dot(a + u * s - o, d), 0.0)
+    let gap = length(o + d * t - (a + u * s))
+    if gap <= r { t } else { 1.0e9 }
+}
+
+/// A year as a JSON number, or null for none.
+fn year_json(y: i32, known: bool) -> String {
+    if known { f"{y}" } else { String::from("null") }
+}
+
+fn state_name(s: State) -> Text {
+    match s {
+        State::Alive => "alive",
+        State::Snag => "standing dead",
+        State::Log => "fallen",
+        State::Gone => "gone",
+    }
+}
+
+fn cause_name(c: Cause) -> Text {
+    match c {
+        Cause::Old => "old age",
+        Cause::Wind => "wind",
+        Cause::Lightning => "lightning",
+        Cause::Snapped => "snapped",
+        Cause::Fire => "fire",
+        Cause::Shade => "shade",
+        Cause::Browsed => "browsed",
+        Cause::Felled => "felled",
+    }
+}
+
+/// The part of the map that shaped a tree (`grow::shaped`), as JSON: what it is and its name;
+/// null for none.
+fn shaped_json(m: engine::place::Map, code: u32) -> String {
+    match shaper(code) {
+        Some((by, i)) => {
+            let (what, name) = match by {
+                Shaper::Relation => ("the relation", m.relations[i].name()),
+                Shaper::Opening => ("the opening", m.openings[i].name),
+                Shaper::Route => ("the route", m.routes[i].name),
+                Shaper::Event => ("the event", m.events[i].name),
+                Shaper::Kept => ("the kept tree", m.kept[i].name),
+            }
+            f"{{\"by\": \"{what}\", \"name\": \"{name}\"}}"
+        },
+        None => String::from("null"),
+    }
+}
+
+/// A tree's provenance as one line of JSON: its species and the line that says how it lives, the
+/// kind it's drawn as and the line that builds it, and the history's record of it.
+pub fn tree_json(t: Tree, drawn_kind: u32, distance: f32, ms: f64) -> String {
+    borrow m = world::MAP
+    let present = map::PRESENT
+    let alive = t.state == State::Alive
+    let species = if t.kind < 7 { SPECIES_NAMES[t.kind] } else { "?" }
+    let habit = if t.kind < 7 { SPECIES_LINES[t.kind] } else { 0 }
+    let kind = if drawn_kind < 22 { KIND_KEYS[drawn_kind] } else { "?" }
+    let built = if drawn_kind < 22 { KIND_LINES[drawn_kind] } else { 0 }
+    let died = year_json(t.died, !alive)
+    // Its age now, or when it died.
+    let age = (if alive { present } else { t.died }) - t.born
+    let fell = year_json(t.fell, t.state == State::Log)
+    let cause = if alive { String::from("null") } else { f"\"{cause_name(t.cause)}\"" }
+    let shaped = shaped_json(m, t.shaped)
+    f"{{\"provenance\": \"tree\", \"at\": [{t.at.x}, {t.at.y}], \"distance\": {distance}, \"species\": \"{species}\", \"habit\": \"species.wrela:{habit}\", \"drawn_as\": \"{kind}\", \"kind\": \"trees.wrela:{built}\", \"born\": {t.born}, \"age\": {age}, \"state\": \"{state_name(t.state)}\", \"died\": {died}, \"fell\": {fell}, \"cause\": {cause}, \"shaped\": {shaped}, \"pinned\": {t.pinned}, \"tall\": {t.tall}, \"girth\": {t.girth}, \"ms\": {ms}}}"
+}
+
+/// The history's fields at world point `p` from the near tile that holds it (light, trodden, wet,
+/// thorn, each 0 to 1), or -1 in each where none does.
+pub fn fields_at(tiles: [NearTile], p: vec2) -> vec4 {
+    let t = engine::place::tile_of(p)
+    for nt in tiles {
+        if nt.tile == t && nt.fields.len() == 4 * WEAR_N * WEAR_N {
+            let cell = TILE / f32(WEAR_N)
+            let q = (p - vec2(t) * TILE) / cell
+            let i = min(u32(max(q.x, 0.0)), WEAR_N - 1)
+            let j = min(u32(max(q.y, 0.0)), WEAR_N - 1)
+            let k = 4 * (j * WEAR_N + i)
+            return vec4(
+                f32(nt.fields[k]),
+                f32(nt.fields[k + 1]),
+                f32(nt.fields[k + 2]),
+                f32(nt.fields[k + 3]),
+            ) /
+                255.0
+        }
+    }
+    vec4(-1.0)
+}
+
+/// What covers the ground, in words, from its cover and fields: the stream's bed, rock, a path's
+/// bare earth, worn grass, the meadow, the wood's floor (leaf litter, moss), under thorn, wet.
+pub fn cover_name(point: vec3, normal: vec3, f: vec4) -> String {
+    let g = world::GROUND
+    let c = engine::terrain::Terrain::cover_with(g, point, normal, f)
+    let rock = g.rocky(point.xz, normal)
+    var name = if f.z > engine::bake::STREAM_BED {
+        String::from("a stream's bed: gravel and wet stones")
+    } else if rock > 0.5 {
+        String::from("rock")
+    } else if f.y > 0.5 {
+        String::from("a path: bare, packed earth")
+    } else if f.x >= 0.0 && f.x < ground::CLOSED {
+        String::from("the wood's floor: leaf litter and moss")
+    } else if c.grass > 0.3 {
+        if f.y > 0.1 { String::from("worn grass beside a path") } else {
+            String::from("meadow grass")
+        }
+    } else if c.grass > 0.02 {
+        String::from("thin grass in half light")
+    } else {
+        String::from("bare ground")
+    }
+    if f.w > 0.3 {
+        name.push_str(", under thorn")
+    }
+    if f.z > 0.6 && f.z <= engine::bake::STREAM_BED {
+        name.push_str(", wet")
+    }
+    name
+}
+
+/// The ground's provenance as one line of JSON: where, its region, what covers it and the
+/// history's fields there.
+pub fn ground_json(tiles: [NearTile], point: vec3, normal: vec3, distance: f32, ms: f64) -> String {
+    borrow m = world::MAP
+    let p = point.xz
+    let f = fields_at(tiles, p)
+    let region = m.regions[m.region_of(p)].name
+    let cover = cover_name(point, normal, f)
+    let fields = if f.x < 0.0 { String::from("null") } else {
+        f"{{\"light\": {f.x}, \"trodden\": {f.y}, \"wet\": {f.z}, \"thorn\": {f.w}}}"
+    }
+    f"{{\"provenance\": \"ground\", \"at\": [{p.x}, {p.y}], \"y\": {point.y}, \"distance\": {distance}, \"region\": \"{region}\", \"cover\": \"{cover}\", \"fields\": {fields}, \"ms\": {ms}}}"
+}
+
+/// A click at screen point `px` (of a screen `size` pixels) through camera `cam`: what's under it,
+/// as one line of JSON, and how long it took to find (ms) within it.
+pub fn click(
+    tiles: [NearTile],
+    cam: Camera,
+    px: vec2,
+    size: vec2,
+    height: fn(vec2) -> f32,
+) -> String {
+    let began = std::time::now()
+    let c = cam.unjittered()
+    let dir = c.ray(px / size * c.screen)
+    let picked = pick(tiles, c.eye, dir, height, trees::drawn_crowns)
+    let ms = 1000.0 * (std::time::now() - began)
+    match picked {
+        Picked::Tree { tile, i, distance } => {
+            let t = tiles[tile].trees[i]
+            // A kept tree is drawn as the great oak (`trees::placed`).
+            let k = if t.pinned { trees::GREAT } else { trees::kind_of(t) }
+            tree_json(t, k, distance, ms)
+        },
+        Picked::Ground { point, normal, distance } => ground_json(
+            tiles,
+            point,
+            normal,
+            distance,
+            ms,
+        ),
+        Picked::Nothing => f"{{\"provenance\": \"nothing\", \"ms\": {ms}}}",
+    }
+}

@@ -1740,3 +1740,76 @@ pub fn frame(time: f32, width: u32, height: u32) {
     );
     assert!(history <= 3.0, "the preview's history took {history:.2} s");
 }
+
+/// AC13's provenance in the running floor: a click on a tree names its species and the line that
+/// says how it lives, the kind it's drawn as and the line that builds it, and the history's
+/// record of it (born, how it died, what shaped it); a click on the ground names its region, its
+/// cover and the history's fields there. In Chrome within 50 ms (the click's frame, CPU), and the
+/// same answers natively. From the gate at 800×600: the great oak, then the meadow.
+#[test]
+#[ignore = "long: bakes the floor, needs Chrome, python3 and a GPU"]
+fn a_click_names_a_trees_kind_and_history_and_the_grounds_cover() {
+    let _ = floor();
+    let (dir, rel) = wrela_tests::page("examples/last-green", "last-green-provenance");
+    let text = r#"[
+        {"frame": 150, "type": "down", "x": 203, "y": 285, "button": "primary"},
+        {"frame": 151, "type": "up", "x": 203, "y": 285, "button": "primary"},
+        {"frame": 170, "type": "down", "x": 250, "y": 450, "button": "primary"},
+        {"frame": 171, "type": "up", "x": 250, "y": 450, "button": "primary"}
+    ]"#;
+    let frames = 200;
+    let run = wrela_tests::ChromeRun {
+        script: Some(text.into()),
+        workers: 8,
+        nohash: true,
+        ..wrela_tests::ChromeRun::new(frames, 800, 600, 60.0)
+    };
+    let chrome = wrela_tests::run_in_chrome_with(&rel, run);
+    let answers = |lines: Vec<&str>| -> Vec<Value> {
+        lines
+            .into_iter()
+            .filter(|l| l.starts_with("{\"provenance\""))
+            .map(|l| serde_json::from_str(l).expect("JSON"))
+            .collect()
+    };
+    let in_chrome = answers(chrome.printed.iter().map(|(_, l)| l.as_str()).collect());
+    let script = wrela_host::parse_script(text).expect("a script");
+    let mut native = wrela_host::Host::load(&dir).expect("load the floor");
+    for i in 0..frames {
+        native.lockstep_frame(i, 60.0, 800, 600, &script).unwrap_or_else(|e| panic!("{i}: {e}"));
+    }
+    let natively = answers(native.take_logs().iter().map(String::as_str).collect());
+    drop(native);
+    eprintln!("chrome: {in_chrome:?}\nnative: {natively:?}");
+    assert_eq!(in_chrome.len(), 2, "two answers in Chrome");
+    for (a, b) in in_chrome.iter().zip(&natively) {
+        assert!(answers_agree(a, b), "the hosts disagree:\n  {a}\n  {b}");
+    }
+    let tree = &in_chrome[0];
+    assert_eq!(tree["provenance"], "tree", "{tree}");
+    assert_eq!(tree["species"], "oak");
+    assert_eq!(tree["drawn_as"], "GREAT");
+    assert_eq!(tree["shaped"]["name"], "the great oak");
+    let trees = std::fs::read_to_string(repo_root().join("examples/last-green/trees.wrela"))
+        .expect("trees.wrela");
+    let line = trees.lines().position(|l| l.contains("k == GREAT {")).expect("the kind") + 1;
+    assert_eq!(tree["kind"], format!("trees.wrela:{line}"), "the kind's line");
+    let species = std::fs::read_to_string(repo_root().join("examples/last-green/species.wrela"))
+        .expect("species.wrela");
+    let line = species.lines().position(|l| l.contains("// Oak:")).expect("the habit") + 1;
+    assert_eq!(tree["habit"], format!("species.wrela:{line}"), "the habit's line");
+    assert!(tree["born"].as_i64().is_some() && tree["state"] == "alive", "{tree}");
+    let ground = &in_chrome[1];
+    assert_eq!(ground["provenance"], "ground", "{ground}");
+    assert_eq!(ground["region"], "the wood pasture");
+    assert!(ground["cover"].as_str().is_some_and(|c| !c.is_empty()), "{ground}");
+    assert!(ground["fields"]["light"].as_f64().is_some(), "the history's fields: {ground}");
+    // The clicks' frames in Chrome: each pointer-up's frame, its CPU time.
+    let frames_json = wrela_tests::result_json(&dir.join("results"), "frames.json");
+    let cpu = frames_json["cpu_ms"].as_array().expect("cpu_ms");
+    for f in [151, 171] {
+        let ms = cpu[f].as_f64().expect("ms");
+        eprintln!("the click at frame {f}: {ms:.1} ms of CPU");
+        assert!(ms <= 50.0, "the click's frame took {ms:.1} ms");
+    }
+}

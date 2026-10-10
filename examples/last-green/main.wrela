@@ -32,6 +32,7 @@ use engine::wood::Wood
 use engine::view::{BEHIND, Camera, NEAREST, camera, first_camera}
 use engine::water::{LOOKS, WaterVert, copy_below, water_shade, water_vertex}
 use history::{BAKED, OBSTACLES, tiles_hi, tiles_lo}
+use provenance::NearTile
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
     Address, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer, GpuSpan,
@@ -39,7 +40,7 @@ use std::gpu::{
     begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture, dispatch,
     buffer_of, draw, label, sampler, texture, writable_texture, write,
 }
-use std::input::{Event, Key, events}
+use std::input::{Button, Event, Key, events}
 use std::io::{Pending, print}
 use world::{GROUND, World, present as snapshot, spawn_world, tick}
 
@@ -165,16 +166,6 @@ const NO_LAYER: u32 = 0
 const FINE: u32 = 1
 const COARSE: u32 = 2
 
-/// A tile cooked and kept while it's near: its bytes as they came and its trees (the history's
-/// records: for its neighbours' fields, and provenance), and which of its neighbours' trees its
-/// ground's fields were worked out with (`engine::bake::neighbour_bit`).
-struct Ground {
-    tile: vec2i,
-    bytes: Vec<u8>,
-    trees: Vec<engine::grow::Tree>,
-    with: u32,
-}
-
 /// What cooking a tile on a helper is given: the tile, its bytes as they came (a baked tile's),
 /// or whether it's the wildwood's (grown, or its trees `own` when it's been grown before); its
 /// neighbours' trees whose crowns may reach over its edge; and whether only its ground's fields
@@ -257,7 +248,7 @@ struct Cooking {
 }
 
 /// Whether tile `t` is among `grounds`.
-fn has_ground(grounds: [Ground], t: vec2i) -> bool {
+fn has_ground(grounds: [NearTile], t: vec2i) -> bool {
     for g in grounds {
         if g.tile == t {
             return true
@@ -268,7 +259,7 @@ fn has_ground(grounds: [Ground], t: vec2i) -> bool {
 
 /// The trees of the cooked tiles round tile `t` whose crowns may reach over its edge, and which
 /// of its neighbours they're from.
-fn others_round(grounds: [Ground], t: vec2i) -> (Vec<engine::grow::Tree>, u32) {
+fn others_round(grounds: [NearTile], t: vec2i) -> (Vec<engine::grow::Tree>, u32) {
     var others: Vec<engine::grow::Tree> = Vec::new()
     var with: u32 = 0
     for g in grounds {
@@ -300,7 +291,7 @@ pub struct Floor {
     arrived: Vec<Arrived>,
     /// The tiles cooked and near: their ground's fields are worked out again as their
     /// neighbours come, so a tile's ground is the same whatever order they came in.
-    grounds: Vec<Ground>,
+    grounds: Vec<NearTile>,
     tiles_in: u32,
     /// The far layer: fetched first (the first frame's payload), then each tile's instances,
     /// loaded where the tile's own trees aren't.
@@ -388,6 +379,12 @@ pub struct Floor {
     hashing: Vec<Pending<u8>>,
     hashed: vec3u,
     hash_sum: u64,
+    /// Where the pointer went down, and a click (down and up in one place) to name what's under
+    /// it (`provenance::click`), in the frame's pixels.
+    press: Option<vec2>,
+    clicked: Option<vec2>,
+    /// The play harness's map with the check (M).
+    map: harness::HarnessMap,
 }
 
 /// The built things to realize: the floor's (`blockouts::built`), and the egg's place's ring of
@@ -527,6 +524,9 @@ pub fn init() -> Floor {
         hashing: Vec::new(),
         hashed: vec3u(0),
         hash_sum: 0,
+        press: None,
+        clicked: None,
+        map: harness::HarnessMap::new(),
     }
 }
 
@@ -735,12 +735,23 @@ fn stream(s: mut Floor, eye: vec2) {
                 // Unless it's been dropped while its fields were cooked.
                 if has_ground(s.grounds, t) {
                     s.clipmap.write_fields(t, cooked.fields)
+                    for g in 0..s.grounds.len() {
+                        if s.grounds[g].tile == t {
+                            s.grounds[g].fields = cooked.fields.clone()
+                        }
+                    }
                 }
                 continue
             }
             s.clipmap.write_fields(t, cooked.fields)
             s.grounds.push(
-                Ground { tile: t, bytes: take k.bytes, trees: take cooked.trees, with: k.with },
+                NearTile {
+                    tile: t,
+                    bytes: take k.bytes,
+                    trees: take cooked.trees,
+                    fields: cooked.fields.clone(),
+                    with: k.with,
+                },
             )
             s.arrived.push(Arrived { tile: t, placed: take cooked.placed })
             // Its neighbours' ground worked out again with its trees, where theirs weren't.
@@ -1006,6 +1017,23 @@ fn cook_load(s: mut Floor) {
 /// number and Enter hold the camera on a lookbook shot (Escape lets it go).
 fn keys(s: mut Floor, time: f32) {
     for e in events() {
+        match e {
+            Event::PointerDown { at, button, .. } => {
+                if button == Button::Primary {
+                    s.press = Some(at)
+                }
+            },
+            Event::PointerUp { at, button, .. } => {
+                if button == Button::Primary {
+                    if let Some(from) = replace(mut s.press, None) {
+                        if length(at - from) < 4.0 {
+                            s.clicked = Some(at)
+                        }
+                    }
+                }
+            },
+            _ => {},
+        }
         if let Event::KeyDown { key, .. } = e {
             if s.typing_shot {
                 let d = match key {
@@ -1038,6 +1066,9 @@ fn keys(s: mut Floor, time: f32) {
             }
             if key == Key::Escape {
                 s.shot = None
+            }
+            if key == Key::M {
+                s.map.toggle()
             }
             let system = match key {
                 Key::F1 => Some(System::Trees),
@@ -1502,7 +1533,7 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
 }
 
 /// Temporal AA up to the output, then the look's passes to the screen.
-fn finish(s: mut Floor, cam: Camera, width: u32, height: u32) {
+fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, heading: f32) {
     let out = vec2(f32(width), f32(height))
     let r = Resolve {
         cam,
@@ -1568,12 +1599,14 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32) {
         screen,
         develop.bind(d, s.history, s.depth, glow: s.glow_a, dabs: s.dabs, s: s.linear, exposure: e),
     )
+    s.map.draw(screen, out, feet, heading)
     screen.present()
 }
 
 pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     keys(mut s, time)
     hash_bake(mut s)
+    s.map.poll()
     let (w, h) = (max(width / SCALE, 1), max(height / SCALE, 1))
     if width != s.width || height != s.height || f32(w) != s.cam.screen.x {
         resize(mut s, width, height, w, h)
@@ -1632,6 +1665,11 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         last: s.cam,
     )
     let cam = s.cam
+    // A click names what's under it: a tree's kind and history, or the ground's cover and fields.
+    if let Some(px) = replace(mut s.clicked, None) {
+        let size = vec2(f32(width), f32(height))
+        print(provenance::click(s.grounds, cam, px, size, height_at))
+    }
     let wind = wind(time)
     // The leaves between the camera and the player fade (#54 §5); on a shot, those round the eye.
     let clear_to = if s.shot.is_some() { eye + cam.forward * 1.5 } else {
@@ -1689,7 +1727,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         print(f"playable at frame {s.frames}")
     }
     draw_scene(mut s, cam, sh, wind)
-    finish(mut s, cam, width, height)
+    finish(mut s, cam, width, height, feet.xz, heading)
     s.frames += 1
 }
 

@@ -1957,3 +1957,91 @@ pub fn walk_bytes(c: Checked) -> Vec<u8> {
     }
     out
 }
+
+/// The floor's map as an image (the play harness's map, #54 §5): over the map's square, `px`
+/// metres a pixel, the ground's relief lit from the north-west, darker under the crowns (the
+/// light at the ground), the trails' earth, open water, what can't be walked greyed, the dead
+/// zones red (a walkable view with no draw `FAINT` or more), the routes yellow and the sites
+/// white. Its size (two `u32`s), its corner and pixel (three `f32`s), then RGBA8 rows from the
+/// corner, north (-z) first.
+pub fn map_image(m: Map, c: Checked, set: Settings, px: f32) -> Vec<u8> {
+    borrow s = c.sight
+    let g = s.grid
+    let w = u32(ceil((m.hi.x - m.lo.x) / px))
+    let h = u32(ceil((m.hi.y - m.lo.y) / px))
+    var out: Vec<u8> = Vec::with_capacity(20 + 4 * w * h)
+    for x in [w, h, bitcast_u32(m.lo.x), bitcast_u32(m.lo.y), bitcast_u32(px)] {
+        for k in 0..4 {
+            out.push(u8((x >> (8 * k)) & 255))
+        }
+    }
+    let vg = views_grid(m, set)
+    var rgb: Vec<vec3> = Vec::filled(w * h, vec3(0.1))
+    for y in 0..h {
+        for x in 0..w {
+            let q = m.lo + (vec2(f32(x), f32(y)) + vec2(0.5)) * px
+            if !g.holds(q) {
+                continue
+            }
+            let cc = g.cell_at(q)
+            let e = g.cell
+            let dx = g.sample(s.ground, q + vec2(e, 0.0)) - g.sample(s.ground, q - vec2(e, 0.0))
+            let dz = g.sample(s.ground, q + vec2(0.0, e)) - g.sample(s.ground, q - vec2(0.0, e))
+            let n = normalize(vec3(-dx, 2.0 * e, -dz))
+            let shade = 0.55 + 0.45 * max(dot(n, normalize(vec3(-1.0, 1.4, -1.0))), 0.0)
+            let wood = mix(vec3(0.09, 0.17, 0.07), vec3(0.42, 0.52, 0.26), vec3(s.open[cc]))
+            var col = mix(wood, vec3(0.55, 0.42, 0.28), vec3(s.trail[cc] * 0.8)) * shade
+            if s.walk[cc] <= 0.0 {
+                col *= 0.55
+            }
+            for mere in m.water.meres {
+                if mere.z > 0.0 && length(q - mere.xy) < mere.z {
+                    col = vec3(0.12, 0.25, 0.42)
+                }
+            }
+            if vg.holds(q) {
+                let v = c.views[vg.cell_at(q)]
+                if v.walkable && v.best < FAINT {
+                    col = mix(col, vec3(0.85, 0.12, 0.1), vec3(0.55))
+                }
+            }
+            rgb[y * w + x] = col
+        }
+    }
+    // The routes and the sites over it.
+    for r in m.routes {
+        for k in 0..r.points.len() - 1 {
+            let a = (r.points[k] - m.lo) / px
+            let b = (r.points[k + 1] - m.lo) / px
+            let steps = u32(ceil(length(b - a))) + 1
+            for i in 0..steps {
+                let p = mix(a, b, vec2(f32(i) / f32(steps)))
+                dot_at(mut rgb, w, h, p, 0.8, vec3(0.95, 0.85, 0.45))
+            }
+        }
+    }
+    for k in m.sites {
+        dot_at(mut rgb, w, h, (k.at - m.lo) / px, 2.2, vec3(1.0))
+    }
+    for col in rgb {
+        let v = sqrt(clamp(col, vec3(0.0), vec3(1.0)))
+        out.push(u8(v.x * 255.0))
+        out.push(u8(v.y * 255.0))
+        out.push(u8(v.z * 255.0))
+        out.push(255)
+    }
+    out
+}
+
+/// A filled dot of radius `r` pixels at `p` in an image `w` by `h`.
+fn dot_at(rgb: mut Vec<vec3>, w: u32, h: u32, p: vec2, r: f32, col: vec3) {
+    let lo = vec2i(floor(p - vec2(r)))
+    let hi = vec2i(ceil(p + vec2(r)))
+    for y in max(lo.y, 0)..min(hi.y + 1, i32(h)) {
+        for x in max(lo.x, 0)..min(hi.x + 1, i32(w)) {
+            if length(vec2(f32(x) + 0.5, f32(y) + 0.5) - p) <= r {
+                rgb[u32(y) * w + u32(x)] = col
+            }
+        }
+    }
+}

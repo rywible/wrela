@@ -113,7 +113,11 @@ pub fn waters() -> Laid {
 }
 
 /// The interest check on the bake (#54 §4): its report (`report.json`) and its views
-/// (`views.bin`), shipped for the map lens and the floor's tests.
+/// (`views.bin`), shipped for the map lens and the floor's tests; and the map with the check
+/// (`map.bin`, `interest::map_image`), which the play harness shows (M).
+/// The play harness's map: metres a pixel.
+pub const MAP_PX: f32 = 4.0
+
 @fuel(2 ** 42)
 pub const CHECKED: Shipped = ship("check", checked())
 
@@ -181,6 +185,7 @@ fn checked() -> Vec<(String, Vec<u8>)> {
         [
             (String::from("report.json"), Vec::from(text.as_bytes())),
             (String::from("views.bin"), views_bytes(m, c, FULL)),
+            (String::from("map.bin"), engine::interest::map_image(m, c, FULL, MAP_PX)),
             (String::from("walk.bin"), walk_bytes(c)),
             (String::from("tour.bin"), take tour_bytes),
             (String::from("reach.json"), Vec::from(reach.as_bytes())),
