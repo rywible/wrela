@@ -18,9 +18,10 @@
 //! wrela doc <item> [<package-dir>]        an item's signature, doc comment and examples
 //! wrela pipelines <package-dir> [--json]  each GPU entry point's instantiations (§7)
 //! wrela profile <package-dir> [--frames n] [--size WxH] [--input <script.json>] [--serial]
-//!     [--json]                            where a frame's time goes on this machine: the GPU's
-//!                                         by label, the CPU's and its phases, each
-//!                                         pipeline's WGSL
+//!     [--json] [--baseline <report.json>] where a frame's time goes on this machine: the GPU's
+//!                                         by label, the CPU's and its phases (medians and
+//!                                         95th percentiles), each pipeline's WGSL; with a
+//!                                         baseline, how each time changed
 //! wrela test <package-dir> [<filter>] [--json]
 //!                                         run the package's `@test` functions (§10), or
 //!                                         those whose names contain `filter`; exit 1 if one
@@ -94,7 +95,7 @@ pub(crate) fn usage() -> ExitCode {
         "wrela explain <code>",
         "wrela doc <item> [<package-dir>]",
         "wrela pipelines <package-dir> [--json]",
-        "wrela profile <package-dir> [--frames n] [--size WxH] [--input <script.json>] [--serial] [--json]",
+        "wrela profile <package-dir> [--frames n] [--size WxH] [--input <script.json>] [--serial] [--json] [--baseline <report.json>]",
         "wrela test <package-dir> [<filter>] [--bless] [--json]",
         "wrela primer [area]",
         "wrela solve <package-dir> (--minimize <module>::<function> | --spec) --free <file>[:<lines>]... [--steps n] [--exact] [--write] [--json]",
