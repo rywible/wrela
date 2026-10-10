@@ -64,8 +64,8 @@ const METERING = Metering {
 }
 
 /// Where the forest's levels hand over: its cards to impostors, and impostors to volumes (m).
-const CARDS_TO: f32 = 100.0
-const IMPOSTORS_TO: f32 = 1000.0
+const CARDS_TO: f32 = 80.0
+const IMPOSTORS_TO: f32 = 4000.0
 
 /// The forest's kinds cooked a frame at load.
 const KINDS_PER_FRAME: u32 = 2
@@ -75,6 +75,9 @@ const KINDS_PER_FRAME: u32 = 2
 /// `SLOTS` at once.
 const WANT: f32 = 350.0
 const DROP: f32 = 450.0
+
+/// Past how far a tile's far layer is coarse (m): a crown each 16 m cell, not 8 m.
+const FAR_FINE: f32 = 500.0
 
 /// How far out the wildwood's far layer is grown (m), and how many of its tiles at a time.
 const WILD_FAR: f32 = 900.0
@@ -103,6 +106,9 @@ const MOVING_SPAN: f32 = 6.0
 const PROBE_COLS: u32 = 81
 const PROBE_SPACING: f32 = 2.0
 const PROBES_MOVE: f32 = 30.0
+
+/// The rays a probe is first baked with (of the engine's `probes::RAYS`).
+const PROBE_RAYS: u32 = 32
 
 /// The systems a frame can leave out (the keys F1–F5 toggle them).
 enum System: Copy + Eq + Fieldless {
@@ -143,6 +149,21 @@ struct Arrived {
     placed: Vec<Placed>,
 }
 
+/// A tile's far layer: a crown each 8 m cell (`fine`), and each 16 m (`coarse`, past
+/// `FAR_FINE`: a quarter of the crowns, each wider, where the far crowns overlap most), and
+/// which is loaded (none while the tile's own trees are).
+struct FarTile {
+    tile: vec2i,
+    fine: Vec<Placed>,
+    coarse: Vec<Placed>,
+    loaded: u32,
+}
+
+/// Which of a far tile's layers is loaded.
+const NO_LAYER: u32 = 0
+const FINE: u32 = 1
+const COARSE: u32 = 2
+
 /// A tile cooked and kept while it's near: its bytes as they came and its trees (the history's
 /// records: for its neighbours' fields, and provenance), and which of its neighbours' trees its
 /// ground's fields were worked out with (`engine::bake::neighbour_bit`).
@@ -168,13 +189,14 @@ struct TileInput {
 }
 
 /// A tile cooked: its trees, its instances placed, its ground's fields, and a wild tile's far
-/// layer (a baked tile's is the bake's `far.bin`).
+/// layer, fine and coarse (a baked tile's is the bake's `far.bin`).
 struct Cooked {
     tile: vec2i,
     trees: Vec<engine::grow::Tree>,
     placed: Vec<Placed>,
     fields: Vec<u8>,
     far: Vec<Placed>,
+    far_coarse: Vec<Placed>,
 }
 
 /// A tile cooked on a helper (#54 §6: "round the player, as jobs on the helpers"): decoded (or a
@@ -186,13 +208,21 @@ fn cook_tile(input: take TileInput) -> Cooked {
     let d = if input.wild { wildwood::decisions(t, take input.own) } else {
         decode_tile(input.bytes)
     }
-    let far = if input.wild && !input.fields_only {
-        trees::far_placed(engine::bake::far_of(d.trees, t, t), t, height_at)
+    let (far, far_coarse) = if input.wild && !input.fields_only {
+        let f = engine::bake::far_of(d.trees, t, t)
+        (trees::far_placed(f, t, height_at, step: 1), trees::far_placed(f, t, height_at, step: 2))
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     }
     if input.far_only {
-        return Cooked { tile: t, trees: Vec::new(), placed: Vec::new(), fields: Vec::new(), far }
+        return Cooked {
+            tile: t,
+            trees: Vec::new(),
+            placed: Vec::new(),
+            fields: Vec::new(),
+            far,
+            far_coarse,
+        }
     }
     let fields = engine::bake::tile_fields(
         d,
@@ -202,7 +232,7 @@ fn cook_tile(input: take TileInput) -> Cooked {
         map::PRESENT,
     )
     if input.fields_only {
-        return Cooked { tile: t, trees: Vec::new(), placed: Vec::new(), fields, far }
+        return Cooked { tile: t, trees: Vec::new(), placed: Vec::new(), fields, far, far_coarse }
     }
     Cooked {
         tile: t,
@@ -210,6 +240,7 @@ fn cook_tile(input: take TileInput) -> Cooked {
         trees: d.trees.clone(),
         fields,
         far,
+        far_coarse,
     }
 }
 
@@ -273,7 +304,7 @@ pub struct Floor {
     /// The far layer: fetched first (the first frame's payload), then each tile's instances,
     /// loaded where the tile's own trees aren't.
     far_fetch: Option<Pending<u8>>,
-    far_layer: Vec<Arrived>,
+    far_layer: Vec<FarTile>,
     grass: Grass,
     /// The static cascades, kept round the eye (the near) and the floor (the far), each drawn
     /// beside the one in use a strip a frame (`caches::Kept`).
@@ -344,6 +375,8 @@ pub struct Floor {
     water_look: u32,
     /// The last report's number (`REPORT_TICKS` apart).
     reported: u32,
+    /// Whether a frame's been full yet (`playable`).
+    playable: bool,
 }
 
 /// The built things to realize: the floor's (`blockouts::built`), and the egg's place's ring of
@@ -369,7 +402,12 @@ fn probes_at(at: vec2, occluders: take Vec<engine::probes::Occluder>) -> Baked {
         high: y + 40.0,
         voxel: 1.0,
     )
-    Baked::new(g, occluders)
+    var b = Baked::new(g, occluders)
+    // Baked while the floor plays: a quarter of the engine's rays a probe at first (a strip's
+    // dispatch is as long as a probe's rays take, however many columns), the rest filled in by
+    // baking again.
+    b.strip_rays = PROBE_RAYS
+    b
 }
 
 pub fn init() -> Floor {
@@ -408,7 +446,9 @@ pub fn init() -> Floor {
             FAR_CASCADE.span,
             reach: FAR_CASCADE.reach,
             side: FAR_CASCADE.side,
-            strips: 12,
+            // A strip a frame of a quarter the trees of the near one's (11 ms a strip in Chrome
+            // at 12 strips).
+            strips: 48,
         ),
         moving: depth_texture(width: MOVING_SIDE, height: MOVING_SIDE),
         cmp: comparison_sampler(),
@@ -468,6 +508,7 @@ pub fn init() -> Floor {
         below: texture::<Rgba16Float>(width: 1, height: 1),
         water_look: 0,
         reported: 0,
+        playable: false,
     }
 }
 
@@ -503,8 +544,27 @@ fn tile_distance(t: vec2i, p: vec2) -> f32 {
     length(p - q)
 }
 
+/// Whether a frame from `eye` is full: the wood cooked, every tile within 120 m placed, the near
+/// shadows drawn, the probes baked.
+fn playable(s: Floor, eye: vec2) -> bool {
+    let Some(w) = s.wood else { return false }
+    if !s.near.ready || !s.probes.done() {
+        return false
+    }
+    let at = engine::place::tile_of(eye)
+    for j in (at.y - 1)..(at.y + 2) {
+        for i in (at.x - 1)..(at.x + 2) {
+            let t = vec2i(i, j)
+            if tile_distance(t, eye) < 120.0 && w.slot_of(t).is_none() {
+                return false
+            }
+        }
+    }
+    true
+}
+
 /// Whether tile `t` is in the far layer.
-fn has_far(far: [Arrived], t: vec2i) -> bool {
+fn has_far(far: [FarTile], t: vec2i) -> bool {
     for a in far {
         if a.tile == t {
             return true
@@ -622,7 +682,14 @@ fn stream(s: mut Floor, eye: vec2) {
             let t = cooked.tile
             // A wild tile's far layer, for when it's beyond `WANT`.
             if !cooked.far.is_empty() && !has_far(s.far_layer, t) {
-                s.far_layer.push(Arrived { tile: t, placed: cooked.far.clone() })
+                s.far_layer.push(
+                    FarTile {
+                        tile: t,
+                        fine: cooked.far.clone(),
+                        coarse: cooked.far_coarse.clone(),
+                        loaded: NO_LAYER,
+                    },
+                )
             }
             if k.far_only {
                 continue
@@ -785,26 +852,47 @@ fn stream(s: mut Floor, eye: vec2) {
     }
     if let Some(far) = far_came {
         s.far_fetch = None
+        s.far.changed()
         let lo = tiles_lo()
         let hi = tiles_hi()
         for j in lo.y..(hi.y + 1) {
             for x in lo.x..(hi.x + 1) {
                 let t = vec2i(x, j)
-                s.far_layer.push(Arrived { tile: t, placed: trees::far_placed(far, t, height_at) })
+                s.far_layer.push(
+                    FarTile {
+                        tile: t,
+                        fine: trees::far_placed(far, t, height_at, step: 1),
+                        coarse: trees::far_placed(far, t, height_at, step: 2),
+                        loaded: NO_LAYER,
+                    },
+                )
             }
         }
     }
     var changed = false
     match mut s.wood {
         Some(w) => {
-            // Each tile's far layer where its own trees aren't loaded.
-            for f in s.far_layer {
+            // Each tile's far layer where its own trees aren't loaded: fine within `FAR_FINE`,
+            // coarse past it (each switched a little past the line, so it doesn't flicker).
+            for mut f in s.far_layer {
                 let own = w.slot_of(f.tile).is_some()
                 let far = w.slot_of(f.tile, far: true).is_some()
-                if own && far {
+                let d = tile_distance(f.tile, eye)
+                let coarse = if f.loaded == COARSE { d > FAR_FINE - 40.0 } else {
+                    d > FAR_FINE + 40.0
+                }
+                let want = if coarse { COARSE } else { FINE }
+                if far && (own || f.loaded != want) {
                     w.drop(f.tile, far: true)
-                } else if !own && !far && w.has_room() {
-                    let _ = w.load(f.tile, f.placed, far: true)
+                    f.loaded = NO_LAYER
+                }
+                if !own && w.slot_of(f.tile, far: true).is_none() && w.has_room() {
+                    let _ = if coarse {
+                        w.load(f.tile, f.coarse, far: true)
+                    } else {
+                        w.load(f.tile, f.fine, far: true)
+                    }
+                    f.loaded = want
                 }
             }
             var k = 0
@@ -829,9 +917,11 @@ fn stream(s: mut Floor, eye: vec2) {
         },
         None => {},
     }
+    // A tile in or out changes the near cascade's casters. The far cascade keeps what it drew
+    // of the far layer (the tiles' own trees loaded or dropped beyond the near cascade change
+    // its shadows too little to draw it all again, which costs 13 ms a strip in Chrome).
     if changed {
         s.near.changed()
-        s.far.changed()
     }
 }
 
@@ -866,7 +956,7 @@ fn cook_load(s: mut Floor) {
             cards_to: CARDS_TO,
             impostors_to: IMPOSTORS_TO,
         )
-        w.card_px = engine::lod::CARD_PX
+        w.card_px = engine::lod::CARD_PX * 2.5
         w.cell = 1.0 / f32(SCALE)
         w.write_lods()
         s.wood = Some(take w)
@@ -1133,6 +1223,7 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         air: s.tables.aerial,
         s: s.linear,
     }
+    label("vegetation choose")
     s.grass.place(
         cam,
         s.light,
@@ -1171,6 +1262,7 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         s.grass.prepass(pre, cam, wind)
     }
     pre.end()
+    label("vegetation occlusion")
     match mut s.wood {
         Some(w) => {
             if trees {
@@ -1497,6 +1589,12 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         print(
             f"frame {s.frames}: the player at {feet.x:.1}, {feet.z:.1}; {s.tiles_in} tiles come, {loaded} instances loaded",
         )
+    }
+    // The first full frame (#55 AC7's time to play): the wood cooked, every tile within 120 m of
+    // the eye placed, the near shadows drawn and the probes baked.
+    if !s.playable && playable(s, eye.xz) {
+        s.playable = true
+        print(f"playable at frame {s.frames}")
     }
     draw_scene(mut s, cam, sh, wind)
     finish(mut s, cam, width, height)

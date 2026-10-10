@@ -686,31 +686,56 @@ pub fn far_kinds() -> Vec<u32> {
     Vec::from([OAK_FOREST, BEECH_FOREST, BIRCH_FOREST, HAWTHORN, SLOE, PINE_FOREST, ALDER_A])
 }
 
-/// The far layer's instances in tile `t` (`engine::bake::Far`): each cell's tallest crown, of its
-/// species' far kind (`KINDS` on), on the ground at the cell's middle moved a little by a draw
-/// of its own, scaled to the crown's height.
-pub fn far_placed(far: engine::bake::Far, t: vec2i, height: fn(vec2) -> f32) -> Vec<Placed> {
+/// The far layer's instances in tile `t` (`engine::bake::Far`): each cell's tallest crown (of
+/// each `step` by `step` cells, a coarser layer for afar: the tallest of them, its crown widened
+/// to stand for the rest), of its species' far kind (`KINDS` on), on the ground at the cell's
+/// middle moved a little by a draw of its own, scaled to the crown's height.
+pub fn far_placed(
+    far: engine::bake::Far,
+    t: vec2i,
+    height: fn(vec2) -> f32,
+    step: u32,
+) -> Vec<Placed> {
     var out: Vec<Placed> = Vec::new()
     let cells = u32(engine::place::TILE / engine::bake::FAR_CELL)
     let at = vec2u(t - far.lo) * cells
     let kinds = far_kinds()
-    for j in 0..cells {
-        for i in 0..cells {
-            let x = at.x + i
-            let z = at.y + j
-            if x >= far.nx || z >= far.nz {
+    let size = engine::bake::FAR_CELL * f32(step)
+    var j = 0
+    while j < cells {
+        var i = 0
+        while i < cells {
+            // The tallest crown of the step's cells.
+            var k = far.nx * far.nz
+            for dj in 0..step {
+                for di in 0..step {
+                    let x = at.x + i + di
+                    let z = at.y + j + dj
+                    if x < far.nx && z < far.nz {
+                        let c = z * far.nx + x
+                        if far.kind[c] != 255 &&
+                            (k == far.nx * far.nz || far.tall[c] > far.tall[k]) {
+                            k = c
+                        }
+                    }
+                }
+            }
+            i += step
+            if k == far.nx * far.nz {
                 continue
             }
-            let k = z * far.nx + x
             let species = far.kind[k]
-            if species == 255 || far.tall[k] < 3.0 || species >= kinds.len() {
+            if far.tall[k] < 3.0 || species >= kinds.len() {
                 continue
             }
+            let x = at.x + i - step
+            let z = at.y + j
             let s = k * 7 + 13
             let p = vec2(far.lo) * engine::place::TILE +
-                (vec2(f32(x), f32(z)) + vec2(0.25 + 0.5 * rand(s, 1), 0.25 + 0.5 * rand(s, 2))) *
-                    engine::bake::FAR_CELL
+                vec2(f32(x), f32(z)) * engine::bake::FAR_CELL +
+                vec2(0.25 + 0.5 * rand(s, 1), 0.25 + 0.5 * rand(s, 2)) * size
             let kind = kinds[species]
+            let widen = if step > 1 { 1.35 } else { 1.0 }
             out.push(
                 Placed {
                     kind: KINDS + species,
@@ -718,11 +743,12 @@ pub fn far_placed(far: engine::bake::Far, t: vec2i, height: fn(vec2) -> f32) -> 
                         at: vec3(p.x, height(p), p.y),
                         yaw: TAU * rand(s, 3),
                         tint: tint(s),
-                        scale: clamp(far.tall[k] / BUILT[kind], 0.15, 1.8),
+                        scale: clamp(far.tall[k] * widen / BUILT[kind], 0.15, 2.4),
                     },
                 },
             )
         }
+        j += step
     }
     out
 }

@@ -834,6 +834,12 @@ pub struct Baked {
     pub agains: u32,
     /// A strip baked again's rays (`trace_again`).
     pub rays: GpuBuffer<Ray>,
+    /// Columns a strip of baking traces, a frame each, and the rays it traces a probe
+    /// (`STRIP_COLUMNS`, `RAYS`; a program that bakes while it plays traces fewer rays, so a
+    /// strip's dispatch is short: each of its threads traces a probe's rays one after another,
+    /// and baking again (`AGAIN_RAYS` a strip) fills the rest in).
+    pub strip_columns: u32,
+    pub strip_rays: u32,
 }
 
 /// Columns a strip of baking traces, a frame each (a short submission), with `RAYS` rays a
@@ -872,6 +878,8 @@ impl Baked {
             again: 0,
             agains: 0,
             rays: buffer(AGAIN_COLUMNS * LAYERS * AGAIN_RAYS),
+            strip_columns: STRIP_COLUMNS,
+            strip_rays: RAYS,
         }
     }
 
@@ -949,8 +957,8 @@ impl Baked {
         let total = self.grid.cols * self.grid.cols
         if !self.done() {
             label("probes bake")
-            let n = min(STRIP_COLUMNS, total - self.baked)
-            let strip = Strip { first: self.baked, rays: RAYS, turn: 0.0, keep: 0.0 }
+            let n = min(self.strip_columns, total - self.baked)
+            let strip = Strip { first: self.baked, rays: self.strip_rays, turn: 0.0, keep: 0.0 }
             let at = self.baked * LAYERS
             dispatch(
                 bake.bind(

@@ -668,6 +668,33 @@ fn volume_normal(
     normalize(turned(yaw, v.yzw))
 }
 
+/// `far_cut` at its quad's depth (the plane through the plant's middle, facing the eye), not
+/// its leaf's: a fragment that writes no depth of its own is tested before it runs, so what's
+/// behind the near crowns' cards costs nothing (a forest's far crowns are mostly behind them).
+/// The shading pass finds its leaf as `far_cut`'s does; only the far crowns' order among
+/// themselves, within a crown's depth, is the plane's.
+@fragment
+pub fn far_cut_flat(
+    f: FarVertex,
+    pixel: FragCoord,
+    b: Bake,
+    colour: Texture<Rgba8>,
+    s: Sampler,
+    cell: f32,
+) -> u32 {
+    let size = cell_size(f.uv, cell)
+    if !keeps_packed(f.keep.value, pixel.position.xy) {
+        discard()
+    }
+    let k = view_of(f, pixel.position.xy)
+    let (at, _) = view_at(f, k)
+    let c = colour.sample_level(s, at).a
+    if c <= 0.0 || c < 1.0 && c < hashed_threshold_of(f.uv, seed_of(f), size) {
+        discard()
+    }
+    f.id.value
+}
+
 /// A far instance's pixel, where its prepass won (its id there): what its impostor shows
 /// (`seen`), lit as a leaf is, where the leaf is. The sky light is for the crown's normal there,
 /// as a card's is: its kind's volume holds it (`grid`).

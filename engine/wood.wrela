@@ -16,7 +16,7 @@
 // The static shadows choose the same way, for the sun's view of a cascade: every instance in
 // its square, drawn whole.
 
-use impostor::{far_cut, far_quad, far_shade, volume_cut, volume_shade, which_crown}
+use impostor::{far_cut_flat, far_quad, far_shade, volume_cut, volume_shade, which_crown}
 use lit::Lighting
 use lod::{IMPOSTOR, Lod, VOLUME, anchor, packed, place, share, ways}
 use plant::{CARD_LEVELS, CORNERS, Instance, Leaves, Wind, cook_outlines, corner_of, level_cards}
@@ -845,11 +845,9 @@ impl Wood {
                 draw(
                     pass,
                     far,
-                    far_cut.bind(
-                        cam,
+                    far_cut_flat.bind(
                         k.impostor.bake,
                         colour: k.impostor.colour,
-                        normal: k.impostor.normal,
                         s: s,
                         cell: self.cell,
                     ),

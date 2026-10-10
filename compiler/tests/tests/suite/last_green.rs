@@ -572,3 +572,105 @@ fn the_floors_walk_replays_and_reports_the_same_in_both_hosts() {
     let built = wrela_host::CpuBuild::load(&dir).expect("load on the CPU");
     assert_eq!(built.replay(&log, 2).expect("replays") as usize, log.ticks.len());
 }
+
+// ---- in Chrome ------------------------------------------------------------------------------
+
+/// A run of the floor in Chrome at 1080p, `frames` frames, seven helpers, with `script`'s keys:
+/// back to back, two frames in flight (`saturate`: the GPU kept busy, its clock high, so a
+/// frame's span is its work: #55's Method for budgets), or paced at 60 Hz as in play. The run,
+/// each frame's GPU span (ms), and each frame's CPU time (ms: `results/frames.json`).
+fn floor_in_chrome(
+    name: &str,
+    frames: u32,
+    script: &str,
+    saturate: bool,
+) -> (PathBuf, wrela_tests::BrowserRun, Vec<f64>, Vec<f64>) {
+    let _ = floor();
+    let (dir, rel) = wrela_tests::page("examples/last-green", name);
+    let run = wrela_tests::ChromeRun {
+        script: Some(script.into()),
+        workers: 8,
+        timing: wrela_host::Timing::Span,
+        saturate,
+        paced: !saturate,
+        nohash: true,
+        ..wrela_tests::ChromeRun::new(frames, 1920, 1080, 60.0)
+    };
+    let chrome = wrela_tests::run_in_chrome_with(&rel, run);
+    let spans: Vec<f64> = chrome.spans.iter().map(|s| s.1).collect();
+    let frames_json = wrela_tests::result_json(&dir.join("results"), "frames.json");
+    let cpu: Vec<f64> = frames_json["cpu_ms"]
+        .as_array()
+        .expect("cpu_ms")
+        .iter()
+        .map(|v| v.as_f64().expect("ms"))
+        .collect();
+    (dir, chrome, spans, cpu)
+}
+
+/// The frame a line starting `prefix` was printed in, if one was.
+fn printed_at(chrome: &wrela_tests::BrowserRun, prefix: &str) -> Option<usize> {
+    chrome.printed.iter().find(|(_, l)| l.starts_with(prefix)).map(|(f, _)| *f)
+}
+
+/// AC8: the floor's walk (P) in Chrome at 1080p, its frames back to back (#55's Method): from
+/// its first full frame, no frame's GPU span over 16.7 ms, and no frame's CPU time (the frame's
+/// call: its streaming, cooking and the caches moving) over 33 ms; `WALK_FRAMES` of it (the
+/// whole walk with `WRELA_FULL`), three runs.
+#[test]
+#[ignore = "measure: needs Chrome, python3 and a GPU"]
+fn the_floors_walk_keeps_its_frames_in_chrome() {
+    let frames = if std::env::var("WRELA_FULL").is_ok() { 24 * 60 * 60 + 600 } else { WALK_FRAMES };
+    let mut failed = Vec::new();
+    let runs = std::env::var("WRELA_RUNS").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+    for k in 0..runs {
+        let (_, chrome, spans, cpu) = floor_in_chrome(
+            &format!("last-green-walk-{k}"),
+            frames,
+            r#"[{"frame": 1, "type": "key", "key": "KeyP"}]"#,
+            true,
+        );
+        let start = printed_at(&chrome, "playable").unwrap_or(0);
+        let spans: Vec<f64> = spans.iter().skip(start).copied().collect();
+        let cpu: Vec<f64> = cpu.iter().skip(start).copied().collect();
+        let over_gpu = spans.iter().filter(|&&m| m > 16.7).count();
+        let over_cpu = cpu.iter().filter(|&&m| m > 33.0).count();
+        let worst_gpu = spans.iter().copied().fold(0.0, f64::max);
+        let worst_cpu = cpu.iter().copied().fold(0.0, f64::max);
+        eprintln!(
+            "run {k}: {} frames from the first full one (frame {start}): GPU span median {:.2} ms, 99th percentile {:.2}, worst {worst_gpu:.2}, {over_gpu} over 16.7; CPU median {:.2} ms, worst {worst_cpu:.2}, {over_cpu} over 33",
+            spans.len(),
+            wrela_tests::median(&spans),
+            wrela_tests::percentile(&spans, 0.99),
+            wrela_tests::median(&cpu),
+        );
+        // What the frames over 16.7 ms held more of than the median frame: each label's mean
+        // time in them, against its median in all.
+        let mut over: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        for (f, m) in &chrome.spans {
+            if *f >= start && *m > 16.7 {
+                over.insert(*f);
+            }
+        }
+        let mut in_over: std::collections::BTreeMap<String, f64> =
+            std::collections::BTreeMap::new();
+        for t in &chrome.timings {
+            if over.contains(&t.frame) {
+                *in_over.entry(t.label.clone()).or_insert(0.0) += t.nanos / 1e6;
+            }
+        }
+        let mut heavy: Vec<(f64, String)> =
+            in_over.into_iter().map(|(l, ms)| (ms / over.len().max(1) as f64, l)).collect();
+        heavy.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for (ms, l) in heavy.iter().take(10) {
+            eprintln!("  in the frames over: {l} {ms:.2} ms a frame on average");
+        }
+        if over_gpu > 0 || over_cpu > 0 {
+            failed.push(format!("run {k}: {over_gpu} frames over 16.7 ms of GPU (worst {worst_gpu:.2}), {over_cpu} over 33 ms of CPU (worst {worst_cpu:.2})"));
+        }
+    }
+    assert!(failed.is_empty(), "{failed:?}");
+}
+
+/// How many frames of the floor's walk the measure runs at its smaller size (a minute and a half).
+const WALK_FRAMES: u32 = 5400;
