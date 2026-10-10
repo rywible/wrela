@@ -7,6 +7,7 @@ CLAUDE.md that agents skipped into a check, or gives back what an agent loses to
                                      gate runs (`tools/check.sh --fmt`).
     python3 tools/hooks.py session   at a session's start (SessionStart): names the open
                                      milestone's task file, and after a compaction gives its text.
+                                     On a cloud machine, also makes it a dev machine (cloud).
 
 Each reads the hook's JSON on stdin. A refusal is its reason, for Claude, on stderr, and exit 2.
 Anything else that goes wrong lets the command run: a hook mustn't stop work by its own fault.
@@ -16,6 +17,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -166,8 +168,47 @@ def bash(event):
 LIMIT = 9000
 
 
+# What a session on a cloud machine is told.
+CLOUD = """This is a Claude Code cloud machine: 4 cores, no GPU. Its GPU is the CPU (Mesa's lavapipe, \
+patched and built by tools/cloud.sh): a floor frame at 1080p takes about 0.6 s, a lookbook still \
+(`tools/lookbook.py <out> --stills <n>`, 301 frames) about 3 minutes, the gate about 20 minutes. \
+Headless Chrome runs WebGPU on SwiftShader, many times slower again: prefer the native host's \
+stills. {warm}"""
+
+
+def cloud(root, source):
+    """On a Claude Code cloud machine: gives the session's commands its variables (the env
+    file), and at a new session's start (or on a machine the environment's setup script didn't
+    provision) starts `tools/cloud.sh --warm` in the background: it provisions the machine if it
+    isn't, then builds what a session builds first. Returns what the session is told."""
+    script = os.path.join(root, "tools", "cloud.sh")
+    env = subprocess.run([script, "--env"], capture_output=True, text=True, timeout=10).stdout
+    path = os.environ.get("CLAUDE_ENV_FILE")
+    if path:
+        with open(path, "a", encoding="utf-8") as f:
+            for line in env.splitlines():
+                key, _, value = line.partition("=")
+                f.write(f"export {key}={shlex.quote(value)}\n")
+    provisioned = subprocess.run([script, "--check"]).returncode == 0
+    if source != "startup" and provisioned:
+        return CLOUD.format(warm="")
+    subprocess.Popen([script, "--warm"], cwd=root, start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL)
+    warm = ("The CLI, the native host, the floor's bake and the tests are building in the "
+            "background (`tools/cloud.sh --warm`, log /tmp/wrela-warm.log): a cargo command waits "
+            "for its lock meanwhile.")
+    if not provisioned:
+        warm = ("The environment's setup script didn't provision this machine, so it's being "
+                "provisioned now (about 3 minutes): run `tools/cloud.sh` before anything that "
+                "builds or renders; it waits for the provisioning. " + warm)
+    return CLOUD.format(warm=warm)
+
+
 def session(event):
     root = repo(event)
+    if os.environ.get("CLAUDE_CODE_REMOTE") == "true":
+        print(cloud(root, event.get("source")))
     for path in sorted(glob.glob(os.path.join(root, "M*-TASKS.md"))):
         name = os.path.basename(path)
         if event.get("source") != "compact":
