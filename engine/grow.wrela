@@ -2,11 +2,13 @@
 // land up. Water finds the hollows and runs down the land from the map's springs and meres; thin
 // soil lies on the crests. A forest of the floor's species grows, competes for light, dies,
 // stands, falls and rots. People keep what they kept while they live there; a herd walks the
-// map's routes, crops its openings and wears its trails; the map's events happen in their years.
-// Each relation is a pin: no crown that could reach into a sightline's cone grows above it.
+// map's routes, crops its openings and wears its trails; the map's events happen in their years,
+// a fire running as its fuel and the wind let it and a gale throwing what it finds exposed, and
+// the land remembers each (`Memories`). Each relation is a pin: no crown that could reach into a
+// sightline's cone grows above it.
 //
 // What's left in the present is the floor: its decisions (which trees stand where, of what kind,
-// how they died; the trails; the water's courses) are baked when the game is built (`bake`), and
+// how they died; the trails; the water's courses; what the land remembers) are baked when the game is built (`bake`), and
 // their consequences (light, wetness, soil, thorn, litter) are worked out where a tile streams in
 // (`consequences`).
 //
@@ -289,6 +291,12 @@ pub struct Habit: Copy {
     pub suckers: bool,
     /// How much its trunk thickens against the others' (an oak's 1.7).
     pub girth: f32 = 1.0,
+    /// How well its bark keeps a ground fire from its trunk's living wood once the trunk is
+    /// thick (0 to 1: a beech's thin bark 0.1, an oak's 0.85); how readily its crown takes a
+    /// fire (a pine's resin 1); and how firmly its roots hold it against a gale.
+    pub bark: f32 = 0.5,
+    pub resin: f32 = 0.5,
+    pub roots: f32 = 0.5,
 }
 
 /// How well a species' seedling takes in ground this wet and this thin.
@@ -965,6 +973,8 @@ pub struct Fields {
     pub bare: Vec<f32>,
     pub seed: Vec<f32>,
     pub shade_sum: Vec<f32>,
+    /// What each cell remembers of the disturbances it has had.
+    pub memory: Memories,
 }
 
 /// A band of the grid's rows, which a helper splats the crowns over (`canopy`): its first row,
@@ -1531,6 +1541,81 @@ fn tear(g: Grid, bare: mut Vec<f32>, p: vec2, r: f32) {
     }
 }
 
+// ---- the land's memory ----------------------------------------------------------------------------
+
+/// What last disturbed a place: one of the map's events (a fire, a gale, a great tree's fall).
+/// The wind's small gaps each decade, the wood's ordinary turnover, leave no mark: the canopy
+/// closes over them, and their marks would cost the bake more than they tell.
+pub enum Mark: Copy + Eq + Fieldless {
+    None,
+    Fire,
+    Wind,
+}
+
+/// What a place remembers: what last disturbed it, in which year, and how hard (0 to 1: a fire's
+/// heat there, or how much a gale brought down there).
+pub struct Memory: Copy {
+    pub mark: Mark,
+    pub year: i32,
+    pub strength: f32,
+}
+
+/// A place nothing has disturbed in the history.
+pub const UNMARKED = Memory { mark: Mark::None, year: NEVER, strength: 0.0 }
+
+/// The land's memory over a history's grid: each cell's last disturbance.
+pub struct Memories: Clone {
+    pub mark: Vec<u8>,
+    pub year: Vec<i32>,
+    pub strength: Vec<f32>,
+}
+
+impl Memories {
+    pub fn new(cells: u32) -> Memories {
+        Memories {
+            mark: Vec::filled(cells, 0),
+            year: Vec::filled(cells, NEVER),
+            strength: Vec::filled(cells, 0.0),
+        }
+    }
+
+    pub fn at(self, c: u32) -> Memory {
+        Memory {
+            mark: Mark::from_u32(u32(self.mark[c])).unwrap_or(Mark::None),
+            year: self.year[c],
+            strength: self.strength[c],
+        }
+    }
+
+    /// Records a disturbance at cell `c`: a later one replaces what came before; of two in one
+    /// year, the stronger stays.
+    pub fn record(mut self, c: u32, mark: Mark, year: i32, strength: f32) {
+        if year > self.year[c] || (year == self.year[c] && strength > self.strength[c]) {
+            self.mark[c] = u8(u32(mark))
+            self.year[c] = year
+            self.strength[c] = clamp(strength, 0.0, 1.0)
+        }
+    }
+
+    /// Records a disturbance on every cell of `g` within `r` of `p`.
+    fn disk(mut self, g: Grid, p: vec2, r: f32, mark: Mark, year: i32, strength: f32) {
+        let lo = g.ij(p - vec2(r))
+        let span = i32(ceil(2.0 * r / g.cell)) + 1
+        for dj in 0..span {
+            for di in 0..span {
+                let i = lo.x + di
+                let j = lo.y + dj
+                if i >= 0 && j >= 0 && i < i32(g.nx) && j < i32(g.nz) {
+                    let k = u32(j) * g.nx + u32(i)
+                    if length(g.centre(k) - p) < r {
+                        self.record(k, mark, year, strength)
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ---- the herd -------------------------------------------------------------------------------------
 
 /// The herd's marks on its grid: the wear of its hooves and the trails' pull (the wear, blurred,
@@ -1843,44 +1928,329 @@ fn browsing(herd: Herd, land: Land, f: mut Fields) {
 
 // ---- events -----------------------------------------------------------------------------------------
 
-/// Throws every tall living tree within `reach` of `at` (a share of them), toward `dir`.
-fn throw(
+/// The highest crown over each cell of `g` (m): each living tree's crown, its whole reach.
+fn tops(trees: [Tree], g: Grid) -> Vec<f32> {
+    var top: Vec<f32> = Vec::filled(g.cells(), 0.0)
+    for t in trees {
+        let c = t.at + t.lean
+        let r = t.reach
+        if t.state != State::Alive || t.tall < 2.0 || !g.holds(c) {
+            continue
+        }
+        let lo = g.ij(c - vec2(r))
+        let span = i32(ceil(2.0 * r / g.cell)) + 1
+        for dj in 0..span {
+            for di in 0..span {
+                let i = lo.x + di
+                let j = lo.y + dj
+                if i >= 0 && j >= 0 && i < i32(g.nx) && j < i32(g.nz) {
+                    let k = u32(j) * g.nx + u32(i)
+                    if length(g.centre(k) - c) < r {
+                        top[k] = max(top[k], t.tall)
+                    }
+                }
+            }
+        }
+    }
+    top
+}
+
+/// The grid a gale's shelter is read on (m).
+const SHELTER_CELL: f32 = 4.0
+
+/// A gale (`EventKind::Storm`) in `year`: its gusts at their strongest round `at`, dying away
+/// past `reach`, blowing toward `dir`. Whether a tree goes is its exposure (a share of it,
+/// `share`): how tall and slender it is, how shallow its roots are (its kind's, in wet or thin
+/// soil), and whether the crowns upwind of it stand higher and shelter it. A tree whose roots hold
+/// snaps instead, and one that stands loses its top to the gusts now and then. Then the gale's
+/// later gusts find the edges its first ones opened. The young are crushed where the thrown come
+/// down; the land remembers where they fell.
+fn gale(
     trees: mut Vec<Tree>,
-    g: Grid,
-    bare: mut Vec<f32>,
+    cx: Cx,
+    f: mut Fields,
     at: vec2,
     reach: f32,
     share: f32,
     dir: vec2,
     year: i32,
+    ei: u32,
 ) {
-    for mut t in trees {
-        let d = length(t.at - at) + 8.0 * (noise2(t.at * 0.05) - 0.5)
-        if t.state == State::Alive &&
-            !t.pinned &&
-            t.tall > 6.0 &&
-            d < reach &&
-            rand(t.seed, 13) < share {
-            t.state = State::Log
-            t.died = year
-            t.fell = year
-            t.cause = Cause::Wind
-            t.fall = rotate(dir, (rand(t.seed, 3) - 0.5) * 0.5)
-            if g.holds(t.at) {
-                bare[g.cell_at(t.at)] = 1.0
+    borrow land = cx.land
+    let g = land.grid
+    let r = 1.3 * reach + 30.0
+    let shelter = Grid::over(at - vec2(r), at + vec2(r), SHELTER_CELL)
+    // Where its thrown crowns came down.
+    var down: Vec<f32> = Vec::filled(shelter.cells(), 0.0)
+    for gust in 0..GUSTS {
+        let top = tops(trees, shelter)
+        let strength = if gust == 0 { share } else { LATER_GUSTS * share }
+        for mut t in trees {
+            if t.state != State::Alive || t.pinned || t.tall <= 6.0 || !g.holds(t.at) {
+                continue
             }
-        } else if t.state == State::Alive &&
-            !t.pinned &&
-            t.tall <= 6.0 &&
-            d < reach &&
-            rand(t.seed, 13) < share {
-            // The young under the thrown: crushed as the big trees come down.
-            t.state = State::Gone
-            t.died = year
-            t.cause = Cause::Wind
+            let d = length(t.at - at) + 8.0 * (noise2(t.at * 0.05) - 0.5)
+            let blow = 1.0 - smoothstep(0.85 * reach, 1.2 * reach, d)
+            if blow <= 0.0 {
+                continue
+            }
+            let h = cx.habits[t.kind]
+            let c = g.cell_at(t.at)
+            // The crowns upwind, past its own: higher than it, and it's sheltered.
+            var upwind = 0.0
+            for k in 0..4 {
+                let q = t.at - dir * (t.reach + 3.0 + 6.0 * f32(k))
+                if shelter.holds(q) {
+                    upwind = max(upwind, top[shelter.cell_at(q)])
+                }
+            }
+            let exposed = 1.0 - smoothstep(-3.0, 3.0, upwind - t.tall)
+            let tall = smoothstep(6.0, 20.0, t.tall)
+            let slender = smoothstep(30.0, 80.0, t.tall / max(2.0 * t.girth, 0.05))
+            let shallow = max(smoothstep(0.55, 0.85, land.wet[c]), land.thin[c])
+            let hold = h.roots * (1.0 - 0.6 * shallow)
+            // Its exposure, 0 to 1: a tall, slender, shallow-rooted tree at a windward edge most.
+            let exposure = 0.35 * exposed + 0.3 * tall + 0.15 * slender + 0.2 * (1.0 - hold)
+            let p = strength * blow * smoothstep(0.15, 0.55, exposure)
+            let draw = rand(t.seed, 13 + u32(gust) * 31)
+            if draw < p {
+                t.died = year
+                t.cause = Cause::Wind
+                t.shaped = shaped(Shaper::Event, ei)
+                let crown = max(t.reach, 1.5)
+                if rand(t.seed, 19) < 0.15 + 0.55 * hold * (1.0 - shallow) {
+                    // Its roots held: its trunk snapped, and its stump stands.
+                    t.state = State::Snag
+                    t.cause = Cause::Snapped
+                    t.tall *= 0.25 + 0.35 * rand(t.seed, 23)
+                    t.reach = 0.3
+                } else {
+                    // Thrown, roots and all: its root plate torn up from the soil.
+                    t.state = State::Log
+                    t.fell = year
+                    t.fall = rotate(dir, (rand(t.seed, 3) - 0.5) * 0.5)
+                    tear(g, mut f.bare, t.at, 1.2 + 6.0 * t.girth)
+                }
+                let s = 0.5 + 0.5 * smoothstep(8.0, 22.0, t.tall)
+                f.memory.disk(g, t.at, max(crown, 3.0), Mark::Wind, year, s)
+                mark(shelter, mut down, t.at + t.fall * (0.6 * t.tall), crown, 1.0)
+            } else if draw < p + 0.25 * p * hold && !(t.cause == Cause::Snapped && t.died == year) {
+                // It stood, and the gusts broke its top: a crown that grows back from below the
+                // break.
+                t.cause = Cause::Snapped
+                t.died = year
+                t.shaped = shaped(Shaper::Event, ei)
+                t.tall *= 0.75
+                t.reach *= 0.7
+                f.memory.disk(g, t.at, max(t.reach, 2.0), Mark::Wind, year, 0.3)
+            }
+        }
+    }
+    // The young and the poles where the thrown came down round them (most of the ground within
+    // a crown's reach or two): crushed and broken by the falling crowns, the smaller the likelier.
+    let near = shelter.blur(down, 2)
+    for mut t in trees {
+        if t.state == State::Alive && !t.pinned && t.tall <= POLES && shelter.holds(t.at) {
+            let crushed = (0.95 - 0.35 * smoothstep(4.0, POLES, t.tall)) *
+                smoothstep(0.2, 0.6, near[shelter.cell_at(t.at)])
+            if rand(t.seed, 29) < crushed {
+                t.state = State::Gone
+                t.died = year
+                t.cause = Cause::Wind
+            }
         }
     }
 }
+
+/// The tallest a tree beneath a gale's thrown crowns is broken by them (m).
+const POLES: f32 = 12.0
+
+/// A gale's gusts: its first, then those that find the edges it opened, as strong as
+/// `LATER_GUSTS` of its first.
+const GUSTS: i32 = 2
+const LATER_GUSTS: f32 = 0.5
+
+/// A fire (`EventKind::Fire`) lit at `at` in `year`. It runs over the land as fast as its fuel,
+/// dryness, slope and the wind let it (uphill and with the wind, faster), no further than `reach`
+/// (the weather that ends it), round what won't burn: open water, wet hollows, the trodden
+/// trails, rock. It burns each place as hot as its fuel and the way it runs there make it: hot
+/// running with the wind through dead wood and resinous crowns, which it climbs into (a crown
+/// fire); cool where it backs into the wind. A ground fire kills the young, and the trees whose
+/// bark is too thin for its heat; a thick-barked trunk lives through it, scarred (its `cause` the
+/// fire, its `died` the fire's year). The land remembers how hot it burnt each place.
+fn fire(trees: mut Vec<Tree>, cx: Cx, f: mut Fields, at: vec2, reach: f32, year: i32, ei: u32) {
+    borrow land = cx.land
+    let lg = land.grid
+    let r = 1.15 * reach + 4.0
+    let g = Grid::over(at - vec2(r), at + vec2(r), lg.cell)
+    let nn = g.cells()
+    // Each cell's fuel: the grass or litter on the ground, the dead wood lying and standing on
+    // it, and how readily the crowns over it burn; and how dry it is.
+    var ground: Vec<f32> = Vec::filled(nn, 0.0)
+    var crowns: Vec<f32> = Vec::filled(nn, 0.0)
+    var dry: Vec<f32> = Vec::filled(nn, 0.0)
+    for k in 0..nn {
+        let p = g.centre(k)
+        if !lg.holds(p) {
+            continue
+        }
+        let c = lg.cell_at(p)
+        if land.habitable[c] && !land.water[c] {
+            let litter = smoothstep(0.3, 0.8, f.shade_sum[c])
+            let worn = 1.0 - 0.8 * smoothstep(0.2, 0.5, f.trodden[c])
+            ground[k] = (0.35 + 0.4 * litter) * worn * (0.6 + 0.8 * noise2(p * 0.07 + vec2(31.0)))
+        }
+        dry[k] = 1.0 - smoothstep(0.5, 0.85, land.wet[c])
+    }
+    for t in trees {
+        if !g.holds(t.at) {
+            continue
+        }
+        let h = cx.habits[t.kind]
+        if t.state == State::Log {
+            let len = t.tall * 0.85
+            var s = 0.0
+            while s < len {
+                let q = t.at + t.fall * s
+                if g.holds(q) {
+                    let k = g.cell_at(q)
+                    ground[k] += 0.5 * min(3.0 * t.girth, 1.0)
+                }
+                s += g.cell
+            }
+        } else if t.state == State::Snag {
+            let k = g.cell_at(t.at)
+            ground[k] += 0.3
+        } else if t.state == State::Alive && t.tall > 2.0 {
+            let c = t.at + t.lean
+            let lo = g.ij(c - vec2(t.reach))
+            let span = i32(ceil(2.0 * t.reach / g.cell)) + 1
+            let burns = h.resin * smoothstep(2.0, 6.0, t.tall)
+            for dj in 0..span {
+                for di in 0..span {
+                    let i = lo.x + di
+                    let j = lo.y + dj
+                    if i >= 0 && j >= 0 && i < i32(g.nx) && j < i32(g.nz) {
+                        let k = u32(j) * g.nx + u32(i)
+                        if length(g.centre(k) - c) < t.reach {
+                            crowns[k] = max(crowns[k], burns)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // When the fire reaches each cell (from its lighting, in its own units). A cell whose fuel is
+    // too little or too wet doesn't take it.
+    var when: Vec<f32> = Vec::filled(nn, 1.0e9)
+    var done: Vec<bool> = Vec::filled(nn, value: false)
+    var heap = Heap { items: Vec::new() }
+    for k in 0..nn {
+        if length(g.centre(k) - at) < LIT {
+            when[k] = 0.0
+            heap.push(0.0, k)
+        }
+    }
+    let wind = WIND_FROM
+    while !heap.items.is_empty() {
+        let top = heap.pop()
+        let c = top.y
+        if done[c] {
+            continue
+        }
+        done[c] = true
+        let p = g.centre(c)
+        let hc = lg.sample(land.heights, p)
+        let (i, j) = (i32(c % g.nx), i32(c / g.nx))
+        for k in 0..8 {
+            let n = vec2i(i, j) + NEIGHBOURS[k]
+            if n.x < 0 || n.y < 0 || n.x >= i32(g.nx) || n.y >= i32(g.nz) {
+                continue
+            }
+            let q = u32(n.y) * g.nx + u32(n.x)
+            let pq = g.centre(q)
+            let fuel = ground[q] * dry[q]
+            let past = length(pq - at) + 18.0 * (noise2(pq * 0.03) - 0.5)
+            if done[q] || fuel < TAKES || past > reach {
+                continue
+            }
+            let way = vec2(NEIGHBOURS[k])
+            let dist = length(way) * g.cell
+            let along = dot(way / length(way), wind)
+            let rise = (lg.sample(land.heights, pq) - hc) / dist
+            let pace = fuel *
+                (1.0 + 1.2 * max(along, 0.0) - 0.5 * max(-along, 0.0)) *
+                clamp(1.0 + 4.0 * rise, 0.4, 3.0)
+            let t = when[c] + dist / max(pace, 0.02)
+            if t < when[q] {
+                when[q] = t
+                heap.push(t, q)
+            }
+        }
+    }
+    // Each burnt cell: how hot (0 to 1), and the crowns it climbed into.
+    var heat: Vec<f32> = Vec::filled(nn, 0.0)
+    for k in 0..nn {
+        if when[k] >= 1.0e9 {
+            continue
+        }
+        let p = g.centre(k)
+        let fuel = ground[k] * dry[k]
+        // Its head (1), running with the wind, its flanks, or its back (0), backing into it.
+        let head = 0.5 + 0.5 * dot(normalize(p - at + vec2(1.0e-3)), wind)
+        let gusty = 0.7 + 0.6 * noise2(p * 0.05 + vec2(57.0))
+        var hot = clamp(1.4 * fuel * (0.65 + 0.75 * head) * gusty, 0.0, 1.0)
+        if crowns[k] * dry[k] * (0.4 + 0.6 * head) * (fuel + 0.3) > CROWNS {
+            hot = max(hot, 0.75 + 0.25 * crowns[k])
+        }
+        heat[k] = hot
+        if lg.holds(p) {
+            let c = lg.cell_at(p)
+            f.bare[c] = max(f.bare[c], hot)
+            f.memory.record(c, Mark::Fire, year, hot)
+        }
+    }
+    for mut t in trees {
+        if t.pinned || !g.holds(t.at) {
+            continue
+        }
+        let hot = heat[g.cell_at(t.at)]
+        if hot <= 0.0 {
+            continue
+        }
+        let h = cx.habits[t.kind]
+        if t.state == State::Log {
+            if rand(t.seed, 17) < 1.3 * hot {
+                t.state = State::Gone
+            }
+        } else if t.state == State::Snag {
+            if hot > 0.6 && rand(t.seed, 17) < 0.4 {
+                t.state = State::Gone
+            }
+        } else if t.state == State::Alive {
+            // Its bark's shield, as thick as its trunk has grown; a low crown the flames reach.
+            let shield = h.bark * smoothstep(0.04, 0.35, t.girth)
+            let low = 0.8 * (1.0 - smoothstep(4.0, 12.0, t.tall))
+            let dies = if hot >= 0.75 || t.tall < 3.0 { 1.0 } else {
+                clamp((hot - 0.6 * shield) * 2.2 + low * hot, 0.0, 1.0)
+            }
+            if rand(t.seed, 17) < dies {
+                t.state = if t.tall < 3.0 { State::Gone } else { State::Snag }
+            }
+            if t.state != State::Alive || hot > 0.1 {
+                t.died = year
+                t.cause = Cause::Fire
+                t.shaped = shaped(Shaper::Event, ei)
+            }
+        }
+    }
+}
+
+/// How near the fire's lighting a cell burns whatever its fuel (m); the least fuel a cell must
+/// have, dry, to take a fire; and the crowns' fuel past which the fire climbs into them.
+const LIT: f32 = 6.0
+const TAKES: f32 = 0.12
+const CROWNS: f32 = 0.45
 
 /// The tallest living tree within `reach` of `at` (of `kind`, unless it's `NONE`), if any.
 fn tallest_near(trees: [Tree], at: vec2, reach: f32, kind: u32) -> u32 {
@@ -1909,26 +2279,9 @@ fn events(trees: mut Vec<Tree>, cx: Cx, f: mut Fields, year: i32) {
         if e.year == year || (year % 10 == 5 && year > 100 && matches_gaps(e)) {
             match e.kind {
                 EventKind::Storm { at, reach, dir, share } => {
-                    throw(mut trees, g, mut f.bare, at, reach, share, normalize(dir), year)
+                    gale(mut trees, cx, mut f, at, reach, share, normalize(dir), year, ei)
                 },
-                EventKind::Fire { at, reach } => {
-                    for mut t in trees {
-                        let d = length(t.at - at) + 18.0 * (noise2(t.at * 0.03) - 0.5)
-                        if t.state == State::Alive && !t.pinned && d < reach {
-                            t.state = State::Snag
-                            t.died = year
-                            t.cause = Cause::Fire
-                            t.shaped = shaped(Shaper::Event, ei)
-                        } else if t.state == State::Log && d < reach {
-                            t.state = State::Gone
-                        }
-                    }
-                    for c in 0..g.cells() {
-                        if length(g.centre(c) - at) < reach {
-                            f.bare[c] = 1.0
-                        }
-                    }
-                },
+                EventKind::Fire { at, reach } => fire(mut trees, cx, mut f, at, reach, year, ei),
                 EventKind::Fall { at, reach, kind, toward } => {
                     let i = tallest_near(trees, at, reach, kind)
                     if i != NONE {
@@ -1940,6 +2293,7 @@ fn events(trees: mut Vec<Tree>, cx: Cx, f: mut Fields, year: i32) {
                         t.fall = normalize(toward - t.at + vec2(0.0, -0.001))
                         t.shaped = shaped(Shaper::Event, ei)
                         tear(g, mut f.bare, t.at, 4.0)
+                        f.memory.disk(g, t.at, max(t.reach, 3.0), Mark::Wind, year, 0.6)
                     }
                 },
                 EventKind::Strike { at, reach } => {
@@ -2275,6 +2629,8 @@ pub struct History {
     pub light: Vec<f32>,
     pub litter: Vec<f32>,
     pub thorn: Vec<f32>,
+    /// What each cell of the land remembers (`Memories`), on the land's grid.
+    pub memory: Memories,
     pub log: Vec<String>,
 }
 
@@ -2410,6 +2766,7 @@ pub fn simulate<G: Ground>(
         bare: Vec::filled(nn, 0.0),
         seed: Vec::filled(nn * habits.len(), 0.0),
         shade_sum: Vec::filled(nn, 0.0),
+        memory: Memories::new(nn),
     }
     let routes = herd_routes(m)
     var herd = new_herd(ground, Grid::over(lo, hi, grain.herd_cell))
@@ -2526,6 +2883,7 @@ pub fn simulate<G: Ground>(
         light: take f.light,
         litter,
         thorn: take f.thorn,
+        memory: take f.memory,
         log,
     }
 }

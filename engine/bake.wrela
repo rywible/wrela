@@ -8,13 +8,13 @@
 // A tile's bytes are its own, so it streams alone: a header; its trees, 22 bytes each (a place to
 // 4 mm within the tile, kind, state and cause, height, crown, trunk, lean, light, fall, years, what
 // shaped it), sorted by place and laid out a byte plane at a time; its trails' wear, a byte each
-// 2 m, runs of nothing coded short; its ground's wetness, a byte each 4 m; and the streams' points
-// within it.
+// 2 m, runs of nothing coded short; its ground's wetness, a byte each 4 m; what its ground
+// remembers (`grow::Memory`), three bytes each 4 m; and the streams' points within it.
 //
 // And a far layer of the whole floor, in the first frame's payload: each 8 m cell's tallest crown
 // (its height and kind), for what lies past the tiles streamed in.
 
-use grow::{Cause, Grid, Habit, History, State, Stream, Tree}
+use grow::{Cause, Grid, Habit, History, Mark, Memory, State, Stream, Tree, UNMARKED}
 use std::io::Shipped
 use noise::noise2
 use place::{Route, RouteKind, TILE, tile_of}
@@ -22,7 +22,7 @@ use std::math::TAU
 
 /// The bytes' first word, and their version.
 const MAGIC: u32 = 0x5754_4c47
-pub const VERSION: u32 = 4
+pub const VERSION: u32 = 5
 
 /// Bytes a tree takes.
 pub const TREE_BYTES: u32 = 22
@@ -207,6 +207,8 @@ pub struct Decisions {
     pub wear: Vec<f32>,
     /// The ground's wetness (0 to 1), `WET_N` a side, 4 m a cell.
     pub wet: Vec<f32>,
+    /// What the ground remembers (`grow::Memory`), `WET_N` a side, 4 m a cell.
+    pub memory: Vec<Memory>,
     /// The streams' points in the tile: (x, z, width, depth).
     pub water: Vec<vec4>,
 }
@@ -227,6 +229,45 @@ impl Decisions {
         let g = Grid { lo: vec2(self.tile) * TILE, nx: WET_N, nz: WET_N, cell: TILE / f32(WET_N) }
         g.sample(self.wet, p)
     }
+
+    /// What the ground remembers at world point `p` in the tile: its 4 m cell's.
+    pub fn memory_at(self, p: vec2) -> Memory {
+        let g = Grid { lo: vec2(self.tile) * TILE, nx: WET_N, nz: WET_N, cell: TILE / f32(WET_N) }
+        self.memory[g.cell_at(p)]
+    }
+}
+
+/// A memory as three bytes, each in a plane of its own (`encode_tile`): its mark and strength
+/// (the mark in the low two bits, the strength in 63 steps above them), and its year
+/// (`qyear`'s, its low byte then its high); all three 0 where nothing is remembered.
+fn memory_bytes(m: Memory) -> (u8, u8, u8) {
+    if m.mark == Mark::None {
+        return (0, 0, 0)
+    }
+    let y = qyear(m.year)
+    (
+        u8(u32(m.mark) | (u32(round(clamp(m.strength, 0.0, 1.0) * 63.0)) << 2)),
+        u8(y & 255),
+        u8(y >> 8),
+    )
+}
+
+fn memory_of(a: u8, lo: u8, hi: u8) -> Memory {
+    let mark = Mark::from_u32(u32(a) & 3).unwrap_or(Mark::None)
+    if mark == Mark::None {
+        return UNMARKED
+    }
+    Memory {
+        mark,
+        year: i32(u32(lo) | (u32(hi) << 8)) - 10000,
+        strength: f32(u32(a) >> 2) / 63.0,
+    }
+}
+
+/// What the land of history `h` remembers at `p`: its grid's cell there (`UNMARKED` off it).
+fn remembered(h: History, p: vec2) -> Memory {
+    let g = h.land.grid
+    if g.holds(p) { h.memory.at(g.cell_at(p)) } else { UNMARKED }
 }
 
 /// Tile `t`'s bytes from history `h`: its trees (those whose trunks stand in it), its trails, its
@@ -288,6 +329,21 @@ pub fn encode_tile(h: History, t: vec2i) -> Vec<u8> {
         }
     }
     put_runs(mut out, wet)
+    // What the ground remembers, each 4 m: its three planes, each run-coded (most of the land
+    // remembers nothing).
+    var planes: Vec<Vec<u8>> = Vec::from_fn(3, |_| Vec::with_capacity(WET_N * WET_N))
+    for j in 0..WET_N {
+        for i in 0..WET_N {
+            let p = lo + (vec2(f32(i), f32(j)) + vec2(0.5)) * wc
+            let (a, b, c) = memory_bytes(remembered(h, p))
+            planes[0].push(a)
+            planes[1].push(b)
+            planes[2].push(c)
+        }
+    }
+    for pl in planes {
+        put_runs(mut out, pl)
+    }
     // The streams' points within the tile and a cell beyond, so a stream drawn across a seam
     // meets itself.
     var pts: Vec<vec4> = Vec::new()
@@ -337,17 +393,24 @@ pub fn decode_tile(b: [u8]) -> Decisions {
     for w in wet8 {
         wet.push(f32(w) / 255.0)
     }
-    let n = get_u32(b, k2)
+    let (marks, k3) = get_runs(b, k2, WET_N * WET_N)
+    let (years_lo, k4) = get_runs(b, k3, WET_N * WET_N)
+    let (years_hi, k5) = get_runs(b, k4, WET_N * WET_N)
+    var memory: Vec<Memory> = Vec::with_capacity(WET_N * WET_N)
+    for i in 0..(WET_N * WET_N) {
+        memory.push(memory_of(marks[i], years_lo[i], years_hi[i]))
+    }
+    let n = get_u32(b, k5)
     var water: Vec<vec4> = Vec::with_capacity(n)
     let lo = vec2(t) * TILE
-    var q = k2 + 4
+    var q = k5 + 4
     for _ in 0..n {
         let x = f32(get_u16(b, q)) / 100.0 - 64.0
         let z = f32(get_u16(b, q + 2)) / 100.0 - 64.0
         water.push(vec4(lo.x + x, lo.y + z, f32(b[q + 4]) / 20.0, f32(b[q + 5]) / 100.0))
         q += 6
     }
-    Decisions { tile: t, trees, wear, wet, water }
+    Decisions { tile: t, trees, wear, wet, memory, water }
 }
 
 /// A tile's file's name.
@@ -491,6 +554,8 @@ pub struct Unbaked {
     pub wear: Vec<f32>,
     pub wet_grid: Grid,
     pub wet: Vec<f32>,
+    /// What the ground remembers, on the wetness's grid (`memory_at`).
+    pub memory: Vec<Memory>,
     pub water: Vec<vec4>,
     /// The streams whole (`encode_streams`).
     pub streams: Vec<Stream>,
@@ -514,6 +579,7 @@ pub fn unbake(files: Shipped, lo: vec2i, hi: vec2i) -> Unbaked {
         wear: Vec::filled(wear_grid.cells(), 0.0),
         wet_grid,
         wet: Vec::filled(wet_grid.cells(), 0.0),
+        memory: Vec::filled(wet_grid.cells(), UNMARKED),
         water: Vec::new(),
         streams: decode_streams(files.bytes(files.find("streams.bin").unwrap())),
     }
@@ -532,8 +598,9 @@ pub fn unbake(files: Shipped, lo: vec2i, hi: vec2i) -> Unbaked {
             }
             for y in 0..WET_N {
                 for x in 0..WET_N {
-                    out.wet[(at.y * WET_N + y) * wet_grid.nx + at.x * WET_N + x] = d.wet[y * WET_N +
-                        x]
+                    let k = (at.y * WET_N + y) * wet_grid.nx + at.x * WET_N + x
+                    out.wet[k] = d.wet[y * WET_N + x]
+                    out.memory[k] = d.memory[y * WET_N + x]
                 }
             }
             // A stream's points within the tile (each tile also holds those a cell past it).
@@ -545,6 +612,30 @@ pub fn unbake(files: Shipped, lo: vec2i, hi: vec2i) -> Unbaked {
         }
     }
     out
+}
+
+/// What the ground remembers at `p` in a bake read back (`grow::Memory`: what last disturbed it,
+/// in which year, and how hard), its 4 m cell's; `UNMARKED` off the bake's tiles.
+pub fn memory_at(u: Unbaked, p: vec2) -> Memory {
+    if u.wet_grid.holds(p) { u.memory[u.wet_grid.cell_at(p)] } else { UNMARKED }
+}
+
+/// What the ground remembers at `p` (a point in tile `b`'s square), read from the tile's bytes
+/// without reading its trees back (a click's provenance); `UNMARKED` if `b` isn't a baked tile.
+pub fn memory_in_tile(b: [u8], p: vec2) -> Memory {
+    if b.len() < 20 || get_u32(b, 0) != MAGIC || get_u32(b, 4) != VERSION {
+        return UNMARKED
+    }
+    let t = vec2i(i32(get_u32(b, 8)), i32(get_u32(b, 12)))
+    let count = get_u32(b, 16)
+    let (_, k) = get_runs(b, 20 + count * TREE_BYTES, WEAR_N * WEAR_N)
+    let (_, k2) = get_runs(b, k, WET_N * WET_N)
+    let (marks, k3) = get_runs(b, k2, WET_N * WET_N)
+    let (years_lo, k4) = get_runs(b, k3, WET_N * WET_N)
+    let (years_hi, _) = get_runs(b, k4, WET_N * WET_N)
+    let g = Grid { lo: vec2(t) * TILE, nx: WET_N, nz: WET_N, cell: TILE / f32(WET_N) }
+    let c = g.cell_at(p)
+    memory_of(marks[c], years_lo[c], years_hi[c])
 }
 
 // ---- the consequences, a tile at a time -----------------------------------------------------------
