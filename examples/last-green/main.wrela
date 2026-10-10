@@ -371,6 +371,10 @@ pub struct Floor {
     /// where the grass keeps out of the stones (each one's place and reach).
     to_build: Vec<blockouts::Built>,
     built: Vec<Realized>,
+    /// Each built thing's reach (m), and its far mesh if it has one (the tower's), for drawing
+    /// only what's in view: every one drawn each frame from anywhere cost 3-4 ms of the GPU.
+    built_reach: Vec<f32>,
+    built_far: Vec<Option<Realized>>,
     footprints: GpuBuffer<vec4>,
     palette: GpuBuffer<mat4>,
     last_palette: GpuBuffer<mat4>,
@@ -554,6 +558,8 @@ pub fn init() -> Floor {
         shot_digits: 0,
         standin: None,
         to_build: to_build(),
+        built_reach: Vec::new(),
+        built_far: Vec::new(),
         built: Vec::new(),
         footprints: buffer_of(footprints_in(vec3(0.0)), at_least: 1),
         palette: buffer(1),
@@ -656,6 +662,12 @@ fn recentre(s: mut Floor, to: vec2i) {
     s.far.shift(d)
     for mut b in s.built {
         b.at[3] = vec4(b.at[3].xyz + d, 1.0)
+    }
+    for mut f in s.built_far {
+        match mut f {
+            Some(b) => b.at[3] = vec4(b.at[3].xyz + d, 1.0),
+            None => {},
+        }
     }
     s.footprints = buffer_of(footprints_in(origin_of(s)), at_least: 1)
     print(f"the render origin moved to tile {to.x}, {to.y}")
@@ -1093,6 +1105,13 @@ fn cook_load(s: mut Floor) {
             let o = origin_of(s)
             r.at[3] = vec4(r.at[3].xyz - o, 1.0)
             s.built.push(take r)
+            s.built_reach.push(blockouts::reach(b))
+            var far = blockouts::realize_far(b, height_at)
+            match mut far {
+                Some(f) => f.at[3] = vec4(f.at[3].xyz - o, 1.0),
+                None => {},
+            }
+            s.built_far.push(take far)
             if s.to_build.is_empty() {
                 s.near.changed()
                 s.far.changed()
@@ -1554,22 +1573,24 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
     if on(off, System::Grass) {
         s.grass.shade(veg, lt, wind, GrassLook {}, Blooms {})
     }
-    for st in s.built {
-        draw(
-            veg,
-            stone_vertex.bind(
-                verts: st.mesh.verts.items(),
-                colours: st.colours.items(),
-                at: st.at,
-                seed: st.seed,
-                cam: cam,
-            ),
-            stone_shade.bind(lt),
-            indices: st.mesh.quads.items(),
-            indirect: st.mesh.draw.items(),
-            cull: std::gpu::Cull::Back,
-            depth: NEAREST,
-        )
+    for i in 0..s.built.len() {
+        let to = s.built[i].at[3].xyz - cam.eye
+        let d = length(to)
+        let r = s.built_reach[i]
+        // In view (in front of the eye, within the field of view's cone grown by its reach),
+        // and near enough to show: a stone at most a few pixels wide past it (out to 200 m and
+        // 60 m a metre of its reach); the tower from anywhere on the floor.
+        let ahead = dot(to, cam.forward)
+        let wide = (cam.tan_half * max(cam.aspect, 1.0) * 1.5) * max(ahead, 0.0) + r
+        let off = length(to - cam.forward * ahead)
+        let reach = if r > 20.0 { 4000.0 } else { 200.0 + 60.0 * r }
+        if ahead < -r || off > wide || d - r > reach {
+            continue
+        }
+        match s.built_far[i] {
+            Some(f) if d > blockouts::TOWER_NEAR => draw_built(veg, f, lt, cam),
+            _ => draw_built(veg, s.built[i], lt, cam),
+        }
     }
     match s.wood {
         Some(w) => {
@@ -2023,6 +2044,25 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     draw_scene(mut s, cam, sh, wind)
     finish(mut s, cam, width, height, feet.xz + o2, heading)
     s.frames += 1
+}
+
+/// A built thing drawn in `pass` (its colours cooked, its place its matrix).
+fn draw_built<P: RenderPass>(pass: P, st: Realized, lt: Lighting, cam: Camera) {
+    draw(
+        pass,
+        stone_vertex.bind(
+            verts: st.mesh.verts.items(),
+            colours: st.colours.items(),
+            at: st.at,
+            seed: st.seed,
+            cam: cam,
+        ),
+        stone_shade.bind(lt),
+        indices: st.mesh.quads.items(),
+        indirect: st.mesh.draw.items(),
+        cull: std::gpu::Cull::Back,
+        depth: NEAREST,
+    )
 }
 
 /// The cast of the lookbook's shot the camera's held on (`shot`), if it casts the characters.
