@@ -357,6 +357,8 @@ pub struct Floor {
     width: u32,
     height: u32,
     frames: u32,
+    /// How many frames the camera has held still (`engine::temporal::held`).
+    settled: u32,
     off: Flags<System>,
     framing: Framing,
     /// The lookbook's shot the camera's held on (none: the player's), since when, and one being
@@ -556,6 +558,7 @@ pub fn init() -> Floor {
         width: 0,
         height: 0,
         frames: 0,
+        settled: 0,
         off: Flags::none(),
         framing: Framing {},
         shot: None,
@@ -1312,6 +1315,7 @@ fn resize(s: mut Floor, width: u32, height: u32, w: u32, h: u32) {
     s.width = width
     s.height = height
     s.frames = 0
+    s.settled = 0
 }
 
 /// The static cascades: a strip of whichever is being drawn beside the one in use (the near
@@ -1816,7 +1820,9 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
         jitter: engine::view::jitter_of(cam.frame),
         last_jitter: engine::view::jitter_of(max(cam.frame, 1) - 1),
         moving: vec4(0.0, 0.0, -1.0, -1.0),
+        settled: f32(s.settled),
     }
+    s.settled = if engine::temporal::held(cam) { s.settled + 1 } else { 0 }
     label("temporal")
     swap(mut s.history, mut s.last_history)
     dispatch(neighbourhoods.bind(s.scene, mut s.means, mut s.spreads), over: s.scene)

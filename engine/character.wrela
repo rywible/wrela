@@ -1,11 +1,12 @@
 // Characters drawn (#28 §5.4, §7, §8): a creature's realized mesh with its normals and colours
 // cooked in when it's realized, so no pixel evaluates its field; skinned by its palette; shaded
-// in B's cel treatment (two bands, a soft terminator, a rim; `light::character`); drawn a
-// second time into the motion target, from this frame's palette and the last, so temporal AA
-// reprojects it by its own motion; and cast into the moving shadow map every frame.
+// in B's cel treatment (two bands, a narrow terminator, a rim where the sun is behind, a line
+// where the form turns away; `cel`); drawn a second time into the motion target, from this
+// frame's palette and the last, so temporal AA reprojects it by its own motion; and cast into
+// the moving shadow map every frame.
 
 use creature::Parts
-use light::{Lit}
+use light::Light
 use lit::{Lighting, sun_and_sky, through_air}
 use realize::{Mesh, SkinVertex, Tally}
 use render::{Look, skin_matrix}
@@ -131,10 +132,38 @@ pub fn character_shade(c: CharacterVertex, pixel: FragCoord, lt: Lighting) -> ve
     }
     let n = normalize(c.normal)
     let (sun, sky) = sun_and_sky(lt, c.world, n, sky_n: n, soft: 1.0)
-    let lit = Lit { albedo: c.albedo, n, sun, sky, through: vec3(0.0) }
     let open = probes::open_light(lt.probes, vec3(0.0, 1.0, 0.0))
-    let colour = light::character(lt.light, lit, open, c.world, lt.cam.eye)
+    let colour = cel(lt.light, c.albedo, n, sun, sky, open, c.world, lt.cam.eye)
     vec4(through_air(lt, colour, c.world), CREATURE + f32(c.part.value % 63))
+}
+
+/// B's cel treatment of a character's point (`albedo` its colour, `n` its normal, `sun` how much
+/// sun reaches it, `sky` the sky light there, `open` the open sky's): two bands with a narrow
+/// terminator, the light one where the sun reaches it, the shade a cool blue-grey of its colour;
+/// a thin rim of its own lit colour only where the sun is behind it (never the sky's white, which
+/// read as a halo against the dark wood); and a thin line, a darker shade of its colour, where
+/// its form turns away from the eye, about a pixel and a half wide however far it is.
+fn cel(
+    light: Light,
+    albedo: vec3,
+    n: vec3,
+    sun: f32,
+    sky: vec3,
+    open: vec3,
+    world: vec3,
+    eye: vec3,
+) -> vec3 {
+    let l = light.sun
+    let v = normalize(eye - world)
+    let t = smoothstep(0.0, 0.08, dot(n, l)) * sun
+    let lit = light.sun_colour * 0.75 + open * 0.5
+    let dark = vec3(0.36, 0.40, 0.54) * (0.45 + 0.55 * saturate(dot(sky, vec3(0.6))))
+    let facing = dot(n, v)
+    let behind = saturate(-dot(v, l))
+    let rim = smoothstep(0.72, 0.9, 1.0 - max(facing, 0.0)) * behind * sun
+    let banded = albedo * (mix(dark, lit, vec3(t)) + light.sun_colour * (rim * 0.6))
+    let edge = 1.0 - smoothstep(1.0, 2.0, facing / max(fwidth(facing), 1.0e-4))
+    banded * (1.0 - 0.5 * edge)
 }
 
 /// What a character's motion vertex passes on: where its point is now and was last frame.

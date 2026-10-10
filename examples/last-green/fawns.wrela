@@ -5,9 +5,11 @@
 
 use engine::creature::{Creature, MAX_BONES}
 use engine::look::{CreatureLook, Mesh}
-use engine::render::Look
+use engine::render::{Look, bone_matrix}
 use engine::standin::placed
-use fawn::creature::{Coat, fawn}
+use fawn::creature::{Coat, fawn, skeleton}
+use std::quat::Quat
+use std::transform::scale
 
 /// The fawn, as the floor keeps it while its mesh is realized (`engine::realize`).
 pub type Grown = Creature<Coat>
@@ -23,17 +25,46 @@ pub const REALIZED = CreatureLook { surface: Mesh { tolerance: 1cm } }
 /// The frames a slice of its realization takes each.
 pub const SLICES: u32 = 1
 
-/// Its colours: its coat's.
+/// Its colours: its coat's, paler under the barrel and the throat (a deer's countershading), so
+/// its belly's line reads against the ground's shade between its legs.
 pub struct FawnLook: Copy + GpuData {}
 
 impl Look<Coat> for FawnLook {
     fn surface(self, c: Coat, rest: vec3, fp: f32) -> (vec3, f32) {
-        (vec3(c.albedo.r, c.albedo.g, c.albedo.b), 0.7)
+        let coat = vec3(c.albedo.r, c.albedo.g, c.albedo.b)
+        let belly = smoothstep(0.88, 0.8, rest.y) * smoothstep(0.66, 0.74, rest.y)
+        let throat = smoothstep(1.2, 1.5, rest.z) *
+            smoothstep(1.0, 1.15, rest.y) *
+            smoothstep(1.62, 1.5, rest.y)
+        let under = max(belly, throat * 0.7)
+        (mix(coat, vec3(0.62, 0.48, 0.34), vec3(under)), 0.7)
     }
 }
 
+/// How big it stands: M5's grazer is the size of a horse (its poll 2 m up, over the stand-in's
+/// head); a fawn stands about half as tall, its back at the stand-in's hip.
+pub const SIZE: f32 = 0.6
+
+/// How far its neck leans forward from the grazer's upright one, about its base (radians): an
+/// upright neck read as a llama's. Its head turns back up by `HEAD_LIFT`, so it looks ahead.
+pub const NECK_LEAN: f32 = 0.22
+pub const HEAD_LIFT: f32 = 0.12
+
 /// Its palette standing at rest, its feet at `feet`, facing `heading` (radians from +z toward
-/// +x): every bone the same placement.
+/// +x): `SIZE` times the grazer's size, its neck leaned forward and its head lifted; every other
+/// bone at rest.
 pub fn at_rest(feet: vec3, heading: f32) -> [mat4; MAX_BONES] {
-    [placed(feet, heading); MAX_BONES]
+    let s = skeleton()
+    let world = placed(feet, heading) * scale(vec3(SIZE))
+    var bones = [world; MAX_BONES]
+    let base = s.rest(s.find("neck 0"))
+    let lean = bone_matrix(Quat::axis_angle(vec3(1.0, 0.0, 0.0), NECK_LEAN), base, base)
+    for name in ["neck 0", "neck 1", "neck 2", "neck 3"] {
+        bones[s.find(name).index] = world * lean
+    }
+    let head = s.find("head")
+    let poll = s.rest(head)
+    let lift = bone_matrix(Quat::axis_angle(vec3(1.0, 0.0, 0.0), -HEAD_LIFT), poll, poll)
+    bones[head.index] = world * lean * lift
+    bones
 }
