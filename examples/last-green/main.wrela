@@ -1154,7 +1154,7 @@ fn cook_load(s: mut Floor) {
 }
 
 /// The keys the frames read (the sim reads the player's): F1–F5 leave a system out, F6 draws the
-/// water's next look; L, a shot's
+/// water's next look, B the sun shafts, V the frame as plain rendering; L, a shot's
 /// number and Enter hold the camera on a lookbook shot (Escape lets it go).
 fn keys(s: mut Floor, time: f32) {
     for e in events() {
@@ -1224,6 +1224,10 @@ fn keys(s: mut Floor, time: f32) {
             }
             if key == Key::B {
                 s.shafts_on = !s.shafts_on
+            }
+            // V: the frame as plain rendering (no look), to tell the look's work from the scene's.
+            if key == Key::V {
+                s.plain = !s.plain
             }
             if key == Key::F9 && s.hashing.is_empty() {
                 for i in 0..BAKED.len() {
@@ -1617,7 +1621,15 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
             draw(
                 ter,
                 ground.bind(cam, lt.levels, texels),
-                ground_shade.bind(lt, texels),
+                ground_shade.bind(
+                    lt,
+                    texels,
+                    litter: s.clipmap.details.litter,
+                    soil: s.clipmap.details.soil,
+                    rock: s.clipmap.details.rock,
+                    moss: s.clipmap.details.moss,
+                    ds: s.clipmap.details.s,
+                ),
                 indices: s.clipmap.indices(),
                 indirect: s.clipmap.draw_args(l),
                 depth: NEAREST,

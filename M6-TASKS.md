@@ -92,6 +92,35 @@ Deleted when the milestone closes.
   sites, and the lookbook each round. Spike 17's stills are in target/spike17-stills.
 - **Posting to GitHub is the owner's:** the retrospective and #26's update are drafted here.
 
+- **Play rounds are quick (the owner's direction, 2026-10-10):** "you should be able to identify
+  areas for improvement and bugs in a couple minutes of play, not an hour". `round.py --quick`
+  plays about 2.5 minutes: a travel to every fourth site (each region's), a 2 s run and a look
+  round at each, six lookbook shots held, the screen saved every 130 frames. The 30 and 60
+  minute rounds stay in the tool (`--minutes`), but the rounds from round 4 on are quick: a
+  deviation from #55 AC5's 30 min and 1 h rounds, by the owner's word.
+- **Wind is gusts, not a period (the owner's question 2):** a gust field, noise carried
+  downwind at the wind's speed and turning slowly, so gusts sweep across the wood and the
+  meadow; a plant feels it with a lag (its response a mix of the gust now and a second ago),
+  rocks by the change, and flutters with it. Still a pure function of the wind and the place.
+- **Trees grown as trees (questions 3 and the roots):** a broad-leaved tree's trunk crooked and
+  leaning, buttress roots flaring into the ground (4 to 6, uneven), 3 to 5 scaffold limbs from
+  their own heights at the golden angle, low limbs under the crown so its foot is ragged, the
+  leader up into the crown; clumps in masses round the scaffolds' ends, sizes varied. Saplings
+  have limbs (a ball on a stick read as a lollipop). Snags snap bluntly, with splinters and
+  short crooked limbs (a tapered top read as a trident).
+- **The floor's plants from the NVC (question 4):** 15 woodland species from W7, W8, W10, W14
+  and W16, and 12 of the open's from MG5 (knapweed meadow), U4 (acid grassland) and M23 (rush
+  pasture): each a shape, size, colour and flower, and a habitat (acidity, wetness, light,
+  wear). A plant takes its colony's species (4.5 m, warped), some its own; a tenth of the
+  meadow's places are forbs. Sources: the NVC's descriptions (JNCC, Rodwell's volumes), W8 and
+  MG5 summaries.
+- **Geology under the ground (question 5):** bedrock in beds (sandstone and mudstone, dipping and
+  folded) with granite at the crags and the Watch; soil deep in hollows and thin on slopes and
+  crests, rock where it's thin; acidity from the rock (granite and sandstone acid), which the
+  species follow. Cooked detail tiles (leaf litter, soil, rock, moss), sized so the look's
+  painting keeps them, rock across the planes it faces. The grass varies in tussocks and
+  colour patches.
+
 ## Session 2 (2026-10-10): order of work
 
 1. Done: gate fixed (layering), map lens tested both hosts, Chrome heap-growth trap fixed, polled

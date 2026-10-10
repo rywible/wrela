@@ -486,6 +486,10 @@ async function runTest(canvas: OffscreenCanvas, device: GPUDevice, build: Build,
     await executor.checkDebugFlag();
     if (executor.presented) live?.drawn(i);
     executor.presented = false;
+    // `snap=n`: the screen every n frames from `snapfrom`, a PNG each (`snap-<frame>.png`).
+    if (params.snap > 0 && i >= params.snapfrom && (i - params.snapfrom) % params.snap === 0) {
+      await putResult(base, `snap-${i}.png`, encodePng(width, height, await readTexture(device, screen)));
+    }
   }
   await draining;
   // Where the pipelines' time went: each built again alone, from code no cache has seen.

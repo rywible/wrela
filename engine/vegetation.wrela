@@ -420,8 +420,9 @@ pub struct CardDraw: Copy + GpuData {
 
 /// How much of a card centred at `c`, reaching `half` from it, fades for an eye at `eye` keeping
 /// `clear` clear (0 to 1): those whose centres are near the line from the eye to the point it
-/// looks at, and those that reach within half a metre of the eye itself (a wide card's centre
-/// can be off the line while its edge meets the near plane).
+/// looks at, and those that reach within a metre or two of the eye itself (a wide card's centre
+/// can be off the line while its edge meets the near plane; a crown beside the eye filled half
+/// the view).
 pub fn faded(c: vec3, half: f32, eye: vec3, clear: vec4) -> f32 {
     if clear.w <= 0.0 {
         return 0.0
@@ -430,7 +431,7 @@ pub fn faded(c: vec3, half: f32, eye: vec3, clear: vec4) -> f32 {
     let t = clamp(dot(c - eye, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
     let d = length(c - (eye + ab * t))
     let reach = length(c - eye) - half
-    max(1.0 - smoothstep(clear.w, clear.w * 1.8, d), 1.0 - smoothstep(0.5, 1.0, reach))
+    max(1.0 - smoothstep(clear.w, clear.w * 1.8, d), 1.0 - smoothstep(0.8, 2.0, reach))
 }
 
 /// A draw of every instance whole, whatever its level (the static shadows').
@@ -699,8 +700,7 @@ pub fn limb(
         world,
         normal: n,
         along,
-        moss: smoothstep(0.2, 0.7, n.y + 0.4 * noise::noise2((world.xz + cam.keyed().xz) * 3.0)) *
-            0.6,
+        moss: mossy(n, along.y, noise::noise2((world.xz + cam.keyed().xz) * 3.0 + world.y * 0.7)),
         keep: Flat { value: marks[i.index].x },
     }
 }
@@ -717,6 +717,19 @@ pub fn limb_shadow(
     ClipPosition { position: view * vec4(world, 1.0) }
 }
 
+/// How mossy bark is (0 to 1), its normal `n`, `along` metres up its limb, `patch` its noise
+/// there: near its foot (a trunk's base, a limb's fork), on faces turned up or to the north (-z,
+/// where the sun doesn't reach), in patches. (All over a trunk's sides, it turned the wood's
+/// trunks green.)
+fn mossy(n: vec3, along: f32, patch: f32) -> f32 {
+    let foot = 1.0 - smoothstep(0.3, 2.2, along)
+    let place = max(
+        foot * 0.8,
+        max(smoothstep(0.45, 0.85, n.y) * 0.6, smoothstep(0.3, 0.9, -n.z) * 0.3),
+    )
+    place * smoothstep(0.3, 0.6, patch)
+}
+
 /// A limb's pixel: its bark, its ridges read from their cooked tile (`plant::cook_ridges`,
 /// through a repeating sampler `rs`) and its moss from its corners: no field is evaluated here.
 @fragment
@@ -731,9 +744,12 @@ pub fn bark_shade(
     if !keeps_packed(b.keep.value, pixel.position.xy) {
         discard()
     }
-    let n = normalize(b.normal)
-    // Bark's ridges run along the limb.
+    // Bark's ridges run along the limb, and turn its surface: a furrow's sides face round the
+    // limb, so the light falls across them (smooth, the trunks read as plastic).
     let ridge = ridges.sample_level(rs, vec2(b.along.x, b.along.y / plant::RIDGES_ALONG)).r
+    let smooth_n = normalize(b.normal)
+    let round = normalize(cross(vec3(0.0, 1.0, 0.0), smooth_n) + vec3(1.0e-4, 0.0, 0.0))
+    let n = normalize(smooth_n + round * ((ridge - 0.5) * 0.9))
     let albedo = mix(bark.dark, bark.light, vec3(ridge))
     let a = mix(albedo, bark.moss, vec3(b.moss))
     // No gloss: bark is rough, and its impostor lights it as its leaves (`leaf_light`).

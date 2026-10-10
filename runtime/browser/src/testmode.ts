@@ -31,7 +31,8 @@
 // stays busy, so a frame's GPU time is its work (GPU budgets). With `inflight=n` (paced), each
 // frame still begins at its time, but up to n frames' GPU work may be in flight, as a browser
 // lets a page's (without it, each waits for the last to finish on the GPU, so a paced frame's
-// interval is its CPU time and its GPU time). With `salt=n`, each pipeline's entry points
+// interval is its CPU time and its GPU time). With `snap=n` (and `snapfrom=i`), the screen every
+// n frames from frame i (0 unless given), as `snap-<frame>.png`. With `salt=n`, each pipeline's entry points
 // store n first, so no cache serves its pipelines (worker.ts `salt`), and `pipelines.json` has how
 // long creating them all, at once, took (#42 AC4's cold pipelines). `load.json` has when the page opened
 // and each file it loaded; `memory.json` the bytes of the program's GPU buffers and textures (at
@@ -57,6 +58,9 @@ export interface TestParams {
   ticklog: number;
   /** Paced, how many frames' GPU work may be in flight (0: each frame waits for the last's). */
   inflight: number;
+  /** The screen saved every `snap` frames from `snapfrom` (0: never). */
+  snap: number;
+  snapfrom: number;
   /** A script of input events, relative to the page; "" for none. */
   input: string;
   /** Pointer events to send through the DOM while the frames run (0: none). */
@@ -89,6 +93,8 @@ export const TEST_DEFAULTS: TestParams = {
   nohash: 0,
   ticklog: 0,
   inflight: 0,
+  snap: 0,
+  snapfrom: 0,
   input: "",
   latency: 0,
   keylatency: 0,

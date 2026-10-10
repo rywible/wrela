@@ -667,31 +667,57 @@ pub fn unturned(yaw: f32, v: vec3) -> vec3 {
     vec3(c * v.x - s * v.z, v.y, s * v.x + c * v.z)
 }
 
-/// The wind (#28 §4, Q5 of #51): a global sway, a function of time and place only. How far a
-/// point `height` metres up its plant at `world` leans at `time`, along the ground: two waves
-/// across the land, and a flutter.
+/// The wind (#28 §4, Q5 of #51): gusts carried over the land (`gust`), a function of time and
+/// place only: its mean direction, how far it bends a plant, its time, and how fast its gusts
+/// travel downwind (m/s).
 pub struct Wind: Copy + GpuData {
-    pub dir: vec2,
-    pub strength: f32,
-    pub time: f32,
-    /// The render origin within `view::KEYED_PERIOD` (`Camera::keyed`): its waves cross the
+    /// The render origin within `view::KEYED_PERIOD` (`Camera::keyed`): its gusts cross the
     /// world, not render space, so they don't jump when the origin moves.
     pub origin: vec3 = vec3(0.0),
+    pub time: f32,
+    pub dir: vec2,
+    pub speed: f32 = 5.0,
+    pub strength: f32,
+}
+
+/// The wind's gust at `p` (on the plane, in the world) at `time` (0 calm to about 1.4 in a strong
+/// gust): a field of gusts about 45 m across carried downwind at the wind's speed, its pattern
+/// slowly turning as it goes, so it never repeats; gust fronts sweep over the land, irregular in
+/// time and place (the sum of sines this replaced swayed every plant on one schedule). One
+/// lookup of noise: it's read for every vertex of every plant.
+pub fn gust(wind: Wind, p: vec2, time: f32) -> f32 {
+    let q = (p - wind.dir * (wind.speed * time)) / 45.0
+    let a = time * 0.013
+    let turned = vec2(q.x * cos(a) - q.y * sin(a), q.x * sin(a) + q.y * cos(a))
+    0.25 + 1.15 * smoothstep(0.35, 0.8, noise::noise2(turned + vec2(time * 0.021, 0.0)))
 }
 
 /// How far a point at `at` (render space), `height` up its plant (or `height` up a blade), sways at the
-/// wind's time: along the wind, more with height, in waves that cross the land; and a flutter
-/// across it. A function of the wind (its time) and the place, nothing else (AC4).
+/// wind's time: along the gust's direction, more with height, as the plant answers the gusts that
+/// reach it (`gust`): a little behind them (its bend follows the gust of a moment ago and of a
+/// second ago), rocking only while the gust it feels changes (a gust's front, its passing) and
+/// most at its own pace (taller sways slower), and its leaves fluttering more in a strong gust.
+/// A function of the wind (its time) and the place, nothing else (AC4).
 pub fn sway(wind: Wind, at: vec3, height: f32) -> vec3 {
     let world = at + wind.origin
-    let d = vec3(wind.dir.x, 0.0, wind.dir.y)
-    let across = vec3(-wind.dir.y, 0.0, wind.dir.x)
-    let x = dot(world.xz, wind.dir)
-    let gust = 0.6 + 0.4 * sin(x * 0.07 - wind.time * 0.9) * sin(x * 0.023 + wind.time * 0.31)
-    let wave = sin(x * 0.45 - wind.time * 1.7 + hash2(i32(world.x * 0.5), i32(world.z * 0.5)) * 2.0)
-    let flutter = sin(world.y * 3.1 + world.x * 1.7 + wind.time * 4.3) * 0.3
+    let t = wind.time
+    let lately = gust(wind, world.xz, t - 0.3)
+    let before = gust(wind, world.xz, t - 1.1)
+    let felt = 0.65 * lately + 0.35 * before
+    // The gust's turn of the wind, a little, as it varies.
+    let turn = 0.35 * (lately - before)
+    let (c, s) = (cos(turn), sin(turn))
+    let dir = vec2(wind.dir.x * c - wind.dir.y * s, wind.dir.x * s + wind.dir.y * c)
+    let d = vec3(dir.x, 0.0, dir.y)
+    let across = vec3(-dir.y, 0.0, dir.x)
     let bend = wind.strength * height * height / (1.0 + height)
-    d * (bend * gust * (0.7 + 0.3 * wave)) + across * (bend * flutter * 0.4)
+    // Rocking at the plant's own pace, its phase its place's, as large as the gust's change; and
+    // the leaves' flutter, quicker, as large as the gust.
+    let pace = 2.6 / sqrt(1.0 + height)
+    let phase = hash2(i32(floor(world.x * 0.7)), i32(floor(world.z * 0.7))) * TAU
+    let rock = (lately - before) * sin(t * pace + phase)
+    let flutter = sin(t * 7.3 + phase * 3.0 + world.y * 2.1) * 0.25 * lately
+    d * (bend * (felt + 0.6 * rock)) + across * (bend * flutter)
 }
 
 // ---- the leaf atlas ----------------------------------------------------------------------------

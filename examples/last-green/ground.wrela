@@ -152,6 +152,31 @@ impl Ground {
         y
     }
 
+    /// The bedrock under (`p`, `y`) as a sample `w` across sees it (the floor's geology): beds of
+    /// sandstone and mudstone, about 18 m a pair, dipping gently to the south-east and bent by
+    /// broad folds, so a slope cuts across them in bands; granite under the crags and the
+    /// Watch. Its acidity (0 a base-rich mudstone, 1 an acid sandstone or granite), which the
+    /// soil over it takes and the wood's floor's plants follow, and its colour.
+    pub fn bedrock(self, p: vec2, y: f32, w: f32) -> (f32, vec3) {
+        let fold = 7.0 * (fbm2_seen(p * 0.004 + vec2(3.0, 9.0), 2, w * 0.004) - 0.5)
+        let lay = y + dot(p, vec2(0.05, -0.035)) + fold
+        let f = fract(lay / 18.0)
+        let sand = smoothstep(0.18, 0.3, f) * smoothstep(0.78, 0.66, f)
+        let watch = 1.0 - smoothstep(30.0, 60.0, length(p - vec2(560.0, -470.0)))
+        let granite = max(self.land.crag_rock(p), watch)
+        let acid = max(mix(0.15, 0.85, sand), granite)
+        let beds = mix(vec3(0.19, 0.19, 0.205), vec3(0.31, 0.26, 0.19), vec3(sand))
+        (acid, mix(beds, vec3(0.27, 0.25, 0.24), vec3(granite)))
+    }
+
+    /// How deep the soil is at `p` (0 bare rock, 1 deep), its normal `n`: thin where it's steep
+    /// (it slips off), thin in patches where the rock comes near the surface, deep on flats.
+    pub fn soil_depth(self, p: vec2, n: vec3, w: f32) -> f32 {
+        let flat = smoothstep(0.6, 0.92, n.y)
+        let near = smoothstep(0.62, 0.8, fbm2_seen(p * 0.035 + vec2(-5.0, 12.0), 3, w * 0.035))
+        saturate(flat * (0.6 + 0.4 * fbm2_seen(p * 0.11, 2, w * 0.11)) - 0.7 * near)
+    }
+
     /// How rocky the ground is at `p` (0 to 1): the crags and their scree, the Watch's granite top,
     /// and the ravine's walls (where `n`, the ground's normal, is steep).
     pub fn rocky(self, p: vec2, n: vec3) -> f32 {
@@ -199,8 +224,13 @@ impl Ground {
         let xz = at.xz
         let past = past_edge(xz)
         let patches = fbm2_seen(xz * 0.08, 3, w * 0.08)
+        let (acid, stone) = self.bedrock(xz, at.y, w)
+        let soil = self.soil_depth(xz, n, w)
+        // The ground under the grass takes its soil's colour: a sandy soil over sandstone
+        // yellower and lighter, a clay over mudstone darker.
+        let earth = mix(vec3(0.15, 0.12, 0.08), vec3(0.22, 0.17, 0.10), vec3(acid))
         let meadow = mix(vec3(0.10, 0.17, 0.035), vec3(0.20, 0.24, 0.05), vec3(patches))
-        var a = meadow
+        var a = mix(meadow, earth * 0.8 + meadow * 0.2, vec3(0.25 * (1.0 - soil)))
         // Down past the plateau's edge: the valley's fields on its floor, the woods of the hills
         // above it (no grass is drawn down there: it's land seen from far off).
         let down = smoothstep(10.0, 60.0, past)
@@ -210,9 +240,10 @@ impl Ground {
         }
         // Rock on the crags and the ravine's walls (`rock_albedo`: its greys, beds, cracks,
         // lichen and moss, cooked).
-        let rock = self.rocky(xz, n)
+        // Where the soil runs out, the bedrock shows: outcrops in its colour.
+        let rock = max(self.rocky(xz, n), smoothstep(0.22, 0.05, soil))
         if rock > 0.0 {
-            a = mix(a, rock_albedo(at, n, w), vec3(rock))
+            a = mix(a, rock_albedo(at, n, w) * (stone / 0.22), vec3(rock))
         }
         // Rock on the mountain's steep slopes, snow high on it.
         let steep = smoothstep(0.7, 0.5, n.y) * smoothstep(500.0, 800.0, at.y)
@@ -238,6 +269,7 @@ impl Ground {
             vec3(0.6 * heath),
         )
         let grass = (1.0 - rock) *
+            smoothstep(0.08, 0.35, soil) *
             (1.0 - steep) *
             (1.0 - snow) *
             (1.0 - bed) *
@@ -252,6 +284,9 @@ impl Ground {
             ),
             deep: smoothstep(0.5, 0.8, fbm2_seen(xz * 0.11 + vec2(-3.0, 8.0), 2, w * 0.11)),
             flowers: vec4(0.0, 0.1, 0.9, 0.35 * heath),
+            under: vec4(0.0),
+            flora: vec4(acid, 0.0, 1.0, 0.0),
+            materials: vec4(0.0, 1.0 - rock, rock, 0.0),
         }
     }
 
@@ -269,11 +304,19 @@ impl Ground {
         let (light, trodden, wet, thorn) = (fields.x, fields.y, fields.z, fields.w)
         // How open the canopy is over the ground: grass from about half the sky's light.
         let open = smoothstep(CLOSED, 0.85, light)
-        let leaves = fbm2_seen(xz * 0.21 + vec2(5.0, 1.0), 3, w * 0.21)
-        let litter = mix(vec3(0.075, 0.048, 0.027), vec3(0.13, 0.075, 0.036), vec3(leaves))
+        // Litter in drifts a few metres across and in patches under them: dark and damp in the
+        // hollows, dry and coppery where it's heaped (one even brown read as paint: round 5).
+        let leaves = fbm2_seen(xz * 0.21 + vec2(5.0, 1.0), 3, w * 0.21) * 0.65 +
+            noise2_seen(xz * 0.9 + vec2(-3.0, 2.0), w * 0.9) * 0.35
+        let litter = mix(
+            vec3(0.055, 0.036, 0.022),
+            vec3(0.16, 0.09, 0.042),
+            vec3(smoothstep(0.2, 0.85, leaves)),
+        )
         let mossy = smoothstep(0.55, 0.8, fbm2_seen(xz * 0.09 + vec2(-7.0, 2.0), 3, w * 0.09)) *
             (1.0 - open)
         var floor = mix(litter, vec3(0.045, 0.075, 0.02), vec3(mossy * 0.7))
+        let rock = c.materials.z
         // Under thorn, darker and bare.
         floor = floor * (1.0 - 0.3 * thorn)
         c.albedo = mix(floor, c.albedo, vec3(open))
@@ -299,6 +342,17 @@ impl Ground {
         let soaked = smoothstep(0.6, 0.95, wet)
         c.albedo *= 1.0 - 0.35 * soaked
         c.deep = max(c.deep, soaked)
+        // What the ground is made of where it shows: litter under the canopy (moss in its
+        // patches), soil in the open and on the paths, the rock where it crops out; the habitat
+        // the wood's floor's plants follow (`grass::species_of`).
+        let shaded = (1.0 - open) * (1.0 - bare)
+        c.materials = vec4(
+            shaded * (1.0 - mossy * 0.7) * (1.0 - rock),
+            (1.0 - shaded) * (1.0 - rock),
+            rock,
+            shaded * mossy * 0.7 * (1.0 - rock),
+        )
+        c.flora = vec4(c.flora.x, wet, light, trodden)
         // The wood's floor's own plants where the canopy closes (#54 §9): low herbs all through
         // it, ferns in patches in the deep shade, bracken in patches where light comes through
         // in gaps; thinner under thorn and in the wet, none on a path. Where the meadow opens,
@@ -324,13 +378,20 @@ impl Ground {
             herbs,
         )
         // Under a stream: its bed of gravel and wet stones; no grass (the mere's bed is `cover`'s).
+        // The bed's field is 2 m a texel, read between texels: the bed reaches out to where it's
+        // read halfway to the bank's wet (else grass stood in the water between its texels).
+        // Its banks are mud and rush, the grass thinning toward the water.
         let stones = noise2_seen(xz * 1.7, w * 1.7)
-        if wet > engine::bake::STREAM_BED {
-            c.albedo = mix(vec3(0.09, 0.08, 0.06), vec3(0.2, 0.18, 0.15), vec3(stones))
-            c.grass = 0.0
-            c.flowers = vec4(0.0)
-            c.under = vec4(0.0)
-        }
+        let bed = smoothstep(0.9, 0.985, wet)
+        c.albedo = mix(
+            c.albedo,
+            mix(vec3(0.09, 0.08, 0.06), vec3(0.2, 0.18, 0.15), vec3(stones)),
+            vec3(bed),
+        )
+        c.grass *= (1.0 - bed) * (1.0 - 0.6 * smoothstep(0.75, 0.9, wet))
+        c.flowers *= 1.0 - bed
+        c.tall *= 1.0 - bed
+        c.under *= 1.0 - bed
         c
     }
 }

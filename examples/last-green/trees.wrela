@@ -55,9 +55,15 @@ const BUILT = [
     16.0, 18.0, 12.0, 20.0, 15.0, 15.0,
 ]
 
-/// A broad-leaved tree, seed `s`, `tall` high: a trunk leaning a little toward +z (the light,
-/// once placed), limbs, and a crown of clumps from `base` (a share of its height) to its top,
-/// `width` (a share of its height) across each way, its clumps `clump` across.
+/// A broad-leaved tree, seed `s`, `tall` high, grown as a tree grows rather than as a ball of
+/// leaves on a stick: roots flaring into the ground round a trunk that curves a little and leans
+/// toward +z (the light, once placed); scaffold limbs leaving the trunk at different heights and
+/// headings (3 to 5); branches from each scaffold to clumps of leaves gathered in masses round
+/// its end, with gaps between the masses. The crown spans `base` (a share of its height) to its
+/// top and `width` (a share of its height) each way; its clumps are `clump` across (varied from
+/// half again smaller to a third larger), `count` of them, `limbs` with branches of their own.
+/// (Playing round 2, the owner: every limb left the trunk's top together, a broom; the crowns
+/// were even blobs; there were no roots.)
 fn broadleaf(
     s: u32,
     tall: f32,
@@ -74,27 +80,129 @@ fn broadleaf(
     let crown_y = tall * base
     let lean = vec3(pick(s, 4, lo: -0.3, hi: 0.3), 0.0, tall * 0.05)
     let top = vec3(0.0, crown_y, 0.0) + lean
+    let kink = vec3(pick(s, 5, lo: -0.4, hi: 0.4), 0.0, pick(s, 6, lo: -0.4, hi: 0.4)) * girth
+    // The trunk: wide at its foot, a little crooked, tapering up well into the crown as its
+    // leader (stopped short at the crown's foot, it read as a broken stump).
     p.tube(
-        [vec3(0.0, -0.6, 0.0), vec3(0.0, 0.5, 0.0), top * 0.6, top + vec3(0.0, tall * 0.08, 0.0)],
-        [girth * 1.5, girth * 1.15, girth * 0.8, girth * 0.45],
+        [
+            vec3(0.0, -0.6, 0.0),
+            vec3(0.0, 0.5, 0.0),
+            top * 0.55 + kink,
+            top + vec3(0.0, (tall - crown_y) * 0.55, 0.0) + lean * 0.3,
+        ],
+        [girth * 1.6, girth * 1.1, girth * 0.82, girth * 0.16],
     )
+    // Roots: buttresses flaring from the trunk's foot into the ground, uneven in size and
+    // spacing (a sapling has none).
+    if girth > 0.1 {
+        let roots = 4 + s % 3
+        for k in 0..roots {
+            let a = TAU * (f32(k) + 0.6 * rand(s, 140 + k)) / f32(roots)
+            let out = girth * pick(s, 150 + k, lo: 2.2, hi: 3.8)
+            let dir = vec3(cos(a), 0.0, sin(a))
+            p.limb(
+                vec3(0.0, girth * 1.3, 0.0),
+                dir * (out * 0.35) + vec3(0.0, girth * 0.35, 0.0),
+                dir * out + vec3(0.0, -0.3, 0.0),
+                r_from: girth * pick(s, 160 + k, lo: 0.45, hi: 0.65),
+                r_to: girth * 0.1,
+            )
+        }
+    }
+    // The scaffolds: each from its own height on the trunk, its heading turned by about the
+    // golden angle from the last, rising toward the crown's shell.
+    let scaffolds = if limbs == 0 { 0 } else { min(3 + s % 3, limbs) }
+    var tips: Vec<vec3> = Vec::new()
+    var feet: Vec<vec3> = Vec::new()
+    let w = tall * width
+    for j in 0..scaffolds {
+        let h = pick(s, 170 + j, lo: 0.5, hi: 1.0)
+        let foot = top * h + kink * (1.0 - h)
+        let a = 2.39996 * f32(j) + pick(s, 180 + j, lo: -0.5, hi: 0.5)
+        let reach = w * pick(s, 190 + j, lo: 0.55, hi: 0.95)
+        let rise = (tall - crown_y) * pick(s, 200 + j, lo: 0.35, hi: 0.8)
+        let tip = foot + vec3(cos(a) * reach, rise, sin(a) * reach)
+        p.limb(
+            foot,
+            mix(foot, tip, vec3(0.45)) + vec3(0.0, rise * 0.15, 0.0),
+            tip,
+            r_from: girth * 0.5,
+            r_to: girth * 0.12,
+        )
+        tips.push(tip)
+        feet.push(foot)
+    }
+    // Low limbs: one to three from the trunk under the crown, each out and a little down to a
+    // small mass of its own, so the crown's foot is ragged and the limbs show leaving the trunk
+    // (the round 5 stills: crowns sat on their trunks with one flat, dark edge, the trunks
+    // seeming to stop at it).
+    if girth > 0.1 && scaffolds > 0 {
+        for j in 0..(1 + s % 3) {
+            let h = pick(s, 260 + j, lo: 0.55, hi: 0.9)
+            let foot = top * h + kink * (1.0 - h)
+            let a = 2.39996 * f32(j + scaffolds) + 1.2 + pick(s, 270 + j, lo: -0.4, hi: 0.4)
+            let reach = w * pick(s, 280 + j, lo: 0.5, hi: 0.85)
+            let tip = foot +
+                vec3(
+                    cos(a) * reach,
+                    crown_y * pick(s, 290 + j, lo: -0.05, hi: 0.12),
+                    sin(a) * reach,
+                )
+            p.limb(
+                foot,
+                mix(foot, tip, vec3(0.5)) + vec3(0.0, reach * 0.12, 0.0),
+                tip,
+                r_from: girth * 0.3,
+                r_to: 0.03,
+            )
+            p.clump(
+                tip + vec3(0.0, clump * 0.3, 0.0),
+                radius: clump * pick(s, 300 + j, lo: 0.6, hi: 0.9),
+            )
+        }
+    }
+    // The clumps: in masses round the scaffolds' ends (the tree's own top too), each branch from
+    // a point along its scaffold; a sapling's round its trunk's top.
     let half = (tall - crown_y) * 0.5
     let mid = vec3(0.0, crown_y + half, 0.0) + lean * 1.3
     for i in 0..count {
-        let a = TAU * rand(s, 20 + i)
-        let up = pick(s, 40 + i, lo: -0.75, hi: 1.0)
-        let r = sqrt(max(1.0 - up * up, 0.0)) * pick(s, 60 + i, lo: 0.45, hi: 1.0)
-        let w = tall * width
-        let at = mid + vec3(r * cos(a) * w, up * (half - clump * 0.4), r * sin(a) * w)
-        p.clump(at, radius: clump * pick(s, 80 + i, lo: 0.8, hi: 1.2))
-        if i < limbs {
-            let from = top * pick(s, 100 + i, lo: 0.55, hi: 0.95)
+        let r_clump = clump * pick(s, 80 + i, lo: 0.6, hi: 1.35)
+        if scaffolds == 0 {
+            let a = TAU * rand(s, 20 + i)
+            let up = pick(s, 40 + i, lo: -0.75, hi: 1.0)
+            let r = sqrt(max(1.0 - up * up, 0.0)) * pick(s, 60 + i, lo: 0.45, hi: 1.0)
+            p.clump(
+                mid + vec3(r * cos(a) * w, up * (half - clump * 0.4), r * sin(a) * w),
+                radius: r_clump,
+            )
+            continue
+        }
+        // Which mass: a scaffold's, or (one in five) the leader's at the top.
+        let j = i % (scaffolds + 1)
+        let (centre, foot) = if j == scaffolds {
+            (vec3(0.0, tall - clump * 0.8, 0.0) + lean * 1.4, top)
+        } else {
+            // Along the scaffold's outer half, not only round its end: bare limbs to a ball of
+            // leaves at the top read as a broom (round 5's quick round).
+            (mix(feet[j], tips[j], vec3(pick(s, 310 + i, lo: 0.45, hi: 1.0))), feet[j])
+        }
+        let spread = clump * 1.4
+        let off = vec3(
+            pick(s, 210 + i, lo: -1.0, hi: 1.0),
+            pick(s, 230 + i, lo: -0.6, hi: 0.8),
+            pick(s, 250 + i, lo: -1.0, hi: 1.0),
+        ) *
+            spread
+        let at = centre + off
+        p.clump(at, radius: r_clump)
+        if i < limbs + scaffolds && i >= scaffolds {
+            let from = mix(foot, centre, vec3(pick(s, 100 + i, lo: 0.45, hi: 0.85)))
             p.limb(
                 from,
-                mix(from, at, vec3(0.5)) + vec3(0.0, tall * 0.03, 0.0),
+                mix(from, at, vec3(0.5)) + vec3(0.0, clump * 0.3, 0.0),
                 at,
-                r_from: girth * 0.45,
-                r_to: 0.04,
+                r_from: girth * 0.18,
+                r_to: 0.03,
             )
         }
     }
@@ -187,30 +295,50 @@ fn snag(s: u32, tall: f32, burnt: bool, conifer: bool) -> Plant {
     let girth = if conifer { 0.32 } else { 0.4 }
     let lean = vec3(pick(s, 4, lo: -0.4, hi: 0.4), 0.0, pick(s, 5, lo: -0.4, hi: 0.4))
     let broke = tall * pick(s, 6, lo: 0.75, hi: 0.95)
+    // The trunk, snapped: its last piece short, so it closes over a hand's width (a blunt
+    // break, not a spike: round 5's stills read the old tapered tops as tridents).
+    let top = vec3(0.0, broke, 0.0) + lean
     p.tube(
         [
             vec3(0.0, -0.6, 0.0),
             vec3(0.0, 0.5, 0.0),
-            vec3(0.0, broke * 0.5, 0.0) + lean * 0.5,
-            vec3(0.0, broke, 0.0) + lean,
+            top - vec3(0.0, 0.5, 0.0) - lean * 0.05,
+            top,
         ],
-        [girth * 1.4, girth * 1.1, girth * 0.75, girth * 0.4],
+        [girth * 1.4, girth * 1.1, girth * 0.6, girth * 0.55],
     )
+    // Splinters standing from the break.
+    for i in 0..(2 + s % 2) {
+        let a = TAU * rand(s, 60 + i)
+        let side = vec3(cos(a), 0.0, sin(a)) * girth * 0.35
+        let from = top - vec3(0.0, 0.3, 0.0) + side
+        let tip = from + vec3(side.x * 0.6, pick(s, 70 + i, lo: 0.5, hi: 1.3), side.z * 0.6)
+        p.straight(from, tip, r_from: girth * 0.22, r_to: 0.02)
+    }
+    // Its limbs: what's left of them, short and crooked, some snapped to stubs.
     let n = if burnt { 3 } else if conifer { 6 } else { 5 }
     for i in 0..n {
-        let h = pick(s, 10 + i, lo: 0.45, hi: 0.9) * broke
+        let h = pick(s, 10 + i, lo: 0.4, hi: 0.9) * broke
         let a = TAU * rand(s, 20 + i)
         let out = vec3(cos(a), 0.0, sin(a))
+        let across = vec3(-out.z, 0.0, out.x)
         let from = vec3(0.0, h, 0.0) + lean * (h / broke)
-        let len = if conifer { tall * 0.08 } else { tall * pick(s, 30 + i, lo: 0.12, hi: 0.25) }
-        let rise = if conifer { -0.2 } else { pick(s, 40 + i, lo: 0.4, hi: 1.0) }
+        let stub = rand(s, 50 + i) < 0.4
+        let len = if conifer { tall * 0.06 } else if stub {
+            tall * pick(s, 30 + i, lo: 0.03, hi: 0.06)
+        } else {
+            tall * pick(s, 30 + i, lo: 0.08, hi: 0.16)
+        }
+        let rise = if conifer { -0.2 } else { pick(s, 40 + i, lo: -0.2, hi: 0.7) }
         let tip = from + out * len + vec3(0.0, len * rise, 0.0)
         p.limb(
             from,
-            mix(from, tip, vec3(0.5)) + vec3(0.0, len * 0.15, 0.0),
+            mix(from, tip, vec3(0.5)) +
+                across * (len * pick(s, 45 + i, lo: -0.3, hi: 0.3)) +
+                vec3(0.0, len * 0.1, 0.0),
             tip,
             r_from: girth * 0.3,
-            r_to: 0.03,
+            r_to: if stub { girth * 0.2 } else { 0.03 },
         )
     }
     p
@@ -227,14 +355,16 @@ fn log(s: u32, long: f32, girth: f32) -> Plant {
     // No leaves: its trunk and its root plate alone.
     var p = plant(leaves: Leaves { size: 0.2 }, bark: bark)
     let bow = pick(s, 1, lo: -0.6, hi: 0.6)
+    // Its foot closed by a short piece swelling from a stub (a tube's start is open: its rim
+    // showed as a white ring: round 5).
     p.tube(
         [
-            vec3(0.0, girth, 0.0),
-            vec3(bow * 0.5, girth * 0.9, long * 0.33),
-            vec3(bow, girth * 0.75, long * 0.66),
+            vec3(0.0, girth, -girth * 0.25),
+            vec3(0.0, girth, girth * 0.35),
+            vec3(bow, girth * 0.8, long * 0.6),
             vec3(bow * 0.6, girth * 0.5, long),
         ],
-        [girth, girth * 0.85, girth * 0.65, girth * 0.4],
+        [girth * 0.35, girth, girth * 0.72, girth * 0.4],
     )
     // The root plate's stubs at the foot.
     for i in 0..4 {
@@ -432,9 +562,9 @@ pub fn kind_plant(k: u32) -> Plant {
             tall: 3.0,
             base: 0.3,
             width: 0.3,
-            clump: 0.7,
-            count: 6,
-            limbs: 0,
+            clump: 0.6,
+            count: 9,
+            limbs: 3,
             girth: 0.04,
             leaves: beech_leaves,
             bark: beech_bark,

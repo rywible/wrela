@@ -17,10 +17,11 @@
 
 use light::Lit
 use sim::Hit
+use noise::{hash2, noise2_wrapped}
 use std::gpu::{
-    Address, ClipPosition, DrawIndexedArgs, GlobalId, GpuBuffer, GpuSpan, Oct32, Rgba8, Sampler,
-    Slots, Texture, Unorm8x4, VertexIndex, buffer, buffer_of, dispatch, label, sampler, texture,
-    write,
+    Address, ClipPosition, DrawIndexedArgs, FragCoord, GlobalId, GpuBuffer, GpuSpan, Oct32, Rgba8,
+    Sampler, Slots, Texture, Unorm8x4, VertexIndex, begin_pass, buffer, buffer_of, dispatch, draw,
+    label, sampler, texture, write,
 }
 use view::Camera
 
@@ -66,7 +67,11 @@ pub trait Terrain: Copy + GpuData {
 /// it's placed: how much grass grows there and how tall (each 0 to 1), how dry and how deep a
 /// green it is; and its flowers: how much of each of three kinds (weights), and how many grow.
 /// And the wood's floor's own plants, where the grass doesn't grow (#54 §9): how many (0 to 1),
-/// then how much of each kind (weights): ferns, bracken, low herbs.
+/// then how much of each kind (weights): ferns, bracken, low herbs. The habitat they grow in
+/// (`flora`: the soil's acidity, its wetness, the light, how worn it is; each 0 to 1), which
+/// chooses their species (`grass::species_of`). And what the ground is made of where it shows
+/// (`materials`: weights of leaf litter, soil, rock, moss), whose cooked detail the ground's
+/// pixels show close up (`ground_shade`).
 pub struct Cover: Copy + GpuData {
     pub albedo: vec3,
     pub grass: f32,
@@ -75,6 +80,8 @@ pub struct Cover: Copy + GpuData {
     pub deep: f32 = 0.0,
     pub flowers: vec4 = vec4(0.0),
     pub under: vec4 = vec4(0.0),
+    pub flora: vec4 = vec4(0.0),
+    pub materials: vec4 = vec4(0.0, 1.0, 0.0, 0.0),
 }
 
 /// One cooked point of the clipmap: the height, the normal (octahedral), the cover (the albedo's
@@ -87,6 +94,8 @@ pub struct Texel: Copy + GpuData {
     pub meadow: Unorm8x4,
     pub flowers: Unorm8x4,
     pub under: Unorm8x4,
+    pub flora: Unorm8x4,
+    pub materials: Unorm8x4,
 }
 
 /// Texels along each side of a level, and the quads between them.
@@ -97,7 +106,7 @@ pub const MAX_LEVELS: u32 = 12
 /// A level's rows in the buffer: as wide as its cooking dispatch's rows, whole groups of 8.
 pub const ROW: u32 = (SIDE + 7) / 8 * 8
 /// Texels a level takes in the buffer: its SIDE rows, rounded up to a 256-byte span (WebGPU
-/// binds a span from a multiple of 256 bytes; a texel is 20, so 64 texels are a whole number of
+/// binds a span from a multiple of 256 bytes; a texel is 32, so 64 texels are a whole number of
 /// spans).
 pub const STRIDE: u32 = (SIDE * ROW + 63) / 64 * 64
 /// The points a level's triangles join (`ground`): its grid's, then the dropped points of its
@@ -196,6 +205,18 @@ pub struct Clipmap {
     /// The render origin (`view::Camera::origin`): the levels lie in render space, and cook the
     /// ground at the world's points.
     origin: vec2,
+    /// The ground's detail close up, cooked once (`cook_detail`): a tile each of leaf litter,
+    /// soil, rock and moss, read through a repeating sampler (`ground_shade`).
+    pub details: Details,
+}
+
+/// The ground's detail tiles (`cook_detail`), and the repeating sampler they're read through.
+pub struct Details {
+    pub litter: Texture<Rgba8>,
+    pub soil: Texture<Rgba8>,
+    pub rock: Texture<Rgba8>,
+    pub moss: Texture<Rgba8>,
+    pub s: Sampler,
 }
 
 impl Clipmap {
@@ -217,6 +238,13 @@ impl Clipmap {
             field_tiles: buffer(1),
             held: Vec::from([vec4(0.0)]),
             origin: vec2(0.0),
+            details: Details {
+                litter: cook_detail(0),
+                soil: cook_detail(1),
+                rock: cook_detail(2),
+                moss: cook_detail(3),
+                s: sampler(address: Address::Repeat),
+            },
         }
     }
 
@@ -508,6 +536,8 @@ pub fn cook_level<T: Terrain>(
         meadow: Unorm8x4::encode(saturate(vec4(c.tall, c.dry, c.deep, 0.0))),
         flowers: Unorm8x4::encode(saturate(c.flowers)),
         under: Unorm8x4::encode(saturate(c.under)),
+        flora: Unorm8x4::encode(saturate(c.flora)),
+        materials: Unorm8x4::encode(saturate(c.materials)),
     }
 }
 
@@ -699,6 +729,7 @@ pub struct Covering: Copy {
     pub meadow: vec4,
     pub flowers: vec4,
     pub under: vec4,
+    pub flora: vec4,
 }
 
 /// Level `l`'s ground at `xz`, between its texels (bilinear).
@@ -711,6 +742,7 @@ fn level_ground(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> Covering {
         meadow: vec4(0.0),
         flowers: vec4(0.0),
         under: vec4(0.0),
+        flora: vec4(0.0),
     }
     var heights = vec4(0.0)
     for dy in 0..2 {
@@ -724,6 +756,7 @@ fn level_ground(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> Covering {
             out.meadow += t.meadow.decode() * w
             out.flowers += t.flowers.decode() * w
             out.under += t.under.decode() * w
+            out.flora += t.flora.decode() * w
             heights[dy * 2 + dx] = t.height
         }
     }
@@ -746,6 +779,7 @@ pub fn ground_cover_at(levels: Levels, texels: [Texel], xz: vec2) -> Covering {
         meadow: mix(g0.meadow, g1.meadow, vec4(m)),
         flowers: mix(g0.flowers, g1.flowers, vec4(m)),
         under: mix(g0.under, g1.under, vec4(m)),
+        flora: mix(g0.flora, g1.flora, vec4(m)),
     }
 }
 
@@ -824,8 +858,37 @@ pub fn below<T: Terrain>(terrain: T, at: vec3) -> Hit {
 /// The ground's pixel: the clipmap's normal and cover at its point, lit by the sun through the
 /// shadows and the clouds' shadows, and by the probes' sky light; through the haze.
 @fragment
-pub fn ground_shade(g: GroundVertex, lt: lit::Lighting, texels: [Texel]) -> vec4 {
-    let (n, albedo, _) = ground_at(lt.levels, texels, g.world.xz)
+pub fn ground_shade(
+    g: GroundVertex,
+    lt: lit::Lighting,
+    texels: [Texel],
+    litter: Texture<Rgba8>,
+    soil: Texture<Rgba8>,
+    rock: Texture<Rgba8>,
+    moss: Texture<Rgba8>,
+    ds: Sampler,
+) -> vec4 {
+    let (n, coarse, _) = ground_at(lt.levels, texels, g.world.xz)
+    // Its detail close up: what it's made of (`Cover::materials`), each material's cooked tile
+    // at two sizes (the finer fading out where a pixel spans its texels: no mipmaps), keyed to
+    // the world. A clipmap texel is 12.5 cm at the finest: without them, the ground read as
+    // smooth paint close up.
+    let mats = materials_at(lt.levels, texels, g.world.xz)
+    let foot = lt.cam.footprint(length(g.world - lt.cam.eye))
+    let wp = g.world + lt.cam.keyed()
+    let w = mats / max(mats.x + mats.y + mats.z + mats.w, 1.0e-3)
+    let a4 = abs(n)
+    let tri = a4 * a4 * a4 * a4 / max(dot(a4 * a4, a4 * a4), 1.0e-6)
+    // Rock across the planes the normal faces (a face's grain doesn't smear); the rest flat.
+    let rk = DETAIL_SIZES[2]
+    let detail = detail_of(litter, ds, wp.xz, DETAIL_SIZES[0], foot) * w.x +
+        detail_of(soil, ds, wp.xz, DETAIL_SIZES[1], foot) * w.y +
+        (detail_of(rock, ds, wp.zy, rk, foot) * tri.x +
+            detail_of(rock, ds, wp.xz, rk, foot) * tri.y +
+            detail_of(rock, ds, wp.xy, rk, foot) * tri.z) *
+            w.z +
+        detail_of(moss, ds, wp.xz, DETAIL_SIZES[3], foot) * w.w
+    let albedo = coarse * detail
     // The sky's reflection, but no glint of the sun: the ground is covered (grass, and far off
     // trees), whose blades and leaves shade each other's glints where the ground's would show
     // (looking toward the sun, at a grazing angle); a crown's levels, where they meet, showed
@@ -834,4 +897,157 @@ pub fn ground_shade(g: GroundVertex, lt: lit::Lighting, texels: [Texel]) -> vec4
     let l = Lit { albedo, n, sun, sky, through: vec3(0.0), rough: 0.9, reflected }
     let c = lit::shown(lt, l, g.world)
     vec4(c, view::GROUND)
+}
+
+// ---- the ground's detail -------------------------------------------------------------------
+
+/// Each detail tile's texels a side, and how wide each tile lies on the ground (m): leaf litter,
+/// soil, rock, moss.
+pub const DETAIL_TEXELS: u32 = 256
+// (The look renders the scene under the output's size and paints it: litter's leaves smaller
+// than about 12 cm, and soil's crumbs, didn't survive it.)
+const DETAIL_SIZES = [2.8, 2.6, 3.5, 1.6]
+
+/// Detail tile `k` (0 leaf litter, 1 soil, 2 rock, 3 moss), cooked once: each texel a colour
+/// multiplier over the cover's albedo (halved: 0.5 keeps it), wrapping.
+pub fn cook_detail(k: u32) -> Texture<Rgba8> {
+    var t = texture::<Rgba8>(width: DETAIL_TEXELS, height: DETAIL_TEXELS)
+    let p = begin_pass(mut t)
+    draw(p, detail_full, detail_texel.bind(k: k), vertices: 3)
+    p.end()
+    t
+}
+
+/// A triangle covering the target.
+@vertex
+fn detail_full(v: VertexIndex) -> ClipPosition {
+    let x = f32((v.index << 1) & 2) * 2.0 - 1.0
+    let y = f32(v.index & 2) * 2.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.5, 1.0) }
+}
+
+/// Wrapped cell `(x, y)` of a grid `n` a side's hash, seeded.
+fn cell_hash(x: i32, y: i32, n: i32, seed: i32) -> f32 {
+    hash2(((x % n) + n) % n + seed * 131, ((y % n) + n) % n - seed * 71)
+}
+
+/// A texel of detail tile `k`.
+@fragment
+fn detail_texel(pixel: FragCoord, k: u32) -> vec4 {
+    let uv = pixel.position.xy / f32(DETAIL_TEXELS)
+    var c = vec3(1.0)
+    if k == 0 {
+        // Leaf litter: fallen leaves over each other, each its own brown, on darker soil.
+        let n = 22
+        let q = uv * f32(n)
+        let base = floor(q)
+        c = vec3(0.62, 0.58, 0.55) *
+            (0.85 + 0.3 * noise2_wrapped(q * 2.0, period: vec2i(n * 2, n * 2)))
+        var best = -1.0
+        for layer in 0..3 {
+            for j in -1..2 {
+                for i in -1..2 {
+                    let cx = i32(base.x) + i
+                    let cy = i32(base.y) + j
+                    let s = layer * 7
+                    let centre = vec2(f32(cx), f32(cy)) +
+                        vec2(cell_hash(cx, cy, n, s + 1), cell_hash(cx, cy, n, s + 2))
+                    let a = 6.2831855 * cell_hash(cx, cy, n, s + 3)
+                    let dir = vec2(cos(a), sin(a))
+                    let d = q - centre
+                    let along = dot(d, dir) / 0.55
+                    let across = dot(d, vec2(-dir.y, dir.x)) /
+                        (0.24 + 0.1 * cell_hash(cx, cy, n, s + 4))
+                    let inside = 1.0 - (along * along + across * across)
+                    let order = f32(layer) + cell_hash(cx, cy, n, s + 5)
+                    if inside > 0.0 && order > best {
+                        best = order
+                        let hue = cell_hash(cx, cy, n, s + 6)
+                        let leaf = mix(vec3(1.25, 0.95, 0.65), vec3(0.9, 0.62, 0.42), vec3(hue))
+                        // A midrib, and the leaf's edge darker.
+                        let rib = 1.0 - 0.25 * smoothstep(0.06, 0.0, abs(across) * 0.24)
+                        c = leaf * (0.75 + 0.35 * smoothstep(0.0, 0.25, inside)) * rib
+                    }
+                }
+            }
+        }
+    } else if k == 1 {
+        // Soil: crumbs and clods, damp and dry, and a few small angular stones half sunk in it
+        // (pale round stones in a grid read as polka dots: the round 5 stills).
+        let crumbs = noise2_wrapped(uv * 48.0, period: vec2i(48, 48)) * 0.5 +
+            noise2_wrapped(uv * 120.0, period: vec2i(120, 120)) * 0.3 +
+            noise2_wrapped(uv * 12.0, period: vec2i(12, 12)) * 0.2
+        c = vec3(0.78 + 0.44 * crumbs)
+        let damp = smoothstep(0.45, 0.7, noise2_wrapped(uv * 6.0 + vec2(1.7), period: vec2i(6, 6)))
+        c *= 1.0 - 0.18 * damp
+        let n = 24
+        let q = uv * f32(n)
+        let cx = i32(floor(q.x))
+        let cy = i32(floor(q.y))
+        let centre = floor(q) +
+            vec2(0.25) +
+            0.5 * vec2(cell_hash(cx, cy, n, 8), cell_hash(cx, cy, n, 9))
+        let r = 0.08 + 0.14 * cell_hash(cx, cy, n, 10)
+        // An angular outline: the distance stretched along a turned axis and broken by noise.
+        let a = 6.2831855 * cell_hash(cx, cy, n, 13)
+        let off = q - centre
+        let e = vec2(dot(off, vec2(cos(a), sin(a))), dot(off, vec2(-sin(a), cos(a)))) *
+            vec2(0.7, 1.3)
+        let d = (abs(e.x) + abs(e.y)) * 0.75 / r +
+            0.35 * noise2_wrapped(uv * 160.0, period: vec2i(160, 160))
+        if cell_hash(cx, cy, n, 11) > 0.72 {
+            let stone = vec3(1.08, 1.06, 1.02) * (0.85 + 0.25 * cell_hash(cx, cy, n, 12))
+            c = mix(c, stone * (0.85 + 0.3 * crumbs), vec3(smoothstep(1.0, 0.85, d)))
+            c *= 1.0 - 0.25 * smoothstep(1.3, 1.0, d) * smoothstep(0.9, 1.05, d) * step(0.0, off.y)
+        }
+    } else if k == 2 {
+        // Rock: its grain, cracks across it, and pale lichen in spots.
+        let grain = noise2_wrapped(uv * 64.0, period: vec2i(64, 64)) * 0.5 +
+            noise2_wrapped(uv * 160.0, period: vec2i(160, 160)) * 0.5
+        c = vec3(0.82 + 0.36 * grain)
+        // Cracks: thin, broken into short runs (a noise's level line everywhere read as a maze
+        // of wiggly lines on the crag's top: round 5).
+        let crack = 1.0 - abs(noise2_wrapped(uv * 9.0, period: vec2i(9, 9)) - 0.5) * 2.0
+        let runs = smoothstep(0.6, 0.75, noise2_wrapped(uv * 5.0 + vec2(2.3), period: vec2i(5, 5)))
+        c *= 1.0 - 0.3 * smoothstep(0.96, 0.99, crack) * runs
+        // Lichen in irregular crusts, broken at their edges, faint (bold round spots read as a
+        // leopard's at the coarser scale).
+        let crust = noise2_wrapped(uv * 20.0 + vec2(3.0), period: vec2i(20, 20)) * 0.7 +
+            noise2_wrapped(uv * 70.0, period: vec2i(70, 70)) * 0.3
+        let lichen = smoothstep(0.62, 0.72, crust)
+        c = mix(c, vec3(1.18, 1.2, 1.06), vec3(lichen * 0.45))
+    } else {
+        // Moss: tufts, lit tips and dark between.
+        let tufts = noise2_wrapped(uv * 90.0, period: vec2i(90, 90)) * 0.6 +
+            noise2_wrapped(uv * 220.0, period: vec2i(220, 220)) * 0.4
+        c = mix(vec3(0.62, 0.7, 0.55), vec3(1.25, 1.3, 1.05), vec3(tufts))
+    }
+    vec4(clamp(c * 0.5, vec3(0.0), vec3(1.0)), 1.0)
+}
+
+/// A detail tile's colour multiplier at `q` (m, on its plane), the tile `size` across: read at
+/// that size and four times it, the finer fading out where a pixel `foot` across spans its texels,
+/// and both where the coarser does (no mipmaps).
+fn detail_of(t: Texture<Rgba8>, ds: Sampler, q: vec2, size: f32, foot: f32) -> vec3 {
+    let fine = smoothstep(2.5, 0.8, foot * f32(DETAIL_TEXELS) / size)
+    let far = smoothstep(2.5, 0.8, foot * f32(DETAIL_TEXELS) / (size * 4.0))
+    let f = t.sample_level(ds, q / size).rgb * 2.0
+    // The coarser read at half strength: at four times the size its shapes (a stone, a crust)
+    // are the size of a footstep, and read as a printed pattern at full strength.
+    let c = mix(
+        vec3(1.0),
+        t.sample_level(ds, q / (size * 4.0) + vec2(0.37, 0.71)).rgb * 2.0,
+        vec3(0.5),
+    )
+    mix(vec3(1.0), mix(c, f * c, vec3(fine)), vec3(far))
+}
+
+/// What the ground is made of at `xz` (`Cover::materials`), from the level it's drawn from,
+/// between its texels.
+pub fn materials_at(levels: Levels, texels: [Texel], xz: vec2) -> vec4 {
+    let l = level_at(levels, xz)
+    let (at, f) = level_cell(levels, l, xz)
+    let a = mix(texels[at.x].materials.decode(), texels[at.y].materials.decode(), vec4(f.x))
+    let b = mix(texels[at.z].materials.decode(), texels[at.w].materials.decode(), vec4(f.x))
+    mix(a, b, vec4(f.y))
 }

@@ -966,7 +966,15 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
             draw(
                 ter,
                 ground.bind(cam, lt.levels, texels),
-                ground_shade.bind(lt, texels),
+                ground_shade.bind(
+                    lt,
+                    texels,
+                    litter: s.clipmap.details.litter,
+                    soil: s.clipmap.details.soil,
+                    rock: s.clipmap.details.rock,
+                    moss: s.clipmap.details.moss,
+                    ds: s.clipmap.details.s,
+                ),
                 indices: s.clipmap.indices(),
                 indirect: s.clipmap.draw_args(l),
                 depth: NEAREST,

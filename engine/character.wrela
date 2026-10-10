@@ -10,7 +10,8 @@ use lit::{Lighting, sun_and_sky, through_air}
 use realize::{Mesh, SkinVertex, Tally}
 use render::{Look, skin_matrix}
 use std::gpu::{
-    ClipPosition, Flat, GlobalId, GpuBuffer, Slots, Unorm8x4, VertexIndex, buffer, dispatch,
+    ClipPosition, Flat, FragCoord, GlobalId, GpuBuffer, Slots, Unorm8x4, VertexIndex, buffer,
+    discard, dispatch,
 }
 use temporal::motion_of
 use view::{CREATURE, Camera}
@@ -114,7 +115,20 @@ pub fn character(
 /// A character's pixel: the cel treatment's bands lit by the sun through the shadows and by the
 /// sky light, through the haze; its tag the character's class and its part.
 @fragment
-pub fn character_shade(c: CharacterVertex, lt: Lighting) -> vec4 {
+pub fn character_shade(c: CharacterVertex, pixel: FragCoord, lt: Lighting) -> vec4 {
+    // Where the camera has pulled in close (a trunk behind it), the character fades: a dither,
+    // turned each frame, that temporal AA settles (it filled the screen).
+    let near = smoothstep(0.55, 1.25, length(c.world - lt.cam.eye))
+    if near < 1.0 {
+        let q = vec2u(pixel.position.xy) % vec2u(4)
+        let bayer = [
+            0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0,
+        ]
+        let t = fract((bayer[q.y * 4 + q.x] + 0.5) / 16.0 + 0.618034 * f32(lt.cam.frame % 64))
+        if t > near {
+            discard()
+        }
+    }
     let n = normalize(c.normal)
     let (sun, sky) = sun_and_sky(lt, c.world, n, sky_n: n, soft: 1.0)
     let lit = Lit { albedo: c.albedo, n, sun, sky, through: vec3(0.0) }

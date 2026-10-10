@@ -26,6 +26,8 @@ test("reads every parameter", () => {
     nohash: 0,
     ticklog: 0,
     inflight: 0,
+    snap: 0,
+    snapfrom: 0,
     paced: 0,
     tickdelay: 0,
     framedelay: 0,

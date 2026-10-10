@@ -3,7 +3,11 @@
 1080p, paced at 60 Hz as in play, eight threads, through the play harness's keys, then its
 lookbook rendered again. Everything goes to target/rounds/round-<n>/.
 
-    tools/round.py <n> [--minutes 30|60] [--no-lookbook] [--frames <n>]
+    tools/round.py <n> [--quick | --minutes 30|60] [--no-lookbook] [--frames <n>]
+
+`--quick` (about two minutes, the edit loop's round): a travel to every fourth site (each
+region's), at each a run of 2 s and a look round, then six lookbook shots held, the screen saved
+at each (`snaps/`); no lookbook render after.
 
 The floor must be built (`wrela build examples/last-green`). The round plays, as a player would
 through the harness's taps: the floor's walk (P: from the gate, along the critical path, through
@@ -73,7 +77,31 @@ def script(minutes):
     return events, max(f, minutes * 60 * FPS)
 
 
-def summarize(out, frames_json, log_lines, printed_in):
+QUICK_SHOTS = [1, 2, 3, 5, 7, 12]
+
+
+SNAP = 130
+
+
+def quick_script():
+    """The quick round's events, how many frames, and the frames whose screens are saved
+    (every `SNAP` frames: each site's block is two, each shot's three)."""
+    events = []
+    f = SNAP
+    for site in range(0, sites(), 4):
+        events += keys_at(f + 5, ["KeyG", *["Digit" + d for d in str(site)], "Enter"])
+        events += keys_at(f + SNAP + 5, ["KeyT", "KeyR"])
+        events += keys_at(f + 2 * SNAP - 25, ["KeyT", "KeyR", "KeyE", "KeyE", "KeyE"])
+        f += 2 * SNAP
+    for shot in QUICK_SHOTS:
+        events += keys_at(f + 5, ["KeyL", *["Digit" + d for d in str(shot)], "Enter"])
+        f += 3 * SNAP
+    events += keys_at(f + 5, ["Escape"])
+    frames = f + 10
+    return events, frames, list(range(SNAP, frames, SNAP))
+
+
+def summarize(out, frames_json, log_lines, printed_in, snaps=()):
     began = frames_json["began_ms"]
     gaps = [(i, began[i] - began[i - 1]) for i in range(1, len(began))]
     start = next((printed_in[k] for k, l in enumerate(log_lines) if l.startswith("playable")), 0)
@@ -93,7 +121,8 @@ def summarize(out, frames_json, log_lines, printed_in):
         r = best[1]
         return f"{r['region']}, {r['site_m']:.0f} m from {r['site']} ({r['at'][0]:.0f}, {r['at'][1]:.0f})"
 
-    hitches = [(i, ms) for i, ms in played if ms > 33.4]
+    # (A frame after a saved screen waited for its readback.)
+    hitches = [(i, ms) for i, ms in played if ms > 33.4 and i - 1 not in snaps]
     sorted_ms = sorted(ms for _, ms in played)
     pct = lambda q: sorted_ms[min(len(sorted_ms) - 1, int(q * len(sorted_ms)))] if sorted_ms else 0
     regions, passed = [], []
@@ -135,17 +164,22 @@ def main():
         sys.exit(__doc__)
     n = int(args[0])
     minutes = int(args[args.index("--minutes") + 1]) if "--minutes" in args else 30
+    quick = "--quick" in args
     out = os.path.join(ROOT, "target/rounds", f"round-{n}")
     shutil.rmtree(out, ignore_errors=True)
     page = os.path.join(out, "page")
     shutil.copytree(BUILD, page, ignore=shutil.ignore_patterns("results", "run", "profile", "studio"))
     events, frames = script(minutes)
+    snaps = []
+    if quick:
+        events, frames, snaps = quick_script()
     if "--frames" in args:
         frames = int(args[args.index("--frames") + 1])
     with open(os.path.join(page, "round-keys.json"), "w") as f:
         json.dump(events, f)
     timeout = frames // FPS * 2 + 600
-    hash_ = (f"#test&frames={frames}&width=1920&height=1080&fps={FPS}&workers=8&paced=1&nohash=1&ticklog=1&inflight=2"
+    snap = f"&snap={SNAP}&snapfrom={SNAP}" if quick else ""
+    hash_ = (f"#test&frames={frames}&width=1920&height=1080&fps={FPS}&workers=8&paced=1&nohash=1&ticklog=1&inflight=2{snap}"
              f"&input=round-keys.json")
     print(f"round {n}: {frames} frames ({frames / FPS / 60:.1f} min) in Chrome", flush=True)
     r = subprocess.run([sys.executable, HEADLESS, os.path.relpath(page, ROOT), hash_, str(timeout)],
@@ -154,14 +188,20 @@ def main():
     for name in ["ticks.log", "log.txt", "console.log", "frames.json", "memory.json", "load.json"]:
         if os.path.exists(os.path.join(results, name)):
             shutil.copyfile(os.path.join(results, name), os.path.join(out, name))
+    if snaps:
+        os.makedirs(os.path.join(out, "snaps"), exist_ok=True)
+        for k, f in enumerate(snaps):
+            src = os.path.join(results, f"snap-{f}.png")
+            if os.path.exists(src):
+                shutil.copyfile(src, os.path.join(out, "snaps", f"{k:02d}-frame-{f}.png"))
     if r.returncode != 0:
         print(r.stderr[-3000:])
         print(f"the round's run failed (see {out}/console.log)")
     frames_json = json.load(open(os.path.join(out, "frames.json")))
     log_lines = open(os.path.join(out, "log.txt")).read().splitlines()
-    summarize(out, frames_json, log_lines, frames_json["printed_in"])
+    summarize(out, frames_json, log_lines, frames_json["printed_in"], set(snaps))
     shutil.rmtree(page, ignore_errors=True)
-    if "--no-lookbook" not in args:
+    if "--no-lookbook" not in args and not quick:
         r = subprocess.run([sys.executable, LOOKBOOK, os.path.join(out, "lookbook"), "--stills"],
                            capture_output=True, text=True)
         print(r.stdout.strip().splitlines()[-1] if r.returncode == 0 else r.stderr[-2000:])
