@@ -123,12 +123,41 @@ The load-bearing rules. Changing one needs the owner, and the change and its rea
 
 **The Reliquary** (working title): an offline, single-player climb of a tower of 100 worlds, played from a link (D-103; settled by the owner on 2026-10-05, with the full constraints in #44).
 
-- **The tower.** When a world ends, something takes the place, frozen at its last moment, and stacks it into the tower. Each floor is a handcrafted world with its own creatures, anchors to free and a Warden that refuses to let its world end. Beating the Warden lets that world's time run again. The tower ends at floor 100 with a final boss. It launches with three floors (the Last Green, a forest; the Titan's Back; the Clockless War) and grows each season.
-- **Skill and knowledge only.** No loot and no power levels: one soul blade that evolves by how you fight, one difficulty, and a discovery loop of echoes cut from the frozen moment.
+- **The tower.** 100 levels (floors), each a handcrafted world with its own creatures, anchors to free and a boss, its Warden. A final boss waits at the top. It launches with three floors (the Last Green, a forest; the Titan's Back; the Clockless War) and grows each season. The story is below ("The lore").
+- **Skill and knowledge only.** No loot and no power levels: one soul blade that evolves by how you fight, one difficulty, and a discovery loop of echoes your blade cuts from each world.
 - **The look:** storybook anime under real light. The world is painted in continuous light, with brush dabs anchored on its surfaces and no lines; characters are cel-shaded, with thin lines (picked by the owner from spike 15's three variants, #50; it can evolve). The climber is masked; there's no voice acting. Realistic human faces stay out of scope.
 - **Seasons and leaderboards.** Each three-month season is a fresh race from floor 1. Leaderboards come from deterministic replays, verified on the native host against the season's build. The first verified unassisted climb of a season is its champion, who proposes a floor that the owner builds.
 - **Nothing collected, nothing sold.** No accounts; saves stay in the game's origin and export as files; hosting is on free tiers.
 - **Later:** an MMO in one shared world, once there's money, time and legal advice (#31).
+
+### The lore
+
+This is the canonical lore, from the owner's own words (2026-10-10). Read it before you write anything that touches the story: a floor's lore, echoes, quests, names, a pitch, a doc, a comment or a test's name. Don't add lore the owner hasn't stated. Propose it to the owner instead, and record it here only when the owner settles it.
+
+```
+   the final boss, at the top of the tower   (what happens then: not decided)
+                  ▲
+                  ┆
+   door 2 ──► a world the tower ate, kept alive by its boss
+                  ┆
+   door 1 ──► a world the tower ate, kept alive by its boss
+                  ┆
+   you start here: an endless spiral staircase in a void.
+   Go up and down it; free the world behind a door to get to the next level.
+```
+
+- **The tower eats worlds.** Each level is a world that the tower ate. The worlds exist inside the tower.
+- **The staircase.** The game starts on an endless spiral staircase in a void. You go up, and there is a door. The door opens into a world.
+- **Levels.** You can go up and down the staircase. But until you free the world behind a door, you can't get to the next level. That is the levelling system.
+- **The boss of each level** (its Warden) tries to keep its own world alive. That is why the world still exists in the tower: the boss keeps it alive through sheer will, and the tower wants to consume it. Each world is a dying, preserved piece of a world (the owner's comparison: like *Clair Obscur: Expedition 33*, almost).
+- **Free or preserve.** When you defeat a world's boss, you choose:
+  - **Preserve** it: the world stays in stasis, and its boss stays alive. You can go back and visit it.
+  - **Free** it: its door disappears and the world is gone. You let the world die.
+- **The end is not decided.** The choices will have implications for the end of the game: what happens when you beat the final boss at the top of the tower. The owner hasn't decided it yet.
+
+**Not the lore** (older ideas that agents keep repeating): there is no Keeper; no world is frozen at its last moment; no "thaw" lets a world's time run again; echoes aren't cut from a frozen moment. In the floors' code, `Keeper` is a term of the history simulation (what keeps an opening open: grazing, rock, water, people, an event), not a character.
+
+**Open, for the owner:** whether preserving a world also opens the way to the next level; where echoes come from, and how a world's anchors, Key and town fit the lore.
 
 The owner's order of priority still holds:
 1. A beautiful, living forest and vegetation.
