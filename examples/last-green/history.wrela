@@ -179,6 +179,17 @@ fn checked() -> Vec<(String, Vec<u8>)> {
     }
     reach.push_str("\n  ]\n}\n")
     let cal = calibration(c, m, mask)
+    // Each lookbook shot's numbers (#54 §9): the check's view at its eye.
+    var shots = String::from("[\n")
+    for i in 0..lookbook::SHOTS.len() {
+        let shot = lookbook::SHOTS[i]
+        let v = engine::interest::view_at(c.sight, m, FULL, shot.eye.xz)
+        let sep = if i == 0 { "" } else { ",\n" }
+        shots.push_str(
+            f"{sep}  {{\"shot\": \"{shot.name}\", \"view\": {engine::interest::view_json(m, v)}}}",
+        )
+    }
+    shots.push_str("\n]\n")
     var tour_bytes: Vec<u8> = Vec::new()
     for p in walk {
         engine::bake::put_u32(mut tour_bytes, bitcast_u32(p.x))
@@ -193,6 +204,7 @@ fn checked() -> Vec<(String, Vec<u8>)> {
             (String::from("tour.bin"), take tour_bytes),
             (String::from("reach.json"), Vec::from(reach.as_bytes())),
             (String::from("calibration.json"), Vec::from(cal.as_bytes())),
+            (String::from("shots.json"), Vec::from(shots.as_bytes())),
         ],
     )
 }
@@ -360,6 +372,30 @@ fn tour_stops() -> Vec<vec2> {
         }
     }
     inside
+}
+
+/// The check's views (`views.bin`): each place's strongest draw, a byte (0 to 1 as 0 to 254;
+/// 255 where a player can't stand), over `VIEWS_GRID`, for the play harness's report.
+pub const VIEWS: Vec<u8> = views_of(CHECKED)
+pub const VIEWS_GRID: Grid = engine::interest::views_grid(map::map(), FULL)
+
+fn views_of(files: Shipped) -> Vec<u8> {
+    borrow b = files.bytes(files.find("views.bin").unwrap())
+    var out: Vec<u8> = Vec::with_capacity(b.len() - 8)
+    for k in 8..b.len() {
+        out.push(b[k])
+    }
+    out
+}
+
+/// The strongest draw at `p` by the check (0 to 1), or -1 where a player can't stand or off the
+/// map's square.
+pub fn draw_at(p: vec2) -> f32 {
+    if !VIEWS_GRID.holds(p) {
+        return -1.0
+    }
+    let b = VIEWS[VIEWS_GRID.cell_at(p)]
+    if b == 255 { -1.0 } else { f32(b) / 254.0 }
 }
 
 /// The floor's walk (#55's Method): a point every 2 m or so on the way from the gate past

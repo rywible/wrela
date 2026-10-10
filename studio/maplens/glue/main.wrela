@@ -56,3 +56,11 @@ pub fn check(state: mut MapLens) {
 pub fn write(state: mut MapLens) {
     maplens::lens::write(mut state)
 }
+
+pub fn walk(state: mut MapLens) {
+    maplens::lens::walk(mut state, Vec::new())
+}
+
+pub fn point(state: mut MapLens, x: f32, z: f32) {
+    maplens::lens::walk(mut state, Vec::from([x, z]))
+}

@@ -1830,6 +1830,30 @@ fn cadence_json(c: Cadence) -> String {
     f"{{\"draws_per_hour\": {c.arrivals_per_hour:.2}, \"median_gap\": {c.median_gap:.1}, \"longest_gap\": {c.longest_gap:.1}, \"lost\": {c.lost:.4}, \"blocked\": {c.blocked:.4}, \"keystones_per_hour\": {c.keystones_per_hour:.2}}}"
 }
 
+/// A view as JSON (a lookbook shot's numbers, #54 §9): its strongest draw and how many draw at
+/// least `FAINT`, whether it's dead (nothing draws) or quiet (only features draw: no site, opening,
+/// crest or trail), and each draw: what pulls (and the site's name, for a site's), how strongly.
+pub fn view_json(m: Map, v: View) -> String {
+    var major = 0.0
+    var draws = String::new()
+    for i in 0..v.draws.len() {
+        let d = v.draws[i]
+        if d.pull != Pull::Feature {
+            major = max(major, d.strength)
+        }
+        let what = match d.pull {
+            Pull::Key => m.sites[d.site].name,
+            Pull::Opening => "an opening",
+            Pull::Crest => "a crest",
+            Pull::Trail => "a trail",
+            Pull::Feature => "a feature",
+        }
+        let sep = if i == 0 { "" } else { ", " }
+        draws.push_str(f"{sep}{{\"pull\": \"{what}\", \"strength\": {d.strength:.3}}}")
+    }
+    f"{{\"best\": {v.best:.3}, \"count\": {v.count}, \"dead\": {flag(v.best < FAINT)}, \"quiet\": {flag(major < FAINT)}, \"draws\": [{draws}]}}"
+}
+
 fn coverage_json(c: Coverage) -> String {
     f"\"walkable\": {c.walkable}, \"walkable_km2\": {c.area:.3}, \"dead\": {c.dead:.4}, \"quiet\": {c.quiet:.4}, \"rich\": {c.rich:.4}"
 }

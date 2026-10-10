@@ -9,7 +9,7 @@
 // types. What the lens needs of the floor comes as functions (the program `wrela studio`
 // writes round it passes them): the map, the ground's height, and the preview.
 
-use engine::interest::{FAINT, Preview, views_grid}
+use engine::interest::{FAINT, Preview, Walk, views_grid}
 use engine::place::{Map, Relation}
 use std::collections::Vec
 use std::gpu::{Rgba8, Texture, begin_screen_pass, draw, texture}
@@ -26,12 +26,14 @@ use ui::text::{Face, Fonts}
 use ui::widgets::Ui
 
 /// What the lens draws (`show`'s bits): the ground (its relief, the light at it, the trails),
-/// the water, the map's sites, routes, openings and relations, and where the check finds
-/// nothing that draws (dead) and how strongly the rest draws.
+/// the water, the map's sites, routes, openings and relations, where the check finds nothing
+/// that draws (dead) and how strongly the rest draws, and the paths of the check's walkers
+/// (magpies, pilgrims and trail pilgrims). Walks given by `walk` are drawn whatever the layers.
 pub const GROUND: u32 = 1
 pub const WATER: u32 = 2
 pub const MAP: u32 = 4
 pub const CHECK: u32 = 8
+pub const WALKERS: u32 = 16
 pub const ALL: u32 = 15
 
 /// Something on the map a click names and a drag moves: a site, a route's point, an opening, or
@@ -73,6 +75,8 @@ pub struct MapLens {
     pub ui: Ui,
     pub renderer: Renderer,
     pub answers: u32,
+    /// Walks to draw (`walk`: a player's, from a replay's reports), each its points.
+    pub walks: Vec<Vec<vec2>>,
 }
 
 /// The lens on a floor whose map `map` gives; its preview starts at once.
@@ -100,6 +104,7 @@ pub fn open(map: fn() -> Map, start: fn() -> Task<Preview>) -> MapLens {
         ui: Ui::new(take fonts),
         renderer,
         answers: 0,
+        walks: Vec::new(),
     }
     start_preview(mut lens, start)
     lens
@@ -353,6 +358,57 @@ pub fn show(lens: mut MapLens, layers: u32) {
     lens.dirty = true
     let a = obj().text("action", "show").int("layers", lens.layers).done()
     lens.answer(a.as_str())
+}
+
+/// `walk`: the next walk the lens draws begun (a player's, from a replay's reports: the first
+/// drawn white, the next in other colours); `walk x z x z ...` and `point x z`: points (x, z)
+/// added to the last walk (one begun if there's none: a long walk comes in several commands).
+/// Its answer: how many walks, and the last one's points.
+pub fn walk(lens: mut MapLens, points: Vec<f32>) {
+    if points.len() == 0 || lens.walks.is_empty() {
+        lens.walks.push(Vec::new())
+    }
+    let last = lens.walks.len() - 1
+    var k = 0
+    while k + 1 < points.len() {
+        lens.walks[last].push(vec2(points[k], points[k + 1]))
+        k += 2
+    }
+    let a = obj()
+        .text("action", "walk")
+        .num("walks", f32(lens.walks.len()))
+        .num("points", f32(lens.walks[last].len()))
+        .done()
+    lens.answer(a.as_str())
+}
+
+/// The colour of walk `i` of the lens's: the first a player's (white), then others.
+fn walk_colour(i: u32) -> vec4 {
+    let cols = [
+        vec4(1.0, 1.0, 1.0, 0.95),
+        vec4(1.0, 0.45, 0.9, 0.95),
+        vec4(0.35, 0.85, 1.0, 0.95),
+        vec4(1.0, 0.75, 0.2, 0.95),
+    ]
+    cols[i % 4]
+}
+
+/// Each step of `walkers`' paths, in pixels, in colour `col`.
+fn walk_steps(lens: MapLens, walkers: [Walk], col: vec4, out: mut Vec<(vec2, vec2, vec4)>) {
+    for w in walkers {
+        for k in 1..w.path.len() {
+            out.push((lens.pixel(w.path[k - 1]), lens.pixel(w.path[k]), col))
+        }
+    }
+}
+
+/// A line of dots from pixel `a` to `b`, `step` pixels apart.
+fn dotted(ui: mut Ui, a: vec2, b: vec2, col: vec4, step: f32, size: f32) {
+    let n = u32(ceil(length(b - a) / step)) + 1
+    for s in 0..n {
+        let p = mix(a, b, vec2(f32(s) / f32(n)))
+        ui.draw.rect(Rect::new(p.x - size * 0.5, p.y - size * 0.5, w: size, h: size), col)
+    }
 }
 
 /// `zoom x z h`: the view `2 h` metres across at (x, z).
@@ -688,6 +744,28 @@ fn draw_marks(lens: mut MapLens, m: Map, screen: vec2) {
             )
         }
     }
+    // The check's walkers: magpies orange, pilgrims blue, trail pilgrims green (their steps in
+    // pixels first, read while the preview is borrowed, then drawn).
+    if (lens.layers & WALKERS) != 0 {
+        var steps: Vec<(vec2, vec2, vec4)> = Vec::new()
+        if let Some(p) = lens.preview {
+            walk_steps(lens, p.checked.magpies, vec4(1.0, 0.55, 0.2, 0.6), mut steps)
+            walk_steps(lens, p.checked.pilgrims, vec4(0.4, 0.6, 1.0, 0.6), mut steps)
+            walk_steps(lens, p.checked.trail, vec4(0.4, 1.0, 0.5, 0.6), mut steps)
+        }
+        for (a, b, col) in steps {
+            dotted(mut lens.ui, a, b, col, step: 4.0, size: 1.5)
+        }
+    }
+    // The walks given (`walk`), over everything.
+    for i in 0..lens.walks.len() {
+        let col = walk_colour(i)
+        for k in 1..lens.walks[i].len() {
+            let a = lens.pixel(lens.walks[i][k - 1])
+            let b = lens.pixel(lens.walks[i][k])
+            dotted(mut lens.ui, a, b, col, step: 2.0, size: 2.0)
+        }
+    }
     let status = match lens.preview {
         Some(p) => f"dead {p.checked.coverage.dead * 100.0:.1}%",
         None => String::from("the preview runs..."),
@@ -823,6 +901,11 @@ pub fn command(lens: mut MapLens, map: fn() -> Map, start: fn() -> Task<Preview>
         check(mut lens, map, start)
     } else if name == "write" {
         write(mut lens)
+    } else if name == "walk" {
+        walk(mut lens, n.clone())
+    } else if name == "point" {
+        let p = Vec::from([arg(0), arg(1)])
+        walk(mut lens, take p)
     } else {
         let a = obj().text("error", f"no action `{name}`".as_str()).done()
         lens.answer(a.as_str())

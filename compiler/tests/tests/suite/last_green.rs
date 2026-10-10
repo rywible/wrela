@@ -287,6 +287,30 @@ fn the_floor_builds_again_from_its_cache() {
     assert!(out.consts.cached > 0);
 }
 
+/// §9: each lookbook shot has the check's numbers for its view (`shots.json`: its strongest draw,
+/// how many draw, and each draw), in the lookbook's order.
+#[test]
+#[ignore = "long: bakes the floor (minutes when the constants' cache is cold)"]
+fn each_lookbook_shot_has_the_checks_numbers() {
+    let text = std::fs::read_to_string(floor().join("files/check/shots.json")).expect("shots.json");
+    let views: Value = serde_json::from_str(&text).expect("shots.json is JSON");
+    let views = views.as_array().expect("an array");
+    let lookbook = std::fs::read_to_string(repo_root().join("examples/last-green/lookbook.wrela"))
+        .expect("lookbook.wrela");
+    let names: Vec<&str> = lookbook
+        .split("name: \"")
+        .skip(1)
+        .map(|rest| rest.split('"').next().expect("a name"))
+        .collect();
+    assert_eq!(views.len(), names.len(), "{} shots, {} with numbers", names.len(), views.len());
+    for (v, name) in views.iter().zip(&names) {
+        assert_eq!(v["shot"].as_str(), Some(*name));
+        let best = v["view"]["best"].as_f64().expect("its strongest draw");
+        assert!((0.0..=1.0).contains(&best), "{name}: {best}");
+        assert!(v["view"]["draws"].is_array(), "{name}: no draws");
+    }
+}
+
 /// AC2: the bake is ≤ 0.7 MB a km² compressed (each file gzipped, over the floor's area), each
 /// tile a file read alone (`bake::decode_tile` reads one with no other).
 #[test]
@@ -1673,7 +1697,7 @@ fn answers_agree(a: &Value, b: &Value) -> bool {
 
 /// The session the map lens test types: the check, the items, a zoom onto the tower, a click on
 /// it, a drag of it 20 px east (9 m), the write, and a click where it now stands.
-const MAP_SESSION: [&str; 7] = [
+const MAP_SESSION: [&str; 10] = [
     "check",
     "items",
     "zoom 560 -470 200",
@@ -1681,6 +1705,9 @@ const MAP_SESSION: [&str; 7] = [
     "move 448 448 468 448",
     "write",
     "click 468 448",
+    "walk 500 -420 520 -440 540 -455",
+    "point 552 -462",
+    "walk",
 ];
 
 /// The screen the map lens's session runs at.
@@ -1773,6 +1800,11 @@ fn the_map_lens_answers_alike_in_both_hosts_and_in_time() {
     let changed: Vec<(&str, &str)> =
         original.lines().zip(na.lines()).filter(|(x, y)| x != y).collect();
     assert_eq!(changed.len(), 1, "a minimal diff: one line changed: {changed:?}");
+    // A walk drawn: three points, a fourth, then the next walk begun.
+    let walked = |i: usize| (a[i]["walks"].as_f64(), a[i]["points"].as_f64());
+    assert_eq!(walked(7), (Some(1.0), Some(3.0)), "{}", a[7]);
+    assert_eq!(walked(8), (Some(1.0), Some(4.0)), "{}", a[8]);
+    assert_eq!(walked(9), (Some(2.0), Some(0.0)), "{}", a[9]);
     // The time from the drag to the map with the check shown again (the preview's history and
     // its check, on the lens's helpers).
     for (host, s) in [("native", &a), ("chrome", &b)] {

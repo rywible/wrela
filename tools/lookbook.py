@@ -9,7 +9,9 @@ The floor must be built (`wrela build examples/last-green`). A shot is chosen as
 (L, its number, Enter); the still is the frame its move starts at (`lookbook::SETTLE` seconds in),
 when the tiles round it have streamed in and its caches have settled; the clip is its move, from
 then for `lookbook::MOVE` seconds, paced as in play, recorded from Chrome's canvas (test mode's
-`clip`: a WebM). `--stills` makes the stills alone.
+`clip`: a WebM). `--stills` makes the stills alone. Each shot's numbers, the interest check's
+view at its eye (the build's `files/check/shots.json`), are printed beside it and saved as
+`check.json`.
 """
 
 import json, os, re, shutil, subprocess, sys, tempfile
@@ -80,8 +82,17 @@ def main():
     os.makedirs(out, exist_ok=True)
     shots = names()
     pick = [int(a) for a in args[1:]] or range(len(shots))
+    numbers = os.path.join(BUILD, "files", "check", "shots.json")
+    views = json.load(open(numbers)) if os.path.exists(numbers) else []
+    if views:
+        shutil.copyfile(numbers, os.path.join(out, "check.json"))
     for i in pick:
         print(still(i, shots[i], out))
+        if i < len(views):
+            v = views[i]["view"]
+            what = ", ".join(f"{d['pull']} {d['strength']:.2f}" for d in v["draws"][:4])
+            state = "dead" if v["dead"] else "quiet" if v["quiet"] else f"{v['count']} draw"
+            print(f"  the check: {state}; strongest {v['best']:.2f}" + (f" ({what})" if what else ""))
         if not stills_only:
             print(clip(i, shots[i], out))
 

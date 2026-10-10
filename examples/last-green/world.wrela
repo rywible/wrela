@@ -313,8 +313,9 @@ pub const MAP: engine::place::Map = map::map()
 
 /// The play harness's report on world `w` after `ticks` ticks (#55 AC5: every 2 s, the same in
 /// both hosts): one line of JSON, from the sim's state alone: the time, where the player is and
-/// how it goes, the region it's in, the nearest site and how far, the water it stands in, and the
-/// floor's walk.
+/// how it goes, the region it's in, the nearest site and how far, the water it stands in, what
+/// draws by the check here and ahead, and the floor's walk. (The frames' times are the host's:
+/// the floor prints them on a line of their own, `frames`.)
 pub fn report(w: World, ticks: u32) -> String {
     let p = w.player
     let at = p.at.world()
@@ -335,7 +336,15 @@ pub fn report(w: World, ticks: u32) -> String {
     let t = f32(ticks) / 60.0
     let heading = p.heading * 57.29578
     let site_m = length(site.at - at)
-    f"{{\"report\": {t}, \"at\": [{at.x}, {at.y}], \"y\": {p.y}, \"heading\": {heading}, \"pace\": {p.pace}, \"speed\": {length(p.velocity)}, \"region\": \"{region}\", \"site\": \"{site.name}\", \"site_m\": {site_m}, \"water\": {water}, \"tour\": [{w.tour.on}, {w.tour.leg}, {TOUR.len()}]}}"
+    // What draws here and ahead, by the check (its strongest draw at 20, 40 and 60 m the way the
+    // player faces).
+    let draw = history::draw_at(at)
+    let toward = vec2(sin(p.heading), cos(p.heading))
+    var ahead = -1.0
+    for d in [20.0, 40.0, 60.0] {
+        ahead = max(ahead, history::draw_at(at + toward * d))
+    }
+    f"{{\"report\": {t}, \"at\": [{at.x}, {at.y}], \"y\": {p.y}, \"heading\": {heading}, \"pace\": {p.pace}, \"speed\": {length(p.velocity)}, \"region\": \"{region}\", \"site\": \"{site.name}\", \"site_m\": {site_m}, \"water\": {water}, \"draw\": {draw:.3}, \"ahead\": {ahead:.3}, \"tour\": [{w.tour.on}, {w.tour.leg}, {TOUR.len()}]}}"
 }
 
 /// The snapshot the frames read.

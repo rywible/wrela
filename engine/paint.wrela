@@ -67,6 +67,11 @@ fn strokes(q: vec2) -> f32 {
     value * smoothstep(0.0, 0.4, best)
 }
 
+/// Where the world planes' dabs start (a constant, as the coarser size's own offset is). Where
+/// the ground's dabs fall behind a far crown's edge moves #51's levels test (kind 11 at 1000 m:
+/// 3.6 to 4.2/255 against its 4.0 as this moves; that crown's levels are close to the limit).
+const PHASE = vec2(3.0, 1.0)
+
 /// Brush dabs on a surface at `world` whose normal is `n`, about `px` pixels long wherever
 /// they're seen (a pixel `footprint` metres wide there): in [-1, 1]. Two sizes of cells, a
 /// power of two apart, blended by distance (Bénard et al. 2009), so the dabs keep their size on
@@ -87,10 +92,26 @@ pub fn dabs(world: vec3, n: vec3, footprint: f32, px: f32) -> f32 {
     for axis in 0..3 {
         if w[axis] > 0.02 {
             let q = if axis == 0 { world.zy } else if axis == 1 { world.xz } else { world.xy }
-            v += w[axis] * mix(strokes(q / s0), strokes(q / (2.0 * s0) + vec2(17.0, 5.0)), f)
+            v += w[axis] *
+                mix(strokes(q / s0 + PHASE), strokes(q / (2.0 * s0) + vec2(20.0, 6.0)), f)
         }
     }
     v
+}
+
+/// Brush dabs on a plane across `n` (a crown's: its dabs lie across the line of sight), anchored
+/// to a frame turned with it: a crown's levels of detail lie at different depths along the same
+/// line, and the world planes' blend (`dabs`) moved the dabs between them (#51's levels test:
+/// 4.4/255 at 1000 m); across the line of sight, they stay.
+pub fn dabs_across(world: vec3, n: vec3, footprint: f32, px: f32) -> f32 {
+    let s = max(footprint * px, 1.0e-4)
+    let l = log2(s)
+    let f = fract(l)
+    let s0 = exp2(floor(l))
+    let t1 = normalize(cross(n, vec3(0.3, 0.2, 1.0)))
+    let t2 = cross(n, t1)
+    let q = vec2(dot(world, t1), dot(world, t2) + dot(world, n) * 0.5)
+    mix(strokes(q / s0), strokes(q / (2.0 * s0) + vec2(17.0, 5.0)), f)
 }
 
 /// Brush dabs anchored to directions (the sky's: `dir` a unit vector, a pixel's angle its
@@ -384,7 +405,11 @@ pub fn dab_map(
     let facing = max(abs(dot(n, normalize(cam.eye - world))), 0.4)
     // Anchored to the world, not render space: they stay put when the render origin moves.
     let keyed = world + cam.keyed()
-    let dab = dabs(keyed, n, footprint / facing, look.dab_px * per_out)
+    let dab = if class == class_of(LEAVES) {
+        dabs_across(keyed, n, footprint / facing, look.dab_px * per_out)
+    } else {
+        dabs(keyed, n, footprint / facing, look.dab_px * per_out)
+    }
     // The tooth's grain, a few output pixels: no finer than two of the scene's pixels at half
     // the output's size, so the map holds it at either.
     vec4(strength * dab, look.tooth * tooth(keyed, footprint * per_out * 2.0), 0.0, 1.0)

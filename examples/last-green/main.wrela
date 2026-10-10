@@ -384,8 +384,12 @@ pub struct Floor {
     water_count: u32,
     below: Texture<Rgba16Float>,
     water_look: u32,
-    /// The last report's number (`REPORT_TICKS` apart).
+    /// The last report's number (`REPORT_TICKS` apart); the last frame's time, and since the
+    /// last report the longest between two frames (ms) and how many over 33 ms.
     reported: u32,
+    last_time: f32,
+    longest: f32,
+    slow: u32,
     /// Whether a frame's been full yet (`playable`).
     playable: bool,
     /// The tiles that were late (`late_tiles`), each told once.
@@ -556,6 +560,9 @@ pub fn init() -> Floor {
         below: texture::<Rgba16Float>(width: 1, height: 1),
         water_look: 0,
         reported: 0,
+        last_time: 0.0,
+        longest: 0.0,
+        slow: 0,
         playable: false,
         late: Vec::new(),
         hashing: Vec::new(),
@@ -1824,9 +1831,25 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     s.snaps.update()
     // The play harness's report, each 2 s of the sim's time (`world::report`).
     let newest = s.snaps.newest()
+    // The frames since the last report, beside it: the longest between two frames' times, and
+    // how many came more than 33 ms after the last (the host's: not in the report itself, which
+    // is the same in both hosts).
+    let gap = (time - s.last_time) * 1000.0
+    s.last_time = time
+    if s.frames > 0 {
+        s.longest = max(s.longest, gap)
+        if gap > 33.4 {
+            s.slow += 1
+        }
+    }
     if newest.ticks / REPORT_TICKS != s.reported {
         s.reported = newest.ticks / REPORT_TICKS
         print(world::report(newest.snap, newest.ticks))
+        print(
+            f"{{\"frames\": {s.reported * 2}, \"longest_ms\": {s.longest:.1}, \"over_33ms\": {s.slow}}}",
+        )
+        s.longest = 0.0
+        s.slow = 0
     }
     let b = s.snaps.at(s.snaps.sim_time(time))
     let pa = b.a.player

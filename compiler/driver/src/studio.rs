@@ -336,6 +336,8 @@ pub const MAP_ACTIONS: &[(&str, &str)] = &[
     ("move", "ffff"),
     ("check", ""),
     ("write", ""),
+    ("walk", ""),
+    ("point", "ff"),
 ];
 
 /// The actions of the lens on the package at `pkg`: the map lens's on a floor, else the field

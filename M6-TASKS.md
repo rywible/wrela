@@ -31,17 +31,19 @@ Deleted when the milestone closes.
 | AC1 | tests pass | map in source with engine types; anatomy, area, keepers (2), reach: suite/last_green.rs |
 | AC2 | mostly | cached (test), 0.65 MB/km² (test), preview vs bake (test, with drawn crowns), head room (tests.wrela); same bytes in both hosts (F9 hashes the bake: test); preview 2.38 s (measure); bake ≤ 2 min after an edit to measure |
 | AC3 | tests written | calibrated: 24 places all round within 0.1 (0.032 mean); landmarks ≥ 1° from the renderer's tags and depth (9 relations); dead 14.3%; every relation holds; openings open |
-| AC4 | started | collision into each thing, trunks as drawn (tests.wrela); camera near plane, no trap, replays both hosts; camera-relative rendering to do |
-| AC5 | started | taps, travel (G), the walk (P), the report every 2 s (both-hosts test), the map with the check (M); rounds to do |
+| AC4 | tests pass | collision into each thing, trunks as drawn (tests.wrela); camera near plane over the walk (a card's half-width counts: 1456 cards met, all faded), no trap, replays both hosts; camera-relative rendering (origin test) |
+| AC5 | rounds | harness done (taps, travel, walk, reports both hosts, map M); rounds by tools/round.py (Chrome, paced 1080p, replay saved, lookbook each round) |
 | AC7 | measured | cold: playable 1.09 s, 3.51 MB before (gzip, as a host serves); 5 Mbit/s walk: 0 late; glide pace (over the ground's things) and memory (allocator fixed) to measure again |
 | AC8 | to measure | systems' slices test written (serial, native); the walk's frames in Chrome; crowns now drawn as wide as the history grew them |
 | AC9 | mostly | mere, streams, fall, springs; one surface, where it is, WGSL bounds (tests); three looks (F6); slice in the systems test |
-| AC10 | started | lookbook: stills and 10 s clips in Chrome (test mode's `clip`); trails' contrast test written; flicker to do |
-| AC11 | started | no grass under closed canopy (test); one metering rule; exposure settles in 2 s, no flash (cap at 1.25× its target: test); sun shafts to do |
-| AC12 | started | cooked bark and stone (WGSL test), leafless kinds; trunks differ (a fork per tree, test); tower relations made out (AC3); far land to do |
+| AC10 | tests pass | lookbook: stills and 10 s clips in Chrome; trails' contrast test; flicker on the walk (look 1.36/255, 2.2% vs plain 7.42/255, 39%); the fawn and the stand-in in three shots (16–18); owner's verdicts pending |
+| AC11 | mostly | no grass under closed canopy, cover's reach (tests); one metering rule; exposure settles in 2 s, no flash (test); sun shafts a candidate (B), cost to measure; owner's blind pick pending |
+| AC12 | mostly | cooked bark and stone (WGSL test), leafless kinds; trunks differ (test); tower in courses with a stepped break (honest bound 6); far land's fields and footprint-limited cover; owner's verdict pending |
 | AC13 | done | map lens: session in both hosts, 3.5 s drag to map (test); provenance: click in Chrome 5 ms (test) |
 | AC15 | done | 5817067, b08cb06 |
-| AC16–18 | to do | speed, record |
+| AC16 | gate passes | gate 70 s (budget scaled for the cores other processes took); slow checks long; WGSL budgets; runtime 105 KB (38 KB gz) of 1 MB; check/build speed to measure |
+| AC17 | deviation | no subagents (the owner's instruction for this session): not run |
+| AC18 | to do | vision.md, #26, retrospective |
 
 ## Decisions made while working (for the record and the retrospective)
 
@@ -68,6 +70,23 @@ Deleted when the milestone closes.
   the arena; the mere's reveal moved west along the Spine (the crag's flank saw the mere).
 - **Metering caps a flash**: a scene that brightens at once shows at most 1.25 times its settled
   brightness.
+
+- **A debug build probes only a grid that fits its probe:** a `Slots` index counts the
+  dispatch's every group, so a block's slot under `PROBE_BLOCKS` could still index past it.
+- **A leaf card fades where its edge nears the eye** (`vegetation::faded` takes its half-width):
+  a wide card's centre could sit off the line to the player while its edge met the near plane.
+- **The fawn in the floor stands at rest** (a rigid placement of every bone), realized over
+  frames only when a shot casts it: M6 judges the cel treatment in the wood, not its gait.
+- **Flicker is measured against plain rendering on the floor's walk** (M5's Q8), with the wind
+  stilled and water, sky and the stand-in left out (#55's Method).
+- **The gate's slow checks went long** (179 s to 70 s): its end-to-end suite alone took 100 s.
+  The budget is an idle machine's: check.sh scales it by the cores other processes took during
+  the tests (Spotlight's indexing of what the builds write: 2.1-2.5 of 10 cores), as it already
+  forgave a wait on another process's GPU hold. The long tier runs only after the gate passes.
+- **Rounds are played through the harness in headless Chrome** (tools/round.py): the walk, the
+  shots held, the wildwood's road; the replay, the frames' intervals, late tiles, regions and
+  sites, and the lookbook each round. Spike 17's stills are in target/spike17-stills.
+- **Posting to GitHub is the owner's:** the retrospective and #26's update are drafted here.
 
 ## Session 2 (2026-10-10): order of work
 
@@ -102,3 +121,25 @@ Deleted when the milestone closes.
 ## Play rounds (AC5)
 
 None yet.
+
+## The retrospective (draft, for a comment on #55; the owner posts it)
+
+**What M6 built.** The Last Green's floor: about 3 km² composed as a map in wrela source with the
+engine's types, grown by a history baked when the game is built (a cached constant, a file a
+tile), checked by the interest check against what the renderer draws, streamed round a stand-in
+player in tiles, with the wildwood beyond its edge and the egg's place 10 km out; water (the
+mere, the streams, the fall, springs: one surface, three looks); the forest's interior (ground
+cover from the history's light, one metering rule, sun shafts as a candidate); cooked bark, rock
+and masonry; leafless kinds; trunks that differ; the tower in courses; camera-relative rendering
+on tile positions; the play harness, the map lens with provenance in the running floor, and the
+lookbook. Language and tools: constants cached by their inputs, a constant's fuel, the clock,
+the diagnostics spike 17 found, the allocator's lock, the LOD trap, `wrela run`'s reload.
+
+**Spike 17 beside M6** (filled from the measures): SPIKE17-VS-M6
+
+**The play rounds:** ROUNDS
+
+**What moved, and why:** MOVED
+
+**What the owner judges next** (AC6, AC9's pick, AC10's verdicts, AC11's shafts, AC12's far
+land, AC14's rounds): the first walk.
