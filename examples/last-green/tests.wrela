@@ -70,6 +70,7 @@ fn nothing_grows_into_the_head_room() {
 /// wood's floor's plants (ferns, bracken, herbs: `Cover::under`) grow on all of it but a path's
 /// earth, a stream's bed and rock; and the beech wood's floor is closed over most of it.
 @test
+@fuel(2 ** 39)
 fn no_meadow_grass_under_a_closed_canopy() {
     let lo = tiles_lo()
     let hi = tiles_hi()
@@ -152,7 +153,9 @@ fn no_meadow_grass_under_a_closed_canopy() {
                     )
                     let n = g.normal(p.x, p.y, 1.0)
                     let path = fields.y > 0.5
-                    let bed = fields.z > engine::bake::STREAM_BED
+                    // A stream's bed where the cover draws it (`ground.wrela`'s gravel, at
+                    // `smoothstep(0.9, 0.985, wet)`) a third or more: it fades the plants there.
+                    let bed = smoothstep(0.9, 0.985, fields.z) >= 0.3
                     let rock = g.rocky(p, n) > 0.5
                     if !path && !bed && !rock {
                         covered_texels += 1
