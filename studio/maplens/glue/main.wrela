@@ -26,7 +26,7 @@ pub fn frame(state: mut MapLens, time: f32, width: u32, height: u32) {
 }
 
 pub fn busy(state: MapLens) -> u32 {
-    if maplens::lens::busy(state) { 1 } else { 0 }
+    if maplens::lens::idle(state) { 0 } else { 1 }
 }
 
 pub fn show(state: mut MapLens, layers: u32) {
@@ -50,7 +50,7 @@ pub fn move(state: mut MapLens, x0: f32, y0: f32, x1: f32, y1: f32) {
 }
 
 pub fn check(state: mut MapLens) {
-    maplens::lens::check(mut state, start)
+    maplens::lens::check(mut state, map, start)
 }
 
 pub fn write(state: mut MapLens) {

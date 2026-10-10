@@ -16,6 +16,9 @@ pub(package) const PAR_HELPED: u32 = 264
 /// Microseconds a helper holds back each task's result (tests).
 pub(package) const PAR_HOLD: u32 = 268
 
+/// How many helpers the host started: with none, `done` runs a task.
+pub(package) const PAR_HELPERS: u32 = 272
+
 /// Nonzero when the host wants the ticker's state hash.
 pub(package) const TICK_WANT_HASH: u32 = 512
 
@@ -75,6 +78,9 @@ pub(package) const LOCK_WAITS: u32 = 44
 
 /// How many tries a thread spun on the allocator's lock.
 pub(package) const LOCK_SPINS: u32 = 48
+
+/// The heap's end as far as a thread has made sure it can reach it.
+pub(package) const SEEN_END: u32 = 52
 
 /// Where `wrela.clock` writes a thread's clock: an `f64`, seconds.
 pub(package) const CLOCK: u32 = 56

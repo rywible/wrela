@@ -44,6 +44,19 @@ pub fn nested_jobs(n: u32) -> u32 {
     take j.join()
 }
 
+/// A job polled until it's done, as a frame polls a long one, then joined: how many polls found
+/// it not done, at most `most`. With no helpers the first poll runs it (nothing else would start
+/// it), so it's done then.
+pub fn polled(n: u32, most: u32) -> u32 {
+    let j = spawn((3, n), churn)
+    var polls: u32 = 0
+    while !j.done() && polls < most {
+        polls += 1
+    }
+    let _ = take j.join()
+    polls
+}
+
 /// A job that traps when its input says so.
 @deterministic
 fn checked(n: take u32) -> u32 {

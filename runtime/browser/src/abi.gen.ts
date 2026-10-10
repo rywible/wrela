@@ -149,6 +149,8 @@ export const PAR_HELPED = 264;
 /** The helpers' wake count and shutdown flag: a host stops a program's helpers with them. */
 export const PAR_WAKE = 256;
 export const PAR_SHUTDOWN = 260;
+/** How many helpers the host started for the program: it writes it before `init`. */
+export const PAR_HELPERS = 272;
 /** The ticker's words (runtime/abi `memory`), and its records' region. */
 export const TICK_WANT_HASH = 512;
 export const TICK_HASH = 520;

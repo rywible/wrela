@@ -10,7 +10,8 @@
 // - Results don't depend on the helpers: a job's chunks are fixed by its size alone, each
 //   writes only its own part, and what's reduced is combined in chunk order.
 // - A parallel job started inside a chunk runs on that thread alone, chunk after chunk.
-// - A task waits in a slot until a helper starts it, or the thread that joins it does. A
+// - A task waits in a slot until a helper starts it, or the thread that joins it does; with no
+//   helpers (the host's count, `PAR_HELPERS`), the thread that asks whether it's `done` does. A
 //   trap in a task on a helper is kept in its slot, and `join` raises it.
 //
 // The words hosts use are wrela_abi's (`std::abi`).
@@ -18,10 +19,10 @@
 use std::abi::{
     DEPTH, JOB_CHUNKS, JOB_CONTEXT, JOB_DONE, JOB_DONE_FAILED, JOB_FAILED, JOB_GENERATION,
     TASK_SLOTS, TASK_SLOT_COUNT, TASK_SLOT_SIZE, JOB_TASK, JOB_TICKET, JOIN_WAITS, PAR_HELPED,
-    PAR_HOLD, PAR_SHUTDOWN, PAR_WAKE, RUNNING, SLOT_FAILED, SLOT_FREE, SLOT_THREAD, THREADS,
-    THREAD_BLOCKS, THREAD_BLOCK_SIZE,
+    PAR_HELPERS, PAR_HOLD, PAR_SHUTDOWN, PAR_WAKE, RUNNING, SLOT_FAILED, SLOT_FREE, SLOT_THREAD,
+    THREADS, THREAD_BLOCKS, THREAD_BLOCK_SIZE,
 }
-use std::alloc::{free, place}
+use std::alloc::{free, place, reach_heap}
 use std::collections::replace
 use std::mem::{
     abort_from, atomic_add, atomic_load, atomic_store, compare_swap, count, load_u32, notify, read,
@@ -130,6 +131,8 @@ pub(package) fn run_chunks(task: u32, ctx: u32, n: u32) {
                 abort_from(atomic_load(me + JOB_FAILED) - 1)
             }
             if done >= n {
+                // The chunks may have left blocks in memory a helper grew.
+                reach_heap()
                 return
             }
             let _ = wait(me + JOB_DONE, done)
@@ -153,6 +156,7 @@ fn claim(owner: u32, helping: bool) -> bool {
                 // Only this thread writes its own depth.
                 store_u32(me + DEPTH, load_u32(me + DEPTH) + 1)
                 atomic_store(me + RUNNING, owner)
+                reach_heap()
                 run_task(atomic_load(owner + JOB_TASK), atomic_load(owner + JOB_CONTEXT), t & 65535)
                 atomic_store(me + RUNNING, 0)
                 store_u32(me + DEPTH, load_u32(me + DEPTH) - 1)
@@ -218,6 +222,7 @@ fn run_spawned(slot: u32, held: bool) {
         let me = thread_block()
         atomic_store(slot + SLOT_THREAD, (me - THREAD_BLOCKS) / THREAD_BLOCK_SIZE)
         atomic_store(me + RUNNING, slot)
+        reach_heap()
         run_task(atomic_load(slot + SLOT_TASK), atomic_load(slot + SLOT_CONTEXT), 0)
         atomic_store(me + RUNNING, 0)
         let hold = atomic_load(PAR_HOLD)
@@ -316,9 +321,17 @@ fn run_task_context<I, O, F: @deterministic fn(take I) -> O>(
 
 impl<O> Task<O> {
     /// Whether the task has finished. It's `nondet` (§8): it depends on when a helper ran it.
+    /// With no helpers (`PAR_HELPERS`), nothing else would start it: it runs here, now.
     @effects(nondet)
     pub fn done(self) -> bool {
-        unsafe { self.slot == 0 || atomic_load(self.slot) >= FINISHED }
+        unsafe {
+            if self.slot != 0 &&
+                atomic_load(PAR_HELPERS) == 0 &&
+                compare_swap(self.slot, QUEUED, STARTED) == QUEUED {
+                run_spawned(self.slot, held: false)
+            }
+            self.slot == 0 || atomic_load(self.slot) >= FINISHED
+        }
     }
 
     /// The task's result, once it's finished: this thread waits for it, and runs it here if no
@@ -347,6 +360,8 @@ impl<O> Task<O> {
                 }
                 atomic_store(self.slot, SLOT_FREE)
             }
+            // Its result may hold blocks in memory a helper grew.
+            reach_heap()
             let result = read::<Option<O>>(self.out)
             free(self.out, size_of::<Option<O>>())
             free(self.context, self.context_size)

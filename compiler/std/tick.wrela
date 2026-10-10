@@ -135,6 +135,7 @@ fn records() -> Vec<Event> {
 @thread_entry
 pub(package) fn tick(thread: u32, task: u32, ticker: u32, k: u32) {
     unsafe {
+        std::alloc::reach_heap()
         run_task(task, ticker, k)
     }
 }

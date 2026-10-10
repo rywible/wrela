@@ -350,36 +350,64 @@ pub fn program_dir(pkg: &Path) -> PathBuf {
     dir(pkg).join(if is_floor(pkg) { "map" } else { "lens" })
 }
 
-/// The path of dependency `dep` the floor's manifest at `pkg` gives, made absolute.
-fn dependency_path(pkg: &Path, dep: &str) -> Result<PathBuf, String> {
+/// The dependencies the floor's manifest at `pkg` gives, each path made absolute.
+fn dependencies(pkg: &Path) -> Result<Vec<(String, PathBuf)>, String> {
     let text = std::fs::read_to_string(pkg.join("wrela.toml"))
         .map_err(|e| format!("can't read {}/wrela.toml: {e}", pkg.display()))?;
     let m = crate::manifest::parse(wrela_diag::FileId(0), &text)
         .map_err(|_| format!("{}/wrela.toml doesn't read", pkg.display()))?;
-    let d = m
-        .deps
+    m.deps
         .iter()
-        .find(|d| d.name == dep)
-        .ok_or_else(|| format!("the floor at {} doesn't depend on `{dep}`", pkg.display()))?;
-    pkg.join(&d.path).canonicalize().map_err(|e| format!("{}: {e}", d.path))
+        .map(|d| {
+            let path = pkg.join(&d.path).canonicalize().map_err(|e| format!("{}: {e}", d.path))?;
+            Ok((d.name.clone(), path))
+        })
+        .collect()
+}
+
+/// A manifest's `[dependencies]` lines: `deps` in order.
+fn dependency_lines(deps: &[(String, String)]) -> String {
+    deps.iter().map(|(n, p)| format!("{n} = {{ path = {p:?} }}\n")).collect()
 }
 
 /// Writes the map lens's program for the floor at `pkg` (studio/maplens/glue with a `floor`
 /// module for the floor's `lens`, and the `maplens`, `studio` and `ui` packages beside it): the
-/// program's directory.
+/// program's directory. The lens's packages read the floor's own dependencies (whatever the
+/// floor is built on), so the compiler names none of them: the embedded `floor.wrela` is the
+/// Last Green's, with the floor's name put in its place.
 fn write_map_lens(pkg: &Path, name: &str) -> Result<PathBuf, String> {
     let io = |e: std::io::Error| format!("can't write the map lens's program: {e}");
-    let engine = dependency_path(pkg, "engine")?;
-    let engine = engine.display().to_string();
+    let floor_deps = dependencies(pkg)?;
     let base = dir(pkg);
     let program = base.join("map");
+    let mut maplens_deps = vec![("studio".to_string(), "../studio".to_string())];
+    maplens_deps.push(("ui".to_string(), "../ui".to_string()));
     for (rel, bytes) in embedded::STUDIO {
         if let Some(rest) = rel.strip_prefix("maplens/") {
             match rest {
                 "glue/main.wrela" => {
                     write_if_changed(&program.join("main.wrela"), bytes).map_err(io)?
                 }
-                "wrela.toml" => {}
+                "glue/floor.wrela" => {
+                    let text = String::from_utf8_lossy(bytes).replace("last_green", name);
+                    write_if_changed(&program.join("floor.wrela"), text.as_bytes()).map_err(io)?
+                }
+                "wrela.toml" => {
+                    // The maplens package's own dependencies, beyond studio and ui, as the floor
+                    // gives them.
+                    let m = crate::manifest::parse(
+                        wrela_diag::FileId(0),
+                        &String::from_utf8_lossy(bytes),
+                    )
+                    .map_err(|_| "studio/maplens/wrela.toml doesn't read".to_string())?;
+                    for d in m.deps.iter().filter(|d| d.name != "studio" && d.name != "ui") {
+                        let (_, path) = floor_deps
+                            .iter()
+                            .find(|(n, _)| *n == d.name)
+                            .ok_or_else(|| format!("the floor doesn't depend on `{}`", d.name))?;
+                        maplens_deps.push((d.name.clone(), path.display().to_string()));
+                    }
+                }
                 _ if rest.starts_with("glue/") => {}
                 _ => write_if_changed(&base.join("maplens").join(rest), bytes).map_err(io)?,
             }
@@ -391,20 +419,18 @@ fn write_map_lens(pkg: &Path, name: &str) -> Result<PathBuf, String> {
         write_if_changed(&base.join("ui").join(rel), bytes).map_err(io)?;
     }
     let maplens = format!(
-        "# Written by `wrela studio`: the map lens, for the floor `{name}`.\n[package]\nname = \"maplens\"\n\n[dependencies]\nstudio = {{ path = \"../studio\" }}\nui = {{ path = \"../ui\" }}\nengine = {{ path = {engine:?} }}\n"
+        "# Written by `wrela studio`: the map lens, for the floor `{name}`.\n[package]\nname = \"maplens\"\n\n[dependencies]\n{}",
+        dependency_lines(&maplens_deps)
     );
     write_if_changed(&base.join("maplens").join("wrela.toml"), maplens.as_bytes()).map_err(io)?;
+    let mut deps = vec![("maplens".to_string(), "../maplens".to_string())];
+    deps.extend(floor_deps.iter().map(|(n, p)| (n.clone(), p.display().to_string())));
+    deps.push((name.to_string(), "../../..".to_string()));
     let manifest = format!(
-        "# Written by `wrela studio`: the map lens on `{name}`.\n[package]\nname = \"map\"\n\n[dependencies]\nmaplens = {{ path = \"../maplens\" }}\nengine = {{ path = {engine:?} }}\n{name} = {{ path = \"../../..\" }}\n"
+        "# Written by `wrela studio`: the map lens on `{name}`.\n[package]\nname = \"map\"\n\n[dependencies]\n{}",
+        dependency_lines(&deps)
     );
     write_if_changed(&program.join("wrela.toml"), manifest.as_bytes()).map_err(io)?;
-    let floor = format!(
-        "// Written by `wrela studio`: what the map lens needs of the floor `{name}` (its `lens`).\n\n\
-         use engine::interest::Preview\nuse engine::place::Map\n\n\
-         pub fn map() -> Map {{\n    {name}::lens::map()\n}}\n\n\
-         pub fn preview() -> Preview {{\n    {name}::lens::preview()\n}}\n"
-    );
-    write_if_changed(&program.join("floor.wrela"), floor.as_bytes()).map_err(io)?;
     Ok(program)
 }
 
@@ -453,7 +479,9 @@ pub fn build(pkg: &Path, debug: bool) -> Result<(crate::Output, PathBuf), String
             pkg.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
         });
         let program = write_map_lens(pkg, &name)?;
-        crate::build_lifted(&program, std::slice::from_ref(&name), kind)?
+        // The map's literals alone: what a drag moves. (The ground's, the species' and the
+        // rest are built into the code, so the preview runs at the speed of the game's build.)
+        crate::build_lifted(&program, &[format!("{name}/map.wrela")], kind)?
     } else {
         let s = subject(pkg)?;
         let lens =

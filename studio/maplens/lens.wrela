@@ -65,8 +65,11 @@ pub struct MapLens {
     pub writing: Option<std::io::Pending<u8>>,
     /// Where the pointer went down, and the item there.
     pub press: Option<(vec2, Item)>,
-    /// The command being typed, the labels' toolkit and its renderer, and how many answers.
+    /// The command being typed, the commands typed while the lens was busy (each runs when it
+    /// isn't, in order, so a session's answers don't depend on how fast its frames come), the
+    /// labels' toolkit and its renderer, and how many answers.
     pub line: String,
+    pub queue: Vec<String>,
     pub ui: Ui,
     pub renderer: Renderer,
     pub answers: u32,
@@ -93,6 +96,7 @@ pub fn open(map: fn() -> Map, start: fn() -> Task<Preview>) -> MapLens {
         writing: None,
         press: None,
         line: String::new(),
+        queue: Vec::new(),
         ui: Ui::new(take fonts),
         renderer,
         answers: 0,
@@ -336,6 +340,11 @@ pub fn busy(lens: MapLens) -> bool {
     lens.job.is_some() || lens.due.is_some() || lens.writing.is_some()
 }
 
+/// Whether the lens has nothing to do: not busy, and no typed command waiting.
+pub fn idle(lens: MapLens) -> bool {
+    !busy(lens) && lens.queue.is_empty()
+}
+
 // ---- the actions -----------------------------------------------------------------------------------
 
 /// `show l`: what the lens draws (`GROUND`, `WATER`, `MAP`, `CHECK`, together).
@@ -452,11 +461,27 @@ pub fn drag(
     start_preview(mut lens, start)
 }
 
-/// `check`: the preview of the map as it is now, and its check's summary once it's in.
-pub fn check(lens: mut MapLens, start: fn() -> Task<Preview>) {
-    lens.due = Some(obj().text("action", "check").done())
-    if lens.job.is_none() {
-        start_preview(mut lens, start)
+/// `check`: the check's summary of the preview of the map as it is now: at once if it's in
+/// (every change of a literal starts a preview, so the last one in is the map's), else once it
+/// is.
+pub fn check(lens: mut MapLens, map: fn() -> Map, start: fn() -> Task<Preview>) {
+    let head = obj().text("action", "check").done()
+    if lens.job.is_some() {
+        lens.due = Some(take head)
+        return
+    }
+    match lens.preview {
+        Some(p) => {
+            let a = obj()
+                .raw("answer", head.as_str())
+                .raw("check", check_json(map(), p).as_str())
+                .done()
+            lens.answer(a.as_str())
+        },
+        None => {
+            lens.due = Some(take head)
+            start_preview(mut lens, start)
+        },
     }
 }
 
@@ -701,7 +726,7 @@ pub fn frame(
             Event::KeyDown { key, .. } => {
                 if key == Key::Enter {
                     let line = std::collections::replace(mut lens.line, String::new())
-                    command(mut lens, map, start, line.as_str())
+                    lens.queue.push(take line)
                 } else if key == Key::Backspace && !lens.line.is_empty() {
                     let n = lens.line.len()
                     lens.line.truncate(n - 1)
@@ -735,6 +760,10 @@ pub fn frame(
     }
     poll_preview(mut lens, map)
     poll_write(mut lens)
+    while !busy(lens) && !lens.queue.is_empty() {
+        let line = lens.queue.remove(0)
+        command(mut lens, map, start, line.as_str())
+    }
     let m = map()
     if lens.dirty {
         draw_image(mut lens, m)
@@ -791,7 +820,7 @@ pub fn command(lens: mut MapLens, map: fn() -> Map, start: fn() -> Task<Preview>
     } else if name == "move" {
         drag(mut lens, map, start, arg(0), arg(1), arg(2), arg(3))
     } else if name == "check" {
-        check(mut lens, start)
+        check(mut lens, map, start)
     } else if name == "write" {
         write(mut lens)
     } else {

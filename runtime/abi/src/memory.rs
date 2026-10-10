@@ -86,6 +86,10 @@ pub const PAR_HELPED: u32 = PAR_STATE + 8;
 /// Microseconds a helper holds back each task's result once it's ready: 0 normally. A
 /// test writes it to slow jobs down, so the threads that take them wait.
 pub const PAR_HOLD: u32 = PAR_STATE + 12;
+/// How many helpers the host started for the program, before its `init`: the host writes it.
+/// With none (a page on a machine of two cores, a test run on one thread), std runs a task when
+/// it's first asked whether it's done, since no helper would ever start it.
+pub const PAR_HELPERS: u32 = PAR_STATE + 16;
 
 /// The ticker's words.
 pub const TICK_STATE: u32 = 512;
@@ -152,6 +156,11 @@ pub const JOIN_WAITS: u32 = 40;
 pub const LOCK_WAITS: u32 = 44;
 /// How many tries this thread spun on the allocator's lock, over all its waits.
 pub const LOCK_SPINS: u32 = 48;
+/// The heap's end as far as this thread has made sure it can reach it (std's own). A thread
+/// that didn't grow a shared memory may go on seeing its old size until it asks (Chrome's
+/// engine), so std asks (`memory.grow(0)`) wherever a thread takes memory another may have
+/// grown: a block from the allocator, a chunk or a task to run, a task's result.
+pub const SEEN_END: u32 = 52;
 /// The clock as `wrela.clock` last wrote it for this thread: an `f64`, seconds since the host
 /// started the program (`std::time::now`).
 pub const CLOCK: u32 = 56;

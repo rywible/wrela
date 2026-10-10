@@ -1498,3 +1498,245 @@ fn the_floors_memory_stays_flat_into_the_wildwood() {
     assert!(within(mib(&b, "wasm", "used"), mib(&a, "wasm", "used")), "the WASM heap grew");
     assert!(mib(&b, "gpu", "peak") + mib(&b, "wasm", "used") <= 1536.0, "over 1.5 GB");
 }
+
+// ---- the map lens ---------------------------------------------------------------------------
+
+/// The floor's sources copied to scratch directory `tag` (its manifest's paths made absolute),
+/// with the map lens's constants' cache, so its build doesn't bake again: the copy.
+fn floor_copy(tag: &str) -> PathBuf {
+    let dir = scratch(&format!("last-green/{tag}"));
+    let floor = repo_root().join("examples/last-green");
+    for e in std::fs::read_dir(&floor).expect("the floor's files") {
+        let path = e.expect("entry").path();
+        if path.extension().is_some_and(|x| x == "wrela") {
+            std::fs::copy(&path, dir.join(path.file_name().expect("a name"))).expect("copy");
+        }
+    }
+    let manifest = std::fs::read_to_string(floor.join("wrela.toml")).expect("wrela.toml");
+    let manifest = manifest.replace("path = \"../", &format!("path = \"{}/../", floor.display()));
+    std::fs::write(dir.join("wrela.toml"), manifest).expect("write wrela.toml");
+    let cache = floor.join("build/studio/map/build/consts");
+    if cache.is_dir() {
+        let to = dir.join("build/studio/map/build/consts");
+        std::fs::create_dir_all(&to).expect("mkdir");
+        for e in std::fs::read_dir(&cache).expect("the cache") {
+            let path = e.expect("entry").path();
+            std::fs::copy(&path, to.join(path.file_name().expect("a name"))).expect("copy");
+        }
+    }
+    dir
+}
+
+/// A script (runtime/abi `input`) typing each command and Enter, a frame apart: the lens runs
+/// each when it's done with the one before.
+fn typed(commands: &[&str]) -> String {
+    let mut events = Vec::new();
+    for (i, c) in commands.iter().enumerate() {
+        let frame = 2 + 2 * i;
+        events.push(serde_json::json!({ "frame": frame, "type": "text", "text": c }));
+        events.push(serde_json::json!({ "frame": frame, "type": "key", "key": "Enter" }));
+    }
+    Value::Array(events).to_string()
+}
+
+/// The lens's answers among lines printed.
+fn lens_answers<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<Value> {
+    lines
+        .filter(|l| l.starts_with('{'))
+        .map(|l| serde_json::from_str(l).expect("an answer is JSON"))
+        .collect()
+}
+
+/// Whether two answers agree: the same keys and texts, numbers within 10⁻⁴ (relative) or 10⁻⁵;
+/// the times (keys ending `ms`) and the write's hashes' file paths left out.
+fn answers_agree(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => {
+            let (x, y) = (x.as_f64().unwrap(), y.as_f64().unwrap());
+            (x - y).abs() <= 1e-5_f64.max(1e-4 * x.abs().max(y.abs()))
+        }
+        (Value::Array(x), Value::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(a, b)| answers_agree(a, b))
+        }
+        (Value::Object(x), Value::Object(y)) => {
+            let keys = |o: &serde_json::Map<String, Value>| -> Vec<String> {
+                o.keys().filter(|k| !k.ends_with("ms")).cloned().collect()
+            };
+            keys(x) == keys(y)
+                && keys(x).iter().all(|k| answers_agree(&x[k.as_str()], &y[k.as_str()]))
+        }
+        _ => a == b,
+    }
+}
+
+/// The session the map lens test types: the check, the items, a zoom onto the tower, a click on
+/// it, a drag of it 20 px east (9 m), the write, and a click where it now stands.
+const MAP_SESSION: [&str; 7] = [
+    "check",
+    "items",
+    "zoom 560 -470 200",
+    "click 448 448",
+    "move 448 448 468 448",
+    "write",
+    "click 468 448",
+];
+
+/// The screen the map lens's session runs at.
+const MAP_SIZE: (u32, u32) = (896, 896);
+
+/// AC13: the map lens on the floor answers a session (the check, a click, a drag and its write)
+/// the same headless and in Chrome, and writes the same edit to map.wrela; a click names the
+/// line of source that places the tower; the drag's literals are written back with exact
+/// readback, a line changed; the map with the check shows again ≤ 5 s after the drag, in both
+/// hosts.
+#[test]
+#[ignore = "measure: the map lens's session, needs Chrome, python3 and a GPU"]
+fn the_map_lens_answers_alike_in_both_hosts_and_in_time() {
+    let script = typed(&MAP_SESSION);
+    let expected = MAP_SESSION.len();
+    // Natively, frame by frame until every answer is in.
+    let native = floor_copy("lens-native");
+    let (out, page) = wrela_driver::studio::build(&native, false).expect("the map lens builds");
+    assert!(
+        !out.has_errors(),
+        "{}",
+        wrela_diag::render::render_all(&out.sources, &out.diagnostics)
+    );
+    let a = {
+        let post = wrela_driver::studio::post_handler(&native, &page, None);
+        let options = wrela_host::Options { post: Some(post), quiet: true, ..Default::default() };
+        let mut host = wrela_host::Host::load_with(&page, &options).expect("the lens loads");
+        let events = wrela_abi::input::parse_script(&script).expect("the script");
+        let (mut lines, began) = (Vec::new(), std::time::Instant::now());
+        let mut frame = 0;
+        while lens_answers(lines.iter().map(String::as_str)).len() < expected {
+            assert!(began.elapsed().as_secs() < 120, "the session didn't finish: {lines:?}");
+            for e in wrela_abi::input::events_at(&events, frame) {
+                host.push_input(e);
+            }
+            host.frame(frame as f32 / 60.0, MAP_SIZE.0, MAP_SIZE.1).expect("a frame");
+            lines.extend(host.take_logs());
+            frame += 1;
+        }
+        lens_answers(lines.iter().map(String::as_str))
+    };
+    // In Chrome, served by the studio server (which writes the edit through `wrela edit`).
+    let chrome = floor_copy("lens-chrome");
+    let (out, page) = wrela_driver::studio::build(&chrome, std::env::var("LENS_DEBUG").is_ok())
+        .expect("the map lens builds");
+    assert!(!out.has_errors());
+    std::fs::write(page.join("session.json"), &script).expect("the script");
+    let b = {
+        let server = wrela_driver::serve::start(&chrome, &page, 0, false, None).expect("serve");
+        let url = format!(
+            "http://127.0.0.1:{}/#test&frames=2400&width={}&height={}&fps=60&workers=8&input=session.json&nohash=1",
+            server.port, MAP_SIZE.0, MAP_SIZE.1
+        );
+        wrela_tests::run_url_in_chrome(&url, &page, 600);
+        let log = std::fs::read_to_string(page.join("results/log.txt")).expect("log.txt");
+        lens_answers(log.lines())
+    };
+    let actions = |s: &[Value]| -> Vec<String> {
+        s.iter()
+            .map(|x| {
+                x["action"].as_str().or(x["answer"]["action"].as_str()).unwrap_or("?").to_string()
+            })
+            .collect()
+    };
+    eprintln!("native: {:?}\nchrome: {:?}", actions(&a), actions(&b));
+    assert_eq!(actions(&a).len(), expected, "every answer natively");
+    assert_eq!(actions(&a), actions(&b), "the same answers, in order");
+    for (x, y) in a.iter().zip(&b) {
+        assert!(answers_agree(x, y), "the hosts disagree:\n  native {x}\n  chrome {y}");
+    }
+    // The click names the line that places the tower; the drag writes it back, exactly.
+    let tower = &a[3]["item"];
+    assert_eq!(tower["name"], "the tower", "{tower}");
+    let lit = &tower["literals"][0]["literal"];
+    assert_eq!(lit["file"], "[last_green] map.wrela", "{lit}");
+    let line = lit["line"].as_u64().expect("a line") as usize;
+    let original = std::fs::read_to_string(repo_root().join("examples/last-green/map.wrela"))
+        .expect("map.wrela");
+    assert!(original.lines().nth(line - 1).is_some_and(|l| l.contains("560.0")), "line {line}");
+    let written = &a[5]["answer"];
+    assert_eq!(written["written"], true, "{written}");
+    for e in written["files"][0]["edits"].as_array().expect("edits") {
+        assert_eq!(e["readback"].as_f64(), e["value"].as_f64(), "exact readback: {e}");
+    }
+    let (na, nb) = (
+        std::fs::read_to_string(native.join("map.wrela")).expect("map.wrela"),
+        std::fs::read_to_string(chrome.join("map.wrela")).expect("map.wrela"),
+    );
+    assert_eq!(na, nb, "the hosts wrote map.wrela alike");
+    let changed: Vec<(&str, &str)> =
+        original.lines().zip(na.lines()).filter(|(x, y)| x != y).collect();
+    assert_eq!(changed.len(), 1, "a minimal diff: one line changed: {changed:?}");
+    // The time from the drag to the map with the check shown again (the preview's history and
+    // its check, on the lens's helpers).
+    for (host, s) in [("native", &a), ("chrome", &b)] {
+        let total = f(&s[4]["ms"]);
+        eprintln!("{host}: the map with the check again {total:.0} ms after the drag (≤ 5000)");
+        assert!(total <= 5000.0, "{host}: the map showed again {total:.0} ms after the drag");
+    }
+}
+
+/// AC2: the preview, the floor's history at the preview's grain (4 m cells, 10-year steps, over
+/// the history's domain), runs in ≤ 3 s on the native host, all cores; the check the map lens
+/// runs on it (`interest::QUICK`) is reported beside it. The median of three.
+#[test]
+#[ignore = "measure: the preview's history, three times on all cores"]
+fn the_preview_runs_in_three_seconds() {
+    let main = r#"
+use engine::footing::obstacles_of
+use engine::grow::{PREVIEW, simulate}
+use engine::interest::{Evidence, QUICK, check}
+use std::io::print
+use std::time::now
+
+pub fn frame(time: f32, width: u32, height: u32) {
+    let m = map::map()
+    let lo = map::LO - vec2(64.0)
+    let hi = map::HI + vec2(64.0)
+    let st = stones::stones(m)
+    let began = now()
+    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st)
+    let grown = now()
+    let o = obstacles_of(h.trees, species::habits(), h.streams, st, stones::walls(m), lo, hi)
+    var e = Evidence::of(h)
+    e.crowns = trees::drawn_crowns(e.trees)
+    e.solids = blockouts::solids(m)
+    let c = check(ground::ground(), m, species::habits(), e, o, st, QUICK)
+    print(f"timed {grown - began} {now() - grown} {c.coverage.dead}")
+}
+"#;
+    let dir = map_package("last-green/preview-time", main);
+    let floor = repo_root().join("examples/last-green");
+    for f in ["trees.wrela", "blockouts.wrela"] {
+        std::fs::copy(floor.join(f), dir.join(f)).expect("copy");
+    }
+    let manifest = std::fs::read_to_string(dir.join("wrela.toml")).expect("the manifest");
+    let great = repo_root().join("examples/great-tree").display().to_string();
+    std::fs::write(
+        dir.join("wrela.toml"),
+        format!("{manifest}great_tree = {{ path = {great:?} }}\n"),
+    )
+    .expect("write wrela.toml");
+    let build = scratch("last-green/preview-time-build");
+    wrela_tests::must_build(&dir, &build);
+    let mut runs = Vec::new();
+    for _ in 0..3 {
+        let mut host = wrela_host::Host::load(&build).expect("load");
+        host.frame(0.0, 64, 64).expect("the frame");
+        let line = host.take_logs().into_iter().find(|l| l.starts_with("timed")).expect("timed");
+        let n: Vec<f64> = line.split(' ').skip(1).map(|x| x.parse().expect("a number")).collect();
+        runs.push((n[0], n[1], n[2]));
+    }
+    runs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (history, check, dead) = runs[1];
+    eprintln!(
+        "the preview: the history {history:.2} s (≤ 3 s; runs {:?}), the lens's check on it {check:.2} s, dead {:.1}%",
+        runs.iter().map(|r| (r.0 * 100.0).round() / 100.0).collect::<Vec<_>>(),
+        100.0 * dead
+    );
+    assert!(history <= 3.0, "the preview's history took {history:.2} s");
+}

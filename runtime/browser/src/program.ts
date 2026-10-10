@@ -20,6 +20,7 @@ import {
   TASK_SLOTS_END,
   MAX_WORKERS,
   PAR_HELPED,
+  PAR_HELPERS,
   PAR_SHUTDOWN,
   PAR_WAKE,
   RUNNING,
@@ -213,7 +214,10 @@ export async function runWorker(module: WebAssembly.Module, memory: WebAssembly.
   try {
     const instance = await otherInstance(module, memory, "a helper");
     (instance.exports[EXPORT_WORKER] as (thread: number) => void)(thread);
-  } catch {
+  } catch (e) {
+    // The program reports the trap where it's joined; a trap outside a job or a task would
+    // otherwise go unseen.
+    console.error(`a helper (thread ${thread}) trapped: ${describeTrap(e, Lines.of(module))}`);
     helperTrapped(memory, thread);
   }
 }
@@ -390,9 +394,12 @@ export class Program {
     program.#reserved = (compiled.memory.maximum ?? compiled.memory.initial) * 65536;
     program.#frame = instance.exports[EXPORT_FRAME] as FrameFn;
     // The helpers: each its own instance of the module on its own thread, with the memory.
-    if (EXPORT_WORKER in instance.exports && options.spawnWorker) {
-      const n = Math.min(Math.max(options.workers ?? 1, 1), MAX_WORKERS + 1) - 1;
-      for (let i = 0; i < n; i++) options.spawnWorker(module, memory, THREAD_HELPER0 + i);
+    if (EXPORT_WORKER in instance.exports) {
+      const spawn = options.spawnWorker;
+      const helpers = spawn ? Math.min(Math.max(options.workers ?? 1, 1), MAX_WORKERS + 1) - 1 : 0;
+      for (let i = 0; i < helpers; i++) spawn!(module, memory, THREAD_HELPER0 + i);
+      // How many helpers there are: with none, std runs a task when asked if it's done.
+      new DataView(memory.buffer).setUint32(PAR_HELPERS, helpers, true);
     }
     if (options.tickHashes) new DataView(memory.buffer).setUint32(TICK_WANT_HASH, 1, true);
     // A program with state makes it once, before anything else runs (language.md §12).

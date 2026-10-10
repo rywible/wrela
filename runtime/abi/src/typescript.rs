@@ -158,6 +158,8 @@ export const PAR_HELPED = {par_helped};
 /** The helpers' wake count and shutdown flag: a host stops a program's helpers with them. */
 export const PAR_WAKE = {par_wake};
 export const PAR_SHUTDOWN = {par_shutdown};
+/** How many helpers the host started for the program: it writes it before `init`. */
+export const PAR_HELPERS = {par_helpers};
 /** The ticker's words (runtime/abi `memory`), and its records' region. */
 export const TICK_WANT_HASH = {tick_want_hash};
 export const TICK_HASH = {tick_hash};
@@ -258,6 +260,7 @@ export const PANIC_CAP = {panic_cap};
         par_helped = crate::memory::PAR_HELPED,
         par_wake = crate::memory::PAR_WAKE,
         par_shutdown = crate::memory::PAR_SHUTDOWN,
+        par_helpers = crate::memory::PAR_HELPERS,
         tick_want_hash = crate::memory::TICK_WANT_HASH,
         tick_hash = crate::memory::TICK_HASH,
         tick_origin = crate::memory::TICK_ORIGIN,

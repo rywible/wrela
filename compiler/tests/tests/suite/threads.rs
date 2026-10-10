@@ -29,6 +29,21 @@ fn jobs_give_the_same_results_with_any_helpers() {
     }
 }
 
+/// A job a program polls (`done`) is done before long, with no helpers too: then the first poll
+/// runs it, since no helper would ever start it (a page on a two-core machine has none; the map
+/// lens, which polls its preview, waited forever in test mode's one thread).
+#[test]
+fn a_polled_job_is_done_with_any_helpers() {
+    const MOST: u32 = 2_000_000_000;
+    let mut host = start(1);
+    assert_eq!(one_u32(&mut host, "polled", &[Value::I32(200_000), Value::I32(MOST as i32)]), 0);
+    for workers in [2, 8] {
+        let mut host = start(workers);
+        let polls = one_u32(&mut host, "polled", &[Value::I32(200_000), Value::I32(MOST as i32)]);
+        assert!(polls < MOST, "{workers} threads: the job was never done");
+    }
+}
+
 /// A trap in a job is the program's panic at its `join`, with the job's message, whichever
 /// thread ran it: with no helpers, one or seven, and with each job's result held back (slowed)
 /// so the joining thread waits for it.
@@ -328,3 +343,36 @@ pub fn init() -> Game {
 
 pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {}
 ";
+
+/// Memory one thread grew is every thread's to use (compiler/tests/grown), in Chrome with 8
+/// threads and natively: `init` grows the heap in 64 steps while the host starts the helpers; a
+/// task grows and frees 192 MiB while the others sleep, then wakes them to a parallel job whose
+/// chunks grow vectors from that memory; the program's thread grows the heap each frame
+/// meanwhile, then writes a block of 160 MiB. In Chrome a helper that started while the memory
+/// grew saw an old size, and trapped on blocks beyond it (std's `alloc` line 127, as the map
+/// lens did), until std asked for the memory's size wherever a thread takes memory another may
+/// have grown (`std::alloc::reach_heap`).
+#[test]
+#[ignore = "long: needs Chrome, python3 and a GPU"]
+fn memory_a_helper_grew_is_every_threads() {
+    let (dir, rel) = wrela_tests::page("compiler/tests/grown", "grown-chrome");
+    let native = {
+        let mut host = wrela_host::Host::load(&dir).expect("load");
+        let (mut lines, began) = (Vec::new(), std::time::Instant::now());
+        for i in 0.. {
+            assert!(began.elapsed().as_secs() < 60, "natively, the helper never finished");
+            host.frame(i as f32 / 60.0, 16, 16).expect("a frame");
+            lines.extend(host.take_logs());
+            if lines.iter().any(|l| l.starts_with("used")) {
+                break;
+            }
+        }
+        lines.into_iter().find(|l| l.starts_with("used")).expect("natively, the block's used")
+    };
+    let run =
+        wrela_tests::ChromeRun { workers: 8, ..wrela_tests::ChromeRun::new(1200, 16, 16, 60.0) };
+    let _ = wrela_tests::run_in_chrome_with(&rel, run);
+    let log = std::fs::read_to_string(dir.join("results/log.txt")).expect("log.txt");
+    let used = log.lines().find(|l| l.starts_with("used")).unwrap_or_default();
+    assert_eq!(used, native, "in Chrome, the block carved from what a helper grew: {log}");
+}

@@ -716,6 +716,9 @@ impl<E: Executor> Program<E> {
                 spawn_worker(compiled.module.clone(), memory.clone(), thread, trace.clone())
             })
             .collect();
+        if has_worker {
+            crate::shared::store_u32(&memory, memory::PAR_HELPERS, n);
+        }
         let helpers = Helpers { memory: memory.clone(), threads };
         let frame = instance
             .get_typed_func::<(f32, u32, u32), ()>(&mut store, EXPORT_FRAME)
@@ -1250,6 +1253,9 @@ impl BuildHelpers {
         trace: &Trace,
     ) -> BuildHelpers {
         let n = if module.get_export(EXPORT_WORKER).is_some() { count.min(MAX_WORKERS) } else { 0 };
+        if module.get_export(EXPORT_WORKER).is_some() {
+            crate::shared::store_u32(memory, memory::PAR_HELPERS, n);
+        }
         let threads = (0..n)
             .map(|i| {
                 let (module, memory, trace) = (module.clone(), memory.clone(), trace.clone());

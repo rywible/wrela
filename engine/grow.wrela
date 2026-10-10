@@ -979,7 +979,7 @@ struct Band {
 }
 
 /// The rows a band holds.
-const BAND: u32 = 32
+const BAND: u32 = 16
 
 /// The crowns over one band: each living tree whose crown reaches it stops its share of the light
 /// there (and a thorny one covers it).
@@ -1082,17 +1082,16 @@ pub fn canopy(g: Grid, trees: [Tree], habits: [Habit], year: i32) -> (Vec<f32>, 
     (light, thorn)
 }
 
-/// Each species' seed rain, worked out in parallel: species `kind`'s at each cell (0 to 1).
+/// Each species' seed rain, worked out in parallel: species `kind`'s spread over the seed's
+/// coarse grid (`SEED_CELL`), the gain that scales it, and the wind's share.
 struct Rain {
     kind: u32,
-    out: Vec<f32>,
+    spread: Vec<f32>,
+    gain: f32,
+    wind: f32,
 }
 
-fn rain_of(r: mut Rain, g: Grid, trees: [Tree], habits: [Habit], light: [f32], year: i32) {
-    let nn = g.cells()
-    // The seed's spread is tens of metres: worked out on a grid of 8 m, then read at each cell.
-    let hi = g.lo + vec2(f32(g.nx), f32(g.nz)) * g.cell
-    let coarse = Grid::over(g.lo, hi, SEED_CELL)
+fn rain_of(r: mut Rain, coarse: Grid, trees: [Tree], habits: [Habit], year: i32) {
     var crop: Vec<f32> = Vec::filled(coarse.cells(), 0.0)
     let h = habits[r.kind]
     var total = 0.0
@@ -1106,22 +1105,30 @@ fn rain_of(r: mut Rain, g: Grid, trees: [Tree], habits: [Habit], light: [f32], y
         }
     }
     let rad = i32(max(round(h.reach / SEED_CELL / 2.0), 1.0))
-    let spread = coarse.blur(coarse.blur(crop, rad), rad)
+    r.spread = coarse.blur(coarse.blur(crop, rad), rad)
     // A tent's peak holds 1 / (2r + 1)² of the crop: scaled so a 2 m cell sees about what the
     // disk's centre did. The seed is what falls on 2 m whatever the grain: a coarser cell's
     // chance of a seedling is its area's (`recruit_row`), so it isn't counted twice.
-    let gain = f32((2 * rad + 1) * (2 * rad + 1)) * 0.25 * (2.0 / SEED_CELL) * (2.0 / SEED_CELL)
-    let wind = if h.windborne { 0.00003 * total } else { 0.0 }
-    r.out = Vec::filled(nn, 0.0)
-    for k in 0..nn {
-        let l = light[k]
-        var w = coarse.sample(spread, g.centre(k)) * gain
-        // Jays carry acorns to open edges; birds drop thorn seed where they perch, at edges.
-        if h.girth > 1.2 {
-            w *= 0.15 + 1.5 * l
+    r.gain = f32((2 * rad + 1) * (2 * rad + 1)) * 0.25 * (2.0 / SEED_CELL) * (2.0 / SEED_CELL)
+    r.wind = if h.windborne { 0.00003 * total } else { 0.0 }
+}
+
+/// The seed that falls on each cell of row `l.k`, each species' in turn (`nx` cells each).
+fn rain_row(l: mut Line, g: Grid, coarse: Grid, rains: [Rain], habits: [Habit], light: [f32]) {
+    l.out = Vec::with_capacity(g.nx * rains.len())
+    for r in rains {
+        let h = habits[r.kind]
+        for i in 0..g.nx {
+            let k = l.k * g.nx + i
+            let lt = light[k]
+            var w = coarse.sample(r.spread, g.centre(k)) * r.gain
+            // Jays carry acorns to open edges; birds drop thorn seed where they perch, at edges.
+            if h.girth > 1.2 {
+                w *= 0.15 + 1.5 * lt
+            }
+            let perch = if h.thorny { 0.2 + 4.0 * lt * (1.0 - lt) } else { 1.0 }
+            l.out.push(1.0 - exp(-(w * perch + r.wind + h.beyond * perch)))
         }
-        let perch = if h.thorny { 0.2 + 4.0 * l * (1.0 - l) } else { 1.0 }
-        r.out[k] = 1.0 - exp(-(w * perch + wind + h.beyond * perch))
     }
 }
 
@@ -1132,14 +1139,26 @@ const SEED_CELL: f32 = 8.0
 /// and the soil it likes.
 const RECRUITS: f32 = 0.048
 
+/// Each species' seed rain at each cell: its spread worked out a species at a time, then read at
+/// the cells a row at a time, both in parallel.
 fn seed_rain(g: Grid, trees: [Tree], habits: [Habit], fields: mut Fields, year: i32) {
     let nn = g.cells()
-    var rains: Vec<Rain> = Vec::from_fn(habits.len(), |k| Rain { kind: k, out: Vec::new() })
+    let hi = g.lo + vec2(f32(g.nx), f32(g.nz)) * g.cell
+    let coarse = Grid::over(g.lo, hi, SEED_CELL)
+    var rains: Vec<Rain> = Vec::from_fn(
+        habits.len(),
+        |k| Rain { kind: k, spread: Vec::new(), gain: 0.0, wind: 0.0 },
+    )
+    rains.par_each_mut(|r| rain_of(mut r, coarse, trees, habits, year))
+    var rows: Vec<Line> = Vec::from_fn(g.nz, |j| Line { k: j, out: Vec::new() })
     borrow light = fields.light
-    rains.par_each_mut(|r| rain_of(mut r, g, trees, habits, light, year))
-    for r in rains {
-        for k in 0..nn {
-            fields.seed[r.kind * nn + k] = r.out[k]
+    rows.par_each_mut(|l| rain_row(mut l, g, coarse, rains, habits, light))
+    for l in rows {
+        for r in 0..rains.len() {
+            let at = l.k * g.nx
+            for i in 0..g.nx {
+                fields.seed[r * nn + at + i] = l.out[r * g.nx + i]
+            }
         }
     }
 }

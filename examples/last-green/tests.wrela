@@ -781,18 +781,3 @@ fn neighbouring_trees_of_a_kind_fork_at_different_heights() {
     assert(pairs > 1000, f"only {pairs} neighbouring pairs of a kind")
     assert(alike == 0, f"{alike} of {pairs} neighbouring pairs of a kind fork alike")
 }
-
-@fuel(2 ** 42)
-const ZZ_PREVIEW: f32 = zz_preview_dead()
-
-fn zz_preview_dead() -> f32 {
-    std::time::phase("preview start")
-    let p = lens::preview()
-    std::time::phase("preview done")
-    p.checked.coverage.dead
-}
-
-@test
-fn zz_preview_time() {
-    print(f"{ZZ_PREVIEW}")
-}

@@ -78,12 +78,15 @@ pub const QUICK = Settings {
 /// each tree as it's drawn, where the floor gives them (`crowns`, a tree each): the eye sees what
 /// the renderer draws (#55 AC3's calibration); none, and they're the history's own (its reach,
 /// a base from its height and light, its girth, its height). And what's built, that the eye
-/// can't see through (`solids`: x, z, radius, height).
+/// can't see through (`solids`: x, z, radius, height). And the ground's height at each cell of
+/// `fields`, where the history read it (`heights`; empty where it didn't): the check reads it
+/// again only on a grid of its own.
 pub struct Evidence {
     pub trees: Vec<Tree>,
     pub crowns: Vec<Drawn>,
     pub solids: Vec<vec4>,
     pub fields: Grid,
+    pub heights: Vec<f32>,
     pub light: Vec<f32>,
     pub thorn: Vec<f32>,
     pub wet_grid: Grid,
@@ -100,6 +103,7 @@ impl Evidence {
             crowns: Vec::new(),
             solids: Vec::new(),
             fields: h.land.grid,
+            heights: h.land.heights.clone(),
             light: h.light.clone(),
             thorn: h.thorn.clone(),
             wet_grid: h.land.grid,
@@ -128,6 +132,7 @@ impl Evidence {
             crowns: Vec::new(),
             solids: Vec::new(),
             fields,
+            heights: Vec::new(),
             light,
             thorn,
             wet_grid,
@@ -288,16 +293,25 @@ pub fn sight_of<G: Ground>(
     g: Grid,
 ) -> Sight {
     let nn = g.cells()
-    var rows: Vec<Heights> = Vec::from_fn(g.nz, |j| Heights { j, out: Vec::new() })
-    rows.par_each_mut(|r| {
-        for i in 0..g.nx {
-            let p = g.centre(r.j * g.nx + i)
-            r.out.push(ground.height(p.x, p.y))
-        }
-    })
+    // The ground's heights: the history's, on its grid; else read, a row each on a helper.
+    let same = e.heights.len() == nn &&
+        e.fields.lo == g.lo &&
+        e.fields.cell == g.cell &&
+        e.fields.nx == g.nx
     var heights: Vec<f32> = Vec::with_capacity(nn)
-    for mut r in rows {
-        heights.append(mut r.out)
+    if same {
+        heights = e.heights.clone()
+    } else {
+        var rows: Vec<Heights> = Vec::from_fn(g.nz, |j| Heights { j, out: Vec::new() })
+        rows.par_each_mut(|r| {
+            for i in 0..g.nx {
+                let p = g.centre(r.j * g.nx + i)
+                r.out.push(ground.height(p.x, p.y))
+            }
+        })
+        for mut r in rows {
+            heights.append(mut r.out)
+        }
     }
     var top: Vec<f32> = Vec::filled(nn, 0.0)
     var base: Vec<f32> = Vec::filled(nn, 1.0e9)

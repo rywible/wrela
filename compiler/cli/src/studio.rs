@@ -16,8 +16,9 @@ use wrela_host::{Event, Host, Value};
 /// (wider, the lens draws its panel for people beside them).
 const SIZE: (u32, u32) = (896, 896);
 
-/// How many frames a headless run waits for the GPU's answers at most.
-const WAIT: u32 = 240;
+/// How long a headless run waits for the lens at most: for the GPU's answers, or for work on
+/// its helpers (the map lens's preview history, a few seconds).
+const WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 pub fn run(args: &[String]) -> ExitCode {
     let mut rest = Vec::new();
@@ -224,9 +225,10 @@ impl Lens {
         self.host.frame(t, self.size.0, self.size.1).map_err(|e| e.to_string())
     }
 
-    /// Frames until the lens isn't waiting for the GPU (at most `WAIT`), then one more.
+    /// Frames until the lens isn't waiting (at most `WAIT`), then one more.
     fn settle(&mut self) -> Result<(), String> {
-        for _ in 0..WAIT {
+        let began = std::time::Instant::now();
+        while began.elapsed() < WAIT {
             let busy =
                 match self.host.call_export("busy", &[]).map_err(|e| e.to_string())?.as_slice() {
                     [Value::I32(b)] => *b != 0,
@@ -237,7 +239,7 @@ impl Lens {
                 return Ok(());
             }
         }
-        Err(format!("the lens was still waiting for the GPU after {WAIT} frames"))
+        Err(format!("the lens was still waiting after {} s", WAIT.as_secs()))
     }
 
     /// Export `name` called with `args`, the lens's lines before it dropped, and the frames

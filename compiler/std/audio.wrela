@@ -59,6 +59,7 @@ fn render_quantum<S, R: @audio fn(mut S, mut [f32])>(quantum: u32, voice: mut Vo
 @thread_entry
 pub(package) fn audio(thread: u32, task: u32, voice: u32) {
     unsafe {
+        std::alloc::reach_heap()
         run_task(task, voice, 0)
     }
 }

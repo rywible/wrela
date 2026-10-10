@@ -161,7 +161,7 @@ pub fn build_lifted(root: &Path, lift: &[String], kind: BuildKind) -> Result<Out
         let loaded = load(root);
         if let Some(l) = &loaded.2 {
             let names: Vec<&str> = l.packages.iter().skip(1).map(|p| p.name.as_str()).collect();
-            if let Some(bad) = lift.iter().find(|n| !names.contains(&n.as_str())) {
+            if let Some(bad) = lift.iter().map(|n| lift_package(n)).find(|n| !names.contains(n)) {
                 return Err(format!(
                     "--lift: the program has no package named `{bad}` (it has {})",
                     names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
@@ -170,6 +170,25 @@ pub fn build_lifted(root: &Path, lift: &[String], kind: BuildKind) -> Result<Out
         }
         let mode = Mode { debug: kind.debug, testing: kind.testing, ..Mode::RELEASE };
         Ok(compile_loaded(root, mode, wrela_lower::Roots::of, lift, loaded))
+    })
+}
+
+/// The package a `--lift` entry names: `name`, or `name/file.wrela` (one file of it).
+fn lift_package(entry: &str) -> &str {
+    entry.split_once('/').map_or(entry, |(p, _)| p)
+}
+
+/// Whether the `--lift` entries `lift` lift the file at `path` of package `pkg` (in `dir`): the
+/// package is named whole, or the file is, by its path in the package.
+fn lifts_file(lift: &[String], pkg: &str, dir: &Path, path: &Path) -> bool {
+    lift.iter().any(|e| match e.split_once('/') {
+        None => e == pkg,
+        Some((p, file)) => {
+            p == pkg
+                && path
+                    .canonicalize()
+                    .is_ok_and(|c| c.strip_prefix(dir).is_ok_and(|r| r == Path::new(file)))
+        }
     })
 }
 
@@ -488,12 +507,15 @@ fn compile_loaded(
         .map(|(f, _, path)| (*f, path.clone()))
         .collect();
     for p in packages.iter_mut().skip(1) {
-        p.lifted = lift.contains(&p.name);
+        p.lifted = lift.iter().any(|e| lift_package(e) == p.name);
     }
-    // The lifted packages' files, each with its path from the program's package.
+    // The lifted files (each of a package named whole, or one named alone), each with its path
+    // from the program's package.
     let lifted_files: Vec<(wrela_diag::FileId, String)> = all_files
         .iter()
-        .filter(|(_, pkg, _)| packages[*pkg].lifted)
+        .filter(|(_, pkg, path)| {
+            *pkg > 0 && lifts_file(lift, &packages[*pkg].name, &dirs[*pkg], path)
+        })
         .map(|(f, _, path)| (*f, lift::relative(path, root)))
         .collect();
     let checked = wrela_sema::check_packages(units, &packages, &mut diagnostics);
