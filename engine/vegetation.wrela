@@ -15,7 +15,7 @@ use impostor::{
 use light::Lit
 use lit::{Lighting, shown, sun_and_sky}
 use noise::{cell_size, hashed_threshold_of}
-use lod::{IMPOSTOR, Lod, VOLUME, anchor, keeps_packed, packed, place, share, ways}
+use lod::{IMPOSTOR, Lod, VOLUME, anchor, by_card, keeps_packed, packed, place, share, ways}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_POINTS, LIMB_VERTICES, Leaves, OUTLINE,
     Plant, Wind, CORNERS, card_orders, card_tint, card_turn, cook_cards, cook_outlines, corner_of,
@@ -531,7 +531,10 @@ pub fn card(
         cam.eye,
         d.clear,
     )
-    let keep = if fade > 0.0 { fade_packed(mark.x, fade) } else { mark.x }
+    let faded_keep = if fade > 0.0 { fade_packed(mark.x, fade) } else { mark.x }
+    // Each card whole or gone, by its own draw, in a settled still (`lod::by_card`).
+    let mixed = (seed_of(card, mark.y & 255) ^ (card.seed >> 15)) * 2246822519
+    let keep = by_card(faded_keep, f32(mixed >> 22) / 1024.0)
     LeafVertex {
         clip: ClipPosition { position: cam.clip(apart) },
         uv,
