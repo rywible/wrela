@@ -52,6 +52,7 @@ only make the checks faster merge without the gate, and the long tier that runs 
 | Tool | What it does here |
 |---|---|
 | [Claude Code](https://claude.com/claude-code) (Anthropic), mostly Claude Opus 5.5 | Writes the code, tests and docs, on Ryan's MacBook Air and in cloud sessions |
+| [OpenAI Codex](https://openai.com/codex/) | Reviews performance across the codebase, implements optimizations and regression tests, and measures their effects in a cloud session |
 | Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 | The authors in the blind authoring rounds that test thesis 1 (vision.md); Opus also in the first round |
 | Claude subagents with no context | Blind raters in the lookdev loop: they see only the before and after stills and the anchors |
 | Claude projects (claude.ai) | Run several agent threads at once (lookdev items, fixes, rendering setup), with one coordinator |

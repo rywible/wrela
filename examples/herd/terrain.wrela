@@ -118,7 +118,12 @@ impl Terrain {
     /// then each edit.
     @deterministic
     pub fn distance(self, p: vec3) -> f32 {
-        var d = (p.y - field_height(p.x, p.z)) * 0.5
+        self.distance_above(p, field_height(p.x, p.z))
+    }
+
+    /// The same distance with the height field already sampled, before the sphere edits.
+    fn distance_above(self, p: vec3, height: f32) -> f32 {
+        var d = (p.y - height) * 0.5
         for e in self.edits {
             let s = length(p - e.at) - e.radius
             d = if e.add { smin(d, s, 50cm) } else { -smin(-d, s, 50cm) }
@@ -130,9 +135,20 @@ impl Terrain {
     /// it went to a hit (nearer than 1 mm), or -1, and how many steps it took.
     @deterministic
     pub fn raycast(self, from: vec3, dir: vec3, max_t: f32) -> (f32, u32) {
+        // A foot's vertical ray stays in one column: sample its five noise octaves once.
+        // Use the first march point, including its signed-zero arithmetic. A nonfinite t
+        // changes zero * t to NaN, so that step still takes the ordinary distance path.
+        let vertical = dir.x == 0.0 && dir.z == 0.0
+        let first = from + dir * 0.0
+        let height = if vertical { field_height(first.x, first.z) } else { 0.0 }
         var t = 0.0
         for i in 1..129 {
-            let d = self.distance(from + dir * t)
+            let p = from + dir * t
+            let d = if vertical && (bitcast_u32(t) & 0x7f800000) != 0x7f800000 {
+                self.distance_above(p, height)
+            } else {
+                self.distance(p)
+            }
             if d < 1mm {
                 return (t, i)
             }
