@@ -2,7 +2,7 @@
 
 Goals, not a log: delete a line when it's done. Work branches off `main` and squash-merges back
 (CLAUDE.md). Milestone-6's task file, with its decisions, play rounds and lookdev reviews, is
-`M6-TASKS.md` at the tag `archive/milestone-6`. The thread "Vision gap review" keeps this list
+`M6-TASKS.md` on the branch `milestone-6`. The thread "Vision gap review" keeps this list
 ranked from its map of the vision against the code (`vision/gap-map.md` in the project's shared
 folder), reviewed each day.
 
