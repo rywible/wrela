@@ -45,7 +45,8 @@ fn both_hosts_render_the_same_samples() {
 }
 
 /// engine::sound's mixer at its busiest (compiler/tests/mixer: the listener, the wind, four
-/// waters, both brushes and four steps, all sounding): a second from the native host.
+/// waters, both brushes, four steps, two impacts and two whooshes, all sounding): a second from
+/// the native host.
 fn mixed(dir: &std::path::Path) -> Vec<f32> {
     let mut host = CpuBuild::load(dir).expect("load").start_with(1).expect("start");
     host.frame(0.0, 16, 16).expect("frame");
