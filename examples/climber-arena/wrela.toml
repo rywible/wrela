@@ -1,0 +1,9 @@
+# The climber's fight with the wolf, its sim alone, drawn as a map from above (the climber and
+# the wolf as squares): the fight's ticks with nothing else on the GPU, so a software GPU runs
+# it in Chrome at the ticks' pace (compiler/tests/tests/suite/climber.rs).
+[package]
+name = "climber_arena"
+
+[dependencies]
+engine = { path = "../../engine" }
+climber = { path = "../climber" }

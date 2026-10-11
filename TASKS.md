@@ -43,9 +43,9 @@ that does each part.
 3. Creatures at scale: a floor's 4–6 kinds, its elites and its Warden, by agents, at shippable
    quality.
 4. Safari and Firefox: the floor, the audio and the sim's bits in all three browsers.
-5. A floor's game: rest points, waystones and fast travel, gliding, saves. Climbing waits on the
-   owner (the climber has no hands); so do anchors, Keys and towns: their lore and how they play
-   aren't written.
+5. A floor's game: rest points, waystones and fast travel, gliding and floating (the climber
+   doesn't climb: it walks up stairs or floats), saves. Anchors, Keys and towns wait on the owner:
+   their lore and how they play aren't written.
 6. Shipping a floor: packaging, offline play, hosting, every budget in the gate.
 7. Seasons and leaderboards (#46). Then the Titan's Back and the Clockless War (#47).
 

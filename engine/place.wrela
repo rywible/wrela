@@ -680,8 +680,8 @@ pub enum EventKind: Copy + Eq {
     /// (`grow::gale`).
     Storm { at: vec2, reach: f32, dir: vec2, share: f32 },
     /// A fire round `at`, lit on its upwind side: it runs as its fuel, dryness, slope and the
-    /// wind let it, no further than `reach` from `at`, and kills what its heat there can kill; the dead stand, silvered, and
-    /// thick-barked survivors are scarred (`grow::fire`).
+    /// wind let it, no further than `reach` from `at`, and kills what its heat there can kill;
+    /// the dead stand, silvered, and thick-barked survivors are scarred (`grow::fire`).
     Fire { at: vec2, reach: f32 },
     /// The tallest tree of species `kind` within `reach` of `at` falls across toward `toward`.
     Fall { at: vec2, reach: f32, kind: u32, toward: vec2 },

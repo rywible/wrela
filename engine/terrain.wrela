@@ -673,11 +673,11 @@ pub fn ground(v: VertexIndex, cam: Camera, levels: Levels, texels: [Texel]) -> G
 /// `height_at` has it), from the finest level that holds the point, blended to the next where
 /// that level morphs.
 pub fn ground_at(levels: Levels, texels: [Texel], xz: vec2) -> (vec3, vec3, f32) {
-    ground_in(levels, texels, level_at(levels, xz), xz)
+    ground_from(levels, texels, level_at(levels, xz), xz)
 }
 
-/// `ground_at` from level `l` (`level_at`'s), for a caller that reads the level more than once.
-pub fn ground_in(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> (vec3, vec3, f32) {
+/// `ground_at` from level `l` (`level_at`'s, found once by a caller that reads more of it).
+fn ground_from(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> (vec3, vec3, f32) {
     let (n0, c0, h0) = level_cover(levels, texels, l, xz)
     let m = morph(levels, l, xz)
     var n = n0
@@ -872,10 +872,9 @@ pub fn ground_shade(
     moss: Texture<Rgba8>,
     ds: Sampler,
 ) -> vec4 {
-    // The level once, for both reads (two calls to `level_at` here took its loop's bounds
-    // branch with l = 11 of 12 levels the second time, on lavapipe: a miscompile).
+    // The level it's drawn from, found once for its cover and its materials.
     let level = level_at(lt.levels, g.world.xz)
-    let (n, coarse, _) = ground_in(lt.levels, texels, level, g.world.xz)
+    let (n, coarse, _) = ground_from(lt.levels, texels, level, g.world.xz)
     // Its detail close up: what it's made of (`Cover::materials`), each material's cooked tile
     // at two sizes (the finer fading out where a pixel spans its texels: no mipmaps), keyed to
     // the world. A clipmap texel is 12.5 cm at the finest: without them, the ground read as
@@ -1049,8 +1048,8 @@ fn detail_of(t: Texture<Rgba8>, ds: Sampler, q: vec2, size: f32, foot: f32) -> v
     mix(vec3(1.0), mix(c, f * c, vec3(fine)), vec3(far))
 }
 
-/// What the ground is made of at `xz` (`Cover::materials`), from the level it's drawn from
-/// (`l`, `level_at`'s), between its texels.
+/// What the ground is made of at `xz` (`Cover::materials`), from level `l` (the level it's
+/// drawn from, `level_at`'s), between its texels.
 pub fn materials_at(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> vec4 {
     let (at, f) = level_cell(levels, l, xz)
     let a = mix(texels[at.x].materials.decode(), texels[at.y].materials.decode(), vec4(f.x))

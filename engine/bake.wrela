@@ -14,7 +14,7 @@
 // And a far layer of the whole floor, in the first frame's payload: each 8 m cell's tallest crown
 // (its height and kind), for what lies past the tiles streamed in.
 
-use grow::{Cause, Grid, Habit, History, Mark, Memory, State, Stream, Tree, UNMARKED}
+use grow::{Cause, Grid, Ground, Habit, History, Mark, Memory, Soil, State, Stream, Tree, UNMARKED}
 use std::io::Shipped
 use noise::noise2
 use place::{Route, RouteKind, TILE, tile_of}
@@ -618,6 +618,13 @@ pub fn unbake(files: Shipped, lo: vec2i, hi: vec2i) -> Unbaked {
 /// in which year, and how hard), its 4 m cell's; `UNMARKED` off the bake's tiles.
 pub fn memory_at(u: Unbaked, p: vec2) -> Memory {
     if u.wet_grid.holds(p) { u.memory[u.wet_grid.cell_at(p)] } else { UNMARKED }
+}
+
+/// The soil at world point `p` (`grow::soil`): the ground's shape round it, its rock, and the
+/// baked wetness there.
+pub fn soil_at<G: Ground>(u: Unbaked, ground: G, p: vec2) -> Soil {
+    let wet = if u.wet_grid.holds(p) { u.wet_grid.sample(u.wet, p) } else { 0.0 }
+    grow::soil_of(ground, p, wet)
 }
 
 /// What the ground remembers at `p` (a point in tile `b`'s square), read from the tile's bytes

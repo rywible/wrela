@@ -3,9 +3,12 @@
 
 use engine::bake::{WEAR_N, decode_tile, reaching, tile_fields, tile_name}
 use engine::grow::{BAKE, BESIDE_PATH, Cause, Grid, HEAD_ROOM, Mark, State, Tree}
-use engine::place::{Keeper, Map, TILE}
+use engine::noise::rand
+use engine::place::{Feature, Keeper, Map, TILE}
 use engine::terrain::Terrain
+use std::field::Surface
 use std::io::print
+use std::math::TAU
 use std::string::String
 use history::{BAKED, decisions, domain_hi, domain_lo, tiles_hi, tiles_lo}
 
@@ -878,4 +881,87 @@ fn remembered(u: engine::bake::Unbaked, at: vec2, reach: f32, mark: Mark, year: 
         }
     }
     (marked, cells)
+}
+
+/// Each ring's stones stand apart, open widest at the threshold, and the great stone stands
+/// across from it, the tallest.
+@test
+fn each_ring_has_a_threshold_and_a_great_stone() {
+    let m = map::map()
+    var rings = 0
+    for k in m.sites {
+        if k.feature != Feature::Ring {
+            continue
+        }
+        rings += 1
+        let all = stones::ring(k)
+        // The last is the centre's stone; the rest stand round the ring in order.
+        let n = all.len() - 1
+        var widest = 0.0
+        var widest_at = 0.0
+        var tallest = 0
+        for i in 0..n {
+            let s = all[i]
+            for j in (i + 1)..all.len() {
+                let o = all[j]
+                assert(
+                    length(s.at - o.at) > stones::footprint(s) + stones::footprint(o),
+                    f"{k.name}: stones {i} and {j} overlap",
+                )
+            }
+            if s.half.y > all[tallest].half.y {
+                tallest = i
+            }
+            let a = atan2(s.at.y - k.at.y, s.at.x - k.at.x)
+            let o = all[(i + 1) % n]
+            let b = atan2(o.at.y - k.at.y, o.at.x - k.at.x)
+            let gap = stones::apart(a, b)
+            if gap > widest {
+                widest = gap
+                widest_at = a + 0.5 * stones::apart(a, b)
+            }
+        }
+        assert(
+            stones::apart(widest_at, stones::THRESHOLD) < 0.4,
+            f"{k.name}: its widest gap is {stones::apart(widest_at, stones::THRESHOLD)} rad from the threshold",
+        )
+        let g = all[tallest]
+        let toward = atan2(g.at.y - k.at.y, g.at.x - k.at.x)
+        assert(
+            stones::apart(toward, stones::THRESHOLD) > 0.4 * TAU,
+            f"{k.name}: the great stone is not across from the threshold",
+        )
+    }
+    assert(rings > 0, "the map has rings")
+}
+
+/// The steepest change of `s`'s field (per m) over pairs of points 3 cm apart all over `box`,
+/// and where.
+fn steepest<S: Surface>(s: S, box: std::derive::Box3) -> (f32, vec3) {
+    var worst = 0.0
+    var at = vec3(0.0)
+    for i in 0..20000 {
+        let p = mix(box.lo, box.hi, vec3(rand(i, 1), rand(i, 2), rand(i, 3)))
+        let dir = normalize(vec3(rand(i, 4), rand(i, 5), rand(i, 6)) - vec3(0.5))
+        let k = abs(s.distance(p) - s.distance(p + dir * 0.03)) / 0.03
+        if k > worst {
+            worst = k
+            at = p
+        }
+    }
+    (worst, at)
+}
+
+/// The built things' fields change no faster than their Lipschitz bounds claim (the realizer
+/// culls by them): the tower and the standing stones of each kind.
+@test
+fn the_built_fields_keep_their_bounds() {
+    let t = blockouts::tower()
+    let (worst, at) = steepest(t, blockouts::tower_creature(t).bounds())
+    assert(worst <= t.lipschitz(0.0), f"the tower's field changes {worst} per m at {at}")
+    for seed in 0..12 {
+        let s = blockouts::Slab { half: vec3(0.5, 1.1, 0.3), seed: f32(seed) * 0.37 }
+        let (worst, at) = steepest(s, blockouts::slab_creature(s).bounds())
+        assert(worst <= s.lipschitz(0.0), f"slab {seed}'s field changes {worst} per m at {at}")
+    }
 }
