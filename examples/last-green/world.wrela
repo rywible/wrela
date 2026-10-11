@@ -1,4 +1,4 @@
-// The floor's simulation (#54 §5): the stand-in player walking and running over the floor, in the
+// The floor's simulation (#54 §5): the climber walking and running over the floor, in the
 // sim's tick (`engine::run`) at 60 Hz, colliding with what the bake left (`history::OBSTACLES`)
 // and stopped by deep water and steep ground (`engine::footing`'s one rule). Its input records
 // are the walk's replay. A travel (the play harness's) moves the player beside a site. The fawn

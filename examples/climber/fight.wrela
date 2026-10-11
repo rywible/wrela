@@ -31,7 +31,6 @@ use std::hash::StateHash
 use std::input::{Event, Key, PadAxis, PadButton}
 use std::math::{PI, TAU}
 use std::serialize::Serialize
-use std::transform::rotate_y
 
 // ---- the controls ------------------------------------------------------------------------------
 
@@ -896,11 +895,7 @@ pub fn segments_apart(a0: vec3, a1: vec3, b0: vec3, b1: vec3) -> f32 {
 /// The sword in the world, `sub` ticks on from tick `c.t` (0 to 1): its grip's middle, toward its
 /// point, and the way its edge leads (unit, the edge square to the aim).
 pub fn sword_at(c: Climber, sub: f32) -> (vec3, vec3, vec3) {
-    let s = c.pose(sub).sword
-    let m = rotate_y(c.heading)
-    let aim = normalize((m * vec4(s.aim, 0.0)).xyz)
-    let edge = (m * vec4(s.edge, 0.0)).xyz
-    (c.at + (m * vec4(s.at, 0.0)).xyz, aim, normalize(edge - aim * dot(edge, aim)))
+    c.pose(sub).sword.placed(c.at, c.heading)
 }
 
 /// The blade's edge in the world, from a little past the guard to the point, `sub` ticks on from
@@ -922,9 +917,17 @@ pub fn wolf_hurt(w: Wolf) -> [vec4; 4] {
     ]
 }
 
+/// How hard a blow throws the wolf's head and its tail (m/s, along the cut), how far it jolts
+/// its front up (rad) and drops its body (m).
+pub const HEAD_KICK: f32 = 2.2
+pub const TAIL_KICK: f32 = 1.2
+const JOLT: f32 = 0.12
+const DROP: f32 = 0.05
+
 /// The blade against the wolf in the move's active ticks: the edge swept from the last tick's
 /// place to this one's, in four steps, against the wolf's capsules. A hit hurts it (it flinches
-/// or goes down), pushes it back, and stops the fight for a few ticks.
+/// or goes down), throws its head and tail the way the edge went, pushes it back, and stops the
+/// fight for a few ticks.
 fn blade_hits(w: mut World) {
     let c = w.climber
     if c.act != Act::Slash && c.act != Act::Backslash {
@@ -959,8 +962,23 @@ fn blade_hits(w: mut World) {
     w.tally.hits += 1
     w.stop = HIT_STOP
     w.wolf.health -= f.damage
+    // The blow, as the wolf's body takes it: its head and tail thrown the way the edge went
+    // (their springs kicked: they swing back on their own once the hit stop ends), its body
+    // jolted up at the front and down, and pushed back along the cut as much as away.
     let away = w.wolf.pos() - c.at.xz
-    w.wolf.pushed = if length(away) > 1.0e-4 { normalize(away) } else { c.forward() }
+    let away_n = if length(away) > 1.0e-4 { normalize(away) } else { c.forward() }
+    let sweep = (q0 + q1 - p0 - p1) * 0.5
+    let blow = if length(sweep) > 1.0e-4 { normalize(sweep) } else {
+        vec3(away_n.x, 0.0, away_n.y)
+    }
+    for i in 0..WOLF_BODY.spring_tips.len() {
+        let kick = if i == 0 { HEAD_KICK } else { TAIL_KICK }
+        w.wolf.walker.springs[i].vel = w.wolf.walker.springs[i].vel + blow * kick
+    }
+    w.wolf.walker.pitch += JOLT
+    w.wolf.walker.height -= DROP
+    let push = away_n + blow.xz * 0.6
+    w.wolf.pushed = if length(push) > 1.0e-4 { normalize(push) } else { away_n }
     w.wolf.t = 0
     if w.wolf.health <= 0.0 {
         w.wolf.mood = Mood::Down

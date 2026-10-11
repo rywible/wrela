@@ -268,3 +268,42 @@ fn the_slash_sweeps_ahead() {
     assert(hi - lo > 1.0, f"the slash's point only falls {hi - lo} m")
     assert(lo < 0.6, f"the slash's point stays {lo} m up: over a wolf")
 }
+
+/// A slash that hits throws the wolf's head the way the edge goes (the slash cuts to the
+/// climber's left), as fast as the blow's kick; the head swings back to its place on its own by
+/// the time the wolf crouches to answer.
+@test
+fn a_hit_throws_the_wolfs_head_along_the_cut() {
+    var w = spawn()
+    let c = w.climber.at.xz
+    let f = w.climber.forward()
+    w.wolf = fight::new_wolf(c + f * 1.7, w.climber.heading + 3.14159265)
+    w.wolf.wait = 1000
+    w.climber.start(Act::Slash)
+    w.climber.t = frames(Act::Slash).windup
+    w.climber.fade = 10
+    var ticks = 0
+    while w.tally.hits == 0 && ticks < 8 {
+        step(mut w, Vec::new())
+        ticks += 1
+    }
+    assert(w.tally.hits == 1, "the slash missed")
+    let head = w.wolf.walker.springs[0]
+    let left = vec2(f.y, -f.x)
+    let across = dot(head.vel.xz, left)
+    print(
+        f"hit after {ticks} ticks: the head thrown {length(head.vel)} m/s, {across} m/s to the climber's left",
+    )
+    assert(length(head.vel) > fight::HEAD_KICK * 0.8, "the head wasn't thrown")
+    assert(across > 0.5, "the head wasn't thrown the way the cut went")
+    // On through the hit stop and the flinch, into the crouch that answers it (it stands still).
+    for _ in 0..45 {
+        step(mut w, Vec::new())
+    }
+    assert(w.wolf.mood == Mood::Crouch, "the wolf isn't crouching")
+    let rest = (engine::gait::body_frame(w.wolf.walker) *
+        vec4(fight::WOLF_BODY.spring_tips[0], 1.0)).xyz
+    let off = length(w.wolf.walker.springs[0].pos - rest)
+    print(f"0.75 s on, crouched: the head {off} m from its place")
+    assert(off < 0.05, f"the head is {off} m from its place")
+}
