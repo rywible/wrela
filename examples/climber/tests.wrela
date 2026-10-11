@@ -2,7 +2,7 @@
 // through a lunge isn't bitten, a blink goes where the stick points, the sword's cut sweeps the
 // space ahead, and a replay of the same presses comes out the same. A test bot plays: it reads the world and presses as a player would.
 
-use fight::{BITE, CROUCH, Mood, World, blade_at, on_screen, spawn, tick}
+use fight::{BITE, CROUCH, Level, Mood, World, blade_at, on_screen, spawn, tick}
 use engine::run::TickInput
 use moves::{Act, BLINK_GONE, frames}
 use std::hash::state_hash
@@ -165,7 +165,7 @@ fn the_blinks_invulnerable_ticks_pass_the_bite() {
         var w = spawn()
         let c = w.climber.at.xz
         let f = w.climber.forward()
-        w.wolf = fight::new_wolf(c + f * 0.75, w.climber.heading + 3.14159265)
+        w.wolf = fight::new_wolf(Level {}, c + f * 0.75, w.climber.heading + 3.14159265)
         w.wolf.mood = Mood::Lunge
         w.wolf.t = BITE.x
         w.wolf.aim = -f
@@ -209,7 +209,7 @@ fn the_fight_is_the_same_twice() {
 fn a_blink_goes_where_the_stick_points() {
     for (sx, sy) in [(1.0, 0.0), (0.0, 0.0)] {
         var w = spawn()
-        w.wolf = fight::new_wolf(vec2(-60.0, -20.0), 0.0)
+        w.wolf = fight::new_wolf(Level {}, vec2(-60.0, -20.0), 0.0)
         let start = w.climber.at.xz
         let want = if sx == 0.0 && sy == 0.0 { -w.climber.forward() } else {
             on_screen(vec2(sx, sy), w.yaw)
@@ -277,7 +277,7 @@ fn a_hit_throws_the_wolfs_head_along_the_cut() {
     var w = spawn()
     let c = w.climber.at.xz
     let f = w.climber.forward()
-    w.wolf = fight::new_wolf(c + f * 1.7, w.climber.heading + 3.14159265)
+    w.wolf = fight::new_wolf(Level {}, c + f * 1.7, w.climber.heading + 3.14159265)
     w.wolf.wait = 1000
     w.climber.start(Act::Slash)
     w.climber.t = frames(Act::Slash).windup
@@ -345,7 +345,7 @@ fn the_fight_sounds_its_swings_hits_and_blinks() {
     var w = spawn()
     let c = w.climber.at.xz
     let f = w.climber.forward()
-    w.wolf = fight::new_wolf(c + f * 1.7, w.climber.heading + 3.14159265)
+    w.wolf = fight::new_wolf(Level {}, c + f * 1.7, w.climber.heading + 3.14159265)
     w.wolf.wait = 1000
     var counts = vec4u(0)
     var at = [vec3(0.0); 2]
