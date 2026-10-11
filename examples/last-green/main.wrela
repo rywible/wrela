@@ -1366,10 +1366,14 @@ fn static_shadows(s: mut Floor, sh: Shadows, wind: Wind) {
     if s.terrain_cooked > 0 && s.near.ready {
         return
     }
-    s.strip_drawn = s.near.drawing() || s.far.drawing()
+    // The far cascade waits for all that casts into it at load (the far layer, the built
+    // things): drawn before, it was drawn whole again as each came (on lavapipe, 48 s each of a
+    // lookbook still's 390 s).
+    let far_casts = s.far_fetch.is_none() && s.wood.is_some() && s.to_build.is_empty()
+    s.strip_drawn = s.near.drawing() || (s.far.drawing() && far_casts)
     if s.near.drawing() {
         s.near.draw_strip(mut s.wood, s.built, SUN, sh, wind, s.linear, s.cam, on, "shadows near")
-    } else if s.far.drawing() {
+    } else if s.far.drawing() && far_casts {
         s.far.draw_strip(mut s.wood, s.built, SUN, sh, wind, s.linear, s.cam, on, "shadows far")
     }
 }
