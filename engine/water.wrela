@@ -874,7 +874,13 @@ pub fn water_shade(
     // A stream's ripples low and long over its clear shallows, so its bed shows (the sky's
     // silver over all of it read as metal); a fall's broken and steep.
     let slope = ripple * strength * (if falling { 3.0 } else if flowing { 0.5 } else { 1.0 })
-    let n = normalize(vec3(-slope.x, 1.0, -slope.y))
+    // A fall's sheet faces down its flow, leaning out a little (its mesh rows are steps: their
+    // planes read as panels); the rest lie flat.
+    let face = if falling {
+        let down = normalize(w.flow + vec2(1.0e-4, 0.0))
+        vec3(down.x, FALL_LEAN, down.y)
+    } else { vec3(0.0, 1.0, 0.0) }
+    let n = normalize(face + vec3(-slope.x, 0.0, -slope.y))
     let v = normalize(cam.eye - w.world)
     let distance = dot(w.world - cam.eye, cam.forward)
     // Under it: the scene through it, bent by its ripples where that's still under the water.
@@ -891,7 +897,8 @@ pub fn water_shade(
     }
     // How much water the eye sees through: what's under it, or the stream's bed under its skin.
     let thick = max(under.a - distance, 0.0) + w.depth / max(v.y, 0.2)
-    let through = exp(-look.dims * thick)
+    // A fall's sheet is white water, all but opaque: the cliff behind it doesn't show through.
+    let through = exp(-look.dims * thick) * (if falling { 0.1 } else { 1.0 })
     let (sun, sky, probe) = sun_and_gloss(lt, w.world, n, soft: 1.0)
     // The clay view: the water's surface as matte grey, lit as the ground is.
     if lt.light.clay != 0 {
@@ -927,10 +934,13 @@ pub fn water_shade(
         let down = normalize(w.flow + vec2(1.0e-4, 0.0))
         let across = vec2(-down.y, down.x)
         let u = dot(keyed, across)
-        let a = dot(keyed, down) - t * length(w.flow)
-        let streak = noise2(vec2(u * 2.2, a * 0.3)) * 0.7 +
-            noise2(vec2(u * 6.0, a * 0.8 + 3.0)) * 0.3
-        foam = smoothstep(0.3, 0.8, streak + 0.1 * churn)
+        // Down the sheet: its drop (it falls more than it runs), then its run.
+        let a = dot(keyed, down) - (w.world.y + cam.keyed().y) - t * length(w.flow)
+        // A white sheet, torn by a few dark threads down it.
+        let uw = u + 0.35 * noise2(vec2(u * 0.6, a * 0.12 + 7.0))
+        let streak = noise2(vec2(uw * 3.5, a * 0.15)) * 0.7 +
+            noise2(vec2(uw * 9.0, a * 0.4 + 3.0)) * 0.3
+        foam = smoothstep(0.12, 0.55, streak + 0.1 * churn)
     } else if flowing {
         foam = smoothstep(0.65, 0.95, churn * 0.7 + w.bank * 0.2 + 0.08 * length(w.flow))
     } else {
@@ -1056,6 +1066,9 @@ pub fn mist_over(
     }
     vec4(c.rgb * through + lit * 0.5, c.a)
 }
+
+/// How far a fall's sheet leans back from upright (its face's rise for each unit out).
+const FALL_LEAN: f32 = 0.3
 
 /// How thick a fall's mist is where it's densest (per m), and how many points of each sphere's
 /// chord a pixel reads it at (a noise each: the pass is full-screen).

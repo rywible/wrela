@@ -36,7 +36,7 @@ use climber::figure::{Figure, figure}
 use climber::moves::{Act, REST}
 use climber::sounds::{Heard, cues, heard}
 use history::{BAKED, OBSTACLES, tiles_hi, tiles_lo}
-use ground::{FIGHT, FIGHT_LANE, fought}
+use ground::{FIGHT, FIGHT_WAY, STONE_FEET, STONE_MARGIN, fought, unbuilt}
 use provenance::NearTile
 use streaming::{near_tile_radius, tile_distance, tile_radius}
 use std::collections::{Flags, replace, swap}
@@ -105,6 +105,13 @@ const WILD_FAR: f32 = 900.0
 const FAR_IN_FLIGHT: u32 = 2
 const IN_FLIGHT: u32 = 4
 const SLOTS: u32 = 160
+
+/// How many of the load's steps a frame takes when the floor captures stills (`Floor::capture`),
+/// which play spreads a step a frame: a tile asked for and one placed, a forest kind or a built
+/// thing, a strip of a static cascade, a strip of the probes, a 64th of the sky's dome; and how
+/// many tiles it has on their way at once. A still's light is then in within a few frames.
+const CAPTURE_STEPS: u32 = 64
+const CAPTURE_IN_FLIGHT: u32 = 64
 
 /// The static cascades: round the player (about 7 cm a texel), and the floor's.
 const NEAR_SPAN: f32 = 144.0
@@ -487,14 +494,18 @@ pub struct Floor {
     capture: bool,
 }
 
-/// The built things to realize: the floor's (`blockouts::built`), and the egg's place's ring of
-/// stones out in the wildwood.
+/// The built things to realize: the floor's (`blockouts::built`), the egg's place's ring of
+/// stones out in the wildwood, and the crags' rock (`Land::crag_beds`).
 fn to_build() -> Vec<blockouts::Built> {
     var out = blockouts::built(map::map())
     var seed = 900
     for st in wildwood::egg_stones() {
         out.push(blockouts::slab_at(st.xy, vec3(0.5, st.w * 0.5, 0.28), seed))
         seed += 1
+    }
+    let g = ground::ground()
+    for b in g.land.crag_beds(|q| g.under_crags(q)) {
+        out.push(blockouts::Built::Rock { at: b.at, bed: b.bed })
     }
     out
 }
@@ -984,7 +995,8 @@ fn stream(s: mut Floor, eye: vec2) {
     }
     // The nearest wanted tile not yet known: a baked one fetched, a wild one grown.
     let at = engine::place::tile_of(eye)
-    if s.fetching.len() + near_cooking(s) < IN_FLIGHT {
+    let in_flight = if s.capture { CAPTURE_IN_FLIGHT } else { IN_FLIGHT }
+    if s.fetching.len() + near_cooking(s) < in_flight {
         // A tile farther away on either axis cannot be within WANT of the eye. Keep the
         // same row order, with the outer rows used only by the far layer left out.
         let r = near_tile_radius(eye, WANT, WILD_FAR)
@@ -1032,7 +1044,7 @@ fn stream(s: mut Floor, eye: vec2) {
         }
     }
     // The wildwood's far layer, a tile at a time, out to `WILD_FAR`; dropped past it.
-    if far_cooking(s) < FAR_IN_FLIGHT {
+    if far_cooking(s) < (if s.capture { CAPTURE_IN_FLIGHT } else { FAR_IN_FLIGHT }) {
         let r = tile_radius(WILD_FAR)
         var best = vec2i(0)
         var near = 1.0e9
@@ -1272,10 +1284,12 @@ fn keys(s: mut Floor, time: f32) {
                 if key == Key::Enter && s.shot_digits < lookbook::SHOTS.len() {
                     s.shot = Some(s.shot_digits)
                     s.shot_from = time
-                    // A still is taken on arrival, however near the shot's eye.
+                    // A still is taken on arrival, however near the shot's eye, under clouds
+                    // marched afresh from there (the dome is round the eye).
                     if s.capture {
                         s.arriving = true
                         s.gathered = 0
+                        s.sky.frames = 0
                     }
                 }
                 s.typing_shot = false
@@ -1486,6 +1500,12 @@ fn trace_of(s: Floor) -> Trace {
     }
 }
 
+/// How many of a load's steps a frame takes (`CAPTURE_STEPS`): many when the floor captures stills
+/// and the work is `filling` a cache (once it's whole, a frame's share is play's), else one.
+fn load_steps(capture: bool, filling: bool) -> u32 {
+    if capture && filling { CAPTURE_STEPS } else { 1 }
+}
+
 /// The probes: the first baked round the start, then the next round the eye once it has moved
 /// `PROBES_MOVE`, baked beside them (its occluders cooked first, then a strip of columns a
 /// frame), and swapped when it's done. They read the near cascade, so they wait for it.
@@ -1496,6 +1516,12 @@ fn bake_probes(s: mut Floor, sh: Shadows, eye: vec2) {
     // where it isn't yet, left the light in shade greener and dimmer by when the load began.)
     let busy = s.playable && (s.terrain_cooked > 0 || s.strip_drawn)
     if !s.near.ready || !s.air_cooked || !s.sky.done() || busy {
+        return
+    }
+    // A still's probes wait for the tiles round the eye too, their occluders (a capture's load
+    // is a few frames: before, the probes saw an empty wood).
+    let loading = !(s.fetching.is_empty() && s.cooking.is_empty() && s.arrived.is_empty())
+    if s.capture && loading {
         return
     }
     let trace = trace_of(s)
@@ -2038,6 +2064,10 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     match cast {
         Some(c) => {
             s.fawn.pose(fawns::at_rest(on_ground(c.fawn), c.fawn.z), shadowed: true, moved: moved)
+            // (A capture realizes it in a frame: a slice a step.)
+            for _ in 1..load_steps(s.capture, filling: true) {
+                s.fawn.realize()
+            }
         },
         None => {
             let f = behaviour::between(b.a.fawn, b.b.fawn, b.alpha)
@@ -2157,8 +2187,11 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         None => {},
     }
     s.terrain_cooked = s.clipmap.follow(GROUND, eye, again: false)
-    cook_load(mut s, eye_w.xz)
-    stream(mut s, eye_w.xz)
+    let steps = load_steps(s.capture, filling: true)
+    for _ in 0..steps {
+        cook_load(mut s, eye_w.xz)
+        stream(mut s, eye_w.xz)
+    }
     // The near cascade round where the eye will be (a little ahead), the far round the floor.
     s.near.follow(vec3(eye.x, height_at(eye_w.xz), eye.z), NEAR_MOVES)
     s.far.follow(FAR_CASCADE.centre - o, 1.0e9)
@@ -2171,10 +2204,23 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         moving_side: MOVING_SIDE,
         frame: s.frames,
     )
-    static_shadows(mut s, sh, wind)
+    for _ in 0..steps {
+        static_shadows(mut s, sh, wind)
+    }
     moving_shadow(mut s, sh)
-    cook_sky(mut s, eye, wind)
-    bake_probes(mut s, sh, eye.xz)
+    // (Each a 64th of the dome marched while it fills; once whole, a frame marches one again.)
+    for _ in 0..load_steps(s.capture, filling: !s.sky.done()) {
+        cook_sky(mut s, eye, wind)
+    }
+    // (Many strips a frame while a bake is under way; once done, a strip baked again a frame,
+    // as in play: more would bounce the light further than a still in play has.)
+    for _ in 0..steps {
+        let baking = !s.probes.done() || s.next_probes.is_some()
+        bake_probes(mut s, sh, eye.xz)
+        if !baking {
+            break
+        }
+    }
     if !s.ready &&
         s.wood.is_some() &&
         s.fetching.is_empty() &&
@@ -2252,6 +2298,14 @@ fn held_cast(shot: Option<u32>) -> Option<lookbook::Cast> {
 }
 
 // ---- tests ---------------------------------------------------------------------------------------
+
+/// Play takes a step of the load a frame; a capture takes many while a cache fills, then play's.
+@test
+fn a_capture_fills_its_caches_in_a_few_frames_then_steps_as_play() {
+    assert(load_steps(capture: false, filling: true) == 1, "play takes one step a frame")
+    assert(load_steps(capture: true, filling: true) == CAPTURE_STEPS, "a capture fills at once")
+    assert(load_steps(capture: true, filling: false) == 1, "a whole cache steps as in play")
+}
 
 /// Sun shafts on (`on` 1) or off.
 @testing
@@ -2408,33 +2462,22 @@ fn the_first_frames_run(s: Floor) {
     assert(s.frames == 40, f"{s.frames} frames drawn")
 }
 
-/// The fight's ground (`fought`) is worn over its disc and the trail's run into it from the east,
-/// and nowhere else; its edge is ragged, not a circle.
+/// The fight's ground (`fought`) is worn over its disc and the wolf's way out to the trail, and
+/// nowhere else; its edge is ragged, not a circle.
 @test
-fn the_fight_wears_its_disc_and_the_way_in() {
+fn the_fight_wears_its_disc_and_the_way_out() {
     let c = FIGHT.xy
     assert(fought(c, 0.0) > 0.99, "the disc's middle is worn")
-    assert(
-        fought(c + vec2(FIGHT.z + 10.0, 0.0), 0.0) > 0.99,
-        "the trail into it is worn",
-    )
-    assert(
-        fought(c + vec2(-FIGHT.z - 6.0, 0.0), 0.0) == 0.0,
-        "the wood's side past it is not",
-    )
-    assert(
-        fought(c + vec2(FIGHT.z + FIGHT_LANE + 3.0, 0.0), 0.0) == 0.0,
-        "nor the trail beyond",
-    )
-    assert(
-        fought(c + vec2(0.0, FIGHT.z + 5.0), 0.0) == 0.0,
-        "nor the glade beside it",
-    )
-    // Where the wear falls through a half, round the disc away from the trail: a ragged edge.
+    assert(fought(FIGHT_WAY.xy, 0.0) > 0.99, "where the wolf waits is worn")
+    assert(fought(FIGHT_WAY.zw, 0.0) > 0.99, "where the trail comes in is worn")
+    assert(fought(c + vec2(0.0, -FIGHT.z - 4.0), 0.0) == 0.0, "the wood's side past it is not")
+    assert(fought(FIGHT_WAY.zw + vec2(6.0, 0.0), 0.0) == 0.0, "nor the trail beyond")
+    assert(fought(FIGHT_WAY.zw + vec2(0.0, 7.0), 0.0) == 0.0, "nor the glade beside the way")
+    // Where the wear falls through a half, round the disc away from the way: a ragged edge.
     var near = 100.0
     var far = 0.0
     for i in 0..48 {
-        let a = 0.5 + 5.0 * f32(i) / 48.0
+        let a = 2.2 + 4.3 * f32(i) / 48.0
         let d = vec2(cos(a), sin(a))
         var r = 0.0
         while fought(c + d * r, 0.0) > 0.5 && r < 20.0 {
@@ -2443,9 +2486,23 @@ fn the_fight_wears_its_disc_and_the_way_in() {
         near = min(near, r)
         far = max(far, r)
     }
-    assert(
-        near > FIGHT.z - 1.5 && far < FIGHT.z + 2.0,
-        f"the edge from {near} m to {far} m",
-    )
+    assert(near > FIGHT.z - 1.5 && far < FIGHT.z + 2.0, f"the edge from {near} m to {far} m")
     assert(far - near > 0.8, f"the edge a circle: {near} m to {far} m")
+}
+
+/// No trail wears under a built stone (`unbuilt`): none on a stone's foot, all of it a margin
+/// past it, and every stone of the floor counted.
+@test
+fn trails_stop_at_built_stones() {
+    var n = 0
+    for s in STONE_FEET {
+        if s.x < 1.0e8 {
+            n += 1
+            assert(unbuilt(s.xy) == 0.0, f"a trail wears under the stone at {s.xy}")
+            let out = s.xy + vec2(s.z + STONE_MARGIN + 0.01, 0.0)
+            assert(unbuilt(out) > 0.0, f"no trail beside the stone at {s.xy}")
+        }
+    }
+    assert(n == stones::stones(map::map()).len(), f"{n} stones' feet kept")
+    assert(unbuilt(vec2(0.0, 30.0)) == 1.0, "a trail away from the stones stopped")
 }

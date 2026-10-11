@@ -353,8 +353,11 @@ pub fn obstacles_of(
 /// How far a body of radius `body` stepping from `p` by `d` moves: pushed out of the obstacles,
 /// and held back from ground it can't stand on (it slides along the way it can go, or stays).
 /// And how fast it goes where it ends against open level ground (`pace`, with the streams'
-/// water). The move, not the end: with nothing in its way it's `d` exactly.
+/// water). The move, not the end: with nothing in its way it's `d` exactly. A body on ground too
+/// steep to stand on (it came to rest on a slope's limit) can always step off it: down, or onto
+/// less steep ground (`steps_off`).
 pub fn step<G: Ground>(g: G, w: Water, o: Obstacles, p: vec2, d: vec2, body: f32) -> (vec2, f32) {
+    let here = stands(g, w, o, p)
     let tries = [d, vec2(d.x, 0.0), vec2(0.0, d.y)]
     for t in tries {
         let (by, _) = o.push_by(p + t, body)
@@ -364,12 +367,30 @@ pub fn step<G: Ground>(g: G, w: Water, o: Obstacles, p: vec2, d: vec2, body: f32
             continue
         }
         let q = p + moved
+        if o.blocked(q, body) {
+            continue
+        }
         let k = stands(g, w, o, q)
-        if k > 0.0 && !o.blocked(q, body) {
+        if k > 0.0 || (here == 0.0 && steps_off(g, w, o, p, q)) {
             return (moved, k)
         }
     }
-    (vec2(0.0), stands(g, w, o, p))
+    (vec2(0.0), here)
+}
+
+/// Whether a body at `p`, on ground too steep to stand on, gets off it by going to `q`: down, or
+/// onto less steep ground, and not over the edge or into deep water. What stops a body for
+/// another reason (the edge, deep water) still stops it.
+fn steps_off<G: Ground>(g: G, w: Water, o: Obstacles, p: vec2, q: vec2) -> bool {
+    let s = slope(g, p)
+    if s <= STEEPEST {
+        return false
+    }
+    let up = g.height(q.x, q.y)
+    if g.past_edge(q) > -EDGE || mere_depth(w, q, up) > DEEP || o.depth(q) > DEEP {
+        return false
+    }
+    slope(g, q) < s || up < g.height(p.x, p.y)
 }
 
 /// How fast a player goes at `p` (0 can't stand there): the ground's `pace`, slowed in a stream's
@@ -620,4 +641,60 @@ impl Walkable {
         }
         (out, missed)
     }
+}
+
+// ---- tests --------------------------------------------------------------------------------------
+
+/// Ground for the tests: level, but rising at `rise` (rise over run) from x = `from` to x = `to`.
+struct Band: Copy {
+    from: f32,
+    to: f32,
+    rise: f32,
+}
+
+impl Ground for Band {
+    fn height(self, x: f32, z: f32) -> f32 {
+        self.rise * (clamp(x, self.from, self.to) - self.from)
+    }
+
+    fn past_edge(self, p: vec2) -> f32 {
+        -100.0
+    }
+
+    fn rock(self, p: vec2) -> f32 {
+        0.0
+    }
+}
+
+/// No water, and nothing standing on the ground, over 20 m by 20 m.
+fn dry() -> (Water, Obstacles) {
+    let water = Water {
+        meres: [vec4(0.0), vec4(0.0)],
+        springs: [vec2(0.0), ..vec2(0.0)],
+        spring_count: 0,
+        falls: [vec2(0.0), vec2(0.0)],
+    }
+    let nothing: Vec<Obstacle> = Vec::new()
+    (water, Obstacles::of(nothing, vec2(0.0), vec2(20.0)))
+}
+
+/// A body on ground too steep to stand on steps off it, down, but not up it (the floor's walk
+/// stopped for good on the crag's talus); one that stands is still held back from ground too
+/// steep.
+@test
+fn a_body_on_ground_too_steep_steps_off_it() {
+    let (w, o) = dry()
+    let g = Band { from: 5.0, to: 15.0, rise: 1.2 }
+    let at = vec2(10.0, 10.0)
+    assert(stands(g, w, o, at) == 0.0, "the slope is too steep to stand on")
+    let (down, _) = step(g, w, o, at, vec2(-0.1, 0.0), BODY)
+    assert(length(down - vec2(-0.1, 0.0)) < 1.0e-5, f"it stepped {down} down the slope")
+    let (up, _) = step(g, w, o, at, vec2(0.1, 0.0), BODY)
+    assert(length(up) < 1.0e-5, f"it stepped {up} up the slope")
+    // Below the slope (`slope` is over a metre each way, so it steepens from x = 4): a body that
+    // stands walks on until the next step would be too steep (past x = 5.5), and stops there.
+    let (on, _) = step(g, w, o, vec2(4.0, 10.0), vec2(0.1, 0.0), BODY)
+    assert(length(on) > 0.05, "a body below the slope walks toward it")
+    let (held, _) = step(g, w, o, vec2(5.45, 10.0), vec2(0.1, 0.0), BODY)
+    assert(length(held) < 1.0e-5, f"a body that stands stepped {held} onto ground too steep")
 }
