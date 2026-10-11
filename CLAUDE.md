@@ -11,6 +11,7 @@ Don't add any more docs besides the grammar, the lexical spec and docs/process.m
 Checks (tools/check.sh; its header says what each tier runs).
 - While you work, run only the tests you touch: `tools/check.sh <filter>` takes seconds. To see a test's output, add `--nocapture`. Run a gate or long test only through check.sh: a test run with `cargo test` takes the GPU alone, and every other session's checks wait for it.
 - Before each commit, run the gate: `tools/check.sh`, under a minute.
+- On a cloud machine (no GPU), the gate runs each slow test alone and skips one that passed before with everything it read unchanged, or whose builds make the same files again (tools/memo.py; the gate names the tests it skipped). Such a gate is a full gate. `tools/check.sh --fresh` runs every test.
 - Before a branch is merged, run `tools/check.sh --long` (about ten minutes). If a long test fails, run that test again (`tools/check.sh --long <name>`), not the tier.
 - The `measure:` tests and `tools/check.sh --full` give the numbers behind a claim. Run a measurement only when you need its number, alone (`cargo test --release --workspace -- --ignored --exact <name>`).
 - A new test that takes more than a second is a long check (`#[ignore = "long: ..."]`), sized with `sized()` so that the long tier stays near ten minutes.
