@@ -1,0 +1,11 @@
+# The climber's lab: the fight (examples/climber) drawn plainly, to judge its motion as stills:
+# the cape simulated, the sword, a stand-in mask, and the wolf, on a flat ground under one sun,
+# seen from the fight's own camera. `wrela-host examples/climber-lab --ticks n --input
+# examples/climber/fight.json --png out.png` draws the scripted fight at tick n.
+[package]
+name = "climber_lab"
+
+[dependencies]
+engine = { path = "../../engine" }
+climber = { path = "../climber" }
+wolf = { path = "../wolf" }
