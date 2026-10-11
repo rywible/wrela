@@ -11,6 +11,7 @@ MIT-licensed language, compiler, engine and agent-native studio for browser game
 2. Edit, add a focused regression for new logic, run `tools/check.sh <check-name>`, and fix failures at their cause. Batch independent reads; background queued jobs and continue independent work.
 3. Review the diff; delete temporary task notes and losing experiments. Run `tools/check.sh` before committing; freeze sources during verification. Later source changes require another full pass before commit/merge.
 4. Confirm `main` is clean and still at the commit incorporated in the verified branch. If it moved, merge current `main` into the branch and rerun `tools/check.sh`. Squash-merge into `main` yourself as soon as it passes. Keep branches short; no milestone branches. Preserve `milestone-6` unchanged.
+5. After merging, return to the `main` checkout. Preserve needed outputs outside the session, discard only its disposable caches, then run `python3 tools/worktrees.py remove <name>` to delete both worktree and local branch. Cleanup is part of completion; report any blocker, never force removal.
 
 - Long work: keep decisions, remaining tasks and checks in checkout-local `TASKS.md`; delete before final verification.
 - Each PR/completion report gives changes, checks, commit/blockers, and frame-time/gate-time impact (explicitly say when neither changes). For frame costs, use `tools/wrela estimate examples/last-green` against each system's share of 16.7 ms. Distinguish estimates from measurements.
@@ -65,7 +66,7 @@ Ten sessions; one costly job across checkouts. Reading/editing need no admission
 - Keep defaults: ≤4 Cargo jobs within CPU quota, one Rust test executable, two test threads, two compiler/runtime workers at lower priority. Explicit concurrency tests retain requested counts. At most two small GPU holders; large renders/measurements take the GPU alone. Let older running jobs finish before adopting new tools.
 - Share `~/.cache/wrela/resources`; only isolated tests may set absolute `WRELA_RESOURCE_DIR`. Never bypass memory/disk admission.
 - Share Cargo/native/constant caches in the common Git directory's `wrela/cache/`; test scratch stays checkout-local, with private constants when counting builds. No copied build output/`node_modules`, duplicate targets or custom cache paths except deliberate isolated runs. Install browser dependencies only where needed; Bun shares downloads.
-- `python3 tools/worktrees.py status`: space/caches (12 GiB admission reserve, 20 GiB cache ceiling). `prune --build-cache`: explicit cold reset only. Preserve captures/unknown output. `remove <name>` refuses dirty/unmerged trees, pending jobs and ignored output needing preservation; retains the branch. Never force removal.
+- `python3 tools/worktrees.py status`: space/caches (12 GiB admission reserve, 20 GiB cache ceiling). `prune --build-cache`: explicit cold reset only. Preserve captures/unknown output. `remove <name>` deletes merged worktrees and local branches, including squash merges; refuses dirty/unmerged work, pending jobs, switched branches and ignored output needing preservation. Never force removal.
 
 ## Records and communication
 

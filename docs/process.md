@@ -174,6 +174,12 @@ Ryan then asked Codex to shorten that file for agent development speed and code 
 The revised instructions make routine agent work and local merges explicit, require source
 freezing during verification, and retain the single gate and shared resource limits.
 Frame-time and gate-time effects belong in completion reports as well as PRs.
+Ryan also required agents to remove each session worktree and local branch after merging.
+Removal accepts either commit ancestry or an identical complete source tree in main's
+first-parent history, so squash merges remain removable after main advances. It pins the
+branch commit for deletion and preserves followup commits, switched branches, dirty work,
+live jobs and ignored outputs needing preservation. Agents move needed outputs outside the
+session before cleanup; no Git hook or periodic job deletes active sessions.
 
 The policy uses Cargo's documented [worker and target settings](https://doc.rust-lang.org/cargo/reference/config.html#buildjobs),
 explicit [libtest thread limits](https://doc.rust-lang.org/rustc/tests/index.html#test-threads-num_threads),
