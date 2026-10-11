@@ -1507,8 +1507,11 @@ fn load_steps(capture: bool, filling: bool) -> u32 {
 /// frame), and swapped when it's done. They read the near cascade, so they wait for it.
 fn bake_probes(s: mut Floor, sh: Shadows, eye: vec2) {
     // (Once the floor's playable, not in a frame that cooks the ground or draws a strip of the
-    // static cascades: one moving cache's work a frame. Before, the first bake comes first.)
-    if !s.near.ready || !s.air_cooked || (s.playable && (s.terrain_cooked > 0 || s.strip_drawn)) {
+    // static cascades: one moving cache's work a frame. Before, the first bake comes first, but
+    // after the clouds' dome is marched whole: its rays read it, and a dome half marched, dark
+    // where it isn't yet, left the light in shade greener and dimmer by when the load began.)
+    let busy = s.playable && (s.terrain_cooked > 0 || s.strip_drawn)
+    if !s.near.ready || !s.air_cooked || !s.sky.done() || busy {
         return
     }
     // A still's probes wait for all they see: the tiles round the eye (their occluders) and the
