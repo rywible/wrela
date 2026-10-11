@@ -515,26 +515,12 @@ pub fn card_tint(card: Card) -> vec3 {
 
 // ---- a leaf's look (its cards', its impostor's and its volume's alike) -------------------------
 
-/// Leaf `which` of a card of seed `seed`: its tilt off the crown's normal (each part in
-/// [-0.5, 0.5)), and the draw that changes its age (`leaf_age`, in [-0.5, 0.5)).
-pub fn leaf_draws(seed: u32, which: u32) -> (vec3, f32) {
-    let tilt = vec3(
-        rand(seed, 100 + which) - 0.5,
-        rand(seed, 120 + which) - 0.5,
-        rand(seed, 140 + which) - 0.5,
-    )
-    (tilt, rand(seed, 160 + which) - 0.5)
-}
-
-/// A leaf's normal: its crown's, `crown_n`, tilted by its draws (`leaf_draws`).
-pub fn leaf_normal(crown_n: vec3, tilt: vec3) -> vec3 {
-    normalize(crown_n + tilt * 0.9)
-}
-
 /// A leaf's colour by its age: young where its crown faces up (`up`, the y of the crown's
-/// normal), old deep down, and moved by its own draw (`aged`, in [-0.5, 0.5); 0 for none).
-pub fn leaf_age(leaves: Leaves, up: f32, aged: f32) -> vec3 {
-    mix(leaves.old, leaves.young, vec3(saturate(0.35 + 0.65 * up + 0.3 * aged)))
+/// normal), old deep down. A leaf has no tilt or age of its own: each leaf lit and coloured apart
+/// from its neighbours read as confetti, not as a mass turning from light to shade (M6's lookdev,
+/// forms.md row 1); a leaf's own shape shows at a mass's edge.
+pub fn leaf_age(leaves: Leaves, up: f32) -> vec3 {
+    mix(leaves.old, leaves.young, vec3(saturate(0.35 + 0.65 * up)))
 }
 
 /// A leaf's albedo: its colour (`leaf_age`) and half its tint (its instance's and its card's,

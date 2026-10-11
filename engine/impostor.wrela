@@ -13,11 +13,10 @@
 use light::{Lit, gloss, gloss_occlusion, matte}
 use lod::{draw_packed, keeps_packed}
 use lit::{Lighting, sun_sky_and_gloss, through_air}
-use noise::{cell_size, hash2, hash2u, hashed_threshold_of, surface_draw}
+use noise::{cell_size, hash2, hash2u, hashed_threshold_of}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_VERTICES, Leaves, Plant, Wind, card_tint,
-    card_turn, leaf_age, leaf_at, leaf_draws, leaf_normal, level_cards, limb_vertex, sway, tinted,
-    turned, unturned,
+    card_turn, leaf_age, leaf_at, level_cards, limb_vertex, sway, tinted, turned, unturned,
 }
 use std::field::Tube
 use std::gpu::{
@@ -39,17 +38,6 @@ pub const ATLAS: u32 = VIEWS * CELL
 pub fn which_crown(at: vec3) -> u32 {
     u32(hash2(i32(at.x * 7.0), i32(at.z * 7.0)) * 60.0)
 }
-
-/// How much of its own tilt (`plant::leaf_draws`) a leaf takes off its crown's normal, the same
-/// for its cards, its impostor and its volume: at all of it, each leaf lit apart from its
-/// neighbours read as confetti, and a crown's masses didn't turn from light to shade as forms
-/// (M6's lookdev pass 1).
-pub const TILT: f32 = 0.0
-
-/// How much of its own draw of age (`plant::leaf_draws`) a leaf's colour takes, the same for its
-/// cards, its impostor and its volume: at all of it, the leaves inside a mass were lit and coloured
-/// apart, a heap of leaves, not one form (M6's lookdev, the arbiter's G2).
-pub const AGED: f32 = 0.0
 
 /// How far toward the sun (m) a leaf's sun is read (`leaf_light`): past its own mass's leaves.
 pub const SELF_SHADE: f32 = 1.5
@@ -261,8 +249,8 @@ fn oct_decode(e: vec2) -> vec3 {
     normalize(vec3(x, y, z))
 }
 
-/// A baked leaf's normal and albedo, as `vegetation::leaf_shade` has them: its leaf's own tilt
-/// off the crown's normal, and its own age and its card's tint (its instance's is added where
+/// A baked leaf's normal and albedo, as `vegetation::leaf_shade` has them: its crown's normal,
+/// its age there and its card's tint (its instance's is added where
 /// it's drawn, `far_shade`); cut where the card has no leaf.
 fn baked_leaf(f: BakeVertex, b: Bake, atlas: Texture<Rgba8>, s: Sampler) -> (vec3, vec3) {
     if f.leaf.value != 1 {
@@ -274,8 +262,7 @@ fn baked_leaf(f: BakeVertex, b: Bake, atlas: Texture<Rgba8>, s: Sampler) -> (vec
         discard()
     }
     let crown_n = normalize(f.normal)
-    let (tilt, aged) = leaf_draws(seed, which)
-    (leaf_normal(crown_n, tilt * TILT), tinted(leaf_age(b.leaves, crown_n.y, aged * AGED), f.tint))
+    (crown_n, tinted(leaf_age(b.leaves, crown_n.y), f.tint))
 }
 
 /// The impostor's colour: each view's leaves' (and limbs') albedo (its square root), and the
@@ -980,9 +967,7 @@ fn volume_place(f: FarVertex, b: Bake, q: vec3) -> vec3 {
 }
 
 /// A very far instance's pixel: its leaves as the cards' are lit (`vegetation::leaf_shade`): the
-/// mean normal the ray met, tilted as one of its leaves (a draw that holds still on the quad,
-/// pixel to pixel: temporal AA's jitter averages neighbours, and nothing changes frame to
-/// frame), their depth in the crown, where they are.
+/// mean normal the ray met, their depth in the crown, where they are.
 @fragment
 pub fn volume_shade(
     f: FarVertex,
@@ -992,16 +977,7 @@ pub fn volume_shade(
     b: Bake,
     grid: Texture3d<Rgba16Float>,
     grid_depth: Texture3d<Rgba16Float>,
-    cell: f32,
 ) -> vec4 {
-    // Its leaves' draws, before anything is left (their derivatives).
-    let seed = seed_of(f)
-    let tilt = vec3(
-        surface_draw(f.uv, seed, 100, cell) - 0.5,
-        surface_draw(f.uv, seed, 120, cell) - 0.5,
-        surface_draw(f.uv, seed, 140, cell) - 0.5,
-    )
-    let aged = surface_draw(f.uv, seed, 160, cell) - 0.5
     if id_at(ids, pixel) != f.id.value {
         discard()
     }
@@ -1012,10 +988,10 @@ pub fn volume_shade(
     let out = leaf_light(
         lt,
         volume_place(f, b, met.at),
-        leaf_normal(crown_n, tilt * TILT),
+        crown_n,
         sky_n: crown_n,
         depth: met.depth * f.yaw_scale.value.y,
-        albedo: tinted(leaf_age(b.leaves, crown_n.y, aged * AGED), f.tint),
+        albedo: tinted(leaf_age(b.leaves, crown_n.y), f.tint),
         through: b.leaves.through,
         leaf: b.leaves.leaf_width() * f.yaw_scale.value.y,
     )
