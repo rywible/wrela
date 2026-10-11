@@ -9,7 +9,7 @@
 // the sim can hold every one of a floor's in its program (a build's constant), and test a step
 // against those near it.
 
-use grow::{Grid, Ground, Habit, Heap, State, Stream, Tree}
+use grow::{Grid, Ground, Habit, Heap, LOG_LENGTH, State, Stream, Tree}
 use place::{Map, Water}
 use std::math::TAU
 
@@ -308,7 +308,7 @@ pub fn obstacles_of(
             let r = max(t.girth, 0.04)
             all.push(Obstacle { a: t.at, b: t.at, r, thing: Thing::Trunk, depth: 0.0 })
         } else if t.state == State::Log && t.girth > 0.25 {
-            let len = t.tall * 0.85
+            let len = t.tall * LOG_LENGTH
             var s = 0.0
             while s < len {
                 let e = min(s + 0.75 * BIN, len)

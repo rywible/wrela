@@ -85,7 +85,7 @@ const GROWN: u32 = grown()
 fn grown() -> u32 {{
     var m = map::map()
     {edit}
-    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, map::LO, map::HI, stones::stones(m))
+    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, map::LO, map::HI, stones::stones(m), |land| history::past(m, land))
     h.trees.len()
 }}
 
@@ -385,7 +385,7 @@ fn previewed() -> Vec<(String, Vec<u8>)> {
     let lo = map::LO - vec2(64.0)
     let hi = map::HI + vec2(64.0)
     let st = stones::stones(m)
-    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st)
+    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st, |land| history::past(m, land))
     let o = obstacles_of(h.trees, species::habits(), h.streams, st, stones::walls(m), lo, hi)
     var e = Evidence::of(h)
     e.crowns = trees::drawn_crowns(e.trees)
@@ -1930,7 +1930,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
     let hi = map::HI + vec2(64.0)
     let st = stones::stones(m)
     let began = now()
-    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st)
+    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st, |land| history::past(m, land))
     let grown = now()
     let o = obstacles_of(h.trees, species::habits(), h.streams, st, stones::walls(m), lo, hi)
     var e = Evidence::of(h)

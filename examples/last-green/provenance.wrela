@@ -390,15 +390,15 @@ pub fn ground_json(tiles: [NearTile], point: vec3, normal: vec3, distance: f32, 
     f"{{\"provenance\": \"ground\", \"at\": [{p.x}, {p.y}], \"y\": {point.y}, \"distance\": {distance}, \"region\": \"{region}\", \"cover\": \"{cover}\", \"fields\": {fields}, \"soil\": {soil}, \"remembers\": {remembers}, \"ms\": {ms}}}"
 }
 
-/// The soil at `p` (`engine::grow::soil`, with the ground's wetness `wet` there), as JSON: its
+/// The soil at `p` (`engine::soil::soil`, with the ground's wetness `wet` there), as JSON: its
 /// kind, its depth (m) and how well crops would do in it.
 fn soil_json(p: vec2, wet: f32) -> String {
-    let s = engine::grow::soil_of(ground::ground(), p, wet)
+    let s = engine::soil::soil_of(ground::ground(), p, wet)
     let kind = SOIL_NAMES[u32(s.kind)]
     f"{{\"kind\": \"{kind}\", \"depth\": {s.depth}, \"fertile\": {s.fertile}}}"
 }
 
-/// `engine::grow::SoilKind`'s names, by kind.
+/// `engine::soil::SoilKind`'s names, by kind.
 const SOIL_NAMES = ["rock", "thin", "loam", "colluvium", "alluvium", "gley", "peat"]
 
 /// What the ground remembers at `p` (`engine::bake::memory_in_tile`, from the near tile that
