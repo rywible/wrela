@@ -1,0 +1,685 @@
+// The mixer (M5.5, #49: "a mixer on the one stereo voice"): every sound a world makes, mixed on
+// the program's one voice (std::audio). The program pushes cues through a ring, a few each
+// frame: where the listener is and which way it faces, a step, the wind, the water near. The
+// voice keeps a source for each, and mixes them into two channels as a pair of ears there would
+// hear them: each source panned by its direction from the listener's facing (equal power),
+// quieter with distance, and duller with it, as the air takes the highs.
+//
+// It knows no world. A step's surface and a water's kind are the world's own numbers: indexes
+// into the `Palette` the world gives when it starts the voice, which says how each one sounds.
+//
+//     program thread                         audio thread
+//     ──────────────                         ────────────
+//     frame: cues.push(Cue::Listen {..})  ─┐
+//            cues.push(Cue::Step {..})     ├─ ring ─▶ mix: read the cues, then each sample:
+//            cues.push(Cue::Water {..})   ─┘          steps + wind + water ─▶ pan, distance,
+//                                                     air ─▶ left, right
+//
+// Everything on the audio thread is f32 arithmetic in a fixed order, and the noise is seeded,
+// so both hosts give the same samples. Gains move across a quantum, never in a step, so a cue
+// that moves a source doesn't click.
+
+use std::audio::{QUANTUM, RingReader, RingWriter, ring}
+use std::math::{PI, TAU, cos, exp, sin, tan}
+
+/// The audio thread's rate.
+const RATE: f32 = 48000.0
+
+/// A palette's surfaces, water kinds and brushes; the steps that ring at once; the water sources
+/// heard at once; the cues the ring holds.
+pub const SURFACES: u32 = 8
+pub const KINDS: u32 = 4
+pub const BRUSHES: u32 = 2
+pub const STEPS: u32 = 4
+pub const WATERS: u32 = 4
+pub const CUES: u32 = 64
+
+/// How a step on a surface sounds: a knock (a decaying tone: the foot's weight on the ground)
+/// and grit (a burst of noise in a band: grass, leaf litter, gravel, a splash).
+pub struct Surface: Copy {
+    /// The knock's frequency (Hz), its seconds to fall 60 dB, and its level (0 to 1).
+    pub knock_hz: f32 = 90.0,
+    pub knock_t60: f32 = 0.08,
+    pub knock: f32 = 0.0,
+    /// The grit's band: its centre (Hz) and its sharpness (Q); its seconds to fall 60 dB; its
+    /// level.
+    pub grit_hz: f32 = 2000.0,
+    pub grit_q: f32 = 0.7,
+    pub grit_t60: f32 = 0.12,
+    pub grit: f32 = 0.0,
+}
+
+/// How water of a kind sounds from close by: noise in a band (`lo_hz` to `hi_hz`) at a level,
+/// swelling and falling at random (a mere's lapping, a stream's babble) about `rate` times a
+/// second, by `depth` (0 steady, 1 to silence and back).
+pub struct Babble: Copy {
+    pub lo_hz: f32 = 300.0,
+    pub hi_hz: f32 = 3000.0,
+    pub level: f32 = 0.0,
+    pub rate: f32 = 2.0,
+    pub depth: f32 = 0.5,
+}
+
+/// How the wind sounds at a gust of 1: a rush of low noise (loudest in the open), and the
+/// leaves' hiss, which flutters (loudest under a canopy).
+pub struct Breath: Copy {
+    pub rush_hz: f32 = 350.0,
+    pub rush: f32 = 0.0,
+    pub leaves_hz: f32 = 4500.0,
+    pub leaves: f32 = 0.0,
+}
+
+/// A world's sounds: its surfaces' steps, its water kinds', its brushes' (what a body moving
+/// through something makes: grass and twigs, water round the legs), its wind's. A source is at
+/// its own level `near` metres away, quieter further off; `gain` is the whole mix's.
+pub struct Palette: Copy {
+    pub surfaces: [Surface; 8],
+    pub waters: [Babble; 4],
+    pub brushes: [Babble; 2],
+    pub wind: Breath,
+    pub near: f32 = 2.0,
+    pub gain: f32 = 1.0,
+}
+
+/// What the program tells the voice. Positions are in metres, in one frame of the world's
+/// (a world that moves its origin says so by moving the listener and the sources with it).
+pub enum Cue: Copy {
+    /// The listener is at `at`, facing `forward` (a direction on the plane: x and z).
+    Listen { at: vec3, forward: vec2 },
+    /// A step at `at` on surface `surface`, `weight` hard (0 to 1: a creep to a run's stamp). Its
+    /// pitch and level vary a little with `seed`, and only with it: the same seed sounds the same
+    /// whenever the step comes (a replay's steps sound as they did).
+    Step { at: vec3, surface: u32, weight: f32, seed: u32 },
+    /// The wind, `gust` strong at the listener (0 calm to about 1.4), blowing toward `toward`,
+    /// with `leaves` of foliage round the listener to hiss in it (0 the open, 1 under a canopy).
+    Wind { gust: f32, toward: vec2, leaves: f32 },
+    /// A body moving through something at `at`, `amount` loud (0 still, 1 pushing through):
+    /// brush `brush` (below `BRUSHES`). It goes on until another cue changes it.
+    Brush { brush: u32, at: vec3, amount: f32 },
+    /// Water source `slot` (below `WATERS`): kind `kind`, heard from its nearest point `at`,
+    /// `flow` loud (0 silences it).
+    Water { slot: u32, at: vec3, kind: u32, flow: f32 },
+}
+
+/// The listener's ears: where they are, and the direction to their right on the plane.
+struct Ears: Copy {
+    at: vec3,
+    right: vec2,
+}
+
+/// Seeded white noise: xorshift, one `u32` of state.
+struct Noise: Copy {
+    s: u32,
+}
+
+/// Noise seeded with `seed`: the seed scattered (so near seeds start far apart), and never 0,
+/// xorshift's one fixed point.
+@audio
+fn seeded(seed: u32) -> Noise {
+    Noise { s: max(seed.wrapping_mul(2654435761).wrapping_add(12345), 1) }
+}
+
+impl Noise {
+    @audio
+    fn next(mut self) -> f32 {
+        var x = self.s
+        x = x ^ (x << 13)
+        x = x ^ (x >> 17)
+        x = x ^ (x << 5)
+        self.s = x
+        f32(x >> 8) * (2.0 / 16777216.0) - 1.0
+    }
+}
+
+/// A state-variable filter (Zavalishin's, trapezoidal): its coefficients, for a centre and a Q.
+struct Band: Copy {
+    a1: f32,
+    a2: f32,
+    a3: f32,
+    k: f32,
+}
+
+@audio
+fn band(hz: f32, q: f32) -> Band {
+    let g = tan(PI * min(hz, 0.45 * RATE) / RATE)
+    let k = 1.0 / max(q, 0.05)
+    let a1 = 1.0 / (1.0 + g * (g + k))
+    Band { a1, a2: g * a1, a3: g * g * a1, k }
+}
+
+/// A state-variable filter's state.
+struct Svf: Copy {
+    ic1: f32,
+    ic2: f32,
+}
+
+impl Svf {
+    /// `x` through the band: the band-pass output, at unit gain at the centre.
+    @audio
+    fn pass(mut self, b: Band, x: f32) -> f32 {
+        let v3 = x - self.ic2
+        let v1 = b.a1 * self.ic1 + b.a2 * v3
+        let v2 = self.ic2 + b.a2 * self.ic1 + b.a3 * v3
+        self.ic1 = 2.0 * v1 - self.ic1
+        self.ic2 = 2.0 * v2 - self.ic2
+        b.k * v1
+    }
+}
+
+/// A place a sound comes from, as the ears hear it: its gains in each channel (now, and as the
+/// quantum began, which they move from), and the air's low-pass between.
+struct Placed: Copy {
+    left: f32,
+    right: f32,
+    was_left: f32,
+    was_right: f32,
+    /// The air's one-pole low-pass: its coefficient and its state.
+    air: f32,
+    held: f32,
+}
+
+fn placed() -> Placed {
+    Placed { left: 0.0, right: 0.0, was_left: 0.0, was_right: 0.0, air: 1.0, held: 0.0 }
+}
+
+/// The air's low-pass corner `metres` away (Hz): 16 kHz close by, an eighth of it at 210 m.
+pub fn air_hz(metres: f32) -> f32 {
+    16000.0 * 30.0 / (30.0 + metres)
+}
+
+/// The gains, left and right, of a sound at `at` heard by `ears`, at its own level `near`
+/// metres away: equal power across the two by how far to the right it is, and falling as one
+/// over its distance past `near`.
+pub fn gains(ears_at: vec3, ears_right: vec2, at: vec3, near: f32) -> vec2 {
+    let d = at - ears_at
+    let distance = length(d)
+    let side = if distance > 1e-3 { clamp(dot(d.xz, ears_right) / distance, -1.0, 1.0) } else {
+        0.0
+    }
+    let angle = 0.25 * PI * (side + 1.0)
+    // √2, so a sound straight ahead is at its level in each ear.
+    1.41421356 * near / max(distance, near) * vec2(cos(angle), sin(angle))
+}
+
+impl Placed {
+    /// Starts a quantum heard from `at`, at `level`, with this quantum's gains and air.
+    @audio
+    fn place(mut self, ears: Ears, at: vec3, near: f32, level: f32) {
+        self.was_left = self.left
+        self.was_right = self.right
+        let g = level * gains(ears.at, ears.right, at, near)
+        self.left = g.x
+        self.right = g.y
+        self.air = 1.0 - exp(-TAU * air_hz(length(at - ears.at)) / RATE)
+    }
+
+    /// Starts a quantum heard from no place (the wind, all round): panned by `side` (-1 left
+    /// to 1 right), at `level`, through no air.
+    @audio
+    fn around(mut self, side: f32, level: f32) {
+        self.was_left = self.left
+        self.was_right = self.right
+        let angle = 0.25 * PI * (clamp(side, -1.0, 1.0) + 1.0)
+        self.left = 1.41421356 * level * cos(angle)
+        self.right = 1.41421356 * level * sin(angle)
+        self.air = 1.0
+    }
+
+    /// `x` (sample `i` of the quantum) through the air and into the two channels.
+    @audio
+    fn add(mut self, x: f32, i: u32, left: mut [f32], right: mut [f32]) {
+        self.held += self.air * (x - self.held)
+        let t = (f32(i) + 1.0) / f32(QUANTUM)
+        left[i] += self.held * (self.was_left + t * (self.left - self.was_left))
+        right[i] += self.held * (self.was_right + t * (self.right - self.was_right))
+    }
+}
+
+/// The decay per sample of a sound that falls 60 dB in `t60` seconds.
+@audio
+fn decay(t60: f32) -> f32 {
+    exp(-6.90775528 / (max(t60, 1e-3) * RATE))
+}
+
+/// A step ringing: its knock (a tone, turned a sample at a time) and its grit (noise through a
+/// band), each with an envelope that swells in over about a millisecond and decays.
+struct Ringing: Copy {
+    at: vec3,
+    on: bool,
+    knock_cos: f32,
+    knock_sin: f32,
+    knock_re: f32,
+    knock_im: f32,
+    knock_decay: f32,
+    grit: Band,
+    grit_svf: Svf,
+    grit_level: f32,
+    grit_decay: f32,
+    /// The swell: 1 at the strike, falling fast; the envelopes are (1 − swell) times theirs.
+    swell: f32,
+    out: Placed,
+}
+
+fn ringing() -> Ringing {
+    Ringing {
+        at: vec3(0.0),
+        on: false,
+        knock_cos: 1.0,
+        knock_sin: 0.0,
+        knock_re: 0.0,
+        knock_im: 0.0,
+        knock_decay: 0.0,
+        grit: Band { a1: 0.0, a2: 0.0, a3: 0.0, k: 0.0 },
+        grit_svf: Svf { ic1: 0.0, ic2: 0.0 },
+        grit_level: 0.0,
+        grit_decay: 0.0,
+        swell: 0.0,
+        out: placed(),
+    }
+}
+
+/// The swell's fall per sample: to 1/e in 0.7 ms.
+const SWELL: f32 = 0.97067
+
+impl Ringing {
+    @audio
+    fn strike(mut self, s: Surface, at: vec3, weight: f32, seed: u32) {
+        // No two steps alike: each a little higher or lower, and louder or softer, by its seed.
+        var own = seeded(seed)
+        let pitch = 1.0 + 0.12 * own.next()
+        let level = weight * (1.0 + 0.2 * own.next())
+        let w = TAU * s.knock_hz * pitch / RATE
+        self.at = at
+        self.on = true
+        self.knock_cos = cos(w)
+        self.knock_sin = sin(w)
+        self.knock_re = s.knock * level
+        self.knock_im = 0.0
+        self.knock_decay = decay(s.knock_t60)
+        self.grit = band(s.grit_hz * pitch, s.grit_q)
+        self.grit_level = s.grit * level
+        self.grit_decay = decay(s.grit_t60)
+        self.swell = 1.0
+    }
+
+    @audio
+    fn sample(mut self, noise: mut Noise) -> f32 {
+        let re = (self.knock_re * self.knock_cos - self.knock_im * self.knock_sin) *
+            self.knock_decay
+        let im = (self.knock_re * self.knock_sin + self.knock_im * self.knock_cos) *
+            self.knock_decay
+        self.knock_re = re
+        self.knock_im = im
+        let grit = self.grit_svf.pass(self.grit, noise.next()) * self.grit_level
+        self.grit_level *= self.grit_decay
+        let y = (1.0 - self.swell) * (re + grit)
+        self.swell *= SWELL
+        y
+    }
+
+    /// Whether it has died away: under -100 dB.
+    @audio
+    fn quiet(self) -> bool {
+        abs(self.knock_re) + abs(self.knock_im) + self.grit_level < 1e-5
+    }
+}
+
+/// Noise through a band, swelling and falling at random: a water source, or the wind's leaves.
+struct Bed: Copy {
+    band: Band,
+    svf: Svf,
+    /// The swells: low-passed noise (its coefficient, its state, and the gain that makes it
+    /// about ±1), and how deep they go.
+    swell_a: f32,
+    swell: f32,
+    swell_gain: f32,
+    depth: f32,
+    out: Placed,
+}
+
+fn bed() -> Bed {
+    Bed {
+        band: Band { a1: 0.0, a2: 0.0, a3: 0.0, k: 0.0 },
+        svf: Svf { ic1: 0.0, ic2: 0.0 },
+        swell_a: 0.0,
+        swell: 0.0,
+        swell_gain: 0.0,
+        depth: 0.0,
+        out: placed(),
+    }
+}
+
+impl Bed {
+    /// Sets the band (`lo` to `hi` Hz) and the swells (`rate` a second, `depth` deep).
+    @audio
+    fn tune(mut self, lo: f32, hi: f32, rate: f32, depth: f32) {
+        let centre = sqrt(lo * hi)
+        self.band = band(centre, centre / max(hi - lo, 1.0))
+        self.swell_a = 1.0 - exp(-TAU * rate / RATE)
+        // One-pole low-passed white noise (variance 1/3) has variance a / (2 − a) of it: this
+        // brings its spread to about ±1.
+        self.swell_gain = sqrt(3.0 * (2.0 - self.swell_a) / max(self.swell_a, 1e-9))
+        self.depth = depth
+    }
+
+    @audio
+    fn sample(mut self, noise: mut Noise) -> f32 {
+        self.swell += self.swell_a * (noise.next() - self.swell)
+        let s = clamp(1.0 + self.depth * self.swell * self.swell_gain, 0.0, 2.0)
+        self.svf.pass(self.band, noise.next()) * s
+    }
+}
+
+/// A water source the voice hears: its bed, its place and its flow.
+struct Stream: Copy {
+    at: vec3,
+    kind: u32,
+    flow: f32,
+    bed: Bed,
+}
+
+/// The voice's state: the cues' reader, the world's palette, the ears, and the sources.
+pub struct Mixer {
+    cues: RingReader<Cue>,
+    palette: Palette,
+    ears: Ears,
+    steps: [Ringing; 4],
+    next_step: u32,
+    gust: f32,
+    toward: vec2,
+    canopy: f32,
+    rush: Bed,
+    leaves: Bed,
+    brushes: [Stream; 2],
+    waters: [Stream; 4],
+    noise: Noise,
+}
+
+/// A mixer for a world that sounds as `palette` says, and the ring the program pushes its cues
+/// into. Start it with `std::audio::play(mixer, mix)`.
+pub fn mixer(palette: Palette, seed: u32 = 1) -> (RingWriter<Cue>, Mixer) {
+    let (cues, reader) = ring::<Cue>(CUES)
+    var rush = bed()
+    var leaves = bed()
+    let w = palette.wind
+    rush.tune(0.6 * w.rush_hz, 1.6 * w.rush_hz, rate: 0.4, depth: 0.6)
+    leaves.tune(0.5 * w.leaves_hz, 2.0 * w.leaves_hz, rate: 5.0, depth: 0.8)
+    let quiet = Stream { at: vec3(0.0), kind: 0, flow: 0.0, bed: bed() }
+    var brushes = [quiet; 2]
+    for i in 0..BRUSHES {
+        let b = palette.brushes[i]
+        brushes[i].kind = i
+        brushes[i].bed.tune(b.lo_hz, b.hi_hz, rate: b.rate, depth: b.depth)
+    }
+    (
+        cues,
+        Mixer {
+            cues: reader,
+            palette,
+            ears: Ears { at: vec3(0.0), right: vec2(-1.0, 0.0) },
+            steps: [ringing(); 4],
+            next_step: 0,
+            gust: 0.0,
+            toward: vec2(1.0, 0.0),
+            canopy: 0.0,
+            rush,
+            leaves,
+            brushes,
+            waters: [quiet; 4],
+            noise: seeded(seed),
+        },
+    )
+}
+
+impl Mixer {
+    @audio
+    fn hear(mut self, c: Cue) {
+        match c {
+            Cue::Listen { at, forward } => {
+                let f = if length(forward) > 1e-6 { normalize(forward) } else { vec2(0.0, 1.0) }
+                self.ears = Ears { at, right: vec2(-f.y, f.x) }
+            },
+            Cue::Step { at, surface, weight, seed } => {
+                let s = self.palette.surfaces[min(surface, SURFACES - 1)]
+                let i = self.next_step
+                self.next_step = (i + 1) % STEPS
+                self.steps[i].strike(s, at, clamp(weight, 0.0, 1.0), seed)
+            },
+            Cue::Wind { gust, toward, leaves } => {
+                self.gust = max(gust, 0.0)
+                self.toward = toward
+                self.canopy = clamp(leaves, 0.0, 1.0)
+            },
+            Cue::Brush { brush, at, amount } => {
+                if brush < BRUSHES {
+                    self.brushes[brush].at = at
+                    self.brushes[brush].flow = clamp(amount, 0.0, 1.0)
+                }
+            },
+            Cue::Water { slot, at, kind, flow } => {
+                if slot < WATERS {
+                    var w = self.waters[slot]
+                    let k = min(kind, KINDS - 1)
+                    if w.kind != k || w.flow == 0.0 {
+                        let b = self.palette.waters[k]
+                        w.bed.tune(b.lo_hz, b.hi_hz, rate: b.rate, depth: b.depth)
+                    }
+                    w.at = at
+                    w.kind = k
+                    w.flow = max(flow, 0.0)
+                    self.waters[slot] = w
+                }
+            },
+        }
+    }
+}
+
+/// The voice: the cues since the last quantum, then each source's samples into `left` and
+/// `right`.
+@audio
+pub fn mix(m: mut Mixer, left: mut [f32], right: mut [f32]) {
+    loop {
+        let Some(c) = m.cues.pop() else { break }
+        m.hear(c)
+    }
+    for i in 0..left.len() {
+        left[i] = 0.0
+        right[i] = 0.0
+    }
+    let p = m.palette
+    let ears = m.ears
+    for s in 0..STEPS {
+        if m.steps[s].on {
+            let at = m.steps[s].at
+            m.steps[s].out.place(ears, at, p.near, p.gain)
+            for i in 0..left.len() {
+                let y = m.steps[s].sample(mut m.noise)
+                m.steps[s].out.add(y, i, mut left, mut right)
+            }
+            if m.steps[s].quiet() {
+                m.steps[s].on = false
+            }
+        }
+    }
+    // The wind comes from upwind: to the side of the ears that faces it, a little.
+    let from = -m.toward
+    let side = if length(from) > 1e-6 { 0.5 * dot(normalize(from), ears.right) } else { 0.0 }
+    let g = m.gust
+    let open = 1.0 - 0.7 * m.canopy
+    m.rush.out.around(side, p.gain * p.wind.rush * g * g * open)
+    m.leaves.out.around(-0.5 * side, p.gain * p.wind.leaves * g * m.canopy)
+    for i in 0..left.len() {
+        let r = m.rush.sample(mut m.noise)
+        m.rush.out.add(r, i, mut left, mut right)
+        let l = m.leaves.sample(mut m.noise)
+        m.leaves.out.add(l, i, mut left, mut right)
+    }
+    for s in 0..WATERS {
+        let level = p.gain * p.waters[m.waters[s].kind].level * m.waters[s].flow
+        sound_stream(mut m.waters[s], ears, p.near, level, mut m.noise, mut left, mut right)
+    }
+    for s in 0..BRUSHES {
+        let level = p.gain * p.brushes[s].level * m.brushes[s].flow
+        sound_stream(mut m.brushes[s], ears, p.near, level, mut m.noise, mut left, mut right)
+    }
+    for i in 0..left.len() {
+        left[i] = clamp(left[i], -1.0, 1.0)
+        right[i] = clamp(right[i], -1.0, 1.0)
+    }
+}
+
+/// A stream's quantum, at `level`, into `left` and `right`: nothing once it's silent and its
+/// gains have come down to 0.
+@audio
+fn sound_stream(
+    w: mut Stream,
+    ears: Ears,
+    near: f32,
+    level: f32,
+    noise: mut Noise,
+    left: mut [f32],
+    right: mut [f32],
+) {
+    if level > 0.0 || w.bed.out.left != 0.0 || w.bed.out.right != 0.0 {
+        w.bed.out.place(ears, w.at, near, level)
+        for i in 0..left.len() {
+            let y = w.bed.sample(mut noise)
+            w.bed.out.add(y, i, mut left, mut right)
+        }
+    }
+}
+
+// The tests render quanta of a mixer directly, on the program's thread, as the audio thread
+// would.
+
+/// A palette with one kind of water (a stream) and one surface.
+fn test_palette() -> Palette {
+    let water = Babble { lo_hz: 500.0, hi_hz: 4000.0, level: 0.3, rate: 3.0, depth: 0.5 }
+    let grass = Surface { knock: 0.2, grit: 0.4 }
+    Palette {
+        surfaces: [grass; 8],
+        waters: [water; 4],
+        brushes: [water; 2],
+        wind: Breath { rush: 0.1, leaves: 0.05 },
+    }
+}
+
+/// The energy of each channel over `quanta` quanta, and of each channel's sample-to-sample
+/// differences (the highs).
+fn render(m: mut Mixer, quanta: u32) -> vec4 {
+    var l = [0.0; QUANTUM]
+    var r = [0.0; QUANTUM]
+    var e = vec4(0.0)
+    var last = vec2(0.0)
+    for _ in 0..quanta {
+        mix(mut m, mut l, mut r)
+        for i in 0..QUANTUM {
+            e += vec4(
+                l[i] * l[i],
+                r[i] * r[i],
+                (l[i] - last.x) * (l[i] - last.x),
+                (r[i] - last.y) * (r[i] - last.y),
+            )
+            last = vec2(l[i], r[i])
+        }
+    }
+    e
+}
+
+/// A stream `metres` away from a listener at the origin facing +z, in direction `dir` on the
+/// plane: the energies of a second of it.
+fn stream_from(dir: vec2, metres: f32) -> vec4 {
+    let (c, mx) = mixer(test_palette())
+    var cues = take c
+    var m = take mx
+    cues.push(Cue::Listen { at: vec3(0.0), forward: vec2(0.0, 1.0) })
+    let at = metres * normalize(dir)
+    cues.push(Cue::Water { slot: 0, at: vec3(at.x, 0.0, at.y), kind: 0, flow: 1.0 })
+    render(mut m, 375)
+}
+
+fn db(x: f32) -> f32 {
+    10.0 * std::math::log(max(x, 1e-30)) / std::math::log(10.0)
+}
+
+@test
+fn a_sound_to_one_side_is_louder_in_that_ear() {
+    // Facing +z, the right is -x (view::camera's right: forward × up).
+    let right = stream_from(vec2(-1.0, 0.0), 5.0)
+    let left = stream_from(vec2(1.0, 0.0), 5.0)
+    let ahead = stream_from(vec2(0.0, 1.0), 5.0)
+    assert(db(right.y) - db(right.x) > 20.0)
+    assert(db(left.x) - db(left.y) > 20.0)
+    assert(abs(db(ahead.x) - db(ahead.y)) < 0.5)
+    // Equal power: the sound to the side is as loud, in all, as the sound ahead.
+    assert(abs(db(right.x + right.y) - db(ahead.x + ahead.y)) < 1.0)
+}
+
+@test
+fn a_far_sound_is_quieter_and_duller() {
+    let near = stream_from(vec2(0.0, 1.0), 4.0)
+    let far = stream_from(vec2(0.0, 1.0), 40.0)
+    // Ten times as far: about 20 dB quieter, and the air took more of its highs.
+    let drop = db(near.x) - db(far.x)
+    assert(drop > 18.0 && drop < 26.0)
+    assert(db(near.z / near.x) - db(far.z / far.x) > 1.0)
+}
+
+@test
+fn a_step_sounds_and_dies_away() {
+    let (c, mx) = mixer(test_palette())
+    var cues = take c
+    var m = take mx
+    cues.push(Cue::Listen { at: vec3(0.0, 1.6, -3.0), forward: vec2(0.0, 1.0) })
+    cues.push(Cue::Step { at: vec3(0.0), surface: 0, weight: 1.0, seed: 1 })
+    // Its first 50 ms, then from half a second on, when it's 60 dB down and more.
+    let first = render(mut m, 20)
+    let _ = render(mut m, 170)
+    let later = render(mut m, 185)
+    assert(first.x > 1e-4 && first.y > 1e-4)
+    assert(later.x < 1e-6 * first.x)
+    assert(!m.steps[0].on)
+}
+
+@test
+fn the_same_cues_give_the_same_samples() {
+    let run = || -> vec4 {
+        let (c, mx) = mixer(test_palette())
+        var cues = take c
+        var m = take mx
+        cues.push(Cue::Listen { at: vec3(0.0), forward: vec2(0.0, 1.0) })
+        cues.push(Cue::Wind { gust: 0.8, toward: vec2(1.0, 0.0), leaves: 0.5 })
+        cues.push(Cue::Brush { brush: 1, at: vec3(0.0), amount: 0.4 })
+        cues.push(Cue::Step { at: vec3(0.5, 0.0, 1.0), surface: 0, weight: 0.7, seed: 3 })
+        cues.push(Cue::Water { slot: 2, at: vec3(3.0, 0.0, 8.0), kind: 0, flow: 0.6 })
+        render(mut m, 100)
+    }
+    assert(run() == run())
+}
+
+@test
+fn a_steps_seed_alone_sets_how_it_sounds() {
+    // A knock alone (no grit, which is noise), so the samples show the pitch and the level.
+    var p = test_palette()
+    p.surfaces[0] = Surface { knock: 0.3 }
+    let first = || -> vec4 {
+        let (c, mx) = mixer(p)
+        var cues = take c
+        var m = take mx
+        cues.push(Cue::Listen { at: vec3(0.0, 1.6, -3.0), forward: vec2(0.0, 1.0) })
+        cues.push(Cue::Step { at: vec3(0.0), surface: 0, weight: 1.0, seed: 5 })
+        render(mut m, 20)
+    }
+    // The same step after another has drawn on the mixer's noise for 300 quanta.
+    let (c, mx) = mixer(p)
+    var cues = take c
+    var m = take mx
+    cues.push(Cue::Listen { at: vec3(0.0, 1.6, -3.0), forward: vec2(0.0, 1.0) })
+    cues.push(Cue::Step { at: vec3(0.0), surface: 0, weight: 1.0, seed: 9 })
+    let other = render(mut m, 20)
+    let _ = render(mut m, 300)
+    cues.push(Cue::Step { at: vec3(0.0), surface: 0, weight: 1.0, seed: 5 })
+    let again = render(mut m, 20)
+    assert(again == first())
+    assert(other != first())
+}
