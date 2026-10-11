@@ -13,6 +13,24 @@ Checks (tools/check.sh; its header says what each tier runs). Never wait on a ch
 - The `measure:` tests and `tools/check.sh --full` give a milestone's numbers. Run a measurement only when you need its number, alone, in the background.
 - A new test that takes more than a second is a long check (`#[ignore = "long: ..."]`), sized with `sized()` so that the long tier stays near ten minutes.
 
+Architecture: docs/vision.md's "Architecture" gives the layers and the constraints. Where each layer lives:
+
+```
+0 hosts     runtime/native (Rust: wgpu + wasmtime), runtime/browser (TS), runtime/abi (shared with the compiler)
+1 language  compiler/ (Rust: syntax → sema → ir → lower → wasm, wgsl; driver; cli = `wrela`), compiler/std (wrela)
+2 engine    engine/ (wrela): no game's names, places or tuning
+3 studio    studio/, ui/ (wrela), tools/ (scripts, the gate)
+4 games     examples/<game>/ (wrela): depends on engine/, never the other way
+```
+
+Code health, with many agents merging at once:
+- Each PR says what it changes in a frame's time (`wrela estimate examples/last-green`: each system against its slice of the 16.7 ms frame, #55 AC8) and in the gate's time. If the change can't touch either, say so in one line.
+- Delete an experiment that lost. Don't keep it behind a flag, a mode number or an unused constant.
+- New logic ships with a focused test: a placement, a layout, a camera rule, a bake or a sim rule, tested on a small case, not only by a long run of the whole floor. A change only to the look is judged by the lookbook instead.
+- A helper that two places need lives once, in engine/ or std, not as a copy.
+- Don't add an engine-wide abstraction (a type, pass or module that other systems must adopt) without the OK of the project's coordinating session or the owner.
+- A spike stays on its branch unless it wins.
+
 Full milestones with AC are stored in github. When you're working on a milestone, you can durably keep track of your tasks in a doc in the repo if you need to break it down, just delete the file once the milestone is complete.
 
 Go 80% of the way on ASD-STE100 when communicating technical details (and strive for clear english in all communication)
