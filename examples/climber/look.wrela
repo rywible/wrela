@@ -32,68 +32,76 @@ pub const CAPE = vec3(0.035, 0.035, 0.045)
 
 // The look's colours: the hood the cape's, its inside blacker still (nothing is under the mask);
 // a pale mask with red marks; the sword's grey steel blade (pale, so it reads against the dark
-// wood), its paler ground edge, its dark iron guard and pommel, and its grip's leather.
+// wood), its paler ground edge, its bronze guard and pommel (a warm accent the eye finds), and
+// its grip's leather.
 const HOOD = Paint { albedo: CAPE }
 const VOID = Paint { albedo: vec3(0.004, 0.004, 0.005) }
 const MASK = Paint { albedo: vec3(0.78, 0.75, 0.68) }
 const MARK = Paint { albedo: vec3(0.45, 0.025, 0.02) }
-const IRON = Paint { albedo: vec3(0.07, 0.072, 0.078) }
+const BRONZE = Paint { albedo: vec3(0.3, 0.18, 0.07) }
 const STEEL = Paint { albedo: vec3(0.36, 0.37, 0.39) }
 const EDGE = Paint { albedo: vec3(0.62, 0.62, 0.6) }
 const LEATHER = Paint { albedo: vec3(0.09, 0.05, 0.03) }
 
 /// The head as a creature of one bone (at the feet, in the body's space: +z ahead): a hood round
-/// the head, open at the front and black inside; in it a mask, pale, with two eye slits cut
-/// through to the black, red marks swept up from the eyes and down the cheeks, and a red mouth
-/// line. Nothing is under it.
+/// the head, open at the front and black inside, with a collar standing round it behind; in it a
+/// mask, pale, flat at the brow and pointed at the chin, a brow ridge and a nose plane raised on
+/// it, two eye slits cut through to the black, and red marks that aren't mirrored. Nothing is
+/// under it.
 pub fn head() -> Creature<Paint> {
     var s = Skeleton::new()
     let root = s.root("body", vec3(0.0))
     let r = HEAD_RADIUS
+    // The mask's face: an oval cut flat across the brow and to a point at the chin, so its
+    // outline isn't an egg's; a brow ridge and a nose plane raised on it for the light to carve.
+    let face = ellipsoid(vec3(0.09, 0.122, 0.036))
+        .translate(vec3(0.0, -0.012, 0.082))
+        .smooth_intersect(half_space(vec3(0.0, 1.0, 0.0), 0.07), k: 0.006)
+        .smooth_intersect(half_space(vec3(1.0, -0.75, 0.0), 0.09), k: 0.01)
+        .smooth_intersect(half_space(vec3(-1.0, -0.75, 0.0), 0.09), k: 0.01)
+    let relief = [
+        round_cone(
+            vec3(-0.07, 0.035, 0.108),
+            vec3(0.07, 0.035, 0.108),
+            r_top: 0.012,
+            r_bottom: 0.012,
+        ),
+        round_cone(vec3(0.0, 0.03, 0.117), vec3(0.0, -0.045, 0.125), r_top: 0.008, r_bottom: 0.016),
+    ].union()
     let slits = [
         round_cone(
-            vec3(0.016, 0.003, 0.118),
-            vec3(0.06, 0.019, 0.106),
-            r_top: 0.01,
-            r_bottom: 0.008,
+            vec3(0.016, 0.006, 0.122),
+            vec3(0.068, 0.028, 0.104),
+            r_top: 0.019,
+            r_bottom: 0.012,
         ),
         round_cone(
-            vec3(-0.016, 0.003, 0.118),
-            vec3(-0.06, 0.019, 0.106),
-            r_top: 0.01,
-            r_bottom: 0.008,
+            vec3(-0.016, 0.006, 0.122),
+            vec3(-0.068, 0.028, 0.104),
+            r_top: 0.019,
+            r_bottom: 0.012,
         ),
     ].union()
+    // The marks, not mirrored: two red sweeps up from the right eye past the brow, one down the
+    // left cheek.
     let marks = [
         round_cone(
-            vec3(0.026, 0.033, 0.114),
-            vec3(0.08, 0.09, 0.09),
-            r_top: 0.012,
-            r_bottom: 0.004,
+            vec3(-0.035, 0.05, 0.118),
+            vec3(-0.085, 0.115, 0.09),
+            r_top: 0.02,
+            r_bottom: 0.007,
         ),
         round_cone(
-            vec3(-0.026, 0.033, 0.114),
-            vec3(-0.08, 0.09, 0.09),
-            r_top: 0.012,
-            r_bottom: 0.004,
+            vec3(-0.072, 0.045, 0.108),
+            vec3(-0.1, 0.075, 0.09),
+            r_top: 0.015,
+            r_bottom: 0.005,
         ),
         round_cone(
-            vec3(0.04, -0.025, 0.113),
-            vec3(0.074, -0.08, 0.094),
-            r_top: 0.011,
-            r_bottom: 0.004,
-        ),
-        round_cone(
-            vec3(-0.04, -0.025, 0.113),
-            vec3(-0.074, -0.08, 0.094),
-            r_top: 0.011,
-            r_bottom: 0.004,
-        ),
-        round_cone(
-            vec3(-0.022, -0.085, 0.112),
-            vec3(0.022, -0.085, 0.112),
-            r_top: 0.009,
-            r_bottom: 0.009,
+            vec3(0.045, -0.03, 0.114),
+            vec3(0.06, -0.095, 0.094),
+            r_top: 0.019,
+            r_bottom: 0.006,
         ),
     ].union()
     creature(s)
@@ -113,21 +121,39 @@ pub fn head() -> Creature<Paint> {
         .join(
             "mask",
             root,
-            ellipsoid(vec3(0.088, 0.118, 0.034))
-                .translate(vec3(0.0, -0.01, 0.082))
-                .smooth_subtract(slits, k: 0.004)
+            face.smooth_union(relief, k: 0.012).smooth_subtract(slits, k: 0.004)
                 .translate(HEAD)
                 .with(MASK),
             seam: smooth(0.004),
         )
         .join("mask's marks", root, marks.translate(HEAD).with(MARK), seam: smooth(0.003))
-        .bounded(Box3 { lo: HEAD - vec3(0.2), hi: HEAD + vec3(0.2, 0.2, 0.25) })
+        .join(
+            "collar",
+            root,
+            round_cone(vec3(0.0, 1.48, -0.02), vec3(0.0, 1.8, -0.06), r_top: 0.17, r_bottom: 0.21)
+                .smooth_subtract(
+                    round_cone(
+                        vec3(0.0, 1.5, 0.03),
+                        vec3(0.0, 1.85, 0.0),
+                        r_top: 0.15,
+                        r_bottom: 0.19,
+                    ),
+                    k: 0.01,
+                )
+                .smooth_intersect(half_space(vec3(0.0, 0.0, 1.0), 0.04), k: 0.01)
+                .with(HOOD),
+            seam: smooth(0.02),
+        )
+        .bounded(Box3 { lo: vec3(-0.3, 1.4, -0.3), hi: vec3(0.3, 1.95, 0.3) })
 }
 
+/// How far below the point the back of the blade turns in toward it (m).
+const SPINE_TIP: f32 = 0.18
+
 /// The great sword, as a creature of one bone at the grip's middle: the point along +y, the edge
-/// along +x. A heavy single-edged blade, straight-backed, that widens toward a clipped point (its
-/// weight forward, for a blow), ground to a pale edge, with a groove along each face; a plain
-/// bar guard, a wrapped grip and a squared pommel.
+/// along +x. A heavy single-edged blade, straight-backed, that widens toward its point (its
+/// weight forward, for a blow), the edge and the back both sweeping in to the point; ground to a
+/// pale edge, with a groove along each face; a bronze bar guard and pommel, and a wrapped grip.
 pub fn sword() -> Creature<Paint> {
     var s = Skeleton::new()
     let grip = s.root("grip", vec3(0.0))
@@ -145,13 +171,8 @@ pub fn sword() -> Creature<Paint> {
             half_space(vec3(1.0, -slope, 0.0), base - slope * GUARD_AT),
             k: 0.002,
         )
-        .smooth_intersect(
-            half_space(
-                vec3(POINT_AT - clip, wide - back, 0.0),
-                (POINT_AT - clip) * wide + (wide - back) * clip,
-            ),
-            k: 0.004,
-        )
+        .smooth_intersect(half_space(vec3(POINT_AT - clip, wide, 0.0), wide * POINT_AT), k: 0.004)
+        .smooth_intersect(half_space(vec3(-SPINE_TIP, -back, 0.0), -back * POINT_AT), k: 0.004)
         .smooth_intersect(half_space(vec3(taper, 0.0, 1.0), thick + taper * back), k: 0.002)
         .smooth_intersect(half_space(vec3(taper, 0.0, -1.0), thick + taper * back), k: 0.002)
     let grooves = [
@@ -180,7 +201,7 @@ pub fn sword() -> Creature<Paint> {
         .join(
             "guard",
             grip,
-            cuboid(vec3(0.16, 0.022, 0.04)).translate(vec3(0.0, GUARD_AT - 0.02, 0.0)).with(IRON),
+            cuboid(vec3(0.16, 0.022, 0.04)).translate(vec3(0.0, GUARD_AT - 0.02, 0.0)).with(BRONZE),
             seam: smooth(0.01),
         )
         .join(
@@ -198,19 +219,18 @@ pub fn sword() -> Creature<Paint> {
         .join(
             "pommel",
             grip,
-            cuboid(vec3(0.042, 0.03, 0.036)).translate(vec3(0.0, -0.27, 0.0)).with(IRON),
+            cuboid(vec3(0.042, 0.03, 0.036)).translate(vec3(0.0, -0.27, 0.0)).with(BRONZE),
             seam: smooth(0.01),
         )
         .bounded(Box3 { lo: vec3(-0.3, -0.35, -0.08), hi: vec3(0.3, POINT_AT + 0.05, 0.08) })
 }
 
-/// The sword reaches its point and keeps its width: its top (the clipped point, at its back) at
-/// the point, as wide as the blade at its middle, and its section a wedge: solid near the back
+/// The sword reaches its point and keeps its width: its top at the point, as wide as the blade at its middle, and its section a wedge: solid near the back
 /// at the faces' thickness, open there near the edge.
 @test
 fn the_sword_reaches_its_point_and_its_edge_is_thin() {
     let f = sword().field()
-    let tip = top(f, -BLADE_WIDTH * 0.4, 0.0)
+    let tip = top(f, x: 0.0, z: 0.0)
     let mid = (GUARD_AT + POINT_AT) * 0.5
     let across = width(f, mid, 0.0)
     print(f"the point at {tip} m, the blade {across} m wide at its middle")
@@ -225,8 +245,8 @@ fn the_sword_reaches_its_point_and_its_edge_is_thin() {
 @test
 fn the_masks_eyes_are_open() {
     let f = head().field()
-    for x in [0.038, -0.038] {
-        let d = f.distance(HEAD + vec3(x, 0.011, 0.116))
+    for x in [0.042, -0.042] {
+        let d = f.distance(HEAD + vec3(x, 0.014, 0.118))
         assert(d > 0.0, f"the eye slit at x {x} is closed ({d} m)")
     }
 }
