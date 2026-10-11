@@ -6,7 +6,7 @@
 // the moving shadow map every frame.
 
 use creature::Parts
-use light::Light
+use light::{Light, clay_or}
 use lit::{Lighting, sun_and_sky, through_air}
 use realize::{Mesh, SkinVertex, Tally}
 use render::{Look, skin_matrix}
@@ -133,7 +133,8 @@ pub fn character_shade(c: CharacterVertex, pixel: FragCoord, lt: Lighting) -> ve
     let n = normalize(c.normal)
     let (sun, sky) = sun_and_sky(lt, c.world, n, sky_n: n, soft: 1.0)
     let open = probes::open_light(lt.probes, vec3(0.0, 1.0, 0.0))
-    let colour = cel(lt.light, c.albedo, n, sun, sky, open, c.world, lt.cam.eye)
+    let albedo = clay_or(lt.light, c.albedo)
+    let colour = cel(lt.light, albedo, n, sun, sky, open, c.world, lt.cam.eye)
     vec4(through_air(lt, colour, c.world), CREATURE + f32(c.part.value % 63))
 }
 
