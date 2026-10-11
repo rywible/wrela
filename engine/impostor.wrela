@@ -80,11 +80,12 @@ pub fn leaf_light(
     // shade (M6's lookdev, forms.md row 1). Other crowns' shadows still fall on it.
     let (sun, sky, reflected) = sun_sky_and_gloss(
         lt,
-        at + lt.light.sun * SELF_SHADE,
+        at,
         n,
         sky_n,
         facing,
         soft: 1.5,
+        shadow_at: at + lt.light.sun * SELF_SHADE,
     )
     let inside = 0.25 + 0.75 * ao
     let lit = Lit {
