@@ -407,6 +407,23 @@ impl Host {
         script: &[Scripted],
         log: bool,
     ) -> Result<(RunResult, Option<TickLog>)> {
+        self.run_lockstep_seen(frames, fps, width, height, script, log, 0, |_, _| Ok(()))
+    }
+
+    /// [`Host::run_lockstep`], with every `every`th frame's screen (0: none) read back as it's
+    /// drawn and given to `seen` with its frame's number: a clip's frames.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_lockstep_seen(
+        &mut self,
+        frames: u32,
+        fps: f64,
+        width: u32,
+        height: u32,
+        script: &[Scripted],
+        log: bool,
+        every: u32,
+        mut seen: impl FnMut(u32, &[u8]) -> Result<()>,
+    ) -> Result<(RunResult, Option<TickLog>)> {
         self.p().executor().set_screen(width, height)?;
         let mut log = if log {
             self.p().want_hashes(true);
@@ -418,6 +435,10 @@ impl Host {
         for i in 0..frames {
             self.p().executor().set_frame(i as usize);
             self.p().lockstep_frame(i, fps, width, height, script, log.as_mut())?;
+            if every > 0 && i % every == 0 {
+                let screen = self.p().executor().read_screen()?;
+                seen(i, &screen)?;
+            }
         }
         Ok((self.result(width, height)?, log))
     }
