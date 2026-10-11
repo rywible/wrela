@@ -77,6 +77,27 @@ reference machine's frame-rate claims. Ryan's play and visual judgments still de
 Not used, by decision: Suno or any music model (Ryan, 2026-10-06, #44), and any image, texture,
 3D, voice or video generator. No asset is made by a model that was trained to output art.
 
+## Simulated construction studies, 2026-10-11
+
+Ryan asked for worlds composed by simulation across seeds, including people whose construction
+becomes fields at compile time, with shared engine mechanisms and different rules per world.
+OpenAI Codex implemented the first small construction studies (`examples/builders`): an event
+calendar, finite stock and labour, support and overlap checks, and continuous field recipes.
+Forest and ocean studies own their site preferences, material knowledge and tidal work rules.
+They are experiments, not new Last Green lore. The lab replays each solid's completion time.
+
+The source is original project code under the repo's MIT license. No outside assets, reference
+images, model-generated art or new external algorithm source was used. The work builds on the
+repo's field, constant-evaluation and seeded-noise code. Tests use small seeded worlds, explicit
+failure cases and a real GPU field comparison. These checks do not establish beautiful worlds,
+structural engineering accuracy, interacting civilizations or a replacement for the floor's
+current authored composition.
+
+Studio finding: an associated event type through a generic world implementation did not resolve
+in a call to the history driver (`Calendar<People<H>::Event>` versus `Calendar<Task>`). The shared
+interface takes its event type as an explicit trait parameter. The engine primer command has
+language areas only; source inspection was used for the existing engine modules.
+
 ## CPU agent workflow survey, 2026-10-11
 
 Ryan asked for a broad pass over agent latency without a GPU, on machines with varying CPU

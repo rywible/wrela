@@ -1,0 +1,114 @@
+use engine::construction::Ground
+use engine::history::{Calendar, Progress, run}
+use people::{FORESTS, OCEANS, Outcome, People, Task, simulate}
+use std::field::Surface
+use worlds::{Culture, Forest, Habitat, Ocean}
+
+fn verify<H: Habitat>(p: People<H>) {
+    assert(p.outcome == Outcome::Complete, "construction did not complete")
+    assert(p.site.built.pieces.len() == p.plan.len())
+    assert(p.plan.len() >= 7)
+    assert(p.raised.len() == p.plan.len())
+    for i in 1..p.raised.len() { assert(p.raised[i] > p.raised[i - 1]) }
+    var work = 0.0
+    for m in 0..2 {
+        assert(p.deposits[m] >= 0.0 && p.site.stock(m) >= 0.0)
+        let built = p.site.built.volume(m)
+        assert(
+            abs(p.deposits[m] + p.site.stock(m) + built - p.initial[m]) < 0.002,
+            "material was created or lost",
+        )
+        work += built * p.habitat.culture().materials[m].work
+    }
+    assert(abs(work - p.site.spent_work) < 0.002)
+    // A body fits from outside through the gate to the centre, above the floor.
+    let forward = vec2(-p.axis.y, p.axis.x)
+    for i in 0..33 {
+        let q = p.at + forward * (-p.half.y - 2.0 + (p.half.y + 2.0) * f32(i) / 32.0)
+        assert(
+            p.site.built.distance(vec3(q.x, p.floor + 1.0, q.y)) > 0.7,
+            "gate or courtyard blocked",
+        )
+    }
+    // The perimeter is solid away from the gate.
+    let wall = p.at + p.axis * p.half.x
+    assert(p.site.built.distance(vec3(wall.x, p.floor + 1.0, wall.y)) < -0.3)
+    for piece in p.site.built.pieces {
+        assert(piece.distance(piece.centre) < 0.0)
+        let face = piece.world(vec3(piece.half.x, 0.0, 0.0))
+        assert(abs(piece.distance(face)) < 1.0e-4, "field and raster face disagree")
+    }
+}
+
+@test
+fn twenty_worlds_build_from_finite_materials_with_open_gates() {
+    for seed in 0..10 {
+        let forest = simulate(Forest { seed }, seed)
+        let ocean = simulate(Ocean { seed }, seed)
+        verify(forest)
+        verify(ocean)
+        assert(forest.waited == 0 && ocean.waited > 0, "tidal access did not change work")
+        assert(ocean.floor >= Ocean { seed }.culture().safe_floor)
+        assert(forest.site.built == FORESTS[seed].built, "compile-time and run-time forest differ")
+        assert(ocean.site.built == OCEANS[seed].built, "compile-time and run-time ocean differ")
+        if seed > 0 {
+            assert(length(FORESTS[seed].at - FORESTS[seed - 1].at) > 1.0)
+            assert(length(OCEANS[seed].at - OCEANS[seed - 1].at) > 1.0)
+        }
+    }
+}
+
+@test
+fn construction_also_completes_for_unpreviewed_seeds() {
+    for seed in 100..110 {
+        verify(simulate(Forest { seed }, seed))
+        verify(simulate(Ocean { seed }, seed))
+    }
+}
+
+@test
+fn pausing_and_cloning_a_history_preserves_the_result() {
+    var c = Calendar::new(7)
+    let _ = c.schedule(0, Task::Seek)
+    var p = People::new(Ocean { seed: 7 })
+    assert(run(mut p, mut c, until: 1000, budget: 8) == Progress::Budget)
+    var saved = p.clone()
+    var clock = c.clone()
+    while run(mut p, mut c, until: 1000, budget: 3) == Progress::Budget {}
+    assert(run(mut saved, mut clock, until: 1000, budget: 4096) == Progress::Reached)
+    assert(p.site.built == saved.site.built && p.deposits == saved.deposits)
+    assert(p.finished == saved.finished && p.waited == saved.waited)
+    verify(p)
+}
+
+struct Barren: Copy { forbidden: bool }
+
+impl Ground for Barren {
+    fn height(self, at: vec2) -> f32 {
+        0.0
+    }
+}
+
+impl Habitat for Barren {
+    fn suitability(self, at: vec2) -> f32 {
+        if self.forbidden { -1.0 } else { 1.0 }
+    }
+    fn available(self, day: u32) -> bool {
+        true
+    }
+    fn source(self, at: vec2) -> f32 {
+        0.0
+    }
+    fn culture(self) -> Culture {
+        Forest { seed: 0 }.culture()
+    }
+}
+
+@test
+fn impossible_worlds_report_failure_without_free_buildings() {
+    let forbidden = simulate(Barren { forbidden: true }, 0)
+    assert(forbidden.outcome == Outcome::NoSite && forbidden.site.built.pieces.len() == 0)
+    let empty = simulate(Barren { forbidden: false }, 0)
+    assert(empty.outcome == Outcome::Exhausted && empty.site.built.pieces.len() == 0)
+    assert(empty.site.spent_work == 0.0)
+}

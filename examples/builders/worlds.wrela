@@ -1,0 +1,96 @@
+// Two construction studies. These are deliberately small models, not claims of realistic
+// structural engineering or established game lore. No building coordinates are authored.
+
+use engine::construction::{Ground, Material}
+use engine::noise::noise2
+
+/// Construction knowledge and needs, owned by these studies' peoples.
+pub struct Culture: Copy {
+    pub materials: [Material; 2],
+    pub half: vec2,
+    pub wall_height: f32,
+    pub thickness: f32,
+    pub gather_rate: f32,
+    pub labour: f32,
+    pub safe_floor: f32,
+}
+
+/// World policy. Construction and scheduling know neither forest nor ocean.
+pub trait Habitat: Copy + Ground {
+    /// A site's desirability; a negative result is forbidden.
+    fn suitability(self, at: vec2) -> f32
+    fn available(self, day: u32) -> bool
+    fn source(self, at: vec2) -> f32
+    fn culture(self) -> Culture
+}
+
+pub struct Forest: Copy { pub seed: u32 }
+
+impl Ground for Forest {
+    fn height(self, at: vec2) -> f32 {
+        1.2 * noise2(at * 0.025 + vec2(f32(self.seed) * 0.31))
+    }
+}
+
+impl Habitat for Forest {
+    fn suitability(self, at: vec2) -> f32 {
+        let shelter = noise2(at * 0.055 + vec2(21.0, f32(self.seed)))
+        let water = abs(at.y - 18.0 * sin(at.x * 0.035 + f32(self.seed)))
+        if water < 8.0 { -1.0 } else { shelter + 1.0 / (1.0 + water * 0.04) }
+    }
+    fn available(self, day: u32) -> bool {
+        true
+    }
+    fn source(self, at: vec2) -> f32 {
+        260.0 + 140.0 * noise2(at * 0.06)
+    }
+    fn culture(self) -> Culture {
+        Culture {
+            materials: [
+                Material { max_height: 8.0, max_span: 0.0, work: 1.2 },
+                Material { max_height: 8.0, max_span: 6.0, work: 0.8 },
+            ],
+            half: vec2(8.0, 6.0),
+            wall_height: 3.5,
+            thickness: 0.65,
+            gather_rate: 16.0,
+            labour: 24.0,
+            safe_floor: -10.0,
+        }
+    }
+}
+
+pub struct Ocean: Copy { pub seed: u32 }
+
+impl Ground for Ocean {
+    fn height(self, at: vec2) -> f32 {
+        -0.8 + 1.4 * noise2(at * 0.04 + vec2(f32(self.seed) * 0.71, 8.0))
+    }
+}
+
+impl Habitat for Ocean {
+    fn suitability(self, at: vec2) -> f32 {
+        self.height(at) + 1.0 + 0.3 * noise2(at * 0.09 + vec2(14.0))
+    }
+    // A simple six-day tidal cycle: gathering occurs on the three accessible days.
+    fn available(self, day: u32) -> bool {
+        day % 6 < 3
+    }
+    fn source(self, at: vec2) -> f32 {
+        420.0 + 160.0 * noise2(at * 0.04)
+    }
+    fn culture(self) -> Culture {
+        Culture {
+            materials: [
+                Material { max_height: 8.0, max_span: 0.0, work: 1.4 },
+                Material { max_height: 8.0, max_span: 5.5, work: 0.9 },
+            ],
+            half: vec2(7.0, 5.0),
+            wall_height: 2.8,
+            thickness: 0.7,
+            gather_rate: 22.0,
+            labour: 32.0,
+            safe_floor: 1.1,
+        }
+    }
+}

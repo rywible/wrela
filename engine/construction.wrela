@@ -1,0 +1,270 @@
+// Construction leaves values which are continuous fields, usable by CPU queries and GPU
+// cooking. A world supplies plans, terrain and material knowledge. This module owns the stock,
+// work and support rules, so an unsuccessful action cannot spend resources or leave geometry.
+
+use std::field::{Surface, cuboid}
+use std::math::is_finite
+
+/// Material knowledge, in metres, cubic metres and work per cubic metre. These are construction
+/// limits supplied by a world, not an engineering stress solver.
+pub struct Material: Copy {
+    pub max_height: f32,
+    pub max_span: f32,
+    pub work: f32,
+}
+
+/// A rectangular solid, continuously sized and placed. `axis` is its horizontal unit x axis.
+/// The z axis is perpendicular. Material identifiers are local to the worksite.
+pub struct Piece: Copy + Eq + GpuData {
+    pub centre: vec3,
+    pub half: vec3,
+    pub axis: vec2,
+    pub material: u32,
+}
+
+impl Piece {
+    pub fn world(self, local: vec3) -> vec3 {
+        self.centre +
+            vec3(
+                self.axis.x * local.x - self.axis.y * local.z,
+                local.y,
+                self.axis.y * local.x + self.axis.x * local.z,
+            )
+    }
+
+    pub fn volume(self) -> f32 {
+        8.0 * self.half.x * self.half.y * self.half.z
+    }
+}
+
+impl Surface for Piece {
+    fn distance(self, p: vec3) -> f32 {
+        let q = p - self.centre
+        cuboid(self.half).distance(
+            vec3(dot(q.xz, self.axis), q.y, dot(q.xz, vec2(-self.axis.y, self.axis.x))),
+        )
+    }
+    fn lipschitz(self, near: f32) -> f32 {
+        1.0
+    }
+}
+
+/// A compact field recipe. Large worlds keep one per building or tile, not one global union.
+/// Capacity exhaustion is reported; it never silently drops part of a building.
+pub struct Built: Copy + Eq + GpuData {
+    pub pieces: Bounded<Piece, 64>,
+}
+
+impl Built {
+    pub fn new() -> Built {
+        Built { pieces: Bounded::new() }
+    }
+    pub fn volume(self, material: u32) -> f32 {
+        var v = 0.0
+        for p in self.pieces { if p.material == material { v += p.volume() } }
+        v
+    }
+}
+
+impl Surface for Built {
+    fn distance(self, p: vec3) -> f32 {
+        var d = 1.0e20
+        for piece in self.pieces { d = min(d, piece.distance(p)) }
+        d
+    }
+    fn lipschitz(self, near: f32) -> f32 {
+        1.0
+    }
+}
+
+/// The world supplies ground height. A foundation may extend into it.
+pub trait Ground {
+    fn height(self, at: vec2) -> f32
+}
+
+pub enum Refusal: Copy + Eq {
+    Shape,
+    Material,
+    Capacity,
+    Stock,
+    Work,
+    Support,
+    Overlap,
+}
+
+pub struct Worksite: Clone {
+    pub built: Built,
+    stock: Vec<f32>,
+    pub spent_work: f32,
+}
+
+impl Worksite {
+    pub fn new(materials: u32) -> Worksite {
+        Worksite { built: Built::new(), stock: Vec::filled(materials, 0.0), spent_work: 0.0 }
+    }
+
+    pub fn stock(self, material: u32) -> f32 {
+        self.stock[material]
+    }
+
+    /// Transfer material from a finite source. It cannot be created by gathering twice.
+    pub fn gather(mut self, material: u32, source: mut f32, requested: f32) -> f32 {
+        assert(
+            is_finite(source) && is_finite(requested) && source >= 0.0 && requested >= 0.0,
+            "material quantities must be nonnegative",
+        )
+        let n = min(source, requested)
+        self.stock[material] += n
+        source -= n
+        n
+    }
+
+    /// Spend stock and available work only after all checks pass. Support is tested at the
+    /// bottom corners; an unsupported centre also needs material that can span the long axis.
+    /// Plans use one axis per building; touching faces are allowed, overlapping solids are not.
+    pub fn install<G: Ground>(
+        mut self,
+        p: Piece,
+        materials: [Material],
+        ground: G,
+        work: mut f32,
+    ) -> Result<u32, Refusal> {
+        if !is_finite(p.volume()) ||
+            !is_finite(dot(p.centre, p.centre)) ||
+            !is_finite(dot(p.axis, p.axis)) ||
+            !(p.half.x > 0.0 && p.half.y > 0.0 && p.half.z > 0.0) ||
+            abs(dot(p.axis, p.axis) - 1.0) > 1.0e-5 {
+            return Err(Refusal::Shape)
+        }
+        if p.material >= materials.len() || p.material >= self.stock.len() {
+            return Err(Refusal::Material)
+        }
+        let m = materials[p.material]
+        if !is_finite(m.work) ||
+            !is_finite(m.max_height) ||
+            !is_finite(m.max_span) ||
+            !(m.work > 0.0 && m.max_height > 0.0 && m.max_span >= 0.0) {
+            return Err(Refusal::Material)
+        }
+        if self.built.pieces.len() == self.built.pieces.capacity() { return Err(Refusal::Capacity) }
+        if 2.0 * p.half.y > m.max_height { return Err(Refusal::Support) }
+        let volume = p.volume()
+        if self.stock[p.material] < volume { return Err(Refusal::Stock) }
+        let need = volume * m.work
+        if !is_finite(work) || !is_finite(need) || work < need { return Err(Refusal::Work) }
+        // Inset support samples keep touching solids from depending on float-rounding at an edge.
+        for x in [-0.999, 0.999] {
+            for z in [-0.999, 0.999] {
+                let foot = p.world(vec3(p.half.x * x, -p.half.y, p.half.z * z))
+                if !supported(self.built, ground, foot) { return Err(Refusal::Support) }
+            }
+        }
+        let middle = p.world(vec3(0.0, -p.half.y, 0.0))
+        if !supported(self.built, ground, middle) && 2.0 * max(p.half.x, p.half.z) > m.max_span {
+            return Err(Refusal::Support)
+        }
+        for q in self.built.pieces {
+            if overlaps(p, q) { return Err(Refusal::Overlap) }
+        }
+        let id = self.built.pieces.len()
+        self.stock[p.material] -= volume
+        work -= need
+        self.spent_work += need
+        self.built.pieces.push(p)
+        Ok(id)
+    }
+}
+
+fn supported<G: Ground>(built: Built, ground: G, foot: vec3) -> bool {
+    foot.y <= ground.height(foot.xz) + 1.0e-3 ||
+        built.distance(foot - vec3(0.0, 1.0e-3, 0.0)) <= 1.0e-4
+}
+
+/// Separating-axis test for two horizontal oriented boxes, with touching faces permitted.
+fn overlaps(a: Piece, b: Piece) -> bool {
+    if abs(a.centre.y - b.centre.y) >= a.half.y + b.half.y - 1.0e-4 { return false }
+    let az = vec2(-a.axis.y, a.axis.x)
+    let bz = vec2(-b.axis.y, b.axis.x)
+    for n in [a.axis, az, b.axis, bz] {
+        let ar = abs(dot(a.axis, n)) * a.half.x + abs(dot(az, n)) * a.half.z
+        let br = abs(dot(b.axis, n)) * b.half.x + abs(dot(bz, n)) * b.half.z
+        if abs(dot(a.centre.xz - b.centre.xz, n)) >= ar + br - 1.0e-4 { return false }
+    }
+    true
+}
+
+struct Flat: Copy {}
+
+impl Ground for Flat {
+    fn height(self, at: vec2) -> f32 {
+        0.0
+    }
+}
+
+@test
+fn construction_spends_only_for_supported_nonoverlapping_work() {
+    var site = Worksite::new(1)
+    var source = 100.0
+    assert(site.gather(0, mut source, 200.0) == 100.0 && source == 0.0)
+    assert(site.gather(0, mut source, 1.0) == 0.0)
+    let material = [Material { max_height: 8.0, max_span: 4.0, work: 2.0 }]
+    let p = Piece {
+        centre: vec3(0.0, 1.0, 0.0),
+        half: vec3(1.0),
+        axis: vec2(1.0, 0.0),
+        material: 0,
+    }
+    var work = 100.0
+    assert(
+        site.install(Piece { centre: vec3(0.0, 4.0, 0.0), ..p }, material, Flat {}, mut work) ==
+            Err(Refusal::Support),
+    )
+    assert(site.stock(0) == 100.0 && work == 100.0 && site.built.pieces.len() == 0)
+    assert(site.install(p, material, Flat {}, mut work) == Ok(0))
+    assert(site.stock(0) == 92.0 && work == 84.0)
+    assert(site.install(p, material, Flat {}, mut work) == Err(Refusal::Overlap))
+    assert(
+        site.install(Piece { centre: vec3(0.0, 3.0, 0.0), ..p }, material, Flat {}, mut work) ==
+            Ok(1),
+    )
+    assert(site.built.distance(vec3(0.0, 3.0, 0.0)) < 0.0)
+    assert(site.built.distance(vec3(2.0, 3.0, 0.0)) == 1.0)
+    assert(abs(site.stock(0) + site.built.volume(0) - 100.0) < 1.0e-5)
+    var none = 0.0
+    assert(
+        site.install(Piece { centre: vec3(0.0, 5.0, 0.0), ..p }, material, Flat {}, mut none) ==
+            Err(Refusal::Work),
+    )
+    assert(site.stock(0) == 84.0 && site.spent_work == 32.0)
+}
+
+@test
+fn a_lintel_requires_both_supports_and_material_span() {
+    let m = [Material { max_height: 8.0, max_span: 5.0, work: 1.0 }]
+    var site = Worksite::new(1)
+    var source = 100.0
+    let _ = site.gather(0, mut source, 100.0)
+    var work = 100.0
+    let left = Piece {
+        centre: vec3(-2.0, 1.0, 0.0),
+        half: vec3(0.5, 1.0, 0.5),
+        axis: vec2(1.0, 0.0),
+        material: 0,
+    }
+    let top = Piece { centre: vec3(0.0, 2.25, 0.0), half: vec3(2.5, 0.25, 0.5), ..left }
+    assert(site.install(left, m, Flat {}, mut work) == Ok(0))
+    assert(site.install(top, m, Flat {}, mut work) == Err(Refusal::Support))
+    assert(
+        site.install(Piece { centre: vec3(2.0, 1.0, 0.0), ..left }, m, Flat {}, mut work) == Ok(1),
+    )
+    assert(
+        site.install(top, [Material { max_span: 3.0, ..m[0] }], Flat {}, mut work) ==
+            Err(Refusal::Support),
+    )
+    assert(site.install(top, m, Flat {}, mut work) == Ok(2))
+    // The probe is one metre below the lintel and 1.5 m from either jamb.
+    assert(
+        site.built.distance(vec3(0.0, 1.0, 0.0)) == 1.0,
+        "the gate clearance differs from its solids",
+    )
+}

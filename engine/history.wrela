@@ -1,0 +1,156 @@
+// Histories run at build time or at load. The calendar orders a world's events; the world owns
+// their meaning. Equal-time events keep insertion order. A work budget stops at an event seam,
+// so a caller can resume exactly, including events queued by an earlier event.
+
+use noise::rand
+
+pub struct Event<E>: Copy {
+    pub at: u32,
+    pub order: u32,
+    pub value: E,
+}
+
+pub struct Calendar<E>: Clone {
+    now: u32,
+    seed: u32,
+    next: u32,
+    pending: Vec<Event<E>>,
+}
+
+pub enum Progress: Copy + Eq {
+    Reached,
+    Budget,
+}
+
+impl<E: Copy> Calendar<E> {
+    pub fn new(seed: u32) -> Calendar<E> {
+        Calendar { now: 0, seed, next: 0, pending: Vec::new() }
+    }
+
+    /// Queue an event at or after the present. Same-time reactions are allowed; `run` bounds
+    /// their work. The returned order is a stable identity for this event in this history.
+    pub fn schedule(mut self, at: u32, value: E) -> u32 {
+        assert(at >= self.now, "an event cannot change the past")
+        assert(self.next < 4294967295, "history event identities exhausted")
+        let order = self.next
+        self.next += 1
+        self.pending.push(Event { at, order, value })
+        var i = self.pending.len() - 1
+        while i > 0 {
+            let p = (i - 1) / 2
+            if !earlier(self.pending[i], self.pending[p]) { break }
+            self.pending.swap(i, p)
+            i = p
+        }
+        order
+    }
+
+    pub fn now(self) -> u32 {
+        self.now
+    }
+
+    pub fn waiting(self) -> u32 {
+        self.pending.len()
+    }
+
+    /// Randomness addressed by a stable subject and purpose, independent of how work is split.
+    pub fn draw(self, subject: u32, purpose: u32) -> f32 {
+        rand(self.seed ^ subject.wrapping_mul(2654435761), purpose)
+    }
+
+    fn pop(mut self) -> Event<E> {
+        let first = self.pending.swap_remove(0)
+        var i = 0
+        while 2 * i + 1 < self.pending.len() {
+            var child = 2 * i + 1
+            if child + 1 < self.pending.len() &&
+                earlier(self.pending[child + 1], self.pending[child]) {
+                child += 1
+            }
+            if !earlier(self.pending[child], self.pending[i]) { break }
+            self.pending.swap(i, child)
+            i = child
+        }
+        first
+    }
+}
+
+fn earlier<E: Copy>(a: Event<E>, b: Event<E>) -> bool {
+    a.at < b.at || (a.at == b.at && a.order < b.order)
+}
+
+/// An implementation belongs to a world. It may apply ecology, construction, trade or other
+/// processes to shared state and queue their next reactions through the same calendar.
+pub trait Process<E: Copy> {
+    fn react(mut self, event: Event<E>, calendar: mut Calendar<E>)
+}
+
+/// Process at most `budget` events up to and including `until`. A budget stop does not move
+/// time past pending work. On `Reached`, time advances to `until`, even when no event was due.
+@deterministic
+pub fn run<E: Copy, W: Process<E>>(
+    world: mut W,
+    calendar: mut Calendar<E>,
+    until: u32,
+    budget: u32,
+) -> Progress {
+    assert(until >= calendar.now, "a history cannot run backwards")
+    var done = 0
+    while calendar.waiting() > 0 && calendar.pending[0].at <= until {
+        if done == budget { return Progress::Budget }
+        let event = calendar.pop()
+        calendar.now = event.at
+        world.react(event, mut calendar)
+        done += 1
+    }
+    calendar.now = until
+    Progress::Reached
+}
+
+struct Counting: Clone {
+    seen: Vec<u32>,
+}
+
+impl Process<u32> for Counting {
+    fn react(mut self, event: Event<u32>, calendar: mut Calendar<u32>) {
+        self.seen.push(event.value)
+        if event.value == 2 { let _ = calendar.schedule(event.at, 4) }
+        if event.value == 5 { let _ = calendar.schedule(event.at, 5) }
+    }
+}
+
+@test
+fn history_keeps_equal_time_order_and_resumes_without_losing_events() {
+    var c: Calendar<u32> = Calendar::new(91)
+    let _ = c.schedule(at: 20, value: 9)
+    let _ = c.schedule(at: 5, value: 2)
+    let _ = c.schedule(at: 5, value: 3)
+    let _ = c.schedule(at: 2, value: 1)
+    var w = Counting { seen: Vec::new() }
+    assert(run(mut w, mut c, until: 10, budget: 0) == Progress::Budget)
+    assert(c.now == 0 && c.waiting() == 4)
+    assert(run(mut w, mut c, until: 10, budget: 2) == Progress::Budget)
+    assert(c.now == 5 && w.seen.len() == 2)
+    var saved = c.clone()
+    var forked = w.clone()
+    assert(run(mut w, mut c, until: 10, budget: 8) == Progress::Reached)
+    assert(w.seen == Vec::from([1, 2, 3, 4]))
+    assert(c.now == 10 && c.waiting() == 1)
+    assert(run(mut forked, mut saved, until: 10, budget: 1) == Progress::Budget)
+    assert(run(mut forked, mut saved, until: 10, budget: 1) == Progress::Reached)
+    assert(w.seen == forked.seen)
+    assert(c.draw(subject: 7, purpose: 3) == saved.draw(subject: 7, purpose: 3))
+    assert(run(mut w, mut c, until: 20, budget: 1) == Progress::Reached)
+    assert(w.seen[4] == 9 && c.waiting() == 0)
+}
+
+@test
+fn a_same_time_reaction_cycle_yields_at_the_work_budget() {
+    var c: Calendar<u32> = Calendar::new(0)
+    var w = Counting { seen: Vec::new() }
+    let _ = c.schedule(at: 0, value: 5)
+    assert(run(mut w, mut c, until: 10, budget: 17) == Progress::Budget)
+    assert(c.now() == 0 && c.waiting() == 1 && w.seen.len() == 17)
+    assert(run(mut w, mut c, until: 10, budget: 3) == Progress::Budget)
+    assert(c.now() == 0 && c.waiting() == 1 && w.seen.len() == 20)
+}

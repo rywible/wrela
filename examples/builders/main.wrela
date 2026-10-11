@@ -1,0 +1,296 @@
+// A construction lab: F forest, O ocean; left/right selects one of ten seeds; A/D orbit; Space replays construction.
+// The buildings are compile-time simulations. Raster faces are the exact boundaries of their
+// cuboid fields; no authored field is evaluated per screen pixel. The look is a construction
+// blockout, not a finished floor's art direction.
+
+use engine::construction::{Built, Ground}
+use engine::render::{View, view}
+use people::{FORESTS, OCEANS, Study}
+use std::field::Surface
+use std::gpu::{
+    ClipPosition, Cull, DepthTexture, GlobalId, GpuBuffer, Slots, VertexIndex,
+    begin_screen_pass_with_depth, buffer, depth_texture, dispatch, draw, read, write,
+}
+use std::input::{Input, Key}
+use std::mem::debug_build
+use std::io::{Pending, print}
+use worlds::{Forest, Ocean}
+
+pub enum World: Copy + Eq { Forest, Ocean }
+
+struct Vertex: Copy + GpuData {
+    at: vec3,
+    normal: vec3,
+    colour: vec3,
+}
+
+pub struct Lab {
+    pub world: World,
+    pub seed: u32,
+    vertices: GpuBuffer<Vertex>,
+    count: u32,
+    depth: DepthTexture,
+    width: u32,
+    height: u32,
+    input: Input,
+    angle: f32,
+    last: f32,
+    probes: GpuBuffer<f32>,
+    samples: GpuBuffer<vec3>,
+    replay: f32,
+    playing: bool,
+    visible: u32,
+    pending: Option<Pending<f32>>,
+    got: Vec<f32>,
+}
+
+pub fn init() -> Lab {
+    var s = Lab {
+        world: World::Forest,
+        seed: 0,
+        vertices: buffer(1),
+        count: 0,
+        depth: depth_texture(width: 1, height: 1),
+        width: 0,
+        height: 0,
+        input: Input::new(),
+        angle: 0.5,
+        last: 0.0,
+        probes: buffer(64),
+        samples: buffer(64),
+        replay: 0.0,
+        playing: false,
+        visible: 64,
+        pending: None,
+        got: Vec::new(),
+    }
+    write(mut s.samples, 0, Vec::from_fn(64, probe_point))
+    rebuild(mut s)
+    s
+}
+
+fn selected(s: Lab) -> Study {
+    if s.world == World::Forest { FORESTS[s.seed] } else { OCEANS[s.seed] }
+}
+
+fn terrain(world: World, seed: u32, p: vec2) -> f32 {
+    if world == World::Forest { Forest { seed }.height(p) } else { Ocean { seed }.height(p) }
+}
+
+fn geometry(world: World, seed: u32, study: Study, visible: u32) -> Vec<Vertex> {
+    var vertices: Vec<Vertex> = Vec::new()
+    let normals = [
+        vec3(1.0, 0.0, 0.0),
+        vec3(-1.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, -1.0, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(0.0, 0.0, -1.0),
+    ]
+    let axes = [
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(1.0, 0.0, 0.0),
+        vec3(1.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+    ]
+    let cu = [-1.0, 1.0, -1.0, -1.0, 1.0, 1.0]
+    let cv = [-1.0, -1.0, 1.0, 1.0, -1.0, 1.0]
+    for i in 0..min(visible, study.built.pieces.len()) {
+        let p = study.built.pieces[i]
+        for f in 0..6 {
+            let n = normals[f]
+            let u = axes[f]
+            let v = cross(n, u)
+            let normal = p.world(n) - p.centre
+            let colour = if p.material == 1 { vec3(0.27, 0.16, 0.07) } else if world ==
+                World::Forest { vec3(0.58, 0.53, 0.41) } else { vec3(0.65, 0.66, 0.58) }
+            for c in 0..6 {
+                vertices.push(
+                    Vertex { at: p.world((n + u * cu[c] + v * cv[c]) * p.half), normal, colour },
+                )
+            }
+        }
+    }
+    let dx = [0, 1, 0, 0, 1, 1]
+    let dz = [0, 0, 1, 1, 0, 1]
+    for z in 0..32 {
+        for x in 0..32 {
+            for c in 0..6 {
+                let q = study.at + vec2(f32(x + dx[c]) - 16.0, f32(z + dz[c]) - 16.0) * 2.0
+                let y = terrain(world, seed, q)
+                let n = normalize(
+                    vec3(
+                        terrain(world, seed, q - vec2(0.1, 0.0)) -
+                            terrain(world, seed, q + vec2(0.1, 0.0)),
+                        0.2,
+                        terrain(world, seed, q - vec2(0.0, 0.1)) -
+                            terrain(world, seed, q + vec2(0.0, 0.1)),
+                    ),
+                )
+                let colour = if world == World::Forest { vec3(0.15, 0.23, 0.1) } else {
+                    vec3(0.36, 0.4, 0.31)
+                }
+                vertices.push(Vertex { at: vec3(q.x, y, q.y), normal: n, colour })
+            }
+        }
+    }
+    if world == World::Ocean {
+        for c in 0..6 {
+            let q = study.at + vec2(f32(dx[c]) * 2.0 - 1.0, f32(dz[c]) * 2.0 - 1.0) * 32.0
+            vertices.push(
+                Vertex {
+                    at: vec3(q.x, 0.75, q.y),
+                    normal: vec3(0.0, 1.0, 0.0),
+                    colour: vec3(0.06, 0.27, 0.32),
+                },
+            )
+        }
+    }
+    vertices
+}
+
+fn rebuild(s: mut Lab) {
+    let chosen = selected(s)
+    let vertices = geometry(s.world, s.seed, chosen, s.visible)
+    s.count = vertices.len()
+    s.vertices = buffer(s.count)
+    write(mut s.vertices, 0, vertices)
+    let name = if s.world == World::Forest { "forest" } else { "ocean" }
+    print(
+        f"{name} seed {s.seed}: {chosen.days} days, {chosen.waited} tidal waits, {chosen.built.pieces.len()} built solids. F/O world; arrows seed; A/D orbit; Space replays construction.",
+    )
+}
+
+struct Surfel: Copy {
+    clip: ClipPosition,
+    normal: vec3,
+    colour: vec3,
+}
+
+@vertex
+fn vertex(v: VertexIndex, vertices: [Vertex], camera: View) -> Surfel {
+    let p = vertices[v.index]
+    Surfel {
+        clip: ClipPosition { position: camera.view_proj * vec4(p.at, 1.0) },
+        normal: p.normal,
+        colour: p.colour,
+    }
+}
+
+@fragment
+fn shade(s: Surfel) -> vec4 {
+    let n = normalize(s.normal)
+    let light = 0.45 + 0.65 * max(dot(n, normalize(vec3(-0.3, 0.8, -0.5))), 0.0)
+    vec4(pow(s.colour * light, vec3(1.0 / 2.2)), 1.0)
+}
+
+/// Real shader agreement for a compiled recipe, including inside, outside and near faces.
+fn probe_point(i: u32) -> vec3 {
+    let b = FORESTS[0]
+    let p = b.built.pieces[i % b.built.pieces.len()]
+    p.world(vec3((f32(i / b.built.pieces.len()) * 0.4 - 0.6) * p.half.x * 2.0, 0.0, 0.0))
+}
+
+@compute(64)
+fn probe(out: mut Slots<f32>, points: [vec3], built: Built, id: GlobalId) {
+    out[id] = built.distance(points[id.x])
+}
+
+pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
+    s.input.read()
+    let dt = clamp(time - s.last, 0.0, 0.1)
+    s.last = time
+    var changed = false
+    if s.input.pressed(Key::F) {
+        s.world = World::Forest
+        changed = true
+    }
+    if s.input.pressed(Key::O) {
+        s.world = World::Ocean
+        changed = true
+    }
+    if s.input.pressed(Key::Right) {
+        s.seed = (s.seed + 1) % 10
+        changed = true
+    }
+    if s.input.pressed(Key::Left) {
+        s.seed = (s.seed + 9) % 10
+        changed = true
+    }
+    if s.input.held(Key::A) { s.angle -= dt }
+    if s.input.held(Key::D) { s.angle += dt }
+    if changed {
+        s.playing = false
+        s.visible = 64
+        rebuild(mut s)
+    }
+    if s.input.pressed(Key::Space) {
+        s.replay = 0.0
+        s.playing = true
+        s.visible = 0
+        rebuild(mut s)
+    }
+    if s.playing {
+        s.replay += dt * 8.0
+        let study = selected(s)
+        var count = 0
+        for day in study.raised { if f32(day) <= s.replay { count += 1 } }
+        if count != s.visible {
+            s.visible = count
+            rebuild(mut s)
+        }
+        if count == study.built.pieces.len() { s.playing = false }
+    }
+    if s.width != width || s.height != height {
+        s.depth = depth_texture(width, height)
+        s.width = width
+        s.height = height
+    }
+    let b = selected(s)
+    let centre = vec3(b.at.x, b.floor + 1.0, b.at.y)
+    let z = vec2(-b.axis.y, b.axis.x)
+    let offset = b.axis * (sin(s.angle) * 28.0) - z * (cos(s.angle) * 28.0)
+    let camera = view(
+        eye: centre + vec3(offset.x, 19.0, offset.y),
+        at: centre,
+        fovy: 0.8,
+        aspect: f32(width) / f32(height),
+        sun: vec3(-0.3, 0.8, -0.5),
+        extent: 25.0,
+    )
+    let screen = begin_screen_pass_with_depth(mut s.depth, clear: vec4(0.68, 0.75, 0.78, 1.0))
+    draw(
+        screen,
+        vertex.bind(vertices: s.vertices.items(), camera: camera),
+        shade,
+        vertices: s.count,
+        cull: Cull::None,
+    )
+    screen.present()
+    if debug_build() && s.got.len() == 0 {
+        match mut s.pending {
+            Some(p) => { if let Some(Ok(v)) = p.poll() { s.got = take v } },
+            None => {
+                dispatch(probe.bind(mut s.probes, s.samples.items(), FORESTS[0].built), over: 64)
+                s.pending = Some(read(s.probes.items()))
+            },
+        }
+    }
+}
+
+@test(frames: 4, gpu: true)
+fn compiled_construction_fields_agree_on_cpu_and_gpu(s: Lab) {
+    assert(s.got.len() == 64)
+    for i in 0..64 {
+        assert(abs(s.got[i] - FORESTS[0].built.distance(probe_point(i))) < 0.001)
+    }
+}
+
+@test(frames: 24, input: "controls.json")
+fn the_lab_selects_another_world_and_replays_its_construction(s: Lab) {
+    assert(s.world == World::Ocean && s.seed == 1)
+    assert(s.playing && s.visible == 0, "the replay must start before the first solid was built")
+    assert(s.count > 0, "the terrain disappeared with the unbuilt structure")
+}

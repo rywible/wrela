@@ -1,0 +1,267 @@
+// People seek a site, size an enclosure to the local supply, gather from finite deposits, and
+// build from foundations upward. They retain a clear gate. A changed environment can refuse a
+// plan; failure is explicit, never replaced by a free finished building.
+
+use engine::construction::{Built, Ground, Piece, Refusal, Worksite}
+use engine::history::{Calendar, Event, Process, Progress, run}
+use worlds::{Forest, Habitat, Ocean}
+use std::math::TAU
+
+pub enum Task: Copy { Seek, Gather, Build }
+
+pub enum Outcome: Copy + Eq { Working, Complete, NoSite, Exhausted, Rejected }
+
+pub struct People<H>: Clone {
+    pub habitat: H,
+    pub site: Worksite,
+    pub plan: Vec<Piece>,
+    pub next: u32,
+    pub deposits: [f32; 2],
+    pub initial: [f32; 2],
+    pub labour: f32,
+    pub outcome: Outcome,
+    pub at: vec2,
+    pub axis: vec2,
+    pub floor: f32,
+    pub half: vec2,
+    pub gate: f32,
+    pub waited: u32,
+    pub finished: u32,
+    pub raised: Bounded<u32, 64>,
+}
+
+impl<H: Habitat> People<H> {
+    pub fn new(habitat: H) -> People<H> {
+        People {
+            habitat,
+            site: Worksite::new(2),
+            plan: Vec::new(),
+            next: 0,
+            deposits: [0.0; 2],
+            initial: [0.0; 2],
+            labour: 0.0,
+            outcome: Outcome::Working,
+            at: vec2(0.0),
+            axis: vec2(1.0, 0.0),
+            floor: 0.0,
+            half: vec2(0.0),
+            gate: 0.0,
+            waited: 0,
+            finished: 0,
+            raised: Bounded::new(),
+        }
+    }
+
+    fn seek(mut self, calendar: Calendar<Task>) {
+        var best = -1.0e20
+        for i in 0..64 {
+            let angle = TAU * calendar.draw(i, 1)
+            let at = vec2(cos(angle), sin(angle)) * (10.0 + 60.0 * sqrt(calendar.draw(i, 2)))
+            let facing = TAU * calendar.draw(i, 3)
+            let axis = vec2(cos(facing), sin(facing))
+            let local = self.habitat.suitability(at)
+            if local < 0.0 { continue }
+            var lo = 1.0e20
+            var hi = -1.0e20
+            // Survey a footprint, not just its centre; water or a cliff under a corner refuses it.
+            var valid = true
+            for x in [-1.0, 0.0, 1.0] {
+                for z in [-1.0, 0.0, 1.0] {
+                    let q = at +
+                        axis * (x * self.habitat.culture().half.x) +
+                        vec2(-axis.y, axis.x) * (z * self.habitat.culture().half.y)
+                    let h = self.habitat.height(q)
+                    lo = min(lo, h)
+                    hi = max(hi, h)
+                    if self.habitat.suitability(q) < 0.0 { valid = false }
+                }
+            }
+            let score = local - (hi - lo)
+            if valid && hi - lo < 1.5 && score > best {
+                best = score
+                self.at = at
+                self.axis = axis
+            }
+        }
+        if best == -1.0e20 {
+            self.outcome = Outcome::NoSite
+            return
+        }
+        let supply = self.habitat.source(self.at)
+        self.initial = [supply, supply * 0.12]
+        self.deposits = self.initial
+        // Replan from largest to smallest until the known supply covers the entire enclosure.
+        // This is an actor changing scope before work starts, not rerolling the world seed.
+        for trial in 0..5 {
+            let scale = 1.0 - 0.12 * f32(trial)
+            self.half = vec2(self.habitat.culture().half.x, self.habitat.culture().half.y) * scale
+            self.design()
+            var need = [0.0; 2]
+            for p in self.plan { need[p.material] += p.volume() }
+            if need[0] <= self.deposits[0] && need[1] <= self.deposits[1] { return }
+        }
+        self.plan.clear()
+        self.outcome = Outcome::Exhausted
+    }
+
+    fn position(self, local: vec2) -> vec2 {
+        self.at + self.axis * local.x + vec2(-self.axis.y, self.axis.x) * local.y
+    }
+
+    fn piece(self, at: vec2, half: vec2, bottom: f32, top: f32, material: u32) -> Piece {
+        let p = self.position(at)
+        Piece {
+            centre: vec3(p.x, (bottom + top) * 0.5, p.y),
+            half: vec3(half.x, (top - bottom) * 0.5, half.y),
+            axis: self.axis,
+            material,
+        }
+    }
+
+    fn design(mut self) {
+        self.plan.clear()
+        let h = self.half
+        let t = self.habitat.culture().thickness
+        self.gate = min(2.0, self.habitat.culture().materials[1].max_span * 0.5 - t)
+        var bottom = 1.0e20
+        var top = self.habitat.culture().safe_floor
+        // Dense, bounded samples of this small study's smooth ground. The construction engine
+        // separately verifies every actual support point before installing a solid.
+        for i in 0..9 {
+            for j in 0..9 {
+                let p = self.position(
+                    vec2((f32(i) / 4.0 - 1.0) * (h.x + t), (f32(j) / 4.0 - 1.0) * (h.y + t)),
+                )
+                let y = self.habitat.height(p)
+                bottom = min(bottom, y - 0.1)
+                top = max(top, y + 0.1)
+            }
+        }
+        self.floor = top
+        // A level, solid foundation. It is paid for by volume and raises an ocean settlement
+        // above high water. Future world adapters can use piers, arches or other field recipes.
+        self.plan.push(self.piece(vec2(0.0), h + vec2(t), bottom, top, 0))
+        // Access is built too: paid, supported treads descend from the gate to the local ground.
+        for step in 0..32 {
+            let z = -h.y - t - 0.3 - 0.6 * f32(step)
+            let tread_top = top - 0.2 * f32(step + 1)
+            var low = 1.0e20
+            for x in [-1.0, 1.0] {
+                for dz in [-0.3, 0.3] {
+                    low = min(low, self.habitat.height(self.position(vec2(x * self.gate, z + dz))))
+                }
+            }
+            if tread_top <= low + 0.05 { break }
+            self.plan.push(self.piece(vec2(0.0, z), vec2(self.gate, 0.3), low - 0.1, tread_top, 0))
+        }
+        let wall_top = top + self.habitat.culture().wall_height
+        // Side walls include their corners. Front/back fit between them, without double volume.
+        self.plan.push(self.piece(vec2(-h.x, 0.0), vec2(t, h.y + t), top, wall_top, 0))
+        self.plan.push(self.piece(vec2(h.x, 0.0), vec2(t, h.y + t), top, wall_top, 0))
+        self.plan.push(self.piece(vec2(0.0, h.y), vec2(h.x - t, t), top, wall_top, 0))
+        let side = (h.x - t - self.gate) * 0.5
+        let centre = (h.x - t + self.gate) * 0.5
+        self.plan.push(self.piece(vec2(-centre, -h.y), vec2(side, t), top, wall_top, 0))
+        self.plan.push(self.piece(vec2(centre, -h.y), vec2(side, t), top, wall_top, 0))
+        // The lintel bears on both gate walls. It does not intersect their solids.
+        self.plan.push(
+            self.piece(vec2(0.0, -h.y), vec2(self.gate + t, t), wall_top, wall_top + 0.4, 1),
+        )
+    }
+}
+
+impl<H: Habitat> Process<Task> for People<H> {
+    fn react(mut self, event: Event<Task>, calendar: mut Calendar<Task>) {
+        if self.outcome != Outcome::Working { return }
+        match event.value {
+            Task::Seek => {
+                self.seek(calendar)
+                if self.outcome == Outcome::Working {
+                    let _ = calendar.schedule(event.at + 1, Task::Gather)
+                }
+            },
+            Task::Gather => {
+                if !self.habitat.available(event.at) {
+                    self.waited += 1
+                    let _ = calendar.schedule(event.at + 1, Task::Gather)
+                    return
+                }
+                let p = self.plan[self.next]
+                let missing = max(0.0, p.volume() - self.site.stock(p.material))
+                if missing > 0.0 {
+                    let n = self.site.gather(
+                        p.material,
+                        mut self.deposits[p.material],
+                        min(missing, self.habitat.culture().gather_rate),
+                    )
+                    if n == 0.0 {
+                        self.outcome = Outcome::Exhausted
+                        return
+                    }
+                }
+                self.labour += self.habitat.culture().labour
+                let _ = calendar.schedule(event.at + 1, Task::Build)
+            },
+            Task::Build => {
+                match self.site.install(
+                    self.plan[self.next],
+                    self.habitat.culture().materials,
+                    self.habitat,
+                    mut self.labour,
+                ) {
+                    Ok(_) => {
+                        self.raised.push(event.at)
+                        self.next += 1
+                        if self.next == self.plan.len() {
+                            self.outcome = Outcome::Complete
+                            self.finished = event.at
+                        } else { let _ = calendar.schedule(event.at + 1, Task::Gather) }
+                    },
+                    Err(Refusal::Stock) => {
+                        let _ = calendar.schedule(event.at + 1, Task::Gather)
+                    },
+                    Err(Refusal::Work) => { let _ = calendar.schedule(event.at + 1, Task::Gather) },
+                    Err(_) => { self.outcome = Outcome::Rejected },
+                }
+            },
+        }
+    }
+}
+
+pub fn simulate<H: Habitat>(habitat: H, seed: u32) -> People<H> {
+    var people = People::new(habitat)
+    var calendar = Calendar::new(seed)
+    let _ = calendar.schedule(0, Task::Seek)
+    assert(run(mut people, mut calendar, until: 1000, budget: 4096) == Progress::Reached)
+    people
+}
+
+/// Both studies' fields are generated during compilation, with no manually placed structure.
+pub struct Study: Copy {
+    pub built: Built,
+    pub at: vec2,
+    pub axis: vec2,
+    pub half: vec2,
+    pub floor: f32,
+    pub days: u32,
+    pub raised: Bounded<u32, 64>,
+    pub waited: u32,
+}
+
+fn study<H: Habitat>(habitat: H, seed: u32) -> Study {
+    let p = simulate(habitat, seed)
+    assert(p.outcome == Outcome::Complete, f"seed {seed} did not finish its construction")
+    Study {
+        built: p.site.built,
+        at: p.at,
+        axis: p.axis,
+        half: p.half,
+        floor: p.floor,
+        days: p.finished,
+        raised: p.raised,
+        waited: p.waited,
+    }
+}
+
+pub const FORESTS: Vec<Study> = Vec::from_fn(10, |seed| study(Forest { seed }, seed))
+pub const OCEANS: Vec<Study> = Vec::from_fn(10, |seed| study(Ocean { seed }, seed))
