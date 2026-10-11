@@ -102,9 +102,10 @@ pub fn init() -> Game {
     let _ = cues.push(Cue::Brush { brush: 0, at: vec3(0.0), amount: 0.7 })
     let _ = cues.push(Cue::Brush { brush: 1, at: vec3(0.0), amount: 0.4 })
     for k in 0..2 {
-        let at = vec3(2.0 - 4.0 * f32(k), 1.0, 1.5)
+        // All to one side of the listener, so the mix stays louder on one side.
+        let at = vec3(3.0, 1.0 - f32(k), -1.0 - f32(k))
         let _ = cues.push(Cue::Impact { at, kind: k, strength: 0.9, seed: 7 + k })
-        let _ = cues.push(Cue::Whoosh { at: -at, kind: k, amount: 0.6, seed: 11 + k })
+        let _ = cues.push(Cue::Whoosh { at: at * 0.8, kind: k, amount: 0.6, seed: 11 + k })
     }
     play(take m, mix)
     Game { cues }
