@@ -843,7 +843,7 @@ fn the_fire_and_the_gales_leave_what_they_did() {
                 var stood = 0
                 for t in u.trees {
                     let d = length(t.at - at)
-                    if d < 0.6 * reach && t.cause == Cause::Snapped && t.died == e.year {
+                    if d < reach && t.cause == Cause::Snapped && t.died == e.year {
                         snapped += 1
                     }
                     if d < reach &&
@@ -855,7 +855,7 @@ fn the_fire_and_the_gales_leave_what_they_did() {
                 }
                 let name = e.name
                 print(
-                    f"{name}: {marked} of {cells} cells near its middle thrown on; {snapped} snapped; {stood} stood through it within its reach",
+                    f"{name}: {marked} of {cells} cells near its middle thrown on; {snapped} snapped and {stood} stood through it within its reach",
                 )
                 // A gale before the bake's first year (the meadow's) never blew.
                 if e.year < m.present - BAKE.years {
