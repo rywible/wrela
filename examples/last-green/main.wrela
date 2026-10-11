@@ -9,7 +9,6 @@ use engine::character::{
     PartOf, character, character_motion, character_shade, character_shadow, motion,
 }
 use engine::realize::realizing
-use engine::standin::{placed as standin_at, realize_standin}
 use engine::stone::{Realized, stone_shade, stone_vertex}
 use engine::bake::{Decisions, Far, decode_far, decode_tile, tile_name}
 use engine::grass::{Blooms, Grass, GrassLook}
@@ -33,6 +32,11 @@ use engine::vegetation::{Kind, Placed, kind}
 use engine::wood::Wood
 use engine::view::{BEHIND, Camera, NEAREST, camera, first_camera}
 use engine::water::{LOOKS, MistAt, WaterVert, copy_below, mist_over, water_shade, water_vertex}
+use climber::body::HEM_RADIUS
+use climber::cape::Plane
+use climber::draw::{Drawn, drawn}
+use climber::figure::{Figure, figure}
+use climber::moves::REST
 use history::{BAKED, OBSTACLES, tiles_hi, tiles_lo}
 use provenance::NearTile
 use std::collections::{Flags, replace, swap}
@@ -369,9 +373,13 @@ pub struct Floor {
     shot_from: f32,
     typing_shot: bool,
     shot_digits: u32,
-    /// The stand-in: its realized mesh (at the first frame), and its one bone's place this frame
-    /// and the last (its palettes, for the motion target).
-    standin: Option<engine::standin::Realized>,
+    /// The climber, the player: its figure (the cape and the darkness off it) stepped each
+    /// frame, and drawn (`climber::draw`: its head and sword realized at the first frame); the
+    /// frame's time it was last stepped to, and that step (s).
+    climber: Figure,
+    drawn: Option<Drawn>,
+    stepped: f32,
+    dt: f32,
     /// The built things (`blockouts`) to realize, one a frame at load, and those realized; and
     /// where the grass keeps out of the stones (each one's place and reach).
     to_build: Vec<blockouts::Built>,
@@ -381,13 +389,11 @@ pub struct Floor {
     built_reach: Vec<f32>,
     built_far: Vec<Option<Realized>>,
     footprints: GpuBuffer<vec4>,
-    palette: GpuBuffer<mat4>,
-    last_palette: GpuBuffer<mat4>,
     /// The fawn (`fawns`): realized over frames once a shot that casts it is held (its job, and
     /// the creature it realizes), then its mesh and colours, and its palette where it stands.
     fawn_job: Option<Job<realizing<fawn::creature::Coat, fawns::Grown>>>,
     fawn_grown: fawns::Grown,
-    fawn: Option<engine::standin::Realized>,
+    fawn: Option<engine::character::Realized>,
     fawn_palette: GpuBuffer<mat4>,
     /// The water's mesh (`history::waters`, laid as the program starts), the scene under it as its pass reads it, and which
     /// of its looks is drawn (`engine::water::LOOKS`; F6 the next).
@@ -569,14 +575,15 @@ pub fn init() -> Floor {
         shot_from: 0.0,
         typing_shot: false,
         shot_digits: 0,
-        standin: None,
+        climber: figure(),
+        drawn: None,
+        stepped: 0.0,
+        dt: 0.0,
         to_build: to_build(),
         built_reach: Vec::new(),
         built_far: Vec::new(),
         built: Vec::new(),
         footprints: buffer_of(footprints_in(vec3(0.0)), at_least: 1),
-        palette: buffer(1),
-        last_palette: buffer(1),
         fawn_job: None,
         fawn_grown: fawns::grown(),
         fawn: None,
@@ -627,7 +634,7 @@ fn footprints_in(o: vec3) -> Vec<vec4> {
     out
 }
 
-/// The footprints a held shot's characters take (the stand-in's, the fawn's): the grass is
+/// The footprints a held shot's characters take (the climber's, the fawn's): the grass is
 /// trodden short round their feet, so their feet show (the characters' lookdev: 16, 18).
 const CAST_FEET: u32 = 2
 const OFF_MAP: vec4 = vec4(1.0e9, 1.0e9, 0.0, 0.0)
@@ -1357,23 +1364,12 @@ fn static_shadows(s: mut Floor, sh: Shadows, wind: Wind) {
     }
 }
 
-/// The moving map: the stand-in, every frame.
+/// The moving map: the climber, every frame.
 fn moving_shadow(s: mut Floor, sh: Shadows) {
     label("shadow moving")
     let mv = begin_depth_pass(mut s.moving, clear_depth: 1.0)
-    if let Some(c) = s.standin {
-        draw(
-            mv,
-            character_shadow.bind(
-                verts: c.mesh.verts.items(),
-                palettes: s.palette.items(),
-                view: sh.moving,
-            ),
-            engine::vegetation::nothing,
-            indices: c.mesh.quads.items(),
-            indirect: c.mesh.draw.items(),
-            depth_bias: CASTER,
-        )
+    if let Some(d) = s.drawn {
+        d.shadow(mv, sh.moving)
     }
     if let Some(c) = s.fawn {
         if fawn_shown(s.shot) {
@@ -1670,22 +1666,8 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         keep_depth: true,
         join: true,
     )
-    if let Some(c) = s.standin {
-        draw(
-            cr,
-            character.bind(
-                verts: c.mesh.verts.items(),
-                colours: c.colours.items(),
-                palettes: s.palette.items(),
-                parts: PartOf { of: [0; 64] },
-                cam: cam,
-            ),
-            character_shade.bind(lt),
-            indices: c.mesh.quads.items(),
-            indirect: c.mesh.draw.items(),
-            cull: std::gpu::Cull::Back,
-            depth: NEAREST,
-        )
+    if let Some(d) = s.drawn {
+        d.draw(cr, lt, cam)
     }
     if let Some(c) = s.fawn {
         if fawn_shown(s.shot) {
@@ -1788,25 +1770,12 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         ap.end()
         swap(mut s.scene, mut s.scene_b)
     }
-    // The stand-in's motion, where it's seen, over the older target: the last frame's is kept.
+    // The climber's motion, where it's seen, over the older target: the last frame's is kept.
     label("motion")
     swap(mut s.motion, mut s.last_motion)
     let mo = begin_pass_with_depth(mut s.motion, mut s.depth, clear: vec4(0.0), keep_depth: true)
-    if let Some(c) = s.standin {
-        draw(
-            mo,
-            character_motion.bind(
-                verts: c.mesh.verts.items(),
-                palettes: s.palette.items(),
-                last: s.last_palette.items(),
-                cam: cam,
-            ),
-            motion.bind(cam),
-            indices: c.mesh.quads.items(),
-            indirect: c.mesh.draw.items(),
-            cull: std::gpu::Cull::Back,
-            depth: engine::view::SEEN,
-        )
+    if let Some(d) = s.drawn {
+        d.motion(mo, cam, s.dt)
     }
     // The fawn stands still: its palette is its last.
     if let Some(c) = s.fawn {
@@ -1963,6 +1932,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     }
     let from = vec2(near_tile - s.origin) * TILE
     let before = s.origin
+    let o_was = origin_of(s)
     if max(abs(from.x), abs(from.y)) > RECENTRE {
         let k = f32(RECENTRE_STEP)
         let t = vec2i(round(vec2(near_tile) / k) * k)
@@ -1974,11 +1944,10 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     let feet2 = pa.at.from_tile(s.origin) + pa.at.to(pb.at) * b.alpha
     let feet = vec3(feet2.x, mix(pa.y, pb.y, b.alpha), feet2.y)
     let c = pb.controls
-    if s.standin.is_none() {
-        s.standin = Some(realize_standin())
+    if s.drawn.is_none() {
+        s.drawn = Some(drawn())
     }
     let heading = engine::present::lerp_angle(pa.heading, pb.heading, b.alpha)
-    std::gpu::copy(from: s.palette.items(), to: s.last_palette.items_mut())
     // A shot that casts the characters stands them where it says (in render space), and the
     // moving shadow map goes round them.
     let cast = held_cast(s.shot)
@@ -1987,7 +1956,40 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         Some(c) => (on_ground(c.player), c.player.z),
         None => (feet, heading),
     }
-    write(mut s.palette, 0, [standin_at(stood, facing)])
+    // The climber's figure, stepped by the frame's time where it stands (carried as it is when
+    // the render origin moves), on the ground as a plane through its feet with the ground's slope
+    // there, in the wind.
+    s.dt = clamp(time - s.stepped, 0.0, 0.1)
+    s.stepped = time
+    let moved = s.origin != before
+    if moved {
+        s.climber.carry(o_was - o)
+    }
+    let w_at = stood.xz + o2
+    let slope = vec2(
+        height_at(w_at + vec2(0.3, 0.0)) - height_at(w_at - vec2(0.3, 0.0)),
+        height_at(w_at + vec2(0.0, 0.3)) - height_at(w_at - vec2(0.0, 0.3)),
+    ) /
+        0.6
+    let gust = wind(time)
+    let breeze = vec3(gust.dir.x, 0.0, gust.dir.y) * (0.5 + if s.still { 0.0 } else {
+        1.5 * gust.strength
+    })
+    s.climber.step(
+        stood,
+        facing,
+        REST,
+        speed: length(pb.velocity),
+        swinging: false,
+        gone: false,
+        ground: Plane { at: stood, slope },
+        wind: breeze,
+        dt: s.dt,
+    )
+    match mut s.drawn {
+        Some(d) => d.write(s.climber, stood, facing, REST, gone: false, still: moved),
+        None => {},
+    }
     if let Some(c) = cast {
         cast_fawn(mut s)
         write(mut s.fawn_palette, 0, fawns::at_rest(on_ground(c.fawn), c.fawn.z))
@@ -2001,17 +2003,13 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         mut s.footprints,
         0,
         match cast {
-            Some(c) => [feet_of(c.player, 0.3), feet_of(c.fawn, 0.35)],
+            Some(c) => [feet_of(c.player, HEM_RADIUS), feet_of(c.fawn, 0.35)],
             None => [OFF_MAP, OFF_MAP],
         },
     )
     let moving_at = match cast {
         Some(c) => 0.5 * (on_ground(c.player) + on_ground(c.fawn)),
         None => feet,
-    }
-    if s.origin != before {
-        // Last frame's place is in the old render space: no motion this frame.
-        std::gpu::copy(from: s.palette.items(), to: s.last_palette.items_mut())
     }
     let ground_r = |p: vec2| height_at(p + o2)
     let (eye, at, fovy) = match s.shot {
@@ -2174,7 +2172,7 @@ fn cast_fawn(s: mut Floor) {
                     fawns::FawnLook {},
                     cell: 1cm,
                 )
-                s.fawn = Some(engine::standin::Realized { mesh: take whole.mesh, colours })
+                s.fawn = Some(engine::character::Realized { mesh: take whole.mesh, colours })
                 s.fawn_job = None
             },
         },

@@ -18,7 +18,7 @@ pub struct Shot: Copy {
     pub cast: Cast = Cast { on: false, player: vec3(0.0), fawn: vec3(0.0) },
 }
 
-/// Who stands in a shot (#54 §9's characters in the wood): the stand-in and the fawn, each at
+/// Who stands in a shot (#54 §9's characters in the wood): the climber and the fawn, each at
 /// (x, z, heading: radians from +z toward +x) on the ground; nobody where `on` is false.
 pub struct Cast: Copy {
     pub on: bool,
@@ -157,7 +157,7 @@ pub const SHOTS = [
         at: vec3(2500.0, 4.0, -2120.0),
         moves: vec2(2.0, -2.0),
     },
-    // The characters in the wood: the fawn and the stand-in, their cel treatment against the
+    // The characters in the wood: the fawn and the climber, their cel treatment against the
     // wood pasture's dappled light, the beeches' dark, and the stream's shade.
     Shot {
         name: "the fawn in the glade",
