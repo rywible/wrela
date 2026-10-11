@@ -1387,6 +1387,37 @@ fn every_kind_has_its_line_and_the_burnt_snags_differ() {
     }
 }
 
+/// An open-grown tree crowded by its neighbours is drawn in its forest form, unless browsing
+/// keeps a line under it (the wood pasture's spreading oaks keep theirs): `trees::crowded_form`,
+/// over the floor's living trees.
+@test
+fn crowded_open_trees_take_their_forest_form() {
+    let open = [trees::OAK_OPEN, trees::BEECH_OPEN, trees::BIRCH_OPEN]
+    let forest = [trees::OAK_FOREST, trees::BEECH_FOREST, trees::BIRCH_FOREST]
+    var crowded = 0
+    var browsed = 0
+    for t in decisions().trees {
+        if t.state != State::Alive {
+            continue
+        }
+        for i in 0..3 {
+            let k = open[i]
+            let wide = trees::crown_wide(t, k, trees::drawn_tall(k, t.tall))
+            let drawn = trees::crowded_form(t, k)
+            if t.lift > 0.0 {
+                assert(drawn == k, f"a browsed tree at {t.at} lost its open form")
+                browsed += 1
+            } else if wide < 1.0 {
+                assert(drawn == forest[i], f"a crowded tree at {t.at} kept its open form")
+                crowded += 1
+            } else {
+                assert(drawn == k, f"a free tree at {t.at} took its forest form")
+            }
+        }
+    }
+    assert(crowded > 0 && browsed > 0, f"crowded {crowded}, browsed {browsed}")
+}
+
 /// The fight on the floor itself (route.md §9, `encounter`): a travel to the wolf (G 62 Enter)
 /// puts the player by the ring, near enough the disc to wake it; within 11 s the wolf has come
 /// out to fight, within 4 m, on the floor's own ground, trunks and stones.
