@@ -138,9 +138,11 @@ pub const SHOTS = [
         moves: vec2(0.0, 2.0),
     },
     // Blockouts, judged as composition.
+    // The town's site from inside its glade, 35 m from its middle on the line the old eye looked
+    // along, so no crown hangs over the lens.
     Shot {
         name: "the town's site",
-        eye: vec3(501.0, 1.7, -810.8),
+        eye: vec3(477.8, 1.7, -828.7),
         at: vec3(450.0, 3.0, -850.0),
         moves: vec2(2.0, -2.0),
         reach: 20.0,
