@@ -1514,10 +1514,10 @@ fn bake_probes(s: mut Floor, sh: Shadows, eye: vec2) {
     if !s.near.ready || !s.air_cooked || !s.sky.done() || busy {
         return
     }
-    // A still's probes wait for all they see: the tiles round the eye (their occluders) and the
-    // whole dome of clouds (a capture's load is a few frames: before, they saw the bare sky).
+    // A still's probes wait for the tiles round the eye too, their occluders (a capture's load
+    // is a few frames: before, the probes saw an empty wood).
     let loading = !(s.fetching.is_empty() && s.cooking.is_empty() && s.arrived.is_empty())
-    if s.capture && (loading || !s.sky.done()) {
+    if s.capture && loading {
         return
     }
     let trace = trace_of(s)
