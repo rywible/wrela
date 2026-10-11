@@ -1993,16 +1993,24 @@ pub fn streams<G: Ground>(ground: G, m: Map, land: Land) -> Vec<Stream> {
         // The grid's steps smoothed out of the course: its points moved toward their
         // neighbours' middle, twice, its ends where they are.
         for _ in 0..2 {
-            let was = pts.clone()
-            for k in 1..(max(was.len(), 2) - 1) {
-                let mid = (was[k - 1].xy + was[k + 1].xy) * 0.5
-                pts[k] = vec4(mix(was[k].xy, mid, vec2(0.5)), was[k].z, was[k].w)
-            }
+            smooth_course(mut pts)
         }
         out.push(Stream { points: pts })
         si += 1
     }
     out
+}
+
+/// One smoothing pass, keeping the original left neighbour before replacing a point.
+fn smooth_course(points: mut Vec<vec4>) {
+    var left = vec2(0.0)
+    for k in 1..(max(points.len(), 2) - 1) {
+        let p = points[k]
+        let before = if k == 1 { points[0].xy } else { left }
+        let mid = (before + points[k + 1].xy) * 0.5
+        left = p.xy
+        points[k] = vec4(mix(p.xy, mid, vec2(0.5)), p.z, p.w)
+    }
 }
 
 /// Where the water at each cell of the land goes next: the neighbour it falls to most steeply

@@ -114,6 +114,12 @@ fn no_token_is_dropped() {
     }
 }
 
+/// The CPU time this thread has used, from Linux's /proc; elsewhere, none.
+fn thread_cpu() -> Option<std::time::Duration> {
+    let stat = std::fs::read_to_string("/proc/thread-self/schedstat").ok()?;
+    Some(std::time::Duration::from_nanos(stat.split_whitespace().next()?.parse().ok()?))
+}
+
 #[test]
 fn many_stray_closers_and_split_tokens_parse_quickly() {
     // Each `]` closes nothing (L19) and is read as `)`, which changes what's open after it and
@@ -125,11 +131,29 @@ fn many_stray_closers_and_split_tokens_parse_quickly() {
         src.push_str(&format!("    let a{i} = g(1]\n    let b{i}: Option<Option<f32>> = None\n"));
     }
     src.push_str("}\n\nfn last() {}\n");
-    let started = std::time::Instant::now();
+    let (started, cpu) = (std::time::Instant::now(), thread_cpu());
     let p = parse(FileId(0), &src);
-    assert!(started.elapsed().as_secs() < 10, "took {:?}", started.elapsed());
+    // The CPU time the parse took where it can be read, so a busy machine (a gate's other tests
+    // share its cores) doesn't fail it; wall-clock time elsewhere.
+    let took = match (cpu, thread_cpu()) {
+        (Some(a), Some(b)) => b - a,
+        _ => started.elapsed(),
+    };
+    assert!(took.as_secs() < 10, "took {took:?}");
     assert!(p.diagnostics.iter().all(|d| d.code.to_string() == "E0102"), "{:#?}", p.diagnostics);
     let body = fn_named(&p.file, "f").body.as_ref().expect("a body");
     assert_eq!(body.stmts.len(), 2 * n);
     fn_named(&p.file, "last");
+}
+
+#[test]
+fn print_fix_keeps_a_leading_bom_first() {
+    let src = "\u{feff}fn f() { println!(\"hello\") }\n";
+    let p = parse(FileId(0), src);
+    let d = p.diagnostics.iter().find(|d| d.code.as_str() == "E0115").expect("macro error");
+    let fix = &d.fixes[0];
+    assert_eq!(fix.edits[0].span.start, 3);
+    let fixed = wrela_diag::apply_edits(src, &fix.edits);
+    assert!(fixed.starts_with("\u{feff}use std::io::print"));
+    assert!(!parse(FileId(0), &fixed).has_errors());
 }

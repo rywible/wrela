@@ -16,7 +16,8 @@ that does each part.
 
 - The route: an opening, an enclosed wood, a reveal, water and an encounter. Each place works on
   approach, while a player explores it, and looking back. The exploration check's goals: dead
-  views at most 15% (27.3% on main), lost walkers at most 25% (21.3%) (Lookdev: shot framing).
+  views at most 15% (27.3% on main), lost walkers at most 25% (21.3%); the required openings are
+  open again (#111) (Lookdev: shot framing).
 - Three definitive tree forms, the hero oak, a beech interior and an alder waterside, whose
   construction then serves every instance (Lookdev: tree crowns; Lookdev: trunks and wood).
 - The look survives movement: walking, fast turns, gusts, water, a character passing in front, sun
@@ -29,9 +30,9 @@ that does each part.
   the climber in place of the floor's stand-in (Climber and fight spike).
 - A creature that notices the player, watches or flees, and goes back to what it was doing, with
   the same senses as the fight's enemy (Creatures that notice you).
-- The place's sounds: the climber's hem through grass and over each ground, creatures' steps,
-  wind in the leaves, water, a mix that keeps the fight's cues clear, tested in the game (Sound
-  on main).
+- The place's sounds. On main: steps by ground, wind in the leaves, water, the mixer, and the
+  piano with its blind gate (`tools/listening.py`, for the owner's ears). Next: the climber's hem
+  and the fight's cues in the mix, kept clear over the beds (Climber and fight spike).
 - Frames paced at 60 fps on the M4 over the route, with the fight in an expensive forest and water
   view (Code health and architecture; Speed up the gate on CPU).
 

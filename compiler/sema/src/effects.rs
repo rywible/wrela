@@ -209,6 +209,31 @@ struct TypedArg {
     callee: String,
 }
 
+/// The body a callable place holds. Its resolved type keeps a closure's or named function's
+/// identity through aggregate fields (`held.f`) and other projections; `held` covers the
+/// temporaries that MIR assigned a callable value directly.
+fn callable_type_body(p: &Program, f: FnId, ty: TyId) -> Option<BodyId> {
+    match p.types.kind(ty) {
+        TyKind::Closure(c, _) => Some(BodyId { func: c.owner.unwrap_or(f), closure: Some(c.id) }),
+        TyKind::FnDef(g, _) => Some(BodyId { func: *g, closure: None }),
+        _ => None,
+    }
+}
+
+fn callable_body(
+    p: &Program,
+    f: FnId,
+    body: &Body,
+    place: &mir::Place,
+    held: &HashMap<mir::Local, BodyId>,
+) -> Option<BodyId> {
+    match callable_type_body(p, f, mir::place_ty(p, &body.locals, place)) {
+        Some(target) => Some(target),
+        _ if place.proj.is_empty() => held.get(&place.local).copied(),
+        _ => None,
+    }
+}
+
 /// The closures and named functions a body passes to `@deterministic fn` and `@parallel fn`
 /// parameters.
 fn typed_callables(p: &Program, f: FnId, body: &Body) -> Vec<TypedArg> {
@@ -231,7 +256,8 @@ fn typed_callables(p: &Program, f: FnId, body: &Body) -> Vec<TypedArg> {
             if !(flags.deterministic || flags.parallel || flags.audio) {
                 continue;
             }
-            let Some(&target) = a.place().and_then(|pl| held.get(&pl.local)) else {
+            let Some(target) = a.place().and_then(|place| callable_body(p, f, body, place, held))
+            else {
                 continue;
             };
             out.push(TypedArg {
@@ -240,6 +266,34 @@ fn typed_callables(p: &Program, f: FnId, body: &Body) -> Vec<TypedArg> {
                 flags: *flags,
                 callee: def.name.clone(),
             });
+        }
+        // A callable may select a blanket impl because it meets an attributed function bound,
+        // even when the selected method never calls it. The bound is still an effect promise
+        // made by the concrete callable (`impl<F: @deterministic fn(..)> Trait for F`).
+        if let Callee::TraitMethod { method, self_ty, trait_args, .. } = &c.callee
+            && let FnOwner::Trait(t) = p.func(*method).owner
+            && let Some((i, subst)) =
+                traits::find_impl(p, *self_ty, &TraitRef { trait_: t, args: trait_args.clone() })
+        {
+            let imp = p.impl_(i);
+            for &g in &imp.generics {
+                let Some(bound) = p.param(g).fn_bound else { continue };
+                let TyKind::FnPtr(_, _, flags) = p.types.kind(p.types.subst(bound, &subst)) else {
+                    continue;
+                };
+                if !(flags.deterministic || flags.parallel || flags.audio) {
+                    continue;
+                }
+                let Some(target) = subst.get(g).and_then(|ty| callable_type_body(p, f, ty)) else {
+                    continue;
+                };
+                out.push(TypedArg {
+                    body: target,
+                    span: c.span,
+                    flags: *flags,
+                    callee: format!("{}'s impl", def.name),
+                });
+            }
         }
     });
     // A struct's function fields: each bounded by its field's type (`fn.fields`).
@@ -442,7 +496,7 @@ fn derived_callables(p: &Program, f: FnId, body: &Body) -> Vec<(BodyId, Span)> {
         );
         if derived
             && let Some(place) = c.args.first().and_then(|a| a.place())
-            && let Some(&target) = held.get(&place.local)
+            && let Some(target) = callable_body(p, f, body, place, held)
         {
             out.push((target, c.span));
         }
@@ -516,41 +570,56 @@ impl<'p> Effects<'p> {
     }
 
     fn propagate(&mut self) {
-        // Iterate to a fixpoint: effect sets only grow, and there are six. What reaches an open
-        // call is open too: a call to a body that isn't here (an intrinsic) isn't.
+        // Send newly found effects back to callers. Each of the seven effects, and openness,
+        // can reach a body only once; a long chain doesn't require rescanning every body.
+        // A call to a body that isn't here (an intrinsic) contributes neither.
         let ids: Vec<BodyId> = self.nodes.keys().copied().collect();
-        for &b in &ids {
-            let mut e: Vec<Effect> = self.nodes[&b].direct.iter().map(|d| d.0).collect();
-            e.sort();
-            e.dedup();
-            self.all.insert(b, e);
+        let index: HashMap<BodyId, usize> = ids.iter().enumerate().map(|(i, &b)| (b, i)).collect();
+        let mut callers = vec![Vec::new(); ids.len()];
+        let mut effects = vec![0u8; ids.len()];
+        let mut open = vec![false; ids.len()];
+        let mut queued = vec![false; ids.len()];
+        let mut work = VecDeque::new();
+        for (i, b) in ids.iter().enumerate() {
+            let node = &self.nodes[b];
+            for &(e, _, _) in &node.direct {
+                effects[i] |= 1 << e as u8;
+            }
+            open[i] = node.open;
+            if effects[i] != 0 || open[i] {
+                work.push_back(i);
+                queued[i] = true;
+            }
+            for (callee, _) in &node.calls {
+                if let Some(&c) = index.get(callee) {
+                    callers[c].push(i);
+                }
+            }
         }
-        self.open = ids.iter().copied().filter(|b| self.nodes[b].open).collect();
-        loop {
-            let mut changed = false;
-            for &b in &ids {
-                let mut e = self.all[&b].clone();
-                let mut open = false;
-                for (c, _) in &self.nodes[&b].calls {
-                    if let Some(ce) = self.all.get(c) {
-                        e.extend(ce.iter().copied());
+        while let Some(c) = work.pop_front() {
+            queued[c] = false;
+            for &b in &callers[c] {
+                let combined = effects[b] | effects[c];
+                let is_open = open[b] || open[c];
+                if combined != effects[b] || is_open != open[b] {
+                    effects[b] = combined;
+                    open[b] = is_open;
+                    if !queued[b] {
+                        queued[b] = true;
+                        work.push_back(b);
                     }
-                    open |= self.open.contains(c);
                 }
-                e.sort();
-                e.dedup();
-                if e != self.all[&b] {
-                    self.all.insert(b, e);
-                    changed = true;
-                }
-                if open && self.open.insert(b) {
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
             }
         }
+        self.all = ids
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| {
+                let found = Effect::ALL.into_iter().filter(|&e| effects[i] & (1 << e as u8) != 0);
+                (b, found.collect())
+            })
+            .collect();
+        self.open = ids.iter().enumerate().filter(|(i, _)| open[*i]).map(|(_, &b)| b).collect();
     }
 
     /// `f`'s effects, each with why it has it, and whether it calls something whose effects
@@ -972,4 +1041,85 @@ pub fn sccs(adj: &[Vec<usize>]) -> Vec<Vec<usize>> {
         }
     }
     t.out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use wrela_diag::FileId;
+
+    #[test]
+    fn frontend_perf_effect_propagation_matches_reachability() {
+        let p = Program::default();
+        let span = Span::new(FileId(0), 0, 0);
+        let id = |i| BodyId { func: FnId(i), closure: None };
+        // Cycles, diamonds, duplicate calls, absent intrinsics and effects, and open calls.
+        // Reachability is an independent specification of the least fixed point.
+        for seed in 0..48u32 {
+            let mut nodes = BTreeMap::new();
+            for i in 0..24u32 {
+                let mut node = Node { open: (i + seed) % 13 == 0, ..Node::default() };
+                for (j, e) in Effect::ALL.into_iter().enumerate() {
+                    if (i * 17 + seed * 7 + j as u32).is_multiple_of(23) {
+                        node.direct.push((e, span, String::new()));
+                        node.direct.push((e, span, String::new()));
+                    }
+                }
+                for j in 0..26u32 {
+                    if (i * 31 + j * 19 + seed) % 29 < 3 {
+                        node.calls.push((id(j), span));
+                    }
+                }
+                nodes.insert(id(i), node);
+            }
+            let mut fx = Effects { p: &p, nodes, all: HashMap::new(), open: HashSet::new() };
+            fx.propagate();
+            for &root in fx.nodes.keys() {
+                let mut seen = HashSet::new();
+                let mut work = vec![root];
+                let mut expected = Vec::new();
+                let mut open = false;
+                while let Some(b) = work.pop() {
+                    if !seen.insert(b) {
+                        continue;
+                    }
+                    if let Some(node) = fx.nodes.get(&b) {
+                        expected.extend(node.direct.iter().map(|d| d.0));
+                        open |= node.open;
+                        work.extend(node.calls.iter().map(|c| c.0));
+                    }
+                }
+                expected.sort();
+                expected.dedup();
+                assert_eq!(fx.all[&root], expected, "seed {seed}, root {root:?}");
+                assert_eq!(fx.open.contains(&root), open, "seed {seed}, root {root:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn frontend_perf_effect_propagation_handles_forward_chain() {
+        let p = Program::default();
+        let span = Span::new(FileId(0), 0, 0);
+        let id = |i| BodyId { func: FnId(i), closure: None };
+        let nodes = (0..256)
+            .map(|i| {
+                let node = if i == 255 {
+                    Node {
+                        direct: vec![(Effect::Panic, span, String::new())],
+                        open: true,
+                        ..Node::default()
+                    }
+                } else {
+                    Node { calls: vec![(id(i + 1), span)], ..Node::default() }
+                };
+                (id(i), node)
+            })
+            .collect();
+        let mut fx = Effects { p: &p, nodes, all: HashMap::new(), open: HashSet::new() };
+        fx.propagate();
+        assert_eq!(fx.open.len(), 256);
+        assert!(fx.all.values().all(|effects| effects == &[Effect::Panic]));
+    }
 }

@@ -1,6 +1,85 @@
 use super::*;
 use crate::token::TokenKind as T;
 
+#[test]
+fn frontend_perf_punctuation_dispatch_preserves_longest_match() {
+    fn check(text: &str) {
+        let lexer = Lexer {
+            file: FileId(0),
+            src: text.as_bytes(),
+            text,
+            pos: 0,
+            out: Lexed::default(),
+            holes: Vec::new(),
+        };
+        let expected = TokenKind::PUNCT
+            .iter()
+            .copied()
+            .find(|k| text.starts_with(k.fixed_text().unwrap()))
+            .filter(|k| {
+                *k != TokenKind::Underscore
+                    || !text.as_bytes().get(1).copied().is_some_and(is_ident_continue)
+            });
+        assert_eq!(lexer.punct(), expected, "{text:?}");
+    }
+    for &kind in TokenKind::PUNCT {
+        let text = kind.fixed_text().unwrap();
+        assert!(text.is_ascii() && text.len() <= 3, "{text:?}");
+        check(text);
+        for &next in TokenKind::PUNCT {
+            check(&format!("{text}{}", next.fixed_text().unwrap()));
+        }
+        for suffix in ["name", "42", " ", "\n", "é", "αβ", "🦀"] {
+            check(&format!("{text}{suffix}"));
+        }
+    }
+    for byte in 0..=127u8 {
+        for suffix in ["", "=", ">=", "ab", "_", "é", "🦀"] {
+            check(&format!("{}{suffix}", char::from(byte)));
+        }
+    }
+    for text in ["", "é", "🦀", "ident"] {
+        check(text);
+    }
+}
+
+#[test]
+fn frontend_perf_literal_decoding_preserves_values_and_float_rounding() {
+    for text in ["42", "0xff", "18446744073709551615", "1.5", "1e-300", "1.5f32"] {
+        assert!(matches!(number_digits(text), Cow::Borrowed(_)), "{text}");
+    }
+    for text in ["4_2", "0xf_f", "1_000u32", "1.000_000_059_604_644_8"] {
+        assert!(matches!(number_digits(text), Cow::Owned(_)), "{text}");
+    }
+    let ints = ["42", "0xff", "18446744073709551615", "4_2", "0xf_f", "1_000u32"];
+    for text in ints {
+        let clean: String = without_type_suffix(text).chars().filter(|c| *c != '_').collect();
+        let expected = if let Some(digits) = clean.strip_prefix("0x") {
+            u64::from_str_radix(digits, 16).unwrap()
+        } else {
+            clean.parse().unwrap()
+        };
+        assert_eq!(int_value(text), IntValue::Ok(expected));
+    }
+    for text in [
+        "1.5",
+        "1_000.0",
+        "1e-300",
+        "1.5f32",
+        "1.0000000596046448",
+        "1.000_000_059_604_644_8",
+        "invalid",
+    ] {
+        let clean: String = without_type_suffix(text).chars().filter(|c| *c != '_').collect();
+        let expected64: f64 = clean.parse().unwrap_or(f64::NAN);
+        let expected32: f32 = clean.parse().unwrap_or(f32::NAN);
+        assert_eq!(float_value(text).to_bits(), expected64.to_bits(), "{text}");
+        assert_eq!(float_value_f32(text).to_bits(), expected32.to_bits(), "{text}");
+    }
+    // This decimal is above an f32 midpoint but rounds to that midpoint in f64.
+    assert_ne!(float_value_f32("1.0000000596046448"), float_value("1.0000000596046448") as f32);
+}
+
 fn kinds(src: &str) -> Vec<TokenKind> {
     lex(FileId(0), src).tokens.iter().map(|t| t.kind).collect()
 }
@@ -28,6 +107,10 @@ fn l3_non_ascii_identifier_is_one_token_with_one_error() {
     assert_eq!(l.tokens.len(), 5);
     assert_eq!(l.diagnostics.len(), 1);
     assert_eq!(l.diagnostics[0].code.as_str(), "E0001");
+
+    // A bad character immediately before the name must not consume its non-ASCII start.
+    assert_eq!(texts("$éx"), ["éx", ""]);
+    assert_eq!(codes_of("$éx"), ["E0001", "E0001"]);
 }
 
 #[test]
@@ -156,6 +239,12 @@ fn l14_strings() {
     assert_eq!(kinds(r#""a\n\"b""#), [T::Str, T::Eof]);
     assert_eq!(codes_of("\"abc"), ["E0005"]);
     assert_eq!(codes_of(r#""\q""#), ["E0005"]);
+
+    // An unknown escape at the end of a line must not hide the line break from the string.
+    let src = "\"a\\\nnext";
+    assert_eq!(kinds(src), [T::Str, T::Newline, T::Ident, T::Eof]);
+    assert_eq!(texts(src), ["\"a\\", "", "next", ""]);
+    assert_eq!(codes_of(src), ["E0005", "E0005"]);
 }
 
 #[test]
@@ -286,6 +375,34 @@ fn fstrings_split_at_their_holes() {
         kinds(r#"f"{f"{x}"}""#),
         [T::FStringHead, T::FStringHead, T::Ident, T::FStringTail, T::FStringTail, T::Eof]
     );
+    // F-string holes follow L19's typed bracket recovery, not scalar nesting depth: `)` closes
+    // the `(` and the `[` opened after it, so the following `}` ends the hole.
+    assert_eq!(
+        kinds(r#"f"{([1) }""#),
+        [T::FStringHead, T::LParen, T::LBracket, T::Int, T::RParen, T::FStringTail, T::Eof]
+    );
+    assert!(codes_of(r#"f"{([1) }""#).is_empty());
+
+    // An unmatched closer changes nothing, just as it does outside an f-string hole.
+    assert_eq!(
+        kinds(r#"f"{(] : 1) }""#),
+        [
+            T::FStringHead,
+            T::LParen,
+            T::RBracket,
+            T::Colon,
+            T::Int,
+            T::RParen,
+            T::FStringTail,
+            T::Eof
+        ]
+    );
+    assert!(codes_of(r#"f"{(] : 1) }""#).is_empty());
+
+    let src = "f\"a\\\nnext";
+    assert_eq!(kinds(src), [T::FString, T::Newline, T::Ident, T::Eof]);
+    assert_eq!(texts(src), ["f\"a\\", "", "next", ""]);
+    assert_eq!(codes_of(src), ["E0005", "E0005"]);
     let (spec, text) = super::fstring_segment(":>8.2}, kg{{\"x\"}}{");
     assert_eq!((spec.as_deref(), text.as_str()), (Some(">8.2"), ", kg{\"x\"}"));
     assert_eq!(super::string_value(r#""a\tb\"""#), "a\tb\"");

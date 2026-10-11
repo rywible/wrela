@@ -3,6 +3,7 @@
 
 use crate::ast::IntValue;
 use crate::token::{Comment, Token, TokenKind};
+use std::borrow::Cow;
 use wrela_diag::{Diagnostic, Edit, FileId, Span, codes};
 
 /// The lexer's output: tokens (NEWLINEs inserted, EOF last), comments and diagnostics.
@@ -41,9 +42,9 @@ struct Lexer<'a> {
     text: &'a str,
     pos: usize,
     out: Lexed,
-    /// The f-string holes open (L22), innermost last: each with where it opened and how many
-    /// brackets are open inside it.
-    holes: Vec<(usize, u32)>,
+    /// The f-string holes open (L22), innermost last: each with where it opened and the
+    /// brackets open inside it.
+    holes: Vec<(usize, Brackets)>,
 }
 
 fn is_ident_start(b: u8) -> bool {
@@ -318,7 +319,7 @@ impl<'a> Lexer<'a> {
         let b = self.src[self.pos];
         // L22: in an f-string's hole, outside brackets, `}` ends the hole and `:` starts its
         // format spec.
-        if let Some(&(_, 0)) = self.holes.last()
+        if self.holes.last().is_some_and(|(_, brackets)| brackets.depth() == 0)
             && (b == b'}' || (b == b':' && self.peek(1) != Some(b':')))
         {
             self.hole_end(line_break_before);
@@ -346,14 +347,8 @@ impl<'a> Lexer<'a> {
             return false;
         } else if let Some(kind) = self.punct() {
             self.pos += kind.fixed_text().map_or(1, str::len);
-            if let Some((_, depth)) = self.holes.last_mut() {
-                match kind {
-                    TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => *depth += 1,
-                    TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
-                        *depth = depth.saturating_sub(1)
-                    }
-                    _ => {}
-                }
+            if let Some((_, brackets)) = self.holes.last_mut() {
+                brackets.track(kind);
             }
             self.push(kind, start, line_break_before);
         } else {
@@ -363,6 +358,7 @@ impl<'a> Lexer<'a> {
                 let b = self.src[self.pos];
                 let ok = b.is_ascii_alphanumeric()
                     || b == b'_'
+                    || b >= 0x80 && c.is_alphabetic()
                     || matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'"')
                     || (b < 0x80 && self.punct().is_some())
                     || (b == b'/' && matches!(self.peek(1), Some(b'/' | b'*')));
@@ -398,15 +394,16 @@ impl<'a> Lexer<'a> {
 
     /// L15: the longest punctuation token at the current position.
     fn punct(&self) -> Option<TokenKind> {
-        let rest = &self.src[self.pos..];
-        TokenKind::PUNCT
-            .iter()
-            .copied()
-            .find(|k| k.fixed_text().is_some_and(|t| rest.starts_with(t.as_bytes())))
-            .filter(|k| {
+        let rest = &self.text[self.pos..];
+        // Fixed spellings are at most three ASCII bytes. A match dispatches by length and
+        // spelling, rather than comparing every punctuation token at every source position.
+        [3, 2, 1].into_iter().find_map(|n| rest.get(..n).and_then(TokenKind::punctuation)).filter(
+            |k| {
                 // `_` followed by an identifier character is an identifier (L10).
-                *k != TokenKind::Underscore || !rest.get(1).copied().is_some_and(is_ident_continue)
-            })
+                *k != TokenKind::Underscore
+                    || !rest.as_bytes().get(1).copied().is_some_and(is_ident_continue)
+            },
+        )
     }
 
     fn ident(&mut self, line_break_before: bool) {
@@ -500,7 +497,7 @@ impl<'a> Lexer<'a> {
                 Some(b'}') if self.peek(1) == Some(b'}') => self.pos += 2,
                 Some(b'{') => {
                     self.pos += 1;
-                    self.holes.push((self.pos, 0));
+                    self.holes.push((self.pos, Brackets::default()));
                     return opened;
                 }
                 Some(b'}') => {
@@ -540,7 +537,10 @@ impl<'a> Lexer<'a> {
         match self.peek(0) {
             Some(b'\\' | b'"' | b'n' | b'r' | b't' | b'0') => self.pos += 1,
             _ => {
-                let c = self.char_at(self.pos).map_or(0, char::len_utf8);
+                let c = match self.peek(0) {
+                    None | Some(b'\n' | b'\r') => 0,
+                    Some(_) => self.char_at(self.pos).map_or(0, char::len_utf8),
+                };
                 self.pos += c;
                 let sp = self.span(esc, self.pos);
                 self.error(
@@ -972,7 +972,7 @@ fn without_type_suffix(text: &str) -> &str {
 
 /// The value of an INT token's text, or `None` if it isn't a number that fits in a `u64`.
 fn u64_value(text: &str) -> Option<u64> {
-    let clean: String = without_type_suffix(text).chars().filter(|c| *c != '_').collect();
+    let clean = number_digits(text);
     let (digits, radix) = match clean.get(..2) {
         Some("0x") => (&clean[2..], 16),
         Some("0b") => (&clean[2..], 2),
@@ -984,15 +984,25 @@ fn u64_value(text: &str) -> Option<u64> {
 
 /// The value of a FLOAT token's text, `_` ignored.
 pub fn float_value(text: &str) -> f64 {
-    let clean: String = without_type_suffix(text).chars().filter(|c| *c != '_').collect();
+    let clean = number_digits(text);
     clean.parse().unwrap_or(f64::NAN)
 }
 
 /// [`float_value`] as an `f32`, rounded once from the decimal: rounding the `f64` again could
 /// land on the other side of a tie.
 pub fn float_value_f32(text: &str) -> f32 {
-    let clean: String = without_type_suffix(text).chars().filter(|c| *c != '_').collect();
+    let clean = number_digits(text);
     clean.parse().unwrap_or(f32::NAN)
+}
+
+/// Most literals have no separators; Rust's number parser can read the source directly.
+fn number_digits(text: &str) -> Cow<'_, str> {
+    let text = without_type_suffix(text);
+    if text.as_bytes().contains(&b'_') {
+        Cow::Owned(text.chars().filter(|c| *c != '_').collect())
+    } else {
+        Cow::Borrowed(text)
+    }
 }
 
 #[cfg(test)]

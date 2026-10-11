@@ -96,12 +96,13 @@ def measures(root):
                 continue
             with open(path, encoding="utf-8", errors="replace") as f:
                 lines = f.read().splitlines()
-            for i, line in enumerate(lines):
+            next_fn = None
+            for line in reversed(lines):
                 if '#[ignore = "measure:' in line:
-                    for later in lines[i + 1:]:
-                        if m := re.search(r"fn (\w+)\(", later):
-                            names.add(m.group(1))
-                            break
+                    if next_fn:
+                        names.add(next_fn)
+                if m := re.search(r"fn (\w+)\(", line):
+                    next_fn = m.group(1)
     return names
 
 
@@ -168,8 +169,9 @@ def bash(event):
 LIMIT = 9000
 
 
-# A Claude project's shared folder: every thread's machine sees it.
-SHARED = "/mnt/project-files"
+# A Claude project's shared folder: every thread's machine sees it. Its tests name another.
+def shared_folder():
+    return os.environ.get("WRELA_SHARED_FOLDER") or "/mnt/project-files"
 
 
 # What a session on a cloud machine is told.
@@ -190,8 +192,9 @@ def cloud(root, source):
     env = dict(line.partition("=")[::2] for line in out.splitlines())
     # In a Claude project, one constants cache for every thread's checkouts: a fresh one reads
     # the floor's bake another made (compiler/driver/src/const_cache.rs).
-    if os.path.isdir(SHARED) and os.access(SHARED, os.W_OK):
-        env.setdefault("WRELA_CONST_CACHE", os.path.join(SHARED, ".wrela-consts"))
+    shared = shared_folder()
+    if os.path.isdir(shared) and os.access(shared, os.W_OK):
+        env.setdefault("WRELA_CONST_CACHE", os.path.join(shared, ".wrela-consts"))
     path = os.environ.get("CLAUDE_ENV_FILE")
     if path:
         with open(path, "a", encoding="utf-8") as f:

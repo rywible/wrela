@@ -46,7 +46,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_error(403, "this server answers only requests for this machine")
             return True
         path = urllib.parse.unquote(self.path.split("?", 1)[0].split("#", 1)[0])
-        if ".git" in path.split("/"):
+        if ".git" in (part.casefold() for part in path.split("/")):
             self.send_error(404, "the repository's history isn't served")
             return True
         return False
@@ -118,7 +118,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_error(403, "PUT is only allowed into a results/ directory")
             return
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            self.send_error(400, "Content-Length must be a non-negative integer")
+            return
+        if length < 0:
+            self.send_error(400, "Content-Length must be a non-negative integer")
+            return
         body = self.rfile.read(length)
         tmp = f"{dest}.{os.getpid()}.{id(self)}.tmp"
         with open(tmp, "wb") as f:
@@ -132,22 +139,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         """Hook for tools/headless.py."""
 
 
-_GZIPPED = {}  # (path, size, mtime) -> the file gzipped
+class _GzipFile:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.version = None
+        self.body = None
+
+
+_GZIPPED = {}  # path -> the latest version of the file gzipped
 _GZIPPED_LOCK = threading.Lock()
 
 
 def gzipped(path):
     """The file at `path`, gzipped: once for each version of it."""
-    st = os.stat(path)
-    key = (path, st.st_size, st.st_mtime_ns)
     with _GZIPPED_LOCK:
-        body = _GZIPPED.get(key)
-    if body is None:
-        with open(path, "rb") as f:
-            body = gzip.compress(f.read(), compresslevel=6)
-        with _GZIPPED_LOCK:
-            _GZIPPED[key] = body
-    return body
+        cached = _GZIPPED.get(path)
+        if cached is None:
+            cached = _GZIPPED[path] = _GzipFile()
+    # One compression of this file at a time; other files can compress beside it. Discard
+    # its old bytes after a rebuild rather than keeping every version for the whole session.
+    with cached.lock:
+        st = os.stat(path)
+        version = (st.st_size, st.st_mtime_ns)
+        if cached.version != version:
+            with open(path, "rb") as f:
+                body = gzip.compress(f.read(), compresslevel=6)
+            cached.version, cached.body = version, body
+        return cached.body
 
 
 class Throttle:
