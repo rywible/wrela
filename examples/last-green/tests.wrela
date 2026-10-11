@@ -1235,6 +1235,20 @@ fn the_floors_sound_changes_as_smoothly_as_the_place() {
     }
 }
 
+/// The load stands the built things nearest the eye first: from a ring's middle, its own
+/// centre stone; from beside the tower, the tower.
+@test
+fn the_nearest_built_thing_is_realized_first() {
+    let m = map::map()
+    let built = blockouts::built(m)
+    for k in m.sites {
+        if k.feature == Feature::Ring || k.feature == Feature::Tower {
+            let b = built[blockouts::nearest(built, k.at + vec2(0.3, 0.0))]
+            assert(length(blockouts::place(b) - k.at) < 0.5, f"{k.name}: not its own middle first")
+        }
+    }
+}
+
 /// Each ring's stones stand apart, open widest at the threshold, and the great stone stands
 /// across from it, the tallest.
 @test

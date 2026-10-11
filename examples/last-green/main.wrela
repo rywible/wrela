@@ -1166,11 +1166,13 @@ fn stream(s: mut Floor, eye: vec2) {
 }
 
 /// The load's work this frame: the forest's kinds, a few a frame; the wood once they're all
-/// cooked.
-fn cook_load(s: mut Floor) {
+/// cooked; then the built things, a frame each, the nearest to the eye (`eye`, the world's) first.
+fn cook_load(s: mut Floor, eye: vec2) {
     if s.wood.is_some() {
         if s.to_build.len() > 0 {
-            let b = s.to_build.remove(0)
+            // The nearest to the eye first, so what a player sees on arriving stands in the first
+            // frames (one a frame from the list's start, the arena's ring stood after a second).
+            let b = s.to_build.remove(blockouts::nearest(s.to_build, eye))
             label("built things")
             var r = blockouts::realize(b, height_at)
             let o = origin_of(s)
@@ -2157,7 +2159,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         None => {},
     }
     s.terrain_cooked = s.clipmap.follow(GROUND, eye, again: false)
-    cook_load(mut s)
+    cook_load(mut s, eye_w.xz)
     stream(mut s, eye_w.xz)
     // The near cascade round where the eye will be (a little ahead), the far round the floor.
     s.near.follow(vec3(eye.x, height_at(eye_w.xz), eye.z), NEAR_MOVES)
