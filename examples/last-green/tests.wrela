@@ -838,7 +838,9 @@ fn the_fire_and_the_gales_leave_what_they_did() {
             engine::place::EventKind::Storm { at, reach, .. } => {
                 let (marked, cells) = remembered(u, at, 0.6 * reach, Mark::Wind, e.year)
                 // A snapped stem stands as a snag, then falls and rots; a living tree's broken top
-                // is remembered too. Within its reach, some trees stood through it.
+                // is remembered too. Within its reach, some trees snapped (its whole reach: in its
+                // middle a full gale throws nearly all, roots and all); and out to where it dies
+                // away (1.2 of its reach), some stood through it.
                 var snapped = 0
                 var stood = 0
                 for t in u.trees {
@@ -846,7 +848,7 @@ fn the_fire_and_the_gales_leave_what_they_did() {
                     if d < reach && t.cause == Cause::Snapped && t.died == e.year {
                         snapped += 1
                     }
-                    if d < reach &&
+                    if d < 1.2 * reach &&
                         t.state == State::Alive &&
                         t.born < e.year - 30 &&
                         t.tall > 6.0 {
@@ -855,7 +857,7 @@ fn the_fire_and_the_gales_leave_what_they_did() {
                 }
                 let name = e.name
                 print(
-                    f"{name}: {marked} of {cells} cells near its middle thrown on; {snapped} snapped and {stood} stood through it within its reach",
+                    f"{name}: {marked} of {cells} cells near its middle thrown on; {snapped} snapped within its reach, {stood} stood through it",
                 )
                 // A gale before the bake's first year (the meadow's) never blew.
                 if e.year < m.present - BAKE.years {
