@@ -179,17 +179,16 @@ pub const SHOTS = [
             fawn: vec3(371.8, -965.7, 2.486),
         },
     },
-    // On the bank, 2 m and more from the water's edge (in the stream, they stood in its bed).
     Shot {
         name: "the fawn by the stream",
-        eye: vec3(-49.4, 1.7, -261.0),
-        at: vec3(-44.3, 0.9, -265.9),
+        eye: vec3(-50.6, 1.7, -263.8),
+        at: vec3(-45.5, 0.9, -268.7),
         reach: 1.0,
         moves: vec2(-0.6, -0.8),
         cast: Cast {
             on: true,
-            player: vec3(-46.0, -264.8, 2.145),
-            fawn: vec3(-42.6, -267.0, 0.631),
+            player: vec3(-47.2, -267.6, 2.145),
+            fawn: vec3(-43.8, -269.8, 0.631),
         },
     },
 ]
