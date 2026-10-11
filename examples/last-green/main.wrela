@@ -395,6 +395,8 @@ pub struct Floor {
     fawn_palette: GpuBuffer<mat4>,
     fawn_last: GpuBuffer<mat4>,
     fawn_on: bool,
+    /// Whether the fawn's near enough the player to fall in the moving shadow map.
+    fawn_shadowed: bool,
     /// The water's mesh (`history::waters`, laid as the program starts), the scene under it as its pass reads it, and which
     /// of its looks is drawn (`engine::water::LOOKS`; F6 the next).
     water_verts: GpuBuffer<WaterVert>,
@@ -589,6 +591,7 @@ pub fn init() -> Floor {
         fawn_palette: buffer(engine::creature::MAX_BONES),
         fawn_last: buffer(engine::creature::MAX_BONES),
         fawn_on: false,
+        fawn_shadowed: false,
         water_verts: buffer_of(waters.mesh.verts, at_least: 1),
         water_tris: buffer_of(waters.mesh.tris, at_least: 1),
         water_count: waters.mesh.tris.len(),
@@ -1384,7 +1387,7 @@ fn moving_shadow(s: mut Floor, sh: Shadows) {
         )
     }
     if let Some(c) = s.fawn {
-        if s.fawn_on {
+        if s.fawn_on && s.fawn_shadowed {
             draw(
                 mv,
                 character_shadow.bind(
@@ -2004,11 +2007,14 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         Some(c) => {
             cast_fawn(mut s)
             write(mut s.fawn_palette, 0, fawns::at_rest(on_ground(c.fawn), c.fawn.z))
+            s.fawn_shadowed = true
             true
         },
         None => {
             let f = behaviour::between(b.a.fawn, b.b.fawn, b.alpha)
-            let near = s.shot.is_none() && length(f.walker.root.pos - (feet + o)) < FAWN_DRAWN
+            let apart = length(f.walker.root.pos - (feet + o))
+            let near = s.shot.is_none() && apart < FAWN_DRAWN
+            s.fawn_shadowed = apart < MOVING_SPAN
             if near {
                 cast_fawn(mut s)
                 write(mut s.fawn_palette, 0, behaviour::palette(f, o))
