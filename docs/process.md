@@ -42,11 +42,22 @@ flowchart LR
 Every commit on `main` so far (50 of 50 on 2026-10-10) was written with Claude Code and carries
 a `Co-Authored-By: Claude` line; Ryan commits or merges them. Agents also merge their own
 branches with Ryan's standing permission, after `tools/check.sh` passes. Since 2026-10-11 every
-branch starts from `main` and squash-merges back into it once its own change passes the gate,
-without first taking unrelated updates from `main`; milestone branches are retired. Changes that
-only make the checks faster merge without the gate, and the long tier that runs on `main` every
-6 hours is their safety net. Right before a merge, `tools/premerge.sh` builds the branch merged
-with the latest `main`, since two branches that each pass the gate can still break together.
+branch starts from `main` and squash-merges back into it once its change passes the local check.
+If main changes after verification, the branch incorporates it and runs the same check on the
+combined sources before merging. Check infrastructure changes pass the complete suite and
+focused failure regressions. There is no separate premerge check or periodic test tier.
+
+## Local verification
+
+On 2026-10-11 Ryan asked Codex to consolidate local verification into `tools/check.sh` and
+`tools/check.sh <check-name>`. Every retained check runs in the complete suite; individual
+checks have the same sizes and assertions. Compiled artifacts are cached, but passes are not.
+The same command can select an exact native Wrela `@test` by package and name, including std.
+The suite uses small CPU/GPU/browser fixtures, bounded seeded samples and explicit resource
+lifecycle checks. Historical milestone benchmarks, full-floor bakes and extended camera tours
+are retired from automated verification; their past results remain historical evidence. A
+passing suite does not re-establish whole-floor visual quality, prolonged stability or a
+reference machine's frame-rate claims. Ryan's play and visual judgments still decide those.
 
 ## Tools and models
 
@@ -61,7 +72,7 @@ with the latest `main`, since two branches that each pass the gate can still bre
 | [sfizz](https://sfz.tools/sfizz/) (BSD 2-clause), `sfizz_render` | Plays the reference piano's samples from a take's MIDI file, for the listening tests (`tools/listening.py`). Not part of the game |
 | Mesa's lavapipe (Vulkan on the CPU), MIT, patched (`tools/cloud/`) | The GPU of a cloud machine, which has none (`tools/cloud.sh`) |
 | [FFmpeg](https://ffmpeg.org/) with x264, GPL | Makes the motion captures' clips and contact sheets from the frames the native host saves (`tools/motion.py`). Not part of the game |
-| strace, LGPL; Linux mount namespaces (`unshare`) | The gate's memory of slow tests (`tools/memo.py`): what each slow test reads, so a pass is reused only while all of it is unchanged, or, for a test that builds a program, while its builds make the same files. The ideas are build systems' (Bazel's action cache, ccache's manifests, tup's and fabricate's traced dependencies, Shake's and Bazel's early cutoff) |
+| strace, LGPL; Linux mount namespaces (`unshare`) | Historical gate pass caching, retired 2026-10-11: what each slow test reads, so a pass is reused only while all of it is unchanged, or, for a test that builds a program, while its builds make the same files. The ideas are build systems' (Bazel's action cache, ccache's manifests, tup's and fabricate's traced dependencies, Shake's and Bazel's early cutoff) |
 
 Not used, by decision: Suno or any music model (Ryan, 2026-10-06, #44), and any image, texture,
 3D, voice or video generator. No asset is made by a model that was trained to output art.
