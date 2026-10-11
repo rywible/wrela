@@ -2354,7 +2354,7 @@ fn census(trees: [Tree], kinds: u32, year: i32) -> String {
 /// The history of `m` over the land from `lo` to `hi`, its species `habits` (at most 8), at
 /// `grain`: from year `grain.from` to the map's present. `rocks` are what the herd walks round
 /// (x, z, radius). `trips` is the herd's trips a year. `past` is what the level's past left the
-/// land as when the history begins (`Start::wild` for none).
+/// land as in the year the history begins (`Start::wild` for none).
 pub fn simulate<G: Ground>(
     ground: G,
     m: Map,
@@ -2363,7 +2363,7 @@ pub fn simulate<G: Ground>(
     lo: vec2,
     hi: vec2,
     rocks: [vec3],
-    past: fn(Land) -> Start,
+    past: fn(Land, i32) -> Start,
 ) -> History {
     phase("survey")
     place::refuse(m)
@@ -2391,7 +2391,7 @@ pub fn simulate<G: Ground>(
     let step = grain.step
     var year = m.present - grain.years
     {
-        var start = past(land)
+        var start = past(land, year)
         let cx = Cx { map: m, habits, land, grain }
         trees = first_forest(cx, start, year)
         trees.append(mut start.standing)
