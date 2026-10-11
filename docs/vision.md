@@ -156,6 +156,7 @@ This is the canonical lore, from the owner's own words (2026-10-10 and 2026-10-1
   - **Free** it: its door disappears and the world is gone. You let the world die. You can't go back to it.
 
   Either choice opens the way up to the next level (the owner, 2026-10-11).
+- **Each level has a story**, which its history simulation runs; nothing in a world is placed by hand (the owner, 2026-10-11). **The Last Green's:** the people who settled it were elves, at one with nature, who shaped it in their own ways. Two elvish tribes warred, and they wiped each other out, with a plague or something like it. Nature reclaimed what they left.
 - **The end is not decided.** The choices will have implications for the end of the game: what happens when you beat the final boss at the top of the tower. The owner hasn't decided it yet.
 
 **Not the lore** (older ideas that agents keep repeating): there is no Keeper; no world is frozen at its last moment; no "thaw" lets a world's time run again; there are no echoes (the owner, 2026-10-11). In the floors' code, `Keeper` is a term of the history simulation (what keeps an opening open: grazing, rock, water, people, an event), not a character.
