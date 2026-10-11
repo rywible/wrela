@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/tools/hooks.py\"; [ ! -f \"$f\" ] || python3 -I \"$f\" bash",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/tools/hooks.py\"; [ ! -f \"$f\" ] || python3 -I \"$f\" session",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
