@@ -632,9 +632,8 @@ fn valley_land(xz: vec2, y: f32, w: f32) -> vec3 {
 /// the crag's cliffs, the ravine's walls, the plateau's lip): grey stone, warmer and cooler in
 /// broad patches; each bed its own colour (`BED`), a dark seam where it meets the next; dark
 /// joints at its blocks' edges (`joints`, as the relief's), straight and few, not a noise's maze
-/// of cracks; dark streaks where water runs down a steep face; lichen in broad faint crusts where
-/// it faces the sky (bold round spots read as a leopard's: pass 1); moss on its ledges and in its
-/// joints. Each detail finer than the sample fades to its share, so a far texel of the clipmap
+/// of cracks; dark streaks where water runs down a steep face. No lichen or moss: they gave it a
+/// green cast in shade (round 14), and bold round spots read as a leopard's (pass 1). Each detail finer than the sample fades to its share, so a far texel of the clipmap
 /// doesn't alias. Cooked into the clipmap: nothing here runs per pixel per frame (AC12).
 pub fn rock_albedo(at: vec3, n: vec3, w: f32) -> vec3 {
     let xz = at.xz
@@ -674,13 +673,5 @@ pub fn rock_albedo(at: vec3, n: vec3, w: f32) -> vec3 {
     let across = xz.x * 0.8 + xz.y * 1.1
     let runs = noise2_seen(vec2(across * 1.1, at.y * 0.07), w * 1.1)
     c *= 1.0 - 0.35 * smoothstep(0.55, 0.75, runs) * steep
-    // Lichen in broad crusts where it faces the sky; moss on its ledges and in its joints, where
-    // water and grit gather.
-    let crust = fbm2_seen(xz * 0.17 + vec2(-3.0, 5.0), 3, w * 0.17)
-    let lichen = smoothstep(0.5, 0.78, crust) * smoothstep(0.35, 0.85, n.y)
-    c = mix(c, vec3(0.38, 0.38, 0.30), vec3(0.4 * lichen))
-    let hollow = fbm2_seen(xz * 0.35 + vec2(12.0, 3.0), 3, w * 0.35)
-    let ledge = smoothstep(0.8, 0.96, n.y) * (1.0 - smoothstep(0.0, 0.5, steep))
-    let moss = smoothstep(0.6, 0.85, 0.7 * hollow + 0.15 * ledge + 0.3 * line)
-    mix(c, vec3(0.06, 0.09, 0.03), vec3(0.6 * moss))
+    c
 }
