@@ -248,10 +248,10 @@ pub fn wish(c: Controls) -> (vec2, bool) {
         d -= f
     }
     if c.right {
-        d -= side
+        d += side
     }
     if c.left {
-        d += side
+        d -= side
     }
     let len = length(d)
     (if len > 1.0e-4 { d / len } else { vec2(0.0) }, c.run_held || c.run_on)
@@ -528,4 +528,34 @@ impl Ground for Shelf {
     fn rock(self, p: vec2) -> f32 {
         0.0
     }
+}
+
+/// At yaw zero, +x is the camera's right: D asks for +x and A for -x.
+@test
+fn the_side_keys_move_the_way_they_are_named() {
+    var c = Controls {
+        forward: false,
+        back: false,
+        left: false,
+        right: true,
+        turn_left: false,
+        turn_right: false,
+        run_held: false,
+        walk_on: false,
+        run_on: false,
+        yaw: 0.0,
+        pitch: 0.0,
+        dragging: false,
+        pointer: vec2(0.0),
+        typing: false,
+        digits: 0,
+        travel: NONE,
+        glide: 0,
+    }
+    let (right, _) = wish(c)
+    c.right = false
+    c.left = true
+    let (left, _) = wish(c)
+    assert(right == vec2(1.0, 0.0), f"D moved {right}")
+    assert(left == vec2(-1.0, 0.0), f"A moved {left}")
 }

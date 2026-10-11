@@ -798,6 +798,19 @@ fn wave(q: vec2, drift: vec2, t: f32, k1: f32, k2: f32) -> f32 {
     noise2(q * 1.3 - drift * t * 1.3) * k1 + noise2(q * 3.7 + vec2(4.0, 1.0) - drift * t * 2.6) * k2
 }
 
+/// The normalized Blinn-Phong sun glint. Opposite light and view have no half vector and no
+/// glint (the sun is behind the visible side then), rather than a `normalize(0)` NaN.
+fn sun_glint(n: vec3, sun: vec3, v: vec3, lost: f32, flowing: bool) -> f32 {
+    let half = sun + v
+    if dot(half, half) <= 1.0e-12 {
+        return 0.0
+    }
+    let h = normalize(half)
+    let sharp = if flowing { 160.0 } else { 600.0 }
+    let spread = mix(sharp, if flowing { 24.0 } else { 60.0 }, lost / 0.85)
+    pow(max(dot(n, h), 0.0), spread) * (spread + 8.0) / 25.13 * (if flowing { 0.6 } else { 1.0 })
+}
+
 /// How far a reflection from the screen marches, in steps, and how far each goes (m, growing).
 const MARCH: u32 = 24
 const FIRST: f32 = 0.4
@@ -899,12 +912,7 @@ pub fn water_shade(
     // The sun's glint off the ripples: sharp where they're drawn, and where they fade into the
     // footprint, as broad as the slopes they lost (one sun path on the far water, not glitter).
     // Normalized (Blinn-Phong's (p + 8) / 8π), so a broad glint is as bright overall, but dimmer.
-    let h = normalize(lt.light.sun + v)
-    let sharp = if flowing { 160.0 } else { 600.0 }
-    let spread = mix(sharp, if flowing { 24.0 } else { 60.0 }, lost / 0.85)
-    let glint = pow(max(dot(n, h), 0.0), spread) * (spread + 8.0) / 25.13 * (if flowing {
-        0.6
-    } else { 1.0 })
+    let glint = sun_glint(n, lt.light.sun, v, lost, flowing)
     c += lt.light.sun_colour * (sun * glint * fresnel * 4.0)
     // Foam: at a stream's banks and where it runs fast, all over where it falls, and on a still
     // pool's shallows.
@@ -1049,3 +1057,18 @@ pub fn mist_over(
 
 /// How thick a fall's mist is where it's densest (per m).
 const MIST_THICK: f32 = 0.22
+
+// ---- tests ------------------------------------------------------------------------------------
+
+/// A view directly away from the sun has no half vector. Water has no glint there, not NaN.
+@test
+fn a_water_glint_is_finite_when_the_view_and_sun_are_opposite() {
+    let glint = sun_glint(
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, -1.0, 0.0),
+        lost: 0.0,
+        flowing: false,
+    )
+    assert(glint == 0.0, "opposite light and view made a water glint or a NaN")
+}
