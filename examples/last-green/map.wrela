@@ -68,7 +68,10 @@ pub fn land() -> Land {
             vec4(1225.0, -925.0, 8.0, 16.0),
             vec4(-300.0, -345.0, 4.0, 12.0),
         ],
-        ramps: vec4(3.6, 2.4, 0.9, 0.3),
+        // The crag's ramp climbs along the Spine's crest from the north-east, away from the old
+        // road, so from the road it shows its cliffs, not the ramp's long smooth back (pass 1: a
+        // dome); along the crest, the ridge adds nothing to its slope.
+        ramps: vec4(0.52, 2.4, 0.9, 0.3),
         tilt: vec4(0.74, -0.67, 12.0, 800.0),
     }
 }
