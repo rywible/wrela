@@ -27,8 +27,8 @@ that does each part.
   telekinetic great sword) and one fight against a creature, in the Last Green at the ring's
   glade. The climber is the floor's player, with its cape's cloth and darkness; it fights the
   wolf at the ring's glade, the camera turned to the wolf, with the fight's sounds; a beaten
-  wolf goes off into the wood. Next: judge and tune the fight in the floor, the hem through the
-  grass, the wolf on the fawn's senses (`engine/senses.wrela`) (Climber and fight spike).
+  wolf goes off into the wood; the wolf notices the player with the fawn's senses. Next: judge
+  and tune the fight in the floor, and the hem through the grass (Climber and fight spike).
 - The place's sounds. On main: steps by ground, wind in the leaves, water, the mixer, and the
   piano with its blind gate (`tools/listening.py`, for the owner's ears). The fight's cues are
   in the mix. Next: the climber's hem, and the fight kept clear over the beds (Climber and fight

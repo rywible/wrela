@@ -494,7 +494,8 @@ impl engine::grow::Ground for Flat {
     }
 }
 
-struct Open: Copy {}
+/// Nothing hides anything: for the tests (here and `encounter`).
+pub struct Open: Copy {}
 
 impl Occluders for Open {
     @deterministic
