@@ -3,7 +3,7 @@
 
 use grow::{
     Cause, Cx, Fields, Grid, Habit, Heap, Land, Mark, Memories, NEIGHBOURS, NEVER, NONE, Shaper,
-    State, Tree, UNBROWSED, mark, rotate, sapling, shaped, tear,
+    State, Tree, UNBROWSED, grazed_bare, mark, rotate, sapling, shaped, tear,
 }
 use noise::{noise2, rand}
 use place::{Event, EventKind}
@@ -782,6 +782,22 @@ fn a_full_gale_opens_its_core() {
         }
     }
     assert(core.x < 0.1 * core.y, f"{core.x} of {core.y} trees stand in the gale's core")
+}
+
+/// Deer graze an event's opening bare for the decades it keeps it, and the herd its lawns once it
+/// has come; elsewhere, and after those decades, nothing is grazed bare.
+@test
+fn an_events_opening_is_grazed_bare_for_its_decades() {
+    var land = open_land(10.0)
+    land.opened[0] = 100
+    land.lawn[1] = true
+    assert(!grazed_bare(land, 0, 99, NEVER), "before the event")
+    assert(grazed_bare(land, 0, 100, NEVER), "in the event's year")
+    assert(grazed_bare(land, 0, 100 + place::RECENT - 1, NEVER), "in its last kept year")
+    assert(!grazed_bare(land, 0, 100 + place::RECENT, NEVER), "after its decades")
+    assert(!grazed_bare(land, 1, 50, 60), "a lawn before the herd comes")
+    assert(grazed_bare(land, 1, 60, 60), "a lawn once the herd has come")
+    assert(!grazed_bare(land, 2, 100, 0), "neither")
 }
 
 /// Flat, open, dry land `half` metres each way of the origin, in 2 m cells.

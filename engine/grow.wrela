@@ -611,6 +611,15 @@ pub struct Land {
     pub region: Vec<u32>,
 }
 
+/// Whether what grows at cell `c` in `year` is grazed down as on a lawn: on the herd's lawns once
+/// it has come (`arrives`), and in an event's opening for the decades it keeps it (`RECENT`),
+/// where deer come for the young growth.
+pub(package) fn grazed_bare(land: Land, c: u32, year: i32, arrives: i32) -> bool {
+    let opened = land.opened[c]
+    let fresh = opened != NEVER && year >= opened && year < opened + place::RECENT
+    fresh || (land.lawn[c] && year >= arrives)
+}
+
 /// The head room the herd browses along its routes (m): no branch below it.
 pub const HEAD_ROOM: f32 = 2.0
 
@@ -1488,7 +1497,7 @@ fn live(l: mut Life, cx: Cx, f: Fields, year: i32) {
             p = 1.0
             cause = Cause::Browsed
         }
-        if cx.land.lawn[c] && year >= cx.map.herd.arrives && was < 4.0 && !t.pinned {
+        if grazed_bare(cx.land, c, year, cx.map.herd.arrives) && was < 4.0 && !t.pinned {
             p += 0.25
             cause = Cause::Browsed
         }
