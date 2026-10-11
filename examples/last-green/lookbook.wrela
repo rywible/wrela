@@ -18,7 +18,7 @@ pub struct Shot: Copy {
     pub cast: Cast = Cast { on: false, player: vec3(0.0), fawn: vec3(0.0) },
 }
 
-/// Who stands in a shot (#54 §9's characters in the wood): the stand-in and the fawn, each at
+/// Who stands in a shot (#54 §9's characters in the wood): the climber and the fawn, each at
 /// (x, z, heading: radians from +z toward +x) on the ground; nobody where `on` is false.
 pub struct Cast: Copy {
     pub on: bool,
@@ -63,11 +63,13 @@ pub const SHOTS = [
         moves: vec2(2.5, -1.7),
     },
     // The canopy from above in its species' colours, the tower on its hill: a long lens, so the
-    // tower reads over the wood.
+    // tower reads over the wood. The eye stands 29 m back from the crag's edge and looks 0.02
+    // below level, along the line to the tower, so the crag's top it stands on, to the shoulder
+    // where it falls away, fills the lower third.
     Shot {
         name: "the crag's top",
-        eye: vec3(330.0, 1.8, -150.0),
-        at: vec3(560.0, 14.0, -470.0),
+        eye: vec3(321.8, 1.8, -138.6),
+        at: vec3(438.5, 57.9, -301.0),
         moves: vec2(1.0, -1.4),
         fovy: 0.4,
         reach: 8.0,
@@ -157,7 +159,7 @@ pub const SHOTS = [
         at: vec3(2500.0, 4.0, -2120.0),
         moves: vec2(2.0, -2.0),
     },
-    // The characters in the wood: the fawn and the stand-in, their cel treatment against the
+    // The characters in the wood: the fawn and the climber, their cel treatment against the
     // wood pasture's dappled light, the beeches' dark, and the stream's shade.
     Shot {
         name: "the fawn in the glade",

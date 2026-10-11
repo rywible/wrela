@@ -76,13 +76,13 @@ impl Output {
         has_errors(&self.diagnostics)
     }
 
-    /// Writes the build's files into `dir`, and makes the directories they need.
+    /// Writes the build's files into `dir`, and makes the directories they need. A symbolic
+    /// link at `dir` or on any file's path refuses the whole write before anything is written.
     pub fn write_to(&self, dir: &Path) -> std::io::Result<()> {
-        ensure_no_symlink_path(dir, dir)?;
+        ensure_no_symlinks(dir, self.files.iter().map(|(path, _)| path.as_str()))?;
         std::fs::create_dir_all(dir)?;
         for (path, bytes) in &self.files {
             let p = dir.join(path);
-            ensure_no_symlink_path(dir, &p)?;
             if let Some(parent) = p.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -116,6 +116,16 @@ pub fn ensure_no_symlink_path(root: &Path, path: &Path) -> std::io::Result<()> {
         reject_symlink(&at)?;
     }
     Ok(())
+}
+
+/// Refuses a symbolic link at `dir`, or on the path of any of `names` inside it: what a writer
+/// of generated files checks before it changes anything there.
+pub fn ensure_no_symlinks<'a>(
+    dir: &Path,
+    names: impl IntoIterator<Item = &'a str>,
+) -> std::io::Result<()> {
+    ensure_no_symlink_path(dir, dir)?;
+    names.into_iter().try_for_each(|name| ensure_no_symlink_path(dir, &dir.join(name)))
 }
 
 fn reject_symlink(path: &Path) -> std::io::Result<()> {
@@ -313,8 +323,8 @@ pub fn with_partial<T: Send>(
         let mut lowered = None;
         if lower && !has_errors(&diagnostics) {
             let mut data = wrela_lower::BuildData::default();
-            let cache = const_cache::dir_of(root);
-            prepare(&checked, &sources, &dirs, &mut data, &mut diagnostics, cache.as_deref());
+            let cache = const_cache::dirs_of(root);
+            prepare(&checked, &sources, &dirs, &mut data, &mut diagnostics, &cache);
             if !has_errors(&diagnostics) {
                 let roots = wrela_lower::Roots::every_fn(&checked);
                 lowered = Some(wrela_lower::lower(&checked, &roots, &data, false).0);
@@ -427,8 +437,8 @@ fn run_tests(
     // A debug build's checks, as `wrela build --debug` makes them (§11).
     let mut data = wrela_lower::BuildData { debug: true, testing: true, ..Default::default() };
     let mut filtered_out = 0;
-    let cache = const_cache::dir_of(root);
-    prepare(&checked, &sources, &dirs, &mut data, &mut diagnostics, cache.as_deref());
+    let cache = const_cache::dirs_of(root);
+    prepare(&checked, &sources, &dirs, &mut data, &mut diagnostics, &cache);
     let mut results = Vec::new();
     if !has_errors(&diagnostics) {
         // The package's tests, in the order written.
@@ -572,8 +582,8 @@ fn compile_loaded(
         testing: mode.testing,
         ..Default::default()
     };
-    let cache = const_cache::dir_of(root);
-    let stats = prepare(&checked, &sources, &dirs, &mut data, &mut diagnostics, cache.as_deref());
+    let cache = const_cache::dirs_of(root);
+    let stats = prepare(&checked, &sources, &dirs, &mut data, &mut diagnostics, &cache);
     if !lift.is_empty() && !has_errors(&diagnostics) {
         data.lift = Some(lift::table(&checked, &sources, &lifted_files));
     }
@@ -621,7 +631,7 @@ fn prepare(
     dirs: &[std::path::PathBuf],
     data: &mut wrela_lower::BuildData,
     diagnostics: &mut Vec<Diagnostic>,
-    cache: Option<&Path>,
+    cache: &[std::path::PathBuf],
 ) -> consts::ConstStats {
     if has_errors(diagnostics) {
         return consts::ConstStats::default();
@@ -1034,6 +1044,26 @@ mod tests {
         assert!(ensure_no_symlink_path(&d, &d.join("ordinary/file")).is_ok());
         let _ = std::fs::remove_dir_all(d);
         let _ = std::fs::remove_dir_all(outside);
+    }
+
+    /// A symbolic link on any file's path refuses the whole write, before a file is written.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_with_a_linked_file_writes_nothing() {
+        let d =
+            std::env::temp_dir().join(format!("wrela-driver-write-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("output root");
+        std::fs::write(d.join("victim"), "keep").expect("victim");
+        std::os::unix::fs::symlink("victim", d.join("b.bin")).expect("symlink");
+        let mut out = check(&d);
+        out.files = vec![("a.bin".into(), vec![1]), ("b.bin".into(), vec![2])];
+        let refused = out.write_to(&d).expect_err("a symbolic link");
+        assert!(refused.to_string().contains("b.bin"), "{refused}");
+        assert!(!d.join("a.bin").exists(), "nothing is written");
+        assert_eq!(std::fs::read_to_string(d.join("victim")).expect("victim"), "keep");
+        assert!(ensure_no_symlinks(&d, ["a.bin"]).is_ok());
+        let _ = std::fs::remove_dir_all(d);
     }
 
     /// A module file that can't be read, or a file whose name can't be a module, is E0205.

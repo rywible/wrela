@@ -766,31 +766,39 @@ impl Field {
     /// Each pixel's signed distance to the outline, positive inside, as a byte.
     fn sample(mut self, spread: f32) {
         borrow c = self.contours
+        // The segment geometry is the same for every pixel of this glyph.
+        var segments: Vec<Segment> = Vec::with_capacity(c.xs.len())
+        for k in 0..c.starts.len() {
+            let from = c.starts[k]
+            let to = if k + 1 < c.starts.len() { c.starts[k + 1] } else { c.xs.len() }
+            for i in from..to - 1 {
+                let (ax, ay, bx, by) = (c.xs[i], c.ys[i], c.xs[i + 1], c.ys[i + 1])
+                let (dx, dy) = (bx - ax, by - ay)
+                segments.push(Segment { ax, ay, by, dx, dy, len2: dx * dx + dy * dy })
+            }
+        }
         var bytes: Vec<u8> = Vec::with_capacity(self.width * self.height)
         for row in 0..self.height {
             // Rows from the top: row 0's centre is half a pixel below `top`.
             let y = self.top - f64(row) - 0.5
             for col in 0..self.width {
                 let x = self.left + f64(col) + 0.5
-                var d = 1.0e300
+                var d2 = 1.0e300
                 var winding = 0
-                for k in 0..c.starts.len() {
-                    let from = c.starts[k]
-                    let to = if k + 1 < c.starts.len() { c.starts[k + 1] } else { c.xs.len() }
-                    for i in from..to - 1 {
-                        let (ax, ay, bx, by) = (c.xs[i], c.ys[i], c.xs[i + 1], c.ys[i + 1])
-                        d = min(d, segment_distance(x, y, ax, ay, bx, by))
-                        // The nonzero winding rule (TrueType's).
-                        let cross = (bx - ax) * (y - ay) - (x - ax) * (by - ay)
-                        if ay <= y {
-                            if by > y && cross > 0.0 {
-                                winding += 1
-                            }
-                        } else if by <= y && cross < 0.0 {
-                            winding -= 1
+                for s in segments {
+                    d2 = min(d2, s.distance_squared(x, y))
+                    // The nonzero winding rule (TrueType's).
+                    let cross = s.dx * (y - s.ay) - (x - s.ax) * s.dy
+                    if s.ay <= y {
+                        if s.by > y && cross > 0.0 {
+                            winding += 1
                         }
+                    } else if s.by <= y && cross < 0.0 {
+                        winding -= 1
                     }
                 }
+                // Square root is monotone: take it once, after choosing the nearest segment.
+                let d = sqrt(d2)
                 let signed = if winding != 0 { d } else { -d }
                 let v = min(max(0.5 + signed / (2.0 * f64(spread)), 0.0), 1.0)
                 bytes.push(u8(floor(v * 255.0 + 0.5)))
@@ -800,14 +808,26 @@ impl Field {
     }
 }
 
-/// The distance from `(x, y)` to the segment from `(ax, ay)` to `(bx, by)`.
-fn segment_distance(x: f64, y: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
-    let (dx, dy) = (bx - ax, by - ay)
-    let len2 = dx * dx + dy * dy
-    let t = if len2 > 0.0 { min(max(((x - ax) * dx + (y - ay) * dy) / len2, 0.0), 1.0) } else {
-        0.0
+/// A flattened outline segment, with its direction and squared length already found.
+struct Segment: Copy {
+    ax: f64,
+    ay: f64,
+    by: f64,
+    dx: f64,
+    dy: f64,
+    len2: f64,
+}
+
+impl Segment {
+    fn distance_squared(self, x: f64, y: f64) -> f64 {
+        let t = if self.len2 > 0.0 {
+            min(max(((x - self.ax) * self.dx + (y - self.ay) * self.dy) / self.len2, 0.0), 1.0)
+        } else {
+            0.0
+        }
+        let (px, py) = (x - (self.ax + t * self.dx), y - (self.ay + t * self.dy))
+        px * px + py * py
     }
-    distance(x, y, ax + t * dx, ay + t * dy)
 }
 
 // ---- kerning -------------------------------------------------------------------------------------

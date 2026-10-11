@@ -47,6 +47,11 @@ pub fn body_frame(at: vec3, heading: f32, form: Form) -> mat4 {
 /// The collar, round the neck, a little over the shoulders.
 const COLLAR = vec3(0.12, 1.56, 0.11)
 
+/// How many folds the cape falls in, and how far they stand out at the hem (a share of its
+/// radius).
+const FOLDS: u32 = 6
+const FOLD: f32 = 0.22
+
 /// The cape at rest, in the body's space: the collar round the neck; then from the shoulders'
 /// width down to the hem's, to just over the ground (its weight brings the hem down onto it).
 pub fn rest(i: u32, j: u32) -> vec3 {
@@ -55,8 +60,10 @@ pub fn rest(i: u32, j: u32) -> vec3 {
         return vec3(COLLAR.x * sin(a), COLLAR.y, COLLAR.z * cos(a))
     }
     let t = f32(j - 1) / f32(DOWN - 2)
-    let rx = mix(SHOULDERS + SHOULDER_RADIUS + 0.03, HEM_RADIUS, t)
-    let rz = mix(0.22, HEM_RADIUS - 0.02, t)
+    // Its folds: the cloth fuller than the bell it falls round, more toward the hem.
+    let fold = 1.0 + FOLD * t * cos(f32(FOLDS) * a)
+    let rx = mix(SHOULDERS + SHOULDER_RADIUS + 0.03, HEM_RADIUS, t) * fold
+    let rz = mix(0.22, HEM_RADIUS - 0.02, t) * fold
     vec3(rx * sin(a), mix(SHOULDER_Y + 0.02, 0.01, t), rz * cos(a))
 }
 
@@ -134,6 +141,26 @@ const PASSES: u32 = 8
 const DRAG: f32 = 0.9
 const SLIDE: f32 = 0.35
 
+/// The ground under the cape, as a plane: its height at `at`, and how much it rises a metre along
+/// x and along z. The cape is under a metre across: a plane through the ground under its middle
+/// holds its hem on a slope.
+pub struct Plane: Copy {
+    pub at: vec3,
+    pub slope: vec2 = vec2(0.0),
+}
+
+impl Plane {
+    /// The plane's height over `p`.
+    pub fn height(self, p: vec3) -> f32 {
+        self.at.y + dot(self.slope, p.xz - self.at.xz)
+    }
+}
+
+/// Level ground at height `y`.
+pub fn flat(y: f32) -> Plane {
+    Plane { at: vec3(0.0, y, 0.0) }
+}
+
 /// The cape hanging at rest in `frame`.
 pub fn hang(frame: mat4) -> Cape {
     var at: Vec<vec3> = Vec::new()
@@ -145,8 +172,9 @@ pub fn hang(frame: mat4) -> Cape {
     Cape { was: at.clone(), at, frame, left: 0.0 }
 }
 
-/// What the cape falls round, in the world: the head, the shoulders' line, the core up the
-/// middle, each a capsule (two ends and a radius; the head's ends are one point).
+/// What the cape falls round, in the world: the head, the shoulders' line, and the core up the
+/// middle, each a capsule or a cone (two ends, each with its radius; the head's ends are one
+/// point). The core widens to the ground, so the cape falls as a bell, not a column.
 fn solids(frame: mat4) -> [vec4; 6] {
     let w = |p: vec3| (frame * vec4(p, 1.0)).xyz
     let left = vec3(SHOULDERS, SHOULDER_Y, 0.0)
@@ -157,22 +185,24 @@ fn solids(frame: mat4) -> [vec4; 6] {
         vec4(w(left), SHOULDER_RADIUS + 0.02),
         vec4(w(right), SHOULDER_RADIUS + 0.02),
         vec4(w(vec3(0.0, 1.3, 0.0)), 0.17),
-        vec4(w(vec3(0.0, 0.25, 0.0)), 0.17),
+        vec4(w(vec3(0.0, 0.12, 0.0)), 0.46),
     ]
 }
 
-/// `p` pushed out of the capsule from `a` to `b` (each end's radius in `w`; the first's used).
+/// `p` pushed out of the capsule or cone from `a` to `b` (each end's radius in `w`), square to
+/// its axis.
 fn out_of(p: vec3, a: vec4, b: vec4) -> vec3 {
     let ab = b.xyz - a.xyz
     let l2 = dot(ab, ab)
     let s = if l2 > 1.0e-9 { clamp(dot(p - a.xyz, ab) / l2, 0.0, 1.0) } else { 0.0 }
     let c = a.xyz + ab * s
+    let r = mix(a.w, b.w, s)
     let d = p - c
     let l = length(d)
-    if l >= a.w || l < 1.0e-6 {
+    if l >= r || l < 1.0e-6 {
         return p
     }
-    c + d * (a.w / l)
+    c + d * (r / l)
 }
 
 impl Cape {
@@ -187,9 +217,9 @@ impl Cape {
 
     /// The cape `dt` seconds on, the body now in `frame`: the collar follows the body over the
     /// steps (eased from the frame it was last in), the rest falls, trails in `wind` (m/s), is
-    /// held by its links and tethers, kept out of the body and above `ground` (a height), drawn in
+    /// held by its links and tethers, kept out of the body and above `ground`, drawn in
     /// toward the middle by `gather` (0 to 1).
-    pub fn step(mut self, frame: mat4, gather: f32, ground: f32, wind: vec3, dt: f32) {
+    pub fn step(mut self, frame: mat4, gather: f32, ground: Plane, wind: vec3, dt: f32) {
         self.left = min(self.left + dt, STEP * f32(MOST_STEPS))
         let steps = u32(self.left / STEP)
         self.left -= f32(steps) * STEP
@@ -210,7 +240,7 @@ impl Cape {
         }
     }
 
-    fn substep(mut self, frame: mat4, gather: f32, ground: f32, wind: vec3) {
+    fn substep(mut self, frame: mat4, gather: f32, ground: Plane, wind: vec3) {
         let h = STEP
         let keep = exp(-DRAG * h)
         let axis = (frame * vec4(0.0, 0.0, 0.0, 1.0)).xyz
@@ -265,15 +295,16 @@ impl Cape {
                 for c in 0..3 {
                     p = out_of(p, solid[2 * c], solid[2 * c + 1])
                 }
-                if p.y < ground {
-                    p.y = ground
+                let under = ground.height(p)
+                if p.y < under {
+                    p.y = under
                 }
                 self.at[k] = p
             }
         }
         // On the ground, a point slides only a little.
         for k in AROUND..POINTS {
-            if self.at[k].y <= ground + 1.0e-4 {
+            if self.at[k].y <= ground.height(self.at[k]) + 1.0e-4 {
                 let w = self.was[k]
                 let p = self.at[k]
                 self.was[k] = vec3(mix(p.x, w.x, SLIDE), w.y, mix(p.z, w.z, SLIDE))
@@ -303,7 +334,7 @@ fn hung_still_it_settles_round_the_body() {
     let frame = body_frame(vec3(0.0), 0.0, Form {})
     var c = hang(frame)
     for _ in 0..120 {
-        c.step(frame, gather: 0.0, ground: 0.0, wind: vec3(0.0), dt: 1.0 / 60.0)
+        c.step(frame, gather: 0.0, ground: flat(0.0), wind: vec3(0.0), dt: 1.0 / 60.0)
     }
     let s = worst_stretch(c)
     var low = 10.0
@@ -340,7 +371,7 @@ fn gliding_it_trails_and_doesnt_stretch() {
         c.step(
             body_frame(at, 0.0, Form { tilt: vec3(0.1, 0.0, 0.0) }),
             gather: 0.0,
-            ground: 0.0,
+            ground: flat(0.0),
             wind: vec3(0.0),
             dt: 1.0 / 60.0,
         )
@@ -367,4 +398,25 @@ fn a_blink_carries_the_cape_as_it_is() {
         length(c.at[point(i: 5, j: 9)] - before - vec3(3.6, 0.0, 0.0)) < 1.0e-6,
         "a point moved off",
     )
+}
+
+/// Hung still on a slope, no point of the cape is under the ground, and its hem lies on the
+/// ground uphill of the body.
+@test
+fn on_a_slope_the_hem_lies_on_the_ground() {
+    let frame = body_frame(vec3(0.0), 0.0, Form {})
+    let slope = Plane { at: vec3(0.0), slope: vec2(0.0, 0.3) }
+    var c = hang(frame)
+    for _ in 0..120 {
+        c.step(frame, gather: 0.0, ground: slope, wind: vec3(0.0), dt: 1.0 / 60.0)
+    }
+    var under = 0.0
+    for k in AROUND..POINTS {
+        under = max(under, slope.height(c.at[k]) - c.at[k].y)
+    }
+    let ahead = c.at[point(0, DOWN - 1)]
+    let over = ahead.y - slope.height(ahead)
+    print(f"deepest under the slope {under} m; the hem ahead {over} m over it")
+    assert(under < 1.0e-4, f"a point is {under} m under the ground")
+    assert(over < 0.02, f"the hem uphill hangs {over} m over the ground")
 }

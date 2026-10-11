@@ -268,3 +268,111 @@ fn the_slash_sweeps_ahead() {
     assert(hi - lo > 1.0, f"the slash's point only falls {hi - lo} m")
     assert(lo < 0.6, f"the slash's point stays {lo} m up: over a wolf")
 }
+
+/// A slash that hits throws the wolf's head the way the edge goes (the slash cuts to the
+/// climber's left), as fast as the blow's kick; the head swings back to its place on its own by
+/// the time the wolf crouches to answer.
+@test
+fn a_hit_throws_the_wolfs_head_along_the_cut() {
+    var w = spawn()
+    let c = w.climber.at.xz
+    let f = w.climber.forward()
+    w.wolf = fight::new_wolf(c + f * 1.7, w.climber.heading + 3.14159265)
+    w.wolf.wait = 1000
+    w.climber.start(Act::Slash)
+    w.climber.t = frames(Act::Slash).windup
+    w.climber.fade = 10
+    var ticks = 0
+    while w.tally.hits == 0 && ticks < 8 {
+        step(mut w, Vec::new())
+        ticks += 1
+    }
+    assert(w.tally.hits == 1, "the slash missed")
+    let head = w.wolf.walker.springs[0]
+    let left = vec2(f.y, -f.x)
+    let across = dot(head.vel.xz, left)
+    print(
+        f"hit after {ticks} ticks: the head thrown {length(head.vel)} m/s, {across} m/s to the climber's left",
+    )
+    assert(length(head.vel) > fight::HEAD_KICK * 0.8, "the head wasn't thrown")
+    assert(across > 0.5, "the head wasn't thrown the way the cut went")
+    // On through the hit stop and the flinch, into the crouch that answers it (it stands still).
+    for _ in 0..45 {
+        step(mut w, Vec::new())
+    }
+    assert(w.wolf.mood == Mood::Crouch, "the wolf isn't crouching")
+    let rest = (engine::gait::body_frame(w.wolf.walker) *
+        vec4(fight::WOLF_BODY.spring_tips[0], 1.0)).xyz
+    let off = length(w.wolf.walker.springs[0].pos - rest)
+    print(f"0.75 s on, crouched: the head {off} m from its place")
+    assert(off < 0.05, f"the head is {off} m from its place")
+}
+
+/// What the fight did, heard tick by tick: (whooshes of the sword, hits, blink goings, blink
+/// comings), and where the last hit and the last coming were.
+fn listen(
+    w: mut World,
+    ticks: u32,
+    presses: fn(u32) -> Vec<Event>,
+    counts: mut vec4u,
+    at: mut [vec3; 2],
+) {
+    var h = sounds::heard(w)
+    for k in 0..ticks {
+        step(mut w, presses(k))
+        for cue in sounds::cues(mut h, w) {
+            match cue {
+                engine::sound::Cue::Whoosh { kind, .. } if kind == sounds::SWORD => counts.x += 1,
+                engine::sound::Cue::Whoosh { kind, .. } if kind == sounds::GONE => counts.z += 1,
+                engine::sound::Cue::Impact { at: p, kind, .. } if kind == sounds::HIT => {
+                    counts.y += 1
+                    at[0] = p
+                },
+                engine::sound::Cue::Impact { at: p, kind, .. } if kind == sounds::ARRIVE => {
+                    counts.w += 1
+                    at[1] = p
+                },
+                _ => {},
+            }
+        }
+    }
+}
+
+/// A slash that hits sounds once as it starts and once as it hits, at the wolf; a blink sounds
+/// as it goes and as it comes, where it comes.
+@test
+fn the_fight_sounds_its_swings_hits_and_blinks() {
+    var w = spawn()
+    let c = w.climber.at.xz
+    let f = w.climber.forward()
+    w.wolf = fight::new_wolf(c + f * 1.7, w.climber.heading + 3.14159265)
+    w.wolf.wait = 1000
+    var counts = vec4u(0)
+    var at = [vec3(0.0); 2]
+    let slash = |k: u32| -> Vec<Event> {
+        var e: Vec<Event> = Vec::new()
+        if k == 0 || k == 4 {
+            e.push(button(PadButton::RightShoulder, down: k == 0))
+        }
+        take e
+    }
+    listen(mut w, 40, slash, mut counts, mut at)
+    print(
+        f"slash: {counts.x} whooshes, {counts.y} hits, the hit {length(at[0].xz - w.wolf.pos())} m from the wolf",
+    )
+    assert(counts.x == 1 && counts.y == 1, f"{counts.x} whooshes, {counts.y} hits")
+    assert(length(at[0].xz - w.wolf.pos()) < 0.5, "the hit sounded away from the wolf")
+    let blink = |k: u32| -> Vec<Event> {
+        var e: Vec<Event> = Vec::new()
+        if k < 2 {
+            e.push(button(PadButton::East, down: k == 0))
+        }
+        take e
+    }
+    listen(mut w, 30, blink, mut counts, mut at)
+    print(
+        f"blink: {counts.z} goings, {counts.w} comings, the coming {length(at[1].xz - w.climber.at.xz)} m from the climber",
+    )
+    assert(counts.z == 1 && counts.w == 1, f"{counts.z} goings, {counts.w} comings")
+    assert(length(at[1].xz - w.climber.at.xz) < 0.1, "the coming sounded away from the climber")
+}

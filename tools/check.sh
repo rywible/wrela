@@ -205,10 +205,18 @@ native_cache = os.path.abspath(native_cache)
 # Keep the same depth as target/tmp: copied fixtures have relative dependency paths.
 scratch_root = os.path.abspath("target")
 os.makedirs(scratch_root, exist_ok=True)
+# A failed program's scratch is kept to look at, until a run six hours later removes it.
+for old in os.listdir(scratch_root):
+    path = os.path.join(scratch_root, old)
+    try:
+        if old.startswith("test-scratch-") and time.time() - os.stat(path).st_mtime > 6 * 3600:
+            shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        pass
 cores = cpu_count()
-# Software Vulkan competes for CPU time, so default to one test thread per program.
-# Hardware uses up to four, bounded by available CPUs and the shared GPU limit.
-test_threads = 1 if os.environ.get("WRELA_SOFTWARE_GPU") else max(1, min(4, cores))
+# Up to four test threads a program, bounded by the CPUs and the shared GPU limit, on a software
+# GPU too: one thread a program made the memo-off gate's tests take 460 s, not 197 s (4 cores).
+test_threads = max(1, min(4, cores))
 programs = []
 for line in open(f"{logs}/tests.json"):
     m = json.loads(line)
@@ -256,7 +264,7 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=cores) as pool:
         if code != 0:
             failed = True
             print(text)
-            print(f"{name} failed; scratch kept at {scratch}")
+            print(f"{name} failed; scratch kept at {scratch} (for six hours)")
         elif passed and "--nocapture" in args:
             print(text)
         elif passed and took >= 1:
@@ -314,8 +322,9 @@ step "wrela fmt --check"
 
 # The optional memory of slow tests that passed (tools/memo.py), where a test can be traced
 # and isolated (Linux: strace, mount namespaces). --fresh, --long and --full run every test.
-# WRELA_GATE_MEMO is the memory's directory, or `off`; in a Claude project's session it is in the
-# project's shared folder, so the project's sessions share what they learn.
+# WRELA_GATE_MEMO is the memory's directory, or `off`; in a Claude project's session it is on this
+# machine, kept in step with the project's shared folder, so the project's sessions share what
+# they learn (tools/memo.py's `stores`).
 memo=off
 if [ "${WRELA_GATE_MEMO:-}" = off ]; then
   echo "  test memo disabled (WRELA_GATE_MEMO=off); running every gate test"
@@ -323,13 +332,6 @@ elif python3 tools/memo.py available; then
   if [ "$fresh" = 1 ] || [ "$long" = 1 ]; then memo=fresh; else memo=on; fi
 else
   echo "  test memo unavailable (requires strace and mount namespaces); running every gate test"
-fi
-if [ -n "${WRELA_GATE_MEMO:-}" ] && [ "$WRELA_GATE_MEMO" != off ]; then
-  memo_dir=$WRELA_GATE_MEMO
-elif [ -d /mnt/project-files ] && [ -w /mnt/project-files ]; then
-  memo_dir=/mnt/project-files/.gate-memo
-else
-  memo_dir="${CARGO_TARGET_DIR:-target}/gate-memo"
 fi
 
 step "tests, on the CPU and the GPU, but the long ones and the measurements$( [ -n "${WRELA_SOFTWARE_GPU:-}" ] && [ "${#heavy_tests[@]}" -gt 0 ] && echo " (on this software GPU, the ${#heavy_tests[@]} heavy ones are long: tools/check.sh --long <name> runs one)"), with bounded CPU workers$( [ "$memo" != off ] && echo " (each slow test alone, the longest first$( [ "$memo" = on ] && echo ", unless it passed with the same inputs before"))"); beside them, the doc tests and the WGSL size budgets (every example's, sketch's and lens's pipelines)"
@@ -341,7 +343,7 @@ tests=0
 if [ "$memo" = off ]; then
   run_tests --include-ignored "${skips[@]}" || tests=1
 else
-  python3 tools/memo.py run "$logs" "${CARGO_TARGET_DIR:-target}/native-cache" "$memo" "$memo_dir" \
+  python3 tools/memo.py run "$logs" "${CARGO_TARGET_DIR:-target}/native-cache" "$memo" auto \
     --include-ignored "${skips[@]}" || tests=1
 fi
 side_results

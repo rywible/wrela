@@ -222,18 +222,20 @@ fn crown_on(
             // as a broom: round 5's quick round).
             (mix(feet[j], tips[j], vec3(0.85)), feet[j])
         }
-        // The mass's first clump is its core; the rest bulge from its top and sides, few from
-        // below, so the mass's underside is broad and in shade.
+        // The mass's first clump is its core, a cushion: a broad top plane in the sun over a
+        // flat underside in shade. The rest are smaller cushions round its rim, a little up, so
+        // its edge is scalloped. (Spheres, each mass read as a heap of leaves with no top or
+        // underside: forms.md, row 1.)
         let (at, r) = if i <= scaffolds {
             (centre, core)
         } else {
             let a = TAU * rand(s, 210 + i)
-            let up = pick(s, 230 + i, lo: -0.25, hi: 0.9)
+            let up = pick(s, 230 + i, lo: -0.1, hi: 0.45)
             let out = sqrt(max(1.0 - up * up, 0.0))
-            let dir = vec3(out * cos(a), up, out * sin(a))
-            (centre + dir * (core * pick(s, 250 + i, lo: 0.6, hi: 0.85)), r_clump * 0.8)
+            let dir = vec3(out * cos(a), up * CUSHION, out * sin(a))
+            (centre + dir * (core * pick(s, 250 + i, lo: 0.75, hi: 0.95)), r_clump * 0.8)
         }
-        p.clump(at, radius: r)
+        p.cushion(at, radius: r, squash: CUSHION)
         if i < limbs + scaffolds && i >= scaffolds {
             let from = mix(foot, centre, vec3(pick(s, 100 + i, lo: 0.45, hi: 0.85)))
             p.limb(
@@ -251,6 +253,9 @@ fn crown_on(
 /// clumps blend (per metre, `Plant::blend`: softer than a plant's own, so a mass's clumps merge
 /// into one lump and its light turns over it as one form).
 const MASS_CORE: f32 = 1.45
+
+/// How tall a broad-leaved crown's clump is against its width (`Clump::squash`).
+const CUSHION: f32 = 0.55
 const MASS_BLEND: f32 = 0.75
 
 /// A pine, seed `s`, `tall` high: a straight trunk, bare low, and a flat-topped crown of dark
@@ -839,7 +844,7 @@ fn lowest(p: Plant) -> f32 {
     }
     for i in 0..p.clumps.len() {
         let c = p.clumps[i]
-        low = min(low, c.centre.y - c.radius)
+        low = min(low, c.centre.y - c.radius * c.squash)
     }
     low
 }
@@ -911,8 +916,8 @@ fn crowns_of_kinds(which: u32) -> [f32; KINDS] {
         for i in 0..p.clumps.len() {
             let c = p.clumps[i]
             reach = max(reach, length(c.centre.xz) + 0.5 * c.radius)
-            low = min(low, c.centre.y - 0.5 * c.radius)
-            high = max(high, c.centre.y + 0.5 * c.radius)
+            low = min(low, c.centre.y - 0.5 * c.radius * c.squash)
+            high = max(high, c.centre.y + 0.5 * c.radius * c.squash)
         }
         out[k] = if p.clumps.len() == 0 { 0.0 } else if which == 0 { reach } else if which == 1 {
             0.5 * (low + lowest(p))

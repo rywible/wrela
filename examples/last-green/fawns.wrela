@@ -1,4 +1,4 @@
-// The fawn in the floor (#54 §9's characters in the wood: the fawn and the stand-in in three
+// The fawn in the floor (#54 §9's characters in the wood: the fawn and the climber in three
 // shots, so the cel treatment is judged against the wood's dark and dappled light): M5's fawn as
 // a young deer (`fawn::creature::wood_fawn`), realized over frames as the clearing realizes it,
 // once a shot that casts it is held, and drawn standing at rest where the shot puts it.
@@ -6,7 +6,7 @@
 use engine::creature::{Creature, MAX_BONES}
 use engine::look::{CreatureLook, Mesh}
 use engine::render::{Look, bone_matrix}
-use engine::standin::placed
+use engine::character::placed
 use fawn::creature::{Coat, skeleton, wood_fawn}
 use std::quat::Quat
 use std::transform::scale
@@ -44,8 +44,8 @@ impl Look<Coat> for FawnLook {
     }
 }
 
-/// How big it stands: M5's grazer is the size of a horse (its poll 2 m up, over the stand-in's
-/// head); a fawn stands about half as tall, its back at the stand-in's hip.
+/// How big it stands: M5's grazer is the size of a horse (its poll 2 m up, over the climber's
+/// head); a fawn stands about half as tall, its back at the climber's hip.
 pub const SIZE: f32 = 0.6
 
 /// How far its neck leans forward from the grazer's upright one, about its base (radians): an
