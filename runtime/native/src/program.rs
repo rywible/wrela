@@ -156,8 +156,12 @@ struct State<E> {
     started: bool,
     /// The voice `wrela.audio` started: its task and context.
     voice: Option<(u32, u32)>,
+    /// Whether the module has the audio thread entry that starting a voice requires.
+    has_audio_entry: bool,
     /// The ticker `wrela.tick` started: its task, context and rate.
     ticker: Option<(u32, u32, u32)>,
+    /// Whether the module has the ticker thread entry that starting a ticker requires.
+    has_tick_entry: bool,
     /// What the program printed and timed, on any of its threads (`std::io::print`,
     /// `std::time::phase`): each line also shown on stderr unless quiet.
     trace: Trace,
@@ -167,6 +171,21 @@ struct State<E> {
     /// (`wrela.keep`): hot reload.
     kept: Vec<u8>,
     keeping: Vec<u8>,
+    /// What the program asked of other builds during the current call (`std::reload`), for the
+    /// host to carry out after it; and whether its host does ([`Program::hand_over_here`]).
+    /// Where it doesn't, each such request fails.
+    handing: Vec<Handing>,
+    hands_over: bool,
+}
+
+/// What a program asks of another build (`std::reload`): the path is as the program wrote it,
+/// relative to its build.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+pub(crate) enum Handing {
+    Prepare { request: u32, path: String },
+    Unprepare { path: String },
+    HandOver { request: u32, path: String },
 }
 
 /// What a start function that calls the host gets.
@@ -214,12 +233,17 @@ struct Requests {
     io: Io,
     answered: HashMap<u32, std::result::Result<Vec<u8>, String>>,
     arriving: Vec<(u32, std::result::Result<Vec<u8>, String>)>,
+    /// Requests the host answers after a call ([`Program::answer`]): another build's.
+    waiting: Vec<u32>,
 }
 
 impl Requests {
     /// A request's number, checked to be free.
     fn start(&self, request: u32, op: stream::Opcode) -> Result<()> {
-        if self.answered.contains_key(&request) || self.arriving.iter().any(|a| a.0 == request) {
+        if self.answered.contains_key(&request)
+            || self.arriving.iter().any(|a| a.0 == request)
+            || self.waiting.contains(&request)
+        {
             return Err(Error::Command(CommandError {
                 opcode: op,
                 why: format!("request {request} is already in use"),
@@ -231,7 +255,22 @@ impl Requests {
     /// The file a storage path or a URL names, under `dir`.
     fn file(dir: &Option<PathBuf>, path: &str, what: &str) -> std::result::Result<PathBuf, String> {
         match dir {
-            Some(d) => Ok(d.join(path)),
+            Some(d) => {
+                let file = d.join(path);
+                let mut prefix = d.clone();
+                for part in path.split('/') {
+                    prefix.push(part);
+                    match std::fs::symlink_metadata(&prefix) {
+                        Ok(metadata) if metadata.file_type().is_symlink() => {
+                            return Err(format!("the path `{path}` crosses a symbolic link"));
+                        }
+                        Ok(_) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                        Err(e) => return Err(e.to_string()),
+                    }
+                }
+                Ok(file)
+            }
             None => Err(format!("this host has no {what}")),
         }
     }
@@ -318,6 +357,23 @@ impl<E: Executor> State<E> {
                 | Command::StorageWrite { .. }
                 | Command::Fetch { .. }
                 | Command::Post { .. } => self.requests.io(&cmd)?,
+                Command::Prepare { request, path } | Command::HandOver { request, path } => {
+                    self.requests.start(*request, cmd.opcode())?;
+                    let path = path.to_string();
+                    if !self.hands_over {
+                        let why = "this host has no other build to hand over to".to_string();
+                        self.requests.arriving.push((*request, Err(why)));
+                    } else if let Command::Prepare { .. } = cmd {
+                        self.requests.waiting.push(*request);
+                        self.handing.push(Handing::Prepare { request: *request, path });
+                    } else {
+                        self.requests.waiting.push(*request);
+                        self.handing.push(Handing::HandOver { request: *request, path });
+                    }
+                }
+                Command::Unprepare { path } if self.hands_over => {
+                    self.handing.push(Handing::Unprepare { path: path.to_string() });
+                }
                 _ => {}
             }
         }
@@ -430,6 +486,9 @@ pub(crate) struct Program<E: 'static> {
     /// Hot reload: the ticks the replaced build ran, which this one runs again first, each with
     /// the records it had.
     replay: Option<Replay>,
+    /// The first frame of its ticks in lockstep: the frame a program handed over to started
+    /// at, whose ticks count from there (a hot reload's go on from the replaced build's).
+    tick_from: Option<u32>,
 }
 
 /// The ticks a replaced build ran, for the build that replaces it to run again (hot reload).
@@ -453,6 +512,33 @@ pub(crate) struct Retired<E> {
     records: std::collections::VecDeque<[u8; EVENT_SIZE as usize]>,
     trace: Option<Trace>,
     batches: Option<Vec<Vec<u8>>>,
+    tick_from: Option<u32>,
+}
+
+impl<E> Retired<E> {
+    /// What a build handed over to gets (`std::reload::hand_over`): the executor, what was
+    /// kept, the input not yet read, the trace and batches; no ticks to replay, since the new
+    /// build's sim is its own.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub(crate) fn handed_over(self) -> Retired<E> {
+        Retired { ticks: 0, ran: None, records: Default::default(), tick_from: None, ..self }
+    }
+
+    /// Adds a line to what the program printed, as the host's own: why a hand-over failed.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub(crate) fn log(&mut self, line: String) {
+        match &self.trace {
+            Some(t) => t.print(line),
+            None => eprintln!("wrela: {line}"),
+        }
+    }
+
+    /// The same, with `kept` in place of what was kept: a build started again after a
+    /// hand-over failed starts with what it had kept before it.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub(crate) fn keeping(self, kept: Vec<u8>) -> Retired<E> {
+        Retired { kept, ..self.handed_over() }
+    }
 }
 
 /// A program's helper threads: dropping it shuts them down (they see the flag when they wake)
@@ -532,6 +618,18 @@ pub(crate) fn check_abi(module: &Module) -> Result<wasmtime::MemoryType> {
         return Err(Error::Program(format!(
             "its `{EXPORT_INIT}` export must be a function with no parameters and no results"
         )));
+    }
+    for (name, params) in [
+        (EXPORT_WORKER, &["i32"][..]),
+        (EXPORT_AUDIO, &["i32", "i32", "i32"][..]),
+        (EXPORT_TICK, &["i32", "i32", "i32", "i32"][..]),
+    ] {
+        if module.get_export(name).is_some_and(|t| !is_func(&t, params)) {
+            return Err(Error::Program(format!(
+                "its `{name}` export must be a function ({}) -> ()",
+                params.join(", ")
+            )));
+        }
     }
     Ok(memory)
 }
@@ -644,6 +742,7 @@ impl<E: Executor> Program<E> {
             records: Default::default(),
             trace: None,
             batches: record.then(Vec::new),
+            tick_from: None,
         };
         Program::instantiate_carrying(compiled, manifest, carried, io, workers, run_init)
     }
@@ -659,7 +758,8 @@ impl<E: Executor> Program<E> {
         workers: u32,
         run_init: bool,
     ) -> Result<Program<E>> {
-        let Retired { executor, kept, ticks, ran, input, records, trace, batches } = carried;
+        let Retired { executor, kept, ticks, ran, input, records, trace, batches, tick_from } =
+            carried;
         let trace = trace.unwrap_or_else(|| Trace::new((!io.quiet).then(|| "wrela: ".to_string())));
         let engine = compiled.module.engine();
         let mut linker = Linker::new(engine);
@@ -691,11 +791,21 @@ impl<E: Executor> Program<E> {
             requests: Requests { io, ..Requests::default() },
             started: false,
             voice: None,
+            has_audio_entry: compiled
+                .module
+                .get_export(EXPORT_AUDIO)
+                .is_some_and(|t| is_func(&t, &["i32", "i32", "i32"])),
             ticker: None,
+            has_tick_entry: compiled
+                .module
+                .get_export(EXPORT_TICK)
+                .is_some_and(|t| is_func(&t, &["i32", "i32", "i32", "i32"])),
             trace: trace.clone(),
             input,
             kept,
             keeping: Vec::new(),
+            handing: Vec::new(),
+            hands_over: false,
         };
         let mut store = Store::new(engine, state);
         if let Some(fuel) = compiled.fuel {
@@ -740,6 +850,7 @@ impl<E: Executor> Program<E> {
             ran: ran.as_ref().map(|_| Vec::new()),
             replay: (ticks > 0)
                 .then(|| Replay { upto: ticks, records: ran.into_iter().flatten().collect() }),
+            tick_from,
         };
         if run_init {
             program.init()?;
@@ -760,7 +871,8 @@ impl<E: Executor> Program<E> {
     /// next build too.
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
     pub(crate) fn retire(self) -> Retired<E> {
-        let Program { store, _helpers: helpers, ticker, ran, replay, records, .. } = self;
+        let Program { store, _helpers: helpers, ticker, ran, replay, records, tick_from, .. } =
+            self;
         drop(helpers);
         let state = store.into_data();
         // The ticks it hadn't replayed yet, what the build before it ran, carry over too.
@@ -785,7 +897,37 @@ impl<E: Executor> Program<E> {
             records,
             trace: Some(state.trace),
             batches: state.batches,
+            tick_from,
         }
+    }
+
+    /// Its host carries out what it asks of other builds (`std::reload`): it takes them with
+    /// [`Program::take_handing`] after each call.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub(crate) fn hand_over_here(&mut self) {
+        self.store.data_mut().hands_over = true;
+    }
+
+    /// What the program asked of other builds since the last time (`std::reload`): the host
+    /// carries it out, and answers each request with [`Program::answer`].
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub(crate) fn take_handing(&mut self) -> Vec<Handing> {
+        std::mem::take(&mut self.store.data_mut().handing)
+    }
+
+    /// Answers request `request`, one of those [`Program::take_handing`] gave: the program sees
+    /// it from its next call on.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub(crate) fn answer(&mut self, request: u32, answer: std::result::Result<Vec<u8>, String>) {
+        let requests = &mut self.store.data_mut().requests;
+        requests.waiting.retain(|&r| r != request);
+        requests.answered.insert(request, answer);
+    }
+
+    /// What it keeps for the build that replaces it (`std::reload::keep`), so far.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub(crate) fn keeping(&self) -> &[u8] {
+        &self.store.data().keeping
     }
 
     /// Runs `init`, for a program [`Program::instantiate_with`] made without running it.
@@ -936,7 +1078,8 @@ impl<E: Executor> Program<E> {
     /// FNV-1a 64 of every byte submitted since the program loaded.
     /// Renders `quanta` quanta of the program's voice ([`wrela_abi::AUDIO_QUANTUM`] samples
     /// each, at [`wrela_abi::AUDIO_SAMPLE_RATE`]) on an instance of its own, as the audio
-    /// thread does, here and now: an offline run. The voice goes on where the last call
+    /// thread does, here and now: an offline run. The samples are the two channels
+    /// interleaved: left, right, left, and so on. The voice goes on where the last call
     /// stopped. Errors if the program hasn't started one.
     pub(crate) fn render_audio(&mut self, quanta: u32) -> Result<Vec<f32>> {
         let Some((task, context)) = self.store.data().voice else {
@@ -952,16 +1095,26 @@ impl<E: Executor> Program<E> {
                 .map_err(wrap)?;
             self.audio = Some((store, render));
         }
+        let trace = self.trace();
         let (store, render) = self.audio.as_mut().expect("made above");
         let n = AUDIO_QUANTUM as usize;
-        let mut out = Vec::with_capacity(n * quanta as usize);
+        let channels = wrela_abi::AUDIO_CHANNELS as usize;
+        let mut out = Vec::with_capacity(channels * n * quanta as usize);
         for _ in 0..quanta {
-            render
-                .call(&mut *store, (memory::THREAD_AUDIO, task, context))
+            trace
+                .end_phase_after(|| render.call(&mut *store, (memory::THREAD_AUDIO, task, context)))
                 .map_err(|e| Error::Trap(format!("the voice trapped: {}", e.root_cause())))?;
-            let bytes = shared::read(&self.memory, wrela_abi::memory::AUDIO_OUT as usize, n * 4)
+            let at = wrela_abi::memory::AUDIO_OUT as usize;
+            let bytes = shared::read(&self.memory, at, channels * n * 4)
                 .ok_or_else(|| Error::Program("the samples are past the memory's end".into()))?;
-            out.extend(bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])));
+            let sample = |i: usize| {
+                let b = &bytes[4 * i..4 * i + 4];
+                f32::from_le_bytes([b[0], b[1], b[2], b[3]])
+            };
+            for i in 0..n {
+                out.push(sample(i));
+                out.push(sample(n + i));
+            }
         }
         Ok(out)
     }
@@ -1082,13 +1235,15 @@ impl<E: Executor> Program<E> {
         script: &[Scripted],
         mut log: Option<&mut TickLog>,
     ) -> Result<()> {
+        valid_fps(fps)?;
         let events: Vec<Event> = wrela_abi::input::events_at(script, i).collect();
         for &e in &events {
             self.push_input(e);
         }
+        let from = *self.tick_from.get_or_insert(i);
         if let Some(hz) = self.ticker_hz() {
             self.push_records(events);
-            while self.next_tick() < lockstep_ticks(i, hz, fps) {
+            while self.next_tick() < lockstep_ticks(i - from, hz, fps) {
                 self.scripted_tick(script, log.as_deref_mut())?;
             }
         }
@@ -1128,6 +1283,7 @@ impl<E: Executor> Program<E> {
         width: u32,
         height: u32,
     ) -> Result<Vec<(Ticked, f64)>> {
+        valid_fps(fps)?;
         self.want_hashes(true);
         let mut thread = self.take_tick_thread()?;
         let (ticked, framed) = std::thread::scope(|s| {
@@ -1189,6 +1345,14 @@ impl<E: Executor> Program<E> {
     #[cfg_attr(not(feature = "gpu"), expect(dead_code, reason = "only `Host` reaches its GPU"))]
     pub(crate) fn executor(&mut self) -> &mut E {
         &mut self.store.data_mut().executor
+    }
+}
+
+pub(crate) fn valid_fps(fps: f64) -> Result<()> {
+    if fps.is_finite() && fps > 0.0 {
+        Ok(())
+    } else {
+        Err(Error::Program(format!("fps must be finite and greater than zero, not {fps:?}")))
     }
 }
 
@@ -1281,7 +1445,7 @@ impl BuildHelpers {
                         }
                         result
                     };
-                    if run(&mut used).is_err() {
+                    if trace.end_phase_after(|| run(&mut used)).is_err() {
                         helper_trapped(&memory, thread);
                     }
                     used
@@ -1351,7 +1515,7 @@ fn spawn_worker(
             let worker = instance.get_typed_func::<u32, ()>(&mut store, EXPORT_WORKER)?;
             worker.call(&mut store, thread)
         };
-        if run().is_err() {
+        if trace.end_phase_after(run).is_err() {
             helper_trapped(&memory, thread);
         }
     })
@@ -1426,6 +1590,20 @@ fn audio<E: Executor>(
         let e = Error::Trap("a program starts one voice, and this one started a second".into());
         return Err(fail(state, e));
     }
+    if !state.has_audio_entry {
+        let e = Error::Trap(format!(
+            "it starts a voice but doesn't export `{EXPORT_AUDIO}(thread, task, context)`"
+        ));
+        return Err(fail(state, e));
+    }
+    let need = memory::AUDIO_OUT as usize + AUDIO_QUANTUM as usize * 4;
+    if state.memory.data().len() < need {
+        let got = state.memory.data().len();
+        let e = Error::Trap(format!(
+            "it starts a voice but its memory is {got} bytes; the audio thread needs at least {need}"
+        ));
+        return Err(fail(state, e));
+    }
     state.voice = Some((task, context));
     Ok(())
 }
@@ -1443,6 +1621,21 @@ fn tick<E: Executor>(
     if state.ticker.is_some() {
         let e =
             Error::Trap("panic: a program starts one ticker, and this one started a second".into());
+        return Err(fail(state, e));
+    }
+    if !state.has_tick_entry {
+        let e = Error::Trap(format!(
+            "it starts a ticker but doesn't export `{EXPORT_TICK}(thread, task, context, tick)`"
+        ));
+        return Err(fail(state, e));
+    }
+    let need =
+        memory::TICK_RECORDS as usize + 4 + memory::MAX_TICK_RECORDS as usize * EVENT_SIZE as usize;
+    if state.memory.data().len() < need {
+        let got = state.memory.data().len();
+        let e = Error::Trap(format!(
+            "it starts a ticker but its memory is {got} bytes; the ticker needs at least {need}"
+        ));
         return Err(fail(state, e));
     }
     state.ticker = Some((task, context, hz));

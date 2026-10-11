@@ -11,7 +11,7 @@
 //
 // Names are `Text` in the map's tables, which only CPU code reads (the GPU reads a site's place).
 
-use noise::{fbm2, noise2}
+use noise::{fbm2, hash2, noise2}
 use sim::SimState
 use std::hash::StateHash
 use std::serialize::Serialize
@@ -149,7 +149,7 @@ impl Land {
         for i in 0..4 {
             let c = self.crags[i]
             if c.w > 0.0 {
-                y += crag(p, c, self.ramps[i])
+                y += crag(p, c, self.ramps[i], u32(i))
             }
         }
         y - self.ravine(p)
@@ -219,15 +219,7 @@ impl Land {
         for i in 0..4 {
             let c = self.crags[i]
             if c.w > 0.0 {
-                let k = p - c.xy
-                let r = length(k)
-                let flank = smoothstep(0.3 * c.w, 0.45 * c.w, r) *
-                    (1.0 - smoothstep(0.85 * c.w, 1.05 * c.w, r))
-                let dir = vec2(cos(self.ramps[i]), sin(self.ramps[i]))
-                let along = dot(k, dir)
-                let across = abs(dot(k, vec2(-dir.y, dir.x)))
-                let ramp = (1.0 - smoothstep(6.0, 12.0, across)) * smoothstep(0.0, 0.2 * c.w, along)
-                f = max(f, flank * (1.0 - ramp))
+                f = max(f, crag_face(p, c, self.ramps[i], u32(i)))
             }
         }
         var walked = 0.0
@@ -267,42 +259,213 @@ impl Land {
         for i in 0..4 {
             let c = self.crags[i]
             if c.w > 0.0 {
-                let d = length(p - c.xy) + 2.5 * (noise2(p * 0.2) - 0.5)
-                r = max(r, 1.0 - smoothstep(c.w * 0.9, c.w * 1.25, d))
-                // Its ramp's scree, where no tree stands (so the way up stays open).
-                let dir = vec2(cos(self.ramps[i]), sin(self.ramps[i]))
-                let k = p - c.xy
-                let along = dot(k, dir)
-                let across = abs(dot(k, vec2(-dir.y, dir.x))) + 1.5 * (noise2(p * 0.3) - 0.5)
-                let scree = (1.0 - smoothstep(5.0, 8.0, across)) *
-                    smoothstep(0.0, 0.2 * c.w, along) *
-                    (1.0 - smoothstep(2.6 * c.w, 3.2 * c.w, along))
-                r = max(r, 0.75 * scree)
+                r = max(r, crag_bare(p, c, self.ramps[i], u32(i)))
             }
         }
         r
     }
 }
 
-/// A crag at `c` (x, z, height, foot radius): steep-sided, its top flat-ish, with a ramp of scree
-/// up from the direction `ramp` (radians), so a player can climb it.
-pub fn crag(p: vec2, c: vec4, ramp: f32) -> f32 {
+/// How much of `p` is crag `c`'s cliff (0 to 1; crag `i` of its land, its ramp from `ramp`):
+/// any of its tiers' (its talus is scree, not a face), not its ramp. Its own function, small in
+/// its arguments, so the shaders that read the land at many points call it and don't copy it
+/// (`ir::opt`).
+pub fn crag_face(p: vec2, c: vec4, ramp: f32, i: u32) -> f32 {
     let k = p - c.xy
-    let r = length(k) + 2.5 * (noise2(p * 0.2) - 0.5)
-    let body = c.z * (1.0 - smoothstep(0.35 * c.w, c.w, r)) +
-        3.0 * exp(-dot(k, k) / (c.w * c.w * 2.0))
+    let (_, flank) = crag_shape(p, c, i)
+    let dir = vec2(cos(ramp), sin(ramp))
+    let along = dot(k, dir)
+    let across = abs(dot(k, vec2(-dir.y, dir.x)))
+    let up = (1.0 - smoothstep(6.0, 12.0, across)) * smoothstep(0.0, 0.2 * c.w, along)
+    // A rock a few metres tall takes less of a face's relief: its blocks and beds a metre or two
+    // high stood as a striped curtain round it (round 9, the edge's rock).
+    flank * (1.0 - up) * min(1.0, c.z / 12.0)
+}
+
+/// How much of `p` is crag `c`'s rock (0 to 1; as `crag_face`): its top, its cliffs, its talus
+/// and its ramp's scree.
+pub fn crag_bare(p: vec2, c: vec4, ramp: f32, i: u32) -> f32 {
+    var r = 0.0
+    // Its top bare but where soil gathers in pockets; its cliffs bare; its talus
+    // stony, the grass taking it back toward its toe.
+    let d = crag_rim(p, c, i)
+    let out = d - cliff_width(c)
+    if out < 0.0 {
+        let pockets = 0.45 * smoothstep(0.55, 0.75, fbm2(p * 0.11 + vec2(f32(i) * 7.0), 2))
+        // (None round its middle, where a player stands to look out: no blade in the eye.)
+        let middle = smoothstep(8.0, 14.0, length(p - c.xy))
+        // (None on a tall crag's top: seen from afar, its top hides its trees' trunks and their
+        // crowns seem to float.)
+        let low = 1.0 - smoothstep(50.0, 65.0, c.z)
+        r = max(r, 1.0 - pockets * middle * low * (1.0 - smoothstep(-6.0, -2.0, d)))
+    } else if out < talus_width(c) {
+        let toe = out / talus_width(c) + 0.25 * (noise2(p * 0.25) - 0.5)
+        r = max(r, 0.9 * (1.0 - smoothstep(0.3, 1.0, toe)))
+    }
+    // Its ramp's scree, where no tree stands (so the way up stays open).
+    let dir = vec2(cos(ramp), sin(ramp))
+    let k = p - c.xy
+    let along = dot(k, dir)
+    let side = abs(dot(k, vec2(-dir.y, dir.x)))
+    if side < 9.0 && along > 0.0 && along < 3.5 * c.w {
+        let across = side + 1.5 * (noise2(p * 0.3) - 0.5)
+        let scree = (1.0 - smoothstep(5.0, 8.0, across)) *
+            smoothstep(0.0, 0.2 * c.w, along) *
+            (1.0 - smoothstep(2.9 * c.w, 3.5 * c.w, along))
+        // The ramp's scree in place of what's under it: the ground's relief keeps its boulders
+        // off it, so the way up stays walkable.
+        r = mix(r, 0.75, scree * step(0.0, out))
+    }
+    r
+}
+
+/// The sides of a crag's outline: the joint planes it splits along.
+pub const CRAG_SIDES: u32 = 7
+
+/// How far `p` is outside crag `i`'s rim (m; negative inside): its outline in plan a polygon of
+/// `CRAG_SIDES` sides, each the trace of a joint plane, at its own distance and turn, so its cliffs
+/// are planes and its corners sharp (a round outline reads as a dome).
+pub fn crag_rim(p: vec2, c: vec4, i: u32) -> f32 {
+    let k = p - c.xy
+    // Past its talus's toe, how far it is matters no more than that it's past it: the land's
+    // height reads every crag at every point, and its planes cost.
+    let r = length(k)
+    if r > crag_reach(c) {
+        return r - 1.2 * c.w
+    }
+    var d = -1.0e9
+    for s in 0..CRAG_SIDES {
+        let si = i32(s)
+        let ci = i32(i)
+        let a = 6.2831853 * (f32(s) + 0.7 * hash2(si, ci * 13 + 1)) / f32(CRAG_SIDES)
+        let side = c.w * (0.55 + 0.3 * hash2(si, ci * 13 + 2))
+        d = max(d, dot(k, vec2(cos(a), sin(a))) - side)
+    }
+    d + 1.2 * (noise2(p * 0.15) - 0.5)
+}
+
+/// How many tiers a crag rises in: one a bed about 10 m thick, at most four (a crag as one
+/// drum read as a barrel: round 5).
+pub fn crag_tiers(c: vec4) -> u32 {
+    u32(clamp(floor(c.z / 10.0), 1.0, 4.0))
+}
+
+/// How tall each of a crag's tiers is (m): its height over its talus, shared.
+pub fn tier_height(c: vec4) -> f32 {
+    (1.0 - TALUS_HIGH) * c.z / f32(crag_tiers(c))
+}
+
+/// A tier's cliff: its height over its width out from its rim (m): near sheer (a slope of 6,
+/// about 80°: at 2.6 a crag read as the dome it was), within the ground's steepest
+/// (`Terrain::steepest`); a rock a few metres tall less steep (a slope of 1.5 at 9 m and under),
+/// as a player sees it from a few metres off, where a sheer face in the clipmap is a stretched
+/// curtain (round 8, the edge's rock).
+pub fn cliff_width(c: vec4) -> f32 {
+    tier_height(c) / clamp(c.z / 6.0, 1.5, 6.0)
+}
+
+/// A crag's talus: the height it's banked to at the cliff's foot (of the crag's height), and how
+/// far it runs out from there (m): concave, at about 37° where it meets the cliff.
+pub const TALUS_HIGH: f32 = 0.25
+
+pub fn talus_width(c: vec4) -> f32 {
+    2.0 * TALUS_HIGH * c.z / 0.75
+}
+
+/// How far from its middle a crag's rock reaches at most: its outline's furthest corner, its
+/// cliff and its talus, with room for its corners' angles.
+pub fn crag_reach(c: vec4) -> f32 {
+    1.2 * c.w + 1.4 * (cliff_width(c) + talus_width(c)) + 2.0
+}
+
+/// Crag `i` at `c`'s body at `p`: its height (talus and tiers, before its ramp), and how much of
+/// `p` is one of its tiers' cliffs (0 to 1). Each tier is a bed of the rock, its outline its own
+/// polygon inside the one under it (each side drawn in by its own amount, some not at all, so a
+/// cliff runs sheer down two tiers in one place and steps back to a ledge in another); its top
+/// tilted with the beds, so it's a slab and not a drum; the talus fallen from the lowest.
+pub fn crag_shape(p: vec2, c: vec4, i: u32) -> (f32, f32) {
+    let k = p - c.xy
+    let r = length(k)
+    let tw = talus_width(c)
+    let foot = TALUS_HIGH * c.z
+    if r > crag_reach(c) {
+        return (0.0, 0.0)
+    }
+    let ci = i32(i)
+    let n = crag_tiers(c)
+    let th = tier_height(c)
+    let cw = cliff_width(c)
+    let tilt = crag_tilt(c, i)
+    let lean = dot(k, tilt)
+    let rough = 1.2 * (noise2(p * 0.15) - 0.5)
+    var dirs = [vec2(0.0); 7]
+    var sides = [0.0; 7]
+    for s in 0..CRAG_SIDES {
+        let si = i32(s)
+        let a = 6.2831853 * (f32(s) + 0.7 * hash2(si, ci * 13 + 1)) / f32(CRAG_SIDES)
+        dirs[s] = vec2(cos(a), sin(a))
+        sides[s] = c.w * (0.55 + 0.3 * hash2(si, ci * 13 + 2))
+    }
+    // The talus round the lowest tier's foot, falling away steep and then gently.
+    var d0 = -1.0e9
+    for s in 0..CRAG_SIDES {
+        d0 = max(d0, dot(k, dirs[s]) - sides[s])
+    }
+    d0 += rough
+    let t = saturate((d0 - cw) / tw)
+    var h = foot * (1.0 - t) * (1.0 - t)
+    var face = 0.0
+    for tier in 0..n {
+        var d = d0
+        if tier > 0 {
+            d = -1.0e9
+            for s in 0..CRAG_SIDES {
+                let si = i32(s)
+                let ti = i32(tier)
+                sides[s] *= 1.0 - max(0.0, 0.2 * hash2(si * 7 + ti, ci * 13 + 5) - 0.05)
+                d = max(d, dot(k, dirs[s]) - sides[s])
+            }
+            d += rough
+        }
+        if d < cw {
+            // Straight down its cliff to the top of the tier under it, with a crisp edge at its
+            // rim and its foot (a smoothstep's shoulders read as a dome).
+            let crown = if tier + 1 == n { 1.5 * exp(-dot(k, k) / (c.w * c.w * 0.5)) } else { 0.0 }
+            let under = if tier == 0 { foot } else { foot + th * f32(tier) + lean }
+            let top = foot + th * f32(tier + 1) + lean + crown
+            h = max(h, mix(top, under, saturate(d / cw)))
+            face = max(face, smoothstep(-0.8, 0.0, d))
+        }
+    }
+    (h, face)
+}
+
+/// How crag `c`'s top leans (rise per metre): as a tall crag's beds dip, but less on a small rock,
+/// whose lean over its width would match its height and drape it like a sheet.
+fn crag_tilt(c: vec4, i: u32) -> vec2 {
+    vec2(cos(1.3 + f32(i)), sin(1.3 + f32(i))) * (6.0 / c.w) * min(1.0, c.z / 30.0)
+}
+
+/// A crag at `c` (x, z, height, foot radius), crag `i` of its land: its tiers and talus
+/// (`crag_shape`), with a ramp of scree up from the direction `ramp` (radians), so a player can
+/// climb it.
+pub fn crag(p: vec2, c: vec4, ramp: f32, i: u32) -> f32 {
+    let k = p - c.xy
+    let (body, _) = crag_shape(p, c, i)
+    let tilt = crag_tilt(c, i)
     // The ramp: a wedge whose top meets the crag's at its rim, falling to the ground over three
     // feet's widths.
     let dir = vec2(cos(ramp), sin(ramp))
     let along = dot(k, dir)
     let across = abs(dot(k, vec2(-dir.y, dir.x)))
-    let reach = 3.2 * c.w
-    // Its top as high as the crag's top at the rim (the body's crown there), so the climb has no
-    // step where it meets it.
-    let ramp_h = (c.z + 3.0) *
-        (1.0 - smoothstep(0.2 * c.w, reach, along)) *
+    let reach = 3.5 * c.w
+    // Its top just under the crag's tilted top inside the rim (the top's own height holds
+    // there) and as high as it at the rim, so the climb has no step where it meets it, and no
+    // ridge across the top.
+    let ramp_h = (c.z + dot(dir, tilt) * min(along, 0.55 * c.w) - 0.3) *
+        (1.0 - smoothstep(0.55 * c.w, reach, along)) *
         (1.0 - smoothstep(4.0, 9.0, across)) *
-        smoothstep(-2.0, 0.2 * c.w, along)
+        step(0.0, along)
     max(body, ramp_h)
 }
 
@@ -513,8 +676,8 @@ pub struct Water: Copy {
 /// What happens in a year of the history.
 pub enum EventKind: Copy + Eq {
     /// A gale round `at`, blowing toward `dir`, dying away past `reach`: it throws or snaps the
-    /// trees it finds exposed (`share` of them where it's strongest), and breaks some tops
-    /// (`grow::gale`).
+    /// trees it finds exposed, and breaks some tops (`grow::gale`). The stronger it is (`share`,
+    /// 0 to 1), the less exposed a tree need be: at its strongest it throws nearly all.
     Storm { at: vec2, reach: f32, dir: vec2, share: f32 },
     /// A fire round `at`, lit on its upwind side: it runs as its fuel, dryness, slope and the
     /// wind let it, no further than `reach` from `at`, and kills what its heat there can kill;
@@ -597,6 +760,9 @@ pub struct Map {
     pub routes: Vec<Route>,
     pub water: Water,
     pub events: Vec<Event>,
+    /// The way the floor's wind blows (toward): off the floor's edge, into the forest. It
+    /// drives the fires (`grow::fire`), and throws the trees the gaps' gusts take.
+    pub wind: vec2,
     pub kept: Vec<Kept>,
     pub regions: Vec<Region>,
     pub herd: Herd,
@@ -795,4 +961,44 @@ fn a_place_keeps_its_precision_far_out() {
         let off = length(end - want)
         assert(off < 0.05, f"{far} m out, a minute's walk ends {off} m off")
     }
+}
+
+/// A crag's form, on two small cases: a tall crag stands in tiers of steep cliffs over a talus
+/// with a near-flat, bare top; a small rock leans less than its height across its top.
+@test
+fn a_crag_has_tiers_of_cliffs_a_talus_and_a_flat_top() {
+    let tall = vec4(0.0, 0.0, 72.0, 36.0)
+    let (top, _) = crag_shape(vec2(0.0), tall, 1)
+    assert(abs(top - 73.5) < 6.0, f"its top stands {top} m high, not near its 72 m")
+    // Out from its middle, every way: down by cliffs (somewhere steeper than 2 in 1) to a gentle
+    // talus, and nothing past its reach.
+    for s in 0..8 {
+        let a = 6.2831853 * f32(s) / 8.0
+        let dir = vec2(cos(a), sin(a))
+        var steepest = 0.0
+        var last = top
+        var rises = 0.0
+        for k in 1..400 {
+            let (h, _) = crag_shape(dir * (0.25 * f32(k)), tall, 1)
+            steepest = max(steepest, (last - h) / 0.25)
+            rises = max(rises, h - last)
+            last = h
+        }
+        assert(steepest > 2.0, f"toward {a}, its steepest drop is {steepest} in 1: no cliff")
+        assert(rises < 0.5, f"toward {a}, it rises {rises} m going out: no tier is under another")
+        let (past, _) = crag_shape(dir * (crag_reach(tall) + 1.0), tall, 1)
+        assert(past == 0.0, f"toward {a}, it stands {past} m past its reach")
+    }
+    // A tall crag's top is bare: no soil pocket for a tree whose crown would float over it.
+    for k in 0..40 {
+        let p = vec2(cos(f32(k)), sin(f32(k))) * (0.4 * f32(k))
+        if crag_rim(p, tall, 1) < -2.0 {
+            let bare = crag_bare(p, tall, 0.0, 1)
+            assert(bare > 0.99, f"at {p}, its top is only {bare} bare")
+        }
+    }
+    // A small rock's top leans less than its height across its width.
+    let small = vec4(0.0, 0.0, 4.0, 12.0)
+    let lean = abs(dot(crag_tilt(small, 3), vec2(2.0 * small.w, 0.0)))
+    assert(lean < 0.5 * small.z, f"a 4 m rock's top leans {lean} m across its width")
 }

@@ -22,7 +22,7 @@ use std::time::now
 use studio::json::{List, list, obj}
 use studio::view::{BACKGROUND, cover_area, show_canvas}
 use ui::draw::{Rect, Renderer}
-use ui::text::{Face, Fonts}
+use ui::text::{Face, Fonts, previous}
 use ui::widgets::Ui
 
 /// What the lens draws (`show`'s bits): the ground (its relief, the light at it, the trails),
@@ -348,6 +348,14 @@ pub fn busy(lens: MapLens) -> bool {
 /// Whether the lens has nothing to do: not busy, and no typed command waiting.
 pub fn idle(lens: MapLens) -> bool {
     !busy(lens) && lens.queue.is_empty()
+}
+
+/// Removes the last Unicode scalar from a command line.
+fn backspace(line: mut String) {
+    if !line.is_empty() {
+        let from = previous(line.as_str(), line.len())
+        line.truncate(from)
+    }
 }
 
 // ---- the actions -----------------------------------------------------------------------------------
@@ -805,9 +813,8 @@ pub fn frame(
                 if key == Key::Enter {
                     let line = std::collections::replace(mut lens.line, String::new())
                     lens.queue.push(take line)
-                } else if key == Key::Backspace && !lens.line.is_empty() {
-                    let n = lens.line.len()
-                    lens.line.truncate(n - 1)
+                } else if key == Key::Backspace {
+                    backspace(mut lens.line)
                 }
             },
             Event::PointerDown { at, button, .. } => {
@@ -910,4 +917,25 @@ pub fn command(lens: mut MapLens, map: fn() -> Map, start: fn() -> Task<Preview>
         let a = obj().text("error", f"no action `{name}`".as_str()).done()
         lens.answer(a.as_str())
     }
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+/// Backspace removes one whole scalar at a time for one- through four-byte UTF-8.
+@test
+fn backspace_keeps_the_command_line_utf8() {
+    var line = String::from("a")
+    line.push_char(233) // é: two bytes
+    line.push_char(27700) // 水: three bytes
+    line.push_char(129420) // 🦌: four bytes
+    backspace(mut line)
+    assert(line.as_str() == "aé水")
+    backspace(mut line)
+    assert(line.as_str() == "aé")
+    backspace(mut line)
+    assert(line.as_str() == "a")
+    backspace(mut line)
+    assert(line.is_empty())
+    backspace(mut line)
+    assert(line.is_empty())
 }

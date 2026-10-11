@@ -1,11 +1,11 @@
 // The main-thread shim: hands the canvas to the render worker, forwards its size (in device
 // pixels) and the page's visibility, and shows fatal errors on the page and in the console.
 
-import { AUDIO_QUANTUM, AUDIO_SAMPLE_RATE } from "./abi.gen.ts";
+import { AUDIO_CHANNELS, AUDIO_QUANTUM, AUDIO_SAMPLE_RATE } from "./abi.gen.ts";
 import { errorMessage } from "./errors.ts";
 import { epochNow, InputRing } from "./input.ts";
 import { listen, pollPads } from "./listen.ts";
-import { type FromWorker, type ToWorker, VOICE_PROCESSOR, type VoiceOptions } from "./messages.ts";
+import { type FromVoice, type FromWorker, type ToWorker, VOICE_PROCESSOR, type VoiceOptions } from "./messages.ts";
 import { asksForTest, isLoopback, loaded, parseTestParams, putResult, sleepUntil, type TestParams } from "./testmode.ts";
 
 let shown = false;
@@ -50,43 +50,100 @@ function onPixelRatioChange(f: () => void): void {
   );
 }
 
+/** The page's audio context, made for the first voice, and the voice playing in it: a build
+ * handed over to plays its voice in the same context (a browser starts a context only after the
+ * person interacts with the page, so a new one would be silent). */
+const audio: { context: Promise<AudioContext> | null; node: AudioWorkletNode | null } = { context: null, node: null };
+
+/** Stops the voice playing: its program handed its place to another build. */
+function stopVoice(): void {
+  if (!audio.node) return;
+  audio.node.port.onmessage = null;
+  audio.node.disconnect();
+  audio.node = null;
+}
+
 /** Plays the program's voice in an AudioWorklet (worklet.js), at the ABI's sample rate (the
  * browser resamples to the device's). In test mode it renders `test.audio` quanta offline
  * instead, saves the samples to `results/audio.f32`, and tells the worker. */
 async function playVoice(voice: VoiceOptions, test: TestParams | null, worker: Worker): Promise<void> {
   const url = new URL("worklet.js", import.meta.url);
-  const node = (ctx: BaseAudioContext) => {
+  const node = (ctx: BaseAudioContext, quanta: number | null): { node: AudioWorkletNode; rendered: Promise<void> } => {
+    const rendered = quanta === null ? null : Promise.withResolvers<void>();
     const n = new AudioWorkletNode(ctx, VOICE_PROCESSOR, {
       numberOfInputs: 0,
       numberOfOutputs: 1,
-      outputChannelCount: [1],
-      processorOptions: voice,
+      outputChannelCount: [AUDIO_CHANNELS],
+      processorOptions: { ...voice, quanta },
     });
-    n.port.onmessage = (e: MessageEvent<{ message: string }>) => {
-      const why = new Error(`the voice trapped: ${e.data.message}`);
-      failEarly(why, test !== null);
+    n.port.onmessage = (e: MessageEvent<FromVoice>) => {
+      const msg = e.data;
+      if (msg.type === "print") {
+        worker.postMessage(msg satisfies ToWorker);
+      } else if (msg.type === "trap") {
+        const why = new Error(`the voice trapped: ${msg.message}`);
+        failEarly(why, test !== null);
+      } else {
+        rendered?.resolve();
+      }
     };
     n.connect(ctx.destination);
+    return { node: n, rendered: rendered?.promise ?? Promise.resolve() };
   };
-  if (test) {
-    if (test.audio === 0) return;
-    const ctx = new OfflineAudioContext({ numberOfChannels: 1, length: test.audio * AUDIO_QUANTUM, sampleRate: AUDIO_SAMPLE_RATE });
+  if (test && test.live > 0) {
+    // Real time: the voice plays for `live` seconds, then the browser's playback statistics
+    // (Chrome's `AudioContext.playbackStats`, where it has them) say whether it kept up.
+    const ctx = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE, latencyHint: "interactive" });
     await ctx.audioWorklet.addModule(url);
-    node(ctx);
-    const samples = (await ctx.startRendering()).getChannelData(0);
-    await putResult(document.baseURI, "audio.f32", samples.slice().buffer);
+    node(ctx, null);
+    await ctx.resume();
+    await new Promise((resolve) => setTimeout(resolve, test.live * 1000));
+    const stats = (ctx as unknown as { playbackStats?: Record<string, unknown> }).playbackStats;
+    const reported = stats ? Object.fromEntries(Object.keys(Object.getPrototypeOf(stats)).concat(Object.keys(stats)).map((k) => [k, (stats as Record<string, unknown>)[k]]).filter(([, v]) => typeof v === "number")) : null;
+    await putResult(document.baseURI, "live.json", JSON.stringify({ seconds: test.live, played: ctx.currentTime, state: ctx.state, baseLatency: ctx.baseLatency, outputLatency: ctx.outputLatency, playbackStats: reported }));
+    await ctx.close();
     worker.postMessage({ type: "audio-rendered" } satisfies ToWorker);
     return;
   }
-  const ctx = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE, latencyHint: "interactive" });
-  await ctx.audioWorklet.addModule(url);
-  node(ctx);
-  // A browser starts audio only after the person interacts with the page.
-  if (ctx.state !== "running") {
-    const resume = () => void ctx.resume();
-    window.addEventListener("pointerdown", resume, { once: true });
-    window.addEventListener("keydown", resume, { once: true });
+  if (test) {
+    if (test.audio === 0) return;
+    const ctx = new OfflineAudioContext({ numberOfChannels: AUDIO_CHANNELS, length: test.audio * AUDIO_QUANTUM, sampleRate: AUDIO_SAMPLE_RATE });
+    await ctx.audioWorklet.addModule(url);
+    const done = node(ctx, test.audio).rendered;
+    const started = performance.now();
+    const rendered = await ctx.startRendering();
+    const ms = performance.now() - started;
+    // The worklet's marker follows every print on its port, so all its lines reach the render
+    // worker before `audio-rendered` lets the test save its log.
+    await done;
+    // The channels interleaved, as the native host gives them.
+    const left = rendered.getChannelData(0);
+    const right = rendered.getChannelData(1);
+    const samples = new Float32Array(2 * left.length);
+    for (let i = 0; i < left.length; i++) {
+      samples[2 * i] = left[i]!;
+      samples[2 * i + 1] = right[i]!;
+    }
+    await putResult(document.baseURI, "audio.f32", samples.buffer);
+    // How long the render took, for the voice's speed (spike 14).
+    await putResult(document.baseURI, "audio-ms.json", JSON.stringify({ ms }));
+    worker.postMessage({ type: "audio-rendered" } satisfies ToWorker);
+    return;
   }
+  audio.context ??= (async () => {
+    const ctx = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE, latencyHint: "interactive" });
+    await ctx.audioWorklet.addModule(url);
+    // A browser starts audio only after the person interacts with the page.
+    if (ctx.state !== "running") {
+      const resume = () => void ctx.resume();
+      window.addEventListener("pointerdown", resume, { once: true });
+      window.addEventListener("keydown", resume, { once: true });
+    }
+    return ctx;
+  })();
+  const ctx = await audio.context;
+  stopVoice();
+  audio.node = node(ctx, null).node;
 }
 
 /** Test mode, `latency`: `n` pointer moves sent through the DOM at random times over `ms`. */
@@ -171,6 +228,8 @@ function start(): void {
         playVoice(msg.voice, test, worker).catch((e: unknown) => failEarly(e, testing));
       } else if (msg.type === "load-query") {
         worker.postMessage({ type: "load", opened_ms: performance.timeOrigin, resources: loaded(["navigation", "resource"]) } satisfies ToWorker);
+      } else if (msg.type === "audio-stop") {
+        stopVoice();
       } else if (msg.type === "reload") {
         location.reload();
       } else if (msg.type === "clip-start") {

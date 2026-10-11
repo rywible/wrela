@@ -723,15 +723,16 @@ pub fn limb_shadow(
 
 /// How mossy bark is (0 to 1), its normal `n`, `along` metres up its limb, `patch` its noise
 /// there: near its foot (a trunk's base, a limb's fork), on faces turned up or to the north (-z,
-/// where the sun doesn't reach), in patches. (All over a trunk's sides, it turned the wood's
-/// trunks green.)
+/// where the sun doesn't reach), in patches with edges: moss is a material on the bark, not a
+/// tint over it. (All over a trunk's sides, it turned the wood's trunks green; soft and wide at
+/// a big trunk's foot, it still tinted its lower half: round 2's blind judges, shot 17.)
 fn mossy(n: vec3, along: f32, patch: f32) -> f32 {
-    let foot = 1.0 - smoothstep(0.3, 2.2, along)
+    let foot = 1.0 - smoothstep(0.2, 1.4, along)
     let place = max(
-        foot * 0.8,
-        max(smoothstep(0.45, 0.85, n.y) * 0.6, smoothstep(0.3, 0.9, -n.z) * 0.3),
+        foot * 0.75,
+        max(smoothstep(0.45, 0.85, n.y) * 0.6, smoothstep(0.3, 0.9, -n.z) * 0.25),
     )
-    place * smoothstep(0.3, 0.6, patch)
+    place * smoothstep(0.42, 0.58, patch)
 }
 
 /// A limb's pixel: its bark, its ridges read from their cooked tile (`plant::cook_ridges`,

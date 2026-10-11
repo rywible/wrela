@@ -201,8 +201,14 @@ pub struct Spot: Copy {
 }
 
 /// How much a crown's leaves stop a sightline, per metre through it, for a species of shade 1
-/// (the renderer's crowns, cards with gaps between: calibrated against its depth, #55 AC3).
-const CROWN_DENSITY: f32 = 0.22
+/// (the renderer's crowns, cards with gaps between: calibrated against its depth, #55 AC3; with
+/// the Last Green's crowns as built since its owner's tree notes, 0.22 saw past what the renderer
+/// draws at 3 of its 24 places, and 0.38 with `SAPLING` brings all 24 within 0.1).
+const CROWN_DENSITY: f32 = 0.38
+
+/// How much a sapling under the crowns stops a sightline, per metre through it, at 2 m tall
+/// or more (a thorn stops 0.16): calibrated with `CROWN_DENSITY`.
+const SAPLING: f32 = 0.12
 
 /// The features' bins (m).
 const FBIN: f32 = 40.0
@@ -360,7 +366,7 @@ pub fn sight_of<G: Ground>(
         // the renderer draws: over 1.2 m; a drawn thorn is a crown, above).
         let least = if drawn { 1.2 } else { 0.8 }
         if t.state == State::Alive && (t.tall <= 4.0 || h.thorny) && t.tall > least && !shrub {
-            let thick = if h.thorny { 0.16 } else { 0.07 }
+            let thick = if h.thorny { 0.16 } else { SAPLING }
             let v = thick * min(t.tall / 2.0, 1.0)
             let wide = if drawn { e.crowns[i].reach } else { t.reach }
             let high = if drawn { e.crowns[i].top } else { t.tall }
@@ -1402,8 +1408,17 @@ fn trail_aim(m: Map, seen_grid: Grid, seen: [bool], found: [bool], p: vec2) -> v
 /// The walkers' starts: the gate, and the walkable views on a lattice spaced so there are
 /// `set.starts_per_km2` over the floor's walkable area (`area`, km²).
 pub fn starts(m: Map, views: [View], set: Settings, area: f32) -> Vec<vec2> {
+    starts_from(m.sites, views, set, area)
+}
+
+/// `starts`, split from the map so the zero-walker setting can be checked without constructing a
+/// floor. Zero means none: in particular, QUICK must not run hour-long walkers from the gate.
+fn starts_from(sites: [Site], views: [View], set: Settings, area: f32) -> Vec<vec2> {
     var out: Vec<vec2> = Vec::new()
-    for k in m.sites {
+    if set.starts_per_km2 <= 0.0 {
+        return out
+    }
+    for k in sites {
         if k.kind == SiteKind::Gate {
             out.push(k.at)
         }
@@ -2088,4 +2103,31 @@ fn dot_at(rgb: mut Vec<vec3>, w: u32, h: u32, p: vec2, r: f32, col: vec3) {
             }
         }
     }
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+/// The map lens's QUICK check does not schedule even a sampled curious walker.
+@test
+fn quick_has_no_walker_starts() {
+    let sites = [
+        Site {
+            kind: SiteKind::Gate,
+            feature: Feature::Ground,
+            at: vec2(0.0),
+            name: "gate",
+        },
+    ]
+    let views = [
+        View {
+            at: vec2(8.0),
+            walkable: true,
+            draws: Bounded::new(),
+            best: 0.0,
+            count: 0,
+        },
+    ]
+    let starts = starts_from(sites, views, QUICK, 1.0)
+    assert(starts.is_empty(), "QUICK scheduled a curious walker")
+    assert(QUICK.trail_walkers == 0, "QUICK scheduled a trail walker")
 }

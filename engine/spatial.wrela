@@ -102,12 +102,16 @@ impl<T> SpatialGrid<T> {
         for dz in -r..r + 1 {
             for dy in -r..r + 1 {
                 for dx in -r..r + 1 {
-                    let key = key_of(c + vec3i(dx, dy, dz))
+                    let cell = c + vec3i(dx, dy, dz)
+                    let key = key_of(cell)
                     var i = self.first_at(key)
                     while i < self.entries.len() && self.entries[i].key == key {
                         let e = self.entries[i]
                         let d = e.pos - p
-                        if dot(d, d) <= r2 {
+                        // A key is only a hash: another cell can have the same one. Checking
+                        // the cell as well as the distance prevents that entry being returned
+                        // once for every colliding cell in this query.
+                        if cell_of(e.pos, self.cell) == cell && dot(d, d) <= r2 {
                             f(Found { handle: e.handle, pos: e.pos })
                         }
                         i += 1
@@ -138,4 +142,22 @@ impl<T> SpatialGrid<T> {
         })
         best
     }
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+struct TestPoint {
+    pos: vec3,
+}
+
+/// A hash collision between two cells in one query must not return an entity more than once.
+/// These two cells have key 264533017.
+@test
+fn a_spatial_query_returns_each_entity_once_when_cells_hash_alike() {
+    var items: Arena<TestPoint> = Arena::new()
+    let h = items.insert(TestPoint { pos: vec3(-5.0, -1.0, 5.0) })
+    let grid = SpatialGrid::build(items, |x| x.pos, 1.0)
+    let found = grid.within(vec3(0.0), 8.0)
+    assert(found.len() == 1, "the colliding cell returned the entity more than once")
+    assert(found[0].handle == h)
 }

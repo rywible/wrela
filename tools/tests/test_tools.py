@@ -1,13 +1,17 @@
-"""Tests for tools/headless.py and tools/serve.py, with a fake Chrome (no browser, no GPU).
+"""Tests for tools/headless.py, tools/serve.py and tools/listening.py, with a fake Chrome (no
+browser, no GPU).
 
     python3 -m unittest discover -s tools/tests
 """
 
 import fcntl
 import json
+import math
 import os
+import random
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -23,6 +27,7 @@ ROOT = os.path.dirname(TOOLS)
 sys.path.insert(0, TOOLS)
 
 import headless  # noqa: E402
+import listening  # noqa: E402
 import serve  # noqa: E402
 
 
@@ -134,6 +139,22 @@ class HeadlessTest(PageDir, unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(results, "hash.txt")))
         self.assert_chrome_gone()
 
+    def test_a_stale_results_symlink_is_replaced_without_touching_its_target(self):
+        outside = tempfile.mkdtemp()
+        try:
+            marker = os.path.join(outside, "mine")
+            with open(marker, "w") as f:
+                f.write("keep")
+            results = os.path.join(self.page_dir, "results")
+            os.symlink(outside, results)
+            status, _, err = self.run_headless("ok")
+            self.assertEqual(status, 0, err)
+            self.assertFalse(os.path.islink(results))
+            self.assertTrue(os.path.isfile(marker))
+            self.assert_chrome_gone()
+        finally:
+            shutil.rmtree(outside, ignore_errors=True)
+
     def test_chrome_exiting_early_fails(self):
         status, _, err = self.run_headless("exit")
         self.assertEqual(status, 1)
@@ -210,11 +231,43 @@ class HeadlessTest(PageDir, unittest.TestCase):
             ([], "usage"),
             (["no/such/page"], "no page directory"),
             ([self.page, "#run", "soon"], "timeout must be a number"),
+            ([self.page, "#run", "nan"], "timeout must be a positive finite number"),
+            ([self.page, "#run", "inf"], "timeout must be a positive finite number"),
+            ([self.page, "#run", "0"], "timeout must be a positive finite number"),
         ]
         for args, message in cases:
             r = subprocess.run([sys.executable, headless, *args], env=env, capture_output=True, text=True)
             self.assertEqual(r.returncode, 2, args)
             self.assertIn(message, r.stderr)
+
+    def test_a_page_path_cant_escape_and_clear_results_outside_the_repo(self):
+        outside = tempfile.mkdtemp()
+        try:
+            results = os.path.join(outside, "results")
+            os.makedirs(results)
+            marker = os.path.join(results, "mine")
+            with open(marker, "w") as f:
+                f.write("keep")
+            env = {
+                **os.environ,
+                "TMPDIR": self.tmp,
+                "WRELA_CHROME": os.path.join(TESTS, "fake_chrome.py"),
+            }
+            r = subprocess.run(
+                [
+                    sys.executable,
+                    os.path.join(TOOLS, "headless.py"),
+                    os.path.relpath(outside, ROOT),
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("must be inside the repository", r.stderr)
+            self.assertTrue(os.path.isfile(marker))
+        finally:
+            shutil.rmtree(outside, ignore_errors=True)
 
 
 class LockPathTest(unittest.TestCase):
@@ -341,6 +394,12 @@ class ServeTest(PageDir, unittest.TestCase):
             e.close()
             return e.code
 
+    def raw(self, request):
+        with socket.create_connection(("127.0.0.1", self.server.server_address[1])) as sock:
+            sock.sendall(request)
+            sock.shutdown(socket.SHUT_WR)
+            return sock.recv(4096)
+
     def test_put_into_results(self):
         self.assertEqual(self.put(f"{self.page}/results/out.json", b"{}"), 201)
         with open(os.path.join(self.page_dir, "results", "out.json"), "rb") as f:
@@ -368,6 +427,18 @@ class ServeTest(PageDir, unittest.TestCase):
         ]:
             self.assertEqual(self.put(path), 403, path)
 
+    def test_put_rejects_an_invalid_content_length(self):
+        port = self.server.server_address[1]
+        for value in [b"nope", b"-1"]:
+            response = self.raw(
+                b"PUT /tools/results/x HTTP/1.1\r\n"
+                + f"Host: localhost:{port}\r\n".encode()
+                + b"Content-Length: "
+                + value
+                + b"\r\nConnection: close\r\n\r\n"
+            )
+            self.assertIn(b" 400 ", response, value)
+
     def test_put_through_a_symlink_out_of_the_repo_is_refused(self):
         outside = tempfile.mkdtemp()
         try:
@@ -388,12 +459,13 @@ class ServeTest(PageDir, unittest.TestCase):
         req = urllib.request.Request(f"{self.base}/LICENSE", headers={"Host": f"localhost:{port}"})
         with urllib.request.urlopen(req) as r:
             self.assertEqual(r.status, 200)
-        for path in [".git/HEAD", "%2egit/HEAD"]:
+        for path in [".git/HEAD", ".GIT/HEAD", "%2egit/HEAD"]:
             with self.assertRaises(urllib.error.HTTPError) as e:
                 urllib.request.urlopen(f"{self.base}/{path}")
             self.assertEqual(e.exception.code, 404, path)
             e.exception.close()
         self.assertEqual(self.put(".git/results/x"), 404)
+        self.assertEqual(self.put(".GIT/results/x"), 404)
 
     def test_pages_are_cross_origin_isolated_with_the_right_types(self):
         with open(os.path.join(self.page_dir, "m.wasm"), "wb") as f:
@@ -402,6 +474,57 @@ class ServeTest(PageDir, unittest.TestCase):
             self.assertEqual(r.headers["Cross-Origin-Opener-Policy"], "same-origin")
             self.assertEqual(r.headers["Cross-Origin-Embedder-Policy"], "require-corp")
             self.assertEqual(r.headers["Content-Type"], "application/wasm")
+
+
+class ListeningTest(unittest.TestCase):
+    """listening.py's blind set: matched in loudness and length, shuffled, the key apart."""
+
+    def test_a_blind_set_gives_nothing_away_but_the_sound(self):
+        rate = 48000
+        tone = lambda amp, n: [amp * math.sin(2 * math.pi * 440 * i / rate) for i in range(n)]
+        # Stereo, interleaved: one loud and short, one quiet and long, one with a spike.
+        loud = [x for s in tone(0.9, 4800) for x in (s, s)]
+        quiet = [x for s in tone(0.05, 9600) for x in (s, s)]
+        spiky = [x for s in tone(0.1, 9600) for x in (s, s)]
+        spiky[100] = 1.0
+        loaded = {"loud": (loud, 2, rate), "quiet": (quiet, 2, rate), "spiky": (spiky, 2, rate)}
+        with tempfile.TemporaryDirectory() as out:
+            key = listening.blind(loaded, out, "ABC", "key.json", rng=random.Random(7))
+            self.assertEqual(sorted(v["render"] for v in key.values()), ["loud", "quiet", "spiky"])
+            self.assertEqual(json.loads(open(os.path.join(out, "key.json")).read()), key)
+            levels = []
+            for letter in "ABC":
+                samples, channels, r = listening.read_wav(os.path.join(out, f"{letter}.wav"))
+                self.assertEqual((channels, r, len(samples)), (2, rate, 2 * 9600))
+                # No peak past -1 dBFS (and a 16-bit step for rounding).
+                self.assertLessEqual(max(abs(x) for x in samples), 10 ** (-1 / 20) + 1 / 32768)
+                levels.append(listening.rms(samples))
+            # One level for all, set by the spike's peak.
+            self.assertLess(max(levels) / min(levels), 1.001)
+
+    def test_the_gate_counts_wrelas_pairs_and_passes_at_12_of_16(self):
+        key = {f"{n:02}": {"wrela": "A" if n % 3 else "B"} for n in range(1, 17)}
+        right = "".join(f"{n} {v['wrela']}\n" for n, v in key.items())
+        self.assertEqual(listening.score(key, right), {"wrela": 16, "of": 16, "p": 0.0, "passes": True})
+        # Four wrong: 12 of 16, p = 0.0384.
+        flip = {"A": "B", "B": "A"}
+        some = "".join(f"{n} {flip[v['wrela']] if int(n) <= 4 else v['wrela']}\n" for n, v in key.items())
+        self.assertEqual(listening.score(key, some), {"wrela": 12, "of": 16, "p": 0.0384, "passes": True})
+        five = "".join(f"{n} {flip[v['wrela']] if int(n) <= 5 else v['wrela']}\n" for n, v in key.items())
+        self.assertFalse(listening.score(key, five)["passes"])
+        with self.assertRaises(SystemExit):
+            listening.score(key, "01 A\n")
+
+    def test_an_excerpt_is_its_bars_faded_in_and_out(self):
+        described = {"bars": 2, "beats": [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]}
+        self.assertEqual(listening.excerpt_times(described, 2, 2), (1.5, 3.0))
+        rate = 1000
+        samples = [1.0] * (2 * 4 * rate)
+        out = listening.cut(samples, 2, rate, 1.0, 2.0)
+        self.assertEqual(len(out), 2 * rate)
+        self.assertEqual((out[0], out[1]), (0.0, 0.0))
+        self.assertEqual(out[2 * 500], 1.0)
+        self.assertEqual(out[-1], 0.0)
 
 
 if __name__ == "__main__":

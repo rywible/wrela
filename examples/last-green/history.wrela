@@ -86,7 +86,9 @@ fn obstacles(u: engine::bake::Unbaked) -> Obstacles {
     )
 }
 
-/// The water (`engine::water`): the map's meres, springs and falls, and the bake's streams.
+/// The water (`engine::water`): the map's meres, springs and falls, and the bake's streams. Its
+/// fall paths search the ground's relief (the rock's joints and beds), past the build's default fuel.
+@fuel(2 ** 36)
 pub const COURSES: Courses = courses_of(decisions())
 
 /// The water's courses and pools (`engine::water::courses`): small, so the program holds them;

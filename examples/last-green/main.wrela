@@ -415,6 +415,8 @@ pub struct Floor {
     /// it (`provenance::click`), in the frame's pixels.
     press: Option<vec2>,
     clicked: Option<vec2>,
+    /// The floor's ears, on the program's voice (sound.wrela).
+    hearing: sound::Hearing,
     /// The play harness's map with the check (M).
     map: harness::HarnessMap,
     /// The render origin's tile (`engine::view::Camera::origin`): what's drawn is the world less
@@ -597,6 +599,7 @@ pub fn init() -> Floor {
         hash_sum: 0,
         press: None,
         clicked: None,
+        hearing: sound::start(),
         map: harness::HarnessMap::new(),
         origin: vec2i(0),
         shafts_on: false,
@@ -2056,6 +2059,10 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     }
     // Where the eye is in the world, for what's kept by tiles.
     let eye_w = eye + o
+    // ---- The floor's sound (sound.wrela): the ears at the eye, the steps at the feet, in the world.
+    let heard_at = sound::moment(eye_w, cam.forward.xz, feet + o, s.grounds, wind, time)
+    sound::frame(mut s.hearing, heard_at)
+    // ---- (the floor's sound ends)
     // The leaves between the camera and the player fade (#54 §5); on a shot, those along the first
     // 6 m of its view (a shot's eye is authored, and may stand in a bush).
     let (clear_to, clear_r) = if s.shot.is_some() { (eye + cam.forward * 3.0, 3.2) } else {

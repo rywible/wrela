@@ -53,6 +53,17 @@ export function pathProblem(path: string): string | undefined {
   return undefined;
 }
 
+/**
+ * What's wrong with the path of a build to hand over to, if anything: as `pathProblem`'s, except
+ * that it may start with `..` parts, so a build can name one beside it.
+ */
+export function buildPathProblem(path: string): string | undefined {
+  let rest = path;
+  while (rest.startsWith("../")) rest = rest.slice(3);
+  if (rest === "..") return "names no build: it ends in `..`";
+  return pathProblem(rest);
+}
+
 const formatOf = (f: TextureFormat) => TEXTURE_FORMATS.find((t) => t.name === f)!;
 /** That texture `handle`, of format `got`, is of the format its binding names. */
 function sameFormat(err: (why: string) => Error, handle: number, got: TextureFormat, want: TextureFormat | null): void {
@@ -121,6 +132,51 @@ export class Checker {
 
   /** Checks a command that has passed the `Sequencer`, and records its effect. */
   check(cmd: Command): void {
+    // A rejected command leaves no trace. Binding checks add uses as they go, and a later
+    // binding (or an indirect range) may still reject the command.
+    // A draw can only change the entries it names, so don't clone a pass's whole (possibly
+    // large) scope for every draw. Commands that start a fresh scope keep the old small scope.
+    const clearsScope = cmd.op === "Dispatch" || cmd.op === "DispatchIndirect" || cmd.op === "BeginPass";
+    const scope = new Map<number, [boolean, boolean]>();
+    if (clearsScope) {
+      for (const [handle, [read, write]] of this.#scope) scope.set(handle, [read, write]);
+    }
+    const passState =
+      cmd.op === "BeginPass"
+        ? { attachments: [...this.#attachments], targets: { ...this.#targets } }
+        : undefined;
+    const entries = new Map<number, [boolean, boolean] | undefined>();
+    const remember = (handle: number) => {
+      if (entries.has(handle)) return;
+      const used = this.#scope.get(handle);
+      entries.set(handle, used === undefined ? undefined : [...used]);
+    };
+    if (cmd.op === "Draw" || cmd.op === "DrawIndirect" || cmd.op === "DrawIndexedIndirect") {
+      for (const binding of cmd.bindings) remember(binding.handle);
+      if (cmd.op !== "Draw") remember(cmd.arguments);
+      if (cmd.op === "DrawIndexedIndirect") remember(cmd.indices);
+    }
+    try {
+      this.#check(cmd);
+    } catch (e) {
+      if (clearsScope) {
+        this.#scope.clear();
+        for (const [handle, used] of scope) this.#scope.set(handle, used);
+      } else {
+        for (const [handle, used] of entries) {
+          if (used === undefined) this.#scope.delete(handle);
+          else this.#scope.set(handle, used);
+        }
+      }
+      if (passState !== undefined) {
+        this.#attachments = passState.attachments;
+        this.#targets = passState.targets;
+      }
+      throw e;
+    }
+  }
+
+  #check(cmd: Command): void {
     const op = cmd.op;
     const err = (why: string) => new CommandError(op, why);
     switch (cmd.op) {
@@ -266,6 +322,13 @@ export class Checker {
       case "Post": {
         const why = pathProblem(cmd.url);
         if (why !== undefined) throw err(`the URL \`${cmd.url}\` ${why}`);
+        return;
+      }
+      case "Prepare":
+      case "Unprepare":
+      case "HandOver": {
+        const why = buildPathProblem(cmd.path);
+        if (why !== undefined) throw err(`the build path \`${cmd.path}\` ${why}`);
         return;
       }
       case "Label":

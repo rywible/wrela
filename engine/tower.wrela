@@ -1,0 +1,306 @@
+// The tower (vision.md, "The lore"): the worlds it ate, each behind a door off an endless stair.
+// After a world's Warden the player decides its fate once: preserved (it stays, and its door
+// stays open) or freed (it's gone, and its door with it). Either opens the door above. This
+// holds that rule and what the player decided, carries it from build to build (each world, and
+// the stair, is a build of its own, which hands its place to the next: `std::reload`) and saves
+// it. The game names the builds, and decides when to go and what to get ready.
+
+use std::io::{IoError, Pending, load, store}
+use std::reload::{hand_over, keep, kept, prepare, unprepare}
+use std::serialize::{LoadError, Serialize, save}
+use std::serialize::load as unpack
+
+/// Where the player is: on the stair, or in world `n` (from 0, the lowest door's).
+pub const STAIR: u32 = 0xFFFF_FFFF
+
+/// A world's fate.
+pub enum Fate: Copy + Eq + Serialize {
+    /// Its Warden still keeps it.
+    Undecided,
+    /// Kept as it is: the player can go back down to it.
+    Preserved,
+    /// Gone: its door is too.
+    Freed,
+}
+
+/// Each world's fate, lowest first.
+pub struct Tower: Clone + Serialize {
+    fates: Vec<Fate>,
+}
+
+impl Tower {
+    pub fn new(worlds: u32) -> Tower {
+        var fates = Vec::new()
+        for _ in 0..worlds {
+            fates.push(Fate::Undecided)
+        }
+        Tower { fates }
+    }
+
+    pub fn worlds(self) -> u32 {
+        self.fates.len()
+    }
+
+    pub fn fate(self, world: u32) -> Fate {
+        self.fates[world]
+    }
+
+    /// Whether world `world`'s door opens: the lowest one does, and each other once the world
+    /// below is preserved or freed; a freed world's never does.
+    pub fn door_open(self, world: u32) -> bool {
+        if world >= self.fates.len() || self.fates[world] == Fate::Freed {
+            return false
+        }
+        world == 0 || self.fates[world - 1] != Fate::Undecided
+    }
+
+    /// Decides world `world`'s fate, once: whether it was undecided.
+    pub fn decide(mut self, world: u32, fate: Fate) -> bool {
+        if world >= self.fates.len() ||
+            self.fates[world] != Fate::Undecided ||
+            fate == Fate::Undecided {
+            return false
+        }
+        self.fates[world] = fate
+        true
+    }
+}
+
+/// What goes from build to build, and into the save.
+pub struct Carry: Clone + Serialize {
+    pub tower: Tower,
+    /// Where the player is (`STAIR`, or a world).
+    pub at: u32,
+    /// The door the player last went through, either way (`STAIR` before the first): back on
+    /// the stair, they stand at it.
+    pub door: u32,
+    /// Where the player was going when this was kept, if they were (`STAIR` or a world), else
+    /// `NOWHERE`: the build that starts with it is there, or the way failed.
+    going: u32,
+}
+
+/// `Carry::going` of a player going nowhere.
+const NOWHERE: u32 = 0xFFFF_FFFE
+
+/// How a build started: as the first build, from the save, through a door, or again after the
+/// way through a door failed.
+pub enum Start: Copy + Eq {
+    /// No build handed over: the save is read (`Journey::loading`).
+    Fresh,
+    /// A build handed over to this one.
+    Arrived,
+    /// The build the player was going to didn't start, and this one, which handed over, started
+    /// again in its place.
+    TurnedBack,
+    /// Started again with what it kept, going nowhere (a hot reload).
+    Again,
+}
+
+/// The tower as a running build sees it: what it carries and saves, and the build it's getting
+/// ready in the background.
+pub struct Journey {
+    pub carry: Carry,
+    pub start: Start,
+    /// Where the save is kept (the game's path in storage, shared by its builds).
+    save_path: Text,
+    loading: Option<Pending<u8>>,
+    saving: Option<Pending<u8>>,
+    going: Option<Pending<u8>>,
+    /// The build being got ready, and whether it is; why getting one ready last failed.
+    preparing: Option<Text>,
+    request: Option<Pending<u8>>,
+    ready: bool,
+    pub prepare_failed: Option<IoError>,
+    /// Why the way through the last door failed, if it did.
+    pub door_failed: Option<IoError>,
+}
+
+impl Journey {
+    /// The journey of the build at `here` (`STAIR` or a world) of a tower of `worlds` worlds,
+    /// saved at `save_path`: what the build that handed over kept, or the save (read in the
+    /// background: `loading`), or a new tower.
+    pub fn begin(here: u32, worlds: u32, save_path: Text) -> Journey {
+        let back: Result<Carry, LoadError> = unpack(kept())
+        var start = Start::Fresh
+        var loading = None
+        var carry = Carry { tower: Tower::new(worlds), at: here, door: STAIR, going: NOWHERE }
+        match back {
+            Ok(c) => {
+                carry = c.clone()
+                start = if carry.going == NOWHERE {
+                    Start::Again
+                } else if carry.going == here {
+                    Start::Arrived
+                } else {
+                    Start::TurnedBack
+                }
+                carry.going = NOWHERE
+                carry.at = here
+            },
+            Err(_) => {
+                loading = Some(load(save_path))
+            },
+        }
+        Journey {
+            carry,
+            start,
+            save_path,
+            loading,
+            saving: None,
+            going: None,
+            preparing: None,
+            request: None,
+            ready: false,
+            prepare_failed: None,
+            door_failed: None,
+        }
+    }
+
+    /// Whether the save is still being read: until it is, the tower is a new one.
+    pub fn loading(self) -> bool {
+        self.loading.is_some()
+    }
+
+    /// Takes what has arrived, and keeps what the next build gets (`std::reload::keep`): once
+    /// a frame.
+    pub fn update(mut self) {
+        let here = self.carry.at
+        let loaded = take_answer(mut self.loading)
+        if let Some(answer) = loaded {
+            // No save, or one of another shape: the new tower stands.
+            if let Ok(bytes) = answer {
+                let saved: Result<Carry, LoadError> = unpack(bytes.clone())
+                if let Ok(c) = saved {
+                    self.carry = c.clone()
+                    self.carry.going = NOWHERE
+                    self.carry.at = here
+                }
+            }
+        }
+        let _ = take_answer(mut self.saving)
+        if let Some(answer) = take_answer(mut self.going) {
+            if let Err(why) = answer {
+                self.door_failed = Some(why.clone())
+            }
+        }
+        if let Some(answer) = take_answer(mut self.request) {
+            match answer {
+                Ok(_) => self.ready = true,
+                Err(why) => self.prepare_failed = Some(why.clone()),
+            }
+        }
+        keep(save(self.carry))
+    }
+
+    /// Writes the save (in the background).
+    pub fn save(mut self) {
+        self.saving = Some(store(self.save_path, save(self.carry)))
+    }
+
+    /// Decides world `world`'s fate, once, and saves: whether it was undecided.
+    pub fn decide(mut self, world: u32, fate: Fate) -> bool {
+        let decided = self.carry.tower.decide(world, fate)
+        if decided {
+            self.save()
+        }
+        decided
+    }
+
+    /// Goes through door `door` to `to` (`STAIR`, or the door's world), whose build is at
+    /// `path`: the build hands its place over after this frame, and the save says where the
+    /// player is. Into a world, its door must open (`Tower::door_open`); whether it did.
+    pub fn go(mut self, door: u32, to: u32, path: Text) -> bool {
+        if to != STAIR && !self.carry.tower.door_open(to) {
+            return false
+        }
+        self.door_failed = None
+        var next = self.carry.clone()
+        next.at = to
+        next.door = door
+        next.going = to
+        self.saving = Some(store(self.save_path, save(next)))
+        keep(save(next))
+        self.carry.door = door
+        self.carry.going = to
+        self.going = Some(hand_over(path))
+        true
+    }
+
+    /// Gets the build at `path` ready in the background while `allowed` (the game's frame and
+    /// memory budget have room, and its own streaming has nothing waiting), and lets it go
+    /// when not: one build at a time, the last asked for. `None` lets go of any.
+    pub fn prepare(mut self, path: Option<Text>, allowed: bool) {
+        let want = if allowed { path } else { None }
+        let same = match (want, self.preparing) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => true,
+            _ => false,
+        }
+        if same {
+            return
+        }
+        if let Some(old) = self.preparing {
+            unprepare(old)
+        }
+        self.preparing = want
+        self.ready = false
+        self.request = None
+        if let Some(p) = want {
+            self.request = Some(prepare(p))
+        }
+    }
+
+    /// Whether the build at `path` is ready.
+    pub fn ready(self, path: Text) -> bool {
+        self.ready && self.preparing == Some(path)
+    }
+}
+
+/// A request's answer, taken, if it has one.
+fn take_answer(p: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, IoError>> {
+    let answer: Option<Result<Vec<u8>, IoError>> = match mut p {
+        Some(r) => r.poll(),
+        None => None,
+    }
+    if answer.is_some() {
+        p = None
+    }
+    answer
+}
+
+@test
+fn the_lowest_door_opens_and_each_above_once_the_world_below_is_decided() {
+    var t = Tower::new(3)
+    assert(t.door_open(0) && !t.door_open(1) && !t.door_open(2) && !t.door_open(3))
+    assert(t.decide(0, Fate::Preserved))
+    assert(t.door_open(0), "a preserved world's door stays open")
+    assert(t.door_open(1) && !t.door_open(2))
+    assert(t.decide(1, Fate::Freed))
+    assert(!t.door_open(1), "a freed world's door is gone")
+    assert(t.door_open(2), "freeing a world opens the way up too")
+}
+
+@test
+fn a_fate_is_decided_once() {
+    var t = Tower::new(2)
+    assert(!t.decide(0, Fate::Undecided))
+    assert(t.decide(0, Fate::Freed))
+    assert(!t.decide(0, Fate::Preserved))
+    assert(t.fate(0) == Fate::Freed)
+    assert(!t.decide(5, Fate::Freed))
+}
+
+@test
+fn what_is_carried_saves_and_loads() {
+    var t = Tower::new(2)
+    let _ = t.decide(0, Fate::Preserved)
+    let c = Carry { tower: t, at: 1, door: 1, going: NOWHERE }
+    let back: Result<Carry, LoadError> = unpack(save(c))
+    match back {
+        Ok(b) => {
+            assert(b.tower.fate(0) == Fate::Preserved && b.tower.fate(1) == Fate::Undecided)
+            assert(b.at == 1 && b.door == 1 && b.going == NOWHERE)
+        },
+        Err(_) => assert(false, "the carry loads"),
+    }
+}

@@ -5,7 +5,7 @@ import { Checker, limitsOf } from "./check.ts";
 import { errorMessage } from "./errors.ts";
 import { buildPipelines, GpuExecutor, type PipelineCache, type ScreenTarget, type Timing } from "./gpu.ts";
 import { type Manifest, parseManifest } from "./manifest.ts";
-import { type Io, Program, type ProgramOptions } from "./program.ts";
+import { type Compiled, type Io, Program, type ProgramOptions } from "./program.ts";
 import type { Bytes } from "./stream.ts";
 import { UTF8 } from "./wasm.ts";
 
@@ -62,6 +62,10 @@ export function browserIo(
   files: string = base,
 ): Io {
   const root = ["wrela", ...new URL(base).pathname.split("/").filter((p) => p !== "")];
+  // `pathProblem` permits a literal `%`, as the native host's file paths do. URL parsing would
+  // interpret percent escapes before resolving dot segments (`%2e%2e` is `..`), so quote each
+  // percent first: the server receives the program's path literally, still under the build.
+  const relativeUrl = (path: string, at: string) => new URL(path.replaceAll("%", "%25"), at);
   const dir = async (parts: string[], create: boolean) => {
     let d = await navigator.storage.getDirectory();
     for (const p of parts) d = await d.getDirectoryHandle(p, { create });
@@ -74,7 +78,7 @@ export function browserIo(
   };
   return {
     async fetch(url) {
-      const response = await get(fetchFn, new URL(url, files));
+      const response = await get(fetchFn, relativeUrl(url, files));
       return new Uint8Array(await response.arrayBuffer());
     },
     async storageRead(path) {
@@ -88,7 +92,7 @@ export function browserIo(
     },
     async post(url, body) {
       // Only to the build's own origin: the path is relative (`pathProblem`).
-      const response = await fetchFn(new URL(url, base), { method: "POST", body });
+      const response = await fetchFn(relativeUrl(url, base), { method: "POST", body });
       if (!response.ok) throw new Error(`POST ${url} failed: ${response.status} ${response.statusText}`);
       return new Uint8Array(await response.arrayBuffer());
     },
@@ -106,24 +110,30 @@ export interface GpuOptions {
   cache?: PipelineCache | undefined;
 }
 
-/** Starts building every pipeline, compiles the WASM meanwhile, then instantiates the program
- * with the decoder behind its import. The program starts while its pipelines build: a command
+/** Starts building every pipeline, compiles the WASM meanwhile (unless the build comes compiled:
+ * one got ready for a hand-over), then instantiates the program with the decoder behind its
+ * import. A program whose `init` fails leaves nothing on the GPU. The program starts while its pipelines build: a command
  * that needs one waits for it (`GpuExecutor`), and the frames wait for the commands
  * (`GpuExecutor.caughtUp`). A pipeline that can't be built fails the program, through the
  * executor's `built`. */
 export async function startProgram(
   device: GPUDevice,
-  build: Build,
+  build: Build & { compiled?: Compiled },
   screen: ScreenTarget,
   options: ProgramOptions = {},
   gpu: GpuOptions = {},
 ): Promise<Program> {
   const started = performance.now();
   const pipelines = buildPipelines(device, build.manifest, build.shaders, gpu.cache);
-  const compiled = await Program.compile(build.wasm);
+  const compiled = build.compiled ?? (await Program.compile(build.wasm));
   const debug = build.manifest.pipelines.some((p) => p.debug_flag !== null);
   const executor = new GpuExecutor(device, pipelines, screen, gpu.timing, debug);
   executor.built.then(() => gpu.onPipelines?.(performance.now() - started), () => {});
   const checker = new Checker(build.manifest, limitsOf(device.limits));
-  return Program.instantiate(compiled, checker, executor, options);
+  try {
+    return await Program.instantiate(compiled, checker, executor, options);
+  } catch (e) {
+    executor.destroyAll();
+    throw e;
+  }
 }
