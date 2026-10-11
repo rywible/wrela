@@ -597,6 +597,9 @@ pub struct Map {
     pub routes: Vec<Route>,
     pub water: Water,
     pub events: Vec<Event>,
+    /// The way the floor's wind blows (toward): off the floor's edge, into the forest. It
+    /// drives the fires (`grow::fire`), and throws the trees the gaps' gusts take.
+    pub wind: vec2,
     pub kept: Vec<Kept>,
     pub regions: Vec<Region>,
     pub herd: Herd,

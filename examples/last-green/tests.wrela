@@ -834,22 +834,24 @@ fn the_fire_and_the_gales_leave_what_they_did() {
             engine::place::EventKind::Storm { at, reach, .. } => {
                 let (marked, cells) = remembered(u, at, 0.6 * reach, Mark::Wind, e.year)
                 // A snapped stem stands as a snag, then falls and rots; a living tree's broken top
-                // is remembered too.
+                // is remembered too. Within its reach, some trees stood through it.
                 var snapped = 0
                 var stood = 0
                 for t in u.trees {
-                    if length(t.at - at) < 0.6 * reach {
-                        if t.cause == Cause::Snapped && t.died == e.year {
-                            snapped += 1
-                        }
-                        if t.state == State::Alive && t.born < e.year - 30 && t.tall > 6.0 {
-                            stood += 1
-                        }
+                    let d = length(t.at - at)
+                    if d < 0.6 * reach && t.cause == Cause::Snapped && t.died == e.year {
+                        snapped += 1
+                    }
+                    if d < reach &&
+                        t.state == State::Alive &&
+                        t.born < e.year - 30 &&
+                        t.tall > 6.0 {
+                        stood += 1
                     }
                 }
                 let name = e.name
                 print(
-                    f"{name}: {marked} of {cells} cells near its middle thrown on; {snapped} snapped, {stood} stood through it",
+                    f"{name}: {marked} of {cells} cells near its middle thrown on; {snapped} snapped; {stood} stood through it within its reach",
                 )
                 // A gale before the bake's first year (the meadow's) never blew.
                 if e.year < m.present - BAKE.years {
@@ -857,6 +859,7 @@ fn the_fire_and_the_gales_leave_what_they_did() {
                 }
                 assert(f32(marked) > 0.4 * f32(cells), f"{name}: only {marked} of {cells} marked")
                 assert(snapped > 0, f"{name}: no trunk snapped")
+                assert(stood > 0, f"{name}: no tree stood through it")
             },
             _ => {},
         }
