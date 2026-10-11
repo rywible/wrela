@@ -1401,7 +1401,9 @@ fn the_built_fields_keep_their_bounds() {
     let (worst, at) = steepest(t, blockouts::tower_creature(t).bounds())
     assert(worst <= t.lipschitz(0.0), f"the tower's field changes {worst} per m at {at}")
     for seed in 0..12 {
-        let s = blockouts::Slab { half: vec3(0.5, 1.1, 0.3), seed: f32(seed) * 0.37 }
+        // A pillar, a needle and a broad stone, in turn.
+        let half = [vec3(0.5, 1.1, 0.3), vec3(0.3, 1.2, 0.26), vec3(0.95, 0.8, 0.3)][seed % 3]
+        let s = blockouts::Slab { half, seed: f32(seed) * 0.37 }
         let (worst, at) = steepest(s, blockouts::slab_creature(s).bounds())
         assert(worst <= s.lipschitz(0.0), f"slab {seed}'s field changes {worst} per m at {at}")
     }
