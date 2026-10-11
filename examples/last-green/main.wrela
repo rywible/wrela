@@ -36,7 +36,7 @@ use climber::figure::{Figure, figure}
 use climber::moves::{Act, REST}
 use climber::sounds::{Heard, cues, heard}
 use history::{BAKED, OBSTACLES, tiles_hi, tiles_lo}
-use ground::{FIGHT, FIGHT_WAY, fought}
+use ground::{FIGHT, FIGHT_WAY, STONE_FEET, STONE_MARGIN, fought, unbuilt}
 use provenance::NearTile
 use streaming::{near_tile_radius, tile_distance, tile_radius}
 use std::collections::{Flags, replace, swap}
@@ -2431,4 +2431,21 @@ fn the_fight_wears_its_disc_and_the_way_out() {
     }
     assert(near > FIGHT.z - 1.5 && far < FIGHT.z + 2.0, f"the edge from {near} m to {far} m")
     assert(far - near > 0.8, f"the edge a circle: {near} m to {far} m")
+}
+
+/// No trail wears under a built stone (`unbuilt`): none on a stone's foot, all of it a margin
+/// past it, and every stone of the floor counted.
+@test
+fn trails_stop_at_built_stones() {
+    var n = 0
+    for s in STONE_FEET {
+        if s.x < 1.0e8 {
+            n += 1
+            assert(unbuilt(s.xy) == 0.0, f"a trail wears under the stone at {s.xy}")
+            let out = s.xy + vec2(s.z + STONE_MARGIN + 0.01, 0.0)
+            assert(unbuilt(out) > 0.0, f"no trail beside the stone at {s.xy}")
+        }
+    }
+    assert(n == stones::stones(map::map()).len(), f"{n} stones' feet kept")
+    assert(unbuilt(vec2(0.0, 30.0)) == 1.0, "a trail away from the stones stopped")
 }
