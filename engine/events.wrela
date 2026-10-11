@@ -3,7 +3,7 @@
 
 use grow::{
     Cause, Cx, Fields, Grid, Habit, Heap, Land, Mark, Memories, NEIGHBOURS, NEVER, NONE, Shaper,
-    State, Tree, UNBROWSED, grazed_bare, mark, rotate, sapling, shaped, tear,
+    State, Tree, UNBROWSED, grazed_bare, mark, rotate, sapling, shaped, tear, world,
 }
 use noise::{noise2, rand}
 use place::{Event, EventKind}
@@ -482,7 +482,9 @@ pub(package) fn events(trees: mut Vec<Tree>, cx: Cx, f: mut Fields, year: i32) {
                     let bz = u32(ceil(f32(g.nz) * g.cell / block)) + 1
                     var gaps: Vec<vec4> = Vec::filled(bx * bz, vec4(0.0))
                     for b in 0..(bx * bz) {
-                        let s = b.wrapping_mul(2654435761) ^ u32(year).wrapping_mul(40503)
+                        let s = b.wrapping_mul(2654435761) ^
+                            u32(year).wrapping_mul(40503) ^
+                            world(cx.map)
                         if rand(s, 1) < chance {
                             let corner = g.lo + vec2(f32(b % bx), f32(b / bx)) * block
                             let at = corner + vec2(rand(s, 2), rand(s, 3)) * block

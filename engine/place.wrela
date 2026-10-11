@@ -766,6 +766,9 @@ pub struct Map {
     pub kept: Vec<Kept>,
     pub regions: Vec<Region>,
     pub herd: Herd,
+    /// The world's seed: every draw of its history (`grow::simulate`) is mixed with it, so each
+    /// seed grows another world from the same map. An authoring tool: bake many, ship the best.
+    pub seed: u32 = 0,
 }
 
 impl Map {

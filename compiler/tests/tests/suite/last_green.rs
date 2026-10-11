@@ -259,7 +259,7 @@ fn fields_near_and_pasture_beyond() {
 fn left_as_last_used_with_old_trees_in_the_pasture() {
     let l = land()
     let p = settle(l, ELVES, 0, 300)
-    let s = left_by(p, l, species::habits(), ELVES, 300)
+    let s = left_by(p, l, species::habits(), ELVES, 300, 0)
     var grazed = 0.0
     for c in 0..l.grid.cells() {
         let was = Left::from_u32(u32(s.left[c])).unwrap()
@@ -285,7 +285,7 @@ fn left_as_last_used_with_old_trees_in_the_pasture() {
 fn left_long_before_the_plague_is_wood_again() {
     let l = land()
     let p = settle(l, ELVES, 0, 200)
-    let s = left_by(p, l, species::habits(), ELVES, 400)
+    let s = left_by(p, l, species::habits(), ELVES, 400, 0)
     for b in s.left {
         assert(Left::from_u32(u32(b)).unwrap() == Left::Wild, "the wood has it back")
     }
@@ -296,6 +296,44 @@ fn left_long_before_the_plague_is_wood_again() {
     let floor = repo_root().join("examples/last-green");
     std::fs::copy(floor.join("peoples.wrela"), dir.join("peoples.wrela")).expect("copy the elves");
     assert_eq!(super::tests_pass(&dir), 4);
+}
+
+/// A world's seed (`Map::seed`): the same map grown with another seed is another world, and with
+/// the same seed, the same world. On a corner of the floor at the preview's grain.
+#[test]
+fn a_seed_grows_another_world_and_the_same_seed_the_same() {
+    let tests = r#"
+use engine::grow::{PREVIEW, Start, Tree, simulate}
+
+fn grown(seed: u32) -> Vec<Tree> {
+    var m = map::map()
+    m.seed = seed
+    let lo = vec2(500.0, -1100.0)
+    var h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, lo + vec2(160.0), stones::stones(m), |land, year| Start::wild(land))
+    take h.trees
+}
+
+fn same(a: [Tree], b: [Tree]) -> bool {
+    if a.len() != b.len() {
+        return false
+    }
+    for i in 0..a.len() {
+        if length(a[i].at - b[i].at) > 0.0 || a[i].tall != b[i].tall {
+            return false
+        }
+    }
+    true
+}
+
+@test
+fn seeds() {
+    let a = grown(0)
+    assert(same(a, grown(0)), "the same seed grows the same world")
+    assert(!same(a, grown(7)), "another seed grows another world")
+}
+"#;
+    let dir = map_package("last-green/seeds", tests);
+    assert_eq!(super::tests_pass(&dir), 1);
 }
 
 // ---- the bake --------------------------------------------------------------------------------
@@ -830,14 +868,82 @@ impl Floor {
     }
 }
 
+/// The floor's test build on the CPU host: the same WASM and frame schedule as [`Floor`], every
+/// command checked and none drawn. For the checks of what the floor's code does, not of what
+/// its frames show.
+struct CpuFloor {
+    host: wrela_host::CpuHost,
+    frame: u32,
+    /// Input for the frames, by frame (`wrela_host::parse_script`'s).
+    script: Vec<wrela_host::Scripted>,
+}
+
+impl CpuFloor {
+    fn load(name: &str) -> CpuFloor {
+        let _ = floor();
+        let (dir, _) = wrela_tests::page("examples/last-green", name);
+        let host = wrela_host::CpuHost::load(&dir).expect("load the floor");
+        CpuFloor { host, frame: 0, script: Vec::new() }
+    }
+
+    /// [`Floor::keys`].
+    fn keys(&mut self, at: u32, keys: &[&str]) {
+        let events: Vec<String> = keys
+            .iter()
+            .map(|k| format!(r#"{{"frame": {at}, "type": "key", "key": "{k}"}}"#))
+            .collect();
+        let mut more = wrela_host::parse_script(&format!("[{}]", events.join(", "))).expect("keys");
+        self.script.append(&mut more);
+    }
+
+    fn printed(&mut self) -> Vec<String> {
+        self.host.take_logs()
+    }
+
+    fn steps(&mut self, n: u32) {
+        for _ in 0..n {
+            self.host
+                .lockstep_frame(self.frame, 60.0, 320, 180, &self.script)
+                .unwrap_or_else(|e| panic!("frame {}: {e}", self.frame));
+            self.frame += 1;
+        }
+    }
+
+    fn call(&mut self, name: &str, args: &[wrela_host::Value]) -> Vec<f64> {
+        let v = self.host.call_export(name, args).unwrap_or_else(|e| panic!("{name}: {e}"));
+        v.iter()
+            .map(|x| match x {
+                wrela_host::Value::F32(f) => f64::from(*f),
+                wrela_host::Value::I32(i) => f64::from(*i),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect()
+    }
+
+    /// [`Floor::until_ready`].
+    fn until_ready(&mut self) {
+        while self.call("test_ready", &[])[0] < 0.5 {
+            assert!(self.frame < 900, "the floor isn't ready after {} frames", self.frame);
+            self.steps(1);
+        }
+    }
+
+    fn hold(&mut self, eye: [f32; 3], at: [f32; 3]) {
+        let args: Vec<wrela_host::Value> =
+            eye.iter().chain(&at).map(|&x| wrela_host::Value::F32(x)).collect();
+        self.call("test_hold", &args);
+    }
+}
+
 /// AC4's no trap: the camera held inside a tree's crown, exactly at its middle (where its
 /// levels' patterns are anchored, `lod::anchor`) and a step either side, looking each way, and
-/// inside its trunk: every frame draws, with the floor's streamed wood (`engine::wood`'s marks).
-/// Playing spike 17, a camera there trapped (`lod.wrela:125`).
+/// inside its trunk: every frame's commands are valid, with the floor's streamed wood
+/// (`engine::wood`'s marks). Playing spike 17, a camera there trapped (`lod.wrela:125`). A trap
+/// is the floor's code's, so the CPU host finds it as the GPU's would.
 #[test]
-#[ignore = "long: bakes the floor, needs a GPU"]
+#[ignore = "long: bakes the floor"]
 fn the_camera_inside_a_crown_of_the_floor_draws_its_frames() {
-    let mut f = Floor::load("last-green-inside-a-crown");
+    let mut f = CpuFloor::load("last-green-inside-a-crown");
     f.until_ready();
     for i in [0, 3, 17, 60] {
         let m = f.call("test_crown", &[wrela_host::Value::I32(i)]);
@@ -1543,20 +1649,21 @@ fn bake_hash_on_disk() -> String {
 /// fetched and hashed, `hash_bake`) in the native host and in Chrome, and as the build wrote it
 /// to disk: the same files, bytes and hash.
 #[test]
-#[ignore = "long: bakes the floor, needs Chrome and a GPU"]
+#[ignore = "long: bakes the floor, needs Chrome"]
 fn the_bake_is_the_same_bytes_in_both_hosts() {
     let disk = bake_hash_on_disk();
-    let mut f = Floor::load("last-green-bake-hash");
+    // The native host's fetches are the CPU host's: it draws nothing.
+    let mut f = CpuFloor::load("last-green-bake-hash");
     f.keys(1, &["F9"]);
     let mut native = None;
     while native.is_none() && f.frame < 900 {
-        f.step();
+        f.steps(1);
         native = f
             .printed()
             .into_iter()
             .find_map(|l| l.find("the bake's bytes").map(|i| l[i..].to_string()));
     }
-    // The native host holds the GPU's lock while it's loaded: Chrome's run waits for it.
+    // Its floor's memory and helpers are Chrome's for the run.
     drop(f);
     let (_, chrome, _, _) = floor_in_chrome(
         "last-green-bake-hash-chrome",
@@ -1578,7 +1685,7 @@ fn the_bake_is_the_same_bytes_in_both_hosts() {
 /// each 2 s, the same lines in both hosts; and Chrome's tick log replays natively, every tick to
 /// the same state hash.
 #[test]
-#[ignore = "long: bakes the floor, needs Chrome, python3 and a GPU"]
+#[ignore = "long: bakes the floor, needs Chrome and python3"]
 fn the_floors_walk_replays_and_reports_the_same_in_both_hosts() {
     let natively = same_in_both_hosts(
         "last-green-hosts",
@@ -1593,7 +1700,7 @@ fn the_floors_walk_replays_and_reports_the_same_in_both_hosts() {
 /// same in Chrome and natively, and Chrome's tick log replays natively, every tick to the same
 /// state hash; and the fawn watched, then fled.
 #[test]
-#[ignore = "long: bakes the floor, needs Chrome, python3 and a GPU"]
+#[ignore = "long: bakes the floor, needs Chrome and python3"]
 fn the_fawns_encounter_replays_the_same_in_both_hosts() {
     let natively = same_in_both_hosts("last-green-fawn", FAWN_WALK_UP, 2160);
     let doing: Vec<String> = natively
@@ -1637,7 +1744,8 @@ fn same_in_both_hosts(name: &str, text: &str, frames: u32) -> Vec<String> {
         lines.into_iter().filter(|l| l.contains("\"report\"")).map(String::from).collect()
     };
     let in_chrome = reports(chrome.printed.iter().map(|(_, l)| l.as_str()).collect());
-    let mut native = wrela_host::Host::load(&dir).expect("load the floor");
+    // The sim's reports are the same with no frame drawn: the CPU host's.
+    let mut native = wrela_host::CpuHost::load(&dir).expect("load the floor");
     for i in 0..frames {
         native
             .lockstep_frame(i, 60.0, 320, 180, &script)
@@ -2246,7 +2354,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
 /// cover and the history's fields there. In Chrome within 50 ms (the click's frame, CPU), and the
 /// same answers natively. From the gate at 800×600: the great oak, then the meadow.
 #[test]
-#[ignore = "long: bakes the floor, needs Chrome, python3 and a GPU"]
+#[ignore = "long: bakes the floor, needs Chrome and python3"]
 fn a_click_names_a_trees_kind_and_history_and_the_grounds_cover() {
     let _ = floor();
     let (dir, rel) = wrela_tests::page("examples/last-green", "last-green-provenance");
@@ -2273,7 +2381,8 @@ fn a_click_names_a_trees_kind_and_history_and_the_grounds_cover() {
     };
     let in_chrome = answers(chrome.printed.iter().map(|(_, l)| l.as_str()).collect());
     let script = wrela_host::parse_script(text).expect("a script");
-    let mut native = wrela_host::Host::load(&dir).expect("load the floor");
+    // The answers are computed on the CPU (provenance.wrela): the CPU host's, no frame drawn.
+    let mut native = wrela_host::CpuHost::load(&dir).expect("load the floor");
     for i in 0..frames {
         native.lockstep_frame(i, 60.0, 800, 600, &script).unwrap_or_else(|e| panic!("{i}: {e}"));
     }
