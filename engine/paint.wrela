@@ -1,15 +1,16 @@
 // The look's passes (#28 §7): the owner's pick, gouache and light for the world, cel for
 // characters. They run after temporal AA, at the output's resolution, on its colour, the scene's
-// depth and the tags.
+// depth and the tags; but the lines (`lines`) run before it, on the scene's own samples.
 //
 // - The world: brush dabs anchored on its surfaces (spike 12's stroke cells: space cut into
 //   cells in the surface's plane, each holding one stroke), moving the paint's value and hue a
 //   little; stronger on broad areas (far ground, crowns, the sky, whose dabs are anchored to
 //   directions) so the painted feel shows at a glance. A paper's tooth anchored in the world too
 //   (Q6 of #51: a grain anchored to the screen is a shower door in motion).
-// - Characters: their two bands are their shading's (`light::character`); here, thin lines in a
+// - Characters: their two bands are their shading's (`light::character`); thin lines in a
 //   darker shade of their colour on their silhouettes and where their parts meet (from the
-//   depth and the tags), and the world's dabs at half strength.
+//   depth and the tags, before temporal AA, which anti-aliases them), and the world's dabs at
+//   half strength.
 // - Bloom: the bright light, brought down to a quarter and blurred; then the tone curve.
 //
 // Every texture the look lays on is anchored in the world (AC1).
@@ -284,18 +285,18 @@ fn silhouette(d: Develop, z: f32, tag: f32) -> f32 {
 }
 
 /// The scene's depth nearest an output pixel's centre `px`.
-fn depth_at(d: Develop, depth: DepthTexture, px: vec2) -> f32 {
+pub fn depth_at(d: Develop, depth: DepthTexture, px: vec2) -> f32 {
     let p = min(vec2u(px * (d.cam.screen / d.out)), vec2u(d.cam.screen) - vec2u(1))
     depth.load(x: p.x, y: p.y)
 }
 
-/// How much of a character's line the output pixel at `p` is (on the character's own pixels,
-/// so the line is a darker shade of its colour): where a neighbour `line_px` away is well behind
-/// it (its silhouette), or is another of its parts a little behind it (where a part passes in
-/// front of another). Its depth is read only on a character's pixels.
-fn line(
+/// How much of a character's line the scene pixel at `p` is (on the character's own pixels, so
+/// the line is a darker shade of its colour): where a neighbour `line_px` output pixels away is
+/// well behind it (its silhouette), or is another of its parts a little behind it (where a part
+/// passes in front of another). Its depth is read only on a character's pixels.
+fn scene_line(
     d: Develop,
-    image: Texture<Rgba16Float>,
+    scene: Texture<Rgba16Float>,
     depth: DepthTexture,
     p: vec2,
     here_tag: f32,
@@ -303,14 +304,15 @@ fn line(
     if class_of(here_tag) != class_of(CREATURE) {
         return 0.0
     }
-    let r = d.look.line_px
-    let near = d.cam.distance_of(depth_at(d, depth, p))
+    let r = d.look.line_px * d.cam.screen.y / d.out.y
+    let lim = d.cam.screen - vec2(1.0)
+    let near = d.cam.distance_of(depth.load(x: u32(p.x), y: u32(p.y)))
     var line = 0.0
     for k in 0..4 {
         let a = f32(k) * 1.5707964 + 0.4
-        let q = clamp(p + vec2(cos(a), sin(a)) * r, vec2(0.0), d.out - vec2(1.0))
-        let other = image.load(x: u32(q.x), y: u32(q.y)).a
-        let there = d.cam.distance_of(depth_at(d, depth, q))
+        let q = clamp(p + vec2(cos(a), sin(a)) * r, vec2(0.0), lim)
+        let other = scene.load(x: u32(q.x), y: u32(q.y)).a
+        let there = d.cam.distance_of(depth.load(x: u32(q.x), y: u32(q.y)))
         let other_char = class_of(other) == class_of(CREATURE)
         // Its silhouette: the neighbour isn't it, and is well behind it.
         let behind = if !other_char { smoothstep(0.03, 0.12, (there - near) / near) } else { 0.0 }
@@ -324,6 +326,23 @@ fn line(
         line = max(line, max(behind, parts * 0.8))
     }
     line
+}
+
+/// The scene with its lines drawn, at the scene's resolution and before temporal AA: the scene
+/// is jittered each frame, so temporal AA anti-aliases a line as it does a silhouette, and a
+/// settled view's line is as clean as its geometry. Its alpha (the tag) is kept. The lines'
+/// darkening is the display's `line_dark`, in linear light.
+@fragment
+pub fn lines(
+    pixel: FragCoord,
+    d: Develop,
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+) -> vec4 {
+    let p = pixel.position.xy
+    let here = scene.load(x: u32(p.x), y: u32(p.y))
+    let l = scene_line(d, scene, depth, p, here.a)
+    vec4(here.rgb * mix(1.0, pow(d.look.line_dark, 2.2), l), here.a)
 }
 
 /// The dabs and the paper's tooth at a scene pixel (the scene's resolution: the look allows
@@ -501,13 +520,8 @@ pub fn develop(
     let gq = min(vec2u(px / 4.0), vec2u(glow.width() - 1, glow.height() - 1))
     paint += glow.load(x: gq.x, y: gq.y).rgb * look.bloom
     var c = tone(paint, exposure[0].value)
-    // The characters' lines: a darker shade of their colour.
     if clay {
         return vec4(c, 1.0)
-    }
-    let l = line(d, image, depth, px, here.a)
-    if l > 0.0 {
-        c = mix(c, c * look.line_dark, vec3(l))
     }
     let uv = px / d.out - vec2(0.5)
     c = c * (1.0 - look.vignette * dot(uv, uv))
