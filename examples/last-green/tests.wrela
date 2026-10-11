@@ -4,7 +4,7 @@
 use engine::bake::{WEAR_N, decode_tile, reaching, tile_fields, tile_name}
 use engine::grow::{BAKE, BESIDE_PATH, Cause, Grid, HEAD_ROOM, Mark, State, Tree}
 use engine::noise::rand
-use engine::place::{Feature, Keeper, Map, TILE}
+use engine::place::{Feature, Keeper, Map, SiteKind, TILE}
 use engine::terrain::Terrain
 use std::field::Surface
 use std::io::print
@@ -889,6 +889,47 @@ fn remembered(u: engine::bake::Unbaked, at: vec2, reach: f32, mark: Mark, year: 
     (marked, cells)
 }
 
+/// The arena's earthworks: its bank stands, every way in crosses it level (its route within a
+/// metre of the ground), and past their reach the land is as it was.
+@test
+fn the_arenas_earthworks_open_for_each_way_in() {
+    let m = map::map()
+    var arenas = 0
+    for k in m.sites {
+        if k.kind != SiteKind::Arena {
+            continue
+        }
+        arenas += 1
+        var highest = 0.0
+        for i in 0..360 {
+            let a = TAU * f32(i) / 360.0
+            let along = vec2(cos(a), sin(a))
+            highest = max(highest, stones::earthworks(k.at + along * 31.0, 0.0))
+            assert(
+                stones::earthworks(k.at + along * 36.5, 0.0) == 0.0,
+                "the land changed past the works",
+            )
+        }
+        assert(highest > 1.2, f"{k.name}: its bank is {highest} m tall")
+        for route in m.routes {
+            for j in 0..route.points.len() - 1 {
+                let a = route.points[j]
+                let b = route.points[j + 1]
+                let steps = u32(ceil(length(b - a) / 0.5))
+                for n in 0..steps + 1 {
+                    let p = mix(a, b, f32(n) / f32(steps))
+                    let lift = abs(stones::earthworks(p, 0.0))
+                    assert(
+                        lift < 1.0,
+                        f"{route.name} crosses {k.name}'s earthworks {lift} m off the ground",
+                    )
+                }
+            }
+        }
+    }
+    assert(arenas == 1, "one arena")
+}
+
 // ---- The floor's sound (sound.wrela; the outside audit's point 6) --------------------------------
 
 /// The splits between the bands a sound is weighed in (Hz): below 300 (a knock, the wind's rush,
@@ -1353,7 +1394,7 @@ fn steepest<S: Surface>(s: S, box: std::derive::Box3) -> (f32, vec3) {
 }
 
 /// The built things' fields change no faster than their Lipschitz bounds claim (the realizer
-/// culls by them): the tower and the standing stones of each kind.
+/// culls by them): the tower, the standing stones of each kind and the curved walls.
 @test
 fn the_built_fields_keep_their_bounds() {
     let t = blockouts::tower()
@@ -1363,6 +1404,19 @@ fn the_built_fields_keep_their_bounds() {
         let s = blockouts::Slab { half: vec3(0.5, 1.1, 0.3), seed: f32(seed) * 0.37 }
         let (worst, at) = steepest(s, blockouts::slab_creature(s).bounds())
         assert(worst <= s.lipschitz(0.0), f"slab {seed}'s field changes {worst} per m at {at}")
+    }
+    // A terrace wall's piece and a house's ring, on sloping ground.
+    var ground = [0.0; 9]
+    for i in 0..9 {
+        ground[i] = 0.15 * f32(i)
+    }
+    let pieces = [
+        blockouts::Arc { r: 21.0, half: 12.0, wide: 0.8, tall: 1.3, seed: 0.4, ground },
+        blockouts::Arc { r: 3.0, half: 8.6, wide: 0.6, tall: 1.4, seed: 1.1, ground },
+    ]
+    for a in pieces {
+        let (worst, at) = steepest(a, blockouts::arc_creature(a).bounds())
+        assert(worst <= a.lipschitz(0.0), f"a curved piece's field changes {worst} per m at {at}")
     }
 }
 

@@ -229,6 +229,8 @@ impl Ground {
         let shaped = smoothstep(70.0, 140.0, length(p - MEADOW))
         let over = self.land.crags_over(p, under)
         var y = under + shaped * (over.x - self.land.ravine(p))
+        // The earthworks the floor's people left (built's).
+        y = stones::earthworks(p, y)
         // Past the edge, the land falls to the valley, whose floor rolls: first a cliff of rock
         // (about a third of the fall, over its first 9 m, taller and lower along the edge), which
         // the stream falls over at the lip; then the rest of the way down, gently.

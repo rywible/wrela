@@ -101,6 +101,186 @@ pub fn footprint(s: Standing) -> f32 {
     max(s.half.x, s.half.z) + 0.05
 }
 
+/// A curved wall on the map: round `at`, `r` from it, from angle `from` to `to` (radians, as
+/// `atan2(z, x)`, `to` past `from`), `wide` across and `tall` high.
+pub struct Curved: Copy {
+    pub at: vec2,
+    pub r: f32,
+    pub from: f32,
+    pub to: f32,
+    pub wide: f32,
+    pub tall: f32,
+}
+
+/// The longest stretch of a curved wall in one piece (m): a piece is realized alone.
+const PIECE: f32 = 24.0
+
+/// Where the map's routes cross the circle round `at`, `r` from it: each crossing's angle and
+/// half the gap a route needs there (radians: its width, and a metre and a half each side).
+fn crossings(m: Map, at: vec2, r: f32) -> Vec<vec2> {
+    var out: Vec<vec2> = Vec::new()
+    for route in m.routes {
+        let half = (0.5 * route.width + 1.5) / r
+        for i in 0..route.points.len() - 1 {
+            let a = route.points[i] - at
+            let b = route.points[i + 1] - at
+            let ab = b - a
+            // |a + t ab| = r: t² ab·ab + 2t a·ab + a·a - r² = 0.
+            let qa = dot(ab, ab)
+            let qb = 2.0 * dot(a, ab)
+            let qc = dot(a, a) - r * r
+            let disc = qb * qb - 4.0 * qa * qc
+            if qa > 0.0 && disc >= 0.0 {
+                for sign in [-1.0, 1.0] {
+                    let t = (-qb + sign * sqrt(disc)) / (2.0 * qa)
+                    if t >= 0.0 && t <= 1.0 {
+                        let p = a + ab * t
+                        out.push(vec2(atan2(p.y, p.x), half))
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A wall round `at`, `r` from it, from angle `from` to `to`, open where the map's
+/// routes cross it and at `gaps` (each an angle and half its width, radians), in pieces no
+/// longer than `PIECE`.
+fn round(
+    m: Map,
+    at: vec2,
+    r: f32,
+    span: vec2,
+    gaps: Vec<vec2>,
+    wide: f32,
+    tall: f32,
+    out: mut Vec<Curved>,
+) {
+    var open = crossings(m, at, r)
+    for g in gaps {
+        open.push(g)
+    }
+    // Walk along it in steps of about 20 cm, keeping the stretches no gap touches.
+    let steps = u32(ceil((span.y - span.x) * r / 0.2))
+    var start = -1.0
+    for i in 0..steps + 1 {
+        let a = mix(span.x, span.y, f32(i) / f32(steps))
+        var shut = i < steps
+        for g in open {
+            if apart(a, g.x) < g.y {
+                shut = false
+            }
+        }
+        if shut && start < span.x {
+            start = a
+        }
+        if start >= span.x && (!shut || (a - start) * r >= PIECE) {
+            if a - start > 0.5 / r {
+                out.push(Curved { at, r, from: start, to: a, wide, tall })
+            }
+            start = if shut { a } else { span.x - 1.0 }
+        }
+    }
+}
+
+/// The curved walls the floor's people left at the town's site: its terraces' walls and the
+/// round footings of its houses.
+pub fn curved(m: Map) -> Vec<Curved> {
+    var out: Vec<Curved> = Vec::new()
+    for k in m.sites {
+        let seed = u32(abs(k.at.x) * 7.0 + abs(k.at.y) * 13.0)
+        if k.kind == SiteKind::Town {
+            // The town stepped down its slope in rings of terrace walls, each fallen in a stretch
+            // or two, and open where a way crosses it.
+            for t in 0..3 {
+                let gaps = Vec::from(
+                    [
+                        vec2(TAU * rand(seed + 30 + t, 1), 0.08 + 0.12 * rand(seed + 30 + t, 2)),
+                        vec2(TAU * rand(seed + 30 + t, 3), 0.05 + 0.1 * rand(seed + 30 + t, 4)),
+                    ],
+                )
+                round(
+                    m,
+                    k.at,
+                    TERRACES.x + TERRACES.y * f32(t),
+                    vec2(0.0, TAU),
+                    gaps,
+                    wide: 0.8,
+                    tall: 1.3 - 0.2 * f32(t),
+                    out: mut out,
+                )
+            }
+            // Its houses' round footings on the terraces between the walls, each door toward
+            // the town's middle. Like the terrace walls, lower than the eye (1.7 m).
+            for i in 0..HOUSES {
+                let a = TAU * (f32(i) + 0.6 * rand(seed + i, 1)) / f32(HOUSES)
+                let r = 2.6 + 0.6 * rand(seed + i, 2)
+                let ring = TERRACES.x + TERRACES.y * (0.5 + f32(i % 2))
+                let at = k.at + vec2(cos(a), sin(a)) * ring
+                var clear = true
+                for route in m.routes {
+                    if route.distance(at).x < 0.5 * route.width + r + 1.5 {
+                        clear = false
+                    }
+                }
+                if clear {
+                    let door = vec2(a + 0.5 * TAU, 0.8 / r)
+                    round(
+                        m,
+                        at,
+                        r,
+                        vec2(0.0, TAU),
+                        Vec::from([door]),
+                        wide: 0.6,
+                        tall: 0.9 + 0.7 * rand(seed + i, 4),
+                        out: mut out,
+                    )
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The town's site's terrace walls' first radius and the step between them (m), and how many
+/// houses' footings it has.
+const TERRACES: vec2 = vec2(11.0, 10.0)
+const HOUSES: u32 = 8
+
+/// The land's height at `p` after the earthworks the floor's people shaped in it, from its
+/// height `y` before them: round the Warden's arena a bank, a ditch inside it, the stones'
+/// ring within; both open at its threshold and where each way comes in (exactly `y` farther
+/// than `WORKS_REACH` from the arena).
+pub fn earthworks(p: vec2, y: f32) -> f32 {
+    let q = p - ARENA
+    let d = length(q)
+    if d >= WORKS_REACH {
+        return y
+    }
+    let a = atan2(q.y, q.x)
+    var open = 1.0
+    for g in ARENA_WAYS {
+        open = min(open, smoothstep(g.y, g.y + 3.0, apart(a, g.x) * max(d, 1.0)))
+    }
+    y + open * (BANK.z * bell((d - BANK.x) / BANK.y) - DITCH.z * bell((d - DITCH.x) / DITCH.y))
+}
+
+/// A bell 1 at 0, falling to 0 at ±1 (and flat past them).
+fn bell(t: f32) -> f32 {
+    0.5 + 0.5 * cos(3.14159265 * clamp(t, -1.0, 1.0))
+}
+
+/// The Warden's arena's middle (`map`'s site), and the ways into it: each an angle round it
+/// (as `atan2(z, x)`) and half its opening (m): its threshold, the pine trail and the heath path.
+const ARENA: vec2 = vec2(1450.0, -1150.0)
+const ARENA_WAYS: [vec2; 3] = [vec2(THRESHOLD, 3.5), vec2(2.554, 3.5), vec2(0.785, 3.0)]
+/// The arena's bank and ditch: each its radius, half its width and its height or depth (m);
+/// and how far from its middle the earthworks reach.
+const BANK: vec3 = vec3(31.0, 4.0, 1.6)
+const DITCH: vec3 = vec3(26.5, 2.0, 0.7)
+const WORKS_REACH: f32 = 36.0
+
 /// The floor's stones: each (x, z, radius).
 pub fn stones(m: Map) -> Vec<vec3> {
     var out: Vec<vec3> = Vec::new()
@@ -127,7 +307,7 @@ pub fn stones(m: Map) -> Vec<vec3> {
 
 /// The ruins' walls: each a line (a, b); a ruin's walls are a rectangle round its site, its long
 /// side across the x axis, with a doorway in its south wall.
-pub fn walls(m: Map) -> Vec<vec4> {
+pub fn ruin_walls(m: Map) -> Vec<vec4> {
     var out: Vec<vec4> = Vec::new()
     for k in m.sites {
         if k.feature == Feature::Ruin && k.tall > 1.0 {
@@ -143,6 +323,23 @@ pub fn walls(m: Map) -> Vec<vec4> {
             out.push(vec4(b.x, b.y, c.x, c.y))
             out.push(vec4(c.x, c.y, d.x, d.y))
             out.push(vec4(d.x, d.y, a.x, a.y))
+        }
+    }
+    out
+}
+
+/// What a player walks round of the floor's walls: the ruins' walls, and the curved walls in
+/// chords about 2 m long.
+pub fn walls(m: Map) -> Vec<vec4> {
+    var out = ruin_walls(m)
+    for c in curved(m) {
+        let n = u32(ceil((c.to - c.from) * c.r / 2.0))
+        for i in 0..n {
+            let a = mix(c.from, c.to, f32(i) / f32(n))
+            let b = mix(c.from, c.to, f32(i + 1) / f32(n))
+            let p = c.at + vec2(cos(a), sin(a)) * c.r
+            let q = c.at + vec2(cos(b), sin(b)) * c.r
+            out.push(vec4(p.x, p.y, q.x, q.y))
         }
     }
     out
