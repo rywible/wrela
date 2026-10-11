@@ -44,7 +44,15 @@ pub fn which_crown(at: vec3) -> u32 {
 /// for its cards, its impostor and its volume: at all of it, each leaf lit apart from its
 /// neighbours read as confetti, and a crown's masses didn't turn from light to shade as forms
 /// (M6's lookdev pass 1).
-pub const TILT: f32 = 0.5
+pub const TILT: f32 = 0.0
+
+/// How much of its own draw of age (`plant::leaf_draws`) a leaf's colour takes, the same for its
+/// cards, its impostor and its volume: at all of it, the leaves inside a mass were lit and coloured
+/// apart, a heap of leaves, not one form (M6's lookdev, the arbiter's G2).
+pub const AGED: f32 = 0.0
+
+/// How far toward the sun (m) a leaf's sun is read (`leaf_light`): past its own mass's leaves.
+pub const SELF_SHADE: f32 = 1.5
 
 /// A leaf's roughness, where a leaf covers several pixels: a little waxy.
 pub const LEAF_ROUGH: f32 = 0.6
@@ -79,7 +87,17 @@ pub fn leaf_light(
     let ao = exp(-depth / 2.4)
     let v = normalize(lt.cam.eye - at)
     let facing = if dot(n, v) < 0.0 { -n } else { n }
-    let (sun, sky, reflected) = sun_sky_and_gloss(lt, at, n, sky_n, facing, soft: 1.5)
+    // The sun is read from `SELF_SHADE` m toward it, past the leaves of its own mass: each leaf
+    // shadowed by its neighbours read as salt and pepper, not as a mass turning from light to
+    // shade (M6's lookdev, forms.md row 1). Other crowns' shadows still fall on it.
+    let (sun, sky, reflected) = sun_sky_and_gloss(
+        lt,
+        at + lt.light.sun * SELF_SHADE,
+        n,
+        sky_n,
+        facing,
+        soft: 1.5,
+    )
     let inside = 0.25 + 0.75 * ao
     let lit = Lit {
         albedo,
@@ -257,7 +275,7 @@ fn baked_leaf(f: BakeVertex, b: Bake, atlas: Texture<Rgba8>, s: Sampler) -> (vec
     }
     let crown_n = normalize(f.normal)
     let (tilt, aged) = leaf_draws(seed, which)
-    (leaf_normal(crown_n, tilt * TILT), tinted(leaf_age(b.leaves, crown_n.y, aged), f.tint))
+    (leaf_normal(crown_n, tilt * TILT), tinted(leaf_age(b.leaves, crown_n.y, aged * AGED), f.tint))
 }
 
 /// The impostor's colour: each view's leaves' (and limbs') albedo (its square root), and the
@@ -997,7 +1015,7 @@ pub fn volume_shade(
         leaf_normal(crown_n, tilt * TILT),
         sky_n: crown_n,
         depth: met.depth * f.yaw_scale.value.y,
-        albedo: tinted(leaf_age(b.leaves, crown_n.y, aged), f.tint),
+        albedo: tinted(leaf_age(b.leaves, crown_n.y, aged * AGED), f.tint),
         through: b.leaves.through,
         leaf: b.leaves.leaf_width() * f.yaw_scale.value.y,
     )
