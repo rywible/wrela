@@ -20,7 +20,7 @@ use std::gpu::{
     DepthTexture, FragCoord, GlobalId, LocalId, One, Rgba16Float, Sampler, Shared, Texture, barrier,
 }
 use terrain::{Levels, Texel, ground_at}
-use view::{CREATURE, Camera, FLOWER, GRASS, GROUND, LEAVES, class_of}
+use view::{CREATURE, Camera, FLOWER, GRASS, GROUND, LEAVES, WATER, class_of}
 
 /// The look's settings: how strong the dabs are on near surfaces, on broad far ones and on the
 /// sky; the paper's tooth; the bloom; the characters' lines (their width in output pixels, and
@@ -254,11 +254,33 @@ pub fn meter(
 
 /// What the look's pass reads besides its textures: the scene's camera (unjittered: the output
 /// is), the look, and the output's size. (The tone curve's exposure is the metered one:
-/// `meter`.)
+/// `meter`.) And `view`, a debug view of form, off by default: 1 clay (the scene's light on its
+/// grey forms, `light::Light`'s `clay`, with none of the look's marks), 2 silhouettes
+/// (`silhouette`).
 pub struct Develop: Copy + GpuData {
     pub cam: Camera,
     pub look: Look,
     pub out: vec2,
+    pub view: u32 = 0,
+}
+
+/// The silhouette view's value at an output pixel (display-referred) whose depth is `z` and tag
+/// `tag`: the sky white; the land (the ground, what grows low on it, water) light; solid forms
+/// (rock, what's built, trunks, crowns, characters) dark; each a step lighter for each band of
+/// distance, a factor of four apart from 4 m. So a form reads by its shape alone, against the
+/// sky, the land and the forms behind it.
+fn silhouette(d: Develop, z: f32, tag: f32) -> f32 {
+    if z <= 0.0 {
+        return 0.97
+    }
+    let dist = d.cam.distance_of(z)
+    let band = clamp(floor(log2(max(dist, 1.0) / 4.0) / 2.0) + 1.0, 0.0, 5.0)
+    let class = class_of(tag)
+    let land = class == class_of(GROUND) ||
+        class == class_of(GRASS) ||
+        class == class_of(FLOWER) ||
+        class == class_of(WATER)
+    if land { 0.52 + 0.06 * band } else { 0.03 + 0.08 * band }
 }
 
 /// The scene's depth nearest an output pixel's centre `px`.
@@ -423,7 +445,8 @@ pub fn dab_map(
 
 /// The output pixel, painted: the dabs and the paper's tooth (from the dab map, between its
 /// texels), the bloom, the characters' lines, a little sharpening, the tone curve at the
-/// metered exposure (`meter`) and a vignette.
+/// metered exposure (`meter`) and a vignette. In the debug views (`Develop`'s `view`), the clay
+/// without the dabs, the tooth, the lines and the vignette; or the silhouettes alone.
 @fragment
 pub fn develop(
     pixel: FragCoord,
@@ -438,6 +461,10 @@ pub fn develop(
     let px = pixel.position.xy
     let p = vec2u(px)
     let here = image.load(x: p.x, y: p.y)
+    if d.view == 2 {
+        return vec4(vec3(silhouette(d, depth_at(d, depth, px), here.a)), 1.0)
+    }
+    let clay = d.view == 1
     let look = d.look
     // A little sharpening against temporal AA's softness: the pixel against its cross.
     let size = vec2u(d.out) - vec2u(1)
@@ -452,13 +479,16 @@ pub fn develop(
     // The dab map's texel for this point: its texels hold their unjittered centres' points
     // (`dab_map`), so the same place each frame.
     let q = px * (d.cam.screen / d.out)
-    let m = dabs.sample_level(s, q / d.cam.screen)
+    let m = if clay { vec4(0.0) } else { dabs.sample_level(s, q / d.cam.screen) }
     paint = paint * (1.0 + m.r) * vec3(1.0 + 0.25 * m.r, 1.0, 1.0 - 0.3 * m.r) * (1.0 + m.g)
     // Bloom.
     let gq = min(vec2u(px / 4.0), vec2u(glow.width() - 1, glow.height() - 1))
     paint += glow.load(x: gq.x, y: gq.y).rgb * look.bloom
     var c = tone(paint, exposure[0].value)
     // The characters' lines: a darker shade of their colour.
+    if clay {
+        return vec4(c, 1.0)
+    }
     let l = line(d, image, depth, px, here.a)
     if l > 0.0 {
         c = mix(c, c * look.line_dark, vec3(l))

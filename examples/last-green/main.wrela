@@ -433,6 +433,9 @@ pub struct Floor {
     /// temporal history and no look: `test_plain`), and the wind stilled (`test_wind`).
     plain: bool,
     still: bool,
+    /// A debug view of form (F8 the next): 0 the look, 1 clay, 2 silhouettes
+    /// (`engine::paint::Develop`'s `view`).
+    view: u32,
     /// How many of the clipmap's levels this frame cooked (a frame that cooks the ground draws
     /// no strip of shadows or probes).
     terrain_cooked: u32,
@@ -602,6 +605,7 @@ pub fn init() -> Floor {
         mists: buffer_of(history::MISTS, at_least: 1),
         plain: false,
         still: false,
+        view: 0,
         terrain_cooked: 0,
         strip_drawn: false,
         last_eye: vec2(0.0),
@@ -1157,8 +1161,8 @@ fn cook_load(s: mut Floor) {
 }
 
 /// The keys the frames read (the sim reads the player's): F1–F5 leave a system out, F6 draws the
-/// water's next look, B the sun shafts, V the frame as plain rendering; L, a shot's
-/// number and Enter hold the camera on a lookbook shot (Escape lets it go).
+/// water's next look, F8 the next debug view of form, B the sun shafts, V the frame as plain
+/// rendering; L, a shot's number and Enter hold the camera on a lookbook shot (Escape lets it go).
 fn keys(s: mut Floor, time: f32) {
     for e in events() {
         match e {
@@ -1231,6 +1235,12 @@ fn keys(s: mut Floor, time: f32) {
             // V: the frame as plain rendering (no look), to tell the look's work from the scene's.
             if key == Key::V {
                 s.plain = !s.plain
+            }
+            // F8: the next debug view of form (clay, silhouettes, the look), to judge the
+            // forms alone.
+            if key == Key::F8 {
+                s.view = (s.view + 1) % 3
+                s.light.clay = if s.view == 1 { 1 } else { 0 }
             }
             if key == Key::F9 && s.hashing.is_empty() {
                 for i in 0..BAKED.len() {
@@ -1853,7 +1863,7 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
         screen.present()
         return
     }
-    let d = Develop { cam, look: Look {}, out }
+    let d = Develop { cam, look: Look {}, out, view: s.view }
     let dp = begin_pass(mut s.dabs)
     fullscreen(
         dp,

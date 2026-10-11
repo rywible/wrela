@@ -15,7 +15,7 @@
 // (`WaterLook`): clear, peat-dark, and painted.
 
 use grow::{Ground, Heap, Stream}
-use light::{LUMA, Light}
+use light::{CLAY, LUMA, Light}
 use lit::{Lighting, sun_and_gloss, through_air}
 use noise::noise2
 use place::Water
@@ -877,6 +877,12 @@ pub fn water_shade(
     let thick = max(under.a - distance, 0.0) + w.depth / max(v.y, 0.2)
     let through = exp(-look.dims * thick)
     let (sun, sky, probe) = sun_and_gloss(lt, w.world, n, soft: 1.0)
+    // The clay view: the water's surface as matte grey, lit as the ground is.
+    if lt.light.clay != 0 {
+        let wrap = max((dot(n, lt.light.sun) + 0.15) / 1.15, 0.0)
+        let c = CLAY * (lt.light.sun_colour * (wrap * sun) + sky)
+        return vec4(through_air(lt, c, w.world), WATER)
+    }
     let deep = look.deep * (sky + vec3(sun) * lt.light.sun_colour * 0.25)
     let seen = under.rgb * through + deep * (vec3(1.0) - through)
     // The world reflected: from the screen where it's on it; else from the probes, and the sky
