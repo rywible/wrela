@@ -1268,7 +1268,7 @@ fn snag_kind(t: Tree) -> u32 {
 /// light its crown had), or young; and where browsing keeps its branches above a line (its
 /// `lift`), the forest's form when the open one's would come below it.
 pub fn drawn_kind(t: Tree) -> u32 {
-    let k = living_kind(t)
+    let k = crowded_form(t, living_kind(t))
     if t.lift <= 0.0 || lowest_placed(k, t.tall, t.fork) >= t.lift {
         k
     } else if k == OAK_OPEN {
@@ -1281,6 +1281,25 @@ pub fn drawn_kind(t: Tree) -> u32 {
         PINE_FOREST
     } else {
         k
+    }
+}
+
+/// An open-grown kind drawn in its forest form where its neighbours crowd it (its crown is drawn
+/// narrower than its kind's: `crown_wide`): a canopy tree whose crown top reaches the light is
+/// still a forest tree below it, with no wide, low crown and no limbs at the eye's height (the
+/// shots item's exploration check: open forms in closed woods closed the views, dead 27% of the
+/// floor and 53% of the beech wood). Where browsing keeps a line (its `lift`: the wood pasture,
+/// the edge), an open tree keeps its open form: the pasture's spreading oaks are its subject.
+pub fn crowded_form(t: Tree, k: u32) -> u32 {
+    let open = k == OAK_OPEN || k == BEECH_OPEN || k == BIRCH_OPEN
+    if !open || t.lift > 0.0 || crown_wide(t, k, drawn_tall(k, t.tall)) >= 1.0 {
+        k
+    } else if k == OAK_OPEN {
+        OAK_FOREST
+    } else if k == BEECH_OPEN {
+        BEECH_FOREST
+    } else {
+        BIRCH_FOREST
     }
 }
 
