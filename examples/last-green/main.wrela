@@ -2215,8 +2215,12 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         static_shadows(mut s, sh, wind)
     }
     moving_shadow(mut s, sh)
-    // (Each a 64th of the dome marched while it fills; once whole, a frame marches one again.)
-    for _ in 0..load_steps(s.capture, filling: !s.sky.done()) {
+    // (Each a 64th of the dome marched while it fills, up to the step that makes it whole; once
+    // whole, a frame marches one again.)
+    for k in 0..load_steps(s.capture, filling: !s.sky.done()) {
+        if k > 0 && s.sky.done() {
+            break
+        }
         cook_sky(mut s, eye, wind)
     }
     // (Many strips a frame while a bake is under way; once done, a strip baked again a frame,
