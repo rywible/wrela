@@ -6,6 +6,7 @@
 
 use engine::air::{Air, Tables, hazy, tables}
 use engine::character::{Cast, PartOf, cast}
+use engine::floor::{Kept, fullscreen, near_tile_radius, tile_distance, tile_radius}
 use engine::stone::{Realized, stone_shade, stone_vertex}
 use engine::bake::{Decisions, Far, decode_far, decode_tile, tile_name}
 use engine::grass::{Blooms, Grass, GrassLook}
@@ -38,7 +39,6 @@ use climber::sounds::{Heard, cues, heard}
 use history::{BAKED, OBSTACLES, tiles_hi, tiles_lo}
 use ground::{FIGHT, FIGHT_WAY, STONE_FEET, STONE_MARGIN, fought, unbuilt}
 use provenance::NearTile
-use streaming::{near_tile_radius, tile_distance, tile_radius}
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
     Address, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer, GpuSpan,
@@ -113,7 +113,9 @@ const SLOTS: u32 = 160
 const CAPTURE_STEPS: u32 = 64
 const CAPTURE_IN_FLIGHT: u32 = 64
 
-/// The static cascades: round the player (about 7 cm a texel), and the floor's.
+/// The static cascades: round the player (about 7 cm a texel), and the floor's; how far past a
+/// cascade's square a tree's shadow can reach into it (m): a 25 m tree's at this sun (24° up) is
+/// 56 m long.
 const NEAR_SPAN: f32 = 144.0
 const FAR_CASCADE = Cascade {
     centre: vec3(650.0, 0.0, -500.0),
@@ -121,6 +123,7 @@ const FAR_CASCADE = Cascade {
     reach: 2600.0,
     side: 2048,
 }
+const REACH_IN: f32 = 60.0
 
 /// How far the eye moves in a frame for a jump (m): a travel or a lookbook shot, not a glide.
 const JUMP: f32 = 30.0
@@ -341,9 +344,9 @@ pub struct Floor {
     far_layer: Vec<FarTile>,
     grass: Grass,
     /// The static cascades, kept round the eye (the near) and the floor (the far), each drawn
-    /// beside the one in use a strip a frame (`caches::Kept`).
-    near: caches::Kept,
-    far: caches::Kept,
+    /// beside the one in use a strip a frame (`engine::floor::Kept`).
+    near: Kept,
+    far: Kept,
     moving: DepthTexture,
     cmp: ComparisonSampler,
     /// Where the near cascade was drawn round, and whether each is drawn for what's placed.
@@ -561,11 +564,19 @@ pub fn init() -> Floor {
         },
         far_layer: Vec::new(),
         grass: Grass::new(),
-        near: caches::Kept::new(eye, NEAR_SPAN, reach: 250.0, side: 2048, strips: NEAR_STRIPS),
-        far: caches::Kept::new(
+        near: Kept::new(
+            eye,
+            NEAR_SPAN,
+            reach: 250.0,
+            reach_in: REACH_IN,
+            side: 2048,
+            strips: NEAR_STRIPS,
+        ),
+        far: Kept::new(
             FAR_CASCADE.centre,
             FAR_CASCADE.span,
             reach: FAR_CASCADE.reach,
+            reach_in: REACH_IN,
             side: FAR_CASCADE.side,
             // A strip a frame of a quarter the trees of the near one's (11 ms a strip in Chrome
             // at 12 strips).
@@ -1390,10 +1401,6 @@ fn hash_bake(s: mut Floor) {
         )
         s.hashing = Vec::new()
     }
-}
-
-fn fullscreen<P: RenderPass, F: FragmentShader<ClipPosition>>(pass: P, fs: F) {
-    draw(pass, full.bind(z: 0.5), fs, vertices: 3)
 }
 
 /// The targets made again for an output of `width` × `height`, the scene's `w` × `h`.

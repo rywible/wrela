@@ -353,8 +353,11 @@ pub fn obstacles_of(
 /// How far a body of radius `body` stepping from `p` by `d` moves: pushed out of the obstacles,
 /// and held back from ground it can't stand on (it slides along the way it can go, or stays).
 /// And how fast it goes where it ends against open level ground (`pace`, with the streams'
-/// water). The move, not the end: with nothing in its way it's `d` exactly.
+/// water). The move, not the end: with nothing in its way it's `d` exactly. A body on ground too
+/// steep to stand on (it came to rest on a slope's limit) can always step off it: down, or onto
+/// less steep ground (`steps_off`).
 pub fn step<G: Ground>(g: G, w: Water, o: Obstacles, p: vec2, d: vec2, body: f32) -> (vec2, f32) {
+    let here = stands(g, w, o, p)
     let tries = [d, vec2(d.x, 0.0), vec2(0.0, d.y)]
     for t in tries {
         let (by, _) = o.push_by(p + t, body)
@@ -364,12 +367,30 @@ pub fn step<G: Ground>(g: G, w: Water, o: Obstacles, p: vec2, d: vec2, body: f32
             continue
         }
         let q = p + moved
+        if o.blocked(q, body) {
+            continue
+        }
         let k = stands(g, w, o, q)
-        if k > 0.0 && !o.blocked(q, body) {
+        if k > 0.0 || (here == 0.0 && steps_off(g, w, o, p, q)) {
             return (moved, k)
         }
     }
-    (vec2(0.0), stands(g, w, o, p))
+    (vec2(0.0), here)
+}
+
+/// Whether a body at `p`, on ground too steep to stand on, gets off it by going to `q`: down, or
+/// onto less steep ground, and not over the edge or into deep water. What stops a body for
+/// another reason (the edge, deep water) still stops it.
+fn steps_off<G: Ground>(g: G, w: Water, o: Obstacles, p: vec2, q: vec2) -> bool {
+    let s = slope(g, p)
+    if s <= STEEPEST {
+        return false
+    }
+    let up = g.height(q.x, q.y)
+    if g.past_edge(q) > -EDGE || mere_depth(w, q, up) > DEEP || o.depth(q) > DEEP {
+        return false
+    }
+    slope(g, q) < s || up < g.height(p.x, p.y)
 }
 
 /// How fast a player goes at `p` (0 can't stand there): the ground's `pace`, slowed in a stream's
@@ -391,9 +412,9 @@ pub fn stands<G: Ground>(g: G, w: Water, o: Obstacles, p: vec2) -> f32 {
 
 // ---- ways on foot -------------------------------------------------------------------------------
 
-/// Where a player can stand on a grid of `cell` m (`walkable_of`): each cell's middle stands
-/// (`stands`) with room for a body a little wider than a player's (logs, walls and thickets
-/// close the cells along them).
+/// Where a player can stand on a grid of `cell` m (`walkable_of`): each cell stands (`stands`,
+/// at its middle, and on steep ground at the middles of its sides too) with room for a body a
+/// little wider than a player's (logs, walls and thickets close the cells along them).
 pub struct Walkable {
     pub grid: Grid,
     pub ok: Vec<bool>,
@@ -418,7 +439,7 @@ pub fn walkable_of<G: Ground>(
         r.ok = Vec::with_capacity(grid.nx)
         for i in 0..grid.nx {
             let p = grid.centre(r.j * grid.nx + i)
-            r.ok.push(stands(g, w, o, p) > 0.0 && !o.blocked(p, BODY + CLEAR))
+            r.ok.push(cell_stands(g, w, o, p, grid.cell) && !o.blocked(p, BODY + CLEAR))
         }
     })
     var ok: Vec<bool> = Vec::with_capacity(grid.cells())
@@ -426,6 +447,29 @@ pub fn walkable_of<G: Ground>(
         ok.append(mut r.ok)
     }
     Walkable { grid, ok }
+}
+
+/// Ground steeper than this (rise over run) at a cell's middle is tested at the middles of the
+/// cell's sides too: a band too steep to stand on can lie between two cells' middles, and a way
+/// planned across them would lead a player onto it.
+const ROUGH: f32 = 0.5
+
+/// Whether a player stands in the cell of `cell` m round `p`: at its middle, and where the ground
+/// there is steep (`ROUGH`), at the middles of its four sides, which a way crosses.
+fn cell_stands<G: Ground>(g: G, w: Water, o: Obstacles, p: vec2, cell: f32) -> bool {
+    if stands(g, w, o, p) == 0.0 {
+        return false
+    }
+    if slope(g, p) <= ROUGH {
+        return true
+    }
+    let h = 0.5 * cell
+    for d in [vec2(h, 0.0), vec2(-h, 0.0), vec2(0.0, h), vec2(0.0, -h)] {
+        if stands(g, w, o, p + d) == 0.0 {
+            return false
+        }
+    }
+    true
 }
 
 /// A row of the mask, as a helper works it out.
@@ -620,4 +664,79 @@ impl Walkable {
         }
         (out, missed)
     }
+}
+
+// ---- tests --------------------------------------------------------------------------------------
+
+/// Ground for the tests: level, but rising at `rise` (rise over run) from x = `from` to x = `to`.
+struct Band: Copy {
+    from: f32,
+    to: f32,
+    rise: f32,
+}
+
+impl Ground for Band {
+    fn height(self, x: f32, z: f32) -> f32 {
+        self.rise * (clamp(x, self.from, self.to) - self.from)
+    }
+
+    fn past_edge(self, p: vec2) -> f32 {
+        -100.0
+    }
+
+    fn rock(self, p: vec2) -> f32 {
+        0.0
+    }
+}
+
+/// No water, and nothing standing on the ground, over 20 m by 20 m.
+fn dry() -> (Water, Obstacles) {
+    let water = Water {
+        meres: [vec4(0.0), vec4(0.0)],
+        springs: [vec2(0.0), ..vec2(0.0)],
+        spring_count: 0,
+        falls: [vec2(0.0), vec2(0.0)],
+    }
+    let nothing: Vec<Obstacle> = Vec::new()
+    (water, Obstacles::of(nothing, vec2(0.0), vec2(20.0)))
+}
+
+/// A band too steep to stand on that lies between two cells' middles closes the cells beside it,
+/// so no way crosses it (the floor's walk was led onto one across the crag's talus); a band a
+/// player can stand on is crossed. The band, 2.2 m wide at 0.95, is too steep (`slope` over a
+/// metre each way) only within 0.2 m of x = 11, which no cell's middle (x = 10.5, 11.5) is.
+@test
+fn a_way_doesnt_cross_a_steep_band_between_two_cells() {
+    let (w, o) = dry()
+    let steep = Band { from: 9.9, to: 12.1, rise: 0.95 }
+    assert(stands(steep, w, o, vec2(10.5, 5.0)) > 0.0, "the cell west of the band stands")
+    assert(stands(steep, w, o, vec2(11.5, 5.0)) > 0.0, "the cell east of the band stands")
+    assert(stands(steep, w, o, vec2(11.0, 5.0)) == 0.0, "the band's middle doesn't")
+    let mask = walkable_of(steep, w, o, vec2(0.0), vec2(20.0), 1.0)
+    let way = mask.way(vec2(5.0, 5.0), vec2(15.0, 5.0))
+    assert(way.is_empty(), f"a way of {way.len()} cells crosses the band")
+    let gentle = Band { from: 9.9, to: 12.1, rise: 0.8 }
+    let crossed = walkable_of(gentle, w, o, vec2(0.0), vec2(20.0), 1.0)
+    assert(!crossed.way(vec2(5.0, 5.0), vec2(15.0, 5.0)).is_empty(), "a gentle band is crossed")
+}
+
+/// A body on ground too steep to stand on steps off it, down, but not up it (the floor's walk
+/// stopped for good on the crag's talus); one that stands is still held back from ground too
+/// steep.
+@test
+fn a_body_on_ground_too_steep_steps_off_it() {
+    let (w, o) = dry()
+    let g = Band { from: 5.0, to: 15.0, rise: 1.2 }
+    let at = vec2(10.0, 10.0)
+    assert(stands(g, w, o, at) == 0.0, "the slope is too steep to stand on")
+    let (down, _) = step(g, w, o, at, vec2(-0.1, 0.0), BODY)
+    assert(length(down - vec2(-0.1, 0.0)) < 1.0e-5, f"it stepped {down} down the slope")
+    let (up, _) = step(g, w, o, at, vec2(0.1, 0.0), BODY)
+    assert(length(up) < 1.0e-5, f"it stepped {up} up the slope")
+    // Below the slope (`slope` is over a metre each way, so it steepens from x = 4): a body that
+    // stands walks on until the next step would be too steep (past x = 5.5), and stops there.
+    let (on, _) = step(g, w, o, vec2(4.0, 10.0), vec2(0.1, 0.0), BODY)
+    assert(length(on) > 0.05, "a body below the slope walks toward it")
+    let (held, _) = step(g, w, o, vec2(5.45, 10.0), vec2(0.1, 0.0), BODY)
+    assert(length(held) < 1.0e-5, f"a body that stands stepped {held} onto ground too steep")
 }
