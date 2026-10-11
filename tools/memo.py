@@ -66,10 +66,10 @@ SLOW = 5.0
 KEEP_DAYS = 14
 
 VERSION = "v1"
-# Part of every entry's key. Change it with any change to what an entry keeps or how it is
-# matched (what a trace gives, which inputs and sources count, the keys, the builds' check), so
-# that the entries made before are not used; a change to anything else here keeps them.
-MEANING = "2026-10-11.1"
+# Part of every entry's key: the code that decides what an entry keeps and how it is matched
+# (`meaning`, set once this file is read), so the entries made before a change to it are not
+# used, and a change to anything else here keeps them.
+MEANING = None
 
 
 def sha(data):
@@ -213,6 +213,13 @@ def touched(log):
     return seen
 
 
+def unplaced(seen):
+    """Whether a run read a relative path its trace doesn't say the directory of (a call with no
+    directory descriptor, after a `chdir`, as `mkdir -p` does): such a path can't be checked
+    again. (What it wrote isn't an input.)"""
+    return any(how != "write" and not os.path.isabs(p) for p, how in seen.items())
+
+
 class Trace:
     """What a test's trace says beyond the paths it touched: the programs it ran, and the paths
     touched only while one of its builds ran (between `recorded_build`'s marks; builds on other
@@ -283,7 +290,7 @@ class Inputs:
         # The checkout's files are inputs wherever it is (in /tmp, say), its target/ aside, and a
         # package's constants cache (`build/consts`, keyed by each constant's code and inputs).
         if under(self.root):
-            if f"{os.sep}build{os.sep}consts" in path[len(self.root):] + os.sep:
+            if f"{os.sep}build{os.sep}consts{os.sep}" in path[len(self.root):] + os.sep:
                 return False
             return not any(under(i) for i in self.ignore if i.startswith(self.root + os.sep))
         return not any(under(i) for i in self.ignore)
@@ -297,6 +304,19 @@ class Inputs:
 
     def path(self, name):
         return os.path.join(self.root, name[5:]) if name.startswith("repo:") else name
+
+    def changed_since(self, seen, since):
+        """Whether a path touched and not written was changed at or after `since` (a time): while
+        a run that read it ran, so what it read may not be what it is now."""
+        for path, how in seen.items():
+            if how == "write" or not self.kept(path):
+                continue
+            try:
+                if os.stat(path).st_mtime >= since:
+                    return True
+            except OSError:
+                pass
+        return False
 
     def of(self, seen, digests):
         """The entry's inputs: {name: state} for each path touched and not written."""
@@ -669,7 +689,17 @@ class Store:
         write_atomically(os.path.join(self.entries_dir(test, rust), sha(body)[:24] + ".json"), body)
 
     def prune(self):
-        """Removes the entries and builds not used or made for KEEP_DAYS days."""
+        """Removes the entries and builds not used or made for KEEP_DAYS days: once a day (a walk
+        of the store takes half a second)."""
+        mark = os.path.join(self.dir, ".pruned")
+        try:
+            if time.time() - os.path.getmtime(mark) < 86400:
+                return
+        except OSError:
+            pass
+        os.makedirs(self.dir, exist_ok=True)
+        with open(mark, "w"):
+            pass
         old = time.time() - KEEP_DAYS * 86400
         for top in (os.path.join(self.dir, "entries"), os.path.join(self.dir, "builds")):
             for dirpath, dirnames, filenames in os.walk(top, topdown=False):
@@ -812,15 +842,18 @@ class Rebuilds:
         if m is not None:
             command = ["strace", "-f", "--seccomp-bpf", "-qq", "-y", "-e", "trace=%file", "-o",
                        log, *command]
+        started = time.time()
         r = subprocess.run(command, cwd=self.root, capture_output=True)
         files = self.files_hash(dir) if r.returncode == 0 else None
         if m is not None and files is not None:
             try:
                 with open(log, encoding="utf-8", errors="surrogateescape") as f:
                     seen = touched(f.read())
-                # What it wrote into its output aside (its `-o` is under target/, not kept).
-                inputs = m.inputs.of(seen, m.digests)
-                write_atomically(path, json.dumps({"inputs": inputs, "files": files}))
+                # Its inputs as they are after it (its `-o` is under target/, not kept), unless
+                # one changed while it ran.
+                if not unplaced(seen) and not m.inputs.changed_since(seen, started):
+                    inputs = m.inputs.of(seen, Digests())
+                    write_atomically(path, json.dumps({"inputs": inputs, "files": files}))
             except OSError:
                 pass
         return files
@@ -955,8 +988,13 @@ class Memo:
         return "built", builds
 
     def remember(self, test_id, program_dir, test, log_text, seconds, record_text=""):
-        """Keeps a passing run's entry, from its strace log and its builds' record."""
+        """Keeps a passing run's entry, from its strace log and its builds' record: unless a file
+        it read changed while it ran, or it named one the trace can't place. Its scope, or None
+        when it keeps none."""
+        started = time.time() - seconds
         trace = Trace(log_text)
+        if unplaced(trace.seen) or self.inputs.changed_since(trace.seen, started):
+            return None
         record = [json.loads(l) for l in record_text.splitlines() if l.strip()]
         scope, builds = self.scope_of(test_id, program_dir, test, trace, record)
         seen = trace.seen
@@ -964,7 +1002,8 @@ class Memo:
             # What only the builds read is the builds' inputs: their files stand for them.
             seen = {p: h for p, h in seen.items()
                     if not (p in trace.in_builds_only and (is_wrela(p) or h in ("list", "stat")))}
-        inputs = self.inputs.of(seen, self.digests)
+        # As they are after it ran, not when the gate began.
+        inputs = self.inputs.of(seen, Digests())
         rust = self.rust(scope, test_id, program_dir, test)
         env = self.env_of(self.code_env_names(test_id, program_dir, test, inputs))
         self.store.save(test_id, rust, env, inputs, seconds, builds=builds)
@@ -1028,15 +1067,21 @@ def run_tests(logs, native_cache, mode, dir, args, parent):
             elif m["target"]["kind"] == ["bin"] and m["target"]["name"] == "wrela":
                 cli = m["executable"]  # built from the sources the tests are
     memo = Memo(root, target, dir, cli)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import runner
+    from resources import cpu_count
+
+    cores = cpu_count()
     # Each slow test's scratch directory (its target/tmp), kept after a failure to look at.
     alone_root = os.path.join(target, "tmp-alone")
     shutil.rmtree(alone_root, ignore_errors=True)
 
     def env_for(pkg):
-        # As cargo runs a test program: in its package's directory. Compiled code is kept across
-        # runs (wrela_host's cache). Four of a program's GPU tests share the GPU at a time.
+        # As tools/runner.py runs a program, for a slow test alone (its scratch is target/tmp,
+        # its own in its mount namespace).
         return {**os.environ, "CARGO_MANIFEST_DIR": pkg, "WRELA_NATIVE_CACHE": native_cache,
-                "WRELA_GPU_SHARED": "4", "WRELA_GPU_WAITS": f"{logs}/gpu-waits"}
+                "WRELA_GPU_SHARED": str(runner.gpu_shared(cores)),
+                "WRELA_GPU_WAITS": f"{logs}/gpu-waits"}
 
     def listed(exe, pkg, more):
         out = subprocess.run([exe, "--list", "--format", "terse", *args, *more], cwd=pkg,
@@ -1066,20 +1111,23 @@ def run_tests(logs, native_cache, mode, dir, args, parent):
     with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
         split_programs = list(pool.map(split, programs))
 
-    # The quick tests: every program at once, each test's time in libtest's JSON (`--report-time`,
-    # a stable libtest's unstable option: RUSTC_BOOTSTRAP). They start now, while the slow tests'
-    # memory is looked up beside them.
-    runs = []
-    for m, pkg, exe, _, prefix, skips, kept, _ in split_programs:
+    # The quick tests: every program at once (tools/runner.py's way, the end-to-end suite first),
+    # each test's time in libtest's JSON (`--report-time`, a stable libtest's unstable option:
+    # RUSTC_BOOTSTRAP). They start now, while the slow tests' memory is looked up beside them.
+    runs, scratch_root = [], runner.scratch_root()
+    scratches = {}
+    for m, pkg, exe, _, prefix, skips, kept, _ in sorted(split_programs,
+                                                          key=lambda p: not runner.is_first(p[0])):
         if not kept:
             continue
+        command, env, _, scratch = runner.start(m, scratch_root, logs, native_cache, cores)
         out = open(f"{logs}/run-{len(runs)}", "w+")
-        name = f"{m['target']['name']} ({m['target']['kind'][0]})"
         proc = subprocess.Popen(
-            [exe, *args, *skips, "-Z", "unstable-options", "--format", "json",
-             "--report-time"], cwd=pkg, env={**env_for(pkg), "RUSTC_BOOTSTRAP": "1"},
+            [*command, *args, *skips, "-Z", "unstable-options", "--format", "json",
+             "--report-time"], cwd=pkg, env={**env, "RUSTC_BOOTSTRAP": "1"},
             stdout=out, stderr=subprocess.STDOUT)
-        runs.append(("quick", name, proc, out, time.monotonic(), prefix))
+        scratches[prefix] = scratch
+        runs.append(("quick", runner.name_of(m), proc, out, time.monotonic(), prefix))
 
     # The slow tests remembered, or to run alone. Those remembered by their builds' files once the
     # builds are made again, all at once.
@@ -1119,7 +1167,6 @@ def run_tests(logs, native_cache, mode, dir, args, parent):
         started[test_id] = (n, program_dir, log, scratch, record)
         runs.append(("alone", n, proc, out, time.monotonic(), test_id))
 
-    cores = os.cpu_count() or 4
     failed, ran = False, 0
     waiting = list(runs)
     while todo and sum(1 for r in waiting if r[0] == "alone") < cores:
@@ -1175,9 +1222,11 @@ def run_tests(logs, native_cache, mode, dir, args, parent):
                         print(f"test {e['name']} failed")
                     if not failures:
                         print("\n".join(other))
-                    print(f"{name} failed")
-                elif passed and took >= 1:
-                    print(f"  {name}: {took:.1f}s")
+                    print(f"{name} failed; scratch kept at {scratches[extra]} (for six hours)")
+                else:
+                    shutil.rmtree(scratches[extra], ignore_errors=True)
+                    if passed and took >= 1:
+                        print(f"  {name}: {took:.1f}s")
             else:
                 n, program_dir, log, scratch, record = started[extra]
                 passed = re.search(r"test result: ok\. 1 passed", text) is not None
@@ -1194,10 +1243,11 @@ def run_tests(logs, native_cache, mode, dir, args, parent):
                             built = f.read()
                     except OSError:
                         built = ""
-                    memo.remember(extra, program_dir, n, text, took, built)
+                    kept = memo.remember(extra, program_dir, n, text, took, built)
                     memo.store.set_timing(extra, cpu[extra], alone=True)
                     shutil.rmtree(scratch, ignore_errors=True)
-                    print(f"  {name}: {took:.1f}s, alone ({cpu[extra]:.0f}s of CPU)")
+                    print(f"  {name}: {took:.1f}s, alone ({cpu[extra]:.0f}s of CPU)"
+                          + ("" if kept else "; not remembered: a file it read changed as it ran"))
                 if todo:
                     start_alone()
                     waiting.append(runs[-1])
@@ -1211,6 +1261,34 @@ def run_tests(logs, native_cache, mode, dir, args, parent):
     print(f"  {ran} tests passed")
     memo.store.prune()
     return 1 if failed or ran + len(remembered) == 0 else 0
+
+
+def meaning():
+    """A hash of the code that decides what an entry keeps and how it is matched: what a trace
+    gives, which inputs and sources count, the keys, the builds' check. Its syntax tree, without
+    comments or docstrings, so that a change to how it reads alone doesn't drop every entry."""
+    import ast
+    import inspect
+    import textwrap
+
+    deciding = [unescape, lines, events, touched, unplaced, Trace, Digests, Inputs, env_names,
+                Sources, Store.entries_dir, Store.find, Store.save, Rebuilds, Memo, is_wrela]
+    constants = [CALLS, WRITE_FLAGS, LINE.pattern, UNFINISHED.pattern, RESUMED.pattern,
+                 STRING.pattern, RESULT_PATH.pattern, BUILD_BEGIN, BUILD_END, ENV_NAMES,
+                 ENV_PREFIXES, ENV_NOT, COMPILE_ONLY, NAMES_COMPILER.pattern, SCOPES]
+    parts = [repr(sorted(c) if isinstance(c, (set, dict)) else c) for c in constants]
+    for o in deciding:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(o)))
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if isinstance(body, list) and body and isinstance(body[0], ast.Expr) and \
+                    isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+                node.body = body[1:] or [ast.Pass()]
+        parts.append(ast.dump(tree))
+    return sha("\n".join(parts))[:16]
+
+
+MEANING = meaning()
 
 
 if __name__ == "__main__":

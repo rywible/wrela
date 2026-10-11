@@ -11,9 +11,10 @@ use lit::{Lighting, sun_and_sky, through_air}
 use realize::{Mesh, SkinVertex, Tally}
 use render::{Look, skin_matrix}
 use std::gpu::{
-    ClipPosition, Flat, FragCoord, GlobalId, GpuBuffer, Slots, Unorm8x4, VertexIndex, buffer,
-    discard, dispatch,
+    ClipPosition, Cull, Flat, FragCoord, GlobalId, GpuBuffer, RenderPass, Slots, Unorm8x4,
+    VertexIndex, buffer, copy, discard, dispatch, draw, write,
 }
+use std::job::{Job, Step}
 use std::transform::{rotate_y, translate}
 use temporal::motion_of
 use view::{CREATURE, Camera}
@@ -216,4 +217,151 @@ pub fn character_shadow(
 ) -> ClipPosition {
     let sv = verts[v.index]
     ClipPosition { position: view * (skin_matrix(sv, palettes, 0) * vec4(sv.pos, 1.0)) }
+}
+
+/// A creature cast as a character (a floor's fawn, a fight's wolf): realized a slice a frame from
+/// the first frame it's wanted (`realize`), its colours through `look`; then drawn from its
+/// palette (`pose`) into the scene, the motion target (this frame's palette against the last)
+/// and, where it's `shadowed`, the moving shadow map.
+pub struct Cast<C, K: creature::Creature<C>, L: Look<C>> {
+    creature: K,
+    look: L,
+    how: look::CreatureLook,
+    slices: u32,
+    job: Option<Job<realize::realizing<C, K>>>,
+    pub realized: Option<Realized>,
+    palette: GpuBuffer<mat4>,
+    last: GpuBuffer<mat4>,
+    /// Whether it's drawn this frame, and whether it falls in the moving shadow map.
+    pub on: bool,
+    pub shadowed: bool,
+}
+
+/// `creature`, to be realized as `how` says, `slices` frames a slice, coloured by `look`.
+pub fn cast<C, K: creature::Creature<C>, L: Look<C>>(
+    creature: take K,
+    look: L,
+    how: look::CreatureLook,
+    slices: u32,
+) -> Cast<C, K, L> {
+    Cast {
+        creature,
+        look,
+        how,
+        slices,
+        job: None,
+        realized: None,
+        palette: buffer(creature::MAX_BONES),
+        last: buffer(creature::MAX_BONES),
+        on: false,
+        shadowed: false,
+    }
+}
+
+impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
+    /// A frame's slice of its realization (started the first time); nothing once it's realized.
+    pub fn realize(mut self) {
+        if self.realized.is_some() {
+            return
+        }
+        if self.job.is_none() {
+            let job: Job<realize::realizing<C, K>> = realize::realizing.start(self.how)
+            self.job = Some(take job)
+        }
+        match mut self.job {
+            Some(job) => match job.resume(self.creature, self.slices) {
+                Step::Yielded => {},
+                Step::Done(whole) => {
+                    let c = colours(whole.mesh, self.creature.field(), self.look, cell: 1cm)
+                    self.realized = Some(Realized { mesh: take whole.mesh, colours: c })
+                    self.job = None
+                },
+            },
+            None => {},
+        }
+    }
+
+    /// This frame's palette, `bones`; and whether it's in the moving shadow map. Where it wasn't
+    /// drawn last frame, or the render space moved (`moved`), the last palette is this one: no
+    /// place to move from.
+    pub fn pose(mut self, bones: [mat4; creature::MAX_BONES], shadowed: bool, moved: bool) {
+        copy(from: self.palette.items(), to: self.last.items_mut())
+        write(mut self.palette, 0, bones)
+        if !self.on || moved {
+            copy(from: self.palette.items(), to: self.last.items_mut())
+        }
+        self.on = true
+        self.shadowed = shadowed
+        self.realize()
+    }
+
+    /// Not drawn this frame.
+    pub fn hide(mut self) {
+        self.on = false
+    }
+
+    /// Its depth into the moving shadow map (`view`), where it's on and shadowed.
+    pub fn shadow<P: RenderPass>(self, pass: P, view: mat4) {
+        if let Some(c) = self.realized {
+            if self.on && self.shadowed {
+                draw(
+                    pass,
+                    character_shadow.bind(
+                        verts: c.mesh.verts.items(),
+                        palettes: self.palette.items(),
+                        view: view,
+                    ),
+                    vegetation::nothing,
+                    indices: c.mesh.quads.items(),
+                    indirect: c.mesh.draw.items(),
+                    depth_bias: shadow::CASTER,
+                )
+            }
+        }
+    }
+
+    /// It in the scene, lit by `lt`, its parts `parts`.
+    pub fn draw<P: RenderPass>(self, pass: P, lt: Lighting, cam: Camera, parts: PartOf) {
+        if let Some(c) = self.realized {
+            if self.on {
+                draw(
+                    pass,
+                    character.bind(
+                        verts: c.mesh.verts.items(),
+                        colours: c.colours.items(),
+                        palettes: self.palette.items(),
+                        parts: parts,
+                        cam: cam,
+                    ),
+                    character_shade.bind(lt),
+                    indices: c.mesh.quads.items(),
+                    indirect: c.mesh.draw.items(),
+                    cull: Cull::Back,
+                    depth: view::NEAREST,
+                )
+            }
+        }
+    }
+
+    /// Its motion: its palette against its last.
+    pub fn motion<P: RenderPass>(self, pass: P, cam: Camera) {
+        if let Some(c) = self.realized {
+            if self.on {
+                draw(
+                    pass,
+                    character_motion.bind(
+                        verts: c.mesh.verts.items(),
+                        palettes: self.palette.items(),
+                        last: self.last.items(),
+                        cam: cam,
+                    ),
+                    motion.bind(cam),
+                    indices: c.mesh.quads.items(),
+                    indirect: c.mesh.draw.items(),
+                    cull: Cull::Back,
+                    depth: view::SEEN,
+                )
+            }
+        }
+    }
 }
