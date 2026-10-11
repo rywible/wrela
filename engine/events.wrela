@@ -113,7 +113,10 @@ fn gale(
                     f.memory.disk(g, t.at + t.fall * (0.6 * t.tall), crown, Mark::Wind, year, s)
                     t.each_along(shelter.cell, |p, _| {
                         mark(shelter, mut down, p, STEM_SWATH, 1.0)
-                        f.memory.disk(g, p, STEM_SWATH, Mark::Wind, year, s)
+                    })
+                    // Every cell of the land the swath touches.
+                    t.each_along(g.cell, |p, _| {
+                        f.memory.disk(g, p, STEM_SWATH + 0.5 * g.cell, Mark::Wind, year, s)
                     })
                 }
             } else if draw < p + 0.25 * p * hold && !(t.cause == Cause::Snapped && t.died == year) {
@@ -696,6 +699,51 @@ fn a_gale_throws_the_windward_edge_and_crushes_the_young() {
         }
     }
     assert(marked > 100, f"the land remembers the gale in {marked} cells")
+}
+
+/// The ground remembers a thrown tree along its stem's whole length, where it lies.
+@test
+fn a_thrown_trees_stem_is_remembered_along_its_length() {
+    let land = open_land(60.0)
+    let g = land.grid
+    let habits = [test_habit(bark: 0.5, resin: 0.5, roots: 0.0)]
+    var trees: Vec<Tree> = Vec::new()
+    stand(
+        mut trees,
+        habits,
+        vec2(-20.0, -20.0),
+        vec2(20.0, 20.0),
+        apart: 8.0,
+        tall: 20.0,
+        girth: 0.3,
+    )
+    var f = test_fields(g)
+    gale(
+        mut trees,
+        land,
+        habits,
+        mut f,
+        vec2(0.0),
+        reach: 50.0,
+        share: 0.99,
+        dir: vec2(1.0, 0.0),
+        year: 100,
+        ei: 0,
+    )
+    var logs = 0
+    var missed = 0
+    for t in trees {
+        if t.state == State::Log && t.died == 100 {
+            logs += 1
+            t.each_along(0.5, |p, _| {
+                if g.holds(p) && f.memory.at(g.cell_at(p)).mark != Mark::Wind {
+                    missed += 1
+                }
+            })
+        }
+    }
+    assert(logs > 0, "no tree thrown")
+    assert(missed == 0, f"{missed} points along {logs} thrown stems not remembered")
 }
 
 /// A full gale throws or snaps nearly every tree in its core, sheltered or not: the gap it

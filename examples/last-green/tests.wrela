@@ -838,7 +838,8 @@ fn the_fire_and_the_gales_leave_what_they_did() {
             engine::place::EventKind::Storm { at, reach, .. } => {
                 let (marked, cells) = remembered(u, at, 0.6 * reach, Mark::Wind, e.year)
                 // A snapped stem stands as a snag, then falls and rots; a living tree's broken top
-                // is remembered too. Within its reach, some trees stood through it.
+                // is remembered too. Within its reach, some trees snapped and some stood through
+                // it (its whole reach: in its middle a full gale throws nearly all, roots and all).
                 var snapped = 0
                 var stood = 0
                 for t in u.trees {
