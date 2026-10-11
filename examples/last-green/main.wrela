@@ -20,7 +20,7 @@ use engine::paint::{
 }
 use engine::place::{Place, TILE}
 use engine::plant::{Plant, Wind, full, leaf_atlas}
-use engine::player::{Framing, third_person}
+use engine::player::{Arm, Focus, Framing, follow}
 use engine::present::Snapshots
 use engine::probes::{Baked, Trace, grid}
 use engine::run::run
@@ -364,6 +364,8 @@ pub struct Floor {
     settled: u32,
     off: Flags<System>,
     framing: Framing,
+    /// The camera's arm as it was last frame (`engine::player::follow`).
+    arm: Arm,
     /// The lookbook's shot the camera's held on (none: the player's), since when, and one being
     /// typed (`keys`).
     shot: Option<u32>,
@@ -574,6 +576,7 @@ pub fn init() -> Floor {
         settled: 0,
         off: Flags::none(),
         framing: Framing {},
+        arm: Arm {},
         shot: None,
         held: None,
         shot_from: 0.0,
@@ -2058,7 +2061,18 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
             (e - o, a - o, shot.fovy)
         },
         None => {
-            let (e, a) = third_person(s.framing, feet, c.yaw, c.pitch, OBSTACLES, o2, ground_r)
+            let (e, a) = follow(
+                mut s.arm,
+                gap / 1000.0,
+                s.framing,
+                feet,
+                yaw: c.yaw,
+                pitch: c.pitch,
+                focus: Focus {},
+                o: OBSTACLES,
+                o_from: o2,
+                height: ground_r,
+            )
             (e, a, s.framing.fovy)
         },
     }
