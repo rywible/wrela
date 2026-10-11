@@ -215,8 +215,8 @@ fn wisp(v: VertexIndex, wisps: [vec4], view: View) -> Wispel {
     let along = if sl > 1.0e-3 { speed / sl } else { vec3(0.0, 1.0, 0.0) }
     var side = cross(along, view.eye - at)
     side = if length(side) > 1.0e-6 { normalize(side) } else { vec3(1.0, 0.0, 0.0) }
-    let long = size * (1.0 + 0.6 * sl)
-    let p = at + side * (cu[corner] * size * 0.6) + along * (cv[corner] * long)
+    let long = size * (1.2 + 1.2 * sl)
+    let p = at + side * (cu[corner] * size * 0.45) + along * (cv[corner] * long)
     Wispel {
         clip: ClipPosition { position: view.view_proj * vec4(p, 1.0) },
         uv: vec2(cu[corner], cv[corner]),
@@ -293,7 +293,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let busy = c.act == Act::Slash || c.act == Act::Backslash
     let rate = AT_REST * (1.0 + 0.6 * c.speed + if busy { 2.0 } else { 0.0 })
     let gone = c.gone()
-    let burst = if gone != s.was_gone { 40 } else { 0 }
+    let burst = if gone != s.was_gone { 24 } else { 0 }
     s.was_gone = gone
     s.dark.step(cape, rate: if gone { 0.0 } else {
         rate
@@ -307,7 +307,9 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.cpu += since(start) * 1000.0
     s.frames += 1
     if s.frames % 120 == 0 {
-        print(f"the cape and the darkness: {s.cpu / f32(s.frames)} ms a frame on the CPU, {s.dark.wisps.len()} wisps")
+        print(
+            f"the cape and the darkness: {s.cpu / f32(s.frames)} ms a frame on the CPU, {s.dark.wisps.len()} wisps",
+        )
     }
     let wisp_count = s.dark.wisps.len()
     if wisp_count > 0 {

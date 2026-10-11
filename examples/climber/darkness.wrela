@@ -71,7 +71,7 @@ impl Darkness {
             speed: cloth * 0.35 + away * (0.15 + 0.2 * rand(n, 3)) + vec3(0.0, 0.35, 0.0),
             age: 0.0,
             life: 0.7 + 0.7 * rand(n, 4),
-            size: 0.04 + 0.05 * rand(n, 5),
+            size: 0.025 + 0.03 * rand(n, 5),
             from: c.at[k].y,
         }
         if self.wisps.len() < MOST {
