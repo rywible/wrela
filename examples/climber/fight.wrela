@@ -1,0 +1,1034 @@
+// The fight's simulation (#30): the climber against the wolf in the clearing, stepped on the
+// ticker's thread at 60 Hz (`engine::run`), deterministic, so a tick log replays to the same state
+// hash in both hosts.
+//
+// The climber is driven by a gamepad (a keyboard stands in): the left stick moves it relative to
+// the camera, the right stick turns the camera; East is a blink when tapped (gone, and there again
+// a few metres away) and a sprint when held; the right shoulder (or West) swings the sword, a
+// slash then a backslash. A press is buffered for a few ticks, so a move pressed late in another
+// starts when that one can be cancelled. Moves cost stamina, which comes back after a pause.
+//
+// The wolf is a sparring dummy on the engine's gait: it closes in, crouches (its tell), lunges
+// and bites, then recovers. The sword's edge hits it as a swept segment against capsules on its
+// body; its bite is a sphere at its head against a capsule up the climber's middle, who can't be
+// hurt in the blink's invulnerable ticks. A hit stops both for a few ticks (the hit stop).
+//
+//   wolf:  Prowl ──in range, facing──► Crouch (30) ──► Lunge (16: bites 3–12) ──► Recover (40)
+//            ▲                                                                        │
+//            └────────────────────────── Flinch (20) ◄── a blade hit ─────────────────┘
+//                                         Down (200) when its health runs out, then up again
+
+use engine::gait::{Body, Path, Walk, Walker, body, body_frame, stand, step}
+use engine::creature::Skeleton
+use engine::present::short_way
+use engine::run::{Asks, TickInput}
+use engine::sim::{SimState, Tick}
+use body::{BODY_HIGH, BODY_LOW, BODY_RADIUS, GUARD_AT, POINT_AT}
+use moves::{Act, BLINK_GONE, Pose, REST, drift_rate, frames, locomotion, pose}
+use clearing::scene::Ground
+use std::field::Blend
+use std::hash::StateHash
+use std::input::{Event, Key, PadAxis, PadButton}
+use std::math::{PI, TAU}
+use std::serialize::Serialize
+use std::transform::rotate_y
+
+// ---- the controls ------------------------------------------------------------------------------
+
+/// What the player holds, as the tick's records left it: the pad's sticks and buttons, and the
+/// keys that stand in for them.
+pub struct Controls: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    /// The left stick (x right, y up) and the right (x right, y up), from the pad.
+    pub move_pad: vec2 = vec2(0.0),
+    pub look_pad: vec2 = vec2(0.0),
+    /// East (blink, sprint) and the attack (right shoulder or West), from the pad.
+    pub east_pad: bool = false,
+    pub attack_pad: bool = false,
+    pub west_pad: bool = false,
+    /// The keys held: W, A, S, D, the arrows (left, right, up, down), Space and J, a bit each.
+    pub keys: u32 = 0,
+}
+
+const K_W: u32 = 1
+const K_A: u32 = 2
+const K_S: u32 = 4
+const K_D: u32 = 8
+const K_LEFT: u32 = 16
+const K_RIGHT: u32 = 32
+const K_UP: u32 = 64
+const K_DOWN: u32 = 128
+const K_SPACE: u32 = 256
+const K_J: u32 = 512
+
+fn key_bit(k: Key) -> u32 {
+    match k {
+        Key::W => K_W,
+        Key::A => K_A,
+        Key::S => K_S,
+        Key::D => K_D,
+        Key::Left => K_LEFT,
+        Key::Right => K_RIGHT,
+        Key::Up => K_UP,
+        Key::Down => K_DOWN,
+        Key::Space => K_SPACE,
+        Key::J => K_J,
+        _ => 0,
+    }
+}
+
+/// How far a stick moves before it counts (radially), and its travel past that, from 0 to 1.
+const DEAD: f32 = 0.15
+
+fn dead_zone(v: vec2) -> vec2 {
+    let m = length(v)
+    if m <= DEAD {
+        return vec2(0.0)
+    }
+    v * (min((m - DEAD) / (1.0 - DEAD), 1.0) / m)
+}
+
+impl Controls {
+    /// After event `e` (pad 0's and the keyboard's).
+    pub fn update(mut self, e: Event) {
+        match e {
+            Event::PadAxis { pad, axis, value } => {
+                if pad == 0 {
+                    // The pad's y is down positive; the controls' up.
+                    match axis {
+                        PadAxis::LeftX => self.move_pad.x = value,
+                        PadAxis::LeftY => self.move_pad.y = -value,
+                        PadAxis::RightX => self.look_pad.x = value,
+                        PadAxis::RightY => self.look_pad.y = -value,
+                    }
+                }
+            },
+            Event::PadButton { pad, button, pressed, .. } => {
+                if pad == 0 {
+                    if button == PadButton::East {
+                        self.east_pad = pressed
+                    }
+                    if button == PadButton::RightShoulder {
+                        self.attack_pad = pressed
+                    }
+                    if button == PadButton::West {
+                        self.west_pad = pressed
+                    }
+                }
+            },
+            Event::KeyDown { key, repeat, .. } => {
+                if !repeat {
+                    self.keys = self.keys | key_bit(key)
+                }
+            },
+            Event::KeyUp { key, .. } => {
+                self.keys = self.keys & !key_bit(key)
+            },
+            _ => {},
+        }
+    }
+
+    fn held(self, bit: u32) -> bool {
+        self.keys & bit != 0
+    }
+
+    fn axis(self, plus: u32, minus: u32) -> f32 {
+        (if self.held(plus) { 1.0 } else { 0.0 }) - (if self.held(minus) { 1.0 } else { 0.0 })
+    }
+
+    /// The move stick, past its dead zone (the keys at full tilt).
+    pub fn moving(self) -> vec2 {
+        let k = vec2(self.axis(K_D, K_A), self.axis(K_W, K_S))
+        if dot(k, k) > 0.0 {
+            return normalize(k)
+        }
+        dead_zone(self.move_pad)
+    }
+
+    /// The look stick, past its dead zone.
+    pub fn looking(self) -> vec2 {
+        let k = vec2(self.axis(K_RIGHT, K_LEFT), self.axis(K_UP, K_DOWN))
+        if dot(k, k) > 0.0 {
+            return k
+        }
+        dead_zone(self.look_pad)
+    }
+
+    pub fn east(self) -> bool {
+        self.east_pad || self.held(K_SPACE)
+    }
+
+    pub fn attack(self) -> bool {
+        self.attack_pad || self.west_pad || self.held(K_J)
+    }
+}
+
+// ---- the climber -----------------------------------------------------------------------------------
+
+/// The climber as the sim has it.
+pub struct Climber: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    /// Where it stands on the ground (the middle of its hem), which way it faces, and how fast it
+    /// glides (m/s).
+    pub at: vec3,
+    pub heading: f32,
+    pub speed: f32,
+    /// How fast its speed changes (m/s², eased) and how fast it turns (rad/s, eased): its lean;
+    /// its float's phase (0 to 1); and how far its sword has come to the guard (0 to 1).
+    pub accel: f32,
+    pub turning: f32,
+    pub drift: f32,
+    pub ready: f32,
+    /// What it's doing, for how many ticks, and which way the move carries it (on the plane).
+    pub act: Act,
+    pub t: u32,
+    pub going: vec2,
+    /// Its pose as the move began, and how many ticks it has blended from it.
+    pub from: Pose,
+    pub fade: u32,
+    /// A move pressed and waiting for its turn, and for how many more ticks it waits.
+    pub buffered: Act,
+    pub buffer: u32,
+    /// How long East has been held (ticks), and whether it's a sprint.
+    pub east_held: u32,
+    pub sprint: bool,
+    pub stamina: f32,
+    /// Ticks since stamina was last spent.
+    pub rested: u32,
+    pub health: f32,
+    /// Whether the move in hand has hit already.
+    pub landed: bool,
+}
+
+pub const STAMINA: f32 = 100.0
+pub const HEALTH: f32 = 100.0
+
+/// Its speeds (m/s): a walk's pace, a run's (the stick all the way), a sprint's (East held).
+pub const WALK_SPEED: f32 = 1.7
+pub const RUN_SPEED: f32 = 4.2
+pub const SPRINT_SPEED: f32 = 5.6
+
+/// How fast it gets up to speed and stops (m/s²).
+const ACCELERATION: f32 = 12.0
+const DECELERATION: f32 = 16.0
+
+/// How long a press waits for its turn (ticks), and how long East is a tap (ticks).
+pub const BUFFER: u32 = 12
+pub const TAP: u32 = 14
+
+/// Stamina comes back at 45 a second after half a second unspent; a sprint spends 14 a second.
+const REGEN: f32 = 45.0
+const REGEN_AFTER: u32 = 30
+const SPRINT_COST: f32 = 14.0
+
+fn new_climber(at: vec2, heading: f32) -> Climber {
+    Climber {
+        at: vec3(at.x, Ground {}.height(at.x, at.y), at.y),
+        heading,
+        speed: 0.0,
+        accel: 0.0,
+        turning: 0.0,
+        drift: 0.0,
+        ready: 0.0,
+        act: Act::Free,
+        t: 0,
+        going: vec2(sin(heading), cos(heading)),
+        from: REST,
+        fade: 0,
+        buffered: Act::Free,
+        buffer: 0,
+        east_held: 0,
+        sprint: false,
+        stamina: STAMINA,
+        rested: 0,
+        health: HEALTH,
+        landed: false,
+    }
+}
+
+/// How many ticks a blend into `a` takes.
+fn fade_into(a: Act) -> u32 {
+    match a {
+        Act::Free => 8,
+        Act::Slash => 4,
+        Act::Backslash => 3,
+        Act::Blink => 2,
+        Act::Hurt => 2,
+        Act::Down => 6,
+    }
+}
+
+/// The direction (on the plane) the stick points, as the camera sees it: up the screen is the
+/// camera's forward.
+pub fn on_screen(stick: vec2, yaw: f32) -> vec2 {
+    let ahead = vec2(sin(yaw), cos(yaw))
+    let right = vec2(-cos(yaw), sin(yaw))
+    ahead * stick.y + right * stick.x
+}
+
+impl Climber {
+    pub fn forward(self) -> vec2 {
+        vec2(sin(self.heading), cos(self.heading))
+    }
+
+    /// Starts `a`, blending from its pose now.
+    pub fn start(mut self, a: Act) {
+        self.from = self.pose(0.0)
+        self.fade = 0
+        self.act = a
+        self.t = 0
+        self.landed = false
+        self.going = self.forward()
+        let f = frames(a)
+        if f.stamina > 0.0 {
+            self.stamina -= f.stamina
+            self.rested = 0
+        }
+    }
+
+    /// Whether it's free to start a move now: free, or late enough in its move.
+    fn can_start(self) -> bool {
+        self.act == Act::Free || (self.act != Act::Down && self.t >= frames(self.act).cancel)
+    }
+
+    /// Whether it can't be hurt now (the blink's invulnerable ticks, or down).
+    pub fn invulnerable(self) -> bool {
+        self.act == Act::Down ||
+            (self.act == Act::Blink && frames(Act::Blink).is_invulnerable(self.t))
+    }
+
+    /// Whether it's between its two places in a blink (drawn as gone).
+    pub fn gone(self) -> bool {
+        self.act == Act::Blink && self.t >= BLINK_GONE.x && self.t < BLINK_GONE.y
+    }
+
+    /// The pose it's drawn in, and hits with: its move's (or its glide's), blended from where the
+    /// move began for the blend's first ticks; `sub` ticks on (0 to 1, between ticks).
+    pub fn pose(self, sub: f32) -> Pose {
+        let now = if self.act == Act::Free {
+            locomotion(self.ready, self.speed, self.accel, self.turning, self.drift)
+        } else {
+            pose(self.act, f32(self.t) + sub)
+        }
+        let f = (f32(self.fade) + sub) / f32(fade_into(self.act))
+        if f >= 1.0 {
+            return now
+        }
+        self.from.blend(now, f * f * (3.0 - 2.0 * f))
+    }
+}
+
+// ---- the wolf ----------------------------------------------------------------------------------------
+
+/// What the wolf is doing.
+pub enum Mood: Copy + Eq + Plain + StateHash + Serialize + SimState + Fieldless {
+    Prowl,
+    Crouch,
+    Lunge,
+    Recover,
+    Flinch,
+    Down,
+}
+
+/// How long each of its moods lasts (ticks), and the bite's active ticks within the lunge.
+pub const CROUCH: u32 = 30
+pub const LUNGE: u32 = 16
+pub const BITE: vec2u = vec2u(3, 12)
+pub const RECOVER: u32 = 40
+pub const FLINCH: u32 = 20
+pub const WOLF_DOWN: u32 = 200
+pub const WOLF_HEALTH: f32 = 100.0
+pub const BITE_DAMAGE: f32 = 25.0
+
+pub struct Wolf: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub walker: Walker,
+    pub mood: Mood,
+    pub t: u32,
+    pub health: f32,
+    /// Where the lunge goes (on the plane), whether it has bitten, and whether the climber
+    /// blinked through it.
+    pub aim: vec2,
+    pub bit: bool,
+    pub dodged: bool,
+    /// Ticks before it may crouch again.
+    pub wait: u32,
+    /// Which way the last hit pushed it (on the plane).
+    pub pushed: vec2,
+    /// Where it circles out to, and for how many more ticks.
+    pub goal: vec2,
+    pub circle: u32,
+}
+
+/// The wolf's skeleton, and its body for walking: springs on its neck and tail. Found once.
+pub const WOLF_SKELETON: Skeleton = wolf::creature::skeleton()
+pub const WOLF_BODY: Body = wolf_body()
+
+fn wolf_body() -> Body {
+    let s = WOLF_SKELETON
+    body(
+        s,
+        [s.find("neck"), s.find("head")],
+        [s.find("tail 0"), s.find("tail 1"), s.find("tail 2"), s.find("tail 3")],
+        head_k: 90.0,
+        tail_k: 30.0,
+    )
+}
+
+/// How it walks when it prowls, when it turns where it stands, and how it bounds when it lunges.
+const PROWL = Walk { speed: 1.3, steer: 2.2, look_ahead: 1.2 }
+const TURN = Walk { speed: 0.45, steer: 3.0, look_ahead: 1.0 }
+const BOUND = Walk {
+    speed: 6.5,
+    duty: 0.35,
+    lift: 0.16,
+    offsets: [0.0, 0.08, 0.5, 0.58],
+    steer: 0.3,
+    look_ahead: 3.0,
+}
+
+/// Where it keeps from the climber (m), and how near and far a lunge starts.
+const KEEP: f32 = 2.6
+const LUNGE_FROM: vec2 = vec2(1.4, 3.6)
+
+/// A straight path: from a point, along a direction, so long.
+struct Toward: Copy {
+    from: vec2,
+    dir: vec2,
+    length: f32,
+}
+
+impl Path for Toward {
+    fn at(self, s: f32) -> vec2 {
+        self.from + self.dir * s
+    }
+
+    fn length(self) -> f32 {
+        self.length
+    }
+}
+
+impl Wolf {
+    pub fn pos(self) -> vec2 {
+        self.walker.root.pos.xz
+    }
+
+    pub fn forward(self) -> vec2 {
+        vec2(sin(self.walker.root.heading), cos(self.walker.root.heading))
+    }
+
+    /// A rest joint of its skeleton, where its body has it now (its legs aside).
+    pub fn joint(self, rest: vec3) -> vec3 {
+        (body_frame(self.walker) * vec4(rest, 1.0)).xyz
+    }
+
+    /// Its bite: a sphere at its jaws.
+    pub fn jaws(self) -> vec3 {
+        self.joint(wolf::creature::J_HEAD + vec3(0.0, -0.05, 0.2))
+    }
+}
+
+pub const BITE_RADIUS: f32 = 0.28
+
+pub fn new_wolf(at: vec2, heading: f32) -> Wolf {
+    Wolf {
+        walker: stand(Ground {}, WOLF_BODY, at, heading),
+        mood: Mood::Prowl,
+        t: 0,
+        health: WOLF_HEALTH,
+        aim: vec2(0.0),
+        bit: false,
+        dodged: false,
+        wait: 90,
+        pushed: vec2(0.0),
+        goal: at,
+        circle: 0,
+    }
+}
+
+// ---- the world -----------------------------------------------------------------------------------------
+
+/// What happened, counted: for the tests, and for the frames (a count that changes is an event).
+pub struct Tally: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub swings: u32 = 0,
+    pub hits: u32 = 0,
+    pub lunges: u32 = 0,
+    pub bites: u32 = 0,
+    pub dodged: u32 = 0,
+    pub blinks: u32 = 0,
+    pub wolf_downs: u32 = 0,
+    pub climber_downs: u32 = 0,
+}
+
+pub struct World: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub climber: Climber,
+    pub wolf: Wolf,
+    pub controls: Controls,
+    /// The camera's turn about the climber (its yaw: where it looks, from +z toward +x) and its
+    /// pitch: the sim's, as the stick moves relative to it.
+    pub yaw: f32,
+    pub pitch: f32,
+    /// Ticks of hit stop left: while it lasts, the climber and the wolf hold still.
+    pub stop: u32,
+    pub tally: Tally,
+    pub ticks: u32,
+}
+
+impl Asks for World {
+    type Ask = u32
+    type Answer = u32
+
+    @deterministic
+    fn asks(self, tick: Tick) -> Vec<(u32, Tick)> {
+        Vec::new()
+    }
+
+    @deterministic
+    fn work(ask: u32) -> u32 {
+        ask
+    }
+}
+
+/// Where the fight starts: the climber on the worn track, the wolf ahead in the meadow, facing it.
+pub const CLIMBER_START = vec2(-2.5, 19.5)
+pub const WOLF_START = vec2(0.5, 26.5)
+
+pub fn spawn() -> World {
+    let to = WOLF_START - CLIMBER_START
+    let heading = atan2(to.x, to.y)
+    World {
+        climber: new_climber(CLIMBER_START, heading),
+        wolf: new_wolf(WOLF_START, heading + PI),
+        controls: Controls {},
+        yaw: heading,
+        pitch: 0.18,
+        stop: 0,
+        tally: Tally {},
+        ticks: 0,
+    }
+}
+
+/// How many ticks a hit stops the fight for.
+pub const HIT_STOP: u32 = 5
+
+/// One tick: the controls from the tick's records; the camera; then, unless a hit stopped them,
+/// the climber, the wolf, the blade against the wolf, the bite against the climber, and the
+/// two kept apart.
+@deterministic
+pub fn tick(w: mut World, input: TickInput<World>) {
+    let dt = input.dt
+    // The climber's presses are read even in a hit stop (they're buffered): each event's, so a
+    // press and its release in one tick count.
+    held(mut w.climber)
+    for e in input.records {
+        let before = w.controls
+        w.controls.update(e)
+        press(mut w.climber, w.controls, before)
+    }
+    w.climber.sprint = w.controls.east() && w.climber.east_held >= TAP && w.climber.stamina > 0.0
+    w.ticks += 1
+    let look = w.controls.looking()
+    w.yaw += look.x * 2.8 * dt
+    w.pitch = clamp(w.pitch - look.y * 1.6 * dt, -0.25, 0.9)
+    if w.stop > 0 {
+        w.stop -= 1
+        return
+    }
+    let wolf_at = w.wolf.pos()
+    let near = engaged(w)
+    climber_step(mut w.climber, w.controls, w.yaw, wolf_at, near, dt, mut w.tally)
+    wolf_step(mut w.wolf, w.climber, dt, mut w.tally)
+    blade_hits(mut w)
+    bite(mut w)
+    keep_apart(mut w.climber, w.wolf)
+    // Near the wolf, the camera turns to keep it ahead, past the climber; elsewhere it drifts
+    // behind the climber as it runs. The right stick overrides both.
+    if length(look) < 0.1 {
+        if engaged(w) {
+            let to = w.wolf.pos() - w.climber.at.xz
+            let d = short_way(atan2(to.x, to.y) - w.yaw, TAU)
+            w.yaw += d * min(dt * 3.0, 1.0)
+        } else if w.climber.speed > 0.5 {
+            let d = short_way(w.climber.heading - w.yaw, TAU)
+            w.yaw += d * min(dt * 0.6 * w.climber.speed / RUN_SPEED, 1.0)
+        }
+    }
+}
+
+/// How near the wolf is when the camera keeps it in view (m).
+const ENGAGE = 7.0
+
+/// Whether the climber and the wolf are fighting: the wolf up and within `ENGAGE`.
+pub fn engaged(w: World) -> bool {
+    w.wolf.mood != Mood::Down && length(w.wolf.pos() - w.climber.at.xz) < ENGAGE
+}
+
+/// A tick of what's held: a buffered press waits a tick less, and East has been held a tick
+/// longer (a sprint, past a tap's length).
+fn held(c: mut Climber) {
+    if c.buffer > 0 {
+        c.buffer -= 1
+        if c.buffer == 0 {
+            c.buffered = Act::Free
+        }
+    }
+    if c.east_held > 0 {
+        c.east_held += 1
+    }
+}
+
+/// What an event pressed: an attack, or East let go after a tap (a blink), buffered.
+fn press(c: mut Climber, now: Controls, before: Controls) {
+    if now.attack() && !before.attack() {
+        c.buffered = Act::Slash
+        c.buffer = BUFFER
+    }
+    if now.east() && !before.east() {
+        c.east_held = 1
+    }
+    if !now.east() && before.east() {
+        if c.east_held <= TAP {
+            c.buffered = Act::Blink
+            c.buffer = BUFFER
+        }
+        c.east_held = 0
+    }
+}
+
+/// The climber's tick: a buffered move started when it can be, the move's tick (its travel, and
+/// its turn toward the stick in its wind-up), or its glide (speed eased toward the stick's,
+/// turned toward it); its sword brought to the guard when the fight is `near`; stamina spent and
+/// regained.
+fn climber_step(
+    c: mut Climber,
+    ctl: Controls,
+    yaw: f32,
+    wolf: vec2,
+    near: bool,
+    dt: f32,
+    tally: mut Tally,
+) {
+    let stick = ctl.moving()
+    let wish = on_screen(stick, yaw)
+    if c.buffered != Act::Free && c.can_start() && c.stamina > 0.0 {
+        var a = c.buffered
+        // An attack after a slash is the backslash.
+        if a == Act::Slash && c.act == Act::Slash {
+            a = Act::Backslash
+        }
+        c.buffered = Act::Free
+        c.buffer = 0
+        // A blink goes where the stick points (straight back if it's let go), still facing as it
+        // was; an attack turns, in its wind-up, toward the wolf if it's near, else the stick.
+        c.start(a)
+        if a == Act::Blink {
+            c.going = if length(wish) > 0.3 { normalize(wish) } else { -c.forward() }
+            tally.blinks += 1
+        } else {
+            tally.swings += 1
+        }
+    }
+    let prev_speed = c.speed
+    let prev_heading = c.heading
+    if c.act == Act::Free {
+        let m = length(stick)
+        let target = if c.sprint && m > 0.2 {
+            SPRINT_SPEED
+        } else if m < 0.6 {
+            WALK_SPEED * m / 0.6
+        } else {
+            mix(WALK_SPEED, RUN_SPEED, (m - 0.6) / 0.4)
+        }
+        if m > 0.05 {
+            let want = atan2(wish.x, wish.y)
+            let d = short_way(want - c.heading, TAU)
+            // A reversal at speed brakes first, then turns.
+            let rate = mix(14.0, 7.0, smoothstep(WALK_SPEED, RUN_SPEED, c.speed))
+            c.heading += clamp(d, -rate * dt, rate * dt)
+        }
+        let target = target * max(cos(short_way(atan2(wish.x, wish.y) - c.heading, TAU)), 0.0)
+        let a = if target > c.speed { ACCELERATION } else { DECELERATION }
+        c.speed += clamp(target - c.speed, -a * dt, a * dt)
+        let f = c.forward()
+        c.at = c.at + vec3(f.x, 0.0, f.y) * (c.speed * dt)
+        if c.sprint && c.speed > RUN_SPEED {
+            c.stamina -= SPRINT_COST * dt
+            c.rested = 0
+        }
+    } else {
+        let f = frames(c.act)
+        if c.t < f.windup && f.turn > 0.0 {
+            // Toward the wolf when it's near (a soft lock), else the stick.
+            let to = wolf - c.at.xz
+            let target = if length(to) < 4.0 {
+                atan2(to.x, to.y)
+            } else if length(wish) > 0.3 {
+                atan2(wish.x, wish.y)
+            } else {
+                c.heading
+            }
+            let d = short_way(target - c.heading, TAU)
+            c.heading += clamp(d, -f.turn * dt, f.turn * dt)
+        }
+        let moved = f.travel * (f.travelled(f32(c.t + 1)) - f.travelled(f32(c.t)))
+        // A blink goes its own way; the rest carry the body the way it faces.
+        let way = if c.act == Act::Blink { c.going } else { c.forward() }
+        c.at = c.at + vec3(way.x, 0.0, way.y) * moved
+        c.speed = max(c.speed - DECELERATION * dt, 0.0)
+        c.t += 1
+        if c.t >= f.total {
+            if c.act == Act::Down {
+                c.health = HEALTH
+                c.stamina = STAMINA
+            }
+            c.start(Act::Free)
+        }
+    }
+    if c.act != Act::Free || c.fade < fade_into(c.act) {
+        c.fade += 1
+    }
+    c.at.y = Ground {}.height(c.at.x, c.at.z)
+    c.drift = fract(c.drift + drift_rate(c.speed) * dt)
+    let to_ready = if near { 1.0 } else { 0.0 }
+    c.ready += clamp(to_ready - c.ready, -dt * 1.5, dt * 4.0)
+    let ease = 1.0 - exp(-dt * 10.0)
+    c.accel += ((c.speed - prev_speed) / dt - c.accel) * ease
+    c.turning += (short_way(c.heading - prev_heading, TAU) / dt - c.turning) * ease
+    c.rested += 1
+    if c.rested > REGEN_AFTER && c.act == Act::Free && !c.sprint {
+        c.stamina = min(c.stamina + REGEN * dt, STAMINA)
+    }
+}
+
+/// The wolf's tick.
+fn wolf_step(w: mut Wolf, c: Climber, dt: f32, tally: mut Tally) {
+    let to = c.at.xz - w.pos()
+    let dist = length(to)
+    let dir = if dist > 1.0e-4 { to / dist } else { w.forward() }
+    let facing = short_way(atan2(dir.x, dir.y) - w.walker.root.heading, TAU)
+    let g = Ground {}
+    w.t += 1
+    if w.wait > 0 {
+        w.wait -= 1
+    }
+    w.walker.along = 0.0
+    match w.mood {
+        Mood::Prowl => {
+            // Toward the climber until it's KEEP away. Nearer than a lunge starts, it circles out
+            // to a point to the side and away (a wolf doesn't back off), then comes round again.
+            // Between, it turns toward the climber, stepping as it turns.
+            var walk = PROWL
+            var way = dir
+            var ahead = 0.0
+            if w.circle == 0 && dist < LUNGE_FROM.x {
+                let side = vec2(-dir.y, dir.x)
+                w.goal = c.at.xz + normalize(side * 0.9 - dir) * (KEEP + 0.8)
+                w.circle = 150
+            }
+            if w.circle > 0 {
+                w.circle -= 1
+                let off = w.goal - w.pos()
+                if length(off) < 0.5 {
+                    w.circle = 0
+                }
+                way = normalize(off)
+                ahead = length(off)
+            } else if dist > KEEP {
+                ahead = dist - KEEP
+            } else if abs(facing) > 0.2 {
+                walk = TURN
+                ahead = 1.0
+            }
+            let path = Toward { from: w.pos(), dir: way, length: ahead + walk.look_ahead }
+            let keep = w.walker.root.pos
+            step(
+                mut w.walker,
+                g,
+                path,
+                WOLF_BODY,
+                walk,
+                go: ahead > 0.05 && c.act != Act::Down,
+                dt: dt,
+            )
+            if walk == TURN {
+                // It turns where it stands: its feet step, its body stays, turning faster than
+                // the gait steers (2.4 rad/s in all).
+                w.walker.root.pos = keep
+                w.walker.root.heading += clamp(facing, -1.6 * dt, 1.6 * dt)
+            }
+            if w.wait == 0 &&
+                dist > LUNGE_FROM.x &&
+                dist < LUNGE_FROM.y &&
+                abs(facing) < 0.3 &&
+                c.act != Act::Down {
+                w.mood = Mood::Crouch
+                w.t = 0
+            }
+        },
+        Mood::Crouch => {
+            // Still, turning a little toward the climber.
+            w.walker.root.heading += clamp(facing, -0.8 * dt, 0.8 * dt)
+            step(
+                mut w.walker,
+                g,
+                Toward { from: w.pos(), dir, length: 0.0 },
+                WOLF_BODY,
+                PROWL,
+                go: false,
+                dt: dt,
+            )
+            if w.t >= CROUCH {
+                w.mood = Mood::Lunge
+                w.t = 0
+                w.aim = dir
+                w.bit = false
+                w.dodged = false
+                w.walker.speed = BOUND.speed
+                tally.lunges += 1
+            }
+        },
+        Mood::Lunge => {
+            let path = Toward { from: w.pos(), dir: w.aim, length: 100.0 }
+            w.walker.speed = if w.bit { w.walker.speed } else { BOUND.speed }
+            step(mut w.walker, g, path, WOLF_BODY, BOUND, go: !w.bit, dt: dt)
+            if w.t >= LUNGE {
+                w.mood = Mood::Recover
+                w.t = 0
+            }
+        },
+        Mood::Recover => {
+            step(
+                mut w.walker,
+                g,
+                Toward { from: w.pos(), dir, length: 0.0 },
+                WOLF_BODY,
+                PROWL,
+                go: false,
+                dt: dt,
+            )
+            if w.t >= RECOVER {
+                w.mood = Mood::Prowl
+                w.t = 0
+                // When it next crouches: not the same each time.
+                w.wait = 30 + (tally.lunges * 37) % 70
+            }
+        },
+        Mood::Flinch => {
+            // Pushed back by the hit, over its first ticks.
+            let push = 0.35 * (1.0 - f32(w.t) / 8.0)
+            if w.t < 8 {
+                let p = w.walker.root.pos + vec3(w.pushed.x, 0.0, w.pushed.y) * (push * dt * 8.0)
+                w.walker.root.pos = vec3(p.x, g.height(p.x, p.z), p.z)
+            }
+            w.walker.speed = 0.0
+            step(
+                mut w.walker,
+                g,
+                Toward { from: w.pos(), dir, length: 0.0 },
+                WOLF_BODY,
+                PROWL,
+                go: false,
+                dt: dt,
+            )
+            if w.t >= FLINCH {
+                // Hurt near the climber, it answers: it crouches to lunge at once (the same
+                // crouch, so the same tell); farther, it prowls.
+                w.mood = if dist < LUNGE_FROM.y && c.act != Act::Down { Mood::Crouch } else {
+                    Mood::Prowl
+                }
+                w.t = 0
+                w.wait = 20
+            }
+        },
+        Mood::Down => {
+            step(
+                mut w.walker,
+                g,
+                Toward { from: w.pos(), dir, length: 0.0 },
+                WOLF_BODY,
+                PROWL,
+                go: false,
+                dt: dt,
+            )
+            if w.t >= WOLF_DOWN {
+                w.health = WOLF_HEALTH
+                w.mood = Mood::Prowl
+                w.t = 0
+                w.wait = 60
+            }
+        },
+    }
+}
+
+/// The closest two segments come: `a0`–`a1` and `b0`–`b1`.
+pub fn segments_apart(a0: vec3, a1: vec3, b0: vec3, b1: vec3) -> f32 {
+    let d1 = a1 - a0
+    let d2 = b1 - b0
+    let r = a0 - b0
+    let a = dot(d1, d1)
+    let e = dot(d2, d2)
+    let f = dot(d2, r)
+    var s = 0.0
+    var t = 0.0
+    if a <= 1.0e-9 && e <= 1.0e-9 {
+        return length(r)
+    }
+    if a <= 1.0e-9 {
+        t = clamp(f / e, 0.0, 1.0)
+    } else {
+        let c = dot(d1, r)
+        if e <= 1.0e-9 {
+            s = clamp(-c / a, 0.0, 1.0)
+        } else {
+            let b = dot(d1, d2)
+            let den = a * e - b * b
+            s = if den > 1.0e-9 { clamp((b * f - c * e) / den, 0.0, 1.0) } else { 0.0 }
+            t = (b * s + f) / e
+            if t < 0.0 {
+                t = 0.0
+                s = clamp(-c / a, 0.0, 1.0)
+            } else if t > 1.0 {
+                t = 1.0
+                s = clamp((b - c) / a, 0.0, 1.0)
+            }
+        }
+    }
+    length((a0 + d1 * s) - (b0 + d2 * t))
+}
+
+/// The sword in the world, `sub` ticks on from tick `c.t` (0 to 1): its grip's middle, toward its
+/// point, and the way its edge leads (unit, the edge square to the aim).
+pub fn sword_at(c: Climber, sub: f32) -> (vec3, vec3, vec3) {
+    let s = c.pose(sub).sword
+    let m = rotate_y(c.heading)
+    let aim = normalize((m * vec4(s.aim, 0.0)).xyz)
+    let edge = (m * vec4(s.edge, 0.0)).xyz
+    (c.at + (m * vec4(s.at, 0.0)).xyz, aim, normalize(edge - aim * dot(edge, aim)))
+}
+
+/// The blade's edge in the world, from a little past the guard to the point, `sub` ticks on from
+/// tick `c.t` (0 to 1).
+pub fn blade_at(c: Climber, sub: f32) -> (vec3, vec3) {
+    let (at, aim, _) = sword_at(c, sub)
+    (at + aim * (GUARD_AT + 0.1), at + aim * POINT_AT)
+}
+
+/// The wolf's body to the blade: capsules from its pelvis to its chest, and its neck to its head,
+/// a little fuller than its body (a hit that grazes its fur counts).
+pub fn wolf_hurt(w: Wolf) -> [vec4; 4] {
+    let cr = wolf::creature::J_PELVIS
+    [
+        vec4(w.joint(cr), 0.26),
+        vec4(w.joint(wolf::creature::J_CHEST + vec3(0.0, 0.05, 0.1)), 0.26),
+        vec4(w.joint(wolf::creature::J_NECK), 0.17),
+        vec4(w.joint(wolf::creature::J_HEAD), 0.17),
+    ]
+}
+
+/// The blade against the wolf in the move's active ticks: the edge swept from the last tick's
+/// place to this one's, in four steps, against the wolf's capsules. A hit hurts it (it flinches
+/// or goes down), pushes it back, and stops the fight for a few ticks.
+fn blade_hits(w: mut World) {
+    let c = w.climber
+    if c.act != Act::Slash && c.act != Act::Backslash {
+        return
+    }
+    let f = frames(c.act)
+    if c.landed || !f.is_active(c.t) || w.wolf.mood == Mood::Down {
+        return
+    }
+    var prev = c
+    prev.t = c.t - 1
+    prev.fade = max(c.fade, 1) - 1
+    let (p0, p1) = blade_at(prev, 0.0)
+    let (q0, q1) = blade_at(c, 0.0)
+    let hurt = wolf_hurt(w.wolf)
+    var hit = false
+    for k in 0..5 {
+        let u = f32(k) / 4.0
+        let a0 = mix(p0, q0, vec3(u))
+        let a1 = mix(p1, q1, vec3(u))
+        for j in 0..2 {
+            let (b0, b1) = (hurt[2 * j], hurt[2 * j + 1])
+            if segments_apart(a0, a1, b0.xyz, b1.xyz) < b0.w + 0.02 {
+                hit = true
+            }
+        }
+    }
+    if !hit {
+        return
+    }
+    w.climber.landed = true
+    w.tally.hits += 1
+    w.stop = HIT_STOP
+    w.wolf.health -= f.damage
+    let away = w.wolf.pos() - c.at.xz
+    w.wolf.pushed = if length(away) > 1.0e-4 { normalize(away) } else { c.forward() }
+    w.wolf.t = 0
+    if w.wolf.health <= 0.0 {
+        w.wolf.mood = Mood::Down
+        w.tally.wolf_downs += 1
+    } else {
+        w.wolf.mood = Mood::Flinch
+    }
+}
+
+/// The wolf's bite against the climber in its active ticks: a sphere at its jaws against a
+/// capsule up the climber's middle. In the blink's invulnerable ticks it passes through (counted
+/// once a lunge); otherwise it bites once.
+fn bite(w: mut World) {
+    let wolf = w.wolf
+    if wolf.mood != Mood::Lunge || wolf.t < BITE.x || wolf.t >= BITE.y || wolf.bit {
+        return
+    }
+    let c = w.climber
+    let jaws = wolf.jaws()
+    let apart = segments_apart(jaws, jaws, c.at + BODY_LOW, c.at + BODY_HIGH)
+    if apart > BITE_RADIUS + BODY_RADIUS {
+        return
+    }
+    if c.invulnerable() {
+        if !wolf.dodged {
+            w.wolf.dodged = true
+            w.tally.dodged += 1
+        }
+        return
+    }
+    w.wolf.bit = true
+    w.tally.bites += 1
+    w.stop = HIT_STOP
+    w.climber.health -= BITE_DAMAGE
+    // Struck: it faces the wolf and is thrown back from it.
+    let to = wolf.pos() - c.at.xz
+    w.climber.heading = atan2(to.x, to.y)
+    w.climber.buffered = Act::Free
+    w.climber.buffer = 0
+    if w.climber.health <= 0.0 {
+        w.climber.start(Act::Down)
+        w.tally.climber_downs += 1
+    } else {
+        w.climber.start(Act::Hurt)
+    }
+}
+
+/// The climber kept out of the wolf's body: two circles along it.
+fn keep_apart(c: mut Climber, w: Wolf) {
+    if c.invulnerable() && c.act == Act::Blink {
+        // A blink passes through the wolf.
+        return
+    }
+    let f = w.forward()
+    for k in 0..2 {
+        let centre = w.pos() + f * (if k == 0 { 0.3 } else { -0.3 })
+        let d = c.at.xz - centre
+        let r = 0.3 + BODY_RADIUS
+        let l = length(d)
+        if l < r && l > 1.0e-4 {
+            let p = centre + d * (r / l)
+            c.at = vec3(p.x, Ground {}.height(p.x, p.y), p.y)
+        }
+    }
+}
+
+/// The snapshot the frames read.
+@deterministic
+pub fn present(w: World) -> World {
+    w
+}
