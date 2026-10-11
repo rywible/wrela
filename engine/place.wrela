@@ -745,12 +745,15 @@ pub struct Route {
 impl Route {
     /// The distance from `p` to the route (m), and how far along it the nearest point is (m).
     pub fn distance(self, p: vec2) -> vec2 {
+        if self.points.len() == 1 {
+            return vec2(length(p - self.points[0]), 0.0)
+        }
         var best = 1.0e9
         var along = 0.0
         var walked = 0.0
-        for i in 0..self.points.len() - 1 {
-            let a = self.points[i]
-            let b = self.points[i + 1]
+        for i in 1..self.points.len() {
+            let a = self.points[i - 1]
+            let b = self.points[i]
             let (d, t) = to_segment(p, a, b)
             let len = length(b - a)
             if d < best {
@@ -765,8 +768,8 @@ impl Route {
     /// Its length (m).
     pub fn length(self) -> f32 {
         var l = 0.0
-        for i in 0..self.points.len() - 1 {
-            l += length(self.points[i + 1] - self.points[i])
+        for i in 1..self.points.len() {
+            l += length(self.points[i] - self.points[i - 1])
         }
         l
     }
@@ -775,12 +778,13 @@ impl Route {
     pub fn along(self, s: f32) -> vec4 {
         var walked = 0.0
         let n = self.points.len()
-        for i in 0..n - 1 {
-            let ab = self.points[i + 1] - self.points[i]
+        assert(n > 0, "an empty route has no point along it")
+        for i in 1..n {
+            let ab = self.points[i] - self.points[i - 1]
             let len = length(ab)
-            if s <= walked + len || i == n - 2 {
+            if s <= walked + len || i == n - 1 {
                 let t = clamp((s - walked) / max(len, 1.0e-6), 0.0, 1.0)
-                return vec4(self.points[i] + ab * t, ab / max(len, 1.0e-6))
+                return vec4(self.points[i - 1] + ab * t, ab / max(len, 1.0e-6))
             }
             walked += len
         }
@@ -967,6 +971,7 @@ impl Map {
 pub enum Refusal: Copy + Eq {
     NoKeeper { opening: u32, name: Text },
     KeeperGone { opening: u32, name: Text, why: Text },
+    RouteEmpty { route: u32, name: Text },
     RouteNotKept { route: u32, name: Text, why: Text },
 }
 
@@ -979,6 +984,9 @@ impl Refusal {
             },
             Refusal::KeeperGone { name, why, .. } => {
                 f"the opening `{name}`'s keeper isn't at work in the present: {why}"
+            },
+            Refusal::RouteEmpty { name, .. } => {
+                f"the route `{name}` has no points"
             },
             Refusal::RouteNotKept { name, why, .. } => {
                 f"the route `{name}` isn't kept in the present: {why}"
@@ -1030,6 +1038,14 @@ fn keeper_gone(m: Map, k: Keeper, p: vec2, radius: f32) -> Option<Text> {
     }
 }
 
+fn empty_route_refusal(route: Route, which: u32) -> Option<Refusal> {
+    if route.points.is_empty() {
+        Some(Refusal::RouteEmpty { route: which, name: route.name })
+    } else {
+        None
+    }
+}
+
 /// Every reason the map can't be grown: each opening with no keeper, or one not at work in the
 /// present; each route kept clear by people who left (an old road with no herd on it). Checked
 /// before the history runs, which would otherwise close them (spike 17's first round lost three
@@ -1047,6 +1063,11 @@ pub fn refusals(m: Map) -> Vec<Refusal> {
     }
     var r = 0
     for route in m.routes {
+        if let Some(why) = empty_route_refusal(route, r) {
+            out.push(why)
+            r += 1
+            continue
+        }
         let p = route.points[route.points.len() / 2]
         if let Some(why) = keeper_gone(m, route.keeper, p, route.width) {
             out.push(Refusal::RouteNotKept { route: r, name: route.name, why })
@@ -1071,6 +1092,40 @@ pub fn refuse(m: Map) {
 }
 
 // ---- tests -----------------------------------------------------------------------------------------
+
+fn test_route(points: take Vec<vec2>) -> Route {
+    Route {
+        kind: RouteKind::Trail,
+        points,
+        width: 1.0,
+        keeper: Keeper::Nothing,
+        name: "test route",
+    }
+}
+
+/// Empty and one-point routes have defined geometry: an empty route is nowhere and has no
+/// length; a one-point route is that point. Asking for a point along an empty route is refused
+/// separately before a map is grown.
+@test
+fn routes_with_fewer_than_two_points_have_defined_geometry() {
+    let empty = test_route(Vec::new())
+    assert(empty.length() == 0.0, "an empty route has a length")
+    assert(empty.distance(vec2(0.0)).x == 1.0e9, "an empty route is near a point")
+
+    let point = test_route(Vec::from([vec2(3.0, 4.0)]))
+    assert(point.length() == 0.0, "a one-point route has a length")
+    assert(point.distance(vec2(0.0)) == vec2(5.0, 0.0), "a one-point route has no point")
+    assert(point.along(10.0) == vec4(3.0, 4.0, 1.0, 0.0), "a one-point route moves")
+}
+
+/// An empty route is an explicit authoring refusal, rather than a bounds or arithmetic trap.
+@test
+fn an_empty_route_refusal_explains_the_problem() {
+    let refusal = empty_route_refusal(test_route(Vec::new()), 2).unwrap()
+    let expected = Refusal::RouteEmpty { route: 2, name: "test route" }
+    assert(refusal == expected, "no empty refusal")
+    assert(refusal.say() == "the route `test route` has no points", "an empty route is obscure")
+}
 
 /// A place stepped a minute at a walk, 60 Hz, ends where an `f64` walk does within 5 cm, 10 km and
 /// 1,000 km out; `f32` positions drift a metre at 10 km (spike 17: 1.03 m).

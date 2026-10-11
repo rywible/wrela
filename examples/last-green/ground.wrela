@@ -13,24 +13,51 @@ use std::field::smin
 pub const MEADOW = vec2(0.0, 30.0)
 
 /// The fight's ground in the ring's glade (route §9): its disc's middle (x, z) and radius (m),
-/// and how far the shore trail's last run into it from the east is worn (m).
+/// and the wolf's way out along the shore trail, from where it waits east past where the trail
+/// comes in, 10 m on (x, z, x, z): the fight is there when the player comes by the trail. The
+/// encounter's `DISC` and `WOLF_HOME` are the disc's middle and the way's start.
 pub const FIGHT = vec3(34.0, -471.0, 6.0)
-pub const FIGHT_LANE: f32 = 15.0
+pub const FIGHT_WAY = vec4(37.0, -463.0, 62.0, -463.0)
 /// How trodden the fight's ground is (`covered`'s trails): its grass worn under the ankle, no
 /// bare earth.
 pub const FIGHT_WEAR: f32 = 0.45
 
-/// How worn by the fight's ground `xz` is, 0 to 1: the disc and the trail's run into it from
-/// the east, with a ragged edge 2–3 m wide (worn ground, not a mown ring), as a sample `w` across
-/// sees it.
+/// The floor's built stones' feet (`stones::stones`: x, z and radius), padded off the map, for
+/// the trails' wear to stop at (`unbuilt`).
+pub const STONE_FEET_N: u32 = 64
+pub const STONE_FEET: [vec3; STONE_FEET_N] = stone_feet()
+/// How far past a stone's foot its trails' wear comes back (m).
+pub const STONE_MARGIN: f32 = 0.5
+
+fn stone_feet() -> [vec3; STONE_FEET_N] {
+    var out = [vec3(1.0e9, 1.0e9, 0.0); STONE_FEET_N]
+    let all = stones::stones(map::map())
+    assert(all.len() <= STONE_FEET_N, f"{all.len()} stones, room for {STONE_FEET_N}")
+    for i in 0..all.len() {
+        out[i] = all[i]
+    }
+    out
+}
+
+/// How free of built stones `xz` is, 0 to 1: 0 on a stone's foot, 1 from `STONE_MARGIN` past it.
+pub fn unbuilt(xz: vec2) -> f32 {
+    var k = 1.0
+    for s in STONE_FEET {
+        k = min(k, smoothstep(s.z, s.z + STONE_MARGIN, length(xz - s.xy)))
+    }
+    k
+}
+
+/// How worn by the fight `xz` is, 0 to 1: the disc, and the wolf's way 3 m either side, with a
+/// ragged edge 2–3 m wide (worn ground, not a mown ring), as a sample `w` across sees it.
 pub fn fought(xz: vec2, w: f32) -> f32 {
     let rag = 2.0 * (noise2_seen(xz * 0.4, w * 0.4) - 0.5)
     let disc = smoothstep(FIGHT.z + 1.5, FIGHT.z - 1.0, length(xz - FIGHT.xy) + rag)
-    let along = clamp(xz.x - FIGHT.x, 0.0, FIGHT.z + FIGHT_LANE)
-    let off = length(xz - vec2(FIGHT.x + along, FIGHT.y))
-    let lane = smoothstep(2.5, 1.0, off + rag) *
-        smoothstep(FIGHT.z + FIGHT_LANE, FIGHT.z + FIGHT_LANE - 4.0, xz.x - FIGHT.x)
-    max(disc, lane)
+    let (from, to) = (FIGHT_WAY.xy, FIGHT_WAY.zw)
+    let t = saturate(dot(xz - from, to - from) / dot(to - from, to - from))
+    let off = length(xz - mix(from, to, vec2(t)))
+    let way = smoothstep(4.0, 1.5, off + rag)
+    max(disc, way)
 }
 
 pub const KNOLL = vec2(7.0, 33.0)
@@ -498,6 +525,10 @@ impl Ground {
         // Thinning faster than it fades: a few blades in a gap's half light, a meadow in the open.
         c.grass *= open * open
         c.flowers *= open * open
+        // No trail wears under a built stone: its wear stops a hand's breadth from the stone's
+        // foot (a route that ended at a stone's middle drew bare lit earth under it, a stem: the
+        // arena's centre stone, 14).
+        let trodden = if trodden > 0.0 { trodden * unbuilt(xz) } else { trodden }
         // The trails: bare earth down a path's middle, the grass worn short and thin on the ground
         // the herd wears beside it. The earth is packed and dry, lighter than the leaf litter
         // round it in the wood (a path shows from 20 m: #55 AC10).
@@ -634,9 +665,8 @@ fn valley_land(xz: vec2, y: f32, w: f32) -> vec3 {
 /// the crag's cliffs, the ravine's walls, the plateau's lip): grey stone, warmer and cooler in
 /// broad patches; each bed its own colour (`BED`), a dark seam where it meets the next; dark
 /// joints at its blocks' edges (`joints`, as the relief's), straight and few, not a noise's maze
-/// of cracks; dark streaks where water runs down a steep face; lichen in broad faint crusts where
-/// it faces the sky (bold round spots read as a leopard's: pass 1); moss on its ledges and in its
-/// joints. Each detail finer than the sample fades to its share, so a far texel of the clipmap
+/// of cracks; dark streaks where water runs down a steep face. No lichen or moss: they gave it a
+/// green cast in shade (round 14), and bold round spots read as a leopard's (pass 1). Each detail finer than the sample fades to its share, so a far texel of the clipmap
 /// doesn't alias. Cooked into the clipmap: nothing here runs per pixel per frame (AC12).
 pub fn rock_albedo(at: vec3, n: vec3, w: f32) -> vec3 {
     let xz = at.xz
@@ -676,13 +706,5 @@ pub fn rock_albedo(at: vec3, n: vec3, w: f32) -> vec3 {
     let across = xz.x * 0.8 + xz.y * 1.1
     let runs = noise2_seen(vec2(across * 1.1, at.y * 0.07), w * 1.1)
     c *= 1.0 - 0.35 * smoothstep(0.55, 0.75, runs) * steep
-    // Lichen in broad crusts where it faces the sky; moss on its ledges and in its joints, where
-    // water and grit gather.
-    let crust = fbm2_seen(xz * 0.17 + vec2(-3.0, 5.0), 3, w * 0.17)
-    let lichen = smoothstep(0.5, 0.78, crust) * smoothstep(0.35, 0.85, n.y)
-    c = mix(c, vec3(0.38, 0.38, 0.30), vec3(0.4 * lichen))
-    let hollow = fbm2_seen(xz * 0.35 + vec2(12.0, 3.0), 3, w * 0.35)
-    let ledge = smoothstep(0.8, 0.96, n.y) * (1.0 - smoothstep(0.0, 0.5, steep))
-    let moss = smoothstep(0.6, 0.85, 0.7 * hollow + 0.15 * ledge + 0.3 * line)
-    mix(c, vec3(0.06, 0.09, 0.03), vec3(0.6 * moss))
+    c
 }

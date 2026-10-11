@@ -25,9 +25,10 @@ use std::math::TAU
 use std::string::String
 
 /// The fight's disc: a flat, clear round 12 m across beside the ring (route.md §9), and where
-/// the wolf waits, at the ring's edge between the ring and the disc.
-pub const DISC = vec2(34.0, -471.0)
-pub const WOLF_HOME = vec2(37.0, -463.0)
+/// the wolf waits, at the ring's edge between the ring and the disc (the ground's, which keeps
+/// them short and worn: `ground::FIGHT`, `ground::FIGHT_WAY`).
+pub const DISC = ground::FIGHT.xy
+pub const WOLF_HOME = ground::FIGHT_WAY.xy
 
 /// How far from the disc the fight is over (m): the wolf senses no player further off.
 pub const LEASH: f32 = 45.0

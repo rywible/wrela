@@ -4,7 +4,8 @@
 //
 // Keys: W and S walk, A and D turn, E goes back through the door when the player is at it.
 
-use engine::tower::{Fate, Journey, STAIR, Start}
+use engine::floor::{Doorway, Exit}
+use engine::tower::{Fate, Start}
 use engine::plant::full
 use std::derive::gradient
 use std::field::{Surface, cuboid}
@@ -18,6 +19,10 @@ const WORLDS: u32 = 2
 const STAIR_BUILD: Text = "../stair"
 const SAVE: Text = "tower/save"
 
+/// The door, which stands at the middle facing +z: a player is at it in front of it, within a
+/// step.
+const DOOR = Doorway { at: vec2(0.0, 0.6), reach: 1.2 }
+
 /// The player's pace (m/s), turn (radians a second) and eye height (m); the floor's radius.
 const PACE: f32 = 3.0
 const TURN: f32 = 1.8
@@ -25,7 +30,7 @@ const EYE: f32 = 1.6
 const RADIUS: f32 = 14.0
 
 pub struct Floor {
-    journey: Journey,
+    exit: Exit,
     input: Input,
     /// Where the player stands, and which way they face (radians from +z towards +x).
     at: vec2,
@@ -36,23 +41,11 @@ pub struct Floor {
 pub fn init() -> Floor {
     // In through the door, which stands at the middle facing +z: the player steps out of it.
     Floor {
-        journey: Journey::begin(WORLD, WORLDS, SAVE),
+        exit: Exit::begin(WORLD, WORLDS, SAVE, STAIR_BUILD, DOOR),
         input: Input::new(),
         at: vec2(0.0, 1.5),
         yaw: 0.0,
         last_time: 0.0,
-    }
-}
-
-/// Whether the player is at the door: in front of it, within a step.
-fn at_door(f: Floor) -> bool {
-    length(f.at - vec2(0.0, 0.6)) < 1.2
-}
-
-/// Goes back out to the stair, if the player is at the door.
-fn leave(f: mut Floor) {
-    if at_door(f) {
-        let _ = f.journey.go(WORLD, STAIR, STAIR_BUILD)
     }
 }
 
@@ -65,7 +58,7 @@ struct Scene: Copy + GpuData {
 }
 
 fn fate_code(f: Floor) -> f32 {
-    match f.journey.carry.tower.fate(WORLD) {
+    match f.exit.journey.carry.tower.fate(WORLD) {
         Fate::Undecided => 0.0,
         Fate::Preserved => 1.0,
         Fate::Freed => 2.0,
@@ -160,7 +153,8 @@ fn shade(pixel: FragCoord, scene: Scene) -> vec4 {
 pub fn frame(f: mut Floor, time: f32, width: u32, height: u32) {
     let dt = clamp(time - f.last_time, 0.0, 0.1)
     f.last_time = time
-    f.journey.update()
+    // The way back is the stair: it's got ready while nothing of the floor's own waits.
+    f.exit.update(allowed: true)
     f.input.read()
     borrow i = f.input
     let walk = (if i.held(Key::W) || i.held(Key::Up) { 1.0 } else { 0.0 })
@@ -172,16 +166,14 @@ pub fn frame(f: mut Floor, time: f32, width: u32, height: u32) {
     f.yaw += turn * TURN * dt
     step(mut f, walk * PACE * dt)
     if pressed_f {
-        let _ = f.journey.decide(WORLD, Fate::Freed)
+        let _ = f.exit.journey.decide(WORLD, Fate::Freed)
     }
     if pressed_p {
-        let _ = f.journey.decide(WORLD, Fate::Preserved)
+        let _ = f.exit.journey.decide(WORLD, Fate::Preserved)
     }
     if pressed_e {
-        leave(mut f)
+        let _ = f.exit.leave(f.at)
     }
-    // The way back is the stair: it's got ready while nothing of the floor's own waits.
-    f.journey.prepare(Some(STAIR_BUILD), allowed: true)
     let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(screen, full.bind(z: 0.0), shade.bind(scene: scene_of(f, width, height)), vertices: 3)
     screen.present()
@@ -209,12 +201,12 @@ pub fn turn(f: mut Floor, radians: f32) {
 
 /// Goes back out through the door, if the player is at it.
 pub fn go_out(f: mut Floor) {
-    leave(mut f)
+    let _ = f.exit.leave(f.at)
 }
 
 /// Where the player stands, how the floor started (`Start`'s order), and its fate.
 pub fn report(f: Floor) -> vec4 {
-    let start = match f.journey.start {
+    let start = match f.exit.journey.start {
         Start::Fresh => 0.0,
         Start::Arrived => 1.0,
         Start::TurnedBack => 2.0,
@@ -231,5 +223,5 @@ pub fn probe(f: Floor, x: f32, y: f32, width: u32, height: u32) -> vec4 {
 /// Decides the floor's fate (1 preserved, 2 freed).
 @testing
 pub fn test_decide(f: mut Floor, fate: u32) {
-    let _ = f.journey.decide(WORLD, if fate == 1 { Fate::Preserved } else { Fate::Freed })
+    let _ = f.exit.journey.decide(WORLD, if fate == 1 { Fate::Preserved } else { Fate::Freed })
 }

@@ -185,8 +185,10 @@ pub const SHOTS = [
     },
     Shot {
         name: "the fawn by the stream",
-        eye: vec3(-50.6, 1.7, -263.8),
-        at: vec3(-45.5, 0.9, -268.7),
+        // 1.5 m to the left of where it stood, past the trunk that grows by the eye since the
+        // forest form (#169) and the elves' history (#170).
+        eye: vec3(-49.6, 1.7, -262.7),
+        at: vec3(-44.5, 0.9, -267.6),
         reach: 1.0,
         moves: vec2(-0.6, -0.8),
         cast: Cast {

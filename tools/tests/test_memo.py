@@ -139,6 +139,37 @@ class Meaning(unittest.TestCase):
         self.assertNotEqual(self.meaning_of(changed), base)
 
 
+class RustCode(unittest.TestCase):
+    CODE = """pub struct S { a: u8, #[cfg(test)] b: Vec<u8, A>, c: u8 }
+const U: &str = "// a string"; /* a /* nested */ comment */
+fn h<'a>(x: &'a str) -> char { let _ = r#"/* raw */"#; '"' } // a comment
+#[cfg(test)]
+pub(crate) fn turn() -> MutexGuard<'static, ()> { TURNS.lock() }
+#[cfg(test)]
+mod tests { fn g() { let x = [1; 2]; } }
+fn after() {}
+"""
+
+    def test_comments_and_spacing_are_left_out_and_strings_kept(self):
+        code = memo.rust_code(self.CODE)
+        self.assertNotIn("comment", code)
+        for kept in ['"// a string"', 'r#"/* raw */"#', "'\"'", "mod tests"]:
+            self.assertIn(kept, code)
+        self.assertEqual(memo.rust_code("fn  f() {\n  // x\n  1 }"), memo.rust_code("fn f() { 1 }"))
+
+    def test_without_tests_each_test_item_is_left_out_and_nothing_beside_it(self):
+        code = memo.rust_code(self.CODE, tests=False)
+        self.assertTrue(code.startswith("pub struct S { a: u8, c: u8 } const"))
+        for gone in ["turn", "mod tests", "Vec<u8, A>"]:
+            self.assertNotIn(gone, code)
+        self.assertTrue(code.endswith("fn after() {}"))
+        self.assertEqual(memo.rust_code("#[cfg(test)] impl<A, B> X for Y<A, B> {} fn k() {}",
+                                        tests=False), "fn k() {}")
+        # Only exactly `cfg(test)`: `cfg(not(test))` and `cfg(any(test, ..))` are built in.
+        for other in ["#[cfg(not(test))] fn f() {}", "#[cfg(any(test, feature = \"x\"))] fn f() {}"]:
+            self.assertEqual(memo.rust_code(other, tests=False), memo.rust_code(other))
+
+
 class Store(Files):
     def test_an_entry_matches_only_with_the_same_key_environment_and_inputs(self):
         store = memo.Store(self.root)
@@ -156,6 +187,14 @@ class Store(Files):
         self.assertIsNone(find(now={"repo:x": "file:2"}))  # a file it read
         self.assertIsNone(store.find("p:suite:test:a::c", "rust1", lambda k: None, lambda n, s: True))
 
+    def test_a_wrong_schema_entry_is_a_cache_miss(self):
+        store = memo.Store(self.root)
+        directory = store.entries_dir("t", "rust")
+        os.makedirs(directory)
+        with open(os.path.join(directory, "bad.json"), "w") as f:
+            json.dump({"test": "t"}, f)
+        self.assertIsNone(store.find("t", "rust", lambda k: None, lambda n, s: True))
+
     def test_a_time_beside_the_other_tests_counts_only_until_the_test_runs_alone(self):
         store = memo.Store(self.root)
         self.assertIsNone(store.timing("t"))
@@ -172,6 +211,16 @@ class Store(Files):
         with open(path, "w") as f:
             memo.json.dump(t, f)
         self.assertEqual(store.timing("t"), 300.0)
+
+    def test_a_wrong_schema_timing_is_a_cache_miss(self):
+        store = memo.Store(self.root)
+        path = os.path.join(store.dir, "timings", memo.sha("t")[:24] + ".json")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w") as f:
+            json.dump([], f)
+        self.assertIsNone(store.timing("t"))
+        store.set_timing("t", 2.0, alone=False)
+        self.assertEqual(store.timing("t"), 2.0)
 
     def test_old_entries_are_pruned(self):
         store = memo.Store(self.root)
@@ -235,6 +284,17 @@ class Sources(Files):
         self.assertEqual(self.sources().key(files), key)
         self.write("lib/src/lib.rs", "pub fn f() {}\n")
         self.assertNotEqual(self.sources().key(files), key)
+
+    def test_a_crate_built_with_the_test_counts_without_its_tests_and_the_tests_own_with(self):
+        s = self.sources()
+        files = s.files_of(s.closure("t"))
+        key = s.key(files, own="t")
+        self.write("lib/src/lib.rs", 'pub fn f() { std::env::var("WRELA_FULL"); }\n'
+                   "// a note\n#[cfg(test)]\nmod tests { fn t() {} }\n")
+        self.assertEqual(self.sources().key(files, own="t"), key)
+        self.assertNotEqual(self.sources().key(files, own="lib"), key)
+        self.write("t/tests/suite/c.rs", "pub fn help() {}\n#[cfg(test)]\nfn more() {}\n")
+        self.assertNotEqual(self.sources().key(files, own="t"), key)
 
     def test_a_test_in_the_root_keeps_what_the_root_names_and_an_unknown_module_all(self):
         s = self.sources()
@@ -393,10 +453,80 @@ echo a.wasm > "$4/.wrela-build"
         self.assertNotEqual(second, first)
 
 
+@unittest.skipUnless(memo.available(), "needs strace and a mount namespace")
+class WgslBudgets(Files):
+    """tools/wgsl_budgets.py with the gate's memory: a build is made again only when its CLI or
+    a file it read changed, and a remembered build's sizes still meet the budget."""
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs(os.path.join(self.root, "tools"))
+        for name in ("wgsl_budgets.py", "memo.py", "resources.py", "subjects.py"):
+            shutil.copy(os.path.join(TOOLS, name), os.path.join(self.root, "tools", name))
+        subprocess.run(["git", "init", "-q", self.root], check=True)
+        # What it made, outside the checkout (a file made there would change the checkout's
+        # listing, which a build read, while the others ran).
+        self.log = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.log)
+        self.cli = self.write("bin/wrela", f"""#!/bin/sh
+echo "$@" >> {self.log}/made
+if [ "$1" = studio ]; then out="$PWD/$2/build/studio/page"; else out="$4"; fi
+mkdir -p "$out" && head -c "$(cat "$PWD/$2/size" 2>/dev/null || echo 10)" /dev/zero > "$out/p.wgsl"
+""")
+        os.chmod(self.cli, 0o755)
+        for s in ("wolf", "grazer", "great-tree", "fawn"):
+            self.write(f"examples/{s}/main.wrela", "fn main() {}\n")
+            # As a checkout that ran the studio before has it: a build that made a directory
+            # changed what another build may have read (its parent), and isn't remembered.
+            self.write(f"examples/{s}/build/studio/page/p.wgsl", "")
+        self.write("examples/a/main.wrela", "fn main() {}\n")
+        self.write("examples/a/size", "100\n")
+        os.makedirs(os.path.join(self.root, "target"))
+
+    def budgets(self):
+        env = {**os.environ, "WRELA_GATE_MEMO": os.path.join(self.root, "store"),
+               "CARGO_TARGET_DIR": os.path.join(self.root, "target")}
+        return subprocess.run([sys.executable, "tools/wgsl_budgets.py", self.cli, "--memo"],
+                              cwd=self.root, env=env, capture_output=True, text=True)
+
+    def made(self):
+        path = os.path.join(self.log, "made")
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            made = f.read().splitlines()
+        os.remove(path)
+        return made
+
+    def test_a_build_is_made_again_only_when_what_it_read_changed(self):
+        r = self.budgets()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("examples/a: largest pipeline 0 KiB", r.stdout)
+        self.assertEqual(len(self.made()), 9)  # 4 lenses, 5 packages
+        r = self.budgets()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("9 pipelines in 9 packages", r.stdout)
+        self.assertEqual(self.made(), [], "none made again")
+        self.write("examples/a/size", str(300 * 1024))
+        r = self.budgets()
+        self.assertEqual(self.made(), ["build examples/a -o " + os.path.join(self.root, "target", "wgsl-budgets", "a")])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("examples/a/p.wgsl is 300 KiB", r.stderr)
+        # Remembered, it is still over.
+        r = self.budgets()
+        self.assertEqual(self.made(), [])
+        self.assertIn("over its size budget", r.stderr)
+
+
 FILES_HASH = "8410ef328ec8af3db236a70a705c1c9c7746bdc9695323b3e5bb56ef647fdf28"
 
 
 class Ending(unittest.TestCase):
+    def test_a_test_remembered_by_its_rebuilt_outputs_is_a_pass(self):
+        self.assertEqual(memo.tests_status(False, 0, [], ["rebuilt"]), 0)
+        self.assertEqual(memo.tests_status(False, 0, [], []), 1)
+        self.assertEqual(memo.tests_status(True, 1, [], []), 1)
+
     def test_stopping_kills_every_process_under_the_runner_and_the_ones_that_escaped(self):
         # A process orphaned under the runner (as a test is when strace, its parent, dies first)
         # comes back to it as its subreaper.

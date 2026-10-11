@@ -30,7 +30,7 @@ const RATE: f32 = f32(SAMPLE_RATE)
 /// holds.
 pub const SURFACES: u32 = 8
 pub const KINDS: u32 = 4
-pub const BRUSHES: u32 = 2
+pub const BRUSHES: u32 = 3
 pub const IMPACTS: u32 = 4
 pub const WHOOSHES: u32 = 2
 pub const STEPS: u32 = 4
@@ -91,7 +91,7 @@ pub struct Breath: Copy {
 pub struct Palette: Copy {
     pub surfaces: [Surface; SURFACES],
     pub waters: [Babble; 4],
-    pub brushes: [Babble; 2],
+    pub brushes: [Babble; BRUSHES],
     pub impacts: [Surface; 4] = [Surface {}; 4],
     pub whooshes: [Swish; 2] = [Swish {}; 2],
     pub wind: Breath,
@@ -439,7 +439,7 @@ pub struct Mixer {
     canopy: f32,
     rush: Bed,
     leaves: Bed,
-    brushes: [Stream; 2],
+    brushes: [Stream; BRUSHES],
     waters: [Stream; 4],
     noise: Noise,
 }
@@ -454,7 +454,7 @@ pub fn mixer(palette: Palette, seed: u32 = 1) -> (RingWriter<Cue>, Mixer) {
     rush.tune(0.6 * w.rush_hz, 1.6 * w.rush_hz, rate: 0.4, depth: 0.6)
     leaves.tune(0.5 * w.leaves_hz, 2.0 * w.leaves_hz, rate: 5.0, depth: 0.8)
     let quiet = Stream { at: vec3(0.0), kind: 0, flow: 0.0, bed: bed() }
-    var brushes = [quiet; 2]
+    var brushes = [quiet; BRUSHES]
     for i in 0..BRUSHES {
         let b = palette.brushes[i]
         brushes[i].kind = i
@@ -638,7 +638,7 @@ fn test_palette() -> Palette {
     Palette {
         surfaces: [grass; 8],
         waters: [water; 4],
-        brushes: [water; 2],
+        brushes: [water; BRUSHES],
         wind: Breath { rush: 0.1, leaves: 0.05 },
     }
 }
