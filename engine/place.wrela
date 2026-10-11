@@ -513,8 +513,8 @@ pub struct Water: Copy {
 /// What happens in a year of the history.
 pub enum EventKind: Copy + Eq {
     /// A gale round `at`, blowing toward `dir`, dying away past `reach`: it throws or snaps the
-    /// trees it finds exposed (`share` of them where it's strongest), and breaks some tops
-    /// (`grow::gale`).
+    /// trees it finds exposed, and breaks some tops (`grow::gale`). The stronger it is (`share`,
+    /// 0 to 1), the less exposed a tree need be: at its strongest it throws nearly all.
     Storm { at: vec2, reach: f32, dir: vec2, share: f32 },
     /// A fire round `at`, lit on its upwind side: it runs as its fuel, dryness, slope and the
     /// wind let it, no further than `reach` from `at`, and kills what its heat there can kill;

@@ -2034,9 +2034,10 @@ fn tops(trees: [Tree], g: Grid) -> Vec<f32> {
 const SHELTER_CELL: f32 = 4.0
 
 /// A gale (`EventKind::Storm`) in `year`: its gusts at their strongest round `at`, dying away
-/// past `reach`, blowing toward `dir`. Whether a tree goes is its exposure (a share of it,
-/// `share`): how tall and slender it is, how shallow its roots are (its kind's, in wet or thin
-/// soil), and whether the crowns upwind of it stand higher and shelter it. A tree whose roots hold
+/// past `reach`, blowing toward `dir`, as strong as `share` (0 to 1). Whether a tree goes is its
+/// exposure against the gale's strength: how tall and slender it is, how shallow its roots are
+/// (its kind's, in wet or thin soil), and whether the crowns upwind of it stand higher and shelter
+/// it. A gentle gale throws only the most exposed; a full one, nearly all. A tree whose roots hold
 /// snaps instead, and one that stands loses its top to the gusts now and then. Then the gale's
 /// later gusts find the edges its first ones opened. The young are crushed where the thrown come
 /// down; the land remembers where they fell.
@@ -2086,7 +2087,10 @@ fn gale(
             let hold = h.roots * (1.0 - 0.6 * shallow)
             // Its exposure, 0 to 1: a tall, slender, shallow-rooted tree at a windward edge most.
             let exposure = 0.35 * exposed + 0.3 * tall + 0.15 * slender + 0.2 * (1.0 - hold)
-            let p = strength * blow * smoothstep(0.15, 0.55, exposure)
+            // The exposure it takes to throw a tree: less the stronger the gust, and at its
+            // strongest none, so a full gale throws the sheltered too.
+            let need = NEED * (1.0 - strength)
+            let p = blow * smoothstep(need - 0.2, need + 0.2, exposure)
             let draw = rand(t.seed, 13 + u32(gust) * 31)
             if draw < p {
                 t.died = year
@@ -2144,6 +2148,10 @@ const POLES: f32 = 12.0
 /// `LATER_GUSTS` of its first.
 const GUSTS: i32 = 2
 const LATER_GUSTS: f32 = 0.5
+
+/// The exposure a gust of no strength would need to throw a tree (the middle of the rise from
+/// none thrown to all).
+const NEED: f32 = 0.75
 
 /// A fire (`EventKind::Fire`) in `year` over `reach` round `at`, the wind blowing toward `wind`.
 /// It's lit on its upwind side (`UPWIND` of `reach` from `at`), so that its head runs through the
@@ -3231,6 +3239,44 @@ fn a_gale_throws_the_windward_edge_and_crushes_the_young() {
         }
     }
     assert(marked > 100, f"the land remembers the gale in {marked} cells")
+}
+
+/// A full gale throws or snaps nearly every tree in its core, sheltered or not: the gap it
+/// leaves stays open.
+@test
+fn a_full_gale_opens_its_core() {
+    let land = open_land(80.0)
+    let habits = [test_habit(bark: 0.5, resin: 0.5, roots: 0.8)]
+    var trees: Vec<Tree> = Vec::new()
+    stand(
+        mut trees,
+        habits,
+        vec2(-40.0, -40.0),
+        vec2(40.0, 40.0),
+        apart: 4.0,
+        tall: 18.0,
+        girth: 0.4,
+    )
+    var f = test_fields(land.grid)
+    gale(
+        mut trees,
+        land,
+        habits,
+        mut f,
+        vec2(0.0),
+        reach: 40.0,
+        share: 0.99,
+        dir: vec2(1.0, 0.0),
+        year: 100,
+        ei: 0,
+    )
+    var core = vec2(0.0)
+    for t in trees {
+        if length(t.at) < 24.0 {
+            core += vec2(if t.state == State::Alive { 1.0 } else { 0.0 }, 1.0)
+        }
+    }
+    assert(core.x < 0.1 * core.y, f"{core.x} of {core.y} trees stand in the gale's core")
 }
 
 /// Flat, open, dry land `half` metres each way of the origin, in 2 m cells.
