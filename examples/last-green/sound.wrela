@@ -7,6 +7,7 @@
 // is in the world (not render space), so a ringing step doesn't jump when the render origin
 // moves.
 
+use climber::moves::drift_rate
 use climber::sounds::{IMPACTS, WHOOSHES}
 use engine::place::{Map, Water}
 use engine::plant::{Wind, gust}
@@ -31,6 +32,7 @@ pub const FALLS: u32 = 2
 pub const POOL: u32 = 3
 pub const THROUGH_GRASS: u32 = 0
 pub const THROUGH_WATER: u32 = 1
+pub const HEM: u32 = 2
 
 /// How the floor sounds. A step's knock is the foot's weight on the ground (deep and dull on
 /// soft ground, higher and sharper on rock); its grit is what the ground is made of (grass's
@@ -132,6 +134,9 @@ pub const PALETTE: Palette = Palette {
         Babble { lo_hz: 1800.0, hi_hz: 8000.0, level: 0.06, rate: 3.0, depth: 0.5 },
         // Wading: water round the legs, low and swirling.
         Babble { lo_hz: 250.0, hi_hz: 2200.0, level: 0.12, rate: 2.5, depth: 0.6 },
+        // The climber's hem dragging over the ground: a soft, slow hush of cloth, under the
+        // touches and the beds.
+        Babble { lo_hz: 300.0, hi_hz: 2500.0, level: 0.02, rate: 1.2, depth: 0.4 },
     ],
     // The fight's (`climber::sounds`): its blows and its blade's swings.
     impacts: IMPACTS,
@@ -271,22 +276,31 @@ pub fn heard(
     best
 }
 
-/// The player's stride (m a step) at a walk and at a run, and the pace past which it isn't
-/// walking (the play harness's glides): no steps.
-const STRIDE_WALK: f32 = 0.75
-const STRIDE_RUN: f32 = 1.3
+/// The pace at which the hem's touches are heaviest, and the pace past which the climber isn't
+/// walking (the play harness's glides): no touches.
 const RUN: f32 = 5.0
 const GLIDING: f32 = 7.0
 
+/// How long the hem's hush takes to come to a new pace (s): it rises and falls slowly, as cloth
+/// does.
+const HEM_EASE: f32 = 0.5
+
+/// How far the climber goes between two touches of its hem on the ground at `speed` (m/s): two
+/// a round of its float (`climber::moves::drift_rate`), so the touches keep time with the cape.
+pub fn touch_every(speed: f32) -> f32 {
+    max(speed, 0.5) / (2.0 * drift_rate(speed))
+}
+
 /// The floor's ears: the ring to the mixer, the water sources in its slots (by their `Heard::id`,
-/// or none), the feet and the time as the last frame had them, and how far the feet have gone
-/// since the last step.
+/// or none), the feet and the time as the last frame had them, how far the feet have gone since
+/// the hem's last touch (in strides), and how loud the hem's hush is (0 to 1).
 pub struct Hearing {
     cues: RingWriter<Cue>,
     pub(package) slots: [u32; 4],
     feet: vec3,
     time: f32,
     walked: f32,
+    pub(package) hem: f32,
     started: bool,
     /// How many steps, by surface (tests and the play harness), and in all.
     pub steps: [u32; 8],
@@ -307,6 +321,7 @@ pub fn listen(seed: u32 = 7) -> (Hearing, Mixer) {
             feet: vec3(0.0),
             time: 0.0,
             walked: 0.0,
+            hem: 0.0,
             started: false,
             steps: [0; 8],
             taken: 0,
@@ -375,9 +390,9 @@ pub fn frame(h: mut Hearing, m: Moment) {
     hear(mut h, m, near)
 }
 
-/// The cues for one frame: the ears, a step if the stride has come round, what the feet push
-/// through, the wind at the ears, and the water sources `near` (from `heard`), each kept in the
-/// slot it had.
+/// The cues for one frame: the ears, a touch of the hem if its stride has come round, the hem's
+/// hush, what the climber pushes through, the wind at the ears, and the water sources `near` (from
+/// `heard`), each kept in the slot it had.
 pub fn hear(h: mut Hearing, m: Moment, near: Bounded<Heard, WATERS>) {
     h.cues.push(Cue::Listen { at: m.eye, forward: m.facing })
     let moved = length((m.feet - h.feet).xz)
@@ -389,13 +404,13 @@ pub fn hear(h: mut Hearing, m: Moment, near: Bounded<Heard, WATERS>) {
         h.walked = 0.0
     } else {
         going = clamp(speed / RUN, 0.0, 1.0)
-        h.walked += moved
-        let stride = STRIDE_WALK + (STRIDE_RUN - STRIDE_WALK) * going
-        if h.walked >= stride {
-            h.walked -= stride
+        // The way to the next touch, as a share of the stride at this pace.
+        h.walked += moved / touch_every(speed)
+        if h.walked >= 1.0 {
+            h.walked -= 1.0
             let s = surface_at(world::GROUND, m.feet, m.normal, m.fields, m.wading)
             h.steps[s] += 1
-            // Seeded by how many steps the floor's ears have heard: a replay's steps sound the same.
+            // Seeded by how many touches the floor's ears have heard: a replay's sound the same.
             h.taken += 1
             h.cues.push(
                 Cue::Step { at: m.feet, surface: s, weight: 0.35 + 0.65 * going, seed: h.taken },
@@ -412,6 +427,11 @@ pub fn hear(h: mut Hearing, m: Moment, near: Bounded<Heard, WATERS>) {
         Cue::Brush { brush: THROUGH_GRASS, at: m.feet, amount: going * plants * (1.0 - water) },
     )
     h.cues.push(Cue::Brush { brush: THROUGH_WATER, at: m.feet, amount: going * water })
+    // The hem's hush on any ground but water, eased so it rises and falls smoothly.
+    if dt > 0.0 {
+        h.hem += (going * (1.0 - water) - h.hem) * min(dt / HEM_EASE, 1.0)
+    }
+    h.cues.push(Cue::Brush { brush: HEM, at: m.feet, amount: h.hem })
     let g = gust(m.wind, m.eye.xz, m.time) * m.wind.strength / 0.035
     h.cues.push(Cue::Wind { gust: g, toward: m.wind.dir, leaves: canopy(m.fields) })
     // Each source keeps its slot while it's heard; a new one takes a slot let go.
