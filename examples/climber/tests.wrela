@@ -2,7 +2,7 @@
 // through a lunge isn't bitten, a blink goes where the stick points, the sword's cut sweeps the
 // space ahead, and a replay of the same presses comes out the same. A test bot plays: it reads the world and presses as a player would.
 
-use fight::{BITE, CROUCH, Level, Mood, World, blade_at, on_screen, spawn, tick}
+use fight::{BITE, CROUCH, Level, Mood, Walked, World, blade_at, bout, on_screen, read, spawn, tick}
 use engine::run::TickInput
 use moves::{Act, BLINK_GONE, frames}
 use std::hash::state_hash
@@ -375,4 +375,35 @@ fn the_fight_sounds_its_swings_hits_and_blinks() {
     )
     assert(counts.z == 1 && counts.w == 1, f"{counts.z} goings, {counts.w} comings")
     assert(length(at[1].xz - w.climber.at.xz) < 0.1, "the coming sounded away from the climber")
+}
+
+/// Walked by another sim (`bout`, a floor's player): while free, the climber stands where the
+/// walk put it, however the stick is held; a blink then carries it from there, 3.6 m back.
+@test
+fn walked_by_another_the_climber_moves_only_in_its_moves() {
+    var w = spawn()
+    w.wolf = fight::new_wolf(Level {}, vec2(-60.0, -20.0), 0.0)
+    let walked = Walked { feet: vec3(4.0, 0.0, 2.0), heading: 0.0, speed: 1.4 }
+    for _ in 0..10 {
+        read(mut w, stick(x: 1.0, y: 1.0))
+        bout(Level {}, mut w, walked, yaw: 0.0, dt: 1.0 / 60.0)
+    }
+    assert(length(w.climber.at - walked.feet) < 1.0e-5, "the free climber glided off")
+    var e = stick(x: 0.0, y: 0.0)
+    e.push(button(PadButton::East, down: true))
+    read(mut w, e)
+    bout(Level {}, mut w, walked, yaw: 0.0, dt: 1.0 / 60.0)
+    var up: Vec<Event> = Vec::new()
+    up.push(button(PadButton::East, down: false))
+    read(mut w, up)
+    for _ in 0..40 {
+        bout(Level {}, mut w, walked, yaw: 0.0, dt: 1.0 / 60.0)
+        if w.climber.act == Act::Free {
+            break
+        }
+        read(mut w, Vec::new())
+    }
+    let back = walked.feet.z - w.climber.at.z
+    print(f"walked: the blink went {back} m back")
+    assert(abs(back - 3.6) < 0.05, f"the blink went {back} m back")
 }

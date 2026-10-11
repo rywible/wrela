@@ -467,8 +467,8 @@ pub fn report(f: Fawn) -> String {
 
 // ---- tests ---------------------------------------------------------------------------------------
 
-/// Level open ground with nothing on it, for the tests.
-struct Flat: Copy + GpuData {}
+/// Level open ground with nothing on it, and no water: for the tests (here and `encounter`).
+pub struct Flat: Copy + GpuData {}
 
 impl Terrain for Flat {
     fn height(self, x: f32, z: f32) -> f32 {
@@ -503,7 +503,7 @@ impl Occluders for Open {
     }
 }
 
-const DRY = Water {
+pub const DRY = Water {
     meres: [vec4(0.0); 2],
     springs: [vec2(0.0); 8],
     spring_count: 0,

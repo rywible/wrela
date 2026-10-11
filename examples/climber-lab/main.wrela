@@ -10,13 +10,14 @@
 use climber::body::{BLADE_THICK, BLADE_WIDTH, GUARD_AT, HEAD, HEAD_RADIUS, POINT_AT}
 use climber::cape::{AROUND, DOWN, POINTS, body_frame, flat}
 use climber::darkness::MOST
+use climber::draw::{WolfCoat, wolf_bones}
 use climber::figure::{Figure, figure}
 use climber::fight::{World, present, spawn, sword_at, tick}
 use climber::moves::Act
-use engine::gait::{between, palette}
+use engine::gait::between
 use engine::present::{Snapshots, short_way}
 use engine::realize::{Mesh, realize_once}
-use engine::render::{Lights, Look, MAX_BONES, View, shade, skin, unlit_shadow, view}
+use engine::render::{Lights, MAX_BONES, View, shade, skin, unlit_shadow, view}
 use engine::run::run
 use std::gpu::{
     ClipPosition, ComparisonSampler, Cull, DepthTexture, GpuBuffer, VertexIndex,
@@ -26,7 +27,6 @@ use std::io::print
 use std::math::TAU
 use std::time::{now, since}
 use std::transform::{scale, translate}
-use wolf::creature::Coat
 
 pub struct Lab {
     snaps: Snapshots<World>,
@@ -231,15 +231,6 @@ fn drop(w: Wispel, colour: vec3) -> vec4 {
     vec4(colour, 1.0)
 }
 
-/// The wolf's colours: its coat's.
-pub struct WolfCoat: Copy + GpuData {}
-
-impl Look<Coat> for WolfCoat {
-    fn surface(self, c: Coat, rest: vec3, fp: f32) -> (vec3, f32) {
-        (vec3(c.albedo.r, c.albedo.g, c.albedo.b), 0.8)
-    }
-}
-
 /// A box's frame: its middle at `at`, its axes `x`, `y` (square to each other, unit), each side
 /// `half` from the middle.
 fn boxed(at: vec3, x: vec3, y: vec3, half: vec3) -> mat4 {
@@ -297,11 +288,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     }
     // The wolf between its two ticks.
     let walker = between(a.wolf.walker, w.wolf.walker, b.alpha)
-    write(
-        mut s.palette,
-        0,
-        palette(wolf::creature::skeleton(), climber::fight::WOLF_BODY, walker).bones,
-    )
+    write(mut s.palette, 0, wolf_bones(a.wolf, w.wolf, b.alpha, origin: vec3(0.0)))
     // The camera: from the side of the line between the climber and the wolf, far enough to
     // keep both and the space round them in the frame (a judge's view, not the player's), eased.
     let wolf_at = walker.root.pos
