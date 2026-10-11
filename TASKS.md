@@ -25,10 +25,10 @@ that does each part.
   clean lines).
 - The climber (vision.md: a floor-length cape all round, no arms or legs, a kabuki mask, a
   telekinetic great sword) and one fight against a creature, in the Last Green at the ring's
-  glade. The sword, the blink, the cape's cloth on the ground and the darkness fight the wolf in
-  `examples/climber`. Next: the hem through the grass, hit reactions, sound cues, the camera, the
-  wolf on the fawn's senses (`engine/senses.wrela`), then the climber in place of the floor's
-  stand-in (Climber and fight spike).
+  glade. The climber is the floor's player, with its cape's cloth and darkness; it fights the
+  wolf in `examples/climber`. Next: the hem through the grass, hit reactions, sound cues, the
+  camera, the wolf on the fawn's senses (`engine/senses.wrela`), then the fight in the floor
+  (Climber and fight spike).
 - The place's sounds. On main: steps by ground, wind in the leaves, water, the mixer, and the
   piano with its blind gate (`tools/listening.py`, for the owner's ears). Next: the climber's hem
   and the fight's cues in the mix, kept clear over the beds (Climber and fight spike).

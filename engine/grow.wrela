@@ -18,6 +18,8 @@
 
 use noise::{noise2, rand}
 use place::{Event, EventKind, Keeper, Map, Relation, RouteKind, to_segment}
+use events::events
+use soil::{Soil, soil_from}
 use std::io::print
 use std::math::TAU
 use std::time::phase
@@ -386,13 +388,29 @@ pub struct Tree: Copy {
     pub seed: u32,
 }
 
+impl Tree {
+    /// Each point every `step` m along a log's stem as it lies, from its root (`LOG_LENGTH` of its
+    /// height): `f` with the point and how far along it is (0 to 1).
+    pub fn each_along(self, step: f32, f: fn(vec2, f32)) {
+        let len = self.tall * LOG_LENGTH
+        var s = 0.0
+        while s < len {
+            f(self.at + self.fall * s, s / len)
+            s += step
+        }
+    }
+}
+
+/// The share of a fallen tree's height its stem lies along (its crown's top breaks off).
+pub const LOG_LENGTH: f32 = 0.85
+
 /// No pin or keeper.
 pub const NONE: u32 = 4294967295
 
 /// No year: a cell no event opened.
 pub const NEVER: i32 = -2147483648
 
-fn sapling(at: vec2, kind: u32, year: i32, tall: f32, seed: u32, h: Habit) -> Tree {
+pub(package) fn sapling(at: vec2, kind: u32, year: i32, tall: f32, seed: u32, h: Habit) -> Tree {
     Tree {
         at,
         kind,
@@ -679,99 +697,6 @@ fn water(g: Grid, heights: [f32]) -> (Vec<f32>, Vec<f32>) {
     (g.blur(wet, 1), acc)
 }
 
-// ---- the soil -----------------------------------------------------------------------------------
-
-/// What a place's soil is. Rock: bare, or a skin over it. Thin: stony, on crests and steep
-/// slopes. Loam: the brown earth of the gentle slopes. Colluvium: deep, crept down into the
-/// hollows and the slopes' feet. Alluvium: laid by water on the valley floors. Gley: waterlogged,
-/// grey. Peat: so wet that what dies there doesn't rot.
-pub enum SoilKind: Copy + Eq + Fieldless {
-    Rock,
-    Thin,
-    Loam,
-    Colluvium,
-    Alluvium,
-    Gley,
-    Peat,
-}
-
-/// A place's soil: its kind, its depth to rock (m), and how well crops would do in it (0 to 1).
-pub struct Soil: Copy {
-    pub kind: SoilKind,
-    pub depth: f32,
-    pub fertile: f32,
-}
-
-/// How far round a place its soil reads the ground's shape (m): the mean of the curvatures at
-/// both, so that a bump smaller than the first doesn't make a hollow; the slope at the first.
-pub const SOIL_SPANS = [12.0, 32.0]
-
-/// The soil at a place: the ground's curvature there (`lap`, the Laplacian of its height, 1/m;
-/// positive in a hollow), its slope, how much of it is rock, and its wetness (`water`'s).
-///
-/// Weathering makes soil from rock, fastest under a thin soil and slower as the soil deepens
-/// (Heimsath and others, 1997); creep moves it downhill in proportion to the slope. Where the
-/// ground is convex the two balance at a depth that is thinner the sharper the crest; where it is
-/// concave the soil gathers (colluvium). Past the angle a soil can hold (about 30°), it slides
-/// off. The valley floors, wet from their catchment and nearly level, hold what the water laid
-/// (alluvium); wetter still, the soil is waterlogged (gley), then peat.
-pub fn soil(lap: f32, slope: f32, rock: f32, wet: f32) -> Soil {
-    var depth = if lap < 0.0 {
-        clamp(0.5 * log(CREST / max(-lap, 1.0e-4)), 0.05, 1.2)
-    } else {
-        min(1.2 + 150.0 * lap, 2.5)
-    }
-    depth *= (1.0 - smoothstep(0.6, 1.0, slope)) * (1.0 - rock)
-    let kind = if rock > 0.6 || depth < 0.08 {
-        SoilKind::Rock
-    } else if wet > 0.9 && slope < 0.05 {
-        SoilKind::Peat
-    } else if wet > 0.75 {
-        SoilKind::Gley
-    } else if wet > 0.6 && slope < 0.06 && depth > 0.8 {
-        SoilKind::Alluvium
-    } else if lap > 0.0025 && depth > 1.0 {
-        SoilKind::Colluvium
-    } else if depth < 0.35 {
-        SoilKind::Thin
-    } else {
-        SoilKind::Loam
-    }
-    let base = match kind {
-        SoilKind::Rock => 0.0,
-        SoilKind::Thin => 0.25,
-        SoilKind::Loam => 0.6,
-        SoilKind::Colluvium => 0.75,
-        SoilKind::Alluvium => 0.95,
-        SoilKind::Gley => 0.35,
-        SoilKind::Peat => 0.15,
-    }
-    let fertile = base * smoothstep(0.05, 0.6, depth) * (1.0 - 0.5 * smoothstep(0.3, 0.7, slope))
-    Soil { kind, depth, fertile }
-}
-
-/// `soil` at `p` on `ground`, with its wetness `wet` there.
-pub fn soil_of<G: Ground>(ground: G, p: vec2, wet: f32) -> Soil {
-    let h = ground.height(p.x, p.y)
-    var lap = 0.0
-    var slope = 0.0
-    for k in 0..2 {
-        let d = SOIL_SPANS[k]
-        let e = ground.height(p.x + d, p.y)
-        let w = ground.height(p.x - d, p.y)
-        let n = ground.height(p.x, p.y - d)
-        let s = ground.height(p.x, p.y + d)
-        lap += 0.5 * (e + w + n + s - 4.0 * h) / (d * d)
-        if k == 0 {
-            slope = length(vec2(e - w, n - s)) / (2.0 * d)
-        }
-    }
-    soil(lap, slope, ground.rock(p), wet)
-}
-
-/// The crest's curvature (1/m) under which weathering and creep balance at a soil 0.3 m deep.
-const CREST: f32 = 0.012
-
 /// The tallest a tree may grow at `p` for the map's sightlines to hold: below each `Seen`
 /// relation's cone that `p` is in, by `SIGHT_CLEAR` (and a `Hidden` one's from where it's
 /// revealed). The cone runs from a player's eye at the relation's place to its site, a few metres
@@ -867,30 +792,11 @@ pub fn survey<G: Ground>(ground: G, m: Map, g: Grid) -> Land {
         thin[c] = max(max(smoothstep(0.15, 0.8, convex), crest) * (1.0 - wet[c]), rock[c])
     }
     let thin = g.blur(thin, 1)
-    // The soil: from the ground's shape at `SOIL_SPANS`, its rock and its water.
+    // The soil: from the ground's shape at `SOIL_SPANS`, read off the heights as `soil_of` reads
+    // the ground, its rock and its water.
     var soils: Vec<Soil> = Vec::with_capacity(nn)
     for c in 0..nn {
-        let i = i32(c % g.nx)
-        let j = i32(c / g.nx)
-        var lap = 0.0
-        for d in SOIL_SPANS {
-            let r = i32(max(round(d / g.cell), 1.0))
-            let span = f32(r) * g.cell
-            let around = heights[g.index(i + r, j)] +
-                heights[g.index(i - r, j)] +
-                heights[g.index(i, j - r)] +
-                heights[g.index(i, j + r)]
-            lap += 0.5 * (around - 4.0 * heights[c]) / (span * span)
-        }
-        let r = i32(max(round(SOIL_SPANS[0] / g.cell), 1.0))
-        let slope = length(
-            vec2(
-                heights[g.index(i + r, j)] - heights[g.index(i - r, j)],
-                heights[g.index(i, j - r)] - heights[g.index(i, j + r)],
-            ),
-        ) /
-            (2.0 * f32(r) * g.cell)
-        soils.push(soil(lap, slope, rock[c], wet[c]))
+        soils.push(soil_from(|q| g.sample(heights, q), g.centre(c), rock[c], wet[c]))
     }
     let lines = sightlines(ground, m)
     // Each route's box, a route's width and 30 m more round it: a cell outside it is far from it.
@@ -1141,9 +1047,8 @@ fn splat(band: mut Band, g: Grid, trees: [Tree], habits: [Habit]) {
     for m in band.members {
         let t = trees[m]
         let c = t.at + t.lean
-        let r = t.reach + 0.5
+        let r = t.reach + CROWN_PAD
         let h = habits[t.kind]
-        let stop = h.shade * min(t.tall / 3.0, 1.0)
         let lo = g.ij(c - vec2(r))
         let span = i32(ceil(2.0 * r / g.cell)) + 1
         for dj in 0..span {
@@ -1157,18 +1062,28 @@ fn splat(band: mut Band, g: Grid, trees: [Tree], habits: [Habit]) {
                     let k = u32(j) * g.nx + u32(i)
                     let d = length(g.centre(k) - c)
                     if d < r {
-                        let w = 1.0 - smoothstep(0.55 * r, r, d)
+                        let shade = crown_shade(t, h, d)
                         let at = (u32(j) - band.j0) * g.nx + u32(i)
-                        band.light[at] *= 1.0 - stop * w
-                        if h.thorny {
-                            band.thorn[at] = max(band.thorn[at], w)
-                        }
+                        band.light[at] *= 1.0 - shade.x
+                        band.thorn[at] = max(band.thorn[at], shade.y)
                     }
                 }
             }
         }
     }
 }
+
+/// What a living tree's crown does to the ground `d` from its middle (`at + lean`): the share of
+/// the light it stops, and the thorn cover it gives (a thorny shrub's), each 0 to 1, and softened
+/// toward its edge, `CROWN_PAD` past its reach (`canopy`, and the bake's tiles).
+pub fn crown_shade(t: Tree, h: Habit, d: f32) -> vec2 {
+    let r = t.reach + CROWN_PAD
+    let w = 1.0 - smoothstep(0.55 * r, r, d)
+    vec2(h.shade * min(t.tall / 3.0, 1.0) * w, if h.thorny { w } else { 0.0 })
+}
+
+/// How far past its reach a crown shades the ground (m).
+pub const CROWN_PAD: f32 = 0.5
 
 /// Light at the ground (each crown stops its share, softened a cell each way), thorn cover from
 /// thorny shrubs and fresh logs, over grid `g`. The crowns are splatted a band of rows at a time,
@@ -1191,7 +1106,7 @@ pub fn canopy(g: Grid, trees: [Tree], habits: [Habit], year: i32) -> (Vec<f32>, 
     for t in trees {
         if t.state == State::Alive && t.tall > 0.8 {
             let c = t.at + t.lean
-            let r = t.reach + 0.5
+            let r = t.reach + CROWN_PAD
             let j0 = clamp(i32(floor((c.y - r - g.lo.y) / g.cell)), 0, i32(g.nz) - 1)
             let j1 = clamp(i32(floor((c.y + r - g.lo.y) / g.cell)), 0, i32(g.nz) - 1)
             for b in (u32(j0) / BAND)..(u32(j1) / BAND + 1) {
@@ -1210,11 +1125,8 @@ pub fn canopy(g: Grid, trees: [Tree], habits: [Habit], year: i32) -> (Vec<f32>, 
     // A fresh log and the tangle of its crown keep grazers off what grows in it.
     for t in trees {
         if t.state == State::Log && year - t.fell < 25 && t.tall > 6.0 {
-            let len = t.tall * 0.85
-            var s = 0.0
-            while s < len {
-                let p = t.at + t.fall * s
-                let wide = 1.0 + 3.0 * s / len
+            t.each_along(g.cell * 0.7, |p, along| {
+                let wide = 1.0 + 3.0 * along
                 for k in 0..3 {
                     let side = vec2(-t.fall.y, t.fall.x) * (f32(k) - 1.0) * wide
                     if g.holds(p + side) {
@@ -1222,8 +1134,7 @@ pub fn canopy(g: Grid, trees: [Tree], habits: [Habit], year: i32) -> (Vec<f32>, 
                         thorn[c] = max(thorn[c], 0.9)
                     }
                 }
-                s += g.cell * 0.7
-            }
+            })
         }
     }
     // Light at the ground: what comes down through the crowns, and what comes in from the side
@@ -1449,11 +1360,11 @@ fn recruit_row(row: mut Row, cx: Cx, b: Bins, f: Fields, year: i32) {
 }
 
 /// What every step of the history reads: the map, its species, the land and the grain.
-borrow struct Cx {
-    map: borrow Map,
-    habits: [Habit],
-    land: borrow Land,
-    grain: Grain,
+pub(package) borrow struct Cx {
+    pub(package) map: borrow Map,
+    pub(package) habits: [Habit],
+    pub(package) land: borrow Land,
+    pub(package) grain: Grain,
 }
 
 fn recruit(cx: Cx, b: Bins, f: Fields, year: i32) -> Vec<Tree> {
@@ -1641,16 +1552,11 @@ fn live(l: mut Life, cx: Cx, f: Fields, year: i32) {
 /// Whether log `t` lies across a place people keep in `year` (a cell under it, each 2 m along).
 fn across_kept(cx: Cx, t: Tree, year: i32) -> bool {
     let g = cx.land.grid
-    let len = t.tall * 0.85
-    var s = 0.0
-    while s < len {
-        let p = t.at + t.fall * s
-        if g.holds(p) && people_keep(cx.map, cx.land, g.cell_at(p), year) {
-            return true
-        }
-        s += 2.0
-    }
-    false
+    var across = false
+    t.each_along(2.0, |p, _| {
+        across = across || (g.holds(p) && people_keep(cx.map, cx.land, g.cell_at(p), year))
+    })
+    across
 }
 
 /// Which way a dead tree comes down: the way it leans (an edge tree leans to the light), else any.
@@ -1665,7 +1571,7 @@ pub fn rotate(v: vec2, a: f32) -> vec2 {
 }
 
 /// Bares the soil within `r` of `p`.
-fn tear(g: Grid, bare: mut Vec<f32>, p: vec2, r: f32) {
+pub(package) fn tear(g: Grid, bare: mut Vec<f32>, p: vec2, r: f32) {
     g.each_within(p, r, |k, _| { bare[k] = 1.0 })
 }
 
@@ -1726,7 +1632,7 @@ impl Memories {
     }
 
     /// Records a disturbance on every cell of `g` within `r` of `p`.
-    fn disk(mut self, g: Grid, p: vec2, r: f32, mark: Mark, year: i32, strength: f32) {
+    pub(package) fn disk(mut self, g: Grid, p: vec2, r: f32, mark: Mark, year: i32, strength: f32) {
         g.each_within(p, r, |k, _| self.record(k, mark, year, strength))
     }
 }
@@ -1780,7 +1686,7 @@ fn new_herd<G: Ground>(ground: G, g: Grid) -> Herd {
 }
 
 /// Sets `g`'s cells within `r` of `p` to at least `v`.
-fn mark(grid: Grid, g: mut Vec<f32>, p: vec2, r: f32, v: f32) {
+pub(package) fn mark(grid: Grid, g: mut Vec<f32>, p: vec2, r: f32, v: f32) {
     grid.each_within(p, r, |k, _| { g[k] = max(g[k], v) })
 }
 
@@ -1798,20 +1704,11 @@ fn obstacles(herd: mut Herd, trees: [Tree], habits: [Habit], rocks: [vec3]) {
             } else if t.state != State::Log && t.tall > 2.0 {
                 mark(g, mut herd.cost, t.at, t.girth + 0.45, 1.0)
             } else if t.state == State::Log {
-                let len = t.tall * 0.85
                 let high = smoothstep(0.15, 0.5, t.girth)
-                var s = 0.0
-                while s < len {
-                    let r = t.girth * (1.0 - 0.6 * s / len)
-                    mark(
-                        g,
-                        mut herd.cost,
-                        t.at + t.fall * s,
-                        r + 0.3,
-                        0.2 + 0.8 * high * (1.0 - s / len),
-                    )
-                    s += g.cell
-                }
+                t.each_along(g.cell, |p, along| {
+                    let r = t.girth * (1.0 - 0.6 * along)
+                    mark(g, mut herd.cost, p, r + 0.3, 0.2 + 0.8 * high * (1.0 - along))
+                })
             }
         }
     }
@@ -2014,542 +1911,6 @@ fn browsing(herd: Herd, land: Land, f: mut Fields) {
     f.trodden = take trod
 }
 
-// ---- events -------------------------------------------------------------------------------------
-
-/// The highest crown over each cell of `g` (m): each living tree's crown, its whole reach.
-fn tops(trees: [Tree], g: Grid) -> Vec<f32> {
-    var top: Vec<f32> = Vec::filled(g.cells(), 0.0)
-    for t in trees {
-        let c = t.at + t.lean
-        let r = t.reach
-        if t.state != State::Alive || t.tall < 2.0 || !g.holds(c) {
-            continue
-        }
-        g.each_within(c, r, |k, _| { top[k] = max(top[k], t.tall) })
-    }
-    top
-}
-
-/// The grid a gale's shelter is read on (m).
-const SHELTER_CELL: f32 = 4.0
-
-/// A gale (`EventKind::Storm`) in `year`: its gusts at their strongest round `at`, dying away
-/// past `reach`, blowing toward `dir`, as strong as `share` (0 to 1). Whether a tree goes is its
-/// exposure against the gale's strength: how tall and slender it is, how shallow its roots are
-/// (its kind's, in wet or thin soil), and whether the crowns upwind of it stand higher and shelter
-/// it. A gentle gale throws only the most exposed; a full one, nearly all. A tree whose roots hold
-/// snaps instead, and one that stands loses its top to the gusts now and then. Then the gale's
-/// later gusts find the edges its first ones opened. The young are crushed where the thrown come
-/// down; the land remembers where they fell.
-fn gale(
-    trees: mut Vec<Tree>,
-    land: Land,
-    habits: [Habit],
-    f: mut Fields,
-    at: vec2,
-    reach: f32,
-    share: f32,
-    dir: vec2,
-    year: i32,
-    ei: u32,
-) {
-    let g = land.grid
-    let r = 1.3 * reach + 30.0
-    let shelter = Grid::over(at - vec2(r), at + vec2(r), SHELTER_CELL)
-    // Where its thrown crowns came down.
-    var down: Vec<f32> = Vec::filled(shelter.cells(), 0.0)
-    for gust in 0..GUSTS {
-        let top = tops(trees, shelter)
-        let strength = if gust == 0 { share } else { LATER_GUSTS * share }
-        for mut t in trees {
-            if t.state != State::Alive || t.pinned || t.tall <= 6.0 || !g.holds(t.at) {
-                continue
-            }
-            let d = length(t.at - at) + 8.0 * (noise2(t.at * 0.05) - 0.5)
-            let blow = 1.0 - smoothstep(0.85 * reach, 1.2 * reach, d)
-            if blow <= 0.0 {
-                continue
-            }
-            let h = habits[t.kind]
-            let c = g.cell_at(t.at)
-            // The crowns upwind, past its own: higher than it, and it's sheltered.
-            var upwind = 0.0
-            for k in 0..4 {
-                let q = t.at - dir * (t.reach + 3.0 + 6.0 * f32(k))
-                if shelter.holds(q) {
-                    upwind = max(upwind, top[shelter.cell_at(q)])
-                }
-            }
-            let exposed = 1.0 - smoothstep(-3.0, 3.0, upwind - t.tall)
-            let tall = smoothstep(6.0, 20.0, t.tall)
-            let slender = smoothstep(30.0, 80.0, t.tall / max(2.0 * t.girth, 0.05))
-            let shallow = max(smoothstep(0.55, 0.85, land.wet[c]), land.thin[c])
-            let hold = h.roots * (1.0 - 0.6 * shallow)
-            // Its exposure, 0 to 1: a tall, slender, shallow-rooted tree at a windward edge most.
-            let exposure = 0.35 * exposed + 0.3 * tall + 0.15 * slender + 0.2 * (1.0 - hold)
-            // The exposure it takes to throw a tree: less the stronger the gust, and at its
-            // strongest none, so a full gale throws the sheltered too.
-            let need = NEED * (1.0 - strength)
-            let p = blow * smoothstep(need - 0.2, need + 0.2, exposure)
-            let draw = rand(t.seed, 13 + u32(gust) * 31)
-            if draw < p {
-                t.died = year
-                t.cause = Cause::Wind
-                t.shaped = shaped(Shaper::Event, ei)
-                let crown = max(t.reach, 1.5)
-                if rand(t.seed, 19) < 0.15 + 0.55 * hold * (1.0 - shallow) {
-                    // Its roots held: its trunk snapped, and its stump stands.
-                    t.state = State::Snag
-                    t.cause = Cause::Snapped
-                    t.tall *= 0.25 + 0.35 * rand(t.seed, 23)
-                    t.reach = 0.3
-                } else {
-                    // Thrown, roots and all: its root plate torn up from the soil.
-                    t.state = State::Log
-                    t.fell = year
-                    t.fall = rotate(dir, (rand(t.seed, 3) - 0.5) * 0.5)
-                    tear(g, mut f.bare, t.at, 1.2 + 6.0 * t.girth)
-                }
-                let s = 0.5 + 0.5 * smoothstep(8.0, 22.0, t.tall)
-                f.memory.disk(g, t.at, max(crown, 3.0), Mark::Wind, year, s)
-                mark(shelter, mut down, t.at + t.fall * (0.6 * t.tall), crown, 1.0)
-                if t.state == State::Log {
-                    // Its stem, lying where it came down, crushes what it lands on too.
-                    var along = 0.0
-                    while along < 0.85 * t.tall {
-                        mark(shelter, mut down, t.at + t.fall * along, STEM_SWATH, 1.0)
-                        along += shelter.cell
-                    }
-                }
-            } else if draw < p + 0.25 * p * hold && !(t.cause == Cause::Snapped && t.died == year) {
-                // It stood, and the gusts broke its top: a crown that grows back from below the
-                // break.
-                t.cause = Cause::Snapped
-                t.died = year
-                t.shaped = shaped(Shaper::Event, ei)
-                t.tall *= 0.75
-                t.reach *= 0.7
-                f.memory.disk(g, t.at, max(t.reach, 2.0), Mark::Wind, year, 0.3)
-            }
-        }
-    }
-    // The young and the poles where the thrown came down round them (most of the ground within
-    // a crown's reach or two): crushed and broken by the falling stems and crowns, the smaller the
-    // likelier.
-    let near = shelter.blur(down, 2)
-    for mut t in trees {
-        if t.state == State::Alive && !t.pinned && t.tall <= POLES && shelter.holds(t.at) {
-            let crushed = (0.95 - 0.35 * smoothstep(4.0, POLES, t.tall)) *
-                smoothstep(0.2, 0.6, near[shelter.cell_at(t.at)])
-            if rand(t.seed, 29) < crushed {
-                t.state = State::Gone
-                t.died = year
-                t.cause = Cause::Wind
-            }
-        }
-    }
-}
-
-/// The tallest a tree beneath a gale's thrown crowns is broken by them (m).
-const POLES: f32 = 12.0
-
-/// How wide a swath a thrown tree's stem and its branches crush where it lies (m, each side).
-const STEM_SWATH: f32 = 2.0
-
-/// A gale's gusts: its first, then those that find the edges it opened, as strong as
-/// `LATER_GUSTS` of its first.
-const GUSTS: i32 = 2
-const LATER_GUSTS: f32 = 0.5
-
-/// The exposure a gust of no strength would need to throw a tree (the middle of the rise from
-/// none thrown to all).
-const NEED: f32 = 0.75
-
-/// A fire (`EventKind::Fire`) in `year` over `reach` round `at`, the wind blowing toward `wind`.
-/// It's lit on its upwind side (`UPWIND` of `reach` from `at`), so that its head runs through the
-/// middle. It runs over the land as fast as its fuel, dryness, slope and the wind let it (uphill
-/// and with the wind, faster), no further than `reach` from `at` (the weather that ends it), round
-/// what won't burn: open water, wet hollows, the trodden trails, rock (`runs`). It burns each
-/// place as hot as its fuel and the way it runs there make it: hot running with the wind through
-/// dead wood and resinous crowns, which it climbs into (a crown fire); cool where it backs into
-/// the wind (`burn`). A ground fire kills the young, and the trees whose bark is too thin for its
-/// heat; a thick-barked trunk lives through it, scarred (`scorch`). The land remembers how hot it
-/// burnt each place.
-fn fire(
-    trees: mut Vec<Tree>,
-    land: Land,
-    habits: [Habit],
-    f: mut Fields,
-    at: vec2,
-    reach: f32,
-    wind: vec2,
-    year: i32,
-    ei: u32,
-) {
-    let r = 1.15 * reach + 4.0
-    let g = Grid::over(at - vec2(r), at + vec2(r), land.grid.cell)
-    let lit = at - wind * (UPWIND * reach)
-    let fuel = fuel_of(trees, land, habits, f, g)
-    let when = runs(land, g, fuel, at, reach, lit, wind)
-    let heat = burn(land, g, fuel, when, lit, wind, mut f, year)
-    scorch(mut trees, habits, g, heat, year, ei)
-}
-
-/// How far upwind of a fire's middle it is lit (a share of its reach).
-const UPWIND: f32 = 0.6
-
-/// What a fire finds to burn in each cell of its grid: the ground's fuel (the grass or litter on
-/// it, and the dead wood lying and standing on it), how readily the crowns over it burn, and how
-/// dry it is (0 to 1).
-struct Fuel {
-    ground: Vec<f32>,
-    crowns: Vec<f32>,
-    dry: Vec<f32>,
-}
-
-/// The fuel in each cell of `g`.
-fn fuel_of(trees: [Tree], land: Land, habits: [Habit], f: Fields, g: Grid) -> Fuel {
-    let lg = land.grid
-    let nn = g.cells()
-    var ground: Vec<f32> = Vec::filled(nn, 0.0)
-    var crowns: Vec<f32> = Vec::filled(nn, 0.0)
-    var dry: Vec<f32> = Vec::filled(nn, 0.0)
-    for k in 0..nn {
-        let p = g.centre(k)
-        if !lg.holds(p) {
-            continue
-        }
-        let c = lg.cell_at(p)
-        if land.habitable[c] && !land.water[c] {
-            let litter = smoothstep(0.3, 0.8, f.shade_sum[c])
-            let worn = 1.0 - 0.8 * smoothstep(0.2, 0.5, f.trodden[c])
-            ground[k] = (0.35 + 0.4 * litter) * worn * (0.6 + 0.8 * noise2(p * 0.07 + vec2(31.0)))
-        }
-        dry[k] = 1.0 - smoothstep(0.5, 0.85, land.wet[c])
-    }
-    for t in trees {
-        if !g.holds(t.at) {
-            continue
-        }
-        if t.state == State::Log {
-            let len = t.tall * 0.85
-            var s = 0.0
-            while s < len {
-                let q = t.at + t.fall * s
-                if g.holds(q) {
-                    let k = g.cell_at(q)
-                    ground[k] += 0.5 * min(3.0 * t.girth, 1.0)
-                }
-                s += g.cell
-            }
-        } else if t.state == State::Snag {
-            let k = g.cell_at(t.at)
-            ground[k] += 0.3
-        } else if t.state == State::Alive && t.tall > 2.0 {
-            let burns = habits[t.kind].resin * smoothstep(2.0, 6.0, t.tall)
-            g.each_within(t.at + t.lean, t.reach, |k, _| { crowns[k] = max(crowns[k], burns) })
-        }
-    }
-    Fuel { ground, crowns, dry }
-}
-
-/// When a fire lit at `lit` reaches each cell of `g` (in its own units; `UNBURNT` where it
-/// doesn't): it takes a cell whose dry fuel is at least `TAKES`, no further than `reach` from
-/// `at`, as fast as the fuel, the wind and the slope let it.
-fn runs(land: Land, g: Grid, fuel: Fuel, at: vec2, reach: f32, lit: vec2, wind: vec2) -> Vec<f32> {
-    let lg = land.grid
-    let nn = g.cells()
-    var when: Vec<f32> = Vec::filled(nn, UNBURNT)
-    var done: Vec<bool> = Vec::filled(nn, value: false)
-    var heap = Heap { items: Vec::new() }
-    for k in 0..nn {
-        if length(g.centre(k) - lit) < LIT {
-            when[k] = 0.0
-            heap.push(0.0, k)
-        }
-    }
-    while !heap.items.is_empty() {
-        let top = heap.pop()
-        let c = top.y
-        if done[c] {
-            continue
-        }
-        done[c] = true
-        let p = g.centre(c)
-        let hc = lg.sample(land.heights, p)
-        let (i, j) = (i32(c % g.nx), i32(c / g.nx))
-        for k in 0..8 {
-            let n = vec2i(i, j) + NEIGHBOURS[k]
-            if n.x < 0 || n.y < 0 || n.x >= i32(g.nx) || n.y >= i32(g.nz) {
-                continue
-            }
-            let q = u32(n.y) * g.nx + u32(n.x)
-            let pq = g.centre(q)
-            let dry_fuel = fuel.ground[q] * fuel.dry[q]
-            let past = length(pq - at) + 18.0 * (noise2(pq * 0.03) - 0.5)
-            if done[q] || dry_fuel < TAKES || past > reach {
-                continue
-            }
-            let way = vec2(NEIGHBOURS[k])
-            let dist = length(way) * g.cell
-            let along = dot(way / length(way), wind)
-            let rise = (lg.sample(land.heights, pq) - hc) / dist
-            let pace = dry_fuel *
-                (1.0 + WITH_WIND * max(along, 0.0) - AGAINST_WIND * max(-along, 0.0)) *
-                clamp(1.0 + UPHILL * rise, SLOPE_PACE.x, SLOPE_PACE.y)
-            let t = when[c] + dist / max(pace, 0.02)
-            if t < when[q] {
-                when[q] = t
-                heap.push(t, q)
-            }
-        }
-    }
-    when
-}
-
-/// When a fire reaches a cell it never reaches.
-const UNBURNT: f32 = 1.0e9
-
-/// How near the fire's lighting a cell burns whatever its fuel (m), and the least fuel a cell must
-/// have, dry, to take a fire.
-const LIT: f32 = 6.0
-const TAKES: f32 = 0.12
-
-/// How the wind and the slope change a fire's pace: running with the wind, `1 + WITH_WIND` times
-/// as fast; backing into it, `1 - AGAINST_WIND`; up a slope of `rise`, `1 + UPHILL * rise`, held
-/// within `SLOPE_PACE`.
-const WITH_WIND: f32 = 1.2
-const AGAINST_WIND: f32 = 0.5
-const UPHILL: f32 = 4.0
-const SLOPE_PACE = vec2(0.4, 3.0)
-
-/// How hot a fire lit at `lit` burns each cell of `g` it reaches (0 to 1): as hot as its dry fuel,
-/// and hotter at its head, running with the wind, than at its back. Where the crowns over a cell
-/// are dry and resinous enough (`CROWNS`), it climbs into them: a crown fire, at least
-/// `CROWN_FIRE` hot. The land remembers how hot it burnt (`Mark::Fire`), and the ground is bared.
-fn burn(
-    land: Land,
-    g: Grid,
-    fuel: Fuel,
-    when: [f32],
-    lit: vec2,
-    wind: vec2,
-    f: mut Fields,
-    year: i32,
-) -> Vec<f32> {
-    let lg = land.grid
-    let nn = g.cells()
-    var heat: Vec<f32> = Vec::filled(nn, 0.0)
-    for k in 0..nn {
-        if when[k] >= UNBURNT {
-            continue
-        }
-        let p = g.centre(k)
-        let dry = fuel.dry[k]
-        let dry_fuel = fuel.ground[k] * dry
-        // Its head (1), running with the wind, its flanks, or its back (0), backing into it.
-        let head = 0.5 + 0.5 * dot(normalize(p - lit + vec2(1.0e-3)), wind)
-        let gusty = 0.7 + 0.6 * noise2(p * 0.05 + vec2(57.0))
-        var hot = clamp(1.4 * dry_fuel * (0.65 + 0.75 * head) * gusty, 0.0, 1.0)
-        let crowns = fuel.crowns[k]
-        if crowns * dry * (0.4 + 0.6 * head) * (dry_fuel + 0.3) > CROWNS {
-            hot = max(hot, CROWN_FIRE + (1.0 - CROWN_FIRE) * crowns)
-        }
-        heat[k] = hot
-        if lg.holds(p) {
-            let c = lg.cell_at(p)
-            f.bare[c] = max(f.bare[c], hot)
-            f.memory.record(c, Mark::Fire, year, hot)
-        }
-    }
-    heat
-}
-
-/// The crowns' fuel past which a fire climbs into them, and the least heat of a crown fire, which
-/// kills every tree it burns.
-const CROWNS: f32 = 0.45
-const CROWN_FIRE: f32 = 0.75
-
-/// What a fire's `heat` over `g` does to the trees. It burns the logs away as hot as it is, and
-/// some snags where it's hot. It kills a living tree as its heat passes its bark's shield (a
-/// species' `bark`, once its trunk is thick), and as it reaches a low crown; a crown fire kills
-/// every tree, and one shorter than `BURNT_AWAY` burns away whole. The dead stand; the living it
-/// reached are scarred (their `cause` the fire, their `died` its year).
-fn scorch(trees: mut Vec<Tree>, habits: [Habit], g: Grid, heat: [f32], year: i32, ei: u32) {
-    for mut t in trees {
-        if t.pinned || !g.holds(t.at) {
-            continue
-        }
-        let hot = heat[g.cell_at(t.at)]
-        if hot <= 0.0 {
-            continue
-        }
-        if t.state == State::Log {
-            if rand(t.seed, 17) < 1.3 * hot {
-                t.state = State::Gone
-            }
-        } else if t.state == State::Snag {
-            if hot > 0.6 && rand(t.seed, 17) < 0.4 {
-                t.state = State::Gone
-            }
-        } else if t.state == State::Alive {
-            // Its bark's shield, as thick as its trunk has grown; a low crown the flames reach.
-            let shield = habits[t.kind].bark * smoothstep(0.04, 0.35, t.girth)
-            let low = 0.8 * (1.0 - smoothstep(4.0, 12.0, t.tall))
-            let dies = if hot >= CROWN_FIRE || t.tall < BURNT_AWAY { 1.0 } else {
-                clamp((hot - 0.6 * shield) * 2.2 + low * hot, 0.0, 1.0)
-            }
-            if rand(t.seed, 17) < dies {
-                t.state = if t.tall < BURNT_AWAY { State::Gone } else { State::Snag }
-            }
-            if t.state != State::Alive || hot > 0.1 {
-                t.died = year
-                t.cause = Cause::Fire
-                t.shaped = shaped(Shaper::Event, ei)
-            }
-        }
-    }
-}
-
-/// The tallest tree a fire burns away whole (m); taller, it stands dead.
-const BURNT_AWAY: f32 = 3.0
-
-/// The tallest living tree within `reach` of `at` (of `kind`, unless it's `NONE`), if any.
-fn tallest_near(trees: [Tree], at: vec2, reach: f32, kind: u32) -> u32 {
-    var best = NONE
-    var tallest = 0.0
-    var i = 0
-    for t in trees {
-        if t.state == State::Alive &&
-            !t.pinned &&
-            (kind == NONE || t.kind == kind) &&
-            length(t.at - at) < reach &&
-            t.tall > tallest {
-            tallest = t.tall
-            best = i
-        }
-        i += 1
-    }
-    best
-}
-
-/// The map's events in `year`, and the trees it keeps sown in theirs.
-fn events(trees: mut Vec<Tree>, cx: Cx, f: mut Fields, year: i32) {
-    let g = cx.land.grid
-    var ei = 0
-    for e in cx.map.events {
-        if e.year == year || (year % 10 == 5 && year > 100 && matches_gaps(e)) {
-            match e.kind {
-                EventKind::Storm { at, reach, dir, share } => {
-                    gale(
-                        mut trees,
-                        cx.land,
-                        cx.habits,
-                        mut f,
-                        at,
-                        reach,
-                        share,
-                        normalize(dir),
-                        year,
-                        ei,
-                    )
-                },
-                EventKind::Fire { at, reach } => {
-                    fire(mut trees, cx.land, cx.habits, mut f, at, reach, cx.map.wind, year, ei)
-                },
-                EventKind::Fall { at, reach, kind, toward } => {
-                    let i = tallest_near(trees, at, reach, kind)
-                    if i != NONE {
-                        mut t = trees[i]
-                        t.state = State::Log
-                        t.died = year
-                        t.fell = year
-                        t.cause = Cause::Wind
-                        t.fall = normalize(toward - t.at + vec2(0.0, -0.001))
-                        t.shaped = shaped(Shaper::Event, ei)
-                        tear(g, mut f.bare, t.at, 4.0)
-                        f.memory.disk(g, t.at, max(t.reach, 3.0), Mark::Wind, year, 0.6)
-                    }
-                },
-                EventKind::Strike { at, reach } => {
-                    let i = tallest_near(trees, at, reach, NONE)
-                    if i != NONE {
-                        mut t = trees[i]
-                        t.died = year
-                        t.cause = Cause::Lightning
-                        t.state = State::Snag
-                        t.shaped = shaped(Shaper::Event, ei)
-                    }
-                },
-                EventKind::Gaps { block, chance, radius } => {
-                    // A gap, or none, in each block this decade; then one pass over the trees,
-                    // each against its own block's and its neighbours'.
-                    let bx = u32(ceil(f32(g.nx) * g.cell / block)) + 1
-                    let bz = u32(ceil(f32(g.nz) * g.cell / block)) + 1
-                    var gaps: Vec<vec4> = Vec::filled(bx * bz, vec4(0.0))
-                    for b in 0..(bx * bz) {
-                        let s = b.wrapping_mul(2654435761) ^ u32(year).wrapping_mul(40503)
-                        if rand(s, 1) < chance {
-                            let corner = g.lo + vec2(f32(b % bx), f32(b / bx)) * block
-                            let at = corner + vec2(rand(s, 2), rand(s, 3)) * block
-                            let reach = radius * (1.0 + rand(s, 4))
-                            gaps[b] = vec4(at, reach, rand(s, 5))
-                            tear(g, mut f.bare, at, reach * 0.7)
-                        }
-                    }
-                    for mut t in trees {
-                        if t.state != State::Alive || t.pinned || t.tall <= 6.0 {
-                            continue
-                        }
-                        let home = vec2i(floor((t.at - g.lo) / block))
-                        for dj in 0..3 {
-                            for di in 0..3 {
-                                let bi = home.x + i32(di) - 1
-                                let bj = home.y + i32(dj) - 1
-                                if bi >= 0 && bj >= 0 && bi < i32(bx) && bj < i32(bz) {
-                                    let gp = gaps[u32(bj) * bx + u32(bi)]
-                                    if gp.z > 0.0 && t.state == State::Alive {
-                                        let d = length(t.at - gp.xy) +
-                                            8.0 * (noise2(t.at * 0.05) - 0.5)
-                                        if d < gp.z && rand(t.seed, 13) < 0.9 {
-                                            t.state = State::Log
-                                            t.died = year
-                                            t.fell = year
-                                            t.cause = Cause::Wind
-                                            let dir = rotate(cx.map.wind, (gp.w - 0.5) * 1.2)
-                                            t.fall = rotate(dir, (rand(t.seed, 3) - 0.5) * 0.5)
-                                            t.shaped = shaped(Shaper::Event, ei)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-            }
-        }
-        ei += 1
-    }
-    var ki = 0
-    for k in cx.map.kept {
-        if k.year == year {
-            var t = sapling(k.at, k.kind, year, 0.5, 51111 + ki, cx.habits[k.kind])
-            t.pinned = true
-            t.shaped = shaped(Shaper::Kept, ki)
-            trees.push(t)
-        }
-        ki += 1
-    }
-}
-
-/// Whether an event happens every decade, not in a year of its own (the wind's small gaps).
-fn matches_gaps(e: Event) -> bool {
-    match e.kind {
-        EventKind::Gaps { .. } => true,
-        _ => false,
-    }
-}
-
 // ---- water --------------------------------------------------------------------------------------
 
 /// The streams: from each spring, and from each mere's outlet (the lowest point of its rim), down
@@ -2709,7 +2070,7 @@ fn drainage(land: Land) -> Vec<u32> {
 }
 
 /// A cell's eight neighbours.
-const NEIGHBOURS = [
+pub(package) const NEIGHBOURS = [
     vec2i(-1, -1),
     vec2i(0, -1),
     vec2i(1, -1),
@@ -2817,14 +2178,59 @@ pub struct History {
     pub log: Vec<String>,
 }
 
+// ---- the start -----------------------------------------------------------------------------------
+
+/// What the land was left as when the history begins: what the level's past (a people's, say)
+/// made of each cell of the land's grid, and the trees it left standing. The level works it out
+/// from the land (`simulate`'s `past`); the history grows from it.
+pub struct Start {
+    /// Each cell's `Left`, as a byte.
+    pub left: Vec<u8>,
+    /// The trees the past left standing, as they stand when the history begins (`grown`).
+    pub standing: Vec<Tree>,
+}
+
+impl Start {
+    /// A start with no past: every cell an old wood.
+    pub fn wild(land: Land) -> Start {
+        Start { left: Vec::filled(land.grid.cells(), u8(u32(Left::Wild))), standing: Vec::new() }
+    }
+}
+
+/// What a cell was left as when the history begins.
+pub enum Left: Copy + Eq + Fieldless {
+    /// Untouched: an old wood (`first_forest`).
+    Wild,
+    /// Tilled: bare ground, which the pioneers whose seed the wind carries take first.
+    Tilled,
+    /// Grazed: grass, with only the trees the past left standing.
+    Grazed,
+    /// Cut over and over (coppice): a young wood, all of an age.
+    Cut,
+    /// Built on, or walked bare: nothing grows there at the start.
+    Built,
+}
+
+/// A tree of `kind` that took root in `born`, as its years have grown it by `year`: in the open
+/// (`open`: its crown as wide as its kind's, its trunk thickening fastest) or among others.
+pub fn grown(at: vec2, kind: u32, born: i32, year: i32, seed: u32, h: Habit, open: bool) -> Tree {
+    let age = f32(year - born)
+    let tall = h.tallest * (1.0 - exp(-age * h.rate / h.tallest))
+    var t = sapling(at, kind, born, tall, seed, h)
+    t.reach = h.crown * tall * if open { 1.0 } else { 0.75 }
+    t.girth = min(0.9, 0.0011 * h.girth * age * if open { 1.0 } else { 0.8 })
+    t.light = if open { 1.0 } else { 0.5 }
+    t
+}
+
 /// The first forest: a wood grown in a stroke, each tree where its ground suits it, of an age
 /// drawn from an old wood's, its height and crown from its age; and saplings between. The
 /// history's centuries then sort it out (spike 17 grew its first 400 years a step at a time, for
 /// the same structure).
-fn first_forest(cx: Cx, year: i32) -> Vec<Tree> {
+fn first_forest(cx: Cx, start: Start, year: i32) -> Vec<Tree> {
     let g = cx.land.grid
     var rows: Vec<Row> = Vec::from_fn(g.nz, |j| Row { j, out: Vec::new() })
-    rows.par_each_mut(|r| first_row(mut r, cx, year))
+    rows.par_each_mut(|r| first_row(mut r, cx, start.left, year))
     var trees: Vec<Tree> = Vec::new()
     for mut r in rows {
         trees.append(mut r.out)
@@ -2832,7 +2238,10 @@ fn first_forest(cx: Cx, year: i32) -> Vec<Tree> {
     trees
 }
 
-fn first_row(row: mut Row, cx: Cx, year: i32) {
+/// Row `row.j`'s first trees: an old wood on the wild cells (as their ground suits each species);
+/// the pioneers' saplings on tilled ground; a young wood, all of an age, where it was cut over;
+/// nothing on the grazed and the built.
+fn first_row(row: mut Row, cx: Cx, left: [u8], year: i32) {
     let g = cx.land.grid
     // A canopy tree each 25 m², and a sapling each 12, whatever the grid.
     let area = g.cell * g.cell
@@ -2842,6 +2251,10 @@ fn first_row(row: mut Row, cx: Cx, year: i32) {
         let c = row.j * g.nx + i
         // The herd's lawns are open when the history begins: the herd has grazed them since.
         if !cx.land.habitable[c] || cx.land.lawn[c] {
+            continue
+        }
+        let was = Left::from_u32(u32(left[c])).unwrap()
+        if was == Left::Grazed || was == Left::Built {
             continue
         }
         let wet = cx.land.wet[c]
@@ -2858,7 +2271,9 @@ fn first_row(row: mut Row, cx: Cx, year: i32) {
         for k in 0..cx.habits.len() {
             let h = cx.habits[k]
             let suits = takes(h, wet, thin)
-            weights[k] = if mixed > 0.0 {
+            weights[k] = if was == Left::Tilled {
+                suits * (if h.windborne { 1.0 } else { 0.05 })
+            } else if mixed > 0.0 {
                 mix[k] * max(suits, 0.3)
             } else {
                 suits * (if h.thorny { 0.15 } else { 1.0 })
@@ -2877,7 +2292,18 @@ fn first_row(row: mut Row, cx: Cx, year: i32) {
         let h = cx.habits[kind]
         let draw = rand(c, 1)
         let at = g.centre(c) + vec2(rand(c, 3) - 0.5, rand(c, 4) - 0.5) * g.cell
-        if draw < min(canopy, 0.95) && !h.thorny {
+        if was == Left::Tilled {
+            // The first of the pioneers, a few years old, here and there.
+            if draw < TILLED_TAKEN * young {
+                let tall = 0.5 + 1.5 * rand(c, 6)
+                row.out.push(sapling(at, kind, year - i32(rand(c, 5) * 6.0), tall, c, h))
+            }
+        } else if was == Left::Cut && draw < min(canopy, 0.95) && !h.thorny {
+            // Its last cutting's regrowth.
+            row.out.push(
+                grown(at, kind, year - i32(5.0 + 20.0 * rand(c, 5)), year, c, h, open: false),
+            )
+        } else if draw < min(canopy, 0.95) && !h.thorny {
             // An old wood's ages: most trees in their middle years.
             let age = h.lifespan * (0.15 + 0.6 * rand(c, 5))
             let soil = 1.0 - 0.6 * thin
@@ -2895,6 +2321,9 @@ fn first_row(row: mut Row, cx: Cx, year: i32) {
         }
     }
 }
+
+/// The share of the old wood's saplings that tilled ground has taken when the history begins.
+const TILLED_TAKEN: f32 = 0.3
 
 /// Counts of the living, standing dead and fallen.
 fn census(trees: [Tree], kinds: u32, year: i32) -> String {
@@ -2924,7 +2353,8 @@ fn census(trees: [Tree], kinds: u32, year: i32) -> String {
 
 /// The history of `m` over the land from `lo` to `hi`, its species `habits` (at most 8), at
 /// `grain`: from year `grain.from` to the map's present. `rocks` are what the herd walks round
-/// (x, z, radius). `trips` is the herd's trips a year.
+/// (x, z, radius). `trips` is the herd's trips a year. `past` is what the level's past left the
+/// land as when the history begins (`Start::wild` for none).
 pub fn simulate<G: Ground>(
     ground: G,
     m: Map,
@@ -2933,6 +2363,7 @@ pub fn simulate<G: Ground>(
     lo: vec2,
     hi: vec2,
     rocks: [vec3],
+    past: fn(Land) -> Start,
 ) -> History {
     phase("survey")
     place::refuse(m)
@@ -2960,20 +2391,17 @@ pub fn simulate<G: Ground>(
     let step = grain.step
     var year = m.present - grain.years
     {
+        var start = past(land)
         let cx = Cx { map: m, habits, land, grain }
-        trees = first_forest(cx, year)
+        trees = first_forest(cx, start, year)
+        trees.append(mut start.standing)
     }
     // The kept trees planted before the history begins, standing at its start as their years
     // have grown them.
     var ki = 0
     for k in m.kept {
         if k.year < year {
-            let h = habits[k.kind]
-            let age = f32(year - k.year)
-            let tall = h.tallest * (1.0 - exp(-age * h.rate / h.tallest))
-            var t = sapling(k.at, k.kind, k.year, tall, 51111 + ki, h)
-            t.reach = h.crown * tall
-            t.girth = min(0.9, 0.0011 * h.girth * age)
+            var t = grown(k.at, k.kind, k.year, year, 51111 + ki, habits[k.kind], open: true)
             t.pinned = true
             t.shaped = shaped(Shaper::Kept, ki)
             trees.push(t)
@@ -3068,323 +2496,5 @@ pub fn simulate<G: Ground>(
         thorn: take f.thorn,
         memory: take f.memory,
         log,
-    }
-}
-
-// ---- tests --------------------------------------------------------------------------------------
-
-/// The soil is thin on a sharp crest and deeper on a gentle one, deeper again on the flat, and
-/// deepest in a hollow; it slides off a steep slope; the valley floor's is laid by water, and
-/// the wettest ground's is waterlogged, then peat; rock has none.
-@test
-fn the_soil_is_thin_on_crests_and_deep_in_hollows() {
-    let sharp = soil(lap: -0.008, slope: 0.1, rock: 0.0, wet: 0.3)
-    let gentle = soil(lap: -0.004, slope: 0.1, rock: 0.0, wet: 0.3)
-    let flat = soil(lap: 0.0, slope: 0.02, rock: 0.0, wet: 0.3)
-    let hollow = soil(lap: 0.006, slope: 0.1, rock: 0.0, wet: 0.3)
-    assert(sharp.kind == SoilKind::Thin, f"a sharp crest's soil is {u32(sharp.kind)}")
-    assert(sharp.depth < gentle.depth && gentle.depth < flat.depth, "crests no thinner")
-    assert(flat.depth < hollow.depth && hollow.kind == SoilKind::Colluvium, "no colluvium")
-    assert(
-        soil(lap: 0.0, slope: 1.2, rock: 0.0, wet: 0.3).kind == SoilKind::Rock,
-        "a cliff holds a soil",
-    )
-    assert(
-        soil(lap: 0.0, slope: 0.02, rock: 0.0, wet: 0.65).kind == SoilKind::Alluvium,
-        "no alluvium",
-    )
-    assert(soil(lap: 0.0, slope: 0.2, rock: 0.0, wet: 0.8).kind == SoilKind::Gley, "no gley")
-    assert(soil(lap: 0.0, slope: 0.02, rock: 0.0, wet: 0.95).kind == SoilKind::Peat, "no peat")
-    assert(
-        soil(lap: 0.0, slope: 0.02, rock: 0.9, wet: 0.3).kind == SoilKind::Rock,
-        "rock holds a soil",
-    )
-    assert(
-        soil(lap: 0.0, slope: 0.02, rock: 0.0, wet: 0.65).fertile > flat.fertile,
-        "alluvium no richer",
-    )
-    assert(flat.fertile > sharp.fertile, "a crest's soil as rich as the flat's")
-}
-
-/// A fire runs with the wind, hottest at its head, and stops at wet ground; it kills the
-/// thin-barked trees it reaches, and the thick-barked live through it, scarred.
-@test
-fn a_fire_runs_with_the_wind_and_spares_thick_bark() {
-    var land = open_land(80.0)
-    let g = land.grid
-    // A wet strip across the wind's way, downwind of the fire's middle.
-    for k in 0..g.cells() {
-        let p = g.centre(k)
-        if p.x > 20.0 && p.x < 26.0 {
-            land.wet[k] = 0.95
-        }
-    }
-    let habits = [
-        test_habit(bark: 0.1, resin: 0.1, roots: 0.5),
-        test_habit(bark: 0.85, resin: 0.1, roots: 0.5),
-    ]
-    var trees: Vec<Tree> = Vec::new()
-    stand(
-        mut trees,
-        habits,
-        vec2(-70.0, -70.0),
-        vec2(70.0, 70.0),
-        apart: 6.0,
-        tall: 18.0,
-        girth: 0.5,
-    )
-    var f = test_fields(g)
-    let wind = vec2(1.0, 0.0)
-    fire(mut trees, land, habits, mut f, vec2(0.0), reach: 60.0, wind: wind, year: 100, ei: 0)
-    // How hot it burnt the cells behind its lighting (upwind of it), and those at its head.
-    var back = vec2(0.0)
-    var head = vec2(0.0)
-    var past_strip = 0
-    for k in 0..g.cells() {
-        let p = g.centre(k)
-        let burnt = f.memory.mark[k] == u8(u32(Mark::Fire))
-        if burnt && p.x > -60.0 && p.x < -42.0 && abs(p.y) < 20.0 {
-            back += vec2(f.memory.strength[k], 1.0)
-        }
-        if burnt && p.x > 0.0 && p.x < 18.0 && abs(p.y) < 20.0 {
-            head += vec2(f.memory.strength[k], 1.0)
-        }
-        if burnt && p.x > 26.0 {
-            past_strip += 1
-        }
-    }
-    assert(
-        back.y > 20.0 && head.y > 20.0,
-        f"burnt {back.y} cells at its back, {head.y} at its head",
-    )
-    let (b, h) = (back.x / back.y, head.x / head.y)
-    assert(h > b + 0.15, f"its head burnt {h} hot, its back {b}")
-    assert(past_strip == 0, f"{past_strip} cells burnt past the wet strip")
-    // The trees in the burn's middle: what share of each kind it killed.
-    var killed = [vec2(0.0), vec2(0.0)]
-    for t in trees {
-        if abs(t.at.y) < 20.0 && t.at.x > -40.0 && t.at.x < 15.0 {
-            let dead = if t.state == State::Alive { 0.0 } else { 1.0 }
-            killed[t.kind] += vec2(dead, 1.0)
-            if t.state == State::Alive {
-                assert(t.cause == Cause::Fire && t.died == 100, "a survivor isn't scarred")
-            }
-        }
-    }
-    let thin = killed[0].x / killed[0].y
-    let thick = killed[1].x / killed[1].y
-    assert(thin > 0.8 && thick < 0.5 * thin, f"killed {thin} of the thin bark, {thick} of thick")
-}
-
-/// A gale throws most at the stand's windward edge, and less in its lee; where its roots hold a
-/// tree snaps, or stands and loses its top; the young are crushed where the thrown come down.
-@test
-fn a_gale_throws_the_windward_edge_and_crushes_the_young() {
-    let land = open_land(80.0)
-    let g = land.grid
-    let habits = [test_habit(bark: 0.5, resin: 0.5, roots: 0.8)]
-    var trees: Vec<Tree> = Vec::new()
-    stand(
-        mut trees,
-        habits,
-        vec2(-30.0, -30.0),
-        vec2(30.0, 30.0),
-        apart: 4.0,
-        tall: 11.0,
-        girth: 0.3,
-    )
-    let tall = trees.len()
-    stand(
-        mut trees,
-        habits,
-        vec2(-28.0, -28.0),
-        vec2(28.0, 28.0),
-        apart: 4.0,
-        tall: 5.0,
-        girth: 0.08,
-    )
-    var f = test_fields(g)
-    let dir = vec2(1.0, 0.0)
-    gale(
-        mut trees,
-        land,
-        habits,
-        mut f,
-        vec2(0.0),
-        reach: 50.0,
-        share: 0.5,
-        dir: dir,
-        year: 100,
-        ei: 0,
-    )
-    var edge = vec2(0.0)
-    var lee = vec2(0.0)
-    var thrown = 0
-    var snapped = 0
-    var stood = 0
-    var crushed = 0
-    var i = 0
-    for t in trees {
-        let down = (t.state == State::Log || t.state == State::Snag) && t.died == 100
-        if i < tall {
-            if t.at.x < -28.0 {
-                edge += vec2(if down { 1.0 } else { 0.0 }, 1.0)
-            } else if t.at.x > 10.0 {
-                lee += vec2(if down { 1.0 } else { 0.0 }, 1.0)
-            }
-            if t.state == State::Log && t.died == 100 {
-                assert(dot(t.fall, dir) > 0.7, f"a tree thrown toward {t.fall.x}, {t.fall.y}")
-                thrown += 1
-            } else if t.state == State::Snag && t.cause == Cause::Snapped {
-                snapped += 1
-            } else if t.state == State::Alive && t.cause == Cause::Snapped && t.died == 100 {
-                stood += 1
-            }
-        } else if t.state == State::Gone && t.cause == Cause::Wind {
-            crushed += 1
-        }
-        i += 1
-    }
-    let (e, l) = (edge.x / edge.y, lee.x / lee.y)
-    assert(e > 2.0 * l, f"it threw {e} of the windward edge, {l} of the lee")
-    assert(
-        thrown > 0 && snapped > 0 && stood > 0,
-        f"{thrown} thrown, {snapped} snapped, {stood} stood",
-    )
-    assert(crushed > 0, "no young crushed")
-    var marked = 0
-    for m in f.memory.mark {
-        if m == u8(u32(Mark::Wind)) {
-            marked += 1
-        }
-    }
-    assert(marked > 100, f"the land remembers the gale in {marked} cells")
-}
-
-/// A full gale throws or snaps nearly every tree in its core, sheltered or not: the gap it
-/// leaves stays open.
-@test
-fn a_full_gale_opens_its_core() {
-    let land = open_land(80.0)
-    let habits = [test_habit(bark: 0.5, resin: 0.5, roots: 0.8)]
-    var trees: Vec<Tree> = Vec::new()
-    stand(
-        mut trees,
-        habits,
-        vec2(-40.0, -40.0),
-        vec2(40.0, 40.0),
-        apart: 4.0,
-        tall: 18.0,
-        girth: 0.4,
-    )
-    var f = test_fields(land.grid)
-    gale(
-        mut trees,
-        land,
-        habits,
-        mut f,
-        vec2(0.0),
-        reach: 40.0,
-        share: 0.99,
-        dir: vec2(1.0, 0.0),
-        year: 100,
-        ei: 0,
-    )
-    var core = vec2(0.0)
-    for t in trees {
-        if length(t.at) < 24.0 {
-            core += vec2(if t.state == State::Alive { 1.0 } else { 0.0 }, 1.0)
-        }
-    }
-    assert(core.x < 0.1 * core.y, f"{core.x} of {core.y} trees stand in the gale's core")
-}
-
-/// Flat, open, dry land `half` metres each way of the origin, in 2 m cells.
-fn open_land(half: f32) -> Land {
-    let grid = Grid::over(vec2(-half), vec2(half), 2.0)
-    let nn = grid.cells()
-    Land {
-        grid,
-        heights: Vec::filled(nn, 0.0),
-        habitable: Vec::filled(nn, value: true),
-        wet: Vec::filled(nn, 0.3),
-        thin: Vec::filled(nn, 0.0),
-        soil: Vec::filled(nn, soil(lap: 0.0, slope: 0.02, rock: 0.0, wet: 0.3)),
-        exposed: Vec::filled(nn, 0.0),
-        cap: Vec::filled(nn, 0.0),
-        capped_by: Vec::filled(nn, NONE),
-        lawn: Vec::filled(nn, value: false),
-        kept: Vec::filled(nn, NONE),
-        opened: Vec::filled(nn, NEVER),
-        browsed: Vec::filled(nn, UNBROWSED),
-        water: Vec::filled(nn, value: false),
-        region: Vec::filled(nn, 0),
-    }
-}
-
-/// Bare fields over `g`: full light, nothing trodden, nothing remembered.
-fn test_fields(g: Grid) -> Fields {
-    let nn = g.cells()
-    Fields {
-        light: Vec::filled(nn, 1.0),
-        thorn: Vec::filled(nn, 0.0),
-        browse: Vec::filled(nn, 0.0),
-        trodden: Vec::filled(nn, 0.0),
-        bare: Vec::filled(nn, 0.0),
-        seed: Vec::filled(nn, 0.0),
-        shade_sum: Vec::filled(nn, 0.0),
-        memory: Memories::new(nn),
-    }
-}
-
-/// A broadleaf's habit, but for its bark, resin and roots.
-fn test_habit(bark: f32, resin: f32, roots: f32) -> Habit {
-    Habit {
-        tallest: 30.0,
-        rate: 0.5,
-        need: 0.3,
-        lifespan: 300.0,
-        crown: 0.2,
-        shade: 0.8,
-        palatable: 0.5,
-        reach: 30.0,
-        mature: 30.0,
-        stands: 1.0,
-        rots: 1.0,
-        wet: 0.0,
-        thin: 0.0,
-        deep: 0.0,
-        beyond: 0.0,
-        windborne: false,
-        thorny: false,
-        suckers: false,
-        bark,
-        resin,
-        roots,
-    }
-}
-
-/// A stand of trees `tall` and `girth` thick, every `apart` from `lo` to `hi`, its kinds in turn.
-fn stand(
-    trees: mut Vec<Tree>,
-    habits: [Habit],
-    lo: vec2,
-    hi: vec2,
-    apart: f32,
-    tall: f32,
-    girth: f32,
-) {
-    var y = lo.y
-    while y <= hi.y {
-        var x = lo.x
-        while x <= hi.x {
-            let n = trees.len()
-            let kind = n % habits.len()
-            var t = sapling(vec2(x, y), kind, 0, tall, n * 7919 + 13, habits[kind])
-            t.girth = girth
-            trees.push(t)
-            x += apart
-        }
-        y += apart
     }
 }

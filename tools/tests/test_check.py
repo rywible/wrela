@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 
@@ -204,9 +205,9 @@ class FocusedCheck(unittest.TestCase):
         self.assertIn("fake link failure", result.stdout + result.stderr)
         self.assertFalse((self.root / "test.json").exists())
 
-    def test_threads_follow_cpu_and_software_gpu_limits(self):
+    def test_threads_follow_cpu_limits_on_any_gpu(self):
         for cores, software, threads in ((1, None, 1), (2, None, 2), (16, None, 4),
-                                         (16, "1", 1), (16, "0", 1), (16, "", 4)):
+                                         (16, "1", 4), (2, "1", 2), (16, "", 4)):
             with self.subTest(cores=cores, software=software):
                 result = self.check("--package=wrela-syntax", cores=cores, software=software)
                 self.assert_focused_success(result)
@@ -231,6 +232,16 @@ class FocusedCheck(unittest.TestCase):
                 self.assertEqual(scratch.parent, self.root / "target")
                 self.assertEqual(scratch.exists(), fail)
 
+
+    def test_a_failed_programs_scratch_is_removed_six_hours_later(self):
+        old, recent = self.root / "target/test-scratch-old", self.root / "target/test-scratch-new"
+        for path, age in ((old, 7 * 3600), (recent, 3600)):
+            (path / "inside").mkdir(parents=True)
+            then = time.time() - age
+            os.utime(path, (then, then))
+        self.assert_focused_success(self.check("--package=wrela-syntax", "normal_case"))
+        self.assertFalse(old.exists())
+        self.assertTrue(recent.exists())
 
 if __name__ == "__main__":
     unittest.main()
