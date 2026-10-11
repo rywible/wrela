@@ -8,8 +8,9 @@
 #                           then runs `cargo check --workspace --all-targets` there and `wrela
 #                           check` on every package whose files either side changed: its own
 #                           directory or a package it depends on. A change to the compiler or to
-#                           std checks every package. About a minute once warm; the first run
-#                           builds the CLI (several minutes).
+#                           std checks every package. About a minute once warm (with the shared
+#                           constants cache); the first run builds the CLI (several minutes),
+#                           and a change to std or the compiler can bake constants again.
 #
 # It exits 1 if main conflicts with the branch (merge main in and resolve it), and 1 if the merge
 # doesn't build or a package doesn't check. It checks what is committed, not the working tree.
@@ -21,6 +22,12 @@ export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$(python3 tools/resources.py)}"
 # The throwaway tree's build keeps its own target, at the same path each run, so it stays warm.
 work="$root/target/premerge"
 export CARGO_TARGET_DIR="$work/target"
+# A package's constants come from the session's shared cache when there is one (a floor's history
+# bakes in minutes otherwise); it's keyed on the code that computes each, so a stale value can't
+# be served.
+if [ -z "${WRELA_CONST_CACHE:-}" ] && [ -d /mnt/project-files/.wrela-consts ]; then
+  export WRELA_CONST_CACHE=/mnt/project-files/.wrela-consts
+fi
 
 git fetch -q origin main
 if ! tree=$(git merge-tree --write-tree HEAD origin/main); then
@@ -73,16 +80,15 @@ for d in sorted(roots):
 ')
 if [ -n "$packages" ]; then
   cargo build -q --release -p wrela --bin wrela
-  failed=0
-  for p in $packages; do
-    if ! "$CARGO_TARGET_DIR/release/wrela" check "$p" >/dev/null 2>&1; then
-      echo "  wrela check $p: fails"
-      "$CARGO_TARGET_DIR/release/wrela" check "$p" 2>&1 | head -20 | sed 's/^/    /'
-      failed=1
-    fi
-  done
+  # The packages at once, as many as the cores; each failure with its first diagnostics.
+  failures=$(echo "$packages" | xargs -P "$CARGO_BUILD_JOBS" -I{} sh -c \
+    '"$1" check "$2" > /dev/null 2>&1 || echo "$2"' _ "$CARGO_TARGET_DIR/release/wrela" {})
   echo "  wrela check: $(echo "$packages" | wc -l) packages, $((SECONDS - start))s"
-  [ "$failed" = 0 ] || exit 1
+  for p in $failures; do
+    echo "  wrela check $p: fails"
+    "$CARGO_TARGET_DIR/release/wrela" check "$p" 2>&1 | head -20 | sed 's/^/    /'
+  done
+  [ -z "$failures" ] || exit 1
 else
   echo "  wrela check: no package reads a changed file"
 fi
