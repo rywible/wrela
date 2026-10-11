@@ -22,10 +22,42 @@ use std::gpu::{
 }
 use std::math::{PI, TAU}
 
-/// A clump of leaves: a sphere of them on a limb.
+/// A clump of leaves on a limb: a sphere of them `radius` across, or, `squash` below 1, a
+/// cushion: as wide, `squash` as tall, so a broad lit top over a flat shaded underside.
 pub struct Clump: Copy + GpuData {
     pub centre: vec3,
     pub radius: f32,
+    pub squash: f32 = 1.0,
+}
+
+impl Clump {
+    /// How far `p` is outside it (m; below 0 inside): exact on its axes, and for a sphere.
+    pub fn distance(self, p: vec3) -> f32 {
+        let v = p - self.centre
+        let l = max(length(vec3(v.x, v.y / self.squash, v.z)), 1.0e-4)
+        // In its unsquashed frame `p` is `l - radius` out; back in the world that's as much
+        // shorter as the ray from its centre is.
+        (l - self.radius) * length(v) / l
+    }
+
+    /// Its surface's normal at the point nearest `p` (unit).
+    pub fn normal(self, p: vec3) -> vec3 {
+        let v = p - self.centre
+        let n = vec3(v.x, v.y / (self.squash * self.squash), v.z)
+        let l = length(n)
+        if l < 1.0e-4 { vec3(0.0, 1.0, 0.0) } else { n / l }
+    }
+
+    /// The point of its surface (at `at` of its radius) in direction `dir` from its centre.
+    pub fn point(self, dir: vec3, at: f32) -> vec3 {
+        self.centre + vec3(dir.x, dir.y * self.squash, dir.z) * (self.radius * at)
+    }
+
+    /// Its surface's area over a sphere's of its radius: 1 for a sphere, less for a cushion
+    /// (a spheroid's, within a few per cent).
+    pub fn area_share(self) -> f32 {
+        pow((1.0 + 2.0 * pow(self.squash, 1.6)) / 3.0, 1.0 / 1.6)
+    }
 }
 
 /// A plant's leaves: a card's width at the nearest level (m), how many times the cards cover
@@ -148,8 +180,13 @@ impl Plant {
 
     /// A clump of leaves at `at`, `radius` across.
     pub fn clump(mut self, at: vec3, radius: f32) {
+        self.cushion(at, radius, squash: 1.0)
+    }
+
+    /// A clump of leaves at `at`, `radius` across and `squash` as tall (`Clump`).
+    pub fn cushion(mut self, at: vec3, radius: f32, squash: f32) {
         if !self.clumps.is_full() {
-            self.clumps.push(Clump { centre: at, radius })
+            self.clumps.push(Clump { centre: at, radius, squash })
         }
     }
 
@@ -161,11 +198,9 @@ impl Plant {
         var g = vec3(0.0)
         for i in 0..self.clumps.len() {
             let c = self.clumps[i]
-            let v = p - c.centre
-            let l = max(length(v), 1.0e-4)
-            let w = exp(-k * (l - c.radius))
+            let w = exp(-k * c.distance(p))
             s += w
-            g += v / l * w
+            g += c.normal(p) * w
         }
         if s <= 0.0 {
             return (1.0e9, vec3(0.0, 1.0, 0.0))
@@ -186,7 +221,8 @@ impl Plant {
     pub fn top(self) -> f32 {
         var top = 0.0
         for i in 0..self.clumps.len() {
-            top = max(top, self.clumps[i].centre.y + self.clumps[i].radius)
+            let c = self.clumps[i]
+            top = max(top, c.centre.y + c.radius * c.squash)
         }
         for i in 0..self.limbs.len() {
             for k in 0..4 {
@@ -219,7 +255,8 @@ impl Plant {
         let s = self.leaves.size
         for i in 0..self.clumps.len() {
             let r = self.clumps[i].radius
-            n += max(4.0 * PI * r * r * self.leaves.cover / (s * s), 16.0)
+            let area = 4.0 * PI * r * r * self.clumps[i].area_share()
+            n += max(area * self.leaves.cover / (s * s), 16.0)
         }
         (u32(n) + 15) / 16 * 16
     }
@@ -252,8 +289,7 @@ impl Surface for Plant {
             // The clump nearest the point decides it most.
             var nearest = 1.0e9
             for i in 0..self.clumps.len() {
-                let c = self.clumps[i]
-                let d = length(p - c.centre) - c.radius
+                let d = self.clumps[i].distance(p)
                 if d < nearest {
                     nearest = d
                     which = self.limbs.len() + i
@@ -267,8 +303,7 @@ impl Surface for Plant {
         if i < self.limbs.len() {
             return self.limbs[i].distance(p)
         }
-        let c = self.clumps[min(i - self.limbs.len(), self.clumps.len() - 1)]
-        length(p - c.centre) - c.radius
+        self.clumps[min(i - self.limbs.len(), self.clumps.len() - 1)].distance(p)
     }
 
     fn part_name(self, i: u32) -> PartName {
@@ -294,8 +329,7 @@ impl Surface for Plant {
         let k = self.blend
         var s = 0.0
         for c in 0..self.clumps.len() {
-            let cl = self.clumps[c]
-            let d = length(p - cl.centre) - cl.radius + if c == j { by } else { 0.0 }
+            let d = self.clumps[c].distance(p) + if c == j { by } else { 0.0 }
             s += exp(-k * d)
         }
         min(self.wood(p), -log(max(s, 1.0e-30)) / k)
@@ -412,22 +446,23 @@ fn card_place(plant: Plant, n: u32, seed: u32, id: u32) -> (u32, vec3, vec3, u32
     var total = 0.0
     for i in 0..plant.clumps.len() {
         let r = plant.clumps[i].radius
-        total += r * r
+        total += r * r * plant.clumps[i].area_share()
     }
     var at = f * total
     var which = plant.clumps.len() - 1
     for i in 0..plant.clumps.len() {
         let r = plant.clumps[i].radius
-        if at < r * r {
+        let a = r * r * plant.clumps[i].area_share()
+        if at < a {
             which = i
             break
         }
-        at -= r * r
+        at -= a
     }
     let c = plant.clumps[which]
     let k = seed.wrapping_mul(7919) ^ id.wrapping_mul(2654435761)
     let dir = direction(rand(k, 3), rand(k, 4))
-    (which, c.centre + dir * (c.radius * (0.72 + 0.28 * sqrt(rand(k, 5)))), dir, k)
+    (which, c.point(dir, 0.72 + 0.28 * sqrt(rand(k, 5))), dir, k)
 }
 
 /// Each of a plant's cards' middle and size as `cook_cards` places them (seed `seed`), on
@@ -447,9 +482,11 @@ pub fn card_centres(plant: Plant, seed: u32) -> Vec<vec4> {
 /// clump's own (so each clump reads as a lump of light), its depth in the crown.
 @compute(64)
 pub fn cook_cards(plant: Plant, n: u32, seed: u32, out: mut Slots<Card>, id: GlobalId) {
-    let (which, p, dir, k) = card_place(plant, n, seed, id.x)
+    let (which, p, _dir, k) = card_place(plant, n, seed, id.x)
     let (d, g) = plant.crown(p)
-    let normal = normalize(normalize(g) * 0.45 + dir * 0.55)
+    // Mostly the crown's (its mass's) normal: lit by its own clump's, each clump read as its own
+    // lump of light, a crown as confetti (M6's lookdev, the arbiter's G2).
+    let normal = normalize(g)
     let size = plant.leaves.size * pick(k, 6, lo: 0.8, hi: 1.2)
     let tint = vec4(rand(k, 7), rand(k, 8), rand(k, 9), rand(which, 10))
     out[id] = Card {
@@ -478,26 +515,12 @@ pub fn card_tint(card: Card) -> vec3 {
 
 // ---- a leaf's look (its cards', its impostor's and its volume's alike) -------------------------
 
-/// Leaf `which` of a card of seed `seed`: its tilt off the crown's normal (each part in
-/// [-0.5, 0.5)), and the draw that changes its age (`leaf_age`, in [-0.5, 0.5)).
-pub fn leaf_draws(seed: u32, which: u32) -> (vec3, f32) {
-    let tilt = vec3(
-        rand(seed, 100 + which) - 0.5,
-        rand(seed, 120 + which) - 0.5,
-        rand(seed, 140 + which) - 0.5,
-    )
-    (tilt, rand(seed, 160 + which) - 0.5)
-}
-
-/// A leaf's normal: its crown's, `crown_n`, tilted by its draws (`leaf_draws`).
-pub fn leaf_normal(crown_n: vec3, tilt: vec3) -> vec3 {
-    normalize(crown_n + tilt * 0.9)
-}
-
 /// A leaf's colour by its age: young where its crown faces up (`up`, the y of the crown's
-/// normal), old deep down, and moved by its own draw (`aged`, in [-0.5, 0.5); 0 for none).
-pub fn leaf_age(leaves: Leaves, up: f32, aged: f32) -> vec3 {
-    mix(leaves.old, leaves.young, vec3(saturate(0.35 + 0.65 * up + 0.3 * aged)))
+/// normal), old deep down. A leaf has no tilt or age of its own: each leaf lit and coloured apart
+/// from its neighbours read as confetti, not as a mass turning from light to shade (M6's lookdev,
+/// forms.md row 1); a leaf's own shape shows at a mass's edge.
+pub fn leaf_age(leaves: Leaves, up: f32) -> vec3 {
+    mix(leaves.old, leaves.young, vec3(saturate(0.35 + 0.65 * up)))
 }
 
 /// A leaf's albedo: its colour (`leaf_age`) and half its tint (its instance's and its card's,
@@ -974,4 +997,26 @@ pub fn full(v: VertexIndex, z: f32) -> ClipPosition {
     let x = f32((v.index << 1) & 2) * 2.0 - 1.0
     let y = f32(v.index & 2) * 2.0 - 1.0
     ClipPosition { position: vec4(x, y, z, 1.0) }
+}
+
+// ---- tests -----------------------------------------------------------------------------------------
+
+/// A cushion clump is as wide as its radius and `squash` as tall, its top faces up and its side
+/// out; at `squash` 1 it's the sphere it was.
+@test
+fn a_cushion_is_wide_and_flat_topped() {
+    let c = Clump { centre: vec3(1.0, 2.0, 3.0), radius: 2.0, squash: 0.5 }
+    let top = vec3(1.0, 3.0, 3.0)
+    let side = vec3(3.0, 2.0, 3.0)
+    assert(abs(c.distance(top)) < 1.0e-4, f"its top is {c.distance(top)} m off")
+    assert(abs(c.distance(side)) < 1.0e-4, f"its side is {c.distance(side)} m off")
+    assert(abs(c.distance(vec3(1.0, 4.0, 3.0)) - 1.0) < 1.0e-4, "a metre over its top")
+    assert(dot(c.normal(top + vec3(0.3, 0.0, 0.0)), vec3(0.0, 1.0, 0.0)) > 0.9, "a tilted top")
+    assert(dot(c.normal(side), vec3(1.0, 0.0, 0.0)) > 0.999, "its side faces out")
+    assert(abs(length(c.point(vec3(0.0, 1.0, 0.0), 1.0) - top)) < 1.0e-4, "its top's point")
+    assert(c.area_share() < 0.8 && c.area_share() > 0.6, f"area share {c.area_share()}")
+    let ball = Clump { centre: vec3(0.0), radius: 1.0, squash: 1.0 }
+    let p = vec3(0.7, 1.9, -0.4)
+    assert(abs(ball.distance(p) - (length(p) - 1.0)) < 1.0e-5, "a sphere")
+    assert(abs(ball.area_share() - 1.0) < 1.0e-5, "a sphere's area")
 }
