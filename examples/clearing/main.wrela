@@ -17,7 +17,7 @@ use engine::run::run
 use engine::air::{Air, Tables, hazy, tables}
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::paint::{
-    Develop, Exposure, Look, Metering, dab_map, develop, glow_blur, glow_down, meter,
+    Develop, Exposure, Look, Metering, dab_map, develop, glow_blur, glow_down, lines, meter,
 }
 use engine::lit::Lighting
 use engine::plant::{Plant, Wind, full, leaf_atlas}
@@ -290,8 +290,10 @@ pub struct Clearing {
     /// The clouds as the last frame drew them (where their field had drifted).
     clouds: Clouds,
     /// The scene: linear colour and tags, depth, motion (this frame's and the last's, swapped
-    /// each frame); and the output's history, two to swap.
+    /// each frame); and the output's history, two to swap. The scene's second target takes the
+    /// lines (`paint::lines`), and becomes the scene.
     scene: Texture<Rgba16Float>,
+    scene_b: Texture<Rgba16Float>,
     depth: DepthTexture,
     /// Which far tree won each pixel of the prepass (`impostor::far_cut`).
     ids: Texture<R32Uint>,
@@ -459,6 +461,7 @@ pub fn init() -> Clearing {
             seed: 0,
         },
         scene: texture::<Rgba16Float>(width: 1, height: 1),
+        scene_b: texture::<Rgba16Float>(width: 1, height: 1),
         depth: depth_texture(width: 1, height: 1),
         ids: texture::<R32Uint>(width: 1, height: 1),
         motion: texture::<Rgba16Float>(width: 1, height: 1),
@@ -628,6 +631,7 @@ fn copy_palette(s: mut Clearing) {
 /// forest's levels fitted to the scene's scale.
 fn resize(s: mut Clearing, width: u32, height: u32, w: u32, h: u32) {
     s.scene = texture::<Rgba16Float>(width: w, height: h)
+    s.scene_b = texture::<Rgba16Float>(width: w, height: h)
     s.depth = depth_texture(width: w, height: h)
     s.ids = texture::<R32Uint>(width: w, height: h)
     s.motion = texture::<Rgba16Float>(width: w, height: h)
@@ -1077,6 +1081,16 @@ fn finish(s: mut Clearing, cam: Camera, body: Box3, creature_on: bool, width: u3
         last_jitter: engine::view::jitter_of(max(cam.frame, 1) - 1),
         moving: s.moves_in,
     }
+    let looked = !test_build() || s.carried.view == View::Look
+    // The lines, on the scene's own samples, so temporal AA anti-aliases them.
+    if looked {
+        label("lines")
+        let d = Develop { cam, look: Look {}, out }
+        let lp = begin_pass(mut s.scene_b)
+        fullscreen(lp, lines.bind(d, s.scene, s.depth))
+        lp.end()
+        swap(mut s.scene, mut s.scene_b)
+    }
     label("temporal")
     // This frame's history is drawn over the older one: the last frame's is read.
     swap(mut s.history, mut s.last_history)
@@ -1094,7 +1108,7 @@ fn finish(s: mut Clearing, cam: Camera, body: Box3, creature_on: bool, width: u3
     )
     label("look")
     // A test's views of the scene and the history (`test_view`), in a test build only.
-    if !test_build() || s.carried.view == View::Look {
+    if looked {
         let m = Metering { fresh: if s.frames == 0 { 1 } else { 0 }, ..METERING }
         dispatch(meter.bind(s.scene, m, exposure: mut s.exposure), groups: 1)
         let d = Develop { cam, look: Look {}, out }
