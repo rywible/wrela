@@ -173,15 +173,19 @@ impl Font {
     /// The byte offset in `text` nearest `x` pixels from its start, at `size`: where a click
     /// puts a text cursor.
     pub fn offset_at(self, text: str, size: f32, x: f32) -> u32 {
-        var at = text.len()
-        let _ = self.walk(text, size, 0.0, |i, g, pen| {
-            let w = self.glyphs[g].advance * size
-            let past = x < pen + 0.5 * w
-            if past {
+        var at = 0
+        var distance = abs(x)
+        let end = self.walk(text, size, 0.0, |i, _g, pen| {
+            let d = abs(x - pen)
+            if d <= distance {
+                distance = d
                 at = i
             }
-            !past
+            true
         })
+        if abs(x - end) <= distance {
+            at = text.len()
+        }
         at
     }
 
@@ -219,6 +223,24 @@ pub fn previous(s: str, i: u32) -> u32 {
 fn decode_replaces_what_isnt_a_character() {
     assert(decode("a狼", 1) == (29436, 4))
     assert(decode("a狼", 2) == (65533, 3))
+}
+
+@test
+fn offset_uses_kerned_caret_positions() {
+    let font = Font::of(Face::Sans)
+    // The Rust performance harness copies this source with deliberately empty baked fonts.
+    // The real UI package has glyphs and exercises the regression below.
+    if font.count() == 0 {
+        return
+    }
+    let a = font.glyph_index(65)
+    let v = font.glyph_index(86)
+    let advance = font.glyph(a).advance
+    let next = advance + font.kern(a, v)
+    assert(next < advance)
+    let x = 0.25 * (next + advance)
+    assert(x > 0.5 * next && x < 0.5 * advance)
+    assert(font.offset_at("AV", 1.0, x) == 1)
 }
 
 /// The two fonts, and where their glyphs are in one atlas: `width` × `height` texels.

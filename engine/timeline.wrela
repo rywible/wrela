@@ -25,6 +25,11 @@ impl<T: Clone> Ring<T> {
 
     /// The value for the next tick; the oldest falls out when the ring is full.
     pub fn push(mut self, value: take T) {
+        if self.capacity == 0 {
+            self.first += 1
+            self.next += 1
+            return
+        }
         match self.claim() {
             None => self.items.push(take value),
             Some(at) => self.items[at] = take value,
@@ -79,6 +84,11 @@ impl<W: Clone> Ring<Saved<W>> {
     /// Keeps `world` as tick `tick`'s keyframe: copied into the oldest one's place once the
     /// ring is full (`clone_into`), so a steady timeline allocates nothing for it (#43 §5.2).
     pub fn keep(mut self, tick: Tick, world: W) {
+        if self.capacity == 0 {
+            self.first += 1
+            self.next += 1
+            return
+        }
         match self.claim() {
             None => self.items.push(Saved { tick, world: world.clone() }),
             Some(at) => {
@@ -98,6 +108,20 @@ impl<W: Clone> Ring<Saved<W>> {
             }
         }
         panic("no keyframe that early: the correction is too late to replay")
+    }
+
+    /// Replaces the world in the keyframe taken before `tick`, while a correction replays it.
+    fn refresh(mut self, tick: Tick, world: W) {
+        var i = self.first
+        while i < self.next {
+            let at = i % self.capacity
+            if self.items[at].tick == tick {
+                world.clone_into(mut self.items[at].world)
+                return
+            }
+            i += 1
+        }
+        panic("a replayed keyframe is no longer held")
     }
 }
 
@@ -157,6 +181,9 @@ impl<W: Clone + StateHash, I: Clone> Timeline<W, I> {
         self.inputs.replace(t, take input)
         var changed = 0
         for tick in from..self.tick {
+            if tick % KEYFRAME_TICKS == 0 {
+                self.saved.refresh(tick, self.world)
+            }
             step(mut self.world, self.inputs.at(tick))
             let h = state_hash(self.world)
             if h != self.hashes.at(tick) {
@@ -176,4 +203,43 @@ impl<W: Clone + StateHash, I: Clone> Timeline<W, I> {
     pub fn checksum_at(self, t: Tick) -> u64 {
         self.hashes.at(t)
     }
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+/// A zero-capacity ring accepts values while retaining none of them.
+@test
+fn a_zero_capacity_ring_stays_empty() {
+    var pushed: Ring<u32> = Ring::new(0)
+    pushed.push(7)
+    assert(pushed.first() == pushed.end(), "a zero-capacity ring has a nonempty tick range")
+    assert(!pushed.holds(0), "a zero-capacity ring retained a pushed value")
+
+    var saved: Ring<Saved<u32>> = Ring::new(0)
+    saved.keep(tick: 4, world: 9)
+    assert(saved.first() == saved.end(), "a zero-capacity ring has a saved tick range")
+    assert(!saved.holds(0), "a zero-capacity ring retained a saved value")
+}
+
+struct TestWorld: Clone + StateHash {
+    total: u32,
+}
+
+@deterministic
+fn add_input(world: mut TestWorld, input: u32) {
+    world.total += input
+}
+
+/// Replaying a correction refreshes the later keyframes, so a correction based on one of them
+/// does not put back the world from before the first correction.
+@test
+fn a_later_correction_keeps_an_earlier_one() {
+    var timeline: Timeline<TestWorld, u32> = Timeline::new(TestWorld { total: 0 }, history: 64)
+    for _ in 0..40 {
+        timeline.advance(0, add_input)
+    }
+    let _ = timeline.correct(t: 5, input: 10, step: add_input)
+    assert(timeline.world().total == 10, "the first correction was not replayed")
+    let _ = timeline.correct(t: 20, input: 1, step: add_input)
+    assert(timeline.world().total == 11, "the second correction lost the first")
 }

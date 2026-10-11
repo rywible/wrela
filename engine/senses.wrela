@@ -69,7 +69,11 @@ const BAND: f32 = 0.1
 pub fn sense<O: Occluders>(s: Senses, me: Transform, it: Presence, o: O) -> Stimulus {
     let d = it.at.xz - me.pos.xz
     let dist = length(d)
-    let heard = it.loud * clamp(1.0 - dist / s.hearing, 0.0, 1.0)
+    let heard = if s.hearing > 0.0 {
+        it.loud * clamp(1.0 - dist / s.hearing, 0.0, 1.0)
+    } else {
+        0.0
+    }
     let moving = clamp(length(it.velocity) / MOVING, 0.0, 1.0)
     let range = s.sight * mix(STILL, 1.0, moving)
     var seen = 0.0
@@ -303,6 +307,16 @@ fn sight_is_keen_ahead_weak_to_the_side_and_blind_behind() {
     let s = sense(TEST_SENSES, LOOKING, still, Open {}).seen
     let m = sense(TEST_SENSES, LOOKING, walker_at(vec2(0.0, 30.0)), Open {}).seen
     assert(s == 0.0 && m > 0.4, f"at 30 m: still {s}, walking {m}")
+}
+
+/// A hearing range of zero disables hearing, including for a body at the same point: it does
+/// not form the indeterminate distance 0 over range 0.
+@test
+fn zero_hearing_is_silent() {
+    var senses = TEST_SENSES
+    senses.hearing = 0.0
+    let heard = sense(senses, LOOKING, walker_at(vec2(0.0)), Open {}).heard
+    assert(heard == 0.0, f"zero hearing heard {heard}")
 }
 
 /// What stands between: a trunk across the sightline hides the body; one beside it, or at the

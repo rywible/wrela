@@ -103,8 +103,11 @@ pub fn noise3(p: vec3) -> f32 {
 }
 
 /// Fractal value noise in about [0, 1]: `octaves` layers, each turned and at twice the
-/// frequency and half the amplitude of the last.
+/// frequency and half the amplitude of the last; 0 with no layers.
 pub fn fbm2(p: vec2, octaves: u32) -> f32 {
+    if octaves == 0 {
+        return 0.0
+    }
     var q = p
     var s = 0.0
     var a = 0.5
@@ -133,8 +136,11 @@ pub fn noise2_seen(p: vec2, w: f32) -> f32 {
 /// `fbm2` as a sample `w` of its first layer's cells wide sees it: each layer finer than the
 /// sample fades to its mean (each is twice as fine as the last), so a far level of a clipmap,
 /// whose texels are many cells apart, gets its broad shapes and not their aliases (the far land's
-/// marbling, playing spike 17). 0 wide, `fbm2` itself.
+/// marbling, playing spike 17). 0 wide, `fbm2` itself; 0 with no layers.
 pub fn fbm2_seen(p: vec2, octaves: u32, w: f32) -> f32 {
+    if octaves == 0 {
+        return 0.0
+    }
     var q = p
     var s = 0.0
     var a = 0.5
@@ -150,8 +156,12 @@ pub fn fbm2_seen(p: vec2, octaves: u32, w: f32) -> f32 {
     s / total
 }
 
-/// Ridged fractal noise in about [0, 1]: sharp crests where the noise crosses its middle.
+/// Ridged fractal noise in about [0, 1]: sharp crests where the noise crosses its middle; 0 with
+/// no layers.
 pub fn ridged2(p: vec2, octaves: u32) -> f32 {
+    if octaves == 0 {
+        return 0.0
+    }
     var q = p
     var s = 0.0
     var a = 0.5
@@ -216,4 +226,15 @@ pub fn hashed_threshold_of(p: vec2, seed: u32, size: f32) -> f32 {
 pub fn surface_draw(p: vec2, seed: u32, k: u32, cell: f32) -> f32 {
     let (lo, _) = octave_of(cell_size(p, cell))
     cell_draw(floor(p / lo), seed ^ hash_u32(k))
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+/// An empty fractal has no contribution, rather than dividing its empty sum by an empty weight.
+@test
+fn zero_octaves_are_zero() {
+    let p = vec2(0.2, 0.7)
+    assert(fbm2(p, 0) == 0.0, "zero-octave value noise isn't zero")
+    assert(fbm2_seen(p, 0, 2.0) == 0.0, "zero-octave filtered noise isn't zero")
+    assert(ridged2(p, 0) == 0.0, "zero-octave ridged noise isn't zero")
 }
