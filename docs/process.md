@@ -170,6 +170,10 @@ clones, retaining current artifacts and excluding workspace crates and increment
 The clones share disk blocks; each session still builds its own current workspace sources.
 AGENTS.md is the sole repository instruction document. It is a regular file; the former
 alias to CLAUDE.md and the separate CLAUDE.md file were removed.
+Ryan then asked Codex to shorten that file for agent development speed and code quality.
+The revised instructions make routine agent work and local merges explicit, require source
+freezing during verification, and retain the single gate and shared resource limits.
+Frame-time and gate-time effects belong in completion reports as well as PRs.
 
 The policy uses Cargo's documented [worker and target settings](https://doc.rust-lang.org/cargo/reference/config.html#buildjobs),
 explicit [libtest thread limits](https://doc.rust-lang.org/rustc/tests/index.html#test-threads-num_threads),
@@ -204,6 +208,7 @@ assertions; reference GPU measurements and final visual judgment remain their ow
 
 | Reference | Source and rights | How we use it |
 |---|---|---|
+| OpenAI, [Custom instructions with AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md) | Public documentation; no text or code copied | Consulted on 2026-10-11 when tightening repository agent instructions: project guidance supplies commands and expectations; the repo retains one instruction file and local verification. |
 | Six photos of bison and wolves (`references/grazer/`, `references/wolf/`) | Wikimedia Commons; US National Park Service, Fish and Wildlife Service and Agricultural Research Service photos; public domain. Each `.toml` has the URL and author. | Authoring rounds 4 and 5: agents saw them beside their creature to check proportion and silhouette (`wrela studio … beside`, `wrela compare`). Nothing of the photo goes into a creature. |
 | "Fantasy wolf miniature", a sculpt (`references/wolf/sculpt-standing.obj`) | Drew Vaughan (3ddrew), [Thingiverse 680145](https://www.thingiverse.com/thing:680145), CC BY 4.0 | Test 6 (vision.md): a wolf measured from the sculpt and rebuilt as lofts and sweeps, to learn whether wrela's forms can hold a great shape. It is an adaptation, so its source carries the attribution in the `.toml`, and a game that ships it credits him. |
 | Satie, Gymnopédie No. 1 (1888) | The Mutopia Project's edition (Mutopia-2014/12/14-37, typeset by Evin Robertson from the Dover reprint), public domain | Spike 14 (#48): transcribed note by note into a score as code (`examples/gymnopedie/score.wrela`), then performed by wrela's piano. |
