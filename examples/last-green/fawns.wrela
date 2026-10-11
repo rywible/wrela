@@ -50,12 +50,12 @@ pub const SIZE: f32 = 0.6
 
 /// How far its neck leans forward from the grazer's upright one, about its base (radians): an
 /// upright neck read as a llama's. Its head turns back up by `HEAD_LIFT`, so it looks ahead.
-pub const NECK_LEAN: f32 = 0.22
-pub const HEAD_LIFT: f32 = 0.12
+pub const NECK_LEAN: f32 = 0.35
+pub const HEAD_LIFT: f32 = 0.25
 
 /// Its palette standing at rest, its feet at `feet`, facing `heading` (radians from +z toward
-/// +x): `SIZE` times the grazer's size, its neck leaned forward and its head lifted; every other
-/// bone at rest.
+/// +x): `SIZE` times the grazer's size, its neck leaned forward and its head lifted, its right
+/// foreleg lifted and folded mid-step (a stance, not a statue's); every other bone at rest.
 pub fn at_rest(feet: vec3, heading: f32) -> [mat4; MAX_BONES] {
     let s = skeleton()
     let world = placed(feet, heading) * scale(vec3(SIZE))
@@ -69,5 +69,14 @@ pub fn at_rest(feet: vec3, heading: f32) -> [mat4; MAX_BONES] {
     let poll = s.rest(head)
     let lift = bone_matrix(Quat::axis_angle(vec3(1.0, 0.0, 0.0), -HEAD_LIFT), poll, poll)
     bones[head.index] = world * lean * lift
+    let x = vec3(1.0, 0.0, 0.0)
+    let elbow = s.rest(s.find("elbow right"))
+    let swing = bone_matrix(Quat::axis_angle(x, 0.45), elbow, elbow)
+    let knee = s.rest(s.find("knee right"))
+    let fold = bone_matrix(Quat::axis_angle(x, -1.5), knee, knee)
+    bones[s.find("elbow right").index] = world * swing
+    for name in ["knee right", "fore fetlock right"] {
+        bones[s.find(name).index] = world * swing * fold
+    }
     bones
 }
