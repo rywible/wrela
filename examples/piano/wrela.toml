@@ -1,0 +1,7 @@
+# A bench for engine::piano (spike 14, #48): one note, struck and held, so a tool can measure
+# its partials against a recorded piano's (`wrela audio partials`).
+[package]
+name = "piano"
+
+[dependencies]
+engine = { path = "../../engine" }

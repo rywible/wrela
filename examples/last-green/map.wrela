@@ -1437,6 +1437,7 @@ pub fn map() -> Map {
         routes,
         water,
         events,
+        wind: vec2(0.75, -0.66),
         kept,
         regions,
         herd: Herd {

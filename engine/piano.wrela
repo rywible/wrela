@@ -1,0 +1,989 @@
+// A piano (spike 14, #48), synthesized by modes: each string's partials are damped resonators,
+// struck by a hammer and stopped by a damper, as engine::acoustics' strikes are. It plays an
+// engine::perform performance on the program's voice.
+//
+// What it models, string by string:
+// - partials stretched by the string's stiffness: the nth is at n f₀ √(1 + B n²), with B the
+//   inharmonicity, and each key tuned as the model's piano was (a tuner stretches the octaves);
+// - each partial twice, a little detuned: the "prompt" sound, which dies fast, and the
+//   "aftersound", which lasts (a unison's strings, coupled at the bridge: Weinreich), so a note
+//   beats and decays in two stages. No two partials beat or decay quite alike: each has its own
+//   detune, decay and aftersound, a little off the model's (seeded, so every run is the same);
+// - a hammer that strikes near an eighth of the string, so the partials with a node there are
+//   quiet, and whose blow is louder and brighter when it's faster: each partial's level comes
+//   from the model's table for its key, its velocity and its frequency;
+// - the blow's onset: the hammer stays on the string for 1 to 4 ms (longer in the bass, and
+//   for a softer blow), and the new sound swells in over that time; each partial reaches the
+//   listener at its own phase, as the board and the air between turn each differently;
+// - in the bass, "phantom" partials at the sums of two partials' frequencies, from the
+//   string's stretching, louder for a harder blow (Conklin);
+// - dampers that stop a string when its key is up, unless the sustain pedal lifts them: off the
+//   strings by 60% of the pedal's travel, touching them in a half-pedal zone below; the top
+//   strings have none. A damper quickens each partial's decay, as it lands, never cuts it;
+// - with the pedal down, every string free to ring in sympathy with what's played;
+// - the soft pedal, which moves the hammers onto fewer strings: softer, darker, and more of
+//   the aftersound;
+// Then the strings' sound goes through a soundboard (broad resonances) and a room (a reverb),
+// across two channels: the low strings to the player's left, and each partial a little apart
+// from the others, as a pair of microphones over a soundboard hears them.
+//
+// The model's numbers are measured (engine::piano_grand: a recorded piano, fitted by `wrela
+// audio model`), except what notes recorded one at a time, without the pedal, can't show: the
+// dampers, the sympathy, the soft pedal, the board, the room.
+//
+// There's no noise of the strike (a keybed's thump, a hammer's click): the strings' own attack
+// comes within 2.7 dB of the recorded piano's sharpness (a note's peak in its first 30 ms over
+// its level from 30 to 300 ms), and filtered noise added to close that gap clicked, at every
+// level tried (`wrela audio clicks`), where the recording's attacks don't. The owner heard the
+// clicks before the tool counted them.
+//
+// The resonators are kept four to a `vec4`, so the bank's arithmetic is SIMD (language.md §11).
+// Everything the audio thread does is f32 arithmetic in a fixed order, so both hosts give the
+// same samples.
+
+use perform::{PedalPoint, Performance}
+use std::collections::Vec
+use std::math::{PI, TAU}
+
+/// The audio thread's rate.
+const RATE: f32 = 48000.0
+
+/// The piano's keys: MIDI's 21 (A0) to 108 (C8).
+pub const KEYS: u32 = 88
+pub const LOWEST: u32 = 21
+
+/// The most partials a string has, the highest frequency one may have, and the level (dB of
+/// full scale, at the hardest blow) below which a string's partials stop.
+const PARTIALS: u32 = 80
+const TOP_HZ: f32 = 12000.0
+const QUIETEST_DB: f32 = -100.0
+
+/// Phantom partials: the sums f₁ + f(n−1), for n from 3 to this, in the keys below
+/// `Model::phantom_below`.
+const PHANTOMS: u32 = 10
+
+/// The tables' shape: 16 keys, 5 velocities, 16 bands from 25 Hz to 12 kHz evenly in log
+/// frequency.
+pub const MODEL_KEYS: u32 = 16
+pub const MODEL_VELOCITIES: u32 = 5
+pub const BANDS: u32 = 16
+
+/// What a piano's sound is made of. The tables are measured at `keys` and `velocities`; keys,
+/// velocities and frequencies between take them linearly.
+pub struct Model: Copy {
+    /// The keys (MIDI's) and the velocities (0 to 1) the tables are measured at.
+    pub keys: [f32; 16],
+    pub velocities: [f32; 5],
+    /// Each key's B (how far its partials are stretched), its first partial's tuning (cents
+    /// from equal temperament at A4 = 440 Hz), and where its hammer strikes (a fraction of the
+    /// string).
+    pub inharmonicity: [f32; 16],
+    pub tuning: [f32; 16],
+    pub strike: [f32; 16],
+    /// Partials' levels when struck, in dB of full scale, with the strike's quiet ones put
+    /// back: at key `k`, velocity `v` and band `b`, `levels[(k * 5 + v) * 16 + b]`.
+    pub levels: [f32; 1280],
+    /// Partials' decays at key `k` and band `b` (`[k * 16 + b]`): the prompt sound's and the
+    /// aftersound's seconds to fall 60 dB, and the aftersound's level in dB below the prompt's.
+    pub prompt: [f32; 256],
+    pub after: [f32; 256],
+    pub after_db: [f32; 256],
+    /// Cents between a partial's prompt sound and its aftersound, on average: each partial's is
+    /// between 0.3 and 1.7 times this, up or down.
+    pub detune: f32 = 0.6,
+    /// How far each partial's decay and aftersound stray from the model's: a fraction of its
+    /// decay, and dB of its aftersound.
+    pub scatter_decay: f32 = 0.15,
+    pub scatter_after_db: f32 = 3.0,
+    /// How far apart a partial's two channels may be, beside its key's place between them.
+    pub scatter_pan: f32 = 0.3,
+    /// The hammer's time on the string, in ms, at the softest blow: at A0, middle C and C8. The
+    /// hardest blow's is a third of it.
+    pub contact_low: f32 = 4.0,
+    pub contact_mid: f32 = 2.5,
+    pub contact_high: f32 = 0.8,
+    /// Phantom partials: their level beside the partial they're near, at the hardest blow (dB),
+    /// and the first key without them.
+    pub phantom_db: f32 = -24.0,
+    pub phantom_below: u32 = 64,
+    /// Seconds a damped string takes to fall 60 dB: at A0, and at the top damper.
+    pub damped_low: f32 = 0.9,
+    pub damped_high: f32 = 0.12,
+    /// The first key with no damper.
+    pub undamped_from: u32 = 89,
+    /// How strongly the free strings ring in sympathy, with the pedal down.
+    pub sympathy: f32 = 0.02,
+    /// How far apart the channels put the low and the high strings (0: none, 1: fully).
+    pub width: f32 = 0.5,
+    /// The soundboard's share of the sound, and the room's.
+    pub board: f32 = 0.1,
+    pub room: f32 = 0.18,
+    /// Seconds the room takes to fall 60 dB.
+    pub room_time: f32 = 1.6,
+    /// The soft pedal fully down: how much softer (dB), how much darker at 12 kHz (dB), and
+    /// how much more aftersound (dB).
+    pub soft_db: f32 = -4.0,
+    pub soft_dark_db: f32 = -9.0,
+    pub soft_after_db: f32 = 4.0,
+    /// The whole piano's gain: the measured levels are of recordings, quieter than a piano is
+    /// heard; this brings them up 9.5 dB.
+    pub gain: f32 = 3.0,
+}
+
+/// Where key `key` falls among the model's keys: the one below and how far toward the next.
+fn key_at(m: Model, key: u32) -> (u32, f32) {
+    let k = f32(key)
+    if k <= m.keys[0] {
+        return (0, 0.0)
+    }
+    for i in 1..MODEL_KEYS {
+        if k <= m.keys[i] {
+            return (i - 1, (k - m.keys[i - 1]) / (m.keys[i] - m.keys[i - 1]))
+        }
+    }
+    (MODEL_KEYS - 2, 1.0)
+}
+
+/// Where frequency `hz` falls among the bands, as a fraction of one.
+fn band_at(hz: f32) -> f32 {
+    clamp(log(hz / 25.0) / log(480.0) * f32(BANDS - 1), 0.0, f32(BANDS - 1))
+}
+
+/// A key's number from a per-key table.
+fn per_key(table: [f32; 16], at: (u32, f32)) -> f32 {
+    table[at.0] + (table[at.0 + 1] - table[at.0]) * at.1
+}
+
+/// A key-and-band table's number at a key and a frequency.
+fn per_band(table: [f32; 256], at: (u32, f32), hz: f32) -> f32 {
+    let b = band_at(hz)
+    let b0 = min(u32(b), BANDS - 2)
+    let u = b - f32(b0)
+    let lo = table[at.0 * BANDS + b0] +
+        (table[at.0 * BANDS + b0 + 1] - table[at.0 * BANDS + b0]) * u
+    let k1 = at.0 + 1
+    let hi = table[k1 * BANDS + b0] + (table[k1 * BANDS + b0 + 1] - table[k1 * BANDS + b0]) * u
+    lo + (hi - lo) * at.1
+}
+
+/// The level table's number at a key, a velocity (its index among the model's) and a frequency.
+fn level_at(m: Model, at: (u32, f32), v: u32, hz: f32) -> f32 {
+    let b = band_at(hz)
+    let b0 = min(u32(b), BANDS - 2)
+    let u = b - f32(b0)
+    let row = |k: u32| {
+        let i = (k * MODEL_VELOCITIES + v) * BANDS + b0
+        m.levels[i] + (m.levels[i + 1] - m.levels[i]) * u
+    }
+    let lo = row(at.0)
+    lo + (row(at.0 + 1) - lo) * at.1
+}
+
+/// Where velocity `v` falls among the model's: the one below and how far toward the next, past
+/// the ends by at most one step either way.
+fn velocity_at(m: Model, v: f32) -> (u32, f32) {
+    if v <= m.velocities[0] {
+        return (0, max((v - m.velocities[0]) / (m.velocities[1] - m.velocities[0]), -1.0))
+    }
+    for i in 1..MODEL_VELOCITIES {
+        if v <= m.velocities[i] {
+            return (i - 1, (v - m.velocities[i - 1]) / (m.velocities[i] - m.velocities[i - 1]))
+        }
+    }
+    let last = MODEL_VELOCITIES - 1
+    (
+        last - 1,
+        min(1.0 + (v - m.velocities[last]) / (m.velocities[last] - m.velocities[last - 1]), 2.0),
+    )
+}
+
+/// Key `key`'s first partial, in hertz: equal temperament from A4 = 440 Hz, moved by the
+/// model's tuning.
+pub fn fundamental(m: Model, key: u32) -> f32 {
+    let cents = per_key(m.tuning, key_at(m, key))
+    440.0 * pow(2.0, (f32(key) - 69.0 + cents / 100.0) / 12.0)
+}
+
+/// A number in [0, 1) that depends only on its three arguments: the seed of a partial's
+/// differences from the model.
+fn scatter(a: u32, b: u32, c: u32) -> f32 {
+    var h = a.wrapping_mul(0x9e3779b1) ^ b.wrapping_mul(0x85ebca77) ^ c.wrapping_mul(0xc2b2ae3d)
+    h = (h ^ (h >> 15)).wrapping_mul(0x2c1b3c6d)
+    h = (h ^ (h >> 12)).wrapping_mul(0x297a2d39)
+    h = h ^ (h >> 15)
+    f32(h >> 8) / 16777216.0
+}
+
+/// How far the sustain pedal at `depth` lifts the dampers: not at all below a quarter of its
+/// travel, fully from 60% of it, and in between, a half pedal.
+fn lift(depth: f32) -> f32 {
+    smoothstep(0.25, 0.6, depth)
+}
+
+/// A note to strike or let go, at a sample.
+struct Event: Copy {
+    at: u32,
+    key: u32,
+    /// The hammer's velocity, from 0 to 1; 0 lets the key go.
+    velocity: f32,
+}
+
+/// A pedal's depth at a sample.
+struct Point: Copy {
+    at: u32,
+    depth: f32,
+}
+
+/// A two-pole resonance: one of the soundboard's.
+struct Resonance: Copy {
+    a1: f32,
+    a2: f32,
+    gain: f32,
+    y1: f32,
+    y2: f32,
+}
+
+/// The room's delay lines, their lengths in samples (primes), and their total.
+const LINES: u32 = 8
+const ROOM_LENGTHS: [u32; 8] = [1123, 1361, 1559, 1747, 1949, 2131, 2357, 2551]
+const ROOM_SAMPLES: u32 = 14778
+
+/// The soundboard's resonances: frequency (Hz) and Q. Broad, as a ribbed board's are; the
+/// measured levels already carry the recorded board's colour, so these only add body.
+const BOARD_HZ: [f32; 12] = [
+    62.0, 98.0, 140.0, 196.0, 262.0, 345.0, 470.0, 620.0, 860.0, 1200.0, 1750.0, 2600.0,
+]
+const BOARD_Q: [f32; 12] = [6.0, 6.0, 6.0, 5.0, 5.0, 4.0, 4.0, 3.5, 3.0, 2.5, 2.0, 2.0]
+
+/// The sympathetic strings: each key's first two partials, four to a vec4.
+const SYMPATHY_GROUPS: u32 = 44
+
+/// A piano playing a performance: what the audio thread owns.
+pub struct Piano {
+    model: Model,
+    events: Vec<Event>,
+    next: u32,
+    sustain: Vec<Point>,
+    soft: Vec<Point>,
+    sample: u32,
+    // Each key: its resonators (`groups` vec4s from `first`), and its state.
+    first: [u32; 88],
+    groups: [u32; 88],
+    sounding: [bool; 88],
+    /// How many of the key's notes are down: a note struck again before its last one is let go
+    /// (legato on one key) is held until both are.
+    held: [u32; 88],
+    has_damper: [bool; 88],
+    /// How much the damper is on the string, from 0 (off) to 1.
+    damp: [f32; 88],
+    /// The quanta since a key's energy was last measured.
+    quiet: [u32; 88],
+    /// A blow swelling in: its length in samples (0: none), and how far into it the key is.
+    swell: [u32; 88],
+    swelled: [u32; 88],
+    // Each resonator, four to a vec4: its state, and the state of a blow still swelling in; its
+    // rotation per sample (decay included), and the cosine and sine of its angle per sample;
+    // its free decay per sample, and how much faster its damper makes it; its level (dB) when
+    // struck at each of the model's velocities (five vec4s a group); how much of the blow it
+    // takes (its prompt or aftersound share, and the strike's position); the phase it reaches
+    // the listener at; 1 for an aftersound resonator; 1 for a phantom partial; how much darker
+    // the soft pedal makes it (its band, from 0 to 1); and its channels' gains.
+    re: Vec<vec4>,
+    im: Vec<vec4>,
+    new_re: Vec<vec4>,
+    new_im: Vec<vec4>,
+    rc: Vec<vec4>,
+    rs: Vec<vec4>,
+    cw: Vec<vec4>,
+    sw: Vec<vec4>,
+    rate: Vec<vec4>,
+    damper: Vec<vec4>,
+    levels: Vec<vec4>,
+    share: Vec<vec4>,
+    phase_c: Vec<vec4>,
+    phase_s: Vec<vec4>,
+    after: Vec<vec4>,
+    phantom: Vec<vec4>,
+    height: Vec<vec4>,
+    pan_left: Vec<vec4>,
+    pan_right: Vec<vec4>,
+    acc_left: [vec4; 128],
+    acc_right: [vec4; 128],
+    swelling: [f32; 128],
+    strings: [f32; 128],
+    // The sympathetic strings: driven resonators, y = a1 y₁ + a2 y₂ + g x, their a1 and a2 from
+    // 2 cos w and their free decay per sample, at the dampers' lift last set.
+    sym_a1: [vec4; 44],
+    sym_a2: [vec4; 44],
+    sym_cw: [vec4; 44],
+    sym_rate: [vec4; 44],
+    sym_lifted: f32,
+    sym_g: [vec4; 44],
+    sym_y1: [vec4; 44],
+    sym_y2: [vec4; 44],
+    board: [Resonance; 12],
+    lines: [f32; 14778],
+    line_at: [u32; 8],
+    line_low: [f32; 8],
+    room_gain: f32,
+}
+
+/// A piano with `model`, to play `performance`. Builds its tables, so call it on the program's
+/// thread, before `std::audio::play`.
+pub fn piano(model: Model, performance: Performance) -> Piano {
+    var p = Piano {
+        model,
+        events: events(performance),
+        next: 0,
+        sustain: points(performance.sustain),
+        soft: points(performance.soft),
+        sample: 0,
+        first: [0; 88],
+        groups: [0; 88],
+        sounding: [false; 88],
+        held: [0; 88],
+        has_damper: [false; 88],
+        damp: [1.0; 88],
+        quiet: [0; 88],
+        swell: [0; 88],
+        swelled: [0; 88],
+        re: Vec::new(),
+        im: Vec::new(),
+        new_re: Vec::new(),
+        new_im: Vec::new(),
+        rc: Vec::new(),
+        rs: Vec::new(),
+        cw: Vec::new(),
+        sw: Vec::new(),
+        rate: Vec::new(),
+        damper: Vec::new(),
+        levels: Vec::new(),
+        share: Vec::new(),
+        phase_c: Vec::new(),
+        phase_s: Vec::new(),
+        after: Vec::new(),
+        phantom: Vec::new(),
+        height: Vec::new(),
+        pan_left: Vec::new(),
+        pan_right: Vec::new(),
+        acc_left: [vec4(0.0); 128],
+        acc_right: [vec4(0.0); 128],
+        swelling: [1.0; 128],
+        strings: [0.0; 128],
+        sym_a1: [vec4(0.0); 44],
+        sym_a2: [vec4(0.0); 44],
+        sym_cw: [vec4(0.0); 44],
+        sym_rate: [vec4(0.0); 44],
+        sym_lifted: -1.0,
+        sym_g: [vec4(0.0); 44],
+        sym_y1: [vec4(0.0); 44],
+        sym_y2: [vec4(0.0); 44],
+        board: [Resonance { a1: 0.0, a2: 0.0, gain: 0.0, y1: 0.0, y2: 0.0 }; 12],
+        lines: [0.0; 14778],
+        line_at: [0; 8],
+        line_low: [0.0; 8],
+        room_gain: 0.0,
+    }
+    for k in 0..KEYS {
+        p.build_key(k)
+    }
+    p.build_sympathy()
+    for i in 0..12 {
+        let w = TAU * BOARD_HZ[i] / RATE
+        let r = exp(-w / (2.0 * BOARD_Q[i]))
+        // A two-pole resonator's gain at its frequency is about g / ((1 - r) 2 sin w): this g
+        // makes it 1.
+        p.board[i] = Resonance {
+            a1: 2.0 * r * cos(w),
+            a2: -r * r,
+            gain: (1.0 - r) * 2.0 * sin(w),
+            y1: 0.0,
+            y2: 0.0,
+        }
+    }
+    // The feedback that makes the room fall 60 dB in `room_time`, over a mean line.
+    let mean = f32(ROOM_SAMPLES) / f32(LINES) / RATE
+    p.room_gain = pow(10.0, -3.0 * mean / model.room_time)
+    p
+}
+
+/// The performance's notes and releases, as events at samples, in order.
+fn events(performance: Performance) -> Vec<Event> {
+    var out: Vec<Event> = Vec::with_capacity(2 * performance.notes.len())
+    for n in performance.notes {
+        out.push(
+            Event { at: samples(n.onset), key: n.key - LOWEST, velocity: max(n.velocity, 0.001) },
+        )
+        out.push(Event { at: samples(n.release), key: n.key - LOWEST, velocity: 0.0 })
+    }
+    out.sort_by(|a, b| a.at < b.at)
+    out
+}
+
+fn points(pedal: Vec<PedalPoint>) -> Vec<Point> {
+    var out: Vec<Point> = Vec::with_capacity(pedal.len())
+    for p in pedal {
+        out.push(Point { at: samples(p.at), depth: p.depth })
+    }
+    out
+}
+
+fn samples(seconds: f64) -> u32 {
+    u32(max(seconds, 0.0) * 48000.0 + 0.5)
+}
+
+/// The decay per sample, as a rate (ln of the factor, negated), of a resonator that falls
+/// 60 dB in `t60` seconds.
+fn decay_rate(t60: f32) -> f32 {
+    6.9078 / (t60 * RATE)
+}
+
+/// A free string's sympathetic ringing damped, when the dampers are down: it falls 60 dB in
+/// 0.15 s.
+const SYMPATHY_DAMPED: f32 = 6.9078 / (0.15 * 48000.0)
+
+/// One resonator's numbers, as `build_key` lays them out.
+struct Lane: Copy {
+    hz: f32,
+    t60: f32,
+    /// Its level when struck at each of the model's velocities (dB).
+    levels: [f32; 5],
+    share: f32,
+    after: f32,
+    phantom: f32,
+    damper: f32,
+}
+
+impl Piano {
+    /// Key `k`'s resonators: its partials, each a prompt and an aftersound resonator, then its
+    /// phantom partials.
+    fn build_key(mut self, k: u32) {
+        borrow m = self.model
+        let key = k + LOWEST
+        let at = key_at(m, key)
+        let b = per_key(m.inharmonicity, at)
+        let x0 = per_key(m.strike, at)
+        // f₀ such that the first partial, f₀ √(1 + B), is the key's fundamental.
+        let f0 = fundamental(m, key) / sqrt(1.0 + b)
+        let partial = |n: u32| f0 * f32(n) * sqrt(1.0 + b * f32(n * n))
+        // A damped string's time: A0's to the top damper's, evenly in log time.
+        let u = clamp(f32(key - LOWEST) / f32(m.undamped_from - LOWEST), 0.0, 1.0)
+        let damped = m.damped_low * pow(m.damped_high / m.damped_low, u)
+        var count = 0
+        for n in 1..PARTIALS + 1 {
+            let f = partial(n)
+            if n > 1 && (f > TOP_HZ || level_at(m, at, MODEL_VELOCITIES - 1, f) < QUIETEST_DB) {
+                break
+            }
+            count += 1
+        }
+        var lanes: Vec<Lane> = Vec::new()
+        for n in 1..count + 1 {
+            let f = partial(n)
+            // The aftersound's share of the power: r / (1 - r) is its level over the prompt
+            // sound's, a little off the model's for each partial.
+            let after_db = per_band(m.after_db, at, f) +
+                m.scatter_after_db * (2.0 * scatter(key, n, 1) - 1.0)
+            let ratio = pow(10.0, after_db / 10.0)
+            let r = ratio / (1.0 + ratio)
+            // Where the hammer strikes: partials with a node there are quiet (as measured, no
+            // quieter than 0.15 of their band).
+            let comb = max(abs(sin(PI * f32(n) * x0)), 0.15)
+            var levels = [0.0; 5]
+            for v in 0..MODEL_VELOCITIES {
+                levels[v] = level_at(m, at, v, f)
+            }
+            // The aftersound up or down by its own detune.
+            let sign = if scatter(key, n, 2) < 0.5 { -1.0 } else { 1.0 }
+            let cents = sign * m.detune * (0.3 + 1.4 * scatter(key, n, 3))
+            let prompt = per_band(m.prompt, at, f) *
+                (1.0 + m.scatter_decay * (2.0 * scatter(key, n, 4) - 1.0))
+            let after = per_band(m.after, at, f) *
+                (1.0 + m.scatter_decay * (2.0 * scatter(key, n, 5) - 1.0))
+            // A damper stops the higher partials faster.
+            let damped_rate = 6.9078 / damped * (1.0 + f / 2000.0)
+            lanes.push(
+                Lane {
+                    hz: f,
+                    t60: prompt,
+                    levels,
+                    share: comb * sqrt(1.0 - r),
+                    after: 0.0,
+                    phantom: 0.0,
+                    damper: max(damped_rate - 6.9078 / prompt, 0.0),
+                },
+            )
+            lanes.push(
+                Lane {
+                    hz: f * pow(2.0, cents / 1200.0),
+                    t60: max(after, prompt),
+                    levels,
+                    share: comb * sqrt(r),
+                    after: 1.0,
+                    phantom: 0.0,
+                    damper: max(damped_rate - 6.9078 / max(after, prompt), 0.0),
+                },
+            )
+        }
+        if key < m.phantom_below {
+            // f₁ + f(n−1), beside partial n: a sum's decay is both parts' together.
+            for n in 3..min(PHANTOMS, count) + 1 {
+                let f = partial(1) + partial(n - 1)
+                let t1 = per_band(m.prompt, at, partial(1))
+                let t2 = per_band(m.prompt, at, partial(n - 1))
+                let t60 = 1.0 / (1.0 / t1 + 1.0 / t2)
+                let comb = max(abs(sin(PI * f32(n) * x0)), 0.15)
+                var levels = [0.0; 5]
+                for v in 0..MODEL_VELOCITIES {
+                    levels[v] = level_at(m, at, v, f) + m.phantom_db
+                }
+                lanes.push(
+                    Lane {
+                        hz: f,
+                        t60,
+                        levels,
+                        share: comb,
+                        after: 0.0,
+                        phantom: 1.0,
+                        damper: max(6.9078 / damped * (1.0 + f / 2000.0) - 6.9078 / t60, 0.0),
+                    },
+                )
+            }
+        }
+        self.first[k] = self.re.len()
+        let groups = (lanes.len() + 3) / 4
+        self.groups[k] = groups
+        // Low strings to the player's left. The channels' mean is the string, as the model's
+        // levels (measured from both channels' mean) are, for every partial.
+        let pan = 0.5 * m.width * ((f32(k) / 87.0) * 2.0 - 1.0)
+        for g in 0..groups {
+            var cw = vec4(1.0)
+            var sw = vec4(0.0)
+            var rate = vec4(0.0)
+            var share = vec4(0.0)
+            var phase_c = vec4(1.0)
+            var phase_s = vec4(0.0)
+            var after = vec4(0.0)
+            var phantom = vec4(0.0)
+            var height = vec4(0.0)
+            var damper = vec4(0.0)
+            var pan_left = vec4(1.0)
+            var pan_right = vec4(1.0)
+            var by_velocity = [vec4(-200.0); 5]
+            for lane in 0..4 {
+                let i = 4 * g + lane
+                if i >= lanes.len() {
+                    continue
+                }
+                let l = lanes[i]
+                let w = TAU * l.hz / RATE
+                let phase = TAU * scatter(key, i, 6)
+                let apart = m.scatter_pan * (2.0 * scatter(key, i, 7) - 1.0)
+                cw = set(cw, lane, cos(w))
+                sw = set(sw, lane, sin(w))
+                rate = set(rate, lane, decay_rate(l.t60))
+                share = set(share, lane, l.share)
+                phase_c = set(phase_c, lane, cos(phase))
+                phase_s = set(phase_s, lane, sin(phase))
+                after = set(after, lane, l.after)
+                phantom = set(phantom, lane, l.phantom)
+                height = set(height, lane, band_at(l.hz) / f32(BANDS - 1))
+                damper = set(damper, lane, l.damper / RATE)
+                pan_left = set(pan_left, lane, 1.0 - pan + apart)
+                pan_right = set(pan_right, lane, 1.0 + pan - apart)
+                for v in 0..MODEL_VELOCITIES {
+                    by_velocity[v] = set(by_velocity[v], lane, l.levels[v])
+                }
+            }
+            self.re.push(vec4(0.0))
+            self.im.push(vec4(0.0))
+            self.new_re.push(vec4(0.0))
+            self.new_im.push(vec4(0.0))
+            self.rc.push(vec4(0.0))
+            self.rs.push(vec4(0.0))
+            self.cw.push(cw)
+            self.sw.push(sw)
+            self.rate.push(rate)
+            self.damper.push(damper)
+            for v in 0..MODEL_VELOCITIES {
+                self.levels.push(by_velocity[v])
+            }
+            self.share.push(share)
+            self.phase_c.push(phase_c)
+            self.phase_s.push(phase_s)
+            self.after.push(after)
+            self.phantom.push(phantom)
+            self.height.push(height)
+            self.pan_left.push(pan_left)
+            self.pan_right.push(pan_right)
+        }
+        self.has_damper[k] = key < m.undamped_from
+        self.damp[k] = if self.has_damper[k] { 1.0 } else { 0.0 }
+        self.set_damping(k)
+    }
+
+    /// The sympathetic strings: each key's first two partials, driven by what's played. Each
+    /// resonates `sympathy` times as loud as what drives it at its own frequency.
+    fn build_sympathy(mut self) {
+        borrow m = self.model
+        for g in 0..SYMPATHY_GROUPS {
+            for lane in 0..4 {
+                let k = 2 * g + lane / 2
+                let n = lane % 2 + 1
+                let key = k + LOWEST
+                let at = key_at(m, key)
+                let b = per_key(m.inharmonicity, at)
+                let f = fundamental(m, key) / sqrt(1.0 + b) * f32(n) * sqrt(1.0 + b * f32(n * n))
+                // Free strings ring a while: shorter than an aftersound, the bridge coupling
+                // them loosely.
+                let t60 = 0.5 * per_band(m.after, at, f)
+                let r = exp(-decay_rate(t60))
+                let w = TAU * f / RATE
+                self.sym_cw[g] = set(self.sym_cw[g], lane, 2.0 * cos(w))
+                self.sym_rate[g] = set(self.sym_rate[g], lane, decay_rate(t60))
+                // A two-pole resonator's gain at its frequency is about g / ((1 - r) 2 sin w).
+                self.sym_g[g] = set(self.sym_g[g], lane, m.sympathy * (1.0 - r) * 2.0 * sin(w))
+            }
+        }
+        self.set_sympathy(0.0)
+    }
+
+    /// The sympathetic strings' poles with the dampers lifted by `lifted`: free strings ring,
+    /// damped ones die in 0.15 s. Only their decay changes, never their state, so the ringing
+    /// fades as the dampers land and doesn't click.
+    @audio
+    fn set_sympathy(mut self, lifted: f32) {
+        self.sym_lifted = lifted
+        for g in 0..SYMPATHY_GROUPS {
+            let r = exp(-(self.sym_rate[g] + vec4((1.0 - lifted) * SYMPATHY_DAMPED)))
+            self.sym_a1[g] = r * self.sym_cw[g]
+            self.sym_a2[g] = -(r * r)
+        }
+    }
+
+    /// Key `k`'s resonators' rotations, with its damper on the string by `damp`: the damper
+    /// quickens their decay; their state, and so their sound, doesn't jump.
+    @audio
+    fn set_damping(mut self, k: u32) {
+        let d = self.damp[k]
+        for g in self.first[k]..self.first[k] + self.groups[k] {
+            let decay = exp(-(self.rate[g] + self.damper[g] * d))
+            self.rc[g] = decay * self.cw[g]
+            self.rs[g] = decay * self.sw[g]
+        }
+    }
+
+    /// A blow still swelling in on key `k`, joined to the string at once.
+    @audio
+    fn join(mut self, k: u32) {
+        for g in self.first[k]..self.first[k] + self.groups[k] {
+            self.re[g] = self.re[g] + self.new_re[g]
+            self.im[g] = self.im[g] + self.new_im[g]
+            self.new_re[g] = vec4(0.0)
+            self.new_im[g] = vec4(0.0)
+        }
+        self.swell[k] = 0
+    }
+
+    /// Strikes key `k` at `velocity`.
+    @audio
+    fn strike(mut self, k: u32, velocity: f32) {
+        if self.swell[k] > 0 {
+            self.join(k)
+        }
+        borrow m = self.model
+        let soft = depth_at(self.soft, self.sample)
+        let (v, u) = velocity_at(m, velocity)
+        // dB to amplitude: e^(dB ln 10 / 20).
+        let to_amplitude = 0.115129255
+        let louder = soft * m.soft_db
+        // Phantom partials grow as the blow does: 20 dB softer for a tenth of the velocity.
+        let phantom_db = 20.0 * log(max(velocity, 0.05)) / log(10.0)
+        for g in self.first[k]..self.first[k] + self.groups[k] {
+            let lo = self.levels[g * MODEL_VELOCITIES + v]
+            let hi = self.levels[g * MODEL_VELOCITIES + v + 1]
+            let db = lo +
+                (hi - lo) * u +
+                louder +
+                soft * (m.soft_dark_db * self.height[g] + m.soft_after_db * self.after[g]) +
+                phantom_db * self.phantom[g]
+            let a = exp(db * to_amplitude) * self.share[g]
+            self.new_re[g] = a * self.phase_c[g]
+            self.new_im[g] = a * self.phase_s[g]
+        }
+        // The hammer's time on the string: longer in the bass and for a softer blow.
+        let key = k + LOWEST
+        let ms = if key < 60 {
+            m.contact_low * pow(m.contact_mid / m.contact_low, f32(key - LOWEST) / 39.0)
+        } else {
+            m.contact_mid * pow(m.contact_high / m.contact_mid, f32(key - 60) / 48.0)
+        }
+        self.swell[k] = max(u32(ms * (1.0 - 0.67 * clamp(velocity, 0.0, 1.0)) * RATE / 1000.0), 8)
+        self.swelled[k] = 0
+        self.sounding[k] = true
+        self.held[k] += 1
+        self.quiet[k] = 0
+        // The key lifted its damper before the hammer reached the string.
+        if self.damp[k] != 0.0 {
+            self.damp[k] = 0.0
+            self.set_damping(k)
+        }
+    }
+
+    /// The strings' sound for samples `from` to `to` of this quantum, added to the channels and
+    /// to `strings` (their mean, which drives the sympathetic strings and the board).
+    @audio
+    fn play_strings(mut self, from: u32, to: u32, left: mut [f32], right: mut [f32]) {
+        if from == to {
+            return
+        }
+        for k in 0..KEYS {
+            if !self.sounding[k] {
+                continue
+            }
+            for s in from..to {
+                self.acc_left[s] = vec4(0.0)
+                self.acc_right[s] = vec4(0.0)
+            }
+            let length = self.swell[k]
+            if length > 0 {
+                // A blow swelling in: its new sound rises from nothing over `length` samples,
+                // as a raised cosine, beside the string's old sound.
+                for s in from..to {
+                    let t = self.swelled[k] + (s - from)
+                    self.swelling[s] = if t < length {
+                        0.5 - 0.5 * cos(PI * f32(t) / f32(length))
+                    } else { 1.0 }
+                }
+                for g in self.first[k]..self.first[k] + self.groups[k] {
+                    var re = self.re[g]
+                    var im = self.im[g]
+                    var nre = self.new_re[g]
+                    var nim = self.new_im[g]
+                    let c = self.rc[g]
+                    let sn = self.rs[g]
+                    let gl = self.pan_left[g]
+                    let gr = self.pan_right[g]
+                    for s in from..to {
+                        let r = re * c - im * sn
+                        im = re * sn + im * c
+                        re = r
+                        let nr = nre * c - nim * sn
+                        nim = nre * sn + nim * c
+                        nre = nr
+                        let y = im + nim * self.swelling[s]
+                        self.acc_left[s] = self.acc_left[s] + y * gl
+                        self.acc_right[s] = self.acc_right[s] + y * gr
+                    }
+                    self.re[g] = re
+                    self.im[g] = im
+                    self.new_re[g] = nre
+                    self.new_im[g] = nim
+                }
+                self.swelled[k] += to - from
+                if self.swelled[k] >= length {
+                    self.join(k)
+                }
+            } else {
+                for g in self.first[k]..self.first[k] + self.groups[k] {
+                    var re = self.re[g]
+                    var im = self.im[g]
+                    let c = self.rc[g]
+                    let sn = self.rs[g]
+                    let gl = self.pan_left[g]
+                    let gr = self.pan_right[g]
+                    for s in from..to {
+                        let r = re * c - im * sn
+                        im = re * sn + im * c
+                        re = r
+                        self.acc_left[s] = self.acc_left[s] + im * gl
+                        self.acc_right[s] = self.acc_right[s] + im * gr
+                    }
+                    self.re[g] = re
+                    self.im[g] = im
+                }
+            }
+            for s in from..to {
+                let l = self.acc_left[s]
+                let r = self.acc_right[s]
+                let yl = (l.x + l.y) + (l.z + l.w)
+                let yr = (r.x + r.y) + (r.z + r.w)
+                left[s] += yl
+                right[s] += yr
+                self.strings[s] += 0.5 * (yl + yr)
+            }
+        }
+    }
+
+    /// Once a quantum: the dampers follow the keys and the pedal, and strings that have died
+    /// away stop being computed.
+    @audio
+    fn settle(mut self, pedal: f32) {
+        let lifted = lift(pedal)
+        for k in 0..KEYS {
+            if !self.sounding[k] {
+                continue
+            }
+            let target = if !self.has_damper[k] || self.held[k] > 0 { 0.0 } else { 1.0 - lifted }
+            // A damper lands in about 20 ms, and lifts as fast.
+            let d = self.damp[k] + clamp(target - self.damp[k], -0.15, 0.15)
+            if d != self.damp[k] {
+                self.damp[k] = d
+                self.set_damping(k)
+            }
+            self.quiet[k] += 1
+            if self.quiet[k] >= 16 && self.swell[k] == 0 {
+                self.quiet[k] = 0
+                var energy = 0.0
+                for g in self.first[k]..self.first[k] + self.groups[k] {
+                    let e = self.re[g] * self.re[g] + self.im[g] * self.im[g]
+                    energy += (e.x + e.y) + (e.z + e.w)
+                }
+                // -120 dB of full scale: silence.
+                if energy < 1e-12 {
+                    self.sounding[k] = false
+                    for g in self.first[k]..self.first[k] + self.groups[k] {
+                        self.re[g] = vec4(0.0)
+                        self.im[g] = vec4(0.0)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The sympathetic strings, the soundboard and the room, over this quantum.
+    @audio
+    fn body(mut self, pedal: f32, left: mut [f32], right: mut [f32]) {
+        let lifted = lift(pedal)
+        if abs(lifted - self.sym_lifted) > 0.001 {
+            self.set_sympathy(lifted)
+        }
+        borrow m = self.model
+        for s in 0..128 {
+            let x = self.strings[s] * lifted
+            var sum = vec4(0.0)
+            for g in 0..SYMPATHY_GROUPS {
+                let y = self.sym_a1[g] * self.sym_y1[g] +
+                    self.sym_a2[g] * self.sym_y2[g] +
+                    self.sym_g[g] * x
+                self.sym_y2[g] = self.sym_y1[g]
+                self.sym_y1[g] = y
+                sum = sum + y
+            }
+            let ringing = (sum.x + sum.y) + (sum.z + sum.w)
+            let dry = self.strings[s] + ringing
+            var board = 0.0
+            for i in 0..12 {
+                let r = self.board[i]
+                let y = r.a1 * r.y1 + r.a2 * r.y2 + r.gain * dry
+                self.board[i].y2 = r.y1
+                self.board[i].y1 = y
+                board += y
+            }
+            let l = left[s] + 0.5 * ringing + m.board * board
+            let rr = right[s] + 0.5 * ringing + m.board * board
+            // The room: eight delay lines, mixed by a Householder matrix, each darkened.
+            var outs = [0.0; 8]
+            var total = 0.0
+            var base = 0
+            for i in 0..LINES {
+                let at = self.line_at[i]
+                let y = self.lines[base + at]
+                self.line_low[i] = y + 0.3 * (self.line_low[i] - y)
+                outs[i] = self.line_low[i]
+                total += outs[i]
+                base += ROOM_LENGTHS[i]
+            }
+            base = 0
+            var wet_l = 0.0
+            var wet_r = 0.0
+            for i in 0..LINES {
+                let len = ROOM_LENGTHS[i]
+                let at = self.line_at[i]
+                let mixed = outs[i] - 0.25 * total
+                let input = if i % 2 == 0 { l } else { rr }
+                self.lines[base + at] = self.room_gain * mixed + 0.35 * input
+                self.line_at[i] = if at + 1 == len { 0 } else { at + 1 }
+                if i % 2 == 0 { wet_l += outs[i] } else { wet_r += outs[i] }
+                base += len
+            }
+            left[s] = m.gain * (l + m.room * wet_l)
+            right[s] = m.gain * (rr + m.room * wet_r)
+            self.strings[s] = 0.0
+        }
+    }
+}
+
+/// A pedal's depth at sample `at`, between its points.
+@audio
+fn depth_at(points: Vec<Point>, at: u32) -> f32 {
+    var depth = 0.0
+    for i in 0..points.len() {
+        let p = points[i]
+        if p.at > at {
+            if i == 0 {
+                return p.depth
+            }
+            let q = points[i - 1]
+            let u = f32(at - q.at) / f32(max(p.at - q.at, 1))
+            return q.depth + (p.depth - q.depth) * u
+        }
+        depth = p.depth
+    }
+    depth
+}
+
+/// `v` with lane `lane` set to `x`.
+fn set(v: vec4, lane: u32, x: f32) -> vec4 {
+    var out = v
+    if lane == 0 {
+        out.x = x
+    } else if lane == 1 {
+        out.y = x
+    } else if lane == 2 {
+        out.z = x
+    } else {
+        out.w = x
+    }
+    out
+}
+
+/// The piano's voice: one quantum of `piano`, into the channels.
+@audio
+pub fn play_piano(p: mut Piano, left: mut [f32], right: mut [f32]) {
+    for s in 0..left.len() {
+        left[s] = 0.0
+        right[s] = 0.0
+    }
+    let start = p.sample
+    var from = 0
+    loop {
+        // Render up to the next event in this quantum, then apply it.
+        var until = 128
+        if p.next < p.events.len() {
+            let at = p.events[p.next].at
+            if at < start + 128 {
+                until = if at > start { at - start } else { 0 }
+            }
+        }
+        if until < from {
+            until = from
+        }
+        p.play_strings(from, until, mut left, mut right)
+        if until == 128 {
+            break
+        }
+        let e = p.events[p.next]
+        p.next += 1
+        if e.velocity > 0.0 {
+            p.strike(e.key, e.velocity)
+        } else if p.held[e.key] > 0 {
+            p.held[e.key] -= 1
+        }
+        from = until
+    }
+    let pedal = depth_at(p.sustain, p.sample)
+    p.settle(pedal)
+    p.body(pedal, mut left, mut right)
+    p.sample += 128
+}

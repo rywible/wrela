@@ -57,7 +57,7 @@ pub struct Bark: Copy + GpuData {
     pub relief: f32 = 0.9,
     pub light: vec3 = vec3(0.30, 0.25, 0.19),
     pub bands: f32 = 0.0,
-    pub moss: vec3 = vec3(0.06, 0.09, 0.02),
+    pub moss: vec3 = vec3(0.07, 0.085, 0.04),
     pub grain: vec3 = vec3(1.0, 0.0, 0.0),
 }
 
@@ -122,6 +122,23 @@ impl Plant {
         if !self.limbs.is_full() {
             self.limbs.push(Tube { points, radii })
         }
+    }
+
+    /// A root: a buttress grown from a trunk `girth` thick (m) standing at `foot`, swelling down
+    /// from it toward `dir` in a hollow curve, running a little way along the ground, winding by
+    /// `across`, and diving under it `out` metres out; `r` thick where it leaves the trunk.
+    /// (Straight ramps from the trunk into the ground, all alike, read as radial wedges: the
+    /// lookdev reviews' A12, F4.)
+    pub fn root(mut self, foot: vec3, dir: vec3, girth: f32, out: f32, across: vec3, r: f32) {
+        self.tube(
+            [
+                foot + vec3(0.0, girth * 1.7, 0.0) + dir * (girth * 0.3),
+                foot + dir * (girth * 0.95) + vec3(0.0, girth * 0.5, 0.0),
+                foot + dir * (out * 0.62) + across * 0.5 + vec3(0.0, girth * 0.02, 0.0),
+                foot + dir * out + across + vec3(0.0, -0.35, 0.0),
+            ],
+            [r * 0.8, r * 0.72, r * 0.42, girth * 0.12],
+        )
     }
 
     /// A straight limb from `from` to `to`.
@@ -898,11 +915,6 @@ fn ridge_texel(pixel: FragCoord) -> vec4 {
     vec4(ridges, plates, bands, 0.6 + 0.4 * smoothstep(0.15, 0.85, mottle))
 }
 
-/// `v` wrapped into 0 to `n`.
-fn wrap(v: i32, n: i32) -> i32 {
-    ((v % n) + n) % n
-}
-
 /// Plates at `p` (cells one unit a side, `period` cells each way, wrapping): each cell's point
 /// placed at random in it, a plate the points' nearest region; its tone its own (0.35 to 1),
 /// a little darker in the crack where two plates meet, and only where the cracks run deep: the
@@ -916,7 +928,10 @@ fn plates_at(p: vec2, period: vec2i) -> f32 {
     for dy in 0..3 {
         for dx in 0..3 {
             let o = vec2(f32(dx) - 1.0, f32(dy) - 1.0)
-            let (x, y) = (wrap(i32(c.x + o.x), period.x), wrap(i32(c.y + o.y), period.y))
+            let (x, y) = (
+                noise::wrapped(i32(c.x + o.x), period.x),
+                noise::wrapped(i32(c.y + o.y), period.y),
+            )
             let at = c +
                 o +
                 vec2(noise::hash2(x, y), noise::hash2(x + 101, y + 37)) * 0.8 +
@@ -940,7 +955,7 @@ fn plates_at(p: vec2, period: vec2i) -> f32 {
 fn band_at(p: vec2, rows: i32) -> f32 {
     let row = i32(floor(p.y))
     let f = p.y - floor(p.y)
-    let r = wrap(row, rows)
+    let r = noise::wrapped(row, rows)
     // Rows have one dash or none, each a share of the way round, from 4% to 14% of it.
     if noise::hash2(r, 7) < 0.45 {
         return 1.0

@@ -1,0 +1,8 @@
+# The piano gate's test chords (#56 AC3, AC4): soft, loud, low, high and pedalled, played
+# deadpan by engine::piano, for the blind trials against the reference piano and for the clicks
+# count.
+[package]
+name = "chords"
+
+[dependencies]
+engine = { path = "../../engine" }

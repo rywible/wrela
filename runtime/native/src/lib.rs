@@ -190,6 +190,8 @@ pub enum ReplayError {
     FirstWorld { log: u64, replayed: u64 },
     /// Tick `tick`'s hash isn't the log's: the first that differs.
     Tick { tick: u32, log: u64, replayed: u64 },
+    /// Tick `tick` has more records than one ticker call can consume.
+    TooManyRecords { tick: u32, count: usize },
     /// The program failed, in tick `tick` if it was in one: it trapped, or the host couldn't
     /// run it.
     Failed { tick: Option<u32>, error: Error },
@@ -220,6 +222,11 @@ impl std::fmt::Display for ReplayError {
                 "tick {tick} differs: the log has {}, the replay {}",
                 hex(*log),
                 hex(*replayed)
+            ),
+            ReplayError::TooManyRecords { tick, count } => write!(
+                f,
+                "tick {tick} has {count} records; a tick takes at most {}",
+                wrela_abi::memory::MAX_TICK_RECORDS
             ),
             ReplayError::Failed { error, .. } => write!(f, "{error}"),
         }
@@ -444,6 +451,7 @@ impl Host {
         every: u32,
         mut seen: impl FnMut(u32, &[u8]) -> Result<()>,
     ) -> Result<(RunResult, Option<TickLog>)> {
+        program::valid_fps(fps)?;
         self.p().executor().set_screen(width, height)?;
         let mut log = if log {
             self.p().want_hashes(true);
@@ -831,7 +839,8 @@ impl CpuHost {
     }
 
     /// Renders `quanta` quanta of the program's voice offline: `wrela_abi::AUDIO_QUANTUM`
-    /// samples each, mono, at `wrela_abi::AUDIO_SAMPLE_RATE`. Each call goes on from the last.
+    /// samples each, at `wrela_abi::AUDIO_SAMPLE_RATE`, the two channels interleaved (left,
+    /// right, left, ...). Each call goes on from the last.
     pub fn render_audio(&mut self, quanta: u32) -> Result<Vec<f32>> {
         self.program.render_audio(quanta)
     }
@@ -882,6 +891,9 @@ impl CpuHost {
         }
         self.want_hashes(true);
         for (k, t) in (0..ticks).zip(&log.ticks) {
+            if t.records.len() > wrela_abi::memory::MAX_TICK_RECORDS as usize {
+                return Err(ReplayError::TooManyRecords { tick: k, count: t.records.len() });
+            }
             self.program.push_raw_records(&t.records);
             let got = self.tick().map_err(|error| ReplayError::Failed { tick: Some(k), error })?;
             let replayed = got.hash.expect("hashes asked for");
