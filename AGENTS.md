@@ -14,7 +14,7 @@ MIT-licensed language, compiler, engine and agent-native studio for browser game
 5. After merging, return to the `main` checkout. Preserve needed outputs outside the session, discard only its disposable caches, then run `python3 tools/worktrees.py remove <name>` to delete both worktree and local branch. Cleanup is part of completion; report any blocker, never force removal.
 
 - Long work: keep decisions, remaining tasks and checks in checkout-local `TASKS.md`; delete before final verification.
-- Each PR/completion report gives changes, checks, commit/blockers, and frame-time/gate-time impact (explicitly say when neither changes). For frame costs, use `tools/wrela estimate examples/last-green` against each system's share of 16.7 ms. Distinguish estimates from measurements.
+- Each PR/completion report gives changes, checks, commit/blockers, and frame-time/gate-time impact (explicitly say when neither changes). For frame costs, measure on the M4 with `tools/wrela profile examples/last-green --json`, compare against a baseline from the same machine and mode, and judge each system against its share of 16.7 ms. Distinguish GPU timings, CPU frame calls, and Chrome frame rates.
 
 ## Context and layers
 
