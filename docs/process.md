@@ -28,11 +28,12 @@ flowchart LR
 | Work | People (Ryan) | AI (Claude agents) |
 |---|---|---|
 | Goal, constraints, flagship design | Decides all of it (#44: "settled means the owner decided it") | Asks questions, writes the decisions down |
+| Planning against the vision | Sets the vision and the owner's gates; answers the open lore questions | Keeps a map from the vision to what exists, ranks the gaps each day, and proposes the next workstreams |
 | Language, compiler, engine, runtime, studio | Reviews, directs, merges | Writes the code and its tests |
 | Art direction | Picked the look (#50) and judges every art result | Builds the looks in code, judges stills against a rubric, proposes changes |
 | Creatures and the world | Judges each result (blind where we can) | Authors them as fields, in wrela code |
 | Music and sound | Judges by ear; ruled out music models (#44) | Write the piano synthesizer, the scores and performances as code, and the tools |
-| Story and lore | Writes the overarching story and its ending | Drafts each floor's lore and echoes; Ryan reviews them |
+| Story and lore | Writes the overarching story and its ending | Drafts each floor's lore within what Ryan has written; Ryan reviews it |
 | Translation (planned) | | Translates; players review |
 | Docs and records | Reviews | Writes them |
 
