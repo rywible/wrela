@@ -201,3 +201,63 @@ pub fn stone_shade(s: StoneVertex, lt: Lighting) -> vec4 {
     let c = shown(lt, lit, s.world)
     vec4(c, ROCK + f32(s.seed.value % 63))
 }
+
+// ---- bedrock: a bed of rock as a solid ------------------------------------------------------------
+
+/// A bed of rock as a solid: a prism its faces cut (each `dot(p, n) < w` for `n` in xyz, `n` of
+/// unit length): its joints' planes round it, its bedding planes over and under it. Flat faces
+/// and hard edges, which light can carve (rock as a heightfield draped where it should break).
+pub struct Bed: Copy + GpuData {
+    pub planes: [vec4; 9],
+    /// A box it lies in, and its tone's seed.
+    pub lo: vec3,
+    pub hi: vec3,
+    pub seed: u32,
+}
+
+impl Surface for Bed {
+    fn distance(self, p: vec3) -> f32 {
+        var d = -1.0e9
+        for q in self.planes {
+            d = max(d, dot(p, q.xyz) - q.w)
+        }
+        d
+    }
+
+    fn lipschitz(self, near: f32) -> f32 {
+        1.0
+    }
+}
+
+/// A bed's colour at `p` (in its own frame): granite of its own tone, one bed lighter or darker
+/// than the next, a darker seam along its foot where the bed over it sits, faint streaks down
+/// it where water runs. No spots, no crack lines: its form carries it.
+pub fn bed_colour(b: Bed, p: vec3) -> Rock {
+    let tone = 0.85 + 0.3 * rand(b.seed, 3)
+    let g = grain(p * 0.9 + vec3(f32(b.seed) * 1.3))
+    var c = tone * mix(vec3(0.30, 0.29, 0.27), vec3(0.40, 0.38, 0.34), vec3(g))
+    // How far over its bedding plane under it `p` is (the last plane's: `-n` up, so `w - dot`).
+    let under = b.planes[8]
+    let above = -(dot(p, under.xyz) - under.w)
+    c *= 0.82 + 0.18 * smoothstep(0.0, 0.5, above)
+    let streak = noise3(vec3(p.x * 1.6, p.y * 0.12, p.z * 1.6) + vec3(f32(b.seed)))
+    c *= 1.0 - 0.12 * smoothstep(0.6, 0.85, streak)
+    Rock { albedo: c }
+}
+
+/// A bed as a creature of one bone, to realize.
+pub fn bed(b: Bed) -> Creature<Rock> {
+    var s = Skeleton::new()
+    let root = s.root("bed", vec3(0.0))
+    creature(s).part(root, b.with_at(|p| bed_colour(b, p))).bounded(Box3 { lo: b.lo, hi: b.hi })
+}
+
+/// Bed `b` realized at `at` (its frame's origin in the world): cells of about 45 cm (its faces
+/// are planes; an edge rounds by about a cell), its colours a cell 25 cm.
+pub fn realize_bed(b: Bed, at: vec3) -> Realized {
+    let c = bed(b)
+    let look = CreatureLook { surface: Tolerance { tolerance: 50cm, largest: 45cm } }
+    let mesh = realize_rigid(c, look)
+    let colours = colours(mesh, c.field(), ByChannels {}, cell: 25cm)
+    Realized { mesh, colours, at: translate(at), seed: b.seed }
+}
