@@ -617,6 +617,15 @@ pub fn bout<G: Terrain>(ground: G, w: mut World, walked: Walked, yaw: f32, dt: f
     let _ = exchange(ground, mut w, glides: false, dt: dt)
 }
 
+/// A beaten wolf's tick (a floor's, once its fight is won): it goes at its prowl the way `away`
+/// points.
+@deterministic
+pub fn slink<G: Terrain>(ground: G, w: mut Wolf, away: vec2, dt: f32) {
+    w.walker.along = 0.0
+    let path = Toward { from: w.pos(), dir: away, length: 10.0 }
+    step(mut w.walker, ground, path, WOLF_BODY, PROWL, go: true, dt: dt)
+}
+
 /// How near the wolf is when the camera keeps it in view (m).
 const ENGAGE = 7.0
 

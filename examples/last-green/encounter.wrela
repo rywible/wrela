@@ -4,9 +4,10 @@
 // (`engine::player`): it walks as it walks everywhere, round trunks and stones. In a move (a
 // swing, a blink, a fall) the fight owns the body: the player doesn't walk, and the move carries
 // it as footing lets it, so a blink stops at a stone. Far from the disc (`LEASH`), the fight is
-// over and the wolf is back in its place.
+// over and the wolf is back in its place. Once the wolf is down (`BEATEN`), the fight is won: the
+// wolf goes off toward the wood (`AWAY`), and once it's `GONE` from the disc it's gone for good.
 
-use climber::fight::{Mood, Walked, World, bout, read, spawn_on}
+use climber::fight::{Mood, Walked, World, bout, read, slink, spawn_on}
 use climber::moves::Act
 use engine::footing::{BODY, Obstacles}
 use engine::place::Water
@@ -28,16 +29,29 @@ pub const WOLF_HOME = vec2(37.0, -463.0)
 pub const WAKES: f32 = 25.0
 pub const LEASH: f32 = 45.0
 
-/// The fight and whether it's on.
+/// The fight; whether it's on; whether it's won (the wolf going), and whether the wolf's gone.
 pub struct Encounter: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub fight: World,
     pub awake: bool,
+    pub won: bool,
+    pub gone: bool,
 }
+
+/// How long the wolf stays down before the fight is won (ticks: under its getting up), the way it
+/// goes then (toward the wood's waystone), and how far from the disc it's gone (m).
+const BEATEN: u32 = 60
+const AWAY = vec2(100.0, -600.0)
+const GONE: f32 = 60.0
 
 /// The fight before the player comes: the wolf at home, facing the shore trail (east), where the
 /// player comes from.
 pub fn encounter<G: Terrain>(ground: G) -> Encounter {
-    Encounter { fight: spawn_on(ground, WOLF_HOME + vec2(10.0, 0.0), WOLF_HOME), awake: false }
+    Encounter {
+        fight: spawn_on(ground, WOLF_HOME + vec2(10.0, 0.0), WOLF_HOME),
+        awake: false,
+        won: false,
+        gone: false,
+    }
 }
 
 /// Whether the fight owns the player's body this tick: a move, or a hit's stop.
@@ -59,6 +73,13 @@ pub fn step_encounter<G: Terrain + engine::grow::Ground>(
     records: Vec<Event>,
     dt: f32,
 ) {
+    if e.won {
+        if !e.gone {
+            slink(ground, mut e.fight.wolf, normalize(AWAY - e.fight.wolf.pos()), dt)
+            e.gone = length(e.fight.wolf.pos() - DISC) > GONE
+        }
+        return
+    }
     let feet = p.at.world()
     let off = length(feet - DISC)
     if !e.awake {
@@ -88,6 +109,12 @@ pub fn step_encounter<G: Terrain + engine::grow::Ground>(
         }
         let q = p.at.world()
         e.fight.climber.at = vec3(q.x, p.y, q.y)
+    }
+    // Won: the wolf down a while, and the climber's move done.
+    let w = e.fight.wolf
+    if w.mood == Mood::Down && w.t >= BEATEN && c.act == Act::Free {
+        e.won = true
+        e.awake = false
     }
 }
 
@@ -122,7 +149,7 @@ pub fn report(e: Encounter) -> String {
     }
     let at = w.pos()
     let t = e.fight.tally
-    f"[{e.awake}, \"{mood}\", {at.x:.2}, {at.y:.2}, {e.fight.climber.health}, {t.hits}, {t.bites}]"
+    f"[{e.awake}, \"{mood}\", {at.x:.2}, {at.y:.2}, {e.fight.climber.health}, {t.hits}, {t.bites}, {e.won}]"
 }
 
 /// How far a body at `from` gets on its way `d` (m), as footing lets it: in steps no longer
@@ -249,4 +276,38 @@ fn the_camera_turns_to_the_wolf_near_it() {
     e.fight.wolf.mood = Mood::Down
     let (_, down) = focus(e, wolf + vec2(5.0, 0.0))
     assert(down == 0.0, "turned to a wolf that's down")
+}
+
+/// Once the wolf has been down a while, the fight is won: the wolf goes off toward the wood, the
+/// camera no longer turns to it, the player walks free, and once it's far it's gone for good,
+/// however near the player comes again.
+@test
+fn a_beaten_wolf_goes_and_doesnt_come_back() {
+    let o = stones(None)
+    var e = encounter(Flat {})
+    var p = standing(DISC)
+    tick(mut e, mut p, o, east: 2)
+    assert(e.awake, "asleep at the disc")
+    e.fight.wolf.mood = Mood::Down
+    e.fight.wolf.t = 0
+    for _ in 0..BEATEN + 1 {
+        tick(mut e, mut p, o, east: 2)
+    }
+    assert(e.won && !e.awake && !holds(e), "not won")
+    let (_, weight) = focus(e, p.at.world())
+    assert(weight == 0.0, "the camera still turns to it")
+    var ticks = 0
+    while !e.gone && ticks < 60 * 60 {
+        tick(mut e, mut p, o, east: 2)
+        ticks += 1
+    }
+    let away = dot(normalize(e.fight.wolf.pos() - DISC), normalize(AWAY - DISC))
+    print(f"gone after {f32(ticks) / 60.0} s, {away} along the way out")
+    assert(e.gone, "never gone")
+    assert(away > 0.9, f"it went astray ({away})")
+    let left = e.fight.wolf.pos()
+    for _ in 0..120 {
+        tick(mut e, mut p, o, east: 2)
+    }
+    assert(e.won && !e.awake && length(e.fight.wolf.pos() - left) < 1.0e-5, "it came back")
 }

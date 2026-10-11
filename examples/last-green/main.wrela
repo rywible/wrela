@@ -2047,7 +2047,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     }
     let (wa, wb) = (b.a.fight.fight.wolf, b.b.fight.fight.wolf)
     let wolf_apart = length(wb.pos() - (feet + o).xz)
-    if cast.is_none() && s.shot.is_none() && wolf_apart < FAWN_DRAWN {
+    if cast.is_none() && s.shot.is_none() && !b.b.fight.gone && wolf_apart < FAWN_DRAWN {
         let bones = wolf_bones(wa, wb, b.alpha, origin: o)
         s.wolf.pose(bones, shadowed: wolf_apart < MOVING_SPAN, moved: moved)
     } else {
