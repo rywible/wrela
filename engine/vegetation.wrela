@@ -9,7 +9,7 @@
 // no `discard` (which would turn off the GPU's early depth test).
 
 use impostor::{
-    Cooked, Impostor, TILT, bake, cook, far_cut, far_quad, far_shade, leaf_light, volume_cut,
+    Cooked, Impostor, bake, cook, far_cut, far_quad, far_shade, leaf_light, volume_cut,
     volume_shade, which_crown,
 }
 use light::Lit
@@ -19,8 +19,7 @@ use lod::{IMPOSTOR, Lod, VOLUME, anchor, by_card, keeps_packed, packed, place, s
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_POINTS, LIMB_VERTICES, Leaves, OUTLINE,
     Plant, Wind, CORNERS, card_orders, card_tint, card_turn, cook_cards, cook_outlines, corner_of,
-    leaf_age, leaf_at, leaf_draws, leaf_normal, level_cards, limb_corner, limb_point, NO_INSTANCE,
-    sway, tinted,
+    leaf_age, leaf_at, level_cards, limb_corner, limb_point, NO_INSTANCE, sway, tinted,
 }
 use shadow::{CASTER, Shadows}
 use std::field::Tube
@@ -625,8 +624,8 @@ fn leaf_cover(m: f32) -> f32 {
     saturate((m - 0.5) / max(fwidth(m), 1.0e-4) + 0.5)
 }
 
-/// A leaf's pixel, where the prepass left its depth: its leaf's own tilt off the crown's normal,
-/// lit by the sun through its shadows and the crown's depth, the sky light (the probes, darkened
+/// A leaf's pixel, where the prepass left its depth: its crown's normal (its mass's), lit by
+/// the sun through its shadows and the crown's depth, the sky light (the probes, darkened
 /// inside the crown) and the light through it, and its gloss (`impostor::leaf_light`, as its
 /// impostor and volume have them); through the haze.
 @fragment
@@ -637,21 +636,18 @@ pub fn leaf_shade(
     instances: [Instance],
     lt: Lighting,
     leaves: Leaves,
-    atlas: Texture<Rgba8>,
 ) -> vec4 {
     let card = cards[l.card.value]
     let inst = instances[l.instance.value & 16777215]
     let world = lt.cam.world_at(pixel.position.xy, pixel.position.z)
-    let (_, which) = leaf_at(atlas, lt.s, card.seed, l.uv)
-    let (tilt, aged) = leaf_draws(card.seed, which)
     let crown_n = normalize(inst.turn(card.normal.decode()))
     let c = leaf_light(
         lt,
         world,
-        leaf_normal(crown_n, tilt * TILT),
+        crown_n,
         sky_n: crown_n,
         depth: card.depth * inst.scale,
-        albedo: tinted(leaf_age(leaves, crown_n.y, aged), inst.tint_rgb() + card_tint(card)),
+        albedo: tinted(leaf_age(leaves, crown_n.y), inst.tint_rgb() + card_tint(card)),
         through: leaves.through,
         leaf: leaves.leaf_width() * inst.scale,
     )
@@ -906,7 +902,6 @@ impl Forest {
                         instances: self.instances(l),
                         lt: lt,
                         leaves: k.plant.leaves,
-                        atlas: self.atlas,
                     ),
                     indices: self.card_triangles,
                     indirect: self.args.at(li).cards,
@@ -975,7 +970,6 @@ impl Forest {
                             k.impostor.bake,
                             grid: k.volume.grid,
                             grid_depth: k.volume.grid_depth,
-                            cell: self.cell,
                         ),
                         vertices: 6,
                         instances: l.count,

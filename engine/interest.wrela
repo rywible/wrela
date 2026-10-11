@@ -376,14 +376,11 @@ pub fn sight_of<G: Ground>(
             })
         }
         if t.state == State::Log && t.tall > 4.0 {
-            var s = 0.0
-            while s < t.tall * 0.85 {
-                let p = t.at + t.fall * s
+            t.each_along(g.cell * 0.5, |p, _| {
                 if g.holds(p) {
                     logs[g.cell_at(p)] += 0.3
                 }
-                s += g.cell * 0.5
-            }
+            })
         }
     }
     // The trunks as they stand, sorted into the cells.
