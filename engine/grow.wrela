@@ -2113,6 +2113,14 @@ fn gale(
                 let s = 0.5 + 0.5 * smoothstep(8.0, 22.0, t.tall)
                 f.memory.disk(g, t.at, max(crown, 3.0), Mark::Wind, year, s)
                 mark(shelter, mut down, t.at + t.fall * (0.6 * t.tall), crown, 1.0)
+                if t.state == State::Log {
+                    // Its stem, lying where it came down, crushes what it lands on too.
+                    var along = 0.0
+                    while along < 0.85 * t.tall {
+                        mark(shelter, mut down, t.at + t.fall * along, STEM_SWATH, 1.0)
+                        along += shelter.cell
+                    }
+                }
             } else if draw < p + 0.25 * p * hold && !(t.cause == Cause::Snapped && t.died == year) {
                 // It stood, and the gusts broke its top: a crown that grows back from below the
                 // break.
@@ -2126,7 +2134,8 @@ fn gale(
         }
     }
     // The young and the poles where the thrown came down round them (most of the ground within
-    // a crown's reach or two): crushed and broken by the falling crowns, the smaller the likelier.
+    // a crown's reach or two): crushed and broken by the falling stems and crowns, the smaller the
+    // likelier.
     let near = shelter.blur(down, 2)
     for mut t in trees {
         if t.state == State::Alive && !t.pinned && t.tall <= POLES && shelter.holds(t.at) {
@@ -2143,6 +2152,9 @@ fn gale(
 
 /// The tallest a tree beneath a gale's thrown crowns is broken by them (m).
 const POLES: f32 = 12.0
+
+/// How wide a swath a thrown tree's stem and its branches crush where it lies (m, each side).
+const STEM_SWATH: f32 = 2.0
 
 /// A gale's gusts: its first, then those that find the edges it opened, as strong as
 /// `LATER_GUSTS` of its first.
