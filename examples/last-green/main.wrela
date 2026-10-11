@@ -1908,10 +1908,10 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
     )
     down.end()
     let x = begin_pass(mut s.glow_b)
-    fullscreen(x, glow_blur.bind(src: s.glow_a, across: 0, spread: 2.0))
+    fullscreen(x, glow_blur.bind(src: s.glow_a, s: s.linear, across: 0, spread: 2.0))
     x.end()
     let y = begin_pass(mut s.glow_a)
-    fullscreen(y, glow_blur.bind(src: s.glow_b, across: 1, spread: 2.0))
+    fullscreen(y, glow_blur.bind(src: s.glow_b, s: s.linear, across: 1, spread: 2.0))
     y.end()
     let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     fullscreen(
