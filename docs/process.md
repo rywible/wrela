@@ -36,6 +36,7 @@ flowchart LR
 | Story and lore | Writes the overarching story and its ending | Drafts each floor's lore within what Ryan has written; Ryan reviews it |
 | Translation (planned) | | Translates; players review |
 | Docs and records | Reviews | Writes them |
+| Architecture and code health | Decides calls that change the architecture | A steward thread reviews every merge each 6 hours (duplicated helpers, dead experiments, code across layers), measures frame and gate time, cleans up, and proposes larger refactors |
 
 Every commit on `main` so far (50 of 50 on 2026-10-10) was written with Claude Code and carries
 a `Co-Authored-By: Claude` line; Ryan commits or merges them. Agents also merge their own

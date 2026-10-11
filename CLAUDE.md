@@ -17,6 +17,24 @@ Checks (tools/check.sh; its header says what each tier runs).
 - Run the gate and filtered runs in the foreground. Run anything longer (the long tier, a measurement, a bake) in the background and keep working. If you need its result before you can go on, wait with Monitor, or end your turn: a background command wakes you when it exits.
 - Hooks (tools/hooks.py) format what the gate checks before it runs, and refuse polling with `sleep` and a `cargo test` that takes the GPU alone. A refusal says what to do instead.
 
+Architecture: docs/vision.md's "Architecture" gives the layers and the constraints. Where each layer lives:
+
+```
+0 hosts     runtime/native (Rust: wgpu + wasmtime), runtime/browser (TS), runtime/abi (shared with the compiler)
+1 language  compiler/ (Rust: syntax → sema → ir → lower → wasm, wgsl; driver; cli = `wrela`), compiler/std (wrela)
+2 engine    engine/ (wrela): no game's names, places or tuning
+3 studio    studio/, ui/ (wrela), tools/ (scripts, the gate)
+4 games     examples/<game>/ (wrela): depends on engine/, never the other way
+```
+
+Code health, with many agents merging at once:
+- Each PR says what it changes in a frame's time (`wrela estimate examples/last-green`: each system against its slice of the 16.7 ms frame, #55 AC8) and in the gate's time. If the change can't touch either, say so in one line.
+- Delete an experiment that lost. Don't keep it behind a flag, a mode number or an unused constant.
+- New logic ships with a focused test: a placement, a layout, a camera rule, a bake or a sim rule, tested on a small case, not only by a long run of the whole floor. A change only to the look is judged by the lookbook instead.
+- A helper that two places need lives once, in engine/ or std, not as a copy.
+- Don't add an engine-wide abstraction (a type, pass or module that other systems must adopt) without the OK of the project's coordinating session or the owner.
+- A spike stays on its branch unless it wins.
+
 Work on one trunk, `main`. Branch off the latest main, keep the branch short, and squash-merge it into main yourself when it's done: merge the latest main into the branch, pass `tools/check.sh` on that result right before you squash, and squash only. There are no milestone branches (retired 2026-10-11; milestone-6's history is at the tag `archive/milestone-6`).
 
 TASKS.md has the open work: a short list of goals, not a log (a hook names it at each session's start, and gives it again after a compaction). Add a goal when the owner sets one; delete it when it's done. The GitHub issues keep each milestone's scope and criteria up to M6, and the backlog (#31).
