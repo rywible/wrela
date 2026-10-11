@@ -506,11 +506,25 @@ pub fn card(
     // The instance's cards in the order for the corner it's seen from (front to back).
     let mark = marks[i.index]
     let c = orders[(mark.y >> 8) * (orders.len() / CORNERS) + v.index / OUTLINE]
-    let (world, uv, card, _) = card_corner(
+    let card = cards[c]
+    // A card in the camera's way fades: its share of the instance's cards shrinks.
+    let inst = instances[i.index]
+    let fade = faded(
+        inst.place(card.centre),
+        card.size * d.grow * inst.scale * 0.75,
+        cam.eye,
+        d.clear,
+    )
+    let faded_keep = if fade > 0.0 { fade_packed(mark.x, fade) } else { mark.x }
+    // Each card whole or gone by its own draw, and smaller near its share's ends
+    // (`lod::by_card`).
+    let mixed = (seed_of(card, mark.y & 255) ^ (card.seed >> 15)) * 2246822519
+    let (keep, size) = by_card(faded_keep, f32(mixed >> 22) / 1024.0)
+    let (world, uv, _, _) = card_corner(
         c,
         v.index % OUTLINE,
         i.index,
-        d,
+        CardDraw { grow: d.grow * size, ..d },
         cards,
         instances,
         outlines,
@@ -521,19 +535,6 @@ pub fn card(
     // along the eye's ray than the level before's: each corner stays on its pixel, and the
     // depth is one level's (some hundred steps of a float apart, in reversed depth).
     let apart = cam.eye + (world - cam.eye) * (1.0 + 1.0e-5 * f32(min(d.way, CARD_LEVELS)))
-    // A card in the camera's way fades: its share of the pixels' draws shrinks (the same dither
-    // the levels hand over by, which temporal AA settles).
-    let inst = instances[i.index]
-    let fade = faded(
-        inst.place(card.centre),
-        card.size * d.grow * inst.scale * 0.75,
-        cam.eye,
-        d.clear,
-    )
-    let faded_keep = if fade > 0.0 { fade_packed(mark.x, fade) } else { mark.x }
-    // Each card whole or gone, by its own draw, in a settled still (`lod::by_card`).
-    let mixed = (seed_of(card, mark.y & 255) ^ (card.seed >> 15)) * 2246822519
-    let keep = by_card(faded_keep, f32(mixed >> 22) / 1024.0)
     LeafVertex {
         clip: ClipPosition { position: cam.clip(apart) },
         uv,
