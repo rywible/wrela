@@ -103,9 +103,10 @@ pub const SHOTS = [
         moves: vec2(1.6, -1.2),
     },
     // The stream falling from the plateau's lip, from the valley's floor: the stream leads to it.
+    // The eye on the bank, 5 m from the water's edge, where the pool shows past the bank.
     Shot {
         name: "the waterfall",
-        eye: vec3(-290.0, 1.7, -110.0),
+        eye: vec3(-283.0, 1.7, -112.0),
         at: vec3(-222.0, 14.0, -152.0),
         moves: vec2(1.5, -1.0),
         fovy: 0.7,

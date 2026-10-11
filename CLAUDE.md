@@ -36,7 +36,7 @@ Code health, with many agents merging at once:
 - Don't add an engine-wide abstraction (a type, pass or module that other systems must adopt) without the OK of the project's coordinating session or the owner.
 - A spike stays on its branch unless it wins.
 
-Work on one trunk, `main`. Branch off the latest main, keep the branch short, and squash-merge it into main yourself when it's done: merge the latest main into the branch, pass `tools/check.sh` on that result right before you squash, and squash only. There are no milestone branches (retired 2026-10-11; the branch `milestone-6` stays, unchanged, as M6's archive).
+Work on one trunk, `main`. Branch off the latest main, keep the branch short, and squash-merge it into main yourself as soon as its change passes `tools/check.sh` on the branch, and squash only. Merge main into the branch only when it conflicts with the change, when it brings something the change needs, or to get a speedup of the checks; don't merge unrelated updates or run the gate again for them. There are no milestone branches (retired 2026-10-11; the branch `milestone-6` stays, unchanged, as M6's archive).
 
 TASKS.md has the open work: a short list of goals, not a log (a hook names it at each session's start, and gives it again after a compaction). Add a goal when the owner sets one; delete it when it's done. The GitHub issues keep each milestone's scope and criteria up to M6, and the backlog (#31).
 
