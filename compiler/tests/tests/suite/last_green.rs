@@ -78,14 +78,14 @@ pub fn frame(time: f32, width: u32, height: u32) {}
 fn grown_from(name: &str, edit: &str) -> PathBuf {
     let main = format!(
         r#"
-use engine::grow::{{History, PREVIEW, simulate}}
+use engine::grow::{{History, PREVIEW, Start, simulate}}
 
 const GROWN: u32 = grown()
 
 fn grown() -> u32 {{
     var m = map::map()
     {edit}
-    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, map::LO, map::HI, stones::stones(m), |land| history::past(m, land))
+    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, map::LO, map::HI, stones::stones(m), |land| Start::wild(land))
     h.trees.len()
 }}
 
