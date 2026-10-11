@@ -116,6 +116,10 @@ const FAR_CASCADE = Cascade {
 /// How far the eye moves in a frame for a jump (m): a travel or a lookbook shot, not a glide.
 const JUMP: f32 = 30.0
 
+/// The frames an arrival stays black once the light round the new eye is drawn (`lit`), while
+/// temporal AA gathers its history under that light (a fresh history is soft for about 10).
+const GATHER: u32 = 12
+
 /// How far the player goes from the near cascade's middle before it's drawn again round it (m),
 /// in how many strips (a strip a frame: 6 cost 1.3-1.5 ms each, and one with a terrain cook
 /// passed 16.7 ms on the walk).
@@ -463,6 +467,11 @@ pub struct Floor {
     /// as late (after a jump).
     last_eye: vec2,
     settle_until: u32,
+    /// Arriving after a jump, once the floor is playable: the frames are black until the light
+    /// round the new eye is drawn (`lit`; at most until `settle_until`), and `GATHER` frames more.
+    /// `gathered`: the frames since it was drawn.
+    arriving: bool,
+    gathered: u32,
 }
 
 /// The built things to realize: the floor's (`blockouts::built`), and the egg's place's ring of
@@ -634,6 +643,8 @@ pub fn init() -> Floor {
         strip_drawn: false,
         last_eye: vec2(0.0),
         settle_until: 0,
+        arriving: false,
+        gathered: 0,
     }
 }
 
@@ -747,6 +758,17 @@ fn playable(s: Floor, eye: vec2) -> bool {
         }
     }
     true
+}
+
+/// Whether the light round the eye (`eye` in render space, `eye_w` in the world) is drawn: a full
+/// frame there (`playable`), the near cascade and the probes in use round it (not round where the
+/// eye was).
+fn lit(s: Floor, eye: vec2, eye_w: vec2) -> bool {
+    !s.near.drawing() &&
+        length(eye - s.near.centre.xz) <= NEAR_MOVES &&
+        s.next_probes.is_none() &&
+        length(eye - s.probes_at) <= PROBES_MOVE &&
+        playable(s, eye_w)
 }
 
 /// Prints each tile within `CARDS_TO` of the eye whose own trees aren't placed: late (once).
@@ -1823,17 +1845,19 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
 /// Temporal AA up to the output, then the look's passes to the screen.
 fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, heading: f32) {
     let out = vec2(f32(width), f32(height))
+    // An arrival's first frame under the new eye's light: temporal AA's history starts again.
+    let again = s.arriving && s.gathered == 1
     let r = Resolve {
         cam,
         out,
         blend: 0.12,
-        fresh: if s.frames == 0 || s.plain { 1 } else { 0 },
+        fresh: if s.frames == 0 || s.plain || again { 1 } else { 0 },
         jitter: engine::view::jitter_of(cam.frame),
         last_jitter: engine::view::jitter_of(max(cam.frame, 1) - 1),
         moving: vec4(0.0, 0.0, -1.0, -1.0),
-        settled: f32(s.settled),
+        settled: if again { 0.0 } else { f32(s.settled) },
     }
-    s.settled = if engine::temporal::held(cam) { s.settled + 1 } else { 0 }
+    s.settled = if !engine::temporal::held(cam) { 0 } else if again { 1 } else { s.settled + 1 }
     // The lines, on the scene's own samples, so temporal AA anti-aliases them (none in the
     // debug views of form).
     if !s.plain && s.view == 0 {
@@ -1864,8 +1888,18 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
     )
     p.end()
     label("look")
-    let m = Metering { fresh: if s.frames == 0 { 1 } else { 0 }, ..METERING }
+    // (While arriving, the exposure is metered afresh each frame: the eye arrives adapted.)
+    let m = Metering { fresh: if s.frames == 0 || s.arriving { 1 } else { 0 }, ..METERING }
     dispatch(meter.bind(s.scene, m, exposure: mut s.exposure), groups: 1)
+    if s.arriving {
+        if s.gathered > GATHER {
+            s.arriving = false
+        } else {
+            let black = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+            black.present()
+            return
+        }
+    }
     // A test's plain rendering: temporal AA's output (with no history: the scene alone) through
     // the tone curve at the metered exposure, with no look.
     if s.plain {
@@ -2163,8 +2197,16 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     // for 3 s after the eye jumps (a travel, a lookbook shot: not a pace streaming holds).
     if length(eye_w.xz - s.last_eye) > JUMP {
         s.settle_until = s.frames + 180
+        // Arriving: black until the light round the new eye is drawn (the near shadows and the
+        // probes came 0.45 s and 0.85 s after a jump, each a step in the light; the exposure
+        // followed), then while temporal AA gathers.
+        s.arriving = s.playable
+        s.gathered = 0
     }
     s.last_eye = eye_w.xz
+    if s.arriving && (s.gathered > 0 || lit(s, eye.xz, eye_w.xz) || s.frames >= s.settle_until) {
+        s.gathered += 1
+    }
     if s.playable && s.frames >= s.settle_until {
         late_tiles(mut s, eye_w.xz)
     }
@@ -2331,7 +2373,7 @@ pub fn test_ground(x: f32, z: f32) -> f32 {
 
 /// Whether the floor round the camera's eye has settled: a full frame there (`playable`: the
 /// tiles round it placed, the near shadows drawn, the probes baked), nothing streaming in, and
-/// the probes baked round where the eye is (not where it was).
+/// the probes baked round where the eye is (not where it was), and no arrival under way.
 @testing
 pub fn test_settled(s: Floor) -> f32 {
     let eye = s.cam.eye.xz
@@ -2340,7 +2382,8 @@ pub fn test_settled(s: Floor) -> f32 {
         s.arrived.is_empty() &&
         s.next_probes.is_none() &&
         length(eye - s.probes_at) <= PROBES_MOVE &&
-        (!s.fawn_on || s.fawn.is_some())
+        (!s.fawn_on || s.fawn.is_some()) &&
+        !s.arriving
     if still && playable(s, eye + s.cam.origin.xz) { 1.0 } else { 0.0 }
 }
 
