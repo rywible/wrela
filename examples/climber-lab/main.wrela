@@ -8,8 +8,9 @@
 // is the subject.
 
 use climber::body::{BLADE_THICK, BLADE_WIDTH, GUARD_AT, HEAD, HEAD_RADIUS, POINT_AT}
-use climber::cape::{AROUND, Cape, DOWN, POINTS, body_frame, hang}
-use climber::darkness::{AT_REST, Darkness, MOST, darkness}
+use climber::cape::{AROUND, DOWN, POINTS, body_frame, flat}
+use climber::darkness::MOST
+use climber::figure::{Figure, figure}
 use climber::fight::{World, present, spawn, sword_at, tick}
 use climber::moves::Act
 use engine::gait::{between, palette}
@@ -29,15 +30,12 @@ use wolf::creature::Coat
 
 pub struct Lab {
     snaps: Snapshots<World>,
-    cape: Option<Cape>,
-    /// The frame's time the cape was last stepped to (s).
+    figure: Figure,
+    /// The frame's time the figure was last stepped to (s).
     stepped: f32,
     points: GpuBuffer<vec4>,
-    dark: Darkness,
     /// Each wisp: where it is and how big now, and its speed.
     wisps: GpuBuffer<vec4>,
-    /// Whether the climber was gone (a blink) last frame.
-    was_gone: bool,
     /// The CPU's time stepping the cape and the darkness (ms, summed), and over how many frames.
     cpu: f32,
     frames: u32,
@@ -61,12 +59,10 @@ pub fn init() -> Lab {
     let latest = run(spawn(), hz: 60, step: tick, present: present)
     Lab {
         snaps: Snapshots::new(take latest, hz: 60),
-        cape: None,
+        figure: figure(),
         stepped: 0.0,
         points: buffer(POINTS),
-        dark: darkness(),
         wisps: buffer(MOST * 2),
-        was_gone: false,
         cpu: 0.0,
         frames: 0,
         wolf: realize_once(wolf::creature::wolf(), WOLF_REALIZED),
@@ -271,51 +267,34 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     c.heading = a.climber.heading + short_way(w.climber.heading - a.climber.heading, TAU) * b.alpha
     let pose = c.pose(b.alpha)
     let frame = body_frame(c.at, c.heading, pose.form)
-    // The cape: hung at the first frame, carried along a blink, stepped by the frame's time.
-    var cape = match replace(mut s.cape, None) {
-        Some(it) => take it,
-        None => hang(frame),
-    }
-    let moved = (frame * vec4(0.0, 0.0, 0.0, 1.0)).xyz - (cape.frame * vec4(0.0, 0.0, 0.0, 1.0)).xyz
-    if c.gone() || length(moved) > 1.0 {
-        cape.carry(moved)
-    }
+    // The cape and the darkness off it, stepped by the frame's time.
     let dt = clamp(time - s.stepped, 0.0, 0.1)
     s.stepped = time
     let start = now()
-    cape.step(frame, gather: pose.form.gather, ground: c.at.y, wind: vec3(0.6, 0.0, 0.2), dt: dt)
-    var pts: Vec<vec4> = Vec::new()
-    for k in 0..POINTS {
-        pts.push(vec4(cape.at[k], 1.0))
-    }
-    write(mut s.points, 0, pts)
-    // The darkness: more off it as it glides fast or swings; a burst as a blink goes and comes.
-    let busy = c.act == Act::Slash || c.act == Act::Backslash
-    let rate = AT_REST * (1.0 + 0.6 * c.speed + if busy { 2.0 } else { 0.0 })
-    let gone = c.gone()
-    let burst = if gone != s.was_gone { 24 } else { 0 }
-    s.was_gone = gone
-    s.dark.step(cape, rate: if gone { 0.0 } else {
-        rate
-    }, burst: burst, wind: vec3(0.6, 0.0, 0.2), dt: dt)
-    var ws: Vec<vec4> = Vec::new()
-    for q in 0..s.dark.wisps.len() {
-        let w = s.dark.wisps[q]
-        ws.push(vec4(w.at, w.now()))
-        ws.push(vec4(w.speed, 0.0))
-    }
+    s.figure.step(
+        c.at,
+        c.heading,
+        pose,
+        speed: c.speed,
+        swinging: c.act == Act::Slash || c.act == Act::Backslash,
+        gone: c.gone(),
+        ground: flat(c.at.y),
+        wind: vec3(0.6, 0.0, 0.2),
+        dt: dt,
+    )
+    write(mut s.points, 0, s.figure.points())
+    let ws = s.figure.wisps()
     s.cpu += since(start) * 1000.0
     s.frames += 1
     if s.frames % 120 == 0 {
         print(
-            f"the cape and the darkness: {s.cpu / f32(s.frames)} ms a frame on the CPU, {s.dark.wisps.len()} wisps",
+            f"the cape and the darkness: {s.cpu / f32(s.frames)} ms a frame on the CPU, {ws.len() / 2} wisps",
         )
     }
-    let wisp_count = s.dark.wisps.len()
+    let wisp_count = ws.len() / 2
     if wisp_count > 0 {
         write(mut s.wisps, 0, ws)
     }
-    s.cape = Some(take cape)
     // The wolf between its two ticks.
     let walker = between(a.wolf.walker, w.wolf.walker, b.alpha)
     write(

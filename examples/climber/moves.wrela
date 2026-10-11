@@ -17,6 +17,7 @@ use std::field::Blend
 use std::hash::StateHash
 use std::math::TAU
 use std::serialize::Serialize
+use std::transform::rotate_y
 
 /// What the climber is doing: free (standing, gliding, which `locomotion` poses), a move, or
 /// down.
@@ -83,6 +84,17 @@ pub struct Sword: Copy + Eq + Plain + StateHash + Serialize + SimState + Blend {
     pub at: vec3,
     pub aim: vec3,
     pub edge: vec3,
+}
+
+impl Sword {
+    /// The sword in the world, for a body standing at `at` and facing `heading`: the grip's middle,
+    /// the unit way to its point, and the unit way its edge leads (square to the point's).
+    pub fn placed(self, at: vec3, heading: f32) -> (vec3, vec3, vec3) {
+        let m = rotate_y(heading)
+        let aim = normalize((m * vec4(self.aim, 0.0)).xyz)
+        let edge = (m * vec4(self.edge, 0.0)).xyz
+        (at + (m * vec4(self.at, 0.0)).xyz, aim, normalize(edge - aim * dot(edge, aim)))
+    }
 }
 
 /// A pose: the body's form and the sword. It's sim state: the sword's path decides the hits.

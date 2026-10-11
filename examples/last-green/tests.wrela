@@ -382,7 +382,7 @@ fn start_near(at: vec2, r: f32, away: f32) -> vec2 {
     vec2(1.0e9)
 }
 
-/// AC4's collision: the stand-in walks into a trunk, a stone, a wall and a shrub (the first of
+/// AC4's collision: the climber walks into a trunk, a stone, a wall and a shrub (the first of
 /// each it can reach from 4 m), and into the mere: each stops it at its surface, it never
 /// passes into one (its body never less than `BODY` from a solid obstacle, to a millimetre), it
 /// never stands where the walkable mask doesn't let it, deep water stops it short of `DEEP`, and
