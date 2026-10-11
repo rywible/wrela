@@ -125,6 +125,51 @@ This pass does not turn full-resolution software rendering, long playthroughs, c
 or uncached world bakes into constant-time operations. Image checks retain their resolution and
 rendered history, and hardware timing measurements still require the reference GPU.
 
+## Local session resource policy, 2026-10-11
+
+Ryan asked Codex to implement support for ten concurrent coding sessions directly on main,
+on an Apple M4 with ten CPU cores, 16 GiB unified memory and limited storage. This policy
+starts with one costly job at a time; it is a conservative setting, not a throughput claim.
+Reading and editing can proceed in all ten sessions. Focused checks and captures precede gates,
+long checks and background warming, with aging for fairness. A long tier yields between tests
+and stages, retaining its cases and sizes. Measurements reserve the queue.
+
+The queue supervises owned process trees, preserves a live child's lease if its supervisor
+dies, and records the checked commit and dirty source digest, queue time and outcome in the
+per-user resource directory. A verification pass is rejected if its sources change. Ordinary
+jobs cap Cargo compilation at four processes, test executables at one, test threads and default
+compiler/runtime workers at two. Explicit concurrency tests retain their requested workers.
+Two small GPU holders share global file permits across native hosts and Python's browser
+driver; large renders and measurements take an exclusive barrier. Warning memory pressure
+reduces check/build workers to one and defers renders, long work and warming. Critical pressure
+pauses admission; sustained critical pressure, a deadline or critically low disk space stops
+the owned job. These limits cooperate with the repo's tools; they do not constrain unrelated
+applications or arbitrary commands outside the queue.
+
+Source-only session worktrees share the common Git directory's Cargo and content-keyed native
+and constant caches. Whole-job admission protects mutable binaries, and each selected checkout
+rebuilds its own tool before use. Test scratch stays inside its checkout. No target or
+node_modules is copied into new sessions. A 20 GiB shared-cache ceiling and 12 GiB admission
+reserve prevent unbounded routine growth; only owned disposable output is pruned automatically.
+An explicit cache reset runs under admission. Existing worktrees, captures, unmerged branches
+and unknown scratch are preserved. The first inventory found about 38 GiB in existing targets;
+this change does not erase them or claim that space has been reclaimed.
+On this APFS machine, existing dependency artifacts seeded the shared cache with filesystem
+clones, retaining current artifacts and excluding workspace crates and incremental state.
+The clones share disk blocks; each session still builds its own current workspace sources.
+AGENTS.md aliases CLAUDE.md, so Codex and Claude read the same contract without a second
+instruction document ([Codex repository instructions](https://learn.chatgpt.com/docs/agent-configuration/agents-md)).
+
+The policy uses Cargo's documented [worker and target settings](https://doc.rust-lang.org/cargo/reference/config.html#buildjobs),
+explicit [libtest thread limits](https://doc.rust-lang.org/rustc/tests/index.html#test-threads-num_threads),
+Python's [process sessions and descriptor inheritance](https://docs.python.org/3/library/subprocess.html#subprocess.Popen),
+and Apple's [memory pressure guidance](https://support.apple.com/guide/activity-monitor/check-if-your-mac-needs-more-ram-actmntr34865/mac).
+Linux admission also reads [cgroup memory limits](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory)
+through all visible ancestors, estimating working memory after inactive filesystem cache;
+host-wide free RAM alone can hide a container's limit.
+No outside code or assets were copied. CPU/lavapipe correctness keeps real shader and buffer
+assertions; reference GPU measurements and final visual judgment remain their own evidence.
+
 ## The references
 
 ### The rules
