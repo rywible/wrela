@@ -21,7 +21,9 @@ use std::gpu::{
     ClipPosition, ComparisonSampler, Cull, DepthTexture, GpuBuffer, VertexIndex,
     begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture, discard, draw, write,
 }
+use std::io::print
 use std::math::TAU
+use std::time::{now, since}
 use std::transform::{scale, translate}
 use wolf::creature::Coat
 
@@ -36,6 +38,9 @@ pub struct Lab {
     wisps: GpuBuffer<vec4>,
     /// Whether the climber was gone (a blink) last frame.
     was_gone: bool,
+    /// The CPU's time stepping the cape and the darkness (ms, summed), and over how many frames.
+    cpu: f32,
+    frames: u32,
     wolf: Mesh,
     palette: GpuBuffer<mat4>,
     /// Where the camera is, eased.
@@ -62,6 +67,8 @@ pub fn init() -> Lab {
         dark: darkness(),
         wisps: buffer(MOST * 2),
         was_gone: false,
+        cpu: 0.0,
+        frames: 0,
         wolf: realize_once(wolf::creature::wolf(), WOLF_REALIZED),
         palette: buffer(MAX_BONES),
         follow: vec3(0.0),
@@ -275,6 +282,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     }
     let dt = clamp(time - s.stepped, 0.0, 0.1)
     s.stepped = time
+    let start = now()
     cape.step(frame, gather: pose.form.gather, ground: c.at.y, wind: vec3(0.6, 0.0, 0.2), dt: dt)
     var pts: Vec<vec4> = Vec::new()
     for k in 0..POINTS {
@@ -295,6 +303,11 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         let w = s.dark.wisps[q]
         ws.push(vec4(w.at, w.now()))
         ws.push(vec4(w.speed, 0.0))
+    }
+    s.cpu += since(start) * 1000.0
+    s.frames += 1
+    if s.frames % 120 == 0 {
+        print(f"the cape and the darkness: {s.cpu / f32(s.frames)} ms a frame on the CPU, {s.dark.wisps.len()} wisps")
     }
     let wisp_count = s.dark.wisps.len()
     if wisp_count > 0 {
