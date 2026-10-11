@@ -332,6 +332,9 @@ type Resource =
   | { kind: "texture"; texture: GPUTexture; view: GPUTextureView; format: TextureFormat; bytes: number }
   | { kind: "sampler"; sampler: GPUSampler };
 
+/** A cached group owns its binding ranges: commands may reuse or change their bindings. */
+type CachedBindGroup = { group: GPUBindGroup; pipeline: number; handles: number[]; ranges: number[] };
+
 /** Where a command was recorded: its frame, and which `frame` it came after (`Label`s name the
  * passes after them in that frame alone). */
 type RecordedIn = { frame: number; generation: number };
@@ -507,7 +510,9 @@ export class GpuExecutor {
   #bytes = 0;
   #peak = 0;
   /** By pipeline and bindings. */
-  readonly #bindGroups = new Map<string, { group: GPUBindGroup; handles: number[] }>();
+  readonly #bindGroups = new Map<string, CachedBindGroup>();
+  /** Each pipeline's last group avoids building a string key for unchanged binding ranges. */
+  readonly #lastGroups: (CachedBindGroup | undefined)[] = [];
   /** The keys of the bind groups that use each resource, so destroying it drops only those. */
   readonly #groupsOf = new Map<number, Set<string>>();
   /** Buffers and textures destroyed by the program, released once the work recorded before is
@@ -559,7 +564,9 @@ export class GpuExecutor {
    * every command after it waits behind it, so they run in order. */
   readonly #pipelines: (BuiltPipeline | undefined)[];
   readonly #building: Promise<BuiltPipeline>[];
-  readonly #waiting: Deferred[] = [];
+  readonly #waiting: (Deferred | undefined)[] = [];
+  /** Consumed slots are cleared in place: a backlog drains without shifting every command. */
+  #waitingAt = 0;
   /** Resolved when no command waits any more (`caughtUp`). */
   #idle: PromiseWithResolvers<void> | null = null;
   /** Why a pipeline couldn't be built, or a command that waited for one failed when it ran:
@@ -658,9 +665,8 @@ export class GpuExecutor {
    * for `drain` in the serial mode. Requests are the program's business, except a readback's
    * copy (`readBack`). */
   execute(cmd: Command): void {
-    const at = { frame: this.#frame, generation: this.#generation };
-    if (this.#deferred !== null) this.#deferred.push({ cmd: copied(cmd), at });
-    else if (this.#waiting.length > 0 || !this.#ready(cmd)) this.#waiting.push({ cmd: copied(cmd), at });
+    const queue = this.#deferred ?? (this.#waitingAt < this.#waiting.length || !this.#ready(cmd) ? this.#waiting : null);
+    if (queue !== null) queue.push({ cmd: copied(cmd), at: { frame: this.#frame, generation: this.#generation } });
     else this.#run(cmd);
   }
 
@@ -668,7 +674,7 @@ export class GpuExecutor {
    * pipeline couldn't be built or a command that waited for one failed. */
   get waiting(): boolean {
     if (this.#failed !== null) throw this.#failed;
-    return this.#waiting.length > 0;
+    return this.#waitingAt < this.#waiting.length;
   }
 
   /** The program has failed, as `e` says (`#failed`). */
@@ -682,7 +688,7 @@ export class GpuExecutor {
    * if a pipeline couldn't be built. */
   caughtUp(): Promise<void> {
     if (this.#failed !== null) return Promise.reject(this.#failed);
-    if (this.#waiting.length === 0) return Promise.resolve();
+    if (this.#waitingAt === this.#waiting.length) return Promise.resolve();
     this.#idle ??= Promise.withResolvers<void>();
     return this.#idle.promise;
   }
@@ -695,14 +701,16 @@ export class GpuExecutor {
   /** A pipeline was built: the commands waiting run, up to the next that needs one not built,
    * and what they recorded is submitted. */
   #resume(): void {
-    if (this.#waiting.length === 0) return;
-    while (this.#waiting.length > 0) {
-      const d = this.#waiting[0]!;
+    if (this.#waitingAt === this.#waiting.length) return;
+    while (this.#waitingAt < this.#waiting.length) {
+      const d = this.#waiting[this.#waitingAt]!;
       if ("cmd" in d && !this.#ready(d.cmd)) return;
-      this.#waiting.shift();
+      this.#waiting[this.#waitingAt++] = undefined;
       if ("cmd" in d) this.#runAs(d.at, d.cmd);
       else this.readBack(d.handle, d.offset, d.size, true).then(d.answer.resolve, d.answer.reject);
     }
+    this.#waiting.length = 0;
+    this.#waitingAt = 0;
     this.flush();
     this.#idle?.resolve();
     this.#idle = null;
@@ -713,7 +721,7 @@ export class GpuExecutor {
   #runAs(at: RecordedIn, cmd: Command): void {
     this.#running = at;
     try {
-      this.#run(cmd);
+      this.#run(cmd, true);
     } finally {
       this.#running = null;
     }
@@ -730,7 +738,7 @@ export class GpuExecutor {
         // before the one being recorded now.
         this.#running = d.at;
         try {
-          this.#run(d.cmd);
+          this.#run(d.cmd, true);
         } catch (e) {
           throw new Error(`serial mode, ${d.cmd.op}: ${errorMessage(e)}`);
         } finally {
@@ -747,7 +755,7 @@ export class GpuExecutor {
     }
   }
 
-  #run(cmd: Command): void {
+  #run(cmd: Command, ownedUniforms = false): void {
     // A label names the passes and dispatches after it in its own frame: the first command of
     // another frame starts with none.
     const generation = this.#running?.generation ?? this.#generation;
@@ -864,8 +872,8 @@ export class GpuExecutor {
       case "Draw":
       case "DrawIndirect":
       case "DrawIndexedIndirect":
-        // The uniform bytes are a view into the program's memory: copy them.
-        this.#pass?.draws.push({ ...cmd, uniforms: cmd.uniforms.slice() });
+        // Immediate commands view the program's memory; queued commands already own a copy.
+        this.#pass?.draws.push({ ...cmd, uniforms: ownedUniforms ? cmd.uniforms : cmd.uniforms.slice() });
         return;
       case "Present":
         this.presented = true;
@@ -909,7 +917,7 @@ export class GpuExecutor {
    * a `ReadBuffer` request's answer. In the serial mode it waits its turn behind the commands
    * kept for `drain`, unless `now`. */
   readBack(handle: number, offset: number, size: number, now = false): Promise<Bytes> {
-    const queue = this.#deferred ?? (this.#waiting.length > 0 ? this.#waiting : null);
+    const queue = this.#deferred ?? (this.#waitingAt < this.#waiting.length ? this.#waiting : null);
     if (queue !== null && !now) {
       const answer = Promise.withResolvers<Bytes>();
       queue.push({ handle, offset, size, answer });
@@ -1033,6 +1041,7 @@ export class GpuExecutor {
       }
       ring.grow(bytes);
       this.#bindGroups.clear(); // they point at the old ring
+      this.#lastGroups.fill(undefined);
       this.#groupsOf.clear();
     }
   }
@@ -1049,8 +1058,19 @@ export class GpuExecutor {
   }
 
   #bindGroup(index: number, bindings: Binding[]): GPUBindGroup {
-    // The pipeline, then each binding's range: built in one pass, as every dispatch and draw
-    // makes one, cached or not.
+    const last = this.#lastGroups[index];
+    if (last !== undefined && last.ranges.length === bindings.length * 3) {
+      let same = true;
+      for (let i = 0; i < bindings.length; i++) {
+        const b = bindings[i]!;
+        if (last.ranges[3 * i] !== b.handle || last.ranges[3 * i + 1] !== b.offset || last.ranges[3 * i + 2] !== b.size) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return last.group;
+    }
+    // The pipeline, then each binding's range: a key is needed only when its ranges change.
     let key = `${index}:`;
     for (let i = 0; i < bindings.length; i++) {
       const b = bindings[i]!;
@@ -1058,7 +1078,10 @@ export class GpuExecutor {
       key += b.handle + "@" + b.offset + "+" + b.size;
     }
     const cached = this.#bindGroups.get(key);
-    if (cached !== undefined) return cached.group;
+    if (cached !== undefined) {
+      this.#lastGroups[index] = cached;
+      return cached.group;
+    }
     const p = this.#pipeline(index);
     const entries: GPUBindGroupEntry[] = [];
     if (p.uniform !== null) {
@@ -1080,7 +1103,11 @@ export class GpuExecutor {
     }
     const group = this.device.createBindGroup({ label: p.name, layout: p.layout, entries });
     const handles = bindings.map((b) => b.handle);
-    this.#bindGroups.set(key, { group, handles });
+    const ranges: number[] = [];
+    for (const b of bindings) ranges.push(b.handle, b.offset, b.size);
+    const entry = { group, pipeline: index, handles, ranges };
+    this.#bindGroups.set(key, entry);
+    this.#lastGroups[index] = entry;
     for (const h of handles) {
       let keys = this.#groupsOf.get(h);
       if (keys === undefined) this.#groupsOf.set(h, (keys = new Set()));
@@ -1093,6 +1120,7 @@ export class GpuExecutor {
     const cached = this.#bindGroups.get(key);
     if (cached === undefined) return;
     this.#bindGroups.delete(key);
+    if (this.#lastGroups[cached.pipeline] === cached) this.#lastGroups[cached.pipeline] = undefined;
     for (const h of cached.handles) this.#groupsOf.get(h)?.delete(key);
   }
 

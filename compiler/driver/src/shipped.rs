@@ -102,8 +102,12 @@ pub fn take(checked: &Checked, data: &mut BuildData) -> (Vec<(String, Vec<u8>)>,
         for (name, b) in names.into_iter().zip(bytes) {
             files.push((format!("files/{dir}/{name}"), b));
         }
-        let mut stripped = parts.clone();
-        stripped[3] = empty_vec();
+        // Clone the metadata, not the file bytes that this value no longer holds.
+        let stripped = parts
+            .iter()
+            .enumerate()
+            .map(|(i, part)| if i == 3 { empty_vec() } else { part.clone() })
+            .collect();
         data.values.insert(c, std::rc::Rc::new(Value::Parts(stripped)));
     }
     files.sort_by(|a, b| a.0.cmp(&b.0));

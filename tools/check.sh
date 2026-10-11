@@ -64,34 +64,6 @@ fi
 
 step() { printf '\n== %s\n' "$*"; }
 
-# The long tests and the measurements, by name (`module::test`, or `test` in a test program of
-# one file): each test whose `#[ignore]` reason starts `long:` is in `long_tests`, and `measure:`
-# in `measures`.
-long_tests=() measures=()
-while read -r kind name; do
-  if [ "$kind" = measure ]; then measures+=("$name"); else long_tests+=("$name"); fi
-done < <(python3 - <<'PY'
-import pathlib, re
-for f in sorted([*pathlib.Path("compiler").rglob("*.rs"), *pathlib.Path("runtime").rglob("*.rs")]):
-    if "target" in f.parts:
-        continue
-    lines = f.read_text().splitlines()
-    for i, line in enumerate(lines):
-        if m := re.search(r'#\[ignore = "(long|measure):', line):
-            name = next(re.search(r"fn (\w+)\(", l).group(1) for l in lines[i + 1:] if re.search(r"fn (\w+)\(", l))
-            # A test file at the top of `tests/` is a test program of its own (no module). A unit
-            # test in `src/` is in its file's `mod tests` (a crate's root file names no module).
-            if f.parent.name == "tests":
-                print(m[1], name)
-            elif "src" in f.parts:
-                module = "" if f.stem in ("lib", "main") else f"{f.stem}::"
-                inside = any(re.match(r"\s*mod tests\b", l) for l in lines[:i])
-                print(m[1], f"{module}{'tests::' if inside else ''}{name}")
-            else:
-                print(m[1], f"{f.stem}::{name}")
-PY
-)
-
 # wrela sources the formatter owns. The conformance and diagnostics cases aren't here: some
 # are malformed on purpose, and their annotations are part of their layout.
 WRELA_SOURCES=(examples engine compiler/std compiler/tests/fields compiler/tests/math compiler/tests/sketches
@@ -110,6 +82,40 @@ if [ "$fmt" = 1 ]; then
   fi
   exit 0
 fi
+
+# Formatting doesn't need to read every Rust source for the long tests and measurements.
+# Their names are `module::test`, or `test` in a test program of one file.
+long_tests=() measures=()
+while read -r kind name; do
+  if [ "$kind" = measure ]; then measures+=("$name"); else long_tests+=("$name"); fi
+done < <(python3 - <<'PY'
+import pathlib, re
+for f in sorted([*pathlib.Path("compiler").rglob("*.rs"), *pathlib.Path("runtime").rglob("*.rs")]):
+    if "target" in f.parts:
+        continue
+    lines = f.read_text().splitlines()
+    next_functions = [None] * len(lines)
+    name = None
+    for i in range(len(lines) - 1, -1, -1):
+        next_functions[i] = name
+        if m := re.search(r"fn (\w+)\(", lines[i]):
+            name = m.group(1)
+    inside = False
+    for i, line in enumerate(lines):
+        if m := re.search(r'#\[ignore = "(long|measure):', line):
+            name = next_functions[i]
+            # A test file at the top of `tests/` is a test program of its own (no module). A unit
+            # test in `src/` is in its file's `mod tests` (a crate's root file names no module).
+            if f.parent.name == "tests":
+                print(m[1], name)
+            elif "src" in f.parts:
+                module = "" if f.stem in ("lib", "main") else f"{f.stem}::"
+                print(m[1], f"{module}{'tests::' if inside else ''}{name}")
+            else:
+                print(m[1], f"{f.stem}::{name}")
+        inside |= bool(re.match(r"\s*mod tests\b", line))
+PY
+)
 
 logs=$(mktemp -d)
 side_jobs=()

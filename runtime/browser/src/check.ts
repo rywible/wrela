@@ -91,9 +91,11 @@ export class Checker {
   readonly #pipelines: Shape[];
   readonly #resources = new Map<number, Resource>();
   /** The current usage scope, a dispatch or the open pass: each buffer's or texture's use so
-   * far, [read-only, read-write]. Dispatches happen only outside a pass (the `Sequencer`
+   * far, bit 1 read-only and bit 2 read-write. Dispatches happen only outside a pass (the `Sequencer`
    * checks), so the two kinds of scope never overlap and share this map. */
-  readonly #scope = new Map<number, [boolean, boolean]>();
+  readonly #scope = new Map<number, number>();
+  /** Read-write buffers in this command, reused across draws and dispatches. */
+  readonly #written: number[] = [];
   /** The open pass's attachments. */
   #attachments: number[] = [];
   /** The open pass's colour target's format (the screen's, a texture's, or none), and whether it
@@ -326,10 +328,9 @@ export class Checker {
 
   /** Adds a use of a buffer or texture (`what`) to the usage scope. */
   #used(op: OpcodeName, what: string, handle: number, write: boolean): void {
-    const seen = this.#scope.get(handle) ?? [false, false];
-    seen[write ? 1 : 0] = true;
+    const seen = (this.#scope.get(handle) ?? 0) | (write ? 2 : 1);
     this.#scope.set(handle, seen);
-    if (seen[0] && seen[1]) {
+    if (seen === 3) {
       const scope = op === "Dispatch" || op === "DispatchIndirect" ? "dispatch" : "pass";
       throw new CommandError(op, `${what} ${handle} is used both read-only and read-write in one ${scope}`);
     }
@@ -349,9 +350,11 @@ export class Checker {
       throw err(`pipeline ${pipeline} (${name}) is a ${is} pipeline; ${op} needs a ${needs} pipeline`);
     }
     // A draw's pass's targets are one of its pipeline's.
-    const here = { color: this.#targets.colour, depth: this.#targets.depth };
-    if (!dispatch && !p.targets.some((t) => t.color === here.color && t.depth === here.depth)) {
-      throw err(`\`${name}\` is drawn into ${targetName(here)}, which isn't one of its targets (${p.targets.map(targetName).join(", ")})`);
+    if (!dispatch) {
+      const here = { color: this.#targets.colour, depth: this.#targets.depth };
+      if (!p.targets.some((t) => t.color === here.color && t.depth === here.depth)) {
+        throw err(`\`${name}\` is drawn into ${targetName(here)}, which isn't one of its targets (${p.targets.map(targetName).join(", ")})`);
+      }
     }
     if (bindings.length !== p.bindings.length) {
       throw err(
@@ -361,7 +364,8 @@ export class Checker {
     if (uniformLen !== p.uniformSize) {
       throw err(`pipeline ${pipeline} (${name}) takes ${p.uniformSize} uniform bytes, but the command has ${uniformLen}`);
     }
-    const written: number[] = [];
+    const written = this.#written;
+    written.length = 0;
     bindings.forEach((b, i) => {
       const { kind, format } = p.bindings[i]!;
       if (this.#attachments.includes(b.handle)) {

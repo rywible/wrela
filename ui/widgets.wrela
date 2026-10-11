@@ -198,8 +198,11 @@ impl Ui {
         self.ids.clear()
         self.areas.clear()
         self.splits.clear()
-        self.last_seen = replace(mut self.seen, Vec::new())
-        self.last_focusable = replace(mut self.focusable, Vec::new())
+        // Keep both frames' buffers: yesterday's previous frame is today's empty room.
+        swap(mut self.seen, mut self.last_seen)
+        self.seen.clear()
+        swap(mut self.focusable, mut self.last_focusable)
+        self.focusable.clear()
         self.pressed = false
         self.released = false
         self.wheel = vec2(0.0)
@@ -948,13 +951,16 @@ impl Ui {
         var t = 0
         for j in 0..self.keys.len() + 1 {
             let upto = if j < self.keys.len() { self.typed_before[j] } else { self.typed.len() }
-            while t < upto {
+            if t < upto {
+                // One uninterrupted run of typing shares one saved tail; keys still split runs.
                 let tail = s.as_str().slice(cursor, s.len()).to_string()
                 s.truncate(cursor)
-                s.push_char(self.typed[t])
+                while t < upto {
+                    s.push_char(self.typed[t])
+                    t += 1
+                }
                 cursor = s.len()
                 s.push_str(tail.as_str())
-                t += 1
             }
             if j == self.keys.len() {
                 break

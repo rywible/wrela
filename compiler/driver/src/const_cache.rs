@@ -10,6 +10,7 @@
 //! for a week are removed.
 
 use sha2::{Digest, Sha256};
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use wrela_ir as ir;
 use wrela_lower::Value;
@@ -34,7 +35,11 @@ pub fn key(wasm: &[u8], fuel: u64) -> String {
     h.update(fuel.to_le_bytes());
     h.update((wasm.len() as u64).to_le_bytes());
     h.update(wasm);
-    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    let mut key = String::with_capacity(64);
+    for b in h.finalize() {
+        write!(key, "{b:02x}").expect("write a cache key");
+    }
+    key
 }
 
 /// The value cached under `key` in `dir`, if there's one that reads back whole. A hit marks the
@@ -72,18 +77,11 @@ pub fn clean(dir: &Path) {
     let now = std::time::SystemTime::now();
     for e in entries.flatten() {
         let path = e.path();
-        let old = e
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| now.duration_since(t).ok())
-            .is_some_and(|age| age > KEEP_FOR);
+        let age =
+            e.metadata().and_then(|m| m.modified()).ok().and_then(|t| now.duration_since(t).ok());
+        let old = age.is_some_and(|age| age > KEEP_FOR);
         let stale_tmp = path.extension().is_some_and(|x| x == "tmp")
-            && e.metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| now.duration_since(t).ok())
-                .is_some_and(|age| age.as_secs() > 3600);
+            && age.is_some_and(|age| age.as_secs() > 3600);
         if old || stale_tmp {
             let _ = std::fs::remove_file(path);
         }
@@ -330,6 +328,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("wrela-consts-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let k = key(b"\0asm module", 1 << 34);
+        assert_eq!(k, "9055858743647bc9bcd49a719c4b94f48e6d263cb84cbc0ded2af72ebfd714b8");
         assert_ne!(k, key(b"\0asm module", 1 << 35), "the fuel is part of the key");
         assert_ne!(k, key(b"\0asm modulf", 1 << 34));
         let v = Value::Bytes(vec![1, 2, 3]);
@@ -339,5 +338,38 @@ mod tests {
         clean(&dir);
         assert!(get(&dir, &k).is_some(), "a value used today is kept");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn perf_cleanup_keeps_used_and_future_entries_and_discards_stale_files() {
+        use std::time::{Duration, SystemTime};
+        let dir = std::env::temp_dir().join(format!("wrela-consts-clean-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let now = SystemTime::now();
+        let hour = Duration::from_secs(3600);
+        for (name, modified) in [
+            ("old.wcv", now - KEEP_FOR - hour),
+            ("recent.wcv", now - hour * 2),
+            ("stale.tmp", now - hour * 2),
+            ("current.tmp", now),
+            ("future.tmp", now + hour),
+        ] {
+            std::fs::write(dir.join(name), "cached").expect("write");
+            std::fs::File::options()
+                .write(true)
+                .open(dir.join(name))
+                .expect("open")
+                .set_modified(modified)
+                .expect("set time");
+        }
+        clean(&dir);
+        let mut kept: Vec<_> = std::fs::read_dir(&dir)
+            .expect("read")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        kept.sort();
+        assert_eq!(kept, ["current.tmp", "future.tmp", "recent.wcv"]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

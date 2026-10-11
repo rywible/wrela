@@ -7,19 +7,25 @@ import { HOST_FUNCTIONS, IMPORT_CLOCK, IMPORT_MEMORY, IMPORT_MODULE, IMPORT_PHAS
  * workers share a time origin's scale (`performance.timeOrigin` is each context's start on one
  * clock), so every thread reads the same clock. */
 export function clockImport(memory: WebAssembly.Memory): (ptr: number) => void {
+  let view: DataView | null = null;
   return (ptr: number) => {
     const seconds = (performance.timeOrigin + performance.now()) / 1000;
-    new DataView(memory.buffer).setFloat64(ptr >>> 0, seconds, true);
+    // A grow replaces the buffer (and detaches an unshared one); otherwise reuse the view.
+    const buffer = memory.buffer;
+    if (view?.buffer !== buffer) view = new DataView(buffer);
+    view.setFloat64(ptr >>> 0, seconds, true);
   };
 }
 
 /** `wrela.print(ptr, len)`: the line at `ptr` (UTF-8), shown on the console now, prefixed so it's
  * found; it's returned for whoever else keeps it. Shared memory can't be decoded in place. */
 export function printed(memory: WebAssembly.Memory, ptr: number, len: number): string {
-  const line = new TextDecoder().decode(new Uint8Array(memory.buffer, ptr >>> 0, len >>> 0).slice());
+  const line = PRINTED_UTF8.decode(new Uint8Array(memory.buffer, ptr >>> 0, len >>> 0).slice());
   console.log(`wrela: ${line}`);
   return line;
 }
+
+const PRINTED_UTF8 = new TextDecoder();
 
 /** `wrela.phase(ptr, len)`: the browser host times no phases (`std::time::phase`); a page is
  * profiled in the browser's own tools. */
