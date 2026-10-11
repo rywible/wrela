@@ -183,10 +183,7 @@ fn read_notes(dir: &Path) -> Result<Notes, String> {
         let Some((key, vel)) = stem.split_once('-') else { continue };
         let (Ok(key), Ok(vel)) = (key.parse::<u32>(), vel.parse::<u32>()) else { continue };
         let (samples, channels, rate) = super::dsp::read_wav(&path)?;
-        let mono: Vec<f32> = samples
-            .chunks_exact(channels)
-            .map(|c| c.iter().sum::<f32>() / channels as f32)
-            .collect();
+        let mono = super::dsp::mono(samples, channels);
         let seconds = (mono.len() as f64 / rate - 0.5).min(12.0);
         by.entry(key).or_default().insert(vel, measure(&mono, rate, key, 0.0, seconds));
     }

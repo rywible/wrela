@@ -64,7 +64,8 @@ export function buildPathProblem(path: string): string | undefined {
   return pathProblem(rest);
 }
 
-const formatOf = (f: TextureFormat) => TEXTURE_FORMATS.find((t) => t.name === f)!;
+const FORMATS = new Map(TEXTURE_FORMATS.map((t) => [t.name, t] as const));
+const formatOf = (f: TextureFormat) => FORMATS.get(f)!;
 /** That texture `handle`, of format `got`, is of the format its binding names. */
 function sameFormat(err: (why: string) => Error, handle: number, got: TextureFormat, want: TextureFormat | null): void {
   if (want !== null && want !== got) throw err(`texture ${handle} is ${got}, and it's bound where a ${want} texture goes`);
@@ -104,7 +105,12 @@ export class Checker {
   /** The current usage scope, a dispatch or the open pass: each buffer's or texture's use so
    * far, bit 1 read-only and bit 2 read-write. Dispatches happen only outside a pass (the `Sequencer`
    * checks), so the two kinds of scope never overlap and share this map. */
-  readonly #scope = new Map<number, number>();
+  #scope = new Map<number, number>();
+  /** A fresh dispatch uses this map, keeping the previous scope intact until it passes. */
+  #spareScope = new Map<number, number>();
+  /** A draw can only change the handles it names; retain their previous uses for rejection. */
+  readonly #entries = new Map<number, number | undefined>();
+  #drawing = false;
   /** Read-write buffers in this command, reused across draws and dispatches. */
   readonly #written: number[] = [];
   /** The open pass's attachments. */
@@ -134,47 +140,44 @@ export class Checker {
 
   /** Checks a command that has passed the `Sequencer`, and records its effect. */
   check(cmd: Command): void {
-    // A rejected command leaves no trace. Binding checks add uses as they go, and a later
-    // binding (or an indirect range) may still reject the command.
-    // A draw can only change the entries it names, so don't clone a pass's whole (possibly
-    // large) scope for every draw. Commands that start a fresh scope keep the old small scope.
-    const clearsScope = cmd.op === "Dispatch" || cmd.op === "DispatchIndirect" || cmd.op === "BeginPass";
-    const scope = new Map<number, number>();
-    if (clearsScope) {
-      for (const [handle, used] of this.#scope) scope.set(handle, used);
+    // Dispatches start a fresh scope. Swap maps instead of copying the previous scope; a
+    // rejection swaps it back, including when the bindings pass but the indirect range fails.
+    if (cmd.op === "Dispatch" || cmd.op === "DispatchIndirect") {
+      const previous = this.#scope;
+      this.#scope = this.#spareScope;
+      this.#spareScope = previous;
+      this.#scope.clear();
+      try {
+        this.#check(cmd);
+      } catch (e) {
+        this.#spareScope = this.#scope;
+        this.#scope = previous;
+        throw e;
+      } finally {
+        this.#spareScope.clear();
+      }
+      return;
     }
-    const passState =
-      cmd.op === "BeginPass"
-        ? { attachments: [...this.#attachments], targets: { ...this.#targets } }
-        : undefined;
-    const entries = new Map<number, number | undefined>();
-    const remember = (handle: number) => {
-      if (entries.has(handle)) return;
-      entries.set(handle, this.#scope.get(handle));
-    };
     if (cmd.op === "Draw" || cmd.op === "DrawIndirect" || cmd.op === "DrawIndexedIndirect") {
-      for (const binding of cmd.bindings) remember(binding.handle);
-      if (cmd.op !== "Draw") remember(cmd.arguments);
-      if (cmd.op === "DrawIndexedIndirect") remember(cmd.indices);
-    }
-    try {
-      this.#check(cmd);
-    } catch (e) {
-      if (clearsScope) {
-        this.#scope.clear();
-        for (const [handle, used] of scope) this.#scope.set(handle, used);
-      } else {
+      const entries = this.#entries;
+      if (entries.size > 0) entries.clear();
+      this.#drawing = true;
+      try {
+        this.#check(cmd);
+      } catch (e) {
         for (const [handle, used] of entries) {
           if (used === undefined) this.#scope.delete(handle);
           else this.#scope.set(handle, used);
         }
+        throw e;
+      } finally {
+        this.#drawing = false;
       }
-      if (passState !== undefined) {
-        this.#attachments = passState.attachments;
-        this.#targets = passState.targets;
-      }
-      throw e;
+      return;
     }
+    // BeginPass validates its targets before changing state; other commands either leave
+    // the scope alone or cannot reject after changing it.
+    this.#check(cmd);
   }
 
   #check(cmd: Command): void {
@@ -243,7 +246,6 @@ export class Checker {
         return;
       }
       case "Dispatch": {
-        this.#scope.clear();
         this.#bindings(op, cmd.pipeline, cmd.bindings, cmd.uniforms.length);
         const max = this.#limits[9]!;
         if (cmd.groups.some((g) => g > max)) {
@@ -252,22 +254,19 @@ export class Checker {
         return;
       }
       case "DispatchIndirect":
-        this.#scope.clear();
         this.#bindings(op, cmd.pipeline, cmd.bindings, cmd.uniforms.length);
         this.#arguments(op, cmd.arguments, cmd.offset, 12);
         return;
       case "BeginScreenPass":
         this.#clearColour(op, cmd.clear);
         this.#scope.clear();
-        this.#attachments = [];
+        this.#attachments.length = 0;
         this.#targets = { colour: SCREEN_FORMAT, depth: false };
         return;
       case "BeginPass": {
         const pass = cmd.pass;
         this.#clearColour(op, pass.clear);
         if (!Number.isFinite(pass.clearDepth)) throw err("the clear depth isn't a finite number");
-        this.#scope.clear();
-        this.#attachments = [];
         for (const t of [pass.color, pass.depth]) {
           const r = this.#resources.get(t);
           if (t !== SCREEN && t !== NONE && r?.kind === "texture" && r.depth > 0) {
@@ -281,7 +280,6 @@ export class Checker {
           if (isDepth(t.format)) throw err(`texture ${pass.color} is a depth texture, so it can't be a colour target`);
           size = [t.width, t.height];
           colour = t.format;
-          this.#attachments.push(pass.color);
         }
         if (pass.depth !== NONE) {
           const t = this.#texture(op, pass.depth);
@@ -289,9 +287,12 @@ export class Checker {
           if (size !== undefined && (size[0] !== t.width || size[1] !== t.height)) {
             throw err("the pass's colour and depth targets differ in size");
           }
-          this.#attachments.push(pass.depth);
         }
         if (pass.color === NONE && pass.depth === NONE) throw err("a pass needs a colour target or a depth target");
+        this.#scope.clear();
+        this.#attachments.length = 0;
+        if (pass.color !== SCREEN && pass.color !== NONE) this.#attachments.push(pass.color);
+        if (pass.depth !== NONE) this.#attachments.push(pass.depth);
         this.#targets = { colour, depth: pass.depth !== NONE };
         return;
       }
@@ -311,7 +312,7 @@ export class Checker {
         return;
       case "Present":
       case "EndPass":
-        this.#attachments = [];
+        this.#attachments.length = 0;
         return;
       case "StorageRead":
       case "StorageWrite": {
@@ -390,8 +391,14 @@ export class Checker {
 
   /** Adds a use of a buffer or texture (`what`) to the usage scope. */
   #used(op: OpcodeName, what: string, handle: number, write: boolean): void {
-    const seen = (this.#scope.get(handle) ?? 0) | (write ? 2 : 1);
-    this.#scope.set(handle, seen);
+    const previous = this.#scope.get(handle);
+    const seen = (previous ?? 0) | (write ? 2 : 1);
+    if (seen !== previous) {
+      // Repeating the same use changes nothing. For a draw's new or conflicting use, keep
+      // its original value once even when bindings, indices and arguments alias it.
+      if (this.#drawing && !this.#entries.has(handle)) this.#entries.set(handle, previous);
+      this.#scope.set(handle, seen);
+    }
     if (seen === 3) {
       const scope = op === "Dispatch" || op === "DispatchIndirect" ? "dispatch" : "pass";
       throw new CommandError(op, `${what} ${handle} is used both read-only and read-write in one ${scope}`);

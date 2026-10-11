@@ -368,7 +368,7 @@ pub fn advance<S: Surface>(
                     f.mu = max(f.mu / 3.0, 1.0e-7)
                 }
                 f.loss = loss
-                f.accepted = f.trying.clone()
+                f.trying.clone_into(mut f.accepted)
                 f.iou_after = iou(rays, f.reference)
                 f.rows.clear()
                 let every = if f.polishing { 1 } else { max(1, (rows.len() + ROWS - 1) / ROWS) }
@@ -395,7 +395,7 @@ pub fn advance<S: Surface>(
                 f.small = 0
                 f.rejected = 0
                 f.loss = -2.0
-                f.trying = f.accepted.clone()
+                f.accepted.clone_into(mut f.trying)
                 measure(mut f, subject)
                 return FitProgress::Going
             }

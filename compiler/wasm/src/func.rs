@@ -211,6 +211,95 @@ mod tests {
         releases(f, &mut actual);
         assert_eq!(actual, expected);
     }
+
+    fn old_ranges(
+        ranges: &mut Ranges<'_>,
+        b: &ir::Block,
+        in_loop: bool,
+    ) -> HashMap<ir::LocalId, u32> {
+        let mut seen: HashMap<ir::LocalId, (u32, usize, usize)> = HashMap::new();
+        for (i, s) in b.iter().enumerate() {
+            let mut add = |l, n| {
+                let e = seen.entry(l).or_insert((0, i, i));
+                e.0 += n;
+                e.2 = i;
+            };
+            mentions(s, &mut |l| add(l, 1));
+            let looped = in_loop || matches!(s, ir::Stmt::Loop { .. });
+            for inner in s.blocks() {
+                for (l, n) in old_ranges(ranges, inner, looped) {
+                    add(l, n);
+                }
+            }
+        }
+        if in_loop {
+            return seen.into_iter().map(|(l, (n, ..))| (l, n)).collect();
+        }
+        let mut open = HashMap::new();
+        let mut seen: Vec<_> = seen.into_iter().collect();
+        seen.sort_unstable_by_key(|(l, _)| l.0);
+        for (l, (n, first, last)) in seen {
+            if n < ranges.total[l.index()] {
+                open.insert(l, n);
+            } else if ranges.scalar[l.index()] {
+                ranges.starts.entry(std::ptr::from_ref(&b[first])).or_default().push(l);
+                ranges.ends.entry(std::ptr::from_ref(&b[last])).or_default().push(l);
+            }
+        }
+        open
+    }
+
+    /// The former counting analysis is an oracle for exact boundaries and local order, across
+    /// sibling scopes, locals mentioned inside and outside loops, nested loops and continuing.
+    #[test]
+    fn codegen_perf_live_ranges_match_counting_analysis() {
+        use ir::{Arg, Expr, LocalId as L, Place, Stmt, ValueId as V};
+        fn next(seed: &mut u64) -> u32 {
+            *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (*seed >> 32) as u32
+        }
+        fn block(seed: &mut u64, depth: u32) -> ir::Block {
+            let mut out = Vec::new();
+            for _ in 0..1 + next(seed) % 5 {
+                let a = L(next(seed) % 23);
+                let b = L(next(seed) % 23);
+                out.push(Stmt::Store(Place::local(a), V(0)));
+                out.push(Stmt::Eval(Expr::Call(
+                    ir::FuncId(0),
+                    vec![Arg::Place(Place::local(a)), Arg::Place(Place::local(b))],
+                )));
+                if depth > 0 {
+                    match next(seed) % 3 {
+                        0 => out.push(Stmt::If {
+                            cond: V(1),
+                            then: block(seed, depth - 1),
+                            else_: block(seed, depth - 1),
+                        }),
+                        1 => out.push(Stmt::Loop {
+                            body: block(seed, depth - 1),
+                            continuing: block(seed, depth - 1),
+                        }),
+                        _ => {}
+                    }
+                }
+            }
+            out
+        }
+        for seed in 0..64 {
+            let scalar: Vec<_> = (0..24).map(|l| (l + seed) % 3 != 0).collect();
+            let body = block(&mut (seed as u64), 4);
+            let mut expected =
+                Ranges { scalar: &scalar, total: vec![0; scalar.len()], ..Ranges::default() };
+            ir::visit::count_local_mentions(&body, &mut expected.total);
+            old_ranges(&mut expected, &body, false);
+            let mut actual =
+                Ranges { scalar: &scalar, total: vec![0; scalar.len()], ..Ranges::default() };
+            actual.block(&body);
+            assert_eq!(actual.total, expected.total, "seed {seed}");
+            assert_eq!(actual.starts, expected.starts, "seed {seed}");
+            assert_eq!(actual.ends, expected.ends, "seed {seed}");
+        }
+    }
 }
 
 /// Zero, of WASM type `t`.
@@ -277,8 +366,11 @@ struct Fe<'m> {
     /// statement's scratch locals, once it is. Engines limit a function to 50,000 locals, and a
     /// derived function can have hundreds of thousands of values (few alive at once).
     free: HashMap<ValType, Vec<u32>>,
-    /// The scratch locals of each statement being emitted, innermost last.
-    scratch: Vec<Vec<u32>>,
+    /// Scratch locals of the statements being emitted, innermost last. Each statement keeps
+    /// its starting length, so nested statements release only their own suffix. The buffer
+    /// is reused instead of allocating a new one for each statement.
+    scratch: Vec<u32>,
+    statement_depth: usize,
     /// The values whose locals are free after each statement (see [`releases`]).
     release: HashMap<*const ir::Stmt, Vec<ir::ValueId>>,
     /// The scalar IR locals that get a local before each statement, and those whose local is
@@ -371,6 +463,7 @@ pub(crate) fn emit_function(
         values: vec![u32::MAX; f.values.len()],
         free: HashMap::new(),
         scratch: Vec::new(),
+        statement_depth: 0,
         release: HashMap::new(),
         local_starts: HashMap::new(),
         local_ends: HashMap::new(),
@@ -422,8 +515,7 @@ pub(crate) fn emit_function(
     let scalar: Vec<bool> =
         fe.ir_locals.iter().map(|r| matches!(r, LocalRepr::Scalar(_))).collect();
     let mut ranges = Ranges { scalar: &scalar, total: vec![0; scalar.len()], ..Ranges::default() };
-    ir::visit::count_local_mentions(&f.body, &mut ranges.total);
-    ranges.block(&f.body, false);
+    ranges.block(&f.body);
     (fe.local_starts, fe.local_ends, fe.local_mentions) =
         (ranges.starts, ranges.ends, ranges.total);
     for v in made {
@@ -656,40 +748,97 @@ struct Ranges<'a> {
 }
 
 impl Ranges<'_> {
-    /// Places the ranges that fall in `b`, and returns the mentions of the other locals in it.
-    fn block(&mut self, b: &ir::Block, in_loop: bool) -> HashMap<ir::LocalId, u32> {
-        // Each local mentioned: how often, and the first and last statements that do.
-        let mut seen: HashMap<ir::LocalId, (u32, usize, usize)> = HashMap::new();
-        for (i, s) in b.iter().enumerate() {
-            let mut add = |l: ir::LocalId, n: u32| {
-                let e = seen.entry(l).or_insert((0, i, i));
-                e.0 += n;
-                e.2 = i;
-            };
-            mentions(s, &mut |l| add(l, 1));
-            let looped = in_loop || matches!(s, ir::Stmt::Loop { .. });
-            for inner in s.blocks() {
-                for (l, n) in self.block(inner, looped) {
-                    add(l, n);
+    /// Finds each range's common scope in one traversal. A mention inside a loop belongs to
+    /// its outermost loop's statement, so the local stays alive between iterations, including
+    /// the continuing block. Other mentions lift a range only when they leave its old scope.
+    fn block(&mut self, b: &ir::Block) {
+        if !self.scalar.iter().any(|&scalar| scalar) {
+            ir::visit::count_local_mentions(b, &mut self.total);
+            return;
+        }
+        struct Scope<'a> {
+            parent: usize,
+            owner: Option<&'a ir::Stmt>,
+            depth: usize,
+        }
+        #[derive(Clone, Copy)]
+        struct Range<'a> {
+            scope: usize,
+            first: &'a ir::Stmt,
+            last: &'a ir::Stmt,
+        }
+        impl<'a> Range<'a> {
+            fn lift(&mut self, scopes: &[Scope<'a>]) {
+                let scope = &scopes[self.scope];
+                let owner = scope.owner.expect("a nested scope");
+                self.scope = scope.parent;
+                self.first = owner;
+                self.last = owner;
+            }
+        }
+        fn walk<'a>(
+            b: &'a ir::Block,
+            scope: usize,
+            loop_at: Option<(usize, &'a ir::Stmt)>,
+            scopes: &mut Vec<Scope<'a>>,
+            ranges: &mut [Option<Range<'a>>],
+            total: &mut [u32],
+            scalar: &[bool],
+        ) {
+            for s in b {
+                let (at_scope, at) = loop_at.unwrap_or((scope, s));
+                mentions(s, &mut |l| {
+                    total[l.index()] += 1;
+                    if !scalar[l.index()] {
+                        return;
+                    }
+                    let mention = Range { scope: at_scope, first: at, last: at };
+                    let Some(range) = &mut ranges[l.index()] else {
+                        ranges[l.index()] = Some(mention);
+                        return;
+                    };
+                    let mut mention = mention;
+                    while scopes[range.scope].depth > scopes[mention.scope].depth {
+                        range.lift(scopes);
+                    }
+                    while scopes[mention.scope].depth > scopes[range.scope].depth {
+                        mention.lift(scopes);
+                    }
+                    while range.scope != mention.scope {
+                        range.lift(scopes);
+                        mention.lift(scopes);
+                    }
+                    range.last = mention.last;
+                });
+                let loop_at =
+                    loop_at.or_else(|| matches!(s, ir::Stmt::Loop { .. }).then_some((scope, s)));
+                for inner in s.blocks() {
+                    let child = if loop_at.is_some() {
+                        scope
+                    } else {
+                        let child = scopes.len();
+                        scopes.push(Scope {
+                            parent: scope,
+                            owner: Some(s),
+                            depth: scopes[scope].depth + 1,
+                        });
+                        child
+                    };
+                    walk(inner, child, loop_at, scopes, ranges, total, scalar);
                 }
             }
         }
-        if in_loop {
-            return seen.into_iter().map(|(l, (n, ..))| (l, n)).collect();
-        }
-        let mut open = HashMap::new();
-        // In local order, so the build is the same every time.
-        let mut seen: Vec<_> = seen.into_iter().collect();
-        seen.sort_unstable_by_key(|(l, _)| l.0);
-        for (l, (n, first, last)) in seen {
-            if n < self.total[l.index()] {
-                open.insert(l, n);
-            } else if self.scalar[l.index()] {
-                self.starts.entry(std::ptr::from_ref(&b[first])).or_default().push(l);
-                self.ends.entry(std::ptr::from_ref(&b[last])).or_default().push(l);
+        let mut scopes = vec![Scope { parent: 0, owner: None, depth: 0 }];
+        let mut ranges = vec![None; self.scalar.len()];
+        walk(b, 0, None, &mut scopes, &mut ranges, &mut self.total, self.scalar);
+        // In local order, so the generated code and free-list order are unchanged.
+        for (l, range) in ranges.into_iter().enumerate() {
+            if let Some(range) = range {
+                let l = ir::LocalId(l as u32);
+                self.starts.entry(std::ptr::from_ref(range.first)).or_default().push(l);
+                self.ends.entry(std::ptr::from_ref(range.last)).or_default().push(l);
             }
         }
-        open
     }
 }
 
@@ -718,13 +867,11 @@ impl<'m> Fe<'m> {
     /// A local of type `t`: while a statement is emitted, a scratch local for it (perhaps one
     /// used before, so it's set before it's read), and before that, one for the whole function.
     fn new_local(&mut self, t: ValType) -> u32 {
-        if self.scratch.is_empty() {
+        if self.statement_depth == 0 {
             return self.fresh_local(t);
         }
         let l = self.reuse_local(t);
-        if let Some(frame) = self.scratch.last_mut() {
-            frame.push(l);
-        }
+        self.scratch.push(l);
         l
     }
 
@@ -1218,11 +1365,16 @@ impl<'m> Fe<'m> {
             let t = repr(&self.m.types, self.vty(*v), self.at.simd);
             self.values[v.index()] = self.reuse_local(t);
         }
-        self.scratch.push(Vec::new());
+        let scratch_start = self.scratch.len();
+        self.statement_depth += 1;
         let r = self.stmt_code(s);
-        for l in self.scratch.pop().unwrap_or_default() {
-            self.free_local(l);
+        self.statement_depth -= 1;
+        // Release in creation order, as before: each type's free list is a stack, so reversing
+        // this order would change which local subsequent statements reuse.
+        for i in scratch_start..self.scratch.len() {
+            self.free_local(self.scratch[i]);
         }
+        self.scratch.truncate(scratch_start);
         for v in self.release.remove(&std::ptr::from_ref(s)).unwrap_or_default() {
             self.free_local(self.values[v.index()]);
         }

@@ -499,6 +499,27 @@ mkdir -p "$out" && head -c "$(cat "$PWD/$2/size" 2>/dev/null || echo 10)" /dev/z
         self.assertEqual(self.made(), [])
         self.assertIn("over its size budget", r.stderr)
 
+    def test_changed_budget_limits_rebuild_remembered_sizes(self):
+        self.write("examples/a/size", str(200 * 1024))
+        r = self.budgets()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.made()), 9)
+        r = self.budgets()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.made(), [])
+        path = os.path.join(self.root, "tools/wgsl_budgets.py")
+        with open(path) as f:
+            script = f.read()
+        self.assertIn("(256 * 1024, None)", script)
+        self.write("tools/wgsl_budgets.py", script.replace("(256 * 1024, None)", "(64 * 1024, None)"))
+        r = self.budgets()
+        self.assertEqual(len(self.made()), 9, "the new limits are part of every raw-only build's key")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("examples/a/p.wgsl is 200 KiB", r.stderr)
+        r = self.budgets()
+        self.assertEqual(self.made(), [])
+        self.assertIn("over its size budget", r.stderr)
+
 
 FILES_HASH = "8410ef328ec8af3db236a70a705c1c9c7746bdc9695323b3e5bb56ef647fdf28"
 

@@ -131,6 +131,19 @@ class WgslBudgetTest(unittest.TestCase):
             self.assertIn(package + "/pipeline_0.wgsl", str(error.exception))
             self.assertIn("gzipped), over its size budget", str(error.exception))
 
+    def test_a_raw_budget_failure_compresses_for_its_diagnostic(self):
+        shader = random.Random(1).randbytes(256 * 1024 + 1)
+        original = gzip.compress
+        packed = len(original(shader))
+        with mock.patch("gzip.compress", wraps=original) as compress, \
+             self.assertRaises(SystemExit) as error:
+            self.run_budgets({"examples/other": shader})
+        self.assertEqual(compress.call_count, 1)
+        self.assertEqual(compress.call_args.args[0], shader)
+        self.assertEqual(str(error.exception),
+                         f"examples/other/pipeline_0.wgsl is {len(shader) / 1024:.0f} KiB "
+                         f"({packed / 1024:.0f} gzipped), over its size budget")
+
 
 if __name__ == "__main__":
     unittest.main()

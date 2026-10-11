@@ -80,6 +80,7 @@ impl Figure {
         var out: Vec<vec4> = Vec::new()
         match self.cape {
             Some(c) => {
+                out.reserve(POINTS)
                 for k in 0..POINTS {
                     out.push(vec4(c.at[k], 1.0))
                 }
@@ -91,7 +92,7 @@ impl Figure {
 
     /// The wisps, two to a wisp for a buffer: where it is and how big now; its speed.
     pub fn wisps(self) -> Vec<vec4> {
-        var out: Vec<vec4> = Vec::new()
+        var out: Vec<vec4> = Vec::with_capacity(2 * self.dark.wisps.len())
         for w in self.dark.wisps {
             out.push(vec4(w.at, w.now()))
             out.push(vec4(w.speed, 0.0))
@@ -101,6 +102,41 @@ impl Figure {
 }
 
 // ---- tests -------------------------------------------------------------------------------------
+
+/// Buffer data keeps the figure's order and values, with one allocation for each nonempty run.
+@test
+fn figure_buffers_are_ordered_and_allocate_once() {
+    var f = figure()
+    let empty_before = std::alloc::allocations()
+    assert(f.points().is_empty() && f.wisps().is_empty())
+    assert(std::alloc::allocations() == empty_before)
+    f.cape = Some(hang(body_frame(vec3(0.0), 0.0, moves::REST.form)))
+    let before = std::alloc::allocations()
+    let points = f.points()
+    assert(std::alloc::allocations().wrapping_sub(before) == 1)
+    assert(points.len() == POINTS)
+    if let Some(c) = f.cape {
+        for k in 0..POINTS {
+            assert(points[k] == vec4(c.at[k], 1.0))
+        }
+    }
+    f.dark.wisps.push(
+        darkness::Wisp {
+            at: vec3(1.0, 2.0, 3.0),
+            speed: vec3(-1.0, 0.5, 2.0),
+            age: 0.25,
+            life: 1.0,
+            size: 0.1,
+            from: 2.0,
+        },
+    )
+    let wisps_before = std::alloc::allocations()
+    let wisps = f.wisps()
+    assert(std::alloc::allocations().wrapping_sub(wisps_before) == 1)
+    assert(wisps.len() == 2)
+    assert(wisps[0] == vec4(f.dark.wisps[0].at, f.dark.wisps[0].now()))
+    assert(wisps[1] == vec4(f.dark.wisps[0].speed, 0.0))
+}
 
 /// A body that jumps (a travel, a new shot) takes its figure with it as it is: the cape doesn't
 /// fall the whole way, its wisps don't stay behind; and the origin's move carries both.

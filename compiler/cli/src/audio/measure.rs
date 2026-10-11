@@ -2,7 +2,7 @@
 //! decays in two stages. `wrela audio partials` reports one note; `wrela audio model` fits
 //! engine::piano's tables to many.
 
-use super::dsp::{db, peak, spectrum};
+use super::dsp::{Spectrum, db, peak, spectrum};
 
 /// A partial of a recorded note: its number, its frequency, and its level (dB of full scale)
 /// every `Measured::dt` seconds.
@@ -68,9 +68,11 @@ pub fn measure(samples: &[f32], rate: f64, key: u32, from: f64, seconds: f64) ->
     let b = b.clamp(2e-5, 0.05);
     let bin = rate / n as f64;
     let frames = ((seconds * rate) as usize / hop).max(1);
-    let mut levels: Vec<Vec<f64>> = vec![Vec::with_capacity(frames); found.len()];
+    // Cloning an empty Vec drops its reserved capacity: reserve each partial's room itself.
+    let mut levels: Vec<Vec<f64>> = (0..found.len()).map(|_| Vec::with_capacity(frames)).collect();
+    let mut spectra = Spectrum::new(n);
     for t in 0..frames {
-        let mag = spectrum(samples, start + t * hop, n);
+        let mag = spectra.at(samples, start + t * hop);
         for (i, (_, f)) in found.iter().enumerate() {
             let k = (f / bin).round() as usize;
             let a = (k.saturating_sub(2)..=(k + 2).min(mag.len() - 1))
@@ -184,16 +186,9 @@ pub fn two_stage(levels: &[f64], dt: f64) -> Option<Decay> {
     if pts.len() < 8 {
         return None;
     }
-    let cost = |t1: f64, t2: f64, r: f64| -> f64 {
-        let model = |t: f64| {
-            10.0 * ((1.0 - r) * 10f64.powf(-6.0 * t / t1) + r * 10f64.powf(-6.0 * t / t2))
-                .max(1e-30)
-                .log10()
-        };
-        // L₀ is the mean residual.
-        let l0 = pts.iter().map(|(t, l)| l - model(*t)).sum::<f64>() / pts.len() as f64;
-        pts.iter().map(|(t, l)| (l - l0 - model(*t)).powi(2)).sum::<f64>()
-    };
+    let mut predictions = vec![0.0; pts.len()];
+    let mut cost =
+        |t1: f64, t2: f64, r: f64| -> f64 { decay_cost(&pts, &mut predictions, t1, t2, r) };
     // A coarse grid in logs, then finer ones around the best.
     let (mut lt1, mut lt2, mut lr) = (0.0f64, 1.0f64, -2.0f64);
     let mut best = f64::MAX;
@@ -241,6 +236,30 @@ pub fn two_stage(levels: &[f64], dt: f64) -> Option<Decay> {
         after_db: 10.0 * (r / (1.0 - r)).log10(),
         error: (best / pts.len() as f64).sqrt(),
     })
+}
+
+/// The candidate's model is the same in both reductions. Keep it once, leaving the two
+/// reductions and each subtraction in their original order so the fit's bits do not change.
+pub(super) fn decay_cost(
+    pts: &[(f64, f64)],
+    predictions: &mut [f64],
+    t1: f64,
+    t2: f64,
+    r: f64,
+) -> f64 {
+    let l0 = pts
+        .iter()
+        .zip(predictions.iter_mut())
+        .map(|((t, l), prediction)| {
+            *prediction = 10.0
+                * ((1.0 - r) * 10f64.powf(-6.0 * t / t1) + r * 10f64.powf(-6.0 * t / t2))
+                    .max(1e-30)
+                    .log10();
+            l - *prediction
+        })
+        .sum::<f64>()
+        / pts.len() as f64;
+    pts.iter().zip(predictions).map(|((_, l), prediction)| (l - l0 - *prediction).powi(2)).sum()
 }
 
 /// The strike's noise: in the first 43 ms, the energy between the partials (more than 70 Hz

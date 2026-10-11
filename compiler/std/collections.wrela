@@ -345,14 +345,15 @@ impl<T> Vec<T> {
                 let hi = min(lo + 2 * width, n)
                 var i = lo
                 var j = mid
-                for k in lo..hi {
+                var k = lo
+                while i < mid && j < hi {
                     // The left run's element while it's not after the right run's: stable.
-                    let left = i < mid && (j >= hi || !unsafe {
+                    let left = !unsafe {
                         before(
                             at::<T, Vec<T>>(self, src + j * size),
                             at::<T, Vec<T>>(self, src + i * size),
                         )
-                    })
+                    }
                     unsafe {
                         if left {
                             copy(dst + k * size, src + i * size, size)
@@ -362,6 +363,13 @@ impl<T> Vec<T> {
                             j += 1
                         }
                     }
+                    k += 1
+                }
+                // Once either run is gone, the other's remaining elements are already in
+                // order. Move that tail at once, without any more calls to `before`.
+                unsafe {
+                    let from = if i < mid { i } else { j }
+                    copy(dst + k * size, src + from * size, (hi - k) * size)
                 }
                 lo = hi
             }

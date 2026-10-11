@@ -939,7 +939,7 @@ export class GpuExecutor {
       this.#encoder = null;
       read?.();
     }
-    for (const r of this.#doomed.splice(0)) r.destroy();
+    if (this.#doomed.length > 0) for (const r of this.#doomed.splice(0)) r.destroy();
   }
 
   /** A buffer's bytes `offset..offset + size`, once the GPU's work recorded so far is done:

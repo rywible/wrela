@@ -290,9 +290,7 @@ pub enum TyKind {
 pub struct Types {
     kinds: FrozenVec<Box<TyKind>>,
     map: RefCell<HashMap<TyKind, TyId>>,
-    /// Each type's size: the nodes of its tree, shared parts counted each time they appear
-    /// (saturating).
-    sizes: RefCell<Vec<u32>>,
+    properties: RefCell<Vec<TypeProperties>>,
     pub bool: TyId,
     pub i32: TyId,
     pub u32: TyId,
@@ -306,6 +304,21 @@ pub struct Types {
     pub vec4: TyId,
 }
 
+/// Facts about the interned structure alone, unaffected by inference bindings or the fields
+/// of an ADT. Every child has already been interned when these are computed.
+#[derive(Clone, Copy)]
+struct TypeProperties {
+    /// The nodes of its tree, shared parts counted each time (saturating).
+    size: u32,
+    mentions: u8,
+}
+
+impl TypeProperties {
+    const VAR: u8 = 1;
+    const PARAM: u8 = 2;
+    const PROJECTION: u8 = 4;
+}
+
 impl Default for Types {
     fn default() -> Self {
         Self::new()
@@ -317,7 +330,7 @@ impl Types {
         let mut t = Types {
             kinds: FrozenVec::new(),
             map: RefCell::new(HashMap::new()),
-            sizes: RefCell::new(Vec::new()),
+            properties: RefCell::new(Vec::new()),
             bool: TyId(0),
             i32: TyId(0),
             u32: TyId(0),
@@ -359,9 +372,23 @@ impl Types {
             Entry::Vacant(e) => e,
         };
         let id = TyId(self.kinds.len() as u32);
-        let mut size = 1u32;
-        children(new.key(), &mut |c| size = size.saturating_add(self.size(c)));
-        self.sizes.borrow_mut().push(size);
+        let mut properties = TypeProperties {
+            size: 1,
+            mentions: match new.key() {
+                TyKind::Var(_) => TypeProperties::VAR,
+                TyKind::Param(_) => TypeProperties::PARAM,
+                TyKind::Projection { .. } => TypeProperties::PROJECTION,
+                _ => 0,
+            },
+        };
+        let known = self.properties.borrow();
+        children(new.key(), &mut |c| {
+            let child = known[c.index()];
+            properties.size = properties.size.saturating_add(child.size);
+            properties.mentions |= child.mentions;
+        });
+        drop(known);
+        self.properties.borrow_mut().push(properties);
         self.kinds.push(Box::new(new.key().clone()));
         new.insert(id);
         id
@@ -375,7 +402,7 @@ impl Types {
     /// what a walk over it that doesn't remember where it's been would visit. See
     /// [`MAX_TYPE_SIZE`].
     pub fn size(&self, t: TyId) -> u32 {
-        self.sizes.borrow()[t.index()]
+        self.properties.borrow()[t.index()].size
     }
 
     /// How many types there are.
@@ -439,17 +466,21 @@ impl Types {
 
     /// Whether a type mentions inference variables.
     pub fn has_vars(&self, t: TyId) -> bool {
-        self.any(t, &mut |k| matches!(k, TyKind::Var(_)))
+        self.mentions(t, TypeProperties::VAR)
     }
 
     /// Whether a type mentions generic parameters or projections.
     pub fn has_params(&self, t: TyId) -> bool {
-        self.any(t, &mut |k| matches!(k, TyKind::Param(_) | TyKind::Projection { .. }))
+        self.mentions(t, TypeProperties::PARAM | TypeProperties::PROJECTION)
     }
 
     /// Whether a type mentions projections.
     pub fn has_projections(&self, t: TyId) -> bool {
-        self.any(t, &mut |k| matches!(k, TyKind::Projection { .. }))
+        self.mentions(t, TypeProperties::PROJECTION)
+    }
+
+    fn mentions(&self, t: TyId, kinds: u8) -> bool {
+        self.properties.borrow()[t.index()].mentions & kinds != 0
     }
 
     /// Whether any part of `t` satisfies `f`, a test of the part alone.
@@ -554,7 +585,7 @@ impl Types {
 
     /// Replaces generic parameters by `subst`.
     pub fn subst(&self, t: TyId, subst: &Subst) -> TyId {
-        if subst.is_empty() {
+        if subst.is_empty() || !self.mentions(t, TypeProperties::PARAM) {
             return t;
         }
         self.map(t, &mut |types, x| match types.kind(x) {
@@ -599,6 +630,100 @@ fn map_list(ts: &[TyId], m: &mut impl FnMut(TyId) -> TyId) -> Option<Vec<TyId>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn type_containment_matches_walks_and_substitution() {
+        let types = Types::new();
+        let param = types.param(ParamId(0));
+        let var = types.var(VarId(0));
+        let projection = types.intern(TyKind::Projection {
+            self_ty: types.i32,
+            trait_: TraitId(0),
+            trait_args: vec![types.bool],
+            name: "Output".into(),
+        });
+        // Every compound type, with each special node in every child position. IDs name
+        // syntax here; an ADT's mutable definition and a variable's bindings aren't children.
+        for child in [types.i32, param, var, projection] {
+            let kinds = [
+                TyKind::Tuple(vec![types.bool, child]),
+                TyKind::Array(child, 3),
+                TyKind::ArrayN(child, types.u32),
+                TyKind::ArrayN(types.bool, child),
+                TyKind::Slice(child),
+                TyKind::Adt(AdtId(0), vec![child]),
+                TyKind::Opaque(FnId(0), vec![child]),
+                TyKind::FnDef(FnId(0), vec![child]),
+                TyKind::Closure(ClosureRef { owner: Some(FnId(0)), id: ClosureId(0) }, vec![child]),
+                TyKind::FnPtr(vec![child], types.bool, FnFlags::default()),
+                TyKind::FnPtr(vec![types.bool], child, FnFlags::default()),
+                TyKind::Projection {
+                    self_ty: child,
+                    trait_: TraitId(0),
+                    trait_args: vec![types.bool],
+                    name: "SelfChild".into(),
+                },
+                TyKind::Projection {
+                    self_ty: types.bool,
+                    trait_: TraitId(0),
+                    trait_args: vec![child],
+                    name: "ArgumentChild".into(),
+                },
+            ];
+            for kind in kinds {
+                let ty = types.intern(kind);
+                let mut shared = ty;
+                for _ in 0..8 {
+                    shared = types.tuple(vec![shared, shared]);
+                }
+            }
+        }
+        types.intern(TyKind::ArrayN(param, types.intern(TyKind::ConstU32(7))));
+        types.intern(TyKind::Str);
+        types.intern(TyKind::Mat(4, 3));
+        let subst = Subst::from_pairs(&[ParamId(0)], &[types.f32]);
+        for i in 0..types.len() {
+            let ty = TyId(i as u32);
+            assert_eq!(types.has_vars(ty), types.any(ty, &mut |k| matches!(k, TyKind::Var(_))));
+            assert_eq!(
+                types.has_params(ty),
+                types.any(ty, &mut |k| matches!(k, TyKind::Param(_) | TyKind::Projection { .. }))
+            );
+            assert_eq!(
+                types.has_projections(ty),
+                types.any(ty, &mut |k| matches!(k, TyKind::Projection { .. }))
+            );
+            let expected = types.map(ty, &mut |types, x| match types.kind(x) {
+                TyKind::Param(p) => subst.get(*p),
+                _ => None,
+            });
+            assert_eq!(types.subst(ty, &subst), expected);
+        }
+        assert_eq!(types.subst(projection, &subst), projection);
+        let normalized =
+            types.intern(TyKind::ArrayN(types.bool, types.intern(TyKind::ConstU32(3))));
+        assert_eq!(normalized, types.array(types.bool, 3));
+        assert!(!types.has_params(normalized));
+        assert!(!types.has_vars(normalized));
+    }
+
+    #[test]
+    fn type_containment_is_independent_of_inference_bindings() {
+        let types = Types::new();
+        let mut infer = crate::check::infer::Infer::default();
+        let variable = infer.new_var(
+            &types,
+            VarKind::General,
+            wrela_diag::Span::new(wrela_diag::FileId(0), 0, 0),
+        );
+        let tuple = types.tuple(vec![types.bool, variable]);
+        let concrete = types.tuple(vec![types.bool, types.i32]);
+        assert!(infer.fits(&types, tuple, concrete));
+        assert!(types.has_vars(infer.resolve(&types, tuple)), "fits must roll back");
+        assert!(infer.try_unify(&types, tuple, concrete));
+        assert!(types.has_vars(tuple), "the interned structure still names a variable");
+        assert!(!types.has_vars(infer.resolve(&types, tuple)));
+    }
 
     #[test]
     fn frontend_perf_type_mapping_preserves_order_and_unchanged_ids() {

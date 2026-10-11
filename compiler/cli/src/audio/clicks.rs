@@ -33,14 +33,15 @@ pub(super) fn clicks(mono: &[f32], rate: f64) -> Vec<Click> {
         .collect();
     let around = 100; // 50 ms of half-millisecond frames
     let mut out = Vec::new();
+    let mut near = Vec::with_capacity(2 * around);
     let mut i = 0;
     while i < frames.len() {
         let lo = i.saturating_sub(around);
         let hi = (i + around).min(frames.len());
-        let mut near: Vec<f64> = frames[lo..hi].to_vec();
-        near.sort_by(f64::total_cmp);
+        near.clear();
+        near.extend_from_slice(&frames[lo..hi]);
         // Silence's median is no level to stand out from: a click must be over -100 dB too.
-        let median = near[near.len() / 2].max(1e-10);
+        let median = median(&mut near).max(1e-10);
         let db = 10.0 * (frames[i] / median).log10();
         let local_max =
             (i.saturating_sub(4)..(i + 5).min(frames.len())).all(|j| frames[j] <= frames[i]);
@@ -54,10 +55,14 @@ pub(super) fn clicks(mono: &[f32], rate: f64) -> Vec<Click> {
     out
 }
 
+pub(super) fn median(values: &mut [f64]) -> f64 {
+    let middle = values.len() / 2;
+    *values.select_nth_unstable_by(middle, f64::total_cmp).1
+}
+
 pub fn run(file: &Path, notes: Option<&Path>) -> Result<(), String> {
     let (samples, channels, rate) = dsp::read_wav(file)?;
-    let mono: Vec<f32> =
-        samples.chunks_exact(channels).map(|c| c.iter().sum::<f32>() / channels as f32).collect();
+    let mono = dsp::mono(samples, channels);
     let found = clicks(&mono, rate);
     let seconds = mono.len() as f64 / rate;
     // What's happening at each click, with a take's notes.

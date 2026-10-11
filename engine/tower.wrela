@@ -124,9 +124,9 @@ impl Journey {
         var start = Start::Fresh
         var loading = None
         var carry = Carry { tower: Tower::new(worlds), at: here, door: STAIR, going: NOWHERE }
-        match back {
+        match take back {
             Ok(c) => {
-                carry = c.clone()
+                carry = take c
                 start = if carry.going == NOWHERE {
                     Start::Again
                 } else if carry.going == here {
@@ -166,12 +166,12 @@ impl Journey {
     pub fn update(mut self) {
         let here = self.carry.at
         let loaded = take_answer(mut self.loading)
-        if let Some(answer) = loaded {
+        if let Some(answer) = take loaded {
             // No save, or one of another shape: the new tower stands.
-            if let Ok(bytes) = answer {
-                let saved: Result<Carry, LoadError> = unpack(bytes.clone())
-                if let Ok(c) = saved {
-                    self.carry = c.clone()
+            if let Ok(bytes) = take answer {
+                let saved: Result<Carry, LoadError> = unpack(take bytes)
+                if let Ok(c) = take saved {
+                    self.carry = take c
                     self.carry.going = NOWHERE
                     self.carry.at = here
                 }
@@ -179,14 +179,14 @@ impl Journey {
         }
         let _ = take_answer(mut self.saving)
         if let Some(answer) = take_answer(mut self.going) {
-            if let Err(why) = answer {
-                self.door_failed = Some(why.clone())
+            if let Err(why) = take answer {
+                self.door_failed = Some(take why)
             }
         }
         if let Some(answer) = take_answer(mut self.request) {
-            match answer {
+            match take answer {
                 Ok(_) => self.ready = true,
-                Err(why) => self.prepare_failed = Some(why.clone()),
+                Err(why) => self.prepare_failed = Some(take why),
             }
         }
         keep(save(self.carry))

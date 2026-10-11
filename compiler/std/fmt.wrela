@@ -49,6 +49,10 @@ pub trait Format {
 /// `s`, padded to `spec`'s width. `number` says it's a number: right-aligned by default, and
 /// `0` pads after its sign.
 fn pad(out: mut String, s: str, spec: Spec, number: bool) {
+    if spec.width == 0 {
+        out.push_str(s)
+        return
+    }
     let n = char_count(s)
     if n >= spec.width {
         out.push_str(s)
@@ -753,6 +757,35 @@ pub fn json_number(out: mut String, x: f32) {
     } else {
         out.push_str("null")
     }
+}
+
+@test
+fn zero_width_formatting_keeps_text_and_special_values() {
+    for text in ["", "ascii", "é🦀狼\0", "-12", "+inf"] {
+        let owned = String::from(text)
+        borrow borrowed = owned.as_str()
+        assert(f"{text}" == text && f"{owned}" == text && f"{borrowed}" == text)
+        assert(f"{text:<0}" == text && f"{text:^0}" == text && f"{text:>0}" == text)
+        for align in 0..4 {
+            for number in [false, true] {
+                var spec = Spec::none()
+                spec.align = align
+                spec.zero = true
+                var out = String::from("prefix:")
+                pad(mut out, text, spec, number)
+                var expected = String::from("prefix:")
+                expected.push_str(text)
+                assert(out == expected)
+            }
+        }
+    }
+    assert(f"{true} {false} {1.5} {0.125:.2}" == "true false 1.5 0.12")
+    assert(f"{bitcast_f32(0x7f800000)}" == "inf")
+    assert(f"{bitcast_f32(0xff800000)}" == "-inf")
+    assert(f"{bitcast_f32(0x7fc00000)}" == "NaN")
+    // Nonzero widths still count code points and use the requested alignment.
+    let unicode = "é🦀"
+    assert(f"{unicode:>4}" == "  é🦀")
 }
 
 @test

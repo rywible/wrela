@@ -115,6 +115,10 @@ impl Darkness {
             w.at = w.at + w.speed * dt
             w.age += dt
             if w.age < w.life {
+                if alive.is_empty() {
+                    // No allocation if none survives; enough room for every remaining wisp.
+                    alive.reserve(self.wisps.len() - q)
+                }
                 alive.push(w)
             }
         }
@@ -135,6 +139,9 @@ fn wisps_rise_and_die() {
         d.step(c, rate: AT_REST, burst: 0, wind: vec3(0.0), dt: 1.0 / 60.0)
         most = max(most, d.wisps.len())
     }
+    let before = std::alloc::allocations()
+    d.step(c, rate: 0.0, burst: 0, wind: vec3(0.0), dt: 0.0)
+    assert(std::alloc::allocations().wrapping_sub(before) == 1, "a wisp step grew its room")
     var rose = 0.0
     var old = 0.0
     for w in d.wisps {

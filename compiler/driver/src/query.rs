@@ -523,44 +523,44 @@ impl<'a> Index<'a> {
     /// The items named `name`: those whose path is it, else those whose path ends with it.
     pub fn find(&self, name: &str) -> Vec<(Item, String)> {
         let q: Vec<&str> = name.trim().split("::").collect();
-        let mut all: Vec<(Item, &Vec<String>)> = Vec::new();
-        all.extend(self.fns.iter().map(|(f, p)| (Item::Fn(*f), p)));
-        all.extend(self.adts.iter().map(|(a, p)| (Item::Adt(*a), p)));
-        all.extend(self.traits.iter().map(|(t, p)| (Item::Trait(*t), p)));
-        let exact: Vec<_> = all
+        let all = self
+            .fns
             .iter()
+            .map(|(f, p)| (Item::Fn(*f), p))
+            .chain(self.adts.iter().map(|(a, p)| (Item::Adt(*a), p)))
+            .chain(self.traits.iter().map(|(t, p)| (Item::Trait(*t), p)));
+        let exact: Vec<_> = all
+            .clone()
             .filter(|(_, p)| p.iter().map(String::as_str).eq(q.iter().copied()))
             .collect();
         let found: Vec<_> = if exact.is_empty() {
-            all.iter()
-                .filter(|(_, p)| {
-                    p.len() >= q.len()
-                        && p[p.len() - q.len()..].iter().map(String::as_str).eq(q.iter().copied())
-                })
-                .collect()
+            all.filter(|(_, p)| {
+                p.len() >= q.len()
+                    && p[p.len() - q.len()..].iter().map(String::as_str).eq(q.iter().copied())
+            })
+            .collect()
         } else {
             exact
         };
         let mut out: Vec<(Item, String)> =
-            found.into_iter().map(|(i, p)| (*i, p.join("::"))).collect();
+            found.into_iter().map(|(i, p)| (i, p.join("::"))).collect();
         // Of several, std's private items go (a full path still names them), then the program's
         // own item wins if there's one.
         if out.len() > 1 {
             let module = |i: Item| i.decl(self.p).module;
             let public = |i: Item| i.decl(self.p).public;
-            let shown: Vec<(Item, String)> = out
-                .iter()
-                .filter(|(i, _)| !self.p.is_std(module(*i)) || public(*i))
-                .cloned()
-                .collect();
-            let own: Vec<(Item, String)> = shown
+            out.retain(|(i, _)| !self.p.is_std(module(*i)) || public(*i));
+            let own = out
                 .iter()
                 .filter(|(i, _)| {
                     self.p.package_of(module(*i)).kind == wrela_sema::defs::PackageKind::Program
                 })
-                .cloned()
-                .collect();
-            out = if own.len() == 1 { own } else { shown };
+                .count();
+            if own == 1 {
+                out.retain(|(i, _)| {
+                    self.p.package_of(module(*i)).kind == wrela_sema::defs::PackageKind::Program
+                });
+            }
         }
         // A path names a method once, though a generic impl may give it several.
         out.dedup_by(|a, b| a.1 == b.1 && matches!((a.0, b.0), (Item::Fn(_), Item::Fn(_))));
@@ -775,18 +775,20 @@ impl<'a> Index<'a> {
         };
         let mut out = Vec::new();
         for (&caller, body) in &self.checked.mir {
-            for (u, span) in uses(p, body) {
-                let hit = match &u {
-                    Use::Trait(m, self_ty) => {
-                        *m == f
-                            || through
-                                .is_some_and(|(tm, ty)| tm == *m && same_head(p, *self_ty, ty))
+            for (s, r) in rvalues(body) {
+                mir::fn_uses(p, s, r, |u, span| {
+                    let hit = match &u {
+                        Use::Trait(m, self_ty) => {
+                            *m == f
+                                || through
+                                    .is_some_and(|(tm, ty)| tm == *m && same_head(p, *self_ty, ty))
+                        }
+                        other => other.func() == f,
+                    };
+                    if hit {
+                        out.push((caller, u, span));
                     }
-                    other => other.func() == f,
-                };
-                if hit {
-                    out.push((caller, u, span));
-                }
+                });
             }
         }
         out.sort_by_key(|(_, _, s)| (s.file, s.start));

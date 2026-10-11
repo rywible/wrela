@@ -16,7 +16,7 @@ struct Recorder {
 }
 
 impl Executor for Recorder {
-    fn execute(&mut self, cmd: &Command<'_>) -> Result<()> {
+    fn execute(&mut self, cmd: &mut Command<'_>) -> Result<()> {
         self.log.push(cmd.opcode().name());
         Ok(())
     }
@@ -567,7 +567,7 @@ struct FailsOnce {
 }
 
 impl Executor for FailsOnce {
-    fn execute(&mut self, cmd: &Command<'_>) -> Result<()> {
+    fn execute(&mut self, cmd: &mut Command<'_>) -> Result<()> {
         if cmd.opcode() == Opcode::Present && !std::mem::replace(&mut self.failed, true) {
             return Err(Error::Gpu("lost".into()));
         }

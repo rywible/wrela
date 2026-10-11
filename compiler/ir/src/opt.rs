@@ -1526,8 +1526,7 @@ fn split_locals(m: &Module, f: &mut Function) {
         let mut split = vec![false; f.locals.len()];
         for (i, l) in f.locals.iter().enumerate() {
             split[i] = mentions[i] > 0
-                && split_parts(m, l.ty)
-                    .is_some_and(|ps| !ps.is_empty() && ps.len() <= SPLIT_FIELDS)
+                && split_part_count(m, l.ty).is_some_and(|n| n > 0 && n <= SPLIT_FIELDS)
                 && crate::layout::layout(&m.types, l.ty).size <= SPLIT_BYTES;
         }
         // A local whose place goes anywhere but a load or a store stays whole, as does a vector
@@ -1567,6 +1566,17 @@ fn split_locals(m: &Module, f: &mut Function) {
 
 /// The parts a local of type `t` splits into, named: a struct's fields (a tuple's too), or the
 /// components of a vector that `scalarize` computes a component at a time. None for others.
+fn split_part_count(m: &Module, t: TypeId) -> Option<usize> {
+    match m.types.get(t) {
+        TypeDef::Struct { fields, .. } => Some(fields.len()),
+        TypeDef::Vector(s, n) if *s != Scalar::F32 => {
+            m.types.lookup(&TypeDef::Scalar(*s))?;
+            Some(usize::from(*n))
+        }
+        _ => None,
+    }
+}
+
 fn split_parts(m: &Module, t: TypeId) -> Option<Vec<(String, TypeId)>> {
     match m.types.get(t) {
         TypeDef::Struct { fields, .. } => Some(fields.clone()),

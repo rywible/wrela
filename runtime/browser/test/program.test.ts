@@ -689,8 +689,12 @@ describe("input", () => {
     expect(p.call("word", 1032)).toBe(bits(3.5) | 0);
     expect(p.call("word", 1040)).toBe(2);
     expect(p.call("word", 1024 + 24 + 8)).toBe(0xe9);
+    const unread = p.unreadInput;
+    expect(unread.length).toBe(1);
     expect(p.call("take", 8)).toBe(1);
     expect(p.call("word", 1024)).toBe(5);
+    expect(p.unreadInput).toBe(unread);
+    expect(unread.length).toBe(0);
     expect(p.call("take", 8)).toBe(0);
     p.queueInput(textEvent(120));
     expect(() => p.call("pastTheEnd")).toThrow("past the end of the program's memory");

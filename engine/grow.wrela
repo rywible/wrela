@@ -669,6 +669,7 @@ fn water(g: Grid, heights: [f32]) -> (Vec<f32>, Vec<f32>) {
         let h = heights[c]
         var total = 0.0
         var steepest = 0.0
+        var weights = [0.0; 8]
         for k in 0..8 {
             let ni = i + DI[k]
             let nj = j + DJ[k]
@@ -676,7 +677,8 @@ fn water(g: Grid, heights: [f32]) -> (Vec<f32>, Vec<f32>) {
                 let dist = if DI[k] != 0 && DJ[k] != 0 { 1.4142 * g.cell } else { g.cell }
                 let drop = (h - heights[u32(nj) * g.nx + u32(ni)]) / dist
                 if drop > 0.0 {
-                    total += pow(drop, 1.1)
+                    weights[k] = pow(drop, 1.1)
+                    total += weights[k]
                     steepest = max(steepest, drop)
                 }
             }
@@ -692,7 +694,7 @@ fn water(g: Grid, heights: [f32]) -> (Vec<f32>, Vec<f32>) {
                     let dist = if DI[k] != 0 && DJ[k] != 0 { 1.4142 * g.cell } else { g.cell }
                     let drop = (h - heights[o]) / dist
                     if drop > 0.0 {
-                        acc[o] += mine * pow(drop, 1.1) / total
+                        acc[o] += mine * weights[k] / total
                     }
                 }
             }
@@ -1704,7 +1706,7 @@ pub(package) fn mark(grid: Grid, g: mut Vec<f32>, p: vec2, r: f32, v: f32) {
 /// What the herd walks round: rocks and walls, trunks, thorn thickets and logs.
 fn obstacles(herd: mut Herd, trees: [Tree], habits: [Habit], rocks: [vec3]) {
     let g = herd.grid
-    herd.cost = herd.rough.clone()
+    herd.rough.clone_into(mut herd.cost)
     for r in rocks {
         mark(g, mut herd.cost, r.xy, r.z * 1.15, 1.0)
     }
@@ -2516,4 +2518,74 @@ pub fn simulate<G: Ground>(
         memory: take f.memory,
         log,
     }
+}
+
+// The two-pass reference recomputes the routing weight on each pass. Reusing it must keep
+// catchment and blurred wetness bit-for-bit, including ties and tiny positive falls.
+@test
+fn watershed_weights_keep_the_reference_float_bits() {
+    let g = Grid::over(vec2(0.0), vec2(8.0, 6.0), 2.0)
+    for seed in 0..16 {
+        let heights = Vec::from_fn(g.cells(), |k| {
+            if seed == 0 { 0.0 } else if seed == 1 { f32(k % 3) * 1.0e-40 } else {
+                f32((k * 11 + seed * 5) % 17) * if seed == 2 { 1.0e20 } else { 0.25 }
+            }
+        })
+        let (wet, acc) = water(g, heights)
+        let (reference_wet, reference_acc) = water_reference(g, heights)
+        assert(wet.len() == reference_wet.len() && acc.len() == reference_acc.len())
+        for k in 0..g.cells() {
+            assert(bitcast_u32(wet[k]) == bitcast_u32(reference_wet[k]))
+            assert(bitcast_u32(acc[k]) == bitcast_u32(reference_acc[k]))
+        }
+    }
+}
+
+fn water_reference(g: Grid, heights: [f32]) -> (Vec<f32>, Vec<f32>) {
+    let nn = g.cells()
+    var order: Vec<u32> = Vec::from_fn(nn, |i| i)
+    order.sort_by(|a, b| heights[a] > heights[b])
+    var acc: Vec<f32> = Vec::filled(nn, 1.0)
+    var slope: Vec<f32> = Vec::filled(nn, 0.0)
+    for c in order {
+        let i = i32(c % g.nx)
+        let j = i32(c / g.nx)
+        let h = heights[c]
+        var total = 0.0
+        var steepest = 0.0
+        for k in 0..8 {
+            let ni = i + DI[k]
+            let nj = j + DJ[k]
+            if ni >= 0 && nj >= 0 && ni < i32(g.nx) && nj < i32(g.nz) {
+                let dist = if DI[k] != 0 && DJ[k] != 0 { 1.4142 * g.cell } else { g.cell }
+                let drop = (h - heights[u32(nj) * g.nx + u32(ni)]) / dist
+                if drop > 0.0 {
+                    total += pow(drop, 1.1)
+                    steepest = max(steepest, drop)
+                }
+            }
+        }
+        slope[c] = steepest
+        if total > 0.0 {
+            let mine = acc[c]
+            for k in 0..8 {
+                let ni = i + DI[k]
+                let nj = j + DJ[k]
+                if ni >= 0 && nj >= 0 && ni < i32(g.nx) && nj < i32(g.nz) {
+                    let o = u32(nj) * g.nx + u32(ni)
+                    let dist = if DI[k] != 0 && DJ[k] != 0 { 1.4142 * g.cell } else { g.cell }
+                    let drop = (h - heights[o]) / dist
+                    if drop > 0.0 {
+                        acc[o] += mine * pow(drop, 1.1) / total
+                    }
+                }
+            }
+        }
+    }
+    var wet: Vec<f32> = Vec::filled(nn, 0.0)
+    for c in 0..nn {
+        let twi = log(acc[c] * g.cell / (slope[c] + 0.01))
+        wet[c] = smoothstep(4.2, 8.5, twi)
+    }
+    (g.blur(wet, 1), acc)
 }

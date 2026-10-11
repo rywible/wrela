@@ -294,18 +294,24 @@ pub fn draw(t: &Take, samples: &[f32], bars: Option<(u32, u32)>) -> Result<Vec<u
         let y = spec_top as f64 + (1.0 - (f / f_lo).ln() / (f_hi / f_lo).ln()) * spec_h as f64;
         img.text(30, y as usize, &format!("{f:.0}"), 1, LABEL);
     }
-    for px in 0..PLOT {
-        let s = t0 + (t1 - t0) * px as f64 / PLOT as f64;
-        let at = ((s * rate) as usize).saturating_sub(n / 2);
-        let mag = dsp::spectrum(&mono, at, n);
-        for py in 0..spec_h {
+    // Each row covers the same frequency bins in every time column.
+    let bands: Vec<(usize, usize)> = (0..spec_h)
+        .map(|py| {
             let u0 = 1.0 - (py + 1) as f64 / spec_h as f64;
             let u1 = 1.0 - py as f64 / spec_h as f64;
             let (fa, fb) = (f_lo * (f_hi / f_lo).powf(u0), f_lo * (f_hi / f_lo).powf(u1));
-            let (ka, kb) = (
+            (
                 (fa * n as f64 / rate) as usize,
                 ((fb * n as f64 / rate) as usize).max((fa * n as f64 / rate) as usize + 1),
-            );
+            )
+        })
+        .collect();
+    let mut spectra = dsp::Spectrum::new(n);
+    for px in 0..PLOT {
+        let s = t0 + (t1 - t0) * px as f64 / PLOT as f64;
+        let at = ((s * rate) as usize).saturating_sub(n / 2);
+        let mag = spectra.at(&mono, at);
+        for (py, &(ka, kb)) in bands.iter().enumerate() {
             let m =
                 mag[ka.min(mag.len() - 1)..kb.min(mag.len())].iter().copied().fold(0.0, f64::max);
             let d = dsp::db(m);

@@ -465,12 +465,16 @@ export class Program {
       if (this.#failed !== null) {
         throw new CommandError(cmd.op, `the host failed to carry out an earlier command (${this.#failed})`);
       }
-      const before = this.#sequencer.copy();
+      // Only pass boundaries change the sequencer's place. Draws, dispatches and I/O
+      // commands need no snapshot for a checker's rejection.
+      const before = cmd.op === "BeginScreenPass" || cmd.op === "BeginPass" || cmd.op === "Present" || cmd.op === "EndPass"
+        ? this.#sequencer.copy()
+        : null;
       this.#sequencer.step(cmd);
       try {
         this.checker.check(cmd);
       } catch (e) {
-        this.#sequencer = before;
+        if (before !== null) this.#sequencer = before;
         throw e;
       }
       try {
@@ -594,7 +598,8 @@ export class Program {
       throw new TrapError(`input(${ptr}, ${cap}) reaches past the end of the program's memory`);
     }
     for (let i = 0; i < n; i++) memory.set(this.#input[i]!, ptr + i * EVENT_SIZE);
-    this.#input.splice(0, n);
+    if (n === this.#input.length) this.#input.length = 0;
+    else this.#input.splice(0, n);
     return n;
   }
 

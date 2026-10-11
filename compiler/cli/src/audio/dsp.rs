@@ -104,16 +104,32 @@ pub fn rms(samples: &[f32]) -> f64 {
         .sqrt()
 }
 
+/// Mixes an owned, interleaved recording to mono in its existing allocation. Each frame is
+/// read whole before its result is written, ahead of the next frame's samples.
+pub fn mono(mut samples: Vec<f32>, channels: usize) -> Vec<f32> {
+    let frames = samples.chunks_exact(channels).len();
+    for i in 0..frames {
+        let sample =
+            samples[i * channels..(i + 1) * channels].iter().sum::<f32>() / channels as f32;
+        samples[i] = sample;
+    }
+    samples.truncate(frames);
+    samples
+}
+
 /// MIDI's variable-length number: seven bits a byte, most significant first.
 pub fn vlq(out: &mut Vec<u8>, mut n: u64) {
-    let mut bytes = vec![(n & 0x7F) as u8];
+    // A u64 needs at most ten seven-bit groups.
+    let mut bytes = [0; 10];
+    let mut first = bytes.len() - 1;
+    bytes[first] = (n & 0x7F) as u8;
     n >>= 7;
     while n > 0 {
-        bytes.push((n & 0x7F) as u8 | 0x80);
+        first -= 1;
+        bytes[first] = (n & 0x7F) as u8 | 0x80;
         n >>= 7;
     }
-    bytes.reverse();
-    out.extend_from_slice(&bytes);
+    out.extend_from_slice(&bytes[first..]);
 }
 
 /// The Fourier transform of `re` + i `im`, in place (radix 2: the length a power of two).
@@ -167,6 +183,37 @@ pub fn spectrum(samples: &[f32], at: usize, n: usize) -> Vec<f64> {
     fft(&mut re, &mut im);
     // A sine of amplitude 1 gives a peak of 1: the window's gain is n / 4.
     (0..n / 2).map(|k| (re[k] * re[k] + im[k] * im[k]).sqrt() * 4.0 / n as f64).collect()
+}
+
+/// Repeated spectra of one size: the Hann window and the FFT's room stay allocated between
+/// frames. The one-off [`spectrum`] avoids keeping a window it will use only once.
+pub(super) struct Spectrum {
+    window: Vec<f64>,
+    re: Vec<f64>,
+    im: Vec<f64>,
+    mag: Vec<f64>,
+}
+
+impl Spectrum {
+    pub(super) fn new(n: usize) -> Self {
+        let window = (0..n)
+            .map(|i| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / n as f64).cos())
+            .collect();
+        Self { window, re: vec![0.0; n], im: vec![0.0; n], mag: vec![0.0; n / 2] }
+    }
+
+    pub(super) fn at(&mut self, samples: &[f32], at: usize) -> &[f64] {
+        let n = self.re.len();
+        for (i, (r, w)) in self.re.iter_mut().zip(&self.window).enumerate() {
+            *r = samples.get(at + i).map_or(0.0, |s| f64::from(*s)) * w;
+        }
+        self.im.fill(0.0);
+        fft(&mut self.re, &mut self.im);
+        for (k, mag) in self.mag.iter_mut().enumerate() {
+            *mag = (self.re[k] * self.re[k] + self.im[k] * self.im[k]).sqrt() * 4.0 / n as f64;
+        }
+        &self.mag
+    }
 }
 
 /// The peak in `mag` between bins `lo` and `hi`: its bin, interpolated by a parabola through

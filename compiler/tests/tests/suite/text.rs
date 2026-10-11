@@ -68,6 +68,17 @@ fn font_baking_needs_positive_finite_geometry() {
     }
 }
 
+/// A GPOS value record has sixteen format bits, even when passed a wider integer.
+#[test]
+fn value_record_sizes_count_only_the_font_formats_bits() {
+    let out = wrela_driver::test(
+        &wrela_tests::repo_root().join("ui"),
+        Some("value_record_sizes_count_only_the_low_sixteen_bits"),
+    );
+    assert!(out.passed(), "{:?} {:?}", out.diagnostics, out.results);
+    assert_eq!(out.results.len(), 1);
+}
+
 /// Every widget's frame test, each driven by a script of input (ui/tests/widgets/scripts).
 #[test]
 fn the_widgets_pass_their_frame_tests() {

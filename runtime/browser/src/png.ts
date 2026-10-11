@@ -61,15 +61,14 @@ export function zlibStored(data: Uint8Array): Uint8Array<ArrayBuffer> {
   return out;
 }
 
-function chunk(type: string, data: Uint8Array): Uint8Array<ArrayBuffer> {
-  const out = new Uint8Array(12 + data.length);
-  const view = new DataView(out.buffer);
+/** Writes a chunk into the final PNG, without another copy of its data. */
+function chunk(out: Uint8Array, view: DataView, at: number, type: string, data: Uint8Array): number {
   const tag = new TextEncoder().encode(type);
-  view.setUint32(0, data.length);
-  out.set(tag, 4);
-  out.set(data, 8);
-  view.setUint32(8 + data.length, crc32(tag, data));
-  return out;
+  view.setUint32(at, data.length);
+  out.set(tag, at + 4);
+  out.set(data, at + 8);
+  view.setUint32(at + 8 + data.length, crc32(tag, data));
+  return at + 12 + data.length;
 }
 
 /** Encodes RGBA8 pixels (rows top to bottom, no padding) as a PNG. */
@@ -86,17 +85,12 @@ export function encodePng(width: number, height: number, rgba: Uint8Array): Uint
   const row = width * 4;
   const raw = new Uint8Array(height * (row + 1));
   for (let y = 0; y < height; y++) raw.set(rgba.subarray(y * row, (y + 1) * row), y * (row + 1) + 1);
-  const parts = [
-    new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk("IHDR", header),
-    chunk("IDAT", zlibStored(raw)),
-    chunk("IEND", new Uint8Array(0)),
-  ];
-  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
-  let at = 0;
-  for (const p of parts) {
-    out.set(p, at);
-    at += p.length;
-  }
+  const stored = zlibStored(raw);
+  const out = new Uint8Array(8 + 12 + header.length + 12 + stored.length + 12);
+  const view = new DataView(out.buffer);
+  out.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  let at = chunk(out, view, 8, "IHDR", header);
+  at = chunk(out, view, at, "IDAT", stored);
+  chunk(out, view, at, "IEND", new Uint8Array(0));
   return out;
 }

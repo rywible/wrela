@@ -936,11 +936,17 @@ fn pair_advance(b: Bytes, s: u32, a: u32, c: u32) -> (bool, i32) {
 
 /// How many bits of `v` are set.
 fn bits(v: u32) -> u32 {
-    var n = 0
-    for k in 0..16 {
-        n += (v >> k) & 1
-    }
-    n
+    (v & 65535).count_ones()
+}
+
+@test
+fn value_record_sizes_count_only_the_low_sixteen_bits() {
+    assert(bits(0) == 0)
+    assert(bits(65535) == 16)
+    assert(bits(0xFFFF0000) == 0)
+    assert(bits(0xFFFF_FFFF) == 16)
+    assert(bits(0x80000001) == 1)
+    assert(bits(0xAAAA5555) == 8)
 }
 
 /// Glyph `g`'s index in the coverage table at `at`, or -1.

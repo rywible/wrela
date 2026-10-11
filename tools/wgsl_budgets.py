@@ -22,15 +22,20 @@ BAKED = {pathlib.Path("examples/last-green")}
 out = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", "target")) / "wgsl-budgets"
 
 
-def sizes(built):
-    """Each pipeline's WGSL in `built`: {name: [bytes, bytes gzipped]}."""
-    return {w.name: [len(t), len(gzip.compress(t))]
+def budgets(pkg):
+    return (128 * 1024, 24 * 1024) if str(pkg) == "examples/hello-field" else (256 * 1024, None)
+
+
+def sizes(built, raw_budget, gz_budget):
+    """Each pipeline's raw bytes, and gzip bytes where checked or reported on failure."""
+    return {w.name: [len(t), len(gzip.compress(t)) if gz_budget is not None or len(t) > raw_budget else 0]
             for w in sorted(built.glob("*.wgsl")) for t in [w.read_bytes()]}
 
 
 def build(package):
     """A package's pipelines' sizes, from the build `command` makes in `built`."""
     pkg, command, built = package
+    raw_budget, gz_budget = budgets(pkg)
 
     def run():
         if out in built.parents:
@@ -39,16 +44,15 @@ def build(package):
 
     if memo is None:
         subprocess.run(run(), check=True, capture_output=True)
-        return pkg, sizes(built)
-    key = memo.rebuilds.key(os.path.abspath(pkg), ["wgsl sizes", command[1]])
-    got = memo.traced(key, run, os.getcwd(), lambda: sizes(built), output=built)
+        return pkg, sizes(built, raw_budget, gz_budget)
+    key = memo.rebuilds.key(os.path.abspath(pkg), ["wgsl sizes", command[1], raw_budget, gz_budget])
+    got = memo.traced(key, run, os.getcwd(), lambda: sizes(built, raw_budget, gz_budget), output=built)
     if got is None:
         sys.exit(f"{pkg}: `{' '.join(command)}` failed")
     return pkg, got
 
 
 try:
-    hello = "examples/hello-field"
     # The lens on each subject (tools/subjects.py), first: inspect its shader artifacts without
     # compiling the WASM for the native host, since this check never runs it. A lens is built
     # lifted, as `wrela studio` builds it (its page, beside the subject): its WGSL is read there.
@@ -67,7 +71,7 @@ try:
     # other example's and sketch's pipelines are at most 256 KiB each.
     pipelines = 0
     for pkg, pipes in built:
-        raw_budget, gz_budget = (128 * 1024, 24 * 1024) if str(pkg) == hello else (256 * 1024, None)
+        raw_budget, gz_budget = budgets(pkg)
         largest = 0
         for name, (raw, packed) in sorted(pipes.items()):
             pipelines += 1

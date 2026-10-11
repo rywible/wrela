@@ -130,6 +130,11 @@ pub struct Checker {
     /// so far, (read-only, read-write). Dispatches happen only outside a pass (the sequencer
     /// checks), so the two kinds of scope never overlap and share this map.
     scope: HashMap<u32, (bool, bool)>,
+    /// Reused for a fresh dispatch's scope until it is accepted. On rejection the prior
+    /// scope is swapped back, so neither the old scope nor its allocation needs copying.
+    spare_scope: HashMap<u32, (bool, bool)>,
+    /// Prior uses of the handles a draw may change, reused for transactional checking.
+    rollback: Vec<(u32, Option<(bool, bool)>)>,
     /// The open pass's attachments.
     attachments: Vec<u32>,
     /// Read-write buffers in this command: reused across draws and dispatches.
@@ -169,6 +174,8 @@ impl Checker {
             pipelines,
             resources: HashMap::new(),
             scope: HashMap::new(),
+            spare_scope: HashMap::new(),
+            rollback: Vec::new(),
             attachments: Vec::new(),
             written: Vec::new(),
             targets: (None, false),
@@ -178,19 +185,15 @@ impl Checker {
     /// Checks a command that has passed the [`crate::stream::Sequencer`], and records its
     /// effect on what later commands may do.
     pub fn check(&mut self, cmd: &Command<'_>) -> Result<()> {
-        // A rejected command leaves no trace. Binding checks add uses as they go, and a later
-        // binding (or an indirect range) may still reject the command.
-        // A draw can only change the entries it names, so don't clone a pass's whole (possibly
-        // large) scope for every draw. Commands that start a fresh scope keep the old small
-        // scope wholesale.
-        let whole_scope = matches!(
-            cmd,
-            Command::Dispatch { .. } | Command::DispatchIndirect { .. } | Command::BeginPass(_)
-        )
-        .then(|| self.scope.clone());
-        let pass_state =
-            matches!(cmd, Command::BeginPass(_)).then(|| (self.attachments.clone(), self.targets));
-        let mut entries = Vec::new();
+        // A rejected command leaves no trace. A fresh dispatch builds in the spare map;
+        // draws remember only the entries they name, once each even when arguments alias a
+        // binding. Passes validate their attachments before changing any state.
+        let fresh_scope =
+            matches!(cmd, Command::Dispatch { .. } | Command::DispatchIndirect { .. });
+        if fresh_scope {
+            std::mem::swap(&mut self.scope, &mut self.spare_scope);
+        }
+        let mut entries = std::mem::take(&mut self.rollback);
         {
             let mut remember = |handle: u32| {
                 if !entries.iter().any(|(h, _)| *h == handle) {
@@ -221,10 +224,10 @@ impl Checker {
         }
         let result = self.check_in_place(cmd);
         if result.is_err() {
-            if let Some(scope) = whole_scope {
-                self.scope = scope;
+            if fresh_scope {
+                std::mem::swap(&mut self.scope, &mut self.spare_scope);
             } else {
-                for (handle, used) in entries {
+                for &(handle, used) in &entries {
                     match used {
                         Some(used) => {
                             self.scope.insert(handle, used);
@@ -235,11 +238,10 @@ impl Checker {
                     }
                 }
             }
-            if let Some((attachments, targets)) = pass_state {
-                self.attachments = attachments;
-                self.targets = targets;
-            }
         }
+        self.spare_scope.clear();
+        entries.clear();
+        self.rollback = entries;
         result
     }
 
@@ -368,8 +370,6 @@ impl Checker {
                 if !pass.clear_depth.is_finite() {
                     return err("the clear depth isn't a finite number".into());
                 }
-                self.scope.clear();
-                self.attachments.clear();
                 let mut size = None;
                 for t in [pass.color, pass.depth] {
                     let three =
@@ -391,7 +391,6 @@ impl Checker {
                     }
                     size = Some((t.width, t.height));
                     colour = Some(t.format);
-                    self.attachments.push(pass.color);
                 }
                 if pass.depth != NONE {
                     let t = self.texture(op, pass.depth)?;
@@ -401,10 +400,17 @@ impl Checker {
                     if size.is_some_and(|s| s != (t.width, t.height)) {
                         return err("the pass's colour and depth targets differ in size".into());
                     }
-                    self.attachments.push(pass.depth);
                 }
                 if pass.color == NONE && pass.depth == NONE {
                     return err("a pass needs a colour target or a depth target".into());
+                }
+                self.scope.clear();
+                self.attachments.clear();
+                if pass.color != SCREEN && pass.color != NONE {
+                    self.attachments.push(pass.color);
+                }
+                if pass.depth != NONE {
+                    self.attachments.push(pass.depth);
                 }
                 self.targets = (colour, pass.depth != NONE);
             }
@@ -787,5 +793,81 @@ mod tests {
         );
         assert!(checker.attachments.is_empty());
         assert_eq!(checker.targets, (Some(SCREEN_FORMAT), false));
+    }
+
+    #[test]
+    fn rejected_dispatches_restore_a_prior_scope_and_indirect_aliases_roll_back_once() {
+        let mut checker = Checker::new(&crate::vectors::check_manifest());
+        for handle in 1..=3 {
+            checker.check(&Command::CreateBuffer { handle, size: 64 }).expect("buffer");
+        }
+        let bindings = vec![Binding::range(1, 0, 64), Binding::range(2, 0, 64)];
+        checker.check(&Command::BeginScreenPass { clear: [0.0; 4] }).expect("pass");
+        checker
+            .check(&Command::Draw {
+                pipeline: 0,
+                vertices: 3,
+                instances: 1,
+                bindings: bindings.clone(),
+                uniforms: &[0; 16],
+            })
+            .expect("prior uses");
+        checker.check(&Command::Present).expect("end pass");
+        let prior = checker.scope.clone();
+        let dispatch = |groups| Command::Dispatch {
+            pipeline: 3,
+            groups,
+            bindings: bindings.clone(),
+            uniforms: &[0; 16],
+        };
+        assert_eq!(
+            checker.check(&dispatch([65_536, 1, 1])).expect_err("too many groups").why,
+            "65536x1x1 workgroups is over the limit of 65535 per dimension"
+        );
+        assert_eq!(checker.scope, prior);
+        let indirect = |offset| Command::DispatchIndirect {
+            pipeline: 3,
+            arguments: 2,
+            offset,
+            bindings: bindings.clone(),
+            uniforms: &[0; 16],
+        };
+        assert_eq!(
+            checker.check(&indirect(60)).expect_err("argument range").why,
+            "reading arguments: 12 bytes at offset 60 overruns buffer 2 (64 bytes)"
+        );
+        assert_eq!(checker.scope, prior);
+        assert_eq!(
+            checker.check(&indirect(0)).expect_err("argument alias").why,
+            "buffer 2 is used both read-only and read-write in one dispatch"
+        );
+        assert_eq!(checker.scope, prior);
+        checker.check(&dispatch([1; 3])).expect("accepted after both failures");
+
+        checker.check(&Command::BeginScreenPass { clear: [0.0; 4] }).expect("next pass");
+        let bad_draw = Command::DrawIndexedIndirect {
+            pipeline: 0,
+            indices: 1,
+            index_offset: 0,
+            index_size: 4,
+            arguments: 1,
+            offset: 60,
+            bindings,
+            uniforms: &[0; 16],
+        };
+        assert_eq!(
+            checker.check(&bad_draw).expect_err("argument range after aliases").why,
+            "reading arguments: 20 bytes at offset 60 overruns buffer 1 (64 bytes)"
+        );
+        assert!(checker.scope.is_empty(), "binding, indices and arguments share one undo entry");
+        checker
+            .check(&Command::Draw {
+                pipeline: 2,
+                vertices: 3,
+                instances: 1,
+                bindings: vec![Binding::range(1, 0, 64), Binding::range(2, 0, 64)],
+                uniforms: &[0; 16],
+            })
+            .expect("the rejected draw left neither reads nor writes");
     }
 }

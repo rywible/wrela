@@ -1400,9 +1400,8 @@ impl Gpu {
         Ok(())
     }
 
-    fn draw(&mut self, pipeline: u32, how: DrawHow, bindings: &[Binding], uniforms: &[u8]) {
-        let draw =
-            PendingDraw { pipeline, how, bindings: bindings.to_vec(), uniforms: uniforms.to_vec() };
+    fn draw(&mut self, pipeline: u32, how: DrawHow, bindings: Vec<Binding>, uniforms: &[u8]) {
+        let draw = PendingDraw { pipeline, how, bindings, uniforms: uniforms.to_vec() };
         self.pass.as_mut().expect("the sequencer checked a pass is open").draws.push(draw);
     }
 
@@ -1704,7 +1703,7 @@ impl Gpu {
 }
 
 impl Executor for Gpu {
-    fn execute(&mut self, cmd: &Command<'_>) -> Result<()> {
+    fn execute(&mut self, cmd: &mut Command<'_>) -> Result<()> {
         if let Some(ended) = &self.ended {
             match cmd {
                 // A label names the passes after it, the next of which may yet continue this one.
@@ -1764,11 +1763,11 @@ impl Executor for Gpu {
             }
             Command::Draw { pipeline, vertices, instances, bindings, uniforms } => {
                 let how = DrawHow::Direct { vertices: *vertices, instances: *instances };
-                self.draw(*pipeline, how, bindings, uniforms);
+                self.draw(*pipeline, how, std::mem::take(bindings), uniforms);
             }
             Command::DrawIndirect { pipeline, arguments, offset, bindings, uniforms } => {
                 let how = DrawHow::Indirect { buffer: *arguments, offset: *offset };
-                self.draw(*pipeline, how, bindings, uniforms);
+                self.draw(*pipeline, how, std::mem::take(bindings), uniforms);
             }
             Command::DrawIndexedIndirect {
                 pipeline,
@@ -1787,7 +1786,7 @@ impl Executor for Gpu {
                     buffer: *arguments,
                     offset: *offset,
                 };
-                self.draw(*pipeline, how, bindings, uniforms);
+                self.draw(*pipeline, how, std::mem::take(bindings), uniforms);
             }
             Command::Present => return self.end_pass(Opcode::Present),
             Command::EndPass => return self.end_pass(Opcode::EndPass),
@@ -2109,6 +2108,59 @@ fn resolve(
 mod tests {
     use super::*;
     use wrela_abi::manifest::Pipeline;
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn pending_draws_keep_decoded_bindings_and_snapshot_uniforms() {
+        let _turn = crate::lock::turn();
+        let _lock = crate::lock::GpuLock::acquire("pending draw ownership").expect("GPU lock");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/first-light");
+        let (manifest, _, shaders) = crate::read_build(&dir).expect("fixture");
+        let mut gpu = Gpu::new(&manifest, &shaders, Timing::Off, false).expect("GPU");
+        gpu.set_screen(4, 4).expect("screen");
+        let uniforms: Vec<u8> = [4.0f32, 4.0, 2.0, 2.0, 0.0, 1.0, 0.0, 0.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let bindings = [Binding::range(1, 0, 256)];
+        let mut bytes = stream::Encoder::new()
+            .create_buffer(1, 256)
+            .create_buffer(2, 20)
+            .create_buffer(3, 12)
+            .begin_screen_pass([0.0; 4])
+            .draw(0, 3, 1, &bindings, &uniforms)
+            .draw_indirect(0, 2, 0, &bindings, &uniforms)
+            .draw_indexed_indirect(0, [3, 0, 12], 2, 0, &bindings, &uniforms)
+            .finish();
+        let mut commands = stream::decode(&bytes).expect("commands");
+        let mut checker = wrela_abi::check::Checker::new(&manifest);
+        let mut sequencer = stream::Sequencer::new();
+        for cmd in &mut commands {
+            sequencer.step(cmd).expect("sequence");
+            checker.check(cmd).expect("checked");
+            let original = match cmd {
+                Command::Draw { bindings, .. }
+                | Command::DrawIndirect { bindings, .. }
+                | Command::DrawIndexedIndirect { bindings, .. } => Some(bindings.as_ptr()),
+                _ => None,
+            };
+            gpu.execute(cmd).expect("recorded");
+            if let Some(original) = original {
+                let draw = gpu.pass.as_ref().unwrap().draws.last().unwrap();
+                assert_eq!(draw.bindings.as_ptr(), original, "retain the decoded allocation");
+                assert_eq!(draw.bindings, bindings);
+            }
+        }
+        // The decoded commands and guest batch can disappear before a deferred pass records.
+        drop(commands);
+        bytes.fill(255);
+        for draw in &gpu.pass.as_ref().unwrap().draws {
+            assert_eq!(draw.uniforms, uniforms, "uniform bytes must remain a snapshot");
+            assert_eq!(draw.bindings, bindings);
+        }
+        gpu.execute(&mut Command::Present).expect("present deferred draws");
+        gpu.end_frame().expect("draws complete without a validation error");
+    }
 
     /// Small streaming texture updates interspersed with recorded GPU work. Include GPU
     /// completion, but leave device creation and the first warm-up out of the samples.

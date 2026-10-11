@@ -24,7 +24,8 @@ export type Compare = Exclude<(typeof COMPARES)[number], null>;
 /** What a binding binds: a storage buffer read or read-write, a texture, or a sampler. */
 export type BindingKind = (typeof BINDING_KINDS)[number];
 
-const traitsOf = (k: BindingKind) => BINDING_KIND_TRAITS.find((t) => t.name === k)!;
+const BINDING_TRAITS = new Map(BINDING_KIND_TRAITS.map((t) => [t.name, t] as const));
+const traitsOf = (k: BindingKind) => BINDING_TRAITS.get(k)!;
 /** Whether a binding is a colour texture, which names its format. */
 export const hasFormat = (k: BindingKind) => traitsOf(k).has_format;
 /** Whether kernels write it: a storage texture. */

@@ -1293,26 +1293,15 @@ impl<'d, 'u> Collector<'d, 'u> {
     /// once (E0209), and what depends on it stays quiet. The rest wait for names nothing
     /// provides, and are reported as such.
     fn report_stuck_imports(&mut self, stuck: Vec<(PendingUse, ModuleId, String)>) {
-        let provider = |m: ModuleId, name: &str| {
-            stuck.iter().position(|(v, ..)| v.module == m && v.alias.name == name)
-        };
-        let next: Vec<Option<usize>> = stuck.iter().map(|(_, m, n)| provider(*m, n)).collect();
-        let mut on_cycle = vec![false; stuck.len()];
-        for start in 0..stuck.len() {
-            // Floyd would do; the chains are short, so walk with a visited list.
-            let mut seen = vec![start];
-            let mut at = start;
-            while let Some(n) = next[at] {
-                if let Some(k) = seen.iter().position(|&s| s == n) {
-                    for &s in &seen[k..] {
-                        on_cycle[s] = true;
-                    }
-                    break;
-                }
-                seen.push(n);
-                at = n;
-            }
+        let mut providers = HashMap::new();
+        for (i, (u, ..)) in stuck.iter().enumerate() {
+            // The first provider wins, as the old source-order lookup did, even when two
+            // unresolved imports declare the same alias.
+            providers.entry((u.module, u.alias.name.as_str())).or_insert(i);
         }
+        let next: Vec<Option<usize>> =
+            stuck.iter().map(|(_, m, n)| providers.get(&(*m, n.as_str())).copied()).collect();
+        let on_cycle = import_cycle_nodes(&next);
         let path_text =
             |u: &PendingUse| u.path.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join("::");
         let mut reported = vec![false; stuck.len()];
@@ -3803,6 +3792,29 @@ fn alias_refs(p: &Program, m: ModuleId, t: &ast::TypeExpr, f: &mut impl FnMut(Al
     }
 }
 
+/// The nodes actually on a cycle of unresolved imports. Each import waits for at most one
+/// provider. Removing nodes with no incoming edge, then their newly unneeded successors,
+/// leaves only cycles: a tail or a chain ending at a missing name is removed in full.
+fn import_cycle_nodes(next: &[Option<usize>]) -> Vec<bool> {
+    let mut incoming = vec![0usize; next.len()];
+    for &to in next.iter().flatten() {
+        incoming[to] += 1;
+    }
+    let mut ready: Vec<usize> =
+        incoming.iter().enumerate().filter_map(|(i, &n)| (n == 0).then_some(i)).collect();
+    let mut on_cycle = vec![true; next.len()];
+    while let Some(i) = ready.pop() {
+        on_cycle[i] = false;
+        if let Some(to) = next[i] {
+            incoming[to] -= 1;
+            if incoming[to] == 0 {
+                ready.push(to);
+            }
+        }
+    }
+    on_cycle
+}
+
 /// The most fuel a constant may set (`@fuel`, §10): 2 ** 46 units, some hours of one core.
 pub const MAX_FUEL: u64 = 1 << 46;
 
@@ -3824,5 +3836,43 @@ fn fuel_value(e: &ast::Expr) -> Option<u64> {
             }
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::import_cycle_nodes;
+
+    #[test]
+    fn unresolved_import_cycles_match_chain_walks() {
+        // Exhaust every functional graph of up to five nodes, including self-cycles,
+        // multiple cycles, tails into them, and chains ending at missing providers.
+        for n in 0usize..=5 {
+            for mut encoded in 0..(n + 1).pow(n as u32) {
+                let next: Vec<Option<usize>> = (0..n)
+                    .map(|_| {
+                        let to = encoded % (n + 1);
+                        encoded /= n + 1;
+                        (to < n).then_some(to)
+                    })
+                    .collect();
+                let mut expected = vec![false; n];
+                for start in 0..n {
+                    let mut seen = vec![start];
+                    let mut at = start;
+                    while let Some(to) = next[at] {
+                        if let Some(k) = seen.iter().position(|&i| i == to) {
+                            for &i in &seen[k..] {
+                                expected[i] = true;
+                            }
+                            break;
+                        }
+                        seen.push(to);
+                        at = to;
+                    }
+                }
+                assert_eq!(import_cycle_nodes(&next), expected, "{next:?}");
+            }
+        }
     }
 }

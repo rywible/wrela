@@ -3,11 +3,120 @@
 //! stages), and a sine with a click in it. The tools that render a piece (`wav`, `describe`,
 //! `numbers`, `midi`, `sheet`, `speed`) are tested on `examples/piano` by the command's tests.
 
-use super::{clicks, measure, model};
+use super::{clicks, dsp, measure, model};
 use std::f64::consts::{PI, TAU};
 use std::path::PathBuf;
 
 const RATE: f64 = 48000.0;
+
+#[test]
+fn perf_sweep_audio_repeated_spectra_keep_every_bins_bits() {
+    let finite: Vec<f32> =
+        (0..257).map(|i| ((i as f64 * 0.37).sin() * (i as f64 * 0.03).cos()) as f32).collect();
+    let exceptional = vec![0.0, -0.0, f32::INFINITY, f32::NEG_INFINITY, f32::NAN, 1.0];
+    for samples in [&finite, &exceptional, &Vec::new()] {
+        for n in [0, 1, 2, 4, 16, 128, 512] {
+            let mut spectra = dsp::Spectrum::new(n);
+            for at in [0, 1, 37, 0, 256, 600, 1] {
+                let expected = dsp::spectrum(samples, at, n);
+                let found = spectra.at(samples, at);
+                assert_eq!(
+                    found.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+                    expected.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+                    "n {n}, at {at}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn perf_sweep_audio_decay_cost_keeps_reduction_and_subtraction_bits() {
+    let pts: Vec<(f64, f64)> =
+        (0..43).map(|i| (i as f64 * 0.037, -12.0 - 3.0 * i as f64 + (i as f64).sin())).collect();
+    for pts in [&pts, &vec![(0.0, f64::NAN)], &vec![(f64::INFINITY, -30.0)], &Vec::new()] {
+        let mut predictions = vec![0.0; pts.len()];
+        for (t1, t2, r) in [(0.7, 6.0, 0.1), (0.0, 1.0, 0.0), (-1.0, 0.3, 2.0)] {
+            let model = |t: f64| {
+                10.0 * ((1.0 - r) * 10f64.powf(-6.0 * t / t1) + r * 10f64.powf(-6.0 * t / t2))
+                    .max(1e-30)
+                    .log10()
+            };
+            let l0 = pts.iter().map(|(t, l)| l - model(*t)).sum::<f64>() / pts.len() as f64;
+            let expected = pts.iter().map(|(t, l)| (l - l0 - model(*t)).powi(2)).sum::<f64>();
+            let found = measure::decay_cost(pts, &mut predictions, t1, t2, r);
+            assert_eq!(found.to_bits(), expected.to_bits());
+        }
+    }
+}
+
+#[test]
+fn perf_sweep_audio_downmix_reuses_samples_and_keeps_float_bits() {
+    let values = [0.0, -0.0, 1.0, -1.0, f32::INFINITY, f32::NEG_INFINITY, f32::NAN];
+    for channels in 1..=9 {
+        for len in 0..=values.len() * 3 {
+            let samples: Vec<f32> = values.iter().copied().cycle().take(len).collect();
+            let expected: Vec<f32> = samples
+                .chunks_exact(channels)
+                .map(|c| c.iter().sum::<f32>() / channels as f32)
+                .collect();
+            let pointer = samples.as_ptr();
+            let found = dsp::mono(samples, channels);
+            assert_eq!(found.as_ptr(), pointer, "the recording's allocation is kept");
+            assert_eq!(
+                found.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+                expected.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+                "{channels} channels, {len} samples"
+            );
+        }
+    }
+}
+
+#[test]
+fn perf_sweep_audio_vlq_keeps_zero_boundaries_and_all_u64_bits() {
+    let mut values = vec![0, 1, u64::MAX];
+    for bits in (7..64).step_by(7) {
+        values.extend([(1 << bits) - 1, 1 << bits, (1 << bits) + 1]);
+    }
+    let mut seed = 0xf39abce81467d205u64;
+    for _ in 0..2000 {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        values.push(seed);
+    }
+    for value in values {
+        let mut expected = vec![(value & 0x7f) as u8];
+        let mut n = value >> 7;
+        while n > 0 {
+            expected.push((n & 0x7f) as u8 | 0x80);
+            n >>= 7;
+        }
+        expected.reverse();
+        let mut found = vec![9, 8];
+        dsp::vlq(&mut found, value);
+        assert_eq!(&found[2..], &expected, "{value}");
+    }
+}
+
+#[test]
+fn perf_sweep_audio_selected_median_matches_total_order_sort() {
+    let mut seed = 0xf39abce81467d205u64;
+    for len in 1..=200 {
+        let mut values = vec![-0.0, 0.0, f64::NEG_INFINITY, f64::INFINITY, f64::NAN];
+        while values.len() < len {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            values.push(f64::from_bits(seed));
+        }
+        values.truncate(len);
+        let mut expected = values.clone();
+        expected.sort_by(f64::total_cmp);
+        let median = clicks::median(&mut values);
+        assert_eq!(median.to_bits(), expected[len / 2].to_bits(), "{len} values");
+    }
+}
 
 /// What a made note's string is.
 #[derive(Clone, Copy)]

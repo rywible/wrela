@@ -714,7 +714,7 @@ impl Host {
 struct NoGpu;
 
 impl program::Executor for NoGpu {
-    fn execute(&mut self, _cmd: &wrela_abi::stream::Command<'_>) -> Result<()> {
+    fn execute(&mut self, _cmd: &mut wrela_abi::stream::Command<'_>) -> Result<()> {
         Ok(())
     }
 

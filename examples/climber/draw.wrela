@@ -186,7 +186,7 @@ impl Drawn {
         if !still {
             copy(from: self.points.items(), to: self.last_points.items_mut())
         }
-        write(mut self.points, 0, points.clone())
+        write(mut self.points, 0, points)
         if still {
             write(mut self.last_points, 0, points)
         }

@@ -67,7 +67,9 @@ pub struct Failure {
 
 /// Carries out commands that have already been decoded, sequenced and checked.
 pub(crate) trait Executor: 'static {
-    fn execute(&mut self, cmd: &Command<'_>) -> Result<()>;
+    /// The executor may retain owned command data (a draw's bindings, for example). The
+    /// program has already hashed the bytes and checked the command before handing it over.
+    fn execute(&mut self, cmd: &mut Command<'_>) -> Result<()>;
     /// Called after each call of `frame` returns: finish (submit) the frame's work.
     fn end_frame(&mut self) -> Result<()>;
     /// A buffer's bytes `offset..offset + size`, for a `ReadBuffer` request: the GPU's work
@@ -329,7 +331,7 @@ impl<E: Executor> State<E> {
         if let Some(b) = &mut self.batches {
             b.push(batch.to_vec());
         }
-        for cmd in stream::decode(batch)? {
+        for mut cmd in stream::decode(batch)? {
             if let Some(first) = &self.failed {
                 return Err(Error::Command(CommandError {
                     opcode: cmd.opcode(),
@@ -342,7 +344,7 @@ impl<E: Executor> State<E> {
                 self.sequencer = before;
                 return Err(e.into());
             }
-            if let Err(e) = self.executor.execute(&cmd) {
+            if let Err(e) = self.executor.execute(&mut cmd) {
                 self.failed = Some(e.to_string());
                 return Err(e);
             }

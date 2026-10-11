@@ -97,6 +97,34 @@ fn one_check_answers_every_kind_of_query() {
     assert!(a[13]["error"].as_str().is_some_and(|e| e.contains("nothing is named")), "{}", a[13]);
 }
 
+#[test]
+fn perf_sweep_query_preserves_ambiguous_names_and_first_callee_order() {
+    let dir = common::package(
+        "query-match-order",
+        &[
+            ("wrela.toml", &common::manifest("query_order")),
+            ("a.wrela", "pub fn same() {}\n"),
+            ("b.wrela", "pub fn same() {}\n"),
+            ("main.wrela", "pub fn needle() {\n    b::same()\n    a::same()\n    b::same()\n}\n"),
+        ],
+    );
+    let answers = query(&dir, &["callees needle", "callers same", "callers a::same"]);
+    let callees = answers[0]["callees"].as_array().expect("callees");
+    assert_eq!(callees.len(), 2);
+    assert_eq!(callees[0]["callee"], "b::same");
+    assert_eq!(callees[0]["at"], "main.wrela:2:5");
+    assert_eq!(callees[1]["callee"], "a::same");
+    assert_eq!(callees[1]["at"], "main.wrela:3:5");
+    assert_eq!(
+        answers[1]["error"],
+        "2 functions are named `same`: a::same, b::same; name one by its path"
+    );
+    let callers = answers[2]["callers"].as_array().expect("callers");
+    assert_eq!(callers.len(), 1);
+    assert_eq!(callers[0]["caller"], "main::needle");
+    assert_eq!(callers[0]["at"], "main.wrela:3:5");
+}
+
 /// A program with an error is answered too: what doesn't depend on the function with the error
 /// is answered as it would be, an answer it could change lists the error as `unsure`, and a
 /// query of that function's code says why it can't be answered. The errors are on standard
