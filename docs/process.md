@@ -189,6 +189,23 @@ this change does not erase them or claim that space has been reclaimed.
 On this APFS machine, existing dependency artifacts seeded the shared cache with filesystem
 clones, retaining current artifacts and excluding workspace crates and incremental state.
 The clones share disk blocks; each session still builds its own current workspace sources.
+
+Audio verification exposed a shared-cache correctness bug: Cargo accepted older, different
+Rust source after another checkout had built into the shared target. Codex traced this to
+Cargo's relative paths and modification-time checks. Job admission now checks the checkout,
+source content and recorded workspace artifact state. Unknown or changed inputs clear only
+workspace freshness records; dependency outputs and incremental data remain cached. A job
+records its resulting artifacts only if its source inputs stayed unchanged. This records build
+provenance, never test passes. Small regressions cover older content, an unrecorded cache writer
+and source changes during a job. Admission follows the enclosing workspace from subdirectories;
+nested tool calls must remain in one checkout instead of sharing its lease with another branch.
+The conservative source key can also rebuild workspace crates
+after non-Rust edits. Test helpers now resolve the running checkout and reject unrelated
+runtime manifests instead of silently reading a build-time checkout.
+
+The investigation used Cargo's public [compiler fingerprint documentation](https://doc.rust-lang.org/stable/nightly-rustc/cargo/compiler/fingerprint/index.html)
+to confirm its freshness rules. No source code or assets were copied from this reference.
+
 AGENTS.md is the sole repository instruction document. It is a regular file; the former
 alias to CLAUDE.md and the separate CLAUDE.md file were removed.
 Ryan then asked Codex to shorten that file for agent development speed and code quality.
