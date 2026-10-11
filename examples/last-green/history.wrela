@@ -6,9 +6,10 @@
 
 use engine::bake::{bake, unbake}
 use engine::footing::{Obstacles, obstacles_of, walkable_of}
-use engine::grow::{BAKE, Grain, Grid, History, Land, PREVIEW, Start, simulate}
+use engine::grow::{BAKE, Grain, Grid, History, Land, PREVIEW, Start, simulate, world}
+use peoples::{Culture, Use, left_by, settle, told}
 use engine::interest::{Evidence, FULL, Sight, check, nearest_first, report, views_bytes, walk_bytes}
-use engine::place::{Map, TILE, tile_of}
+use engine::place::{Kind, Map, TILE, tile_of}
 use engine::water::Laid
 use std::io::{Shipped, print, ship}
 use std::string::String
@@ -50,14 +51,30 @@ pub fn grown(grain: Grain) -> History {
         domain_lo(),
         domain_hi(),
         rocks(),
-        |land| past(m, land),
+        past,
     )
 }
 
-/// What the floor's past left the land as when its history begins.
-pub fn past(m: Map, land: Land) -> Start {
-    Start::wild(land)
+/// What the floor's past left the land as in `year`, when its history begins: the elves'
+/// (`peoples`), who lived there five centuries until the plague.
+pub fn past(land: Land, year: i32) -> Start {
+    let elves = Culture {}
+    var p = settle(land, elves, year - ELVES_LIVED, year)
+    // The floor's wood pasture is the old wood they grazed under: it stands as it was, whatever
+    // else they used the land round it for.
+    let m = map::map()
+    for c in 0..p.grid.cells() {
+        if m.regions[m.region_of(p.grid.centre(c))].kind == Kind::WoodPasture {
+            p.last[c] = u8(u32(Use::Wild))
+        }
+    }
+    let s = left_by(p, land, species::habits(), elves, year, world(m))
+    print(told(p, s, land))
+    s
 }
+
+/// How long the elves lived on the floor's land before the plague (years).
+pub const ELVES_LIVED: i32 = 500
 
 /// The bake: the floor's decisions, a file a tile and the far layer. Computed when the game is
 /// built, on every core, and kept between builds while nothing it reads changes.

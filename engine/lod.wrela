@@ -162,27 +162,29 @@ pub fn packed(keep: vec4) -> u32 {
     s.x | (s.y << 14) | (c.x << 28) | (c.y << 30)
 }
 
-/// How much of the switch between its share's start and end a card fades in, by its own draw
-/// (`by_card`).
+/// How much of the switch between its share's start and end a card shrinks over, by its own
+/// draw (`by_card`).
 pub const CARD_BAND: f32 = 0.1
 
 /// A share packed by `packed`, taken by one card of the instance whose draw in [0, 1) is `h`:
-/// the card is whole where `h` falls inside the share, gone where it falls outside, and in
-/// part only within `CARD_BAND` of its ends. A crown between two levels, or fading near the
-/// eye, then shows most of its cards whole and the rest gone. (Every card kept the same part
-/// of the pixels, so in a settled still, whose history evens the pattern, each was a
-/// see-through leaf, two levels' leaves over each other: the lookdev reviews.)
-pub fn by_card(k: u32, h: f32) -> u32 {
+/// the share the card keeps (all of it or none) and its size (0 to 1). The card is whole where
+/// `h` falls inside the share, gone where it falls outside, and smaller within `CARD_BAND` of
+/// its ends. A crown between two levels, or fading near the eye, then shows most of its cards
+/// whole and the rest gone. (Every card kept the same part of the pixels, so in a settled still,
+/// whose history evens the pattern, each was a see-through leaf: the lookdev reviews. Cards in
+/// the band kept that part of the pixels, and a bush faded near the eye left only them, as
+/// see-through leaves on the ground: shot 15, audit pass 1.)
+pub fn by_card(k: u32, h: f32) -> (u32, f32) {
     let start = f32(k & 16383) / 16383.0
     let end = f32((k >> 14) & 16383) / 16383.0
     if start <= 0.0 && end >= 1.0 {
-        return k
+        return (k, 1.0)
     }
     let after = if start <= 0.0 { 1.0 } else { saturate((h - start) / CARD_BAND + 0.5) }
     let before = if end >= 1.0 { 1.0 } else { saturate((end - h) / CARD_BAND + 0.5) }
-    let kept = after * before
-    let q = u32(round(saturate(kept) * 16383.0))
-    (k & 4026531840) | (q << 14)
+    let size = after * before
+    let whole = if size > 0.0 { 16383 } else { 0 }
+    ((k & 4026531840) | (whole << 14), size)
 }
 
 /// Whether a share packed by `packed` holds the pixel at `pixel` (a fragment's position): where
@@ -265,4 +267,30 @@ fn a_stills_sixteen_frames_keep_each_share_spread_over_the_pixel() {
             )
         }
     }
+}
+
+/// A card keeps all of a share or none of it (never a part of the pixels, which a settled still
+/// shows as a see-through leaf), and near the share's ends it's drawn smaller instead.
+@test
+fn a_card_is_whole_or_gone_and_smaller_near_its_shares_end() {
+    let half = packed(vec4(0.0, 0.5, 0.0, 0.0))
+    let (inside, inside_size) = by_card(half, 0.2)
+    let (outside, outside_size) = by_card(half, 0.8)
+    let (edge, edge_size) = by_card(half, 0.5)
+    let full = vec2(0.0, 0.0)
+    for (k, name) in [(inside, "inside"), (edge, "at the end")] {
+        for x in 0..4 {
+            for y in 0..4 {
+                assert(keeps_packed(k, full + vec2(f32(x), f32(y))), f"{name}: a pixel left out")
+            }
+        }
+    }
+    assert(inside_size == 1.0, f"inside the share: size {inside_size}")
+    assert(outside_size == 0.0, f"outside the share: size {outside_size}")
+    for x in 0..4 {
+        assert(!keeps_packed(outside, vec2(f32(x), 0.0)), "outside the share: a pixel kept")
+    }
+    assert(abs(edge_size - 0.5) < 1.0e-3, f"at the share's end: size {edge_size}")
+    let whole = packed(vec4(0.0, 1.0, 0.0, 0.0))
+    assert(by_card(whole, 0.99).1 == 1.0, "a whole share")
 }

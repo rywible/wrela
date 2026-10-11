@@ -507,6 +507,31 @@ impl Host {
         Ok((self.result(width, height)?, log))
     }
 
+    /// Runs in lockstep until the program prints a line holding `until` (`std::io::print`), at
+    /// most `frames` frames: that frame's screen (a capture's still), or none if it never did.
+    pub fn run_lockstep_until(
+        &mut self,
+        frames: u32,
+        fps: f64,
+        width: u32,
+        height: u32,
+        script: &[Scripted],
+        until: &str,
+    ) -> Result<Option<RunResult>> {
+        program::valid_fps(fps)?;
+        self.p().executor().set_screen(width, height)?;
+        self.p().take_logs();
+        for i in 0..frames {
+            self.p().executor().set_frame(i as usize);
+            self.p().lockstep_frame(i, fps, width, height, script, None)?;
+            self.settle_handing()?;
+            if self.p().take_logs().iter().any(|line| line.contains(until)) {
+                return Ok(Some(self.result(width, height)?));
+            }
+        }
+        Ok(None)
+    }
+
     /// Frame `i` of a lockstep run ([`Host::run_lockstep`]), alone: for a test that looks at the
     /// program between frames (its exports, the screen). Frames go in order from 0.
     pub fn lockstep_frame(

@@ -360,6 +360,109 @@ NAMES_COMPILER = re.compile(r"\bwrela_(?:sema|ir|lower|wasm|wgsl)\b")
 ROOT_FILES = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/")
 
 
+def rust_code(text, tests=True):
+    """A Rust file's code as rustc builds it: its comments left out and, without `tests`, each
+    item marked `#[cfg(test)]` (rustc builds those only into the crate's own unit tests, never
+    into a crate built with it), and its spacing as one space. A change to what's left out can't
+    change a test built with the file, so it doesn't change the file's key. An item it can't place the end of exactly stays
+    (in part): that only keeps a key changing."""
+    toks, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if text.startswith("//", i):
+            i = text.find("\n", i)
+            i = n if i < 0 else i
+        elif text.startswith("/*", i):
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if text.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif text.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+        elif c.isspace():
+            j = i
+            while j < n and text[j].isspace():
+                j += 1
+            toks.append(("ws", text[i:j]))
+            i = j
+        elif c.isalpha() or c == "_":
+            j = i
+            while j < n and (text[j].isalnum() or text[j] == "_"):
+                j += 1
+            word, hashes = text[i:j], 0
+            while j + hashes < n and text[j + hashes] == "#":
+                hashes += 1
+            if word in ("r", "br", "cr") and j + hashes < n and text[j + hashes] == '"':
+                close = '"' + "#" * hashes
+                end = text.find(close, j + hashes + 1)
+                end = n if end < 0 else end + len(close)
+                toks.append(("lit", text[i:end]))
+                i = end
+            else:
+                toks.append(("word", word))
+                i = j
+        elif c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            toks.append(("lit", text[i:j + 1]))
+            i = j + 1
+        elif c == "'" and (text.startswith("\\", i + 1) or text.startswith("'", i + 2)):
+            j = i + 2 if text[i + 1] == "\\" else i + 1
+            j = text.find("'", j + 1)
+            j = n - 1 if j < 0 else j
+            toks.append(("lit", text[i:j + 1]))
+            i = j + 1
+        else:
+            toks.append(("p", c))
+            i += 1
+    if not tests:
+        code = [k for k, t in enumerate(toks) if t[0] != "ws"]
+        marker = [("p", "#"), ("p", "["), ("word", "cfg"), ("p", "("), ("word", "test"),
+                  ("p", ")"), ("p", "]")]
+        drop, at = set(), 0
+        while at < len(code):
+            if [toks[k] for k in code[at:at + len(marker)]] != marker:
+                at += 1
+                continue
+            # Generics' `<..>` count as brackets in a signature or a type: not after its `=`.
+            start, at, depth, angle, value = code[at], at + len(marker), 0, 0, False
+            while at < len(code):
+                kind, t = toks[code[at]]
+                if kind == "p" and t == "=" and depth == 0:
+                    value = True
+                elif kind == "p" and t == "<" and not value:
+                    angle += 1
+                elif kind == "p" and t == ">" and not value and toks[code[at - 1]] != ("p", "-"):
+                    angle -= 1
+                elif kind == "p" and t in "([{":
+                    depth += 1
+                elif kind == "p" and t in ")]}":
+                    if depth == 0:
+                        break  # the end of what holds the item: not the item's
+                    depth -= 1
+                    if depth == 0 and t == "}":
+                        at += 1
+                        break
+                elif kind == "p" and (t == ";" or t == "," and angle <= 0) and depth == 0:
+                    at += 1
+                    break
+                at += 1
+            end = code[at - 1] if at > 0 else start
+            drop.update(range(start, end + 1))
+        toks = [t for k, t in enumerate(toks) if k not in drop]
+    # Space between tokens only parts them (no code reads its own lines: `line!()` is unused).
+    out = []
+    for kind, t in toks:
+        if kind != "ws":
+            out.append(t)
+        elif out and out[-1] != " ":
+            out.append(" ")
+    return "".join(out).strip()
+
+
 class Sources:
     """The files the test programs are built from, by crate: each crate's files (`git ls-files`
     under its directory, and those rustc's dep-info says it read elsewhere, by `include_str!`),
@@ -389,6 +492,7 @@ class Sources:
                 if not rel.startswith(owner + "/"):
                     self.by_package[owner].add(rel)
         self.hashes = {}
+        self.code_hashes = {}
         self.texts = {}
         self.names = {}
 
@@ -464,6 +568,19 @@ class Sources:
                 self.hashes[rel] = "absent"
         return self.hashes[rel]
 
+    def code_hash(self, rel, tests):
+        """The hash of a file's code: a Rust file's by `rust_code`, any other's bytes."""
+        if not rel.endswith(".rs"):
+            return self.hash(rel)
+        if (rel, tests) not in self.code_hashes:
+            try:
+                with open(os.path.join(self.root, rel), encoding="utf-8") as f:
+                    code = sha(rust_code(f.read(), tests).encode())
+            except (OSError, ValueError):
+                code = self.hash(rel)
+            self.code_hashes[(rel, tests)] = code
+        return self.code_hashes[(rel, tests)]
+
     def text(self, rel):
         if rel not in self.texts:
             try:
@@ -513,8 +630,11 @@ class Sources:
         left_out = {f for name, fs in modules.items() if name not in wanted for f in fs}
         return [f for f in files if f not in left_out]
 
-    def key(self, files):
-        return sha("\n".join(f"{f} {self.hash(f)}" for f in files))
+    def key(self, files, own=None):
+        """The files' key, by their code: a Rust file outside `own` (the directory of the package
+        whose test runs) without its tests. None for `own` keeps every file's tests."""
+        tests = lambda f: own is None or f.startswith(own.rstrip("/") + "/")
+        return sha("\n".join(f"{f} {self.code_hash(f, tests(f))}" for f in files))
 
 
 # ---- the store ------------------------------------------------------------------------------
@@ -689,7 +809,17 @@ class Store:
         write_atomically(os.path.join(self.entries_dir(test, rust), sha(body)[:24] + ".json"), body)
 
     def prune(self):
-        """Removes the entries and builds not used or made for KEEP_DAYS days."""
+        """Removes the entries and builds not used or made for KEEP_DAYS days: once a day (a walk
+        of the store takes half a second)."""
+        mark = os.path.join(self.dir, ".pruned")
+        try:
+            if time.time() - os.path.getmtime(mark) < 86400:
+                return
+        except OSError:
+            pass
+        os.makedirs(self.dir, exist_ok=True)
+        with open(mark, "w"):
+            pass
         old = time.time() - KEEP_DAYS * 86400
         for top in (os.path.join(self.dir, "entries"), os.path.join(self.dir, "builds")):
             for dirpath, dirnames, filenames in os.walk(top, topdown=False):
@@ -896,7 +1026,7 @@ class Memo:
     def rust(self, scope, test_id, program_dir, test):
         # MEANING too: what an entry keeps and how it is matched are part of its meaning.
         return sha(f"{scope}\n{MEANING}\n" + self.sources.key(
-            self.files(scope, test_id, program_dir, test)))
+            self.files(scope, test_id, program_dir, test), own=self.package(test_id)))
 
     def env_of(self, names):
         return {n: os.environ.get(n) for n in sorted(names)}
@@ -1057,15 +1187,21 @@ def run_tests(logs, native_cache, mode, dir, args, parent):
             elif m["target"]["kind"] == ["bin"] and m["target"]["name"] == "wrela":
                 cli = m["executable"]  # built from the sources the tests are
     memo = Memo(root, target, dir, cli)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import runner
+    from resources import cpu_count
+
+    cores = cpu_count()
     # Each slow test's scratch directory (its target/tmp), kept after a failure to look at.
     alone_root = os.path.join(target, "tmp-alone")
     shutil.rmtree(alone_root, ignore_errors=True)
 
     def env_for(pkg):
-        # As cargo runs a test program: in its package's directory. Compiled code is kept across
-        # runs (wrela_host's cache). Four of a program's GPU tests share the GPU at a time.
+        # As tools/runner.py runs a program, for a slow test alone (its scratch is target/tmp,
+        # its own in its mount namespace).
         return {**os.environ, "CARGO_MANIFEST_DIR": pkg, "WRELA_NATIVE_CACHE": native_cache,
-                "WRELA_GPU_SHARED": "4", "WRELA_GPU_WAITS": f"{logs}/gpu-waits"}
+                "WRELA_GPU_SHARED": str(runner.gpu_shared(cores)),
+                "WRELA_GPU_WAITS": f"{logs}/gpu-waits"}
 
     def listed(exe, pkg, more):
         out = subprocess.run([exe, "--list", "--format", "terse", *args, *more], cwd=pkg,
@@ -1095,20 +1231,23 @@ def run_tests(logs, native_cache, mode, dir, args, parent):
     with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
         split_programs = list(pool.map(split, programs))
 
-    # The quick tests: every program at once, each test's time in libtest's JSON (`--report-time`,
-    # a stable libtest's unstable option: RUSTC_BOOTSTRAP). They start now, while the slow tests'
-    # memory is looked up beside them.
-    runs = []
-    for m, pkg, exe, _, prefix, skips, kept, _ in split_programs:
+    # The quick tests: every program at once (tools/runner.py's way, the end-to-end suite first),
+    # each test's time in libtest's JSON (`--report-time`, a stable libtest's unstable option:
+    # RUSTC_BOOTSTRAP). They start now, while the slow tests' memory is looked up beside them.
+    runs, scratch_root = [], runner.scratch_root()
+    scratches = {}
+    for m, pkg, exe, _, prefix, skips, kept, _ in sorted(split_programs,
+                                                          key=lambda p: not runner.is_first(p[0])):
         if not kept:
             continue
+        command, env, _, scratch = runner.start(m, scratch_root, logs, native_cache, cores)
         out = open(f"{logs}/run-{len(runs)}", "w+")
-        name = f"{m['target']['name']} ({m['target']['kind'][0]})"
         proc = subprocess.Popen(
-            [exe, *args, *skips, "-Z", "unstable-options", "--format", "json",
-             "--report-time"], cwd=pkg, env={**env_for(pkg), "RUSTC_BOOTSTRAP": "1"},
+            [*command, *args, *skips, "-Z", "unstable-options", "--format", "json",
+             "--report-time"], cwd=pkg, env={**env, "RUSTC_BOOTSTRAP": "1"},
             stdout=out, stderr=subprocess.STDOUT)
-        runs.append(("quick", name, proc, out, time.monotonic(), prefix))
+        scratches[prefix] = scratch
+        runs.append(("quick", runner.name_of(m), proc, out, time.monotonic(), prefix))
 
     # The slow tests remembered, or to run alone. Those remembered by their builds' files once the
     # builds are made again, all at once.
@@ -1148,7 +1287,6 @@ def run_tests(logs, native_cache, mode, dir, args, parent):
         started[test_id] = (n, program_dir, log, scratch, record)
         runs.append(("alone", n, proc, out, time.monotonic(), test_id))
 
-    cores = os.cpu_count() or 4
     failed, ran = False, 0
     waiting = list(runs)
     while todo and sum(1 for r in waiting if r[0] == "alone") < cores:
@@ -1204,9 +1342,11 @@ def run_tests(logs, native_cache, mode, dir, args, parent):
                         print(f"test {e['name']} failed")
                     if not failures:
                         print("\n".join(other))
-                    print(f"{name} failed")
-                elif passed and took >= 1:
-                    print(f"  {name}: {took:.1f}s")
+                    print(f"{name} failed; scratch kept at {scratches[extra]} (for six hours)")
+                else:
+                    shutil.rmtree(scratches[extra], ignore_errors=True)
+                    if passed and took >= 1:
+                        print(f"  {name}: {took:.1f}s")
             else:
                 n, program_dir, log, scratch, record = started[extra]
                 passed = re.search(r"test result: ok\. 1 passed", text) is not None
@@ -1252,7 +1392,7 @@ def meaning():
     import textwrap
 
     deciding = [unescape, lines, events, touched, unplaced, Trace, Digests, Inputs, env_names,
-                Sources, Store.entries_dir, Store.find, Store.save, Rebuilds, Memo, is_wrela]
+                rust_code, Sources, Store.entries_dir, Store.find, Store.save, Rebuilds, Memo, is_wrela]
     constants = [CALLS, WRITE_FLAGS, LINE.pattern, UNFINISHED.pattern, RESUMED.pattern,
                  STRING.pattern, RESULT_PATH.pattern, BUILD_BEGIN, BUILD_END, ENV_NAMES,
                  ENV_PREFIXES, ENV_NOT, COMPILE_ONLY, NAMES_COMPILER.pattern, SCOPES]

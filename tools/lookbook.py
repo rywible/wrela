@@ -3,8 +3,8 @@
 rendered settled at 1080p, as a still on the native host and as a 10 s clip in Chrome (its move),
 into a directory.
 
-    tools/lookbook.py <out-dir> [--stills] [--view clay|silhouette] [--size WxH] [--jobs N]
-                      [shot-number ...]
+    tools/lookbook.py <out-dir> [--stills] [--capture] [--view clay|silhouette]
+                      [--size WxH] [--jobs N] [shot-number ...]
 
 The floor must be built (`wrela build examples/last-green`). A shot is chosen as a player would
 (L, its number, Enter); the still is the frame its move starts at (`lookbook::SETTLE` seconds in),
@@ -20,6 +20,13 @@ on a 4-core cloud machine lavapipe leaves cores idle in a still's load frames, a
 and 9 took 785 s at once, about 1400 s one by one. Each shot's numbers, the
 interest check's view at its eye (the build's `files/check/shots.json`), are printed beside it and saved as
 `check.json`.
+
+`--capture` takes each still in capture mode (F7, `Floor::capture` in examples/last-green/main.wrela):
+the floor does its load in a few frames, and the still is the frame it prints `still at frame N` on,
+a 16-frame resolve once the light round the eye is in, not the frame 5 s in. Shot 2 at 1080p on a
+4-core cloud machine: 104 s, not 460 s; shots 2, 7 and 9 at once: 180 s, each the same pixels as
+alone. (One process taking shot after shot was as fast for three, but a shot's still depended on
+the shots before it.)
 """
 
 import json, os, re, shutil, subprocess, sys, tempfile
@@ -30,6 +37,9 @@ BUILD = os.path.join(ROOT, "examples/last-green/build")
 HOST = os.path.join(ROOT, "target/release/wrela-host")
 HEADLESS = os.path.join(ROOT, "tools/headless.py")
 SETTLE_FRAMES = 300
+# A capture's frames at most, its load and its resolve: it stops before, at `STILL`.
+CAPTURE_FRAMES = 900
+STILL = "still at frame"
 MOVE_FRAMES = 600
 
 
@@ -55,14 +65,21 @@ def stem(i, name):
     return f"{i:02d}-{name.replace(' ', '-').replace(chr(39), '')}"
 
 
-def still(i, name, out, view="look", size="1920x1080", jobs=1):
+def still(i, name, out, view="look", size="1920x1080", jobs=1, capture=False):
+    """Shot `i`'s still: the frame 5 s in, or with `capture`, the frame that prints `STILL` (F7
+    first: it toggles capture mode)."""
+    events = keys(i, view)
+    if capture:
+        events = [{"frame": 1, "type": "key", "key": "F7"}] + events
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-        json.dump(keys(i, view), f)
+        json.dump(events, f)
         script = f.name
     png = os.path.join(out, stem(i, name) + ".png")
     env = dict(os.environ, WRELA_GPU_SHARED=str(max(2, jobs))) if jobs > 1 else None
-    r = subprocess.run([HOST, BUILD, "--frames", str(SETTLE_FRAMES + 1), "--size", size,
-                        "--input", script, "--png", png], capture_output=True, text=True, env=env)
+    frames = CAPTURE_FRAMES if capture else SETTLE_FRAMES + 1
+    cmd = [HOST, BUILD, "--frames", str(frames), "--size", size, "--input", script, "--png", png]
+    r = subprocess.run(cmd + (["--until", STILL] if capture else []), capture_output=True,
+                       text=True, env=env)
     os.unlink(script)
     if r.returncode != 0:
         sys.exit(f"shot {i} ({name}) failed:\n{r.stderr[-2000:]}")
@@ -92,7 +109,8 @@ def main():
     if not args:
         sys.exit(__doc__)
     stills_only = "--stills" in args
-    args = [a for a in args if a != "--stills"]
+    capture = "--capture" in args
+    args = [a for a in args if a not in ("--stills", "--capture")]
     view = "look"
     if "--view" in args:
         k = args.index("--view")
@@ -126,7 +144,7 @@ def main():
     # The stills at once, `jobs` at a time (each printed, in order, as it and those before it end);
     # then each clip in turn, as Chrome takes the GPU alone.
     pool = ThreadPoolExecutor(jobs)
-    pngs = [pool.submit(still, i, shots[i], out, view, size, jobs) for i in pick]
+    pngs = [pool.submit(still, i, shots[i], out, view, size, jobs, capture) for i in pick]
     for i, png in zip(pick, pngs):
         print(png.result(), flush=True)
         if i < len(views):
