@@ -20,12 +20,13 @@ export function clockImport(memory: WebAssembly.Memory): (ptr: number) => void {
 /** `wrela.print(ptr, len)`: the line at `ptr` (UTF-8), shown on the console now, prefixed so it's
  * found; it's returned for whoever else keeps it. Shared memory can't be decoded in place. */
 export function printed(memory: WebAssembly.Memory, ptr: number, len: number): string {
-  const line = PRINTED_UTF8.decode(new Uint8Array(memory.buffer, ptr >>> 0, len >>> 0).slice());
+  const line = (printedUtf8 ??= new TextDecoder()).decode(new Uint8Array(memory.buffer, ptr >>> 0, len >>> 0).slice());
   console.log(`wrela: ${line}`);
   return line;
 }
 
-const PRINTED_UTF8 = new TextDecoder();
+// AudioWorkletGlobalScope has no TextDecoder; a voice that never prints needs none.
+let printedUtf8: TextDecoder | null = null;
 
 /** `wrela.phase(ptr, len)`: the browser host times no phases (`std::time::phase`); a page is
  * profiled in the browser's own tools. */

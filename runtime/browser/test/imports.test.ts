@@ -1,5 +1,31 @@
 import { expect, spyOn, test } from "bun:test";
+import { HOST_FUNCTIONS, IMPORT_CLOCK, IMPORT_MEMORY, IMPORT_MODULE, IMPORT_PHASE, IMPORT_PRINT } from "../src/abi.gen.ts";
 import { clockImport, printed } from "../src/imports.ts";
+
+test("thread imports initialize without TextDecoder until a line is printed", async () => {
+  const bundle = await Bun.build({ entrypoints: [new URL("../src/imports.ts", import.meta.url).pathname], target: "browser", format: "esm" });
+  expect(bundle.success).toBe(true);
+  const path = `data:text/javascript;base64,${Buffer.from(await bundle.outputs[0]!.text()).toString("base64")}`;
+  const decoder = Object.getOwnPropertyDescriptor(globalThis, "TextDecoder")!;
+  try {
+    Reflect.deleteProperty(globalThis, "TextDecoder");
+    // A fresh bundle models AudioWorkletGlobalScope, where TextDecoder is absent. Bun caches
+    // file imports even with a URL query, which would hide a previously constructed decoder.
+    const fresh: typeof import("../src/imports.ts") = await import(path);
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    const imports = fresh.refusingImports(memory, "the audio thread", Error);
+    const host = imports[IMPORT_MODULE]!;
+    expect(host[IMPORT_MEMORY]).toBe(memory);
+    (host[IMPORT_CLOCK] as (ptr: number) => void)(8);
+    expect(Number.isFinite(new DataView(memory.buffer).getFloat64(8, true))).toBe(true);
+    expect(() => (host[IMPORT_PHASE] as (ptr: number, len: number) => void)(0, 0)).not.toThrow();
+    expect(() => (host[HOST_FUNCTIONS[0]![0]] as () => void)()).toThrow("the audio thread can't call the host");
+    // Printing still requires the decoder; unavailable platform functions are not masked.
+    expect(() => (host[IMPORT_PRINT] as (ptr: number, len: number) => void)(0, 0)).toThrow(ReferenceError);
+  } finally {
+    Object.defineProperty(globalThis, "TextDecoder", decoder);
+  }
+});
 
 for (const shared of [false, true]) {
   test(`the clock writes to ${shared ? "shared" : "unshared"} memory before and after growth`, () => {
