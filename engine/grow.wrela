@@ -1497,7 +1497,9 @@ fn live(l: mut Life, cx: Cx, f: Fields, year: i32) {
             p = 1.0
             cause = Cause::Browsed
         }
-        if grazed_bare(cx.land, c, year, cx.map.herd.arrives) && was < 4.0 && !t.pinned {
+        if grazed_bare(cx.land, c, year: year, arrives: cx.map.herd.arrives) &&
+            was < 4.0 &&
+            !t.pinned {
             p += 0.25
             cause = Cause::Browsed
         }

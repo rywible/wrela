@@ -791,13 +791,16 @@ fn an_events_opening_is_grazed_bare_for_its_decades() {
     var land = open_land(10.0)
     land.opened[0] = 100
     land.lawn[1] = true
-    assert(!grazed_bare(land, 0, 99, NEVER), "before the event")
-    assert(grazed_bare(land, 0, 100, NEVER), "in the event's year")
-    assert(grazed_bare(land, 0, 100 + place::RECENT - 1, NEVER), "in its last kept year")
-    assert(!grazed_bare(land, 0, 100 + place::RECENT, NEVER), "after its decades")
-    assert(!grazed_bare(land, 1, 50, 60), "a lawn before the herd comes")
-    assert(grazed_bare(land, 1, 60, 60), "a lawn once the herd has come")
-    assert(!grazed_bare(land, 2, 100, 0), "neither")
+    assert(!grazed_bare(land, 0, year: 99, arrives: NEVER), "before the event")
+    assert(grazed_bare(land, 0, year: 100, arrives: NEVER), "in the event's year")
+    assert(
+        grazed_bare(land, 0, year: 100 + place::RECENT - 1, arrives: NEVER),
+        "in its last kept year",
+    )
+    assert(!grazed_bare(land, 0, year: 100 + place::RECENT, arrives: NEVER), "after its decades")
+    assert(!grazed_bare(land, 1, year: 50, arrives: 60), "a lawn before the herd comes")
+    assert(grazed_bare(land, 1, year: 60, arrives: 60), "a lawn once the herd has come")
+    assert(!grazed_bare(land, 2, year: 100, arrives: 0), "neither")
 }
 
 /// Flat, open, dry land `half` metres each way of the origin, in 2 m cells.
