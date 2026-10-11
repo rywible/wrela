@@ -89,25 +89,18 @@ pub fn great_tree() -> Plant {
         p.clump(right + vec3(0.0, 0.5, 0.0), radius: pick(51, i, lo: 1.8, hi: 2.4))
         tips[i] = tip
     }
-    // The crown: six masses, one raised over each limb's end and one over the trunk's top, each a
-    // large core with smaller clumps bulging from its top and sides, few from below: lit masses
-    // over shaded undersides, gaps of sky between them. (M6's lookdev pass 1: 34 clumps spread
-    // evenly over the dome read as one even blob of leaves.)
-    p.blend = 0.75
-    for m in 0..6 {
-        let centre = if m == 5 { top + vec3(0.0, 7.0, 0.0) } else { tips[m] + vec3(0.0, 0.8, 0.0) }
-        p.clump(centre, radius: pick(45, m, lo: 3.3, hi: 3.9))
-        for i in 0..4 {
-            let k = m * 4 + i
-            let a = TAU * rand(43, k)
-            let up = pick(41, k, lo: -0.2, hi: 0.9)
-            let out = sqrt(max(1.0 - up * up, 0.0))
-            let dir = vec3(out * cos(a), up, out * sin(a))
-            p.clump(
-                centre + dir * pick(49, k, lo: 2.2, hi: 3.0),
-                radius: pick(47, k, lo: 1.9, hi: 2.7),
-            )
+    // The crown: a mass of clumps round each limb's end, raised over it, and one over the
+    // trunk's top; gaps of sky between the masses, their undersides open.
+    for i in 0..34 {
+        let mass = i % 6
+        let centre = if mass == 5 { top + vec3(0.0, 7.0, 0.0) } else {
+            tips[mass] + vec3(0.0, 0.8, 0.0)
         }
+        let spread = if mass == 5 { 2.6 } else { 2.2 }
+        let a = TAU * rand(43, i)
+        let r = spread * sqrt(rand(41, i))
+        let at = centre + vec3(r * cos(a), pick(45, i, lo: -0.6, hi: 1.4), r * sin(a))
+        p.clump(at, radius: pick(47, i, lo: 2.1, hi: 3.1))
     }
     p
 }
