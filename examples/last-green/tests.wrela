@@ -1236,6 +1236,20 @@ fn the_floors_sound_changes_as_smoothly_as_the_place() {
     }
 }
 
+/// The load stands the built things nearest the eye first: from a ring's middle, its own
+/// centre stone; from beside the tower, the tower.
+@test
+fn the_nearest_built_thing_is_realized_first() {
+    let m = map::map()
+    let built = blockouts::built(m)
+    for k in m.sites {
+        if k.feature == Feature::Ring || k.feature == Feature::Tower {
+            let b = built[blockouts::nearest(built, k.at + vec2(0.3, 0.0))]
+            assert(length(blockouts::place(b) - k.at) < 0.5, f"{k.name}: not its own middle first")
+        }
+    }
+}
+
 /// A water source's slot is let go only when the voice will hear it go: while the ring is full
 /// (a voice not yet running, as in a browser before the player's first input), the slot keeps
 /// its source, and lets it go on the first frame whose release gets in.
@@ -1372,4 +1386,38 @@ fn every_kind_has_its_line_and_the_burnt_snags_differ() {
             )
         }
     }
+}
+
+/// The fight on the floor itself (route.md §9, `encounter`): a travel to the wolf (G 62 Enter)
+/// puts the player by the ring, near enough the disc to wake it; within 11 s the wolf has come
+/// out to fight, within 4 m, on the floor's own ground, trunks and stones.
+@test
+fn the_wolf_comes_out_to_fight_at_the_ring() {
+    var w = world::spawn_world()
+    let key = |k: std::input::Key| std::input::Event::KeyDown {
+        key: k,
+        repeat: false,
+        mods: std::input::Mods {},
+    }
+    var nearest = 1.0e9
+    for k in 0..u32(11 * 60) {
+        var records: Vec<std::input::Event> = Vec::new()
+        if k == 0 {
+            for c in [std::input::Key::G, std::input::Key::Digit6, std::input::Key::Digit2] {
+                records.push(key(c))
+            }
+            records.push(key(std::input::Key::Enter))
+        }
+        world::tick(
+            mut w,
+            engine::run::TickInput { tick: k, dt: 1.0 / 60.0, records, answers: Vec::new() },
+        )
+        let apart = length(w.fight.fight.wolf.pos() - w.player.at.world())
+        nearest = min(nearest, apart)
+        if k % 60 == 0 {
+            print(f"{f32(k) / 60.0} s: {encounter::report(w.fight)}, {apart} m apart")
+        }
+    }
+    assert(w.fight.awake, "the wolf never woke")
+    assert(nearest < 4.0, f"the wolf came no nearer than {nearest} m")
 }

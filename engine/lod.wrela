@@ -123,7 +123,10 @@ pub fn anchor(cam: Camera, at: vec3, top: f32, scale: f32) -> vec2 {
     // Each cycle takes the 16 places in another order (`cycle_shift`): in one order, a pixel
     // was kept at the same frames of the jitter's cycle each time, so it was kept with the
     // same few of the jitter's offsets, and a settled still kept a fixed pattern of stripes.
-    let k = (cam.frame * 7 + cycle_shift(cam.frame / 16)) % 16
+    // On a still's grid the place and the jitter's cell are one (`view::jitter_of`).
+    let k = if cam.grid != 0 { cam.frame % 16 } else {
+        (cam.frame * 7 + cycle_shift(cam.frame / 16)) % 16
+    }
     let step = vec2(f32(k % 4), f32(k / 4))
     let middle = at + vec3(0.0, top * 0.5 * scale, 0.0)
     let ahead = dot(middle - cam.eye, cam.forward) > cam.near
@@ -219,4 +222,47 @@ pub fn ways(level: f32, faint: f32) -> (bool, u32, u32) {
         return (true, upper, upper)
     }
     (true, lower, upper)
+}
+
+/// On a still's grid (`view::jitter_of`), 16 frames in a row keep each pixel of a share at
+/// exactly its share of the frames, and the jitter's cells of those frames spread over the
+/// pixel: their mean is within an eighth of a pixel of its middle (a 256-frame mean's, which
+/// meets every cell at every place). In play's order they were not tied: this is the still's.
+@test
+fn a_stills_sixteen_frames_keep_each_share_spread_over_the_pixel() {
+    let at = vec3(3.0, 0.0, 20.0)
+    for n in [4, 5, 8, 12] {
+        let share = f32(n) / 16.0
+        for q in 0..16 {
+            let pixel = vec2(f32(400 + q % 4), f32(300 + q / 4)) + vec2(0.5)
+            var kept = 0
+            var sum = vec2(0.0)
+            var last = view::blank()
+            for f in 37..53 {
+                let cam = view::camera(
+                    vec3(0.0, 1.7, 0.0),
+                    at,
+                    0.8,
+                    width: 960,
+                    height: 540,
+                    frame: u32(f),
+                    time: 0.0,
+                    last: last,
+                    grid: true,
+                )
+                last = cam
+                let k = packed(vec4(0.0, share, anchor(cam, at, top: 10.0, scale: 1.0)))
+                if keeps_packed(k, pixel) {
+                    kept += 1
+                    sum += view::jitter_of(u32(f), grid: true)
+                }
+            }
+            assert(kept == n, f"pixel {q}: kept {kept} of 16 frames, its share {n}")
+            let mean = sum / f32(kept)
+            assert(
+                abs(mean.x) <= 0.126 && abs(mean.y) <= 0.126,
+                f"pixel {q}, share {n}/16: its kept frames' jitter is {mean} from the middle",
+            )
+        }
+    }
 }
