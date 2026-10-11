@@ -453,7 +453,7 @@ fn to_build() -> Vec<blockouts::Built> {
     var out = blockouts::built(map::map())
     var seed = 900
     for st in wildwood::egg_stones() {
-        out.push(blockouts::Built::Slab { at: st.xy, half: vec3(0.5, st.w * 0.5, 0.28), seed })
+        out.push(blockouts::slab_at(st.xy, vec3(0.5, st.w * 0.5, 0.28), seed))
         seed += 1
     }
     out
