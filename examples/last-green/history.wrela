@@ -6,7 +6,7 @@
 
 use engine::bake::{bake, unbake}
 use engine::footing::{Obstacles, obstacles_of, walkable_of}
-use engine::grow::{BAKE, Grain, Grid, History, Land, PREVIEW, Start, simulate}
+use engine::grow::{BAKE, Grain, Grid, History, Land, PREVIEW, Start, simulate, world}
 use peoples::{Culture, Use, left_by, settle, told}
 use engine::interest::{Evidence, FULL, Sight, check, nearest_first, report, views_bytes, walk_bytes}
 use engine::place::{Kind, Map, TILE, tile_of}
@@ -68,7 +68,7 @@ pub fn past(land: Land, year: i32) -> Start {
             p.last[c] = u8(u32(Use::Wild))
         }
     }
-    let s = left_by(p, land, species::habits(), elves, year)
+    let s = left_by(p, land, species::habits(), elves, year, world(m))
     print(told(p, s, land))
     s
 }

@@ -468,8 +468,16 @@ pub const RECLAIMED: i32 = 60
 /// from: each cell as its last use left it, if they used it in the `RECLAIMED` years before
 /// (fields tilled, pasture grazed, wood cut, settlements built); and in the pasture, the old
 /// trees they kept, open-grown oak (beech where the soil is deep and dry), one in each
-/// `culture.veteran` of it, but where the history keeps the ground open.
-pub fn left_by(p: Peopled, land: Land, habits: [Habit], culture: Culture, year: i32) -> Start {
+/// `culture.veteran` of it, but where the history keeps the ground open; their draws mixed with
+/// the world's `seed` (`grow::world`).
+pub fn left_by(
+    p: Peopled,
+    land: Land,
+    habits: [Habit],
+    culture: Culture,
+    year: i32,
+    seed: u32,
+) -> Start {
     let g = land.grid
     var left: Vec<u8> = Vec::filled(g.cells(), u8(u32(Left::Wild)))
     var standing: Vec<Tree> = Vec::new()
@@ -498,7 +506,7 @@ pub fn left_by(p: Peopled, land: Land, habits: [Habit], culture: Culture, year: 
             continue
         }
         let ij = g.ij(at)
-        let n = hash2u(ij.x, ij.y, 7121)
+        let n = hash2u(ij.x, ij.y, 7121 ^ seed)
         if rand(n, 0) >= chance {
             continue
         }
