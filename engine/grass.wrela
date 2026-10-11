@@ -269,6 +269,7 @@ pub fn place(
             cloud,
             linear,
             grounds,
+            stones,
             flora,
             mut blades,
             mut flowers,
@@ -926,6 +927,7 @@ fn under_plant(
     cloud: Texture<Rgba16Float>,
     linear: Sampler,
     grounds: [f32],
+    stones: [vec4],
     flora: Flora,
     blades: mut Append<Blade>,
     flowers: mut Append<Flower>,
@@ -987,6 +989,13 @@ fn under_plant(
         let away = w - crown
         facing = atan2(away.y, away.x)
         xz = crown + normalize(away + vec2(1.0e-4)) * 0.06 - keyed
+        // The cell was outside every stone; its crown or rosette can move the root inside one.
+        for st in stones {
+            let past = length(xz - st.xy) - st.z
+            if past < 0.0 {
+                return
+            }
+        }
         y = terrain::height_at(levels, texels, xz)
     }
     let root = vec3(xz.x, y + 0.05, xz.y)
