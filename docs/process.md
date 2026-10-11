@@ -66,6 +66,65 @@ with the latest `main`, since two branches that each pass the gate can still bre
 Not used, by decision: Suno or any music model (Ryan, 2026-10-06, #44), and any image, texture,
 3D, voice or video generator. No asset is made by a model that was trained to output art.
 
+## CPU agent workflow survey, 2026-10-11
+
+Ryan asked for a broad pass over agent latency without a GPU, on machines with varying CPU
+counts. Codex and parallel agents inspected discovery and editing, builds, tests, simulation,
+studio inspection, reference fitting, audio, captures, browser driving and the check runners.
+The development container has a two-CPU quota despite an affinity mask of three CPUs; scheduling
+uses the quota and affinity rather than the host's reported processor count.
+
+| Workflow | Work removed or bounded |
+|---|---|
+| Source discovery and edits | `query` already batches queries in one check, `doc` parses without compiling, and source edits use checked plans. These paths keep their existing behavior. |
+| Builds and state tests | Existing constant and native-code caches stay. CPU frame/tick tests skip GPU optimization and shader/browser output, retaining language diagnostics, CPU debug checks and pipeline command metadata. GPU tests and programs that fetch generated build files keep the full path. |
+| Simulation diagnosis | `trace` and `bisect --no-gpu` can inspect CPU state without software rasterization; `--workers` selects an explicit worker count. State which needs GPU feedback still needs shader execution. |
+| Studio inspection and comparison | Twelve synchronous field actions run their own exports on the CPU without an unseen frame or shader compilation. Invalid actions fail before a build. PNGs and GPU-dependent actions still render. Comparisons batch consecutive field view controls into their final image; field edits and map actions still settle normally. |
+| Audio | Reuse FFT plans, windows and scratch buffers; retain fitted decay curves across grid candidates; reject non-peaks before median calculation. Numbers and sheets share one build but keep separate program instances. Listening excerpts touch only fade boundaries and avoid full-track copies. |
+| Reference fitting | Independent part fits use a bounded queue and return in original order, instead of starting a thread per part in every round. |
+| Stills and motion | Reuse screen readback buffers, use fast lossless PNG compression, and omit discarded pre-roll captures while rendering the same history. Software stills divide available CPUs between concurrent shots; browser and FFmpeg workers use available CPUs too. |
+| Browser and local server | Reap orphaned Chrome children on Linux and reduce server shutdown polling latency from 500 ms to 50 ms. |
+| Check runners | Reuse Python workers; bound memo builds and quick/slow test processes by the CPU quota. Only compress WGSL when a compressed budget applies or a failure needs its compressed size. |
+
+Measured locally against a clean build of `7f49462`, with the release tools on two CPU workers:
+
+| Work | Before | After | Evidence |
+|---|---:|---:|---|
+| Wolf studio probe, cold native cache | 9.54 s | 4.60 s | Same JSON; Mesa's shader cache shared |
+| Wolf studio parts, warm native cache | 4.53 s | 2.34 s | Same JSON |
+| Sphere studio probe, warm | 2.06 s | 0.61 s | Same JSON; all twelve actions compared |
+| 120 first-light frames at 640×360, all PNGs | 1.13 s | 0.37 s | Three-run medians; same decoded pixels and command hash |
+| Same render, keep only frames 90–119 | 1.13 s | 0.17 s | Same retained pixels; 121 files become 31 |
+| 60-frame test-floor state trace | 1.53 s | 0.34 s | Two-run medians; `--no-gpu` gives the same 61 CSV lines |
+| Eight seconds of audio partial analysis | 0.53 s | 0.15 s | Three-run medians; same JSON |
+| Thirty seconds of click analysis | 0.084 s | 0.0084 s | Three-run medians; same JSON |
+| Eight 20-second listening excerpts | 2.78 s | 0.071 s | Same samples |
+| 56 check/memo/resource tests | 6.87 s | 1.60 s | Same tests pass |
+| Wolf / grazer 120-frame CPU tests | 2.54 / 3.11 s | 2.18 / 2.77 s | Three alternating runs; same results |
+
+The faster PNG encoder trades file size for CPU time: this capture's files grew 35%, with no
+pixel change. Audio numbers and sheets took 1.4× and 1.7× less time in fresh one-second piano
+runs; their JSON, the sheet PNG and the rendered WAV matched exactly. WAV synthesis itself did
+not get faster. Shader and simulation arithmetic stay unchanged; the runtime frame-cost changes
+apply to screen capture. These are local workflow measurements, not reference-GPU timing claims.
+
+Separately, batching comparison view controls on top of the other changes cut default-size
+`beside` from 3.44 to 2.16 s, `variants` from 4.67 to 3.19 s, and `sweep` from 5.68 to 3.78 s.
+All three commands matched every decoded pixel and their normalized JSON at 64, 896 and 960
+pixels; the largest size also displays the lens's UI panel. Raw local timings, environment
+details and validation logs are kept in `target/cpu-bench`.
+
+Final validation passed 607 Rust tests, 119 Python tooling tests, formatting, Clippy, the browser
+runtime checks and all 211 shader size checks. Another focused run passed 18 regressions,
+including the relevant long audio and studio image tests. Worker scheduling was exercised at
+1, 2, 4 and larger simulated CPU counts; wall-clock measurements used this two-CPU container.
+The complete final gate still took 235 s here, with every gate test run because the optional
+strace/mount-namespace test memo was unavailable.
+
+This pass does not turn full-resolution software rendering, long playthroughs, cold Rust builds,
+or uncached world bakes into constant-time operations. Image checks retain their resolution and
+rendered history, and hardware timing measurements still require the reference GPU.
+
 ## The references
 
 ### The rules
