@@ -257,6 +257,8 @@ impl Ui {
                         self.typed.push(char)
                     }
                 },
+                // A pad doesn't drive the widgets.
+                Event::PadButton { .. } | Event::PadAxis { .. } => {},
             }
         }
         if self.released && self.payload != 0 {

@@ -32,6 +32,7 @@ flowchart LR
 | Language, compiler, engine, runtime, studio | Reviews, directs, merges | Writes the code and its tests |
 | Art direction | Picked the look (#50) and judges every art result | Builds the looks in code, judges stills against a rubric, proposes changes |
 | Creatures and the world | Judges each result (blind where we can) | Authors them as fields, in wrela code |
+| Characters' motion and combat | Designed the climber (a cape all the way round, a mask, a great sword moved by will, a blink for a dodge); judges how the fight plays, with a pad | Keys the moves and their frame data as code (the sword's path, the body's form), writes the fight's sim and its tests, and plays it with a test bot |
 | Music and sound | Judges by ear; ruled out music models (#44) | Write the piano synthesizer, the scores and performances as code, and the tools |
 | Story and lore | Writes the overarching story and its ending | Drafts each floor's lore within what Ryan has written; Ryan reviews it |
 | Translation (planned) | | Translates; players review |
@@ -41,7 +42,10 @@ flowchart LR
 Every commit on `main` so far (50 of 50 on 2026-10-10) was written with Claude Code and carries
 a `Co-Authored-By: Claude` line; Ryan commits or merges them. Agents also merge their own
 branches with Ryan's standing permission, after `tools/check.sh` passes. Since 2026-10-11 every
-branch starts from `main` and squash-merges back into it; milestone branches are retired.
+branch starts from `main` and squash-merges back into it once its own change passes the gate,
+without first taking unrelated updates from `main`; milestone branches are retired. Changes that
+only make the checks faster merge without the gate, and the long tier that runs on `main` every
+6 hours is their safety net.
 
 ## Tools and models
 
@@ -52,6 +56,8 @@ branch starts from `main` and squash-merges back into it; milestone branches are
 | Claude subagents with no context | Blind raters in the lookdev loop: they see only the before and after stills and the anchors |
 | Claude projects (claude.ai) | Run several agent threads at once (lookdev items, fixes, rendering setup), with one coordinator |
 | OpenAI Codex (GPT-6) and parallel subagents | Since 2026-10-10, audit performance across the compiler, runtimes, engine, studio, UI and tools; implement behavior-preserving improvements and run focused tests and repository gates. Ryan requested a daily sweep from fresh `main` at 02:00 America/Denver. |
+| Mesa's lavapipe (Vulkan on the CPU), MIT, patched (`tools/cloud/`) | The GPU of a cloud machine, which has none (`tools/cloud.sh`) |
+| strace, LGPL; Linux mount namespaces (`unshare`) | The gate's memory of slow tests (`tools/memo.py`): what each slow test reads, so a pass is reused only while all of it is unchanged, or, for a test that builds a program, while its builds make the same files. The ideas are build systems' (Bazel's action cache, ccache's manifests, tup's and fabricate's traced dependencies, Shake's and Bazel's early cutoff) |
 
 Not used, by decision: Suno or any music model (Ryan, 2026-10-06, #44), and any image, texture,
 3D, voice or video generator. No asset is made by a model that was trained to output art.
@@ -86,6 +92,9 @@ Not used, by decision: Suno or any music model (Ryan, 2026-10-06, #44), and any 
 | Inter and JetBrains Mono fonts (`ui/fonts/`) | SIL Open Font License 1.1, licence texts beside them | The studio's interface text. |
 | musl's libm; ARM's optimized-routines | MIT | `compiler/std/math.wrela` follows their algorithms and coefficients (credited in the file). |
 | Steven Worley, "A Cellular Texture Basis Function" (SIGGRAPH 1996) | A published algorithm; no code taken | Bark's plates (`engine/plant.wrela`, `plates_at`): the nearest and second-nearest of jittered cell points, written from the paper's idea. |
+| The soil production function: Heimsath, Dietrich, Nishiizumi and Finkel, "The soil production function and landscape equilibrium", *Nature* 388 (1997) | A published finding; we use its idea, not its text or data | `engine::grow::soil`: rock weathers to soil fastest under a thin soil and creep moves it downhill, so crests are thin and hollows deep (credited in the file). |
+| W3C, Gamepad API, its "standard" mapping | A W3C specification; no code taken | The browser host reads pads by it (`runtime/browser/src/listen.ts`), and wrela's pad buttons and axes take its order and names (south, east, west, north, the shoulders and triggers, the sticks, the d-pad). |
+| Closest points of two segments (as in Christer Ericson, *Real-Time Collision Detection*, 2005, §5.1.9) | A standard method; no code taken | The climber's fight (`examples/climber/fight.wrela`): the sword's edge, swept between ticks, is tested against capsules on the wolf's body, and the wolf's bite against a capsule up the climber. |
 
 ### Style influences (named, not traced)
 

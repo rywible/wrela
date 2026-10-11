@@ -8,9 +8,10 @@
 // sightline's cone grows above it.
 //
 // What's left in the present is the floor: its decisions (which trees stand where, of what kind,
-// how they died; the trails; the water's courses; what the land remembers) are baked when the game is built (`bake`), and
-// their consequences (light, wetness, soil, thorn, litter) are worked out where a tile streams in
-// (`consequences`).
+// how they died; the trails; the water's courses; what the land remembers) are baked when the
+// game is built (`bake`), and their consequences (light, wetness, soil, thorn, litter) are
+// worked out where a tile streams in (`consequences`). The soil itself (`soil`) is the ground's:
+// from its shape, its rock and its water.
 //
 // The species are data (`Habit`), the floor's; so is the grain: 2 m cells and 2-year steps for the
 // bake, 4 m cells and 10-year steps for the preview an editor shows after each edit.
@@ -240,7 +241,7 @@ fn blur_strip(l: mut Line, a: [f32], nx: u32, nz: u32, r: i32) {
 pub const DI = [-1, 0, 1, -1, 1, -1, 0, 1]
 pub const DJ = [-1, -1, -1, 0, 0, 1, 1, 1]
 
-// ---- the ground --------------------------------------------------------------------------------
+// ---- the ground ---------------------------------------------------------------------------------
 
 /// The floor's ground as the history reads it: its height, and where the floor ends (past its
 /// edge the land falls away, and nothing of the history grows). The same field the terrain draws.
@@ -254,7 +255,7 @@ pub trait Ground: Copy {
     fn rock(self, p: vec2) -> f32
 }
 
-// ---- species --------------------------------------------------------------------------------------
+// ---- species ------------------------------------------------------------------------------------
 
 /// How a species lives: the floor's data.
 pub struct Habit: Copy {
@@ -306,7 +307,7 @@ fn takes(h: Habit, wet: f32, thin: f32) -> f32 {
     max(0.03, h.wet * w + h.thin * thin + h.deep * deep * deep + (1.0 - h.wet - h.thin - h.deep))
 }
 
-// ---- trees ----------------------------------------------------------------------------------------
+// ---- trees --------------------------------------------------------------------------------------
 
 /// A tree's state.
 pub enum State: Copy + Eq + Fieldless {
@@ -514,7 +515,7 @@ fn measure(need: mut Need, trees: [Tree], b: Bins) {
     need.push = push
 }
 
-// ---- the land -------------------------------------------------------------------------------------
+// ---- the land -----------------------------------------------------------------------------------
 
 /// The grain of a history: its cells (m), its step (years) and its herd's cells (m).
 pub struct Grain: Copy {
@@ -552,6 +553,8 @@ pub struct Land {
     pub habitable: Vec<bool>,
     pub wet: Vec<f32>,
     pub thin: Vec<f32>,
+    /// The soil at each cell (`soil`).
+    pub soil: Vec<Soil>,
     pub exposed: Vec<f32>,
     pub cap: Vec<f32>,
     pub capped_by: Vec<u32>,
@@ -654,6 +657,99 @@ fn water(g: Grid, heights: [f32]) -> (Vec<f32>, Vec<f32>) {
     (g.blur(wet, 1), acc)
 }
 
+// ---- the soil -----------------------------------------------------------------------------------
+
+/// What a place's soil is. Rock: bare, or a skin over it. Thin: stony, on crests and steep
+/// slopes. Loam: the brown earth of the gentle slopes. Colluvium: deep, crept down into the
+/// hollows and the slopes' feet. Alluvium: laid by water on the valley floors. Gley: waterlogged,
+/// grey. Peat: so wet that what dies there doesn't rot.
+pub enum SoilKind: Copy + Eq + Fieldless {
+    Rock,
+    Thin,
+    Loam,
+    Colluvium,
+    Alluvium,
+    Gley,
+    Peat,
+}
+
+/// A place's soil: its kind, its depth to rock (m), and how well crops would do in it (0 to 1).
+pub struct Soil: Copy {
+    pub kind: SoilKind,
+    pub depth: f32,
+    pub fertile: f32,
+}
+
+/// How far round a place its soil reads the ground's shape (m): the mean of the curvatures at
+/// both, so that a bump smaller than the first doesn't make a hollow; the slope at the first.
+pub const SOIL_SPANS = [12.0, 32.0]
+
+/// The soil at a place: the ground's curvature there (`lap`, the Laplacian of its height, 1/m;
+/// positive in a hollow), its slope, how much of it is rock, and its wetness (`water`'s).
+///
+/// Weathering makes soil from rock, fastest under a thin soil and slower as the soil deepens
+/// (Heimsath and others, 1997); creep moves it downhill in proportion to the slope. Where the
+/// ground is convex the two balance at a depth that is thinner the sharper the crest; where it is
+/// concave the soil gathers (colluvium). Past the angle a soil can hold (about 30°), it slides
+/// off. The valley floors, wet from their catchment and nearly level, hold what the water laid
+/// (alluvium); wetter still, the soil is waterlogged (gley), then peat.
+pub fn soil(lap: f32, slope: f32, rock: f32, wet: f32) -> Soil {
+    var depth = if lap < 0.0 {
+        clamp(0.5 * log(CREST / max(-lap, 1.0e-4)), 0.05, 1.2)
+    } else {
+        min(1.2 + 150.0 * lap, 2.5)
+    }
+    depth *= (1.0 - smoothstep(0.6, 1.0, slope)) * (1.0 - rock)
+    let kind = if rock > 0.6 || depth < 0.08 {
+        SoilKind::Rock
+    } else if wet > 0.9 && slope < 0.05 {
+        SoilKind::Peat
+    } else if wet > 0.75 {
+        SoilKind::Gley
+    } else if wet > 0.6 && slope < 0.06 && depth > 0.8 {
+        SoilKind::Alluvium
+    } else if lap > 0.0025 && depth > 1.0 {
+        SoilKind::Colluvium
+    } else if depth < 0.35 {
+        SoilKind::Thin
+    } else {
+        SoilKind::Loam
+    }
+    let base = match kind {
+        SoilKind::Rock => 0.0,
+        SoilKind::Thin => 0.25,
+        SoilKind::Loam => 0.6,
+        SoilKind::Colluvium => 0.75,
+        SoilKind::Alluvium => 0.95,
+        SoilKind::Gley => 0.35,
+        SoilKind::Peat => 0.15,
+    }
+    let fertile = base * smoothstep(0.05, 0.6, depth) * (1.0 - 0.5 * smoothstep(0.3, 0.7, slope))
+    Soil { kind, depth, fertile }
+}
+
+/// `soil` at `p` on `ground`, with its wetness `wet` there.
+pub fn soil_of<G: Ground>(ground: G, p: vec2, wet: f32) -> Soil {
+    let h = ground.height(p.x, p.y)
+    var lap = 0.0
+    var slope = 0.0
+    for k in 0..2 {
+        let d = SOIL_SPANS[k]
+        let e = ground.height(p.x + d, p.y)
+        let w = ground.height(p.x - d, p.y)
+        let n = ground.height(p.x, p.y - d)
+        let s = ground.height(p.x, p.y + d)
+        lap += 0.5 * (e + w + n + s - 4.0 * h) / (d * d)
+        if k == 0 {
+            slope = length(vec2(e - w, n - s)) / (2.0 * d)
+        }
+    }
+    soil(lap, slope, ground.rock(p), wet)
+}
+
+/// The crest's curvature (1/m) under which weathering and creep balance at a soil 0.3 m deep.
+const CREST: f32 = 0.012
+
 /// The tallest a tree may grow at `p` for the map's sightlines to hold: below each `Seen`
 /// relation's cone that `p` is in, by `SIGHT_CLEAR` (and a `Hidden` one's from where it's
 /// revealed). The cone runs from a player's eye at the relation's place to its site, a few metres
@@ -749,6 +845,31 @@ pub fn survey<G: Ground>(ground: G, m: Map, g: Grid) -> Land {
         thin[c] = max(max(smoothstep(0.15, 0.8, convex), crest) * (1.0 - wet[c]), rock[c])
     }
     let thin = g.blur(thin, 1)
+    // The soil: from the ground's shape at `SOIL_SPANS`, its rock and its water.
+    var soils: Vec<Soil> = Vec::with_capacity(nn)
+    for c in 0..nn {
+        let i = i32(c % g.nx)
+        let j = i32(c / g.nx)
+        var lap = 0.0
+        for d in SOIL_SPANS {
+            let r = i32(max(round(d / g.cell), 1.0))
+            let span = f32(r) * g.cell
+            let around = heights[g.index(i + r, j)] +
+                heights[g.index(i - r, j)] +
+                heights[g.index(i, j - r)] +
+                heights[g.index(i, j + r)]
+            lap += 0.5 * (around - 4.0 * heights[c]) / (span * span)
+        }
+        let r = i32(max(round(SOIL_SPANS[0] / g.cell), 1.0))
+        let slope = length(
+            vec2(
+                heights[g.index(i + r, j)] - heights[g.index(i - r, j)],
+                heights[g.index(i, j - r)] - heights[g.index(i, j + r)],
+            ),
+        ) /
+            (2.0 * f32(r) * g.cell)
+        soils.push(soil(lap, slope, rock[c], wet[c]))
+    }
     let lines = sightlines(ground, m)
     // Each route's box, a route's width and 30 m more round it: a cell outside it is far from it.
     var boxes: Vec<vec4> = Vec::new()
@@ -811,6 +932,7 @@ pub fn survey<G: Ground>(ground: G, m: Map, g: Grid) -> Land {
         habitable,
         wet,
         thin,
+        soil: soils,
         exposed,
         cap: held,
         capped_by: by,
@@ -960,7 +1082,7 @@ fn people_keep(m: Map, land: Land, c: u32, year: i32) -> bool {
     }
 }
 
-// ---- what does change: light, thorn, browsing, trampling, seed --------------------------------------
+// ---- what does change: light, thorn, browsing, trampling, seed ----------------------------------
 
 /// What changes year by year over the grid: light at the ground, thorn cover, browsing,
 /// trampling (the herd's trails), freshly bared soil, each species' seed (end to end), and the
@@ -1173,7 +1295,7 @@ fn seed_rain(g: Grid, trees: [Tree], habits: [Habit], fields: mut Fields, year: 
     }
 }
 
-// ---- recruiting and growing ----------------------------------------------------------------------
+// ---- recruiting and growing ---------------------------------------------------------------------
 
 /// The saplings one row of cells recruits this year (`recruit`'s work, a row at a time).
 struct Row {
@@ -1541,7 +1663,7 @@ fn tear(g: Grid, bare: mut Vec<f32>, p: vec2, r: f32) {
     }
 }
 
-// ---- the land's memory ----------------------------------------------------------------------------
+// ---- the land's memory --------------------------------------------------------------------------
 
 /// What last disturbed a place: one of the map's events (a fire, a gale, a great tree's fall).
 /// The wind's small gaps each decade, the wood's ordinary turnover, leave no mark: the canopy
@@ -1616,7 +1738,7 @@ impl Memories {
     }
 }
 
-// ---- the herd -------------------------------------------------------------------------------------
+// ---- the herd -----------------------------------------------------------------------------------
 
 /// The herd's marks on its grid: the wear of its hooves and the trails' pull (the wear, blurred,
 /// its gradient), where it grazes and rests; and what it walks round.
@@ -1926,7 +2048,7 @@ fn browsing(herd: Herd, land: Land, f: mut Fields) {
     f.trodden = take trod
 }
 
-// ---- events -----------------------------------------------------------------------------------------
+// ---- events -------------------------------------------------------------------------------------
 
 /// The highest crown over each cell of `g` (m): each living tree's crown, its whole reach.
 fn tops(trees: [Tree], g: Grid) -> Vec<f32> {
@@ -2073,10 +2195,10 @@ const LATER_GUSTS: f32 = 0.5
 /// A fire (`EventKind::Fire`) in `year` over `reach` round `at`, lit on its upwind side (`UPWIND`
 /// of `reach` from `at`), so that its head runs through the middle. It runs over the land as fast
 /// as its fuel, dryness, slope and the wind let it (uphill and with the wind, faster), no further
-/// than `reach` from `at` (the weather that ends it), round what won't burn: open water, wet hollows, the trodden
-/// trails, rock. It burns each place as hot as its fuel and the way it runs there make it: hot
-/// running with the wind through dead wood and resinous crowns, which it climbs into (a crown
-/// fire); cool where it backs into the wind. A ground fire kills the young, and the trees whose
+/// than `reach` from `at` (the weather that ends it), round what won't burn: open water, wet
+/// hollows, the trodden trails, rock. It burns each place as hot as its fuel and the way it runs
+/// there make it: hot running with the wind through dead wood and resinous crowns, which it
+/// climbs into (a crown fire); cool where it backs into the wind. A ground fire kills the young, and the trees whose
 /// bark is too thin for its heat; a thick-barked trunk lives through it, scarred (its `cause` the
 /// fire, its `died` the fire's year). The land remembers how hot it burnt each place.
 fn fire(trees: mut Vec<Tree>, cx: Cx, f: mut Fields, at: vec2, reach: f32, year: i32, ei: u32) {
@@ -2380,7 +2502,7 @@ fn matches_gaps(e: Event) -> bool {
     }
 }
 
-// ---- water -----------------------------------------------------------------------------------------
+// ---- water --------------------------------------------------------------------------------------
 
 /// The streams: from each spring, and from each mere's outlet (the lowest point of its rim), down
 /// the land to where the water falls off it (a fall of the map's, or past the plateau's edge),
@@ -2628,7 +2750,7 @@ fn water_courses(land: mut Land, ss: [Stream]) {
     }
 }
 
-// ---- the history ------------------------------------------------------------------------------------
+// ---- the history --------------------------------------------------------------------------------
 
 /// What a history leaves: its decisions (the trees, the trails' wear on the herd's grid, the
 /// streams), the land it surveyed, and its consequences on its grid (light, litter, thorn), and
@@ -2899,4 +3021,39 @@ pub fn simulate<G: Ground>(
         memory: take f.memory,
         log,
     }
+}
+
+// ---- tests --------------------------------------------------------------------------------------
+
+/// The soil is thin on a sharp crest and deeper on a gentle one, deeper again on the flat, and
+/// deepest in a hollow; it slides off a steep slope; the valley floor's is laid by water, and
+/// the wettest ground's is waterlogged, then peat; rock has none.
+@test
+fn the_soil_is_thin_on_crests_and_deep_in_hollows() {
+    let sharp = soil(lap: -0.008, slope: 0.1, rock: 0.0, wet: 0.3)
+    let gentle = soil(lap: -0.004, slope: 0.1, rock: 0.0, wet: 0.3)
+    let flat = soil(lap: 0.0, slope: 0.02, rock: 0.0, wet: 0.3)
+    let hollow = soil(lap: 0.006, slope: 0.1, rock: 0.0, wet: 0.3)
+    assert(sharp.kind == SoilKind::Thin, f"a sharp crest's soil is {u32(sharp.kind)}")
+    assert(sharp.depth < gentle.depth && gentle.depth < flat.depth, "crests no thinner")
+    assert(flat.depth < hollow.depth && hollow.kind == SoilKind::Colluvium, "no colluvium")
+    assert(
+        soil(lap: 0.0, slope: 1.2, rock: 0.0, wet: 0.3).kind == SoilKind::Rock,
+        "a cliff holds a soil",
+    )
+    assert(
+        soil(lap: 0.0, slope: 0.02, rock: 0.0, wet: 0.65).kind == SoilKind::Alluvium,
+        "no alluvium",
+    )
+    assert(soil(lap: 0.0, slope: 0.2, rock: 0.0, wet: 0.8).kind == SoilKind::Gley, "no gley")
+    assert(soil(lap: 0.0, slope: 0.02, rock: 0.0, wet: 0.95).kind == SoilKind::Peat, "no peat")
+    assert(
+        soil(lap: 0.0, slope: 0.02, rock: 0.9, wet: 0.3).kind == SoilKind::Rock,
+        "rock holds a soil",
+    )
+    assert(
+        soil(lap: 0.0, slope: 0.02, rock: 0.0, wet: 0.65).fertile > flat.fertile,
+        "alluvium no richer",
+    )
+    assert(flat.fertile > sharp.fertile, "a crest's soil as rich as the flat's")
 }
