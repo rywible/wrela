@@ -107,9 +107,13 @@ fn gale(
                 f.memory.disk(g, t.at, max(crown, 3.0), Mark::Wind, year, s)
                 mark(shelter, mut down, t.at + t.fall * (0.6 * t.tall), crown, 1.0)
                 if t.state == State::Log {
-                    // Its stem, lying where it came down, crushes what it lands on too.
+                    // Its stem, lying where it came down, crushes what it lands on too; and the
+                    // ground remembers where its stem and its crown came down, not only its root
+                    // plate.
+                    f.memory.disk(g, t.at + t.fall * (0.6 * t.tall), crown, Mark::Wind, year, s)
                     t.each_along(shelter.cell, |p, _| {
                         mark(shelter, mut down, p, STEM_SWATH, 1.0)
+                        f.memory.disk(g, p, STEM_SWATH, Mark::Wind, year, s)
                     })
                 }
             } else if draw < p + 0.25 * p * hold && !(t.cause == Cause::Snapped && t.died == year) {
