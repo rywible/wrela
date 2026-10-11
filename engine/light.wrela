@@ -13,8 +13,10 @@ use std::math::PI
 /// sky's table is read by). And for a test of the sky light, `sky_test`: 1, every surface's sky
 /// light set to `sky_sh`, spherical harmonics' first two bands (`probes::sky_light`), so the
 /// test learns how each pixel answers to it; 2, the probes' as usual. Either way, no gloss
-/// reflects it (`probes::sky_lights`): the test measures the light a surface scatters.
-pub struct Light: Copy + GpuData {
+/// reflects it (`probes::sky_lights`): the test measures the light a surface scatters. And
+/// `clay`, a debug view of form (1): every surface the same matte grey (`CLAY`), lit as usual,
+/// with no gloss; so a still shows the light on the forms alone, not their colours.
+pub struct Light: Copy + GpuData + Eq {
     pub sun: vec3,
     pub exposure: f32,
     pub sun_colour: vec3,
@@ -22,6 +24,15 @@ pub struct Light: Copy + GpuData {
     pub sky_sh: vec4 = vec4(0.0),
     pub eye: f32,
     pub horizon: f32,
+    pub clay: u32 = 0,
+}
+
+/// The clay view's albedo (`Light`'s `clay`): a mid grey.
+pub const CLAY = vec3(0.5)
+
+/// `albedo`, or the clay view's grey (`Light`'s `clay`).
+pub fn clay_or(light: Light, albedo: vec3) -> vec3 {
+    if light.clay != 0 { CLAY } else { albedo }
 }
 
 /// Luminance's weights (linear Rec. 709).
@@ -110,12 +121,19 @@ pub fn gloss_occlusion(ao: f32, nv: f32, rough: f32) -> f32 {
 /// and bounce from the probes, the light through thin things, and its gloss (`gloss`). Before
 /// the haze.
 pub fn world(light: Light, s: Lit, world: vec3, eye: vec3) -> vec3 {
+    matte(light, s, world, eye) + gloss(light, s, normalize(eye - world))
+}
+
+/// `world`'s light without its gloss: what a matte surface shows.
+pub fn matte(light: Light, s: Lit, world: vec3, eye: vec3) -> vec3 {
     let l = light.sun
     let v = normalize(eye - world)
     let ndl = dot(s.n, l)
     let wrap = max((ndl + 0.15) / 1.15, 0.0)
-    let through = s.through * light.sun_colour * (s.sun * backlit(v, l))
-    s.albedo * (light.sun_colour * (wrap * s.sun) + s.sky) + through + gloss(light, s, v)
+    // In the clay view, what passes through a leaf passes as grey (the same amount of light).
+    let passes = if light.clay != 0 { vec3(dot(s.through, LUMA)) } else { s.through }
+    let through = passes * light.sun_colour * (s.sun * backlit(v, l))
+    clay_or(light, s.albedo) * (light.sun_colour * (wrap * s.sun) + s.sky) + through
 }
 
 /// The light a surface reflects as a glossy one does, seen along `v` (toward the eye): the sun's
@@ -123,11 +141,18 @@ pub fn world(light: Light, s: Lit, world: vec3, eye: vec3) -> vec3 {
 /// visibility, Schlick's Fresnel), and the light round it toward its reflection, by the split
 /// sum's scale and bias for its roughness (Karis's analytic fit, for F0 of 0.04).
 pub fn gloss(light: Light, s: Lit, v: vec3) -> vec3 {
+    // Clay is matte.
+    if light.clay != 0 {
+        return vec3(0.0)
+    }
     let n = s.n
     let l = light.sun
     let nv = max(dot(n, v), 1.0e-4)
     let nl = max(dot(n, l), 0.0)
-    let h = normalize(l + v)
+    let half = l + v
+    // Directly opposite light and view have no half vector. The sun is behind a visible
+    // surface then, so any finite direction gives the zero glint that `nl` selects below.
+    let h = if dot(half, half) > 1.0e-12 { normalize(half) } else { n }
     let nh = max(dot(n, h), 0.0)
     let a = max(s.rough * s.rough, 0.002)
     let a2 = a * a
@@ -176,4 +201,30 @@ pub fn tone(c: vec3, exposure: f32) -> vec3 {
 /// A filmic shoulder: Narkowicz's fit of ACES, from linear light to [0, 1].
 pub fn aces(x: vec3) -> vec3 {
     clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), vec3(0.0), vec3(1.0))
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+/// A view directly away from the sun has no half vector. Its glint is zero, not NaN.
+@test
+fn gloss_is_finite_when_the_view_and_sun_are_opposite() {
+    let light = Light {
+        sun: vec3(0.0, 1.0, 0.0),
+        exposure: 1.0,
+        sun_colour: vec3(1.0),
+        eye: 0.0,
+        horizon: 0.0,
+    }
+    let surface = Lit {
+        albedo: vec3(1.0),
+        n: vec3(0.0, -1.0, 0.0),
+        sun: 1.0,
+        sky: vec3(0.0),
+        through: vec3(0.0),
+        rough: 0.5,
+        reflected: vec3(0.0),
+        glint: 1.0,
+    }
+    let c = gloss(light, surface, vec3(0.0, -1.0, 0.0))
+    assert(c == vec3(0.0), "opposite light and view made a glint or a NaN")
 }

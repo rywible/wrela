@@ -7,7 +7,7 @@
 //      into a list, whose count is the next passes' indirect dispatch, and the block map gets
 //      each block's live slot + 1, or 0.
 //   2. place_vertices: one 4×4×4 workgroup per live block (a slice of them a frame, when a level
-//      change is spread over frames: slice_groups gives each slice's group counts). The block's
+//      change is spread over frames). The block's
 //      5³ corners are evaluated once each, into workgroup memory, each under one mask: its
 //      block's inside it, and on the block's boundary the union of the masks of the live blocks
 //      that share it, so every block that evaluates a corner gets the same bits and no quad goes
@@ -16,6 +16,8 @@
 //      map keeps each cell's signs and vertex.
 //   3. emit_quads: each cell with a vertex emits a quad for each crossed edge leaving its low
 //      corner, joining the four cells around it, facing outward; the index count is the draw's.
+//      Passes 2 and 3 go in chunks of at most 65,535 workgroups (`record_blocks`), WebGPU's most
+//      along x: chunk_groups gives each chunk's group counts from the live blocks' count.
 //   4. finish_mesh: the index count clamped to the slab, so a draw reads only its own indices;
 //      the counts, and the skin pass's group count.
 //   5. skin_vertices: each vertex's skin weights.
@@ -143,7 +145,7 @@ pub struct CornerProbe: Copy + GpuData {
     pub bits: [u32; 2],
 }
 
-/// The most live blocks a debug build's probe holds (`Scratch::probe`).
+/// The most blocks a grid a debug build probes has (`Scratch::probe`).
 pub const PROBE_BLOCKS: u32 = 32768
 
 /// One vertex of a realized mesh, 48 bytes as spike 01's: its rest position, its four bones (a
@@ -288,16 +290,15 @@ fn solve3(a0: vec3, a1: vec3, a2: vec3, b: vec3) -> vec3 {
     vec3(det3(b, a1, a2), det3(a0, b, a2), det3(a0, a1, b)) / det
 }
 
-/// Each slice's group counts for `record_vertices`, from the live blocks' count: three `u32`s a
-/// slice, `SLICE_BLOCKS` workgroups (fewer past the live blocks' end), the last slice the rest.
+/// Each chunk's group counts for a pass over live slots `from` to `to` (not included, and not
+/// past the live blocks' end): three `u32`s a chunk, `GROUPS_MOST` workgroups (fewer past the
+/// end), chunk `c` from slot `from + c × GROUPS_MOST`.
 @compute(64)
-fn slice_groups(live: [u32], slices: u32, out: mut Slots<u32>, id: GlobalId) {
-    let s = id.x / 3
-    let first = s * SLICE_BLOCKS
-    let left = if live[0] > first { live[0] - first } else { 0 }
-    out[id] = if id.x % 3 != 0 { 1 } else if s == slices - 1 { left } else {
-        min(left, SLICE_BLOCKS)
-    }
+fn chunk_groups(live: [u32], from: u32, to: u32, out: mut Slots<u32>, id: GlobalId) {
+    let start = from + (id.x / 3) * GROUPS_MOST
+    let end = min(live[0], to)
+    let left = if end > start { end - start } else { 0 }
+    out[id] = if id.x % 3 != 0 { 1 } else { min(left, GROUPS_MOST) }
 }
 
 /// The field's normal at `x`, from the items in `mask`, seen `fp` wide: one function for an
@@ -327,7 +328,7 @@ pub fn place_vertices<C, F: Parts<C>>(
     lid: LocalId,
     id: GlobalId,
 ) {
-    // A slice of the live blocks starts at `first` (`record_vertices`).
+    // A chunk of the live blocks starts at `first` (`record_blocks`).
     let slot = block.x + first
     let lb = blocks[slot]
     // Each cell's entry in the cell map, wherever the slice's dispatch puts its invocation.
@@ -361,7 +362,9 @@ pub fn place_vertices<C, F: Parts<C>>(
             probed.bits[k] = bitcast_u32(d)
         }
     }
-    if debug_build() {
+    // (Room for `PROBE_BLOCKS` blocks: a larger grid's isn't probed. A slot's index counts the
+    // dispatch's every group, so a slot below the room can still fall past it.)
+    if debug_build() && grid.blocks <= PROBE_BLOCKS {
         probe[id] = probed
     }
     barrier(mut corners)
@@ -483,6 +486,7 @@ fn vertex_at(grid: Grid, block_map: [u32], cells: [u32], blocks: u32, room: u32,
 pub fn emit_quads(
     grid: Grid,
     room: u32,
+    first: u32,
     blocks: [LiveBlock],
     block_map: [u32],
     cells: [u32],
@@ -491,7 +495,8 @@ pub fn emit_quads(
     block: WorkgroupId,
     lid: LocalId,
 ) {
-    let slot = block.x
+    // A chunk of the live blocks starts at `first` (`record_blocks`).
+    let slot = block.x + first
     let n = cells.len() / (BLOCK * BLOCK * BLOCK)
     let cell = CellWord::of_bits(cells[cell_key(slot, lid.xyz(), n)])
     let v0 = cell.vertex
@@ -604,8 +609,8 @@ pub struct Scratch {
     pub live: AppendBuffer<LiveBlock>,
     pub block_map: GpuBuffer<u32>,
     pub cells: GpuBuffer<u32>,
-    /// A sliced realization's group counts (`slice_groups`).
-    pub slices: GpuBuffer<u32>,
+    /// The group counts of a pass's chunks (`chunk_groups`).
+    pub chunks: GpuBuffer<u32>,
     /// A debug build's: each boundary corner's value as each live block evaluated it, an
     /// invocation's two in its slot. A release build's holds one, and nothing writes it.
     pub probe: GpuBuffer<CornerProbe>,
@@ -618,7 +623,7 @@ impl Scratch {
             live: append_buffer(n),
             block_map: buffer(n),
             cells: buffer(n * 64),
-            slices: buffer(3 * MAX_SLICES),
+            chunks: buffer(3 * chunks_for(n)),
             probe: buffer(if debug_build() { min(n, PROBE_BLOCKS) * 64 } else { 1 }),
         }
     }
@@ -798,24 +803,11 @@ pub fn record_cull<C, F: Parts<C>>(field: F, grid: Grid, scratch: mut Scratch, m
 
 /// A realization's vertices in every live block.
 pub fn record_vertices<C, F: Parts<C>>(field: F, grid: Grid, scratch: mut Scratch, mesh: mut Mesh) {
-    dispatch(
-        place_vertices.bind(
-            field: field,
-            grid: grid,
-            first: 0,
-            blocks: scratch.live.items(),
-            block_map: scratch.block_map.span(0, scratch.block_map.len()),
-            probe: mut scratch.probe,
-            cells: mut scratch.cells,
-            verts: mut mesh.verts,
-        ),
-        groups: scratch.live.count(),
-    )
+    place_blocks(field, grid, from: 0, to: grid.blocks, scratch: mut scratch, mesh: mut mesh)
 }
 
 /// A realization's vertices in slice `slice` of its live blocks, of `slices`: `SLICE_BLOCKS`
-/// of them from `slice × SLICE_BLOCKS`, the last slice taking the rest (each slice's group
-/// counts from `slice_groups`, dispatched with the first, after culling). A `Realizer` spreads
+/// of them from `slice × SLICE_BLOCKS`, the last slice taking the rest. A `Realizer` spreads
 /// a level change so over frames.
 pub fn record_slice<C, F: Parts<C>>(
     field: F,
@@ -825,25 +817,72 @@ pub fn record_slice<C, F: Parts<C>>(
     scratch: mut Scratch,
     mesh: mut Mesh,
 ) {
-    if slice == 0 {
+    let from = min(slice * SLICE_BLOCKS, grid.blocks)
+    let to = if slice + 1 >= slices { grid.blocks } else { min(from + SLICE_BLOCKS, grid.blocks) }
+    place_blocks(field, grid, from: from, to: to, scratch: mut scratch, mesh: mut mesh)
+}
+
+/// The vertices in live slots `from` to `to` (not included; `to` at most the grid's blocks).
+fn place_blocks<C, F: Parts<C>>(
+    field: F,
+    grid: Grid,
+    from: u32,
+    to: u32,
+    scratch: mut Scratch,
+    mesh: mut Mesh,
+) {
+    if from == 0 && to == grid.blocks && grid.blocks <= GROUPS_MOST {
+        // Every live block, in one dispatch: its count is the group count.
         dispatch(
-            slice_groups.bind(live: scratch.live.count(), slices: slices, out: mut scratch.slices),
-            over: 3 * slices,
+            place_vertices.bind(
+                field: field,
+                grid: grid,
+                first: 0,
+                blocks: scratch.live.items(),
+                block_map: scratch.block_map.span(0, scratch.block_map.len()),
+                probe: mut scratch.probe,
+                cells: mut scratch.cells,
+                verts: mut mesh.verts,
+            ),
+            groups: scratch.live.count(),
+        )
+        return
+    }
+    let chunks = record_chunks(from, to, mut scratch)
+    for c in 0..chunks {
+        dispatch(
+            place_vertices.bind(
+                field: field,
+                grid: grid,
+                first: from + c * GROUPS_MOST,
+                blocks: scratch.live.items(),
+                block_map: scratch.block_map.span(0, scratch.block_map.len()),
+                probe: mut scratch.probe,
+                cells: mut scratch.cells,
+                verts: mut mesh.verts,
+            ),
+            groups: scratch.chunks.span(start: 3 * c, count: 3),
         )
     }
+}
+
+/// WebGPU's most workgroups along an axis: a pass over more live blocks goes in chunks.
+const GROUPS_MOST: u32 = 65535
+
+/// How many chunks a pass over `blocks` live slots goes in (at least one).
+fn chunks_for(blocks: u32) -> u32 {
+    max((blocks + GROUPS_MOST - 1) / GROUPS_MOST, 1)
+}
+
+/// The group counts of a pass over live slots `from` to `to` (not included) in `scratch.chunks`,
+/// dispatched after culling: how many chunks the pass goes in.
+fn record_chunks(from: u32, to: u32, scratch: mut Scratch) -> u32 {
+    let chunks = chunks_for(to - from)
     dispatch(
-        place_vertices.bind(
-            field: field,
-            grid: grid,
-            first: slice * SLICE_BLOCKS,
-            blocks: scratch.live.items(),
-            block_map: scratch.block_map.span(0, scratch.block_map.len()),
-            probe: mut scratch.probe,
-            cells: mut scratch.cells,
-            verts: mut mesh.verts,
-        ),
-        groups: scratch.slices.span(start: 3 * slice, count: 3),
+        chunk_groups.bind(live: scratch.live.count(), from: from, to: to, out: mut scratch.chunks),
+        over: 3 * chunks,
     )
+    chunks
 }
 
 /// A realization's last part, once every live block has its vertices: the quads, the draw's
@@ -873,18 +912,39 @@ pub fn record_finish<C, F: Parts<C>>(
 /// arguments.
 fn record_mesh(grid: Grid, scratch: mut Scratch, mesh: mut Mesh) {
     let room = mesh.room()
-    dispatch(
-        emit_quads.bind(
-            grid: grid,
-            room: room.vertices,
-            blocks: scratch.live.items(),
-            block_map: scratch.block_map.span(0, scratch.block_map.len()),
-            cells: scratch.cells.span(0, scratch.cells.len()),
-            quads: mut mesh.quads,
-            holes: mut mesh.holes,
-        ),
-        groups: scratch.live.count(),
-    )
+    if grid.blocks <= GROUPS_MOST {
+        // Every live block, in one dispatch: its count is the group count.
+        dispatch(
+            emit_quads.bind(
+                grid: grid,
+                room: room.vertices,
+                first: 0,
+                blocks: scratch.live.items(),
+                block_map: scratch.block_map.span(0, scratch.block_map.len()),
+                cells: scratch.cells.span(0, scratch.cells.len()),
+                quads: mut mesh.quads,
+                holes: mut mesh.holes,
+            ),
+            groups: scratch.live.count(),
+        )
+    } else {
+        let chunks = record_chunks(0, grid.blocks, mut scratch)
+        for c in 0..chunks {
+            dispatch(
+                emit_quads.bind(
+                    grid: grid,
+                    room: room.vertices,
+                    first: c * GROUPS_MOST,
+                    blocks: scratch.live.items(),
+                    block_map: scratch.block_map.span(0, scratch.block_map.len()),
+                    cells: scratch.cells.span(0, scratch.cells.len()),
+                    quads: mut mesh.quads,
+                    holes: mut mesh.holes,
+                ),
+                groups: scratch.chunks.span(start: 3 * c, count: 3),
+            )
+        }
+    }
     dispatch(
         finish_mesh.bind(
             vertices: mesh.verts.count(),
@@ -1048,9 +1108,9 @@ impl<F> Realizer<F> {
         let meshes: Vec<Option<Mesh>> = Vec::from_fn(self.detail.levels.len(), |_| None)
         self.held.push(
             Held {
-                field: take field,
+                field,
                 bounds,
-                meshes: take meshes,
+                meshes,
                 drawn: NO_LEVEL,
                 target: NO_LEVEL,
                 priority: 0.0,
@@ -1378,7 +1438,7 @@ impl<C, F: Parts<C>> Realizer<F> {
         }
         let slices = slices_for(grid)
         self.slicing = Some(
-            Slicing { instance: best, level, grid, mesh: take mesh, at: 0, slices, calibration },
+            Slicing { instance: best, level, grid, mesh, at: 0, slices, calibration },
         )
         true
     }

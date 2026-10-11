@@ -1,0 +1,135 @@
+// The play harness's map (#54 §5, #55 AC5): the floor from above with the interest check over it
+// (`interest::map_image`, shipped with the check as `map.bin`) and the player on it, drawn over
+// the screen's top right corner while M holds it on. Fetched the first time it's shown.
+
+use history::CHECKED
+use std::gpu::{ClipPosition, FragCoord, RenderPass, Rgba8, Texture, VertexIndex, draw, texture}
+use std::io::Pending
+
+/// The map: shown or not, its file on its way, and once it's come its texture and where it lies
+/// (its corner on the plane and metres a pixel).
+pub struct HarnessMap {
+    pub shown: bool,
+    pub fetch: Option<Pending<u8>>,
+    pub image: Option<Texture<Rgba8>>,
+    pub lo: vec2,
+    pub px: f32,
+}
+
+impl HarnessMap {
+    pub fn new() -> HarnessMap {
+        HarnessMap { shown: false, fetch: None, image: None, lo: vec2(0.0), px: 1.0 }
+    }
+
+    /// M: shown or hidden; the first time, its file fetched.
+    pub fn toggle(mut self) {
+        self.shown = !self.shown
+        if self.image.is_none() && self.fetch.is_none() {
+            self.fetch = match CHECKED.find("map.bin") {
+                Some(f) => Some(CHECKED.fetch(f)),
+                None => None,
+            }
+        }
+    }
+
+    /// The file, once it's come: its texture made.
+    pub fn poll(mut self) {
+        let came = match mut self.fetch {
+            Some(p) => p.poll(),
+            None => None,
+        }
+        let Some(result) = take came else { return }
+        self.fetch = None
+        if let Ok(b) = take result {
+            var bytes = take b
+            let word = |k: u32| -> u32 {
+                u32(bytes[4 * k]) |
+                    (u32(bytes[4 * k + 1]) << 8) |
+                    (u32(bytes[4 * k + 2]) << 16) |
+                    (u32(bytes[4 * k + 3]) << 24)
+            }
+            let (w, h) = (word(0), word(1))
+            self.lo = vec2(bitcast_f32(word(2)), bitcast_f32(word(3)))
+            self.px = bitcast_f32(word(4))
+            let _ = bytes.drain_front(20)
+            var t = texture::<Rgba8>(width: w, height: h)
+            t.write(x: 0, y: 0, width: w, height: h, bytes: bytes)
+            self.image = Some(take t)
+        }
+    }
+
+    /// Drawn over the screen's top right corner (`out` pixels), 45% of its height, with the
+    /// player at `at` facing `heading` (radians from +z toward +x).
+    pub fn draw<P: RenderPass>(self, pass: P, out: vec2, at: vec2, heading: f32) {
+        if !self.shown {
+            return
+        }
+        let Some(img) = self.image else { return }
+        let size = vec2(f32(img.width()), f32(img.height()))
+        let tall = out.y * 0.45
+        let wide = tall * size.x / size.y
+        let area = vec4(out.x - wide - 16.0, 16.0, wide, tall)
+        let o = Overlay {
+            area,
+            player: (at - self.lo) / self.px,
+            heading,
+        }
+        draw(
+            pass,
+            map_area.bind(area: area, screen: out),
+            map_overlay.bind(o, map: img),
+            vertices: 6,
+        )
+    }
+}
+
+/// Where the map lies on the screen (x, y, width, height in pixels), where the player is on it
+/// (in its pixels) and which way it faces.
+pub struct Overlay: Copy + GpuData {
+    pub area: vec4,
+    pub player: vec2,
+    pub heading: f32,
+}
+
+/// The map's rectangle of the screen: two triangles.
+@vertex
+pub fn map_area(v: VertexIndex, area: vec4, screen: vec2) -> ClipPosition {
+    let corner = [
+        vec2(0.0, 0.0),
+        vec2(1.0, 0.0),
+        vec2(0.0, 1.0),
+        vec2(1.0, 0.0),
+        vec2(1.0, 1.0),
+        vec2(0.0, 1.0),
+    ]
+    let px = area.xy + corner[v.index % 6] * area.zw
+    ClipPosition {
+        position: vec4(px.x / screen.x * 2.0 - 1.0, 1.0 - px.y / screen.y * 2.0, 0.0, 1.0),
+    }
+}
+
+/// A pixel of the map: its image (nearest texel), a dark rim, and the player as a red dot with
+/// a line the way it faces.
+@fragment
+pub fn map_overlay(pixel: FragCoord, o: Overlay, map: Texture<Rgba8>) -> vec4 {
+    let size = vec2(f32(map.width()), f32(map.height()))
+    let local = pixel.position.xy - o.area.xy
+    let uv = local / o.area.zw
+    let edge = min(min(local.x, local.y), min(o.area.z - local.x, o.area.w - local.y))
+    if edge < 2.0 {
+        return vec4(0.05, 0.05, 0.05, 1.0)
+    }
+    let texel = clamp(vec2u(uv * size), vec2u(0), vec2u(size) - vec2u(1))
+    var c = map.load(x: texel.x, y: texel.y).rgb
+    // The player, in the screen's pixels: a dot and its facing.
+    let scale = o.area.z / size.x
+    let me = o.player * scale
+    let d = length(local - me)
+    let facing = vec2(sin(o.heading), cos(o.heading))
+    let along = dot(local - me, facing)
+    let across = abs(dot(local - me, vec2(-facing.y, facing.x)))
+    if d < 4.5 || (along > 0.0 && along < 14.0 && across < 1.2) {
+        c = vec3(1.0, 0.15, 0.1)
+    }
+    vec4(c, 1.0)
+}

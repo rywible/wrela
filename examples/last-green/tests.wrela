@@ -1,0 +1,1342 @@
+// The floor's own tests (`wrela test examples/last-green`, #55): what the bake leaves, read back
+// as the program reads it. They read the bake, so they're long (`suite/last_green.rs`).
+
+use engine::bake::{WEAR_N, decode_tile, reaching, tile_fields, tile_name}
+use engine::grow::{BAKE, BESIDE_PATH, Cause, Grid, HEAD_ROOM, Mark, State, Tree}
+use engine::noise::rand
+use engine::place::{Feature, Keeper, Map, TILE}
+use engine::terrain::Terrain
+use std::field::Surface
+use std::io::print
+use std::math::TAU
+use std::string::String
+use history::{BAKED, decisions, domain_hi, domain_lo, tiles_hi, tiles_lo}
+use provenance::NearTile
+
+/// The line browsing keeps where tree `t` stands (m; 0 for none), judged as the history judges
+/// it: at the middle of the history's cell that holds it, a region's browse line or the head
+/// room beside a herd's path.
+fn line_at(m: Map, g: Grid, t: Tree) -> f32 {
+    let p = g.centre(g.cell_at(t.at))
+    let line = m.regions[m.region_of(p)].character.browse_line
+    if line > 0.0 {
+        return line
+    }
+    for r in m.routes {
+        if r.keeper == Keeper::Grazing && r.distance(p).x < 0.5 * r.width + BESIDE_PATH {
+            return HEAD_ROOM
+        }
+    }
+    0.0
+}
+
+/// AC2's head room: along the herd's paths (their width and 4 m each side) and in wood pasture
+/// (a region with a browse line), no shrub of the history's stands, and no living tree's branch
+/// comes below the line: not in the history (its lift), and not as it's drawn (its kind's lowest
+/// branch, placed at its height).
+@test
+fn nothing_grows_into_the_head_room() {
+    let m = map::map()
+    let g = Grid::over(domain_lo(), domain_hi(), BAKE.cell)
+    let habits = species::habits()
+    let u = decisions()
+    var zoned = 0
+    for t in u.trees {
+        if t.state != State::Alive || t.pinned {
+            continue
+        }
+        let line = line_at(m, g, t)
+        if line <= 0.0 {
+            continue
+        }
+        zoned += 1
+        let h = habits[t.kind]
+        let at = t.at
+        assert(
+            !h.thorny && !h.suckers,
+            f"a shrub (kind {t.kind}) stands at {at} under a {line} m line",
+        )
+        assert(t.lift >= line, f"a tree at {at} keeps branches to {t.lift} m under a {line} m line")
+        let k = trees::drawn_kind(t)
+        let low = trees::lowest_placed(k, t.tall, t.fork)
+        assert(
+            low >= line - 0.01,
+            f"a tree at {at}, {t.tall} m, drawn as kind {k}: branches to {low} m",
+        )
+    }
+    assert(zoned > 200, f"only {zoned} trees stand where browsing keeps a line")
+}
+
+/// AC11's ground cover: over every tile the floor streams, its ground's fields worked out as the
+/// program works them out once its neighbours are in (`tile_fields`, with their trees whose
+/// crowns reach over its edge), no meadow grass or flowers grow where the history's canopy is
+/// closed (the light at the ground under `ground::CLOSED`), and no ground there is bare: the
+/// wood's floor's plants (ferns, bracken, herbs: `Cover::under`) grow on all of it but a path's
+/// earth, a stream's bed and rock; and the beech wood's floor is closed over most of it.
+@test
+@fuel(2 ** 39)
+fn no_meadow_grass_under_a_closed_canopy() {
+    let lo = tiles_lo()
+    let hi = tiles_hi()
+    let habits = species::habits()
+    let m = map::map()
+    let g = ground::ground()
+    var trees: Vec<Vec<Tree>> = Vec::new()
+    for j in lo.y..(hi.y + 1) {
+        for i in lo.x..(hi.x + 1) {
+            trees.push(
+                decode_tile(
+                    BAKED.bytes(BAKED.find(tile_name(vec2i(i, j)).as_str()).unwrap()),
+                ).trees,
+            )
+        }
+    }
+    let nx = hi.x - lo.x + 1
+    var closed = 0
+    var texels = 0
+    var beech_closed = 0
+    var beech = 0
+    var beech_wood = 0
+    var covered_texels = 0
+    var bare = 0
+    for r in 0..m.regions.len() {
+        if m.regions[r].name == "the beech wood" {
+            beech_wood = r
+        }
+    }
+    for j in lo.y..(hi.y + 1) {
+        for i in lo.x..(hi.x + 1) {
+            let t = vec2i(i, j)
+            let d = decode_tile(BAKED.bytes(BAKED.find(tile_name(t).as_str()).unwrap()))
+            var others: Vec<Tree> = Vec::new()
+            for dj in -1..2 {
+                for di in -1..2 {
+                    let n = t + vec2i(di, dj)
+                    if (di != 0 || dj != 0) &&
+                        n.x >= lo.x &&
+                        n.y >= lo.y &&
+                        n.x <= hi.x &&
+                        n.y <= hi.y {
+                        reaching(t, trees[u32((n.y - lo.y) * nx + n.x - lo.x)], mut others)
+                    }
+                }
+            }
+            let f = tile_fields(d, others, habits, m.routes, map::PRESENT)
+            let cell = TILE / f32(WEAR_N)
+            for k in 0..(WEAR_N * WEAR_N) {
+                let p = vec2(t) * TILE + (vec2(f32(k % WEAR_N), f32(k / WEAR_N)) + vec2(0.5)) * cell
+                if !m.inside(p) {
+                    continue
+                }
+                let fields = vec4(
+                    f32(f[4 * k]),
+                    f32(f[4 * k + 1]),
+                    f32(f[4 * k + 2]),
+                    f32(f[4 * k + 3]),
+                ) /
+                    255.0
+                texels += 1
+                let in_beech = m.region_of(p) == beech_wood
+                if in_beech {
+                    beech += 1
+                }
+                if fields.x < ground::CLOSED {
+                    closed += 1
+                    if in_beech {
+                        beech_closed += 1
+                    }
+                    let c = g.cover_with(
+                        vec3(p.x, g.at(p.x, p.y), p.y),
+                        vec3(0.0, 1.0, 0.0),
+                        fields,
+                    )
+                    let flowers = c.flowers.x + c.flowers.y + c.flowers.z + c.flowers.w
+                    assert(
+                        c.grass == 0.0 && flowers == 0.0,
+                        f"meadow grass ({c.grass}) under a closed canopy at {p}, its light {fields.x}",
+                    )
+                    let n = g.normal(p.x, p.y, 1.0)
+                    let path = fields.y > 0.5
+                    // A stream's bed where the cover draws it (`ground.wrela`'s gravel, at
+                    // `smoothstep(0.9, 0.985, wet)`) a third or more: it fades the plants there.
+                    let bed = smoothstep(0.9, 0.985, fields.z) >= 0.3
+                    let rock = g.rocky(p, n) > 0.5
+                    if !path && !bed && !rock {
+                        covered_texels += 1
+                        if c.under.x < 0.12 {
+                            bare += 1
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert(closed > 0 && texels > 0, "no texel of the floor's ground")
+    print(
+        f"under a closed canopy: {covered_texels} texels the wood's plants may cover, {bare} bare",
+    )
+    assert(bare == 0, f"{bare} of {covered_texels} texels under a closed canopy are bare ground")
+    let in_beech = f32(beech_closed) / f32(max(beech, 1))
+    assert(in_beech > 0.5, f"the beech wood's canopy is closed over only {in_beech * 100.0}% of it")
+}
+
+/// AC9's one surface: the sim's water height (`Laid::surface`: the mesh's triangles binned) and
+/// the drawn mesh's (every triangle's plane, as the rasterizer draws it) agree within 1 cm: down
+/// every course, across its width (to 0.6 of it each way: a bend's ribbon turns), and over the
+/// mere's water. And it lies where it should: a stream's within 10 cm of a skin over the ground
+/// (`SKIN`), the mere's at its level.
+@test
+fn the_water_is_one_surface() {
+    let w = map::map().water
+    let laid = history::waters()
+    var worst = 0.0
+    var worst_at = vec2(0.0)
+    var samples = 0
+    for c in laid.courses {
+        var k = 0
+        while k + 1 < c.points.len() {
+            let a = c.points[k]
+            let b = c.points[k + 1]
+            let along = normalize(b.xy - a.xy + vec2(1.0e-6, 0.0))
+            let side = vec2(-along.y, along.x)
+            for i in 0..5 {
+                let u = 0.6 * (f32(i) / 2.0 - 1.0)
+                let p = mix(a.xy, b.xy, vec2(0.37)) + side * (u * 0.5 * a.z)
+                let sim = laid.surface(p)
+                let drawn = laid.mesh.height_over(p)
+                assert(
+                    sim > engine::water::NONE && drawn > engine::water::NONE,
+                    f"no water at {p} down a course",
+                )
+                let skin = sim - world::GROUND.at(p.x, p.y) - engine::water::SKIN
+                let ground = world::GROUND.at(p.x, p.y)
+                let in_mere = length(p - w.meres[0].xy) <
+                    w.meres[0].z * engine::water::MERE_REACH &&
+                    ground < w.meres[0].w
+                assert(
+                    c.falls || in_mere || abs(skin) < 0.1,
+                    f"a stream's water at {p} is {skin} m off its skin",
+                )
+                if abs(sim - drawn) > worst {
+                    worst = abs(sim - drawn)
+                    worst_at = p
+                }
+                samples += 1
+            }
+            k += 7
+        }
+    }
+    for m in w.meres {
+        if m.z > 0.0 {
+            for i in 0..200 {
+                let a = f32(i) * 2.399963
+                let p = m.xy + vec2(cos(a), sin(a)) * m.z * sqrt(f32(i) / 200.0)
+                if world::GROUND.at(p.x, p.y) < m.w {
+                    let sim = laid.surface(p)
+                    assert(
+                        abs(sim - m.w) < 1.0e-4,
+                        f"the mere's water at {p} is at {sim}, not its level {m.w}",
+                    )
+                    let drawn = laid.mesh.height_over(p)
+                    if abs(sim - drawn) > worst {
+                        worst = abs(sim - drawn)
+                        worst_at = p
+                    }
+                    samples += 1
+                }
+            }
+        }
+    }
+    assert(samples > 200, f"only {samples} points of the water")
+    assert(worst <= 0.01, f"the sim's water and the drawn are {worst} m apart at {worst_at}")
+}
+
+/// AC9's where it is: a course rises at each spring and at the mere's outlet, and one falls from
+/// the map's fall, to a pool at its foot; and open water keeps its opening: no tree stands in a
+/// mere's water or a stream's course (but at its very edge, as the history's cells judge it:
+/// `SHORE`, `BANK`).
+@test
+fn the_water_is_where_the_map_and_the_flow_put_it() {
+    let m = map::map()
+    let w = m.water
+    let laid = history::waters()
+    for i in 0..w.spring_count {
+        var rises = false
+        for c in laid.courses {
+            rises = rises || length(c.points[0].xy - w.springs[i]) < 1.0
+        }
+        let s = w.springs[i]
+        assert(rises, f"no stream rises at the spring at {s}")
+    }
+    var falls = false
+    for c in laid.courses {
+        falls = falls || (c.falls && length(c.points[0].xy - w.falls[0]) < 10.0)
+    }
+    let f = w.falls[0]
+    assert(falls, f"no water falls at the map's fall at {f}")
+    for t in decisions().trees {
+        if t.state == State::Alive || t.state == State::Snag {
+            let at = t.at
+            let deep = laid.surface(at) - world::GROUND.at(at.x, at.y)
+            assert(
+                deep <= SHORE && !in_course(laid, at),
+                f"a tree stands in the water at {at}, {deep} m deep",
+            )
+        }
+    }
+}
+
+/// The water a tree may stand in at a shore or a stream's bank (m deep, or m in from its edge):
+/// the history judges a cell of 2 m by its middle.
+const SHORE: f32 = 0.1
+const BANK: f32 = 1.5
+
+/// Whether `p` is within a stream's course, more than `BANK` in from its edge (not a fall's:
+/// past the edge, where no tree is read).
+fn in_course(laid: engine::water::Laid, p: vec2) -> bool {
+    for c in laid.courses {
+        if !c.falls {
+            for i in 0..c.points.len() - 1 {
+                let a = c.points[i]
+                let b = c.points[i + 1]
+                let ab = b.xy - a.xy
+                let t = clamp(dot(p - a.xy, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
+                if length(p - (a.xy + ab * t)) < 0.5 * a.z - BANK {
+                    return true
+                }
+            }
+        }
+    }
+    false
+}
+
+// ---- the player (AC4) ---------------------------------------------------------------------------
+
+/// What a walk found: the least room the player's body had from any solid obstacle (m, from its
+/// surface: under `BODY` is through it), the least the ground let it go anywhere it stood (its
+/// `stands`: 0 is off the walkable mask), how near it came to its target's surface, its pace in
+/// the deepest water it stood in, and that water's depth.
+struct Walked {
+    room: f32,
+    stood: f32,
+    closest: f32,
+    wading_pace: f32,
+    deepest: f32,
+}
+
+/// The player walked from `from` toward `to` for `seconds` as the sim steps it (60 Hz, forward
+/// held, the look on `to`, running if `run`), measured against a target: a capsule from `a` to
+/// `b` (a point where they're the same), `r` across.
+fn walk_toward(from: vec2, to: vec2, seconds: f32, run: bool, a: vec2, b: vec2, r: f32) -> Walked {
+    let w = map::map().water
+    let d = to - from
+    var p = engine::player::spawn(world::GROUND, engine::place::Place::of(from), atan2(d.x, d.y))
+    p.controls.forward = true
+    p.controls.run_held = run
+    p.controls.yaw = atan2(d.x, d.y)
+    let target = engine::footing::Obstacle {
+        a,
+        b,
+        r,
+        thing: engine::footing::Thing::Stone,
+        depth: 0.0,
+    }
+    var out = Walked { room: 1.0e9, stood: 1.0e9, closest: 1.0e9, wading_pace: 1.0, deepest: 0.0 }
+    for _ in 0..u32(seconds * 60.0) {
+        engine::player::step(mut p, world::GROUND, w, history::OBSTACLES, 1.0 / 60.0)
+        let at = p.at.world()
+        history::OBSTACLES.near(at, |o| {
+            if o.thing != engine::footing::Thing::Stream {
+                out.room = min(out.room, o.reach(at).0)
+            }
+        })
+        out.stood = min(
+            out.stood,
+            engine::footing::stands(world::GROUND, w, history::OBSTACLES, at),
+        )
+        out.closest = min(out.closest, target.reach(at).0)
+        let deep = max(
+            engine::footing::mere_depth(w, at, world::GROUND.at(at.x, at.y)),
+            history::OBSTACLES.depth(at),
+        )
+        if deep > out.deepest {
+            out.deepest = deep
+            out.wading_pace = p.pace
+        }
+    }
+    out
+}
+
+/// A start `away` m from `at` (beyond a thing `r` across) on walkable ground, clear of every
+/// solid obstacle, looked for round it (`NONE`'s x for none).
+fn start_near(at: vec2, r: f32, away: f32) -> vec2 {
+    let w = map::map().water
+    for k in 0..16 {
+        let a = 6.2831853 * f32(k) / 16.0
+        let s = at + vec2(cos(a), sin(a)) * (r + away)
+        if engine::footing::stands(world::GROUND, w, history::OBSTACLES, s) > 0.0 &&
+            !history::OBSTACLES.blocked(s, engine::footing::BODY + 0.2) {
+            return s
+        }
+    }
+    vec2(1.0e9)
+}
+
+/// AC4's collision: the stand-in walks into a trunk, a stone, a wall and a shrub (the first of
+/// each it can reach from 4 m), and into the mere: each stops it at its surface, it never
+/// passes into one (its body never less than `BODY` from a solid obstacle, to a millimetre), it
+/// never stands where the walkable mask doesn't let it, deep water stops it short of `DEEP`, and
+/// a stream's shallows slow it to wading.
+@test
+fn the_player_walks_into_each_thing_and_never_through_it() {
+    let m = map::map()
+    let body = engine::footing::BODY
+    // Each thing's candidates: its middle, its radius (a wall: its ends).
+    var trunks: Vec<vec3> = Vec::new()
+    var shrubs: Vec<vec3> = Vec::new()
+    for t in decisions().trees {
+        if t.state == State::Alive && m.inside(t.at) {
+            if species::habits()[t.kind].thorny {
+                if t.tall > 0.8 && shrubs.len() < 40 {
+                    shrubs.push(vec3(t.at + t.lean, 0.7 * t.reach))
+                }
+            } else if t.tall > 2.0 && t.girth > 0.2 && trunks.len() < 40 {
+                trunks.push(vec3(t.at, t.girth))
+            }
+        }
+    }
+    let stones = stones::stones(m)
+    let walls = stones::walls(m)
+    var reached = [false; 4]
+    var room = 1.0e9
+    var stood = 1.0e9
+    for kind in 0..4 {
+        let count = if kind == 0 { trunks.len() } else if kind == 1 { stones.len() } else if kind ==
+            2 { walls.len() } else { shrubs.len() }
+        for i in 0..min(count, 40) {
+            if reached[kind] {
+                break
+            }
+            // The thing as a capsule: its ends, and its radius.
+            let (a, b, r) = if kind == 0 {
+                (trunks[i].xy, trunks[i].xy, trunks[i].z)
+            } else if kind == 1 {
+                (stones[i].xy, stones[i].xy, stones[i].z)
+            } else if kind == 2 {
+                (walls[i].xy, walls[i].zw, 0.5)
+            } else {
+                (shrubs[i].xy, shrubs[i].xy, shrubs[i].z)
+            }
+            let centre = (a + b) * 0.5
+            let from = start_near(centre, r + 0.5 * length(b - a), 4.0)
+            if from.x > 1.0e8 {
+                continue
+            }
+            let w = walk_toward(from, centre, 6.0, run: false, a: a, b: b, r: r)
+            room = min(room, w.room)
+            stood = min(stood, w.stood)
+            reached[kind] = w.closest < body + 0.25
+        }
+    }
+    let (trunk, stone, wall, shrub) = (reached[0], reached[1], reached[2], reached[3])
+    assert(
+        trunk && stone && wall && shrub,
+        f"walked into a trunk {trunk}, a stone {stone}, a wall {wall}, a shrub {shrub}",
+    )
+    // Into the mere, running, from its shore.
+    let mere = m.water.meres[0]
+    let shore = mere.xy + vec2(0.0, 1.0) * mere.z * 1.25
+    let into = walk_toward(shore, mere.xy, 20.0, run: true, a: mere.xy, b: mere.xy, r: 0.0)
+    room = min(room, into.room)
+    stood = min(stood, into.stood)
+    let deepest = into.deepest
+    assert(
+        deepest > engine::footing::WADE && deepest <= engine::footing::DEEP,
+        f"walking into the mere it stood in {deepest} m of water",
+    )
+    assert(
+        room >= body - 1.0e-3,
+        f"the player's body came {room} m from an obstacle's surface (its radius {body})",
+    )
+    assert(stood > 0.0, "the player stood where the walkable mask doesn't let it")
+    // Across a stream's shallows: the course's middle, walked across.
+    borrow c = history::COURSES.courses[0]
+    let mid = c.points[c.points.len() / 2]
+    let next = c.points[c.points.len() / 2 + 1]
+    let across = normalize(vec2(next.y - mid.y, mid.x - next.x))
+    let wade = walk_toward(
+        mid.xy - across * 5.0,
+        mid.xy + across * 5.0,
+        6.0,
+        run: false,
+        a: mid.xy,
+        b: mid.xy,
+        r: 0.0,
+    )
+    let pace = wade.wading_pace
+    let wading_depth = wade.deepest
+    assert(
+        wading_depth > engine::footing::WADE && pace <= engine::footing::WADING + 1.0e-4,
+        f"in a stream {wading_depth} m deep, its pace was {pace}",
+    )
+}
+
+/// AC4's trunks: each standing tree's obstacle (`history::OBSTACLES`, the sim's) holds its trunk
+/// as it's drawn at a player's chest (1.2 m), to 5 cm: the player stops where the trunk is seen.
+@test
+fn a_trunk_stops_the_player_where_it_is_drawn() {
+    var worst = 0.0
+    var at = vec2(0.0)
+    var n = 0
+    for t in decisions().trees {
+        if (t.state == State::Alive || t.state == State::Snag) &&
+            t.tall > 2.0 &&
+            !species::habits()[t.kind].thorny &&
+            !t.pinned &&
+            map::map().inside(t.at) {
+            var r = 0.0
+            history::OBSTACLES.near(t.at, |o| {
+                if o.thing == engine::footing::Thing::Trunk && length(o.a - t.at) < 0.05 {
+                    r = max(r, o.r)
+                }
+            })
+            let over = trees::trunk_at(trees::kind_of(t), t.tall, 1.2, t.fork) - r
+            if over > worst {
+                worst = over
+                at = t.at
+            }
+            n += 1
+        }
+    }
+    assert(n > 1000, f"only {n} trunks")
+    assert(worst <= 0.05, f"a trunk at {at} is drawn {worst} m past its obstacle")
+}
+
+/// AC5's harness and #55's Method: the floor's walk, pressed once (P), is walked to its end by
+/// the sim, at a run, round what's in its way, giving up no more than one point in fifty; and it
+/// takes the time the record states (its length on foot).
+@test
+@fuel(2 ** 40)
+fn the_floors_walk_is_walked_to_its_end() {
+    var w = world::spawn_world()
+    var k = 0
+    while k < 60 * 60 * 60 && (k == 0 || w.tour.on) {
+        var records: Vec<std::input::Event> = Vec::new()
+        if k == 0 {
+            records.push(
+                std::input::Event::KeyDown {
+                    key: std::input::Key::P,
+                    repeat: false,
+                    mods: std::input::Mods {},
+                },
+            )
+        }
+        world::tick(
+            mut w,
+            engine::run::TickInput { tick: k, dt: 1.0 / 60.0, records, answers: Vec::new() },
+        )
+        k += 1
+    }
+    let (leg, of, skipped) = (w.tour.leg, history::TOUR.len(), w.tour.skipped)
+    let minutes = f32(w.tour.ticks) / 3600.0
+    print(f"the floor's walk: {of} points, {minutes} min at a run, {skipped} given up")
+    assert(leg >= of, f"the walk stopped at point {leg} of {of} after {minutes} min")
+    assert(skipped * 50 <= of, f"the walk gave up {skipped} of its {of} points")
+}
+
+/// The camera's near plane (m: `view::camera`'s).
+const NEAR: f32 = 0.1
+
+/// AC4's camera: over the floor's walk (its frames each half second, the camera as the floor
+/// frames it: `player::third_person`), the eye is never in the ground or in a trunk, a stone or a
+/// wall, and every leaf card its near plane could meet (its middle within its half-width of the
+/// eye) is faded away (`vegetation::faded`, the leaves between the camera and the player kept
+/// clear): no frame's camera is inside foliage.
+@test
+@fuel(2 ** 44)
+fn the_camera_is_never_inside_a_thing() {
+    // Each kind's cards, as cooked (`main.wrela` cooks kind `k` with seed `k + 1`).
+    var cards: Vec<Vec<vec4>> = Vec::new()
+    for k in 0..trees::KINDS {
+        cards.push(engine::plant::card_centres(trees::kind_plant(k), k + 1))
+    }
+    // The trees, binned 16 m a bin over the floor.
+    let all = decisions().trees
+    let bins = Grid::over(map::LO - vec2(64.0), map::HI + vec2(64.0), 16.0)
+    var in_bin: Vec<Vec<u32>> = Vec::from_fn(bins.cells(), |_| Vec::new())
+    for i in 0..all.len() {
+        if bins.holds(all[i].at) {
+            in_bin[bins.cell_at(all[i].at)].push(i)
+        }
+    }
+    let framing = engine::player::Framing {}
+    var w = world::spawn_world()
+    var frames = 0
+    var seen = 0
+    var k = 0
+    while k < 60 * 60 * 60 && (k == 0 || w.tour.on) {
+        var records: Vec<std::input::Event> = Vec::new()
+        if k == 0 {
+            records.push(
+                std::input::Event::KeyDown {
+                    key: std::input::Key::P,
+                    repeat: false,
+                    mods: std::input::Mods {},
+                },
+            )
+        }
+        world::tick(
+            mut w,
+            engine::run::TickInput { tick: k, dt: 1.0 / 60.0, records, answers: Vec::new() },
+        )
+        k += 1
+        if k % 30 != 0 {
+            continue
+        }
+        frames += 1
+        let at = w.player.at.world()
+        let feet = vec3(at.x, w.player.y, at.y)
+        let c = w.player.controls
+        let (eye, _) = engine::player::third_person(
+            framing,
+            feet,
+            c.yaw,
+            c.pitch,
+            history::OBSTACLES,
+            vec2(0.0),
+            |p: vec2| world::GROUND.at(p.x, p.y),
+        )
+        let target = feet + vec3(0.0, framing.target, 0.0)
+        let ground = world::GROUND.at(eye.x, eye.z)
+        assert(eye.y - ground >= NEAR, f"at {at} the eye is {eye.y - ground} m over the ground")
+        history::OBSTACLES.near(eye.xz, |o| {
+            let solid = o.thing == engine::footing::Thing::Trunk ||
+                o.thing == engine::footing::Thing::Stone ||
+                o.thing == engine::footing::Thing::Wall
+            let (d, _) = o.reach(eye.xz)
+            assert(
+                !solid || d >= NEAR || eye.y - ground > 3.0,
+                f"at {at} the eye {eye} is in a trunk, a stone or a wall",
+            )
+        })
+        // The leaves round the eye.
+        let clear = vec4(target, 1.1)
+        let b = bins.cell_at(eye.xz)
+        let bi = vec2i(i32(b % bins.nx), i32(b / bins.nx))
+        for dj in -1..2 {
+            for di in -1..2 {
+                let q = bi + vec2i(di, dj)
+                if q.x < 0 || q.y < 0 || q.x >= i32(bins.nx) || q.y >= i32(bins.nz) {
+                    continue
+                }
+                for ti in in_bin[u32(q.y) * bins.nx + u32(q.x)] {
+                    for pl in trees::placed([all[ti]], |p: vec2| world::GROUND.at(p.x, p.y)) {
+                        if length(pl.at.at - eye) > 40.0 {
+                            continue
+                        }
+                        for card in cards[pl.kind] {
+                            let centre = pl.at.place(card.xyz)
+                            let half = card.w * pl.at.scale * 0.75
+                            if length(centre - eye) - half < NEAR {
+                                seen += 1
+                                let fade = engine::vegetation::faded(centre, half, eye, clear)
+                                assert(
+                                    fade >= 0.999,
+                                    f"at {at} a leaf card {length(centre - eye)} m from the eye is drawn ({fade} faded)",
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    print(
+        f"the camera over the floor's walk: {frames} frames, {seen} cards at its near plane, all faded",
+    )
+    assert(frames > 600, f"only {frames} frames of the walk")
+}
+
+/// AC7's wildwood (Q9): a wild tile grown alone with its margin (`engine::wild::MARGIN` cells)
+/// is the same tile cut from a wood grown three tiles wide round it, to 3% of its cells' species
+/// and 0.3 m of their heights on average (spike 17's seam test), at the egg's road and away from
+/// it.
+@test
+@fuel(2 ** 42)
+fn a_wild_tile_grown_alone_matches_the_wider_wood() {
+    for t in [vec2i(9, -9), vec2i(14, -14), vec2i(-12, 6)] {
+        let e = engine::wild::seam_error(
+            t,
+            engine::wild::MARGIN,
+            wildwood::road_distance,
+            wildwood::kept_clear,
+        )
+        print(
+            f"wild tile {t}: {e.x * 100.0}% of its cells' species differ, heights {e.y} m apart on average",
+        )
+        assert(
+            e.x <= 0.03 && e.y <= 0.3,
+            f"wild tile {t} grown alone differs from the wider wood: {e}",
+        )
+    }
+    // With no margin, its edge shows (the margin is what keeps the seam out).
+    let bare = engine::wild::seam_error(
+        vec2i(9, -9),
+        0,
+        wildwood::road_distance,
+        wildwood::kept_clear,
+    )
+    assert(
+        bare.x > 0.01,
+        f"with no margin, only {bare.x * 100.0}% of the cells differ: the test can't see a seam",
+    )
+}
+
+/// A minute's walk at a run (5 m/s on a heading, stepped at 60 Hz) from world point (x, z):
+/// stepped as the sim steps a player (`place::Place::moved`), or in `f32` world points; how far
+/// its end is from the true end (worked out in `f64`), m.
+fn walk_error(x: f64, z: f64, tiled: bool) -> f64 {
+    let v = vec2(cos(0.7), sin(0.7)) * 5.0
+    let dt = 1.0 / 60.0
+    var p = engine::place::Place::of_f64(x, z)
+    var q = vec2(f32(x), f32(z))
+    for _ in 0..3600 {
+        p = p.moved(v * dt)
+        q += v * dt
+    }
+    let end = if tiled { p.world_f64() } else { vec2d(f64(q.x), f64(q.y)) }
+    let truth = vec2d(x + f64(v.x) * 60.0, z + f64(v.y) * 60.0)
+    sqrt((end.x - truth.x) * (end.x - truth.x) + (end.y - truth.y) * (end.y - truth.y))
+}
+
+/// AC4's positions (Q3): a minute's walk stepped 10 km and 1,000 km from the origin ends within
+/// 5 cm of its true end, as the sim steps a player (a tile and an offset in it); in `f32` world
+/// points it's a metre off 10 km out (spike 17's 1.03 m), as the test shows beside it.
+@test
+fn a_walk_far_from_the_origin_ends_where_it_should() {
+    for d in [0.0, 10000.0, 1000000.0] {
+        let e = walk_error(x: d, z: -d * 0.5, tiled: true)
+        let f = walk_error(x: d, z: -d * 0.5, tiled: false)
+        print(f"a minute's walk {d / 1000.0} km out: {e} m off as the sim steps it, {f} m in f32")
+        assert(e <= 0.05, f"a minute's walk {d / 1000.0} km out ends {e} m from its true end")
+    }
+    assert(
+        walk_error(x: 10000.0, z: -5000.0, tiled: false) > 0.1,
+        "in f32 the walk 10 km out should show its error",
+    )
+}
+
+/// Each species' tree kinds (kinds 1 to 10: the open and the forest form of oak, beech, birch,
+/// pine and alder), by species.
+const KIND_SPECIES = [0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4]
+
+/// AC12's trunks differ: each species' trunks differ from every other's in form (where its kind
+/// first forks, as a share of its height, or how thick its trunk is for its height) and in bark;
+/// and over the floor's trees, no two standing neighbours of a kind (their crowns touch:
+/// `trees::neighbours`) first fork at the same height (`trees::forks_apart`), as they're
+/// placed: each with its own fork (`trees::forked`).
+@test
+fn neighbouring_trees_of_a_kind_fork_at_different_heights() {
+    for a in 1..11 {
+        for b in (a + 1)..11 {
+            if KIND_SPECIES[a] == KIND_SPECIES[b] {
+                continue
+            }
+            let share = |k: u32| trees::fork_height(k, tall: 10.0, fork: 0.0) / 10.0
+            let thick = |k: u32| trees::trunk_at(k, tall: 10.0, h: 1.2, fork: 0.0) / 10.0
+            let form = abs(share(a) - share(b)) >= 0.03 ||
+                abs(thick(a) - thick(b)) >= 0.1 * max(thick(a), thick(b))
+            assert(form, f"kinds {a} and {b} (two species) fork alike and are as thick")
+            let (pa, pb) = (trees::kind_plant(a), trees::kind_plant(b))
+            let bark = max(abs(pa.bark.light - pb.bark.light), abs(pa.bark.dark - pb.bark.dark))
+            assert(
+                max(max(bark.x, bark.y), bark.z) >= 0.02,
+                f"kinds {a} and {b} (two species) have the same bark",
+            )
+        }
+    }
+    // Each standing tree whose fork is chosen, its kind and its first fork's height.
+    var all: Vec<Tree> = Vec::new()
+    var kinds: Vec<u32> = Vec::new()
+    var forks: Vec<f32> = Vec::new()
+    for t in decisions().trees {
+        if trees::forks(t) {
+            let k = trees::kind_of(t)
+            all.push(t)
+            kinds.push(k)
+            forks.push(trees::fork_height(k, t.tall, t.fork))
+        }
+    }
+    let g = Grid::over(domain_lo(), domain_hi(), trees::NEIGHBOURS_WITHIN)
+    var bins: Vec<Vec<u32>> = Vec::filled(g.cells(), Vec::new())
+    for i in 0..all.len() {
+        bins[g.cell_at(all[i].at)].push(i)
+    }
+    var pairs = 0
+    var alike = 0
+    for i in 0..all.len() {
+        let a = all[i]
+        let c = g.ij(a.at)
+        for dj in 0..3 {
+            for di in 0..3 {
+                let x = c.x + di - 1
+                let z = c.y + dj - 1
+                if x >= 0 && z >= 0 && x < i32(g.nx) && z < i32(g.nz) {
+                    for j in bins[u32(z) * g.nx + u32(x)] {
+                        let b = all[j]
+                        if j > i && kinds[j] == kinds[i] && trees::neighbours(a, b) {
+                            pairs += 1
+                            // The bake keeps a height to the centimetre: a little under.
+                            let (fa, fb) = (forks[i], forks[j])
+                            if abs(fb - fa) < 0.9 * trees::FORK_APART * max(fa, fb) {
+                                if alike < 5 {
+                                    let (pa, pb, k) = (a.at, b.at, kinds[i])
+                                    print(f"kind {k} at {pa} and {pb} fork at {fa} and {fb} m")
+                                }
+                                alike += 1
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    print(f"{pairs} neighbouring pairs of a kind among {all.len()} trees; {alike} fork alike")
+    assert(pairs > 1000, f"only {pairs} neighbouring pairs of a kind")
+    assert(alike == 0, f"{alike} of {pairs} neighbouring pairs of a kind fork alike")
+}
+
+/// Stage 0 of a deeper history: the fire and the gales are processes, and the land remembers
+/// them. In the burn, most of the ground the fire reached is remembered as burnt in its year, the
+/// fire killed most of its trees, and some thick-barked trees lived through it, scarred; it left
+/// ground unburnt within its reach (wet hollows, trails). In each gale, the ground it threw trees
+/// on is remembered as wind in its year, some trees snapped and stand, and some stood through it.
+@test
+fn the_fire_and_the_gales_leave_what_they_did() {
+    let m = map::map()
+    let u = decisions()
+    for e in m.events {
+        match e.kind {
+            engine::place::EventKind::Fire { at, reach } => {
+                let (marked, cells) = remembered(u, at, reach, Mark::Fire, e.year)
+                var killed = 0
+                var scarred = 0
+                for t in u.trees {
+                    if length(t.at - at) < reach && t.cause == Cause::Fire && t.died == e.year {
+                        if t.state == State::Alive { scarred += 1 } else { killed += 1 }
+                    }
+                }
+                let name = e.name
+                print(
+                    f"{name}: {marked} of {cells} cells within its reach burnt; {killed} trees killed, {scarred} scarred and living",
+                )
+                assert(f32(marked) > 0.6 * f32(cells), f"{name}: only {marked} of {cells} burnt")
+                assert(marked < cells, f"{name}: every cell burnt, none spared")
+                assert(killed > 3 * scarred, f"{name}: {scarred} lived through it, {killed} died")
+                assert(scarred > 0, f"{name}: no tree lived through it")
+            },
+            engine::place::EventKind::Storm { at, reach, .. } => {
+                let (marked, cells) = remembered(u, at, 0.6 * reach, Mark::Wind, e.year)
+                // A snapped stem stands as a snag, then falls and rots; a living tree's broken top
+                // is remembered too. Within its reach, some trees stood through it.
+                var snapped = 0
+                var stood = 0
+                for t in u.trees {
+                    let d = length(t.at - at)
+                    if d < 0.6 * reach && t.cause == Cause::Snapped && t.died == e.year {
+                        snapped += 1
+                    }
+                    if d < reach &&
+                        t.state == State::Alive &&
+                        t.born < e.year - 30 &&
+                        t.tall > 6.0 {
+                        stood += 1
+                    }
+                }
+                let name = e.name
+                print(
+                    f"{name}: {marked} of {cells} cells near its middle thrown on; {snapped} snapped; {stood} stood through it within its reach",
+                )
+                // A gale before the bake's first year (the meadow's) never blew.
+                if e.year < m.present - BAKE.years {
+                    continue
+                }
+                assert(f32(marked) > 0.4 * f32(cells), f"{name}: only {marked} of {cells} marked")
+                assert(snapped > 0, f"{name}: no trunk snapped")
+                assert(stood > 0, f"{name}: no tree stood through it")
+            },
+            _ => {},
+        }
+    }
+}
+
+/// How many of the bake's 4 m cells within `reach` of `at` remember `mark` in `year`, of how many.
+fn remembered(u: engine::bake::Unbaked, at: vec2, reach: f32, mark: Mark, year: i32) -> (u32, u32) {
+    let g = u.wet_grid
+    var marked = 0
+    var cells = 0
+    for c in 0..g.cells() {
+        if length(g.centre(c) - at) < reach {
+            cells += 1
+            let r = engine::bake::memory_at(u, g.centre(c))
+            if r.mark == mark && r.year == year {
+                marked += 1
+            }
+        }
+    }
+    (marked, cells)
+}
+
+// ---- The floor's sound (sound.wrela; the outside audit's point 6) --------------------------------
+
+/// The splits between the bands a sound is weighed in (Hz): below 300 (a knock, the wind's rush,
+/// the falls' roar), 300 to 1200, 1200 to 4000, and above (grit, leaves, a stream's babble).
+const SPLITS = vec3(300.0, 1200.0, 4000.0)
+
+/// A listener on the floor: its ears (`sound::Hearing`) and the mixer they cue, rendered here a
+/// frame at a time as the voice would render it; the tiles' fields where it goes; and each
+/// quantum's energy in the four bands (the two channels' mean), as rendered.
+struct Listener {
+    hearing: sound::Hearing,
+    mixer: engine::sound::Mixer,
+    grounds: Vec<NearTile>,
+    frame: u32,
+    samples: u32,
+    split: vec3,
+    lows: vec3,
+    bands: Vec<vec4>,
+    peak: f32,
+}
+
+fn listener(seed: u32) -> Listener {
+    let (h, m) = sound::listen(seed)
+    let w = -std::math::TAU / 48000.0
+    let a = vec3(
+        1.0 - std::math::exp(w * SPLITS.x),
+        1.0 - std::math::exp(w * SPLITS.y),
+        1.0 - std::math::exp(w * SPLITS.z),
+    )
+    Listener {
+        hearing: h,
+        mixer: m,
+        grounds: Vec::new(),
+        frame: 0,
+        samples: 0,
+        split: a,
+        lows: vec3(0.0),
+        bands: Vec::new(),
+        peak: 0.0,
+    }
+}
+
+/// Tile `t`'s fields, as the program works them out once its neighbours are in.
+fn near_tile(t: vec2i) -> NearTile {
+    let lo = tiles_lo()
+    let hi = tiles_hi()
+    let d = decode_tile(BAKED.bytes(BAKED.find(tile_name(t).as_str()).unwrap()))
+    var others: Vec<Tree> = Vec::new()
+    for dj in -1..2 {
+        for di in -1..2 {
+            let n = t + vec2i(di, dj)
+            if (di != 0 || dj != 0) && n.x >= lo.x && n.y >= lo.y && n.x <= hi.x && n.y <= hi.y {
+                let nd = decode_tile(BAKED.bytes(BAKED.find(tile_name(n).as_str()).unwrap()))
+                reaching(t, nd.trees, mut others)
+            }
+        }
+    }
+    let fields = tile_fields(d, others, species::habits(), map::map().routes, map::PRESENT)
+    NearTile { tile: t, bytes: Vec::new(), trees: Vec::new(), fields, with: 0 }
+}
+
+impl Listener {
+    /// A frame (1/60 s) with the feet at `feet` (on the plane) facing `facing`, the camera behind
+    /// and above them as the floor frames the player: its cues, then the samples due by its end.
+    fn frame(mut self, feet: vec2, facing: vec2) {
+        let t = engine::place::tile_of(feet)
+        var have = false
+        for g in self.grounds {
+            have = have || g.tile == t
+        }
+        if !have {
+            self.grounds.push(near_tile(t))
+        }
+        let time = f32(self.frame) / 60.0
+        let g = world::GROUND
+        let at = vec3(feet.x, g.at(x: feet.x, z: feet.y), feet.y)
+        let f = normalize(facing)
+        let eye = at - 3.0 * vec3(f.x, 0.0, f.y) + vec3(0.0, 1.8, 0.0)
+        let wind = engine::plant::Wind { dir: normalize(vec2(-0.55, 0.3)), strength: 0.035, time }
+        sound::frame(mut self.hearing, sound::moment(eye, f, at, self.grounds, wind, time))
+        self.frame += 1
+        self.render_to(self.frame * 800)
+    }
+
+    /// Quanta rendered until `samples` are.
+    fn render_to(mut self, samples: u32) {
+        var l = [0.0; std::audio::QUANTUM]
+        var r = [0.0; std::audio::QUANTUM]
+        while self.samples < samples {
+            engine::sound::mix(mut self.mixer, mut l, mut r)
+            var e = vec4(0.0)
+            for i in 0..std::audio::QUANTUM {
+                let x = 0.5 * (l[i] + r[i])
+                self.peak = max(self.peak, max(abs(l[i]), abs(r[i])))
+                self.lows += self.split * (vec3(x) - self.lows)
+                let b = vec4(
+                    self.lows.x,
+                    self.lows.y - self.lows.x,
+                    self.lows.z - self.lows.y,
+                    x - self.lows.z,
+                )
+                e += b * b
+            }
+            self.bands.push(e / f32(std::audio::QUANTUM))
+            self.samples += std::audio::QUANTUM
+        }
+    }
+
+    /// The mean energy in each band over quanta `from` to `to`, in dB.
+    fn level(self, from: u32, to: u32) -> vec4 {
+        var e = vec4(0.0)
+        for q in from..to {
+            e += self.bands[q]
+        }
+        let mean = e / f32(max(to - from, 1))
+        vec4(db(mean.x), db(mean.y), db(mean.z), db(mean.w))
+    }
+}
+
+/// An energy in dB.
+fn db(e: f32) -> f32 {
+    10.0 * std::math::log(max(e, 1e-20)) / std::math::log(10.0)
+}
+
+/// All four bands' energy in dB (from each band's, in dB).
+fn total_db(b: vec4) -> f32 {
+    let e = vec4(
+        std::math::exp(0.1 * LN10 * b.x),
+        std::math::exp(0.1 * LN10 * b.y),
+        std::math::exp(0.1 * LN10 * b.z),
+        std::math::exp(0.1 * LN10 * b.w),
+    )
+    db(e.x + e.y + e.z + e.w)
+}
+
+const LN10: f32 = 2.30258509
+
+/// Quanta in `seconds`.
+fn quanta(seconds: f32) -> u32 {
+    u32(seconds * 48000.0 / f32(std::audio::QUANTUM))
+}
+
+/// The bed under the steps over quanta `from` to `to`, in dB: the quietest quarter of their
+/// windows of 8 quanta (21 ms; a step rings over a few).
+fn bed_db(l: Listener, from: u32, to: u32) -> f32 {
+    var windows: Vec<f32> = Vec::new()
+    var q = from
+    while q + 8 <= to {
+        windows.push(total_db(l.level(q, q + 8)))
+        q += 8
+    }
+    windows.sort_by(|a, b| a < b)
+    windows[windows.len() / 4]
+}
+
+/// The lookbook's shot named `name`.
+fn shot(name: Text) -> lookbook::Shot {
+    for s in lookbook::SHOTS {
+        if s.name == name {
+            return s
+        }
+    }
+    assert(false, f"no shot named {name}")
+    lookbook::SHOTS[0]
+}
+
+/// A listener (its noise seeded with `seed`) that stands at `from` facing `to` for a second, then
+/// walks toward it at `pace` (m/s) for `seconds`.
+fn walked(from: vec2, to: vec2, pace: f32, seconds: f32, seed: u32 = 7) -> Listener {
+    var l = listener(seed)
+    let d = normalize(to - from)
+    let frames = u32(60.0 * (1.0 + seconds))
+    for k in 0..frames {
+        let t = max(f32(k) / 60.0 - 1.0, 0.0)
+        l.frame(from + d * (pace * t), d)
+    }
+    l
+}
+
+/// The window levels (dB, all bands) of quanta `from` to `to`, each window `n` quanta.
+fn windows(l: Listener, from: u32, to: u32, n: u32) -> Vec<f32> {
+    var out: Vec<f32> = Vec::new()
+    var q = from
+    while q + n <= to {
+        out.push(total_db(l.level(q, q + n)))
+        q += n
+    }
+    out
+}
+
+/// The point `k`/`of` of the way through `xs`, sorted.
+fn ranked(xs: [f32], k: u32, of: u32) -> f32 {
+    var s: Vec<f32> = Vec::new()
+    for x in xs {
+        s.push(x)
+    }
+    s.sort_by(|a, b| a < b)
+    s[min(s.len() * k / of, s.len() - 1)]
+}
+
+/// The outside audit's point 6: each place on the floor sounds its own. A listener stands a
+/// second at each of the lookbook's places with a sound of their own (the clearing's meadow, the
+/// beech high forest, the stream in the wood, the waterfall, the mere's shore, the crag's top),
+/// along the mere's shore, and at the waterfall's foot, then walks 4 s on: each place's sound (the
+/// energy in each of four bands, the steps on its ground with the bed under them) is 3 dB or more
+/// from every other's in some band. And the mix leaves room: no sample past -6 dBFS; the
+/// player's steps are heard over the bed (3 dB or more), at the waterfall's foot too; and the bed
+/// is 10 dB or more under the level the duel's cues will be mixed at (`CUE`), so they'll be clear
+/// of it.
+@test
+@fuel(2 ** 40)
+fn each_place_on_the_floor_sounds_its_own() {
+    // (The shot of the mere wades into it.)
+    let names = [
+        "the clearing",
+        "beech high forest",
+        "the stream in the wood",
+        "the waterfall",
+        "the mere",
+        "the crag's top",
+    ]
+    var profiles: Vec<vec4> = Vec::new()
+    var labels: Vec<Text> = Vec::new()
+    for name in names {
+        let s = shot(name)
+        profiles.push(place(name, s.eye.xz, s.at.xz))
+        labels.push(name)
+    }
+    // Along the mere's shore, 4 m from the water, where the lookbook's shot of it wades in.
+    let mere = world::MAP.water.meres[0]
+    let out = normalize(shot("the mere").eye.xz - mere.xy)
+    let along = vec2(-out.y, out.x)
+    let shore = mere.xy + out * (mere.z + 4.0)
+    profiles.push(place("the mere's shore", shore, shore + along * 10.0))
+    labels.push("the mere's shore")
+    // The waterfall's foot: the loudest place on the floor.
+    let falls = world::MAP.water.falls[0]
+    let away = normalize(shot("the waterfall").eye.xz - falls)
+    profiles.push(place("the waterfall's foot", falls + away * 12.0, falls + away * 6.0))
+    labels.push("the waterfall's foot")
+    for i in 0..profiles.len() {
+        for j in (i + 1)..profiles.len() {
+            let d = abs(profiles[i] - profiles[j])
+            let most = max(max(d.x, d.y), max(d.z, d.w))
+            let (a, b) = (labels[i], labels[j])
+            assert(most >= 3.0, f"{a} and {b} sound alike: {most} dB apart at most")
+        }
+    }
+}
+
+/// The level the duel's cues will be mixed at, their first 50 ms (dB of full scale): a strike, a
+/// wolf's snarl. None is made yet; the beds leave them room.
+const CUE: f32 = -12.0
+
+/// A place's sound: a listener standing a second at `from` and walking 4 s toward `to`. Its numbers, printed, and its mix's room checked; the energy in each band
+/// over the 5 s (dB).
+fn place(name: Text, from: vec2, to: vec2) -> vec4 {
+    let l = walked(from, to, pace: 1.4, seconds: 4.0)
+    let walk = quanta(1.0)
+    let end = quanta(5.0)
+    let p = l.level(0, end)
+    let bed = bed_db(l, walk, end)
+    let still = total_db(l.level(quanta(0.3), walk))
+    let steps = ranked(windows(l, walk, end, n: 8), k: 19, of: 20)
+    let peak = 20.0 * std::math::log(max(l.peak, 1e-10)) / LN10
+    let counts = surfaces(l)
+    print(
+        f"{name}: bands {p} dB; still {still} dB, walking bed {bed} dB, steps {steps} dB; peak {peak} dBFS; steps by surface {counts}",
+    )
+    assert(peak < -6.0, f"{name}: the mix peaks at {peak} dBFS")
+    assert(steps - bed >= 3.0, f"{name}: the steps stand only {steps - bed} dB over the bed")
+    let loudest = max(still, bed)
+    assert(
+        loudest <= CUE - 10.0,
+        f"{name}: the bed ({loudest} dB) leaves a cue at {CUE} dB too little room",
+    )
+    p
+}
+
+/// How many steps a listener took on each surface, in words.
+fn surfaces(l: Listener) -> String {
+    var out = String::new()
+    for k in 0..7 {
+        let n = l.hearing.steps[k]
+        out.push_str(f"{n} ")
+    }
+    out
+}
+
+/// The listeners' mean, quantum by quantum: the mix's expected energy, with the beds' random
+/// swells (each listener's own noise) averaged away.
+fn mean_of(ls: [Listener]) -> Listener {
+    var m = listener(1)
+    for q in 0..ls[0].bands.len() {
+        var e = vec4(0.0)
+        for l in ls {
+            e += l.bands[q]
+        }
+        m.bands.push(e / f32(ls.len()))
+    }
+    m
+}
+
+/// The outside audit's point 6: the floor's sound changes as smoothly as the place does. Walking
+/// into the mere (from 6 m short of its shore to 6 m in: the steps turn to splashes, the grass's
+/// swish to the water round the legs) and toward the waterfall (from 50 m to 6 m: its roar
+/// swells), the bed under the steps never moves 3 dB from one quarter second to the next. The
+/// bed's level is the mean of 16 listeners' (each with its own noise): the waters' and the wind's
+/// swells are the beds' own life, not a change of place.
+@test
+@fuel(2 ** 41)
+fn the_floors_sound_changes_as_smoothly_as_the_place() {
+    let mere = world::MAP.water.meres[0]
+    let out = normalize(shot("the mere").eye.xz - mere.xy)
+    let falls = world::MAP.water.falls[0]
+    let away = normalize(shot("the waterfall").eye.xz - falls)
+    let walks = [
+        (mere.xy + out * (mere.z + 6.0), mere.xy, 1.4, 12.0 / 1.4),
+        (falls + away * 50.0, falls, 1.4, 44.0 / 1.4),
+    ]
+    for w in walks {
+        let (from, to, pace, seconds) = w
+        var ls: Vec<Listener> = Vec::new()
+        for seed in 0..16 {
+            ls.push(walked(from, to, pace: pace, seconds: seconds, seed: 11 + seed))
+        }
+        let l = mean_of(ls)
+        let quarter = quanta(0.25)
+        var last = bed_db(l, quanta(1.0), quanta(1.0) + quarter)
+        var worst = 0.0
+        var q = quanta(1.0) + quarter
+        while q + quarter <= quanta(1.0 + seconds) {
+            let now = bed_db(l, q, q + quarter)
+            worst = max(worst, abs(now - last))
+            last = now
+            q += quarter
+        }
+        let counts = surfaces(ls[0])
+        print(
+            f"from {from} toward {to}: the bed moves {worst} dB at most in a quarter second; steps by surface {counts}",
+        )
+        assert(
+            worst < 3.0,
+            f"from {from} toward {to}: the bed moved {worst} dB in a quarter second",
+        )
+    }
+}
+
+/// Each ring's stones stand apart, open widest at the threshold, and the great stone stands
+/// across from it, the tallest.
+@test
+fn each_ring_has_a_threshold_and_a_great_stone() {
+    let m = map::map()
+    var rings = 0
+    for k in m.sites {
+        if k.feature != Feature::Ring {
+            continue
+        }
+        rings += 1
+        let all = stones::ring(k)
+        // The last is the centre's stone; the rest stand round the ring in order.
+        let n = all.len() - 1
+        var widest = 0.0
+        var widest_at = 0.0
+        var tallest = 0
+        for i in 0..n {
+            let s = all[i]
+            for j in (i + 1)..all.len() {
+                let o = all[j]
+                assert(
+                    length(s.at - o.at) > stones::footprint(s) + stones::footprint(o),
+                    f"{k.name}: stones {i} and {j} overlap",
+                )
+            }
+            if s.half.y > all[tallest].half.y {
+                tallest = i
+            }
+            let a = atan2(s.at.y - k.at.y, s.at.x - k.at.x)
+            let o = all[(i + 1) % n]
+            let b = atan2(o.at.y - k.at.y, o.at.x - k.at.x)
+            let gap = stones::apart(a, b)
+            if gap > widest {
+                widest = gap
+                widest_at = a + 0.5 * stones::apart(a, b)
+            }
+        }
+        assert(
+            stones::apart(widest_at, stones::THRESHOLD) < 0.4,
+            f"{k.name}: its widest gap is {stones::apart(widest_at, stones::THRESHOLD)} rad from the threshold",
+        )
+        let g = all[tallest]
+        let toward = atan2(g.at.y - k.at.y, g.at.x - k.at.x)
+        assert(
+            stones::apart(toward, stones::THRESHOLD) > 0.4 * TAU,
+            f"{k.name}: the great stone is not across from the threshold",
+        )
+    }
+    assert(rings > 0, "the map has rings")
+}
+
+/// The steepest change of `s`'s field (per m) over pairs of points 3 cm apart all over `box`,
+/// and where.
+fn steepest<S: Surface>(s: S, box: std::derive::Box3) -> (f32, vec3) {
+    var worst = 0.0
+    var at = vec3(0.0)
+    for i in 0..20000 {
+        let p = mix(box.lo, box.hi, vec3(rand(i, 1), rand(i, 2), rand(i, 3)))
+        let dir = normalize(vec3(rand(i, 4), rand(i, 5), rand(i, 6)) - vec3(0.5))
+        let k = abs(s.distance(p) - s.distance(p + dir * 0.03)) / 0.03
+        if k > worst {
+            worst = k
+            at = p
+        }
+    }
+    (worst, at)
+}
+
+/// The built things' fields change no faster than their Lipschitz bounds claim (the realizer
+/// culls by them): the tower and the standing stones of each kind.
+@test
+fn the_built_fields_keep_their_bounds() {
+    let t = blockouts::tower()
+    let (worst, at) = steepest(t, blockouts::tower_creature(t).bounds())
+    assert(worst <= t.lipschitz(0.0), f"the tower's field changes {worst} per m at {at}")
+    for seed in 0..12 {
+        let s = blockouts::Slab { half: vec3(0.5, 1.1, 0.3), seed: f32(seed) * 0.37 }
+        let (worst, at) = steepest(s, blockouts::slab_creature(s).bounds())
+        assert(worst <= s.lipschitz(0.0), f"slab {seed}'s field changes {worst} per m at {at}")
+    }
+}
+
+/// Provenance names the line that builds each drawn kind (AC13): every kind's line is found in
+/// trees.wrela. And the burn's three snag kinds differ in silhouette (round 3 of the wood's
+/// lookdev: one kind for every burnt snag drew a picket fence): their tops or their reaches at
+/// least a metre apart.
+@test
+fn every_kind_has_its_line_and_the_burnt_snags_differ() {
+    for k in 0..trees::KINDS {
+        assert(provenance::KIND_LINES[k] > 0, f"kind {k} has no line in trees.wrela")
+    }
+    let burnt = [trees::SNAG_BURNT, trees::SNAG_STUMP, trees::SNAG_FORKED]
+    for a in 0..3 {
+        for b in (a + 1)..3 {
+            let (pa, pb) = (trees::kind_plant(burnt[a]), trees::kind_plant(burnt[b]))
+            let (ta, tb) = (pa.top(), pb.top())
+            let (ra, rb) = (pa.reach(), pb.reach())
+            assert(
+                abs(ta - tb) >= 1.0 || abs(ra - rb) >= 1.0,
+                f"burnt snags {a} and {b} stand alike: tops {ta}, {tb}; reaches {ra}, {rb}",
+            )
+        }
+    }
+}

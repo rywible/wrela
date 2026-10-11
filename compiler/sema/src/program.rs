@@ -6,6 +6,10 @@ use crate::ty::*;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
+/// A checked closure's parameter types, result and parameter modes, in its owner's generic
+/// terms. Trait solving uses it to decide whether the closure meets a function-type bound.
+pub(crate) type ClosureSignature = (Vec<TyId>, TyId, Vec<Mode>);
+
 #[derive(Debug, Default)]
 pub struct Program {
     pub types: Types,
@@ -47,7 +51,7 @@ pub struct Program {
     /// Each closure's parameter and return types, in its owner's generic terms, for whether
     /// it fits a function-type bound (`impl<F: fn(vec3) -> f32> Tr for F`). Recorded when the
     /// closure is checked, and again when its body's types are final.
-    pub(crate) closure_sigs: std::cell::RefCell<HashMap<ClosureRef, (Vec<TyId>, TyId)>>,
+    pub(crate) closure_sigs: std::cell::RefCell<HashMap<ClosureRef, ClosureSignature>>,
     /// Whether a type implements a structural trait (`Copy`, `Clone`, `GpuData`): worked out
     /// once per type, since struct types share their fields' types.
     pub(crate) builtin_impls: std::cell::RefCell<HashMap<(TyId, Lang), bool>>,
@@ -66,6 +70,9 @@ pub struct Program {
     pub syntax_errors: Vec<wrela_diag::Span>,
     /// The unit suffixes: `std::units`' constants by name (§5).
     pub units: HashMap<String, ConstId>,
+    /// What each job's value holds (§6.18), worked out before the bodies are checked: its
+    /// traits, derived field by field, are the locals' (`fn.job-values`).
+    pub job_held: HashMap<FnId, crate::defs::JobHeld>,
 }
 
 /// The trait solver's goals in order, and where each derivation in progress started.
@@ -314,11 +321,14 @@ impl Program {
                 s.push('>');
             }
             TyKind::Adt(a, args) => {
-                s.push_str(&self.adt(*a).name);
+                let def = self.adt(*a);
+                s.push_str(&def.name);
                 // A bound entry point's type shows as its entry point bound: `shade.bind(...)`.
-                if !args.is_empty() && self.adt(*a).entry.is_none() {
+                // Its function fields' parameters aren't written (`fn.fields`).
+                let written = &args[..args.len().min(def.written_generics())];
+                if !written.is_empty() && def.entry.is_none() {
                     s.push('<');
-                    self.write_list(args, s);
+                    self.write_list(written, s);
                     s.push('>');
                 }
             }
@@ -393,6 +403,22 @@ impl Program {
     }
 
     /// The declared fields of a struct (`variant` is `None`) or of one of an enum's variants.
+    /// A job's value's parts, when `a` with `args` is a `Job<f>` (§6.18): where it stopped, a
+    /// `u32` named `at` with a hash of the job's code (a save made by another build doesn't
+    /// load), then each local it holds, by name, its type with the job's generics. To the traits
+    /// derived field by field, they're its fields (`fn.job-values`).
+    pub fn job_parts(&self, a: AdtId, args: &[TyId]) -> Option<Vec<(String, TyId)>> {
+        if !self.is_lang_adt(a, Lang::Job) {
+            return None;
+        }
+        let &TyKind::FnDef(f, ref fargs) = self.types.kind(*args.first()?) else { return None };
+        let held = self.job_held.get(&f)?;
+        let subst = Subst::from_pairs(&self.fn_all_generics(f), fargs);
+        let mut out = vec![(format!("at {:016x}", held.code), self.types.u32)];
+        out.extend(held.locals.iter().map(|(n, _, t)| (n.clone(), self.types.subst(*t, &subst))));
+        Some(out)
+    }
+
     pub fn adt_fields(&self, a: AdtId, variant: Option<u32>) -> &[FieldDef] {
         let def = self.adt(a);
         match variant {
@@ -405,6 +431,9 @@ impl Program {
     /// order, with the type's arguments substituted and projections on them resolved
     /// (`k: T::K` with `T = P` is `P`'s `K`).
     pub fn fields_of(&self, a: AdtId, args: &[TyId], variant: Option<u32>) -> Vec<TyId> {
+        if let Some(parts) = self.job_parts(a, args) {
+            return parts.into_iter().map(|(_, t)| t).collect();
+        }
         let subst = Subst::from_pairs(&self.adt(a).generics, args);
         self.adt_fields(a, variant).iter().map(|f| self.field_under(f.ty, &subst)).collect()
     }
@@ -447,6 +476,9 @@ impl Program {
         variant: Option<u32>,
         i: usize,
     ) -> Option<TyId> {
+        if let Some(parts) = self.job_parts(a, args) {
+            return parts.get(i).map(|&(_, t)| t);
+        }
         let f = self.adt_fields(a, variant).get(i)?;
         Some(self.field_under(f.ty, &Subst::from_pairs(&self.adt(a).generics, args)))
     }

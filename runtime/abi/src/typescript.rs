@@ -52,6 +52,8 @@ pub fn typescript() -> String {
         input::EventKind::ALL.iter().map(|&k| format!("  {}: {},\n", k.name(), k as u32)).collect();
     let keys = list(input::KEYS.iter().map(|k| format!("{k:?}")));
     let buttons = list(input::BUTTONS.iter().map(|b| format!("{b:?}")));
+    let pad_buttons = list(input::PAD_BUTTONS.iter().map(|b| format!("{b:?}")));
+    let pad_axes = list(input::PAD_AXES.iter().map(|a| format!("{a:?}")));
     let texture_writable = stream::WRITABLE;
     let pass_join = stream::PASS_JOIN;
     let max_texture_3d = stream::MAX_TEXTURE_3D;
@@ -106,6 +108,12 @@ export const EXPORT_TICK = {export_tick:?};
 export const EXPORT_LIFT_SET = {export_lift_set:?};
 export const IMPORT_KEEP = {import_keep:?};
 export const IMPORT_KEPT = {import_kept:?};
+/** The clock (`std::time`): seconds on the host's clock, an `f64` written at an address. */
+export const IMPORT_CLOCK = {import_clock:?};
+/** A line printed (`std::io::print`) and a phase timed (`std::time::phase`): each a UTF-8 run,
+ * shown or noted as it's made. */
+export const IMPORT_PRINT = {import_print:?};
+export const IMPORT_PHASE = {import_phase:?};
 /** Input (runtime/abi `input`): an event is EVENT_SIZE bytes, six words: its kind, its
  * modifiers, then four words that depend on the kind. */
 export const EVENT_SIZE = {event_size};
@@ -119,14 +127,21 @@ export const MODIFIER_META = {meta};
 export const BUTTONS = [{buttons}] as const;
 /** The physical keys, by number: DOM's `KeyboardEvent.code` (0: one not listed). */
 export const KEYS = [{keys}] as const;
+/** How many gamepads a host reports, and a pad's buttons and axes by number: the W3C Gamepad
+ * API's standard mapping, as a script names them. */
+export const PADS = {pads};
+export const PAD_BUTTONS = [{pad_buttons}] as const;
+export const PAD_AXES = [{pad_axes}] as const;
 /** Every function a program may import besides its memory, with its type as both hosts word
  * it. */
 export const HOST_FUNCTIONS = [
 {host_functions}] as const;
 export const EXPORT_AUDIO = {export_audio:?};
-/** The audio thread's rate and render quantum, and where `__audio` leaves a quantum's samples. */
+/** The audio thread's rate, render quantum and channels, and where `__audio` leaves a quantum's
+ * samples: the left channel's, then the right's. */
 export const AUDIO_SAMPLE_RATE = {audio_sample_rate};
 export const AUDIO_QUANTUM = {audio_quantum};
+export const AUDIO_CHANNELS = {audio_channels};
 export const AUDIO_OUT = {audio_out};
 /** The threads (runtime/abi `memory`): their numbers, their blocks, and the words of a block and
  * of a job slot a host reads and writes. */
@@ -142,8 +157,8 @@ export const JOB_DONE = {job_done};
 export const JOB_FAILED = {job_failed};
 export const JOB_DONE_FAILED = {job_done_failed};
 export const RUNNING = {running};
-export const JOB_SLOTS = {job_slots};
-export const JOB_SLOTS_END = {job_slots_end};
+export const TASK_SLOTS = {task_slots};
+export const TASK_SLOTS_END = {task_slots_end};
 export const SLOT_STATE = {slot_state};
 export const SLOT_THREAD = {slot_thread};
 export const SLOT_FAILED = {slot_failed};
@@ -152,6 +167,8 @@ export const PAR_HELPED = {par_helped};
 /** The helpers' wake count and shutdown flag: a host stops a program's helpers with them. */
 export const PAR_WAKE = {par_wake};
 export const PAR_SHUTDOWN = {par_shutdown};
+/** How many helpers the host started for the program: it writes it before `init`. */
+export const PAR_HELPERS = {par_helpers};
 /** The ticker's words (runtime/abi `memory`), and its records' region. */
 export const TICK_WANT_HASH = {tick_want_hash};
 export const TICK_HASH = {tick_hash};
@@ -220,14 +237,19 @@ export const PANIC_CAP = {panic_cap};
         export_lift_set = crate::EXPORT_LIFT_SET,
         import_keep = crate::IMPORT_KEEP,
         import_kept = crate::IMPORT_KEPT,
+        import_clock = crate::IMPORT_CLOCK,
+        import_print = crate::IMPORT_PRINT,
+        import_phase = crate::IMPORT_PHASE,
         event_size = input::EVENT_SIZE,
         shift = input::SHIFT,
         control = input::CONTROL,
         alt = input::ALT,
         meta = input::META,
+        pads = input::PADS,
         export_audio = crate::EXPORT_AUDIO,
         audio_sample_rate = crate::AUDIO_SAMPLE_RATE,
         audio_quantum = crate::AUDIO_QUANTUM,
+        audio_channels = crate::AUDIO_CHANNELS,
         audio_out = crate::memory::AUDIO_OUT,
         thread_main = crate::memory::THREAD_MAIN,
         thread_tick = crate::memory::THREAD_TICK,
@@ -241,14 +263,15 @@ export const PANIC_CAP = {panic_cap};
         job_failed = crate::memory::JOB_FAILED,
         job_done_failed = crate::memory::JOB_DONE_FAILED,
         running = crate::memory::RUNNING,
-        job_slots = crate::memory::JOB_SLOTS,
-        job_slots_end = crate::memory::JOB_SLOTS_END,
+        task_slots = crate::memory::TASK_SLOTS,
+        task_slots_end = crate::memory::TASK_SLOTS_END,
         slot_state = crate::memory::SLOT_STATE,
         slot_thread = crate::memory::SLOT_THREAD,
         slot_failed = crate::memory::SLOT_FAILED,
         par_helped = crate::memory::PAR_HELPED,
         par_wake = crate::memory::PAR_WAKE,
         par_shutdown = crate::memory::PAR_SHUTDOWN,
+        par_helpers = crate::memory::PAR_HELPERS,
         tick_want_hash = crate::memory::TICK_WANT_HASH,
         tick_hash = crate::memory::TICK_HASH,
         tick_origin = crate::memory::TICK_ORIGIN,

@@ -1,7 +1,7 @@
 // Generated from the wrela-abi crate (runtime/abi): the one definition of the
 // command stream and manifest. Don't edit; run `cargo run -p wrela-abi --bin generate`.
 
-export const STREAM_VERSION = 7;
+export const STREAM_VERSION = 9;
 export const MANIFEST_VERSION = 8;
 /** The bytes `WRCS`, read as a little-endian u32. */
 export const STREAM_MAGIC = 0x53435257;
@@ -37,10 +37,12 @@ export const Opcode = {
   StorageRead: 19,
   StorageWrite: 20,
   Fetch: 21,
-  Log: 22,
   Post: 23,
   DrawIndexedIndirect: 24,
   Label: 25,
+  Prepare: 26,
+  Unprepare: 27,
+  HandOver: 28,
 } as const;
 
 /** A texture's format, by its number in the stream: WebGPU's name, the bytes of one texel, and
@@ -79,6 +81,12 @@ export const EXPORT_TICK = "__tick";
 export const EXPORT_LIFT_SET = "__lift_set";
 export const IMPORT_KEEP = "keep";
 export const IMPORT_KEPT = "kept";
+/** The clock (`std::time`): seconds on the host's clock, an `f64` written at an address. */
+export const IMPORT_CLOCK = "clock";
+/** A line printed (`std::io::print`) and a phase timed (`std::time::phase`): each a UTF-8 run,
+ * shown or noted as it's made. */
+export const IMPORT_PRINT = "print";
+export const IMPORT_PHASE = "phase";
 /** Input (runtime/abi `input`): an event is EVENT_SIZE bytes, six words: its kind, its
  * modifiers, then four words that depend on the kind. */
 export const EVENT_SIZE = 24;
@@ -90,6 +98,8 @@ export const EventKind = {
   KeyDown: 5,
   KeyUp: 6,
   Text: 7,
+  PadButton: 8,
+  PadAxis: 9,
 } as const;
 export const MODIFIER_SHIFT = 1;
 export const MODIFIER_CONTROL = 2;
@@ -99,6 +109,11 @@ export const MODIFIER_META = 8;
 export const BUTTONS = ["primary", "middle", "secondary"] as const;
 /** The physical keys, by number: DOM's `KeyboardEvent.code` (0: one not listed). */
 export const KEYS = ["Unknown", "KeyA", "KeyB", "KeyC", "KeyD", "KeyE", "KeyF", "KeyG", "KeyH", "KeyI", "KeyJ", "KeyK", "KeyL", "KeyM", "KeyN", "KeyO", "KeyP", "KeyQ", "KeyR", "KeyS", "KeyT", "KeyU", "KeyV", "KeyW", "KeyX", "KeyY", "KeyZ", "Digit0", "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8", "Digit9", "Enter", "Escape", "Backspace", "Tab", "Space", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown", "Insert", "Delete", "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight", "CapsLock", "Minus", "Equal", "BracketLeft", "BracketRight", "Backslash", "Semicolon", "Quote", "Backquote", "Comma", "Period", "Slash", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "NumpadEnter", "NumpadAdd", "NumpadSubtract", "NumpadMultiply", "NumpadDivide", "NumpadDecimal"] as const;
+/** How many gamepads a host reports, and a pad's buttons and axes by number: the W3C Gamepad
+ * API's standard mapping, as a script names them. */
+export const PADS = 4;
+export const PAD_BUTTONS = ["south", "east", "west", "north", "leftshoulder", "rightshoulder", "lefttrigger", "righttrigger", "select", "start", "leftstick", "rightstick", "up", "down", "left", "right", "home"] as const;
+export const PAD_AXES = ["leftx", "lefty", "rightx", "righty"] as const;
 /** Every function a program may import besides its memory, with its type as both hosts word
  * it. */
 export const HOST_FUNCTIONS = [
@@ -111,11 +126,16 @@ export const HOST_FUNCTIONS = [
   ["tick", "(i32, i32, i32) -> ()"],
   ["keep", "(i32, i32) -> ()"],
   ["kept", "(i32, i32) -> (i32)"],
+  ["clock", "(i32) -> ()"],
+  ["print", "(i32, i32) -> ()"],
+  ["phase", "(i32, i32) -> ()"],
 ] as const;
 export const EXPORT_AUDIO = "__audio";
-/** The audio thread's rate and render quantum, and where `__audio` leaves a quantum's samples. */
+/** The audio thread's rate, render quantum and channels, and where `__audio` leaves a quantum's
+ * samples: the left channel's, then the right's. */
 export const AUDIO_SAMPLE_RATE = 48000;
 export const AUDIO_QUANTUM = 128;
+export const AUDIO_CHANNELS = 2;
 export const AUDIO_OUT = 1245184;
 /** The threads (runtime/abi `memory`): their numbers, their blocks, and the words of a block and
  * of a job slot a host reads and writes. */
@@ -131,8 +151,8 @@ export const JOB_DONE = 20;
 export const JOB_FAILED = 24;
 export const JOB_DONE_FAILED = 2147483648;
 export const RUNNING = 32;
-export const JOB_SLOTS = 1212416;
-export const JOB_SLOTS_END = 1216512;
+export const TASK_SLOTS = 1212416;
+export const TASK_SLOTS_END = 1216512;
 export const SLOT_STATE = 0;
 export const SLOT_THREAD = 12;
 export const SLOT_FAILED = 5;
@@ -141,6 +161,8 @@ export const PAR_HELPED = 264;
 /** The helpers' wake count and shutdown flag: a host stops a program's helpers with them. */
 export const PAR_WAKE = 256;
 export const PAR_SHUTDOWN = 260;
+/** How many helpers the host started for the program: it writes it before `init`. */
+export const PAR_HELPERS = 272;
 /** The ticker's words (runtime/abi `memory`), and its records' region. */
 export const TICK_WANT_HASH = 512;
 export const TICK_HASH = 520;

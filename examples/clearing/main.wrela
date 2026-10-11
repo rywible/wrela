@@ -17,7 +17,7 @@ use engine::run::run
 use engine::air::{Air, Tables, hazy, tables}
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::paint::{
-    Develop, Exposure, Look, Metering, dab_map, develop, glow_blur, glow_down, meter,
+    Develop, Exposure, Look, Metering, dab_map, develop, glow_blur, glow_down, lines, meter,
 }
 use engine::lit::Lighting
 use engine::plant::{Plant, Wind, full, leaf_atlas}
@@ -30,6 +30,7 @@ use engine::terrain::{Clipmap, Terrain, Texel, ground, ground_shade}
 use engine::vegetation::{Forest, Kind, kind, nothing}
 use engine::view::{BEHIND, Camera, NEAREST, SEEN, camera, first_camera}
 use std::gpu::dispatch
+use std::cache::Stale
 use std::collections::{Flags, replace, swap}
 use std::derive::Box3
 use std::job::{Job, Step}
@@ -66,6 +67,7 @@ const METERING = Metering {
     lo: 0.15,
     hi: 0.75,
     rate: 0.05,
+    flash: 1.25,
     fresh: 0,
 }
 
@@ -240,11 +242,11 @@ pub struct Clearing {
     /// Where the grass keeps out of the stones: each one's place and reach on the plane.
     footprints: GpuBuffer<vec4>,
     light: Light,
-    /// The air the sun shines through, its tables, and whether they're cooked for it (with the
-    /// probes' open sky, from them).
+    /// The air the sun shines through, its tables, and what they're cooked from (with the
+    /// probes' open sky, from them): the air and the light.
     air: Air,
     tables: Tables,
-    air_cooked: bool,
+    cooked_air: Stale<(Air, Light)>,
     cam: Camera,
     /// What the forest is made from; and the forest, its kinds cooked a few a frame at load (a
     /// short submission each) with its leaves' atlas: until they're all cooked, a forest of
@@ -254,13 +256,13 @@ pub struct Clearing {
     kinds: Vec<Kind>,
     forest_done: bool,
     grass: Grass,
-    /// The shadow maps: the static cascades (drawn when something static changes), and the
-    /// moving map.
+    /// The shadow maps: the static cascades, and what they're drawn from (`statics_key`: drawn
+    /// again when it changes), and the moving map.
     near: DepthTexture,
     far: DepthTexture,
     moving: DepthTexture,
     cmp: ComparisonSampler,
-    static_drawn: bool,
+    drawn_statics: Stale<StaticsKey>,
     /// The probes, baked over the first frames, and whether the occluders are cooked. After an
     /// edit, the next probes bake beside them (their occluders cooked first), and take over when
     /// they're done.
@@ -268,22 +270,30 @@ pub struct Clearing {
     occluders_cooked: bool,
     next_probes: Option<Baked>,
     next_cooked: bool,
+    /// What the probes are baked for: the light's, the forest's, the stones' and the ground's
+    /// literals' versions. A change bakes the next probes beside these.
+    probes_for: Stale<(u32, u32, u32, u32)>,
     /// What's cooked from literals (hot reload), and whether this build took over from another:
     /// it shows nothing until it's cooked everything, so the screen keeps the old build's frame.
     watches: Watches,
     restored: bool,
     /// Whether everything cooked at load is done.
     ready: bool,
-    /// The clouds: their noises, weather and shadow maps and dome (`engine::sky`), and whether
-    /// the noises and the maps are cooked (the maps again after an edit).
+    /// The clouds: their noises, weather and shadow maps and dome (`engine::sky`), and what the
+    /// noises, the weather's maps and the clouds' shadow are cooked from: nothing, the light's
+    /// and the clouds' literals' versions, and whether the shadow's on and the weather's
+    /// version.
     sky: Sky,
-    noise_cooked: bool,
-    sky_cooked: bool,
+    cooked_noise: Stale<()>,
+    cooked_weather: Stale<(u32, u32)>,
+    cooked_cloud_shadow: Stale<(bool, u32)>,
     /// The clouds as the last frame drew them (where their field had drifted).
     clouds: Clouds,
     /// The scene: linear colour and tags, depth, motion (this frame's and the last's, swapped
-    /// each frame); and the output's history, two to swap.
+    /// each frame); and the output's history, two to swap. The scene's second target takes the
+    /// lines (`paint::lines`), and becomes the scene.
     scene: Texture<Rgba16Float>,
+    scene_b: Texture<Rgba16Float>,
     depth: DepthTexture,
     /// Which far tree won each pixel of the prepass (`impostor::far_cut`).
     ids: Texture<R32Uint>,
@@ -315,10 +325,8 @@ pub struct Clearing {
     /// another (hot reload) shows none until it's ready, but its load goes on a step a frame.
     frames: u32,
     ran: u32,
-    /// What the tests set (testing.wrela): whether the clouds' shadow map needs cooking again
-    /// (for one left out or back), whether the next frame counts the cards' shading, and the
-    /// shadows the last frame drew by.
-    clouds_again: bool,
+    /// What the tests set (testing.wrela): whether the next frame counts the cards' shading,
+    /// and the shadows the last frame drew by.
     counting: bool,
     sh: Shadows,
     /// The last counts and captures, which a test reads back (each the newest buffer).
@@ -368,9 +376,6 @@ fn keys(s: mut Clearing) {
             }
             if let Some(system) = system {
                 s.carried.off = s.carried.off.toggled(system)
-                if system == System::Shadows {
-                    s.static_drawn = false
-                }
             }
         }
     }
@@ -394,8 +399,8 @@ pub fn init() -> Clearing {
     print(f"clouds: {cloudscape().len()} cumulus")
     var s = Clearing {
         snaps: Snapshots::new(take latest, hz: 60),
-        fawn: take fawn,
-        realizing: take realize,
+        fawn,
+        realizing: realize,
         creature: None,
         colours: buffer(1),
         palette: buffer(MAX_BONES),
@@ -417,9 +422,9 @@ pub fn init() -> Clearing {
         light: sun_light(),
         air: air_of(),
         tables: tables(),
-        air_cooked: false,
+        cooked_air: Stale::new(),
         cam: first_camera(start_eye(), LOOK_AT, FOVY, width: 960, height: 540),
-        woods: take woods,
+        woods,
         forest: Forest::new(
             Vec::new(),
             Vec::new(),
@@ -434,17 +439,19 @@ pub fn init() -> Clearing {
         far: depth_texture(width: FAR_CASCADE.side, height: FAR_CASCADE.side),
         moving: depth_texture(width: MOVING_SIDE, height: MOVING_SIDE),
         cmp: comparison_sampler(),
-        static_drawn: false,
-        probes: take probes,
+        drawn_statics: Stale::new(),
+        probes,
         occluders_cooked: false,
         next_probes: None,
         next_cooked: false,
+        probes_for: Stale::new(),
         watches: Watches::new(),
         restored: false,
         ready: false,
         sky: new_sky(),
-        noise_cooked: false,
-        sky_cooked: false,
+        cooked_noise: Stale::new(),
+        cooked_weather: Stale::new(),
+        cooked_cloud_shadow: Stale::new(),
         clouds: Clouds {
             eye: vec3(0.0),
             phase: 0,
@@ -454,6 +461,7 @@ pub fn init() -> Clearing {
             seed: 0,
         },
         scene: texture::<Rgba16Float>(width: 1, height: 1),
+        scene_b: texture::<Rgba16Float>(width: 1, height: 1),
         depth: depth_texture(width: 1, height: 1),
         ids: texture::<R32Uint>(width: 1, height: 1),
         motion: texture::<Rgba16Float>(width: 1, height: 1),
@@ -473,7 +481,6 @@ pub fn init() -> Clearing {
         height: 0,
         frames: 0,
         ran: 0,
-        clouds_again: false,
         counting: false,
         sh: shadows(
             SUN,
@@ -503,47 +510,39 @@ pub fn init() -> Clearing {
 /// forest, the boulders, the clouds, the ground; then the shadows and the probes they light.
 /// The probes bake beside the ones in use, which stay until they're done.
 fn cook_again(s: mut Clearing, eye: vec3) {
-    var shadows = false
-    var probes = false
-    var clouds = false
+    // What's cooked from these names their versions, or the values reloaded here, in its key
+    // (`std::cache`), so it's cooked again on its own.
     if s.watches.light.changed() {
         s.light = sun_light()
         s.air = air_of()
-        s.air_cooked = false
-        shadows = true
-        probes = true
-        clouds = true
     }
     if s.watches.forest.changed() {
         s.woods = woods()
         s.forest = forest_of(s.woods, mut s.forest, s.linear, s.carried.scale)
-        shadows = true
-        probes = true
     }
     if s.watches.stones.changed() {
         s.stones = boulders()
         s.footprints = buffer_of(footprints(), at_least: 1)
-        shadows = true
-        probes = true
     }
-    if s.watches.clouds.changed() {
-        clouds = true
-    }
+    let _ = s.watches.clouds.changed()
     if s.watches.ground.changed() {
         s.clipmap.follow(Ground {}, eye, again: true)
-        shadows = true
-        probes = true
     }
-    if shadows {
-        s.static_drawn = false
-    }
-    if probes {
-        s.next_probes = Some(probes_of(s.woods))
-        s.next_cooked = false
-    }
-    if clouds {
-        s.sky_cooked = false
-    }
+}
+
+/// What the static shadows are drawn from: the light, whether shadows are on, and the forest's,
+/// the stones' and the ground's literals' versions. (A test that places the forest by hand
+/// forgets what they were drawn from.)
+type StaticsKey = (Light, bool, u32, u32, u32)
+
+fn statics_key(s: Clearing) -> StaticsKey {
+    (
+        s.light,
+        on(s.carried.off, System::Shadows),
+        s.watches.forest.version(),
+        s.watches.stones.version(),
+        s.watches.ground.version(),
+    )
 }
 
 /// What the clearing carries across a hot reload, kept each frame.
@@ -632,6 +631,7 @@ fn copy_palette(s: mut Clearing) {
 /// forest's levels fitted to the scene's scale.
 fn resize(s: mut Clearing, width: u32, height: u32, w: u32, h: u32) {
     s.scene = texture::<Rgba16Float>(width: w, height: h)
+    s.scene_b = texture::<Rgba16Float>(width: w, height: h)
     s.depth = depth_texture(width: w, height: h)
     s.ids = texture::<R32Uint>(width: w, height: h)
     s.motion = texture::<Rgba16Float>(width: w, height: h)
@@ -666,12 +666,12 @@ fn cook_load(s: mut Clearing) {
             let atlas = take_atlas(mut s.forest)
             s.forest = new_forest(take kinds, s.woods.placed.clone(), take atlas, s.carried.scale)
             s.forest_done = true
-            s.static_drawn = false
+            s.drawn_statics.forget()
         }
     }
     if s.stones.len() < BOULDERS {
         s.stones.push(boulder(s.stones.len()))
-        s.static_drawn = false
+        s.drawn_statics.forget()
     }
     if s.creature.is_none() {
         match s.realizing.resume(s.fawn, CREATURE_SLICES) {
@@ -742,15 +742,17 @@ fn moving_shadow(s: mut Clearing, sh: Shadows, creature_on: bool) {
 /// one of the dome's tiles in 64 marched each frame, from `eye`, the field drifted with `wind`.
 fn cook_sky(s: mut Clearing, eye: vec3, wind: Wind) {
     let off = s.carried.off
+    let weather_key = (s.watches.light.version(), s.watches.clouds.version())
+    let cloud_shadows = on(off, System::CloudShadows)
     if s.ran > 0 {
-        if !s.air_cooked {
+        if s.cooked_air.stale((s.air, s.light)) {
             s.tables.cook(s.air, s.linear)
             s.probes.open(s.light, s.air.ground, s.tables.view, s.linear)
-            s.air_cooked = true
-        } else if !s.noise_cooked {
+            s.cooked_air.cooked((s.air, s.light))
+        } else if s.cooked_noise.stale(()) {
             s.sky.cook_noise()
-            s.noise_cooked = true
-        } else if !s.sky_cooked {
+            s.cooked_noise.cooked(())
+        } else if s.cooked_weather.stale(weather_key) {
             let w = weather()
             s.sky.cook_weather(
                 w.clouds,
@@ -758,18 +760,20 @@ fn cook_sky(s: mut Clearing, eye: vec3, wind: Wind) {
                 w.gap,
                 s.light.sun,
                 s.repeat,
-                shadows: on(off, System::CloudShadows),
+                shadows: cloud_shadows,
             )
-            s.sky_cooked = true
-            s.clouds_again = false
+            s.cooked_weather.cooked(weather_key)
+            s.cooked_cloud_shadow.cooked((cloud_shadows, s.cooked_weather.version()))
         }
     }
+    let fresh = !s.cooked_weather.stale(weather_key)
     // A test left the clouds' shadows out, or put them back.
-    if s.clouds_again && s.sky_cooked {
-        s.sky.cook_shadow(s.light.sun, s.repeat, shadows: on(off, System::CloudShadows))
-        s.clouds_again = false
+    let shadow_key = (cloud_shadows, s.cooked_weather.version())
+    if fresh && s.cooked_cloud_shadow.stale(shadow_key) {
+        s.sky.cook_shadow(s.light.sun, s.repeat, shadows: cloud_shadows)
+        s.cooked_cloud_shadow.cooked(shadow_key)
     }
-    if s.sky_cooked {
+    if fresh {
         s.clouds = s.sky.march(
             s.air,
             s.light,
@@ -791,7 +795,22 @@ fn cook_sky(s: mut Clearing, eye: vec3, wind: Wind) {
 fn bake_probes(s: mut Clearing, sh: Shadows) {
     let texels = s.clipmap.texels()
     let trace = trace_of(s)
-    if s.static_drawn {
+    // An edit of what they're baked from: the next probes bake beside these.
+    let edits = (
+        s.watches.light.version(),
+        s.watches.forest.version(),
+        s.watches.stones.version(),
+        s.watches.ground.version(),
+    )
+    if s.probes_for.stale(edits) {
+        if s.probes_for.ready() {
+            s.next_probes = Some(probes_of(s.woods))
+            s.next_cooked = false
+        }
+        s.probes_for.cooked(edits)
+    }
+    let drawn = !s.drawn_statics.stale(statics_key(s))
+    if drawn {
         if !s.occluders_cooked {
             s.probes.cook()
             s.occluders_cooked = true
@@ -951,7 +970,15 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
             draw(
                 ter,
                 ground.bind(cam, lt.levels, texels),
-                ground_shade.bind(lt, texels),
+                ground_shade.bind(
+                    lt,
+                    texels,
+                    litter: s.clipmap.details.litter,
+                    soil: s.clipmap.details.soil,
+                    rock: s.clipmap.details.rock,
+                    moss: s.clipmap.details.moss,
+                    ds: s.clipmap.details.s,
+                ),
                 indices: s.clipmap.indices(),
                 indirect: s.clipmap.draw_args(l),
                 depth: NEAREST,
@@ -1054,6 +1081,16 @@ fn finish(s: mut Clearing, cam: Camera, body: Box3, creature_on: bool, width: u3
         last_jitter: engine::view::jitter_of(max(cam.frame, 1) - 1),
         moving: s.moves_in,
     }
+    let looked = !test_build() || s.carried.view == View::Look
+    // The lines, on the scene's own samples, so temporal AA anti-aliases them.
+    if looked {
+        label("lines")
+        let d = Develop { cam, look: Look {}, out }
+        let lp = begin_pass(mut s.scene_b)
+        fullscreen(lp, lines.bind(d, s.scene, s.depth))
+        lp.end()
+        swap(mut s.scene, mut s.scene_b)
+    }
     label("temporal")
     // This frame's history is drawn over the older one: the last frame's is read.
     swap(mut s.history, mut s.last_history)
@@ -1071,7 +1108,7 @@ fn finish(s: mut Clearing, cam: Camera, body: Box3, creature_on: bool, width: u3
     )
     label("look")
     // A test's views of the scene and the history (`test_view`), in a test build only.
-    if !test_build() || s.carried.view == View::Look {
+    if looked {
         let m = Metering { fresh: if s.frames == 0 { 1 } else { 0 }, ..METERING }
         dispatch(meter.bind(s.scene, m, exposure: mut s.exposure), groups: 1)
         let d = Develop { cam, look: Look {}, out }
@@ -1156,9 +1193,10 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     )
     s.sh = sh
     // The static shadows, once the forest and the boulders that cast them are cooked.
-    if !s.static_drawn && s.forest_done && s.stones.len() == BOULDERS {
+    let key = statics_key(s)
+    if s.drawn_statics.stale(key) && s.forest_done && s.stones.len() == BOULDERS {
         static_shadows(mut s, sh, wind)
-        s.static_drawn = true
+        s.drawn_statics.cooked(key)
     }
     moving_shadow(mut s, sh, creature_on)
     cook_sky(mut s, eye, wind)
@@ -1204,15 +1242,9 @@ pub fn test_view(s: mut Clearing, view: View) {
 /// The systems frames leave out, by their bits (`System`).
 @testing
 pub fn test_off(s: mut Clearing, off: u32) {
-    let off = Flags::of_bits(off)
-    let changed = off.changed(s.carried.off)
-    if changed.has(System::Shadows) {
-        s.static_drawn = false
-    }
-    if changed.has(System::CloudShadows) {
-        s.clouds_again = true
-    }
-    s.carried.off = off
+    // What's cooked from these systems names them in its key: the static shadows and the
+    // clouds' shadow are cooked again on their own.
+    s.carried.off = Flags::of_bits(off)
 }
 
 /// The scene's size against the output's: 1 (native) or 2.
@@ -1234,8 +1266,6 @@ pub fn test_sun(s: mut Clearing, toward: vec3, light: f32) {
     s.air = hazy(toward, SUN_TOP, eye: start_eye().y)
     let l = sunlight(s.air)
     s.light = Light { sun_colour: l.sun_colour * light, ..l }
-    s.air_cooked = false
-    s.static_drawn = false
 }
 
 /// The forest replaced by one instance of kind `kind` at `at` (on the ground there), drawn as
@@ -1247,7 +1277,7 @@ pub fn test_solo(s: mut Clearing, kind: u32, at: vec2, cards_to: f32, impostors_
     s.forest.place(take placed)
     s.forest.cards_to = cards_to
     s.forest.impostors_to = impostors_to
-    s.static_drawn = false
+    s.drawn_statics.forget()
 }
 
 /// How wide kind `k`'s cards look on screen at their finest level (the scene's pixels), for an
@@ -1493,6 +1523,15 @@ pub fn test_kind(s: Clearing, k: u32) -> vec3 {
         2.0 * b.half / f32(engine::impostor::CELL),
         2.0 * b.half / f32(engine::impostor::VOXELS),
     )
+}
+
+/// Instance `i`'s middle, where its levels' patterns are anchored (`lod::anchor`), and its
+/// trunk's foot (in w, its height above the ground).
+@testing
+pub fn test_middle(s: Clearing, i: u32) -> vec4 {
+    let p = s.forest.placed[i % s.forest.placed.len()]
+    let top = s.forest.kinds[p.kind].top * p.at.scale
+    vec4(p.at.at + vec3(0.0, top * 0.5, 0.0), top)
 }
 
 /// The instances drawn the last frame as cards, as impostors and as volumes.

@@ -1,5 +1,6 @@
-//! Effects (language.md §8): what a function may do besides compute its result. There are six:
-//! `alloc` (the heap), `io`, `nondet` (anything whose result isn't a function of the inputs),
+//! Effects (language.md §8): what a function may do besides compute its result. There are
+//! seven: `alloc` (the heap), `io`, `trace` (an output the program never reads back: a line
+//! printed, a phase timed), `nondet` (anything whose result isn't a function of the inputs),
 //! `recursion` (a cycle in the call graph), `host` (recording GPU work), and `panic`. They're
 //! inferred from each body and everything it calls, never written, and checked against the
 //! contexts that forbid some: GPU entry points and `@gpu` functions, `@audio`, `@deterministic`,
@@ -23,6 +24,7 @@ use wrela_diag::{Diagnostic, Span, codes};
 pub enum Effect {
     Alloc,
     Io,
+    Trace,
     Nondet,
     Recursion,
     Host,
@@ -30,8 +32,15 @@ pub enum Effect {
 }
 
 impl Effect {
-    pub const ALL: [Effect; 6] =
-        [Effect::Alloc, Effect::Io, Effect::Nondet, Effect::Recursion, Effect::Host, Effect::Panic];
+    pub const ALL: [Effect; 7] = [
+        Effect::Alloc,
+        Effect::Io,
+        Effect::Trace,
+        Effect::Nondet,
+        Effect::Recursion,
+        Effect::Host,
+        Effect::Panic,
+    ];
 
     /// The effect `@effects(...)` names `name`.
     pub fn named(name: &str) -> Option<Effect> {
@@ -42,6 +51,7 @@ impl Effect {
         match self {
             Effect::Alloc => "alloc",
             Effect::Io => "io",
+            Effect::Trace => "trace",
             Effect::Nondet => "nondet",
             Effect::Recursion => "recursion",
             Effect::Host => "host",
@@ -54,6 +64,7 @@ impl Effect {
         match self {
             Effect::Alloc => "allocates",
             Effect::Io => "does IO",
+            Effect::Trace => "writes to the host's trace",
             Effect::Nondet => "is non-deterministic",
             Effect::Recursion => "recurses",
             Effect::Host => "records GPU work",
@@ -198,6 +209,31 @@ struct TypedArg {
     callee: String,
 }
 
+/// The body a callable place holds. Its resolved type keeps a closure's or named function's
+/// identity through aggregate fields (`held.f`) and other projections; `held` covers the
+/// temporaries that MIR assigned a callable value directly.
+fn callable_type_body(p: &Program, f: FnId, ty: TyId) -> Option<BodyId> {
+    match p.types.kind(ty) {
+        TyKind::Closure(c, _) => Some(BodyId { func: c.owner.unwrap_or(f), closure: Some(c.id) }),
+        TyKind::FnDef(g, _) => Some(BodyId { func: *g, closure: None }),
+        _ => None,
+    }
+}
+
+fn callable_body(
+    p: &Program,
+    f: FnId,
+    body: &Body,
+    place: &mir::Place,
+    held: &HashMap<mir::Local, BodyId>,
+) -> Option<BodyId> {
+    match callable_type_body(p, f, mir::place_ty(p, &body.locals, place)) {
+        Some(target) => Some(target),
+        _ if place.proj.is_empty() => held.get(&place.local).copied(),
+        _ => None,
+    }
+}
+
 /// The closures and named functions a body passes to `@deterministic fn` and `@parallel fn`
 /// parameters.
 fn typed_callables(p: &Program, f: FnId, body: &Body) -> Vec<TypedArg> {
@@ -220,7 +256,8 @@ fn typed_callables(p: &Program, f: FnId, body: &Body) -> Vec<TypedArg> {
             if !(flags.deterministic || flags.parallel || flags.audio) {
                 continue;
             }
-            let Some(&target) = a.place().and_then(|pl| held.get(&pl.local)) else {
+            let Some(target) = a.place().and_then(|place| callable_body(p, f, body, place, held))
+            else {
                 continue;
             };
             out.push(TypedArg {
@@ -230,8 +267,104 @@ fn typed_callables(p: &Program, f: FnId, body: &Body) -> Vec<TypedArg> {
                 callee: def.name.clone(),
             });
         }
+        // A callable may select a blanket impl because it meets an attributed function bound,
+        // even when the selected method never calls it. The bound is still an effect promise
+        // made by the concrete callable (`impl<F: @deterministic fn(..)> Trait for F`).
+        if let Callee::TraitMethod { method, self_ty, trait_args, .. } = &c.callee
+            && let FnOwner::Trait(t) = p.func(*method).owner
+            && let Some((i, subst)) =
+                traits::find_impl(p, *self_ty, &TraitRef { trait_: t, args: trait_args.clone() })
+        {
+            let imp = p.impl_(i);
+            for &g in &imp.generics {
+                let Some(bound) = p.param(g).fn_bound else { continue };
+                let TyKind::FnPtr(_, _, flags) = p.types.kind(p.types.subst(bound, &subst)) else {
+                    continue;
+                };
+                if !(flags.deterministic || flags.parallel || flags.audio) {
+                    continue;
+                }
+                let Some(target) = subst.get(g).and_then(|ty| callable_type_body(p, f, ty)) else {
+                    continue;
+                };
+                out.push(TypedArg {
+                    body: target,
+                    span: c.span,
+                    flags: *flags,
+                    callee: format!("{}'s impl", def.name),
+                });
+            }
+        }
+    });
+    // A struct's function fields: each bounded by its field's type (`fn.fields`).
+    adts_with_held(f, body, |adt, fields, held| {
+        let def = p.adt(adt);
+        let AdtKind::Struct(decl) = &def.kind else { return };
+        for (field, op) in decl.iter().zip(fields) {
+            let TyKind::Param(g) = p.types.kind(field.ty) else { continue };
+            let Some(bound) = p.param(*g).fn_bound else { continue };
+            let TyKind::FnPtr(_, _, flags) = p.types.kind(bound) else { continue };
+            if !(flags.deterministic || flags.parallel || flags.audio) {
+                continue;
+            }
+            let held_by = match &op.kind {
+                mir::OperandKind::Copy(pl) | mir::OperandKind::Move(pl, _) => held.get(&pl.local),
+                mir::OperandKind::Const(_) => None,
+            };
+            let Some(&target) = held_by else { continue };
+            out.push(TypedArg {
+                body: target,
+                span: op.span,
+                flags: *flags,
+                callee: format!("{}.{}", def.name, field.name),
+            });
+        }
     });
     out
+}
+
+/// Calls `visit` on each struct a body builds (in its closures too), with its fields'
+/// operands and what each local holds at that point: a closure or a named function.
+fn adts_with_held(
+    f: FnId,
+    body: &Body,
+    mut visit: impl FnMut(AdtId, &[mir::Operand], &HashMap<mir::Local, BodyId>),
+) {
+    let mut held: HashMap<mir::Local, BodyId> = HashMap::new();
+    for code in &body.fns {
+        for b in &code.blocks {
+            for s in &b.stmts {
+                let (StatementKind::Assign(_, r) | StatementKind::Eval(r)) = &s.kind else {
+                    continue;
+                };
+                if let StatementKind::Assign(place, r) = &s.kind
+                    && place.proj.is_empty()
+                {
+                    match r {
+                        Rvalue::Closure(id) => {
+                            held.insert(place.local, BodyId { func: f, closure: Some(*id) });
+                        }
+                        Rvalue::FnRef(g, _) => {
+                            held.insert(place.local, BodyId { func: *g, closure: None });
+                        }
+                        Rvalue::Use(op) => {
+                            if let mir::OperandKind::Copy(from) | mir::OperandKind::Move(from, _) =
+                                &op.kind
+                                && from.proj.is_empty()
+                                && let Some(&b) = held.get(&from.local)
+                            {
+                                held.insert(place.local, b);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if let Rvalue::Adt { adt, variant: None, fields, .. } = r {
+                    visit(*adt, fields, &held);
+                }
+            }
+        }
+    }
 }
 
 /// Calls `visit` on each call in `body` (in its closures too), with what each local holds at
@@ -325,15 +458,26 @@ fn parallel_writes(body: &Body, arg: &TypedArg) -> Vec<Diagnostic> {
     ]
 }
 
-// What each context forbids.
-const GPU: &[Effect] =
-    &[Effect::Alloc, Effect::Io, Effect::Nondet, Effect::Recursion, Effect::Host, Effect::Panic];
-const AUDIO: &[Effect] = &[Effect::Io, Effect::Host, Effect::Recursion, Effect::Alloc];
+// What each context forbids. A line printed or a phase timed changes no value the program
+// computes, so only code that can't call the host (the GPU's), the audio thread (which mustn't
+// wait on the host) and what's derived (which runs in another form) forbid `trace`.
+const GPU: &[Effect] = &[
+    Effect::Alloc,
+    Effect::Io,
+    Effect::Trace,
+    Effect::Nondet,
+    Effect::Recursion,
+    Effect::Host,
+    Effect::Panic,
+];
+const AUDIO: &[Effect] =
+    &[Effect::Io, Effect::Trace, Effect::Host, Effect::Recursion, Effect::Alloc];
 /// `@deterministic` code, a constant, and what runs on several workers at once. A replayed tick
 /// mustn't touch storage either: requests are `io` (§6.15).
 const DETERMINISTIC: &[Effect] = &[Effect::Io, Effect::Nondet, Effect::Host];
 /// What's derived can't allocate, do IO, be non-deterministic or call the host (§13).
-const DERIVED: &[Effect] = &[Effect::Alloc, Effect::Io, Effect::Nondet, Effect::Host];
+const DERIVED: &[Effect] =
+    &[Effect::Alloc, Effect::Io, Effect::Trace, Effect::Nondet, Effect::Host];
 
 /// The bodies a function hands to `gradient`, `value_and_gradient` or `interval`, and where.
 fn derived_callables(p: &Program, f: FnId, body: &Body) -> Vec<(BodyId, Span)> {
@@ -352,7 +496,7 @@ fn derived_callables(p: &Program, f: FnId, body: &Body) -> Vec<(BodyId, Span)> {
         );
         if derived
             && let Some(place) = c.args.first().and_then(|a| a.place())
-            && let Some(&target) = held.get(&place.local)
+            && let Some(target) = callable_body(p, f, body, place, held)
         {
             out.push((target, c.span));
         }
@@ -546,6 +690,7 @@ impl<'p> Effects<'p> {
                 match e {
                     Effect::Alloc => "using the heap (a `Vec`, a `String`, a `Box`, an f-string)",
                     Effect::Io => "reading or writing outside the program",
+                    Effect::Trace => "printing a line or timing a phase",
                     Effect::Nondet => "depending on something besides the inputs (the clock, randomness, readback)",
                     Effect::Recursion => "a cycle of calls",
                     Effect::Host => "recording GPU work",
@@ -623,6 +768,10 @@ fn node(
         }
         if def.lang.is_some_and(Lang::requests_io) {
             n.direct.push((Effect::Io, span, format!("`{}` asks the host for IO", def.name)));
+            return;
+        }
+        if def.lang.is_some_and(Lang::traces) {
+            n.direct.push((Effect::Trace, span, format!("`{}` tells the host", def.name)));
             return;
         }
         if def.lang == Some(Lang::LiftSet) {

@@ -119,12 +119,12 @@ pub fn walker<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Walker {
     let mesh = realize_once(creature, look)
     let shadow = unlit_shadow()
     Walker {
-        mesh: take mesh,
+        mesh,
         gait,
         palettes: buffer(MAX_BONES),
         walked: walked(),
         depth: depth_texture(width: 1, height: 1),
-        shadow: take shadow,
+        shadow,
         shadow_sampler: comparison_sampler(),
         width: 1,
         height: 1,

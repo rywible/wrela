@@ -126,7 +126,7 @@ pub struct Reading<T> {
 /// Starts reading `count` values of `buffer` back.
 pub fn reading<T: GpuData + Plain>(buffer: take GpuBuffer<T>, count: u32) -> Reading<T> {
     let pending = read(buffer.span(start: 0, count: count))
-    Reading { buffer: take buffer, pending, got: None }
+    Reading { buffer, pending, got: None }
 }
 
 /// Whether `r` has come back (nothing, if the GPU failed).
@@ -224,7 +224,7 @@ pub fn start<S: Surface>(field: S, points: [vec3], part: u32, twin: u32) -> Snap
     Snapping {
         count: n,
         points: buf,
-        snapped: take snapped,
+        snapped,
         at: reading(take at, count),
         about: reading(take about, count),
         raised: reading(take raised, count),

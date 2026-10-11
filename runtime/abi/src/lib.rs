@@ -82,8 +82,8 @@ pub const IMPORT_MEMORY: &str = "memory";
 /// `__worker(thread)`: a helper's thread entry (`memory`'s threads and helpers).
 pub const EXPORT_WORKER: &str = "__worker";
 /// `__audio(thread, task, context)`: renders one quantum of the voice `wrela.audio` started, at
-/// [`memory::AUDIO_OUT`], on the audio thread ([`memory::THREAD_AUDIO`]), on its own instance
-/// of the module, with the same memory.
+/// [`memory::AUDIO_OUT`] (its left channel, then its right), on the audio thread
+/// ([`memory::THREAD_AUDIO`]), on its own instance of the module, with the same memory.
 pub const EXPORT_AUDIO: &str = "__audio";
 /// `__tick(thread, task, context, tick)`: runs tick `tick` of the ticker `wrela.tick` started,
 /// with the records at [`memory::TICK_RECORDS`], on the ticker's thread
@@ -100,11 +100,24 @@ pub const IMPORT_KEEP: &str = "keep";
 /// `kept(address, cap) -> length`: copies up to `cap` bytes of what the replaced build last
 /// kept to the address, and gives how many it kept, all of them (0 if nothing).
 pub const IMPORT_KEPT: &str = "kept";
+/// `clock(address)`: writes the seconds since the host started the program, an `f64` that never
+/// goes back, to the address (`std::time::now`). Reading it is `nondet` (language.md §8).
+pub const IMPORT_CLOCK: &str = "clock";
+/// `print(address, length)`: shows that UTF-8 line on the host's console now, from any thread
+/// (`std::io::print`). The program never reads it back (the `trace` effect, language.md §8).
+pub const IMPORT_PRINT: &str = "print";
+/// `phase(address, length)`: this thread's time from now to its next `phase`, or to the end of
+/// the call the host made (a frame, a tick, a constant, a test), counts under that UTF-8 name;
+/// an empty name counts it under none (`std::time::phase`). The host reports it, and the
+/// program never reads it back (the `trace` effect).
+pub const IMPORT_PHASE: &str = "phase";
 /// The audio thread's sample rate, in hertz, and how many samples one `__audio` call renders
 /// (a Web Audio render quantum). Both hosts render at this rate; the browser resamples to the
 /// device's.
 pub const AUDIO_SAMPLE_RATE: u32 = 48000;
 pub const AUDIO_QUANTUM: u32 = 128;
+/// The voice's channels: left, then right.
+pub const AUDIO_CHANNELS: u32 = 2;
 /// What `request_status` says of a request that isn't answered yet, and of one that failed.
 pub const REQUEST_PENDING: i32 = -1;
 pub const REQUEST_FAILED: i32 = -2;
@@ -127,7 +140,7 @@ impl HostFunction {
 }
 
 /// Every function a program may import besides its memory ([`IMPORT_MEMORY`]).
-pub const HOST_FUNCTIONS: [HostFunction; 9] = [
+pub const HOST_FUNCTIONS: [HostFunction; 12] = [
     HostFunction { name: IMPORT_SUBMIT, params: 2, results: 0 },
     HostFunction { name: IMPORT_REQUEST_STATUS, params: 1, results: 1 },
     HostFunction { name: IMPORT_REQUEST_TAKE, params: 2, results: 0 },
@@ -137,6 +150,9 @@ pub const HOST_FUNCTIONS: [HostFunction; 9] = [
     HostFunction { name: IMPORT_TICK, params: 3, results: 0 },
     HostFunction { name: IMPORT_KEEP, params: 2, results: 0 },
     HostFunction { name: IMPORT_KEPT, params: 2, results: 1 },
+    HostFunction { name: IMPORT_CLOCK, params: 1, results: 0 },
+    HostFunction { name: IMPORT_PRINT, params: 2, results: 0 },
+    HostFunction { name: IMPORT_PHASE, params: 2, results: 0 },
 ];
 
 /// The export the host calls each frame.

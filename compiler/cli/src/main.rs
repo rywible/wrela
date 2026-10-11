@@ -17,6 +17,17 @@
 //!                                         has it and the program fixed
 //! wrela doc <item> [<package-dir>]        an item's signature, doc comment and examples
 //! wrela pipelines <package-dir> [--json]  each GPU entry point's instantiations (§7)
+//! wrela profile <package-dir> [--frames n] [--size WxH] [--input <script.json>] [--serial]
+//!     [--json] [--baseline <report.json>] where a frame's time goes on this machine: the GPU's
+//!                                         by label, the CPU's and its phases (medians and
+//!                                         95th percentiles), each pipeline's WGSL; with a
+//!                                         baseline, how each time changed
+//! wrela estimate <package-dir> [--frames n] [--skip n] [--size WxH] [--input <script.json>]
+//!     [--json] [--work <out.json>] [--pair <m4-profile.json>]
+//!                                         a frame's time on the MacBook Air M4, estimated
+//!                                         without its GPU: run on lavapipe, each label's
+//!                                         time through a model fitted to recorded M4 times,
+//!                                         with the model's own error
 //! wrela test <package-dir> [<filter>] [--json]
 //!                                         run the package's `@test` functions (§10), or
 //!                                         those whose names contain `filter`; exit 1 if one
@@ -32,13 +43,19 @@
 //!                                         the first frame at which a condition holds
 //! wrela query <package-dir> [<query>...] [--json]
 //!                                         types, callers, callees, impls, effects, borrows,
-//!                                         instantiations and signatures, from one check
+//!                                         instantiations and signatures, from one check;
+//!                                         with errors, what's known, and what they make
+//!                                         unsure
 //! wrela context <item> [<package-dir>] [--budget n]
-//!                                         an item's source and what's around it, in a budget
+//!                                         an item's source and what's around it, in a budget,
+//!                                         with errors too
 //! wrela refactor <package-dir> <change> [--dry-run] [--json]
 //!                                         rename, move, add-param, change-mode: checked
 //!                                         before written, refused on a stale plan
 //! wrela studio <package-dir> [...]        the lens (§22)
+//! wrela audio <package-dir> <action> [...] a piece's voice as files and numbers: wav,
+//!                                         describe, numbers, midi, sheet, speed; and
+//!                                         `wrela audio partials <wav> --key k`
 //! wrela reference replica <parts> -o <dir> [--engine <dir>] [--harmonics k]
 //!     [--sections-every m] [--seam m]     a reference mesh as a package of lofts, maybe
 //!                                         compressed
@@ -56,16 +73,19 @@ static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod audio;
 mod build;
 mod compare;
 mod doc;
 mod edit;
+mod estimate;
 mod explain;
 mod fix;
 mod fmt;
 mod mesh;
 mod pipelines;
 mod primer;
+mod profile;
 mod query;
 mod refactor;
 mod reference;
@@ -86,7 +106,9 @@ pub(crate) fn usage() -> ExitCode {
         "wrela explain <code>",
         "wrela doc <item> [<package-dir>]",
         "wrela pipelines <package-dir> [--json]",
-        "wrela test <package-dir> [<filter>] [--json]",
+        "wrela profile <package-dir> [--frames n] [--size WxH] [--input <script.json>] [--serial] [--json] [--baseline <report.json>]",
+        "wrela estimate <package-dir> [--frames n] [--skip n] [--size WxH] [--input <script.json>] [--json] [--work <out.json>] [--pair <m4-profile.json>]",
+        "wrela test <package-dir> [<filter>] [--bless] [--json]",
         "wrela primer [area]",
         "wrela solve <package-dir> (--minimize <module>::<function> | --spec) --free <file>[:<lines>]... [--steps n] [--exact] [--write] [--json]",
         "wrela query <package-dir> [<query>...] [--json]",
@@ -97,6 +119,10 @@ pub(crate) fn usage() -> ExitCode {
         "wrela reference replica <parts.toml> -o <out-dir> [--engine <dir>] [--harmonics k] [--sections-every m] [--seam m]",
         "wrela reference deviation <parts.toml> <package-dir> [--points n] [--json]",
         "wrela run <package-dir> [--port N] [--lift <package>]... [--debug]",
+        "wrela audio <package-dir> (wav <out.wav> | describe | numbers | midi <out.mid> | sheet <out.png> [--bars a-b] | speed) [--take n] [--seconds s]",
+        "wrela audio partials <file.wav> --key k [--from s] [--seconds s]",
+        "wrela audio model <dir-of-key-velocity.wav> --out <file.wrela> [--against <dir>]",
+        "wrela audio clicks <file.wav> [--notes <take.json>]",
         "wrela studio <package-dir> [serve [--port N] | build | run <script> | look | beside <manifest> | variants <package-dir>... | sweep <literal> <value>... | <action> [args...]] [--png FILE] [--view F] [--size WxH] [--reference PNG] [--debug]",
     ];
     eprintln!("usage:\n  {}\nqueries: {}", lines.join("\n  "), wrela_driver::query::KINDS);
@@ -119,9 +145,12 @@ fn main() -> ExitCode {
         "explain" => explain::run(rest),
         "doc" => doc::run(rest),
         "pipelines" => pipelines::run(rest),
+        "profile" => profile::run(rest),
+        "estimate" => estimate::run(rest),
         "test" => test::run(rest),
         "studio" => studio::run(rest),
         "run" => run::run(rest),
+        "audio" => audio::run(rest),
         "reference" => reference::run(rest),
         "solve" => solve::run(rest),
         "primer" => primer::run(rest),
@@ -244,7 +273,33 @@ pub(crate) fn write_build(out: &wrela_driver::Output, to: &Path) -> Result<(), S
     if out.has_errors() {
         return Err(wrela_diag::render::render_all(&out.sources, &out.diagnostics));
     }
+    if is_symlink(to) {
+        return Err(format!("{} is a symbolic link, so it won't be used", to.display()));
+    }
+    if let Some(name) = symlink_in(to, out.files.iter().map(|(name, _)| name.as_str())) {
+        return Err(format!(
+            "{} is a symbolic link, so it won't be replaced",
+            to.join(name).display()
+        ));
+    }
     out.write_to(to).map_err(|e| e.to_string())
+}
+
+pub(crate) fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+pub(crate) fn symlink_in<'a>(
+    dir: &Path,
+    names: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
+    names.into_iter().find(|name| is_symlink(&dir.join(name))).map(String::from)
+}
+
+/// Checks a generated path below `<package>/build` without following a symbolic-link component.
+pub(crate) fn generated_path(package: &Path, path: &Path) -> Result<(), String> {
+    wrela_driver::ensure_no_symlink_path(&package.join("build"), path)
+        .map_err(|e| format!("can't use `{}`: {e}", path.display()))
 }
 
 /// The last line of `logs` that starts `{`: a program's JSON answer.
@@ -287,5 +342,37 @@ mod tests {
         std::fs::write(dir.join("main.wrela"), "").expect("write");
         assert!(package_args(&args, true).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_paths_find_symbolic_links() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!("wrela-cli-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        symlink("missing", dir.join("game.wasm")).expect("symlink file");
+        assert_eq!(symlink_in(&dir, ["manifest.json", "game.wasm"]), Some("game.wasm".into()));
+        assert!(is_symlink(&dir.join("game.wasm")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generated_paths_reject_a_symlinked_build_parent() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!("wrela-cli-build-link-{}", std::process::id()));
+        let outside =
+            std::env::temp_dir().join(format!("wrela-cli-build-out-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&dir).expect("package");
+        std::fs::create_dir_all(&outside).expect("outside");
+        symlink(&outside, dir.join("build")).expect("symlink build");
+        assert!(generated_path(&dir, &dir.join("build/trace")).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(outside);
     }
 }

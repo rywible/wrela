@@ -8,11 +8,19 @@
 #                           goldens, run and GPU tests, grammar and fuzz samples; the tools'
 #                           tests; the browser runtime's checks; the WGSL size budgets. Its tests
 #                           have a budget (below); it fails if they take longer.
+#   tools/check.sh --fresh  the gate, with no test skipped as remembered. Where tests can be
+#                           traced (Linux: strace, unshare; a cloud machine), the gate runs each
+#                           slow test (5 s or more, last time) alone and remembers its pass with
+#                           what it read (tools/memo.py), and skips a slow test that passed before
+#                           with everything it read unchanged.
+#                           On a software GPU (WRELA_SOFTWARE_GPU, a cloud machine), the tests
+#                           whose `#[ignore]` reason starts `heavy:` are long tests instead.
 #   tools/check.sh --long   also the long checks, at their smaller sizes: the tests whose
 #                           `#[ignore]` reason starts `long:` (headless Chrome against the native
 #                           host, the clearing's camera path, soak runs, images against spike
 #                           01's), sharing the GPU; the grammar's 10^6 programs and 200,000 GBNF
-#                           samples; the compiler's crates built for wasm32 (all but the
+#                           samples; the WGSL size budgets of the packages that bake a history
+#                           (the floor); the compiler's crates built for wasm32 (all but the
 #                           driver, the CLI and the tests: the compiler is to run in the
 #                           browser too, so none may need what wasm32 doesn't have); 20,000 fuzz
 #                           cases from a new seed; and two of the measurements, in turn,
@@ -27,23 +35,35 @@
 #   tools/check.sh <filter>...
 #                           the edit loop's check: only the gate's tests whose names hold a
 #                           filter (`clearing::`, `lock`), from every test program, the GPU
-#                           shared; with --long, the long checks' too. Seconds.
+#                           shared; with --long, the long checks' too; with --nocapture, each
+#                           program's output, passed or not. Seconds.
+#   tools/check.sh --fmt    formats what the gate checks: rustfmt, and `wrela fmt` with the CLI
+#                           as last built (tools/hooks.py runs it before the gate).
 #
 # Needs: the Rust toolchain in rust-toolchain.toml, bun, python3, a GPU; Chrome stable for --long.
+# A cloud machine has them from tools/cloud.sh (the GPU is the CPU's Vulkan, and the gate takes
+# about 20 minutes there).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # The gate runs everything, the same way each time: a variable that narrows the tests, rewrites
 # goldens or picks a fuzz seed (left set in the shell by an earlier run) doesn't apply here.
 unset WRELA_RUN_ONLY WRELA_BLESS WRELA_FUZZ_ITERS WRELA_FUZZ_SEED WRELA_FUZZ_WORKER WRELA_FUZZ_JOBS \
-  WRELA_FUZZ_TIERS WRELA_FULL WRELA_GPU_SHARED
+  WRELA_FUZZ_TIERS WRELA_FULL WRELA_GPU_SHARED WRELA_GPU_WAITS
+# The tests count the constants their builds compute: each package keeps its own cache here, not
+# the one a session shares with other checkouts.
+unset WRELA_CONST_CACHE
 
-long=0 full=0 filters=()
+usage="usage: tools/check.sh [--fresh | --long | --full] | [--long] [--nocapture] <filter>... | --fmt"
+long=0 full=0 fmt=0 fresh=0 nocapture=() filters=()
 for arg in "$@"; do
   case "$arg" in
     --long) long=1 ;;
     --full) long=1 full=1 ;;
-    -*) echo "usage: tools/check.sh [--long | --full] | [--long] <filter>..." >&2; exit 2 ;;
+    --fmt) fmt=1 ;;
+    --fresh) fresh=1 ;;
+    --nocapture) nocapture=(--nocapture) ;;
+    -*) echo "$usage" >&2; exit 2 ;;
     *) filters+=("$arg") ;;
   esac
 done
@@ -51,15 +71,24 @@ if [ "$full" = 1 ] && [ "${#filters[@]}" -gt 0 ]; then
   echo "a measurement runs alone: cargo test --release --workspace -- --ignored --exact <name>" >&2
   exit 2
 fi
+if { [ "${#nocapture[@]}" -gt 0 ] && [ "${#filters[@]}" = 0 ]; } || { [ "$fmt" = 1 ] && [ "$#" -gt 1 ]; } \
+  || { [ "$fresh" = 1 ] && [ "$#" -gt 1 ]; }; then
+  echo "$usage" >&2
+  exit 2
+fi
 
 step() { printf '\n== %s\n' "$*"; }
 
 # The long tests and the measurements, by name (`module::test`, or `test` in a test program of
-# one file): each test whose `#[ignore]` reason starts `long:` is in `long_tests`, and `measure:`
-# in `measures`.
-long_tests=() measures=()
+# one file): each test whose `#[ignore]` reason starts `long:` is in `long_tests`, `measure:` in
+# `measures`, and `heavy:` in `heavy_tests`.
+long_tests=() measures=() heavy_tests=()
 while read -r kind name; do
-  if [ "$kind" = measure ]; then measures+=("$name"); else long_tests+=("$name"); fi
+  case $kind in
+    measure) measures+=("$name") ;;
+    heavy) heavy_tests+=("$name") ;;
+    *) long_tests+=("$name") ;;
+  esac
 done < <(python3 - <<'PY'
 import pathlib, re
 for f in sorted([*pathlib.Path("compiler").rglob("*.rs"), *pathlib.Path("runtime").rglob("*.rs")]):
@@ -67,12 +96,25 @@ for f in sorted([*pathlib.Path("compiler").rglob("*.rs"), *pathlib.Path("runtime
         continue
     lines = f.read_text().splitlines()
     for i, line in enumerate(lines):
-        if m := re.search(r'#\[ignore = "(long|measure):', line):
+        if m := re.search(r'#\[ignore = "(long|measure|heavy):', line):
             name = next(re.search(r"fn (\w+)\(", l).group(1) for l in lines[i + 1:] if re.search(r"fn (\w+)\(", l))
-            # A test file at the top of `tests/` is a test program of its own (no module).
-            print(m[1], name if f.parent.name == "tests" else f"{f.stem}::{name}")
+            # A test file at the top of `tests/` is a test program of its own (no module). A unit
+            # test in `src/` is in its file's module, under the directories it's in, and in its
+            # `mod tests` (a crate's root file names no module, nor does a `mod.rs`).
+            if f.parent.name == "tests":
+                print(m[1], name)
+            elif "src" in f.parts:
+                path = [*f.parts[f.parts.index("src") + 1 : -1], f.stem]
+                module = "".join(f"{p}::" for p in path if p not in ("lib", "main", "mod"))
+                inside = any(re.match(r"\s*mod tests\b", l) for l in lines[:i])
+                print(m[1], f"{module}{'tests::' if inside else ''}{name}")
+            else:
+                print(m[1], f"{f.stem}::{name}")
 PY
 )
+# A heavy test takes seconds on a GPU but minutes on a software one (lavapipe): there, it is a
+# long test, which main's long run checks every six hours.
+if [ -n "${WRELA_SOFTWARE_GPU:-}" ]; then long_tests+=("${heavy_tests[@]}"); fi
 
 # wrela sources the formatter owns. The conformance and diagnostics cases aren't here: some
 # are malformed on purpose, and their annotations are part of their layout.
@@ -80,19 +122,35 @@ WRELA_SOURCES=(examples engine compiler/std compiler/tests/fields compiler/tests
   compiler/tests/numerics compiler/tests/render compiler/tests/queries compiler/tests/simd
   compiler/tests/input compiler/tests/lift compiler/tests/texels compiler/tests/shader_params compiler/tests/unroll ui studio)
 
+# Formats what the gate checks, and names what it changed. `wrela fmt` is the CLI as last built:
+# the gate builds it afresh and checks again.
+if [ "$fmt" = 1 ]; then
+  cargo fmt --all -- -l
+  wrela="${CARGO_TARGET_DIR:-target}/release/wrela"
+  if [ -x "$wrela" ]; then
+    # The files it would change, on stdout (its count is on stderr).
+    "$wrela" fmt --check "${WRELA_SOURCES[@]}" 2>/dev/null || true
+    "$wrela" fmt "${WRELA_SOURCES[@]}"
+  fi
+  exit 0
+fi
+
 logs=$(mktemp -d)
 side_jobs=()
-side() { # name, command...: runs in the background, its output and status kept
+side() { # name, command...: runs in the background, its output, status and time kept
   local name=$1; shift
   side_jobs+=("$name")
-  (set +e; "$@" > "$logs/$name" 2>&1; echo $? > "$logs/$name.status") &
+  (set +e; s=$SECONDS; "$@" > "$logs/$name" 2>&1; echo $? > "$logs/$name.status"; echo $((SECONDS - s)) > "$logs/$name.took") &
 }
-# Waits for the side jobs: each that failed shows its output and fails the checks (`tests`).
+# Waits for the side jobs: each that failed shows its output and fails the checks (`tests`);
+# each that took 10 s or more says how long.
 side_results() {
   wait
   for job in "${side_jobs[@]}"; do
     if [ "$(cat "$logs/$job.status")" != 0 ]; then cat "$logs/$job"; echo "the $job checks failed" >&2; tests=1; fi
+    if [ "$(cat "$logs/$job.took")" -ge 10 ]; then echo "  beside them, $job: $(cat "$logs/$job.took")s"; fi
   done
+  side_jobs=()
 }
 # The tools' tests (the dev server, the headless-Chrome driver with a fake Chrome, the agent
 # test's scorer) mostly wait on processes, so each runs in a process of its own, all at once.
@@ -118,29 +176,38 @@ TOOLS
 }
 
 # Runs every test program at once, each with `args` (its tests filtered and skipped), in its
-# package's directory as cargo does; prints each one's time, and the output of each that fails,
-# and fails if no test ran. Four of a program's GPU tests share the GPU at a time: they check
-# what the GPU computes, not how long it takes (the measurements run alone, below).
+# package's directory as cargo does; prints each one's time, and the output of each that fails
+# (with --nocapture, of each that ran a test), and fails if no test ran. Four of a program's GPU
+# tests share the GPU at a time: they check what the GPU computes, not how long it takes (the
+# measurements run alone, below). A program that waits for another process's hold on the GPU
+# notes how long in `gpu-waits` (`WRELA_GPU_WAITS`), for the gate's budget.
 run_tests() { # args...
   python3 - "$logs" "${CARGO_TARGET_DIR:-target}/native-cache" "$@" <<'PY'
 import json, os, re, subprocess, sys, time
 logs, native_cache, *args = sys.argv[1:]
 native_cache = os.path.abspath(native_cache)
 runs = []
+programs = []
 for line in open(f"{logs}/tests.json"):
     m = json.loads(line)
     if m.get("reason") == "compiler-artifact" and m.get("executable") and m["profile"]["test"]:
-        # As cargo runs a test program: in its package's directory.
-        pkg = os.path.dirname(m["manifest_path"])
-        # Compiled code is kept across runs (wrela_host's cache): a test's build is made afresh
-        # each run, and its WASM is mostly the same.
-        env = {**os.environ, "CARGO_MANIFEST_DIR": pkg, "WRELA_NATIVE_CACHE": native_cache,
-               "WRELA_GPU_SHARED": "4"}
-        out = open(f"{logs}/run-{len(runs)}", "w+")
-        name = f"{m['target']['name']} ({m['target']['kind'][0]})"
-        proc = subprocess.Popen([m["executable"], "-q", *args], cwd=pkg, env=env,
-                                stdout=out, stderr=subprocess.STDOUT)
-        runs.append((name, proc, out, time.monotonic()))
+        programs.append(m)
+# The end-to-end suite is the longest program, so the gate's time: it starts first, and the
+# others yield to it (`nice`: with all at one priority, it took half as long again as alone).
+programs.sort(key=lambda m: not os.path.dirname(m["manifest_path"]).endswith("compiler/tests"))
+for m in programs:
+    # As cargo runs a test program: in its package's directory.
+    pkg = os.path.dirname(m["manifest_path"])
+    # Compiled code is kept across runs (wrela_host's cache): a test's build is made afresh
+    # each run, and its WASM is mostly the same.
+    env = {**os.environ, "CARGO_MANIFEST_DIR": pkg, "WRELA_NATIVE_CACHE": native_cache,
+           "WRELA_GPU_SHARED": "4", "WRELA_GPU_WAITS": f"{logs}/gpu-waits"}
+    out = open(f"{logs}/run-{len(runs)}", "w+")
+    name = f"{m['target']['name']} ({m['target']['kind'][0]})"
+    first = pkg.endswith("compiler/tests")
+    proc = subprocess.Popen([*([] if first else ["nice", "-n", "10"]), m["executable"], "-q", *args],
+                            cwd=pkg, env=env, stdout=out, stderr=subprocess.STDOUT)
+    runs.append((name, proc, out, time.monotonic()))
 failed, ran = False, 0
 waiting = list(runs)
 while waiting:
@@ -156,6 +223,8 @@ while waiting:
             failed = True
             print(text)
             print(f"{name} failed")
+        elif passed and "--nocapture" in args:
+            print(text)
         elif passed and time.monotonic() - start >= 1:
             print(f"  {name}: {time.monotonic() - start:.1f}s")
 print(f"  {ran} tests passed")
@@ -177,7 +246,7 @@ if [ "${#filters[@]}" -gt 0 ]; then
     for t in "${measures[@]}"; do skips+=(--skip "$t"); done
   fi
   step "the tests whose names hold ${filters[*]}"
-  run_tests --include-ignored "${skips[@]}" "${filters[@]}"
+  run_tests --include-ignored "${skips[@]}" "${nocapture[@]}" "${filters[@]}"
   rm -rf "$logs"
   exit 0
 fi
@@ -197,29 +266,103 @@ wrela="${CARGO_TARGET_DIR:-target}/release/wrela"
 step "wrela fmt --check"
 "$wrela" fmt --check "${WRELA_SOURCES[@]}"
 
-step "tests, on the CPU and the GPU, but the long ones and the measurements, every test program at once; beside them, the doc tests and the WGSL size budgets (every example's, sketch's and lens's pipelines)"
+# The memory of slow tests that passed (tools/memo.py), where a test can be traced (Linux:
+# strace, unshare): each slow test runs alone, and the gate skips one that passed before with all
+# it read as it is now. --fresh, --long and --full run every test, and keep what they learn.
+# WRELA_GATE_MEMO is the memory's directory, or `off`; in a Claude project's session it is in the
+# project's shared folder, so the project's sessions share what they learn.
+memo=off
+if [ "${WRELA_GATE_MEMO:-}" != off ] && python3 tools/memo.py available; then
+  if [ "$fresh" = 1 ] || [ "$long" = 1 ]; then memo=fresh; else memo=on; fi
+fi
+if [ -n "${WRELA_GATE_MEMO:-}" ] && [ "$WRELA_GATE_MEMO" != off ]; then
+  memo_dir=$WRELA_GATE_MEMO
+elif [ -d /mnt/project-files ] && [ -w /mnt/project-files ]; then
+  memo_dir=/mnt/project-files/.gate-memo
+else
+  memo_dir="${CARGO_TARGET_DIR:-target}/gate-memo"
+fi
+
+step "tests, on the CPU and the GPU, but the long ones and the measurements$( [ -n "${WRELA_SOFTWARE_GPU:-}" ] && [ "${#heavy_tests[@]}" -gt 0 ] && echo " (on this software GPU, the ${#heavy_tests[@]} heavy ones are long: tools/check.sh --long <name> runs one)"), every test program at once$( [ "$memo" != off ] && echo " (each slow test alone, the longest first$( [ "$memo" = on ] && echo ", unless it passed with the same inputs before"))"); beside them, the doc tests and the WGSL size budgets (every example's, sketch's and lens's pipelines)"
 tests_started=$SECONDS
+ps -A -o pid=,ppid=,time= > "$logs/ps-before"
 side doc cargo test -q --release --workspace --doc
 side wgsl python3 tools/wgsl_budgets.py "$wrela"
 tests=0
-run_tests --include-ignored "${skips[@]}" || tests=1
+if [ "$memo" = off ]; then
+  run_tests --include-ignored "${skips[@]}" || tests=1
+else
+  python3 tools/memo.py run "$logs" "${CARGO_TARGET_DIR:-target}/native-cache" "$memo" "$memo_dir" \
+    --include-ignored "${skips[@]}" || tests=1
+fi
 side_results
+ps -A -o pid=,ppid=,time= > "$logs/ps-after"
 [ "$tests" = 0 ] || exit 1
 grep -h "pipelines in" "$logs/wgsl" || true
 took=$((SECONDS - tests_started))
 echo "  the tests took ${took}s; built and tested in $((SECONDS - started))s"
 # The budget that keeps the gate quick: a test that takes seconds belongs in the long checks.
+# It's an idle machine's. While another process held the GPU alone (a measurement, a test run
+# outside the checks), the tests waited for it: they're over budget only if they are without
+# their longest wait. And the cores other processes kept busy meanwhile (another session's
+# checks, Spotlight indexing what the builds wrote: 2.5 of 10 cores on 2026-10-10) weren't the
+# tests': the budget grows by the share they took.
 if [ "$took" -gt 60 ]; then
-  echo "the tests took ${took}s, over their 60 s budget: tag the slow ones \`#[ignore = \"long: ...\"]\`" >&2
-  exit 1
+  waited=0
+  if [ -s "$logs/gpu-waits" ]; then
+    waited=$(awk '$1 > m { m = $1 } END { printf "%d", m }' "$logs/gpu-waits")
+    echo "  the tests waited for the GPU (at most ${waited}s), held alone by:"
+    cut -d' ' -f2- "$logs/gpu-waits" | sort -u | sed 's/^/    /'
+  fi
+  budget=$(python3 - "$logs" "$$" "$took" <<'PY'
+import os, sys
+logs, me, took = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+def read(name):
+    ps = {}
+    for line in open(f"{logs}/{name}"):
+        pid, ppid, t = line.split()
+        parts = [float(x) for x in t.split(":")]
+        secs = sum(v * 60 ** (len(parts) - 1 - i) for i, v in enumerate(parts))
+        ps[int(pid)] = (int(ppid), secs)
+    return ps
+before, after = read("ps-before"), read("ps-after")
+def ours(pid):
+    while pid > 1:
+        if pid == me:
+            return True
+        pid = after.get(pid, before.get(pid, (1, 0)))[0]
+    return False
+# The CPU each process outside the checks used while they ran (one that started or ended
+# meanwhile isn't counted: the share is a lower bound).
+other = sum(after[p][1] - before[p][1] for p in after if p in before and not ours(p))
+cores = os.cpu_count()
+busy = min(other / max(took, 1), cores - 1)
+print(f"{busy:.1f} {60 * cores / (cores - busy):.0f}")
+PY
+)
+  busy=${budget% *}; budget=${budget#* }
+  echo "  other processes kept ${busy} of the machine's cores busy meanwhile: the budget is ${budget}s"
+  if [ $((took - waited)) -gt "$budget" ]; then
+    # The budget is a GPU's: on the CPU's Vulkan (a cloud machine, tools/cloud.sh), the GPU
+    # tests take many times as long. It's reported there, not gated.
+    if [ -n "${WRELA_SOFTWARE_GPU:-}" ]; then
+      echo "  over the budget (${budget}s), on a software GPU (WRELA_SOFTWARE_GPU): reported, not gated"
+    else
+      echo "the tests took ${took}s, over their budget (${budget}s): tag the slow ones \`#[ignore = \"long: ...\"]\`" >&2
+      exit 1
+    fi
+  else
+    echo "  within the budget for the cores the tests had: not a failure"
+  fi
 fi
 
 if [ "$long" = 1 ]; then
   # A new seed each run, so the runs between them cover more cases; a failure names its seed.
   seed=$(( (RANDOM << 15 | RANDOM) + 1 ))
   side_jobs=()
-  step "long: the long checks$( [ "$full" = 1 ] && echo ", at full size"), sharing the GPU (one headless Chrome at a time); beside them, the grammar's 10^6 generated programs against the oracle and the formatter, 200,000 GBNF samples (seed $seed), and the compiler's crates built for wasm32"
+  step "long: the long checks$( [ "$full" = 1 ] && echo ", at full size"), sharing the GPU (one headless Chrome at a time); beside them, the grammar's 10^6 generated programs against the oracle and the formatter, 200,000 GBNF samples (seed $seed), the baked packages' WGSL size budgets, and the compiler's crates built for wasm32"
   side differential cargo run -q --release -p wrela-grammar --bin differential -- 1000000 --seed "$seed"
+  side wgsl_baked python3 tools/wgsl_budgets.py "$wrela" --baked
   side gbnf cargo run -q --release -p wrela-grammar --bin gbnf-sample -- 200000 --seed "$seed"
   # Each crate under compiler/ but the driver (it runs wasmtime), the CLI and the tests, so a
   # new compiler crate is in it; their libraries only (the grammar's command-line tools don't
@@ -239,6 +382,7 @@ for p in json.load(sys.stdin)["packages"]:
   unset WRELA_FULL
   side_results
   [ "$tests" = 0 ] || exit 1
+  grep -h "largest pipeline" "$logs/wgsl_baked" || true
 
   fuzz=$( [ "$full" = 1 ] && echo 1000000 || echo 20000 )
   step "long: fuzz: $fuzz mutated programs of tiers 1 and 2, one worker per core (seed $seed)"
@@ -268,7 +412,7 @@ if [ "$full" = 1 ]; then
   step "full: every test of the gate at full size"
   WRELA_FULL=1 run_tests --include-ignored "${skips[@]}"
 
-  step "full: the CLI's speed, cold processes: hello field's check < 200 ms and build < 2 s, sketch 03's, the herd's, the clearing's and the lens's (on each subject) < 500 ms and < 5 s"
+  step "full: the CLI's speed, cold processes: hello field's check < 200 ms and build < 2 s, sketch 03's, the herd's, the clearing's, the floor's (its bake cached) and the lens's (on each subject) < 500 ms and < 5 s"
   python3 - "$wrela" <<'PY'
 import shutil, subprocess, sys, tempfile, time
 sys.path.insert(0, "tools")
@@ -300,6 +444,9 @@ try:
         ("build the herd", ["build", "examples/herd", "-o", f"{out}/speed-herd"], 5.0),
         ("check the clearing", ["check", "examples/clearing"], 0.5),
         ("build the clearing", ["build", "examples/clearing", "-o", f"{out}/speed-clearing"], 5.0),
+        # The floor with its bake from the constants' cache (#55 AC16).
+        ("check the floor", ["check", "examples/last-green"], 0.5),
+        ("build the floor", ["build", "examples/last-green", "-o", f"{out}/speed-floor"], 5.0),
     ]
     for s in SUBJECTS:
         runs += [

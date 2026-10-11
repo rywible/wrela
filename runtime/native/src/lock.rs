@@ -42,7 +42,11 @@ const POLL: Duration = Duration::from_millis(500);
 /// that queue are those that see the same `$TMPDIR` (normally all of one user's); a run with
 /// another one, or another user's, takes a lock of its own.
 fn lock_path() -> PathBuf {
-    lock_path_in(std::env::var_os("TMPDIR"), std::env::home_dir())
+    let path = lock_path_in(std::env::var_os("TMPDIR"), std::env::home_dir());
+    // This crate's unit tests take the lock alone. On the real file they'd wait for every GPU
+    // test the checks run beside them, which share it (minutes on a software GPU). Nothing else
+    // in this crate's unit tests takes the lock.
+    if cfg!(test) { path.with_file_name("wrela-gpu-unit-tests.lock") } else { path }
 }
 
 fn lock_path_in(tmpdir: Option<OsString>, home: Option<PathBuf>) -> PathBuf {
@@ -220,16 +224,18 @@ fn take(who: &str, shared: bool) -> Result<File> {
     let mut file = open(&path)?;
     let start = Instant::now();
     let mut announced = false;
+    let mut holder = String::new();
     loop {
         let tried = if shared { file.try_lock_shared() } else { file.try_lock() };
         match tried {
             Ok(()) => break,
             Err(TryLockError::WouldBlock) => {
                 if !announced {
-                    let mut holder = String::new();
                     let _ = (&file).read_to_string(&mut holder);
-                    let holder = holder.trim();
-                    let holder = if holder.is_empty() { "unknown" } else { holder };
+                    holder = holder.trim().to_string();
+                    if holder.is_empty() {
+                        holder = "unknown".into();
+                    }
                     eprintln!("waiting for the GPU lock, held by: {holder}");
                     announced = true;
                 }
@@ -248,6 +254,7 @@ fn take(who: &str, shared: bool) -> Result<File> {
     }
     if announced {
         eprintln!("got the GPU lock after {:.0}s", start.elapsed().as_secs_f64());
+        note_wait(std::env::var_os("WRELA_GPU_WAITS"), start.elapsed(), &holder);
     }
     // Say who holds it, for waiters' messages. Best effort: the lock is what matters.
     let note = format!("pid {}, {who}\n", std::process::id());
@@ -256,6 +263,20 @@ fn take(who: &str, shared: bool) -> Result<File> {
         .and_then(|()| file.seek(SeekFrom::Start(0)))
         .and_then(|_| file.write_all(note.as_bytes()));
     Ok(file)
+}
+
+/// With `WRELA_GPU_WAITS` naming a file, a run that waited for another process appends a line:
+/// the seconds it waited, and the holder's note. tools/check.sh reads it to tell a slow test from
+/// a GPU another process held alone (a measurement, or a test run outside the checks). Best
+/// effort, as the holder's note is.
+fn note_wait(path: Option<OsString>, waited: Duration, holder: &str) {
+    let Some(path) = path.filter(|p| !p.is_empty()) else { return };
+    let line = format!("{:.1} {holder}\n", waited.as_secs_f64());
+    let _ = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut f| f.write_all(line.as_bytes()));
 }
 
 #[cfg(test)]
@@ -384,5 +405,19 @@ mod tests {
             PathBuf::from("/home/u/.wrela-gpu.lock")
         );
         assert_eq!(lock_path_in(None, home), PathBuf::from("/home/u/.wrela-gpu.lock"));
+    }
+
+    #[test]
+    fn a_wait_is_noted_in_the_file_the_variable_names() {
+        let dir = std::env::temp_dir().join(format!("wrela-waits-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("waits");
+        note_wait(Some(path.clone().into()), Duration::from_millis(2500), "pid 7, a measurement");
+        note_wait(Some(path.clone().into()), Duration::from_secs(12), "pid 8, a test");
+        note_wait(Some("".into()), Duration::from_secs(1), "nowhere");
+        note_wait(None, Duration::from_secs(1), "nowhere");
+        let text = std::fs::read_to_string(&path).expect("the notes");
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+        assert_eq!(text, "2.5 pid 7, a measurement\n12.0 pid 8, a test\n");
     }
 }

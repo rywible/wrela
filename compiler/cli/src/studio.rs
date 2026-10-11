@@ -16,8 +16,9 @@ use wrela_host::{Event, Host, Value};
 /// (wider, the lens draws its panel for people beside them).
 const SIZE: (u32, u32) = (896, 896);
 
-/// How many frames a headless run waits for the GPU's answers at most.
-const WAIT: u32 = 240;
+/// How long a headless run waits for the lens at most: for the GPU's answers, or for work on
+/// its helpers (the map lens's preview history, a few seconds).
+const WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 pub fn run(args: &[String]) -> ExitCode {
     let mut rest = Vec::new();
@@ -85,7 +86,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 }
             }
         }
-        name => match parse_action(name, &rest[2..]) {
+        name => match parse_action(studio::actions(&pkg), name, &rest[2..]) {
             Ok(a) => finish(one_action(&pkg, &page, &a, size, png.as_deref(), mask)),
             Err(code) => code,
         },
@@ -141,11 +142,15 @@ fn compare(
         _ => {
             let Some((literal, values)) = plain.split_first() else { return crate::usage() };
             let (Ok(literal), Ok(values)) = (
-                literal.parse::<u32>(),
+                literal.parse::<i32>(),
                 values.iter().map(|v| v.parse::<f32>()).collect::<Result<Vec<_>, _>>(),
             ) else {
                 return crate::usage();
             };
+            if literal < 0 || values.iter().any(|v| !v.is_finite()) {
+                return crate::usage();
+            }
+            let literal = literal as u32;
             finish(crate::compare::sweep(pkg, page, n, literal, &values, facing, &png))
         }
     }
@@ -224,9 +229,10 @@ impl Lens {
         self.host.frame(t, self.size.0, self.size.1).map_err(|e| e.to_string())
     }
 
-    /// Frames until the lens isn't waiting for the GPU (at most `WAIT`), then one more.
+    /// Frames until the lens isn't waiting (at most `WAIT`), then one more.
     fn settle(&mut self) -> Result<(), String> {
-        for _ in 0..WAIT {
+        let began = std::time::Instant::now();
+        while began.elapsed() < WAIT {
             let busy =
                 match self.host.call_export("busy", &[]).map_err(|e| e.to_string())?.as_slice() {
                     [Value::I32(b)] => *b != 0,
@@ -237,7 +243,7 @@ impl Lens {
                 return Ok(());
             }
         }
-        Err(format!("the lens was still waiting for the GPU after {WAIT} frames"))
+        Err(format!("the lens was still waiting after {} s", WAIT.as_secs()))
     }
 
     /// Export `name` called with `args`, the lens's lines before it dropped, and the frames
@@ -375,9 +381,13 @@ struct Action<'a> {
 
 /// `name` and `args` read as one of the lens's actions, or the exit status after printing why
 /// not.
-fn parse_action<'a>(name: &'a str, args: &[String]) -> Result<Action<'a>, ExitCode> {
-    let Some((_, kinds)) = studio::ACTIONS.iter().find(|(n, _)| *n == name) else {
-        let names: Vec<&str> = studio::ACTIONS.iter().map(|(n, _)| *n).collect();
+fn parse_action<'a>(
+    actions: &[(&str, &str)],
+    name: &'a str,
+    args: &[String],
+) -> Result<Action<'a>, ExitCode> {
+    let Some((_, kinds)) = actions.iter().find(|(n, _)| *n == name) else {
+        let names: Vec<&str> = actions.iter().map(|(n, _)| *n).collect();
         eprintln!(
             "error: the lens has no action `{name}` (it has serve, build, run, {})",
             names.join(", ")
@@ -396,19 +406,21 @@ fn parse_action<'a>(name: &'a str, args: &[String]) -> Result<Action<'a>, ExitCo
     }
     let mut literals = Vec::new();
     for a in named {
-        match a.parse::<u32>() {
-            Ok(n) => literals.push(Value::I32(n as i32)),
-            Err(_) => {
-                eprintln!("error: `{a}` isn't a literal's index");
-                return Err(ExitCode::from(2));
-            }
+        let Ok(n) = a.parse::<i32>() else {
+            eprintln!("error: `{a}` isn't a literal's index");
+            return Err(ExitCode::from(2));
+        };
+        if n < 0 {
+            eprintln!("error: `{a}` isn't a literal's index");
+            return Err(ExitCode::from(2));
         }
+        literals.push(Value::I32(n));
     }
     let mut values = Vec::new();
     for (a, k) in args.iter().zip(kinds.chars()) {
         let v = match k {
-            'u' => a.parse::<u32>().ok().map(|n| Value::I32(n as i32)),
-            _ => a.parse::<f32>().ok().map(Value::F32),
+            'u' => a.parse::<i32>().ok().filter(|n| *n >= 0).map(Value::I32),
+            _ => a.parse::<f32>().ok().filter(|n| n.is_finite()).map(Value::F32),
         };
         let Some(v) = v else {
             eprintln!("error: `{a}` isn't a number");
@@ -472,4 +484,29 @@ fn session(
         lens.print_logs();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_arguments_fit_the_values_the_host_receives() {
+        for value in ["2147483648", "4294967295", "-1"] {
+            assert!(
+                parse_action(studio::ACTIONS, "view", &[value.into()]).is_err(),
+                "accepted {value}"
+            );
+            let args = ["0", "0", "0", "0", "0", "0", value].map(String::from);
+            assert!(
+                parse_action(studio::ACTIONS, "move", &args).is_err(),
+                "accepted literal {value}"
+            );
+        }
+        for value in ["nan", "inf", "-inf"] {
+            let args = [value, "0", "0", "0"].map(String::from);
+            assert!(parse_action(studio::ACTIONS, "zoom", &args).is_err(), "accepted {value}");
+        }
+        assert!(parse_action(studio::ACTIONS, "view", &["2147483647".into()]).is_ok());
+    }
 }

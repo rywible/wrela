@@ -125,8 +125,14 @@ fn command(c: &Command) -> Value {
         Command::Post { request, url, body } => {
             json!({ "op": "Post", "request": request, "url": url, "body": body })
         }
-        Command::Log { text } => json!({ "op": "Log", "text": text }),
         Command::Label { name } => json!({ "op": "Label", "name": name }),
+        Command::Prepare { request, path } => {
+            json!({ "op": "Prepare", "request": request, "path": path })
+        }
+        Command::Unprepare { path } => json!({ "op": "Unprepare", "path": path }),
+        Command::HandOver { request, path } => {
+            json!({ "op": "HandOver", "request": request, "path": path })
+        }
     }
 }
 
@@ -176,10 +182,12 @@ pub(crate) fn golden_batch() -> Vec<u8> {
         .storage_read(2, "saves/slot1")
         .storage_write(3, "saves/a", &[1, 2, 3, 4, 5])
         .fetch(4, "data/level.bin")
-        .log("frame 3: 2 grazers, é")
         .post(5, "studio/edit", &[123, 125])
         .draw_indexed_indirect(1, [3, 0, 12], 3, 16, &[], &[])
         .label("terrain")
+        .prepare(6, "../floor")
+        .unprepare("../floor")
+        .hand_over(7, "next")
         .finish()
 }
 
@@ -291,10 +299,7 @@ fn batches() -> Vec<Value> {
             "a post body length that disagrees with the payload",
             &edit(Encoder::new().post(1, "x", &[1, 2]).finish(), h + 16, 9),
         ),
-        batch(
-            "a log line that isn't UTF-8",
-            &edit(Encoder::new().log("ok").finish(), h + 12, 0xFF),
-        ),
+        batch("a label that isn't UTF-8", &edit(Encoder::new().label("ok").finish(), h + 12, 0xFF)),
         batch(
             "an unaligned indirect offset",
             &edit(Encoder::new().draw_indirect(0, 1, 0, &[], &[]).finish(), h + 8 + 8, 2),
@@ -977,6 +982,26 @@ fn checks() -> Value {
             &Encoder::new().post(1, "https://example.com/x", &[1]).finish(),
         ),
         check(
+            "a build path to another site",
+            &m,
+            &Encoder::new().hand_over(1, "https://example.com/x").finish(),
+        ),
+        check(
+            "a build path with `..` past its start",
+            &m,
+            &Encoder::new().prepare(1, "a/../b").finish(),
+        ),
+        check("a build path of `..` alone", &m, &Encoder::new().unprepare("../..").finish()),
+        check(
+            "builds beside this one, named rightly",
+            &m,
+            &Encoder::new()
+                .prepare(1, "../floor")
+                .unprepare("../floor")
+                .hand_over(2, "../../x/y")
+                .finish(),
+        ),
+        check(
             "requests, made rightly",
             &m,
             &Encoder::new().storage_write(1, "a/b", &[1]).fetch(2, "c.bin").finish(),
@@ -1446,6 +1471,15 @@ fn input_scripts() -> Value {
   {"frame": 4, "type": "text", "text": "aéÿ"}
 ]"#,
         ),
+        (
+            "a pad's events",
+            r#"[
+  {"tick": 1, "type": "padaxis", "axis": "lefty", "value": -0.75},
+  {"tick": 2, "type": "padbutton", "pad": 2, "button": "righttrigger", "pressed": true, "value": 0.5},
+  {"tick": 3, "type": "padpress", "button": "east"},
+  {"tick": 4, "type": "padbutton", "button": "south", "pressed": false}
+]"#,
+        ),
         ("not an array", "{}"),
         ("not JSON", "[{"),
         ("no frame", r#"[{"type": "move"}]"#),
@@ -1463,6 +1497,16 @@ fn input_scripts() -> Value {
         ("a coordinate that isn't a number", r#"[{"frame": 0, "type": "move", "x": "1"}]"#),
         ("a modifier that isn't a bool", r#"[{"frame": 0, "type": "move", "shift": 1}]"#),
         ("text that's missing", r#"[{"frame": 0, "type": "text"}]"#),
+        ("an unknown pad button", r#"[{"frame": 0, "type": "padpress", "button": "a"}]"#),
+        (
+            "a pad past the fourth",
+            r#"[{"frame": 0, "type": "padpress", "button": "east", "pad": 4}]"#,
+        ),
+        (
+            "an axis past its range",
+            r#"[{"frame": 0, "type": "padaxis", "axis": "rightx", "value": -1.5}]"#,
+        ),
+        ("a button with no pressed", r#"[{"frame": 0, "type": "padbutton", "button": "north"}]"#),
     ];
     scripts
         .iter()

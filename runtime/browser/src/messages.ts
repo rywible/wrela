@@ -18,8 +18,9 @@ export type ToWorker =
       /** The ring the main thread writes input events into (input.ts). */
       input: SharedArrayBuffer;
       /** The page is served by `wrela run`: new literals and new builds come while it runs
-       * (hot reload, live.ts). */
-      live: boolean;
+       * (hot reload, live.ts), after the change numbered here, the last its build holds; null
+       * otherwise. */
+      live: number | null;
     }
   | { type: "resize"; width: number; height: number }
   | { type: "visibility"; visible: boolean }
@@ -27,8 +28,12 @@ export type ToWorker =
   | { type: "thread"; module: WebAssembly.Module; memory: WebAssembly.Memory; index: number }
   /** Test mode: the main thread has rendered the voice and saved its samples. */
   | { type: "audio-rendered" }
+  /** A line the audio thread printed, relayed by the main thread. */
+  | PrintMessage
   /** Test mode, `latency` or `keylatency`: the main thread has sent its events. */
   | { type: "latency-sent" }
+  /** Test mode, `clip`: the main thread has saved the clip (`clip.webm`). */
+  | { type: "clip-saved" }
   /** To the ticker's thread the render worker starts: run the program's ticks (ticker.ts). */
   | ({ type: "ticker" } & TickerStart)
   /** Test mode: what the page loaded, for `load.json`. */
@@ -49,10 +54,16 @@ export type FromWorker =
   | { type: "latency-start"; ms: number }
   /** Test mode: the main thread answers with what the page loaded (`load`). */
   | { type: "load-query" }
+  /** Test mode, `clip`: start recording the canvas, or stop and save the recording. */
+  | { type: "clip-start" }
+  | { type: "clip-stop" }
   /** The program started its voice: the main thread plays it in an AudioWorklet. */
   | { type: "audio"; voice: VoiceOptions }
   /** Hot reload of a program whose voice plays: the page reloads. */
-  | { type: "reload" };
+  | { type: "reload" }
+  /** The program whose voice plays handed its place to another build: the voice stops (the
+   * new build's voice, if it starts one, plays in the same audio context). */
+  | { type: "audio-stop" };
 
 /** The program's voice, as the audio worklet's processor gets it: the module and memory to
  * run it with, and the task and context `__audio` takes (wrela_abi's `IMPORT_AUDIO`). */
@@ -63,8 +74,25 @@ export interface VoiceOptions {
   context: number;
 }
 
+/** What the audio processor receives: in an offline test, how many quanta it renders. */
+export interface VoiceProcessorOptions extends VoiceOptions {
+  quanta: number | null;
+}
+
 /** The audio worklet's processor (worklet.ts). */
 export const VOICE_PROCESSOR = "wrela-voice";
+
+/** A line one of the program's other threads printed, relayed to its render thread. */
+export interface PrintMessage {
+  type: "print";
+  line: string;
+}
+
+/** What the audio worklet tells the main thread. */
+export type FromVoice = PrintMessage | { type: "trap"; message: string } | { type: "rendered" };
+
+/** What a helper tells the render worker. */
+export type FromHelper = PrintMessage;
 
 /** The program's ticker, as its thread gets it: the module and memory to run it with, and the
  * task, context and rate `__tick` takes (wrela_abi's `IMPORT_TICK`). */
@@ -118,6 +146,7 @@ export interface TickReport {
 /** What the ticker's thread tells the render worker. */
 export type FromTicker =
   | { type: "fatal"; message: string }
+  | PrintMessage
   /** Stopped (test mode, or a hot reload): the ticks, the tick log when hashes were kept, and
    * what a build that replaces this one replays. */
   | { type: "ticks"; report: TickReport; log: Uint8Array<ArrayBuffer> | null; replay: Replay };

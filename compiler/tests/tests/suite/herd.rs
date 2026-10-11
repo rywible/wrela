@@ -155,49 +155,10 @@ fn alternate(rounds: usize, mut a: impl FnMut(), mut b: impl FnMut()) -> (f64, f
     (median(&ta), median(&tb))
 }
 
-/// AC6's physique: seed 1's mass at a 2 cm finest cell within 0.05% of the spike's ground truth
-/// (1,119.26 kg, a uniform 1 cm grid of 25M samples), as a job's work computes it.
+/// AC6's physique and #43 §9's per bone: the herd's own tests (examples/herd's `@test`s).
 #[test]
-fn seed_1s_mass_is_within_0_05_percent_of_the_ground_truth() {
-    let mut host = ours();
-    let mass = f64_of(&host.call_export("mass", &[Value::I32(1), Value::F32(0.02)]).expect("mass"));
-    let truth = 1119.26;
-    let off = (mass - truth) / truth * 100.0;
-    eprintln!(
-        "seed 1's mass at 2 cm: {mass:.2} kg, {off:+.3}% from {truth} kg (the spike's: 1,118.94)"
-    );
-    assert!(off.abs() <= 0.05, "{mass} kg is {off:.3}% from {truth}");
-}
-
-/// #43 §9: the physique per bone, by the spike's method: the bones' masses sum to the whole,
-/// which is `adaptive_mass`'s; every bone's moments of inertia meet the triangle inequality;
-/// and each bone over 1 kg is within 5% of the derived interval's method (`integrate`). The two
-/// lay their cells on different grids, and a cell where two bones meet counts wholly for the
-/// bone nearest its centre, so they differ by a share of a cell at each bone's ends: 20% at
-/// 4 cm, 3.6% at 2 cm and 2.4% at 1 cm.
-#[test]
-fn the_physique_gives_each_bone_its_mass_and_moments() {
-    let mut host = ours();
-    let r = host.call_export("physique", &[Value::I32(1), Value::F32(0.02)]).expect("physique");
-    let [Value::F32(total), Value::F32(sum), Value::I32(bones), Value::F32(least)] = r[..] else {
-        panic!("{r:?}")
-    };
-    let mass = f64_of(&host.call_export("mass", &[Value::I32(1), Value::F32(0.02)]).expect("mass"));
-    let differ = f64_of(
-        &host
-            .call_export("physique_methods_differ", &[Value::I32(1), Value::F32(0.02)])
-            .expect("differ"),
-    );
-    eprintln!(
-        "seed 1 at 2 cm: {total:.2} kg in {bones} bones (summed {sum:.2}; adaptive_mass {mass:.2}); \
-         moments' triangle margin at least {least:.3}; bones within {:.2}% of integrate's",
-        differ * 100.0
-    );
-    assert!((f64::from(total) - mass).abs() <= 1e-6 * mass, "{total} against {mass}");
-    assert!((total - sum).abs() <= 1e-4 * total, "{sum} summed against {total}");
-    assert!(bones >= 20, "only {bones} bones have mass");
-    assert!(least >= -1e-4, "a bone's moments break the triangle inequality: {least}");
-    assert!(differ <= 0.05, "a bone is {:.2}% from integrate's", differ * 100.0);
+fn the_herds_own_tests_pass() {
+    assert_eq!(super::tests_pass(&wrela_tests::repo_root().join("examples/herd")), 2);
 }
 
 /// AC6's timings on the CPU (WASM), in one harness, alternating: the physique at 2 cm (≤ 1.25×
@@ -485,6 +446,47 @@ fn a_realization_in_slices_is_the_whole_ones() {
         }
         eprintln!("{cell} m: {} triangles, the same in 1, 5 and 40 slices", whole.tris);
     }
+}
+
+/// More live blocks than WebGPU dispatches workgroups along x (65,535): herd-realize's slab,
+/// 750 × 750 × 3 cells, about 70,000 live blocks. Its passes go in chunks, so its mesh is whole:
+/// a quad for each lattice edge its faces cross (2 × 750² + 4 × 750 × 3), no holes, and the same
+/// triangles in 2 slices (the second past 65,535 blocks on its own). It can't be smaller.
+#[test]
+#[ignore = "long: realizes a 7.5 m slab at 1 cm, past 65,535 live blocks"]
+fn a_realization_past_65535_live_blocks_is_whole() {
+    let mut host = wrela_host::Host::load(crate::built("herd-realize")).expect("load");
+    let realize = |host: &mut wrela_host::Host, slices: i32| {
+        host.call_export("realize_slab", &[Value::I32(slices)]).expect("realize_slab");
+        let b = host.buffers();
+        let mesh = b[b.len() - MESH_BUFFERS..].to_vec();
+        read_mesh(host, &mesh)
+    };
+    let whole = realize(&mut host, 0);
+    let quads = 2 * 750 * 750 + 4 * 750 * 3;
+    assert!(whole.live > 65_535, "only {} live blocks", whole.live);
+    assert_eq!((whole.tris, whole.holes, whole.flags), (2 * quads, 0, 0));
+    let corners = |o: &Ours| {
+        let mut t: Vec<[[u32; 3]; 3]> = o
+            .mesh
+            .tris
+            .iter()
+            .map(|&t| {
+                let c = o.mesh.corners(t).map(|p| p.map(f32::to_bits));
+                let k = (0..3).min_by_key(|&k| c[k]).expect("a corner");
+                [c[k], c[(k + 1) % 3], c[(k + 2) % 3]]
+            })
+            .collect();
+        t.sort();
+        t
+    };
+    let sliced = realize(&mut host, 2);
+    assert_eq!(
+        (sliced.live, sliced.tris, sliced.holes, sliced.flags),
+        (whole.live, whole.tris, whole.holes, whole.flags)
+    );
+    assert!(corners(&sliced) == corners(&whole), "the triangles differ in 2 slices");
+    eprintln!("{} live blocks, {} triangles", whole.live, whole.tris);
 }
 
 /// Ours at `cell`, as the spike's harness runs it: the room calibrated on the largest grid (a
@@ -988,7 +990,7 @@ fn moving_to_the_herd_keeps_the_frames_in_chrome() {
 /// first (`cull_blocks`) and its last (`skin_vertices`); and there are as many as the realizer
 /// counts for its room calibrations and overflow checks (#43 §7.8).
 #[test]
-#[ignore = "needs a GPU"]
+#[ignore = "heavy: needs a GPU; minutes on a software GPU"]
 fn realization_reads_nothing_back_between_its_passes() {
     use wrela_abi::stream::{Command, decode};
     let dir = herd();
@@ -1515,8 +1517,9 @@ fn code_of(text: &str) -> String {
     text.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n")
 }
 
-/// AC7, layering: the engine doesn't depend on the herd, and no code in it names the grazer or
-/// the herd (its comments may cite them); neither uses `unsafe`; and the compiler's crates name
+/// AC7, layering: the engine doesn't depend on the herd, and no code in it names the herd's
+/// modules or its grazer (its comments may cite them; M6's history has a herd of its own, a word
+/// of the floor's map, not this example's); neither uses `unsafe`; and the compiler's crates name
 /// nothing of the engine (the `wrela` command's tools, which find an `engine/` beside a parts
 /// file, aren't the compiler). And AC9's "no ratio is met by hand": the engine and the herd are
 /// wrela sources and their manifests alone, with no WGSL or JS of their own.
@@ -1541,7 +1544,7 @@ fn the_engine_and_the_herd_keep_their_layers() {
     assert!(!manifest.contains("herd"), "the engine depends on the herd: {manifest}");
     for (path, text) in wrela_files(&root.join("engine")) {
         let code = code_of(&text);
-        for word in ["grazer", "Grazer", "herd", "Herd", "unsafe"] {
+        for word in ["grazer", "Grazer", "herd::", "unsafe"] {
             assert!(!code.contains(word), "{} has `{word}` in its code", path.display());
         }
     }

@@ -27,14 +27,15 @@ fn rejects_another_manifest_version() {
 
 #[test]
 fn rejects_another_stream_version() {
-    let err = load_with_manifest("stream-v9", |m| {
+    let other = wrela_abi::stream::VERSION + 1;
+    let err = load_with_manifest("stream-other", |m| {
         m.replace(
             &format!("\"stream_version\": {}", wrela_abi::stream::VERSION),
-            "\"stream_version\": 9",
+            &format!("\"stream_version\": {other}"),
         )
     });
     assert!(matches!(&err, Error::Manifest(_)), "{err}");
-    assert!(err.to_string().contains("command stream version 9"), "{err}");
+    assert!(err.to_string().contains(&format!("command stream version {other}")), "{err}");
 }
 
 #[test]
@@ -56,6 +57,6 @@ fn rejects_a_program_with_other_imports() {
     let err = Host::load(&dir).err().expect("rejected");
     assert_eq!(
         err.to_string(),
-        "invalid program: it imports `env.now`, which isn't one of the host's: `wrela.memory`, `wrela.submit`, `wrela.request_status`, `wrela.request_take`, `wrela.limit`, `wrela.audio`, `wrela.input`, `wrela.tick`, `wrela.keep`, `wrela.kept`"
+        "invalid program: it imports `env.now`, which isn't one of the host's: `wrela.memory`, `wrela.submit`, `wrela.request_status`, `wrela.request_take`, `wrela.limit`, `wrela.audio`, `wrela.input`, `wrela.tick`, `wrela.keep`, `wrela.kept`, `wrela.clock`, `wrela.print`, `wrela.phase`"
     );
 }

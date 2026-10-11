@@ -20,15 +20,20 @@ so concurrent runs don't need a server and can't collide on one.
 Exit status: 0 the page wrote `ok`; 1 it failed, timed out, or Chrome exited; 2 a setup error;
 3 the GPU lock (or the Chrome lock) wasn't free within an hour.
 
-Environment: WRELA_CHROME overrides the Chrome binary; WRELA_GPU_SHARED (2 or more) shares the
-GPU with native runs (below).
+Environment: WRELA_CHROME overrides the Chrome binary; WRELA_CHROME_ARGS adds arguments to its
+command line (split as a shell would: tools/cloud.sh's Chromium on a CPU's Vulkan); WRELA_GPU_SHARED (2 or more) shares the
+GPU with native runs (below); WRELA_THROTTLE (bits a second) slows the server's sending, every
+request sharing the rate (tools/serve.py).
 """
 
 import fcntl
+import math
 import os
 import re
+import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -201,10 +206,15 @@ def main(argv):
         fragment = argv[2] if len(argv) > 2 else "#run"
         timeout_arg = argv[3] if len(argv) > 3 else None
         page_dir = os.path.join(serve.ROOT, page)
+        root = os.path.realpath(serve.ROOT)
+        if os.path.commonpath([os.path.realpath(page_dir), root]) != root:
+            fail(2, f"page directory must be inside the repository, not {argv[1]}")
     try:
         timeout = float(timeout_arg) if timeout_arg else 120.0
     except ValueError:
         fail(2, f"timeout must be a number of seconds, not {timeout_arg!r}")
+    if not math.isfinite(timeout) or timeout <= 0:
+        fail(2, f"timeout must be a positive finite number of seconds, not {timeout_arg!r}")
     if not os.path.isdir(page_dir):
         fail(2, f"no page directory at {page_dir}")
     if not os.access(CHROME, os.X_OK):
@@ -217,10 +227,19 @@ def main(argv):
     # What an earlier run left (a stale DONE above all) isn't this run's.
     results = os.path.join(page_dir, "results")
     try:
-        shutil.rmtree(results)
+        mode = os.lstat(results).st_mode
+        if stat.S_ISDIR(mode) and not stat.S_ISLNK(mode):
+            shutil.rmtree(results)
+        else:
+            os.unlink(results)
     except FileNotFoundError:
         pass
-    os.makedirs(results)
+    except OSError as e:
+        fail(2, f"can't clear {results}: {e}")
+    try:
+        os.makedirs(results)
+    except OSError as e:
+        fail(2, f"can't make {results}: {e}")
 
     done = []
     server = None
@@ -245,11 +264,14 @@ def main(argv):
                     "--disable-extensions",
                     "--disable-background-timer-throttling",
                     "--disable-renderer-backgrounding",
+                    # A test page plays its voice without a click (test mode's `live`).
+                    "--autoplay-policy=no-user-gesture-required",
                     # Timestamp queries at full resolution, not quantized to 100 µs.
                     "--enable-webgpu-developer-features",
                     "--enable-logging=stderr",
                     "--v=0",
                     "--window-size=1920,1080",
+                    *shlex.split(os.environ.get("WRELA_CHROME_ARGS", "")),
                     url,
                 ],
                 stdin=subprocess.DEVNULL,

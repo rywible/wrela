@@ -71,7 +71,7 @@ fn assert_near(got: [u8; 4], want: [f32; 4], what: &str) {
 }
 
 #[test]
-#[ignore = "needs the GPU"]
+#[ignore = "needs a GPU"]
 fn first_light_runs_end_to_end() {
     let (width, height) = (640, 360);
     let times: Vec<f32> = (0..60).map(|i| frame_time(i, 60.0)).collect();
@@ -116,7 +116,7 @@ fn first_light_runs_end_to_end() {
 }
 
 #[test]
-#[ignore = "needs the GPU"]
+#[ignore = "needs a GPU"]
 fn runs_are_deterministic() {
     let times: Vec<f32> = (0..10).map(|i| frame_time(i, 30.0)).collect();
     let a = Host::load(common::first_light())
@@ -132,7 +132,7 @@ fn runs_are_deterministic() {
 }
 
 #[test]
-#[ignore = "needs the GPU"]
+#[ignore = "needs a GPU"]
 fn shader_errors_name_the_pipeline_and_shader() {
     let dir = common::first_light_copy("bad-shader");
     std::fs::write(
@@ -194,7 +194,7 @@ fn store_host(name: &str, frames: &[Vec<Vec<u8>>], options: &Options) -> (TempDi
 /// More dispatches and draws in one submission than the uniform ring starts with room for
 /// (64 KiB at 256 bytes a slice): each must still see its own uniform bytes.
 #[test]
-#[ignore = "needs the GPU"]
+#[ignore = "needs a GPU"]
 fn every_command_gets_its_own_uniforms() {
     let n = 600u32;
     let (w, h) = (30u32, 20u32);
@@ -220,7 +220,7 @@ fn every_command_gets_its_own_uniforms() {
 
 /// A `WriteBuffer` after a dispatch doesn't change what the dispatch saw.
 #[test]
-#[ignore = "needs the GPU"]
+#[ignore = "needs a GPU"]
 fn writes_apply_in_recorded_order() {
     let mut e = Encoder::new();
     e.create_buffer(1, 16)
@@ -235,7 +235,7 @@ fn writes_apply_in_recorded_order() {
 }
 
 #[test]
-#[ignore = "needs the GPU"]
+#[ignore = "needs a GPU"]
 fn times_dispatches_and_passes_with_timestamps() {
     let frame = |i: u32| {
         let mut e = Encoder::new();
@@ -258,17 +258,20 @@ fn times_dispatches_and_passes_with_timestamps() {
         store_host("timestamps", &frames, &Options { timing: Timing::Span, ..Options::default() });
     let run = host.run_frames(&[0.0; 5], 64, 64).expect("runs");
     assert_eq!(run.timings.len(), 15, "{:?}", run.timings);
+    // A GPU's pass takes well under 0.1 s. On the CPU's Vulkan (a cloud machine, tools/cloud.sh)
+    // a pass's time is the CPU's, shared with the gate's other tests: up to 0.75 s was seen.
+    let most = if std::env::var_os("WRELA_SOFTWARE_GPU").is_some() { 1e10 } else { 1e8 };
     for (i, t) in run.timings.iter().enumerate() {
         assert_eq!(t.frame, i / 3);
         assert_eq!(t.label, if i % 3 == 2 { "screen pass" } else { "store" });
-        assert!(t.nanos > 0.0 && t.nanos < 1e8, "{} {i} took {} ns", t.label, t.nanos);
+        assert!(t.nanos > 0.0 && t.nanos < most, "{} {i} took {} ns", t.label, t.nanos);
     }
 }
 
 /// More timed passes in one submission than the query set holds: the host flushes early and
 /// every pass still gets its own duration.
 #[test]
-#[ignore = "needs the GPU"]
+#[ignore = "needs a GPU"]
 fn times_more_passes_than_one_query_set_holds() {
     let mut e = Encoder::new();
     e.create_buffer(1, 4 * 300);
@@ -320,7 +323,7 @@ const MESH_PIPELINES: &str = r#"[
 /// towards the eye, covers only the left one, though it's at red's depth; blue, culling back
 /// faces with no bias, is hidden by green's depth.
 #[test]
-#[ignore = "needs the GPU"]
+#[ignore = "needs a GPU"]
 fn indexed_indirect_draws_cull_and_bias() {
     let f = |x: f32| x.to_bits();
     let positions = [

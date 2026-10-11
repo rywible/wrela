@@ -1111,7 +1111,10 @@ pub(crate) fn intrinsic(
             | Lang::Limit
             | Lang::InputTake
             | Lang::Keep
-            | Lang::Kept),
+            | Lang::Kept
+            | Lang::ReadClock
+            | Lang::PrintCommand
+            | Lang::PhaseCommand),
         ) if fl.is_gpu() => {
             let name = fl.cx.checked.program.func(func).name.clone();
             fl.cx.err(Diagnostic::new(
@@ -1151,6 +1154,22 @@ pub(crate) fn intrinsic(
             let u = fl.mb.m.types.u32();
             Some(fl.value(u, ir::Expr::Host(ir::HostOp::Kept, vec![at, cap])))
         }
+        Some(Lang::ReadClock) => {
+            let at = fl.arg_value(&c.args[0])?;
+            fl.mb.m.clock = true;
+            fl.emit(ir::Stmt::Eval(ir::Expr::Host(ir::HostOp::Clock, vec![at])));
+            None
+        }
+        Some(l @ (Lang::PrintCommand | Lang::PhaseCommand)) => {
+            let run = fl.str_arg(&c.args[0])?;
+            let u = fl.mb.m.types.u32();
+            let at = fl.value(u, ir::Expr::Extract(run, 0));
+            let len = fl.value(u, ir::Expr::Extract(run, 1));
+            fl.mb.m.trace = true;
+            let op = if l == Lang::PrintCommand { ir::HostOp::Print } else { ir::HostOp::Phase };
+            fl.emit(ir::Stmt::Eval(ir::Expr::Host(op, vec![at, len])));
+            None
+        }
         Some(Lang::InputTake) => {
             let at = fl.arg_value(&c.args[0])?;
             let cap = fl.arg_value(&c.args[1])?;
@@ -1169,19 +1188,23 @@ pub(crate) fn intrinsic(
             | Lang::StorageReadCommand
             | Lang::StorageWriteCommand
             | Lang::FetchCommand
-            | Lang::PrintCommand
             | Lang::LabelCommand
-            | Lang::PostCommand),
+            | Lang::PostCommand
+            | Lang::PrepareCommand
+            | Lang::UnprepareCommand
+            | Lang::HandOverCommand),
         ) => {
             // The request number and (a readback) the buffer's range, then the runs: a path or
-            // URL, the bytes to store, a line to print, a label.
+            // URL, the bytes to store, a line to print, a label, a build's path.
             let (opcode, words) = match l {
                 Lang::ReadBufferCommand => (Opcode::ReadBuffer, 4),
                 Lang::StorageReadCommand => (Opcode::StorageRead, 1),
                 Lang::StorageWriteCommand => (Opcode::StorageWrite, 1),
-                Lang::PrintCommand => (Opcode::Log, 0),
                 Lang::LabelCommand => (Opcode::Label, 0),
                 Lang::PostCommand => (Opcode::Post, 1),
+                Lang::PrepareCommand => (Opcode::Prepare, 1),
+                Lang::UnprepareCommand => (Opcode::Unprepare, 0),
+                Lang::HandOverCommand => (Opcode::HandOver, 1),
                 _ => (Opcode::Fetch, 1),
             };
             let mut args = Vec::new();

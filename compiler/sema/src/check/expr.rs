@@ -34,6 +34,7 @@ impl<'p> Checker<'p> {
             ast::ExprKind::Tuple(_)
                 | ast::ExprKind::Array(_)
                 | ast::ExprKind::ArrayRepeat { .. }
+                | ast::ExprKind::ArrayFill { .. }
                 | ast::ExprKind::StructLit { .. }
                 | ast::ExprKind::Call { .. }
                 | ast::ExprKind::MethodCall { .. }
@@ -129,6 +130,56 @@ impl<'p> Checker<'p> {
                 }
                 let ty = self.p.types.array(elem, xs.len() as u32);
                 Expr { ty, span, kind: ExprKind::Array(xs) }
+            }
+            ast::ExprKind::ArrayFill { items, fill } => {
+                // The length is the expected array's: `[a, b, ..fill]` fills it out.
+                let (elem_exp, len) = match expected.map(|t| self.kind(t)) {
+                    Some(TyKind::Array(t, n)) => (Some(*t), Some(*n)),
+                    Some(TyKind::ArrayN(t, _)) => (Some(*t), None),
+                    _ => (None, None),
+                };
+                let elem = elem_exp.unwrap_or_else(|| self.new_var(VarKind::General, span));
+                let xs: Vec<Expr> = items.iter().map(|x| self.check_expect(x, elem)).collect();
+                let f = self.check_expect(fill, elem);
+                let n = match len {
+                    Some(n) if (xs.len() as u32) <= n => n,
+                    Some(n) => {
+                        self.err(Diagnostic::new(
+                            codes::E0300,
+                            span,
+                            format!("this array is `[_; {n}]`, and {} elements are written before its fill", xs.len()),
+                        ));
+                        xs.len() as u32
+                    }
+                    None => {
+                        self.err(
+                            Diagnostic::new(
+                                codes::E0306,
+                                span,
+                                "`..fill` fills an array to its length, and no length is known here",
+                            )
+                            .with_note("the length comes from the type the array is used as: a field's, a parameter's or a binding's `[T; N]`, with `N` a number")
+                            .with_help("write the type: `let xs: [T; N] = [a, b, ..fill]`, or the elements in full"),
+                        );
+                        xs.len() as u32
+                    }
+                };
+                let ft = self.infer.resolve(&self.p.types, f.ty);
+                if self.p.types.has_vars(ft) {
+                    if let Some(copy) = self.p.lang_trait(Lang::Copy) {
+                        let r = crate::defs::TraitRef { trait_: copy, args: Vec::new() };
+                        self.obligation(ft, r, f.span, "`..fill`, which copies the fill,".into());
+                    }
+                } else if !crate::traits::implements_builtin(self.p, ft, Lang::Copy) {
+                    let shown = self.display(f.ty);
+                    self.err(Diagnostic::new(
+                        codes::E0400,
+                        f.span,
+                        format!("`..fill` copies the fill to each place left, so it must be `Copy`, and `{shown}` isn't"),
+                    ));
+                }
+                let ty = self.p.types.array(elem, n);
+                Expr { ty, span, kind: ExprKind::ArrayFill(xs, Box::new(f), n) }
             }
             ast::ExprKind::ArrayRepeat { value, count } => {
                 let elem_exp = match expected.map(|t| self.kind(t)) {
@@ -331,7 +382,7 @@ impl<'p> Checker<'p> {
     /// both are decimals, as every unit in std is, the product is exact and rounded once to
     /// each float type, so `15cm` is `0.15`, as an `f32` and as an `f64`. Otherwise it's worked
     /// out in `f64` and rounded once to an `f32`.
-    fn check_suffixed(&mut self, lit: &ast::Lit, expected: Option<TyId>) -> Expr {
+    pub(super) fn check_suffixed(&mut self, lit: &ast::Lit, expected: Option<TyId>) -> Expr {
         let span = lit.span;
         let (digits, suffix) = wrela_syntax::lexer::split_suffix(&lit.text);
         let Some(&c) = self.p.units.get(suffix) else {
@@ -436,6 +487,13 @@ impl<'p> Checker<'p> {
                 ));
                 return None;
             }
+            if segs[0].generics.is_some() {
+                self.err(Diagnostic::new(
+                    codes::E0322,
+                    first.span,
+                    format!("`{}` takes no generic arguments", first.name),
+                ));
+            }
             let base = if first.name == "Self" {
                 match self.scope.self_ty {
                     Some(t) => t,
@@ -450,6 +508,14 @@ impl<'p> Checker<'p> {
                 }
             } else {
                 let Some(p) = param else { unreachable!("checked above") };
+                if self.p.param(p).is_const {
+                    self.err(Diagnostic::new(
+                        codes::E0212,
+                        first.span,
+                        format!("`{}` is a constant parameter, not a type", first.name),
+                    ));
+                    return None;
+                }
                 self.p.types.param(p)
             };
             return Some(ValueRes::TypeRelative(base, segs[1].ident.clone()));
@@ -466,9 +532,24 @@ impl<'p> Checker<'p> {
                 {
                     match r {
                         Res::Adt(a) => {
-                            let n = self.p.adt(a).generics.len();
+                            let params = self.p.adt(a).generics.clone();
+                            let n = params.len();
                             let args: Vec<TyId> = match &segs[segs.len() - 2].generics {
-                                Some(g) => g.iter().map(|t| self.resolve_type(t)).collect(),
+                                Some(g) if g.len() == n => g
+                                    .iter()
+                                    .zip(&params)
+                                    .map(|(t, &param)| self.resolve_generic_arg(t, param))
+                                    .collect(),
+                                Some(g) => {
+                                    let name = &self.p.adt(a).name;
+                                    self.err(resolve::wrong_generic_count(
+                                        path.span,
+                                        name,
+                                        n,
+                                        g.len(),
+                                    ));
+                                    (0..n).map(|_| self.p.types.error).collect()
+                                }
                                 None => (0..n)
                                     .map(|_| self.new_var(VarKind::General, path.span))
                                     .collect(),
@@ -497,9 +578,15 @@ impl<'p> Checker<'p> {
                 Expr { ty: self.locals[l.index()].ty, span, kind: ExprKind::Local(l) }
             }
             ValueRes::ConstParam(g) => {
+                if self.reject_const_path_generics(path) {
+                    return self.error_expr(span);
+                }
                 Expr { ty: self.p.types.u32, span, kind: ExprKind::ConstParam(g) }
             }
             ValueRes::Item(Res::Const(c)) => {
+                if self.reject_const_path_generics(path) {
+                    return self.error_expr(span);
+                }
                 self.p.note_const_use(c);
                 Expr { ty: self.const_ty(c), span, kind: ExprKind::Const(c) }
             }
@@ -693,6 +780,18 @@ impl<'p> Checker<'p> {
         }
     }
 
+    /// Constants and const parameters take no generic arguments; module resolution otherwise
+    /// deliberately ignores the generic syntax attached to path segments.
+    fn reject_const_path_generics(&mut self, path: &ast::Path) -> bool {
+        let Some(seg) = path.segments.iter().find(|s| s.generics.is_some()) else { return false };
+        self.err(Diagnostic::new(
+            codes::E0322,
+            seg.ident.span,
+            format!("`{}` takes no generic arguments", seg.ident.name),
+        ));
+        true
+    }
+
     /// Whether a type has an inherent associated function or method of this name.
     pub(crate) fn has_associated_fn(&self, a: AdtId, name: &str) -> bool {
         self.p.inherent_method(a, name).is_some()
@@ -707,10 +806,15 @@ impl<'p> Checker<'p> {
         expected: Option<TyId>,
         span: Span,
     ) -> Vec<TyId> {
-        let n = self.p.adt(a).generics.len();
+        let params = self.p.adt(a).generics.clone();
+        let n = params.len();
         let explicit = path.segments.iter().rev().find_map(|s| s.generics.as_deref());
         let args: Vec<TyId> = match explicit {
-            Some(g) if g.len() == n => g.iter().map(|t| self.resolve_type(t)).collect(),
+            Some(g) if g.len() == n => g
+                .iter()
+                .zip(&params)
+                .map(|(t, &param)| self.resolve_generic_arg(t, param))
+                .collect(),
             Some(g) => {
                 let name = &self.p.adt(a).name;
                 self.err(resolve::wrong_generic_count(span, name, n, g.len()));
@@ -765,7 +869,7 @@ impl<'p> Checker<'p> {
                 self.err(resolve::wrong_generic_count(span, name, declared.len(), g.len()));
             } else {
                 for (q, t) in declared.iter().zip(g) {
-                    let ty = self.resolve_type(t);
+                    let ty = self.resolve_generic_arg(t, *q);
                     if let Some(i) = params.iter().position(|x| x == q) {
                         given[i] = Some(ty);
                     }
@@ -1005,6 +1109,7 @@ impl<'p> Checker<'p> {
                 fields: Vec::new(),
                 order: Vec::new(),
                 base: None,
+                literal: false,
             },
         };
         Ok(Expr { ty: bool_ty, span, kind: ExprKind::Binary(test, Box::new(call), Box::new(k)) })
@@ -1549,7 +1654,16 @@ impl<'p> Checker<'p> {
             }
             return Expr { ty: elem, span, kind: ExprKind::Index(Box::new(b), Box::new(i)) };
         }
-        let i = self.check_expr(index, None);
+        let mut i = self.check_expr(index, None);
+        // An enum that can be an array's length indexes by its discriminant: `xs[Species::Oak]`
+        // for a `[T; Species]` (`ty.enum-arrays`).
+        if let &TyKind::Adt(a, _) = self.kind(i.ty)
+            && resolve::enum_length(self.p, a).is_some()
+        {
+            let u = self.p.types.u32;
+            let at = i.span;
+            i = Expr { ty: u, span: at, kind: ExprKind::Discriminant(Box::new(i)) };
+        }
         // An integer literal is a `u32` index. A value whose literal type isn't settled yet
         // (`let i = 1`) can be either index type: it's checked once it's settled.
         let open = self.infer.var_kind(&self.p.types, i.ty) == Some(VarKind::Int);
@@ -1568,7 +1682,9 @@ impl<'p> Checker<'p> {
             let d = Diagnostic::new(
                 codes::E0312,
                 i.span,
-                format!("an index must be a `u32` or `i32`, not `{shown}`"),
+                format!(
+                    "an index must be a `u32`, an `i32` or an enum whose variants are numbered 0, 1, 2 and on, not `{shown}`"
+                ),
             );
             // A number converts; a vector has components to choose from.
             self.err(match self.kind(i.ty) {
@@ -1690,9 +1806,11 @@ impl<'p> Checker<'p> {
         let (generics, ty) = (def.generics.clone(), def.ty);
         let given = path.segments.last().and_then(|s| s.generics.as_deref());
         let args: Vec<TyId> = match given {
-            Some(g) if g.len() == generics.len() => {
-                g.iter().map(|t| self.resolve_type(t)).collect()
-            }
+            Some(g) if g.len() == generics.len() => g
+                .iter()
+                .zip(&generics)
+                .map(|(t, &param)| self.resolve_generic_arg(t, param))
+                .collect(),
             Some(g) => {
                 let name = self.p.aliases[al.index()].name.clone();
                 self.err(resolve::wrong_generic_count(span, &name, generics.len(), g.len()));
@@ -1865,6 +1983,7 @@ impl<'p> Checker<'p> {
             fields: vec![word],
             order: vec![0],
             base: None,
+            literal: false,
         };
         Expr { ty, span, kind }
     }
@@ -1982,7 +2101,10 @@ impl<'p> Checker<'p> {
                 self.err(d);
                 continue;
             };
-            if self.field_hidden(adt_mod, &decls[i]) && variant.is_none() {
+            // An unmarked enum payload inherits its enum's visibility. `pub(package)` can
+            // explicitly narrow one field of a public enum.
+            if self.field_hidden(adt_mod, &decls[i]) && (variant.is_none() || decls[i].package_only)
+            {
                 self.err(
                     Diagnostic::new(
                         codes::E0210,
@@ -2005,17 +2127,38 @@ impl<'p> Checker<'p> {
                 continue;
             }
             let fty = field_tys[i];
+            // A function field takes a closure or a function of its type, as a parameter of a
+            // function type does (`fn.fields`).
+            let fn_bound = match self.p.types.kind(decls[i].ty) {
+                TyKind::Param(g) if self.p.adt(adt).fn_fields.iter().any(|(_, h)| h == g) => {
+                    let gens = self.p.adt(adt).generics.clone();
+                    self.p
+                        .param(*g)
+                        .fn_bound
+                        .map(|b| self.p.types.subst(b, &crate::ty::Subst::from_pairs(&gens, &args)))
+                }
+                _ => None,
+            };
+            let expect = fn_bound.unwrap_or(fty);
             let value = match &f.value {
-                Some(v) => self.check_expr(v, Some(fty)),
+                Some(v) => self.check_expr(v, Some(expect)),
                 None => {
                     // `S { time }`: the local `time`.
                     let p = ast::Path {
                         segments: vec![ast::PathSegment { ident: f.name.clone(), generics: None }],
                         span: f.name.span,
                     };
-                    self.check_path_expr(&p, Some(fty), f.name.span)
+                    self.check_path_expr(&p, Some(expect), f.name.span)
                 }
             };
+            if let Some(b) = fn_bound {
+                match *self.kind(value.ty) {
+                    TyKind::Param(g) if let Some(have) = self.p.param(g).fn_bound => {
+                        self.pass_bounded(have, b, value.span);
+                    }
+                    _ => self.coerce_arg(&value, b),
+                }
+            }
             if self.p.adt(adt).borrow {
                 self.borrow_field(&decls[i], &value);
             }
@@ -2074,7 +2217,11 @@ impl<'p> Checker<'p> {
             self.err(d);
         }
         let base = base_expr.map(Box::new);
-        Expr { ty, span, kind: ExprKind::Adt { adt, args, variant, fields: out, order, base } }
+        Expr {
+            ty,
+            span,
+            kind: ExprKind::Adt { adt, args, variant, fields: out, order, base, literal: true },
+        }
     }
 
     /// The source text of a zero of a scalar or vector type, for fixes.
@@ -2321,6 +2468,7 @@ impl<'p> Checker<'p> {
                             ],
                             order: (0..6).collect(),
                             base: None,
+                            literal: false,
                         },
                     };
                     let callee = Callee::TraitMethod {
@@ -2499,6 +2647,7 @@ impl<'p> Checker<'p> {
                 fields: ret_fields,
                 order,
                 base: None,
+                literal: false,
             },
         };
         let never = self.p.types.never;
@@ -2652,7 +2801,15 @@ pub(super) fn variant_expr(
     Expr {
         ty,
         span,
-        kind: ExprKind::Adt { adt, args, variant: Some(v), fields, order, base: None },
+        kind: ExprKind::Adt {
+            adt,
+            args,
+            variant: Some(v),
+            fields,
+            order,
+            base: None,
+            literal: false,
+        },
     }
 }
 

@@ -133,6 +133,9 @@ pub fn lower_consts(
     cx.drain(&mut mb);
     crate::rewrite_cpu_math(&mut cx, &mut mb);
     cx.drain(&mut mb);
+    // A constant's parallel jobs run on the build's threads (§10): its module exports the
+    // helpers' entry when it runs any.
+    crate::thread_entries(&mut cx, &mut mb);
     if !cx.missing.is_empty() {
         return (ConstLowering::Needs(cx.missing), Vec::new());
     }
@@ -230,9 +233,10 @@ pub(crate) fn zero(types: &ir::Types, t: ir::TypeId) -> ir::ConstValue {
         ir::TypeDef::Struct { fields, .. } => {
             V::Parts(fields.iter().map(|&(_, f)| zero(types, f)).collect())
         }
-        ir::TypeDef::Enum { variants, .. } => {
-            V::Variant(0, variants[0].1.map(|p| Box::new(zero(types, p))))
-        }
+        ir::TypeDef::Enum { variants, .. } => V::Variant(
+            0,
+            variants.first().and_then(|(_, payload)| *payload).map(|p| Box::new(zero(types, p))),
+        ),
         ir::TypeDef::Run(_) | ir::TypeDef::RuntimeArray(_) | ir::TypeDef::Ptr(_) => {
             V::Scalar(ir::Const::U32(0))
         }
@@ -468,6 +472,13 @@ impl Cx<'_> {
             let (Value::Bytes(bs), Value::Scalar(len)) = (ps.first()?, ps.get(1)?) else {
                 return None;
             };
+            // GPU code has no addresses: a text there is its length alone (`gpu_run`).
+            if mb.target() == ir::Target::Gpu {
+                return Some(ir::ConstValue::Parts(vec![
+                    ir::ConstValue::Scalar(ir::Const::U32(0)),
+                    ir::ConstValue::Scalar(len.clone()),
+                ]));
+            }
             let d = self.bytes_data(mb, bs);
             return Some(ir::ConstValue::Parts(vec![
                 ir::ConstValue::Addr(d),

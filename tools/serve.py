@@ -4,10 +4,13 @@ to this machine by name (a page elsewhere can't reach it through DNS rebinding),
 nothing under `.git`. Pages are served at their path relative to the repo root,
 cross-origin isolated (COOP/COEP), as the browser runtime needs."""
 
+import gzip
 import http.server
+import io
 import os
 import sys
 import threading
+import time
 import urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the repo root
@@ -43,14 +46,49 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_error(403, "this server answers only requests for this machine")
             return True
         path = urllib.parse.unquote(self.path.split("?", 1)[0].split("#", 1)[0])
-        if ".git" in path.split("/"):
+        if ".git" in (part.casefold() for part in path.split("/")):
             self.send_error(404, "the repository's history isn't served")
             return True
         return False
 
     def do_GET(self):
-        if not self.refused():
+        if self.refused():
+            return
+        if not self.send_gzipped():
             super().do_GET()
+
+    # What a host compresses when the browser accepts it, as a game's host would.
+    GZIPPED = (".wasm", ".js", ".mjs", ".wgsl", ".json", ".bin", ".html")
+
+    def send_gzipped(self):
+        """Sends the file gzipped (as a static host would) if the request accepts gzip and it's a
+        kind a host compresses: whether it did. The test pages' load times and bytes then are
+        what a player's would be."""
+        if "gzip" not in (self.headers.get("Accept-Encoding") or ""):
+            return False
+        path = self.translate_path(self.path)
+        if not path.endswith(self.GZIPPED) or not os.path.isfile(path):
+            return False
+        body = gzipped(path)
+        self.send_response(200)
+        self.send_header("Content-Type", self.guess_type(path))
+        self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.copyfile(io.BytesIO(body), self.wfile)
+        return True
+
+    def copyfile(self, source, outputfile):
+        """Sends a file, at most `WRELA_THROTTLE` bits a second over every request at once when
+        that's set (a slow network: #55 AC7's 5 Mbit/s)."""
+        if THROTTLE.rate is None:
+            return super().copyfile(source, outputfile)
+        while True:
+            chunk = source.read(16384)
+            if not chunk:
+                return
+            THROTTLE.take(len(chunk))
+            outputfile.write(chunk)
 
     def do_HEAD(self):
         if not self.refused():
@@ -80,7 +118,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_error(403, "PUT is only allowed into a results/ directory")
             return
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            self.send_error(400, "Content-Length must be a non-negative integer")
+            return
+        if length < 0:
+            self.send_error(400, "Content-Length must be a non-negative integer")
+            return
         body = self.rfile.read(length)
         tmp = f"{dest}.{os.getpid()}.{id(self)}.tmp"
         with open(tmp, "wb") as f:
@@ -92,6 +137,45 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def on_put(self, rel, body):
         """Hook for tools/headless.py."""
+
+
+_GZIPPED = {}  # (path, size, mtime) -> the file gzipped
+_GZIPPED_LOCK = threading.Lock()
+
+
+def gzipped(path):
+    """The file at `path`, gzipped: once for each version of it."""
+    st = os.stat(path)
+    key = (path, st.st_size, st.st_mtime_ns)
+    with _GZIPPED_LOCK:
+        body = _GZIPPED.get(key)
+    if body is None:
+        with open(path, "rb") as f:
+            body = gzip.compress(f.read(), compresslevel=6)
+        with _GZIPPED_LOCK:
+            _GZIPPED[key] = body
+    return body
+
+
+class Throttle:
+    """A rate every request shares (bytes a second), or none: `WRELA_THROTTLE` in bits a second.
+    A request takes the bytes it's about to send, waiting until the rate allows them."""
+
+    def __init__(self):
+        bits = os.environ.get("WRELA_THROTTLE")
+        self.rate = float(bits) / 8.0 if bits else None
+        self.lock = threading.Lock()
+        self.next = time.monotonic()
+
+    def take(self, n):
+        with self.lock:
+            now = time.monotonic()
+            start = max(now, self.next)
+            self.next = start + n / self.rate
+        time.sleep(max(start + n / self.rate - time.monotonic(), 0.0))
+
+
+THROTTLE = Throttle()
 
 
 class QuietHandler(Handler):

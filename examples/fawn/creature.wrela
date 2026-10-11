@@ -11,14 +11,15 @@
 // Its coat is round 1's browns warmed and lifted toward a fawn's (spike 15's): the game shows
 // these colours as they are, and so does the lens.
 
-use engine::creature::{Creature, Skeleton, creature, cut, ground, smooth}
+use engine::creature::{Creature, Modifier, Skeleton, creature, cut, frame, ground, smooth}
 use grazer::creature::{
-    CHEST, Cape, EAR_BASE, ELBOW, EYE_AT, Ear, FFETLOCK, HEAD, HFETLOCK, HIP, HOCK, HORN0, Hoof,
-    KNEE, Muscle, NECK0, NECK1, NECK2, NECK3, PELVIS, SCAPULA, SHOULDER, SPINE, STIFLE, TAIL0,
-    TAIL1, TAIL2, TAIL3, TAIL4, TAIL5, TAIL_END, head_frame, muscle, neck_cone,
+    CHEST, Cape, EAR_BASE, ELBOW, EYE_AT, Ear, FFETLOCK, HEAD, HEAD_PITCH, HFETLOCK, HIP, HOCK,
+    HORN0, Hoof, KNEE, Muscle, NECK0, NECK1, NECK2, NECK3, PELVIS, SCAPULA, SHOULDER, SPINE, STIFLE,
+    TAIL0, TAIL1, TAIL2, TAIL3, TAIL4, TAIL5, TAIL_END, head_frame, muscle, neck_cone,
 }
 use round1::shapes::{ell, fbm3, flat_cone, mirror_x, noise3, rot_x, sd_box, sstep}
-use std::field::{cuboid, rgb, round_cone, sphere}
+use std::derive::{Box3, Interval}
+use std::field::{Bound, Surface, UNBOUNDED, cuboid, rgb, round_cone, sphere}
 
 // ---- the coat ------------------------------------------------------------------------------------
 
@@ -53,8 +54,59 @@ fn tail_cone(a: vec3, c: vec3, r1: f32, r2: f32) -> std::field::With<std::field:
 
 // ---- the fawn ----------------------------------------------------------------------------------
 
-/// The fawn, standing.
+/// The clearing's fawn, standing.
 pub fn fawn() -> Creature<Coat> {
+    build(CLEARING)
+}
+
+/// The fawn of the Last Green's wood, standing: the clearing's fawn as a young deer
+/// (`WOOD`).
+pub fn wood_fawn() -> Creature<Coat> {
+    build(WOOD)
+}
+
+/// Which fawn `build` makes: its barrel's and chest's sizes and places, its head's and ears'
+/// sizes, its ears' coat, and whether it keeps the grazer's parts (the shoulder hump, the mane,
+/// the beard, the dewlap, the woolly cape, the horns and the long tail with its tuft).
+struct Kind: Copy {
+    barrel: vec3,
+    barrel_at: vec3,
+    chest: vec3,
+    chest_at: vec3,
+    head_size: f32,
+    ear_size: f32,
+    ear: Coat,
+    grazer: bool,
+}
+
+/// The clearing's fawn (M5): the grazer's parts, on a fawn's frame.
+const CLEARING = Kind {
+    barrel: vec3(0.336, 0.33, 0.60),
+    barrel_at: vec3(0.0, 1.10, 0.53),
+    chest: vec3(0.36, 0.35, 0.34),
+    chest_at: vec3(0.0, 1.14, 0.96),
+    head_size: 1.0,
+    ear_size: 1.0,
+    ear: WOOL,
+    grazer: true,
+}
+
+/// The wood's fawn (M6): no grazer's parts, a slimmer barrel and chest, a smaller head and
+/// ears half again as big, in its hide's colour, so its silhouette reads as a fawn's at a
+/// distance.
+const WOOD = Kind {
+    barrel: vec3(0.3, 0.28, 0.60),
+    barrel_at: vec3(0.0, 1.14, 0.53),
+    chest: vec3(0.31, 0.3, 0.32),
+    chest_at: vec3(0.0, 1.18, 0.96),
+    head_size: 0.82,
+    ear_size: 1.8,
+    ear: HIDE,
+    grazer: false,
+}
+
+/// A fawn of the kind `kind`.
+fn build(kind: Kind) -> Creature<Coat> {
     let s = skeleton()
     let b = |name: Text| s.find(name)
     let (pelvis, chest, head) = (b("pelvis"), b("chest"), b("head"))
@@ -77,15 +129,15 @@ pub fn fawn() -> Creature<Coat> {
                 g.join(
                     "barrel",
                     pelvis,
-                    ell(vec3(0.336, 0.33, 0.60))
-                        .translate(vec3(0.0, 1.10, 0.53) - PELVIS)
+                    ell(kind.barrel)
+                        .translate(kind.barrel_at - PELVIS)
                         .with(HIDE),
                 )
                     .join(
                         "chest",
                         chest,
-                        ell(vec3(0.36, 0.35, 0.34))
-                            .translate(vec3(0.0, 1.14, 0.96) - CHEST)
+                        ell(kind.chest)
+                            .translate(kind.chest_at - CHEST)
                             .with(WOOL),
                         seam: smooth(0.14),
                     )
@@ -100,8 +152,11 @@ pub fn fawn() -> Creature<Coat> {
                     .join(
                         "shoulder hump",
                         chest,
-                        ell(vec3(0.23, 0.24074, 0.40))
-                            .translate(vec3(0.0, 1.43, 0.80) - CHEST)
+                        kept(
+                            kind.grazer,
+                            ell(vec3(0.23, 0.24074, 0.40))
+                                .translate(vec3(0.0, 1.43, 0.80) - CHEST),
+                        )
                             .with(WOOL),
                         seam: smooth(0.12),
                     )
@@ -181,12 +236,15 @@ pub fn fawn() -> Creature<Coat> {
                     .join(
                         "mane", // a ridge along the top of the neck
                         n0,
-                        neck_cone(
-                            vec3(0.0, 1.74, 1.40),
-                            vec3(0.0, 1.99, 1.58),
-                            r1: 0.045,
-                            r2: 0.035,
-                            sx: 2.0,
+                        kept(
+                            kind.grazer,
+                            neck_cone(
+                                vec3(0.0, 1.74, 1.40),
+                                vec3(0.0, 1.99, 1.58),
+                                r1: 0.045,
+                                r2: 0.035,
+                                sx: 2.0,
+                            ),
                         )
                             .with(WOOL),
                         seam: smooth(0.05),
@@ -194,12 +252,15 @@ pub fn fawn() -> Creature<Coat> {
                     .join(
                         "beard", // hanging under the jaw and the throat
                         n0,
-                        neck_cone(
-                            vec3(0.0, 1.76, 1.68),
-                            vec3(0.0, 1.48, 1.56),
-                            r1: 0.03,
-                            r2: 0.06,
-                            sx: 1.6,
+                        kept(
+                            kind.grazer,
+                            neck_cone(
+                                vec3(0.0, 1.76, 1.68),
+                                vec3(0.0, 1.48, 1.56),
+                                r1: 0.03,
+                                r2: 0.06,
+                                sx: 1.6,
+                            ),
                         )
                             .with(WOOL),
                         seam: smooth(0.06),
@@ -207,12 +268,15 @@ pub fn fawn() -> Creature<Coat> {
                     .join(
                         "dewlap", // a keel down the front of the chest
                         n0,
-                        neck_cone(
-                            vec3(0.0, 1.28, 1.24),
-                            vec3(0.0, 0.88, 1.12),
-                            r1: 0.07,
-                            r2: 0.08,
-                            sx: 2.2,
+                        kept(
+                            kind.grazer,
+                            neck_cone(
+                                vec3(0.0, 1.28, 1.24),
+                                vec3(0.0, 0.88, 1.12),
+                                r1: 0.07,
+                                r2: 0.08,
+                                sx: 2.2,
+                            ),
                         )
                             .with(WOOL),
                         seam: smooth(0.08),
@@ -310,7 +374,11 @@ pub fn fawn() -> Creature<Coat> {
                     )
             },
             seam: smooth(0.05),
-            space: head_frame(),
+            space: frame(
+                HEAD,
+                turn: Quat::axis_angle(vec3(1.0, 0.0, 0.0), HEAD_PITCH),
+                scale: kind.head_size,
+            ),
             mirror: true,
         )
         .group(
@@ -326,34 +394,38 @@ pub fn fawn() -> Creature<Coat> {
                     .join(
                         "tail 2",
                         b("tail 2"),
-                        tail_cone(TAIL2, TAIL3, r1: 0.036, r2: 0.030),
+                        kept(kind.grazer, tail_cone(TAIL2, TAIL3, r1: 0.036, r2: 0.030)).with(HIDE),
                         seam: smooth(0.015),
                     )
                     .join(
                         "tail 3",
                         b("tail 3"),
-                        tail_cone(TAIL3, TAIL4, r1: 0.030, r2: 0.026),
+                        kept(kind.grazer, tail_cone(TAIL3, TAIL4, r1: 0.030, r2: 0.026)).with(HIDE),
                         seam: smooth(0.015),
                     )
                     .join(
                         "tail 4",
                         b("tail 4"),
-                        tail_cone(TAIL4, TAIL5, r1: 0.026, r2: 0.022),
+                        kept(kind.grazer, tail_cone(TAIL4, TAIL5, r1: 0.026, r2: 0.022)).with(HIDE),
                         seam: smooth(0.015),
                     )
                     .join(
                         "tuft",
                         b("tail 5"),
-                        Muscle {
-                            a: vec3(),
-                            b: TAIL_END - TAIL5,
-                            t: 0.55,
-                            off: vec2(0.0),
-                            r: vec3(0.04, 0.04, 0.085),
-                            noise: 0.002,
-                            freq: 30.0,
-                            origin: TAIL5,
-                        }.with(TUFT),
+                        kept(
+                            kind.grazer,
+                            Muscle {
+                                a: vec3(),
+                                b: TAIL_END - TAIL5,
+                                t: 0.55,
+                                off: vec2(0.0),
+                                r: vec3(0.04, 0.04, 0.085),
+                                noise: 0.002,
+                                freq: 30.0,
+                                origin: TAIL5,
+                            },
+                        )
+                            .with(TUFT),
                         seam: smooth(0.03),
                     )
             },
@@ -566,11 +638,19 @@ pub fn fawn() -> Creature<Coat> {
             mirror: true,
         )
         .then(
-            Cape { depth: 0.006 },
+            Shag { cape: Cape { depth: 0.006 }, on: kind.grazer },
         )
         .group(
             "ears",
-            |g| g.join("ear", head, Ear { cup: 0.022 }.with(WOOL)),
+            |g| g.join(
+                "ear",
+                head,
+                Ear { cup: 0.022 }
+                    .translate(-EAR_BASE)
+                    .scale(kind.ear_size)
+                    .translate(EAR_BASE)
+                    .with(kind.ear),
+            ),
             seam: smooth(0.012),
             space: head_frame(),
             mirror: true,
@@ -581,18 +661,21 @@ pub fn fawn() -> Creature<Coat> {
                 g.join(
                     "horn base",
                     head,
-                    round_cone(HORN0, HORN1, r_top: 0.036, r_bottom: 0.026).with(HORN),
+                    kept(kind.grazer, round_cone(HORN0, HORN1, r_top: 0.036, r_bottom: 0.026))
+                        .with(HORN),
                 )
                     .join(
                         "horn middle",
                         head,
-                        round_cone(HORN1, HORN2, r_top: 0.026, r_bottom: 0.018).with(HORN),
+                        kept(kind.grazer, round_cone(HORN1, HORN2, r_top: 0.026, r_bottom: 0.018))
+                            .with(HORN),
                         seam: smooth(0.012),
                     )
                     .join(
                         "horn tip",
                         head,
-                        round_cone(HORN2, HORN3, r_top: 0.018, r_bottom: 0.009).with(HORN),
+                        kept(kind.grazer, round_cone(HORN2, HORN3, r_top: 0.018, r_bottom: 0.009))
+                            .with(HORN),
                         seam: smooth(0.008),
                     )
             },
@@ -601,4 +684,66 @@ pub fn fawn() -> Creature<Coat> {
             mirror: true,
         )
         .then(ground())
+}
+
+/// A part a fawn's kind keeps, or leaves off: a part left off is nowhere (its distance is
+/// 1 km everywhere), so one builder makes both fawns with the same parts.
+struct Kept<F>: Copy + GpuData {
+    part: F,
+    kept: bool,
+}
+
+/// `part`, kept or left off (`Kept`).
+fn kept<F: Surface>(kept: bool, part: F) -> Kept<F> {
+    Kept { part, kept }
+}
+
+/// Where a part left off is: farther than any fawn reaches.
+const NOWHERE: f32 = 1000.0
+
+impl<F: Surface> Surface for Kept<F> {
+    fn distance(self, p: vec3) -> f32 {
+        if self.kept { self.part.distance(p) } else { NOWHERE }
+    }
+
+    fn filtered(self, p: vec3, footprint: f32) -> f32 {
+        if self.kept { self.part.filtered(p, footprint) } else { NOWHERE }
+    }
+
+    fn bound(self) -> Bound {
+        if self.kept { self.part.bound() } else { UNBOUNDED }
+    }
+
+    fn interval(self, over: Box3) -> Interval {
+        if self.kept { self.part.interval(over) } else { Interval { lo: NOWHERE, hi: NOWHERE } }
+    }
+
+    /// A part left off is a constant: its gradient is 0, under any bound.
+    fn lipschitz(self, near: f32) -> f32 {
+        if self.kept { self.part.lipschitz(near) } else { 1.0 }
+    }
+}
+
+/// The grazer's woolly cape, on a fawn that keeps the grazer's parts, or no change.
+struct Shag: Copy + GpuData {
+    cape: Cape,
+    on: bool,
+}
+
+impl Modifier for Shag {
+    fn apply(self, d: f32, p: vec3) -> f32 {
+        if self.on { self.cape.apply(d, p) } else { d }
+    }
+
+    fn lipschitz(self, inner: f32, near: f32) -> f32 {
+        if self.on { self.cape.lipschitz(inner, near) } else { inner }
+    }
+
+    fn widen(self, near: f32) -> f32 {
+        if self.on { self.cape.widen(near) } else { near }
+    }
+
+    fn interval(self, d: Interval, b: Box3) -> Interval {
+        if self.on { self.cape.interval(d, b) } else { d }
+    }
 }

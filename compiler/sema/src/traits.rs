@@ -236,28 +236,50 @@ fn impl_for(p: &Program, i: ImplId, ty: TyId, r: &TraitRef) -> Option<Subst> {
 /// a parameter with the same bound. A closure not checked yet fits (its call is checked where
 /// it's made).
 pub fn fits_fn_bound(p: &Program, ty: TyId, bound: TyId) -> bool {
-    let TyKind::FnPtr(want, want_ret, _) = p.types.kind(bound) else { return false };
-    let (params, ret) = match p.types.kind(ty) {
-        TyKind::FnPtr(ps, r, _) => (ps.clone(), *r),
+    let TyKind::FnPtr(want, want_ret, want_flags) = p.types.kind(bound) else { return false };
+    let (params, ret, modes, attrs_fit) = match p.types.kind(ty) {
+        TyKind::FnPtr(ps, r, flags) => {
+            let attrs_fit = want_flags
+                .attrs()
+                .into_iter()
+                .zip(flags.attrs())
+                .all(|((_, want), (_, have))| !want || have);
+            let modes = (0..ps.len()).map(|i| flags.mode(i)).collect();
+            (ps.clone(), *r, modes, attrs_fit)
+        }
         TyKind::FnDef(f, args) => {
             let subst = Subst::from_pairs(&p.fn_all_generics(*f), args);
             let def = p.func(*f);
+            if def.ret_mode != RetMode::Owned {
+                return false;
+            }
             let ps = def.params.iter().map(|q| p.types.subst(q.ty, &subst)).collect();
-            (ps, p.types.subst(def.ret, &subst))
+            let modes = def.params.iter().map(|q| q.mode).collect();
+            // A concrete function's attributed constraints are checked by the effects pass.
+            (ps, p.types.subst(def.ret, &subst), modes, true)
         }
         TyKind::Closure(c, env) => {
-            let Some((ps, r)) = p.closure_sigs.borrow().get(c).cloned() else { return true };
+            let Some((ps, r, modes)) = p.closure_sigs.borrow().get(c).cloned() else {
+                return true;
+            };
             let generics = c.owner.map(|f| p.fn_all_generics(f)).unwrap_or_default();
             let subst = Subst::from_pairs(&generics, env);
-            (ps.iter().map(|&t| p.types.subst(t, &subst)).collect(), p.types.subst(r, &subst))
+            (
+                ps.iter().map(|&t| p.types.subst(t, &subst)).collect(),
+                p.types.subst(r, &subst),
+                modes,
+                true,
+            )
         }
         TyKind::Param(g) => {
-            return p.param(*g).fn_bound.is_some_and(|b| could_unify(p, b, bound));
+            return p.param(*g).fn_bound.is_some_and(|b| fits_fn_bound(p, b, bound));
         }
         TyKind::Error => return true,
         _ => return false,
     };
-    params.len() == want.len()
+    attrs_fit
+        && params.len() == want.len()
+        && modes.iter().enumerate().all(|(i, &mode)| mode == want_flags.mode(i))
         && params.iter().zip(want).all(|(&a, &b)| could_unify(p, a, b))
         && could_unify(p, ret, *want_ret)
 }
@@ -283,6 +305,7 @@ fn impl_args_at(p: &Program, ty: TyId, t: TraitId, depth: u32) -> Vec<Vec<TyId>>
         }
         if depth < IMPL_ARGS_DEPTH {
             solve_from_bounds(p, &imp.generics, &mut subst, depth);
+            solve_from_elements(p, i, ty, t, &mut subst, depth);
         }
         let args =
             imp.trait_ref.as_ref().map(|r| r.subst(&p.types, &subst).args).unwrap_or_default();
@@ -341,6 +364,55 @@ fn solve_from_bounds(p: &Program, generics: &[ParamId], subst: &mut Subst, depth
         }
         if !progress {
             break;
+        }
+    }
+}
+
+/// Solves a tuple's or an array's derived impl's trait parameters (`impl<C, T0, T1> Tr<C> for
+/// (T0, T1)`) from its first element: it has the trait as its elements do, so the way the first
+/// has it gives `C` (a pair of `Field<Tint>`s is a `Field<Tint>`).
+fn solve_from_elements(
+    p: &Program,
+    i: ImplId,
+    ty: TyId,
+    t: TraitId,
+    subst: &mut Subst,
+    depth: u32,
+) {
+    let imp = p.impl_(i);
+    if !imp.from_opt_in
+        || !matches!(p.types.kind(imp.self_ty), TyKind::Tuple(_) | TyKind::ArrayN(..))
+    {
+        return;
+    }
+    let Some(r) = &imp.trait_ref else { return };
+    if r.args
+        .iter()
+        .all(|&a| !matches!(p.types.kind(a), TyKind::Param(g) if subst.get(*g).is_none()))
+    {
+        return;
+    }
+    let first = match p.types.kind(ty) {
+        TyKind::Tuple(ts) => ts.first().copied(),
+        TyKind::Array(e, _) | TyKind::ArrayN(e, _) => Some(*e),
+        _ => None,
+    };
+    let Some(first) = first else { return };
+    let mut ways: Vec<Vec<TyId>> = match declared_bounds(p, first) {
+        Some(bounds) => bounds.into_iter().filter(|b| b.trait_ == t).map(|b| b.args).collect(),
+        None if p.types.has_params(first) => return,
+        None => impl_args_at(p, first, t, depth + 1),
+    };
+    ways.dedup();
+    if let [only] = ways.as_slice() {
+        let mut solved = subst.clone();
+        let fits = r.args.len() == only.len()
+            && r.args
+                .iter()
+                .zip(only)
+                .all(|(&pat, &a)| match_ty(p, pat, a, &imp.generics, &mut solved));
+        if fits {
+            *subst = solved;
         }
     }
 }
@@ -495,6 +567,14 @@ fn implements_builtin_uncached(p: &Program, ty: TyId, lang: Lang) -> bool {
         // holds the same loans, which the memory checker tracks per holder (§6.6). It never
         // crosses to the GPU.
         TyKind::Adt(a, _) if p.adt(*a).borrow => lang != Lang::GpuData,
+        // A job's value is `Clone` when every part of it is: where it stopped, and each local it
+        // holds (`fn.job-values`). It's never `Copy`, `Plain` or `GpuData`: its layout is this
+        // build's.
+        TyKind::Adt(a, args) if p.is_lang_adt(*a, Lang::Job) => {
+            lang == Lang::Clone
+                && p.job_parts(*a, args)
+                    .is_some_and(|parts| parts.iter().all(|&(_, t)| implements_builtin(p, t, lang)))
+        }
         TyKind::Adt(a, args) => {
             let Some(want) = p.lang_trait(lang) else { return false };
             let adt = p.adt(*a);

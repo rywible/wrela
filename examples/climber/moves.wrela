@@ -1,0 +1,422 @@
+// The climber's moves, keyframed as code (#30): each a few poses at the ticks they're reached
+// (60 a second), and its frame data: when it can hit (wind-up, active, recovery), when another
+// move can cancel it, when it can't be hurt, what it costs, and how far it carries the body.
+// Between keys a move eases (smoothstep); the body's travel is a curve of its own.
+//
+// A pose is two things the climber moves apart: its body's form (it has no arms or legs: it's a
+// cape all the way round over a head and shoulders, so its form is how it sinks, tips, turns and
+// leans), and its sword, which it moves by will: where the grip is, which way the point is, and
+// which way the edge leads, each in the body's space. A swing is written as the sword's path.
+//
+//   tick  0 ─── wind-up ───► active ─── recovery ───► end
+//               (no hit)    (the edge     (cancel from `cancel`:
+//                            can hit)      a buffered move goes)
+
+use engine::sim::SimState
+use std::field::Blend
+use std::hash::StateHash
+use std::math::TAU
+use std::serialize::Serialize
+
+/// What the climber is doing: free (standing, gliding, which `locomotion` poses), a move, or
+/// down.
+pub enum Act: Copy + Eq + Plain + StateHash + Serialize + SimState + Fieldless {
+    Free,
+    Slash,
+    Backslash,
+    Blink,
+    Hurt,
+    Down,
+}
+
+/// A move's frame data, in ticks from its start (60 a second): its active ticks are
+/// `windup <= t < windup + active`; it ends at `total`; a buffered move can cancel it from
+/// `cancel`; it can't be hurt in `invulnerable`'s ticks (`lo <= t < hi`); and what it costs and
+/// does.
+pub struct Frames: Copy {
+    pub windup: u32,
+    pub active: u32,
+    pub total: u32,
+    pub cancel: u32,
+    pub invulnerable: vec2u = vec2u(0, 0),
+    pub stamina: f32 = 0.0,
+    pub damage: f32 = 0.0,
+    /// How far the move carries the body along its direction (m), and from and to which ticks.
+    pub travel: f32 = 0.0,
+    pub travel_ticks: vec2u = vec2u(0, 1),
+    /// How fast the climber may turn toward its aim during the wind-up (rad/s).
+    pub turn: f32 = 0.0,
+}
+
+impl Frames {
+    pub fn is_active(self, t: u32) -> bool {
+        t >= self.windup && t < self.windup + self.active
+    }
+
+    pub fn is_invulnerable(self, t: u32) -> bool {
+        t >= self.invulnerable.x && t < self.invulnerable.y
+    }
+
+    /// How far along its travel the body is at tick `t` (0 to 1): eased in and out.
+    pub fn travelled(self, t: f32) -> f32 {
+        let (a, b) = (f32(self.travel_ticks.x), f32(self.travel_ticks.y))
+        let u = clamp((t - a) / max(b - a, 1.0), 0.0, 1.0)
+        u * u * (3.0 - 2.0 * u)
+    }
+}
+
+// ---- poses ---------------------------------------------------------------------------------------
+
+/// The body's form: how far it sinks from standing (m, down negative), how it tips forward (x),
+/// turns its shoulders to the left (y) and leans to its left (z) (rad), and how far it has
+/// gathered its cape in (0 loose, 1 drawn tight about it: before a blink).
+pub struct Form: Copy + Eq + Plain + StateHash + Serialize + SimState + Blend {
+    pub lift: f32 = 0.0,
+    pub tilt: vec3 = vec3(0.0),
+    pub gather: f32 = 0.0,
+}
+
+/// The sword, in the body's space (+x the climber's left, +y up, +z ahead, from the ground under
+/// it): the grip's middle, toward its point, and the way its edge leads (both turned to unit
+/// length where they're read: keys blend them as they are).
+pub struct Sword: Copy + Eq + Plain + StateHash + Serialize + SimState + Blend {
+    pub at: vec3,
+    pub aim: vec3,
+    pub edge: vec3,
+}
+
+/// A pose: the body's form and the sword. It's sim state: the sword's path decides the hits.
+pub struct Pose: Copy + Eq + Plain + StateHash + Serialize + SimState + Blend {
+    pub form: Form = Form {},
+    pub sword: Sword,
+}
+
+/// A key: the tick it's reached at, and the pose.
+pub struct Key: Copy {
+    pub at: u32,
+    pub pose: Pose,
+}
+
+/// The keys at tick `t` (a fraction between ticks too): the two around it, eased between
+/// (smoothstep). Before the first key, the first; after the last, the last.
+pub fn sample(keys: [Key], t: f32) -> Pose {
+    let n = keys.len()
+    if t <= f32(keys[0].at) {
+        return keys[0].pose
+    }
+    for i in 1..n {
+        let b = keys[i]
+        if t <= f32(b.at) {
+            let a = keys[i - 1]
+            let u = (t - f32(a.at)) / max(f32(b.at - a.at), 1.0)
+            return a.pose.blend(b.pose, u * u * (3.0 - 2.0 * u))
+        }
+    }
+    keys[n - 1].pose
+}
+
+/// The sword at rest: it floats upright behind the right shoulder, its point up, its edge back.
+pub const REST = Pose {
+    sword: Sword {
+        at: vec3(-0.5, 1.15, -0.32),
+        aim: vec3(-0.05, 1.0, -0.08),
+        edge: vec3(0.0, 0.0, -1.0),
+    },
+}
+
+/// The guard, when a fight is near: the sword hangs ahead on the right, its point toward the
+/// enemy and a little up, its edge to the left; the body a little sunk and turned to the right.
+pub const GUARD = Pose {
+    form: Form { lift: -0.03, tilt: vec3(0.06, -0.12, 0.0) },
+    sword: Sword {
+        at: vec3(-0.55, 1.0, 0.5),
+        aim: vec3(-0.1, 0.3, 1.0),
+        edge: vec3(1.0, 0.0, 0.0),
+    },
+}
+
+// ---- the slash: a diagonal cut from high on the right down across to the left ------------------
+
+pub const SLASH_FRAMES = Frames {
+    windup: 13,
+    active: 6,
+    total: 40,
+    cancel: 27,
+    stamina: 18.0,
+    damage: 24.0,
+    travel: 0.6,
+    travel_ticks: vec2u(8, 19),
+    turn: 6.0,
+}
+
+/// The slash's keys: the sword drawn back high over the right shoulder, its point behind (the
+/// body turned to the right and rising: the tell), up over the top, then down across the front
+/// to low on the left, the body tipping into the cut; then back to the guard.
+pub fn slash_keys() -> Vec<Key> {
+    let g = GUARD
+    let chamber = Pose {
+        form: Form { lift: 0.04, tilt: vec3(-0.08, -0.4, 0.05) },
+        sword: Sword {
+            at: vec3(-0.6, 1.75, -0.25),
+            aim: vec3(-0.3, 0.5, -0.8),
+            edge: vec3(0.1, 0.8, 0.55),
+        },
+    }
+    let over = Pose {
+        form: Form { lift: 0.02, tilt: vec3(0.05, -0.15, 0.0) },
+        sword: Sword {
+            at: vec3(-0.45, 1.95, 0.25),
+            aim: vec3(-0.15, 0.95, 0.2),
+            edge: vec3(0.1, 0.2, 1.0),
+        },
+    }
+    let strike = Pose {
+        form: Form { lift: -0.08, tilt: vec3(0.25, 0.3, -0.05) },
+        sword: Sword {
+            at: vec3(-0.15, 1.2, 0.9),
+            aim: vec3(0.25, -0.45, 0.85),
+            edge: vec3(0.35, -0.85, -0.3),
+        },
+    }
+    let follow = Pose {
+        form: Form { lift: -0.06, tilt: vec3(0.18, 0.5, -0.08) },
+        sword: Sword {
+            at: vec3(0.5, 0.75, 0.45),
+            aim: vec3(0.85, -0.4, 0.3),
+            edge: vec3(0.3, 0.2, -0.9),
+        },
+    }
+    var k: Vec<Key> = Vec::new()
+    k.push(Key { at: 0, pose: g })
+    k.push(Key { at: 11, pose: chamber })
+    k.push(Key { at: 13, pose: chamber })
+    k.push(Key { at: 15, pose: over })
+    k.push(Key { at: 17, pose: strike })
+    k.push(Key { at: 19, pose: follow })
+    k.push(Key { at: 27, pose: follow })
+    k.push(Key { at: 40, pose: g })
+    k
+}
+
+// ---- the backslash: the return cut, from low on the left up across to the right ----------------
+
+pub const BACKSLASH_FRAMES = Frames {
+    windup: 10,
+    active: 6,
+    total: 42,
+    cancel: 28,
+    stamina: 20.0,
+    damage: 28.0,
+    travel: 0.5,
+    travel_ticks: vec2u(5, 16),
+    turn: 6.0,
+}
+
+/// The backslash's keys: from the slash's follow-through (where the slash can be cancelled into
+/// it), the sword turned over and drawn back low on the left, its point behind; then cut up across
+/// the front to high on the right, the body unwinding; then the guard.
+pub fn backslash_keys() -> Vec<Key> {
+    let g = GUARD
+    let from = sample(SLASH, f32(SLASH_FRAMES.cancel))
+    let wound = Pose {
+        form: Form { lift: -0.1, tilt: vec3(0.12, 0.6, -0.05) },
+        sword: Sword {
+            at: vec3(0.6, 0.65, 0.0),
+            aim: vec3(0.55, -0.25, -0.8),
+            edge: vec3(0.0, 0.3, 0.95),
+        },
+    }
+    let turning = Pose {
+        form: Form { lift: -0.08, tilt: vec3(0.15, 0.35, 0.0) },
+        sword: Sword {
+            at: vec3(0.45, 0.6, 0.45),
+            aim: vec3(0.85, -0.3, 0.45),
+            edge: vec3(-0.45, 0.1, 0.9),
+        },
+    }
+    let cut = Pose {
+        form: Form { lift: -0.06, tilt: vec3(0.2, -0.1, 0.05) },
+        sword: Sword {
+            at: vec3(0.0, 0.85, 0.9),
+            aim: vec3(-0.25, -0.12, 0.96),
+            edge: vec3(-0.95, 0.25, -0.2),
+        },
+    }
+    let high = Pose {
+        form: Form { lift: 0.0, tilt: vec3(0.05, -0.45, 0.1) },
+        sword: Sword {
+            at: vec3(-0.55, 1.55, 0.55),
+            aim: vec3(-0.65, 0.6, 0.45),
+            edge: vec3(-0.4, 0.75, -0.5),
+        },
+    }
+    var k: Vec<Key> = Vec::new()
+    k.push(Key { at: 0, pose: from })
+    k.push(Key { at: 8, pose: wound })
+    k.push(Key { at: 10, pose: wound })
+    k.push(Key { at: 11, pose: turning })
+    k.push(Key { at: 13, pose: cut })
+    k.push(Key { at: 16, pose: high })
+    k.push(Key { at: 26, pose: high })
+    k.push(Key { at: 42, pose: g })
+    k
+}
+
+// ---- the blink: gone, and there again a few metres away ----------------------------------------
+
+pub const BLINK_FRAMES = Frames {
+    windup: 0,
+    active: 0,
+    total: 24,
+    cancel: 16,
+    invulnerable: vec2u(1, 12),
+    stamina: 22.0,
+    travel: 3.6,
+    travel_ticks: vec2u(3, 6),
+}
+
+/// The blink's ticks in which the climber is between its two places (`lo <= t < hi`): the frames
+/// draw it as gone, and its darkness as the trail between.
+pub const BLINK_GONE = vec2u(3, 6)
+
+/// The blink's keys: the cape drawn in tight and the body sunk (2 ticks), gone (3 to 5), then
+/// there again, sunk and still gathered, unfolding back into the guard. The sword goes with it.
+pub fn blink_keys() -> Vec<Key> {
+    let g = GUARD
+    let drawn = Pose { form: Form { lift: -0.15, tilt: vec3(0.15, 0.0, 0.0), gather: 1.0 }, ..g }
+    let landed = Pose { form: Form { lift: -0.12, tilt: vec3(-0.08, 0.0, 0.0), gather: 0.8 }, ..g }
+    var k: Vec<Key> = Vec::new()
+    k.push(Key { at: 0, pose: g })
+    k.push(Key { at: 2, pose: drawn })
+    k.push(Key { at: 6, pose: landed })
+    k.push(Key { at: 10, pose: landed })
+    k.push(Key { at: 24, pose: g })
+    k
+}
+
+// ---- the stagger, and down -----------------------------------------------------------------------
+
+pub const HURT_FRAMES = Frames {
+    windup: 0,
+    active: 0,
+    total: 26,
+    cancel: 20,
+    travel: -0.6,
+    travel_ticks: vec2u(0, 10),
+}
+
+/// Struck: thrown back, the body tipped back and the sword knocked out wide to the right, its
+/// point down; then both back to the guard.
+pub fn hurt_keys() -> Vec<Key> {
+    let g = GUARD
+    let thrown = Pose {
+        form: Form { lift: -0.06, tilt: vec3(-0.35, -0.2, -0.15) },
+        sword: Sword {
+            at: vec3(-1.0, 0.95, -0.05),
+            aim: vec3(-0.6, -0.5, -0.6),
+            edge: vec3(0.0, 0.8, -0.6),
+        },
+    }
+    var k: Vec<Key> = Vec::new()
+    k.push(Key { at: 0, pose: g })
+    k.push(Key { at: 5, pose: thrown })
+    k.push(Key { at: 12, pose: thrown })
+    k.push(Key { at: 26, pose: g })
+    k
+}
+
+pub const DOWN_FRAMES = Frames {
+    windup: 0,
+    active: 0,
+    total: 150,
+    cancel: 150,
+    travel: -0.4,
+    travel_ticks: vec2u(0, 20),
+}
+
+/// Down: the body sinks into its cape until the cape lies on the ground round the mask; the sword
+/// falls and lies flat beside it. Then both rise again.
+pub fn down_keys() -> Vec<Key> {
+    let g = GUARD
+    let falling = Pose {
+        form: Form { lift: -0.45, tilt: vec3(-0.25, 0.0, 0.1) },
+        sword: Sword {
+            at: vec3(-0.9, 0.55, 0.2),
+            aim: vec3(-0.3, -0.6, 0.75),
+            edge: vec3(0.0, 0.8, 0.6),
+        },
+    }
+    let lying = Pose {
+        form: Form { lift: -1.15, tilt: vec3(-0.4, 0.0, 0.15) },
+        sword: Sword {
+            at: vec3(-0.95, 0.06, 0.1),
+            aim: vec3(-0.2, 0.0, 1.0),
+            edge: vec3(1.0, 0.0, 0.2),
+        },
+    }
+    var k: Vec<Key> = Vec::new()
+    k.push(Key { at: 0, pose: g })
+    k.push(Key { at: 12, pose: falling })
+    k.push(Key { at: 28, pose: lying })
+    k.push(Key { at: 125, pose: lying })
+    k.push(Key { at: 150, pose: g })
+    k
+}
+
+/// Each move's keys, built once.
+pub const SLASH: Vec<Key> = slash_keys()
+pub const BACKSLASH: Vec<Key> = backslash_keys()
+pub const BLINK: Vec<Key> = blink_keys()
+pub const HURT: Vec<Key> = hurt_keys()
+pub const DOWN: Vec<Key> = down_keys()
+
+/// A move's frame data.
+pub fn frames(a: Act) -> Frames {
+    match a {
+        Act::Slash => SLASH_FRAMES,
+        Act::Backslash => BACKSLASH_FRAMES,
+        Act::Blink => BLINK_FRAMES,
+        Act::Hurt => HURT_FRAMES,
+        Act::Down => DOWN_FRAMES,
+        Act::Free => Frames { windup: 0, active: 0, total: 1, cancel: 0 },
+    }
+}
+
+/// A move's pose at tick `t` of it.
+pub fn pose(a: Act, t: f32) -> Pose {
+    match a {
+        Act::Slash => sample(SLASH, t),
+        Act::Backslash => sample(BACKSLASH, t),
+        Act::Blink => sample(BLINK, t),
+        Act::Hurt => sample(HURT, t),
+        Act::Down => sample(DOWN, t),
+        Act::Free => GUARD,
+    }
+}
+
+// ---- gliding: procedural -----------------------------------------------------------------------
+
+/// The climber free: it glides, with no steps. `ready` (0 to 1) is how far the sword has come to
+/// the guard (a fight near), `speed` its speed (m/s), `accel` how fast that changes (m/s²),
+/// `turning` how fast it turns (rad/s) and `drift` its float's phase (0 to 1). The body tips
+/// into its speed and its acceleration, back as it stops, and leans into a turn; it rises and
+/// falls a little as it floats. The sword at rest trails: it tips back as the body speeds up and
+/// swings out of a turn.
+pub fn locomotion(ready: f32, speed: f32, accel: f32, turning: f32, drift: f32) -> Pose {
+    var p = REST.blend(GUARD, ready)
+    let lean = clamp(accel * 0.02, -0.2, 0.22)
+    let bank = clamp(turning * speed * 0.03, -0.3, 0.3)
+    p.form.lift += 0.015 * sin(TAU * drift)
+    p.form.tilt.x += 0.025 * speed + lean
+    p.form.tilt.z += bank
+    let trail = (1.0 - ready) * clamp(speed * 0.06 + lean * 0.5, 0.0, 0.45)
+    p.sword.at.z -= trail * 0.4
+    p.sword.at.x -= bank * 0.3
+    p.sword.aim.z -= trail
+    p
+}
+
+/// How fast the float goes round (a second at rest, faster as it glides): its phase's rate (1/s).
+pub fn drift_rate(speed: f32) -> f32 {
+    mix(0.7, 1.6, smoothstep(0.0, 4.0, speed))
+}

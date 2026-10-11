@@ -248,10 +248,10 @@ fn start_without(fv: FitView, lits: [u32]) -> Fit {
     let n = fv.res * fv.res
     Fit {
         fv,
-        lits: take l,
+        lits: l,
         original: v.clone(),
         accepted: v.clone(),
-        trying: take v,
+        trying: v,
         reference: Vec::new(),
         waiting: Waiting::Reference,
         asked: None,

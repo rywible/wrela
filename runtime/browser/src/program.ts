@@ -16,10 +16,11 @@ import {
   JOB_DONE,
   JOB_DONE_FAILED,
   JOB_FAILED,
-  JOB_SLOTS,
-  JOB_SLOTS_END,
+  TASK_SLOTS,
+  TASK_SLOTS_END,
   MAX_WORKERS,
   PAR_HELPED,
+  PAR_HELPERS,
   PAR_SHUTDOWN,
   PAR_WAKE,
   RUNNING,
@@ -37,6 +38,9 @@ import {
   IMPORT_INPUT,
   IMPORT_KEEP,
   IMPORT_KEPT,
+  IMPORT_CLOCK,
+  IMPORT_PHASE,
+  IMPORT_PRINT,
   IMPORT_LIMIT,
   IMPORT_MODULE,
   IMPORT_REQUEST_STATUS,
@@ -52,7 +56,7 @@ import {
 import { type Checker, CommandError } from "./check.ts";
 import { errorMessage } from "./errors.ts";
 import { StateHash } from "./hash.ts";
-import { refusingImports } from "./imports.ts";
+import { clockImport, phaseImport, printed, refusingImports } from "./imports.ts";
 import { Lines, LINES_SECTION, wasmOffsets } from "./lines.ts";
 import { type Bytes, type Command, decode, type OpcodeName, Sequencer } from "./stream.ts";
 import type { TickerOptions, VoiceOptions } from "./messages.ts";
@@ -93,6 +97,19 @@ export interface Io {
   post(url: string, body: Bytes): Promise<Bytes>;
 }
 
+/** The other builds a program may hand its place to (`std::reload`), each named by its path from
+ * the program's own build. */
+export interface Builds {
+  /** Gets the build ready: fetched, compiled, and its pipelines built. */
+  prepare(path: string): Promise<void>;
+  /** Lets go of what was got ready for the build. */
+  unprepare(path: string): void;
+  /** Hands the program's place to the build after the call that asked. Rejected, with why, if
+   * the build can't be got ready, and the program goes on; never resolved if the hand-over is
+   * made, since the program stops. */
+  handOver(path: string): Promise<void>;
+}
+
 /** An answer: the bytes, or why the request failed. */
 type Answer = { bytes: Bytes } | { error: string };
 
@@ -131,6 +148,9 @@ class Requests {
     for (const [r, a] of this.#arriving.splice(0)) this.answered.set(r, a);
   }
 }
+
+/** What a host without `Builds` has none of (as the native host words it). */
+const OTHER_BUILD = "other build to hand over to";
 
 /** The imports a program may have, with their types as both hosts word them. */
 const IMPORTS = new Map<string, string>(HOST_FUNCTIONS);
@@ -185,6 +205,16 @@ export function checkAbi(module: WebAssembly.Module, bytes: Uint8Array): MemoryL
   if (exports.has(EXPORT_INIT) && (exports.get(EXPORT_INIT) !== "function" || types.exports.get(EXPORT_INIT) !== "() -> ()")) {
     throw new ProgramError(`its \`${EXPORT_INIT}\` export must be a function with no parameters and no results`);
   }
+  const threadEntries = [
+    [EXPORT_WORKER, "(i32) -> ()"],
+    [EXPORT_AUDIO, "(i32, i32, i32) -> ()"],
+    [EXPORT_TICK, "(i32, i32, i32, i32) -> ()"],
+  ] as const;
+  for (const [name, want] of threadEntries) {
+    if (exports.has(name) && (exports.get(name) !== "function" || types.exports.get(name) !== want)) {
+      throw new ProgramError(`its \`${name}\` export must be a function ${want}`);
+    }
+  }
   return memory;
 }
 
@@ -194,23 +224,44 @@ export interface Compiled {
   memory: MemoryLimits;
 }
 
+/** A line printed by any of a program's threads, after that thread has shown it on its console. */
+export type PrintSink = (line: string) => void;
+
 /** Starts helper thread `thread` (its number, wrela_abi memory's threads) on `module`, with
  * `memory`: something that instantiates it there and calls `__worker(thread)` (`runWorker`). */
-export type SpawnWorker = (module: WebAssembly.Module, memory: WebAssembly.Memory, thread: number) => void;
+export type SpawnWorker = (
+  module: WebAssembly.Module,
+  memory: WebAssembly.Memory,
+  thread: number,
+  onPrint: PrintSink,
+) => void;
 
 /** Another thread's instance of the program, `who`'s: the host's functions trap (`refusingImports`). */
-export function otherInstance(module: WebAssembly.Module, memory: WebAssembly.Memory, who: string): Promise<WebAssembly.Instance> {
-  return WebAssembly.instantiate(module, refusingImports(memory, who, TrapError));
+export function otherInstance(
+  module: WebAssembly.Module,
+  memory: WebAssembly.Memory,
+  who: string,
+  onPrint: PrintSink = () => {},
+): Promise<WebAssembly.Instance> {
+  return WebAssembly.instantiate(module, refusingImports(memory, who, TrapError, onPrint));
 }
 
 /** On a helper thread, number `thread`: instantiates the program with the shared memory and
  * runs work until the program shuts it down. If it traps, it tells the thread that waits for
  * what it ran (wrela_abi memory's helpers), and runs nothing more. */
-export async function runWorker(module: WebAssembly.Module, memory: WebAssembly.Memory, thread: number): Promise<void> {
+export async function runWorker(
+  module: WebAssembly.Module,
+  memory: WebAssembly.Memory,
+  thread: number,
+  onPrint: PrintSink = () => {},
+): Promise<void> {
   try {
-    const instance = await otherInstance(module, memory, "a helper");
+    const instance = await otherInstance(module, memory, "a helper", onPrint);
     (instance.exports[EXPORT_WORKER] as (thread: number) => void)(thread);
-  } catch {
+  } catch (e) {
+    // The program reports the trap where it's joined; a trap outside a job or a task would
+    // otherwise go unseen.
+    console.error(`a helper (thread ${thread}) trapped: ${describeTrap(e, Lines.of(module))}`);
     helperTrapped(memory, thread);
   }
 }
@@ -224,12 +275,13 @@ function helperTrapped(memory: WebAssembly.Memory, thread: number): void {
   const words = new Int32Array(memory.buffer);
   const running = Atomics.load(words, (threadBlock(thread) + RUNNING) / 4) >>> 0;
   if (running >= THREAD_BLOCKS && running < THREAD_BLOCKS_END) {
-    // A thread's parallel job: its starting thread waits on its count of done chunks.
-    Atomics.store(words, (running + JOB_FAILED) / 4, thread + 1);
+    // A thread's parallel job: its starting thread waits on its count of done chunks. The first
+    // helper to trap is the one whose message the program reports.
+    Atomics.compareExchange(words, (running + JOB_FAILED) / 4, 0, thread + 1);
     Atomics.or(words, (running + JOB_DONE) / 4, JOB_DONE_FAILED | 0);
     Atomics.notify(words, (running + JOB_DONE) / 4);
-  } else if (running >= JOB_SLOTS && running < JOB_SLOTS_END) {
-    // A long job: whoever joins it waits on its state.
+  } else if (running >= TASK_SLOTS && running < TASK_SLOTS_END) {
+    // A task: whoever joins it waits on its state.
     Atomics.store(words, (running + SLOT_THREAD) / 4, thread);
     Atomics.store(words, (running + SLOT_STATE) / 4, SLOT_FAILED);
     Atomics.notify(words, (running + SLOT_STATE) / 4);
@@ -245,9 +297,11 @@ export interface ProgramOptions {
   hash?: boolean;
   /** Where storage and fetch requests go; without it, they fail. */
   io?: Io;
+  /** The builds the program may hand over to; without it, those requests fail. */
+  builds?: Builds | undefined;
   /** Plays the voice the program starts (`std::audio::play`), on an audio thread; without
    * it, the voice is kept but not played. */
-  startVoice?: (voice: VoiceOptions) => void;
+  startVoice?: (voice: VoiceOptions, onPrint: PrintSink) => void;
   /** How many threads run a parallel job's chunks, the program's own included: 1 (the
    * default) runs them all on it. More need `spawnWorker`. */
   workers?: number;
@@ -257,7 +311,7 @@ export interface ProgramOptions {
   onPrint?: (line: string) => void;
   /** Starts the program's ticker (`std::tick::start`) on its own thread; without it, the ticker
    * is kept but never ticks. */
-  startTicker?: (ticker: TickerOptions) => void;
+  startTicker?: (ticker: TickerOptions, onPrint: PrintSink) => void;
   /** Each tick reports its state's hash (wrela_abi memory's `TICK_WANT_HASH`), and so does the
    * ticker's `start`, in `init`: test mode keeps them in a tick log. */
   tickHashes?: boolean;
@@ -282,10 +336,10 @@ export class Program {
   #module: WebAssembly.Module | null = null;
   /** The voice the program started: its task and context. */
   #voice: { task: number; context: number } | null = null;
-  readonly #startVoice: ((voice: VoiceOptions) => void) | null;
+  readonly #startVoice: ((voice: VoiceOptions, onPrint: PrintSink) => void) | null;
   /** The ticker the program started: its task, context and rate. */
   #ticker: Pick<TickerOptions, "task" | "context" | "hz"> | null = null;
-  readonly #startTicker: ((ticker: TickerOptions) => void) | null;
+  readonly #startTicker: ((ticker: TickerOptions, onPrint: PrintSink) => void) | null;
   /** The error behind the most recent trap raised by `submit`, so the caller gets it rather
    * than whatever the engine wraps it in. */
   #failure: unknown = null;
@@ -294,7 +348,8 @@ export class Program {
   #failed: string | null = null;
   readonly #requests = new Requests();
   readonly #io: Io | null;
-  readonly #onPrint: ((line: string) => void) | null;
+  readonly #builds: Builds | null;
+  readonly #onPrint: PrintSink | null;
   /** Input events not yet read (`wrela.input`), EVENT_SIZE bytes each, oldest first. */
   #input: Uint8Array[] = [];
   /** What the replaced build kept (`wrela.kept`), and what this one keeps (`wrela.keep`). */
@@ -308,6 +363,7 @@ export class Program {
   ) {
     this.hash = options.hash ? new StateHash() : null;
     this.#io = options.io ?? null;
+    this.#builds = options.builds ?? null;
     this.#startVoice = options.startVoice ?? null;
     this.#startTicker = options.startTicker ?? null;
     this.#onPrint = options.onPrint ?? null;
@@ -364,6 +420,13 @@ export class Program {
         [IMPORT_TICK]: (task: number, context: number, hz: number) => program.#tickImport(task >>> 0, context >>> 0, hz >>> 0),
         [IMPORT_KEEP]: (ptr: number, len: number) => program.#keepImport(ptr >>> 0, len >>> 0),
         [IMPORT_KEPT]: (ptr: number, cap: number) => program.#keptImport(ptr >>> 0, cap >>> 0),
+        [IMPORT_CLOCK]: clockImport(memory),
+        // `std::io::print`: a line for whoever runs the program, shown as it's made.
+        [IMPORT_PRINT]: (ptr: number, len: number) => {
+          const line = printed(memory, ptr, len);
+          program.#printed(line);
+        },
+        [IMPORT_PHASE]: phaseImport(memory),
       },
     };
     // As the native host words it: a module that can't be instantiated isn't a valid program.
@@ -379,9 +442,14 @@ export class Program {
     program.#reserved = (compiled.memory.maximum ?? compiled.memory.initial) * 65536;
     program.#frame = instance.exports[EXPORT_FRAME] as FrameFn;
     // The helpers: each its own instance of the module on its own thread, with the memory.
-    if (EXPORT_WORKER in instance.exports && options.spawnWorker) {
-      const n = Math.min(Math.max(options.workers ?? 1, 1), MAX_WORKERS + 1) - 1;
-      for (let i = 0; i < n; i++) options.spawnWorker(module, memory, THREAD_HELPER0 + i);
+    if (EXPORT_WORKER in instance.exports) {
+      const spawn = options.spawnWorker;
+      const helpers = spawn ? Math.min(Math.max(options.workers ?? 1, 1), MAX_WORKERS + 1) - 1 : 0;
+      for (let i = 0; i < helpers; i++) {
+        spawn!(module, memory, THREAD_HELPER0 + i, (line) => program.#printed(line));
+      }
+      // How many helpers there are: with none, std runs a task when asked if it's done.
+      new DataView(memory.buffer).setUint32(PAR_HELPERS, helpers, true);
     }
     if (options.tickHashes) new DataView(memory.buffer).setUint32(TICK_WANT_HASH, 1, true);
     // A program with state makes it once, before anything else runs (language.md §12).
@@ -445,11 +513,21 @@ export class Program {
         this.#requests.start(cmd.op, cmd.request, io ? () => io.post(cmd.url, body) : none("server to post to"));
         return;
       }
-      case "Log":
-        // `std::io::print`: a line for whoever runs the program, prefixed so it's found.
-        console.log(`wrela: ${cmd.text}`);
-        this.#onPrint?.(cmd.text);
+      case "Prepare": {
+        const builds = this.#builds;
+        const prepare = builds ? () => builds.prepare(cmd.path).then(() => new Uint8Array(0)) : none(OTHER_BUILD);
+        this.#requests.start(cmd.op, cmd.request, prepare);
         return;
+      }
+      case "Unprepare":
+        this.#builds?.unprepare(cmd.path);
+        return;
+      case "HandOver": {
+        const builds = this.#builds;
+        const go = builds ? () => builds.handOver(cmd.path).then(() => new Uint8Array(0)) : none(OTHER_BUILD);
+        this.#requests.start(cmd.op, cmd.request, go);
+        return;
+      }
       default:
         return;
     }
@@ -574,7 +652,10 @@ export class Program {
     if (this.#voice !== null) throw new TrapError("a program starts one voice, and this one started a second");
     if (!(EXPORT_AUDIO in this.#instance!.exports)) throw new TrapError(`it starts a voice but doesn't export \`${EXPORT_AUDIO}\``);
     this.#voice = { task, context };
-    this.#startVoice?.({ module: this.#module!, memory: this.#memory!, task, context });
+    this.#startVoice?.(
+      { module: this.#module!, memory: this.#memory!, task, context },
+      (line) => this.#printed(line),
+    );
   }
 
   /** Whether the program has started its voice. */
@@ -588,7 +669,15 @@ export class Program {
     if (this.#ticker !== null) throw new TrapError("panic: a program starts one ticker, and this one started a second");
     if (!(EXPORT_TICK in this.#instance!.exports)) throw new TrapError(`it starts a ticker but doesn't export \`${EXPORT_TICK}\``);
     this.#ticker = { task, context, hz };
-    this.#startTicker?.({ module: this.#module!, memory: this.#memory!, task, context, hz });
+    this.#startTicker?.(
+      { module: this.#module!, memory: this.#memory!, task, context, hz },
+      (line) => this.#printed(line),
+    );
+  }
+
+  /** A line printed on this program's thread, or relayed from one of its other threads. */
+  #printed(line: string): void {
+    this.#onPrint?.(line);
   }
 
   /** The ticker the program started, if it has: its task, context and rate. */
