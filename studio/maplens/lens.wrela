@@ -696,9 +696,9 @@ fn draw_marks(lens: mut MapLens, m: Map, screen: vec2) {
     if (lens.layers & MAP) != 0 {
         let line = vec4(0.95, 0.85, 0.55, 0.9)
         for r in m.routes {
-            for k in 0..r.points.len() - 1 {
-                let a = lens.pixel(r.points[k])
-                let b = lens.pixel(r.points[k + 1])
+            for k in 1..r.points.len() {
+                let a = lens.pixel(r.points[k - 1])
+                let b = lens.pixel(r.points[k])
                 let n = u32(ceil(length(b - a) / 3.0)) + 1
                 for s in 0..n {
                     let p = mix(a, b, vec2(f32(s) / f32(n)))

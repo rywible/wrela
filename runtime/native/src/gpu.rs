@@ -4,9 +4,9 @@
 //! back. How commands map to wgpu (the browser runtime's decoder does the same with WebGPU):
 //!
 //! - Work is recorded into one pending command encoder and submitted ("flushed") at the end of
-//!   a pass on the screen, before a `WriteBuffer` or `WriteTexture` (so earlier work sees the old
-//!   contents), before a readback, and at the end of each call. Each dispatch gets its own
-//!   compute pass.
+//!   a pass on the screen, before a large upload (so earlier work sees the old contents), before
+//!   a readback, and at the end of each call. Smaller buffer and texture writes use ordered
+//!   copies from an upload ring. Each dispatch gets its own compute pass.
 //! - A pass's draws are collected and recorded into one render pass when it ends (`Present` or
 //!   `EndPass`), since a pass can span batches. A pass that may join the one before (`join`), and
 //!   begins right after it ended on the same targets, keeping what's in them, runs as part of
@@ -234,7 +234,7 @@ enum Kind {
 }
 
 /// A cached bind group: its pipeline, and the bindings it holds.
-type BindGroupKey = (u32, Box<[Binding]>);
+type BindGroupKey = (u32, Arc<[Binding]>);
 
 enum DrawHow {
     Direct {
@@ -279,9 +279,11 @@ struct Screen {
 /// A buffer whose bytes for this submission are staged on the CPU and written to it at the
 /// flush: the uniform ring, and the upload ring.
 ///
-/// The upload ring holds this submission's buffer writes (`WriteBuffer`): a copy of each from
-/// there is recorded where the write is, so a write splits no work into submissions. (A queue
-/// write would have to come between two: the work recorded before it must see the old
+/// The upload ring holds this submission's buffer and texture writes: a copy of each from
+/// there is recorded where the write is, so a write splits no work into submissions. Texture
+/// rows are padded to 256 bytes, as buffer-to-texture copies require, and their uploads start
+/// at that alignment too. (A queue write would have to come between two: the work recorded
+/// before it must see the old
 /// contents. Each submission waited for the GPU, which then started cold, and the pass after a
 /// write measured a third more, the herd's culling 15 times.)
 struct Ring {
@@ -376,7 +378,7 @@ pub(crate) struct Gpu {
     built: Arc<AtomicUsize>,
     resources: HashMap<u32, Resource>,
     /// Each pipeline's cached bind groups, by the bindings they hold.
-    bind_groups: Vec<HashMap<Box<[Binding]>, wgpu::BindGroup>>,
+    bind_groups: Vec<HashMap<Arc<[Binding]>, wgpu::BindGroup>>,
     /// For each resource, the cached bind groups it's in: destroying it drops them.
     bound_in: HashMap<u32, HashSet<BindGroupKey>>,
     /// The uniform ring, bound with dynamic offsets, and the upload ring.
@@ -545,14 +547,21 @@ impl Gpu {
             old_keys.into_iter().zip(std::mem::take(&mut self.pipelines)).collect();
         // The last build's spares go; those got ready for a build stay.
         self.spare.retain(|_, (_, prepared)| *prepared);
+        let mut kept = Vec::new();
+        let mut missing = Vec::new();
         for (p, source) in manifest.pipelines.iter().zip(shaders) {
             let key = pipeline_key(p, source);
-            let pipeline = match old.remove(&key).or_else(|| self.spare.remove(&key).map(|s| s.0)) {
-                Some(kept) => kept,
-                None => self.builder().build(p, source)?,
-            };
-            self.pipelines.push(pipeline);
+            let have = old.remove(&key).or_else(|| self.spare.remove(&key).map(|s| s.0));
+            if have.is_none() {
+                missing.push((p, source.as_str()));
+            }
+            kept.push(have);
             self.pipeline_keys.push(key);
+        }
+        let mut built = self.builder().build_many(&missing)?.into_iter();
+        for have in kept {
+            self.pipelines
+                .push(have.unwrap_or_else(|| built.next().expect("one built for each missing")));
         }
         for (key, pipeline) in old {
             self.spare.entry(key).or_insert((pipeline, false));
@@ -564,6 +573,26 @@ impl Gpu {
     /// Hot reload: finishes the old build's work, forgets its resources, and takes the new
     /// build's pipelines. The device, the screen and the rings stay.
     fn reload_build(&mut self, manifest: &Manifest, shaders: &[String]) -> Result<()> {
+        self.finish_build()?;
+        self.take_pipelines(manifest, shaders)
+    }
+
+    /// A fresh program on the same device: only immutable pipelines and upload allocations
+    /// survive. In particular, a program that doesn't draw mustn't see the last one's screen.
+    pub(crate) fn restart_build(&mut self, manifest: &Manifest, shaders: &[String]) -> Result<()> {
+        self.finish_build()?;
+        self.screen = None;
+        self.frame = 0;
+        self.debug_flag = None;
+        self.spare.clear();
+        if let Some(timer) = &mut self.timer {
+            *timer = Timer::new(&self.device, timer.serial, timer.counter.is_some());
+        }
+        self.take_pipelines(manifest, shaders)
+    }
+
+    /// Finishes the retiring build's commands before releasing the resources they used.
+    fn finish_build(&mut self) -> Result<()> {
         self.pass = None;
         self.label = None;
         self.flush()?;
@@ -571,7 +600,7 @@ impl Gpu {
         self.device.poll(wgpu::PollType::wait_indefinitely()).map_err(gpu_err)?;
         self.resources.clear();
         self.bound_in.clear();
-        self.take_pipelines(manifest, shaders)
+        Ok(())
     }
 
     /// What builds pipelines on this device, on any thread.
@@ -636,14 +665,43 @@ impl Builder {
         shaders: &[String],
         have: &HashSet<u64>,
     ) -> Result<Ready> {
-        let mut out = Vec::new();
+        let mut keys = Vec::new();
+        let mut missing = Vec::new();
         for (p, source) in manifest.pipelines.iter().zip(shaders) {
             let key = pipeline_key(p, source);
-            if !have.contains(&key) && !out.iter().any(|(k, _)| *k == key) {
-                out.push((key, self.build(p, source)?));
+            if !have.contains(&key) && !keys.contains(&key) {
+                keys.push(key);
+                missing.push((p, source.as_str()));
             }
         }
-        Ok(out)
+        Ok(keys.into_iter().zip(self.build_many(&missing)?).collect())
+    }
+
+    /// Each of `jobs` built, in order, on as many threads as the machine has cores: a software
+    /// GPU (lavapipe) compiles a pipeline on the thread that makes it, and a floor has hundreds
+    /// (wgpu's error scopes, which catch a shader's errors, are each thread's own). The first
+    /// failure in order, if any.
+    fn build_many(&self, jobs: &[(&wrela_abi::manifest::Pipeline, &str)]) -> Result<Vec<Pipeline>> {
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(jobs.len());
+        if threads <= 1 {
+            return jobs.iter().map(|(p, source)| self.build(p, source)).collect();
+        }
+        let next = AtomicUsize::new(0);
+        let mut results: Vec<Option<Result<Pipeline>>> = (0..jobs.len()).map(|_| None).collect();
+        let done = Mutex::new(&mut results);
+        std::thread::scope(|scope| {
+            for _ in 0..threads {
+                scope.spawn(|| {
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some((p, source)) = jobs.get(i) else { break };
+                        let r = self.build(p, source);
+                        done.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(r);
+                    }
+                });
+            }
+        });
+        results.into_iter().map(|r| r.expect("every job ran")).collect()
     }
 
     fn build(&self, p: &wrela_abi::manifest::Pipeline, source: &str) -> Result<Pipeline> {
@@ -927,7 +985,9 @@ impl Gpu {
             return bg.clone();
         }
         let p = &self.pipelines[pipeline as usize];
-        let mut entries = Vec::new();
+        let mut entries = Vec::with_capacity(
+            bindings.len() + usize::from(p.uniform.is_some()) + usize::from(p.debug_flag.is_some()),
+        );
         if let Some((binding, size)) = p.uniform {
             entries.push(wgpu::BindGroupEntry {
                 binding,
@@ -959,7 +1019,9 @@ impl Gpu {
             layout: &p.layout,
             entries: &entries,
         });
-        let key: Box<[Binding]> = bindings.into();
+        // The reverse index holds this key once per resource. Share its binding array rather
+        // than copying the whole array for every resource in it.
+        let key: Arc<[Binding]> = bindings.into();
         for b in bindings {
             self.bound_in.entry(b.handle).or_default().insert((pipeline, key.clone()));
         }
@@ -1168,14 +1230,7 @@ impl Gpu {
             self.queue.write_buffer(self.buffer(handle), u64::from(offset), data);
             return Ok(());
         }
-        if self.upload.staging.len() as u64 + len > self.upload.capacity() {
-            self.flush()?;
-            if len > self.upload.capacity() {
-                let capacity = len.max(self.upload.capacity() * 2).next_power_of_two();
-                self.upload.grow(&self.device, capacity);
-            }
-        }
-        let at = self.upload.staging.len() as u64;
+        let at = self.reserve_upload(len, 1)?;
         self.upload.staging.extend_from_slice(data);
         let mut encoder = self.take_encoder();
         encoder.copy_buffer_to_buffer(
@@ -1189,6 +1244,21 @@ impl Gpu {
         Ok(())
     }
 
+    /// Makes room for an upload, flushing first if necessary. Texture copies need both their
+    /// rows and their starting offsets aligned; buffer copies already carry aligned lengths.
+    fn reserve_upload(&mut self, bytes: u64, alignment: u64) -> Result<u64> {
+        let at = align_to(self.upload.staging.len() as u64, alignment);
+        if at + bytes <= self.upload.capacity() {
+            return Ok(at);
+        }
+        self.flush()?;
+        if bytes > self.upload.capacity() {
+            let capacity = bytes.max(self.upload.capacity() * 2).next_power_of_two();
+            self.upload.grow(&self.device, capacity);
+        }
+        Ok(0)
+    }
+
     fn write_texture(
         &mut self,
         handle: u32,
@@ -1199,25 +1269,61 @@ impl Gpu {
         if data.is_empty() {
             return Ok(());
         }
-        self.flush()?;
-        let Resource::Texture { texture, format, .. } = &self.resources[&handle] else {
+        let Resource::Texture { format, .. } = &self.resources[&handle] else {
             unreachable!("the checker checked {handle} is a texture");
         };
-        self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d { x: origin[0], y: origin[1], z: 0 },
-                aspect: wgpu::TextureAspect::All,
+        let row = u64::from(size[0]) * u64::from(format.bytes_per_texel());
+        let padded = align_to(row, u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
+        let bytes = padded * u64::from(size[1]);
+        let extent = wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 };
+        let origin = wgpu::Origin3d { x: origin[0], y: origin[1], z: 0 };
+        if bytes > u64::from(stream::UPLOAD_MAX) {
+            self.flush()?;
+            let Resource::Texture { texture, .. } = &self.resources[&handle] else {
+                unreachable!("the checker checked {handle} is a texture");
+            };
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo { origin, ..texture.as_image_copy() },
+                data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row as u32),
+                    rows_per_image: Some(size[1]),
+                },
+                extent,
+            );
+            return Ok(());
+        }
+        let at = self.reserve_upload(bytes, u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))?;
+        self.upload.staging.resize(at as usize, 0);
+        if row == padded {
+            self.upload.staging.extend_from_slice(data);
+        } else {
+            self.upload.staging.resize((at + bytes) as usize, 0);
+            for (source, target) in data
+                .chunks_exact(row as usize)
+                .zip(self.upload.staging[at as usize..].chunks_exact_mut(padded as usize))
+            {
+                target[..row as usize].copy_from_slice(source);
+            }
+        }
+        let mut encoder = self.take_encoder();
+        let Resource::Texture { texture, .. } = &self.resources[&handle] else {
+            unreachable!("the checker checked {handle} is a texture");
+        };
+        encoder.copy_buffer_to_texture(
+            wgpu::TexelCopyBufferInfo {
+                buffer: &self.upload.buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: at,
+                    bytes_per_row: Some(padded as u32),
+                    rows_per_image: Some(size[1]),
+                },
             },
-            data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(size[0] * format.bytes_per_texel()),
-                rows_per_image: Some(size[1]),
-            },
-            wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+            wgpu::TexelCopyTextureInfo { origin, ..texture.as_image_copy() },
+            extent,
         );
+        self.encoder = Some(encoder);
         Ok(())
     }
 
@@ -1358,20 +1464,14 @@ impl Gpu {
             });
         let moved = (targets[0].0.max(targets[1].0), targets[0].1 + targets[1].1);
         let timestamps = self.timer.as_mut().map(|t| t.next(self.frame, label, moved));
-        let counts: Vec<Option<u32>> = open
-            .draws
-            .iter()
-            .map(|d| {
-                let name = &self.pipelines[d.pipeline as usize].name;
-                self.timer.as_mut().and_then(|t| t.count(name))
-            })
-            .collect();
         let [r, g, b, a] = pass.clear.map(f64::from);
-        let mut bind_groups = Vec::new();
-        let mut offsets = Vec::new();
+        let mut prepared = Vec::with_capacity(open.draws.len());
         for d in &open.draws {
-            offsets.push(self.push_uniforms(&d.uniforms));
-            bind_groups.push(self.bind_group(d.pipeline, &d.bindings));
+            let name = &self.pipelines[d.pipeline as usize].name;
+            let count = self.timer.as_mut().and_then(|t| t.count(name));
+            let offset = self.push_uniforms(&d.uniforms);
+            let bind_group = self.bind_group(d.pipeline, &d.bindings);
+            prepared.push((bind_group, offset, count));
         }
         let mut encoder = self.take_encoder();
         let view_of = |gpu: &'_ Gpu, h: u32| -> wgpu::TextureView {
@@ -1426,8 +1526,7 @@ impl Gpu {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        let draws = open.draws.iter().zip(&bind_groups).zip(&offsets).zip(&counts);
-        for (((d, bind_group), offset), count) in draws {
+        for (d, (bind_group, offset, count)) in open.draws.iter().zip(&prepared) {
             let Kind::Render { variants, .. } = &self.pipelines[d.pipeline as usize].kind else {
                 unreachable!("the checker checked the kind");
             };
@@ -1561,15 +1660,17 @@ impl Gpu {
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
         self.queue.submit([encoder.finish()]);
-        let bytes = map_read(&self.device, &staging)?;
+        let frame = map_read_with(&self.device, &staging, |bytes| {
+            if padded == row {
+                return bytes.to_vec();
+            }
+            let mut frame = Vec::with_capacity((row * u64::from(height)) as usize);
+            for padded_row in bytes.chunks_exact(padded as usize) {
+                frame.extend_from_slice(&padded_row[..row as usize]);
+            }
+            frame
+        })?;
         self.check_errors()?;
-        if padded == row {
-            return Ok(bytes);
-        }
-        let mut frame = Vec::with_capacity((row * u64::from(height)) as usize);
-        for padded_row in bytes.chunks_exact(padded as usize) {
-            frame.extend_from_slice(&padded_row[..row as usize]);
-        }
         Ok(frame)
     }
 
@@ -1815,6 +1916,16 @@ fn render_variant(device: &wgpu::Device, name: &str, kind: &mut Kind, targets: T
 
 /// Maps a `MAP_READ` buffer and copies it out, waiting for the GPU.
 pub fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Result<Vec<u8>> {
+    map_read_with(device, buffer, <[u8]>::to_vec)
+}
+
+/// Converts mapped bytes before unmapping, so callers can copy just the pixels or words they
+/// need without first copying the whole mapped range to a temporary byte vector.
+fn map_read_with<T>(
+    device: &wgpu::Device,
+    buffer: &wgpu::Buffer,
+    read: impl FnOnce(&[u8]) -> T,
+) -> Result<T> {
     let slice = buffer.slice(..);
     let (tx, rx) = std::sync::mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |r| {
@@ -1822,9 +1933,11 @@ pub fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Result<Vec<u8>>
     });
     device.poll(wgpu::PollType::wait_indefinitely()).map_err(gpu_err)?;
     rx.recv().map_err(gpu_err)?.map_err(gpu_err)?;
-    let bytes = slice.get_mapped_range().map_err(gpu_err)?.to_vec();
+    let mapped = slice.get_mapped_range().map_err(gpu_err)?;
+    let out = read(&mapped);
+    drop(mapped);
     buffer.unmap();
-    Ok(bytes)
+    Ok(out)
 }
 
 impl Timer {
@@ -1987,14 +2100,148 @@ fn resolve(
     encoder.resolve_query_set(queries, 0..n, &resolved, 0);
     encoder.copy_buffer_to_buffer(&resolved, 0, &readback, 0, size);
     queue.submit([encoder.finish()]);
-    let bytes = map_read(device, &readback)?;
-    Ok(bytes.chunks_exact(8).map(|b| u64::from_le_bytes(b.try_into().expect("8 bytes"))).collect())
+    map_read_with(device, &readback, |bytes| {
+        bytes.chunks_exact(8).map(|b| u64::from_le_bytes(b.try_into().expect("8 bytes"))).collect()
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use wrela_abi::manifest::Pipeline;
+
+    /// Small streaming texture updates interspersed with recorded GPU work. Include GPU
+    /// completion, but leave device creation and the first warm-up out of the samples.
+    #[test]
+    #[ignore = "measure: texture upload throughput, needs a GPU"]
+    fn texture_upload_throughput() {
+        let _turn = crate::lock::turn();
+        let _lock = crate::lock::GpuLock::alone("texture upload throughput").expect("GPU lock");
+        let mut gpu = Gpu::new(&Manifest::new("game.wasm"), &[], Timing::Off, false).unwrap();
+        eprintln!("{}", gpu.adapter());
+        gpu.create_buffer(2, 4);
+        gpu.create_buffer(3, 4);
+        for side in [32, 128] {
+            gpu.create_texture(1, [side, side, 0], TextureFormat::Rgba8, false);
+            let bytes = vec![127; (side * side * 4) as usize];
+            let mut samples = Vec::new();
+            for run in 0..8 {
+                let started = std::time::Instant::now();
+                for _ in 0..256 {
+                    gpu.write_texture(1, [0, 0], [side, side], &bytes).unwrap();
+                    gpu.copy_buffer(2, 0, 3, 0, 4);
+                }
+                gpu.read_buffer(3).unwrap();
+                gpu.check_errors().unwrap();
+                let millis = started.elapsed().as_secs_f64() * 1000.0;
+                if run > 0 {
+                    samples.push(millis);
+                }
+            }
+            samples.sort_by(f64::total_cmp);
+            eprintln!(
+                "256 ordered {side}x{side} texture uploads: {:.3} ms median ({samples:?})",
+                samples[3]
+            );
+            gpu.destroy(1);
+        }
+    }
+
+    /// Copies a texture before a later write can replace it, leaving the copy in the current
+    /// encoder so the test checks ordering within and between submissions.
+    fn snapshot_texture(
+        gpu: &mut Gpu,
+        handle: u32,
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+    ) -> wgpu::Buffer {
+        let row = align_to(width * format.bytes_per_texel(), wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let buffer = gpu.readback_buffer(u64::from(row) * u64::from(height));
+        let mut encoder = gpu.take_encoder();
+        let Resource::Texture { texture, .. } = &gpu.resources[&handle] else { unreachable!() };
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        gpu.encoder = Some(encoder);
+        buffer
+    }
+
+    /// A packed texture upload keeps every row and changes only its rectangle. Reads recorded
+    /// before another write keep the earlier texels, even beside buffer uploads whose lengths
+    /// don't meet texture-copy alignment.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn texture_uploads_preserve_rows_rectangles_and_order() {
+        let _turn = crate::lock::turn();
+        let _lock = crate::lock::GpuLock::acquire("texture upload order").expect("GPU lock");
+        let mut gpu = Gpu::new(&Manifest::new("game.wasm"), &[], Timing::Off, false).unwrap();
+        gpu.create_buffer(2, 4);
+        for format in [
+            TextureFormat::Rgba8,
+            TextureFormat::Rgba16Float,
+            TextureFormat::R16Float,
+            TextureFormat::Rg16Float,
+            TextureFormat::R32Float,
+            TextureFormat::R32Uint,
+        ] {
+            let texel = format.bytes_per_texel() as usize;
+            gpu.create_texture(1, [5, 4, 0], format, false);
+            let original: Vec<u8> = (0..5 * 4 * texel).map(|i| (i % 251) as u8).collect();
+            gpu.write_buffer(2, 0, &[1, 2, 3, 4]).unwrap();
+            gpu.write_texture(1, [0, 0], [5, 4], &original).unwrap();
+            let before = snapshot_texture(&mut gpu, 1, 5, 4, format);
+            let replacement: Vec<u8> = (0..3 * 2 * texel).map(|i| 255 - i as u8).collect();
+            gpu.write_buffer(2, 0, &[5, 6, 7, 8]).unwrap();
+            gpu.write_texture(1, [1, 1], [3, 2], &replacement).unwrap();
+            gpu.write_texture(1, [0, 0], [0, 4], &[]).unwrap();
+            let after = snapshot_texture(&mut gpu, 1, 5, 4, format);
+            gpu.flush().unwrap();
+            let read = |buffer: &wgpu::Buffer| {
+                map_read(&gpu.device, buffer)
+                    .unwrap()
+                    .chunks_exact(256)
+                    .flat_map(|row| row[..5 * texel].iter().copied())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(read(&before), original, "{format:?}: before overwrite");
+            let mut expected = original;
+            for row in 0..2 {
+                let at = ((row + 1) * 5 + 1) * texel;
+                expected[at..at + 3 * texel]
+                    .copy_from_slice(&replacement[row * 3 * texel..(row + 1) * 3 * texel]);
+            }
+            assert_eq!(read(&after), expected, "{format:?}: after overwrite");
+            assert_eq!(gpu.read_buffer(2).unwrap(), [5, 6, 7, 8]);
+            gpu.destroy(1);
+        }
+        // Padding makes a narrow upload larger than the ring's starting capacity. Growing
+        // it must first submit the buffer write already staged there.
+        let height = stream::UPLOAD_START / wgpu::COPY_BYTES_PER_ROW_ALIGNMENT + 1;
+        gpu.create_texture(1, [1, height, 0], TextureFormat::Rgba8, false);
+        let original: Vec<u8> = (0..height * 4).map(|i| (i % 251) as u8).collect();
+        gpu.write_buffer(2, 0, &[9, 10, 11, 12]).unwrap();
+        gpu.write_texture(1, [0, 0], [1, height], &original).unwrap();
+        let snapshot = snapshot_texture(&mut gpu, 1, 1, height, TextureFormat::Rgba8);
+        gpu.flush().unwrap();
+        let read: Vec<u8> = map_read(&gpu.device, &snapshot)
+            .unwrap()
+            .chunks_exact(256)
+            .flat_map(|row| row[..4].iter().copied())
+            .collect();
+        assert_eq!(read, original);
+        assert_eq!(gpu.read_buffer(2).unwrap(), [9, 10, 11, 12]);
+        gpu.check_errors().unwrap();
+    }
 
     /// A hot reload keeps a pipeline wherever its WGSL file is: a pipeline added before it
     /// renumbers its file, not its entry or its code.

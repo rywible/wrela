@@ -19,6 +19,7 @@ use light::{CLAY, LUMA, Light}
 use lit::{Lighting, sun_and_gloss, through_air}
 use noise::noise2
 use place::Water
+use render::EIGHT_PI
 use sky::sky_with_clouds
 use std::gpu::{ClipPosition, FragCoord, Rgba16Float, Sampler, Texture, VertexIndex}
 use std::math::TAU
@@ -106,14 +107,14 @@ pub fn lay<G: Ground>(g: G, w: Water, courses: [Course], pools: [vec4]) -> Water
     }
     for mere in w.meres {
         if mere.z > 0.0 {
-            disc(mut m, g, mere.xy, mere.z * MERE_REACH, mere.w, MERE_STEP)
+            disc(mut m, g, mere.xy, mere.z * MERE_REACH, mere.w, MERE_STEP, spills: false)
         }
     }
     for c in courses {
         ribbon(mut m, g, c)
     }
     for q in pools {
-        disc(mut m, g, q.xy, q.z, q.w, POOL_STEP)
+        disc(mut m, g, q.xy, q.z, q.w, POOL_STEP, spills: true)
     }
     binned(mut m)
     m
@@ -180,12 +181,12 @@ fn tri_bins(m: WaterMesh, k: u32) -> (vec2u, vec2u) {
 
 /// A disc round `at`, `r` across: still at `level` (a mere's, a filled hollow's: its depth over
 /// the ground under it), or a skin over the ground where its level is `NONE` (a spring's; its
-/// depth a stream's). Its rings and points `step` apart, at least 12 round.
-fn disc<G: Ground>(m: mut WaterMesh, g: G, at: vec2, r: f32, level: f32, step: f32) {
+/// depth a stream's). Its rings and points `step` apart, at least 12 round. Where it `spills`
+/// (a pool's), its water runs on as a skin past where the ground falls away (`disc_point`).
+fn disc<G: Ground>(m: mut WaterMesh, g: G, at: vec2, r: f32, level: f32, step: f32, spills: bool) {
     let rings = max(u32(ceil(r / step)), 2)
     let round = clamp(u32(ceil(TAU * r / step)), 12, 160)
     let first = m.verts.len()
-    let spills = step == POOL_STEP
     m.verts.push(disc_point(g, at, at, r, level, spills))
     for k in 1..(rings + 1) {
         for i in 0..round {
@@ -794,8 +795,10 @@ fn ripples(p: vec2, flow: vec2, t: f32, fp: f32) -> (vec2, f32) {
 }
 
 /// The ripples' height at `q`, drifting at `drift`, `t` seconds in, each layer at its share.
+/// The fine layer only where it has a share (none past a few metres).
 fn wave(q: vec2, drift: vec2, t: f32, k1: f32, k2: f32) -> f32 {
-    noise2(q * 1.3 - drift * t * 1.3) * k1 + noise2(q * 3.7 + vec2(4.0, 1.0) - drift * t * 2.6) * k2
+    let broad = noise2(q * 1.3 - drift * t * 1.3) * k1
+    if k2 > 0.0 { broad + noise2(q * 3.7 + vec2(4.0, 1.0) - drift * t * 2.6) * k2 } else { broad }
 }
 
 /// The normalized Blinn-Phong sun glint. Opposite light and view have no half vector and no
@@ -808,7 +811,7 @@ fn sun_glint(n: vec3, sun: vec3, v: vec3, lost: f32, flowing: bool) -> f32 {
     let h = normalize(half)
     let sharp = if flowing { 160.0 } else { 600.0 }
     let spread = mix(sharp, if flowing { 24.0 } else { 60.0 }, lost / 0.85)
-    pow(max(dot(n, h), 0.0), spread) * (spread + 8.0) / 25.13 * (if flowing { 0.6 } else { 1.0 })
+    pow(max(dot(n, h), 0.0), spread) * (spread + 8.0) / EIGHT_PI * (if flowing { 0.6 } else { 1.0 })
 }
 
 /// How far a reflection from the screen marches, in steps, and how far each goes (m, growing).
@@ -871,7 +874,13 @@ pub fn water_shade(
     // A stream's ripples low and long over its clear shallows, so its bed shows (the sky's
     // silver over all of it read as metal); a fall's broken and steep.
     let slope = ripple * strength * (if falling { 3.0 } else if flowing { 0.5 } else { 1.0 })
-    let n = normalize(vec3(-slope.x, 1.0, -slope.y))
+    // A fall's sheet faces down its flow, leaning out a little (its mesh rows are steps: their
+    // planes read as panels); the rest lie flat.
+    let face = if falling {
+        let down = normalize(w.flow + vec2(1.0e-4, 0.0))
+        vec3(down.x, FALL_LEAN, down.y)
+    } else { vec3(0.0, 1.0, 0.0) }
+    let n = normalize(face + vec3(-slope.x, 0.0, -slope.y))
     let v = normalize(cam.eye - w.world)
     let distance = dot(w.world - cam.eye, cam.forward)
     // Under it: the scene through it, bent by its ripples where that's still under the water.
@@ -888,7 +897,8 @@ pub fn water_shade(
     }
     // How much water the eye sees through: what's under it, or the stream's bed under its skin.
     let thick = max(under.a - distance, 0.0) + w.depth / max(v.y, 0.2)
-    let through = exp(-look.dims * thick)
+    // A fall's sheet is white water, all but opaque: the cliff behind it doesn't show through.
+    let through = exp(-look.dims * thick) * (if falling { 0.1 } else { 1.0 })
     let (sun, sky, probe) = sun_and_gloss(lt, w.world, n, soft: 1.0)
     // The clay view: the water's surface as matte grey, lit as the ground is.
     if lt.light.clay != 0 {
@@ -924,10 +934,13 @@ pub fn water_shade(
         let down = normalize(w.flow + vec2(1.0e-4, 0.0))
         let across = vec2(-down.y, down.x)
         let u = dot(keyed, across)
-        let a = dot(keyed, down) - t * length(w.flow)
-        let streak = noise2(vec2(u * 2.2, a * 0.3)) * 0.7 +
-            noise2(vec2(u * 6.0, a * 0.8 + 3.0)) * 0.3
-        foam = smoothstep(0.3, 0.8, streak + 0.1 * churn)
+        // Down the sheet: its drop (it falls more than it runs), then its run.
+        let a = dot(keyed, down) - (w.world.y + cam.keyed().y) - t * length(w.flow)
+        // A white sheet, torn by a few dark threads down it.
+        let uw = u + 0.35 * noise2(vec2(u * 0.6, a * 0.12 + 7.0))
+        let streak = noise2(vec2(uw * 3.5, a * 0.15)) * 0.7 +
+            noise2(vec2(uw * 9.0, a * 0.4 + 3.0)) * 0.3
+        foam = smoothstep(0.12, 0.55, streak + 0.1 * churn)
     } else if flowing {
         foam = smoothstep(0.65, 0.95, churn * 0.7 + w.bank * 0.2 + 0.08 * length(w.flow))
     } else {
@@ -1030,22 +1043,21 @@ pub fn mist_over(
         if t1 <= t0 {
             continue
         }
-        // Six samples along the chord: soft billows rising and drifting, densest low in the
-        // sphere (it rises off the water) and thinning smoothly to its edge.
+        // Samples along the chord: soft billows rising and drifting, densest low in the sphere
+        // (it rises off the water) and thinning smoothly to its edge.
         var d = 0.0
-        for k in 0..6 {
-            let t = mix(t0, t1, (f32(k) + 0.5) / 6.0)
+        for k in 0..MIST_SAMPLES {
+            let t = mix(t0, t1, (f32(k) + 0.5) / f32(MIST_SAMPLES))
             let q = cam.eye + dir * t
             let rel = (q - centre) / m.w
             let r2 = dot(rel, rel)
             let fade = (1.0 - min(r2, 1.0)) * (1.0 - min(r2, 1.0))
             let low = 1.0 - 0.6 * smoothstep(-0.6, 0.8, rel.y)
             let drift = vec3(0.0, -at.time * 0.7, at.time * 0.15)
-            let n = noise::noise3((q + keyed) * 0.18 + drift * 0.4) * 0.65 +
-                noise::noise3((q + keyed) * 0.5 + drift) * 0.35
+            let n = noise::noise3((q + keyed) * 0.25 + drift * 0.6)
             d += fade * low * smoothstep(0.2, 0.75, n)
         }
-        let a = 1.0 - exp(-MIST_THICK * d * (t1 - t0) / 6.0)
+        let a = 1.0 - exp(-MIST_THICK * d * (t1 - t0) / f32(MIST_SAMPLES))
         // Droplets throw the sun's light forward most, and are lit by the whole sky.
         let forward = pow(max(dot(dir, at.light.sun), 0.0), 4.0)
         let light = at.light.sun_colour * (0.3 + 0.9 * forward) + vec3(0.55, 0.6, 0.68)
@@ -1055,8 +1067,13 @@ pub fn mist_over(
     vec4(c.rgb * through + lit * 0.5, c.a)
 }
 
-/// How thick a fall's mist is where it's densest (per m).
+/// How far a fall's sheet leans back from upright (its face's rise for each unit out).
+const FALL_LEAN: f32 = 0.3
+
+/// How thick a fall's mist is where it's densest (per m), and how many points of each sphere's
+/// chord a pixel reads it at (a noise each: the pass is full-screen).
 const MIST_THICK: f32 = 0.22
+const MIST_SAMPLES: u32 = 4
 
 // ---- tests ------------------------------------------------------------------------------------
 

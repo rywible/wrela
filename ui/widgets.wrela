@@ -133,9 +133,9 @@ pub struct Ui {
     opens: SortedMap<u32, bool>,
     fractions: SortedMap<u32, f32>,
     editing: Option<Editing>,
-    // A drag and drop in flight: its payload plus one (0: none), and one dropped this frame.
-    payload: u32,
-    dropped: u32,
+    // A drag and drop in flight, and one dropped this frame.
+    payload: Option<u32>,
+    dropped: Option<u32>,
     dropped_at: vec2,
     /// The last widget's id and rectangle.
     last: u32,
@@ -178,8 +178,8 @@ impl Ui {
             opens: SortedMap::new(),
             fractions: SortedMap::new(),
             editing: None,
-            payload: 0,
-            dropped: 0,
+            payload: None,
+            dropped: None,
             dropped_at: vec2(-1.0),
             last: 0,
             last_rect: Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 },
@@ -198,8 +198,11 @@ impl Ui {
         self.ids.clear()
         self.areas.clear()
         self.splits.clear()
-        self.last_seen = replace(mut self.seen, Vec::new())
-        self.last_focusable = replace(mut self.focusable, Vec::new())
+        // Keep both frames' buffers: yesterday's previous frame is today's empty room.
+        swap(mut self.seen, mut self.last_seen)
+        self.seen.clear()
+        swap(mut self.focusable, mut self.last_focusable)
+        self.focusable.clear()
         self.pressed = false
         self.released = false
         self.wheel = vec2(0.0)
@@ -207,7 +210,7 @@ impl Ui {
         self.typed.clear()
         self.typed_before.clear()
         self.tab = 0
-        self.dropped = 0
+        self.dropped = None
         for e in events {
             match e {
                 Event::PointerMove { at, mods } => {
@@ -258,10 +261,12 @@ impl Ui {
                 Event::PadButton { .. } | Event::PadAxis { .. } => {},
             }
         }
-        if self.released && self.payload != 0 {
-            self.dropped = self.payload
-            self.dropped_at = self.release_at
-            self.payload = 0
+        if self.released {
+            if let Some(payload) = self.payload {
+                self.dropped = Some(payload)
+                self.dropped_at = self.release_at
+                self.payload = None
+            }
         }
         // Tab moves the focus along last frame's order.
         if self.tab != 0 && self.last_focusable.len() > 0 {
@@ -473,6 +478,13 @@ impl Ui {
     /// it, until `end_panel`.
     pub fn begin_panel(mut self, title: str, r: Rect) {
         let t = self.theme
+        let clip = self.draw.clip_rect()
+        if self.pressed && r.contains(self.press_at) && clip.contains(self.press_at) {
+            // Forget a widget placed below the panel; one inside it may claim the press next.
+            self.active = 0
+            self.focus = 0
+            self.payload = None
+        }
         self.draw.rect(r, t.panel, t.radius)
         var inner = r.shrink(t.pad)
         if title.len() > 0 {
@@ -568,7 +580,9 @@ impl Ui {
         let r = self.place(vec2(0.0, h))
         self.note(label, r)
         var y = self.scrolls.get(id).unwrap_or(0.0)
-        if r.contains(self.pointer) && self.wheel.y != 0.0 {
+        if r.contains(self.pointer) &&
+            self.draw.clip_rect().contains(self.pointer) &&
+            self.wheel.y != 0.0 {
             y += self.wheel.y
             self.wheel = vec2(0.0)
         }
@@ -595,7 +609,9 @@ impl Ui {
             let bar_h = max(r.h * r.h / height, 20.0)
             let track = Rect::new(r.right() - 6.0, r.y, 6.0, r.h)
             let bar_id = view.id ^ 2654435761
-            if self.pressed && track.contains(self.press_at) {
+            if self.pressed &&
+                track.contains(self.press_at) &&
+                self.draw.clip_rect().contains(self.press_at) {
                 self.active = bar_id
                 self.drag_start = self.press_at
                 self.drag_value = y
@@ -950,13 +966,16 @@ impl Ui {
         var t = 0
         for j in 0..self.keys.len() + 1 {
             let upto = if j < self.keys.len() { self.typed_before[j] } else { self.typed.len() }
-            while t < upto {
+            if t < upto {
+                // One uninterrupted run of typing shares one saved tail; keys still split runs.
                 let tail = s.as_str().slice(cursor, s.len()).to_string()
                 s.truncate(cursor)
-                s.push_char(self.typed[t])
+                while t < upto {
+                    s.push_char(self.typed[t])
+                    t += 1
+                }
                 cursor = s.len()
                 s.push_str(tail.as_str())
-                t += 1
             }
             if j == self.keys.len() {
                 break
@@ -1193,19 +1212,116 @@ impl Ui {
     /// Dragging starts at the last widget when the pointer goes down on it, carrying
     /// `payload`.
     pub fn drag_source(mut self, payload: u32) {
-        if self.pressed && self.last_rect.contains(self.press_at) {
-            self.payload = payload + 1
+        if self.pressed &&
+            self.last_rect.contains(self.press_at) &&
+            self.draw.clip_rect().contains(self.press_at) {
+            self.payload = Some(payload)
         }
     }
 
     /// A payload dropped on the last widget this frame.
     pub fn dropped(mut self) -> Option<u32> {
-        if self.dropped != 0 && self.last_rect.contains(self.dropped_at) {
-            let p = self.dropped - 1
-            self.dropped = 0
-            Some(p)
-        } else {
-            None
+        if self.last_rect.contains(self.dropped_at) &&
+            self.draw.clip_rect().contains(self.dropped_at) {
+            if let Some(payload) = self.dropped {
+                self.dropped = None
+                return Some(payload)
+            }
         }
+        None
     }
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+@test
+fn drag_and_drop_accepts_every_u32_payload() {
+    var ui = Ui::new(Fonts::load())
+    let widget = Rect::new(x: 0.0, y: 0.0, w: 100.0, h: 20.0)
+    let down = Event::PointerDown { at: vec2(1.0), button: Button::Primary, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [down])
+    ui.last_rect = widget
+    ui.drag_source(4294967295)
+    ui.end()
+
+    let up = Event::PointerUp { at: vec2(1.0), button: Button::Primary, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [up])
+    ui.last_rect = widget
+    assert(ui.dropped() == Some(4294967295))
+}
+
+@test
+fn clipped_widgets_cannot_start_or_receive_a_drag() {
+    var source_ui = Ui::new(Fonts::load())
+    let down = Event::PointerDown { at: vec2(1.0, 51.0), button: Button::Primary, mods: Mods {} }
+    source_ui.begin(vec2(200.0, 100.0), [down])
+    source_ui.begin_scroll("scroll", 20.0)
+    source_ui.space(50.0)
+    source_ui.last_rect = Rect::new(x: 0.0, y: 50.0, w: 100.0, h: 20.0)
+    source_ui.drag_source(7)
+    source_ui.end_scroll()
+    source_ui.end()
+    let up = Event::PointerUp { at: vec2(1.0), button: Button::Primary, mods: Mods {} }
+    source_ui.begin(vec2(200.0, 100.0), [up])
+    source_ui.last_rect = Rect::new(x: 0.0, y: 0.0, w: 100.0, h: 20.0)
+    assert(source_ui.dropped() == None)
+
+    var target_ui = Ui::new(Fonts::load())
+    let down = Event::PointerDown { at: vec2(1.0), button: Button::Primary, mods: Mods {} }
+    target_ui.begin(vec2(200.0, 100.0), [down])
+    target_ui.last_rect = Rect::new(x: 0.0, y: 0.0, w: 100.0, h: 20.0)
+    target_ui.drag_source(7)
+    target_ui.end()
+    let up = Event::PointerUp { at: vec2(1.0, 51.0), button: Button::Primary, mods: Mods {} }
+    target_ui.begin(vec2(200.0, 100.0), [up])
+    target_ui.begin_scroll("scroll", 20.0)
+    target_ui.space(50.0)
+    target_ui.last_rect = Rect::new(x: 0.0, y: 50.0, w: 100.0, h: 20.0)
+    assert(target_ui.dropped() == None)
+    target_ui.end_scroll()
+}
+
+@test
+fn a_clipped_nested_scroll_cannot_consume_wheel() {
+    var ui = Ui::new(Fonts::load())
+    let wheel = Event::Wheel { at: vec2(1.0, 51.0), delta: vec2(0.0, 9.0), mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [wheel])
+    ui.begin_scroll("outer", 20.0)
+    ui.space(50.0)
+    ui.begin_scroll("hidden inner", 20.0)
+    ui.end_scroll()
+    ui.end_scroll()
+    assert(ui.wheel().y == 9.0)
+}
+
+@test
+fn a_panel_press_clears_underlying_interaction_state() {
+    var ui = Ui::new(Fonts::load())
+    let panel = Rect::new(x: 0.0, y: 0.0, w: 200.0, h: 100.0)
+    let under = 17
+    let down = Event::PointerDown { at: vec2(1.0), button: Button::Primary, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [down])
+    let _ = ui.interact(under, panel, true)
+    ui.last_rect = panel
+    ui.drag_source(7)
+    ui.begin_panel("", panel)
+    ui.end_panel()
+    ui.end()
+
+    let up = Event::PointerUp { at: vec2(1.0), button: Button::Primary, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [up])
+    let (_, clicked) = ui.interact(under, panel, true)
+    ui.last_rect = panel
+    let dropped = ui.dropped()
+    ui.begin_panel("", panel)
+    ui.end_panel()
+    ui.end()
+    assert(!clicked && dropped == None)
+
+    let enter = Event::KeyDown { key: Key::Enter, repeat: false, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [enter])
+    let (_, keyed) = ui.interact(under, panel, true)
+    ui.begin_panel("", panel)
+    ui.end_panel()
+    assert(!keyed)
 }

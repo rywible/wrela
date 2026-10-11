@@ -1,0 +1,125 @@
+// The fight's sounds (#30): what the fight's sim did since the last state heard, as cues for
+// engine::sound's mixer: a whoosh as a swing starts (it swells to the blade's fastest ticks), an
+// impact as the blade hits the wolf and as the wolf's bite lands, a whoosh where a blink goes
+// and an impact where it comes. They're read from the sim's tallies, so a frame that passes two
+// ticks loses none, and they're seeded by the tallies, so a replay sounds as it did. The hit's
+// cue goes out in the frame of its hit stop.
+
+use engine::sound::{Cue, Surface, Swish}
+use fight::{World, sword_at}
+use body::{GUARD_AT, POINT_AT}
+
+/// The fight's impacts and whooshes, by their place in the world's palette (`IMPACTS`,
+/// `WHOOSHES`).
+pub const HIT: u32 = 0
+pub const BITE: u32 = 1
+pub const ARRIVE: u32 = 2
+pub const SWORD: u32 = 0
+pub const GONE: u32 = 1
+
+/// How each sounds, peaking near -12 dBFS from 2 m. The hit: a deep thud and the cut's grit.
+/// The bite: a short snap. A blink's coming: a soft low thump. The sword: air pushed past a
+/// broad blade, low, swelling over the wind-up. A blink's going: a quick high rush.
+pub const IMPACTS = [
+    Surface {
+        knock_hz: 85.0,
+        knock_t60: 0.25,
+        knock: 0.18,
+        grit_hz: 1800.0,
+        grit_q: 0.9,
+        grit_t60: 0.12,
+        grit: 0.15,
+    },
+    Surface {
+        knock_hz: 220.0,
+        knock_t60: 0.06,
+        knock: 0.1,
+        grit_hz: 3200.0,
+        grit_q: 1.2,
+        grit_t60: 0.08,
+        grit: 0.15,
+    },
+    Surface {
+        knock_hz: 55.0,
+        knock_t60: 0.4,
+        knock: 0.12,
+        grit_hz: 600.0,
+        grit_q: 0.6,
+        grit_t60: 0.25,
+        grit: 0.08,
+    },
+    Surface {},
+]
+pub const WHOOSHES = [
+    Swish { hz: 700.0, q: 0.9, attack: 0.16, t60: 0.3, level: 0.2 },
+    Swish { hz: 1800.0, q: 0.6, attack: 0.03, t60: 0.25, level: 0.15 },
+]
+
+/// What's been heard of the fight: its tallies, and whether the climber was gone, at the last
+/// state heard.
+pub struct Heard: Copy {
+    swings: u32,
+    hits: u32,
+    bites: u32,
+    blinks: u32,
+    gone: bool,
+}
+
+/// Nothing of `w` to hear yet: what it did before now isn't heard.
+pub fn heard(w: World) -> Heard {
+    Heard {
+        swings: w.tally.swings,
+        hits: w.tally.hits,
+        bites: w.tally.bites,
+        blinks: w.tally.blinks,
+        gone: w.climber.gone(),
+    }
+}
+
+/// The cues for what the fight did since `h`, which is brought up to `w`.
+pub fn cues(h: mut Heard, w: World) -> Vec<Cue> {
+    var out: Vec<Cue> = Vec::new()
+    let t = w.tally
+    let c = w.climber
+    if t.swings > h.swings {
+        let (grip, aim, _) = sword_at(c, 0.0)
+        let at = grip + aim * (0.5 * (GUARD_AT + POINT_AT))
+        out.push(Cue::Whoosh { at, kind: SWORD, amount: 1.0, seed: t.swings })
+    }
+    if t.hits > h.hits {
+        let at = w.wolf.walker.root.pos + vec3(0.0, 0.5, 0.0)
+        out.push(Cue::Impact { at, kind: HIT, strength: 1.0, seed: t.hits })
+    }
+    if t.bites > h.bites {
+        out.push(
+            Cue::Impact {
+                at: c.at + vec3(0.0, 1.0, 0.0),
+                kind: BITE,
+                strength: 1.0,
+                seed: t.bites,
+            },
+        )
+    }
+    if t.blinks > h.blinks {
+        out.push(
+            Cue::Whoosh { at: c.at + vec3(0.0, 1.0, 0.0), kind: GONE, amount: 1.0, seed: t.blinks },
+        )
+    }
+    let gone = c.gone()
+    if h.gone && !gone {
+        out.push(
+            Cue::Impact {
+                at: c.at + vec3(0.0, 0.5, 0.0),
+                kind: ARRIVE,
+                strength: 0.8,
+                seed: t.blinks,
+            },
+        )
+    }
+    h.swings = t.swings
+    h.hits = t.hits
+    h.bites = t.bites
+    h.blinks = t.blinks
+    h.gone = gone
+    out
+}

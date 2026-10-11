@@ -13,7 +13,7 @@ use engine::noise::{noise3, rand}
 use engine::place::{Feature, Map, SiteKind}
 use engine::realize::realize_rigid
 use engine::render::ByChannels
-use engine::stone::{Realized, Rock, grain, realize_stone}
+use engine::stone::{Bed, Realized, Rock, grain, realize_bed, realize_stone}
 use engine::sweep::wrap
 use std::derive::Box3
 use std::field::{Surface, cuboid}
@@ -632,7 +632,8 @@ pub fn realize_wall(a: vec3, b: vec3, tall: f32, seed: u32) -> Realized {
 // ---- what's built where --------------------------------------------------------------------------
 
 /// A thing to realize: a stone (at, radius, squash, seed), a standing slab (turned as its
-/// builders set it: `slab_at` turns one at random), a fallen block, a waystone, the tower, or a wall (two ends).
+/// builders set it: `slab_at` turns one at random), a fallen block, a waystone, the tower, a wall (two ends), or
+/// a bed of a crag's rock (`Land::crag_beds`: its frame's origin in the world, and the bed).
 pub enum Built: Copy {
     Stone { at: vec2, radius: f32, squash: vec3, seed: u32 },
     Standing { at: vec2, half: vec3, turn: f32, seed: u32 },
@@ -640,6 +641,7 @@ pub enum Built: Copy {
     Waystone { at: vec2, tall: f32, seed: u32 },
     Tower { at: vec2 },
     Wall { a: vec2, b: vec2, tall: f32, seed: u32 },
+    Rock { at: vec3, bed: Bed },
 }
 
 /// A standing slab `half` its size each way, turned at random.
@@ -751,12 +753,40 @@ pub fn solids(m: Map) -> Vec<vec4> {
                     out.push(vec4(mix(a, b, vec2(f32(i) / f32(max(n, 1)))), 0.45, tall))
                 }
             },
+            // (The heightfield holds a crag's rock for the check: its slabs only draw its faces.)
+            Built::Rock { .. } => {},
         }
     }
     out
 }
 
-/// Built thing `b` realized, standing on the ground (`height`).
+/// Where a built thing stands on the map (its middle).
+pub fn place(b: Built) -> vec2 {
+    match b {
+        Built::Stone { at, .. } => at,
+        Built::Standing { at, .. } => at,
+        Built::Block { at, .. } => at,
+        Built::Waystone { at, .. } => at,
+        Built::Tower { at } => at,
+        Built::Wall { a, b, .. } => 0.5 * (a + b),
+        Built::Rock { at, .. } => at.xz,
+    }
+}
+
+/// Which of `built` stands nearest `at` (its index; 0 if there are none).
+pub fn nearest(built: Vec<Built>, at: vec2) -> u32 {
+    var near = 0
+    var best = 1.0e9
+    for i in 0..built.len() {
+        let d = length(place(built[i]) - at)
+        if d < best {
+            near = i
+            best = d
+        }
+    }
+    near
+}
+
 /// How far a built thing reaches from its place (m: its realized mesh's origin), for culling.
 pub fn reach(b: Built) -> f32 {
     match b {
@@ -767,6 +797,7 @@ pub fn reach(b: Built) -> f32 {
         Built::Waystone { tall, .. } => tall + 0.7,
         Built::Tower { .. } => stones::TOWER_FOOT + stones::TOWER_TALL,
         Built::Wall { a, b, tall, .. } => 0.5 * length(b - a) + tall + 0.5,
+        Built::Rock { bed, .. } => length(bed.hi - bed.lo),
     }
 }
 
@@ -778,6 +809,7 @@ pub fn realize_far(b: Built, height: fn(vec2) -> f32) -> Option<Realized> {
     }
 }
 
+/// Built thing `b` realized, standing on the ground (`height`).
 pub fn realize(b: Built, height: fn(vec2) -> f32) -> Realized {
     match b {
         Built::Stone { at, radius, squash, seed } => {
@@ -815,5 +847,6 @@ pub fn realize(b: Built, height: fn(vec2) -> f32) -> Realized {
             tall,
             seed,
         ),
+        Built::Rock { at, bed } => realize_bed(bed, at),
     }
 }

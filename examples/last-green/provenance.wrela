@@ -69,13 +69,13 @@ const SPECIES_KEYS = [
 
 /// The line of trees.wrela that builds each drawn kind, and of species.wrela that gives each
 /// species' habit: found in the files as the build reads them, so they follow an edit.
-pub const KIND_LINES: [u32; 24] = kind_lines()
+pub const KIND_LINES: [u32; trees::KINDS] = kind_lines()
 pub const SPECIES_LINES: [u32; 7] = species_lines()
 
-fn kind_lines() -> [u32; 24] {
+fn kind_lines() -> [u32; trees::KINDS] {
     let text = embed("trees.wrela")
-    var out = [0; 24]
-    for k in 0..24 {
+    var out = [0; trees::KINDS]
+    for k in 0..trees::KINDS {
         out[k] = line_of(text, f"k == {KIND_KEYS[k]} {{".as_str())
     }
     out
@@ -304,8 +304,8 @@ pub fn tree_json(t: Tree, drawn_kind: u32, distance: f32, ms: f64) -> String {
     let alive = t.state == State::Alive
     let species = if t.kind < 7 { SPECIES_NAMES[t.kind] } else { "?" }
     let habit = if t.kind < 7 { SPECIES_LINES[t.kind] } else { 0 }
-    let kind = if drawn_kind < 24 { KIND_KEYS[drawn_kind] } else { "?" }
-    let built = if drawn_kind < 24 { KIND_LINES[drawn_kind] } else { 0 }
+    let kind = if drawn_kind < trees::KINDS { KIND_KEYS[drawn_kind] } else { "?" }
+    let built = if drawn_kind < trees::KINDS { KIND_LINES[drawn_kind] } else { 0 }
     let died = year_json(t.died, !alive)
     // Its age now, or when it died.
     let age = (if alive { present } else { t.died }) - t.born
@@ -392,15 +392,15 @@ pub fn ground_json(tiles: [NearTile], point: vec3, normal: vec3, distance: f32, 
     f"{{\"provenance\": \"ground\", \"at\": [{p.x}, {p.y}], \"y\": {point.y}, \"distance\": {distance}, \"region\": \"{region}\", \"cover\": \"{cover}\", \"fields\": {fields}, \"soil\": {soil}, \"remembers\": {remembers}, \"ms\": {ms}}}"
 }
 
-/// The soil at `p` (`engine::grow::soil`, with the ground's wetness `wet` there), as JSON: its
+/// The soil at `p` (`engine::soil::soil`, with the ground's wetness `wet` there), as JSON: its
 /// kind, its depth (m) and how well crops would do in it.
 fn soil_json(p: vec2, wet: f32) -> String {
-    let s = engine::grow::soil_of(ground::ground(), p, wet)
+    let s = engine::soil::soil_of(ground::ground(), p, wet)
     let kind = SOIL_NAMES[u32(s.kind)]
     f"{{\"kind\": \"{kind}\", \"depth\": {s.depth}, \"fertile\": {s.fertile}}}"
 }
 
-/// `engine::grow::SoilKind`'s names, by kind.
+/// `engine::soil::SoilKind`'s names, by kind.
 const SOIL_NAMES = ["rock", "thin", "loam", "colluvium", "alluvium", "gley", "peat"]
 
 /// What the ground remembers at `p` (`engine::bake::memory_in_tile`, from the near tile that

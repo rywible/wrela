@@ -1424,7 +1424,18 @@ const CPU_LOOP_INLINE_SIZE: usize = 600;
 /// The most statements a CPU function grows to with what's inlined into it.
 const CPU_BUDGET: usize = 4000;
 
-/// Inlines calls on the CPU (AC12): calls to small functions, and the one call to a function
+/// The most statements a small function's copies may add up to, at all of its calls, for it to
+/// be inlined at each: past it, it's inlined only at its calls in a loop. Functions that many
+/// places call (`sin` and `cos` with their range reduction, `Vec::push`, `free`) were copied
+/// into each, and the copies were 0.6 MB of the Last Green's 8.8 MB of WASM; outside a loop a
+/// call costs little next to such a body, and the floor's CPU frame didn't change (2026-10-11).
+/// Bodies under `CPU_SPREAD_LEAST` statements are inlined however many places call them: a call
+/// and its arguments are about as big.
+const CPU_SPREAD: usize = 6000;
+const CPU_SPREAD_LEAST: usize = 32;
+
+/// Inlines calls on the CPU (AC12): calls to small functions (in a loop only, when the copies at
+/// all their calls would be too many statements: `CPU_SPREAD`), and the one call to a function
 /// that only one place calls. A closure is a function of its own, called by an instance of the
 /// function it's passed to that takes it alone; so a query that takes a closure, such as
 /// `each_within`, becomes the loop a hand-written query is. The closure's body is in the loop,
@@ -1465,7 +1476,8 @@ pub fn inline_cpu(m: &mut Module) -> Result<()> {
         sizes[f] = size_of(&m.functions[f].body);
         let once = sites[f] == 1 && !root[f];
         if !recursive[f] && !m.functions[f].counted {
-            if sizes[f] <= CPU_INLINE_SIZE || once {
+            let spread = sizes[f] >= CPU_SPREAD_LEAST && sizes[f] * sites[f] as usize > CPU_SPREAD;
+            if (sizes[f] <= CPU_INLINE_SIZE && !spread) || once {
                 keep[f] = false;
                 exits[f] = exit_form(m, f);
             } else if sizes[f] <= CPU_LOOP_INLINE_SIZE {
@@ -1717,30 +1729,38 @@ fn inert(m: &Module, f: &Function, e: &Expr) -> bool {
 /// Drops the values nothing uses that are `inert`, or loads of a local's own storage without an
 /// index (which is checked). Then the stores to locals nothing reads any more.
 fn drop_dead_values(m: &Module, f: &mut Function) {
-    loop {
-        let mut uses = vec![0u32; f.values.len()];
-        visit::walk(&f.body, &mut |s| s.for_each_value(&mut |v| uses[v.index()] += 1));
-        let removable = |e: &Expr| match e {
+    let mut uses = vec![0u32; f.values.len()];
+    let mut defs = vec![None; f.values.len()];
+    visit::walk(&f.body, &mut |s| {
+        s.for_each_value(&mut |v| uses[v.index()] += 1);
+        if let Stmt::Let(v, e) = s {
+            defs[v.index()] = Some(e);
+        }
+    });
+    // Removing a value removes its operand uses too. Follow those to the newly dead values,
+    // instead of recounting and sweeping the entire body once per link in a dead chain.
+    let mut work: Vec<usize> =
+        (0..uses.len()).filter(|&i| uses[i] == 0 && defs[i].is_some()).collect();
+    let mut used = vec![true; f.values.len()];
+    while let Some(v) = work.pop() {
+        let Some(e) = defs[v].take() else { continue };
+        let removable = match e {
             Expr::Load(p) => m.local_storage(f, p).is_some() && !p.has_index(),
             e => inert(m, f, e),
         };
-        let mut used = vec![true; f.values.len()];
-        let mut any = false;
-        visit::walk(&f.body, &mut |s| {
-            if let Stmt::Let(v, e) = s
-                && uses[v.index()] == 0
-                && removable(e)
-            {
-                used[v.index()] = false;
-                any = true;
-            }
-        });
-        if !any {
-            break;
+        if removable {
+            used[v] = false;
+            e.for_each_value(&mut |operand| {
+                let count = &mut uses[operand.index()];
+                *count -= 1;
+                if *count == 0 {
+                    work.push(operand.index());
+                }
+            });
         }
-        // A removable value has no effect, so `sweep` drops it; every store stays.
-        sweep(&mut f.body, &used, &vec![true; f.locals.len()]);
     }
+    // A removable value has no effect, so `sweep` drops it; every store stays.
+    sweep(&mut f.body, &used, &vec![true; f.locals.len()]);
     drop_dead_stores(m, f);
 }
 
@@ -2224,7 +2244,11 @@ fn retain_reached(m: &mut Module, roots: Vec<usize>) -> Vec<Option<u32>> {
     let mut work = roots;
     while let Some(f) = work.pop() {
         if !std::mem::replace(&mut reached[f], true) {
-            work.extend(visit::calls(&m.functions[f].body).iter().map(|g| g.index()));
+            visit::walk(&m.functions[f].body, &mut |s| {
+                if let Some(g) = s.expr().and_then(Expr::callee) {
+                    work.push(g.index());
+                }
+            });
         }
     }
     let remap = retain_by_index(&mut m.functions, |i| reached[i]);
@@ -2503,14 +2527,21 @@ fn resolve(rename: &[Option<ValueId>], mut v: ValueId) -> ValueId {
 /// Keeps the items whose index `keep` holds for, in order: each one's new index, by its old one.
 fn retain_by_index<T>(items: &mut Vec<T>, keep: impl Fn(usize) -> bool) -> Vec<Option<u32>> {
     let mut remap = vec![None; items.len()];
-    let mut kept = Vec::new();
-    for (i, x) in std::mem::take(items).into_iter().enumerate() {
-        if keep(i) {
-            remap[i] = Some(kept.len() as u32);
-            kept.push(x);
+    let mut i = 0;
+    let mut next = 0;
+    items.retain(|_| {
+        let kept = keep(i);
+        if kept {
+            remap[i] = Some(next);
+            next += 1;
         }
+        i += 1;
+        kept
+    });
+    // Fully dead locals or specialized arguments need no backing storage any more.
+    if items.is_empty() {
+        items.shrink_to_fit();
     }
-    *items = kept;
     remap
 }
 
@@ -2538,6 +2569,22 @@ fn flattened_size(m: &Module, order: &[usize], keep: &[bool]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codegen_perf_compaction_keeps_order_indices_and_storage() {
+        let mut items = vec!["a", "b", "c", "d", "e"];
+        let ptr = items.as_ptr();
+        let capacity = items.capacity();
+        let remap = retain_by_index(&mut items, |i| i == 0 || i == 2 || i == 4);
+        assert_eq!(items, ["a", "c", "e"]);
+        assert_eq!(remap, [Some(0), None, Some(1), None, Some(2)]);
+        assert_eq!(items.as_ptr(), ptr);
+        assert_eq!(items.capacity(), capacity);
+        assert_eq!(retain_by_index(&mut items, |_| false), [None; 3]);
+        assert!(items.is_empty());
+        assert_eq!(items.capacity(), 0);
+        assert!(retain_by_index(&mut items, |_| true).is_empty());
+    }
 
     /// A dead chain through locals, as a run of `let`s makes it, goes in one pass; what the
     /// result needs stays.
@@ -3080,6 +3127,67 @@ mod tests {
         assert_eq!(f.body, vec![Stmt::Let(a, Expr::Zero(big)), Stmt::Return(None)]);
     }
 
+    /// Dead chains can share operands, live inputs and nested blocks. Checked arithmetic,
+    /// indexed loads, branch conditions and returned values still keep everything they use.
+    #[test]
+    fn cpu_dead_chains_preserve_live_values_and_traps() {
+        let mut m = Module::default();
+        let (f32t, u32t, boolt) = (m.types.f32(), m.types.u32(), m.types.bool());
+        let array = m.types.intern(TypeDef::Array(f32t, 4));
+        let params = vec![
+            Param { name: "x".into(), ty: f32t, by_ref: false, mutable: false },
+            Param { name: "i".into(), ty: u32t, by_ref: false, mutable: false },
+        ];
+        let mut f = Function::new("f", params, Some(f32t));
+        let (x, i, cond, checked, indexed) = (
+            f.new_value(f32t),
+            f.new_value(u32t),
+            f.new_value(boolt),
+            f.new_value(u32t),
+            f.new_value(f32t),
+        );
+        let local = f.new_local("array", array);
+        let prefix = vec![
+            Stmt::Let(x, Expr::Param(0)),
+            Stmt::Let(i, Expr::Param(1)),
+            Stmt::Let(cond, Expr::Binary(BinOp::Eq, i, i)),
+            Stmt::Let(checked, Expr::Binary(BinOp::Add, i, i)),
+            Stmt::Let(indexed, Expr::Load(Place::local(local).with(Proj::Index(i)))),
+        ];
+        let mut dead = Vec::new();
+        let mut prev = x;
+        for _ in 0..2048 {
+            let v = f.new_value(f32t);
+            dead.push(Stmt::Let(v, Expr::Binary(BinOp::Mul, prev, prev)));
+            prev = v;
+        }
+        f.body = prefix.clone();
+        f.body.push(Stmt::If { cond, then: dead, else_: Vec::new() });
+        f.body.push(Stmt::Return(Some(x)));
+        drop_dead_values(&m, &mut f);
+        let mut expected = prefix;
+        expected.push(Stmt::If { cond, then: Vec::new(), else_: Vec::new() });
+        expected.push(Stmt::Return(Some(x)));
+        assert_eq!(f.body, expected);
+    }
+
+    #[test]
+    fn cpu_dead_float_values_still_check_nan_in_debug_builds() {
+        let mut m = Module { nan_message: Some((DataId(0), 0)), ..Module::default() };
+        let f32t = m.types.f32();
+        let mut f = Function::new("f", Vec::new(), None);
+        let (a, b, c) = (f.new_value(f32t), f.new_value(f32t), f.new_value(f32t));
+        f.body = vec![
+            Stmt::Let(a, Expr::Const(Const::F32(0.0))),
+            Stmt::Let(b, Expr::Binary(BinOp::Div, a, a)),
+            Stmt::Let(c, Expr::Binary(BinOp::Mul, b, b)),
+            Stmt::Return(None),
+        ];
+        let expected = f.body.clone();
+        drop_dead_values(&m, &mut f);
+        assert_eq!(f.body, expected);
+    }
+
     /// A body too large to inline everywhere is inlined where it's called in a loop, and stays
     /// a call elsewhere.
     #[test]
@@ -3134,5 +3242,76 @@ mod tests {
         assert!(visit::calls(body).is_empty(), "the loop's call is inlined: {body:?}");
         assert_eq!(visit::calls(&main.body).len(), 1, "the call outside the loop stays");
         crate::verify(&m).expect("a valid module");
+    }
+
+    /// A module in which `outside` exported functions each call `g`, a chain of `len`
+    /// multiplies, and `main` calls it once in a loop; after CPU inlining, how many calls the
+    /// exported functions keep, and whether the loop's call was inlined.
+    fn calls_kept(len: usize, outside: usize) -> (usize, bool) {
+        let mut m = Module::default();
+        let f32t = m.types.f32();
+        let p = Param { name: "x".into(), ty: f32t, by_ref: false, mutable: false };
+        let mut g = Function::new("g", vec![p], Some(f32t));
+        let x = g.new_value(f32t);
+        let mut body = vec![Stmt::Let(x, Expr::Param(0))];
+        let mut at = x;
+        for _ in 0..len {
+            let v = g.new_value(f32t);
+            body.push(Stmt::Let(v, Expr::Binary(BinOp::Mul, at, x)));
+            at = v;
+        }
+        body.push(Stmt::Return(Some(at)));
+        g.body = body;
+        let g = m.add_function(g);
+        for k in 0..outside {
+            let mut c = Function::new(format!("c{k}"), Vec::new(), Some(f32t));
+            let (a, r) = (c.new_value(f32t), c.new_value(f32t));
+            c.body = vec![
+                Stmt::Let(a, Expr::Const(Const::F32(k as f32))),
+                Stmt::Let(r, Expr::Call(g, vec![Arg::Value(a)])),
+                Stmt::Return(Some(r)),
+            ];
+            let c = m.add_function(c);
+            m.exports.push((format!("c{k}"), c));
+        }
+        let mut main = Function::new("main", Vec::new(), Some(f32t));
+        let (one, two, b) = (main.new_value(f32t), main.new_value(f32t), main.new_value(f32t));
+        main.body = vec![
+            Stmt::Let(one, Expr::Const(Const::F32(1.0))),
+            Stmt::Loop {
+                body: vec![
+                    Stmt::Let(two, Expr::Const(Const::F32(2.0))),
+                    Stmt::Let(b, Expr::Call(g, vec![Arg::Value(two)])),
+                    Stmt::Break,
+                ],
+                continuing: Vec::new(),
+            },
+            Stmt::Return(Some(one)),
+        ];
+        let main = m.add_function(main);
+        m.exports.push(("main".into(), main));
+        let _ = b;
+        inline_cpu(&mut m).expect("inline");
+        crate::verify(&m).expect("a valid module");
+        let kept = m.functions.iter().filter(|f| f.name.starts_with('c'));
+        let kept = kept.map(|f| visit::calls(&f.body).len()).sum();
+        let main = m.functions.iter().find(|f| f.name == "main").expect("main");
+        (kept, visit::calls(&main.body).is_empty())
+    }
+
+    /// A small function is inlined at each call, unless its copies would add up past
+    /// `CPU_SPREAD`: then only its calls in a loop are, and the rest stay calls. A body too small
+    /// to be worth a call is inlined however many places call it.
+    #[test]
+    fn a_small_function_called_from_many_places_stays_a_call_outside_loops() {
+        assert_eq!(calls_kept(40, 3), (0, true), "few calls: all inlined");
+        let many = CPU_SPREAD / 40 + 1;
+        assert_eq!(calls_kept(40, many), (many, true), "many calls: kept, but in the loop");
+        let tiny = CPU_SPREAD_LEAST - 3;
+        assert_eq!(
+            calls_kept(tiny, CPU_SPREAD / tiny + 1),
+            (0, true),
+            "a tiny body: always inlined"
+        );
     }
 }

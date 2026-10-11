@@ -133,6 +133,19 @@ fn needs_memory_and_frame_exports() {
         r#"(module (import "wrela" "memory" (memory 1 16384 shared)) (export "memory" (memory 0)) (func (export "frame") (param f64)))"#,
     );
     assert!(matches!(wrong_frame.err(), Some(Error::Program(m)) if m.contains("`frame(")));
+    let other_memory = load_wat(
+        r#"(module
+            (import "wrela" "memory" (memory $imported 1 16384 shared))
+            (memory $other 1 16384 shared)
+            (export "memory" (memory $other))
+            (func (export "frame") (param f32 i32 i32)))"#,
+    )
+    .err()
+    .expect("a different exported memory is rejected");
+    assert_eq!(
+        other_memory.to_string(),
+        "invalid program: its `memory` export isn't its imported shared memory"
+    );
     assert!(matches!(compile_with(b"not wasm", None).err(), Some(Error::Program(_))));
 }
 
@@ -164,20 +177,92 @@ fn the_default_limits_are_webgpus() {
 }
 
 #[test]
-fn a_start_function_cant_call_the_host() {
-    let err = load_wat(
-        r#"(module (import "wrela" "submit" (func $submit (param i32 i32)))
-             (import "wrela" "memory" (memory 1 16384 shared)) (export "memory" (memory 0))
-             (func (export "frame") (param f32 i32 i32))
-             (func $start (call $submit (i32.const 0) (i32.const 0)))
-             (start $start))"#,
-    )
-    .err()
-    .expect("rejected");
-    assert_eq!(
-        err.to_string(),
-        "invalid program: its start function called the host; a wrela program calls the host only from an export"
+fn audio_quanta_copy_samples_before_the_next_call_overwrites_them() {
+    let wat = format!(
+        r#"(module
+          (import "wrela" "memory" (memory 20 16384 shared))
+          (import "wrela" "audio" (func $audio (param i32 i32)))
+          (export "memory" (memory 0))
+          (global $quantum (mut i32) (i32.const 0))
+          (func (export "init") (call $audio (i32.const 1) (i32.const 0)))
+          (func (export "frame") (param f32 i32 i32))
+          (func (export "__audio") (param i32 i32 i32) (local $i i32)
+            (loop $samples
+              (f32.store
+                (i32.add (i32.const {audio_out}) (i32.mul (local.get $i) (i32.const 4)))
+                (f32.convert_i32_u
+                  (i32.add (global.get $quantum) (local.get $i))))
+              (f32.store
+                (i32.add (i32.const {right_out}) (i32.mul (local.get $i) (i32.const 4)))
+                (f32.neg (f32.convert_i32_u
+                  (i32.add (i32.add (global.get $quantum) (local.get $i)) (i32.const 1)))))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br_if $samples (i32.lt_u (local.get $i) (i32.const {n}))))
+            (global.set $quantum (i32.add (global.get $quantum) (i32.const {n})))))"#,
+        audio_out = memory::AUDIO_OUT,
+        right_out = memory::AUDIO_OUT + 4 * AUDIO_QUANTUM,
+        n = AUDIO_QUANTUM,
     );
+    let mut program = load_wat(&wat).expect("a voice");
+    assert!(program.render_audio(0).expect("no samples requested").is_empty());
+    let samples = program.render_audio(3).expect("three quanta");
+    assert_eq!(
+        samples,
+        (0..3 * AUDIO_QUANTUM).flat_map(|n| [n as f32, -(n as f32 + 1.0)]).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        program.render_audio(1).expect("the next quantum"),
+        (3 * AUDIO_QUANTUM..4 * AUDIO_QUANTUM)
+            .flat_map(|n| [n as f32, -(n as f32 + 1.0)])
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_start_function_cant_call_the_host() {
+    let calls = [
+        (IMPORT_SUBMIT, "(param i32 i32)", "(call $host (i32.const 0) (i32.const 0))"),
+        (IMPORT_REQUEST_STATUS, "(param i32) (result i32)", "(drop (call $host (i32.const 0)))"),
+        (IMPORT_REQUEST_TAKE, "(param i32 i32)", "(call $host (i32.const 0) (i32.const 0))"),
+        (IMPORT_LIMIT, "(param i32) (result i32)", "(drop (call $host (i32.const 0)))"),
+        (IMPORT_AUDIO, "(param i32 i32)", "(call $host (i32.const 0) (i32.const 0))"),
+        (
+            IMPORT_INPUT,
+            "(param i32 i32) (result i32)",
+            "(drop (call $host (i32.const 0) (i32.const 0)))",
+        ),
+        (
+            IMPORT_TICK,
+            "(param i32 i32 i32)",
+            "(call $host (i32.const 0) (i32.const 0) (i32.const 1))",
+        ),
+        (IMPORT_KEEP, "(param i32 i32)", "(call $host (i32.const 0) (i32.const 0))"),
+        (
+            IMPORT_KEPT,
+            "(param i32 i32) (result i32)",
+            "(drop (call $host (i32.const 0) (i32.const 0)))",
+        ),
+        (IMPORT_CLOCK, "(param i32)", "(call $host (i32.const 0))"),
+        (IMPORT_PRINT, "(param i32 i32)", "(call $host (i32.const 0) (i32.const 0))"),
+        (IMPORT_PHASE, "(param i32 i32)", "(call $host (i32.const 0) (i32.const 0))"),
+    ];
+    for (name, signature, call) in calls {
+        let wat = format!(
+            r#"(module
+                (import "wrela" "{name}" (func $host {signature}))
+                (import "wrela" "memory" (memory 20 16384 shared))
+                (export "memory" (memory 0))
+                (func (export "frame") (param f32 i32 i32))
+                (func $start {call})
+                (start $start))"#
+        );
+        let err = load_wat(&wat).err().unwrap_or_else(|| panic!("start called {name}"));
+        assert_eq!(
+            err.to_string(),
+            "invalid program: its start function called the host; a wrela program calls the host only from an export",
+            "start called {name}"
+        );
+    }
 }
 
 #[test]
@@ -291,6 +376,21 @@ fn starting_a_ticker_with_too_little_memory_is_an_error_not_a_host_panic() {
         (func (export "__tick") (param i32 i32 i32 i32)))"#;
     let err = load_wat(wat).err().expect("too little memory");
     assert!(matches!(&err, Error::Trap(m) if m.contains("ticker needs at least")), "{err}");
+}
+
+#[test]
+fn a_ticker_must_tick_at_least_once_a_second() {
+    let wat = r#"(module
+        (import "wrela" "tick" (func $start (param i32 i32 i32)))
+        (import "wrela" "memory" (memory 20 16384 shared)) (export "memory" (memory 0))
+        (func (export "init") (call $start (i32.const 1) (i32.const 2) (i32.const 0)))
+        (func (export "frame") (param f32 i32 i32))
+        (func (export "__tick") (param i32 i32 i32 i32)))"#;
+    let err = load_wat(wat).err().expect("zero-rate ticker");
+    assert_eq!(
+        err.to_string(),
+        "the program trapped: it starts a ticker at 0 Hz; a ticker ticks at least once a second"
+    );
 }
 
 #[test]

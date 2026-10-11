@@ -53,9 +53,12 @@ pub fn emit(m: &ir::Module) -> R<Wgsl> {
 /// names run to hundreds (`Then_Then_Then_Placed_With_...`), each written where it's declared
 /// and where it's used; naga's namer makes the cut names unique.
 fn struct_name(name: &str) -> String {
-    let full = ir::ident(name);
-    let cut: String = full.chars().take(32).collect();
-    cut.trim_end_matches('_').to_string()
+    let mut name = ir::ident(name);
+    if let Some((end, _)) = name.char_indices().nth(32) {
+        name.truncate(end);
+    }
+    name.truncate(name.trim_end_matches('_').len());
+    name
 }
 
 /// WGSL text without its lines' indentation, which the language ignores. A creature's item
@@ -430,10 +433,11 @@ impl<'m> Cx<'m> {
             cx: self,
             f,
             func: &mut func,
-            values: HashMap::new(),
+            values: vec![None; f.values.len()],
             locals: Vec::new(),
             entry,
             io: None,
+            varying_paths: HashMap::new(),
             frag_out: None,
             param_base: 0,
             inputs: Vec::new(),
@@ -476,17 +480,28 @@ fn part_ty(types: &ir::Types, t: ir::TypeId, path: &[u32]) -> R<ir::TypeId> {
         .ok_or_else(|| "internal: a varying's path".to_string())
 }
 
+/// Each varying's input member, keeping the first if a path occurs more than once.
+fn varying_paths(map: &[ir::Varying]) -> HashMap<&[u32], u32> {
+    let mut paths = HashMap::with_capacity(map.len());
+    for (k, v) in map.iter().enumerate() {
+        paths.entry(v.path.as_slice()).or_insert(k as u32);
+    }
+    paths
+}
+
 /// Builds one naga function.
 struct Fb<'a, 'm> {
     cx: &'a mut Cx<'m>,
     f: &'m ir::Function,
     func: &'a mut Function,
-    values: HashMap<ir::ValueId, Handle<Expression>>,
+    values: Vec<Option<Handle<Expression>>>,
     locals: Vec<Handle<LocalVariable>>,
     /// The entry point being written, or `None` for a function that stays a call.
     entry: Option<&'m ir::EntryPoint>,
     /// The vertex output (fragment input) struct, its members, and the IR type they're parts of.
     io: Option<(Handle<Type>, &'m [ir::Varying], ir::TypeId)>,
+    /// Fragment input members, indexed once for every reconstruction of its nested parts.
+    varying_paths: HashMap<&'m [u32], u32>,
     /// A fragment shader's output struct, when it writes its depth: its colour and its depth.
     frag_out: Option<Handle<Type>>,
     /// Where the IR's parameters start among the naga arguments: after the builtin inputs.
@@ -584,6 +599,7 @@ impl<'a, 'm> Fb<'a, 'm> {
                         binding: None,
                     });
                     self.io = Some((io, map, *vt));
+                    self.varying_paths = varying_paths(map);
                 }
                 let colour = Binding::Location {
                     location: 0,
@@ -723,8 +739,9 @@ impl<'a, 'm> Fb<'a, 'm> {
 
     fn val(&self, v: ir::ValueId) -> R<Handle<Expression>> {
         self.values
-            .get(&v)
+            .get(v.index())
             .copied()
+            .flatten()
             .ok_or_else(|| format!("internal: v{} has no naga expression", v.0))
     }
 
@@ -786,7 +803,7 @@ impl<'a, 'm> Fb<'a, 'm> {
         match s {
             ir::Stmt::Let(v, e) => {
                 let h = self.value(*v, e, out)?;
-                self.values.insert(*v, h);
+                self.values[v.index()] = Some(h);
                 // Arithmetic is written where it's used (naga binds what's used twice to a
                 // `let` of its own); what reads memory, calls or has an effect is bound where
                 // it is, so it runs in the IR's order.
@@ -911,17 +928,16 @@ impl<'a, 'm> Fb<'a, 'm> {
     }
 
     /// The part at `path` of the fragment shader's input, of IR type `t`, rebuilt from the
-    /// members of `arg`, the input struct that holds its parts (`map`).
+    /// members of `arg`, the input struct that holds its parts.
     fn rebuild(
         &mut self,
         arg: Handle<Expression>,
-        map: &[ir::Varying],
         t: ir::TypeId,
         path: &mut Vec<u32>,
         out: &mut Block,
     ) -> R<Handle<Expression>> {
-        if let Some(k) = map.iter().position(|v| v.path == *path) {
-            return Ok(self.expr(Expression::AccessIndex { base: arg, index: k as u32 }, out));
+        if let Some(&index) = self.varying_paths.get(path.as_slice()) {
+            return Ok(self.expr(Expression::AccessIndex { base: arg, index }, out));
         }
         let types = &self.cx.m.types;
         let n = match types.get(t) {
@@ -929,11 +945,11 @@ impl<'a, 'm> Fb<'a, 'm> {
             ir::TypeDef::Matrix(c, _) => u32::from(*c),
             _ => return Err("internal: a varying's part that no member holds".into()),
         };
-        let mut comps = Vec::new();
+        let mut comps = Vec::with_capacity(n as usize);
         for k in 0..n {
             let pt = part_ty(types, t, &[k])?;
             path.push(k);
-            comps.push(self.rebuild(arg, map, pt, path, out)?);
+            comps.push(self.rebuild(arg, pt, path, out)?);
             path.pop();
         }
         let ty = self.cx.ty(t)?;
@@ -991,12 +1007,12 @@ impl<'a, 'm> Fb<'a, 'm> {
             }
             ir::Expr::Param(i) => {
                 // In a fragment shader, parameter 0 is the varyings: rebuild the IR struct.
-                if let Some((_, map, vt)) = self.io
+                if let Some((_, _, vt)) = self.io
                     && let Some(ir::EntryPoint { stage: ir::Stage::Fragment { .. }, .. }) =
                         self.entry
                 {
                     let arg = self.expr(Expression::FunctionArgument(self.param_base + *i), out);
-                    self.rebuild(arg, map, vt, &mut Vec::new(), out)?
+                    self.rebuild(arg, vt, &mut Vec::new(), out)?
                 } else {
                     self.expr(Expression::FunctionArgument(self.param_base + *i), out)
                 }
@@ -1553,6 +1569,107 @@ fn image_dim(three: bool) -> naga::ImageDimension {
 mod tests {
     use super::*;
 
+    #[test]
+    fn codegen_perf_varying_paths_keep_first_members_and_missing_parents() {
+        let map: Vec<_> = [vec![2, 0], vec![0], vec![2, 1], vec![2, 0]]
+            .into_iter()
+            .map(|path| ir::Varying { path, position: false, flat: false })
+            .collect();
+        let paths = varying_paths(&map);
+        assert_eq!(paths.get([2, 0].as_slice()), Some(&0));
+        assert_eq!(paths.get([0].as_slice()), Some(&1));
+        assert_eq!(paths.get([2, 1].as_slice()), Some(&2));
+        assert!(!paths.contains_key([2].as_slice()));
+        assert!(!paths.contains_key([].as_slice()));
+    }
+
+    #[test]
+    fn codegen_perf_fragment_rebuilds_nested_structs_and_matrix_columns() {
+        let mut m = ir::Module::default();
+        let (v4, mat) = (m.types.vector(4), m.types.intern(ir::TypeDef::Matrix(2, 2)));
+        let inner = m.types.intern(ir::TypeDef::Struct {
+            name: "Inner".into(),
+            fields: vec![("matrix".into(), mat), ("colour".into(), v4)],
+        });
+        let outer = m.types.intern(ir::TypeDef::Struct {
+            name: "Outer".into(),
+            fields: vec![("position".into(), v4), ("inner".into(), inner)],
+        });
+        let mut f = ir::Function::new(
+            "fragment",
+            vec![ir::Param { name: "input".into(), ty: outer, by_ref: false, mutable: false }],
+            Some(v4),
+        );
+        let (input, nested, colour) = (f.new_value(outer), f.new_value(inner), f.new_value(v4));
+        f.body = vec![
+            ir::Stmt::Let(input, ir::Expr::Param(0)),
+            ir::Stmt::Let(nested, ir::Expr::Extract(input, 1)),
+            ir::Stmt::Let(colour, ir::Expr::Extract(nested, 1)),
+            ir::Stmt::Return(Some(colour)),
+        ];
+        let function = m.add_function(f);
+        let map: Vec<_> = [vec![1, 1], vec![0], vec![1, 0, 1], vec![1, 0, 0]]
+            .into_iter()
+            .map(|path| ir::Varying { position: path == [0], path, flat: false })
+            .collect();
+        m.entry_points.push(ir::EntryPoint {
+            name: "fragment".into(),
+            function,
+            stage: ir::Stage::Fragment { varyings: Some((outer, map)), depth: false, uint: false },
+            inputs: Vec::new(),
+        });
+        ir::verify(&m).expect("valid IR");
+        let module = to_naga(&m).expect("emits nested varyings");
+        validate(&module).expect("valid nested varyings");
+        let func = &module.entry_points[0].function;
+        let input_member = |h| match func.expressions[h] {
+            Expression::AccessIndex { base, index } => {
+                assert!(matches!(func.expressions[base], Expression::FunctionArgument(0)));
+                index
+            }
+            ref other => panic!("not an input member: {other:?}"),
+        };
+        let parts = |name| {
+            func.expressions
+                .iter()
+                .find_map(|(_, e)| match e {
+                    Expression::Compose { ty, components }
+                        if module.types[*ty].name.as_deref() == Some(name) =>
+                    {
+                        Some(components)
+                    }
+                    _ => None,
+                })
+                .expect("rebuilt struct")
+        };
+        let outer_parts = parts("Outer");
+        assert_eq!(input_member(outer_parts[0]), 1);
+        let inner_parts = parts("Inner");
+        assert_eq!(input_member(inner_parts[1]), 0);
+        let Expression::Compose { components, .. } = &func.expressions[inner_parts[0]] else {
+            panic!("matrix not rebuilt")
+        };
+        assert_eq!(components.iter().copied().map(input_member).collect::<Vec<_>>(), [3, 2]);
+        let text = emit(&m).expect("valid WGSL").text;
+        naga::front::wgsl::parse_str(&text).expect("WGSL parses back");
+    }
+
+    #[test]
+    fn codegen_perf_struct_names_preserve_unicode_cut_and_trim() {
+        for name in [
+            "",
+            "___",
+            "Short_",
+            "中文_Δλ_例",
+            "First With Spaces: And More Than Thirty Two Letters",
+            "1234567890123456789012345678901___",
+            "Δλ".repeat(25).as_str(),
+        ] {
+            let cut: String = ir::ident(name).chars().take(32).collect();
+            assert_eq!(struct_name(name), cut.trim_end_matches('_'));
+        }
+    }
+
     /// A tiny compute module named `name`, which writes each invocation's index as a float.
     fn kernel(name: &str) -> ir::Module {
         let mut m = ir::Module::default();
@@ -1593,6 +1710,37 @@ mod tests {
             inputs: vec![ir::BuiltinInput::GlobalInvocationId],
         });
         m
+    }
+
+    #[test]
+    fn value_table_handles_sparse_and_missing_values() {
+        let mut m = kernel("sparse");
+        let expected = emit(&m).expect("emits").text;
+        let f = &mut m.functions[0];
+        let ty = f.value_ty(ir::ValueId(2));
+        let missing = f.new_value(ty);
+        let moved = f.new_value(ty);
+        for s in &mut f.body {
+            s.for_each_value_mut(&mut |v| {
+                if *v == ir::ValueId(2) {
+                    *v = moved;
+                }
+            });
+            if let ir::Stmt::Let(v, _) = s
+                && *v == ir::ValueId(2)
+            {
+                *v = moved;
+            }
+        }
+        assert_eq!(emit(&m).expect("sparse values emit").text, expected);
+        for v in [missing, ir::ValueId(100)] {
+            let ir::Stmt::Store(_, value) = &mut m.functions[0].body[3] else { unreachable!() };
+            *value = v;
+            assert_eq!(
+                to_naga(&m).expect_err("an undefined value"),
+                format!("internal: v{} has no naga expression", v.0)
+            );
+        }
     }
 
     /// The text has no indentation, and a struct's name is cut to 32 characters (#42 AC9's size

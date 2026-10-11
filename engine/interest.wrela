@@ -376,14 +376,11 @@ pub fn sight_of<G: Ground>(
             })
         }
         if t.state == State::Log && t.tall > 4.0 {
-            var s = 0.0
-            while s < t.tall * 0.85 {
-                let p = t.at + t.fall * s
+            t.each_along(g.cell * 0.5, |p, _| {
                 if g.holds(p) {
                     logs[g.cell_at(p)] += 0.3
                 }
-                s += g.cell * 0.5
-            }
+            })
         }
     }
     // The trunks as they stand, sorted into the cells.
@@ -1379,9 +1376,9 @@ fn trail_aim(m: Map, seen_grid: Grid, seen: [bool], found: [bool], p: vec2) -> v
     var d = 1.0e9
     for r in m.routes {
         if r.kind == place::RouteKind::Trail || r.kind == place::RouteKind::Road {
-            for i in 0..r.points.len() - 1 {
-                let a = r.points[i]
-                let b = r.points[i + 1]
+            for i in 1..r.points.len() {
+                let a = r.points[i - 1]
+                let b = r.points[i]
                 let n = u32(ceil(length(b - a) / 20.0))
                 for k in 0..(n + 1) {
                     let q = mix(a, b, vec2(f32(k) / f32(max(n, 1))))
@@ -2069,9 +2066,9 @@ pub fn map_image(m: Map, c: Checked, set: Settings, px: f32) -> Vec<u8> {
     }
     // The routes and the sites over it.
     for r in m.routes {
-        for k in 0..r.points.len() - 1 {
-            let a = (r.points[k] - m.lo) / px
-            let b = (r.points[k + 1] - m.lo) / px
+        for k in 1..r.points.len() {
+            let a = (r.points[k - 1] - m.lo) / px
+            let b = (r.points[k] - m.lo) / px
             let steps = u32(ceil(length(b - a))) + 1
             for i in 0..steps {
                 let p = mix(a, b, vec2(f32(i) / f32(steps)))

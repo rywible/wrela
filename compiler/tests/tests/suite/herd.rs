@@ -161,6 +161,74 @@ fn the_herds_own_tests_pass() {
     assert_eq!(super::tests_pass(&wrela_tests::repo_root().join("examples/herd")), 2);
 }
 
+/// Reusing the height of a vertical ray's column keeps each hit's bits and march count,
+/// including misses, signed zeros, nonvertical rays and nonfinite inputs.
+#[test]
+fn terrain_rays_keep_their_hits_and_steps() {
+    let source = r#"
+use terrain::Terrain
+
+fn reference(terrain: Terrain, from: vec3, dir: vec3, max_t: f32) -> (f32, u32) {
+    var t = 0.0
+    for i in 1..129 {
+        let d = terrain.distance(from + dir * t)
+        if d < 1mm { return (t, i) }
+        t += max(d, 1mm)
+        if t > max_t { return (-1.0, i) }
+    }
+    (-1.0, 128)
+}
+
+pub fn compare(from: vec3, dir: vec3, max_t: f32) -> (u32, u32, u32, u32) {
+    let terrain = Terrain::new(7)
+    let (a, sa) = terrain.raycast(from, dir, max_t)
+    let (b, sb) = reference(terrain, from, dir, max_t)
+    (bitcast_u32(a), sa, bitcast_u32(b), sb)
+}
+"#;
+    let dir = super::engine_package("herd/raycasts", "raycasts", source);
+    std::fs::copy(repo_root().join("examples/herd/terrain.wrela"), dir.join("terrain.wrela"))
+        .expect("the herd's terrain");
+    let out = wrela_driver::build(&dir);
+    assert!(!out.has_errors(), "{:?}", out.diagnostics);
+    let build = dir.join("build");
+    out.write_to(&build).expect("write the build");
+    let mut host = CpuBuild::load(&build).expect("load").start_with(1).expect("start");
+    let mut compare = |from: [f32; 3], dir: [f32; 3], max_t: f32| {
+        let args: Vec<_> = from.into_iter().chain(dir).chain([max_t]).map(Value::F32).collect();
+        let result = host.call_export("compare", &args).expect("compare rays");
+        let [Value::I32(a), Value::I32(sa), Value::I32(b), Value::I32(sb)] = result[..] else {
+            panic!("unexpected result: {result:?}");
+        };
+        assert_eq!((a, sa), (b, sb), "from {from:?}, dir {dir:?}, limit {max_t}");
+    };
+    let directions = [
+        [0.0, -1.0, 0.0],
+        [-0.0, -1.0, -0.0],
+        [0.0, 1.0, -0.0],
+        [-0.0, 0.0, 0.0],
+        [0.125, -1.0, -0.25],
+        [f32::from_bits(1), -1.0, 0.0],
+    ];
+    for i in 0..16 {
+        let from = [((i * 37) % 101) as f32 - 50.0, 5.0, ((i * 71) % 103) as f32 - 50.0];
+        for dir in directions {
+            for limit in [0.0, 0.5, 10.0] {
+                compare(from, dir, limit);
+            }
+        }
+    }
+    for x in [0.0, -0.0, f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
+        for dir in directions {
+            compare([x, 5.0, -0.0], dir, 10.0);
+        }
+    }
+    for dir in [[0.0, f32::INFINITY, 0.0], [0.0, f32::NAN, 0.0]] {
+        compare([0.0, 5.0, 0.0], dir, f32::INFINITY);
+    }
+    compare([0.0, f32::MAX, 0.0], [0.0, 1.0, 0.0], f32::INFINITY);
+}
+
 /// AC6's timings on the CPU (WASM), in one harness, alternating: the physique at 2 cm (≤ 1.25×
 /// the spike's), the grazer's field per evaluation whole and pruned, and a raycast (each ≤ 1.25×).
 #[test]
@@ -1273,7 +1341,7 @@ fn the_herds_pipelines_load_cold_as_fast() {
 /// in lockstep, a frame's ticks follow its number, not the clock, so the schedule is a paced
 /// run's.
 #[test]
-#[ignore = "long: needs Chrome, python3, a GPU and Rosetta"]
+#[ignore = "long: needs Chrome, python3 and a GPU; also Rosetta on macOS"]
 fn the_herds_ticks_hash_the_same_everywhere() {
     const TICKS: u32 = 10_000;
     let part = wrela_tests::sized(1_000, TICKS);
@@ -1314,12 +1382,17 @@ fn the_herds_ticks_hash_the_same_everywhere() {
     assert!(gpu.len() >= TICKS as usize - 1, "only {} ticks with the GPU", gpu.len());
     eprintln!("the native host with the GPU agrees over {} ticks", gpu.len());
     // x86-64 under Rosetta: the log replays.
-    let path = dir.join("herd.ticks");
-    std::fs::write(&path, log.encode()).expect("write the log");
-    let (ok, text) = crate::replay_on_x86(&crate::x86_host(), &path, &dir);
-    assert!(ok, "x86-64 didn't replay the herd's log: {text}");
-    assert!(text.contains(&format!("{TICKS} ticks replayed")), "{text}");
-    eprintln!("x86-64 under Rosetta replays {TICKS} ticks");
+    #[cfg(target_os = "macos")]
+    {
+        let path = dir.join("herd.ticks");
+        std::fs::write(&path, log.encode()).expect("write the log");
+        let (ok, text) = crate::replay_on_x86(&crate::x86_host(), &path, &dir);
+        assert!(ok, "x86-64 didn't replay the herd's log: {text}");
+        assert!(text.contains(&format!("{TICKS} ticks replayed")), "{text}");
+        eprintln!("x86-64 under Rosetta replays {TICKS} ticks");
+    }
+    #[cfg(not(target_os = "macos"))]
+    eprintln!("cross-architecture Rosetta replay requires macOS; checking native/browser hashes");
     for (fps, delay) in [(60.0, 0), (30.0, 0), (144.0, 0), (60.0, 20)] {
         let n = if fps == 60.0 && delay == 0 { TICKS } else { part };
         let frames = (f64::from(n) * fps / 60.0).ceil() as u32 + 1;

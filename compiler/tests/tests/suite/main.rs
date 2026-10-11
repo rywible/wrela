@@ -70,10 +70,15 @@ use wrela_host::{CpuBuild, ReplayError, TickLog};
 /// An empty directory `name` (a relative path) for a test's files, under the binary's scratch
 /// directory.
 fn scratch(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let dir = scratch_root().join(name);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("make a scratch directory");
     dir
+}
+
+/// This process's test files, isolated by the gate or in Cargo's usual scratch directory.
+fn scratch_root() -> PathBuf {
+    wrela_tests::scratch_root(env!("CARGO_TARGET_TMPDIR"))
 }
 
 /// A one-file package: [`scratch`] directory `name` with `text` as its `main.wrela`, plus an
@@ -105,17 +110,18 @@ fn with_frame(text: &str) -> String {
 }
 
 /// Runs the package's tests as `wrela test` does, which must all pass: panics with the errors
-/// or the failures if not. How many ran.
+/// or the failures, rendered, if not. How many ran.
 fn tests_pass(dir: &Path) -> usize {
     let out = wrela_driver::test(dir, None);
     if !out.passed() {
-        let errors: Vec<_> = out.diagnostics.iter().filter(|d| d.is_error()).collect();
-        let failed: Vec<String> = out
-            .results
-            .iter()
-            .filter_map(|r| r.failure.as_ref().map(|d| format!("{}: {}", r.name, d.message)))
-            .collect();
-        panic!("errors: {errors:#?}\nfailed: {failed:#?}");
+        let errors: Vec<_> = out.diagnostics.iter().filter(|d| d.is_error()).cloned().collect();
+        let failed: Vec<_> = out.results.iter().filter_map(|r| r.failure.clone()).collect();
+        panic!(
+            "{}:\n{}{}",
+            dir.display(),
+            wrela_diag::render::render_all(&out.sources, &errors),
+            wrela_diag::render::render_all(&out.sources, &failed)
+        );
     }
     out.results.len()
 }
@@ -153,7 +159,7 @@ fn built_as(pkg: &str, lift: &[&str], debug: bool) -> PathBuf {
     BUILDS.run(&name, || {
         lift::build_into(&name, &src, lift, debug);
     });
-    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name)
+    scratch_root().join(name)
 }
 
 /// The newest `n` buffers of the test package `pkg` after its first frame on the GPU (64 × 64),
@@ -201,6 +207,7 @@ fn a_flipped_record_fails_at_its_tick(build: &CpuBuild, log: &TickLog, k: usize)
 }
 
 /// `wrela-host`, built for x86-64 without the GPU, to run under Rosetta: its path.
+#[cfg(target_os = "macos")]
 fn x86_host() -> PathBuf {
     let root = wrela_tests::repo_root();
     let status = std::process::Command::new("cargo")
@@ -215,6 +222,7 @@ fn x86_host() -> PathBuf {
 
 /// `wrela-host --replay <log> --no-gpu <build>` for x86-64, under Rosetta: its output, and
 /// whether it passed.
+#[cfg(target_os = "macos")]
 fn replay_on_x86(host: &Path, log: &Path, build: &Path) -> (bool, String) {
     let out = std::process::Command::new("arch")
         .arg("-x86_64")

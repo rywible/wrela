@@ -13,7 +13,6 @@ Each reads the hook's JSON on stdin. A refusal is its reason, for Claude, on std
 Anything else that goes wrong lets the command run: a hook mustn't stop work by its own fault.
 """
 
-import glob
 import json
 import os
 import re
@@ -88,21 +87,14 @@ def polls(command, background):
 
 
 def measures(root):
-    """The names of the tests whose `#[ignore]` reason starts `measure:`, as check.sh finds them."""
-    names = set()
-    for top in ("compiler", "runtime"):
-        for path in glob.glob(os.path.join(root, top, "**", "*.rs"), recursive=True):
-            if f"{os.sep}target{os.sep}" in path:
-                continue
-            with open(path, encoding="utf-8", errors="replace") as f:
-                lines = f.read().splitlines()
-            for i, line in enumerate(lines):
-                if '#[ignore = "measure:' in line:
-                    for later in lines[i + 1:]:
-                        if m := re.search(r"fn (\w+)\(", later):
-                            names.add(m.group(1))
-                            break
-    return names
+    """The names of the tests whose `#[ignore]` reason starts `measure:` (tools/ignored.py), each
+    as its function's name."""
+    tools = os.path.join(root, "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import ignored
+
+    return {name.rsplit("::", 1)[-1] for kind, name in ignored.ignored(root) if kind == "measure"}
 
 
 def takes_the_gpu_alone(command, root):
@@ -120,7 +112,7 @@ def runs_gate(command):
             if arg[0] in "<>" or re.match(r"\d?&?>", arg):
                 break
             words.append(arg)
-        if "--fmt" not in words and all(w.startswith("-") for w in words):
+        if "--fmt" not in words and all(w.startswith("-") and not w.startswith("--package=") for w in words):
             return True
     return False
 
@@ -199,6 +191,12 @@ def cloud(root, source):
         with open(path, "a", encoding="utf-8") as f:
             for key, value in env.items():
                 f.write(f"export {key}={shlex.quote(value)}\n")
+    # The gate's memory: what the project's other machines learned comes to this one's copy.
+    try:
+        subprocess.run([sys.executable, os.path.join(root, "tools", "memo.py"), "pull"], cwd=root,
+                       env={**os.environ, **env}, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
     provisioned = subprocess.run([script, "--check"]).returncode == 0
     if source != "startup" and provisioned:
         return CLOUD.format(warm="")
