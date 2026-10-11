@@ -7,6 +7,7 @@
 // is in the world (not render space), so a ringing step doesn't jump when the render origin
 // moves.
 
+use climber::sounds::{IMPACTS, WHOOSHES}
 use engine::place::{Map, Water}
 use engine::plant::{Wind, gust}
 use engine::sound::{Babble, Breath, Cue, Mixer, Palette, Surface, WATERS, mix, mixer}
@@ -132,6 +133,9 @@ pub const PALETTE: Palette = Palette {
         // Wading: water round the legs, low and swirling.
         Babble { lo_hz: 250.0, hi_hz: 2200.0, level: 0.12, rate: 2.5, depth: 0.6 },
     ],
+    // The fight's (`climber::sounds`): its blows and its blade's swings.
+    impacts: IMPACTS,
+    whooshes: WHOOSHES,
     wind: Breath { rush_hz: 300.0, rush: 0.1, leaves_hz: 4500.0, leaves: 0.035 },
     near: 2.0,
     gain: 2.5,

@@ -33,7 +33,7 @@ pub fn preview() -> Preview {
         lo,
         hi,
         st,
-        |land| history::past(m, land),
+        history::past,
     )
     let streams = h.streams.clone()
     let o = obstacles_of(h.trees, species::habits(), h.streams, st, stones::walls(m), lo, hi)

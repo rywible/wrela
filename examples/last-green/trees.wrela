@@ -170,6 +170,30 @@ fn broadleaf(
     // and gaps of sky between the masses; each branch from a point along its scaffold. A
     // sapling's round its trunk's top. (Pass 1 of M6's lookdev: clumps spread along each
     // scaffold, each its own small lump of light, read as confetti, not as masses.)
+    crown_on(mut p, s, tips, feet, tall, crown_y, lean, top, w, clump, count, limbs, girth)
+    p
+}
+
+/// A broad-leaved crown on its limbs: a mass round each of `tips` (each grown from its foot in
+/// `feet`) and one at the tree's own top, `count` clumps `clump` across in all, `limbs` of them
+/// with a branch of their own; a sapling's (no tips) round its trunk's top. (Split from
+/// `broadleaf` so that each species grows its own trunk and limbs, and the crowns item owns this.)
+fn crown_on(
+    p: mut Plant,
+    s: u32,
+    tips: Vec<vec3>,
+    feet: Vec<vec3>,
+    tall: f32,
+    crown_y: f32,
+    lean: vec3,
+    top: vec3,
+    w: f32,
+    clump: f32,
+    count: u32,
+    limbs: u32,
+    girth: f32,
+) {
+    let scaffolds = tips.len()
     let half = (tall - crown_y) * 0.5
     let mid = vec3(0.0, crown_y + half, 0.0) + lean * 1.3
     if scaffolds > 0 {
@@ -223,7 +247,6 @@ fn broadleaf(
             )
         }
     }
-    p
 }
 
 /// A broad-leaved crown's mass: its core's radius against the kind's clump, and how softly its
@@ -827,10 +850,10 @@ fn lowest(p: Plant) -> f32 {
 }
 
 /// Each kind's lowest branch (`lowest`), as it's built (the great oak's isn't needed: it's kept).
-pub const LOWEST: [f32; 24] = lowest_of_kinds()
+pub const LOWEST: [f32; KINDS] = lowest_of_kinds()
 
-fn lowest_of_kinds() -> [f32; 24] {
-    var out = [0.0; 24]
+fn lowest_of_kinds() -> [f32; KINDS] {
+    var out = [0.0; KINDS]
     for k in 1..KINDS {
         out[k] = lowest(kind_plant(k))
     }
@@ -843,10 +866,10 @@ pub fn lowest_placed(k: u32, tall: f32, fork: f32) -> f32 {
 }
 
 /// Each kind's trunk (its first limb), as it's built (the great oak's isn't needed: it's kept).
-const TRUNKS: [Tube<4>; 24] = trunks_of_kinds()
+const TRUNKS: [Tube<4>; KINDS] = trunks_of_kinds()
 
-fn trunks_of_kinds() -> [Tube<4>; 24] {
-    var out = [Tube { points: [vec3(0.0); 4], radii: [0.0; 4] }; 24]
+fn trunks_of_kinds() -> [Tube<4>; KINDS] {
+    var out = [Tube { points: [vec3(0.0); 4], radii: [0.0; 4] }; KINDS]
     for k in 1..KINDS {
         let p = kind_plant(k)
         if p.limbs.len() > 0 {
@@ -879,12 +902,12 @@ pub fn trunk_at(k: u32, tall: f32, h: f32, fork: f32) -> f32 {
 /// and the lowest middle less half a clump; and its top, the highest middle and half a clump (a
 /// clump's edge is leaves with gaps between, which the eye sees through: calibrated against the
 /// renderer's depth, #55 AC3).
-const CROWN_R: [f32; 24] = crowns_of_kinds(0)
-const CROWN_BASE: [f32; 24] = crowns_of_kinds(1)
-const CROWN_TOP: [f32; 24] = crowns_of_kinds(2)
+const CROWN_R: [f32; KINDS] = crowns_of_kinds(0)
+const CROWN_BASE: [f32; KINDS] = crowns_of_kinds(1)
+const CROWN_TOP: [f32; KINDS] = crowns_of_kinds(2)
 
-fn crowns_of_kinds(which: u32) -> [f32; 24] {
-    var out = [0.0; 24]
+fn crowns_of_kinds(which: u32) -> [f32; KINDS] {
+    var out = [0.0; KINDS]
     for k in 0..KINDS {
         let p = kind_plant(k)
         var reach = 0.0
@@ -965,10 +988,10 @@ pub fn drawn_crowns(trees: [Tree]) -> Vec<Drawn> {
 
 /// Where each kind's trunk first forks, as it's built (m): its lowest limb's foot (its first
 /// limb is its trunk); 0 for a kind with no limbs.
-const FORK_Y: [f32; 24] = forks_of_kinds()
+const FORK_Y: [f32; KINDS] = forks_of_kinds()
 
-fn forks_of_kinds() -> [f32; 24] {
-    var out = [0.0; 24]
+fn forks_of_kinds() -> [f32; KINDS] {
+    var out = [0.0; KINDS]
     for k in 1..KINDS {
         let p = kind_plant(k)
         for i in 1..p.limbs.len() {
@@ -1245,7 +1268,7 @@ fn snag_kind(t: Tree) -> u32 {
 /// light its crown had), or young; and where browsing keeps its branches above a line (its
 /// `lift`), the forest's form when the open one's would come below it.
 pub fn drawn_kind(t: Tree) -> u32 {
-    let k = living_kind(t)
+    let k = crowded_form(t, living_kind(t))
     if t.lift <= 0.0 || lowest_placed(k, t.tall, t.fork) >= t.lift {
         k
     } else if k == OAK_OPEN {
@@ -1258,6 +1281,25 @@ pub fn drawn_kind(t: Tree) -> u32 {
         PINE_FOREST
     } else {
         k
+    }
+}
+
+/// An open-grown kind drawn in its forest form where its neighbours crowd it (its crown is drawn
+/// narrower than its kind's: `crown_wide`): a canopy tree whose crown top reaches the light is
+/// still a forest tree below it, with no wide, low crown and no limbs at the eye's height (the
+/// shots item's exploration check: open forms in closed woods closed the views, dead 27% of the
+/// floor and 53% of the beech wood). Where browsing keeps a line (its `lift`: the wood pasture,
+/// the edge), an open tree keeps its open form: the pasture's spreading oaks are its subject.
+pub fn crowded_form(t: Tree, k: u32) -> u32 {
+    let open = k == OAK_OPEN || k == BEECH_OPEN || k == BIRCH_OPEN
+    if !open || t.lift > 0.0 || crown_wide(t, k, drawn_tall(k, t.tall)) >= 1.0 {
+        k
+    } else if k == OAK_OPEN {
+        OAK_FOREST
+    } else if k == BEECH_OPEN {
+        BEECH_FOREST
+    } else {
+        BIRCH_FOREST
     }
 }
 
@@ -1471,10 +1513,22 @@ pub fn occluders(
         let plant = plants[p.kind]
         for i in 0..plant.clumps.len() {
             let c = plant.clumps[i]
-            let w = at.place(c.centre)
-            out.push(
-                engine::probes::Occluder { a: w, radius: c.radius * at.scale, b: w, solid: 0.0 },
-            )
+            // A cushion (`Clump::squash`) as two capsules crossed in its plane, as tall as it.
+            let r = c.radius * c.squash
+            let reach = c.radius - r
+            for side in [vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0)] {
+                out.push(
+                    engine::probes::Occluder {
+                        a: at.place(c.centre - side * reach),
+                        radius: r * at.scale,
+                        b: at.place(c.centre + side * reach),
+                        solid: 0.0,
+                    },
+                )
+                if reach <= 0.0 {
+                    break
+                }
+            }
         }
         for i in 0..plant.limbs.len() {
             let l = plant.limbs[i]

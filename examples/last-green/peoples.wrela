@@ -1,0 +1,538 @@
+// The elves of the Last Green, before its history (docs/vision.md, "The lore"): two tribes who
+// shaped the wood they lived in, until they wiped each other out. They come to the best places to
+// live, till the good soil nearest, graze the rest as wood pasture under the old trees they keep,
+// cut wood beyond, and wear ways between their settlements. They grow while the land feeds them;
+// their fields wear out and they take new ones; when a settlement's land is full, some of its
+// people found another at the next best place, and stay of its tribe. Then the plague: the land
+// keeps what each place was last used for (`left_by`), and the floor's history grows from it.
+//
+// The ideas are human geography's: a settlement's site by its water, its soil and its shelter;
+// its land in rings by walking cost (von Thünen): fields nearest, then pasture, then wood; a
+// people who outgrow their land move on to new land (budding). The numbers are the elves'
+// (`Culture`). On a coarse grid (`CELL`) over the history's land. The rules are this floor's: a
+// piece goes to the engine when a second world needs it.
+
+use engine::grow::{Grid, Habit, Heap, Land, Left, NEVER, NONE, Start, Tree, grown}
+use species::Species
+use std::string::String
+use engine::noise::{hash2u, rand}
+use engine::soil::SoilKind
+
+/// The peoples' grid's cell (m).
+pub const CELL: f32 = 8.0
+
+/// A people's ways of living: what one person needs of field (m² at full fertility), pasture
+/// and wood (m²); the share their number grows by in a decade when they are fed, and shrinks by
+/// when they are not; how many found a new settlement, and how many a settlement must be before
+/// it sends them; how far apart their settlements stand, and the two tribes' first (m); how far
+/// they walk to their fields, their pasture and their wood (in walking cost: m on the level); the
+/// share of a field's fertility a decade's cropping takes, and a decade's rest gives back; and
+/// the pasture for each old tree they keep standing in it (m²). The defaults are a farming
+/// people's; the elves' own ways wait on the owner's lore.
+pub struct Culture: Copy {
+    pub field: f32 = 2500.0,
+    pub pasture: f32 = 3000.0,
+    pub wood: f32 = 2000.0,
+    pub growth: f32 = 0.06,
+    pub decline: f32 = 0.08,
+    pub founders: f32 = 20.0,
+    pub buds_at: f32 = 60.0,
+    pub apart: f32 = 450.0,
+    pub tribes_apart: f32 = 800.0,
+    pub field_reach: f32 = 600.0,
+    pub pasture_reach: f32 = 900.0,
+    pub reach: f32 = 1200.0,
+    pub wears: f32 = 0.005,
+    pub rests: f32 = 0.02,
+    pub veteran: f32 = 900.0,
+}
+
+/// What a place was used for.
+pub enum Use: Copy + Eq + Fieldless {
+    Wild,
+    Field,
+    Pasture,
+    Wood,
+    Settled,
+}
+
+/// A settlement: its cell, the year it was founded, how many live there (and the most who ever
+/// did), the settlement whose people founded it (`NONE` for a tribe's first), and its tribe.
+pub struct Settlement: Copy {
+    pub at: u32,
+    pub founded: i32,
+    pub people: f32,
+    pub most: f32,
+    pub from: u32,
+    pub tribe: u32,
+}
+
+/// What the people left: their grid; each cell's last use, the first and last years it had one
+/// (`NEVER` for none), and how many decades; how worn each cell is by their ways (decades walked); and
+/// their settlements.
+pub struct Peopled: Clone {
+    pub grid: Grid,
+    pub last: Vec<u8>,
+    pub first_year: Vec<i32>,
+    pub last_year: Vec<i32>,
+    pub decades: Vec<u32>,
+    pub worn: Vec<f32>,
+    pub settlements: Vec<Settlement>,
+}
+
+/// The lay of the land as the people see it, a cell of their grid each: its height, how well crops grow in its soil now
+/// and at its best, whether they can live or farm there, its walking cost (m on the level for a
+/// cell's side), and how good a place to live it is.
+struct Lay: Clone {
+    height: Vec<f32>,
+    fertile: Vec<f32>,
+    best: Vec<f32>,
+    farm: Vec<bool>,
+    graze: Vec<bool>,
+    cost: Vec<f32>,
+    site: Vec<f32>,
+}
+
+const STEP: i32 = 10
+
+/// A people of `culture` on `land` from year `from`, who leave in year `to`.
+pub fn settle(land: Land, culture: Culture, from: i32, to: i32) -> Peopled {
+    let g = Grid::over(
+        land.grid.lo,
+        land.grid.lo + vec2(f32(land.grid.nx), f32(land.grid.nz)) * land.grid.cell,
+        CELL,
+    )
+    var gr = ground_of(land, g)
+    let nn = g.cells()
+    var out = Peopled {
+        grid: g,
+        last: Vec::filled(nn, u8(u32(Use::Wild))),
+        first_year: Vec::filled(nn, NEVER),
+        last_year: Vec::filled(nn, NEVER),
+        decades: Vec::filled(nn, 0),
+        worn: Vec::filled(nn, 0.0),
+        settlements: Vec::new(),
+    }
+    // Each settlement's walking cost to every cell, as it was worked out when it was founded,
+    // and the cell each cell is reached from.
+    var costs: Vec<Vec<f32>> = Vec::new()
+    var ways: Vec<Vec<u32>> = Vec::new()
+    // The two tribes come to the best place, and the best far enough from it, however poor.
+    let first = best_site(gr, g, out.settlements, culture.apart, 0.0)
+    if first == NONE {
+        return out
+    }
+    found(mut out, mut costs, mut ways, gr, g, first, from, culture.founders, NONE, 0)
+    let best_score = gr.site[first]
+    let second = best_site(gr, g, out.settlements, culture.tribes_apart, 0.0)
+    if second != NONE {
+        found(mut out, mut costs, mut ways, gr, g, second, from, culture.founders, NONE, 1)
+    }
+    var owner: Vec<u32> = Vec::filled(nn, NONE)
+    var year = from
+    while year < to {
+        let uses = claim(gr, g, out.settlements, costs, culture, mut owner)
+        // The decade's harvest, and each settlement's people.
+        var fed: Vec<f32> = Vec::filled(out.settlements.len(), 0.0)
+        for c in 0..nn {
+            let s = owner[c]
+            if s == NONE {
+                continue
+            }
+            if uses[c] == u8(u32(Use::Field)) {
+                fed[s] += gr.fertile[c] * g.cell * g.cell
+            }
+            if out.first_year[c] == NEVER {
+                out.first_year[c] = year
+            }
+            out.last_year[c] = year + STEP
+            out.last[c] = uses[c]
+            out.decades[c] += 1
+        }
+        for c in 0..nn {
+            // Cropping wears a field's soil; rest gives it back.
+            if owner[c] != NONE && uses[c] == u8(u32(Use::Field)) {
+                gr.fertile[c] *= 1.0 - culture.wears
+            } else {
+                gr.fertile[c] = min(gr.best[c], gr.fertile[c] + culture.rests * gr.best[c])
+            }
+        }
+        let n = out.settlements.len()
+        for s in 0..n {
+            var t = out.settlements[s]
+            if t.people <= 0.0 {
+                continue
+            }
+            let food = fed[s] / (t.people * culture.field)
+            if food >= 1.0 {
+                t.people *= 1.0 + culture.growth
+            } else {
+                t.people *= 1.0 - culture.decline * (1.0 - food)
+            }
+            t.most = max(t.most, t.people)
+            // Its land is full: some of its people go to found another.
+            if food < 1.0 && t.people >= culture.buds_at {
+                let site = best_site(gr, g, out.settlements, culture.apart, 0.35 * best_score)
+                if site != NONE {
+                    t.people -= culture.founders
+                    out.settlements[s] = t
+                    found(
+                        mut out,
+                        mut costs,
+                        mut ways,
+                        gr,
+                        g,
+                        site,
+                        year,
+                        culture.founders,
+                        s,
+                        t.tribe,
+                    )
+                    continue
+                }
+            }
+            out.settlements[s] = t
+        }
+        // Each settlement's way to the one its people came from is walked another decade.
+        for s in 0..out.settlements.len() {
+            let t = out.settlements[s]
+            if t.from == NONE || t.people <= 0.0 {
+                continue
+            }
+            var c = t.at
+            borrow back = ways[t.from]
+            var k = 0
+            while c != NONE && c != out.settlements[t.from].at && k < nn {
+                out.worn[c] += 1.0
+                c = back[c]
+                k += 1
+            }
+        }
+        year += STEP
+    }
+    out
+}
+
+/// A settlement of `people` of `tribe` founded at cell `at` in `year` by the people of `from`.
+fn found(
+    out: mut Peopled,
+    costs: mut Vec<Vec<f32>>,
+    ways: mut Vec<Vec<u32>>,
+    gr: Lay,
+    g: Grid,
+    at: u32,
+    year: i32,
+    people: f32,
+    from: u32,
+    tribe: u32,
+) {
+    out.settlements.push(Settlement { at, founded: year, people, most: people, from, tribe })
+    let (cost, back) = walk_from(gr, g, at)
+    costs.push(take cost)
+    ways.push(take back)
+}
+
+/// The best place to found a settlement, scoring at least `least`, no nearer than `apart` (m) to
+/// a settlement already there; `NONE` if there's none.
+fn best_site(gr: Lay, g: Grid, ss: [Settlement], apart: f32, least: f32) -> u32 {
+    var best = NONE
+    var score = max(least, 1.0e-6)
+    for c in 0..g.cells() {
+        if gr.site[c] <= score {
+            continue
+        }
+        var free = true
+        for s in ss {
+            if length(g.centre(c) - g.centre(s.at)) < apart {
+                free = false
+                break
+            }
+        }
+        if free {
+            best = c
+            score = gr.site[c]
+        }
+    }
+    best
+}
+
+/// Each cell's use this decade and which settlement holds it (`owner`): the settlements take
+/// land in rings by walking cost, fields on the best soil nearest, then pasture, then wood, the
+/// biggest first; a cell a settlement held last decade is worth more to it (they keep their
+/// fields), and the settlement itself takes the cells it stands on.
+fn claim(
+    gr: Lay,
+    g: Grid,
+    ss: [Settlement],
+    costs: [Vec<f32>],
+    culture: Culture,
+    owner: mut Vec<u32>,
+) -> Vec<u8> {
+    let nn = g.cells()
+    let area = g.cell * g.cell
+    var uses: Vec<u8> = Vec::filled(nn, u8(u32(Use::Wild)))
+    var held: Vec<u32> = Vec::filled(nn, NONE)
+    // The settlements, biggest first.
+    var order: Vec<u32> = Vec::from_fn(ss.len(), |i| i)
+    order.sort_by(|a, b| ss[a].people > ss[b].people)
+    for s in order {
+        let t = ss[s]
+        if t.people <= 0.0 {
+            continue
+        }
+        let r = sqrt(t.people * 120.0 / 3.14159) + 0.5 * g.cell
+        let c0 = g.centre(t.at)
+        let span = i32(ceil(r / g.cell))
+        let ij = g.ij(c0)
+        for dj in -span..(span + 1) {
+            for di in -span..(span + 1) {
+                let c = g.index(ij.x + di, ij.y + dj)
+                if held[c] == NONE && length(g.centre(c) - c0) <= r {
+                    held[c] = s
+                    uses[c] = u8(u32(Use::Settled))
+                }
+            }
+        }
+    }
+    for kind in [Use::Field, Use::Pasture, Use::Wood] {
+        let reach = if kind == Use::Field { culture.field_reach } else if kind == Use::Pasture {
+            culture.pasture_reach
+        } else {
+            culture.reach
+        }
+        // Every settlement's bid for every free cell it could use, worth more the better its
+        // soil (for a field), the nearer, and if it held it last decade; the best bids win, a
+        // cell to one settlement, until each has what it needs.
+        var bids: Vec<vec2u> = Vec::new()
+        var worth: Vec<f32> = Vec::new()
+        var need: Vec<f32> = Vec::filled(ss.len(), 0.0)
+        for s in order {
+            let t = ss[s]
+            if t.people <= 0.0 {
+                continue
+            }
+            need[s] = t.people * (if kind == Use::Field {
+                culture.field
+            } else if kind == Use::Pasture {
+                culture.pasture
+            } else {
+                culture.wood
+            })
+            borrow cost = costs[s]
+            for c in 0..nn {
+                if held[c] != NONE || cost[c] > reach {
+                    continue
+                }
+                if !(if kind == Use::Field { gr.farm[c] } else { gr.graze[c] }) {
+                    continue
+                }
+                let kept = if owner[c] == s { 1.5 } else { 1.0 }
+                let soil = if kind == Use::Field { gr.fertile[c] } else { 1.0 }
+                bids.push(vec2u(s, c))
+                worth.push(kept * soil / (1.0 + cost[c] / 300.0))
+            }
+        }
+        var idx: Vec<u32> = Vec::from_fn(bids.len(), |i| i)
+        idx.sort_by(|a, b| worth[a] > worth[b])
+        for i in idx {
+            let s = bids[i].x
+            let c = bids[i].y
+            if held[c] != NONE || need[s] <= 0.0 {
+                continue
+            }
+            held[c] = s
+            uses[c] = u8(u32(kind))
+            need[s] -= if kind == Use::Field { gr.fertile[c] * area } else { area }
+        }
+    }
+    for c in 0..nn {
+        owner[c] = held[c]
+    }
+    uses
+}
+
+/// The walking cost from cell `at` to every cell (m on the level), and the cell each is reached
+/// from (`NONE` for `at` and the unreached).
+fn walk_from(gr: Lay, g: Grid, at: u32) -> (Vec<f32>, Vec<u32>) {
+    let nn = g.cells()
+    var cost: Vec<f32> = Vec::filled(nn, 1.0e9)
+    var back: Vec<u32> = Vec::filled(nn, NONE)
+    var done: Vec<bool> = Vec::filled(nn, value: false)
+    var heap = Heap { items: Vec::new() }
+    cost[at] = 0.0
+    heap.push(0.0, at)
+    while !heap.items.is_empty() {
+        let top = heap.pop()
+        let c = top.y
+        if done[c] {
+            continue
+        }
+        done[c] = true
+        let i = i32(c % g.nx)
+        let j = i32(c / g.nx)
+        for k in 0..8 {
+            let n = vec2i(i, j) + AROUND[k]
+            if n.x < 0 || n.y < 0 || n.x >= i32(g.nx) || n.y >= i32(g.nz) {
+                continue
+            }
+            let q = u32(n.y) * g.nx + u32(n.x)
+            if done[q] {
+                continue
+            }
+            let step = length(vec2(AROUND[k])) * 0.5 * (gr.cost[c] + gr.cost[q])
+            let t = cost[c] + step
+            if t < cost[q] {
+                cost[q] = t
+                back[q] = c
+                heap.push(t, q)
+            }
+        }
+    }
+    (cost, back)
+}
+
+/// A cell's eight neighbours.
+const AROUND = [
+    vec2i(-1, -1),
+    vec2i(0, -1),
+    vec2i(1, -1),
+    vec2i(-1, 0),
+    vec2i(1, 0),
+    vec2i(-1, 1),
+    vec2i(0, 1),
+    vec2i(1, 1),
+]
+
+/// The people's view of `land` on grid `g`: each cell's soil and water as the land's cell at its
+/// middle has them; its slope; its walking cost (the level 1 a metre, steeper dearer, open water
+/// dearest: a ford); and how good a place to live it is: dry, gently sloped and sunny (facing
+/// south, +z), with water within a few hundred metres and good soil round it.
+fn ground_of(land: Land, g: Grid) -> Lay {
+    let lg = land.grid
+    let nn = g.cells()
+    var height: Vec<f32> = Vec::with_capacity(nn)
+    var fertile: Vec<f32> = Vec::with_capacity(nn)
+    var farm: Vec<bool> = Vec::with_capacity(nn)
+    var graze: Vec<bool> = Vec::with_capacity(nn)
+    var wet: Vec<bool> = Vec::with_capacity(nn)
+    var water: Vec<f32> = Vec::with_capacity(nn)
+    for c in 0..nn {
+        let p = g.centre(c)
+        let l = lg.cell_at(p)
+        let s = land.soil[l]
+        height.push(lg.sample(land.heights, p))
+        let open = land.water[l]
+        let livable = land.habitable[l] && !open && s.kind != SoilKind::Rock
+        let sodden = s.kind == SoilKind::Gley || s.kind == SoilKind::Peat
+        fertile.push(if livable { s.fertile } else { 0.0 })
+        farm.push(livable && !sodden && s.fertile > 0.3)
+        graze.push(livable)
+        wet.push(sodden)
+        water.push(if open { 1.0 } else { 0.0 })
+    }
+    var slope: Vec<f32> = Vec::with_capacity(nn)
+    var south: Vec<f32> = Vec::with_capacity(nn)
+    var cost: Vec<f32> = Vec::with_capacity(nn)
+    for c in 0..nn {
+        let i = i32(c % g.nx)
+        let j = i32(c / g.nx)
+        let dx = (height[g.index(i + 1, j)] - height[g.index(i - 1, j)]) / (2.0 * g.cell)
+        let dz = (height[g.index(i, j + 1)] - height[g.index(i, j - 1)]) / (2.0 * g.cell)
+        let s = length(vec2(dx, dz))
+        slope.push(s)
+        // Facing south, its height falls toward +z.
+        south.push(clamp(-dz * 5.0, -1.0, 1.0))
+        let ford = if water[c] > 0.0 { 12.0 } else { 0.0 }
+        cost.push(g.cell * (1.0 + 10.0 * s * s + ford + if wet[c] { 1.0 } else { 0.0 }))
+    }
+    // Water near: the open water blurred far, read as "is there water within ~250 m".
+    let near_water = g.blur(water, i32(250.0 / g.cell))
+    // Good soil round a place, within ~500 m.
+    let near_soil = g.blur(fertile, i32(500.0 / g.cell))
+    var site: Vec<f32> = Vec::with_capacity(nn)
+    for c in 0..nn {
+        let ok = graze[c] && !wet[c]
+        let watered = smoothstep(0.0, 0.01, near_water[c])
+        let level = 1.0 - smoothstep(0.06, 0.18, slope[c])
+        let sun = 1.0 + 0.25 * south[c]
+        site.push(if ok { near_soil[c] * watered * level * sun } else { 0.0 })
+    }
+    Lay { height, fertile: fertile.clone(), best: fertile, farm, graze, cost, site }
+}
+
+/// How long a place the elves left before the plague stays what they made it (years): after
+/// that it has gone back to the wood.
+pub const RECLAIMED: i32 = 60
+
+/// What the elves left `land` as when the plague took them in `year`, for the history to grow
+/// from: each cell as its last use left it, if they used it in the `RECLAIMED` years before
+/// (fields tilled, pasture grazed, wood cut, settlements built); and in the pasture, the old
+/// trees they kept, open-grown oak (beech where the soil is deep and dry), one in each
+/// `culture.veteran` of it, but where the history keeps the ground open.
+pub fn left_by(p: Peopled, land: Land, habits: [Habit], culture: Culture, year: i32) -> Start {
+    let g = land.grid
+    var left: Vec<u8> = Vec::filled(g.cells(), u8(u32(Left::Wild)))
+    var standing: Vec<Tree> = Vec::new()
+    let chance = g.cell * g.cell / culture.veteran
+    for c in 0..g.cells() {
+        let at = g.centre(c)
+        if !p.grid.holds(at) {
+            continue
+        }
+        let pc = p.grid.cell_at(at)
+        if p.last_year[pc] == NEVER || p.last_year[pc] < year - RECLAIMED {
+            continue
+        }
+        let used = Use::from_u32(u32(p.last[pc])).unwrap()
+        let was = match used {
+            Use::Wild => Left::Wild,
+            Use::Field => Left::Tilled,
+            Use::Pasture => Left::Grazed,
+            Use::Wood => Left::Cut,
+            Use::Settled => Left::Built,
+        }
+        left[c] = u8(u32(was))
+        // No old tree where the history keeps the ground open: the herd's lawns, what people
+        // keep clear, and under a pin's cap.
+        if used != Use::Pasture || !land.habitable[c] || land.lawn[c] || land.kept[c] != NONE {
+            continue
+        }
+        let ij = g.ij(at)
+        let n = hash2u(ij.x, ij.y, 7121)
+        if rand(n, 0) >= chance {
+            continue
+        }
+        let s = land.soil[c]
+        let deep = s.depth > 1.0 && s.kind != SoilKind::Gley && s.kind != SoilKind::Peat
+        let kind = u32(if deep && rand(n, 1) < 0.5 { Species::Beech } else { Species::Oak })
+        let jitter = vec2(rand(n, 2), rand(n, 3)) - vec2(0.5)
+        let born = year - 80 - i32(170.0 * rand(n, 4))
+        let t = grown(at + jitter * g.cell, kind, born, year, n, habits[kind], open: true)
+        if t.tall < land.cap[c] {
+            standing.push(t)
+        }
+    }
+    Start { left, standing }
+}
+
+/// One line of what the elves left (`left_by`'s `s`, on `land`'s grid): their settlements by
+/// tribe, the hectares each use left, and the old trees standing.
+pub fn told(p: Peopled, s: Start, land: Land) -> String {
+    var tribes = [0, 0]
+    for t in p.settlements {
+        tribes[min(t.tribe, 1)] += 1
+    }
+    var area: Vec<f32> = Vec::filled(5, 0.0)
+    let cell = land.grid.cell * land.grid.cell / 10000.0
+    for b in s.left {
+        area[u32(b)] += cell
+    }
+    let a = tribes[0]
+    let b = tribes[1]
+    let tilled = area[u32(Left::Tilled)]
+    let grazed = area[u32(Left::Grazed)]
+    let cut = area[u32(Left::Cut)]
+    let built = area[u32(Left::Built)]
+    let old = s.standing.len()
+    f"the elves left: {a} and {b} settlements of the two tribes; tilled {tilled} ha, grazed {grazed} ha, cut {cut} ha, built {built} ha; {old} old trees"
+}
