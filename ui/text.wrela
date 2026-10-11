@@ -173,15 +173,19 @@ impl Font {
     /// The byte offset in `text` nearest `x` pixels from its start, at `size`: where a click
     /// puts a text cursor.
     pub fn offset_at(self, text: str, size: f32, x: f32) -> u32 {
-        var at = text.len()
-        let _ = self.walk(text, size, 0.0, |i, g, pen| {
-            let w = self.glyphs[g].advance * size
-            let past = x < pen + 0.5 * w
-            if past {
+        var at = 0
+        var distance = abs(x)
+        let end = self.walk(text, size, 0.0, |i, _g, pen| {
+            let d = abs(x - pen)
+            if d <= distance {
+                distance = d
                 at = i
             }
-            !past
+            true
         })
+        if abs(x - end) <= distance {
+            at = text.len()
+        }
         at
     }
 
@@ -195,42 +199,8 @@ impl Font {
 /// The code point at byte `i` of UTF-8 `s`, and where the next one starts. A byte that doesn't
 /// start a valid sequence is U+FFFD, one byte long.
 pub fn decode(s: str, i: u32) -> (u32, u32) {
-    let left = s.len() - i
-    let byte = |k: u32| if k < left { u32(s.byte(i + k)) } else { 0 }
-    let (cp, len) = decode_prefix(byte(0), byte(1), byte(2), byte(3), left)
+    let Some((cp, len)) = s.char_at(i) else { return (65533, i + 1) }
     (cp, i + len)
-}
-
-/// The scalar at the start of `left` bytes whose first four are `b0` through `b3`, and its byte
-/// length. An invalid leading byte is U+FFFD, one byte long.
-fn decode_prefix(b0: u32, b1: u32, b2: u32, b3: u32, left: u32) -> (u32, u32) {
-    if b0 < 128 {
-        return (b0, 1)
-    }
-    let cont = |b: u32| (b & 192) == 128
-    if b0 >= 194 && b0 <= 223 && left >= 2 && cont(b1) {
-        return (((b0 & 31) << 6) | (b1 & 63), 2)
-    }
-    if b0 >= 224 &&
-        b0 <= 239 &&
-        left >= 3 &&
-        cont(b1) &&
-        cont(b2) &&
-        (b0 != 224 || b1 >= 160) &&
-        (b0 != 237 || b1 <= 159) {
-        return (((b0 & 15) << 12) | ((b1 & 63) << 6) | (b2 & 63), 3)
-    }
-    if b0 >= 240 &&
-        b0 <= 244 &&
-        left >= 4 &&
-        cont(b1) &&
-        cont(b2) &&
-        cont(b3) &&
-        (b0 != 240 || b1 >= 144) &&
-        (b0 != 244 || b1 <= 143) {
-        return (((b0 & 7) << 18) | ((b1 & 63) << 12) | ((b2 & 63) << 6) | (b3 & 63), 4)
-    }
-    (65533, 1)
 }
 
 /// Where the character before byte `i` of UTF-8 `s` starts.
@@ -247,48 +217,30 @@ pub fn previous(s: str, i: u32) -> u32 {
 
 // ---- tests ------------------------------------------------------------------------------------
 
-/// Invalid UTF-8 lead sequences are each one replacement character, and valid scalar boundaries
-/// still decode: no overlong forms, surrogates or values past U+10FFFF get through.
+/// A byte that doesn't start a character is one replacement character (std's `char_at` tests
+/// UTF-8's every invalid form); a character decodes whole.
 @test
-fn decode_rejects_every_non_scalar_utf8_form() {
-    let rejects = |b0: u32, b1: u32, b2: u32, b3: u32, n: u32| {
-        let (cp, len) = decode_prefix(b0, b1, b2, b3, n)
-        assert(cp == 65533 && len == 1, f"accepted {b0}, {b1}, {b2}, {b3} ({n} bytes)")
-    }
-    // Two-, three- and four-byte overlong forms, at each edge of the excluded range.
-    rejects(192, 128, 0, 0, 2)
-    rejects(193, 191, 0, 0, 2)
-    rejects(224, 128, 128, 0, 3)
-    rejects(224, 159, 191, 0, 3)
-    rejects(240, 128, 128, 128, 4)
-    rejects(240, 143, 191, 191, 4)
-    // UTF-16's surrogate range, U+D800 through U+DFFF.
-    rejects(237, 160, 128, 0, 3)
-    rejects(237, 191, 191, 0, 3)
-    // U+110000 and higher, including lead bytes beyond UTF-8's last valid one.
-    rejects(244, 144, 128, 128, 4)
-    rejects(244, 191, 191, 191, 4)
-    rejects(245, 128, 128, 128, 4)
-    rejects(247, 191, 191, 191, 4)
-    rejects(248, 136, 128, 128, 5)
-    rejects(255, 0, 0, 0, 1)
-    // Stray continuations, missing continuations and a non-continuation inside a sequence.
-    rejects(128, 0, 0, 0, 1)
-    rejects(191, 0, 0, 0, 1)
-    rejects(194, 0, 0, 0, 1)
-    rejects(194, 65, 0, 0, 2)
-    rejects(224, 160, 0, 0, 2)
-    rejects(240, 144, 128, 0, 3)
+fn decode_replaces_what_isnt_a_character() {
+    assert(decode("a狼", 1) == (29436, 4))
+    assert(decode("a狼", 2) == (65533, 3))
+}
 
-    // The valid values immediately beside those exclusions still decode.
-    let accepts = |b0: u32, b1: u32, b2: u32, b3: u32, n: u32, cp: u32| {
-        assert(decode_prefix(b0, b1, b2, b3, n) == (cp, n))
+@test
+fn offset_uses_kerned_caret_positions() {
+    let font = Font::of(Face::Sans)
+    // The Rust performance harness copies this source with deliberately empty baked fonts.
+    // The real UI package has glyphs and exercises the regression below.
+    if font.count() == 0 {
+        return
     }
-    accepts(194, 128, 0, 0, 2, 128)
-    accepts(224, 160, 128, 0, 3, 2048)
-    accepts(237, 159, 191, 0, 3, 55295)
-    accepts(240, 144, 128, 128, 4, 65536)
-    accepts(244, 143, 191, 191, 4, 1114111)
+    let a = font.glyph_index(65)
+    let v = font.glyph_index(86)
+    let advance = font.glyph(a).advance
+    let next = advance + font.kern(a, v)
+    assert(next < advance)
+    let x = 0.25 * (next + advance)
+    assert(x > 0.5 * next && x < 0.5 * advance)
+    assert(font.offset_at("AV", 1.0, x) == 1)
 }
 
 /// The two fonts, and where their glyphs are in one atlas: `width` × `height` texels.

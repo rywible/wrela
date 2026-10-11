@@ -8,7 +8,7 @@ use climber::moves::Act
 use climber::sounds::{Heard, IMPACTS, WHOOSHES, cues, heard}
 use engine::present::Snapshots
 use engine::run::run
-use engine::sound::{Babble, Breath, Cue, Palette, Surface, mixer}
+use engine::sound::{BRUSHES, Babble, Breath, Cue, Palette, Surface, mixer}
 use std::audio::{RingWriter, play}
 use std::gpu::{ClipPosition, VertexIndex, begin_screen_pass, draw}
 
@@ -22,7 +22,7 @@ pub struct Arena {
 const PALETTE = Palette {
     surfaces: [Surface {}; 8],
     waters: [Babble {}; 4],
-    brushes: [Babble {}; 2],
+    brushes: [Babble {}; BRUSHES],
     impacts: IMPACTS,
     whooshes: WHOOSHES,
     wind: Breath {},

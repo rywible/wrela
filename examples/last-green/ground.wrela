@@ -11,6 +11,55 @@ use std::field::smin
 
 /// The meadow's middle, the great tree's rise, and where the clearing's camera started (M5).
 pub const MEADOW = vec2(0.0, 30.0)
+
+/// The fight's ground in the ring's glade (route §9): its disc's middle (x, z) and radius (m),
+/// and the wolf's way out along the shore trail, from where it waits east past where the trail
+/// comes in, 10 m on (x, z, x, z): the fight is there when the player comes by the trail. The
+/// encounter's `DISC` and `WOLF_HOME` are the disc's middle and the way's start.
+pub const FIGHT = vec3(34.0, -471.0, 6.0)
+pub const FIGHT_WAY = vec4(37.0, -463.0, 62.0, -463.0)
+/// How trodden the fight's ground is (`covered`'s trails): its grass worn under the ankle, no
+/// bare earth.
+pub const FIGHT_WEAR: f32 = 0.45
+
+/// The floor's built stones' feet (`stones::stones`: x, z and radius), padded off the map, for
+/// the trails' wear to stop at (`unbuilt`).
+pub const STONE_FEET_N: u32 = 64
+pub const STONE_FEET: [vec3; STONE_FEET_N] = stone_feet()
+/// How far past a stone's foot its trails' wear comes back (m).
+pub const STONE_MARGIN: f32 = 0.5
+
+fn stone_feet() -> [vec3; STONE_FEET_N] {
+    var out = [vec3(1.0e9, 1.0e9, 0.0); STONE_FEET_N]
+    let all = stones::stones(map::map())
+    assert(all.len() <= STONE_FEET_N, f"{all.len()} stones, room for {STONE_FEET_N}")
+    for i in 0..all.len() {
+        out[i] = all[i]
+    }
+    out
+}
+
+/// How free of built stones `xz` is, 0 to 1: 0 on a stone's foot, 1 from `STONE_MARGIN` past it.
+pub fn unbuilt(xz: vec2) -> f32 {
+    var k = 1.0
+    for s in STONE_FEET {
+        k = min(k, smoothstep(s.z, s.z + STONE_MARGIN, length(xz - s.xy)))
+    }
+    k
+}
+
+/// How worn by the fight `xz` is, 0 to 1: the disc, and the wolf's way 3 m either side, with a
+/// ragged edge 2–3 m wide (worn ground, not a mown ring), as a sample `w` across sees it.
+pub fn fought(xz: vec2, w: f32) -> f32 {
+    let rag = 2.0 * (noise2_seen(xz * 0.4, w * 0.4) - 0.5)
+    let disc = smoothstep(FIGHT.z + 1.5, FIGHT.z - 1.0, length(xz - FIGHT.xy) + rag)
+    let (from, to) = (FIGHT_WAY.xy, FIGHT_WAY.zw)
+    let t = saturate(dot(xz - from, to - from) / dot(to - from, to - from))
+    let off = length(xz - mix(from, to, vec2(t)))
+    let way = smoothstep(4.0, 1.5, off + rag)
+    max(disc, way)
+}
+
 pub const KNOLL = vec2(7.0, 33.0)
 pub const STAND = vec2(-1.5, 0.0)
 
@@ -171,7 +220,8 @@ pub struct Ground: Copy + GpuData {
 
 /// The ground of the floor's map.
 pub fn ground() -> Ground {
-    Ground { land: map::land() }
+    let g = Ground { land: map::land() }
+    Ground { land: g.land.settled(|q| g.under_crags(q)) }
 }
 
 impl Ground {
@@ -198,26 +248,14 @@ impl Ground {
     /// The land's height at (x, z), before the mere's basin.
     pub fn natural(self, x: f32, z: f32) -> f32 {
         let p = vec2(x, z)
-        let r = length(p - MEADOW)
         let past = past_edge(p)
-        // The meadow's gentle swell, tilting down toward the edge.
-        var y = 0.9 * (fbm2(p * 0.035, 3) - 0.5) + 0.25 * (noise2(p * 0.21) - 0.5)
-        y -= 0.07 * clamp(dot(p - MEADOW, ACROSS), -40.0, 40.0)
-        // The forest floor rising round it, but not toward the gap: faded out where the camera
-        // started, where every direction meets.
-        let s = p - STAND
-        let a = atan2(s.x, s.y + 1.0e-4)
-        let within = smoothstep(GAP_FROM - 0.1, GAP_FROM + 0.1, a) *
-            smoothstep(GAP_TO + 0.1, GAP_TO - 0.1, a)
-        let open = within * smoothstep(2.0, 10.0, length(s))
-        y += 3.0 * smoothstep(18.0, 60.0, r) * (1.0 - open)
-        // The great tree's rise, and the rise the clearing's camera started on.
-        let k = p - KNOLL
-        y += 2.4 * exp(-dot(k, k) / 120.0)
-        y += 3.2 * exp(-dot(s, s) / 260.0)
-        // The map's shapes, faded out round the clearing, whose own layout holds there.
-        let shaped = smoothstep(70.0, 140.0, r)
-        y += shaped * self.land.height(p)
+        // The land's crags and ravines on the rest, each crag's tiers on its floor
+        // (`Land::settled`, from this same ground), so their tops are the planes its slabs are
+        // cut to.
+        let under = self.under_crags(p)
+        let shaped = smoothstep(70.0, 140.0, length(p - MEADOW))
+        let over = self.land.crags_over(p, under)
+        var y = under + shaped * (over.x - self.land.ravine(p))
         // Past the edge, the land falls to the valley, whose floor rolls: first a cliff of rock
         // (about a third of the fall, over its first 9 m, taller and lower along the edge), which
         // the stream falls over at the lip; then the rest of the way down, gently.
@@ -228,14 +266,17 @@ impl Ground {
             y -= cliff + (95.0 - scarp) * fall
             y += fall * 14.0 * (fbm2(p * 0.004, 4) - 0.5)
         }
-        // Rock's own relief (`rock_relief`) on the map's steep faces (the crags' cliffs, the
-        // ravine's walls), the plateau's scarp (once it's fallen, so its beds cut across
-        // it), and the crags' tops and talus (playing spike 17,
-        // the crag was a mound; pass 1, a dome).
+        // Rock's own relief (`rock_relief`) on the map's steep faces (the ravine's walls), the
+        // plateau's scarp (once it's fallen, so its beds cut across it), and the crags' talus
+        // (a crag's cliffs and top are its slabs': `Land::crag_beds`).
         let scarp = smoothstep(-1.0, 1.5, past) * (1.0 - smoothstep(8.0, 12.0, past))
         let face = max(shaped * self.land.faces(p), scarp)
-        // (Not on a ramp's scree, `crag_bare`'s 0.75: its boulders would bar the way up.)
-        let bare = shaped * smoothstep(0.76, 0.9, self.land.crag_rock(p)) * (1.0 - face)
+        // (Not on a ramp's scree, `crag_bare`'s 0.75: its boulders would bar the way up; nor
+        // under a slab, whose top they'd stand through.)
+        let bare = shaped *
+            smoothstep(0.76, 0.9, self.land.crag_rock(p)) *
+            (1.0 - over.y) *
+            (1.0 - face)
         if face > 0.0 || bare > 0.0 {
             y = rock_relief(p, y, face, bare)
         }
@@ -267,6 +308,29 @@ impl Ground {
             y += rise * smoothstep(1.0e-3, 2.0e-2, mountain)
         }
         y
+    }
+
+    /// The ground's height at `p` before the land's crags and ravines (`natural` adds them): the
+    /// meadow's swell, the forest floor round it, and the land's base (`Land::base`).
+    pub fn under_crags(self, p: vec2) -> f32 {
+        let r = length(p - MEADOW)
+        // The meadow's gentle swell, tilting down toward the edge.
+        var y = 0.9 * (fbm2(p * 0.035, 3) - 0.5) + 0.25 * (noise2(p * 0.21) - 0.5)
+        y -= 0.07 * clamp(dot(p - MEADOW, ACROSS), -40.0, 40.0)
+        // The forest floor rising round it, but not toward the gap: faded out where the camera
+        // started, where every direction meets.
+        let s = p - STAND
+        let a = atan2(s.x, s.y + 1.0e-4)
+        let within = smoothstep(GAP_FROM - 0.1, GAP_FROM + 0.1, a) *
+            smoothstep(GAP_TO + 0.1, GAP_TO - 0.1, a)
+        let open = within * smoothstep(2.0, 10.0, length(s))
+        y += 3.0 * smoothstep(18.0, 60.0, r) * (1.0 - open)
+        // The great tree's rise, and the rise the clearing's camera started on.
+        let k = p - KNOLL
+        y += 2.4 * exp(-dot(k, k) / 120.0)
+        y += 3.2 * exp(-dot(s, s) / 260.0)
+        // The map's shapes, faded out round the clearing, whose own layout holds there.
+        y + smoothstep(70.0, 140.0, r) * self.land.base(p)
     }
 
     /// The bedrock under (`p`, `y`) as a sample `w` across sees it (the floor's geology): beds of
@@ -434,6 +498,8 @@ impl Ground {
         }
         let xz = at.xz
         let (light, trodden, wet, thorn) = (fields.x, fields.y, fields.z, fields.w)
+        // The fight's disc and the trail into it worn short, so feet and paws read.
+        let trodden = max(trodden, FIGHT_WEAR * fought(xz, w))
         // How open the canopy is over the ground: grass from about half the sky's light.
         let open = smoothstep(CLOSED, 0.85, light)
         // Litter in drifts a few metres across and in patches under them: dark and damp in the
@@ -457,6 +523,10 @@ impl Ground {
         // Thinning faster than it fades: a few blades in a gap's half light, a meadow in the open.
         c.grass *= open * open
         c.flowers *= open * open
+        // No trail wears under a built stone: its wear stops a hand's breadth from the stone's
+        // foot (a route that ended at a stone's middle drew bare lit earth under it, a stem: the
+        // arena's centre stone, 14).
+        let trodden = if trodden > 0.0 { trodden * unbuilt(xz) } else { trodden }
         // The trails: bare earth down a path's middle, the grass worn short and thin on the ground
         // the herd wears beside it. The earth is packed and dry, lighter than the leaf litter
         // round it in the wood (a path shows from 20 m: #55 AC10).
@@ -593,9 +663,8 @@ fn valley_land(xz: vec2, y: f32, w: f32) -> vec3 {
 /// the crag's cliffs, the ravine's walls, the plateau's lip): grey stone, warmer and cooler in
 /// broad patches; each bed its own colour (`BED`), a dark seam where it meets the next; dark
 /// joints at its blocks' edges (`joints`, as the relief's), straight and few, not a noise's maze
-/// of cracks; dark streaks where water runs down a steep face; lichen in broad faint crusts where
-/// it faces the sky (bold round spots read as a leopard's: pass 1); moss on its ledges and in its
-/// joints. Each detail finer than the sample fades to its share, so a far texel of the clipmap
+/// of cracks; dark streaks where water runs down a steep face. No lichen or moss: they gave it a
+/// green cast in shade (round 14), and bold round spots read as a leopard's (pass 1). Each detail finer than the sample fades to its share, so a far texel of the clipmap
 /// doesn't alias. Cooked into the clipmap: nothing here runs per pixel per frame (AC12).
 pub fn rock_albedo(at: vec3, n: vec3, w: f32) -> vec3 {
     let xz = at.xz
@@ -635,13 +704,5 @@ pub fn rock_albedo(at: vec3, n: vec3, w: f32) -> vec3 {
     let across = xz.x * 0.8 + xz.y * 1.1
     let runs = noise2_seen(vec2(across * 1.1, at.y * 0.07), w * 1.1)
     c *= 1.0 - 0.35 * smoothstep(0.55, 0.75, runs) * steep
-    // Lichen in broad crusts where it faces the sky; moss on its ledges and in its joints, where
-    // water and grit gather.
-    let crust = fbm2_seen(xz * 0.17 + vec2(-3.0, 5.0), 3, w * 0.17)
-    let lichen = smoothstep(0.5, 0.78, crust) * smoothstep(0.35, 0.85, n.y)
-    c = mix(c, vec3(0.38, 0.38, 0.30), vec3(0.4 * lichen))
-    let hollow = fbm2_seen(xz * 0.35 + vec2(12.0, 3.0), 3, w * 0.35)
-    let ledge = smoothstep(0.8, 0.96, n.y) * (1.0 - smoothstep(0.0, 0.5, steep))
-    let moss = smoothstep(0.6, 0.85, 0.7 * hollow + 0.15 * ledge + 0.3 * line)
-    mix(c, vec3(0.06, 0.09, 0.03), vec3(0.6 * moss))
+    c
 }

@@ -66,8 +66,9 @@ pub fn wood_fawn() -> Creature<Coat> {
 }
 
 /// Which fawn `build` makes: its barrel's and chest's sizes and places, its head's and ears'
-/// sizes, its ears' coat, and whether it keeps the grazer's parts (the shoulder hump, the mane,
-/// the beard, the dewlap, the woolly cape, the horns and the long tail with its tuft).
+/// sizes, how thick its upper legs and neck are, its ears' coat, and whether it keeps the
+/// grazer's parts (the shoulder hump, the mane, the beard, the dewlap, the woolly cape, the
+/// horns and the long tail with its tuft).
 struct Kind: Copy {
     barrel: vec3,
     barrel_at: vec3,
@@ -75,6 +76,10 @@ struct Kind: Copy {
     chest_at: vec3,
     head_size: f32,
     ear_size: f32,
+    /// How thick its upper legs and its neck are, as a share of the grazer's: a young deer's
+    /// are thin, its legs long for its body; the grazer's full ones read as a horse's or a goat's.
+    limb: f32,
+    neck: f32,
     ear: Coat,
     grazer: bool,
 }
@@ -87,20 +92,24 @@ const CLEARING = Kind {
     chest_at: vec3(0.0, 1.14, 0.96),
     head_size: 1.0,
     ear_size: 1.0,
+    limb: 1.0,
+    neck: 1.0,
     ear: WOOL,
     grazer: true,
 }
 
-/// The wood's fawn (M6): no grazer's parts, a slimmer barrel and chest, a smaller head and
-/// ears half again as big, in its hide's colour, so its silhouette reads as a fawn's at a
-/// distance.
+/// The wood's fawn (M6): no grazer's parts, a shorter, slimmer barrel and chest, thin legs and
+/// neck, a head a tenth bigger and ears over twice as big, in its hide's colour, so its
+/// silhouette reads as a young deer's at a distance.
 const WOOD = Kind {
-    barrel: vec3(0.3, 0.28, 0.60),
+    barrel: vec3(0.3, 0.28, 0.46),
     barrel_at: vec3(0.0, 1.14, 0.53),
     chest: vec3(0.31, 0.3, 0.32),
     chest_at: vec3(0.0, 1.18, 0.96),
-    head_size: 0.82,
-    ear_size: 1.8,
+    head_size: 1.1,
+    ear_size: 2.2,
+    limb: 0.6,
+    neck: 0.65,
     ear: HIDE,
     grazer: false,
 }
@@ -178,7 +187,13 @@ fn build(kind: Kind) -> Creature<Coat> {
                 g.join(
                     "neck base",
                     n0,
-                    neck_cone(NECK0, NECK1, r1: 0.30, r2: 0.22, sx: 1.3).with(WOOL),
+                    neck_cone(
+                        NECK0,
+                        NECK1,
+                        r1: 0.30 * kind.neck,
+                        r2: 0.22 * kind.neck,
+                        sx: 1.3,
+                    ).with(WOOL),
                 )
                     .join(
                         "throat",
@@ -186,8 +201,8 @@ fn build(kind: Kind) -> Creature<Coat> {
                         round_cone(
                             vec3(0.0, -0.02, -0.06),
                             vec3(0.0, 0.08, 0.06),
-                            r_top: 0.30,
-                            r_bottom: 0.22,
+                            r_top: 0.30 * kind.neck,
+                            r_bottom: 0.22 * kind.neck,
                         ).with(WOOL),
                         seam: smooth(0.06),
                     )
@@ -197,8 +212,8 @@ fn build(kind: Kind) -> Creature<Coat> {
                         flat_cone(
                             vec3(),
                             NECK2 - NECK1,
-                            r1: 0.22,
-                            r2: 0.175,
+                            r1: 0.22 * kind.neck,
+                            r2: 0.175 * kind.neck,
                             sx: 1.3,
                             scale_ends: false,
                         )
@@ -211,8 +226,8 @@ fn build(kind: Kind) -> Creature<Coat> {
                         flat_cone(
                             vec3(),
                             NECK3 - NECK2,
-                            r1: 0.175,
-                            r2: 0.14,
+                            r1: 0.175 * kind.neck,
+                            r2: 0.14 * kind.neck,
                             sx: 1.3,
                             scale_ends: false,
                         )
@@ -225,8 +240,8 @@ fn build(kind: Kind) -> Creature<Coat> {
                         flat_cone(
                             vec3(),
                             HEAD - NECK3,
-                            r1: 0.14,
-                            r2: 0.10,
+                            r1: 0.14 * kind.neck,
+                            r2: 0.10 * kind.neck,
                             sx: 1.3,
                             scale_ends: false,
                         )
@@ -444,14 +459,19 @@ fn build(kind: Kind) -> Creature<Coat> {
                         SCAPULA,
                         t: 0.45,
                         off: vec2(0.0, -0.02),
-                        r: vec3(0.12, 0.17, 0.28),
+                        r: vec3(0.12, 0.17, 0.28) * kind.limb,
                     )
                         .with(WOOL),
                 )
                     .join(
                         "upper arm",
                         shoulder,
-                        round_cone(vec3(), ELBOW - SHOULDER, r_top: 0.10, r_bottom: 0.085).with(
+                        round_cone(
+                            vec3(),
+                            ELBOW - SHOULDER,
+                            r_top: 0.10 * kind.limb,
+                            r_bottom: 0.085 * kind.limb,
+                        ).with(
                             WOOL,
                         ),
                         seam: smooth(0.06),
@@ -465,7 +485,7 @@ fn build(kind: Kind) -> Creature<Coat> {
                             SHOULDER,
                             t: 0.55,
                             off: vec2(0.0, -0.08),
-                            r: vec3(0.10, 0.13, 0.2),
+                            r: vec3(0.10, 0.13, 0.2) * kind.limb,
                         )
                             .with(WOOL),
                         seam: smooth(0.06),
@@ -479,7 +499,12 @@ fn build(kind: Kind) -> Creature<Coat> {
                     .join(
                         "forearm",
                         elbow,
-                        round_cone(vec3(), KNEE - ELBOW, r_top: 0.10, r_bottom: 0.048).with(HIDE),
+                        round_cone(
+                            vec3(),
+                            KNEE - ELBOW,
+                            r_top: 0.10 * kind.limb,
+                            r_bottom: 0.048 * kind.limb,
+                        ).with(HIDE),
                         seam: smooth(0.04),
                     )
                     .join(
@@ -491,7 +516,7 @@ fn build(kind: Kind) -> Creature<Coat> {
                             ELBOW,
                             t: 0.2,
                             off: vec2(0.0, 0.01),
-                            r: vec3(0.085, 0.115, 0.17),
+                            r: vec3(0.085, 0.115, 0.17) * kind.limb,
                         )
                             .with(HIDE),
                         seam: smooth(0.05),
@@ -544,7 +569,7 @@ fn build(kind: Kind) -> Creature<Coat> {
                         HIP,
                         t: 0.5,
                         off: vec2(0.0, -0.10),
-                        r: vec3(0.15, 0.27, 0.36),
+                        r: vec3(0.15, 0.27, 0.36) * kind.limb,
                     ).with(HIDE),
                 )
                     .join(
@@ -553,8 +578,8 @@ fn build(kind: Kind) -> Creature<Coat> {
                         round_cone(
                             vec3(0.13, 1.18, -0.24) - HIP,
                             vec3(0.18, 0.66, -0.07) - HIP,
-                            r_top: 0.12,
-                            r_bottom: 0.07,
+                            r_top: 0.12 * kind.limb,
+                            r_bottom: 0.07 * kind.limb,
                         ).with(HIDE),
                         seam: smooth(0.09),
                     )
@@ -567,7 +592,12 @@ fn build(kind: Kind) -> Creature<Coat> {
                     .join(
                         "gaskin",
                         stifle,
-                        round_cone(vec3(), HOCK - STIFLE, r_top: 0.10, r_bottom: 0.052).with(HIDE),
+                        round_cone(
+                            vec3(),
+                            HOCK - STIFLE,
+                            r_top: 0.10 * kind.limb,
+                            r_bottom: 0.052 * kind.limb,
+                        ).with(HIDE),
                         seam: smooth(0.06),
                     )
                     .join(
@@ -579,7 +609,7 @@ fn build(kind: Kind) -> Creature<Coat> {
                             STIFLE,
                             t: 0.32,
                             off: vec2(0.0, -0.05),
-                            r: vec3(0.07, 0.08, 0.16),
+                            r: vec3(0.07, 0.08, 0.16) * kind.limb,
                         )
                             .with(HIDE),
                         seam: smooth(0.05),

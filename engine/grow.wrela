@@ -611,6 +611,15 @@ pub struct Land {
     pub region: Vec<u32>,
 }
 
+/// Whether what grows at cell `c` in `year` is grazed down as on a lawn: on the herd's lawns once
+/// it has come (`arrives`), and in an event's opening for the decades it keeps it (`RECENT`),
+/// where deer come for the young growth.
+pub(package) fn grazed_bare(land: Land, c: u32, year: i32, arrives: i32) -> bool {
+    let opened = land.opened[c]
+    let fresh = opened != NEVER && year >= opened && year < opened + place::RECENT
+    fresh || (land.lawn[c] && year >= arrives)
+}
+
 /// The head room the herd browses along its routes (m): no branch below it.
 pub const HEAD_ROOM: f32 = 2.0
 
@@ -1327,7 +1336,7 @@ fn recruit_row(row: mut Row, cx: Cx, b: Bins, f: Fields, year: i32) {
         if total <= 0.0 {
             continue
         }
-        let n = c.wrapping_mul(16)
+        let n = c.wrapping_mul(16) ^ world(cx.map)
         let draw = rand(n, u32(year))
         if draw >= min(total, 0.9) {
             continue
@@ -1488,7 +1497,9 @@ fn live(l: mut Life, cx: Cx, f: Fields, year: i32) {
             p = 1.0
             cause = Cause::Browsed
         }
-        if cx.land.lawn[c] && year >= cx.map.herd.arrives && was < 4.0 && !t.pinned {
+        if grazed_bare(cx.land, c, year: year, arrives: cx.map.herd.arrives) &&
+            was < 4.0 &&
+            !t.pinned {
             p += 0.25
             cause = Cause::Browsed
         }
@@ -1835,7 +1846,7 @@ fn herd_year(herd: mut Herd, cx: Cx, routes: [u32], year: i32, trips: u32) {
         return
     }
     var walks: Vec<Trip> = Vec::from_fn(trips, |k| {
-        let s = u32(year).wrapping_mul(7919) ^ k.wrapping_mul(104729)
+        let s = u32(year).wrapping_mul(7919) ^ k.wrapping_mul(104729) ^ world(cx.map)
         Trip {
             seed: s,
             route: routes[u32(rand(s, 4) * f32(routes.len())) % routes.len()],
@@ -2211,6 +2222,12 @@ pub enum Left: Copy + Eq + Fieldless {
     Built,
 }
 
+/// The world's seed (`Map::seed`) as a history mixes it into its draws: 0 for seed 0, so a map
+/// with none grows as it always has.
+pub fn world(m: Map) -> u32 {
+    m.seed.wrapping_mul(2654435761)
+}
+
 /// A tree of `kind` that took root in `born`, as its years have grown it by `year`: in the open
 /// (`open`: its crown as wide as its kind's, its trunk thickening fastest) or among others.
 pub fn grown(at: vec2, kind: u32, born: i32, year: i32, seed: u32, h: Habit, open: bool) -> Tree {
@@ -2249,6 +2266,8 @@ fn first_row(row: mut Row, cx: Cx, left: [u8], year: i32) {
     let young = area / 12.0
     for i in 0..g.nx {
         let c = row.j * g.nx + i
+        // The cell's draws, mixed with the world's seed.
+        let n = c ^ world(cx.map)
         // The herd's lawns are open when the history begins: the herd has grazed them since.
         if !cx.land.habitable[c] || cx.land.lawn[c] {
             continue
@@ -2280,7 +2299,7 @@ fn first_row(row: mut Row, cx: Cx, left: [u8], year: i32) {
             }
             total += weights[k]
         }
-        var pick = rand(c, 2) * total
+        var pick = rand(n, 2) * total
         var kind = 0
         for k in 0..cx.habits.len() {
             if pick < weights[k] {
@@ -2290,33 +2309,33 @@ fn first_row(row: mut Row, cx: Cx, left: [u8], year: i32) {
             pick -= weights[k]
         }
         let h = cx.habits[kind]
-        let draw = rand(c, 1)
-        let at = g.centre(c) + vec2(rand(c, 3) - 0.5, rand(c, 4) - 0.5) * g.cell
+        let draw = rand(n, 1)
+        let at = g.centre(c) + vec2(rand(n, 3) - 0.5, rand(n, 4) - 0.5) * g.cell
         if was == Left::Tilled {
             // The first of the pioneers, a few years old, here and there.
             if draw < TILLED_TAKEN * young {
-                let tall = 0.5 + 1.5 * rand(c, 6)
-                row.out.push(sapling(at, kind, year - i32(rand(c, 5) * 6.0), tall, c, h))
+                let tall = 0.5 + 1.5 * rand(n, 6)
+                row.out.push(sapling(at, kind, year - i32(rand(n, 5) * 6.0), tall, n, h))
             }
         } else if was == Left::Cut && draw < min(canopy, 0.95) && !h.thorny {
             // Its last cutting's regrowth.
             row.out.push(
-                grown(at, kind, year - i32(5.0 + 20.0 * rand(c, 5)), year, c, h, open: false),
+                grown(at, kind, year - i32(5.0 + 20.0 * rand(n, 5)), year, n, h, open: false),
             )
         } else if draw < min(canopy, 0.95) && !h.thorny {
             // An old wood's ages: most trees in their middle years.
-            let age = h.lifespan * (0.15 + 0.6 * rand(c, 5))
+            let age = h.lifespan * (0.15 + 0.6 * rand(n, 5))
             let soil = 1.0 - 0.6 * thin
             let tallest = h.tallest * soil
             let tall = tallest * (1.0 - exp(-age * h.rate / tallest))
-            var t = sapling(at, kind, year - i32(age), tall, c, h)
+            var t = sapling(at, kind, year - i32(age), tall, n, h)
             t.reach = h.crown * tall * 0.75
             t.girth = min(0.9, 0.0011 * h.girth * age * 0.8)
             t.light = 0.5
             row.out.push(t)
         } else if draw < min(canopy + young, 0.98) {
             row.out.push(
-                sapling(at, kind, year - i32(rand(c, 5) * 10.0), 0.5 + 2.0 * rand(c, 6), c, h),
+                sapling(at, kind, year - i32(rand(n, 5) * 10.0), 0.5 + 2.0 * rand(n, 6), n, h),
             )
         }
     }
@@ -2354,7 +2373,7 @@ fn census(trees: [Tree], kinds: u32, year: i32) -> String {
 /// The history of `m` over the land from `lo` to `hi`, its species `habits` (at most 8), at
 /// `grain`: from year `grain.from` to the map's present. `rocks` are what the herd walks round
 /// (x, z, radius). `trips` is the herd's trips a year. `past` is what the level's past left the
-/// land as when the history begins (`Start::wild` for none).
+/// land as in the year the history begins (`Start::wild` for none).
 pub fn simulate<G: Ground>(
     ground: G,
     m: Map,
@@ -2363,7 +2382,7 @@ pub fn simulate<G: Ground>(
     lo: vec2,
     hi: vec2,
     rocks: [vec3],
-    past: fn(Land) -> Start,
+    past: fn(Land, i32) -> Start,
 ) -> History {
     phase("survey")
     place::refuse(m)
@@ -2391,7 +2410,7 @@ pub fn simulate<G: Ground>(
     let step = grain.step
     var year = m.present - grain.years
     {
-        var start = past(land)
+        var start = past(land, year)
         let cx = Cx { map: m, habits, land, grain }
         trees = first_forest(cx, start, year)
         trees.append(mut start.standing)

@@ -94,9 +94,13 @@ if [ "$fmt" = 1 ]; then
   cargo fmt --all -- -l
   wrela="${CARGO_TARGET_DIR:-target}/release/wrela"
   if [ -x "$wrela" ]; then
-    # The files it would change, on stdout (its count is on stderr).
-    "$wrela" fmt --check "${WRELA_SOURCES[@]}" 2>/dev/null || true
-    "$wrela" fmt "${WRELA_SOURCES[@]}"
+    # The files it would change, on stdout (its count is on stderr); then only those, formatted.
+    changed=$("$wrela" fmt --check "${WRELA_SOURCES[@]}" 2>/dev/null || true)
+    if [ -n "$changed" ]; then
+      printf '%s\n' "$changed"
+      mapfile -t files <<< "$changed"
+      "$wrela" fmt "${files[@]}"
+    fi
   fi
   exit 0
 fi
@@ -111,36 +115,7 @@ while read -r kind name; do
     heavy) heavy_tests+=("$name") ;;
     *) long_tests+=("$name") ;;
   esac
-done < <(python3 - <<'PY'
-import pathlib, re
-for f in sorted([*pathlib.Path("compiler").rglob("*.rs"), *pathlib.Path("runtime").rglob("*.rs")]):
-    if "target" in f.parts:
-        continue
-    lines = f.read_text().splitlines()
-    next_functions = [None] * len(lines)
-    name = None
-    for i in range(len(lines) - 1, -1, -1):
-        next_functions[i] = name
-        if m := re.search(r"fn (\w+)\(", lines[i]):
-            name = m.group(1)
-    inside = False
-    for i, line in enumerate(lines):
-        if m := re.search(r'#\[ignore = "(long|measure|heavy):', line):
-            name = next_functions[i]
-            # A test file at the top of `tests/` is a test program of its own (no module). A unit
-            # test in `src/` is in its file's module, under the directories it's in, and in its
-            # `mod tests` (a crate's root file names no module, nor does a `mod.rs`).
-            if f.parent.name == "tests":
-                print(m[1], name)
-            elif "src" in f.parts:
-                path = [*f.parts[f.parts.index("src") + 1 : -1], f.stem]
-                module = "".join(f"{p}::" for p in path if p not in ("lib", "main", "mod"))
-                print(m[1], f"{module}{'tests::' if inside else ''}{name}")
-            else:
-                print(m[1], f"{f.stem}::{name}")
-        inside |= bool(re.match(r"\s*mod tests\b", line))
-PY
-)
+done < <(python3 tools/ignored.py)
 # A heavy test takes seconds on a GPU but minutes on a software one (lavapipe): there, it is a
 # long test, which main's long run checks every six hours.
 if [ -n "${WRELA_SOFTWARE_GPU:-}" ]; then long_tests+=("${heavy_tests[@]}"); fi
@@ -189,74 +164,40 @@ TOOLS
 }
 
 # Runs at most one test program per available CPU, each with `args` (its tests filtered and
-# skipped), in its package's directory as cargo does. Prints each one's time and each failure's
+# skipped), as tools/runner.py starts it (tools/memo.py's quick runs too). Prints each one's time and each failure's
 # output (with --nocapture, each that ran a test), and fails if no test ran. Up to four GPU
 # tests share the GPU at a time: they check what the GPU computes, not how long it takes (the
 # measurements run alone, below). A program that waits for another process's hold on the GPU
 # notes how long in `gpu-waits` (`WRELA_GPU_WAITS`), for the gate's budget.
 run_tests() { # args...
   python3 - "$logs" "${CARGO_TARGET_DIR:-target}/native-cache" "$@" <<'PY'
-import concurrent.futures, errno, json, os, re, shutil, subprocess, sys, tempfile, time
+import concurrent.futures, json, os, re, shutil, subprocess, sys, time
 sys.path.insert(0, "tools")
 from resources import cpu_count
+import runner
 logs, native_cache, *args = sys.argv[1:]
 native_cache = os.path.abspath(native_cache)
-# Browser pages stay beneath the checkout even when Cargo's target is elsewhere.
-# Keep the same depth as target/tmp: copied fixtures have relative dependency paths.
-scratch_root = os.path.abspath("target")
-os.makedirs(scratch_root, exist_ok=True)
-# A failed program's scratch is kept to look at, until a run six hours later removes it.
-for old in os.listdir(scratch_root):
-    path = os.path.join(scratch_root, old)
-    try:
-        if old.startswith("test-scratch-") and time.time() - os.stat(path).st_mtime > 6 * 3600:
-            shutil.rmtree(path, ignore_errors=True)
-    except OSError:
-        pass
+scratch_root = runner.scratch_root()
 cores = cpu_count()
-# Up to four test threads a program, bounded by the CPUs and the shared GPU limit, on a software
-# GPU too: one thread a program made the memo-off gate's tests take 460 s, not 197 s (4 cores).
-test_threads = max(1, min(4, cores))
 programs = []
 for line in open(f"{logs}/tests.json"):
     m = json.loads(line)
     if m.get("reason") == "compiler-artifact" and m.get("executable") and m["profile"]["test"]:
         programs.append(m)
-# The end-to-end suite is the longest program, so the gate's time: it starts first, and the
-# others yield to it (`nice`: with all at one priority, it took half as long again as alone).
-programs.sort(key=lambda m: not os.path.dirname(m["manifest_path"]).endswith("compiler/tests"))
 def run(index, m):
-    # As cargo runs a test program: in its package's directory.
-    pkg = os.path.dirname(m["manifest_path"])
-    # Compiled code is kept across runs (wrela_host's cache): a test's build is made afresh
-    # each run, and its WASM is mostly the same.
-    scratch = tempfile.mkdtemp(prefix="test-scratch-", dir=scratch_root)
-    # A concurrent Cargo build may replace its test binary. Keep this run's executable
-    # reachable so tests that spawn themselves (the fuzz workers) can still find it.
-    executable = os.path.join(scratch, "test-program")
-    try:
-        os.link(m["executable"], executable)
-    except OSError as error:
-        if error.errno != errno.EXDEV:
-            raise
-        shutil.copy2(m["executable"], executable)
-    env = {**os.environ, "CARGO_MANIFEST_DIR": pkg, "WRELA_NATIVE_CACHE": native_cache,
-           "WRELA_TEST_TMPDIR": scratch, "RUST_TEST_THREADS": str(test_threads),
-           "WRELA_GPU_SHARED": str(max(2, min(4, cores))), "WRELA_GPU_WAITS": f"{logs}/gpu-waits"}
-    name = f"{m['target']['name']} ({m['target']['kind'][0]})"
-    first = pkg.endswith("compiler/tests")
+    command, env, pkg, scratch = runner.start(m, scratch_root, logs, native_cache, cores)
     start = time.monotonic()
     with open(f"{logs}/run-{index}", "w+") as out:
-        proc = subprocess.run([*([] if first else ["nice", "-n", "10"]), executable, "-q", *args],
-                              cwd=pkg, env=env, stdout=out, stderr=subprocess.STDOUT)
+        proc = subprocess.run([*command, "-q", *args], cwd=pkg, env=env, stdout=out,
+                              stderr=subprocess.STDOUT)
         out.seek(0)
         text = out.read()
     if proc.returncode == 0:
         shutil.rmtree(scratch, ignore_errors=True)
-    return name, proc.returncode, text, time.monotonic() - start, scratch
+    return runner.name_of(m), proc.returncode, text, time.monotonic() - start, scratch
 failed, ran = False, 0
 with concurrent.futures.ThreadPoolExecutor(max_workers=cores) as pool:
-    waiting = [pool.submit(run, i, m) for i, m in enumerate(programs)]
+    waiting = [pool.submit(run, i, m) for i, m in enumerate(runner.in_order(programs))]
     for future in concurrent.futures.as_completed(waiting):
         name, code, text, took, scratch = future.result()
         passed = sum(int(n) for n in re.findall(r"test result: \w+\. (\d+) passed", text))
@@ -338,7 +279,9 @@ step "tests, on the CPU and the GPU, but the long ones and the measurements$( [ 
 tests_started=$SECONDS
 ps -A -o pid=,ppid=,time= > "$logs/ps-before"
 side doc cargo test -q --release --workspace --doc
-side wgsl python3 tools/wgsl_budgets.py "$wrela"
+# (Each build's sizes remembered, as the slow tests are: a build that reads what it read before,
+# with the same CLI, isn't made again.)
+side wgsl python3 tools/wgsl_budgets.py "$wrela" $( [ "$memo" = on ] && echo --memo)
 tests=0
 if [ "$memo" = off ]; then
   run_tests --include-ignored "${skips[@]}" || tests=1

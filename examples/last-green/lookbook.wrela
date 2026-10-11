@@ -138,9 +138,11 @@ pub const SHOTS = [
         moves: vec2(0.0, 2.0),
     },
     // Blockouts, judged as composition.
+    // The town's site from inside its glade, 35 m from its middle on the line the old eye looked
+    // along, so no crown hangs over the lens.
     Shot {
         name: "the town's site",
-        eye: vec3(501.0, 1.7, -810.8),
+        eye: vec3(477.8, 1.7, -828.7),
         at: vec3(450.0, 3.0, -850.0),
         moves: vec2(2.0, -2.0),
         reach: 20.0,
@@ -183,8 +185,10 @@ pub const SHOTS = [
     },
     Shot {
         name: "the fawn by the stream",
-        eye: vec3(-50.6, 1.7, -263.8),
-        at: vec3(-45.5, 0.9, -268.7),
+        // 1.5 m to the left of where it stood, past the trunk that grows by the eye since the
+        // forest form (#169) and the elves' history (#170).
+        eye: vec3(-49.6, 1.7, -262.7),
+        at: vec3(-44.5, 0.9, -267.6),
         reach: 1.0,
         moves: vec2(-0.6, -0.8),
         cast: Cast {
@@ -192,6 +196,16 @@ pub const SHOTS = [
             player: vec3(-47.2, -267.6, 2.145),
             fawn: vec3(-43.8, -269.8, 0.631),
         },
+    },
+    // The climber from in front and to one side, its mask lit by the low sun from the camera's
+    // right, the glade behind it and the fawn grazing there.
+    Shot {
+        name: "the climber's mask",
+        eye: vec3(145.8, 1.5, 37.1),
+        at: vec3(142.9, 1.0, 40.3),
+        reach: 1.0,
+        moves: vec2(0.59, 0.54),
+        cast: Cast { on: true, player: vec3(142.9, 40.3, 1.6), fawn: vec3(137.5, 47.9, 0.9) },
     },
 ]
 

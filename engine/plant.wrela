@@ -4,7 +4,7 @@
 // the lens draws it, probes it and drags its literals.
 //
 // Cooking a plant (once, on the GPU) turns its crown into leaf cards: each a cluster of leaves
-// cut from a square by `discard`, placed over the clumps' spheres, with the crown's normal there
+// cut from a square by `discard`, placed over the clumps' surfaces, with the crown's normal there
 // and how deep in the crown it is (from the crown's field). The cards come in three nested
 // levels: level L draws the first quarter^L of them, each 2^L times its own size, so every
 // level covers the crown as often (spike 15: 472K cards became 120K with no visible loss). Each
@@ -61,7 +61,7 @@ impl Clump {
 }
 
 /// A plant's leaves: a card's width at the nearest level (m), how many times the cards cover
-/// each clump's sphere, the colours of young (lit) and old (deep) leaves and of the light
+/// each clump's surface, the colours of young (lit) and old (deep) leaves and of the light
 /// they pass, linear, and how many leaves a card holds.
 pub struct Leaves: Copy + GpuData {
     pub young: vec3 = vec3(0.17, 0.25, 0.035),
@@ -413,7 +413,7 @@ pub fn corner_of(inst: Instance, mid: f32, eye: vec3) -> u32 {
 pub fn card_orders(plant: Plant, n: u32, seed: u32) -> Vec<u32> {
     var centres: Vec<vec3> = Vec::new()
     for c in 0..n {
-        let (_, p, _, _) = card_place(plant, n, seed, c)
+        let (_, p, _) = card_place(plant, n, seed, c)
         centres.push(p)
     }
     var out: Vec<u32> = Vec::new()
@@ -438,9 +438,9 @@ pub fn card_orders(plant: Plant, n: u32, seed: u32) -> Vec<u32> {
 }
 
 /// Card `id` of a plant's `n` (cooked by `seed`): its clump (each level's share spread over the
-/// clumps by their areas), where it is (on its clump's sphere, most near its surface), the
-/// direction from the clump's centre, and its draws' seed.
-fn card_place(plant: Plant, n: u32, seed: u32, id: u32) -> (u32, vec3, vec3, u32) {
+/// clumps by their areas), where it is (on its clump's surface or a little inside), and its
+/// draws' seed.
+fn card_place(plant: Plant, n: u32, seed: u32, id: u32) -> (u32, vec3, u32) {
     let (_, f) = card_share(id, n)
     // The clump whose share of the total area holds `f`.
     var total = 0.0
@@ -462,7 +462,7 @@ fn card_place(plant: Plant, n: u32, seed: u32, id: u32) -> (u32, vec3, vec3, u32
     let c = plant.clumps[which]
     let k = seed.wrapping_mul(7919) ^ id.wrapping_mul(2654435761)
     let dir = direction(rand(k, 3), rand(k, 4))
-    (which, c.point(dir, 0.72 + 0.28 * sqrt(rand(k, 5))), dir, k)
+    (which, c.point(dir, 0.72 + 0.28 * sqrt(rand(k, 5))), k)
 }
 
 /// Each of a plant's cards' middle and size as `cook_cards` places them (seed `seed`), on
@@ -471,21 +471,21 @@ pub fn card_centres(plant: Plant, seed: u32) -> Vec<vec4> {
     let n = plant.cards()
     var out: Vec<vec4> = Vec::with_capacity(n)
     for c in 0..n {
-        let (_, p, _, k) = card_place(plant, n, seed, c)
+        let (_, p, k) = card_place(plant, n, seed, c)
         out.push(vec4(p, plant.leaves.size * pick(k, 6, lo: 0.8, hi: 1.2)))
     }
     out
 }
 
 /// The plant's cards: each level's share spread over the clumps by their areas, each card on
-/// its clump's sphere (most near its surface), its normal the crown's there mixed with the
-/// clump's own (so each clump reads as a lump of light), its depth in the crown.
+/// its clump's surface or a little inside, its normal the crown's there (its mass's, so a mass
+/// turns from light to shade as one form), its depth in the crown.
 @compute(64)
 pub fn cook_cards(plant: Plant, n: u32, seed: u32, out: mut Slots<Card>, id: GlobalId) {
-    let (which, p, _dir, k) = card_place(plant, n, seed, id.x)
+    let (which, p, k) = card_place(plant, n, seed, id.x)
     let (d, g) = plant.crown(p)
-    // Mostly the crown's (its mass's) normal: lit by its own clump's, each clump read as its own
-    // lump of light, a crown as confetti (M6's lookdev, the arbiter's G2).
+    // The crown's normal alone: mixed with its own clump's, each clump read as its own lump of
+    // light, a crown as confetti (M6's lookdev, the arbiter's G2).
     let normal = normalize(g)
     let size = plant.leaves.size * pick(k, 6, lo: 0.8, hi: 1.2)
     let tint = vec4(rand(k, 7), rand(k, 8), rand(k, 9), rand(which, 10))

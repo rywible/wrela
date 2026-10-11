@@ -1,0 +1,339 @@
+// The floor kit: what a floor's program uses to stream its world round the player and keep its
+// caches, with none of a floor's own content (its map, ground, history, kinds, tuning). A floor is
+// a build of its own (`std::reload`, engine::tower); each one's main.wrela holds its content and
+// calls these.
+
+use place::{TILE, tile_of}
+use plant::{Wind, full}
+use shadow::{CASTER, Cascade, Shadows, sun_view}
+use stone::{Realized, stone_shadow}
+use tower::{Journey, STAIR}
+use view::Camera
+use wood::Wood
+use std::collections::swap
+use std::gpu::{
+    ClipPosition, DepthTexture, FragmentShader, RenderPass, Sampler, begin_depth_pass,
+    depth_texture, draw, label,
+}
+
+/// Any fragment shader over the whole target (`engine::plant::full`'s triangle): a pass that
+/// draws each pixel once.
+pub fn fullscreen<P: RenderPass, F: FragmentShader<ClipPosition>>(pass: P, fs: F) {
+    draw(pass, full.bind(z: 0.5), fs, vertices: 3)
+}
+
+// ---- The door back down ---------------------------------------------------------------------
+
+/// Where a floor's door back down to the stair stands: its middle on the floor's ground (m), and
+/// how near it a player's feet are at it.
+pub struct Doorway: Copy {
+    pub at: vec2,
+    pub reach: f32,
+}
+
+impl Doorway {
+    /// Whether `feet` (on the floor's ground, m) are at the door.
+    pub fn holds(self, feet: vec2) -> bool {
+        length(feet - self.at) < self.reach
+    }
+}
+
+/// A floor's way back down to the stair (engine::tower): the tower's journey, the floor's world
+/// in it, the stair's build, the doorway, and whether the player's feet were in it last frame
+/// (one who starts in it, as a player who has just come through does, doesn't go back at once).
+pub struct Exit {
+    pub journey: Journey,
+    world: u32,
+    stair: Text,
+    pub door: Doorway,
+    inside: bool,
+}
+
+impl Exit {
+    /// The way back from world `world` of a tower of `worlds` worlds, saved at `save`, to the
+    /// stair's build at `stair`, through `door`.
+    pub fn begin(world: u32, worlds: u32, save: Text, stair: Text, door: Doorway) -> Exit {
+        Exit { journey: Journey::begin(world, worlds, save), world, stair, door, inside: true }
+    }
+
+    /// Once a frame: takes what the tower's requests answered, and gets the stair's build ready
+    /// while `allowed` (the floor's own streaming has nothing waiting).
+    pub fn update(mut self, allowed: bool) {
+        self.journey.update()
+        self.journey.prepare(Some(self.stair), allowed)
+    }
+
+    /// Back down to the stair, if `feet` are at the door: whether the way was taken (the build
+    /// hands its place over after this frame).
+    pub fn leave(mut self, feet: vec2) -> bool {
+        self.door.holds(feet) && self.journey.go(self.world, STAIR, self.stair)
+    }
+
+    /// Whether `feet` stepped into the doorway this frame, from outside it.
+    pub fn stepped_in(mut self, feet: vec2) -> bool {
+        let was = self.inside
+        self.inside = self.door.holds(feet)
+        steps_in(was, self.inside)
+    }
+}
+
+/// Whether feet in the doorway now (`now`) stepped in: not if they were in it already (`was`).
+fn steps_in(was: bool, now: bool) -> bool {
+    now && !was
+}
+
+/// The way back is taken on stepping into the doorway, not by standing in it: a player who has
+/// just come through, and starts in it, stays until they step out and in again.
+@test
+fn the_door_is_taken_on_stepping_into_it() {
+    let d = Doorway { at: vec2(2.0, -5.0), reach: 0.6 }
+    assert(d.holds(vec2(2.3, -5.2)) && !d.holds(vec2(2.0, -4.0)))
+    assert(!steps_in(was: true, now: true), "a player who starts in it stays")
+    assert(steps_in(was: false, now: true), "one who steps in goes")
+    assert(!steps_in(was: true, now: false) && !steps_in(was: false, now: false))
+}
+
+// ---- The tiles round the player -------------------------------------------------------------
+
+/// How far tile `t` is from `p` (m): to its nearest point.
+pub fn tile_distance(t: vec2i, p: vec2) -> f32 {
+    let lo = vec2(t) * TILE
+    let q = clamp(p, lo, lo + vec2(TILE))
+    length(p - q)
+}
+
+/// The square round the eye's tile that contains every tile within `reach` metres.
+/// One more tile covers the eye's position within its own tile.
+pub fn tile_radius(reach: f32) -> i32 {
+    i32(ceil(reach / TILE)) + 1
+}
+
+/// The near search within the far search's original square. At extreme world coordinates,
+/// f32 can round several integer tiles to one corner: retain that square and its tie order.
+pub fn near_tile_radius(eye: vec2, reach: f32, far: f32) -> i32 {
+    let outer = tile_radius(far)
+    if !(reach > 0.0 && reach < far) || max(abs(eye.x), abs(eye.y)) >= TILE * 8388608.0 {
+        return outer
+    }
+    min(tile_radius(reach), outer)
+}
+
+/// The tiles round `eye` within `radius` of its tile, nearer than `reach`, in search order.
+fn candidates(eye: vec2, radius: i32, reach: f32) -> Vec<vec2i> {
+    let at = tile_of(eye)
+    var out: Vec<vec2i> = Vec::new()
+    for j in (at.y - radius)..(at.y + radius + 1) {
+        for i in (at.x - radius)..(at.x + radius + 1) {
+            let t = vec2i(i, j)
+            if tile_distance(t, eye) < reach { out.push(t) }
+        }
+    }
+    out
+}
+
+/// The tighter near search visits exactly the same wanted tiles in the same order as the far
+/// search, ties on boundaries and eyes either side of the origin included.
+@test
+fn the_near_tile_search_keeps_every_candidate_in_order() {
+    for cell in [-67108864, -8388608, -40, -1, 0, 1, 40, 8388608, 67108864] {
+        for x in [-0.001, 0.0, 128.0, 255.999] {
+            for z in [0.0, 128.0, 255.999] {
+                let eye = vec2(f32(cell) * TILE + x, -f32(cell) * TILE + z)
+                for reach in [
+                    -350.0,
+                    0.0,
+                    1.0,
+                    255.999,
+                    256.0,
+                    256.001,
+                    350.0,
+                    512.0,
+                    1200.0,
+                    bitcast_f32(0x7f7fffff),
+                ] {
+                    let near = candidates(eye, near_tile_radius(eye, reach, 900.0), reach)
+                    let far = candidates(eye, tile_radius(900.0), reach)
+                    assert(near.len() == far.len(), "a wanted tile was skipped")
+                    for i in 0..near.len() {
+                        assert(near[i] == far[i], "the nearest-tile tie order changed")
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---- Caches that follow the player ----------------------------------------------------------
+
+/// A static shadow cascade kept round a moving middle (#54 §7), with no frame drawing it whole:
+/// the map in use stays while the next is drawn beside it, a strip of its trees a frame (the wood
+/// chooses each strip's on the GPU), and the two swap when the last strip is drawn. Playing spike
+/// 17, each time the probes and the shadows re-centred one frame took 67–300 ms.
+///
+/// It holds the map in use and its middle; the map being drawn beside it and its middle, and the
+/// strip it's at; its square's size and reach, how far past the square a shadow can reach into
+/// it, its texels a side and its strips; and whether what casts into it changed (it's drawn
+/// again in place).
+pub struct Kept {
+    pub front: DepthTexture,
+    back: DepthTexture,
+    pub centre: vec3,
+    next: Option<vec3>,
+    strip: u32,
+    pub span: f32,
+    pub reach: f32,
+    reach_in: f32,
+    pub side: u32,
+    pub strips: u32,
+    stale: bool,
+    /// Whether the map in use has been drawn at all (the first is drawn before it's used).
+    pub ready: bool,
+}
+
+impl Kept {
+    /// A cascade `span` wide round `centre`, `side` texels a side, drawn in `strips` strips;
+    /// `reach_in` is how far past its square a tree's shadow can reach into it (m: a 25 m tree's
+    /// at a sun 24° up is 56 m long).
+    pub fn new(centre: vec3, span: f32, reach: f32, reach_in: f32, side: u32, strips: u32) -> Kept {
+        Kept {
+            front: depth_texture(width: side, height: side),
+            back: depth_texture(width: side, height: side),
+            centre,
+            next: Some(centre),
+            strip: 0,
+            span,
+            reach,
+            reach_in,
+            side,
+            strips,
+            stale: false,
+            ready: false,
+        }
+    }
+
+    /// The cascade in use.
+    pub fn cascade(self) -> Cascade {
+        Cascade { centre: self.centre, span: self.span, reach: self.reach, side: self.side }
+    }
+
+    /// Moved by `d` with render space (the render origin moved by `-d`): its maps hold what they
+    /// held, since nothing snaps a static cascade's view.
+    pub fn shift(mut self, d: vec3) {
+        self.centre += d
+        self.next = match self.next {
+            Some(n) => Some(n + d),
+            None => None,
+        }
+    }
+
+    /// What casts into it changed: drawn again where it is, once the drawing under way ends (a
+    /// drawing that hasn't drawn its first strip yet draws what casts now).
+    pub fn changed(mut self) {
+        self.stale = self.stale || draws_again(drawing: self.next.is_some(), strip: self.strip)
+    }
+
+    /// Follows `at`: once it's `moves` from the middle in use (or what casts changed), the next
+    /// map starts round it, unless one is being drawn.
+    pub fn follow(mut self, at: vec3, moves: f32) {
+        if self.next.is_some() {
+            return
+        }
+        if length(at.xz - self.centre.xz) > moves {
+            self.next = Some(at)
+            self.strip = 0
+            self.stale = false
+        } else if self.stale {
+            self.next = Some(self.centre)
+            self.strip = 0
+            self.stale = false
+        }
+    }
+
+    /// Whether a map is being drawn beside the one in use.
+    pub fn drawing(self) -> bool {
+        self.next.is_some()
+    }
+
+    /// A strip of the next map, if one's being drawn: the trees standing in the strip's part of
+    /// its square (and a shadow's reach past it), chosen and drawn into the map (cleared first),
+    /// and with the first strip the built things (`built`: stones, the tower, walls); after the
+    /// last, the maps swap. `sh` gives the sun's basis.
+    pub fn draw_strip(
+        mut self,
+        wood: mut Option<Wood>,
+        built: [Realized],
+        sun: vec3,
+        sh: Shadows,
+        wind: Wind,
+        s: Sampler,
+        cam: Camera,
+        on: bool,
+        name: Text,
+    ) {
+        let Some(c) = self.next else { return }
+        let half = self.span * 0.5 + self.reach_in
+        let lo = c.xz - vec2(half)
+        let step = 2.0 * half / f32(self.strips)
+        let a = vec2(lo.x, lo.y + step * f32(self.strip))
+        let b = vec2(lo.x + 2.0 * half, a.y + step)
+        let view = sun_view(normalize(sun), c, self.span, self.reach)
+        // (Its choice of trees is the strip's work too.)
+        label(name)
+        match mut wood {
+            Some(w) => {
+                if on {
+                    w.select_shadow(cam, a, b)
+                }
+            },
+            None => {},
+        }
+        let pass = begin_depth_pass(mut self.back, clear_depth: 1.0, keep_depth: self.strip > 0)
+        match wood {
+            Some(w) => {
+                if on {
+                    w.shadow(pass, view, sh, wind, s)
+                }
+            },
+            None => {},
+        }
+        if on && self.strip == 0 {
+            for st in built {
+                draw(
+                    pass,
+                    stone_shadow.bind(verts: st.mesh.verts.items(), at: st.at, view: view),
+                    vegetation::nothing,
+                    indices: st.mesh.quads.items(),
+                    indirect: st.mesh.draw.items(),
+                    depth_bias: CASTER,
+                )
+            }
+        }
+        pass.end()
+        self.strip += 1
+        if self.strip >= self.strips {
+            swap(mut self.front, mut self.back)
+            self.centre = c
+            self.next = None
+            self.ready = true
+        }
+    }
+}
+
+/// Whether a change to what casts draws a cascade again: not while its drawing (`drawing`) is
+/// still at its first strip (`strip`), which draws what casts then.
+fn draws_again(drawing: bool, strip: u32) -> bool {
+    !drawing || strip > 0
+}
+
+/// A change to what casts before a drawing's first strip is drawn with it (the far cascade at
+/// load: the far layer and the built things come while it waits); one after it, or with no
+/// drawing under way, draws the map again.
+@test
+fn a_change_before_the_first_strip_is_drawn_with_it() {
+    assert(
+        !draws_again(drawing: true, strip: 0),
+        "a change before the first strip draws the map again",
+    )
+    assert(draws_again(drawing: true, strip: 1), "a change after the first strip isn't drawn")
+    assert(draws_again(drawing: false, strip: 0), "a change with no drawing under way isn't drawn")
+}
