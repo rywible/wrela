@@ -8,6 +8,7 @@ use engine::character::{
     PartOf, character, character_motion, character_shade, character_shadow, colours, motion,
     parts_of,
 }
+use engine::floor::fullscreen
 use engine::gait::{between, palette, posed_bounds}
 use engine::grass::{Blooms, Grass, GrassLook}
 use engine::present::{Snapshots, lerp_angle}
@@ -548,12 +549,6 @@ fn statics_key(s: Clearing) -> StaticsKey {
 /// What the clearing carries across a hot reload, kept each frame.
 fn keep_carried(s: Clearing) {
     keep(save(s.carried))
-}
-
-/// Any fragment shader over the whole target (`engine::plant::full`'s triangle): a pass that
-/// reads its inputs at each pixel.
-fn fullscreen<P: RenderPass, F: FragmentShader<ClipPosition>>(pass: P, fs: F) {
-    draw(pass, full.bind(z: 0.5), fs, vertices: 3)
 }
 
 /// The look's passes: the glow's chain from `image` (a quarter's size, blurred across and
