@@ -12,12 +12,14 @@ Checks (tools/check.sh; its header says what each tier runs).
 - While you work, run only the tests you touch: `tools/check.sh <filter>` takes seconds. To see a test's output, add `--nocapture`. Run a gate or long test only through check.sh: a test run with `cargo test` takes the GPU alone, and every other session's checks wait for it.
 - Before each commit, run the gate: `tools/check.sh`, under a minute.
 - Before a branch is merged, run `tools/check.sh --long` (about ten minutes). If a long test fails, run that test again (`tools/check.sh --long <name>`), not the tier.
-- The `measure:` tests and `tools/check.sh --full` give a milestone's numbers. Run a measurement only when you need its number, alone (`cargo test --release --workspace -- --ignored --exact <name>`).
+- The `measure:` tests and `tools/check.sh --full` give the numbers behind a claim. Run a measurement only when you need its number, alone (`cargo test --release --workspace -- --ignored --exact <name>`).
 - A new test that takes more than a second is a long check (`#[ignore = "long: ..."]`), sized with `sized()` so that the long tier stays near ten minutes.
 - Run the gate and filtered runs in the foreground. Run anything longer (the long tier, a measurement, a bake) in the background and keep working. If you need its result before you can go on, wait with Monitor, or end your turn: a background command wakes you when it exits.
 - Hooks (tools/hooks.py) format what the gate checks before it runs, and refuse polling with `sleep` and a `cargo test` that takes the GPU alone. A refusal says what to do instead.
 
-Full milestones with AC are stored in github. When you're working on a milestone, you can durably keep track of your tasks in a doc in the repo if you need to break it down (name it `M<n>-TASKS.md`: a hook names it at each session's start, and gives it again after a compaction), just delete the file once the milestone is complete.
+Work on one trunk, `main`. Branch off the latest main, keep the branch short, and squash-merge it into main yourself when it's done: merge the latest main into the branch, pass `tools/check.sh` on that result right before you squash, and squash only. There are no milestone branches (retired 2026-10-11; milestone-6's history is at the tag `archive/milestone-6`).
+
+TASKS.md has the open work: a short list of goals, not a log (a hook names it at each session's start, and gives it again after a compaction). Add a goal when the owner sets one; delete it when it's done. The GitHub issues keep each milestone's scope and criteria up to M6, and the backlog (#31).
 
 Go 80% of the way on ASD-STE100 when communicating technical details (and strive for clear english in all communication)
 

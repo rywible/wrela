@@ -171,9 +171,9 @@ The owner's order of priority still holds:
 
 ## Milestones
 
-Planned in GitHub issues on rywible/wrela, not here. Each milestone has a scope issue listing what's in, what's out, and where the out-of-scope items go.
+M0 to M6 were planned in GitHub issues on rywible/wrela, each with a scope issue listing what's in, what's out, and where the out-of-scope items go. Since 2026-10-11 there are no milestones: work merges into `main` as it's done, toward the outcomes after M6 below, in order, and TASKS.md has the open work.
 
-| Milestone | Outcome |
+| Milestone or goal | Outcome |
 |---|---|
 | **M0: measure first** | Done: spikes 01–12 |
 | **M1: hello field** | Done: wrela compiles to WASM and WGSL; a field renders in a browser tab |
@@ -182,11 +182,11 @@ Planned in GitHub issues on rywible/wrela, not here. Each milestone has a scope 
 | **M4: the engine's spine** | Done (October 2026): spike 01's herd simulated and rendered from wrela source within 1.25× of the hand-written numbers; the sim on its own worker, its replays verified with no GPU and on x86-64 |
 | **M5: the look** | Built (October 2026): the Last Green's clearing at 60 fps (6.2 ms median of GPU work per 1080p frame in Chrome; 3.6 after the render work that followed; 4.5 with the physical sky, moving clouds, their light and gloss) with a creature walking across it, in the look the owner picked from spike 15's three; hot reload in both hosts; the great tree and the fawn authored with the lens. The owner's judgments (the look in motion, the round's verdicts) are pending |
 | **M6: the Last Green's floor** | Built (October 2026): about 3 km² of the flagship's first floor composed as a map in wrela source, grown by a history baked when the game is built (a cached constant, a file a 256 m tile, 0.65 MB a km² compressed), checked by the interest check against what the renderer draws, and streamed round a stand-in player with water, ground cover, cooked bark, rock and masonry, and the wildwood past its edge to the egg's place 10 km out; tile positions and camera-relative rendering. In Chrome on the M4: playable 1.09 s cold after 3.51 MB, the walk's frames a median 5.7 ms of GPU work back to back (worst 14.9 over three runs, none over 16.7), 60 Hz paced; the floor 6.4 MB as served (#44's estimate: 16). The play harness, the map lens with provenance in the running floor, and the lookbook. The owner's walk, notes and verdicts are pending |
-| **M7: the duel** | The masked climber against one creature, in all three browsers; the combat-feel gate |
-| **M8: the Ashstag** | The first Warden and the soul blade's first evolution; the art-quality gate |
-| **M9: the Last Green** | Floor 1 in full, streamed, released free as an offline game |
-| **M10: seasons** | Leaderboards from verified replays, seasons and the champion |
-| **M11: season 1** | The Titan's Back and the Clockless War; the tower opens with three floors |
+| **The duel** | The masked climber against one creature, in all three browsers; the combat-feel gate |
+| **The Ashstag** | The first Warden and the soul blade's first evolution; the art-quality gate |
+| **The Last Green** | Floor 1 in full, streamed, released free as an offline game |
+| **Seasons** | Leaderboards from verified replays, seasons and the champion |
+| **Season 1** | The Titan's Back and the Clockless War; the tower opens with three floors |
 
 Everything else in the vision is in the backlog issue (#31). The pinned issue #26 tracks status against the vision.
 

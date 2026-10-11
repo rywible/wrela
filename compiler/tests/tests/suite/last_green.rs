@@ -1660,10 +1660,10 @@ fn kept_pace(chrome: &wrela_tests::BrowserRun, from: usize) -> f64 {
     }
 }
 
-/// AC7's fastest pace (measured, for M9's gliding): along the egg's road in the wildwood, a
-/// minute at each glide (1, 2, 4, 8 and 16 times a run; a glide passes over what's on the
-/// ground, as M9's will): the pace each kept, the tiles late at each, and the fastest with
-/// none.
+/// AC7's fastest pace (measured, for the game's gliding): along the egg's road in the wildwood,
+/// a minute at each glide (1, 2, 4, 8 and 16 times a run; a glide passes over what's on the
+/// ground, as the game's will): the pace each kept, the tiles late at each, and the fastest
+/// with none.
 #[test]
 #[ignore = "measure: needs Chrome, python3 and a GPU"]
 fn the_fastest_pace_the_streaming_holds() {

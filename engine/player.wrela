@@ -31,8 +31,8 @@ pub const WALK: f32 = 1.4
 pub const RUN: f32 = 5.0
 
 /// How much faster each glide goes (the play harness's, H: each press the next; for the
-/// streaming's tests, and M9's gliding to come): 2, 4, 8 and 16 times a run, over what's on the
-/// ground.
+/// streaming's tests, and the game's gliding to come): 2, 4, 8 and 16 times a run, over what's on
+/// the ground.
 pub const GLIDES = [1.0, 2.0, 4.0, 8.0, 16.0]
 /// How quickly the player gets up to its pace, and stops (m/s²).
 pub const ACCELERATION: f32 = 10.0
@@ -272,7 +272,8 @@ pub fn step<G: Ground>(p: mut Player, ground: G, water: Water, o: Obstacles, dt:
     p.controls = c
     let (dir, running) = wish(c)
     let at = p.at.world()
-    // A glide goes over what's on the ground (as M9's gliding will), at its pace on any ground.
+    // A glide goes over what's on the ground (as the game's gliding will), at its pace on any
+    // ground.
     let gliding = c.glide > 0
     let pace = if gliding { 1.0 } else { stands(ground, water, o, at) }
     let target = dir * (if running { RUN } else { WALK }) * max(pace, 0.2) * GLIDES[c.glide]
