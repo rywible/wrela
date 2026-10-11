@@ -31,13 +31,14 @@ impl Shaded for Paint {
 pub const CAPE = vec3(0.035, 0.035, 0.045)
 
 // The look's colours: the hood the cape's, its inside blacker still (nothing is under the mask);
-// a pale mask with red marks; the sword's grey steel blade (pale, so it reads against the dark
+// an ivory mask (darker than it looks: in the sun its lit band is about twice its albedo) with
+// red marks; the sword's grey steel blade (pale, so it reads against the dark
 // wood), its paler ground edge, its bronze guard and pommel (a warm accent the eye finds), and
 // its grip's leather.
 const HOOD = Paint { albedo: CAPE }
 const VOID = Paint { albedo: vec3(0.004, 0.004, 0.005) }
-const MASK = Paint { albedo: vec3(0.78, 0.75, 0.68) }
-const MARK = Paint { albedo: vec3(0.45, 0.025, 0.02) }
+const MASK = Paint { albedo: vec3(0.42, 0.4, 0.35) }
+const MARK = Paint { albedo: vec3(0.32, 0.015, 0.012) }
 const BRONZE = Paint { albedo: vec3(0.3, 0.18, 0.07) }
 const STEEL = Paint { albedo: vec3(0.36, 0.37, 0.39) }
 const EDGE = Paint { albedo: vec3(0.62, 0.62, 0.6) }
@@ -46,12 +47,14 @@ const LEATHER = Paint { albedo: vec3(0.09, 0.05, 0.03) }
 /// The head as a creature of one bone (at the feet, in the body's space: +z ahead): a hood round
 /// the head, open at the front and black inside, with a collar standing round it behind; in it a
 /// mask, pale, flat at the brow and pointed at the chin, a brow ridge and a nose plane raised on
-/// it, two eye slits cut through to the black, and red marks that aren't mirrored. Nothing is
-/// under it.
+/// it, two wide black eyes set in it, and red marks that aren't mirrored, all a fifth larger
+/// than the head and forward of it, so the mask fills the hood's opening. Nothing is under it.
 pub fn head() -> Creature<Paint> {
     var s = Skeleton::new()
     let root = s.root("body", vec3(0.0))
     let r = HEAD_RADIUS
+    // Where the mask goes: a little forward of the head, so it stands in the hood's opening.
+    let on_face = HEAD + vec3(0.0, 0.0, 0.012)
     // The mask's face: an oval cut flat across the brow and to a point at the chin, so its
     // outline isn't an egg's; a brow ridge and a nose plane raised on it for the light to carve.
     let face = ellipsoid(vec3(0.09, 0.122, 0.036))
@@ -68,18 +71,18 @@ pub fn head() -> Creature<Paint> {
         ),
         round_cone(vec3(0.0, 0.03, 0.117), vec3(0.0, -0.045, 0.125), r_top: 0.008, r_bottom: 0.016),
     ].union()
-    let slits = [
+    let eyes = [
         round_cone(
-            vec3(0.016, 0.006, 0.122),
-            vec3(0.068, 0.028, 0.104),
-            r_top: 0.019,
-            r_bottom: 0.012,
+            vec3(0.012, 0.008, 0.124),
+            vec3(0.072, 0.03, 0.106),
+            r_top: 0.024,
+            r_bottom: 0.013,
         ),
         round_cone(
-            vec3(-0.016, 0.006, 0.122),
-            vec3(-0.068, 0.028, 0.104),
-            r_top: 0.019,
-            r_bottom: 0.012,
+            vec3(-0.012, 0.008, 0.124),
+            vec3(-0.072, 0.03, 0.106),
+            r_top: 0.024,
+            r_bottom: 0.013,
         ),
     ].union()
     // The marks, not mirrored: two red sweeps up from the right eye past the brow, one down the
@@ -89,19 +92,19 @@ pub fn head() -> Creature<Paint> {
             vec3(-0.035, 0.05, 0.118),
             vec3(-0.085, 0.115, 0.09),
             r_top: 0.02,
-            r_bottom: 0.007,
+            r_bottom: 0.006,
         ),
         round_cone(
             vec3(-0.072, 0.045, 0.108),
             vec3(-0.1, 0.075, 0.09),
-            r_top: 0.015,
-            r_bottom: 0.005,
+            r_top: 0.009,
+            r_bottom: 0.004,
         ),
         round_cone(
             vec3(0.045, -0.03, 0.114),
             vec3(0.06, -0.095, 0.094),
-            r_top: 0.019,
-            r_bottom: 0.006,
+            r_top: 0.011,
+            r_bottom: 0.004,
         ),
     ].union()
     creature(s)
@@ -121,12 +124,27 @@ pub fn head() -> Creature<Paint> {
         .join(
             "mask",
             root,
-            face.smooth_union(relief, k: 0.012).smooth_subtract(slits, k: 0.004)
-                .translate(HEAD)
+            face.smooth_union(relief, k: 0.012).smooth_subtract(eyes, k: 0.004)
+                .scale(1.2)
+                .translate(on_face)
                 .with(MASK),
             seam: smooth(0.004),
         )
-        .join("mask's marks", root, marks.translate(HEAD).with(MARK), seam: smooth(0.003))
+        .join(
+            "mask's eyes",
+            root,
+            eyes.smooth_intersect(face.translate(vec3(0.0, 0.0, -0.012)), k: 0.002)
+                .scale(1.2)
+                .translate(on_face)
+                .with(VOID),
+            seam: smooth(0.002),
+        )
+        .join(
+            "mask's marks",
+            root,
+            marks.scale(1.2).translate(on_face).with(MARK),
+            seam: smooth(0.003),
+        )
         .join(
             "collar",
             root,
@@ -241,12 +259,14 @@ fn the_sword_reaches_its_point_and_its_edge_is_thin() {
     assert(f.distance(vec3(BLADE_WIDTH * 0.45, mid, face)) > 0.0, "the edge isn't thin")
 }
 
-/// The mask's eyes are open to the black behind them: the slits are cut through it.
+/// The mask's eyes are black inlays on its pale face, wide enough to read at play distance.
 @test
-fn the_masks_eyes_are_open() {
+fn the_masks_eyes_are_dark_on_a_pale_face() {
     let f = head().field()
-    for x in [0.042, -0.042] {
-        let d = f.distance(HEAD + vec3(x, 0.014, 0.118))
-        assert(d > 0.0, f"the eye slit at x {x} is closed ({d} m)")
+    for x in [0.05, -0.05] {
+        let eye = f.channels(HEAD + vec3(x, 0.023, 0.145)).albedo
+        assert(eye.x < 0.05, f"the eye at x {x} isn't dark ({eye})")
     }
+    let brow = f.channels(HEAD + vec3(0.0, 0.06, 0.14)).albedo
+    assert(brow.x > 0.3, f"the brow isn't pale ({brow})")
 }

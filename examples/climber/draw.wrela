@@ -43,11 +43,12 @@ const CAPE_PART: u32 = 1
 const HEAD_PART: u32 = 2
 const SWORD_PART: u32 = 3
 
-/// A creature of one bone realized: its mesh and colours (cells for a 3 mm tolerance).
-fn realized<K: Creature<Paint>>(c: K) -> Realized {
-    let look = CreatureLook { surface: Tolerance { tolerance: 3mm, largest: 3cm } }
+/// A creature of one bone realized: its mesh and colours (cells for a 3 mm tolerance, and no
+/// wider than `largest`: the mask's paint is finer than the 3 cm a 3 mm tolerance allows).
+fn realized<K: Creature<Paint>>(c: K, largest: f32) -> Realized {
+    let look = CreatureLook { surface: Tolerance { tolerance: 3mm, largest } }
     let mesh = realize_rigid(c, look)
-    let colours = colours(mesh, c.field(), ByChannels {}, cell: 1cm)
+    let colours = colours(mesh, c.field(), ByChannels {}, cell: min(largest, 1cm))
     Realized { mesh, colours }
 }
 
@@ -63,8 +64,8 @@ pub struct Rigid {
     part: u32,
 }
 
-fn rigid<K: Creature<Paint>>(c: K, part: u32) -> Rigid {
-    Rigid { r: realized(c), at: buffer(1), was: buffer(1), part }
+fn rigid<K: Creature<Paint>>(c: K, part: u32, largest: f32) -> Rigid {
+    Rigid { r: realized(c, largest), at: buffer(1), was: buffer(1), part }
 }
 
 impl Rigid {
@@ -150,8 +151,8 @@ pub fn drawn() -> Drawn {
         last_points: buffer(POINTS),
         wisps: buffer(MOST * 2),
         count: 0,
-        head: rigid(head(), HEAD_PART),
-        sword: rigid(sword(), SWORD_PART),
+        head: rigid(head(), HEAD_PART, largest: 7mm),
+        sword: rigid(sword(), SWORD_PART, largest: 3cm),
         written: false,
         shown: false,
     }
