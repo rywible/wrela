@@ -15,16 +15,18 @@ floors). Set 2026-10-11, from an outside audit the owner shared. In brackets, th
 that does each part.
 
 - The route: an opening, an enclosed wood, a reveal, water and an encounter. Each place works on
-  approach, while a player explores it, and looking back (Lookdev: shot framing).
+  approach, while a player explores it, and looking back. The exploration check's goals: dead
+  views at most 15% (27.3% on main), lost walkers at most 25% (21.3%) (Lookdev: shot framing).
 - Three definitive tree forms, the hero oak, a beech interior and an alder waterside, whose
   construction then serves every instance (Lookdev: tree crowns; Lookdev: trunks and wood).
 - The look survives movement: walking, fast turns, gusts, water, a character passing in front, sun
   to shade, and the first second after arriving, not only the settled still (Native resolution and
   clean lines).
 - The climber (vision.md: a floor-length cape all round, no arms or legs, a kabuki mask, a
-  telekinetic great sword) and one fight against a creature: the sword's moves, a short blink in
-  place of a dodge roll, the cape as cloth that meets the ground and the grass, then the darkness
-  off it; frame data; a gamepad (Climber and fight spike).
+  telekinetic great sword) and one fight against a creature, in the Last Green at the ring's
+  glade. The sword, the blink, the cape's cloth on the ground and the darkness fight the wolf in
+  `examples/climber`. Next: the hem through the grass, hit reactions, sound cues, the camera, then
+  the climber in place of the floor's stand-in (Climber and fight spike).
 - A creature that notices the player, watches or flees, and goes back to what it was doing, with
   the same senses as the fight's enemy (Creatures that notice you).
 - The place's sounds: the climber's hem through grass and over each ground, creatures' steps,
@@ -37,9 +39,10 @@ that does each part.
 
 1. Measure what one accepted scene, creature and encounter cost to make, before content is
    multiplied over floors.
-2. The tower: the staircase in the void, doors, a floor as a unit the engine loads, and world
-   states that change in play. Freeing or preserving a world opens the way up; a preserved world
-   can be visited again, a freed one can't (Staircase, doors and floor kit).
+2. The tower: the stair, its doors and the door rule load each floor as its own build
+   (`examples/stair`). Next: a floor kit that takes the Last Green's streaming and frame out of
+   its own code, world states that change in play, and a faster door into the Last Green
+   (Staircase, doors and floor kit).
 3. Creatures at scale: a floor's 4–6 kinds, its elites and its Warden, by agents, at shippable
    quality.
 4. Safari and Firefox: the floor, the audio and the sim's bits in all three browsers.
