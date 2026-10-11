@@ -407,3 +407,39 @@ fn walked_by_another_the_climber_moves_only_in_its_moves() {
     print(f"walked: the blink went {back} m back")
     assert(abs(back - 3.6) < 0.05, f"the blink went {back} m back")
 }
+
+/// The sword at rest floats on its own: a hand's width clear of the cape all along its blade, it
+/// rises and falls a quarter round behind the body's float, and it holds still at the guard.
+@test
+fn the_sword_at_rest_floats_clear_of_the_cape() {
+    var low = 10.0
+    var high = -10.0
+    var clear = 10.0
+    for k in 0..8 {
+        let drift = f32(k) / 8.0
+        let p = moves::locomotion(ready: 0.0, speed: 0.0, accel: 0.0, turning: 0.0, drift: drift)
+        low = min(low, p.sword.at.y)
+        high = max(high, p.sword.at.y)
+        let aim = normalize(p.sword.aim)
+        for j in 1..cape::DOWN {
+            for i in 0..cape::AROUND {
+                let c = cape::rest(i, j) + vec3(0.0, p.form.lift, 0.0)
+                let along = clamp(dot(c - p.sword.at, aim), 0.0, body::POINT_AT)
+                let gap = length(c - (p.sword.at + aim * along)) - 0.5 * body::BLADE_WIDTH
+                clear = min(clear, gap)
+            }
+        }
+        let guard = moves::locomotion(
+            ready: 1.0,
+            speed: 0.0,
+            accel: 0.0,
+            turning: 0.0,
+            drift: drift,
+        )
+        let still = moves::locomotion(ready: 1.0, speed: 0.0, accel: 0.0, turning: 0.0, drift: 0.0)
+        assert(length(guard.sword.at - still.sword.at) < 1e-5, "the sword at the guard bobs")
+    }
+    print(f"the sword at rest: {clear} m clear of the cape, rising and falling {high - low} m")
+    assert(clear >= 0.12, f"the sword at rest is only {clear} m clear of the cape")
+    assert(high - low > 1.5 * moves::SWORD_BOB, f"the sword at rest bobs only {high - low} m")
+}

@@ -34,7 +34,7 @@ use climber::body::HEM_RADIUS
 use climber::cape::Plane
 use climber::draw::{CastWolf, Drawn, cast_wolf, drawn, wolf_bones}
 use climber::figure::{Figure, figure}
-use climber::moves::{Act, REST}
+use climber::moves::{Act, drift_rate, locomotion}
 use climber::sounds::{Heard, cues, heard}
 use history::{BAKED, OBSTACLES, tiles_hi, tiles_lo}
 use ground::{FIGHT, FIGHT_WAY, STONE_FEET, STONE_MARGIN, fought, unbuilt}
@@ -406,11 +406,13 @@ pub struct Floor {
     shot_digits: u32,
     /// The climber, the player: its figure (the cape and the darkness off it) stepped each
     /// frame, and drawn (`climber::draw`: its head and sword realized at the first frame); the
-    /// frame's time it was last stepped to, and that step (s).
+    /// frame's time it was last stepped to, and that step (s); its float's phase out of the
+    /// fight (0 to 1).
     climber: Figure,
     drawn: Option<Drawn>,
     stepped: f32,
     dt: f32,
+    drift: f32,
     /// The built things (`blockouts`) to realize, one a frame at load, and those realized; and
     /// where the grass keeps out of the stones (each one's place and reach).
     to_build: Vec<blockouts::Built>,
@@ -638,6 +640,7 @@ pub fn init() -> Floor {
         drawn: None,
         stepped: 0.0,
         dt: 0.0,
+        drift: 0.0,
         to_build: to_build(),
         built_reach: Vec::new(),
         built_far: Vec::new(),
@@ -2044,17 +2047,22 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     let breeze = vec3(gust.dir.x, 0.0, gust.dir.y) * (0.5 + if s.still { 0.0 } else {
         1.5 * gust.strength
     })
-    // In the fight (in play), its pose, its swings and its blink are the fight's climber's.
+    // In the fight (in play), its pose, its swings and its blink are the fight's climber's; out
+    // of it, it glides, floating as it goes.
     let fc = b.b.fight.fight.climber
     let fighting = cast.is_none() && b.b.fight.awake
-    let pose = if fighting { fc.pose(b.alpha) } else { REST }
+    let speed = length(pb.velocity)
+    s.drift = fract(s.drift + drift_rate(speed) * s.dt)
+    let pose = if fighting { fc.pose(b.alpha) } else {
+        locomotion(ready: 0.0, speed: speed, accel: 0.0, turning: 0.0, drift: s.drift)
+    }
     let swinging = fighting && (fc.act == Act::Slash || fc.act == Act::Backslash)
     let gone = fighting && fc.gone()
     s.climber.step(
         stood,
         facing,
         pose,
-        speed: length(pb.velocity),
+        speed: speed,
         swinging: swinging,
         gone: gone,
         ground: Plane { at: stood, slope },
