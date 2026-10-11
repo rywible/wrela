@@ -20,7 +20,7 @@ use engine::paint::{
 }
 use engine::place::{Place, TILE}
 use engine::plant::{Plant, Wind, full, leaf_atlas}
-use engine::player::{Framing, third_person}
+use engine::player::{Arm, Focus, Framing, follow}
 use engine::present::Snapshots
 use engine::probes::{Baked, Trace, grid}
 use engine::run::run
@@ -51,6 +51,9 @@ use world::{GROUND, World, present as snapshot, spawn_world, tick}
 /// (a whole number of the clipmap's coarsest snaps and of its fields' blocks: what's cooked stays).
 const RECENTRE: f32 = 3072.0
 const RECENTRE_STEP: i32 = 6
+
+/// How near the player the sim's fawn is drawn (m): past it, it's a few pixels.
+const FAWN_DRAWN: f32 = 150.0
 
 /// The ticks between the play harness's reports (2 s at 60 Hz).
 const REPORT_TICKS: u32 = 120
@@ -361,6 +364,8 @@ pub struct Floor {
     settled: u32,
     off: Flags<System>,
     framing: Framing,
+    /// The camera's arm as it was last frame (`engine::player::follow`).
+    arm: Arm,
     /// The lookbook's shot the camera's held on (none: the player's), since when, and one being
     /// typed (`keys`).
     shot: Option<u32>,
@@ -383,12 +388,17 @@ pub struct Floor {
     footprints: GpuBuffer<vec4>,
     palette: GpuBuffer<mat4>,
     last_palette: GpuBuffer<mat4>,
-    /// The fawn (`fawns`): realized over frames once a shot that casts it is held (its job, and
-    /// the creature it realizes), then its mesh and colours, and its palette where it stands.
+    /// The fawn (`fawns`): realized over frames once a shot that casts it is held or, in play,
+    /// once the sim's fawn (`behaviour`) is near (its job, and the creature it realizes), then
+    /// its mesh and colours; its palette this frame and the last, and whether it's drawn.
     fawn_job: Option<Job<realizing<fawn::creature::Coat, fawns::Grown>>>,
     fawn_grown: fawns::Grown,
     fawn: Option<engine::standin::Realized>,
     fawn_palette: GpuBuffer<mat4>,
+    fawn_last: GpuBuffer<mat4>,
+    fawn_on: bool,
+    /// Whether the fawn's near enough the player to fall in the moving shadow map.
+    fawn_shadowed: bool,
     /// The water's mesh (`history::waters`, laid as the program starts), the scene under it as its pass reads it, and which
     /// of its looks is drawn (`engine::water::LOOKS`; F6 the next).
     water_verts: GpuBuffer<WaterVert>,
@@ -566,6 +576,7 @@ pub fn init() -> Floor {
         settled: 0,
         off: Flags::none(),
         framing: Framing {},
+        arm: Arm {},
         shot: None,
         held: None,
         shot_from: 0.0,
@@ -583,6 +594,9 @@ pub fn init() -> Floor {
         fawn_grown: fawns::grown(),
         fawn: None,
         fawn_palette: buffer(engine::creature::MAX_BONES),
+        fawn_last: buffer(engine::creature::MAX_BONES),
+        fawn_on: false,
+        fawn_shadowed: false,
         water_verts: buffer_of(waters.mesh.verts, at_least: 1),
         water_tris: buffer_of(waters.mesh.tris, at_least: 1),
         water_count: waters.mesh.tris.len(),
@@ -1352,10 +1366,14 @@ fn static_shadows(s: mut Floor, sh: Shadows, wind: Wind) {
     if s.terrain_cooked > 0 && s.near.ready {
         return
     }
-    s.strip_drawn = s.near.drawing() || s.far.drawing()
+    // The far cascade waits for all that casts into it at load (the far layer, the built
+    // things): drawn before, it was drawn whole again as each came (on lavapipe, 48 s each of a
+    // lookbook still's 390 s).
+    let far_casts = s.far_fetch.is_none() && s.wood.is_some() && s.to_build.is_empty()
+    s.strip_drawn = s.near.drawing() || (s.far.drawing() && far_casts)
     if s.near.drawing() {
         s.near.draw_strip(mut s.wood, s.built, SUN, sh, wind, s.linear, s.cam, on, "shadows near")
-    } else if s.far.drawing() {
+    } else if s.far.drawing() && far_casts {
         s.far.draw_strip(mut s.wood, s.built, SUN, sh, wind, s.linear, s.cam, on, "shadows far")
     }
 }
@@ -1379,7 +1397,7 @@ fn moving_shadow(s: mut Floor, sh: Shadows) {
         )
     }
     if let Some(c) = s.fawn {
-        if fawn_shown(s.shot) {
+        if s.fawn_on && s.fawn_shadowed {
             draw(
                 mv,
                 character_shadow.bind(
@@ -1691,7 +1709,7 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         )
     }
     if let Some(c) = s.fawn {
-        if fawn_shown(s.shot) {
+        if s.fawn_on {
             draw(
                 cr,
                 character.bind(
@@ -1811,15 +1829,15 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
             depth: engine::view::SEEN,
         )
     }
-    // The fawn stands still: its palette is its last.
+    // The fawn's motion: its palette against its last.
     if let Some(c) = s.fawn {
-        if fawn_shown(s.shot) {
+        if s.fawn_on {
             draw(
                 mo,
                 character_motion.bind(
                     verts: c.mesh.verts.items(),
                     palettes: s.fawn_palette.items(),
-                    last: s.fawn_palette.items(),
+                    last: s.fawn_last.items(),
                     cam: cam,
                 ),
                 motion.bind(cam),
@@ -1991,9 +2009,32 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         None => (feet, heading),
     }
     write(mut s.palette, 0, [standin_at(stood, facing)])
-    if let Some(c) = cast {
-        cast_fawn(mut s)
-        write(mut s.fawn_palette, 0, fawns::at_rest(on_ground(c.fawn), c.fawn.z))
+    // The fawn: where a shot casts it, standing at rest; in play (no shot held), the sim's,
+    // between the two ticks round the frame, where it's near enough the player to be seen.
+    std::gpu::copy(from: s.fawn_palette.items(), to: s.fawn_last.items_mut())
+    let fawn_was_on = s.fawn_on
+    s.fawn_on = match cast {
+        Some(c) => {
+            cast_fawn(mut s)
+            write(mut s.fawn_palette, 0, fawns::at_rest(on_ground(c.fawn), c.fawn.z))
+            s.fawn_shadowed = true
+            true
+        },
+        None => {
+            let f = behaviour::between(b.a.fawn, b.b.fawn, b.alpha)
+            let apart = length(f.walker.root.pos - (feet + o))
+            let near = s.shot.is_none() && apart < FAWN_DRAWN
+            s.fawn_shadowed = apart < MOVING_SPAN
+            if near {
+                cast_fawn(mut s)
+                write(mut s.fawn_palette, 0, behaviour::palette(f, o))
+            }
+            near
+        },
+    }
+    if !fawn_was_on || s.origin != before {
+        // No last frame's place to move from, or it's in the old render space.
+        std::gpu::copy(from: s.fawn_palette.items(), to: s.fawn_last.items_mut())
     }
     // The cast's footprints in the grass (`CAST_FEET`), each its place and reach.
     let feet_of = |c: vec3, reach: f32| {
@@ -2024,7 +2065,18 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
             (e - o, a - o, shot.fovy)
         },
         None => {
-            let (e, a) = third_person(s.framing, feet, c.yaw, c.pitch, OBSTACLES, o2, ground_r)
+            let (e, a) = follow(
+                mut s.arm,
+                gap / 1000.0,
+                s.framing,
+                feet,
+                yaw: c.yaw,
+                pitch: c.pitch,
+                focus: Focus {},
+                o: OBSTACLES,
+                o_from: o2,
+                height: ground_r,
+            )
             (e, a, s.framing.fovy)
         },
     }
@@ -2156,11 +2208,6 @@ fn held_cast(shot: Option<u32>) -> Option<lookbook::Cast> {
         ),
         _ => None,
     }
-}
-
-/// Whether the fawn's drawn: a shot that casts it is held.
-fn fawn_shown(shot: Option<u32>) -> bool {
-    held_cast(shot).is_some()
 }
 
 /// The fawn's realization, a slice a frame (started the first time it's cast).
@@ -2295,7 +2342,7 @@ pub fn test_settled(s: Floor) -> f32 {
         s.arrived.is_empty() &&
         s.next_probes.is_none() &&
         length(eye - s.probes_at) <= PROBES_MOVE &&
-        (!fawn_shown(s.shot) || s.fawn.is_some())
+        (!s.fawn_on || s.fawn.is_some())
     if still && playable(s, eye + s.cam.origin.xz) { 1.0 } else { 0.0 }
 }
 

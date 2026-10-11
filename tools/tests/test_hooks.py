@@ -136,6 +136,8 @@ class GateTest(Checkout, unittest.TestCase):
             "tools/check.sh clearing:: lock",
             "tools/check.sh --long clearing:: --nocapture",
             "tools/check.sh --fmt",
+            "tools/check.sh --package=wrela-syntax",
+            "tools/check.sh --package=wrela-syntax lexer",
             "sed -n 1,60p tools/check.sh",
             'grep -n "budget" tools/check.sh',
         ]:
@@ -208,9 +210,10 @@ case "$1" in
 esac
 """, 0o755)
 
-    def session(self, source):
+    def session(self, source, shared="no/such/folder"):
         out = run("session", {"cwd": self.root, "source": source},
-                  {"CLAUDE_CODE_REMOTE": "true", "CLAUDE_ENV_FILE": self.env_file})
+                  {"CLAUDE_CODE_REMOTE": "true", "CLAUDE_ENV_FILE": self.env_file,
+                   "WRELA_SHARED_FOLDER": os.path.join(self.root, shared)})
         self.assertEqual(out.returncode, 0, out.stderr)
         return out.stdout
 
@@ -233,6 +236,14 @@ esac
         self.assertEqual(sorted(self.ran(True)), ["--check", "--env", "--warm"])
         with open(self.env_file) as f:
             self.assertEqual(f.read(), "export WRELA_SOFTWARE_GPU=1\nexport WRELA_CHROME_ARGS='--a --b'\n")
+
+    def test_in_a_project_the_constants_cache_is_in_its_shared_folder(self):
+        open(os.path.join(self.root, "provisioned"), "w").close()
+        os.mkdir(os.path.join(self.root, "shared"))
+        self.session("resume", shared="shared")
+        with open(self.env_file) as f:
+            cache = os.path.join(self.root, "shared", ".wrela-consts")
+            self.assertIn(f"export WRELA_CONST_CACHE={cache}\n", f.read())
 
     def test_a_machine_not_provisioned_is_provisioned_in_the_background(self):
         for source in ("startup", "resume"):

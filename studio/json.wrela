@@ -2,6 +2,7 @@
 // headless runner and the studio server read. Numbers are written exactly (std::fmt's floats
 // read back as the same f32); a NaN or an infinity, which JSON has no form for, is `null`.
 
+use std::fmt::{json_number, json_text}
 use std::string::String
 
 /// One JSON object being written: `obj().num("d", 0.1).text("part", "ear").done()`.
@@ -16,40 +17,6 @@ pub fn obj() -> Json {
     Json { out, first: true }
 }
 
-/// `s` as a JSON string's body: quotes, backslashes and control characters escaped.
-pub fn escape(out: mut String, s: str) {
-    for i in 0..s.len() {
-        let b = s.byte(i)
-        if b == 34 {
-            out.push_str("\\\"")
-        } else if b == 92 {
-            out.push_str("\\\\")
-        } else if b == 10 {
-            out.push_str("\\n")
-        } else if b == 13 {
-            out.push_str("\\r")
-        } else if b == 9 {
-            out.push_str("\\t")
-        } else if b < 32 {
-            out.push_str("\\u00")
-            let hex = "0123456789abcdef"
-            out.push_byte(hex.byte(u32(b >> 4)))
-            out.push_byte(hex.byte(u32(b & 15)))
-        } else {
-            out.push_byte(b)
-        }
-    }
-}
-
-/// A float as JSON: exact, or `null` for a NaN or an infinity.
-pub fn number(out: mut String, x: f32) {
-    if x == x && abs(x) < 3.4028235e38 {
-        out.push_str(f"{x}")
-    } else {
-        out.push_str("null")
-    }
-}
-
 impl Json {
     fn key(mut self, k: str) {
         if !self.first {
@@ -57,14 +24,14 @@ impl Json {
         }
         self.first = false
         self.out.push_str("\"")
-        escape(mut self.out, k)
+        json_text(mut self.out, k)
         self.out.push_str("\":")
     }
 
     pub fn num(take self, k: str, x: f32) -> Json {
         var j = take self
         j.key(k)
-        number(mut j.out, x)
+        json_number(mut j.out, x)
         j
     }
 
@@ -86,7 +53,7 @@ impl Json {
         var j = take self
         j.key(k)
         j.out.push_str("\"")
-        escape(mut j.out, s)
+        json_text(mut j.out, s)
         j.out.push_str("\"")
         j
     }
@@ -95,11 +62,11 @@ impl Json {
         var j = take self
         j.key(k)
         j.out.push_str("[")
-        number(mut j.out, v.x)
+        json_number(mut j.out, v.x)
         j.out.push_str(",")
-        number(mut j.out, v.y)
+        json_number(mut j.out, v.y)
         j.out.push_str(",")
-        number(mut j.out, v.z)
+        json_number(mut j.out, v.z)
         j.out.push_str("]")
         j
     }
@@ -108,9 +75,9 @@ impl Json {
         var j = take self
         j.key(k)
         j.out.push_str("[")
-        number(mut j.out, v.x)
+        json_number(mut j.out, v.x)
         j.out.push_str(",")
-        number(mut j.out, v.y)
+        json_number(mut j.out, v.y)
         j.out.push_str("]")
         j
     }

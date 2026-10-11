@@ -29,9 +29,21 @@ impl<A: Clone> Timers<A> {
     @deterministic
     pub fn after(mut self, now: Tick, delay: f32, dt: f32, action: take A) -> u64 {
         let due = now + u32(ceil(delay / dt))
-        var at = self.pending.len()
-        while at > 0 && self.pending[at - 1].due > due {
-            at -= 1
+        let n = self.pending.len()
+        var at = n
+        if n > 0 && self.pending[n - 1].due > due {
+            // The first later timer: equal due ticks keep the order they were set in.
+            var lo = 0
+            var hi = n
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2
+                if self.pending[mid].due <= due {
+                    lo = mid + 1
+                } else {
+                    hi = mid
+                }
+            }
+            at = lo
         }
         let seq = self.next
         self.pending.insert(at, Timer { due, seq, action })

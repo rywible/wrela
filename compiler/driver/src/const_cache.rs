@@ -11,6 +11,7 @@
 //! used for a week are removed.
 
 use sha2::{Digest, Sha256};
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use wrela_ir as ir;
 use wrela_lower::Value;
@@ -55,16 +56,21 @@ fn package_root(dir: &Path) -> Option<&Path> {
     (dir.file_name()? == "consts" && build.file_name()? == "build").then(|| build.parent())?
 }
 
-/// A constant's key: its module's WASM and the fuel it may use, with the compiler's version.
+/// A constant's key: its module's WASM and the fuel it may use, with the identity of the code
+/// that runs it and reads its value back (build.rs: those sources' hash, and wasmtime's version).
 /// How many threads computed it isn't part of it: results don't depend on them (§6.12).
 pub fn key(wasm: &[u8], fuel: u64) -> String {
     let mut h = Sha256::new();
     h.update(MAGIC);
-    h.update(env!("CARGO_PKG_VERSION").as_bytes());
+    h.update(env!("WRELA_CONST_IDENTITY").as_bytes());
     h.update(fuel.to_le_bytes());
     h.update((wasm.len() as u64).to_le_bytes());
     h.update(wasm);
-    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    let mut key = String::with_capacity(64);
+    for b in h.finalize() {
+        write!(key, "{b:02x}").expect("write a cache key");
+    }
+    key
 }
 
 /// The value cached under `key` in `dir`, if there's one that reads back whole. A hit marks the
@@ -409,6 +415,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("wrela-consts-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let k = key(b"\0asm module", 1 << 34);
+        // The same every time, for one build of the compiler (its code's hash is in it).
+        assert_eq!(k, key(b"\0asm module", 1 << 34));
+        assert!(k.len() == 64 && k.bytes().all(|b| b.is_ascii_hexdigit()), "{k}");
         assert_ne!(k, key(b"\0asm module", 1 << 35), "the fuel is part of the key");
         assert_ne!(k, key(b"\0asm modulf", 1 << 34));
         let v = Value::Bytes(vec![1, 2, 3]);
@@ -418,6 +427,43 @@ mod tests {
         clean(&dir);
         assert!(get(&dir, &k).is_some(), "a value used today is kept");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn perf_cleanup_keeps_used_and_future_entries_and_discards_stale_files() {
+        use std::time::{Duration, SystemTime};
+        let dir =
+            std::env::temp_dir().join(format!("wrela-consts-perf-clean-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let now = SystemTime::now();
+        let hour = Duration::from_secs(3600);
+        let recent = format!("{}.wcv", "2".repeat(64));
+        let current = format!("{}.123.tmp", "4".repeat(64));
+        let future = format!("{}.123-456.tmp", "5".repeat(64));
+        for (name, modified) in [
+            (format!("{}.wcv", "1".repeat(64)), now - KEEP_FOR - hour),
+            (recent.clone(), now - hour * 2),
+            (format!("{}.123-456.tmp", "3".repeat(64)), now - hour * 2),
+            (current.clone(), now),
+            (future.clone(), now + hour),
+        ] {
+            std::fs::write(dir.join(&name), "cached").expect("write");
+            std::fs::File::options()
+                .write(true)
+                .open(dir.join(&name))
+                .expect("open")
+                .set_modified(modified)
+                .expect("set time");
+        }
+        clean(&dir);
+        let mut kept: Vec<_> = std::fs::read_dir(&dir)
+            .expect("read")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        kept.sort();
+        assert_eq!(kept, [recent, current, future]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

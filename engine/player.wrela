@@ -372,6 +372,52 @@ pub fn focused(
     o_from: vec2,
     height: fn(vec2) -> f32,
 ) -> (vec3, vec3) {
+    let (eye, at, _) = framed(f, feet, yaw, pitch, focus, 1.0e9, o, o_from, height)
+    (eye, at)
+}
+
+/// How fast the camera's arm comes back out after something cut it short (m/s): it goes in at
+/// once (the eye never inside a stone), and out over about a second, so a stone passing between
+/// the camera and the player doesn't make the eye jump in and out.
+pub const ARM_OUT: f32 = 4.0
+
+/// The camera's arm as it was last frame: how far out the eye stood (m).
+pub struct Arm: Copy {
+    pub reach: f32 = 1.0e9,
+}
+
+/// `focused`, its arm going back out at `ARM_OUT` from where `arm` left it, `dt` seconds ago;
+/// `arm` takes this frame's.
+pub fn follow(
+    arm: mut Arm,
+    dt: f32,
+    f: Framing,
+    feet: vec3,
+    yaw: f32,
+    pitch: f32,
+    focus: Focus,
+    o: Obstacles,
+    o_from: vec2,
+    height: fn(vec2) -> f32,
+) -> (vec3, vec3) {
+    let most = arm.reach + ARM_OUT * clamp(dt, 0.0, 0.25)
+    let (eye, at, reach) = framed(f, feet, yaw, pitch, focus, most, o, o_from, height)
+    arm.reach = reach
+    (eye, at)
+}
+
+/// `focused`, its arm no longer than `most`; and the arm's length it took.
+fn framed(
+    f: Framing,
+    feet: vec3,
+    yaw: f32,
+    pitch: f32,
+    focus: Focus,
+    most: f32,
+    o: Obstacles,
+    o_from: vec2,
+    height: fn(vec2) -> f32,
+) -> (vec3, vec3, f32) {
     let target = feet + vec3(0.0, f.target, 0.0)
     let to = focus.at.xz - feet.xz
     let w = if length(to) > 0.1 { clamp(focus.weight, 0.0, 1.0) } else { 0.0 }
@@ -398,6 +444,8 @@ pub fn focused(
             break
         }
     }
+    // Every point short of the first in the way is clear, so a shorter arm is too.
+    reach = min(reach, max(most, 0.4))
     // Where no point 0.4 m or more out on the arm is clear (a player backed into a trunk or a
     // wall), the eye goes over the head, where the player stands clear, not inside it.
     let eye = if reach < 0.4 { target + vec3(0.0, OVER_HEAD, 0.0) } else {
@@ -405,7 +453,7 @@ pub fn focused(
     }
     // Look a little over the target, so the player sits low in the frame.
     let own = target + vec3(ahead.x, 0.0, ahead.y) * 2.0 + vec3(0.0, 0.25, 0.0)
-    (eye, mix(own, target + (focus.at - target) / 3.0, vec3(w)))
+    (eye, mix(own, target + (focus.at - target) / 3.0, vec3(w)), reach)
 }
 
 /// Whether an eye at `p` would be too near the ground, a trunk, a stone or a wall (`third_person`).
@@ -509,6 +557,71 @@ fn a_placed_player_stands_on_the_ground() {
     place_at(mut p, ground, none, Place::of(vec2(15.0, 6.0)), 7.0)
     assert(abs(p.y - 3.0) < 1.0e-5, f"stands at {p.y}")
     assert(abs(p.heading - wrap(7.0)) < 1.0e-5, f"faces {p.heading}")
+}
+
+/// A stone between the camera and the player pulls the arm in at once; when it's gone, the arm
+/// goes back out over frames, not in one.
+@test
+fn the_arm_goes_in_at_once_and_out_slowly() {
+    let f = Framing {}
+    let feet = vec3(10.0, 0.0, 10.0)
+    // Looking along +z: the arm runs back along -z. A stone 2 m behind the player.
+    let stone = footing::Obstacle {
+        a: vec2(10.0, 8.0),
+        b: vec2(10.0, 8.0),
+        r: 0.4,
+        thing: footing::Thing::Stone,
+        depth: 0.0,
+    }
+    let blocked = Obstacles::of([stone], vec2(0.0), vec2(20.0))
+    let nothing: Vec<footing::Obstacle> = Vec::new()
+    let clear = Obstacles::of(nothing, vec2(0.0), vec2(20.0))
+    var arm = Arm {}
+    let dt = 1.0 / 60.0
+    let reach = |eye: vec3| length(eye - (feet + vec3(0.0, f.target, 0.0)))
+    let (out, _) = follow(
+        mut arm,
+        dt,
+        f,
+        feet,
+        yaw: 0.0,
+        pitch: 0.0,
+        focus: Focus {},
+        o: clear,
+        o_from: vec2(0.0),
+        height: |p: vec2| 0.0,
+    )
+    let full = reach(out)
+    let (cut, _) = follow(
+        mut arm,
+        dt,
+        f,
+        feet,
+        yaw: 0.0,
+        pitch: 0.0,
+        focus: Focus {},
+        o: blocked,
+        o_from: vec2(0.0),
+        height: |p: vec2| 0.0,
+    )
+    assert(reach(cut) < 2.0, f"the arm stays out to {reach(cut)} m past the stone")
+    let (back, _) = follow(
+        mut arm,
+        dt,
+        f,
+        feet,
+        yaw: 0.0,
+        pitch: 0.0,
+        focus: Focus {},
+        o: clear,
+        o_from: vec2(0.0),
+        height: |p: vec2| 0.0,
+    )
+    assert(
+        reach(back) <= reach(cut) + ARM_OUT * dt + 1.0e-4,
+        f"the arm jumped out from {reach(cut)} to {reach(back)} m",
+    )
+    assert(reach(back) < full, "the arm went straight back out")
 }
 
 /// Ground for the tests: level at 1 m, and at `high` past x = 10.
