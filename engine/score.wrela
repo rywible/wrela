@@ -291,7 +291,8 @@ impl Score {
                 },
             )
         }
-        // Voices numbered differently can interleave, so this merges rather than appends.
+        // Remapping voices can reverse notes at the same tick; merge needs each input sorted.
+        notes.sort_by(|a, b| before(a, b))
         s.notes = merge_notes(s.notes, notes)
         for d in next.dynamics {
             s.dynamics.push(Dynamic { at: d.at + offset, level: d.level })
@@ -412,6 +413,19 @@ fn merge_pedal(a: Vec<PedalMark>, b: Vec<PedalMark>) -> Vec<PedalMark> {
         }
     }
     out
+}
+
+/// Passages may list their voices in different orders. Their notes are sorted by the joined
+/// score's voice numbers, including notes that start on the same tick.
+@test
+fn joining_passages_resorts_notes_after_voice_remapping() {
+    let m = meter(beats: 4, unit: 4)
+    let base = score("base", m).voice("B", ["b3/1 |"]).voice("A", ["a3/1 |"])
+    let next = score("next", m).voice("A", ["a3/1 |"]).voice("B", ["b3/1 |"])
+    let joined = take base.then(next)
+    assert(joined.notes.len() == 4)
+    assert(joined.notes[2].start == m.bar() && joined.notes[3].start == m.bar())
+    assert(joined.notes[2].voice == 0 && joined.notes[3].voice == 1, "joined voices out of order")
 }
 
 /// A hairpin begun and not yet ended.

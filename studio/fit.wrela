@@ -229,6 +229,18 @@ fn set_all(lits: [u32], values: [f32]) {
     }
 }
 
+/// A failed fit leaves the last accepted values active, not its unmeasured trial.
+pub fn restore_accepted(lits: [u32], accepted: [f32], trying: mut Vec<f32>) {
+    restore_values(lits, accepted, mut trying, set)
+}
+
+fn restore_values(lits: [u32], accepted: [f32], trying: mut Vec<f32>, write: fn(u32, f32)) {
+    for i in 0..lits.len() {
+        trying[i] = accepted[i]
+        write(lits[i], accepted[i])
+    }
+}
+
 /// A fit of the literals `lits` in the view `fv`; it asks the server for the reference first.
 pub fn start(fv: FitView, lits: [u32]) -> Fit {
     var f = start_without(fv, lits)
@@ -466,4 +478,13 @@ pub fn answer(f: Fit) -> String {
         .int("accepted", f.accepted_steps)
         .raw("literals", lits.as_str())
         .done()
+}
+
+@test
+fn a_failed_fit_discards_its_unmeasured_trial() {
+    var trying = Vec::from([0.9, 0.8])
+    var written = Vec::filled(3, -1.0)
+    restore_values([2, 0], [0.25, 0.5], mut trying, |i, v| { written[i] = v })
+    assert(trying[0] == 0.25 && trying[1] == 0.5)
+    assert(written[2] == 0.25 && written[0] == 0.5 && written[1] == -1.0)
 }

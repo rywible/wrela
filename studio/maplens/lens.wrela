@@ -360,12 +360,16 @@ fn backspace(line: mut String) {
 
 // ---- the actions -----------------------------------------------------------------------------------
 
-/// `show l`: what the lens draws (`GROUND`, `WATER`, `MAP`, `CHECK`, together).
+/// `show l`: what the lens draws (`GROUND`, `WATER`, `MAP`, `CHECK`, and `WALKERS`).
 pub fn show(lens: mut MapLens, layers: u32) {
-    lens.layers = layers & ALL
+    lens.layers = showable_layers(layers)
     lens.dirty = true
     let a = obj().text("action", "show").int("layers", lens.layers).done()
     lens.answer(a.as_str())
+}
+
+fn showable_layers(layers: u32) -> u32 {
+    layers & (ALL | WALKERS)
 }
 
 /// `walk`: the next walk the lens draws begun (a player's, from a replay's reports: the first
@@ -414,7 +418,7 @@ fn walk_steps(lens: MapLens, walkers: [Walk], col: vec4, out: mut Vec<(vec2, vec
 fn dotted(ui: mut Ui, a: vec2, b: vec2, col: vec4, step: f32, size: f32) {
     let n = u32(ceil(length(b - a) / step)) + 1
     for s in 0..n {
-        let p = mix(a, b, vec2(f32(s) / f32(n)))
+        let p = mix(a, b, vec2(f32(s) / f32(max(n - 1, 1))))
         ui.draw.rect(Rect::new(p.x - size * 0.5, p.y - size * 0.5, w: size, h: size), col)
     }
 }
@@ -699,11 +703,7 @@ fn draw_marks(lens: mut MapLens, m: Map, screen: vec2) {
             for k in 1..r.points.len() {
                 let a = lens.pixel(r.points[k - 1])
                 let b = lens.pixel(r.points[k])
-                let n = u32(ceil(length(b - a) / 3.0)) + 1
-                for s in 0..n {
-                    let p = mix(a, b, vec2(f32(s) / f32(n)))
-                    lens.ui.draw.rect(Rect::new(p.x - 1.0, p.y - 1.0, w: 2.0, h: 2.0), line)
-                }
+                dotted(mut lens.ui, a, b, line, step: 3.0, size: 2.0)
             }
         }
         for o in m.openings {
@@ -728,11 +728,7 @@ fn draw_marks(lens: mut MapLens, m: Map, screen: vec2) {
             let col = if holds { vec4(0.4, 0.95, 0.5, 0.8) } else { vec4(1.0, 0.3, 0.25, 0.9) }
             let a = lens.pixel(rel.from())
             let b = lens.pixel(m.sites[rel.to()].at)
-            let n = u32(ceil(length(b - a) / 6.0)) + 1
-            for s in 0..n {
-                let p = mix(a, b, vec2(f32(s) / f32(n)))
-                lens.ui.draw.rect(Rect::new(p.x - 1.0, p.y - 1.0, w: 2.0, h: 2.0), col)
-            }
+            dotted(mut lens.ui, a, b, col, step: 6.0, size: 2.0)
             ri += 1
         }
         for k in m.sites {
@@ -920,6 +916,23 @@ pub fn command(lens: mut MapLens, map: fn() -> Map, start: fn() -> Task<Preview>
 }
 
 // ---- tests ------------------------------------------------------------------------------------
+
+@test
+fn show_can_enable_walkers_without_unknown_layers() {
+    assert(showable_layers(WALKERS) == WALKERS)
+    assert(showable_layers(4294967295) == ALL | WALKERS)
+}
+
+@test
+fn dotted_segments_draw_both_endpoints() {
+    var ui = Ui::new(Fonts::load())
+    ui.begin(vec2(100.0, 100.0), Vec::<Event>::new())
+    dotted(mut ui, vec2(5.0, 5.0), vec2(7.0, 5.0), vec4(1.0), step: 4.0, size: 2.0)
+    let first = ui.draw.quads[0].rect
+    let last = ui.draw.quads[ui.draw.quads.len() - 1].rect
+    assert(first.x + 0.5 * first.z == 5.0)
+    assert(last.x + 0.5 * last.z == 7.0)
+}
 
 /// Backspace removes one whole scalar at a time for one- through four-byte UTF-8.
 @test

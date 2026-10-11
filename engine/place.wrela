@@ -995,17 +995,30 @@ impl Refusal {
     }
 }
 
+/// Whether a keeper whose work has a date is active in `present`: why not, or nothing.
+fn dated_keeper_gone(present: i32, k: Keeper) -> Option<Text> {
+    match k {
+        Keeper::People { from, to } => if present < from {
+            Some("its people have not arrived yet")
+        } else if present >= to {
+            Some("its people left before the present")
+        } else { None },
+        Keeper::Event { year } => if year > present {
+            Some("its event has not happened yet")
+        } else if present - year > RECENT {
+            Some("its event is too long before the present: the forest has closed it again")
+        } else { None },
+        _ => None,
+    }
+}
+
 /// Whether `k`, keeping a place at `p` `radius` across, is at work in the map's present: why not,
 /// or nothing.
 fn keeper_gone(m: Map, k: Keeper, p: vec2, radius: f32) -> Option<Text> {
     match k {
         Keeper::Nothing => Some("it has none"),
-        Keeper::People { to, .. } => if to < m.present {
-            Some("its people left before the present")
-        } else { None },
-        Keeper::Event { year } => if m.present - year > RECENT {
-            Some("its event is too long before the present: the forest has closed it again")
-        } else { None },
+        Keeper::People { .. } => dated_keeper_gone(m.present, k),
+        Keeper::Event { .. } => dated_keeper_gone(m.present, k),
         Keeper::Grazing => {
             if m.herd.arrives > m.present {
                 return Some("no herd grazes there in the present")
@@ -1092,6 +1105,17 @@ pub fn refuse(m: Map) {
 }
 
 // ---- tests -----------------------------------------------------------------------------------------
+
+/// A keeper's interval includes its first year, excludes its end, and an event cannot keep an
+/// opening before it happens.
+@test
+fn future_and_expired_keepers_are_not_at_work_in_the_present() {
+    assert(dated_keeper_gone(100, Keeper::People { from: 101, to: 120 }).is_some())
+    assert(dated_keeper_gone(100, Keeper::People { from: 80, to: 100 }).is_some())
+    assert(dated_keeper_gone(100, Keeper::People { from: 100, to: 101 }).is_none())
+    assert(dated_keeper_gone(100, Keeper::Event { year: 101 }).is_some())
+    assert(dated_keeper_gone(100, Keeper::Event { year: 100 }).is_none())
+}
 
 fn test_route(points: take Vec<vec2>) -> Route {
     Route {

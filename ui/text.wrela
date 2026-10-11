@@ -189,6 +189,11 @@ impl Font {
         at
     }
 
+    /// The caret's x position at byte offset `at`, including kerning before the next glyph.
+    pub fn caret_at(self, text: str, size: f32, at: u32) -> f32 {
+        self.walk(text, size, 0.0, |i, _g, _pen| i != at)
+    }
+
     /// Glyph `i`'s place in the atlas.
     pub fn place(mut self, i: u32, x: u32, y: u32) {
         self.glyphs[i].atlas_x = x
@@ -228,11 +233,6 @@ fn decode_replaces_what_isnt_a_character() {
 @test
 fn offset_uses_kerned_caret_positions() {
     let font = Font::of(Face::Sans)
-    // The Rust performance harness copies this source with deliberately empty baked fonts.
-    // The real UI package has glyphs and exercises the regression below.
-    if font.count() == 0 {
-        return
-    }
     let a = font.glyph_index(65)
     let v = font.glyph_index(86)
     let advance = font.glyph(a).advance
@@ -241,6 +241,7 @@ fn offset_uses_kerned_caret_positions() {
     let x = 0.25 * (next + advance)
     assert(x > 0.5 * next && x < 0.5 * advance)
     assert(font.offset_at("AV", 1.0, x) == 1)
+    assert(abs(font.caret_at("AV", 1.0, 1) - next) < 1.0e-6)
 }
 
 /// The two fonts, and where their glyphs are in one atlas: `width` × `height` texels.

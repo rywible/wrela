@@ -329,7 +329,14 @@ pub fn obstacles_of(
         for i in 1..s.points.len() {
             let p = s.points[i - 1]
             let q = s.points[i]
-            all.push(Obstacle { a: p.xy, b: q.xy, r: 0.5 * p.z, thing: Thing::Stream, depth: p.w })
+            // A stream's authored points can be more than a bin apart. Each capsule is stored
+            // in its first point's bin, and `near` only reads the neighbouring bins.
+            let n = max(u32(ceil(length(q.xy - p.xy) / (0.75 * BIN))), 1)
+            for k in 0..n {
+                let a = mix(p.xy, q.xy, vec2(f32(k) / f32(n)))
+                let b = mix(p.xy, q.xy, vec2(f32(k + 1) / f32(n)))
+                all.push(Obstacle { a, b, r: 0.5 * p.z, thing: Thing::Stream, depth: p.w })
+            }
         }
     }
     for st in stones {
@@ -667,6 +674,21 @@ impl Walkable {
 }
 
 // ---- tests --------------------------------------------------------------------------------------
+
+/// A stream segment longer than a bin still has water at its far end, where a query cannot
+/// see the bin holding its first point.
+@test
+fn a_long_stream_has_depth_across_its_binned_length() {
+    let stream = Stream {
+        points: Vec::from([vec4(0.0, 10.0, 2.0, 1.0), vec4(40.0, 10.0, 2.0, 1.0)]),
+    }
+    let trees: Vec<Tree> = Vec::new()
+    let habits: Vec<Habit> = Vec::new()
+    let stones: Vec<vec3> = Vec::new()
+    let walls: Vec<vec4> = Vec::new()
+    let o = obstacles_of(trees, habits, [take stream], stones, walls, vec2(0.0), vec2(64.0, 32.0))
+    assert(o.depth(vec2(32.0, 10.0)) > 0.9, "the far part of the stream became dry")
+}
 
 /// Ground for the tests: level, but rising at `rise` (rise over run) from x = `from` to x = `to`.
 struct Band: Copy {

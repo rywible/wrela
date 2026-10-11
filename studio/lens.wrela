@@ -531,7 +531,12 @@ fn advance_fit<S: Surface>(
             lens.answer(a.as_str())
         },
         fit::FitProgress::Failed(why) => {
+            match mut lens.fit {
+                Some(f) => fit::restore_accepted(f.lits, f.accepted, mut f.trying),
+                None => {},
+            }
             lens.fit = None
+            lens.dirty = true
             fail(mut lens, "fit", why.as_str())
         },
     }

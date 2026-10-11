@@ -138,12 +138,15 @@ impl<W: Clone + StateHash, I: Clone> Timeline<W, I> {
     /// A timeline from `world`, keeping `history` ticks of inputs (and keyframes enough to
     /// replay them).
     pub fn new(world: take W, history: u32) -> Timeline<W, I> {
+        // The oldest correctable tick may start up to 15 ticks after its keyframe. Keep that
+        // replay prefix's inputs and hashes as well, even when `history` is not a full cycle.
+        let replay = if history == 0 { 0 } else { history + KEYFRAME_TICKS - 1 }
         Timeline {
             world,
             tick: 0,
-            inputs: Ring::new(history),
+            inputs: Ring::new(replay),
             saved: Ring::new(history / KEYFRAME_TICKS + 2),
-            hashes: Ring::new(history),
+            hashes: Ring::new(replay),
         }
     }
 
@@ -242,4 +245,17 @@ fn a_later_correction_keeps_an_earlier_one() {
     assert(timeline.world().total == 10, "the first correction was not replayed")
     let _ = timeline.correct(t: 20, input: 1, step: add_input)
     assert(timeline.world().total == 11, "the second correction lost the first")
+}
+
+/// The oldest retained input can be after its keyframe when history isn't a multiple of 16.
+/// Replaying it still needs the inputs and hashes between that keyframe and the correction.
+@test
+fn a_correction_at_a_partial_history_boundary_replays_from_its_keyframe() {
+    var timeline: Timeline<TestWorld, u32> = Timeline::new(TestWorld { total: 0 }, history: 20)
+    for _ in 0..40 {
+        timeline.advance(1, add_input)
+    }
+    let changed = timeline.correct(t: 20, input: 3, step: add_input)
+    assert(changed == 20, f"changed {changed} checksums")
+    assert(timeline.world().total == 42, "the oldest retained correction was not replayed")
 }
