@@ -13,24 +13,24 @@ use std::field::smin
 pub const MEADOW = vec2(0.0, 30.0)
 
 /// The fight's ground in the ring's glade (route §9): its disc's middle (x, z) and radius (m),
-/// and how far the shore trail's last run into it from the east is worn (m).
+/// and the wolf's way out to the shore trail, from where it waits (`encounter::WOLF_HOME`) east to
+/// where the trail comes in (x, z, x, z), where the fight is when the player comes by the trail.
 pub const FIGHT = vec3(34.0, -471.0, 6.0)
-pub const FIGHT_LANE: f32 = 15.0
+pub const FIGHT_WAY = vec4(37.0, -463.0, 55.0, -463.0)
 /// How trodden the fight's ground is (`covered`'s trails): its grass worn under the ankle, no
 /// bare earth.
 pub const FIGHT_WEAR: f32 = 0.45
 
-/// How worn by the fight's ground `xz` is, 0 to 1: the disc and the trail's run into it from
-/// the east, with a ragged edge 2–3 m wide (worn ground, not a mown ring), as a sample `w` across
-/// sees it.
+/// How worn by the fight `xz` is, 0 to 1: the disc, and the wolf's way 3 m either side, with a
+/// ragged edge 2–3 m wide (worn ground, not a mown ring), as a sample `w` across sees it.
 pub fn fought(xz: vec2, w: f32) -> f32 {
     let rag = 2.0 * (noise2_seen(xz * 0.4, w * 0.4) - 0.5)
     let disc = smoothstep(FIGHT.z + 1.5, FIGHT.z - 1.0, length(xz - FIGHT.xy) + rag)
-    let along = clamp(xz.x - FIGHT.x, 0.0, FIGHT.z + FIGHT_LANE)
-    let off = length(xz - vec2(FIGHT.x + along, FIGHT.y))
-    let lane = smoothstep(2.5, 1.0, off + rag) *
-        smoothstep(FIGHT.z + FIGHT_LANE, FIGHT.z + FIGHT_LANE - 4.0, xz.x - FIGHT.x)
-    max(disc, lane)
+    let (from, to) = (FIGHT_WAY.xy, FIGHT_WAY.zw)
+    let t = saturate(dot(xz - from, to - from) / dot(to - from, to - from))
+    let off = length(xz - mix(from, to, vec2(t)))
+    let way = smoothstep(4.0, 1.5, off + rag)
+    max(disc, way)
 }
 
 pub const KNOLL = vec2(7.0, 33.0)

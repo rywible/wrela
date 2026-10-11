@@ -36,7 +36,7 @@ use climber::figure::{Figure, figure}
 use climber::moves::{Act, REST}
 use climber::sounds::{Heard, cues, heard}
 use history::{BAKED, OBSTACLES, tiles_hi, tiles_lo}
-use ground::{FIGHT, FIGHT_LANE, fought}
+use ground::{FIGHT, FIGHT_WAY, fought}
 use provenance::NearTile
 use streaming::{near_tile_radius, tile_distance, tile_radius}
 use std::collections::{Flags, replace, swap}
@@ -2405,33 +2405,22 @@ fn the_first_frames_run(s: Floor) {
     assert(s.frames == 40, f"{s.frames} frames drawn")
 }
 
-/// The fight's ground (`fought`) is worn over its disc and the trail's run into it from the east,
-/// and nowhere else; its edge is ragged, not a circle.
+/// The fight's ground (`fought`) is worn over its disc and the wolf's way out to the trail, and
+/// nowhere else; its edge is ragged, not a circle.
 @test
-fn the_fight_wears_its_disc_and_the_way_in() {
+fn the_fight_wears_its_disc_and_the_way_out() {
     let c = FIGHT.xy
     assert(fought(c, 0.0) > 0.99, "the disc's middle is worn")
-    assert(
-        fought(c + vec2(FIGHT.z + 10.0, 0.0), 0.0) > 0.99,
-        "the trail into it is worn",
-    )
-    assert(
-        fought(c + vec2(-FIGHT.z - 6.0, 0.0), 0.0) == 0.0,
-        "the wood's side past it is not",
-    )
-    assert(
-        fought(c + vec2(FIGHT.z + FIGHT_LANE + 3.0, 0.0), 0.0) == 0.0,
-        "nor the trail beyond",
-    )
-    assert(
-        fought(c + vec2(0.0, FIGHT.z + 5.0), 0.0) == 0.0,
-        "nor the glade beside it",
-    )
-    // Where the wear falls through a half, round the disc away from the trail: a ragged edge.
+    assert(fought(FIGHT_WAY.xy, 0.0) > 0.99, "where the wolf waits is worn")
+    assert(fought(FIGHT_WAY.zw, 0.0) > 0.99, "where the trail comes in is worn")
+    assert(fought(c + vec2(0.0, -FIGHT.z - 4.0), 0.0) == 0.0, "the wood's side past it is not")
+    assert(fought(FIGHT_WAY.zw + vec2(6.0, 0.0), 0.0) == 0.0, "nor the trail beyond")
+    assert(fought(FIGHT_WAY.zw + vec2(0.0, 7.0), 0.0) == 0.0, "nor the glade beside the way")
+    // Where the wear falls through a half, round the disc away from the way: a ragged edge.
     var near = 100.0
     var far = 0.0
     for i in 0..48 {
-        let a = 0.5 + 5.0 * f32(i) / 48.0
+        let a = 2.2 + 4.3 * f32(i) / 48.0
         let d = vec2(cos(a), sin(a))
         var r = 0.0
         while fought(c + d * r, 0.0) > 0.5 && r < 20.0 {
@@ -2440,9 +2429,6 @@ fn the_fight_wears_its_disc_and_the_way_in() {
         near = min(near, r)
         far = max(far, r)
     }
-    assert(
-        near > FIGHT.z - 1.5 && far < FIGHT.z + 2.0,
-        f"the edge from {near} m to {far} m",
-    )
+    assert(near > FIGHT.z - 1.5 && far < FIGHT.z + 2.0, f"the edge from {near} m to {far} m")
     assert(far - near > 0.8, f"the edge a circle: {near} m to {far} m")
 }
