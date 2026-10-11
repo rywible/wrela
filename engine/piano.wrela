@@ -42,11 +42,12 @@
 // same samples.
 
 use perform::{PedalPoint, Performance}
+use std::audio::{SAMPLE_RATE, decay_rate}
 use std::collections::Vec
 use std::math::{PI, TAU}
 
 /// The audio thread's rate.
-const RATE: f32 = 48000.0
+const RATE: f32 = f32(SAMPLE_RATE)
 
 /// The piano's keys: MIDI's 21 (A0) to 108 (C8).
 pub const KEYS: u32 = 88
@@ -429,18 +430,12 @@ fn points(pedal: Vec<PedalPoint>) -> Vec<Point> {
 }
 
 fn samples(seconds: f64) -> u32 {
-    u32(max(seconds, 0.0) * 48000.0 + 0.5)
-}
-
-/// The decay per sample, as a rate (ln of the factor, negated), of a resonator that falls
-/// 60 dB in `t60` seconds.
-fn decay_rate(t60: f32) -> f32 {
-    6.9078 / (t60 * RATE)
+    u32(max(seconds, 0.0) * f64(SAMPLE_RATE) + 0.5)
 }
 
 /// A free string's sympathetic ringing damped, when the dampers are down: it falls 60 dB in
 /// 0.15 s.
-const SYMPATHY_DAMPED: f32 = 6.9078 / (0.15 * 48000.0)
+const SYMPATHY_DAMPED: f32 = 6.9078 / (0.15 * RATE)
 
 /// One resonator's numbers, as `build_key` lays them out.
 struct Lane: Copy {
