@@ -8,9 +8,14 @@ use body::{BLADE_THICK, BLADE_WIDTH, GUARD_AT, HEAD, HEAD_RADIUS, POINT_AT}
 use cape::{AROUND, DOWN, POINTS, body_frame}
 use darkness::MOST
 use engine::character::{
-    CharacterVertex, MotionVertex, PartOf, Realized, character, character_motion, character_shade,
-    character_shadow, colours, motion,
+    Cast, CharacterVertex, MotionVertex, PartOf, Realized, cast, character, character_motion,
+    character_shade, character_shadow, colours, motion,
 }
+use engine::creature::MAX_BONES
+use engine::gait::{between, palette}
+use engine::render::Look
+use fight::{WOLF_BODY, WOLF_SKELETON, Wolf}
+use std::transform::translate
 use engine::creature::{Creature, Skeleton, creature, hard}
 use engine::lit::{Lighting, through_air}
 use engine::look::{CreatureLook, Mesh as Tolerance}
@@ -385,4 +390,43 @@ pub fn wisp_moved(w: WispMotion, cam: Camera) -> vec4 {
         discard()
     }
     motion_of(cam, w.now, w.then)
+}
+
+// ---- the wolf ------------------------------------------------------------------------------------
+
+/// The wolf's colours: its coat's.
+pub struct WolfCoat: Copy + GpuData {}
+
+impl Look<wolf::creature::Coat> for WolfCoat {
+    fn surface(self, c: wolf::creature::Coat, rest: vec3, fp: f32) -> (vec3, f32) {
+        (vec3(c.albedo.r, c.albedo.g, c.albedo.b), 0.8)
+    }
+}
+
+/// The wolf, built.
+pub type WolfGrown = Creature<wolf::creature::Coat>
+
+fn grown_wolf() -> WolfGrown {
+    wolf::creature::wolf()
+}
+
+/// The wolf as a floor casts it (`engine::character::Cast`): realized at 1 cm, a slice a frame.
+pub type CastWolf = Cast<wolf::creature::Coat, WolfGrown, WolfCoat>
+
+pub fn cast_wolf() -> CastWolf {
+    let how = CreatureLook { surface: Tolerance { tolerance: 1cm } }
+    cast(grown_wolf(), WolfCoat {}, how, slices: 1)
+}
+
+/// The wolf's palette between its ticks `a` and `b` (`alpha` of the way), in a render space
+/// whose origin is `origin`.
+pub fn wolf_bones(a: Wolf, b: Wolf, alpha: f32, origin: vec3) -> [mat4; MAX_BONES] {
+    let walker = between(a.walker, b.walker, alpha)
+    let posed = palette(WOLF_SKELETON, WOLF_BODY, walker).bones
+    let to_render = translate(-origin)
+    var bones = posed
+    for i in 0..MAX_BONES {
+        bones[i] = to_render * posed[i]
+    }
+    bones
 }

@@ -8,6 +8,7 @@ use engine::footing::{BODY, stands}
 use engine::place::{Place, Water}
 use engine::player::{NONE, Player, control, spawn, step, turn_to}
 use behaviour::{Fawn, STEPPED_WITHIN, presence, spawn_fawn, step_fawn}
+use encounter::{Encounter, encounter, holds, step_encounter}
 use engine::run::{Asks, TickInput}
 use engine::senses::{Occluders, clear_over}
 use engine::sim::{SimState, Tick}
@@ -39,12 +40,13 @@ fn sites() -> Vec<vec3> {
 }
 
 /// The world: the player, where it is on the floor's walk when it's walking it, the wildwood's
-/// trunks round it when it's past the floor, and the fawn.
+/// trunks round it when it's past the floor, the fawn, and the fight at the ring's glade.
 pub struct World: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub player: Player,
     pub tour: Tour,
     pub wild: Wildside,
     pub fawn: Fawn,
+    pub fight: Encounter,
 }
 
 /// What hides the player from a creature on the floor: its ground, and what the bake left
@@ -156,6 +158,7 @@ pub fn spawn_world() -> World {
             pending: false,
         },
         fawn: spawn_fawn(GROUND),
+        fight: encounter(GROUND),
     }
 }
 
@@ -202,6 +205,9 @@ pub fn tick(w: mut World, input: TickInput<World>) {
             // Three past: in front of the fawn, `MEET` m off, to walk up to it.
             let f = w.fawn.walker.root
             travel(mut w.player, vec3(f.pos.x, f.pos.z, MEET - 3.0), f.heading)
+        } else if asked == SITES.len() + 3 {
+            // Four past: east of the fight's wolf, by the shore trail, near enough to wake it.
+            travel(mut w.player, vec3(encounter::WOLF_HOME, 12.0), 1.5707964)
         }
         w.player.controls.travel = NONE
     }
@@ -222,11 +228,16 @@ pub fn tick(w: mut World, input: TickInput<World>) {
         w.wild.ask_at = at
         w.wild.pending = true
     }
+    // In a move of the fight, the fight moves the player (`encounter`), not its walk. The fight
+    // waits while the sim walks the floor's walk (a check, not a player).
     if near_wild(at, 0.0) {
         let o = wild_obstacles(w.wild)
         step(mut w.player, GROUND, WATER, o, input.dt)
-    } else {
+    } else if !holds(w.fight) {
         step(mut w.player, GROUND, WATER, OBSTACLES, input.dt)
+    }
+    if !w.tour.on {
+        step_encounter(mut w.fight, mut w.player, GROUND, WATER, OBSTACLES, input.records, input.dt)
     }
     // The fawn, near enough the player to matter.
     let p = w.player
@@ -379,7 +390,7 @@ pub fn report(w: World, ticks: u32) -> String {
     for d in [20.0, 40.0, 60.0] {
         ahead = max(ahead, history::draw_at(at + toward * d))
     }
-    f"{{\"report\": {t}, \"at\": [{at.x}, {at.y}], \"y\": {p.y}, \"heading\": {heading}, \"pace\": {p.pace}, \"speed\": {length(p.velocity)}, \"region\": \"{region}\", \"site\": \"{site.name}\", \"site_m\": {site_m}, \"water\": {water}, \"draw\": {draw:.3}, \"ahead\": {ahead:.3}, \"tour\": [{w.tour.on}, {w.tour.leg}, {TOUR.len()}], \"fawn\": {behaviour::report(w.fawn)}}}"
+    f"{{\"report\": {t}, \"at\": [{at.x}, {at.y}], \"y\": {p.y}, \"heading\": {heading}, \"pace\": {p.pace}, \"speed\": {length(p.velocity)}, \"region\": \"{region}\", \"site\": \"{site.name}\", \"site_m\": {site_m}, \"water\": {water}, \"draw\": {draw:.3}, \"ahead\": {ahead:.3}, \"tour\": [{w.tour.on}, {w.tour.leg}, {TOUR.len()}], \"fawn\": {behaviour::report(w.fawn)}, \"fight\": {encounter::report(w.fight)}}}"
 }
 
 /// The snapshot the frames read.

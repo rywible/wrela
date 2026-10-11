@@ -756,7 +756,32 @@ pub fn solids(m: Map) -> Vec<vec4> {
     out
 }
 
-/// Built thing `b` realized, standing on the ground (`height`).
+/// Where a built thing stands on the map (its middle).
+pub fn place(b: Built) -> vec2 {
+    match b {
+        Built::Stone { at, .. } => at,
+        Built::Standing { at, .. } => at,
+        Built::Block { at, .. } => at,
+        Built::Waystone { at, .. } => at,
+        Built::Tower { at } => at,
+        Built::Wall { a, b, .. } => 0.5 * (a + b),
+    }
+}
+
+/// Which of `built` stands nearest `at` (its index; 0 if there are none).
+pub fn nearest(built: Vec<Built>, at: vec2) -> u32 {
+    var near = 0
+    var best = 1.0e9
+    for i in 0..built.len() {
+        let d = length(place(built[i]) - at)
+        if d < best {
+            near = i
+            best = d
+        }
+    }
+    near
+}
+
 /// How far a built thing reaches from its place (m: its realized mesh's origin), for culling.
 pub fn reach(b: Built) -> f32 {
     match b {
@@ -778,6 +803,7 @@ pub fn realize_far(b: Built, height: fn(vec2) -> f32) -> Option<Realized> {
     }
 }
 
+/// Built thing `b` realized, standing on the ground (`height`).
 pub fn realize(b: Built, height: fn(vec2) -> f32) -> Realized {
     match b {
         Built::Stone { at, radius, squash, seed } => {
