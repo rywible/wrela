@@ -42,7 +42,7 @@
 // same samples.
 
 use perform::{PedalPoint, Performance}
-use std::audio::{SAMPLE_RATE, decay_rate}
+use std::audio::{FALL_60_DB, SAMPLE_RATE, decay_rate}
 use std::collections::Vec
 use std::math::{PI, TAU}
 
@@ -435,7 +435,7 @@ fn samples(seconds: f64) -> u32 {
 
 /// A free string's sympathetic ringing damped, when the dampers are down: it falls 60 dB in
 /// 0.15 s.
-const SYMPATHY_DAMPED: f32 = 6.9078 / (0.15 * RATE)
+const SYMPATHY_DAMPED: f32 = decay_rate(0.15)
 
 /// One resonator's numbers, as `build_key` lays them out.
 struct Lane: Copy {
@@ -496,7 +496,7 @@ impl Piano {
             let after = per_band(m.after, at, f) *
                 (1.0 + m.scatter_decay * (2.0 * scatter(key, n, 5) - 1.0))
             // A damper stops the higher partials faster.
-            let damped_rate = 6.9078 / damped * (1.0 + f / 2000.0)
+            let damped_rate = FALL_60_DB / damped * (1.0 + f / 2000.0)
             lanes.push(
                 Lane {
                     hz: f,
@@ -505,7 +505,7 @@ impl Piano {
                     share: comb * sqrt(1.0 - r),
                     after: 0.0,
                     phantom: 0.0,
-                    damper: max(damped_rate - 6.9078 / prompt, 0.0),
+                    damper: max(damped_rate - FALL_60_DB / prompt, 0.0),
                 },
             )
             lanes.push(
@@ -516,7 +516,7 @@ impl Piano {
                     share: comb * sqrt(r),
                     after: 1.0,
                     phantom: 0.0,
-                    damper: max(damped_rate - 6.9078 / max(after, prompt), 0.0),
+                    damper: max(damped_rate - FALL_60_DB / max(after, prompt), 0.0),
                 },
             )
         }
@@ -540,7 +540,10 @@ impl Piano {
                         share: comb,
                         after: 0.0,
                         phantom: 1.0,
-                        damper: max(6.9078 / damped * (1.0 + f / 2000.0) - 6.9078 / t60, 0.0),
+                        damper: max(
+                            FALL_60_DB / damped * (1.0 + f / 2000.0) - FALL_60_DB / t60,
+                            0.0,
+                        ),
                     },
                 )
             }
