@@ -370,7 +370,7 @@ pub fn advance<S: Surface>(
                 f.loss = loss
                 f.accepted = f.trying.clone()
                 f.iou_after = iou(rays, f.reference)
-                f.rows = Vec::new()
+                f.rows.clear()
                 let every = if f.polishing { 1 } else { max(1, (rows.len() + ROWS - 1) / ROWS) }
                 for k in 0..rows.len() {
                     if k % every == 0 {

@@ -6,8 +6,8 @@ line here is wrong, that is a bug: fix it in the same change that makes it wrong
 
 ## In short
 
-- **One person, a team of AI agents.** Ryan (the owner) decides, directs and judges. Claude agents
-  write almost all of the code, tests and docs, and run the experiments.
+- **One person, a team of AI agents.** Ryan (the owner) decides, directs and judges. Claude and
+  Codex agents write almost all of the code, tests and docs, and run the experiments.
 - **No generative image, sound, music, voice or video model makes anything in wrela.** Every
   image and sound comes from wrela code that runs on the player's device: the renderer draws the
   world from fields, the piano synthesizes its notes, and the music is a score written as code.
@@ -19,13 +19,13 @@ line here is wrong, that is a bug: fix it in the same change that makes it wrong
 
 ```mermaid
 flowchart LR
-    R[Ryan: decides the goal,<br/>the constraints and the look] --> A[Claude agents: write code,<br/>tests, docs; run spikes and rounds]
+    R[Ryan: decides the goal,<br/>the constraints and the look] --> A[AI agents: write code,<br/>tests, docs; run spikes and rounds]
     A --> C[tools/check.sh:<br/>the local checks]
     C --> J[Ryan judges: art, sound,<br/>feel, what ships]
     J -->|picks, rejects, redirects| R
 ```
 
-| Work | People (Ryan) | AI (Claude agents) |
+| Work | People (Ryan) | AI agents |
 |---|---|---|
 | Goal, constraints, flagship design | Decides all of it (#44: "settled means the owner decided it") | Asks questions, writes the decisions down |
 | Planning against the vision | Sets the vision and the owner's gates; answers the open lore questions | Keeps a map from the vision to what exists, ranks the gaps each day, and proposes the next workstreams |
@@ -55,6 +55,7 @@ only make the checks faster merge without the gate, and the long tier that runs 
 | Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 | The authors in the blind authoring rounds that test thesis 1 (vision.md); Opus also in the first round |
 | Claude subagents with no context | Blind raters in the lookdev loop: they see only the before and after stills and the anchors |
 | Claude projects (claude.ai) | Run several agent threads at once (lookdev items, fixes, rendering setup), with one coordinator |
+| OpenAI Codex (GPT-6) and parallel subagents | Since 2026-10-10, audit performance across the compiler, runtimes, engine, studio, UI and tools; implement behavior-preserving improvements and run focused tests and repository gates. Ryan requested a daily sweep from fresh `main` at 02:00 America/Denver. |
 | [sfizz](https://sfz.tools/sfizz/) (BSD 2-clause), `sfizz_render` | Plays the reference piano's samples from a take's MIDI file, for the listening tests (`tools/listening.py`). Not part of the game |
 | Mesa's lavapipe (Vulkan on the CPU), MIT, patched (`tools/cloud/`) | The GPU of a cloud machine, which has none (`tools/cloud.sh`) |
 | strace, LGPL; Linux mount namespaces (`unshare`) | The gate's memory of slow tests (`tools/memo.py`): what each slow test reads, so a pass is reused only while all of it is unchanged, or, for a test that builds a program, while its builds make the same files. The ideas are build systems' (Bazel's action cache, ccache's manifests, tup's and fabricate's traced dependencies, Shake's and Bazel's early cutoff) |
