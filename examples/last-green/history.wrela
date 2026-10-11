@@ -130,7 +130,8 @@ pub fn waters() -> Laid {
 /// The play harness's map: metres a pixel.
 pub const MAP_PX: f32 = 4.0
 
-@fuel(2 ** 42)
+// The walk's mask tests steep cells at five points (`footing::walkable_of`).
+@fuel(2 ** 43)
 pub const CHECKED: Shipped = ship("check", checked())
 
 fn checked() -> Vec<(String, Vec<u8>)> {
