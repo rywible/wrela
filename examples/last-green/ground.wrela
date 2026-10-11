@@ -13,9 +13,9 @@ use std::field::smin
 pub const MEADOW = vec2(0.0, 30.0)
 
 /// The fight's ground in the ring's glade (route §9): its disc's middle (x, z) and radius (m),
-/// and the wolf's way out along the shore trail, from where it waits (`encounter::WOLF_HOME`) east
-/// past where the trail comes in, 10 m on (x, z, x, z): the fight is there when the player comes
-/// by the trail.
+/// and the wolf's way out along the shore trail, from where it waits east past where the trail
+/// comes in, 10 m on (x, z, x, z): the fight is there when the player comes by the trail. The
+/// encounter's `DISC` and `WOLF_HOME` are the disc's middle and the way's start.
 pub const FIGHT = vec3(34.0, -471.0, 6.0)
 pub const FIGHT_WAY = vec4(37.0, -463.0, 62.0, -463.0)
 /// How trodden the fight's ground is (`covered`'s trails): its grass worn under the ankle, no
