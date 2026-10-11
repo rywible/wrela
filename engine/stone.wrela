@@ -60,12 +60,17 @@ pub struct Stain: Copy + GpuData {
     pub seed: f32,
 }
 
+/// Granite's grain at `q` (0 to 1): three octaves, the coarsest the strongest.
+pub fn grain(q: vec3) -> f32 {
+    0.5 * noise3(q) + 0.3 * noise3(q * 3.1) + 0.2 * noise3(q * 9.7)
+}
+
 impl Stain {
     pub fn at(self, p: vec3) -> Rock {
         let q = p * (6.0 / self.r) + vec3(self.seed)
-        let grain = 0.5 * noise3(q) + 0.3 * noise3(q * 3.1) + 0.2 * noise3(q * 9.7)
+        let g = grain(q)
         let lichen = smoothstep(0.72, 0.8, noise3(p * 3.3 + vec3(5.0, 2.0, 1.0) + vec3(self.seed)))
-        var c = mix(vec3(0.22, 0.21, 0.20), vec3(0.36, 0.34, 0.31), vec3(grain))
+        var c = mix(vec3(0.22, 0.21, 0.20), vec3(0.36, 0.34, 0.31), vec3(g))
         // A fixed-scale speckle and cracks, whatever the stone's size.
         c *= 0.9 + 0.2 * noise3(p * 9.0 + vec3(self.seed))
         let crack = 1.0 - abs(noise3(p * 1.4 + vec3(self.seed * 0.7)) - 0.5) * 2.0

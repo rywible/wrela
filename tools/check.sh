@@ -8,6 +8,13 @@
 #                           goldens, run and GPU tests, grammar and fuzz samples; the tools'
 #                           tests; the browser runtime's checks; the WGSL size budgets. Its tests
 #                           have a budget (below); it fails if they take longer.
+#   tools/check.sh --fresh  the gate, with no test skipped as remembered. Where tests can be
+#                           traced (Linux: strace, unshare; a cloud machine), the gate runs each
+#                           slow test (5 s or more, last time) alone and remembers its pass with
+#                           what it read (tools/memo.py), and skips a slow test that passed before
+#                           with everything it read unchanged.
+#                           On a software GPU (WRELA_SOFTWARE_GPU, a cloud machine), the tests
+#                           whose `#[ignore]` reason starts `heavy:` are long tests instead.
 #   tools/check.sh --long   also the long checks, at their smaller sizes: the tests whose
 #                           `#[ignore]` reason starts `long:` (headless Chrome against the native
 #                           host, the clearing's camera path, soak runs, images against spike
@@ -41,13 +48,14 @@ cd "$(dirname "$0")/.."
 unset WRELA_RUN_ONLY WRELA_BLESS WRELA_FUZZ_ITERS WRELA_FUZZ_SEED WRELA_FUZZ_WORKER WRELA_FUZZ_JOBS \
   WRELA_FUZZ_TIERS WRELA_FULL WRELA_GPU_SHARED WRELA_GPU_WAITS
 
-usage="usage: tools/check.sh [--long | --full] | [--long] [--nocapture] <filter>... | --fmt"
-long=0 full=0 fmt=0 nocapture=() filters=()
+usage="usage: tools/check.sh [--fresh | --long | --full] | [--long] [--nocapture] <filter>... | --fmt"
+long=0 full=0 fmt=0 fresh=0 nocapture=() filters=()
 for arg in "$@"; do
   case "$arg" in
     --long) long=1 ;;
     --full) long=1 full=1 ;;
     --fmt) fmt=1 ;;
+    --fresh) fresh=1 ;;
     --nocapture) nocapture=(--nocapture) ;;
     -*) echo "$usage" >&2; exit 2 ;;
     *) filters+=("$arg") ;;
@@ -57,7 +65,8 @@ if [ "$full" = 1 ] && [ "${#filters[@]}" -gt 0 ]; then
   echo "a measurement runs alone: cargo test --release --workspace -- --ignored --exact <name>" >&2
   exit 2
 fi
-if { [ "${#nocapture[@]}" -gt 0 ] && [ "${#filters[@]}" = 0 ]; } || { [ "$fmt" = 1 ] && [ "$#" -gt 1 ]; }; then
+if { [ "${#nocapture[@]}" -gt 0 ] && [ "${#filters[@]}" = 0 ]; } || { [ "$fmt" = 1 ] && [ "$#" -gt 1 ]; } \
+  || { [ "$fresh" = 1 ] && [ "$#" -gt 1 ]; }; then
   echo "$usage" >&2
   exit 2
 fi
@@ -65,11 +74,15 @@ fi
 step() { printf '\n== %s\n' "$*"; }
 
 # The long tests and the measurements, by name (`module::test`, or `test` in a test program of
-# one file): each test whose `#[ignore]` reason starts `long:` is in `long_tests`, and `measure:`
-# in `measures`.
-long_tests=() measures=()
+# one file): each test whose `#[ignore]` reason starts `long:` is in `long_tests`, `measure:` in
+# `measures`, and `heavy:` in `heavy_tests`.
+long_tests=() measures=() heavy_tests=()
 while read -r kind name; do
-  if [ "$kind" = measure ]; then measures+=("$name"); else long_tests+=("$name"); fi
+  case $kind in
+    measure) measures+=("$name") ;;
+    heavy) heavy_tests+=("$name") ;;
+    *) long_tests+=("$name") ;;
+  esac
 done < <(python3 - <<'PY'
 import pathlib, re
 for f in sorted([*pathlib.Path("compiler").rglob("*.rs"), *pathlib.Path("runtime").rglob("*.rs")]):
@@ -77,7 +90,7 @@ for f in sorted([*pathlib.Path("compiler").rglob("*.rs"), *pathlib.Path("runtime
         continue
     lines = f.read_text().splitlines()
     for i, line in enumerate(lines):
-        if m := re.search(r'#\[ignore = "(long|measure):', line):
+        if m := re.search(r'#\[ignore = "(long|measure|heavy):', line):
             name = next(re.search(r"fn (\w+)\(", l).group(1) for l in lines[i + 1:] if re.search(r"fn (\w+)\(", l))
             # A test file at the top of `tests/` is a test program of its own (no module). A unit
             # test in `src/` is in its file's `mod tests` (a crate's root file names no module).
@@ -91,6 +104,9 @@ for f in sorted([*pathlib.Path("compiler").rglob("*.rs"), *pathlib.Path("runtime
                 print(m[1], f"{f.stem}::{name}")
 PY
 )
+# A heavy test takes seconds on a GPU but minutes on a software one (lavapipe): there, it is a
+# long test, which main's long run checks every six hours.
+if [ -n "${WRELA_SOFTWARE_GPU:-}" ]; then long_tests+=("${heavy_tests[@]}"); fi
 
 # wrela sources the formatter owns. The conformance and diagnostics cases aren't here: some
 # are malformed on purpose, and their annotations are part of their layout.
@@ -242,13 +258,35 @@ wrela="${CARGO_TARGET_DIR:-target}/release/wrela"
 step "wrela fmt --check"
 "$wrela" fmt --check "${WRELA_SOURCES[@]}"
 
-step "tests, on the CPU and the GPU, but the long ones and the measurements, every test program at once; beside them, the doc tests and the WGSL size budgets (every example's, sketch's and lens's pipelines)"
+# The memory of slow tests that passed (tools/memo.py), where a test can be traced (Linux:
+# strace, unshare): each slow test runs alone, and the gate skips one that passed before with all
+# it read as it is now. --fresh, --long and --full run every test, and keep what they learn.
+# WRELA_GATE_MEMO is the memory's directory, or `off`; in a Claude project's session it is in the
+# project's shared folder, so the project's sessions share what they learn.
+memo=off
+if [ "${WRELA_GATE_MEMO:-}" != off ] && python3 tools/memo.py available; then
+  if [ "$fresh" = 1 ] || [ "$long" = 1 ]; then memo=fresh; else memo=on; fi
+fi
+if [ -n "${WRELA_GATE_MEMO:-}" ] && [ "$WRELA_GATE_MEMO" != off ]; then
+  memo_dir=$WRELA_GATE_MEMO
+elif [ -d /mnt/project-files ] && [ -w /mnt/project-files ]; then
+  memo_dir=/mnt/project-files/.gate-memo
+else
+  memo_dir="${CARGO_TARGET_DIR:-target}/gate-memo"
+fi
+
+step "tests, on the CPU and the GPU, but the long ones and the measurements$( [ -n "${WRELA_SOFTWARE_GPU:-}" ] && [ "${#heavy_tests[@]}" -gt 0 ] && echo " (on this software GPU, the ${#heavy_tests[@]} heavy ones are long: tools/check.sh --long <name> runs one)"), every test program at once$( [ "$memo" != off ] && echo " (each slow test alone, the longest first$( [ "$memo" = on ] && echo ", unless it passed with the same inputs before"))"); beside them, the doc tests and the WGSL size budgets (every example's, sketch's and lens's pipelines)"
 tests_started=$SECONDS
 ps -A -o pid=,ppid=,time= > "$logs/ps-before"
 side doc cargo test -q --release --workspace --doc
 side wgsl python3 tools/wgsl_budgets.py "$wrela"
 tests=0
-run_tests --include-ignored "${skips[@]}" || tests=1
+if [ "$memo" = off ]; then
+  run_tests --include-ignored "${skips[@]}" || tests=1
+else
+  python3 tools/memo.py run "$logs" "${CARGO_TARGET_DIR:-target}/native-cache" "$memo" "$memo_dir" \
+    --include-ignored "${skips[@]}" || tests=1
+fi
 side_results
 ps -A -o pid=,ppid=,time= > "$logs/ps-after"
 [ "$tests" = 0 ] || exit 1
