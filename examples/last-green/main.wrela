@@ -614,14 +614,23 @@ pub fn init() -> Floor {
 }
 
 /// Where the grass keeps out of the floor's stones: each one's place (in render space, the
-/// render origin `o` taken off) and reach.
+/// render origin `o` taken off) and reach. The first `CAST_FEET` are a held shot's characters'
+/// (`cast_feet`), off the map until one is cast.
 fn footprints_in(o: vec3) -> Vec<vec4> {
     var out: Vec<vec4> = Vec::new()
+    for _ in 0..CAST_FEET {
+        out.push(OFF_MAP)
+    }
     for st in stones::stones(map::map()) {
         out.push(vec4(st.x - o.x, st.y - o.z, st.z * 1.1, 0.0))
     }
     out
 }
+
+/// The footprints a held shot's characters take (the stand-in's, the fawn's): the grass is
+/// trodden short round their feet, so their feet show (the characters' lookdev: 16, 18).
+const CAST_FEET: u32 = 2
+const OFF_MAP: vec4 = vec4(1.0e9, 1.0e9, 0.0, 0.0)
 
 /// The clipmap's blocks of the ground's fields a side: each a tile, wrapping (the tiles kept
 /// round the eye are at most five across: `the_fields_hold_every_tile_kept`).
@@ -1971,6 +1980,19 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         cast_fawn(mut s)
         write(mut s.fawn_palette, 0, fawns::at_rest(on_ground(c.fawn), c.fawn.z))
     }
+    // The cast's footprints in the grass (`CAST_FEET`), each its place and reach.
+    let feet_of = |c: vec3, reach: f32| {
+        let p = on_ground(c)
+        vec4(p.x, p.z, reach, 0.0)
+    }
+    write(
+        mut s.footprints,
+        0,
+        match cast {
+            Some(c) => [feet_of(c.player, 0.3), feet_of(c.fawn, 0.35)],
+            None => [OFF_MAP, OFF_MAP],
+        },
+    )
     let moving_at = match cast {
         Some(c) => 0.5 * (on_ground(c.player) + on_ground(c.fawn)),
         None => feet,
