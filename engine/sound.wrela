@@ -19,11 +19,11 @@
 // so both hosts give the same samples. Gains move across a quantum, never in a step, so a cue
 // that moves a source doesn't click.
 
-use std::audio::{QUANTUM, RingReader, RingWriter, ring}
+use std::audio::{QUANTUM, RingReader, RingWriter, SAMPLE_RATE, decay_rate, ring}
 use std::math::{PI, TAU, cos, exp, sin, tan}
 
 /// The audio thread's rate.
-const RATE: f32 = 48000.0
+const RATE: f32 = f32(SAMPLE_RATE)
 
 /// A palette's surfaces, water kinds and brushes, its impacts and whooshes; the steps that ring
 /// at once, and the impacts and whooshes; the water sources heard at once; the cues the ring
@@ -89,7 +89,7 @@ pub struct Breath: Copy {
 /// bite: a knock and grit, as a step's), its whooshes', its wind's. A source is at its own level
 /// `near` metres away, quieter further off; `gain` is the whole mix's.
 pub struct Palette: Copy {
-    pub surfaces: [Surface; 8],
+    pub surfaces: [Surface; SURFACES],
     pub waters: [Babble; 4],
     pub brushes: [Babble; 2],
     pub impacts: [Surface; 4] = [Surface {}; 4],
@@ -262,7 +262,7 @@ impl Placed {
 /// The decay per sample of a sound that falls 60 dB in `t60` seconds.
 @audio
 fn decay(t60: f32) -> f32 {
-    exp(-6.90775528 / (max(t60, 1e-3) * RATE))
+    exp(-decay_rate(max(t60, 1e-3)))
 }
 
 /// A step ringing: its knock (a tone, turned a sample at a time) and its grit (noise through a
