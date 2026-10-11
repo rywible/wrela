@@ -6,7 +6,7 @@
 
 use engine::air::{Air, Tables, hazy, tables}
 use engine::character::{Cast, PartOf, cast}
-use engine::floor::{Kept, fullscreen, near_tile_radius, tile_distance, tile_radius}
+use engine::floor::{Doorway, Exit, Kept, fullscreen, near_tile_radius, tile_distance, tile_radius}
 use engine::stone::{Realized, stone_shade, stone_vertex}
 use engine::bake::{Decisions, Far, decode_far, decode_tile, tile_name}
 use engine::grass::{Blooms, Grass, GrassLook}
@@ -48,7 +48,7 @@ use std::gpu::{
 }
 use std::input::{Button, Event, Key, events}
 use std::io::{Pending, print}
-use world::{GROUND, World, present as snapshot, spawn_world, tick}
+use world::{GATE, GROUND, World, present as snapshot, spawn_world, tick}
 
 /// How far the player goes from the render origin before it moves (m), and the tiles it moves by
 /// (a whole number of the clipmap's coarsest snaps and of its fields' blocks: what's cooked stays).
@@ -60,6 +60,18 @@ const FAWN_DRAWN: f32 = 150.0
 
 /// How long the camera takes to turn fully to the fight's wolf, or back from it (s).
 const FOCUS_EASE: f32 = 0.6
+
+/// The floor's world in the tower (engine::tower), the stair's build beside it, and the save.
+const WORLD: u32 = 0
+const WORLDS: u32 = 2
+const STAIR_BUILD: Text = "../stair"
+const SAVE: Text = "tower/save"
+
+/// The door back down to the stair: behind the gate, where a player comes in facing away from
+/// it; its two posts stand either side of the way through (a stand-in for its look).
+const DOOR = Doorway { at: GATE + vec2(0.0, -5.0), reach: 0.6 }
+const DOOR_POST = vec3(0.25, 1.4, 0.3)
+const DOOR_POSTS = [vec2(-0.95, 0.0), vec2(0.95, 0.0)]
 
 /// The ticks between the play harness's reports (2 s at 60 Hz).
 const REPORT_TICKS: u32 = 120
@@ -318,6 +330,8 @@ fn others_round(grounds: [NearTile], t: vec2i) -> (Vec<engine::grow::Tree>, u32)
 }
 
 pub struct Floor {
+    /// The way back down to the stair, and the tower's journey.
+    exit: Exit,
     snaps: Snapshots<World>,
     clipmap: Clipmap,
     light: Light,
@@ -508,6 +522,10 @@ fn to_build() -> Vec<blockouts::Built> {
         out.push(blockouts::slab_at(st.xy, vec3(0.5, st.w * 0.5, 0.28), seed))
         seed += 1
     }
+    for k in 0..DOOR_POSTS.len() {
+        let at = DOOR.at + DOOR_POSTS[k]
+        out.push(blockouts::Built::Standing { at, half: DOOR_POST, turn: 0.0, seed: 950 + k })
+    }
     let g = ground::ground()
     for b in g.land.crag_beds(|q| g.under_crags(q)) {
         out.push(blockouts::Built::Rock { at: b.at, bed: b.bed })
@@ -544,6 +562,7 @@ pub fn init() -> Floor {
     let atlas = leaf_atlas(6)
     let eye = vec3(start.x, height_at(start) + 2.0, start.y)
     Floor {
+        exit: Exit::begin(WORLD, WORLDS, SAVE, STAIR_BUILD, DOOR),
         snaps: Snapshots::new(take latest, hz: 60),
         clipmap: fields_clipmap(),
         light: sun_light(),
@@ -695,6 +714,10 @@ fn footprints_in(o: vec3) -> Vec<vec4> {
     }
     for st in stones::stones(map::map()) {
         out.push(vec4(st.x - o.x, st.y - o.z, st.z * 1.1, 0.0))
+    }
+    for p in DOOR_POSTS {
+        let at = DOOR.at + p
+        out.push(vec4(at.x - o.x, at.y - o.z, length(DOOR_POST.xz) * 1.1, 0.0))
     }
     out
 }
@@ -2015,6 +2038,12 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     // The player's feet in render space, exact however far it is (`Place::from_tile`).
     let feet2 = pa.at.from_tile(s.origin) + pa.at.to(pb.at) * b.alpha
     let feet = vec3(feet2.x, mix(pa.y, pb.y, b.alpha), feet2.y)
+    // Stepping into the door goes back down to the stair; the stair is got ready while nothing
+    // of the floor's own streaming waits.
+    s.exit.update(allowed: s.fetching.is_empty() && s.cooking.is_empty() && s.wood.is_some())
+    if s.exit.stepped_in(feet2 + o2) {
+        let _ = s.exit.leave(feet2 + o2)
+    }
     let c = pb.controls
     if s.drawn.is_none() {
         s.drawn = Some(drawn())
@@ -2327,6 +2356,13 @@ fn a_capture_fills_its_caches_in_a_few_frames_then_steps_as_play() {
 }
 
 /// Sun shafts on (`on` 1) or off.
+/// Goes back down to the stair as if the player's feet stood at (`x`, `z`): 1 if the way was
+/// taken (they're at the door), else 0.
+@testing
+pub fn test_leave(s: mut Floor, x: f32, z: f32) -> f32 {
+    if s.exit.leave(vec2(x, z)) { 1.0 } else { 0.0 }
+}
+
 @testing
 pub fn test_shafts(s: mut Floor, on: u32) {
     s.shafts_on = on != 0
