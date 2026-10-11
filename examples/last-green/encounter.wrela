@@ -16,6 +16,7 @@ use engine::terrain::Terrain
 use std::hash::StateHash
 use std::input::Event
 use std::serialize::Serialize
+use std::string::String
 
 /// The fight's disc: a flat, clear round 12 m across beside the ring (route.md §9), and where
 /// the wolf waits, at the ring's edge between the ring and the disc.
@@ -105,6 +106,23 @@ pub fn focus(e: Encounter, feet: vec2) -> (vec3, f32) {
         return (at, 0.0)
     }
     (at, 1.0 - smoothstep(FOCUS_FULL, FOCUS_NONE, length(w.pos() - feet)))
+}
+
+/// What the report says of the fight: whether it's on, the wolf's mood and where it is, and the
+/// climber's health and the hits each way.
+pub fn report(e: Encounter) -> String {
+    let w = e.fight.wolf
+    let mood = match w.mood {
+        Mood::Prowl => "prowl",
+        Mood::Crouch => "crouch",
+        Mood::Lunge => "lunge",
+        Mood::Recover => "recover",
+        Mood::Flinch => "flinch",
+        Mood::Down => "down",
+    }
+    let at = w.pos()
+    let t = e.fight.tally
+    f"[{e.awake}, \"{mood}\", {at.x:.2}, {at.y:.2}, {e.fight.climber.health}, {t.hits}, {t.bites}]"
 }
 
 /// How far a body at `from` gets on its way `d` (m), as footing lets it: in steps no longer

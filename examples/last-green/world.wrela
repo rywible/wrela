@@ -385,7 +385,7 @@ pub fn report(w: World, ticks: u32) -> String {
     for d in [20.0, 40.0, 60.0] {
         ahead = max(ahead, history::draw_at(at + toward * d))
     }
-    f"{{\"report\": {t}, \"at\": [{at.x}, {at.y}], \"y\": {p.y}, \"heading\": {heading}, \"pace\": {p.pace}, \"speed\": {length(p.velocity)}, \"region\": \"{region}\", \"site\": \"{site.name}\", \"site_m\": {site_m}, \"water\": {water}, \"draw\": {draw:.3}, \"ahead\": {ahead:.3}, \"tour\": [{w.tour.on}, {w.tour.leg}, {TOUR.len()}], \"fawn\": {behaviour::report(w.fawn)}}}"
+    f"{{\"report\": {t}, \"at\": [{at.x}, {at.y}], \"y\": {p.y}, \"heading\": {heading}, \"pace\": {p.pace}, \"speed\": {length(p.velocity)}, \"region\": \"{region}\", \"site\": \"{site.name}\", \"site_m\": {site_m}, \"water\": {water}, \"draw\": {draw:.3}, \"ahead\": {ahead:.3}, \"tour\": [{w.tour.on}, {w.tour.leg}, {TOUR.len()}], \"fawn\": {behaviour::report(w.fawn)}, \"fight\": {encounter::report(w.fight)}}}"
 }
 
 /// The snapshot the frames read.
