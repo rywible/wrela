@@ -16,7 +16,7 @@ use engine::grass::{Blooms, Grass, GrassLook}
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::lit::Lighting
 use engine::paint::{
-    Develop, Exposure, Look, Metering, dab_map, develop, glow_blur, glow_down, meter,
+    Develop, Exposure, Look, Metering, dab_map, develop, glow_blur, glow_down, lines, meter,
 }
 use engine::place::{Place, TILE}
 use engine::plant::{Plant, Wind, full, leaf_atlas}
@@ -59,7 +59,7 @@ const FAWN_DRAWN: f32 = 150.0
 const REPORT_TICKS: u32 = 120
 
 /// The scene's size against the output's: half each way (#51 Q3).
-const SCALE: u32 = 2
+const SCALE: f32 = 2.0
 
 /// Toward the sun: the clearing's (low, 24°).
 pub const SUN = vec3(0.900, 0.407, -0.159)
@@ -622,14 +622,23 @@ pub fn init() -> Floor {
 }
 
 /// Where the grass keeps out of the floor's stones: each one's place (in render space, the
-/// render origin `o` taken off) and reach.
+/// render origin `o` taken off) and reach. The first `CAST_FEET` are a held shot's characters'
+/// (`cast_feet`), off the map until one is cast.
 fn footprints_in(o: vec3) -> Vec<vec4> {
     var out: Vec<vec4> = Vec::new()
+    for _ in 0..CAST_FEET {
+        out.push(OFF_MAP)
+    }
     for st in stones::stones(map::map()) {
         out.push(vec4(st.x - o.x, st.y - o.z, st.z * 1.1, 0.0))
     }
     out
 }
+
+/// The footprints a held shot's characters take (the stand-in's, the fawn's): the grass is
+/// trodden short round their feet, so their feet show (the characters' lookdev: 16, 18).
+const CAST_FEET: u32 = 2
+const OFF_MAP: vec4 = vec4(1.0e9, 1.0e9, 0.0, 0.0)
 
 /// The clipmap's blocks of the ground's fields a side: each a tile, wrapping (the tiles kept
 /// round the eye are at most five across: `the_fields_hold_every_tile_kept`).
@@ -1160,8 +1169,10 @@ fn cook_load(s: mut Floor) {
             cards_to: CARDS_TO,
             impostors_to: IMPOSTORS_TO,
         )
-        w.card_px = engine::lod::CARD_PX * 2.5
-        w.cell = 1.0 / f32(SCALE)
+        // Both in the scene's pixels: the levels hand over at the same size on the output (5 ×
+        // `CARD_PX` of its pixels), and a cut's cell is an output pixel, whatever `SCALE`.
+        w.card_px = engine::lod::CARD_PX * 5.0 / SCALE
+        w.cell = 1.0 / SCALE
         w.write_lods()
         s.wood = Some(take w)
         print(f"the wood: {s.plants.len()} kinds cooked at frame {s.frames}")
@@ -1841,6 +1852,16 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
         settled: f32(s.settled),
     }
     s.settled = if engine::temporal::held(cam) { s.settled + 1 } else { 0 }
+    // The lines, on the scene's own samples, so temporal AA anti-aliases them (none in the
+    // debug views of form).
+    if !s.plain && s.view == 0 {
+        label("lines")
+        let d = Develop { cam, look: Look {}, out, view: s.view }
+        let lp = begin_pass(mut s.scene_b)
+        fullscreen(lp, lines.bind(d, s.scene, s.depth))
+        lp.end()
+        swap(mut s.scene, mut s.scene_b)
+    }
     label("temporal")
     swap(mut s.history, mut s.last_history)
     dispatch(neighbourhoods.bind(s.scene, mut s.means, mut s.spreads), over: s.scene)
@@ -1912,8 +1933,8 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     keys(mut s, time)
     hash_bake(mut s)
     s.map.poll()
-    let scale = if s.plain { 1 } else { SCALE }
-    let (w, h) = (max(width / scale, 1), max(height / scale, 1))
+    let scale = if s.plain { 1.0 } else { SCALE }
+    let (w, h) = (max(u32(f32(width) / scale), 1), max(u32(f32(height) / scale), 1))
     if width != s.width || height != s.height || f32(w) != s.cam.screen.x {
         resize(mut s, width, height, w, h)
     }
@@ -1999,6 +2020,19 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         // No last frame's place to move from, or it's in the old render space.
         std::gpu::copy(from: s.fawn_palette.items(), to: s.fawn_last.items_mut())
     }
+    // The cast's footprints in the grass (`CAST_FEET`), each its place and reach.
+    let feet_of = |c: vec3, reach: f32| {
+        let p = on_ground(c)
+        vec4(p.x, p.z, reach, 0.0)
+    }
+    write(
+        mut s.footprints,
+        0,
+        match cast {
+            Some(c) => [feet_of(c.player, 0.3), feet_of(c.fawn, 0.35)],
+            None => [OFF_MAP, OFF_MAP],
+        },
+    )
     let moving_at = match cast {
         Some(c) => 0.5 * (on_ground(c.player) + on_ground(c.fawn)),
         None => feet,
