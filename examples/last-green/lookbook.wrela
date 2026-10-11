@@ -63,11 +63,12 @@ pub const SHOTS = [
         moves: vec2(2.5, -1.7),
     },
     // The canopy from above in its species' colours, the tower on its hill: a long lens, so the
-    // tower reads over the wood.
+    // tower reads over the wood. The eye stands 29 m back from the crag's edge and looks 0.06
+    // below level, along the line to the tower, so the rim it stands on is the lower third.
     Shot {
         name: "the crag's top",
-        eye: vec3(330.0, 1.8, -150.0),
-        at: vec3(560.0, 14.0, -470.0),
+        eye: vec3(321.8, 1.8, -138.6),
+        at: vec3(438.5, 49.9, -301.0),
         moves: vec2(1.0, -1.4),
         fovy: 0.4,
         reach: 8.0,
