@@ -168,8 +168,8 @@ this change does not erase them or claim that space has been reclaimed.
 On this APFS machine, existing dependency artifacts seeded the shared cache with filesystem
 clones, retaining current artifacts and excluding workspace crates and incremental state.
 The clones share disk blocks; each session still builds its own current workspace sources.
-AGENTS.md aliases CLAUDE.md, so Codex and Claude read the same contract without a second
-instruction document ([Codex repository instructions](https://learn.chatgpt.com/docs/agent-configuration/agents-md)).
+AGENTS.md is the sole repository instruction document. It is a regular file; the former
+alias to CLAUDE.md and the separate CLAUDE.md file were removed.
 
 The policy uses Cargo's documented [worker and target settings](https://doc.rust-lang.org/cargo/reference/config.html#buildjobs),
 explicit [libtest thread limits](https://doc.rust-lang.org/rustc/tests/index.html#test-threads-num_threads),
@@ -381,5 +381,5 @@ without text over it) and Wikimedia Commons (rate-limited).
 
 ## Keeping this record
 
-CLAUDE.md tells every agent to update this file in the same change when it uses a new
+AGENTS.md tells every agent to update this file in the same change when it uses a new
 reference, a new outside asset or data, a new AI tool or model, or AI in a new kind of work.
