@@ -8,10 +8,12 @@
 // through the door the player is at.
 
 use engine::tower::{Fate, Journey, STAIR, Start}
-use std::gpu::{ClipPosition, FragCoord, VertexIndex, begin_screen_pass, draw}
+use engine::plant::full
+use std::derive::gradient
+use std::field::{Surface, cuboid}
+use std::gpu::{FragCoord, begin_screen_pass, draw}
+use std::math::TAU
 use std::input::{Input, Key}
-
-const TAU: f32 = 6.2831853
 
 /// Steps a turn, and each one's rise (m).
 const STEPS: f32 = 16.0
@@ -151,17 +153,12 @@ fn unturn(q: vec3, a: f32) -> vec3 {
     vec3(c * q.x + s * q.z, q.y, -s * q.x + c * q.z)
 }
 
-fn box(q: vec3, half: vec3) -> f32 {
-    let d = abs(q) - half
-    length(max(d, vec3(0.0))) + min(max(d.x, max(d.y, d.z)), 0.0)
-}
-
 /// Step `i`'s slab: its top at `i` rises, its run from the inner edge to the outer.
 fn step_slab(p: vec3, i: f32) -> f32 {
     let q = unturn(p, (i + 0.5) / STEPS * TAU)
     let mid = 0.5 * (INNER + OUTER)
     let width = OUTER * TAU / STEPS * 0.52
-    box(q - vec3(mid, i * RISE - 0.14, 0.0), vec3(0.5 * (OUTER - INNER), 0.14, width))
+    cuboid(vec3(0.5 * (OUTER - INNER), 0.14, width)).distance(q - vec3(mid, i * RISE - 0.14, 0.0))
 }
 
 /// The steps and the column: the steps nearest `p` in angle, on the turn nearest in height.
@@ -185,8 +182,11 @@ fn stone(p: vec3) -> f32 {
 fn door_parts(p: vec3, world: f32) -> vec2 {
     let step = STEPS * (world + 1.0)
     let q = unturn(p, (step + 0.5) / STEPS * TAU) - vec3(OUTER + 0.1, step * RISE + 1.15, 0.0)
-    let frame = max(box(q, vec3(0.12, 1.3, 0.75)), -box(q, vec3(0.3, 1.15, 0.6)))
-    let fill = box(q, vec3(0.03, 1.15, 0.6))
+    let frame = max(
+        cuboid(vec3(0.12, 1.3, 0.75)).distance(q),
+        -cuboid(vec3(0.3, 1.15, 0.6)).distance(q),
+    )
+    let fill = cuboid(vec3(0.03, 1.15, 0.6)).distance(q)
     vec2(frame, fill)
 }
 
@@ -207,17 +207,6 @@ fn scene_distance(p: vec3, doors: vec2) -> vec2 {
         }
     }
     best
-}
-
-fn normal_at(p: vec3, doors: vec2) -> vec3 {
-    let h = 0.002
-    normalize(
-        vec3(
-            scene_distance(p + vec3(x: h), doors).x - scene_distance(p - vec3(x: h), doors).x,
-            scene_distance(p + vec3(y: h), doors).x - scene_distance(p - vec3(y: h), doors).x,
-            scene_distance(p + vec3(z: h), doors).x - scene_distance(p - vec3(z: h), doors).x,
-        ),
-    )
 }
 
 /// The light an open door gives `p` (facing `n`).
@@ -267,7 +256,7 @@ fn shade_pixel(pixel: vec2, scene: Scene) -> vec4 {
         // An open door: the light of the world beyond.
         return vec4(vec3(1.0, 0.8, 0.55), 1.0)
     }
-    let n = normal_at(p, scene.doors)
+    let n = normalize(gradient(|q: vec3| scene_distance(q, scene.doors).x, p))
     // A lantern at the eye, and a cold light from far above.
     let to_eye = scene.eye - p
     let lantern = vec3(1.0, 0.86, 0.66) *
@@ -281,14 +270,6 @@ fn shade_pixel(pixel: vec2, scene: Scene) -> vec4 {
     let lit = albedo * (lantern + above + door_light(p, n, scene.doors) + vec3(0.015))
     let fog = exp(-0.07 * t)
     vec4(mix(void, lit, fog), 1.0)
-}
-
-/// One triangle that covers the screen.
-@vertex
-fn cover(vertex: VertexIndex) -> ClipPosition {
-    let x = f32(vertex.index % 2) * 4.0 - 1.0
-    let y = f32(vertex.index / 2) * 4.0 - 1.0
-    ClipPosition { position: vec4(x, y, 0.0, 1.0) }
 }
 
 @fragment
@@ -321,7 +302,7 @@ pub fn frame(s: mut Stair, time: f32, width: u32, height: u32) {
     }
     s.journey.prepare(next, allowed: true)
     let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
-    draw(screen, cover, shade.bind(scene: scene_of(s, width, height)), vertices: 3)
+    draw(screen, full.bind(z: 0.0), shade.bind(scene: scene_of(s, width, height)), vertices: 3)
     screen.present()
 }
 

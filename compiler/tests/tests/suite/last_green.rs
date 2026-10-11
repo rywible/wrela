@@ -78,14 +78,14 @@ pub fn frame(time: f32, width: u32, height: u32) {}
 fn grown_from(name: &str, edit: &str) -> PathBuf {
     let main = format!(
         r#"
-use engine::grow::{{History, PREVIEW, simulate}}
+use engine::grow::{{History, PREVIEW, Start, simulate}}
 
 const GROWN: u32 = grown()
 
 fn grown() -> u32 {{
     var m = map::map()
     {edit}
-    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, map::LO, map::HI, stones::stones(m))
+    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, map::LO, map::HI, stones::stones(m), |land, year| Start::wild(land))
     h.trees.len()
 }}
 
@@ -131,6 +131,163 @@ fn an_opening_whose_keeper_stops_before_the_present_is_refused_by_name() {
     refused(&dir, "the clearing's meadow", "left");
 }
 
+/// The elves (peoples.wrela) on a small land of good soil by a river: the two tribes come to the
+/// best places, far enough apart; each settlement tills the soil nearest it, grazes beyond, and
+/// leaves the land as it last used it, with old trees standing only in the pasture, about one in
+/// each `veteran` of it; land they left long before the plague has gone back to the wood.
+#[test]
+fn the_elves_settle_the_best_land_and_leave_it_as_they_used_it() {
+    let tests = r#"
+use engine::grow::{Grid, Land, Left, NEVER, NONE, UNBROWSED}
+use engine::soil::soil
+use peoples::{Culture, RECLAIMED, Use, left_by, settle}
+
+/// A level land 1200 m by 800 m of deep loam, a river along its south edge.
+fn land() -> Land {
+    let grid = Grid::over(vec2(0.0), vec2(1200.0, 800.0), 4.0)
+    let nn = grid.cells()
+    var water: Vec<bool> = Vec::new()
+    for c in 0..nn {
+        water.push(grid.centre(c).y < 12.0)
+    }
+    Land {
+        grid,
+        heights: Vec::filled(nn, 0.0),
+        habitable: Vec::filled(nn, value: true),
+        wet: Vec::filled(nn, 0.3),
+        thin: Vec::filled(nn, 0.0),
+        soil: Vec::filled(nn, soil(lap: 0.002, slope: 0.01, rock: 0.0, wet: 0.3)),
+        exposed: Vec::filled(nn, 0.0),
+        cap: Vec::filled(nn, 1.0e9),
+        capped_by: Vec::filled(nn, NONE),
+        lawn: Vec::filled(nn, value: false),
+        kept: Vec::filled(nn, NONE),
+        opened: Vec::filled(nn, NEVER),
+        browsed: Vec::filled(nn, UNBROWSED),
+        water,
+        region: Vec::filled(nn, 0),
+    }
+}
+
+const ELVES = Culture { apart: 250.0, tribes_apart: 500.0, field_reach: 300.0, pasture_reach: 450.0, reach: 600.0 }
+
+@test
+fn two_tribes_far_apart() {
+    let p = settle(land(), ELVES, 0, 300)
+    var tribes = [0, 0]
+    for s in p.settlements {
+        tribes[s.tribe] += 1
+    }
+    assert(tribes[0] >= 1 && tribes[1] >= 1, f"both tribes settle: {tribes[0]} and {tribes[1]}")
+    let a = p.grid.centre(p.settlements[0].at)
+    let b = p.grid.centre(p.settlements[1].at)
+    assert(length(a - b) >= 500.0, f"the tribes' first settlements stand apart: {length(a - b)} m")
+    assert(a.y < 260.0 && b.y < 260.0, f"near the river: {a.y} and {b.y} m from it")
+}
+
+@test
+fn fields_near_and_pasture_beyond() {
+    let p = settle(land(), ELVES, 0, 300)
+    var near = [0.0, 0.0]
+    var count = [0.0, 0.0]
+    for c in 0..p.grid.cells() {
+        let u = Use::from_u32(u32(p.last[c])).unwrap()
+        let k = if u == Use::Field { 0 } else if u == Use::Pasture { 1 } else { 2 }
+        if k == 2 {
+            continue
+        }
+        var d = 1.0e9
+        for s in p.settlements {
+            d = min(d, length(p.grid.centre(c) - p.grid.centre(s.at)))
+        }
+        near[k] += d
+        count[k] += 1.0
+    }
+    assert(count[0] > 0.0 && count[1] > 0.0, f"fields {count[0]} and pasture {count[1]}")
+    assert(near[0] / count[0] < near[1] / count[1], f"fields {near[0] / count[0]} m from home, pasture {near[1] / count[1]} m")
+}
+
+@test
+fn left_as_last_used_with_old_trees_in_the_pasture() {
+    let l = land()
+    let p = settle(l, ELVES, 0, 300)
+    let s = left_by(p, l, species::habits(), ELVES, 300, 0)
+    var grazed = 0.0
+    for c in 0..l.grid.cells() {
+        let was = Left::from_u32(u32(s.left[c])).unwrap()
+        let pc = p.grid.cell_at(l.grid.centre(c))
+        let used = Use::from_u32(u32(p.last[pc])).unwrap()
+        let want = if p.last_year[pc] < 300 - RECLAIMED { Left::Wild } else if used == Use::Field { Left::Tilled } else if used == Use::Pasture { Left::Grazed } else if used == Use::Wood { Left::Cut } else if used == Use::Settled { Left::Built } else { Left::Wild }
+        assert(was == want, "each cell left as it was last used, if in the years before")
+        if was == Left::Grazed {
+            grazed += l.grid.cell * l.grid.cell
+        }
+    }
+    let want = grazed / ELVES.veteran
+    let n = f32(s.standing.len())
+    assert(n > 0.7 * want && n < 1.3 * want, f"about one old tree to each {ELVES.veteran} m² of pasture: {n} for {want}")
+    let habits = species::habits()
+    for t in s.standing {
+        let full = habits[t.kind].crown * t.tall
+        assert(t.reach > 0.99 * full, f"open-grown: crown {t.reach} m, its kind's {full} m")
+    }
+}
+
+@test
+fn left_long_before_the_plague_is_wood_again() {
+    let l = land()
+    let p = settle(l, ELVES, 0, 200)
+    let s = left_by(p, l, species::habits(), ELVES, 400, 0)
+    for b in s.left {
+        assert(Left::from_u32(u32(b)).unwrap() == Left::Wild, "the wood has it back")
+    }
+    assert(s.standing.len() == 0, "no tree kept")
+}
+"#;
+    let dir = map_package("last-green/elves", tests);
+    let floor = repo_root().join("examples/last-green");
+    std::fs::copy(floor.join("peoples.wrela"), dir.join("peoples.wrela")).expect("copy the elves");
+    assert_eq!(super::tests_pass(&dir), 4);
+}
+
+/// A world's seed (`Map::seed`): the same map grown with another seed is another world, and with
+/// the same seed, the same world. On a corner of the floor at the preview's grain.
+#[test]
+fn a_seed_grows_another_world_and_the_same_seed_the_same() {
+    let tests = r#"
+use engine::grow::{PREVIEW, Start, Tree, simulate}
+
+fn grown(seed: u32) -> Vec<Tree> {
+    var m = map::map()
+    m.seed = seed
+    let lo = vec2(500.0, -1100.0)
+    var h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, lo + vec2(160.0), stones::stones(m), |land, year| Start::wild(land))
+    take h.trees
+}
+
+fn same(a: [Tree], b: [Tree]) -> bool {
+    if a.len() != b.len() {
+        return false
+    }
+    for i in 0..a.len() {
+        if length(a[i].at - b[i].at) > 0.0 || a[i].tall != b[i].tall {
+            return false
+        }
+    }
+    true
+}
+
+@test
+fn seeds() {
+    let a = grown(0)
+    assert(same(a, grown(0)), "the same seed grows the same world")
+    assert(!same(a, grown(7)), "another seed grows another world")
+}
+"#;
+    let dir = map_package("last-green/seeds", tests);
+    assert_eq!(super::tests_pass(&dir), 1);
+}
+
 // ---- the bake --------------------------------------------------------------------------------
 
 /// The floor built (its bake from the constants' cache when it's warm), once a test process:
@@ -147,7 +304,7 @@ fn floor() -> PathBuf {
                 "{}",
                 wrela_diag::render::render_all(&out.sources, &out.diagnostics)
             );
-            let build = repo_root().join("target/tmp/last-green-floor");
+            let build = crate::scratch_root().join("last-green-floor");
             let _ = std::fs::remove_dir_all(&build);
             for (path, bytes) in &out.files {
                 let to = build.join(path);
@@ -385,7 +542,7 @@ fn previewed() -> Vec<(String, Vec<u8>)> {
     let lo = map::LO - vec2(64.0)
     let hi = map::HI + vec2(64.0)
     let st = stones::stones(m)
-    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st)
+    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st, history::past)
     let o = obstacles_of(h.trees, species::habits(), h.streams, st, stones::walls(m), lo, hi)
     var e = Evidence::of(h)
     e.crowns = trees::drawn_crowns(e.trees)
@@ -452,12 +609,12 @@ pub fn frame(time: f32, width: u32, height: u32) {
 /// trunks as drawn, and its camera over the floor's walk; the floor's walk walked to its end;
 /// AC7's wildwood tiles matching the wider wood; AC12's trunks that differ (a fork per tree);
 /// its sound (each place its own, changing as smoothly as the place: the outside audit's point
-/// 6); and its first frames on the GPU.
+/// 6); the fight at the ring's glade (encounter.wrela); and its first frames on the GPU.
 #[test]
 #[ignore = "long: bakes the floor (minutes when the constants' cache is cold)"]
 fn the_floors_own_tests_pass() {
     let _ = floor();
-    assert_eq!(super::tests_pass(&repo_root().join("examples/last-green")), 18);
+    assert_eq!(super::tests_pass(&repo_root().join("examples/last-green")), 29);
 }
 
 /// The body of WGSL function `name` in `text` (to its closing brace at the line's start).
@@ -663,14 +820,82 @@ impl Floor {
     }
 }
 
+/// The floor's test build on the CPU host: the same WASM and frame schedule as [`Floor`], every
+/// command checked and none drawn. For the checks of what the floor's code does, not of what
+/// its frames show.
+struct CpuFloor {
+    host: wrela_host::CpuHost,
+    frame: u32,
+    /// Input for the frames, by frame (`wrela_host::parse_script`'s).
+    script: Vec<wrela_host::Scripted>,
+}
+
+impl CpuFloor {
+    fn load(name: &str) -> CpuFloor {
+        let _ = floor();
+        let (dir, _) = wrela_tests::page("examples/last-green", name);
+        let host = wrela_host::CpuHost::load(&dir).expect("load the floor");
+        CpuFloor { host, frame: 0, script: Vec::new() }
+    }
+
+    /// [`Floor::keys`].
+    fn keys(&mut self, at: u32, keys: &[&str]) {
+        let events: Vec<String> = keys
+            .iter()
+            .map(|k| format!(r#"{{"frame": {at}, "type": "key", "key": "{k}"}}"#))
+            .collect();
+        let mut more = wrela_host::parse_script(&format!("[{}]", events.join(", "))).expect("keys");
+        self.script.append(&mut more);
+    }
+
+    fn printed(&mut self) -> Vec<String> {
+        self.host.take_logs()
+    }
+
+    fn steps(&mut self, n: u32) {
+        for _ in 0..n {
+            self.host
+                .lockstep_frame(self.frame, 60.0, 320, 180, &self.script)
+                .unwrap_or_else(|e| panic!("frame {}: {e}", self.frame));
+            self.frame += 1;
+        }
+    }
+
+    fn call(&mut self, name: &str, args: &[wrela_host::Value]) -> Vec<f64> {
+        let v = self.host.call_export(name, args).unwrap_or_else(|e| panic!("{name}: {e}"));
+        v.iter()
+            .map(|x| match x {
+                wrela_host::Value::F32(f) => f64::from(*f),
+                wrela_host::Value::I32(i) => f64::from(*i),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect()
+    }
+
+    /// [`Floor::until_ready`].
+    fn until_ready(&mut self) {
+        while self.call("test_ready", &[])[0] < 0.5 {
+            assert!(self.frame < 900, "the floor isn't ready after {} frames", self.frame);
+            self.steps(1);
+        }
+    }
+
+    fn hold(&mut self, eye: [f32; 3], at: [f32; 3]) {
+        let args: Vec<wrela_host::Value> =
+            eye.iter().chain(&at).map(|&x| wrela_host::Value::F32(x)).collect();
+        self.call("test_hold", &args);
+    }
+}
+
 /// AC4's no trap: the camera held inside a tree's crown, exactly at its middle (where its
 /// levels' patterns are anchored, `lod::anchor`) and a step either side, looking each way, and
-/// inside its trunk: every frame draws, with the floor's streamed wood (`engine::wood`'s marks).
-/// Playing spike 17, a camera there trapped (`lod.wrela:125`).
+/// inside its trunk: every frame's commands are valid, with the floor's streamed wood
+/// (`engine::wood`'s marks). Playing spike 17, a camera there trapped (`lod.wrela:125`). A trap
+/// is the floor's code's, so the CPU host finds it as the GPU's would.
 #[test]
-#[ignore = "long: bakes the floor, needs a GPU"]
+#[ignore = "long: bakes the floor"]
 fn the_camera_inside_a_crown_of_the_floor_draws_its_frames() {
-    let mut f = Floor::load("last-green-inside-a-crown");
+    let mut f = CpuFloor::load("last-green-inside-a-crown");
     f.until_ready();
     for i in [0, 3, 17, 60] {
         let m = f.call("test_crown", &[wrela_host::Value::I32(i)]);
@@ -738,7 +963,7 @@ fn the_checks_sight_matches_the_renderers_depth() {
     let half = std::f64::consts::PI / views as f64;
     let mut f = Floor::load_sized("last-green-calibration", (960, 540));
     f.until_ready();
-    let shots = repo_root().join("target/tmp/last-green-calibration-views");
+    let shots = crate::scratch_root().join("last-green-calibration-views");
     std::fs::create_dir_all(&shots).expect("a directory for the views");
     let mut off = Vec::new();
     let mut sum = 0.0;
@@ -790,7 +1015,7 @@ fn each_landmark_can_be_made_out_from_where_it_is_seen() {
     let (w, h) = (960usize, 540usize);
     let mut f = Floor::load_sized("last-green-landmarks", (w as u32, h as u32));
     f.until_ready();
-    let shots = repo_root().join("target/tmp/last-green-landmark-views");
+    let shots = crate::scratch_root().join("last-green-landmark-views");
     std::fs::create_dir_all(&shots).expect("a directory for the views");
     let mut small = Vec::new();
     for l in cal["landmarks"].as_array().expect("landmarks") {
@@ -853,7 +1078,7 @@ fn the_trails_read_as_paths() {
     let (w, h) = (960usize, 540usize);
     let mut f = Floor::load_sized("last-green-trails", (w as u32, h as u32));
     f.until_ready();
-    let shots = repo_root().join("target/tmp/last-green-trail-views");
+    let shots = crate::scratch_root().join("last-green-trail-views");
     std::fs::create_dir_all(&shots).expect("a directory for the views");
     let places = cal["trails"].as_array().expect("trails");
     let (mut weak, mut measured) = (Vec::new(), 0usize);
@@ -922,20 +1147,29 @@ fn the_trails_read_as_paths() {
     assert!(weak.is_empty(), "trails under 8/255 from the ground beside them: {weak:?}");
 }
 
-/// The look's flicker over the floor's walk's first 10 s at a run (the wind still): each frame
-/// warped into the one before it, by spike 12's measure (`camera::warp_error`: the earlier frame
-/// sampled bilinearly where it sees the same surface, the sky, the stand-in and water left out:
-/// water moves by design, #55's Method). `plain`: the same content drawn as plain rendering, at
-/// the output's size, with no temporal AA, no jitter and no look. The mean warp error (/255), the
-/// share of pixels over 8/255, and each class's mean. A frame and the next every 4 frames (every
-/// frame at full size).
-fn floor_flicker(plain: bool) -> (f64, f64, [f64; 9]) {
+/// How much a run of frames flickers (`floor_flicker`): the mean warp error (/255), the share of
+/// pixels over 8/255, and each class's mean; and the largest step in the screen's mean
+/// brightness from a frame to the next, as a share of it.
+struct Flicker {
+    mean: f64,
+    share: f64,
+    by: [f64; 9],
+    step: f64,
+}
+
+/// The look's flicker on the floor in motion, with the wind blowing: over the floor's walk's first
+/// 10 s at a run, and over the first second shown after a jump to the beech wood's lookbook shot
+/// (arriving somewhere: the frames are black until the light there is drawn). Each frame warped into the one before it, by spike 12's measure
+/// (`camera::warp_error`: the earlier frame sampled bilinearly where it sees the same surface,
+/// or the same sky); nothing left out, so the leaves in the wind, the water, the sky and the
+/// stand-in are in it, as they are in plain rendering's. `plain`: the same content drawn as plain
+/// rendering, at the output's size, with no temporal AA, no jitter and no look. On the walk, a
+/// frame and the next every 4 frames (every frame at full size); after the jump, every frame.
+fn floor_flicker(plain: bool) -> (Flicker, Flicker) {
     use wrela_tests::camera::{Seen, warp_error};
     let (w, h) = (960usize, 540usize);
-    let every = wrela_tests::sized(4, 1);
     let name = if plain { "last-green-flicker-plain" } else { "last-green-flicker" };
     let mut f = Floor::load_sized(name, (w as u32, h as u32));
-    f.call("test_wind", &[wrela_host::Value::I32(0)]);
     if plain {
         f.call("test_plain", &[wrela_host::Value::I32(1)]);
     }
@@ -949,69 +1183,121 @@ fn floor_flicker(plain: bool) -> (f64, f64, [f64; 9]) {
         let tags = f.capture(CAPTURE_TAGS);
         (f.host.read_screen().expect("the screen"), depth, cam, tags)
     };
-    let mut last = grab(&mut f);
-    let (mut sum, mut over, mut motion, mut pairs) = (0.0, 0.0, 0.0, 0usize);
-    let mut worst = (0.0f64, 0u32);
-    let mut by = [(0.0f64, 0usize); 9];
-    let end = f.frame + 600;
-    while f.frame < end {
+    // `frames` frames from now, a pair every `every`.
+    let measure = |f: &mut Floor, frames: u32, every: u32, what: &str| {
+        let mut last = grab(f);
+        let (mut sum, mut over, mut motion, mut pairs) = (0.0, 0.0, 0.0, 0usize);
+        let mut step = 0.0f64;
+        let mut worst = (0.0f64, 0u32);
+        let mut by = [(0.0f64, 0usize); 9];
+        let end = f.frame + frames;
+        while f.frame < end {
+            f.step();
+            if !f.frame.is_multiple_of(every) {
+                // The first frame of the next pair.
+                if (f.frame + 1).is_multiple_of(every) {
+                    last = grab(f);
+                }
+                continue;
+            }
+            let now = grab(f);
+            let (a, b) = (brightness(&last.0), brightness(&now.0));
+            step = step.max((b - a).abs() / a.max(1.0));
+            let warp = warp_error(&Seen::of(&last), &Seen::of(&now), (w, h), &[], &mut by);
+            if warp.n > 10000 {
+                sum += warp.mean;
+                over += warp.over;
+                motion += warp.motion;
+                pairs += 1;
+                if warp.mean > worst.0 {
+                    worst = (warp.mean, f.frame);
+                }
+            }
+            last = now;
+        }
+        let p = pairs.max(1) as f64;
+        let (mean, share) = (sum / p, over / p);
+        println!(
+            "{}, {what}: flicker over {pairs} frames: mean warp error {mean:.3}/255, {:.2}% over 8/255, at {:.2} px a frame; worst {:.3}/255 at frame {}; brightness's largest step {:.1}%",
+            if plain { "plain" } else { "the look" },
+            share * 100.0,
+            motion / p,
+            worst.0,
+            worst.1,
+            step * 100.0
+        );
+        assert!(pairs * every as usize * 3 > frames as usize * 2, "only {pairs} frames compared");
+        Flicker { mean, share, by: by.map(|(s, n)| s / n.max(1) as f64), step }
+    };
+    let walk = measure(&mut f, 600, wrela_tests::sized(4, 1), "the walk");
+    // The walk stopped, and a jump to the beech wood's shot, dark after the open: its first
+    // second shown.
+    f.keys(f.frame + 1, &["KeyP", "KeyL", "Digit2", "Enter"]);
+    f.steps(2);
+    let from = f.frame;
+    while brightness(&f.host.read_screen().expect("the screen")) < 0.5 {
+        assert!(f.frame < from + 240, "the beech wood not shown 4 s after the jump");
         f.step();
-        if !f.frame.is_multiple_of(every) {
-            // The first frame of the next pair.
-            if (f.frame + 1).is_multiple_of(every) {
-                last = grab(&mut f);
-            }
-            continue;
-        }
-        let now = grab(&mut f);
-        let warp =
-            warp_error(&Seen::of(&last), &Seen::of(&now), (w, h), &[0, 5, CLASS_WATER], &mut by);
-        if warp.n > 10000 {
-            sum += warp.mean;
-            over += warp.over;
-            motion += warp.motion;
-            pairs += 1;
-            if warp.mean > worst.0 {
-                worst = (warp.mean, f.frame);
-            }
-        }
-        last = now;
     }
-    let p = pairs.max(1) as f64;
-    let (mean, share) = (sum / p, over / p);
-    println!(
-        "{}: flicker over {pairs} frames: mean warp error {mean:.3}/255, {:.2}% over 8/255, at {:.2} px a frame; worst {:.3}/255 at frame {}",
-        if plain { "plain" } else { "the look" },
-        share * 100.0,
-        motion / p,
-        worst.0,
-        worst.1
-    );
-    assert!(pairs > 400 / every as usize, "only {pairs} frames compared");
-    (mean, share, by.map(|(s, n)| s / n.max(1) as f64))
+    println!("arriving: black for {} frames", f.frame - from);
+    let arrival = measure(&mut f, 60, 1, "arriving");
+    (walk, arrival)
 }
 
-/// AC10's flicker on the floor's walk, by M5's criterion (#51 Q8): the look flickers no more
-/// than the same content drawn as plain rendering, by at most 0.5/255 of mean warp error and 0.5
-/// points of pixels over 8/255. Each class's means are printed.
+/// A screen's mean brightness (of 255: its RGB's mean).
+fn brightness(rgba: &[u8]) -> f64 {
+    let sum: u64 =
+        rgba.chunks_exact(4).map(|p| u64::from(p[0]) + u64::from(p[1]) + u64::from(p[2])).sum();
+    sum as f64 / (rgba.len() / 4 * 3) as f64
+}
+
+/// AC10's flicker on the floor in motion, by M5's criterion (#51 Q8): on the walk and after
+/// arriving somewhere, the look flickers no more than the same content drawn as plain
+/// rendering, by at most 0.5/255 of mean warp error and 0.5 points of pixels over 8/255; and
+/// arriving, the light comes with the first frame shown: the screen's brightness changes by at
+/// most 3% from a frame to the next (the near shadows and the probes, drawn after the jump, were
+/// steps of 50% and 80%). Each class's means are printed.
 #[test]
 #[ignore = "long: bakes the floor and walks it twice, needs a GPU"]
 fn the_floor_doesnt_flicker_on_its_walk() {
-    let (look, look_share, look_by) = floor_flicker(false);
-    let (plain, plain_share, plain_by) = floor_flicker(true);
-    let names = ["sky", "ground", "grass", "leaves", "bark", "stand-in", "rock", "flowers"];
-    for k in [1, 2, 3, 4, 6, 7] {
-        println!("  {}: the look {:.3}/255, plain {:.3}/255", names[k], look_by[k], plain_by[k]);
+    let (look_walk, look_arrival) = floor_flicker(false);
+    let (plain_walk, plain_arrival) = floor_flicker(true);
+    let arrival_step = look_arrival.step;
+    let names =
+        ["sky", "ground", "grass", "leaves", "bark", "stand-in", "rock", "flowers", "water"];
+    for (what, look, plain) in
+        [("the walk", look_walk, plain_walk), ("arriving", look_arrival, plain_arrival)]
+    {
+        for (k, name) in names.iter().enumerate() {
+            println!(
+                "  {what}, {name}: the look {:.3}/255, plain {:.3}/255",
+                look.by[k], plain.by[k]
+            );
+        }
+        println!(
+            "{what}, the look against plain: {:.3} against {:.3}/255, {:.2}% against {:.2}% over 8/255",
+            look.mean,
+            plain.mean,
+            look.share * 100.0,
+            plain.share * 100.0
+        );
+        assert!(
+            look.mean <= plain.mean + 0.5,
+            "{what}: the look's warp error is {}/255, plain's {}/255",
+            look.mean,
+            plain.mean
+        );
+        assert!(
+            look.share <= plain.share + 0.005,
+            "{what}: {} of the look's pixels over 8/255, {} of plain's",
+            look.share,
+            plain.share
+        );
     }
-    println!(
-        "the look against plain: {look:.3} against {plain:.3}/255, {:.2}% against {:.2}% over 8/255",
-        look_share * 100.0,
-        plain_share * 100.0
-    );
-    assert!(look <= plain + 0.5, "the look's warp error is {look}/255, plain's {plain}/255");
     assert!(
-        look_share <= plain_share + 0.005,
-        "{look_share} of the look's pixels over 8/255, {plain_share} of plain's"
+        arrival_step <= 0.03,
+        "arriving, the look's brightness steps {:.1}% from a frame to the next",
+        arrival_step * 100.0
     );
 }
 
@@ -1120,7 +1406,7 @@ const SYSTEMS: [(&str, f64, &[&str]); 9] = [
         ],
     ),
     ("temporal AA", 1.0, &["temporal"]),
-    ("look", 2.0, &["look"]),
+    ("look", 2.0, &["look", "lines"]),
 ];
 
 /// Each system's time (ms) in each of `frames` (its labels' times summed), from a run's timings.
@@ -1238,7 +1524,7 @@ fn the_floors_systems_keep_their_slices() {
     let shore = f.ground([207.0, -337.0]);
     f.look([235.0, shore + 1.5, -365.0], [270.0, shore - 3.0, -400.0], 60);
     let (mere, water) = timed_view(&mut f, 120);
-    f.save(&repo_root().join("target/tmp/last-green-mere-view.png"));
+    f.save(&crate::scratch_root().join("last-green-mere-view.png"));
     let of = |t: &[(&str, f64, f64)], n: &str| t.iter().find(|x| x.0 == n).map_or(0.0, |x| x.2);
     eprintln!("beech high forest: vegetation {:.3} ms (slice 4.0)", of(&beech, "vegetation"));
     eprintln!(
@@ -1315,20 +1601,21 @@ fn bake_hash_on_disk() -> String {
 /// fetched and hashed, `hash_bake`) in the native host and in Chrome, and as the build wrote it
 /// to disk: the same files, bytes and hash.
 #[test]
-#[ignore = "long: bakes the floor, needs Chrome and a GPU"]
+#[ignore = "long: bakes the floor, needs Chrome"]
 fn the_bake_is_the_same_bytes_in_both_hosts() {
     let disk = bake_hash_on_disk();
-    let mut f = Floor::load("last-green-bake-hash");
+    // The native host's fetches are the CPU host's: it draws nothing.
+    let mut f = CpuFloor::load("last-green-bake-hash");
     f.keys(1, &["F9"]);
     let mut native = None;
     while native.is_none() && f.frame < 900 {
-        f.step();
+        f.steps(1);
         native = f
             .printed()
             .into_iter()
             .find_map(|l| l.find("the bake's bytes").map(|i| l[i..].to_string()));
     }
-    // The native host holds the GPU's lock while it's loaded: Chrome's run waits for it.
+    // Its floor's memory and helpers are Chrome's for the run.
     drop(f);
     let (_, chrome, _, _) = floor_in_chrome(
         "last-green-bake-hash-chrome",
@@ -1350,13 +1637,55 @@ fn the_bake_is_the_same_bytes_in_both_hosts() {
 /// each 2 s, the same lines in both hosts; and Chrome's tick log replays natively, every tick to
 /// the same state hash.
 #[test]
-#[ignore = "long: bakes the floor, needs Chrome, python3 and a GPU"]
+#[ignore = "long: bakes the floor, needs Chrome and python3"]
 fn the_floors_walk_replays_and_reports_the_same_in_both_hosts() {
+    let natively = same_in_both_hosts(
+        "last-green-hosts",
+        r#"[{"frame": 1, "type": "key", "key": "KeyP"}]"#,
+        720,
+    );
+    assert!(natively.len() >= 5, "only {} reports natively", natively.len());
+}
+
+/// The fawn's encounter (behaviour.wrela) in both hosts: the player travels to 46 m in front of
+/// the fawn and walks up, stands, and walks on. Its reports (the fawn's state among them) are the
+/// same in Chrome and natively, and Chrome's tick log replays natively, every tick to the same
+/// state hash; and the fawn watched, then fled.
+#[test]
+#[ignore = "long: bakes the floor, needs Chrome and python3"]
+fn the_fawns_encounter_replays_the_same_in_both_hosts() {
+    let natively = same_in_both_hosts("last-green-fawn", FAWN_WALK_UP, 2160);
+    let doing: Vec<String> = natively
+        .iter()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .map(|r| r["fawn"][0].as_str().unwrap_or("").to_string())
+        .collect();
+    println!("the fawn: {doing:?}");
+    let watched = doing.iter().position(|d| d == "watch").expect("it never watched");
+    assert!(doing[watched..].iter().any(|d| d == "flee"), "it watched but never fled");
+}
+
+/// The player's walk up to the fawn: a travel to it (G 61 Enter: the sites are 0 to 58, the egg
+/// 59, its road 60, the fawn 61), then walk 10 s, stand 8 s, and walk on 9.5 s.
+const FAWN_WALK_UP: &str = r#"[
+    {"frame": 1, "type": "key", "key": "KeyG"},
+    {"frame": 1, "type": "key", "key": "Digit6"},
+    {"frame": 1, "type": "key", "key": "Digit1"},
+    {"frame": 1, "type": "key", "key": "Enter"},
+    {"frame": 150, "type": "keydown", "key": "KeyW"},
+    {"frame": 750, "type": "keyup", "key": "KeyW"},
+    {"frame": 1230, "type": "keydown", "key": "KeyW"},
+    {"frame": 1800, "type": "keyup", "key": "KeyW"}
+]"#;
+
+/// The floor run with `script` for `frames` frames at 60 a second in Chrome's test mode and in
+/// the native host, frame for frame: the play harness's reports the same in both, and Chrome's
+/// tick log replayed natively, every tick to the same state hash (a hash that differs fails the
+/// replay at its tick). The native host's reports.
+fn same_in_both_hosts(name: &str, text: &str, frames: u32) -> Vec<String> {
     let _ = floor();
-    let (dir, rel) = wrela_tests::page("examples/last-green", "last-green-hosts");
-    let text = r#"[{"frame": 1, "type": "key", "key": "KeyP"}]"#;
+    let (dir, rel) = wrela_tests::page("examples/last-green", name);
     let script = wrela_host::parse_script(text).expect("a script");
-    let frames = 720;
     let run = wrela_tests::ChromeRun {
         script: Some(text.into()),
         workers: 4,
@@ -1367,7 +1696,8 @@ fn the_floors_walk_replays_and_reports_the_same_in_both_hosts() {
         lines.into_iter().filter(|l| l.contains("\"report\"")).map(String::from).collect()
     };
     let in_chrome = reports(chrome.printed.iter().map(|(_, l)| l.as_str()).collect());
-    let mut native = wrela_host::Host::load(&dir).expect("load the floor");
+    // The sim's reports are the same with no frame drawn: the CPU host's.
+    let mut native = wrela_host::CpuHost::load(&dir).expect("load the floor");
     for i in 0..frames {
         native
             .lockstep_frame(i, 60.0, 320, 180, &script)
@@ -1381,15 +1711,13 @@ fn the_floors_walk_replays_and_reports_the_same_in_both_hosts() {
         natively.len(),
         natively.last()
     );
-    assert!(natively.len() >= 5, "only {} reports natively", natively.len());
     assert_eq!(in_chrome, natively, "the hosts' reports differ");
-    // The ticks: Chrome's log (its records and every tick's state hash) replays natively, each
-    // tick to the same hash (a hash that differs fails the replay at its tick).
     let ticks = chrome.ticks.expect("the ticker's ticks");
     let log = ticks.log.expect("a tick log");
-    assert!(log.ticks.len() > 600, "{} ticks", log.ticks.len());
+    assert!(log.ticks.len() as u32 > frames * 5 / 6, "{} ticks", log.ticks.len());
     let built = wrela_host::CpuBuild::load(&dir).expect("load on the CPU");
     assert_eq!(built.replay(&log, 2).expect("replays") as usize, log.ticks.len());
+    natively
 }
 
 // ---- in Chrome ------------------------------------------------------------------------------
@@ -1930,7 +2258,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
     let hi = map::HI + vec2(64.0)
     let st = stones::stones(m)
     let began = now()
-    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st)
+    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st, history::past)
     let grown = now()
     let o = obstacles_of(h.trees, species::habits(), h.streams, st, stones::walls(m), lo, hi)
     var e = Evidence::of(h)
@@ -1978,7 +2306,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
 /// cover and the history's fields there. In Chrome within 50 ms (the click's frame, CPU), and the
 /// same answers natively. From the gate at 800×600: the great oak, then the meadow.
 #[test]
-#[ignore = "long: bakes the floor, needs Chrome, python3 and a GPU"]
+#[ignore = "long: bakes the floor, needs Chrome and python3"]
 fn a_click_names_a_trees_kind_and_history_and_the_grounds_cover() {
     let _ = floor();
     let (dir, rel) = wrela_tests::page("examples/last-green", "last-green-provenance");
@@ -2005,7 +2333,8 @@ fn a_click_names_a_trees_kind_and_history_and_the_grounds_cover() {
     };
     let in_chrome = answers(chrome.printed.iter().map(|(_, l)| l.as_str()).collect());
     let script = wrela_host::parse_script(text).expect("a script");
-    let mut native = wrela_host::Host::load(&dir).expect("load the floor");
+    // The answers are computed on the CPU (provenance.wrela): the CPU host's, no frame drawn.
+    let mut native = wrela_host::CpuHost::load(&dir).expect("load the floor");
     for i in 0..frames {
         native.lockstep_frame(i, 60.0, 800, 600, &script).unwrap_or_else(|e| panic!("{i}: {e}"));
     }

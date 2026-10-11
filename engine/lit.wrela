@@ -60,12 +60,13 @@ pub fn sun_and_sky(l: Lighting, world: vec3, n: vec3, sky_n: vec3, soft: f32) ->
 /// `sun_and_sky`), and the light its gloss reflects: toward its reflection of the ray from the
 /// eye (`light::Lit::reflected`).
 pub fn sun_and_gloss(l: Lighting, world: vec3, n: vec3, soft: f32) -> (f32, vec3, vec3) {
-    sun_sky_and_gloss(l, world, n, sky_n: n, facing: n, soft: soft)
+    sun_sky_and_gloss(l, world, n, sky_n: n, facing: n, soft: soft, shadow_at: world)
 }
 
 /// `sun_and_gloss` for a surface whose sky light is for another facing, `sky_n`, and whose gloss
 /// is about `facing`: a leaf's, whose sky light is its crown's, and whose gloss is its side's
-/// that faces the eye.
+/// that faces the eye. Its shadow maps are read at `shadow_at`: a leaf's, past its own mass's
+/// leaves.
 pub fn sun_sky_and_gloss(
     l: Lighting,
     world: vec3,
@@ -73,6 +74,7 @@ pub fn sun_sky_and_gloss(
     sky_n: vec3,
     facing: vec3,
     soft: f32,
+    shadow_at: vec3,
 ) -> (f32, vec3, vec3) {
     let shade = cloud_shadow(l.clouds, l.cloud, l.s, world)
     let v = normalize(l.cam.eye - world)
@@ -88,7 +90,7 @@ pub fn sun_sky_and_gloss(
         r,
         shade,
     )
-    (sun_through(l, world, n, soft, shade), sky, reflected)
+    (sun_through(l, shadow_at, n, soft, shade), sky, reflected)
 }
 
 /// `colour`, at `world`, as the eye sees it through the air between them (`light::hazed`).

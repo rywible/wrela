@@ -88,6 +88,14 @@ impl Darkness {
         }
     }
 
+    /// Every wisp moved by `by`, as it is.
+    pub fn carry(mut self, by: vec3) {
+        for q in 0..self.wisps.len() {
+            self.wisps[q].at = self.wisps[q].at + by
+            self.wisps[q].from += by.y
+        }
+    }
+
     /// The darkness `dt` seconds on: `rate` wisps a second let go from the cape (`burst` more at
     /// once), and each wisp risen, eased toward `wind`, aged; the dead let go.
     pub fn step(mut self, c: Cape, rate: f32, burst: u32, wind: vec3, dt: f32) {

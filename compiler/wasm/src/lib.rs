@@ -351,10 +351,13 @@ pub fn emit_with(m: &ir::Module, options: Options) -> Result<Emitted, String> {
         code.function(&body);
         next
     });
-    // The tasks a parallel job's chunks run, by index.
+    // The tasks a parallel job's chunks run, by index. A thread entry calls its task by index,
+    // so a module with one has the table even with no task in it (`std::audio`'s entry comes
+    // with any of the module's functions, `play` or not).
+    let has_table = !m.tasks.is_empty() || !m.thread_entries.is_empty();
     let mut tables = TableSection::new();
     let mut elements = ElementSection::new();
-    if !m.tasks.is_empty() {
+    if has_table {
         let n = m.tasks.len() as u64;
         tables.table(TableType {
             element_type: RefType::FUNCREF,
@@ -387,7 +390,7 @@ pub fn emit_with(m: &ir::Module, options: Options) -> Result<Emitted, String> {
     module.section(&types.section);
     module.section(&imports);
     module.section(&functions);
-    if !m.tasks.is_empty() {
+    if has_table {
         module.section(&tables);
     }
     if !shared_memory {
@@ -838,6 +841,25 @@ mod tests {
         let copies = |ops: &[String]| ops.iter().filter(|o| o.starts_with("MemoryCopy")).count();
         assert_eq!(copies(&copy_of(8)), 0);
         assert!(copies(&copy_of(256)) >= 1);
+    }
+
+    /// Both copies read their whole source before they write, even when it is also the
+    /// destination. Repeating the chunk iterator must not interleave loads and stores.
+    #[test]
+    fn codegen_perf_small_copies_read_before_writing() {
+        for n in [4, 8, 32] {
+            let ops = copy_of(n);
+            let memory: Vec<_> = ops
+                .iter()
+                .filter(|o| o.starts_with("V128Load") || o.starts_with("V128Store"))
+                .map(|o| o.starts_with("V128Load"))
+                .collect();
+            let chunks = n as usize / 4;
+            let copy: Vec<_> = std::iter::repeat_n(true, chunks)
+                .chain(std::iter::repeat_n(false, chunks))
+                .collect();
+            assert_eq!(memory, copy.repeat(2), "{ops:?}");
+        }
     }
 
     /// `fn f(x: f32) -> f32 { x + MARK }` has no frame: no stack check, and the stack pointer

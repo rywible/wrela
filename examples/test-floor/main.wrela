@@ -4,17 +4,24 @@
 //
 // Keys: W and S walk, A and D turn, E goes back through the door when the player is at it.
 
-use engine::tower::{Fate, Journey, STAIR, Start}
-use std::gpu::{ClipPosition, FragCoord, VertexIndex, begin_screen_pass, draw}
+use engine::floor::{Doorway, Exit}
+use engine::tower::{Fate, Start}
+use engine::plant::full
+use std::derive::gradient
+use std::field::{Surface, cuboid}
+use std::gpu::{FragCoord, begin_screen_pass, draw}
+use std::math::TAU
 use std::input::{Input, Key}
-
-const TAU: f32 = 6.2831853
 
 /// This floor's world in the tower, and the door to it.
 const WORLD: u32 = 1
 const WORLDS: u32 = 2
 const STAIR_BUILD: Text = "../stair"
 const SAVE: Text = "tower/save"
+
+/// The door, which stands at the middle facing +z: a player is at it in front of it, within a
+/// step.
+const DOOR = Doorway { at: vec2(0.0, 0.6), reach: 1.2 }
 
 /// The player's pace (m/s), turn (radians a second) and eye height (m); the floor's radius.
 const PACE: f32 = 3.0
@@ -23,7 +30,7 @@ const EYE: f32 = 1.6
 const RADIUS: f32 = 14.0
 
 pub struct Floor {
-    journey: Journey,
+    exit: Exit,
     input: Input,
     /// Where the player stands, and which way they face (radians from +z towards +x).
     at: vec2,
@@ -34,23 +41,11 @@ pub struct Floor {
 pub fn init() -> Floor {
     // In through the door, which stands at the middle facing +z: the player steps out of it.
     Floor {
-        journey: Journey::begin(WORLD, WORLDS, SAVE),
+        exit: Exit::begin(WORLD, WORLDS, SAVE, STAIR_BUILD, DOOR),
         input: Input::new(),
         at: vec2(0.0, 1.5),
         yaw: 0.0,
         last_time: 0.0,
-    }
-}
-
-/// Whether the player is at the door: in front of it, within a step.
-fn at_door(f: Floor) -> bool {
-    length(f.at - vec2(0.0, 0.6)) < 1.2
-}
-
-/// Goes back out to the stair, if the player is at the door.
-fn leave(f: mut Floor) {
-    if at_door(f) {
-        let _ = f.journey.go(WORLD, STAIR, STAIR_BUILD)
     }
 }
 
@@ -63,7 +58,7 @@ struct Scene: Copy + GpuData {
 }
 
 fn fate_code(f: Floor) -> f32 {
-    match f.journey.carry.tower.fate(WORLD) {
+    match f.exit.journey.carry.tower.fate(WORLD) {
         Fate::Undecided => 0.0,
         Fate::Preserved => 1.0,
         Fate::Freed => 2.0,
@@ -77,11 +72,6 @@ fn scene_of(f: Floor, width: u32, height: u32) -> Scene {
         resolution: vec2(f32(width), f32(height)),
         fate: fate_code(f),
     }
-}
-
-fn box(q: vec3, half: vec3) -> f32 {
-    let d = abs(q) - half
-    length(max(d, vec3(0.0))) + min(max(d.x, max(d.y, d.z)), 0.0)
 }
 
 /// The nearest surface's distance and what it is: 0 ground, 1 a pillar, 2 the door's frame, 3
@@ -98,26 +88,18 @@ fn scene_distance(p: vec3) -> vec2 {
         best = vec2(pillar, 1.0)
     }
     let q = p - vec3(0.0, 1.15, 0.0)
-    let frame = max(box(q, vec3(0.75, 1.3, 0.12)), -box(q, vec3(0.6, 1.15, 0.3)))
+    let frame = max(
+        cuboid(vec3(0.75, 1.3, 0.12)).distance(q),
+        -cuboid(vec3(0.6, 1.15, 0.3)).distance(q),
+    )
     if frame < best.x {
         best = vec2(frame, 2.0)
     }
-    let doorway = box(q, vec3(0.6, 1.15, 0.03))
+    let doorway = cuboid(vec3(0.6, 1.15, 0.03)).distance(q)
     if doorway < best.x {
         best = vec2(doorway, 3.0)
     }
     best
-}
-
-fn normal_at(p: vec3) -> vec3 {
-    let h = 0.002
-    normalize(
-        vec3(
-            scene_distance(p + vec3(x: h)).x - scene_distance(p - vec3(x: h)).x,
-            scene_distance(p + vec3(y: h)).x - scene_distance(p - vec3(y: h)).x,
-            scene_distance(p + vec3(z: h)).x - scene_distance(p - vec3(z: h)).x,
-        ),
-    )
 }
 
 fn shade_pixel(pixel: vec2, scene: Scene) -> vec4 {
@@ -152,7 +134,7 @@ fn shade_pixel(pixel: vec2, scene: Scene) -> vec4 {
         return vec4(0.02, 0.025, 0.04, 1.0)
     }
     let p = scene.eye + dir * t
-    let n = normal_at(p)
+    let n = normalize(gradient(|q: vec3| scene_distance(q).x, p))
     let sun_dir = normalize(vec3(0.5, 0.7, 0.3))
     let sun = mix(vec3(0.9, 0.92, 0.95), vec3(1.0, 0.85, 0.6), warm) * max(dot(n, sun_dir), 0.0)
     let albedo = if hit.y < 0.5 { vec3(0.42, 0.45, 0.32) } else if hit.y < 1.5 {
@@ -163,13 +145,6 @@ fn shade_pixel(pixel: vec2, scene: Scene) -> vec4 {
     vec4(mix(sky, lit, fog), 1.0)
 }
 
-@vertex
-fn cover(vertex: VertexIndex) -> ClipPosition {
-    let x = f32(vertex.index % 2) * 4.0 - 1.0
-    let y = f32(vertex.index / 2) * 4.0 - 1.0
-    ClipPosition { position: vec4(x, y, 0.0, 1.0) }
-}
-
 @fragment
 fn shade(pixel: FragCoord, scene: Scene) -> vec4 {
     shade_pixel(pixel.position.xy, scene)
@@ -178,7 +153,8 @@ fn shade(pixel: FragCoord, scene: Scene) -> vec4 {
 pub fn frame(f: mut Floor, time: f32, width: u32, height: u32) {
     let dt = clamp(time - f.last_time, 0.0, 0.1)
     f.last_time = time
-    f.journey.update()
+    // The way back is the stair: it's got ready while nothing of the floor's own waits.
+    f.exit.update(allowed: true)
     f.input.read()
     borrow i = f.input
     let walk = (if i.held(Key::W) || i.held(Key::Up) { 1.0 } else { 0.0 })
@@ -190,18 +166,16 @@ pub fn frame(f: mut Floor, time: f32, width: u32, height: u32) {
     f.yaw += turn * TURN * dt
     step(mut f, walk * PACE * dt)
     if pressed_f {
-        let _ = f.journey.decide(WORLD, Fate::Freed)
+        let _ = f.exit.journey.decide(WORLD, Fate::Freed)
     }
     if pressed_p {
-        let _ = f.journey.decide(WORLD, Fate::Preserved)
+        let _ = f.exit.journey.decide(WORLD, Fate::Preserved)
     }
     if pressed_e {
-        leave(mut f)
+        let _ = f.exit.leave(f.at)
     }
-    // The way back is the stair: it's got ready while nothing of the floor's own waits.
-    f.journey.prepare(Some(STAIR_BUILD), allowed: true)
     let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
-    draw(screen, cover, shade.bind(scene: scene_of(f, width, height)), vertices: 3)
+    draw(screen, full.bind(z: 0.0), shade.bind(scene: scene_of(f, width, height)), vertices: 3)
     screen.present()
 }
 
@@ -227,12 +201,12 @@ pub fn turn(f: mut Floor, radians: f32) {
 
 /// Goes back out through the door, if the player is at it.
 pub fn go_out(f: mut Floor) {
-    leave(mut f)
+    let _ = f.exit.leave(f.at)
 }
 
 /// Where the player stands, how the floor started (`Start`'s order), and its fate.
 pub fn report(f: Floor) -> vec4 {
-    let start = match f.journey.start {
+    let start = match f.exit.journey.start {
         Start::Fresh => 0.0,
         Start::Arrived => 1.0,
         Start::TurnedBack => 2.0,
@@ -249,5 +223,5 @@ pub fn probe(f: Floor, x: f32, y: f32, width: u32, height: u32) -> vec4 {
 /// Decides the floor's fate (1 preserved, 2 freed).
 @testing
 pub fn test_decide(f: mut Floor, fate: u32) {
-    let _ = f.journey.decide(WORLD, if fate == 1 { Fate::Preserved } else { Fate::Freed })
+    let _ = f.exit.journey.decide(WORLD, if fate == 1 { Fate::Preserved } else { Fate::Freed })
 }

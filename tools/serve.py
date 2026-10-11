@@ -8,6 +8,7 @@ import gzip
 import http.server
 import io
 import os
+import re
 import sys
 import threading
 import time
@@ -64,7 +65,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         """Sends the file gzipped (as a static host would) if the request accepts gzip and it's a
         kind a host compresses: whether it did. The test pages' load times and bytes then are
         what a player's would be."""
-        if "gzip" not in (self.headers.get("Accept-Encoding") or ""):
+        accepted = ",".join(self.headers.get_all("Accept-Encoding", []))
+        if not accepts_gzip(accepted):
             return False
         path = self.translate_path(self.path)
         if not path.endswith(self.GZIPPED) or not os.path.isfile(path):
@@ -75,7 +77,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.copyfile(io.BytesIO(body), self.wfile)
+        if self.command != "HEAD":
+            self.copyfile(io.BytesIO(body), self.wfile)
         return True
 
     def copyfile(self, source, outputfile):
@@ -91,7 +94,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             outputfile.write(chunk)
 
     def do_HEAD(self):
-        if not self.refused():
+        if not self.refused() and not self.send_gzipped():
             super().do_HEAD()
 
     def results_path(self):
@@ -139,22 +142,56 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         """Hook for tools/headless.py."""
 
 
-_GZIPPED = {}  # (path, size, mtime) -> the file gzipped
+class _GzipFile:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.version = None
+        self.body = None
+
+
+_GZIPPED = {}  # path -> the latest version of the file gzipped
 _GZIPPED_LOCK = threading.Lock()
+
+_QVALUE = re.compile(r"(?:0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?)\Z")
+
+
+def accepts_gzip(value):
+    """Whether an Accept-Encoding field allows gzip, including wildcard preferences."""
+    qualities = {}
+    for item in value.split(","):
+        parts = item.split(";")
+        coding = parts[0].strip().casefold()
+        if coding not in ("gzip", "*"):
+            continue
+        quality = 1.0
+        for parameter in parts[1:]:
+            name, separator, number = parameter.partition("=")
+            number = number.strip()
+            if name.strip().casefold() != "q" or not separator or not _QVALUE.fullmatch(number):
+                quality = None
+                break
+            quality = float(number)
+        if quality is not None:
+            qualities[coding] = max(quality, qualities.get(coding, 0.0))
+    return qualities.get("gzip", qualities.get("*", 0.0)) > 0
 
 
 def gzipped(path):
     """The file at `path`, gzipped: once for each version of it."""
-    st = os.stat(path)
-    key = (path, st.st_size, st.st_mtime_ns)
     with _GZIPPED_LOCK:
-        body = _GZIPPED.get(key)
-    if body is None:
-        with open(path, "rb") as f:
-            body = gzip.compress(f.read(), compresslevel=6)
-        with _GZIPPED_LOCK:
-            _GZIPPED[key] = body
-    return body
+        cached = _GZIPPED.get(path)
+        if cached is None:
+            cached = _GZIPPED[path] = _GzipFile()
+    # One compression of this file at a time; other files can compress beside it. Discard
+    # its old bytes after a rebuild rather than keeping every version for the whole session.
+    with cached.lock:
+        st = os.stat(path)
+        version = (st.st_size, st.st_mtime_ns)
+        if cached.version != version:
+            with open(path, "rb") as f:
+                body = gzip.compress(f.read(), compresslevel=6)
+            cached.version, cached.body = version, body
+        return cached.body
 
 
 class Throttle:

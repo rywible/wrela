@@ -295,9 +295,9 @@ fn read_file<T>(
 pub struct Host {
     /// Always a program, but while a hot reload swaps it ([`Host::reload`]).
     program: Option<Program<Gpu>>,
-    wasm_hash: u64,
-    /// The build's directory and how it was loaded: what a hot reload loads the next build
-    /// with.
+    /// The running build, and its directory and how it was loaded: what a hot reload loads the
+    /// next build with, and what starts again when a hand-over fails.
+    build: Build,
     dir: PathBuf,
     options: Options,
     /// The builds the program got ready to hand over to (`std::reload::prepare`).
@@ -312,6 +312,30 @@ impl Host {
         self.program.as_mut().expect("the host has a program")
     }
 
+    /// `build`, in `dir`, started in the place of the program `carried` comes from, on its
+    /// device (`build`'s pipelines taken from the spares where they can be): given what it
+    /// kept, its unread input and, if it has any, its ticks to run again. `run_init` runs its
+    /// `init` too.
+    fn start_carrying(
+        &self,
+        build: &Build,
+        dir: &Path,
+        mut carried: program::Retired<Gpu>,
+        run_init: bool,
+    ) -> Result<Program<Gpu>> {
+        program::Executor::reload(&mut carried.executor, &build.manifest, &build.shaders)?;
+        let mut program = Program::instantiate_carrying(
+            &build.compiled,
+            &build.manifest,
+            carried,
+            self.options.io(dir),
+            workers(self.options.workers),
+            run_init,
+        )?;
+        program.hand_over_here();
+        Ok(program)
+    }
+
     /// Hot reload: replaces the running program with the build in `dir` (by default the one
     /// it was loaded from, rebuilt), in this process, on the same device. The new build starts
     /// with `init`; what the old one kept (`std::reload::keep`) is what its `kept()` gives;
@@ -324,19 +348,8 @@ impl Host {
         let dir = dir.map_or_else(|| self.dir.clone(), Path::to_path_buf);
         let build = compile_build(&dir, None)?;
         let old = self.program.take().expect("the host has a program");
-        let mut carried = old.retire();
-        program::Executor::reload(&mut carried.executor, &build.manifest, &build.shaders)?;
-        let mut program = Program::instantiate_carrying(
-            &build.compiled,
-            &build.manifest,
-            carried,
-            self.options.io(&dir),
-            workers(self.options.workers),
-            true,
-        )?;
-        program.hand_over_here();
-        self.program = Some(program);
-        self.wasm_hash = build.wasm_hash;
+        self.program = Some(self.start_carrying(&build, &dir, old.retire(), true)?);
+        self.build = build;
         self.dir = dir;
         Ok(())
     }
@@ -346,16 +359,36 @@ impl Host {
     /// one's (its buffers and textures released; nothing kept, no ticks carried). The pipelines
     /// are kept. For tests that each start fresh on one host (`wrela test`'s GPU frame tests).
     pub fn restart_with(&mut self, options: &Options) -> Result<()> {
-        let options = &options.homed(&self.dir);
-        let build = compile_build(&self.dir, None)?;
+        self.restart_in(self.dir.clone(), options)
+    }
+
+    /// Starts the build in `dir` afresh, keeping the device and unchanged pipelines. Nothing
+    /// of the old program is carried: its resources, screen, requests and recorded state go;
+    /// the new program reads files and, by default, storage from `dir`. The GPU lock stays
+    /// held. Changing the timing or counting options opens a device with those capabilities.
+    pub fn restart_in(&mut self, dir: impl AsRef<Path>, options: &Options) -> Result<()> {
+        let dir = dir.as_ref();
+        let options = &options.homed(dir);
+        let build = compile_build(dir, None)?;
+        // A preparation belongs to the retiring program. Let its GPU work finish before
+        // resetting the device's resources and dropping its prepared pipelines.
+        for prepared in std::mem::take(&mut self.prepared).into_values() {
+            if let handover::Prepared::Going(job, _) = prepared {
+                let _ = job.join();
+            }
+        }
         let old = self.program.take().expect("the host has a program");
         let mut executor = old.retire().executor;
-        program::Executor::reload(&mut executor, &build.manifest, &build.shaders)?;
+        if options.timing == self.options.timing && options.counts == self.options.counts {
+            executor.restart_build(&build.manifest, &build.shaders)?;
+        } else {
+            executor = Gpu::new(&build.manifest, &build.shaders, options.timing, options.counts)?;
+        }
         let mut program = Program::instantiate_with(
             &build.compiled,
             &build.manifest,
             executor,
-            options.io(&self.dir),
+            options.io(dir),
             options.record,
             workers(options.workers),
             !options.defer_init,
@@ -365,6 +398,8 @@ impl Host {
         }
         program.hand_over_here();
         self.program = Some(program);
+        self.build = build;
+        self.dir = dir.to_path_buf();
         self.options = options.clone();
         Ok(())
     }
@@ -386,13 +421,13 @@ impl Host {
         let dir = dir.as_ref();
         let options = &options.homed(dir);
         // Everything that can be checked without the GPU is, before taking it.
-        let Build { manifest, shaders, wasm_hash, compiled } = compile_build(dir, None)?;
+        let build = compile_build(dir, None)?;
         let lock = lock::GpuLock::acquire(&format!("wrela-host {}", dir.display()))?;
-        let gpu = Gpu::new(&manifest, &shaders, options.timing, options.counts)?;
+        let gpu = Gpu::new(&build.manifest, &build.shaders, options.timing, options.counts)?;
         let n = workers(options.workers);
         let mut program = Program::instantiate_with(
-            &compiled,
-            &manifest,
+            &build.compiled,
+            &build.manifest,
             gpu,
             options.io(dir),
             options.record,
@@ -405,7 +440,7 @@ impl Host {
         program.hand_over_here();
         Ok(Host {
             program: Some(program),
-            wasm_hash,
+            build,
             dir: dir.to_path_buf(),
             options: options.clone(),
             prepared: handover::PreparedBuilds::new(),
@@ -434,11 +469,28 @@ impl Host {
         script: &[Scripted],
         log: bool,
     ) -> Result<(RunResult, Option<TickLog>)> {
+        self.run_lockstep_seen(frames, fps, width, height, script, log, 0, |_, _| Ok(()))
+    }
+
+    /// [`Host::run_lockstep`], with every `every`th frame's screen (0: none) read back as it's
+    /// drawn and given to `seen` with its frame's number: a clip's frames.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_lockstep_seen(
+        &mut self,
+        frames: u32,
+        fps: f64,
+        width: u32,
+        height: u32,
+        script: &[Scripted],
+        log: bool,
+        every: u32,
+        mut seen: impl FnMut(u32, &[u8]) -> Result<()>,
+    ) -> Result<(RunResult, Option<TickLog>)> {
         program::valid_fps(fps)?;
         self.p().executor().set_screen(width, height)?;
         let mut log = if log {
             self.p().want_hashes(true);
-            let hash = self.wasm_hash;
+            let hash = self.build.wasm_hash;
             Some(self.p().tick_log(hash)?)
         } else {
             None
@@ -447,8 +499,37 @@ impl Host {
             self.p().executor().set_frame(i as usize);
             self.p().lockstep_frame(i, fps, width, height, script, log.as_mut())?;
             self.settle_handing()?;
+            if every > 0 && i % every == 0 {
+                let screen = self.p().executor().read_screen()?;
+                seen(i, &screen)?;
+            }
         }
         Ok((self.result(width, height)?, log))
+    }
+
+    /// Runs in lockstep until the program prints a line holding `until` (`std::io::print`), at
+    /// most `frames` frames: that frame's screen (a capture's still), or none if it never did.
+    pub fn run_lockstep_until(
+        &mut self,
+        frames: u32,
+        fps: f64,
+        width: u32,
+        height: u32,
+        script: &[Scripted],
+        until: &str,
+    ) -> Result<Option<RunResult>> {
+        program::valid_fps(fps)?;
+        self.p().executor().set_screen(width, height)?;
+        self.p().take_logs();
+        for i in 0..frames {
+            self.p().executor().set_frame(i as usize);
+            self.p().lockstep_frame(i, fps, width, height, script, None)?;
+            self.settle_handing()?;
+            if self.p().take_logs().iter().any(|line| line.contains(until)) {
+                return Ok(Some(self.result(width, height)?));
+            }
+        }
+        Ok(None)
     }
 
     /// Frame `i` of a lockstep run ([`Host::run_lockstep`]), alone: for a test that looks at the
@@ -555,8 +636,8 @@ impl Host {
         &self.dir
     }
 
-    /// How many pipelines the host has built since it loaded: what a hand-over or a reload
-    /// built, by the difference.
+    /// How many pipelines the current device has built: what a hand-over, reload or restart
+    /// built, by the difference. Restarts that change GPU capabilities open a new device.
     pub fn pipelines_built(&mut self) -> usize {
         self.p().executor().pipelines_built()
     }
@@ -656,6 +737,8 @@ pub struct CpuBuild {
     wasm_hash: u64,
     /// Whether its hosts keep a copy of every batch ([`CpuHost::take_batches`]).
     record: bool,
+    /// Whether the caller shows the program's printed lines itself.
+    quiet: bool,
 }
 
 impl CpuBuild {
@@ -676,13 +759,26 @@ impl CpuBuild {
 
     fn load_compiled(dir: &Path, fuel: Option<u64>) -> Result<CpuBuild> {
         let Build { manifest, wasm_hash, compiled, .. } = compile_build(dir, fuel)?;
-        Ok(CpuBuild { compiled, manifest, dir: dir.to_path_buf(), wasm_hash, record: false })
+        Ok(CpuBuild {
+            compiled,
+            manifest,
+            dir: dir.to_path_buf(),
+            wasm_hash,
+            record: false,
+            quiet: false,
+        })
     }
 
     /// Its hosts keep a copy of every batch the program submits ([`CpuHost::take_batches`]):
     /// for tests that look at what a program recorded. A long run keeps none.
     pub fn recording(mut self) -> CpuBuild {
         self.record = true;
+        self
+    }
+
+    /// Keeps printed lines for [`CpuHost::take_logs`] without also showing them on stderr.
+    pub fn quiet(mut self) -> CpuBuild {
+        self.quiet = true;
         self
     }
 
@@ -743,7 +839,7 @@ impl CpuBuild {
     /// `storage` (by default, `storage/` in the build's directory), and without running
     /// `init`: call [`CpuHost::init`] next, which says why it failed if it does.
     pub fn instantiate_in(&self, workers: u32, storage: Option<&Path>) -> Result<CpuHost> {
-        let io = io(&self.dir, storage, None, false);
+        let io = io(&self.dir, storage, None, self.quiet);
         let n = self::workers(workers);
         let (compiled, manifest) = (&self.compiled, &self.manifest);
         let program =

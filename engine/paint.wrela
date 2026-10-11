@@ -167,22 +167,30 @@ pub fn glow_down(
     vec4(sum / 4.0, 1.0)
 }
 
-/// A 13-tap Gaussian blur along x (`across` 0) or y (1), `spread` texels a tap.
+/// A 13-tap Gaussian blur along x (`across` 0) or y (1), `spread` texels a tap. Each tap but the
+/// middle one is a filtered sample (`s`, linear) half a texel inside its place, so with `spread`
+/// 2 it reads two texels and every texel is read: taps that loaded one texel each skipped every
+/// other one, and left a grid of bright and dark texels round the sun.
 @fragment
-pub fn glow_blur(pixel: FragCoord, src: Texture<Rgba16Float>, across: u32, spread: f32) -> vec4 {
-    let p = vec2i(pixel.position.xy)
+pub fn glow_blur(
+    pixel: FragCoord,
+    src: Texture<Rgba16Float>,
+    s: Sampler,
+    across: u32,
+    spread: f32,
+) -> vec4 {
+    let size = vec2(f32(src.width()), f32(src.height()))
+    let at = pixel.position.xy
     let w = [0.1964, 0.1748, 0.1232, 0.0687, 0.0303, 0.0106, 0.0029]
-    let (wi, hi) = (i32(src.width()) - 1, i32(src.height()) - 1)
-    var s = src.load(x: u32(p.x), y: u32(p.y)).rgb * w[0]
+    let along = select(if_false: vec2(1.0, 0.0), if_true: vec2(0.0, 1.0), cond: across == 1)
+    var sum = src.sample_level(s, at / size).rgb * w[0]
     for k in 1..7 {
-        let o = i32(round(f32(k) * spread))
-        let d = select(if_false: vec2i(o, 0), if_true: vec2i(0, o), cond: across == 1)
-        let a = clamp(p + d, vec2i(0), vec2i(wi, hi))
-        let b = clamp(p - d, vec2i(0), vec2i(wi, hi))
-        s += (src.load(x: u32(a.x), y: u32(a.y)).rgb + src.load(x: u32(b.x), y: u32(b.y)).rgb) *
+        let d = along * max(f32(k) * spread - 0.5, 0.0)
+        sum += (src.sample_level(s, (at + d) / size).rgb +
+            src.sample_level(s, (at - d) / size).rgb) *
             w[k]
     }
-    vec4(s, 1.0)
+    vec4(sum, 1.0)
 }
 
 // ---- metering -------------------------------------------------------------------------------
@@ -302,30 +310,80 @@ fn scene_line(
     here_tag: f32,
 ) -> f32 {
     if class_of(here_tag) != class_of(CREATURE) {
-        return 0.0
+        return world_line(d, scene, depth, p, here_tag)
     }
     let r = d.look.line_px * d.cam.screen.y / d.out.y
-    let lim = d.cam.screen - vec2(1.0)
     let near = d.cam.distance_of(depth.load(x: u32(p.x), y: u32(p.y)))
+    // Not where it stands in front of itself: a character's own folds are its shading's.
+    outline(d.cam, scene, depth, p, here_tag, near, r, kin_behind: false)
+}
+
+/// How much of a line the scene pixel at `p` is (its tag `here_tag`, `near` metres away), from
+/// its four neighbours `r` scene pixels away: where one is well behind it (a silhouette), and
+/// where one of its kind with another tag is a little behind it (a leg against the body, a stone
+/// against a stone). A neighbour of its kind well behind it counts only with `kin_behind`.
+fn outline(
+    cam: Camera,
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    p: vec2,
+    here_tag: f32,
+    near: f32,
+    r: f32,
+    kin_behind: bool,
+) -> f32 {
+    let lim = cam.screen - vec2(1.0)
     var line = 0.0
     for k in 0..4 {
         let a = f32(k) * 1.5707964 + 0.4
         let q = clamp(p + vec2(cos(a), sin(a)) * r, vec2(0.0), lim)
+        let zq = depth.load(x: u32(q.x), y: u32(q.y))
+        let there = if zq <= 0.0 { 1.0e9 } else { cam.distance_of(zq) }
         let other = scene.load(x: u32(q.x), y: u32(q.y)).a
-        let there = d.cam.distance_of(depth.load(x: u32(q.x), y: u32(q.y)))
-        let other_char = class_of(other) == class_of(CREATURE)
-        // Its silhouette: the neighbour isn't it, and is well behind it.
-        let behind = if !other_char { smoothstep(0.03, 0.12, (there - near) / near) } else { 0.0 }
-        // Where one of its parts passes in front of another (a leg against its body): another
-        // part, a little behind.
-        let parts = if other_char && abs(other - here_tag) > 0.5 {
-            smoothstep(0.004, 0.02, (there - near) / near)
-        } else {
+        let kin = class_of(other) == class_of(here_tag)
+        let gap = (there - near) / near
+        let behind = if kin_behind || !kin { smoothstep(0.03, 0.12, gap) } else { 0.0 }
+        let apart = if kin && abs(other - here_tag) > 0.5 { smoothstep(0.004, 0.02, gap) } else {
             0.0
         }
-        line = max(line, max(behind, parts * 0.8))
+        line = max(line, max(behind, apart * 0.8))
     }
     line
+}
+
+/// How much of the world's line the scene pixel at `p` is (one line, the owner's pick: the same
+/// line as the characters', a darker shade of the colour under it). On solid forms only: rock,
+/// what's built, trunks and the ground's near crests; none on grass, flowers, water or crowns,
+/// where a line round each blade or leaf is noise. Where a neighbour a line's width away is well
+/// behind it (a silhouette), or is another one of its kind a little behind it (a stone against
+/// a stone). The width falls with distance (`line_px` times 1.6 at 3 m, one output pixel by
+/// 20 m), and the line fades out by 120 m (the ground's by 40 m, at half weight): near forms are
+/// drawn, far ones are left to their light.
+fn world_line(
+    d: Develop,
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    p: vec2,
+    here_tag: f32,
+) -> f32 {
+    let class = class_of(here_tag)
+    let ground = class == class_of(GROUND)
+    if class != class_of(ROCK) && class != class_of(BARK) && !ground {
+        return 0.0
+    }
+    let z = depth.load(x: u32(p.x), y: u32(p.y))
+    if z <= 0.0 {
+        return 0.0
+    }
+    let near = d.cam.distance_of(z)
+    let far = if ground { 40.0 } else { 120.0 }
+    let fade = (1.0 - smoothstep(far * 0.4, far, near)) * (if ground { 0.5 } else { 1.0 })
+    if fade <= 0.0 {
+        return 0.0
+    }
+    let width = clamp(d.look.line_px * sqrt(8.0 / near), 1.0, 2.5)
+    let r = width * d.cam.screen.y / d.out.y
+    outline(d.cam, scene, depth, p, here_tag, near, r, kin_behind: true) * fade
 }
 
 /// The scene with its lines drawn, at the scene's resolution and before temporal AA: the scene
@@ -517,8 +575,8 @@ pub fn develop(
     let m = if clay { vec4(0.0) } else { dabs.sample_level(s, q / d.cam.screen) }
     paint = paint * (1.0 + m.r) * vec3(1.0 + 0.25 * m.r, 1.0, 1.0 - 0.3 * m.r) * (1.0 + m.g)
     // Bloom.
-    let gq = min(vec2u(px / 4.0), vec2u(glow.width() - 1, glow.height() - 1))
-    paint += glow.load(x: gq.x, y: gq.y).rgb * look.bloom
+    // Filtered (a texel of the glow is 4×4 pixels: loaded, it showed as their blocks).
+    paint += glow.sample_level(s, px / d.out).rgb * look.bloom
     var c = tone(paint, exposure[0].value)
     if clay {
         return vec4(c, 1.0)

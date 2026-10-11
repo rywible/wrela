@@ -191,6 +191,80 @@ fn store_host(name: &str, frames: &[Vec<Vec<u8>>], options: &Options) -> (TempDi
     (dir, host)
 }
 
+/// A comparison's next package starts as a cold load would, without preparing its unchanged
+/// pipelines again. Even its first frame's empty screen and its IO directory must be fresh.
+#[test]
+#[ignore = "needs a GPU"]
+fn restarting_in_another_build_reuses_pipelines_but_starts_fresh() {
+    let (w, h) = (4, 4);
+    let old = Encoder::new()
+        .create_buffer(1, 16)
+        .write_buffer(1, 0, &words(&[99; 4]))
+        .storage_write(4, "save", b"old")
+        .begin_screen_pass([1.0, 0.0, 0.0, 1.0])
+        .present()
+        .finish();
+    let options = Options { record: true, ..Default::default() };
+    let (old_dir, mut host) = store_host("restart-old", &[vec![old]], &options);
+    host.run_frames(&[0.0, 1.0], w, h).expect("old program runs");
+    let pipelines = host.pipelines_built();
+    assert_eq!(pipelines, 2);
+
+    let next = Encoder::new()
+        .create_buffer(1, 16)
+        .dispatch(0, [1, 1, 1], &[Binding::range(1, 0, 16)], &words(&[1, 42, 0, 0]))
+        .storage_write(4, "save", b"next")
+        .begin_screen_pass([0.0, 0.0, 0.0, 1.0])
+        .draw(1, 6, 1, &[], &words(&[1, 2, w, h, 0xff00_ff00, 0, 0, 0]))
+        .present()
+        .finish();
+    // The first frame submits nothing; the second exercises fresh WASM globals, resources
+    // and request IDs (the previous program already used buffer 1 and request 4).
+    let wasm = wat::parse_str(common::wat::program(&[vec![], vec![next]])).expect("compiles");
+    let next_dir = common::build(
+        "restart-next",
+        &common::manifest(STORE_PIPELINES),
+        &[("store.wgsl", STORE_WGSL), ("cell.wgsl", CELL_WGSL)],
+        &wasm,
+    );
+    host.restart_in(&next_dir, &options).expect("restarts in the next directory");
+    assert_eq!(host.pipelines_built(), pipelines, "unchanged pipelines are reused");
+    assert!(host.take_batches().is_empty(), "old recorded commands are gone");
+    assert!(host.read_buffer(1).is_err(), "old resources are gone");
+    let blank = host.run_frames(&[0.0], w, h).expect("empty first frame");
+    assert!(blank.frame.iter().all(|b| *b == 0), "the old screen is gone");
+    let restarted = host.run_frames(&[1.0], w, h).expect("new program runs");
+    let buffer = host.read_buffer(1).expect("new buffer");
+    assert_eq!(buffer, words(&[0, 42, 0, 0]));
+    assert_eq!(pixel(&restarted.frame, w, 1, 2), [0, 255, 0, 255]);
+    assert_eq!(std::fs::read(old_dir.join("storage/save")).expect("old storage"), b"old");
+    assert_eq!(std::fs::read(next_dir.join("storage/save")).expect("new storage"), b"next");
+    let batches = host.take_batches();
+
+    let mut cold = Host::load_with(&next_dir, &options).expect("cold load of the next build");
+    let cold_blank = cold.run_frames(&[0.0], w, h).expect("cold empty first frame");
+    let cold_run = cold.run_frames(&[1.0], w, h).expect("cold program runs");
+    assert_eq!(blank.hash, cold_blank.hash, "initial command state");
+    assert!(blank.frame == cold_blank.frame, "initial pixels");
+    assert_eq!(restarted.hash, cold_run.hash, "fresh command state");
+    assert!(restarted.frame == cold_run.frame, "fresh pixels");
+    assert_eq!(buffer, cold.read_buffer(1).expect("cold buffer"));
+    assert_eq!(batches, cold.take_batches(), "fresh recording");
+    drop(cold);
+
+    // The same-directory wrapper now refers to the new package, and a changed shader is
+    // rebuilt while its companion compute pipeline is kept.
+    std::fs::write(
+        next_dir.join("cell.wgsl"),
+        CELL_WGSL.replace("unpack4x8unorm(c.colour)", "vec4f(0, 0, 1, 1)"),
+    )
+    .expect("change one shader");
+    host.restart_with(&options).expect("restarts the new package");
+    assert_eq!(host.pipelines_built(), pipelines + 1, "only the changed pipeline is built");
+    let changed = host.run_frames(&[0.0, 1.0], w, h).expect("changed shader runs");
+    assert_eq!(pixel(&changed.frame, w, 1, 2), [0, 0, 255, 255]);
+}
+
 /// More dispatches and draws in one submission than the uniform ring starts with room for
 /// (64 KiB at 256 bytes a slice): each must still see its own uniform bytes.
 #[test]
@@ -232,6 +306,168 @@ fn writes_apply_in_recorded_order() {
     let (_dir, mut host) = store_host("order", &[vec![e.finish()]], &Options::default());
     host.run_frames(&[0.0], 4, 4).expect("runs");
     assert_eq!(host.read_buffer(1).expect("reads back"), words(&[10, 20, 30, 40]));
+}
+
+/// Two pipelines share the same three resources. Destroying and recreating each input must
+/// invalidate both cached groups, while recorded dispatches retain the old resource.
+#[test]
+#[ignore = "needs a GPU"]
+fn cached_bind_groups_follow_resource_lifetimes() {
+    let shader = r#"
+@group(0) @binding(0) var<storage, read> a: array<u32>;
+@group(0) @binding(1) var<storage, read> b: array<u32>;
+@group(0) @binding(2) var<storage, read_write> out: array<u32>;
+@compute @workgroup_size(1) fn sum() { out[0] += a[0] + b[0]; }
+"#;
+    let pipelines: Vec<_> = ["sum_a", "sum_b"]
+        .into_iter()
+        .map(|name| {
+            format!(
+                r#"{{
+            "name": "{name}", "shader": "sum.wgsl", "kind": "compute", "entry": "sum",
+            "workgroup_size": [1, 1, 1], "uniform": null,
+            "bindings": [
+                {{ "binding": 0, "kind": "read" }},
+                {{ "binding": 1, "kind": "read" }},
+                {{ "binding": 2, "kind": "read_write" }}
+            ]
+        }}"#
+            )
+        })
+        .collect();
+    let bindings = [1, 2, 3].map(|handle| Binding::range(handle, 0, 4));
+    let mut encoder = Encoder::new();
+    for (handle, value) in [(1, 7), (2, 11), (3, 1)] {
+        encoder.create_buffer(handle, 4).write_buffer(handle, 0, &words(&[value]));
+    }
+    for replacement in [None, Some((1, 10)), Some((2, 3))] {
+        if let Some((handle, value)) = replacement {
+            encoder.destroy_buffer(handle).create_buffer(handle, 4).write_buffer(
+                handle,
+                0,
+                &words(&[value]),
+            );
+        }
+        for pipeline in 0..2 {
+            encoder.dispatch(pipeline, [1; 3], &bindings, &[]);
+        }
+    }
+    let wasm =
+        wat::parse_str(common::wat::program(&[vec![encoder.finish()]])).expect("test program");
+    let dir = common::build(
+        "bind-group-lifetimes",
+        &common::manifest(&format!("[{}]", pipelines.join(","))),
+        &[("sum.wgsl", shader)],
+        &wasm,
+    );
+    let mut host = Host::load(&dir).expect("loads");
+    host.frame(0.0, 16, 16).expect("dispatches");
+    assert_eq!(host.read_buffer(3).expect("recorded work finishes"), words(&[105]));
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn screen_readback_removes_padding_and_keeps_region_rows_in_order() {
+    let widths = [3, 64, 65];
+    let height = 3;
+    let frames: Vec<_> = widths
+        .iter()
+        .map(|&width| {
+            let mut encoder = Encoder::new();
+            encoder.begin_screen_pass([0.0; 4]);
+            for y in 0..height {
+                for x in 0..width {
+                    let colour = 0xff00_0000 | (y << 8) | x;
+                    encoder.draw(1, 6, 1, &[], &words(&[x, y, width, height, colour, 0, 0, 0]));
+                }
+            }
+            vec![encoder.present().finish()]
+        })
+        .collect();
+    let (_dir, mut host) = store_host("screen-row-padding", &frames, &Options::default());
+    for (i, width) in widths.into_iter().enumerate() {
+        host.frame(i as f32, width, height).expect("draws uniquely coloured pixels");
+        let frame = host.read_screen().expect("reads packed screen rows");
+        assert_eq!(frame.len(), (width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                assert_eq!(pixel(&frame, width, x, y), [x as u8, y as u8, 0, 255]);
+            }
+        }
+        let size = [width - 2, height - 1];
+        let region = host.read_screen_region(1, 1, size[0], size[1]).expect("reads interior rows");
+        assert_eq!(region.len(), (size[0] * size[1] * 4) as usize);
+        for y in 0..size[1] {
+            for x in 0..size[0] {
+                assert_eq!(pixel(&region, size[0], x, y), pixel(&frame, width, x + 1, y + 1));
+            }
+        }
+        assert!(host.read_screen_region(0, 0, 0, 1).is_err());
+        assert!(host.read_screen_region(width - 1, 0, 2, 1).is_err());
+    }
+}
+
+/// Counter queries must follow each draw's pipeline and uniforms within the same pass.
+#[test]
+#[ignore = "needs a GPU"]
+fn perf_counted_draws_keep_piece_and_uniform_order() {
+    let pipelines: Vec<_> = ["cell_a", "cell_b"]
+        .into_iter()
+        .map(|name| {
+            format!(
+                r#"{{ "name": "{name}", "shader": "cell.wgsl", "kind": "render",
+                    "vertex_entry": "vs", "fragment_entry": "fs",
+                    "targets": [{{ "color": "rgba8unorm", "depth": false }}],
+                    "uniform": {{ "binding": 0, "size": 32, "space": "uniform" }},
+                    "bindings": [] }}"#
+            )
+        })
+        .collect();
+    let mut encoder = Encoder::new();
+    encoder.label("counted draws").begin_screen_pass([0.0, 0.0, 0.0, 1.0]);
+    // Two whole cells, then the first cell's first triangle over its earlier colour.
+    for (pipeline, vertices, cell, colour) in
+        [(0, 6, 0, 0xff00_00ff), (1, 6, 1, 0xff00_ff00), (0, 3, 0, 0xffff_0000)]
+    {
+        encoder.draw(pipeline, vertices, 1, &[], &words(&[cell, 0, 2, 1, colour, 0, 0, 0]));
+    }
+    let wasm = wat::parse_str(common::wat::program(&[vec![encoder.present().finish()]]))
+        .expect("test program");
+    let dir = common::build(
+        "multi-draw-counts",
+        &common::manifest(&format!("[{}]", pipelines.join(","))),
+        &[("cell.wgsl", CELL_WGSL)],
+        &wasm,
+    );
+    let options = Options { timing: Timing::Serial, counts: true, ..Options::default() };
+    let mut host = match Host::load_with(&dir, &options) {
+        Ok(host) => host,
+        Err(error) => {
+            assert!(error.to_string().contains("PIPELINE_STATISTICS_QUERY"), "{error}");
+            return;
+        }
+    };
+    host.frame(0.0, 8, 4).expect("three counted draws");
+    let frame = host.read_screen().expect("the draws' output");
+    assert_eq!(pixel(&frame, 8, 0, 0), [0, 0, 255, 255], "the last draw overwrote the first");
+    assert_eq!(pixel(&frame, 8, 3, 3), [255, 0, 0, 255], "outside its triangle stays red");
+    assert_eq!(pixel(&frame, 8, 7, 3), [0, 255, 0, 255], "the second draw's uniforms");
+    let timings = host.take_timings().expect("timings");
+    let work = host.take_work().expect("pipeline statistics");
+    assert_eq!(timings.len(), 1);
+    assert_eq!(work.len(), 1);
+    assert_eq!(work[0].label, "counted draws");
+    assert_eq!(work[0].label, timings[0].label);
+    assert_eq!((work[0].target_texels, work[0].target_bytes), (32, 128));
+    let pieces = &work[0].pieces;
+    assert_eq!(
+        pieces.iter().map(|p| p.pipeline.as_str()).collect::<Vec<_>>(),
+        ["cell_a", "cell_b", "cell_a"]
+    );
+    assert_eq!(pieces.iter().map(|p| p.vertices).collect::<Vec<_>>(), [6, 6, 3]);
+    // Vertex counts distinguish the three queries. Clipper counts vary by backend; software
+    // Vulkan reports zero for these full-cell quads in both the baseline and this host.
+    assert!(pieces.iter().all(|p| p.fragments > 0 && p.invocations == 0));
 }
 
 #[test]

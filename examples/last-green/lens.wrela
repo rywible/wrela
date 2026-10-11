@@ -25,7 +25,16 @@ pub fn preview() -> Preview {
     let lo = history::domain_lo()
     let hi = history::domain_hi()
     let st = stones::stones(m)
-    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st)
+    let h = simulate(
+        ground::ground(),
+        m,
+        species::habits(),
+        PREVIEW,
+        lo,
+        hi,
+        st,
+        history::past,
+    )
     let streams = h.streams.clone()
     let o = obstacles_of(h.trees, species::habits(), h.streams, st, stones::walls(m), lo, hi)
     var e = Evidence::of(h)

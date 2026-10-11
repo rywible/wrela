@@ -14,7 +14,10 @@
 // And a far layer of the whole floor, in the first frame's payload: each 8 m cell's tallest crown
 // (its height and kind), for what lies past the tiles streamed in.
 
-use grow::{Cause, Grid, Ground, Habit, History, Mark, Memory, Soil, State, Stream, Tree, UNMARKED}
+use grow::{
+    CROWN_PAD, Cause, Grid, Habit, History, Mark, Memory, State, Stream, Tree, UNMARKED,
+    crown_shade,
+}
 use std::io::Shipped
 use noise::noise2
 use place::{Route, RouteKind, TILE, tile_of}
@@ -215,15 +218,51 @@ fn skip_runs(b: [u8], at: u32, n: u32) -> u32 {
     k
 }
 
-/// Byte `i` of a plane of run-coded bytes from `at`, read without keeping the plane; and where
-/// the plane ends.
-fn run_byte(b: [u8], at: u32, n: u32, i: u32) -> (u8, u32) {
+/// Where a valid plane of exactly `n` run-coded bytes ends, or nothing when it is truncated,
+/// has a zero-length run, or a run past the plane's end.
+fn checked_skip_runs(b: [u8], at: u32, n: u32) -> Option<u32> {
+    var got = 0
+    var k = at
+    while got < n {
+        if k >= b.len() {
+            return None
+        }
+        if b[k] == 0 {
+            if b.len() - k < 3 {
+                return None
+            }
+            let run = get_u16(b, k + 1)
+            if run == 0 || run > n - got {
+                return None
+            }
+            got += run
+            k += 3
+        } else {
+            got += 1
+            k += 1
+        }
+    }
+    Some(k)
+}
+
+/// Byte `i` of a valid plane of exactly `n` run-coded bytes, and where the plane ends.
+fn checked_run_byte(b: [u8], at: u32, n: u32, i: u32) -> Option<(u8, u32)> {
     var got = 0
     var k = at
     var found = 0
     while got < n {
+        if k >= b.len() {
+            return None
+        }
         if b[k] == 0 {
-            got += get_u16(b, k + 1)
+            if b.len() - k < 3 {
+                return None
+            }
+            let run = get_u16(b, k + 1)
+            if run == 0 || run > n - got {
+                return None
+            }
+            got += run
             k += 3
         } else {
             if got == i {
@@ -233,7 +272,7 @@ fn run_byte(b: [u8], at: u32, n: u32, i: u32) -> (u8, u32) {
             k += 1
         }
     }
-    (found, k)
+    Some((found, k))
 }
 
 /// Where tile bytes `b`'s memory planes start: after its trees, its wear and its wetness.
@@ -656,13 +695,6 @@ pub fn memory_at(u: Unbaked, p: vec2) -> Memory {
     if u.wet_grid.holds(p) { u.memory[u.wet_grid.cell_at(p)] } else { UNMARKED }
 }
 
-/// The soil at world point `p` (`grow::soil`): the ground's shape round it, its rock, and the
-/// baked wetness there.
-pub fn soil_at<G: Ground>(u: Unbaked, ground: G, p: vec2) -> Soil {
-    let wet = if u.wet_grid.holds(p) { u.wet_grid.sample(u.wet, p) } else { 0.0 }
-    grow::soil_of(ground, p, wet)
-}
-
 /// What the ground remembers at `p` (a point in tile `b`'s square), read from the tile's bytes
 /// without reading its trees back (a click's provenance); `UNMARKED` if `b` isn't a baked tile.
 pub fn memory_in_tile(b: [u8], p: vec2) -> Memory {
@@ -673,10 +705,57 @@ pub fn memory_in_tile(b: [u8], p: vec2) -> Memory {
     let g = Grid { lo: vec2(t) * TILE, nx: WET_N, nz: WET_N, cell: TILE / f32(WET_N) }
     let c = g.cell_at(p)
     let n = WET_N * WET_N
-    let (mark, k) = run_byte(b, memory_planes(b), n, c)
-    let (lo, k2) = run_byte(b, k, n, c)
-    let (hi, _) = run_byte(b, k2, n, c)
+    let count = get_u32(b, 16)
+    if count > (b.len() - 20) / TREE_BYTES {
+        return UNMARKED
+    }
+    let trees_end = 20 + count * TREE_BYTES
+    let Some(wear_end) = checked_skip_runs(b, trees_end, WEAR_N * WEAR_N) else {
+        return UNMARKED
+    }
+    let Some(memory_start) = checked_skip_runs(b, wear_end, n) else {
+        return UNMARKED
+    }
+    let Some((mark, k)) = checked_run_byte(b, memory_start, n, c) else {
+        return UNMARKED
+    }
+    let Some((lo, k2)) = checked_run_byte(b, k, n, c) else {
+        return UNMARKED
+    }
+    let Some((hi, _)) = checked_run_byte(b, k2, n, c) else {
+        return UNMARKED
+    }
     memory_of(mark, lo, hi)
+}
+
+/// A magic-valid but malformed baked tile has no provenance, instead of trapping while it is
+/// inspected by an authoring click.
+fn test_tile_header(count: u32) -> Vec<u8> {
+    var b: Vec<u8> = Vec::new()
+    put_u32(mut b, MAGIC)
+    put_u32(mut b, VERSION)
+    put_u32(mut b, 0)
+    put_u32(mut b, 0)
+    put_u32(mut b, count)
+    b
+}
+
+@test
+fn malformed_tile_bytes_have_no_memory() {
+    var cases: Vec<Vec<u8>> = Vec::new()
+    cases.push(test_tile_header(0)) // truncated before the first plane
+    var zero = test_tile_header(0)
+    var zero_run = Vec::from([0, 0, 0])
+    zero.append(mut zero_run)
+    cases.push(take zero) // a zero-length run never advances
+    var over = test_tile_header(0)
+    var long_run = Vec::from([0, 255, 255])
+    over.append(mut long_run)
+    cases.push(take over) // the run reaches past its plane
+    cases.push(test_tile_header(4294967295)) // the declared tree bytes don't fit
+    for b in cases {
+        assert(memory_in_tile(b, vec2(0.0)).mark == Mark::None, "malformed bytes have a memory")
+    }
 }
 
 /// What the ground remembers over tile bytes `b`, `WET_N` a side.
@@ -752,9 +831,9 @@ pub fn path_at(routes: [Route], near: [u32], p: vec2, used: f32) -> f32 {
     for k in near {
         borrow r = routes[k]
         var walked = 0.0
-        for i in 0..r.points.len() - 1 {
-            let a = r.points[i]
-            let b = r.points[i + 1]
+        for i in 1..r.points.len() {
+            let a = r.points[i - 1]
+            let b = r.points[i]
             let ab = b - a
             let len = length(ab)
             let t = clamp(dot(p - a, ab) / max(len * len, 1.0e-6), 0.0, 1.0)
@@ -845,39 +924,18 @@ pub fn tile_fields(
         let t = if k < d.trees.len() { d.trees[k] } else { others[k - d.trees.len()] }
         if t.state == State::Alive && t.tall > 0.8 {
             let h = habits[t.kind]
-            let c = t.at + t.lean
-            let r = t.reach + 0.5
-            let stop = h.shade * min(t.tall / 3.0, 1.0)
-            let a = g.ij(c - vec2(r))
-            let span = i32(ceil(2.0 * r / cell)) + 1
-            for dj in 0..span {
-                for di in 0..span {
-                    let i = a.x + di
-                    let j = a.y + dj
-                    if i >= 0 && j >= 0 && i < i32(g.nx) && j < i32(g.nz) {
-                        let q = u32(j) * g.nx + u32(i)
-                        let dist = length(g.centre(q) - c)
-                        if dist < r {
-                            let w = 1.0 - smoothstep(0.55 * r, r, dist)
-                            light[q] *= 1.0 - stop * w
-                            if h.thorny {
-                                thorn[q] = max(thorn[q], w)
-                            }
-                        }
-                    }
-                }
-            }
+            g.each_within(t.at + t.lean, t.reach + CROWN_PAD, |q, d| {
+                let shade = crown_shade(t, h, d)
+                light[q] *= 1.0 - shade.x
+                thorn[q] = max(thorn[q], shade.y)
+            })
         } else if t.state == State::Log && year - t.fell < 25 && t.tall > 6.0 {
-            let len = t.tall * 0.85
-            var s = 0.0
-            while s < len {
-                let p = t.at + t.fall * s
+            t.each_along(cell * 0.7, |p, _| {
                 if g.holds(p) {
                     let q = g.cell_at(p)
                     thorn[q] = max(thorn[q], 0.9)
                 }
-                s += cell * 0.7
-            }
+            })
         }
     }
     let down = g.blur(light, 2)

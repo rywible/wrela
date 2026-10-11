@@ -19,6 +19,10 @@ use std::math::PI
 use std::quat::Quat
 use std::transform::{look_at, ortho, perspective, translate}
 
+/// Normalized Blinn-Phong's denominator: a lobe of power p is scaled by (p + 8) / 8π, so a
+/// broad highlight is as bright overall as a sharp one, but dimmer.
+pub const EIGHT_PI: f32 = 8.0 * PI
+
 /// A camera and the sun: the camera's view-projection, the sun's (its shadow map's), the eye,
 /// and the direction toward the sun.
 pub struct View: Copy + GpuData {
@@ -69,7 +73,7 @@ impl Lights {
         let ndl = max(dot(n, l), 0.0)
         let a = max(rough * rough, 0.02)
         let sp = 2.0 / (a * a) - 2.0
-        let spec = pow(max(dot(n, h), 0.0), sp) * (sp + 8.0) / 25.13 * self.f0
+        let spec = pow(max(dot(n, h), 0.0), sp) * (sp + 8.0) / EIGHT_PI * self.f0
         let hemi = mix(self.ground, self.sky, 0.5 + 0.5 * n.y)
         let sun = self.sun_colour * (ndl * lit)
         self.tonemap(albedo * (hemi * self.ambient + sun) + sun * spec)

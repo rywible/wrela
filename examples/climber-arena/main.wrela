@@ -1,20 +1,38 @@
 // The fight's sim alone (examples/climber's `fight`), drawn as a map from above: 12 m across,
 // round where the fight starts; the climber a square (lighter while it can't be hurt), the wolf
-// one (redder as it crouches and lunges, darker when it's down).
+// one (redder as it crouches and lunges, darker when it's down). It sounds as the fight does
+// (`climber::sounds`), heard from the climber.
 
 use climber::fight::{Mood, World, present, spawn, tick}
 use climber::moves::Act
+use climber::sounds::{Heard, IMPACTS, WHOOSHES, cues, heard}
 use engine::present::Snapshots
 use engine::run::run
+use engine::sound::{BRUSHES, Babble, Breath, Cue, Palette, Surface, mixer}
+use std::audio::{RingWriter, play}
 use std::gpu::{ClipPosition, VertexIndex, begin_screen_pass, draw}
 
 pub struct Arena {
     snaps: Snapshots<World>,
+    cues: RingWriter<Cue>,
+    heard: Heard,
+}
+
+/// The arena's sounds: the fight's alone.
+const PALETTE = Palette {
+    surfaces: [Surface {}; 8],
+    waters: [Babble {}; 4],
+    brushes: [Babble {}; BRUSHES],
+    impacts: IMPACTS,
+    whooshes: WHOOSHES,
+    wind: Breath {},
 }
 
 pub fn init() -> Arena {
     let latest = run(spawn(), hz: 60, step: tick, present: present)
-    Arena { snaps: Snapshots::new(take latest, hz: 60) }
+    let (cues, m) = mixer(PALETTE)
+    play(take m, engine::sound::mix)
+    Arena { snaps: Snapshots::new(take latest, hz: 60), cues, heard: heard(spawn()) }
 }
 
 /// A square of `size` (clip space) at `at`, two triangles.
@@ -46,6 +64,15 @@ pub fn frame(arena: mut Arena, time: f32, width: u32, height: u32) {
     let w = b.b
     let c = mix(b.a.climber.at.xz, w.climber.at.xz, vec2(b.alpha))
     let f = mix(b.a.wolf.pos(), w.wolf.pos(), vec2(b.alpha))
+    let _ = arena.cues.push(
+        Cue::Listen {
+            at: vec3(c.x, w.climber.at.y + 1.6, c.y),
+            forward: w.climber.forward(),
+        },
+    )
+    for cue in cues(mut arena.heard, w) {
+        let _ = arena.cues.push(cue)
+    }
     let screen = begin_screen_pass(clear: vec4(0.12, 0.16, 0.1, 1.0))
     let lit = if w.climber.invulnerable() { 1.0 } else { 0.7 }
     let climber = if w.climber.act == Act::Down { vec4(0.3, 0.3, 0.3, 1.0) } else {

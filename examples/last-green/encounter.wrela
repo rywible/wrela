@@ -1,0 +1,370 @@
+// The fight at the ring's glade (route.md §9): the climber's fight (`climber::fight`) against
+// the wolf, in the floor's sim. The wolf waits at the ring's edge, turning to what it senses
+// (`engine::senses`, as the fawn does); once it's sure of the player (`WAKES_AT`) it wakes and
+// comes to fight, and it can't miss a player within `CLOSE`. The player stays the floor's
+// (`engine::player`): it walks as it walks everywhere, round trunks and stones. In a move (a
+// swing, a blink, a fall) the fight owns the body: the player doesn't walk, and the move carries
+// it as footing lets it, so a blink stops at a stone. Far from the disc (`LEASH`), the fight is
+// over and the wolf is back in its place. Once the wolf is down (`BEATEN`), the fight is won: the
+// wolf goes off toward the wood (`AWAY`), and once it's `GONE` from the disc it's gone for good.
+
+use behaviour::presence
+use climber::fight::{Mood, Walked, World, bout, read, slink, spawn_on}
+use climber::moves::Act
+use engine::footing::{BODY, Obstacles}
+use engine::place::Water
+use engine::present::short_way
+use engine::senses::{Awareness, Occluders, Presence, Senses, sense}
+use engine::player::{Player, place_at}
+use engine::sim::SimState
+use engine::terrain::Terrain
+use std::hash::StateHash
+use std::input::Event
+use std::serialize::Serialize
+use std::math::TAU
+use std::string::String
+
+/// The fight's disc: a flat, clear round 12 m across beside the ring (route.md §9), and where
+/// the wolf waits, at the ring's edge between the ring and the disc (the ground's, which keeps
+/// them short and worn: `ground::FIGHT`, `ground::FIGHT_WAY`).
+pub const DISC = ground::FIGHT.xy
+pub const WOLF_HOME = ground::FIGHT_WAY.xy
+
+/// How far from the disc the fight is over (m): the wolf senses no player further off.
+pub const LEASH: f32 = 45.0
+
+/// How it senses, waiting: a hunter's eyes at its head's height, keen within 50° and half as keen
+/// out to 140°; it sees a moving player at 60 m (a still one at 21 m) and hears a run at 35 m.
+const SENSES = Senses { eye: 0.85, sight: 60.0, fov: 0.87, around: 2.45, side: 0.5, hearing: 35.0 }
+
+/// How fast its awareness rises and falls (a second), the ticks between its sensings, how aware
+/// it is when it wakes, and how near it wakes whatever it sensed (m).
+const RISE: f32 = 0.9
+const FALL: f32 = 0.1
+const SENSE_TICKS: u32 = 6
+pub const WAKES_AT: f32 = 0.5
+const CLOSE: f32 = 6.0
+
+/// How fast it turns, waiting, to where it sensed the player (rad/s), once it's noticed (`HEED`).
+const TURNS: f32 = 1.5
+const HEED: f32 = 0.15
+
+/// The fight; how aware the waiting wolf is of the player; whether the fight's on; whether it's
+/// won (the wolf going), and whether the wolf's gone.
+pub struct Encounter: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub fight: World,
+    pub aware: Awareness,
+    pub awake: bool,
+    pub won: bool,
+    pub gone: bool,
+}
+
+/// How long the wolf stays down before the fight is won (ticks: under its getting up), the way it
+/// goes then (toward the wood's waystone), and how far from the disc it's gone (m).
+const BEATEN: u32 = 60
+const AWAY = vec2(100.0, -600.0)
+const GONE: f32 = 60.0
+
+/// The fight before the player comes: the wolf at home, facing the shore trail (east), where the
+/// player comes from.
+pub fn encounter<G: Terrain>(ground: G) -> Encounter {
+    Encounter {
+        fight: spawn_on(ground, WOLF_HOME + vec2(10.0, 0.0), WOLF_HOME),
+        aware: Awareness::new(),
+        awake: false,
+        won: false,
+        gone: false,
+    }
+}
+
+/// Whether the fight owns the player's body this tick: a move, or a hit's stop.
+pub fn holds(e: Encounter) -> bool {
+    e.awake && (e.fight.climber.act != Act::Free || e.fight.stop > 0)
+}
+
+/// A tick of the fight, after the player's walk (none while `holds`): the waiting wolf senses the
+/// player past what hides it (`sight`) and wakes, or the fight ends by the player's distance from
+/// the disc; the fight reads the tick's presses (J or the pad's attack, a
+/// tap of Space or East to blink) and steps round the player as it stands; then the player is
+/// moved where the fight put the climber, round what's in its way.
+@deterministic
+pub fn step_encounter<G: Terrain + engine::grow::Ground, O: Occluders>(
+    e: mut Encounter,
+    p: mut Player,
+    ground: G,
+    water: Water,
+    o: Obstacles,
+    sight: O,
+    records: Vec<Event>,
+    dt: f32,
+) {
+    if e.won {
+        if !e.gone {
+            slink(ground, mut e.fight.wolf, normalize(AWAY - e.fight.wolf.pos()), dt)
+            e.gone = length(e.fight.wolf.pos() - DISC) > GONE
+        }
+        return
+    }
+    let feet = p.at.world()
+    let off = length(feet - DISC)
+    if !e.awake {
+        if off > LEASH {
+            return
+        }
+        wait(mut e, presence(vec3(feet.x, p.y, feet.y), p.velocity), sight, dt)
+        if !e.awake {
+            return
+        }
+    }
+    if off > LEASH {
+        e = encounter(ground)
+        return
+    }
+    read(mut e.fight, records)
+    let walked = Walked {
+        feet: vec3(feet.x, p.y, feet.y),
+        heading: p.heading,
+        speed: length(p.velocity),
+    }
+    bout(ground, mut e.fight, walked, p.controls.yaw, dt)
+    let c = e.fight.climber
+    let d = c.at.xz - feet
+    if length(d) > 1.0e-5 || c.act != Act::Free {
+        let moved = carried(ground, water, o, feet, d)
+        place_at(mut p, ground, o, p.at.moved(moved), c.heading)
+        if c.act != Act::Free {
+            p.velocity = vec2(0.0)
+        }
+        let q = p.at.world()
+        e.fight.climber.at = vec3(q.x, p.y, q.y)
+    }
+    // Won: the wolf down a while, and the climber's move done.
+    let w = e.fight.wolf
+    if w.mood == Mood::Down && w.t >= BEATEN && c.act == Act::Free {
+        e.won = true
+        e.awake = false
+    }
+}
+
+/// A tick of the waiting wolf: it senses the player ten times a second; it turns where it
+/// stands to where it sensed it, once it's noticed; and it wakes, sure of it or with it near.
+fn wait<O: Occluders>(e: mut Encounter, me: Presence, sight: O, dt: f32) {
+    let w = e.fight.wolf
+    if e.fight.ticks % SENSE_TICKS == 0 {
+        let st = sense(SENSES, w.walker.root, me, sight)
+        e.aware.update(st, RISE, FALL, dt * f32(SENSE_TICKS))
+    }
+    e.fight.ticks += 1
+    if e.aware.level > HEED {
+        let to = e.aware.last - w.pos()
+        let d = short_way(atan2(to.x, to.y) - w.walker.root.heading, TAU)
+        e.fight.wolf.walker.root.heading += clamp(d, -TURNS * dt, TURNS * dt)
+    }
+    e.awake = e.aware.level >= WAKES_AT || length(me.at.xz - w.pos()) < CLOSE
+}
+
+/// How near the wolf the camera turns fully to keep it ahead, and how far off it doesn't turn
+/// at all (m: route.md §9).
+pub const FOCUS_FULL: f32 = 7.0
+pub const FOCUS_NONE: f32 = 25.0
+
+/// What the camera turns to in the fight (`engine::player::Focus`, world space) and how much it
+/// wants to, for a player at `feet`: the wolf's shoulders, fully within `FOCUS_FULL`, not at all
+/// past `FOCUS_NONE`, nor while the wolf is down or the fight is off. (The frame eases toward it.)
+pub fn focus(e: Encounter, feet: vec2) -> (vec3, f32) {
+    let w = e.fight.wolf
+    let at = w.walker.root.pos + vec3(0.0, 0.6, 0.0)
+    if !e.awake || w.mood == Mood::Down {
+        return (at, 0.0)
+    }
+    (at, 1.0 - smoothstep(FOCUS_FULL, FOCUS_NONE, length(w.pos() - feet)))
+}
+
+/// What the report says of the fight: whether it's on, the wolf's mood and where it is, and the
+/// climber's health and the hits each way.
+pub fn report(e: Encounter) -> String {
+    let w = e.fight.wolf
+    let mood = match w.mood {
+        Mood::Prowl => "prowl",
+        Mood::Crouch => "crouch",
+        Mood::Lunge => "lunge",
+        Mood::Recover => "recover",
+        Mood::Flinch => "flinch",
+        Mood::Down => "down",
+    }
+    let at = w.pos()
+    let t = e.fight.tally
+    f"[{e.awake}, \"{mood}\", {at.x:.2}, {at.y:.2}, {e.fight.climber.health}, {t.hits}, {t.bites}, {e.won}]"
+}
+
+/// How far a body at `from` gets on its way `d` (m), as footing lets it: in steps no longer
+/// than `SWEPT`, so a blink's metre in a tick doesn't jump a stone, up to the first that's blocked.
+fn carried<G: engine::grow::Ground>(g: G, water: Water, o: Obstacles, from: vec2, d: vec2) -> vec2 {
+    let n = max(u32(ceil(length(d) / SWEPT)), 1)
+    let piece = d / f32(n)
+    var at = from
+    for _ in 0..n {
+        let (moved, _) = engine::footing::step(g, water, o, at, piece, BODY)
+        at += moved
+        if length(moved) < 0.5 * length(piece) {
+            break
+        }
+    }
+    at - from
+}
+
+/// The longest step `carried` takes (m): under half a body's width.
+const SWEPT: f32 = 0.15
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+use behaviour::{DRY, Flat, Open}
+use engine::footing::{Obstacle, Thing}
+use engine::place::Place
+use std::input::PadButton
+use std::io::print
+
+/// The obstacles of a test: none, or one stone of radius 0.3 at `stone`.
+fn stones(stone: Option<vec2>) -> Obstacles {
+    var all: Vec<Obstacle> = Vec::new()
+    if let Some(s) = stone {
+        all.push(Obstacle { a: s, b: s, r: 0.3, thing: Thing::Stone, depth: 0.0 })
+    }
+    Obstacles::of(all, vec2(-512.0), vec2(512.0))
+}
+
+/// A player standing at `at`, facing +z.
+fn standing(at: vec2) -> Player {
+    engine::player::spawn(Flat {}, Place::of(at), 0.0)
+}
+
+/// A tick of the encounter, pad 0's East pressed or let go (`east`: 1 down, 0 up, else neither).
+fn tick(e: mut Encounter, p: mut Player, o: Obstacles, east: u32) {
+    var records: Vec<Event> = Vec::new()
+    if east < 2 {
+        records.push(
+            Event::PadButton {
+                pad: 0,
+                button: PadButton::East,
+                value: f32(east),
+                pressed: east == 1,
+            },
+        )
+    }
+    step_encounter(mut e, mut p, Flat {}, DRY, o, Open {}, records, 1.0 / 60.0)
+}
+
+/// The wolf senses the player as the fawn does: a still, silent player behind it goes
+/// unnoticed; in front of it, the wolf turns to it and wakes; past `LEASH` the fight is over and
+/// the wolf back home.
+@test
+fn the_wolf_wakes_when_it_senses_the_player_and_goes_home_far_off() {
+    let o = stones(None)
+    // It faces east, the way the player comes.
+    var e = encounter(Flat {})
+    var p = standing(WOLF_HOME - vec2(15.0, 0.0))
+    for _ in 0..300 {
+        tick(mut e, mut p, o, east: 2)
+    }
+    assert(
+        !e.awake && e.aware.level == 0.0,
+        f"it noticed a still player behind it: {e.aware.level}",
+    )
+    p = standing(WOLF_HOME + vec2(15.0, 0.0))
+    var woke = 0
+    for k in 0..300 {
+        tick(mut e, mut p, o, east: 2)
+        if e.awake && woke == 0 {
+            woke = k
+        }
+    }
+    print(f"in front, still, 15 m off: awake after {f32(woke) / 60.0} s")
+    assert(e.awake, "it never woke")
+    let moved = length(e.fight.wolf.pos() - WOLF_HOME)
+    assert(moved > 0.5, f"the wolf moved {moved} m awake")
+    p = standing(DISC + vec2(LEASH + 5.0, 0.0))
+    tick(mut e, mut p, o, east: 2)
+    assert(!e.awake, "awake past the leash")
+    assert(length(e.fight.wolf.pos() - WOLF_HOME) < 1.0e-4, "the wolf isn't home")
+}
+
+/// A blink carries the player, and a stone in its way stops it: straight back (no stick), 3.6 m
+/// on open ground, and short of a stone 1.6 m behind. The player doesn't walk while it blinks.
+@test
+fn a_blink_carries_the_player_and_stops_at_a_stone() {
+    let start = DISC + vec2(0.0, 6.0)
+    for stone in [None, Some(start - vec2(0.0, 1.6))] {
+        let o = stones(stone)
+        var e = encounter(Flat {})
+        var p = standing(start)
+        tick(mut e, mut p, o, east: 1)
+        tick(mut e, mut p, o, east: 0)
+        assert(holds(e), "no blink")
+        for _ in 0..40 {
+            tick(mut e, mut p, o, east: 2)
+        }
+        let back = start.y - p.at.world().y
+        let side = abs(p.at.world().x - start.x)
+        print(f"stone {stone.is_some()}: back {back} m, {side} m aside")
+        if stone.is_some() {
+            assert(back > 0.5 && back < 1.0, f"the blink went {back} m back")
+        } else {
+            assert(abs(back - 3.6) < 0.05, f"the blink went {back} m back")
+        }
+        assert(side < 0.01, f"the blink went {side} m aside")
+        let c = e.fight.climber.at.xz
+        assert(length(c - p.at.world()) < 1.0e-4, "the climber isn't where the player is")
+    }
+}
+
+/// The camera turns to the wolf near it, not far off, and not once it's down.
+@test
+fn the_camera_turns_to_the_wolf_near_it() {
+    var e = encounter(Flat {})
+    let wolf = e.fight.wolf.pos()
+    let (_, asleep) = focus(e, wolf + vec2(5.0, 0.0))
+    assert(asleep == 0.0, "turned to a sleeping wolf")
+    e.awake = true
+    let (at, near) = focus(e, wolf + vec2(5.0, 0.0))
+    let (_, far) = focus(e, wolf + vec2(30.0, 0.0))
+    let (_, between) = focus(e, wolf + vec2(16.0, 0.0))
+    assert(near == 1.0 && far == 0.0 && between > 0.2 && between < 0.8, f"{near}, {between}, {far}")
+    assert(length(at.xz - wolf) < 1.0e-5 && at.y > 0.5, "not on the wolf")
+    e.fight.wolf.mood = Mood::Down
+    let (_, down) = focus(e, wolf + vec2(5.0, 0.0))
+    assert(down == 0.0, "turned to a wolf that's down")
+}
+
+/// Once the wolf has been down a while, the fight is won: the wolf goes off toward the wood, the
+/// camera no longer turns to it, the player walks free, and once it's far it's gone for good,
+/// however near the player comes again.
+@test
+fn a_beaten_wolf_goes_and_doesnt_come_back() {
+    let o = stones(None)
+    var e = encounter(Flat {})
+    var p = standing(WOLF_HOME + vec2(4.0, 0.0))
+    tick(mut e, mut p, o, east: 2)
+    assert(e.awake, "asleep beside it")
+    e.fight.wolf.mood = Mood::Down
+    e.fight.wolf.t = 0
+    for _ in 0..BEATEN + 1 {
+        tick(mut e, mut p, o, east: 2)
+    }
+    assert(e.won && !e.awake && !holds(e), "not won")
+    let (_, weight) = focus(e, p.at.world())
+    assert(weight == 0.0, "the camera still turns to it")
+    var ticks = 0
+    while !e.gone && ticks < 60 * 60 {
+        tick(mut e, mut p, o, east: 2)
+        ticks += 1
+    }
+    let away = dot(normalize(e.fight.wolf.pos() - DISC), normalize(AWAY - DISC))
+    print(f"gone after {f32(ticks) / 60.0} s, {away} along the way out")
+    assert(e.gone, "never gone")
+    assert(away > 0.9, f"it went astray ({away})")
+    let left = e.fight.wolf.pos()
+    for _ in 0..120 {
+        tick(mut e, mut p, o, east: 2)
+    }
+    assert(e.won && !e.awake && length(e.fight.wolf.pos() - left) < 1.0e-5, "it came back")
+}

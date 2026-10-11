@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
@@ -94,6 +95,80 @@ class Inputs(Files):
         self.assertNotEqual(d.compute(os.path.join(self.root, "pkg"), "list"), before)
         self.assertEqual(d.compute(os.path.join(self.root, "pkg"), "stat"), "dir")
 
+    def test_only_the_constants_cache_itself_is_left_out(self):
+        inputs = memo.Inputs(self.root, os.path.join(self.root, "target"))
+        self.assertFalse(inputs.kept(os.path.join(self.root, "ex/build/consts/ab12.wcv")))
+        self.assertTrue(inputs.kept(os.path.join(self.root, "ex/build/consts.json")))
+        self.assertTrue(inputs.kept(os.path.join(self.root, "ex/build/consts-old/a")))
+
+    def test_a_file_changed_while_a_run_ran_is_found(self):
+        inputs = memo.Inputs(self.root, os.path.join(self.root, "target"))
+        a = self.write("engine/a.wrela", "a")
+        old = time.time() - 60
+        os.utime(a, (old, old))
+        started = time.time() - 30
+        self.assertFalse(inputs.changed_since({a: "read"}, started))
+        self.write("engine/a.wrela", "b")
+        self.assertTrue(inputs.changed_since({a: "read"}, started))
+        self.assertFalse(inputs.changed_since({a: "write"}, started), "its own output")
+
+    def test_a_relative_path_cant_be_placed(self):
+        self.assertTrue(memo.unplaced({"rel/a.wrela": "read", "/abs/b": "read"}))
+        self.assertFalse(memo.unplaced({"/abs/b": "read", "made/here": "write"}))
+
+
+class Meaning(unittest.TestCase):
+    def meaning_of(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "memo_copy.py"), "w") as f:
+                f.write(text)
+            out = subprocess.run([sys.executable, "-c", "import memo_copy; print(memo_copy.MEANING)"],
+                                 cwd=d, capture_output=True, text=True, check=True)
+            return out.stdout.strip()
+
+    def test_the_key_follows_the_matching_code_not_its_comments(self):
+        with open(os.path.join(TOOLS, "memo.py")) as f:
+            text = f.read()
+        anchor = "    def changed_since(self, seen, since):\n"
+        self.assertIn(anchor, text)
+        base = self.meaning_of(text)
+        self.assertEqual(len(base), 16)
+        commented = text.replace(anchor, "    # a comment\n" + anchor)
+        self.assertEqual(self.meaning_of(commented), base)
+        changed = text.replace("st_mtime >= since", "st_mtime > since")
+        self.assertNotEqual(self.meaning_of(changed), base)
+
+
+class RustCode(unittest.TestCase):
+    CODE = """pub struct S { a: u8, #[cfg(test)] b: Vec<u8, A>, c: u8 }
+const U: &str = "// a string"; /* a /* nested */ comment */
+fn h<'a>(x: &'a str) -> char { let _ = r#"/* raw */"#; '"' } // a comment
+#[cfg(test)]
+pub(crate) fn turn() -> MutexGuard<'static, ()> { TURNS.lock() }
+#[cfg(test)]
+mod tests { fn g() { let x = [1; 2]; } }
+fn after() {}
+"""
+
+    def test_comments_and_spacing_are_left_out_and_strings_kept(self):
+        code = memo.rust_code(self.CODE)
+        self.assertNotIn("comment", code)
+        for kept in ['"// a string"', 'r#"/* raw */"#', "'\"'", "mod tests"]:
+            self.assertIn(kept, code)
+        self.assertEqual(memo.rust_code("fn  f() {\n  // x\n  1 }"), memo.rust_code("fn f() { 1 }"))
+
+    def test_without_tests_each_test_item_is_left_out_and_nothing_beside_it(self):
+        code = memo.rust_code(self.CODE, tests=False)
+        self.assertTrue(code.startswith("pub struct S { a: u8, c: u8 } const"))
+        for gone in ["turn", "mod tests", "Vec<u8, A>"]:
+            self.assertNotIn(gone, code)
+        self.assertTrue(code.endswith("fn after() {}"))
+        self.assertEqual(memo.rust_code("#[cfg(test)] impl<A, B> X for Y<A, B> {} fn k() {}",
+                                        tests=False), "fn k() {}")
+        # Only exactly `cfg(test)`: `cfg(not(test))` and `cfg(any(test, ..))` are built in.
+        for other in ["#[cfg(not(test))] fn f() {}", "#[cfg(any(test, feature = \"x\"))] fn f() {}"]:
+            self.assertEqual(memo.rust_code(other, tests=False), memo.rust_code(other))
+
 
 class Store(Files):
     def test_an_entry_matches_only_with_the_same_key_environment_and_inputs(self):
@@ -112,6 +187,14 @@ class Store(Files):
         self.assertIsNone(find(now={"repo:x": "file:2"}))  # a file it read
         self.assertIsNone(store.find("p:suite:test:a::c", "rust1", lambda k: None, lambda n, s: True))
 
+    def test_a_wrong_schema_entry_is_a_cache_miss(self):
+        store = memo.Store(self.root)
+        directory = store.entries_dir("t", "rust")
+        os.makedirs(directory)
+        with open(os.path.join(directory, "bad.json"), "w") as f:
+            json.dump({"test": "t"}, f)
+        self.assertIsNone(store.find("t", "rust", lambda k: None, lambda n, s: True))
+
     def test_a_time_beside_the_other_tests_counts_only_until_the_test_runs_alone(self):
         store = memo.Store(self.root)
         self.assertIsNone(store.timing("t"))
@@ -129,6 +212,16 @@ class Store(Files):
             memo.json.dump(t, f)
         self.assertEqual(store.timing("t"), 300.0)
 
+    def test_a_wrong_schema_timing_is_a_cache_miss(self):
+        store = memo.Store(self.root)
+        path = os.path.join(store.dir, "timings", memo.sha("t")[:24] + ".json")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w") as f:
+            json.dump([], f)
+        self.assertIsNone(store.timing("t"))
+        store.set_timing("t", 2.0, alone=False)
+        self.assertEqual(store.timing("t"), 2.0)
+
     def test_old_entries_are_pruned(self):
         store = memo.Store(self.root)
         store.save("t", "rust", {}, {}, 1.0)
@@ -136,6 +229,17 @@ class Store(Files):
         (name,) = os.listdir(d)
         old = os.path.getmtime(os.path.join(d, name)) - (memo.KEEP_DAYS + 1) * 86400
         os.utime(os.path.join(d, name), (old, old))
+        store.prune()
+        self.assertFalse(os.path.exists(d))
+        # Once a day: a second old entry waits for the next day's prune.
+        store.save("u", "rust", {}, {}, 1.0)
+        d = store.entries_dir("u", "rust")
+        (name,) = os.listdir(d)
+        os.utime(os.path.join(d, name), (old, old))
+        store.prune()
+        self.assertTrue(os.path.exists(d))
+        day_ago = time.time() - 86401
+        os.utime(os.path.join(store.dir, ".pruned"), (day_ago, day_ago))
         store.prune()
         self.assertFalse(os.path.exists(d))
 
@@ -180,6 +284,17 @@ class Sources(Files):
         self.assertEqual(self.sources().key(files), key)
         self.write("lib/src/lib.rs", "pub fn f() {}\n")
         self.assertNotEqual(self.sources().key(files), key)
+
+    def test_a_crate_built_with_the_test_counts_without_its_tests_and_the_tests_own_with(self):
+        s = self.sources()
+        files = s.files_of(s.closure("t"))
+        key = s.key(files, own="t")
+        self.write("lib/src/lib.rs", 'pub fn f() { std::env::var("WRELA_FULL"); }\n'
+                   "// a note\n#[cfg(test)]\nmod tests { fn t() {} }\n")
+        self.assertEqual(self.sources().key(files, own="t"), key)
+        self.assertNotEqual(self.sources().key(files, own="lib"), key)
+        self.write("t/tests/suite/c.rs", "pub fn help() {}\n#[cfg(test)]\nfn more() {}\n")
+        self.assertNotEqual(self.sources().key(files, own="t"), key)
 
     def test_a_test_in_the_root_keeps_what_the_root_names_and_an_unknown_module_all(self):
         s = self.sources()
@@ -247,6 +362,11 @@ class Builds(Sources):
         self.record = json.dumps({"pkg": self.root + "/ex", "args": ["--testing"], "files": "h1"}) + "\n"
 
     def remember(self, trace=None, record=None, test="a::x"):
+        # Its files as they were before the run (a file changed while it ran keeps no entry).
+        old = time.time() - 60
+        for dirpath, _, names in os.walk(self.root):
+            for path in [dirpath, *(os.path.join(dirpath, n) for n in names)]:
+                os.utime(path, (old, old))
         return self.memo.remember("t:suite:test:" + test, "t/tests/suite", test,
                                   trace or self.trace, 1.0, self.record if record is None else record)
 
@@ -302,11 +422,111 @@ class Builds(Sources):
             f.write(b"fn main() {}")
         self.assertEqual(memo.Rebuilds.files_hash(d), FILES_HASH)
 
+    @unittest.skipUnless(memo.available(), "needs strace and mount namespaces")
+    def test_a_build_is_made_again_only_when_a_file_it_read_changed(self):
+        cli = os.path.join(self.root, "target", "release", "wrela")
+        count = os.path.join(self.root, "target", "count")
+        os.makedirs(os.path.dirname(cli), exist_ok=True)
+        with open(cli, "w") as f:
+            f.write(f"""#!/bin/sh
+echo made >> {count}
+mkdir -p "$4" && cat "$2/wrela.toml" {self.root}/engine/sky.wrela > "$4/a.wasm"
+echo a.wasm > "$4/.wrela-build"
+""")
+        os.chmod(cli, 0o755)
+
+        def make():  # one gate's
+            m = memo.Memo(self.root, os.path.join(self.root, "target"),
+                          os.path.join(self.root, "store"), cli, sources=self.sources())
+            return m.rebuilds.make(self.root + "/ex", ["--testing"])
+
+        def made():
+            with open(count) as f:
+                return len(f.readlines())
+
+        first = make()
+        self.assertIsNotNone(first)
+        self.assertEqual((make(), made()), (first, 1), "the same files read: not made again")
+        self.write("engine/sky.wrela", "fn sky() { changed() }\n")
+        second = make()
+        self.assertEqual(made(), 2)
+        self.assertNotEqual(second, first)
+
+
+@unittest.skipUnless(memo.available(), "needs strace and a mount namespace")
+class WgslBudgets(Files):
+    """tools/wgsl_budgets.py with the gate's memory: a build is made again only when its CLI or
+    a file it read changed, and a remembered build's sizes still meet the budget."""
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs(os.path.join(self.root, "tools"))
+        for name in ("wgsl_budgets.py", "memo.py", "resources.py", "subjects.py"):
+            shutil.copy(os.path.join(TOOLS, name), os.path.join(self.root, "tools", name))
+        subprocess.run(["git", "init", "-q", self.root], check=True)
+        # What it made, outside the checkout (a file made there would change the checkout's
+        # listing, which a build read, while the others ran).
+        self.log = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.log)
+        self.cli = self.write("bin/wrela", f"""#!/bin/sh
+echo "$@" >> {self.log}/made
+if [ "$1" = studio ]; then out="$PWD/$2/build/studio/page"; else out="$4"; fi
+mkdir -p "$out" && head -c "$(cat "$PWD/$2/size" 2>/dev/null || echo 10)" /dev/zero > "$out/p.wgsl"
+""")
+        os.chmod(self.cli, 0o755)
+        for s in ("wolf", "grazer", "great-tree", "fawn"):
+            self.write(f"examples/{s}/main.wrela", "fn main() {}\n")
+            # As a checkout that ran the studio before has it: a build that made a directory
+            # changed what another build may have read (its parent), and isn't remembered.
+            self.write(f"examples/{s}/build/studio/page/p.wgsl", "")
+        self.write("examples/a/main.wrela", "fn main() {}\n")
+        self.write("examples/a/size", "100\n")
+        os.makedirs(os.path.join(self.root, "target"))
+
+    def budgets(self):
+        env = {**os.environ, "WRELA_GATE_MEMO": os.path.join(self.root, "store"),
+               "CARGO_TARGET_DIR": os.path.join(self.root, "target")}
+        return subprocess.run([sys.executable, "tools/wgsl_budgets.py", self.cli, "--memo"],
+                              cwd=self.root, env=env, capture_output=True, text=True)
+
+    def made(self):
+        path = os.path.join(self.log, "made")
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            made = f.read().splitlines()
+        os.remove(path)
+        return made
+
+    def test_a_build_is_made_again_only_when_what_it_read_changed(self):
+        r = self.budgets()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("examples/a: largest pipeline 0 KiB", r.stdout)
+        self.assertEqual(len(self.made()), 9)  # 4 lenses, 5 packages
+        r = self.budgets()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("9 pipelines in 9 packages", r.stdout)
+        self.assertEqual(self.made(), [], "none made again")
+        self.write("examples/a/size", str(300 * 1024))
+        r = self.budgets()
+        self.assertEqual(self.made(), ["build examples/a -o " + os.path.join(self.root, "target", "wgsl-budgets", "a")])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("examples/a/p.wgsl is 300 KiB", r.stderr)
+        # Remembered, it is still over.
+        r = self.budgets()
+        self.assertEqual(self.made(), [])
+        self.assertIn("over its size budget", r.stderr)
+
 
 FILES_HASH = "8410ef328ec8af3db236a70a705c1c9c7746bdc9695323b3e5bb56ef647fdf28"
 
 
 class Ending(unittest.TestCase):
+    def test_a_test_remembered_by_its_rebuilt_outputs_is_a_pass(self):
+        self.assertEqual(memo.tests_status(False, 0, [], ["rebuilt"]), 0)
+        self.assertEqual(memo.tests_status(False, 0, [], []), 1)
+        self.assertEqual(memo.tests_status(True, 1, [], []), 1)
+
     def test_stopping_kills_every_process_under_the_runner_and_the_ones_that_escaped(self):
         # A process orphaned under the runner (as a test is when strace, its parent, dies first)
         # comes back to it as its subreaper.
@@ -326,6 +546,61 @@ print(escaped, len(memo.under(os.getpid())))
         out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
                              timeout=30, check=True).stdout
         self.assertEqual(out.split(), ["2", "0"])
+
+
+class Shared(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def test_the_store_is_the_variables_else_this_machines_kept_with_the_projects(self):
+        folder = os.path.join(self.tmp, "project")
+        self.assertEqual(memo.stores({"WRELA_GATE_MEMO": "/m", "WRELA_SHARED_FOLDER": self.tmp}), ("/m", None))
+        self.assertEqual(memo.stores({"WRELA_SHARED_FOLDER": folder, "CARGO_TARGET_DIR": "/t"}),
+                         ("/t/gate-memo", None))
+        os.mkdir(folder)
+        own, shared = memo.stores({"WRELA_SHARED_FOLDER": folder})
+        self.assertEqual(shared, os.path.join(folder, ".gate-memo"))
+        self.assertTrue(own.startswith(os.path.expanduser("~")), own)
+
+    def test_a_sync_copies_what_is_new_or_newer_with_its_time_and_nothing_else(self):
+        src, dst = os.path.join(self.tmp, "src"), os.path.join(self.tmp, "dst")
+
+        def put(root, rel, text, when):
+            path = os.path.join(root, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(text)
+            os.utime(path, (when, when))
+
+        put(src, "v1/entries/a/b/new.json", "new", 1000)
+        put(src, "v1/timings/t.json", "newer", 2000)
+        put(dst, "v1/timings/t.json", "older", 1000)
+        put(src, "v1/timings/u.json", "older", 1000)
+        put(dst, "v1/timings/u.json", "newer", 2000)
+        put(src, "v1/timings/half.json.1-2.tmp", "half", 3000)
+        self.assertEqual(memo.sync(src, dst, self.tmp), 2)
+        read = lambda rel: open(os.path.join(dst, rel)).read()
+        self.assertEqual((read("v1/entries/a/b/new.json"), read("v1/timings/t.json"),
+                          read("v1/timings/u.json")), ("new", "newer", "newer"))
+        self.assertEqual(os.path.getmtime(os.path.join(dst, "v1/timings/t.json")), 2000)
+        self.assertFalse(os.path.exists(os.path.join(dst, "v1/timings/half.json.1-2.tmp")))
+        self.assertEqual(memo.sync(src, dst, self.tmp), 0, "nothing new the second time")
+
+    def test_one_sync_of_the_same_two_at_a_time(self):
+        import fcntl
+        src, dst = os.path.join(self.tmp, "src"), os.path.join(self.tmp, "dst")
+        os.makedirs(os.path.join(src, "v1"))
+        with open(os.path.join(src, "v1", "x.json"), "w") as f:
+            f.write("x")
+        memo.sync(src, dst, self.tmp)  # makes the lock's file
+        lock = [n for n in os.listdir(self.tmp) if n.startswith(".sync-")]
+        self.assertEqual(len(lock), 1)
+        os.remove(os.path.join(dst, "v1", "x.json"))
+        with open(os.path.join(self.tmp, lock[0]), "w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            self.assertEqual(memo.sync(src, dst, self.tmp), 0)
+        self.assertEqual(memo.sync(src, dst, self.tmp), 1)
 
 
 if __name__ == "__main__":

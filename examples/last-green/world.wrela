@@ -1,12 +1,16 @@
-// The floor's simulation (#54 §5): the stand-in player walking and running over the floor, in the
+// The floor's simulation (#54 §5): the climber walking and running over the floor, in the
 // sim's tick (`engine::run`) at 60 Hz, colliding with what the bake left (`history::OBSTACLES`)
 // and stopped by deep water and steep ground (`engine::footing`'s one rule). Its input records
-// are the walk's replay. A travel (the play harness's) moves the player beside a site.
+// are the walk's replay. A travel (the play harness's) moves the player beside a site. The fawn
+// grazes in the glade and notices the player (behaviour.wrela).
 
 use engine::footing::{BODY, stands}
 use engine::place::{Place, Water}
-use engine::player::{NONE, Player, control, spawn, step}
+use engine::player::{NONE, Player, control, spawn, step, turn_to}
+use behaviour::{Fawn, STEPPED_WITHIN, presence, spawn_fawn, step_fawn}
+use encounter::{Encounter, encounter, holds, step_encounter}
 use engine::run::{Asks, TickInput}
+use engine::senses::{Occluders, clear_over}
 use engine::sim::{SimState, Tick}
 use ground::Ground
 use history::{OBSTACLES, TOUR}
@@ -35,12 +39,25 @@ fn sites() -> Vec<vec3> {
     out
 }
 
-/// The world: the player, where it is on the floor's walk when it's walking it, and the
-/// wildwood's trunks round it when it's past the floor.
+/// The world: the player, where it is on the floor's walk when it's walking it, the wildwood's
+/// trunks round it when it's past the floor, the fawn, and the fight at the ring's glade.
 pub struct World: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub player: Player,
     pub tour: Tour,
     pub wild: Wildside,
+    pub fawn: Fawn,
+    pub fight: Encounter,
+}
+
+/// What hides the player from a creature on the floor: its ground, and what the bake left
+/// standing on it (`history::OBSTACLES`).
+struct FloorSight: Copy {}
+
+impl Occluders for FloorSight {
+    @deterministic
+    fn clear(self, from: vec3, to: vec3) -> f32 {
+        clear_over(GROUND, OBSTACLES, from, to)
+    }
 }
 
 /// The wildwood's trunks round the player (`wildwood::trunks_round`), as the sim walks round
@@ -87,6 +104,11 @@ const HELD: u32 = 120
 const AROUND: u32 = 180
 const AROUND_TURN: f32 = 1.31
 const GIVE_UP: u32 = 480
+
+/// How far the walk's heading turns in a tick at most (radians; 4.8 a second): the camera behind
+/// it turns with it, not in one frame, and at a run its circle (1 m round) still comes within
+/// `REACHED` of a point.
+const TURN: f32 = 0.08
 
 /// The egg's road, a point every 40 m (`wildwood::road_points`): Y walks it.
 pub const EGG_ROAD: Vec<vec2> = wildwood::road_points(40.0)
@@ -135,6 +157,8 @@ pub fn spawn_world() -> World {
             ask_at: vec2(0.0),
             pending: false,
         },
+        fawn: spawn_fawn(GROUND),
+        fight: encounter(GROUND),
     }
 }
 
@@ -171,12 +195,19 @@ pub fn tick(w: mut World, input: TickInput<World>) {
     let asked = w.player.controls.travel
     if asked != NONE {
         if asked < SITES.len() {
-            travel(mut w.player, SITES[asked])
+            travel(mut w.player, SITES[asked], 0.0)
         } else if asked == SITES.len() {
             // One past the sites: the egg's place; two past, its road in the wildwood.
-            travel(mut w.player, vec3(wildwood::EGG, 16.0))
+            travel(mut w.player, vec3(wildwood::EGG, 16.0), 0.0)
         } else if asked == SITES.len() + 1 {
-            travel(mut w.player, vec3(wildwood::ROAD_START, 0.0))
+            travel(mut w.player, vec3(wildwood::ROAD_START, 0.0), 0.0)
+        } else if asked == SITES.len() + 2 {
+            // Three past: in front of the fawn, `MEET` m off, to walk up to it.
+            let f = w.fawn.walker.root
+            travel(mut w.player, vec3(f.pos.x, f.pos.z, MEET - 3.0), f.heading)
+        } else if asked == SITES.len() + 3 {
+            // Four past: east of the fight's wolf, by the shore trail, near enough to wake it.
+            travel(mut w.player, vec3(encounter::WOLF_HOME, 12.0), 1.5707964)
         }
         w.player.controls.travel = NONE
     }
@@ -197,11 +228,32 @@ pub fn tick(w: mut World, input: TickInput<World>) {
         w.wild.ask_at = at
         w.wild.pending = true
     }
+    // In a move of the fight, the fight moves the player (`encounter`), not its walk. The fight
+    // waits while the sim walks the floor's walk (a check, not a player).
     if near_wild(at, 0.0) {
         let o = wild_obstacles(w.wild)
         step(mut w.player, GROUND, WATER, o, input.dt)
-    } else {
+    } else if !holds(w.fight) {
         step(mut w.player, GROUND, WATER, OBSTACLES, input.dt)
+    }
+    if !w.tour.on {
+        step_encounter(
+            mut w.fight,
+            mut w.player,
+            GROUND,
+            WATER,
+            OBSTACLES,
+            FloorSight {},
+            input.records,
+            input.dt,
+        )
+    }
+    // The fawn, near enough the player to matter.
+    let p = w.player
+    let feet = p.at.world()
+    if length(w.fawn.walker.root.pos.xz - feet) < STEPPED_WITHIN {
+        let me = presence(vec3(feet.x, p.y, feet.y), p.velocity)
+        step_fawn(mut w.fawn, GROUND, WATER, OBSTACLES, FloorSight {}, me, input.dt)
     }
 }
 
@@ -280,20 +332,23 @@ fn walk_the_tour(w: mut World) {
         w.tour.around -= 1
         yaw += w.tour.side * AROUND_TURN
     }
-    w.player.controls.yaw = yaw
+    w.player.controls.yaw = turn_to(from: w.player.controls.yaw, to: yaw, most: TURN)
     w.player.controls.forward = true
     w.player.controls.run_held = true
 }
 
+/// How far in front of the fawn a travel to it puts the player (m): out of its notice.
+const MEET: f32 = 46.0
+
 /// The player moved beside site `s` (x, z, reach): the first place a player can stand round it,
-/// just outside its reach, facing it.
+/// just outside its reach, facing it, looking round it from `from` (radians from +z toward +x).
 @deterministic
-fn travel(p: mut Player, s: vec3) {
+fn travel(p: mut Player, s: vec3, from: f32) {
     let at = s.xy
     for ring in 0..6 {
         let r = s.z + 3.0 + 4.0 * f32(ring)
         for k in 0..16 {
-            let a = TAU * f32(k) / 16.0
+            let a = from + TAU * f32(k) / 16.0
             let q = at + vec2(sin(a), cos(a)) * r
             if stands(GROUND, WATER, OBSTACLES, q) > 0.0 && !OBSTACLES.blocked(q, BODY) {
                 p.at = Place::of(q)
@@ -344,7 +399,7 @@ pub fn report(w: World, ticks: u32) -> String {
     for d in [20.0, 40.0, 60.0] {
         ahead = max(ahead, history::draw_at(at + toward * d))
     }
-    f"{{\"report\": {t}, \"at\": [{at.x}, {at.y}], \"y\": {p.y}, \"heading\": {heading}, \"pace\": {p.pace}, \"speed\": {length(p.velocity)}, \"region\": \"{region}\", \"site\": \"{site.name}\", \"site_m\": {site_m}, \"water\": {water}, \"draw\": {draw:.3}, \"ahead\": {ahead:.3}, \"tour\": [{w.tour.on}, {w.tour.leg}, {TOUR.len()}]}}"
+    f"{{\"report\": {t}, \"at\": [{at.x}, {at.y}], \"y\": {p.y}, \"heading\": {heading}, \"pace\": {p.pace}, \"speed\": {length(p.velocity)}, \"region\": \"{region}\", \"site\": \"{site.name}\", \"site_m\": {site_m}, \"water\": {water}, \"draw\": {draw:.3}, \"ahead\": {ahead:.3}, \"tour\": [{w.tour.on}, {w.tour.leg}, {TOUR.len()}], \"fawn\": {behaviour::report(w.fawn)}, \"fight\": {encounter::report(w.fight)}}}"
 }
 
 /// The snapshot the frames read.

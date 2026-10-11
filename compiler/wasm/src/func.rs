@@ -102,22 +102,115 @@ impl Width {
 }
 
 /// `size` bytes as loads or stores, widest first: each one's offset and width.
-fn chunks(size: u32, simd: bool) -> Vec<(u32, Width)> {
+fn chunks(size: u32, simd: bool) -> impl Iterator<Item = (u32, Width)> + Clone {
     let widths: &[Width] = if simd {
         &[Width::V128, Width::I64, Width::I32, Width::I16, Width::I8]
     } else {
         &[Width::I64, Width::I32, Width::I16, Width::I8]
     };
-    let mut out = Vec::new();
     let mut off = 0;
-    for &w in widths {
+    widths.iter().flat_map(move |&w| {
         let n = 1 << w.log2();
-        while size - off >= n {
-            out.push((off, w));
-            off += n;
+        let start = off;
+        let count = (size - off) / n;
+        off += count * n;
+        (0..count).map(move |i| (start + i * n, w))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codegen_perf_copy_chunks_cover_every_byte_in_order() {
+        for simd in [false, true] {
+            for size in 0..=INLINE_ZERO_BYTES {
+                let mut end = 0;
+                let mut widths = Vec::new();
+                let mut parts = chunks(size, simd);
+                let first = parts.next().map(|(off, w)| (off, w.log2()));
+                let tail: Vec<_> = parts.clone().map(|(off, w)| (off, w.log2())).collect();
+                assert_eq!(parts.map(|(off, w)| (off, w.log2())).collect::<Vec<_>>(), tail);
+                for (off, log2) in first.into_iter().chain(tail) {
+                    assert_eq!(off, end);
+                    let max_log2 = if simd { 4 } else { 3 };
+                    let expected = (0..=max_log2).rev().find(|&w| 1 << w <= size - end).unwrap();
+                    assert_eq!(log2, expected);
+                    end += 1 << log2;
+                    widths.push(log2);
+                }
+                assert_eq!(end, size);
+                if size <= INLINE_BYTES {
+                    assert!(widths.len() <= (INLINE_BYTES / 8 + 3) as usize);
+                }
+            }
         }
     }
-    out
+
+    /// Nested uses keep a value alive through its enclosing statement, including both
+    /// branches and a loop's continuing block. Value IDs need not follow statement order,
+    /// and the optimizer can leave unused IDs behind.
+    #[test]
+    fn releases_follow_defining_scopes() {
+        use ir::{BinOp, Const, Expr, Stmt, ValueId as V};
+        let mut m = ir::Module::default();
+        let (float, boolean) = (m.types.f32(), m.types.bool());
+        let mut f = ir::Function::new("scopes", Vec::new(), Some(float));
+        for id in 0..11 {
+            f.new_value(if id == 9 { boolean } else { float });
+        }
+        let add = |out, a, b| Stmt::Let(V(out), Expr::Binary(BinOp::Add, V(a), V(b)));
+        f.body = vec![
+            Stmt::Let(V(10), Expr::Const(Const::F32(2.0))),
+            Stmt::Let(V(7), Expr::Const(Const::F32(1.0))),
+            Stmt::Let(V(9), Expr::Const(Const::Bool(true))),
+            add(3, 7, 7),
+            Stmt::If {
+                cond: V(9),
+                then: vec![
+                    Stmt::Let(V(5), Expr::Const(Const::F32(3.0))),
+                    Stmt::Loop {
+                        body: vec![
+                            add(1, 7, 5),
+                            Stmt::If {
+                                cond: V(9),
+                                then: vec![add(0, 1, 10)],
+                                else_: vec![add(6, 1, 5)],
+                            },
+                            Stmt::Break,
+                        ],
+                        continuing: vec![add(2, 7, 5)],
+                    },
+                ],
+                else_: vec![add(4, 7, 7)],
+            },
+            Stmt::Return(Some(V(7))),
+        ];
+        m.add_function(f);
+        ir::verify(&m).expect("valid IR");
+        let f = &m.functions[0];
+        let Stmt::If { then, else_, .. } = &f.body[4] else { unreachable!() };
+        let Stmt::Loop { body, continuing } = &then[1] else { unreachable!() };
+        let Stmt::If { then: inner_then, else_: inner_else, .. } = &body[1] else { unreachable!() };
+        let expected: HashMap<_, _> = [
+            (&f.body[3], vec![V(3)]),
+            (&f.body[4], vec![V(9), V(10)]),
+            (&f.body[5], vec![V(7)]),
+            (&then[1], vec![V(5)]),
+            (&body[1], vec![V(1)]),
+            (&inner_then[0], vec![V(0)]),
+            (&inner_else[0], vec![V(6)]),
+            (&continuing[0], vec![V(2)]),
+            (&else_[0], vec![V(4)]),
+        ]
+        .into_iter()
+        .map(|(s, values)| (std::ptr::from_ref(s), values))
+        .collect();
+        let mut actual = HashMap::new();
+        releases(f, &mut actual);
+        assert_eq!(actual, expected);
+    }
 }
 
 /// Zero, of WASM type `t`.
@@ -336,7 +429,7 @@ pub(crate) fn emit_function(
     for v in made {
         fe.value_slots[v.index()] = Some(fe.slot(f.value_ty(v)));
     }
-    releases(&f.body, &mut fe.release);
+    releases(f, &mut fe.release);
     fe.block(&f.body)?;
     // Falling off the end: only a function with no result can.
     fe.epilogue();
@@ -504,34 +597,39 @@ fn drop_restores(fe: &mut Fe) {
 /// block that defines it (`ir::verify` checks), so that's where it dies; a use in a nested loop
 /// counts as a use by the loop's whole statement, so a value read on every iteration lives
 /// until the loop ends.
-fn releases(b: &ir::Block, out: &mut HashMap<*const ir::Stmt, Vec<ir::ValueId>>) {
-    fn uses(s: &ir::Stmt, f: &mut impl FnMut(ir::ValueId)) {
-        s.for_each_value(f);
-        for inner in s.blocks() {
-            for t in inner {
-                uses(t, f);
+fn releases(f: &ir::Function, out: &mut HashMap<*const ir::Stmt, Vec<ir::ValueId>>) {
+    // Each value records its defining scope and the last statement there that uses it.
+    // A nested use belongs to that scope's current ancestor statement: a value used by a loop
+    // stays live for all its iterations. Visit each statement once, rather than scan its
+    // descendants again at every enclosing block. The verifier keeps each value in its scope.
+    fn block<'a>(
+        b: &'a ir::Block,
+        path: &mut Vec<&'a ir::Stmt>,
+        last: &mut [Option<(usize, &'a ir::Stmt)>],
+    ) {
+        for s in b {
+            path.push(s);
+            s.for_each_value(&mut |v| {
+                if let Some((depth, at)) = &mut last[v.index()] {
+                    *at = path[*depth];
+                }
+            });
+            if let ir::Stmt::Let(v, _) = s {
+                last[v.index()] = Some((path.len() - 1, s));
             }
+            for inner in s.blocks() {
+                block(inner, path, last);
+            }
+            path.pop();
         }
     }
-    let mut last = HashMap::new();
-    for (i, s) in b.iter().enumerate() {
-        uses(s, &mut |v| {
-            if let Some(l) = last.get_mut(&v) {
-                *l = i;
-            }
-        });
-        if let ir::Stmt::Let(v, _) = s {
-            last.insert(*v, i);
+    let mut last = vec![None; f.values.len()];
+    block(&f.body, &mut Vec::new(), &mut last);
+    // In value order, so local reuse and the generated code stay deterministic.
+    for (v, used) in last.into_iter().enumerate() {
+        if let Some((_, at)) = used {
+            out.entry(std::ptr::from_ref(at)).or_default().push(ir::ValueId(v as u32));
         }
-        for inner in s.blocks() {
-            releases(inner, out);
-        }
-    }
-    // In value order, so the build is the same every time.
-    let mut last: Vec<(ir::ValueId, usize)> = last.into_iter().collect();
-    last.sort_unstable_by_key(|&(v, _)| v.0);
-    for (v, i) in last {
-        out.entry(std::ptr::from_ref(&b[i])).or_default().push(v);
     }
 }
 
@@ -775,13 +873,14 @@ impl<'m> Fe<'m> {
         let (dst, src) = (self.new_local(ValType::I32), self.new_local(ValType::I32));
         self.ins.extend([I::LocalSet(src), I::LocalSet(dst)]);
         let chunks = chunks(l.size, self.at.simd);
-        let mut held = Vec::with_capacity(chunks.len());
-        for &(off, w) in &chunks {
+        // At most INLINE_BYTES / 8 wide chunks, then one each of 4, 2 and 1 bytes.
+        let mut held = [0; (INLINE_BYTES / 8 + 3) as usize];
+        for ((off, w), held) in chunks.clone().zip(&mut held) {
             let t = self.new_local(w.val_type());
             self.ins.extend([I::LocalGet(src), w.load(off, l.align), I::LocalSet(t)]);
-            held.push(t);
+            *held = t;
         }
-        for (&(off, w), t) in chunks.iter().zip(held) {
+        for ((off, w), t) in chunks.zip(held) {
             self.ins.extend([I::LocalGet(dst), I::LocalGet(t), w.store(off, l.align)]);
         }
     }

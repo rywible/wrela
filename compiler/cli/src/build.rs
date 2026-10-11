@@ -5,6 +5,7 @@
 //! files are left alone, and the build stops rather than replace one. `.wrela-build` there
 //! lists the files the last build wrote.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -32,15 +33,9 @@ pub fn run(args: &[String]) -> ExitCode {
         wrela_driver::build(dir)
     };
     let failed = crate::report(&output, args.json);
-    if crate::is_symlink(&out) {
-        eprintln!("error: `{}` is a symbolic link, so the build won't use it", out.display());
-        return ExitCode::from(2);
-    }
-    if let Some(name) = symlink_in_way(&out, &output.files) {
-        eprintln!(
-            "error: `{}` is a symbolic link, so the build won't replace it",
-            out.join(name).display()
-        );
+    // Before anything in `out` is removed or written.
+    if let Err(e) = symlinks_in_way(&out, &output.files) {
+        eprintln!("error: {e}");
         return ExitCode::from(2);
     }
     let owned = match owned(&out) {
@@ -59,8 +54,9 @@ pub fn run(args: &[String]) -> ExitCode {
     if failed {
         return ExitCode::from(1);
     }
+    let owned_names: HashSet<&str> = owned.iter().map(String::as_str).collect();
     if let Some((name, _)) =
-        output.files.iter().find(|(f, _)| !owned.contains(f) && out.join(f).exists())
+        output.files.iter().find(|(f, _)| !owned_names.contains(f.as_str()) && out.join(f).exists())
     {
         eprintln!(
             "error: `{}` is in the way: an earlier `wrela build` didn't write it, so it isn't replaced",
@@ -116,8 +112,9 @@ const LIST: &str = ".wrela-build";
 
 /// A build output (or its ownership list) that's a symbolic link. Writing a symlink would
 /// replace its target, which isn't a file this build owns.
-fn symlink_in_way(out: &Path, files: &[(String, Vec<u8>)]) -> Option<String> {
-    crate::symlink_in(out, files.iter().map(|(name, _)| name.as_str()).chain(std::iter::once(LIST)))
+fn symlinks_in_way(out: &Path, files: &[(String, Vec<u8>)]) -> std::io::Result<()> {
+    let names = files.iter().map(|(name, _)| name.as_str()).chain(std::iter::once(LIST));
+    wrela_driver::ensure_no_symlinks(out, names)
 }
 
 /// The files in `out` that an earlier build wrote: those [`LIST`] names, or, in a directory a
@@ -152,11 +149,13 @@ fn owned(out: &Path) -> std::io::Result<Vec<String>> {
 /// Removes the files in `out` that an earlier build wrote (`owned`) but `files` doesn't hold.
 /// Nothing else in `out` is touched.
 fn remove_stale(out: &Path, owned: &[String], files: &[(String, Vec<u8>)]) -> std::io::Result<()> {
-    for name in owned {
+    let current: HashSet<&str> = files.iter().map(|(f, _)| f.as_str()).collect();
+    let stale: Vec<&String> =
+        owned.iter().filter(|name| !current.contains(name.as_str())).collect();
+    wrela_driver::ensure_no_symlinks(out, stale.iter().map(|name| name.as_str()))?;
+    for name in stale {
         let path = out.join(name);
-        if !files.iter().any(|(f, _)| f == name)
-            && std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file())
-        {
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
             std::fs::remove_file(path)?;
         }
     }
@@ -217,8 +216,31 @@ mod tests {
         std::fs::write(dir.join("victim"), "keep").expect("write victim");
         symlink("victim", dir.join("game.wasm")).expect("symlink");
         let files = [("game.wasm".to_string(), Vec::new())];
-        assert_eq!(symlink_in_way(&dir, &files).as_deref(), Some("game.wasm"));
+        let refused = symlinks_in_way(&dir, &files).expect_err("a symbolic link");
+        assert!(refused.to_string().contains("game.wasm"), "{refused}");
         assert_eq!(std::fs::read_to_string(dir.join("victim")).unwrap(), "keep");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_files_arent_removed_through_a_linked_parent() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!("wrela-cli-stale-link-{}", std::process::id()));
+        let outside =
+            std::env::temp_dir().join(format!("wrela-cli-stale-out-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(dir.join("files")).expect("output");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::fs::write(outside.join("small.bin"), "keep").expect("victim");
+        symlink(&outside, dir.join("files/data")).expect("symlink");
+        let owned = vec!["files/data/small.bin".to_string()];
+        let refused = remove_stale(&dir, &owned, &[]).expect_err("a symbolic-link parent");
+        assert!(refused.to_string().contains("files/data"), "{refused}");
+        assert_eq!(std::fs::read_to_string(outside.join("small.bin")).unwrap(), "keep");
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(outside);
     }
 }

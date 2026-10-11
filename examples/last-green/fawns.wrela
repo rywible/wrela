@@ -1,4 +1,4 @@
-// The fawn in the floor (#54 §9's characters in the wood: the fawn and the stand-in in three
+// The fawn in the floor (#54 §9's characters in the wood: the fawn and the climber in three
 // shots, so the cel treatment is judged against the wood's dark and dappled light): M5's fawn as
 // a young deer (`fawn::creature::wood_fawn`), realized over frames as the clearing realizes it,
 // once a shot that casts it is held, and drawn standing at rest where the shot puts it.
@@ -6,7 +6,7 @@
 use engine::creature::{Creature, MAX_BONES}
 use engine::look::{CreatureLook, Mesh}
 use engine::render::{Look, bone_matrix}
-use engine::standin::placed
+use engine::character::placed
 use fawn::creature::{Coat, skeleton, wood_fawn}
 use std::quat::Quat
 use std::transform::scale
@@ -44,18 +44,18 @@ impl Look<Coat> for FawnLook {
     }
 }
 
-/// How big it stands: M5's grazer is the size of a horse (its poll 2 m up, over the stand-in's
-/// head); a fawn stands about half as tall, its back at the stand-in's hip.
+/// How big it stands: M5's grazer is the size of a horse (its poll 2 m up, over the climber's
+/// head); a fawn stands about half as tall, its back at the climber's hip.
 pub const SIZE: f32 = 0.6
 
 /// How far its neck leans forward from the grazer's upright one, about its base (radians): an
 /// upright neck read as a llama's. Its head turns back up by `HEAD_LIFT`, so it looks ahead.
-pub const NECK_LEAN: f32 = 0.22
-pub const HEAD_LIFT: f32 = 0.12
+pub const NECK_LEAN: f32 = 0.35
+pub const HEAD_LIFT: f32 = 0.25
 
 /// Its palette standing at rest, its feet at `feet`, facing `heading` (radians from +z toward
-/// +x): `SIZE` times the grazer's size, its neck leaned forward and its head lifted; every other
-/// bone at rest.
+/// +x): `SIZE` times the grazer's size, its neck leaned forward and its head lifted, its right
+/// foreleg lifted and folded mid-step (a stance, not a statue's); every other bone at rest.
 pub fn at_rest(feet: vec3, heading: f32) -> [mat4; MAX_BONES] {
     let s = skeleton()
     let world = placed(feet, heading) * scale(vec3(SIZE))
@@ -69,5 +69,14 @@ pub fn at_rest(feet: vec3, heading: f32) -> [mat4; MAX_BONES] {
     let poll = s.rest(head)
     let lift = bone_matrix(Quat::axis_angle(vec3(1.0, 0.0, 0.0), -HEAD_LIFT), poll, poll)
     bones[head.index] = world * lean * lift
+    let x = vec3(1.0, 0.0, 0.0)
+    let elbow = s.rest(s.find("elbow right"))
+    let swing = bone_matrix(Quat::axis_angle(x, 0.35), elbow, elbow)
+    let knee = s.rest(s.find("knee right"))
+    let fold = bone_matrix(Quat::axis_angle(x, -0.9), knee, knee)
+    bones[s.find("elbow right").index] = world * swing
+    for name in ["knee right", "fore fetlock right"] {
+        bones[s.find(name).index] = world * swing * fold
+    }
     bones
 }

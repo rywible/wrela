@@ -1,10 +1,10 @@
 // The decoder's mapping to WebGPU, on a fake device (see runtime/native/tests/suite/gpu.rs for
 // the same behaviour on a real GPU).
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { type BuiltPipeline, buildPipelines, GpuExecutor, type PipelineCache, ShaderError } from "../src/gpu.ts";
 import type { Manifest, Pipeline } from "../src/manifest.ts";
-import { NONE } from "../src/abi.gen.ts";
+import { NONE, TEXTURE_FORMATS, UPLOAD_MAX, UPLOAD_START } from "../src/abi.gen.ts";
 import { decode } from "../src/stream.ts";
 import { Encoder, words } from "./encoder.ts";
 import { type Event, FakeDevice, fakeTexture } from "./fake-gpu.ts";
@@ -123,6 +123,82 @@ test("each dispatch and draw gets its own aligned uniform slice", async () => {
   expect(device.events[3]).toEqual({ kind: "renderPass", clear: { r: 0.25, g: 0.5, b: 0.75, a: 1 }, view: "screen" });
 });
 
+test("small texture writes keep their order in one submission, with aligned copies of packed rows", async () => {
+  for (const format of TEXTURE_FORMATS.filter((f) => !f.depth)) {
+    const { device, run, executor } = await setup();
+    const bytes = Uint8Array.from({ length: 3 * 2 * format.bytes }, (_, i) => i + 1);
+    const original = bytes.slice();
+    run(new Encoder().createBuffer(1, 64).createBuffer(2, 64).createTexture(3, 5, 4, format.name));
+    run(new Encoder().dispatch(1, [1, 1, 1], [1, 2], u(0)).writeBuffer(1, 0, words([7])));
+    executor.execute({ op: "WriteTexture", handle: 3, x: 1, y: 1, width: 3, height: 2, data: bytes });
+    bytes.fill(255); // The program may reuse its shared memory before the submission.
+    run(new Encoder().dispatch(1, [1, 1, 1], [1, 2], u(1)));
+    executor.execute({ op: "WriteTexture", handle: 3, x: 0, y: 0, width: 0, height: 4, data: new Uint8Array(0) });
+    executor.flush();
+    expect(kinds(device.events)).toEqual([
+      "dispatch", "copyBuffer", "copyBufferToTexture", "dispatch", "writeBuffer", "writeBuffer", "submit",
+    ]);
+    expect(device.events[2]).toEqual({
+      kind: "copyBufferToTexture", from: "upload ring", fromOffset: 256, texture: "texture 3",
+      origin: { x: 1, y: 1 }, bytesPerRow: 256, rowsPerImage: 2, size: { width: 3, height: 2 },
+    });
+    const upload = device.events[5] as Extract<Event, { kind: "writeBuffer" }>;
+    expect(upload.data.length).toBe(768);
+    expect(upload.data.subarray(0, 4)).toEqual(words([7]));
+    expect(upload.data.subarray(256, 256 + 3 * format.bytes)).toEqual(original.subarray(0, 3 * format.bytes));
+    expect(upload.data.subarray(512, 512 + 3 * format.bytes)).toEqual(original.subarray(3 * format.bytes));
+  }
+});
+
+test("texture writes flush and reuse a full upload ring", async () => {
+  const { device, run, executor } = await setup();
+  const data = new Uint8Array(UPLOAD_START / 2);
+  run(new Encoder().createTexture(3, 128, 256, "rgba8unorm"));
+  for (let i = 0; i < 3; i++) {
+    executor.execute({ op: "WriteTexture", handle: 3, x: 0, y: 0, width: 128, height: 256, data });
+  }
+  executor.flush();
+  expect(kinds(device.events)).toEqual([
+    "copyBufferToTexture", "copyBufferToTexture", "writeBuffer", "submit", "copyBufferToTexture", "writeBuffer", "submit",
+  ]);
+  const offsets = device.events.flatMap((e) => e.kind === "copyBufferToTexture" ? [e.fromOffset] : []);
+  expect(offsets).toEqual([0, data.length, 0]);
+  expect(device.buffers.filter((b) => b.label === "upload ring").length).toBe(1);
+});
+
+test("a texture write grows the upload ring after earlier work is submitted", async () => {
+  const { device, run, executor } = await setup();
+  run(new Encoder().createBuffer(1, 64).writeBuffer(1, 0, words([7])).createTexture(3, 64, 1025, "rgba8unorm"));
+  const data = new Uint8Array(256 * 1025);
+  executor.execute({ op: "WriteTexture", handle: 3, x: 0, y: 0, width: 64, height: 1025, data });
+  executor.flush();
+  expect(kinds(device.events)).toEqual(["copyBuffer", "writeBuffer", "submit", "copyBufferToTexture", "writeBuffer", "submit"]);
+  expect(device.buffers.filter((b) => b.label === "upload ring").map((b) => [b.size, b.destroyed])).toEqual([
+    [UPLOAD_START, true], [2 * UPLOAD_START, false],
+  ]);
+});
+
+test("a texture with a staged write is destroyed only after its copy is submitted", async () => {
+  const { device, run, executor } = await setup();
+  run(new Encoder().createTexture(3, 1, 1, "rgba8unorm").writeTexture(3, [0, 0], [1, 1], words([7])).destroyTexture(3));
+  expect(device.textures[0]!.destroyed).toBe(false);
+  executor.flush();
+  expect(kinds(device.events)).toEqual(["copyBufferToTexture", "writeBuffer", "submit"]);
+  expect(device.textures[0]!.destroyed).toBe(true);
+});
+
+test("texture uploads over the padded size cap still write through the queue after a flush", async () => {
+  const { device, run, executor } = await setup();
+  // The packed bytes fit the cap, but the padded rows don't.
+  const width = 2049;
+  const height = Math.floor(UPLOAD_MAX / 4352) + 1;
+  run(new Encoder().createBuffer(1, 64).createBuffer(2, 64).createTexture(3, width, height, "r16float"));
+  run(new Encoder().dispatch(1, [1, 1, 1], [1, 2], u(0)));
+  executor.execute({ op: "WriteTexture", handle: 3, x: 0, y: 0, width, height, data: new Uint8Array(2 * width * height) });
+  expect(kinds(device.events)).toEqual(["dispatch", "writeBuffer", "submit", "writeTexture"]);
+  expect(device.events[3]).toMatchObject({ bytesPerRow: 2 * width, size: { width, height } });
+});
+
 test("bind groups are cached per pipeline and buffers", async () => {
   const { device, run } = await setup();
   run(
@@ -141,6 +217,46 @@ test("bind groups are cached per pipeline and buffers", async () => {
     { binding: 1, buffer: "buffer 1", offset: 0, size: 64 },
     { binding: 2, buffer: "buffer 2", offset: 0, size: 64 },
   ]);
+});
+
+test("each pipeline's unchanged ranges reuse its group without another string-key lookup", async () => {
+  const m = shapes();
+  m.pipelines.push({ ...m.pipelines[1]!, name: "another compute" });
+  const { device, run } = await setup(m);
+  const get = spyOn(Map.prototype, "get");
+  let lookups = 0;
+  try {
+    const e = new Encoder().createBuffer(1, 64).createBuffer(2, 64);
+    for (let i = 0; i < 3; i++) e.dispatch(1, [1, 1, 1], [1, 2], u(i)).dispatch(2, [1, 1, 1], [1, 2], u(i));
+    run(e);
+    lookups = get.mock.calls.filter(([key]) => typeof key === "string" && /^\d+:\d+@/.test(key)).length;
+  } finally {
+    get.mockRestore();
+  }
+  expect(lookups).toBe(2);
+  expect(device.events.flatMap((e) => (e.kind === "dispatch" ? [e.bindGroup.id] : []))).toEqual([0, 1, 0, 1, 0, 1]);
+});
+
+test("a cached group's ranges stay its own when a command changes its bindings", async () => {
+  const { device, run, executor } = await setup();
+  run(new Encoder().createBuffer(1, 64).createBuffer(2, 64));
+  const cmd = decode(new Encoder().dispatch(1, [1, 1, 1], [1, 2], u(0)).finish())[0]!;
+  if (cmd.op !== "Dispatch") throw new Error("expected a dispatch");
+  executor.execute(cmd);
+  cmd.bindings[0]!.offset = 4;
+  cmd.bindings[0]!.size = 60;
+  executor.execute(cmd);
+  cmd.bindings[0]!.size = 32;
+  executor.execute(cmd);
+  cmd.bindings[0]!.handle = 2;
+  executor.execute(cmd);
+  cmd.bindings[0] = { handle: 1, offset: 0, size: 64 };
+  executor.execute(cmd);
+  executor.execute(cmd);
+  const groups = device.events.flatMap((e) => (e.kind === "dispatch" ? [e.bindGroup] : []));
+  expect(groups.map((g) => g.id)).toEqual([0, 1, 2, 3, 0, 0]);
+  expect(groups[0]!.entries[1]).toMatchObject({ buffer: "buffer 1", offset: 0, size: 64 });
+  expect(groups[3]!.entries[1]).toMatchObject({ buffer: "buffer 2", offset: 4, size: 32 });
 });
 
 test("a debug build's flag is laid out, bound in every dispatch and draw, and read", async () => {
@@ -289,15 +405,29 @@ test("textures and samplers are made as the stream says, and bound as views and 
   // A depth texture can't be written from the CPU.
   expect([depth!.format, depth!.usage]).toEqual(["depth32float", TEXTURE_BINDING | RENDER_ATTACHMENT | COPY_SRC]);
   expect(device.samplers[0]).toMatchObject({ magFilter: "linear", addressModeU: "repeat", compare: "less-equal" });
-  expect(device.events.find((e) => e.kind === "writeTexture")).toEqual({
-    kind: "writeTexture",
+  expect(device.events.find((e) => e.kind === "copyBufferToTexture")).toEqual({
+    kind: "copyBufferToTexture",
+    from: "upload ring",
+    fromOffset: 0,
     texture: "texture 3",
     origin: { x: 1, y: 0 },
-    bytesPerRow: 16,
+    bytesPerRow: 256,
+    rowsPerImage: 2,
     size: { width: 2, height: 2 },
   });
   const draw = device.events.find((e) => e.kind === "draw") as Extract<Event, { kind: "draw" }>;
   expect(draw.bindGroup.entries.map((e) => e.buffer)).toEqual(["uniform ring", "texture 4", "sampler 5"]);
+});
+
+test("replacing a texture or sampler invalidates the pipeline's last bind group", async () => {
+  const { device, run } = await setup(sampled());
+  const draw = (e: Encoder) => e.beginScreenPass([0, 0, 0, 1]).draw(0, 3, 1, [[4, 0, 0], [5, 0, 0]], u(0)).present();
+  run(draw(new Encoder().createTexture(4, 4, 2, "depth32float").createSampler(5, true, true, "less-equal")));
+  run(draw(new Encoder().destroyTexture(4).createTexture(4, 4, 2, "depth32float")));
+  run(draw(new Encoder().destroySampler(5).createSampler(5, false, false, "less-equal")));
+  run(draw(new Encoder()));
+  const groups = device.events.flatMap((e) => (e.kind === "draw" ? [e.bindGroup.id] : []));
+  expect(groups).toEqual([0, 1, 2, 2]);
 });
 
 test("a pass into textures draws with the pipeline made for their formats, and isn't submitted alone", async () => {
@@ -464,6 +594,99 @@ test("a command whose pipeline is still being built waits for it, and the comman
   expect((await answer).length).toBe(4);
 });
 
+test("a command backlog advances across staggered pipelines and keeps writes and readbacks in order", async () => {
+  const device = new FakeDevice();
+  const m = shapes();
+  m.pipelines.push({ ...m.pipelines[1]!, name: "another compute" });
+  const [draw, compute, another] = await Promise.all(buildPipelines(device.gpu, m, m.pipelines.map(() => SHADER)));
+  const first = Promise.withResolvers<BuiltPipeline>();
+  const second = Promise.withResolvers<BuiltPipeline>();
+  const executor = new GpuExecutor(device.gpu, [draw!, first.promise, second.promise], { texture: () => fakeTexture("screen") });
+  const run = (e: Encoder) => {
+    for (const cmd of decode(e.finish())) executor.execute(cmd);
+  };
+  run(new Encoder().createBuffer(1, 64).createBuffer(2, 64).dispatch(1, [1, 1, 1], [1, 2], u(0)).writeBuffer(1, 0, words([7])));
+  const read = executor.readBack(2, 0, 4);
+  run(new Encoder().dispatch(2, [2, 1, 1], [1, 2], u(1)).writeBuffer(1, 4, words([8])));
+  const caughtUp = executor.caughtUp();
+  first.resolve(compute!);
+  await first.promise;
+  expect(executor.waiting).toBe(true);
+  expect(kinds(device.events)).toEqual(["dispatch", "copyBuffer", "writeBuffer", "writeBuffer", "submit", "copyBuffer", "submit"]);
+  run(new Encoder().dispatch(1, [3, 1, 1], [1, 2], u(2)));
+  second.resolve(another!);
+  await caughtUp;
+  expect(executor.waiting).toBe(false);
+  expect((await read).length).toBe(4);
+  expect(device.events.flatMap((e) => (e.kind === "dispatch" ? [[e.pipeline, e.groups[0]]] : []))).toEqual([
+    ["compute", 1], ["another compute", 2], ["compute", 3],
+  ]);
+  // Commands after the backlog drains execute immediately.
+  run(new Encoder().dispatch(1, [4, 1, 1], [1, 2], u(3)));
+  expect(device.events.at(-1)).toMatchObject({ kind: "dispatch", groups: [4, 1, 1] });
+});
+
+test.each(["waiting", "serial"] as const)("a %s draw keeps one uniform copy until its pass ends", async (mode) => {
+  const device = new FakeDevice();
+  const m = shapes();
+  const [draw, compute] = await Promise.all(buildPipelines(device.gpu, m, m.pipelines.map(() => SHADER)));
+  const later = Promise.withResolvers<BuiltPipeline>();
+  const executor = new GpuExecutor(device.gpu, [mode === "waiting" ? later.promise : draw!, compute!], { texture: () => fakeTexture("screen") }, mode === "serial" ? "serial" : "off");
+  const batch = new Encoder().createBuffer(1, 64).createBuffer(2, 64).beginScreenPass([0, 0, 0, 1]).draw(0, 3, 1, [1, 2], u(7)).finish();
+  const commands = decode(batch);
+  const slice = spyOn(Uint8Array.prototype, "slice");
+  let copies = 0;
+  try {
+    for (const cmd of commands) executor.execute(cmd);
+    batch.fill(0);
+    if (mode === "waiting") {
+      const caughtUp = executor.caughtUp();
+      later.resolve(draw!);
+      await caughtUp;
+    } else await executor.drain();
+    copies = slice.mock.calls.length;
+  } finally {
+    slice.mockRestore();
+  }
+  expect(copies).toBe(1);
+  executor.execute({ op: "Present" });
+  await executor.drain();
+  const uploaded = device.events.find((e) => e.kind === "writeBuffer") as Extract<Event, { kind: "writeBuffer" }>;
+  expect(uploaded.data).toEqual(u(7));
+});
+
+test("a reentrant immediate draw owns its uniforms while a queued screen pass finishes", async () => {
+  const device = new FakeDevice();
+  const m = shapes();
+  const [draw, compute] = await Promise.all(buildPipelines(device.gpu, m, m.pipelines.map(() => SHADER)));
+  const later = Promise.withResolvers<BuiltPipeline>();
+  const reentrant = decode(new Encoder().beginScreenPass([0, 0, 0, 1]).draw(0, 3, 1, [1, 2], u(9)).finish());
+  const reentrantDraw = reentrant[1]!;
+  if (reentrantDraw.op !== "Draw") throw new Error("expected a draw");
+  let reentered = false;
+  const executor = new GpuExecutor(device.gpu, [later.promise, compute!], {
+    texture: () => fakeTexture("screen"),
+    afterPass: () => {
+      if (reentered) return;
+      reentered = true;
+      // Present is the final waiting command, so these commands run immediately while the
+      // queued command still supplies its frame's timing context. Leave this pass open.
+      for (const cmd of reentrant) executor.execute(cmd);
+    },
+  });
+  for (const cmd of decode(new Encoder().createBuffer(1, 64).createBuffer(2, 64).beginScreenPass([0, 0, 0, 1]).draw(0, 3, 1, [1, 2], u(7)).present().finish())) executor.execute(cmd);
+  const caughtUp = executor.caughtUp();
+  later.resolve(draw!);
+  await caughtUp;
+  expect(reentered).toBe(true);
+  expect(executor.waiting).toBe(false);
+  expect(device.events.filter((e) => e.kind === "draw")).toHaveLength(1);
+  reentrantDraw.uniforms.fill(0);
+  executor.execute({ op: "Present" });
+  const uploaded = device.events.filter((e): e is Extract<Event, { kind: "writeBuffer" }> => e.kind === "writeBuffer" && e.buffer === "uniform ring");
+  expect(uploaded.map((e) => e.data)).toEqual([u(7), u(9)]);
+});
+
 test("commands that wait for a pipeline keep their frame's label; the next frame's start with none", async () => {
   const device = new FakeDevice();
   const m = shapes();
@@ -499,6 +722,24 @@ test("a command that waited for a pipeline, then fails, fails the program", asyn
   later.resolve(compute!);
   expect(await caughtUp).toBe("host bug: resource 8 passed the checks but doesn't exist");
   expect(() => executor.waiting).toThrow("host bug: resource 8 passed the checks but doesn't exist");
+});
+
+test("a failed waiting queue does not submit recorded work when another pipeline finishes", async () => {
+  const device = new FakeDevice();
+  const m = shapes();
+  const [draw, compute] = await Promise.all(buildPipelines(device.gpu, m, m.pipelines.map(() => SHADER)));
+  const first = Promise.withResolvers<BuiltPipeline>();
+  const unused = Promise.withResolvers<BuiltPipeline>();
+  const executor = new GpuExecutor(device.gpu, [draw!, first.promise, unused.promise], { texture: () => fakeTexture("screen") });
+  const batch = new Encoder().createBuffer(1, 64).createBuffer(2, 64).dispatch(1, [1, 1, 1], [1, 2], u(0)).destroyBuffer(8);
+  for (const cmd of decode(batch.finish())) executor.execute(cmd);
+  const caughtUp = executor.caughtUp();
+  first.resolve(compute!);
+  await expect(caughtUp).rejects.toThrow("host bug: resource 8 passed the checks but doesn't exist");
+  expect(kinds(device.events)).toEqual(["dispatch"]);
+  unused.resolve(compute!);
+  await executor.built;
+  expect(kinds(device.events)).toEqual(["dispatch"]);
 });
 
 test("a hot reload keeps the pipelines whose entries and WGSL are the same, wherever their files are", async () => {
@@ -582,6 +823,42 @@ test("a retired executor runs no commands when a pipeline finishes late", async 
   await executor.built;
   await Promise.resolve();
   expect(kinds(device.events)).toEqual([]);
+});
+
+test.each(["failed", "retired"] as const)("a partly drained backlog rejects readbacks when its executor is %s", async (mode) => {
+  const device = new FakeDevice();
+  const m = shapes();
+  const [, compute] = await Promise.all(buildPipelines(device.gpu, m, m.pipelines.map(() => SHADER)));
+  const first = Promise.withResolvers<BuiltPipeline>();
+  const later = Promise.withResolvers<BuiltPipeline>();
+  const executor = new GpuExecutor(device.gpu, [first.promise, later.promise], { texture: () => fakeTexture("screen") });
+  for (const cmd of decode(new Encoder().createBuffer(1, 64).createBuffer(2, 64).dispatch(0, [1, 1, 1], [1, 2], u(0)).dispatch(1, [2, 1, 1], [1, 2], u(1)).finish())) {
+    executor.execute(cmd);
+  }
+  const caughtUp = executor.caughtUp().catch((e: Error) => e.message);
+  const readback = executor.readBack(2, 0, 4).catch((e: Error) => e.message);
+  const built = executor.built.catch((e: Error) => e.message);
+  first.resolve(compute!);
+  await first.promise;
+  // The first dispatch's consumed slot is empty while the next pipeline is still missing.
+  expect(executor.waiting).toBe(true);
+  expect(device.events.filter((e) => e.kind === "dispatch")).toHaveLength(1);
+  const why = mode === "failed" ? "later pipeline failed" : "the GPU executor was retired";
+  if (mode === "failed") later.reject(new Error(why));
+  else {
+    executor.destroyAll();
+    later.resolve(compute!);
+  }
+  expect(await caughtUp).toBe(why);
+  expect(await readback).toBe(why);
+  await built;
+  expect(device.events.filter((e) => e.kind === "dispatch")).toHaveLength(1);
+  if (mode === "failed") expect(() => executor.waiting).toThrow(why);
+  else {
+    expect(executor.waiting).toBe(false);
+    await expect(executor.caughtUp()).resolves.toBeUndefined();
+    await expect(executor.readBack(2, 0, 4)).rejects.toThrow(why);
+  }
 });
 
 test("the program's buffers and textures are counted in bytes, now and at most", async () => {

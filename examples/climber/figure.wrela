@@ -1,0 +1,148 @@
+// The climber's figure as it's drawn (#30): the cape and the darkness off it, stepped each frame
+// from where the body stands and its pose. They're presentation: the frames step them, so the
+// fight's state and its replays don't carry them (`cape`, `darkness`).
+
+use cape::{Cape, Plane, POINTS, body_frame, hang}
+use darkness::{AT_REST, Darkness, darkness}
+use moves::Pose
+
+/// How many wisps a blink lets go at once, where it goes and where it comes.
+pub const BURST: u32 = 24
+
+/// How far the body may move in a frame before the figure is carried there as it is, not
+/// stepped (m): a blink, a travel, a new shot.
+const JUMP: f32 = 1.0
+
+/// The figure: the cape (hung at the first step), the darkness, and whether the body was gone (a
+/// blink) at the last step.
+pub struct Figure {
+    pub cape: Option<Cape>,
+    pub dark: Darkness,
+    was_gone: bool,
+}
+
+pub fn figure() -> Figure {
+    Figure { cape: None, dark: darkness(), was_gone: false }
+}
+
+impl Figure {
+    /// The figure `dt` seconds on: the body at `feet`, facing `heading`, in `pose`, gliding at
+    /// `speed` (m/s), swinging or not, gone (a blink) or not, on `ground`, in `wind` (m/s). More
+    /// darkness leaves it as it glides fast or swings, none while it's gone, and a burst as it
+    /// goes and as it comes.
+    pub fn step(
+        mut self,
+        feet: vec3,
+        heading: f32,
+        pose: Pose,
+        speed: f32,
+        swinging: bool,
+        gone: bool,
+        ground: Plane,
+        wind: vec3,
+        dt: f32,
+    ) {
+        let frame = body_frame(feet, heading, pose.form)
+        var cape = match replace(mut self.cape, None) {
+            Some(it) => take it,
+            None => hang(frame),
+        }
+        let moved = (frame * vec4(0.0, 0.0, 0.0, 1.0)).xyz -
+            (cape.frame * vec4(0.0, 0.0, 0.0, 1.0)).xyz
+        // A blink takes the cape and leaves the darkness behind; a jump takes both.
+        if gone || length(moved) > JUMP {
+            cape.carry(moved)
+        }
+        if !gone && length(moved) > JUMP {
+            self.dark.carry(moved)
+        }
+        cape.step(frame, gather: pose.form.gather, ground: ground, wind: wind, dt: dt)
+        let rate = AT_REST * (1.0 + 0.6 * speed + if swinging { 2.0 } else { 0.0 })
+        let burst = if gone != self.was_gone { BURST } else { 0 }
+        self.was_gone = gone
+        self.dark.step(cape, rate: if gone { 0.0 } else {
+            rate
+        }, burst: burst, wind: wind, dt: dt)
+        self.cape = Some(take cape)
+    }
+
+    /// The whole figure moved by `by`, as it is (the floor's render origin moved).
+    pub fn carry(mut self, by: vec3) {
+        match mut self.cape {
+            Some(c) => c.carry(by),
+            None => {},
+        }
+        self.dark.carry(by)
+    }
+
+    /// The cape's points, for a buffer (none before its first step).
+    pub fn points(self) -> Vec<vec4> {
+        var out: Vec<vec4> = Vec::new()
+        match self.cape {
+            Some(c) => {
+                for k in 0..POINTS {
+                    out.push(vec4(c.at[k], 1.0))
+                }
+            },
+            None => {},
+        }
+        out
+    }
+
+    /// The wisps, two to a wisp for a buffer: where it is and how big now; its speed.
+    pub fn wisps(self) -> Vec<vec4> {
+        var out: Vec<vec4> = Vec::new()
+        for w in self.dark.wisps {
+            out.push(vec4(w.at, w.now()))
+            out.push(vec4(w.speed, 0.0))
+        }
+        out
+    }
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+/// A body that jumps (a travel, a new shot) takes its figure with it as it is: the cape doesn't
+/// fall the whole way, its wisps don't stay behind; and the origin's move carries both.
+@test
+fn a_jump_takes_the_figure_along() {
+    var f = figure()
+    let ground = cape::flat(0.0)
+    for _ in 0..60 {
+        f.step(
+            vec3(0.0),
+            0.0,
+            moves::REST,
+            speed: 0.0,
+            swinging: false,
+            gone: false,
+            ground: ground,
+            wind: vec3(0.0),
+            dt: 1.0 / 60.0,
+        )
+    }
+    let hem = f.points()[POINTS - 1].xyz
+    let by = vec3(40.0, 0.0, -25.0)
+    f.step(
+        by,
+        0.0,
+        moves::REST,
+        speed: 0.0,
+        swinging: false,
+        gone: false,
+        ground: ground,
+        wind: vec3(0.0),
+        dt: 1.0 / 60.0,
+    )
+    let off = length(f.points()[POINTS - 1].xyz - (hem + by))
+    var behind = 0
+    for w in f.dark.wisps {
+        if length(w.at.xz - by.xz) > 3.0 {
+            behind += 1
+        }
+    }
+    assert(off < 0.05, f"the hem is {off} m off where the jump took it")
+    assert(behind == 0, f"{behind} wisps stayed behind")
+    f.carry(vec3(-40.0, 0.0, 25.0))
+    assert(length(f.points()[POINTS - 1].xyz - hem) < 0.05, "the origin's move left the hem")
+}
