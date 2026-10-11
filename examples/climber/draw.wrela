@@ -2,8 +2,7 @@
 // the motion target, the moving shadow map, a line where its parts meet): the cape's cloth from
 // its points, written each frame (`figure`); the head with its mask, and the sword, each a field
 // realized once as a mesh of one bone; and the darkness's wisps, solid drops drawn out along
-// their way. The look of the mask, the cape and the sword is the characters thread's: these are
-// plain placeholders.
+// their way. The look of the mask, the cape and the sword is the characters thread's (`look`).
 
 use body::{BLADE_THICK, BLADE_WIDTH, GUARD_AT, HEAD, HEAD_RADIUS, POINT_AT}
 use cape::{AROUND, DOWN, POINTS, body_frame}
@@ -22,6 +21,7 @@ use engine::temporal::motion_of
 use engine::vegetation::nothing
 use engine::view::{CREATURE, Camera, NEAREST, SEEN}
 use figure::Figure
+use look::{CAPE, Paint, head, sword}
 use moves::Pose
 use std::derive::Box3
 use std::field::{Blend, Surface, cuboid, ellipsoid, half_space, round_cone, sphere}
@@ -30,89 +30,13 @@ use std::gpu::{
     write,
 }
 
-/// What a point of the head or the sword carries: its colour (linear).
-pub struct Paint: Copy + GpuData + Blend {
-    pub albedo: vec3,
-}
-
-impl Shaded for Paint {
-    fn albedo(self) -> vec3 {
-        self.albedo
-    }
-
-    fn roughness(self) -> f32 {
-        0.8
-    }
-}
-
-// The placeholders' colours: the cape and the hood near black, a little blue; the mask ivory;
-// the blade a grey steel; the hilt dark leather. The darkness is darker than the cape.
-const CAPE = vec3(0.05, 0.05, 0.065)
-const HOOD = Paint { albedo: vec3(0.05, 0.05, 0.065) }
-const MASK = Paint { albedo: vec3(0.72, 0.69, 0.62) }
-const STEEL = Paint { albedo: vec3(0.42, 0.44, 0.46) }
-const HILT = Paint { albedo: vec3(0.09, 0.06, 0.04) }
+// The darkness is darker than the cape.
 const DARK = vec3(0.012, 0.012, 0.016)
 
 /// Each part's id, for the lines where parts meet.
 const CAPE_PART: u32 = 1
 const HEAD_PART: u32 = 2
 const SWORD_PART: u32 = 3
-
-/// The head as a creature of one bone (at the feet, in the body's space: +z ahead): a hood round
-/// it, and the mask on its front.
-pub fn head() -> Creature<Paint> {
-    var s = Skeleton::new()
-    let root = s.root("body", vec3(0.0))
-    creature(s)
-        .join("hood", root, sphere(HEAD_RADIUS + 0.02).translate(HEAD).with(HOOD))
-        .join(
-            "mask",
-            root,
-            ellipsoid(vec3(0.1, 0.13, 0.06)).translate(HEAD + vec3(0.0, -0.01, 0.115)).with(MASK),
-            seam: hard(),
-        )
-        .bounded(Box3 { lo: vec3(-0.2, 1.45, -0.2), hi: vec3(0.2, 1.88, 0.25) })
-}
-
-/// The sword as a creature of one bone (at the grip's middle, +y to the point, +x the way its
-/// edge leads): the blade, its point cut by two planes, the guard, the grip and the pommel.
-pub fn sword() -> Creature<Paint> {
-    var s = Skeleton::new()
-    let root = s.root("grip", vec3(0.0))
-    let w = BLADE_WIDTH * 0.5
-    let blade = cuboid(vec3(w, (POINT_AT - GUARD_AT) * 0.5, BLADE_THICK * 0.5))
-        .translate(vec3(0.0, (GUARD_AT + POINT_AT) * 0.5, 0.0))
-        .intersect(half_space(vec3(0.25, w, 0.0), w * POINT_AT))
-        .intersect(half_space(vec3(-0.25, w, 0.0), w * POINT_AT))
-    creature(s)
-        .join("blade", root, blade.with(STEEL))
-        .join(
-            "guard",
-            root,
-            cuboid(vec3(0.16, 0.03, 0.045)).translate(vec3(0.0, GUARD_AT, 0.0)).with(HILT),
-            seam: hard(),
-        )
-        .join(
-            "grip",
-            root,
-            round_cone(
-                vec3(0.0, -0.22, 0.0),
-                vec3(0.0, GUARD_AT, 0.0),
-                r_top: 0.028,
-                r_bottom: 0.03,
-            )
-                .with(HILT),
-            seam: hard(),
-        )
-        .join(
-            "pommel",
-            root,
-            sphere(0.045).translate(vec3(0.0, -0.25, 0.0)).with(HILT),
-            seam: hard(),
-        )
-        .bounded(Box3 { lo: vec3(-0.2, -0.32, -0.08), hi: vec3(0.2, 1.9, 0.08) })
-}
 
 /// A creature of one bone realized: its mesh and colours (cells for a 3 mm tolerance).
 fn realized<K: Creature<Paint>>(c: K) -> Realized {
