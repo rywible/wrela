@@ -17,7 +17,7 @@ pub fn great_tree() -> Plant {
         grain: vec3(0.65, 0.35, 0.0),
         relief: 1.5,
     }
-    var p = plant(leaves: Leaves { size: 0.85, cover: 1.9 }, bark: bark)
+    var p = plant(leaves: Leaves { size: 0.5, cover: 1.9 }, bark: bark)
     let base = vec3(0.0, -0.3, 0.0)
     let fork = base + vec3(0.215, 4.2, -0.1)
     // The trunk, one tube: from below the ground (its rounded end out of sight), flared at its

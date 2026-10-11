@@ -1,13 +1,13 @@
 // The fawn in the floor (#54 §9's characters in the wood: the fawn and the stand-in in three
-// shots, so the cel treatment is judged against the wood's dark and dappled light): M5's fawn
-// (examples/fawn), realized over frames as the clearing realizes it, once a shot that casts it
-// is held, and drawn standing at rest where the shot puts it.
+// shots, so the cel treatment is judged against the wood's dark and dappled light): M5's fawn as
+// a young deer (`fawn::creature::wood_fawn`), realized over frames as the clearing realizes it,
+// once a shot that casts it is held, and drawn standing at rest where the shot puts it.
 
 use engine::creature::{Creature, MAX_BONES}
 use engine::look::{CreatureLook, Mesh}
 use engine::render::{Look, bone_matrix}
 use engine::standin::placed
-use fawn::creature::{Coat, fawn, skeleton}
+use fawn::creature::{Coat, skeleton, wood_fawn}
 use std::quat::Quat
 use std::transform::scale
 
@@ -16,7 +16,7 @@ pub type Grown = Creature<Coat>
 
 /// The fawn, built.
 pub fn grown() -> Grown {
-    fawn()
+    wood_fawn()
 }
 
 /// How it's realized: 1 cm cells, as the clearing's.
@@ -36,7 +36,10 @@ impl Look<Coat> for FawnLook {
         let throat = smoothstep(1.2, 1.5, rest.z) *
             smoothstep(1.0, 1.15, rest.y) *
             smoothstep(1.62, 1.5, rest.y)
-        let under = max(belly * smoothstep(0.24, 0.14, abs(rest.x)), throat) * 0.6
+        let barrel = smoothstep(0.24, 0.14, abs(rest.x)) *
+            smoothstep(0.05, 0.2, rest.z) *
+            smoothstep(0.82, 0.68, rest.z)
+        let under = max(belly * barrel, throat) * 0.6
         (mix(coat, vec3(0.62, 0.48, 0.34), vec3(under)), 0.7)
     }
 }

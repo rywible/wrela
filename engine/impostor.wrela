@@ -40,6 +40,12 @@ pub fn which_crown(at: vec3) -> u32 {
     u32(hash2(i32(at.x * 7.0), i32(at.z * 7.0)) * 60.0)
 }
 
+/// How much of its own tilt (`plant::leaf_draws`) a leaf takes off its crown's normal, the same
+/// for its cards, its impostor and its volume: at all of it, each leaf lit apart from its
+/// neighbours read as confetti, and a crown's masses didn't turn from light to shade as forms
+/// (M6's lookdev pass 1).
+pub const TILT: f32 = 0.5
+
 /// A leaf's roughness, where a leaf covers several pixels: a little waxy.
 pub const LEAF_ROUGH: f32 = 0.6
 
@@ -68,7 +74,9 @@ pub fn leaf_light(
     through: vec3,
     leaf: f32,
 ) -> vec3 {
-    let ao = exp(-depth / 1.6)
+    // Over 2.4 m: a crown's masses are deeper than its old clumps, and over 1.6 m their lit
+    // tops went murk (M6's lookdev, crowns round 2: the mere's woods).
+    let ao = exp(-depth / 2.4)
     let v = normalize(lt.cam.eye - at)
     let facing = if dot(n, v) < 0.0 { -n } else { n }
     let (sun, sky, reflected) = sun_sky_and_gloss(lt, at, n, sky_n, facing, soft: 1.5)
@@ -249,7 +257,7 @@ fn baked_leaf(f: BakeVertex, b: Bake, atlas: Texture<Rgba8>, s: Sampler) -> (vec
     }
     let crown_n = normalize(f.normal)
     let (tilt, aged) = leaf_draws(seed, which)
-    (leaf_normal(crown_n, tilt), tinted(leaf_age(b.leaves, crown_n.y, aged), f.tint))
+    (leaf_normal(crown_n, tilt * TILT), tinted(leaf_age(b.leaves, crown_n.y, aged), f.tint))
 }
 
 /// The impostor's colour: each view's leaves' (and limbs') albedo (its square root), and the
@@ -986,7 +994,7 @@ pub fn volume_shade(
     let out = leaf_light(
         lt,
         volume_place(f, b, met.at),
-        leaf_normal(crown_n, tilt),
+        leaf_normal(crown_n, tilt * TILT),
         sky_n: crown_n,
         depth: met.depth * f.yaw_scale.value.y,
         albedo: tinted(leaf_age(b.leaves, crown_n.y, aged), f.tint),
