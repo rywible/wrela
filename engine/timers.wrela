@@ -34,7 +34,7 @@ impl<A: Clone> Timers<A> {
             at -= 1
         }
         let seq = self.next
-        self.pending.insert(at, Timer { due, seq, action: take action })
+        self.pending.insert(at, Timer { due, seq, action })
         self.next += 1
         seq
     }

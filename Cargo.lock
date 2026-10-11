@@ -2070,6 +2070,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2",
  "wasmtime",
  "wrela-abi",
  "wrela-diag",
@@ -2158,7 +2159,6 @@ dependencies = [
  "wrela-sema",
  "wrela-syntax",
  "wrela-wasm",
- "wrela-wfont",
 ]
 
 [[package]]
@@ -2171,13 +2171,6 @@ dependencies = [
  "wrela-abi",
  "wrela-diag",
  "wrela-ir",
-]
-
-[[package]]
-name = "wrela-wfont"
-version = "0.1.0"
-dependencies = [
- "ttf-parser",
 ]
 
 [[package]]

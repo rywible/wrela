@@ -1,0 +1,8 @@
+# The lens's program (`wrela studio`): the lens on a subject. `wrela studio <package>` builds a
+# copy of it whose `subject.wrela` is the package's; this one's is a sphere, so it checks and
+# runs alone.
+[package]
+name = "glue"
+
+[dependencies]
+studio = { path = ".." }

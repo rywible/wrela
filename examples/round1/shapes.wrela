@@ -4,7 +4,7 @@
 // has the same function (`round_cone`, `smin`, `smax`), the port uses std's, which is the same
 // up to rounding. Each shape states a Lipschitz bound, derived in its comment.
 
-use std::field::{Lipschitz, RoundCone, Surface, round_cone}
+use std::field::{Surface, RoundCone, round_cone}
 
 /// WGSL's `smoothstep(from, to, x)`, as its formula, for either order of the edges: round 1's
 /// authors wrote some with `from > to`, a falling step, which WGSL leaves to the platform.
@@ -154,9 +154,7 @@ impl Surface for Ell {
         let k1 = max(length(p / (self.r * self.r)), 1.0e-9)
         k0 * (k0 - 1.0) / k1
     }
-}
 
-impl Lipschitz for Ell {
     /// Inside, k0's gradient is at most 1 / min(r), so the distance's is at most 1. Outside,
     /// with k1 = |p / r²|: ∇k0 = (p / r²) / k0 is k1 / k0 long, |∇k1| ≤ 1 / min(r)², and
     /// k0 / max(r) ≤ k1 ≤ k0 / min(r); so the gradient of k0 (k0 − 1) / k1 is at most
@@ -191,9 +189,7 @@ impl Surface for FlatCone {
     fn distance(self, p: vec3) -> f32 {
         self.cone.distance(vec3(p.x * self.sx, p.y, p.z)) / self.sx
     }
-}
 
-impl Lipschitz for FlatCone {
     /// The cone's gradient is a unit vector; the squash scales its x by `sx`, and the result
     /// is divided by `sx`: at most max(sx, 1) / sx.
     fn lipschitz(self, near: f32) -> f32 {
@@ -219,9 +215,7 @@ impl Surface for FurredEll {
         let fur = fbm3((p + self.origin) * self.freq + self.offset, self.octaves)
         ell(self.r).distance(p - self.centre) - self.amp * fur
     }
-}
 
-impl Lipschitz for FurredEll {
     /// The ellipsoid's, within `near` plus the fur's reach, and the fur's: `amp` times fbm3's
     /// bound times the largest frequency.
     fn lipschitz(self, near: f32) -> f32 {

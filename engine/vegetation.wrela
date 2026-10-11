@@ -9,17 +9,18 @@
 // no `discard` (which would turn off the GPU's early depth test).
 
 use impostor::{
-    Cooked, Impostor, bake, cook, far_cut, far_quad, far_shade, leaf_light, volume_cut,
+    Cooked, Impostor, TILT, bake, cook, far_cut, far_quad, far_shade, leaf_light, volume_cut,
     volume_shade, which_crown,
 }
 use light::Lit
 use lit::{Lighting, shown, sun_and_sky}
 use noise::{cell_size, hashed_threshold_of}
-use lod::{IMPOSTOR, Lod, VOLUME, anchor, keeps_packed, packed, place, share, ways}
+use lod::{IMPOSTOR, Lod, VOLUME, anchor, by_card, keeps_packed, packed, place, share, ways}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_POINTS, LIMB_VERTICES, Leaves, OUTLINE,
     Plant, Wind, CORNERS, card_orders, card_tint, card_turn, cook_cards, cook_outlines, corner_of,
-    leaf_age, leaf_at, leaf_draws, leaf_normal, level_cards, limb_corner, limb_point, sway, tinted,
+    leaf_age, leaf_at, leaf_draws, leaf_normal, level_cards, limb_corner, limb_point, NO_INSTANCE,
+    sway, tinted,
 }
 use shadow::{CASTER, Shadows}
 use std::field::Tube
@@ -49,10 +50,13 @@ pub struct Kind {
 
 /// Cooks `plant` as a kind: its cards (by `seed`), and its limbs.
 pub fn kind(plant: Plant, seed: u32, atlas: Texture<Rgba8>, s: Sampler) -> Kind {
+    // A plant with no leaves (a snag, a log) has no cards: its limbs alone are drawn.
     let n = plant.cards()
-    var cards: GpuBuffer<Card> = buffer(n)
-    dispatch(cook_cards.bind(plant, n, seed, out: mut cards), over: n)
-    let orders = buffer_of(card_orders(plant, n, seed))
+    var cards: GpuBuffer<Card> = buffer(max(n, 1))
+    if n > 0 {
+        dispatch(cook_cards.bind(plant, n, seed, out: mut cards), over: n)
+    }
+    let orders = buffer_of(card_orders(plant, n, seed), at_least: 1)
     let limb_count = plant.limbs.len()
     var list: Vec<Tube<4>> = Vec::new()
     for i in 0..limb_count {
@@ -63,15 +67,15 @@ pub fn kind(plant: Plant, seed: u32, atlas: Texture<Rgba8>, s: Sampler) -> Kind 
     let volume = cook(impostor.bake, cards, n, atlas, s)
     Kind {
         plant,
-        cards: take cards,
+        cards,
         card_count: n,
-        orders: take orders,
-        limbs: take limbs,
+        orders,
+        limbs,
         limb_count,
         top: plant.top(),
         reach: plant.reach(),
-        impostor: take impostor,
-        volume: take volume,
+        impostor,
+        volume,
     }
 }
 
@@ -82,7 +86,7 @@ pub struct Placed: Copy {
 }
 
 /// The ways an instance is drawn: its cards' levels, an impostor, a volume (`lod`).
-const WAYS: u32 = VOLUME + 1
+pub const WAYS: u32 = VOLUME + 1
 
 /// A list of instances drawn one way: a kind, how (a card level, `IMPOSTOR` or `VOLUME`), and where its
 /// instances start in the frame's buffer and how many.
@@ -106,9 +110,12 @@ pub struct Forest {
     pub lists: Vec<List>,
     every: GpuBuffer<Instance>,
     pub every_lists: Vec<List>,
-    /// The leaf patterns cards read, cooked once, and each one's outline (`cook_outlines`).
+    /// The leaf patterns cards read, cooked once, and each one's outline (`cook_outlines`); bark's
+    /// ridges, cooked once (`plant::cook_ridges`), and the sampler that repeats them.
     pub atlas: Texture<Rgba8>,
     outlines: GpuBuffer<vec2>,
+    ridges: Texture<Rgba8>,
+    repeat: Sampler,
     /// The cards' and the limbs' triangles (`card_indices`, `limb_indices`), and each list's
     /// draws of them (`ListDraws`: `lists`'s, then `every_lists`'s).
     card_triangles: GpuBuffer<u32>,
@@ -149,16 +156,16 @@ fn every_of(kinds: u32, placed: [Placed]) -> (GpuBuffer<Instance>, Vec<List>) {
             lists.push(List { kind: k, how: 1, first, count: n })
         }
         while every.len() % ALIGN != 0 {
-            every.push(Instance { at: vec3(0.0), yaw: 0.0, tint: vec3(0.0), scale: 0.0 })
+            every.push(NO_INSTANCE)
         }
     }
     (buffer_of(every, at_least: 1), lists)
 }
 
 /// A list's indexed draws (`Forest::args`): its cards' and its limbs'.
-struct ListDraws: Copy + GpuData {
-    cards: DrawIndexedArgs,
-    limbs: DrawIndexedArgs,
+pub struct ListDraws: Copy + GpuData {
+    pub cards: DrawIndexedArgs,
+    pub limbs: DrawIndexedArgs,
 }
 
 /// Each list's draws (at `level`, or each list's own way if `ALL`): its cards' and its limbs',
@@ -215,19 +222,21 @@ impl Forest {
         write(mut every_args, 0, args_of(kinds, every_lists, 1))
         let room_args = kinds.len() * WAYS
         Forest {
-            kinds: take kinds,
-            placed: take placed,
+            kinds,
+            placed,
             instances: buffer(room),
             marks: buffer(room),
             lists: Vec::new(),
-            every: take every,
+            every,
             every_lists,
-            atlas: take atlas,
-            outlines: take outlines,
-            card_triangles: take card_triangles,
-            limb_triangles: take limb_triangles,
+            atlas,
+            outlines,
+            ridges: plant::cook_ridges(),
+            repeat: std::gpu::sampler(address: std::gpu::Address::Repeat),
+            card_triangles,
+            limb_triangles,
             args: buffer(room_args),
-            every_args: take every_args,
+            every_args,
             cards_to,
             impostors_to,
             card_px: lod::CARD_PX,
@@ -287,7 +296,7 @@ impl Forest {
         }
         var out = Vec::filled(
             max(first, 1),
-            Instance { at: vec3(0.0), yaw: 0.0, tint: vec3(0.0), scale: 0.0 },
+            NO_INSTANCE,
         )
         var marks = Vec::filled(max(first, 1), vec2u(0))
         var fill = Vec::filled(kinds * ways, 0)
@@ -362,13 +371,13 @@ impl Kind {
 }
 
 /// A way that isn't drawn.
-const HIDDEN: u32 = 99
+pub const HIDDEN: u32 = 99
 
 /// The ways instance `at` of kind `k` is drawn from `cam` (the lower and the upper of the two it's
 /// between, or one twice): none (`HIDDEN`) when it's out of view (the view's cone, `corner` its
 /// corner's angle) or faded out. And where it is between its levels, its level and how far it
 /// has faded (`lod::place`), when it's in view.
-fn ways_for(k: Kind, at: Instance, cam: Camera, l: Lod, corner: f32) -> (vec2u, vec2) {
+pub fn ways_for(k: Kind, at: Instance, cam: Camera, l: Lod, corner: f32) -> (vec2u, vec2) {
     let centre = at.at + vec3(0.0, k.top * 0.5 * at.scale, 0.0)
     let r = k.reach * at.scale
     let v = centre - cam.eye
@@ -403,6 +412,27 @@ pub struct CardDraw: Copy + GpuData {
     pub grow: f32,
     /// How wide a cut's hashed cell is, in the scene's pixels (`Lod::cell`).
     pub cell: f32,
+    /// What a third person's camera keeps clear of leaves: the point it looks at (the player)
+    /// and, in `w`, how far round the line from the eye to it a card fades (0: none). M6 §5: the
+    /// camera never shows the inside of foliage.
+    pub clear: vec4 = vec4(0.0),
+}
+
+/// How much of a card centred at `c`, reaching `half` from it, fades for an eye at `eye` keeping
+/// `clear` clear (0 to 1): those whose centres are near the line from the eye to the point it
+/// looks at, and those that reach within a metre or two of the eye itself (a wide card's centre
+/// can be off the line while its edge meets the near plane; a crown beside the eye filled half
+/// the view).
+pub fn faded(c: vec3, half: f32, eye: vec3, clear: vec4) -> f32 {
+    if clear.w <= 0.0 {
+        return 0.0
+    }
+    let ab = clear.xyz - eye
+    let t = clamp(dot(c - eye, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
+    let d = length(c - (eye + ab * t))
+    let reach = length(c - eye) - half
+    // Over a short way (a card part faded for long reads as a curtain of dots: the reviews).
+    max(1.0 - smoothstep(clear.w, clear.w * 1.25, d), 1.0 - smoothstep(1.0, 1.4, reach))
 }
 
 /// A draw of every instance whole, whatever its level (the static shadows').
@@ -427,7 +457,7 @@ pub const CARD_INDICES: u32 = 6
 const TRIANGLES: [u32; 6] = [0, 1, 2, 0, 2, 3]
 
 /// `n` cards' triangles: each card's corners.
-fn card_indices(n: u32) -> Vec<u32> {
+pub fn card_indices(n: u32) -> Vec<u32> {
     var out: Vec<u32> = Vec::new()
     for c in 0..n {
         for k in TRIANGLES {
@@ -492,14 +522,38 @@ pub fn card(
     // along the eye's ray than the level before's: each corner stays on its pixel, and the
     // depth is one level's (some hundred steps of a float apart, in reversed depth).
     let apart = cam.eye + (world - cam.eye) * (1.0 + 1.0e-5 * f32(min(d.way, CARD_LEVELS)))
+    // A card in the camera's way fades: its share of the pixels' draws shrinks (the same dither
+    // the levels hand over by, which temporal AA settles).
+    let inst = instances[i.index]
+    let fade = faded(
+        inst.place(card.centre),
+        card.size * d.grow * inst.scale * 0.75,
+        cam.eye,
+        d.clear,
+    )
+    let faded_keep = if fade > 0.0 { fade_packed(mark.x, fade) } else { mark.x }
+    // Each card whole or gone, by its own draw, in a settled still (`lod::by_card`).
+    let mixed = (seed_of(card, mark.y & 255) ^ (card.seed >> 15)) * 2246822519
+    let keep = by_card(faded_keep, f32(mixed >> 22) / 1024.0)
     LeafVertex {
         clip: ClipPosition { position: cam.clip(apart) },
         uv,
         seed: Flat { value: seed_of(card, mark.y & 255) },
-        keep: Flat { value: mark.x },
+        keep: Flat { value: keep },
         card: Flat { value: c },
         instance: Flat { value: i.index | ((mark.y & 255) << 24) },
     }
+}
+
+/// A share packed by `lod::packed` with `fade` of it taken away (its end moved toward its
+/// start): all of it at 1.
+fn fade_packed(k: u32, fade: f32) -> u32 {
+    let start = f32(k & 16383) / 16383.0
+    let end = f32((k >> 14) & 16383) / 16383.0
+    let e = mix(end, start, fade)
+    let s = u32(round(saturate(start) * 16383.0))
+    let q = u32(round(saturate(e) * 16383.0))
+    (k & 4026531840) | s | (q << 14)
 }
 
 /// A card's seed for its cut: its pattern (the card's seed's low bits, `plant::leaf_uv`), the
@@ -573,10 +627,8 @@ fn leaf_cover(m: f32) -> f32 {
 
 /// A leaf's pixel, where the prepass left its depth: its leaf's own tilt off the crown's normal,
 /// lit by the sun through its shadows and the crown's depth, the sky light (the probes, darkened
-/// inside the crown) and the light through it; through the haze. No gloss (`light::gloss`): a
-/// crown's level of detail changes it (each leaf's own normal on cards, its texels' normals
-/// blended on an impostor, the crown's on a volume), and the levels differed where they meet by
-/// up to 5.7/255 with it (bound 4); an impostor would need the crown's normal too.
+/// inside the crown) and the light through it, and its gloss (`impostor::leaf_light`, as its
+/// impostor and volume have them); through the haze.
 @fragment
 pub fn leaf_shade(
     l: LeafVertex,
@@ -596,11 +648,12 @@ pub fn leaf_shade(
     let c = leaf_light(
         lt,
         world,
-        leaf_normal(crown_n, tilt),
+        leaf_normal(crown_n, tilt * TILT),
         sky_n: crown_n,
         depth: card.depth * inst.scale,
-        albedo: tinted(leaf_age(leaves, crown_n.y, aged), inst.tint + card_tint(card)),
+        albedo: tinted(leaf_age(leaves, crown_n.y, aged), inst.tint_rgb() + card_tint(card)),
         through: leaves.through,
+        leaf: leaves.leaf_width() * inst.scale,
     )
     vec4(c, view::LEAVES + f32(l.instance.value >> 24))
 }
@@ -612,12 +665,14 @@ pub struct BarkVertex: Copy {
     pub world: vec3,
     pub normal: vec3,
     pub along: vec2,
+    /// How mossy it is: on its upper side, in patches (worked out at its corners).
+    pub moss: f32,
     /// The part of a pixel's draws its instance keeps this way, packed (`Forest::marks`).
     pub keep: Flat<u32>,
 }
 
 /// `n` limbs' triangles: each limb's points (`limb_corner`).
-fn limb_indices(n: u32) -> Vec<u32> {
+pub fn limb_indices(n: u32) -> Vec<u32> {
     var out: Vec<u32> = Vec::new()
     for l in 0..n {
         for k in 0..LIMB_VERTICES {
@@ -629,9 +684,9 @@ fn limb_indices(n: u32) -> Vec<u32> {
 
 /// Point `v % LIMB_POINTS` of limb `v / LIMB_POINTS`, of instance `i`, in the world.
 fn limb_world(v: u32, i: u32, limbs: [Tube<4>], instances: [Instance]) -> (vec3, vec3, vec2) {
-    let (p, n, along) = limb_point(limbs[v / LIMB_POINTS], v % LIMB_POINTS)
+    let (centre, n, radius, along) = limb_point(limbs[v / LIMB_POINTS], v % LIMB_POINTS)
     let inst = instances[i]
-    (inst.place(p), inst.turn(n), along)
+    (inst.place_round(centre, n * radius), inst.turn_normal(n, centre.y), along)
 }
 
 @vertex
@@ -649,6 +704,7 @@ pub fn limb(
         world,
         normal: n,
         along,
+        moss: mossy(n, along.y, noise::noise2((world.xz + cam.keyed().xz) * 3.0 + world.y * 0.7)),
         keep: Flat { value: marks[i.index].x },
     }
 }
@@ -665,18 +721,42 @@ pub fn limb_shadow(
     ClipPosition { position: view * vec4(world, 1.0) }
 }
 
+/// How mossy bark is (0 to 1), its normal `n`, `along` metres up its limb, `patch` its noise
+/// there: near its foot (a trunk's base, a limb's fork), on faces turned up or to the north (-z,
+/// where the sun doesn't reach), in patches. (All over a trunk's sides, it turned the wood's
+/// trunks green.)
+fn mossy(n: vec3, along: f32, patch: f32) -> f32 {
+    let foot = 1.0 - smoothstep(0.3, 2.2, along)
+    let place = max(
+        foot * 0.8,
+        max(smoothstep(0.45, 0.85, n.y) * 0.6, smoothstep(0.3, 0.9, -n.z) * 0.3),
+    )
+    place * smoothstep(0.3, 0.6, patch)
+}
+
+/// A limb's pixel: its bark, its ridges read from their cooked tile (`plant::cook_ridges`,
+/// through a repeating sampler `rs`) and its moss from its corners: no field is evaluated here.
 @fragment
-pub fn bark_shade(b: BarkVertex, pixel: FragCoord, lt: Lighting, bark: Bark) -> vec4 {
+pub fn bark_shade(
+    b: BarkVertex,
+    pixel: FragCoord,
+    lt: Lighting,
+    bark: Bark,
+    ridges: Texture<Rgba8>,
+    rs: Sampler,
+) -> vec4 {
     if !keeps_packed(b.keep.value, pixel.position.xy) {
         discard()
     }
-    let n = normalize(b.normal)
-    // Bark's ridges run along the limb.
-    let ridges = noise::noise2(vec2(b.along.x * 22.0, b.along.y * 1.6))
-    let albedo = mix(bark.dark, bark.light, vec3(ridges))
-    let moss = smoothstep(0.2, 0.7, n.y + 0.4 * noise::noise2(b.world.xz * 3.0)) * 0.6
-    let a = mix(albedo, bark.moss, vec3(moss))
-    // No gloss, as the leaves have none (`leaf_shade`): an impostor bakes the limbs with them.
+    // Bark's ridges run along the limb, and turn its surface: a furrow's sides face round the
+    // limb, so the light falls across them (smooth, the trunks read as plastic).
+    let t = ridges.sample_level(rs, vec2(b.along.x, b.along.y / plant::RIDGES_ALONG))
+    let smooth_n = normalize(b.normal)
+    let round = normalize(cross(vec3(0.0, 1.0, 0.0), smooth_n) + vec3(1.0e-4, 0.0, 0.0))
+    let n = normalize(smooth_n + round * bark.raised(t))
+    let albedo = mix(bark.dark, bark.light, vec3(bark.tone(t)))
+    let a = mix(albedo, bark.moss, vec3(b.moss))
+    // No gloss: bark is rough, and its impostor lights it as its leaves (`leaf_light`).
     let (sun, sky) = sun_and_sky(lt, b.world, n, sky_n: n, soft: 1.5)
     let lit = Lit { albedo: a, n, sun, sky, through: vec3(0.0) }
     let c = shown(lt, lit, b.world)
@@ -713,9 +793,12 @@ pub fn card_draw(
 /// `lod::place`), anchored where its pattern is (`lod::anchor`), packed (`lod::packed`); and
 /// which crown it is (the low 8 bits) and which corner it's seen from (the next 8,
 /// `plant::corner_of`).
-fn mark_of(l: Lod, cam: Camera, inst: Instance, way: u32, at: vec2) -> vec2u {
+pub fn mark_of(l: Lod, cam: Camera, inst: Instance, way: u32, at: vec2) -> vec2u {
     let keep = vec4(share(at.x, at.y, way), anchor(cam, inst.at, l.top, inst.scale))
-    vec2u(packed(keep), which_crown(inst.at) | (corner_of(inst, l.top * 0.5, cam.eye) << 8))
+    vec2u(
+        packed(keep),
+        which_crown(inst.at + cam.keyed()) | (corner_of(inst, l.top * 0.5, cam.eye) << 8),
+    )
 }
 
 impl Forest {
@@ -843,7 +926,7 @@ impl Forest {
                             instances: self.instances(l),
                             marks: self.marks(l),
                         ),
-                        bark_shade.bind(lt, k.plant.bark),
+                        bark_shade.bind(lt, k.plant.bark, ridges: self.ridges, rs: self.repeat),
                         indices: self.limb_triangles,
                         indirect: self.args.at(li).limbs,
                         cull: std::gpu::Cull::Back,

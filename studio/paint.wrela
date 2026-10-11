@@ -3,7 +3,7 @@
 // channels' first `r`, `g`, `b` floats, when they hold a colour, else in `Clay`. Either is the
 // subject in every other way: its distance, its parts and its bound are the subject's.
 
-use std::field::{Lipschitz, PartName, Surface}
+use std::field::{Surface, PartName}
 
 /// A surface with a colour at each point.
 pub trait Colours: Surface {
@@ -43,9 +43,7 @@ impl<F: Surface> Surface for Clay<F> {
     fn part_name(self, i: u32) -> PartName {
         self.field.part_name(i)
     }
-}
 
-impl<F: Lipschitz> Lipschitz for Clay<F> {
     fn lipschitz(self, near: f32) -> f32 {
         self.field.lipschitz(near)
     }

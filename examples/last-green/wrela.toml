@@ -1,0 +1,11 @@
+# The Last Green's floor (#54, #55): about 3 km² of the flagship's first floor round the
+# clearing, composed as a map (map.wrela), grown by a history baked when the game is built
+# (bake.wrela), streamed round the player, with water, a stand-in player and its camera, and the
+# look M5 picked. The game's package until the flagship has a home of its own.
+[package]
+name = "last_green"
+
+[dependencies]
+engine = { path = "../../engine" }
+fawn = { path = "../fawn" }
+great_tree = { path = "../great-tree" }

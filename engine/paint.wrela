@@ -20,7 +20,7 @@ use std::gpu::{
     DepthTexture, FragCoord, GlobalId, LocalId, One, Rgba16Float, Sampler, Shared, Texture, barrier,
 }
 use terrain::{Levels, Texel, ground_at}
-use view::{CREATURE, Camera, FLOWER, GRASS, GROUND, LEAVES, class_of}
+use view::{BARK, CREATURE, Camera, FLOWER, GRASS, GROUND, LEAVES, ROCK, WATER, class_of}
 
 /// The look's settings: how strong the dabs are on near surfaces, on broad far ones and on the
 /// sky; the paper's tooth; the bloom; the characters' lines (their width in output pixels, and
@@ -33,7 +33,7 @@ pub struct Look: Copy + GpuData {
     pub tooth: f32 = 0.06,
     pub bloom: f32 = 0.18,
     pub line_px: f32 = 1.6,
-    pub line_dark: f32 = 0.45,
+    pub line_dark: f32 = 0.65,
     pub sharpen: f32 = 0.2,
     pub vignette: f32 = 0.28,
 }
@@ -67,11 +67,43 @@ fn strokes(q: vec2) -> f32 {
     value * smoothstep(0.0, 0.4, best)
 }
 
+/// Where the world planes' dabs start (a constant, as the coarser size's own offset is). Where
+/// the ground's dabs fall behind a far crown's edge moves #51's levels test (kind 11 at 1000 m:
+/// 3.6 to 4.2/255 against its 4.0 as this moves; that crown's levels are close to the limit).
+const PHASE = vec2(3.0, 1.0)
+
 /// Brush dabs on a surface at `world` whose normal is `n`, about `px` pixels long wherever
 /// they're seen (a pixel `footprint` metres wide there): in [-1, 1]. Two sizes of cells, a
 /// power of two apart, blended by distance (Bénard et al. 2009), so the dabs keep their size on
-/// screen and stay on the surface.
+/// screen and stay on the surface. They lie on the world's planes across the normal's strongest
+/// axes (the ground's on its plane, a wall's on its own), blended where two are near alike, so
+/// they don't follow the surface's curvature: anchored to a frame turned with the normal, a
+/// small turn moved them by metres where the world's coordinates are hundreds (the far hills'
+/// and the crag's contour-like marbling, playing spike 17 and M6).
 pub fn dabs(world: vec3, n: vec3, footprint: f32, px: f32) -> f32 {
+    let s = max(footprint * px, 1.0e-4)
+    let l = log2(s)
+    let f = fract(l)
+    let s0 = exp2(floor(l))
+    let a = abs(n)
+    let w8 = a * a * a * a * a * a * a * a
+    let w = w8 / max(w8.x + w8.y + w8.z, 1.0e-6)
+    var v = 0.0
+    for axis in 0..3 {
+        if w[axis] > 0.02 {
+            let q = if axis == 0 { world.zy } else if axis == 1 { world.xz } else { world.xy }
+            v += w[axis] *
+                mix(strokes(q / s0 + PHASE), strokes(q / (2.0 * s0) + vec2(20.0, 6.0)), f)
+        }
+    }
+    v
+}
+
+/// Brush dabs on a plane across `n` (a crown's: its dabs lie across the line of sight), anchored
+/// to a frame turned with it: a crown's levels of detail lie at different depths along the same
+/// line, and the world planes' blend (`dabs`) moved the dabs between them (#51's levels test:
+/// 4.4/255 at 1000 m); across the line of sight, they stay.
+pub fn dabs_across(world: vec3, n: vec3, footprint: f32, px: f32) -> f32 {
     let s = max(footprint * px, 1.0e-4)
     let l = log2(s)
     let f = fract(l)
@@ -79,6 +111,21 @@ pub fn dabs(world: vec3, n: vec3, footprint: f32, px: f32) -> f32 {
     let t1 = normalize(cross(n, vec3(0.3, 0.2, 1.0)))
     let t2 = cross(n, t1)
     let q = vec2(dot(world, t1), dot(world, t2) + dot(world, n) * 0.5)
+    mix(strokes(q / s0), strokes(q / (2.0 * s0) + vec2(17.0, 5.0)), f)
+}
+
+/// Brush dabs anchored to directions (the sky's: `dir` a unit vector, a pixel's angle its
+/// `footprint`), on the plane across the direction: a direction's frame turns with it, but its
+/// coordinates are under 1, so a turn moves them little.
+pub fn sky_dabs(dir: vec3, footprint: f32, px: f32) -> f32 {
+    let s = max(footprint * px, 1.0e-4)
+    let l = log2(s)
+    let f = fract(l)
+    let s0 = exp2(floor(l))
+    let n = -dir
+    let t1 = normalize(cross(n, vec3(0.3, 0.2, 1.0)))
+    let t2 = cross(n, t1)
+    let q = vec2(dot(dir, t1), dot(dir, t2) + dot(dir, n) * 0.5)
     mix(strokes(q / s0), strokes(q / (2.0 * s0) + vec2(17.0, 5.0)), f)
 }
 
@@ -143,8 +190,10 @@ pub fn glow_blur(pixel: FragCoord, src: Texture<Rgba16Float>, across: u32, sprea
 /// luminance (geometric, over a 32 × 32 grid of its pixels) is `reference`, and for another
 /// mean, `base` times (`reference` / mean) to the power `strength` (1 brings every scene to the
 /// same mean, 0 doesn't meter), within `lo` to `hi`; reached a fraction `rate` of the way each
-/// frame, or at once (`fresh` 1). A hazy sky toward a low sun is ten times the rest of it: a
-/// fixed exposure shows it white.
+/// frame, or at once (`fresh` 1); but never more than `flash` times it, so a scene that
+/// brightens at once (a turn from the wood's shade to a sunlit clearing) shows no more than that
+/// over its settled brightness, while one that darkens adapts at `rate` (#55 AC11: no flash). A
+/// hazy sky toward a low sun is ten times the rest of it: a fixed exposure shows it white.
 pub struct Metering: Copy + GpuData {
     pub base: f32,
     pub reference: f32,
@@ -152,6 +201,7 @@ pub struct Metering: Copy + GpuData {
     pub lo: f32,
     pub hi: f32,
     pub rate: f32,
+    pub flash: f32,
     pub fresh: u32,
 }
 
@@ -195,18 +245,42 @@ pub fn meter(
     let mean = exp2(sums.get(0) / 1024.0)
     let target = clamp(m.base * pow(m.reference / mean, m.strength), m.lo, m.hi)
     exposure.update(id, |old| {
-        let value = if m.fresh != 0 { target } else { mix(old.value, target, m.rate) }
+        let value = if m.fresh != 0 { target } else {
+            min(mix(old.value, target, m.rate), target * m.flash)
+        }
         Exposure { value, mean }
     })
 }
 
 /// What the look's pass reads besides its textures: the scene's camera (unjittered: the output
 /// is), the look, and the output's size. (The tone curve's exposure is the metered one:
-/// `meter`.)
+/// `meter`.) And `view`, a debug view of form, off by default: 1 clay (the scene's light on its
+/// grey forms, `light::Light`'s `clay`, with none of the look's marks), 2 silhouettes
+/// (`silhouette`).
 pub struct Develop: Copy + GpuData {
     pub cam: Camera,
     pub look: Look,
     pub out: vec2,
+    pub view: u32 = 0,
+}
+
+/// The silhouette view's value at an output pixel (display-referred) whose depth is `z` and tag
+/// `tag`: the sky white; the land (the ground, what grows low on it, water) light; solid forms
+/// (rock, what's built, trunks, crowns, characters) dark; each a step lighter for each band of
+/// distance, a factor of four apart from 4 m. So a form reads by its shape alone, against the
+/// sky, the land and the forms behind it.
+fn silhouette(d: Develop, z: f32, tag: f32) -> f32 {
+    if z <= 0.0 {
+        return 0.97
+    }
+    let dist = d.cam.distance_of(z)
+    let band = clamp(floor(log2(max(dist, 1.0) / 4.0) / 2.0) + 1.0, 0.0, 5.0)
+    let class = class_of(tag)
+    let land = class == class_of(GROUND) ||
+        class == class_of(GRASS) ||
+        class == class_of(FLOWER) ||
+        class == class_of(WATER)
+    if land { 0.52 + 0.06 * band } else { 0.03 + 0.08 * band }
 }
 
 /// The scene's depth nearest an output pixel's centre `px`.
@@ -286,7 +360,7 @@ pub fn dab_map(
         // The sky: dabs anchored to directions, a pixel's angle being its footprint at 1 m.
         let ray = still.ray(px)
         let footprint = 2.0 * cam.tan_half / cam.screen.y
-        let dab = dabs(ray, -ray, footprint, look.dab_px * 1.6 * per_out)
+        let dab = sky_dabs(ray, footprint, look.dab_px * 1.6 * per_out)
         return vec4(look.dabs_sky * dab, 0.0, 0.0, 1.0)
     }
     // The surface at the pixel's own (unjittered) point, not at the jittered sample the scene
@@ -344,6 +418,28 @@ pub fn dab_map(
     // Broad things take stronger dabs: the far ground, crowns; characters half.
     let broad = if class == class_of(LEAVES) { 1.0 } else { smoothstep(30.0, 250.0, dist) }
     var strength = mix(look.dabs_near, look.dabs_far, broad)
+    // The far ground's dabs softer than a crown's: on the world's planes they lie flat on a
+    // slope or a rock face, and at the crowns' strength read as dots (the crag, the plateau's
+    // lip, the fall's cliff: round 1's lookbook).
+    if class == class_of(GROUND) {
+        strength = mix(look.dabs_near, look.dabs_far * 0.6, broad)
+    }
+    // No dabs and no tooth on rock, stone and bark, near or far: the owner picked clean, solid
+    // form over a painted surface (carved light and one line), and on a rock face the dabs read
+    // as dark ovals. A steep slope of the ground is a rock face.
+    var grain = 1.0
+    if class == class_of(ROCK) || class == class_of(BARK) {
+        grain = 0.0
+    } else if class == class_of(GROUND) {
+        grain = smoothstep(0.55, 0.85, n.y)
+    }
+    strength *= grain
+    // No dabs on crowns: `dabs_across`'s plane takes the pixel's depth (`dot(world, n)`), and
+    // the leaf cards' depths differ pixel to pixel, so each pixel took another stroke along the
+    // plane's second axis: vertical streaks over the near canopy (08, 18).
+    if class == class_of(LEAVES) {
+        strength = 0.0
+    }
     if class == class_of(CREATURE) {
         strength *= 0.5
     }
@@ -351,15 +447,22 @@ pub fn dab_map(
     // spreads a pixel along it): so a dab is as wide on screen one way as the other, never a
     // streak thinner than a pixel.
     let facing = max(abs(dot(n, normalize(cam.eye - world))), 0.4)
-    let dab = dabs(world, n, footprint / facing, look.dab_px * per_out)
+    // Anchored to the world, not render space: they stay put when the render origin moves.
+    let keyed = world + cam.keyed()
+    let dab = if class == class_of(LEAVES) {
+        dabs_across(keyed, n, footprint / facing, look.dab_px * per_out)
+    } else {
+        dabs(keyed, n, footprint / facing, look.dab_px * per_out)
+    }
     // The tooth's grain, a few output pixels: no finer than two of the scene's pixels at half
     // the output's size, so the map holds it at either.
-    vec4(strength * dab, look.tooth * tooth(world, footprint * per_out * 2.0), 0.0, 1.0)
+    vec4(strength * dab, grain * look.tooth * tooth(keyed, footprint * per_out * 2.0), 0.0, 1.0)
 }
 
 /// The output pixel, painted: the dabs and the paper's tooth (from the dab map, between its
 /// texels), the bloom, the characters' lines, a little sharpening, the tone curve at the
-/// metered exposure (`meter`) and a vignette.
+/// metered exposure (`meter`) and a vignette. In the debug views (`Develop`'s `view`), the clay
+/// without the dabs, the tooth, the lines and the vignette; or the silhouettes alone.
 @fragment
 pub fn develop(
     pixel: FragCoord,
@@ -374,6 +477,10 @@ pub fn develop(
     let px = pixel.position.xy
     let p = vec2u(px)
     let here = image.load(x: p.x, y: p.y)
+    if d.view == 2 {
+        return vec4(vec3(silhouette(d, depth_at(d, depth, px), here.a)), 1.0)
+    }
+    let clay = d.view == 1
     let look = d.look
     // A little sharpening against temporal AA's softness: the pixel against its cross.
     let size = vec2u(d.out) - vec2u(1)
@@ -388,13 +495,16 @@ pub fn develop(
     // The dab map's texel for this point: its texels hold their unjittered centres' points
     // (`dab_map`), so the same place each frame.
     let q = px * (d.cam.screen / d.out)
-    let m = dabs.sample_level(s, q / d.cam.screen)
+    let m = if clay { vec4(0.0) } else { dabs.sample_level(s, q / d.cam.screen) }
     paint = paint * (1.0 + m.r) * vec3(1.0 + 0.25 * m.r, 1.0, 1.0 - 0.3 * m.r) * (1.0 + m.g)
     // Bloom.
     let gq = min(vec2u(px / 4.0), vec2u(glow.width() - 1, glow.height() - 1))
     paint += glow.load(x: gq.x, y: gq.y).rgb * look.bloom
     var c = tone(paint, exposure[0].value)
     // The characters' lines: a darker shade of their colour.
+    if clay {
+        return vec4(c, 1.0)
+    }
     let l = line(d, image, depth, px, here.a)
     if l > 0.0 {
         c = mix(c, c * look.line_dark, vec3(l))
