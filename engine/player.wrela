@@ -223,6 +223,12 @@ pub fn control(c: mut Controls, e: Event) {
     c.yaw = wrap(c.yaw)
 }
 
+/// Heading `from` turned toward `to` (radians) by `most` at most, the short way round: what a
+/// steered walker's heading is a tick on, so that it turns instead of snapping.
+pub fn turn_to(from: f32, to: f32, most: f32) -> f32 {
+    wrap(from + clamp(wrap(to - from), -most, most))
+}
+
 /// An angle in (-π, π].
 fn wrap(a: f32) -> f32 {
     var x = a
@@ -557,6 +563,22 @@ fn a_placed_player_stands_on_the_ground() {
     place_at(mut p, ground, none, Place::of(vec2(15.0, 6.0)), 7.0)
     assert(abs(p.y - 3.0) < 1.0e-5, f"stands at {p.y}")
     assert(abs(p.heading - wrap(7.0)) < 1.0e-5, f"faces {p.heading}")
+}
+
+/// A heading turns toward its target by the most it may, the short way round, and stops on it.
+@test
+fn a_heading_turns_the_short_way_and_stops_on_its_target() {
+    assert(
+        abs(turn_to(from: 0.0, to: 1.0, most: 0.25) - 0.25) < 1.0e-6,
+        "a far target is turned toward by the most",
+    )
+    assert(
+        abs(turn_to(from: 0.9, to: 1.0, most: 0.25) - 1.0) < 1.0e-6,
+        "a near target is reached, not passed",
+    )
+    // From just short of π to just past -π is a short turn across the back, not most of a circle.
+    let h = turn_to(from: 3.0, to: -3.0, most: 0.1)
+    assert(h > 3.0 && h <= PI, "the short way round across ±π")
 }
 
 /// A stone between the camera and the player pulls the arm in at once; when it's gone, the arm

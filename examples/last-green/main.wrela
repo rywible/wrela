@@ -5,10 +5,7 @@
 // person's camera; its trees from the bake's tiles, fetched as files the build shipped.
 
 use engine::air::{Air, Tables, hazy, tables}
-use engine::character::{
-    PartOf, character, character_motion, character_shade, character_shadow, motion,
-}
-use engine::realize::realizing
+use engine::character::{Cast, PartOf, cast}
 use engine::stone::{Realized, stone_shade, stone_vertex}
 use engine::bake::{Decisions, Far, decode_far, decode_tile, tile_name}
 use engine::grass::{Blooms, Grass, GrassLook}
@@ -23,7 +20,7 @@ use engine::player::{Arm, Focus, Framing, follow}
 use engine::present::Snapshots
 use engine::probes::{Baked, Trace, grid}
 use engine::run::run
-use engine::shadow::{CASTER, Cascade, Shadows, shadows}
+use engine::shadow::{Cascade, Shadows, shadows}
 use engine::shafts::{Shafts, add_shafts, march_shafts}
 use engine::sky::{Clouds, Sky, new_sky, sky_shade}
 use engine::temporal::{Resolve, neighbourhoods, resolve}
@@ -34,11 +31,13 @@ use engine::view::{BEHIND, Camera, NEAREST, camera, first_camera}
 use engine::water::{LOOKS, MistAt, WaterVert, copy_below, mist_over, water_shade, water_vertex}
 use climber::body::HEM_RADIUS
 use climber::cape::Plane
-use climber::draw::{Drawn, drawn}
+use climber::draw::{CastWolf, Drawn, cast_wolf, drawn, wolf_bones}
 use climber::figure::{Figure, figure}
-use climber::moves::REST
+use climber::moves::{Act, REST}
+use climber::sounds::{Heard, cues, heard}
 use history::{BAKED, OBSTACLES, tiles_hi, tiles_lo}
 use provenance::NearTile
+use streaming::{near_tile_radius, tile_distance, tile_radius}
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
     Address, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer, GpuSpan,
@@ -47,7 +46,6 @@ use std::gpu::{
     buffer_of, draw, label, sampler, texture, writable_texture, write,
 }
 use std::input::{Button, Event, Key, events}
-use std::job::{Job, Step}
 use std::io::{Pending, print}
 use world::{GROUND, World, present as snapshot, spawn_world, tick}
 
@@ -58,6 +56,9 @@ const RECENTRE_STEP: i32 = 6
 
 /// How near the player the sim's fawn is drawn (m): past it, it's a few pixels.
 const FAWN_DRAWN: f32 = 150.0
+
+/// How long the camera takes to turn fully to the fight's wolf, or back from it (s).
+const FOCUS_EASE: f32 = 0.6
 
 /// The ticks between the play harness's reports (2 s at 60 Hz).
 const REPORT_TICKS: u32 = 120
@@ -119,6 +120,12 @@ const JUMP: f32 = 30.0
 /// The frames an arrival stays black once the light round the new eye is drawn (`lit`), while
 /// temporal AA gathers its history under that light (a fresh history is soft for about 10).
 const GATHER: u32 = 12
+
+/// The frames a still's history gathers once the light round its eye is drawn, when the floor
+/// captures stills (`Floor::capture`): each of the dithers' 16 places once, each on its own cell
+/// of the jitter's grid (`view::jitter_of`). Two blind judges couldn't tell 16 from the 256 a
+/// settled view gathers in play (shots 00, 02, 08 at 1080p).
+const STILL_FRAMES: u32 = 16
 
 /// How far the player goes from the near cascade's middle before it's drawn again round it (m),
 /// in how many strips (a strip a frame: 6 cost 1.3-1.5 ms each, and one with a terrain cook
@@ -256,7 +263,7 @@ fn cook_tile(input: take TileInput) -> Cooked {
     Cooked {
         tile: t,
         placed: trees::placed(d.trees, height_at),
-        trees: d.trees.clone(),
+        trees: take d.trees,
         fields,
         far,
         far_coarse,
@@ -374,6 +381,10 @@ pub struct Floor {
     framing: Framing,
     /// The camera's arm as it was last frame (`engine::player::follow`).
     arm: Arm,
+    /// How much the camera turns to the fight's wolf (`encounter::focus`, eased), and where the
+    /// wolf is (world space).
+    focus: f32,
+    focus_at: vec3,
     /// The lookbook's shot the camera's held on (none: the player's), since when, and one being
     /// typed (`keys`).
     shot: Option<u32>,
@@ -399,16 +410,10 @@ pub struct Floor {
     built_far: Vec<Option<Realized>>,
     footprints: GpuBuffer<vec4>,
     /// The fawn (`fawns`): realized over frames once a shot that casts it is held or, in play,
-    /// once the sim's fawn (`behaviour`) is near (its job, and the creature it realizes), then
-    /// its mesh and colours; its palette this frame and the last, and whether it's drawn.
-    fawn_job: Option<Job<realizing<fawn::creature::Coat, fawns::Grown>>>,
-    fawn_grown: fawns::Grown,
-    fawn: Option<engine::character::Realized>,
-    fawn_palette: GpuBuffer<mat4>,
-    fawn_last: GpuBuffer<mat4>,
-    fawn_on: bool,
-    /// Whether the fawn's near enough the player to fall in the moving shadow map.
-    fawn_shadowed: bool,
+    /// once the sim's fawn (`behaviour`) is near. The wolf (the fight's, `encounter`), once it's
+    /// near in play.
+    fawn: Cast<fawn::creature::Coat, fawns::Grown, fawns::FawnLook>,
+    wolf: CastWolf,
     /// The water's mesh (`history::waters`, laid as the program starts), the scene under it as its pass reads it, and which
     /// of its looks is drawn (`engine::water::LOOKS`; F6 the next).
     water_verts: GpuBuffer<WaterVert>,
@@ -437,6 +442,8 @@ pub struct Floor {
     clicked: Option<vec2>,
     /// The floor's ears, on the program's voice (sound.wrela).
     hearing: sound::Hearing,
+    /// What the fight has sounded so far (`climber::sounds`).
+    fight_heard: Heard,
     /// The play harness's map with the check (M).
     map: harness::HarnessMap,
     /// The render origin's tile (`engine::view::Camera::origin`): what's drawn is the world less
@@ -472,6 +479,11 @@ pub struct Floor {
     /// `gathered`: the frames since it was drawn.
     arriving: bool,
     gathered: u32,
+    /// Whether the floor captures stills (F7): each frame's jitter on a still's grid
+    /// (`view::jitter_of`), and an arrival on F7, on a lookbook shot and on a jump (playable or
+    /// not, with no limit), shown once `STILL_FRAMES` frames have gathered under the new eye's
+    /// light: that frame is the still (printed: `still at frame N`).
+    capture: bool,
 }
 
 /// The built things to realize: the floor's (`blockouts::built`), and the egg's place's ring of
@@ -592,6 +604,8 @@ pub fn init() -> Floor {
         off: Flags::none(),
         framing: Framing {},
         arm: Arm {},
+        focus: 0.0,
+        focus_at: vec3(0.0),
         shot: None,
         held: None,
         shot_from: 0.0,
@@ -606,13 +620,8 @@ pub fn init() -> Floor {
         built_far: Vec::new(),
         built: Vec::new(),
         footprints: buffer_of(footprints_in(vec3(0.0)), at_least: 1),
-        fawn_job: None,
-        fawn_grown: fawns::grown(),
-        fawn: None,
-        fawn_palette: buffer(engine::creature::MAX_BONES),
-        fawn_last: buffer(engine::creature::MAX_BONES),
-        fawn_on: false,
-        fawn_shadowed: false,
+        fawn: cast(fawns::grown(), fawns::FawnLook {}, fawns::REALIZED, fawns::SLICES),
+        wolf: cast_wolf(),
         water_verts: buffer_of(waters.mesh.verts, at_least: 1),
         water_tris: buffer_of(waters.mesh.tris, at_least: 1),
         water_count: waters.mesh.tris.len(),
@@ -630,6 +639,7 @@ pub fn init() -> Floor {
         press: None,
         clicked: None,
         hearing: sound::start(),
+        fight_heard: heard(spawn_world().fight.fight),
         map: harness::HarnessMap::new(),
         origin: vec2i(0),
         shafts_on: false,
@@ -645,6 +655,7 @@ pub fn init() -> Floor {
         settle_until: 0,
         arriving: false,
         gathered: 0,
+        capture: false,
     }
 }
 
@@ -731,13 +742,6 @@ fn recentre(s: mut Floor, to: vec2i) {
     }
     s.footprints = buffer_of(footprints_in(origin_of(s)), at_least: 1)
     print(f"the render origin moved to tile {to.x}, {to.y}")
-}
-
-/// How far tile `t` is from `p` (m): to its nearest point.
-fn tile_distance(t: vec2i, p: vec2) -> f32 {
-    let lo = vec2(t) * TILE
-    let q = clamp(p, lo, lo + vec2(TILE))
-    length(p - q)
 }
 
 /// Whether a frame from `eye` is full: the wood cooked, the built things realized, every tile
@@ -912,8 +916,8 @@ fn stream(s: mut Floor, eye: vec2) {
                 s.far_layer.push(
                     FarTile {
                         tile: t,
-                        fine: cooked.far.clone(),
-                        coarse: cooked.far_coarse.clone(),
+                        fine: take cooked.far,
+                        coarse: take cooked.far_coarse,
                         loaded: NO_LAYER,
                     },
                 )
@@ -939,7 +943,7 @@ fn stream(s: mut Floor, eye: vec2) {
                     tile: t,
                     bytes: take k.bytes,
                     trees: take cooked.trees,
-                    fields: cooked.fields.clone(),
+                    fields: take cooked.fields,
                     with: k.with,
                 },
             )
@@ -979,8 +983,10 @@ fn stream(s: mut Floor, eye: vec2) {
     }
     // The nearest wanted tile not yet known: a baked one fetched, a wild one grown.
     let at = engine::place::tile_of(eye)
-    let r = i32(ceil(WILD_FAR / TILE)) + 1
     if s.fetching.len() + near_cooking(s) < IN_FLIGHT {
+        // A tile farther away on either axis cannot be within WANT of the eye. Keep the
+        // same row order, with the outer rows used only by the far layer left out.
+        let r = near_tile_radius(eye, WANT, WILD_FAR)
         var best = vec2i(0)
         var near = 1.0e9
         for j in (at.y - r)..(at.y + r + 1) {
@@ -1026,6 +1032,7 @@ fn stream(s: mut Floor, eye: vec2) {
     }
     // The wildwood's far layer, a tile at a time, out to `WILD_FAR`; dropped past it.
     if far_cooking(s) < FAR_IN_FLIGHT {
+        let r = tile_radius(WILD_FAR)
         var best = vec2i(0)
         var near = 1.0e9
         for j in (at.y - r)..(at.y + r + 1) {
@@ -1166,11 +1173,13 @@ fn stream(s: mut Floor, eye: vec2) {
 }
 
 /// The load's work this frame: the forest's kinds, a few a frame; the wood once they're all
-/// cooked.
-fn cook_load(s: mut Floor) {
+/// cooked; then the built things, a frame each, the nearest to the eye (`eye`, the world's) first.
+fn cook_load(s: mut Floor, eye: vec2) {
     if s.wood.is_some() {
         if s.to_build.len() > 0 {
-            let b = s.to_build.remove(0)
+            // The nearest to the eye first, so what a player sees on arriving stands in the first
+            // frames (one a frame from the list's start, the arena's ring stood after a second).
+            let b = s.to_build.remove(blockouts::nearest(s.to_build, eye))
             label("built things")
             var r = blockouts::realize(b, height_at)
             let o = origin_of(s)
@@ -1218,8 +1227,9 @@ fn cook_load(s: mut Floor) {
 }
 
 /// The keys the frames read (the sim reads the player's): F1–F5 leave a system out, F6 draws the
-/// water's next look, F8 the next debug view of form, B the sun shafts, V the frame as plain
-/// rendering; L, a shot's number and Enter hold the camera on a lookbook shot (Escape lets it go).
+/// water's next look, F7 captures stills, F8 the next debug view of form, B the sun shafts, V
+/// the frame as plain rendering; L, a shot's number and Enter hold the camera on a lookbook shot
+/// (Escape lets it go).
 fn keys(s: mut Floor, time: f32) {
     for e in events() {
         match e {
@@ -1261,6 +1271,11 @@ fn keys(s: mut Floor, time: f32) {
                 if key == Key::Enter && s.shot_digits < lookbook::SHOTS.len() {
                     s.shot = Some(s.shot_digits)
                     s.shot_from = time
+                    // A still is taken on arrival, however near the shot's eye.
+                    if s.capture {
+                        s.arriving = true
+                        s.gathered = 0
+                    }
                 }
                 s.typing_shot = false
                 continue
@@ -1295,6 +1310,11 @@ fn keys(s: mut Floor, time: f32) {
             }
             // F8: the next debug view of form (clay, silhouettes, the look), to judge the
             // forms alone.
+            if key == Key::F7 {
+                s.capture = !s.capture
+                s.arriving = s.capture
+                s.gathered = 0
+            }
             if key == Key::F8 {
                 s.view = (s.view + 1) % 3
                 s.light.clay = if s.view == 1 { 1 } else { 0 }
@@ -1414,22 +1434,8 @@ fn moving_shadow(s: mut Floor, sh: Shadows) {
     if let Some(d) = s.drawn {
         d.shadow(mv, sh.moving)
     }
-    if let Some(c) = s.fawn {
-        if s.fawn_on && s.fawn_shadowed {
-            draw(
-                mv,
-                character_shadow.bind(
-                    verts: c.mesh.verts.items(),
-                    palettes: s.fawn_palette.items(),
-                    view: sh.moving,
-                ),
-                engine::vegetation::nothing,
-                indices: c.mesh.quads.items(),
-                indirect: c.mesh.draw.items(),
-                depth_bias: CASTER,
-            )
-        }
-    }
+    s.fawn.shadow(mv, sh.moving)
+    s.wolf.shadow(mv, sh.moving)
     mv.end()
 }
 
@@ -1712,25 +1718,8 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
     if let Some(d) = s.drawn {
         d.draw(cr, lt, cam)
     }
-    if let Some(c) = s.fawn {
-        if s.fawn_on {
-            draw(
-                cr,
-                character.bind(
-                    verts: c.mesh.verts.items(),
-                    colours: c.colours.items(),
-                    palettes: s.fawn_palette.items(),
-                    parts: PartOf { of: [0; 64] },
-                    cam: cam,
-                ),
-                character_shade.bind(lt),
-                indices: c.mesh.quads.items(),
-                indirect: c.mesh.draw.items(),
-                cull: std::gpu::Cull::Back,
-                depth: NEAREST,
-            )
-        }
-    }
+    s.fawn.draw(cr, lt, cam, PartOf { of: [0; 64] })
+    s.wolf.draw(cr, lt, cam, PartOf { of: [0; 64] })
     cr.end()
     label("sky")
     let sky = begin_pass_with_depth(
@@ -1820,25 +1809,9 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
     if let Some(d) = s.drawn {
         d.motion(mo, cam, s.dt)
     }
-    // The fawn's motion: its palette against its last.
-    if let Some(c) = s.fawn {
-        if s.fawn_on {
-            draw(
-                mo,
-                character_motion.bind(
-                    verts: c.mesh.verts.items(),
-                    palettes: s.fawn_palette.items(),
-                    last: s.fawn_last.items(),
-                    cam: cam,
-                ),
-                motion.bind(cam),
-                indices: c.mesh.quads.items(),
-                indirect: c.mesh.draw.items(),
-                cull: std::gpu::Cull::Back,
-                depth: engine::view::SEEN,
-            )
-        }
-    }
+    // The fawn's and the wolf's: each palette against its last.
+    s.fawn.motion(mo, cam)
+    s.wolf.motion(mo, cam)
     mo.end()
 }
 
@@ -1852,8 +1825,8 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
         out,
         blend: 0.12,
         fresh: if s.frames == 0 || s.plain || again { 1 } else { 0 },
-        jitter: engine::view::jitter_of(cam.frame),
-        last_jitter: engine::view::jitter_of(max(cam.frame, 1) - 1),
+        jitter: engine::view::jitter_of(cam.frame, cam.grid != 0),
+        last_jitter: engine::view::jitter_of(max(cam.frame, 1) - 1, cam.grid != 0),
         moving: vec4(0.0, 0.0, -1.0, -1.0),
         settled: if again { 0.0 } else { f32(s.settled) },
     }
@@ -1892,8 +1865,12 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
     let m = Metering { fresh: if s.frames == 0 || s.arriving { 1 } else { 0 }, ..METERING }
     dispatch(meter.bind(s.scene, m, exposure: mut s.exposure), groups: 1)
     if s.arriving {
-        if s.gathered > GATHER {
+        let gather = if s.capture { STILL_FRAMES - 1 } else { GATHER }
+        if s.gathered > gather {
             s.arriving = false
+            if s.capture {
+                print(f"still at frame {s.frames}")
+            }
         } else {
             let black = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
             black.present()
@@ -2030,47 +2007,51 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     let breeze = vec3(gust.dir.x, 0.0, gust.dir.y) * (0.5 + if s.still { 0.0 } else {
         1.5 * gust.strength
     })
+    // In the fight (in play), its pose, its swings and its blink are the fight's climber's.
+    let fc = b.b.fight.fight.climber
+    let fighting = cast.is_none() && b.b.fight.awake
+    let pose = if fighting { fc.pose(b.alpha) } else { REST }
+    let swinging = fighting && (fc.act == Act::Slash || fc.act == Act::Backslash)
+    let gone = fighting && fc.gone()
     s.climber.step(
         stood,
         facing,
-        REST,
+        pose,
         speed: length(pb.velocity),
-        swinging: false,
-        gone: false,
+        swinging: swinging,
+        gone: gone,
         ground: Plane { at: stood, slope },
         wind: breeze,
         dt: s.dt,
     )
     match mut s.drawn {
-        Some(d) => d.write(s.climber, stood, facing, REST, gone: false, still: moved),
+        Some(d) => d.write(s.climber, stood, facing, pose, gone: gone, still: moved),
         None => {},
     }
     // The fawn: where a shot casts it, standing at rest; in play (no shot held), the sim's,
-    // between the two ticks round the frame, where it's near enough the player to be seen.
-    std::gpu::copy(from: s.fawn_palette.items(), to: s.fawn_last.items_mut())
-    let fawn_was_on = s.fawn_on
-    s.fawn_on = match cast {
+    // between the two ticks round the frame, where it's near enough the player to be seen. The
+    // wolf: in play, where it's as near.
+    match cast {
         Some(c) => {
-            cast_fawn(mut s)
-            write(mut s.fawn_palette, 0, fawns::at_rest(on_ground(c.fawn), c.fawn.z))
-            s.fawn_shadowed = true
-            true
+            s.fawn.pose(fawns::at_rest(on_ground(c.fawn), c.fawn.z), shadowed: true, moved: moved)
         },
         None => {
             let f = behaviour::between(b.a.fawn, b.b.fawn, b.alpha)
             let apart = length(f.walker.root.pos - (feet + o))
-            let near = s.shot.is_none() && apart < FAWN_DRAWN
-            s.fawn_shadowed = apart < MOVING_SPAN
-            if near {
-                cast_fawn(mut s)
-                write(mut s.fawn_palette, 0, behaviour::palette(f, o))
+            if s.shot.is_none() && apart < FAWN_DRAWN {
+                s.fawn.pose(behaviour::palette(f, o), shadowed: apart < MOVING_SPAN, moved: moved)
+            } else {
+                s.fawn.hide()
             }
-            near
         },
     }
-    if !fawn_was_on || s.origin != before {
-        // No last frame's place to move from, or it's in the old render space.
-        std::gpu::copy(from: s.fawn_palette.items(), to: s.fawn_last.items_mut())
+    let (wa, wb) = (b.a.fight.fight.wolf, b.b.fight.fight.wolf)
+    let wolf_apart = length(wb.pos() - (feet + o).xz)
+    if cast.is_none() && s.shot.is_none() && wolf_apart < FAWN_DRAWN {
+        let bones = wolf_bones(wa, wb, b.alpha, origin: o)
+        s.wolf.pose(bones, shadowed: wolf_apart < MOVING_SPAN, moved: moved)
+    } else {
+        s.wolf.hide()
     }
     // The cast's footprints in the grass (`CAST_FEET`), each its place and reach.
     let feet_of = |c: vec3, reach: f32| {
@@ -2089,6 +2070,11 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         Some(c) => 0.5 * (on_ground(c.player) + on_ground(c.fawn)),
         None => feet,
     }
+    // The fight's focus, between the ticks, its weight eased in and out over `FOCUS_EASE`.
+    let (fa, _) = encounter::focus(b.a.fight, (feet + o).xz)
+    let (fb, wanted) = encounter::focus(b.b.fight, (feet + o).xz)
+    s.focus_at = mix(fa, fb, vec3(b.alpha))
+    s.focus += clamp(wanted - s.focus, -s.dt / FOCUS_EASE, s.dt / FOCUS_EASE)
     let ground_r = |p: vec2| height_at(p + o2)
     let (eye, at, fovy) = match s.shot {
         Some(i) => {
@@ -2104,7 +2090,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
                 feet,
                 yaw: c.yaw,
                 pitch: c.pitch,
-                focus: Focus {},
+                focus: Focus { at: s.focus_at - o, weight: s.focus },
                 o: OBSTACLES,
                 o_from: o2,
                 height: ground_r,
@@ -2128,6 +2114,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         last: s.cam,
         still: s.plain,
         origin: o,
+        grid: s.capture,
     )
     let cam = s.cam
     // A click names what's under it: a tree's kind and history, or the ground's cover and fields.
@@ -2146,6 +2133,15 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     // ---- The floor's sound (sound.wrela): the ears at the eye, the steps at the feet, in the world.
     let heard_at = sound::moment(eye_w, cam.forward.xz, feet + o, s.grounds, wind, time)
     sound::frame(mut s.hearing, heard_at)
+    // The fight's sounds, while it's on (in play).
+    let bout = b.b.fight
+    if bout.awake && cast.is_none() {
+        for c in cues(mut s.fight_heard, bout.fight) {
+            sound::cue(mut s.hearing, c)
+        }
+    } else {
+        s.fight_heard = heard(bout.fight)
+    }
     // ---- (the floor's sound ends)
     // The leaves between the camera and the player fade (#54 §5); on a shot, those along the first
     // 6 m of its view (a shot's eye is authored, and may stand in a bush).
@@ -2157,7 +2153,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         None => {},
     }
     s.terrain_cooked = s.clipmap.follow(GROUND, eye, again: false)
-    cook_load(mut s)
+    cook_load(mut s, eye_w.xz)
     stream(mut s, eye_w.xz)
     // The near cascade round where the eye will be (a little ahead), the far round the floor.
     s.near.follow(vec3(eye.x, height_at(eye_w.xz), eye.z), NEAR_MOVES)
@@ -2200,11 +2196,12 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         // Arriving: black until the light round the new eye is drawn (the near shadows and the
         // probes came 0.45 s and 0.85 s after a jump, each a step in the light; the exposure
         // followed), then while temporal AA gathers.
-        s.arriving = s.playable
+        s.arriving = s.playable || s.capture
         s.gathered = 0
     }
     s.last_eye = eye_w.xz
-    if s.arriving && (s.gathered > 0 || lit(s, eye.xz, eye_w.xz) || s.frames >= s.settle_until) {
+    let late = s.frames >= s.settle_until && !s.capture
+    if s.arriving && (s.gathered > 0 || lit(s, eye.xz, eye_w.xz) || late) {
         s.gathered += 1
     }
     if s.playable && s.frames >= s.settle_until {
@@ -2247,32 +2244,6 @@ fn held_cast(shot: Option<u32>) -> Option<lookbook::Cast> {
             lookbook::SHOTS[i].cast,
         ),
         _ => None,
-    }
-}
-
-/// The fawn's realization, a slice a frame (started the first time it's cast).
-fn cast_fawn(s: mut Floor) {
-    if s.fawn.is_some() {
-        return
-    }
-    if s.fawn_job.is_none() {
-        s.fawn_job = Some(realizing.start(fawns::REALIZED))
-    }
-    match mut s.fawn_job {
-        Some(job) => match job.resume(s.fawn_grown, fawns::SLICES) {
-            Step::Yielded => {},
-            Step::Done(whole) => {
-                let colours = engine::character::colours(
-                    whole.mesh,
-                    s.fawn_grown.field(),
-                    fawns::FawnLook {},
-                    cell: 1cm,
-                )
-                s.fawn = Some(engine::character::Realized { mesh: take whole.mesh, colours })
-                s.fawn_job = None
-            },
-        },
-        None => {},
     }
 }
 
@@ -2382,7 +2353,8 @@ pub fn test_settled(s: Floor) -> f32 {
         s.arrived.is_empty() &&
         s.next_probes.is_none() &&
         length(eye - s.probes_at) <= PROBES_MOVE &&
-        (!s.fawn_on || s.fawn.is_some()) &&
+        (!s.fawn.on || s.fawn.realized.is_some()) &&
+        (!s.wolf.on || s.wolf.realized.is_some()) &&
         !s.arriving
     if still && playable(s, eye + s.cam.origin.xz) { 1.0 } else { 0.0 }
 }

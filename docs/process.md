@@ -45,13 +45,15 @@ branches with Ryan's standing permission, after `tools/check.sh` passes. Since 2
 branch starts from `main` and squash-merges back into it once its own change passes the gate,
 without first taking unrelated updates from `main`; milestone branches are retired. Changes that
 only make the checks faster merge without the gate, and the long tier that runs on `main` every
-6 hours is their safety net.
+6 hours is their safety net. Right before a merge, `tools/premerge.sh` builds the branch merged
+with the latest `main`, since two branches that each pass the gate can still break together.
 
 ## Tools and models
 
 | Tool | What it does here |
 |---|---|
 | [Claude Code](https://claude.com/claude-code) (Anthropic), mostly Claude Opus 5.5 | Writes the code, tests and docs, on Ryan's MacBook Air and in cloud sessions |
+| [OpenAI Codex](https://openai.com/codex/) | Reviews performance across the codebase, implements optimizations and regression tests, and measures their effects in a cloud session |
 | Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 | The authors in the blind authoring rounds that test thesis 1 (vision.md); Opus also in the first round |
 | Claude subagents with no context | Blind raters in the lookdev loop: they see only the before and after stills and the anchors |
 | Claude projects (claude.ai) | Run several agent threads at once (lookdev items, fixes, rendering setup), with one coordinator |

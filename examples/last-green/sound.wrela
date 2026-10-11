@@ -7,6 +7,7 @@
 // is in the world (not render space), so a ringing step doesn't jump when the render origin
 // moves.
 
+use climber::sounds::{IMPACTS, WHOOSHES}
 use engine::place::{Map, Water}
 use engine::plant::{Wind, gust}
 use engine::sound::{Babble, Breath, Cue, Mixer, Palette, Surface, WATERS, mix, mixer}
@@ -122,7 +123,7 @@ pub const PALETTE: Palette = Palette {
         // A stream: a babble, brighter, quick and uneven.
         Babble { lo_hz: 500.0, hi_hz: 5000.0, level: 0.08, rate: 6.0, depth: 0.6 },
         // The falls: a roar, broad and steady, heard from far.
-        Babble { lo_hz: 120.0, hi_hz: 3500.0, level: 0.15, rate: 1.5, depth: 0.15 },
+        Babble { lo_hz: 120.0, hi_hz: 3500.0, level: 0.09, rate: 1.5, depth: 0.15 },
         // A spring's pool, or the plunge pool's edge: a trickle.
         Babble { lo_hz: 900.0, hi_hz: 6000.0, level: 0.03, rate: 8.0, depth: 0.8 },
     ],
@@ -132,6 +133,9 @@ pub const PALETTE: Palette = Palette {
         // Wading: water round the legs, low and swirling.
         Babble { lo_hz: 250.0, hi_hz: 2200.0, level: 0.12, rate: 2.5, depth: 0.6 },
     ],
+    // The fight's (`climber::sounds`): its blows and its blade's swings.
+    impacts: IMPACTS,
+    whooshes: WHOOSHES,
     wind: Breath { rush_hz: 300.0, rush: 0.1, leaves_hz: 4500.0, leaves: 0.035 },
     near: 2.0,
     gain: 2.5,
@@ -279,7 +283,7 @@ const GLIDING: f32 = 7.0
 /// since the last step.
 pub struct Hearing {
     cues: RingWriter<Cue>,
-    slots: [u32; 4],
+    pub(package) slots: [u32; 4],
     feet: vec3,
     time: f32,
     walked: f32,
@@ -425,10 +429,14 @@ pub fn hear(h: mut Hearing, m: Moment, near: Bounded<Heard, WATERS>) {
                 kept = true
             }
         }
+        // Let go only once the voice will hear it: a full ring (a voice not yet running) drops
+        // the cue, and the slot is let go again next frame.
         if !kept && h.slots[slot] != NOBODY {
-            h.cues.push(Cue::Water { slot, at: vec3(0.0), kind: 0, flow: 0.0 })
-            h.slots[slot] = NOBODY
-            freed[slot] = true
+            let silenced = Cue::Water { slot, at: vec3(0.0), kind: 0, flow: 0.0 }
+            if h.cues.push(silenced) {
+                h.slots[slot] = NOBODY
+                freed[slot] = true
+            }
         }
     }
     for i in 0..near.len() {

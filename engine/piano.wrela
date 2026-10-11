@@ -42,11 +42,12 @@
 // same samples.
 
 use perform::{PedalPoint, Performance}
+use std::audio::{FALL_60_DB, SAMPLE_RATE, decay_rate}
 use std::collections::Vec
 use std::math::{PI, TAU}
 
 /// The audio thread's rate.
-const RATE: f32 = 48000.0
+const RATE: f32 = f32(SAMPLE_RATE)
 
 /// The piano's keys: MIDI's 21 (A0) to 108 (C8).
 pub const KEYS: u32 = 88
@@ -429,18 +430,12 @@ fn points(pedal: Vec<PedalPoint>) -> Vec<Point> {
 }
 
 fn samples(seconds: f64) -> u32 {
-    u32(max(seconds, 0.0) * 48000.0 + 0.5)
-}
-
-/// The decay per sample, as a rate (ln of the factor, negated), of a resonator that falls
-/// 60 dB in `t60` seconds.
-fn decay_rate(t60: f32) -> f32 {
-    6.9078 / (t60 * RATE)
+    u32(max(seconds, 0.0) * f64(SAMPLE_RATE) + 0.5)
 }
 
 /// A free string's sympathetic ringing damped, when the dampers are down: it falls 60 dB in
 /// 0.15 s.
-const SYMPATHY_DAMPED: f32 = 6.9078 / (0.15 * 48000.0)
+const SYMPATHY_DAMPED: f32 = decay_rate(0.15)
 
 /// One resonator's numbers, as `build_key` lays them out.
 struct Lane: Copy {
@@ -501,7 +496,7 @@ impl Piano {
             let after = per_band(m.after, at, f) *
                 (1.0 + m.scatter_decay * (2.0 * scatter(key, n, 5) - 1.0))
             // A damper stops the higher partials faster.
-            let damped_rate = 6.9078 / damped * (1.0 + f / 2000.0)
+            let damped_rate = FALL_60_DB / damped * (1.0 + f / 2000.0)
             lanes.push(
                 Lane {
                     hz: f,
@@ -510,7 +505,7 @@ impl Piano {
                     share: comb * sqrt(1.0 - r),
                     after: 0.0,
                     phantom: 0.0,
-                    damper: max(damped_rate - 6.9078 / prompt, 0.0),
+                    damper: max(damped_rate - FALL_60_DB / prompt, 0.0),
                 },
             )
             lanes.push(
@@ -521,7 +516,7 @@ impl Piano {
                     share: comb * sqrt(r),
                     after: 1.0,
                     phantom: 0.0,
-                    damper: max(damped_rate - 6.9078 / max(after, prompt), 0.0),
+                    damper: max(damped_rate - FALL_60_DB / max(after, prompt), 0.0),
                 },
             )
         }
@@ -545,7 +540,10 @@ impl Piano {
                         share: comb,
                         after: 0.0,
                         phantom: 1.0,
-                        damper: max(6.9078 / damped * (1.0 + f / 2000.0) - 6.9078 / t60, 0.0),
+                        damper: max(
+                            FALL_60_DB / damped * (1.0 + f / 2000.0) - FALL_60_DB / t60,
+                            0.0,
+                        ),
                     },
                 )
             }

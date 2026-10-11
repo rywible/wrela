@@ -2,6 +2,7 @@
 // at a known place (compiler/tests/tests/suite/text.rs lays the same lines out and compares).
 
 use std::gpu::{begin_screen_pass}
+use std::hash::Hasher
 use ui::draw::{DrawList, Renderer}
 use ui::text::{Face, Font, Fonts}
 
@@ -83,4 +84,18 @@ pub fn pen(face: u32, i: u32, k: u32) -> f32 {
 /// The bytes of the face's fields.
 pub fn field_bytes(face: u32) -> u32 {
     Font::of(face_of(face)).field_bytes()
+}
+
+/// All glyph field bytes, in order: a regression for the baker's exact output.
+pub fn field_hash(face: u32) -> u64 {
+    let font = Font::of(face_of(face))
+    var h = Hasher::new()
+    h.write_u32(font.field_bytes())
+    for i in 0..font.count() {
+        let glyph = font.glyph(i)
+        for k in 0..glyph.width * glyph.height {
+            h.write_u32(u32(font.field_byte(i, k)))
+        }
+    }
+    h.finish()
 }

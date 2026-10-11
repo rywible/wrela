@@ -20,7 +20,9 @@ the compiler's crates (COMPILE_ONLY) or to wrela sources only the builds read ca
 the test does. A build tool's "early cutoff". That holds when the compiler did all its work for
 the test in those builds, so such an entry is made only when the test lexed no wrela text
 outside them (wrela-syntax says so in the record), read no wrela source outside them, ran none
-of the workspace's programs, and its code names no compiler crate.
+of the workspace's programs, and its code names no compiler crate. A build made again is traced
+too, and remembered by the same `wrela` CLI's bytes and the files it read: the gate after makes
+it again only when one of those changed.
 
     sources but the compiler's ─┐
     environment ────────────────┤
@@ -64,10 +66,10 @@ SLOW = 5.0
 KEEP_DAYS = 14
 
 VERSION = "v1"
-# Part of every entry's key. Change it with any change to what an entry keeps or how it is
-# matched (what a trace gives, which inputs and sources count, the keys, the builds' check), so
-# that the entries made before are not used; a change to anything else here keeps them.
-MEANING = "2026-10-11.1"
+# Part of every entry's key: the code that decides what an entry keeps and how it is matched
+# (`meaning`, set once this file is read), so the entries made before a change to it are not
+# used, and a change to anything else here keeps them.
+MEANING = None
 
 
 def sha(data):
@@ -211,6 +213,13 @@ def touched(log):
     return seen
 
 
+def unplaced(seen):
+    """Whether a run read a relative path its trace doesn't say the directory of (a call with no
+    directory descriptor, after a `chdir`, as `mkdir -p` does): such a path can't be checked
+    again. (What it wrote isn't an input.)"""
+    return any(how != "write" and not os.path.isabs(p) for p, how in seen.items())
+
+
 class Trace:
     """What a test's trace says beyond the paths it touched: the programs it ran, and the paths
     touched only while one of its builds ran (between `recorded_build`'s marks; builds on other
@@ -281,7 +290,7 @@ class Inputs:
         # The checkout's files are inputs wherever it is (in /tmp, say), its target/ aside, and a
         # package's constants cache (`build/consts`, keyed by each constant's code and inputs).
         if under(self.root):
-            if f"{os.sep}build{os.sep}consts" in path[len(self.root):] + os.sep:
+            if f"{os.sep}build{os.sep}consts{os.sep}" in path[len(self.root):] + os.sep:
                 return False
             return not any(under(i) for i in self.ignore if i.startswith(self.root + os.sep))
         return not any(under(i) for i in self.ignore)
@@ -295,6 +304,19 @@ class Inputs:
 
     def path(self, name):
         return os.path.join(self.root, name[5:]) if name.startswith("repo:") else name
+
+    def changed_since(self, seen, since):
+        """Whether a path touched and not written was changed at or after `since` (a time): while
+        a run that read it ran, so what it read may not be what it is now."""
+        for path, how in seen.items():
+            if how == "write" or not self.kept(path):
+                continue
+            try:
+                if os.stat(path).st_mtime >= since:
+                    return True
+            except OSError:
+                pass
+        return False
 
     def of(self, seen, digests):
         """The entry's inputs: {name: state} for each path touched and not written."""
@@ -368,6 +390,7 @@ class Sources:
                     self.by_package[owner].add(rel)
         self.hashes = {}
         self.texts = {}
+        self.names = {}
 
     @staticmethod
     def metadata(root):
@@ -450,6 +473,17 @@ class Sources:
                 self.texts[rel] = ""
         return self.texts[rel]
 
+    def names_in(self, rel):
+        """The names a Rust file's code (its comments aside) uses as paths (`name::`) or imports
+        from its crate or its parent (`use crate::{.., name, ..}`): once a gate."""
+        if rel not in self.names:
+            code = "\n".join(l for l in self.text(rel).splitlines() if not l.lstrip().startswith("//"))
+            names = set(re.findall(r"\b(\w+)::", code))
+            for group in re.findall(r"use (?:super|crate)::\{([^}]*)", code):
+                names.update(re.findall(r"\b\w+\b", group))
+            self.names[rel] = names
+        return self.names[rel]
+
     def for_test(self, files, program_dir, test):
         """Of `files`, those a test's code can come from: all but the modules of its program (a
         test program of several files, `program_dir`) that neither its module nor the program's
@@ -474,11 +508,8 @@ class Sources:
                 continue
             wanted.add(name)
             for f in [prefix + "main.rs"] if name == "main" else modules.get(name, []):
-                code = "\n".join(l for l in self.text(f).splitlines() if not l.lstrip().startswith("//"))
-                for other in modules:
-                    if other not in wanted and re.search(
-                            rf"\b{re.escape(other)}::|use (?:super|crate)::\{{[^}}]*\b{re.escape(other)}\b", code):
-                        todo.append(other)
+                todo.extend(other for other in modules
+                            if other not in wanted and other in self.names_in(f))
         left_out = {f for name, fs in modules.items() if name not in wanted for f in fs}
         return [f for f in files if f not in left_out]
 
@@ -658,22 +689,22 @@ class Store:
         write_atomically(os.path.join(self.entries_dir(test, rust), sha(body)[:24] + ".json"), body)
 
     def prune(self):
-        """Removes the entries not used or made for KEEP_DAYS days."""
+        """Removes the entries and builds not used or made for KEEP_DAYS days."""
         old = time.time() - KEEP_DAYS * 86400
-        top = os.path.join(self.dir, "entries")
-        for dirpath, dirnames, filenames in os.walk(top, topdown=False):
-            for n in filenames:
-                p = os.path.join(dirpath, n)
-                try:
-                    if os.path.getmtime(p) < old:
-                        os.remove(p)
-                except OSError:
-                    pass
-            if dirpath != top:
-                try:
-                    os.rmdir(dirpath)
-                except OSError:
-                    pass
+        for top in (os.path.join(self.dir, "entries"), os.path.join(self.dir, "builds")):
+            for dirpath, dirnames, filenames in os.walk(top, topdown=False):
+                for n in filenames:
+                    p = os.path.join(dirpath, n)
+                    try:
+                        if os.path.getmtime(p) < old:
+                            os.remove(p)
+                    except OSError:
+                        pass
+                if dirpath != top:
+                    try:
+                        os.rmdir(dirpath)
+                    except OSError:
+                        pass
 
 
 # ---- one test, alone and traced -------------------------------------------------------------
@@ -744,9 +775,10 @@ class Rebuilds:
     (`wrela build <package> -o <dir> <args>`, the build `recorded_build` says makes the same
     files), each once per gate: each one's files' hash, or None if it failed."""
 
-    def __init__(self, cli, root, out):
-        self.cli, self.root, self.out = cli, root, out
+    def __init__(self, cli, root, out, memo=None):
+        self.cli, self.root, self.out, self.memo = cli, root, out, memo
         self.known = {}
+        self.cli_key = None
 
     @staticmethod
     def files_hash(dir):
@@ -764,14 +796,57 @@ class Rebuilds:
         except OSError:
             return None
 
+    def key(self, pkg, args):
+        """A build's key in the store: the CLI's bytes, the variables its code reads, the
+        package and the arguments."""
+        if self.cli_key is None:
+            m = self.memo
+            texts = [m.sources.text(f) for f in m.sources.files_of(m.sources.closure("compiler/cli"))
+                     if f.endswith(".rs")]
+            env = m.env_of(env_names(texts) - ENV_NOT)
+            self.cli_key = sha(json.dumps([MEANING, m.digests.of(self.cli, "read"), env]))
+        return sha(json.dumps([self.cli_key, self.memo.inputs.name(pkg), args]))
+
     def make(self, pkg, args):
+        """The build's files' hash: remembered, if the same CLI read the same files for it
+        before; else made, traced, and remembered."""
         if self.cli is None:
             return None
+        m = self.memo
+        if m is not None:
+            key = self.key(pkg, args)
+            path = os.path.join(m.store.dir, "builds", key[:24] + ".json")
+            try:
+                with open(path, encoding="utf-8") as f:
+                    entry = json.load(f)
+                if all(m.still(n, state) for n, state in entry["inputs"].items()):
+                    os.utime(path)  # used: kept by `prune`
+                    return entry["files"]
+            except (OSError, ValueError, KeyError, AttributeError):
+                pass
         dir = os.path.join(self.out, sha(json.dumps([pkg, args]))[:16])
         shutil.rmtree(dir, ignore_errors=True)
-        r = subprocess.run([self.cli, "build", pkg, "-o", dir, *args], cwd=self.root,
-                           capture_output=True)
-        return self.files_hash(dir) if r.returncode == 0 else None
+        os.makedirs(self.out, exist_ok=True)
+        command = [self.cli, "build", pkg, "-o", dir, *args]
+        log = dir + ".trace"
+        if m is not None:
+            command = ["strace", "-f", "--seccomp-bpf", "-qq", "-y", "-e", "trace=%file", "-o",
+                       log, *command]
+        started = time.time()
+        r = subprocess.run(command, cwd=self.root, capture_output=True)
+        files = self.files_hash(dir) if r.returncode == 0 else None
+        if m is not None and files is not None:
+            try:
+                with open(log, encoding="utf-8", errors="surrogateescape") as f:
+                    seen = touched(f.read())
+                # Its inputs as they are after it (its `-o` is under target/, not kept), unless
+                # one changed while it ran.
+                if not unplaced(seen) and not m.inputs.changed_since(seen, started):
+                    inputs = m.inputs.of(seen, Digests())
+                    write_atomically(path, json.dumps({"inputs": inputs, "files": files}))
+            except OSError:
+                pass
+        return files
 
     def prefetch(self, builds):
         """Makes `builds` ((package, args) pairs) not yet made, as many at once as there are cores."""
@@ -804,7 +879,7 @@ class Memo:
         self.sources = sources or Sources(self.root, target)
         self.inputs = Inputs(self.root, target, ignore=[dir])
         self.digests = Digests()
-        self.rebuilds = Rebuilds(cli, self.root, os.path.join(target, "gate-memo-builds"))
+        self.rebuilds = Rebuilds(cli, self.root, os.path.join(target, "gate-memo-builds"), self)
 
     @staticmethod
     def package(test_id):
@@ -903,8 +978,13 @@ class Memo:
         return "built", builds
 
     def remember(self, test_id, program_dir, test, log_text, seconds, record_text=""):
-        """Keeps a passing run's entry, from its strace log and its builds' record."""
+        """Keeps a passing run's entry, from its strace log and its builds' record: unless a file
+        it read changed while it ran, or it named one the trace can't place. Its scope, or None
+        when it keeps none."""
+        started = time.time() - seconds
         trace = Trace(log_text)
+        if unplaced(trace.seen) or self.inputs.changed_since(trace.seen, started):
+            return None
         record = [json.loads(l) for l in record_text.splitlines() if l.strip()]
         scope, builds = self.scope_of(test_id, program_dir, test, trace, record)
         seen = trace.seen
@@ -912,7 +992,8 @@ class Memo:
             # What only the builds read is the builds' inputs: their files stand for them.
             seen = {p: h for p, h in seen.items()
                     if not (p in trace.in_builds_only and (is_wrela(p) or h in ("list", "stat")))}
-        inputs = self.inputs.of(seen, self.digests)
+        # As they are after it ran, not when the gate began.
+        inputs = self.inputs.of(seen, Digests())
         rust = self.rust(scope, test_id, program_dir, test)
         env = self.env_of(self.code_env_names(test_id, program_dir, test, inputs))
         self.store.save(test_id, rust, env, inputs, seconds, builds=builds)
@@ -991,10 +1072,8 @@ def run_tests(logs, native_cache, mode, dir, args, parent):
                              env=env_for(pkg), capture_output=True, text=True, check=True).stdout
         return [l[:-len(": test")] for l in out.splitlines() if l.endswith(": test")]
 
-    # Each program's tests; the slow ones (by their last time), remembered or to run alone. Those
-    # remembered by their builds' files once the builds are made again, all at once.
-    quick_runs, alone, remembered, maybe = [], [], [], []
-    for m in programs:
+    # Each program's tests (listed all at once); the slow ones (by their last time) apart.
+    def split(m):
         pkg = os.path.dirname(m["manifest_path"])
         exe = m["executable"]
         src = m["target"]["src_path"]
@@ -1009,15 +1088,37 @@ def run_tests(logs, native_cache, mode, dir, args, parent):
         # A skip holds a name, not only matches it: a test whose name holds a slow one's would be
         # skipped too, so it runs alone as well.
         kept = set(listed(exe, pkg, skips)) if slow else set(names)
-        aside = [n for n in names if n not in kept]
-        for n in aside:
-            test_id = prefix + n
-            if mode == "on" and n in slow and memo.remembered(test_id, program_dir, n, builds=False):
+        aside = [(prefix + n, n, n in slow) for n in names if n not in kept]
+        return m, pkg, exe, program_dir, prefix, skips, kept, aside
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
+        split_programs = list(pool.map(split, programs))
+
+    # The quick tests: every program at once, each test's time in libtest's JSON (`--report-time`,
+    # a stable libtest's unstable option: RUSTC_BOOTSTRAP). They start now, while the slow tests'
+    # memory is looked up beside them.
+    runs = []
+    for m, pkg, exe, _, prefix, skips, kept, _ in split_programs:
+        if not kept:
+            continue
+        out = open(f"{logs}/run-{len(runs)}", "w+")
+        name = f"{m['target']['name']} ({m['target']['kind'][0]})"
+        proc = subprocess.Popen(
+            [exe, *args, *skips, "-Z", "unstable-options", "--format", "json",
+             "--report-time"], cwd=pkg, env={**env_for(pkg), "RUSTC_BOOTSTRAP": "1"},
+            stdout=out, stderr=subprocess.STDOUT)
+        runs.append(("quick", name, proc, out, time.monotonic(), prefix))
+
+    # The slow tests remembered, or to run alone. Those remembered by their builds' files once the
+    # builds are made again, all at once.
+    alone, remembered, maybe = [], [], []
+    for _, pkg, exe, program_dir, _, _, _, aside in split_programs:
+        for test_id, n, slow in aside:
+            if mode == "on" and slow and memo.remembered(test_id, program_dir, n, builds=False):
                 remembered.append(n)
             else:
                 maybe.append((memo.store.timing(test_id) or 0, test_id, n, exe, pkg, program_dir))
-        if kept:
-            quick_runs.append((m, pkg, exe, skips, prefix))
     by_builds = []
     if mode == "on" and maybe:
         memo.rebuilds.prefetch([b for _, t, n, _, _, d in maybe for b in memo.builds_wanted(t, d, n)])
@@ -1028,18 +1129,6 @@ def run_tests(logs, native_cache, mode, dir, args, parent):
             by_builds.append(n)
         else:
             alone.append(a)
-
-    # The quick tests: every program at once, each test's time in libtest's JSON (`--report-time`,
-    # a stable libtest's unstable option: RUSTC_BOOTSTRAP).
-    runs = []
-    for m, pkg, exe, skips, prefix in quick_runs:
-        out = open(f"{logs}/run-{len(runs)}", "w+")
-        name = f"{m['target']['name']} ({m['target']['kind'][0]})"
-        proc = subprocess.Popen(
-            [exe, *args, *skips, "-Z", "unstable-options", "--format", "json",
-             "--report-time"], cwd=pkg, env={**env_for(pkg), "RUSTC_BOOTSTRAP": "1"},
-            stdout=out, stderr=subprocess.STDOUT)
-        runs.append(("quick", name, proc, out, time.monotonic(), prefix))
 
     # The slow tests: the longest first, as many at once as the machine has cores.
     alone.sort(key=lambda a: -a[0])
@@ -1134,10 +1223,11 @@ def run_tests(logs, native_cache, mode, dir, args, parent):
                             built = f.read()
                     except OSError:
                         built = ""
-                    memo.remember(extra, program_dir, n, text, took, built)
+                    kept = memo.remember(extra, program_dir, n, text, took, built)
                     memo.store.set_timing(extra, cpu[extra], alone=True)
                     shutil.rmtree(scratch, ignore_errors=True)
-                    print(f"  {name}: {took:.1f}s, alone ({cpu[extra]:.0f}s of CPU)")
+                    print(f"  {name}: {took:.1f}s, alone ({cpu[extra]:.0f}s of CPU)"
+                          + ("" if kept else "; not remembered: a file it read changed as it ran"))
                 if todo:
                     start_alone()
                     waiting.append(runs[-1])
@@ -1151,6 +1241,34 @@ def run_tests(logs, native_cache, mode, dir, args, parent):
     print(f"  {ran} tests passed")
     memo.store.prune()
     return 1 if failed or ran + len(remembered) == 0 else 0
+
+
+def meaning():
+    """A hash of the code that decides what an entry keeps and how it is matched: what a trace
+    gives, which inputs and sources count, the keys, the builds' check. Its syntax tree, without
+    comments or docstrings, so that a change to how it reads alone doesn't drop every entry."""
+    import ast
+    import inspect
+    import textwrap
+
+    deciding = [unescape, lines, events, touched, unplaced, Trace, Digests, Inputs, env_names,
+                Sources, Store.entries_dir, Store.find, Store.save, Rebuilds, Memo, is_wrela]
+    constants = [CALLS, WRITE_FLAGS, LINE.pattern, UNFINISHED.pattern, RESUMED.pattern,
+                 STRING.pattern, RESULT_PATH.pattern, BUILD_BEGIN, BUILD_END, ENV_NAMES,
+                 ENV_PREFIXES, ENV_NOT, COMPILE_ONLY, NAMES_COMPILER.pattern, SCOPES]
+    parts = [repr(sorted(c) if isinstance(c, (set, dict)) else c) for c in constants]
+    for o in deciding:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(o)))
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if isinstance(body, list) and body and isinstance(body[0], ast.Expr) and \
+                    isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+                node.body = body[1:] or [ast.Pass()]
+        parts.append(ast.dump(tree))
+    return sha("\n".join(parts))[:16]
+
+
+MEANING = meaning()
 
 
 if __name__ == "__main__":

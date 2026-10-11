@@ -170,6 +170,30 @@ fn broadleaf(
     // and gaps of sky between the masses; each branch from a point along its scaffold. A
     // sapling's round its trunk's top. (Pass 1 of M6's lookdev: clumps spread along each
     // scaffold, each its own small lump of light, read as confetti, not as masses.)
+    crown_on(mut p, s, tips, feet, tall, crown_y, lean, top, w, clump, count, limbs, girth)
+    p
+}
+
+/// A broad-leaved crown on its limbs: a mass round each of `tips` (each grown from its foot in
+/// `feet`) and one at the tree's own top, `count` clumps `clump` across in all, `limbs` of them
+/// with a branch of their own; a sapling's (no tips) round its trunk's top. (Split from
+/// `broadleaf` so that each species grows its own trunk and limbs, and the crowns item owns this.)
+fn crown_on(
+    p: mut Plant,
+    s: u32,
+    tips: Vec<vec3>,
+    feet: Vec<vec3>,
+    tall: f32,
+    crown_y: f32,
+    lean: vec3,
+    top: vec3,
+    w: f32,
+    clump: f32,
+    count: u32,
+    limbs: u32,
+    girth: f32,
+) {
+    let scaffolds = tips.len()
     let half = (tall - crown_y) * 0.5
     let mid = vec3(0.0, crown_y + half, 0.0) + lean * 1.3
     if scaffolds > 0 {
@@ -223,7 +247,6 @@ fn broadleaf(
             )
         }
     }
-    p
 }
 
 /// A broad-leaved crown's mass: its core's radius against the kind's clump, and how softly its
@@ -827,10 +850,10 @@ fn lowest(p: Plant) -> f32 {
 }
 
 /// Each kind's lowest branch (`lowest`), as it's built (the great oak's isn't needed: it's kept).
-pub const LOWEST: [f32; 24] = lowest_of_kinds()
+pub const LOWEST: [f32; KINDS] = lowest_of_kinds()
 
-fn lowest_of_kinds() -> [f32; 24] {
-    var out = [0.0; 24]
+fn lowest_of_kinds() -> [f32; KINDS] {
+    var out = [0.0; KINDS]
     for k in 1..KINDS {
         out[k] = lowest(kind_plant(k))
     }
@@ -843,10 +866,10 @@ pub fn lowest_placed(k: u32, tall: f32, fork: f32) -> f32 {
 }
 
 /// Each kind's trunk (its first limb), as it's built (the great oak's isn't needed: it's kept).
-const TRUNKS: [Tube<4>; 24] = trunks_of_kinds()
+const TRUNKS: [Tube<4>; KINDS] = trunks_of_kinds()
 
-fn trunks_of_kinds() -> [Tube<4>; 24] {
-    var out = [Tube { points: [vec3(0.0); 4], radii: [0.0; 4] }; 24]
+fn trunks_of_kinds() -> [Tube<4>; KINDS] {
+    var out = [Tube { points: [vec3(0.0); 4], radii: [0.0; 4] }; KINDS]
     for k in 1..KINDS {
         let p = kind_plant(k)
         if p.limbs.len() > 0 {
@@ -879,12 +902,12 @@ pub fn trunk_at(k: u32, tall: f32, h: f32, fork: f32) -> f32 {
 /// and the lowest middle less half a clump; and its top, the highest middle and half a clump (a
 /// clump's edge is leaves with gaps between, which the eye sees through: calibrated against the
 /// renderer's depth, #55 AC3).
-const CROWN_R: [f32; 24] = crowns_of_kinds(0)
-const CROWN_BASE: [f32; 24] = crowns_of_kinds(1)
-const CROWN_TOP: [f32; 24] = crowns_of_kinds(2)
+const CROWN_R: [f32; KINDS] = crowns_of_kinds(0)
+const CROWN_BASE: [f32; KINDS] = crowns_of_kinds(1)
+const CROWN_TOP: [f32; KINDS] = crowns_of_kinds(2)
 
-fn crowns_of_kinds(which: u32) -> [f32; 24] {
-    var out = [0.0; 24]
+fn crowns_of_kinds(which: u32) -> [f32; KINDS] {
+    var out = [0.0; KINDS]
     for k in 0..KINDS {
         let p = kind_plant(k)
         var reach = 0.0
@@ -965,10 +988,10 @@ pub fn drawn_crowns(trees: [Tree]) -> Vec<Drawn> {
 
 /// Where each kind's trunk first forks, as it's built (m): its lowest limb's foot (its first
 /// limb is its trunk); 0 for a kind with no limbs.
-const FORK_Y: [f32; 24] = forks_of_kinds()
+const FORK_Y: [f32; KINDS] = forks_of_kinds()
 
-fn forks_of_kinds() -> [f32; 24] {
-    var out = [0.0; 24]
+fn forks_of_kinds() -> [f32; KINDS] {
+    var out = [0.0; KINDS]
     for k in 1..KINDS {
         let p = kind_plant(k)
         for i in 1..p.limbs.len() {
