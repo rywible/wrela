@@ -225,11 +225,15 @@ pub fn place(
     if keep <= 0.0 && k + 1 < LEVELS {
         return
     }
-    // Out of the stones.
+    // Out of the stones, and short round them for a stride past their reach (grazed and trodden
+    // there, as round a standing stone or a wall), so their feet show.
+    var trodden = 1.0
     for st in stones {
-        if length(xz - st.xy) < st.z {
+        let past = length(xz - st.xy) - st.z
+        if past < 0.0 {
             return
         }
+        trodden = min(trodden, mix(0.3, 1.0, smoothstep(0.0, 1.6, past)))
     }
     let t = ground_cover_at(levels, texels, xz)
     let cover = t.cover
@@ -240,13 +244,21 @@ pub fn place(
     // It shrinks away as it's dropped (keep from 0.15 to 0), and over the last stretch of the
     // grass's reach, into the meadow's ground: nothing pops.
     let dropped = if k + 1 < LEVELS { smoothstep(0.0, 0.15, keep) } else { 1.0 }
-    let shrink = dropped * (1.0 - smoothstep(REACH - 12.0, REACH, d))
+    let shrink = dropped * trodden * (1.0 - smoothstep(REACH - 12.0, REACH, d))
     let grass = rand(seed, 3) < cover.a
-    // In the grass, a share of forbs (a meadow is not grass alone: `FORBS`).
-    let forb = grass && rand(seed, 15) < FORBS
+    // In the grass, a share of forbs (a meadow is not grass alone: `FORBS`), most of them in
+    // the meadow's drifts of flowers (`bloom_drift`).
+    let wxz = xz + keyed
+    let drift = if grass { bloom_drift(wxz) } else { 0.0 }
+    // The sward's drifts (`sward`): the blades' height and lie, and the forbs' and the wood's
+    // floor's plants' too where they grow in the grass, so a grazed gap is low all through and
+    // nothing stands out of it as a spike (round 2).
+    let (lie, swathe) = sward(wxz)
+    let lawn = mix(1.0, mix(0.65, 1.2, swathe), smoothstep(0.05, 0.4, cover.a))
+    let forb = grass && rand(seed, 15) < FORBS * (0.6 + 0.8 * drift)
     if !grass || forb {
         // No grass: perhaps one of the wood's floor's own plants, or a forb of the open's.
-        let p = WoodPlant { xz, y, d, seed, shrink, forb }
+        let p = WoodPlant { xz, y, d, seed, shrink: shrink * lawn, forb, drift }
         under_plant(
             at,
             t,
@@ -263,17 +275,34 @@ pub fn place(
         )
         return
     }
-    // Its patch (keyed to the world, a few metres across): taller tussocks and shorter grazed
-    // lawn, greener and drier (one even height and colour read as a carpet).
-    let wxz = xz + keyed
-    let patch = noise::noise2(wxz * 0.35 + vec2(11.0, 3.0))
+    // The sward as a carpet, not a bed of spikes (pass 1): its height set by its drift (keyed
+    // to the world, metres to tens of metres across: taller swathes, quiet grazed gaps), little
+    // by the blade, so no one blade stands out of its neighbours; a few lit tufts.
     let tuft = noise::noise2(wxz * 1.3 + vec2(-5.0, 8.0))
-    let tall = (0.18 + 0.6 * meadow.x) *
-        (0.6 + 0.8 * rand(seed, 4)) *
-        (0.55 + 0.9 * patch) *
-        (0.8 + 0.5 * smoothstep(0.55, 0.8, tuft)) *
+    let tall = (0.15 + 0.55 * meadow.x) *
+        (0.85 + 0.3 * rand(seed, 4)) *
+        mix(0.65, 1.2, swathe) *
+        (0.9 + 0.3 * smoothstep(0.6, 0.85, tuft)) *
         shrink
-    let width = spacing_at(d) * (0.85 + 0.4 * rand(seed, 5)) * 1.15
+    let width = spacing_at(d) * (0.85 + 0.4 * rand(seed, 5)) * 1.3
+    // Its tuft: blades gather in tussocks a hand or two across, splaying out from its middle
+    // (a tuft reads as one mass, where blades stood alone as spikes), the tallest in the middle,
+    // all combed the patch's way.
+    let tc = floor(wxz / TUFT)
+    let ti = vec2i(tc)
+    let middle = (tc +
+        vec2(0.5) +
+        0.6 * (vec2(hash2(ti.x + 5, ti.y), hash2(ti.y - 3, ti.x)) - 0.5)) *
+        TUFT
+    let away = wxz - middle
+    let out = length(away) / (0.75 * TUFT)
+    let comb = vec2(cos(lie), sin(lie))
+    let splay = normalize(
+        normalize(away + vec2(1.0e-4)) * 0.4 +
+            comb * 0.9 +
+            0.4 * vec2(rand(seed, 6) - 0.5, rand(seed, 16) - 0.5),
+    )
+    let tall = tall * (1.1 - 0.2 * saturate(out))
     let tint = rand(seed, 8)
     let ground_n = t.normal
     let root = vec3(xz.x, y + 0.1, xz.y)
@@ -283,8 +312,10 @@ pub fn place(
         Blade {
             root: vec3(xz.x, y - 0.02, xz.y),
             tall,
-            facing: TAU * rand(seed, 6),
-            bend: 0.2 + 0.5 * rand(seed, 7),
+            // Splayed from its tuft and combed by the wind and the herd, bending over more
+            // toward the tuft's edge, so the blades cover the ground as a pile does.
+            facing: atan2(splay.y, splay.x),
+            bend: 0.25 + 0.25 * saturate(out) + 0.25 * rand(seed, 7),
             width,
             ground: std::gpu::Oct32::encode(t.normal),
             colour: Unorm8x4::encode(
@@ -300,9 +331,10 @@ pub fn place(
             sky: Unorm8x4::encode(vec4(saturate(sky * 0.5), 0.0)),
         },
     )
-    // A flower on its tip, where the meadow has them: which kind, by their weights here.
+    // A flower on its tip, where the meadow has them, in its drifts: which kind, by their
+    // weights here.
     let fw = t.flowers
-    if rand(seed, 11) < fw.w && d < FLOWERS_TO {
+    if rand(seed, 11) < fw.w * (0.04 + 1.8 * drift) && d < FLOWERS_TO {
         let r = rand(seed, 12) * (fw.x + fw.y + fw.z)
         let kind = if r < fw.x { 0 } else if r < fw.x + fw.y { 1 } else { 2 }
         let _ = flowers.push(
@@ -328,6 +360,25 @@ struct WoodPlant: Copy {
     shrink: f32,
     /// A forb in the grass: one of the open's species, not as `Cover::under` asks.
     forb: bool,
+    /// How far into a drift of flowers it stands (`bloom_drift`).
+    drift: f32,
+}
+
+/// The meadow's drifts at `w` (in the world): which way its blades lie (radians: combed in
+/// swathes, turning slowly across the meadow), and how tall the sward stands, 0 in its quiet
+/// grazed gaps to 1 in its tall swathes (pass 1: one even, spiky height read as a bed of nails).
+pub fn sward(w: vec2) -> (f32, f32) {
+    let lie = TAU * noise::fbm2(w * 0.035 + vec2(-13.0, 5.0), 2) * 1.5
+    let swathe = smoothstep(0.3, 0.72, noise::fbm2(w * 0.07 + vec2(11.0, 3.0), 3))
+    (lie, swathe)
+}
+
+/// How far `w` (in the world) is into one of the meadow's drifts of flowers, 0 to 1: drifts
+/// some metres across with few flowers between them, not flowers scattered evenly (confetti,
+/// pass 1).
+pub fn bloom_drift(w: vec2) -> f32 {
+    let warped = w + 6.0 * vec2(noise::noise2(w * 0.05), noise::noise2(w * 0.05 + vec2(4.0, 9.0)))
+    smoothstep(0.58, 0.74, noise::fbm2(warped * 0.06 + vec2(3.0, -7.0), 2))
 }
 
 /// The share of the grass's places a forb takes (MG5's sward is about a third forbs by cover;
@@ -337,6 +388,9 @@ pub const FORBS: f32 = 0.1
 /// The ground a frond of a fern or of bracken covers (m²): the wood's floor's plants' density
 /// (`Cover::under`) is fronds this far apart.
 pub const FROND_AREA: f32 = 0.18
+
+/// How far apart the meadow's tufts are (m).
+pub const TUFT: f32 = 0.24
 
 /// How near the eye no frond grows (m, on the plane).
 pub const CLEAR_EYE: f32 = 1.5
@@ -899,11 +953,14 @@ fn under_plant(
     let spec = flora.species[sp]
     let kind = if sp > 0 { spec.shape } else { kind }
     // A tall species keeps clear of the eye as a frond does.
-    if sp > 0 && spec.tall > 0.4 && near < CLEAR_EYE {
+    if sp > 0 && spec.tall > 0.2 && near < CLEAR_EYE {
         return
     }
     let (tall, wide, bend) = if sp > 0 {
-        (spec.tall * (0.7 + 0.6 * v), spec.wide, spec.bend * (0.8 + 0.4 * rand(p.seed, 7)))
+        // A strap leaf arches out of its rosette (alone and upright, it read as a dark spike:
+        // round 2, the ring).
+        let arch = if kind == STRAP { max(spec.bend, 0.6) } else { spec.bend }
+        (spec.tall * (0.7 + 0.6 * v), spec.wide, arch * (0.8 + 0.4 * rand(p.seed, 7)))
     } else if kind == FERN {
         (0.45 + 0.35 * v, 0.2, 0.75 + 0.2 * rand(p.seed, 7))
     } else if kind == BRACKEN {
@@ -915,11 +972,11 @@ fn under_plant(
     }
     // A fern's fronds rise from its crown and arch out from it: each frond's foot is drawn to
     // the crown of its cell of a coarser grid (keyed to the world), facing away from it; a
-    // herb's leaves spread so from a rosette. Bracken stands where it falls.
+    // herb's leaves and a strap's spread so from a rosette. Bracken stands where it falls.
     var xz = p.xz
     var y = p.y
     var facing = TAU * rand(p.seed, 6)
-    if kind == FERN || kind == HERB {
+    if kind == FERN || kind == HERB || kind == STRAP {
         let crown_size = if kind == FERN { FERN_CROWN } else { HERB_ROSETTE }
         let keyed = at.cam.keyed().xz
         let w = p.xz + keyed
@@ -951,14 +1008,17 @@ fn under_plant(
         },
     )
     // Its flowers, as its species has them (a bluebell's haze, a foxglove's spike).
-    if spec.bloom > 0 && rand(p.seed, 12) < spec.blooms && p.d < FLOWERS_TO {
+    // A forb of the open flowers in the meadow's drifts, few between them.
+    let blooms = if p.forb { spec.blooms * (0.03 + 0.97 * p.drift) } else { spec.blooms }
+    if spec.bloom > 0 && rand(p.seed, 12) < blooms && p.d < FLOWERS_TO {
         let head = root + vec3(0.0, tall * p.shrink * (0.75 + 0.2 * rand(p.seed, 13)), 0.0)
         let _ = flowers.push(
             Flower {
                 head,
-                size: (0.025 + 0.02 * rand(p.seed, 14)) *
-                    p.shrink *
-                    (1.0 - smoothstep(FLOWERS_TO - 12.0, FLOWERS_TO, p.d)),
+                // A forb's heads smaller than a wood plant's: big ones read as confetti.
+                size: (if p.forb { 0.016 + 0.016 * rand(p.seed, 14) } else {
+                    0.025 + 0.02 * rand(p.seed, 14)
+                }) * p.shrink * (1.0 - smoothstep(FLOWERS_TO - 12.0, FLOWERS_TO, p.d)),
                 kind: spec.bloom - 1,
                 seed: p.seed,
             },
@@ -1024,10 +1084,10 @@ fn group_indices() -> Vec<u32> {
 /// The grass's colours: at the root, at the tip of young and dry grass, and the light through
 /// a blade (linear).
 pub struct GrassLook: Copy + GpuData {
-    pub root: vec3 = vec3(0.03, 0.055, 0.015),
+    pub root: vec3 = vec3(0.045, 0.08, 0.02),
     pub tip_young: vec3 = vec3(0.12, 0.20, 0.05),
     pub tip_dry: vec3 = vec3(0.30, 0.28, 0.10),
-    pub through: vec3 = vec3(0.12, 0.17, 0.03),
+    pub through: vec3 = vec3(0.11, 0.17, 0.028),
     /// The wood's floor's plants: a fern's frond (deep green), bracken's (yellower, and brown
     /// past its prime), a herb's leaf; each from a darker stalk.
     pub fern: vec3 = vec3(0.055, 0.11, 0.025),
@@ -1321,12 +1381,18 @@ pub fn blade_shade(
     let b = blades[v.which.value]
     let colour = b.colour.decode()
     let kind = colour.w
-    // A frond is cut into its leaflets: solid along its stalk, gaps between them toward its
-    // edges (a herb's leaf is whole).
+    // How far up the blade a pixel spans (taken before any branch: a derivative).
+    let dv = fwidth(v.uv.y)
+    // A frond is cut into its leaflets: solid along its stalk, round lobes toward its edges,
+    // shallow notches between them (a herb's leaf is whole). A triangle wave's cut read as a
+    // sawtooth band (pass 1: the ring, the windthrow); where a leaflet is under a few pixels
+    // the cut fades, so a far frond is a whole soft leaf, never a row of teeth.
     if kind > 0.25 && kind < 0.8 {
-        let n = if kind < 0.5 { 13.0 } else { 9.0 }
-        let leaflet = 1.0 - abs(fract(v.uv.y * n) - 0.5) * 2.0
-        if abs(v.uv.x) > 0.18 + 0.82 * leaflet {
+        let n = if kind < 0.5 { 11.0 } else { 8.0 }
+        let x = 2.0 * fract(v.uv.y * n) - 1.0
+        let lobe = sqrt(saturate(1.0 - x * x))
+        let seen = 1.0 - smoothstep(0.15, 0.4, dv * n)
+        if abs(v.uv.x) > 1.0 - seen * 0.55 * (1.0 - lobe) {
             discard()
         }
     }
@@ -1335,13 +1401,16 @@ pub fn blade_shade(
     let n = normalize(ground * 0.75 + blade_normal(b, v.uv.x) * 0.25)
     let t = v.uv.y
     let sun = sun_at(lt, world, ground, soft: 1.5)
-    let ao = 0.35 + 0.65 * smoothstep(0.0, 0.8, t)
+    // Darker down in the sward, but not so much that each blade reads as a dark-rooted spike.
+    let ao = 0.5 + 0.5 * smoothstep(0.0, 0.8, t)
     let sky = b.sky.decode().xyz * 2.0 * ao
     // (A wood's floor plant's species; a meadow blade's third part is how deep a green it is.)
     let sp = if kind > 0.1 { u32(round(colour.z * 255.0)) } else { 0 }
     let albedo = if sp > 0 {
-        let c = species[min(sp, species.len() - 1)].colour
-        mix(c * 0.45, c, vec3(smoothstep(0.0, 0.35, t))) * (0.8 + 0.4 * colour.x)
+        // A little lighter than its listed colour: at its value the wood's floor's leaves and
+        // the meadow's forbs read as black cut-outs among the grass (round 1: the ring).
+        let c = species[min(sp, species.len() - 1)].colour * 1.5
+        mix(c * 0.55, c, vec3(smoothstep(0.0, 0.35, t))) * (0.8 + 0.4 * colour.x)
     } else if kind > 0.1 { under_colour(look, kind, t, colour.x, colour.y) } else {
         grass_colour(look, t, colour.x, colour.y, colour.z)
     }
@@ -1355,10 +1424,14 @@ pub fn blade_shade(
         // A frond or a herb's leaf is thicker than a blade: less light through it (sunlit fronds
         // through which as much shone as through grass read as white zigzags).
         through: look.through * t * (if kind > 0.1 { 0.35 } else { 1.0 }),
-        rough: 0.75,
-        glint: 1.0,
+        // Matte, with little glint: against the sun, a blade's glint and its sky's reflection
+        // at a grazing angle turned a backlit meadow white (A5, P7); its glow is the light
+        // through it, which keeps its green.
+        rough: 0.9,
+        glint: 0.2,
         reflected: sky *
-            light::gloss_occlusion(ao, abs(dot(n, normalize(lt.cam.eye - world))), 0.75),
+            0.5 *
+            light::gloss_occlusion(ao, abs(dot(n, normalize(lt.cam.eye - world))), 0.9),
     }
     let c = shown(lt, lit, world)
     vec4(c, view::GRASS)
@@ -1495,4 +1568,44 @@ impl Grass {
             depth: view::PREPASSED,
         )
     }
+}
+
+/// The meadow's drifts (`sward`, `bloom_drift`) are patches some metres across, not noise per
+/// blade: over a 200 m square, a drift of flowers covers a minority of the ground, a point in one
+/// is mostly beside another, and the sward has both its quiet gaps and its tall swathes.
+@test
+fn the_meadow_grows_in_drifts() {
+    var drifted = 0
+    var beside = 0
+    var gaps = 0
+    var swathes = 0
+    var n = 0
+    for j in 0..200 {
+        for i in 0..200 {
+            let w = vec2(f32(i), f32(j)) - vec2(100.0)
+            n += 1
+            if bloom_drift(w) > 0.5 {
+                drifted += 1
+                if bloom_drift(w + vec2(1.0, 0.0)) > 0.5 {
+                    beside += 1
+                }
+            }
+            let (_, swathe) = sward(w)
+            assert(swathe >= 0.0 && swathe <= 1.0, f"a swathe of {swathe} at {w}")
+            if swathe < 0.2 {
+                gaps += 1
+            }
+            if swathe > 0.8 {
+                swathes += 1
+            }
+        }
+    }
+    let share = f32(drifted) / f32(n)
+    assert(share > 0.03 && share < 0.4, f"drifts of flowers over {share * 100.0}% of the meadow")
+    let together = f32(beside) / f32(max(drifted, 1))
+    assert(together > 0.8, f"only {together * 100.0}% of a drift's points beside another")
+    assert(
+        gaps > n / 20 && swathes > n / 20,
+        f"{gaps} points in gaps, {swathes} in swathes, of {n}",
+    )
 }
