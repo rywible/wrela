@@ -201,8 +201,14 @@ pub struct Spot: Copy {
 }
 
 /// How much a crown's leaves stop a sightline, per metre through it, for a species of shade 1
-/// (the renderer's crowns, cards with gaps between: calibrated against its depth, #55 AC3).
-const CROWN_DENSITY: f32 = 0.22
+/// (the renderer's crowns, cards with gaps between: calibrated against its depth, #55 AC3; with
+/// the Last Green's crowns as built since its owner's tree notes, 0.22 saw past what the renderer
+/// draws at 3 of its 24 places, and 0.38 with `SAPLING` brings all 24 within 0.1).
+const CROWN_DENSITY: f32 = 0.38
+
+/// How much a sapling under the crowns stops a sightline, per metre through it, at 2 m tall
+/// or more (a thorn stops 0.16): calibrated with `CROWN_DENSITY`.
+const SAPLING: f32 = 0.12
 
 /// The features' bins (m).
 const FBIN: f32 = 40.0
@@ -360,7 +366,7 @@ pub fn sight_of<G: Ground>(
         // the renderer draws: over 1.2 m; a drawn thorn is a crown, above).
         let least = if drawn { 1.2 } else { 0.8 }
         if t.state == State::Alive && (t.tall <= 4.0 || h.thorny) && t.tall > least && !shrub {
-            let thick = if h.thorny { 0.16 } else { 0.07 }
+            let thick = if h.thorny { 0.16 } else { SAPLING }
             let v = thick * min(t.tall / 2.0, 1.0)
             let wide = if drawn { e.crowns[i].reach } else { t.reach }
             let high = if drawn { e.crowns[i].top } else { t.tall }
