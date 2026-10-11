@@ -843,7 +843,7 @@ fn the_fire_and_the_gales_leave_what_they_did() {
                 var stood = 0
                 for t in u.trees {
                     let d = length(t.at - at)
-                    if d < 0.6 * reach && t.cause == Cause::Snapped && t.died == e.year {
+                    if d < reach && t.cause == Cause::Snapped && t.died == e.year {
                         snapped += 1
                     }
                     if d < reach &&
@@ -855,7 +855,7 @@ fn the_fire_and_the_gales_leave_what_they_did() {
                 }
                 let name = e.name
                 print(
-                    f"{name}: {marked} of {cells} cells near its middle thrown on; {snapped} snapped; {stood} stood through it within its reach",
+                    f"{name}: {marked} of {cells} cells near its middle thrown on; {snapped} snapped and {stood} stood through it within its reach",
                 )
                 // A gale before the bake's first year (the meadow's) never blew.
                 if e.year < m.present - BAKE.years {
@@ -1160,7 +1160,7 @@ fn place(name: Text, from: vec2, to: vec2) -> vec4 {
     assert(steps - bed >= 3.0, f"{name}: the steps stand only {steps - bed} dB over the bed")
     let loudest = max(still, bed)
     assert(
-        loudest <= CUE - 10.0,
+        loudest <= CUE - 15.0,
         f"{name}: the bed ({loudest} dB) leaves a cue at {CUE} dB too little room",
     )
     p
@@ -1233,6 +1233,52 @@ fn the_floors_sound_changes_as_smoothly_as_the_place() {
             f"from {from} toward {to}: the bed moved {worst} dB in a quarter second",
         )
     }
+}
+
+/// The load stands the built things nearest the eye first: from a ring's middle, its own
+/// centre stone; from beside the tower, the tower.
+@test
+fn the_nearest_built_thing_is_realized_first() {
+    let m = map::map()
+    let built = blockouts::built(m)
+    for k in m.sites {
+        if k.feature == Feature::Ring || k.feature == Feature::Tower {
+            let b = built[blockouts::nearest(built, k.at + vec2(0.3, 0.0))]
+            assert(length(blockouts::place(b) - k.at) < 0.5, f"{k.name}: not its own middle first")
+        }
+    }
+}
+
+/// A water source's slot is let go only when the voice will hear it go: while the ring is full
+/// (a voice not yet running, as in a browser before the player's first input), the slot keeps
+/// its source, and lets it go on the first frame whose release gets in.
+@test
+fn a_water_slot_is_let_go_only_when_the_voice_hears_it() {
+    var l = listener(7)
+    let wind = engine::plant::Wind { dir: vec2(1.0, 0.0), strength: 0.035, time: 0.0 }
+    let m = sound::Moment {
+        eye: vec3(0.0, 1.8, 0.0),
+        facing: vec2(0.0, 1.0),
+        feet: vec3(0.0),
+        normal: vec3(0.0, 1.0, 0.0),
+        fields: vec4(0.0),
+        wading: 0.0,
+        wind,
+        time: 0.0,
+    }
+    var near: Bounded<sound::Heard, engine::sound::WATERS> = Bounded::new()
+    near.push(sound::Heard { id: 7, kind: 0, at: vec3(5.0, 0.0, 0.0), flow: 1.0 })
+    let gone: Bounded<sound::Heard, engine::sound::WATERS> = Bounded::new()
+    sound::hear(mut l.hearing, m, near)
+    assert(l.hearing.slots[0] == 7, "the source took the first slot")
+    for _ in 0..engine::sound::CUES {
+        sound::cue(mut l.hearing, engine::sound::Cue::Listen { at: m.eye, forward: m.facing })
+    }
+    sound::hear(mut l.hearing, m, gone)
+    assert(l.hearing.slots[0] == 7, "the slot was let go, though the full ring dropped its release")
+    l.render_to(std::audio::QUANTUM)
+    sound::hear(mut l.hearing, m, gone)
+    assert(l.hearing.slots[0] != 7, "the slot wasn't let go once the ring had room")
 }
 
 /// Each ring's stones stand apart, open widest at the threshold, and the great stone stands

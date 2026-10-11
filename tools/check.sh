@@ -205,10 +205,18 @@ native_cache = os.path.abspath(native_cache)
 # Keep the same depth as target/tmp: copied fixtures have relative dependency paths.
 scratch_root = os.path.abspath("target")
 os.makedirs(scratch_root, exist_ok=True)
+# A failed program's scratch is kept to look at, until a run six hours later removes it.
+for old in os.listdir(scratch_root):
+    path = os.path.join(scratch_root, old)
+    try:
+        if old.startswith("test-scratch-") and time.time() - os.stat(path).st_mtime > 6 * 3600:
+            shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        pass
 cores = cpu_count()
-# Software Vulkan competes for CPU time, so default to one test thread per program.
-# Hardware uses up to four, bounded by available CPUs and the shared GPU limit.
-test_threads = 1 if os.environ.get("WRELA_SOFTWARE_GPU") else max(1, min(4, cores))
+# Up to four test threads a program, bounded by the CPUs and the shared GPU limit, on a software
+# GPU too: one thread a program made the memo-off gate's tests take 460 s, not 197 s (4 cores).
+test_threads = max(1, min(4, cores))
 programs = []
 for line in open(f"{logs}/tests.json"):
     m = json.loads(line)
@@ -256,7 +264,7 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=cores) as pool:
         if code != 0:
             failed = True
             print(text)
-            print(f"{name} failed; scratch kept at {scratch}")
+            print(f"{name} failed; scratch kept at {scratch} (for six hours)")
         elif passed and "--nocapture" in args:
             print(text)
         elif passed and took >= 1:

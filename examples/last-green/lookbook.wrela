@@ -63,11 +63,13 @@ pub const SHOTS = [
         moves: vec2(2.5, -1.7),
     },
     // The canopy from above in its species' colours, the tower on its hill: a long lens, so the
-    // tower reads over the wood.
+    // tower reads over the wood. The eye stands 29 m back from the crag's edge and looks 0.02
+    // below level, along the line to the tower, so the crag's top it stands on, to the shoulder
+    // where it falls away, fills the lower third.
     Shot {
         name: "the crag's top",
-        eye: vec3(330.0, 1.8, -150.0),
-        at: vec3(560.0, 14.0, -470.0),
+        eye: vec3(321.8, 1.8, -138.6),
+        at: vec3(438.5, 57.9, -301.0),
         moves: vec2(1.0, -1.4),
         fovy: 0.4,
         reach: 8.0,
@@ -190,6 +192,16 @@ pub const SHOTS = [
             player: vec3(-47.2, -267.6, 2.145),
             fawn: vec3(-43.8, -269.8, 0.631),
         },
+    },
+    // The climber from in front and to one side, its mask lit by the low sun from the camera's
+    // right, the glade behind it and the fawn grazing there.
+    Shot {
+        name: "the climber's mask",
+        eye: vec3(145.8, 1.5, 37.1),
+        at: vec3(142.9, 1.0, 40.3),
+        reach: 1.0,
+        moves: vec2(0.59, 0.54),
+        cast: Cast { on: true, player: vec3(142.9, 40.3, 1.6), fawn: vec3(137.5, 47.9, 0.9) },
     },
 ]
 
