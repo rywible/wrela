@@ -14,6 +14,7 @@ use std::gpu::{
     ClipPosition, Flat, FragCoord, GlobalId, GpuBuffer, Slots, Unorm8x4, VertexIndex, buffer,
     discard, dispatch,
 }
+use std::transform::{rotate_y, translate}
 use temporal::motion_of
 use view::{CREATURE, Camera}
 
@@ -60,6 +61,18 @@ pub fn colours<C, F: Parts<C>, L: Look<C>>(
         groups: (room + 63) / 64,
     )
     out
+}
+
+/// A character realized: its mesh and each vertex's colour.
+pub struct Realized {
+    pub mesh: Mesh,
+    pub colours: GpuBuffer<Unorm8x4>,
+}
+
+/// A rigid character's one bone where it stands: its feet at `feet`, facing `heading` (radians
+/// from +z toward +x).
+pub fn placed(feet: vec3, heading: f32) -> mat4 {
+    translate(feet) * rotate_y(heading)
 }
 
 /// What a character's vertex passes on: its world point and normal, its colour, and the bone
