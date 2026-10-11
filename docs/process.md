@@ -41,7 +41,10 @@ flowchart LR
 Every commit on `main` so far (50 of 50 on 2026-10-10) was written with Claude Code and carries
 a `Co-Authored-By: Claude` line; Ryan commits or merges them. Agents also merge their own
 branches with Ryan's standing permission, after `tools/check.sh` passes. Since 2026-10-11 every
-branch starts from `main` and squash-merges back into it; milestone branches are retired.
+branch starts from `main` and squash-merges back into it once its own change passes the gate,
+without first taking unrelated updates from `main`; milestone branches are retired. Changes that
+only make the checks faster merge without the gate, and the long tier that runs on `main` every
+6 hours is their safety net.
 
 ## Tools and models
 
