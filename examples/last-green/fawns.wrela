@@ -71,9 +71,9 @@ pub fn at_rest(feet: vec3, heading: f32) -> [mat4; MAX_BONES] {
     bones[head.index] = world * lean * lift
     let x = vec3(1.0, 0.0, 0.0)
     let elbow = s.rest(s.find("elbow right"))
-    let swing = bone_matrix(Quat::axis_angle(x, 0.45), elbow, elbow)
+    let swing = bone_matrix(Quat::axis_angle(x, 0.35), elbow, elbow)
     let knee = s.rest(s.find("knee right"))
-    let fold = bone_matrix(Quat::axis_angle(x, -1.5), knee, knee)
+    let fold = bone_matrix(Quat::axis_angle(x, -0.9), knee, knee)
     bones[s.find("elbow right").index] = world * swing
     for name in ["knee right", "fore fetlock right"] {
         bones[s.find(name).index] = world * swing * fold
