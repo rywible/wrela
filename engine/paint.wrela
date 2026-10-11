@@ -305,25 +305,40 @@ fn scene_line(
         return world_line(d, scene, depth, p, here_tag)
     }
     let r = d.look.line_px * d.cam.screen.y / d.out.y
-    let lim = d.cam.screen - vec2(1.0)
     let near = d.cam.distance_of(depth.load(x: u32(p.x), y: u32(p.y)))
+    // Not where it stands in front of itself: a character's own folds are its shading's.
+    outline(d.cam, scene, depth, p, here_tag, near, r, kin_behind: false)
+}
+
+/// How much of a line the scene pixel at `p` is (its tag `here_tag`, `near` metres away), from
+/// its four neighbours `r` scene pixels away: where one is well behind it (a silhouette), and
+/// where one of its kind with another tag is a little behind it (a leg against the body, a stone
+/// against a stone). A neighbour of its kind well behind it counts only with `kin_behind`.
+fn outline(
+    cam: Camera,
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    p: vec2,
+    here_tag: f32,
+    near: f32,
+    r: f32,
+    kin_behind: bool,
+) -> f32 {
+    let lim = cam.screen - vec2(1.0)
     var line = 0.0
     for k in 0..4 {
         let a = f32(k) * 1.5707964 + 0.4
         let q = clamp(p + vec2(cos(a), sin(a)) * r, vec2(0.0), lim)
+        let zq = depth.load(x: u32(q.x), y: u32(q.y))
+        let there = if zq <= 0.0 { 1.0e9 } else { cam.distance_of(zq) }
         let other = scene.load(x: u32(q.x), y: u32(q.y)).a
-        let there = d.cam.distance_of(depth.load(x: u32(q.x), y: u32(q.y)))
-        let other_char = class_of(other) == class_of(CREATURE)
-        // Its silhouette: the neighbour isn't it, and is well behind it.
-        let behind = if !other_char { smoothstep(0.03, 0.12, (there - near) / near) } else { 0.0 }
-        // Where one of its parts passes in front of another (a leg against its body): another
-        // part, a little behind.
-        let parts = if other_char && abs(other - here_tag) > 0.5 {
-            smoothstep(0.004, 0.02, (there - near) / near)
-        } else {
+        let kin = class_of(other) == class_of(here_tag)
+        let gap = (there - near) / near
+        let behind = if kin_behind || !kin { smoothstep(0.03, 0.12, gap) } else { 0.0 }
+        let apart = if kin && abs(other - here_tag) > 0.5 { smoothstep(0.004, 0.02, gap) } else {
             0.0
         }
-        line = max(line, max(behind, parts * 0.8))
+        line = max(line, max(behind, apart * 0.8))
     }
     line
 }
@@ -360,24 +375,7 @@ fn world_line(
     }
     let width = clamp(d.look.line_px * sqrt(8.0 / near), 1.0, 2.5)
     let r = width * d.cam.screen.y / d.out.y
-    let lim = d.cam.screen - vec2(1.0)
-    var line = 0.0
-    for k in 0..4 {
-        let a = f32(k) * 1.5707964 + 0.4
-        let q = clamp(p + vec2(cos(a), sin(a)) * r, vec2(0.0), lim)
-        let zq = depth.load(x: u32(q.x), y: u32(q.y))
-        let there = if zq <= 0.0 { 1.0e9 } else { d.cam.distance_of(zq) }
-        let other = scene.load(x: u32(q.x), y: u32(q.y)).a
-        let behind = smoothstep(0.03, 0.12, (there - near) / near)
-        // Another one of its kind (another stone, another trunk), a little behind.
-        let apart = if class_of(other) == class && abs(other - here_tag) > 0.5 {
-            smoothstep(0.004, 0.02, (there - near) / near)
-        } else {
-            0.0
-        }
-        line = max(line, max(behind, apart * 0.8))
-    }
-    line * fade
+    outline(d.cam, scene, depth, p, here_tag, near, r, kin_behind: true) * fade
 }
 
 /// The scene with its lines drawn, at the scene's resolution and before temporal AA: the scene
