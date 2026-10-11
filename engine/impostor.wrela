@@ -10,9 +10,9 @@
 // - A volume is the kind's crown as densities on a small grid, from its field; a farther
 //   instance is a quad that marches it.
 
-use light::{Lit}
+use light::{Lit, gloss, gloss_occlusion, matte}
 use lod::{draw_packed, keeps_packed}
-use lit::{Lighting, shown, sun_and_sky}
+use lit::{Lighting, sun_sky_and_gloss, through_air}
 use noise::{cell_size, hash2, hash2u, hashed_threshold_of, surface_draw}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_VERTICES, Leaves, Plant, Wind, card_tint,
@@ -32,18 +32,38 @@ pub const VIEWS: u32 = 16
 pub const CELL: u32 = 64
 pub const ATLAS: u32 = VIEWS * CELL
 
-/// Which crown a tree's is (its tag in the look: one of 60), from where it stands (any point on
-/// its axis): the same for its cards, its impostor and its volume, so its tag stays as its
-/// level changes.
+/// Which crown a tree's is (its tag in the look: one of 60), from where it stands in the world
+/// (any point on its axis; a render-space point with `Camera::keyed` added): the same for its
+/// cards, its impostor and its volume, so its tag stays as its level changes, and as the render
+/// origin moves.
 pub fn which_crown(at: vec3) -> u32 {
     u32(hash2(i32(at.x * 7.0), i32(at.z * 7.0)) * 60.0)
+}
+
+/// How much of its own tilt (`plant::leaf_draws`) a leaf takes off its crown's normal, the same
+/// for its cards, its impostor and its volume: at all of it, each leaf lit apart from its
+/// neighbours read as confetti, and a crown's masses didn't turn from light to shade as forms
+/// (M6's lookdev pass 1).
+pub const TILT: f32 = 0.5
+
+/// A leaf's roughness, where a leaf covers several pixels: a little waxy.
+pub const LEAF_ROUGH: f32 = 0.6
+
+/// A leaf's roughness where it's `px` of the scene's pixels wide: `LEAF_ROUGH` down to 8, then
+/// rougher, to the roughest (1) at 2 and under. A pixel then holds several leaves at several angles,
+/// and their glints merge into a broad sheen; each level of a crown holds them in different
+/// places (its own leaves on cards, its views' on an impostor, drawn on a volume), and where
+/// they glinted apart the levels differed by up to 5.1/255 where they meet (bound 4).
+pub fn leaf_rough(px: f32) -> f32 {
+    mix(LEAF_ROUGH, 1.0, 1.0 - smoothstep(2.0, 8.0, px))
 }
 
 /// A leaf's light at `at`, the same for its cards (`vegetation::leaf_shade`), its impostor and
 /// its volume: its normal `n`, the sky light for a surface facing `sky_n` (its crown's normal,
 /// where that's known), and `depth` metres inside its crown, which darkens the sun, the sky
-/// light and the light through it (`through`, its leaves'); through the haze. No gloss
-/// (`vegetation::leaf_shade` says why).
+/// light and the light through it (`through`, its leaves'); through the haze. Its gloss is its
+/// side's that faces the eye (a leaf has two), as rough as a leaf `leaf` metres wide is there
+/// (`leaf_rough`).
 pub fn leaf_light(
     lt: Lighting,
     at: vec3,
@@ -52,17 +72,31 @@ pub fn leaf_light(
     depth: f32,
     albedo: vec3,
     through: vec3,
+    leaf: f32,
 ) -> vec3 {
-    let ao = exp(-depth / 1.6)
-    let (sun, sky) = sun_and_sky(lt, at, n, sky_n, soft: 1.5)
+    // Over 2.4 m: a crown's masses are deeper than its old clumps, and over 1.6 m their lit
+    // tops went murk (M6's lookdev, crowns round 2: the mere's woods).
+    let ao = exp(-depth / 2.4)
+    let v = normalize(lt.cam.eye - at)
+    let facing = if dot(n, v) < 0.0 { -n } else { n }
+    let (sun, sky, reflected) = sun_sky_and_gloss(lt, at, n, sky_n, facing, soft: 1.5)
+    let inside = 0.25 + 0.75 * ao
     let lit = Lit {
         albedo,
         n,
         sun: sun * (0.35 + 0.65 * ao),
-        sky: sky * (0.25 + 0.75 * ao),
+        sky: sky * inside,
         through: through * (0.4 + 0.6 * ao),
     }
-    shown(lt, lit, at)
+    let rough = leaf_rough(leaf / lt.cam.footprint(max(dot(at - lt.cam.eye, lt.cam.forward), 0.1)))
+    let glossy = Lit {
+        n: facing,
+        rough,
+        glint: 1.0,
+        reflected: reflected * inside * gloss_occlusion(inside, dot(facing, v), rough),
+        ..lit,
+    }
+    through_air(lt, matte(lt.light, lit, at, lt.cam.eye) + gloss(lt.light, glossy, v), at)
 }
 
 /// The direction a hemi-octahedral grid's point `g` (each in [0, 1]) looks from (unit, y ≥ 0).
@@ -223,7 +257,7 @@ fn baked_leaf(f: BakeVertex, b: Bake, atlas: Texture<Rgba8>, s: Sampler) -> (vec
     }
     let crown_n = normalize(f.normal)
     let (tilt, aged) = leaf_draws(seed, which)
-    (leaf_normal(crown_n, tilt), tinted(leaf_age(b.leaves, crown_n.y, aged), f.tint))
+    (leaf_normal(crown_n, tilt * TILT), tinted(leaf_age(b.leaves, crown_n.y, aged), f.tint))
 }
 
 /// The impostor's colour: each view's leaves' (and limbs') albedo (its square root), and the
@@ -325,13 +359,15 @@ pub fn bake(
     let level = level_cards(n, BAKED)
     {
         let p = begin_pass_with_depth(mut colour, mut depth, clear: vec4(0.0), clear_depth: 1.0)
-        draw(
-            p,
-            bake_card.bind(b, cards: cards.span(start: 0, count: level)),
-            bake_colour.bind(b, atlas, s),
-            vertices: level * 6,
-            instances: views,
-        )
+        if level > 0 {
+            draw(
+                p,
+                bake_card.bind(b, cards: cards.span(start: 0, count: level)),
+                bake_colour.bind(b, atlas, s),
+                vertices: level * 6,
+                instances: views,
+            )
+        }
         if limb_count > 0 {
             draw(
                 p,
@@ -350,13 +386,15 @@ pub fn bake(
             clear: vec4(0.0, 0.0, 0.5, 0.0),
             clear_depth: 1.0,
         )
-        draw(
-            p,
-            bake_card.bind(b, cards: cards.span(start: 0, count: level)),
-            bake_normal.bind(b, atlas, s),
-            vertices: level * 6,
-            instances: views,
-        )
+        if level > 0 {
+            draw(
+                p,
+                bake_card.bind(b, cards: cards.span(start: 0, count: level)),
+                bake_normal.bind(b, atlas, s),
+                vertices: level * 6,
+                instances: views,
+            )
+        }
         if limb_count > 0 {
             draw(
                 p,
@@ -370,7 +408,7 @@ pub fn bake(
     }
     var bounds: GpuBuffer<vec4> = buffer(views)
     dispatch(view_bounds.bind(colour, out: mut bounds), over: views)
-    Impostor { colour: take colour, normal: take normal, bake: b, bounds: take bounds }
+    Impostor { colour, normal, bake: b, bounds }
 }
 
 // ---- drawing impostors ----------------------------------------------------------------------
@@ -395,6 +433,8 @@ pub struct FarVertex: Copy {
     pub shift2: Flat<vec4>,
     /// The part of a pixel's draws its instance keeps this way, packed (`Forest::marks`).
     pub keep: Flat<u32>,
+    /// Its own seed (`seed_of`), from where it stands in the world.
+    pub seed: Flat<u32>,
 }
 
 /// A far instance: a quad facing the eye, the plant's reach wide, about its middle; swayed by
@@ -437,7 +477,9 @@ pub fn far_quad(
     let q = mix(lo, hi, vec2(qx[k], qy[k]))
     let right = normalize(cross(vec3(0.0, 1.0, 0.0), to))
     let up = cross(to, right)
-    let flat = centre + (right * q.x + up * q.y) * (b.half * inst.scale)
+    // Its crown as wide as the instance's (`Instance::wide`): the quad narrowed across, the
+    // views read as the kind's.
+    let flat = centre + (right * (q.x * inst.wide) + up * q.y) * (b.half * inst.scale)
     let height = max(flat.y - inst.at.y, 0.0)
     var world = flat + sway(wind, flat, height)
     // The views round the eye's direction, the same for all the quad: each one's place for this
@@ -461,7 +503,7 @@ pub fn far_quad(
         uv: q,
         centre,
         yaw_scale: Flat { value: vec2(inst.yaw, inst.scale) },
-        tint: inst.tint,
+        tint: inst.tint_rgb(),
         id: Flat { value: first + i.index + 1 },
         views: vec4(uv[0], uv[1]),
         views2: vec4(uv[2], uv[3]),
@@ -469,6 +511,7 @@ pub fn far_quad(
         shift: Flat { value: vec4(shift[0], shift[1]) },
         shift2: Flat { value: vec4(shift[2], shift[3]) },
         keep: Flat { value: marks[i.index].x },
+        seed: Flat { value: seed_at(centre + cam.keyed()) },
     }
 }
 
@@ -664,6 +707,33 @@ fn volume_normal(
     normalize(turned(yaw, v.yzw))
 }
 
+/// `far_cut` at its quad's depth (the plane through the plant's middle, facing the eye), not
+/// its leaf's: a fragment that writes no depth of its own is tested before it runs, so what's
+/// behind the near crowns' cards costs nothing (a forest's far crowns are mostly behind them).
+/// The shading pass finds its leaf as `far_cut`'s does; only the far crowns' order among
+/// themselves, within a crown's depth, is the plane's.
+@fragment
+pub fn far_cut_flat(
+    f: FarVertex,
+    pixel: FragCoord,
+    b: Bake,
+    colour: Texture<Rgba8>,
+    s: Sampler,
+    cell: f32,
+) -> u32 {
+    let size = cell_size(f.uv, cell)
+    if !keeps_packed(f.keep.value, pixel.position.xy) {
+        discard()
+    }
+    let k = view_of(f, pixel.position.xy)
+    let (at, _) = view_at(f, k)
+    let c = colour.sample_level(s, at).a
+    if c <= 0.0 || c < 1.0 && c < hashed_threshold_of(f.uv, seed_of(f), size) {
+        discard()
+    }
+    f.id.value
+}
+
 /// A far instance's pixel, where its prepass won (its id there): what its impostor shows
 /// (`seen`), lit as a leaf is, where the leaf is. The sky light is for the crown's normal there,
 /// as a card's is: its kind's volume holds it (`grid`).
@@ -692,8 +762,9 @@ pub fn far_shade(
         depth: leaf.depth * f.yaw_scale.value.y,
         albedo: tinted(leaf.albedo, f.tint),
         through: b.leaves.through,
+        leaf: b.leaves.leaf_width() * f.yaw_scale.value.y,
     )
-    vec4(out, LEAVES + f32(which_crown(f.centre)))
+    vec4(out, LEAVES + f32(which_crown(f.centre + lt.cam.keyed())))
 }
 
 // ---- volumes ------------------------------------------------------------------------------------
@@ -849,10 +920,15 @@ fn march_volume(
     met
 }
 
-/// A far instance's own seed, for its draws that hold still on it: from where it stands (its
-/// quad's middle doesn't sway), the 24 bits of its lattice's hash that `noise::hash2` reads.
+/// A far instance's own seed, for its draws that hold still on it: from where it stands in the
+/// world (`at`; its quad's middle doesn't sway), the 24 bits of its lattice's hash that
+/// `noise::hash2` reads.
+fn seed_at(at: vec3) -> u32 {
+    hash2u(i32(floor(at.x * 8.0)), i32(floor(at.z * 8.0)), 0) >> 8
+}
+
 fn seed_of(f: FarVertex) -> u32 {
-    hash2u(i32(floor(f.centre.x * 8.0)), i32(floor(f.centre.z * 8.0)), 0) >> 8
+    f.seed.value
 }
 
 /// A very far instance cut by its volume's opacity, dithered: temporal AA brings it to the
@@ -918,13 +994,14 @@ pub fn volume_shade(
     let out = leaf_light(
         lt,
         volume_place(f, b, met.at),
-        leaf_normal(crown_n, tilt),
+        leaf_normal(crown_n, tilt * TILT),
         sky_n: crown_n,
         depth: met.depth * f.yaw_scale.value.y,
         albedo: tinted(leaf_age(b.leaves, crown_n.y, aged), f.tint),
         through: b.leaves.through,
+        leaf: b.leaves.leaf_width() * f.yaw_scale.value.y,
     )
-    vec4(out, LEAVES + f32(which_crown(f.centre)))
+    vec4(out, LEAVES + f32(which_crown(f.centre + lt.cam.keyed())))
 }
 
 /// A kind's volume, cooked: its voxels and their depths, in two 3D textures.
@@ -946,7 +1023,7 @@ pub fn cook(b: Bake, cards: GpuBuffer<Card>, n: u32, atlas: Texture<Rgba8>, s: S
     dispatch(
         cook_volume.bind(
             b,
-            cards: cards.span(start: 0, count: n),
+            cards: cards.span(start: 0, count: max(n, 1)),
             n: n,
             covers: covers.span(start: 0, count: LEAF_PATTERNS),
             out: mut grid,
@@ -954,5 +1031,5 @@ pub fn cook(b: Bake, cards: GpuBuffer<Card>, n: u32, atlas: Texture<Rgba8>, s: S
         ),
         over: grid,
     )
-    Cooked { grid: take grid, grid_depth: take grid_depth }
+    Cooked { grid, grid_depth }
 }

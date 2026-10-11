@@ -143,7 +143,7 @@ pub struct CornerProbe: Copy + GpuData {
     pub bits: [u32; 2],
 }
 
-/// The most live blocks a debug build's probe holds (`Scratch::probe`).
+/// The most blocks a grid a debug build probes has (`Scratch::probe`).
 pub const PROBE_BLOCKS: u32 = 32768
 
 /// One vertex of a realized mesh, 48 bytes as spike 01's: its rest position, its four bones (a
@@ -361,7 +361,9 @@ pub fn place_vertices<C, F: Parts<C>>(
             probed.bits[k] = bitcast_u32(d)
         }
     }
-    if debug_build() {
+    // (Room for `PROBE_BLOCKS` blocks: a larger grid's isn't probed. A slot's index counts the
+    // dispatch's every group, so a slot below the room can still fall past it.)
+    if debug_build() && grid.blocks <= PROBE_BLOCKS {
         probe[id] = probed
     }
     barrier(mut corners)
@@ -1048,9 +1050,9 @@ impl<F> Realizer<F> {
         let meshes: Vec<Option<Mesh>> = Vec::from_fn(self.detail.levels.len(), |_| None)
         self.held.push(
             Held {
-                field: take field,
+                field,
                 bounds,
-                meshes: take meshes,
+                meshes,
                 drawn: NO_LEVEL,
                 target: NO_LEVEL,
                 priority: 0.0,
@@ -1378,7 +1380,7 @@ impl<C, F: Parts<C>> Realizer<F> {
         }
         let slices = slices_for(grid)
         self.slicing = Some(
-            Slicing { instance: best, level, grid, mesh: take mesh, at: 0, slices, calibration },
+            Slicing { instance: best, level, grid, mesh, at: 0, slices, calibration },
         )
         true
     }

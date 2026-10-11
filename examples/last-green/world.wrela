@@ -1,0 +1,354 @@
+// The floor's simulation (#54 §5): the stand-in player walking and running over the floor, in the
+// sim's tick (`engine::run`) at 60 Hz, colliding with what the bake left (`history::OBSTACLES`)
+// and stopped by deep water and steep ground (`engine::footing`'s one rule). Its input records
+// are the walk's replay. A travel (the play harness's) moves the player beside a site.
+
+use engine::footing::{BODY, stands}
+use engine::place::{Place, Water}
+use engine::player::{NONE, Player, control, spawn, step}
+use engine::run::{Asks, TickInput}
+use engine::sim::{SimState, Tick}
+use ground::Ground
+use history::{OBSTACLES, TOUR}
+use std::input::{Event, Key}
+use std::hash::StateHash
+use std::math::TAU
+use std::serialize::Serialize
+use std::string::String
+
+/// The floor's ground and water, as the sim reads them.
+pub const GROUND: Ground = ground::ground()
+pub const WATER: Water = water()
+
+fn water() -> Water {
+    map::map().water
+}
+
+/// The sites' places and reaches, for travel: (x, z, reach).
+pub const SITES: Vec<vec3> = sites()
+
+fn sites() -> Vec<vec3> {
+    var out: Vec<vec3> = Vec::new()
+    for s in map::map().sites {
+        out.push(vec3(s.at.x, s.at.y, s.reach))
+    }
+    out
+}
+
+/// The world: the player, where it is on the floor's walk when it's walking it, and the
+/// wildwood's trunks round it when it's past the floor.
+pub struct World: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub player: Player,
+    pub tour: Tour,
+    pub wild: Wildside,
+}
+
+/// The wildwood's trunks round the player (`wildwood::trunks_round`), as the sim walks round
+/// them: asked for as a job where the player nears or is past the floor's tiles, round where it
+/// is, and kept until it's moved on (`ASK_AGAIN`): how many, each (x, z, radius, 0), and where
+/// they were asked round; whether this tick asks again, where, and whether an answer's on its way.
+pub struct Wildside: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub count: u32,
+    pub trunks: [vec4; 512],
+    pub around: vec2,
+    pub asking: bool,
+    pub ask_at: vec2,
+    pub pending: bool,
+}
+
+/// How far the player moves from where the wildwood's trunks were asked round before it asks
+/// again (m), how near the floor's tiles' edge it starts asking (m), and the ticks an answer is
+/// due in.
+const ASK_AGAIN: f32 = 20.0
+const WILD_NEAR: f32 = 80.0
+const ASK_DUE: u32 = 30
+
+/// The floor's walk (`history::TOUR`), walked by the sim when P is pressed: whether it's on, the
+/// point it's making for, the nearest it's come to it and the ticks since it came nearer; and a
+/// way round what's in its way: the ticks left of it, and which side it goes round by.
+pub struct Tour: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub on: bool,
+    /// Which walk: the floor's (`TOUR`), or the egg's road (`EGG_ROAD`, Y).
+    pub road: bool,
+    pub leg: u32,
+    pub best: f32,
+    pub since: u32,
+    pub around: u32,
+    pub side: f32,
+    /// The points it gave up (`GIVE_UP`), and the ticks it's walked.
+    pub skipped: u32,
+    pub ticks: u32,
+}
+
+/// How long the walk goes no nearer its point before it goes round what's in its way (ticks),
+/// how long it goes round (ticks), how far it turns from the point (radians: 75°), and how long
+/// before it gives the point up for the next.
+const HELD: u32 = 120
+const AROUND: u32 = 180
+const AROUND_TURN: f32 = 1.31
+const GIVE_UP: u32 = 480
+
+/// The egg's road, a point every 40 m (`wildwood::road_points`): Y walks it.
+pub const EGG_ROAD: Vec<vec2> = wildwood::road_points(40.0)
+
+/// How near a point of the walk the player comes before it makes for the next (m).
+const REACHED: f32 = 1.5
+
+impl Asks for World {
+    type Ask = vec2
+    type Answer = Vec<vec4>
+
+    @deterministic
+    fn asks(self, tick: Tick) -> Vec<(vec2, Tick)> {
+        if self.wild.asking { Vec::from([(self.wild.ask_at, tick + ASK_DUE)]) } else { Vec::new() }
+    }
+
+    @deterministic
+    fn work(ask: vec2) -> Vec<vec4> {
+        wildwood::trunks_round(ask, wildwood::REACH)
+    }
+}
+
+/// Where a player arrives: the gate (the clearing's foot), facing the meadow.
+pub const GATE = vec2(-1.5, -2.0)
+
+/// The world at tick 0: the player at the gate.
+pub fn spawn_world() -> World {
+    World {
+        player: spawn(GROUND, Place::of(GATE), 0.0),
+        tour: Tour {
+            on: false,
+            road: false,
+            leg: 0,
+            best: 1.0e9,
+            since: 0,
+            around: 0,
+            side: 1.0,
+            skipped: 0,
+            ticks: 0,
+        },
+        wild: Wildside {
+            count: 0,
+            trunks: [vec4(0.0); 512],
+            around: vec2(1.0e9),
+            asking: false,
+            ask_at: vec2(0.0),
+            pending: false,
+        },
+    }
+}
+
+/// One tick: the input's records turn the controls; a travel asked for moves the player; then
+/// it steps.
+@deterministic
+pub fn tick(w: mut World, input: TickInput<World>) {
+    for e in input.records {
+        control(mut w.player.controls, e)
+        if let Event::KeyDown { key, repeat, .. } = e {
+            if (key == Key::P || key == Key::Y) && !repeat {
+                w.tour.on = !w.tour.on
+                w.tour.road = key == Key::Y
+                // The egg's road from its point nearest the player; the floor's walk from its start.
+                w.tour.leg = 0
+                if w.tour.road {
+                    let at = w.player.at.world()
+                    for k in 0..EGG_ROAD.len() {
+                        if length(EGG_ROAD[k] - at) < length(EGG_ROAD[w.tour.leg] - at) {
+                            w.tour.leg = k
+                        }
+                    }
+                }
+                w.tour.best = 1.0e9
+                w.tour.since = 0
+                w.player.controls.forward = w.tour.on
+                w.player.controls.run_held = w.tour.on
+            }
+        }
+    }
+    if w.tour.on {
+        walk_the_tour(mut w)
+    }
+    let asked = w.player.controls.travel
+    if asked != NONE {
+        if asked < SITES.len() {
+            travel(mut w.player, SITES[asked])
+        } else if asked == SITES.len() {
+            // One past the sites: the egg's place; two past, its road in the wildwood.
+            travel(mut w.player, vec3(wildwood::EGG, 16.0))
+        } else if asked == SITES.len() + 1 {
+            travel(mut w.player, vec3(wildwood::ROAD_START, 0.0))
+        }
+        w.player.controls.travel = NONE
+    }
+    // The wildwood's trunks: an answer come; asked for again where the player has moved on.
+    w.wild.asking = false
+    for a in input.answers {
+        let n = min(a.answer.len(), wildwood::MOST_TRUNKS)
+        for i in 0..n {
+            w.wild.trunks[i] = a.answer[i]
+        }
+        w.wild.count = n
+        w.wild.around = a.ask
+        w.wild.pending = false
+    }
+    let at = w.player.at.world()
+    if near_wild(at, WILD_NEAR) && !w.wild.pending && length(at - w.wild.around) > ASK_AGAIN {
+        w.wild.asking = true
+        w.wild.ask_at = at
+        w.wild.pending = true
+    }
+    if near_wild(at, 0.0) {
+        let o = wild_obstacles(w.wild)
+        step(mut w.player, GROUND, WATER, o, input.dt)
+    } else {
+        step(mut w.player, GROUND, WATER, OBSTACLES, input.dt)
+    }
+}
+
+/// Whether the wildwood is within `d` of `p`: past the bake's tiles.
+fn near_wild(p: vec2, d: f32) -> bool {
+    let lo = vec2(history::tiles_lo()) * engine::place::TILE + vec2(d)
+    let hi = vec2(history::tiles_hi() + vec2i(1)) * engine::place::TILE - vec2(d)
+    p.x < lo.x || p.y < lo.y || p.x >= hi.x || p.y >= hi.y
+}
+
+/// The wildwood's trunks the world holds, as obstacles (`footing`'s).
+fn wild_obstacles(w: Wildside) -> engine::footing::Obstacles {
+    var all: Vec<engine::footing::Obstacle> = Vec::with_capacity(w.count)
+    for i in 0..w.count {
+        let t = w.trunks[i]
+        all.push(
+            engine::footing::Obstacle {
+                a: t.xy,
+                b: t.xy,
+                r: t.z,
+                thing: engine::footing::Thing::Trunk,
+                depth: 0.0,
+            },
+        )
+    }
+    engine::footing::Obstacles::of(
+        all,
+        w.around - vec2(wildwood::REACH + 16.0),
+        w.around + vec2(wildwood::REACH + 16.0),
+    )
+}
+
+/// A tick of the floor's walk: the look turned to the point it's making for, forward held at a
+/// run; on to the next point once it's within `REACHED`. Coming no nearer it for `HELD` ticks
+/// (something's in its way), it goes round, turned `AROUND_TURN` to one side for `AROUND` ticks
+/// (the other side the next time); after `GIVE_UP`, it makes for the next point. Off at the
+/// walk's end.
+@deterministic
+fn walk_the_tour(w: mut World) {
+    borrow points = if w.tour.road { EGG_ROAD } else { TOUR }
+    w.tour.ticks += 1
+    let at = w.player.at.world()
+    while w.tour.leg < points.len() && length(points[w.tour.leg] - at) < REACHED {
+        w.tour.leg += 1
+        w.tour.best = 1.0e9
+        w.tour.since = 0
+    }
+    if w.tour.leg < points.len() {
+        let dist = length(points[w.tour.leg] - at)
+        if dist < w.tour.best - 0.5 {
+            w.tour.best = dist
+            w.tour.since = 0
+        } else {
+            w.tour.since += 1
+        }
+        if w.tour.since == HELD {
+            w.tour.around = AROUND
+            w.tour.side = -w.tour.side
+        }
+        if w.tour.since >= GIVE_UP {
+            w.tour.leg += 1
+            w.tour.skipped += 1
+            w.tour.best = 1.0e9
+            w.tour.since = 0
+        }
+    }
+    if w.tour.leg >= points.len() {
+        w.tour.on = false
+        w.player.controls.forward = false
+        w.player.controls.run_held = false
+        return
+    }
+    let d = points[w.tour.leg] - at
+    var yaw = atan2(d.x, d.y)
+    if w.tour.around > 0 {
+        w.tour.around -= 1
+        yaw += w.tour.side * AROUND_TURN
+    }
+    w.player.controls.yaw = yaw
+    w.player.controls.forward = true
+    w.player.controls.run_held = true
+}
+
+/// The player moved beside site `s` (x, z, reach): the first place a player can stand round it,
+/// just outside its reach, facing it.
+@deterministic
+fn travel(p: mut Player, s: vec3) {
+    let at = s.xy
+    for ring in 0..6 {
+        let r = s.z + 3.0 + 4.0 * f32(ring)
+        for k in 0..16 {
+            let a = TAU * f32(k) / 16.0
+            let q = at + vec2(sin(a), cos(a)) * r
+            if stands(GROUND, WATER, OBSTACLES, q) > 0.0 && !OBSTACLES.blocked(q, BODY) {
+                p.at = Place::of(q)
+                p.y = GROUND.at(q.x, q.y)
+                p.velocity = vec2(0.0)
+                let to = at - q
+                p.heading = atan2(to.x, to.y)
+                p.controls.yaw = p.heading
+                return
+            }
+        }
+    }
+}
+
+/// The floor's map, for the frames' reports.
+pub const MAP: engine::place::Map = map::map()
+
+/// The play harness's report on world `w` after `ticks` ticks (#55 AC5: every 2 s, the same in
+/// both hosts): one line of JSON, from the sim's state alone: the time, where the player is and
+/// how it goes, the region it's in, the nearest site and how far, the water it stands in, what
+/// draws by the check here and ahead, and the floor's walk. (The frames' times are the host's:
+/// the floor prints them on a line of their own, `frames`.)
+pub fn report(w: World, ticks: u32) -> String {
+    let p = w.player
+    let at = p.at.world()
+    var near = 0
+    for i in 0..MAP.sites.len() {
+        if length(MAP.sites[i].at - at) < length(MAP.sites[near].at - at) {
+            near = i
+        }
+    }
+    let site = MAP.sites[near]
+    let region = if near_wild(at, 0.0) { "the wildwood" } else {
+        MAP.regions[MAP.region_of(at)].name
+    }
+    let water = max(
+        engine::footing::mere_depth(WATER, at, GROUND.at(at.x, at.y)),
+        OBSTACLES.depth(at),
+    )
+    let t = f32(ticks) / 60.0
+    let heading = p.heading * 57.29578
+    let site_m = length(site.at - at)
+    // What draws here and ahead, by the check (its strongest draw at 20, 40 and 60 m the way the
+    // player faces).
+    let draw = history::draw_at(at)
+    let toward = vec2(sin(p.heading), cos(p.heading))
+    var ahead = -1.0
+    for d in [20.0, 40.0, 60.0] {
+        ahead = max(ahead, history::draw_at(at + toward * d))
+    }
+    f"{{\"report\": {t}, \"at\": [{at.x}, {at.y}], \"y\": {p.y}, \"heading\": {heading}, \"pace\": {p.pace}, \"speed\": {length(p.velocity)}, \"region\": \"{region}\", \"site\": \"{site.name}\", \"site_m\": {site_m}, \"water\": {water}, \"draw\": {draw:.3}, \"ahead\": {ahead:.3}, \"tour\": [{w.tour.on}, {w.tour.leg}, {TOUR.len()}]}}"
+}
+
+/// The snapshot the frames read.
+@deterministic
+pub fn present(w: World) -> World {
+    w
+}

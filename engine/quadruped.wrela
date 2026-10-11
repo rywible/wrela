@@ -13,8 +13,8 @@
 
 use creature::{Body, Group, Inside, Placed, Skeleton, Then, creature, group, hard, smooth}
 use std::field::{
-    Cuboid, Intersect, Lipschitz, Oval, Rotate, RoundCone, Sphere, Surface, Translate, Tube, With,
-    cuboid, oval, round_cone, smin, sphere, tube,
+    Cuboid, Intersect, Surface, Oval, Rotate, RoundCone, Sphere, Translate, Tube, With, cuboid,
+    oval, round_cone, smin, sphere, tube,
 }
 use std::quat::Quat
 use std::units::deg
@@ -357,9 +357,7 @@ impl Surface for Foot {
             max(max(d, sole), -slot)
         }
     }
-}
 
-impl Lipschitz for Foot {
     /// Smooth unions and intersections of exact distances.
     fn lipschitz(self, near: f32) -> f32 {
         1.0

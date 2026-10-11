@@ -7,7 +7,7 @@
 // between them hid their pads. And authors who had only tubes and balls built ball paws, even
 // with a photo of a wolf in view.
 
-use std::field::{Lipschitz, Surface}
+use std::field::Surface
 use sweep::{Sweep, section, sweep}
 
 /// `N` digits (`digits`), each a sweep of three sections.
@@ -95,9 +95,7 @@ impl<const N: u32> Surface for Digits<N> {
         }
         d
     }
-}
 
-impl<const N: u32> Lipschitz for Digits<N> {
     /// The largest of its digits'.
     fn lipschitz(self, near: f32) -> f32 {
         var most = 0.0

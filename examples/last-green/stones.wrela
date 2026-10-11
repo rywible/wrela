@@ -1,0 +1,145 @@
+// What's built or set on the floor, where a player walks round it (#54 §5): the standing stones of
+// the ring and the Warden's arena, the waystones, the rests' seats and the small stones of the
+// echoes' sites as stones (x, z, radius); the tower as a stone of its own breadth; the ruins'
+// walls (each two points: a wall's line). From the map's sites, so each is where the map puts it:
+// the renderer draws the same ones (`engine::footing`'s obstacles, the check's walking).
+
+use engine::noise::rand
+use engine::place::{Feature, Map, Site, SiteKind}
+use std::math::TAU
+
+/// The tower's radius over its battered foot (m), and how far the batter stands out past it.
+pub const TOWER_RADIUS: f32 = 4.6
+pub const TOWER_BATTER: f32 = 0.4
+
+/// A ring's stones: how many, and how far round from its middle (a share of the site's reach).
+pub const RING_STONES: u32 = 11
+pub const RING_AT: f32 = 0.8
+
+/// Which way a ring opens (radians round it, as `atan2(z, x)`): toward the floor's low sun
+/// (`main::SUN`: x 0.900, z -0.159), so the sun comes in through its threshold and lights its
+/// great stone across the ring.
+pub const THRESHOLD: f32 = -0.175
+
+/// A ring's stone: where it stands (x, z), its half size (x along the ring, y up, z across it)
+/// and its turn about +y (its x along the ring). A fallen stone lies: its half height is less
+/// than its half breadth.
+pub struct Standing: Copy {
+    pub at: vec2,
+    pub half: vec3,
+    pub turn: f32,
+}
+
+/// The angular distance between `a` and `b`.
+pub fn apart(a: f32, b: f32) -> f32 {
+    let d = abs(a - b) % TAU
+    min(d, TAU - d)
+}
+
+/// The turn about +y that lays a stone's x along the direction at angle `a`.
+fn along(a: f32) -> f32 {
+    -atan2(sin(a), cos(a))
+}
+
+/// A ring's stones, as its builders set them: a threshold toward the sun (`THRESHOLD`), wider
+/// than the other gaps and held by two taller portal stones; across the ring from it the great
+/// stone, the tallest and broadest, with the stones graded up toward it; one stone fallen; and
+/// at the centre, the ring's own stone (a squat broad stone across the axis; the arena's
+/// low and broad, a table that keeps its floor open). Each stands with its broad face to the
+/// centre.
+pub fn ring(k: Site) -> Vec<Standing> {
+    let arena = k.kind == SiteKind::Arena
+    let n = if arena { RING_STONES + 6 } else { RING_STONES }
+    let seed = u32(abs(k.at.x) * 7.0 + abs(k.at.y) * 13.0)
+    let r = k.reach * RING_AT
+    // The threshold's gap is 1.8 of the others.
+    let space = TAU / (f32(n) + 0.8)
+    let great = (n - 1) / 2
+    let fallen = 2 + seed % 3
+    var out: Vec<Standing> = Vec::new()
+    for i in 0..n {
+        let a = THRESHOLD + space * (0.9 + f32(i) + 0.3 * (rand(seed + i, 1) - 0.5))
+        let at = k.at + vec2(cos(a), sin(a)) * r * (0.97 + 0.06 * rand(seed + i, 2))
+        // 0 at the threshold, 1 across the ring.
+        let u = apart(a, THRESHOLD) / (0.5 * TAU)
+        let wide = 0.42 + 0.16 * rand(seed + i, 3)
+        let deep = 0.24 + 0.08 * rand(seed + i, 4)
+        let grade = if i == great {
+            2.0
+        } else if i == 0 || i == n - 1 {
+            1.5
+        } else if i + 1 == great || i == great + 1 {
+            1.1
+        } else {
+            0.55 + 0.3 * u + 0.15 * rand(seed + i, 5)
+        }
+        let tall = grade * k.tall
+        let turn = along(a + 0.25 * TAU) + 0.3 * (rand(seed + i, 6) - 0.5)
+        let half = if i == great {
+            vec3(1.1, 0.5 * tall, 0.45)
+        } else if i == fallen {
+            // Fallen outward, lying along the ring.
+            vec3(0.5 * tall, 0.3, wide)
+        } else {
+            vec3(wide, 0.5 * tall, deep)
+        }
+        let out_by = if i == fallen { 0.6 } else { 0.0 }
+        out.push(Standing { at: at + vec2(cos(a), sin(a)) * out_by, half, turn })
+    }
+    // The centre's stone, its long side across the axis from the threshold to the great stone.
+    let half = if arena { vec3(1.5, 0.45, 1.0) } else { vec3(0.8, 0.55, 0.55) }
+    out.push(Standing { at: k.at, half, turn: along(THRESHOLD + 0.25 * TAU) })
+    out
+}
+
+/// A ring's stone's footprint: its radius on the ground (m).
+pub fn footprint(s: Standing) -> f32 {
+    max(s.half.x, s.half.z) + 0.05
+}
+
+/// The floor's stones: each (x, z, radius).
+pub fn stones(m: Map) -> Vec<vec3> {
+    var out: Vec<vec3> = Vec::new()
+    for k in m.sites {
+        match k.feature {
+            Feature::Ring => {
+                for s in ring(k) {
+                    out.push(vec3(s.at, footprint(s)))
+                }
+            },
+            Feature::Tower => out.push(vec3(k.at.x, k.at.y, TOWER_RADIUS + TOWER_BATTER)),
+            // A stone a player stands beside (a waystone, a seat, a cairn); a taller "stone" is
+            // the land's own rock (the quarry's face).
+            Feature::Stone => {
+                if k.tall <= 2.5 {
+                    out.push(vec3(k.at.x, k.at.y, 0.3 + 0.15 * k.tall))
+                }
+            },
+            _ => {},
+        }
+    }
+    out
+}
+
+/// The ruins' walls: each a line (a, b); a ruin's walls are a rectangle round its site, its long
+/// side across the x axis, with a doorway in its south wall.
+pub fn walls(m: Map) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for k in m.sites {
+        if k.feature == Feature::Ruin && k.tall > 1.0 {
+            let h = vec2(k.reach * 0.7, k.reach * 0.45)
+            let a = k.at + vec2(-h.x, -h.y)
+            let b = k.at + vec2(h.x, -h.y)
+            let c = k.at + vec2(h.x, h.y)
+            let d = k.at + vec2(-h.x, h.y)
+            // Its doorway, wide enough for a player past the walls' rubble (4 m).
+            let door = 2.0
+            out.push(vec4(a.x, a.y, k.at.x - door, a.y))
+            out.push(vec4(k.at.x + door, a.y, b.x, b.y))
+            out.push(vec4(b.x, b.y, c.x, c.y))
+            out.push(vec4(c.x, c.y, d.x, d.y))
+            out.push(vec4(d.x, d.y, a.x, a.y))
+        }
+    }
+    out
+}

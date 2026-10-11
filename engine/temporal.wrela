@@ -39,6 +39,26 @@ pub struct Resolve: Copy + GpuData {
     /// corners in output pixels: `seen_box` of the moving things' bounds; empty for none):
     /// where last frame's motion is checked for what moved off a pixel.
     pub moving: vec4,
+    /// How many frames the camera has held still before this one (`held`; 0 when it moved):
+    /// a settled view's history gathers more frames (`SETTLED`).
+    pub settled: f32 = 0.0,
+}
+
+/// The least share of a frame a settled view's pixel takes: its history is the mean of about
+/// this many frames' samples (1 / this), not the last few's. Each of the levels' and the near
+/// fades' dithers steps through its 16 places over the jitter's cycle (`lod::anchor`), and a
+/// history of a few frames' (`Resolve::blend`) weighted the last of them most, so a settled
+/// still kept the pattern as a screen over crowns and trunks (the lookdev reviews). A mean of
+/// 16 cycles' frames evens it: each of the jitter's offsets meets each of the pattern's places
+/// (`lod::anchor`; a mean of 64 frames left a grain on pale leaves). What changes in a settled view (a tile streaming in, a leaf
+/// in the wind) is still clipped to this frame's neighbourhood, so it doesn't trail.
+pub const SETTLED: f32 = 256.0
+
+/// Whether `cam` sees just what it saw last frame (its view and projection held, its jitter
+/// aside): a settled view (`Resolve::settled`).
+pub fn held(cam: Camera) -> bool {
+    let (a, b) = (cam.view_proj, cam.last_view_proj)
+    a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3]
 }
 
 /// The rectangle on the output (`out` pixels) round the world's box `lo` to `hi` as `cam` sees
@@ -286,7 +306,16 @@ pub fn resolve(
             }
         }
     }
-    let a = if left { 1.0 } else { clamp(r.blend * nearest * 1.6, r.blend * 0.25, 0.5) }
+    // In a settled view, a pixel that doesn't move takes the mean of the frames since the view
+    // settled, up to `SETTLED` of them.
+    let settling = if r.settled > 0.0 && moved.z < 0.5 {
+        max(1.0 / (r.settled + 1.0), 1.0 / SETTLED)
+    } else {
+        1.0
+    }
+    let a = if left { 1.0 } else {
+        min(clamp(r.blend * nearest * 1.6, r.blend * 0.25, 0.5), settling)
+    }
     let out = mix(from_ycocg(clipped), current, vec3(a))
     vec4(untamed(max(out, vec3(0.0))), tag)
 }

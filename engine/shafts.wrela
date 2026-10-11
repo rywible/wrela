@@ -1,0 +1,103 @@
+// Sun shafts (#54 §9, Q6: a candidate, kept only if the owner prefers them): the sun's light the
+// air scatters toward the eye where it passes between the crowns. Along each ray from the eye to
+// what it meets (at most `Shafts::reach`), marched through the sun's static shadow cascades and
+// the clouds' shadow at a quarter of the output's pixels, from a start that moves each frame
+// (temporal AA settles it), the light that reaches each step, scattered forward (a
+// Henyey-Greenstein lobe round the sun) and dimmed by the air between it and the eye; then added
+// to the scene before temporal AA, into the scene's second target (`add_shafts`).
+
+use light::Light
+use shadow::{Shadows, statically_sunlit}
+use sky::{Clouds, cloud_shadow}
+use std::gpu::{
+    ComparisonSampler, DepthTexture, FragCoord, GlobalId, Rgba16Float, Sampler, Texels, Texture,
+}
+use std::math::PI
+use view::Camera
+
+/// How the shafts are marched and how strong: the air's scattering under the canopy (per metre),
+/// its lobe's forwardness (`g`, 0 to 1), how far the march goes (m) and in how many steps.
+pub struct Shafts: Copy + GpuData {
+    pub scatter: f32 = 0.006,
+    pub g: f32 = 0.72,
+    pub reach: f32 = 48.0,
+    pub steps: u32 = 20,
+}
+
+/// The Henyey-Greenstein phase function at the cosine `c` between the ray and the sun.
+fn phase(c: f32, g: f32) -> f32 {
+    let gg = g * g
+    (1.0 - gg) / (4.0 * PI * pow(1.0 + gg - 2.0 * g * c, 1.5))
+}
+
+/// A pixel's place in a 4×4 pattern of offsets (0 to 1), turned each frame: the march's start.
+fn offset(px: vec2u, frame: u32) -> f32 {
+    let bayer = [
+        0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0,
+    ]
+    fract((bayer[(px.y % 4) * 4 + px.x % 4] + 0.5) / 16.0 + 0.618034 * f32(frame % 64))
+}
+
+/// A texel of the shafts (a quarter of the scene's pixels: each 2×2 of the scene): the light
+/// scattered toward the eye along its ray, to the nearest of the four scene pixels' depths.
+@compute(8, 8)
+pub fn march_shafts(
+    cam: Camera,
+    light: Light,
+    sh: Shadows,
+    near: DepthTexture,
+    far: DepthTexture,
+    cmp: ComparisonSampler,
+    clouds: Clouds,
+    cloud: Texture<Rgba16Float>,
+    s: Sampler,
+    depth: DepthTexture,
+    look: Shafts,
+    out: mut Texels<Rgba16Float>,
+    id: GlobalId,
+) {
+    let size = vec2u(u32(cam.screen.x), u32(cam.screen.y))
+    let q = vec2u(id.x, id.y)
+    if q.x * 2 >= size.x || q.y * 2 >= size.y {
+        return
+    }
+    // The nearest of its four pixels' depths (reversed: the greatest).
+    var z = 0.0
+    for k in 0..4 {
+        let p = min(q * 2 + vec2u(k % 2, k / 2), size - vec2u(1))
+        z = max(z, depth.load(x: p.x, y: p.y))
+    }
+    let still = cam.unjittered()
+    let px = vec2(q * 2) + vec2(1.0)
+    let dir = still.ray(px)
+    let along = cam.distance_of(z) / max(dot(dir, cam.forward), 0.05)
+    let end = min(along, look.reach)
+    let n = max(look.steps, 1)
+    let step = end / f32(n)
+    let first = offset(q, cam.frame)
+    var lit = 0.0
+    for i in 0..n {
+        let t = (f32(i) + first) * step
+        let p = cam.eye + dir * t
+        let sun = statically_sunlit(sh, p, vec3(0.0), near, far, cmp, 1.0) *
+            cloud_shadow(clouds, cloud, s, p)
+        lit += sun * exp(-look.scatter * t) * step
+    }
+    let c = light.sun_colour * (look.scatter * phase(dot(dir, light.sun), look.g) * lit)
+    out.store(id, vec4(c, 1.0))
+}
+
+/// The scene's pixel with the shafts added (their texel's, bilinear: four taps cost twice the
+/// pass), its tag kept.
+@fragment
+pub fn add_shafts(
+    pixel: FragCoord,
+    scene: Texture<Rgba16Float>,
+    shafts: Texture<Rgba16Float>,
+    s: Sampler,
+) -> vec4 {
+    let p = vec2u(pixel.position.xy)
+    let c = scene.load(x: p.x, y: p.y)
+    let uv = pixel.position.xy / vec2(f32(scene.width()), f32(scene.height()))
+    vec4(c.rgb + shafts.sample_level(s, uv).rgb, c.a)
+}

@@ -1,0 +1,623 @@
+// Where a player can stand, and how fast they go (M6 §5): one rule for the sim's collision, the
+// interest check's walkers and the map lens's reachability, so what the check says can be
+// reached can be walked to.
+//
+// The ground decides most of it: how steep it is, the plateau's edge (past it the land falls
+// away), and water's depth (a mere's, a stream's): shallow water slows a player, deep water stops
+// them. What stands on the ground stops them too: trunks, stones and walls, thorny shrubs, big
+// logs. Those are the obstacles, circles and capsules binned on a grid, packed in 8 bytes each so
+// the sim can hold every one of a floor's in its program (a build's constant), and test a step
+// against those near it.
+
+use grow::{Grid, Ground, Habit, Heap, State, Stream, Tree}
+use place::{Map, Water}
+use std::math::TAU
+
+/// The steepest ground a player can stand on (rise over run: about 42°).
+pub const STEEPEST: f32 = 0.9
+/// Water deeper than this (m) stops a player; deeper than `WADE` slows them to `WADING`.
+pub const DEEP: f32 = 0.8
+pub const WADE: f32 = 0.2
+pub const WADING: f32 = 0.45
+/// How far inside the plateau's edge a player can go (m): the edge is a fall, not a slope.
+pub const EDGE: f32 = 1.5
+/// A player's radius (m), against the obstacles.
+pub const BODY: f32 = 0.35
+
+/// The ground's slope at `p` (rise over run), over a metre each way.
+pub fn slope<G: Ground>(g: G, p: vec2) -> f32 {
+    let dx = g.height(p.x + 1.0, p.y) - g.height(p.x - 1.0, p.y)
+    let dz = g.height(p.x, p.y + 1.0) - g.height(p.x, p.y - 1.0)
+    0.5 * length(vec2(dx, dz))
+}
+
+/// How deep the meres' water is at `p` (m; 0 or less on dry ground), where the ground is
+/// `ground` high: a mere's level over its basin.
+pub fn mere_depth(w: Water, p: vec2, ground: f32) -> f32 {
+    var d = 0.0
+    for m in w.meres {
+        if m.z > 0.0 && length(p - m.xy) < m.z * 1.3 {
+            d = max(d, m.w - ground)
+        }
+    }
+    d
+}
+
+/// How fast a player goes at `p` against open level ground (0 can't stand there), from the
+/// ground alone: its slope, the edge, and the meres' water. Streams and what stands on the
+/// ground are the obstacles' (`Obstacles::depth`, `Obstacles::push`).
+pub fn pace<G: Ground>(g: G, w: Water, p: vec2) -> f32 {
+    if g.past_edge(p) > -EDGE {
+        return 0.0
+    }
+    let s = slope(g, p)
+    if s > STEEPEST {
+        return 0.0
+    }
+    let deep = mere_depth(w, p, g.height(p.x, p.y))
+    if deep > DEEP {
+        return 0.0
+    }
+    let wading = if deep > WADE { WADING } else { 1.0 }
+    wading * (1.0 - 0.5 * smoothstep(0.3, STEEPEST, s))
+}
+
+// ---- obstacles ----------------------------------------------------------------------------------
+
+/// What an obstacle is.
+pub enum Thing: Copy + Eq + Fieldless {
+    Trunk,
+    Stone,
+    Wall,
+    Shrub,
+    Log,
+    /// A stretch of a stream: its width is the capsule's, and it has a depth.
+    Stream,
+}
+
+/// An obstacle: a capsule from `a` to `b` of radius `r` (a circle where they're the same), what
+/// it is, and for a stream, its depth (m).
+pub struct Obstacle: Copy {
+    pub a: vec2,
+    pub b: vec2,
+    pub r: f32,
+    pub thing: Thing,
+    pub depth: f32,
+}
+
+impl Obstacle {
+    /// The distance from `p` to the capsule's surface (negative inside), and the direction out.
+    pub fn reach(self, p: vec2) -> (f32, vec2) {
+        let ab = self.b - self.a
+        let t = clamp(dot(p - self.a, ab) / max(dot(ab, ab), 1.0e-8), 0.0, 1.0)
+        let q = self.a + ab * t
+        let d = p - q
+        let len = length(d)
+        let out = if len > 1.0e-5 { d / len } else { vec2(1.0, 0.0) }
+        (len - self.r, out)
+    }
+}
+
+/// The obstacles' bins (m).
+pub const BIN: f32 = 16.0
+
+/// The obstacles of a stretch of ground, binned: the bins' corner and count each way, each bin's
+/// first item (and one past the last bin's), and the items packed two words each
+/// (`pack`), each bin's in order.
+pub struct Obstacles {
+    pub lo: vec2,
+    pub nx: u32,
+    pub nz: u32,
+    pub start: Vec<u32>,
+    pub items: Vec<u32>,
+}
+
+/// An obstacle as two words, its place from its bin's corner `corner`: its first point (16 bits
+/// each way of the bin), then its thing (3 bits), radius (7 bits, 2 cm steps), length (8 bits,
+/// 25 cm steps), direction (8 bits) and depth (6 bits, 2 cm steps).
+fn pack(o: Obstacle, corner: vec2) -> (u32, u32) {
+    let local = clamp((o.a - corner) / BIN, vec2(0.0), vec2(0.99999))
+    let w0 = u32(local.x * 65536.0) | (u32(local.y * 65536.0) << 16)
+    let ab = o.b - o.a
+    let len = length(ab)
+    let dir = if len > 1.0e-4 { atan2(ab.y, ab.x) } else { 0.0 }
+    let w1 = (u32(o.thing) & 7) |
+        (min(u32(round(o.r / 0.02)), 127) << 3) |
+        (min(u32(round(len / 0.25)), 255) << 10) |
+        ((u32(round((dir / TAU + 1.0) * 256.0)) % 256) << 18) |
+        (min(u32(round(o.depth / 0.02)), 63) << 26)
+    (w0, w1)
+}
+
+fn unpack(w0: u32, w1: u32, corner: vec2) -> Obstacle {
+    let a = corner + vec2(f32(w0 & 65535) + 0.5, f32(w0 >> 16) + 0.5) * (BIN / 65536.0)
+    let len = f32((w1 >> 10) & 255) * 0.25
+    let dir = TAU * f32((w1 >> 18) & 255) / 256.0
+    Obstacle {
+        a,
+        b: a + vec2(cos(dir), sin(dir)) * len,
+        r: f32((w1 >> 3) & 127) * 0.02,
+        thing: Thing::from_u32(w1 & 7).unwrap_or(Thing::Stone),
+        depth: f32((w1 >> 26) & 63) * 0.02,
+    }
+}
+
+impl Obstacles {
+    /// Obstacles `all` binned over the ground from `lo` to `hi`. A capsule goes in its first
+    /// point's bin; a query reaches a bin each way, so none is longer than a bin.
+    pub fn of(all: [Obstacle], lo: vec2, hi: vec2) -> Obstacles {
+        let nx = u32(ceil((hi.x - lo.x) / BIN))
+        let nz = u32(ceil((hi.y - lo.y) / BIN))
+        var count: Vec<u32> = Vec::filled(nx * nz + 1, 0)
+        var keep: Vec<bool> = Vec::with_capacity(all.len())
+        for o in all {
+            let b = bin_of(lo, nx, nz, o.a)
+            keep.push(b < nx * nz)
+            if b < nx * nz {
+                count[b + 1] += 1
+            }
+        }
+        for k in 0..(nx * nz) {
+            let before = count[k]
+            count[k + 1] += before
+        }
+        var cursor = count.clone()
+        var items: Vec<u32> = Vec::filled(2 * count[nx * nz], 0)
+        var i = 0
+        for o in all {
+            if keep[i] {
+                let b = bin_of(lo, nx, nz, o.a)
+                let corner = lo + vec2(f32(b % nx), f32(b / nx)) * BIN
+                let (w0, w1) = pack(o, corner)
+                items[2 * cursor[b]] = w0
+                items[2 * cursor[b] + 1] = w1
+                cursor[b] += 1
+            }
+            i += 1
+        }
+        Obstacles { lo, nx, nz, start: count, items }
+    }
+
+    /// How many obstacles it holds.
+    pub fn len(self) -> u32 {
+        self.items.len() / 2
+    }
+
+    /// Calls `f` with each obstacle in the bins round `p` (each within a bin of it).
+    pub fn near(self, p: vec2, f: fn(Obstacle)) {
+        let c = vec2i(floor((p - self.lo) / BIN))
+        for dj in 0..3 {
+            let j = c.y + dj - 1
+            if j < 0 || j >= i32(self.nz) {
+                continue
+            }
+            for di in 0..3 {
+                let i = c.x + di - 1
+                if i < 0 || i >= i32(self.nx) {
+                    continue
+                }
+                let b = u32(j) * self.nx + u32(i)
+                let corner = self.lo + vec2(f32(i), f32(j)) * BIN
+                for k in self.start[b]..self.start[b + 1] {
+                    f(unpack(self.items[2 * k], self.items[2 * k + 1], corner))
+                }
+            }
+        }
+    }
+
+    /// The deepest stream water at `p` (m).
+    pub fn depth(self, p: vec2) -> f32 {
+        var d = 0.0
+        self.near(p, |o| {
+            if o.thing == Thing::Stream {
+                let (out, _) = o.reach(p)
+                if out < 0.0 {
+                    d = max(d, o.depth * min(-out / max(o.r * 0.5, 0.1), 1.0))
+                }
+            }
+        })
+        d
+    }
+
+    /// `p` pushed out of every solid obstacle (not a stream) a body of radius `body` overlaps,
+    /// and whether it overlapped any.
+    pub fn push(self, p: vec2, body: f32) -> (vec2, bool) {
+        let (by, hit) = self.push_by(p, body)
+        (p + by, hit)
+    }
+
+    /// How far `push` moves `p`, and whether it overlapped any: the push alone, so a body far
+    /// from the origin (whose world point is coarse in `f32`) moves by exactly its step when
+    /// nothing is in its way.
+    pub fn push_by(self, p: vec2, body: f32) -> (vec2, bool) {
+        var by = vec2(0.0)
+        var hit = false
+        for _ in 0..3 {
+            var moved = false
+            let at = p + by
+            self.near(at, |o| {
+                if o.thing != Thing::Stream {
+                    let (d, out) = o.reach(p + by)
+                    if d < body {
+                        by += out * (body - d + 1.0e-3)
+                        moved = true
+                    }
+                }
+            })
+            hit = hit || moved
+            if !moved {
+                break
+            }
+        }
+        (by, hit)
+    }
+
+    /// Whether a body of radius `body` at `p` overlaps a solid obstacle.
+    pub fn blocked(self, p: vec2, body: f32) -> bool {
+        var any = false
+        self.near(p, |o| {
+            if o.thing != Thing::Stream {
+                let (d, _) = o.reach(p)
+                any = any || d < body - 1.0e-3
+            }
+        })
+        any
+    }
+}
+
+fn bin_of(lo: vec2, nx: u32, nz: u32, p: vec2) -> u32 {
+    let c = vec2i(floor((p - lo) / BIN))
+    if c.x < 0 || c.y < 0 || u32(c.x) >= nx || u32(c.y) >= nz {
+        nx * nz
+    } else {
+        u32(c.y) * nx + u32(c.x)
+    }
+}
+
+/// The obstacles a history leaves: each standing trunk taller than a player (alive or dead) as
+/// a circle of its girth; each thorny shrub's thicket as a circle of most of its crown; each log
+/// thick enough not to step over, as a capsule along its fall, in pieces no longer than a bin;
+/// the streams' courses as capsules with their depth; and `stones` (x, z, radius) and `walls`
+/// (each two points and a half-thickness: (a, b), (r, 0)).
+pub fn obstacles_of(
+    trees: [Tree],
+    habits: [Habit],
+    streams: [Stream],
+    stones: [vec3],
+    walls: [vec4],
+    lo: vec2,
+    hi: vec2,
+) -> Obstacles {
+    var all: Vec<Obstacle> = Vec::new()
+    for t in trees {
+        let h = habits[t.kind]
+        if h.thorny {
+            if t.state == State::Alive && t.tall > 0.8 {
+                let r = 0.7 * t.reach
+                all.push(
+                    Obstacle {
+                        a: t.at + t.lean,
+                        b: t.at + t.lean,
+                        r,
+                        thing: Thing::Shrub,
+                        depth: 0.0,
+                    },
+                )
+            }
+        } else if (t.state == State::Alive || t.state == State::Snag) && t.tall > 2.0 {
+            let r = max(t.girth, 0.04)
+            all.push(Obstacle { a: t.at, b: t.at, r, thing: Thing::Trunk, depth: 0.0 })
+        } else if t.state == State::Log && t.girth > 0.25 {
+            let len = t.tall * 0.85
+            var s = 0.0
+            while s < len {
+                let e = min(s + 0.75 * BIN, len)
+                all.push(
+                    Obstacle {
+                        a: t.at + t.fall * s,
+                        b: t.at + t.fall * e,
+                        r: t.girth,
+                        thing: Thing::Log,
+                        depth: 0.0,
+                    },
+                )
+                s = e
+            }
+        }
+    }
+    for s in streams {
+        for i in 0..s.points.len() - 1 {
+            let p = s.points[i]
+            let q = s.points[i + 1]
+            all.push(Obstacle { a: p.xy, b: q.xy, r: 0.5 * p.z, thing: Thing::Stream, depth: p.w })
+        }
+    }
+    for st in stones {
+        all.push(Obstacle { a: st.xy, b: st.xy, r: st.z, thing: Thing::Stone, depth: 0.0 })
+    }
+    for w in walls {
+        // A wall longer than a bin, in pieces.
+        let len = length(w.zw - w.xy)
+        let n = u32(ceil(len / (0.75 * BIN)))
+        for k in 0..n {
+            let a = mix(w.xy, w.zw, vec2(f32(k) / f32(n)))
+            let b = mix(w.xy, w.zw, vec2(f32(k + 1) / f32(n)))
+            all.push(Obstacle { a, b, r: 0.5, thing: Thing::Wall, depth: 0.0 })
+        }
+    }
+    Obstacles::of(all, lo, hi)
+}
+
+// ---- a step -------------------------------------------------------------------------------------
+
+/// How far a body of radius `body` stepping from `p` by `d` moves: pushed out of the obstacles,
+/// and held back from ground it can't stand on (it slides along the way it can go, or stays).
+/// And how fast it goes where it ends against open level ground (`pace`, with the streams'
+/// water). The move, not the end: with nothing in its way it's `d` exactly.
+pub fn step<G: Ground>(g: G, w: Water, o: Obstacles, p: vec2, d: vec2, body: f32) -> (vec2, f32) {
+    let tries = [d, vec2(d.x, 0.0), vec2(0.0, d.y)]
+    for t in tries {
+        let (by, _) = o.push_by(p + t, body)
+        let moved = t + by
+        if length(moved) > 2.0 * length(d) + 0.05 {
+            // Pushed further than it stepped: squeezed between two obstacles.
+            continue
+        }
+        let q = p + moved
+        let k = stands(g, w, o, q)
+        if k > 0.0 && !o.blocked(q, body) {
+            return (moved, k)
+        }
+    }
+    (vec2(0.0), stands(g, w, o, p))
+}
+
+/// How fast a player goes at `p` (0 can't stand there): the ground's `pace`, slowed in a stream's
+/// shallows and stopped in its deep water.
+pub fn stands<G: Ground>(g: G, w: Water, o: Obstacles, p: vec2) -> f32 {
+    let k = pace(g, w, p)
+    if k == 0.0 {
+        return 0.0
+    }
+    let deep = o.depth(p)
+    if deep > DEEP {
+        0.0
+    } else if deep > WADE {
+        min(k, WADING)
+    } else {
+        k
+    }
+}
+
+// ---- ways on foot -------------------------------------------------------------------------------
+
+/// Where a player can stand on a grid of `cell` m (`walkable_of`): each cell's middle stands
+/// (`stands`) with room for a body a little wider than a player's (logs, walls and thickets
+/// close the cells along them).
+pub struct Walkable {
+    pub grid: Grid,
+    pub ok: Vec<bool>,
+}
+
+/// How much wider than a player a walkable cell's room is (m): a way planned on the mask keeps
+/// clear of what it passes.
+const CLEAR: f32 = 0.15
+
+/// The walkable mask over `lo` to `hi`, `cell` m a cell.
+pub fn walkable_of<G: Ground>(
+    g: G,
+    w: Water,
+    o: Obstacles,
+    lo: vec2,
+    hi: vec2,
+    cell: f32,
+) -> Walkable {
+    let grid = Grid::over(lo, hi, cell)
+    var rows: Vec<Row> = Vec::from_fn(grid.nz, |j| Row { j, ok: Vec::new() })
+    rows.par_each_mut(|r| {
+        r.ok = Vec::with_capacity(grid.nx)
+        for i in 0..grid.nx {
+            let p = grid.centre(r.j * grid.nx + i)
+            r.ok.push(stands(g, w, o, p) > 0.0 && !o.blocked(p, BODY + CLEAR))
+        }
+    })
+    var ok: Vec<bool> = Vec::with_capacity(grid.cells())
+    for mut r in rows {
+        ok.append(mut r.ok)
+    }
+    Walkable { grid, ok }
+}
+
+/// A row of the mask, as a helper works it out.
+struct Row {
+    j: u32,
+    ok: Vec<bool>,
+}
+
+/// A cell's eight neighbours, and the two it passes between on a diagonal (0 for none).
+const STEPS = [
+    vec2i(1, 0),
+    vec2i(-1, 0),
+    vec2i(0, 1),
+    vec2i(0, -1),
+    vec2i(1, 1),
+    vec2i(1, -1),
+    vec2i(-1, 1),
+    vec2i(-1, -1),
+]
+
+impl Walkable {
+    /// The walkable cell nearest `p` (looked for within 20 cells), or `grow::NONE`.
+    pub fn nearest(self, p: vec2) -> u32 {
+        let g = self.grid
+        let c = vec2i(floor((p - g.lo) / g.cell))
+        for r in 0..20 {
+            var best = grow::NONE
+            var d = 1.0e9
+            for dj in -r..(r + 1) {
+                for di in -r..(r + 1) {
+                    let q = c + vec2i(di, dj)
+                    if (abs(di) == r || abs(dj) == r) &&
+                        q.x >= 0 &&
+                        q.y >= 0 &&
+                        q.x < i32(g.nx) &&
+                        q.y < i32(g.nz) {
+                        let k = u32(q.y) * g.nx + u32(q.x)
+                        if self.ok[k] && length(g.centre(k) - p) < d {
+                            d = length(g.centre(k) - p)
+                            best = k
+                        }
+                    }
+                }
+            }
+            if best != grow::NONE {
+                return best
+            }
+        }
+        grow::NONE
+    }
+
+    /// The quickest way on the mask from `from` to `to` (A*: eight neighbours, no corner cut
+    /// between two closed cells), as cell middles; empty if there's none.
+    pub fn way(self, from: vec2, to: vec2) -> Vec<vec2> {
+        let g = self.grid
+        var out: Vec<vec2> = Vec::new()
+        let start = self.nearest(from)
+        let goal = self.nearest(to)
+        if start == grow::NONE || goal == grow::NONE {
+            return out
+        }
+        let nn = g.cells()
+        var cost: Vec<f32> = Vec::filled(nn, 1.0e30)
+        var came: Vec<u32> = Vec::filled(nn, grow::NONE)
+        var open = Heap { items: Vec::new() }
+        cost[start] = 0.0
+        open.push(length(g.centre(goal) - g.centre(start)), start)
+        while !open.items.is_empty() {
+            let c = open.pop().y
+            if c == goal {
+                break
+            }
+            let here = vec2i(i32(c % g.nx), i32(c / g.nx))
+            for k in 0..8 {
+                let q = here + STEPS[k]
+                if q.x < 0 || q.y < 0 || q.x >= i32(g.nx) || q.y >= i32(g.nz) {
+                    continue
+                }
+                let n = u32(q.y) * g.nx + u32(q.x)
+                if !self.ok[n] {
+                    continue
+                }
+                // A diagonal step only between two open cells.
+                if k >= 4 {
+                    let a = u32(here.y) * g.nx + u32(q.x)
+                    let b = u32(q.y) * g.nx + u32(here.x)
+                    if !self.ok[a] || !self.ok[b] {
+                        continue
+                    }
+                }
+                let step = if k >= 4 { 1.41421 } else { 1.0 }
+                let c2 = cost[c] + step * g.cell
+                if c2 < cost[n] {
+                    cost[n] = c2
+                    came[n] = c
+                    open.push(c2 + length(g.centre(goal) - g.centre(n)), n)
+                }
+            }
+        }
+        if came[goal] == grow::NONE && goal != start {
+            return out
+        }
+        var c = goal
+        while c != start && c != grow::NONE {
+            out.push(g.centre(c))
+            c = came[c]
+        }
+        out.push(g.centre(start))
+        var back: Vec<vec2> = Vec::with_capacity(out.len())
+        var k = out.len()
+        while k > 0 {
+            k -= 1
+            back.push(out[k])
+        }
+        back
+    }
+
+    /// The cells a player can walk to from `from` (as `way` steps: eight neighbours, no corner
+    /// cut between two closed cells).
+    pub fn reached_from(self, from: vec2) -> Vec<bool> {
+        let g = self.grid
+        var seen: Vec<bool> = Vec::filled(g.cells(), value: false)
+        let start = self.nearest(from)
+        if start == grow::NONE {
+            return seen
+        }
+        var todo: Vec<u32> = Vec::from([start])
+        seen[start] = true
+        while !todo.is_empty() {
+            let c = todo.pop().unwrap()
+            let here = vec2i(i32(c % g.nx), i32(c / g.nx))
+            for k in 0..8 {
+                let q = here + STEPS[k]
+                if q.x < 0 || q.y < 0 || q.x >= i32(g.nx) || q.y >= i32(g.nz) {
+                    continue
+                }
+                let n = u32(q.y) * g.nx + u32(q.x)
+                if seen[n] || !self.ok[n] {
+                    continue
+                }
+                if k >= 4 {
+                    let a = u32(here.y) * g.nx + u32(q.x)
+                    let b = u32(q.y) * g.nx + u32(here.x)
+                    if !self.ok[a] || !self.ok[b] {
+                        continue
+                    }
+                }
+                seen[n] = true
+                todo.push(n)
+            }
+        }
+        seen
+    }
+
+    /// Whether a cell `reached` (`reached_from`) is within `reach` of `at`.
+    pub fn reaches(self, reached: [bool], at: vec2, reach: f32) -> bool {
+        let g = self.grid
+        let lo = vec2i(floor((at - vec2(reach) - g.lo) / g.cell))
+        let n = i32(ceil(2.0 * reach / g.cell)) + 1
+        for dj in 0..n {
+            for di in 0..n {
+                let q = lo + vec2i(di, dj)
+                if q.x >= 0 && q.y >= 0 && q.x < i32(g.nx) && q.y < i32(g.nz) {
+                    let c = u32(q.y) * g.nx + u32(q.x)
+                    if reached[c] && length(g.centre(c) - at) <= reach {
+                        return true
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// A tour of `stops` on foot, in their order: the quickest way between each two (`way`), a
+    /// point every `every` m or so; and the stops no way was found to (skipped).
+    pub fn tour(self, stops: [vec2], every: f32) -> (Vec<vec2>, Vec<vec2>) {
+        var out: Vec<vec2> = Vec::new()
+        var missed: Vec<vec2> = Vec::new()
+        var from = if stops.len() == 0 { vec2(0.0) } else { stops[0] }
+        for i in 1..stops.len() {
+            let w = self.way(from, stops[i])
+            if w.is_empty() {
+                missed.push(stops[i])
+                continue
+            }
+            for p in w {
+                if out.is_empty() || length(p - out[out.len() - 1]) >= every {
+                    out.push(p)
+                }
+            }
+            from = stops[i]
+        }
+        (out, missed)
+    }
+}

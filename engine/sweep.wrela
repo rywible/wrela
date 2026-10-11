@@ -15,7 +15,7 @@
 // carried along the path without twisting it: at a paw that turns forward from the leg, the
 // leg's front becomes the paw's top. Angles grow toward the left (`up × forward`).
 
-use std::field::{Lipschitz, Surface}
+use std::field::Surface
 use std::math::{PI, TAU}
 
 /// A section across a sweep: its extents from the path toward `up` (angle 0), its left
@@ -462,6 +462,59 @@ impl<const S: u32> Surface for Sweep<S> {
     fn distance(self, p: vec3) -> f32 {
         max(self.near(p), self.to_path(p) - self.reach)
     }
+
+    /// From samples of its sections (64 places by 64 angles): the side's slope changes over
+    /// `near`, as a loft's (1 + `near` times how fast it changes). And where the path turns,
+    /// by κ per metre, a slope along it is steeper by up to 1 / (1 − κ r) on the inside of the
+    /// turn at radius r (sampled at each vertex, 32 angles). Infinite where `near` reaches
+    /// half the least radius, or a turn's centre (κ (r + `near`) ≥ 0.9). Then 25% more: the
+    /// samples miss what's between them.
+    fn lipschitz(self, near: f32) -> f32 {
+        let len = self.length()
+        let near = max(near, 0.0)
+        var least = 1.0e9
+        var grows = 0.0
+        for i in 0..64 {
+            let f = f32(i) / 63.0
+            let sec = self.section_at(f)
+            for j in 0..64 {
+                let theta = TAU * f32(j) / 64.0
+                let r = sec.radius(theta)
+                least = min(least, r)
+                let k = slopes(self, sec, f * len, theta)
+                let k2 = slopes(self, sec, f * len, theta + 0.02)
+                grows = max(
+                    grows,
+                    abs(k2.y - k.y) / 0.02 / max(r * r, 0.000001) +
+                        abs(k2.x - k.x) / 0.02 / max(r, 0.0001) +
+                        abs(k.y) / max(r * r, 0.000001),
+                )
+            }
+        }
+        if least - near <= 0.5 * least {
+            return 1.0 / 0.0
+        }
+        var bend = 1.0
+        for i in 1..self.vertices - 1 {
+            let turn = acos(clamp(dot(self.normal[i - 1], self.normal[i + 1]), -1.0, 1.0))
+            let kappa = turn / max(0.5 * (self.along[i + 1] - self.along[i - 1]), 0.000001)
+            let sec = self.section_at(self.along[i] / len)
+            var r = 0.0
+            var slope = 0.0
+            for j in 0..32 {
+                let theta = TAU * f32(j) / 32.0
+                r = max(r, sec.radius(theta))
+                slope = max(slope, abs(slopes(self, sec, self.along[i], theta).x))
+            }
+            let kr = kappa * (r + near)
+            if kr >= 0.9 {
+                return 1.0 / 0.0
+            }
+            let steep = slope / (1.0 - kr)
+            bend = max(bend, sqrt(1.0 + steep * steep) / sqrt(1.0 + slope * slope))
+        }
+        (1.0 + near * grows) * bend * 1.25
+    }
 }
 
 impl<const S: u32> Sweep<S> {
@@ -525,60 +578,5 @@ impl<const S: u32> Sweep<S> {
         // Past the piece's span, at least as far as it's outside (inside it, the span holds
         // nothing back).
         select(if_false: d, if_true: length(vec2(max(d, 0.0), outside)), cond: outside > 0.0)
-    }
-}
-
-impl<const S: u32> Lipschitz for Sweep<S> {
-    /// From samples of its sections (64 places by 64 angles): the side's slope changes over
-    /// `near`, as a loft's (1 + `near` times how fast it changes). And where the path turns,
-    /// by κ per metre, a slope along it is steeper by up to 1 / (1 − κ r) on the inside of the
-    /// turn at radius r (sampled at each vertex, 32 angles). Infinite where `near` reaches
-    /// half the least radius, or a turn's centre (κ (r + `near`) ≥ 0.9). Then 25% more: the
-    /// samples miss what's between them.
-    fn lipschitz(self, near: f32) -> f32 {
-        let len = self.length()
-        let near = max(near, 0.0)
-        var least = 1.0e9
-        var grows = 0.0
-        for i in 0..64 {
-            let f = f32(i) / 63.0
-            let sec = self.section_at(f)
-            for j in 0..64 {
-                let theta = TAU * f32(j) / 64.0
-                let r = sec.radius(theta)
-                least = min(least, r)
-                let k = slopes(self, sec, f * len, theta)
-                let k2 = slopes(self, sec, f * len, theta + 0.02)
-                grows = max(
-                    grows,
-                    abs(k2.y - k.y) / 0.02 / max(r * r, 0.000001) +
-                        abs(k2.x - k.x) / 0.02 / max(r, 0.0001) +
-                        abs(k.y) / max(r * r, 0.000001),
-                )
-            }
-        }
-        if least - near <= 0.5 * least {
-            return 1.0 / 0.0
-        }
-        var bend = 1.0
-        for i in 1..self.vertices - 1 {
-            let turn = acos(clamp(dot(self.normal[i - 1], self.normal[i + 1]), -1.0, 1.0))
-            let kappa = turn / max(0.5 * (self.along[i + 1] - self.along[i - 1]), 0.000001)
-            let sec = self.section_at(self.along[i] / len)
-            var r = 0.0
-            var slope = 0.0
-            for j in 0..32 {
-                let theta = TAU * f32(j) / 32.0
-                r = max(r, sec.radius(theta))
-                slope = max(slope, abs(slopes(self, sec, self.along[i], theta).x))
-            }
-            let kr = kappa * (r + near)
-            if kr >= 0.9 {
-                return 1.0 / 0.0
-            }
-            let steep = slope / (1.0 - kr)
-            bend = max(bend, sqrt(1.0 + steep * steep) / sqrt(1.0 + slope * slope))
-        }
-        (1.0 + near * grows) * bend * 1.25
     }
 }

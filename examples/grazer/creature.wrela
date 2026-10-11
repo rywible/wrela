@@ -19,7 +19,7 @@ use round1::shapes::{
     FlatCone, NOISE3_LIPSCHITZ, ell, fbm3, fbm3_lipschitz, fbm3_range, flat_cone, mirror_x, noise3,
     rot_x, sd_box, sstep, sstep_slope,
 }
-use std::field::{Blend, Color, Lipschitz, Surface, cuboid, rgb, round_cone, smax, sphere}
+use std::field::{Blend, Color, Surface, cuboid, rgb, round_cone, smax, sphere}
 use std::quat::Quat
 
 // ---- channels: a coat per part ------------------------------------------------------------------
@@ -160,9 +160,7 @@ impl Surface for Muscle {
         )
         if self.noise != 0.0 { d + self.noise * noise3((p + self.origin) * self.freq) } else { d }
     }
-}
 
-impl Lipschitz for Muscle {
     /// The ellipsoid's, in a turned frame, within `near` plus the noise's reach, and the
     /// noise's.
     fn lipschitz(self, near: f32) -> f32 {
@@ -190,9 +188,7 @@ impl Surface for Hoof {
         h = smax(h, -q.y, 0.006)
         smax(h, -sd_box(q - vec3(0.0, 0.03, 0.10), vec3(0.004, 0.05, 0.05)), 0.004)
     }
-}
 
-impl Lipschitz for Hoof {
     /// A cone, a plane and a box (each exact), joined by smooth maxima.
     fn lipschitz(self, near: f32) -> f32 {
         1.0
@@ -235,9 +231,7 @@ impl Surface for Ear {
             1.9
         smax(d, -cup, 0.004)
     }
-}
 
-impl Lipschitz for Ear {
     /// Two cones squashed by 1.9 across x and divided by it: each at most 1.9 / 1.9 = 1, then
     /// a smooth maximum.
     fn lipschitz(self, near: f32) -> f32 {
