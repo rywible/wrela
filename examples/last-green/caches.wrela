@@ -67,9 +67,10 @@ impl Kept {
         }
     }
 
-    /// What casts into it changed: drawn again where it is, once the drawing under way ends.
+    /// What casts into it changed: drawn again where it is, once the drawing under way ends (a
+    /// drawing that hasn't drawn its first strip yet draws what casts now).
     pub fn changed(mut self) {
-        self.stale = true
+        self.stale = self.stale || draws_again(drawing: self.next.is_some(), strip: self.strip)
     }
 
     /// Follows `at`: once it's `moves` from the middle in use (or what casts changed), the next
@@ -157,4 +158,23 @@ impl Kept {
             self.ready = true
         }
     }
+}
+
+/// Whether a change to what casts draws a cascade again: not while its drawing (`drawing`) is
+/// still at its first strip (`strip`), which draws what casts then.
+fn draws_again(drawing: bool, strip: u32) -> bool {
+    !drawing || strip > 0
+}
+
+/// A change to what casts before a drawing's first strip is drawn with it (the far cascade at
+/// load: the far layer and the built things come while it waits); one after it, or with no
+/// drawing under way, draws the map again.
+@test
+fn a_change_before_the_first_strip_is_drawn_with_it() {
+    assert(
+        !draws_again(drawing: true, strip: 0),
+        "a change before the first strip draws the map again",
+    )
+    assert(draws_again(drawing: true, strip: 1), "a change after the first strip isn't drawn")
+    assert(draws_again(drawing: false, strip: 0), "a change with no drawing under way isn't drawn")
 }

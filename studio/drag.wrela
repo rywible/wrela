@@ -148,11 +148,11 @@ pub fn begin<S: Surface>(
 
 /// Makes `lits` the drag's literals, each where it is now, free.
 fn take_literals(d: mut Drag, lits: [u32]) {
-    d.lits = Vec::new()
-    d.original = Vec::new()
-    d.now = Vec::new()
-    d.active = Vec::new()
-    d.held = Vec::new()
+    d.lits.clear()
+    d.original.clear()
+    d.now.clear()
+    d.active.clear()
+    d.held.clear()
     for i in lits {
         d.lits.push(i)
         d.original.push(value(i))

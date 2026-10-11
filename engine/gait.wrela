@@ -31,6 +31,8 @@ pub struct Walk: Copy + Eq + StateHash + Serialize + SimState {
     /// How fast it turns toward where its path leads (per second), and how far ahead it looks.
     pub steer: f32 = 1.4,
     pub look_ahead: f32 = 2.5,
+    /// Its cycles a second: the first at a standstill, and the second more for each m/s.
+    pub cadence: vec2 = vec2(0.55, 0.25),
 }
 
 /// A foot: whether it's on the ground, where its sole is (world), and the ground's normal there;
@@ -282,7 +284,7 @@ pub fn step<T: Terrain, P: Path>(
     }
     w.along = best
     // The cycle: faster with speed; a stride's length follows.
-    let cadence = 0.55 + 0.25 * w.speed
+    let cadence = walk.cadence.x + walk.cadence.y * w.speed
     let moving = w.speed > 0.02
     if moving {
         w.phase = (w.phase + dt * cadence) % 1.0

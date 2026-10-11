@@ -1039,8 +1039,8 @@ pub fn click<S: Surface>(
     let top = ranked(derivatives(grad, reached(), p))
     let own = part_reads(p, i)
     var lits = list()
-    lens.picks = Vec::new()
-    lens.pick_labels = Vec::new()
+    lens.picks.clear()
+    lens.pick_labels.clear()
     for item in top {
         let (index, d) = item
         var mine = false

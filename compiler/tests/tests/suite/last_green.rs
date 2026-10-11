@@ -147,7 +147,7 @@ fn floor() -> PathBuf {
                 "{}",
                 wrela_diag::render::render_all(&out.sources, &out.diagnostics)
             );
-            let build = repo_root().join("target/tmp/last-green-floor");
+            let build = crate::scratch_root().join("last-green-floor");
             let _ = std::fs::remove_dir_all(&build);
             for (path, bytes) in &out.files {
                 let to = build.join(path);
@@ -457,7 +457,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
 #[ignore = "long: bakes the floor (minutes when the constants' cache is cold)"]
 fn the_floors_own_tests_pass() {
     let _ = floor();
-    assert_eq!(super::tests_pass(&repo_root().join("examples/last-green")), 18);
+    assert_eq!(super::tests_pass(&repo_root().join("examples/last-green")), 20);
 }
 
 /// The body of WGSL function `name` in `text` (to its closing brace at the line's start).
@@ -738,7 +738,7 @@ fn the_checks_sight_matches_the_renderers_depth() {
     let half = std::f64::consts::PI / views as f64;
     let mut f = Floor::load_sized("last-green-calibration", (960, 540));
     f.until_ready();
-    let shots = repo_root().join("target/tmp/last-green-calibration-views");
+    let shots = crate::scratch_root().join("last-green-calibration-views");
     std::fs::create_dir_all(&shots).expect("a directory for the views");
     let mut off = Vec::new();
     let mut sum = 0.0;
@@ -790,7 +790,7 @@ fn each_landmark_can_be_made_out_from_where_it_is_seen() {
     let (w, h) = (960usize, 540usize);
     let mut f = Floor::load_sized("last-green-landmarks", (w as u32, h as u32));
     f.until_ready();
-    let shots = repo_root().join("target/tmp/last-green-landmark-views");
+    let shots = crate::scratch_root().join("last-green-landmark-views");
     std::fs::create_dir_all(&shots).expect("a directory for the views");
     let mut small = Vec::new();
     for l in cal["landmarks"].as_array().expect("landmarks") {
@@ -853,7 +853,7 @@ fn the_trails_read_as_paths() {
     let (w, h) = (960usize, 540usize);
     let mut f = Floor::load_sized("last-green-trails", (w as u32, h as u32));
     f.until_ready();
-    let shots = repo_root().join("target/tmp/last-green-trail-views");
+    let shots = crate::scratch_root().join("last-green-trail-views");
     std::fs::create_dir_all(&shots).expect("a directory for the views");
     let places = cal["trails"].as_array().expect("trails");
     let (mut weak, mut measured) = (Vec::new(), 0usize);
@@ -1238,7 +1238,7 @@ fn the_floors_systems_keep_their_slices() {
     let shore = f.ground([207.0, -337.0]);
     f.look([235.0, shore + 1.5, -365.0], [270.0, shore - 3.0, -400.0], 60);
     let (mere, water) = timed_view(&mut f, 120);
-    f.save(&repo_root().join("target/tmp/last-green-mere-view.png"));
+    f.save(&crate::scratch_root().join("last-green-mere-view.png"));
     let of = |t: &[(&str, f64, f64)], n: &str| t.iter().find(|x| x.0 == n).map_or(0.0, |x| x.2);
     eprintln!("beech high forest: vegetation {:.3} ms (slice 4.0)", of(&beech, "vegetation"));
     eprintln!(
@@ -1352,11 +1352,53 @@ fn the_bake_is_the_same_bytes_in_both_hosts() {
 #[test]
 #[ignore = "long: bakes the floor, needs Chrome, python3 and a GPU"]
 fn the_floors_walk_replays_and_reports_the_same_in_both_hosts() {
+    let natively = same_in_both_hosts(
+        "last-green-hosts",
+        r#"[{"frame": 1, "type": "key", "key": "KeyP"}]"#,
+        720,
+    );
+    assert!(natively.len() >= 5, "only {} reports natively", natively.len());
+}
+
+/// The fawn's encounter (behaviour.wrela) in both hosts: the player travels to 46 m in front of
+/// the fawn and walks up, stands, and walks on. Its reports (the fawn's state among them) are the
+/// same in Chrome and natively, and Chrome's tick log replays natively, every tick to the same
+/// state hash; and the fawn watched, then fled.
+#[test]
+#[ignore = "long: bakes the floor, needs Chrome, python3 and a GPU"]
+fn the_fawns_encounter_replays_the_same_in_both_hosts() {
+    let natively = same_in_both_hosts("last-green-fawn", FAWN_WALK_UP, 2160);
+    let doing: Vec<String> = natively
+        .iter()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .map(|r| r["fawn"][0].as_str().unwrap_or("").to_string())
+        .collect();
+    println!("the fawn: {doing:?}");
+    let watched = doing.iter().position(|d| d == "watch").expect("it never watched");
+    assert!(doing[watched..].iter().any(|d| d == "flee"), "it watched but never fled");
+}
+
+/// The player's walk up to the fawn: a travel to it (G 61 Enter: the sites are 0 to 58, the egg
+/// 59, its road 60, the fawn 61), then walk 10 s, stand 8 s, and walk on 9.5 s.
+const FAWN_WALK_UP: &str = r#"[
+    {"frame": 1, "type": "key", "key": "KeyG"},
+    {"frame": 1, "type": "key", "key": "Digit6"},
+    {"frame": 1, "type": "key", "key": "Digit1"},
+    {"frame": 1, "type": "key", "key": "Enter"},
+    {"frame": 150, "type": "keydown", "key": "KeyW"},
+    {"frame": 750, "type": "keyup", "key": "KeyW"},
+    {"frame": 1230, "type": "keydown", "key": "KeyW"},
+    {"frame": 1800, "type": "keyup", "key": "KeyW"}
+]"#;
+
+/// The floor run with `script` for `frames` frames at 60 a second in Chrome's test mode and in
+/// the native host, frame for frame: the play harness's reports the same in both, and Chrome's
+/// tick log replayed natively, every tick to the same state hash (a hash that differs fails the
+/// replay at its tick). The native host's reports.
+fn same_in_both_hosts(name: &str, text: &str, frames: u32) -> Vec<String> {
     let _ = floor();
-    let (dir, rel) = wrela_tests::page("examples/last-green", "last-green-hosts");
-    let text = r#"[{"frame": 1, "type": "key", "key": "KeyP"}]"#;
+    let (dir, rel) = wrela_tests::page("examples/last-green", name);
     let script = wrela_host::parse_script(text).expect("a script");
-    let frames = 720;
     let run = wrela_tests::ChromeRun {
         script: Some(text.into()),
         workers: 4,
@@ -1381,15 +1423,13 @@ fn the_floors_walk_replays_and_reports_the_same_in_both_hosts() {
         natively.len(),
         natively.last()
     );
-    assert!(natively.len() >= 5, "only {} reports natively", natively.len());
     assert_eq!(in_chrome, natively, "the hosts' reports differ");
-    // The ticks: Chrome's log (its records and every tick's state hash) replays natively, each
-    // tick to the same hash (a hash that differs fails the replay at its tick).
     let ticks = chrome.ticks.expect("the ticker's ticks");
     let log = ticks.log.expect("a tick log");
-    assert!(log.ticks.len() > 600, "{} ticks", log.ticks.len());
+    assert!(log.ticks.len() as u32 > frames * 5 / 6, "{} ticks", log.ticks.len());
     let built = wrela_host::CpuBuild::load(&dir).expect("load on the CPU");
     assert_eq!(built.replay(&log, 2).expect("replays") as usize, log.ticks.len());
+    natively
 }
 
 // ---- in Chrome ------------------------------------------------------------------------------
