@@ -318,6 +318,9 @@ pub struct Framing: Copy {
 pub const CLEARANCE: f32 = 0.35
 pub const ABOVE_GROUND: f32 = 0.45
 
+/// How far over the target the eye goes when nothing on the arm is clear (m).
+pub const OVER_HEAD: f32 = 0.5
+
 /// The camera's eye and what it looks at, for a player standing at `feet` (render space), its
 /// look `yaw` and `pitch`: the eye on the framing's arm, pulled in along it where a trunk, a
 /// stone or a wall (`o`, in the same space as `feet`, offset by `o_from`) or the ground comes
@@ -355,7 +358,11 @@ pub fn third_person(
             break
         }
     }
-    let eye = target + arm * (reach / len)
+    // Where no point 0.4 m or more out on the arm is clear (a player backed into a trunk or a
+    // wall), the eye goes over the head, where the player stands clear, not inside it.
+    let eye = if reach < 0.4 { target + vec3(0.0, OVER_HEAD, 0.0) } else {
+        target + arm * (reach / len)
+    }
     // Look a little over the target, so the player sits low in the frame.
     (eye, target + vec3(ahead.x, 0.0, ahead.y) * 2.0 + vec3(0.0, 0.25, 0.0))
 }
@@ -374,4 +381,31 @@ fn in_the_way(p: vec3, o: Obstacles, o_from: vec2, height: fn(vec2) -> f32) -> b
         })
     }
     hit
+}
+
+/// A player backed against a trunk, so close that no point on the arm is clear: the eye goes over
+/// the head, clear of the trunk, not to the target (inside the head).
+@test
+fn a_blocked_arm_puts_the_eye_over_the_head() {
+    let f = Framing {}
+    let feet = vec3(10.0, 0.0, 10.0)
+    let yaw = 0.6
+    let ahead = facing(yaw)
+    // A trunk of radius 0.8 m, its surface 0.4 m behind the player: the arm's first step meets it.
+    let centre = feet.xz - ahead * 1.2
+    let trunk = footing::Obstacle {
+        a: centre,
+        b: centre,
+        r: 0.8,
+        thing: footing::Thing::Trunk,
+        depth: 0.0,
+    }
+    let o = Obstacles::of([trunk], vec2(0.0), vec2(20.0))
+    let (eye, _) = third_person(f, feet, yaw, 0.0, o, vec2(0.0), |p: vec2| 0.0)
+    let target = feet + vec3(0.0, f.target, 0.0)
+    assert(
+        length(eye - target) >= 0.4,
+        f"the eye {eye} is {length(eye - target)} m from the target",
+    )
+    assert(!in_the_way(eye, o, vec2(0.0), |p: vec2| 0.0), f"the eye {eye} is in the way")
 }
