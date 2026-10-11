@@ -127,12 +127,13 @@ pub fn sample(keys: [Key], t: f32) -> Pose {
     keys[n - 1].pose
 }
 
-/// The sword at rest: it floats upright behind the right shoulder, its point up, its edge back.
+/// The sword at rest: it floats upright behind the right shoulder, a hand's width clear of the
+/// cape, its point up, its edge toward the body (so its flat, its full width, faces back).
 pub const REST = Pose {
     sword: Sword {
-        at: vec3(-0.5, 1.15, -0.32),
+        at: vec3(-0.6, 1.15, -0.32),
         aim: vec3(-0.05, 1.0, -0.08),
-        edge: vec3(0.0, 0.0, -1.0),
+        edge: vec3(1.0, 0.0, 0.0),
     },
 }
 
@@ -413,7 +414,8 @@ pub fn pose(a: Act, t: f32) -> Pose {
 /// `turning` how fast it turns (rad/s) and `drift` its float's phase (0 to 1). The body tips
 /// into its speed and its acceleration, back as it stops, and leans into a turn; it rises and
 /// falls a little as it floats. The sword at rest trails: it tips back as the body speeds up and
-/// swings out of a turn.
+/// swings out of a turn. It floats on its own, a quarter round behind the body: it rises and falls
+/// more than the body and rocks a little, less as it comes to the guard.
 pub fn locomotion(ready: f32, speed: f32, accel: f32, turning: f32, drift: f32) -> Pose {
     var p = REST.blend(GUARD, ready)
     let lean = clamp(accel * 0.02, -0.2, 0.22)
@@ -425,8 +427,16 @@ pub fn locomotion(ready: f32, speed: f32, accel: f32, turning: f32, drift: f32) 
     p.sword.at.z -= trail * 0.4
     p.sword.at.x -= bank * 0.3
     p.sword.aim.z -= trail
+    let bob = (1.0 - ready) * sin(TAU * (drift - 0.25))
+    p.sword.at.y += SWORD_BOB * bob
+    p.sword.aim.x += SWORD_ROCK * bob
     p
 }
+
+/// How far the sword at rest rises and falls as it floats (m), and how far it rocks (its aim's
+/// sideways part).
+pub const SWORD_BOB: f32 = 0.04
+pub const SWORD_ROCK: f32 = 0.05
 
 /// How fast the float goes round (a second at rest, faster as it glides): its phase's rate (1/s).
 pub fn drift_rate(speed: f32) -> f32 {
