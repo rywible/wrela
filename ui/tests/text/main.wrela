@@ -3,7 +3,7 @@
 
 use std::gpu::{begin_screen_pass}
 use ui::draw::{DrawList, Renderer}
-use ui::text::{Face, Fonts}
+use ui::text::{Face, Font, Fonts}
 
 /// The lines: their font, their size, and the top of each, from the screen's top.
 pub const SIZES: [f32; 7] = [10.0, 12.0, 16.0, 24.0, 32.0, 48.0, 72.0]
@@ -52,4 +52,35 @@ pub fn frame(state: mut Scene, time: f32, width: u32, height: u32) {
     let screen_pass = begin_screen_pass(clear: vec4(0.1, 0.1, 0.12, 1.0))
     state.renderer.draw(screen_pass, screen)
     screen_pass.present()
+}
+
+fn face_of(face: u32) -> Face {
+    if face == 0 { Face::Sans } else { Face::Mono }
+}
+
+/// The face's ascender, ems: where a line's baseline is below its top.
+pub fn ascender(face: u32) -> f32 {
+    Font::of(face_of(face)).ascender
+}
+
+/// Where glyph `k` of line `i` of the face's lines goes: its pen (pixels from the left), as
+/// the line is laid out from x 10.
+pub fn pen(face: u32, i: u32, k: u32) -> f32 {
+    let font = Font::of(face_of(face))
+    let text = if i % 2 == 0 { LATIN } else { MORE }
+    var at = 0.0
+    var n = 0
+    let _ = font.walk(text, SIZES[i / 2], 10.0, |_i, _g, x| {
+        if n == k {
+            at = x
+        }
+        n += 1
+        n <= k
+    })
+    at
+}
+
+/// The bytes of the face's fields.
+pub fn field_bytes(face: u32) -> u32 {
+    Font::of(face_of(face)).field_bytes()
 }

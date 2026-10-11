@@ -63,6 +63,26 @@ pub fn noise2(p: vec2) -> f32 {
     mix(mix(a, b, u.x), mix(c, d, u.x), u.y)
 }
 
+/// `noise2` repeating every `period` cells each way (a tile that wraps: a cooked texture's).
+pub fn noise2_wrapped(p: vec2, period: vec2i) -> f32 {
+    let i = floor(p)
+    let f = p - i
+    let u = f * f * (vec2(3.0) - 2.0 * f)
+    let (x, y) = (i32(i.x), i32(i.y))
+    let (x0, x1) = (wrapped(x, period.x), wrapped(x + 1, period.x))
+    let (y0, y1) = (wrapped(y, period.y), wrapped(y + 1, period.y))
+    let a = hash2(x0, y0)
+    let b = hash2(x1, y0)
+    let c = hash2(x0, y1)
+    let d = hash2(x1, y1)
+    mix(mix(a, b, u.x), mix(c, d, u.x), u.y)
+}
+
+/// `v` wrapped into 0 to `n`.
+fn wrapped(v: i32, n: i32) -> i32 {
+    ((v % n) + n) % n
+}
+
 /// Value noise in [0, 1], in 3D.
 pub fn noise3(p: vec3) -> f32 {
     let i = floor(p)
@@ -94,6 +114,38 @@ pub fn fbm2(p: vec2, octaves: u32) -> f32 {
         total += a
         q = vec2(1.6 * q.x - 1.2 * q.y, 1.2 * q.x + 1.6 * q.y) + vec2(17.3, -9.1)
         a *= 0.5
+    }
+    s / total
+}
+
+/// How much of a layer of noise a sample `w` of its cells wide keeps: all of it while the sample
+/// is under a quarter of a cell, none past three quarters (it averages to the layer's mean).
+fn kept_at(w: f32) -> f32 {
+    1.0 - smoothstep(0.25, 0.75, w)
+}
+
+/// `noise2` as a sample `w` cells wide sees it: faded to its mean (0.5) as the sample grows past
+/// its cells, so what's cooked or drawn far off doesn't alias. 0 wide, `noise2` itself.
+pub fn noise2_seen(p: vec2, w: f32) -> f32 {
+    mix(0.5, noise2(p), kept_at(w))
+}
+
+/// `fbm2` as a sample `w` of its first layer's cells wide sees it: each layer finer than the
+/// sample fades to its mean (each is twice as fine as the last), so a far level of a clipmap,
+/// whose texels are many cells apart, gets its broad shapes and not their aliases (the far land's
+/// marbling, playing spike 17). 0 wide, `fbm2` itself.
+pub fn fbm2_seen(p: vec2, octaves: u32, w: f32) -> f32 {
+    var q = p
+    var s = 0.0
+    var a = 0.5
+    var total = 0.0
+    var f = 1.0
+    for _ in 0..octaves {
+        s += a * mix(0.5, noise2(q), kept_at(w * f))
+        total += a
+        q = vec2(1.6 * q.x - 1.2 * q.y, 1.2 * q.x + 1.6 * q.y) + vec2(17.3, -9.1)
+        a *= 0.5
+        f *= 2.0
     }
     s / total
 }

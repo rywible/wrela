@@ -149,7 +149,7 @@ impl Ui {
     pub fn new(fonts: take Fonts) -> Ui {
         Ui {
             theme: Theme {},
-            fonts: take fonts,
+            fonts,
             draw: DrawList::new(),
             screen: vec2(640.0, 480.0),
             pointer: vec2(-1.0),

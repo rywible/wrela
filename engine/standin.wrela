@@ -1,0 +1,182 @@
+// The stand-in player (M6 §5): a shape the climber's height (1.7 m), until the climber (the
+// duel's): a body, a head, arms and legs as rounded cones, joined smoothly, in a traveller's
+// colours. A field realized once at load, as a creature of one bone (as a stone is), and drawn
+// as the characters are (`character`: B's cel treatment, the motion target, the moving shadow
+// map), its one bone placed where the player stands each frame.
+
+use character::colours
+use creature::{Creature, Skeleton, creature, smooth}
+use look::{CreatureLook, Mesh as Tolerance}
+use realize::{Mesh, realize_rigid}
+use render::{ByChannels, Shaded}
+use std::derive::Box3
+use std::field::{Blend, Surface, cuboid, ellipsoid, round_cone, sphere}
+use std::gpu::{GpuBuffer, Unorm8x4}
+use std::transform::{rotate_y, translate}
+
+/// What a point of the stand-in carries: its colour (linear).
+pub struct Cloth: Copy + GpuData + Blend {
+    pub albedo: vec3,
+}
+
+impl Shaded for Cloth {
+    fn albedo(self) -> vec3 {
+        self.albedo
+    }
+
+    fn roughness(self) -> f32 {
+        0.85
+    }
+}
+
+// The traveller's colours: a madder cloak, warm against the wood's greens; an ochre scarf by the
+// face, where the eye goes; dark trousers and boots; a leather pack; an ash staff.
+const CLOAK = Cloth { albedo: vec3(0.26, 0.085, 0.05) }
+const SCARF = Cloth { albedo: vec3(0.50, 0.33, 0.09) }
+const FACE = Cloth { albedo: vec3(0.55, 0.36, 0.25) }
+const TROUSERS = Cloth { albedo: vec3(0.055, 0.062, 0.075) }
+const BOOTS = Cloth { albedo: vec3(0.10, 0.055, 0.03) }
+const PACK = Cloth { albedo: vec3(0.12, 0.075, 0.04) }
+const STAFF = Cloth { albedo: vec3(0.24, 0.16, 0.08) }
+
+/// The stand-in as a creature of one bone (at its feet, +z ahead): a traveller in a hooded
+/// cloak, designed by its silhouette, which reads from any side: the hood's point, the cloak's
+/// flare, the staff above the head, the pack behind on its straps, the boots at the hem.
+pub fn standin() -> Creature<Cloth> {
+    var s = Skeleton::new()
+    let root = s.root("stand-in", vec3(0.0))
+    // The cloak: a cone from the shoulders to a hem at the knees, flattened front to back.
+    let cloak = round_cone(
+        vec3(0.0, 0.50, -0.03),
+        vec3(0.0, 1.36, 0.0),
+        r_top: 0.34,
+        r_bottom: 0.15,
+    )
+        .smooth_intersect(cuboid(vec3(0.5, 1.0, 0.19)).translate(vec3(0.0, 1.0, -0.02)), k: 0.06)
+    creature(s)
+        .join("cloak", root, cloak.with(CLOAK))
+        .join(
+            "shoulders",
+            root,
+            ellipsoid(vec3(0.24, 0.11, 0.15)).translate(vec3(0.0, 1.37, -0.01)).with(CLOAK),
+            seam: smooth(0.06),
+        )
+        .join(
+            "hood",
+            root,
+            sphere(0.15).translate(vec3(0.0, 1.58, -0.03)).with(CLOAK),
+            seam: smooth(0.05),
+        )
+        .join(
+            "hood's point",
+            root,
+            round_cone(vec3(0.0, 1.62, -0.09), vec3(0.0, 1.77, -0.25), r_top: 0.11, r_bottom: 0.028)
+                .with(CLOAK),
+            seam: smooth(0.04),
+        )
+        .join(
+            "face",
+            root,
+            sphere(0.1).translate(vec3(0.0, 1.555, 0.06)).with(FACE),
+            seam: smooth(0.01),
+        )
+        .join(
+            "scarf",
+            root,
+            ellipsoid(vec3(0.15, 0.065, 0.14)).translate(vec3(0.0, 1.45, 0.02)).with(SCARF),
+            seam: smooth(0.015),
+        )
+        .join(
+            "scarf's tail",
+            root,
+            round_cone(
+                vec3(0.07, 1.42, 0.12),
+                vec3(0.11, 1.08, 0.17),
+                r_top: 0.045,
+                r_bottom: 0.035,
+            )
+                .with(SCARF),
+            seam: smooth(0.015),
+        )
+        .join(
+            "leg",
+            root,
+            round_cone(vec3(0.09, 0.14, 0.0), vec3(0.1, 0.6, 0.0), r_top: 0.065, r_bottom: 0.085)
+                .with(TROUSERS),
+            seam: smooth(0.02),
+            mirror: true,
+        )
+        .join(
+            "boot",
+            root,
+            round_cone(vec3(0.095, 0.075, -0.03), vec3(0.1, 0.3, 0.0), r_top: 0.07, r_bottom: 0.07)
+                .smooth_union(
+                    round_cone(
+                        vec3(0.095, 0.065, -0.02),
+                        vec3(0.1, 0.055, 0.14),
+                        r_top: 0.065,
+                        r_bottom: 0.05,
+                    ),
+                    k: 0.03,
+                )
+                .with(BOOTS),
+            seam: smooth(0.015),
+            mirror: true,
+        )
+        .join(
+            "sleeve",
+            root,
+            round_cone(vec3(0.21, 1.33, 0.0), vec3(0.28, 1.03, 0.1), r_top: 0.08, r_bottom: 0.065)
+                .with(CLOAK),
+            seam: smooth(0.04),
+        )
+        .join(
+            "hand",
+            root,
+            sphere(0.045).translate(vec3(0.3, 0.98, 0.14)).with(FACE),
+            seam: smooth(0.015),
+        )
+        .join(
+            "staff",
+            root,
+            round_cone(vec3(0.33, 0.0, 0.22), vec3(0.29, 1.86, 0.1), r_top: 0.02, r_bottom: 0.026)
+                .smooth_union(sphere(0.04).translate(vec3(0.29, 1.87, 0.1)), k: 0.02)
+                .with(STAFF),
+            seam: smooth(0.01),
+        )
+        .join(
+            "strap",
+            root,
+            round_cone(vec3(0.09, 1.25, -0.22), vec3(0.11, 1.4, 0.1), r_top: 0.022, r_bottom: 0.022)
+                .with(PACK),
+            seam: smooth(0.01),
+            mirror: true,
+        )
+        .join(
+            "pack",
+            root,
+            cuboid(vec3(0.12, 0.15, 0.055)).translate(vec3(0.0, 1.13, -0.235)).with(PACK),
+            seam: smooth(0.03),
+        )
+        .bounded(Box3 { lo: vec3(-0.45, -0.05, -0.45), hi: vec3(0.45, 1.95, 0.4) })
+}
+
+/// The stand-in realized: its mesh and colours (cells for a 5 mm tolerance).
+pub struct Realized {
+    pub mesh: Mesh,
+    pub colours: GpuBuffer<Unorm8x4>,
+}
+
+pub fn realize_standin() -> Realized {
+    let s = standin()
+    let look = CreatureLook { surface: Tolerance { tolerance: 5mm, largest: 3cm } }
+    let mesh = realize_rigid(s, look)
+    let colours = colours(mesh, s.field(), ByChannels {}, cell: 1cm)
+    Realized { mesh, colours }
+}
+
+/// The stand-in's one bone where it stands: its feet at `feet`, facing `heading` (radians from
+/// +z toward +x).
+pub fn placed(feet: vec3, heading: f32) -> mat4 {
+    translate(feet) * rotate_y(heading)
+}

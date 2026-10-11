@@ -1,0 +1,856 @@
+// A history baked (M6 §3): "bake the decisions, recompute the consequences" (spike 17). The
+// history's years are the costly part, and what they decide is short: which trees stand where, of
+// what kind, how they died and fell, where the herd wore its trails, how wet the ground is and where
+// the streams run. That's written once when the game is built (a cached constant, shipped as a file
+// a tile: `std::io::Shipped`), fetched as a tile streams in, and read back; what follows from it
+// (light, litter, thorn) is worked out again where the tile is cooked (`grow::canopy`).
+//
+// A tile's bytes are its own, so it streams alone: a header; its trees, 22 bytes each (a place to
+// 4 mm within the tile, kind, state and cause, height, crown, trunk, lean, light, fall, years, what
+// shaped it), sorted by place and laid out a byte plane at a time; its trails' wear, a byte each
+// 2 m, runs of nothing coded short; its ground's wetness, a byte each 4 m; what its ground
+// remembers (`grow::Memory`), three bytes each 4 m; and the streams' points within it.
+//
+// And a far layer of the whole floor, in the first frame's payload: each 8 m cell's tallest crown
+// (its height and kind), for what lies past the tiles streamed in.
+
+use grow::{Cause, Grid, Habit, History, Mark, Memory, State, Stream, Tree, UNMARKED}
+use std::io::Shipped
+use noise::noise2
+use place::{Route, RouteKind, TILE, tile_of}
+use std::math::TAU
+
+/// The bytes' first word, and their version.
+const MAGIC: u32 = 0x5754_4c47
+pub const VERSION: u32 = 5
+
+/// Bytes a tree takes.
+pub const TREE_BYTES: u32 = 22
+
+/// The least height of a living tree the bake keeps: a seedling shorter isn't drawn, and the
+/// check doesn't see it (its undergrowth is over 0.8 m).
+pub const SEEDLING: f32 = 0.8
+
+/// The trails' grid in a tile (2 m) and the wetness's (4 m), each way.
+pub const WEAR_N: u32 = 128
+pub const WET_N: u32 = 64
+
+fn put_u16(out: mut Vec<u8>, x: u32) {
+    out.push(u8(x & 255))
+    out.push(u8((x >> 8) & 255))
+}
+
+pub fn put_u32(out: mut Vec<u8>, x: u32) {
+    for k in 0..4 {
+        out.push(u8((x >> (8 * k)) & 255))
+    }
+}
+
+pub fn get_u16(b: [u8], at: u32) -> u32 {
+    u32(b[at]) | (u32(b[at + 1]) << 8)
+}
+
+pub fn get_u32(b: [u8], at: u32) -> u32 {
+    u32(b[at]) | (u32(b[at + 1]) << 8) | (u32(b[at + 2]) << 16) | (u32(b[at + 3]) << 24)
+}
+
+/// A number in [0, TILE) as a `u16`, and back.
+fn q16(x: f32) -> u32 {
+    u32(clamp(x / TILE * 65536.0, 0.0, 65535.0))
+}
+
+fn unq16(q: u32) -> f32 {
+    (f32(q) + 0.5) * (TILE / 65536.0)
+}
+
+/// The unit a standing tree's fork is kept in: to ±0.508.
+pub const FORK_STEP: f32 = 0.004
+
+/// A signed number as a byte, `step` a unit, held to ±127 steps.
+fn q8s(x: f32, step: f32) -> u8 {
+    u8(u32(clamp(round(x / step), -127.0, 127.0) + 128.0))
+}
+
+fn unq8s(b: u8, step: f32) -> f32 {
+    (f32(b) - 128.0) * step
+}
+
+/// A year as a `u16` (years from -10000).
+fn qyear(y: i32) -> u32 {
+    u32(clamp(y + 10000, 0, 65535))
+}
+
+/// A tree as 22 bytes, its place from tile `t`'s corner: its place (two `u16`s), its kind, state
+/// and cause (a byte: 3, 2 and 3 bits) and whether it's pinned (a byte with its browse line, in
+/// 2 cm steps to 2.5 m, and its pin in the top bit), its height (cm), crown (5 cm) and trunk (4 mm),
+/// lean (each way, 10 cm), light, a log's fall's direction or a standing tree's fork (`FORK_STEP`
+/// a unit), years (born; died and fell as years after it), and what shaped it (`grow::shaped`'s
+/// code, a `u16`). Its seed isn't kept: it's drawn again from its place (`get_tree`).
+fn put_tree(out: mut Vec<u8>, tr: Tree, t: vec2i) {
+    let local = tr.at - vec2(t) * TILE
+    put_u16(mut out, q16(local.x))
+    put_u16(mut out, q16(local.y))
+    out.push(u8((tr.kind & 7) | ((u32(tr.state) & 3) << 3) | ((u32(tr.cause) & 7) << 5)))
+    out.push(u8(min(u32(tr.lift * 50.0), 127) | (if tr.pinned { 128 } else { 0 })))
+    put_u16(mut out, u32(clamp(tr.tall * 100.0, 0.0, 65535.0)))
+    out.push(u8(clamp(tr.reach * 20.0, 0.0, 255.0)))
+    out.push(u8(clamp(tr.girth * 250.0, 0.0, 255.0)))
+    out.push(q8s(tr.lean.x, 0.1))
+    out.push(q8s(tr.lean.y, 0.1))
+    out.push(u8(clamp(tr.light, 0.0, 1.0) * 255.0 + 0.5))
+    if tr.state == State::Log {
+        let fall = atan2(tr.fall.y, tr.fall.x)
+        out.push(u8(u32(round((fall / TAU + 1.0) * 256.0)) % 256))
+    } else {
+        out.push(q8s(tr.fork, FORK_STEP))
+    }
+    put_u16(mut out, qyear(tr.born))
+    put_u16(mut out, u32(clamp(tr.died - tr.born, 0, 65535)))
+    put_u16(mut out, u32(clamp(tr.fell - tr.born, 0, 65535)))
+    put_u16(mut out, if tr.shaped == grow::NONE { 65535 } else { tr.shaped & 65535 })
+}
+
+/// The tree whose 22 bytes are at `at` in `b`, its place from tile `t`'s corner.
+pub fn get_tree(b: [u8], at: u32, t: vec2i) -> Tree {
+    let packed = u32(b[at + 4])
+    let state = State::from_u32((packed >> 3) & 3).unwrap_or(State::Alive)
+    // A log's byte 13 is its fall's direction; a standing tree's, its fork.
+    let fall = if state == State::Log { TAU * f32(b[at + 13]) / 256.0 } else { 0.0 }
+    let flags = u32(b[at + 5])
+    let born = i32(get_u16(b, at + 14)) - 10000
+    let shaped = get_u16(b, at + 20)
+    Tree {
+        at: vec2(t) * TILE + vec2(unq16(get_u16(b, at)), unq16(get_u16(b, at + 2))),
+        kind: packed & 7,
+        state,
+        cause: Cause::from_u32((packed >> 5) & 7).unwrap_or(Cause::Old),
+        pinned: flags >= 128,
+        lift: f32(flags & 127) / 50.0,
+        tall: f32(get_u16(b, at + 6)) / 100.0,
+        reach: f32(b[at + 8]) / 20.0,
+        girth: f32(b[at + 9]) / 250.0,
+        lean: vec2(unq8s(b[at + 10], 0.1), unq8s(b[at + 11], 0.1)),
+        light: f32(b[at + 12]) / 255.0,
+        vigour: 0.5,
+        fall: vec2(cos(fall), sin(fall)),
+        born,
+        died: born + i32(get_u16(b, at + 16)),
+        fell: born + i32(get_u16(b, at + 18)),
+        shaped: if shaped == 65535 { grow::NONE } else { shaped },
+        fork: if state == State::Log { 0.0 } else { unq8s(b[at + 13], FORK_STEP) },
+        // Its own draws' seed, from where it stands (a stored seed is random bytes, which don't
+        // compress: 12% of the bake).
+        seed: noise::hash2u(
+            i32(get_u16(b, at)) ^ (t.x << 16),
+            i32(get_u16(b, at + 2)) ^ (t.y << 16),
+            1103,
+        ),
+    }
+}
+
+/// A tree as the bake keeps it: its record written and read back (its place, height, crown,
+/// light and the rest rounded as `put_tree` rounds them; its seed drawn from its place, as
+/// `get_tree` draws it). What's chosen from a tree before it's baked (a floor's forks) is chosen
+/// from this, so the bake read back agrees with it.
+pub fn as_baked(tr: Tree) -> Tree {
+    let t = tile_of(tr.at)
+    var b: Vec<u8> = Vec::with_capacity(TREE_BYTES)
+    put_tree(mut b, tr, t)
+    get_tree(b, 0, t)
+}
+
+/// Bytes with runs of zeros coded short: a zero, then the run's length (a `u16`).
+fn put_runs(out: mut Vec<u8>, xs: [u8]) {
+    var i = 0
+    let n = xs.len()
+    while i < n {
+        if xs[i] == 0 {
+            var run = 0
+            while i < n && run < 65535 && xs[i] == 0 {
+                run += 1
+                i += 1
+            }
+            out.push(0)
+            put_u16(mut out, run)
+        } else {
+            out.push(xs[i])
+            i += 1
+        }
+    }
+}
+
+/// `n` bytes run-coded from `at` in `b` (`put_runs`), and where they end.
+fn get_runs(b: [u8], at: u32, n: u32) -> (Vec<u8>, u32) {
+    var out: Vec<u8> = Vec::with_capacity(n)
+    var k = at
+    while out.len() < n {
+        let w = b[k]
+        k += 1
+        if w == 0 {
+            let run = get_u16(b, k)
+            k += 2
+            for _ in 0..run {
+                out.push(0)
+            }
+        } else {
+            out.push(w)
+        }
+    }
+    (out, k)
+}
+
+/// A tile's decisions, read back.
+pub struct Decisions {
+    pub tile: vec2i,
+    pub trees: Vec<Tree>,
+    /// The trails' wear (0 to 1), `WEAR_N` a side from the tile's corner, 2 m a cell.
+    pub wear: Vec<f32>,
+    /// The ground's wetness (0 to 1), `WET_N` a side, 4 m a cell.
+    pub wet: Vec<f32>,
+    /// What the ground remembers (`grow::Memory`), `WET_N` a side, 4 m a cell.
+    pub memory: Vec<Memory>,
+    /// The streams' points in the tile: (x, z, width, depth).
+    pub water: Vec<vec4>,
+}
+
+impl Decisions {
+    /// The trails' wear at world point `p` in the tile, bilinear.
+    pub fn wear_at(self, p: vec2) -> f32 {
+        let g = Grid {
+            lo: vec2(self.tile) * TILE,
+            nx: WEAR_N,
+            nz: WEAR_N,
+            cell: TILE / f32(WEAR_N),
+        }
+        g.sample(self.wear, p)
+    }
+
+    pub fn wet_at(self, p: vec2) -> f32 {
+        let g = Grid { lo: vec2(self.tile) * TILE, nx: WET_N, nz: WET_N, cell: TILE / f32(WET_N) }
+        g.sample(self.wet, p)
+    }
+
+    /// What the ground remembers at world point `p` in the tile: its 4 m cell's.
+    pub fn memory_at(self, p: vec2) -> Memory {
+        let g = Grid { lo: vec2(self.tile) * TILE, nx: WET_N, nz: WET_N, cell: TILE / f32(WET_N) }
+        self.memory[g.cell_at(p)]
+    }
+}
+
+/// A memory as three bytes, each in a plane of its own (`encode_tile`): its mark and strength
+/// (the mark in the low two bits, the strength in 63 steps above them), and its year
+/// (`qyear`'s, its low byte then its high); all three 0 where nothing is remembered.
+fn memory_bytes(m: Memory) -> (u8, u8, u8) {
+    if m.mark == Mark::None {
+        return (0, 0, 0)
+    }
+    let y = qyear(m.year)
+    (
+        u8(u32(m.mark) | (u32(round(clamp(m.strength, 0.0, 1.0) * 63.0)) << 2)),
+        u8(y & 255),
+        u8(y >> 8),
+    )
+}
+
+fn memory_of(a: u8, lo: u8, hi: u8) -> Memory {
+    let mark = Mark::from_u32(u32(a) & 3).unwrap_or(Mark::None)
+    if mark == Mark::None {
+        return UNMARKED
+    }
+    Memory {
+        mark,
+        year: i32(u32(lo) | (u32(hi) << 8)) - 10000,
+        strength: f32(u32(a) >> 2) / 63.0,
+    }
+}
+
+/// What the land of history `h` remembers at `p`: its grid's cell there (`UNMARKED` off it).
+fn remembered(h: History, p: vec2) -> Memory {
+    let g = h.land.grid
+    if g.holds(p) { h.memory.at(g.cell_at(p)) } else { UNMARKED }
+}
+
+/// Tile `t`'s bytes from history `h`: its trees (those whose trunks stand in it), its trails, its
+/// wetness and its streams.
+pub fn encode_tile(h: History, t: vec2i) -> Vec<u8> {
+    var out: Vec<u8> = Vec::new()
+    put_u32(mut out, MAGIC)
+    put_u32(mut out, VERSION)
+    put_u32(mut out, u32(t.x))
+    put_u32(mut out, u32(t.y))
+    let lo = vec2(t) * TILE
+    var mine: Vec<u32> = Vec::new()
+    var i = 0
+    for tr in h.trees {
+        if tile_of(tr.at) == t && !(tr.state == State::Alive && tr.tall < SEEDLING) {
+            mine.push(i)
+        }
+        i += 1
+    }
+    // The trees in rows, south to north, each tree's record laid out a byte plane at a time (every
+    // tree's first byte, then every tree's second, ...): neighbours' records are alike, byte by
+    // byte, so the planes compress (spike 17's records, one after another: half again larger).
+    mine.sort_by(|a, b| {
+        let pa = h.trees[a].at
+        let pb = h.trees[b].at
+        pa.y < pb.y || (pa.y == pb.y && pa.x < pb.x)
+    })
+    put_u32(mut out, mine.len())
+    var records: Vec<u8> = Vec::with_capacity(mine.len() * TREE_BYTES)
+    for k in mine {
+        put_tree(mut records, h.trees[k], t)
+    }
+    let n = mine.len()
+    for byte in 0..TREE_BYTES {
+        for i in 0..n {
+            out.push(records[i * TREE_BYTES + byte])
+        }
+    }
+    // The trails: the herd's wear at each 2 m of the tile.
+    var wear: Vec<u8> = Vec::with_capacity(WEAR_N * WEAR_N)
+    let cell = TILE / f32(WEAR_N)
+    for j in 0..WEAR_N {
+        for i in 0..WEAR_N {
+            let p = lo + (vec2(f32(i), f32(j)) + vec2(0.5)) * cell
+            let w = if h.herd_grid.holds(p) { h.herd_grid.sample(h.wear, p) } else { 0.0 }
+            wear.push(u8(clamp(w, 0.0, 1.0) * 255.0 + 0.5))
+        }
+    }
+    put_runs(mut out, wear)
+    // The wetness, each 4 m.
+    var wet: Vec<u8> = Vec::with_capacity(WET_N * WET_N)
+    let wc = TILE / f32(WET_N)
+    let g = h.land.grid
+    for j in 0..WET_N {
+        for i in 0..WET_N {
+            let p = lo + (vec2(f32(i), f32(j)) + vec2(0.5)) * wc
+            let w = if g.holds(p) { g.sample(h.land.wet, p) } else { 0.0 }
+            wet.push(u8(clamp(w, 0.0, 1.0) * 255.0 + 0.5))
+        }
+    }
+    put_runs(mut out, wet)
+    // What the ground remembers, each 4 m: its three planes, each run-coded (most of the land
+    // remembers nothing).
+    var planes: Vec<Vec<u8>> = Vec::from_fn(3, |_| Vec::with_capacity(WET_N * WET_N))
+    for j in 0..WET_N {
+        for i in 0..WET_N {
+            let p = lo + (vec2(f32(i), f32(j)) + vec2(0.5)) * wc
+            let (a, b, c) = memory_bytes(remembered(h, p))
+            planes[0].push(a)
+            planes[1].push(b)
+            planes[2].push(c)
+        }
+    }
+    for pl in planes {
+        put_runs(mut out, pl)
+    }
+    // The streams' points within the tile and a cell beyond, so a stream drawn across a seam
+    // meets itself.
+    var pts: Vec<vec4> = Vec::new()
+    for s in h.streams {
+        for p in s.points {
+            let q = p.xy - lo
+            if q.x > -8.0 && q.y > -8.0 && q.x < TILE + 8.0 && q.y < TILE + 8.0 {
+                pts.push(p)
+            }
+        }
+    }
+    put_u32(mut out, pts.len())
+    for p in pts {
+        put_u16(mut out, u32(clamp((p.x - lo.x + 64.0) * 100.0, 0.0, 65535.0)))
+        put_u16(mut out, u32(clamp((p.y - lo.y + 64.0) * 100.0, 0.0, 65535.0)))
+        out.push(u8(clamp(p.z * 20.0, 0.0, 255.0)))
+        out.push(u8(clamp(p.w * 100.0, 0.0, 255.0)))
+    }
+    out
+}
+
+/// A tile's decisions from its bytes.
+pub fn decode_tile(b: [u8]) -> Decisions {
+    assert(get_u32(b, 0) == MAGIC, "a tile's bytes aren't a baked tile")
+    assert(get_u32(b, 4) == VERSION, "a baked tile of another version: bake it again")
+    let t = vec2i(i32(get_u32(b, 8)), i32(get_u32(b, 12)))
+    let count = get_u32(b, 16)
+    // The records' byte planes, back into records.
+    var records: Vec<u8> = Vec::filled(count * TREE_BYTES, 0)
+    for byte in 0..TREE_BYTES {
+        for i in 0..count {
+            records[i * TREE_BYTES + byte] = b[20 + byte * count + i]
+        }
+    }
+    var trees: Vec<Tree> = Vec::with_capacity(count)
+    for i in 0..count {
+        trees.push(get_tree(records, i * TREE_BYTES, t))
+    }
+    let at = 20 + count * TREE_BYTES
+    let (wear8, k) = get_runs(b, at, WEAR_N * WEAR_N)
+    let (wet8, k2) = get_runs(b, k, WET_N * WET_N)
+    var wear: Vec<f32> = Vec::with_capacity(WEAR_N * WEAR_N)
+    for w in wear8 {
+        wear.push(f32(w) / 255.0)
+    }
+    var wet: Vec<f32> = Vec::with_capacity(WET_N * WET_N)
+    for w in wet8 {
+        wet.push(f32(w) / 255.0)
+    }
+    let (marks, k3) = get_runs(b, k2, WET_N * WET_N)
+    let (years_lo, k4) = get_runs(b, k3, WET_N * WET_N)
+    let (years_hi, k5) = get_runs(b, k4, WET_N * WET_N)
+    var memory: Vec<Memory> = Vec::with_capacity(WET_N * WET_N)
+    for i in 0..(WET_N * WET_N) {
+        memory.push(memory_of(marks[i], years_lo[i], years_hi[i]))
+    }
+    let n = get_u32(b, k5)
+    var water: Vec<vec4> = Vec::with_capacity(n)
+    let lo = vec2(t) * TILE
+    var q = k5 + 4
+    for _ in 0..n {
+        let x = f32(get_u16(b, q)) / 100.0 - 64.0
+        let z = f32(get_u16(b, q + 2)) / 100.0 - 64.0
+        water.push(vec4(lo.x + x, lo.y + z, f32(b[q + 4]) / 20.0, f32(b[q + 5]) / 100.0))
+        q += 6
+    }
+    Decisions { tile: t, trees, wear, wet, memory, water }
+}
+
+/// A tile's file's name.
+pub fn tile_name(t: vec2i) -> String {
+    f"t{t.x}_{t.y}.bin"
+}
+
+/// The far layer's cell (m): each holds its tallest crown.
+pub const FAR_CELL: f32 = 8.0
+
+/// The far layer of the tiles from `lo` to `hi` (tile indices, inclusive): each `FAR_CELL` cell's
+/// tallest living crown, its height (a quarter metre a step) and its kind, two bytes, rows from
+/// the first tile's corner. Small enough for the first frame's payload (a byte each 32 m² a kind).
+pub fn encode_far(h: History, lo: vec2i, hi: vec2i) -> Vec<u8> {
+    let f = far_of(h.trees, lo, hi)
+    let n = vec2u(f.nx, f.nz)
+    borrow tall = f.tall
+    borrow kind = f.kind
+    var out: Vec<u8> = Vec::new()
+    put_u32(mut out, MAGIC)
+    put_u32(mut out, VERSION)
+    put_u32(mut out, u32(lo.x))
+    put_u32(mut out, u32(lo.y))
+    put_u32(mut out, n.x)
+    put_u32(mut out, n.y)
+    var heights: Vec<u8> = Vec::with_capacity(n.x * n.y)
+    var kinds: Vec<u8> = Vec::with_capacity(n.x * n.y)
+    for k in 0..(n.x * n.y) {
+        heights.push(u8(clamp(tall[k] * 4.0, 0.0, 255.0)))
+        kinds.push(u8(kind[k] + 1))
+    }
+    put_runs(mut out, heights)
+    put_runs(mut out, kinds)
+    out
+}
+
+/// The far layer of `trees` over tiles `lo` to `hi` (inclusive): each `FAR_CELL` cell's tallest
+/// living crown over 3 m, its height and kind (255 for none).
+pub fn far_of(trees: [Tree], lo: vec2i, hi: vec2i) -> Far {
+    let n = vec2u(hi - lo + vec2i(1)) * u32(TILE / FAR_CELL)
+    let corner = vec2(lo) * TILE
+    var tall: Vec<f32> = Vec::filled(n.x * n.y, 0.0)
+    var kind: Vec<u32> = Vec::filled(n.x * n.y, 255)
+    for t in trees {
+        if t.state == State::Alive && t.tall > 3.0 {
+            let c = vec2i(floor((t.at - corner) / FAR_CELL))
+            if c.x >= 0 && c.y >= 0 && u32(c.x) < n.x && u32(c.y) < n.y {
+                let k = u32(c.y) * n.x + u32(c.x)
+                if t.tall > tall[k] {
+                    tall[k] = t.tall
+                    kind[k] = t.kind
+                }
+            }
+        }
+    }
+    Far { lo, nx: n.x, nz: n.y, tall, kind }
+}
+
+/// The far layer, read back: each cell's tallest crown's height and kind (255 for none).
+pub struct Far {
+    pub lo: vec2i,
+    pub nx: u32,
+    pub nz: u32,
+    pub tall: Vec<f32>,
+    pub kind: Vec<u32>,
+}
+
+pub fn decode_far(b: [u8]) -> Far {
+    assert(get_u32(b, 0) == MAGIC, "the far layer's bytes aren't a far layer")
+    let lo = vec2i(i32(get_u32(b, 8)), i32(get_u32(b, 12)))
+    let nx = get_u32(b, 16)
+    let nz = get_u32(b, 20)
+    let (h, k) = get_runs(b, 24, nx * nz)
+    let (kinds, _) = get_runs(b, k, nx * nz)
+    var tall: Vec<f32> = Vec::with_capacity(nx * nz)
+    var kind: Vec<u32> = Vec::with_capacity(nx * nz)
+    for i in 0..(nx * nz) {
+        tall.push(f32(h[i]) / 4.0)
+        kind.push(if kinds[i] == 0 { 255 } else { u32(kinds[i]) - 1 })
+    }
+    Far { lo, nx, nz, tall, kind }
+}
+
+/// Every file of a baked history over the tiles from `lo` to `hi` (inclusive): each tile's, and
+/// the far layer, `far.bin`.
+pub fn bake(h: History, lo: vec2i, hi: vec2i) -> Vec<(String, Vec<u8>)> {
+    var out: Vec<(String, Vec<u8>)> = Vec::new()
+    for j in lo.y..(hi.y + 1) {
+        for i in lo.x..(hi.x + 1) {
+            let t = vec2i(i, j)
+            out.push((tile_name(t), encode_tile(h, t)))
+        }
+    }
+    out.push((String::from("far.bin"), encode_far(h, lo, hi)))
+    out.push((String::from("streams.bin"), encode_streams(h.streams)))
+    out
+}
+
+/// The streams whole (the water's courses: `water::laid`), each its count of points then its
+/// points (x, z, width, depth), as f32s.
+pub fn encode_streams(ss: [Stream]) -> Vec<u8> {
+    var out: Vec<u8> = Vec::new()
+    put_u32(mut out, ss.len())
+    for st in ss {
+        put_u32(mut out, st.points.len())
+        for p in st.points {
+            for k in 0..4 {
+                put_u32(mut out, bitcast_u32(p[k]))
+            }
+        }
+    }
+    out
+}
+
+/// The streams `encode_streams` wrote.
+pub fn decode_streams(b: [u8]) -> Vec<Stream> {
+    var out: Vec<Stream> = Vec::new()
+    var at = 4
+    for _ in 0..get_u32(b, 0) {
+        let n = get_u32(b, at)
+        at += 4
+        var points: Vec<vec4> = Vec::with_capacity(n)
+        for _ in 0..n {
+            var p = vec4(0.0)
+            for k in 0..4 {
+                p[k] = bitcast_f32(get_u32(b, at))
+                at += 4
+            }
+            points.push(p)
+        }
+        out.push(Stream { points })
+    }
+    out
+}
+
+/// A bake read back whole: every tile's trees; the trails' wear and the ground's wetness on
+/// grids over all the tiles; and the streams' points, each once, and the streams whole.
+pub struct Unbaked {
+    pub trees: Vec<Tree>,
+    pub wear_grid: Grid,
+    pub wear: Vec<f32>,
+    pub wet_grid: Grid,
+    pub wet: Vec<f32>,
+    /// What the ground remembers, on the wetness's grid (`memory_at`).
+    pub memory: Vec<Memory>,
+    pub water: Vec<vec4>,
+    /// The streams whole (`encode_streams`).
+    pub streams: Vec<Stream>,
+}
+
+/// The tiles from `lo` to `hi` (inclusive) of a bake shipped as `files`, read in place (in
+/// build-time code: a constant computed from the bake, or a test).
+pub fn unbake(files: Shipped, lo: vec2i, hi: vec2i) -> Unbaked {
+    let n = vec2u(hi - lo + vec2i(1))
+    let corner = vec2(lo) * TILE
+    let wear_grid = Grid {
+        lo: corner,
+        nx: n.x * WEAR_N,
+        nz: n.y * WEAR_N,
+        cell: TILE / f32(WEAR_N),
+    }
+    let wet_grid = Grid { lo: corner, nx: n.x * WET_N, nz: n.y * WET_N, cell: TILE / f32(WET_N) }
+    var out = Unbaked {
+        trees: Vec::new(),
+        wear_grid,
+        wear: Vec::filled(wear_grid.cells(), 0.0),
+        wet_grid,
+        wet: Vec::filled(wet_grid.cells(), 0.0),
+        memory: Vec::filled(wet_grid.cells(), UNMARKED),
+        water: Vec::new(),
+        streams: decode_streams(files.bytes(files.find("streams.bin").unwrap())),
+    }
+    for j in lo.y..(hi.y + 1) {
+        for i in lo.x..(hi.x + 1) {
+            let t = vec2i(i, j)
+            var d = decode_tile(files.bytes(files.find(tile_name(t).as_str()).unwrap()))
+            let at = vec2u(t - lo)
+            out.trees.append(mut d.trees)
+            for y in 0..WEAR_N {
+                for x in 0..WEAR_N {
+                    out.wear[(at.y * WEAR_N + y) * wear_grid.nx + at.x * WEAR_N + x] = d.wear[y *
+                        WEAR_N +
+                        x]
+                }
+            }
+            for y in 0..WET_N {
+                for x in 0..WET_N {
+                    let k = (at.y * WET_N + y) * wet_grid.nx + at.x * WET_N + x
+                    out.wet[k] = d.wet[y * WET_N + x]
+                    out.memory[k] = d.memory[y * WET_N + x]
+                }
+            }
+            // A stream's points within the tile (each tile also holds those a cell past it).
+            for p in d.water {
+                if tile_of(p.xy) == t {
+                    out.water.push(p)
+                }
+            }
+        }
+    }
+    out
+}
+
+/// What the ground remembers at `p` in a bake read back (`grow::Memory`: what last disturbed it,
+/// in which year, and how hard), its 4 m cell's; `UNMARKED` off the bake's tiles.
+pub fn memory_at(u: Unbaked, p: vec2) -> Memory {
+    if u.wet_grid.holds(p) { u.memory[u.wet_grid.cell_at(p)] } else { UNMARKED }
+}
+
+/// What the ground remembers at `p` (a point in tile `b`'s square), read from the tile's bytes
+/// without reading its trees back (a click's provenance); `UNMARKED` if `b` isn't a baked tile.
+pub fn memory_in_tile(b: [u8], p: vec2) -> Memory {
+    if b.len() < 20 || get_u32(b, 0) != MAGIC || get_u32(b, 4) != VERSION {
+        return UNMARKED
+    }
+    let t = vec2i(i32(get_u32(b, 8)), i32(get_u32(b, 12)))
+    let count = get_u32(b, 16)
+    let (_, k) = get_runs(b, 20 + count * TREE_BYTES, WEAR_N * WEAR_N)
+    let (_, k2) = get_runs(b, k, WET_N * WET_N)
+    let (marks, k3) = get_runs(b, k2, WET_N * WET_N)
+    let (years_lo, k4) = get_runs(b, k3, WET_N * WET_N)
+    let (years_hi, _) = get_runs(b, k4, WET_N * WET_N)
+    let g = Grid { lo: vec2(t) * TILE, nx: WET_N, nz: WET_N, cell: TILE / f32(WET_N) }
+    let c = g.cell_at(p)
+    memory_of(marks[c], years_lo[c], years_hi[c])
+}
+
+// ---- the consequences, a tile at a time -----------------------------------------------------------
+
+/// How far past a tile's edge a tree's crown can reach over it (m): an oak's reaches 10 m, and a
+/// crown leans.
+pub const CROWN_MARGIN: f32 = 16.0
+
+/// The trees of `trees` (a neighbour's) whose crowns may reach over tile `t`'s edge, added to
+/// `into`.
+pub fn reaching(t: vec2i, trees: [Tree], into: mut Vec<Tree>) {
+    let lo = vec2(t) * TILE - vec2(CROWN_MARGIN)
+    let hi = vec2(t + vec2i(1)) * TILE + vec2(CROWN_MARGIN)
+    for tr in trees {
+        if tr.at.x > lo.x && tr.at.y > lo.y && tr.at.x < hi.x && tr.at.y < hi.y {
+            into.push(tr)
+        }
+    }
+}
+
+/// Which of tile `t`'s eight neighbours tile `n` is (a bit each): `0` when it's no neighbour.
+pub fn neighbour_bit(t: vec2i, n: vec2i) -> u32 {
+    let d = n - t
+    if (d.x == 0 && d.y == 0) || abs(d.x) > 1 || abs(d.y) > 1 {
+        0
+    } else {
+        u32(1) << u32((d.y + 1) * 3 + d.x + 1)
+    }
+}
+
+/// How a route's path is trodden: its tread's half width (m) by kind, how worn it is however
+/// little the history's herd walks it (people keep a road made and a trail trodden; the herd's
+/// own way is as worn as it's walked, at least half), and how far it wanders from the route's
+/// line (m), over about `WANDER_OVER` m along it.
+fn tread_half(k: RouteKind) -> f32 {
+    match k {
+        RouteKind::Road => 1.3,
+        RouteKind::Herd => 0.6,
+        RouteKind::Trail => 0.8,
+    }
+}
+
+fn made(k: RouteKind) -> f32 {
+    match k {
+        RouteKind::Road => 0.9,
+        RouteKind::Herd => 0.5,
+        RouteKind::Trail => 0.85,
+    }
+}
+
+const WANDER: f32 = 1.4
+const WANDER_OVER: f32 = 30.0
+
+/// How far beside a path's tread its feet wear the grass short (m): so the path shows from a
+/// walker's eye over the grass, and on the fields' 2 m grid.
+const HALO: f32 = 2.5
+
+/// How trodden point `p` is by the routes' paths (0 to 1): the path down a route's line,
+/// wandering from it and its width changing along it, and the grass worn short beside it
+/// (`HALO`). `used` gives how much the route is walked (the history's wear round the point; a
+/// route is worn as `made` says at least); `near`, which routes may come near.
+pub fn path_at(routes: [Route], near: [u32], p: vec2, used: f32) -> f32 {
+    var best = 0.0
+    for k in near {
+        borrow r = routes[k]
+        var walked = 0.0
+        for i in 0..r.points.len() - 1 {
+            let a = r.points[i]
+            let b = r.points[i + 1]
+            let ab = b - a
+            let len = length(ab)
+            let t = clamp(dot(p - a, ab) / max(len * len, 1.0e-6), 0.0, 1.0)
+            let side = (p - a).x * ab.y - (p - a).y * ab.x
+            let dist = length(p - (a + ab * t)) * sign(side)
+            if abs(dist) < WANDER + HALO + 2.0 {
+                let along = walked + t * len
+                let w = noise2(vec2(along / WANDER_OVER, f32(k) * 7.3))
+                let half = tread_half(r.kind) *
+                    (0.75 + 0.5 * noise2(vec2(along / 11.0, f32(k) * 3.1 + 40.0)))
+                let off = abs(dist - WANDER * (2.0 * w - 1.0))
+                let worn = max(used, made(r.kind))
+                // Worn to its half width, fading over a metre (the fields' 2 m grid holds it).
+                let tread = 1.0 - smoothstep(half, half + 1.0, off)
+                let beside = 0.4 * (1.0 - smoothstep(half, half + HALO, off))
+                best = max(best, max(tread, beside) * worn)
+            }
+            walked += len
+        }
+    }
+    best
+}
+
+/// Whether `p` is in a stream's bed: within half its width of the line between two of its points
+/// (`water`: a tile's, the streams one after another, 4 m apart; a gap over 6 m starts another).
+fn in_stream(water: [vec4], p: vec2) -> bool {
+    for i in 0..max(water.len(), 1) - 1 {
+        let a = water[i]
+        let b = water[i + 1]
+        let ab = b.xy - a.xy
+        if dot(ab, ab) < 36.0 {
+            let t = clamp(dot(p - a.xy, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
+            if length(p - (a.xy + ab * t)) < 0.5 * mix(a.z, b.z, t) {
+                return true
+            }
+        }
+    }
+    false
+}
+
+/// The wet field's value on a stream's bed (`tile_fields`): any wetter than 0.98 is one.
+pub const STREAM_BED: f32 = 0.99
+
+/// The fields a tile's ground is covered by (`terrain::Terrain::cover_with`), each 2 m: the light
+/// at the ground (the history's: its crowns' shade, `grow::canopy`'s rule), how trodden it is,
+/// its wetness and its thorn, worked out again where the tile streams in from its decisions: its
+/// own trees and those of its neighbours whose crowns reach over its edge (`others`). Trodden is
+/// the routes' paths (`routes`), as walked as the history's wear round them says, and the
+/// broader ground the herd wears (up to 0.45); wet is a stream's bed over `STREAM_BED`. Four
+/// bytes a texel (light, trodden, wet, thorn),
+/// `WEAR_N` a side, rows from the tile's corner.
+pub fn tile_fields(
+    d: Decisions,
+    others: [Tree],
+    habits: [Habit],
+    routes: [Route],
+    year: i32,
+) -> Vec<u8> {
+    let n = WEAR_N
+    let cell = TILE / f32(n)
+    // The routes near the tile, and the wear round each point (8 m) that says how walked they are.
+    let corner = vec2(d.tile) * TILE
+    var near: Vec<u32> = Vec::new()
+    for k in 0..routes.len() {
+        borrow r = routes[k]
+        var lo = vec2(1.0e9)
+        var hi = vec2(-1.0e9)
+        for q in r.points {
+            lo = min(lo, q)
+            hi = max(hi, q)
+        }
+        let a = corner - vec2(8.0)
+        let b = corner + vec2(TILE + 8.0)
+        if hi.x > a.x && hi.y > a.y && lo.x < b.x && lo.y < b.y {
+            near.push(k)
+        }
+    }
+    let tg = Grid { lo: corner, nx: n, nz: n, cell }
+    let worn = tg.blur(d.wear, 4)
+    // The light's grid: the tile and 8 m round it, where crowns from beyond its edge shade it.
+    let m = 8
+    let lo = vec2(d.tile) * TILE - vec2(f32(m) * cell)
+    let g = Grid { lo, nx: n + 2 * m, nz: n + 2 * m, cell }
+    let nn = g.cells()
+    var light: Vec<f32> = Vec::filled(nn, 1.0)
+    var thorn: Vec<f32> = Vec::filled(nn, 0.0)
+    for k in 0..(d.trees.len() + others.len()) {
+        let t = if k < d.trees.len() { d.trees[k] } else { others[k - d.trees.len()] }
+        if t.state == State::Alive && t.tall > 0.8 {
+            let h = habits[t.kind]
+            let c = t.at + t.lean
+            let r = t.reach + 0.5
+            let stop = h.shade * min(t.tall / 3.0, 1.0)
+            let a = g.ij(c - vec2(r))
+            let span = i32(ceil(2.0 * r / cell)) + 1
+            for dj in 0..span {
+                for di in 0..span {
+                    let i = a.x + di
+                    let j = a.y + dj
+                    if i >= 0 && j >= 0 && i < i32(g.nx) && j < i32(g.nz) {
+                        let q = u32(j) * g.nx + u32(i)
+                        let dist = length(g.centre(q) - c)
+                        if dist < r {
+                            let w = 1.0 - smoothstep(0.55 * r, r, dist)
+                            light[q] *= 1.0 - stop * w
+                            if h.thorny {
+                                thorn[q] = max(thorn[q], w)
+                            }
+                        }
+                    }
+                }
+            }
+        } else if t.state == State::Log && year - t.fell < 25 && t.tall > 6.0 {
+            let len = t.tall * 0.85
+            var s = 0.0
+            while s < len {
+                let p = t.at + t.fall * s
+                if g.holds(p) {
+                    let q = g.cell_at(p)
+                    thorn[q] = max(thorn[q], 0.9)
+                }
+                s += cell * 0.7
+            }
+        }
+    }
+    let down = g.blur(light, 2)
+    let side = g.blur(light, 4)
+    var out: Vec<u8> = Vec::with_capacity(n * n * 4)
+    for j in 0..n {
+        for i in 0..n {
+            let q = (j + m) * g.nx + i + m
+            let l = 0.65 * down[q] + 0.35 * side[q]
+            let p = vec2(d.tile) * TILE + (vec2(f32(i), f32(j)) + vec2(0.5)) * cell
+            out.push(u8(clamp(l, 0.0, 1.0) * 255.0 + 0.5))
+            let k = j * n + i
+            let used = smoothstep(0.01, 0.05, worn[k])
+            let trodden = max(
+                path_at(routes, near, p, used),
+                0.45 * smoothstep(0.03, 0.15, d.wear[k]),
+            )
+            out.push(u8(clamp(trodden, 0.0, 1.0) * 255.0 + 0.5))
+            // Wet to 0.98 of the byte; its whole (`STREAM_BED`) a stream's bed.
+            let wet = if in_stream(d.water, p) { 1.0 } else { min(d.wet_at(p), 0.98) }
+            out.push(u8(clamp(wet, 0.0, 1.0) * 255.0 + 0.5))
+            out.push(u8(clamp(thorn[q], 0.0, 1.0) * 255.0 + 0.5))
+        }
+    }
+    out
+}

@@ -152,7 +152,7 @@ impl DrawList {
         let baseline = floor(at.y + font.ascender * size + 0.5)
         let packed = Unorm8x4::encode(color)
         let scale = 2.0 * font.spread * k
-        // tools/wfont pads each field by its spread, rounded up, and a texel.
+        // The baker pads each field by its spread, rounded up, and a texel (ttf.wrela).
         let pad = ceil(font.spread) + 1.0
         let aw = f32(fonts.width)
         let ah = f32(fonts.height)

@@ -374,7 +374,7 @@ impl Frame {
     }
 
     pub fn draw(mut self, kind: CreatureKey, pose: take Pose) {
-        self.items.push(DrawItem { kind, pose: take pose })
+        self.items.push(DrawItem { kind, pose })
     }
 }
 
