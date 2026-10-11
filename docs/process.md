@@ -45,7 +45,8 @@ branches with Ryan's standing permission, after `tools/check.sh` passes. Since 2
 branch starts from `main` and squash-merges back into it once its own change passes the gate,
 without first taking unrelated updates from `main`; milestone branches are retired. Changes that
 only make the checks faster merge without the gate, and the long tier that runs on `main` every
-6 hours is their safety net.
+6 hours is their safety net. Right before a merge, `tools/premerge.sh` builds the branch merged
+with the latest `main`, since two branches that each pass the gate can still break together.
 
 ## Tools and models
 
