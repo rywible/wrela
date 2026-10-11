@@ -170,6 +170,132 @@ fn broadleaf(
     // and gaps of sky between the masses; each branch from a point along its scaffold. A
     // sapling's round its trunk's top. (Pass 1 of M6's lookdev: clumps spread along each
     // scaffold, each its own small lump of light, read as confetti, not as masses.)
+    crown_on(mut p, s, tips, feet, tall, crown_y, lean, top, w, clump, count, limbs, girth)
+    p
+}
+
+/// A beech, seed `s`, `tall` high: a smooth grey column on a heavy flare of buttress roots,
+/// forking under its crown into two or three leaders that rise steeply in a fan, each with one
+/// branch out of it, and its crown's masses round their ends (the other arguments as
+/// `broadleaf`'s). Grown in the open (`open`), it forks lower and its leaders spread wider. (The
+/// forms review, row 5: beech columns stopped at a ceiling of leaves with no limb fan, on root
+/// fins; a broadleaf's scaffolds left the trunk one at a time, as an oak's.)
+fn beech(
+    s: u32,
+    tall: f32,
+    base: f32,
+    width: f32,
+    clump: f32,
+    count: u32,
+    limbs: u32,
+    girth: f32,
+    leaves: Leaves,
+    bark: Bark,
+    open: bool,
+) -> Plant {
+    var p = plant(leaves, bark)
+    let crown_y = tall * base
+    let lean = vec3(pick(s, 4, lo: -0.25, hi: 0.25), 0.0, tall * 0.03)
+    // The fork: under the crown's foot, so the fan shows below the leaves.
+    let fork_y = crown_y * (if open { 0.6 } else { 0.72 })
+    let fork = vec3(0.0, fork_y, 0.0) + lean * (fork_y / tall)
+    let sway = vec3(pick(s, 5, lo: -0.3, hi: 0.3), 0.0, pick(s, 6, lo: -0.3, hi: 0.3)) * girth
+    // The bole: hardly tapering, a column, wide at its foot where the flare takes it; its last
+    // piece short and into the leaders' feet, so the point a tube closes to is inside them (a
+    // bole closing at the fork drew a pencil's tip under the fan).
+    p.tube(
+        [
+            vec3(0.0, -0.6, 0.0),
+            vec3(0.0, 0.7, 0.0),
+            fork * 0.9 + sway,
+            fork + vec3(0.0, girth * 1.2, 0.0),
+        ],
+        [girth * 1.5, girth * 1.02, girth * 0.86, girth * 0.8],
+    )
+    // The flare: six to eight thick buttresses, close round the bole so they merge into one
+    // swelling foot (thin, far-reaching roots read as fins: round 3's judges, shot 17).
+    let roots = 6 + s % 3
+    for k in 0..roots {
+        let a = TAU * (f32(k) + 0.5 * rand(s, 140 + k)) / f32(roots)
+        let out = girth * pick(s, 150 + k, lo: 1.5, hi: 2.4)
+        let dir = vec3(cos(a), 0.0, sin(a))
+        let across = vec3(-dir.z, 0.0, dir.x) * (out * pick(s, 155 + k, lo: -0.15, hi: 0.15))
+        p.root(
+            vec3(0.0),
+            dir,
+            girth,
+            out,
+            across,
+            r: girth * pick(s, 160 + k, lo: 0.75, hi: 0.95),
+        )
+    }
+    // The leaders: two or three (three in the open), each turned its share of the way round and
+    // rising steeply, bowed a little, tapering from the fork to a point inside its mass; each
+    // throws one branch out at a wider angle from about two thirds of its way.
+    let leaders = if open { 3 } else { 2 + s % 2 }
+    var tips: Vec<vec3> = Vec::new()
+    var feet: Vec<vec3> = Vec::new()
+    let w = tall * width
+    let up = vec3(0.0, 1.0, 0.0)
+    for j in 0..leaders {
+        let a = TAU * f32(j) / f32(leaders) + pick(s, 180 + j, lo: -0.45, hi: 0.45)
+        let tilt = if open { pick(s, 190 + j, lo: 0.45, hi: 0.75) } else {
+            pick(s, 190 + j, lo: 0.25, hi: 0.45)
+        }
+        let out = vec3(cos(a), 0.0, sin(a))
+        let dir = out * sin(tilt) + up * cos(tilt)
+        let long = (tall - fork_y) * pick(s, 200 + j, lo: 0.7, hi: 0.85)
+        let bow = vec3(-out.z, 0.0, out.x) * (long * pick(s, 205 + j, lo: -0.08, hi: 0.08))
+        let tip = fork + dir * long
+        // From inside the bole's top, so the leaders grow out of one swelling, not crossed.
+        let start = fork - vec3(0.0, girth * 0.8, 0.0) + out * (girth * 0.25)
+        p.tube(
+            [start, fork + dir * (long * 0.35) + bow, fork + dir * (long * 0.7) + bow * 0.4, tip],
+            [girth * 0.68, girth * 0.56, girth * 0.42, girth * 0.22],
+        )
+        tips.push(tip)
+        feet.push(fork)
+        if limbs > leaders {
+            let from = fork + dir * (long * pick(s, 210 + j, lo: 0.5, hi: 0.68)) + bow * 0.6
+            let side = out * cos(0.6) +
+                vec3(-out.z, 0.0, out.x) * pick(s, 215 + j, lo: -0.6, hi: 0.6)
+            let reach = min(w * pick(s, 220 + j, lo: 0.5, hi: 0.8), long * 0.6)
+            let end = from + normalize(side * 0.9 + up * 0.55) * reach
+            p.limb(
+                from,
+                mix(from, end, vec3(0.5)) + up * (reach * 0.1),
+                end,
+                r_from: girth * 0.26,
+                r_to: girth * 0.04,
+            )
+            tips.push(end)
+            feet.push(from)
+        }
+    }
+    crown_on(mut p, s, tips, feet, tall, crown_y, lean, fork, w, clump, count, limbs, girth)
+    p
+}
+
+/// A broad-leaved crown on its limbs: a mass round each of `tips` (each grown from its foot in
+/// `feet`) and one at the tree's own top, `count` clumps `clump` across in all, `limbs` of them
+/// with a branch of their own; a sapling's (no tips) round its trunk's top. (Split from
+/// `broadleaf` so that each species grows its own trunk and limbs, and the crowns item owns this.)
+fn crown_on(
+    p: mut Plant,
+    s: u32,
+    tips: Vec<vec3>,
+    feet: Vec<vec3>,
+    tall: f32,
+    crown_y: f32,
+    lean: vec3,
+    top: vec3,
+    w: f32,
+    clump: f32,
+    count: u32,
+    limbs: u32,
+    girth: f32,
+) {
+    let scaffolds = tips.len()
     let half = (tall - crown_y) * 0.5
     let mid = vec3(0.0, crown_y + half, 0.0) + lean * 1.3
     if scaffolds > 0 {
@@ -221,7 +347,6 @@ fn broadleaf(
             )
         }
     }
-    p
 }
 
 /// A broad-leaved crown's mass: its core's radius against the kind's clump, and how softly its
@@ -589,7 +714,7 @@ pub fn kind_plant(k: u32) -> Plant {
             bark: oak_bark,
         )
     } else if k == BEECH_OPEN {
-        broadleaf(
+        beech(
             103,
             tall: 20.0,
             base: 0.22,
@@ -600,9 +725,10 @@ pub fn kind_plant(k: u32) -> Plant {
             girth: 0.45,
             leaves: beech_leaves,
             bark: beech_bark,
+            open: true,
         )
     } else if k == BEECH_FOREST {
-        broadleaf(
+        beech(
             104,
             tall: 20.0,
             base: 0.6,
@@ -613,6 +739,7 @@ pub fn kind_plant(k: u32) -> Plant {
             girth: 0.36,
             leaves: beech_leaves,
             bark: beech_bark,
+            open: false,
         )
     } else if k == BIRCH_OPEN {
         broadleaf(
@@ -822,10 +949,10 @@ fn lowest(p: Plant) -> f32 {
 }
 
 /// Each kind's lowest branch (`lowest`), as it's built (the great oak's isn't needed: it's kept).
-pub const LOWEST: [f32; 24] = lowest_of_kinds()
+pub const LOWEST: [f32; KINDS] = lowest_of_kinds()
 
-fn lowest_of_kinds() -> [f32; 24] {
-    var out = [0.0; 24]
+fn lowest_of_kinds() -> [f32; KINDS] {
+    var out = [0.0; KINDS]
     for k in 1..KINDS {
         out[k] = lowest(kind_plant(k))
     }
@@ -838,10 +965,10 @@ pub fn lowest_placed(k: u32, tall: f32, fork: f32) -> f32 {
 }
 
 /// Each kind's trunk (its first limb), as it's built (the great oak's isn't needed: it's kept).
-const TRUNKS: [Tube<4>; 24] = trunks_of_kinds()
+const TRUNKS: [Tube<4>; KINDS] = trunks_of_kinds()
 
-fn trunks_of_kinds() -> [Tube<4>; 24] {
-    var out = [Tube { points: [vec3(0.0); 4], radii: [0.0; 4] }; 24]
+fn trunks_of_kinds() -> [Tube<4>; KINDS] {
+    var out = [Tube { points: [vec3(0.0); 4], radii: [0.0; 4] }; KINDS]
     for k in 1..KINDS {
         let p = kind_plant(k)
         if p.limbs.len() > 0 {
@@ -874,12 +1001,12 @@ pub fn trunk_at(k: u32, tall: f32, h: f32, fork: f32) -> f32 {
 /// and the lowest middle less half a clump; and its top, the highest middle and half a clump (a
 /// clump's edge is leaves with gaps between, which the eye sees through: calibrated against the
 /// renderer's depth, #55 AC3).
-const CROWN_R: [f32; 24] = crowns_of_kinds(0)
-const CROWN_BASE: [f32; 24] = crowns_of_kinds(1)
-const CROWN_TOP: [f32; 24] = crowns_of_kinds(2)
+const CROWN_R: [f32; KINDS] = crowns_of_kinds(0)
+const CROWN_BASE: [f32; KINDS] = crowns_of_kinds(1)
+const CROWN_TOP: [f32; KINDS] = crowns_of_kinds(2)
 
-fn crowns_of_kinds(which: u32) -> [f32; 24] {
-    var out = [0.0; 24]
+fn crowns_of_kinds(which: u32) -> [f32; KINDS] {
+    var out = [0.0; KINDS]
     for k in 0..KINDS {
         let p = kind_plant(k)
         var reach = 0.0
@@ -960,10 +1087,10 @@ pub fn drawn_crowns(trees: [Tree]) -> Vec<Drawn> {
 
 /// Where each kind's trunk first forks, as it's built (m): its lowest limb's foot (its first
 /// limb is its trunk); 0 for a kind with no limbs.
-const FORK_Y: [f32; 24] = forks_of_kinds()
+const FORK_Y: [f32; KINDS] = forks_of_kinds()
 
-fn forks_of_kinds() -> [f32; 24] {
-    var out = [0.0; 24]
+fn forks_of_kinds() -> [f32; KINDS] {
+    var out = [0.0; KINDS]
     for k in 1..KINDS {
         let p = kind_plant(k)
         for i in 1..p.limbs.len() {
