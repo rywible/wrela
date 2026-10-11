@@ -611,6 +611,15 @@ pub struct Land {
     pub region: Vec<u32>,
 }
 
+/// Whether what grows at cell `c` in `year` is grazed down as on a lawn: on the herd's lawns once
+/// it has come (`arrives`), and in an event's opening for the decades it keeps it (`RECENT`),
+/// where deer come for the young growth.
+pub(package) fn grazed_bare(land: Land, c: u32, year: i32, arrives: i32) -> bool {
+    let opened = land.opened[c]
+    let fresh = opened != NEVER && year >= opened && year < opened + place::RECENT
+    fresh || (land.lawn[c] && year >= arrives)
+}
+
 /// The head room the herd browses along its routes (m): no branch below it.
 pub const HEAD_ROOM: f32 = 2.0
 
@@ -1488,7 +1497,9 @@ fn live(l: mut Life, cx: Cx, f: Fields, year: i32) {
             p = 1.0
             cause = Cause::Browsed
         }
-        if cx.land.lawn[c] && year >= cx.map.herd.arrives && was < 4.0 && !t.pinned {
+        if grazed_bare(cx.land, c, year: year, arrives: cx.map.herd.arrives) &&
+            was < 4.0 &&
+            !t.pinned {
             p += 0.25
             cause = Cause::Browsed
         }
@@ -2354,7 +2365,7 @@ fn census(trees: [Tree], kinds: u32, year: i32) -> String {
 /// The history of `m` over the land from `lo` to `hi`, its species `habits` (at most 8), at
 /// `grain`: from year `grain.from` to the map's present. `rocks` are what the herd walks round
 /// (x, z, radius). `trips` is the herd's trips a year. `past` is what the level's past left the
-/// land as when the history begins (`Start::wild` for none).
+/// land as in the year the history begins (`Start::wild` for none).
 pub fn simulate<G: Ground>(
     ground: G,
     m: Map,
@@ -2363,7 +2374,7 @@ pub fn simulate<G: Ground>(
     lo: vec2,
     hi: vec2,
     rocks: [vec3],
-    past: fn(Land) -> Start,
+    past: fn(Land, i32) -> Start,
 ) -> History {
     phase("survey")
     place::refuse(m)
@@ -2391,7 +2402,7 @@ pub fn simulate<G: Ground>(
     let step = grain.step
     var year = m.present - grain.years
     {
-        var start = past(land)
+        var start = past(land, year)
         let cx = Cx { map: m, habits, land, grain }
         trees = first_forest(cx, start, year)
         trees.append(mut start.standing)

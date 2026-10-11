@@ -11,6 +11,28 @@ use std::field::smin
 
 /// The meadow's middle, the great tree's rise, and where the clearing's camera started (M5).
 pub const MEADOW = vec2(0.0, 30.0)
+
+/// The fight's ground in the ring's glade (route §9): its disc's middle (x, z) and radius (m),
+/// and how far the shore trail's last run into it from the east is worn (m).
+pub const FIGHT = vec3(34.0, -471.0, 6.0)
+pub const FIGHT_LANE: f32 = 15.0
+/// How trodden the fight's ground is (`covered`'s trails): its grass worn under the ankle, no
+/// bare earth.
+pub const FIGHT_WEAR: f32 = 0.45
+
+/// How worn by the fight's ground `xz` is, 0 to 1: the disc and the trail's run into it from
+/// the east, with a ragged edge 2–3 m wide (worn ground, not a mown ring), as a sample `w` across
+/// sees it.
+pub fn fought(xz: vec2, w: f32) -> f32 {
+    let rag = 2.0 * (noise2_seen(xz * 0.4, w * 0.4) - 0.5)
+    let disc = smoothstep(FIGHT.z + 1.5, FIGHT.z - 1.0, length(xz - FIGHT.xy) + rag)
+    let along = clamp(xz.x - FIGHT.x, 0.0, FIGHT.z + FIGHT_LANE)
+    let off = length(xz - vec2(FIGHT.x + along, FIGHT.y))
+    let lane = smoothstep(2.5, 1.0, off + rag) *
+        smoothstep(FIGHT.z + FIGHT_LANE, FIGHT.z + FIGHT_LANE - 4.0, xz.x - FIGHT.x)
+    max(disc, lane)
+}
+
 pub const KNOLL = vec2(7.0, 33.0)
 pub const STAND = vec2(-1.5, 0.0)
 
@@ -434,6 +456,8 @@ impl Ground {
         }
         let xz = at.xz
         let (light, trodden, wet, thorn) = (fields.x, fields.y, fields.z, fields.w)
+        // The fight's disc and the trail into it worn short, so feet and paws read.
+        let trodden = max(trodden, FIGHT_WEAR * fought(xz, w))
         // How open the canopy is over the ground: grass from about half the sky's light.
         let open = smoothstep(CLOSED, 0.85, light)
         // Litter in drifts a few metres across and in patches under them: dark and damp in the

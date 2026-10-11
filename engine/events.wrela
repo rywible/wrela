@@ -3,7 +3,7 @@
 
 use grow::{
     Cause, Cx, Fields, Grid, Habit, Heap, Land, Mark, Memories, NEIGHBOURS, NEVER, NONE, Shaper,
-    State, Tree, UNBROWSED, mark, rotate, sapling, shaped, tear,
+    State, Tree, UNBROWSED, grazed_bare, mark, rotate, sapling, shaped, tear,
 }
 use noise::{noise2, rand}
 use place::{Event, EventKind}
@@ -113,7 +113,10 @@ fn gale(
                     f.memory.disk(g, t.at + t.fall * (0.6 * t.tall), crown, Mark::Wind, year, s)
                     t.each_along(shelter.cell, |p, _| {
                         mark(shelter, mut down, p, STEM_SWATH, 1.0)
-                        f.memory.disk(g, p, STEM_SWATH, Mark::Wind, year, s)
+                    })
+                    // Every cell of the land the swath touches.
+                    t.each_along(g.cell, |p, _| {
+                        f.memory.disk(g, p, STEM_SWATH + 0.5 * g.cell, Mark::Wind, year, s)
                     })
                 }
             } else if draw < p + 0.25 * p * hold && !(t.cause == Cause::Snapped && t.died == year) {
@@ -698,6 +701,51 @@ fn a_gale_throws_the_windward_edge_and_crushes_the_young() {
     assert(marked > 100, f"the land remembers the gale in {marked} cells")
 }
 
+/// The ground remembers a thrown tree along its stem's whole length, where it lies.
+@test
+fn a_thrown_trees_stem_is_remembered_along_its_length() {
+    let land = open_land(60.0)
+    let g = land.grid
+    let habits = [test_habit(bark: 0.5, resin: 0.5, roots: 0.0)]
+    var trees: Vec<Tree> = Vec::new()
+    stand(
+        mut trees,
+        habits,
+        vec2(-20.0, -20.0),
+        vec2(20.0, 20.0),
+        apart: 8.0,
+        tall: 20.0,
+        girth: 0.3,
+    )
+    var f = test_fields(g)
+    gale(
+        mut trees,
+        land,
+        habits,
+        mut f,
+        vec2(0.0),
+        reach: 50.0,
+        share: 0.99,
+        dir: vec2(1.0, 0.0),
+        year: 100,
+        ei: 0,
+    )
+    var logs = 0
+    var missed = 0
+    for t in trees {
+        if t.state == State::Log && t.died == 100 {
+            logs += 1
+            t.each_along(0.5, |p, _| {
+                if g.holds(p) && f.memory.at(g.cell_at(p)).mark != Mark::Wind {
+                    missed += 1
+                }
+            })
+        }
+    }
+    assert(logs > 0, "no tree thrown")
+    assert(missed == 0, f"{missed} points along {logs} thrown stems not remembered")
+}
+
 /// A full gale throws or snaps nearly every tree in its core, sheltered or not: the gap it
 /// leaves stays open.
 @test
@@ -734,6 +782,25 @@ fn a_full_gale_opens_its_core() {
         }
     }
     assert(core.x < 0.1 * core.y, f"{core.x} of {core.y} trees stand in the gale's core")
+}
+
+/// Deer graze an event's opening bare for the decades it keeps it, and the herd its lawns once it
+/// has come; elsewhere, and after those decades, nothing is grazed bare.
+@test
+fn an_events_opening_is_grazed_bare_for_its_decades() {
+    var land = open_land(10.0)
+    land.opened[0] = 100
+    land.lawn[1] = true
+    assert(!grazed_bare(land, 0, year: 99, arrives: NEVER), "before the event")
+    assert(grazed_bare(land, 0, year: 100, arrives: NEVER), "in the event's year")
+    assert(
+        grazed_bare(land, 0, year: 100 + place::RECENT - 1, arrives: NEVER),
+        "in its last kept year",
+    )
+    assert(!grazed_bare(land, 0, year: 100 + place::RECENT, arrives: NEVER), "after its decades")
+    assert(!grazed_bare(land, 1, year: 50, arrives: 60), "a lawn before the herd comes")
+    assert(grazed_bare(land, 1, year: 60, arrives: 60), "a lawn once the herd has come")
+    assert(!grazed_bare(land, 2, year: 100, arrives: 0), "neither")
 }
 
 /// Flat, open, dry land `half` metres each way of the origin, in 2 m cells.

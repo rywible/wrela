@@ -237,7 +237,16 @@ pub fn tick(w: mut World, input: TickInput<World>) {
         step(mut w.player, GROUND, WATER, OBSTACLES, input.dt)
     }
     if !w.tour.on {
-        step_encounter(mut w.fight, mut w.player, GROUND, WATER, OBSTACLES, input.records, input.dt)
+        step_encounter(
+            mut w.fight,
+            mut w.player,
+            GROUND,
+            WATER,
+            OBSTACLES,
+            FloorSight {},
+            input.records,
+            input.dt,
+        )
     }
     // The fawn, near enough the player to matter.
     let p = w.player
