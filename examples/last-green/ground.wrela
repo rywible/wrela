@@ -440,9 +440,11 @@ impl Ground {
         // hollows, dry and coppery where it's heaped (one even brown read as paint: round 5).
         let leaves = fbm2_seen(xz * 0.21 + vec2(5.0, 1.0), 3, w * 0.21) * 0.65 +
             noise2_seen(xz * 0.9 + vec2(-3.0, 2.0), w * 0.9) * 0.35
+        // Umber, not orange: the heaped leaves' copper in sun read as bare orange earth (pass 1:
+        // the ring).
         let litter = mix(
-            vec3(0.055, 0.036, 0.022),
-            vec3(0.16, 0.09, 0.042),
+            vec3(0.05, 0.037, 0.025),
+            vec3(0.13, 0.085, 0.05),
             vec3(smoothstep(0.2, 0.85, leaves)),
         )
         let mossy = smoothstep(0.55, 0.8, fbm2_seen(xz * 0.09 + vec2(-7.0, 2.0), 3, w * 0.09)) *
@@ -503,8 +505,8 @@ impl Ground {
             shade *
                 (0.35 + 0.65 * max(fern, bracken)) *
                 (1.0 - bare) *
-                (1.0 - 0.4 * thorn) *
-                (1.0 - 0.4 * soaked),
+                (1.0 - 0.3 * thorn) *
+                (1.0 - 0.25 * soaked),
             fern,
             bracken,
             herbs,
