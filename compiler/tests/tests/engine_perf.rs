@@ -324,7 +324,8 @@ fn typed_runs_and_keys_match_the_previous_editor() {
 "#;
     let widgets = format!("{}\n{tests}", source("ui/widgets.wrela"));
     std::fs::write(dir.join("widgets.wrela"), widgets).expect("UI tests");
-    passes(&dir, 2);
+    // The two focused cases plus the current text decoder and font-height regressions.
+    passes(&dir, 4);
 }
 
 #[test]

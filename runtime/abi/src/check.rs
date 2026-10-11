@@ -70,6 +70,20 @@ pub fn path_problem(path: &str) -> Option<&'static str> {
     None
 }
 
+/// What's wrong with the path of a build to hand over to, if anything: as [`path_problem`]'s,
+/// except that it may start with `..` parts, so a build can name one beside it (a game's builds
+/// sit side by side under one origin).
+pub fn build_path_problem(path: &str) -> Option<&'static str> {
+    let mut rest = path;
+    while let Some(r) = rest.strip_prefix("../") {
+        rest = r;
+    }
+    if rest == ".." {
+        return Some("names no build: it ends in `..`");
+    }
+    path_problem(rest)
+}
+
 struct Shape {
     name: String,
     compute: bool,
@@ -166,6 +180,72 @@ impl Checker {
     /// Checks a command that has passed the [`crate::stream::Sequencer`], and records its
     /// effect on what later commands may do.
     pub fn check(&mut self, cmd: &Command<'_>) -> Result<()> {
+        // A rejected command leaves no trace. Binding checks add uses as they go, and a later
+        // binding (or an indirect range) may still reject the command.
+        // A draw can only change the entries it names, so don't clone a pass's whole (possibly
+        // large) scope for every draw. Commands that start a fresh scope keep the old small
+        // scope wholesale.
+        let whole_scope = matches!(
+            cmd,
+            Command::Dispatch { .. } | Command::DispatchIndirect { .. } | Command::BeginPass(_)
+        )
+        .then(|| self.scope.clone());
+        let pass_state =
+            matches!(cmd, Command::BeginPass(_)).then(|| (self.attachments.clone(), self.targets));
+        let mut entries = Vec::new();
+        {
+            let mut remember = |handle: u32| {
+                if !entries.iter().any(|(h, _)| *h == handle) {
+                    entries.push((handle, self.scope.get(&handle).copied()));
+                }
+            };
+            match cmd {
+                Command::Draw { bindings, .. } => {
+                    for b in bindings {
+                        remember(b.handle);
+                    }
+                }
+                Command::DrawIndirect { arguments, bindings, .. } => {
+                    for b in bindings {
+                        remember(b.handle);
+                    }
+                    remember(*arguments);
+                }
+                Command::DrawIndexedIndirect { indices, arguments, bindings, .. } => {
+                    for b in bindings {
+                        remember(b.handle);
+                    }
+                    remember(*indices);
+                    remember(*arguments);
+                }
+                _ => {}
+            }
+        }
+        let result = self.check_in_place(cmd);
+        if result.is_err() {
+            if let Some(scope) = whole_scope {
+                self.scope = scope;
+            } else {
+                for (handle, used) in entries {
+                    match used {
+                        Some(used) => {
+                            self.scope.insert(handle, used);
+                        }
+                        None => {
+                            self.scope.remove(&handle);
+                        }
+                    }
+                }
+            }
+            if let Some((attachments, targets)) = pass_state {
+                self.attachments = attachments;
+                self.targets = targets;
+            }
+        }
+        result
+    }
+
+    fn check_in_place(&mut self, cmd: &Command<'_>) -> Result<()> {
         let op = cmd.opcode();
         let err = |why: String| Err(CommandError { opcode: op, why });
         match cmd {
@@ -363,6 +443,13 @@ impl Checker {
             Command::Fetch { url, .. } | Command::Post { url, .. } => {
                 if let Some(why) = path_problem(url) {
                     return err(format!("the URL `{url}` {why}"));
+                }
+            }
+            Command::Prepare { path, .. }
+            | Command::Unprepare { path }
+            | Command::HandOver { path, .. } => {
+                if let Some(why) = build_path_problem(path) {
+                    return err(format!("the build path `{path}` {why}"));
                 }
             }
             Command::Label { .. } => {}
@@ -648,5 +735,59 @@ mod tests {
         let error = checker.check(&dispatch(vec![a, a])).expect_err("a duplicate output");
         assert_eq!(error.why, "buffer 1 is bound read-write twice in one dispatch");
         checker.check(&dispatch(vec![a, b])).expect("a rejected command does not retain outputs");
+    }
+
+    #[test]
+    fn rejected_draws_and_passes_leave_checker_state_unchanged() {
+        let mut checker = Checker::new(&crate::vectors::check_manifest());
+        checker.check(&Command::CreateBuffer { handle: 1, size: 64 }).expect("buffer 1");
+        checker.check(&Command::CreateBuffer { handle: 2, size: 64 }).expect("buffer 2");
+        checker.check(&Command::BeginScreenPass { clear: [0.0; 4] }).expect("pass");
+        let bad = Command::Draw {
+            pipeline: 0,
+            vertices: 3,
+            instances: 1,
+            bindings: vec![Binding::range(1, 0, 64), Binding::range(99, 0, 64)],
+            uniforms: &[0; 16],
+        };
+        assert_eq!(checker.check(&bad).expect_err("missing buffer").why, "there's no buffer 99");
+
+        let good = Command::Draw {
+            pipeline: 2,
+            vertices: 3,
+            instances: 1,
+            bindings: vec![Binding::range(1, 0, 64), Binding::range(2, 0, 64)],
+            uniforms: &[0; 16],
+        };
+        checker.check(&good).expect("the rejected draw left no read-only use behind");
+
+        checker.check(&Command::Present).expect("end pass");
+        checker
+            .check(&Command::CreateTexture {
+                handle: 3,
+                width: 8,
+                height: 8,
+                format: TextureFormat::Rgba8,
+                writable: false,
+                depth: 0,
+            })
+            .expect("texture");
+        checker.check(&Command::BeginScreenPass { clear: [0.0; 4] }).expect("screen pass");
+        checker.check(&Command::Present).expect("end screen pass");
+        let bad_pass = Command::BeginPass(crate::stream::Pass {
+            color: 3,
+            keep_color: false,
+            join: false,
+            clear: [0.0; 4],
+            depth: 99,
+            keep_depth: false,
+            clear_depth: 1.0,
+        });
+        assert_eq!(
+            checker.check(&bad_pass).expect_err("missing depth target").why,
+            "there's no texture 99"
+        );
+        assert!(checker.attachments.is_empty());
+        assert_eq!(checker.targets, (Some(SCREEN_FORMAT), false));
     }
 }

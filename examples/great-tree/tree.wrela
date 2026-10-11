@@ -27,22 +27,19 @@ pub fn great_tree() -> Plant {
         [base - vec3(0.0, 0.9, 0.0), base + vec3(0.0, 0.6, 0.0), mix(base, top, vec3(0.45)), top],
         [1.6, 1.2, 0.9, 0.5],
     )
-    // Roots: buttresses swelling down from the trunk in hollow curves, along the ground a
-    // little way, and under it.
+    // Roots (`Plant::root`), from a trunk about 1.1 m thick at its foot.
     for k in 0..6 {
         let a = TAU * (f32(k) + 0.5 * rand(29, k)) / 6.0
         let dir = vec3(cos(a), 0.0, sin(a))
         let out = pick(29, 10 + k, lo: 3.2, hi: 4.8)
         let across = vec3(-dir.z, 0.0, dir.x) * pick(29, 20 + k, lo: -0.8, hi: 0.8)
-        let r = pick(29, 30 + k, lo: 0.6, hi: 0.85)
-        p.tube(
-            [
-                base + vec3(0.0, 1.9, 0.0) + dir * 0.5,
-                base + dir * 1.55 + vec3(0.0, 0.55, 0.0),
-                base + dir * (out * 0.62) + across * 0.5 + vec3(0.0, 0.05, 0.0),
-                base + dir * out + across + vec3(0.0, -0.4, 0.0),
-            ],
-            [r * 0.8, r * 0.7, r * 0.4, 0.15],
+        p.root(
+            base,
+            dir,
+            girth: 1.1,
+            out: out,
+            across: across,
+            r: pick(29, 30 + k, lo: 0.6, hi: 0.85),
         )
     }
     // The limbs: each leaves the trunk at its own height, the lowest reaching farthest and

@@ -679,6 +679,91 @@ test("a pipeline that can't be built fails the program: caughtUp and built rejec
   expect(await built).toBe("pipeline `compute` failed to build");
 });
 
+test("a late pipeline success runs no commands after another pipeline failed", async () => {
+  const device = new FakeDevice();
+  const failed = Promise.withResolvers<BuiltPipeline>();
+  const later = Promise.withResolvers<BuiltPipeline>();
+  const executor = new GpuExecutor(device.gpu, [failed.promise, later.promise], { texture: () => fakeTexture("screen") });
+  const compute: BuiltPipeline = {
+    name: "compute",
+    layout: {} as GPUBindGroupLayout,
+    compute: { label: "compute" } as GPUComputePipeline,
+    render: null,
+    uniform: null,
+    bindings: [],
+    debugFlag: null,
+  };
+  executor.execute({ op: "Dispatch", pipeline: 1, groups: [1, 1, 1], bindings: [], uniforms: new Uint8Array() });
+  const readback = executor.readBack(7, 0, 4);
+  failed.reject(new Error("pipeline 0 failed"));
+  await executor.built.catch(() => {});
+  await expect(readback).rejects.toThrow("pipeline 0 failed");
+  later.resolve(compute);
+  await later.promise;
+  await Promise.resolve();
+  expect(kinds(device.events)).toEqual([]);
+  await expect(executor.caughtUp()).rejects.toThrow("pipeline 0 failed");
+});
+
+test("a retired executor runs no commands when a pipeline finishes late", async () => {
+  const device = new FakeDevice();
+  const later = Promise.withResolvers<BuiltPipeline>();
+  const executor = new GpuExecutor(device.gpu, [later.promise], { texture: () => fakeTexture("screen") });
+  const compute: BuiltPipeline = {
+    name: "compute",
+    layout: {} as GPUBindGroupLayout,
+    compute: { label: "compute" } as GPUComputePipeline,
+    render: null,
+    uniform: null,
+    bindings: [],
+    debugFlag: null,
+  };
+  executor.execute({ op: "Dispatch", pipeline: 0, groups: [1, 1, 1], bindings: [], uniforms: new Uint8Array() });
+  const readback = executor.readBack(7, 0, 4);
+  executor.destroyAll();
+  await expect(readback).rejects.toThrow("the GPU executor was retired");
+  later.resolve(compute);
+  await executor.built;
+  await Promise.resolve();
+  expect(kinds(device.events)).toEqual([]);
+});
+
+test.each(["failed", "retired"] as const)("a partly drained backlog rejects readbacks when its executor is %s", async (mode) => {
+  const device = new FakeDevice();
+  const m = shapes();
+  const [, compute] = await Promise.all(buildPipelines(device.gpu, m, m.pipelines.map(() => SHADER)));
+  const first = Promise.withResolvers<BuiltPipeline>();
+  const later = Promise.withResolvers<BuiltPipeline>();
+  const executor = new GpuExecutor(device.gpu, [first.promise, later.promise], { texture: () => fakeTexture("screen") });
+  for (const cmd of decode(new Encoder().createBuffer(1, 64).createBuffer(2, 64).dispatch(0, [1, 1, 1], [1, 2], u(0)).dispatch(1, [2, 1, 1], [1, 2], u(1)).finish())) {
+    executor.execute(cmd);
+  }
+  const caughtUp = executor.caughtUp().catch((e: Error) => e.message);
+  const readback = executor.readBack(2, 0, 4).catch((e: Error) => e.message);
+  const built = executor.built.catch((e: Error) => e.message);
+  first.resolve(compute!);
+  await first.promise;
+  // The first dispatch's consumed slot is empty while the next pipeline is still missing.
+  expect(executor.waiting).toBe(true);
+  expect(device.events.filter((e) => e.kind === "dispatch")).toHaveLength(1);
+  const why = mode === "failed" ? "later pipeline failed" : "the GPU executor was retired";
+  if (mode === "failed") later.reject(new Error(why));
+  else {
+    executor.destroyAll();
+    later.resolve(compute!);
+  }
+  expect(await caughtUp).toBe(why);
+  expect(await readback).toBe(why);
+  await built;
+  expect(device.events.filter((e) => e.kind === "dispatch")).toHaveLength(1);
+  if (mode === "failed") expect(() => executor.waiting).toThrow(why);
+  else {
+    expect(executor.waiting).toBe(false);
+    await expect(executor.caughtUp()).resolves.toBeUndefined();
+    await expect(executor.readBack(2, 0, 4)).rejects.toThrow(why);
+  }
+});
+
 test("the program's buffers and textures are counted in bytes, now and at most", async () => {
   const { run, executor } = await setup();
   run(new Encoder().createBuffer(1, 1000).createTexture(2, 8, 4, "rgba16float").createTexture(3, 8, 8, "depth32float"));

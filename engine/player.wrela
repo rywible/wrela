@@ -248,10 +248,10 @@ pub fn wish(c: Controls) -> (vec2, bool) {
         d -= f
     }
     if c.right {
-        d -= side
+        d += side
     }
     if c.left {
-        d += side
+        d -= side
     }
     let len = length(d)
     (if len > 1.0e-4 { d / len } else { vec2(0.0) }, c.run_held || c.run_on)
@@ -298,9 +298,22 @@ pub fn step<G: Ground>(p: mut Player, ground: G, water: Water, o: Obstacles, dt:
     } else {
         p.pace = pace
     }
-    // On the ground; in a stream, on its bed, its depth under the water's skin.
-    let q = p.at.world()
-    p.y = ground.height(q.x, q.y) - o.depth(q)
+    p.y = standing_height(ground, o, p.at)
+}
+
+/// Puts the player at `at`, facing `heading`, on the ground as walking does: for a move that isn't
+/// a walk (a game's roll or knock-back), which owns the player's place while it runs.
+pub fn place_at<G: Ground>(p: mut Player, ground: G, o: Obstacles, at: Place, heading: f32) {
+    p.at = at
+    p.heading = wrap(heading)
+    p.y = standing_height(ground, o, at)
+}
+
+/// The height a player's feet stand at, at `at`: on the ground; in a stream, on its bed, its depth
+/// under the water's skin.
+fn standing_height<G: Ground>(ground: G, o: Obstacles, at: Place) -> f32 {
+    let q = at.world()
+    ground.height(q.x, q.y) - o.depth(q)
 }
 
 // ---- the camera -----------------------------------------------------------------------------------
@@ -312,6 +325,15 @@ pub struct Framing: Copy {
     pub behind: f32 = 4.2,
     pub shoulder: f32 = 0.45,
     pub fovy: f32 = 0.82,
+}
+
+/// What the camera turns to besides its player (render space), and how much: 0 not at all (the
+/// player's look alone), 1 fully (the point ahead, past the player, and looked at a third of the
+/// way from the target to it). A game sets it (a fight, on its foe) and eases the weight in and
+/// out.
+pub struct Focus: Copy {
+    pub at: vec3 = vec3(0.0),
+    pub weight: f32 = 0.0,
 }
 
 /// The closest an eye comes to a trunk, a stone or a wall (m), and to the ground.
@@ -334,8 +356,26 @@ pub fn third_person(
     o_from: vec2,
     height: fn(vec2) -> f32,
 ) -> (vec3, vec3) {
+    focused(f, feet, yaw, pitch, Focus {}, o, o_from, height)
+}
+
+/// `third_person`, turned toward `focus` by its weight: the arm swings from the look's `yaw`
+/// toward the focus's bearing from the feet, and the eye looks from the player's own point
+/// toward a third of the way from the target to the focus.
+pub fn focused(
+    f: Framing,
+    feet: vec3,
+    yaw: f32,
+    pitch: f32,
+    focus: Focus,
+    o: Obstacles,
+    o_from: vec2,
+    height: fn(vec2) -> f32,
+) -> (vec3, vec3) {
     let target = feet + vec3(0.0, f.target, 0.0)
-    let ahead = facing(yaw)
+    let to = focus.at.xz - feet.xz
+    let w = if length(to) > 0.1 { clamp(focus.weight, 0.0, 1.0) } else { 0.0 }
+    let ahead = facing(wrap(yaw + wrap(atan2(to.x, to.y) - yaw) * w))
     let right = vec2(-ahead.y, ahead.x) * -1.0
     let back = vec3(-ahead.x * cos(pitch), -sin(pitch), -ahead.y * cos(pitch))
     let side = vec3(right.x, 0.0, right.y) * f.shoulder
@@ -364,7 +404,8 @@ pub fn third_person(
         target + arm * (reach / len)
     }
     // Look a little over the target, so the player sits low in the frame.
-    (eye, target + vec3(ahead.x, 0.0, ahead.y) * 2.0 + vec3(0.0, 0.25, 0.0))
+    let own = target + vec3(ahead.x, 0.0, ahead.y) * 2.0 + vec3(0.0, 0.25, 0.0)
+    (eye, mix(own, target + (focus.at - target) / 3.0, vec3(w)))
 }
 
 /// Whether an eye at `p` would be too near the ground, a trunk, a stone or a wall (`third_person`).
@@ -408,4 +449,113 @@ fn a_blocked_arm_puts_the_eye_over_the_head() {
         f"the eye {eye} is {length(eye - target)} m from the target",
     )
     assert(!in_the_way(eye, o, vec2(0.0), |p: vec2| 0.0), f"the eye {eye} is in the way")
+}
+
+/// A focus at full weight puts what it's on ahead, past the player, and looks a third of the way
+/// to it; at no weight the camera is the player's own.
+@test
+fn a_focus_turns_the_camera_to_put_it_ahead() {
+    let f = Framing {}
+    let feet = vec3(10.0, 0.0, 10.0)
+    let nothing: Vec<footing::Obstacle> = Vec::new()
+    let none = Obstacles::of(nothing, vec2(0.0), vec2(20.0))
+    // Looking along +z; the foe 5 m off to the player's side, along +x.
+    let foe = vec3(15.0, 0.6, 10.0)
+    let (e0, a0) = third_person(
+        f,
+        feet,
+        yaw: 0.0,
+        pitch: 0.0,
+        o: none,
+        o_from: vec2(0.0),
+        height: |p: vec2| 0.0,
+    )
+    let (e1, a1) = focused(
+        f,
+        feet,
+        yaw: 0.0,
+        pitch: 0.0,
+        focus: Focus { at: foe, weight: 0.0 },
+        o: none,
+        o_from: vec2(0.0),
+        height: |p: vec2| 0.0,
+    )
+    assert(length(e1 - e0) < 1.0e-5 && length(a1 - a0) < 1.0e-5, "no weight: the player's camera")
+    let (eye, at) = focused(
+        f,
+        feet,
+        yaw: 0.0,
+        pitch: 0.0,
+        focus: Focus { at: foe, weight: 1.0 },
+        o: none,
+        o_from: vec2(0.0),
+        height: |p: vec2| 0.0,
+    )
+    let target = feet + vec3(0.0, f.target, 0.0)
+    assert(length(at - (target + (foe - target) / 3.0)) < 1.0e-4, f"looks at {at}")
+    // The eye behind the player from the foe: the player between the eye and the foe.
+    let back = normalize((eye - target).xz)
+    let toward = normalize((foe - feet).xz)
+    assert(dot(back, toward) < -0.95, f"the eye {eye} isn't behind the player from the foe")
+}
+
+/// A move that isn't a walk puts the player on the ground where walking would.
+@test
+fn a_placed_player_stands_on_the_ground() {
+    let ground = Shelf { high: 3.0 }
+    let nothing: Vec<footing::Obstacle> = Vec::new()
+    let none = Obstacles::of(nothing, vec2(0.0), vec2(20.0))
+    var p = spawn(ground, Place::of(vec2(1.0, 1.0)), 0.0)
+    place_at(mut p, ground, none, Place::of(vec2(15.0, 6.0)), 7.0)
+    assert(abs(p.y - 3.0) < 1.0e-5, f"stands at {p.y}")
+    assert(abs(p.heading - wrap(7.0)) < 1.0e-5, f"faces {p.heading}")
+}
+
+/// Ground for the tests: level at 1 m, and at `high` past x = 10.
+struct Shelf: Copy {
+    high: f32,
+}
+
+impl Ground for Shelf {
+    fn height(self, x: f32, z: f32) -> f32 {
+        if x > 10.0 { self.high } else { 1.0 }
+    }
+
+    fn past_edge(self, p: vec2) -> f32 {
+        -100.0
+    }
+
+    fn rock(self, p: vec2) -> f32 {
+        0.0
+    }
+}
+
+/// At yaw zero, +x is the camera's right: D asks for +x and A for -x.
+@test
+fn the_side_keys_move_the_way_they_are_named() {
+    var c = Controls {
+        forward: false,
+        back: false,
+        left: false,
+        right: true,
+        turn_left: false,
+        turn_right: false,
+        run_held: false,
+        walk_on: false,
+        run_on: false,
+        yaw: 0.0,
+        pitch: 0.0,
+        dragging: false,
+        pointer: vec2(0.0),
+        typing: false,
+        digits: 0,
+        travel: NONE,
+        glide: 0,
+    }
+    let (right, _) = wish(c)
+    c.right = false
+    c.left = true
+    let (left, _) = wish(c)
+    assert(right == vec2(1.0, 0.0), f"D moved {right}")
+    assert(left == vec2(-1.0, 0.0), f"A moved {left}")
 }

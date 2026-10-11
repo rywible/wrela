@@ -53,8 +53,9 @@ impl Surface for Facets {
     }
 }
 
-/// A stone's colour at a point of it, `r` across, seed `seed`: grey granite with a grain,
-/// lichen in patches, and moss on its top.
+/// A stone's colour at a point of it, `r` across, seed `seed`: grey granite with a grain, each
+/// facet a little its own tone, lichen in broad faint crusts where it faces the sky, and moss on
+/// its top (round lichen spots and a noise's crack lines read as a leopard's and a maze).
 pub struct Stain: Copy + GpuData {
     pub r: f32,
     pub seed: f32,
@@ -68,15 +69,20 @@ pub fn grain(q: vec3) -> f32 {
 impl Stain {
     pub fn at(self, p: vec3) -> Rock {
         let q = p * (6.0 / self.r) + vec3(self.seed)
-        let g = grain(q)
-        let lichen = smoothstep(0.72, 0.8, noise3(p * 3.3 + vec3(5.0, 2.0, 1.0) + vec3(self.seed)))
-        var c = mix(vec3(0.22, 0.21, 0.20), vec3(0.36, 0.34, 0.31), vec3(g))
-        // A fixed-scale speckle and cracks, whatever the stone's size.
-        c *= 0.9 + 0.2 * noise3(p * 9.0 + vec3(self.seed))
-        let crack = 1.0 - abs(noise3(p * 1.4 + vec3(self.seed * 0.7)) - 0.5) * 2.0
-        c *= 1.0 - 0.4 * smoothstep(0.9, 0.97, crack)
-        c = mix(c, vec3(0.42, 0.40, 0.22), vec3(lichen * 0.7))
+        var c = mix(vec3(0.22, 0.21, 0.20), vec3(0.36, 0.34, 0.31), vec3(grain(q)))
+        // A fine speckle at a fixed scale, whatever the stone's size, faint.
+        c *= 0.94 + 0.12 * noise3(p * 9.0 + vec3(self.seed))
+        // Warmer and cooler in broad patches across it.
+        c *= mix(
+            vec3(0.95, 0.98, 1.03),
+            vec3(1.05, 1.0, 0.93),
+            vec3(noise3(p * (1.2 / self.r) + vec3(self.seed * 0.7))),
+        )
         let top = p.y / self.r
+        let crust = 0.7 * noise3(p * 1.1 + vec3(5.0, 2.0, 1.0) + vec3(self.seed)) +
+            0.3 * noise3(p * 4.0 + vec3(self.seed))
+        let lichen = smoothstep(0.5, 0.75, crust) * smoothstep(-0.2, 0.4, top)
+        c = mix(c, vec3(0.42, 0.41, 0.30), vec3(lichen * 0.4))
         let moss = smoothstep(0.25, 0.65, top + 0.35 * (noise3(p * 2.5 + vec3(self.seed)) - 0.5))
         Rock { albedo: mix(c, vec3(0.10, 0.14, 0.035), vec3(moss * 0.6)) }
     }

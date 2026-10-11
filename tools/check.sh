@@ -47,6 +47,9 @@ cd "$(dirname "$0")/.."
 # goldens or picks a fuzz seed (left set in the shell by an earlier run) doesn't apply here.
 unset WRELA_RUN_ONLY WRELA_BLESS WRELA_FUZZ_ITERS WRELA_FUZZ_SEED WRELA_FUZZ_WORKER WRELA_FUZZ_JOBS \
   WRELA_FUZZ_TIERS WRELA_FULL WRELA_GPU_SHARED WRELA_GPU_WAITS
+# The tests count the constants their builds compute: each package keeps its own cache here, not
+# the one a session shares with other checkouts.
+unset WRELA_CONST_CACHE
 
 usage="usage: tools/check.sh [--fresh | --long | --full] | [--long] [--nocapture] <filter>... | --fmt"
 long=0 full=0 fmt=0 fresh=0 nocapture=() filters=()
@@ -119,11 +122,13 @@ for f in sorted([*pathlib.Path("compiler").rglob("*.rs"), *pathlib.Path("runtime
         if m := re.search(r'#\[ignore = "(long|measure|heavy):', line):
             name = next_functions[i]
             # A test file at the top of `tests/` is a test program of its own (no module). A unit
-            # test in `src/` is in its file's `mod tests` (a crate's root file names no module).
+            # test in `src/` is in its file's module, under the directories it's in, and in its
+            # `mod tests` (a crate's root file names no module, nor does a `mod.rs`).
             if f.parent.name == "tests":
                 print(m[1], name)
             elif "src" in f.parts:
-                module = "" if f.stem in ("lib", "main") else f"{f.stem}::"
+                path = [*f.parts[f.parts.index("src") + 1 : -1], f.stem]
+                module = "".join(f"{p}::" for p in path if p not in ("lib", "main", "mod"))
                 print(m[1], f"{module}{'tests::' if inside else ''}{name}")
             else:
                 print(m[1], f"{f.stem}::{name}")

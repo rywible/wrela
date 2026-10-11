@@ -1,7 +1,7 @@
 // Generated from the wrela-abi crate (runtime/abi): the one definition of the
 // command stream and manifest. Don't edit; run `cargo run -p wrela-abi --bin generate`.
 
-export const STREAM_VERSION = 8;
+export const STREAM_VERSION = 9;
 export const MANIFEST_VERSION = 8;
 /** The bytes `WRCS`, read as a little-endian u32. */
 export const STREAM_MAGIC = 0x53435257;
@@ -40,6 +40,9 @@ export const Opcode = {
   Post: 23,
   DrawIndexedIndirect: 24,
   Label: 25,
+  Prepare: 26,
+  Unprepare: 27,
+  HandOver: 28,
 } as const;
 
 /** A texture's format, by its number in the stream: WebGPU's name, the bytes of one texel, and
@@ -128,9 +131,11 @@ export const HOST_FUNCTIONS = [
   ["phase", "(i32, i32) -> ()"],
 ] as const;
 export const EXPORT_AUDIO = "__audio";
-/** The audio thread's rate and render quantum, and where `__audio` leaves a quantum's samples. */
+/** The audio thread's rate, render quantum and channels, and where `__audio` leaves a quantum's
+ * samples: the left channel's, then the right's. */
 export const AUDIO_SAMPLE_RATE = 48000;
 export const AUDIO_QUANTUM = 128;
+export const AUDIO_CHANNELS = 2;
 export const AUDIO_OUT = 1245184;
 /** The threads (runtime/abi `memory`): their numbers, their blocks, and the words of a block and
  * of a job slot a host reads and writes. */

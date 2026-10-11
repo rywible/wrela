@@ -28,6 +28,8 @@ mod error;
 #[cfg(feature = "gpu")]
 mod gpu;
 #[cfg(feature = "gpu")]
+mod handover;
+#[cfg(feature = "gpu")]
 pub mod image;
 pub mod lock;
 mod program;
@@ -91,7 +93,8 @@ pub struct Options {
     /// that look at what a program recorded, such as a dispatch's uniform bytes.
     pub record: bool,
     /// Where the program's storage requests read and write; by default, `storage/` in the
-    /// build's directory.
+    /// directory of the build the host loaded (or restarted), which every build after it in
+    /// the host, by a hot reload or a hand-over, shares.
     pub storage: Option<std::path::PathBuf>,
     /// How many threads run a parallel job's chunks, the program's own included (at most
     /// `wrela_abi::memory::MAX_WORKERS + 1`); 0 for [`default_workers`].
@@ -114,6 +117,15 @@ impl Options {
     #[cfg(feature = "gpu")]
     fn io(&self, dir: &Path) -> program::Io {
         io(dir, self.storage.as_deref(), self.post.clone(), self.quiet)
+    }
+
+    /// These options with their storage in the build in `dir`'s, unless they name it: the
+    /// storage of the builds a host runs after it.
+    #[cfg(feature = "gpu")]
+    fn homed(&self, dir: &Path) -> Options {
+        let mut options = self.clone();
+        options.storage.get_or_insert_with(|| dir.join("storage"));
+        options
     }
 }
 
@@ -178,6 +190,8 @@ pub enum ReplayError {
     FirstWorld { log: u64, replayed: u64 },
     /// Tick `tick`'s hash isn't the log's: the first that differs.
     Tick { tick: u32, log: u64, replayed: u64 },
+    /// Tick `tick` has more records than one ticker call can consume.
+    TooManyRecords { tick: u32, count: usize },
     /// The program failed, in tick `tick` if it was in one: it trapped, or the host couldn't
     /// run it.
     Failed { tick: Option<u32>, error: Error },
@@ -208,6 +222,11 @@ impl std::fmt::Display for ReplayError {
                 "tick {tick} differs: the log has {}, the replay {}",
                 hex(*log),
                 hex(*replayed)
+            ),
+            ReplayError::TooManyRecords { tick, count } => write!(
+                f,
+                "tick {tick} has {count} records; a tick takes at most {}",
+                wrela_abi::memory::MAX_TICK_RECORDS
             ),
             ReplayError::Failed { error, .. } => write!(f, "{error}"),
         }
@@ -281,6 +300,8 @@ pub struct Host {
     /// with.
     dir: PathBuf,
     options: Options,
+    /// The builds the program got ready to hand over to (`std::reload::prepare`).
+    prepared: handover::PreparedBuilds,
     // Declared last: dropped after the GPU.
     _lock: lock::GpuLock,
 }
@@ -305,7 +326,7 @@ impl Host {
         let old = self.program.take().expect("the host has a program");
         let mut carried = old.retire();
         program::Executor::reload(&mut carried.executor, &build.manifest, &build.shaders)?;
-        let program = Program::instantiate_carrying(
+        let mut program = Program::instantiate_carrying(
             &build.compiled,
             &build.manifest,
             carried,
@@ -313,6 +334,7 @@ impl Host {
             workers(self.options.workers),
             true,
         )?;
+        program.hand_over_here();
         self.program = Some(program);
         self.wasm_hash = build.wasm_hash;
         self.dir = dir;
@@ -324,6 +346,7 @@ impl Host {
     /// one's (its buffers and textures released; nothing kept, no ticks carried). The pipelines
     /// are kept. For tests that each start fresh on one host (`wrela test`'s GPU frame tests).
     pub fn restart_with(&mut self, options: &Options) -> Result<()> {
+        let options = &options.homed(&self.dir);
         let build = compile_build(&self.dir, None)?;
         let old = self.program.take().expect("the host has a program");
         let mut executor = old.retire().executor;
@@ -340,6 +363,7 @@ impl Host {
         if options.reloadable {
             program.keep_ticks();
         }
+        program.hand_over_here();
         self.program = Some(program);
         self.options = options.clone();
         Ok(())
@@ -360,6 +384,7 @@ impl Host {
 
     pub fn load_with(dir: impl AsRef<Path>, options: &Options) -> Result<Host> {
         let dir = dir.as_ref();
+        let options = &options.homed(dir);
         // Everything that can be checked without the GPU is, before taking it.
         let Build { manifest, shaders, wasm_hash, compiled } = compile_build(dir, None)?;
         let lock = lock::GpuLock::acquire(&format!("wrela-host {}", dir.display()))?;
@@ -377,11 +402,13 @@ impl Host {
         if options.reloadable {
             program.keep_ticks();
         }
+        program.hand_over_here();
         Ok(Host {
             program: Some(program),
             wasm_hash,
             dir: dir.to_path_buf(),
             options: options.clone(),
+            prepared: handover::PreparedBuilds::new(),
             _lock: lock,
         })
     }
@@ -407,6 +434,7 @@ impl Host {
         script: &[Scripted],
         log: bool,
     ) -> Result<(RunResult, Option<TickLog>)> {
+        program::valid_fps(fps)?;
         self.p().executor().set_screen(width, height)?;
         let mut log = if log {
             self.p().want_hashes(true);
@@ -418,6 +446,7 @@ impl Host {
         for i in 0..frames {
             self.p().executor().set_frame(i as usize);
             self.p().lockstep_frame(i, fps, width, height, script, log.as_mut())?;
+            self.settle_handing()?;
         }
         Ok((self.result(width, height)?, log))
     }
@@ -434,7 +463,8 @@ impl Host {
     ) -> Result<()> {
         self.p().executor().set_screen(width, height)?;
         self.p().executor().set_frame(i as usize);
-        self.p().lockstep_frame(i, fps, width, height, script, None)
+        self.p().lockstep_frame(i, fps, width, height, script, None)?;
+        self.settle_handing()
     }
 
     /// [`CpuHost::ticks_beside_frames`], with the GPU: the frames draw.
@@ -481,6 +511,7 @@ impl Host {
             }
             self.p().executor().set_frame(i);
             self.p().frame(time, width, height)?;
+            self.settle_handing()?;
         }
         self.result(width, height)
     }
@@ -514,7 +545,20 @@ impl Host {
     /// the program a frame at a time (a studio session), and reads the screen when it wants.
     pub fn frame(&mut self, time: f32, width: u32, height: u32) -> Result<()> {
         self.p().executor().set_screen(width, height)?;
-        self.p().frame(time, width, height)
+        self.p().frame(time, width, height)?;
+        self.settle_handing()
+    }
+
+    /// The directory of the build that's running: another after a hand-over
+    /// (`std::reload::hand_over`).
+    pub fn build_dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// How many pipelines the host has built since it loaded: what a hand-over or a reload
+    /// built, by the difference.
+    pub fn pipelines_built(&mut self) -> usize {
+        self.p().executor().pipelines_built()
     }
 
     /// The screen after the last frame: RGBA8, rows top to bottom.
@@ -774,7 +818,8 @@ impl CpuHost {
     }
 
     /// Renders `quanta` quanta of the program's voice offline: `wrela_abi::AUDIO_QUANTUM`
-    /// samples each, mono, at `wrela_abi::AUDIO_SAMPLE_RATE`. Each call goes on from the last.
+    /// samples each, at `wrela_abi::AUDIO_SAMPLE_RATE`, the two channels interleaved (left,
+    /// right, left, ...). Each call goes on from the last.
     pub fn render_audio(&mut self, quanta: u32) -> Result<Vec<f32>> {
         self.program.render_audio(quanta)
     }
@@ -825,6 +870,9 @@ impl CpuHost {
         }
         self.want_hashes(true);
         for (k, t) in (0..ticks).zip(&log.ticks) {
+            if t.records.len() > wrela_abi::memory::MAX_TICK_RECORDS as usize {
+                return Err(ReplayError::TooManyRecords { tick: k, count: t.records.len() });
+            }
             self.program.push_raw_records(&t.records);
             let got = self.tick().map_err(|error| ReplayError::Failed { tick: Some(k), error })?;
             let replayed = got.hash.expect("hashes asked for");

@@ -33,7 +33,8 @@ test("usage conflicts persist within a pass and reset at the next pass", () => {
   checker.check(draw([a, b]));
   checker.check(draw([a, b]));
   expect(() => checker.check(draw([b, a]))).toThrow("buffer 2 is used both read-only and read-write in one pass");
-  expect(() => checker.check(draw([a, b]))).toThrow("buffer 2 is used both read-only and read-write in one pass");
+  // The rejected reversed draw leaves the previous pass scope intact.
+  expect(() => checker.check(draw([a, b]))).not.toThrow();
   checker.check({ op: "Present" });
   checker.check({ op: "BeginScreenPass", clear: [0, 0, 0, 1] });
   expect(() => checker.check(draw([b, a]))).not.toThrow();

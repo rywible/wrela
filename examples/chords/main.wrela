@@ -1,0 +1,161 @@
+// The piano gate's test chords (#56 AC3 and AC4): what a piano shows itself by, each passage
+// eight bars of 4/4, played deadpan (the score exactly; the sustain pedal where it's written).
+// Take 0 has the room; take 2 is dry, as the listening tests play it beside a recorded piano.
+// It follows `wrela audio`'s protocol, as examples/gymnopedie does: `choose` before the first
+// frame, `seconds`, and `describe`.
+//
+//   bars 1-8    soft: chords in the middle, pp, held to die away
+//   bars 9-16   loud: the same chords, ff
+//   bars 17-24  low: the bass's octaves and chords, from p to ff
+//   bars 25-32  high: the top two octaves, from p to ff (where the reference warbles)
+//   bars 33-40  pedalled: broken chords over the keyboard, the pedal changed with the harmony
+
+use engine::perform::{Performance, deadpan}
+use engine::piano::{Model, piano, play_piano}
+use engine::piano_grand::GRAND
+use engine::score::{Score, meter, score}
+use std::audio::play
+use std::io::print
+
+const SOFT = score("soft", meter(beats: 4, unit: 4)).voice(
+    "chords",
+    [
+        "<c4 e4 g4>/1 !pp | r/1 | <a3 c4 e4 a4>/1 | r/1 |",
+        "<f3 a3 c4 f4>/2 <g3 b3 d4 g4>/2 | <c4 e4 g4 c5>/1 | r/1 | r/1 |",
+    ],
+)
+
+const LOUD = score("loud", meter(beats: 4, unit: 4)).voice(
+    "chords",
+    [
+        "<c4 e4 g4>/1 !ff | r/1 | <a3 c4 e4 a4>/1 | r/1 |",
+        "<f3 a3 c4 f4>/2 <g3 b3 d4 g4>/2 | <c4 e4 g4 c5>/1 | r/1 | r/1 |",
+    ],
+)
+
+const LOW = score("low", meter(beats: 4, unit: 4)).voice(
+    "chords",
+    [
+        "<a0 a1>/2 !p <c1 c2>/2 | <e1 e2>/1 | <c2 g2 c3>/2 !f <f1 c2 f2>/2 | <g1 d2 g2>/1 |",
+        "<c1 c2>/2 !ff <g1 g2>/2 | <c1 g1 c2 e2>/1 | r/1 | r/1 |",
+    ],
+)
+
+const HIGH = score("high", meter(beats: 4, unit: 4)).voice(
+    "chords",
+    [
+        "<c6 e6 g6>/2 !p <d6 f6 a6>/2 | <e6 g6 c7>/1 | c7/4 !f e7 g7 c8 | <g6 c7 e7>/1 |",
+        "<c7 e7 g7>/2 !ff <b6 d7 g7>/2 | <c7 e7 g7 c8>/1 | r/1 | r/1 |",
+    ],
+)
+
+const PEDALLED = score("pedalled", meter(beats: 4, unit: 4)).voice(
+    "broken",
+    [
+        "c2/8 !mf !ped g2 c3 e3 g3 c4 e4 g4 | a1/8 !unped !ped e2 a2 c3 e3 a3 c4 e4 |",
+        "f1/8 !unped !ped c2 f2 a2 c3 f3 a3 c4 | g1/8 !unped !ped d2 g2 b2 d3 g3 b3 d4 |",
+        "c2/8 !unped !ped g2 c3 e3 g3 c4 e4 g4 | <c2 g2 c3 e3 g3 c4>/1 | r/1 | r/1 !unped |",
+    ],
+)
+
+/// The test chords: 40 bars.
+pub const CHORDS: Score = score("The test chords", meter(beats: 4, unit: 4))
+    .then(SOFT)
+    .then(LOUD)
+    .then(LOW)
+    .then(HIGH)
+    .then(PEDALLED)
+
+/// The chords' tempo: a whole note in about 3 s, long enough for a chord to sound out.
+const TEMPO: f32 = 80.0
+
+pub struct Game {
+    which: u32,
+    started: bool,
+}
+
+pub fn init() -> Game {
+    Game { which: 0, started: false }
+}
+
+/// Plays take `which`: 0 with the room, 2 dry. Only before the first frame.
+pub fn choose(game: mut Game, which: u32) {
+    assert(!game.started, "a take is chosen before the chords start")
+    assert(which == 0 || which == 2, "the takes are 0 (with the room) and 2 (dry)")
+    game.which = which
+}
+
+fn played() -> Performance {
+    deadpan(CHORDS, tempo: TEMPO)
+}
+
+pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
+    if !game.started {
+        game.started = true
+        let model = if game.which >= 2 { Model { room: 0.0, ..GRAND } } else { GRAND }
+        play(piano(model, played()), play_piano)
+    }
+}
+
+/// How long the chords sound, the room's tail included.
+pub fn seconds(game: Game) -> f32 {
+    f32(played().length) + 4.0
+}
+
+/// The take as JSON lines, as examples/gymnopedie gives its: the piece, its voices, each note
+/// as played, the pedals, and when each beat fell.
+pub fn describe(game: Game) {
+    let p = played()
+    print(
+        f"{{\"title\":\"{CHORDS.title}\",\"take\":\"deadpan\",\"bars\":{CHORDS.bars},\"beats_per_bar\":{CHORDS.meter.beats},\"seconds\":{p.length}}}",
+    )
+    for i in 0..CHORDS.voices.len() {
+        print(f"{{\"voice\":{i},\"name\":\"{CHORDS.voices[i]}\"}}")
+    }
+    for n in p.notes {
+        let written = CHORDS.notes[n.note]
+        print(
+            f"{{\"key\":{n.key},\"voice\":{n.voice},\"onset\":{n.onset},\"release\":{n.release},\"velocity\":{n.velocity},\"bar\":{CHORDS.bar_of(written.start)}}}",
+        )
+    }
+    for s in p.sustain {
+        print(f"{{\"sustain\":{s.at},\"depth\":{s.depth}}}")
+    }
+    for s in p.soft {
+        print(f"{{\"soft\":{s.at},\"depth\":{s.depth}}}")
+    }
+    for b in p.beats {
+        print(f"{{\"beat\":{b}}}")
+    }
+}
+
+@test
+fn the_chords_span_the_keyboard_soft_to_loud() {
+    assert(CHORDS.bars == 40)
+    var low = 108
+    var high = 21
+    for n in CHORDS.notes {
+        low = min(low, n.key)
+        high = max(high, n.key)
+    }
+    // A0 to C8: the piano's lowest key and its highest.
+    assert(low == 21 && high == 108)
+    let p = played()
+    var soft = 1.0
+    var loud = 0.0
+    for n in p.notes {
+        soft = min(soft, n.velocity)
+        loud = max(loud, n.velocity)
+    }
+    assert(loud > 2.0 * soft)
+    // The pedal goes down and comes up in the last passage, five times each.
+    var downs = 0
+    var down = false
+    for s in p.sustain {
+        if s.depth > 0.5 && !down {
+            downs += 1
+        }
+        down = s.depth > 0.5
+    }
+    assert(downs == 5 && !down)
+}

@@ -79,7 +79,7 @@ pub fn noise2_wrapped(p: vec2, period: vec2i) -> f32 {
 }
 
 /// `v` wrapped into 0 to `n`.
-fn wrapped(v: i32, n: i32) -> i32 {
+pub fn wrapped(v: i32, n: i32) -> i32 {
     ((v % n) + n) % n
 }
 

@@ -1,0 +1,366 @@
+// The stair: an endless spiral staircase in a void, with a door off it to each world (vision.md,
+// "The lore"). The lowest door opens; each above it opens once the world below is preserved or
+// freed, and a freed world's door is gone (engine::tower). Walking through an open door hands
+// this build's place to the world's own build; coming back down, the player stands at its door.
+// The next open door's build is got ready while the player climbs.
+//
+// Keys: W or the up arrow climbs, S or the down arrow goes down, A and D look round, E goes
+// through the door the player is at.
+
+use engine::tower::{Fate, Journey, STAIR, Start}
+use std::gpu::{ClipPosition, FragCoord, VertexIndex, begin_screen_pass, draw}
+use std::input::{Input, Key}
+
+const TAU: f32 = 6.2831853
+
+/// Steps a turn, and each one's rise (m).
+const STEPS: f32 = 16.0
+const RISE: f32 = 0.2
+/// The column's radius, and the steps' inner and outer edges (m).
+const COLUMN: f32 = 0.5
+const INNER: f32 = 0.45
+const OUTER: f32 = 3.0
+/// How far out the player walks, and their eye's height (m).
+const WALK: f32 = 1.8
+const EYE: f32 = 1.6
+/// The pace up or down the stair (m/s, along it), and of looking round (radians a second).
+const PACE: f32 = 2.2
+const LOOK: f32 = 1.8
+
+/// The worlds' builds, beside this one, lowest first: the Last Green, then the test floor.
+const WORLDS: u32 = 2
+
+fn build_of(world: u32) -> Text {
+    if world == 0 { "../last-green" } else { "../test-floor" }
+}
+
+/// Where the tower is saved, in the storage every build of the game shares.
+const SAVE: Text = "tower/save"
+
+/// World `world`'s door is on the landing a turn above the one below it.
+fn door_step(world: u32) -> f32 {
+    STEPS * f32(world + 1)
+}
+
+pub struct Stair {
+    journey: Journey,
+    input: Input,
+    /// How far up the player is, in steps (from the bottom landing, 0), and where they look:
+    /// radians from straight up the stair.
+    at: f32,
+    look: f32,
+    last_time: f32,
+    /// Whether the save was being read last frame: once it's read, the player stands at the door
+    /// they last went through.
+    loading: bool,
+}
+
+pub fn init() -> Stair {
+    let journey = Journey::begin(STAIR, WORLDS, SAVE)
+    let loading = journey.loading()
+    var s = Stair { journey, input: Input::new(), at: 0.0, look: 0.0, last_time: 0.0, loading }
+    if s.journey.start != Start::Fresh {
+        stand_at_door(mut s)
+    }
+    s
+}
+
+/// Puts the player at the door they last went through, facing in from it: back down a world, or
+/// turned back from one that didn't start.
+fn stand_at_door(s: mut Stair) {
+    let door = s.journey.carry.door
+    if door != STAIR {
+        s.at = door_step(door)
+        s.look = -0.25 * TAU
+    }
+}
+
+/// The door the player is at, if any: within half a step of its landing.
+fn door_here(s: Stair) -> Option<u32> {
+    for w in 0..WORLDS {
+        if abs(s.at - door_step(w)) < 0.5 {
+            return Some(w)
+        }
+    }
+    None
+}
+
+/// Goes through the door the player is at, if it opens.
+fn enter(s: mut Stair) {
+    if let Some(w) = door_here(s) {
+        let _ = s.journey.go(w, w, build_of(w))
+    }
+}
+
+/// The lowest world whose door opens at or above where the player is, or the highest below:
+/// the build to get ready next.
+fn next_door(s: Stair) -> Option<u32> {
+    var best: Option<u32> = None
+    for w in 0..WORLDS {
+        if s.journey.carry.tower.door_open(w) {
+            if door_step(w) + 0.5 >= s.at {
+                return Some(w)
+            }
+            best = Some(w)
+        }
+    }
+    best
+}
+
+/// What the shaders read: the canvas, the eye, and each door's state (0 shut, 1 open, 2 gone).
+struct Scene: Copy + GpuData {
+    eye: vec3,
+    forward: vec3,
+    resolution: vec2,
+    doors: vec2,
+}
+
+fn door_state(s: Stair, world: u32) -> f32 {
+    borrow t = s.journey.carry.tower
+    if t.fate(world) == Fate::Freed {
+        2.0
+    } else if t.door_open(world) {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+fn scene_of(s: Stair, width: u32, height: u32) -> Scene {
+    let a = s.at / STEPS * TAU
+    let feet = vec3(WALK * cos(a), s.at * RISE, WALK * sin(a))
+    // Up the stair is round it, and rising: a step's rise over its run.
+    let up_stair = vec3(-sin(a), 0.0, cos(a))
+    let out = vec3(cos(a), 0.0, sin(a))
+    // Half the stair's slope: the steps ahead are in view.
+    let pitch = 0.5 * atan2(RISE, TAU / STEPS * WALK)
+    let level = up_stair * cos(s.look) + out * sin(s.look)
+    let forward = normalize(level + vec3(y: tan(pitch) * cos(s.look)))
+    Scene {
+        eye: feet + vec3(y: EYE),
+        forward,
+        resolution: vec2(f32(width), f32(height)),
+        doors: vec2(door_state(s, 0), door_state(s, 1)),
+    }
+}
+
+/// `q` turned about the vertical by `-a`: a point at angle `a` comes onto the +x axis.
+fn unturn(q: vec3, a: f32) -> vec3 {
+    let c = cos(a)
+    let s = sin(a)
+    vec3(c * q.x + s * q.z, q.y, -s * q.x + c * q.z)
+}
+
+fn box(q: vec3, half: vec3) -> f32 {
+    let d = abs(q) - half
+    length(max(d, vec3(0.0))) + min(max(d.x, max(d.y, d.z)), 0.0)
+}
+
+/// Step `i`'s slab: its top at `i` rises, its run from the inner edge to the outer.
+fn step_slab(p: vec3, i: f32) -> f32 {
+    let q = unturn(p, (i + 0.5) / STEPS * TAU)
+    let mid = 0.5 * (INNER + OUTER)
+    let width = OUTER * TAU / STEPS * 0.52
+    box(q - vec3(mid, i * RISE - 0.14, 0.0), vec3(0.5 * (OUTER - INNER), 0.14, width))
+}
+
+/// The steps and the column: the steps nearest `p` in angle, on the turn nearest in height.
+fn stone(p: vec3) -> f32 {
+    var a = atan2(p.z, p.x)
+    if a < 0.0 {
+        a += TAU
+    }
+    let j = floor(a / TAU * STEPS)
+    let turn = floor((p.y / RISE - j) / STEPS + 0.5)
+    let i = j + STEPS * turn
+    var d = length(p.xz) - COLUMN
+    for k in 0..3 {
+        d = min(d, step_slab(p, i + f32(k) - 1.0))
+    }
+    d
+}
+
+/// World `world`'s door: its frame, and what fills it (`state` 0 shut, 1 open), as distances.
+/// It stands at the outer edge of its landing, facing the column.
+fn door_parts(p: vec3, world: f32) -> vec2 {
+    let step = STEPS * (world + 1.0)
+    let q = unturn(p, (step + 0.5) / STEPS * TAU) - vec3(OUTER + 0.1, step * RISE + 1.15, 0.0)
+    let frame = max(box(q, vec3(0.12, 1.3, 0.75)), -box(q, vec3(0.3, 1.15, 0.6)))
+    let fill = box(q, vec3(0.03, 1.15, 0.6))
+    vec2(frame, fill)
+}
+
+/// The nearest surface's distance and what it is: 0 stone, 1 a door's frame, 2 an open door,
+/// 3 a shut one.
+fn scene_distance(p: vec3, doors: vec2) -> vec2 {
+    var best = vec2(stone(p), 0.0)
+    for w in 0..2 {
+        let state = if w == 0 { doors.x } else { doors.y }
+        if state < 1.5 {
+            let parts = door_parts(p, f32(w))
+            if parts.x < best.x {
+                best = vec2(parts.x, 1.0)
+            }
+            if parts.y < best.x {
+                best = vec2(parts.y, if state > 0.5 { 2.0 } else { 3.0 })
+            }
+        }
+    }
+    best
+}
+
+fn normal_at(p: vec3, doors: vec2) -> vec3 {
+    let h = 0.002
+    normalize(
+        vec3(
+            scene_distance(p + vec3(x: h), doors).x - scene_distance(p - vec3(x: h), doors).x,
+            scene_distance(p + vec3(y: h), doors).x - scene_distance(p - vec3(y: h), doors).x,
+            scene_distance(p + vec3(z: h), doors).x - scene_distance(p - vec3(z: h), doors).x,
+        ),
+    )
+}
+
+/// The light an open door gives `p` (facing `n`).
+fn door_light(p: vec3, n: vec3, doors: vec2) -> vec3 {
+    var c = vec3(0.0)
+    for w in 0..2 {
+        let state = if w == 0 { doors.x } else { doors.y }
+        if state > 0.5 && state < 1.5 {
+            let step = STEPS * (f32(w) + 1.0)
+            let a = (step + 0.5) / STEPS * TAU
+            let at = vec3(OUTER * cos(a), step * RISE + 1.15, OUTER * sin(a))
+            let to = at - p
+            let d2 = dot(to, to)
+            c += vec3(1.0, 0.72, 0.42) * 2.4 * max(dot(n, normalize(to)), 0.0) / (1.0 + d2)
+        }
+    }
+    c
+}
+
+fn shade_pixel(pixel: vec2, scene: Scene) -> vec4 {
+    let uv = (pixel * 2.0 - scene.resolution) / scene.resolution.y
+    let right = normalize(cross(scene.forward, vec3(y: 1.0)))
+    let up = cross(right, scene.forward)
+    let dir = normalize(scene.forward * 1.2 + right * uv.x - up * uv.y)
+    let void = mix(
+        vec3(0.008, 0.01, 0.018),
+        vec3(0.03, 0.035, 0.06),
+        clamp(0.5 + 0.5 * dir.y, 0.0, 1.0),
+    )
+    var t = 0.02
+    var hit = vec2(-1.0)
+    var i = 0
+    while i < 160 && hit.x < 0.0 && t < 40.0 {
+        let d = scene_distance(scene.eye + dir * t, scene.doors)
+        if d.x < 0.0008 * t {
+            hit = vec2(t, d.y)
+        } else {
+            t += d.x * 0.9
+        }
+        i += 1
+    }
+    if hit.x < 0.0 {
+        return vec4(void, 1.0)
+    }
+    let p = scene.eye + dir * t
+    if hit.y > 1.5 && hit.y < 2.5 {
+        // An open door: the light of the world beyond.
+        return vec4(vec3(1.0, 0.8, 0.55), 1.0)
+    }
+    let n = normal_at(p, scene.doors)
+    // A lantern at the eye, and a cold light from far above.
+    let to_eye = scene.eye - p
+    let lantern = vec3(1.0, 0.86, 0.66) *
+        2.2 *
+        max(dot(n, normalize(to_eye)), 0.0) /
+        (1.0 + 0.2 * dot(to_eye, to_eye))
+    let above = vec3(0.5, 0.58, 0.75) * 0.3 * (0.6 + 0.4 * n.y)
+    let albedo = if hit.y < 0.5 { vec3(0.55, 0.52, 0.47) } else if hit.y < 1.5 {
+        vec3(0.3, 0.26, 0.22)
+    } else { vec3(0.08, 0.07, 0.06) }
+    let lit = albedo * (lantern + above + door_light(p, n, scene.doors) + vec3(0.015))
+    let fog = exp(-0.07 * t)
+    vec4(mix(void, lit, fog), 1.0)
+}
+
+/// One triangle that covers the screen.
+@vertex
+fn cover(vertex: VertexIndex) -> ClipPosition {
+    let x = f32(vertex.index % 2) * 4.0 - 1.0
+    let y = f32(vertex.index / 2) * 4.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.0, 1.0) }
+}
+
+@fragment
+fn shade(pixel: FragCoord, scene: Scene) -> vec4 {
+    shade_pixel(pixel.position.xy, scene)
+}
+
+pub fn frame(s: mut Stair, time: f32, width: u32, height: u32) {
+    let dt = clamp(time - s.last_time, 0.0, 0.1)
+    s.last_time = time
+    s.journey.update()
+    if s.loading && !s.journey.loading() {
+        stand_at_door(mut s)
+    }
+    s.loading = s.journey.loading()
+    s.input.read()
+    borrow i = s.input
+    let climb = (if i.held(Key::W) || i.held(Key::Up) { 1.0 } else { 0.0 })
+    -(if i.held(Key::S) || i.held(Key::Down) { 1.0 } else { 0.0 })
+    s.at = max(s.at + climb * PACE * dt / (TAU / STEPS * WALK), 0.0)
+    let look = (if i.held(Key::D) { 1.0 } else { 0.0 }) - (if i.held(Key::A) { 1.0 } else { 0.0 })
+    s.look = clamp(s.look + look * LOOK * dt, -0.45 * TAU, 0.45 * TAU)
+    if i.pressed(Key::E) {
+        enter(mut s)
+    }
+    // Nothing of its own streams: the next open door's build is got ready all the while.
+    let next = match next_door(s) {
+        Some(w) => Some(build_of(w)),
+        None => None,
+    }
+    s.journey.prepare(next, allowed: true)
+    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(screen, cover, shade.bind(scene: scene_of(s, width, height)), vertices: 3)
+    screen.present()
+}
+
+// ---- for tests and tools ----
+
+/// Climbs `steps` steps (down, if negative).
+pub fn climb(s: mut Stair, steps: f32) {
+    s.at = max(s.at + steps, 0.0)
+}
+
+/// Goes through the door the player is at, if it opens.
+pub fn go_in(s: mut Stair) {
+    enter(mut s)
+}
+
+/// Where the player is (steps up), how they started (`Start`'s order), each door's state, and
+/// whether the next door's build is ready.
+pub fn report(s: Stair) -> vec4 {
+    let start = match s.journey.start {
+        Start::Fresh => 0.0,
+        Start::Arrived => 1.0,
+        Start::TurnedBack => 2.0,
+        Start::Again => 3.0,
+    }
+    let next = next_door(s)
+    let ready = match next {
+        Some(w) => if s.journey.ready(build_of(w)) { 1.0 } else { 0.0 },
+        None => 0.0,
+    }
+    vec4(s.at, start, door_state(s, 0) * 4.0 + door_state(s, 1), ready)
+}
+
+/// The pixel at (`x`, `y`), shaded on the CPU.
+pub fn probe(s: Stair, x: f32, y: f32, width: u32, height: u32) -> vec4 {
+    shade_pixel(vec2(x, y), scene_of(s, width, height))
+}
+
+/// Decides world `world`'s fate (1 preserved, 2 freed), as its Warden's end would.
+@testing
+pub fn test_decide(s: mut Stair, world: u32, fate: u32) {
+    let _ = s.journey.decide(world, if fate == 1 { Fate::Preserved } else { Fate::Freed })
+}

@@ -88,6 +88,82 @@ pub fn past_edge(p: vec2) -> f32 {
     dot(p - EDGE, ACROSS) + 8.0 * (noise2(p * 0.025) - 0.5)
 }
 
+/// Rock's own relief at `p` on ground `y` high, where it's `face` a steep face (0 to 1) and
+/// `bare` a crag's bare top or talus: on a face, blocks split along joints, each its own plane,
+/// standing out between recessed joints, and the rock's beds as ledges; on a top or a talus,
+/// smaller blocks a hand or two high (its pavement, its fallen boulders). Its own function, small
+/// in its arguments, so the clipmap's cook calls it and doesn't copy it at every point it reads
+/// the ground at (`ir::opt`).
+fn rock_relief(p: vec2, ground: f32, face: f32, bare: f32) -> f32 {
+    var y = ground
+    if face > 0.0 {
+        // Blocks split along joints, each its own plane, with crisp edges (a groove that ramps,
+        // not a smoothstep's round, which read as clay).
+        let (block, joint) = joints(p, 5.5)
+        y += face * 1.2 * (block - 0.5) * min(joint / 0.8, 1.0)
+        y += face * 0.5 * (ridged2(p * 0.35 + vec2(1.0, 7.0), 2) - 0.5)
+        // The beds: steps 3 m tall dipping gently south-east, each a near-level ledge and a
+        // riser over the last 55% of it, and every third a thicker one standing out; the face
+        // drawn most of the way to them, so a cliff reads as rock in tiers near and far.
+        let tilt = dot(p, BED_DIP)
+        let major = (y + tilt) / (3.0 * BED)
+        let thick = (floor(major) + saturate((fract(major) - 0.5) / 0.5)) * 3.0 * BED
+        y = mix(y, thick - tilt, 0.3 * face)
+        let lay = (y + tilt) / BED
+        let stepped = (floor(lay) + saturate((fract(lay) - 0.45) / 0.55)) * BED
+        y = mix(y, stepped - tilt, 0.5 * face)
+    }
+    // On the crags' tops and their talus, smaller blocks a hand or two high: the top's
+    // jointed pavement, the talus's fallen boulders (a top as one sheet read as a lawn of
+    // grey: pass 1, the crag's top).
+    if bare > 0.0 {
+        let (block, joint) = joints(p + vec2(31.0, -17.0), 3.2)
+        y += bare * 0.35 * block * min(joint / 1.0, 1.0)
+    }
+    y
+}
+
+/// The rock's beds: how tall a bed is (m), and how they dip (their rise per metre in x and z).
+pub const BED: f32 = 3.0
+pub const BED_DIP = vec2(0.05, -0.035)
+
+/// The rock's joints at `p`: blocks about `size` metres across (cells round scattered points),
+/// each raised by its own amount and tilted by its own slope, so it's a plane of its own (0 to 1
+/// of the relief); and how far `p` is from its block's edge, the joint (m).
+pub fn joints(p: vec2, size: f32) -> (f32, f32) {
+    let q = p / size
+    let i = floor(q)
+    var near = 1.0e9
+    var next = 1.0e9
+    var raised = 0.0
+    for j in -1..2 {
+        for k in -1..2 {
+            let cx = i32(i.x) + k
+            let cz = i32(i.y) + j
+            let centre = vec2(f32(cx), f32(cz)) +
+                vec2(0.1) +
+                0.8 *
+                    vec2(engine::noise::hash2(cx * 3 + 1, cz), engine::noise::hash2(cx, cz * 5 - 3))
+            let d = length(q - centre)
+            if d < near {
+                next = near
+                near = d
+                let tilt = vec2(
+                    engine::noise::hash2(cx + 7, cz - 11),
+                    engine::noise::hash2(cx - 5, cz + 9),
+                ) -
+                    vec2(0.5)
+                raised = 0.35 +
+                    0.5 * engine::noise::hash2(cx - 2, cz + 4) +
+                    0.6 * dot(q - centre, tilt)
+            } else if d < next {
+                next = d
+            }
+        }
+    }
+    (saturate(raised), 0.5 * (next - near) * size)
+}
+
 /// The floor's ground: the map's land, and the clearing's.
 pub struct Ground: Copy + GpuData {
     pub land: Land,
@@ -142,22 +218,6 @@ impl Ground {
         // The map's shapes, faded out round the clearing, whose own layout holds there.
         let shaped = smoothstep(70.0, 140.0, r)
         y += shaped * self.land.height(p)
-        // Rock's own relief on the map's steep faces (the crags' flanks, the ravine's walls) and on
-        // the plateau's scarp: knobs and ledges a metre or two high, so close up they read as rock
-        // and not as a smooth slope (playing spike 17, the crag was a mound).
-        let scarp = smoothstep(-1.0, 1.5, past) * (1.0 - smoothstep(8.0, 12.0, past))
-        let face = max(shaped * self.land.faces(p), scarp)
-        if face > 0.0 {
-            let knobs = ridged2(p * 0.21 + vec2(1.0, 7.0), 3) - 0.5
-            let ledges = fbm2(p * 0.09 + vec2(-4.0, 2.0), 2) - 0.5
-            y += face * (3.2 * knobs + 1.6 * ledges)
-            // The rock's beds as ledges: the face drawn a third of the way toward steps 3 m tall
-            // (each riser over the last 40% of its step), so a crag reads as rock in tiers and
-            // not as a dome (round 1's lookbook: the old road's crag).
-            let t = y / 3.0
-            let stepped = (floor(t) + smoothstep(0.6, 1.0, fract(t))) * 3.0
-            y = mix(y, stepped, 0.35 * face)
-        }
         // Past the edge, the land falls to the valley, whose floor rolls: first a cliff of rock
         // (about a third of the fall, over its first 9 m, taller and lower along the edge), which
         // the stream falls over at the lip; then the rest of the way down, gently.
@@ -168,20 +228,42 @@ impl Ground {
             y -= cliff + (95.0 - scarp) * fall
             y += fall * 14.0 * (fbm2(p * 0.004, 4) - 0.5)
         }
-        // The valley's far side: soft hills.
+        // Rock's own relief (`rock_relief`) on the map's steep faces (the crags' cliffs, the
+        // ravine's walls), the plateau's scarp (once it's fallen, so its beds cut across
+        // it), and the crags' tops and talus (playing spike 17,
+        // the crag was a mound; pass 1, a dome).
+        let scarp = smoothstep(-1.0, 1.5, past) * (1.0 - smoothstep(8.0, 12.0, past))
+        let face = max(shaped * self.land.faces(p), scarp)
+        // (Not on a ramp's scree, `crag_bare`'s 0.75: its boulders would bar the way up.)
+        let bare = shaped * smoothstep(0.76, 0.9, self.land.crag_rock(p)) * (1.0 - face)
+        if face > 0.0 || bare > 0.0 {
+            y = rock_relief(p, y, face, bare)
+        }
+        // The valley's far side: soft hills, the tallest with crests.
         let d = length(p - STAND)
         if d > 1100.0 && past > 0.0 {
             let hills = fbm2(p * 0.0011 + vec2(7.0, 2.0), 5)
-            y += smoothstep(1100.0, 3200.0, d) * (40.0 + 380.0 * smoothstep(0.3, 0.8, hills))
+            let crests = 140.0 *
+                smoothstep(0.5, 0.8, hills) *
+                ridged2(p * 0.0024 + vec2(2.0, 5.0), 4)
+            y += smoothstep(1100.0, 3200.0, d) *
+                (40.0 + 380.0 * smoothstep(0.3, 0.8, hills) + crests)
         }
-        // The far mountain, across the valley: one peak, and a shoulder.
+        // The far mountain, across the valley: one peak, and a shoulder; spurs running down from
+        // the peak, sharp-crested with gullies between (ridged noise round the peak), and its
+        // faces broken by smaller crests (a smooth bell read as a dune: pass 1).
         let m = p - vec2(-3300.0, 7600.0)
         let peak = exp(-dot(m, m) / 5.0e6)
         let m2 = p - vec2(-1800.0, 7000.0)
         let shoulder = exp(-dot(m2, m2) / 3.0e6)
         let mountain = peak + 0.55 * shoulder
         if mountain > 1.0e-3 {
-            let rise = mountain * (900.0 + 500.0 * ridged2(p * 0.0012 + vec2(3.1, 7.7), 5))
+            // Round the peak (its direction, on a circle in the noise's plane: no seam) and down
+            // from it.
+            let out = length(m)
+            let spurs = ridged2(m / max(out, 1.0) * 3.2 + vec2(out * 0.0009, 3.1 - out * 0.0005), 4)
+            let crests = ridged2(p * 0.0021 + vec2(-5.3, 1.9), 4)
+            let rise = mountain * (750.0 + 650.0 * spurs * spurs + 300.0 * crests)
             y += rise * smoothstep(1.0e-3, 2.0e-2, mountain)
         }
         y
@@ -219,7 +301,11 @@ impl Ground {
         let w = length(p - vec2(560.0, -470.0)) + 8.0 * noise2(p * 0.09)
         bald = max(bald, 0.75 * (1.0 - smoothstep(26.0, 40.0, w)))
         let steep = smoothstep(0.82, 0.62, n.y)
-        max(bald, steep)
+        // The plateau's scarp: its cliff, and the talus fallen from it at its foot, stony,
+        // thinning out down the slope (grass to the cliff's foot read as a lawn: pass 1).
+        let past = past_edge(p) + 4.0 * (noise2(p * 0.08) - 0.5)
+        let talus = 0.85 * smoothstep(-0.5, 1.5, past) * (1.0 - smoothstep(12.0, 26.0, past))
+        max(max(bald, steep), talus)
     }
 }
 
@@ -245,8 +331,9 @@ impl Terrain for Ground {
     }
 
     fn steepest(self) -> f32 {
-        // The valley's fall, about 95 m over 55, and the crags' faces with their ledges' risers.
-        4.5
+        // The valley's fall, about 95 m over 55, and the crags' cliffs with their ledges' risers
+        // and joints.
+        8.0
     }
 }
 
@@ -280,11 +367,21 @@ impl Ground {
         if rock > 0.0 {
             a = mix(a, rock_albedo(at, n, w) * (stone / 0.22), vec3(rock))
         }
-        // Rock on the mountain's steep slopes, snow high on it.
-        let steep = smoothstep(0.7, 0.5, n.y) * smoothstep(500.0, 800.0, at.y)
-        a = mix(a, vec3(0.22, 0.21, 0.21), vec3(steep))
-        let snow = smoothstep(820.0, 900.0, at.y + 60.0 * noise2_seen(xz * 0.01, w * 0.01)) *
-            smoothstep(0.5, 0.7, n.y)
+        // The hills and the mountain past the valley, in belts with clear edges (a far slope all
+        // one grey-green had no material boundaries: pass 1): the woods below the tree line; above
+        // it, high pasture; rock on the steep, scree fanned under it, snow high on what's not
+        // steep. Each edge broken by a broad noise, not blurred.
+        let high = at.y + 70.0 * (fbm2_seen(xz * 0.004 + vec2(2.0, 8.0), 3, w * 0.004) - 0.5)
+        let alpine = smoothstep(330.0, 360.0, high) * down
+        a = mix(a, mix(vec3(0.15, 0.16, 0.06), vec3(0.20, 0.18, 0.09), vec3(patches)), vec3(alpine))
+        let lean = n.y + 0.1 * (noise2_seen(xz * 0.012, w * 0.012) - 0.5)
+        let up = smoothstep(180.0, 240.0, high) * down
+        let scree = smoothstep(0.86, 0.82, lean) * up
+        a = mix(a, vec3(0.25, 0.23, 0.2), vec3(0.8 * scree))
+        let steep = smoothstep(0.76, 0.72, lean) * up
+        a = mix(a, vec3(0.2, 0.19, 0.19) * (0.8 + 0.4 * patches), vec3(steep))
+        let snow = smoothstep(940.0, 960.0, high + 40.0 * noise2_seen(xz * 0.02, w * 0.02)) *
+            smoothstep(0.58, 0.64, n.y)
         a = mix(a, vec3(0.85, 0.88, 0.92), vec3(snow))
         // The mere's bed: mud, no grass under its water.
         let bed = smoothstep(MERE.w - 0.02, MERE.w - 0.12, at.y) *
@@ -493,39 +590,58 @@ fn valley_land(xz: vec2, y: f32, w: f32) -> vec3 {
 }
 
 /// Rock's colour at `at` (its normal `n`), as a sample `w` metres across sees it (#54 §9:
-/// the crag's faces, the ravine's walls, the plateau's lip; playing spike 17 the crag was a
-/// smooth mound): grey stone, warmer and cooler in broad patches; its beds, bands a metre or so
-/// apart along its height, the softer ones darker; cracks across them; pale lichen where it faces
-/// the sky, and moss in its hollows and on its ledges. Each detail finer than the sample fades to
-/// its share, so a far texel of the clipmap doesn't alias. Cooked into the clipmap: nothing
-/// here runs per pixel per frame (AC12).
+/// the crag's cliffs, the ravine's walls, the plateau's lip): grey stone, warmer and cooler in
+/// broad patches; each bed its own colour (`BED`), a dark seam where it meets the next; dark
+/// joints at its blocks' edges (`joints`, as the relief's), straight and few, not a noise's maze
+/// of cracks; dark streaks where water runs down a steep face; lichen in broad faint crusts where
+/// it faces the sky (bold round spots read as a leopard's: pass 1); moss on its ledges and in its
+/// joints. Each detail finer than the sample fades to its share, so a far texel of the clipmap
+/// doesn't alias. Cooked into the clipmap: nothing here runs per pixel per frame (AC12).
 pub fn rock_albedo(at: vec3, n: vec3, w: f32) -> vec3 {
     let xz = at.xz
     let tone = fbm2_seen(xz * 0.05 + vec2(4.0, -2.0), 3, w * 0.05)
     var c = mix(vec3(0.15, 0.145, 0.135), vec3(0.25, 0.235, 0.21), vec3(tone))
-    c = mix(c, c * vec3(0.92, 0.96, 1.04), vec3(fbm2_seen(xz * 0.13, 2, w * 0.13)))
-    // The beds: along the height, bent a little by the rock's own lie.
-    let lie = at.y + 1.6 * (fbm2_seen(xz * 0.07 + vec2(9.0, 1.0), 2, w * 0.07) - 0.5)
-    let bed = 1.15
-    let f = fract(lie / bed)
-    let soft = smoothstep(0.0, 0.18, f) * smoothstep(0.42, 0.24, f)
-    let beds = mix(soft, 0.17, smoothstep(0.25 * bed, 0.75 * bed, w))
-    c *= 1.0 - 0.38 * beds
-    // Cracks: thin dark lines where the noise crosses its middle.
-    let crack = 1.0 - abs(engine::noise::noise2(xz * 0.9 + vec2(at.y * 0.6, 0.0)) - 0.5) * 2.0
-    let cracks = mix(smoothstep(0.9, 0.97, crack), 0.06, smoothstep(0.3, 1.0, w))
-    c *= 1.0 - 0.45 * cracks
+    // The beds: each its own (cooler or warmer, lighter or darker), and a dark seam under each
+    // one's lip, where the ledge above it overhangs (the relief's ledges sit at a bed's bottom).
+    let lay = (at.y + dot(xz, BED_DIP)) / BED
+    let bed = i32(floor(lay))
+    let own = mix(
+        vec3(0.93, 0.97, 1.04),
+        vec3(1.07, 1.0, 0.9),
+        vec3(engine::noise::hash2(bed, 17)),
+    ) *
+        (0.86 + 0.28 * engine::noise::hash2(bed, 5))
+    c *= mix(own, vec3(1.0), vec3(smoothstep(0.5 * BED, 2.0 * BED, w)))
+    // Every third bed thicker and its own, as the relief's: these read from far off.
+    let thick = i32(floor(lay / 3.0))
+    let band = mix(
+        vec3(0.9, 0.95, 1.03),
+        vec3(1.1, 1.02, 0.9),
+        vec3(engine::noise::hash2(thick, 23)),
+    ) *
+        (0.82 + 0.36 * engine::noise::hash2(thick, 29))
+    c *= mix(band, vec3(1.0), vec3(smoothstep(1.5 * BED, 6.0 * BED, w)))
+    let f = fract(lay)
+    let seam = smoothstep(0.8, 0.9, f) * smoothstep(1.0, 0.95, f)
+    c *= 1.0 - 0.35 * mix(seam, 0.06, smoothstep(0.2, 1.2, w))
+    // The joints: the big blocks' edges, and the small ones' on tops and talus.
+    let (_, joint) = joints(xz, 5.5)
+    let (_, small) = joints(xz + vec2(31.0, -17.0), 3.2)
+    let line = max(1.0 - smoothstep(0.06, 0.3, joint), 0.7 * (1.0 - smoothstep(0.04, 0.16, small)))
+    c *= 1.0 - 0.6 * mix(line, 0.05, smoothstep(0.15, 0.8, w))
     // Where water runs down a steep face: dark streaks, long down it and thin across (the
     // ravine's walls read as plaster without them).
     let steep = 1.0 - smoothstep(0.5, 0.85, n.y)
     let across = xz.x * 0.8 + xz.y * 1.1
     let runs = noise2_seen(vec2(across * 1.1, at.y * 0.07), w * 1.1)
-    c *= 1.0 - 0.4 * smoothstep(0.55, 0.75, runs) * steep
-    // Lichen where it faces the sky, in spots; moss in its hollows and on what's near level.
-    let spots = smoothstep(0.6, 0.72, fbm2_seen(xz * 0.8 + vec2(-3.0, 5.0), 2, w * 0.8))
-    let lichen = spots * smoothstep(0.3, 0.8, n.y)
-    c = mix(c, vec3(0.42, 0.42, 0.33), vec3(0.6 * lichen))
+    c *= 1.0 - 0.35 * smoothstep(0.55, 0.75, runs) * steep
+    // Lichen in broad crusts where it faces the sky; moss on its ledges and in its joints, where
+    // water and grit gather.
+    let crust = fbm2_seen(xz * 0.17 + vec2(-3.0, 5.0), 3, w * 0.17)
+    let lichen = smoothstep(0.5, 0.78, crust) * smoothstep(0.35, 0.85, n.y)
+    c = mix(c, vec3(0.38, 0.38, 0.30), vec3(0.4 * lichen))
     let hollow = fbm2_seen(xz * 0.35 + vec2(12.0, 3.0), 3, w * 0.35)
-    let moss = smoothstep(0.55, 0.75, hollow + 0.3 * smoothstep(0.75, 0.95, n.y))
-    mix(c, vec3(0.06, 0.09, 0.03), vec3(0.65 * moss))
+    let ledge = smoothstep(0.8, 0.96, n.y) * (1.0 - smoothstep(0.0, 0.5, steep))
+    let moss = smoothstep(0.6, 0.85, 0.7 * hollow + 0.15 * ledge + 0.3 * line)
+    mix(c, vec3(0.06, 0.09, 0.03), vec3(0.6 * moss))
 }
