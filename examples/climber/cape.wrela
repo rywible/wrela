@@ -1,0 +1,370 @@
+// The cape (#30): the climber is a cape all the way round, to the ground, over a head and
+// shoulders that nothing shows but the mask. The cape is cloth, simulated: a grid of points,
+// `AROUND` round and `DOWN` from the collar to the hem, joined by links that keep their lengths
+// (position-based dynamics, Müller et al. 2007), each point held within its length down the cloth
+// from the collar (long-range attachments, Kim et al. 2012: the cloth can't stretch, however fast
+// the body moves). The collar is pinned to the body; the cloth falls round the head, the
+// shoulders and a core up the middle (so it hangs round a body that isn't there), drags on the
+// ground, and trails in the air.
+//
+// It's drawn, not simulated by the fight: the frames step it from the fight's snapshots, at a
+// fixed step of its own, so the fight's state and its replays don't carry it.
+//
+//      collar (pinned) ─── row 0       ○ head
+//      shoulders       ─── row 1     ══╪══ shoulders
+//          ...                         │  core
+//      hem (drags)     ─── row DOWN-1 ─┴─ ground
+
+use body::{HEAD, HEAD_RADIUS, HEM_RADIUS, SHOULDERS, SHOULDER_RADIUS, SHOULDER_Y}
+use moves::Form
+use std::io::print
+use std::math::TAU
+use std::transform::{rotate_x, rotate_y, rotate_z, translate}
+
+/// How many points round the cape, and down it from the collar to the hem.
+pub const AROUND: u32 = 24
+pub const DOWN: u32 = 14
+pub const POINTS: u32 = AROUND * DOWN
+
+/// The point `i` round (0 ahead, toward the climber's left) and `j` down (0 the collar).
+pub fn point(i: u32, j: u32) -> u32 {
+    j * AROUND + (i % AROUND)
+}
+
+/// Where the body's form turns it about: half way up.
+const PIVOT: f32 = 0.9
+
+/// The body's frame: standing at `at`, facing `heading`, in `form` (sunk, tipped about its middle,
+/// its shoulders turned, leaned).
+pub fn body_frame(at: vec3, heading: f32, form: Form) -> mat4 {
+    translate(at + vec3(0.0, form.lift + PIVOT, 0.0)) *
+        rotate_y(heading + form.tilt.y) *
+        rotate_x(form.tilt.x) *
+        rotate_z(-form.tilt.z) *
+        translate(vec3(0.0, -PIVOT, 0.0))
+}
+
+/// The collar, round the neck, a little over the shoulders.
+const COLLAR = vec3(0.12, 1.56, 0.11)
+
+/// The cape at rest, in the body's space: the collar round the neck; then from the shoulders'
+/// width down to the hem's, to just over the ground (its weight brings the hem down onto it).
+pub fn rest(i: u32, j: u32) -> vec3 {
+    let a = TAU * f32(i) / f32(AROUND)
+    if j == 0 {
+        return vec3(COLLAR.x * sin(a), COLLAR.y, COLLAR.z * cos(a))
+    }
+    let t = f32(j - 1) / f32(DOWN - 2)
+    let rx = mix(SHOULDERS + SHOULDER_RADIUS + 0.03, HEM_RADIUS, t)
+    let rz = mix(0.22, HEM_RADIUS - 0.02, t)
+    vec3(rx * sin(a), mix(SHOULDER_Y + 0.02, 0.01, t), rz * cos(a))
+}
+
+/// A link between two points, its length at rest, and how stiff it is (0 to 1, a share of the
+/// error it takes back each pass).
+pub struct Link: Copy {
+    pub a: u32,
+    pub b: u32,
+    pub length: f32,
+    pub stiff: f32,
+}
+
+/// The link from point `a` (round, down) to `b`.
+fn link(a: (u32, u32), b: (u32, u32), stiff: f32) -> Link {
+    let (pa, pb) = (rest(a.0, a.1), rest(b.0, b.1))
+    Link { a: point(a.0, a.1), b: point(b.0, b.1), length: length(pa - pb), stiff }
+}
+
+/// The cape's links: round and down (stiff), across each cell (a little less, so it shears), and
+/// to the point two along, round and down (soft: it bends).
+pub fn links() -> Vec<Link> {
+    var out: Vec<Link> = Vec::new()
+    for j in 0..DOWN {
+        for i in 0..AROUND {
+            out.push(link((i, j), (i + 1, j), 1.0))
+            out.push(link((i, j), (i + 2, j), 0.3))
+            if j + 1 < DOWN {
+                out.push(link((i, j), (i, j + 1), 1.0))
+                out.push(link((i, j), (i + 1, j + 1), 0.7))
+                out.push(link((i + 1, j), (i, j + 1), 0.7))
+            }
+            if j + 2 < DOWN {
+                out.push(link((i, j), (i, j + 2), 0.3))
+            }
+        }
+    }
+    out
+}
+
+/// How far each point may be from its column's collar point: its length down the cloth.
+pub fn tethers() -> Vec<f32> {
+    var out: Vec<f32> = Vec::new()
+    for j in 0..DOWN {
+        for i in 0..AROUND {
+            var d = 0.0
+            for k in 0..j {
+                d += length(rest(i, k + 1) - rest(i, k))
+            }
+            out.push(d)
+        }
+    }
+    out
+}
+
+pub const LINKS: Vec<Link> = links()
+pub const TETHERS: Vec<f32> = tethers()
+
+/// The cape: each point now and a step ago, the body's frame it was last stepped in, and the
+/// time not yet stepped (s).
+pub struct Cape {
+    pub at: Vec<vec3>,
+    pub was: Vec<vec3>,
+    pub frame: mat4,
+    pub left: f32,
+}
+
+/// The step the cape is simulated at (s), the most steps it takes for one frame, and how many
+/// passes over its links each step makes.
+pub const STEP: f32 = 1.0 / 120.0
+const MOST_STEPS: u32 = 4
+const PASSES: u32 = 8
+
+/// The air: how fast a point's speed through the air dies away (1/s); and what's left of a
+/// point's speed along the ground each step it touches it.
+const DRAG: f32 = 0.9
+const SLIDE: f32 = 0.35
+
+/// The cape hanging at rest in `frame`.
+pub fn hang(frame: mat4) -> Cape {
+    var at: Vec<vec3> = Vec::new()
+    for j in 0..DOWN {
+        for i in 0..AROUND {
+            at.push((frame * vec4(rest(i, j), 1.0)).xyz)
+        }
+    }
+    Cape { was: at.clone(), at, frame, left: 0.0 }
+}
+
+/// What the cape falls round, in the world: the head, the shoulders' line, the core up the
+/// middle, each a capsule (two ends and a radius; the head's ends are one point).
+fn solids(frame: mat4) -> [vec4; 6] {
+    let w = |p: vec3| (frame * vec4(p, 1.0)).xyz
+    let left = vec3(SHOULDERS, SHOULDER_Y, 0.0)
+    let right = vec3(-SHOULDERS, SHOULDER_Y, 0.0)
+    [
+        vec4(w(HEAD), HEAD_RADIUS + 0.02),
+        vec4(w(HEAD), HEAD_RADIUS + 0.02),
+        vec4(w(left), SHOULDER_RADIUS + 0.02),
+        vec4(w(right), SHOULDER_RADIUS + 0.02),
+        vec4(w(vec3(0.0, 1.3, 0.0)), 0.17),
+        vec4(w(vec3(0.0, 0.25, 0.0)), 0.17),
+    ]
+}
+
+/// `p` pushed out of the capsule from `a` to `b` (each end's radius in `w`; the first's used).
+fn out_of(p: vec3, a: vec4, b: vec4) -> vec3 {
+    let ab = b.xyz - a.xyz
+    let l2 = dot(ab, ab)
+    let s = if l2 > 1.0e-9 { clamp(dot(p - a.xyz, ab) / l2, 0.0, 1.0) } else { 0.0 }
+    let c = a.xyz + ab * s
+    let d = p - c
+    let l = length(d)
+    if l >= a.w || l < 1.0e-6 {
+        return p
+    }
+    c + d * (a.w / l)
+}
+
+impl Cape {
+    /// The whole cape moved by `by`, as it is (a blink takes it along).
+    pub fn carry(mut self, by: vec3) {
+        for k in 0..POINTS {
+            self.at[k] = self.at[k] + by
+            self.was[k] = self.was[k] + by
+        }
+        self.frame = translate(by) * self.frame
+    }
+
+    /// The cape `dt` seconds on, the body now in `frame`: the collar follows the body over the
+    /// steps (eased from the frame it was last in), the rest falls, trails in `wind` (m/s), is
+    /// held by its links and tethers, kept out of the body and above `ground` (a height), drawn in
+    /// toward the middle by `gather` (0 to 1).
+    pub fn step(mut self, frame: mat4, gather: f32, ground: f32, wind: vec3, dt: f32) {
+        self.left = min(self.left + dt, STEP * f32(MOST_STEPS))
+        let steps = u32(self.left / STEP)
+        self.left -= f32(steps) * STEP
+        let from = self.frame
+        for s in 0..steps {
+            let u = f32(s + 1) / f32(steps)
+            // The frame between the last and this, column by column (both are rigid, and near).
+            let f = mat4(
+                mix(from[0], frame[0], vec4(u)),
+                mix(from[1], frame[1], vec4(u)),
+                mix(from[2], frame[2], vec4(u)),
+                mix(from[3], frame[3], vec4(u)),
+            )
+            self.substep(f, gather, ground, wind)
+        }
+        if steps > 0 {
+            self.frame = frame
+        }
+    }
+
+    fn substep(mut self, frame: mat4, gather: f32, ground: f32, wind: vec3) {
+        let h = STEP
+        let keep = exp(-DRAG * h)
+        let axis = (frame * vec4(0.0, 0.0, 0.0, 1.0)).xyz
+        let up = normalize((frame * vec4(0.0, 1.0, 0.0, 0.0)).xyz)
+        for k in AROUND..POINTS {
+            let p = self.at[k]
+            let v = (p - self.was[k]) / h
+            // Gravity, and the air: its speed eases toward the wind's.
+            var a = vec3(0.0, -9.8, 0.0)
+            // Drawn in: toward the body's middle, across it.
+            let off = p - axis
+            let across = off - up * dot(off, up)
+            a = a - across * (gather * 60.0)
+            let v2 = wind + (v - wind) * keep + a * h
+            self.was[k] = p
+            self.at[k] = p + v2 * h
+        }
+        for i in 0..AROUND {
+            let k = point(i, 0)
+            self.was[k] = self.at[k]
+            self.at[k] = (frame * vec4(rest(i, 0), 1.0)).xyz
+        }
+        let solid = solids(frame)
+        for _ in 0..PASSES {
+            for l in LINKS {
+                let (pa, pb) = (self.at[l.a], self.at[l.b])
+                let d = pb - pa
+                let len = length(d)
+                if len < 1.0e-6 {
+                    continue
+                }
+                let fix = d * ((len - l.length) / len * 0.5 * l.stiff)
+                // The collar is pinned: the other end takes the whole fix.
+                if l.a < AROUND {
+                    self.at[l.b] = pb - fix * 2.0
+                } else if l.b < AROUND {
+                    self.at[l.a] = pa + fix * 2.0
+                } else {
+                    self.at[l.a] = pa + fix
+                    self.at[l.b] = pb - fix
+                }
+            }
+            for k in AROUND..POINTS {
+                var p = self.at[k]
+                // Tethered to its column's collar point.
+                let top = self.at[k % AROUND]
+                let t = p - top
+                let tl = length(t)
+                if tl > TETHERS[k] {
+                    p = top + t * (TETHERS[k] / tl)
+                }
+                for c in 0..3 {
+                    p = out_of(p, solid[2 * c], solid[2 * c + 1])
+                }
+                if p.y < ground {
+                    p.y = ground
+                }
+                self.at[k] = p
+            }
+        }
+        // On the ground, a point slides only a little.
+        for k in AROUND..POINTS {
+            if self.at[k].y <= ground + 1.0e-4 {
+                let w = self.was[k]
+                let p = self.at[k]
+                self.was[k] = vec3(mix(p.x, w.x, SLIDE), w.y, mix(p.z, w.z, SLIDE))
+            }
+        }
+    }
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+/// The most a link of `stiff` 1 has stretched, as a share of its length (cloth buckles where it's
+/// pushed together: only stretch counts).
+fn worst_stretch(c: Cape) -> f32 {
+    var worst = 0.0
+    for l in LINKS {
+        if l.stiff >= 1.0 {
+            worst = max(worst, length(c.at[l.a] - c.at[l.b]) / l.length - 1.0)
+        }
+    }
+    worst
+}
+
+/// Hung still for two seconds, the cape settles: its links within 3% of their lengths, its hem on
+/// the ground, its collar on the body, and no point inside the head, the shoulders or the core.
+@test
+fn hung_still_it_settles_round_the_body() {
+    let frame = body_frame(vec3(0.0), 0.0, Form {})
+    var c = hang(frame)
+    for _ in 0..120 {
+        c.step(frame, gather: 0.0, ground: 0.0, wind: vec3(0.0), dt: 1.0 / 60.0)
+    }
+    let s = worst_stretch(c)
+    var low = 10.0
+    var high_hem = 0.0
+    for i in 0..AROUND {
+        let h = c.at[point(i, DOWN - 1)].y
+        low = min(low, h)
+        high_hem = max(high_hem, h)
+    }
+    var inside = 0.0
+    let solid = solids(frame)
+    for k in AROUND..POINTS {
+        for s2 in 0..3 {
+            inside = max(
+                inside,
+                length(out_of(c.at[k], solid[2 * s2], solid[2 * s2 + 1]) - c.at[k]),
+            )
+        }
+    }
+    print(f"stretch {s}, hem {low} to {high_hem} m up, deepest inside {inside} m")
+    assert(s < 0.03, f"a link is {s} off its length")
+    assert(high_hem < 0.02, f"the hem hangs {high_hem} m over the ground")
+    assert(inside < 0.005, f"a point is {inside} m inside the body")
+}
+
+/// Gliding ahead at a run, the cape trails: its hem behind the body's middle; and it doesn't
+/// stretch (its tethers hold it), however fast it starts.
+@test
+fn gliding_it_trails_and_doesnt_stretch() {
+    var at = vec3(0.0)
+    var c = hang(body_frame(at, 0.0, Form {}))
+    for _ in 0..60 {
+        at.z += 4.2 / 60.0
+        c.step(
+            body_frame(at, 0.0, Form { tilt: vec3(0.1, 0.0, 0.0) }),
+            gather: 0.0,
+            ground: 0.0,
+            wind: vec3(0.0),
+            dt: 1.0 / 60.0,
+        )
+    }
+    var hem = 0.0
+    for i in 0..AROUND {
+        hem += c.at[point(i, DOWN - 1)].z - at.z
+    }
+    hem = hem / f32(AROUND)
+    let s = worst_stretch(c)
+    print(f"the hem's middle {hem} m ahead of the body; stretch {s}")
+    assert(hem < -0.1, f"the hem is {hem} m ahead of the body")
+    assert(s < 0.1, f"a link is {s} off its length")
+}
+
+/// A blink carries the cape as it is: each point moved by the same.
+@test
+fn a_blink_carries_the_cape_as_it_is() {
+    let frame = body_frame(vec3(0.0), 0.0, Form {})
+    var c = hang(frame)
+    let before = c.at[point(i: 5, j: 9)]
+    c.carry(vec3(3.6, 0.0, 0.0))
+    assert(
+        length(c.at[point(i: 5, j: 9)] - before - vec3(3.6, 0.0, 0.0)) < 1.0e-6,
+        "a point moved off",
+    )
+}
