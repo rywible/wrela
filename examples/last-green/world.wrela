@@ -6,7 +6,7 @@
 
 use engine::footing::{BODY, stands}
 use engine::place::{Place, Water}
-use engine::player::{NONE, Player, control, spawn, step}
+use engine::player::{NONE, Player, control, spawn, step, turn_to}
 use behaviour::{Fawn, STEPPED_WITHIN, presence, spawn_fawn, step_fawn}
 use engine::run::{Asks, TickInput}
 use engine::senses::{Occluders, clear_over}
@@ -102,6 +102,11 @@ const HELD: u32 = 120
 const AROUND: u32 = 180
 const AROUND_TURN: f32 = 1.31
 const GIVE_UP: u32 = 480
+
+/// How far the walk's heading turns in a tick at most (radians; 4.8 a second): the camera behind
+/// it turns with it, not in one frame, and at a run its circle (1 m round) still comes within
+/// `REACHED` of a point.
+const TURN: f32 = 0.08
 
 /// The egg's road, a point every 40 m (`wildwood::road_points`): Y walks it.
 pub const EGG_ROAD: Vec<vec2> = wildwood::road_points(40.0)
@@ -307,7 +312,7 @@ fn walk_the_tour(w: mut World) {
         w.tour.around -= 1
         yaw += w.tour.side * AROUND_TURN
     }
-    w.player.controls.yaw = yaw
+    w.player.controls.yaw = turn_to(from: w.player.controls.yaw, to: yaw, most: TURN)
     w.player.controls.forward = true
     w.player.controls.run_held = true
 }

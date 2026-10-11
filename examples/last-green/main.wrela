@@ -39,6 +39,7 @@ use climber::figure::{Figure, figure}
 use climber::moves::REST
 use history::{BAKED, OBSTACLES, tiles_hi, tiles_lo}
 use provenance::NearTile
+use streaming::{near_tile_radius, tile_distance, tile_radius}
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
     Address, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer, GpuSpan,
@@ -256,7 +257,7 @@ fn cook_tile(input: take TileInput) -> Cooked {
     Cooked {
         tile: t,
         placed: trees::placed(d.trees, height_at),
-        trees: d.trees.clone(),
+        trees: take d.trees,
         fields,
         far,
         far_coarse,
@@ -733,13 +734,6 @@ fn recentre(s: mut Floor, to: vec2i) {
     print(f"the render origin moved to tile {to.x}, {to.y}")
 }
 
-/// How far tile `t` is from `p` (m): to its nearest point.
-fn tile_distance(t: vec2i, p: vec2) -> f32 {
-    let lo = vec2(t) * TILE
-    let q = clamp(p, lo, lo + vec2(TILE))
-    length(p - q)
-}
-
 /// Whether a frame from `eye` is full: the wood cooked, the built things realized, every tile
 /// within 120 m placed, the near shadows drawn, the probes baked.
 fn playable(s: Floor, eye: vec2) -> bool {
@@ -912,8 +906,8 @@ fn stream(s: mut Floor, eye: vec2) {
                 s.far_layer.push(
                     FarTile {
                         tile: t,
-                        fine: cooked.far.clone(),
-                        coarse: cooked.far_coarse.clone(),
+                        fine: take cooked.far,
+                        coarse: take cooked.far_coarse,
                         loaded: NO_LAYER,
                     },
                 )
@@ -939,7 +933,7 @@ fn stream(s: mut Floor, eye: vec2) {
                     tile: t,
                     bytes: take k.bytes,
                     trees: take cooked.trees,
-                    fields: cooked.fields.clone(),
+                    fields: take cooked.fields,
                     with: k.with,
                 },
             )
@@ -979,8 +973,10 @@ fn stream(s: mut Floor, eye: vec2) {
     }
     // The nearest wanted tile not yet known: a baked one fetched, a wild one grown.
     let at = engine::place::tile_of(eye)
-    let r = i32(ceil(WILD_FAR / TILE)) + 1
     if s.fetching.len() + near_cooking(s) < IN_FLIGHT {
+        // A tile farther away on either axis cannot be within WANT of the eye. Keep the
+        // same row order, with the outer rows used only by the far layer left out.
+        let r = near_tile_radius(eye, WANT, WILD_FAR)
         var best = vec2i(0)
         var near = 1.0e9
         for j in (at.y - r)..(at.y + r + 1) {
@@ -1026,6 +1022,7 @@ fn stream(s: mut Floor, eye: vec2) {
     }
     // The wildwood's far layer, a tile at a time, out to `WILD_FAR`; dropped past it.
     if far_cooking(s) < FAR_IN_FLIGHT {
+        let r = tile_radius(WILD_FAR)
         var best = vec2i(0)
         var near = 1.0e9
         for j in (at.y - r)..(at.y + r + 1) {

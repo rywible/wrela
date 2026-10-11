@@ -19,18 +19,22 @@
 // so both hosts give the same samples. Gains move across a quantum, never in a step, so a cue
 // that moves a source doesn't click.
 
-use std::audio::{QUANTUM, RingReader, RingWriter, ring}
+use std::audio::{QUANTUM, RingReader, RingWriter, SAMPLE_RATE, decay_rate, ring}
 use std::math::{PI, TAU, cos, exp, sin, tan}
 
 /// The audio thread's rate.
-const RATE: f32 = 48000.0
+const RATE: f32 = f32(SAMPLE_RATE)
 
-/// A palette's surfaces, water kinds and brushes; the steps that ring at once; the water sources
-/// heard at once; the cues the ring holds.
+/// A palette's surfaces, water kinds and brushes, its impacts and whooshes; the steps that ring
+/// at once, and the impacts and whooshes; the water sources heard at once; the cues the ring
+/// holds.
 pub const SURFACES: u32 = 8
 pub const KINDS: u32 = 4
 pub const BRUSHES: u32 = 2
+pub const IMPACTS: u32 = 4
+pub const WHOOSHES: u32 = 2
 pub const STEPS: u32 = 4
+pub const STRIKES: u32 = 4
 pub const WATERS: u32 = 4
 pub const CUES: u32 = 64
 
@@ -47,6 +51,17 @@ pub struct Surface: Copy {
     pub grit_q: f32 = 0.7,
     pub grit_t60: f32 = 0.12,
     pub grit: f32 = 0.0,
+}
+
+/// How air moved past fast sounds (a blade's swing, a body gone at once): noise in a band
+/// (`hz`, `q`) that swells in over `attack` seconds and falls 60 dB in `t60`, at `level`. A
+/// whoosh's amount (0 to 1) raises its band up to half an octave and its level with it.
+pub struct Swish: Copy {
+    pub hz: f32 = 900.0,
+    pub q: f32 = 0.8,
+    pub attack: f32 = 0.08,
+    pub t60: f32 = 0.35,
+    pub level: f32 = 0.0,
 }
 
 /// How water of a kind sounds from close by: noise in a band (`lo_hz` to `hi_hz`) at a level,
@@ -70,12 +85,15 @@ pub struct Breath: Copy {
 }
 
 /// A world's sounds: its surfaces' steps, its water kinds', its brushes' (what a body moving
-/// through something makes: grass and twigs, water round the legs), its wind's. A source is at
-/// its own level `near` metres away, quieter further off; `gain` is the whole mix's.
+/// through something makes: grass and twigs, water round the legs), its impacts' (a blow, a
+/// bite: a knock and grit, as a step's), its whooshes', its wind's. A source is at its own level
+/// `near` metres away, quieter further off; `gain` is the whole mix's.
 pub struct Palette: Copy {
-    pub surfaces: [Surface; 8],
+    pub surfaces: [Surface; SURFACES],
     pub waters: [Babble; 4],
     pub brushes: [Babble; 2],
+    pub impacts: [Surface; 4] = [Surface {}; 4],
+    pub whooshes: [Swish; 2] = [Swish {}; 2],
     pub wind: Breath,
     pub near: f32 = 2.0,
     pub gain: f32 = 1.0,
@@ -96,6 +114,12 @@ pub enum Cue: Copy {
     /// A body moving through something at `at`, `amount` loud (0 still, 1 pushing through):
     /// brush `brush` (below `BRUSHES`). It goes on until another cue changes it.
     Brush { brush: u32, at: vec3, amount: f32 },
+    /// An impact of kind `kind` (below `IMPACTS`) at `at`, `strength` hard (0 to 1), varied by
+    /// `seed` as a step is.
+    Impact { at: vec3, kind: u32, strength: f32, seed: u32 },
+    /// A whoosh of kind `kind` (below `WHOOSHES`) at `at`, `amount` fast (0 to 1), varied by
+    /// `seed`.
+    Whoosh { at: vec3, kind: u32, amount: f32, seed: u32 },
     /// Water source `slot` (below `WATERS`): kind `kind`, heard from its nearest point `at`,
     /// `flow` loud (0 silences it).
     Water { slot: u32, at: vec3, kind: u32, flow: f32 },
@@ -238,7 +262,7 @@ impl Placed {
 /// The decay per sample of a sound that falls 60 dB in `t60` seconds.
 @audio
 fn decay(t60: f32) -> f32 {
-    exp(-6.90775528 / (max(t60, 1e-3) * RATE))
+    exp(-decay_rate(max(t60, 1e-3)))
 }
 
 /// A step ringing: its knock (a tone, turned a sample at a time) and its grit (noise through a
@@ -255,8 +279,10 @@ struct Ringing: Copy {
     grit_svf: Svf,
     grit_level: f32,
     grit_decay: f32,
-    /// The swell: 1 at the strike, falling fast; the envelopes are (1 − swell) times theirs.
+    /// The swell: 1 at the strike, falling by `fall` a sample; the envelopes are (1 − swell)
+    /// times theirs.
     swell: f32,
+    fall: f32,
     out: Placed,
 }
 
@@ -274,6 +300,7 @@ fn ringing() -> Ringing {
         grit_level: 0.0,
         grit_decay: 0.0,
         swell: 0.0,
+        fall: SWELL,
         out: placed(),
     }
 }
@@ -300,6 +327,24 @@ impl Ringing {
         self.grit_level = s.grit * level
         self.grit_decay = decay(s.grit_t60)
         self.swell = 1.0
+        self.fall = SWELL
+    }
+
+    /// A whoosh: grit alone, its band raised and its level grown by `amount`, swelling in over
+    /// the swish's attack.
+    @audio
+    fn swish(mut self, w: Swish, at: vec3, amount: f32, seed: u32) {
+        var own = seeded(seed)
+        let pitch = (1.0 + 0.41 * amount) * (1.0 + 0.08 * own.next())
+        self.at = at
+        self.on = true
+        self.knock_re = 0.0
+        self.knock_im = 0.0
+        self.grit = band(w.hz * pitch, w.q)
+        self.grit_level = w.level * (0.4 + 0.6 * amount) * (1.0 + 0.15 * own.next())
+        self.grit_decay = decay(w.t60)
+        self.swell = 1.0
+        self.fall = exp(-1.0 / (max(w.attack, 1e-3) * RATE))
     }
 
     @audio
@@ -313,7 +358,7 @@ impl Ringing {
         let grit = self.grit_svf.pass(self.grit, noise.next()) * self.grit_level
         self.grit_level *= self.grit_decay
         let y = (1.0 - self.swell) * (re + grit)
-        self.swell *= SWELL
+        self.swell *= self.fall
         y
     }
 
@@ -385,6 +430,10 @@ pub struct Mixer {
     ears: Ears,
     steps: [Ringing; 4],
     next_step: u32,
+    /// The impacts' and whooshes' voices (a fight's: kept apart from the steps, so a step never
+    /// cuts a blow short).
+    strikes: [Ringing; 4],
+    next_strike: u32,
     gust: f32,
     toward: vec2,
     canopy: f32,
@@ -419,6 +468,8 @@ pub fn mixer(palette: Palette, seed: u32 = 1) -> (RingWriter<Cue>, Mixer) {
             ears: Ears { at: vec3(0.0), right: vec2(-1.0, 0.0) },
             steps: [ringing(); 4],
             next_step: 0,
+            strikes: [ringing(); 4],
+            next_strike: 0,
             gust: 0.0,
             toward: vec2(1.0, 0.0),
             canopy: 0.0,
@@ -444,6 +495,18 @@ impl Mixer {
                 let i = self.next_step
                 self.next_step = (i + 1) % STEPS
                 self.steps[i].strike(s, at, clamp(weight, 0.0, 1.0), seed)
+            },
+            Cue::Impact { at, kind, strength, seed } => {
+                let s = self.palette.impacts[min(kind, IMPACTS - 1)]
+                let i = self.next_strike
+                self.next_strike = (i + 1) % STRIKES
+                self.strikes[i].strike(s, at, clamp(strength, 0.0, 1.0), seed)
+            },
+            Cue::Whoosh { at, kind, amount, seed } => {
+                let w = self.palette.whooshes[min(kind, WHOOSHES - 1)]
+                let i = self.next_strike
+                self.next_strike = (i + 1) % STRIKES
+                self.strikes[i].swish(w, at, clamp(amount, 0.0, 1.0), seed)
             },
             Cue::Wind { gust, toward, leaves } => {
                 self.gust = max(gust, 0.0)
@@ -489,17 +552,10 @@ pub fn mix(m: mut Mixer, left: mut [f32], right: mut [f32]) {
     let p = m.palette
     let ears = m.ears
     for s in 0..STEPS {
-        if m.steps[s].on {
-            let at = m.steps[s].at
-            m.steps[s].out.place(ears, at, p.near, p.gain)
-            for i in 0..left.len() {
-                let y = m.steps[s].sample(mut m.noise)
-                m.steps[s].out.add(y, i, mut left, mut right)
-            }
-            if m.steps[s].quiet() {
-                m.steps[s].on = false
-            }
-        }
+        sound_ringing(mut m.steps[s], ears, p, mut m.noise, mut left, mut right)
+    }
+    for s in 0..STRIKES {
+        sound_ringing(mut m.strikes[s], ears, p, mut m.noise, mut left, mut right)
     }
     // The wind comes from upwind: to the side of the ears that faces it, a little.
     let from = -m.toward
@@ -525,6 +581,29 @@ pub fn mix(m: mut Mixer, left: mut [f32], right: mut [f32]) {
     for i in 0..left.len() {
         left[i] = clamp(left[i], -1.0, 1.0)
         right[i] = clamp(right[i], -1.0, 1.0)
+    }
+}
+
+/// A ringing voice's quantum (a step, an impact, a whoosh), into `left` and `right`: nothing
+/// once it has died away.
+@audio
+fn sound_ringing(
+    r: mut Ringing,
+    ears: Ears,
+    p: Palette,
+    noise: mut Noise,
+    left: mut [f32],
+    right: mut [f32],
+) {
+    if r.on {
+        r.out.place(ears, r.at, p.near, p.gain)
+        for i in 0..left.len() {
+            let y = r.sample(mut noise)
+            r.out.add(y, i, mut left, mut right)
+        }
+        if r.quiet() {
+            r.on = false
+        }
     }
 }
 
@@ -682,4 +761,42 @@ fn a_steps_seed_alone_sets_how_it_sounds() {
     let again = render(mut m, 20)
     assert(again == first())
     assert(other != first())
+}
+
+@test
+fn an_impact_rings_on_its_own_voice_and_dies_away() {
+    var p = test_palette()
+    p.impacts[1] = Surface { knock_hz: 70.0, knock: 0.3, grit_hz: 1500.0, grit: 0.3 }
+    let (c, mx) = mixer(p)
+    var cues = take c
+    var m = take mx
+    cues.push(Cue::Listen { at: vec3(0.0, 1.6, -3.0), forward: vec2(0.0, 1.0) })
+    // Four steps take every step voice; the blow still rings.
+    for k in 0..STEPS {
+        let _ = cues.push(Cue::Step { at: vec3(0.0), surface: 0, weight: 0.5, seed: k })
+    }
+    cues.push(Cue::Impact { at: vec3(0.0), kind: 1, strength: 1.0, seed: 1 })
+    let first = render(mut m, 20)
+    assert(m.strikes[0].on && first.x > 1e-4)
+    let _ = render(mut m, 400)
+    assert(!m.strikes[0].on)
+}
+
+@test
+fn a_whoosh_swells_then_falls() {
+    var p = test_palette()
+    p.whooshes[0] = Swish { hz: 900.0, attack: 0.1, t60: 0.4, level: 0.3 }
+    let (c, mx) = mixer(p)
+    var cues = take c
+    var m = take mx
+    cues.push(Cue::Listen { at: vec3(0.0, 1.6, -3.0), forward: vec2(0.0, 1.0) })
+    cues.push(Cue::Whoosh { at: vec3(0.0), kind: 0, amount: 1.0, seed: 2 })
+    // Its first 10 ms against 60 to 100 ms in, near the top of its swell; then 0.8 s on.
+    let start = render(mut m, 4)
+    let _ = render(mut m, 18)
+    let top = render(mut m, 15)
+    let _ = render(mut m, 260)
+    let late = render(mut m, 15)
+    assert(db(top.x / 15.0) - db(start.x / 4.0) > 6.0)
+    assert(db(top.x) - db(late.x) > 30.0)
 }

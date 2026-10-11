@@ -31,6 +31,54 @@ fn map_package(name: &str, main: &str) -> PathBuf {
     dir
 }
 
+/// The tighter near search visits exactly the same wanted tiles in the same order as the
+/// far search, including ties on boundaries and cameras on either side of the origin.
+#[test]
+fn the_near_tile_search_keeps_every_candidate_in_order() {
+    let tests = r#"
+use engine::place::{TILE, tile_of}
+use streaming::{near_tile_radius, tile_distance, tile_radius}
+
+fn candidates(eye: vec2, radius: i32, reach: f32) -> Vec<vec2i> {
+    let at = tile_of(eye)
+    var out: Vec<vec2i> = Vec::new()
+    for j in (at.y - radius)..(at.y + radius + 1) {
+        for i in (at.x - radius)..(at.x + radius + 1) {
+            let t = vec2i(i, j)
+            if tile_distance(t, eye) < reach { out.push(t) }
+        }
+    }
+    out
+}
+
+@test
+fn search_order() {
+    for cell in [-67108864, -8388608, -40, -1, 0, 1, 40, 8388608, 67108864] {
+        for x in [-0.001, 0.0, 128.0, 255.999] {
+            for z in [0.0, 128.0, 255.999] {
+                let eye = vec2(f32(cell) * TILE + x, -f32(cell) * TILE + z)
+                for reach in [-350.0, 0.0, 1.0, 255.999, 256.0, 256.001, 350.0, 512.0, 1200.0, bitcast_f32(0x7f7fffff)] {
+                    let near = candidates(eye, near_tile_radius(eye, reach, 900.0), reach)
+                    let far = candidates(eye, tile_radius(900.0), reach)
+                    assert(near.len() == far.len(), "a wanted tile was skipped")
+                    for i in 0..near.len() {
+                        assert(near[i] == far[i], "the nearest-tile tie order changed")
+                    }
+                }
+            }
+        }
+    }
+}
+"#;
+    let dir = super::engine_package("last-green/tile-search", "tile_search", tests);
+    std::fs::copy(
+        repo_root().join("examples/last-green/streaming.wrela"),
+        dir.join("streaming.wrela"),
+    )
+    .expect("the floor's tile search");
+    assert_eq!(super::tests_pass(&dir), 1);
+}
+
 /// AC1: the floor's map is wrela source written with the engine's types, and holds #44's
 /// anatomy: a gate, a town's site, 3–5 anchors, a Warden's arena, rest points, waystones, 25–35
 /// echoes' sites and views; its area is 3 km² within 10% (Q1); and the engine's own refusals
@@ -78,14 +126,14 @@ pub fn frame(time: f32, width: u32, height: u32) {}
 fn grown_from(name: &str, edit: &str) -> PathBuf {
     let main = format!(
         r#"
-use engine::grow::{{History, PREVIEW, simulate}}
+use engine::grow::{{History, PREVIEW, Start, simulate}}
 
 const GROWN: u32 = grown()
 
 fn grown() -> u32 {{
     var m = map::map()
     {edit}
-    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, map::LO, map::HI, stones::stones(m))
+    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, map::LO, map::HI, stones::stones(m), |land| Start::wild(land))
     h.trees.len()
 }}
 
@@ -385,7 +433,7 @@ fn previewed() -> Vec<(String, Vec<u8>)> {
     let lo = map::LO - vec2(64.0)
     let hi = map::HI + vec2(64.0)
     let st = stones::stones(m)
-    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st)
+    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st, |land| history::past(m, land))
     let o = obstacles_of(h.trees, species::habits(), h.streams, st, stones::walls(m), lo, hi)
     var e = Evidence::of(h)
     e.crowns = trees::drawn_crowns(e.trees)
@@ -457,7 +505,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
 #[ignore = "long: bakes the floor (minutes when the constants' cache is cold)"]
 fn the_floors_own_tests_pass() {
     let _ = floor();
-    assert_eq!(super::tests_pass(&repo_root().join("examples/last-green")), 20);
+    assert_eq!(super::tests_pass(&repo_root().join("examples/last-green")), 21);
 }
 
 /// The body of WGSL function `name` in `text` (to its closing brace at the line's start).
@@ -1181,7 +1229,7 @@ const SYSTEMS: [(&str, f64, &[&str]); 9] = [
         ],
     ),
     ("temporal AA", 1.0, &["temporal"]),
-    ("look", 2.0, &["look"]),
+    ("look", 2.0, &["look", "lines"]),
 ];
 
 /// Each system's time (ms) in each of `frames` (its labels' times summed), from a run's timings.
@@ -2031,7 +2079,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
     let hi = map::HI + vec2(64.0)
     let st = stones::stones(m)
     let began = now()
-    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st)
+    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, hi, st, |land| history::past(m, land))
     let grown = now()
     let o = obstacles_of(h.trees, species::habits(), h.streams, st, stones::walls(m), lo, hi)
     var e = Evidence::of(h)
