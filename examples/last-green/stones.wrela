@@ -12,6 +12,10 @@ use std::math::TAU
 pub const TOWER_RADIUS: f32 = 4.6
 pub const TOWER_BATTER: f32 = 0.4
 
+/// How far the tower's foot reaches from its axis, and its height (m).
+pub const TOWER_FOOT: f32 = TOWER_RADIUS + TOWER_BATTER
+pub const TOWER_TALL: f32 = 22.0
+
 /// A ring's stones: how many, and how far round from its middle (a share of the site's reach).
 pub const RING_STONES: u32 = 11
 pub const RING_AT: f32 = 0.8
@@ -107,7 +111,7 @@ pub fn stones(m: Map) -> Vec<vec3> {
                     out.push(vec3(s.at, footprint(s)))
                 }
             },
-            Feature::Tower => out.push(vec3(k.at.x, k.at.y, TOWER_RADIUS + TOWER_BATTER)),
+            Feature::Tower => out.push(vec3(k.at.x, k.at.y, TOWER_FOOT)),
             // A stone a player stands beside (a waystone, a seat, a cairn); a taller "stone" is
             // the land's own rock (the quarry's face).
             Feature::Stone => {
