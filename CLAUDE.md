@@ -9,6 +9,7 @@ Don't add any more docs besides the grammar, the lexical spec and docs/process.m
 Checks (tools/check.sh; its header says what each tier runs). Never wait on a check with sleep or polling: run it in the background, keep working, and read its result when it ends.
 - While you work, run only the tests you touch: `tools/check.sh <filter>` takes seconds.
 - Before each commit, run the gate: `tools/check.sh`, under a minute.
+- On a cloud machine (no GPU), the gate runs each slow test alone and skips one that passed before with everything it read unchanged, or whose builds make the same files again (tools/memo.py; the gate names the tests it skipped). Such a gate is a full gate. `tools/check.sh --fresh` runs every test.
 - Before a branch is merged, run `tools/check.sh --long` (about ten minutes) in the background. If a long test fails, run that test again (`tools/check.sh --long <name>`), not the tier.
 - The `measure:` tests and `tools/check.sh --full` give a milestone's numbers. Run a measurement only when you need its number, alone, in the background.
 - A new test that takes more than a second is a long check (`#[ignore = "long: ..."]`), sized with `sized()` so that the long tier stays near ten minutes.
