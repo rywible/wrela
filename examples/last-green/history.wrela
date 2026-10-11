@@ -7,9 +7,9 @@
 use engine::bake::{bake, unbake}
 use engine::footing::{Obstacles, obstacles_of, walkable_of}
 use engine::grow::{BAKE, Grain, Grid, History, Land, PREVIEW, Start, simulate}
-use peoples::{Culture, left_by, settle, told}
+use peoples::{Culture, Use, left_by, settle, told}
 use engine::interest::{Evidence, FULL, Sight, check, nearest_first, report, views_bytes, walk_bytes}
-use engine::place::{Map, TILE, tile_of}
+use engine::place::{Kind, Map, TILE, tile_of}
 use engine::water::Laid
 use std::io::{Shipped, print, ship}
 use std::string::String
@@ -59,7 +59,15 @@ pub fn grown(grain: Grain) -> History {
 /// (`peoples`), who lived there five centuries until the plague.
 pub fn past(land: Land, year: i32) -> Start {
     let elves = Culture {}
-    let p = settle(land, elves, year - ELVES_LIVED, year)
+    var p = settle(land, elves, year - ELVES_LIVED, year)
+    // The floor's wood pasture is the old wood they grazed under: it stands as it was, whatever
+    // else they used the land round it for.
+    let m = map::map()
+    for c in 0..p.grid.cells() {
+        if m.regions[m.region_of(p.grid.centre(c))].kind == Kind::WoodPasture {
+            p.last[c] = u8(u32(Use::Wild))
+        }
+    }
     let s = left_by(p, land, species::habits(), elves, year)
     print(told(p, s, land))
     s
