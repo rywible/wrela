@@ -220,16 +220,24 @@ pub fn resolve(
             let texel = scene.load(x: u32(p.x), y: u32(p.y))
             let c = tamed(max(texel.rgb, vec3(0.0)))
             let pos = vec2(p) + vec2(0.5) - j
-            // How far it falls, in output pixels: a Gaussian an output pixel or so wide, so a
-            // sample counts by how near it falls whatever the scene's size (the history gathers
-            // the others over the jitter's cycle).
+            // How far it falls, in output pixels. The history gathers the other subpixel
+            // samples over the jitter's cycle.
             let d = (pos - q) / scale
             let sample_depth = depth.load(x: u32(p.x), y: u32(p.y))
             // A reconstruction filter must not mix an opaque surface with geometry well
             // behind it. Keep the nearest sample's surface across large depth breaks; small
             // changes on a slope still filter. Jittered frames supply silhouette coverage.
             let same_surface = abs(sample_depth - z) <= max(max(sample_depth, z) * 0.2, 1.0e-7)
-            let w = if coverage || same_surface { exp(-1.4 * dot(d, d)) } else { 0.0 }
+            // A compact tent is zero at its boundary and interpolates exact scene samples.
+            // The previous four-tap Gaussian truncated a nonzero weight there, biasing an
+            // aligned native sample toward its right and lower neighbours. Keep a little
+            // overlap even when an output pixel spans less than half a scene pixel. Thin
+            // silhouettes keep wider support to reconstruct partial background coverage. Never
+            // extend past the four-tap footprint, including when reducing scene resolution.
+            let support = if coverage { 0.8 } else { 0.55 }
+            let radius = min(vec2(1.0) / scale, max(vec2(1.0), support / scale))
+            let tent = max(vec2(1.0) - abs(d) / radius, vec2(0.0))
+            let w = if coverage || same_surface { tent.x * tent.y } else { 0.0 }
             sum += c * w
             weight += w
             // And all but the moving ones' (see `current`).

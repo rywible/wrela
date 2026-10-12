@@ -570,6 +570,10 @@ pub struct Wood {
     /// Whether the lists need laying out again (a tile came or went).
     laid: bool,
     pub cards_to: f32,
+    /// Maximum centre of the cards-to-impostor handover, in metres.
+    pub cards_limit: f32,
+    /// Desired maximum crown diameter at that handover, in scene pixels.
+    pub impostor_px: f32,
     pub impostors_to: f32,
     pub card_px: f32,
     pub cell: f32,
@@ -629,6 +633,8 @@ impl Wood {
             shadowed: Chosen::empty(),
             laid: false,
             cards_to,
+            cards_limit: cards_to,
+            impostor_px: f32(impostor::CELL),
             impostors_to,
             card_px: lod::CARD_PX,
             cell: 1.0,
@@ -654,6 +660,8 @@ impl Wood {
         borrow kind = self.kinds[self.own(k)]
         Lod {
             cards_to: if k < self.kinds.len() { self.cards_to } else { 1.0e-3 },
+            cards_limit: if k < self.kinds.len() { self.cards_limit } else { 1.0e-3 },
+            impostor_px: self.impostor_px,
             impostors_to: self.impostors_to,
             leaf: kind.plant.leaves.size,
             top: kind.top,

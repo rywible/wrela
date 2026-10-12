@@ -76,8 +76,8 @@ const DOOR_POSTS = [vec2(-0.95, 0.0), vec2(0.95, 0.0)]
 /// The ticks between the play harness's reports (2 s at 60 Hz).
 const REPORT_TICKS: u32 = 120
 
-/// Output-to-scene scale: preserve more fine detail during movement than half resolution.
-const SCALE: f32 = 1.75
+/// Author the look at full output resolution; tune reconstruction against this reference.
+const SCALE: f32 = 1.0
 
 /// Toward the sun: the clearing's (low, 24°).
 pub const SUN = vec3(0.900, 0.407, -0.159)
@@ -110,7 +110,7 @@ const WANT: f32 = 350.0
 const DROP: f32 = 450.0
 
 /// Past how far a tile's far layer is coarse (m): a crown each 16 m cell, not 8 m.
-const FAR_FINE: f32 = 500.0
+const FAR_FINE: f32 = 900.0
 
 /// The wildwood's far layer is whole to this distance (m), then fades across one tile.
 const WILD_FAR: f32 = 900.0
@@ -1594,9 +1594,11 @@ fn cook_load(s: mut Floor, eye: vec2) {
             cards_to: CARDS_TO,
             impostors_to: IMPOSTORS_TO,
         )
-        // Both in the scene's pixels: the levels hand over at the same size on the output (5 ×
-        // `CARD_PX` of its pixels), and a cut's cell is an output pixel, whatever `SCALE`.
-        w.card_px = engine::lod::CARD_PX * 5.0 / SCALE
+        // Retain leaf detail by output size and keep large crowns as geometry farther away.
+        // The whole handover stays inside the loaded near forest; cut cells use output pixels.
+        w.cards_limit = 160.0
+        w.impostor_px = 128.0 / SCALE
+        w.card_px = engine::lod::CARD_PX / SCALE
         w.cell = 1.0 / SCALE
         w.write_lods()
         s.wood = Some(take w)

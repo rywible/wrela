@@ -430,13 +430,11 @@ pub struct FarVertex: Copy {
     pub tint: vec3,
     pub id: Flat<u32>,
     /// The four views round the eye's direction (`views_round`): where the quad's point falls in
-    /// each one's cell (two to a vec4), how much each counts, and how far its point moves in its
-    /// cell as a leaf is a half-width toward the eye (its parallax, two to a vec4).
+    /// each one's cell (two to a vec4), each cell's index, and how much each counts.
     pub views: vec4,
     pub views2: vec4,
     pub weights: Flat<vec4>,
-    pub shift: Flat<vec4>,
-    pub shift2: Flat<vec4>,
+    pub cells: Flat<vec4u>,
     /// The part of a pixel's draws its instance keeps this way, packed (`Forest::marks`).
     pub keep: Flat<u32>,
     /// Its own seed (`seed_of`), from where it stands in the world.
@@ -465,8 +463,8 @@ pub fn far_quad(
     let inst = instances[i.index]
     let centre = inst.at + inst.turn(b.mid * inst.scale)
     let to = normalize(cam.eye - centre)
-    // The quad round what the four views blended here cover (and as far again as a leaf's
-    // parallax moves it, a tenth of the half-width): most of the plant's box is empty.
+    // The quad round what the four views cover, with their filter's margin: most of the
+    // plant's box is empty.
     let (cells, w) = views_round(unoriented(inst.yaw, inst.pitch, to))
     var lo = vec2(1.0)
     var hi = vec2(-1.0)
@@ -488,16 +486,12 @@ pub fn far_quad(
     let flat = centre + (right * (q.x * inst.wide) + up * q.y) * (b.half * inst.scale)
     let height = max(flat.y - inst.at.y, 0.0)
     var world = flat + sway(wind, flat, height)
-    // The views round the eye's direction, the same for all the quad: each one's place for this
-    // corner (between corners, a view's place moves as the quad's point does).
+    // Both passes read the same projected surface. Moving only the shading coordinates by
+    // parallax shaded leaves where the depth pass had found a different part of the crown.
     let p = unoriented(inst.yaw, inst.pitch, right * q.x + up * q.y)
-    let local_to = unoriented(inst.yaw, inst.pitch, to)
     var uv = [vec2(0.0); 4]
-    var shift = [vec2(0.0); 4]
     for k in 0..4 {
-        let (_, vr, vu) = view_basis(cells[k].y * VIEWS + cells[k].x)
         uv[k] = cell_uv(cells[k], p)
-        shift[k] = vec2(dot(local_to, vr), dot(local_to, vu)) * (0.5 / f32(VIEWS))
     }
     if front != 0 {
         let d = length(centre - cam.eye)
@@ -514,8 +508,14 @@ pub fn far_quad(
         views: vec4(uv[0], uv[1]),
         views2: vec4(uv[2], uv[3]),
         weights: Flat { value: w },
-        shift: Flat { value: vec4(shift[0], shift[1]) },
-        shift2: Flat { value: vec4(shift[2], shift[3]) },
+        cells: Flat {
+            value: vec4u(
+                cells[0].y * VIEWS + cells[0].x,
+                cells[1].y * VIEWS + cells[1].x,
+                cells[2].y * VIEWS + cells[2].x,
+                cells[3].y * VIEWS + cells[3].x,
+            ),
+        },
         keep: Flat { value: marks[i.index].x },
         seed: Flat { value: seed_at(centre + cam.keyed()) },
     }
@@ -546,21 +546,31 @@ fn cell_uv(cell: vec2u, q: vec3) -> vec2 {
     (vec2(cell) + (vec2(dot(q, right), dot(q, up)) * 0.5 + vec2(0.5))) / f32(VIEWS)
 }
 
-/// A far quad's point's place in view `k` of its four, and that view's parallax. (Chosen, not
-/// read from an array: an array indexed by a pixel's choice is memory, not registers.)
-fn view_at(f: FarVertex, k: u32) -> (vec2, vec2) {
-    let s = f.shift.value
-    let s2 = f.shift2.value
+/// A far quad's point's place and cell in view `k`. Both passes use the same coordinates.
+fn view_at(f: FarVertex, k: u32) -> (vec2, u32) {
+    let c = f.cells.value
     if k == 0 {
-        return (f.views.xy, s.xy)
+        return (f.views.xy, c.x)
     }
     if k == 1 {
-        return (f.views.zw, s.zw)
+        return (f.views.zw, c.y)
     }
     if k == 2 {
-        return (f.views2.xy, s2.xy)
+        return (f.views2.xy, c.z)
     }
-    (f.views2.zw, s2.zw)
+    (f.views2.zw, c.w)
+}
+
+/// Keep bilinear taps inside their own view. Points outside the cell have no coverage;
+/// clamping those points alone would stretch the cell's last leaf along its whole border.
+fn sample_cell(colour: Texture<Rgba8>, s: Sampler, at: vec2, cell: u32) -> vec4 {
+    let base = vec2(f32(cell % VIEWS), f32(cell / VIEWS)) / f32(VIEWS)
+    let end = base + vec2(1.0 / f32(VIEWS))
+    if at.x < base.x || at.y < base.y || at.x >= end.x || at.y >= end.y {
+        return vec4(0.0)
+    }
+    let inset = vec2(0.5 / f32(ATLAS))
+    colour.sample_level(s, clamp(at, base + inset, end - inset))
 }
 
 /// Which of a far quad's four views this pixel shows this frame: picked by their weights, by a
@@ -594,29 +604,40 @@ struct Seen {
     toward: f32,
 }
 
-/// The impostor's normal texture at `uv`, between its texels: each texel's normal unfolded
-/// first (folded normals don't blend: between two that fold to either side, the blend is
-/// neither), and its place and depth blended.
-fn normal_at(normal: Texture<Rgba16Float>, uv: vec2) -> (vec3, vec2) {
+/// Filter decoded normals and depth only where their colour texels have coverage. Empty
+/// texels contain clear values, which must not bend normals or pull the surface backward.
+fn normal_at(
+    colour: Texture<Rgba8>,
+    normal: Texture<Rgba16Float>,
+    uv: vec2,
+    cell: u32,
+) -> (vec3, vec2) {
     let size = vec2(f32(normal.width()), f32(normal.height()))
-    let g = uv * size - vec2(0.5)
+    let lo = vec2u(cell % VIEWS, cell / VIEWS) * CELL
+    let hi = lo + vec2u(CELL - 1)
+    let g = clamp(uv * size - vec2(0.5), vec2(lo), vec2(hi))
     let i = floor(g)
     let t = g - i
-    let lim = vec2u(size) - vec2u(1)
     var n = vec3(0.0)
     var zw = vec2(0.0)
+    var coverage = 0.0
     for dy in 0..2 {
         for dx in 0..2 {
             let w = (if dx == 0 { 1.0 - t.x } else { t.x }) * (if dy == 0 { 1.0 - t.y } else {
                 t.y
             })
-            let at = min(vec2u(max(i + vec2(f32(dx), f32(dy)), vec2(0.0))), lim)
+            let at = clamp(vec2u(i + vec2(f32(dx), f32(dy))), lo, hi)
+            let covered = w * colour.load(x: at.x, y: at.y).a
             let nd = normal.load(x: at.x, y: at.y)
-            n += oct_decode(nd.xy) * w
-            zw += nd.zw * w
+            n += oct_decode(nd.xy) * covered
+            zw += nd.zw * covered
+            coverage += covered
         }
     }
-    (n, zw)
+    if coverage <= 1.0e-5 {
+        return (vec3(0.0, 1.0, 0.0), vec2(0.5, 0.0))
+    }
+    (n / coverage, zw / coverage)
 }
 
 fn seen(
@@ -626,12 +647,9 @@ fn seen(
     normal: Texture<Rgba16Float>,
     s: Sampler,
 ) -> Seen {
-    // Where the eye's ray through the quad's point meets what view `k` baked: moved along the
-    // ray by how far toward the view the leaf there was (one step).
-    let (at, shift) = view_at(f, k)
-    let uv = at + shift * (normal.sample_level(s, at).z * 2.0 - 1.0)
-    let c = colour.sample_level(s, uv)
-    let (n, zw) = normal_at(normal, uv)
+    let (at, cell) = view_at(f, k)
+    let c = sample_cell(colour, s, at, cell)
+    let (n, zw) = normal_at(colour, normal, at, cell)
     // Its albedo where its leaves cover it (the texel's colour is filtered with the empty texels
     // round it).
     let own = c.rgb / max(c.a, 1.0e-3)
@@ -684,12 +702,12 @@ pub fn far_cut(
     // The view this pixel shows this frame, and its coverage. Most of the quad is empty: left
     // before its leaf's place is read.
     let k = view_of(f, pixel.position.xy)
-    let (at, _) = view_at(f, k)
-    let c = colour.sample_level(s, at).a
+    let (at, view) = view_at(f, k)
+    let c = sample_cell(colour, s, at, view).a
     if c <= 0.0 || c < 1.0 && c < hashed_threshold_of(f.uv, seed_of(f), size) {
         discard()
     }
-    let toward = normal.sample_level(s, at).z * 2.0 - 1.0
+    let toward = normal_at(colour, normal, at, view).1.x * 2.0 - 1.0
     let at = leaf_place(f, cam, b, toward)
     WithDepth { color: f.id.value, depth: depth_of(cam, at) }
 }
@@ -732,8 +750,8 @@ pub fn far_cut_flat(
         discard()
     }
     let k = view_of(f, pixel.position.xy)
-    let (at, _) = view_at(f, k)
-    let c = colour.sample_level(s, at).a
+    let (at, view) = view_at(f, k)
+    let c = sample_cell(colour, s, at, view).a
     if c <= 0.0 || c < 1.0 && c < hashed_threshold_of(f.uv, seed_of(f), size) {
         discard()
     }

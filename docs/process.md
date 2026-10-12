@@ -229,6 +229,29 @@ host-wide free RAM alone can hide a container's limit.
 No outside code or assets were copied. CPU/lavapipe correctness keeps real shader and buffer
 assertions; reference GPU measurements and final visual judgment remain their own evidence.
 
+## Native image-quality study, 2026-10-11
+
+Ryan asked Codex and parallel subagents to compare image reconstruction and tree detail,
+then set full output resolution as the look-development baseline, accepting slower frames.
+The study compares native exact samples, native temporal AA, and the prior 1.75 scale on
+moving routes. It uses small GPU regressions, M4 profiles, and interactive browser play.
+Temporal averaging and upscaling are separate: native rendering can still use history for
+thin-leaf coverage. A four-tap filter that mixes neighbours at exact sample alignment hides
+authored detail. Bounded interpolation preserves those samples; projected crown size controls
+when geometry becomes an impostor. Atlas views need isolated sampling and coverage-weighted
+normal/depth filtering. No generated art assets or external implementation code were used.
+
+Primary research: [AMD FSR 1](https://gpuopen.com/fidelityfx-superresolution/) and
+[FSR 2](https://gpuopen.com/fidelityfx-superresolution-2/) (SDK code under MIT; documentation
+consulted, no code ported) explain spatial versus temporal inputs and history requirements.
+[Epic TSR documentation](https://dev.epicgames.com/documentation/en-us/unreal-engine/temporal-super-resolution-in-unreal-engine)
+(copyright Epic; documentation only) explains temporal detail and motion diagnostics.
+[meshoptimizer](https://github.com/zeux/meshoptimizer) (MIT; documentation only) informs
+error-based geometry selection. [NVIDIA GPU Gems filtering](https://developer.nvidia.com/gpugems/gpugems/part-iv-image-processing/chapter-24-high-quality-filtering)
+(copyright NVIDIA and contributors; reading only) explains why procedural detail must be
+filtered over its pixel footprint. These references guide comparisons, not claims that an
+external upscaler or automatic compiler reconstruction has been implemented.
+
 ## The references
 
 ### The rules

@@ -125,6 +125,10 @@ pub struct Forest {
     /// Beyond this distance (m), an instance is drawn as an impostor, not as cards; and beyond
     /// `impostors_to`, as a volume.
     pub cards_to: f32,
+    /// Maximum centre of the cards-to-impostor handover, in metres.
+    pub cards_limit: f32,
+    /// Desired maximum crown diameter at that handover, in scene pixels.
+    pub impostor_px: f32,
     pub impostors_to: f32,
     /// How wide a card level's cards grow on screen before the next takes over, and how wide a
     /// cut's hashed cell is (`Lod::cell`), in the scene's pixels.
@@ -238,6 +242,8 @@ impl Forest {
             args: buffer(room_args),
             every_args,
             cards_to,
+            cards_limit: cards_to,
+            impostor_px: f32(impostor::CELL),
             impostors_to,
             card_px: lod::CARD_PX,
             cell: 1.0,
@@ -338,6 +344,8 @@ impl Forest {
         borrow kind = self.kinds[k]
         Lod {
             cards_to: self.cards_to,
+            cards_limit: self.cards_limit,
+            impostor_px: self.impostor_px,
             impostors_to: self.impostors_to,
             leaf: kind.plant.leaves.size,
             top: kind.top,

@@ -36,6 +36,11 @@ pub const FAINT_PX: f32 = 1.5
 /// wide on screen a card level's cards grow before the next takes over (`CARD_PX`).
 pub struct Lod: Copy + GpuData {
     pub cards_to: f32,
+    /// The farthest handover centre allowed for cards (m). A large crown can keep its cards
+    /// beyond `cards_to` until it fits `impostor_px`, but never past this range's fade band.
+    pub cards_limit: f32,
+    /// The desired maximum crown diameter when it becomes an impostor, in scene pixels.
+    pub impostor_px: f32,
     pub impostors_to: f32,
     pub leaf: f32,
     pub top: f32,
@@ -56,14 +61,23 @@ pub fn place(l: Lod, cam: Camera, at: vec3, scale: f32) -> (f32, f32) {
     // The finest level whose cards look no wider than CARD_PX (each level doubles them).
     let px = card_width(l, cam, at, scale)
     var level = clamp(log2(l.card_px / max(px, 1.0e-4)), 0.0, f32(CARD_LEVELS - 1))
+    // A large crown or a narrow lens keeps its geometry until the impostor has enough
+    // samples across it. The owner bounds this extension to its loaded geometry's range.
+    let projected = 2.0 * r / max(cam.footprint(1.0) * l.impostor_px, 1.0e-6)
+    // Finish this whole band before the volume band begins, even if the owner's extension
+    // exceeds the impostor range. Otherwise the additive transitions can skip a level.
+    let last_cards = max(l.impostors_to * (0.92 / 1.08), 1.0e-4)
+    let first_cards = min(l.cards_to, last_cards)
+    let limit = clamp(l.cards_limit, first_cards, last_cards)
+    let cards_to = clamp(projected, first_cards, limit)
     // Toward the impostors, the coarsest cards (the impostor's): from 60% of the way.
-    level = max(level, f32(CARD_LEVELS - 1) * smoothstep(0.6, 0.75, d / l.cards_to))
+    level = max(level, f32(CARD_LEVELS - 1) * smoothstep(0.6, 0.75, d / cards_to))
     // Then the impostor, and then the volume, each over a tenth of its distance.
-    level += smoothstep(0.92, 1.08, d / l.cards_to) + smoothstep(0.92, 1.08, d / l.impostors_to)
+    level += smoothstep(0.92, 1.08, d / cards_to) + smoothstep(0.92, 1.08, d / l.impostors_to)
     // Beyond the cards, a crown fading as it shrinks to a pixel or two.
     let crown = 2.0 * r / max(cam.footprint(d), 1.0e-6)
     let fp = FAINT_PX * l.card_px / CARD_PX
-    let faint = if d > l.cards_to { 1.0 - smoothstep(fp, 2.0 * fp, crown) } else { 0.0 }
+    let faint = if d > cards_to { 1.0 - smoothstep(fp, 2.0 * fp, crown) } else { 0.0 }
     (level, faint)
 }
 
@@ -293,4 +307,73 @@ fn a_card_is_whole_or_gone_and_smaller_near_its_shares_end() {
     assert(abs(edge_size - 0.5) < 1.0e-3, f"at the share's end: size {edge_size}")
     let whole = packed(vec4(0.0, 1.0, 0.0, 0.0))
     assert(by_card(whole, 0.99).1 == 1.0, "a whole share")
+}
+
+/// A crown that is still large on screen keeps its geometry, within the owner's range.
+@test
+fn projected_crowns_delay_impostors_within_the_loaded_range() {
+    let l = Lod {
+        cards_to: 80.0,
+        cards_limit: 160.0,
+        impostors_to: 4000.0,
+        impostor_px: 128.0,
+        leaf: 0.9,
+        top: 10.0,
+        reach: 5.0,
+        card_px: 120.0,
+        cell: 1.0,
+    }
+    let cam = view::first_camera(vec3(0.0), vec3(0.0, 0.0, 1.0), 0.8, width: 1920, height: 1080)
+    let at = |distance: f32, scale: f32| vec3(0.0, -l.top * 0.5 * scale, distance)
+    let small = place(l, cam, at(90.0, 0.5), 0.5).0
+    let large = place(l, cam, at(90.0, 2.0), 2.0).0
+    assert(small >= f32(IMPOSTOR))
+    assert(large < f32(IMPOSTOR) - 0.5)
+    // A much larger crown still completes its handover at the bounded band's far edge.
+    let bounded = place(l, cam, at(174.0, 20.0), 20.0).0
+    assert(bounded >= f32(IMPOSTOR))
+    // Far-only aggregate kinds cannot accidentally acquire full geometry at any scale.
+    let far = Lod { cards_to: 0.001, cards_limit: 0.001, ..l }
+    assert(place(far, cam, at(1.0, 20.0), 20.0).0 >= f32(IMPOSTOR))
+    // An over-large extension cannot push geometry into the volume transition.
+    let ordered = Lod { cards_limit: 1000.0, impostors_to: 200.0, ..l }
+    assert(abs(place(ordered, cam, at(184.0, 20.0), 20.0).0 - f32(IMPOSTOR)) < 1.0e-4)
+    assert(place(ordered, cam, at(217.0, 20.0), 20.0).0 >= f32(VOLUME))
+}
+
+/// The threshold follows the lens and output pixels, independently of scene resolution.
+@test
+fn projected_crown_handover_follows_lens_and_output_pixels() {
+    let l = Lod {
+        cards_to: 80.0,
+        cards_limit: 160.0,
+        impostors_to: 4000.0,
+        impostor_px: 128.0,
+        leaf: 0.9,
+        top: 10.0,
+        reach: 5.0,
+        card_px: 120.0,
+        cell: 1.0,
+    }
+    let camera = |fov: f32, width: u32, height: u32| view::first_camera(
+        vec3(0.0),
+        vec3(0.0, 0.0, 1.0),
+        fov,
+        width: width,
+        height: height,
+    )
+    let normal = camera(0.8, 1920, 1080)
+    let zoomed = camera(0.4, 1920, 1080)
+    let smaller = camera(0.8, 960, 540)
+    let half = Lod { impostor_px: 64.0, card_px: 60.0, cell: 0.5, ..l }
+    let at = vec3(0.0, -5.0, 120.0)
+    assert(place(l, normal, at, 1.0).0 >= f32(IMPOSTOR))
+    assert(place(l, zoomed, at, 1.0).0 < f32(IMPOSTOR) - 0.5)
+    for distance in [40.0, 78.0, 95.0, 100.0, 104.0, 120.0, 172.0] {
+        let at = vec3(0.0, -5.0, distance)
+        let a = place(l, normal, at, 1.0)
+        let b = place(half, smaller, at, 1.0)
+        assert(abs(a.0 - b.0) < 1.0e-5)
+        assert(abs(a.1 - b.1) < 1.0e-5)
+    }
 }
