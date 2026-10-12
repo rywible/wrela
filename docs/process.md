@@ -769,6 +769,41 @@ The full-scene rendering profile is a short startup-inclusive measurement, not a
 Chrome frame-rate or whole-scene quality claim. Raw timing samples, harness inputs and logs
 are retained outside the session under `target/perf-sweep-20261012`.
 
+## Console startup pacing and folded form, 2026-10-12
+
+Ryan reported startup stalls, an ineffective fade, oversized lettering and a form that did
+not feel alien enough. Codex replaced the spindle with six bands of a procedural surface
+in four coordinates. Independent plane rotations and perspective projection let the cavities
+change depth as the form turns. The same sampled Meridian paths receive the contracting
+bands. The word is one third of its earlier width, with a matte finish. The geometry and
+motion are authored Wrela code; no outside design or generated media assets were used.
+
+A Wrela presentation clock now starts at the first frame and caps each advance at 1/30 s,
+so initialization and a loading pause cannot jump over the intro. A final scene exposure
+fades every part to black, holds black for 250 ms and then admits the library. Skip,
+reduced motion, profile storage and game/save selection retain their existing behavior.
+
+A fresh-profile Chrome run on the M4 reproduced 112 ms and 316 ms gaps during background
+game preparation; console CPU frame work stayed below 6 ms. Removing the game catalog for
+an isolation run removed those gaps (21 ms maximum). The browser host now queues one
+background shader compilation per device, with a 16 ms yield between them. Foreground
+startup and cache identity are unchanged; the game still prepares during the intro. A
+matched run with only this loader change had a 27 ms maximum interval and no gap above
+35 ms. The complete new release recorded 19 ms maximum across 842 frames; pixel checks
+on desktop and phone captures confirmed full black between the word and the library. These are bounded real-time startup traces, not sustained gameplay frame rates.
+A focused fake-device test checks the bound across overlapping preparations, promise reuse
+and recovery after a shader rejects. Presentation-clock, black-hold, projection-bound and
+word-size regressions accompany the Wrela change. Captures and traces are retained outside
+the checkout with the `paradox-` prefix in the console's October 12 visualization directory.
+
+Matched native M4 profiles at 1280×720 measured the console's 480-frame opening at
+0.167 → 0.177 ms median GPU span (p95 0.380 → 0.348 ms), and 0.663 → 0.686 ms CPU frame call.
+The new form uses about 1.1% of a 16.7 ms GPU frame budget. Last Green's unchanged 120-frame
+workload measured 11.825 → 11.790 ms GPU span and 17.664 → 17.806 ms CPU frame call; all 114
+shader inventory entries match. Those small differences are not a gameplay performance
+claim. Full-gate timing is reported with completion; the new queue regression itself took
+0.1 s, while cold Wrela fixture compilation took 83–126 s in focused runs.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

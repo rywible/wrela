@@ -1,8 +1,8 @@
 // Wrela's console. The catalog and game session protocol supply all title-specific content.
 use catalog::{Card, parse}
 use paint::{
-    Field, Station, VERTICES_PER_VANE, RINGS, chamber, image, moment, quad, scene, sculpture,
-    titanium, word_stations,
+    Field, Station, VERTICES_PER_VANE, RINGS, OPENING_SECONDS, chamber, image, moment,
+    presentation_step, quad, scene, sculpture, titanium, word_stations,
 }
 use platform::host
 use platform::protocol::{Reply, Request, SaveInfo, valid_key}
@@ -133,7 +133,8 @@ pub struct Console {
     clicked: Option<vec2>,
     pressed: Option<vec2>,
     zoom: f32,
-    time: f32,
+    time: Option<f32>,
+    presentation: f32,
 }
 
 pub fn init() -> Console {
@@ -180,7 +181,7 @@ pub fn init() -> Console {
         message: String::new(),
         pixel_ratio: 1.0,
         reduced: false,
-        intro_until: 6.6,
+        intro_until: OPENING_SECONDS,
         focus: 1,
         controls: 0,
         activate: None,
@@ -189,7 +190,8 @@ pub fn init() -> Console {
         clicked: None,
         pressed: None,
         zoom: 1.0,
-        time: 0.0,
+        time: None,
+        presentation: 0.0,
     }
 }
 
@@ -820,14 +822,15 @@ fn settings(s: mut Console, w: f32, h: f32) {
 }
 
 pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
-    let dt = clamp(time - s.time, 0.0, 0.05)
-    s.time = time
+    let dt = presentation_step(s.time, time)
+    s.time = Some(time)
+    s.presentation += dt
     update(mut s)
     let logical = f32(width) / s.pixel_ratio
     s.zoom = s.pixel_ratio * clamp(f32(height) / s.pixel_ratio / 720.0, 0.7, 1.0)
     let w = f32(width) / s.zoom
     let h = f32(height) / s.zoom
-    let was_opening = s.profile.motion && !s.reduced && time < s.intro_until
+    let was_opening = s.profile.motion && !s.reduced && s.presentation < s.intro_until
     s.enter = false
     s.clicked = None
     s.activate = None
@@ -912,8 +915,8 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         s.clicked = None
         s.pressed = None
     }
-    let opening = s.profile.motion && !s.reduced && time < s.intro_until
-    let phase = moment(time, opening)
+    let opening = s.profile.motion && !s.reduced && s.presentation < s.intro_until
+    let phase = moment(s.presentation, opening)
     s.reveal = phase.library
     s.album = mix(s.album, f32(s.selected), if s.reduced || !s.profile.motion { 1.0 } else {
         1.0 - exp(-dt * 12.0)
@@ -938,10 +941,8 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         s.depth = depth_texture(width, height)
     }
     let field = Field { screen, time: if s.reduced || !s.profile.motion { 1.8 } else {
-        time
-    }, morph: if phase.library > 0.0 { 0.0 } else {
-        phase.morph
-    }, light: phase.light, library: phase.library }
+        s.presentation
+    }, morph: phase.morph, library: phase.library }
     let space = begin_pass_with_depth(mut s.scene, mut s.depth, clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         space,
@@ -961,7 +962,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     draw(
         pass,
         quad.bind(screen, rect: vec4(0.0, 0.0, screen)),
-        scene.bind(content: s.scene, linear: s.linear),
+        scene.bind(content: s.scene, linear: s.linear, exposure: phase.light),
         vertices: 6,
     )
     for index in 0..s.panels.len() {
