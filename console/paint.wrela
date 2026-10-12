@@ -1,6 +1,6 @@
-// A suspended, sculpted field and a font extrusion. The entire opening is Wrela.
+// A sculpture made from Meridian's strokes. Each vane keeps its topology as it unfolds.
+use meridian::{WEIGHT, letter}
 use std::gpu::{ClipPosition, FragCoord, Over, Rgba8, Sampler, Texture, VertexIndex}
-use ui::text::Font
 
 pub struct Vertex {
     pub position: ClipPosition,
@@ -37,39 +37,13 @@ pub struct Moment: Copy {
     pub library: f32,
 }
 
-// One timeline controls the solid's transformation, its lights, and the library's reveal.
 pub fn moment(time: f32, opening: bool) -> Moment {
     if !opening { return Moment { morph: 0.0, light: 0.7, library: 1.0 } }
     Moment {
-        morph: smoothstep(2.5, 4.4, time),
-        light: smoothstep(0.15, 1.25, time) * (1.0 - smoothstep(5.0, 5.7, time)),
+        morph: smoothstep(2.1, 4.5, time),
+        light: smoothstep(0.15, 1.3, time) * (1.0 - smoothstep(5.0, 5.7, time)),
         library: smoothstep(5.7, 6.6, time),
     }
-}
-
-// Assemble the actual supplied face's distance fields once, without raster or host policy.
-pub fn word_field(font: Font) -> Vec<u8> {
-    var bytes: Vec<u8> = Vec::filled(256 * 96 * 4, 0)
-    let width = font.measure("Wrela", font.em)
-    let _ = font.walk("Wrela", font.em, (256.0 - width) * 0.5, |_i, gi, pen| {
-        let g = font.glyph(gi)
-        let left = i32(round(pen + g.left))
-        let top = i32(round(64.0 - g.top))
-        for y in 0..g.height {
-            for x in 0..g.width {
-                let px = left + i32(x)
-                let py = top + i32(y)
-                if px >= 0 && px < 256 && py >= 0 && py < 96 {
-                    let at = (u32(py) * 256 + u32(px)) * 4
-                    let value = font.field_byte(gi, y * g.width + x)
-                    bytes[at] = max(bytes[at], value)
-                    bytes[at + 3] = 255
-                }
-            }
-        }
-        true
-    })
-    bytes
 }
 
 pub struct Field: Copy + GpuData {
@@ -80,113 +54,237 @@ pub struct Field: Copy + GpuData {
     pub library: f32,
 }
 
+pub struct Station: Copy + GpuData {
+    pub point: vec2,
+    pub travel: f32,
+    pub vane: f32,
+}
+
+pub const SEGMENTS: u32 = 160
+pub const RINGS: u32 = SEGMENTS + 1
+pub const VERTICES_PER_VANE: u32 = (SEGMENTS + 2) * 8 * 6
+
+// Equal arc-length samples of the very same paths as the baked display font. No textured
+// word or second shape is crossfaded in. Duplicate end rings close each cut terminal.
+pub fn word_stations() -> Vec<Station> {
+    let word = [87, 114, 101, 108, 97]
+    var width = 0.0
+    for cp in word { width += letter(cp).advance }
+    var pen = -width * 0.5
+    var stations: Vec<Station> = Vec::new()
+    var vane = 0.0
+    for cp in word {
+        let glyph = letter(cp)
+        for path in glyph.paths {
+            var length_sum = 0.0
+            for i in 0..path.points.len() - 1 {
+                length_sum += length(path.points[i + 1] - path.points[i])
+            }
+            var segment = 0
+            var before = 0.0
+            for i in 0..RINGS {
+                let u = f32(i) / f32(SEGMENTS)
+                let wanted = u * length_sum
+                while segment + 2 < path.points.len() &&
+                    before + length(path.points[segment + 1] - path.points[segment]) < wanted {
+                    before += length(path.points[segment + 1] - path.points[segment])
+                    segment += 1
+                }
+                let a = path.points[segment]
+                let b = path.points[segment + 1]
+                let p = mix(a, b, saturate((wanted - before) / max(length(b - a), 0.00001)))
+                stations.push(
+                    Station {
+                        point: (p + vec2(pen, -0.36)) * 1.65,
+                        travel: u,
+                        vane,
+                    },
+                )
+            }
+            vane += 1.0
+        }
+        pen += glyph.advance
+    }
+    stations
+}
+
 fn turn(p: vec2, angle: f32) -> vec2 {
     let c = cos(angle)
     let s = sin(angle)
     vec2(c * p.x - s * p.y, s * p.x + c * p.y)
 }
 
-fn solid(p: vec3, field: Field, letters: Texture<Rgba8>, linear: Sampler) -> f32 {
-    let m = field.morph
-    let angle = (field.time * mix(0.6, 0.12, field.library) + 0.45) * (1.0 - m)
-    let xz = turn(p.xz, angle)
-    let yz = turn(vec2(p.y, xz.y), (0.5 + sin(field.time * 0.31) * 0.23) * (1.0 - m))
-    let xy = turn(vec2(xz.x, yz.x), -0.2 * (1.0 - m))
-    let q = vec3(xy.x / mix(1.0, 2.7, m), xy.y, yz.y)
-    let a = atan2(q.y, q.x)
-    let radius = 0.78 + 0.22 * cos(a * 3.0)
-    let section = turn(vec2(length(q.xy) - radius, q.z - 0.32 * sin(a * 3.0)), a * 1.5)
-    let tube = 0.19 + 0.035 * cos(a * 6.0 + field.time * 0.4)
-    let knot = (length(section / vec2(0.52, 1.5)) - tube) * 0.27
-    if m <= 0.001 { return knot }
-    // The word spans 256/48 ems; the extrusion's bevel gives the letters real side faces.
-    let word_xz = turn(p.xz, (0.12 + 0.14 * (1.0 - smoothstep(4.4, 5.7, field.time))) * m)
-    let uv = vec2(word_xz.x / 8.0 + 0.5, 0.5 - p.y / 3.0)
-    let sample = letters.sample_level(linear, clamp(uv, vec2(0.0), vec2(1.0)), 0.0).x
-    let ink = (0.5 - sample) * (10.0 / 48.0) * 1.5
-    let bounds = abs(vec2(word_xz.x, p.y)) - vec2(4.0, 1.5)
-    let outside = length(max(bounds, vec2(0.0))) + min(max(bounds.x, bounds.y), 0.0)
-    let letter = max(max(ink, outside), abs(word_xz.y) - 0.11) - 0.012
-    if m >= 0.999 { return letter }
-    // Stretch the rotating solid before its mass resolves into the word's field.
-    mix(knot, letter, m) - 0.20 * sin(m * 3.14159265)
-}
-
-fn normal(p: vec3, field: Field, letters: Texture<Rgba8>, linear: Sampler) -> vec3 {
-    let e = 0.002
-    let a = vec3(1.0, -1.0, -1.0)
-    let b = vec3(-1.0, -1.0, 1.0)
-    let c = vec3(-1.0, 1.0, -1.0)
-    let d = vec3(1.0, 1.0, 1.0)
-    normalize(
-        a * solid(p + a * e, field, letters, linear) +
-            b * solid(p + b * e, field, letters, linear) +
-            c * solid(p + c * e, field, letters, linear) +
-            d * solid(p + d * e, field, letters, linear),
+// Six broad, tapering vanes wrap a hollow spindle. The offset spine and changing pitch
+// give it a different silhouette at every angle; there is no sphere or luminous core.
+fn spine(u: f32, vane: f32) -> vec3 {
+    let phase = vane * 1.04719755
+    let theta = phase + u * 3.8 - 1.8
+    let belly = pow(max(sin(u * 3.14159265), 0.0), 0.72)
+    let radius = 0.20 + 0.67 * belly + 0.08 * sin(phase * 2.0 + u * 5.0)
+    vec3(
+        radius * cos(theta) + 0.13 * sin(u * 3.14159265 + phase),
+        (u - 0.5) * (2.5 + 0.42 * cos(phase)) + 0.12 * sin(phase),
+        radius * sin(theta),
     )
 }
 
+fn local_morph(field: Field, vane: f32) -> f32 {
+    // A short stagger reads as articulated parts, while every vane reaches the word together.
+    smoothstep(vane * 0.025, 0.84 + vane * 0.025, field.morph)
+}
+
+fn pose(station: Station, field: Field) -> vec3 {
+    let m = local_morph(field, station.vane)
+    var p = spine(station.travel, station.vane)
+    let yaw = field.time * mix(0.48, 0.12, field.library) + 0.35
+    let xz = turn(p.xz, yaw)
+    let xy = turn(vec2(xz.x, p.y), -0.23)
+    p = vec3(xy.x, xy.y, xz.y)
+    // Release radially before each rail straightens into its own letter, with a small depth fan.
+    let fan = sin(m * 3.14159265)
+    let target = vec3(station.point, 0.0)
+    mix(p, target, m) +
+        vec3(
+            station.point.x * 0.23,
+            sin(station.vane * 1.7) * 0.25,
+            cos(station.vane * 1.3) * 0.48,
+        ) *
+            fan
+}
+
+// Fit the wide word on portrait screens, but keep the library sculpture substantial.
+fn space_scale(aspect: f32, library: f32) -> f32 {
+    mix(max(1.0, 1.36 / aspect), max(1.0, 0.55 / aspect) * 2.15, library)
+}
+
+pub struct Metal {
+    pub position: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+}
+
+@vertex
+pub fn sculpture(id: VertexIndex, stations: [Station], field: Field) -> Metal {
+    let vane = id.index / VERTICES_PER_VANE
+    let local = id.index % VERTICES_PER_VANE
+    let segment = local / 48
+    let face = (local / 6) % 8
+    let corner = [0, 1, 2, 2, 1, 3][local % 6]
+    let ring = segment + corner / 2
+    let side = (face + corner % 2) % 8
+    let sample = min(u32(max(i32(ring) - 1, 0)), SEGMENTS)
+    let station = stations[vane * RINGS + sample]
+    let previous = stations[vane * RINGS + max(sample, 1) - 1]
+    let next = stations[vane * RINGS + min(sample + 1, SEGMENTS)]
+    let p = pose(station, field)
+    let tangent = normalize(pose(next, field) - pose(previous, field))
+    let m = local_morph(field, station.vane)
+    let radial = normalize(vec3(p.x, 0.12, p.z) + vec3(0.001, 0.0, 0.001))
+    let up = normalize(mix(radial, vec3(0.0, 0.0, 1.0), m))
+    let side_axis = normalize(cross(tangent, up))
+    let face_axis = normalize(cross(side_axis, tangent))
+    let section = [
+        vec2(-0.82, 1.0),
+        vec2(0.82, 1.0),
+        vec2(1.0, 0.58),
+        vec2(1.0, -0.58),
+        vec2(0.82, -1.0),
+        vec2(-0.82, -1.0),
+        vec2(-1.0, -0.58),
+        vec2(-1.0, 0.58),
+    ]
+    let u = station.travel
+    let taper = pow(max(sin(u * 3.14159265), 0.0), 0.5)
+    let cap = if ring == 0 || ring == SEGMENTS + 2 { 0.0 } else { 1.0 }
+    let half_width = mix(0.002 + taper * (0.21 + 0.025 * cos(station.vane * 1.8)), WEIGHT * 1.65, m)
+    let depth = mix(0.004 + taper * 0.045, 0.045, m)
+    let section_point = section[side] * vec2(half_width, depth) * cap
+    let world = p + side_axis * section_point.x + face_axis * section_point.y
+    let edge = (section[(face + 1) % 8] - section[face]) * vec2(half_width, depth)
+    var n = normalize(side_axis * -edge.y + face_axis * edge.x)
+    if segment == 0 { n = -tangent }
+    if segment == SEGMENTS + 1 { n = tangent }
+    let aspect = field.screen.x / field.screen.y
+    let scale = space_scale(aspect, field.library)
+    let perspective = 7.5 / (7.5 - world.z)
+    let center = vec2(0.0, mix(0.0, 0.46, field.library))
+    let xy = world.xy * perspective / vec2(aspect, 1.0) / (2.4 * scale) + center
+    Metal {
+        position: ClipPosition { position: vec4(xy, (7.5 - world.z) / 16.0, 1.0) },
+        world,
+        normal: n,
+    }
+}
+
 @fragment
-pub fn chamber(pixel: FragCoord, field: Field, letters: Texture<Rgba8>, linear: Sampler) -> vec4 {
+pub fn titanium(v: Metal, field: Field) -> vec4 {
+    var n = normalize(v.normal)
+    let view = normalize(vec3(0.0, 0.0, 7.5) - v.world)
+    if dot(n, view) < 0.0 { n = -n }
+    let reflected = n * (2.0 * dot(n, view)) - view
+    // Large rectangular studio lights in the reflection, a cool edge and warm low fill.
+    let top = pow(max(dot(reflected, normalize(vec3(-0.55, 0.9, 1.2))), 0.0), 9.0)
+    let stripe = pow(max(dot(reflected, normalize(vec3(0.8, 0.3, 0.8))), 0.0), 34.0)
+    let blue = pow(max(dot(reflected, normalize(vec3(1.0, -0.1, -0.2))), 0.0), 13.0)
+    let warm = pow(max(dot(reflected, normalize(vec3(-1.0, -0.6, 0.4))), 0.0), 16.0)
+    let fresnel = pow(1.0 - max(dot(n, view), 0.0), 3.0)
+    let diffuse = 0.10 + max(dot(n, normalize(vec3(-0.5, 0.8, 1.0))), 0.0) * 0.25
+    var color = vec3(0.24, 0.29, 0.35) * diffuse +
+        vec3(0.78, 0.87, 0.96) * top * 1.6 +
+        vec3(0.92, 0.96, 1.0) * stripe * 2.3 +
+        vec3(0.24, 0.38, 0.68) * blue * 1.2 +
+        vec3(0.63, 0.49, 0.34) * warm * 0.7 +
+        vec3(0.34, 0.43, 0.56) * fresnel * 0.35
+    // The final word is quiet platinum; a travelling light makes its cuts legible.
+    let sweep_at = (v.world.x - (field.time - 4.55) * 10.0) / 0.85
+    let sweep = exp(-sweep_at * sweep_at)
+    color += vec3(0.95, 1.06, 1.17) * field.morph +
+        vec3(1.3, 1.5, 1.7) * sweep * field.morph * field.morph
+    color = pow(color / (vec3(1.0) + color), vec3(0.8))
+    let light = mix(field.light, field.library * 0.64, field.library)
+    vec4(color * light, 1.0)
+}
+
+@fragment
+pub fn chamber(pixel: FragCoord, field: Field) -> vec4 {
     let uv = pixel.position.xy / field.screen
     let aspect = field.screen.x / field.screen.y
-    let center = vec2(0.5, mix(0.49, 0.27, field.library))
-    let scale = max(1.0, mix(0.78, 1.18, field.morph) / aspect) * mix(1.0, 1.65, field.library)
-    let xy = (uv - center) * vec2(aspect, -1.0) * 4.2 * scale
-    let ro = vec3(0.0, 0.0, 7.0)
-    let rd = normalize(vec3(xy, -7.0))
-    // A black room, with light falling onto a ground plane under the suspended solid.
-    let floor_uv = (uv - vec2(0.5, center.y + 0.22 / scale)) * vec2(aspect, 4.8)
-    let pool = exp(-dot(floor_uv, floor_uv) * 8.0)
-    let shadow = exp(-dot(floor_uv * vec2(1.8, 1.0), floor_uv * vec2(1.8, 1.0)) * 26.0)
-    var color = vec3(0.005, 0.008, 0.011) * field.library +
-        vec3(0.032, 0.052, 0.061) * pool * (1.0 - shadow * 0.78)
-    var distance = 4.8
-    var hit = false
-    // Reject the empty room cheaply; the march is bounded even during the morph.
-    if abs(xy.x) < mix(1.75, 3.3, field.morph) && abs(xy.y) < 1.5 {
-        for _ in 0..88 {
-            let p = ro + rd * distance
-            let d = solid(p, field, letters, linear)
-            if d < 0.0018 {
-                hit = true
-                break
-            }
-            distance += max(d * 0.8, 0.001)
-            if distance > 9.0 { break }
-        }
+    let center = vec2(0.5, mix(0.78, 0.40, field.library))
+    let floor_uv = (uv - center) * vec2(aspect, 5.5)
+    let pool = exp(-dot(floor_uv, floor_uv) * 9.0)
+    let shadow = exp(-dot(floor_uv * vec2(2.0, 1.0), floor_uv * vec2(2.0, 1.0)) * 32.0)
+    let color = vec3(0.005, 0.007, 0.010) * field.library +
+        vec3(0.035, 0.048, 0.069) * pool * (1.0 - shadow * 0.82)
+    let light = mix(field.light, field.library * 0.65, field.library)
+    vec4(color * light, 1.0)
+}
+
+@fragment
+pub fn scene(v: Vertex, content: Texture<Rgba8>, linear: Sampler) -> vec4 {
+    content.sample_level(linear, v.uv, 0.0)
+}
+
+@test
+fn the_word_mesh_uses_every_meridian_path_and_closes_at_its_letter_positions() {
+    let stations = word_stations()
+    assert(stations.len() == RINGS * 6)
+    let field = Field {
+        screen: vec2(1280.0, 720.0),
+        time: 4.5,
+        morph: 1.0,
+        light: 1.0,
+        library: 0.0,
     }
-    if hit {
-        let p = ro + rd * distance
-        let n = normal(p, field, letters, linear)
-        let view = -rd
-        let key = normalize(
-            vec3(-3.0 + 6.0 * smoothstep(3.6, 5.0, field.time) * field.morph, 3.0, 5.0) - p,
-        )
-        let rim = normalize(vec3(0.9, 0.25, -0.6))
-        let warm = normalize(vec3(-1.0, -0.4, 0.1))
-        let diffuse = max(dot(n, key), 0.0)
-        let fresnel = pow(1.0 - max(dot(n, view), 0.0), 3.0)
-        let spec = pow(max(dot(n, normalize(key + view)), 0.0), 80.0)
-        let strip = pow(max(dot(n, normalize(rim + view)), 0.0), 26.0)
-        let edge = pow(max(dot(n, rim), 0.0), 3.0)
-        let gold = pow(max(dot(n, warm), 0.0), 4.0)
-        let grain = 0.985 + 0.015 * sin(p.y * 260.0 + p.x * 35.0)
-        let broad = pow(max(dot(n, normalize(key + view)), 0.0), 16.0)
-        color = mix(vec3(0.10, 0.16, 0.18), vec3(0.32, 0.43, 0.47), field.morph) *
-            (0.1 + diffuse * 0.6) *
-            grain +
-            vec3(0.52, 0.66, 0.72) * broad * 0.46 +
-            vec3(0.75, 0.89, 0.94) * spec * 1.65 +
-            vec3(0.27, 0.62, 0.69) * (strip * 1.0 + edge * 0.45) +
-            vec3(0.65, 0.45, 0.30) * gold * 0.6 +
-            vec3(0.28, 0.43, 0.48) * fresnel * 0.55
-        color = color / (vec3(1.0) + color)
-        color = pow(color, vec3(0.78))
+    for s in stations {
+        assert(s.travel >= 0.0 && s.travel <= 1.0)
+        let end = pose(s, field)
+        assert(length(end - vec3(s.point, 0.0)) < 0.0001)
+        assert(abs(end.x) < 3.0 && abs(end.y) < 1.0)
     }
-    // The solid fades to black before a different, quieter instance lights the library.
-    let exposure = mix(field.light, smoothstep(0.0, 1.0, field.library) * 0.65, field.library)
-    vec4(color * exposure, 1.0)
+    for i in 0..6 {
+        assert(stations[i * RINGS].travel == 0.0)
+        assert(stations[(i + 1) * RINGS - 1].travel == 1.0)
+    }
 }
 
 @fragment
@@ -210,4 +308,15 @@ fn the_opening_has_black_bookends_and_a_resolved_word_before_the_library() {
     assert(black.light == 0.0 && black.library == 0.0)
     assert(moment(6.6, opening: true).library == 1.0)
     assert(moment(0.0, opening: false).library == 1.0)
+}
+
+@test
+fn portrait_keeps_the_word_in_frame_and_the_library_sculpture_present() {
+    for screen in [vec2(1280.0, 720.0), vec2(390.0, 844.0)] {
+        let aspect = screen.x / screen.y
+        // The word fits the camera's width, and the library form stands 140–240 px tall.
+        assert(space_scale(aspect, 0.0) * aspect * 2.4 > 3.0)
+        let height = 2.8 / (4.8 * space_scale(aspect, 1.0)) * screen.y
+        assert(height > 140.0 && height < 240.0)
+    }
 }

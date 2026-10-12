@@ -1,0 +1,1227 @@
+// Wrela Meridian: original centreline drawings, in ems, with a 0.052-em stroke.
+// These paths supply both the display face and the opening's transforming metal vanes.
+// Designed for Wrela; no external font outlines or raster assets are used here.
+use ui::ttf::{Baked, BakedGlyph}
+
+pub const WEIGHT: f32 = 0.026
+
+@fuel(2 ** 38)
+pub const FONT: Baked = bake()
+
+pub struct Path: Clone {
+    pub points: Vec<vec2>,
+}
+
+pub struct Letter: Clone {
+    pub advance: f32,
+    pub paths: Vec<Path>,
+}
+
+// Rounded corners retain long straight stems and flat terminals. The design points are
+// hundredths of an em; small chamfers soften the cuts without rounding the whole face.
+fn rail(points: [vec2]) -> Path {
+    var out: Vec<vec2> = Vec::new()
+    out.push(points[0] * 0.01 + vec2(0.055, 0.0))
+    for i in 1..points.len() - 1 {
+        let a = points[i - 1]
+        let b = points[i]
+        let c = points[i + 1]
+        let radius = min(5.5, min(length(b - a), length(c - b)) * 0.3)
+        let start = b + normalize(a - b) * radius
+        let end = b + normalize(c - b) * radius
+        out.push(start * 0.01 + vec2(0.055, 0.0))
+        for j in 1..9 {
+            let t = f32(j) / 8.0
+            let p = mix(mix(start, b, t), mix(b, end, t), t)
+            out.push(p * 0.01 + vec2(0.055, 0.0))
+        }
+    }
+    out.push(points[points.len() - 1] * 0.01 + vec2(0.055, 0.0))
+    Path { points: out }
+}
+
+pub fn letter(codepoint: u32) -> Letter {
+    var paths: Vec<Path> = Vec::new()
+    let advance = match codepoint {
+        32 => { //
+            0.32
+        },
+        33 => { // !
+            paths.push(rail([vec2(5.0, 72.0), vec2(5.0, 23.0)]))
+            paths.push(rail([vec2(5.0, 0.0), vec2(5.0, 5.0)]))
+            0.26
+        },
+        34 => { // "
+            paths.push(rail([vec2(0.0, 72.0), vec2(0.0, 55.0)]))
+            paths.push(rail([vec2(20.0, 72.0), vec2(20.0, 55.0)]))
+            0.36
+        },
+        35 => { // #
+            paths.push(rail([vec2(19.0, 72.0), vec2(7.0, 0.0)]))
+            paths.push(rail([vec2(57.0, 72.0), vec2(45.0, 0.0)]))
+            paths.push(rail([vec2(0.0, 23.0), vec2(63.0, 23.0)]))
+            paths.push(rail([vec2(4.0, 49.0), vec2(67.0, 49.0)]))
+            0.75
+        },
+        36 => { // $
+            paths.push(
+                rail(
+                    [
+                        vec2(60.0, 61.0),
+                        vec2(48.0, 70.0),
+                        vec2(14.0, 70.0),
+                        vec2(0.0, 56.0),
+                        vec2(0.0, 47.0),
+                        vec2(14.0, 36.0),
+                        vec2(45.0, 33.0),
+                        vec2(60.0, 22.0),
+                        vec2(60.0, 13.0),
+                        vec2(46.0, 0.0),
+                        vec2(12.0, 0.0),
+                        vec2(0.0, 9.0),
+                    ],
+                ),
+            )
+            paths.push(rail([vec2(30.0, 82.0), vec2(30.0, -12.0)]))
+            0.71
+        },
+        37 => { // %
+            paths.push(rail([vec2(3.0, 0.0), vec2(72.0, 72.0)]))
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 60.0),
+                        vec2(0.0, 72.0),
+                        vec2(14.0, 72.0),
+                        vec2(14.0, 55.0),
+                        vec2(0.0, 55.0),
+                        vec2(0.0, 60.0),
+                    ],
+                ),
+            )
+            paths.push(
+                rail(
+                    [
+                        vec2(62.0, 0.0),
+                        vec2(76.0, 0.0),
+                        vec2(76.0, 17.0),
+                        vec2(62.0, 17.0),
+                        vec2(62.0, 0.0),
+                    ],
+                ),
+            )
+            0.90
+        },
+        38 => { // &
+            paths.push(
+                rail(
+                    [
+                        vec2(69.0, 0.0),
+                        vec2(13.0, 51.0),
+                        vec2(8.0, 60.0),
+                        vec2(8.0, 66.0),
+                        vec2(16.0, 74.0),
+                        vec2(32.0, 74.0),
+                        vec2(40.0, 66.0),
+                        vec2(40.0, 58.0),
+                        vec2(0.0, 26.0),
+                        vec2(0.0, 14.0),
+                        vec2(14.0, 0.0),
+                        vec2(42.0, 0.0),
+                        vec2(66.0, 32.0),
+                    ],
+                ),
+            )
+            0.82
+        },
+        39 => { // '
+            paths.push(rail([vec2(3.0, 72.0), vec2(3.0, 55.0)]))
+            0.20
+        },
+        40 => { // (
+            paths.push(
+                rail([vec2(23.0, 80.0), vec2(7.0, 61.0), vec2(7.0, 10.0), vec2(23.0, -10.0)]),
+            )
+            0.35
+        },
+        41 => { // )
+            paths.push(
+                rail([vec2(0.0, 80.0), vec2(16.0, 61.0), vec2(16.0, 10.0), vec2(0.0, -10.0)]),
+            )
+            0.35
+        },
+        42 => { // *
+            paths.push(rail([vec2(20.0, 72.0), vec2(20.0, 34.0)]))
+            paths.push(rail([vec2(0.0, 62.0), vec2(40.0, 42.0)]))
+            paths.push(rail([vec2(0.0, 42.0), vec2(40.0, 62.0)]))
+            0.51
+        },
+        43 => { // +
+            paths.push(rail([vec2(0.0, 31.0), vec2(49.0, 31.0)]))
+            paths.push(rail([vec2(25.0, 6.0), vec2(25.0, 56.0)]))
+            0.63
+        },
+        44 => { // ,
+            paths.push(rail([vec2(8.0, 4.0), vec2(8.0, -5.0), vec2(0.0, -14.0)]))
+            0.25
+        },
+        45 => { // -
+            paths.push(rail([vec2(0.0, 30.0), vec2(34.0, 30.0)]))
+            0.48
+        },
+        46 => { // .
+            paths.push(rail([vec2(6.0, 0.0), vec2(6.0, 5.0)]))
+            0.25
+        },
+        47 => { // /
+            paths.push(rail([vec2(0.0, -10.0), vec2(46.0, 80.0)]))
+            0.59
+        },
+        48 => { // 0
+            paths.push(
+                rail(
+                    [
+                        vec2(14.0, 0.0),
+                        vec2(46.0, 0.0),
+                        vec2(60.0, 16.0),
+                        vec2(60.0, 56.0),
+                        vec2(46.0, 72.0),
+                        vec2(14.0, 72.0),
+                        vec2(0.0, 56.0),
+                        vec2(0.0, 16.0),
+                        vec2(14.0, 0.0),
+                    ],
+                ),
+            )
+            paths.push(rail([vec2(21.0, 22.0), vec2(39.0, 50.0)]))
+            0.73
+        },
+        49 => { // 1
+            paths.push(rail([vec2(0.0, 58.0), vec2(21.0, 72.0), vec2(21.0, 0.0)]))
+            0.45
+        },
+        50 => { // 2
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 59.0),
+                        vec2(13.0, 72.0),
+                        vec2(44.0, 72.0),
+                        vec2(58.0, 58.0),
+                        vec2(58.0, 46.0),
+                        vec2(0.0, 0.0),
+                        vec2(60.0, 0.0),
+                    ],
+                ),
+            )
+            0.70
+        },
+        51 => { // 3
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 72.0),
+                        vec2(43.0, 72.0),
+                        vec2(58.0, 57.0),
+                        vec2(58.0, 48.0),
+                        vec2(44.0, 36.0),
+                        vec2(24.0, 36.0),
+                    ],
+                ),
+            )
+            paths.push(
+                rail(
+                    [
+                        vec2(44.0, 36.0),
+                        vec2(58.0, 24.0),
+                        vec2(58.0, 14.0),
+                        vec2(44.0, 0.0),
+                        vec2(0.0, 0.0),
+                    ],
+                ),
+            )
+            0.69
+        },
+        52 => { // 4
+            paths.push(
+                rail(
+                    [
+                        vec2(47.0, 0.0),
+                        vec2(47.0, 72.0),
+                        vec2(36.0, 72.0),
+                        vec2(0.0, 25.0),
+                        vec2(62.0, 25.0),
+                    ],
+                ),
+            )
+            0.73
+        },
+        53 => { // 5
+            paths.push(
+                rail(
+                    [
+                        vec2(58.0, 72.0),
+                        vec2(0.0, 72.0),
+                        vec2(0.0, 39.0),
+                        vec2(43.0, 39.0),
+                        vec2(58.0, 24.0),
+                        vec2(58.0, 15.0),
+                        vec2(43.0, 0.0),
+                        vec2(0.0, 0.0),
+                    ],
+                ),
+            )
+            0.69
+        },
+        54 => { // 6
+            paths.push(
+                rail(
+                    [
+                        vec2(57.0, 72.0),
+                        vec2(20.0, 72.0),
+                        vec2(0.0, 52.0),
+                        vec2(0.0, 15.0),
+                        vec2(15.0, 0.0),
+                        vec2(44.0, 0.0),
+                        vec2(58.0, 14.0),
+                        vec2(58.0, 29.0),
+                        vec2(44.0, 43.0),
+                        vec2(0.0, 43.0),
+                    ],
+                ),
+            )
+            0.71
+        },
+        55 => { // 7
+            paths.push(rail([vec2(0.0, 72.0), vec2(57.0, 72.0), vec2(16.0, 0.0)]))
+            0.67
+        },
+        56 => { // 8
+            paths.push(
+                rail(
+                    [
+                        vec2(14.0, 36.0),
+                        vec2(0.0, 49.0),
+                        vec2(0.0, 59.0),
+                        vec2(14.0, 72.0),
+                        vec2(44.0, 72.0),
+                        vec2(58.0, 59.0),
+                        vec2(58.0, 49.0),
+                        vec2(44.0, 36.0),
+                        vec2(14.0, 36.0),
+                        vec2(0.0, 23.0),
+                        vec2(0.0, 13.0),
+                        vec2(14.0, 0.0),
+                        vec2(44.0, 0.0),
+                        vec2(58.0, 13.0),
+                        vec2(58.0, 23.0),
+                        vec2(44.0, 36.0),
+                    ],
+                ),
+            )
+            0.71
+        },
+        57 => { // 9
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 0.0),
+                        vec2(38.0, 0.0),
+                        vec2(58.0, 20.0),
+                        vec2(58.0, 57.0),
+                        vec2(43.0, 72.0),
+                        vec2(14.0, 72.0),
+                        vec2(0.0, 58.0),
+                        vec2(0.0, 43.0),
+                        vec2(14.0, 29.0),
+                        vec2(58.0, 29.0),
+                    ],
+                ),
+            )
+            0.71
+        },
+        58 => { // :
+            paths.push(rail([vec2(6.0, 0.0), vec2(6.0, 5.0)]))
+            paths.push(rail([vec2(6.0, 44.0), vec2(6.0, 46.0)]))
+            0.25
+        },
+        59 => { // ;
+            paths.push(rail([vec2(8.0, 4.0), vec2(8.0, -5.0), vec2(0.0, -14.0)]))
+            paths.push(rail([vec2(8.0, 44.0), vec2(8.0, 46.0)]))
+            0.25
+        },
+        60 => { // <
+            paths.push(rail([vec2(43.0, 58.0), vec2(0.0, 30.0), vec2(43.0, 2.0)]))
+            0.56
+        },
+        61 => { // =
+            paths.push(rail([vec2(0.0, 43.0), vec2(48.0, 43.0)]))
+            paths.push(rail([vec2(0.0, 18.0), vec2(48.0, 18.0)]))
+            0.62
+        },
+        62 => { // >
+            paths.push(rail([vec2(0.0, 58.0), vec2(43.0, 30.0), vec2(0.0, 2.0)]))
+            0.56
+        },
+        63 => { // ?
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 61.0),
+                        vec2(12.0, 72.0),
+                        vec2(38.0, 72.0),
+                        vec2(51.0, 59.0),
+                        vec2(51.0, 49.0),
+                        vec2(24.0, 29.0),
+                        vec2(24.0, 21.0),
+                    ],
+                ),
+            )
+            paths.push(rail([vec2(24.0, 0.0), vec2(24.0, 5.0)]))
+            0.62
+        },
+        64 => { // @
+            paths.push(
+                rail(
+                    [
+                        vec2(72.0, 9.0),
+                        vec2(60.0, 0.0),
+                        vec2(14.0, 0.0),
+                        vec2(0.0, 14.0),
+                        vec2(0.0, 60.0),
+                        vec2(14.0, 74.0),
+                        vec2(60.0, 74.0),
+                        vec2(75.0, 59.0),
+                        vec2(75.0, 23.0),
+                        vec2(63.0, 13.0),
+                        vec2(50.0, 13.0),
+                        vec2(50.0, 53.0),
+                        vec2(23.0, 53.0),
+                        vec2(15.0, 43.0),
+                        vec2(15.0, 22.0),
+                        vec2(24.0, 13.0),
+                        vec2(38.0, 13.0),
+                        vec2(50.0, 23.0),
+                    ],
+                ),
+            )
+            0.92
+        },
+        65 => { // A
+            paths.push(rail([vec2(0.0, 0.0), vec2(30.0, 72.0), vec2(40.0, 72.0), vec2(70.0, 0.0)]))
+            paths.push(rail([vec2(13.0, 27.0), vec2(57.0, 27.0)]))
+            0.76
+        },
+        66 => { // B
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 0.0),
+                        vec2(0.0, 72.0),
+                        vec2(45.0, 72.0),
+                        vec2(61.0, 60.0),
+                        vec2(61.0, 47.0),
+                        vec2(47.0, 37.0),
+                        vec2(0.0, 37.0),
+                    ],
+                ),
+            )
+            paths.push(
+                rail(
+                    [
+                        vec2(38.0, 37.0),
+                        vec2(64.0, 30.0),
+                        vec2(64.0, 12.0),
+                        vec2(49.0, 0.0),
+                        vec2(0.0, 0.0),
+                    ],
+                ),
+            )
+            0.74
+        },
+        67 => { // C
+            paths.push(
+                rail(
+                    [
+                        vec2(66.0, 63.0),
+                        vec2(54.0, 72.0),
+                        vec2(15.0, 72.0),
+                        vec2(0.0, 57.0),
+                        vec2(0.0, 15.0),
+                        vec2(15.0, 0.0),
+                        vec2(54.0, 0.0),
+                        vec2(66.0, 9.0),
+                    ],
+                ),
+            )
+            0.76
+        },
+        68 => { // D
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 0.0),
+                        vec2(0.0, 72.0),
+                        vec2(44.0, 72.0),
+                        vec2(66.0, 50.0),
+                        vec2(66.0, 22.0),
+                        vec2(44.0, 0.0),
+                        vec2(0.0, 0.0),
+                    ],
+                ),
+            )
+            0.77
+        },
+        69 => { // E
+            paths.push(rail([vec2(59.0, 72.0), vec2(0.0, 72.0), vec2(0.0, 0.0), vec2(59.0, 0.0)]))
+            paths.push(rail([vec2(0.0, 37.0), vec2(49.0, 37.0)]))
+            0.70
+        },
+        70 => { // F
+            paths.push(rail([vec2(58.0, 72.0), vec2(0.0, 72.0), vec2(0.0, 0.0)]))
+            paths.push(rail([vec2(0.0, 37.0), vec2(48.0, 37.0)]))
+            0.67
+        },
+        71 => { // G
+            paths.push(
+                rail(
+                    [
+                        vec2(66.0, 62.0),
+                        vec2(55.0, 72.0),
+                        vec2(15.0, 72.0),
+                        vec2(0.0, 57.0),
+                        vec2(0.0, 15.0),
+                        vec2(15.0, 0.0),
+                        vec2(53.0, 0.0),
+                        vec2(67.0, 14.0),
+                        vec2(67.0, 33.0),
+                        vec2(39.0, 33.0),
+                    ],
+                ),
+            )
+            0.78
+        },
+        72 => { // H
+            paths.push(rail([vec2(0.0, 0.0), vec2(0.0, 72.0)]))
+            paths.push(rail([vec2(66.0, 0.0), vec2(66.0, 72.0)]))
+            paths.push(rail([vec2(0.0, 37.0), vec2(66.0, 37.0)]))
+            0.78
+        },
+        73 => { // I
+            paths.push(rail([vec2(6.0, 0.0), vec2(6.0, 72.0)]))
+            0.27
+        },
+        74 => { // J
+            paths.push(
+                rail(
+                    [
+                        vec2(51.0, 72.0),
+                        vec2(51.0, 16.0),
+                        vec2(35.0, 0.0),
+                        vec2(14.0, 0.0),
+                        vec2(0.0, 14.0),
+                    ],
+                ),
+            )
+            0.62
+        },
+        75 => { // K
+            paths.push(rail([vec2(0.0, 0.0), vec2(0.0, 72.0)]))
+            paths.push(rail([vec2(61.0, 72.0), vec2(0.0, 25.0)]))
+            paths.push(rail([vec2(23.0, 43.0), vec2(65.0, 0.0)]))
+            0.75
+        },
+        76 => { // L
+            paths.push(rail([vec2(0.0, 72.0), vec2(0.0, 0.0), vec2(55.0, 0.0)]))
+            0.65
+        },
+        77 => { // M
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 0.0),
+                        vec2(0.0, 72.0),
+                        vec2(12.0, 72.0),
+                        vec2(40.0, 20.0),
+                        vec2(68.0, 72.0),
+                        vec2(80.0, 72.0),
+                        vec2(80.0, 0.0),
+                    ],
+                ),
+            )
+            0.92
+        },
+        78 => { // N
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 0.0),
+                        vec2(0.0, 72.0),
+                        vec2(9.0, 72.0),
+                        vec2(67.0, 0.0),
+                        vec2(67.0, 72.0),
+                    ],
+                ),
+            )
+            0.81
+        },
+        79 => { // O
+            paths.push(
+                rail(
+                    [
+                        vec2(17.0, 0.0),
+                        vec2(51.0, 0.0),
+                        vec2(68.0, 17.0),
+                        vec2(68.0, 55.0),
+                        vec2(51.0, 72.0),
+                        vec2(17.0, 72.0),
+                        vec2(0.0, 55.0),
+                        vec2(0.0, 17.0),
+                        vec2(17.0, 0.0),
+                    ],
+                ),
+            )
+            0.81
+        },
+        80 => { // P
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 0.0),
+                        vec2(0.0, 72.0),
+                        vec2(47.0, 72.0),
+                        vec2(62.0, 57.0),
+                        vec2(62.0, 43.0),
+                        vec2(47.0, 29.0),
+                        vec2(0.0, 29.0),
+                    ],
+                ),
+            )
+            0.73
+        },
+        81 => { // Q
+            paths.push(
+                rail(
+                    [
+                        vec2(17.0, 0.0),
+                        vec2(51.0, 0.0),
+                        vec2(68.0, 17.0),
+                        vec2(68.0, 55.0),
+                        vec2(51.0, 72.0),
+                        vec2(17.0, 72.0),
+                        vec2(0.0, 55.0),
+                        vec2(0.0, 17.0),
+                        vec2(17.0, 0.0),
+                    ],
+                ),
+            )
+            paths.push(rail([vec2(40.0, 22.0), vec2(72.0, -10.0)]))
+            0.83
+        },
+        82 => { // R
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 0.0),
+                        vec2(0.0, 72.0),
+                        vec2(47.0, 72.0),
+                        vec2(62.0, 57.0),
+                        vec2(62.0, 43.0),
+                        vec2(47.0, 29.0),
+                        vec2(0.0, 29.0),
+                    ],
+                ),
+            )
+            paths.push(rail([vec2(34.0, 29.0), vec2(66.0, 0.0)]))
+            0.77
+        },
+        83 => { // S
+            paths.push(
+                rail(
+                    [
+                        vec2(63.0, 64.0),
+                        vec2(52.0, 72.0),
+                        vec2(15.0, 72.0),
+                        vec2(0.0, 57.0),
+                        vec2(0.0, 48.0),
+                        vec2(14.0, 37.0),
+                        vec2(49.0, 34.0),
+                        vec2(63.0, 23.0),
+                        vec2(63.0, 14.0),
+                        vec2(49.0, 0.0),
+                        vec2(13.0, 0.0),
+                        vec2(0.0, 9.0),
+                    ],
+                ),
+            )
+            0.73
+        },
+        84 => { // T
+            paths.push(rail([vec2(0.0, 72.0), vec2(66.0, 72.0)]))
+            paths.push(rail([vec2(33.0, 72.0), vec2(33.0, 0.0)]))
+            0.76
+        },
+        85 => { // U
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 72.0),
+                        vec2(0.0, 17.0),
+                        vec2(17.0, 0.0),
+                        vec2(49.0, 0.0),
+                        vec2(66.0, 17.0),
+                        vec2(66.0, 72.0),
+                    ],
+                ),
+            )
+            0.79
+        },
+        86 => { // V
+            paths.push(rail([vec2(0.0, 72.0), vec2(29.0, 0.0), vec2(39.0, 0.0), vec2(68.0, 72.0)]))
+            0.78
+        },
+        87 => { // W
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 72.0),
+                        vec2(21.0, 0.0),
+                        vec2(50.0, 49.0),
+                        vec2(79.0, 0.0),
+                        vec2(100.0, 72.0),
+                    ],
+                ),
+            )
+            1.15
+        },
+        88 => { // X
+            paths.push(rail([vec2(0.0, 72.0), vec2(66.0, 0.0)]))
+            paths.push(rail([vec2(0.0, 0.0), vec2(66.0, 72.0)]))
+            0.78
+        },
+        89 => { // Y
+            paths.push(rail([vec2(0.0, 72.0), vec2(32.0, 35.0), vec2(64.0, 72.0)]))
+            paths.push(rail([vec2(32.0, 35.0), vec2(32.0, 0.0)]))
+            0.77
+        },
+        90 => { // Z
+            paths.push(rail([vec2(0.0, 72.0), vec2(61.0, 72.0), vec2(0.0, 0.0), vec2(61.0, 0.0)]))
+            0.72
+        },
+        91 => { // [
+            paths.push(
+                rail([vec2(24.0, 80.0), vec2(5.0, 80.0), vec2(5.0, -10.0), vec2(24.0, -10.0)]),
+            )
+            0.36
+        },
+        92 => { // backslash
+            paths.push(rail([vec2(0.0, 80.0), vec2(46.0, -10.0)]))
+            0.59
+        },
+        93 => { // ]
+            paths.push(
+                rail([vec2(0.0, 80.0), vec2(19.0, 80.0), vec2(19.0, -10.0), vec2(0.0, -10.0)]),
+            )
+            0.36
+        },
+        94 => { // ^
+            paths.push(rail([vec2(0.0, 42.0), vec2(24.0, 73.0), vec2(48.0, 42.0)]))
+            0.60
+        },
+        95 => { // _
+            paths.push(rail([vec2(0.0, -13.0), vec2(54.0, -13.0)]))
+            0.67
+        },
+        96 => { // `
+            paths.push(rail([vec2(0.0, 80.0), vec2(14.0, 68.0)]))
+            0.28
+        },
+        97 => { // a
+            paths.push(
+                rail(
+                    [
+                        vec2(51.0, 40.0),
+                        vec2(40.0, 51.0),
+                        vec2(12.0, 51.0),
+                        vec2(0.0, 39.0),
+                        vec2(0.0, 12.0),
+                        vec2(12.0, 0.0),
+                        vec2(38.0, 0.0),
+                        vec2(51.0, 13.0),
+                    ],
+                ),
+            )
+            paths.push(rail([vec2(51.0, 51.0), vec2(51.0, 0.0)]))
+            0.65
+        },
+        98 => { // b
+            paths.push(rail([vec2(0.0, 76.0), vec2(0.0, 0.0)]))
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 39.0),
+                        vec2(13.0, 51.0),
+                        vec2(40.0, 51.0),
+                        vec2(52.0, 39.0),
+                        vec2(52.0, 12.0),
+                        vec2(40.0, 0.0),
+                        vec2(13.0, 0.0),
+                        vec2(0.0, 12.0),
+                    ],
+                ),
+            )
+            0.66
+        },
+        99 => { // c
+            paths.push(
+                rail(
+                    [
+                        vec2(51.0, 43.0),
+                        vec2(41.0, 51.0),
+                        vec2(12.0, 51.0),
+                        vec2(0.0, 39.0),
+                        vec2(0.0, 12.0),
+                        vec2(12.0, 0.0),
+                        vec2(41.0, 0.0),
+                        vec2(51.0, 8.0),
+                    ],
+                ),
+            )
+            0.63
+        },
+        100 => { // d
+            paths.push(rail([vec2(52.0, 76.0), vec2(52.0, 0.0)]))
+            paths.push(
+                rail(
+                    [
+                        vec2(52.0, 39.0),
+                        vec2(39.0, 51.0),
+                        vec2(12.0, 51.0),
+                        vec2(0.0, 39.0),
+                        vec2(0.0, 12.0),
+                        vec2(12.0, 0.0),
+                        vec2(39.0, 0.0),
+                        vec2(52.0, 12.0),
+                    ],
+                ),
+            )
+            0.66
+        },
+        101 => { // e
+            paths.push(
+                rail(
+                    [
+                        vec2(53.0, 7.0),
+                        vec2(43.0, 0.0),
+                        vec2(12.0, 0.0),
+                        vec2(0.0, 12.0),
+                        vec2(0.0, 39.0),
+                        vec2(12.0, 51.0),
+                        vec2(41.0, 51.0),
+                        vec2(53.0, 39.0),
+                        vec2(53.0, 27.0),
+                        vec2(0.0, 27.0),
+                    ],
+                ),
+            )
+            0.66
+        },
+        102 => { // f
+            paths.push(rail([vec2(8.0, 0.0), vec2(8.0, 63.0), vec2(20.0, 76.0), vec2(34.0, 76.0)]))
+            paths.push(rail([vec2(0.0, 51.0), vec2(33.0, 51.0)]))
+            0.45
+        },
+        103 => { // g
+            paths.push(
+                rail(
+                    [
+                        vec2(52.0, 39.0),
+                        vec2(39.0, 51.0),
+                        vec2(12.0, 51.0),
+                        vec2(0.0, 39.0),
+                        vec2(0.0, 12.0),
+                        vec2(12.0, 0.0),
+                        vec2(39.0, 0.0),
+                        vec2(52.0, 12.0),
+                    ],
+                ),
+            )
+            paths.push(
+                rail([vec2(52.0, 51.0), vec2(52.0, -12.0), vec2(39.0, -25.0), vec2(8.0, -25.0)]),
+            )
+            0.66
+        },
+        104 => { // h
+            paths.push(rail([vec2(0.0, 0.0), vec2(0.0, 76.0)]))
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 38.0),
+                        vec2(14.0, 51.0),
+                        vec2(39.0, 51.0),
+                        vec2(52.0, 38.0),
+                        vec2(52.0, 0.0),
+                    ],
+                ),
+            )
+            0.66
+        },
+        105 => { // i
+            paths.push(rail([vec2(6.0, 0.0), vec2(6.0, 51.0)]))
+            paths.push(rail([vec2(6.0, 70.0), vec2(6.0, 75.0)]))
+            0.27
+        },
+        106 => { // j
+            paths.push(
+                rail([vec2(17.0, 51.0), vec2(17.0, -13.0), vec2(5.0, -25.0), vec2(-9.0, -25.0)]),
+            )
+            paths.push(rail([vec2(17.0, 70.0), vec2(17.0, 75.0)]))
+            0.33
+        },
+        107 => { // k
+            paths.push(rail([vec2(0.0, 0.0), vec2(0.0, 76.0)]))
+            paths.push(rail([vec2(48.0, 51.0), vec2(0.0, 16.0)]))
+            paths.push(rail([vec2(20.0, 30.0), vec2(50.0, 0.0)]))
+            0.61
+        },
+        108 => { // l
+            paths.push(rail([vec2(0.0, 76.0), vec2(0.0, 8.0), vec2(8.0, 0.0), vec2(17.0, 0.0)]))
+            0.31
+        },
+        109 => { // m
+            paths.push(rail([vec2(0.0, 0.0), vec2(0.0, 51.0)]))
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 39.0),
+                        vec2(12.0, 51.0),
+                        vec2(29.0, 51.0),
+                        vec2(41.0, 39.0),
+                        vec2(41.0, 0.0),
+                    ],
+                ),
+            )
+            paths.push(
+                rail(
+                    [
+                        vec2(41.0, 39.0),
+                        vec2(54.0, 51.0),
+                        vec2(72.0, 51.0),
+                        vec2(84.0, 39.0),
+                        vec2(84.0, 0.0),
+                    ],
+                ),
+            )
+            0.98
+        },
+        110 => { // n
+            paths.push(rail([vec2(0.0, 0.0), vec2(0.0, 51.0)]))
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 39.0),
+                        vec2(13.0, 51.0),
+                        vec2(39.0, 51.0),
+                        vec2(52.0, 38.0),
+                        vec2(52.0, 0.0),
+                    ],
+                ),
+            )
+            0.66
+        },
+        111 => { // o
+            paths.push(
+                rail(
+                    [
+                        vec2(12.0, 0.0),
+                        vec2(40.0, 0.0),
+                        vec2(52.0, 12.0),
+                        vec2(52.0, 39.0),
+                        vec2(40.0, 51.0),
+                        vec2(12.0, 51.0),
+                        vec2(0.0, 39.0),
+                        vec2(0.0, 12.0),
+                        vec2(12.0, 0.0),
+                    ],
+                ),
+            )
+            0.66
+        },
+        112 => { // p
+            paths.push(rail([vec2(0.0, -25.0), vec2(0.0, 51.0)]))
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 39.0),
+                        vec2(13.0, 51.0),
+                        vec2(40.0, 51.0),
+                        vec2(52.0, 39.0),
+                        vec2(52.0, 12.0),
+                        vec2(40.0, 0.0),
+                        vec2(13.0, 0.0),
+                        vec2(0.0, 12.0),
+                    ],
+                ),
+            )
+            0.66
+        },
+        113 => { // q
+            paths.push(rail([vec2(52.0, -25.0), vec2(52.0, 51.0)]))
+            paths.push(
+                rail(
+                    [
+                        vec2(52.0, 39.0),
+                        vec2(39.0, 51.0),
+                        vec2(12.0, 51.0),
+                        vec2(0.0, 39.0),
+                        vec2(0.0, 12.0),
+                        vec2(12.0, 0.0),
+                        vec2(39.0, 0.0),
+                        vec2(52.0, 12.0),
+                    ],
+                ),
+            )
+            0.66
+        },
+        114 => { // r
+            paths.push(rail([vec2(0.0, 0.0), vec2(0.0, 51.0), vec2(29.0, 51.0), vec2(41.0, 40.0)]))
+            0.55
+        },
+        115 => { // s
+            paths.push(
+                rail(
+                    [
+                        vec2(49.0, 44.0),
+                        vec2(40.0, 51.0),
+                        vec2(10.0, 51.0),
+                        vec2(0.0, 41.0),
+                        vec2(0.0, 34.0),
+                        vec2(11.0, 26.0),
+                        vec2(38.0, 24.0),
+                        vec2(49.0, 16.0),
+                        vec2(49.0, 9.0),
+                        vec2(40.0, 0.0),
+                        vec2(10.0, 0.0),
+                        vec2(0.0, 7.0),
+                    ],
+                ),
+            )
+            0.61
+        },
+        116 => { // t
+            paths.push(rail([vec2(10.0, 70.0), vec2(10.0, 12.0), vec2(22.0, 0.0), vec2(34.0, 0.0)]))
+            paths.push(rail([vec2(0.0, 51.0), vec2(35.0, 51.0)]))
+            0.45
+        },
+        117 => { // u
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 51.0),
+                        vec2(0.0, 13.0),
+                        vec2(13.0, 0.0),
+                        vec2(39.0, 0.0),
+                        vec2(52.0, 13.0),
+                    ],
+                ),
+            )
+            paths.push(rail([vec2(52.0, 51.0), vec2(52.0, 0.0)]))
+            0.66
+        },
+        118 => { // v
+            paths.push(rail([vec2(0.0, 51.0), vec2(22.0, 0.0), vec2(29.0, 0.0), vec2(51.0, 51.0)]))
+            0.62
+        },
+        119 => { // w
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 51.0),
+                        vec2(16.0, 0.0),
+                        vec2(39.0, 37.0),
+                        vec2(62.0, 0.0),
+                        vec2(78.0, 51.0),
+                    ],
+                ),
+            )
+            0.91
+        },
+        120 => { // x
+            paths.push(rail([vec2(0.0, 51.0), vec2(49.0, 0.0)]))
+            paths.push(rail([vec2(0.0, 0.0), vec2(49.0, 51.0)]))
+            0.61
+        },
+        121 => { // y
+            paths.push(rail([vec2(0.0, 51.0), vec2(24.0, 0.0)]))
+            paths.push(
+                rail([vec2(51.0, 51.0), vec2(20.0, -17.0), vec2(9.0, -25.0), vec2(-1.0, -25.0)]),
+            )
+            0.62
+        },
+        122 => { // z
+            paths.push(rail([vec2(0.0, 51.0), vec2(47.0, 51.0), vec2(0.0, 0.0), vec2(47.0, 0.0)]))
+            0.59
+        },
+        123 => { // {
+            paths.push(
+                rail(
+                    [
+                        vec2(30.0, 80.0),
+                        vec2(16.0, 80.0),
+                        vec2(10.0, 73.0),
+                        vec2(10.0, 42.0),
+                        vec2(0.0, 35.0),
+                        vec2(10.0, 28.0),
+                        vec2(10.0, -3.0),
+                        vec2(16.0, -10.0),
+                        vec2(30.0, -10.0),
+                    ],
+                ),
+            )
+            0.45
+        },
+        124 => { // |
+            paths.push(rail([vec2(6.0, 80.0), vec2(6.0, -10.0)]))
+            0.27
+        },
+        125 => { // }
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 80.0),
+                        vec2(14.0, 80.0),
+                        vec2(20.0, 73.0),
+                        vec2(20.0, 42.0),
+                        vec2(30.0, 35.0),
+                        vec2(20.0, 28.0),
+                        vec2(20.0, -3.0),
+                        vec2(14.0, -10.0),
+                        vec2(0.0, -10.0),
+                    ],
+                ),
+            )
+            0.45
+        },
+        126 => { // ~
+            paths.push(
+                rail(
+                    [
+                        vec2(0.0, 28.0),
+                        vec2(11.0, 39.0),
+                        vec2(21.0, 39.0),
+                        vec2(32.0, 27.0),
+                        vec2(42.0, 27.0),
+                        vec2(53.0, 38.0),
+                    ],
+                ),
+            )
+            0.65
+        },
+        _ => return letter(63),
+    }
+    Letter { advance, paths }
+}
+
+fn path_distance(p: vec2, path: Path) -> f32 {
+    var distance = 100.0
+    let n = path.points.len()
+    let open = length(path.points[0] - path.points[n - 1]) > 0.001
+    for i in 0..n - 1 {
+        let a = path.points[i]
+        let b = path.points[i + 1]
+        let v = b - a
+        let t = saturate(dot(p - a, v) / max(dot(v, v), 0.00000001))
+        var segment = length(p - mix(a, b, t)) - WEIGHT
+        // Clip each terminal before the union: a bar ending at a stem must not cut it.
+        if open && i == 0 { segment = max(segment, -dot(p - a, normalize(v))) }
+        if open && i + 2 == n { segment = max(segment, dot(p - b, normalize(v))) }
+        distance = min(distance, segment)
+    }
+    distance
+}
+
+// No font file or runtime outline processing: the compiler bakes the original drawings.
+pub fn bake() -> Baked {
+    let em = 64.0
+    let spread = 5.0
+    var glyphs: Vec<BakedGlyph> = Vec::new()
+    var fields: Vec<u8> = Vec::new()
+    for cp in 32..127 {
+        let l = letter(cp)
+        var lo = vec2(100.0)
+        var hi = vec2(-100.0)
+        for path in l.paths {
+            for p in path.points {
+                lo = min(lo, p)
+                hi = max(hi, p)
+            }
+        }
+        let empty = l.paths.is_empty()
+        let left = if empty { 0.0 } else { floor((lo.x - WEIGHT) * em - spread) }
+        let top = if empty { 0.0 } else { ceil((hi.y + WEIGHT) * em + spread) }
+        let width = if empty { 0 } else { u32(ceil((hi.x + WEIGHT) * em + spread) - left) }
+        let height = if empty { 0 } else { u32(top - floor((lo.y - WEIGHT) * em - spread)) }
+        glyphs.push(
+            BakedGlyph {
+                codepoint: cp,
+                advance: l.advance,
+                left,
+                top,
+                width,
+                height,
+                offset: fields.len(),
+            },
+        )
+        for y in 0..height {
+            for x in 0..width {
+                let p = vec2(left + f32(x) + 0.5, top - f32(y) - 0.5) / em
+                var distance = 100.0
+                for path in l.paths { distance = min(distance, path_distance(p, path)) }
+                fields.push(u8(round(saturate(0.5 - distance * em / (2.0 * spread)) * 255.0)))
+            }
+        }
+    }
+    Baked {
+        em,
+        spread,
+        ascender: 0.83,
+        descender: -0.28,
+        line_gap: 0.12,
+        glyphs,
+        kerning: Vec::new(),
+        fields,
+    }
+}
+
+@test
+fn meridian_has_distinct_printable_ascii_and_bounded_fields() {
+    borrow font = FONT
+    assert(font.glyphs.len() == 95)
+    var end = 0
+    for i in 0..95 {
+        let g = font.glyphs[i]
+        assert(g.codepoint == i + 32 && g.advance > 0.0 && g.advance < 1.2)
+        assert(g.offset == end)
+        end += g.width * g.height
+        assert(end <= font.fields.len())
+        if i == 0 { assert(g.width == 0 && g.height == 0) } else {
+            var ink = 0
+            for k in g.offset..end { if font.fields[k] > 127 { ink += 1 } }
+            assert(ink > 0, "every visible ASCII character has ink")
+        }
+    }
+    assert(end == font.fields.len())
+    assert(letter(87).advance > letter(77).advance)
+    assert(letter(105).advance < letter(110).advance)
+    // Lowercase has its own x-height, not scaled capitals.
+    assert(letter(97).paths[0].points[0].y < letter(65).paths[0].points[1].y)
+}
+
+@test
+fn a_cut_terminal_preserves_the_stroke_it_meets() {
+    let e = letter(101)
+    assert(path_distance(vec2(0.045, 0.27), e.paths[0]) < 0.0)
+    let l = letter(108)
+    assert(path_distance(vec2(0.24, 0.0), l.paths[0]) > 0.0)
+    assert(path_distance(vec2(0.20, 0.0), l.paths[0]) < 0.0)
+}

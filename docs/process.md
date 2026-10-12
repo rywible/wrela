@@ -147,6 +147,43 @@ and 17.731 ms CPU frame call before this change, then 12.127 ms and 17.932 ms. T
 is not a performance gain. Gate time impact was not measured as a paired benchmark; the
 same complete gate retains all checks and gains four small tests plus the scene shader.
 
+## Original console typography and unfolding sculpture, 2026-10-12
+
+Ryan requested an original sleek font, a better alien form and transformation, and removal
+of the top-right player name. Codex used the frontend-design skill to compare two concepts
+and authored Wrela Meridian: 95 original printable ASCII glyphs with broad proportions,
+cut terminals, a low lowercase x-height, and softened geometric corners. Centreline paths
+in `console/meridian.wrela` supply build-time distance fields for display text and the
+opening's actual mesh. The existing Manrope face remains for small controls and save details.
+New builds replace Barlow; retained immutable releases keep their original notices. The new drawings and procedural sculpture are original
+project code under the repository's MIT license; no outside outlines, visual references,
+shader source or generative media assets were used.
+
+Six tapered titanium vanes rotate around a hollow spindle, separate with a short stagger,
+and unfold into their exact glyph paths. Mesh topology stays fixed throughout the opening.
+A moving light crosses the resolved word before the room fades into the library. The prior
+field interpolation and font texture extrusion are removed. All geometry, lighting, text
+and timing remain in Wrela. The host ABI, static hosting model, saved profile identity and
+game code are unchanged. The top-right profile label is removed; settings and saves remain.
+
+A Wrela specimen and Chrome sequences at desktop and portrait sizes check the alphabet,
+full opening, library, skip and saved animation-off behavior. Focused regressions cover glyph
+coverage and field bounds, terminal joins, and the correspondence between font paths and
+mesh endpoints, plus portrait framing. Captures are original renders, retained outside the repository.
+
+On the M4, matched 480-frame native lockstep profiles at 1280×720 measured the previous
+opening at 0.666 ms median GPU span and 1.326 ms CPU frame call; the final mesh opening
+measured 0.167 ms and 0.669 ms. GPU p95 fell from 1.205 to 0.271 ms, about 1.6% of the
+16.7 ms frame budget. The mesh adds a resize-bound colour/depth pair (7.0 MiB at this size)
+and uploads its geometry once. These are startup-inclusive native samples, not sustained
+Chrome frame rates or browser session-loading measurements.
+
+Matched 120-frame Last Green profiles measured 12.335 ms GPU span / 17.967 ms CPU before,
+and 11.856 / 17.926 ms after; all 114 shader inventory entries match. This console change
+adds no game-frame work; the difference is measurement variation. There is no paired gate
+time benchmark. The gate keeps its existing coverage and gains four small regressions,
+a cached original-font bake and two additional render pipelines.
+
 ## Simulated construction studies, 2026-10-11
 
 Ryan asked for worlds composed by simulation across seeds, including people whose construction

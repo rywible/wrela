@@ -1,9 +1,15 @@
 // Wrela's console. The catalog and game session protocol supply all title-specific content.
 use catalog::{Card, parse}
-use paint::{Field, chamber, image, moment, quad, word_field}
+use paint::{
+    Field, Station, VERTICES_PER_VANE, RINGS, chamber, image, moment, quad, scene, sculpture,
+    titanium, word_stations,
+}
 use platform::host
 use platform::protocol::{Reply, Request, SaveInfo, valid_key}
-use std::gpu::{Rgba8, Sampler, Texture, begin_screen_pass, draw, sampler, texture}
+use std::gpu::{
+    Compare, Depth, DepthTexture, GpuBuffer, Rgba8, Sampler, Texture, begin_pass_with_depth,
+    begin_screen_pass, buffer_of, depth_texture, draw, sampler, texture,
+}
 use std::input::{Button, Event, Key, PadButton, events}
 use std::io::{Pending, fetch, load as read_file, store}
 use std::serialize::{LoadError, Serialize, load, save}
@@ -13,8 +19,8 @@ use ui::ttf::{Baked, bake}
 
 @fuel(2 ** 38)
 const BODY: Baked = bake(embed("fonts/Manrope-Medium.ttf"), em: 36.0, spread: 4.0)
-@fuel(2 ** 38)
-const DISPLAY: Baked = bake(embed("fonts/Barlow-Light.ttf"), em: 48.0, spread: 5.0)
+@fuel(2 ** 32)
+const STATIONS: Vec<Station> = word_stations()
 const INK = vec4(0.945, 0.969, 0.992, 1.0)
 const MUTED = vec4(0.48, 0.56, 0.59, 1.0)
 const LIGHT = vec4(0.82, 0.91, 0.94, 1.0)
@@ -88,7 +94,9 @@ pub struct Console {
     renderer: Renderer,
     draw: DrawList,
     linear: Sampler,
-    letters: Texture<Rgba8>,
+    sculpture: GpuBuffer<Station>,
+    scene: Texture<Rgba8>,
+    depth: DepthTexture,
     covers: Vec<Cover>,
     panels: Vec<Panel>,
     album: f32,
@@ -129,16 +137,16 @@ pub struct Console {
 }
 
 pub fn init() -> Console {
-    let fonts = Fonts::from_baked(BODY, DISPLAY)
+    let fonts = Fonts::from_baked(BODY, meridian::FONT)
     let renderer = Renderer::new(fonts)
-    var letters = texture::<Rgba8>(width: 256, height: 96)
-    letters.write(x: 0, y: 0, width: 256, height: 96, bytes: word_field(fonts.mono))
     Console {
         fonts,
         renderer,
         draw: DrawList::new(),
         linear: sampler(),
-        letters,
+        sculpture: buffer_of(STATIONS),
+        scene: texture(width: 1, height: 1),
+        depth: depth_texture(width: 1, height: 1),
         covers: Vec::new(),
         panels: Vec::new(),
         album: 0.0,
@@ -917,11 +925,6 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         let margin = if logical < 800.0 { 24.0 } else { 40.0 }
         text(mut s, "Wrela", 26.0, vec2(margin, margin - 1.0), INK, Face::Mono)
         cog(mut s, w, margin)
-        if w > 480.0 {
-            let name = s.profile.name.clone()
-            let measured = s.fonts.sans.measure(name, 14.0)
-            text(mut s, name, 14.0, vec2(w - margin - 64.0 - measured, margin + 6.0), MUTED)
-        }
         match s.pane {
             Pane::Games => library(mut s, w, h),
             Pane::Saves => saves(mut s, w, h),
@@ -929,16 +932,36 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         }
     }
     s.renderer.upload(s.draw)
-    let pass = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     let screen = vec2(f32(width), f32(height))
+    if s.scene.width() != width || s.scene.height() != height {
+        s.scene = texture(width, height)
+        s.depth = depth_texture(width, height)
+    }
+    let field = Field { screen, time: if s.reduced || !s.profile.motion { 1.8 } else {
+        time
+    }, morph: if phase.library > 0.0 { 0.0 } else {
+        phase.morph
+    }, light: phase.light, library: phase.library }
+    let space = begin_pass_with_depth(mut s.scene, mut s.depth, clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(
+        space,
+        quad.bind(screen, rect: vec4(0.0, 0.0, screen)),
+        chamber.bind(field),
+        vertices: 6,
+        depth: Depth { compare: Compare::Always, write: false },
+    )
+    draw(
+        space,
+        sculpture.bind(stations: s.sculpture, field: field),
+        titanium.bind(field),
+        vertices: STATIONS.len() / RINGS * VERTICES_PER_VANE,
+    )
+    space.end()
+    let pass = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         pass,
         quad.bind(screen, rect: vec4(0.0, 0.0, screen)),
-        chamber.bind(field: Field { screen, time: if s.reduced || !s.profile.motion { 1.8 } else {
-            time
-        }, morph: if phase.library > 0.0 { 0.0 } else {
-            phase.morph
-        }, light: phase.light, library: phase.library }, letters: s.letters, linear: s.linear),
+        scene.bind(content: s.scene, linear: s.linear),
         vertices: 6,
     )
     for index in 0..s.panels.len() {
