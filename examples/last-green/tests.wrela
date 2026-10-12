@@ -6,6 +6,7 @@ use engine::grow::{BAKE, BESIDE_PATH, Cause, Grid, HEAD_ROOM, Mark, State, Tree}
 use engine::noise::rand
 use engine::place::{Feature, Keeper, Map, TILE}
 use engine::terrain::Terrain
+use engine::run::{Answered, Asks, TickInput}
 use std::field::Surface
 use std::io::print
 use std::math::TAU
@@ -512,6 +513,37 @@ fn a_trunk_stops_the_player_where_it_is_drawn() {
     assert(worst <= 0.05, f"a trunk at {at} is drawn {worst} m past its obstacle")
 }
 
+/// A synchronous test driver for the same ask/due contract as engine::run. Work is real;
+/// computing it immediately does not expose its answer before the scheduled tick.
+struct CollisionAnswer {
+    ask: vec2,
+    due: u32,
+    answer: Vec<vec4>,
+}
+
+fn tick_world(
+    w: mut world::World,
+    pending: mut Vec<CollisionAnswer>,
+    tick: u32,
+    records: Vec<std::input::Event>,
+) {
+    var answers: Vec<Answered<vec2, Vec<vec4>>> = Vec::new()
+    var i = 0
+    while i < pending.len() {
+        if pending[i].due <= tick {
+            let done = pending.remove(i)
+            answers.push(Answered { ask: done.ask, answer: take done.answer })
+        } else {
+            i += 1
+        }
+    }
+    world::tick(mut w, TickInput { tick, dt: 1.0 / 60.0, records: records.clone(), answers })
+    for (ask, due) in w.asks(tick) {
+        assert(due > tick, "collision answer was not scheduled after its request")
+        pending.push(CollisionAnswer { ask, due, answer: world::World::work(ask) })
+    }
+}
+
 /// AC5's harness and #55's Method: the floor's walk, pressed once (P), is walked to its end by
 /// the sim, at a run, round what's in its way, giving up no more than one point in fifty; and it
 /// takes the time the record states (its length on foot).
@@ -519,6 +551,7 @@ fn a_trunk_stops_the_player_where_it_is_drawn() {
 @fuel(2 ** 40)
 fn the_floors_walk_is_walked_to_its_end() {
     var w = world::spawn_world()
+    var pending: Vec<CollisionAnswer> = Vec::new()
     var k = 0
     while k < 60 * 60 * 60 && (k == 0 || w.tour.on) {
         var records: Vec<std::input::Event> = Vec::new()
@@ -531,10 +564,7 @@ fn the_floors_walk_is_walked_to_its_end() {
                 },
             )
         }
-        world::tick(
-            mut w,
-            engine::run::TickInput { tick: k, dt: 1.0 / 60.0, records, answers: Vec::new() },
-        )
+        tick_world(mut w, mut pending, k, records)
         k += 1
     }
     let (leg, of, skipped) = (w.tour.leg, history::TOUR.len(), w.tour.skipped)
@@ -571,6 +601,7 @@ fn the_camera_is_never_inside_a_thing() {
     }
     let framing = engine::player::Framing {}
     var w = world::spawn_world()
+    var pending: Vec<CollisionAnswer> = Vec::new()
     var frames = 0
     var seen = 0
     var k = 0
@@ -585,10 +616,7 @@ fn the_camera_is_never_inside_a_thing() {
                 },
             )
         }
-        world::tick(
-            mut w,
-            engine::run::TickInput { tick: k, dt: 1.0 / 60.0, records, answers: Vec::new() },
-        )
+        tick_world(mut w, mut pending, k, records)
         k += 1
         if k % 30 != 0 {
             continue
@@ -1470,6 +1498,7 @@ fn crowded_open_trees_take_their_forest_form() {
 @test
 fn the_wolf_comes_out_to_fight_at_the_ring() {
     var w = world::spawn_world()
+    var pending: Vec<CollisionAnswer> = Vec::new()
     let key = |k: std::input::Key| std::input::Event::KeyDown {
         key: k,
         repeat: false,
@@ -1484,10 +1513,7 @@ fn the_wolf_comes_out_to_fight_at_the_ring() {
             }
             records.push(key(std::input::Key::Enter))
         }
-        world::tick(
-            mut w,
-            engine::run::TickInput { tick: k, dt: 1.0 / 60.0, records, answers: Vec::new() },
-        )
+        tick_world(mut w, mut pending, k, records)
         let apart = length(w.fight.fight.wolf.pos() - w.player.at.world())
         nearest = min(nearest, apart)
         if k % 60 == 0 {
@@ -1496,4 +1522,63 @@ fn the_wolf_comes_out_to_fight_at_the_ring() {
     }
     assert(w.fight.awake, "the wolf never woke")
     assert(nearest < 4.0, f"the wolf came no nearer than {nearest} m")
+}
+
+/// Gravel continues up a creek's bank, with wet soil pockets for rushes; the dry meadow and
+/// the submerged bed keep their distinct cover.
+@test
+fn stream_bank_gravel_material_tracks_wet_edge() {
+    let g = ground::ground()
+    let p = vec3(0.0, g.at(x: 0.0, z: 0.0), 0.0)
+    let n = vec3(0.0, 1.0, 0.0)
+    let dry = g.covered(p, n, vec4(1.0, 0.0, 0.3, 0.0), 0.25)
+    let bank = g.covered(p, n, vec4(1.0, 0.0, 0.86, 0.0), 0.25)
+    let bed = g.covered(p, n, vec4(1.0, 0.0, 1.0, 0.0), 0.25)
+    assert(bank.materials.z > dry.materials.z + 0.1, "a wet bank still has only meadow soil")
+    assert(bank.materials.y > 0.1 && bank.grass > 0.0, "rushes lost all their bank pockets")
+    assert(bank.under.x > 0.2 && bank.under.w > 0.4, "an open bank has no rush habitat slot")
+    assert(abs(bank.flora.y - 0.86) < 1.0e-5, "bank wetness was lost")
+    assert(bed.grass == 0.0 && bed.materials.z > 0.7, "the channel lost its bare gravel bed")
+}
+
+/// Cutting the duplicate crag volume must not raise a lower basin or shave relief from the
+/// exposed ramp and talus. The complete physical height is already supplied by the cook.
+@test
+fn crag_substrate_preserves_lower_basins_and_exposed_ground() {
+    let g = ground::ground()
+    let mere = ground::MERE.xy
+    let lake = vec3(mere.x, g.at(x: mere.x, z: mere.y), mere.y)
+    assert(g.substrate_height(lake) == lake.y, "the mere's basin changed")
+    let c = g.land.crags[0]
+    let low = vec3(c.x, g.under_crags(c.xy) - 2.0, c.y)
+    assert(g.substrate_height(low) == low.y, "the substrate filled an existing lower basin")
+    var exposed = 0
+    for j in -10..11 {
+        for k in -10..11 {
+            let p = c.xy + vec2(f32(j), f32(k)) * 6.0
+            let under = g.under_crags(p)
+            let substrate = g.land.crag_substrate_over(p, under)
+            let y = g.at(x: p.x, z: p.y)
+            let drawn = g.substrate_height(vec3(p.x, y, p.y))
+            assert(drawn <= y + 1.0e-5, "the substrate rose through the surface")
+            if substrate.y == 0.0 {
+                assert(drawn == y, f"exposed ground relief was shaved at {p}")
+                exposed += 1
+            }
+        }
+    }
+    assert(exposed > 100, "the fixture missed exposed ground")
+}
+
+/// A shaded ravine's exposed bedrock keeps its mineral colour rather than being painted as
+/// forest-floor litter. Canopy light still affects soil, grass and the actual illumination.
+@test
+fn canopy_litter_does_not_paint_the_ravines_rock_faces() {
+    let g = ground::ground()
+    let p = vec3(-60.0, g.at(x: -60.0, z: -262.0), -262.0)
+    let n = normalize(vec3(1.0, 0.08, 0.0))
+    let bare = g.cover_at(p, n, 0.25)
+    let shade = g.covered(p, n, vec4(0.1, 0.0, 0.0, 0.0), 0.25)
+    assert(bare.materials.z > 0.99, "the fixture missed a rock face")
+    assert(length(shade.albedo - bare.albedo) < 1.0e-5, "forest litter recoloured exposed rock")
 }

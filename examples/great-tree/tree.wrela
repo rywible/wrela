@@ -4,7 +4,7 @@
 // from this, as the clearing loads.
 
 use engine::noise::{pick, rand}
-use engine::plant::{Bark, Leaves, Plant, plant}
+use engine::plant::{Bark, Leaves, Plant, limb_axis, limb_at_height, plant}
 use std::math::TAU
 
 /// The great tree, its base at the origin.
@@ -50,12 +50,12 @@ pub fn great_tree() -> Plant {
     let heights = [2.6, 4.6, 3.3, 5.4, 3.9]
     var tips = [vec3(0.0); 5]
     for i in 0..5 {
-        let a = TAU * (f32(i) + 0.3) / 5.0 + pick(31, i, lo: -0.3, hi: 0.3)
+        let a = 2.39996 * f32(i) + 0.4 + pick(31, i, lo: -0.25, hi: 0.25)
         let out = vec3(cos(a), 0.0, sin(a))
         let side = vec3(-out.z, 0.0, out.x)
         let h = heights[i]
         let low = 1.0 - (h - 2.6) / 2.8
-        let foot = base + mix(vec3(0.0), top - base, vec3(h / (top.y - base.y))) + out * 0.4
+        let (foot, trunk_axis, trunk_radius) = limb_at_height(p.limbs[0], base.y + h)
         let elbow = foot +
             out * (2.2 + 1.2 * low) +
             side * pick(32, i, lo: -0.9, hi: 0.9) +
@@ -64,24 +64,41 @@ pub fn great_tree() -> Plant {
             out * (5.0 + 1.6 * low) +
             side * pick(34, i, lo: -0.8, hi: 0.8) +
             vec3(0.0, 3.6 + 1.4 * (1.0 - low) + pick(33, i, lo: -0.6, hi: 0.6), 0.0)
-        let r0 = 0.6 - 0.12 * (1.0 - low)
-        p.tube(
-            [foot - out * 0.3, mix(foot, elbow, vec3(0.55)) - vec3(0.0, 0.2, 0.0), elbow, tip],
-            [r0, r0 * 0.8, r0 * 0.55, 0.12],
-        )
-        // Two forks, from the elbow and from halfway on, each ending in a clump of its own (bare,
-        // their tips stood out of the crown as spikes).
-        let on = mix(elbow, tip, vec3(0.5))
-        let left = elbow + side * 2.2 + out * 1.4 + vec3(0.0, 2.0, 0.0)
-        let right = on - side * 1.9 + out * 1.2 + vec3(0.0, 1.4, 0.0)
+        let r0 = trunk_radius * pick(36, i, lo: 0.55, hi: 0.7)
         p.limb(
-            elbow,
-            mix(elbow, left, vec3(0.5)) + vec3(0.0, 0.3, 0.0),
-            left,
-            r_from: 0.22,
-            r_to: 0.06,
+            foot,
+            elbow * 0.75 + foot * 0.25 + trunk_axis * 0.35,
+            tip,
+            r_from: r0,
+            r_to: 0.10,
         )
-        p.limb(on, mix(on, right, vec3(0.5)) + vec3(0.0, 0.3, 0.0), right, r_from: 0.18, r_to: 0.05)
+        let parent = p.limbs[p.limbs.len() - 1]
+        // Unequal laterals leave at different places and follow the parent's growth before
+        // turning outward. Their starts use the same curved axis as the rendered scaffold.
+        let (left_from, left_axis, left_r) = limb_axis(parent, pick(37, i, lo: 0.4, hi: 0.58))
+        let (right_from, right_axis, right_r) = limb_axis(parent, pick(38, i, lo: 0.68, hi: 0.82))
+        let left = left_from +
+            side * pick(39, i, lo: 1.4, hi: 2.7) +
+            out * 1.4 +
+            vec3(0.0, pick(40, i, lo: 1.2, hi: 2.4), 0.0)
+        let right = right_from -
+            side * pick(42, i, lo: 0.9, hi: 2.0) +
+            out * 1.2 +
+            vec3(0.0, pick(44, i, lo: 0.8, hi: 1.6), 0.0)
+        p.limb(
+            left_from,
+            left_from + left_axis * 0.9 + (left - left_from) * 0.3,
+            left,
+            r_from: left_r * 0.6,
+            r_to: 0.04,
+        )
+        p.limb(
+            right_from,
+            right_from + right_axis * 0.65 + (right - right_from) * 0.3,
+            right,
+            r_from: right_r * 0.5,
+            r_to: 0.025,
+        )
         p.clump(left + vec3(0.0, 0.5, 0.0), radius: pick(49, i, lo: 1.8, hi: 2.4))
         p.clump(right + vec3(0.0, 0.5, 0.0), radius: pick(51, i, lo: 1.8, hi: 2.4))
         tips[i] = tip
@@ -100,4 +117,23 @@ pub fn great_tree() -> Plant {
         p.clump(at, radius: pick(47, i, lo: 2.1, hi: 3.1))
     }
     p
+}
+
+@test
+fn great_tree_laterals_grow_from_the_scaffold_axis() {
+    let p = great_tree()
+    // One trunk and six roots precede the five scaffolds and their two laterals.
+    for i in 0..5 {
+        let parent = p.limbs[7 + 3 * i]
+        for j in 1..3 {
+            let child = p.limbs[7 + 3 * i + j]
+            var nearest = 1.0e6
+            for sample in 0..128 {
+                let (at, _, radius) = limb_axis(parent, f32(sample) / 127.0)
+                nearest = min(nearest, length(child.points[0] - at) - radius)
+            }
+            assert(nearest < 0.005, "hero tree lateral is detached from its scaffold")
+            assert(child.radii[0] < parent.radii[0] * 0.65, "lateral competes with the scaffold")
+        }
+    }
 }

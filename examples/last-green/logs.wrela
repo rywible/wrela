@@ -1,0 +1,359 @@
+// Collision for fallen wood uses the same fitted trunk and root plate as the renderer.
+// Small capsules retain local height over uneven ground; standing trees use ordinary footing.
+
+use engine::footing::{BODY, MAX_LOG_HEIGHT, Obstacle, Thing}
+use engine::grow::{State, Tree}
+use engine::plant::{RINGS, limb_axis}
+use engine::vegetation::Placed
+use std::field::Tube
+
+/// Each capsule covers at most half a metre of rendered centreline before packing. The five
+/// bounded template limbs yield fewer than 256 records even at their largest admitted scale.
+const SEGMENT: f32 = 0.5
+pub const MOST: u32 = 256
+/// Maximum template length at its largest admitted scale, plus root plate and trunk radius.
+pub const REACH: f32 = 40.0
+
+/// Shared samples of the ground under one log, aligned with its long axis. The lattice covers
+/// its root plate and the body's footprint too; each height is evaluated once, not per capsule.
+const GROUND_CELL: f32 = 0.75
+const MOST_GROUND: u32 = 640
+const MOST_LIMBS: u32 = 5
+const MOST_QUERIES: u32 = MOST_GROUND + 2 * MOST + MOST_LIMBS
+
+struct SampledGround {
+    origin: vec2,
+    forward: vec2,
+    side: vec2,
+    lo: vec2,
+    nx: u32,
+    nz: u32,
+    values: Vec<f32>,
+    ready: Vec<bool>,
+}
+
+fn local(p: vec2, origin: vec2, forward: vec2, side: vec2) -> vec2 {
+    vec2(dot(p - origin, side), dot(p - origin, forward))
+}
+
+fn sample_ground(log: Placed, limbs: Bounded<Tube<4>, engine::plant::MAX_LIMBS>) -> SampledGround {
+    let origin = log.at.at.xz
+    let forward = vec2(sin(log.at.yaw), cos(log.at.yaw))
+    let side = vec2(forward.y, -forward.x)
+    var lo = vec2(1.0e9)
+    var hi = vec2(-1.0e9)
+    for limb in limbs {
+        var widest = 0.0
+        for radius in limb.radii {
+            widest = max(widest, radius)
+        }
+        for ring in 0..(3 * RINGS + 1) {
+            let (p, _, _) = limb_axis(limb, f32(ring) / f32(3 * RINGS))
+            let at = local(p.xz, origin, forward, side)
+            let reach = vec2(widest + BODY + 0.27)
+            lo = min(lo, at - reach)
+            hi = max(hi, at + reach)
+        }
+    }
+    lo = floor(lo / GROUND_CELL) * GROUND_CELL
+    let count = vec2u(ceil((hi - lo) / GROUND_CELL)) + vec2u(1)
+    assert(count.x * count.y <= MOST_GROUND, "fallen ground samples exceeded their fixed bound")
+    SampledGround {
+        origin,
+        forward,
+        side,
+        lo,
+        nx: count.x,
+        nz: count.y,
+        values: Vec::filled(count.x * count.y, 0.0),
+        ready: Vec::filled(count.x * count.y, value: false),
+    }
+}
+
+impl SampledGround {
+    /// Lowest cached node in the enclosing footprint cells. Include their outer corners,
+    /// rather than interpolating upward through a hollow or sampling only the centreline.
+    fn beneath(
+        mut self,
+        from: vec2,
+        to: vec2,
+        radius: f32,
+        top: f32,
+        height: fn(vec2) -> f32,
+    ) -> f32 {
+        let a = local(from, self.origin, self.forward, self.side)
+        let b = local(to, self.origin, self.forward, self.side)
+        let reach = vec2(radius + BODY + 0.27)
+        let lo = vec2i(floor((min(a, b) - reach - self.lo) / GROUND_CELL))
+        let hi = vec2i(ceil((max(a, b) + reach - self.lo) / GROUND_CELL))
+        var low = 1.0e9
+        for j in max(lo.y, 0)..min(hi.y + 1, i32(self.nz)) {
+            for i in max(lo.x, 0)..min(hi.x + 1, i32(self.nx)) {
+                let k = u32(j) * self.nx + u32(i)
+                if !self.ready[k] {
+                    let q = self.lo + vec2(f32(i), f32(j)) * GROUND_CELL
+                    self.values[k] = height(self.origin + self.side * q.x + self.forward * q.y)
+                    self.ready[k] = true
+                }
+                low = min(low, self.values[k])
+                if top - low > MAX_LOG_HEIGHT {
+                    return low
+                }
+            }
+        }
+        low
+    }
+}
+
+pub fn obstacles(trees: [Tree], height: fn(vec2) -> f32) -> Vec<Obstacle> {
+    var all: Vec<Obstacle> = Vec::new()
+    for t in trees {
+        if t.state == State::Log {
+            let log = trees::fallen_placement(t, height)
+            for o in shapes(log, height) {
+                all.push(o)
+            }
+        }
+    }
+    all
+}
+
+/// Capsules from each rendered ring interval, including the torn roots. Sampling the ring
+/// intervals keeps every centreline bend; subdivision bounds footprint and height variation.
+pub fn shapes(log: Placed, height: fn(vec2) -> f32) -> Vec<Obstacle> {
+    var all: Vec<Obstacle> = Vec::new()
+    let limbs = trees::fallen_limbs(log)
+    assert(limbs.len() <= MOST_LIMBS, "fallen wood exceeded its limb bound")
+    var sampled = sample_ground(log, limbs)
+    var segments = 0
+    for limb in limbs {
+        let (start, _, _) = limb_axis(limb, 0.0)
+        var previous = height(start.xz)
+        for ring in 0..(3 * RINGS) {
+            let (a, _, ar) = limb_axis(limb, f32(ring) / f32(3 * RINGS))
+            let (b, _, br) = limb_axis(limb, f32(ring + 1) / f32(3 * RINGS))
+            let pieces = max(u32(ceil(length(b - a) / SEGMENT)), 1)
+            for i in 0..pieces {
+                let u = f32(i) / f32(pieces)
+                let v = f32(i + 1) / f32(pieces)
+                let from = mix(a, b, vec3(u))
+                let to = mix(a, b, vec3(v))
+                let radius = max(mix(ar, br, u), mix(ar, br, v))
+                let top = max(from.y, to.y) + radius
+                // Keep exact centreline samples for a narrow hollow between lattice nodes.
+                // Consecutive capsules share their endpoint, so each adds only two queries.
+                let end_height = height(to.xz)
+                var floor = min(previous, end_height)
+                // Once one exact sample proves overflow, every clearance treats this capsule
+                // as solid. No further ground sample can change that classification.
+                if top - floor <= MAX_LOG_HEIGHT {
+                    floor = min(floor, height((from.xz + to.xz) * 0.5))
+                }
+                if top - floor <= MAX_LOG_HEIGHT {
+                    floor = min(floor, sampled.beneath(from.xz, to.xz, radius, top, height))
+                }
+                previous = end_height
+                segments += 1
+                assert(segments <= MOST, "fallen wood exceeded its geometric segment bound")
+                let high = if top - floor > MAX_LOG_HEIGHT { 1.0 / 0.0 } else {
+                    max(top - floor, 0.0)
+                }
+                if high > 0.02 {
+                    all.push(
+                        Obstacle {
+                            a: from.xz,
+                            b: to.xz,
+                            r: radius,
+                            thing: Thing::Log,
+                            depth: high,
+                        },
+                    )
+                    assert(all.len() <= MOST, "fallen wood exceeded its collision record bound")
+                }
+            }
+        }
+    }
+    all
+}
+
+/// Geometry rather than the history's old girth/length controls the footprint and clearance.
+/// Root plate pieces are retained, and packed capsules cover every sampled rendered section.
+@test
+fn fitted_log_collision_covers_rendered_wood_and_keeps_high_sections_solid() {
+    var reachable = 0
+    var blocked = 0
+    for kind in [trees::LOG_SHORT, trees::LOG_LONG] {
+        for pitch in [-0.4, 0.0, 0.4] {
+            var inst = engine::plant::NO_INSTANCE
+            inst.scale = 1.8
+            inst.yaw = 0.8
+            inst.pitch = pitch
+            inst.at = vec3(0.0, 0.8, 0.0)
+            let placed = Placed { kind, at: inst }
+            let height = |p: vec2| 0.1 * p.x
+            let records = shapes(placed, height)
+            assert(records.len() > 6 && records.len() <= MOST, "missing wood or unbounded records")
+            let packed = engine::footing::Obstacles::of(records, vec2(-64.0), vec2(64.0))
+            for limb in trees::fallen_limbs(placed) {
+                for i in 0..25 {
+                    let (axis, _, radius) = limb_axis(limb, f32(i) / 24.0)
+                    if axis.y + radius - height(axis.xz) <= 0.02 {
+                        continue
+                    }
+                    var covers = false
+                    packed.near(axis.xz, |o| {
+                        let (distance, _) = o.reach(axis.xz)
+                        if distance <= 0.0 {
+                            covers = true
+                        }
+                    })
+                    assert(covers, "rendered log section has no collision capsule")
+                    // A low root may overlap solid high wood. Clearance is only meaningful
+                    // where the complete set lets the floating body stand, not per capsule.
+                    if packed.blocked_over(axis.xz, BODY, 1.2) {
+                        blocked += 1
+                    } else {
+                        reachable += 1
+                        let y = height(axis.xz) + packed.lift(axis.xz, BODY, 1.2)
+                        assert(y >= axis.y + radius, "clearance clips reachable rendered wood")
+                    }
+                }
+            }
+        }
+    }
+    assert(reachable > 0 && blocked > 0, "fixture missed reachable wood or high solid sections")
+}
+
+/// A small rendered log is actually crossed, with height held above its wood and eased back
+/// to ground. The same rendered shape still blocks a grounded body.
+@test
+fn a_low_rendered_log_is_crossed_with_continuous_lift() {
+    var inst = engine::plant::NO_INSTANCE
+    inst.scale = 1.0
+    let placed = Placed { kind: trees::LOG_SHORT, at: inst }
+    let records = shapes(placed, |p: vec2| 0.0)
+    let o = engine::footing::Obstacles::of(records, vec2(-16.0), vec2(32.0))
+    var at = vec2(-3.0, 6.0)
+    var previous = 0.0
+    var high = 0.0
+    for _ in 0..120 {
+        let (moved, _) = engine::footing::step_over(
+            behaviour::Flat {},
+            behaviour::DRY,
+            o,
+            at,
+            vec2(0.05, 0.0),
+            BODY,
+            1.2,
+        )
+        at += moved
+        let height = o.lift(at, BODY, 1.2)
+        assert(abs(height - previous) < 0.05, "rendered log lift jumped between capsules")
+        high = max(high, height)
+        previous = height
+    }
+    assert(at.x > 2.9 && high > 0.25 && previous == 0.0, "rendered low log was not crossed")
+}
+
+/// Real callback counts keep preparation bounded independently of the number of neighbouring
+/// capsules. The largest templates, pitched both ways, include their full root plate footprint.
+@test
+fn log_terrain_samples_are_shared_and_bounded_at_the_largest_scale() {
+    var most = 0
+    for kind in [trees::LOG_SHORT, trees::LOG_LONG] {
+        for pitch in [-0.6, 0.0, 0.6] {
+            var inst = engine::plant::NO_INSTANCE
+            inst.scale = 1.8
+            inst.yaw = 0.7
+            inst.pitch = pitch
+            inst.at = vec3(0.0, 0.8, 0.0)
+            var calls = 0
+            let height = |p: vec2| {
+                calls += 1
+                0.1 * p.x
+            }
+            let records = shapes(Placed { kind, at: inst }, height)
+            assert(!records.is_empty(), "fixture has no rendered log collision")
+            assert(
+                calls > 0 && calls <= MOST_QUERIES,
+                f"log preparation queried terrain {calls} times",
+            )
+            most = max(most, calls)
+        }
+    }
+    std::io::print(f"maximum terrain queries per fitted log: {most}")
+}
+
+/// A smooth narrow hollow can fall between every cached node. Exact capsule midpoint samples
+/// must still raise the body above the rendered wood instead of following that hollow into it.
+@test
+fn an_off_lattice_hollow_keeps_exact_clearance_under_the_rendered_log() {
+    var inst = engine::plant::NO_INSTANCE
+    inst.scale = 1.0
+    let log = Placed { kind: trees::LOG_SHORT, at: inst }
+    let limbs = trees::fallen_limbs(log)
+    let sampled = sample_ground(log, limbs)
+    let trunk = limbs[0]
+    var centre = vec2(0.0)
+    var top = 0.0
+    var away = 0.0
+    for ring in 2..4 {
+        let (a, _, ar) = limb_axis(trunk, f32(ring) / f32(3 * RINGS))
+        let (b, _, br) = limb_axis(trunk, f32(ring + 1) / f32(3 * RINGS))
+        let pieces = max(u32(ceil(length(b - a) / SEGMENT)), 1)
+        for i in 0..pieces {
+            let t = (f32(i) + 0.5) / f32(pieces)
+            let axis = mix(a, b, vec3(t))
+            let q = local(axis.xz, sampled.origin, sampled.forward, sampled.side) - sampled.lo
+            let distance = length(q - round(q / GROUND_CELL) * GROUND_CELL)
+            if distance > away {
+                centre = axis.xz
+                top = axis.y + mix(ar, br, t)
+                away = distance
+            }
+        }
+    }
+    assert(away > 0.15, "fixture midpoint is not clear of the lattice nodes")
+    let width = away * 0.4
+    let height = |p: vec2| -0.2 *
+        pow(max(1.0 - dot(p - centre, p - centre) / (width * width), 0.0), 2.0)
+    for j in 0..sampled.nz {
+        for i in 0..sampled.nx {
+            let q = sampled.lo + vec2(f32(i), f32(j)) * GROUND_CELL
+            let p = sampled.origin + sampled.side * q.x + sampled.forward * q.y
+            assert(height(p) == 0.0, "fixture hollow touched a lattice node")
+        }
+    }
+    let records = shapes(log, height)
+    var exact = false
+    for o in records {
+        if length((o.a + o.b) * 0.5 - centre) < 0.001 {
+            exact = true
+            assert(o.depth >= top + 0.199, "capsule ignored its off-lattice ground sample")
+        }
+    }
+    assert(exact, "fixture did not find its rendered capsule")
+    let o = engine::footing::Obstacles::of(records, vec2(-16.0), vec2(32.0))
+    assert(
+        height(centre) + o.lift(centre, BODY, 1.2) >= top,
+        "the hollow lowered the floating body into rendered wood",
+    )
+}
+
+/// Any exact centreline sample can prove packed height overflow. The remaining footprint
+/// queries cannot alter that solid classification, even with an arbitrarily high clearance.
+@test
+fn high_rendered_logs_stop_sampling_after_their_height_overflows() {
+    var inst = engine::plant::NO_INSTANCE
+    inst.scale = 1.8
+    inst.at = vec3(0.0, 20.0, 0.0)
+    var calls = 0
+    let records = shapes(Placed { kind: trees::LOG_LONG, at: inst }, |p: vec2| {
+        calls += 1
+        0.0
+    })
+    assert(calls == records.len() + MOST_LIMBS, "solid logs queried unnecessary terrain")
+    for o in records {
+        assert(o.depth == 1.0 / 0.0 && !o.cleared(1000.0), "overflow log became traversable")
+    }
+}

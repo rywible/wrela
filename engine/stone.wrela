@@ -13,7 +13,7 @@ use realize::{Mesh, SkinVertex, realize_rigid}
 use render::{ByChannels, Shaded}
 use std::derive::Box3
 use std::field::{Blend, Surface, fbm, oval}
-use std::gpu::{ClipPosition, Flat, GpuBuffer, Unorm8x4, VertexIndex}
+use std::gpu::{ClipPosition, Flat, FragCoord, GpuBuffer, Unorm8x4, VertexIndex, discard}
 use std::math::TAU
 use std::transform::{rotate_y, translate}
 use view::{Camera, ROCK}
@@ -134,12 +134,114 @@ pub struct Realized {
     pub seed: u32,
 }
 
+/// A placement borrows one mesh from its owner. Its enclosing sphere is in world space.
+pub struct Placement: Copy {
+    pub prototype: u32,
+    pub at: mat4,
+    pub normal_at: mat3,
+    pub reach: f32,
+    pub seed: u32,
+}
+
+/// Repeated rigid stones: a small set of owned GPU meshes and plain placement data.
+pub struct Instances {
+    pub prototypes: Vec<Realized>,
+    pub placements: Vec<Placement>,
+}
+
+impl Instances {
+    pub fn shift(mut self, delta: vec3) {
+        for mut p in self.placements {
+            p.at[3] = vec4(p.at[3].xyz + delta, 1.0)
+        }
+    }
+}
+
+impl Placement {
+    /// Whether this sphere meets an orthographic shadow volume (clip z is 0 to 1).
+    pub fn casts_into(self, view: mat4) -> bool {
+        let p = view * vec4(self.at[3].xyz, 1.0)
+        let r = self.reach *
+            vec3(
+                length(vec3(view[0].x, view[1].x, view[2].x)),
+                length(vec3(view[0].y, view[1].y, view[2].y)),
+                length(vec3(view[0].z, view[1].z, view[2].z)),
+            )
+        abs(p.x) <= 1.0 + r.x && abs(p.y) <= 1.0 + r.y && p.z >= -r.z && p.z <= 1.0 + r.z
+    }
+}
+
+/// A normal transforms by the inverse transpose, including when instances squash a mesh.
+pub fn normal_matrix(at: mat4) -> mat3 {
+    let a = at[0].xyz
+    let b = at[1].xyz
+    let c = at[2].xyz
+    let cofactor = mat3(cross(b, c), cross(c, a), cross(a, b))
+    let determinant = dot(a, cross(b, c))
+    mat3(cofactor[0] / determinant, cofactor[1] / determinant, cofactor[2] / determinant)
+}
+
+@test
+fn stone_instance_normals_stay_perpendicular_after_squashing() {
+    let at = translate(vec3(4.0, 2.0, -7.0)) *
+        rotate_y(0.7) *
+        std::transform::scale(vec3(1.4, 0.35, 0.8))
+    let normal = normalize(vec3(1.0, 1.0, 0.0))
+    let tangent = vec3(1.0, -1.0, 0.0)
+    let transformed = (at * vec4(tangent, 0.0)).xyz
+    let n = normalize(normal_matrix(at) * normal)
+    assert(abs(dot(n, transformed)) < 1.0e-5, "squashed stone normal leaned away from its surface")
+    assert(abs(length(n) - 1.0) < 1.0e-5, "stone normal lost its unit length")
+}
+
+@test
+fn repeated_stone_bounds_follow_the_origin_and_shadow_volume() {
+    let identity = std::transform::scale(vec3(1.0))
+    let p = Placement {
+        prototype: 0,
+        at: translate(vec3(1.3, 0.0, 0.5)),
+        normal_at: normal_matrix(identity),
+        reach: 0.4,
+        seed: 7,
+    }
+    assert(p.casts_into(identity), "a caster overlapping a shadow edge was culled")
+    let outside = Placement { at: translate(vec3(1.5, 0.0, 0.5)), ..p }
+    assert(!outside.casts_into(identity), "a caster outside the shadow volume survived")
+    var set = Instances { prototypes: Vec::new(), placements: Vec::from([p]) }
+    set.shift(vec3(-1.3, 0.0, 0.0))
+    let moved = set.placements[0]
+    assert(length(moved.at[3].xyz - vec3(0.0, 0.0, 0.5)) < 1.0e-6, "origin shift lost a placement")
+    assert(
+        moved.prototype == p.prototype && moved.reach == p.reach,
+        "origin shift changed mesh ownership",
+    )
+    assert(moved.casts_into(identity), "shifted caster lost its shadow")
+}
+
 /// The stone of `radius`, `squash` and `seed`, realized once (cells for an 8 mm tolerance, at
 /// most 4 cm: a stone bends gently, and its stain varies over a sixth of its radius) at `at`
 /// turned by `turn` about +y.
 pub fn realize_stone(radius: f32, squash: vec3, seed: u32, at: vec3, turn: f32) -> Realized {
+    realize_stone_within(
+        radius,
+        squash,
+        seed,
+        at,
+        turn,
+        CreatureLook { surface: Tolerance { tolerance: 8mm, largest: 4cm } },
+    )
+}
+
+/// A reusable stone prototype, with a surface tolerance suited to its final displayed scale.
+pub fn realize_stone_within(
+    radius: f32,
+    squash: vec3,
+    seed: u32,
+    at: vec3,
+    turn: f32,
+    look: CreatureLook,
+) -> Realized {
     let s = stone(radius, squash, seed)
-    let look = CreatureLook { surface: Tolerance { tolerance: 8mm, largest: 4cm } }
     let mesh = realize_rigid(s, look)
     let colours = colours(mesh, s.field(), ByChannels {}, cell: 1cm)
     Realized { mesh, colours, at: translate(at) * rotate_y(turn), seed }
@@ -163,16 +265,42 @@ pub fn stone_vertex(
     seed: u32,
     cam: Camera,
 ) -> StoneVertex {
-    let sv = verts[v.index]
+    stone_point(v.index, verts, colours, at, mat3(at[0].xyz, at[1].xyz, at[2].xyz), seed, cam)
+}
+
+fn stone_point(
+    index: u32,
+    verts: [SkinVertex],
+    colours: [Unorm8x4],
+    at: mat4,
+    normal_at: mat3,
+    seed: u32,
+    cam: Camera,
+) -> StoneVertex {
+    let sv = verts[index]
     let world = (at * vec4(sv.pos, 1.0)).xyz
-    let c = colours[v.index].decode()
+    let c = colours[index].decode()
     StoneVertex {
         clip: ClipPosition { position: cam.clip(world) },
         world,
-        normal: mat3(at[0].xyz, at[1].xyz, at[2].xyz) * sv.normal,
+        normal: normal_at * sv.normal,
         albedo: c.rgb * c.rgb,
         seed: Flat { value: seed },
     }
+}
+
+/// An instance's inverse transpose is computed once on the CPU with its placement.
+@vertex
+pub fn stone_instance_vertex(
+    v: VertexIndex,
+    verts: [SkinVertex],
+    colours: [Unorm8x4],
+    at: mat4,
+    normal_at: mat3,
+    seed: u32,
+    cam: Camera,
+) -> StoneVertex {
+    stone_point(v.index, verts, colours, at, normal_at, seed, cam)
 }
 
 @vertex
@@ -180,10 +308,51 @@ pub fn stone_shadow(v: VertexIndex, verts: [SkinVertex], at: mat4, view: mat4) -
     ClipPosition { position: view * (at * vec4(verts[v.index].pos, 1.0)) }
 }
 
+/// Whether a pixel belongs to a mesh's share of a transition. Both representations use the
+/// same framebuffer pixel and frame, with adjacent shares, so one draws colour and depth at
+/// each pixel. A whole share keeps the ordinary opaque path.
+pub fn coverage_kept(coverage: vec2, pixel: vec2, frame: u32) -> bool {
+    if coverage.x <= 0.0 && coverage.y >= 1.0 {
+        return true
+    }
+    let anchor = vec2(f32(frame % 4), f32((frame / 4) % 4))
+    lod::keeps_packed(lod::packed(vec4(coverage, anchor)), pixel)
+}
+
+@test
+fn complementary_stone_meshes_cover_each_pixel_once() {
+    for frame in 0..16 {
+        for step in 0..33 {
+            let split = f32(step) / 32.0
+            for y in 0..4 {
+                for x in 0..4 {
+                    let pixel = vec2(f32(x) + 0.5, f32(y) + 0.5)
+                    let near = coverage_kept(vec2(0.0, split), pixel, frame)
+                    let far = coverage_kept(vec2(split, 1.0), pixel, frame)
+                    assert(
+                        near != far,
+                        "mesh transition left a hole or shaded the same pixel twice",
+                    )
+                    if step == 0 { assert(!near && far, "zero share retained the near mesh") }
+                    if step == 32 { assert(near && !far, "whole share retained the far mesh") }
+                }
+            }
+        }
+    }
+}
+
 /// A stone's pixel: its cooked normal and colour, lit by the world's light, darker where it
 /// meets the ground.
 @fragment
-pub fn stone_shade(s: StoneVertex, lt: Lighting) -> vec4 {
+pub fn stone_shade(
+    s: StoneVertex,
+    pixel: FragCoord,
+    lt: Lighting,
+    coverage: vec2 = vec2(0.0, 1.0),
+) -> vec4 {
+    if !coverage_kept(coverage, pixel.position.xy, lt.cam.frame) {
+        discard()
+    }
     let n = normalize(s.normal)
     let (sun, sky, reflected) = sun_and_gloss(lt, s.world, n, soft: 1.0)
     let ground = probes::ground_under(lt.grid, lt.grounds, s.world.xz)

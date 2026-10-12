@@ -7,7 +7,9 @@
 use engine::grow::{Cause, State, Tree, log_rot}
 use engine::interest::Drawn
 use engine::noise::{noise2, pick, rand}
-use engine::plant::{Bark, Instance, Leaves, Plant, bend, plant, tint_of, unbend}
+use engine::plant::{
+    Bark, Instance, Leaves, Plant, bend, limb_axis, limb_at_height, plant, tint_of, unbend,
+}
 use std::field::Tube
 use engine::vegetation::Placed
 use great_tree::tree::great_tree
@@ -116,24 +118,24 @@ fn broadleaf(
     // golden angle from the last, rising toward the crown's shell.
     let scaffolds = if limbs == 0 { 0 } else { min(3 + s % 3, limbs) }
     var tips: Vec<vec3> = Vec::new()
-    var feet: Vec<vec3> = Vec::new()
+    var branches: Vec<Tube<4>> = Vec::new()
     let w = tall * width
     for j in 0..scaffolds {
         let h = pick(s, 170 + j, lo: 0.5, hi: 1.0)
-        let foot = top * h + kink * (1.0 - h)
+        let (foot, axis, radius) = limb_at_height(p.limbs[0], crown_y * h)
         let a = 2.39996 * f32(j) + pick(s, 180 + j, lo: -0.5, hi: 0.5)
         let reach = w * pick(s, 190 + j, lo: 0.55, hi: 0.95)
         let rise = (tall - crown_y) * pick(s, 200 + j, lo: 0.35, hi: 0.8)
         let tip = foot + vec3(cos(a) * reach, rise, sin(a) * reach)
         p.limb(
             foot,
-            mix(foot, tip, vec3(0.45)) + vec3(0.0, rise * 0.15, 0.0),
+            foot + axis * (reach * 0.24) + (tip - foot) * 0.28,
             tip,
-            r_from: girth * 0.5,
-            r_to: girth * 0.12,
+            r_from: radius * pick(s, 220 + j, lo: 0.45, hi: 0.62),
+            r_to: girth * 0.07,
         )
         tips.push(tip)
-        feet.push(foot)
+        branches.push(p.limbs[p.limbs.len() - 1])
     }
     // Low limbs: one to three from the trunk under the crown, each out and a little down to a
     // small mass of its own, so the crown's foot is ragged and the limbs show leaving the trunk
@@ -142,7 +144,7 @@ fn broadleaf(
     if girth > 0.1 && scaffolds > 0 {
         for j in 0..(1 + s % 3) {
             let h = pick(s, 260 + j, lo: 0.55, hi: 0.9)
-            let foot = top * h + kink * (1.0 - h)
+            let (foot, axis, radius) = limb_at_height(p.limbs[0], crown_y * h)
             let a = 2.39996 * f32(j + scaffolds) + 1.2 + pick(s, 270 + j, lo: -0.4, hi: 0.4)
             let reach = w * pick(s, 280 + j, lo: 0.5, hi: 0.85)
             let tip = foot +
@@ -153,9 +155,9 @@ fn broadleaf(
                 )
             p.limb(
                 foot,
-                mix(foot, tip, vec3(0.5)) + vec3(0.0, reach * 0.12, 0.0),
+                foot + axis * (reach * 0.16) + (tip - foot) * 0.35,
                 tip,
-                r_from: girth * 0.3,
+                r_from: radius * 0.4,
                 r_to: 0.03,
             )
             p.clump(
@@ -170,28 +172,26 @@ fn broadleaf(
     // and gaps of sky between the masses; each branch from a point along its scaffold. A
     // sapling's round its trunk's top. (Pass 1 of M6's lookdev: clumps spread along each
     // scaffold, each its own small lump of light, read as confetti, not as masses.)
-    crown_on(mut p, s, tips, feet, tall, crown_y, lean, top, w, clump, count, limbs, girth)
+    crown_on(mut p, s, tips, branches, tall, crown_y, lean, w, clump, count, limbs)
     p
 }
 
 /// A broad-leaved crown on its limbs: a mass round each of `tips` (each grown from its foot in
-/// `feet`) and one at the tree's own top, `count` clumps `clump` across in all, `limbs` of them
+/// `branches`) and one at the tree's own top, `count` clumps `clump` across in all, `limbs` of them
 /// with a branch of their own; a sapling's (no tips) round its trunk's top. (Split from
 /// `broadleaf` so that each species grows its own trunk and limbs, and the crowns item owns this.)
 fn crown_on(
     p: mut Plant,
     s: u32,
     tips: Vec<vec3>,
-    feet: Vec<vec3>,
+    branches: Vec<Tube<4>>,
     tall: f32,
     crown_y: f32,
     lean: vec3,
-    top: vec3,
     w: f32,
     clump: f32,
     count: u32,
     limbs: u32,
-    girth: f32,
 ) {
     let scaffolds = tips.len()
     let half = (tall - crown_y) * 0.5
@@ -214,13 +214,13 @@ fn crown_on(
         // Which mass: a scaffold's, or (one in five) the leader's at the top.
         let j = i % (scaffolds + 1)
         let core = clump * MASS_CORE
-        let (centre, foot) = if j == scaffolds {
-            (vec3(0.0, tall - core * 0.9, 0.0) + lean * 1.4, top)
+        let (centre, parent) = if j == scaffolds {
+            (vec3(0.0, tall - core * 0.9, 0.0) + lean * 1.4, p.limbs[0])
         } else {
             // A little in from the scaffold's end, so its outer clumps hang over it and the
             // limb shows leaving the trunk under the mass (bare limbs to a ball of leaves read
             // as a broom: round 5's quick round).
-            (mix(feet[j], tips[j], vec3(0.85)), feet[j])
+            (mix(branches[j].points[0], tips[j], vec3(0.85)), branches[j])
         }
         // The mass's first clump is its core, a cushion: a broad top plane in the sun over a
         // flat underside in shade. The rest are smaller cushions round its rim, a little up, so
@@ -237,13 +237,14 @@ fn crown_on(
         }
         p.cushion(at, radius: r, squash: CUSHION)
         if i < limbs + scaffolds && i >= scaffolds {
-            let from = mix(foot, centre, vec3(pick(s, 100 + i, lo: 0.45, hi: 0.85)))
+            let (from, axis, radius) = limb_axis(parent, pick(s, 100 + i, lo: 0.48, hi: 0.84))
+            let reach = length(at - from)
             p.limb(
                 from,
-                mix(from, at, vec3(0.5)) + vec3(0.0, clump * 0.3, 0.0),
+                from + axis * (reach * 0.28) + (at - from) * 0.25,
                 at,
-                r_from: girth * 0.18,
-                r_to: 0.03,
+                r_from: radius * 0.48,
+                r_to: min(radius * 0.12, 0.025),
             )
         }
     }
@@ -463,23 +464,26 @@ fn snag(s: u32, tall: f32, burnt: bool, conifer: bool, form: u32) -> Plant {
         let a = TAU * rand(s, 20 + i)
         let out = vec3(cos(a), 0.0, sin(a))
         let across = vec3(-out.z, 0.0, out.x)
-        let from = vec3(0.0, h, 0.0) + lean * (h / broke) + crook * min(h / (high * 0.5), 1.0)
+        let (from, axis, radius) = limb_at_height(p.limbs[0], h)
         // A burnt one's limbs are all burnt back to stubs (long and thin, they read as thorns).
         let stub = burnt || rand(s, 50 + i) < 0.4
-        let len = if conifer { tall * 0.06 } else if stub {
+        let len = if conifer { tall * pick(s, 30 + i, lo: 0.025, hi: 0.085) } else if stub {
             tall * pick(s, 30 + i, lo: 0.015, hi: 0.08)
         } else {
             tall * pick(s, 30 + i, lo: 0.08, hi: 0.16)
         }
-        let rise = if conifer { -0.2 } else { pick(s, 40 + i, lo: -0.2, hi: 0.7) }
+        let rise = if conifer { pick(s, 40 + i, lo: -0.35, hi: 0.12) } else {
+            pick(s, 40 + i, lo: -0.2, hi: 0.7)
+        }
         let tip = from + out * len + vec3(0.0, len * rise, 0.0)
         p.limb(
             from,
-            mix(from, tip, vec3(0.5)) +
-                across * (len * pick(s, 45 + i, lo: -0.3, hi: 0.3)) +
-                vec3(0.0, len * 0.1, 0.0),
+            from +
+                axis * (len * 0.16) +
+                (tip - from) * 0.4 +
+                across * (len * pick(s, 45 + i, lo: -0.3, hi: 0.3)),
             tip,
-            r_from: girth * pick(s, 47 + i, lo: 0.2, hi: 0.35),
+            r_from: radius * pick(s, 47 + i, lo: 0.25, hi: 0.5),
             r_to: if stub { girth * 0.16 } else { 0.03 },
         )
     }
@@ -499,15 +503,16 @@ fn log(s: u32, long: f32, girth: f32) -> Plant {
     var p = plant(leaves: Leaves { size: 0.2 }, bark: bark)
     let bow = pick(s, 1, lo: -0.6, hi: 0.6)
     // Its foot closed by a short piece swelling from a stub (a tube's start is open: its rim
-    // showed as a white ring: round 5).
+    // showed as a white ring: round 5). The far end is a short break: closing a final
+    // piece 40% of the log's length made a several-metre needle hovering over the slope.
     p.tube(
         [
             vec3(0.0, girth, -girth * 0.25),
             vec3(0.0, girth, girth * 0.35),
-            vec3(bow, girth * 0.8, long * 0.6),
+            vec3(bow * 0.6, girth * 0.5, long - girth * 0.5),
             vec3(bow * 0.6, girth * 0.5, long),
         ],
-        [girth * 0.35, girth, girth * 0.72, girth * 0.4],
+        [girth * 0.35, girth, girth * 0.4, girth * 0.4],
     )
     // The root plate's stubs at the foot.
     for i in 0..4 {
@@ -1324,6 +1329,75 @@ fn living_kind(t: Tree) -> u32 {
     }
 }
 
+/// Lowest point of a trunk section, including its tilt. Its circular section stays round.
+fn log_support(inst: Instance, trunk: Tube<4>, t: f32) -> vec3 {
+    let (centre, tangent, radius) = limb_axis(trunk, mix(1.0 / 3.0, 2.0 / 3.0, t))
+    let axis = inst.turn(tangent)
+    let down = vec3(0.0, -1.0, 0.0) + axis * axis.y
+    inst.place(centre) + down / max(length(down), 1.0e-5) * (radius * inst.scale)
+}
+
+/// Fit the two ends of the solid trunk to the terrain, then raise it only enough to rest on
+/// intervening high ground. A rigid log can bridge a hollow; it cannot hang horizontally
+/// from its uphill root. Decay's shallow burial is applied after finding its supports.
+fn settle_log(inst: Instance, trunk: Tube<4>, height: fn(vec2) -> f32, sink: f32) -> Instance {
+    var out = inst
+    for _ in 0..6 {
+        let a = log_support(out, trunk, 0.0)
+        let b = log_support(out, trunk, 1.0)
+        let da = height(a.xz) - a.y
+        let db = height(b.xz) - b.y
+        out.at.y += da
+        out.pitch = clamp(out.pitch + atan2(db - da, max(length(b.xz - a.xz), 0.1)), -1.1, 1.1)
+    }
+    var lift = -1.0e6
+    for i in 0..17 {
+        let p = log_support(out, trunk, f32(i) / 16.0)
+        lift = max(lift, height(p.xz) - p.y)
+    }
+    out.at.y += lift - sink
+    out
+}
+
+/// The same decayed, terrain-supported fallen tree for drawing and collision.
+pub fn fallen_placement(t: Tree, height: fn(vec2) -> f32) -> Placed {
+    let rot = clamp(f32(PRESENT - t.fell) / (2.0 * t.tall + 4.0), 0.0, 1.0)
+    let len = t.tall * 0.85 * (1.0 - 0.3 * rot)
+    let kind = if t.girth > 0.35 { LOG_LONG } else { LOG_SHORT }
+    var p = instance(
+        kind,
+        t.at,
+        height(t.at),
+        len,
+        t.fall,
+        t.seed,
+        sink: 0.0,
+        fork: 0.0,
+        wide: 1.0,
+        tint: tint(t.seed),
+    )
+    p.at.scale = clamp(len / BUILT[kind], 0.25, 1.8)
+    p.at = settle_log(p.at, TRUNKS[kind], height, 0.3 * rot * t.girth)
+    p
+}
+
+const FALLEN_LIMBS = [kind_plant(LOG_SHORT).limbs, kind_plant(LOG_LONG).limbs]
+
+/// All of a placed log's wood in the world, including its root plate. Collision samples the
+/// same curved axes and radii as the renderer, including decay, scale, yaw and terrain pitch.
+pub fn fallen_limbs(p: Placed) -> Bounded<Tube<4>, engine::plant::MAX_LIMBS> {
+    var limbs = FALLEN_LIMBS[if p.kind == LOG_LONG { 1 } else { 0 }]
+    for i in 0..limbs.len() {
+        var limb = limbs[i]
+        for j in 0..4 {
+            limb.points[j] = p.at.place(limb.points[j])
+            limb.radii[j] *= p.at.scale
+        }
+        limbs[i] = limb
+    }
+    limbs
+}
+
 /// The instances of a tile's trees, `height(p)` the ground's height: the great oak (the kept
 /// tree), each tree the history kept, living, standing dead or fallen.
 pub fn placed(trees: [Tree], height: fn(vec2) -> f32) -> Vec<Placed> {
@@ -1382,24 +1456,7 @@ pub fn placed(trees: [Tree], height: fn(vec2) -> f32) -> Vec<Placed> {
                 ),
             )
         } else if t.state == State::Log {
-            let rot = clamp(f32(PRESENT - t.fell) / (2.0 * t.tall + 4.0), 0.0, 1.0)
-            let len = t.tall * 0.85 * (1.0 - 0.3 * rot)
-            let k = if t.girth > 0.35 { LOG_LONG } else { LOG_SHORT }
-            // Scaled by length; sunk as it rots.
-            var p = instance(
-                k,
-                t.at,
-                y,
-                len,
-                t.fall,
-                t.seed,
-                sink: 0.3 * rot * t.girth,
-                fork: 0.0,
-                wide: 1.0,
-                tint: tint(t.seed),
-            )
-            p.at.scale = clamp(len / BUILT[k], 0.25, 1.8)
-            out.push(p)
+            out.push(fallen_placement(t, height))
         }
     }
     out
@@ -1548,4 +1605,114 @@ pub fn occluders(
         }
     }
     out
+}
+
+/// Every new limb starts inside older wood. This catches chord-based attachments that leave
+/// visible gaps where a trunk or scaffold curves.
+@test
+fn living_branches_join_the_parent_wood() {
+    for kind in [OAK_OPEN, OAK_FOREST, BEECH_OPEN, BEECH_FOREST, BIRCH_OPEN, ALDER_A] {
+        let p = kind_plant(kind)
+        for i in 1..p.limbs.len() {
+            let child = p.limbs[i]
+            if child.points[0].y < 0.1 {
+                continue
+            }
+            var nearest = 1.0e6
+            for j in 0..i {
+                for piece in 0..24 {
+                    let parent = p.limbs[j]
+                    let (a, _, ar) = limb_axis(parent, f32(piece) / 24.0)
+                    let (b, _, br) = limb_axis(parent, f32(piece + 1) / 24.0)
+                    let t = saturate(dot(child.points[0] - a, b - a) / dot(b - a, b - a))
+                    let d = length(child.points[0] - mix(a, b, vec3(t))) - mix(ar, br, t)
+                    nearest = min(nearest, d)
+                }
+            }
+            assert(nearest <= 0.005, f"kind {kind} branch {i} is detached by {nearest} m")
+        }
+    }
+}
+
+@test
+fn fallen_trunks_end_in_a_short_break_not_a_long_needle() {
+    for kind in [LOG_SHORT, LOG_LONG] {
+        let p = kind_plant(kind)
+        let trunk = p.limbs[0]
+        let cap = length(trunk.points[3] - trunk.points[2])
+        assert(cap <= trunk.radii[1] * 0.6, f"log {kind} has a {cap} m pointed end")
+        assert(abs(trunk.radii[2] - trunk.radii[3]) < 1.0e-6, "log narrows before its broken end")
+    }
+}
+
+@test
+fn fallen_logs_rest_on_slopes_and_clear_intervening_ground() {
+    for kind in [LOG_SHORT, LOG_LONG] {
+        let trunk = TRUNKS[kind]
+        for slope in [-0.45, 0.0, 0.45] {
+            for yaw in [0.0, 0.8, 2.7] {
+                let height = |p: vec2| 2.0 + slope * (sin(yaw) * p.x + cos(yaw) * p.y)
+                var inst = engine::plant::NO_INSTANCE
+                inst.at = vec3(5.0, 2.0, -3.0)
+                inst.scale = 1.2
+                inst.yaw = yaw
+                let fitted = settle_log(inst, trunk, height, 0.0)
+                for t in [0.0, 1.0] {
+                    let p = log_support(fitted, trunk, t)
+                    let gap = p.y - height(p.xz)
+                    assert(abs(gap) < 0.06, f"log {kind} end {t} hangs {gap} m above slope {slope}")
+                }
+                for i in 0..17 {
+                    let p = log_support(fitted, trunk, f32(i) / 16.0)
+                    assert(p.y >= height(p.xz) - 0.001, "log intersects its slope")
+                }
+            }
+        }
+        var inst = engine::plant::NO_INSTANCE
+        inst.scale = 1.0
+        let mound = |p: vec2| 0.7 * exp(-pow((p.y - BUILT[kind] * 0.5) / 2.0, 2.0))
+        let fitted = settle_log(inst, trunk, mound, 0.0)
+        var closest = 1.0e6
+        for i in 0..17 {
+            let p = log_support(fitted, trunk, f32(i) / 16.0)
+            let gap = p.y - mound(p.xz)
+            closest = min(closest, gap)
+            assert(gap >= -0.001, "log cuts through an intervening mound")
+        }
+        assert(abs(closest) < 0.001, "log has no ground support")
+    }
+}
+
+@test
+fn fallen_collision_wood_matches_the_rendered_root_plate_and_trunk() {
+    for kind in [LOG_SHORT, LOG_LONG] {
+        var inst = engine::plant::NO_INSTANCE
+        inst.at = vec3(16.0, 5.0, -11.0)
+        inst.scale = 1.4
+        inst.yaw = 0.8
+        inst.pitch = -0.37
+        let placed = Placed { kind, at: inst }
+        let world = fallen_limbs(placed)
+        let local = kind_plant(kind).limbs
+        assert(world.len() == local.len() && world.len() > 1, "fallen root plate is missing")
+        for i in 0..world.len() {
+            for step in 0..13 {
+                let t = f32(step) / 12.0
+                let (a, an, ar) = limb_axis(local[i], t)
+                let (b, bn, br) = limb_axis(world[i], t)
+                assert(
+                    length(inst.place(a) - b) < 0.001,
+                    "collision axis differs from rendered log",
+                )
+                assert(
+                    length(inst.turn(an) - bn) < 0.001,
+                    "collision tangent differs from rendered log",
+                )
+                assert(
+                    abs(ar * inst.scale - br) < 1.0e-5,
+                    "collision girth differs from rendered log",
+                )
+            }
+        }
+    }
 }

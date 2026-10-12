@@ -5,8 +5,8 @@
 
 use place::{TILE, tile_of}
 use plant::{Wind, full}
-use shadow::{CASTER, Cascade, Shadows, sun_view}
-use stone::{Realized, stone_shadow}
+use shadow::{CASTER, Cascade, Shadows, snapped_centre, sun_view}
+use stone::{Instances, Realized, stone_shadow}
 use tower::{Journey, STAIR}
 use view::Camera
 use wood::Wood
@@ -217,7 +217,7 @@ impl Kept {
     }
 
     /// Moved by `d` with render space (the render origin moved by `-d`): its maps hold what they
-    /// held, since nothing snaps a static cascade's view.
+    /// held: replacement maps snap relative to this shifted centre.
     pub fn shift(mut self, d: vec3) {
         self.centre += d
         self.next = match self.next {
@@ -254,6 +254,12 @@ impl Kept {
         self.next.is_some()
     }
 
+    /// A complete map with no active or queued replacement. Finishing a strip set may
+    /// leave a stale map until follow starts the next set on the following frame.
+    pub fn settled(self) -> bool {
+        cache_settled(self.ready, self.drawing(), self.stale)
+    }
+
     /// A strip of the next map, if one's being drawn: the trees standing in the strip's part of
     /// its square (and a shadow's reach past it), chosen and drawn into the map (cleared first),
     /// and with the first strip the built things (`built`: stones, the tower, walls); after the
@@ -262,6 +268,7 @@ impl Kept {
         mut self,
         wood: mut Option<Wood>,
         built: [Realized],
+        instances: Instances,
         sun: vec3,
         sh: Shadows,
         wind: Wind,
@@ -270,7 +277,11 @@ impl Kept {
         on: bool,
         name: Text,
     ) {
-        let Some(c) = self.next else { return }
+        let Some(requested) = self.next else { return }
+        let c = if self.strip == 0 && self.ready {
+            snapped_centre(sun, requested, self.centre, self.span / f32(self.side))
+        } else { requested }
+        self.next = Some(c)
         let half = self.span * 0.5 + self.reach_in
         let lo = c.xz - vec2(half)
         let step = 2.0 * half / f32(self.strips)
@@ -291,7 +302,9 @@ impl Kept {
         match wood {
             Some(w) => {
                 if on {
-                    w.shadow(pass, view, sh, wind, s)
+                    // A static cache cannot follow a different wind time in every strip.
+                    // Keep its casters at rest; visible leaves still move with the live wind.
+                    w.shadow(pass, view, sh, Wind { strength: 0.0, ..wind }, s)
                 }
             },
             None => {},
@@ -301,6 +314,20 @@ impl Kept {
                 draw(
                     pass,
                     stone_shadow.bind(verts: st.mesh.verts.items(), at: st.at, view: view),
+                    vegetation::nothing,
+                    indices: st.mesh.quads.items(),
+                    indirect: st.mesh.draw.items(),
+                    depth_bias: CASTER,
+                )
+            }
+            for p in instances.placements {
+                if p.prototype >= instances.prototypes.len() || !p.casts_into(view) {
+                    continue
+                }
+                borrow st = instances.prototypes[p.prototype]
+                draw(
+                    pass,
+                    stone_shadow.bind(verts: st.mesh.verts.items(), at: p.at, view: view),
                     vegetation::nothing,
                     indices: st.mesh.quads.items(),
                     indirect: st.mesh.draw.items(),
@@ -317,6 +344,39 @@ impl Kept {
             self.ready = true
         }
     }
+}
+
+fn cache_settled(ready: bool, drawing: bool, stale: bool) -> bool {
+    ready && !drawing && !stale
+}
+
+@test
+fn static_light_is_not_settled_between_queued_replacements() {
+    assert(!cache_settled(ready: false, drawing: false, stale: false), "an empty map is settled")
+    assert(
+        !cache_settled(ready: false, drawing: true, stale: false),
+        "the first strip set is settled",
+    )
+    assert(
+        cache_settled(ready: true, drawing: false, stale: false),
+        "the completed first map is not settled",
+    )
+    assert(
+        !cache_settled(ready: true, drawing: true, stale: false),
+        "an active replacement is settled",
+    )
+    assert(
+        !cache_settled(ready: true, drawing: true, stale: true),
+        "changed casters are settled during drawing",
+    )
+    assert(
+        !cache_settled(ready: true, drawing: false, stale: true),
+        "the gap before a queued replacement is settled",
+    )
+    assert(
+        cache_settled(ready: true, drawing: false, stale: false),
+        "the completed replacement never settles",
+    )
 }
 
 /// Whether a change to what casts draws a cascade again: not while its drawing (`drawing`) is

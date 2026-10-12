@@ -18,7 +18,7 @@ use engine::sweep::wrap
 use std::derive::Box3
 use std::field::{Surface, cuboid}
 use std::math::TAU
-use std::transform::{rotate_y, translate}
+use std::transform::{rotate_y, scale, translate}
 
 /// Moss's colour on the built things' stone.
 const MOSS: vec3 = vec3(0.08, 0.12, 0.03)
@@ -312,14 +312,34 @@ pub fn realize_tower(at: vec3) -> Realized {
     realize_tower_within(at, tolerance: 2cm, largest: 12cm)
 }
 
-/// The tower as seen from past `TOWER_NEAR`: cells for a 10 cm tolerance (its courses' joints
+/// The tower's distant representation: cells for a 10 cm tolerance (its courses' joints
 /// are a pixel or less there), a twentieth of the near mesh's vertices.
 pub fn realize_tower_far(at: vec3) -> Realized {
     realize_tower_within(at, tolerance: 10cm, largest: 40cm)
 }
 
-/// How far the near mesh of the tower is drawn (m): past it, the far one.
-pub const TOWER_NEAR: f32 = 80.0
+/// The tower's distant mesh takes over across this distance band (m).
+pub const TOWER_BLEND: vec2 = vec2(64.0, 96.0)
+
+pub fn tower_far_share(distance: f32) -> f32 {
+    smoothstep(TOWER_BLEND.x, TOWER_BLEND.y, distance)
+}
+
+@test
+fn the_tower_changes_mesh_over_a_band_without_a_threshold_jump() {
+    assert(tower_far_share(TOWER_BLEND.x) == 0.0, "distant tower appears before its band")
+    assert(tower_far_share(TOWER_BLEND.y) == 1.0, "near tower persists past its band")
+    assert(abs(tower_far_share(80.0) - 0.5) < 0.0001, "the former hard switch is not blended")
+    var previous = 0.0
+    for step in 0..129 {
+        let share = tower_far_share(TOWER_BLEND.x + f32(step) * 0.25)
+        assert(
+            share >= previous && share - previous < 0.012,
+            "tower detail jumps within its transition band",
+        )
+        previous = share
+    }
+}
 
 fn realize_tower_within(at: vec3, tolerance: f32, largest: f32) -> Realized {
     let t = tower()
@@ -727,6 +747,181 @@ pub fn built(m: Map) -> Vec<Built> {
         out.push(Built::Wall { a: w.xy, b: w.zw, tall: 2.2, seed })
     }
     out
+}
+
+/// Small partly buried stones along stream margins. Three stones make each irregular
+/// patch; the total stays bounded even when the history produces long courses. Falls use
+/// their cliff geometry instead. These low stones remain below the climber's floating lift.
+pub const BANK_STONE_LIMIT: u32 = 384
+const BANK_PATCH_STONES: u32 = 3
+
+pub fn bank_stones(courses: [engine::water::Course]) -> Vec<Built> {
+    var total = 0.0
+    for c in courses {
+        if c.falls || c.points.len() < 2 {
+            continue
+        }
+        for i in 0..c.points.len() - 1 {
+            total += length(c.points[i + 1].xy - c.points[i].xy)
+        }
+    }
+    let spacing = max(3.5, total / f32(BANK_STONE_LIMIT / BANK_PATCH_STONES))
+    var out: Vec<Built> = Vec::new()
+    var walked = 0.0
+    var next = spacing * 0.35
+    var patch = 0
+    for c in courses {
+        if c.falls || c.points.len() < 2 {
+            continue
+        }
+        for i in 0..c.points.len() - 1 {
+            let a = c.points[i]
+            let b = c.points[i + 1]
+            let length = length(b.xy - a.xy)
+            if length <= 1.0e-4 {
+                continue
+            }
+            let along = (b.xy - a.xy) / length
+            let side = vec2(-along.y, along.x)
+            while next < walked + length {
+                if out.len() + BANK_PATCH_STONES > BANK_STONE_LIMIT {
+                    return out
+                }
+                let q = mix(a, b, vec4(clamp((next - walked) / length, 0.0, 1.0)))
+                let seed = 12000 + patch * 11
+                let bank = if rand(seed, 1) < 0.5 { -1.0 } else { 1.0 }
+                for k in 0..BANK_PATCH_STONES {
+                    let radius = if k == 0 { 0.42 + 0.24 * rand(seed, 2) } else {
+                        0.18 + 0.22 * rand(seed + k, 2)
+                    }
+                    let offset = (f32(k) - 1.0) * (0.65 + 0.5 * rand(seed + k, 3))
+                    let across = 0.5 * max(q.z, 0.2) + radius * (0.2 + 0.9 * rand(seed + k, 4))
+                    let at = q.xy + along * offset + side * (bank * across)
+                    out.push(
+                        Built::Stone {
+                            at,
+                            radius,
+                            squash: vec3(
+                                1.15 + 0.3 * rand(seed + k, 5),
+                                0.65,
+                                0.85 + 0.2 * rand(seed + k, 6),
+                            ),
+                            seed: seed + k,
+                        },
+                    )
+                }
+                patch += 1
+                next += spacing * (0.8 + 0.4 * rand(seed, 7))
+            }
+            walked += length
+        }
+    }
+    out
+}
+
+/// Three shared stones supply every bank patch; placement scale gives the authored size.
+pub const BANK_PROTOTYPES: u32 = 3
+
+pub fn bank_prototype(index: u32) -> Realized {
+    engine::stone::realize_stone_within(
+        radius: 1.0,
+        squash: vec3(1.0),
+        seed: 12000 + index * 19,
+        at: vec3(0.0),
+        turn: 0.0,
+        look: CreatureLook { surface: Tolerance { tolerance: 2cm, largest: 8cm } },
+    )
+}
+
+pub fn bank_instances(
+    courses: [engine::water::Course],
+    height: fn(vec2) -> f32,
+) -> engine::stone::Instances {
+    var placements: Vec<engine::stone::Placement> = Vec::new()
+    for b in bank_stones(courses) {
+        if let Built::Stone { at, radius, squash, seed } = b {
+            let size = squash * radius
+            let centre = vec3(at.x, height(at) + size.y * 0.35, at.y)
+            let transform = translate(centre) * rotate_y(TAU * rand(seed, 4)) * scale(size)
+            placements.push(
+                engine::stone::Placement {
+                    prototype: seed % BANK_PROTOTYPES,
+                    at: transform,
+                    normal_at: engine::stone::normal_matrix(transform),
+                    // Unit prototype's field bounds are +/-1.22; a rotation preserves this
+                    // corner radius. No placement copies a vertex, index or colour buffer.
+                    reach: length(size * 1.22),
+                    seed,
+                },
+            )
+        }
+    }
+    engine::stone::Instances { prototypes: Vec::new(), placements }
+}
+
+@test
+fn bank_instances_share_three_prototypes_and_enclose_their_scaled_bounds() {
+    let c = engine::water::Course {
+        points: Vec::from([vec4(0.0, 0.0, 4.0, 0.4), vec4(0.0, 80.0, 4.0, 0.4)]),
+        falls: false,
+    }
+    let bank = bank_instances([take c], |_p| 2.0)
+    assert(bank.prototypes.is_empty(), "placement allocated a private GPU mesh")
+    assert(bank.placements.len() > 30, "the instances lost the authored bank density")
+    for p in bank.placements {
+        assert(p.prototype < BANK_PROTOTYPES, "placement selected an absent prototype")
+        var bottom = 1.0e9
+        var top = -1.0e9
+        for x in [-1.22, 1.22] {
+            for y in [-1.22, 1.22] {
+                for z in [-1.22, 1.22] {
+                    let corner = (p.at * vec4(x, y, z, 1.0)).xyz
+                    assert(
+                        length(corner - p.at[3].xyz) <= p.reach + 1.0e-4,
+                        "instance bound missed its mesh",
+                    )
+                    bottom = min(bottom, corner.y)
+                    top = max(top, corner.y)
+                }
+            }
+        }
+        assert(
+            bottom < 2.0 && top > 2.0 && top < 3.0,
+            "bank stone was not partly buried below floating clearance",
+        )
+    }
+}
+
+@test
+fn stream_bank_stones_follow_both_margins_with_a_fixed_bound() {
+    let course = engine::water::Course {
+        points: Vec::from([vec4(0.0, 0.0, 4.0, 0.4), vec4(0.0, 80.0, 4.0, 0.4)]),
+        falls: false,
+    }
+    let rocks = bank_stones([course.clone()])
+    let again = bank_stones([course.clone()])
+    assert(rocks.len() > 30 && rocks.len() <= BANK_STONE_LIMIT, "no useful bounded bank cover")
+    assert(rocks.len() == again.len(), "bank placement count changed")
+    var left = 0
+    var right = 0
+    for i in 0..rocks.len() {
+        let p = place(rocks[i])
+        assert(p == place(again[i]), "bank placement changed for the same course")
+        assert(abs(p.x) >= 2.0 && abs(p.x) < 3.0, f"bank stone left its water margin at {p}")
+        assert(p.y >= -2.0 && p.y <= 82.0, "bank stone went beyond the course")
+        if p.x < 0.0 { left += 1 } else { right += 1 }
+    }
+    assert(left > 0 && right > 0, "only one creek bank received stones")
+    let long = engine::water::Course {
+        points: Vec::from([vec4(0.0, 0.0, 4.0, 0.4), vec4(0.0, 100000.0, 4.0, 0.4)]),
+        falls: false,
+    }
+    assert(
+        bank_stones([take long]).len() <= BANK_STONE_LIMIT,
+        "long water exceeded its geometry budget",
+    )
+    let fall = engine::water::Course { falls: true, ..course }
+    assert(bank_stones([take fall]).is_empty(), "bank stones float beside a waterfall")
 }
 
 /// What's built, as the interest check sees it (`interest::Evidence::solids`): each thing's

@@ -225,8 +225,9 @@ impl Plant {
             top = max(top, c.centre.y + c.radius * c.squash)
         }
         for i in 0..self.limbs.len() {
-            for k in 0..4 {
-                top = max(top, self.limbs[i].points[k].y + self.limbs[i].radii[k])
+            for k in 0..(3 * RINGS + 1) {
+                let (at, _, radius) = limb_axis(self.limbs[i], f32(k) / f32(3 * RINGS))
+                top = max(top, at.y + radius)
             }
         }
         top
@@ -240,8 +241,9 @@ impl Plant {
             r = max(r, length(self.clumps[i].centre - mid) + self.clumps[i].radius)
         }
         for i in 0..self.limbs.len() {
-            for k in 0..4 {
-                r = max(r, length(self.limbs[i].points[k] - mid) + self.limbs[i].radii[k])
+            for k in 0..(3 * RINGS + 1) {
+                let (at, _, radius) = limb_axis(self.limbs[i], f32(k) / f32(3 * RINGS))
+                r = max(r, length(at - mid) + radius)
             }
         }
         r
@@ -400,7 +402,7 @@ fn corner_dir(o: u32) -> vec3 {
 /// Which corner a plant at `inst` is seen from by an eye at `eye` (`mid` metres up its middle,
 /// in its own frame).
 pub fn corner_of(inst: Instance, mid: f32, eye: vec3) -> u32 {
-    let v = unturned(inst.yaw, eye - inst.at)
+    let v = unoriented(inst.yaw, inst.pitch, eye - inst.at)
     let y = v.y - mid * inst.scale
     u32(v.x > 0.0) | (u32(y > 0.0) << 1) | (u32(v.z > 0.0) << 2)
 }
@@ -555,9 +557,8 @@ pub fn leaves_on(uv: vec2, seed: u32, w: f32, n: u32) -> (f32, u32) {
 
 // ---- limbs as geometry -----------------------------------------------------------------------
 
-/// Sides round a limb's tube, and rings along each of its three pieces. A piece is straight, and
-/// its radius changes evenly along it, so two rings are enough (the last piece's closing tip
-/// takes the second); sides are what a thick trunk shows, as flat faces the look paints by.
+/// Sides round a limb's tube, and rings along each of its three curved pieces. Its middle
+/// ring follows the smooth axis; the final ring closes its tip. No extra geometry is needed.
 pub const SIDES: u32 = 14
 pub const RINGS: u32 = 2
 /// Vertices a limb draws: each piece's rings of quads round it.
@@ -588,6 +589,73 @@ pub fn limb_vertex(limb: Tube<4>, k: u32) -> (vec3, vec3, vec2) {
     (centre + n * radius, n, along)
 }
 
+/// A collapsed segment or a reversing joint has no unique tangent. Keep a finite frame
+/// using the adjacent direction, or world up when the entire limb is collapsed.
+fn limb_direction(v: vec3, otherwise: vec3) -> vec3 {
+    let size = length(v)
+    if size > 1.0e-5 { v / size } else { otherwise }
+}
+
+/// A smooth axis through a limb's four authored points. Both sides of a joint share the
+/// same tangent; existing intermediate rings follow the curve instead of a straight chord.
+/// Its excursion stays within a fifth of its radius so inner wood occluders remain enclosed.
+fn limb_segment(limb: Tube<4>, piece: u32, t: f32) -> (vec3, vec3, f32) {
+    let a = limb.points[piece]
+    let b = limb.points[piece + 1]
+    let delta = b - a
+    let span = max(length(delta), 1.0e-5)
+    let dir = limb_direction(delta, vec3(0.0, 1.0, 0.0))
+    let before = if piece > 0 { a - limb.points[piece - 1] } else { delta }
+    let after = if piece < 2 { limb.points[piece + 2] - b } else { delta }
+    let start = limb_direction(dir + limb_direction(before, dir), dir) * min(span, length(before))
+    let end = limb_direction(dir + limb_direction(after, dir), dir) * min(span, length(after))
+    let t2 = t * t
+    let t3 = t2 * t
+    let centre = if t <= 0.0 { a } else if t >= 1.0 { b } else {
+        a * (2.0 * t3 - 3.0 * t2 + 1.0) +
+            start * (t3 - 2.0 * t2 + t) +
+            b * (-2.0 * t3 + 3.0 * t2) +
+            end * (t3 - t2)
+    }
+    let tangent = a * (6.0 * t2 - 6.0 * t) +
+        start * (3.0 * t2 - 4.0 * t + 1.0) +
+        b * (-6.0 * t2 + 6.0 * t) +
+        end * (3.0 * t2 - 2.0 * t)
+    let radius = if t >= 1.0 { limb.radii[piece + 1] } else {
+        mix(limb.radii[piece], limb.radii[piece + 1], t)
+    }
+    let straight = mix(a, b, vec3(t))
+    let offset = centre - straight
+    let limited = straight + offset * min(1.0, radius * 0.2 / max(length(offset), 1.0e-6))
+    let centre = if t <= 0.0 { a } else if t >= 1.0 { b } else { limited }
+    (centre, limb_direction(tangent, dir), radius)
+}
+
+/// Position, tangent and radius on the axis the limb renderer uses, from root 0 to tip 1.
+/// Branches attach here so changing the curve cannot detach them from their parent.
+pub fn limb_axis(limb: Tube<4>, t: f32) -> (vec3, vec3, f32) {
+    let along = clamp(t, 0.0, 1.0) * 3.0
+    let piece = min(u32(floor(along)), 2)
+    let ring = (along - f32(piece)) * f32(RINGS)
+    let first = min(u32(floor(ring)), RINGS - 1)
+    let f = ring - f32(first)
+    let (a, an, ar) = limb_segment(limb, piece, f32(first) / f32(RINGS))
+    let (b, bn, br) = limb_segment(limb, piece, f32(first + 1) / f32(RINGS))
+    (mix(a, b, vec3(f)), limb_direction(mix(an, bn, vec3(f)), an), mix(ar, br, f))
+}
+
+/// Position, tangent and radius at a height on a trunk whose points rise in order.
+pub fn limb_at_height(limb: Tube<4>, height: f32) -> (vec3, vec3, f32) {
+    var lo = 0.0
+    var hi = 1.0
+    for _ in 0..12 {
+        let mid = (lo + hi) * 0.5
+        let (p, _, _) = limb_axis(limb, mid)
+        if p.y < height { lo = mid } else { hi = mid }
+    }
+    limb_axis(limb, (lo + hi) * 0.5)
+}
+
 /// A limb's point `p` (of `LIMB_POINTS`), in the plant's frame: the point of its axis it's
 /// round, its normal and its distance out from the axis (the point is `centre + n * radius`),
 /// and where it is round and along the limb (for bark's ridges).
@@ -598,16 +666,12 @@ pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, f32, vec2) {
     let along = f32(r / (SIDES + 1)) / f32(RINGS)
     let a = limb.points[piece]
     let b = limb.points[piece + 1]
-    // A ring at a joint lies across both pieces it joins (their axes' mean), and every ring's
-    // frame turns from one reference for the whole limb: no crack or twist where pieces meet.
-    var axis = normalize(b - a)
-    if along == 0.0 && piece > 0 {
-        axis = normalize(axis + normalize(a - limb.points[piece - 1]))
-    } else if along == 1.0 && piece < 2 {
-        axis = normalize(axis + normalize(limb.points[piece + 2] - b))
-    }
+    let (centre, axis, r_axis) = limb_segment(limb, piece, along)
     let whole = normalize(limb.points[3] - limb.points[0] + vec3(0.0, 1.0e-4, 0.0))
     let ref_axis = if abs(whole.y) > 0.9 { vec3(1.0, 0.0, 0.0) } else { vec3(0.0, 1.0, 0.0) }
+    let ref_axis = if abs(dot(axis, ref_axis)) > 0.99 {
+        if abs(axis.y) < 0.9 { vec3(0.0, 1.0, 0.0) } else { vec3(1.0, 0.0, 0.0) }
+    } else { ref_axis }
     let t1 = normalize(cross(axis, ref_axis))
     let t2 = cross(axis, t1)
     let ang = TAU * side / f32(SIDES)
@@ -617,10 +681,7 @@ pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, f32, vec2) {
     // A joint's ring is worked out twice, as one piece's end and the next's start: exactly the
     // same both times (`mix(a, b, 1.0)` isn't always `b` on the GPU, and the two rings a rounding
     // apart left a dotted crack round the limb: the lookdev reviews' pale rings on logs).
-    let radius = if along >= 1.0 { limb.radii[piece + 1] } else {
-        mix(limb.radii[piece], limb.radii[piece + 1], along)
-    } * closing
-    let centre = if along >= 1.0 { b } else { mix(a, b, vec3(along)) }
+    let radius = r_axis * closing
     // How far along the limb (m), from its start: the bark's ridges run on across the joints.
     var walked = 0.0
     for k in 0..piece {
@@ -644,6 +705,8 @@ pub struct Instance: Copy + GpuData {
     pub scale: f32,
     pub fork: f32,
     pub wide: f32,
+    /// Tilt of local +z above the ground plane, in radians, before yaw.
+    pub pitch: f32 = 0.0,
 }
 
 /// No plant: an empty place in an instances' buffer.
@@ -667,8 +730,9 @@ impl Instance {
     /// sized and turned.
     pub fn place(self, p: vec3) -> vec3 {
         self.at +
-            turned(
+            oriented(
                 self.yaw,
+                self.pitch,
                 vec3(p.x * self.wide, bend(p.y, self.fork), p.z * self.wide) * self.scale,
             )
     }
@@ -677,18 +741,18 @@ impl Instance {
     /// surface's offset `off` from it sized and turned (a limb keeps its girth where its crown
     /// is narrowed).
     pub fn place_round(self, centre: vec3, off: vec3) -> vec3 {
-        self.place(centre) + turned(self.yaw, off * self.scale)
+        self.place(centre) + self.turn(off * self.scale)
     }
 
     /// A direction of the plant's frame in the world.
     pub fn turn(self, v: vec3) -> vec3 {
-        turned(self.yaw, v)
+        oriented(self.yaw, self.pitch, v)
     }
 
     /// A normal of the plant's frame at height `y` in it, in the world: bent as `place` bends
     /// the plant there.
     pub fn turn_normal(self, n: vec3, y: f32) -> vec3 {
-        turned(self.yaw, normalize(vec3(n.x, n.y / bend_slope(y, self.fork), n.z)))
+        self.turn(normalize(vec3(n.x, n.y / bend_slope(y, self.fork), n.z)))
     }
 
     /// Its tint (`tint_of`), as added to its leaves' colour.
@@ -734,6 +798,19 @@ pub fn turned(yaw: f32, v: vec3) -> vec3 {
 pub fn unturned(yaw: f32, v: vec3) -> vec3 {
     let (c, s) = (cos(yaw), sin(yaw))
     vec3(c * v.x - s * v.z, v.y, s * v.x + c * v.z)
+}
+
+/// A direction tilted about local x so +z rises, then turned about world +y.
+pub fn oriented(yaw: f32, pitch: f32, v: vec3) -> vec3 {
+    let (c, s) = (cos(pitch), sin(pitch))
+    turned(yaw, vec3(v.x, c * v.y + s * v.z, -s * v.y + c * v.z))
+}
+
+/// A world direction returned to a plant's tilted, turned frame.
+pub fn unoriented(yaw: f32, pitch: f32, v: vec3) -> vec3 {
+    let q = unturned(yaw, v)
+    let (c, s) = (cos(pitch), sin(pitch))
+    vec3(q.x, c * q.y - s * q.z, s * q.y + c * q.z)
 }
 
 /// The wind (#28 §4, Q5 of #51): gusts carried over the land (`gust`), a function of time and
@@ -795,8 +872,8 @@ pub fn sway(wind: Wind, at: vec3, height: f32) -> vec3 {
 /// (`LEAF_PATTERNS` side by side, in a square), so cutting a card reads one texel, not its
 /// leaves' shapes (the prepass draws every layer of a crown).
 pub const LEAF_PATTERNS: u32 = 16
-pub const LEAF_TEXELS: u32 = 64
-pub const LEAF_ATLAS: u32 = 256
+pub const LEAF_TEXELS: u32 = 128
+pub const LEAF_ATLAS: u32 = 512
 /// The patterns along each side of the atlas.
 const LEAF_SIDE: u32 = LEAF_ATLAS / LEAF_TEXELS
 
@@ -805,8 +882,22 @@ fn pattern_seed(k: u32) -> u32 {
     k.wrapping_mul(2246822519) ^ 3266489917
 }
 
+/// Fine tissue within one leaf: its midrib passes less light, and its blade has a gentle
+/// fold. Cooked once into spare atlas channels; it does not add per-frame shape evaluation.
+fn leaf_tissue(uv: vec2, seed: u32, which: u32, n: u32) -> vec2 {
+    let a = TAU * (f32(which) + rand(seed, 20 + which) * 0.6) / f32(n)
+    let dir = vec2(cos(a), sin(a))
+    let len = 0.55 + 0.3 * rand(seed, 40 + which)
+    let q = uv - dir * (0.18 + 0.1 * rand(seed, 60 + which))
+    let along = saturate(dot(q, dir) / len)
+    let across = dot(q, vec2(-dir.y, dir.x)) / len
+    let rib = smoothstep(0.012, 0.065, abs(across))
+    let blade = 0.5 + 0.5 * sin(PI * along) * (1.0 - smoothstep(0.03, 0.3, abs(across)))
+    vec2(rib, blade)
+}
+
 /// The leaf atlas's texels: each pattern's coverage (a soft edge a texel wide) in red, and which
-/// of its leaves covers it (its index over 8) in green.
+/// of its leaves covers it (its index over 8) in green; midrib transmission and fold in blue/alpha.
 @fragment
 pub fn cook_leaves(pixel: FragCoord, n: u32) -> vec4 {
     let p = vec2u(pixel.position.xy)
@@ -814,7 +905,8 @@ pub fn cook_leaves(pixel: FragCoord, n: u32) -> vec4 {
     let local = (vec2(p % vec2u(LEAF_TEXELS)) + vec2(0.5)) / f32(LEAF_TEXELS)
     let uv = local * 2.0 - vec2(1.0)
     let (m, which) = leaves_on(uv, pattern_seed(k), w: 2.0 / f32(LEAF_TEXELS), n: n)
-    vec4(m, (f32(which) + 0.5) / 8.0, 0.0, 1.0)
+    let tissue = leaf_tissue(uv, pattern_seed(k), which, n)
+    vec4(m, (f32(which) + 0.5) / 8.0, tissue.x, tissue.y)
 }
 
 /// Where a card of seed `seed` reads its pattern at `uv` (in [-1, 1]²): its pattern's cell in
@@ -1019,4 +1111,106 @@ fn a_cushion_is_wide_and_flat_topped() {
     let p = vec3(0.7, 1.9, -0.4)
     assert(abs(ball.distance(p) - (length(p) - 1.0)) < 1.0e-5, "a sphere")
     assert(abs(ball.area_share() - 1.0) < 1.0e-5, "a sphere's area")
+}
+
+@test
+fn limb_curves_share_joint_position_and_tangent() {
+    let limb = Tube {
+        points: [
+            vec3(0.0, 0.0, 0.0),
+            vec3(0.1, 2.0, 0.0),
+            vec3(1.4, 4.0, 0.2),
+            vec3(4.0, 5.0, 0.4),
+        ],
+        radii: [0.5, 0.4, 0.25, 0.05],
+    }
+    for joint in 0..2 {
+        let (a, an, ar) = limb_segment(limb, joint, 1.0)
+        let (b, bn, br) = limb_segment(limb, joint + 1, 0.0)
+        assert(length(a - b) < 1.0e-6 && abs(ar - br) < 1.0e-6, "limb joint has a gap")
+        assert(dot(an, bn) > 0.9999, "limb joint has an angular tangent")
+    }
+    let (middle, _, _) = limb_segment(limb, 1, 0.5)
+    assert(
+        length(middle - mix(limb.points[1], limb.points[2], vec3(0.5))) > 0.02,
+        "limb still follows straight pieces",
+    )
+    let (at, _, _) = limb_at_height(limb, 3.0)
+    assert(abs(at.y - 3.0) < 0.003, "branch attaches at the wrong height")
+}
+
+@test
+fn leaf_midrib_blocks_more_light_than_its_blade() {
+    let seed = pattern_seed(3)
+    let a = TAU * rand(seed, 20) * 0.6 / 6.0
+    let dir = vec2(cos(a), sin(a))
+    let len = 0.55 + 0.3 * rand(seed, 40)
+    let centre = dir * (0.18 + 0.1 * rand(seed, 60) + 0.45 * len)
+    let rib = leaf_tissue(centre, seed, which: 0, n: 6)
+    let blade = leaf_tissue(centre + vec2(-dir.y, dir.x) * (len * 0.12), seed, which: 0, n: 6)
+    assert(rib.x < 0.01 && blade.x > 0.99, "backlit leaf has no midrib")
+    assert(rib.y > blade.y, "leaf fold has no surface relief")
+}
+
+@test
+fn plant_bounds_contain_curved_limb_rings() {
+    var p = plant(Leaves {}, Bark {})
+    p.tube(
+        [vec3(0.0), vec3(0.2, 2.0, 0.0), vec3(2.0, 3.0, 0.0), vec3(3.0, 3.1, 0.2)],
+        [0.5, 0.4, 0.25, 0.1],
+    )
+    let top = p.top()
+    let mid = vec3(0.0, top * 0.5, 0.0)
+    let reach = p.reach()
+    for k in 0..LIMB_POINTS {
+        let (at, normal, radius, _) = limb_point(p.limbs[0], k)
+        let point = at + normal * radius
+        assert(point.y <= top + 1.0e-5, "curved limb exceeds plant height")
+        assert(length(point - mid) <= reach + 1.0e-5, "curved limb exceeds plant reach")
+    }
+}
+
+@test
+fn collapsed_and_reversing_limbs_keep_finite_frames() {
+    for points in [
+        [vec3(0.0); 4],
+        [vec3(0.0), vec3(0.0), vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0)],
+        [vec3(0.0), vec3(1.0, 0.0, 0.0), vec3(0.0), vec3(-1.0, 0.0, 0.0)],
+    ] {
+        let limb = Tube { points, radii: [0.2, 0.15, 0.1, 0.02] }
+        for k in 0..LIMB_POINTS {
+            let (at, normal, radius, _) = limb_point(limb, k)
+            assert(length(at) < 2.0 && radius >= 0.0, "limb has a non-finite point")
+            assert(abs(length(normal) - 1.0) < 1.0e-4, "limb has a non-finite frame")
+        }
+    }
+}
+
+@test
+fn tilted_instances_place_round_sections_and_normals_in_one_frame() {
+    for yaw in [0.0, 0.73, 3.9] {
+        for pitch in [-0.6, 0.0, 0.45] {
+            var inst = NO_INSTANCE
+            inst.at = vec3(12.0, -4.0, 9.0)
+            inst.scale = 1.7
+            inst.yaw = yaw
+            inst.pitch = pitch
+            let p = vec3(0.2, 0.5, 8.0)
+            let n = normalize(vec3(0.3, 0.9, -0.1))
+            let world = inst.place_round(p, n * 0.4)
+            let local = unoriented(yaw, pitch, (world - inst.at) / inst.scale)
+            assert(length(local - (p + n * 0.4)) < 1.0e-4, "limb and instance frames disagree")
+            assert(
+                abs(dot(inst.turn(n), inst.turn(vec3(1.0, 0.0, 0.0))) - n.x) < 1.0e-5,
+                "tilt changes normal angle",
+            )
+            assert(
+                length(inst.turn_normal(n, p.y) - inst.turn(n)) < 1.0e-5,
+                "tilted normals disagree",
+            )
+            if pitch == 0.0 {
+                assert(length(inst.turn(p) - turned(yaw, p)) < 1.0e-6, "standing instance changed")
+            }
+        }
+    }
 }

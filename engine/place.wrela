@@ -172,6 +172,31 @@ impl Land {
         y
     }
 
+    /// The ground mesh's part of the crags: talus and access ramps, with bedded rock
+    /// supplied by `crag_beds` alone. Keeping the same rock in the heightfield lets its
+    /// coarser triangles cross the slabs as the clipmap follows the eye. Returns the earth
+    /// height over `here`, and how much rock was removed from the complete surface.
+    pub fn crag_substrate_over(self, p: vec2, here: f32) -> vec2 {
+        var earth = 0.0
+        var whole = 0.0
+        for i in 0..4 {
+            let c = self.crags[i]
+            if c.w > 0.0 && length(p - c.xy) < max(crag_reach(c), 3.5 * c.w) {
+                let rise = if bedded(c) { self.floors[i] - here } else { 0.0 }
+                let (talus, body, _) = crag_shape(p, c, u32(i))
+                let ramp = crag_ramp(p, c, self.ramps[i], u32(i), rise)
+                let substrate = if bedded(c) {
+                    max(talus, ramp)
+                } else {
+                    max(max(talus, body), ramp)
+                }
+                earth = max(earth, substrate)
+                whole = max(whole, max(max(talus, rise + body), ramp))
+            }
+        }
+        vec2(earth, max(whole - earth, 0.0))
+    }
+
     /// This land with its crags' floors set from `ground`, the whole ground's height without the
     /// crags at a point (the game's: it adds its own shapes to the land's `base`).
     pub fn settled(self, ground: fn(vec2) -> f32) -> Land {
@@ -573,8 +598,15 @@ fn crag_tilt(c: vec4, i: u32) -> vec2 {
 /// under its floor: its talus, its tiers (`crag_shape`), and a ramp of scree up from the direction
 /// `ramp` (radians), so a player can climb it; and whether its slabs stand over `p` (1, else 0).
 pub fn crag(p: vec2, c: vec4, ramp: f32, i: u32, rise: f32) -> vec2 {
-    let k = p - c.xy
     let (talus, body, _) = crag_shape(p, c, i)
+    let ramp_h = crag_ramp(p, c, ramp, i, rise)
+    let slab = if bedded(c) && body > -1.0e8 { 1.0 } else { 0.0 }
+    vec2(max(max(talus, rise + body), ramp_h), slab)
+}
+
+/// The earth ramp shared by the collision surface and the drawn substrate.
+fn crag_ramp(p: vec2, c: vec4, ramp: f32, i: u32, rise: f32) -> f32 {
+    let k = p - c.xy
     let tilt = crag_tilt(c, i)
     // The ramp: a wedge whose top meets the crag's at its rim, falling to the ground over three
     // feet's widths.
@@ -586,12 +618,13 @@ pub fn crag(p: vec2, c: vec4, ramp: f32, i: u32, rise: f32) -> vec2 {
     // there) and as high as it at the rim, so the climb has no step where it meets it, and no
     // ridge across the top; from its floor there, and from the ground round it lower down.
     let floor = rise * (1.0 - smoothstep(0.55 * c.w, 2.0 * c.w, along))
-    let ramp_h = (c.z + dot(dir, tilt) * min(along, 0.55 * c.w) - 0.3 + floor) *
+    // Carry the transverse tilt too: an untilted ramp crest cuts through the low side
+    // of the slab's tilted plane, leaving a strip of earth across its stone surface.
+    let lean = dot(k, tilt) - dot(dir, tilt) * max(along - 0.55 * c.w, 0.0)
+    (c.z + lean - 0.3 + floor) *
         (1.0 - smoothstep(0.55 * c.w, reach, along)) *
         (1.0 - smoothstep(4.0, 9.0, across)) *
         step(0.0, along)
-    let slab = if bedded(c) && body > -1.0e8 { 1.0 } else { 0.0 }
-    vec2(max(max(talus, rise + body), ramp_h), slab)
 }
 
 // ---- sites, relations, openings and keepers ----------------------------------------------------
@@ -1294,4 +1327,76 @@ fn a_bedded_crags_slabs_and_no_outcrops_stand_over_the_ground() {
     let toe = tall.xy + vec2(1.2 * tall.w + cliff_width(tall) + talus_width(tall), 0.0)
     assert(land.crags_over(toe, 0.0).y == 0.0, "a slab stands over a crag's talus's toe")
     assert(land.crags_over(low.xy, 0.0).y == 0.0, "a slab stands over an outcrop")
+}
+
+/// Solid crags own their rock volume. The terrain below keeps the surrounding earth and the
+/// climb ramp, while low outcrops without a solid mesh remain complete heightfields.
+@test
+fn crag_substrate_keeps_earth_and_leaves_rock_to_the_slabs() {
+    let tall = vec4(0.0, 0.0, 45.0, 30.0)
+    let low = vec4(300.0, 0.0, 4.0, 12.0)
+    let land = Land {
+        hills: [vec4(0.0); 8],
+        hollows: [vec4(0.0); 8],
+        ridges: [vec4(0.0); 24],
+        ravines: [vec4(0.0); 16],
+        ravine_fall: 0.0,
+        crags: [tall, low, vec4(0.0), vec4(0.0)],
+        ramps: vec4(0.0),
+        floors: vec4(0.0),
+        tilt: vec4(0.0),
+    }
+    var separated = 0
+    var earth = 0
+    for j in -12..13 {
+        for k in -12..13 {
+            let p = vec2(f32(j), f32(k)) * 5.0
+            let full = land.crags_over(p, 0.0)
+            let base = land.crag_substrate_over(p, 0.0)
+            assert(base.x <= full.x + 1.0e-5, f"substrate rose above the surface at {p}")
+            if full.y == 0.0 {
+                assert(abs(base.x - full.x) < 1.0e-5, f"exposed earth changed at {p}")
+                earth += 1
+            }
+            if full.x - base.x > 1.0 {
+                separated += 1
+            }
+        }
+    }
+    assert(separated > 20 && earth > 100, "the fixture did not cover both rock and earth")
+    for k in 0..24 {
+        let p = vec2(f32(k) * 5.0, 0.0)
+        let full = land.crags_over(p, 0.0).x
+        let ramp = crag_ramp(p, tall, 0.0, 0, 0.0)
+        if abs(full - ramp) < 1.0e-5 {
+            assert(
+                abs(land.crag_substrate_over(p, 0.0).x - full) < 1.0e-5,
+                "the climb ramp was cut",
+            )
+        }
+    }
+    assert(
+        land.crag_substrate_over(low.xy, 0.0) == land.crags_over(low.xy, 0.0),
+        "an outcrop lost its surface without a slab to supply it",
+    )
+}
+
+/// The whole ramp crest meets the bedding plane, including its low side. Testing only the
+/// centreline misses terrain crossing the slab where the bed tilts across the ramp.
+@test
+fn a_crag_ramp_meets_the_tilted_top_across_its_full_width() {
+    let c = vec4(0.0, 0.0, 45.0, 30.0)
+    let angle = 0.52
+    let dir = vec2(cos(angle), sin(angle))
+    let side = vec2(-dir.y, dir.x)
+    for rise in [-10.0, 0.0, 10.0] {
+        for j in 1..9 {
+            for k in -4..5 {
+                let p = dir * f32(j) + side * (f32(k) * 0.95)
+                let top = c.z + dot(p, crag_tilt(c, 0)) + rise
+                let ramp = crag_ramp(p, c, angle, 0, rise)
+                assert(abs(top - ramp - 0.3) < 1.0e-4, f"ramp crossed its bedding plane at {p}")
+            }
+        }
+    }
 }

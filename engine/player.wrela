@@ -30,6 +30,15 @@ use std::serialize::Serialize
 pub const WALK: f32 = 1.4
 pub const RUN: f32 = 5.0
 
+/// A body's travel policy, supplied by the game. `clearance` is the tallest low log it can
+/// rise over; zero keeps a grounded walker. Turning is bounded in radians per second.
+pub struct Motion: Copy {
+    pub walk: f32 = WALK,
+    pub run: f32 = RUN,
+    pub clearance: f32 = 0.0,
+    pub turn: f32 = 6.0,
+}
+
 /// How much faster each glide goes (the play harness's, H: each press the next; for the
 /// streaming's tests, and the game's gliding to come): 2, 4, 8 and 16 times a run, over what's on
 /// the ground.
@@ -268,6 +277,20 @@ pub fn wish(c: Controls) -> (vec2, bool) {
 /// lets it, and turns to face the way it goes.
 @deterministic
 pub fn step<G: Ground>(p: mut Player, ground: G, water: Water, o: Obstacles, dt: f32) {
+    step_with(mut p, ground, water, o, Motion {}, dt)
+}
+
+/// A tick with the game's travel policy. Face the camera-relative input as soon as it changes,
+/// including while braking out of a reversal; the camera alone never rotates a still body.
+@deterministic
+pub fn step_with<G: Ground>(
+    p: mut Player,
+    ground: G,
+    water: Water,
+    o: Obstacles,
+    motion: Motion,
+    dt: f32,
+) {
     var c = p.controls
     if c.turn_left {
         c.yaw = wrap(c.yaw - TURN_RATE * dt)
@@ -282,14 +305,19 @@ pub fn step<G: Ground>(p: mut Player, ground: G, water: Water, o: Obstacles, dt:
     // ground.
     let gliding = c.glide > 0
     let pace = if gliding { 1.0 } else { stands(ground, water, o, at) }
-    let target = dir * (if running { RUN } else { WALK }) * max(pace, 0.2) * GLIDES[c.glide]
+    let target = dir * (if running { motion.run } else {
+        motion.walk
+    }) * max(pace, 0.2) * GLIDES[c.glide]
+    if length(dir) > 1.0e-4 {
+        p.heading = turn_to(p.heading, atan2(dir.x, dir.y), motion.turn * dt)
+    }
     let dv = target - p.velocity
     let most = ACCELERATION * dt
     p.velocity += if length(dv) > most { dv * (most / length(dv)) } else { dv }
     let d = p.velocity * dt
     if length(d) > 1.0e-6 {
         let (moved, k) = if gliding { (d, 1.0) } else {
-            footing::step(ground, water, o, at, d, BODY)
+            footing::step_over(ground, water, o, at, d, BODY, motion.clearance)
         }
         p.at = p.at.moved(moved)
         p.pace = k
@@ -297,14 +325,10 @@ pub fn step<G: Ground>(p: mut Player, ground: G, water: Water, o: Obstacles, dt:
         if length(moved) < 0.25 * length(d) {
             p.velocity = vec2(0.0)
         }
-        if length(moved) > 1.0e-4 {
-            let want = atan2(moved.x, moved.y)
-            p.heading = wrap(p.heading + wrap(want - p.heading) * min(12.0 * dt, 1.0))
-        }
     } else {
         p.pace = pace
     }
-    p.y = standing_height(ground, o, p.at)
+    p.y = standing_height(ground, o, p.at) + o.lift(p.at.world(), BODY, motion.clearance)
 }
 
 /// Puts the player at `at`, facing `heading`, on the ground as walking does: for a move that isn't
@@ -724,4 +748,65 @@ fn the_side_keys_move_the_way_they_are_named() {
     let (left, _) = wish(c)
     assert(right == vec2(1.0, 0.0), f"D moved {right}")
     assert(left == vec2(-1.0, 0.0), f"A moved {left}")
+}
+
+/// Facing follows the camera-relative travel request during a reversal without a flip key,
+/// with no discontinuity across the angle seam. A stopped player can look round independently.
+@test
+fn movement_turns_toward_the_camera_relative_wish_without_snapping() {
+    let ground = Shelf { high: 1.0 }
+    let none: Vec<footing::Obstacle> = Vec::new()
+    let o = Obstacles::of(none, vec2(-20.0), vec2(20.0))
+    let water = Water {
+        meres: [vec4(0.0), vec4(0.0)],
+        springs: [vec2(0.0), ..vec2(0.0)],
+        spring_count: 0,
+        falls: [vec2(0.0), vec2(0.0)],
+    }
+    var p = spawn(ground, Place::of(vec2(0.0)), 0.0)
+    p.velocity = vec2(0.0, 3.0)
+    p.controls.yaw = PI - 0.01
+    p.controls.forward = true
+    let motion = Motion { walk: 3.0, run: 7.5 }
+    for _ in 0..40 {
+        let before = p.heading
+        step_with(mut p, ground, water, o, motion, 1.0 / 60.0)
+        assert(abs(wrap(p.heading - before)) <= 0.10001, "the body snapped into its reversal")
+    }
+    assert(dot(facing(p.heading), facing(p.controls.yaw)) > 0.999, "the body did not face travel")
+    assert(p.velocity.y < -2.9, "forward did not follow the rotated camera")
+    p.controls.forward = false
+    p.velocity = vec2(0.0)
+    let before = p.heading
+    p.controls.yaw = 0.0
+    step_with(mut p, ground, water, o, motion, 1.0 / 60.0)
+    assert(p.heading == before, "looking round spun the stopped body")
+}
+
+/// Shift selects the game's sprint speed; releasing it returns to a distinct walk. Diagonal
+/// input retains that speed instead of adding the two axes.
+@test
+fn travel_policy_has_distinct_walk_and_shift_sprint_speeds() {
+    let ground = Shelf { high: 1.0 }
+    let none: Vec<footing::Obstacle> = Vec::new()
+    let o = Obstacles::of(none, vec2(-100.0), vec2(100.0))
+    let water = Water {
+        meres: [vec4(0.0), vec4(0.0)],
+        springs: [vec2(0.0), ..vec2(0.0)],
+        spring_count: 0,
+        falls: [vec2(0.0), vec2(0.0)],
+    }
+    var p = spawn(ground, Place::of(vec2(0.0)), 0.0)
+    let motion = Motion { walk: 3.0, run: 7.5 }
+    p.controls.forward = true
+    p.controls.right = true
+    for running in [false, true, false] {
+        p.controls.run_held = running
+        for _ in 0..90 {
+            step_with(mut p, ground, water, o, motion, 1.0 / 60.0)
+        }
+        let want = if running { 7.5 } else { 3.0 }
+        assert(abs(length(p.velocity) - want) < 0.001, f"travel speed was {length(p.velocity)}")
+        assert(abs(p.velocity.x - p.velocity.y) < 0.001, "diagonal travel drifted")
+    }
 }

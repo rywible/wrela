@@ -396,19 +396,14 @@ fn march(
             let q = vec3(p.x - c.drift.x, h + BASE, p.z - c.drift.y)
             let dens = field(q, h, weather, shape, detail, rep, detailed: true)
             if dens > 0.0 && through >= 0.01 {
-                // Toward the sun: five samples within 750 m, then one about 2 km out (the
-                // shadows of clouds farther off), each placed in its stretch by the ray's
-                // jitter: a sample at a fixed place, a stretch apart, cut a far cloud's shadow
-                // with a hard edge.
+                // Resolve the sunlit skin before the deep shadow. Equal 150 m intervals
+                // missed this skin and made the whole cloud a soft, evenly shaded patch.
+                // The same six samples cover 3.15 km, with most near the visible surface.
                 var od = 0.0
                 for k in 0..6 {
-                    let (at, step) = if k < 5 {
-                        ((f32(k) + jitter) * 150.0, 150.0)
-                    } else {
-                        (750.0 + jitter * 2400.0, 2400.0)
-                    }
-                    let ql = q + c.sun * at
-                    od += field(ql, ql.y - BASE, weather, shape, detail, rep, detailed: false) *
+                    let (lo, step) = light_interval(k)
+                    let ql = q + c.sun * (lo + jitter * step)
+                    od += field(ql, ql.y - BASE, weather, shape, detail, rep, detailed: k < 2) *
                         step
                 }
                 od *= EXTINCTION
@@ -424,7 +419,10 @@ fn march(
                     b *= 0.7
                 }
                 to_sun *= mix(1.0, 1.0 - exp(-2.0 * od - dens * 0.6), powder)
-                let hf = saturate(h / (TOP - BASE))
+                // Each cloud's own top sees the sky. Using the tallest possible layer
+                // height kept short cumulus dark and removed its vertical shape.
+                let local_top = weather.sample_level(rep, q.xz / SPAN + vec2(0.5)).g * (TOP - BASE)
+                let hf = saturate(h / max(local_top, 1.0))
                 let ambient = mix(below, above, vec3(saturate(hf * 1.5)))
                 let source = sun_light * to_sun + ambient
                 let step_t = exp(-dens * EXTINCTION * dt)
@@ -562,8 +560,8 @@ pub fn cloud_shadow(c: Clouds, shadow: Texture<Rgba16Float>, s: Sampler, world: 
 // ---- the sky's pass -----------------------------------------------------------------------------
 
 /// The sky (the air's sky table, `view`) with the dome's clouds along `dir`, and their cover:
-/// the dome read through a tent three texels wide (four samples), which averages away most of
-/// its march's jitter.
+/// the dome read with one bilinear sample. Its history already reduces march noise; another
+/// tent filter smeared billow silhouettes and flattened small sunlit edges.
 pub fn sky_with_clouds(
     view: Texture<Rgba16Float>,
     light: Light,
@@ -573,12 +571,7 @@ pub fn sky_with_clouds(
 ) -> vec4 {
     let base = sky(view, s, light, dir) + sun_disc(light, dir)
     let uv = sky_uv(dir)
-    let d = vec2(0.5 / f32(SKY_W), 0.5 / f32(SKY_H))
-    let c = (dome.sample_level(s, uv + d) +
-        dome.sample_level(s, uv - d) +
-        dome.sample_level(s, uv + vec2(d.x, -d.y)) +
-        dome.sample_level(s, uv + vec2(-d.x, d.y))) *
-        0.25
+    let c = dome.sample_level(s, uv)
     vec4(base * (1.0 - c.a) + c.rgb, c.a)
 }
 
@@ -749,4 +742,28 @@ impl Sky {
     pub fn done(self) -> bool {
         self.frames >= PHASES
     }
+}
+
+/// Consecutive sunlight integration intervals, in metres. Resolve the illuminated shell
+/// first and use the last interval for shadows from distant clouds.
+fn light_interval(k: u32) -> (f32, f32) {
+    let lo = 20.0 * (f32(1 << k) - 1.0)
+    let hi = if k == 5 { 3150.0 } else { 20.0 * (f32(1 << (k + 1)) - 1.0) }
+    (lo, hi - lo)
+}
+
+@test
+fn cloud_sunlight_samples_resolve_the_surface_before_deep_shadow() {
+    var end = 0.0
+    var previous = 0.0
+    for k in 0..6 {
+        let (lo, width) = light_interval(k)
+        assert(abs(lo - end) < 0.001, "cloud sunlight integration leaves a gap")
+        assert(width > previous, "cloud sunlight samples do not widen with depth")
+        end = lo + width
+        previous = width
+    }
+    let (_, skin) = light_interval(0)
+    assert(skin <= 1.5 / EXTINCTION, "first light interval skips the illuminated shell")
+    assert(abs(end - 3150.0) < 0.001, "distant cloud shadows lost their integration range")
 }

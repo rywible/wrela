@@ -23,6 +23,8 @@ pub const WADING: f32 = 0.45
 pub const EDGE: f32 = 1.5
 /// A player's radius (m), against the obstacles.
 pub const BODY: f32 = 0.35
+/// Largest finite log height in the packed field; anything higher remains an uncrossable solid.
+pub const MAX_LOG_HEIGHT: f32 = 62.0 * 0.02
 
 /// The ground's slope at `p` (rise over run), over a metre each way.
 pub fn slope<G: Ground>(g: G, p: vec2) -> f32 {
@@ -76,16 +78,23 @@ pub enum Thing: Copy + Eq + Fieldless {
 }
 
 /// An obstacle: a capsule from `a` to `b` of radius `r` (a circle where they're the same), what
-/// it is, and for a stream, its depth (m).
+/// it is, and its vertical extent: stream depth or log height above the ground (m).
 pub struct Obstacle: Copy {
     pub a: vec2,
     pub b: vec2,
     pub r: f32,
     pub thing: Thing,
+    /// Stream depth or log height. Packed log heights round up; an overflow stays solid.
     pub depth: f32,
 }
 
 impl Obstacle {
+    /// Logs whose recorded height fits within `clearance` can be crossed from above. Standing
+    /// trunks and walls have no bounded height in this representation and always block.
+    pub fn cleared(self, clearance: f32) -> bool {
+        self.thing == Thing::Log && self.depth < 1.0 / 0.0 && self.depth <= clearance
+    }
+
     /// The distance from `p` to the capsule's surface (negative inside), and the direction out.
     pub fn reach(self, p: vec2) -> (f32, vec2) {
         let ab = self.b - self.a
@@ -121,11 +130,22 @@ fn pack(o: Obstacle, corner: vec2) -> (u32, u32) {
     let ab = o.b - o.a
     let len = length(ab)
     let dir = if len > 1.0e-4 { atan2(ab.y, ab.x) } else { 0.0 }
+    let extent = if o.thing == Thing::Log {
+        u32(clamp(ceil(o.depth / 0.02), 0.0, 63.0))
+    } else {
+        min(u32(round(o.depth / 0.02)), 63)
+    }
+    // Log capsules are derived from rendered geometry. Round their size outward, with room
+    // for the direction's quantisation, so packing cannot expose a sliver of solid wood.
+    let radius = if o.thing == Thing::Log { ceil((o.r + len * 0.013 + 0.001) / 0.02) } else {
+        round(o.r / 0.02)
+    }
+    let span = if o.thing == Thing::Log { ceil(len / 0.25) } else { round(len / 0.25) }
     let w1 = (u32(o.thing) & 7) |
-        (min(u32(round(o.r / 0.02)), 127) << 3) |
-        (min(u32(round(len / 0.25)), 255) << 10) |
+        (min(u32(radius), 127) << 3) |
+        (min(u32(span), 255) << 10) |
         ((u32(round((dir / TAU + 1.0) * 256.0)) % 256) << 18) |
-        (min(u32(round(o.depth / 0.02)), 63) << 26)
+        (extent << 26)
     (w0, w1)
 }
 
@@ -133,12 +153,14 @@ fn unpack(w0: u32, w1: u32, corner: vec2) -> Obstacle {
     let a = corner + vec2(f32(w0 & 65535) + 0.5, f32(w0 >> 16) + 0.5) * (BIN / 65536.0)
     let len = f32((w1 >> 10) & 255) * 0.25
     let dir = TAU * f32((w1 >> 18) & 255) / 256.0
+    let thing = Thing::from_u32(w1 & 7).unwrap_or(Thing::Stone)
+    let extent = (w1 >> 26) & 63
     Obstacle {
         a,
         b: a + vec2(cos(dir), sin(dir)) * len,
         r: f32((w1 >> 3) & 127) * 0.02,
-        thing: Thing::from_u32(w1 & 7).unwrap_or(Thing::Stone),
-        depth: f32((w1 >> 26) & 63) * 0.02,
+        thing,
+        depth: if thing == Thing::Log && extent == 63 { 1.0 / 0.0 } else { f32(extent) * 0.02 },
     }
 }
 
@@ -205,6 +227,26 @@ impl Obstacles {
         }
     }
 
+    /// Calls `f` once per capsule touching the disk. Include the preceding bin because
+    /// a capsule's first point can lie outside the disk while its far end crosses it.
+    pub fn within(self, p: vec2, radius: f32, f: fn(Obstacle)) {
+        let lo = vec2i(floor((p - vec2(radius + BIN) - self.lo) / BIN))
+        let hi = vec2i(floor((p + vec2(radius + BIN) - self.lo) / BIN))
+        for j in max(lo.y, 0)..min(hi.y + 1, i32(self.nz)) {
+            for i in max(lo.x, 0)..min(hi.x + 1, i32(self.nx)) {
+                let b = u32(j) * self.nx + u32(i)
+                let corner = self.lo + vec2(f32(i), f32(j)) * BIN
+                for k in self.start[b]..self.start[b + 1] {
+                    let o = unpack(self.items[2 * k], self.items[2 * k + 1], corner)
+                    let (distance, _) = o.reach(p)
+                    if distance <= radius {
+                        f(o)
+                    }
+                }
+            }
+        }
+    }
+
     /// The deepest stream water at `p` (m).
     pub fn depth(self, p: vec2) -> f32 {
         var d = 0.0
@@ -230,13 +272,18 @@ impl Obstacles {
     /// from the origin (whose world point is coarse in `f32`) moves by exactly its step when
     /// nothing is in its way.
     pub fn push_by(self, p: vec2, body: f32) -> (vec2, bool) {
+        self.push_by_over(p, body, clearance: 0.0)
+    }
+
+    /// The push for a body able to rise over logs up to `clearance` metres tall.
+    pub fn push_by_over(self, p: vec2, body: f32, clearance: f32) -> (vec2, bool) {
         var by = vec2(0.0)
         var hit = false
         for _ in 0..3 {
             var moved = false
             let at = p + by
             self.near(at, |o| {
-                if o.thing != Thing::Stream {
+                if o.thing != Thing::Stream && !o.cleared(clearance) {
                     let (d, out) = o.reach(p + by)
                     if d < body {
                         by += out * (body - d + 1.0e-3)
@@ -254,14 +301,36 @@ impl Obstacles {
 
     /// Whether a body of radius `body` at `p` overlaps a solid obstacle.
     pub fn blocked(self, p: vec2, body: f32) -> bool {
+        self.blocked_over(p, body, clearance: 0.0)
+    }
+
+    /// Whether anything taller than the body's allowed clearance blocks it.
+    pub fn blocked_over(self, p: vec2, body: f32, clearance: f32) -> bool {
         var any = false
         self.near(p, |o| {
-            if o.thing != Thing::Stream {
+            if o.thing != Thing::Stream && !o.cleared(clearance) {
                 let (d, _) = o.reach(p)
                 any = any || d < body - 1.0e-3
             }
         })
         any
+    }
+
+    /// Height above the ground needed to cross nearby low logs. Rise starts before contact,
+    /// reaches the full log height before the body overlaps, and eases down on the far side.
+    pub fn lift(self, p: vec2, body: f32, clearance: f32) -> f32 {
+        if clearance <= 0.0 {
+            return 0.0
+        }
+        var height = 0.0
+        self.near(p, |o| {
+            if o.cleared(clearance) {
+                let (d, _) = o.reach(p)
+                let blend = 1.0 - smoothstep(body + 0.15, body + 1.8, d)
+                height = max(height, (o.depth + 0.08) * blend)
+            }
+        })
+        height
     }
 }
 
@@ -318,7 +387,7 @@ pub fn obstacles_of(
                         b: t.at + t.fall * e,
                         r: t.girth,
                         thing: Thing::Log,
-                        depth: 0.0,
+                        depth: 2.0 * t.girth,
                     },
                 )
                 s = e
@@ -364,17 +433,31 @@ pub fn obstacles_of(
 /// steep to stand on (it came to rest on a slope's limit) can always step off it: down, or onto
 /// less steep ground (`steps_off`).
 pub fn step<G: Ground>(g: G, w: Water, o: Obstacles, p: vec2, d: vec2, body: f32) -> (vec2, f32) {
+    step_over(g, w, o, p, d, body, clearance: 0.0)
+}
+
+/// A step with a bounded height allowance for crossing low logs. Ground, water, tall logs,
+/// trunks and walls keep the same collision rules as a grounded step.
+pub fn step_over<G: Ground>(
+    g: G,
+    w: Water,
+    o: Obstacles,
+    p: vec2,
+    d: vec2,
+    body: f32,
+    clearance: f32,
+) -> (vec2, f32) {
     let here = stands(g, w, o, p)
     let tries = [d, vec2(d.x, 0.0), vec2(0.0, d.y)]
     for t in tries {
-        let (by, _) = o.push_by(p + t, body)
+        let (by, _) = o.push_by_over(p + t, body, clearance)
         let moved = t + by
         if length(moved) > 2.0 * length(d) + 0.05 {
             // Pushed further than it stepped: squeezed between two obstacles.
             continue
         }
         let q = p + moved
-        if o.blocked(q, body) {
+        if o.blocked_over(q, body, clearance) {
             continue
         }
         let k = stands(g, w, o, q)
@@ -761,4 +844,108 @@ fn a_body_on_ground_too_steep_steps_off_it() {
     assert(length(on) > 0.05, "a body below the slope walks toward it")
     let (held, _) = step(g, w, o, vec2(5.45, 10.0), vec2(0.1, 0.0), BODY)
     assert(length(held) < 1.0e-5, f"a body that stands stepped {held} onto ground too steep")
+}
+
+/// A floating body crosses a low log with a smooth rise, but tall logs and standing trunks
+/// still block it. A grounded body retains its collision with the same low log.
+@test
+fn bounded_clearance_crosses_low_logs_and_keeps_tall_obstacles_solid() {
+    let g = Band { from: 0.0, to: 20.0, rise: 0.0 }
+    let (water, _) = dry()
+    for thing in [Thing::Log, Thing::Trunk, Thing::Wall] {
+        for radius in [0.4, 0.8] {
+            let item = Obstacle {
+                a: vec2(4.0, 10.0),
+                b: vec2(12.0, 10.0),
+                r: radius,
+                thing,
+                depth: 2.0 * radius,
+            }
+            let o = Obstacles::of([item], vec2(0.0), vec2(20.0))
+            var at = vec2(8.0, 6.0)
+            var previous = 0.0
+            var high = 0.0
+            for _ in 0..160 {
+                let (moved, _) = step_over(g, water, o, at, vec2(0.0, 0.05), BODY, 1.2)
+                at += moved
+                let height = o.lift(at, BODY, 1.2)
+                assert(abs(height - previous) < 0.05, f"the lift jumped {height - previous} m")
+                if o.blocked(at, BODY) {
+                    assert(height >= 2.0 * radius, "the floating body clipped the log")
+                }
+                high = max(high, height)
+                previous = height
+            }
+            if thing == Thing::Log && radius < 0.6 {
+                assert(at.y > 13.9 && high > 0.8 && previous == 0.0, "the low log was not crossed")
+                let (edge, _) = o.push(vec2(8.0, 9.9), BODY)
+                let (held, _) = step(g, water, o, edge, vec2(0.0, 0.05), BODY)
+                assert(length(held) < 0.01, "the grounded body crossed the same low log")
+            } else {
+                assert(at.y < 10.0 - radius && high == 0.0, "a tall obstacle was cleared")
+            }
+        }
+    }
+}
+
+/// A recorded log height can exceed its girth, as for wood resting above a hollow. Packing
+/// rounds height up, and overflow never turns a tall obstacle into a clearable short one.
+@test
+fn log_height_packing_is_conservative_and_overflow_stays_solid() {
+    for height in [0.801, 1.201, 1.26, 4.0] {
+        let item = Obstacle {
+            a: vec2(4.0),
+            b: vec2(6.0, 4.0),
+            r: 0.2,
+            thing: Thing::Log,
+            depth: height,
+        }
+        let o = Obstacles::of([item], vec2(0.0), vec2(16.0))
+        var found = false
+        o.near(vec2(5.0, 4.0), |stored| {
+            found = true
+            assert(stored.depth >= height, "packing lowered the log height")
+            if height > 1.2 {
+                assert(!stored.cleared(1.2), "a high log became clearable")
+            }
+            if height >= 1.26 {
+                assert(!stored.cleared(1000.0), "overflow became a finite short log")
+            }
+        })
+        assert(found, "the log was lost")
+        if height < 1.2 {
+            assert(o.lift(vec2(5.0, 4.0), BODY, 1.2) > height, "lift used girth instead of height")
+        }
+    }
+}
+
+/// Regional queries include long capsule starts in an adjacent bin and omit distant shapes.
+@test
+fn regional_obstacles_include_capsules_starting_outside_the_disk() {
+    let o = Obstacles::of(
+        [
+            Obstacle {
+                a: vec2(-25.0, 0.0),
+                b: vec2(-13.0, 0.0),
+                r: 0.4,
+                thing: Thing::Wall,
+                depth: 0.0,
+            },
+            Obstacle {
+                a: vec2(40.0, 0.0),
+                b: vec2(40.0, 0.0),
+                r: 0.4,
+                thing: Thing::Trunk,
+                depth: 0.0,
+            },
+        ],
+        vec2(-64.0),
+        vec2(64.0),
+    )
+    var count = 0
+    o.within(vec2(0.0), 16.0, |item| {
+        count += 1
+        assert(item.thing == Thing::Wall, "regional query included a distant shape")
+    })
+    assert(count == 1, "regional query lost or duplicated the long capsule")
 }

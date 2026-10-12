@@ -1,13 +1,13 @@
 // The Last Green's floor (#54): the program. The player at the gate, the sim stepping it on the
 // ticker's thread (world.wrela); the floor drawn by the engine's renderer as M5 drew the clearing
-// (the scene at half the output's resolution, jittered, into a linear-light target with depth and
+// (the scene at reduced resolution, jittered, into a linear-light target with depth and
 // tags; temporal AA up to the output; the look's passes to the screen), seen by the third
 // person's camera; its trees from the bake's tiles, fetched as files the build shipped.
 
 use engine::air::{Air, Tables, hazy, tables}
 use engine::character::{Cast, PartOf, cast}
 use engine::floor::{Doorway, Exit, Kept, fullscreen, near_tile_radius, tile_distance, tile_radius}
-use engine::stone::{Realized, stone_shade, stone_vertex}
+use engine::stone::{Instances, Realized, stone_instance_vertex, stone_shade, stone_vertex}
 use engine::bake::{Decisions, Far, decode_far, decode_tile, tile_name}
 use engine::grass::{Blooms, Grass, GrassLook}
 use engine::light::{Light, SUN_TOP, sunlight}
@@ -76,8 +76,8 @@ const DOOR_POSTS = [vec2(-0.95, 0.0), vec2(0.95, 0.0)]
 /// The ticks between the play harness's reports (2 s at 60 Hz).
 const REPORT_TICKS: u32 = 120
 
-/// The scene's size against the output's: half each way (#51 Q3).
-const SCALE: f32 = 2.0
+/// Output-to-scene scale: preserve more fine detail during movement than half resolution.
+const SCALE: f32 = 1.75
 
 /// Toward the sun: the clearing's (low, 24°).
 pub const SUN = vec3(0.900, 0.407, -0.159)
@@ -112,8 +112,10 @@ const DROP: f32 = 450.0
 /// Past how far a tile's far layer is coarse (m): a crown each 16 m cell, not 8 m.
 const FAR_FINE: f32 = 500.0
 
-/// How far out the wildwood's far layer is grown (m), and how many of its tiles at a time.
+/// The wildwood's far layer is whole to this distance (m), then fades across one tile.
 const WILD_FAR: f32 = 900.0
+/// Fetch and retain its tiles to the fade band's outer edge, before they become visible.
+const FAR_REACH: f32 = WILD_FAR + TILE
 const FAR_IN_FLIGHT: u32 = 2
 const IN_FLIGHT: u32 = 4
 const SLOTS: u32 = 160
@@ -165,6 +167,8 @@ const MOVING_SPAN: f32 = 6.0
 const PROBE_COLS: u32 = 81
 const PROBE_SPACING: f32 = 2.0
 const PROBES_MOVE: f32 = 30.0
+/// Loaded tree tiles used by a probe bake, inside the near streaming request distance.
+const PROBE_TREES: f32 = 200.0
 
 /// The rays a probe is first baked with (of the engine's `probes::RAYS`).
 const PROBE_RAYS: u32 = 32
@@ -209,19 +213,13 @@ struct Arrived {
 }
 
 /// A tile's far layer: a crown each 8 m cell (`fine`), and each 16 m (`coarse`, past
-/// `FAR_FINE`: a quarter of the crowns, each wider, where the far crowns overlap most), and
-/// which is loaded (none while the tile's own trees are).
+/// `FAR_FINE`: a quarter of the crowns, each wider, where the far crowns overlap most).
+/// The representation is chosen when loaded and held until the near layer replaces it.
 struct FarTile {
     tile: vec2i,
     fine: Vec<Placed>,
     coarse: Vec<Placed>,
-    loaded: u32,
 }
-
-/// Which of a far tile's layers is loaded.
-const NO_LAYER: u32 = 0
-const FINE: u32 = 1
-const COARSE: u32 = 2
 
 /// What cooking a tile on a helper is given: the tile, its bytes as they came (a baked tile's),
 /// or whether it's the wildwood's (grown, or its trees `own` when it's been grown before); its
@@ -304,14 +302,60 @@ struct Cooking {
     far_only: bool,
 }
 
-/// Whether tile `t` is among `grounds`.
-fn has_ground(grounds: [NearTile], t: vec2i) -> bool {
-    for g in grounds {
-        if g.tile == t {
+/// Publish only the latest requested neighbour set. Jobs can finish out of order; an older
+/// set must not remove canopy shading supplied by a newer result, or resurrect a dropped tile.
+fn update_fields(grounds: mut Vec<NearTile>, t: vec2i, with: u32, fields: [u8]) -> bool {
+    for i in 0..grounds.len() {
+        if grounds[i].tile == t {
+            if grounds[i].with != with {
+                return false
+            }
+            grounds[i].fields = Vec::from(fields)
             return true
         }
     }
     false
+}
+
+@test
+fn older_field_jobs_cannot_replace_newer_neighbour_shading() {
+    let tile = vec2i(2, -3)
+    for newest_first in [false, true] {
+        var grounds: Vec<NearTile> = Vec::new()
+        grounds.push(
+            NearTile {
+                tile,
+                bytes: Vec::new(),
+                trees: Vec::new(),
+                fields: Vec::from([u8(255), 0, 0, 0]),
+                with: 3,
+            },
+        )
+        if newest_first {
+            assert(
+                update_fields(mut grounds, tile, 3, [u8(21), 0, 0, 0]),
+                "latest fields were rejected",
+            )
+        }
+        assert(
+            !update_fields(mut grounds, tile, 1, [u8(180), 0, 0, 0]),
+            "superseded fields were sent to the clipmap",
+        )
+        let expected = if newest_first { u8(21) } else { u8(255) }
+        assert(grounds[0].fields[0] == expected, "an old job changed the visible field data")
+        if !newest_first {
+            assert(
+                update_fields(mut grounds, tile, 3, [u8(21), 0, 0, 0]),
+                "latest fields were rejected",
+            )
+        }
+        assert(grounds[0].fields[0] == 21, "completion order changed canopy shading")
+        let _ = grounds.remove(0)
+        assert(
+            !update_fields(mut grounds, tile, 3, [u8(21), 0, 0, 0]),
+            "a dropped tile's job was sent to the clipmap",
+        )
+    }
 }
 
 /// The trees of the cooked tiles round tile `t` whose crowns may reach over its edge, and which
@@ -327,6 +371,65 @@ fn others_round(grounds: [NearTile], t: vec2i) -> (Vec<engine::grow::Tree>, u32)
         }
     }
     (others, with)
+}
+
+/// An arrival refreshes its neighbours and itself: its initial job may have started before
+/// neighbours that finished first. Already requested neighbour sets need no duplicate job.
+fn field_refresh(
+    grounds: [NearTile],
+    i: u32,
+    arrived: vec2i,
+) -> Option<(Vec<engine::grow::Tree>, u32)> {
+    let tile = grounds[i].tile
+    if tile != arrived && engine::bake::neighbour_bit(tile, arrived) == 0 {
+        return None
+    }
+    let (others, with) = others_round(grounds, tile)
+    if (with & grounds[i].with) == with {
+        return None
+    }
+    Some((take others, with))
+}
+
+@test
+fn a_delayed_tile_refreshes_neighbours_that_finished_during_its_job() {
+    let delayed = vec2i(2, -3)
+    let neighbour = delayed + vec2i(1, 0)
+    var grounds: Vec<NearTile> = Vec::new()
+    grounds.push(
+        NearTile {
+            tile: neighbour,
+            bytes: Vec::new(),
+            trees: Vec::new(),
+            fields: Vec::new(),
+            with: 0,
+        },
+    )
+    grounds.push(
+        NearTile {
+            tile: delayed,
+            bytes: Vec::new(),
+            trees: Vec::new(),
+            fields: Vec::new(),
+            with: 0,
+        },
+    )
+    // Both jobs started without neighbours. The delayed tile's own arrival must catch up,
+    // as must the neighbour that was already visible when it finished.
+    for i in 0..2 {
+        let (_, with) = field_refresh(grounds, i, delayed).unwrap()
+        let other = if i == 0 { delayed } else { neighbour }
+        assert(
+            with == engine::bake::neighbour_bit(grounds[i].tile, other),
+            "arrival did not request the complete neighbour set",
+        )
+        grounds[i].with = with
+        assert(field_refresh(grounds, i, delayed).is_none(), "arrival queued duplicate field work")
+    }
+    assert(
+        field_refresh(grounds, 1, delayed + vec2i(4, 0)).is_none(),
+        "a distant arrival queued unrelated field work",
+    )
 }
 
 pub struct Floor {
@@ -381,6 +484,7 @@ pub struct Floor {
     clouds: Clouds,
     scene: Texture<Rgba16Float>,
     depth: DepthTexture,
+    last_depth: DepthTexture,
     ids: Texture<R32Uint>,
     motion: Texture<Rgba16Float>,
     last_motion: Texture<Rgba16Float>,
@@ -431,6 +535,8 @@ pub struct Floor {
     /// where the grass keeps out of the stones (each one's place and reach).
     to_build: Vec<blockouts::Built>,
     built: Vec<Realized>,
+    /// Bank stones share three meshes; the placements contain no GPU resources.
+    banks: Instances,
     /// Each built thing's reach (m), and its far mesh if it has one (the tower's), for drawing
     /// only what's in view: every one drawn each frame from anywhere cost 3-4 ms of the GPU.
     built_reach: Vec<f32>,
@@ -501,9 +607,9 @@ pub struct Floor {
     /// as late (after a jump).
     last_eye: vec2,
     settle_until: u32,
-    /// Arriving after a jump, once the floor is playable: the frames are black until the light
-    /// round the new eye is drawn (`lit`; at most until `settle_until`), and `GATHER` frames more.
-    /// `gathered`: the frames since it was drawn.
+    /// Loading the first view or arriving after a jump: frames stay covered until the light
+    /// round the new eye is drawn (`lit`), then `GATHER` consecutive ready frames resolve it.
+    /// `gathered`: the consecutive ready frames; loading has no forced-reveal timeout.
     arriving: bool,
     gathered: u32,
     /// Whether the floor captures stills (F7): each frame's jitter on a still's grid
@@ -533,18 +639,53 @@ fn to_build() -> Vec<blockouts::Built> {
     out
 }
 
-/// The probes round `at` (render space, the render origin `o` taken off), unbaked, and what
-/// occludes them: the trees standing round it.
-fn probes_at(at: vec2, occluders: take Vec<engine::probes::Occluder>, o: vec2) -> Baked {
-    let y = height_at(at + o)
-    let g = grid(
-        at,
+/// Every replacement samples the same world lattice in its overlap. The density volume
+/// also keeps its vertical voxel lattice as the camera climbs uneven ground.
+fn probe_grid(at: vec2, o: vec2) -> engine::probes::ProbeGrid {
+    let world = round((at + o) / PROBE_SPACING) * PROBE_SPACING
+    let y = floor(height_at(world))
+    grid(
+        world - o,
         cols: PROBE_COLS,
         spacing: PROBE_SPACING,
         low: y - 30.0,
         high: y + 40.0,
         voxel: 1.0,
     )
+}
+
+@test
+fn replacement_probe_grids_keep_the_world_sample_lattice() {
+    let origin = vec2(1536.0, -3072.0)
+    let at = vec2(12.3, -4.7)
+    let first = probe_grid(at, origin)
+    let next = probe_grid(at + vec2(31.7, -33.3), origin)
+    let moved = (next.corner - first.corner) / PROBE_SPACING
+    assert(
+        length(moved - round(moved)) < 1.0e-5,
+        "replacement probes moved their sample lattice within the overlap",
+    )
+    let vertical = next.volume_corner.y - first.volume_corner.y
+    assert(
+        abs(vertical - round(vertical)) < 1.0e-5,
+        "replacement density changed its vertical voxel lattice",
+    )
+    let shift = vec2(3072.0, -1536.0)
+    let shifted = probe_grid(at - shift, origin + shift)
+    assert(
+        length(shifted.corner + shift - first.corner) < 0.001,
+        "render origin shift moved the probe lattice",
+    )
+    assert(
+        length(shifted.volume_corner + vec3(shift.x, 0.0, shift.y) - first.volume_corner) < 0.001,
+        "render origin shift moved the density lattice",
+    )
+}
+
+/// The probes round `at` (render space, the render origin `o` taken off), unbaked, and what
+/// occludes them: the trees standing round it.
+fn probes_at(at: vec2, occluders: take Vec<engine::probes::Occluder>, o: vec2) -> Baked {
+    let g = probe_grid(at, o)
     var b = Baked::new(g, occluders)
     // Baked while the floor plays: a quarter of the engine's rays a probe at first (a strip's
     // dispatch is as long as a probe's rays take, however many columns), the rest filled in by
@@ -626,6 +767,7 @@ pub fn init() -> Floor {
         },
         scene: texture::<Rgba16Float>(width: 1, height: 1),
         depth: depth_texture(width: 1, height: 1),
+        last_depth: depth_texture(width: 1, height: 1),
         ids: texture::<R32Uint>(width: 1, height: 1),
         motion: texture::<Rgba16Float>(width: 1, height: 1),
         last_motion: texture::<Rgba16Float>(width: 1, height: 1),
@@ -664,6 +806,7 @@ pub fn init() -> Floor {
         built_reach: Vec::new(),
         built_far: Vec::new(),
         built: Vec::new(),
+        banks: blockouts::bank_instances(history::COURSES.courses, height_at),
         footprints: buffer_of(footprints_in(vec3(0.0)), at_least: 1),
         fawn: cast(fawns::grown(), fawns::FawnLook {}, fawns::REALIZED, fawns::SLICES),
         wolf: cast_wolf(),
@@ -698,7 +841,7 @@ pub fn init() -> Floor {
         strip_drawn: false,
         last_eye: vec2(0.0),
         settle_until: 0,
-        arriving: false,
+        arriving: true,
         gathered: 0,
         capture: false,
     }
@@ -780,6 +923,7 @@ fn recentre(s: mut Floor, to: vec2i) {
     s.next_probes = None
     s.near.shift(d)
     s.far.shift(d)
+    s.banks.shift(d)
     for mut b in s.built {
         b.at[3] = vec4(b.at[3].xyz + d, 1.0)
     }
@@ -798,15 +942,21 @@ fn recentre(s: mut Floor, to: vec2i) {
 fn playable(s: Floor, eye: vec2) -> bool {
     let Some(w) = s.wood else { return false }
     // The built things too: realized a frame each at load, the tower among them.
-    if !s.near.ready || !s.probes.done() || !s.to_build.is_empty() {
+    if !s.near.ready ||
+        !s.probes.done() ||
+        !s.to_build.is_empty() ||
+        s.banks.prototypes.len() < blockouts::BANK_PROTOTYPES {
         return false
     }
     let at = engine::place::tile_of(eye)
     for j in (at.y - 1)..(at.y + 2) {
         for i in (at.x - 1)..(at.x + 2) {
             let t = vec2i(i, j)
-            if tile_distance(t, eye) < 120.0 && w.slot_of(t).is_none() {
-                return false
+            if tile_distance(t, eye) < 120.0 {
+                match w.slot_of(t) {
+                    Some(i) => if w.slots[i].visibility < 1.0 { return false },
+                    None => return false,
+                }
             }
         }
     }
@@ -817,7 +967,8 @@ fn playable(s: Floor, eye: vec2) -> bool {
 /// frame there (`playable`), the near cascade and the probes in use round it (not round where the
 /// eye was).
 fn lit(s: Floor, eye: vec2, eye_w: vec2) -> bool {
-    !s.near.drawing() &&
+    s.near.settled() &&
+        s.far.settled() &&
         length(eye - s.near.centre.xz) <= NEAR_MOVES &&
         s.next_probes.is_none() &&
         length(eye - s.probes_at) <= PROBES_MOVE &&
@@ -908,6 +1059,148 @@ fn known(s: Floor, t: vec2i) -> bool {
     }
 }
 
+/// Work completed under the arrival cover is immediately whole; ordinary visible streaming
+/// keeps the near/far handover instead of exposing a whole tile in one frame.
+fn arrival_visibility(covered: bool) -> f32 {
+    if covered { 1.0 } else { 0.0 }
+}
+
+/// Resolve only consecutive complete frames. A delayed tile or light cache cannot be made
+/// ready by a frame-count timeout, nor by a ready frame that preceded a later cache update.
+fn arrival_gathered(previous: u32, ready: bool) -> u32 {
+    if ready { previous + 1 } else { 0 }
+}
+
+/// Keep a shot's clock at its starting view while arrival is covered. Its authored hold and
+/// movement start only after the complete view can be shown.
+fn shot_clock(start: f32, time: f32, covered: bool) -> f32 {
+    if covered { time } else { start }
+}
+
+@test
+fn an_arrival_waits_for_complete_frames_without_a_timeout() {
+    var gathered = 0
+    for _ in 0..600 {
+        gathered = arrival_gathered(gathered, ready: false)
+        assert(gathered == 0, "an unready arrival was forced visible by elapsed frames")
+    }
+    for _ in 0..GATHER {
+        gathered = arrival_gathered(gathered, ready: true)
+    }
+    assert(gathered == GATHER, "ready frames did not gather")
+    gathered = arrival_gathered(gathered, ready: false)
+    assert(gathered == 0, "a later cache update retained an earlier ready count")
+    assert(arrival_visibility(covered: true) == 1.0, "covered arrival needlessly dithers trees")
+    assert(arrival_visibility(covered: false) == 0.0, "visible streaming exposes a whole tile")
+}
+
+@test
+fn a_lookbook_move_waits_for_its_loaded_view() {
+    let shot = lookbook::SHOTS[0]
+    var started = 0.0
+    let flat = |_: vec2| 0.0
+    let (first, _) = lookbook::place(shot, 0.0, flat)
+    // A long load exceeds the old fixed five-second preroll but must not advance the shot.
+    for i in 0..601 {
+        let time = f32(i) / 60.0
+        started = shot_clock(started, time, covered: true)
+        let (eye, _) = lookbook::place(shot, time - started, flat)
+        assert(eye == first, "the shot moved before its arrival was ready")
+    }
+    let time = started + lookbook::SETTLE + lookbook::MOVE * 0.5
+    started = shot_clock(started, time, covered: false)
+    let (eye, _) = lookbook::place(shot, time - started, flat)
+    assert(
+        length(eye.xz - first.xz - shot.moves * 0.5) < 0.0001,
+        "the shot did not resume its authored motion after readiness",
+    )
+}
+
+/// A streamed layer moves toward its requested coverage at one full handover per second.
+/// A long frame is capped by the caller so one delayed frame cannot complete a visible swap.
+fn tile_visibility(now: f32, target: f32, step: f32) -> f32 {
+    now + clamp(target - now, -step, step)
+}
+
+/// A departing near tile waits for its distant replacement while it is still within the
+/// streamed horizon. Past the horizon it must retire even if its far layer was already evicted.
+fn tile_retires(distance: f32, fallback: bool) -> bool {
+    distance > DROP && (fallback || distance > FAR_REACH)
+}
+
+@test
+fn streamed_tiles_retire_after_their_far_layer_is_evicted() {
+    // A loaded slot first waits for a missing fallback within the visible horizon.
+    var slot = engine::wood::Slot {
+        tile: Some(vec2i(0)),
+        far: false,
+        count: 0,
+        kinds: Vec::new(),
+        visibility: 1.0,
+    }
+    assert(!tile_retires(DROP + 1.0, fallback: false), "a visible tile left before its fallback")
+    assert(tile_retires(DROP + 1.0, fallback: true), "a ready fallback cannot replace a tile")
+    // A jump evicts the far layer first. The same retirement condition used by stream must
+    // still fade and free the near slot, rather than pinning it at full opacity forever.
+    let distance = FAR_REACH + 1.0
+    for _ in 0..11 {
+        let retire = tile_retires(distance, fallback: false)
+        let target = if retire { 0.0 } else { 1.0 }
+        slot.visibility = tile_visibility(slot.visibility, target, 0.1)
+        if retire && slot.visibility == 0.0 {
+            slot.tile = None
+        }
+    }
+    assert(slot.tile.is_none(), "far-layer eviction leaked its near slot")
+    // Returning while a normal handover is under way reverses it continuously.
+    let leaving = tile_visibility(now: 1.0, target: 0.0, step: 0.1)
+    let target = if tile_retires(DROP - 1.0, fallback: true) { 0.0 } else { 1.0 }
+    let returning = tile_visibility(leaving, target, 0.05)
+    assert(returning > leaving && returning < 1.0, "returning snapped the tile's coverage")
+}
+
+/// A far tile is requested throughout the band where it can contribute visible coverage.
+fn far_requested(distance: f32) -> bool {
+    distance < FAR_REACH
+}
+
+@test
+fn far_requests_cover_the_fade_band_within_the_slot_budget() {
+    assert(far_requested(WILD_FAR + TILE * 0.5), "incoming trees wait until they are fully visible")
+    assert(!far_requested(FAR_REACH + 0.01), "far requests escape their retained horizon")
+    let baked = tiles_hi() - tiles_lo() + vec2i(1)
+    let baked_tiles = u32(baked.x * baked.y)
+    let r = tile_radius(FAR_REACH)
+    // Include both tile edges and offsets across the tile. Count all nearby tiles plus the
+    // full authored far layer, a conservative bound even where the two regions overlap.
+    var most = 0
+    for z in 0..17 {
+        for x in 0..17 {
+            let eye = vec2(f32(x), f32(z)) * (TILE / 16.0)
+            let at = engine::place::tile_of(eye)
+            var requested = 0
+            var band = 0
+            for j in (at.y - r)..(at.y + r + 1) {
+                for i in (at.x - r)..(at.x + r + 1) {
+                    let distance = tile_distance(vec2i(i, j), eye)
+                    if far_requested(distance) {
+                        requested += 1
+                        if distance > WILD_FAR { band += 1 }
+                    }
+                }
+            }
+            assert(band > 0, "the prefetch search misses the incoming fade band")
+            most = max(most, requested)
+        }
+    }
+    // Pending near/far jobs and one replacement still fit without raising the slot cap.
+    // More simultaneous handovers wait for a slot as before.
+    assert(
+        most + baked_tiles + IN_FLIGHT + FAR_IN_FLIGHT + 1 <= SLOTS,
+        f"the far horizon takes {most + baked_tiles} of {SLOTS} slots before handovers",
+    )
+}
+
 /// The tiles round `eye`: the nearest wanted one not yet known fetched; those come decoded and
 /// their trees placed (one a frame, once the wood is cooked); those far behind dropped.
 fn stream(s: mut Floor, eye: vec2) {
@@ -967,7 +1260,6 @@ fn stream(s: mut Floor, eye: vec2) {
                         tile: t,
                         fine: take cooked.far,
                         coarse: take cooked.far_coarse,
-                        loaded: NO_LAYER,
                     },
                 )
             }
@@ -975,14 +1267,8 @@ fn stream(s: mut Floor, eye: vec2) {
                 continue
             }
             if k.fields_only {
-                // Unless it's been dropped while its fields were cooked.
-                if has_ground(s.grounds, t) {
+                if update_fields(mut s.grounds, t, k.with, cooked.fields) {
                     s.clipmap.write_fields(t, cooked.fields)
-                    for g in 0..s.grounds.len() {
-                        if s.grounds[g].tile == t {
-                            s.grounds[g].fields = cooked.fields.clone()
-                        }
-                    }
                 }
                 continue
             }
@@ -997,12 +1283,11 @@ fn stream(s: mut Floor, eye: vec2) {
                 },
             )
             s.arrived.push(Arrived { tile: t, placed: take cooked.placed })
-            // Its neighbours' ground worked out again with its trees, where theirs weren't.
+            // Its neighbours gain its trees; it also gains neighbours that finished while
+            // its own job was running.
             for g in 0..s.grounds.len() {
                 let n = s.grounds[g].tile
-                let bit = engine::bake::neighbour_bit(n, t)
-                if bit != 0 && (s.grounds[g].with & bit) == 0 {
-                    let (others, with) = others_round(s.grounds, n)
+                if let Some((others, with)) = field_refresh(s.grounds, g, t) {
                     let wild = wildwood::is_wild(n)
                     let input = TileInput {
                         tile: n,
@@ -1036,7 +1321,7 @@ fn stream(s: mut Floor, eye: vec2) {
     if s.fetching.len() + near_cooking(s) < in_flight {
         // A tile farther away on either axis cannot be within WANT of the eye. Keep the
         // same row order, with the outer rows used only by the far layer left out.
-        let r = near_tile_radius(eye, WANT, WILD_FAR)
+        let r = near_tile_radius(eye, WANT, FAR_REACH)
         var best = vec2i(0)
         var near = 1.0e9
         for j in (at.y - r)..(at.y + r + 1) {
@@ -1080,9 +1365,10 @@ fn stream(s: mut Floor, eye: vec2) {
             }
         }
     }
-    // The wildwood's far layer, a tile at a time, out to `WILD_FAR`; dropped past it.
+    // Prepare the wildwood's far layer across its entire fade band, so inward travel does
+    // not first request a tile after it has reached full coverage.
     if far_cooking(s) < (if s.capture { CAPTURE_IN_FLIGHT } else { FAR_IN_FLIGHT }) {
-        let r = tile_radius(WILD_FAR)
+        let r = tile_radius(FAR_REACH)
         var best = vec2i(0)
         var near = 1.0e9
         for j in (at.y - r)..(at.y + r + 1) {
@@ -1090,7 +1376,7 @@ fn stream(s: mut Floor, eye: vec2) {
                 let t = vec2i(x, j)
                 let d = tile_distance(t, eye)
                 if wildwood::is_wild(t) &&
-                    d < WILD_FAR &&
+                    far_requested(d) &&
                     d < near &&
                     !has_far(s.far_layer, t) &&
                     !cooking(s, t) {
@@ -1099,7 +1385,7 @@ fn stream(s: mut Floor, eye: vec2) {
                 }
             }
         }
-        if near < WILD_FAR {
+        if far_requested(near) {
             let input = TileInput {
                 tile: best,
                 bytes: Vec::new(),
@@ -1124,7 +1410,7 @@ fn stream(s: mut Floor, eye: vec2) {
     var f = 0
     while f < s.far_layer.len() {
         let t = s.far_layer[f].tile
-        if wildwood::is_wild(t) && tile_distance(t, eye) > WILD_FAR + TILE {
+        if wildwood::is_wild(t) && tile_distance(t, eye) > FAR_REACH {
             let _ = s.far_layer.remove(f)
             match mut s.wood {
                 Some(w) => w.drop(t, far: true),
@@ -1158,7 +1444,6 @@ fn stream(s: mut Floor, eye: vec2) {
                         tile: t,
                         fine: trees::far_placed(far, t, height_at, step: 1),
                         coarse: trees::far_placed(far, t, height_at, step: 2),
-                        loaded: NO_LAYER,
                     },
                 )
             }
@@ -1169,33 +1454,63 @@ fn stream(s: mut Floor, eye: vec2) {
     let o = origin_of(s)
     match mut s.wood {
         Some(w) => {
-            // Each tile's far layer where its own trees aren't loaded: fine within `FAR_FINE`,
-            // coarse past it (each switched a little past the line, so it doesn't flicker).
-            for mut f in s.far_layer {
-                let own = w.slot_of(f.tile).is_some()
+            // Keep the distant shapes while the tile's own trees arrive, and restore them
+            // before its own trees leave. A handover changes coverage over one second.
+            let step = if s.capture { 1.0 } else { clamp(s.dt, 0.0, 0.1) }
+            for k in 0..w.slots.len() {
+                if let Some(t) = w.slots[k].tile {
+                    if !w.slots[k].far {
+                        let fallback = w.slot_of(t, far: true).is_some()
+                        let target = if tile_retires(tile_distance(t, eye), fallback) { 0.0 } else {
+                            1.0
+                        }
+                        let v = tile_visibility(w.slots[k].visibility, target, step)
+                        w.show(t, v)
+                    }
+                }
+            }
+            for f in s.far_layer {
+                let own = w.slot_of(f.tile)
                 let far = w.slot_of(f.tile, far: true).is_some()
                 let d = tile_distance(f.tile, eye)
-                let coarse = if f.loaded == COARSE { d > FAR_FINE - 40.0 } else {
-                    d > FAR_FINE + 40.0
+                let near_share = match own {
+                    Some(i) => w.slots[i].visibility,
+                    None => 0.0,
                 }
-                let want = if coarse { COARSE } else { FINE }
-                if far && (own || f.loaded != want) {
+                let needs_far = own.is_none() || near_share < 1.0 || d > DROP - 40.0
+                if !needs_far && far {
                     w.drop(f.tile, far: true)
-                    f.loaded = NO_LAYER
                 }
-                if !own && w.slot_of(f.tile, far: true).is_none() && w.has_room() {
+                if needs_far && !far && w.has_room() {
+                    // Hold the chosen distant representation until its replacement. Switching
+                    // all of a tile's trees at a distance threshold changed their positions,
+                    // species and sizes in one frame.
+                    let coarse = d > FAR_FINE
                     let _ = if coarse {
-                        w.load(f.tile, rendered(f.coarse, -o), far: true)
+                        w.load(f.tile, rendered(f.coarse, -o), far: true, visibility: 0.0)
                     } else {
-                        w.load(f.tile, rendered(f.fine, -o), far: true)
+                        w.load(f.tile, rendered(f.fine, -o), far: true, visibility: 0.0)
                     }
-                    f.loaded = want
+                }
+                if let Some(i) = w.slot_of(f.tile, far: true) {
+                    let edge = if wildwood::is_wild(f.tile) {
+                        1.0 - smoothstep(WILD_FAR, FAR_REACH, d)
+                    } else { 1.0 }
+                    let target = (1.0 - near_share) * edge
+                    // Match the complementary near share during handovers. A new far tile
+                    // without a near layer also fades in, instead of appearing at full size.
+                    let v = if own.is_some() { target } else {
+                        tile_visibility(w.slots[i].visibility, target, step)
+                    }
+                    w.show(f.tile, v, far: true)
                 }
             }
             var k = 0
             while k < w.slots.len() {
                 if let Some(t) = w.slots[k].tile {
-                    if !w.slots[k].far && tile_distance(t, eye) > DROP {
+                    if !w.slots[k].far &&
+                        w.slots[k].visibility == 0.0 &&
+                        tile_retires(tile_distance(t, eye), w.slot_of(t, far: true).is_some()) {
                         w.drop(t)
                         s.own.retain(|a| a.tile != t)
                         s.grounds.retain(|g| g.tile != t)
@@ -1207,7 +1522,11 @@ fn stream(s: mut Floor, eye: vec2) {
             }
             if s.arrived.len() > 0 && w.has_room() {
                 let a = s.arrived.remove(0)
-                let _ = w.load(a.tile, rendered(a.placed, -o))
+                let _ = w.load(
+                    a.tile,
+                    rendered(a.placed, -o),
+                    visibility: arrival_visibility(s.arriving),
+                )
                 s.own.push(take a)
                 changed = true
             }
@@ -1226,6 +1545,15 @@ fn stream(s: mut Floor, eye: vec2) {
 /// cooked; then the built things, a frame each, the nearest to the eye (`eye`, the world's) first.
 fn cook_load(s: mut Floor, eye: vec2) {
     if s.wood.is_some() {
+        if s.banks.prototypes.len() < blockouts::BANK_PROTOTYPES {
+            let prototype = blockouts::bank_prototype(s.banks.prototypes.len())
+            s.banks.prototypes.push(take prototype)
+            if s.banks.prototypes.len() == blockouts::BANK_PROTOTYPES {
+                s.near.changed()
+                s.far.changed()
+            }
+            return
+        }
         if s.to_build.len() > 0 {
             // The nearest to the eye first, so what a player sees on arriving stands in the first
             // frames (one a frame from the list's start, the arena's ring stood after a second).
@@ -1321,11 +1649,11 @@ fn keys(s: mut Floor, time: f32) {
                 if key == Key::Enter && s.shot_digits < lookbook::SHOTS.len() {
                     s.shot = Some(s.shot_digits)
                     s.shot_from = time
-                    // A still is taken on arrival, however near the shot's eye, under clouds
-                    // marched afresh from there (the dome is round the eye).
+                    // Every shot waits for its own view to load before its movement clock
+                    // begins. Captured stills also rebuild the dome round that eye.
+                    s.arriving = true
+                    s.gathered = 0
                     if s.capture {
-                        s.arriving = true
-                        s.gathered = 0
                         s.sky.frames = 0
                     }
                 }
@@ -1435,6 +1763,7 @@ fn resize(s: mut Floor, width: u32, height: u32, w: u32, h: u32) {
     s.scene_b = texture::<Rgba16Float>(width: w, height: h)
     s.shafts = writable_texture::<Rgba16Float>(width: max(w / 2, 1), height: max(h / 2, 1))
     s.depth = depth_texture(width: w, height: h)
+    s.last_depth = depth_texture(width: w, height: h)
     s.ids = texture::<R32Uint>(width: w, height: h)
     s.motion = texture::<Rgba16Float>(width: w, height: h)
     s.below = texture::<Rgba16Float>(width: w, height: h)
@@ -1469,9 +1798,31 @@ fn static_shadows(s: mut Floor, sh: Shadows, wind: Wind) {
     let far_casts = s.far_fetch.is_none() && s.wood.is_some() && s.to_build.is_empty()
     s.strip_drawn = s.near.drawing() || (s.far.drawing() && far_casts)
     if s.near.drawing() {
-        s.near.draw_strip(mut s.wood, s.built, SUN, sh, wind, s.linear, s.cam, on, "shadows near")
+        s.near.draw_strip(
+            mut s.wood,
+            s.built,
+            s.banks,
+            SUN,
+            sh,
+            wind,
+            s.linear,
+            s.cam,
+            on,
+            "shadows near",
+        )
     } else if s.far.drawing() && far_casts {
-        s.far.draw_strip(mut s.wood, s.built, SUN, sh, wind, s.linear, s.cam, on, "shadows far")
+        s.far.draw_strip(
+            mut s.wood,
+            s.built,
+            s.banks,
+            SUN,
+            sh,
+            wind,
+            s.linear,
+            s.cam,
+            on,
+            "shadows far",
+        )
     }
 }
 
@@ -1539,6 +1890,137 @@ fn load_steps(capture: bool, filling: bool) -> u32 {
     if capture && filling { CAPTURE_STEPS } else { 1 }
 }
 
+/// Occluders for a complete loaded neighbourhood. An empty result is valid in open land;
+/// a missing tile is not: baking it as empty would brighten the wood until the next bake.
+fn loaded_probe_occluders(
+    own: [Arrived],
+    plants: [Plant],
+    eye: vec2,
+    origin: vec2,
+) -> Option<Vec<engine::probes::Occluder>> {
+    let world = eye + origin
+    let at = engine::place::tile_of(world)
+    let r = tile_radius(PROBE_TREES)
+    for j in (at.y - r)..(at.y + r + 1) {
+        for i in (at.x - r)..(at.x + r + 1) {
+            let tile = vec2i(i, j)
+            if tile_distance(tile, world) < PROBE_TREES {
+                var loaded = false
+                for a in own {
+                    loaded = loaded || a.tile == tile
+                }
+                if !loaded {
+                    return None
+                }
+            }
+        }
+    }
+    var placed: Vec<Placed> = Vec::new()
+    for a in own {
+        if tile_distance(a.tile, world) < PROBE_TREES {
+            var more = rendered(a.placed, vec3(-origin.x, 0.0, -origin.y))
+            placed.append(mut more)
+        }
+    }
+    let half = vec2(0.5 * f32(PROBE_COLS - 1) * PROBE_SPACING)
+    Some(trees::occluders(placed, plants, eye - half, eye + half))
+}
+
+@test
+fn first_probe_bake_waits_for_loaded_tree_occluders() {
+    assert(PROBE_TREES < WANT, "probe readiness waits for tiles that streaming never requests")
+    let eye = vec2(5.0, 7.0)
+    let origin = vec2(2048.0, -1024.0)
+    let world = eye + origin
+    var plant = engine::plant::plant(engine::plant::Leaves {}, engine::plant::Bark {})
+    plant.clump(vec3(0.0, 2.0, 0.0), radius: 1.0)
+    let plants = [plant]
+    var own: Vec<Arrived> = Vec::new()
+    assert(
+        loaded_probe_occluders(own, plants, eye, origin).is_none(),
+        "missing trees were baked as empty",
+    )
+    let at = engine::place::tile_of(world)
+    let r = tile_radius(PROBE_TREES)
+    for j in (at.y - r)..(at.y + r + 1) {
+        for i in (at.x - r)..(at.x + r + 1) {
+            let tile = vec2i(i, j)
+            if tile_distance(tile, world) < PROBE_TREES {
+                own.push(Arrived { tile, placed: Vec::new() })
+            }
+        }
+    }
+    let empty = loaded_probe_occluders(own, plants, eye, origin).unwrap()
+    assert(empty.is_empty(), "loaded open land must be allowed to bake")
+    own[0].placed.push(
+        Placed {
+            kind: 0,
+            at: engine::plant::Instance {
+                at: vec3(world.x, 0.0, world.y),
+                scale: 1.0,
+                ..engine::plant::NO_INSTANCE,
+            },
+        },
+    )
+    let occluders = loaded_probe_occluders(own, plants, eye, origin).unwrap()
+    assert(occluders.len() == 1, "the first bake lost its loaded crown")
+    assert(
+        length(occluders[0].a - vec3(eye.x, 2.0, eye.y)) < 0.001,
+        "probe occluders were not moved into render space",
+    )
+    let removed = own.remove(own.len() - 1)
+    assert(
+        loaded_probe_occluders(own, plants, eye, origin).is_none(),
+        "a partly loaded neighbourhood was accepted",
+    )
+    own.push(take removed)
+    assert(
+        loaded_probe_occluders(own, plants, eye, origin).is_some(),
+        "the last arriving tile did not release probe readiness",
+    )
+}
+
+/// The first probe bake waits for all static casters and both settled shadow maps, near
+/// then far. A settled map includes any replacement queued during an earlier strip set.
+fn first_probe_light_ready(built_remaining: u32, bank_prototypes: u32, settled: [bool; 2]) -> bool {
+    if built_remaining > 0 || bank_prototypes < blockouts::BANK_PROTOTYPES {
+        return false
+    }
+    for i in 0..2 {
+        if !settled[i] {
+            return false
+        }
+    }
+    true
+}
+
+@test
+fn first_probes_wait_for_complete_static_casters_and_both_settled_maps() {
+    let whole = [true; 2]
+    let banks = blockouts::BANK_PROTOTYPES
+    assert(
+        !first_probe_light_ready(1, banks, whole),
+        "unfinished built casters reached the first bake",
+    )
+    assert(
+        !first_probe_light_ready(0, banks - 1, whole),
+        "unfinished bank casters reached the first bake",
+    )
+    for cascade in 0..2 {
+        var settled = whole
+        settled[cascade] = false
+        assert(
+            !first_probe_light_ready(0, banks, settled),
+            "an unfinished shadow map reached the first bake",
+        )
+        settled[cascade] = true
+        assert(
+            first_probe_light_ready(0, banks, settled),
+            "complete static light did not release the first bake",
+        )
+    }
+}
+
 /// The probes: the first baked round the start, then the next round the eye once it has moved
 /// `PROBES_MOVE`, baked beside them (its occluders cooked first, then a strip of columns a
 /// frame), and swapped when it's done. They read the near cascade, so they wait for it.
@@ -1557,8 +2039,23 @@ fn bake_probes(s: mut Floor, sh: Shadows, eye: vec2) {
     if s.capture && loading {
         return
     }
+    // The first probes must see the same completed static light that arrival reveals.
+    // Static casters and maps load independently of probes, so this cannot hold their work.
+    if !s.occluders_cooked &&
+        !first_probe_light_ready(
+            s.to_build.len(),
+            s.banks.prototypes.len(),
+            [s.near.settled(), s.far.settled()],
+        ) {
+        return
+    }
     let trace = trace_of(s)
     if !s.occluders_cooked {
+        let o = origin_of(s).xz
+        let Some(occluders) = loaded_probe_occluders(s.own, s.plants, eye, o) else { return }
+        s.probes = probes_at(eye, take occluders, o)
+        s.probes_at = eye
+        s.probes.open(s.light, s.air.ground, s.tables.view, s.linear)
         s.probes.cook()
         s.occluders_cooked = true
         return
@@ -1579,19 +2076,9 @@ fn bake_probes(s: mut Floor, sh: Shadows, eye: vec2) {
         return
     }
     if s.next_probes.is_none() && length(eye - s.probes_at) > PROBES_MOVE {
-        // The eye and the trees in render space; the tiles by the world's eye.
-        let o = origin_of(s)
-        var placed: Vec<Placed> = Vec::new()
-        for a in s.own {
-            if tile_distance(a.tile, eye + o.xz) < 200.0 {
-                var more = rendered(a.placed, -o)
-                placed.append(mut more)
-            }
-        }
-        let half = vec2(0.5 * f32(PROBE_COLS - 1) * PROBE_SPACING)
-        s.next_probes = Some(
-            probes_at(eye, trees::occluders(placed, s.plants, eye - half, eye + half), o.xz),
-        )
+        let o = origin_of(s).xz
+        let Some(occluders) = loaded_probe_occluders(s.own, s.plants, eye, o) else { return }
+        s.next_probes = Some(probes_at(eye, take occluders, o))
         s.next_at = eye
         s.next_cooked = false
     }
@@ -1723,20 +2210,55 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         let to = s.built[i].at[3].xyz - cam.eye
         let d = length(to)
         let r = s.built_reach[i]
-        // In view (in front of the eye, within the field of view's cone grown by its reach),
-        // and near enough to show: a stone at most a few pixels wide past it (out to 200 m and
-        // 60 m a metre of its reach); the tower from anywhere on the floor.
+        // Keep resident structures wherever their bounds meet the view. Distance cutoffs
+        // removed stones and walls while they still covered several pixels.
         let ahead = dot(to, cam.forward)
         let wide = (cam.tan_half * max(cam.aspect, 1.0) * 1.5) * max(ahead, 0.0) + r
         let off = length(to - cam.forward * ahead)
-        let reach = if r > 20.0 { 4000.0 } else { 200.0 + 60.0 * r }
-        if ahead < -r || off > wide || d - r > reach {
+        if ahead < -r || off > wide {
             continue
         }
         match s.built_far[i] {
-            Some(f) if d > blockouts::TOWER_NEAR => draw_built(veg, f, lt, cam),
-            _ => draw_built(veg, s.built[i], lt, cam),
+            Some(f) => {
+                let far = blockouts::tower_far_share(d)
+                let split = 1.0 - far
+                if far < 1.0 {
+                    draw_built(veg, s.built[i], lt, cam, coverage: vec2(0.0, split))
+                }
+                if far > 0.0 {
+                    draw_built(veg, f, lt, cam, coverage: vec2(split, 1.0))
+                }
+            },
+            None => draw_built(veg, s.built[i], lt, cam),
         }
+    }
+    for p in s.banks.placements {
+        if p.prototype >= s.banks.prototypes.len() {
+            continue
+        }
+        let to = p.at[3].xyz - cam.eye
+        let ahead = dot(to, cam.forward)
+        let wide = cam.tan_half * max(cam.aspect, 1.0) * 1.5 * max(ahead, 0.0) + p.reach
+        if ahead < -p.reach || length(to - cam.forward * ahead) > wide {
+            continue
+        }
+        borrow prototype = s.banks.prototypes[p.prototype]
+        draw(
+            veg,
+            stone_instance_vertex.bind(
+                verts: prototype.mesh.verts.items(),
+                colours: prototype.colours.items(),
+                at: p.at,
+                normal_at: p.normal_at,
+                seed: p.seed,
+                cam: cam,
+            ),
+            stone_shade.bind(lt),
+            indices: prototype.mesh.quads.items(),
+            indirect: prototype.mesh.draw.items(),
+            cull: std::gpu::Cull::Back,
+            depth: NEAREST,
+        )
     }
     match s.wood {
         Some(w) => {
@@ -1914,6 +2436,7 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
             r,
             s.scene,
             s.depth,
+            s.last_depth,
             s.motion,
             s.last_motion,
             s.last_history,
@@ -2131,7 +2654,9 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     } else {
         s.wolf.hide()
     }
-    // The cast's footprints in the grass (`CAST_FEET`), each its place and reach.
+    // The cloak bends contacting stems; it never clears or lowers the grass roots.
+    s.grass.contact = if gone { vec4(0.0) } else { vec4(stood, HEM_RADIUS) }
+    // The fawn's planted footprint, each its place and reach.
     let feet_of = |c: vec3, reach: f32| {
         let p = on_ground(c)
         vec4(p.x, p.z, reach, 0.0)
@@ -2140,7 +2665,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         mut s.footprints,
         0,
         match cast {
-            Some(c) => [feet_of(c.player, HEM_RADIUS), feet_of(c.fawn, 0.35)],
+            Some(c) => [OFF_MAP, feet_of(c.fawn, 0.35)],
             None => [OFF_MAP, OFF_MAP],
         },
     )
@@ -2154,6 +2679,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     s.focus_at = mix(fa, fb, vec3(b.alpha))
     s.focus += clamp(wanted - s.focus, -s.dt / FOCUS_EASE, s.dt / FOCUS_EASE)
     let ground_r = |p: vec2| height_at(p + o2)
+    s.shot_from = shot_clock(s.shot_from, time, s.arriving)
     let (eye, at, fovy) = match s.shot {
         Some(i) => {
             let shot = lookbook::SHOTS[i]
@@ -2239,7 +2765,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     // The near cascade round where the eye will be (a little ahead), the far round the floor.
     s.near.follow(vec3(eye.x, height_at(eye_w.xz), eye.z), NEAR_MOVES)
     s.far.follow(FAR_CASCADE.centre - o, 1.0e9)
-    let sh = shadows(
+    var sh = shadows(
         s.light.sun,
         s.near.cascade(),
         s.far.cascade(),
@@ -2251,6 +2777,17 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     for _ in 0..steps {
         static_shadows(mut s, sh, wind)
     }
+    // A completed strip set swaps its depth map and cascade together. Shading must use
+    // that new cascade in this frame, including moving shadows and the probe bake.
+    sh = shadows(
+        s.light.sun,
+        s.near.cascade(),
+        s.far.cascade(),
+        moving_at: moving_at + vec3(0.0, 1.0, 0.0),
+        moving_span: MOVING_SPAN,
+        moving_side: MOVING_SIDE,
+        frame: s.frames,
+    )
     moving_shadow(mut s, sh)
     // (Each a 64th of the dome marched while it fills, up to the step that makes it whole; once
     // whole, a frame marches one again.)
@@ -2294,13 +2831,12 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         // Arriving: black until the light round the new eye is drawn (the near shadows and the
         // probes came 0.45 s and 0.85 s after a jump, each a step in the light; the exposure
         // followed), then while temporal AA gathers.
-        s.arriving = s.playable || s.capture
+        s.arriving = true
         s.gathered = 0
     }
     s.last_eye = eye_w.xz
-    let late = s.frames >= s.settle_until && !s.capture
-    if s.arriving && (s.gathered > 0 || lit(s, eye.xz, eye_w.xz) || late) {
-        s.gathered += 1
+    if s.arriving {
+        s.gathered = arrival_gathered(s.gathered, lit(s, eye.xz, eye_w.xz))
     }
     if s.playable && s.frames >= s.settle_until {
         late_tiles(mut s, eye_w.xz)
@@ -2311,13 +2847,20 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         s.playable = true
         print(f"playable at frame {s.frames}")
     }
+    swap(mut s.depth, mut s.last_depth)
     draw_scene(mut s, cam, sh, wind)
     finish(mut s, cam, width, height, feet.xz + o2, heading)
     s.frames += 1
 }
 
 /// A built thing drawn in `pass` (its colours cooked, its place its matrix).
-fn draw_built<P: RenderPass>(pass: P, st: Realized, lt: Lighting, cam: Camera) {
+fn draw_built<P: RenderPass>(
+    pass: P,
+    st: Realized,
+    lt: Lighting,
+    cam: Camera,
+    coverage: vec2 = vec2(0.0, 1.0),
+) {
     draw(
         pass,
         stone_vertex.bind(
@@ -2327,7 +2870,7 @@ fn draw_built<P: RenderPass>(pass: P, st: Realized, lt: Lighting, cam: Camera) {
             seed: st.seed,
             cam: cam,
         ),
-        stone_shade.bind(lt),
+        stone_shade.bind(lt, coverage),
         indices: st.mesh.quads.items(),
         indirect: st.mesh.draw.items(),
         cull: std::gpu::Cull::Back,
@@ -2469,7 +3012,7 @@ pub fn test_settled(s: Floor) -> f32 {
         (!s.fawn.on || s.fawn.realized.is_some()) &&
         (!s.wolf.on || s.wolf.realized.is_some()) &&
         !s.arriving
-    if still && playable(s, eye + s.cam.origin.xz) { 1.0 } else { 0.0 }
+    if still && lit(s, eye, eye + s.cam.origin.xz) { 1.0 } else { 0.0 }
 }
 
 /// Whether the floor's ready: its kinds cooked and the tiles round the player in and placed.

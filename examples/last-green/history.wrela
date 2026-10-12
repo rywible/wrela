@@ -92,7 +92,82 @@ pub fn decisions() -> engine::bake::Unbaked {
     unbake(BAKED, tiles_lo(), tiles_hi())
 }
 
-/// What a player walks round, from the bake: its trunks (as they're drawn: `trees::as_drawn`),
+/// Raw fallen-tree records retained in the program. Shipped bytes can only be read at build
+/// time; runtime collision jobs select these small tile lists and fit only nearby wood.
+struct FallenTiles {
+    lo: vec2i,
+    n: vec2u,
+    trees: Vec<Vec<engine::grow::Tree>>,
+}
+
+const FALLEN: FallenTiles = fallen_tiles(decisions().trees, tiles_lo(), tiles_hi())
+
+fn fallen_tiles(trees: [engine::grow::Tree], lo: vec2i, hi: vec2i) -> FallenTiles {
+    let n = vec2u(hi - lo + vec2i(1))
+    var by_tile: Vec<Vec<engine::grow::Tree>> = Vec::from_fn(n.x * n.y, |_| Vec::new())
+    for tree in trees {
+        if tree.state == engine::grow::State::Log {
+            let at = tile_of(tree.at) - lo
+            if at.x >= 0 && at.y >= 0 && at.x < i32(n.x) && at.y < i32(n.y) {
+                by_tile[u32(at.y) * n.x + u32(at.x)].push(tree)
+            }
+        }
+    }
+    FallenTiles { lo, n, trees: by_tile }
+}
+
+impl FallenTiles {
+    fn at(self, tile: vec2i) -> Vec<engine::grow::Tree> {
+        let at = tile - self.lo
+        if at.x < 0 || at.y < 0 || at.x >= i32(self.n.x) || at.y >= i32(self.n.y) {
+            return Vec::new()
+        }
+        self.trees[u32(at.y) * self.n.x + u32(at.x)].clone()
+    }
+}
+
+pub fn fallen_in(tile: vec2i) -> Vec<engine::grow::Tree> {
+    FALLEN.at(tile)
+}
+
+@test
+fn authored_raw_logs_are_retained_in_their_runtime_tiles() {
+    let log = engine::grow::Tree {
+        at: vec2(1.0),
+        kind: 0,
+        born: 0,
+        tall: 10.0,
+        reach: 2.0,
+        lean: vec2(0.0),
+        girth: 0.4,
+        light: 1.0,
+        vigour: 1.0,
+        state: engine::grow::State::Log,
+        died: 10,
+        fell: 11,
+        fall: vec2(0.0, 1.0),
+        cause: engine::grow::Cause::Wind,
+        pinned: false,
+        shaped: 0,
+        lift: 0.0,
+        fork: 0.0,
+        seed: 1,
+    }
+    let next = engine::grow::Tree { at: vec2(TILE + 1.0, 1.0), seed: 2, ..log }
+    let standing = engine::grow::Tree { state: engine::grow::State::Alive, ..log }
+    let indexed = fallen_tiles([log, next, standing], vec2i(0), vec2i(1, 0))
+    assert(
+        indexed.at(vec2i(0)).len() == 1 && indexed.at(vec2i(0))[0].seed == 1,
+        "runtime tile lost its log or retained a standing tree",
+    )
+    assert(
+        indexed.at(vec2i(1, 0)).len() == 1 && indexed.at(vec2i(1, 0))[0].seed == 2,
+        "runtime log tile indexed the wrong root",
+    )
+    assert(indexed.at(vec2i(-1, 0)).is_empty(), "outside tile returned authored wood")
+}
+
+/// Coarse whole-floor collision for creatures and sight, from the bake: its trunks (as they're drawn: `trees::as_drawn`),
 /// thorn, big logs and streams, and the floor's stones and walls. In the program (the sim's collision is the same in every host and
 /// every replay, wherever the tiles have streamed to).
 pub const OBSTACLES: Obstacles = obstacles(decisions())

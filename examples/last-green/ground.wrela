@@ -228,7 +228,11 @@ impl Ground {
     /// The ground's height at (x, z): the land, and the mere's basin in it.
     pub fn at(self, x: f32, z: f32) -> f32 {
         let p = vec2(x, z)
-        var y = self.natural(x, z)
+        self.basins(p, self.natural(x, z))
+    }
+
+    fn basins(self, p: vec2, height: f32) -> f32 {
+        var y = height
         // The mere's basin: under its level within its radius (its shore a little ragged), the
         // shore rising past it, the land round it kept where it's lower.
         let q = (length(p - MERE.xy) + 5.0 * (noise2(p * 0.05) - 0.5)) / MERE.z
@@ -248,13 +252,16 @@ impl Ground {
     /// The land's height at (x, z), before the mere's basin.
     pub fn natural(self, x: f32, z: f32) -> f32 {
         let p = vec2(x, z)
+        let under = self.under_crags(p)
+        self.natural_over(p, under, self.land.crags_over(p, under))
+    }
+
+    fn natural_over(self, p: vec2, under: f32, over: vec2) -> f32 {
         let past = past_edge(p)
         // The land's crags and ravines on the rest, each crag's tiers on its floor
         // (`Land::settled`, from this same ground), so their tops are the planes its slabs are
         // cut to.
-        let under = self.under_crags(p)
         let shaped = smoothstep(70.0, 140.0, length(p - MEADOW))
-        let over = self.land.crags_over(p, under)
         var y = under + shaped * (over.x - self.land.ravine(p))
         // Past the edge, the land falls to the valley, whose floor rolls: first a cliff of rock
         // (about a third of the fall, over its first 9 m, taller and lower along the edge), which
@@ -380,6 +387,28 @@ pub const CLOSED: f32 = 0.45
 impl Terrain for Ground {
     fn height(self, x: f32, z: f32) -> f32 {
         self.at(x, z)
+    }
+
+    fn substrate_height(self, at: vec3) -> f32 {
+        let p = at.xz
+        // Outside a solid crag the complete ground is already the substrate.
+        var solid = false
+        for c in self.land.crags {
+            if engine::place::bedded(c) && length(p - c.xy) < engine::place::crag_reach(c) {
+                solid = true
+            }
+        }
+        if !solid {
+            return at.y
+        }
+        let under = self.under_crags(p)
+        let substrate = self.land.crag_substrate_over(p, under)
+        if substrate.y <= 0.0 {
+            return at.y
+        }
+        // Only the rock-owned surface changes. Preserve exposed ground relief and any
+        // lower existing basin without evaluating the whole land a second time.
+        min(at.y, under + substrate.x)
     }
 
     fn cover(self, at: vec3, n: vec3) -> Cover {
@@ -519,7 +548,8 @@ impl Ground {
         let rock = c.materials.z
         // Under thorn, darker and bare.
         floor = floor * (1.0 - 0.3 * thorn)
-        c.albedo = mix(floor, c.albedo, vec3(open))
+        // Canopy litter covers soil, not the exposed face of the ravine's bedrock.
+        c.albedo = mix(floor, c.albedo, vec3(max(open, rock)))
         // Thinning faster than it fades: a few blades in a gap's half light, a meadow in the open.
         c.grass *= open * open
         c.flowers *= open * open
@@ -587,10 +617,19 @@ impl Ground {
         // Its banks are mud and rush, the grass thinning toward the water.
         let stones = noise2_seen(xz * 1.7, w * 1.7)
         let bed = smoothstep(0.9, 0.985, wet)
+        // Exposed gravel continues onto the bank. Patchy gravel leaves damp pockets for
+        // rushes rather than a straight strip of meadow grass against the water.
+        let bank = smoothstep(0.72, 0.92, wet) * (0.55 + 0.45 * stones)
+        let gravel = max(bed, bank)
+        c.materials = mix(c.materials, vec4(0.0, 0.25, 0.75, 0.0), vec4(gravel))
+        // Wet open banks need an understory slot too, so the habitat can place rushes
+        // where ordinary meadow grass has thinned. The submerged bed removes these below.
+        c.under.x = max(c.under.x, 0.55 * bank * (1.0 - bare))
+        c.under.w = max(c.under.w, bank)
         c.albedo = mix(
             c.albedo,
             mix(vec3(0.09, 0.08, 0.06), vec3(0.2, 0.18, 0.15), vec3(stones)),
-            vec3(bed),
+            vec3(gravel),
         )
         // No blade stands in the water: the grass is gone a texel's half before the bed shows
         // (between a stream's texel, 1, and its bank's, 0.98 at most).

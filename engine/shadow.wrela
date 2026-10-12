@@ -45,6 +45,26 @@ pub fn sun_view(sun: vec3, centre: vec3, span: f32, reach: f32) -> mat4 {
         look_at(centre + sun * reach, centre)
 }
 
+/// Snap a replacement static cascade to the texel grid of its previous map. The reference
+/// moves with render space, so shifting the render origin does not change the grid.
+pub fn snapped_centre(sun: vec3, centre: vec3, reference: vec3, texel: f32) -> vec3 {
+    let fwd = -normalize(sun)
+    let right = normalize(cross(fwd, vec3(0.0, 1.0, 0.0)))
+    let up = cross(right, fwd)
+    let delta = centre - reference
+    reference +
+        right * (round(dot(delta, right) / texel) * texel) +
+        up * (round(dot(delta, up) / texel) * texel) +
+        fwd * dot(delta, fwd)
+}
+
+/// The near map's share, fading into the far map before its border. Both maps stay valid in
+/// this band; switching at the last valid texel made a moving square of light on the land.
+fn near_share(clip: vec3) -> f32 {
+    let edge = min(1.0 - abs(clip.x), 1.0 - abs(clip.y)) * 0.5
+    smoothstep(0.01, 0.12, edge) * smoothstep(0.0, 0.04, min(clip.z, 1.0 - clip.z))
+}
+
 /// The shadows for a frame: the static cascades `near` and `far` (their maps each `side` texels
 /// a side), and the moving map round `moving_at`, `moving_span` wide, `moving_side` texels a
 /// side.
@@ -172,7 +192,8 @@ pub fn statically_sunlit(
         soft,
         bias: 0.0004,
     )
-    if inside {
+    let share = if inside { near_share((sh.near * vec4(world, 1.0)).xyz) } else { 0.0 }
+    if share >= 1.0 {
         return a
     }
     let (b, _) = lookup(
@@ -185,5 +206,42 @@ pub fn statically_sunlit(
         1.5,
         bias: 0.0006,
     )
-    b
+    mix(b, a, share)
+}
+
+@test
+fn static_shadow_replacement_keeps_its_texel_grid() {
+    let sun = normalize(vec3(0.9, 0.407, -0.159))
+    let fwd = -sun
+    let right = normalize(cross(fwd, vec3(0.0, 1.0, 0.0)))
+    let up = cross(right, fwd)
+    let reference = vec3(12.3, 7.1, -22.6)
+    let texel = 144.0 / 2048.0
+    let at = reference + vec3(41.37, -2.1, 13.6)
+    let snapped = snapped_centre(sun, at, reference, texel)
+    let delta = snapped - reference
+    assert(
+        abs(dot(delta, right) / texel - round(dot(delta, right) / texel)) < 0.001,
+        "replacement moved the shadow's horizontal texel grid",
+    )
+    assert(
+        abs(dot(delta, up) / texel - round(dot(delta, up) / texel)) < 0.001,
+        "replacement moved the shadow's vertical texel grid",
+    )
+    let shift = vec3(256.0, 0.0, -512.0)
+    let moved = snapped_centre(sun, at + shift, reference + shift, texel)
+    assert(length(moved - shift - snapped) < 0.0002, "render origin shift moved the static grid")
+}
+
+@test
+fn static_shadow_cascades_meet_over_a_continuous_band() {
+    assert(near_share(vec3(0.0, 0.0, 0.5)) == 1.0, "near centre lost its detail")
+    assert(near_share(vec3(0.98, 0.0, 0.5)) < 0.0001, "near edge switches before fading out")
+    var previous = 1.0
+    for i in 0..101 {
+        let share = near_share(vec3(0.75 + f32(i) * 0.0025, 0.0, 0.5))
+        assert(share <= previous && previous - share < 0.02, "cascade boundary pops")
+        previous = share
+    }
+    assert(previous == 0.0, "near map extends beyond its valid border")
 }

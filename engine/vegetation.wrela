@@ -18,8 +18,9 @@ use noise::{cell_size, hashed_threshold_of}
 use lod::{IMPOSTOR, Lod, VOLUME, anchor, by_card, keeps_packed, packed, place, share, ways}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_POINTS, LIMB_VERTICES, Leaves, OUTLINE,
-    Plant, Wind, CORNERS, card_orders, card_tint, card_turn, cook_cards, cook_outlines, corner_of,
-    leaf_age, leaf_at, level_cards, limb_corner, limb_point, NO_INSTANCE, sway, tinted,
+    Plant, Wind, CORNERS, LEAF_TEXELS, card_orders, card_tint, card_turn, cook_cards, cook_outlines,
+    corner_of, leaf_age, leaf_at, leaf_uv, level_cards, limb_corner, limb_point, NO_INSTANCE, sway,
+    tinted,
 }
 use shadow::{CASTER, Shadows}
 use std::field::Tube
@@ -377,7 +378,7 @@ pub const HIDDEN: u32 = 99
 /// corner's angle) or faded out. And where it is between its levels, its level and how far it
 /// has faded (`lod::place`), when it's in view.
 pub fn ways_for(k: Kind, at: Instance, cam: Camera, l: Lod, corner: f32) -> (vec2u, vec2) {
-    let centre = at.at + vec3(0.0, k.top * 0.5 * at.scale, 0.0)
+    let centre = at.at + at.turn(vec3(0.0, k.top * 0.5 * at.scale, 0.0))
     let r = k.reach * at.scale
     let v = centre - cam.eye
     let d = length(v)
@@ -604,10 +605,9 @@ pub fn leaf_cut(
     atlas: Texture<Rgba8>,
     s: Sampler,
 ) -> u32 {
-    let (m, which) = leaf_at(atlas, s, l.seed.value, l.uv)
-    let cover = leaf_cover(m)
+    let cover = leaf_pixel(atlas, s, l.seed.value, l.uv, d.per_card)
     let size = cell_size(l.uv, d.cell)
-    if cover <= 0.0 || which >= d.per_card || !keeps_packed(l.keep.value, pixel.position.xy) {
+    if cover <= 0.0 || !keeps_packed(l.keep.value, pixel.position.xy) {
         discard()
     }
     // A pixel covered in part is kept that much of the time, by a draw that holds still on the
@@ -617,6 +617,30 @@ pub fn leaf_cut(
         discard()
     }
     0
+}
+
+/// Filter cutout coverage over the pixel before the alpha test. A centre-only sample
+/// skipped thin leaves as the camera moved, especially obvious against a bright backlight.
+/// Magnified leaves keep the sharp derivative edge; minified leaves use four area samples.
+fn leaf_pixel(atlas: Texture<Rgba8>, s: Sampler, seed: u32, uv: vec2, per_card: u32) -> f32 {
+    let dx = dpdx(uv)
+    let dy = dpdy(uv)
+    let (m, which) = leaf_at(atlas, s, seed, uv)
+    let sharp = leaf_cover(m) * if which < per_card { 1.0 } else { 0.0 }
+    let footprint = max(length(dx), length(dy)) * f32(LEAF_TEXELS) * 0.5
+    let filtered = smoothstep(0.75, 1.5, footprint)
+    if filtered <= 0.0 {
+        return sharp
+    }
+    var area = 0.0
+    for i in 0..4 {
+        let offset = dx * (f32(i & 1) - 0.5) * 0.5 + dy * (f32(i >> 1) - 0.5) * 0.5
+        let (coverage, leaf) = leaf_at(atlas, s, seed, uv + offset)
+        if leaf < per_card {
+            area += coverage * 0.25
+        }
+    }
+    mix(sharp, area, filtered)
 }
 
 /// How much of the pixel a card's leaves cover where the atlas reads `m`: the atlas's soft edge
@@ -637,19 +661,27 @@ pub fn leaf_shade(
     instances: [Instance],
     lt: Lighting,
     leaves: Leaves,
+    atlas: Texture<Rgba8>,
 ) -> vec4 {
     let card = cards[l.card.value]
     let inst = instances[l.instance.value & 16777215]
     let world = lt.cam.world_at(pixel.position.xy, pixel.position.z)
     let crown_n = normalize(inst.turn(card.normal.decode()))
+    let leaf_px = leaves.leaf_width() *
+        inst.scale /
+        lt.cam.footprint(max(dot(world - lt.cam.eye, lt.cam.forward), 0.1))
+    let resolved = smoothstep(4.0, 12.0, leaf_px)
+    let tissue = atlas.sample_level(lt.s, leaf_uv(card.seed, l.uv)).ba
+    let transmission = mix(1.0, mix(0.4, 1.06, tissue.x), resolved)
+    let fold = mix(1.0, mix(0.92, 1.04, tissue.y), resolved)
     let c = leaf_light(
         lt,
         world,
         crown_n,
         sky_n: crown_n,
         depth: card.depth * inst.scale,
-        albedo: tinted(leaf_age(leaves, crown_n.y), inst.tint_rgb() + card_tint(card)),
-        through: leaves.through,
+        albedo: tinted(leaf_age(leaves, crown_n.y), inst.tint_rgb() + card_tint(card)) * fold,
+        through: leaves.through * transmission,
         leaf: leaves.leaf_width() * inst.scale,
     )
     vec4(c, view::LEAVES + f32(l.instance.value >> 24))
@@ -903,6 +935,7 @@ impl Forest {
                         instances: self.instances(l),
                         lt: lt,
                         leaves: k.plant.leaves,
+                        atlas: self.atlas,
                     ),
                     indices: self.card_triangles,
                     indirect: self.args.at(li).cards,
@@ -1058,8 +1091,7 @@ pub fn leaf_covering(
     width: u32,
     covering: mut Atomics<u32>,
 ) -> vec4 {
-    let (m, which) = leaf_at(atlas, s, l.seed.value, l.uv)
-    if leaf_cover(m) <= 0.0 || which >= d.per_card {
+    if leaf_pixel(atlas, s, l.seed.value, l.uv, d.per_card) <= 0.0 {
         discard()
     }
     let i = u32(p.position.y) * width + u32(p.position.x)

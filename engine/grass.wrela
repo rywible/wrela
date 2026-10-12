@@ -159,19 +159,37 @@ fn finest_cell(c: vec2i, k: u32) -> vec2i {
     cell
 }
 
-/// A cell's rank among its three siblings and itself (0 the parent's own blade), and a draw in
-/// [0, 1) to order cells of one rank.
+/// Width of a blade's density fade. Reserve this much below the largest rank so all four
+/// children start a ring at full height, while the inherited blade ends it at full height.
+const DENSITY_FADE: f32 = 0.15
+
+/// A cell's rank among its siblings: the parent's inherited blade is exactly 0. The other
+/// three ranks include jitter, with room left for their fade at the ring's inner edge.
 fn rank(c: vec2i, k: u32) -> f32 {
     let parent = vec2i(i32(floor(f32(c.x) / 2.0)), i32(floor(f32(c.y) / 2.0)))
     let first = first_child(parent, k + 1)
     if c.x == first.x && c.y == first.y {
-        return hash2(c.x + 911, c.y - 77)
+        return 0.0
     }
-    // The other three, in a fixed order by their place.
+    // Shuffle the other three for each parent. A fixed quadrant order made diagonal rows
+    // where a level retained two or three of its four children.
     let i = (c.x - parent.x * 2) + 2 * (c.y - parent.y * 2)
     let j = (first.x - parent.x * 2) + 2 * (first.y - parent.y * 2)
-    let order = if i < j { i + 1 } else { i }
-    f32(order) + hash2(c.x + 911, c.y - 77)
+    let order = if i < j { i } else { i - 1 }
+    let shuffle = hash2u(parent.x, parent.y, k + 413)
+    let turned = (u32(order) + shuffle % 3) % 3
+    let ranked = if (shuffle & 8) == 0 { turned } else { 2 - turned }
+    f32(1 + ranked) + (1.0 - DENSITY_FADE) * hash2(c.x + 911, c.y - 77)
+}
+
+fn density_keep(c: vec2i, k: u32, distance: f32) -> f32 {
+    let spacing = FINEST * f32(1 << k)
+    let want = spacing / spacing_at(distance)
+    4.0 * want * want - rank(c, k)
+}
+
+fn density_scale(keep: f32, k: u32) -> f32 {
+    if k + 1 < LEVELS { smoothstep(0.0, DENSITY_FADE, keep) } else { 1.0 }
 }
 
 /// A level's blades and flowers: each cell of the level's box whose blade falls in the level's
@@ -220,8 +238,7 @@ pub fn place(
     }
     // Kept while its rank is under the density this distance asks (from 1 at the level's
     // inner edge to a quarter at its outer).
-    let want = s / spacing_at(d)
-    let keep = 4.0 * want * want - rank(c, k)
+    let keep = density_keep(c, k, d)
     if keep <= 0.0 && k + 1 < LEVELS {
         return
     }
@@ -243,7 +260,7 @@ pub fn place(
     let y = t.height
     // It shrinks away as it's dropped (keep from 0.15 to 0), and over the last stretch of the
     // grass's reach, into the meadow's ground: nothing pops.
-    let dropped = if k + 1 < LEVELS { smoothstep(0.0, 0.15, keep) } else { 1.0 }
+    let dropped = density_scale(keep, k)
     let shrink = dropped * trodden * (1.0 - smoothstep(REACH - 12.0, REACH, d))
     let grass = rand(seed, 3) < cover.a
     // In the grass, a share of forbs (a meadow is not grass alone: `FORBS`), most of them in
@@ -288,20 +305,20 @@ pub fn place(
     // Its tuft: blades gather in tussocks a hand or two across, splaying out from its middle
     // (a tuft reads as one mass, where blades stood alone as spikes), the tallest in the middle,
     // all combed the patch's way.
-    let tc = floor(wxz / TUFT)
+    // Turn the tuft lattice away from the blade lattice and warp it smoothly;
+    // aligned square tuft boundaries read as planted rows even with jittered roots.
+    let tuft_space = vec2(0.8 * wxz.x - 0.6 * wxz.y, 0.6 * wxz.x + 0.8 * wxz.y)
+    let warp = vec2(noise::noise2(wxz * 0.7), noise::noise2(wxz * 0.7 + vec2(31.0))) * TUFT
+    let tc = floor((tuft_space + warp) / TUFT)
     let ti = vec2i(tc)
     let middle = (tc +
         vec2(0.5) +
         0.6 * (vec2(hash2(ti.x + 5, ti.y), hash2(ti.y - 3, ti.x)) - 0.5)) *
         TUFT
-    let away = wxz - middle
+    let offset = tuft_space + warp - middle
+    let away = vec2(0.8 * offset.x + 0.6 * offset.y, -0.6 * offset.x + 0.8 * offset.y)
     let out = length(away) / (0.75 * TUFT)
-    let comb = vec2(cos(lie), sin(lie))
-    let splay = normalize(
-        normalize(away + vec2(1.0e-4)) * 0.4 +
-            comb * 0.9 +
-            0.4 * vec2(rand(seed, 6) - 0.5, rand(seed, 16) - 0.5),
-    )
+    let splay = tuft_direction(away, lie, seed)
     let tall = tall * (1.1 - 0.2 * saturate(out))
     let tint = rand(seed, 8)
     let ground_n = t.normal
@@ -348,6 +365,14 @@ pub fn place(
             },
         )
     }
+}
+
+/// A tuft spreads all around its root. The meadow's prevailing lie only nudges it;
+/// overpowering that spread made every blade lean in parallel strips.
+fn tuft_direction(away: vec2, lie: f32, seed: u32) -> vec2 {
+    let comb = vec2(cos(lie), sin(lie))
+    let turn = TAU * rand(seed, 6)
+    normalize(normalize(away + vec2(1.0e-4)) * 0.8 + comb * 0.3 + vec2(cos(turn), sin(turn)) * 0.5)
 }
 
 /// Where a plant of the wood's floor might stand: its place, the ground's height there, its
@@ -873,6 +898,8 @@ pub const SPECIES = [
 
 /// How many species there are (`SPECIES`).
 pub const SPECIES_N: u32 = 33
+/// The upright rush in the species table.
+const RUSH: u32 = 27
 
 /// The species where the placing kernel reads them: a uniform (a storage buffer would be the
 /// kernel's ninth in a debug build, past WebGPU's eight a stage).
@@ -893,6 +920,11 @@ fn suits(flora: Flora, i: u32, h: vec4) -> f32 {
 /// The wide a colony of one species spreads (m): the wood's floor's species grow in patches.
 pub const COLONY: f32 = 4.5
 
+/// Wet banks and open rush pasture, excluding deep shade and submerged beds.
+fn rush_habitat(h: vec4) -> f32 {
+    smoothstep(0.68, 0.82, h.y) * (1.0 - smoothstep(0.94, 0.99, h.y)) * smoothstep(0.15, 0.4, h.z)
+}
+
 /// The species a plant of the wood's floor at `w` (in the world) is, by its habitat `h` and its
 /// colony: mostly its colony's (the species that suits the habitat best, weighed by the colony's
 /// draw), some its own, so patches have stragglers.
@@ -904,13 +936,36 @@ pub fn species_of(flora: Flora, w: vec2, h: vec4, seed: u32) -> u32 {
     var best = 0
     var score = 0.05
     for i in 1..SPECIES_N {
-        let s = suits(flora, i, h) * (0.25 + rand(draw_seed, 40 + i))
+        let bank = if i == RUSH { 1.0 + 3.0 * rush_habitat(h) } else { 1.0 }
+        let s = suits(flora, i, h) * (0.25 + rand(draw_seed, 40 + i)) * bank
         if s > score {
             score = s
             best = i
         }
     }
     best
+}
+
+/// A world-keyed crown shared by its fronds at every density. Let crowns cross their cell
+/// edges: confining them to each cell's central half left straight empty rows between them.
+fn rosette_crown(w: vec2, size: f32) -> vec2 {
+    let c = floor(w / size)
+    let ci = vec2i(c)
+    let jitter = vec2(hash2(ci.x + 3, ci.y), hash2(ci.y + 9, ci.x))
+    (c + vec2(0.5) + 1.2 * (jitter - vec2(0.5))) * size
+}
+
+/// The coverage draw fades to zero before rejection as density spacing changes with range.
+fn under_occupancy(chance: f32, draw: f32) -> f32 {
+    smoothstep(0.0, 0.08, chance - draw)
+}
+
+/// Tall plants leave room round the camera continuously, including tall herb species such
+/// as reeds. Low ground cover keeps its size even directly beneath the eye.
+fn under_clearance(kind: f32, tall: f32, distance: f32) -> f32 {
+    if kind == FERN || kind == BRACKEN || tall > 0.2 {
+        smoothstep(CLEAR_EYE, 2.0 * CLEAR_EYE, distance)
+    } else { 1.0 }
 }
 
 /// One of the wood's floor's plants (#54 §9: ferns, bracken and low herbs where the grass
@@ -932,18 +987,16 @@ fn under_plant(
 ) {
     let u = t.under
     let spacing = spacing_at(p.d)
-    if !p.forb && (u.x <= 0.0 || rand(p.seed, 9) >= u.x * spacing * spacing / FROND_AREA) {
+    let occupied = if p.forb { 1.0 } else {
+        under_occupancy(u.x * spacing * spacing / FROND_AREA, rand(p.seed, 9))
+    }
+    if occupied <= 0.0 {
         return
     }
     let r = rand(p.seed, 10) * (u.y + u.z + u.w)
-    let kind = if p.forb || r >= u.y + u.z { HERB } else if r < u.y { FERN } else { BRACKEN }
-    // A frond taller than the eye's ground clearance would fill a low camera's view: none within
-    // `CLEAR_EYE` of the eye (on the plane), and they grow back to full size over as far again.
-    let near = length(p.xz - at.cam.eye.xz)
-    if kind != HERB && near < CLEAR_EYE {
-        return
-    }
-    let grown = if kind == HERB { 1.0 } else { smoothstep(CLEAR_EYE, 2.0 * CLEAR_EYE, near) }
+    let kind = if p.forb || rand(p.seed, 34) < rush_habitat(t.flora) || r >= u.y + u.z {
+        HERB
+    } else if r < u.y { FERN } else { BRACKEN }
     let v = rand(p.seed, 4)
     // Each kind's size: a fern's arching frond, bracken's taller and flatter, a herb's low leaf;
     // never narrower than a blade's spacing here, so the far ones still cover.
@@ -952,15 +1005,9 @@ fn under_plant(
     let sp = if kind == HERB { species_of(flora, keyed_xz, t.flora, p.seed) } else { 0 }
     let spec = flora.species[sp]
     let kind = if sp > 0 { spec.shape } else { kind }
-    // A tall species keeps clear of the eye as a frond does.
-    if sp > 0 && spec.tall > 0.2 && near < CLEAR_EYE {
-        return
-    }
     let (tall, wide, bend) = if sp > 0 {
-        // A strap leaf arches out of its rosette (alone and upright, it read as a dark spike:
-        // round 2, the ring).
-        let arch = if kind == STRAP { max(spec.bend, 0.6) } else { spec.bend }
-        (spec.tall * (0.7 + 0.6 * v), spec.wide, arch * (0.8 + 0.4 * rand(p.seed, 7)))
+        // Each species keeps its habit: rush stems stay upright while strap leaves arch.
+        (spec.tall * (0.7 + 0.6 * v), spec.wide, spec.bend * (0.8 + 0.4 * rand(p.seed, 7)))
     } else if kind == FERN {
         (0.45 + 0.35 * v, 0.2, 0.75 + 0.2 * rand(p.seed, 7))
     } else if kind == BRACKEN {
@@ -980,14 +1027,15 @@ fn under_plant(
         let crown_size = if kind == FERN { FERN_CROWN } else { HERB_ROSETTE }
         let keyed = at.cam.keyed().xz
         let w = p.xz + keyed
-        let c = floor(w / crown_size)
-        let ci = vec2i(c)
-        let crown = (c + vec2(0.25) + 0.5 * vec2(hash2(ci.x + 3, ci.y), hash2(ci.y + 9, ci.x))) *
-            crown_size
+        let crown = rosette_crown(w, crown_size)
         let away = w - crown
         facing = atan2(away.y, away.x)
         xz = crown + normalize(away + vec2(1.0e-4)) * 0.06 - keyed
         y = terrain::height_at(levels, texels, xz)
+    }
+    let grown = occupied * under_clearance(kind, tall, length(xz - at.cam.eye.xz))
+    if grown <= 0.0 {
+        return
     }
     let root = vec3(xz.x, y + 0.05, xz.y)
     let shade = cloud_shadow(at.clouds, cloud, linear, root)
@@ -995,10 +1043,10 @@ fn under_plant(
     let _ = blades.push(
         Blade {
             root: vec3(xz.x, y - 0.02, xz.y),
-            tall: tall * p.shrink * max(grown, 0.35),
+            tall: tall * p.shrink * grown,
             facing,
             bend,
-            width: max(wide, spacing * 1.2) * (0.8 + 0.4 * rand(p.seed, 5)),
+            width: max(wide, spacing * 1.2) * (0.8 + 0.4 * rand(p.seed, 5)) * grown,
             ground: std::gpu::Oct32::encode(t.normal),
             // Its tint, how brown (bracken past its prime, in patches), its species (`SPECIES`).
             colour: Unorm8x4::encode(
@@ -1011,14 +1059,14 @@ fn under_plant(
     // A forb of the open flowers in the meadow's drifts, few between them.
     let blooms = if p.forb { spec.blooms * (0.03 + 0.97 * p.drift) } else { spec.blooms }
     if spec.bloom > 0 && rand(p.seed, 12) < blooms && p.d < FLOWERS_TO {
-        let head = root + vec3(0.0, tall * p.shrink * (0.75 + 0.2 * rand(p.seed, 13)), 0.0)
+        let head = root + vec3(0.0, tall * p.shrink * grown * (0.75 + 0.2 * rand(p.seed, 13)), 0.0)
         let _ = flowers.push(
             Flower {
                 head,
                 // A forb's heads smaller than a wood plant's: big ones read as confetti.
                 size: (if p.forb { 0.016 + 0.016 * rand(p.seed, 14) } else {
                     0.025 + 0.02 * rand(p.seed, 14)
-                }) * p.shrink * (1.0 - smoothstep(FLOWERS_TO - 12.0, FLOWERS_TO, p.d)),
+                }) * p.shrink * grown * (1.0 - smoothstep(FLOWERS_TO - 12.0, FLOWERS_TO, p.d)),
                 kind: spec.bloom - 1,
                 seed: p.seed,
             },
@@ -1117,6 +1165,8 @@ pub struct Blooms: Copy + GpuData {
 
 /// The grass of a frame: what places it, and what it placed (each tier's blades).
 pub struct Grass {
+    /// A cloth contact: hem centre in render space and radius. Zero radius disables it.
+    pub contact: vec4,
     pub near: AppendBuffer<Blade>,
     pub middle: AppendBuffer<Blade>,
     pub far: AppendBuffer<Blade>,
@@ -1134,6 +1184,7 @@ pub struct Grass {
 impl Grass {
     pub fn new() -> Grass {
         Grass {
+            contact: vec4(0.0),
             near: append_buffer(MAX_BLADES / 4),
             middle: append_buffer(MAX_BLADES / 2),
             far: append_buffer(MAX_BLADES / 2),
@@ -1251,6 +1302,24 @@ fn blade_point(b: Blade, t: f32, side: f32, wind: Wind) -> vec3 {
     base + sway(wind, b.root, t * b.tall) * 0.6
 }
 
+/// Push only blade points that meet the cloth. Roots stay fixed, and grass below a raised
+/// hem is untouched. There is no ground displacement or moving hole in the grass.
+pub fn cloth_contact(point: vec3, root: vec3, t: f32, contact: vec4) -> vec3 {
+    if contact.w <= 0.0 || t <= 0.0 || point.y <= contact.y - 0.03 {
+        return point
+    }
+    let delta = point.xz - contact.xz
+    let distance = length(delta)
+    let overlap = max(contact.w - distance, 0.0)
+    let above = smoothstep(contact.y - 0.03, contact.y + 0.12, point.y)
+    let height = 1.0 - smoothstep(contact.y + 1.0, contact.y + 1.4, point.y)
+    let dir = if distance > 1.0e-4 { delta / distance } else {
+        normalize(root.xz - contact.xz + vec2(1.0e-4, 0.0))
+    }
+    let offset = dir * overlap * smoothstep(0.0, 0.65, t) * above * height
+    point + vec3(offset.x, 0.0, offset.y)
+}
+
 /// The points of a blade of `segments`: two a step up its curve, and its tip.
 pub fn blade_points(segments: u32) -> u32 {
     2 * segments + 1
@@ -1333,6 +1402,7 @@ pub fn blade(
     g: InstanceIndex,
     cam: Camera,
     wind: Wind,
+    contact: vec4,
     tier: Tier,
     blades: [Blade],
     count: [u32],
@@ -1350,7 +1420,9 @@ pub fn blade(
     let d = length(b.root - cam.eye)
     let m = smoothstep(tier.morph_from, tier.morph_to, d)
     let (i, side) = blade_point_of(v.index % per, tier.segments)
-    let world = blade_vertex(b, i, side, tier.segments, m, wind)
+    let t = f32(i) / f32(tier.segments)
+    let point = blade_vertex(b, i, side, tier.segments, m, wind)
+    let world = cloth_contact(point, b.root, t, contact)
     BladeVertex {
         clip: ClipPosition { position: cam.clip(world) },
         uv: vec2(side, f32(i) / f32(tier.segments)),
@@ -1550,6 +1622,7 @@ impl Grass {
                 blade.bind(
                     lt.cam,
                     wind,
+                    contact: self.contact,
                     tier: tier(t),
                     blades: blades.items(),
                     count: blades.count(),
@@ -1608,4 +1681,218 @@ fn the_meadow_grows_in_drifts() {
         gaps > n / 20 && swathes > n / 20,
         f"{gaps} points in gaps, {swathes} in swathes, of {n}",
     )
+}
+
+/// Each density rank must be spread over all quadrants; otherwise thinning reveals rows.
+@test
+fn thinning_has_no_preferred_quadrant() {
+    var quadrants: [u32; 4] = [0; 4]
+    for y in 0..32 {
+        for x in 0..32 {
+            var ranks: [u32; 4] = [0; 4]
+            for q in 0..4 {
+                let cell = vec2i(x * 2 + i32(q & 1), y * 2 + i32(q >> 1))
+                let r = u32(floor(rank(cell, 1)))
+                ranks[r] += 1
+                if r == 1 {
+                    quadrants[q] += 1
+                }
+            }
+            for n in ranks {
+                assert(n == 1, "a sibling density rank is duplicated or missing")
+            }
+        }
+    }
+    for n in quadrants {
+        assert(n > 180 && n < 330, f"a quadrant receives {n} of 1024 second-ranked blades")
+    }
+}
+
+@test
+fn cloth_moves_contacting_grass_without_moving_roots() {
+    let root = vec3(0.3, 0.0, 0.0)
+    let hem = vec4(0.0, 0.0, 0.0, 0.7)
+    assert(length(cloth_contact(root, root, 0.0, hem) - root) < 1.0e-6, "root moved")
+    let tip = root + vec3(0.0, 0.4, 0.0)
+    let moved = cloth_contact(tip, root, 1.0, hem)
+    assert(moved.x > tip.x + 0.3 && moved.y == tip.y, "cloth did not part the grass")
+    let raised = vec4(0.0, 0.6, 0.0, 0.7)
+    assert(
+        length(cloth_contact(tip, root, 1.0, raised) - tip) < 1.0e-6,
+        "floating hem touched grass below it",
+    )
+    let outside = vec3(1.0, 0.4, 0.0)
+    assert(
+        length(cloth_contact(outside, root, 1.0, hem) - outside) < 1.0e-6,
+        "cloth moved distant grass",
+    )
+}
+
+@test
+fn wet_banks_grow_upright_rush_without_changing_dry_meadows() {
+    let flora = Flora { species: SPECIES }
+    var wet = 0
+    var dry = 0
+    for i in 0..128 {
+        let w = vec2(f32(i) * 3.7, f32(i % 17) * 4.1)
+        if species_of(flora, w, vec4(0.5, 0.87, 0.7, 0.0), i) == RUSH { wet += 1 }
+        if species_of(flora, w, vec4(0.5, 0.3, 0.7, 0.0), i) == RUSH { dry += 1 }
+    }
+    assert(wet > 96 && dry == 0, f"rush selected {wet} wet banks and {dry} dry places")
+    assert(SPECIES[RUSH].bend < 0.15 && SPECIES[RUSH].tall > 0.6, "rush lost its upright habit")
+    assert(rush_habitat(vec4(0.5, 1.0, 0.7, 0.0)) == 0.0, "rush grows in the submerged bed")
+}
+
+@test
+fn tuft_blades_spread_across_the_prevailing_lie() {
+    var against = 0
+    for i in 0..128 {
+        let a = TAU * f32(i) / 128.0
+        let dir = tuft_direction(vec2(cos(a), sin(a)), 0.0, i)
+        assert(abs(length(dir) - 1.0) < 1.0e-5, "blade direction is invalid")
+        if dir.x < -0.1 { against += 1 }
+    }
+    assert(against > 24, f"only {against} blades spread against the prevailing lie")
+}
+
+/// A blade inherited across a ring keeps its root and full height on both sides. The other
+/// three children have finished shrinking before that handover, so none vanishes at height.
+@test
+fn grass_ring_handover_preserves_inherited_blade_height() {
+    for level in 0..(LEVELS - 1) {
+        let edge = ring(level)
+        for y in -8..8 {
+            for x in -8..8 {
+                let parent = vec2i(x, y)
+                let child = first_child(parent, level + 1)
+                let fine = finest_cell(child, level)
+                let coarse = finest_cell(parent, level + 1)
+                assert(fine.x == coarse.x && fine.y == coarse.y, "inherited blade changed root")
+                let before = density_scale(density_keep(child, level, edge), level)
+                let after = density_scale(density_keep(parent, level + 1, edge), level + 1)
+                assert(
+                    abs(before - 1.0) < 1.0e-6 && abs(after - 1.0) < 1.0e-6,
+                    "inherited blade changes height at ring boundary",
+                )
+                let near = density_scale(density_keep(child, level, edge - 0.0001), level)
+                let far = density_scale(density_keep(parent, level + 1, edge + 0.0001), level + 1)
+                assert(abs(near - far) < 0.0001, "inherited blade jumps beside ring boundary")
+                for q in 0..4 {
+                    let sibling = parent * 2 + vec2i(i32(q & 1), i32(q >> 1))
+                    if sibling.x != child.x || sibling.y != child.y {
+                        let height = density_scale(density_keep(sibling, level, edge), level)
+                        assert(
+                            height < 1.0e-6,
+                            "a discarded blade reaches the ring boundary at height",
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@test
+fn rosette_crowns_fill_grid_gaps_and_keep_world_roots() {
+    for size in [HERB_ROSETTE, FERN_CROWN] {
+        var edges: [u32; 4] = [0; 4]
+        for y in -8..8 {
+            for x in -16..16 {
+                let c = vec2(f32(x), f32(y))
+                let w = (c + vec2(0.5)) * size
+                let crown = rosette_crown(w, size)
+                let offset = (crown - w) / size
+                assert(
+                    abs(offset.x) <= 0.601 && abs(offset.y) <= 0.601,
+                    "crown escapes its bounded neighbourhood",
+                )
+                if offset.x < -0.25 { edges[0] += 1 }
+                if offset.x > 0.25 { edges[1] += 1 }
+                if offset.y < -0.25 { edges[2] += 1 }
+                if offset.y > 0.25 { edges[3] += 1 }
+                for origin in [vec2(0.0), vec2(256.0, -256.0), vec2(-256.0, 256.0)] {
+                    let render = w - origin
+                    let shifted = rosette_crown(render + origin, size) - origin
+                    assert(
+                        length(shifted + origin - crown) < 0.0001,
+                        "origin rebase moved a rosette",
+                    )
+                }
+            }
+        }
+        for count in edges {
+            assert(count > 64, "crowns still leave a regular empty grid gutter")
+        }
+        for level in 0..(LEVELS - 1) {
+            for x in -16..16 {
+                let parent = vec2i(x, x * 3 + 1)
+                let child = first_child(parent, level + 1)
+                let fine = finest_cell(child, level)
+                let coarse = finest_cell(parent, level + 1)
+                let root = |c: vec2i| (vec2(c) + vec2(hash2(c.x, c.y), hash2(c.y + 31, c.x - 17))) *
+                    FINEST
+                assert(
+                    length(rosette_crown(root(fine), size) - rosette_crown(root(coarse), size)) <
+                        1.0e-6,
+                    "density handover moved a rosette",
+                )
+            }
+        }
+    }
+}
+
+@test
+fn undergrowth_reaches_zero_before_camera_clearance_rejection() {
+    for kind in [FERN, BRACKEN, HERB, STRAP] {
+        assert(
+            under_clearance(kind, 0.8, CLEAR_EYE - 0.001) == 0.0,
+            "tall plant remains inside clearance",
+        )
+        assert(
+            under_clearance(kind, 0.8, CLEAR_EYE) == 0.0,
+            "tall plant is dropped at visible size",
+        )
+        assert(
+            under_clearance(kind, 0.8, CLEAR_EYE + 0.001) < 0.00001,
+            "tall plant pops just outside clearance",
+        )
+        var before = 0.0
+        for i in 0..65 {
+            let d = CLEAR_EYE * (1.0 + f32(i) / 64.0)
+            let growth = under_clearance(kind, 0.8, d)
+            assert(
+                growth >= before && growth - before < 0.025,
+                "camera clearance jumps or reverses",
+            )
+            before = growth
+        }
+        assert(before == 1.0, "tall plant never reaches full size")
+    }
+    assert(
+        under_clearance(HERB, tall: 0.13, distance: 0.0) == 1.0,
+        "low ground cover retreats from the camera",
+    )
+}
+
+@test
+fn undergrowth_coverage_draw_fades_before_acceptance_changes() {
+    for draw in [0.01, 0.3, 0.7, 0.99] {
+        assert(under_occupancy(draw - 0.0001, draw) == 0.0, "rejected plant leaves a ghost")
+        assert(under_occupancy(draw, draw) == 0.0, "plant is rejected at visible size")
+        assert(
+            under_occupancy(draw + 0.0001, draw) < 0.00001,
+            "accepted plant starts at visible size",
+        )
+        assert(under_occupancy(draw + 0.08, draw) > 0.9999, "covered plant never reaches full size")
+        var before = 0.0
+        for i in 0..65 {
+            let growth = under_occupancy(draw + 0.08 * f32(i) / 64.0, draw)
+            assert(
+                growth >= before && growth - before < 0.025,
+                "coverage transition jumps or reverses",
+            )
+            before = growth
+        }
+    }
+    assert(under_occupancy(chance: 0.0, draw: 0.0) == 0.0, "empty coverage keeps a plant")
 }

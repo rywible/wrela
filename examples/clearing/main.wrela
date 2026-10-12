@@ -296,6 +296,7 @@ pub struct Clearing {
     scene: Texture<Rgba16Float>,
     scene_b: Texture<Rgba16Float>,
     depth: DepthTexture,
+    last_depth: DepthTexture,
     /// Which far tree won each pixel of the prepass (`impostor::far_cut`).
     ids: Texture<R32Uint>,
     motion: Texture<Rgba16Float>,
@@ -464,6 +465,7 @@ pub fn init() -> Clearing {
         scene: texture::<Rgba16Float>(width: 1, height: 1),
         scene_b: texture::<Rgba16Float>(width: 1, height: 1),
         depth: depth_texture(width: 1, height: 1),
+        last_depth: depth_texture(width: 1, height: 1),
         ids: texture::<R32Uint>(width: 1, height: 1),
         motion: texture::<Rgba16Float>(width: 1, height: 1),
         last_motion: texture::<Rgba16Float>(width: 1, height: 1),
@@ -592,6 +594,7 @@ fn temporal(
     r: Resolve,
     scene: Texture<Rgba16Float>,
     depth: DepthTexture,
+    last_depth: DepthTexture,
     motion: Texture<Rgba16Float>,
     last_motion: Texture<Rgba16Float>,
     means: mut Texture<Rgba16Float>,
@@ -600,7 +603,10 @@ fn temporal(
 ) {
     dispatch(neighbourhoods.bind(scene, mut means, mut spreads), over: scene)
     let p = begin_pass(mut into)
-    fullscreen(p, resolve.bind(r, scene, depth, motion, last_motion, from, means, spreads, s))
+    fullscreen(
+        p,
+        resolve.bind(r, scene, depth, last_depth, motion, last_motion, from, means, spreads, s),
+    )
     p.end()
 }
 
@@ -628,6 +634,7 @@ fn resize(s: mut Clearing, width: u32, height: u32, w: u32, h: u32) {
     s.scene = texture::<Rgba16Float>(width: w, height: h)
     s.scene_b = texture::<Rgba16Float>(width: w, height: h)
     s.depth = depth_texture(width: w, height: h)
+    s.last_depth = depth_texture(width: w, height: h)
     s.ids = texture::<R32Uint>(width: w, height: h)
     s.motion = texture::<Rgba16Float>(width: w, height: h)
     s.last_motion = texture::<Rgba16Float>(width: w, height: h)
@@ -1095,6 +1102,7 @@ fn finish(s: mut Clearing, cam: Camera, body: Box3, creature_on: bool, width: u3
         r,
         s.scene,
         s.depth,
+        s.last_depth,
         s.motion,
         s.last_motion,
         mut s.means,
@@ -1212,6 +1220,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         s.carried.path_from = time
         print(f"path begins at frame {s.frames}")
     }
+    swap(mut s.depth, mut s.last_depth)
     draw_scene(mut s, cam, sh, wind, creature_on)
     // The creature's box: its mesh's at rest, posed, 15 cm wider for what its pose reaches past
     // that and for where it was last frame.

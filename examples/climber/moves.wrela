@@ -127,24 +127,24 @@ pub fn sample(keys: [Key], t: f32) -> Pose {
     keys[n - 1].pose
 }
 
-/// The sword at rest: it floats upright behind the right shoulder, a hand's width clear of the
-/// cape, its point up, its edge toward the body (so its flat, its full width, faces back).
+/// The sword floats ready ahead of the right shoulder, clear of the cape: point up and a
+/// little forward, sharp edge forward and spine toward the face.
 pub const REST = Pose {
     sword: Sword {
-        at: vec3(-0.6, 1.15, -0.32),
-        aim: vec3(-0.05, 1.0, -0.08),
-        edge: vec3(1.0, 0.0, 0.0),
+        at: vec3(-0.6, 0.95, 0.58),
+        aim: vec3(-0.03, 1.0, 0.12),
+        edge: vec3(0.0, -0.12, 1.0),
     },
 }
 
 /// The guard, when a fight is near: the sword hangs ahead on the right, its point toward the
-/// enemy and a little up, its edge to the left; the body a little sunk and turned to the right.
+/// enemy and a little up, its edge away to the right; the body a little sunk and turned right.
 pub const GUARD = Pose {
     form: Form { lift: -0.03, tilt: vec3(0.06, -0.12, 0.0) },
     sword: Sword {
         at: vec3(-0.55, 1.0, 0.5),
         aim: vec3(-0.1, 0.3, 1.0),
-        edge: vec3(1.0, 0.0, 0.0),
+        edge: vec3(-1.0, 0.0, 0.0),
     },
 }
 
@@ -412,20 +412,19 @@ pub fn pose(a: Act, t: f32) -> Pose {
 /// The climber free: it glides, with no steps. `ready` (0 to 1) is how far the sword has come to
 /// the guard (a fight near), `speed` its speed (m/s), `accel` how fast that changes (m/s²),
 /// `turning` how fast it turns (rad/s) and `drift` its float's phase (0 to 1). The body tips
-/// into its speed and its acceleration, back as it stops, and leans into a turn; it rises and
-/// falls a little as it floats. The sword at rest trails: it tips back as the body speeds up and
-/// swings out of a turn. It floats on its own, a quarter round behind the body: it rises and falls
-/// more than the body and rocks a little, less as it comes to the guard.
+/// gently into its speed and its acceleration, back as it stops, and into a turn. The blade
+/// holds its ready position with a slow, small independent sway; starting or stopping must not
+/// throw either the collar or the sword into a large swing.
 pub fn locomotion(ready: f32, speed: f32, accel: f32, turning: f32, drift: f32) -> Pose {
     var p = REST.blend(GUARD, ready)
-    let lean = clamp(accel * 0.02, -0.2, 0.22)
-    let bank = clamp(turning * speed * 0.03, -0.3, 0.3)
-    p.form.lift += 0.015 * sin(TAU * drift)
-    p.form.tilt.x += 0.025 * speed + lean
+    let lean = clamp(accel * 0.002, -0.025, 0.025)
+    let bank = clamp(turning * speed * 0.008, -0.08, 0.08)
+    p.form.lift += 0.006 * sin(TAU * drift)
+    p.form.tilt.x += min(0.008 * speed, 0.06) + lean
     p.form.tilt.z += bank
-    let trail = (1.0 - ready) * clamp(speed * 0.06 + lean * 0.5, 0.0, 0.45)
-    p.sword.at.z -= trail * 0.4
-    p.sword.at.x -= bank * 0.3
+    let trail = (1.0 - ready) * clamp(speed * 0.004 + lean * 0.2, 0.0, 0.035)
+    p.sword.at.z -= trail * 0.2
+    p.sword.at.x -= bank * 0.1
     p.sword.aim.z -= trail
     let bob = (1.0 - ready) * sin(TAU * (drift - 0.25))
     p.sword.at.y += SWORD_BOB * bob
@@ -435,10 +434,35 @@ pub fn locomotion(ready: f32, speed: f32, accel: f32, turning: f32, drift: f32) 
 
 /// How far the sword at rest rises and falls as it floats (m), and how far it rocks (its aim's
 /// sideways part).
-pub const SWORD_BOB: f32 = 0.04
-pub const SWORD_ROCK: f32 = 0.05
+pub const SWORD_BOB: f32 = 0.008
+pub const SWORD_ROCK: f32 = 0.012
 
-/// How fast the float goes round (a second at rest, faster as it glides): its phase's rate (1/s).
+/// How fast the float goes round: a slow glide, only a little faster at a sprint (1/s).
 pub fn drift_rate(speed: f32) -> f32 {
-    mix(0.7, 1.6, smoothstep(0.0, 4.0, speed))
+    mix(0.32, 0.45, smoothstep(0.0, 7.5, speed))
+}
+
+/// Starts, stops and sharp turns keep the floating blade ready and its edge away from the
+/// face. The body has no stride bounce to transfer into the cape's collar.
+@test
+fn free_motion_keeps_the_blade_ready_and_the_collar_quiet() {
+    let (guard_at, _, guard_edge) = GUARD.sword.placed(vec3(0.0), 0.0)
+    assert(dot(guard_edge, guard_at - vec3(0.0, 1.66, 0.0)) > 0.5, "the guard edge faces the mask")
+    for speed in [0.0, 3.0, 7.5] {
+        for accel in [-30.0, 0.0, 30.0] {
+            for turning in [-6.0, 0.0, 6.0] {
+                for k in 0..16 {
+                    let p = locomotion(0.0, speed, accel, turning, f32(k) / 16.0)
+                    let (at, aim, edge) = p.sword.placed(vec3(0.0), 0.0)
+                    assert(at.z > 0.55 && at.x < -0.55, "the blade left its forward ready position")
+                    assert(aim.y > 0.98, "the blade tipped out of its upright ready position")
+                    assert(dot(edge, at - vec3(0.0, 1.66, 0.0)) > 0.5, "the edge faces the mask")
+                    assert(abs(at.y - REST.sword.at.y) <= 0.009, "the floating blade bounces")
+                    assert(abs(p.form.lift) <= 0.007, "the collar bounces")
+                    assert(abs(p.form.tilt.x) <= 0.086, "a tap throws the collar forward or back")
+                    assert(abs(p.form.tilt.z) <= 0.081, "a turn throws the collar sideways")
+                }
+            }
+        }
+    }
 }

@@ -132,6 +132,7 @@ pub fn step_encounter<G: Terrain + engine::grow::Ground, O: Occluders>(
     if length(d) > 1.0e-5 || c.act != Act::Free {
         let moved = carried(ground, water, o, feet, d)
         place_at(mut p, ground, o, p.at.moved(moved), c.heading)
+        p.y += o.lift(p.at.world(), BODY, world::TRAVEL.clearance)
         if c.act != Act::Free {
             p.velocity = vec2(0.0)
         }
@@ -204,7 +205,15 @@ fn carried<G: engine::grow::Ground>(g: G, water: Water, o: Obstacles, from: vec2
     let piece = d / f32(n)
     var at = from
     for _ in 0..n {
-        let (moved, _) = engine::footing::step(g, water, o, at, piece, BODY)
+        let (moved, _) = engine::footing::step_over(
+            g,
+            water,
+            o,
+            at,
+            piece,
+            BODY,
+            world::TRAVEL.clearance,
+        )
         at += moved
         if length(moved) < 0.5 * length(piece) {
             break
@@ -367,4 +376,28 @@ fn a_beaten_wolf_goes_and_doesnt_come_back() {
         tick(mut e, mut p, o, east: 2)
     }
     assert(e.won && !e.awake && length(e.fight.wolf.pos() - left) < 1.0e-5, "it came back")
+}
+
+/// Combat displacement follows the same bounded clearance as normal floating travel: a low
+/// log is crossed, but a tall log and a standing trunk still stop a blink's swept path.
+@test
+fn combat_travel_crosses_low_logs_without_bypassing_tall_solids() {
+    for thing in [Thing::Log, Thing::Trunk] {
+        for radius in [0.4, 0.8] {
+            let item = Obstacle {
+                a: vec2(-2.0, 2.0),
+                b: vec2(2.0, 2.0),
+                r: radius,
+                thing,
+                depth: 2.0 * radius,
+            }
+            let o = Obstacles::of([item], vec2(-16.0), vec2(16.0))
+            let moved = carried(Flat {}, DRY, o, vec2(0.0), vec2(0.0, 4.0))
+            if thing == Thing::Log && radius < 0.6 {
+                assert(abs(moved.y - 4.0) < 0.001, "combat travel stopped at a low log")
+            } else {
+                assert(moved.y < 2.0 - radius, "combat travel bypassed a tall solid")
+            }
+        }
+    }
 }

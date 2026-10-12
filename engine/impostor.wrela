@@ -16,7 +16,7 @@ use lit::{Lighting, sun_sky_and_gloss, through_air}
 use noise::{cell_size, hash2, hash2u, hashed_threshold_of}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_VERTICES, Leaves, Plant, Wind, card_tint,
-    card_turn, leaf_age, leaf_at, level_cards, limb_vertex, sway, tinted, turned, unturned,
+    card_turn, leaf_age, leaf_at, level_cards, limb_vertex, sway, tinted, oriented, unoriented,
 }
 use std::field::Tube
 use std::gpu::{
@@ -420,13 +420,13 @@ pub fn bake(
 // ---- drawing impostors ----------------------------------------------------------------------
 
 /// What a far instance's quad passes on: its world point, its place on the quad, and the
-/// instance (its centre, and its turn and scale, `yaw_scale`) to find its view.
+/// instance (its centre, and its yaw, scale and pitch, `yaw_scale`) to find its view.
 pub struct FarVertex: Copy {
     pub clip: ClipPosition,
     pub world: vec3,
     pub uv: vec2,
     pub centre: vec3,
-    pub yaw_scale: Flat<vec2>,
+    pub yaw_scale: Flat<vec3>,
     pub tint: vec3,
     pub id: Flat<u32>,
     /// The four views round the eye's direction (`views_round`): where the quad's point falls in
@@ -463,11 +463,11 @@ pub fn far_quad(
     front: u32,
 ) -> FarVertex {
     let inst = instances[i.index]
-    let centre = inst.at + vec3(0.0, b.mid.y * inst.scale, 0.0)
+    let centre = inst.at + inst.turn(b.mid * inst.scale)
     let to = normalize(cam.eye - centre)
     // The quad round what the four views blended here cover (and as far again as a leaf's
     // parallax moves it, a tenth of the half-width): most of the plant's box is empty.
-    let (cells, w) = views_round(unturned(inst.yaw, to))
+    let (cells, w) = views_round(unoriented(inst.yaw, inst.pitch, to))
     var lo = vec2(1.0)
     var hi = vec2(-1.0)
     for c in cells {
@@ -490,8 +490,8 @@ pub fn far_quad(
     var world = flat + sway(wind, flat, height)
     // The views round the eye's direction, the same for all the quad: each one's place for this
     // corner (between corners, a view's place moves as the quad's point does).
-    let p = unturned(inst.yaw, right * q.x + up * q.y)
-    let local_to = unturned(inst.yaw, to)
+    let p = unoriented(inst.yaw, inst.pitch, right * q.x + up * q.y)
+    let local_to = unoriented(inst.yaw, inst.pitch, to)
     var uv = [vec2(0.0); 4]
     var shift = [vec2(0.0); 4]
     for k in 0..4 {
@@ -508,7 +508,7 @@ pub fn far_quad(
         world: flat,
         uv: q,
         centre,
-        yaw_scale: Flat { value: vec2(inst.yaw, inst.scale) },
+        yaw_scale: Flat { value: vec3(inst.yaw, inst.scale, inst.pitch) },
         tint: inst.tint_rgb(),
         id: Flat { value: first + i.index + 1 },
         views: vec4(uv[0], uv[1]),
@@ -704,13 +704,13 @@ fn volume_normal(
     at: vec3,
     otherwise: vec3,
 ) -> vec3 {
-    let (yaw, scale) = (f.yaw_scale.value.x, f.yaw_scale.value.y)
-    let q = unturned(yaw, (at - f.centre) / scale) / b.half
+    let (yaw, scale, pitch) = (f.yaw_scale.value.x, f.yaw_scale.value.y, f.yaw_scale.value.z)
+    let q = unoriented(yaw, pitch, (at - f.centre) / scale) / b.half
     let v = grid.sample_level(s, q * 0.5 + vec3(0.5))
     if length(v.yzw) <= 1.0e-4 * v.x || v.x <= 1.0e-5 {
         return otherwise
     }
-    normalize(turned(yaw, v.yzw))
+    normalize(oriented(yaw, pitch, v.yzw))
 }
 
 /// `far_cut` at its quad's depth (the plane through the plant's middle, facing the eye), not
@@ -758,7 +758,7 @@ pub fn far_shade(
         discard()
     }
     let leaf = seen(f, view_of(f, pixel.position.xy), colour, normal, lt.s)
-    let n = normalize(turned(f.yaw_scale.value.x, leaf.normal))
+    let n = normalize(oriented(f.yaw_scale.value.x, f.yaw_scale.value.z, leaf.normal))
     let at = leaf_place(f, lt.cam, b, leaf.toward)
     let out = leaf_light(
         lt,
@@ -874,8 +874,8 @@ fn march_volume(
     grid_depth: Texture3d<Rgba16Float>,
     s: Sampler,
 ) -> Met {
-    let (yaw, scale) = (f.yaw_scale.value.x, f.yaw_scale.value.y)
-    let to_local = |w: vec3| unturned(yaw, (w - f.centre) / scale) + b.mid
+    let (yaw, scale, pitch) = (f.yaw_scale.value.x, f.yaw_scale.value.y, f.yaw_scale.value.z)
+    let to_local = |w: vec3| unoriented(yaw, pitch, (w - f.centre) / scale) + b.mid
     let o = to_local(cam.eye)
     let p = to_local(f.world)
     let dir = normalize(p - o)
@@ -964,7 +964,7 @@ pub fn volume_cut(
 
 /// Where a point of a volume's plant's frame is in the world.
 fn volume_place(f: FarVertex, b: Bake, q: vec3) -> vec3 {
-    f.centre + turned(f.yaw_scale.value.x, (q - b.mid) * f.yaw_scale.value.y)
+    f.centre + oriented(f.yaw_scale.value.x, f.yaw_scale.value.z, (q - b.mid) * f.yaw_scale.value.y)
 }
 
 /// A very far instance's pixel: its leaves as the cards' are lit (`vegetation::leaf_shade`): the
@@ -983,7 +983,7 @@ pub fn volume_shade(
         discard()
     }
     let met = march_volume(f, lt.cam, b, grid, grid_depth, lt.s)
-    let crown_n = normalize(turned(f.yaw_scale.value.x, met.normal))
+    let crown_n = normalize(oriented(f.yaw_scale.value.x, f.yaw_scale.value.z, met.normal))
     // Lit where its leaves are, not on the quad (which lies in its own shadow); aged by the
     // normal the ray met (in the plant's frame: its y is the crown's).
     let out = leaf_light(

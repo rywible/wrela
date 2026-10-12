@@ -31,6 +31,13 @@ pub trait Terrain: Copy + GpuData {
     /// The ground's height at (x, z), in metres.
     fn height(self, x: f32, z: f32) -> f32
 
+    /// The ground mesh under separately drawn solids. By default the whole heightfield;
+    /// terrain assembled with solid outcrops can leave their volume out of this substrate.
+    /// Collision, normals and cover still read `height`, the complete ground surface.
+    fn substrate_height(self, at: vec3) -> f32 {
+        at.y
+    }
+
     /// What covers the ground at `at` (a point on it) whose normal is `n`: its albedo and how
     /// much grass grows there. Cooked into the clipmap, so it can be as costly as it needs.
     fn cover(self, at: vec3, n: vec3) -> Cover
@@ -530,7 +537,7 @@ pub fn cook_level<T: Terrain>(
     let c = terrain.cover_seen(vec3(x, h, z), n, f, s)
     // Slot (i, j) is j * ROW + i: the dispatch's rows are ROW wide (`texel_index`).
     out[id] = Texel {
-        height: h,
+        height: terrain.substrate_height(vec3(x, h, z)),
         normal: Oct32::encode(n),
         cover: Unorm8x4::encode(vec4(sqrt(saturate(c.albedo)), saturate(c.grass))),
         meadow: Unorm8x4::encode(saturate(vec4(c.tall, c.dry, c.deep, 0.0))),
@@ -1049,10 +1056,54 @@ fn detail_of(t: Texture<Rgba8>, ds: Sampler, q: vec2, size: f32, foot: f32) -> v
 }
 
 /// What the ground is made of at `xz` (`Cover::materials`), from level `l` (the level it's
-/// drawn from, `level_at`'s), between its texels.
+/// drawn from, `level_at`'s), between its texels and through its transition to the next
+/// level. Material detail must follow the same morph as the cover's colour and normal.
 pub fn materials_at(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> vec4 {
+    let here = level_materials(levels, texels, l, xz)
+    let m = morph(levels, l, xz)
+    if m <= 0.0 {
+        return here
+    }
+    mix(here, level_materials(levels, texels, l + 1, xz), vec4(m))
+}
+
+fn level_materials(levels: Levels, texels: [Texel], l: u32, xz: vec2) -> vec4 {
     let (at, f) = level_cell(levels, l, xz)
     let a = mix(texels[at.x].materials.decode(), texels[at.y].materials.decode(), vec4(f.x))
     let b = mix(texels[at.z].materials.decode(), texels[at.w].materials.decode(), vec4(f.x))
     mix(a, b, vec4(f.y))
+}
+
+/// A material boundary follows the same transition as height and colour, including at the
+/// end where the level selected by `level_at` changes. A missing material morph jumps here.
+@test
+fn material_weights_follow_the_clipmap_morph() {
+    var at = [vec4(0.0); MAX_LEVELS]
+    at[0] = vec4(-64.0, -64.0, 1.0, 0.0)
+    at[1] = vec4(-128.0, -128.0, 2.0, 0.0)
+    let levels = Levels { at, count: 2, eye: vec2(0.0) }
+    var texels: Vec<Texel> = Vec::new()
+    for l in 0..2 {
+        let materials = if l == 0 { vec4(0.0, 1.0, 0.0, 0.0) } else { vec4(0.0, 0.0, 1.0, 0.0) }
+        let t = Texel {
+            height: 0.0,
+            normal: Oct32::encode(vec3(0.0, 1.0, 0.0)),
+            cover: Unorm8x4::encode(vec4(0.0)),
+            meadow: Unorm8x4::encode(vec4(0.0)),
+            flowers: Unorm8x4::encode(vec4(0.0)),
+            under: Unorm8x4::encode(vec4(0.0)),
+            flora: Unorm8x4::encode(vec4(0.0)),
+            materials: Unorm8x4::encode(materials),
+        }
+        for _ in 0..STRIDE {
+            texels.push(t)
+        }
+    }
+    for k in 0..11 {
+        let xz = vec2(52.0 + f32(k), 0.0)
+        let value = materials_at(levels, texels, level_at(levels, xz), xz)
+        let expected = f32(k) / 10.0
+        assert(abs(value.z - expected) < 1.0e-5, f"material changed to {value} at {xz}")
+        assert(abs(value.y + value.z - 1.0) < 1.0e-5, "material blend lost its total weight")
+    }
 }

@@ -5,7 +5,7 @@
 // by a ring of standing stones.
 
 use engine::bake::{Decisions, WEAR_N, WET_N}
-use engine::grow::Tree
+use engine::grow::{State, Tree}
 use species::Species
 
 /// The egg's place: 10 km from the gate, south-east over the plateau.
@@ -111,24 +111,36 @@ pub fn egg_stones() -> Vec<vec4> {
 pub const REACH: f32 = 60.0
 pub const MOST_TRUNKS: u32 = 512
 
-/// What the sim walks round in the wildwood within `REACH` of `p`: each standing tree's trunk (as
-/// it's drawn at a chest's height: `trees::as_drawn`) and each of the egg's stones, as (x, z,
-/// radius, 0), the nearest first, at most `MOST_TRUNKS`. Worked out as a job (the world's `work`):
-/// the tiles it touches grown again.
+/// Local player collision within `reach`: wildwood trunks and stones as (x, z, radius, 0),
+/// plus fitted fallen wood in both authored and wild tiles as (x, z, radius, height).
+/// Read only the neighbouring authored tiles; grow wild tiles on demand. Keep the nearest
+/// `MOST_TRUNKS` circles. Authored standing solids and water come from the static bins.
 pub fn trunks_round(p: vec2, reach: f32) -> Vec<vec4> {
     var out: Vec<vec4> = Vec::new()
-    let lo = engine::place::tile_of(p - vec2(reach))
-    let hi = engine::place::tile_of(p + vec2(reach))
+    let lo = engine::place::tile_of(p - vec2(reach + logs::REACH))
+    let hi = engine::place::tile_of(p + vec2(reach + logs::REACH))
+    let ground = ground::ground()
     for j in lo.y..(hi.y + 1) {
         for i in lo.x..(hi.x + 1) {
             let t = vec2i(i, j)
-            if !is_wild(t) {
-                continue
+            let wild = is_wild(t)
+            let candidates = if wild { decisions(t, Vec::new()).trees } else {
+                history::fallen_in(t)
             }
-            let d = decisions(t, Vec::new())
-            for tr in trees::as_drawn(d.trees) {
-                if tr.tall > 2.0 && length(tr.at - p) < reach {
-                    out.push(vec4(tr.at, max(tr.girth, 0.04), 0.0))
+            for tr in candidates {
+                if wild && standing_trunk(tr.state, tr.tall) && length(tr.at - p) < reach {
+                    let drawn = trees::as_drawn([tr])[0]
+                    out.push(vec4(drawn.at, max(drawn.girth, 0.04), 0.0))
+                } else if tr.state == State::Log && length(tr.at - p) < reach + logs::REACH {
+                    for log in logs::obstacles(
+                        [tr],
+                        |at: vec2| engine::grow::Ground::height(ground, at.x, at.y),
+                    ) {
+                        let circle = log_circle(log)
+                        if length(circle.xy - p) - circle.z < reach {
+                            out.push(circle)
+                        }
+                    }
                 }
             }
         }
@@ -138,7 +150,167 @@ pub fn trunks_round(p: vec2, reach: f32) -> Vec<vec4> {
             out.push(vec4(s.xy, s.z, 0.0))
         }
     }
-    out.sort_by(|a, b| length(a.xy - p) < length(b.xy - p))
-    out.truncate(MOST_TRUNKS)
+    nearest(mut out, p)
     out
+}
+
+/// A short capsule enclosed by one circle, with its explicit wood height in the answer's
+/// fourth word. Zero height is reserved for standing trunks and stones.
+fn log_circle(o: engine::footing::Obstacle) -> vec4 {
+    vec4((o.a + o.b) * 0.5, o.r + 0.5 * length(o.b - o.a), o.depth)
+}
+
+/// Two low circles can share a conservative enclosing circle without losing lift. Keep
+/// room for the packed radius's upward rounding; standing and high wood never merge here.
+fn merged_low(a: vec4, b: vec4) -> Option<vec4> {
+    if a.w <= 0.0 || b.w <= 0.0 || a.w > world::TRAVEL.clearance || b.w > world::TRAVEL.clearance {
+        return None
+    }
+    let d = length(b.xy - a.xy)
+    let high = max(a.w, b.w)
+    if d + b.z <= a.z { return Some(vec4(a.xy, a.z, high)) }
+    if d + a.z <= b.z { return Some(vec4(b.xy, b.z, high)) }
+    let radius = 0.5 * (d + a.z + b.z) + 0.001
+    if radius > 2.50 { return None }
+    let centre = a.xy + (b.xy - a.xy) * ((radius - 0.001 - a.z) / max(d, 1.0e-6))
+    Some(vec4(centre, radius, high))
+}
+
+fn nearest(out: mut Vec<vec4>, p: vec2) {
+    out.sort_by(|a, b| length(a.xy - p) - a.z < length(b.xy - p) - b.z)
+    // Only a crowded answer with no body-sized safe disk needs coalescing. Each low circle
+    // checks at most 64 recent low groups, in deterministic order. A solid pile can still hold
+    // movement; retries are not claimed to make irreducible geometry traversable.
+    if out.len() > MOST_TRUNKS &&
+        length(out[MOST_TRUNKS - 1].xy - p) - out[MOST_TRUNKS - 1].z <=
+            engine::footing::BODY + 0.04 {
+        var compact: Vec<vec4> = Vec::new()
+        var recent: [u32; 64] = [0; 64]
+        var groups = 0
+        for circle in out {
+            var joined = false
+            if circle.w > 0.0 && circle.w <= world::TRAVEL.clearance {
+                for k in 0..min(groups, 64) {
+                    let at = recent[k]
+                    if let Some(merged) = merged_low(compact[at], circle) {
+                        compact[at] = merged
+                        joined = true
+                        break
+                    }
+                }
+                if !joined {
+                    recent[groups % 64] = compact.len()
+                    groups += 1
+                }
+            }
+            if !joined { compact.push(circle) }
+        }
+        out = take compact
+        out.sort_by(|a, b| length(a.xy - p) - a.z < length(b.xy - p) - b.z)
+    }
+    out.truncate(MOST_TRUNKS)
+}
+
+/// Distance the bounded answer covers before a closer omitted circle may enter it.
+pub fn covered(last: vec4, count: u32, around: vec2) -> f32 {
+    if count < MOST_TRUNKS { REACH } else { max(length(last.xy - around) - last.z, 0.0) }
+}
+
+/// Fallen wood is not an upright trunk at its former root.
+fn standing_trunk(state: State, tall: f32) -> bool {
+    (state == State::Alive || state == State::Snag) && tall > 2.0
+}
+
+@test
+fn fallen_wildwood_trees_do_not_leave_standing_root_blockers() {
+    assert(standing_trunk(State::Alive, 10.0), "living trunk disappeared")
+    assert(standing_trunk(State::Snag, 10.0), "standing dead trunk disappeared")
+    assert(!standing_trunk(State::Log, 10.0), "fallen log left a standing root blocker")
+}
+
+@test
+fn wildwood_answers_keep_nearest_bounded_shapes_and_log_height() {
+    let log = engine::footing::Obstacle {
+        a: vec2(-0.25, 0.0),
+        b: vec2(0.25, 0.0),
+        r: 0.3,
+        thing: engine::footing::Thing::Log,
+        depth: 0.9,
+    }
+    let circle = log_circle(log)
+    assert(circle.w == 0.9, "wildwood lost the rendered log height")
+    assert(length(log.a - circle.xy) + log.r <= circle.z + 1.0e-6, "circle misses log start")
+    assert(length(log.b - circle.xy) + log.r <= circle.z + 1.0e-6, "circle misses log end")
+    var all: Vec<vec4> = Vec::from_fn(MOST_TRUNKS + 10, |i| vec4(f32(i + 1), 0.0, 0.1, 0.0))
+    all.push(circle)
+    nearest(mut all, vec2(0.0))
+    assert(all.len() == MOST_TRUNKS && all[0] == circle, "nearest bounded wood was lost")
+    let reach = covered(all[all.len() - 1], all.len(), vec2(0.0))
+    assert(reach < f32(MOST_TRUNKS), "answer claims coverage beyond omitted shapes")
+}
+
+/// Dense overlapping low wood can be crossed after conservative coalescing. Standing wood
+/// and high logs retain their separate solid semantics, and every original low circle is held.
+@test
+fn dense_low_log_answers_coalesce_without_losing_clearance_or_solid_wood() {
+    let low = Vec::from_fn(
+        700,
+        |i| vec4(
+            -0.8 + 1.6 * f32(i % 35) / 34.0,
+            -0.3 + 0.6 * f32(i / 35) / 19.0,
+            0.4,
+            0.8 + 0.02 * f32(i % 5),
+        ),
+    )
+    var circles = low.clone()
+    circles.push(vec4(1.8, 1.8, 0.4, 1.0 / 0.0))
+    circles.push(vec4(-1.8, 1.8, 0.4, 0.0))
+    nearest(mut circles, vec2(0.0))
+    assert(circles.len() < MOST_TRUNKS, "overlapping low wood still exhausted local coverage")
+    assert(
+        covered(circles[circles.len() - 1], circles.len(), vec2(0.0)) > 5.0,
+        "coalesced low wood did not recover travel coverage",
+    )
+    for original in low {
+        var held = false
+        for circle in circles {
+            if circle.w > 0.0 &&
+                circle.w <= world::TRAVEL.clearance &&
+                circle.w >= original.w &&
+                length(original.xy - circle.xy) + original.z <= circle.z + 0.001 {
+                held = true
+            }
+        }
+        assert(held, "coalescing lost original log coverage or height")
+    }
+    var records: Vec<engine::footing::Obstacle> = Vec::new()
+    for c in circles {
+        assert(c.z <= 2.50, "coalesced radius cannot fit after packing")
+        records.push(engine::footing::Obstacle { a: c.xy, b: c.xy, r: c.z, thing: if c.w > 0.0 {
+            engine::footing::Thing::Log
+        } else { engine::footing::Thing::Trunk }, depth: c.w })
+    }
+    let obstacles = engine::footing::Obstacles::of(records, vec2(-16.0), vec2(16.0))
+    assert(
+        obstacles.blocked_over(vec2(1.8), engine::footing::BODY, 1000.0),
+        "high wood became traversable",
+    )
+    assert(
+        obstacles.blocked_over(vec2(-1.8, 1.8), engine::footing::BODY, 1.2),
+        "standing wood became low",
+    )
+    var at = vec2(-3.0, 0.0)
+    for _ in 0..120 {
+        let (moved, _) = engine::footing::step_over(
+            behaviour::Flat {},
+            behaviour::DRY,
+            obstacles,
+            at,
+            vec2(0.05, 0.0),
+            engine::footing::BODY,
+            world::TRAVEL.clearance,
+        )
+        at += moved
+    }
+    assert(at.x > 2.9, "coalesced low wood still held travel")
 }

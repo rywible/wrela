@@ -15,12 +15,11 @@
 // (`WaterLook`): clear, peat-dark, and painted.
 
 use grow::{Ground, Heap, Stream}
-use light::{CLAY, LUMA, Light}
+use light::{CLAY, LUMA, Light, sun_reflection}
 use lit::{Lighting, sun_and_gloss, through_air}
 use noise::noise2
 use place::Water
-use render::EIGHT_PI
-use sky::sky_with_clouds
+use sky::clouded_sky
 use std::gpu::{ClipPosition, FragCoord, Rgba16Float, Sampler, Texture, VertexIndex}
 use std::math::TAU
 use view::{Camera, WATER}
@@ -706,7 +705,7 @@ pub const CLEAR = WaterLook {
     dims: vec3(0.45, 0.22, 0.20),
     flow_ripple: 0.22,
     foam: vec3(0.80, 0.82, 0.80),
-    mirror: 1.0,
+    mirror: 0.55,
     bands: 0.0,
     refract: 0.05,
 }
@@ -778,9 +777,9 @@ fn ripples(p: vec2, flow: vec2, t: f32, fp: f32) -> (vec2, f32) {
     // The plane turned to the flow and squeezed along it: the noise's cells long down it.
     let q = vec2(dot(p, down) / stretch, dot(p, vec2(-down.y, down.x)))
     let qd = vec2(dot(drift, down) / stretch, dot(drift, vec2(-down.y, down.x)))
-    // Each layer's share, faded where its wavelength (0.77 m and 0.27 m) is under 4 footprints
-    // (the broad one kept at a quarter: the far water keeps a faint grain, not a sheet of glass).
-    let k1 = 0.6 * (1.0 - 0.75 * smoothstep(0.19, 0.77, fp))
+    // Each layer's share fades once its wavelength (0.77 m and 0.27 m) is under 4 footprints.
+    // All unresolved slope becomes roughness; keeping any of it aliases into moving sparkles.
+    let k1 = 0.6 * (1.0 - smoothstep(0.19, 0.77, fp))
     let k2 = 0.4 * (1.0 - smoothstep(0.07, 0.27, fp))
     let e = 0.05
     let h = wave(q, qd, t, k1, k2)
@@ -801,17 +800,19 @@ fn wave(q: vec2, drift: vec2, t: f32, k1: f32, k2: f32) -> f32 {
     if k2 > 0.0 { broad + noise2(q * 3.7 + vec2(4.0, 1.0) - drift * t * 2.6) * k2 } else { broad }
 }
 
-/// The normalized Blinn-Phong sun glint. Opposite light and view have no half vector and no
-/// glint (the sun is behind the visible side then), rather than a `normalize(0)` NaN.
+/// The sun reflected by the unresolved facets between drawn ripples. Losing resolved
+/// slopes widens their normal distribution; the normalized BRDF preserves its energy.
+/// The water's Fresnel is evaluated against the sun's half-vector inside `sun_reflection`,
+/// not the macro surface (which greatly overstated its glint at grazing view angles).
 fn sun_glint(n: vec3, sun: vec3, v: vec3, lost: f32, flowing: bool) -> f32 {
-    let half = sun + v
-    if dot(half, half) <= 1.0e-12 {
-        return 0.0
-    }
-    let h = normalize(half)
-    let sharp = if flowing { 160.0 } else { 600.0 }
-    let spread = mix(sharp, if flowing { 24.0 } else { 60.0 }, lost / 0.85)
-    pow(max(dot(n, h), 0.0), spread) * (spread + 8.0) / EIGHT_PI * (if flowing { 0.6 } else { 1.0 })
+    sun_reflection(n, sun, v, ripple_roughness(lost, flowing), 0.02)
+}
+
+/// Perceptual roughness for both sun and scene reflections. The small undrawn ripples
+/// retain a finite slope width even near the eye; filtered large slopes add to that width.
+fn ripple_roughness(lost: f32, flowing: bool) -> f32 {
+    let slope_width = mix(if flowing { 0.16 } else { 0.08 }, 0.25, clamp(lost, 0.0, 1.0))
+    sqrt(slope_width)
 }
 
 /// How far a reflection from the screen marches, in steps, and how far each goes (m, growing).
@@ -822,7 +823,14 @@ const FIRST: f32 = 0.4
 /// view space against `below`'s distances, the colour where the ray goes behind what's there
 /// (within the step's length), and how much to trust it (fading at the screen's edges, and to
 /// nothing where it leaves the screen or comes back toward the eye).
-fn reflected_on_screen(cam: Camera, below: Texture<Rgba16Float>, world: vec3, r: vec3) -> vec4 {
+fn reflected_on_screen(
+    cam: Camera,
+    below: Texture<Rgba16Float>,
+    s: Sampler,
+    world: vec3,
+    r: vec3,
+    rough: f32,
+) -> vec4 {
     var len = FIRST
     var at = world
     for _ in 0..MARCH {
@@ -842,8 +850,19 @@ fn reflected_on_screen(cam: Camera, below: Texture<Rgba16Float>, world: vec3, r:
         }
         if seen.a < d && d - seen.a < len * 1.5 + 0.2 {
             let edge = min(min(px.x, cam.screen.x - px.x), min(px.y, cam.screen.y - px.y))
-            let trust = smoothstep(0.0, 0.08 * cam.screen.y, edge)
-            return vec4(seen.rgb, trust)
+            // A hit close to the ray thickness limit is uncertain. Fade it before the
+            // next frame can lose it; nearest-depth tests still prevent foreground leaks.
+            let trust = smoothstep(0.0, 0.08 * cam.screen.y, edge) *
+                (1.0 - smoothstep(0.25, 1.0, (d - seen.a) / (len * 1.5 + 0.2)))
+            let uv = px / cam.screen
+            let spread = vec2(1.0 + rough * 4.0) / cam.screen
+            // Filter colour only. Filtering distance across a silhouette invents a surface.
+            let colour = (below.sample_level(s, uv + vec2(spread.x, 0.0)).rgb +
+                below.sample_level(s, uv - vec2(spread.x, 0.0)).rgb +
+                below.sample_level(s, uv + vec2(0.0, spread.y)).rgb +
+                below.sample_level(s, uv - vec2(0.0, spread.y)).rgb) *
+                0.25
+            return vec4(colour, trust)
         }
         len *= 1.18
     }
@@ -912,18 +931,21 @@ pub fn water_shade(
     // with its clouds where the probe sees the sky's light that way.
     let r = n * (2.0 * dot(n, v)) - v
     let up = vec3(r.x, max(r.y, 0.02), r.z)
-    let open = sky_with_clouds(view, lt.light, normalize(up), dome, lt.s).rgb
+    // The direct solar disc is accounted for once, by the glint below. Reflecting it
+    // from the sky as well adds a second, unfiltered white highlight.
+    let open = clouded_sky(view, lt.light, normalize(up), dome, lt.s)
     let opens = clamp(dot(probe, LUMA) / max(dot(open, LUMA), 1.0e-4), 0.0, 1.0)
     var reflected = mix(probe, open, vec3(opens * opens))
-    let screen = reflected_on_screen(cam, below, w.world, r)
+    // Slopes below a pixel still spread the reflection instead of vanishing into a mirror.
+    let rough = ripple_roughness(lost, flowing)
+    let screen = reflected_on_screen(cam, below, lt.s, w.world, r, rough)
     reflected = mix(reflected, screen.rgb, vec3(screen.a))
-    let fresnel = clamp((0.02 + 0.98 * pow(1.0 - max(dot(n, v), 0.0), 5.0)) * look.mirror, 0.0, 1.0)
+    let fresnel = reflection_share(dot(n, v), rough, look.mirror)
     var c = mix(seen, reflected, vec3(fresnel))
-    // The sun's glint off the ripples: sharp where they're drawn, and where they fade into the
-    // footprint, as broad as the slopes they lost (one sun path on the far water, not glitter).
-    // Normalized (Blinn-Phong's (p + 8) / 8π), so a broad glint is as bright overall, but dimmer.
+    // The direct solar BRDF includes Fresnel, light incidence and facet masking. The
+    // environment Fresnel above belongs only to reflected scene light, not to this lobe.
     let glint = sun_glint(n, lt.light.sun, v, lost, flowing)
-    c += lt.light.sun_colour * (sun * glint * fresnel * 4.0)
+    c += lt.light.sun_colour * (sun * glint * look.mirror)
     // Foam: at a stream's banks and where it runs fast, all over where it falls, and on a still
     // pool's shallows.
     let churn = noise2(keyed * 2.1 - w.flow * t * 1.5) * 0.6 +
@@ -1088,4 +1110,60 @@ fn a_water_glint_is_finite_when_the_view_and_sun_are_opposite() {
         flowing: false,
     )
     assert(glint == 0.0, "opposite light and view made a water glint or a NaN")
+}
+
+/// A rough surface spreads grazing reflections over the normal distribution. Keep the
+/// normal-incidence water reflectance and reduce the coherent mirror as roughness rises.
+fn reflection_share(cosine: f32, rough: f32, mirror: f32) -> f32 {
+    let grazing = max(1.0 - rough, 0.02)
+    clamp((0.02 + (grazing - 0.02) * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0)) * mirror, 0.0, 1.0)
+}
+
+@test
+fn unresolved_water_ripples_transfer_to_roughness() {
+    for i in 0..16 {
+        let (slope, lost) = ripples(vec2(f32(i) * 0.43, 2.7), vec2(0.2, 0.7), f32(i), 1.0)
+        assert(length(slope) < 1.0e-6, "unresolved waves still move the far reflection")
+        assert(abs(lost - 1.0) < 1.0e-6, "unresolved slopes did not become roughness")
+    }
+    assert(
+        abs(reflection_share(cosine: 1.0, rough: 0.5, mirror: 1.0) - 0.02) < 1.0e-6,
+        "roughness changed normal-incidence water reflectance",
+    )
+    assert(
+        reflection_share(cosine: 0.0, rough: 0.5, mirror: 1.0) <
+            reflection_share(cosine: 0.0, rough: 0.0, mirror: 1.0),
+        "rough grazing water remains a perfect mirror",
+    )
+}
+
+@test
+fn water_glint_spreads_without_creating_reflected_energy() {
+    let up = vec3(0.0, 1.0, 0.0)
+    assert(
+        sun_glint(up, up, up, 1.0, flowing: false) < sun_glint(up, up, up, 0.0, flowing: false),
+        "unresolved ripple slopes do not spread the sun's peak",
+    )
+    // Integrate incident directions over the hemisphere for a fixed view. The shared
+    // BRDF already includes cosine and is scaled by pi (the scene's sun_colour units).
+    // A passive water surface cannot reflect more energy than arrives.
+    for rough in [0.3, 0.5, 0.8] {
+        for elevation in [0.15, 0.5, 1.0] {
+            let v = vec3(sqrt(1.0 - elevation * elevation), elevation, 0.0)
+            var reflected = 0.0
+            for y in 0..24 {
+                let upness = (f32(y) + 0.5) / 24.0
+                let across = sqrt(1.0 - upness * upness)
+                for x in 0..48 {
+                    let angle = TAU * (f32(x) + 0.5) / 48.0
+                    let l = vec3(cos(angle) * across, upness, sin(angle) * across)
+                    reflected += sun_reflection(up, l, v, rough, 0.02) * (2.0 / (24.0 * 48.0))
+                }
+            }
+            assert(
+                reflected > 0.0 && reflected <= 1.0,
+                "water's direct reflection creates energy or is not finite",
+            )
+        }
+    }
 }

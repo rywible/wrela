@@ -50,7 +50,7 @@ const COLLAR = vec3(0.12, 1.56, 0.11)
 /// How many folds the cape falls in, and how far they stand out at the hem (a share of its
 /// radius).
 const FOLDS: u32 = 6
-const FOLD: f32 = 0.22
+const FOLD: f32 = 0.12
 
 /// The cape at rest, in the body's space: the collar round the neck; then from the shoulders'
 /// width down to the hem's, to just over the ground (its weight brings the hem down onto it).
@@ -60,10 +60,12 @@ pub fn rest(i: u32, j: u32) -> vec3 {
         return vec3(COLLAR.x * sin(a), COLLAR.y, COLLAR.z * cos(a))
     }
     let t = f32(j - 1) / f32(DOWN - 2)
-    // Its folds: the cloth fuller than the bell it falls round, more toward the hem.
+    // The shoulders and hidden arms give a straight drape. Only the last rows spread onto
+    // the ground: extra cloth at the hem makes a pool without turning the body into a bell.
+    let pool = smoothstep(0.8, 1.0, t)
     let fold = 1.0 + FOLD * t * cos(f32(FOLDS) * a)
-    let rx = mix(SHOULDERS + SHOULDER_RADIUS + 0.03, HEM_RADIUS, t) * fold
-    let rz = mix(0.22, HEM_RADIUS - 0.02, t) * fold
+    let rx = mix(SHOULDERS + SHOULDER_RADIUS + 0.03, HEM_RADIUS, pool) * fold
+    let rz = mix(0.29, HEM_RADIUS - 0.02, pool) * fold
     vec3(rx * sin(a), mix(SHOULDER_Y + 0.02, 0.01, t), rz * cos(a))
 }
 
@@ -121,24 +123,27 @@ pub fn tethers() -> Vec<f32> {
 pub const LINKS: Vec<Link> = links()
 pub const TETHERS: Vec<f32> = tethers()
 
-/// The cape: each point now and a step ago, the body's frame it was last stepped in, and the
-/// time not yet stepped (s).
+/// The cape: each point now and a step ago, the body and support plane it was last stepped
+/// against, and the time not yet stepped (s).
 pub struct Cape {
     pub at: Vec<vec3>,
     pub was: Vec<vec3>,
     pub frame: mat4,
+    ground: Option<Plane>,
     pub left: f32,
 }
 
 /// The step the cape is simulated at (s), the most steps it takes for one frame, and how many
 /// passes over its links each step makes.
 pub const STEP: f32 = 1.0 / 120.0
-const MOST_STEPS: u32 = 4
+// Presentation accepts up to 100 ms between frames. Cover that whole interval: dropping
+// cloth time while its collar covers the full distance turns a sprint into a violent yank.
+const MOST_STEPS: u32 = 12
 const PASSES: u32 = 8
 
 /// The air: how fast a point's speed through the air dies away (1/s); and what's left of a
 /// point's speed along the ground each step it touches it.
-const DRAG: f32 = 0.9
+const DRAG: f32 = 3.5
 const SLIDE: f32 = 0.35
 
 /// The ground under the cape, as a plane: its height at `at`, and how much it rises a metre along
@@ -169,12 +174,13 @@ pub fn hang(frame: mat4) -> Cape {
             at.push((frame * vec4(rest(i, j), 1.0)).xyz)
         }
     }
-    Cape { was: at.clone(), at, frame, left: 0.0 }
+    Cape { was: at.clone(), at, frame, ground: None, left: 0.0 }
 }
 
 /// What the cape falls round, in the world: the head, the shoulders' line, and the core up the
 /// middle, each a capsule or a cone (two ends, each with its radius; the head's ends are one
-/// point). The core widens to the ground, so the cape falls as a bell, not a column.
+/// point). The core has the same width down its length, so cloth can hang around a plausible
+/// body and arms; the loose hem can pool outside it.
 fn solids(frame: mat4) -> [vec4; 6] {
     let w = |p: vec3| (frame * vec4(p, 1.0)).xyz
     let left = vec3(SHOULDERS, SHOULDER_Y, 0.0)
@@ -184,8 +190,8 @@ fn solids(frame: mat4) -> [vec4; 6] {
         vec4(w(HEAD), HEAD_RADIUS + 0.02),
         vec4(w(left), SHOULDER_RADIUS + 0.02),
         vec4(w(right), SHOULDER_RADIUS + 0.02),
-        vec4(w(vec3(0.0, 1.3, 0.0)), 0.17),
-        vec4(w(vec3(0.0, 0.12, 0.0)), 0.46),
+        vec4(w(vec3(0.0, 1.3, 0.0)), 0.27),
+        vec4(w(vec3(0.0, 0.2, 0.0)), 0.27),
     ]
 }
 
@@ -213,6 +219,10 @@ impl Cape {
             self.was[k] = self.was[k] + by
         }
         self.frame = translate(by) * self.frame
+        match mut self.ground {
+            Some(ground) => ground.at = ground.at + by,
+            None => {},
+        }
     }
 
     /// The cape `dt` seconds on, the body now in `frame`: the collar follows the body over the
@@ -224,6 +234,11 @@ impl Cape {
         let steps = u32(self.left / STEP)
         self.left -= f32(steps) * STEP
         let from = self.frame
+        let under = match self.ground {
+            Some(previous) => previous,
+            None => ground,
+        }
+        var previous = under
         for s in 0..steps {
             let u = f32(s + 1) / f32(steps)
             // The frame between the last and this, column by column (both are rigid, and near).
@@ -233,21 +248,34 @@ impl Cape {
                 mix(from[2], frame[2], vec4(u)),
                 mix(from[3], frame[3], vec4(u)),
             )
-            self.substep(f, gather, ground, wind)
+            // The support rises with the collar over a log. Applying the final plane to
+            // earlier collar positions compresses the hem toward the head before it moves.
+            let support = Plane {
+                at: mix(under.at, ground.at, vec3(u)),
+                slope: mix(under.slope, ground.slope, vec2(u)),
+            }
+            // A lifted support plane is a kinematic move of the floating figure, not a
+            // floor striking the cloth. Transport current and previous positions equally,
+            // preserving all relative velocity and bending. On a fixed slope this is zero.
+            let rise = support.height(f[3].xyz) - previous.height(f[3].xyz)
+            self.substep(f, gather, support, wind, rise)
+            previous = support
         }
         if steps > 0 {
             self.frame = frame
+            self.ground = Some(ground)
         }
     }
 
-    fn substep(mut self, frame: mat4, gather: f32, ground: Plane, wind: vec3) {
+    fn substep(mut self, frame: mat4, gather: f32, ground: Plane, wind: vec3, rise: f32) {
+        let carried = vec3(0.0, rise, 0.0)
         let h = STEP
         let keep = exp(-DRAG * h)
         let axis = (frame * vec4(0.0, 0.0, 0.0, 1.0)).xyz
         let up = normalize((frame * vec4(0.0, 1.0, 0.0, 0.0)).xyz)
         for k in AROUND..POINTS {
-            let p = self.at[k]
-            let v = (p - self.was[k]) / h
+            let p = self.at[k] + carried
+            let v = (self.at[k] - self.was[k]) / h
             // Gravity, and the air: its speed eases toward the wind's.
             var a = vec3(0.0, -9.8, 0.0)
             // Drawn in: toward the body's middle, across it.
@@ -260,7 +288,7 @@ impl Cape {
         }
         for i in 0..AROUND {
             let k = point(i, 0)
-            self.was[k] = self.at[k]
+            self.was[k] = self.at[k] + carried
             self.at[k] = (frame * vec4(rest(i, 0), 1.0)).xyz
         }
         let solid = solids(frame)
@@ -302,12 +330,15 @@ impl Cape {
                 self.at[k] = p
             }
         }
-        // On the ground, a point slides only a little.
+        // Ground contact has no bounce. Remove normal velocity, including the correction
+        // from the collision solve, so a brief move cannot launch the pooled hem upward.
+        let normal = normalize(vec3(-ground.slope.x, 1.0, -ground.slope.y))
         for k in AROUND..POINTS {
             if self.at[k].y <= ground.height(self.at[k]) + 1.0e-4 {
-                let w = self.was[k]
                 let p = self.at[k]
-                self.was[k] = vec3(mix(p.x, w.x, SLIDE), w.y, mix(p.z, w.z, SLIDE))
+                let moved = p - self.was[k]
+                let slide = moved - normal * dot(moved, normal)
+                self.was[k] = p - slide * SLIDE
             }
         }
     }
@@ -419,4 +450,91 @@ fn on_a_slope_the_hem_lies_on_the_ground() {
     print(f"deepest under the slope {under} m; the hem ahead {over} m over it")
     assert(under < 1.0e-4, f"a point is {under} m under the ground")
     assert(over < 0.02, f"the hem uphill hangs {over} m over the ground")
+}
+
+/// Most of the cape hangs straight; its last rows contain extra cloth to pool on the ground.
+@test
+fn the_cape_hangs_straight_above_a_full_hem() {
+    for i in 0..AROUND {
+        let shoulder = length(rest(i, 1).xz)
+        let knee = length(rest(i, 9).xz)
+        let hem = rest(i, DOWN - 1)
+        assert(abs(knee - shoulder) < 0.04, "the cape widens into a bell above the hem")
+        assert(length(hem.xz) > knee + 0.12, "the hem has no extra cloth to pool")
+        assert(hem.y < 0.02, "the hem starts above the ground")
+    }
+}
+
+/// A short forward tap then a stop must settle without turning ground contact into a bounce.
+@test
+fn a_forward_tap_does_not_bounce_the_pooled_hem() {
+    var at = vec3(0.0)
+    var c = hang(body_frame(at, 0.0, Form {}))
+    for _ in 0..120 {
+        c.step(body_frame(at, 0.0, Form {}), 0.0, flat(0.0), vec3(0.0), 1.0 / 60.0)
+    }
+    var high_hem = 0.0
+    for tick in 0..120 {
+        let speed = if tick < 6 { 3.0 } else { 0.0 }
+        at.z += speed / 60.0
+        let p = moves::locomotion(
+            ready: 0.0,
+            speed: speed,
+            accel: 0.0,
+            turning: 0.0,
+            drift: f32(tick) * 0.4 / 60.0,
+        )
+        c.step(body_frame(at, 0.0, p.form), 0.0, flat(0.0), vec3(0.0), 1.0 / 60.0)
+        for i in 0..AROUND {
+            let k = point(i, DOWN - 1)
+            high_hem = max(high_hem, c.at[k].y)
+            if c.at[k].y <= 1.0e-4 {
+                assert(abs(c.at[k].y - c.was[k].y) < 1.0e-5, "ground contact adds vertical speed")
+            }
+        }
+    }
+    print(f"a forward tap lifts the hem at most {high_hem} m")
+    assert(high_hem < 0.18, f"a forward tap throws the hem {high_hem} m up")
+    var settled = 0.0
+    for i in 0..AROUND {
+        settled = max(settled, c.at[point(i, DOWN - 1)].y)
+    }
+    assert(settled < 0.03, f"the hem still hangs {settled} m up after the tap")
+}
+
+/// A sprint over a low log on a slope must give the cloth the same elapsed time as its collar
+/// and support plane. Ten rendered frames per second still cover twelve cloth steps each.
+@test
+fn sprinting_over_a_log_keeps_cloth_time_and_support_together() {
+    let support = |z: f32| Plane {
+        at: vec3(0.0, 0.35 * z + 1.1 * (1.0 - smoothstep(0.45, 2.1, abs(z))), z),
+        slope: vec2(0.0, 0.35),
+    }
+    let start = support(-4.0)
+    var coarse = hang(body_frame(start.at, 0.0, Form {}))
+    var fine = hang(body_frame(start.at, 0.0, Form {}))
+    for _ in 0..120 {
+        coarse.step(body_frame(start.at, 0.0, Form {}), 0.0, start, vec3(0.0), 1.0 / 60.0)
+        fine.step(body_frame(start.at, 0.0, Form {}), 0.0, start, vec3(0.0), 1.0 / 60.0)
+    }
+    var worst = 0.0
+    var hem_high = 0.0
+    for frame in 0..16 {
+        for step in 0..12 {
+            let z = -4.0 + 7.5 * (f32(frame) * 0.1 + f32(step + 1) * STEP)
+            let ground = support(z)
+            fine.step(body_frame(ground.at, 0.0, Form {}), 0.0, ground, vec3(0.0), STEP)
+        }
+        let ground = support(-4.0 + 7.5 * f32(frame + 1) * 0.1)
+        coarse.step(body_frame(ground.at, 0.0, Form {}), 0.0, ground, vec3(0.0), 0.1)
+        for k in AROUND..POINTS {
+            worst = max(worst, length(coarse.at[k] - fine.at[k]))
+        }
+        for i in 0..AROUND {
+            hem_high = max(hem_high, coarse.at[point(i, DOWN - 1)].y - ground.at.y)
+        }
+    }
+    print(f"sprinting over a log: frame-rate cloth gap {worst} m; hem above feet {hem_high} m")
+    assert(worst < 0.3, f"slow frames move the cape {worst} m away from its fixed-step path")
+    assert(hem_high < 0.65, f"the pooled hem rises {hem_high} m toward the shoulders")
 }

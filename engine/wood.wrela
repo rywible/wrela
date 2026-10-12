@@ -47,6 +47,8 @@ pub struct Slot {
     pub far: bool,
     pub count: u32,
     pub kinds: Vec<u32>,
+    /// The part drawn while a streamed tile arrives or leaves.
+    pub visibility: f32,
 }
 
 /// A list: a kind drawn one way, and its room in the frame's buffers (its first place and how
@@ -73,12 +75,13 @@ pub struct Choose: Copy + GpuData {
 /// Chooses instance `id`'s ways (`lod::place`), and puts its index and marks in each way's list:
 /// a place taken from the list's count (`counts`), its index into `picked` and its marks into
 /// `marks` (two words a place). For a shadow, its one list is its kind's, at level 1, if it
-/// stands in the cascade's square.
+/// stands in the cascade's square. `metadata` holds the instances' kinds followed by each
+/// slot's visible share as an f32 bit pattern, read together through one storage binding.
 @compute(64)
 pub fn choose(
     c: Choose,
     every: [Instance],
-    kind_of: [u32],
+    metadata: [u32],
     lods: [Lod],
     lists: [List],
     counts: mut Atomics<u32>,
@@ -90,7 +93,7 @@ pub fn choose(
     if i >= c.instances {
         return
     }
-    let k = kind_of[i]
+    let k = metadata[i]
     if k == NO_KIND {
         return
     }
@@ -108,7 +111,7 @@ pub fn choose(
         return
     }
     let l = lods[k]
-    let centre = inst.at + vec3(0.0, l.top * 0.5 * inst.scale, 0.0)
+    let centre = inst.at + inst.turn(vec3(0.0, l.top * 0.5 * inst.scale, 0.0))
     let r = l.reach * inst.scale
     let v = centre - c.cam.eye
     let d = length(v)
@@ -119,7 +122,9 @@ pub fn choose(
             return
         }
     }
-    let (level, faint) = place(l, c.cam, inst.at, inst.scale)
+    let (level, distant) = place(l, c.cam, inst.at, inst.scale)
+    let visibility = bitcast_f32(metadata[c.instances + i / SLOT])
+    let faint = 1.0 - (1.0 - distant) * visibility
     let (drawn, lower, upper) = ways(level, faint)
     if !drawn {
         return
@@ -287,7 +292,7 @@ pub fn cull(
             let inst = every[i]
             let lod = lods[l.kind]
             let r = lod.reach * inst.scale
-            let centre = inst.at + vec3(0.0, lod.top * 0.5 * inst.scale, 0.0)
+            let centre = inst.at + inst.turn(vec3(0.0, lod.top * 0.5 * inst.scale, 0.0))
             let to = centre - c.cam.eye
             let d = length(to)
             if d > r * 1.5 {
@@ -442,7 +447,7 @@ impl Chosen {
         mut self,
         c: Choose,
         every: GpuBuffer<Instance>,
-        kind_of: GpuBuffer<u32>,
+        metadata: GpuBuffer<u32>,
         lods: GpuBuffer<Lod>,
     ) {
         let n = self.lists.len()
@@ -451,7 +456,7 @@ impl Chosen {
             choose.bind(
                 c,
                 every,
-                kind_of,
+                metadata,
                 lods,
                 lists: self.lists_gpu,
                 counts: mut self.counts,
@@ -555,7 +560,10 @@ pub struct Wood {
     limb_triangles: GpuBuffer<u32>,
     lods: GpuBuffer<Lod>,
     every: GpuBuffer<Instance>,
-    kind_of: GpuBuffer<u32>,
+    /// One kind per instance, then one f32 bit pattern per slot for its visible share.
+    /// Sharing a binding leaves room for lifted kernels' parameter storage within WebGPU's
+    /// eight-storage-buffer limit.
+    metadata: GpuBuffer<u32>,
     pub slots: Vec<Slot>,
     seen: Chosen,
     shadowed: Chosen,
@@ -591,8 +599,9 @@ impl Wood {
             most = max(most, k.card_count)
             most_limbs = max(most_limbs, k.limb_count)
         }
-        var kind_of: GpuBuffer<u32> = buffer(slots * SLOT)
-        write(mut kind_of, 0, Vec::filled(slots * SLOT, NO_KIND))
+        var metadata: GpuBuffer<u32> = buffer(slots * SLOT + slots)
+        // Empty slots return at NO_KIND before reading their unused visibility words.
+        write(mut metadata, 0, Vec::filled(slots * SLOT, NO_KIND))
         let n = kinds.len() + far_kinds.len()
         var w = Wood {
             kinds,
@@ -605,10 +614,16 @@ impl Wood {
             limb_triangles: buffer_of(limb_indices(most_limbs)),
             lods: buffer(max(n, 1)),
             every: buffer(slots * SLOT),
-            kind_of,
+            metadata,
             slots: Vec::from_fn(
                 slots,
-                |_| Slot { tile: None, far: false, count: 0, kinds: Vec::filled(n, 0) },
+                |_| Slot {
+                    tile: None,
+                    far: false,
+                    count: 0,
+                    kinds: Vec::filled(n, 0),
+                    visibility: 1.0,
+                },
             ),
             seen: Chosen::empty(),
             shadowed: Chosen::empty(),
@@ -681,7 +696,13 @@ impl Wood {
 
     /// Loads tile `t`'s instances (at most `SLOT`; each an instance and its kind) into a free slot:
     /// false if there's none. A far layer's (`far`) name far kinds.
-    pub fn load(mut self, t: vec2i, placed: [vegetation::Placed], far: bool = false) -> bool {
+    pub fn load(
+        mut self,
+        t: vec2i,
+        placed: [vegetation::Placed],
+        far: bool = false,
+        visibility: f32 = 1.0,
+    ) -> bool {
         var free = self.slots.len()
         for i in 0..self.slots.len() {
             if self.slots[i].tile.is_none() && free == self.slots.len() {
@@ -705,10 +726,23 @@ impl Wood {
             kinds.push(NO_KIND)
         }
         write(mut self.every, free * SLOT, at)
-        write(mut self.kind_of, free * SLOT, kinds)
-        self.slots[free] = Slot { tile: Some(t), far, count: n, kinds: per }
+        write(mut self.metadata, free * SLOT, kinds)
+        self.slots[free] = Slot { tile: Some(t), far, count: n, kinds: per, visibility }
+        write(mut self.metadata, self.slots.len() * SLOT + free, [bitcast_u32(visibility)])
         self.laid = false
         true
+    }
+
+    /// Changes a tile's visible share without replacing its instances. Shadows keep their
+    /// complete static casters; games finish the handover outside the near shadow cascade.
+    pub fn show(mut self, t: vec2i, visibility: f32, far: bool = false) {
+        if let Some(i) = self.slot_of(t, far) {
+            let value = saturate(visibility)
+            if self.slots[i].visibility != value {
+                self.slots[i].visibility = value
+                write(mut self.metadata, self.slots.len() * SLOT + i, [bitcast_u32(value)])
+            }
+        }
     }
 
     /// Every loaded instance moved by `d`: render space moved (the render origin by `-d`, whole
@@ -725,12 +759,13 @@ impl Wood {
     /// Drops tile `t`'s instances (or its far layer's, `far`), if they're loaded.
     pub fn drop(mut self, t: vec2i, far: bool = false) {
         if let Some(i) = self.slot_of(t, far) {
-            write(mut self.kind_of, i * SLOT, Vec::filled(SLOT, NO_KIND))
+            write(mut self.metadata, i * SLOT, Vec::filled(SLOT, NO_KIND))
             self.slots[i] = Slot {
                 tile: None,
                 far: false,
                 count: 0,
                 kinds: Vec::filled(self.all_kinds(), 0),
+                visibility: 1.0,
             }
             self.laid = false
         }
@@ -783,7 +818,7 @@ impl Wood {
             instances: self.slots.len() * SLOT,
             square: vec4(0.0),
         }
-        self.seen.run(c, self.every, self.kind_of, self.lods)
+        self.seen.run(c, self.every, self.metadata, self.lods)
     }
 
     /// The lists for a shadow cascade: every instance within the square `lo` to `hi` (x, z).
@@ -797,7 +832,7 @@ impl Wood {
             instances: self.slots.len() * SLOT,
             square: vec4(lo, hi),
         }
-        self.shadowed.run(c, self.every, self.kind_of, self.lods)
+        self.shadowed.run(c, self.every, self.metadata, self.lods)
     }
 
     fn card_draw_of(self, l: List, cam: Camera, wind: Wind) -> CardDraw {
@@ -929,6 +964,7 @@ impl Wood {
                     instances: self.seen.instances_of(l),
                     lt: lt,
                     leaves: k.plant.leaves,
+                    atlas: self.atlas,
                 ),
                 indices: self.card_triangles,
                 indirect: self.seen.args.at(li).cards,

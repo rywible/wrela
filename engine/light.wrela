@@ -148,25 +148,36 @@ pub fn gloss(light: Light, s: Lit, v: vec3) -> vec3 {
     let n = s.n
     let l = light.sun
     let nv = max(dot(n, v), 1.0e-4)
+    let glint = light.sun_colour * (sun_reflection(n, l, v, s.rough, F0) * s.sun * s.glint)
+    let c = vec4(-1.0, -0.0275, -0.572, 0.022) * s.rough + vec4(1.0, 0.0425, 1.04, -0.04)
+    let bias = min(c.x * c.x, exp2(-9.28 * nv)) * c.x + c.y
+    let ab = vec2(-1.04, 1.04) * bias + c.zw
+    glint + s.reflected * (F0 * ab.x + ab.y)
+}
+
+/// The direct sun's GGX reflection per unit `sun_colour`, including light incidence,
+/// masking and Fresnel at the reflecting facet. `rough` is perceptual roughness; `f0` is
+/// normal-incidence reflectance (0.04 for ordinary dielectrics, 0.02 for water).
+pub fn sun_reflection(n: vec3, l: vec3, v: vec3, rough: f32, f0: f32) -> f32 {
+    let nv = max(dot(n, v), 1.0e-4)
     let nl = max(dot(n, l), 0.0)
     let half = l + v
-    // Directly opposite light and view have no half vector. The sun is behind a visible
-    // surface then, so any finite direction gives the zero glint that `nl` selects below.
-    let h = if dot(half, half) > 1.0e-12 { normalize(half) } else { n }
+    // Opposite light and view have no reflecting facet. This also keeps a back-facing
+    // water sample finite when it meets the sun direction exactly.
+    if dot(half, half) <= 1.0e-12 {
+        return 0.0
+    }
+    let h = normalize(half)
     let nh = max(dot(n, h), 0.0)
-    let a = max(s.rough * s.rough, 0.002)
+    let a = max(rough * rough, 0.002)
     let a2 = a * a
     let dd = nh * nh * (a2 - 1.0) + 1.0
     let facets = a2 / (PI * dd * dd)
     let k = nl * sqrt(nv * nv * (1.0 - a2) + a2) + nv * sqrt(nl * nl * (1.0 - a2) + a2)
     let seen = 0.5 / max(k, 1.0e-5)
-    let fresnel = F0 + (1.0 - F0) * pow(1.0 - max(dot(v, h), 0.0), 5.0)
+    let fresnel = f0 + (1.0 - f0) * pow(1.0 - max(dot(v, h), 0.0), 5.0)
     // `sun_colour` is what a white surface facing the sun reflects: π times a BRDF of 1/π.
-    let glint = light.sun_colour * (PI * facets * seen * fresnel * nl * s.sun * s.glint)
-    let c = vec4(-1.0, -0.0275, -0.572, 0.022) * s.rough + vec4(1.0, 0.0425, 1.04, -0.04)
-    let bias = min(c.x * c.x, exp2(-9.28 * nv)) * c.x + c.y
-    let ab = vec2(-1.04, 1.04) * bias + c.zw
-    glint + s.reflected * (F0 * ab.x + ab.y)
+    PI * facets * seen * fresnel * nl
 }
 
 /// A character's light (cel): two bands and a soft terminator; the shadow side cool and lit by
@@ -227,4 +238,39 @@ fn gloss_is_finite_when_the_view_and_sun_are_opposite() {
     }
     let c = gloss(light, surface, vec3(0.0, -1.0, 0.0))
     assert(c == vec3(0.0), "opposite light and view made a glint or a NaN")
+}
+
+@test
+fn direct_sun_reflection_preserves_dielectric_normal_incidence() {
+    let up = vec3(0.0, 1.0, 0.0)
+    // At normal incidence the existing GGX response is F0 / (4 * roughness^4).
+    let dielectric = sun_reflection(up, up, up, rough: 0.5, f0: 0.04)
+    assert(abs(dielectric - 0.16) < 1.0e-6, "shared glint changed ordinary dielectric gloss")
+    let light = Light {
+        sun: up,
+        exposure: 1.0,
+        sun_colour: vec3(1.0, 0.8, 0.5),
+        eye: 0.0,
+        horizon: 0.0,
+    }
+    let surface = Lit {
+        albedo: vec3(1.0),
+        n: up,
+        sun: 0.75,
+        sky: vec3(0.0),
+        through: vec3(0.0),
+        rough: 0.5,
+        reflected: vec3(0.0),
+        glint: 0.8,
+    }
+    assert(
+        length(gloss(light, surface, up) - vec3(0.096, 0.0768, 0.048)) < 1.0e-6,
+        "ordinary gloss changed its sun colour, shadow, or glint weight",
+    )
+    let water = sun_reflection(up, up, up, rough: 0.5, f0: 0.02)
+    assert(abs(water - 0.08) < 1.0e-6, "water uses the wrong normal-incidence reflectance")
+    assert(
+        sun_reflection(up, -up, up, rough: 0.5, f0: 0.02) == 0.0,
+        "sun below the surface contributes a glint",
+    )
 }
