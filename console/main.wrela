@@ -1,6 +1,6 @@
 // Wrela's console. The catalog and game session protocol supply all title-specific content.
 use catalog::{Card, parse}
-use paint::{Field, horizon, image, quad}
+use paint::{Field, chamber, image, moment, quad, word_field}
 use platform::host
 use platform::protocol::{Reply, Request, SaveInfo, valid_key}
 use std::gpu::{Rgba8, Sampler, Texture, begin_screen_pass, draw, sampler, texture}
@@ -16,9 +16,9 @@ const BODY: Baked = bake(embed("fonts/Manrope-Medium.ttf"), em: 36.0, spread: 4.
 @fuel(2 ** 38)
 const DISPLAY: Baked = bake(embed("fonts/Barlow-Light.ttf"), em: 48.0, spread: 5.0)
 const INK = vec4(0.945, 0.969, 0.992, 1.0)
-const MUTED = vec4(0.675, 0.773, 0.871, 1.0)
-const LIGHT = vec4(0.765, 0.894, 0.957, 1.0)
-const SURFACE = vec4(0.125, 0.216, 0.325, 1.0)
+const MUTED = vec4(0.48, 0.56, 0.59, 1.0)
+const LIGHT = vec4(0.82, 0.91, 0.94, 1.0)
+const SURFACE = vec4(0.035, 0.055, 0.065, 1.0)
 
 pub struct Profile: Clone + Serialize {
     version: u32,
@@ -57,7 +57,6 @@ enum Step: Copy + Eq {
 
 enum Action: Copy + Eq {
     Games,
-    Saves,
     Settings,
     Play,
     NewGame,
@@ -71,14 +70,29 @@ enum Action: Copy + Eq {
     Retry,
 }
 
+struct Cover {
+    image: Option<Texture<Rgba8>>,
+    load: Option<Pending<u8>>,
+    requested: bool,
+}
+
+struct Panel: Copy {
+    index: u32,
+    rect: Rect,
+    lean: f32,
+    alpha: f32,
+}
+
 pub struct Console {
     fonts: Fonts,
     renderer: Renderer,
     draw: DrawList,
     linear: Sampler,
-    cover: Option<Texture<Rgba8>>,
-    cover_rect: Rect,
-    cover_load: Option<Pending<u8>>,
+    letters: Texture<Rgba8>,
+    covers: Vec<Cover>,
+    panels: Vec<Panel>,
+    album: f32,
+    reveal: f32,
     catalog_load: Option<Pending<u8>>,
     profile_load: Option<Pending<u8>>,
     profile_write: Option<Pending<u8>>,
@@ -107,6 +121,7 @@ pub struct Console {
     controls: u32,
     activate: Option<Action>,
     enter: bool,
+    keyboard: bool,
     clicked: Option<vec2>,
     pressed: Option<vec2>,
     zoom: f32,
@@ -116,14 +131,18 @@ pub struct Console {
 pub fn init() -> Console {
     let fonts = Fonts::from_baked(BODY, DISPLAY)
     let renderer = Renderer::new(fonts)
+    var letters = texture::<Rgba8>(width: 256, height: 96)
+    letters.write(x: 0, y: 0, width: 256, height: 96, bytes: word_field(fonts.mono))
     Console {
         fonts,
         renderer,
         draw: DrawList::new(),
         linear: sampler(),
-        cover: None,
-        cover_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
-        cover_load: None,
+        letters,
+        covers: Vec::new(),
+        panels: Vec::new(),
+        album: 0.0,
+        reveal: 0.0,
         catalog_load: Some(fetch("catalog.tsv")),
         profile_load: Some(read_file("console/profile")),
         profile_write: None,
@@ -153,11 +172,12 @@ pub fn init() -> Console {
         message: String::new(),
         pixel_ratio: 1.0,
         reduced: false,
-        intro_until: 2.6,
-        focus: 3,
+        intro_until: 6.6,
+        focus: 1,
         controls: 0,
         activate: None,
         enter: false,
+        keyboard: false,
         clicked: None,
         pressed: None,
         zoom: 1.0,
@@ -230,8 +250,6 @@ fn open_selected(s: mut Console) {
     s.saves.clear()
     s.picked = 0
     s.prepared_slot = None
-    s.cover = None
-    s.cover_load = Some(fetch(s.cards[s.selected].cover))
     s.profile.game = s.cards[s.selected].id.clone()
     let bytes = save(s.profile)
     s.profile_write = Some(store("console/profile", bytes))
@@ -351,6 +369,10 @@ fn catalog_result(bytes: Vec<u8>) -> Result<Vec<Card>, String> {
     Err(String::from("The game library could not be read."))
 }
 
+fn near_cover(index: u32, selected: u32) -> bool {
+    if index >= selected { index - selected <= 2 } else { selected - index <= 2 }
+}
+
 fn update(s: mut Console) {
     if let Some(result) = poll(mut s.environment) {
         if let Ok(bytes) = result {
@@ -367,7 +389,6 @@ fn update(s: mut Console) {
             if let Ok(p) = profile {
                 if p.version == 1 && valid_key(p.key) && p.name.len() <= 160 {
                     s.profile = p.clone()
-                    s.intro_until = 0.45
                 }
             }
         }
@@ -377,6 +398,9 @@ fn update(s: mut Console) {
             Ok(bytes) => match catalog_result(bytes) {
                 Ok(cards) => {
                     s.cards = cards.clone()
+                    for _ in 0..cards.len() {
+                        s.covers.push(Cover { image: None, load: None, requested: false })
+                    }
                     s.need_open = true
                 },
                 Err(message) => s.message = message.clone(),
@@ -390,13 +414,27 @@ fn update(s: mut Console) {
         for i in 0..s.cards.len() { if s.cards[i].id == s.profile.game { s.selected = i } }
         open_selected(mut s)
     }
-    if let Some(result) = poll(mut s.cover_load) {
-        if let Ok(bytes) = result {
-            let card = s.cards[s.selected].clone()
-            if bytes.len() == card.width * card.height * 4 {
-                var image = texture::<Rgba8>(width: card.width, height: card.height)
-                image.write(x: 0, y: 0, width: card.width, height: card.height, bytes: bytes)
-                s.cover = Some(take image)
+    // Only the selected album and two neighbours on each side hold textures or requests.
+    for i in 0..s.covers.len() {
+        let visible = near_cover(i, s.selected)
+        if !visible {
+            s.covers[i].image = None
+            s.covers[i].load = None
+            s.covers[i].requested = false
+            continue
+        }
+        if !s.covers[i].requested {
+            s.covers[i].load = Some(fetch(s.cards[i].cover))
+            s.covers[i].requested = true
+        }
+        if let Some(result) = poll(mut s.covers[i].load) {
+            if let Ok(bytes) = result {
+                let card = s.cards[i].clone()
+                if bytes.len() == card.width * card.height * 4 {
+                    var image = texture::<Rgba8>(width: card.width, height: card.height)
+                    image.write(x: 0, y: 0, width: card.width, height: card.height, bytes: bytes)
+                    s.covers[i].image = Some(take image)
+                }
             }
         }
     }
@@ -424,15 +462,15 @@ fn act(s: mut Console, action: Action) {
     match action {
         Action::Games => {
             s.pane = Pane::Games
-            s.focus = 3
+            s.focus = 1
         },
-        Action::Saves | Action::ViewSaves => {
+        Action::ViewSaves => {
             s.pane = Pane::Saves
-            s.focus = 3
+            s.focus = 1
         },
         Action::Settings => {
-            s.pane = Pane::Settings
-            s.focus = 3
+            s.pane = if s.pane == Pane::Settings { Pane::Games } else { Pane::Settings }
+            s.focus = 1
         },
         Action::Motion => s.profile.motion = !s.profile.motion,
         Action::SaveProfile => {
@@ -495,205 +533,293 @@ fn act(s: mut Console, action: Action) {
 }
 
 fn text(s: mut Console, content: str, size: f32, at: vec2, color: vec4, face: Face = Face::Sans) {
-    let _ = s.draw.text(s.fonts, face, content, size * s.zoom, at * s.zoom, color)
+    let _ = s.draw.text(
+        s.fonts,
+        face,
+        content,
+        size * s.zoom,
+        at * s.zoom,
+        vec4(color.xyz, color.w * s.reveal),
+    )
+}
+
+fn centered(
+    s: mut Console,
+    content: str,
+    size: f32,
+    x: f32,
+    y: f32,
+    color: vec4,
+    face: Face = Face::Sans,
+) {
+    let width = s.fonts.font(face).measure(content, size)
+    text(mut s, content, size, vec2(x - width * 0.5, y), color, face)
 }
 
 fn rect(s: mut Console, r: Rect, color: vec4, radius: f32 = 0.0) {
     s.draw.rect(
         Rect::new(r.x * s.zoom, r.y * s.zoom, r.w * s.zoom, r.h * s.zoom),
-        color,
+        vec4(color.xyz, color.w * s.reveal),
         radius * s.zoom,
     )
 }
 
-fn button(s: mut Console, action: Action, r: Rect, label: str, primary: bool = false) {
+fn control(s: mut Console, action: Action, r: Rect) -> bool {
     let focus = s.focus == s.controls
     s.controls += 1
-    let hovered = match (s.clicked, s.pressed) {
+    let clicked = match (s.clicked, s.pressed) {
         (Some(up), Some(down)) => r.contains(up / s.zoom) && r.contains(down / s.zoom),
         _ => false,
     }
-    if (focus && s.enter) || hovered { s.activate = Some(action) }
-    if primary { rect(mut s, r, LIGHT, 32.0) }
-    if focus {
-        let outer = Rect::new(r.x - 3.0, r.y - 3.0, r.w + 6.0, r.h + 6.0)
-        if primary {
-            rect(mut s, outer, INK, 35.0)
-            rect(mut s, r, LIGHT, 32.0)
-        } else { rect(mut s, outer, SURFACE, 12.0) }
+    if s.reveal > 0.95 && s.activate.is_none() && ((focus && s.enter) || clicked) {
+        s.activate = Some(action)
     }
-    let color = if primary { vec4(0.078, 0.133, 0.227, 1.0) } else { INK }
-    let width = s.fonts.sans.measure(label, 20.0)
-    text(
-        mut s,
-        label,
-        20.0,
-        vec2(r.x + max((r.w - width) * 0.5, 8.0), r.y + (r.h - 24.0) * 0.5),
-        color,
-    )
+    focus && s.keyboard
+}
+
+fn button(s: mut Console, action: Action, r: Rect, label: str, primary: bool = false) {
+    let focus = control(mut s, action, r)
+    if primary {
+        if focus {
+            rect(
+                mut s,
+                Rect::new(r.x - 3.0, r.y - 3.0, r.w + 6.0, r.h + 6.0),
+                vec4(LIGHT.xyz, 0.32),
+                28.0,
+            )
+        }
+        rect(mut s, r, LIGHT, 25.0)
+    } else if focus { rect(mut s, r, vec4(LIGHT.xyz, 0.12), 12.0) }
+    centered(mut s, label, 16.0, r.x + r.w * 0.5, r.y + (r.h - 20.0) * 0.5, if primary {
+        vec4(0.015, 0.035, 0.045, 1.0)
+    } else { INK })
+}
+
+fn cog(s: mut Console, w: f32, margin: f32) {
+    let r = Rect::new(w - margin - 44.0, margin - 8.0, 44.0, 44.0)
+    let focus = control(mut s, Action::Settings, r)
+    if focus || s.pane == Pane::Settings { rect(mut s, r, vec4(LIGHT.xyz, 0.12), 22.0) }
+    let c = r.center()
+    for i in 0..8 {
+        let a = f32(i) * 0.78539816
+        let p = c + vec2(cos(a), sin(a)) * 9.0
+        rect(mut s, Rect::new(p.x - 2.0, p.y - 2.0, 4.0, 4.0), INK, 1.0)
+    }
+    rect(mut s, Rect::new(c.x - 8.0, c.y - 8.0, 16.0, 16.0), INK, 8.0)
+    rect(mut s, Rect::new(c.x - 5.5, c.y - 5.5, 11.0, 11.0), SURFACE, 6.0)
+    rect(mut s, Rect::new(c.x - 2.0, c.y - 2.0, 4.0, 4.0), INK, 2.0)
 }
 
 fn status(s: Console) -> String {
     if !s.message.is_empty() { return s.message.clone() }
     match s.step {
-        Step::Open | Step::List => String::from("Reading your saves"),
-        Step::Prepare => String::from("Preparing game"),
-        Step::Start | Step::Frame | Step::Show => String::from("Preparing the world"),
+        Step::Start | Step::Frame | Step::Show => String::from("Opening game"),
         Step::PickFile | Step::Import => String::from("Importing save"),
         Step::Export | Step::Download => String::from("Exporting save"),
-        _ => String::from("Ready to play"),
+        _ => String::new(),
     }
 }
 
 fn empty_library_message(message: str) -> String {
-    if message.is_empty() { String::from("Your library is loading") } else { message.to_string() }
+    if message.is_empty() { String::from("Loading games") } else { message.to_string() }
 }
 
-fn library(s: mut Console, w: f32, h: f32, mobile: bool) {
+// Fit a landscape album to the actual viewport, without stretching its cover.
+fn album_rect(w: f32, h: f32, aspect: f32) -> Rect {
+    let width = min(320.0, w - 64.0)
+    let height = min(width / aspect, h * 0.27)
+    let fitted = min(width, height * aspect)
+    Rect::new((w - fitted) * 0.5, h * 0.57 - height * 0.5, fitted, height)
+}
+
+fn panel_rect(base: Rect, w: f32, delta: f32, aspect: f32) -> Rect {
+    let depth = min(abs(delta), 2.0)
+    let scale = 1.0 / (1.0 + depth * 0.24)
+    let height = min(base.h * scale, base.w * scale / aspect)
+    let width = height * aspect
+    let center = base.center() + vec2(delta * min(230.0, w * 0.46), depth * -10.0)
+    Rect::new(center.x - width * 0.5, center.y - height * 0.5, width, height)
+}
+
+fn library(s: mut Console, w: f32, h: f32) {
     if s.cards.is_empty() {
         let label = empty_library_message(s.message)
-        text(mut s, label, 36.0, vec2(48.0, 180.0), INK)
+        centered(mut s, label, 18.0, w * 0.5, h * 0.64, MUTED)
         return
     }
     let card = s.cards[s.selected].clone()
-    let margin = if mobile { 24.0 } else { 72.0 }
-    let title_y = if mobile { 390.0 } else { 250.0 }
-    let cover = if mobile { Rect::new(margin, 150.0, w - margin * 2.0, 210.0) } else {
-        Rect::new(w * 0.44, 180.0, w * 0.56 - margin, 418.0)
-    }
-    s.cover_rect = cover
-    if s.cover.is_none() { rect(mut s, cover, SURFACE, 20.0) }
-    let greeting = f"Good to see you, {s.profile.name}."
-    text(mut s, greeting, if mobile { 18.0 } else { 24.0 }, vec2(margin, if mobile { 110.0 } else {
-        180.0
-    }), MUTED)
-    let title_size = if mobile { 38.0 } else { 66.0 }
-    let title_width = if mobile { w - margin * 2.0 } else { cover.x - margin - 24.0 }
-    let fitted = min(
-        title_size,
-        title_size * title_width / max(s.fonts.mono.measure(card.title, title_size), 1.0),
+    let base = album_rect(w, h, f32(card.width) / f32(card.height))
+    let selected_rect = panel_rect(
+        base,
+        w,
+        f32(s.selected) - s.album,
+        f32(card.width) / f32(card.height),
     )
-    text(mut s, card.title, fitted, vec2(margin, title_y), INK, Face::Mono)
-    let description = if s.saves.is_empty() { String::from("Start a new game.") } else {
-        s.saves[s.picked].description.clone()
+    let selected_focus = control(mut s, Action::Play, selected_rect)
+    // Test nearer albums first; draw them in the reverse order below.
+    for offset in 0..3 {
+        for side in 0..2 {
+            let offset = i32(offset)
+            let index = i32(s.selected) + if side == 0 { -offset } else { offset }
+            if index < 0 || index >= i32(s.cards.len()) || (offset == 0 && side == 0) { continue }
+            let delta = f32(index) - s.album
+            let depth = min(abs(delta), 2.0)
+            let r = panel_rect(
+                base,
+                w,
+                delta,
+                f32(s.cards[u32(index)].width) / f32(s.cards[u32(index)].height),
+            )
+            let alpha = 1.0 / (1.0 + depth * 0.85)
+            let focus = if u32(index) == s.selected { selected_focus } else {
+                control(mut s, Action::Game { index: u32(index) }, r)
+            }
+            if s.covers[u32(index)].image.is_none() { rect(mut s, r, SURFACE, 12.0) }
+            if focus {
+                rect(mut s, Rect::new(r.x - 4.0, r.y - 4.0, r.w + 8.0, 2.0), LIGHT, 1.0)
+                rect(mut s, Rect::new(r.x - 4.0, r.bottom() + 2.0, r.w + 8.0, 2.0), LIGHT, 1.0)
+            }
+            s.panels.push(
+                Panel {
+                    index: u32(index),
+                    rect: r,
+                    lean: clamp(delta * -0.44, -0.75, 0.75),
+                    alpha,
+                },
+            )
+        }
     }
-    text(mut s, description, 20.0, vec2(margin, title_y + if mobile { 64.0 } else { 106.0 }), MUTED)
-    let label = if s.step != Step::Idle { "Play when ready" } else if s.saves.is_empty() {
-        "New game"
-    } else { "Continue" }
-    button(mut s, Action::Play, Rect::new(margin, title_y + if mobile { 110.0 } else {
-        180.0
-    }, if mobile { w - margin * 2.0 } else { 210.0 }, 64.0), label, true)
-    button(mut s, Action::ViewSaves, Rect::new(if mobile { margin } else {
-        margin + 232.0
-    }, title_y + if mobile { 184.0 } else { 180.0 }, 150.0, 64.0), "View saves")
+    let title_size = min(30.0, 30.0 * (w - 48.0) / max(s.fonts.mono.measure(card.title, 30.0), 1.0))
+    centered(mut s, card.title, title_size, w * 0.5, base.bottom() + 20.0, INK, Face::Mono)
+    let y = base.bottom() + 76.0
+    let playing = s.play_intent.is_some()
+    button(mut s, Action::Play, Rect::new(w * 0.5 - 72.0, y, 144.0, 48.0), if playing {
+        "Opening..."
+    } else if s.saves.is_empty() { "Play" } else { "Continue" }, true)
+    button(mut s, Action::ViewSaves, Rect::new(w * 0.5 - 40.0, y + 57.0, 80.0, 36.0), "Saves")
     let state = status(s)
-    text(mut s, state, 16.0, vec2(if mobile { margin } else { cover.x }, if mobile { 666.0 } else {
-        622.0
-    }), MUTED)
-    if s.step != Step::Idle {
-        let pulse = if s.reduced || !s.profile.motion { 0.8 } else {
-            0.55 + sin(s.time * 3.0) * 0.25
-        }
-        rect(mut s, Rect::new(if mobile { margin } else { cover.x }, if mobile { 652.0 } else {
-            609.0
-        }, 44.0, 2.0), vec4(LIGHT.xyz, pulse), 1.0)
-    }
-    if !mobile {
-        for i in 0..s.cards.len() {
-            let r = Rect::new(margin + f32(i) * 290.0, min(h - 208.0, 696.0), 270.0, 106.0)
-            rect(mut s, r, SURFACE, 16.0)
-            let label = s.cards[i].title.clone()
-            button(mut s, Action::Game { index: i }, r, label)
+    if !state.is_empty() {
+        centered(mut s, state, 14.0, w * 0.5, h - 52.0, MUTED)
+        if !s.message.is_empty() {
+            button(
+                mut s,
+                Action::Retry,
+                Rect::new(w * 0.5 - 50.0, h - 32.0, 100.0, 28.0),
+                "Try again",
+            )
         }
     }
-    if mobile && s.cards.len() > 1 {
-        button(
-            mut s,
-            Action::Game { index: (s.selected + 1) % s.cards.len() },
-            Rect::new(w - margin - 150.0, title_y + 184.0, 150.0, 64.0),
-            "Next game",
-        )
-    }
-    if mobile && !s.saves.is_empty() {
-        button(mut s, Action::NewGame, Rect::new(margin, 700.0, 150.0, 48.0), "New game")
-    }
-    if !s.message.is_empty() {
-        button(mut s, Action::Retry, Rect::new(margin, h - 130.0, 150.0, 48.0), "Try again")
+    if s.cards.len() > 1 {
+        // Navigation is quiet and only exists when there is somewhere to go.
+        if s.selected > 0 {
+            button(
+                mut s,
+                Action::Game { index: s.selected - 1 },
+                Rect::new(16.0, base.y + base.h * 0.5 - 22.0, 40.0, 44.0),
+                "<",
+            )
+        }
+        if s.selected + 1 < s.cards.len() {
+            button(
+                mut s,
+                Action::Game { index: s.selected + 1 },
+                Rect::new(w - 56.0, base.y + base.h * 0.5 - 22.0, 40.0, 44.0),
+                ">",
+            )
+        }
     }
 }
 
-fn saves(s: mut Console, w: f32, h: f32, mobile: bool) {
-    let margin = if mobile { 24.0 } else { 72.0 }
-    text(mut s, "Your saves", 36.0, vec2(margin, 170.0), INK)
+fn dialog(s: mut Console, w: f32, h: f32, title: str) -> Rect {
+    rect(mut s, Rect::new(0.0, 0.0, w, h), vec4(0.0, 0.0, 0.0, 0.72))
+    let r = Rect::new(
+        max(20.0, (w - 620.0) * 0.5),
+        max(48.0, (h - 590.0) * 0.5),
+        min(w - 40.0, 620.0),
+        min(h - 96.0, 590.0),
+    )
+    rect(mut s, r, vec4(0.022, 0.033, 0.041, 0.98), 20.0)
+    text(mut s, title, 32.0, vec2(r.x + 28.0, r.y + 24.0), INK, Face::Mono)
+    button(mut s, Action::Games, Rect::new(r.right() - 62.0, r.y + 22.0, 40.0, 40.0), "×")
+    r
+}
+
+fn save_capacity(height: f32) -> u32 {
+    u32(clamp(floor((height - 304.0) / 76.0), 1.0, 3.0))
+}
+
+fn saves(s: mut Console, w: f32, h: f32) {
+    let panel = dialog(mut s, w, h, "Saves")
+    let x = panel.x + 28.0
+    let width = panel.w - 56.0
+    let top = panel.y + 98.0
     if s.cards.is_empty() { return }
-    let title = s.cards[s.selected].title.clone()
-    text(mut s, title, 24.0, vec2(margin, 235.0), MUTED)
-    if s.saves.is_empty() {
-        text(mut s, "Your first save will appear here.", 20.0, vec2(margin, 310.0), MUTED)
+    let capacity = save_capacity(panel.h)
+    let first = s.picked / capacity * capacity
+    let count = min(s.saves.len() - first, capacity)
+    if count == 0 {
+        text(mut s, if s.step == Step::Open || s.step == Step::List { "Reading saves" } else {
+            "No saves yet"
+        }, 18.0, vec2(x, top), MUTED)
     }
-    let first = s.picked / 3 * 3
-    let count = min(s.saves.len() - first, 3)
     for i in first..first + count {
-        let r = Rect::new(margin, 280.0 + f32(i - first) * 90.0, min(w - margin * 2.0, 750.0), 78.0)
-        rect(mut s, r, SURFACE, 16.0)
+        let r = Rect::new(x, top + f32(i - first) * 76.0, width, 64.0)
+        if i == s.picked { rect(mut s, r, SURFACE, 10.0) }
         let save = s.saves[i].clone()
-        button(mut s, Action::Save { index: i }, Rect::new(r.x, r.y, r.w, 42.0), save.label)
-        text(mut s, save.description, 16.0, vec2(r.x + 24.0, r.y + 49.0), MUTED)
+        button(mut s, Action::Save { index: i }, Rect::new(r.x, r.y, r.w, 32.0), save.label)
+        let size = min(
+            13.0,
+            13.0 * (width - 24.0) / max(s.fonts.sans.measure(save.description, 13.0), 1.0),
+        )
+        centered(mut s, save.description, size, r.center().x, r.y + 37.0, MUTED)
     }
-    var y = if mobile { 300.0 + f32(max(count, 1)) * 90.0 } else { 590.0 }
-    if s.saves.len() > 3 {
+    let y = top + f32(max(count, 1)) * 76.0 + 8.0
+    if s.saves.len() > capacity {
         button(
             mut s,
-            Action::Save { index: (first + 3) % s.saves.len() },
-            Rect::new(margin, y, 160.0, 40.0),
+            Action::Save { index: (first + capacity) % s.saves.len() },
+            Rect::new(x, y - 12.0, width, 32.0),
             "More saves",
         )
-        y += 50.0
     }
-    let small = if mobile { (w - margin * 2.0 - 12.0) * 0.5 } else { 160.0 }
-    button(mut s, Action::Play, Rect::new(margin, y, 210.0, 64.0), if s.saves.is_empty() {
-        "New game"
+    let cell = (width - 12.0) * 0.5
+    button(mut s, Action::Play, Rect::new(x, y + 26.0, cell, 46.0), if s.saves.is_empty() {
+        "Play"
     } else { "Continue" }, true)
-    button(mut s, Action::Export, Rect::new(margin + if mobile { 0.0 } else {
-        232.0
-    }, y + if mobile { 74.0 } else { 0.0 }, small, 64.0), "Export save")
-    button(mut s, Action::Import, Rect::new(margin + if mobile { small + 12.0 } else {
-        412.0
-    }, y + if mobile { 74.0 } else { 0.0 }, small, 64.0), "Import save")
-    if !s.saves.is_empty() && !mobile {
-        button(mut s, Action::NewGame, Rect::new(margin, y + if mobile { 145.0 } else {
-            80.0
-        }, 160.0, 48.0), "New game")
-    }
+    button(mut s, Action::NewGame, Rect::new(x + cell + 12.0, y + 26.0, cell, 46.0), "New game")
+    button(mut s, Action::Export, Rect::new(x, y + 91.0, cell, 36.0), "Export")
+    button(mut s, Action::Import, Rect::new(x + cell + 12.0, y + 91.0, cell, 36.0), "Import")
     let state = status(s)
-    text(mut s, state, 16.0, vec2(margin, min(h - 92.0, y + 212.0)), MUTED)
+    if !state.is_empty() { centered(mut s, state, 13.0, w * 0.5, panel.bottom() - 20.0, MUTED) }
 }
 
-fn settings(s: mut Console, w: f32) {
-    let margin = if w < 800.0 { 24.0 } else { 72.0 }
-    text(mut s, "Your profile", 36.0, vec2(margin, 170.0), INK)
-    text(mut s, "Type your name", 20.0, vec2(margin, 258.0), MUTED)
-    rect(mut s, Rect::new(margin, 304.0, min(w - margin * 2.0, 560.0), 64.0), SURFACE, 12.0)
+fn settings(s: mut Console, w: f32, h: f32) {
+    let panel = dialog(mut s, w, h, "Settings")
+    let x = panel.x + 28.0
+    let width = panel.w - 56.0
+    text(mut s, "Your name", 16.0, vec2(x, panel.y + 114.0), MUTED)
+    rect(mut s, Rect::new(x, panel.y + 148.0, width, 60.0), SURFACE, 10.0)
     let name = s.profile.name.clone()
-    text(mut s, name, 24.0, vec2(margin + 24.0, 322.0), INK)
-    button(mut s, Action::SaveProfile, Rect::new(margin, 404.0, 210.0, 64.0), "Save profile", true)
-    button(mut s, Action::Motion, Rect::new(margin, 508.0, 310.0, 56.0), if s.profile.motion {
-        "Opening animation: on"
-    } else { "Opening animation: off" })
-    text(mut s, "Your profile and saves stay on this device.", 18.0, vec2(margin, 600.0), MUTED)
+    let size = min(23.0, 23.0 * (width - 32.0) / max(s.fonts.sans.measure(name, 23.0), 1.0))
+    text(mut s, name, size, vec2(x + 16.0, panel.y + 163.0), INK)
+    button(mut s, Action::SaveProfile, Rect::new(x, panel.y + 242.0, 144.0, 48.0), "Save", true)
+    button(mut s, Action::Motion, Rect::new(x, panel.y + 335.0, width, 48.0), if s.profile.motion {
+        "Animation on"
+    } else { "Animation off" })
+    text(mut s, "Saves stay on this device", 14.0, vec2(x, panel.bottom() - 64.0), MUTED)
+    let state = status(s)
+    if !state.is_empty() { text(mut s, state, 13.0, vec2(x, panel.bottom() - 35.0), MUTED) }
 }
 
 pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
+    let dt = clamp(time - s.time, 0.0, 0.05)
     s.time = time
     update(mut s)
     let logical = f32(width) / s.pixel_ratio
-    let mobile = logical < 800.0
-    s.zoom = s.pixel_ratio * if mobile {
-        clamp(f32(height) / s.pixel_ratio / 844.0, 0.72, 1.0)
-    } else { clamp(logical / 1440.0, 0.72, 1.3) }
+    s.zoom = s.pixel_ratio * clamp(f32(height) / s.pixel_ratio / 720.0, 0.7, 1.0)
     let w = f32(width) / s.zoom
     let h = f32(height) / s.zoom
+    let was_opening = s.profile.motion && !s.reduced && time < s.intro_until
     s.enter = false
     s.clicked = None
     s.activate = None
@@ -702,23 +828,37 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
             Event::PointerDown { at, button: Button::Primary, .. } => {
                 s.pressed = Some(at)
                 s.intro_until = 0.0
+                s.keyboard = false
             },
             Event::PointerUp { at, button: Button::Primary, .. } => {
                 s.clicked = Some(at)
                 s.intro_until = 0.0
+                s.keyboard = false
             },
             Event::KeyDown { key, repeat, mods } => {
+                s.keyboard = true
                 s.intro_until = 0.0
                 if key == Key::Enter && !repeat { s.enter = true }
-                if key == Key::Tab || key == Key::Right || key == Key::Down {
+                if key == Key::Tab || key == Key::Down {
                     s.focus = (s.focus + 1) % max(s.controls, 1)
                 }
-                if key == Key::Left || key == Key::Up {
+                if key == Key::Up {
                     s.focus = (s.focus + max(s.controls, 1) - 1) % max(s.controls, 1)
+                }
+                if key == Key::Right || key == Key::Left {
+                    if s.pane == Pane::Games && s.cards.len() > 1 {
+                        let delta = if key == Key::Right { 1 } else { -1 }
+                        let index = u32(clamp(i32(s.selected) + delta, 0, i32(s.cards.len()) - 1))
+                        act(mut s, Action::Game { index })
+                    } else {
+                        s.focus = if key == Key::Right { (s.focus + 1) % max(s.controls, 1) } else {
+                            (s.focus + max(s.controls, 1) - 1) % max(s.controls, 1)
+                        }
+                    }
                 }
                 if key == Key::Escape {
                     s.pane = Pane::Games
-                    s.focus = 3
+                    s.focus = 1
                 }
                 if s.pane == Pane::Settings && key == Key::A && mods.command() {
                     s.profile.name.clear()
@@ -734,83 +874,127 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                 }
             },
             Event::PadButton { button, pressed: true, .. } => {
+                s.keyboard = true
                 s.intro_until = 0.0
                 if button == PadButton::South { s.enter = true }
                 if button == PadButton::East {
                     s.pane = Pane::Games
-                    s.focus = 3
+                    s.focus = 1
                 }
-                if button == PadButton::Right || button == PadButton::Down {
-                    s.focus = (s.focus + 1) % max(s.controls, 1)
-                }
-                if button == PadButton::Left || button == PadButton::Up {
-                    s.focus = (s.focus + max(s.controls, 1) - 1) % max(s.controls, 1)
+                if s.pane == Pane::Games &&
+                    s.cards.len() > 1 &&
+                    (button == PadButton::Right || button == PadButton::Left) {
+                    let delta = if button == PadButton::Right { 1 } else { -1 }
+                    let index = u32(clamp(i32(s.selected) + delta, 0, i32(s.cards.len()) - 1))
+                    act(mut s, Action::Game { index })
+                } else {
+                    if button == PadButton::Right || button == PadButton::Down {
+                        s.focus = (s.focus + 1) % max(s.controls, 1)
+                    }
+                    if button == PadButton::Left || button == PadButton::Up {
+                        s.focus = (s.focus + max(s.controls, 1) - 1) % max(s.controls, 1)
+                    }
                 }
             },
             _ => {},
         }
     }
+    if was_opening {
+        s.enter = false
+        s.clicked = None
+        s.pressed = None
+    }
+    let opening = s.profile.motion && !s.reduced && time < s.intro_until
+    let phase = moment(time, opening)
+    s.reveal = phase.library
+    s.album = mix(s.album, f32(s.selected), if s.reduced || !s.profile.motion { 1.0 } else {
+        1.0 - exp(-dt * 12.0)
+    })
     s.draw.clear(vec2(f32(width), f32(height)))
     s.controls = 0
-    s.cover_rect = Rect::new(0.0, 0.0, 0.0, 0.0)
-    let opening = s.profile.motion && !s.reduced && time < s.intro_until
-    if opening {
-        let label = "wrela"
-        let size = if mobile { 112.0 } else { 150.0 }
-        let measured = s.fonts.mono.measure(label, size)
-        text(mut s, label, size, vec2((w - measured) * 0.5, h * 0.29), INK, Face::Mono)
-        text(mut s, "Preparing your library", 16.0, vec2(w * 0.5 - 88.0, h * 0.82), MUTED)
-    } else {
-        text(mut s, "wrela", 38.0, vec2(if mobile { 24.0 } else { 72.0 }, 42.0), INK, Face::Mono)
-        let x = if mobile { 24.0 } else { 200.0 }
-        let y = if mobile { h - 64.0 } else { 42.0 }
-        button(mut s, Action::Games, Rect::new(x, y, 90.0, 48.0), "Games")
-        button(mut s, Action::Saves, Rect::new(x + 106.0, y, 90.0, 48.0), "Saves")
-        button(mut s, Action::Settings, Rect::new(x + 212.0, y, 112.0, 48.0), "Settings")
-        match s.pane {
-            Pane::Games => library(mut s, w, h, mobile),
-            Pane::Saves => saves(mut s, w, h, mobile),
-            Pane::Settings => settings(mut s, w),
+    s.panels.clear()
+    if phase.library > 0.0 {
+        let margin = if logical < 800.0 { 24.0 } else { 40.0 }
+        text(mut s, "Wrela", 26.0, vec2(margin, margin - 1.0), INK, Face::Mono)
+        cog(mut s, w, margin)
+        if w > 480.0 {
+            let name = s.profile.name.clone()
+            let measured = s.fonts.sans.measure(name, 14.0)
+            text(mut s, name, 14.0, vec2(w - margin - 64.0 - measured, margin + 6.0), MUTED)
         }
-        if !mobile {
-            text(
-                mut s,
-                "Enter  Select     Esc  Back     F10  Return from game",
-                16.0,
-                vec2(72.0, h - 48.0),
-                MUTED,
-            )
+        match s.pane {
+            Pane::Games => library(mut s, w, h),
+            Pane::Saves => saves(mut s, w, h),
+            Pane::Settings => settings(mut s, w, h),
         }
     }
     s.renderer.upload(s.draw)
-    let pass = begin_screen_pass(clear: vec4(0.078, 0.133, 0.227, 1.0))
+    let pass = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     let screen = vec2(f32(width), f32(height))
     draw(
         pass,
         quad.bind(screen, rect: vec4(0.0, 0.0, screen)),
-        horizon.bind(field: Field { screen, time: if s.reduced || !s.profile.motion { 3.0 } else {
+        chamber.bind(field: Field { screen, time: if s.reduced || !s.profile.motion { 1.8 } else {
             time
-        }, opening: if opening { 1.0 } else { 0.0 } }),
+        }, morph: if phase.library > 0.0 { 0.0 } else {
+            phase.morph
+        }, light: phase.light, library: phase.library }, letters: s.letters, linear: s.linear),
         vertices: 6,
     )
-    if s.cover_rect.w > 0.0 {
-        match s.cover {
-            Some(t) => {
-                let r = s.cover_rect
-                draw(
-                    pass,
-                    quad.bind(screen, rect: vec4(r.x, r.y, r.w, r.h) * s.zoom),
-                    image.bind(content: t, linear: s.linear, size: vec2(r.w, r.h) * s.zoom),
-                    vertices: 6,
-                )
-            },
-            None => {},
+    for index in 0..s.panels.len() {
+        let panel = s.panels[s.panels.len() - 1 - index]
+        if let Some(t) = s.covers[panel.index].image {
+            let r = panel.rect
+            draw(
+                pass,
+                quad.bind(screen, rect: vec4(r.x, r.y, r.w, r.h) * s.zoom, lean: panel.lean),
+                image.bind(
+                    content: t,
+                    linear: s.linear,
+                    size: vec2(r.w, r.h) * s.zoom,
+                    alpha: panel.alpha * s.reveal,
+                ),
+                vertices: 6,
+            )
         }
     }
     s.renderer.draw(pass, screen)
     pass.present()
     if let Some(action) = s.activate { act(mut s, action) }
     if s.clicked.is_some() { s.pressed = None }
+}
+
+@test
+fn cover_requests_stay_within_two_neighbours_and_album_hits_follow_the_animation() {
+    for selected in 0..9 {
+        var count = 0
+        for index in 0..9 { if near_cover(index, selected) { count += 1 } }
+        assert(count <= 5 && near_cover(selected, selected))
+    }
+    assert(!near_cover(0, 4294967295))
+    let base = album_rect(1280.0, 720.0, 16.0 / 9.0)
+    let moving = panel_rect(base, 1280.0, 1.0, 16.0 / 9.0)
+    assert(moving.center().x > base.right())
+    assert(!moving.contains(base.center()))
+    let portrait = panel_rect(base, 1280.0, -1.0, 0.5)
+    assert(abs(portrait.w / portrait.h - 0.5) < 0.001 && portrait.h < base.h)
+}
+
+@test
+fn shorter_save_panels_page_the_rows_to_keep_actions_visible() {
+    assert(save_capacity(590.0) == 3)
+    assert(save_capacity(480.0) == 2)
+    assert(save_capacity(332.0) == 1)
+}
+
+@test
+fn albums_keep_the_cover_ratio_and_leave_room_for_the_play_action() {
+    for size in [vec2(1280.0, 720.0), vec2(390.0, 844.0), vec2(780.0, 720.0)] {
+        let r = album_rect(size.x, size.y, 16.0 / 9.0)
+        assert(abs(r.w / r.h - 16.0 / 9.0) < 0.001)
+        assert(r.x >= 24.0 && r.right() <= size.x - 24.0)
+        assert(r.bottom() + 169.0 < size.y)
+    }
 }
 
 @test
@@ -876,5 +1060,5 @@ fn every_valid_game_key_has_a_downloadable_export_name() {
 fn an_empty_library_displays_its_error_instead_of_loading() {
     let message = "The game library could not be read."
     assert(empty_library_message(message) == message)
-    assert(empty_library_message("") == "Your library is loading")
+    assert(empty_library_message("") == "Loading games")
 }

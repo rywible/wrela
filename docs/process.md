@@ -118,6 +118,35 @@ Chrome-frame-rate claim. The console suspends its frame clock and pad input whil
 shown. Gate time gains were not measured; the complete gate retains the new policy and failure
 regressions and adds the console's small shader corpus.
 
+## Wrela alien opening and sparse library, 2026-10-12
+
+Ryan rejected the busy first console and requested a black, lit 3D space, a rotating alien
+form that becomes Wrela, and a small album selector. Codex used the frontend-design skill
+for composition studies, then authored the procedural solid, metallic lighting, font-field
+extrusion, morph timeline and all controls in Wrela. The existing licensed Barlow fields
+supply the letter shapes. No outside visual asset, shader source or generative media was used.
+The browser ABI and game rendering code are unchanged. Covers retain their aspect ratio;
+only five nearby covers can hold textures or requests. Saves and settings open on demand.
+The 6.6-second opening can be skipped without starting a game; reduced motion bypasses it
+and holds the background still.
+
+Actual Chrome captures checked the full opening at 1280×720 and 390×844, a three-title
+fixture, and Enter used to skip the intro. Local interaction checks exercised continue,
+ready-frame handoff, F10 return, the existing saved profile, save selection and settings.
+Four small Wrela regressions cover the timeline, album geometry and request window, and
+save-panel capacity. The frame captures and clips are original Wrela renders retained
+outside the repository.
+
+On the M4, matched 480-frame native lockstep runs at 1280×720 measured the old console at
+0.055 ms median GPU span and 0.543 ms CPU frame call, and the new console at 0.658 ms and
+1.323 ms. The new GPU span's p95 is 1.147 ms, about 7% of 16.7 ms. Native console runs do
+not exercise browser session I/O; these samples do not establish sustained Chrome frame
+rates. Matched 120-frame Last Green runs on the same machine measured 11.792 ms GPU span
+and 17.731 ms CPU frame call before this change, then 12.127 ms and 17.932 ms. The game's
+114 generated shader entries match. This change adds no game-frame work; timing variation
+is not a performance gain. Gate time impact was not measured as a paired benchmark; the
+same complete gate retains all checks and gains four small tests plus the scene shader.
+
 ## Simulated construction studies, 2026-10-11
 
 Ryan asked for worlds composed by simulation across seeds, including people whose construction
