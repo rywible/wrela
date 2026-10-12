@@ -8,6 +8,7 @@
 use engine::sound::{Cue, Surface, Swish}
 use fight::{World, sword_at}
 use body::{GUARD_AT, POINT_AT}
+use std::input::{Event, PadButton}
 
 /// The fight's impacts and whooshes, by their place in the world's palette (`IMPACTS`,
 /// `WHOOSHES`).
@@ -55,14 +56,18 @@ pub const WHOOSHES = [
     Swish { hz: 1800.0, q: 0.6, attack: 0.03, t60: 0.25, level: 0.15 },
 ]
 
-/// What's been heard of the fight: its tallies, and whether the climber was gone, at the last
-/// state heard.
+/// What's been heard of the fight: its tallies and completed blink arrivals.
 pub struct Heard: Copy {
     swings: u32,
     hits: u32,
     bites: u32,
     blinks: u32,
-    gone: bool,
+    arrivals: u32,
+}
+
+fn completed_blinks(w: World) -> u32 {
+    let pending = w.climber.act == moves::Act::Blink && w.climber.t < moves::BLINK_GONE.y
+    if pending && w.tally.blinks > 0 { w.tally.blinks - 1 } else { w.tally.blinks }
 }
 
 /// Nothing of `w` to hear yet: what it did before now isn't heard.
@@ -72,7 +77,7 @@ pub fn heard(w: World) -> Heard {
         hits: w.tally.hits,
         bites: w.tally.bites,
         blinks: w.tally.blinks,
-        gone: w.climber.gone(),
+        arrivals: completed_blinks(w),
     }
 }
 
@@ -84,35 +89,48 @@ pub fn cues(h: mut Heard, w: World) -> Vec<Cue> {
     if t.swings > h.swings {
         let (grip, aim, _) = sword_at(c, 0.0)
         let at = grip + aim * (0.5 * (GUARD_AT + POINT_AT))
-        out.push(Cue::Whoosh { at, kind: SWORD, amount: 1.0, seed: t.swings })
+        for n in h.swings..t.swings {
+            out.push(Cue::Whoosh { at, kind: SWORD, amount: 1.0, seed: n + 1 })
+        }
     }
     if t.hits > h.hits {
         let at = w.wolf.walker.root.pos + vec3(0.0, 0.5, 0.0)
-        out.push(Cue::Impact { at, kind: HIT, strength: 1.0, seed: t.hits })
+        for n in h.hits..t.hits {
+            out.push(Cue::Impact { at, kind: HIT, strength: 1.0, seed: n + 1 })
+        }
     }
     if t.bites > h.bites {
-        out.push(
-            Cue::Impact {
-                at: c.at + vec3(0.0, 1.0, 0.0),
-                kind: BITE,
-                strength: 1.0,
-                seed: t.bites,
-            },
-        )
+        for n in h.bites..t.bites {
+            out.push(
+                Cue::Impact {
+                    at: c.at + vec3(0.0, 1.0, 0.0),
+                    kind: BITE,
+                    strength: 1.0,
+                    seed: n + 1,
+                },
+            )
+        }
     }
     if t.blinks > h.blinks {
-        out.push(
-            Cue::Whoosh { at: c.at + vec3(0.0, 1.0, 0.0), kind: GONE, amount: 1.0, seed: t.blinks },
-        )
+        for n in h.blinks..t.blinks {
+            out.push(
+                Cue::Whoosh {
+                    at: c.at + vec3(0.0, 1.0, 0.0),
+                    kind: GONE,
+                    amount: 1.0,
+                    seed: n + 1,
+                },
+            )
+        }
     }
-    let gone = c.gone()
-    if h.gone && !gone {
+    let arrivals = completed_blinks(w)
+    for n in h.arrivals..arrivals {
         out.push(
             Cue::Impact {
                 at: c.at + vec3(0.0, 0.5, 0.0),
                 kind: ARRIVE,
                 strength: 0.8,
-                seed: t.blinks,
+                seed: n + 1,
             },
         )
     }
@@ -120,6 +138,100 @@ pub fn cues(h: mut Heard, w: World) -> Vec<Cue> {
     h.hits = t.hits
     h.bites = t.bites
     h.blinks = t.blinks
-    h.gone = gone
+    h.arrivals = arrivals
     out
+}
+
+@test
+fn every_counted_sound_is_heard_after_frames_skip_ticks() {
+    var world = fight::spawn()
+    var h = heard(world)
+    world.tally.swings = 3
+    world.tally.hits = 2
+    world.tally.bites = 2
+    world.tally.blinks = 3
+    let sounds = cues(mut h, world)
+    assert(sounds.len() == 13, "counted fight sounds were lost between frames")
+    for i in 0..3 {
+        match sounds[i] {
+            Cue::Whoosh { kind, seed, .. } => assert(kind == SWORD && seed == i + 1),
+            _ => panic("the swing cue changed kind"),
+        }
+    }
+    for i in 0..2 {
+        match sounds[i + 3] {
+            Cue::Impact { kind, seed, .. } => assert(kind == HIT && seed == i + 1),
+            _ => panic("the hit cue changed kind"),
+        }
+        match sounds[i + 5] {
+            Cue::Impact { kind, seed, .. } => assert(kind == BITE && seed == i + 1),
+            _ => panic("the bite cue changed kind"),
+        }
+    }
+    for i in 0..3 {
+        match sounds[i + 7] {
+            Cue::Whoosh { kind, seed, .. } => assert(kind == GONE && seed == i + 1),
+            _ => panic("the blink cue changed kind"),
+        }
+        match sounds[i + 10] {
+            Cue::Impact { kind, seed, .. } => assert(kind == ARRIVE && seed == i + 1),
+            _ => panic("the arrival cue changed kind"),
+        }
+    }
+    assert(cues(mut h, world).is_empty(), "sounds were repeated on the next frame")
+}
+
+fn sound_test_tick(world: mut World, records: take Vec<Event>) {
+    let tick = world.ticks
+    fight::tick(
+        mut world,
+        engine::run::TickInput {
+            tick,
+            dt: 1.0 / 60.0,
+            records,
+            answers: Vec::new(),
+        },
+    )
+}
+
+@test
+fn a_blink_arrival_is_heard_when_frames_skip_its_transit() {
+    for heard_start in [false, true] {
+        var world = fight::spawn()
+        world.wolf = fight::new_wolf(fight::Level {}, vec2(-60.0, -20.0), 0.0)
+        var h = heard(world)
+        for pressed in [true, false] {
+            sound_test_tick(
+                mut world,
+                Vec::from([
+                    Event::PadButton {
+                        pad: 0,
+                        button: PadButton::East,
+                        value: if pressed { 1.0 } else { 0.0 },
+                        pressed,
+                    },
+                ]),
+            )
+        }
+        assert(world.tally.blinks == 1 && world.climber.t < moves::BLINK_GONE.x)
+        if heard_start {
+            let start = cues(mut h, world)
+            assert(start.len() == 1, "the arrival was heard before transit ended")
+            match start[0] {
+                Cue::Whoosh { kind, .. } => assert(kind == GONE),
+                _ => panic("the departure was not heard"),
+            }
+        }
+        for _ in 0..moves::BLINK_GONE.y + 1 {
+            sound_test_tick(mut world, Vec::new())
+        }
+        assert(!world.climber.gone())
+        let arrived = cues(mut h, world)
+        assert(arrived.len() == if heard_start { 1 } else { 2 }, "the skipped arrival was lost")
+        match arrived[arrived.len() - 1] {
+            Cue::Impact { kind, seed, .. } => assert(kind == ARRIVE && seed == 1),
+            _ => panic("the arrival cue changed kind"),
+        }
+        assert(cues(mut h, world).is_empty(), "the arrival was heard twice")
+    }
 }

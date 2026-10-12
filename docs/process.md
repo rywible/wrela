@@ -339,6 +339,66 @@ remains the baseline. Geometry and material structure must read before any extra
 upscaling, distance simplification or temporal averaging is judged. No generative media
 models or outside art assets were used for this research pass.
 
+## Repository bug sweep, 2026-10-12
+
+Ryan requested an autonomous review of the whole current repository. Codex and parallel
+agents reviewed the compiler, shared ABI, both hosts, standard library, engine, UI, studio,
+examples and local tools. They used the existing MIT-licensed source, language specification
+and tests to find failures, then added bounded regressions and fixed their causes. No outside
+assets or new reference algorithms were used.
+
+The review includes invalid input and resource lifetime paths: unsafe automatic source fixes,
+trait and projection checks, GPU lowering, stale source edits and hot reload, command validation,
+GPU retirement and pass joining, nested task failure reporting, text focus and small layouts,
+field diagnostics, and verification admission and source tracking. Suspected bugs that failed
+to reproduce were discarded. State tests use CPU hosts; shader behavior uses real GPU tests.
+The atomic map review consulted the [WGSL memory model](https://www.w3.org/TR/WGSL/#memory-model)
+and [atomic built-ins](https://www.w3.org/TR/WGSL/#atomic-builtin-functions), W3C, under its
+[permissive document license](https://www.w3.org/copyright/document-license/). They explain that
+atomic ordering applies per memory location. The fix uses a key claim and commuting atomic
+additions, with stable reads in a later dispatch, instead of a publication flag across locations.
+
+ABI validation was checked against the installed wgpu-core 30.0.1 source, commit
+`40f4a34ebaf56f9a046231f54125ad046239d3f3`, under MIT or Apache-2.0. Its
+[resource validation](https://github.com/gfx-rs/wgpu/blob/40f4a34ebaf56f9a046231f54125ad046239d3f3/wgpu-core/src/device/resource.rs)
+and [render validation](https://github.com/gfx-rs/wgpu/blob/40f4a34ebaf56f9a046231f54125ad046239d3f3/wgpu-core/src/command/render.rs)
+were used to check binding-number limits, colour blendability and depth-clear ranges. No source
+was copied.
+
+The full local check verifies the final frozen tree before the local squash merge. Frame costs
+are compared with native M4 profiles of The Last Green in the same measurement mode; those
+profiles do not establish Chrome frame rates or long-run stability.
+
+The saved baseline and sweep outputs for the floor's reach, shots, report, calibration and tour
+are byte-identical. All critical sites pass the reach check. Existing authoring diagnostics
+identify two unreachable crag viewpoints and two shots below their subject-visibility threshold;
+their cause remains a content-review question. They did not establish an additional code defect.
+
+Before the squash merge, `main` advanced to `f2969cbd` and then `cb12b804`. The agents reviewed
+the optimizer, wood buffers, checker scope reuse, console, session services and hosting changes,
+incorporated them, and regenerated the shared ABI files and browser bundle. The extended review
+also covers resumed gamepad state, hidden child input, embedded-page reload, host method receivers,
+UTF-8 text parity, catalog errors and asset paths, export names, recovery acknowledgement and
+destinations, recovered-save backups, immutable release metadata, reserved build paths and the
+release tool's checkout admission. Final verification and the paired profile baseline use the
+latest incorporated main.
+
+The sweep fixes 105 distinct defect classes. Shared native/browser defects are counted once;
+the browser also receives the corresponding parity fixes.
+
+| Area | Defects | Main failure paths |
+|---|---:|---|
+| Syntax, grammar, standard collections and UI | 13 | Unsafe source fixes, worker admission, zero-sized boxes, small integer serialization, atomic payloads, focus and clipped layouts |
+| Semantic analysis | 8 | Trait bounds, generic kinds, associated types, projection loans, callable effects and runtime array counts |
+| Lowering and workgroup analysis | 7 | Skipped barriers, GPU vector shifts, unsupported blending, enum clone tags, callback writeback, erased values and missing array bounds |
+| Driver and CLI | 13 | Invalid roots, stale edits and builds, float text, empty test selections, trace precision, audio bounds and refactor parsing |
+| Shared ABI | 8 | Workgroup overflow, pad number parity, depth clears, texture payload padding, binding indices, blended formats and UTF-8 text parity |
+| Native host and parallel tasks | 12 | Pass scopes, timing collection, debug state, call completion, handovers, malformed worker memory and thread lifetime |
+| Browser-only host paths | 15 | Deferred attachments, resource retirement, input loss, stuck input, audio shutdown, OPFS recovery, literal URLs, test parameters, host receivers, embedded reload and gamepad routing |
+| Tools and engine helpers | 15 | Frozen-source proof, input hashing, server paths, gzip freshness, lock cleanup, admission, executable freshness, nearest cells, camera, clipmap invalidation and static release packaging |
+| Studio, RNG, float parsing and fight sounds | 6 | Invalid diagnostic samples, rounded unit draws, repeated exponent signs, lost tally cues and skipped blink arrivals |
+| Console and session services | 8 | Pending export identity, catalog decode errors, accepted export keys, cover paths, visible load errors, recovery slot selection, export acknowledgement and freed-world resume destinations |
+
 ## The references
 
 ### The rules

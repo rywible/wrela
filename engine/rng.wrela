@@ -39,18 +39,31 @@ impl Rng {
         f64(t ^ (t >> 14)) / 4294967296.0
     }
 
-    /// A draw in [lo, hi), computed in f64 and rounded once.
+    /// A draw computed in [lo, hi) in f64, then rounded once to f32. Rounding can reach an endpoint.
     pub fn range(mut self, lo: f64, hi: f64) -> f32 {
         f32(lo + (hi - lo) * self.next())
     }
 
     /// A draw in [0, 1), as an f32.
     pub fn unit(mut self) -> f32 {
-        f32(self.next())
+        min(f32(self.next()), bitcast_f32(0x3f7fffff))
     }
 
     /// A stream of its own for entity `n`: the same whatever order entities draw in.
     pub fn split(self, n: u32) -> Rng {
         Rng { state: self.state ^ n.wrapping_mul(0x9e3779b9) }
+    }
+}
+
+@test
+fn a_unit_draw_stays_below_one_after_rounding() {
+    var near_one = Rng::raw(52078625)
+    let draw = near_one.unit()
+    assert(draw >= 0.0 && draw < 1.0, "a unit draw rounded up to one")
+    assert(draw == bitcast_f32(0x3f7fffff))
+    var ordinary = Rng::raw(7)
+    for _ in 0..16 {
+        let x = ordinary.unit()
+        assert(x >= 0.0 && x < 1.0)
     }
 }

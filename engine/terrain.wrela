@@ -298,8 +298,13 @@ impl Clipmap {
         let n = i32(at.blocks)
         let b = vec2u(u32(((t.x % n) + n) % n), u32(((t.y % n) + n) % n))
         let side = u32(round(at.tile / at.texel))
+        let k = b.y * at.blocks + b.x
+        let old = self.held[k]
+        if old.z != 0.0 && old.xy != vec2(t) {
+            self.touched(old.xy * at.tile, (old.xy + vec2(1.0)) * at.tile)
+        }
         self.fields.write(b.x * side, b.y * side, side, side, bytes)
-        self.held[b.y * at.blocks + b.x] = vec4(f32(t.x), f32(t.y), 1.0, 0.0)
+        self.held[k] = vec4(f32(t.x), f32(t.y), 1.0, 0.0)
         write(mut self.field_tiles, 0, self.held)
         self.touched(vec2(t) * at.tile, vec2(t + vec2i(1)) * at.tile)
     }
@@ -326,7 +331,7 @@ impl Clipmap {
         for l in 0..self.levels.count {
             let a = self.levels.at[l]
             let end = a.xy + vec2(f32(QUADS) * a.z)
-            if a.x < hi.x && a.y < hi.y && end.x > lo.x && end.y > lo.y {
+            if a.x < hi.x && a.y < hi.y && end.x >= lo.x && end.y >= lo.y {
                 self.cooked[l] = false
             }
         }

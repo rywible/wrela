@@ -585,9 +585,10 @@ impl Walkable {
     pub fn nearest(self, p: vec2) -> u32 {
         let g = self.grid
         let c = vec2i(floor((p - g.lo) / g.cell))
+        let offset = abs((p - g.lo) / g.cell - vec2(c) - vec2(0.5))
+        var best = grow::NONE
+        var d = bitcast_f32(0x7f7fffff)
         for r in 0..20 {
-            var best = grow::NONE
-            var d = 1.0e9
             for dj in -r..(r + 1) {
                 for di in -r..(r + 1) {
                     let q = c + vec2i(di, dj)
@@ -604,11 +605,14 @@ impl Walkable {
                     }
                 }
             }
-            if best != grow::NONE {
+            // The nearest point in the next ring is at least this far away. A farther
+            // corner of this ring can lose to a side of the next one.
+            let next = (f32(r) + 1.0 - max(offset.x, offset.y)) * g.cell
+            if best != grow::NONE && (r == 0 || d <= next) {
                 return best
             }
         }
-        grow::NONE
+        best
     }
 
     /// The quickest way on the mask from `from` to `to` (A*: eight neighbours, no corner cut
@@ -757,6 +761,21 @@ impl Walkable {
 }
 
 // ---- tests --------------------------------------------------------------------------------------
+
+/// A cell in the next square ring can be nearer than the previous ring's opposite corner.
+@test
+fn nearest_walkable_uses_distance_across_grid_rings() {
+    let grid = Grid::over(vec2(0.0), vec2(24.0), 1.0)
+    var ok: Vec<bool> = Vec::filled(grid.cells(), value: false)
+    ok[9 * grid.nx + 9] = true
+    let closest = 10 * grid.nx + 12
+    ok[closest] = true
+    let mask = Walkable { grid, ok }
+    assert(mask.nearest(vec2(10.99)) == closest, "the previous ring's farther corner was selected")
+    let coarse = Grid::over(vec2(0.0), vec2(8589934592.0), 4294967296.0)
+    let wide = Walkable { grid: coarse, ok: Vec::from([true, false, false, false]) }
+    assert(wide.nearest(vec2(0.0)) == 0, "an artificial distance limit lost the containing cell")
+}
 
 /// A stream segment longer than a bin still has water at its far end, where a query cannot
 /// see the bin holding its first point.

@@ -12,6 +12,7 @@ use std::derive::Box3
 use std::field::Surface
 use std::gpu::{GlobalId, GpuBuffer, Slots, buffer, dispatch, read}
 use std::io::Pending
+use std::math::is_finite
 use std::string::String
 
 /// Cells per edge (fieldview's `GRID`).
@@ -195,7 +196,7 @@ pub fn report(grid: Grid, d: [f32]) -> Report {
         for j in 0..n {
             for i in 0..n {
                 let v = d[idx(i, j, k)]
-                if !(v == v && abs(v) < 3.4e38) {
+                if !is_finite(v) {
                     r.bad += 1
                     continue
                 }
@@ -204,7 +205,7 @@ pub fn report(grid: Grid, d: [f32]) -> Report {
                     let (ni, nj, nk) = (i + one(0), j + one(1), k + one(2))
                     if ni < n && nj < n && nk < n {
                         let w = d[idx(ni, nj, nk)]
-                        if w == w && abs(w) < 3.4e38 && (abs(v) < 0.1 || abs(w) < 0.1) {
+                        if is_finite(w) && (abs(v) < 0.1 || abs(w) < 0.1) {
                             let g = abs(w - v) / grid.cell
                             r.gradient = max(r.gradient, g)
                             r.pairs += 1
@@ -247,7 +248,7 @@ pub fn report(grid: Grid, d: [f32]) -> Report {
 fn flood(grid: Grid, d: [f32], level: f32) -> Vec<(u32, vec3)> {
     let n = grid.n
     let total = n * n * n
-    var seen = Vec::filled(total, value: false)
+    var seen = Vec::from_fn(total, |i| !is_finite(d[i]))
     var queue: Vec<u32> = Vec::new()
     var found: Vec<(u32, vec3)> = Vec::new()
     for start in 0..total {
@@ -385,4 +386,28 @@ impl Report {
 /// count, without the rest of the report).
 pub fn pieces(grid: Grid, d: [f32]) -> u32 {
     flood(grid, d, 0.0).len()
+}
+
+@test
+fn invalid_samples_do_not_join_or_create_pieces() {
+    let grid = Grid { origin: vec3(0.0), cell: 1.0, n: 3 }
+    var d = Vec::filled(grid.count(), 1.0)
+    d[0] = -0.1
+    d[1] = bitcast_f32(0xff800000)
+    d[2] = -0.1
+    let r = report(grid, d)
+    assert(r.bad == 1 && r.inside == 2)
+    assert(r.pieces == 2 && r.pieces_joined == 2, "an infinite sample joined separate pieces")
+    assert(r.sizes[0] == 1 && r.sizes[1] == 1)
+
+    let empty = Vec::filled(grid.count(), bitcast_f32(0xff800000))
+    let e = report(grid, empty)
+    assert(e.bad == grid.count() && e.inside == 0 && e.pieces == 0 && e.pieces_joined == 0)
+}
+
+@test
+fn every_finite_sample_is_valid() {
+    let grid = Grid { origin: vec3(0.0), cell: 1.0, n: 1 }
+    let r = report(grid, [-bitcast_f32(0x7f7fffff)])
+    assert(r.bad == 0 && r.inside == 1 && r.pieces == 1, "a finite distance was marked invalid")
 }

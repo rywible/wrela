@@ -48,6 +48,7 @@ pub struct Session {
     prepared: bool,
     interrupted: bool,
     recovery_failed: bool,
+    recovery_exported: bool,
     recovered: Vec<u8>,
 }
 
@@ -71,6 +72,7 @@ pub fn init() -> Session {
         prepared: false,
         interrupted: false,
         recovery_failed: false,
+        recovery_exported: false,
         recovered: Vec::new(),
     }
 }
@@ -89,15 +91,38 @@ fn valid_carry(carry: Carry) -> bool {
         (carry.door == STAIR || carry.door < 2)
 }
 
+fn carry_at_rest(bytes: Vec<u8>) -> Option<Carry> {
+    let loaded: Result<Carry, LoadError> = load(bytes.clone())
+    let Ok(c) = loaded else { return None }
+    var carry = c.clone()
+    // A player can free this world, then return before walking through its exit.
+    // Its tower decision is durable, but the next playable destination is the stair.
+    if carry.tower.worlds() == 2 &&
+        carry.at < 2 &&
+        carry.tower.fate(carry.at) == engine::tower::Fate::Freed {
+        if carry.at != 0 && carry.tower.fate(carry.at - 1) == engine::tower::Fate::Undecided {
+            return None
+        }
+        carry.at = STAIR
+    }
+    if !valid_carry(carry) { return None }
+    Some(carry)
+}
+
 /// Only this game interprets its tower snapshot. Imports cannot name another game/build.
 fn checked(bytes: Vec<u8>) -> Option<SaveFile> {
     let file: Result<SaveFile, LoadError> = load(bytes.clone())
     let Ok(file) = file else { return None }
     if file.game != GAME || file.version != 1 { return None }
-    let carry: Result<Carry, LoadError> = load(file.body.clone())
-    let Ok(carry) = carry else { return None }
-    if !valid_carry(carry) { return None }
-    Some(file.clone())
+    let Some(carry) = carry_at_rest(file.body) else { return None }
+    Some(
+        SaveFile {
+            game: file.game.clone(),
+            version: file.version,
+            saved: file.saved,
+            body: save(carry),
+        },
+    )
 }
 
 fn summary(file: SaveFile, slot: str) -> SaveInfo {
@@ -149,7 +174,7 @@ fn begin(s: mut Session, request: Request) {
             s.phase = Phase::ReadSlot
         },
         Request::Prepare { profile, slot } => {
-            if s.recovery_failed {
+            if s.recovery_failed && !s.recovery_exported {
                 error(
                     mut s,
                     "The latest save could not be backed up. Export it before starting another game.",
@@ -212,6 +237,31 @@ fn begin(s: mut Session, request: Request) {
     }
 }
 
+fn slot_file(s: Session, result: Result<Vec<u8>, std::io::IoError>) -> Option<SaveFile> {
+    var file = match result {
+        Ok(bytes) => checked(bytes),
+        Err(_) => None,
+    }
+    let recovered_slot = match s.request {
+        Some(Request::List { .. }) => s.list_slot == 0,
+        Some(Request::Prepare { slot, .. }) => {
+            s.recovery_exported && (slot.is_empty() || slot == "continue")
+        },
+        _ => false,
+    }
+    if s.recovery_failed && s.profile == s.active && recovered_slot {
+        file = Some(
+            SaveFile {
+                game: String::from(GAME),
+                version: 1,
+                saved: s.saved,
+                body: s.recovered.clone(),
+            },
+        )
+    }
+    file
+}
+
 fn answered(s: mut Session, result: Result<Vec<u8>, std::io::IoError>) {
     match s.phase {
         Phase::Journal => {
@@ -233,44 +283,29 @@ fn answered(s: mut Session, result: Result<Vec<u8>, std::io::IoError>) {
                 return
             }
             if let Ok(bytes) = result {
-                let carry: Result<Carry, LoadError> = load(bytes.clone())
-                if let Ok(c) = carry {
-                    if valid_carry(c) {
-                        s.recovered = bytes.clone()
-                        let file = SaveFile {
-                            game: String::from(GAME),
-                            version: 1,
-                            saved: s.saved,
-                            body: bytes.clone(),
-                        }
-                        let envelope = save(file)
-                        s.io = Some(store(path(s.active, "continue"), envelope))
-                        s.phase = Phase::WriteRecovery
-                        return
+                if let Some(carry) = carry_at_rest(bytes) {
+                    s.recovered = save(carry)
+                    let file = SaveFile {
+                        game: String::from(GAME),
+                        version: 1,
+                        saved: s.saved,
+                        body: s.recovered.clone(),
                     }
+                    let envelope = save(file)
+                    s.io = Some(store(path(s.active, "continue"), envelope))
+                    s.phase = Phase::WriteRecovery
+                    return
                 }
             }
             s.phase = Phase::Idle
         },
         Phase::WriteRecovery => {
             s.recovery_failed = result.is_err()
+            s.recovery_exported = false
             s.phase = Phase::Idle
         },
         Phase::ReadSlot => {
-            var file = match result {
-                Ok(bytes) => checked(bytes),
-                Err(_) => None,
-            }
-            if s.recovery_failed && s.profile == s.active && s.list_slot == 0 {
-                file = Some(
-                    SaveFile {
-                        game: String::from(GAME),
-                        version: 1,
-                        saved: s.saved,
-                        body: s.recovered.clone(),
-                    },
-                )
-            }
+            let file = slot_file(s, result)
             let request = s.request.clone()
             match request {
                 Some(Request::List { .. }) => {
@@ -312,13 +347,11 @@ fn answered(s: mut Session, result: Result<Vec<u8>, std::io::IoError>) {
             }
         },
         Phase::Backup => {
-            if let Ok(bytes) = result {
-                if let Some(file) = checked(bytes) {
-                    let body = save(file)
-                    s.io = Some(store(path(s.profile, "previous"), body))
-                    s.phase = Phase::BackupSaved
-                    return
-                }
+            if let Some(file) = slot_file(s, result) {
+                let body = save(file)
+                s.io = Some(store(path(s.profile, "previous"), body))
+                s.phase = Phase::BackupSaved
+                return
             }
             s.io = Some(store(JOURNAL, [u8(1)]))
             s.phase = Phase::MarkPrepare
@@ -379,6 +412,11 @@ fn answered(s: mut Session, result: Result<Vec<u8>, std::io::IoError>) {
             respond(mut s, Reply::Ready)
         },
         Phase::Reply => {
+            if result.is_ok() && s.recovery_failed {
+                if let Some(Request::Export { profile, slot }) = s.request {
+                    if profile == s.active && slot == "continue" { s.recovery_exported = true }
+                }
+            }
             s.request = None
             if s.launch {
                 s.io = Some(hand_over(s.entry))
@@ -469,4 +507,111 @@ fn imports_reject_locked_worlds_and_invalid_doors() {
     assert(checked(file(1, STAIR)).is_none())
     assert(checked(file(0, 5)).is_none())
     assert(checked(file(4, STAIR)).is_none())
+}
+
+fn failed_recovery_fixture() -> Session {
+    Session {
+        phase: Phase::ReadSlot,
+        io: None,
+        incoming: None,
+        request: None,
+        call: 1,
+        profile: String::from("player-1"),
+        active: String::from("player-1"),
+        slot: String::new(),
+        entries: Vec::new(),
+        list_slot: 0,
+        bytes: Vec::new(),
+        saved: 99,
+        environment: None,
+        entry: String::new(),
+        launch: false,
+        prepared: false,
+        interrupted: false,
+        recovery_failed: true,
+        recovery_exported: false,
+        recovered: save(
+            CarryFixture {
+                tower: engine::tower::Tower::new(2),
+                at: STAIR,
+                door: 0,
+                going: 0xFFFFFFFE,
+            },
+        ),
+    }
+}
+
+@test
+fn recovery_failure_preserves_exports_of_other_slots() {
+    let body = save(
+        CarryFixture { tower: engine::tower::Tower::new(2), at: 0, door: STAIR, going: 0xFFFFFFFE },
+    )
+    let file = SaveFile { game: String::from(GAME), version: 1, saved: 17, body: body.clone() }
+    var s = failed_recovery_fixture()
+    for slot in ["imported", "previous"] {
+        s.slot = slot.to_string()
+        s.request = Some(
+            Request::Export { profile: s.profile.clone(), slot: slot.to_string() },
+        )
+        let Some(exported) = slot_file(s, Ok(save(file))) else {
+            assert(false, "the requested save is readable")
+            return
+        }
+        assert(exported.saved == 17 && exported.body == body, "export must keep the requested slot")
+    }
+    s.request = Some(Request::List { profile: s.profile.clone() })
+    let Some(recovered) = slot_file(s, Ok(save(file))) else {
+        assert(false, "the uncommitted continuation must remain visible")
+        return
+    }
+    assert(recovered.saved == 99 && recovered.body == s.recovered)
+    s.list_slot = 1
+    let Some(imported) = slot_file(s, Ok(save(file))) else {
+        assert(false, "a listed import is readable")
+        return
+    }
+    assert(imported.saved == 17 && imported.body == body)
+    s.recovery_exported = true
+    s.request = Some(
+        Request::Prepare { profile: s.profile.clone(), slot: String::from("continue") },
+    )
+    let Some(continued) = slot_file(s, Ok(save(file))) else {
+        assert(false, "the exported recovery can be continued")
+        return
+    }
+    assert(continued.saved == 99 && continued.body == s.recovered)
+    s.request = Some(
+        Request::Prepare { profile: s.profile.clone(), slot: String::from("imported") },
+    )
+    let Some(prepared) = slot_file(s, Ok(save(file))) else {
+        assert(false, "another prepared slot remains readable")
+        return
+    }
+    assert(prepared.saved == 17 && prepared.body == body)
+}
+
+@test
+fn a_freed_current_world_resumes_on_the_stair() {
+    var tower = engine::tower::Tower::new(2)
+    assert(tower.decide(0, engine::tower::Fate::Preserved))
+    assert(tower.decide(1, engine::tower::Fate::Freed))
+    let body = save(CarryFixture { tower, at: 1, door: 1, going: 0xFFFFFFFE })
+    let file = SaveFile { game: String::from(GAME), version: 1, saved: 17, body }
+    let Some(file) = checked(save(file)) else {
+        assert(false, "freeing the current world must keep its save")
+        return
+    }
+    let carry: Result<Carry, LoadError> = load(file.body.clone())
+    match carry {
+        Ok(c) => {
+            assert(c.at == STAIR && c.door == 1)
+            assert(c.tower.fate(1) == engine::tower::Fate::Freed)
+        },
+        Err(_) => assert(false, "the normalized carry remains readable"),
+    }
+    var locked = engine::tower::Tower::new(2)
+    assert(locked.decide(1, engine::tower::Fate::Freed))
+    let body = save(CarryFixture { tower: locked, at: 1, door: 1, going: 0xFFFFFFFE })
+    let file = SaveFile { game: String::from(GAME), version: 1, saved: 17, body }
+    assert(checked(save(file)).is_none(), "a locked world remains invalid")
 }

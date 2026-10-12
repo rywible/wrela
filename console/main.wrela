@@ -34,6 +34,12 @@ enum PlayIntent: Copy + Eq { Selected, NewGame }
 
 enum PlayPlan: Clone { Start, Prepare { slot: String } }
 
+struct ExportPlan: Clone {
+    game: String,
+    profile: String,
+    slot: String,
+}
+
 enum Step: Copy + Eq {
     Idle,
     Open,
@@ -90,6 +96,7 @@ pub struct Console {
     picked: u32,
     prepared_slot: Option<String>,
     wanted_slot: String,
+    exporting: Option<ExportPlan>,
     play_intent: Option<PlayIntent>,
     need_open: bool,
     message: String,
@@ -140,6 +147,7 @@ pub fn init() -> Console {
         picked: 0,
         prepared_slot: None,
         wanted_slot: String::new(),
+        exporting: None,
         play_intent: None,
         need_open: false,
         message: String::new(),
@@ -237,6 +245,15 @@ fn failed(s: mut Console, message: str) {
     s.play_intent = None
     s.step = Step::Idle
     s.prepared_slot = None
+    s.exporting = None
+}
+
+fn export_plan(game: str, profile: str, slot: str) -> ExportPlan {
+    ExportPlan { game: game.to_string(), profile: profile.to_string(), slot: slot.to_string() }
+}
+
+fn export_name(plan: ExportPlan) -> String {
+    f"wrela-{plan.game}-{plan.profile}-{plan.slot}.wrela-save"
 }
 
 fn answer(s: mut Console, bytes: take Vec<u8>) {
@@ -287,11 +304,13 @@ fn answer(s: mut Console, bytes: take Vec<u8>) {
                     s.step = Step::Frame
                 },
                 Reply::Exported { bytes } => {
-                    let slot = if s.saves.is_empty() { String::from("save") } else {
-                        s.saves[s.picked].slot.clone()
+                    let Some(plan) = s.exporting else {
+                        failed(mut s, "The game sent an unsupported response.")
+                        return
                     }
-                    let name = f"{s.cards[s.selected].id}-{s.profile.key}-{slot}.wrela-save"
+                    let name = export_name(plan)
                     s.pending = Some(host::export_file(name, bytes))
+                    s.exporting = None
                     s.step = Step::Download
                 },
                 Reply::Imported => {
@@ -323,6 +342,15 @@ fn answer(s: mut Console, bytes: take Vec<u8>) {
     }
 }
 
+fn catalog_result(bytes: Vec<u8>) -> Result<Vec<Card>, String> {
+    if let Some(text) = String::from_utf8(bytes.clone()) {
+        if let Some(cards) = parse(text) {
+            return Ok(cards.clone())
+        } else { return Err(String::from("The game library could not be read.")) }
+    }
+    Err(String::from("The game library could not be read."))
+}
+
 fn update(s: mut Console) {
     if let Some(result) = poll(mut s.environment) {
         if let Ok(bytes) = result {
@@ -346,13 +374,12 @@ fn update(s: mut Console) {
     }
     if let Some(result) = poll(mut s.catalog_load) {
         match result {
-            Ok(bytes) => {
-                if let Some(text) = String::from_utf8(bytes.clone()) {
-                    if let Some(cards) = parse(text) {
-                        s.cards = cards.clone()
-                        s.need_open = true
-                    } else { s.message = String::from("The game library could not be read.") }
-                }
+            Ok(bytes) => match catalog_result(bytes) {
+                Ok(cards) => {
+                    s.cards = cards.clone()
+                    s.need_open = true
+                },
+                Err(message) => s.message = message.clone(),
             },
             Err(_) => s.message = String::from(
                 "The game library could not load. Check your connection and reload.",
@@ -438,9 +465,15 @@ fn act(s: mut Console, action: Action) {
         },
         Action::Export => {
             if s.step == Step::Idle && !s.saves.is_empty() {
+                let plan = export_plan(
+                    s.cards[s.selected].id,
+                    s.profile.key,
+                    s.saves[s.picked].slot,
+                )
+                s.exporting = Some(plan.clone())
                 let request = Request::Export {
-                    profile: s.profile.key.clone(),
-                    slot: s.saves[s.picked].slot.clone(),
+                    profile: plan.profile.clone(),
+                    slot: plan.slot.clone(),
                 }
                 call(mut s, request, Step::Export)
             }
@@ -512,9 +545,14 @@ fn status(s: Console) -> String {
     }
 }
 
+fn empty_library_message(message: str) -> String {
+    if message.is_empty() { String::from("Your library is loading") } else { message.to_string() }
+}
+
 fn library(s: mut Console, w: f32, h: f32, mobile: bool) {
     if s.cards.is_empty() {
-        text(mut s, "Your library is loading", 36.0, vec2(48.0, 180.0), INK)
+        let label = empty_library_message(s.message)
+        text(mut s, label, 36.0, vec2(48.0, 180.0), INK)
         return
     }
     let card = s.cards[s.selected].clone()
@@ -803,4 +841,40 @@ fn a_queued_play_uses_the_current_save_or_explicit_new_game() {
         PlayPlan::Start => {},
         _ => assert(false, "Ready selection starts"),
     }
+}
+
+@test
+fn an_export_keeps_the_requested_slot_when_selection_changes() {
+    let slots = ["continue", "other"]
+    var picked = 0
+    let plan = export_plan("first", "player-1", slots[picked])
+    picked = 1
+    assert(slots[picked] == "other")
+    assert(plan.slot == "continue")
+    assert(export_name(plan) == "wrela-first-player-1-continue.wrela-save")
+}
+
+@test
+fn an_invalid_utf8_catalog_finishes_with_an_error() {
+    match catalog_result(Vec::<u8>::from([255])) {
+        Err(message) => assert(message == "The game library could not be read."),
+        Ok(_) => assert(false, "Invalid UTF-8 is a catalog completion error"),
+    }
+}
+
+@test
+fn every_valid_game_key_has_a_downloadable_export_name() {
+    let cards = parse("-first\tFirst\turl\timage\t1\t1").unwrap()
+    let plan = export_plan(cards[0].id, "player-1", "continue")
+    assert(valid_key(plan.game))
+    let name = export_name(plan)
+    let first = name.byte(0)
+    assert((first >= 97 && first <= 122) || (first >= 48 && first <= 57))
+}
+
+@test
+fn an_empty_library_displays_its_error_instead_of_loading() {
+    let message = "The game library could not be read."
+    assert(empty_library_message(message) == message)
+    assert(empty_library_message("") == "Your library is loading")
 }

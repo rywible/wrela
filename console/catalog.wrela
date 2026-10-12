@@ -1,5 +1,6 @@
 // A static catalog is release data, not a list of games compiled into the console.
 use platform::protocol::valid_key
+use std::io::path_problem
 
 pub struct Card: Clone {
     pub id: String,
@@ -23,6 +24,7 @@ pub fn parse(text: str) -> Option<Vec<Card>> {
         if !valid_key(part(0)) ||
             part(1).is_empty() ||
             part(2).is_empty() ||
+            path_problem(part(3)).is_some() ||
             width == 0 ||
             height == 0 ||
             width > 2048 ||
@@ -53,4 +55,26 @@ fn a_catalog_can_hold_unrelated_games_without_changing_the_console() {
     assert(parse("first\tFirst\turl\timage\t0\t1").is_none())
     assert(parse("bad\trow").is_none())
     assert(parse("same\tFirst\turl\timage\t1\t1\nsame\tSecond\turl\timage\t1\t1").is_none())
+}
+
+@test
+fn catalog_covers_are_valid_relative_fetch_paths() {
+    for cover in [
+        "",
+        "/cover.rgba",
+        "https://host/cover.rgba",
+        "a\\b",
+        "a?b",
+        "a#b",
+        ".",
+        "..",
+        "a//b",
+        "a/./b",
+        "a/../b",
+    ] {
+        assert(parse(f"first\tFirst\turl\t{cover}\t1\t1").is_none(), f"invalid cover: `{cover}`")
+    }
+    for cover in ["cover.rgba", "files/cover 1.rgba", "files/cover%23.rgba", "files/%2f.rgba"] {
+        assert(parse(f"first\tFirst\turl\t{cover}\t1\t1").is_some(), cover)
+    }
 }

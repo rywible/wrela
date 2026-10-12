@@ -465,17 +465,19 @@ fn framed(
     let len = length(arm)
     let steps = 24
     var reach = len
-    for k in 1..(steps + 1) {
-        let t = len * f32(k) / f32(steps)
-        if in_the_way(target + arm * (t / len), o, o_from, height) {
-            // At least 0.4 m from the target where that's clear; where it isn't, the last point
-            // that was (with the 0.4 m always kept, a player against a trunk had the eye inside
-            // the trunk).
-            reach = len * f32(k - 1) / f32(steps)
-            if reach < 0.4 && !in_the_way(target + arm * (0.4 / len), o, o_from, height) {
-                reach = 0.4
+    if len > 0.0 {
+        for k in 1..(steps + 1) {
+            let t = len * f32(k) / f32(steps)
+            if in_the_way(target + arm * (t / len), o, o_from, height) {
+                // At least 0.4 m from the target where that's clear; where it isn't, the last point
+                // that was (with the 0.4 m always kept, a player against a trunk had the eye inside
+                // the trunk).
+                reach = len * f32(k - 1) / f32(steps)
+                if reach < 0.4 && !in_the_way(target + arm * (0.4 / len), o, o_from, height) {
+                    reach = 0.4
+                }
+                break
             }
-            break
         }
     }
     // Every point short of the first in the way is clear, so a shorter arm is too.
@@ -504,6 +506,28 @@ fn in_the_way(p: vec3, o: Obstacles, o_from: vec2, height: fn(vec2) -> f32) -> b
         })
     }
     hit
+}
+
+/// A framing with no arm reaches the same over-head fallback without dividing by its length.
+@test
+fn a_zero_camera_arm_remains_finite() {
+    let f = Framing { behind: 0.0, shoulder: 0.0, focus_shoulder: 0.0 }
+    let feet = vec3(10.0, 0.0, 10.0)
+    let nothing: Vec<footing::Obstacle> = Vec::new()
+    let o = Obstacles::of(nothing, vec2(0.0), vec2(20.0))
+    let (eye, _) = third_person(
+        f,
+        feet,
+        yaw: 0.0,
+        pitch: 0.0,
+        o: o,
+        o_from: vec2(0.0),
+        height: |p: vec2| 0.0,
+    )
+    assert(
+        eye == feet + vec3(0.0, f.target + OVER_HEAD, 0.0),
+        "the collapsed arm lost its fallback",
+    )
 }
 
 /// A player backed against a trunk, so close that no point on the arm is clear: the eye goes over

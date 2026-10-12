@@ -300,7 +300,7 @@ impl Ui {
             self.active = 0
             self.dragged = false
         }
-        if self.pressed && self.focus == 0 {
+        if self.editing_id() != self.focus {
             self.end_editing()
         }
     }
@@ -532,7 +532,9 @@ impl Ui {
         let div = if dir == Dir::Row { Rect::new(r.x + at - 3.0, r.y, 6.0, r.h) } else {
             Rect::new(r.x, r.y + at - 3.0, r.w, 6.0)
         }
-        if self.pressed && div.contains(self.press_at) {
+        if self.pressed &&
+            div.contains(self.press_at) &&
+            self.draw.clip_rect().contains(self.press_at) {
             self.active = id
         }
         if self.active == id && self.down {
@@ -610,7 +612,7 @@ impl Ui {
         var y = clamp(view.at, 0.0, most)
         // The bar: dragged to scroll.
         if most > 0.0 {
-            let bar_h = max(r.h * r.h / height, 20.0)
+            let bar_h = min(max(r.h * r.h / height, 20.0), r.h)
             let track = Rect::new(r.right() - 6.0, r.y, 6.0, r.h)
             let bar_id = view.id ^ 2654435761
             if self.pressed &&
@@ -1241,6 +1243,55 @@ impl Ui {
 }
 
 // ---- tests ------------------------------------------------------------------------------------
+
+@test
+fn a_press_on_another_widget_ends_text_editing() {
+    var ui = Ui::new(Fonts::load())
+    let text_id = ui.id("text")
+    ui.start_editing(text_id, "kept")
+    let down = Event::PointerDown { at: vec2(1.0), button: Button::Primary, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [down])
+    let button_id = ui.id("button")
+    let _ = ui.interact(button_id, Rect::new(x: 0.0, y: 0.0, w: 100.0, h: 20.0), focusable: true)
+    ui.end()
+    assert(ui.focused(button_id) && ui.editing_id() == 0)
+
+    // A press in the same field keeps the original text for Escape to restore.
+    ui.start_editing(text_id, "kept")
+    ui.begin(vec2(200.0, 100.0), [down])
+    let _ = ui.interact(text_id, Rect::new(x: 0.0, y: 0.0, w: 100.0, h: 20.0), focusable: true)
+    ui.end()
+    assert(ui.editing_id() == text_id && ui.edit_original() == "kept")
+}
+
+@test
+fn a_scroll_thumb_stays_inside_a_short_viewport() {
+    var ui = Ui::new(Fonts::load())
+    ui.begin(vec2(200.0, 100.0), Vec::<Event>::new())
+    ui.begin_scroll("short", 10.0)
+    ui.space(100.0)
+    let _ = ui.place(vec2(10.0))
+    ui.end_scroll()
+    let viewport = ui.last_rect()
+    assert(ui.draw.quads.len() == 1)
+    let thumb = ui.draw.quads[0].rect
+    assert(thumb.y >= viewport.y && thumb.y + thumb.w <= viewport.bottom())
+}
+
+@test
+fn a_clipped_split_divider_cannot_take_a_press() {
+    var ui = Ui::new(Fonts::load())
+    let down = Event::PointerDown { at: vec2(96.0, 51.0), button: Button::Primary, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [down])
+    ui.begin_scroll("outer", 20.0)
+    ui.space(50.0)
+    ui.begin_split("hidden", Dir::Row, 0.5)
+    assert(!ui.busy())
+    ui.next_pane()
+    ui.end_split()
+    ui.end_scroll()
+    ui.end()
+}
 
 @test
 fn a_split_reserves_its_place_in_the_parent_area() {
