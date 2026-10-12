@@ -5,8 +5,8 @@
 use creature::{Fawn, Grown, REALIZED, SKELETON, WALKER_BODY, grown}
 use fawn::creature::Coat
 use engine::character::{
-    PartOf, character, character_motion, character_shade, character_shadow, colours, motion,
-    parts_of,
+    Material, PartOf, character, character_motion, character_shade, character_shadow, materials,
+    motion, parts_of,
 }
 use engine::floor::fullscreen
 use engine::gait::{between, palette, posed_bounds}
@@ -38,7 +38,7 @@ use std::job::{Job, Step}
 use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, on_ground, start_eye}
 use std::gpu::{
     Address, ClipPosition, ComparisonSampler, Cull, DepthTexture, FragmentShader, GpuBuffer,
-    GpuSpan, R32Uint, RenderPass, Rgba16Float, Rgba8, Sampler, Texture, Unorm8x4, begin_depth_pass,
+    GpuSpan, R32Uint, RenderPass, Rgba16Float, Rgba8, Sampler, Texture, begin_depth_pass,
     begin_pass, begin_pass_with_depth, begin_screen_pass, buffer, buffer_of, comparison_sampler,
     depth_texture, draw, label, sampler, texture, writable_texture, write,
 }
@@ -233,7 +233,7 @@ pub struct Clearing {
     fawn: Grown,
     realizing: Job<realizing<Coat, Grown>>,
     creature: Option<Whole>,
-    colours: GpuBuffer<Unorm8x4>,
+    materials: GpuBuffer<Material>,
     palette: GpuBuffer<mat4>,
     last_palette: GpuBuffer<mat4>,
     /// What's carried across a hot reload.
@@ -404,7 +404,7 @@ pub fn init() -> Clearing {
         fawn,
         realizing: realize,
         creature: None,
-        colours: buffer(1),
+        materials: buffer(1),
         palette: buffer(MAX_BONES),
         last_palette: buffer(MAX_BONES),
         carried: Carried {
@@ -492,7 +492,6 @@ pub fn init() -> Clearing {
             vec3(0.0),
             MOVING_SPAN,
             moving_side: MOVING_SIDE,
-            frame: 0,
         ),
         shaded: buffer(1),
         covering: buffer(1),
@@ -679,7 +678,7 @@ fn cook_load(s: mut Clearing) {
         match s.realizing.resume(s.fawn, CREATURE_SLICES) {
             Step::Yielded => {},
             Step::Done(whole) => {
-                s.colours = colours(whole.mesh, s.fawn.field(), Fawn {}, cell: 1cm)
+                s.materials = materials(whole.mesh, s.fawn.field(), Fawn {}, cell: 1cm)
                 s.creature = Some(take whole)
             },
         }
@@ -741,7 +740,7 @@ fn moving_shadow(s: mut Clearing, sh: Shadows, creature_on: bool) {
 /// forest's first kinds, the terrain's clipmap). Then the clouds: their noises, then their maps
 /// (again after an edit), each cooked in a frame of its own after the air's (each is tens of
 /// milliseconds of the GPU: together, with the load's other work, a frame took 137 ms); then
-/// one of the dome's tiles in 64 marched each frame, from `eye`, the field drifted with `wind`.
+/// one phase of the dome's tiles marched each frame, from `eye`, the field drifted with `wind`.
 fn cook_sky(s: mut Clearing, eye: vec3, wind: Wind) {
     let off = s.carried.off
     let weather_key = (s.watches.light.version(), s.watches.clouds.version())
@@ -1002,7 +1001,7 @@ fn draw_scene(s: mut Clearing, cam: Camera, sh: Shadows, wind: Wind, creature_on
                 cr,
                 character.bind(
                     verts: c.mesh.verts.items(),
-                    colours: s.colours.items(),
+                    materials: s.materials.items(),
                     palettes: s.palette.items(),
                     parts: PARTS,
                     cam: cam,
@@ -1192,7 +1191,6 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         moving_at: walker.root.pos + vec3(0.0, 1.0, 0.0),
         moving_span: MOVING_SPAN,
         moving_side: MOVING_SIDE,
-        frame: s.frames,
     )
     s.sh = sh
     // The static shadows, once the forest and the boulders that cast them are cooked.

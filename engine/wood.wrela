@@ -214,14 +214,8 @@ pub fn draws_of(
 /// side, which a far crown must be in front of to be drawn.
 pub const OCC: u32 = 8
 
-/// The share of a block the near crowns must cover to hide what's wholly behind them: cut
-/// leaves leave a hole in nearly every block, so a block counts as shut once most of it is
-/// covered (what shows through its holes is the wood's own dark, not a far crown's leaves).
-pub const SHUT: f32 = 0.8
-
-/// Block `id`'s depth as an occluder: the farthest depth (the least, reversed) of what the
-/// cards drew there (the near crowns), if they cover `SHUT` of it; else nothing (0: the far
-/// plane), which hides nothing.
+/// Block `id`'s farthest depth (the least, reversed). Any uncovered pixel keeps the
+/// block open: crowns behind foliage gaps remain visible when those gaps move across it.
 @compute(64)
 pub fn occluders(depth: DepthTexture, cols: u32, rows: u32, out: mut Slots<f32>, id: GlobalId) {
     if id.x >= cols * rows {
@@ -231,19 +225,15 @@ pub fn occluders(depth: DepthTexture, cols: u32, rows: u32, out: mut Slots<f32>,
     let by = id.x / cols
     let (w, h) = (depth.width(), depth.height())
     var least = 1.0
-    var covered = 0
     for y in 0..OCC {
         for x in 0..OCC {
             let px = min(bx * OCC + x, w - 1)
             let py = min(by * OCC + y, h - 1)
             let d = depth.load(px, py)
-            if d > 0.0 {
-                least = min(least, d)
-                covered += 1
-            }
+            least = min(least, d)
         }
     }
-    out[id] = if f32(covered) >= SHUT * f32(OCC * OCC) { least } else { 0.0 }
+    out[id] = least
 }
 
 /// What culling reads: the camera, the occluders' map's size, and how many places there are.
@@ -253,6 +243,56 @@ pub struct Cull: Copy + GpuData {
     pub rows: u32,
     pub places: u32,
     pub lists: u32,
+}
+
+/// Conservative pixel bounds of the view-aligned box enclosing a sphere, wholly beyond
+/// the near plane. Perspective uses forward depth, including the nearest face; using
+/// distance to the eye underbounded crowns at the edge of the view. Include raster jitter
+/// because the occluder blocks come from this frame's depth target.
+fn occlusion_bounds(cam: Camera, centre: vec3, r: f32) -> vec4 {
+    let to = centre - cam.eye
+    let z = dot(to, cam.forward)
+    let p = vec2(dot(to, cam.right), dot(to, cam.up))
+    let near = 1.0 / (z - r)
+    let far = 1.0 / (z + r)
+    let low = min((p - vec2(r)) * near, (p - vec2(r)) * far)
+    let high = max((p + vec2(r)) * near, (p + vec2(r)) * far)
+    let scale = cam.screen.y / (2.0 * cam.tan_half)
+    let middle = cam.screen * 0.5 + cam.jitter * cam.screen * vec2(0.5, -0.5)
+    vec4(middle + vec2(low.x, -high.y) * scale, middle + vec2(high.x, -low.y) * scale)
+}
+
+@test
+fn far_crown_occlusion_bounds_cover_off_axis_spheres() {
+    let cam = view::first_camera(
+        vec3(2.0, 4.0, 6.0),
+        vec3(2.0, 4.0, 7.0),
+        1.3,
+        width: 1600,
+        height: 900,
+    )
+    for side in -2..3 {
+        let cam = Camera { jitter: vec2(0.0007, -0.0009), ..cam }
+        let centre = cam.eye + cam.forward * 30.0 + cam.right * (f32(side) * 15.0) + cam.up * 8.0
+        let radius = 9.0
+        let bounds = occlusion_bounds(cam, centre, radius)
+        for i in 0..128 {
+            let point = centre + radius * noise::direction(noise::rand(i, 0), noise::rand(i, 1))
+            let q = cam.clip(point)
+            let px = vec2(
+                (q.x / q.w + 1.0) * cam.screen.x * 0.5,
+                (1.0 - q.y / q.w) * cam.screen.y * 0.5,
+            )
+            assert(
+                px.x >= bounds.x && px.y >= bounds.y && px.x <= bounds.z && px.y <= bounds.w,
+                "occlusion bounds clipped an off-axis crown",
+            )
+            assert(
+                q.z / q.w <= cam.near / (30.0 - radius) + 1.0e-6,
+                "occlusion used a depth behind the crown's nearest surface",
+            )
+        }
+    }
 }
 
 /// Whether place `id` holds a far crown that's seen (1) or hidden behind the near crowns (0;
@@ -293,17 +333,13 @@ pub fn cull(
             let lod = lods[l.kind]
             let r = lod.reach * inst.scale
             let centre = inst.at + inst.turn(vec3(0.0, lod.top * 0.5 * inst.scale, 0.0))
-            let to = centre - c.cam.eye
-            let d = length(to)
-            if d > r * 1.5 {
-                // The sphere's nearest point's depth, and the blocks it covers.
-                let near = c.cam.eye + to * ((d - r) / d)
-                let q = c.cam.view_proj * vec4(near, 1.0)
-                let z = q.z / q.w
-                let px = c.cam.pixel(centre)
-                let radius = r / c.cam.footprint(d)
-                let b0 = vec2i(floor((px - vec2(radius)) / f32(OCC)))
-                let b1 = vec2i(floor((px + vec2(radius)) / f32(OCC)))
+            let ahead = dot(centre - c.cam.eye, c.cam.forward)
+            if ahead - r > c.cam.near {
+                // The nearest forward depth, and every block touched by the enclosing box.
+                let z = c.cam.near / (ahead - r)
+                let bounds = occlusion_bounds(c.cam, centre, r)
+                let b0 = vec2i(floor(bounds.xy / f32(OCC)))
+                let b1 = vec2i(floor(bounds.zw / f32(OCC)))
                 if b1.x >= 0 &&
                     b1.y >= 0 &&
                     b0.x < i32(c.cols) &&

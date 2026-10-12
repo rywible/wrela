@@ -1,42 +1,32 @@
 // The climber drawn as the floors draw characters (#30; `engine::character`: B's cel treatment,
 // the motion target, the moving shadow map, a line where its parts meet): the cape's cloth from
-// its points, written each frame (`figure`); the head with its mask, and the sword, each a field
-// realized once as a mesh of one bone; and the darkness's wisps, solid drops drawn out along
-// their way. The look of the mask, the cape and the sword is the characters thread's (`look`).
+// its points, written each frame (`figure`); empty hood and sleeves, and the sword, each a field
+// realized once as a mesh of one bone. Every pass uses the same connected cloth points.
 
-use body::{BLADE_THICK, BLADE_WIDTH, GUARD_AT, HEAD, HEAD_RADIUS, POINT_AT}
 use cape::{AROUND, DOWN, POINTS, body_frame}
-use darkness::MOST
 use engine::character::{
     Cast, CharacterVertex, MotionVertex, PartOf, Realized, cast, character, character_motion,
-    character_shade, character_shadow, colours, motion,
+    character_shade, character_shadow, materials, motion,
 }
 use engine::creature::MAX_BONES
 use engine::gait::{between, palette}
 use engine::render::Look
 use fight::{WOLF_BODY, WOLF_SKELETON, Wolf}
 use std::transform::translate
-use engine::creature::{Creature, Skeleton, creature, hard}
-use engine::lit::{Lighting, through_air}
+use engine::creature::Creature
+use engine::lit::Lighting
 use engine::look::{CreatureLook, Mesh as Tolerance}
 use engine::realize::realize_rigid
-use engine::render::{ByChannels, Shaded}
+use engine::render::ByChannels
 use engine::shadow::CASTER
-use engine::temporal::motion_of
 use engine::vegetation::nothing
-use engine::view::{CREATURE, Camera, NEAREST, SEEN}
+use engine::view::{Camera, NEAREST, SEEN}
 use figure::Figure
 use look::{CAPE, Paint, head, sword}
 use moves::Pose
-use std::derive::Box3
-use std::field::{Blend, Surface, cuboid, ellipsoid, half_space, round_cone, sphere}
 use std::gpu::{
-    ClipPosition, Cull, Flat, GpuBuffer, RenderPass, VertexIndex, buffer, copy, discard, draw,
-    write,
+    ClipPosition, Cull, Flat, GpuBuffer, RenderPass, VertexIndex, buffer, copy, draw, write,
 }
-
-// The darkness is darker than the cape.
-const DARK = vec3(0.012, 0.012, 0.016)
 
 /// Each part's id, for the lines where parts meet.
 const CAPE_PART: u32 = 1
@@ -44,12 +34,12 @@ const HEAD_PART: u32 = 2
 const SWORD_PART: u32 = 3
 
 /// A creature of one bone realized: its mesh and colours (cells for a 3 mm tolerance, and no
-/// wider than `largest`: the mask's paint is finer than the 3 cm a 3 mm tolerance allows).
+/// wider than `largest`: the sword's fittings use finer cells than the robe's broad folds).
 fn realized<K: Creature<Paint>>(c: K, largest: f32) -> Realized {
     let look = CreatureLook { surface: Tolerance { tolerance: 3mm, largest } }
     let mesh = realize_rigid(c, look)
-    let colours = colours(mesh, c.field(), ByChannels {}, cell: min(largest, 1cm))
-    Realized { mesh, colours }
+    let materials = materials(mesh, c.field(), ByChannels {}, cell: min(largest, 1cm))
+    Realized { mesh, materials }
 }
 
 /// The cape's vertices: two triangles a cell between its rows.
@@ -99,7 +89,7 @@ impl Rigid {
             pass,
             character.bind(
                 verts: self.r.mesh.verts.items(),
-                colours: self.r.colours.items(),
+                materials: self.r.materials.items(),
                 palettes: self.at.items(),
                 parts: PartOf { of: [self.part; 64] },
                 cam: cam,
@@ -131,13 +121,11 @@ impl Rigid {
 }
 
 /// The climber as it's drawn: the cape's points this frame and the last (for the motion
-/// target), the wisps and how many, the head and the sword; whether it's been written yet, and
+/// target), the empty hood and the sword; whether it's been written yet, and
 /// whether it's shown (not while a blink has it gone).
 pub struct Drawn {
     points: GpuBuffer<vec4>,
     last_points: GpuBuffer<vec4>,
-    wisps: GpuBuffer<vec4>,
-    count: u32,
     head: Rigid,
     sword: Rigid,
     written: bool,
@@ -149,10 +137,8 @@ pub fn drawn() -> Drawn {
     Drawn {
         points: buffer(POINTS),
         last_points: buffer(POINTS),
-        wisps: buffer(MOST * 2),
-        count: 0,
-        head: rigid(head(), HEAD_PART, largest: 7mm),
-        sword: rigid(sword(), SWORD_PART, largest: 3cm),
+        head: rigid(head(), HEAD_PART, largest: 2cm),
+        sword: rigid(sword(), SWORD_PART, largest: 12mm),
         written: false,
         shown: false,
     }
@@ -193,11 +179,6 @@ impl Drawn {
         let (at, aim, edge) = pose.sword.placed(feet, heading)
         self.head.place(body_frame(feet, heading, pose.form), still)
         self.sword.place(sword_bone(at, aim, edge), still)
-        let wisps = f.wisps()
-        self.count = wisps.len() / 2
-        if self.count > 0 {
-            write(mut self.wisps, 0, wisps)
-        }
         self.shown = !gone
     }
 
@@ -218,18 +199,8 @@ impl Drawn {
         self.sword.shadow(pass, view)
     }
 
-    /// The climber drawn into the scene: the cape, the head, the sword, the wisps.
+    /// The climber drawn into the scene: connected cape, empty hood and sleeves, and sword.
     pub fn draw<P: RenderPass>(self, pass: P, lt: Lighting, cam: Camera) {
-        if self.count > 0 {
-            draw(
-                pass,
-                wisp_vertex.bind(wisps: self.wisps.items(), cam: cam),
-                wisp_shade.bind(lt),
-                vertices: self.count * 6,
-                cull: Cull::None,
-                depth: NEAREST,
-            )
-        }
         if !self.shown {
             return
         }
@@ -245,18 +216,8 @@ impl Drawn {
         self.sword.draw(pass, lt, cam)
     }
 
-    /// The climber's motion, where it's seen (the wisps over `dt` seconds of their speed).
-    pub fn motion<P: RenderPass>(self, pass: P, cam: Camera, dt: f32) {
-        if self.count > 0 {
-            draw(
-                pass,
-                wisp_motion.bind(wisps: self.wisps.items(), cam: cam, dt: dt),
-                wisp_moved.bind(cam),
-                vertices: self.count * 6,
-                cull: Cull::None,
-                depth: SEEN,
-            )
-        }
+    /// The climber's motion, from the actual preceding cloth and rigid-part positions.
+    pub fn motion<P: RenderPass>(self, pass: P, cam: Camera) {
         if !self.shown {
             return
         }
@@ -319,78 +280,6 @@ pub fn cape_motion(v: VertexIndex, points: [vec4], last: [vec4], cam: Camera) ->
 pub fn cape_shadow(v: VertexIndex, points: [vec4], view: mat4) -> ClipPosition {
     let (i, j) = corner(v.index)
     ClipPosition { position: view * vec4(cape_point(points, i, j), 1.0) }
-}
-
-// ---- the darkness --------------------------------------------------------------------------------
-
-/// A wisp's corner: where it is, and where on its quad (u across, v along its way).
-pub struct Wispel: Copy {
-    pub clip: ClipPosition,
-    pub world: vec3,
-    pub uv: vec2,
-}
-
-/// Vertex `v`'s wisp's corner in the world, and where on its quad: drawn out along its way,
-/// square to the eye at `eye`.
-fn wisp_corner(v: u32, wisps: [vec4], eye: vec3) -> (vec3, vec2, vec3) {
-    let q = v / 6
-    let c = v % 6
-    let cu = [-1.0, 1.0, -1.0, -1.0, 1.0, 1.0]
-    let cv = [-1.0, -1.0, 1.0, 1.0, -1.0, 1.0]
-    let at = wisps[2 * q].xyz
-    let size = wisps[2 * q].w
-    let speed = wisps[2 * q + 1].xyz
-    let sl = length(speed)
-    let along = if sl > 1.0e-3 { speed / sl } else { vec3(0.0, 1.0, 0.0) }
-    var side = cross(along, eye - at)
-    side = if length(side) > 1.0e-6 { normalize(side) } else { vec3(1.0, 0.0, 0.0) }
-    let long = size * (1.2 + 1.2 * sl)
-    (at + side * (cu[c] * size * 0.45) + along * (cv[c] * long), vec2(cu[c], cv[c]), speed)
-}
-
-@vertex
-pub fn wisp_vertex(v: VertexIndex, wisps: [vec4], cam: Camera) -> Wispel {
-    let (p, uv, _) = wisp_corner(v.index, wisps, cam.eye)
-    Wispel { clip: ClipPosition { position: cam.clip(p) }, world: p, uv }
-}
-
-/// Whether a wisp's point `uv` is off its shape: a drop, round at its head (ahead, +v) and drawn
-/// to a point behind; its edge hard.
-fn off_drop(uv: vec2) -> bool {
-    let y = uv.y
-    let r = if y >= 0.0 { sqrt(max(1.0 - y * y, 0.0)) } else { 1.0 + y }
-    abs(uv.x) > r
-}
-
-/// A wisp's pixel: solid dark through the haze, tagged as the cape's (no line between them).
-@fragment
-pub fn wisp_shade(w: Wispel, lt: Lighting) -> vec4 {
-    if off_drop(w.uv) {
-        discard()
-    }
-    vec4(through_air(lt, DARK, w.world), CREATURE + f32(CAPE_PART))
-}
-
-/// A wisp's corner for the motion target: where it is now and was `dt` seconds ago.
-pub struct WispMotion: Copy {
-    pub clip: ClipPosition,
-    pub uv: vec2,
-    pub now: vec3,
-    pub then: vec3,
-}
-
-@vertex
-pub fn wisp_motion(v: VertexIndex, wisps: [vec4], cam: Camera, dt: f32) -> WispMotion {
-    let (p, uv, speed) = wisp_corner(v.index, wisps, cam.eye)
-    WispMotion { clip: ClipPosition { position: cam.clip(p) }, uv, now: p, then: p - speed * dt }
-}
-
-@fragment
-pub fn wisp_moved(w: WispMotion, cam: Camera) -> vec4 {
-    if off_drop(w.uv) {
-        discard()
-    }
-    motion_of(cam, w.now, w.then)
 }
 
 // ---- the wolf ------------------------------------------------------------------------------------

@@ -1,27 +1,27 @@
 // The climber's measures (#30): a cape all the way round, to the ground, over a head and
-// shoulders that nothing shows but the mask; and the great sword it moves by will. The fight
+// shoulders with no visible body or face; and the great sword it moves by will. The fight
 // hits and is hit by these; the cape hangs on them.
 //
 // Units: metres. +y up, the ground at y = 0, +z ahead, +x the climber's left.
 
 /// How tall it stands, to the top of its head, and how wide its shoulders are (from the middle).
-pub const HEIGHT: f32 = 1.85
-pub const SHOULDERS: f32 = 0.24
+pub const HEIGHT: f32 = 2.25
+pub const SHOULDERS: f32 = 0.28
 
-/// Its head's middle, and the head's radius: the mask is on its front.
-pub const HEAD = vec3(0.0, 1.66, 0.0)
-pub const HEAD_RADIUS: f32 = 0.13
+/// The empty hood's support centre and radius; no face is drawn within it.
+pub const HEAD = vec3(0.0, 1.9, 0.0)
+pub const HEAD_RADIUS: f32 = 0.18
 
 /// Where its shoulders' line is, and how round they are.
-pub const SHOULDER_Y: f32 = 1.44
-pub const SHOULDER_RADIUS: f32 = 0.1
+pub const SHOULDER_Y: f32 = 1.68
+pub const SHOULDER_RADIUS: f32 = 0.085
 
 /// How far round the cape stands out at its hem, on the ground (it narrows to the shoulders).
-pub const HEM_RADIUS: f32 = 0.56
+pub const HEM_RADIUS: f32 = 0.72
 
 /// What the wolf can bite: a capsule up the middle, from over the hem to the head.
 pub const BODY_LOW = vec3(0.0, 0.3, 0.0)
-pub const BODY_HIGH = vec3(0.0, 1.5, 0.0)
+pub const BODY_HIGH = vec3(0.0, 1.8, 0.0)
 pub const BODY_RADIUS: f32 = 0.3
 
 /// The sword, along its aim from the grip's middle: the guard, and the point; and how wide and

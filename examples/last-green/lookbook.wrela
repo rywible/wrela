@@ -197,12 +197,12 @@ pub const SHOTS = [
             fawn: vec3(-43.8, -269.8, 0.631),
         },
     },
-    // The climber from in front and to one side, its mask lit by the low sun from the camera's
+    // The climber from in front and to one side, its empty hood lit by the low sun from the camera's
     // right, the glade behind it and the fawn grazing there.
     Shot {
-        name: "the climber's mask",
-        eye: vec3(145.8, 1.5, 37.1),
-        at: vec3(142.9, 1.0, 40.3),
+        name: "the climber's robe",
+        eye: vec3(146.5, 1.8, 36.2),
+        at: vec3(142.9, 1.45, 40.3),
         reach: 1.0,
         moves: vec2(0.59, 0.54),
         cast: Cast { on: true, player: vec3(142.9, 40.3, 1.6), fawn: vec3(137.5, 47.9, 0.9) },

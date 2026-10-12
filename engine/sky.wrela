@@ -9,7 +9,7 @@
 //
 // The dome: every direction round the eye, by azimuth (all round) and elevation (from a little
 // below the horizon to the zenith). The clouds are kilometres away, so a step of the eye moves
-// nothing in it, and turning looks elsewhere in it. Each frame marches one in 64 of its 32 × 32
+// nothing in it, and turning looks elsewhere in it. Each frame marches one in 32 of its 16 × 16
 // tiles (whole tiles, so neighbouring invocations march neighbouring rays, and read the noise
 // together), each texel blended with what it held; the clouds drift a few metres (well under
 // half a texel at 5 km) while a tile waits its turn.
@@ -46,16 +46,16 @@ pub const DETAIL_SIDE: u32 = 32
 pub const DETAIL_SPAN: f32 = 480.0
 
 /// The dome's size, and the elevations it holds (radians).
-pub const SKY_W: u32 = 3072
-pub const SKY_H: u32 = 960
+pub const SKY_W: u32 = 4096
+pub const SKY_H: u32 = 1280
 pub const EL_LO: f32 = -0.08
 pub const EL_HI: f32 = 1.5708
 
 /// The dome's tiles (`TILE` texels a side, `TILES_W` across), and a frame's share: one in
 /// `PHASES`.
-pub const TILE: u32 = 32
+pub const TILE: u32 = 16
 pub const TILES_W: u32 = SKY_W / TILE
-pub const PHASES: u32 = 64
+pub const PHASES: u32 = 32
 pub const PHASE_TEXELS: u32 = (TILES_W * (SKY_H / TILE) / PHASES) * TILE * TILE
 
 /// How far the dome's rays look for clouds (m), and how far through the layer they march.
@@ -65,8 +65,14 @@ const THROUGH: f32 = 30000.0
 /// Extinction per metre where the field is densest.
 const EXTINCTION: f32 = 0.06
 
-/// The dome's march's samples in each of a ray's cells that may hold cloud.
-const FINE: u32 = 4
+/// At most this many metres between cloud density samples. Optical depth changes quickly at
+/// a billow's skin; a fixed sample count spread across a grazing ray misses that skin.
+const VIEW_STEP: f32 = 40.0
+const LIGHT_SAMPLES: u32 = 8
+
+fn view_samples(cell_length: f32) -> u32 {
+    max(8, u32(ceil(cell_length / VIEW_STEP)))
+}
 
 /// A cumulus of a cloudscape: its middle (x, z), how wide and how tall (m).
 pub struct Cumulus: Copy + GpuData {
@@ -383,14 +389,17 @@ fn march(
     var lit = vec3(0.0)
     var depth_sum = 0.0
     var weight = 0.0
-    // The marked cells, each `FINE` samples a step: the same steps on every ray of a cell.
-    let dt = ct / f32(FINE)
+    // Each marked cell has enough samples to resolve its skin, including long grazing
+    // rays. Jitter stays within one short interval rather than moving a surface hundreds
+    // of metres between neighbouring dome texels.
+    let fine = view_samples(ct)
+    let dt = ct / f32(fine)
     for i in 0..cells {
         if ((marked >> i) & 1) == 0 || through < 0.01 {
             continue
         }
-        for j in 0..FINE {
-            let t = enter + (f32(i) + (f32(j) + jitter) / f32(FINE)) * ct
+        for j in 0..fine {
+            let t = enter + (f32(i) + (f32(j) + jitter) / f32(fine)) * ct
             let h = height_along(y, dir.y, t) - BASE
             let p = c.eye + dir * t
             let q = vec3(p.x - c.drift.x, h + BASE, p.z - c.drift.y)
@@ -398,11 +407,13 @@ fn march(
             if dens > 0.0 && through >= 0.01 {
                 // Resolve the sunlit skin before the deep shadow. Equal 150 m intervals
                 // missed this skin and made the whole cloud a soft, evenly shaded patch.
-                // The same six samples cover 3.15 km, with most near the visible surface.
+                // Eight intervals cover 3.15 km. Midpoints keep the sunlight estimate
+                // independent of the view jitter: one random draw must not move both the
+                // visible skin and its lighting at once.
                 var od = 0.0
-                for k in 0..6 {
+                for k in 0..LIGHT_SAMPLES {
                     let (lo, step) = light_interval(k)
-                    let ql = q + c.sun * (lo + jitter * step)
+                    let ql = q + c.sun * (lo + 0.5 * step)
                     od += field(ql, ql.y - BASE, weather, shape, detail, rep, detailed: k < 2) *
                         step
                 }
@@ -684,8 +695,8 @@ impl Sky {
     }
 
     /// The frame's texels of the dome marched (from the eye at `eye`, the field drifted
-    /// `drift`), and put in the dome. The first round (64 frames) replaces what the dome held;
-    /// after, each march is 0.3 of the blend with it. `still`: the march's jitter stays the same
+    /// `drift`), and put in the dome. The first round (32 frames) replaces what the dome held;
+    /// after, each march is 0.75 of the blend with it. `still`: the march's jitter stays the same
     /// round to round (a test's frames alike once the dome is whole).
     pub fn march(
         mut self,
@@ -702,7 +713,7 @@ impl Sky {
             eye,
             phase: self.frames % PHASES,
             sun: light.sun,
-            blend: if self.frames < PHASES { 1.0 } else { 0.3 },
+            blend: if self.frames < PHASES { 1.0 } else { 0.75 },
             drift,
             seed: if still { 0 } else { self.frames / PHASES },
         }
@@ -747,8 +758,8 @@ impl Sky {
 /// Consecutive sunlight integration intervals, in metres. Resolve the illuminated shell
 /// first and use the last interval for shadows from distant clouds.
 fn light_interval(k: u32) -> (f32, f32) {
-    let lo = 20.0 * (f32(1 << k) - 1.0)
-    let hi = if k == 5 { 3150.0 } else { 20.0 * (f32(1 << (k + 1)) - 1.0) }
+    let lo = 12.5 * (f32(1 << k) - 1.0)
+    let hi = if k + 1 == LIGHT_SAMPLES { 3150.0 } else { 12.5 * (f32(1 << (k + 1)) - 1.0) }
     (lo, hi - lo)
 }
 
@@ -756,7 +767,7 @@ fn light_interval(k: u32) -> (f32, f32) {
 fn cloud_sunlight_samples_resolve_the_surface_before_deep_shadow() {
     var end = 0.0
     var previous = 0.0
-    for k in 0..6 {
+    for k in 0..LIGHT_SAMPLES {
         let (lo, width) = light_interval(k)
         assert(abs(lo - end) < 0.001, "cloud sunlight integration leaves a gap")
         assert(width > previous, "cloud sunlight samples do not widen with depth")
@@ -766,4 +777,40 @@ fn cloud_sunlight_samples_resolve_the_surface_before_deep_shadow() {
     let (_, skin) = light_interval(0)
     assert(skin <= 1.5 / EXTINCTION, "first light interval skips the illuminated shell")
     assert(abs(end - 3150.0) < 0.001, "distant cloud shadows lost their integration range")
+}
+
+@test
+fn cloud_view_intervals_resolve_grazing_skins_with_bounded_work() {
+    // These span overhead through the longest admitted grazing ray's weather cell.
+    for span in [1.0, 40.0, 160.0, 400.0, THROUGH / 24.0] {
+        let count = view_samples(span)
+        assert(count >= 8, "short cloud cells lose stratified density samples")
+        assert(span / f32(count) <= VIEW_STEP, "grazing cloud samples skip the billow skin")
+        assert(count <= 32, "cloud density samples exceed the admitted ray budget")
+    }
+}
+
+@test
+fn cloud_dome_phases_cover_each_texel_once_without_partial_tiles() {
+    assert(SKY_W % TILE == 0 && SKY_H % TILE == 0, "cloud dome ends in a partial tile")
+    assert(PHASE_TEXELS * PHASES == SKY_W * SKY_H, "cloud dome phases leave unvisited texels")
+    var c = Clouds {
+        eye: vec3(0.0),
+        phase: 0,
+        sun: vec3(0.0, 1.0, 0.0),
+        blend: 1.0,
+        drift: vec2(0.0),
+        seed: 0,
+    }
+    for phase in 0..PHASES {
+        c.phase = phase
+        for k in [0, TILE * TILE - 1, PHASE_TEXELS - 1] {
+            let t = phase_texel(c, k)
+            assert(t.x < SKY_W && t.y < SKY_H, "cloud phase maps outside the dome")
+            let tile = (t.y / TILE) * TILES_W + t.x / TILE
+            assert(tile % PHASES == phase, "cloud phase visits another phase's tile")
+            let packed = (tile / PHASES) * TILE * TILE + (t.y % TILE) * TILE + t.x % TILE
+            assert(packed == k, "cloud scatter does not invert the phase mapping")
+        }
+    }
 }

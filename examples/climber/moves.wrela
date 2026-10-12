@@ -131,7 +131,7 @@ pub fn sample(keys: [Key], t: f32) -> Pose {
 /// little forward, sharp edge forward and spine toward the face.
 pub const REST = Pose {
     sword: Sword {
-        at: vec3(-0.6, 0.95, 0.58),
+        at: vec3(-0.78, 1.16, 0.72),
         aim: vec3(-0.03, 1.0, 0.12),
         edge: vec3(0.0, -0.12, 1.0),
     },
@@ -142,7 +142,7 @@ pub const REST = Pose {
 pub const GUARD = Pose {
     form: Form { lift: -0.03, tilt: vec3(0.06, -0.12, 0.0) },
     sword: Sword {
-        at: vec3(-0.55, 1.0, 0.5),
+        at: vec3(-0.7, 1.14, 0.64),
         aim: vec3(-0.1, 0.3, 1.0),
         edge: vec3(-1.0, 0.0, 0.0),
     },
@@ -347,7 +347,7 @@ pub const DOWN_FRAMES = Frames {
     travel_ticks: vec2u(0, 20),
 }
 
-/// Down: the body sinks into its cape until the cape lies on the ground round the mask; the sword
+/// Down: the body sinks into its cape until the cape lies on the ground round the empty hood; the sword
 /// falls and lies flat beside it. Then both rise again.
 pub fn down_keys() -> Vec<Key> {
     let g = GUARD
@@ -447,7 +447,7 @@ pub fn drift_rate(speed: f32) -> f32 {
 @test
 fn free_motion_keeps_the_blade_ready_and_the_collar_quiet() {
     let (guard_at, _, guard_edge) = GUARD.sword.placed(vec3(0.0), 0.0)
-    assert(dot(guard_edge, guard_at - vec3(0.0, 1.66, 0.0)) > 0.5, "the guard edge faces the mask")
+    assert(dot(guard_edge, guard_at - body::HEAD) > 0.5, "the guard edge faces the hood")
     for speed in [0.0, 3.0, 7.5] {
         for accel in [-30.0, 0.0, 30.0] {
             for turning in [-6.0, 0.0, 6.0] {
@@ -456,7 +456,7 @@ fn free_motion_keeps_the_blade_ready_and_the_collar_quiet() {
                     let (at, aim, edge) = p.sword.placed(vec3(0.0), 0.0)
                     assert(at.z > 0.55 && at.x < -0.55, "the blade left its forward ready position")
                     assert(aim.y > 0.98, "the blade tipped out of its upright ready position")
-                    assert(dot(edge, at - vec3(0.0, 1.66, 0.0)) > 0.5, "the edge faces the mask")
+                    assert(dot(edge, at - body::HEAD) > 0.5, "the edge faces the hood")
                     assert(abs(at.y - REST.sword.at.y) <= 0.009, "the floating blade bounces")
                     assert(abs(p.form.lift) <= 0.007, "the collar bounces")
                     assert(abs(p.form.tilt.x) <= 0.086, "a tap throws the collar forward or back")

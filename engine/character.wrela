@@ -6,8 +6,8 @@
 // the moving shadow map every frame.
 
 use creature::Parts
-use light::{Light, clay_or}
-use lit::{Lighting, sun_and_sky, through_air}
+use light::{Light, Lit, clay_or, gloss}
+use lit::{Lighting, sun_and_gloss, through_air}
 use realize::{Mesh, SkinVertex, Tally}
 use render::{Look, skin_matrix}
 use std::gpu::{
@@ -64,10 +64,62 @@ pub fn colours<C, F: Parts<C>, L: Look<C>>(
     out
 }
 
+/// A character's baked surface: the colour and roughness, plus independent metallic reflectance.
+pub struct Material: Copy + GpuData {
+    pub colour: Unorm8x4,
+    pub metallic: f32,
+}
+
+@compute(64)
+pub fn cook_materials<C, F: Parts<C>, L: Look<C>>(
+    field: F,
+    look: L,
+    fp: f32,
+    tally: [Tally],
+    verts: [SkinVertex],
+    materials: mut Slots<Material>,
+    id: GlobalId,
+) {
+    if id.x >= tally[0].vertices {
+        return
+    }
+    let v = verts[id.x]
+    let (_, _, c) = field.sample_masked(v.pos, v.mask, fp)
+    let (albedo, rough) = look.surface(c, v.pos, fp)
+    materials[id] = Material {
+        colour: Unorm8x4::encode(vec4(sqrt(saturate(albedo)), saturate(rough))),
+        metallic: saturate(look.metallic(c, v.pos, fp)),
+    }
+}
+
+/// Bake a character's complete surface once. Rigid scenery can keep the smaller `colours`
+/// buffer; characters retain their independent roughness and conducting share for lighting.
+pub fn materials<C, F: Parts<C>, L: Look<C>>(
+    mesh: Mesh,
+    field: F,
+    look: L,
+    cell: f32,
+) -> GpuBuffer<Material> {
+    let room = mesh.room().vertices
+    var out: GpuBuffer<Material> = buffer(room)
+    dispatch(
+        cook_materials.bind(
+            field,
+            look,
+            fp: cell,
+            tally: mesh.tally.items(),
+            verts: mesh.verts.items(),
+            materials: mut out,
+        ),
+        groups: (room + 63) / 64,
+    )
+    out
+}
+
 /// A character realized: its mesh and each vertex's colour.
 pub struct Realized {
     pub mesh: Mesh,
-    pub colours: GpuBuffer<Unorm8x4>,
+    pub materials: GpuBuffer<Material>,
 }
 
 /// A rigid character's one bone where it stands: its feet at `feet`, facing `heading` (radians
@@ -83,6 +135,8 @@ pub struct CharacterVertex: Copy {
     pub world: vec3,
     pub normal: vec3,
     pub albedo: vec3,
+    pub rough: f32 = 1.0,
+    pub metallic: f32 = 0.0,
     pub part: Flat<u32>,
 }
 
@@ -108,7 +162,7 @@ pub fn parts_of(s: creature::Skeleton) -> PartOf {
 pub fn character(
     v: VertexIndex,
     verts: [SkinVertex],
-    colours: [Unorm8x4],
+    materials: [Material],
     palettes: [mat4],
     parts: PartOf,
     cam: Camera,
@@ -117,12 +171,15 @@ pub fn character(
     let m = skin_matrix(sv, palettes, 0)
     let world = (m * vec4(sv.pos, 1.0)).xyz
     let n = mat3(m[0].xyz, m[1].xyz, m[2].xyz) * sv.normal
-    let c = colours[v.index].decode()
+    let surface = materials[v.index]
+    let c = surface.colour.decode()
     CharacterVertex {
         clip: ClipPosition { position: cam.clip(world) },
         world,
         normal: n,
         albedo: c.rgb * c.rgb,
+        rough: c.a,
+        metallic: surface.metallic,
         part: Flat { value: parts.of[min(sv.bones & 255, 63)] },
     }
 }
@@ -145,10 +202,23 @@ pub fn character_shade(c: CharacterVertex, pixel: FragCoord, lt: Lighting) -> ve
         }
     }
     let n = normalize(c.normal)
-    let (sun, sky) = sun_and_sky(lt, c.world, n, sky_n: n, soft: 1.0)
+    let (sun, sky, reflected) = sun_and_gloss(lt, c.world, n, soft: 1.0)
     let open = probes::open_light(lt.probes, vec3(0.0, 1.0, 0.0))
     let albedo = clay_or(lt.light, c.albedo)
-    let colour = cel(lt.light, albedo, n, sun, sky, open, c.world, lt.cam.eye)
+    let metallic = if lt.light.clay != 0 { 0.0 } else { saturate(c.metallic) }
+    let diffuse = cel(lt.light, albedo, n, sun, sky, open, c.world, lt.cam.eye) * (1.0 - metallic)
+    // A bevel narrower than a pixel contains several normals. Broaden only its specular
+    // lobe by that variance, so a polished edge does not flash as individual samples move.
+    let dx = dpdx(n)
+    let dy = dpdy(n)
+    let r2 = max(c.rough * c.rough, 0.01)
+    let rough = min(1.0, sqrt(sqrt(r2 * r2 + 0.25 * (dot(dx, dx) + dot(dy, dy)))))
+    let specular = gloss(
+        lt.light,
+        Lit { albedo, n, sun, sky, through: vec3(0.0), rough, metallic, reflected, glint: 1.0 },
+        normalize(lt.cam.eye - c.world),
+    )
+    let colour = diffuse + specular
     vec4(through_air(lt, colour, c.world), CREATURE + f32(c.part.value % 63))
 }
 
@@ -272,8 +342,8 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
             Some(job) => match job.resume(self.creature, self.slices) {
                 Step::Yielded => {},
                 Step::Done(whole) => {
-                    let c = colours(whole.mesh, self.creature.field(), self.look, cell: 1cm)
-                    self.realized = Some(Realized { mesh: take whole.mesh, colours: c })
+                    let c = materials(whole.mesh, self.creature.field(), self.look, cell: 1cm)
+                    self.realized = Some(Realized { mesh: take whole.mesh, materials: c })
                     self.job = None
                 },
             },
@@ -328,7 +398,7 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
                     pass,
                     character.bind(
                         verts: c.mesh.verts.items(),
-                        colours: c.colours.items(),
+                        materials: c.materials.items(),
                         palettes: self.palette.items(),
                         parts: parts,
                         cam: cam,

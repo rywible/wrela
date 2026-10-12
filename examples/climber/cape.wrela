@@ -1,5 +1,5 @@
 // The cape (#30): the climber is a cape all the way round, to the ground, over a head and
-// shoulders that nothing shows but the mask. The cape is cloth, simulated: a grid of points,
+// shoulders with no visible body or face. The cape is cloth, simulated: a grid of points,
 // `AROUND` round and `DOWN` from the collar to the hem, joined by links that keep their lengths
 // (position-based dynamics, Müller et al. 2007), each point held within its length down the cloth
 // from the collar (long-range attachments, Kim et al. 2012: the cloth can't stretch, however fast
@@ -22,8 +22,8 @@ use std::math::TAU
 use std::transform::{rotate_x, rotate_y, rotate_z, translate}
 
 /// How many points round the cape, and down it from the collar to the hem.
-pub const AROUND: u32 = 24
-pub const DOWN: u32 = 14
+pub const AROUND: u32 = 32
+pub const DOWN: u32 = 16
 pub const POINTS: u32 = AROUND * DOWN
 
 /// The point `i` round (0 ahead, toward the climber's left) and `j` down (0 the collar).
@@ -45,12 +45,12 @@ pub fn body_frame(at: vec3, heading: f32, form: Form) -> mat4 {
 }
 
 /// The collar, round the neck, a little over the shoulders.
-const COLLAR = vec3(0.12, 1.56, 0.11)
+const COLLAR = vec3(0.19, 1.78, 0.17)
 
 /// How many folds the cape falls in, and how far they stand out at the hem (a share of its
 /// radius).
-const FOLDS: u32 = 6
-const FOLD: f32 = 0.12
+const FOLDS: u32 = 8
+const FOLD: f32 = 0.19
 
 /// The cape at rest, in the body's space: the collar round the neck; then from the shoulders'
 /// width down to the hem's, to just over the ground (its weight brings the hem down onto it).
@@ -63,10 +63,11 @@ pub fn rest(i: u32, j: u32) -> vec3 {
     // The shoulders and hidden arms give a straight drape. Only the last rows spread onto
     // the ground: extra cloth at the hem makes a pool without turning the body into a bell.
     let pool = smoothstep(0.8, 1.0, t)
-    let fold = 1.0 + FOLD * t * cos(f32(FOLDS) * a)
-    let rx = mix(SHOULDERS + SHOULDER_RADIUS + 0.03, HEM_RADIUS, pool) * fold
-    let rz = mix(0.29, HEM_RADIUS - 0.02, pool) * fold
-    vec3(rx * sin(a), mix(SHOULDER_Y + 0.02, 0.01, t), rz * cos(a))
+    let fold = 1.0 + FOLD * (0.5 + 0.5 * t) * cos(f32(FOLDS) * a)
+    let drape = SHOULDERS + SHOULDER_RADIUS + 0.03 - 0.055 * sin(t * 3.14159265)
+    let rx = mix(drape, HEM_RADIUS, pool) * fold
+    let rz = mix(0.29 + 0.025 * t, HEM_RADIUS - 0.025, pool) * fold
+    vec3(rx * sin(a), mix(SHOULDER_Y + 0.1 - 0.18 * abs(sin(a)), 0.01, t), rz * cos(a))
 }
 
 /// A link between two points, its length at rest, and how stiff it is (0 to 1, a share of the
@@ -139,7 +140,9 @@ pub const STEP: f32 = 1.0 / 120.0
 // Presentation accepts up to 100 ms between frames. Cover that whole interval: dropping
 // cloth time while its collar covers the full distance turns a sprint into a violent yank.
 const MOST_STEPS: u32 = 12
-const PASSES: u32 = 8
+// The denser 32-column rings need enough relaxation to transmit a moving collar around the
+// pooled hem without leaving stretched circumferential links or a delayed recoil.
+const PASSES: u32 = 20
 
 /// The air: how fast a point's speed through the air dies away (1/s); and what's left of a
 /// point's speed along the ground each step it touches it.
@@ -181,17 +184,19 @@ pub fn hang(frame: mat4) -> Cape {
 /// middle, each a capsule or a cone (two ends, each with its radius; the head's ends are one
 /// point). The core has the same width down its length, so cloth can hang around a plausible
 /// body and arms; the loose hem can pool outside it.
-fn solids(frame: mat4) -> [vec4; 6] {
+fn solids(frame: mat4) -> [vec4; 8] {
     let w = |p: vec3| (frame * vec4(p, 1.0)).xyz
-    let left = vec3(SHOULDERS, SHOULDER_Y, 0.0)
-    let right = vec3(-SHOULDERS, SHOULDER_Y, 0.0)
+    let left = vec3(SHOULDERS, SHOULDER_Y - 0.08, 0.0)
+    let right = vec3(-SHOULDERS, SHOULDER_Y - 0.08, 0.0)
     [
         vec4(w(HEAD), HEAD_RADIUS + 0.02),
         vec4(w(HEAD), HEAD_RADIUS + 0.02),
-        vec4(w(left), SHOULDER_RADIUS + 0.02),
-        vec4(w(right), SHOULDER_RADIUS + 0.02),
-        vec4(w(vec3(0.0, 1.3, 0.0)), 0.27),
-        vec4(w(vec3(0.0, 0.2, 0.0)), 0.27),
+        vec4(w(vec3(0.0, 1.77, 0.0)), 0.11),
+        vec4(w(left), SHOULDER_RADIUS),
+        vec4(w(vec3(0.0, 1.77, 0.0)), 0.11),
+        vec4(w(right), SHOULDER_RADIUS),
+        vec4(w(vec3(0.0, 1.5, 0.0)), 0.25),
+        vec4(w(vec3(0.0, 0.2, 0.0)), 0.25),
     ]
 }
 
@@ -320,7 +325,7 @@ impl Cape {
                 if tl > TETHERS[k] {
                     p = top + t * (TETHERS[k] / tl)
                 }
-                for c in 0..3 {
+                for c in 0..4 {
                     p = out_of(p, solid[2 * c], solid[2 * c + 1])
                 }
                 let under = ground.height(p)
@@ -378,7 +383,7 @@ fn hung_still_it_settles_round_the_body() {
     var inside = 0.0
     let solid = solids(frame)
     for k in AROUND..POINTS {
-        for s2 in 0..3 {
+        for s2 in 0..4 {
             inside = max(
                 inside,
                 length(out_of(c.at[k], solid[2 * s2], solid[2 * s2 + 1]) - c.at[k]),
@@ -413,7 +418,17 @@ fn gliding_it_trails_and_doesnt_stretch() {
     }
     hem = hem / f32(AROUND)
     let s = worst_stretch(c)
-    print(f"the hem's middle {hem} m ahead of the body; stretch {s}")
+    var worst_a = 0
+    var worst_b = 0
+    for l in LINKS {
+        if l.stiff >= 1.0 && length(c.at[l.a] - c.at[l.b]) / l.length - 1.0 >= s - 1.0e-6 {
+            worst_a = l.a
+            worst_b = l.b
+        }
+    }
+    print(
+        f"the hem's middle {hem} m ahead of the body; stretch {s} between {worst_a} and {worst_b}",
+    )
     assert(hem < -0.1, f"the hem is {hem} m ahead of the body")
     assert(s < 0.1, f"a link is {s} off its length")
 }
@@ -452,14 +467,17 @@ fn on_a_slope_the_hem_lies_on_the_ground() {
     assert(over < 0.02, f"the hem uphill hangs {over} m over the ground")
 }
 
-/// Most of the cape hangs straight; its last rows contain extra cloth to pool on the ground.
+/// The shoulders slope into a narrow drape; the last rows hold extra cloth for a pooled base.
 @test
-fn the_cape_hangs_straight_above_a_full_hem() {
+fn the_cape_tapers_below_sloped_shoulders_and_pools_at_the_hem() {
+    assert(rest(AROUND / 4, 1).y < rest(i: 0, j: 1).y - 0.15, "the shoulders form a level bar")
+    assert(abs(rest(AROUND / 4, 1).x) < 0.44, "the upper robe is too broad")
+    assert(abs(rest(AROUND / 4, 8).x) < abs(rest(AROUND / 4, 1).x), "the torso has no inward taper")
     for i in 0..AROUND {
         let shoulder = length(rest(i, 1).xz)
         let knee = length(rest(i, 9).xz)
         let hem = rest(i, DOWN - 1)
-        assert(abs(knee - shoulder) < 0.04, "the cape widens into a bell above the hem")
+        assert(knee < shoulder + 0.04, "the cape widens into a bell above the hem")
         assert(length(hem.xz) > knee + 0.12, "the hem has no extra cloth to pool")
         assert(hem.y < 0.02, "the hem starts above the ground")
     }

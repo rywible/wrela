@@ -61,12 +61,12 @@ pub const FLOWERS_TO: f32 = 60.0
 /// The levels of cells: the coarsest's blades reach past REACH.
 pub const LEVELS: u32 = 5
 
-/// The blades' tiers: near blades bend along 4 segments, the middle ones along 2, far ones
-/// along 1 (the tip the last); a level's blades are its tier's (`tier_of`). Each tier's curve
+/// The blades' tiers: near blades bend along 8 segments, the middle ones along 4, far ones
+/// along 2 (the tip the last); a level's blades are its tier's (`tier_of`). Each tier's curve
 /// morphs to the next tier's shape over the last stretch before it hands over, so no blade's
 /// shape pops.
 pub const TIERS: u32 = 3
-pub const SEGMENTS: [u32; TIERS] = [4, 2, 1]
+pub const SEGMENTS: [u32; TIERS] = [8, 4, 2]
 
 /// The tier of level `k`'s blades.
 pub fn tier_of(k: u32) -> u32 {
@@ -297,11 +297,11 @@ pub fn place(
     // by the blade, so no one blade stands out of its neighbours; a few lit tufts.
     let tuft = noise::noise2(wxz * 1.3 + vec2(-5.0, 8.0))
     let tall = (0.15 + 0.55 * meadow.x) *
-        (0.85 + 0.3 * rand(seed, 4)) *
+        (0.6 + 0.7 * rand(seed, 4)) *
         mix(0.65, 1.2, swathe) *
         (0.9 + 0.3 * smoothstep(0.6, 0.85, tuft)) *
         shrink
-    let width = spacing_at(d) * (0.85 + 0.4 * rand(seed, 5)) * 1.3
+    let width = spacing_at(d) * (0.75 + 0.5 * rand(seed, 5))
     // Its tuft: blades gather in tussocks a hand or two across, splaying out from its middle
     // (a tuft reads as one mass, where blades stood alone as spikes), the tallest in the middle,
     // all combed the patch's way.
@@ -332,7 +332,7 @@ pub fn place(
             // Splayed from its tuft and combed by the wind and the herd, bending over more
             // toward the tuft's edge, so the blades cover the ground as a pile does.
             facing: atan2(splay.y, splay.x),
-            bend: 0.25 + 0.25 * saturate(out) + 0.25 * rand(seed, 7),
+            bend: 0.45 + 0.35 * saturate(out) + 0.35 * rand(seed, 7),
             width,
             ground: std::gpu::Oct32::encode(t.normal),
             colour: Unorm8x4::encode(
@@ -968,6 +968,18 @@ fn under_clearance(kind: f32, tall: f32, distance: f32) -> f32 {
     } else { 1.0 }
 }
 
+/// Sparse distant leaves can widen to hold their coverage, but must keep their species'
+/// proportions. Unbounded spacing-based width turned narrow stalks into broad spears.
+fn under_width(authored: f32, spacing: f32, variation: f32) -> f32 {
+    min(max(authored * (0.8 + 0.4 * variation), spacing * 0.65), authored * 2.0)
+}
+
+/// Broad herb leaves arch away from their petiole; upright flowering plants must not be
+/// represented by a rigid vertical leaf. Rushes and other strap species keep their habit.
+fn under_bend(kind: f32, bend: f32) -> f32 {
+    if kind == HERB { max(bend, 0.45) } else { bend }
+}
+
 /// One of the wood's floor's plants (#54 §9: ferns, bracken and low herbs where the grass
 /// doesn't grow, as the ground's `under` says), as a blade of its own kind: kept with the chance
 /// its density over a blade's spacing here asks, its kind by the weights.
@@ -1017,6 +1029,7 @@ fn under_plant(
         // read as grass under the beeches (round 1's lookbook).
         (0.07 + 0.06 * v, 0.13, 0.65 + 0.25 * rand(p.seed, 7))
     }
+    let bend = under_bend(kind, bend)
     // A fern's fronds rise from its crown and arch out from it: each frond's foot is drawn to
     // the crown of its cell of a coarser grid (keyed to the world), facing away from it; a
     // herb's leaves and a strap's spread so from a rosette. Bracken stands where it falls.
@@ -1046,7 +1059,7 @@ fn under_plant(
             tall: tall * p.shrink * grown,
             facing,
             bend,
-            width: max(wide, spacing * 1.2) * (0.8 + 0.4 * rand(p.seed, 5)) * grown,
+            width: under_width(wide, spacing, rand(p.seed, 5)) * grown,
             ground: std::gpu::Oct32::encode(t.normal),
             // Its tint, how brown (bracken past its prime, in patches), its species (`SPECIES`).
             colour: Unorm8x4::encode(
@@ -1284,15 +1297,26 @@ pub struct BladeVertex: Copy {
     pub which: Flat<u32>,
 }
 
+/// The blade's arch in its facing plane: it leans from the sheath, then bends more near
+/// its tip. A cubic vertical term lets a long, flexible tip turn down while its base rises.
+fn blade_arch(bend: f32, t: f32) -> (vec2, vec2) {
+    let t2 = t * t
+    (
+        vec2(bend * (0.2 * t + 0.8 * t2), t - 0.48 * bend * t2 * t),
+        vec2(bend * (0.2 + 1.6 * t), 1.0 - 1.44 * bend * t2),
+    )
+}
+
 /// A blade's point `t` up its curve (0 its root, 1 its tip), at its edge `side` (−1 or 1),
 /// swayed by the wind.
 fn blade_point(b: Blade, t: f32, side: f32, wind: Wind) -> vec3 {
     let dir = vec2(cos(b.facing), sin(b.facing))
-    let lean = dir * b.bend
-    // A parabola: up, then over.
-    let over = lean * (t * t) * b.tall
-    let up = b.tall * (t - 0.35 * b.bend * t * t)
     let across = vec2(-dir.y, dir.x)
+    let (arch, _) = blade_arch(b.bend, t)
+    // A stable side bow breaks the flat fan without moving a root or changing with the eye.
+    let twist = (b.colour.decode().x - 0.5) * 0.65 * b.bend * t * t
+    let over = (dir * arch.x + across * twist) * b.tall
+    let up = b.tall * arch.y
     // Tapering to a point; a frond or a leaf widest along its middle, from a narrow stalk.
     let frond = b.colour.decode().w > 0.25
     let w = if frond { b.width * pow(sin(3.14159 * min(t * 1.08, 1.0)), 0.7) * 0.5 + 0.0005 } else {
@@ -1372,11 +1396,12 @@ fn blade_vertex(b: Blade, i: u32, side: f32, segments: u32, m: f32, wind: Wind) 
 }
 
 /// A blade's normal at `side` across it: its face's, turned a little toward its edge.
-fn blade_normal(b: Blade, side: f32) -> vec3 {
+fn blade_normal(b: Blade, side: f32, t: f32) -> vec3 {
     let dir = vec2(cos(b.facing), sin(b.facing))
     let across = vec2(-dir.y, dir.x)
-    let face = normalize(vec3(dir.x, 0.35, dir.y))
-    normalize(face + vec3(across.x, 0.0, across.y) * (side * 0.4))
+    let (_, tangent) = blade_arch(b.bend, t)
+    let face = normalize(vec3(-dir.x * tangent.y, tangent.x, -dir.y * tangent.y))
+    normalize(face + vec3(across.x, 0.0, across.y) * (side * 0.25))
 }
 
 /// What a tier's blades' draw reads: its segments, and where it morphs to the next tier's shape
@@ -1394,7 +1419,7 @@ pub fn tier(t: u32) -> Tier {
 }
 
 /// A tier's blades: an instance a group of `GROUP`, indexed, so each point of a blade is shaded
-/// once (a near blade's 9, not its triangles' 21 corners: 0.68 ms, 0.45). The last group's
+/// once (a near blade's 17, not its triangles' 45 corners). The last group's
 /// blades past the count draw nothing.
 @vertex
 pub fn blade(
@@ -1470,7 +1495,7 @@ pub fn blade_shade(
     }
     let world = lt.cam.world_at(pixel.position.xy, pixel.position.z)
     let ground = normalize(b.ground.decode())
-    let n = normalize(ground * 0.75 + blade_normal(b, v.uv.x) * 0.25)
+    let n = normalize(ground * 0.75 + blade_normal(b, v.uv.x, v.uv.y) * 0.25)
     let t = v.uv.y
     let sun = sun_at(lt, world, ground, soft: 1.5)
     // Darker down in the sward, but not so much that each blade reads as a dark-rooted spike.
@@ -1895,4 +1920,85 @@ fn undergrowth_coverage_draw_fades_before_acceptance_changes() {
         }
     }
     assert(under_occupancy(chance: 0.0, draw: 0.0) == 0.0, "empty coverage keeps a plant")
+}
+
+@test
+fn grass_arches_keep_roots_and_turn_flexible_tips_down() {
+    for bend in [0.08, 0.45, 0.8, 1.15] {
+        let (root, tangent) = blade_arch(bend, 0.0)
+        assert(length(root) == 0.0, "authored arch moves its root")
+        assert(tangent.y > 0.0 && tangent.x > 0.0, "blade does not leave its sheath leaning upward")
+        var previous = 0.0
+        for i in 0..33 {
+            let (at, slope) = blade_arch(bend, f32(i) / 32.0)
+            assert(
+                at.x >= previous && at.y >= 0.0,
+                "blade folds through its base or reverses its arch",
+            )
+            assert(length(slope) > 0.1, "blade has a collapsed tangent")
+            previous = at.x
+        }
+    }
+    let (_, flexible) = blade_arch(bend: 0.9, t: 1.0)
+    let (_, stiff) = blade_arch(bend: 0.08, t: 1.0)
+    assert(flexible.y < 0.0, "flexible grass tip still points straight up")
+    assert(stiff.y > 0.8, "stiff rush lost its upright habit")
+    assert(SEGMENTS[TIERS - 1] >= 2, "far grass collapses to straight triangles")
+    for i in 0..(TIERS - 1) {
+        assert(SEGMENTS[i] == SEGMENTS[i + 1] * 2, "curve tiers cannot morph to matching points")
+    }
+}
+
+@test
+fn grass_curve_normals_follow_the_authored_arch() {
+    let b = Blade {
+        root: vec3(2.0, 3.0, 4.0),
+        tall: 0.8,
+        facing: 0.7,
+        bend: 0.9,
+        width: 0.04,
+        ground: std::gpu::Oct32::encode(vec3(0.0, 1.0, 0.0)),
+        colour: Unorm8x4::encode(vec4(0.5, 0.0, 0.0, 0.0)),
+        sky: Unorm8x4::encode(vec4(0.0)),
+    }
+    for i in 0..9 {
+        let t = f32(i) / 8.0
+        let (_, tangent) = blade_arch(b.bend, t)
+        let along = normalize(vec3(cos(b.facing) * tangent.x, tangent.y, sin(b.facing) * tangent.x))
+        let n = blade_normal(b, 0.0, t)
+        assert(abs(dot(n, along)) < 1.0e-5, "lighting normal cuts along the blade")
+        assert(abs(length(n) - 1.0) < 1.0e-5, "blade lighting normal is not unit length")
+    }
+}
+
+@test
+fn undergrowth_width_keeps_authored_species_proportions_at_distance() {
+    for authored in [0.012, 0.04, 0.13, 0.32] {
+        for variation in [0.0, 0.5, 1.0] {
+            var before = 0.0
+            for i in 0..65 {
+                let width = under_width(authored, spacing_at(REACH * f32(i) / 64.0), variation)
+                assert(width <= authored * 2.0, "distant leaf becomes a broad spear")
+                assert(width >= authored * 0.8, "leaf loses its authored width")
+                assert(width >= before, "distance widening reverses")
+                before = width
+            }
+        }
+    }
+}
+
+@test
+fn broad_herbs_arch_while_rushes_keep_their_upright_habit() {
+    for authored in [0.08, 0.15, 0.3, 0.7] {
+        let bend = under_bend(HERB, authored)
+        let (root, _) = blade_arch(bend, 0.0)
+        let (tip, _) = blade_arch(bend, 1.0)
+        assert(length(root) == 0.0, "herb arch moves its root")
+        assert(
+            tip.x >= 0.45 && tip.y > 0.0,
+            "broad herb remains a vertical spear or enters the ground",
+        )
+        assert(under_bend(STRAP, authored) == authored, "strap leaf lost its species habit")
+        assert(under_bend(FERN, authored) == authored, "fern lost its authored arch")
+    }
 }

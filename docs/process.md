@@ -252,6 +252,24 @@ error-based geometry selection. [NVIDIA GPU Gems filtering](https://developer.nv
 filtered over its pixel footprint. These references guide comparisons, not claims that an
 external upscaler or automatic compiler reconstruction has been implemented.
 
+## Character presence and vegetation stability, 2026-10-11
+
+Ryan requested stable foliage light, more natural grass and ground, clearer cloud volume,
+and a new character silhouette. The current direction is a large empty black robe with
+hanging empty sleeves, an empty hood, a hem that leaks connected shadows, and a detailed
+telekinetic sword with a metallic light response. The upper silhouette is lean and varied,
+not a wide block. It supersedes the earlier mask design. Ryan named a grim reaper and the broad mood
+of a dementor (Harry Potter, copyright its rights holders), explicitly requesting an original
+character. No reference shot, mesh, texture, or character design was copied or sampled.
+Codex and parallel agents author the forms in Wrela, inspect motion captures and browser
+play, and validate rendering rules with small shader and numerical regressions. No art
+asset is made with a generative image, audio, music, voice, or video model.
+The material pass carries authored roughness and metallicity through the character bake,
+reusing the engine's GGX and probe reflection functions with colored metal reflectance.
+Small real-shader fixtures check moving highlights, roughness, material baking, static shadow
+sampling, foliage gaps, and vacated temporal history. Native captures and browser play remain
+the visual evidence; test passes alone do not establish a finished environment or zero flicker.
+
 ## The references
 
 ### The rules

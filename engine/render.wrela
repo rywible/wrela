@@ -102,15 +102,25 @@ impl Lights {
 pub trait Look<C>: Copy + GpuData {
     fn surface(self, c: C, rest: vec3, fp: f32) -> (vec3, f32)
 
+    /// The conducting share baked by `character::materials`; its albedo then gives its
+    /// coloured reflectance. The basic `Lights` renderer uses dielectric lighting.
+    fn metallic(self, c: C, rest: vec3, fp: f32) -> f32 {
+        0.0
+    }
+
     fn output(self, colour: vec3) -> vec4 {
         vec4(colour, 1.0)
     }
 }
 
-/// Channels that say their own albedo and roughness.
+/// Channels that say their own albedo, roughness and conducting share.
 pub trait Shaded {
     fn albedo(self) -> vec3
     fn roughness(self) -> f32
+
+    fn metallic(self) -> f32 {
+        0.0
+    }
 }
 
 /// A look that takes the albedo and roughness straight from the channels (`Shaded`).
@@ -119,6 +129,10 @@ pub struct ByChannels: Copy + GpuData {}
 impl<C: Shaded> Look<C> for ByChannels {
     fn surface(self, c: C, rest: vec3, fp: f32) -> (vec3, f32) {
         (c.albedo(), c.roughness())
+    }
+
+    fn metallic(self, c: C, rest: vec3, fp: f32) -> f32 {
+        c.metallic()
     }
 }
 

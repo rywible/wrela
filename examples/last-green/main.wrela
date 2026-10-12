@@ -122,7 +122,7 @@ const SLOTS: u32 = 160
 
 /// How many of the load's steps a frame takes when the floor captures stills (`Floor::capture`),
 /// which play spreads a step a frame: a tile asked for and one placed, a forest kind or a built
-/// thing, a strip of a static cascade, a strip of the probes, a 64th of the sky's dome; and how
+/// thing, a strip of a static cascade, a strip of the probes, one phase of the sky's dome; and how
 /// many tiles it has on their way at once. A still's light is then in within a few frames.
 const CAPTURE_STEPS: u32 = 64
 const CAPTURE_IN_FLIGHT: u32 = 64
@@ -788,7 +788,7 @@ pub fn init() -> Floor {
         frames: 0,
         settled: 0,
         off: Flags::none(),
-        framing: Framing {},
+        framing: Framing { target: 1.65 },
         arm: Arm {},
         focus: 0.0,
         focus_at: vec3(0.0),
@@ -2394,7 +2394,7 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
     swap(mut s.motion, mut s.last_motion)
     let mo = begin_pass_with_depth(mut s.motion, mut s.depth, clear: vec4(0.0), keep_depth: true)
     if let Some(d) = s.drawn {
-        d.motion(mo, cam, s.dt)
+        d.motion(mo, cam)
     }
     // The fawn's and the wolf's: each palette against its last.
     s.fawn.motion(mo, cam)
@@ -2414,7 +2414,8 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
         fresh: if s.frames == 0 || s.plain || again { 1 } else { 0 },
         jitter: engine::view::jitter_of(cam.frame, cam.grid != 0),
         last_jitter: engine::view::jitter_of(max(cam.frame, 1) - 1, cam.grid != 0),
-        moving: vec4(0.0, 0.0, -1.0, -1.0),
+        // All submitted creature motion can uncover the background, including the moving hem.
+        moving: vec4(0.0, 0.0, out),
         settled: if again { 0.0 } else { f32(s.settled) },
     }
     s.settled = if !engine::temporal::held(cam) { 0 } else if again { 1 } else { s.settled + 1 }
@@ -2774,7 +2775,6 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         moving_at: moving_at + vec3(0.0, 1.0, 0.0),
         moving_span: MOVING_SPAN,
         moving_side: MOVING_SIDE,
-        frame: s.frames,
     )
     for _ in 0..steps {
         static_shadows(mut s, sh, wind)
@@ -2788,10 +2788,9 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         moving_at: moving_at + vec3(0.0, 1.0, 0.0),
         moving_span: MOVING_SPAN,
         moving_side: MOVING_SIDE,
-        frame: s.frames,
     )
     moving_shadow(mut s, sh)
-    // (Each a 64th of the dome marched while it fills, up to the step that makes it whole; once
+    // (Each one phase of the dome marched while it fills, up to the step that makes it whole; once
     // whole, a frame marches one again.)
     for k in 0..load_steps(s.capture, filling: !s.sky.done()) {
         if k > 0 && s.sky.done() {

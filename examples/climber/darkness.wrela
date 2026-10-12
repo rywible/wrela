@@ -1,161 +1,63 @@
-// The darkness off the cape (#30): wisps that leave the cloth, mostly at its hem, rise, trail in
-// the air as the climber moves, and shrink away. Each is a clean shape, solid dark with a hard
-// edge (the style draws clean forms, not smoke): a drop drawn out along its way. More leave when
-// the climber moves fast or swings, and a blink leaves a burst where it goes and where it comes.
-//
-// It's drawn, not simulated by the fight: the frames step it beside the cape, from the cape's
-// points.
+// The robe's lower fabric curls into dark flame-shaped tongues. These are the cape's own
+// vertices, connected to its upper rows; no detached particle, bead, or billboard is drawn.
 
-use cape::{AROUND, Cape, DOWN, STEP, point}
-use engine::noise::rand
-use std::io::print
+use cape::{AROUND, Cape, DOWN, point}
+use std::math::TAU
 
-/// The most wisps alive at once.
-pub const MOST: u32 = 192
-
-/// A wisp: where it is and how fast it goes (m/s), how old it is and how long it lives (s), how
-/// big it is at its fullest (m), and how high it left the cape.
-pub struct Wisp: Copy {
-    pub at: vec3,
-    pub speed: vec3,
-    pub age: f32,
-    pub life: f32,
-    pub size: f32,
-    pub from: f32,
+/// Presentation-only folds and escaping shadow at one cloth point. Relief keeps the hanging
+/// cloth's long creases readable after its physical links settle. The lower edge spills in
+/// unequal tapered tongues: most lie low, while a few turn back into the robe.
+pub fn cloth_point(c: Cape, i: u32, j: u32, phase: f32) -> vec3 {
+    let p = c.at[point(i, j)]
+    let down = f32(j) / f32(DOWN - 1)
+    let a = TAU * f32(i) / f32(AROUND)
+    let collar = c.at[point(i, 0)]
+    let away = p.xz - collar.xz
+    let radial = if length(away) > 1.0e-5 { normalize(away) } else { vec2(sin(a), cos(a)) }
+    let side = vec2(radial.y, -radial.x)
+    let fold_root = smoothstep(0.04, 0.25, down)
+    let fold = 0.065 * sin(7.0 * a + 0.25 * sin(3.0 * a) + down * 0.8) * fold_root
+    let weight = smoothstep(0.67, 1.0, down)
+    let long = pow(0.5 + 0.5 * sin(5.0 * a - phase * 0.7 + 0.6 * sin(3.0 * a + phase * 0.23)), 3.0)
+    let short = pow(0.5 + 0.5 * sin(9.0 * a + phase * 0.43), 5.0)
+    let tongue = max(long, short * 0.55)
+    let curl = 0.5 + 0.5 * sin(3.0 * a + phase * 0.31 + 0.9)
+    let spread = 0.32 * tongue * (1.0 - 0.65 * curl) * weight
+    let turn = 0.15 * tongue * sin(phase * 0.65 + a * 4.0 + down * 3.0) * weight
+    let rise = 0.32 * tongue * pow(curl, 3.0) * weight
+    let offset = radial * (fold + spread) + side * turn
+    p + vec3(offset.x, rise, offset.y)
 }
 
-impl Wisp {
-    /// How big it is now: it swells, then shrinks away to nothing.
-    pub fn now(self) -> f32 {
-        let u = clamp(self.age / self.life, 0.0, 1.0)
-        self.size * sin(3.14159265 * sqrt(u))
-    }
-}
-
-/// The darkness: its wisps, how many it has let go so far (each one's draws), and the wisps owed
-/// but not yet let go (a share of one).
-pub struct Darkness {
-    pub wisps: Vec<Wisp>,
-    pub made: u32,
-    pub owed: f32,
-}
-
-pub fn darkness() -> Darkness {
-    Darkness { wisps: Vec::new(), made: 0, owed: 0.0 }
-}
-
-/// How fast wisps rise (m/s²), how fast their speed eases to the wind's (1/s), and how many leave
-/// a second at rest.
-const RISE: f32 = 1.6
-const DRAG: f32 = 2.2
-pub const AT_REST: f32 = 40.0
-
-impl Darkness {
-    /// One wisp let go from the cape `c`: from a point near its hem (or, one in four, anywhere on
-    /// it), with some of the cloth's own speed and a little outward.
-    fn let_go(mut self, c: Cape) {
-        let n = self.made
-        self.made += 1
-        let i = u32(rand(n, 0) * f32(AROUND)) % AROUND
-        let low = rand(n, 1) < 0.75
-        let j = if low { DOWN - 1 - u32(rand(n, 2) * 3.0) } else {
-            1 + u32(rand(n, 2) * f32(DOWN - 2))
-        }
-        let k = point(i, j)
-        let cloth = (c.at[k] - c.was[k]) / STEP
-        let mid = c.at[point(i, 0)]
-        let out = c.at[k] - vec3(mid.x, c.at[k].y, mid.z)
-        let away = if length(out) > 1.0e-4 { normalize(out) } else { vec3(0.0) }
-        let w = Wisp {
-            at: c.at[k] + away * 0.02,
-            speed: cloth * 0.35 + away * (0.15 + 0.2 * rand(n, 3)) + vec3(0.0, 0.35, 0.0),
-            age: 0.0,
-            life: 0.7 + 0.7 * rand(n, 4),
-            size: 0.025 + 0.03 * rand(n, 5),
-            from: c.at[k].y,
-        }
-        if self.wisps.len() < MOST {
-            self.wisps.push(w)
-        } else {
-            // Full: it takes the oldest's place.
-            var oldest = 0
-            for q in 0..self.wisps.len() {
-                if self.wisps[q].age > self.wisps[oldest].age {
-                    oldest = q
+/// The shadow tongues are attached to unchanged cloth roots, and stay within a small bounded
+/// region of its physical hem. A later phase moves that same connected surface.
+@test
+fn the_dark_hem_is_connected_and_its_motion_is_bounded() {
+    let c = cape::hang(cape::body_frame(vec3(0.0), 0.0, moves::Form {}))
+    var changed = 0.0
+    for phase in [0.0, 0.6, 1.7, 3.0] {
+        for i in 0..AROUND {
+            for j in 0..DOWN {
+                let physical = c.at[point(i, j)]
+                let p = cloth_point(c, i, j, phase)
+                if j == 0 {
+                    assert(
+                        length(p - physical) == 0.0,
+                        "shadow deformation detached from the robe collar",
+                    )
                 }
+                assert(
+                    p.y >= physical.y && length(p - physical) < 0.45,
+                    "dark fabric left its bounded hem region",
+                )
             }
-            self.wisps[oldest] = w
+            changed = max(
+                changed,
+                length(
+                    cloth_point(c, i, DOWN - 1, phase) - cloth_point(c, i, DOWN - 1, phase + 0.5),
+                ),
+            )
         }
     }
-
-    /// Every wisp moved by `by`, as it is.
-    pub fn carry(mut self, by: vec3) {
-        for q in 0..self.wisps.len() {
-            self.wisps[q].at = self.wisps[q].at + by
-            self.wisps[q].from += by.y
-        }
-    }
-
-    /// The darkness `dt` seconds on: `rate` wisps a second let go from the cape (`burst` more at
-    /// once), and each wisp risen, eased toward `wind`, aged; the dead let go.
-    pub fn step(mut self, c: Cape, rate: f32, burst: u32, wind: vec3, dt: f32) {
-        self.owed += rate * dt
-        for _ in 0..burst {
-            self.let_go(c)
-        }
-        while self.owed >= 1.0 {
-            self.owed -= 1.0
-            self.let_go(c)
-        }
-        let keep = exp(-DRAG * dt)
-        var alive: Vec<Wisp> = Vec::new()
-        for q in 0..self.wisps.len() {
-            var w = self.wisps[q]
-            w.speed = wind + (w.speed - wind) * keep + vec3(0.0, RISE * dt, 0.0)
-            w.at = w.at + w.speed * dt
-            w.age += dt
-            if w.age < w.life {
-                alive.push(w)
-            }
-        }
-        self.wisps = take alive
-    }
-}
-
-// ---- tests -------------------------------------------------------------------------------------
-
-/// From a cape hung still, wisps leave at the rate asked, rise (a fifth of a metre over where they
-/// left, on average), never pass `MOST`, and each dies at the end of its life.
-@test
-fn wisps_rise_and_die() {
-    let c = cape::hang(cape::body_frame(vec3(0.0), 0.0, moves::Form {}))
-    var d = darkness()
-    var most = 0
-    for _ in 0..240 {
-        d.step(c, rate: AT_REST, burst: 0, wind: vec3(0.0), dt: 1.0 / 60.0)
-        most = max(most, d.wisps.len())
-    }
-    var rose = 0.0
-    var old = 0.0
-    for w in d.wisps {
-        rose += w.at.y - w.from
-        old = max(old, w.age / w.life)
-    }
-    rose = rose / f32(d.wisps.len())
-    print(
-        f"after 4 s: {d.made} let go, {d.wisps.len()} alive (most {most}), risen {rose} m on average",
-    )
-    assert(abs(f32(d.made) - 4.0 * AT_REST) <= 1.0, f"{d.made} let go in 4 s")
-    assert(most <= MOST, f"{most} alive")
-    assert(old < 1.0, "a wisp outlived its life")
-    assert(rose > 0.2, f"the wisps rose {rose} m on average")
-}
-
-/// A burst never takes the wisps past `MOST`.
-@test
-fn a_burst_keeps_to_the_most() {
-    let c = cape::hang(cape::body_frame(vec3(0.0), 0.0, moves::Form {}))
-    var d = darkness()
-    d.step(c, rate: 0.0, burst: MOST + 50, wind: vec3(0.0), dt: 1.0 / 60.0)
-    assert(d.wisps.len() == MOST, f"{d.wisps.len()} alive")
+    assert(changed > 0.05, "the connected dark hem does not change shape")
 }

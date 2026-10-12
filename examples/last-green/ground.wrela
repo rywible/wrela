@@ -444,8 +444,8 @@ impl Ground {
         // The ground under the grass takes its soil's colour: a sandy soil over sandstone
         // yellower and lighter, a clay over mudstone darker.
         let earth = mix(vec3(0.15, 0.12, 0.08), vec3(0.22, 0.17, 0.10), vec3(acid))
-        let meadow = mix(vec3(0.10, 0.17, 0.035), vec3(0.20, 0.24, 0.05), vec3(patches))
-        var a = mix(meadow, earth * 0.8 + meadow * 0.2, vec3(0.25 * (1.0 - soil)))
+        let meadow = mix(vec3(0.055, 0.085, 0.032), vec3(0.12, 0.14, 0.06), vec3(patches))
+        var a = mix(meadow, earth * 0.8 + meadow * 0.2, vec3(0.6 * (1.0 - soil)))
         // Down past the plateau's edge: the valley's fields on its floor, the woods of the hills
         // above it (no grass is drawn down there: it's land seen from far off).
         let down = smoothstep(10.0, 60.0, past)
@@ -588,7 +588,7 @@ impl Ground {
         )
         c.flora = vec4(c.flora.x, wet, light, trodden)
         // The wood's floor's own plants where the canopy closes (#54 §9): low herbs all through
-        // it, ferns in patches in the deep shade, bracken in patches where light comes through
+        // it with litter visible between their colonies, ferns in patches in deep shade, bracken where light comes through
         // in gaps; thinner under thorn and in the wet, none on a path. Where the meadow opens,
         // the grass takes over.
         let fern = smoothstep(0.45, 0.62, fbm2_seen(xz * 0.09 + vec2(13.0, 7.0), 3, w * 0.09)) *
@@ -599,11 +599,11 @@ impl Ground {
             fbm2_seen(xz * 0.045 + vec2(-21.0, 4.0), 3, w * 0.045),
         ) *
             smoothstep(0.12, 0.4, light)
-        let herbs = 0.3
+        let herbs = 0.22
         let shade = 1.0 - open
         c.under = vec4(
             shade *
-                (0.35 + 0.65 * max(fern, bracken)) *
+                (0.14 + 0.76 * max(fern, bracken)) *
                 (1.0 - bare) *
                 (1.0 - 0.3 * thorn) *
                 (1.0 - 0.25 * soaked),

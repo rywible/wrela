@@ -1,15 +1,13 @@
 // The climber's lab: the fight drawn plainly, to judge its motion as stills. The fight's sim
 // runs as in the game (`engine::run`, the pad's presses as its records); each frame draws the
 // snapshots round the frame's time: the cape, stepped from the climber's body (`climber::cape`),
-// the darkness off it (`climber::darkness`), the sword and a stand-in mask (the figure's look is
-// the characters thread's), and the wolf, on
+// its connected curling hem, the empty hood and sleeves, a simple sword, and the wolf, on
 // flat ground under one sun, seen from the side of the line between the two, far enough for both
 // (a judge's view; the player's camera is the shots thread's). No shadows, no grass: the motion
 // is the subject.
 
-use climber::body::{BLADE_THICK, BLADE_WIDTH, GUARD_AT, HEAD, HEAD_RADIUS, POINT_AT}
+use climber::body::{BLADE_THICK, BLADE_WIDTH, GUARD_AT, POINT_AT}
 use climber::cape::{AROUND, DOWN, POINTS, body_frame, flat}
-use climber::darkness::MOST
 use climber::draw::{WolfCoat, wolf_bones}
 use climber::figure::{Figure, figure}
 use climber::fight::{World, present, spawn, sword_at, tick}
@@ -17,11 +15,11 @@ use climber::moves::Act
 use engine::gait::between
 use engine::present::{Snapshots, short_way}
 use engine::realize::{Mesh, realize_once}
-use engine::render::{Lights, MAX_BONES, View, shade, skin, unlit_shadow, view}
+use engine::render::{ByChannels, Lights, MAX_BONES, View, shade, skin, unlit_shadow, view}
 use engine::run::run
 use std::gpu::{
     ClipPosition, ComparisonSampler, Cull, DepthTexture, GpuBuffer, VertexIndex,
-    begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture, discard, draw, write,
+    begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture, draw, write,
 }
 use std::io::print
 use std::math::TAU
@@ -34,12 +32,12 @@ pub struct Lab {
     /// The frame's time the figure was last stepped to (s).
     stepped: f32,
     points: GpuBuffer<vec4>,
-    /// Each wisp: where it is and how big now, and its speed.
-    wisps: GpuBuffer<vec4>,
-    /// The CPU's time stepping the cape and the darkness (ms, summed), and over how many frames.
+    /// The CPU's time stepping the cape and its hem (ms, summed), and over how many frames.
     cpu: f32,
     frames: u32,
     wolf: Mesh,
+    hood: Mesh,
+    hood_palette: GpuBuffer<mat4>,
     palette: GpuBuffer<mat4>,
     /// Where the camera is, eased.
     follow: vec3,
@@ -62,10 +60,16 @@ pub fn init() -> Lab {
         figure: figure(),
         stepped: 0.0,
         points: buffer(POINTS),
-        wisps: buffer(MOST * 2),
         cpu: 0.0,
         frames: 0,
         wolf: realize_once(wolf::creature::wolf(), WOLF_REALIZED),
+        hood: realize_once(
+            climber::look::head(),
+            engine::look::CreatureLook {
+                surface: engine::look::Mesh { tolerance: 3mm, largest: 2cm },
+            },
+        ),
+        hood_palette: buffer(MAX_BONES),
         palette: buffer(MAX_BONES),
         follow: vec3(0.0),
         depth: depth_texture(width: 1, height: 1),
@@ -158,24 +162,6 @@ fn block(v: VertexIndex, model: mat4, view: View) -> Surfel {
     }
 }
 
-/// A unit sphere's point, 16 round and 10 down, moved by `model`.
-@vertex
-fn ball(v: VertexIndex, model: mat4, view: View) -> Surfel {
-    let cell = v.index / 6
-    let corner = v.index % 6
-    let di = [0, 1, 0, 0, 1, 1]
-    let dj = [0, 0, 1, 1, 0, 1]
-    let a = TAU * f32(cell % 16 + di[corner]) / 16.0
-    let b = 3.14159265 * f32(cell / 16 + dj[corner]) / 10.0
-    let n = vec3(sin(b) * sin(a), cos(b), sin(b) * cos(a))
-    let world = (model * vec4(n, 1.0)).xyz
-    Surfel {
-        clip: ClipPosition { position: view.view_proj * vec4(world, 1.0) },
-        world,
-        normal: turned(model, n),
-    }
-}
-
 /// A normal `n` moved by `model` (its axes square to each other, each scaled).
 fn turned(model: mat4, n: vec3) -> vec3 {
     let (x, y, z) = (model[0].xyz, model[1].xyz, model[2].xyz)
@@ -192,45 +178,6 @@ fn lit(s: Surfel, albedo: vec3, rough: f32, view: View, lights: Lights) -> vec4 
     vec4(lights.light(albedo, rough, n, s.world, view, 1.0), 1.0)
 }
 
-/// A wisp's corner: a quad drawn out along its way, square to the eye.
-pub struct Wispel: Copy {
-    pub clip: ClipPosition,
-    pub uv: vec2,
-}
-
-@vertex
-fn wisp(v: VertexIndex, wisps: [vec4], view: View) -> Wispel {
-    let q = v.index / 6
-    let corner = v.index % 6
-    let cu = [-1.0, 1.0, -1.0, -1.0, 1.0, 1.0]
-    let cv = [-1.0, -1.0, 1.0, 1.0, -1.0, 1.0]
-    let at = wisps[2 * q].xyz
-    let size = wisps[2 * q].w
-    let speed = wisps[2 * q + 1].xyz
-    let sl = length(speed)
-    let along = if sl > 1.0e-3 { speed / sl } else { vec3(0.0, 1.0, 0.0) }
-    var side = cross(along, view.eye - at)
-    side = if length(side) > 1.0e-6 { normalize(side) } else { vec3(1.0, 0.0, 0.0) }
-    let long = size * (1.2 + 1.2 * sl)
-    let p = at + side * (cu[corner] * size * 0.45) + along * (cv[corner] * long)
-    Wispel {
-        clip: ClipPosition { position: view.view_proj * vec4(p, 1.0) },
-        uv: vec2(cu[corner], cv[corner]),
-    }
-}
-
-/// A wisp's shape: a drop, round at its head (ahead, +v) and drawn to a point behind; solid, its
-/// edge hard.
-@fragment
-fn drop(w: Wispel, colour: vec3) -> vec4 {
-    let y = w.uv.y
-    let r = if y >= 0.0 { sqrt(max(1.0 - y * y, 0.0)) } else { 1.0 + y }
-    if abs(w.uv.x) > r {
-        discard()
-    }
-    vec4(colour, 1.0)
-}
-
 /// A box's frame: its middle at `at`, its axes `x`, `y` (square to each other, unit), each side
 /// `half` from the middle.
 fn boxed(at: vec3, x: vec3, y: vec3, half: vec3) -> mat4 {
@@ -238,15 +185,12 @@ fn boxed(at: vec3, x: vec3, y: vec3, half: vec3) -> mat4 {
     mat4(vec4(x * half.x, 0.0), vec4(y * half.y, 0.0), vec4(z * half.z, 0.0), vec4(at, 1.0))
 }
 
-/// The colours: the cape near black, a little blue; the blade's steel; the mask's pale face; the
+/// The colours: the cape near black, a little blue; the blade's steel; the
 /// hood; the ground.
-const CAPE = vec3(0.07, 0.07, 0.09)
+const CAPE = climber::look::CAPE
 const STEEL = vec3(0.42, 0.43, 0.45)
 const HILT = vec3(0.12, 0.08, 0.05)
-const MASK = vec3(0.82, 0.79, 0.74)
-const HOOD = vec3(0.025, 0.025, 0.035)
 const GROUND = vec3(0.16, 0.2, 0.1)
-const DARK = vec3(0.012, 0.01, 0.02)
 
 pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.snaps.update()
@@ -258,7 +202,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     c.heading = a.climber.heading + short_way(w.climber.heading - a.climber.heading, TAU) * b.alpha
     let pose = c.pose(b.alpha)
     let frame = body_frame(c.at, c.heading, pose.form)
-    // The cape and the darkness off it, stepped by the frame's time.
+    // The cape and its connected lower fabric, stepped by the frame's time.
     let dt = clamp(time - s.stepped, 0.0, 0.1)
     s.stepped = time
     let start = now()
@@ -274,18 +218,14 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         dt: dt,
     )
     write(mut s.points, 0, s.figure.points())
-    let ws = s.figure.wisps()
     s.cpu += since(start) * 1000.0
     s.frames += 1
     if s.frames % 120 == 0 {
         print(
-            f"the cape and the darkness: {s.cpu / f32(s.frames)} ms a frame on the CPU, {ws.len() / 2} wisps",
+            f"the cape and its connected hem: {s.cpu / f32(s.frames)} ms a frame on the CPU",
         )
     }
-    let wisp_count = ws.len() / 2
-    if wisp_count > 0 {
-        write(mut s.wisps, 0, ws)
-    }
+    write(mut s.hood_palette, 0, [frame; MAX_BONES])
     // The wolf between its two ticks.
     let walker = between(a.wolf.walker, w.wolf.walker, b.alpha)
     write(mut s.palette, 0, wolf_bones(a.wolf, w.wolf, b.alpha, origin: vec3(0.0)))
@@ -338,15 +278,6 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         indirect: s.wolf.draw.items(),
         cull: Cull::Back,
     )
-    if wisp_count > 0 {
-        draw(
-            pass,
-            wisp.bind(wisps: s.wisps.items(), view: v),
-            drop.bind(colour: DARK),
-            vertices: wisp_count * 6,
-            cull: Cull::None,
-        )
-    }
     if !c.gone() {
         draw(
             pass,
@@ -355,22 +286,25 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
             vertices: AROUND * (DOWN - 1) * 6,
             cull: Cull::None,
         )
-        // The hood round the head, and the mask on its front.
-        let head = frame * translate(HEAD)
         draw(
             pass,
-            ball.bind(model: head * scale(vec3(HEAD_RADIUS + 0.02)), view: v),
-            lit.bind(albedo: HOOD, rough: 0.85, view: v, lights: LIGHTS),
-            vertices: 960,
-        )
-        draw(
-            pass,
-            ball.bind(
-                model: head * translate(vec3(0.0, -0.01, 0.06)) * scale(vec3(0.105, 0.135, 0.09)),
+            skin.bind(
+                verts: s.hood.verts.items(),
+                palettes: s.hood_palette.items(),
+                first: 0,
                 view: v,
             ),
-            lit.bind(albedo: MASK, rough: 0.5, view: v, lights: LIGHTS),
-            vertices: 960,
+            shade.bind(
+                field: climber::look::head().field(),
+                look: ByChannels {},
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.shadow_sampler,
+            ),
+            indices: s.hood.quads.items(),
+            indirect: s.hood.draw.items(),
+            cull: Cull::Back,
         )
         // The sword: the blade, the guard, the grip.
         let (at, aim, edge) = sword_at(c, b.alpha)
