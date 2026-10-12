@@ -1,0 +1,70 @@
+// Shared Wrela session protocol. Hosts carry these bytes without interpreting save policy.
+use std::serialize::{Serialize, load, save}
+
+pub struct SaveInfo: Clone + Serialize {
+    pub slot: String,
+    pub label: String,
+    pub description: String,
+    pub saved: u32,
+}
+
+pub enum Request: Clone + Serialize {
+    List { profile: String },
+    Prepare { profile: String, slot: String },
+    Start,
+    Export { profile: String, slot: String },
+    Import { profile: String, bytes: Vec<u8> },
+}
+
+pub enum Reply: Clone + Serialize {
+    Saves { entries: Vec<SaveInfo> },
+    Ready,
+    Started,
+    Exported { bytes: Vec<u8> },
+    Imported,
+    Error { message: String },
+}
+
+/// Exported saves identify their game and schema before the game reads the payload.
+pub struct SaveFile: Clone + Serialize {
+    pub game: String,
+    pub version: u32,
+    pub saved: u32,
+    pub body: Vec<u8>,
+}
+
+/// A profile key is a bounded storage component, separate from its editable display name.
+pub fn valid_key(key: str) -> bool {
+    if key.is_empty() || key.len() > 64 { return false }
+    for i in 0..key.len() {
+        let c = key.byte(i)
+        if !((c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45) { return false }
+    }
+    true
+}
+
+@test
+fn profile_keys_cannot_escape_storage_or_expand_without_bound() {
+    assert(valid_key("player-1"))
+    for key in ["", "../save", "a/b", "a\\b", "a%2fb", "a:b", "A", "."] {
+        assert(!valid_key(key), key)
+    }
+}
+
+@test
+fn session_replies_keep_game_owned_save_metadata() {
+    var entries: Vec<SaveInfo> = Vec::new()
+    entries.push(
+        SaveInfo {
+            slot: String::from("continue"),
+            label: String::from("Continue"),
+            description: String::from("A game supplied summary"),
+            saved: 42,
+        },
+    )
+    let back: Result<Reply, std::serialize::LoadError> = load(save(Reply::Saves { entries }))
+    match back {
+        Ok(Reply::Saves { entries }) => assert(entries.len() == 1 && entries[0].saved == 42),
+        _ => assert(false, "session reply round trip"),
+    }
+}

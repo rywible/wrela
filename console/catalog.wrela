@@ -1,0 +1,56 @@
+// A static catalog is release data, not a list of games compiled into the console.
+use platform::protocol::valid_key
+
+pub struct Card: Clone {
+    pub id: String,
+    pub title: String,
+    pub session: String,
+    pub cover: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+pub fn parse(text: str) -> Option<Vec<Card>> {
+    var cards: Vec<Card> = Vec::new()
+    for line in text.lines() {
+        borrow row = text.slice(line.0, line.1).trim()
+        if row.is_empty() { continue }
+        let columns = row.split("\t")
+        if columns.len() != 6 { return None }
+        let part = |i: u32| row.slice(columns[i].0, columns[i].1).to_string()
+        let Some(width) = part(4).parse_u32() else { return None }
+        let Some(height) = part(5).parse_u32() else { return None }
+        if !valid_key(part(0)) ||
+            part(1).is_empty() ||
+            part(2).is_empty() ||
+            width == 0 ||
+            height == 0 ||
+            width > 2048 ||
+            height > 2048 { return None }
+        for c in cards { if c.id == part(0) { return None } }
+        cards.push(
+            Card {
+                id: part(0).to_string(),
+                title: part(1).to_string(),
+                session: part(2).to_string(),
+                cover: part(3).to_string(),
+                width,
+                height,
+            },
+        )
+    }
+    if cards.is_empty() { None } else { Some(cards) }
+}
+
+@test
+fn a_catalog_can_hold_unrelated_games_without_changing_the_console() {
+    let text = "first\tFirst title\thttps://first.example/session/\ta.rgba\t320\t180\nsecond\tSecond title\thttps://second.example/session/\tb.rgba\t640\t360\n"
+    let Some(cards) = parse(text) else {
+        assert(false, "valid catalog")
+        return
+    }
+    assert(cards.len() == 2 && cards[1].title == "Second title")
+    assert(parse("first\tFirst\turl\timage\t0\t1").is_none())
+    assert(parse("bad\trow").is_none())
+    assert(parse("same\tFirst\turl\timage\t1\t1\nsame\tSecond\turl\timage\t1\t1").is_none())
+}

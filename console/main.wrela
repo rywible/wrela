@@ -1,0 +1,806 @@
+// Wrela's console. The catalog and game session protocol supply all title-specific content.
+use catalog::{Card, parse}
+use paint::{Field, horizon, image, quad}
+use platform::host
+use platform::protocol::{Reply, Request, SaveInfo, valid_key}
+use std::gpu::{Rgba8, Sampler, Texture, begin_screen_pass, draw, sampler, texture}
+use std::input::{Button, Event, Key, PadButton, events}
+use std::io::{Pending, fetch, load as read_file, store}
+use std::serialize::{LoadError, Serialize, load, save}
+use ui::draw::{DrawList, Rect, Renderer}
+use ui::text::{Face, Fonts, previous}
+use ui::ttf::{Baked, bake}
+
+@fuel(2 ** 38)
+const BODY: Baked = bake(embed("fonts/Manrope-Medium.ttf"), em: 36.0, spread: 4.0)
+@fuel(2 ** 38)
+const DISPLAY: Baked = bake(embed("fonts/Barlow-Light.ttf"), em: 48.0, spread: 5.0)
+const INK = vec4(0.945, 0.969, 0.992, 1.0)
+const MUTED = vec4(0.675, 0.773, 0.871, 1.0)
+const LIGHT = vec4(0.765, 0.894, 0.957, 1.0)
+const SURFACE = vec4(0.125, 0.216, 0.325, 1.0)
+
+pub struct Profile: Clone + Serialize {
+    version: u32,
+    key: String,
+    name: String,
+    game: String,
+    motion: bool,
+}
+
+enum Pane: Copy + Eq { Games, Saves, Settings }
+
+enum PlayIntent: Copy + Eq { Selected, NewGame }
+
+enum PlayPlan: Clone { Start, Prepare { slot: String } }
+
+enum Step: Copy + Eq {
+    Idle,
+    Open,
+    List,
+    Prepare,
+    Start,
+    Frame,
+    Show,
+    Closed,
+    Export,
+    Download,
+    PickFile,
+    Import,
+}
+
+enum Action: Copy + Eq {
+    Games,
+    Saves,
+    Settings,
+    Play,
+    NewGame,
+    ViewSaves,
+    Export,
+    Import,
+    SaveProfile,
+    Motion,
+    Game { index: u32 },
+    Save { index: u32 },
+    Retry,
+}
+
+pub struct Console {
+    fonts: Fonts,
+    renderer: Renderer,
+    draw: DrawList,
+    linear: Sampler,
+    cover: Option<Texture<Rgba8>>,
+    cover_rect: Rect,
+    cover_load: Option<Pending<u8>>,
+    catalog_load: Option<Pending<u8>>,
+    profile_load: Option<Pending<u8>>,
+    profile_write: Option<Pending<u8>>,
+    environment: Option<Pending<u8>>,
+    pending: Option<Pending<u8>>,
+    closing: Option<Pending<u8>>,
+    cards: Vec<Card>,
+    selected: u32,
+    profile: Profile,
+    profile_ready: bool,
+    pane: Pane,
+    step: Step,
+    handle: Option<u32>,
+    saves: Vec<SaveInfo>,
+    picked: u32,
+    prepared_slot: Option<String>,
+    wanted_slot: String,
+    play_intent: Option<PlayIntent>,
+    need_open: bool,
+    message: String,
+    pixel_ratio: f32,
+    reduced: bool,
+    intro_until: f32,
+    focus: u32,
+    controls: u32,
+    activate: Option<Action>,
+    enter: bool,
+    clicked: Option<vec2>,
+    pressed: Option<vec2>,
+    zoom: f32,
+    time: f32,
+}
+
+pub fn init() -> Console {
+    let fonts = Fonts::from_baked(BODY, DISPLAY)
+    let renderer = Renderer::new(fonts)
+    Console {
+        fonts,
+        renderer,
+        draw: DrawList::new(),
+        linear: sampler(),
+        cover: None,
+        cover_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
+        cover_load: None,
+        catalog_load: Some(fetch("catalog.tsv")),
+        profile_load: Some(read_file("console/profile")),
+        profile_write: None,
+        environment: Some(host::environment()),
+        pending: None,
+        closing: None,
+        cards: Vec::new(),
+        selected: 0,
+        profile: Profile {
+            version: 1,
+            key: String::from("player-1"),
+            name: String::from("Player 1"),
+            game: String::new(),
+            motion: true,
+        },
+        profile_ready: false,
+        pane: Pane::Games,
+        step: Step::Idle,
+        handle: None,
+        saves: Vec::new(),
+        picked: 0,
+        prepared_slot: None,
+        wanted_slot: String::new(),
+        play_intent: None,
+        need_open: false,
+        message: String::new(),
+        pixel_ratio: 1.0,
+        reduced: false,
+        intro_until: 2.6,
+        focus: 3,
+        controls: 0,
+        activate: None,
+        enter: false,
+        clicked: None,
+        pressed: None,
+        zoom: 1.0,
+        time: 0.0,
+    }
+}
+
+fn poll(pending: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>> {
+    var answer = None
+    match mut pending {
+        Some(p) => answer = p.poll(),
+        None => {},
+    }
+    if answer.is_some() { pending = None }
+    answer
+}
+
+fn call(s: mut Console, request: Request, step: Step) {
+    let Some(id) = s.handle else { return }
+    let bytes = save(request)
+    s.pending = Some(host::send(id, bytes))
+    s.step = step
+}
+
+fn list(s: mut Console) {
+    let request = Request::List { profile: s.profile.key.clone() }
+    call(mut s, request, Step::List)
+}
+
+fn prepare_game(s: mut Console, slot: String) {
+    s.wanted_slot = slot.clone()
+    let request = Request::Prepare { profile: s.profile.key.clone(), slot: slot.clone() }
+    call(mut s, request, Step::Prepare)
+}
+
+fn start(s: mut Console) {
+    call(mut s, Request::Start, Step::Start)
+}
+
+// A queued play always uses the latest explicit selection, even if a different slot finishes preparing.
+fn play_plan(
+    prepared: Option<String>,
+    saves: [SaveInfo],
+    picked: u32,
+    intent: PlayIntent,
+) -> PlayPlan {
+    let slot = if intent == PlayIntent::NewGame || saves.len() == 0 { String::new() } else {
+        saves[min(picked, saves.len() - 1)].slot.clone()
+    }
+    if let Some(ready) = prepared { if ready == slot { return PlayPlan::Start } }
+    PlayPlan::Prepare { slot }
+}
+
+fn fulfill_play(s: mut Console) {
+    let Some(intent) = s.play_intent else { return }
+    if s.step != Step::Idle || s.closing.is_some() || s.cards.is_empty() { return }
+    if s.handle.is_none() {
+        s.need_open = true
+        return
+    }
+    match play_plan(s.prepared_slot, s.saves, s.picked, intent) {
+        PlayPlan::Start => start(mut s),
+        PlayPlan::Prepare { slot } => prepare_game(mut s, slot.clone()),
+    }
+}
+
+fn open_selected(s: mut Console) {
+    if s.cards.is_empty() { return }
+    s.message.clear()
+    s.saves.clear()
+    s.picked = 0
+    s.prepared_slot = None
+    s.cover = None
+    s.cover_load = Some(fetch(s.cards[s.selected].cover))
+    s.profile.game = s.cards[s.selected].id.clone()
+    let bytes = save(s.profile)
+    s.profile_write = Some(store("console/profile", bytes))
+    s.pending = Some(host::open(s.cards[s.selected].session))
+    s.step = Step::Open
+    s.need_open = false
+}
+
+fn failed(s: mut Console, message: str) {
+    s.message = message.to_string()
+    s.play_intent = None
+    s.step = Step::Idle
+    s.prepared_slot = None
+}
+
+fn answer(s: mut Console, bytes: take Vec<u8>) {
+    match s.step {
+        Step::Open => {
+            let Some(id) = host::word(bytes) else {
+                failed(mut s, "The game could not connect. Try again.")
+                return
+            }
+            s.handle = Some(id)
+            list(mut s)
+        },
+        Step::List | Step::Prepare | Step::Start | Step::Export | Step::Import => {
+            let result: Result<Reply, LoadError> = load(bytes.clone())
+            let Ok(reply) = result else {
+                failed(mut s, "The game sent an unsupported response.")
+                return
+            }
+            match reply {
+                Reply::Error { message } => failed(mut s, message),
+                Reply::Saves { entries } => {
+                    if entries.len() > 256 {
+                        failed(mut s, "The game sent too many saves.")
+                        return
+                    }
+                    for entry in entries {
+                        if !valid_key(entry.slot) ||
+                            entry.label.len() > 160 ||
+                            entry.description.len() > 512 {
+                            failed(mut s, "The game sent unsupported save details.")
+                            return
+                        }
+                    }
+                    s.saves = entries.clone()
+                    s.picked = 0
+                    let slot = if s.saves.is_empty() { String::new() } else {
+                        s.saves[0].slot.clone()
+                    }
+                    prepare_game(mut s, slot)
+                },
+                Reply::Ready => {
+                    s.prepared_slot = Some(s.wanted_slot.clone())
+                    s.step = Step::Idle
+                },
+                Reply::Started => {
+                    let Some(id) = s.handle else { return }
+                    s.pending = Some(host::surface("surface/frame", id))
+                    s.step = Step::Frame
+                },
+                Reply::Exported { bytes } => {
+                    let slot = if s.saves.is_empty() { String::from("save") } else {
+                        s.saves[s.picked].slot.clone()
+                    }
+                    let name = f"{s.cards[s.selected].id}-{s.profile.key}-{slot}.wrela-save"
+                    s.pending = Some(host::export_file(name, bytes))
+                    s.step = Step::Download
+                },
+                Reply::Imported => {
+                    s.message = String::from("Save imported.")
+                    list(mut s)
+                },
+            }
+        },
+        Step::Frame => {
+            let Some(id) = s.handle else { return }
+            s.pending = Some(host::surface("surface/show", id))
+            // Keep the closure request alive before the host suspends this console.
+            s.closing = Some(host::surface("surface/closed", id))
+            s.step = Step::Show
+        },
+        Step::Show => {
+            s.step = Step::Closed
+            s.play_intent = None
+        },
+        Step::Download => {
+            s.step = Step::Idle
+            s.message = String::from("Save exported.")
+        },
+        Step::PickFile => {
+            let request = Request::Import { profile: s.profile.key.clone(), bytes }
+            call(mut s, request, Step::Import)
+        },
+        _ => s.step = Step::Idle,
+    }
+}
+
+fn update(s: mut Console) {
+    if let Some(result) = poll(mut s.environment) {
+        if let Ok(bytes) = result {
+            if !bytes.is_empty() { s.reduced = bytes[0] != 0 }
+            if let Some(ratio) = host::word(bytes, 5) {
+                s.pixel_ratio = clamp(f32(ratio) / 1024.0, 0.5, 4.0)
+            }
+        }
+    }
+    if let Some(result) = poll(mut s.profile_load) {
+        s.profile_ready = true
+        if let Ok(bytes) = result {
+            let profile: Result<Profile, LoadError> = load(bytes.clone())
+            if let Ok(p) = profile {
+                if p.version == 1 && valid_key(p.key) && p.name.len() <= 160 {
+                    s.profile = p.clone()
+                    s.intro_until = 0.45
+                }
+            }
+        }
+    }
+    if let Some(result) = poll(mut s.catalog_load) {
+        match result {
+            Ok(bytes) => {
+                if let Some(text) = String::from_utf8(bytes.clone()) {
+                    if let Some(cards) = parse(text) {
+                        s.cards = cards.clone()
+                        s.need_open = true
+                    } else { s.message = String::from("The game library could not be read.") }
+                }
+            },
+            Err(_) => s.message = String::from(
+                "The game library could not load. Check your connection and reload.",
+            ),
+        }
+    }
+    if s.need_open && s.profile_ready && s.step == Step::Idle {
+        for i in 0..s.cards.len() { if s.cards[i].id == s.profile.game { s.selected = i } }
+        open_selected(mut s)
+    }
+    if let Some(result) = poll(mut s.cover_load) {
+        if let Ok(bytes) = result {
+            let card = s.cards[s.selected].clone()
+            if bytes.len() == card.width * card.height * 4 {
+                var image = texture::<Rgba8>(width: card.width, height: card.height)
+                image.write(x: 0, y: 0, width: card.width, height: card.height, bytes: bytes)
+                s.cover = Some(take image)
+            }
+        }
+    }
+    if let Some(result) = poll(mut s.profile_write) {
+        if result.is_err() {
+            s.message = String::from("Your profile could not be saved on this device.")
+        }
+    }
+    if let Some(result) = poll(mut s.pending) {
+        match result {
+            Ok(bytes) => answer(mut s, bytes.clone()),
+            Err(_) => failed(mut s, "The request could not finish. Try again."),
+        }
+    }
+    if poll(mut s.closing).is_some() {
+        s.handle = None
+        s.step = Step::Idle
+        s.need_open = true
+        s.play_intent = None
+    }
+    fulfill_play(mut s)
+}
+
+fn act(s: mut Console, action: Action) {
+    match action {
+        Action::Games => {
+            s.pane = Pane::Games
+            s.focus = 3
+        },
+        Action::Saves | Action::ViewSaves => {
+            s.pane = Pane::Saves
+            s.focus = 3
+        },
+        Action::Settings => {
+            s.pane = Pane::Settings
+            s.focus = 3
+        },
+        Action::Motion => s.profile.motion = !s.profile.motion,
+        Action::SaveProfile => {
+            if s.profile.name.trim().is_empty() {
+                s.message = String::from("Enter a name for this profile.")
+                return
+            }
+            let bytes = save(s.profile)
+            s.profile_write = Some(store("console/profile", bytes))
+            s.message = String::from("Profile saved.")
+        },
+        Action::Game { index } => {
+            if s.step != Step::Idle || s.closing.is_some() || index == s.selected { return }
+            s.need_open = s.handle.is_none()
+            if let Some(id) = s.handle { s.closing = Some(host::surface("surface/close", id)) }
+            s.handle = None
+            s.selected = index
+            s.profile.game = s.cards[index].id.clone()
+        },
+        Action::Save { index } => {
+            s.picked = index
+            s.prepared_slot = None
+        },
+        Action::Play | Action::NewGame => {
+            if s.cards.is_empty() { return }
+            s.play_intent = Some(if action == Action::NewGame { PlayIntent::NewGame } else {
+                PlayIntent::Selected
+            })
+            fulfill_play(mut s)
+        },
+        Action::Export => {
+            if s.step == Step::Idle && !s.saves.is_empty() {
+                let request = Request::Export {
+                    profile: s.profile.key.clone(),
+                    slot: s.saves[s.picked].slot.clone(),
+                }
+                call(mut s, request, Step::Export)
+            }
+        },
+        Action::Import => {
+            if s.step == Step::Idle {
+                s.pending = Some(host::import_file())
+                s.step = Step::PickFile
+            }
+        },
+        Action::Retry => {
+            if s.step == Step::Idle && s.closing.is_none() {
+                s.need_open = s.handle.is_none()
+                if let Some(id) = s.handle { s.closing = Some(host::surface("surface/close", id)) }
+                s.handle = None
+            }
+        },
+    }
+}
+
+fn text(s: mut Console, content: str, size: f32, at: vec2, color: vec4, face: Face = Face::Sans) {
+    let _ = s.draw.text(s.fonts, face, content, size * s.zoom, at * s.zoom, color)
+}
+
+fn rect(s: mut Console, r: Rect, color: vec4, radius: f32 = 0.0) {
+    s.draw.rect(
+        Rect::new(r.x * s.zoom, r.y * s.zoom, r.w * s.zoom, r.h * s.zoom),
+        color,
+        radius * s.zoom,
+    )
+}
+
+fn button(s: mut Console, action: Action, r: Rect, label: str, primary: bool = false) {
+    let focus = s.focus == s.controls
+    s.controls += 1
+    let hovered = match (s.clicked, s.pressed) {
+        (Some(up), Some(down)) => r.contains(up / s.zoom) && r.contains(down / s.zoom),
+        _ => false,
+    }
+    if (focus && s.enter) || hovered { s.activate = Some(action) }
+    if primary { rect(mut s, r, LIGHT, 32.0) }
+    if focus {
+        let outer = Rect::new(r.x - 3.0, r.y - 3.0, r.w + 6.0, r.h + 6.0)
+        if primary {
+            rect(mut s, outer, INK, 35.0)
+            rect(mut s, r, LIGHT, 32.0)
+        } else { rect(mut s, outer, SURFACE, 12.0) }
+    }
+    let color = if primary { vec4(0.078, 0.133, 0.227, 1.0) } else { INK }
+    let width = s.fonts.sans.measure(label, 20.0)
+    text(
+        mut s,
+        label,
+        20.0,
+        vec2(r.x + max((r.w - width) * 0.5, 8.0), r.y + (r.h - 24.0) * 0.5),
+        color,
+    )
+}
+
+fn status(s: Console) -> String {
+    if !s.message.is_empty() { return s.message.clone() }
+    match s.step {
+        Step::Open | Step::List => String::from("Reading your saves"),
+        Step::Prepare => String::from("Preparing game"),
+        Step::Start | Step::Frame | Step::Show => String::from("Preparing the world"),
+        Step::PickFile | Step::Import => String::from("Importing save"),
+        Step::Export | Step::Download => String::from("Exporting save"),
+        _ => String::from("Ready to play"),
+    }
+}
+
+fn library(s: mut Console, w: f32, h: f32, mobile: bool) {
+    if s.cards.is_empty() {
+        text(mut s, "Your library is loading", 36.0, vec2(48.0, 180.0), INK)
+        return
+    }
+    let card = s.cards[s.selected].clone()
+    let margin = if mobile { 24.0 } else { 72.0 }
+    let title_y = if mobile { 390.0 } else { 250.0 }
+    let cover = if mobile { Rect::new(margin, 150.0, w - margin * 2.0, 210.0) } else {
+        Rect::new(w * 0.44, 180.0, w * 0.56 - margin, 418.0)
+    }
+    s.cover_rect = cover
+    if s.cover.is_none() { rect(mut s, cover, SURFACE, 20.0) }
+    let greeting = f"Good to see you, {s.profile.name}."
+    text(mut s, greeting, if mobile { 18.0 } else { 24.0 }, vec2(margin, if mobile { 110.0 } else {
+        180.0
+    }), MUTED)
+    let title_size = if mobile { 38.0 } else { 66.0 }
+    let title_width = if mobile { w - margin * 2.0 } else { cover.x - margin - 24.0 }
+    let fitted = min(
+        title_size,
+        title_size * title_width / max(s.fonts.mono.measure(card.title, title_size), 1.0),
+    )
+    text(mut s, card.title, fitted, vec2(margin, title_y), INK, Face::Mono)
+    let description = if s.saves.is_empty() { String::from("Start a new game.") } else {
+        s.saves[s.picked].description.clone()
+    }
+    text(mut s, description, 20.0, vec2(margin, title_y + if mobile { 64.0 } else { 106.0 }), MUTED)
+    let label = if s.step != Step::Idle { "Play when ready" } else if s.saves.is_empty() {
+        "New game"
+    } else { "Continue" }
+    button(mut s, Action::Play, Rect::new(margin, title_y + if mobile { 110.0 } else {
+        180.0
+    }, if mobile { w - margin * 2.0 } else { 210.0 }, 64.0), label, true)
+    button(mut s, Action::ViewSaves, Rect::new(if mobile { margin } else {
+        margin + 232.0
+    }, title_y + if mobile { 184.0 } else { 180.0 }, 150.0, 64.0), "View saves")
+    let state = status(s)
+    text(mut s, state, 16.0, vec2(if mobile { margin } else { cover.x }, if mobile { 666.0 } else {
+        622.0
+    }), MUTED)
+    if s.step != Step::Idle {
+        let pulse = if s.reduced || !s.profile.motion { 0.8 } else {
+            0.55 + sin(s.time * 3.0) * 0.25
+        }
+        rect(mut s, Rect::new(if mobile { margin } else { cover.x }, if mobile { 652.0 } else {
+            609.0
+        }, 44.0, 2.0), vec4(LIGHT.xyz, pulse), 1.0)
+    }
+    if !mobile {
+        for i in 0..s.cards.len() {
+            let r = Rect::new(margin + f32(i) * 290.0, min(h - 208.0, 696.0), 270.0, 106.0)
+            rect(mut s, r, SURFACE, 16.0)
+            let label = s.cards[i].title.clone()
+            button(mut s, Action::Game { index: i }, r, label)
+        }
+    }
+    if mobile && s.cards.len() > 1 {
+        button(
+            mut s,
+            Action::Game { index: (s.selected + 1) % s.cards.len() },
+            Rect::new(w - margin - 150.0, title_y + 184.0, 150.0, 64.0),
+            "Next game",
+        )
+    }
+    if mobile && !s.saves.is_empty() {
+        button(mut s, Action::NewGame, Rect::new(margin, 700.0, 150.0, 48.0), "New game")
+    }
+    if !s.message.is_empty() {
+        button(mut s, Action::Retry, Rect::new(margin, h - 130.0, 150.0, 48.0), "Try again")
+    }
+}
+
+fn saves(s: mut Console, w: f32, h: f32, mobile: bool) {
+    let margin = if mobile { 24.0 } else { 72.0 }
+    text(mut s, "Your saves", 36.0, vec2(margin, 170.0), INK)
+    if s.cards.is_empty() { return }
+    let title = s.cards[s.selected].title.clone()
+    text(mut s, title, 24.0, vec2(margin, 235.0), MUTED)
+    if s.saves.is_empty() {
+        text(mut s, "Your first save will appear here.", 20.0, vec2(margin, 310.0), MUTED)
+    }
+    let first = s.picked / 3 * 3
+    let count = min(s.saves.len() - first, 3)
+    for i in first..first + count {
+        let r = Rect::new(margin, 280.0 + f32(i - first) * 90.0, min(w - margin * 2.0, 750.0), 78.0)
+        rect(mut s, r, SURFACE, 16.0)
+        let save = s.saves[i].clone()
+        button(mut s, Action::Save { index: i }, Rect::new(r.x, r.y, r.w, 42.0), save.label)
+        text(mut s, save.description, 16.0, vec2(r.x + 24.0, r.y + 49.0), MUTED)
+    }
+    var y = if mobile { 300.0 + f32(max(count, 1)) * 90.0 } else { 590.0 }
+    if s.saves.len() > 3 {
+        button(
+            mut s,
+            Action::Save { index: (first + 3) % s.saves.len() },
+            Rect::new(margin, y, 160.0, 40.0),
+            "More saves",
+        )
+        y += 50.0
+    }
+    let small = if mobile { (w - margin * 2.0 - 12.0) * 0.5 } else { 160.0 }
+    button(mut s, Action::Play, Rect::new(margin, y, 210.0, 64.0), if s.saves.is_empty() {
+        "New game"
+    } else { "Continue" }, true)
+    button(mut s, Action::Export, Rect::new(margin + if mobile { 0.0 } else {
+        232.0
+    }, y + if mobile { 74.0 } else { 0.0 }, small, 64.0), "Export save")
+    button(mut s, Action::Import, Rect::new(margin + if mobile { small + 12.0 } else {
+        412.0
+    }, y + if mobile { 74.0 } else { 0.0 }, small, 64.0), "Import save")
+    if !s.saves.is_empty() && !mobile {
+        button(mut s, Action::NewGame, Rect::new(margin, y + if mobile { 145.0 } else {
+            80.0
+        }, 160.0, 48.0), "New game")
+    }
+    let state = status(s)
+    text(mut s, state, 16.0, vec2(margin, min(h - 92.0, y + 212.0)), MUTED)
+}
+
+fn settings(s: mut Console, w: f32) {
+    let margin = if w < 800.0 { 24.0 } else { 72.0 }
+    text(mut s, "Your profile", 36.0, vec2(margin, 170.0), INK)
+    text(mut s, "Type your name", 20.0, vec2(margin, 258.0), MUTED)
+    rect(mut s, Rect::new(margin, 304.0, min(w - margin * 2.0, 560.0), 64.0), SURFACE, 12.0)
+    let name = s.profile.name.clone()
+    text(mut s, name, 24.0, vec2(margin + 24.0, 322.0), INK)
+    button(mut s, Action::SaveProfile, Rect::new(margin, 404.0, 210.0, 64.0), "Save profile", true)
+    button(mut s, Action::Motion, Rect::new(margin, 508.0, 310.0, 56.0), if s.profile.motion {
+        "Opening animation: on"
+    } else { "Opening animation: off" })
+    text(mut s, "Your profile and saves stay on this device.", 18.0, vec2(margin, 600.0), MUTED)
+}
+
+pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
+    s.time = time
+    update(mut s)
+    let logical = f32(width) / s.pixel_ratio
+    let mobile = logical < 800.0
+    s.zoom = s.pixel_ratio * if mobile {
+        clamp(f32(height) / s.pixel_ratio / 844.0, 0.72, 1.0)
+    } else { clamp(logical / 1440.0, 0.72, 1.3) }
+    let w = f32(width) / s.zoom
+    let h = f32(height) / s.zoom
+    s.enter = false
+    s.clicked = None
+    s.activate = None
+    for event in events() {
+        match event {
+            Event::PointerDown { at, button: Button::Primary, .. } => {
+                s.pressed = Some(at)
+                s.intro_until = 0.0
+            },
+            Event::PointerUp { at, button: Button::Primary, .. } => {
+                s.clicked = Some(at)
+                s.intro_until = 0.0
+            },
+            Event::KeyDown { key, repeat, mods } => {
+                s.intro_until = 0.0
+                if key == Key::Enter && !repeat { s.enter = true }
+                if key == Key::Tab || key == Key::Right || key == Key::Down {
+                    s.focus = (s.focus + 1) % max(s.controls, 1)
+                }
+                if key == Key::Left || key == Key::Up {
+                    s.focus = (s.focus + max(s.controls, 1) - 1) % max(s.controls, 1)
+                }
+                if key == Key::Escape {
+                    s.pane = Pane::Games
+                    s.focus = 3
+                }
+                if s.pane == Pane::Settings && key == Key::A && mods.command() {
+                    s.profile.name.clear()
+                }
+                if s.pane == Pane::Settings && key == Key::Backspace {
+                    let end = previous(s.profile.name, s.profile.name.len())
+                    s.profile.name.truncate(end)
+                }
+            },
+            Event::Text { char } => {
+                if s.pane == Pane::Settings && s.profile.name.len() < 120 {
+                    s.profile.name.push_char(char)
+                }
+            },
+            Event::PadButton { button, pressed: true, .. } => {
+                s.intro_until = 0.0
+                if button == PadButton::South { s.enter = true }
+                if button == PadButton::East {
+                    s.pane = Pane::Games
+                    s.focus = 3
+                }
+                if button == PadButton::Right || button == PadButton::Down {
+                    s.focus = (s.focus + 1) % max(s.controls, 1)
+                }
+                if button == PadButton::Left || button == PadButton::Up {
+                    s.focus = (s.focus + max(s.controls, 1) - 1) % max(s.controls, 1)
+                }
+            },
+            _ => {},
+        }
+    }
+    s.draw.clear(vec2(f32(width), f32(height)))
+    s.controls = 0
+    s.cover_rect = Rect::new(0.0, 0.0, 0.0, 0.0)
+    let opening = s.profile.motion && !s.reduced && time < s.intro_until
+    if opening {
+        let label = "wrela"
+        let size = if mobile { 112.0 } else { 150.0 }
+        let measured = s.fonts.mono.measure(label, size)
+        text(mut s, label, size, vec2((w - measured) * 0.5, h * 0.29), INK, Face::Mono)
+        text(mut s, "Preparing your library", 16.0, vec2(w * 0.5 - 88.0, h * 0.82), MUTED)
+    } else {
+        text(mut s, "wrela", 38.0, vec2(if mobile { 24.0 } else { 72.0 }, 42.0), INK, Face::Mono)
+        let x = if mobile { 24.0 } else { 200.0 }
+        let y = if mobile { h - 64.0 } else { 42.0 }
+        button(mut s, Action::Games, Rect::new(x, y, 90.0, 48.0), "Games")
+        button(mut s, Action::Saves, Rect::new(x + 106.0, y, 90.0, 48.0), "Saves")
+        button(mut s, Action::Settings, Rect::new(x + 212.0, y, 112.0, 48.0), "Settings")
+        match s.pane {
+            Pane::Games => library(mut s, w, h, mobile),
+            Pane::Saves => saves(mut s, w, h, mobile),
+            Pane::Settings => settings(mut s, w),
+        }
+        if !mobile {
+            text(
+                mut s,
+                "Enter  Select     Esc  Back     F10  Return from game",
+                16.0,
+                vec2(72.0, h - 48.0),
+                MUTED,
+            )
+        }
+    }
+    s.renderer.upload(s.draw)
+    let pass = begin_screen_pass(clear: vec4(0.078, 0.133, 0.227, 1.0))
+    let screen = vec2(f32(width), f32(height))
+    draw(
+        pass,
+        quad.bind(screen, rect: vec4(0.0, 0.0, screen)),
+        horizon.bind(field: Field { screen, time: if s.reduced || !s.profile.motion { 3.0 } else {
+            time
+        }, opening: if opening { 1.0 } else { 0.0 } }),
+        vertices: 6,
+    )
+    if s.cover_rect.w > 0.0 {
+        match s.cover {
+            Some(t) => {
+                let r = s.cover_rect
+                draw(
+                    pass,
+                    quad.bind(screen, rect: vec4(r.x, r.y, r.w, r.h) * s.zoom),
+                    image.bind(content: t, linear: s.linear, size: vec2(r.w, r.h) * s.zoom),
+                    vertices: 6,
+                )
+            },
+            None => {},
+        }
+    }
+    s.renderer.draw(pass, screen)
+    pass.present()
+    if let Some(action) = s.activate { act(mut s, action) }
+    if s.clicked.is_some() { s.pressed = None }
+}
+
+@test
+fn a_queued_play_uses_the_current_save_or_explicit_new_game() {
+    let saves = [
+        SaveInfo {
+            slot: String::from("continue"),
+            label: String::new(),
+            description: String::new(),
+            saved: 0,
+        },
+        SaveInfo {
+            slot: String::from("imported"),
+            label: String::new(),
+            description: String::new(),
+            saved: 0,
+        },
+    ]
+    match play_plan(Some(String::from("continue")), saves, 0, PlayIntent::NewGame) {
+        PlayPlan::Prepare { slot } => assert(slot.is_empty()),
+        _ => assert(false, "New game must not start a prepared continuation"),
+    }
+    match play_plan(Some(String::from("continue")), saves, 1, PlayIntent::Selected) {
+        PlayPlan::Prepare { slot } => assert(slot == "imported"),
+        _ => assert(false, "A changed selection needs its own preparation"),
+    }
+    match play_plan(Some(String::from("imported")), saves, 1, PlayIntent::Selected) {
+        PlayPlan::Start => {},
+        _ => assert(false, "Ready selection starts"),
+    }
+}

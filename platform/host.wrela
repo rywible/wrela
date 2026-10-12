@@ -1,0 +1,80 @@
+// Typed application mechanisms over the shared std::host request. All payloads are bytes.
+use std::host::request
+use std::io::Pending
+use std::serialize::Writer
+
+pub fn word(bytes: [u8], at: u32 = 0) -> Option<u32> {
+    if at > bytes.len() || bytes.len() - at < 4 { return None }
+    Some(
+        u32(bytes[at]) |
+            (u32(bytes[at + 1]) << 8) |
+            (u32(bytes[at + 2]) << 16) |
+            (u32(bytes[at + 3]) << 24),
+    )
+}
+
+pub fn environment() -> Pending<u8> {
+    request("environment", [u8(0); 0])
+}
+
+pub fn open(url: str) -> Pending<u8> {
+    var bytes: Vec<u8> = Vec::new()
+    for i in 0..url.len() { bytes.push(url.byte(i)) }
+    request("surface/open", bytes)
+}
+
+pub fn surface(service: str, id: u32) -> Pending<u8> {
+    var w = Writer::new()
+    w.write_u32(id)
+    let body = take w.into_bytes()
+    request(service, body)
+}
+
+pub fn send(id: u32, bytes: [u8]) -> Pending<u8> {
+    var w = Writer::new()
+    w.write_u32(id)
+    var body = take w.into_bytes()
+    for b in bytes { body.push(b) }
+    request("surface/call", body)
+}
+
+pub fn receive() -> Pending<u8> {
+    request("channel/receive", [u8(0); 0])
+}
+
+pub fn reply(id: u32, bytes: [u8], ok: bool = true) -> Pending<u8> {
+    var w = Writer::new()
+    w.write_u32(id)
+    w.write_u8(if ok { 1 } else { 0 })
+    var body = take w.into_bytes()
+    for b in bytes { body.push(b) }
+    request("channel/reply", body)
+}
+
+pub fn import_file() -> Pending<u8> {
+    request("file/import", [u8(0); 0])
+}
+
+pub fn export_file(name: str, bytes: [u8]) -> Pending<u8> {
+    var w = Writer::new()
+    w.write_str(name)
+    var body = take w.into_bytes()
+    for b in bytes { body.push(b) }
+    request("file/export", body)
+}
+
+pub fn ready() -> Pending<u8> {
+    request("surface/ready", [u8(0); 0])
+}
+
+pub fn return_to_parent() -> Pending<u8> {
+    request("surface/return", [u8(0); 0])
+}
+
+@test
+fn capability_words_reject_short_and_out_of_range_runs() {
+    assert(word([1, 2, 3, 4]) == Some(0x04030201))
+    assert(word([1, 2, 3]).is_none())
+    assert(word([1, 2, 3, 4], 5).is_none())
+    assert(word([1, 2, 3, 4], 0xFFFFFFFF).is_none())
+}

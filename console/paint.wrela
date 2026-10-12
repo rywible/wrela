@@ -1,0 +1,65 @@
+// The console's original field animation and a content-image pass. Both are Wrela shaders.
+use std::gpu::{ClipPosition, FragCoord, Over, Rgba8, Sampler, Texture, VertexIndex}
+
+pub struct Vertex {
+    pub position: ClipPosition,
+    pub uv: vec2,
+    pub pixel: vec2,
+}
+
+@vertex
+pub fn quad(v: VertexIndex, screen: vec2, rect: vec4) -> Vertex {
+    let corners = [
+        vec2(0.0, 0.0),
+        vec2(1.0, 0.0),
+        vec2(0.0, 1.0),
+        vec2(0.0, 1.0),
+        vec2(1.0, 0.0),
+        vec2(1.0, 1.0),
+    ]
+    let uv = corners[v.index]
+    let p = rect.xy + uv * rect.zw
+    Vertex {
+        position: ClipPosition {
+            position: vec4(p.x / screen.x * 2.0 - 1.0, 1.0 - p.y / screen.y * 2.0, 0.0, 1.0),
+        },
+        uv,
+        pixel: p,
+    }
+}
+
+pub struct Field: Copy + GpuData {
+    pub screen: vec2,
+    pub time: f32,
+    pub opening: f32,
+}
+
+@fragment
+pub fn horizon(pixel: FragCoord, field: Field) -> vec4 {
+    let p = pixel.position.xy / field.screen
+    let reveal = smoothstep(0.0, 1.15, field.time)
+    let gather = smoothstep(1.5, 2.45, field.time)
+    let spread = mix(0.006, mix(0.38, 0.06, gather), reveal)
+    let centre = mix(0.52, 0.73, 1.0 - field.opening)
+    let wave = sin(p.x * 8.5 + 0.9) * 0.105 + sin(p.x * 3.0 - 0.8) * 0.055
+    let y = (p.y - centre - wave * mix(0.35, 1.0, reveal)) / max(spread, 0.001)
+    let line = abs(fract(y * 24.0) - 0.5)
+    let pixel_width = min(0.25, 24.0 / max(field.screen.y * spread, 1.0))
+    let contours = 1.0 - smoothstep(pixel_width * 0.3, pixel_width * 1.4, line)
+    let envelope = (1.0 - smoothstep(0.0, 1.0, abs(y))) *
+        smoothstep(0.0, 0.04, p.x) *
+        (1.0 - smoothstep(0.96, 1.0, p.x))
+    let amount = mix(0.075, 0.64, field.opening) * contours * envelope
+    let halo = exp(-5.0 * length((p - vec2(0.68, 0.4)) * vec2(1.0, 1.2)))
+    let base = vec3(0.078, 0.133, 0.227) + vec3(0.026, 0.040, 0.055) * halo
+    let light = vec3(0.765, 0.894, 0.957)
+    vec4(base + light * amount, 1.0)
+}
+
+@fragment
+pub fn image(v: Vertex, content: Texture<Rgba8>, linear: Sampler, size: vec2) -> Over {
+    let p = abs((v.uv - vec2(0.5)) * size) - size * 0.5 + vec2(20.0)
+    let d = length(max(p, vec2(0.0))) + min(max(p.x, p.y), 0.0) - 20.0
+    let c = content.sample_level(linear, v.uv, 0.0)
+    Over { color: vec4(c.xyz, c.w * saturate(0.5 - d)) }
+}

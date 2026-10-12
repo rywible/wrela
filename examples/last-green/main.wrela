@@ -1,3 +1,5 @@
+use platform::presentation::Link
+use std::serialize::save
 // The Last Green's floor (#54): the program. The player at the gate, the sim stepping it on the
 // ticker's thread (world.wrela); the floor drawn by the engine's renderer as M5 drew the clearing
 // (the scene at reduced resolution, jittered, into a linear-light target with depth and
@@ -433,6 +435,7 @@ fn a_delayed_tile_refreshes_neighbours_that_finished_during_its_job() {
 }
 
 pub struct Floor {
+    console: Link,
     /// The way back down to the stair, and the tower's journey.
     exit: Exit,
     snaps: Snapshots<World>,
@@ -703,6 +706,7 @@ pub fn init() -> Floor {
     let atlas = leaf_atlas(6)
     let eye = vec3(start.x, height_at(start) + 2.0, start.y)
     Floor {
+        console: Link::new(),
         exit: Exit::begin(WORLD, WORLDS, SAVE, STAIR_BUILD, DOOR),
         snaps: Snapshots::new(take latest, hz: 60),
         clipmap: fields_clipmap(),
@@ -1612,6 +1616,7 @@ fn cook_load(s: mut Floor, eye: vec2) {
 /// (Escape lets it go).
 fn keys(s: mut Floor, time: f32) {
     for e in events() {
+        s.console.event(e)
         match e {
             Event::PointerDown { at, button, .. } => {
                 if button == Button::Primary {
@@ -2862,6 +2867,11 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     }
     swap(mut s.depth, mut s.last_depth)
     draw_scene(mut s, cam, sh, wind)
+    if !s.arriving { s.console.presented() }
+    if s.console.returning {
+        let bytes = save(s.exit.journey.carry)
+        s.console.save_and_return(SAVE, bytes)
+    }
     finish(mut s, cam, width, height, feet.xz + o2, heading)
     s.frames += 1
 }

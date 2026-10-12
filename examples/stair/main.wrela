@@ -1,3 +1,5 @@
+use platform::presentation::Link
+use std::serialize::save
 // The stair: an endless spiral staircase in a void, with a door off it to each world (vision.md,
 // "The lore"). The lowest door opens; each above it opens once the world below is preserved or
 // freed, and a freed world's door is gone (engine::tower). Walking through an open door hands
@@ -45,6 +47,7 @@ fn door_step(world: u32) -> f32 {
 }
 
 pub struct Stair {
+    console: Link,
     journey: Journey,
     input: Input,
     /// How far up the player is, in steps (from the bottom landing, 0), and where they look:
@@ -60,7 +63,15 @@ pub struct Stair {
 pub fn init() -> Stair {
     let journey = Journey::begin(STAIR, WORLDS, SAVE)
     let loading = journey.loading()
-    var s = Stair { journey, input: Input::new(), at: 0.0, look: 0.0, last_time: 0.0, loading }
+    var s = Stair {
+        console: Link::new(),
+        journey,
+        input: Input::new(),
+        at: 0.0,
+        look: 0.0,
+        last_time: 0.0,
+        loading,
+    }
     if s.journey.start != Start::Fresh {
         stand_at_door(mut s)
     }
@@ -286,6 +297,7 @@ pub fn frame(s: mut Stair, time: f32, width: u32, height: u32) {
     }
     s.loading = s.journey.loading()
     s.input.read()
+    s.console.input(s.input)
     borrow i = s.input
     let climb = (if i.held(Key::W) || i.held(Key::Up) { 1.0 } else { 0.0 })
     -(if i.held(Key::S) || i.held(Key::Down) { 1.0 } else { 0.0 })
@@ -304,6 +316,11 @@ pub fn frame(s: mut Stair, time: f32, width: u32, height: u32) {
     let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(screen, full.bind(z: 0.0), shade.bind(scene: scene_of(s, width, height)), vertices: 3)
     screen.present()
+    s.console.presented()
+    if s.console.returning {
+        let bytes = save(s.journey.carry)
+        s.console.save_and_return(SAVE, bytes)
+    }
 }
 
 // ---- for tests and tools ----

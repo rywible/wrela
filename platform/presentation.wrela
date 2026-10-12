@@ -1,0 +1,110 @@
+// An embedded application's readiness and durable return, independent of game policy.
+use std::input::{Event, Key, Mods, Pad, PadButton, PADS}
+use std::io::{Pending, store}
+use host::{ready, return_to_parent}
+
+pub struct Link {
+    signalled: bool,
+    pads: [Pad; PADS],
+    ready_request: Option<Pending<u8>>,
+    pub returning: bool,
+    saving: Option<Pending<u8>>,
+    leaving: Option<Pending<u8>>,
+}
+
+impl Link {
+    pub fn new() -> Link {
+        Link {
+            signalled: false,
+            pads: [Pad {}; PADS],
+            ready_request: None,
+            returning: false,
+            saving: None,
+            leaving: None,
+        }
+    }
+
+    /// One deliberate console shortcut, after the game's ordinary input read.
+    pub fn input(mut self, input: std::input::Input) {
+        for e in input.events { self.event(e) }
+    }
+
+    pub fn event(mut self, event: Event) {
+        for i in 0..PADS {
+            self.pads[i].update(i, event)
+            if self.pads[i].held(PadButton::Select) && self.pads[i].held(PadButton::Start) {
+                self.returning = true
+            }
+        }
+        match event {
+            Event::KeyDown { key: Key::F10, repeat: false, .. } => self.returning = true,
+            Event::PadButton {
+                button: PadButton::Home,
+                pressed: true,
+                ..
+            } => self.returning = true,
+            _ => {},
+        }
+    }
+
+    /// Called after an application's first useful frame, never from a loading/black frame.
+    pub fn presented(mut self) {
+        if !self.signalled {
+            self.ready_request = Some(ready())
+            self.signalled = true
+        }
+        match mut self.ready_request {
+            Some(p) => { if p.poll().is_some() { self.ready_request = None } },
+            None => {},
+        }
+    }
+
+    /// The application supplies its save bytes. Return is sent only after storage commits.
+    pub fn save_and_return(mut self, path: str, bytes: [u8]) {
+        if self.returning && self.saving.is_none() && self.leaving.is_none() {
+            self.saving = Some(store(path, bytes))
+        }
+        var written = None
+        match mut self.saving {
+            Some(p) => written = p.poll(),
+            None => {},
+        }
+        if let Some(result) = written {
+            self.saving = None
+            match result {
+                Ok(_) => self.leaving = Some(return_to_parent()),
+                Err(_) => self.returning = false,
+            }
+        }
+        match mut self.leaving {
+            Some(p) => {
+                if p.poll().is_some() {
+                    self.leaving = None
+                    self.returning = false
+                }
+            },
+            None => {},
+        }
+    }
+}
+
+@test
+fn returning_requires_a_deliberate_non_repeated_shortcut() {
+    var link = Link::new()
+    link.event(Event::KeyDown { key: Key::F10, repeat: true, mods: Mods {} })
+    assert(!link.returning)
+    link.event(Event::KeyDown { key: Key::Escape, repeat: false, mods: Mods {} })
+    assert(!link.returning)
+    link.event(Event::KeyDown { key: Key::F10, repeat: false, mods: Mods {} })
+    assert(link.returning)
+}
+
+@test
+fn controller_return_chord_requires_both_buttons_on_one_pad() {
+    var link = Link::new()
+    link.event(Event::PadButton { pad: 0, button: PadButton::Select, pressed: true, value: 1.0 })
+    link.event(Event::PadButton { pad: 1, button: PadButton::Start, pressed: true, value: 1.0 })
+    assert(!link.returning)
+    link.event(Event::PadButton { pad: 0, button: PadButton::Start, pressed: true, value: 1.0 })
+    assert(link.returning)
+}

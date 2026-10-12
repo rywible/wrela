@@ -77,6 +77,47 @@ reference machine's frame-rate claims. Ryan's play and visual judgments still de
 Not used, by decision: Suno or any music model (Ryan, 2026-10-06, #44), and any image, texture,
 3D, voice or video generator. No asset is made by a model that was trained to output art.
 
+## Wrela console and static hosting, 2026-10-12
+
+Ryan requested a generic Wrela console at `games.wrela.dev`, starting with The Last Green,
+with an original opening animation, local profiles and saves, and static Cloudflare hosting.
+Codex authored editable Figma mocks as text, vectors and components, then implemented the
+console UI and session/save policy in Wrela. Browser code supplies generic embedded-program
+channels, file import/export and environment mechanisms through a shared asynchronous host
+capability request. The compiler and native host support that same request; neither knows the
+console catalog or a game's save schema. The intro is a Wrela field shader. Existing Wrela
+renders supply game cover images. No generative image, audio or video model made an asset.
+
+Figma's Plugin API and timeline export were used for layout and timing studies, outside the
+repository. The chosen font files are [Barlow](https://github.com/google/fonts/tree/main/ofl/barlow)
+and [Manrope](https://github.com/google/fonts/tree/main/ofl/manrope), both SIL Open Font License;
+their licenses ship in `console/fonts`. Manrope's variable font was instantiated at weight 500
+with [fontTools](https://github.com/fonttools/fonttools) (MIT), without changing its design.
+[Pillow](https://pillow.readthedocs.io/) (HPND) converts existing Wrela frame captures into
+RGBA cover data during release packaging. The reusable Wrela UI accepts caller-selected baked fonts rather than adding console fonts to
+every program's default font pair.
+
+[Cloudflare Pages Direct Upload](https://developers.cloudflare.com/pages/get-started/direct-upload/),
+[custom domains](https://developers.cloudflare.com/pages/configuration/custom-domains/), and
+[static headers](https://developers.cloudflare.com/pages/configuration/headers/) were consulted
+for local static release uploads, domain binding, immutable build paths and isolation headers.
+[MDN's cross-origin isolation permission reference](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Permissions-Policy/cross-origin-isolated)
+was used to delegate the existing shared WASM memory capability to embedded game origins.
+These are implementation references, not copied product designs or assets. Saves and profiles
+stay in browser-owned storage and export as files; there is no server-side save service.
+
+Local browser checks exercised new game, explicit ready-frame handoff, F10 return after storage
+commit, save export/import, the previous-game backup, profile-name persistence, and a 390×844
+layout with three slots. These checks establish the exercised flows, not prolonged stability.
+On the M4, 120 native lockstep frames at 1280×720 measured the console opening at 0.057 ms
+median GPU span and 0.576 ms median CPU frame call; the browser channel is outside this native
+measurement. The same-mode Last Green baseline at `f2969cbd` measured 12.806 ms GPU span and
+18.956 ms CPU frame call; the candidate measured 12.129 ms and 18.173 ms. All 114 shader files
+match. Separate startup-inclusive samples vary, so this is no performance-win or sustained
+Chrome-frame-rate claim. The console suspends its frame clock and pad input while a game is
+shown. Gate time gains were not measured; the complete gate retains the new policy and failure
+regressions and adds the console's small shader corpus.
+
 ## Simulated construction studies, 2026-10-11
 
 Ryan asked for worlds composed by simulation across seeds, including people whose construction

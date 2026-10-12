@@ -1,0 +1,13 @@
+# Static release metadata. The console reads its generated catalog, not game source.
+[console]
+package = "console"
+project = "wrela-games"
+domain = "games.wrela.dev"
+
+[[games]]
+id = "last-green"
+title = "The Last Green"
+project = "wrela-last-green"
+domain = "wrela-last-green.pages.dev"
+session = "session"
+builds = { session = "examples/last-green/session", last-green = "examples/last-green", stair = "examples/stair", test-floor = "examples/test-floor" }

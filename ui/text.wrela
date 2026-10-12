@@ -59,8 +59,8 @@ pub struct Font: Clone {
     index: [u32; 256],
     /// The advance's change between two glyphs, by `left * count + right`: ems.
     kerning: Vec<f32>,
-    /// Whose fields its glyphs' are.
-    face: Face,
+    /// The fields supplied with this face, including application-specific fonts.
+    fields: Vec<u8>,
     /// `?`'s glyph: what a character the font hasn't shows.
     missing: u32,
 }
@@ -68,7 +68,11 @@ pub struct Font: Clone {
 impl Font {
     /// The font of `face`: its glyphs, each code point's, and its kerning by glyph.
     pub fn of(face: Face) -> Font {
-        borrow b = baked(face)
+        Font::from_baked(baked(face))
+    }
+
+    /// A caller-selected baked font, independent of the default UI faces.
+    pub fn from_baked(b: Baked) -> Font {
         let n = b.glyphs.len()
         var glyphs: Vec<Glyph> = Vec::with_capacity(n)
         var index = [0; 256]
@@ -104,7 +108,7 @@ impl Font {
             glyphs,
             index,
             kerning,
-            face,
+            fields: b.fields.clone(),
             missing,
         }
     }
@@ -115,7 +119,7 @@ impl Font {
 
     /// The bytes of its glyphs' fields, all of them.
     pub fn field_bytes(self) -> u32 {
-        baked(self.face).fields.len()
+        self.fields.len()
     }
 
     /// The index of the glyph for code point `cp`: `?`'s for one the font hasn't.
@@ -129,7 +133,7 @@ impl Font {
 
     /// Byte `k` of glyph `i`'s field (rows from the top).
     pub fn field_byte(self, i: u32, k: u32) -> u8 {
-        baked(self.face).fields[self.glyphs[i].offset + k]
+        self.fields[self.glyphs[i].offset + k]
     }
 
     /// The kerning between glyphs `a` and `b`: ems added to `a`'s advance.
@@ -284,6 +288,17 @@ impl Fonts {
         Fonts { sans, mono, width, height }
     }
 
+    /// Two application-selected faces. `Sans` selects the first; `Mono` selects the second.
+    /// The default loader keeps the studio's proportional/source pair.
+    pub fn from_baked(first: Baked, second: Baked) -> Fonts {
+        var sans = Font::from_baked(first)
+        var mono = Font::from_baked(second)
+        let width = 1024
+        let mid = pack(mut sans, width, 1)
+        let height = pack(mut mono, width, mid)
+        Fonts { sans, mono, width, height }
+    }
+
     pub fn font(self, face: Face) -> borrow Font {
         match face {
             Face::Sans => self.sans,
@@ -310,4 +325,42 @@ impl Fonts {
         }
         bytes
     }
+}
+
+@test
+fn caller_fonts_keep_their_own_fields_and_atlas_places() {
+    var glyphs: Vec<ttf::BakedGlyph> = Vec::new()
+    glyphs.push(
+        ttf::BakedGlyph {
+            codepoint: 63,
+            advance: 0.5,
+            left: 0.0,
+            top: 1.0,
+            width: 2,
+            height: 1,
+            offset: 0,
+        },
+    )
+    var first = Baked {
+        em: 9.0,
+        spread: 2.0,
+        ascender: 0.8,
+        descender: -0.2,
+        line_gap: 0.0,
+        glyphs,
+        kerning: Vec::new(),
+        fields: Vec::filled(2, 17),
+    }
+    var second = first.clone()
+    second.fields[0] = 231
+    let fonts = Fonts::from_baked(first, second)
+    first.fields[0] = 0
+    assert(fonts.sans.field_byte(0, 0) == 17)
+    assert(fonts.mono.field_byte(0, 0) == 231)
+    let bytes = fonts.atlas()
+    let a = fonts.sans.glyph(0)
+    let b = fonts.mono.glyph(0)
+    assert(a.atlas_y != b.atlas_y)
+    assert(bytes[(a.atlas_y * fonts.width + a.atlas_x) * 4] == 17)
+    assert(bytes[(b.atlas_y * fonts.width + b.atlas_x) * 4] == 231)
 }
