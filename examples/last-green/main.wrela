@@ -2206,7 +2206,19 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
     label("vegetation")
     let veg = begin_pass_with_depth(mut s.scene, mut s.depth, clear: vec4(0.0), keep_depth: true)
     if on(off, System::Grass) {
-        s.grass.shade(veg, lt, wind, GrassLook {}, Blooms {})
+        s.grass.shade(
+            veg,
+            lt,
+            wind,
+            GrassLook {
+                tip_young: vec3(0.095, 0.145, 0.06),
+                tip_dry: vec3(0.20, 0.185, 0.09),
+                through: vec3(0.08, 0.12, 0.045),
+                fern: vec3(0.045, 0.085, 0.035),
+                bracken: vec3(0.075, 0.11, 0.045),
+            },
+            Blooms {},
+        )
     }
     for i in 0..s.built.len() {
         let to = s.built[i].at[3].xyz - cam.eye

@@ -6,9 +6,10 @@
 
 use engine::grow::{Cause, State, Tree, log_rot}
 use engine::interest::Drawn
-use engine::noise::{noise2, pick, rand}
+use engine::noise::{hash2u, noise2, pick, rand}
 use engine::plant::{
-    Bark, Instance, Leaves, Plant, bend, limb_axis, limb_at_height, plant, tint_of, unbend,
+    Bark, Instance, Leaves, Plant, RINGS, SIDES, bend, limb_axis, limb_at_height, limb_corner,
+    limb_point, limb_ring_axis, plant, tint_of, unbend,
 }
 use std::field::Tube
 use engine::vegetation::Placed
@@ -127,11 +128,12 @@ fn broadleaf(
         let reach = w * pick(s, 190 + j, lo: 0.55, hi: 0.95)
         let rise = (tall - crown_y) * pick(s, 200 + j, lo: 0.35, hi: 0.8)
         let tip = foot + vec3(cos(a) * reach, rise, sin(a) * reach)
-        p.limb(
+        p.branch(
             foot,
+            axis,
             foot + axis * (reach * 0.24) + (tip - foot) * 0.28,
             tip,
-            r_from: radius * pick(s, 220 + j, lo: 0.45, hi: 0.62),
+            r_from: radius * pick(s, 220 + j, lo: 0.36, hi: 0.54),
             r_to: girth * 0.07,
         )
         tips.push(tip)
@@ -153,11 +155,12 @@ fn broadleaf(
                     crown_y * pick(s, 290 + j, lo: -0.05, hi: 0.12),
                     sin(a) * reach,
                 )
-            p.limb(
+            p.branch(
                 foot,
+                axis,
                 foot + axis * (reach * 0.16) + (tip - foot) * 0.35,
                 tip,
-                r_from: radius * 0.4,
+                r_from: radius * 0.32,
                 r_to: 0.03,
             )
             p.clump(
@@ -166,12 +169,8 @@ fn broadleaf(
             )
         }
     }
-    // The clumps: a mass round each scaffold's end and one at the tree's own top (4 to 6 masses,
-    // the crown's 3 to 7 lit masses with the low limbs'), each a large core with smaller clumps
-    // bulging from its top and sides, so it reads as one lump of light with a shaded underside
-    // and gaps of sky between the masses; each branch from a point along its scaffold. A
-    // sapling's round its trunk's top. (Pass 1 of M6's lookdev: clumps spread along each
-    // scaffold, each its own small lump of light, read as confetti, not as masses.)
+    // Broad unequal masses around the scaffold ends, with smaller lateral sprays. Their
+    // gaps separate major limbs; foliage does not trace each ascending limb as a tall lobe.
     crown_on(mut p, s, tips, branches, tall, crown_y, lean, w, clump, count, limbs)
     p
 }
@@ -200,7 +199,7 @@ fn crown_on(
         p.blend = MASS_BLEND
     }
     for i in 0..count {
-        let r_clump = clump * pick(s, 80 + i, lo: 0.6, hi: 1.35)
+        let r_clump = clump * pick(s, 80 + i, lo: 0.35, hi: 0.72)
         if scaffolds == 0 {
             let a = TAU * rand(s, 20 + i)
             let up = pick(s, 40 + i, lo: -0.75, hi: 1.0)
@@ -213,7 +212,7 @@ fn crown_on(
         }
         // Which mass: a scaffold's, or (one in five) the leader's at the top.
         let j = i % (scaffolds + 1)
-        let core = clump * MASS_CORE
+        let core = clump * MASS_CORE * pick(s, 205 + j, lo: 0.8, hi: 1.25)
         let (centre, parent) = if j == scaffolds {
             (vec3(0.0, tall - core * 0.9, 0.0) + lean * 1.4, p.limbs[0])
         } else {
@@ -222,29 +221,62 @@ fn crown_on(
             // as a broom: round 5's quick round).
             (mix(branches[j].points[0], tips[j], vec3(0.85)), branches[j])
         }
-        // The mass's first clump is its core, a cushion: a broad top plane in the sun over a
-        // flat underside in shade. The rest are smaller cushions round its rim, a little up, so
-        // its edge is scalloped. (Spheres, each mass read as a heap of leaves with no top or
-        // underside: forms.md, row 1.)
-        let (at, r) = if i <= scaffolds {
-            (centre, core)
-        } else {
-            let a = TAU * rand(s, 210 + i)
-            let up = pick(s, 230 + i, lo: -0.1, hi: 0.45)
-            let out = sqrt(max(1.0 - up * up, 0.0))
-            let dir = vec3(out * cos(a), up * CUSHION, out * sin(a))
-            (centre + dir * (core * pick(s, 250 + i, lo: 0.75, hi: 0.95)), r_clump * 0.8)
+        let branch_out = (parent.points[3] - parent.points[0]).xz
+        let axis = if length(branch_out) > 0.05 { normalize(branch_out) } else {
+            let a = TAU * rand(s, 310 + j)
+            vec2(cos(a), sin(a))
         }
-        p.cushion(at, radius: r, squash: CUSHION)
-        if i < limbs + scaffolds && i >= scaffolds {
-            let (from, axis, radius) = limb_axis(parent, pick(s, 100 + i, lo: 0.48, hi: 0.84))
+        let side_axis = vec2(-axis.y, axis.x)
+        // Cores differ in height and thickness. Smaller sprays follow each scaffold
+        // outward, with gaps between their branches rather than one flat canopy shelf.
+        let squash = if i <= scaffolds { pick(s, 231 + i, lo: 0.55, hi: 0.82) } else {
+            pick(s, 231 + i, lo: 0.58, hi: 0.95)
+        }
+        let (at, r, attach) = if i <= scaffolds {
+            (centre + vec3(0.0, core * 0.18, 0.0), core, 0.72)
+        } else {
+            let attach = pick(s, 100 + i, lo: 0.52, hi: 0.94)
+            let a = pick(s, 210 + i, lo: -1.25, hi: 1.25)
+            let reach = core * pick(s, 250 + i, lo: 0.4, hi: 0.95)
+            let spread = (axis * cos(a) + side_axis * sin(a)) * reach
+            let side = vec3(
+                spread.x,
+                core * pick(s, 230 + i, lo: -0.35, hi: 0.45),
+                spread.y,
+            )
+            (centre + side, r_clump, attach)
+        }
+        if i <= scaffolds {
+            // A main mass is an unequal overlapping pair stretched along its branch.
+            // A single large ellipsoid kept reading as a round pillow under its sprays.
+            let along = vec3(axis.x, 0.0, axis.y)
+            let across = vec3(side_axis.x, 0.0, side_axis.y)
+            p.cushion(
+                at - along * (r * 0.22),
+                radius: r * pick(s, 330 + j, lo: 0.77, hi: 0.9),
+                squash: squash,
+            )
+            p.cushion(
+                at +
+                    along * (r * 0.46) +
+                    across * (r * pick(s, 340 + j, lo: -0.22, hi: 0.22)) +
+                    vec3(0.0, r * pick(s, 350 + j, lo: -0.25, hi: 0.3), 0.0),
+                radius: r * pick(s, 360 + j, lo: 0.55, hi: 0.72),
+                squash: pick(s, 370 + j, lo: 0.4, hi: 0.72),
+            )
+        } else {
+            p.cushion(at, radius: r, squash: squash)
+        }
+        if i > scaffolds && i < limbs * 2 + scaffolds {
+            let (from, axis, radius) = limb_axis(parent, attach)
             let reach = length(at - from)
-            p.limb(
+            p.branch(
                 from,
-                from + axis * (reach * 0.28) + (at - from) * 0.25,
+                axis,
+                from + axis * (reach * 0.2) + (at - from) * 0.55,
                 at,
-                r_from: radius * 0.48,
-                r_to: min(radius * 0.12, 0.025),
+                r_from: radius * 0.38,
+                r_to: min(radius * 0.08, 0.018),
             )
         }
     }
@@ -253,11 +285,10 @@ fn crown_on(
 /// A broad-leaved crown's mass: its core's radius against the kind's clump, and how softly its
 /// clumps blend (per metre, `Plant::blend`: softer than a plant's own, so a mass's clumps merge
 /// into one lump and its light turns over it as one form).
-const MASS_CORE: f32 = 1.45
+const MASS_CORE: f32 = 1.15
 
-/// How tall a broad-leaved crown's clump is against its width (`Clump::squash`).
-const CUSHION: f32 = 0.55
-const MASS_BLEND: f32 = 0.75
+/// Keep neighbouring sprays distinct while their lighting still follows their shared crown.
+const MASS_BLEND: f32 = 1.35
 
 /// A pine, seed `s`, `tall` high: a straight trunk, bare low, and a flat-topped crown of dark
 /// clumps; grown in the open (`open`), its crown reaches lower and wider.
@@ -352,9 +383,9 @@ fn snag(s: u32, tall: f32, burnt: bool, conifer: bool, form: u32) -> Plant {
         // Weathered to silver-grey (paler than living bark, but no white: at 0.48 a sunlit snag
         // read as a white post), split along its grain.
         Bark {
-            dark: vec3(0.11, 0.105, 0.10),
-            light: vec3(0.31, 0.30, 0.27),
-            grain: vec3(1.0, 0.0, 0.0),
+            dark: vec3(0.065, 0.07, 0.066),
+            light: vec3(0.24, 0.23, 0.215),
+            grain: vec3(0.75, 0.25, 0.0),
             relief: 1.2,
         }
     }
@@ -380,11 +411,13 @@ fn snag(s: u32, tall: f32, burnt: bool, conifer: bool, form: u32) -> Plant {
     p.tube(
         [
             vec3(0.0, -0.6, 0.0),
-            vec3(0.0, 0.5, 0.0),
             vec3(0.0, broke * fork * 0.5, 0.0) + lean * (fork * 0.4) + crook,
+            trunk_top - vec3(0.0, girth * 0.25, 0.0),
             trunk_top,
         ],
-        [girth * 1.5, girth * 1.1, girth * 0.72, girth * if form == 2 { 0.6 } else { 0.5 }],
+        [girth * 1.5, girth * 0.83, girth * if form == 2 { 0.6 } else {
+            0.5
+        }, girth * if form == 2 { 0.6 } else { 0.5 }],
     )
     // Roots, as a living tree's (`broadleaf`).
     for k in 0..(3 + s % 2) {
@@ -414,10 +447,10 @@ fn snag(s: u32, tall: f32, burnt: bool, conifer: bool, form: u32) -> Plant {
                 [
                     trunk_top - vec3(0.0, girth, 0.0),
                     trunk_top + out * girth * 0.3,
-                    mix(trunk_top, end, vec3(0.6)),
+                    end - normalize(end - trunk_top) * (girth * 0.16),
                     end,
                 ],
-                [girth * 0.5, girth * 0.45, girth * 0.36, girth * 0.32],
+                [girth * 0.5, girth * 0.45, girth * 0.32, girth * 0.32],
             )
             breaks[k] = end
         }
@@ -432,10 +465,10 @@ fn snag(s: u32, tall: f32, burnt: bool, conifer: bool, form: u32) -> Plant {
         let w = if form == 2 { girth * 0.6 } else { girth }
         let a = TAU * rand(s, 60 + k)
         let rim = vec3(cos(a), 0.0, sin(a)) * w * 0.3
-        let shard = if form == 1 { pick(s, 70, lo: 1.5, hi: 2.5) } else if burnt {
-            pick(s, 70 + k, lo: 0.3, hi: 0.7)
+        let shard = if form == 1 { pick(s, 70, lo: 0.45, hi: 1.0) } else if burnt {
+            pick(s, 70 + k, lo: 0.12, hi: 0.3)
         } else {
-            pick(s, 70 + k, lo: 0.6, hi: 1.4)
+            pick(s, 70 + k, lo: 0.18, hi: 0.45)
         }
         let out = if form == 1 { rim * (shard * 1.4 / max(w * 0.3, 0.01)) * 0.35 } else {
             rim * 0.4
@@ -476,16 +509,13 @@ fn snag(s: u32, tall: f32, burnt: bool, conifer: bool, form: u32) -> Plant {
             pick(s, 40 + i, lo: -0.2, hi: 0.7)
         }
         let tip = from + out * len + vec3(0.0, len * rise, 0.0)
-        p.limb(
-            from,
-            from +
-                axis * (len * 0.16) +
-                (tip - from) * 0.4 +
-                across * (len * pick(s, 45 + i, lo: -0.3, hi: 0.3)),
-            tip,
-            r_from: radius * pick(s, 47 + i, lo: 0.25, hi: 0.5),
-            r_to: if stub { girth * 0.16 } else { 0.03 },
-        )
+        let bend = from +
+            axis * (len * 0.16) +
+            (tip - from) * 0.4 +
+            across * (len * pick(s, 45 + i, lo: -0.3, hi: 0.3))
+        let base_radius = radius * pick(s, 47 + i, lo: 0.25, hi: 0.5)
+        let end_radius = base_radius * pick(s, 49 + i, lo: 0.4, hi: 0.65)
+        p.branch(from, axis, bend, tip, r_from: base_radius, r_to: end_radius)
     }
     p
 }
@@ -541,9 +571,9 @@ fn far_tree(s: u32) -> Plant {
 /// Kind `k`'s plant.
 pub fn kind_plant(k: u32) -> Plant {
     let oak_leaves = Leaves {
-        young: vec3(0.14, 0.21, 0.035),
-        old: vec3(0.035, 0.085, 0.025),
-        size: 0.5,
+        young: vec3(0.105, 0.16, 0.055),
+        old: vec3(0.055, 0.095, 0.035),
+        size: 0.26,
         cover: 1.6,
     }
     // Bark per species (the lookdev reviews' A13): oak's deep furrows broken into blocks;
@@ -556,22 +586,22 @@ pub fn kind_plant(k: u32) -> Plant {
         relief: 1.4,
     }
     let beech_leaves = Leaves {
-        young: vec3(0.20, 0.28, 0.05),
-        old: vec3(0.05, 0.11, 0.03),
-        size: 0.48,
+        young: vec3(0.13, 0.20, 0.065),
+        old: vec3(0.075, 0.115, 0.05),
+        size: 0.25,
         cover: 1.7,
     }
     let beech_bark = Bark {
-        dark: vec3(0.10, 0.085, 0.10),
-        light: vec3(0.31, 0.275, 0.30),
+        dark: vec3(0.07, 0.075, 0.07),
+        light: vec3(0.25, 0.26, 0.245),
         moss: vec3(0.13, 0.13, 0.10),
         grain: vec3(0.0, 0.0, 1.0),
         relief: 0.6,
     }
     let birch_leaves = Leaves {
-        young: vec3(0.25, 0.31, 0.06),
-        old: vec3(0.08, 0.14, 0.03),
-        size: 0.36,
+        young: vec3(0.16, 0.23, 0.075),
+        old: vec3(0.08, 0.125, 0.06),
+        size: 0.19,
         cover: 1.2,
     }
     let birch_bark = Bark {
@@ -1478,9 +1508,9 @@ pub fn far_kinds() -> Vec<u32> {
 }
 
 /// The far layer's instances in tile `t` (`engine::bake::Far`): each cell's tallest crown (of
-/// each `step` by `step` cells, a coarser layer for afar: the tallest of them, its crown widened
-/// to stand for the rest), of its species' far kind (`KINDS` on), on the ground at the cell's
-/// middle moved a little by a draw of its own, scaled to the crown's height.
+/// each `step` by `step` cells, a coarser layer for afar). A coarse group retains its tallest
+/// fine crown's position, height and turn; its width represents only occupied members. Empty
+/// cells do not move or inflate surviving crowns. World-cell seeds agree across bake extents.
 pub fn far_placed(
     far: engine::bake::Far,
     t: vec2i,
@@ -1491,22 +1521,24 @@ pub fn far_placed(
     let cells = u32(engine::place::TILE / engine::bake::FAR_CELL)
     let at = vec2u(t - far.lo) * cells
     let kinds = far_kinds()
-    let size = engine::bake::FAR_CELL * f32(step)
     var j = 0
     while j < cells {
         var i = 0
         while i < cells {
             // The tallest crown of the step's cells.
             var k = far.nx * far.nz
+            var occupied = 0
             for dj in 0..step {
                 for di in 0..step {
                     let x = at.x + i + di
                     let z = at.y + j + dj
                     if x < far.nx && z < far.nz {
                         let c = z * far.nx + x
-                        if far.kind[c] != 255 &&
-                            (k == far.nx * far.nz || far.tall[c] > far.tall[k]) {
-                            k = c
+                        if far.kind[c] < kinds.len() && far.tall[c] >= 3.0 {
+                            occupied += 1
+                            if k == far.nx * far.nz || far.tall[c] > far.tall[k] {
+                                k = c
+                            }
                         }
                     }
                 }
@@ -1519,17 +1551,15 @@ pub fn far_placed(
             if far.tall[k] < 3.0 || species >= kinds.len() {
                 continue
             }
-            let x = at.x + i - step
-            let z = at.y + j
-            let s = k * 7 + 13
-            let p = vec2(far.lo) * engine::place::TILE +
-                vec2(f32(x), f32(z)) * engine::bake::FAR_CELL +
-                vec2(0.25 + 0.5 * rand(s, 1), 0.25 + 0.5 * rand(s, 2)) * size
+            let cell = far.lo * i32(cells) + vec2i(i32(k % far.nx), i32(k / far.nx))
+            let s = hash2u(cell.x, cell.y, 731)
+            let p = (vec2(cell) + vec2(0.05 + 0.9 * rand(s, 1), 0.05 + 0.9 * rand(s, 2))) *
+                engine::bake::FAR_CELL
             let kind = kinds[species]
             // Crowns in groups: larger together in some places, smaller in others, over about
             // `GROUP` m (even in size, the far crowns read as an orchard: round 1).
             let group = 0.85 + 0.3 * noise2(p / GROUP + vec2(3.7, 11.2))
-            let widen = group * if step > 1 { 1.35 } else { 1.0 }
+            let widen = group * sqrt(1.0 + 0.275 * f32(occupied - 1))
             out.push(
                 Placed {
                     kind: KINDS + species,
@@ -1537,9 +1567,9 @@ pub fn far_placed(
                         at: vec3(p.x, height(p), p.y),
                         yaw: TAU * rand(s, 3),
                         tint: tint_of(stand_tint(p, height, s)),
-                        scale: clamp(far.tall[k] * widen / BUILT[kind], 0.15, 2.4),
+                        scale: clamp(far.tall[k] / BUILT[kind], 0.15, 2.4),
                         fork: 0.0,
-                        wide: 1.0,
+                        wide: widen,
                     },
                 },
             )
@@ -1547,6 +1577,55 @@ pub fn far_placed(
         j += step
     }
     out
+}
+
+/// Keep the existing straight inner capsule inside curved wood. Narrow curved twigs can
+/// have no straight core; omit those instead of straightening their rendered silhouette.
+fn inner_wood_capsule(limb: Tube<4>, piece: u32, at: Instance) -> (vec3, vec3, f32) {
+    let a = at.place(limb.points[piece])
+    let b = at.place(limb.points[piece + 1])
+    let span = length(b - a)
+    let dir = (b - a) / max(span, 1.0e-6)
+    var alignment = 1.0
+    for ring in 0..(RINGS + 1) {
+        let (_, axis, _) = limb_ring_axis(limb, piece * RINGS + ring)
+        // place_round keeps girth round even where the centreline is narrowed or bent.
+        alignment = min(alignment, abs(dot(at.turn(axis), dir)))
+    }
+    let core = 0.6 * min(limb.radii[piece], limb.radii[piece + 1]) * at.scale
+    // Keep both capsule spheres behind the open ring planes, and exclude the closed tip.
+    let (last, _, _) = limb_ring_axis(limb, (piece + 1) * RINGS - 1)
+    let cap = if piece == 2 { length(b - at.place(last)) } else { 0.0 }
+    var radius = min(core, max(span - cap, 0.0) * 0.2 * alignment)
+    let inset = radius / max(alignment, 1.0e-6)
+    let a = a + dir * inset
+    let b = b - dir * (inset + cap)
+    // Fit the straight core against the actual curved, tapered triangle planes. A radius
+    // allowance from centreline error alone misses oblique rings. This runs only while
+    // preparing probe occluders and adds no capsules or rendered geometry.
+    var vertices: Vec<vec3> = Vec::with_capacity((RINGS + 1) * (SIDES + 1))
+    var normals: Vec<vec3> = Vec::with_capacity((RINGS + 1) * (SIDES + 1))
+    let first = piece * (RINGS + 1) * (SIDES + 1)
+    for v in 0..((RINGS + 1) * (SIDES + 1)) {
+        let (centre, normal, r, _) = limb_point(limb, first + v)
+        vertices.push(at.place_round(centre, normal * r))
+        normals.push(at.turn(normal))
+    }
+    for triangle in 0..(RINGS * SIDES * 2) {
+        let v = piece * RINGS * SIDES * 6 + triangle * 3
+        let i = limb_corner(v) - first
+        let j = limb_corner(v + 1) - first
+        let k = limb_corner(v + 2) - first
+        let face = cross(vertices[j] - vertices[i], vertices[k] - vertices[i])
+        let size = length(face)
+        if size <= 1.0e-7 { continue }
+        let outward = normals[i] + normals[j] + normals[k]
+        let n = face / size * if dot(face, outward) < 0.0 { -1.0 } else { 1.0 }
+        let margin = -max(dot(a - vertices[i], n), dot(b - vertices[i], n))
+        radius = min(radius, margin - 1.0e-5)
+        if radius <= 0.0 { return (a, b, 0.0) }
+    }
+    (a, b, radius)
 }
 
 /// What the probes' occluder volume is cooked from, within `lo` to `hi` on the plane: each
@@ -1590,17 +1669,17 @@ pub fn occluders(
         for i in 0..plant.limbs.len() {
             let l = plant.limbs[i]
             for k in 0..3 {
-                out.push(
-                    engine::probes::Occluder {
-                        a: at.place(l.points[k]),
-                        // Inside the limb it stands for, so no bark lies within its own occluder (a
-                        // mean radius bulged past it at the joints' end spheres: the reviews'
-                        // pale rings on logs, where the bark's sky light changed).
-                        radius: 0.6 * min(l.radii[k], l.radii[k + 1]) * at.scale,
-                        b: at.place(l.points[k + 1]),
-                        solid: 1.0,
-                    },
-                )
+                let (a, b, radius) = inner_wood_capsule(l, k, at)
+                if radius > 0.0 {
+                    out.push(
+                        engine::probes::Occluder {
+                            a,
+                            radius,
+                            b,
+                            solid: 1.0,
+                        },
+                    )
+                }
             }
         }
     }
@@ -1715,4 +1794,202 @@ fn fallen_collision_wood_matches_the_rendered_root_plate_and_trunk() {
             }
         }
     }
+}
+
+@test
+fn broadleaf_crowns_have_unequal_vertical_sprays() {
+    for kind in [OAK_OPEN, OAK_FOREST, BEECH_OPEN, BEECH_FOREST, BIRCH_OPEN, ALDER_A] {
+        let p = kind_plant(kind)
+        var lo = 2.0
+        var hi = 0.0
+        var small = 1.0e6
+        var large = 0.0
+        for i in 0..p.clumps.len() {
+            let c = p.clumps[i]
+            lo = min(lo, c.squash)
+            hi = max(hi, c.squash)
+            small = min(small, c.radius)
+            large = max(large, c.radius)
+        }
+        assert(hi - lo > 0.2, f"kind {kind} forms identical flat canopy pads")
+        assert(large > small * 1.5, f"kind {kind} has no hierarchy of foliage sprays")
+        assert(
+            !p.clumps.is_full() && !p.limbs.is_full(),
+            f"kind {kind} silently drops authored structure",
+        )
+    }
+}
+
+@test
+fn dead_trunks_and_branches_close_over_short_breaks() {
+    for form in 0..3 {
+        let p = snag(s: 31, tall: 16.0, burnt: false, conifer: false, form: form)
+        let trunk = p.limbs[0]
+        assert(
+            length(trunk.points[3] - trunk.points[2]) < trunk.radii[3],
+            "dead trunk closes into a long needle",
+        )
+        assert(trunk.radii[2] == trunk.radii[3], "dead trunk tapers before its break")
+        let branches = if form == 1 { 2 } else { 5 }
+        for i in (p.limbs.len() - branches)..p.limbs.len() {
+            let limb = p.limbs[i]
+            let last = (2 * (RINGS + 1) + RINGS - 1) * (SIDES + 1)
+            let (solid, _, radius, _) = limb_point(limb, last)
+            let (end, _, tip_radius, _) = limb_point(limb, last + SIDES + 1)
+            assert(
+                length(end - solid) < limb.radii[3] && radius >= limb.radii[3] && tip_radius == 0.0,
+                "dead branch ends as a horn",
+            )
+            for joint in 0..2 {
+                let a = normalize(limb.points[joint + 1] - limb.points[joint])
+                let b = normalize(limb.points[joint + 2] - limb.points[joint + 1])
+                assert(dot(a, b) > 0.75, "dead branch has a sharp authored elbow")
+            }
+        }
+        if form == 2 {
+            for i in 5..7 {
+                let limb = p.limbs[i]
+                assert(
+                    length(limb.points[3] - limb.points[2]) < limb.radii[3],
+                    "forked snag leader ends as a needle",
+                )
+            }
+        }
+    }
+}
+
+@test
+fn far_groups_widen_without_changing_grown_height() {
+    let far = engine::bake::Far {
+        lo: vec2i(0),
+        nx: 2,
+        nz: 2,
+        tall: Vec::filled(4, 20.0),
+        kind: Vec::filled(n: 4, value: 0),
+    }
+    let fine = far_placed(far, vec2i(0), |_p: vec2| 0.0, step: 1)
+    let coarse = far_placed(far, vec2i(0), |_p: vec2| 0.0, step: 2)
+    assert(fine.len() == 4 && coarse.len() == 1, "far group fixture did not retain its crowns")
+    for p in fine {
+        assert(abs(p.at.scale - coarse[0].at.scale) < 1.0e-6, "coarse group changed tree height")
+        assert(
+            abs(p.at.scale * BUILT[OAK_FOREST] - 20.0) < 1.0e-4,
+            "stand variation changed grown height",
+        )
+    }
+    assert(coarse[0].at.wide > 1.0, "coarse group did not cover its wider cell")
+}
+
+@test
+fn far_groups_retain_fine_anchors_and_do_not_fill_empty_cells() {
+    var far = engine::bake::Far {
+        lo: vec2i(-2, 3),
+        nx: 4,
+        nz: 4,
+        tall: Vec::filled(16, 0.0),
+        kind: Vec::filled(n: 16, value: 255),
+    }
+    // One sparse group and one dense group, separated by two empty groups.
+    for k in [1, 10, 11, 14, 15] {
+        far.tall[k] = 12.0 + f32(k)
+        far.kind[k] = 0
+    }
+    let fine = far_placed(far, far.lo, |_p: vec2| 0.0, step: 1)
+    let coarse = far_placed(far, far.lo, |_p: vec2| 0.0, step: 2)
+    assert(fine.len() == 5 && coarse.len() == 2, "empty groups gained crowns")
+    // The same world cells packaged inside a wider bake retain their seeded anchors.
+    var wider = engine::bake::Far {
+        lo: vec2i(-3, 3),
+        nx: 36,
+        nz: 4,
+        tall: Vec::filled(144, 0.0),
+        kind: Vec::filled(n: 144, value: 255),
+    }
+    for k in [1, 10, 11, 14, 15] {
+        let c = (k / 4) * 36 + 32 + k % 4
+        wider.tall[c] = far.tall[k]
+        wider.kind[c] = far.kind[k]
+    }
+    let shifted = far_placed(wider, far.lo, |_p: vec2| 0.0, step: 1)
+    assert(shifted.len() == fine.len(), "bake extent changed the occupied cell count")
+    for i in 0..fine.len() {
+        assert(
+            shifted[i].at.at == fine[i].at.at && shifted[i].at.yaw == fine[i].at.yaw,
+            "bake extent changed a world cell's seeded anchor",
+        )
+    }
+    for p in coarse {
+        var matches = 0
+        for f in fine {
+            if p.at.at == f.at.at {
+                matches += 1
+                assert(
+                    p.at.scale == f.at.scale && p.at.yaw == f.at.yaw,
+                    "coarse crown changed its source",
+                )
+                if p.at.at.x < -496.0 {
+                    assert(p.at.wide == f.at.wide, "one surviving crown expanded into empty cells")
+                } else {
+                    assert(p.at.wide > f.at.wide, "dense group lost its combined coverage")
+                }
+            }
+        }
+        assert(matches == 1, "coarse crown relocated away from its fine anchor")
+    }
+}
+
+@test
+fn curved_wood_reduces_inner_capsules_instead_of_flattening_branches() {
+    var omitted = 0
+    var retained = 0
+    for kind in [OAK_OPEN, OAK_FOREST, SNAG_BROAD, LOG_LONG] {
+        let p = kind_plant(kind)
+        for fork in [-0.4, 0.0, 0.4] {
+            let inst = Instance {
+                at: vec3(11.0, 3.0, -7.0),
+                yaw: 0.73,
+                pitch: 0.2,
+                scale: 1.3,
+                wide: 0.65,
+                fork,
+                tint: tint_of(vec2(0.0)),
+            }
+            for limb in p.limbs {
+                for piece in 0..3 {
+                    let (a, b, radius) = inner_wood_capsule(limb, piece, inst)
+                    if radius <= 0.0 {
+                        omitted += 1
+                        continue
+                    }
+                    retained += 1
+                    // A capsule's support against every actual mesh triangle plane must lie
+                    // inside. This covers tilted rings and the final cap, not just its axis.
+                    for triangle in 0..(RINGS * SIDES * 2) {
+                        var vertices = [vec3(0.0); 3]
+                        var outward = vec3(0.0)
+                        for corner in 0..3 {
+                            let v = piece * RINGS * SIDES * 6 + triangle * 3 + corner
+                            let (centre, normal, r, _) = limb_point(limb, limb_corner(v))
+                            vertices[corner] = inst.place_round(centre, normal * r)
+                            outward += inst.turn(normal)
+                        }
+                        let cross_normal = cross(
+                            vertices[1] - vertices[0],
+                            vertices[2] - vertices[0],
+                        )
+                        if length(cross_normal) <= 1.0e-7 { continue }
+                        let n = normalize(cross_normal) * if dot(cross_normal, outward) < 0.0 {
+                            -1.0
+                        } else { 1.0 }
+                        let support = max(dot(a - vertices[0], n), dot(b - vertices[0], n)) + radius
+                        assert(
+                            support <= 0.002,
+                            f"kind {kind} piece {piece}: capsule crosses bark by {support}",
+                        )
+                    }
+                }
+            }
+        }
+    }
+    assert(retained > 0 && omitted > 0, "curved twig cores were neither bounded nor omitted")
 }

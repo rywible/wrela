@@ -53,12 +53,14 @@ pub fn land() -> Land {
             ..vec4(0.0),
         ],
         ravines: [
-            vec4(185.0, -392.0, 7.0, 11.0),
-            vec4(110.0, -352.0, 7.0, 11.0),
-            vec4(40.0, -322.0, 7.0, 11.0),
-            vec4(-60.0, -262.0, 7.0, 11.0),
-            vec4(-150.0, -205.0, 7.0, 11.0),
-            vec4(-235.0, -150.0, 7.0, 11.0),
+            vec4(185.0, -392.0, 7.0, 16.0),
+            vec4(110.0, -352.0, 7.0, 16.0),
+            vec4(40.0, -322.0, 7.0, 16.0),
+            // The bank path passes this bend. Its narrow rim joins broader eroded
+            // sections upstream and downstream without swallowing the established shelf.
+            vec4(-60.0, -262.0, 7.0, 7.0),
+            vec4(-150.0, -205.0, 7.0, 16.0),
+            vec4(-235.0, -150.0, 7.0, 16.0),
             ..vec4(0.0),
         ],
         ravine_fall: 5.0,
@@ -1449,4 +1451,147 @@ pub fn map() -> Map {
             rest: vec2(0.0, 30.0),
         },
     }
+}
+
+/// Broad, irregular openings which remain clear through succession.
+fn woodland_clearing(p: vec2) -> bool {
+    engine::noise::fbm2(p / 80.0 + vec2(17.3, -9.1), 3) < 0.35
+}
+
+/// Establishment varies between stands, and between eight-metre groups within a stand.
+/// All four growth cells share a decision: independent thinning at four metres would still
+/// leave almost every distant crown cell occupied, preserving the planted-looking rows.
+fn woodland_established(p: vec2) -> bool {
+    let cell = vec2i(floor(p / 8.0))
+    let centre = (vec2(cell) + vec2(0.5)) * 8.0
+    let density = 0.55 + 0.4 * engine::noise::noise2(centre / 64.0 + vec2(-5.7, 23.1))
+    engine::noise::rand(engine::noise::hash2u(cell.x, cell.y, 619), 47) < density
+}
+
+/// Wildwood openings, from broad clearings and uneven establishment within woodland.
+/// Only `wildwood::kept_clear` passes this into growth; the authored history is unchanged.
+/// Rendered trees, far crowns, probes and collision all share the resulting tree records.
+pub fn woodland_open(p: vec2) -> bool {
+    woodland_clearing(p) || !woodland_established(p)
+}
+
+@test
+fn woodland_openings_form_moderate_groups() {
+    var open = 0
+    var neighbours = 0
+    var transitions = 0
+    var boundary = vec2(0.0)
+    for j in 0..64 {
+        for i in 0..64 {
+            let p = vec2(4096.0 + f32(i) * 8.0, -4096.0 + f32(j) * 8.0)
+            let here = woodland_clearing(p)
+            if here {
+                open += 1
+                assert(woodland_open(p), "establishment filled a broad clearing")
+                if woodland_clearing(p + vec2(8.0, 0.0)) { neighbours += 1 }
+            }
+            if here != woodland_clearing(p + vec2(8.0, 0.0)) {
+                transitions += 1
+                boundary = p
+            }
+        }
+    }
+    assert(open > 200 && open < 1200, "woodland lost its moderate mix of trees and openings")
+    assert(neighbours * 4 > open * 3, "openings are isolated cell speckles rather than groups")
+    assert(transitions > 30 && transitions < 700, "opening boundaries are uniform or too granular")
+
+    // Exercise the production growth predicate on a 48 m patch crossing an opening edge.
+    // This never loads the authored history or cooks a whole wildwood tile.
+    let from = vec2i(floor((boundary - vec2(16.0)) / engine::wild::WCELL))
+    let cells = engine::wild::grow_wild(
+        from.x,
+        from.y,
+        n: 12,
+        steps: 6,
+        ride: |_p: vec2| 1000.0,
+        clear: woodland_open,
+    )
+    var clear_cells = 0
+    var trees = 0
+    for j in 0..12 {
+        for i in 0..12 {
+            let p = (vec2(from) + vec2(f32(i), f32(j)) + vec2(0.5)) * engine::wild::WCELL
+            let c = cells[j * 12 + i]
+            if woodland_open(p) {
+                clear_cells += 1
+                assert(c.kind == engine::wild::NOTHING, "growth filled a persistent opening")
+            } else if c.kind != engine::wild::NOTHING {
+                trees += 1
+            }
+        }
+    }
+    assert(clear_cells > 0 && trees > 0, "growth fixture missed the woodland boundary")
+}
+
+@test
+fn woodland_establishment_varies_stands_and_retains_real_far_gaps() {
+    var total = 0
+    var least = 64
+    var most = 0
+    // Sixty-four stands, each with sixty-four possible groups. Use negative world cells too.
+    for stand in 0..64 {
+        var count = 0
+        for j in 0..8 {
+            for i in 0..8 {
+                let p = vec2(
+                    -1024.0 + f32((stand % 8) * 64 + i * 8),
+                    4096.0 + f32((stand / 8) * 64 + j * 8),
+                )
+                let retained = woodland_established(p + vec2(2.0))
+                for offset in [vec2(2.0, 6.0), vec2(6.0, 2.0), vec2(6.0)] {
+                    assert(
+                        woodland_established(p + offset) == retained,
+                        "one establishment group split into independently thinned growth cells",
+                    )
+                }
+                if retained { count += 1 }
+            }
+        }
+        total += count
+        least = min(least, count)
+        most = max(most, count)
+    }
+    assert(total > 2250 && total < 3600, "establishment is empty or still fills nearly every group")
+    assert(most - least > 14, "woodland stands have uniform establishment density")
+
+    // Actual growth over only 64 m: its 4 m cells must retain empty 8 m crown groups.
+    // This is the same predicate supplied by wildwood, without a history or whole-tile bake.
+    let from = vec2i(1024, -1024)
+    let cells = engine::wild::grow_wild(
+        from.x,
+        from.y,
+        n: 16,
+        steps: 6,
+        ride: |_p: vec2| 1000.0,
+        clear: woodland_open,
+    )
+    var occupied = 0
+    var excluded = 0
+    for j in 0..8 {
+        for i in 0..8 {
+            let p = vec2(from) * engine::wild::WCELL + vec2(f32(i), f32(j)) * 8.0
+            var crowns = 0
+            for dz in 0..2 {
+                for dx in 0..2 {
+                    let c = cells[(j * 2 + dz) * 16 + i * 2 + dx]
+                    if c.kind != engine::wild::NOTHING && c.tall >= 3.0 { crowns += 1 }
+                    if !woodland_established(p + vec2(2.0)) {
+                        assert(
+                            c.kind == engine::wild::NOTHING,
+                            "growth refilled an excluded establishment group",
+                        )
+                    }
+                }
+            }
+            if crowns > 0 { occupied += 1 }
+            if !woodland_established(p + vec2(2.0)) { excluded += 1 }
+        }
+    }
+    assert(excluded > 4 && excluded < 40, "growth fixture missed its mix of established groups")
+    assert(occupied > 8 && occupied < 60, "real growth lost woodland or refilled every far cell")
 }

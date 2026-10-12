@@ -17,7 +17,15 @@ pub fn great_tree() -> Plant {
         grain: vec3(0.65, 0.35, 0.0),
         relief: 1.5,
     }
-    var p = plant(leaves: Leaves { size: 0.5, cover: 1.9 }, bark: bark)
+    var p = plant(
+        leaves: Leaves {
+            size: 0.25,
+            cover: 1.65,
+            young: vec3(0.105, 0.16, 0.055),
+            old: vec3(0.055, 0.095, 0.035),
+        },
+        bark: bark,
+    )
     let base = vec3(0.0, -0.3, 0.0)
     let fork = base + vec3(0.215, 4.2, -0.1)
     // The trunk, one tube: from below the ground (its rounded end out of sight), flared at its
@@ -64,9 +72,10 @@ pub fn great_tree() -> Plant {
             out * (5.0 + 1.6 * low) +
             side * pick(34, i, lo: -0.8, hi: 0.8) +
             vec3(0.0, 3.6 + 1.4 * (1.0 - low) + pick(33, i, lo: -0.6, hi: 0.6), 0.0)
-        let r0 = trunk_radius * pick(36, i, lo: 0.55, hi: 0.7)
-        p.limb(
+        let r0 = trunk_radius * pick(36, i, lo: 0.42, hi: 0.58)
+        p.branch(
             foot,
+            trunk_axis,
             elbow * 0.75 + foot * 0.25 + trunk_axis * 0.35,
             tip,
             r_from: r0,
@@ -85,22 +94,24 @@ pub fn great_tree() -> Plant {
             side * pick(42, i, lo: 0.9, hi: 2.0) +
             out * 1.2 +
             vec3(0.0, pick(44, i, lo: 0.8, hi: 1.6), 0.0)
-        p.limb(
+        p.branch(
             left_from,
+            left_axis,
             left_from + left_axis * 0.9 + (left - left_from) * 0.3,
             left,
-            r_from: left_r * 0.6,
+            r_from: left_r * 0.48,
             r_to: 0.04,
         )
-        p.limb(
+        p.branch(
             right_from,
+            right_axis,
             right_from + right_axis * 0.65 + (right - right_from) * 0.3,
             right,
-            r_from: right_r * 0.5,
+            r_from: right_r * 0.4,
             r_to: 0.025,
         )
-        p.clump(left + vec3(0.0, 0.5, 0.0), radius: pick(49, i, lo: 1.8, hi: 2.4))
-        p.clump(right + vec3(0.0, 0.5, 0.0), radius: pick(51, i, lo: 1.8, hi: 2.4))
+        p.clump(left + vec3(0.0, 0.5, 0.0), radius: pick(49, i, lo: 0.9, hi: 1.5))
+        p.clump(right + vec3(0.0, 0.5, 0.0), radius: pick(51, i, lo: 0.9, hi: 1.5))
         tips[i] = tip
     }
     // The crown: a mass of clumps round each limb's end, raised over it, and one over the
@@ -110,11 +121,11 @@ pub fn great_tree() -> Plant {
         let centre = if mass == 5 { top + vec3(0.0, 7.0, 0.0) } else {
             tips[mass] + vec3(0.0, 0.8, 0.0)
         }
-        let spread = if mass == 5 { 2.6 } else { 2.2 }
+        let spread = if mass == 5 { 2.1 } else { 2.7 }
         let a = TAU * rand(43, i)
         let r = spread * sqrt(rand(41, i))
-        let at = centre + vec3(r * cos(a), pick(45, i, lo: -0.6, hi: 1.4), r * sin(a))
-        p.clump(at, radius: pick(47, i, lo: 2.1, hi: 3.1))
+        let at = centre + vec3(r * cos(a), pick(45, i, lo: -1.0, hi: 1.5), r * sin(a))
+        p.cushion(at, radius: pick(47, i, lo: 1.0, hi: 1.85), squash: pick(48, i, lo: 0.7, hi: 1.1))
     }
     p
 }

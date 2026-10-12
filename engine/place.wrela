@@ -223,6 +223,27 @@ impl Land {
         best
     }
 
+    /// Signed curvature along a segment. Interpolating the vertex turns keeps a bend's
+    /// inner bank on the same side through each join, including short sampled courses.
+    fn ravine_bend(self, i: u32, t: f32) -> f32 {
+        let a = self.ravines[i]
+        let b = self.ravines[i + 1]
+        let dir = normalize(b.xy - a.xy + vec2(1.0e-8))
+        var before = dir
+        var after = dir
+        if i > 0 && self.ravines[i - 1].w > 0.0 {
+            before = normalize(a.xy - self.ravines[i - 1].xy + vec2(1.0e-8))
+        }
+        if i < 14 && self.ravines[i + 2].w > 0.0 {
+            after = normalize(self.ravines[i + 2].xy - b.xy + vec2(1.0e-8))
+        }
+        clamp(
+            4.0 * mix(before.x * dir.y - before.y * dir.x, dir.x * after.y - dir.y * after.x, t),
+            -1.0,
+            1.0,
+        )
+    }
+
     /// How deep the ravines cut at `p`, and how far along the nearest one it is (m from its first
     /// point), and how far from its course. Its walls are steep but where they've slumped.
     pub fn ravine_at(self, p: vec2) -> vec3 {
@@ -249,7 +270,11 @@ impl Land {
                     )
                     let w = mix(a.w, b.w, t) * (1.0 + 3.5 * slump)
                     let depth = mix(a.z, b.z, t)
-                    cut = depth * (1.0 - smoothstep(w * 0.3, w, d + 1.5 * (noise2(p * 0.15) - 0.5)))
+                    let dir = (b.xy - a.xy) / max(len, 1.0e-5)
+                    let offset = p - mix(a.xy, b.xy, t)
+                    let side = if dot(offset, vec2(-dir.y, dir.x)) < 0.0 { -1.0 } else { 1.0 }
+                    let section = ravine_section(side * d, w, self.ravine_bend(i, t))
+                    cut = depth * section.x
                 }
                 walked += len
             } else if a.w > 0.0 {
@@ -277,11 +302,13 @@ impl Land {
                 let (d, t) = to_segment(p, a.xy, b.xy)
                 let len = length(b.xy - a.xy)
                 let along = walked + t * len
-                let slump = smoothstep(0.55, 0.8, 0.5 + 0.5 * cos(along * 6.2831853 / SLUMP_EVERY))
-                let w = mix(a.w, b.w, t)
-                let wall = smoothstep(0.3 * w, 0.42 * w, d) *
-                    (1.0 - smoothstep(0.85 * w, 1.0 * w, d))
-                f = max(f, wall * (1.0 - slump))
+                let slump = smoothstep(0.7, 0.9, 0.5 + 0.5 * cos(along * 6.2831853 / SLUMP_EVERY))
+                let w = mix(a.w, b.w, t) * (1.0 + 3.5 * slump)
+                let dir = (b.xy - a.xy) / max(len, 1.0e-5)
+                let offset = p - mix(a.xy, b.xy, t)
+                let side = if dot(offset, vec2(-dir.y, dir.x)) < 0.0 { -1.0 } else { 1.0 }
+                let section = ravine_section(side * d, w, self.ravine_bend(i, t))
+                f = max(f, section.y * (1.0 - slump))
                 walked += len
             } else if a.w > 0.0 {
                 walked = 0.0
@@ -1399,4 +1426,48 @@ fn a_crag_ramp_meets_the_tilted_top_across_its_full_width() {
             }
         }
     }
+}
+
+/// Bed depth and exposed wall fraction across a stream valley. Inside a bend, deposited
+/// sediment makes a broad low shelf; outside it, erosion leaves a narrower cut bank.
+/// The channel centre and the outer rim remain fixed in height.
+fn ravine_section(across: f32, width: f32, bend: f32) -> vec2 {
+    let bank = bend * smoothstep(-0.2, 0.2, across / max(width, 1.0e-5)) * 2.0 - bend
+    let inner = max(bank, 0.0)
+    let outer = max(-bank, 0.0)
+    let r = abs(across) / max(width * (1.0 + 0.45 * inner - 0.15 * outer), 1.0e-5)
+    let ordinary = 1.0 - smoothstep(0.3, 1.0 - 0.15 * outer, r)
+    let shelf = 1.0 - 0.18 * smoothstep(0.25, 0.42, r) - 0.82 * smoothstep(0.68, 1.0, r)
+    let cut = mix(ordinary, shelf, inner)
+    let wall = smoothstep(mix(0.32, 0.7, inner), mix(0.46, 0.78, inner), r) *
+        (1.0 - smoothstep(0.87, 1.0, r))
+    vec2(cut, wall)
+}
+
+@test
+fn ravine_bends_keep_the_bed_and_form_opposed_banks() {
+    for bend in [-1.0, -0.5, 0.0, 0.5, 1.0] {
+        assert(
+            ravine_section(across: 0.0, width: 10.0, bend: bend).x == 1.0,
+            "bend moved the channel bed",
+        )
+        for i in 0..101 {
+            let x = f32(i) * 0.2
+            let a = ravine_section(across: x, width: 10.0, bend: bend)
+            let b = ravine_section(across: -x, width: 10.0, bend: -bend)
+            assert(length(a - b) < 1.0e-5, "opposite bends do not mirror")
+            assert(
+                a.x >= 0.0 && a.x <= 1.0 && a.y >= 0.0 && a.y <= 1.0,
+                "bank escaped its height bounds",
+            )
+        }
+        assert(
+            ravine_section(across: 15.0, width: 10.0, bend: bend).x == 0.0,
+            "bank cut past its bounded rim",
+        )
+    }
+    let inner = ravine_section(across: 7.0, width: 10.0, bend: 1.0)
+    let outer = ravine_section(across: -7.0, width: 10.0, bend: 1.0)
+    assert(inner.x > outer.x + 0.4, "bend did not form a low inner shelf")
+    assert(inner.y < 0.01, "flat deposited shelf was classified as a rock wall")
 }

@@ -20,7 +20,7 @@ use lit::{Lighting, sun_and_gloss, through_air}
 use noise::noise2
 use place::Water
 use sky::clouded_sky
-use std::gpu::{ClipPosition, FragCoord, Rgba16Float, Sampler, Texture, VertexIndex}
+use std::gpu::{ClipPosition, FragCoord, Rgba16Float, Texture, VertexIndex}
 use std::math::TAU
 use view::{Camera, WATER}
 
@@ -819,14 +819,38 @@ fn ripple_roughness(lost: f32, flowing: bool) -> f32 {
 const MARCH: u32 = 24
 const FIRST: f32 = 0.4
 
+/// A bilinear colour sample restricted to the hit's depth layer. The colour taps cannot
+/// borrow a nearer bank or trunk just because the reflection's centre hit the water's far
+/// shore. Weight is retained as coverage so narrow silhouettes fade toward the fallback.
+fn reflection_colour(below: Texture<Rgba16Float>, px: vec2, depth: f32, tolerance: f32) -> vec4 {
+    let q = px - vec2(0.5)
+    let base = vec2i(floor(q))
+    let f = fract(q)
+    let limit = vec2i(i32(below.width()) - 1, i32(below.height()) - 1)
+    var colour = vec3(0.0)
+    var weight = 0.0
+    for y in 0..2 {
+        for x in 0..2 {
+            let p = clamp(base + vec2i(x, y), vec2i(0), limit)
+            let sample = below.load(x: u32(p.x), y: u32(p.y))
+            let same = 1.0 - smoothstep(tolerance * 0.25, tolerance, abs(sample.a - depth))
+            let w = (if x == 0 { 1.0 - f.x } else { f.x }) * (if y == 0 { 1.0 - f.y } else {
+                f.y
+            }) * same
+            colour += sample.rgb * w
+            weight += w
+        }
+    }
+    vec4(colour, weight)
+}
+
 /// The world the water's reflection meets from the screen: marched from `world` along `r` in
 /// view space against `below`'s distances, the colour where the ray goes behind what's there
 /// (within the step's length), and how much to trust it (fading at the screen's edges, and to
 /// nothing where it leaves the screen or comes back toward the eye).
-fn reflected_on_screen(
+pub fn reflected_on_screen(
     cam: Camera,
     below: Texture<Rgba16Float>,
-    s: Sampler,
     world: vec3,
     r: vec3,
     rough: f32,
@@ -839,7 +863,9 @@ fn reflected_on_screen(
         if at.y < world.y {
             return vec4(0.0)
         }
-        let px = cam.pixel(at)
+        // `below` was rasterized with this frame's jitter. An unjittered lookup walks
+        // across a different silhouette every frame even when the water does not move.
+        let px = cam.pixel(at) + cam.jitter * cam.screen * vec2(0.5, -0.5)
         if px.x < 0.0 || px.y < 0.0 || px.x >= cam.screen.x || px.y >= cam.screen.y {
             return vec4(0.0)
         }
@@ -854,15 +880,13 @@ fn reflected_on_screen(
             // next frame can lose it; nearest-depth tests still prevent foreground leaks.
             let trust = smoothstep(0.0, 0.08 * cam.screen.y, edge) *
                 (1.0 - smoothstep(0.25, 1.0, (d - seen.a) / (len * 1.5 + 0.2)))
-            let uv = px / cam.screen
-            let spread = vec2(1.0 + rough * 4.0) / cam.screen
-            // Filter colour only. Filtering distance across a silhouette invents a surface.
-            let colour = (below.sample_level(s, uv + vec2(spread.x, 0.0)).rgb +
-                below.sample_level(s, uv - vec2(spread.x, 0.0)).rgb +
-                below.sample_level(s, uv + vec2(0.0, spread.y)).rgb +
-                below.sample_level(s, uv - vec2(0.0, spread.y)).rgb) *
-                0.25
-            return vec4(colour, trust)
+            let spread = 1.0 + rough * 4.0
+            let tolerance = min(len * 1.5 + 0.2, 0.05 + seen.a * 0.02)
+            let filtered = reflection_colour(below, px + vec2(spread, 0.0), seen.a, tolerance) +
+                reflection_colour(below, px - vec2(spread, 0.0), seen.a, tolerance) +
+                reflection_colour(below, px + vec2(0.0, spread), seen.a, tolerance) +
+                reflection_colour(below, px - vec2(0.0, spread), seen.a, tolerance)
+            return vec4(filtered.rgb / max(filtered.a, 1.0e-6), trust * filtered.a * 0.25)
         }
         len *= 1.18
     }
@@ -938,7 +962,7 @@ pub fn water_shade(
     var reflected = mix(probe, open, vec3(opens * opens))
     // Slopes below a pixel still spread the reflection instead of vanishing into a mirror.
     let rough = ripple_roughness(lost, flowing)
-    let screen = reflected_on_screen(cam, below, lt.s, w.world, r, rough)
+    let screen = reflected_on_screen(cam, below, w.world, r, rough)
     reflected = mix(reflected, screen.rgb, vec3(screen.a))
     let fresnel = reflection_share(dot(n, v), rough, look.mirror)
     var c = mix(seen, reflected, vec3(fresnel))

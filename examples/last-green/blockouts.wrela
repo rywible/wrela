@@ -89,7 +89,7 @@ fn past(q: vec2) -> f32 {
 
 /// Where a stone of a coursed wall is: its course `row`, its block's index along the course,
 /// how far through its course and its block it is (0 to 1), and whether the block runs on into
-/// the next (a long stone: about one in five has no joint at its end).
+/// the next (some neighbouring stones share a dressed face colour).
 struct Coursed: Copy {
     pub row: f32,
     pub block: f32,
@@ -114,11 +114,10 @@ fn coursed(y: f32, along: f32, course: f32, n: f32) -> Coursed {
     let last = u32((row + 64.0) * 131.0 + (if block < 1.0 && n > 0.0 { n - 1.0 } else {
         block - 1.0
     }) + 4096.0)
-    let long = rand(key, 1) < 0.22
     let joined = rand(last, 1) < 0.22
-    let bed = smoothstep(0.82, 0.97, u - row)
+    let bed = 1.0 - smoothstep(0.02, 0.09, min(u - row, 1.0 - (u - row)))
     // The ends' joints are thinner than the beds', so the courses lead.
-    let end = if long { 0.0 } else { 0.5 * smoothstep(0.88, 0.99, on) }
+    let end = 0.7 * (1.0 - smoothstep(0.01, 0.06, min(on, 1.0 - on)))
     Coursed {
         row,
         block,
@@ -126,6 +125,113 @@ fn coursed(y: f32, along: f32, course: f32, n: f32) -> Coursed {
         on,
         id: if joined { last } else { key },
         joint: max(bed, end),
+    }
+}
+
+/// Course-scale relief shared by the mesh and its material. Every block meets the same
+/// recessed mortar plane at its edges, so changing the stone's key cannot split the field.
+fn masonry_relief(st: Coursed) -> f32 {
+    // A narrow linear bevel meets a broad dressed plane. Multiplying rounded edge ramps
+    // made each block swell at its corners; the nearer edge alone defines the bevel here.
+    let bed = saturate((min(st.up, 1.0 - st.up) - 0.018) / 0.115)
+    let end = saturate((min(st.on, 1.0 - st.on) - 0.008) / 0.06)
+    -0.012 + min(bed, end) * (0.043 + 0.014 * rand(st.id, 12))
+}
+
+@test
+fn masonry_faces_have_depth_and_share_recessed_joint_boundaries() {
+    var low = 1.0
+    var high = -1.0
+    for y in 0..101 {
+        let p = 5.0 + f32(y) * 0.01
+        let relief = masonry_relief(coursed(p, 3.4, COURSE, BLOCKS))
+        low = min(low, relief)
+        high = max(high, relief)
+    }
+    assert(low < -0.009 && high > 0.025, "masonry courses lost their shallow geometric joints")
+    assert(low >= -0.0121 && high <= 0.0451, "masonry relief projects beyond dressed stone scale")
+    for id in 0..64 {
+        let face = Coursed { row: 1.0, block: 2.0, up: 0.5, on: 0.5, id, joint: 0.0 }
+        let near_edge = Coursed { up: 0.15, on: 0.08, ..face }
+        assert(
+            abs(masonry_relief(face) - masonry_relief(near_edge)) < 1.0e-6,
+            "a broad stone face swells instead of staying planar up to its bevel",
+        )
+    }
+    for row in 0..8 {
+        let base = Coursed { row: f32(row), block: 2.0, up: 0.5, on: 0.0, id: row, joint: 1.0 }
+        let next = Coursed { on: 1.0, id: row + 91, ..base }
+        assert(masonry_relief(base) == masonry_relief(next), "stone keys split a head joint")
+        let below = Coursed { up: 0.0, on: 0.5, ..base }
+        let above = Coursed { up: 1.0, on: 0.5, id: row + 71, ..base }
+        assert(masonry_relief(below) == masonry_relief(above), "stone keys split a bed joint")
+    }
+}
+
+@test
+fn fortress_masonry_keeps_a_solid_thick_core_and_open_hollow() {
+    let t = tower()
+    for i in 0..36 {
+        let a = TAU * (f32(i) + 0.5) / 36.0
+        let dir = vec2(cos(a - TAU * 0.5), sin(a - TAU * 0.5))
+        let radius = t.radius - t.wall * 0.5
+        // Sample the intact foot outside the doorway, below every broken column.
+        if stones::apart(a, DOOR) < 0.5 { continue }
+        let p = vec3(dir.x * radius, 0.5, dir.y * radius)
+        // The union of neighbouring columns is a conservative field: its negative
+        // magnitude can be limited by an internal column edge, not an exposed surface.
+        // Test solid occupancy throughout a half-metre disc instead of treating that
+        // magnitude as the exact distance to air.
+        let tangent = vec2(-dir.y, dir.x)
+        for radial in -2..3 {
+            for across in -2..3 {
+                let offset = vec2(f32(radial), f32(across)) * 0.25
+                if dot(offset, offset) > 0.25 { continue }
+                let q = p.xz + dir * offset.x + tangent * offset.y
+                assert(
+                    t.distance(vec3(q.x, p.y, q.y)) < 0.0,
+                    "joint relief cut through the wall's half-metre structural core",
+                )
+            }
+        }
+        let inside = vec3(dir.x * (t.radius - t.wall - 0.2), 0.5, dir.y * (t.radius - t.wall - 0.2))
+        assert(t.distance(inside) > 0.1, "masonry relief filled the tower's hollow")
+    }
+    let wall = Wall { half: vec3(3.0, 1.1, 0.45) }
+    for x in 0..21 {
+        for across in -3..4 {
+            // Column union boundaries may be exactly zero inside the wall; positive
+            // distance would be a real gap through this sixty-centimetre-thick core.
+            assert(
+                wall.distance(vec3(-2.0 + f32(x) * 0.2, 0.4, f32(across) * 0.1)) <= 0.0,
+                "ruin joints split its lower masonry core",
+            )
+        }
+    }
+}
+
+@test
+fn tower_arch_relief_is_continuous_at_its_material_boundaries() {
+    let t = tower()
+    let r = t.radius - 0.05
+    let e = 0.0001
+    for i in 0..25 {
+        // Crossing the spring line within the band of stone around the opening.
+        let ds = 0.82 + f32(i) * 0.019
+        let a = DOOR + ds / r
+        let p = vec3(r * cos(a - TAU * 0.5), DOOR_SPRING, r * sin(a - TAU * 0.5))
+        let below = t.relief(p - vec3(0.0, e, 0.0), a, r)
+        let above = t.relief(p + vec3(0.0, e, 0.0), a, r)
+        assert(abs(above - below) <= 2.0 * e * 9.0, "arch relief jumps across its spring")
+        // Crossing the outer arch radius, at several angles of its upper semicircle.
+        let angle = 0.15 + f32(i) * 0.117
+        let side = (DOOR_HALF + 0.5) * cos(angle)
+        let y = DOOR_SPRING + (DOOR_HALF + 0.5) * sin(angle)
+        let a = DOOR + side / r
+        let p = vec3(r * cos(a - TAU * 0.5), y, r * sin(a - TAU * 0.5))
+        let inside = t.relief(p - vec3(0.0, e, 0.0), a, r)
+        let outside = t.relief(p + vec3(0.0, e, 0.0), a, r)
+        assert(abs(outside - inside) <= 2.0 * e * 9.0, "arch relief jumps across its outer edge")
     }
 }
 
@@ -162,12 +268,22 @@ impl Tower {
         let notch = CHIP *
             (1.0 - smoothstep(0.1, 1.0, stones::apart(a, CHIP_AT) / 0.4)) *
             (0.6 + 0.8 * rand(n, 10))
-        joint_below(rim - max(bite, notch), COURSE)
+        joint_below(rim - max(bite, notch), COURSE) + COURSE * (rand(n, 11) - 0.5) * 0.6
     }
 
     /// The broken top over angle `a`: the column's there.
     pub fn top(self, a: f32) -> f32 {
         self.column_top(floor(a / TAU * BLOCKS) % BLOCKS)
+    }
+
+    /// Geometry blends between the arch and ordinary courses. The material's discrete
+    /// ownership boundary must not introduce a jump into the meshed distance field.
+    fn relief(self, p: vec3, a: f32, r: f32) -> f32 {
+        let ordinary = masonry_relief(coursed(p.y, a / TAU * BLOCKS, COURSE, BLOCKS))
+        let v = vec2(wrap(a - DOOR) * r, p.y - DOOR_SPRING)
+        let arch = smoothstep(0.0, 0.15, v.y) *
+            (1.0 - smoothstep(DOOR_HALF + 0.32, DOOR_HALF + 0.5, length(v)))
+        mix(ordinary, masonry_relief(self.stone_at(p, a, r)), arch)
     }
 
     /// The stone at `p` (angle `a` round the tower, `r` from its axis): its course and block, or
@@ -202,7 +318,8 @@ impl Surface for Tower {
         let r = length(p.xz)
         let a = atan2(p.z, p.x) + TAU * 0.5
         let inner = self.radius - self.wall
-        var d = max(r - self.outer(p.y), inner - r)
+        let relief = self.relief(p, a, r)
+        var d = max(r - self.outer(p.y) - relief, inner - r - relief)
         d = max(d, -(p.y + 3.0))
         // The top: the union of the blocks' columns, each standing to its own top, its sides
         // measured round the tower at this radius (exact to the nearest five; past them, at
@@ -214,7 +331,13 @@ impl Surface for Tower {
         for k in 0..5 {
             let jj = j + f32(k) - 2.0
             let side = max(jj - fj, fj - (jj + 1.0)) * TAU / BLOCKS * reach
-            let t = self.column_top((jj + BLOCKS) % BLOCKS)
+            let column = (jj + BLOCKS) % BLOCKS
+            // A fractured block slopes through the wall's thickness and along its face.
+            // Neither face ends in the identical clean stair-step cut.
+            let across = clamp((r - inner) / self.wall, 0.0, 1.0) - 0.5
+            let fracture = 0.38 * across * (2.0 * rand(u32(column), 13) - 1.0) +
+                0.22 * clamp(fj - jj - 0.5, -0.5, 0.5) * (2.0 * rand(u32(column), 14) - 1.0)
+            let t = self.column_top(column) + fracture
             top = min(top, past(vec2(side, p.y - t)))
         }
         d = max(d, top)
@@ -231,15 +354,14 @@ impl Surface for Tower {
             let slit = max(abs(wrap(a - s.x)) * r - (0.09 + 0.3 * depth), abs(p.y - s.y) - 0.6)
             d = max(d, -slit)
         }
-        // Weathered. (Its courses are drawn in its colour: stones proud of their joints would
-        // step the field at every joint.)
-        d - 0.03 * noise3(p * 2.0)
+        // The dressed faces retain broad planes; small weathering does not melt the joints.
+        d - 0.008 * noise3(p * 3.0)
     }
 
     /// The top's columns, the door and the slits are distances (the slits' splay bends them
     /// by a third); the batter's slope and the weathering bend the field a little more.
     fn lipschitz(self, near: f32) -> f32 {
-        3.0
+        9.0
     }
 }
 
@@ -259,13 +381,14 @@ impl Masonry {
         var c = dressed(p, st.id)
         c = mix(c, c * 0.6, vec3(st.joint * 0.6))
         let streak = noise3(vec3(a * 14.0, p.y * 0.12, 1.0))
-        c *= 1.0 - 0.2 * smoothstep(0.55, 0.85, streak)
+        c *= 1.0 - 0.16 * st.joint * smoothstep(0.55, 0.85, streak)
         c *= mix(0.78, 1.0, smoothstep(0.0, 2.5, p.y))
         let north = smoothstep(-0.2, 0.8, p.z / max(r, 0.1))
         let top = t.top(a)
         let lip = smoothstep(1.6, 0.2, top - p.y) * (0.5 + 0.5 * noise3(p * 1.7))
-        let moss = max(smoothstep(2.5, 0.0, p.y) * north, lip)
-        Rock { albedo: mix(c, MOSS, vec3(moss * 0.75)) }
+        let damp = smoothstep(2.5, 0.0, p.y) * north
+        let moss = max(damp * (0.25 + 0.75 * st.joint), lip * (0.3 + 0.7 * st.joint))
+        Rock { albedo: mix(c, MOSS, vec3(moss * 0.6)) }
     }
 }
 
@@ -293,7 +416,7 @@ impl Courses {
 
 /// The floor's tower.
 pub fn tower() -> Tower {
-    Tower { radius: stones::TOWER_RADIUS, wall: 1.3, tall: stones::TOWER_TALL }
+    Tower { radius: stones::TOWER_RADIUS, wall: 1.65, tall: stones::TOWER_TALL }
 }
 
 /// The tower as a creature of one bone.
@@ -380,15 +503,16 @@ impl Block {
             let end = smoothstep(0.06, 0.0, abs((q.x / 0.8 + 4.0 + 0.5 * upper) % 1.0 - 0.5) - 0.44)
             c = mix(c, c * 0.55, vec3(max(bed, end) * 0.75))
         }
-        let moss = smoothstep(0.2, 0.9, q.y / self.half.y + 0.4 * (noise3(p * 3.0) - 0.5))
-        Rock { albedo: mix(c, MOSS, vec3(moss * 0.6)) }
+        let damp = smoothstep(0.45, -0.45, p.y / max(self.half.y, 0.1))
+        let moss = damp * smoothstep(0.45, 0.75, noise3(p * 3.0))
+        Rock { albedo: mix(c, MOSS, vec3(moss * 0.55)) }
     }
 }
 
 impl Surface for Block {
     fn distance(self, p: vec3) -> f32 {
         let q = self.local(p)
-        let round = 0.05
+        let round = 0.025
         var d = cuboid(self.half - vec3(round)).distance(q) - round
         for k in 0..2 {
             let n = normalize(
@@ -399,9 +523,9 @@ impl Surface for Block {
                 ) / self.half,
             )
             let corner = dot(abs(n), self.half)
-            d = max(d, dot(q, n) - corner * (0.72 + 0.12 * rand(self.seed, 16 + k)))
+            d = max(d, dot(q, n) - corner * (0.58 + 0.3 * rand(self.seed, 16 + k)))
         }
-        d - 0.015 * noise3(p * 5.0)
+        d - 0.006 * noise3(p * 5.0)
     }
 
     fn lipschitz(self, near: f32) -> f32 {
@@ -600,17 +724,25 @@ pub struct Wall: Copy + GpuData {
 
 impl Surface for Wall {
     fn distance(self, p: vec3) -> f32 {
-        // Its top ragged where it's fallen.
-        let q = p - vec3(0.0, self.half.y, 0.0)
-        let top = self.half.y * (0.65 + 0.35 * noise3(vec3(p.x * 0.4, 1.0, 2.0)))
-        let d = cuboid(vec3(self.half.x, top, self.half.z)).distance(
-            q - vec3(0.0, top - self.half.y, 0.0),
-        )
-        d - 0.03 * noise3(p * 2.0)
+        let st = coursed(p.y, p.x / 0.8, course: 0.3, n: 0.0)
+        let relief = masonry_relief(st) * 0.7
+        var d = max(abs(p.x) - self.half.x, abs(p.z) - self.half.z - relief)
+        d = max(d, -p.y)
+        let column = floor(p.x / 0.8)
+        var top = 2.0
+        for k in 0..3 {
+            let j = column + f32(k) - 1.0
+            let key = u32(j + 2048.0)
+            let height = joint_below(2.0 * self.half.y * (0.58 + 0.42 * rand(key, 31)), 0.3)
+            let fracture = 0.16 * p.z / self.half.z * (rand(key, 32) - 0.5)
+            let side = max(j * 0.8 - p.x, p.x - (j + 1.0) * 0.8)
+            top = min(top, past(vec2(side, p.y - height - fracture)))
+        }
+        max(d, top)
     }
 
     fn lipschitz(self, near: f32) -> f32 {
-        1.4
+        5.0
     }
 }
 
@@ -697,9 +829,17 @@ pub fn built(m: Map) -> Vec<Built> {
                     let a = toward + 0.8 * (rand(seed + i, 3) - 0.5) * (1.0 + f)
                     let r = stones::TOWER_FOOT + 0.3 + 6.0 * f * f
                     let half = if i < 5 {
-                        vec3(1.2 + 0.3 * rand(seed + i, 4), 0.55, 0.65)
+                        vec3(
+                            0.8 + 0.65 * rand(seed + i, 4),
+                            0.32 + 0.25 * rand(seed + i, 5),
+                            0.42 + 0.3 * rand(seed + i, 6),
+                        )
                     } else {
-                        vec3(0.3 + 0.15 * rand(seed + i, 4), 0.18 + 0.06 * rand(seed + i, 5), 0.24)
+                        vec3(
+                            0.16 + 0.34 * rand(seed + i, 4),
+                            0.10 + 0.16 * rand(seed + i, 5),
+                            0.13 + 0.23 * rand(seed + i, 6),
+                        )
                     }
                     out.push(
                         Built::Block {
@@ -841,6 +981,17 @@ pub fn bank_instances(
     for b in bank_stones(courses) {
         if let Built::Stone { at, radius, squash, seed } = b {
             let size = squash * radius
+            // Loose stream stones settle on shelves, not halfway up an exposed cut bank.
+            // Probe over the stone's footprint so a narrow ledge cannot hold a large boulder.
+            let step = max(radius, 0.3)
+            let slope = vec2(
+                height(at + vec2(step, 0.0)) - height(at - vec2(step, 0.0)),
+                height(at + vec2(0.0, step)) - height(at - vec2(0.0, step)),
+            ) /
+                (2.0 * step)
+            if length(slope) > 1.0 {
+                continue
+            }
             let centre = vec3(at.x, height(at) + size.y * 0.35, at.y)
             let transform = translate(centre) * rotate_y(TAU * rand(seed, 4)) * scale(size)
             placements.push(
@@ -1044,4 +1195,14 @@ pub fn realize(b: Built, height: fn(vec2) -> f32) -> Realized {
         ),
         Built::Rock { at, bed } => realize_bed(bed, at),
     }
+}
+
+@test
+fn bank_stones_settle_on_shelves_and_not_cut_faces() {
+    let c = engine::water::Course {
+        points: Vec::from([vec4(0.0, 0.0, 4.0, 0.4), vec4(0.0, 80.0, 4.0, 0.4)]),
+        falls: false,
+    }
+    let cliff = bank_instances([take c], |p| 2.0 * p.x)
+    assert(cliff.placements.is_empty(), "loose stones perched on a cut bank")
 }

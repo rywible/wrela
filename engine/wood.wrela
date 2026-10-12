@@ -112,7 +112,7 @@ pub fn choose(
     }
     let l = lods[k]
     let centre = inst.at + inst.turn(vec3(0.0, l.top * 0.5 * inst.scale, 0.0))
-    let r = l.reach * inst.scale
+    let r = inst.bound_radius(l.reach)
     let v = centre - c.cam.eye
     let d = length(v)
     // Outside the view's cone by more than its own angular radius.
@@ -122,7 +122,9 @@ pub fn choose(
             return
         }
     }
-    let (level, distant) = place(l, c.cam, inst.at, inst.scale)
+    var extent = l
+    extent.reach *= max(inst.wide, 1.0)
+    let (level, distant) = place(extent, c.cam, inst.at, inst.scale)
     let visibility = bitcast_f32(metadata[c.instances + i / SLOT])
     let faint = 1.0 - (1.0 - distant) * visibility
     let (drawn, lower, upper) = ways(level, faint)
@@ -331,7 +333,7 @@ pub fn cull(
         if i < every.len() {
             let inst = every[i]
             let lod = lods[l.kind]
-            let r = lod.reach * inst.scale
+            let r = inst.bound_radius(lod.reach)
             let centre = inst.at + inst.turn(vec3(0.0, lod.top * 0.5 * inst.scale, 0.0))
             let ahead = dot(centre - c.cam.eye, c.cam.forward)
             if ahead - r > c.cam.near {

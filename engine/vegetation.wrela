@@ -19,8 +19,8 @@ use lod::{IMPOSTOR, Lod, VOLUME, anchor, by_card, keeps_packed, packed, place, s
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_POINTS, LIMB_VERTICES, Leaves, OUTLINE,
     Plant, Wind, CORNERS, LEAF_TEXELS, card_orders, card_tint, card_turn, cook_cards, cook_outlines,
-    corner_of, leaf_age, leaf_at, leaf_uv, level_cards, limb_corner, limb_point, NO_INSTANCE, sway,
-    tinted,
+    card_scale, corner_of, leaf_age, leaf_at, leaf_uv, level_cards, limb_corner, limb_point,
+    NO_INSTANCE, sway, tinted,
 }
 use shadow::{CASTER, Shadows}
 use std::field::Tube
@@ -387,7 +387,7 @@ pub const HIDDEN: u32 = 99
 /// has faded (`lod::place`), when it's in view.
 pub fn ways_for(k: Kind, at: Instance, cam: Camera, l: Lod, corner: f32) -> (vec2u, vec2) {
     let centre = at.at + at.turn(vec3(0.0, k.top * 0.5 * at.scale, 0.0))
-    let r = k.reach * at.scale
+    let r = at.bound_radius(k.reach)
     let v = centre - cam.eye
     let d = length(v)
     // Outside the view's cone by more than its own angular radius.
@@ -397,7 +397,9 @@ pub fn ways_for(k: Kind, at: Instance, cam: Camera, l: Lod, corner: f32) -> (vec
             return (vec2u(HIDDEN), vec2(0.0))
         }
     }
-    let (level, faint) = place(l, cam, at.at, at.scale)
+    var extent = l
+    extent.reach *= max(at.wide, 1.0)
+    let (level, faint) = place(extent, cam, at.at, at.scale)
     let (drawn, lower, upper) = ways(level, faint)
     if !drawn {
         return (vec2u(HIDDEN), vec2(level, faint))
@@ -538,7 +540,7 @@ pub fn card(
         instances,
         outlines,
     )
-    // A coarser level draws the same card twice the size in the same plane (a card faces the
+    // A coarser level draws the same card sqrt(2) times the size in the same plane (a card faces the
     // camera's basis, so it's at one depth), so where two levels cross-fade the prepass's depth
     // would pass both levels' equal test. Each level's cards lie a hundred-thousandth farther
     // along the eye's ray than the level before's: each corner stays on its pixel, and the
@@ -674,7 +676,9 @@ pub fn leaf_shade(
     let card = cards[l.card.value]
     let inst = instances[l.instance.value & 16777215]
     let world = lt.cam.world_at(pixel.position.xy, pixel.position.z)
-    let crown_n = normalize(inst.turn(card.normal.decode()))
+    let base_n = card.normal.decode()
+    let wide = max(inst.wide, 1.0e-4)
+    let crown_n = inst.turn_normal(vec3(base_n.x / wide, base_n.y, base_n.z / wide), card.centre.y)
     let leaf_px = leaves.leaf_width() *
         inst.scale /
         lt.cam.footprint(max(dot(world - lt.cam.eye, lt.cam.forward), 0.1))
@@ -772,6 +776,20 @@ fn mossy(n: vec3, along: f32, patch: f32) -> f32 {
     place * smoothstep(0.42, 0.58, patch)
 }
 
+/// Turns a surface by the gradient of its height, measured along two screen directions.
+/// Unlike height alone, opposite sides of a furrow face opposite ways. The surface basis
+/// follows horizontal limbs as well as trunks; unresolved or edge-on relief stays bounded.
+fn bark_normal(n: vec3, dx: vec3, dy: vec3, height: vec2) -> vec3 {
+    let across = cross(dy, n)
+    let along = cross(n, dx)
+    let det = dot(dx, across)
+    if abs(det) < max(length(dx) * length(dy) * 1.0e-4, 1.0e-12) {
+        return n
+    }
+    let gradient = (across * height.x + along * height.y) / det
+    normalize(n - gradient / max(1.0, length(gradient) / 1.2))
+}
+
 /// A limb's pixel: its bark, its ridges read from their cooked tile (`plant::cook_ridges`,
 /// through a repeating sampler `rs`) and its moss from its corners: no field is evaluated here.
 @fragment
@@ -783,15 +801,14 @@ pub fn bark_shade(
     ridges: Texture<Rgba8>,
     rs: Sampler,
 ) -> vec4 {
+    // Derivatives run before the coverage discard, so every lane has a surface and height.
+    let t = ridges.sample_level(rs, vec2(b.along.x, b.along.y / plant::RIDGES_ALONG))
+    let smooth_n = normalize(b.normal)
+    let height = bark.raised(t) * 0.035
+    let n = bark_normal(smooth_n, dpdx(b.world), dpdy(b.world), vec2(dpdx(height), dpdy(height)))
     if !keeps_packed(b.keep.value, pixel.position.xy) {
         discard()
     }
-    // Bark's ridges run along the limb, and turn its surface: a furrow's sides face round the
-    // limb, so the light falls across them (smooth, the trunks read as plastic).
-    let t = ridges.sample_level(rs, vec2(b.along.x, b.along.y / plant::RIDGES_ALONG))
-    let smooth_n = normalize(b.normal)
-    let round = normalize(cross(vec3(0.0, 1.0, 0.0), smooth_n) + vec3(1.0e-4, 0.0, 0.0))
-    let n = normalize(smooth_n + round * bark.raised(t))
     let albedo = mix(bark.dark, bark.light, vec3(bark.tone(t)))
     let a = mix(albedo, bark.moss, vec3(b.moss))
     // No gloss: bark is rough, and its impostor lights it as its leaves (`leaf_light`).
@@ -799,6 +816,34 @@ pub fn bark_shade(
     let lit = Lit { albedo: a, n, sun, sky, through: vec3(0.0) }
     let c = shown(lt, lit, b.world)
     vec4(c, view::BARK)
+}
+
+@test
+fn bark_relief_follows_surface_slopes_and_stays_bounded() {
+    let n = vec3(0.0, 0.0, 1.0)
+    let dx = vec3(0.1, 0.0, 0.0)
+    let dy = vec3(0.0, 0.1, 0.0)
+    let a = bark_normal(n, dx, dy, vec2(0.03, 0.0))
+    let b = bark_normal(n, dx, dy, vec2(-0.03, 0.0))
+    assert(a.x < -0.2 && b.x > 0.2, "furrow sides face the same way")
+    assert(length(bark_normal(n, dx, dy, vec2(0.0)) - n) < 1.0e-6, "flat bark is tilted")
+    let turned = bark_normal(vec3(0.0, 1.0, 0.0), dx, vec3(0.0, 0.0, -0.1), vec2(0.03, 0.0))
+    assert(
+        abs(turned.x - a.x) < 1.0e-6 && abs(turned.y - a.z) < 1.0e-6,
+        "relief does not turn with a fallen limb",
+    )
+    assert(
+        length(bark_normal(n, -dx, dy, vec2(-0.03, 0.0)) - a) < 1.0e-6,
+        "screen winding reverses relief",
+    )
+    assert(
+        dot(bark_normal(n, dx, dy, vec2(100.0)), n) > 0.6,
+        "unresolved relief turns inside the surface",
+    )
+    assert(
+        length(bark_normal(n, dx, dx, vec2(1.0)) - n) < 1.0e-6,
+        "collapsed surface basis is not finite",
+    )
 }
 
 /// The leaves a card holds in the sun's shadow maps (spike 15's).
@@ -812,7 +857,7 @@ pub fn nothing() -> vec4 {
 
 // ---- drawing a forest ----------------------------------------------------------------------
 
-/// The cards' draw state for a level: they grow 2^level, and face `right` and `up`; their cut's
+/// The cards' draw state for a level: they grow sqrt(2)^level, and face `right` and `up`; their cut's
 /// cells are `cell` pixels wide.
 pub fn card_draw(
     wind: Wind,
@@ -823,7 +868,7 @@ pub fn card_draw(
     cell: f32,
     way: u32,
 ) -> CardDraw {
-    CardDraw { wind, grow: f32(1 << level), right, per_card: leaves.per_card, up, way, cell }
+    CardDraw { wind, grow: card_scale(level), right, per_card: leaves.per_card, up, way, cell }
 }
 
 /// What the draws of an instance drawn way `way` read of it this frame (`Forest::marks`): the

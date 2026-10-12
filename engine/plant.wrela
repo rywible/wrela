@@ -6,7 +6,7 @@
 // Cooking a plant (once, on the GPU) turns its crown into leaf cards: each a cluster of leaves
 // cut from a square by `discard`, placed over the clumps' surfaces, with the crown's normal there
 // and how deep in the crown it is (from the crown's field). The cards come in three nested
-// levels: level L draws the first quarter^L of them, each 2^L times its own size, so every
+// levels: level L draws the first half^L of them, each sqrt(2)^L times its own size, so every
 // level covers the crown as often (spike 15: 472K cards became 120K with no visible loss). Each
 // level's own share is spread over all the clumps, so the first cards are a coarse crown.
 //
@@ -82,7 +82,7 @@ impl Leaves {
 /// A plant's bark: its dark and light tones, and its moss, linear; its grain: the shares of the
 /// cooked patterns (`cook_ridges`) in its tone: ridges (furrows that run along it: oak, alder),
 /// plates (scales with dark cracks between: pine, char) and mottle (soft patches on smooth
-/// bark: beech, never below 0.6), adding to 1; how dark its bands mark it (birch's lenticels: short dark dashes
+/// bark: beech), adding to 1; how dark its bands mark it (birch's lenticels: short dark dashes
 /// across it), and how much its pattern turns its surface (0: smooth).
 pub struct Bark: Copy + GpuData {
     pub dark: vec3 = vec3(0.16, 0.12, 0.09),
@@ -156,6 +156,38 @@ impl Plant {
         }
     }
 
+    /// A branch with a short collar that follows its parent's axis before turning outward.
+    /// The collar broadens below the shoulder, then the child tapers toward its tip.
+    pub fn branch(
+        mut self,
+        from: vec3,
+        parent: vec3,
+        bend: vec3,
+        to: vec3,
+        r_from: f32,
+        r_to: f32,
+    ) {
+        let span = length(to - from)
+        let out = limb_direction(to - from, parent)
+        let neck = limb_direction(parent * 0.7 + out * 0.3, out)
+        // The shoulder is a control of the whole path, not a short segment followed by
+        // a mandatory elbow. Sample a cubic so each authored chord already turns gently.
+        let shoulder = from + neck * (span * 0.3)
+        let outward = mix(bend, to, vec3(0.5))
+        var points = [from; 4]
+        var radii = [r_from; 4]
+        for i in 0..4 {
+            let t = f32(i) / 3.0
+            let u = 1.0 - t
+            points[i] = from * (u * u * u) +
+                shoulder * (3.0 * u * u * t) +
+                outward * (3.0 * u * t * t) +
+                to * (t * t * t)
+            radii[i] = mix(r_from * 1.08, r_to, t)
+        }
+        self.tube(points, radii)
+    }
+
     /// A root: a buttress grown from a trunk `girth` thick (m) standing at `foot`, swelling down
     /// from it toward `dir` in a hollow curve, running a little way along the ground, winding by
     /// `across`, and diving under it `out` metres out; `r` thick where it leaves the trunk.
@@ -226,7 +258,7 @@ impl Plant {
         }
         for i in 0..self.limbs.len() {
             for k in 0..(3 * RINGS + 1) {
-                let (at, _, radius) = limb_axis(self.limbs[i], f32(k) / f32(3 * RINGS))
+                let (at, _, radius) = limb_ring_axis(self.limbs[i], k)
                 top = max(top, at.y + radius)
             }
         }
@@ -242,7 +274,7 @@ impl Plant {
         }
         for i in 0..self.limbs.len() {
             for k in 0..(3 * RINGS + 1) {
-                let (at, _, radius) = limb_axis(self.limbs[i], f32(k) / f32(3 * RINGS))
+                let (at, _, radius) = limb_ring_axis(self.limbs[i], k)
                 r = max(r, length(at - mid) + radius)
             }
         }
@@ -359,9 +391,15 @@ pub struct Card: Copy + GpuData {
 pub const CARD_LEVELS: u32 = 3
 
 /// How many of a plant's `n` cards (`Plant::cards`) level `level` draws: all of them at level
-/// 0, a quarter at 1, a sixteenth at 2.
+/// 0, a half at 1, a quarter at 2.
 pub fn level_cards(n: u32, level: u32) -> u32 {
-    n >> (2 * level)
+    n >> level
+}
+
+/// Card width at a nested density level. Half as many cards need sqrt(2) times the width,
+/// preserving area without the large individual leaves of quarter-density steps.
+pub fn card_scale(level: u32) -> f32 {
+    sqrt(f32(1 << level))
 }
 
 /// Card `id` of a plant's `n`: which level's own share it's in (the coarsest's first), and its
@@ -558,9 +596,9 @@ pub fn leaves_on(uv: vec2, seed: u32, w: f32, n: u32) -> (f32, u32) {
 // ---- limbs as geometry -----------------------------------------------------------------------
 
 /// Sides round a limb's tube, and rings along each of its three curved pieces. Its middle
-/// ring follows the smooth axis; the final ring closes its tip. No extra geometry is needed.
+/// rings follow the smooth axis; the final ring closes its tip.
 pub const SIDES: u32 = 14
-pub const RINGS: u32 = 2
+pub const RINGS: u32 = 4
 /// Vertices a limb draws: each piece's rings of quads round it.
 pub const LIMB_VERTICES: u32 = 3 * RINGS * SIDES * 6
 
@@ -596,10 +634,9 @@ fn limb_direction(v: vec3, otherwise: vec3) -> vec3 {
     if size > 1.0e-5 { v / size } else { otherwise }
 }
 
-/// A smooth axis through a limb's four authored points. Both sides of a joint share the
-/// same tangent; existing intermediate rings follow the curve instead of a straight chord.
-/// Its excursion stays within a fifth of its radius so inner wood occluders remain enclosed.
-fn limb_segment(limb: Tube<4>, piece: u32, t: f32) -> (vec3, vec3, f32) {
+/// The same joint derivative from either side. Its length cannot exceed either adjacent
+/// chord, so the cubic controls stay ordered along each piece instead of looping back.
+fn limb_tangents(limb: Tube<4>, piece: u32) -> (vec3, vec3) {
     let a = limb.points[piece]
     let b = limb.points[piece + 1]
     let delta = b - a
@@ -609,6 +646,16 @@ fn limb_segment(limb: Tube<4>, piece: u32, t: f32) -> (vec3, vec3, f32) {
     let after = if piece < 2 { limb.points[piece + 2] - b } else { delta }
     let start = limb_direction(dir + limb_direction(before, dir), dir) * min(span, length(before))
     let end = limb_direction(dir + limb_direction(after, dir), dir) * min(span, length(after))
+    (start, end)
+}
+
+/// A smooth axis through the authored points. Radius does not limit its curvature: doing
+/// that flattened thin branches into long chords with a sudden elbow at their shared ring.
+fn limb_segment(limb: Tube<4>, piece: u32, t: f32) -> (vec3, vec3, f32) {
+    let a = limb.points[piece]
+    let b = limb.points[piece + 1]
+    let dir = limb_direction(b - a, vec3(0.0, 1.0, 0.0))
+    let (start, end) = limb_tangents(limb, piece)
     let t2 = t * t
     let t3 = t2 * t
     let centre = if t <= 0.0 { a } else if t >= 1.0 { b } else {
@@ -624,11 +671,26 @@ fn limb_segment(limb: Tube<4>, piece: u32, t: f32) -> (vec3, vec3, f32) {
     let radius = if t >= 1.0 { limb.radii[piece + 1] } else {
         mix(limb.radii[piece], limb.radii[piece + 1], t)
     }
-    let straight = mix(a, b, vec3(t))
-    let offset = centre - straight
-    let limited = straight + offset * min(1.0, radius * 0.2 / max(length(offset), 1.0e-6))
-    let centre = if t <= 0.0 { a } else if t >= 1.0 { b } else { limited }
     (centre, limb_direction(tangent, dir), radius)
+}
+
+/// Where the final piece starts its short closing cap. Its length follows the end radius,
+/// rather than consuming a fixed share of a long branch and turning broken wood into a spike.
+fn cap_start(limb: Tube<4>) -> f32 {
+    let span = max(length(limb.points[3] - limb.points[2]), 1.0e-5)
+    1.0 - clamp(limb.radii[3] * 0.5 / span, 1.0e-4, 0.4)
+}
+
+/// Reserve the final ring interval for the cap; other rings describe the curved body.
+fn ring_t(limb: Tube<4>, piece: u32, ring: u32) -> f32 {
+    if piece < 2 { f32(ring) / f32(RINGS) } else if ring == RINGS { 1.0 } else {
+        cap_start(limb) * f32(ring) / f32(RINGS - 1)
+    }
+}
+
+pub fn limb_ring_axis(limb: Tube<4>, k: u32) -> (vec3, vec3, f32) {
+    let piece = min(k / RINGS, 2)
+    limb_segment(limb, piece, ring_t(limb, piece, k - piece * RINGS))
 }
 
 /// Position, tangent and radius on the axis the limb renderer uses, from root 0 to tip 1.
@@ -636,11 +698,15 @@ fn limb_segment(limb: Tube<4>, piece: u32, t: f32) -> (vec3, vec3, f32) {
 pub fn limb_axis(limb: Tube<4>, t: f32) -> (vec3, vec3, f32) {
     let along = clamp(t, 0.0, 1.0) * 3.0
     let piece = min(u32(floor(along)), 2)
-    let ring = (along - f32(piece)) * f32(RINGS)
+    let t = along - f32(piece)
+    let cap = cap_start(limb)
+    let ring = if piece < 2 { t * f32(RINGS) } else if t <= cap {
+        t / cap * f32(RINGS - 1)
+    } else { f32(RINGS - 1) + (t - cap) / (1.0 - cap) }
     let first = min(u32(floor(ring)), RINGS - 1)
     let f = ring - f32(first)
-    let (a, an, ar) = limb_segment(limb, piece, f32(first) / f32(RINGS))
-    let (b, bn, br) = limb_segment(limb, piece, f32(first + 1) / f32(RINGS))
+    let (a, an, ar) = limb_segment(limb, piece, ring_t(limb, piece, first))
+    let (b, bn, br) = limb_segment(limb, piece, ring_t(limb, piece, first + 1))
     (mix(a, b, vec3(f)), limb_direction(mix(an, bn, vec3(f)), an), mix(ar, br, f))
 }
 
@@ -663,7 +729,8 @@ pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, f32, vec2) {
     let piece = p / ((RINGS + 1) * (SIDES + 1))
     let r = p % ((RINGS + 1) * (SIDES + 1))
     let side = f32(r % (SIDES + 1))
-    let along = f32(r / (SIDES + 1)) / f32(RINGS)
+    let ring = r / (SIDES + 1)
+    let along = ring_t(limb, piece, ring)
     let a = limb.points[piece]
     let b = limb.points[piece + 1]
     let (centre, axis, r_axis) = limb_segment(limb, piece, along)
@@ -677,7 +744,7 @@ pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, f32, vec2) {
     let ang = TAU * side / f32(SIDES)
     let n = t1 * cos(ang) + t2 * sin(ang)
     // The last piece closes to a point at the limb's end, so its tip is never an open tube.
-    let closing = if piece == 2 { 1.0 - smoothstep(0.6, 1.0, along) } else { 1.0 }
+    let closing = if piece == 2 && ring == RINGS { 0.0 } else { 1.0 }
     // A joint's ring is worked out twice, as one piece's end and the next's start: exactly the
     // same both times (`mix(a, b, 1.0)` isn't always `b` on the GPU, and the two rings a rounding
     // apart left a dotted crack round the limb: the lookdev reviews' pale rings on logs).
@@ -696,8 +763,8 @@ pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, f32, vec2) {
 /// leaves' red and green, packed: `tint_of`), its size, its fork: how much higher its trunk
 /// forks than its kind's (below 0, lower), as a share of the height there (`bend`), so two trees
 /// of a kind don't fork at the same height (#54 §9); and how wide its crown is drawn against its
-/// kind's (0 to 1: as wide as its history grew it among its neighbours; its trunk and limbs keep
-/// their girth).
+/// kind's (below 1 where neighbours constrain it, above 1 for a distant group; its trunk and
+/// limbs keep their girth).
 pub struct Instance: Copy + GpuData {
     pub at: vec3,
     pub yaw: f32,
@@ -726,6 +793,11 @@ pub fn tint_of(t: vec2) -> Unorm8x4 {
 }
 
 impl Instance {
+    /// A sphere remains conservative when a distant crown is widened to represent a group.
+    pub fn bound_radius(self, reach: f32) -> f32 {
+        reach * self.scale * max(self.wide, 1.0)
+    }
+
     /// A point of the plant's frame in the world: its crown narrowed (`wide`), bent at its fork,
     /// sized and turned.
     pub fn place(self, p: vec3) -> vec3 {
@@ -994,10 +1066,10 @@ pub fn leaf_atlas(n: u32) -> Texture<Rgba8> {
 
 /// Bark's patterns, cooked once (#55 AC12: no field per pixel per frame for bark): a tile round a
 /// limb (across, once round) and along it (down, `RIDGES_ALONG` m), read through a repeating
-/// sampler. Its channels: ridges (r: 22 round, 1.6 a metre along), plates (g: 18 round, 3 a
+/// sampler. Its channels: ridges (r: 44 round, 1.6 a metre along), plates (g: 18 round, 3 a
 /// metre along, their tones different, dark cracks between), bands (b:
 /// 0 in a short dash across the limb, about 13 rows a metre) and mottle (a: soft patches, 5
-/// round, 0.8 a metre, 0.6 to 1).
+/// round, 0.8 a metre, 0.25 to 0.95).
 pub const RIDGES_ALONG: f32 = 40.0
 const RIDGES_W: u32 = 256
 const RIDGES_H: u32 = 2048
@@ -1015,8 +1087,8 @@ pub fn cook_ridges() -> Texture<Rgba8> {
 fn ridge_texel(pixel: FragCoord) -> vec4 {
     let uv = pixel.position.xy / vec2(f32(RIDGES_W), f32(RIDGES_H))
     let ridges = noise::noise2_wrapped(
-        vec2(uv.x * 22.0, uv.y * RIDGES_ALONG * 1.6),
-        period: vec2i(22, 64),
+        vec2(uv.x * 44.0, uv.y * RIDGES_ALONG * 1.6),
+        period: vec2i(44, 64),
     )
     let plates = plates_at(vec2(uv.x * 18.0, uv.y * RIDGES_ALONG * 3.0), vec2i(18, 120))
     let bands = band_at(vec2(uv.x, uv.y * RIDGES_ALONG * 13.0), 520)
@@ -1027,7 +1099,7 @@ fn ridge_texel(pixel: FragCoord) -> vec4 {
         0.65 +
         noise::noise2_wrapped(vec2(uv.x * 10.0, uv.y * RIDGES_ALONG * 1.6), period: vec2i(10, 64)) *
             0.35
-    vec4(ridges, plates, bands, 0.6 + 0.4 * smoothstep(0.15, 0.85, mottle))
+    vec4(smoothstep(0.28, 0.72, ridges), plates, bands, 0.25 + 0.7 * smoothstep(0.15, 0.85, mottle))
 }
 
 /// Plates at `p` (cells one unit a side, `period` cells each way, wrapping): each cell's point
@@ -1211,6 +1283,125 @@ fn tilted_instances_place_round_sections_and_normals_in_one_frame() {
             if pitch == 0.0 {
                 assert(length(inst.turn(p) - turned(yaw, p)) < 1.0e-6, "standing instance changed")
             }
+        }
+    }
+}
+
+@test
+fn leaf_density_levels_preserve_area_without_oversized_cards() {
+    for n in [16, 64, 1024] {
+        for level in 0..CARD_LEVELS {
+            let scale = card_scale(level)
+            let area = f32(level_cards(n, level)) * scale * scale
+            assert(abs(area - f32(n)) < f32(n) * 1.0e-6, "leaf LOD changes aggregate coverage")
+            assert(scale <= 2.0, "a coarse card inflates into a leaf block")
+            if level > 0 {
+                assert(
+                    level_cards(n, level) * 2 == level_cards(n, level - 1),
+                    "nested card shares are inconsistent",
+                )
+            }
+        }
+    }
+}
+
+@test
+fn branch_collars_follow_parent_and_taper_to_the_tip() {
+    var p = plant(Leaves {}, Bark {})
+    let from = vec3(1.0, 3.0, 2.0)
+    let parent = normalize(vec3(0.1, 1.0, 0.1))
+    p.branch(from, parent, vec3(2.0, 4.0, 2.0), vec3(4.0, 4.5, 2.5), r_from: 0.25, r_to: 0.02)
+    let limb = p.limbs[0]
+    let neck = normalize(limb.points[1] - limb.points[0])
+    let out = normalize(limb.points[3] - limb.points[0])
+    assert(length(limb.points[0] - from) == 0.0, "branch leaves its attachment")
+    assert(dot(neck, parent) > dot(out, parent), "branch collar cuts straight across the parent")
+    for i in 0..3 {
+        assert(limb.radii[i] > limb.radii[i + 1], "branch thickens toward its tip")
+    }
+    for i in 0..2 {
+        let a = normalize(limb.points[i + 1] - limb.points[i])
+        let b = normalize(limb.points[i + 2] - limb.points[i + 1])
+        assert(dot(a, b) > 0.85, "authored branch has a sharp elbow")
+    }
+    for i in 0..(3 * RINGS + 1) {
+        let (point, tangent, radius) = limb_axis(limb, f32(i) / f32(3 * RINGS))
+        assert(
+            length(point - from) < 5.0 && abs(length(tangent) - 1.0) < 1.0e-4,
+            "collar curve has an invalid frame",
+        )
+        assert(radius > 0.0 && radius <= 0.271, "collar curve has invalid girth")
+    }
+}
+
+@test
+fn rendered_caps_keep_long_branches_blunt_and_axis_on_the_mesh() {
+    for span in [3.0, 20.0] {
+        for radius in [0.02, 0.3] {
+            let limb = Tube {
+                points: [
+                    vec3(0.0),
+                    vec3(0.0, 1.0, 0.0),
+                    vec3(span * 0.4, 1.2, 0.2),
+                    vec3(span, 1.4, 0.5),
+                ],
+                radii: [radius * 2.0, radius * 1.8, radius * 1.3, radius],
+            }
+            let last = (2 * (RINGS + 1) + RINGS - 1) * (SIDES + 1)
+            let (rim, _, girth, _) = limb_point(limb, last)
+            let (tip, _, end, _) = limb_point(limb, last + SIDES + 1)
+            assert(length(tip - rim) < radius, "rendered cap still consumes a long segment")
+            assert(girth >= radius && end == 0.0, "the last solid ring is already shrunk")
+            for ring in 0..RINGS {
+                let p = (2 * (RINGS + 1) + ring) * (SIDES + 1)
+                let (a, _, _, _) = limb_point(limb, p)
+                let (b, _, _, _) = limb_point(limb, p + SIDES + 1)
+                let t = (ring_t(limb, piece: 2, ring: ring) +
+                    ring_t(limb, piece: 2, ring: ring + 1)) *
+                    0.5
+                let (at, _, _) = limb_axis(limb, (2.0 + t) / 3.0)
+                assert(
+                    length(at - (a + b) * 0.5) < 1.0e-4,
+                    "attachment axis leaves the rendered ring lattice",
+                )
+            }
+        }
+    }
+}
+
+@test
+fn thin_branch_rings_turn_gradually_without_radius_clamping() {
+    let points = [vec3(0.0), vec3(1.0, 1.0, 0.0), vec3(4.0, 1.2, 0.0), vec3(7.0, 1.5, 0.0)]
+    let thin = Tube { points, radii: [0.03, 0.025, 0.02, 0.015] }
+    let thick = Tube { points, radii: [0.6, 0.5, 0.4, 0.3] }
+    for piece in 0..3 {
+        let a = points[piece]
+        let b = points[piece + 1]
+        let dir = normalize(b - a)
+        for ring in 0..(RINGS + 1) {
+            // Compare equal parameters: the last solid ring's cap position depends on girth.
+            let t = f32(ring) / f32(RINGS)
+            let (p, _, _) = limb_segment(thin, piece, t)
+            let (q, _, _) = limb_segment(thick, piece, t)
+            assert(length(p - q) < 1.0e-6, "thin wood flattens the branch's centreline")
+            let along = dot(p - a, dir)
+            assert(along >= -1.0e-5 && along <= length(b - a) + 1.0e-5, "curve doubles back")
+        }
+    }
+    // Read actual mesh ring centres, including both sides of each authored joint. A smooth
+    // formula is not sufficient if the renderer flattens the intervals back into an elbow.
+    for ring in 1..(3 * RINGS) {
+        let (a, _, _) = limb_ring_axis(thin, ring - 1)
+        let (b, _, _) = limb_ring_axis(thin, ring)
+        let (c, _, _) = limb_ring_axis(thin, ring + 1)
+        assert(
+            dot(normalize(b - a), normalize(c - b)) > 0.9,
+            "rendered thin branch still turns by more than 26 degrees at one ring",
+        )
+        let (at, _, _) = limb_axis(thin, f32(ring) / f32(3 * RINGS))
+        // Interior pieces use the uniform ring lattice; the final cap uses its own spacing.
+        if ring < 2 * RINGS {
+            assert(length(at - b) < 1.0e-5, "attachment axis leaves the mesh")
         }
     }
 }

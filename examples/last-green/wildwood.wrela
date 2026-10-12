@@ -51,10 +51,11 @@ pub fn road_points(every: f32) -> Vec<vec2> {
 /// tiles, in the wildwood.
 pub const ROAD_START: vec2 = road_at(300.0)
 
-/// Where the wildwood grows no tree: the floor's own square (its history's), and the egg's place.
+/// Where the wildwood grows no tree: the authored square, the egg and woodland openings.
 pub fn kept_clear(p: vec2) -> bool {
     (p.x >= map::LO.x && p.y >= map::LO.y && p.x < map::HI.x && p.y < map::HI.y) ||
-        length(p - EGG) < 30.0
+        length(p - EGG) < 30.0 ||
+        map::woodland_open(p)
 }
 
 /// The history's species the wildwood's beech, oak, birch and pine are.

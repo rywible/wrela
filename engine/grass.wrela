@@ -46,6 +46,8 @@ pub struct Blade: Copy + GpuData {
 /// A flower's head, placed with the grass: where it is, its size, its kind (0 to 2) and seed.
 pub struct Flower: Copy + GpuData {
     pub head: vec3,
+    pub root: vec3,
+    pub height: f32,
     pub size: f32,
     pub kind: u32,
     pub seed: u32,
@@ -357,6 +359,8 @@ pub fn place(
         let _ = flowers.push(
             Flower {
                 head: vec3(xz.x, y + tall * (0.75 + 0.35 * rand(seed, 13)), xz.y),
+                root: vec3(xz.x, y, xz.y),
+                height: tall,
                 size: (0.035 + 0.03 * rand(seed, 14)) *
                     shrink *
                     (1.0 - smoothstep(FLOWERS_TO - 12.0, FLOWERS_TO, d)),
@@ -980,6 +984,21 @@ fn under_bend(kind: f32, bend: f32) -> f32 {
     if kind == HERB { max(bend, 0.45) } else { bend }
 }
 
+/// The leaves of flowering herbs form a low crown; the flowering axis rises above it.
+/// A flowering height must not stretch every basal leaf into a spear.
+fn leaf_height(spec: Species) -> f32 {
+    if spec.bloom > 0 && (spec.shape == HERB || spec.shape == STRAP) {
+        min(spec.tall * 0.5, 0.24)
+    } else { spec.tall }
+}
+
+/// All leaves in a rosette choose one species and size seed, independent of blade density.
+fn rosette_species(flora: Flora, w: vec2, habitat: vec4) -> u32 {
+    let c = vec2i(floor(w / HERB_ROSETTE))
+    let seed = hash2u(c.x, c.y, 1907)
+    species_of(flora, rosette_crown(w, HERB_ROSETTE), habitat, seed)
+}
+
 /// One of the wood's floor's plants (#54 §9: ferns, bracken and low herbs where the grass
 /// doesn't grow, as the ground's `under` says), as a blade of its own kind: kept with the chance
 /// its density over a blade's spacing here asks, its kind by the weights.
@@ -1014,12 +1033,12 @@ fn under_plant(
     // never narrower than a blade's spacing here, so the far ones still cover.
     // A herb's species, by its habitat and colony (`species_of`): its own shape and size.
     let keyed_xz = p.xz + at.cam.keyed().xz
-    let sp = if kind == HERB { species_of(flora, keyed_xz, t.flora, p.seed) } else { 0 }
+    let sp = if kind == HERB { rosette_species(flora, keyed_xz, t.flora) } else { 0 }
     let spec = flora.species[sp]
     let kind = if sp > 0 { spec.shape } else { kind }
     let (tall, wide, bend) = if sp > 0 {
         // Each species keeps its habit: rush stems stay upright while strap leaves arch.
-        (spec.tall * (0.7 + 0.6 * v), spec.wide, spec.bend * (0.8 + 0.4 * rand(p.seed, 7)))
+        (leaf_height(spec) * (0.7 + 0.6 * v), spec.wide, spec.bend * (0.8 + 0.4 * rand(p.seed, 7)))
     } else if kind == FERN {
         (0.45 + 0.35 * v, 0.2, 0.75 + 0.2 * rand(p.seed, 7))
     } else if kind == BRACKEN {
@@ -1046,11 +1065,11 @@ fn under_plant(
         xz = crown + normalize(away + vec2(1.0e-4)) * 0.06 - keyed
         y = terrain::height_at(levels, texels, xz)
     }
-    let grown = occupied * under_clearance(kind, tall, length(xz - at.cam.eye.xz))
+    let grown = occupied * under_clearance(kind, max(tall, spec.tall), length(xz - at.cam.eye.xz))
     if grown <= 0.0 {
         return
     }
-    let root = vec3(xz.x, y + 0.05, xz.y)
+    let root = vec3(xz.x, y - 0.02, xz.y)
     let shade = cloud_shadow(at.clouds, cloud, linear, root)
     let sky = sky_light(at.grid, probes, linear, grounds, at.light, root, t.normal, shade)
     let _ = blades.push(
@@ -1072,10 +1091,26 @@ fn under_plant(
     // A forb of the open flowers in the meadow's drifts, few between them.
     let blooms = if p.forb { spec.blooms * (0.03 + 0.97 * p.drift) } else { spec.blooms }
     if spec.bloom > 0 && rand(p.seed, 12) < blooms && p.d < FLOWERS_TO {
-        let head = root + vec3(0.0, tall * p.shrink * grown * (0.75 + 0.2 * rand(p.seed, 13)), 0.0)
+        let stem_height = spec.tall * p.shrink * grown * (0.85 + 0.3 * rand(p.seed, 13))
+        let head = root + vec3(0.0, stem_height, 0.0)
+        // The head has a physical slender support. Its tip and head share wind displacement.
+        let _ = blades.push(
+            Blade {
+                root,
+                tall: stem_height,
+                facing,
+                bend: 0.0,
+                width: 0.003 * grown,
+                ground: std::gpu::Oct32::encode(t.normal),
+                colour: Unorm8x4::encode(vec4(rand(p.seed, 8), 0.0, f32(sp) / 255.0, STRAP)),
+                sky: Unorm8x4::encode(vec4(saturate(sky * 0.5), 0.0)),
+            },
+        )
         let _ = flowers.push(
             Flower {
                 head,
+                root,
+                height: stem_height,
                 // A forb's heads smaller than a wood plant's: big ones read as confetti.
                 size: (if p.forb { 0.016 + 0.016 * rand(p.seed, 14) } else {
                     0.025 + 0.02 * rand(p.seed, 14)
@@ -1543,6 +1578,12 @@ pub struct BloomVertex: Copy {
     pub seed: Flat<u32>,
 }
 
+/// Flower heads and their support tips share wind and contact deformation in every pass.
+fn flower_head(f: Flower, wind: Wind, contact: vec4) -> vec3 {
+    let head = f.head + sway(wind, f.root, f.height) * 0.6
+    cloth_contact(head, f.root, 1.0, contact)
+}
+
 /// A flower's head: a card facing up and toward the eye a little, swayed with its blade.
 @vertex
 pub fn flower(
@@ -1551,6 +1592,7 @@ pub fn flower(
     cam: Camera,
     wind: Wind,
     flowers: [Flower],
+    contact: vec4,
 ) -> BloomVertex {
     let f = flowers[i.index]
     let k = v.index % 6
@@ -1560,7 +1602,7 @@ pub fn flower(
     let tilt = normalize(cam.up * 0.6 + vec3(0.0, 1.0, 0.0))
     let side = cam.right
     let fwd = normalize(cross(side, tilt))
-    let head = f.head + sway(wind, vec3(f.head.x, 0.0, f.head.z), 0.4) * 0.6
+    let head = flower_head(f, wind, contact)
     let world = head + (side * q.x + fwd * q.y * 0.8) * f.size
     BloomVertex {
         clip: ClipPosition { position: cam.clip(world) },
@@ -1622,7 +1664,7 @@ impl Grass {
     pub fn prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind) {
         draw(
             pass,
-            flower.bind(cam, wind, flowers: self.flowers.items()),
+            flower.bind(cam, wind, flowers: self.flowers.items(), contact: self.contact),
             flower_cut,
             indirect: self.blooms.items(),
             depth: view::NEAREST,
@@ -1660,7 +1702,7 @@ impl Grass {
         }
         draw(
             pass,
-            flower.bind(lt.cam, wind, flowers: self.flowers.items()),
+            flower.bind(lt.cam, wind, flowers: self.flowers.items(), contact: self.contact),
             flower_shade.bind(lt, blooms),
             indirect: self.blooms.items(),
             depth: view::PREPASSED,
@@ -2000,5 +2042,79 @@ fn broad_herbs_arch_while_rushes_keep_their_upright_habit() {
         )
         assert(under_bend(STRAP, authored) == authored, "strap leaf lost its species habit")
         assert(under_bend(FERN, authored) == authored, "fern lost its authored arch")
+    }
+}
+
+@test
+fn flowering_herbs_keep_leaves_below_their_flower_stems() {
+    var tall_flowers = 0
+    for spec in SPECIES {
+        let leaf = leaf_height(spec)
+        assert(leaf > 0.0 && leaf <= spec.tall, "leaf height exceeds its plant")
+        if spec.bloom > 0 && spec.tall >= 0.4 && (spec.shape == HERB || spec.shape == STRAP) {
+            assert(leaf <= 0.24 && leaf <= spec.tall * 0.5, "flower height stretched basal leaves")
+            tall_flowers += 1
+        }
+        if spec.bloom == 0 {
+            assert(leaf == spec.tall, "nonflowering rush or leaf changed height")
+        }
+    }
+    assert(tall_flowers >= 4, "fixture lacks tall flowering herbs")
+}
+
+@test
+fn rosette_leaves_keep_one_species_across_density_samples() {
+    let flora = Flora { species: SPECIES }
+    for habitat in [vec4(0.3, 0.4, 0.8, 0.0), vec4(0.8, 0.75, 0.4, 0.0)] {
+        for x in -8..8 {
+            for z in -8..8 {
+                let corner = vec2(f32(x), f32(z)) * HERB_ROSETTE
+                let first = rosette_species(flora, corner + vec2(HERB_ROSETTE * 0.1), habitat)
+                for offset in [vec2(0.2, 0.8), vec2(0.7, 0.3), vec2(0.9, 0.9)] {
+                    assert(
+                        rosette_species(flora, corner + offset * HERB_ROSETTE, habitat) == first,
+                        "one rosette mixed species between leaves",
+                    )
+                }
+            }
+        }
+    }
+}
+
+@test
+fn flower_heads_follow_stem_tips_in_wind_and_contact() {
+    let root = vec3(0.25, 1.0, -0.2)
+    let b = Blade {
+        root,
+        tall: 0.65,
+        facing: 0.7,
+        bend: 0.0,
+        width: 0.003,
+        ground: std::gpu::Oct32::encode(vec3(0.0, 1.0, 0.0)),
+        colour: Unorm8x4::encode(vec4(0.4, 0.0, 1.0 / 255.0, STRAP)),
+        sky: Unorm8x4::encode(vec4(0.3)),
+    }
+    let f = Flower {
+        root,
+        head: root + vec3(0.0, b.tall, 0.0),
+        height: b.tall,
+        size: 0.03,
+        kind: 1,
+        seed: 7,
+    }
+    for time in [0.0, 1.3, 2.7] {
+        let wind = Wind { time, dir: vec2(0.8, 0.6), strength: 0.4 }
+        for contact in [vec4(0.0), vec4(0.2, 1.1, -0.15, 0.7)] {
+            let tip = cloth_contact(
+                blade_point(b, t: 1.0, side: 0.0, wind: wind),
+                root,
+                1.0,
+                contact,
+            )
+            assert(
+                length(flower_head(f, wind, contact) - tip) < 1.0e-5,
+                "flower detached from its support in wind or contact",
+            )
+        }
     }
 }

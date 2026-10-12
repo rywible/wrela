@@ -20,7 +20,7 @@ use noise::{hash2, noise3}
 use std::gpu::{
     DepthTexture, FragCoord, GlobalId, LocalId, One, Rgba16Float, Sampler, Shared, Texture, barrier,
 }
-use terrain::{Levels, Texel, ground_at}
+use terrain::{Levels, Texel, ground_at, level_at, materials_at}
 use view::{BARK, CREATURE, Camera, FLOWER, GRASS, GROUND, LEAVES, ROCK, WATER, class_of}
 
 /// The look's settings: how strong the dabs are on near surfaces, on broad far ones and on the
@@ -508,7 +508,8 @@ pub fn dab_map(
     if class == class_of(ROCK) || class == class_of(BARK) {
         grain = 0.0
     } else if class == class_of(GROUND) {
-        grain = smoothstep(0.55, 0.85, n.y)
+        let material = materials_at(levels, texels, level_at(levels, world.xz), world.xz)
+        grain = ground_grain(n.y, material)
     }
     strength *= grain
     // No dabs on crowns: `dabs_across`'s plane takes the pixel's depth (`dot(world, n)`), and
@@ -584,4 +585,27 @@ pub fn develop(
     let uv = px / d.out - vec2(0.5)
     c = c * (1.0 - look.vignette * dot(uv, uv))
     vec4(c, 1.0)
+}
+
+/// The terrain's material owns its paint as well as its shading. Flat exposed bedrock must
+/// remain as clean as a vertical rock face; blended edges retain only their soil share.
+fn ground_grain(up: f32, material: vec4) -> f32 {
+    let rock = saturate(material.z / max(dot(material, vec4(1.0)), 1.0e-5))
+    smoothstep(0.55, 0.85, up) * (1.0 - rock)
+}
+
+@test
+fn terrain_rock_rejects_paint_on_flat_and_sloping_surfaces() {
+    for up in [0.0, 0.6, 0.9, 1.0] {
+        assert(ground_grain(up, vec4(0.0, 0.0, 1.0, 0.0)) == 0.0, "bedrock took paint")
+    }
+    assert(ground_grain(up: 1.0, material: vec4(0.0, 1.0, 0.0, 0.0)) == 1.0, "flat soil lost paint")
+    assert(
+        abs(ground_grain(up: 1.0, material: vec4(0.0, 1.0, 3.0, 0.0)) - 0.25) < 1.0e-5,
+        "mixed ownership ignored normalized weights",
+    )
+    assert(
+        ground_grain(up: 0.4, material: vec4(0.0, 1.0, 0.0, 0.0)) == 0.0,
+        "steep soil took ovals",
+    )
 }

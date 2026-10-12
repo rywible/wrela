@@ -950,12 +950,12 @@ fn detail_texel(pixel: FragCoord, k: u32) -> vec4 {
     let uv = pixel.position.xy / f32(DETAIL_TEXELS)
     var c = vec3(1.0)
     if k == 0 {
-        // Leaf litter: fallen leaves over each other, each its own brown, on darker soil.
+        // Leaf litter: overlapping leaves vary in value over darker soil. The cover owns
+        // their colour; tinting this multiplier brown again made umber ground orange.
         let n = 22
         let q = uv * f32(n)
         let base = floor(q)
-        c = vec3(0.62, 0.58, 0.55) *
-            (0.85 + 0.3 * noise2_wrapped(q * 2.0, period: vec2i(n * 2, n * 2)))
+        c = vec3(0.62) * (0.85 + 0.3 * noise2_wrapped(q * 2.0, period: vec2i(n * 2, n * 2)))
         var best = -1.0
         for layer in 0..3 {
             for j in -1..2 {
@@ -975,8 +975,8 @@ fn detail_texel(pixel: FragCoord, k: u32) -> vec4 {
                     let order = f32(layer) + cell_hash(cx, cy, n, s + 5)
                     if inside > 0.0 && order > best {
                         best = order
-                        let hue = cell_hash(cx, cy, n, s + 6)
-                        let leaf = mix(vec3(1.25, 0.95, 0.65), vec3(0.9, 0.62, 0.42), vec3(hue))
+                        let value = cell_hash(cx, cy, n, s + 6)
+                        let leaf = vec3(mix(1.05, 0.75, value))
                         // A midrib, and the leaf's edge darker.
                         let rib = 1.0 - 0.25 * smoothstep(0.06, 0.0, abs(across) * 0.24)
                         c = leaf * (0.75 + 0.35 * smoothstep(0.0, 0.25, inside)) * rib

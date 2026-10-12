@@ -214,7 +214,10 @@ fn shape_texel(id: GlobalId) -> vec4 {
     let pw = mix(w, 1.0, p01)
     let low = w * 0.625 + worley_fbm(q, 8) * 0.25 + worley_fbm(q, 16) * 0.125
     let base = above(pw, from: low - 1.0)
-    vec4(saturate((base - 0.68) / 0.29), 0.0, 0.0, 1.0)
+    // A separate broad shape channel varies the depth of billows without another field
+    // sample. Its wavelength is longer than the erosion, so not every lobe has one size.
+    let billow = saturate(perlin3(q * 2.0 + vec3(7.0, 3.0, 11.0), 2) * 0.9 + 0.5)
+    vec4(saturate((base - 0.68) / 0.29), billow, 0.0, 1.0)
 }
 
 /// The detail noise's texel: Worley noise in three octaves, three ways.
@@ -226,7 +229,8 @@ fn detail_texel(id: GlobalId) -> vec4 {
 // ---- the weather map ------------------------------------------------------------------------
 
 /// The weather map's texel: how covered the sky is there (r) and how tall its clouds are (g, a
-/// fraction of the layer): the cloudscape's cumulus, each covering a disc as wide as it, and
+/// fraction of the layer), and a small condensation-base offset (b, fraction of the layer):
+/// the cloudscape's cumulus, each covering a disc as wide as it, and
 /// between them fair-weather clouds from noise, `fair` of them; none in `gap`.
 @compute(8, 8)
 pub fn cook_weather(
@@ -259,10 +263,25 @@ pub fn cook_weather(
     let along = saturate(dot(xz - gap.a, ab) / max(dot(ab, ab), 1.0))
     let clear = smoothstep(gap.radius * 0.7, gap.radius, length(xz - gap.a - ab * along))
     let broken = cover * clear * (0.8 + 0.4 * fbm2(xz * (64.0 / SPAN) + vec2(5.0, 3.0), 3))
-    out.store(id, vec4(saturate(broken), saturate(tall / (TOP - BASE)), 0.0, 1.0))
+    // Keep one broad condensation level. Small coherent variations break the ruler edge;
+    // they do not turn a fair-weather cloud's base into an upside-down mountain range.
+    let bottom = min(tall * 0.035, 65.0) * fbm2(xz * (40.0 / SPAN) + vec2(83.0, 19.0), 3)
+    out.store(id, vec4(saturate(broken), saturate(tall / (TOP - BASE)), bottom / (TOP - BASE), 1.0))
 }
 
 // ---- the field --------------------------------------------------------------------------------
+
+/// A cloud column's bounds above the layer base. Broad billows lift the top much more than
+/// the condensation base; small underside changes leave the shared base level readable.
+fn cloud_bounds(weather: vec4, billow: f32) -> vec2 {
+    let top = weather.g * (TOP - BASE)
+    let bottom = max(0.0, weather.b * (TOP - BASE) + (billow - 0.5) * min(32.0, top * 0.025))
+    vec2(bottom, min(TOP - BASE, max(bottom + 1.0, top * mix(0.82, 1.08, billow))))
+}
+
+fn cloud_profile(height: f32) -> f32 {
+    smoothstep(0.0, 0.12, height) * smoothstep(1.0, 0.48, height)
+}
 
 /// The field at `q` (the field's frame: the world less the drift; m), `h` metres above the
 /// layer's base, in [0, 1]: the weather map's cover, rounded off toward its clouds' tops and
@@ -279,14 +298,18 @@ fn field(
 ) -> f32 {
     let w = weather.sample_level(rep, q.xz / SPAN + vec2(0.5))
     let top = w.g * (TOP - BASE)
-    if h <= 0.0 || h >= top || w.r <= 0.001 {
+    if h <= 0.0 || h >= top * 1.08 || w.r <= 0.001 {
         return 0.0
     }
-    let hf = h / top
-    let profile = smoothstep(0.0, 0.07, hf) * smoothstep(1.0, 0.55, hf)
-    let base = shape.sample_level(rep, q / SHAPE_SPAN).r
+    let base = shape.sample_level(rep, q / SHAPE_SPAN)
+    let bounds = cloud_bounds(w, base.g)
+    let hf = (h - bounds.x) / max(bounds.y - bounds.x, 1.0)
+    if hf <= 0.0 || hf >= 1.0 {
+        return 0.0
+    }
+    let profile = cloud_profile(hf)
     let cover = w.r * profile
-    var s = saturate(above(base, from: 1.0 - cover)) * cover
+    var s = saturate(above(base.r, from: 1.0 - cover)) * cover
     if detailed && s > 0.0 {
         let d = detail.sample_level(rep, q / DETAIL_SPAN)
         let fine = d.r * 0.625 + d.g * 0.25 + d.b * 0.125
@@ -356,7 +379,7 @@ fn march(
         let t = enter + (f32(i) + 0.5) * ct
         let p = c.eye + dir * t
         let w = weather.sample_level(rep, (p.xz - c.drift) / SPAN + vec2(0.5))
-        if w.r > 0.001 && height_along(y, dir.y, t) - BASE < w.g * (TOP - BASE) {
+        if w.r > 0.001 && height_along(y, dir.y, t) - BASE < w.g * (TOP - BASE) * 1.08 {
             marked = marked | (7 << i)
         }
     }
@@ -373,7 +396,9 @@ fn march(
         round += sky(view, s, light, normalize(vec3(cos(a), 0.6, sin(a))))
     }
     let above = round * 0.175 + sky(view, s, light, vec3(0.0, 1.0, 0.0)) * 0.3
-    let below = light.sun_colour * (max(c.sun.y, 0.0) * 0.18) + above * 0.15
+    // The underside receives sky bounce as well as ground bounce. Keeping its fill cool
+    // separates a gray condensation base from a solid, uniformly lit stone shelf.
+    let below = light.sun_colour * (max(c.sun.y, 0.0) * 0.12) + above * 0.22
     let cos_sun = dot(dir, c.sun)
     // Each octave's phase (`to_sun`'s below), the same all along the ray.
     var phases = vec4(0.0)
@@ -434,7 +459,9 @@ fn march(
                 // height kept short cumulus dark and removed its vertical shape.
                 let local_top = weather.sample_level(rep, q.xz / SPAN + vec2(0.5)).g * (TOP - BASE)
                 let hf = saturate(h / max(local_top, 1.0))
-                let ambient = mix(below, above, vec3(saturate(hf * 1.5)))
+                // Let the full column develop its lighting gradient. Saturating at two thirds of
+                // its height flattened every upper billow into the same pale scoop.
+                let ambient = mix(below, above, vec3(smoothstep(0.08, 0.92, hf)))
                 let source = sun_light * to_sun + ambient
                 let step_t = exp(-dens * EXTINCTION * dt)
                 let absorbed = through * (1.0 - step_t)
@@ -813,4 +840,36 @@ fn cloud_dome_phases_cover_each_texel_once_without_partial_tiles() {
             assert(packed == k, "cloud scatter does not invert the phase mapping")
         }
     }
+}
+
+@test
+fn cloud_column_bounds_keep_a_shared_base_and_vary_the_billows() {
+    let weather = vec4(0.7, 0.5, 0.01, 1.0)
+    let low = cloud_bounds(weather, 0.0)
+    let high = cloud_bounds(weather, 1.0)
+    assert(abs(high.x - low.x) <= 32.0, "cloud base variation loses the condensation level")
+    assert(high.y - low.y > 400.0, "cloud billows have no large-scale height variation")
+    for billow in [0.0, 0.25, 0.5, 0.75, 1.0] {
+        for tall in [0.0, 0.01, 0.2, 0.9, 1.0] {
+            let bounds = cloud_bounds(vec4(0.7, tall, 0.0, 1.0), billow)
+            assert(bounds.x >= 0.0 && bounds.y > bounds.x, "cloud column bounds invert")
+            assert(
+                bounds.y <= TOP - BASE,
+                "cloud billow exceeds view and shadow integration bounds",
+            )
+        }
+    }
+}
+
+@test
+fn cloud_density_profile_closes_both_edges_without_a_shelf() {
+    assert(cloud_profile(-0.1) == 0.0 && cloud_profile(0.0) == 0.0, "cloud extends below its base")
+    assert(cloud_profile(1.0) == 0.0 && cloud_profile(1.1) == 0.0, "cloud extends above its top")
+    var previous = 0.0
+    for k in 0..13 {
+        let value = cloud_profile(f32(k) * 0.01)
+        assert(value >= previous && value <= 1.0, "cloud base does not condense smoothly")
+        previous = value
+    }
+    assert(cloud_profile(0.3) > 0.99, "cloud loses its full-density middle")
 }

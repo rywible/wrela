@@ -25,7 +25,7 @@ pub const VOLUME: u32 = 4
 
 /// Where each card level ends, in pixels a card's width: an instance is drawn at the coarsest
 /// level whose cards look no wider than this on screen.
-pub const CARD_PX: f32 = 24.0
+pub const CARD_PX: f32 = 12.0
 /// The width on screen (the scene's pixels) below which a far crown fades out, by half again.
 /// Like `CARD_PX`, it's scaled by `Lod::card_px`: a scene drawn at another size chooses the
 /// same levels and fades by giving `card_px` in its own pixels.
@@ -58,9 +58,9 @@ pub struct Lod: Copy + GpuData {
 pub fn place(l: Lod, cam: Camera, at: vec3, scale: f32) -> (f32, f32) {
     let r = l.reach * scale
     let d = length(at + vec3(0.0, l.top * 0.5 * scale, 0.0) - cam.eye)
-    // The finest level whose cards look no wider than CARD_PX (each level doubles them).
+    // The finest level whose cards look no wider than CARD_PX (each level grows them by sqrt(2)).
     let px = card_width(l, cam, at, scale)
-    var level = clamp(log2(l.card_px / max(px, 1.0e-4)), 0.0, f32(CARD_LEVELS - 1))
+    var level = clamp(2.0 * log2(l.card_px / max(px, 1.0e-4)), 0.0, f32(CARD_LEVELS - 1))
     // A large crown or a narrow lens keeps its geometry until the impostor has enough
     // samples across it. The owner bounds this extension to its loaded geometry's range.
     let projected = 2.0 * r / max(cam.footprint(1.0) * l.impostor_px, 1.0e-6)
@@ -82,7 +82,7 @@ pub fn place(l: Lod, cam: Camera, at: vec3, scale: f32) -> (f32, f32) {
 }
 
 /// How wide the cards of an instance at `at`, `scale` large, look from `cam` at its nearest
-/// level, in pixels (each level doubles it): `place`'s measure.
+/// level, in pixels (each level grows it by sqrt(2)): `place`'s measure.
 pub fn card_width(l: Lod, cam: Camera, at: vec3, scale: f32) -> f32 {
     let r = l.reach * scale
     let d = length(at + vec3(0.0, l.top * 0.5 * scale, 0.0) - cam.eye)
