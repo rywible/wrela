@@ -390,12 +390,16 @@ pub struct Chosen {
     lists_gpu: GpuBuffer<List>,
     templates: GpuBuffer<ListDraws>,
     counts: GpuBuffer<u32>,
+    /// Counts' reset values, kept on the CPU while the lists stay laid out.
+    zero_counts: Vec<u32>,
     picked: GpuBuffer<u32>,
     raw_marks: GpuBuffer<u32>,
     pub instances: GpuBuffer<Instance>,
     pub marks: GpuBuffer<vec2u>,
     pub args: GpuBuffer<ListDraws>,
     pub far: GpuBuffer<DrawArgs>,
+    /// The current lists' aligned places. Buffers keep extra room for later tiles, but a
+    /// frame gathers, culls and hides only these places; draws cannot read the unused tail.
     places: u32,
     /// The instances as the far crowns are drawn: the far crowns the near hid put out (`hide`);
     /// whether each place is seen; and the occluders' map.
@@ -416,6 +420,7 @@ impl Chosen {
             lists_gpu: buffer(1),
             templates: buffer(1),
             counts: buffer(1),
+            zero_counts: Vec::new(),
             picked: buffer(1),
             raw_marks: buffer(2),
             instances: buffer(1),
@@ -462,7 +467,7 @@ impl Chosen {
             }
         }
         let places = room(first)
-        if places > self.places {
+        if places > self.instances.len() {
             // Room to grow into, so a tile more doesn't make them again.
             let grown = places + places / 2
             self.picked = buffer(grown)
@@ -471,11 +476,15 @@ impl Chosen {
             self.marks = buffer(grown)
             self.drawn = buffer(grown)
             self.seen_places = buffer(grown)
-            self.places = grown
         }
+        self.places = places
         self.lists_gpu = buffer_of(self.lists, at_least: 1)
         self.templates = buffer_of(templates, at_least: 1)
         self.counts = buffer(room(self.lists.len()))
+        self.zero_counts.clear()
+        for _ in 0..room(self.lists.len()) {
+            self.zero_counts.push(0)
+        }
         self.args = buffer(room(self.lists.len()))
         self.far = buffer(room(self.lists.len()))
     }
@@ -489,7 +498,7 @@ impl Chosen {
         lods: GpuBuffer<Lod>,
     ) {
         let n = self.lists.len()
-        write(mut self.counts, 0, Vec::filled(room(n), 0))
+        write(mut self.counts, 0, self.zero_counts)
         dispatch(
             choose.bind(
                 c,

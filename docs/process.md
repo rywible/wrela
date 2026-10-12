@@ -497,6 +497,111 @@ without text over it) and Wikimedia Commons (rate-limited).
 | `ghibli-totoro-018.jpg` | My Neighbor Totoro (1988). Studio Ghibli, dir. Hayao Miyazaki; art director Kazuo Oga. | © Studio Ghibli, free-use still | [link](https://www.ghibli.jp/gallery/totoro018.jpg) | Child running through a painted summer garden; a cel figure in motion with a hard sun shadow and no outline on the painted world. |
 | `ghibli-totoro-038.jpg` | My Neighbor Totoro (1988). Studio Ghibli, dir. Hayao Miyazaki; art director Kazuo Oga. | © Studio Ghibli, free-use still | [link](https://www.ghibli.jp/gallery/totoro038.jpg) | Three figures under a large tree with dappled shade; shows how cel characters take leaf-shadow and sunlight patches. |
 
+
+## Whole-repo performance sweep, 2026-10-12
+
+Ryan asked Codex and parallel agents to inspect today's whole codebase, verify performance
+opportunities, and ship winning changes. The audit covered compiler syntax, semantics, IR,
+lowering and drivers; native, ABI and browser hosts; engine, std, games, studio and UI; and
+build, check, capture and audio tools. It used current source rather than recent commits.
+No outside algorithm, asset or new AI tool was used. Upscaling stays disabled: The Last
+Green's `SCALE` remains 1.0.
+
+Six changes remove repeated work: GPU DCE follows borrowed expression definitions rather
+than allocating per-expression operand lists; native and browser command checkers retain
+rollback scopes; streamed wood retains count-reset storage and processes active list
+spans while keeping spare GPU capacity; Chrome console collection tails appended log
+bytes; and ordinary cache admission reuses its first storage scan. Regressions cover
+effect/control/local/index dependencies, rejected commands and attachments, same-layout
+count resets, shrink/empty/regrow GPU contents and poisoned tails, split console records
+and UTF-8, and cache/disk admission failures.
+
+Measured on the Apple M4 against `b7a7e032`:
+
+| Bounded workload | Before | After | Evidence and limit |
+|---|---:|---:|---|
+| GPU DCE, 32,768 live dependency steps | 1.245 ms | 0.535 ms | Identical whole IR output; 32,771 allocations become 3 |
+| GPU DCE, dead dependency steps | 1.003 ms | 0.274 ms | Identical output; construction/cloning excluded |
+| GPU DCE, steps through locals | 4.049 ms | 2.317 ms | Identical output; 98,311 allocations become 32,775 |
+| Native dispatch checking, 2 / 8 bindings | 52.06 / 122.49 ns | 30.29 / 104.36 ns | Seven alternating samples; one allocation per dispatch becomes zero |
+| Browser dispatch checking, 2 / 8 bindings | 173.62 / 525.48 ns | 149.34 / 349.86 ns | JavaScriptCore, nine alternating samples; all 74 diagnostic vectors match |
+| Browser mixed command checking | 108.66 ns/command | 100.29 ns/command | Draw costs stay equivalent; excludes WebGPU and Chrome frame rate |
+| Console processing, 200 appended-log polls | 2528.6 ms | 72.6 ms | Three pairs; identical full output; 307.4 MB of source reads become 3.1 MB |
+| Two versus one shared-cache size scans | 475.1 ms | 230.7 ms | Five samples over 9.09 GiB; about 244 ms less ordinary job admission work |
+| Last Green vegetation occlusion, controlled native run | 0.449 ms | 0.367 ms | Median of three run medians; 17.8–19.1% less GPU time in every pair |
+| Last Green GPU span, controlled native run | 12.124 ms | 11.751 ms | 2.2–3.6% less in each pair; label times overlap and cannot be added |
+| Last Green CPU frame call, controlled native run | 19.291 ms | 17.850 ms | Includes GPU synchronization; 1.3–7.5% less in each pair |
+
+The render measurements use 120 lockstep frames at 1280×720, span timing, and nine workers
+under exclusive measurement admission. `tools/wrela profile examples/last-green --json`
+ran twice on each checkout. Separate CLI pairs showed wide variation, including slower
+whole-frame candidate results, so they do not establish a whole-frame win on their own.
+A controlled comparison then held one host binary, device, allocator and compiled pipelines
+for six runs, alternating old/new, new/old, old/new. Each restart reset the game and its
+resources; restart/init time is outside CPU frame-call timing. All 114 pipeline manifest
+entries and corresponding shader hashes match, and no restart built a GPU pipeline.
+The controlled comparison isolates the Wrela program change; the checker measurements
+separately establish the host validator benefit.
+
+Vegetation occlusion now takes 2.2% of the total 16.7 ms budget, down from 2.7%. The controlled
+GPU span fits that budget; the synchronized CPU frame-call median remains above it.
+Water remains the largest recurring label at about 7.5 ms (45% of the total budget), with
+clouds and full-resolution temporal resolve around 3.4–3.6 ms each. These are overlapping
+GPU labels, not additive costs or Chrome frame rates. Slow-frame results are mixed: one
+controlled pair's GPU p95 grew 8.6% and CPU p95 grew 6.6%; there is no tail-stability claim.
+End-to-end gate-time savings were not measured; the compiler pass and admission scan
+numbers establish bounded reductions only. The rejected browser draw-map reuse added
+about 9% to draw-check time and was removed before verification.
+
+The following opportunities were inspected but are not claimed as measured improvements.
+Each needs the stated bounded proof before implementation; none justifies reducing
+quality, weakening checks, changing resource hazards, or restoring upscaling.
+
+| Area and current cost | Next bounded verification |
+|---|---|
+| Water reflection march and depth-aware filtering (`engine/water.wrela`); largest recurring baseline GPU label | Preserve depth-layer filtering and reflected pixels; measure water separately on the M4 |
+| Terrain material shading samples all four materials and three rock planes even at zero weights (`engine/terrain.wrela`) | Real shader comparisons for pure/mixed materials and axis normals; measure divergent branches |
+| Filtered noise still evaluates zero-contribution octaves (`engine/noise.wrela`) | Seeded CPU/GPU agreement across footprint cutoffs; preserve summation order |
+| Cloud inner march still samples fields after its existing opacity cutoff (`engine/sky.wrela`) | Exact bounded shader comparison, then cloud GPU timings |
+| Clipmap follow rewrites draw arguments even with no cooked levels (`engine/terrain.wrela`) | Unchanged/moved levels and indirect argument contents |
+| Forest CPU selection builds eight temporary vectors (`engine/vegetation.wrela`; clearing/reference examples) | Reused capacity, exact list/mark order, and warm allocation counts |
+| Wood choosing scans every reserved slot, including empty ones (`engine/wood.wrela`) | Slot indirection and visibility indexing through load/drop/recentre; real GPU output |
+| Wood culling also visits card lists and padding (`engine/wood.wrela`) | Restrict dispatch ranges without reading stale tails or missing far lists |
+| Spatial queries search a wider cube of hashed cells than their exact bounds (`engine/spatial.wrela`) | Seeded boundary queries with identical callback order |
+| Crown-cap dilation is linear in radius per grid cell (`engine/grow.wrela`) | Exact values and first-owner ties against the current two-pass rule |
+| Studio contacts linearly search pair counts for each interface voxel (`studio/describe.wrela`) | Small many-part field results and diagnosis CPU time |
+| CSE clones vector-owning expressions for both lookup and removal (`compiler/ir/src/opt.rs`) | Dominance, branch/loop scopes, signed zeros and NaNs; whole-package compile time |
+| Type-property queries repeatedly walk interned DAGs (`compiler/sema/src/ty.rs`) | Cached flags for variables, parameters and projections; inference agreement |
+| Parser drops lexer newline tokens then reconstructs recovery newlines (`compiler/syntax/src`) | Public lexer agreement, malformed brackets and parser recovery |
+| Borrow liveness globally rescans bodies, including bodies with no loan holders (`compiler/sema/src/borrowck.rs`) | Empty fast path first; unchanged loan diagnostics and loop back edges |
+| Uniform specialization scans unrelated functions each round (`compiler/ir/src/opt.rs`) | Callsite worklist agreement over shared copies and dependent specializations |
+| Code motion rebuilds nested use sets; uniform loads clone scoped maps (`compiler/ir/src/opt.rs`) | Stores, dominance, loops and conditional motion |
+| Branch conversion allocates operand lists and clones expressions for shape tests (`compiler/ir/src/opt.rs`) | Exact output shape and shader budgets; existing 96-statement bound limits benefit |
+| Constant cache cleanup scans the whole shared directory per build (`compiler/driver/src`) | Stale-temp recovery, content integrity and bounded cold-build timing |
+| Native draws copy bindings/uniforms; pending/prepared pass vectors are rebuilt (`runtime/native/src/gpu.rs`) | Joined-pass resource hazards, multi-batch lifetimes and real pixels before scratch reuse |
+| Native timestamp resolve creates scratch buffers per timed flush (`runtime/native/src/gpu.rs`) | Reuse buffers while retaining Metal's required pre-resolve wait; timing-only benefit |
+| Native/browser readbacks create staging buffers and separate submissions (`runtime/*`) | Concurrent snapshots, map/unmap lifetimes and measured readback workloads |
+| Native cache pruning scans all module files on a cold write (`runtime/native/src/cache.rs`) | Stale cleanup and actual cold-module latency |
+| Native decoding allocates command and binding vectors per batch (`runtime/abi/src/stream.rs`) | Preserve all-or-nothing rejection of malformed trailing commands |
+| Scripted input rescans full event lists every tick/frame; queued input copies bytes (`runtime/abi/src/input.rs`) | Event arrival/order and reload ownership under long bounded scripts |
+| Browser texture-binding checks repeatedly classify kinds/formats (`runtime/browser/src/check.ts`) | Cached descriptor flags, unchanged ABI vectors and texture-heavy checker timing |
+| Browser copies sequencer state for every command (`runtime/browser/src/program.ts`) | Snapshot only mutating transitions; rejected-command state and allocation timing |
+| Browser render draws repeat pipeline state and zero-uniform bind groups (`runtime/browser/src/gpu.ts`) | Mock call counts plus Chrome CPU timing; native wgpu already deduplicates pipelines |
+| Browser event queues copy already assembled input events (`runtime/browser/src/program.ts`) | FIFO, mutation and unread-input reload regressions |
+| Browser tick clock is sampled when timing is disabled (`runtime/browser/src/ticker.ts`) | Controlled clock counts and identical timing-enabled results |
+| Browser storage rewalks OPFS directories for requests (`runtime/browser/src/loader.ts`) | Repeated latency and recovery after directory deletion |
+| UI tree rows and wholly clipped rect/glyph quads still get generated (`ui/widgets.wrela`, `ui/draw.wrela`) | Layout/focus/caret agreement, exact clip-edge pixels and large-list uploads |
+| Full check enumerates Rust tests twice per executable (`tools/check.py`) | Empty artifacts, exact selected counts and unchanged failure handling |
+| Job cancellation scans the process tree every 200 ms (`tools/jobs.py`) | Preserve descendant cleanup and cancellation safety before reducing scans |
+| Focused Rust selection rereads all Rust source (`tools/check.py`) | Exact/ambiguous/unknown selection agreement and startup timing |
+| Blind listening pads/copies full tracks; PCM writes build an integer list (`tools/listening.py`) | Exact gain, samples and padding; long-track peak memory |
+
+Existing caches, input/no-input fast paths, upload rings, screen readback reuse, idle studio
+views, quota admission and GPU synchronization were reviewed before proposing replacements.
+The full-scene rendering profile is a short startup-inclusive measurement, not a sustained
+Chrome frame-rate or whole-scene quality claim. Raw timing samples, harness inputs and logs
+are retained outside the session under `target/perf-sweep-20261012`.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
