@@ -804,6 +804,35 @@ shader inventory entries match. Those small differences are not a gameplay perfo
 claim. Full-gate timing is reported with completion; the new queue regression itself took
 0.1 s, while cold Wrela fixture compilation took 83–126 s in focused runs.
 
+## T3-managed work and direct checks, 2026-10-12
+
+Ryan chose T3 Code to own worktrees and agent sessions across two background machines, with
+completed work pushed as a branch and submitted as a pull request. He asked Codex to remove
+the repository's worktree registry, job queue, resource admission and process bookkeeping.
+This supersedes the local session resource policy above; that entry remains as history.
+
+The implementation removes the custom queue, CPU/memory probes, shared Cargo target registry,
+GPU permits and command-blocking/session hooks. The CLI, check, console-release, lookbook,
+motion and cloud-warm commands run directly. Cargo output belongs to each checkout by default;
+ordinary Cargo dependency downloads and the compiler/runtime's content-keyed code caches remain.
+Native GPU hosts no longer acquire machine-wide locks, and default worker counts use the
+available machine parallelism instead of an admitted-job environment variable. Explicit worker
+counts and concurrency tests retain their meaning.
+
+The check runner still discovers every retained test, rejects empty or ambiguous selections,
+includes ignored GPU tests, and reports failures and skipped tests. Rust fixtures keep isolated
+scratch directories and pinned executables for tests that spawn their own workers; a failed run
+keeps its diagnostic output. Browser runs retain per-run pages, timeouts and child-process
+cleanup. New small fixtures cover direct CLI build/command failure propagation and console
+release paths relative to the caller. Tests solely for the removed orchestration are removed.
+
+Sources: T3 Code's public [project settings documentation](https://github.com/pingdotgg/t3code/blob/main/docs/user/project-settings.md)
+and [remote access documentation](https://github.com/pingdotgg/t3code/blob/main/docs/user/remote-access.md),
+used as workflow references for assigned worktrees, separate environments and PR-based cleanup.
+No outside code or assets were copied. Codex (GPT-6.1 Sol, high reasoning) performed the dependency
+audit, implementation and local verification through a T3-managed worktree. No before/after
+gate-speed or M4 frame-time gain is claimed.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
