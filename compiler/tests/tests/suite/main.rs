@@ -42,6 +42,7 @@ mod noise;
 mod numerics;
 mod parallel;
 mod piano;
+mod quiescence;
 mod reload;
 mod render;
 mod renderer;

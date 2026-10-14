@@ -13,12 +13,14 @@
 //! resources and entry points, and only CPU code has constant data.
 
 pub mod bounds;
+mod demand;
 pub mod derive;
 mod error;
 pub mod gpu_memory;
 pub mod layout;
 pub mod opt;
 pub mod print;
+mod quiescence;
 pub mod scalarize;
 mod single_exit;
 mod types;

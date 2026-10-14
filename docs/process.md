@@ -903,6 +903,344 @@ and Rust's [file-lock API](https://doc.rust-lang.org/std/fs/struct.File.html#met
 They teach hardware/fallback classification and advisory-lock lifetime. These public documents
 were read as API references; no outside source code or art assets were copied.
 
+## Compiler opportunities and bounded experiments, 2026-10-13
+
+Ryan asked for research and experiments on compiler changes that could improve rendering
+and compute by orders of magnitude. He narrowed the scope to the compiler. Codex
+(GPT-6-Astra), with three GPT-6-Astra subagents, inspected the compiler and emitted shaders,
+researched primary sources through Exa, and tested compiler changes. After Ryan rejected
+the initial synthetic evidence, the work restarted on unchanged real packages. No outside
+code or assets were copied. No engine policy, renderer, language semantics or milestone-6
+content changed. Measurements apply only to the listed replay windows on this GPU.
+
+### What is already present
+
+The compiler already has monomorphization, uniform-address specialization, GPU inlining,
+common-expression elimination, small-loop unrolling, CPU load reuse and narrow WASM SIMD
+loops. Derived gradients already use activity analysis and structural zero tangents.
+Intervals already widen for target arithmetic, narrow branch guards and split floor cases.
+`std::stage::Tape.prune` already prunes expressions by interval dominance. These are not new
+opportunities. The earlier 19× uniform-copy cost described in `compiler/ir/src/opt.rs` is
+evidence that a compiler can remove a large pathological cost, not an available 19× gain.
+
+### Larger compiler opportunities from the actual programs
+
+**Interval-certified spatial residual programs.** Last Green's ground multiplies
+`Land.base(p)` by `smoothstep(70, 140, r)`. In the inner meadow that factor is zero, but
+`engine/place.wrela` still evaluates noise, 23 ridge segments, eight hills and eight hollows
+for each height query. The terrain already reuses old clipmap texels and filters detail by
+footprint; neither removes irrelevant subgraphs inside each newly evaluated texel. The
+`woodland_cover` to `colony_coverage` call also computes noise before passing it to a helper
+whose footprint can make that argument unnecessary.
+
+The compiler can combine its derived interval interpretation with conditional argument and
+result demand, then emit a bounded set of evaluators for spatial regions and footprints.
+Boundary and unknown regions retain the original evaluator. Preserve the operation order
+of surviving work; require pure terminating producers and target-correct bounds. Approximate
+interval endpoints are not proof of exact zeros. Existing part masks and `Tape.prune` do
+not specialize this arbitrary compiled terrain program. The first decisive experiment is
+unchanged Last Green terrain on interior, boundary, coarse and moving-origin tiles, checking
+all cooked buffers and including preparation/selection costs. Removing 39 source-loop
+iterations plus noise is a concrete opportunity, not a measured tenfold improvement.
+A tenfold component-work claim needs evidence that at least 90% of its expensive work goes.
+
+**Infer evaluation rates and generate shared GPU intermediates.** The compiler sees typed
+binding closures and the CPU code recording dispatches and draws. It could infer which
+subgraphs vary per dispatch, blade or vertex, and synthesize GPU preparation plus residual
+shaders using existing commands and resources. In `engine/sky.wrela`, surviving cloud rays
+repeat sun illumination and five sky-table lookups whose inputs are identical across the
+163,840 dispatched rays per frame. The existing temporal update already processes only
+1/32 of the dome; this opportunity removes repetition among the rays that remain. The
+lookup uses explicit LOD. Compute it once on the GPU; the density and light marches remain.
+
+Near grass blades have 17 distinct vertices after indexed reuse. `engine/grass.wrela` calls
+`engine/plant.wrela`'s sway with the same root for these vertices. Its two gust evaluations,
+root phase and direction can be computed once per blade, leaving height-dependent bending
+per vertex. That is a possible 17-fold reduction in those evaluations, not in the whole
+shader. Far tiers have fewer vertices; vegetation cards have only four corners. Culling
+and thinning already remove blades but do not share the root-dependent work of survivors.
+Dependency summaries must cross calls, track immutable resource versions and invalidate at
+relevant writes. Keep arithmetic on the GPU; exclude implicit LOD, derivatives, effects and
+collectives. Charge for preparation dispatches, intermediate storage and extra traffic.
+
+**Demand-aware derivation.** `derive/ad.rs` first derives a whole distance/payload pair,
+then selects the distance tangents. Backward primal-output and tangent-output demands could
+avoid generating unused derivative IR, with bounded demand variants in `DeriveCache`.
+Payload-only cooking could use a primal evaluator; herd shading needs distance tangents
+and primal channels. The post-derivation experiment below already removes tangent reads
+from cook shaders, so earlier demand does not establish a second runtime multiplier.
+Smaller intermediate programs and calling interfaces are additional unmeasured opportunities.
+
+At the measured Last Green baseline near 85.2 ms, even making the entire terrain, clouds,
+vegetation or grass category ten times faster gives only about 1.13, 1.18, 1.20 or 1.13 times
+whole-frame speed respectively. Making all four ten times faster gives about 2.22 times.
+These arithmetic ceilings assume the measured costs remain additive; they are not GPU
+predictions. Orders-of-magnitude reductions in selected field work remain plausible.
+The evidence does not support orders-of-magnitude whole-frame claims.
+
+### Experiments and interpretation
+
+The initial experiments did not answer the real-workload question. A generated chain of
+32 integer maps showed that one dispatch can outperform 32 dispatches. A separate Python
+model showed that correlated bounds can prune constructed affine expressions. Neither was
+a production compiler pass, and neither established an improvement in an existing game.
+Ryan rejected that evidence as the basis for prioritizing this work. The generators and
+their tests were removed. Their synthetic speedup numbers are not real-workload claims.
+A temporary loop-invariant motion pass also produced no measured GPU improvement and was
+removed. The replacement experiments use unchanged Last Green, clearing and herd sources.
+
+The real baseline uses the package sources without edits, 1280×720, one worker, no input,
+span timing, zero warmup and the first 180 frames. On this machine's Intel UHD Graphics
+620, clearing's GPU span median was 45.210 ms, Last Green's 84.784 ms and herd's 17.419 ms.
+These single runs locate work; improvements require alternating baseline/candidate pairs.
+Clearing's colour bake total was only 1.212 ms across those frames, while its recurring
+cloud label had a 14.752 ms median. Last Green's terrain cooking total was 1,738.8 ms over
+13 measured frames; its recurring cloud median was 14.607 ms. Label totals and medians
+answer different questions and must not be presented as interchangeable frame costs.
+
+**Broad endpoint guards: rejected.** An initial GPU IR pass delayed expensive pure
+producer slices at any mix endpoint. The generated Last Green terrain shader skipped
+filtered noise octaves and two joint searches, but also added branches inside ordinary
+noise interpolation. Three alternating baseline/candidate pairs with the settings above
+made GPU span medians worse: 85.183 to 86.013 ms (+0.97% median paired change). Terrain cook
+medians rose from 117.311 to 118.667 ms; grass rose 3.19% and vegetation 2.19%. The CPU
+frame-call comparison was inconclusive. The report is
+`/tmp/wrela-real-last-green-mix-paired.json`. This is evidence against the broad rule,
+not a performance gain. Restricting the rule to clamp/smoothstep-derived weights still
+made herd's screen pass about 2% slower, with inconclusive whole-frame results. Requiring
+uniform weights through the existing context-sensitive uniformity analysis produced no
+guards in any of the three real packages: its conservative control-flow facts reject these
+sites. The pass, its analysis extension and its tests were removed. It is not shipped as
+an optimization supported only by its correctness fixture.
+
+**Post-derivation field demand, isolated clearing comparison.** The pass unions observed
+struct fields over GPU callers and loop-carried locals, zeros dead interface fields, and
+removes their pure computations. It keeps signatures, calls, control flow, external writes,
+borrowed roots and indexed locals. Ordinary extract forwarding, CSE and dead-code cleanup
+follow it. The CPU program is unchanged. In real colour/material cook shaders, tangent
+reads disappear, while primal noise, distances, blends and calls remain. Colour WGSL shrank
+from 43,150 to 24,929 bytes and material WGSL from 237,626 to 202,178 bytes. These are code
+sizes, not runtime operation counts.
+
+The pass also removes ordinary unused fields, without differentiation. In
+`engine/terrain.wrela`'s `ground_shade`, `ground_from` returns a height that the caller
+discards. The final shader removes eight height-buffer reads and seven interpolation
+calls that the baseline still computes through aggregate results. Its 36 texture-sampling
+sites remain. Clearing and Last Green have identical before/after terrain-draw shaders.
+These measurements cover field demand and its following extract forwarding, CSE and
+dead-code cleanup together; the terrain gain is not evidence of derivative pruning.
+
+In clearing's `cook_level`, unused arguments to `Terrain_cover_seen` become zeros, removing
+a cached-field texture sample and its coordinate calculation. Terrain cooking still
+regressed about 5% in the paired measurements below. Last Green's `cook_level` keeps its
+function, loop, branch and texture-sampling counts; its changes mainly remove aggregate
+construction and projection work. Smaller shaders and fewer operations do not by themselves
+establish faster execution.
+
+Three alternating clearing pairs gave GPU span medians 44.986 to 44.671 ms (-0.68% median
+paired change) and synchronized CPU frame calls 61.104 to 60.667 ms (-0.71%). Material cook
+fell 5.914 to 4.222 ms (-28.12% paired), terrain drawing 3.348 to 3.033 ms (-9.49%). Colour
+cook rose 0.232 to 0.252 ms (+7.15% paired) and terrain cook 264.111 to 277.705 ms (+5.03%).
+This is a mixed, modest scene improvement, not an order-of-magnitude result. The report is
+`/tmp/wrela-real-clearing-demand-paired.json`. A hardware regression separately checks
+all payload fields against direct evaluation through helpers and dynamic loop state.
+
+**Stop counted loops after a permanently closed guard.** The GPU pass proves a u32
+counter increases by one toward an invariant bound, its final value is unobserved, and
+assuming a particular guard is false leaves no reachable observable state changes. It
+preserves the original float comparison, including its NaN behavior, rather than assuming
+monotonic arithmetic. Calls, derivatives, implicit LOD, collectives, dynamic indexed reads
+and possible state recovery prevent the rewrite. In the actual cloud shader this adds an
+exit before remaining density samples once the existing opacity guard cannot reopen.
+It changes neither the opacity threshold nor the lighting calculation.
+
+Against the demand-only build, three alternating clearing pairs reduced the cloud label
+median from 13.163 to 12.737 ms (-3.23% paired) and GPU span from 43.069 to 42.654 ms
+(-1.07% paired). Neither build's cloud shader had blend guards, so this label isolates the
+loop change. The full-scene comparison also included the subsequently rejected clamped
+blend experiment; it is not the final combined result. Report:
+`/tmp/wrela-real-clearing-candidate-v-demand-paired.json`. Absolute timings differ between separate
+profile commands; only paired comparisons support the reported changes.
+
+**Final two-pass comparison: field demand and closed-guard loop exits.** These builds
+exclude all endpoint-guard experiments. The baseline compiler is
+`533d58daaa7a3e71c800119d2b8a695e70bd4533`; its frozen, unchanged-package builds are
+`/tmp/wrela-real-herd-before`, `/tmp/wrela-real-clearing-before` and
+`/tmp/wrela-real-last-green-before`. Each comparison used three alternating pairs on the
+same Intel UHD Graphics 620, Vulkan/Mesa 26.0.8-1ubuntu0.3, with the same native host.
+Both sides ran the same scene and empty input script, 1280×720, one worker, fixed 60 Hz
+simulation steps, zero warmup and the first 180 frames, using GPU span timing (`serial:
+false`). No other builds or GPU work ran during measurement. Each sample started fresh;
+these are short load scenarios that include startup work, not prolonged play measurements.
+
+The milliseconds below are medians of three run medians. Percent changes are the median
+of the three matched-pair percentages, `100 * (candidate / baseline - 1)`, rather than the
+ratio of the two displayed medians. Those statistics can differ, as the herd result shows.
+
+| Scene | GPU span before → after (ms) | Median paired GPU change | CPU frame call before → after (ms) | Median paired CPU change |
+|---|---:|---:|---:|---:|
+| Herd | 17.110 → 17.130 | +0.07%, inconclusive | 25.888 → 25.795 | -0.61%, inconclusive |
+| Clearing | 45.044 → 44.121 | -2.05% | 61.157 → 60.195 | -1.54% |
+| Last Green | 85.175 → 83.384 | -2.10% | 115.799 → 113.813 | -1.41% |
+
+There is no demonstrated herd improvement: its recurring screen pass was 11.030 ms on
+both sides, with an inconclusive -0.04% paired change. Clearing's recurring clouds fell
+14.780 to 14.201 ms (-3.92% paired), terrain drawing 3.348 to 3.033 ms (-9.47%), and its
+one-frame material cook 5.779 to 4.220 ms (-27.05%). Startup also regressed: clearing's
+one-frame terrain cook rose 264.024 to 277.528 ms (+5.11% paired), and colour-cook medians
+rose 0.233 to 0.250 ms (+7.34%). The latter's total over six measured frames rose 1.213 to
+1.293 ms; it was never a dominant recurring cost.
+
+Last Green's recurring clouds fell 14.546 to 13.958 ms (-4.24% paired), and terrain drawing
+10.700 to 9.455 ms (-11.72%). Grass and vegetation comparisons were inconclusive. Its
+terrain-cook median fell slightly, 117.417 to 117.157 ms (-0.25% paired), while median
+run totals over the 13 frames with cooking rose 1,736.2 to 1,738.4 ms. This does not establish
+a terrain-startup gain. GPU label medians and totals cannot be added to reconstruct frame
+span. CPU frame calls include synchronization and do not measure browser frame rates.
+The overall improvements are modest; no measured runtime result is an order-of-magnitude gain.
+
+Reports are `/tmp/wrela-real-herd-final-paired.json`,
+`/tmp/wrela-real-clearing-final-paired.json` and
+`/tmp/wrela-real-last-green-final-paired.json`. They retain all run samples, workload and
+device identities, and baseline/candidate content hashes. With the baseline build preserved,
+the Last Green comparison can be repeated with the two-pass compiler using:
+
+```sh
+tools/wrela profile examples/last-green --compare /tmp/wrela-real-last-green-before \
+  --pairs 3 --frames 180 --warmup 0 --workers 1 --size 1280x720 \
+  --scenario last-green-load --json > /tmp/wrela-real-last-green-final-paired.json
+```
+
+**Moving Last Green replay.** A second comparison used the same baseline and two-pass
+candidate, hardware, host, 1280×720, one worker and GPU span timing, with 120 warmup frames
+followed by 300 measured frames at fixed 60 Hz. Three alternating pairs replayed walking
+forward and two turns through the real controls: `engine/player.wrela` maps W to forward
+movement and the left/right arrows to held yaw changes. Input frame numbers include warmup:
+frames 0–119 warm up, and frames 120–419 are measured. The exact input, saved as
+`/tmp/wrela-real-last-green-walk.json`, was:
+
+```json
+[
+  {"frame":120,"type":"keydown","key":"KeyW"},
+  {"frame":180,"type":"keydown","key":"ArrowLeft"},
+  {"frame":210,"type":"keyup","key":"ArrowLeft"},
+  {"frame":300,"type":"keydown","key":"ArrowRight"},
+  {"frame":330,"type":"keyup","key":"ArrowRight"},
+  {"frame":419,"type":"keyup","key":"KeyW"}
+]
+```
+
+GPU span medians were 80.090 to 78.146 ms, a -2.42% median paired change. The first pair
+was unusually large at -5.00%; the other two were -2.42% and -2.40%. The full range of
+baseline run medians was 80.065–82.228 ms, versus 78.114–78.153 ms for the candidate; no
+pair was excluded. Synchronized CPU frame calls fell 114.954 to 113.021 ms (-1.68% median
+paired change), with pair changes ranging from -2.32% to -0.96%.
+
+Cloud medians fell 14.566 to 13.938 ms (-4.37% paired), terrain drawing 10.492 to 9.208 ms
+(-12.24%), and vegetation 15.576 to 15.539 ms (-0.24%). Grass was effectively unchanged
+at 10.773 to 10.770 ms, with an inconclusive comparison. Terrain cooking while moving was
+also inconclusive: 1.064 to 1.068 ms, +0.93% median paired change, with pair changes from
+-1.31% to +1.23%. The warmup excludes the initial terrain cook, so this does not overturn
+the startup regressions above. This five-second measured replay tests movement and turns;
+it does not establish prolonged stability or browser frame rates. Reproduce it with:
+
+```sh
+tools/wrela profile examples/last-green --compare /tmp/wrela-real-last-green-before \
+  --pairs 3 --frames 300 --warmup 120 --workers 1 --size 1280x720 \
+  --input /tmp/wrela-real-last-green-walk.json --scenario last-green-walk --json \
+  > /tmp/wrela-real-last-green-walk-paired.json
+```
+
+**Guard possible interval branches: not retained.** A smaller derivation experiment ran
+only branches that an interval condition could select, while preserving the existing hull,
+guard narrowing, partial writes and ambiguous-branch restrictions. Fourteen new CPU
+expectations and the existing CPU/GPU enclosure corpus passed. Three alternating herd pairs
+against the two-pass build gave cull medians 1.054 to 1.018 ms (-3.04% median paired change),
+but the comparison was inconclusive. Whole-frame GPU spans were 17.118 to 17.113 ms
+(-0.14% paired, inconclusive). CPU frame calls improved 25.711 to 25.646 ms (-0.52% paired),
+which does not establish the intended GPU culling gain. Existing rough culling already
+rejects blocks before the derived interval evaluation. The patch and its fixture were
+removed; this experiment does not validate regional residual programs. Report:
+`/tmp/wrela-real-herd-interval-paired.json`.
+
+**Correctness and verification.** The retained code has eight field-demand IR regressions,
+five closed-guard IR regressions, a hardware test of derived payloads through helpers and
+loop-carried state, and an exact-buffer hardware test of dynamic counted loops with divergent
+lanes and a partial workgroup. Existing CPU WASM is byte-identical between the baseline and
+candidate for all three real packages.
+
+Fresh native captures used the same hardware, one worker, 1280×720, fixed 60 Hz and the same
+inputs. Herd, clearing and Last Green matched all 3,686,400 RGBA bytes at the end of the
+180-frame load runs. The 420-frame walking endpoint was not bit-exact: the first comparison
+changed 12 pixels/13 channels, and a repeated comparison changed 146 pixels/149 channels.
+Every changed channel differed by one 8-bit level. Baseline against its own repeat changed
+151 pixels/154 channels; candidate against its own repeat changed seven pixels/eight channels,
+also by at most one level. Thus the moving baseline itself is not bit-deterministic, and
+these captures do not isolate a compiler-induced pixel difference. No new pixel tolerance
+or pass threshold was introduced. Reports are `/tmp/wrela-real-output-comparison.json` and
+`/tmp/wrela-real-output-repeat-analysis.json`; captures are in `/tmp/wrela-real-*-frame*.rgba`
+and the corresponding PNGs. Endpoint comparisons and bounded tests do not prove all-frame
+identity or prolonged stability.
+
+The full `tools/check.sh` gate passed: 759 Rust tests, 464 browser tests, 66 tooling tests,
+formatters, Clippy, documentation, browser type/distribution/size checks and WGSL budgets.
+It includes hardware GPU shaders and small Chrome agreement scenarios, with no skipped
+retained tests. Wall time was 698.7 seconds. This is an unpaired gate-duration observation;
+it does not establish a compiler-time improvement or regression.
+
+### Sources, rights and use
+
+These primary papers and author documentation were read for mechanisms, limitations and
+experiment design. Copyright stays with their authors/publishers; public access is not a
+code license. No text, implementation, images or assets were imported into the repository.
+
+- [WGSL floating-point evaluation](https://www.w3.org/TR/WGSL/#floating-point-evaluation)
+  and [mix](https://www.w3.org/TR/WGSL/#mix-builtin): runtime finite-math and interpolation
+  rules informed the GPU-only endpoint experiment. CPU strict floating-point rules remain
+  unchanged. The normative specification was read, not copied.
+- [Halide, Ragan-Kelley et al.](https://people.csail.mit.edu/jrk/halide12/halide12.pdf):
+  scheduling, locality and fusion; its blur example combines several optimizations, so its
+  improvement cannot be assigned to fusion alone.
+- [Futhark, PLDI 2017](https://www.futhark-lang.org/publications/pldi17.pdf) and
+  [incremental flattening, 2019](https://ppopp19.sigplan.org/details/PPoPP-2019-papers/20/Incremental-Flattening-for-Nested-Data-Parallelism):
+  kernel extraction, fusion, schedule variants and locality. Futhark's comparison to twelve
+  low-level references reports a 1.81× geometric mean, with four slower cases; this is useful
+  evidence against universal tenfold claims.
+- [AnyDSL](https://graphics.cg.uni-saarland.de/publications/leissa-2018-oopsla-anydsl.html)
+  and [Rodent](https://compilers.cs.uni-saarland.de/papers/perard-2019-siggraph-rodent.pdf):
+  partial evaluation can remove abstraction and specialize rendering code. These informed
+  the constant-interpreter proposal, not a claim of a measured Wrela gain.
+- [Unified shader specialization](https://arxiv.org/html/2109.14682v2) (CC BY as identified
+  on the article) and [Spire](https://dl.acm.org/doi/10.1145/2897824.2925923): staging and
+  evaluation rates. Spire includes approximation; its transformations are not blanket
+  evidence of exact equivalence.
+- [Enzyme](https://enzyme.mit.edu/): optimization before differentiation informed the AD
+  proposal. Wrela's existing activity and zero-tangent pruning were accounted for.
+- [Keeter, 2020](https://www.mattkeeter.com/research/mpr/): regional expression pruning,
+  including a two-orders-of-magnitude expression-complexity result in one benchmark. That
+  is not a 100× frame-time result. Runtime tape pruning is already present in Wrela.
+- [Sharp and Jacobson, 2022](https://arxiv.org/html/2202.02444v2): correlated affine bounds
+  and the costs of growing/truncating affine forms. This motivated the relational probe.
+- [Knoll et al., 2008](https://www.sci.utah.edu/~knolla/cgrtia.pdf): reduced affine arithmetic
+  and generated shaders. Its numerical caveats and omitted outward rounding do not satisfy
+  Wrela's enclosure contract.
+- [CEAL](https://www.ttic.edu/technical_reports/ttic-tr-2009-2.pdf) and
+  [self-adjusting stack machines](https://dl.acm.org/doi/pdf/10.1145/2048066.2048124):
+  dependency tracking and incrementalization. CEAL's 6–19× from-scratch overhead argues
+  against making persistent incremental computation a universal compiler default.
+- [egg](https://dl.acm.org/doi/10.1145/3434304) and
+  [Herbie](https://homes.cs.washington.edu/~ztatlock/599z-17sp/papers/herbie-panchekha-pldi15.pdf):
+  equality saturation and floating-point rewrites. Faster optimizer machinery and improved
+  arithmetic accuracy are distinct from faster generated programs; neither supplies a
+  general runtime-speed claim for Wrela.
+
+Studio finding: `tools/wrela primer compiler` has no compiler area. The supported `gpu`
+and `derive` primers describe language rules; source inspection was needed for optimizer
+architecture. `tools/wrela` builds the CLI before use, so builds and GPU measurements were
+scheduled separately. Only this machine's hardware GPU was available; no paired M4 Air
+baseline or Chrome frame-rate measurement was made. Gate duration is an observation, not
+a measured compiler/gate-time effect.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

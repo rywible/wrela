@@ -50,6 +50,17 @@ pub fn flatten_gpu(m: &mut Module) -> Result<()> {
         dce(&mut f);
         m.functions[i] = f;
     }
+    crate::demand::prune_gpu(m);
+    for i in 0..m.functions.len() {
+        let mut f = std::mem::take(&mut m.functions[i]);
+        forward_extracts(m, &mut f);
+        cse(&mut f);
+        dce(&mut f);
+        m.functions[i] = f;
+    }
+    for f in &mut m.functions {
+        crate::quiescence::eliminate(f, &m.types);
+    }
     Ok(())
 }
 
