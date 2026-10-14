@@ -1,63 +1,313 @@
-// The robe's lower fabric curls into dark flame-shaped tongues. These are the cape's own
-// vertices, connected to its upper rows; no detached particle, bead, or billboard is drawn.
+// The darkness off the climber: wisps of shadow that leave the robe's lower cloth and the blade,
+// and a pool of it on the ground round the robe's foot. Each wisp is a ribbon along the path its
+// root has taken over the last moments, each part of it carried up and out and curled as it ages
+// since it left: so when the climber stands, the darkness rises and curls off it, and when it
+// moves, the darkness streams behind (and on a blink, lies along the way between). The ribbons
+// and the pool are drawn as ink: hard where they're dense, broken up at their edges.
 
 use cape::{AROUND, Cape, DOWN, point}
 use std::math::TAU
 
-/// Presentation-only folds and escaping shadow at one cloth point. Relief keeps the hanging
-/// cloth's long creases readable after its physical links settle. The lower edge spills in
-/// unequal tapered tongues: most lie low, while a few turn back into the robe.
-pub fn cloth_point(c: Cape, i: u32, j: u32, phase: f32) -> vec3 {
-    let p = c.at[point(i, j)]
-    let down = f32(j) / f32(DOWN - 1)
-    let a = TAU * f32(i) / f32(AROUND)
-    let collar = c.at[point(i, 0)]
-    let away = p.xz - collar.xz
-    let radial = if length(away) > 1.0e-5 { normalize(away) } else { vec2(sin(a), cos(a)) }
-    let side = vec2(radial.y, -radial.x)
-    let fold_root = smoothstep(0.04, 0.25, down)
-    let fold = 0.065 * sin(7.0 * a + 0.25 * sin(3.0 * a) + down * 0.8) * fold_root
-    let weight = smoothstep(0.67, 1.0, down)
-    let long = pow(0.5 + 0.5 * sin(5.0 * a - phase * 0.7 + 0.6 * sin(3.0 * a + phase * 0.23)), 3.0)
-    let short = pow(0.5 + 0.5 * sin(9.0 * a + phase * 0.43), 5.0)
-    let tongue = max(long, short * 0.55)
-    let curl = 0.5 + 0.5 * sin(3.0 * a + phase * 0.31 + 0.9)
-    let spread = 0.32 * tongue * (1.0 - 0.65 * curl) * weight
-    let turn = 0.15 * tongue * sin(phase * 0.65 + a * 4.0 + down * 3.0) * weight
-    let rise = 0.32 * tongue * pow(curl, 3.0) * weight
-    let offset = radial * (fold + spread) + side * turn
-    p + vec3(offset.x, rise, offset.y)
+/// How many wisps leave the robe's foot, and the blade; and how many points each has, its root
+/// and its past.
+pub const ROBE_WISPS: u32 = 30
+pub const BLADE_WISPS: u32 = 3
+pub const WISPS: u32 = ROBE_WISPS + BLADE_WISPS
+pub const NODES: u32 = 16
+pub const WISP_POINTS: u32 = WISPS * NODES
+
+/// How often each wisp keeps a point of its root's path (s): it shows (`NODES` - 1) of them.
+const EVERY: f32 = 1.0 / 20.0
+/// How long a wisp is (s of its root's path).
+pub const LIFE: f32 = EVERY * f32(NODES - 1)
+
+/// How far beyond the robe's foot the pool reaches (m), and how high over the ground it lies.
+const POOL_REACH: f32 = 0.25
+const POOL_LIFT: f32 = 0.012
+
+/// How much of its root's motion each wisp's past is carried along by (0 to 1): the darkness
+/// clings to the robe and the blade, so a sprint draws it out behind a little way, not in a
+/// trail metres long.
+const CLING_ROBE: f32 = 0.75
+const CLING_BLADE: f32 = 0.9
+
+/// The darkness: each wisp's root's path, newest first (`NODES` - 1 a wisp), how long since its
+/// newest was kept, the time (s), and where each root was last.
+pub struct Shroud {
+    past: Vec<vec3>,
+    since: f32,
+    time: f32,
+    started: bool,
+    last: Vec<vec3>,
 }
 
-/// The shadow tongues are attached to unchanged cloth roots, and stay within a small bounded
-/// region of its physical hem. A later phase moves that same connected surface.
-@test
-fn the_dark_hem_is_connected_and_its_motion_is_bounded() {
-    let c = cape::hang(cape::body_frame(vec3(0.0), 0.0, moves::Form {}))
-    var changed = 0.0
-    for phase in [0.0, 0.6, 1.7, 3.0] {
-        for i in 0..AROUND {
-            for j in 0..DOWN {
-                let physical = c.at[point(i, j)]
-                let p = cloth_point(c, i, j, phase)
-                if j == 0 {
-                    assert(
-                        length(p - physical) == 0.0,
-                        "shadow deformation detached from the robe collar",
-                    )
+pub fn shroud() -> Shroud {
+    Shroud { past: Vec::new(), since: 0.0, time: 0.0, started: false, last: Vec::new() }
+}
+
+/// Wisp `w`'s cloth column (a robe wisp's), spread unevenly round the robe.
+fn column(w: u32) -> u32 {
+    (w * AROUND / ROBE_WISPS + (w * 7) % 3) % AROUND
+}
+
+/// A fixed, uneven number in [0, 1) for wisp `w`.
+pub fn seed(w: u32) -> f32 {
+    fract(sin(f32(w) * 91.3458 + 3.17) * 47453.547)
+}
+
+/// Where each wisp's root is now: robe wisps on the cloth of the robe's foot, blade wisps along
+/// the blade from its middle to near its point (`grip`, `aim`: the sword's grip and the way to
+/// its point).
+pub fn roots(c: Cape, grip: vec3, aim: vec3) -> Vec<vec3> {
+    var out: Vec<vec3> = Vec::new()
+    for w in 0..ROBE_WISPS {
+        let j = DOWN - 2 - (w * 5) % 6
+        out.push(c.at[point(column(w), j)])
+    }
+    for k in 0..BLADE_WISPS {
+        let along = body::GUARD_AT + (body::POINT_AT - body::GUARD_AT) * (0.25 + 0.3 * f32(k))
+        out.push(grip + aim * along)
+    }
+    out
+}
+
+impl Shroud {
+    /// The darkness `dt` seconds on, its roots now at `at` (`roots`); carried along with its
+    /// roots as it clings, unless `left` (a blink: it stays where it was, along the way).
+    pub fn step(mut self, at: Vec<vec3>, left: bool, dt: f32) {
+        if !self.started {
+            self.restart(at)
+            return
+        }
+        self.time += dt
+        self.since += dt
+        if !left {
+            for w in 0..WISPS {
+                let cling = if w < ROBE_WISPS { CLING_ROBE } else { CLING_BLADE }
+                let by = (at[w] - self.last[w]) * cling
+                for k in 0..(NODES - 1) {
+                    self.past[w * (NODES - 1) + k] = self.past[w * (NODES - 1) + k] + by
                 }
-                assert(
-                    p.y >= physical.y && length(p - physical) < 0.45,
-                    "dark fabric left its bounded hem region",
-                )
             }
-            changed = max(
-                changed,
-                length(
-                    cloth_point(c, i, DOWN - 1, phase) - cloth_point(c, i, DOWN - 1, phase + 0.5),
-                ),
-            )
+        }
+        self.last = at.clone()
+        // Keep a point of each root's path every `EVERY` seconds: the oldest falls off the end.
+        // (A long frame keeps only the points it needs, along the way from the last to now.)
+        var kept = 0
+        while self.since >= EVERY && kept < NODES {
+            self.since -= EVERY
+            kept += 1
+            for w in 0..WISPS {
+                let base = w * (NODES - 1)
+                var k = NODES - 2
+                while k > 0 {
+                    self.past[base + k] = self.past[base + k - 1]
+                    k -= 1
+                }
+                // Where the root was `since` ago, along the way from its last point to now.
+                let last = self.past[base + 1]
+                let u = EVERY / (EVERY + self.since)
+                self.past[base] = mix(last, at[w], vec3(u))
+            }
+        }
+        self.since = min(self.since, EVERY)
+    }
+
+    /// Every wisp's path started again where its root is: nothing streams from before.
+    pub fn restart(mut self, at: Vec<vec3>) {
+        self.past = Vec::new()
+        for w in 0..WISPS {
+            for _ in 0..(NODES - 1) {
+                self.past.push(at[w])
+            }
+        }
+        self.last = at.clone()
+        self.since = 0.0
+        self.started = true
+    }
+
+    /// The whole darkness moved by `by`, as it is (the render origin moved).
+    pub fn carry(mut self, by: vec3) {
+        for k in 0..self.past.len() {
+            self.past[k] = self.past[k] + by
+        }
+        for k in 0..self.last.len() {
+            self.last[k] = self.last[k] + by
         }
     }
-    assert(changed > 0.05, "the connected dark hem does not change shape")
+
+    /// Wisp `w`'s point `k` (0 its root, now at `root`), and how far along its life it is (0 to
+    /// 1), with `wind` (m/s) carrying it as it ages.
+    pub fn node(self, w: u32, k: u32, root: vec3, wind: vec3) -> vec4 {
+        if k == 0 || !self.started {
+            return vec4(root, 0.0)
+        }
+        let age = self.since + f32(k - 1) * EVERY
+        let at = self.past[w * (NODES - 1) + k - 1]
+        vec4(at + drift(w, age, self.time - age, wind), age / LIFE)
+    }
+
+    /// Every wisp's points (`WISP_POINTS`), each its place and how far along its life it is.
+    pub fn nodes(self, roots: Vec<vec3>, wind: vec3) -> Vec<vec4> {
+        var out: Vec<vec4> = Vec::new()
+        for w in 0..WISPS {
+            for k in 0..NODES {
+                out.push(self.node(w, k, roots[w], wind))
+            }
+        }
+        out
+    }
+}
+
+/// How far a part of wisp `w` has gone from where it left its root, `age` seconds after it left
+/// at time `left`, in `wind`: a robe wisp spreads out low over the ground and curls up as it
+/// thins; a blade wisp rises off the steel. Each part keeps its own turn of the curl (it's keyed
+/// to when it left), so the darkness flows along the wisp rather than waving as one.
+pub fn drift(w: u32, age: f32, left: f32, wind: vec3) -> vec3 {
+    let s = seed(w)
+    let phase = left * (1.1 + 0.6 * s) + s * TAU
+    let curl = vec3(sin(phase + age * 2.3), 0.0, cos(phase * 1.3 + age * 1.7))
+    if w < ROBE_WISPS {
+        let a = TAU * f32(column(w)) / f32(AROUND)
+        let out = vec3(sin(a), 0.0, cos(a))
+        let spread = (0.16 + 0.2 * s) * (1.0 - exp(-age * 3.0))
+        let rise = (0.35 + 0.65 * s) * pow(age, 1.3)
+        return out * spread + vec3(0.0, rise, 0.0) + curl * (0.18 * age) + wind * (0.45 * age)
+    }
+    let rise = (0.35 + 0.25 * s) * pow(age, 1.3)
+    vec3(0.0, rise, 0.0) + curl * (0.14 * age) + wind * (0.35 * age)
+}
+
+/// The pool's ring: a point a little beyond the robe's foot under each column, on the ground
+/// (`height`: the ground's height under a point), and its middle under the body's axis (last).
+pub fn pool(c: Cape, centre: vec3, height: fn(vec3) -> f32) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for i in 0..AROUND {
+        let hem = c.at[point(i, DOWN - 1)]
+        let away = hem.xz - centre.xz
+        let out_by = if length(away) > 1.0e-4 { normalize(away) } else {
+            vec2(sin(TAU * f32(i) / f32(AROUND)), cos(TAU * f32(i) / f32(AROUND)))
+        }
+        let edge = hem.xz + out_by * POOL_REACH
+        let p = vec3(edge.x, 0.0, edge.y)
+        out.push(vec4(p.x, height(p) + POOL_LIFT, p.z, 1.0))
+    }
+    out.push(vec4(centre.x, height(centre) + POOL_LIFT, centre.z, 0.0))
+    out
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+/// A shroud stepped with its roots at `at` for `frames` frames of 60 a second.
+fn stepped(s: mut Shroud, at: Vec<vec3>, frames: u32) {
+    for _ in 0..frames {
+        s.step(at.clone(), left: false, dt: 1.0 / 60.0)
+    }
+}
+
+/// Roots all at `p`.
+fn all_at(p: vec3) -> Vec<vec3> {
+    var out: Vec<vec3> = Vec::new()
+    for _ in 0..WISPS {
+        out.push(p)
+    }
+    out
+}
+
+/// Standing still, every wisp leaves its root and rises and spreads from it: connected at the
+/// root, risen at its end, and never far (the darkness hangs about the body).
+@test
+fn standing_the_darkness_rises_off_its_roots() {
+    var s = shroud()
+    let roots = all_at(vec3(1.0, 0.0, 2.0))
+    stepped(mut s, roots.clone(), 90)
+    let nodes = s.nodes(roots.clone(), vec3(0.0))
+    for w in 0..WISPS {
+        let root = nodes[w * NODES]
+        let end = nodes[w * NODES + NODES - 1]
+        assert(length(root.xyz - roots[w]) < 1.0e-6, "a wisp is detached from its root")
+        assert(root.w == 0.0 && end.w > 0.9 && end.w <= 1.0, "a wisp's life runs wrong")
+        assert(end.y > root.y + 0.05, "a wisp doesn't rise")
+        assert(length(end.xyz - root.xyz) < 1.4, "a wisp leaves the body")
+        for k in 1..NODES {
+            let step = length(nodes[w * NODES + k].xyz - nodes[w * NODES + k - 1].xyz)
+            assert(step < 0.25, "a wisp breaks into pieces")
+        }
+    }
+}
+
+/// Moving at a sprint, the darkness streams out behind, the way the body came, but clings to it:
+/// a short way, not metres; and it changes as it flows, rather than holding its shape. On a
+/// blink it stays behind, along the way between.
+@test
+fn moving_the_darkness_streams_a_little_behind() {
+    var s = shroud()
+    var at = vec3(0.0)
+    var before = vec3(0.0)
+    for f in 0..90 {
+        at.z += 7.5 / 60.0
+        s.step(all_at(at), left: false, dt: 1.0 / 60.0)
+        if f == 80 {
+            before = s.nodes(all_at(at), vec3(0.0))[NODES / 2].xyz - at
+        }
+    }
+    let nodes = s.nodes(all_at(at), vec3(0.0))
+    for w in 0..WISPS {
+        let behind = at.z - nodes[w * NODES + NODES - 1].z
+        // The blade's aura clings closer than the robe's darkness.
+        let least = if w < ROBE_WISPS { 0.6 } else { 0.3 }
+        assert(behind > least, f"wisp {w}'s end is {behind} m behind the body: no stream")
+        assert(behind < 2.6, f"wisp {w}'s end is {behind} m behind the body: it doesn't cling")
+    }
+    let middle = nodes[NODES / 2].xyz - at
+    assert(length(middle - before) > 0.01, "the darkness holds its shape as it streams")
+    for _ in 0..3 {
+        at.z += 1.2
+        s.step(all_at(at), left: true, dt: 1.0 / 60.0)
+    }
+    let trail = s.nodes(all_at(at), vec3(0.0))
+    assert(at.z - trail[NODES - 1].z > 3.0, "a blink's darkness doesn't stay along the way")
+}
+
+/// A long frame keeps the wisp's path along the way the root went: no point is left far off it.
+@test
+fn a_long_frame_keeps_the_path_continuous() {
+    var s = shroud()
+    stepped(mut s, all_at(vec3(0.0)), 30)
+    s.step(all_at(vec3(0.0, 0.0, 1.0)), left: false, dt: 0.1)
+    let nodes = s.nodes(all_at(vec3(0.0, 0.0, 1.0)), vec3(0.0))
+    for k in 1..NODES {
+        let gap = length(nodes[k].xyz - nodes[k - 1].xyz)
+        assert(gap < 0.5, f"a long frame tore the wisp: a {gap} m gap")
+    }
+}
+
+/// The origin's move carries the darkness as it is.
+@test
+fn an_origin_move_carries_the_darkness() {
+    var s = shroud()
+    stepped(mut s, all_at(vec3(0.0)), 30)
+    let before = s.nodes(all_at(vec3(0.0)), vec3(0.0))
+    let by = vec3(-64.0, 0.0, 128.0)
+    s.carry(by)
+    let after = s.nodes(all_at(by), vec3(0.0))
+    for k in 0..WISP_POINTS {
+        assert(length(after[k].xyz - (before[k].xyz + by)) < 1.0e-3, "the origin's move left it")
+    }
+}
+
+/// The pool lies on the ground, beyond the robe's foot all round, with its middle under the body.
+@test
+fn the_pool_lies_beyond_the_robes_foot() {
+    let c = cape::hang(cape::body_frame(vec3(0.0), 0.0, moves::Form {}))
+    let ground = |p: vec3| 0.1 * p.x
+    let ring = pool(c, vec3(0.0), ground)
+    assert(ring.len() == AROUND + 1, "the pool's ring is the wrong size")
+    for i in 0..AROUND {
+        let p = ring[i].xyz
+        let hem = c.at[point(i, DOWN - 1)]
+        assert(abs(p.y - ground(p) - POOL_LIFT) < 1.0e-4, "the pool doesn't lie on the ground")
+        assert(length(p.xz) > length(hem.xz) + 0.2, "the pool doesn't reach beyond the robe")
+    }
+    assert(length(ring[AROUND].xz) < 1.0e-5, "the pool's middle isn't under the body")
 }

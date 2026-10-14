@@ -8,7 +8,7 @@
 
 use climber::body::{BLADE_THICK, BLADE_WIDTH, GUARD_AT, POINT_AT}
 use climber::cape::{AROUND, DOWN, POINTS, body_frame, flat}
-use climber::draw::{WolfCoat, wolf_bones}
+use climber::draw::{TEARS, Tears, WolfCoat, corner, wolf_bones}
 use climber::figure::{Figure, figure}
 use climber::fight::{World, present, spawn, sword_at, tick}
 use climber::moves::Act
@@ -108,15 +108,11 @@ fn cape_point(points: [vec4], i: u32, j: u32) -> vec3 {
     points[j * AROUND + i % AROUND].xyz
 }
 
-/// The cape's cloth: two triangles a cell, each corner's normal from its neighbours.
+/// The cape's cloth: two triangles a cell (none across a tear), each corner's normal from its
+/// neighbours.
 @vertex
-fn cloth(v: VertexIndex, points: [vec4], view: View) -> Surfel {
-    let cell = v.index / 6
-    let corner = v.index % 6
-    let di = [0, 1, 0, 0, 1, 1]
-    let dj = [0, 0, 1, 1, 0, 1]
-    let i = cell % AROUND + di[corner]
-    let j = cell / AROUND + dj[corner]
+fn cloth(v: VertexIndex, points: [vec4], tears: Tears, view: View) -> Surfel {
+    let (i, j) = corner(v.index, tears)
     let p = cape_point(points, i, j)
     let around = cape_point(points, i + 1, j) - cape_point(points, i + AROUND - 1, j)
     let down = cape_point(points, i, min(j + 1, DOWN - 1)) - cape_point(points, i, max(j, 1) - 1)
@@ -210,8 +206,6 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         c.at,
         c.heading,
         pose,
-        speed: c.speed,
-        swinging: c.act == Act::Slash || c.act == Act::Backslash,
         gone: c.gone(),
         ground: flat(c.at.y),
         wind: vec3(0.6, 0.0, 0.2),
@@ -281,7 +275,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     if !c.gone() {
         draw(
             pass,
-            cloth.bind(points: s.points.items(), view: v),
+            cloth.bind(points: s.points.items(), tears: TEARS, view: v),
             lit.bind(albedo: CAPE, rough: 0.85, view: v, lights: LIGHTS),
             vertices: AROUND * (DOWN - 1) * 6,
             cull: Cull::None,

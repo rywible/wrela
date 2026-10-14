@@ -1,54 +1,136 @@
-// The climber's figure: simulated cloth with a connected curling hem, stepped each frame
-// from where the body stands and its pose. They're presentation: the frames step them, so the
-// fight's state and its replays don't carry presentation cloth or hem deformation.
+// The climber's figure: simulated cloth and the darkness off it, stepped each frame from where
+// the body stands and its pose. They're presentation: the frames step them, so the fight's state
+// and its replays don't carry presentation cloth or darkness.
 
 use cape::{Cape, Plane, POINTS, body_frame, hang}
+use darkness::{Shroud, roots, shroud}
+use look::{SLEEVES, sleeve_pivot}
 use moves::Pose
+use std::transform::{rotate_x, rotate_z, translate}
 
-/// How far the body may move in a frame before the figure is carried there as it is, not
-/// stepped (m): a blink, a travel, a new shot.
+/// How far the body may move in a frame before the figure is hung afresh where it is, not
+/// stepped (m): a travel, a new shot.
 const JUMP: f32 = 1.0
 
-/// The figure: cloth hung at the first step and a continuous phase for its lower fabric.
+/// How long an empty sleeve is from its pivot to its middle's weight (m), how fast its swing dies
+/// away (1/s): it swings back once after a start or a stop; and how much of the body's
+/// acceleration throws it (the air and the robe hold it back from the rest).
+const SLEEVE_LENGTH: f32 = 0.5
+const SLEEVE_DAMPING: f32 = 4.0
+const SLEEVE_THROW: f32 = 0.5
+/// The most a sleeve swings from hanging (rad): back and forth, and out to the side (less: a
+/// sleeve flung out sideways reads as an arm raised).
+const SLEEVE_SWING: f32 = 0.45
+const SLEEVE_FLARE: f32 = 0.16
+
+/// The figure: cloth hung at the first step, the darkness off it and the blade, the ground and
+/// wind it was last stepped in, the body's velocity then (m/s), and each sleeve's swing: how far
+/// it's turned back (x) and out to the climber's left (y) from hanging, and how fast (z, w).
 pub struct Figure {
     pub cape: Option<Cape>,
-    phase: f32,
+    shroud: Shroud,
+    roots: Vec<vec3>,
+    ground: Plane,
+    wind: vec3,
+    velocity: vec3,
+    swing: [vec4; 2],
 }
 
 pub fn figure() -> Figure {
-    Figure { cape: None, phase: 0.0 }
+    Figure {
+        cape: None,
+        shroud: shroud(),
+        roots: Vec::new(),
+        ground: cape::flat(0.0),
+        wind: vec3(0.0),
+        velocity: vec3(0.0),
+        swing: [vec4(0.0); 2],
+    }
 }
 
 impl Figure {
-    /// The figure `dt` seconds on: the body at `feet`, facing `heading`, in `pose`, gliding at
-    /// `speed` (m/s), swinging or not, gone (a blink) or not, on `ground`, in `wind` (m/s).
-    /// The connected lower fabric moves a little faster while travelling or swinging.
+    /// The figure `dt` seconds on: the body at `feet`, facing `heading`, in `pose`, gone (a
+    /// blink) or not, on `ground`, in `wind` (m/s).
     pub fn step(
         mut self,
         feet: vec3,
         heading: f32,
         pose: Pose,
-        speed: f32,
-        swinging: bool,
         gone: bool,
         ground: Plane,
         wind: vec3,
         dt: f32,
     ) {
         let frame = body_frame(feet, heading, pose.form)
+        var fresh = false
         var cape = match replace(mut self.cape, None) {
             Some(it) => take it,
-            None => hang(frame),
+            None => {
+                fresh = true
+                hang(frame)
+            },
         }
         let moved = (frame * vec4(0.0, 0.0, 0.0, 1.0)).xyz -
             (cape.frame * vec4(0.0, 0.0, 0.0, 1.0)).xyz
-        // A blink or travel carries the entire connected robe together.
-        if gone || length(moved) > JUMP {
+        // A blink carries the entire connected robe together, its folds and its train as they
+        // are; its darkness stays, streaming along the way between. A travel or a new shot puts
+        // the body somewhere else, maybe facing elsewhere: the robe hangs there afresh, its train
+        // behind it, and its darkness starts again.
+        if length(moved) > JUMP && !gone {
+            cape = hang(frame)
+            fresh = true
+        } else if gone {
             cape.carry(moved)
         }
         cape.step(frame, gather: pose.form.gather, ground: ground, wind: wind, dt: dt)
-        self.phase += dt * (1.6 + 0.04 * min(speed, 8.0) + if swinging { 0.3 } else { 0.0 })
+        if fresh || gone {
+            self.velocity = vec3(0.0)
+            self.swing = [vec4(0.0); 2]
+        } else if dt > 1.0e-4 {
+            let velocity = moved / dt
+            self.swing_sleeves(frame, (velocity - self.velocity) / dt, wind, dt)
+            self.velocity = velocity
+        }
+        let (grip, aim, _) = pose.sword.placed(feet, heading)
+        self.roots = roots(cape, grip, aim)
+        if fresh {
+            self.shroud.restart(self.roots.clone())
+        } else {
+            self.shroud.step(self.roots.clone(), left: gone, dt: dt)
+        }
+        self.ground = ground
+        self.wind = wind
         self.cape = Some(take cape)
+    }
+
+    /// The sleeves `dt` seconds on, each a damped pendulum from its pivot in the body's `frame`,
+    /// pulled by gravity, thrown back by the body's `accel` (m/s²) and pushed by the `wind`.
+    fn swing_sleeves(mut self, frame: mat4, accel: vec3, wind: vec3, dt: f32) {
+        let a = if length(accel) > 40.0 { normalize(accel) * 40.0 } else { accel }
+        let world = vec3(0.0, -9.8, 0.0) - a * SLEEVE_THROW + wind * 0.3
+        // Into the body's space (its frame turns rigidly: the transpose undoes it).
+        let r = mat3(frame[0].xyz, frame[1].xyz, frame[2].xyz)
+        let g = vec3(dot(r[0], world), dot(r[1], world), dot(r[2], world))
+        let steps = u32(ceil(dt / (1.0 / 120.0)))
+        let h = dt / f32(steps)
+        for k in 0..SLEEVES {
+            var s = self.swing[k]
+            for _ in 0..steps {
+                let back = (g.y * sin(s.x) - g.z * cos(s.x)) / SLEEVE_LENGTH
+                let out = (g.x * cos(s.y) + g.y * sin(s.y)) / SLEEVE_LENGTH
+                s.z += (back - SLEEVE_DAMPING * s.z) * h
+                s.w += (out - SLEEVE_DAMPING * s.w) * h
+                s.x = clamp(s.x + s.z * h, -SLEEVE_SWING, SLEEVE_SWING)
+                s.y = clamp(s.y + s.w * h, -SLEEVE_FLARE, SLEEVE_FLARE)
+            }
+            self.swing[k] = s
+        }
+    }
+
+    /// Sleeve `k`'s place in the body's space: turned about its pivot by its swing.
+    pub fn sleeve(self, k: u32) -> mat4 {
+        let p = sleeve_pivot(k)
+        translate(p) * rotate_x(self.swing[k].x) * rotate_z(self.swing[k].y) * translate(-p)
     }
 
     /// The whole figure moved by `by`, as it is (the floor's render origin moved).
@@ -57,6 +139,11 @@ impl Figure {
             Some(c) => c.carry(by),
             None => {},
         }
+        self.shroud.carry(by)
+        for k in 0..self.roots.len() {
+            self.roots[k] = self.roots[k] + by
+        }
+        self.ground.at = self.ground.at + by
     }
 
     /// The cape's points, for a buffer (none before its first step).
@@ -64,54 +151,97 @@ impl Figure {
         var out: Vec<vec4> = Vec::new()
         match self.cape {
             Some(c) => {
-                for j in 0..cape::DOWN {
-                    for i in 0..cape::AROUND {
-                        out.push(vec4(darkness::cloth_point(c, i, j, self.phase), 1.0))
-                    }
+                for k in 0..POINTS {
+                    out.push(vec4(c.at[k], 1.0))
                 }
             },
             None => {},
         }
         out
     }
+
+    /// The darkness's wisps' points (`darkness::WISP_POINTS`; none before the first step).
+    pub fn wisps(self) -> Vec<vec4> {
+        if self.roots.is_empty() {
+            return Vec::new()
+        }
+        self.shroud.nodes(self.roots.clone(), self.wind)
+    }
+
+    /// The pool of darkness round the robe's foot (none before the first step).
+    pub fn pool(self) -> Vec<vec4> {
+        match self.cape {
+            Some(c) => {
+                let g = self.ground
+                let centre = (c.frame * vec4(0.0, 0.0, 0.0, 1.0)).xyz
+                darkness::pool(c, centre, |p: vec3| g.height(p))
+            },
+            None => Vec::new(),
+        }
+    }
 }
 
 // ---- tests -------------------------------------------------------------------------------------
 
-/// A body that jumps (a travel, a new shot) takes its figure with it as it is: the cape doesn't
-/// fall the whole way, its connected hem doesn't stay behind; an origin shift carries it all.
-@test
-fn a_jump_takes_the_figure_along() {
-    var f = figure()
-    let ground = cape::flat(0.0)
-    for _ in 0..60 {
-        f.step(
-            vec3(0.0),
-            0.0,
-            moves::REST,
-            speed: 0.0,
-            swinging: false,
-            gone: false,
-            ground: ground,
-            wind: vec3(0.0),
-            dt: 1.0 / 60.0,
-        )
-    }
-    let hem = f.points()[POINTS - 1].xyz
-    let by = vec3(40.0, 0.0, -25.0)
+/// A frame of the figure standing still at `at`, facing `heading`, on level ground.
+fn still(f: mut Figure, at: vec3, heading: f32) {
     f.step(
-        by,
-        0.0,
+        at,
+        heading,
         moves::REST,
-        speed: 0.0,
-        swinging: false,
         gone: false,
-        ground: ground,
+        ground: cape::flat(0.0),
         wind: vec3(0.0),
         dt: 1.0 / 60.0,
     )
-    let off = length(f.points()[POINTS - 1].xyz - (hem + by))
-    assert(off < 0.05, f"the hem is {off} m off where the jump took it")
+}
+
+/// A body that jumps (a travel, a new shot) has its figure hung afresh where it lands, facing
+/// the way it now faces: the cape doesn't fall the whole way, its train lies behind it, not
+/// where it lay before. An origin shift carries it all as it is.
+@test
+fn a_jump_hangs_the_figure_where_it_lands() {
+    var f = figure()
+    for _ in 0..60 {
+        still(mut f, vec3(0.0), 0.0)
+    }
+    let by = vec3(40.0, 0.0, -25.0)
+    let heading = 1.5707964
+    still(mut f, by, heading)
+    let end = cape::point(cape::AROUND / 2, cape::DOWN - 1)
+    let ahead = (cape::body_frame(by, heading, moves::REST.form) * vec4(0.0, 0.0, 1.0, 0.0)).xyz
+    let behind = -dot(f.points()[end].xyz - by, ahead)
+    assert(behind > 1.2, f"after the jump the train lies {behind} m behind the body")
+    let collar = f.points()[0].xyz
+    assert(length(collar.xz - by.xz) < 0.3, "the collar was left behind by the jump")
+    let before = f.points()[end].xyz
     f.carry(vec3(-40.0, 0.0, 25.0))
-    assert(length(f.points()[POINTS - 1].xyz - hem) < 0.05, "the origin's move left the hem")
+    let moved = f.points()[end].xyz - before
+    assert(length(moved - vec3(-40.0, 0.0, 25.0)) < 1.0e-3, "the origin's move left the hem")
+}
+
+/// Gliding off from a stand, the sleeves swing back, then settle hanging again: they never swing
+/// past their reach, and they come to rest.
+@test
+fn the_sleeves_swing_back_as_it_sets_off_and_settle() {
+    var f = figure()
+    for _ in 0..30 {
+        still(mut f, vec3(0.0), 0.0)
+    }
+    var most = 0.0
+    var at = vec3(0.0)
+    for _ in 0..20 {
+        at.z += 6.0 / 60.0
+        still(mut f, at, 0.0)
+        most = max(most, f.swing[0].x)
+    }
+    assert(most > 0.08, f"setting off swings the sleeve back only {most} rad")
+    assert(most <= SLEEVE_SWING, "the sleeve swings past its reach")
+    for _ in 0..300 {
+        at.z += 6.0 / 60.0
+        still(mut f, at, 0.0)
+    }
+    for k in 0..SLEEVES {
+        assert(abs(f.swing[k].x) < 0.02 && abs(f.swing[k].y) < 0.02, "a sleeve doesn't settle")
+    }
 }

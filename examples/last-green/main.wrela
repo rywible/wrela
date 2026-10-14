@@ -528,12 +528,16 @@ pub struct Floor {
     /// The climber, the player: its figure (the cape and the darkness off it) stepped each
     /// frame, and drawn (`climber::draw`: its head and sword realized at the first frame); the
     /// frame's time it was last stepped to, and that step (s); its float's phase out of the
-    /// fight (0 to 1).
+    /// fight (0 to 1); and its glide as last drawn: its velocity (m/s) and heading, and how fast
+    /// it was speeding up (m/s²) and turning (rad/s), eased.
     climber: Figure,
     drawn: Option<Drawn>,
     stepped: f32,
     dt: f32,
     drift: f32,
+    glide_velocity: vec2,
+    glide_heading: f32,
+    glide_change: vec2,
     /// The built things (`blockouts`) to realize, one a frame at load, and those realized; and
     /// where the grass keeps out of the stones (each one's place and reach).
     to_build: Vec<blockouts::Built>,
@@ -792,7 +796,8 @@ pub fn init() -> Floor {
         frames: 0,
         settled: 0,
         off: Flags::none(),
-        framing: Framing { target: 1.65 },
+        // Far enough back that the whole robe, its train and the darkness at its foot are seen.
+        framing: Framing { target: 1.4, behind: 5.0 },
         arm: Arm {},
         focus: 0.0,
         focus_at: vec3(0.0),
@@ -806,6 +811,9 @@ pub fn init() -> Floor {
         stepped: 0.0,
         dt: 0.0,
         drift: 0.0,
+        glide_velocity: vec2(0.0),
+        glide_heading: 0.0,
+        glide_change: vec2(0.0),
         to_build: to_build(),
         built_reach: Vec::new(),
         built_far: Vec::new(),
@@ -2623,19 +2631,35 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     // of it, it glides, floating as it goes.
     let fc = b.b.fight.fight.climber
     let fighting = cast.is_none() && b.b.fight.awake
-    let speed = length(pb.velocity)
+    let velocity = mix(pa.velocity, pb.velocity, vec2(b.alpha))
+    let speed = length(velocity)
     s.drift = fract(s.drift + drift_rate(speed) * s.dt)
-    let pose = if fighting { fc.pose(b.alpha) } else {
-        locomotion(ready: 0.0, speed: speed, accel: 0.0, turning: 0.0, drift: s.drift)
+    // How fast the glide speeds up along the way it faces, and turns, eased over a tenth of a
+    // second so a tick's step doesn't jolt the body's lean.
+    if s.dt > 1.0e-4 && !moved {
+        let ahead = vec2(sin(facing), cos(facing))
+        let change = vec2(
+            dot(velocity - s.glide_velocity, ahead) / s.dt,
+            engine::present::lerp_angle(0.0, facing - s.glide_heading, 1.0) / s.dt,
+        )
+        s.glide_change += (change - s.glide_change) * (1.0 - exp(-s.dt / 0.1))
     }
-    let swinging = fighting && (fc.act == Act::Slash || fc.act == Act::Backslash)
+    s.glide_velocity = velocity
+    s.glide_heading = facing
+    let pose = if fighting { fc.pose(b.alpha) } else {
+        locomotion(
+            ready: 0.0,
+            speed: speed,
+            accel: s.glide_change.x,
+            turning: s.glide_change.y,
+            drift: s.drift,
+        )
+    }
     let gone = fighting && fc.gone()
     s.climber.step(
         stood,
         facing,
         pose,
-        speed: speed,
-        swinging: swinging,
         gone: gone,
         ground: Plane { at: stood, slope },
         wind: breeze,

@@ -32,11 +32,15 @@ pub const RUN: f32 = 5.0
 
 /// A body's travel policy, supplied by the game. `clearance` is the tallest low log it can
 /// rise over; zero keeps a grounded walker. Turning is bounded in radians per second.
+/// `response` is how its velocity closes on what's asked: 0 takes it up and down at a steady
+/// `ACCELERATION`; above 0, it closes that share of the gap a second, eased (it answers a start,
+/// a stop or a reversal at once and settles softly, the gap halving every 0.69 / `response` s).
 pub struct Motion: Copy {
     pub walk: f32 = WALK,
     pub run: f32 = RUN,
     pub clearance: f32 = 0.0,
     pub turn: f32 = 6.0,
+    pub response: f32 = 0.0,
 }
 
 /// How much faster each glide goes (the play harness's, H: each press the next; for the
@@ -312,8 +316,15 @@ pub fn step_with<G: Ground>(
         p.heading = turn_to(p.heading, atan2(dir.x, dir.y), motion.turn * dt)
     }
     let dv = target - p.velocity
-    let most = ACCELERATION * dt
-    p.velocity += if length(dv) > most { dv * (most / length(dv)) } else { dv }
+    if motion.response > 0.0 {
+        p.velocity += dv * (1.0 - exp(-motion.response * dt))
+        if length(target - p.velocity) < 0.01 {
+            p.velocity = target
+        }
+    } else {
+        let most = ACCELERATION * dt
+        p.velocity += if length(dv) > most { dv * (most / length(dv)) } else { dv }
+    }
     let d = p.velocity * dt
     if length(d) > 1.0e-6 {
         let (moved, k) = if gliding { (d, 1.0) } else {
@@ -833,4 +844,42 @@ fn travel_policy_has_distinct_walk_and_shift_sprint_speeds() {
         assert(abs(length(p.velocity) - want) < 0.001, f"travel speed was {length(p.velocity)}")
         assert(abs(p.velocity.x - p.velocity.y) < 0.001, "diagonal travel drifted")
     }
+}
+
+/// An eased response answers at once and settles: from a stand to most of a run in a quarter of
+/// a second, a reversal at a run turned in under half a second, and a stop that comes to rest
+/// rather than creeping.
+@test
+fn an_eased_response_answers_starts_stops_and_reversals_quickly() {
+    let ground = Shelf { high: 1.0 }
+    let none: Vec<footing::Obstacle> = Vec::new()
+    let o = Obstacles::of(none, vec2(-100.0), vec2(100.0))
+    let water = Water {
+        meres: [vec4(0.0), vec4(0.0)],
+        springs: [vec2(0.0), ..vec2(0.0)],
+        spring_count: 0,
+        falls: [vec2(0.0), vec2(0.0)],
+    }
+    let motion = Motion { walk: 3.0, run: 7.5, turn: 10.0, response: 8.0 }
+    var p = spawn(ground, Place::of(vec2(0.0)), 0.0)
+    p.controls.forward = true
+    p.controls.run_held = true
+    for _ in 0..15 {
+        step_with(mut p, ground, water, o, motion, 1.0 / 60.0)
+    }
+    assert(length(p.velocity) > 0.8 * 7.5, f"a quarter second in it goes {length(p.velocity)} m/s")
+    for _ in 0..45 {
+        step_with(mut p, ground, water, o, motion, 1.0 / 60.0)
+    }
+    p.controls.forward = false
+    p.controls.back = true
+    for _ in 0..27 {
+        step_with(mut p, ground, water, o, motion, 1.0 / 60.0)
+    }
+    assert(p.velocity.y < -0.5 * 7.5, f"after 0.45 s of reversal it goes {p.velocity.y} m/s")
+    p.controls.back = false
+    for _ in 0..60 {
+        step_with(mut p, ground, water, o, motion, 1.0 / 60.0)
+    }
+    assert(length(p.velocity) == 0.0, "a stop creeps on")
 }

@@ -941,6 +941,25 @@ tests. On this branch, with no `WRELA_*` variables set, it passed all 744 Rust t
 browser, tools and infrastructure check in 321.0 s. That time includes warm build output. It
 is not a paired gate-time comparison. No rendering code changed, so no frame-time claim is made.
 
+## The climber's robe, darkness and glide, 2026-10-14
+
+Ryan found the Last Green's player character clunky to move and its cloth, robe, darkness and
+sword poor. He named a mix of a dementor (Harry Potter) and a ringwraith (the Nazgûl of
+Tolkien's *The Lord of the Rings*) as the mood, with Organization XIII's coats (*Kingdom
+Hearts*, Square Enix and Disney) as another reference: a long train that drags on the ground,
+a readable empty hood, nice movement. These works are copyright their rights holders. They
+were named, not looked at: no image, shot, mesh, texture or character design was traced,
+sampled or recreated, and the forms are original.
+
+Claude Code (Claude Opus 5.5) did the work alone, without subagents. It rebuilt the cloth's
+rest shape (a lean A line with a 1.35 m train and torn strips at its foot), the peaked hood,
+the slim swinging sleeves, the sword and its hanging pose, and replaced the hem's deformed
+tongues with wisps and a pool of darkness. It also eased the floor's glide. It judged each
+round from native-host lookbook stills and motion captures on this Linux machine. The
+darkness is drawn as coverage kept by Wyman and McGuire's hashed alpha threshold
+(`engine::noise`, already in the engine). The sleeves swing as damped pendulums. No outside
+code, asset or data was used, and no art was made with a generative model.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

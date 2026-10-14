@@ -25,8 +25,8 @@ pub const BODY_HIGH = vec3(0.0, 1.8, 0.0)
 pub const BODY_RADIUS: f32 = 0.3
 
 /// The sword, along its aim from the grip's middle: the guard, and the point; and how wide and
-/// thick its blade is (a heavy blade, wide and blunt-backed).
+/// thick its blade is (a long, slender blade with a thick back).
 pub const GUARD_AT: f32 = 0.25
 pub const POINT_AT: f32 = 1.85
-pub const BLADE_WIDTH: f32 = 0.24
-pub const BLADE_THICK: f32 = 0.04
+pub const BLADE_WIDTH: f32 = 0.16
+pub const BLADE_THICK: f32 = 0.03

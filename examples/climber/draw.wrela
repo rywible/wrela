@@ -3,7 +3,8 @@
 // its points, written each frame (`figure`); empty hood and sleeves, and the sword, each a field
 // realized once as a mesh of one bone. Every pass uses the same connected cloth points.
 
-use cape::{AROUND, DOWN, POINTS, body_frame}
+use cape::{AROUND, DOWN, POINTS, body_frame, torn_from}
+use darkness::{NODES, ROBE_WISPS, WISPS, WISP_POINTS, seed}
 use engine::character::{
     Cast, CharacterVertex, MotionVertex, PartOf, Realized, cast, character, character_motion,
     character_shade, character_shadow, materials, motion,
@@ -20,18 +21,24 @@ use engine::realize::realize_rigid
 use engine::render::ByChannels
 use engine::shadow::CASTER
 use engine::vegetation::nothing
-use engine::view::{Camera, NEAREST, SEEN}
+use engine::noise::{cell_size, fbm2, hashed_threshold_of}
+use engine::view::{CREATURE, Camera, NEAREST, SEEN}
 use figure::Figure
-use look::{CAPE, Paint, head, sword}
+use look::{CAPE, CLOTH_ROUGH, Paint, empty_sleeve, hood, sword}
 use moves::Pose
+use engine::lit::through_air
 use std::gpu::{
-    ClipPosition, Cull, Flat, GpuBuffer, RenderPass, VertexIndex, buffer, copy, draw, write,
+    ClipPosition, Cull, Flat, FragCoord, GpuBuffer, RenderPass, VertexIndex, buffer, copy, discard,
+    draw, write,
 }
+use std::math::TAU
 
 /// Each part's id, for the lines where parts meet.
 const CAPE_PART: u32 = 1
 const HEAD_PART: u32 = 2
 const SWORD_PART: u32 = 3
+const WISP_PART: u32 = 4
+const POOL_PART: u32 = 5
 
 /// A creature of one bone realized: its mesh and colours (cells for a 3 mm tolerance, and no
 /// wider than `largest`: the sword's fittings use finer cells than the robe's broad folds).
@@ -44,6 +51,30 @@ fn realized<K: Creature<Paint>>(c: K, largest: f32) -> Realized {
 
 /// The cape's vertices: two triangles a cell between its rows.
 const CAPE_VERTICES: u32 = AROUND * (DOWN - 1) * 6
+
+/// The wisps' vertices: two triangles between each two of a wisp's points.
+const WISP_VERTICES: u32 = WISPS * (NODES - 1) * 6
+
+/// The pool's rings out from its middle, and its vertices: two triangles a cell.
+const POOL_RINGS: u32 = 4
+const POOL_POINTS: u32 = AROUND + 1
+const POOL_VERTICES: u32 = AROUND * POOL_RINGS * 6
+
+/// Which rows each seam of the cape is torn from (`cape::torn_from`), for its shaders: computed
+/// once on the CPU, so the GPU's arithmetic can't move a tear.
+pub struct Tears: Copy + GpuData {
+    pub from: [u32; 32],
+}
+
+fn tears() -> Tears {
+    var t = Tears { from: [0; 32] }
+    for i in 0..AROUND {
+        t.from[i] = torn_from(i)
+    }
+    t
+}
+
+pub const TEARS: Tears = tears()
 
 /// A rigid part drawn (the head, the sword): realized, its one bone's place this frame and the
 /// last, and its part id.
@@ -120,24 +151,37 @@ impl Rigid {
     }
 }
 
-/// The climber as it's drawn: the cape's points this frame and the last (for the motion
-/// target), the empty hood and the sword; whether it's been written yet, and
-/// whether it's shown (not while a blink has it gone).
+/// The climber as it's drawn: the cape's and the darkness's points this frame and the last (for
+/// the motion target), the empty hood, its swinging sleeves and the sword; whether it's been
+/// written yet, and whether it's shown (not while a blink has it gone).
 pub struct Drawn {
     points: GpuBuffer<vec4>,
     last_points: GpuBuffer<vec4>,
-    head: Rigid,
+    wisps: GpuBuffer<vec4>,
+    last_wisps: GpuBuffer<vec4>,
+    pool: GpuBuffer<vec4>,
+    last_pool: GpuBuffer<vec4>,
+    hood: Rigid,
+    sleeves: [Rigid; 2],
     sword: Rigid,
     written: bool,
     shown: bool,
 }
 
-/// The climber ready to draw: its head and sword realized (once, at load).
+/// The climber ready to draw: its hood, sleeves and sword realized (once, at load).
 pub fn drawn() -> Drawn {
     Drawn {
         points: buffer(POINTS),
         last_points: buffer(POINTS),
-        head: rigid(head(), HEAD_PART, largest: 2cm),
+        wisps: buffer(WISP_POINTS),
+        last_wisps: buffer(WISP_POINTS),
+        pool: buffer(POOL_POINTS),
+        last_pool: buffer(POOL_POINTS),
+        hood: rigid(hood(), HEAD_PART, largest: 2cm),
+        sleeves: [
+            rigid(empty_sleeve(0), HEAD_PART, largest: 2cm),
+            rigid(empty_sleeve(1), HEAD_PART, largest: 2cm),
+        ],
         sword: rigid(sword(), SWORD_PART, largest: 12mm),
         written: false,
         shown: false,
@@ -169,15 +213,27 @@ impl Drawn {
         }
         let still = still || !self.written
         self.written = true
+        let wisps = f.wisps()
+        let pool = f.pool()
         if !still {
             copy(from: self.points.items(), to: self.last_points.items_mut())
+            copy(from: self.wisps.items(), to: self.last_wisps.items_mut())
+            copy(from: self.pool.items(), to: self.last_pool.items_mut())
         }
         write(mut self.points, 0, points.clone())
+        write(mut self.wisps, 0, wisps.clone())
+        write(mut self.pool, 0, pool.clone())
         if still {
             write(mut self.last_points, 0, points)
+            write(mut self.last_wisps, 0, wisps)
+            write(mut self.last_pool, 0, pool)
         }
         let (at, aim, edge) = pose.sword.placed(feet, heading)
-        self.head.place(body_frame(feet, heading, pose.form), still)
+        let body = body_frame(feet, heading, pose.form)
+        self.hood.place(body, still)
+        for k in 0..2 {
+            self.sleeves[k].place(body * f.sleeve(k), still)
+        }
         self.sword.place(sword_bone(at, aim, edge), still)
         self.shown = !gone
     }
@@ -189,13 +245,16 @@ impl Drawn {
         }
         draw(
             pass,
-            cape_shadow.bind(points: self.points.items(), view: view),
+            cape_shadow.bind(points: self.points.items(), tears: TEARS, view: view),
             nothing,
             vertices: CAPE_VERTICES,
             cull: Cull::None,
             depth_bias: CASTER,
         )
-        self.head.shadow(pass, view)
+        self.hood.shadow(pass, view)
+        for k in 0..2 {
+            self.sleeves[k].shadow(pass, view)
+        }
         self.sword.shadow(pass, view)
     }
 
@@ -206,14 +265,33 @@ impl Drawn {
         }
         draw(
             pass,
-            cape_vertex.bind(points: self.points.items(), cam: cam),
+            cape_vertex.bind(points: self.points.items(), tears: TEARS, cam: cam),
             character_shade.bind(lt),
             vertices: CAPE_VERTICES,
             cull: Cull::None,
             depth: NEAREST,
         )
-        self.head.draw(pass, lt, cam)
+        self.hood.draw(pass, lt, cam)
+        for k in 0..2 {
+            self.sleeves[k].draw(pass, lt, cam)
+        }
         self.sword.draw(pass, lt, cam)
+        draw(
+            pass,
+            pool_vertex.bind(pool: self.pool.items(), cam: cam),
+            dark_shade.bind(lt),
+            vertices: POOL_VERTICES,
+            cull: Cull::None,
+            depth: NEAREST,
+        )
+        draw(
+            pass,
+            wisp_vertex.bind(nodes: self.wisps.items(), cam: cam),
+            dark_shade.bind(lt),
+            vertices: WISP_VERTICES,
+            cull: Cull::None,
+            depth: NEAREST,
+        )
     }
 
     /// The climber's motion, from the actual preceding cloth and rigid-part positions.
@@ -223,13 +301,37 @@ impl Drawn {
         }
         draw(
             pass,
-            cape_motion.bind(points: self.points.items(), last: self.last_points.items(), cam: cam),
+            cape_motion.bind(
+                points: self.points.items(),
+                last: self.last_points.items(),
+                tears: TEARS,
+                cam: cam,
+            ),
             motion.bind(cam),
             vertices: CAPE_VERTICES,
             cull: Cull::None,
             depth: SEEN,
         )
-        self.head.motion(pass, cam)
+        draw(
+            pass,
+            pool_motion.bind(pool: self.pool.items(), last: self.last_pool.items(), cam: cam),
+            motion.bind(cam),
+            vertices: POOL_VERTICES,
+            cull: Cull::None,
+            depth: SEEN,
+        )
+        draw(
+            pass,
+            wisp_motion.bind(nodes: self.wisps.items(), last: self.last_wisps.items(), cam: cam),
+            motion.bind(cam),
+            vertices: WISP_VERTICES,
+            cull: Cull::None,
+            depth: SEEN,
+        )
+        self.hood.motion(pass, cam)
+        for k in 0..2 {
+            self.sleeves[k].motion(pass, cam)
+        }
         self.sword.motion(pass, cam)
     }
 }
@@ -240,19 +342,34 @@ fn cape_point(points: [vec4], i: u32, j: u32) -> vec3 {
     points[j * AROUND + i % AROUND].xyz
 }
 
-/// Vertex `v`'s cell and corner of the cape (`i` round, `j` down).
-fn corner(v: u32) -> (u32, u32) {
+/// Vertex `v`'s cell and corner of the cape (`i` round, `j` down). A cell across a torn seam
+/// is drawn as nothing: all its corners at one point.
+pub fn corner(v: u32, tears: Tears) -> (u32, u32) {
     let cell = v / 6
     let c = v % 6
+    let (i, j) = (cell % AROUND, cell / AROUND)
+    if j + 1 >= tears.from[i] {
+        return (i, j)
+    }
     let di = [0, 1, 0, 0, 1, 1]
     let dj = [0, 0, 1, 1, 0, 1]
-    (cell % AROUND + di[c], cell / AROUND + dj[c])
+    (i + di[c], j + dj[c])
+}
+
+/// How dark the robe's cloth is at column `i`, `j` rows down: its colour, sinking toward the
+/// dark at its foot and all along its train, where it gives way to the darkness off it; and
+/// black at the collar's front, which shows through the hood's opening.
+fn cloth_albedo(i: u32, j: u32) -> vec3 {
+    let down = f32(j) / f32(DOWN - 1)
+    let front = smoothstep(0.2, 0.8, cos(TAU * f32(i) / f32(AROUND)))
+    let collar = 1.0 - smoothstep(1.0, 3.0, f32(j))
+    CAPE * mix(1.0, 0.2, smoothstep(0.6, 1.0, down)) * (1.0 - 0.95 * front * collar)
 }
 
 /// The cape's cloth: two triangles a cell, each corner's normal from its neighbours (outward).
 @vertex
-pub fn cape_vertex(v: VertexIndex, points: [vec4], cam: Camera) -> CharacterVertex {
-    let (i, j) = corner(v.index)
+pub fn cape_vertex(v: VertexIndex, points: [vec4], tears: Tears, cam: Camera) -> CharacterVertex {
+    let (i, j) = corner(v.index, tears)
     let p = cape_point(points, i, j)
     let around = cape_point(points, i + 1, j) - cape_point(points, i + AROUND - 1, j)
     let down = cape_point(points, i, min(j + 1, DOWN - 1)) - cape_point(points, i, max(j, 1) - 1)
@@ -260,14 +377,21 @@ pub fn cape_vertex(v: VertexIndex, points: [vec4], cam: Camera) -> CharacterVert
         clip: ClipPosition { position: cam.clip(p) },
         world: p,
         normal: cross(down, around),
-        albedo: CAPE,
+        albedo: cloth_albedo(i, j),
+        rough: CLOTH_ROUGH,
         part: Flat { value: CAPE_PART },
     }
 }
 
 @vertex
-pub fn cape_motion(v: VertexIndex, points: [vec4], last: [vec4], cam: Camera) -> MotionVertex {
-    let (i, j) = corner(v.index)
+pub fn cape_motion(
+    v: VertexIndex,
+    points: [vec4],
+    last: [vec4],
+    tears: Tears,
+    cam: Camera,
+) -> MotionVertex {
+    let (i, j) = corner(v.index, tears)
     let now = cape_point(points, i, j)
     MotionVertex {
         clip: ClipPosition { position: cam.clip(now) },
@@ -277,9 +401,155 @@ pub fn cape_motion(v: VertexIndex, points: [vec4], last: [vec4], cam: Camera) ->
 }
 
 @vertex
-pub fn cape_shadow(v: VertexIndex, points: [vec4], view: mat4) -> ClipPosition {
-    let (i, j) = corner(v.index)
+pub fn cape_shadow(v: VertexIndex, points: [vec4], tears: Tears, view: mat4) -> ClipPosition {
+    let (i, j) = corner(v.index, tears)
     ClipPosition { position: view * vec4(cape_point(points, i, j), 1.0) }
+}
+
+// ---- the darkness --------------------------------------------------------------------------------
+
+/// A point of the darkness: where it is, how far along its wisp (0 its root, 1 its end) or out
+/// across the pool (0 its middle, 1 its edge) it is, how far across the wisp (-1 to 1), and which
+/// wisp (`WISPS` for the pool).
+pub struct DarkVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub along: f32,
+    pub across: f32,
+    pub wisp: Flat<u32>,
+}
+
+/// Vertex `v`'s wisp, its point along it, and which side of the ribbon it's on.
+fn wisp_corner(v: u32) -> (u32, u32, f32) {
+    let per = (NODES - 1) * 6
+    let w = v / per
+    let r = v % per
+    let dk = [0, 0, 1, 1, 0, 1]
+    let side = [-1.0, 1.0, -1.0, -1.0, 1.0, 1.0]
+    (w, r / 6 + dk[r % 6], side[r % 6])
+}
+
+/// How wide wisp `w` is at `life` along it (m, each side of its line): a robe wisp swells as it
+/// spreads, a blade wisp stays thin.
+fn wisp_width(w: u32, life: f32) -> f32 {
+    if w < ROBE_WISPS {
+        return (0.04 + 0.2 * smoothstep(0.0, 0.6, life)) * (0.7 + 0.6 * seed(w))
+    }
+    0.015 + 0.05 * smoothstep(0.0, 0.7, life)
+}
+
+/// Wisp `w`'s point `k` of `nodes` (`WISP_POINTS`), and the ribbon's side there, square to the
+/// way it goes and to the eye at `eye`.
+fn wisp_point(nodes: [vec4], w: u32, k: u32, side: f32, eye: vec3) -> (vec3, f32) {
+    let base = w * NODES
+    let n = nodes[base + k]
+    let way = nodes[base + min(k + 1, NODES - 1)].xyz - nodes[base + max(k, 1) - 1].xyz
+    let to_eye = eye - n.xyz
+    var out = cross(way, to_eye)
+    if length(out) < 1.0e-6 {
+        out = cross(vec3(0.0, 1.0, 0.0), to_eye)
+    }
+    (n.xyz + normalize(out) * (wisp_width(w, n.w) * side), n.w)
+}
+
+@vertex
+pub fn wisp_vertex(v: VertexIndex, nodes: [vec4], cam: Camera) -> DarkVertex {
+    let (w, k, side) = wisp_corner(v.index)
+    let (p, life) = wisp_point(nodes, w, k, side, cam.eye)
+    DarkVertex {
+        clip: ClipPosition { position: cam.clip(p) },
+        world: p,
+        along: life,
+        across: side,
+        wisp: Flat { value: w },
+    }
+}
+
+@vertex
+pub fn wisp_motion(v: VertexIndex, nodes: [vec4], last: [vec4], cam: Camera) -> MotionVertex {
+    let (w, k, side) = wisp_corner(v.index)
+    let (now, _) = wisp_point(nodes, w, k, side, cam.eye)
+    let (then, _) = wisp_point(last, w, k, side, cam.eye)
+    MotionVertex { clip: ClipPosition { position: cam.clip(now) }, now, then }
+}
+
+/// Vertex `v`'s place on the pool (`pool`: its ring, then its middle), and how far out it is.
+fn pool_point(pool: [vec4], v: u32) -> (vec3, f32, f32) {
+    let cell = v / 6
+    let c = v % 6
+    let di = [0, 1, 0, 0, 1, 1]
+    let dr = [0, 0, 1, 1, 0, 1]
+    let i = (cell % AROUND + di[c]) % AROUND
+    let t = f32(cell / AROUND + dr[c]) / f32(POOL_RINGS)
+    let p = mix(pool[AROUND].xyz, pool[i].xyz, vec3(t))
+    (p, t, f32(cell % AROUND + di[c]) / f32(AROUND))
+}
+
+@vertex
+pub fn pool_vertex(v: VertexIndex, pool: [vec4], cam: Camera) -> DarkVertex {
+    let (p, t, round) = pool_point(pool, v.index)
+    DarkVertex {
+        clip: ClipPosition { position: cam.clip(p) },
+        world: p,
+        along: t,
+        across: round,
+        wisp: Flat { value: WISPS },
+    }
+}
+
+@vertex
+pub fn pool_motion(v: VertexIndex, pool: [vec4], last: [vec4], cam: Camera) -> MotionVertex {
+    let (now, _, _) = pool_point(pool, v.index)
+    let (then, _, _) = pool_point(last, v.index)
+    MotionVertex { clip: ClipPosition { position: cam.clip(now) }, now, then }
+}
+
+/// The darkness's ink: near black, a little violet.
+const INK = vec3(0.0035, 0.003, 0.0055)
+
+/// How much of the darkness covers a pixel (0 to 1): a wisp dense along its middle, thinning to
+/// its end, its edges broken up by noise that flows along it; the pool dense under the robe,
+/// breaking into tendrils toward its edge, the tendrils keyed to the world so they stay put on
+/// the ground as the climber stands.
+fn dark_cover(d: DarkVertex, time: f32, keyed: vec3) -> f32 {
+    if d.wisp.value < WISPS {
+        let s = seed(d.wisp.value)
+        let body = 1.0 - abs(d.across)
+        let flow = vec2(d.along * 7.0 - time * 1.8 + s * 37.0, d.across * 1.6 + s * 11.0)
+        let n = fbm2(flow, 4)
+        let fade = 1.0 - smoothstep(0.25, 1.0, d.along)
+        let dense = smoothstep(0.0, 0.6, body * fade + (n - 0.5) * 0.8)
+        return dense * (0.9 - 0.3 * d.along)
+    }
+    let at = (d.world + keyed).xz
+    let n = fbm2(at * 3.0 + vec2(time * 0.15, -time * 0.11), 4)
+    let reach = 1.0 - d.along
+    smoothstep(0.05, 0.6, reach * 0.95 + (n - 0.5) * 1.2) * 0.8
+}
+
+/// Where a pixel of the darkness is on its own surface (about metres): along and across a wisp,
+/// or on the ground under the pool; the hashed threshold holds still there.
+fn dark_surface(d: DarkVertex, keyed: vec3) -> vec2 {
+    if d.wisp.value < WISPS {
+        return vec2(d.along * 3.0 + f32(d.wisp.value) * 7.0, d.across * 0.2)
+    }
+    (d.world + keyed).xz
+}
+
+/// The darkness's pixel: ink of the density it has there, kept that share of the time (Wyman and
+/// McGuire's hashed threshold, held still on its own surface), so temporal AA settles it into
+/// soft, thinning smoke; through the haze; tagged as the climber's for its lines.
+@fragment
+pub fn dark_shade(d: DarkVertex, pixel: FragCoord, lt: Lighting) -> vec4 {
+    let keyed = lt.cam.keyed()
+    let surface = dark_surface(d, keyed)
+    let size = cell_size(surface, 1.0)
+    let cover = dark_cover(d, lt.cam.time, keyed)
+    if cover <= 0.0 || cover < 1.0 && cover < hashed_threshold_of(surface, 7 + d.wisp.value, size) {
+        discard()
+    }
+    let part = if d.wisp.value < WISPS { WISP_PART } else { POOL_PART }
+    vec4(through_air(lt, INK, d.world), CREATURE + f32(part))
 }
 
 // ---- the wolf ------------------------------------------------------------------------------------

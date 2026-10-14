@@ -127,13 +127,13 @@ pub fn sample(keys: [Key], t: f32) -> Pose {
     keys[n - 1].pose
 }
 
-/// The sword floats ready ahead of the right shoulder, clear of the cape: point up and a
-/// little forward, sharp edge forward and spine toward the face.
+/// The sword hangs by will beside the right sleeve, clear of the cape: point down and out,
+/// just over the ground, its hilt by the shoulder; edge forward.
 pub const REST = Pose {
     sword: Sword {
-        at: vec3(-0.78, 1.16, 0.72),
-        aim: vec3(-0.03, 1.0, 0.12),
-        edge: vec3(0.0, -0.12, 1.0),
+        at: vec3(-0.68, 1.98, 0.22),
+        aim: vec3(-0.36, -1.0, 0.06),
+        edge: vec3(0.0, 0.06, 1.0),
     },
 }
 
@@ -411,58 +411,71 @@ pub fn pose(a: Act, t: f32) -> Pose {
 
 /// The climber free: it glides, with no steps. `ready` (0 to 1) is how far the sword has come to
 /// the guard (a fight near), `speed` its speed (m/s), `accel` how fast that changes (m/s²),
-/// `turning` how fast it turns (rad/s) and `drift` its float's phase (0 to 1). The body tips
-/// gently into its speed and its acceleration, back as it stops, and into a turn. The blade
-/// holds its ready position with a slow, small independent sway; starting or stopping must not
-/// throw either the collar or the sword into a large swing.
+/// `turning` how fast it turns (rad/s) and `drift` its float's phase (0 to 1). The body leans
+/// into its speed and its acceleration like something pulled, not walking: back as it stops, and
+/// banked into a turn. The hanging blade bobs and turns slowly on its own axis, and trails behind
+/// at speed, its point swept back.
 pub fn locomotion(ready: f32, speed: f32, accel: f32, turning: f32, drift: f32) -> Pose {
     var p = REST.blend(GUARD, ready)
-    let lean = clamp(accel * 0.002, -0.025, 0.025)
-    let bank = clamp(turning * speed * 0.008, -0.08, 0.08)
-    p.form.lift += 0.006 * sin(TAU * drift)
-    p.form.tilt.x += min(0.008 * speed, 0.06) + lean
+    let lean = clamp(accel * 0.006, -0.07, 0.07)
+    let bank = clamp(turning * speed * 0.012, -0.14, 0.14)
+    p.form.lift += 0.012 * sin(TAU * drift)
+    p.form.tilt.x += min(0.016 * speed, 0.12) + lean
     p.form.tilt.z += bank
-    let trail = (1.0 - ready) * clamp(speed * 0.004 + lean * 0.2, 0.0, 0.035)
-    p.sword.at.z -= trail * 0.2
-    p.sword.at.x -= bank * 0.1
-    p.sword.aim.z -= trail
-    let bob = (1.0 - ready) * sin(TAU * (drift - 0.25))
+    let free = 1.0 - ready
+    let trail = free * clamp(speed * 0.03 + lean * 0.8, 0.0, 0.26)
+    p.sword.at.z -= trail * 0.9
+    p.sword.at.y -= trail * 0.25
+    p.sword.at.x -= bank * 0.6 * free
+    p.sword.aim.z -= trail * 1.6
+    let bob = free * sin(TAU * (drift - 0.25))
     p.sword.at.y += SWORD_BOB * bob
     p.sword.aim.x += SWORD_ROCK * bob
+    // It turns on its hanging axis, slower than it bobs.
+    let spin = free * SWORD_SPIN * sin(TAU * drift * 0.5 + 0.7)
+    let e = p.sword.edge
+    p.sword.edge = vec3(e.x * cos(spin) + e.z * sin(spin), e.y, e.z * cos(spin) - e.x * sin(spin))
     p
 }
 
-/// How far the sword at rest rises and falls as it floats (m), and how far it rocks (its aim's
-/// sideways part).
-pub const SWORD_BOB: f32 = 0.008
-pub const SWORD_ROCK: f32 = 0.012
+/// How far the hanging sword rises and falls as it floats (m), how far it rocks (its aim's
+/// sideways part), and how far it turns on its own axis (rad).
+pub const SWORD_BOB: f32 = 0.03
+pub const SWORD_ROCK: f32 = 0.03
+pub const SWORD_SPIN: f32 = 0.4
 
 /// How fast the float goes round: a slow glide, only a little faster at a sprint (1/s).
 pub fn drift_rate(speed: f32) -> f32 {
     mix(0.32, 0.45, smoothstep(0.0, 7.5, speed))
 }
 
-/// Starts, stops and sharp turns keep the floating blade ready and its edge away from the
-/// face. The body has no stride bounce to transfer into the cape's collar.
+/// Starts, stops and sharp turns keep the hanging blade beside the body, point down and clear
+/// of the hood, the ground and the sleeve; the body leans and banks, but never pitches over.
 @test
-fn free_motion_keeps_the_blade_ready_and_the_collar_quiet() {
-    let (guard_at, _, guard_edge) = GUARD.sword.placed(vec3(0.0), 0.0)
-    assert(dot(guard_edge, guard_at - body::HEAD) > 0.5, "the guard edge faces the hood")
+fn free_motion_keeps_the_blade_hanging_and_the_body_upright() {
     for speed in [0.0, 3.0, 7.5] {
         for accel in [-30.0, 0.0, 30.0] {
             for turning in [-6.0, 0.0, 6.0] {
                 for k in 0..16 {
                     let p = locomotion(0.0, speed, accel, turning, f32(k) / 16.0)
                     let (at, aim, edge) = p.sword.placed(vec3(0.0), 0.0)
-                    assert(at.z > 0.55 && at.x < -0.55, "the blade left its forward ready position")
-                    assert(aim.y > 0.98, "the blade tipped out of its upright ready position")
-                    assert(dot(edge, at - body::HEAD) > 0.5, "the edge faces the hood")
-                    assert(abs(at.y - REST.sword.at.y) <= 0.009, "the floating blade bounces")
-                    assert(abs(p.form.lift) <= 0.007, "the collar bounces")
-                    assert(abs(p.form.tilt.x) <= 0.086, "a tap throws the collar forward or back")
-                    assert(abs(p.form.tilt.z) <= 0.081, "a turn throws the collar sideways")
+                    let point = at + aim * body::POINT_AT
+                    assert(at.x < -0.55, "the blade swung in over the body")
+                    assert(aim.y < -0.8, "the hanging blade tipped out of point down")
+                    assert(point.y > 0.0, "the point dips into the ground")
+                    assert(length(at - body::HEAD) > 0.5, "the hilt hangs at the hood")
+                    assert(abs(dot(edge, aim)) < 1.0e-3, "the edge isn't square to the aim")
+                    assert(abs(at.y - REST.sword.at.y) <= 0.11, "the floating blade bounces")
+                    assert(abs(p.form.lift) <= 0.013, "the collar bounces")
+                    assert(abs(p.form.tilt.x) <= 0.2, "a tap throws the body over")
+                    assert(abs(p.form.tilt.z) <= 0.15, "a turn throws the body over")
                 }
             }
         }
     }
+    let still = locomotion(ready: 0.0, speed: 0.0, accel: 0.0, turning: 0.0, drift: 0.0)
+    let fast = locomotion(ready: 0.0, speed: 7.5, accel: 0.0, turning: 0.0, drift: 0.0)
+    assert(fast.form.tilt.x > still.form.tilt.x + 0.08, "the body doesn't lean into its speed")
+    let (_, aim, _) = fast.sword.placed(vec3(0.0), 0.0)
+    assert(aim.z < -0.2, "at speed the blade's point doesn't trail")
 }
