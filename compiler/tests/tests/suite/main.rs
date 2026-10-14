@@ -13,6 +13,7 @@ mod clearing;
 mod climber;
 mod closed_list;
 mod codes;
+mod compiler_fusion;
 mod conformance;
 mod console;
 mod consts;

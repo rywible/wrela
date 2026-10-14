@@ -903,6 +903,222 @@ and Rust's [file-lock API](https://doc.rust-lang.org/std/fs/struct.File.html#met
 They teach hardware/fallback classification and advisory-lock lifetime. These public documents
 were read as API references; no outside source code or art assets were copied.
 
+## Compiler opportunities and bounded experiments, 2026-10-13
+
+Ryan asked for research and experiments on compiler changes that could improve rendering
+and compute by orders of magnitude. He narrowed the scope to the compiler. Codex
+(GPT-6-Astra), with three GPT-6-Astra subagents, inspected the compiler, researched primary
+sources through Exa, and built bounded experiments. Thirteen searches returned 65 result
+slots across three tracks; this is not a count of unique papers read. No outside code or
+assets were copied. No engine policy, renderer, language semantics or milestone-6 content
+changed. These experiments establish mechanisms and limits, not whole-game speedups.
+
+### What is already present
+
+The compiler already has monomorphization, uniform-address specialization, GPU inlining,
+common-expression elimination, small-loop unrolling, CPU load reuse and narrow WASM SIMD
+loops. Derived gradients already use activity analysis and structural zero tangents.
+Intervals already widen for target arithmetic, narrow branch guards and split floor cases.
+`std::stage::Tape.prune` already prunes expressions by interval dominance. These are not new
+opportunities. The earlier 19× uniform-copy cost described in `compiler/ir/src/opt.rs` is
+evidence that a compiler can remove a large pathological cost, not an available 19× gain.
+
+### Candidate compiler extensions
+
+1. **Retain a graph of dispatches and their memory dependencies before lowering commands.**
+   Today `compiler/ir/src/lib.rs` represents the CPU program or one GPU pipeline, and
+   `compiler/lower/src/lib.rs` lowers them separately. Start with adjacent same-index maps:
+   substitute each producer expression into its consumer and remove unobserved intermediate
+   writes. Reject cross-index reads, aliases, observed intermediates, atomics, collectives
+   and indirect counts until they have proofs. Preserve rounding at materialized formats.
+   Fewer dispatches and less global traffic are the benefit; register pressure, lost
+   occupancy and instruction growth can erase it. A dependency graph is a prerequisite,
+   not a request to put engine knowledge in the compiler.
+2. **Extract independent inner work into kernels, with an ordered gather.**
+   `engine/probes.wrela` already records a hand-written version: making each ray an invocation
+   instead of tracing all rays serially per probe reportedly reduced about 4 ms to a tenth.
+   That is an existing comment, not a measurement from this work, and the optimized path
+   already exists. Generalize the transformation to a pure map feeding an ordered fold.
+   Preserve each reduction's order; prove iteration independence, bound scratch storage and
+   keep its lifetime explicit. Choose among generated schedules only when measurements
+   justify their size and thresholds. Blindly flattening every loop can destroy locality.
+3. **Specialize values, not just types and uniform addresses.**
+   A constant tape or configuration can leave opcode dispatch, array indexing and inactive
+   branches in the runtime program. A budgeted partial evaluator could produce residual
+   code for known aggregate arguments before ordinary optimization and differentiation.
+   `compiler/std/stage.wrela`'s interpreter is a useful first fixture. Reuse target-correct
+   constant semantics, cap variants and code size, and retain a generic path for unknown
+   inputs. This needs a compiler experiment against a constant interpreter and its direct
+   implementation; no speedup was measured here.
+4. **Preserve correlations in range analysis, then consume proven domain facts.**
+   Extend `compiler/ir/src/derive/interval.rs` selectively with affine relations through
+   supported pure arithmetic. Correlated differences can prove a branch dead where two
+   independent intervals overlap. Keep existing interval bounds as the fallback. A bounded
+   specialization pass must consume these facts before branch conversion and dead-code
+   elimination to obtain the branch reductions below. Tighter interval results alone do
+   not produce that reduction. Dynamic domains need a separate, bounded specialization
+   design; compiling thousands of regional shaders per frame is not a viable default.
+5. **Share exact invariant work across invocations.**
+   Extend the dependency analysis behind `compiler/ir/src/uniformity.rs` from validation to
+   classification by invocation, workgroup and dispatch. Generate GPU preparation for
+   expensive pure uniform expressions; do not move floating-point computation to the CPU
+   and assume equivalent results. Handle tail invocations before adding barriers. Exclude
+   derivatives, implicit texture LOD and side effects. This can reduce one expression's
+   evaluation count by a group size, but does not imply the same whole-kernel speedup.
+
+Pre-differentiation simplification and output-demand specialization are useful companion
+work. Generic fast-math reassociation, replacing the renderer, persistent automatic caches
+and SIMD-width gains alone do not support this task's orders-of-magnitude claim. CPU
+floating-point and reduction-order rules still apply. Automatic cross-frame caching would
+also change the explicit cache policy in the language spec.
+
+### Experiments and interpretation
+
+**Loop-invariant code motion: rejected.** A temporary IR pass moved only top-level,
+side-effect-free GPU arithmetic and fixed uniform reads whose operands dominate the loop.
+It excluded calls, indexed reads, local/storage reads and derivatives. Three focused IR
+regressions passed. The first generated shader exposed a second issue: the WGSL emitter
+inlined single-use arithmetic back into the loop. A temporary emitter change preserved
+definitions used in deeper loops; the final shader placed its sin/cos/sqrt/exp chain before
+the loop. The test processed 65,536 invocations, each accumulating 128 iterations.
+
+With `tools/wrela profile`, five alternating pairs of 60 warmup and 120 measured frames,
+one worker, 64×64 surface, no input, span timing, produced GPU median-of-run-medians of
+2.068917 ms for both builds on Intel UHD Graphics 620 / Mesa 26.0.8 / Vulkan. Paired GPU
+changes ranged from -0.0041% to +0.0081%; run ranges overlapped. Synchronized CPU frame-call
+medians were 3.598879 and 3.708676 ms, also inconclusive. This is consistent with downstream
+optimization already handling the case; it does not prove every GPU does. Both experimental
+compiler changes were removed. No rendering improvement is claimed.
+
+**Same-index dispatch fusion.** `tools/compiler_fusion.py` generates two implementations of
+one fixed legal map chain, plus an independent integer oracle. It is a bounded
+source-to-source lowering prototype, not an optimizer that accepts arbitrary Wrela.
+Thirty-two wrapping-u32 transforms run over 262,144 elements. Each frame starts from the
+invocation ID; intermediate values are unobserved. The materialized version uses 32
+dispatches and two alternating buffers. The fused version emits the same operations into
+one kernel. Both allocate the same buffers. This keeps the arithmetic exact and removes
+only intermediate materialization and dispatches. It is deliberately a favorable case.
+
+The logical global accesses fall from 16,515,072 to 262,144 (63×), because the first stage
+generates its input and fusion removes every intermediate read and write. Arithmetic stays
+at 8,388,608 transforms. Logical accesses are not measured DRAM traffic. A separate CPU
+model rejected a naive neighboring-index substitution: all 65 checked outputs differed.
+Such a dependency cannot use this same-index rule. The retained hardware regression checks
+both generated variants against a Rust integer oracle, including a partial workgroup and
+more than one frame; correctness has no time threshold.
+
+Five alternating pairs on the same Intel UHD Graphics 620 / Mesa 26.0.8 / Vulkan device,
+60 warmup and 120 measured frames per run, one worker, a 64×64 surface, no input and span
+timing, gave GPU median-of-run-medians of 6.882167 ms materialized and 1.040583 ms fused
+(6.614×). Baseline run medians ranged from 5.913750 to 6.901584 ms; fused medians from
+1.040333 to 1.040667 ms. Paired reductions ranged from 82.41% to 84.92%, with no overlap
+between run ranges. Synchronized CPU frame-call medians were 10.307415 and 2.674927 ms;
+these include GPU waits and do not establish a browser frame rate. Both variants used the
+same unchanged compiler and host in this comparison. No concurrent build or GPU work ran
+during sampling. This is evidence for a favorable synthetic compute chain, not evidence
+that an existing game scene has thirty-two eligible maps or will become 6.6× faster.
+
+A second size isolates the cost of many small dispatches: 4,096 elements, still 32 stages,
+with the same five-pair settings. GPU medians were 1.678833 and 0.042667 ms (39.348×).
+Baseline run medians ranged from 1.626167 to 1.707750 ms; fused medians from 0.042583 to
+0.043083 ms. Paired GPU reductions ranged from 97.35% to 97.51%. Synchronized CPU
+frame-call medians were 4.459328 and 0.996978 ms (4.473×). The small case establishes an
+order-of-magnitude GPU improvement for this constructed chain; the larger case establishes
+why that is not a general multiplier. Use `--elements 4096` in the generator to reproduce
+the small case. Its report is `/tmp/wrela-fusion-small-profile.json`.
+
+A separate hardware readback checked every output of both measured builds at both sizes,
+after each of two frames, against the exact CPU oracle: all matched. That session-only
+verification test was removed after it ran; the smaller odd/even-stage regression remains
+in the complete check. The large oracle SHA256 is
+`50aee67cdb860d040fe5d18028025829c9655f117e9c91fe327d8b5db60590b3`.
+
+Reproduce the retained experiments, keeping builds and other GPU work idle while profiling:
+
+```sh
+python3 tools/compiler_fusion.py --output /tmp/wrela-fusion
+tools/wrela build /tmp/wrela-fusion/before -o /tmp/wrela-fusion-before-build
+tools/wrela profile /tmp/wrela-fusion/after --compare /tmp/wrela-fusion-before-build --pairs 5 --frames 120 --warmup 60 --workers 1 --size 64x64 --scenario fusion32 --json > /tmp/wrela-fusion-report.json
+python3 tools/compiler_ranges.py > /tmp/wrela-ranges-report.json
+```
+
+Full reports retain sample times, replay settings and build/host/machine hashes outside the
+repository. The original fusion report is `/tmp/wrela-fusion-profile.json`; the range report
+is `/tmp/wrela-compiler-ranges.json`. Absolute temporary paths describe this session's
+artifacts, not durable repository files. The commands above regenerate them.
+
+**Relational range analysis.** `tools/compiler_ranges.py` models 64 float32 affine branches
+under `min`, over 64 boxes. Exact rational coefficient differences plus conservative
+per-operation float32 round-to-nearest error envelopes prove strict dominance. The original
+floating-point expressions are left intact; analysis does not reassociate the program.
+All corners, centers and 127 seeded dyadic points per box check the retained result bits.
+This prototype models finite, bounded CPU float32 arithmetic, not WGSL's looser error bounds.
+
+For the correlated case, independent interval pruning retained 4,096 branch instances;
+relational pruning retained 127 (1–4 per box), a 32.252× reduction in point-branch work.
+For the unrelated-plane control, 1,688 became 762 (2.215×), with some boxes retaining all
+64 branches. Each case checked 8,704 points with zero bit mismatches. Analysis itself took
+12,049 and 74,448 pairwise comparisons respectively; that cost must amortize. These are
+synthetic work counts, not Wrela execution times, certified GPU results or frame speedups.
+The language spec still defers compiler LiveMask pruning until it beats engine part masks,
+and records a failed tracing approach that needed 3–50× more evaluations. Neither existing
+constraint is displaced by this experiment.
+
+### Sources, rights and use
+
+These primary papers and author documentation were read for mechanisms, limitations and
+experiment design. Copyright stays with their authors/publishers; public access is not a
+code license. No text, implementation, images or assets were imported into the repository.
+
+- [Halide, Ragan-Kelley et al.](https://people.csail.mit.edu/jrk/halide12/halide12.pdf):
+  scheduling, locality and fusion; its blur example combines several optimizations, so its
+  improvement cannot be assigned to fusion alone.
+- [Futhark, PLDI 2017](https://www.futhark-lang.org/publications/pldi17.pdf) and
+  [incremental flattening, 2019](https://ppopp19.sigplan.org/details/PPoPP-2019-papers/20/Incremental-Flattening-for-Nested-Data-Parallelism):
+  kernel extraction, fusion, schedule variants and locality. Futhark's comparison to twelve
+  low-level references reports a 1.81× geometric mean, with four slower cases; this is useful
+  evidence against universal tenfold claims.
+- [AnyDSL](https://graphics.cg.uni-saarland.de/publications/leissa-2018-oopsla-anydsl.html)
+  and [Rodent](https://compilers.cs.uni-saarland.de/papers/perard-2019-siggraph-rodent.pdf):
+  partial evaluation can remove abstraction and specialize rendering code. These informed
+  the constant-interpreter proposal, not a claim of a measured Wrela gain.
+- [Unified shader specialization](https://arxiv.org/html/2109.14682v2) (CC BY as identified
+  on the article) and [Spire](https://dl.acm.org/doi/10.1145/2897824.2925923): staging and
+  evaluation rates. Spire includes approximation; its transformations are not blanket
+  evidence of exact equivalence.
+- [Enzyme](https://enzyme.mit.edu/): optimization before differentiation informed the AD
+  proposal. Wrela's existing activity and zero-tangent pruning were accounted for.
+- [Keeter, 2020](https://www.mattkeeter.com/research/mpr/): regional expression pruning,
+  including a two-orders-of-magnitude expression-complexity result in one benchmark. That
+  is not a 100× frame-time result. Runtime tape pruning is already present in Wrela.
+- [Sharp and Jacobson, 2022](https://arxiv.org/html/2202.02444v2): correlated affine bounds
+  and the costs of growing/truncating affine forms. This motivated the relational probe.
+- [Knoll et al., 2008](https://www.sci.utah.edu/~knolla/cgrtia.pdf): reduced affine arithmetic
+  and generated shaders. Its numerical caveats and omitted outward rounding do not satisfy
+  Wrela's enclosure contract.
+- [CEAL](https://www.ttic.edu/technical_reports/ttic-tr-2009-2.pdf) and
+  [self-adjusting stack machines](https://dl.acm.org/doi/pdf/10.1145/2048066.2048124):
+  dependency tracking and incrementalization. CEAL's 6–19× from-scratch overhead argues
+  against making persistent incremental computation a universal compiler default.
+- [egg](https://dl.acm.org/doi/10.1145/3434304) and
+  [Herbie](https://homes.cs.washington.edu/~ztatlock/599z-17sp/papers/herbie-panchekha-pldi15.pdf):
+  equality saturation and floating-point rewrites. Faster optimizer machinery and improved
+  arithmetic accuracy are distinct from faster generated programs; neither supplies a
+  general runtime-speed claim for Wrela.
+
+Studio finding: `tools/wrela primer compiler` has no compiler area. The supported `gpu`
+and `derive` primers describe language rules; source inspection was needed for optimizer
+architecture. `tools/wrela` builds the CLI before use, so builds and GPU measurements were
+scheduled separately. Only this machine's hardware GPU was available; no paired M4 Air
+baseline or Chrome frame-rate measurement was made. Gate duration is an observation, not
+a measured compiler/gate-time effect.
+
+Verification: the complete `tools/check.sh` passed in 668.7 s on this machine, including
+745 Rust tests, 464 browser tests, 71 tools tests and all infrastructure checks. The new
+hardware test checks 3 and 32 stages over 129 elements, with exact results over two frames.
+The full relational probe separately checked 17,408 points. No paired gate-time change
+was measured.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
