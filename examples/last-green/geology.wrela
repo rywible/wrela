@@ -17,9 +17,9 @@ use engine::grow::Grid
 use engine::landform::{
     Feature, Finding, Landscape, PlaceKind, Relief, Shaping, Strength, border, evolve, places,
 }
-use engine::noise::fbm2
+use engine::noise::{fbm2, fbm2_seen}
 use engine::terrain::{Cover, Terrain}
-use ground::joints
+use ground::{BED, BED_DIP, joints, rock_albedo}
 use lookbook::Shot
 use std::io::{Shipped, ship}
 use std::string::String
@@ -81,15 +81,15 @@ pub fn stratum(p: vec2, y: f32) -> Stratum {
 
 /// How easily water cuts each stratum (the stream power law's K, m^0 a year per m of fall: m is
 /// 0.5), the slope it stands at (rise over run), how fast a steeper face of it weathers back (m a
-/// year) and how much of the land's creep it has: the grit and the granite stand in cliffs,
-/// weather slowly and hardly creep, the sandstone stands in steep steps, and the shale only as
-/// talus, weathering fast under a soil that creeps.
+/// year) and how much of the land's creep it has: the grit stands in stepped cliffs and the
+/// granite steeper, both weathering slowly and hardly creeping; the sandstone stands in steep
+/// steps, and the shale only as talus, weathering fast under a soil that creeps.
 const STRENGTH: [Strength; Stratum] = [
-    Strength { erodibility: 1.4e-6, standing: 4.0, weathering: 2.0e-4, creep: 0.05 },
+    Strength { erodibility: 1.4e-6, standing: 1.6, weathering: 2.0e-4, creep: 0.05 },
     Strength { erodibility: 8.0e-6, standing: 0.65, weathering: 2.0e-3, creep: 1.0 },
-    Strength { erodibility: 2.4e-6, standing: 1.8, weathering: 6.0e-4, creep: 0.3 },
+    Strength { erodibility: 2.4e-6, standing: 1.2, weathering: 6.0e-4, creep: 0.3 },
     Strength { erodibility: 8.0e-6, standing: 0.65, weathering: 2.0e-3, creep: 1.0 },
-    Strength { erodibility: 7.0e-7, standing: 6.0, weathering: 1.0e-4, creep: 0.02 },
+    Strength { erodibility: 7.0e-7, standing: 3.0, weathering: 1.0e-4, creep: 0.02 },
 ]
 
 /// The strength of the rock at `p`, `y` high: its stratum's, its joints making it a little
@@ -166,12 +166,21 @@ fn trunk(p: vec2) -> vec2 {
 /// The land before it was cut: the plateau's old top, low swells on it, falling at its ragged edge
 /// to the lowland; and the trunk valley across it, a trough to its river.
 pub fn old_land(p: vec2) -> f32 {
-    let r = length(p - MIDDLE) + 900.0 * (fbm2(p * 0.00035 + vec2(1.0, 6.0), 3) - 0.5)
-    let top = PLATEAU + 9.0 * (fbm2(p * 0.0016 + vec2(3.0, 3.0), 4) - 0.5)
-    let y = mix(top, lowland(p), smoothstep(EDGE_FROM, EDGE_TO, r))
+    let r = length(p - MIDDLE) +
+        900.0 * (fbm2(p * 0.00035 + vec2(1.0, 6.0), 3) - 0.5) +
+        350.0 * (fbm2(p * 0.0012 + vec2(-3.0, 4.0), 3) - 0.5)
+    // Broad swells as well as low ones, so the water's first ways branch and don't all run
+    // straight down the trough's sides.
+    let top = PLATEAU +
+        9.0 * (fbm2(p * 0.0016 + vec2(3.0, 3.0), 4) - 0.5) +
+        26.0 * (fbm2(p * 0.0005 + vec2(-6.0, 2.0), 3) - 0.5)
+    let edge = smoothstep(EDGE_FROM, EDGE_TO, r)
+    // The edge's slope is broken by spurs and bays, not an even ramp its water would comb.
+    let y = mix(top, lowland(p), edge) +
+        4.0 * edge * (1.0 - edge) * 40.0 * (fbm2(p * 0.0014 + vec2(5.0, -7.0), 3) - 0.5)
     let t = trunk(p)
-    let trough = t.y + 0.6 * max(t.x - 40.0, 0.0)
-    min(y, trough)
+    let wall = max(t.x - 40.0 + 220.0 * (fbm2(p * 0.0022 + vec2(8.0, -1.0), 3) - 0.5), 0.0)
+    min(y, t.y + 0.6 * wall)
 }
 
 // ---- its making -------------------------------------------------------------------------------
@@ -265,14 +274,20 @@ impl Bare {
         let slope = length(m.yz)
         var y = m.x + 0.6 * (fbm2(p * 0.04 + vec2(2.0, 9.0), 3) - 0.5)
         y += 0.25 * (fbm2(p * 0.17 + vec2(-4.0, 3.0), 2) - 0.5)
-        let face = smoothstep(0.7, 1.4, slope)
+        let face = smoothstep(0.5, 1.1, slope)
         if face > 0.0 {
-            // The beds as ledges, each about 2.5 m, and the joints' blocks standing out.
-            let lay = (y - dot(p, DIP)) / 2.5
-            let stepped = (floor(lay) + smoothstep(0.55, 1.0, fract(lay))) * 2.5 + dot(p, DIP)
-            y = mix(y, stepped, 0.6 * face)
-            let (block, joint) = joints(p, 6.0)
-            y += face * 0.5 * (block - 0.5) * min(joint / 0.2, 1.0)
+            // The beds as ledges (the floor's own: `ground::BED` deep, dipping as `BED_DIP`, so
+            // the rock's colour's bands lie on them), every third standing out more, and the
+            // joints' blocks each its own plane.
+            let tilt = dot(p, BED_DIP)
+            let major = (y + tilt) / (3.0 * BED)
+            let thick = (floor(major) + saturate((fract(major) - 0.5) / 0.5)) * 3.0 * BED
+            y = mix(y, thick - tilt, 0.35 * face)
+            let lay = (y + tilt) / BED
+            let stepped = (floor(lay) + saturate((fract(lay) - 0.45) / 0.55)) * BED
+            y = mix(y, stepped - tilt, 0.6 * face)
+            let (block, joint) = joints(p, 5.0)
+            y += face * 0.7 * (block - 0.5) * min(joint / 0.15, 1.0)
         }
         y
     }
@@ -289,14 +304,30 @@ impl Terrain for Bare {
         self.at(x, z)
     }
 
-    /// The bare land: its rock where it's too steep to hold soil, its soil elsewhere, darker and
-    /// browner where it's wet; nothing growing.
     fn cover(self, at: vec3, n: vec3) -> Cover {
+        self.bare_cover(at, n, 0.0)
+    }
+
+    fn cover_seen(self, at: vec3, n: vec3, fields: vec4, footprint: f32) -> Cover {
+        self.bare_cover(at, n, footprint)
+    }
+
+    fn steepest(self) -> f32 {
+        // The grit's and the granite's cliffs stand at up to 3, their ledges steeper still.
+        12.0
+    }
+}
+
+impl Bare {
+    /// The bare land as a sample `w` metres across sees it: its rock where it's too steep to
+    /// hold soil, in its beds, joints and streaks (`ground::rock_albedo`) and its stratum's
+    /// colour; its soil elsewhere, darker and browner where it's wet; nothing growing.
+    fn bare_cover(self, at: vec3, n: vec3, w: f32) -> Cover {
         let p = at.xz
         let slope = sqrt(max(1.0 - n.y * n.y, 0.0)) / max(n.y, 0.05)
         let s = stratum(p, at.y)
-        let grain = 0.85 + 0.3 * fbm2(p * 0.08 + vec2(5.0, 5.0), 3)
-        let rock = COLOUR[s] * grain
+        let grain = 0.85 + 0.3 * fbm2_seen(p * 0.08 + vec2(5.0, 5.0), 3, w * 0.08)
+        let rock = COLOUR[s] / 0.24 * rock_albedo(at, n, w)
         let bare = max(
             smoothstep(0.75, 1.1, slope),
             if s == Stratum::Grit || s == Stratum::Granite { 0.35 } else { 0.0 },
@@ -309,11 +340,6 @@ impl Terrain for Bare {
         )
         let a = mix(soil * grain, rock, vec3(bare))
         Cover { albedo: a, grass: 0.0, materials: vec4(0.0, 1.0 - bare, bare, 0.0) }
-    }
-
-    fn steepest(self) -> f32 {
-        // The grit's and the granite's cliffs stand at up to 6, their ledges steeper still.
-        12.0
     }
 }
 
@@ -461,8 +487,13 @@ pub fn shots_of(land: Bare, found: [Feature], names: [String]) -> (Vec<Shot>, Ve
                         f"from {names[i]}",
                         Shot {
                             name: "",
-                            eye: vec3(at.x, 1.7, at.y),
-                            at: vec3(at.x + f.toward.x * 300.0, 0.0, at.y + f.toward.y * 300.0),
+                            // At the drop's lip, looking across it and a little down into it.
+                            eye: vec3(lip(land, f).x, 1.7, lip(land, f).y),
+                            at: vec3(
+                                at.x + f.toward.x * 400.0,
+                                0.4 * f.measure,
+                                at.y + f.toward.y * 400.0,
+                            ),
                             moves: across * 3.0,
                         },
                     ),
@@ -537,6 +568,20 @@ pub fn shots_of(land: Bare, found: [Feature], names: [String]) -> (Vec<Shot>, Ve
         }
     }
     (shots, called)
+}
+
+/// Where overlook `f`'s land begins to drop (x, z): along the way it faces, 3 m short of where
+/// the ground first falls 2 m below it.
+fn lip(land: Bare, f: Feature) -> vec2 {
+    var d = 0.0
+    while d < FINDING.overlook_reach {
+        let p = f.at + f.toward * d
+        if land.at(p.x, p.y) < f.height - 2.0 {
+            return f.at + f.toward * max(d - 3.0, 0.0)
+        }
+        d += 1.0
+    }
+    f.at
 }
 
 /// Shot `s` with its eye raised, 2 m at a time and to 40 m at most, till nothing of land `land`

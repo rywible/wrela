@@ -935,9 +935,11 @@ fn draw_marks(lens: mut MapLens, m: Map, screen: vec2) {
             )
         }
     }
-    // The geology's places, where the lens shows a layer of it: each a gold dot and its name.
+    // The geology's places, where the lens shows a layer of it: each a gold dot, and its name
+    // where it doesn't cover a name already drawn (the places come best first).
     if lens.stratum > 0 {
         if let Some(s) = lens.geology {
+            var named: Vec<vec4> = Vec::new()
             for i in 0..s.places.len() {
                 let p = lens.pixel(s.places[i].at)
                 lens.ui.draw.rect(
@@ -945,6 +947,15 @@ fn draw_marks(lens: mut MapLens, m: Map, screen: vec2) {
                     vec4(1.0, 0.82, 0.3, 1.0),
                     radius: 3.0,
                 )
+                let label = vec4(p.x + 5.0, p.y - 9.0, p.x + 5.0 + 6.0 * f32(s.names[i].len()), p.y + 5.0)
+                var covers = false
+                for o in named {
+                    covers = covers || label.x < o.z && o.x < label.z && label.y < o.w && o.y < label.w
+                }
+                if covers {
+                    continue
+                }
+                named.push(label)
                 let _ = lens.ui.draw.text(
                     lens.ui.fonts,
                     Face::Sans,

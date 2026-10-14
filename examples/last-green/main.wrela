@@ -200,6 +200,13 @@ fn shown(off: Flags<System>, view: u32) -> Flags<System> {
     } else { off }
 }
 
+/// The look in view `view`: in the bare view, no brush dabs on the land or the sky (on bare
+/// ground all one soil, the look's dabs read as spots, not brushwork: what grows on the floor
+/// carries them).
+fn look_of(view: u32) -> Look {
+    if view == BARE { Look { dabs_near: 0.0, dabs_far: 0.0, dabs_sky: 0.0 } } else { Look {} }
+}
+
 /// The view `engine::paint::Develop` draws in view `view`: the bare view in the look.
 fn look_view(view: u32) -> u32 {
     if view == BARE { 0 } else { view }
@@ -2478,7 +2485,7 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
     // debug views of form).
     if !s.plain && (s.view == 0 || s.view == BARE) {
         label("lines")
-        let d = Develop { cam, look: Look {}, out, view: look_view(s.view) }
+        let d = Develop { cam, look: look_of(s.view), out, view: look_view(s.view) }
         let lp = begin_pass(mut s.scene_b)
         fullscreen(lp, lines.bind(d, s.scene, s.depth))
         lp.end()
@@ -2529,7 +2536,7 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
         screen.present()
         return
     }
-    let d = Develop { cam, look: Look {}, out, view: look_view(s.view) }
+    let d = Develop { cam, look: look_of(s.view), out, view: look_view(s.view) }
     let dp = begin_pass(mut s.dabs)
     fullscreen(
         dp,
