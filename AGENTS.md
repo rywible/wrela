@@ -10,7 +10,7 @@ MIT-licensed language, compiler, engine and agent-native studio for browser game
 - Ship the smallest complete change. Preserve other sessions' work. Delete losing experiments, dead code and unused constants; avoid speculative abstractions and compatibility scaffolding. Preserve `milestone-6` unchanged.
 - Add focused regressions for new logic, fix failures at their cause, and run `tools/check.sh` before committing. Do not weaken assertions or skip tests for a pass.
 - End completed work with a committed, pushed branch and a pull request against `main`. Describe the change, checks and any blockers; leave merging to Ryan through the PR workflow.
-- Report frame-time and gate-time effects honestly. Measure frame costs on the M4 with `tools/wrela profile examples/last-green --json`, against a baseline from the same machine and mode. Distinguish GPU timings, CPU frame calls and Chrome frame rates.
+- Report frame-time and gate-time effects honestly. Use `tools/wrela profile` for paired relative costs on each Linux hardware GPU, with the same scene, input, resolution, workers and timing mode. Run without concurrent builds or GPU work. Check paired M4 Air baselines periodically; keep each machine's reports separate. Distinguish GPU timings, synchronized CPU frame calls and Chrome frame rates.
 
 ## Context and layers
 
@@ -31,7 +31,7 @@ MIT-licensed language, compiler, engine and agent-native studio for browser game
 
 - Language features must make sense outside games. Shared helpers live once in engine/std, in the appropriate layer.
 - Test rules on small fixtures, bounded seeded samples and explicit resource lifecycle assertions. Judge changes only to the look with the lookbook.
-- Use real shaders for pixel/buffer assertions and CPU hosts for command/state assertions.
+- Use real shaders on hardware GPUs for pixel/buffer assertions and CPU hosts for command/state assertions. Fail if a hardware adapter is unavailable; never use software rendering. Rendering tests assert correctness, without frame-time or FPS thresholds. Keep performance comparisons in `tools/wrela profile`.
 - `tools/check.sh` runs every retained test and infrastructure check, including real GPU shaders and small Chrome agreement scenarios. `tools/check.sh <check-name>` runs exactly one; unknown or ambiguous names fail.
 - Names: Rust `module::test` or `crate::target::module::test`; Python `tools::test_module.Class.test_method`; browser `browser::file.test.ts::full test name`; Wrela `wrela::<package-path>::<test-name>` (`compiler/std` for std).
 - Infrastructure names: `rustfmt`, `wrela-fmt`, `clippy`, `doc`, `tools`, `browser`, `browser-types`, `browser-dist`, `browser-size`, `wgsl`. Use normal formatters.

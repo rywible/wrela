@@ -833,6 +833,76 @@ No outside code or assets were copied. Codex (GPT-6.1 Sol, high reasoning) perfo
 audit, implementation and local verification through a T3-managed worktree. No before/after
 gate-speed or M4 frame-time gain is claimed.
 
+## Hardware rendering checks and relative profiles, 2026-10-13
+
+Ryan moved development to Linux machines with integrated GPUs. Rendering checks now require
+hardware adapters in both hosts. The native host rejects CPU, virtual and unknown adapter
+types; the browser rejects WebGPU fallback adapters before requesting a device. The old
+lavapipe provisioning script, Mesa patch and software-only lookbook scheduling are removed.
+The timestamp regression checks valid results and label/frame association without a speed
+ceiling. Other correctness, resource and shipped-size assertions remain in the local check.
+
+`wrela profile` now excludes 60 warmup frames by default. `--warmup 0` includes the first
+frames. Fixed simulation steps, frame range, size, workers and parsed input define the replay;
+`--scenario` names it. Seeds and quality remain in the scene and script and must stay fixed
+for a performance comparison. Init and warmup costs are reported separately. Every run starts
+with empty temporary storage, never the game's saved state.
+
+Save a baseline build before changing the source, in the normal checkout:
+
+```sh
+tools/wrela build examples/last-green -o /tmp/last-green-before
+```
+
+After the change, with builds and other GPU work idle:
+
+```sh
+tools/wrela profile examples/last-green --compare /tmp/last-green-before --pairs 5 --json > /tmp/last-green-comparison.json
+```
+
+The comparison alternates baseline/candidate and candidate/baseline, on one device with the
+same host binary. Each sample resets the program and its resources and storage. It excludes
+warmup work from GPU labels and timed CPU phases. JSON retains every sample, paired changes,
+and the range of run medians. Overlapping ranges are reported as inconclusive; the range is
+not a confidence interval. An unchanged build compared with its saved copy measures local
+noise. A machine-wide advisory file lock excludes other profiler processes; it does not stop
+ordinary builds, browser work or external processes.
+
+Reports record hashed machine identity, OS/architecture, CPU availability, GPU/backend/PCI IDs,
+driver, host executable hash and build content hash (manifest, WASM, shaders and packaged
+files). Saved `--baseline` reports must match hardware and replay settings. Changed host code
+is allowed and remains identified by its hash. Controlled `--compare` isolates Wrela build
+changes; use separate same-machine reports when measuring changes to the Rust host itself.
+Build changes detected during a comparison invalidate the result. A baseline under the
+candidate's generated directory is rejected before it can be overwritten. Older reports lack
+the required identity and must be recorded again.
+
+Linux results describe each Linux GPU. Periodic paired M4 Air profiles use separate baselines.
+GPU spans, individual pass durations and CPU frame calls stay distinct; synchronized CPU calls
+include GPU waits and do not establish Chrome frame rates. This tooling change makes no
+render-speed claim, and no M4 measurement was made for it.
+
+Verification on this Intel UHD Graphics 620 / Mesa 26.0.8 Linux machine passed the focused
+GPU profiler regression, all 744 Rust tests, 464 browser tests and 66 tools tests, plus every
+infrastructure check. The final complete `tools/check.sh` took 683.2 s. This is an observed
+check duration; no paired gate-time change was measured.
+
+An isolated unchanged-build sample used `examples/hello-field`, 640×360, one worker,
+60 warmup frames and 120 measured frames in each of five alternating pairs, in span mode.
+Both build hashes matched. GPU run medians ranged from 7.914 to 7.916 ms; paired changes
+ranged from -0.006% to +0.027%. CPU frame-call run medians ranged from 8.656 to 9.350 ms;
+paired changes ranged from -0.14% to +5.49%. Both comparisons were inconclusive. These
+samples measure local variation for this scene and mode, not a rendering improvement or
+a universal noise threshold. Reports and saved builds stayed outside the repository.
+
+Codex (GPT-6.1) implemented this work without subagents or generated assets. Implementation
+references were the [wgpu device-type documentation](https://docs.rs/wgpu/latest/wgpu/enum.DeviceType.html),
+the [WebGPU adapter options](https://gpuweb.github.io/types/interfaces/GPURequestAdapterOptions.html)
+and [adapter information](https://gpuweb.github.io/types/interfaces/GPUAdapterInfo.html),
+and Rust's [file-lock API](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock).
+They teach hardware/fallback classification and advisory-lock lifetime. These public documents
+were read as API references; no outside source code or art assets were copied.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
