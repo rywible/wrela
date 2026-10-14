@@ -44,26 +44,31 @@ pub fn preview() -> Preview {
     Preview { checked: check(ground::GROUND, m, species::habits(), e, o, st, QUICK), streams }
 }
 
-/// The far land as its making left it (`geology::made`), for the lens.
-@fuel(2 ** 40)
-const FAR_LAND: Landscape = geology::made()
+/// The floor's square as its making left it (`geology::square`), for the lens.
+@fuel(2 ** 42)
+const SQUARE_LAND: Landscape = geology::square(geology::WORLD.land.region)
 
-/// The floor's geology as an agent surveys it: its far land as its making left it, how much each
-/// cell rose or sank over the sketch, the ground over the same cells as the game draws it, and the
-/// cells where the relief holds whole.
+/// The world's geology as an agent surveys it: the floor's square as its making left it, how much
+/// each cell rose or was cut from the old land, the land as the bare view draws it over the same
+/// cells, the floor's square's cells, and the places found in it.
 pub fn geology() -> Survey {
-    borrow g = ground::GROUND
-    let grid = FAR_LAND.grid
+    borrow w = geology::WORLD
+    let grid = SQUARE_LAND.grid
     Survey {
-        made: FAR_LAND.clone(),
-        rise: Vec::from_fn(grid.cells(), |c| g.far.rise(c)),
+        made: SQUARE_LAND.clone(),
+        rise: Vec::from_fn(
+            grid.cells(),
+            |c| SQUARE_LAND.heights[c] - geology::old_land(grid.centre(c)),
+        ),
         surface: Vec::from_fn(grid.cells(), |c| {
             let p = grid.centre(c)
-            g.natural(p.x, p.y)
+            w.land.at(p.x, p.y)
         }),
         counted: Vec::from_fn(grid.cells(), |c| {
             let p = grid.centre(c)
-            geology::far_weight(g.far, p, ground::past_edge(p)) == 1.0
+            p.x >= map::LO.x && p.y >= map::LO.y && p.x < map::HI.x && p.y < map::HI.y
         }),
+        places: w.places.clone(),
+        names: w.names.clone(),
     }
 }

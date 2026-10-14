@@ -516,9 +516,11 @@ the browser also receives the corresponding parity fixes.
 | Heini Hediger's flight distance (*Wild Animals in Captivity*, 1950), as field ethology uses it | A published idea; no code or data taken | The fawn's behaviour (`examples/last-green/behaviour.wrela`): it notices a person first and watches, and flees when they come on within a distance; the distances are our own, tuned by test. |
 | Vadim Zavalishin, *The Art of VA Filter Design* (2012); George Marsaglia, "Xorshift RNGs" (2003) | Published algorithms; no code taken | The floor's sound (`engine/sound.wrela`): the state-variable filter that bands each source's noise, and the seeded noise itself. |
 | The soil production function: Heimsath, Dietrich, Nishiizumi and Finkel, "The soil production function and landscape equilibrium", *Nature* 388 (1997) | A published finding; we use its idea, not its text or data | `engine::soil::soil`: rock weathers to soil fastest under a thin soil and creep moves it downhill, so crests are thin and hollows deep (credited in the file). |
-| Landscape evolution by stream power: Jean Braun and Sean D. Willett, "A very efficient O(n), implicit and parallel method to solve the stream power equation governing fluvial incision and landscape evolution", *Geomorphology* 180–181 (2013) | A published method; no code taken | `engine::landform::incise`: a channel cuts down at K A^m S, solved implicitly in the order the water flows, so a step of any length is stable. The far land of the Last Green is made with it (`examples/last-green/geology.wrela`). |
+| Landscape evolution by stream power: Jean Braun and Sean D. Willett, "A very efficient O(n), implicit and parallel method to solve the stream power equation governing fluvial incision and landscape evolution", *Geomorphology* 180–181 (2013) | A published method; no code taken | `engine::landform::incise`: a channel cuts down at K A^m S, solved implicitly in the order the water flows, so a step of any length is stable. The Last Green's world is made with it (`examples/last-green/geology.wrela`). |
 | Priority-flood depression filling: Richard Barnes, Clarence Lehman and David Mulla, "Priority-flood: An optimal depression-filling and watershed-labeling algorithm for digital elevation models", *Computers & Geosciences* 62 (2014), its epsilon variant | A published method; no code taken | `engine::landform::drainage` (moved there from `engine::grow`, which already used it): water is routed across pits from the outlets, lowest first, so every cell drains. |
-| Uplift as the author's control: Guillaume Cordonnier, Jean Braun, Marie-Paule Cani, Bedrich Benes, Éric Galin, Adrien Peytavie and Éric Guérin, "Large Scale Terrain Generation from Tectonic Uplift and Fluvial Erosion", *Computer Graphics Forum* 35(2) (2016) | A published idea; no code or data taken | The far land's relief is authored through its causes (where the land rises, which rock is hard, where the base level is) and not by drawing its valleys. |
+| Terrain authored through its causes: Guillaume Cordonnier, Jean Braun, Marie-Paule Cani, Bedrich Benes, Éric Galin, Adrien Peytavie and Éric Guérin, "Large Scale Terrain Generation from Tectonic Uplift and Fluvial Erosion", *Computer Graphics Forum* 35(2) (2016) | A published idea; no code or data taken | The world's land is authored through its causes (its rock's layers, the old land, the base level its rivers run to) and not by drawing its valleys. |
+| Threshold slopes, as thermal erosion does: F. Kenton Musgrave, Craig E. Kolb and Robert S. Mace, "The synthesis and rendering of eroded fractal terrains", *SIGGRAPH* (1989) | A published idea; no code taken | `engine::landform::collapse`: a slope steeper than its rock stands at sheds its excess downhill, no faster than the rock weathers, so a hard cap stands in cliffs over the soft rock's talus. |
+| Channel initiation at a source area: David R. Montgomery and William E. Dietrich, "Where do channels begin?", *Nature* 336 (1988) | A published finding; we use its idea, not its data | `engine::landform::Shaping::channel`: water cuts only where enough of it gathers to run in a channel; below that, slopes only creep and fail. |
 | Johann Heinrich von Thünen's land-use rings (*Der isolirte Staat*, 1826); settlement site and budding as human geography teaches them | Published ideas; no code or data taken | The Last Green's elves (`examples/last-green/peoples.wrela`): each settlement takes its fields nearest by walking cost, then pasture, then wood; it chooses its site by water, soil, slope and sun; when it outgrows its land, some of its people found another. |
 | W3C, Gamepad API, its "standard" mapping | A W3C specification; no code taken | The browser host reads pads by it (`runtime/browser/src/listen.ts`), and wrela's pad buttons and axes take its order and names (south, east, west, north, the shoulders and triggers, the sticks, the d-pad). |
 | Closest points of two segments (as in Christer Ericson, *Real-Time Collision Detection*, 2005, §5.1.9) | A standard method; no code taken | The climber's fight (`examples/climber/fight.wrela`): the sword's edge, swept between ticks, is tested against capsules on the wolf's body, and the wolf's bite against a capsule up the climber. |
@@ -943,7 +945,7 @@ tests. On this branch, with no `WRELA_*` variables set, it passed all 744 Rust t
 browser, tools and infrastructure check in 321.0 s. That time includes warm build output. It
 is not a paired gate-time comparison. No rendering code changed, so no frame-time claim is made.
 
-## Geology layer for the far land, 2026-10-14
+## The world's geology, 2026-10-14
 
 Ryan asked for a deep visual pass on the Last Green, built in levels: geology first, then the
 stages that read it, such as ecology. He asked that an agent can see how the geology reads at
@@ -955,15 +957,20 @@ test fixtures, a GPU test of the relief, and a lens that does not wait for the h
 Claude decided, implemented and verified the change, without subagents other than the
 council.
 
-The far land past the valley was noise with valleys drawn on it. It is now made: the sketch
-of hills and the mountain is raised by an uplift, cut by its water where its rock lets it, and
-crept, over 1.2 million years at build time (`engine::landform`, `geology.wrela`). The
-granite under the summit holds it up. The wildwood grows no tree on rock, cliffs or above the
-tree line. The map lens draws the geology's layers and answers its numbers as JSON. The near
-land is the same to the bit. On this Linux machine's integrated AMD GPU, paired profiles
-showed no change standing at the gate, and the terrain cook 0.18 ms slower a frame
-(+18%; the frame +0.6%) while running, as the cook reads the relief. No outside asset was
-used, and no lore was added.
+A first version eroded the far mountains. Ryan then asked for no mountains, a forest that
+goes on to the horizon, and the authored square itself simulated, its named places derived
+from the land and not drawn. He chose a dissected plateau. The world is now made at build time
+(`engine::landform`, `examples/last-green/geology.wrela`): an old plateau of bedded rock (a
+hard grit cap over shale, a sandstone band, granite bosses) is cut over 1.2 million years by
+rivers running to a trunk valley and to the lowland round it, at 64 m over 16 km and at 8 m
+over the floor's square. Slopes creep where their rock carries soil and fail where they are
+steeper than their rock stands, as fast as it weathers. Summits, tors, overlooks, falls,
+gorges, springs, lakes and the meetings of streams are found in the land and named for what
+and where they are; no lore names were added. The bare view (F8's fourth, `tools/lookbook.py
+--view bare`) draws this land alone, and the map lens draws its layers and its places and
+answers its numbers as JSON. The floor's play still stands on its old land until Ryan has
+judged this one. The wildwood also no longer grows trees on rock, cliffs or above the tree
+line. No outside asset was used.
 
 ## Keeping this record
 

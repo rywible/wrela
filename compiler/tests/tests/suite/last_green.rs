@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 use wrela_tests::repo_root;
 
 /// The floor's files that make its map: copied into a package with `main` as its program.
-const MAP_FILES: [&str; 5] =
-    ["map.wrela", "ground.wrela", "geology.wrela", "species.wrela", "stones.wrela"];
+const MAP_FILES: [&str; 4] = ["map.wrela", "ground.wrela", "species.wrela", "stones.wrela"];
 
 /// A scratch package `name` holding the floor's map files and `main` as its `main.wrela`,
 /// depending on the engine.
@@ -38,6 +37,23 @@ fn declared_tests(file: &Path) -> usize {
         .lines()
         .filter(|line| line.trim() == "@test")
         .count()
+}
+
+/// The world's geology (`geology.wrela`, its land made and its places found, which the bare view
+/// draws), its own tests run beside the map's: the square is cut as deep as the region round it,
+/// and each shot of a place sees it. Its making runs once, in this package's build.
+#[test]
+fn the_worlds_geology_is_made_and_its_places_seen() {
+    let dir =
+        map_package("last-green/geology", "pub fn frame(time: f32, width: u32, height: u32) {}\n");
+    let floor = repo_root().join("examples/last-green");
+    let extra = ["geology.wrela", "lookbook.wrela"];
+    for file in extra {
+        std::fs::copy(floor.join(file), dir.join(file)).expect("copy the geology's modules");
+    }
+    let declared = copied_map_test_count(&dir)
+        + extra.iter().map(|file| declared_tests(&dir.join(file))).sum::<usize>();
+    assert_eq!(super::tests_pass(&dir), declared);
 }
 
 /// Terrain, trees and masonry use bounded fields and small seeded fixtures. Copy only their

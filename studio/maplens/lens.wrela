@@ -10,7 +10,7 @@
 // writes round it passes them): the map, the ground's height, and the preview.
 
 use engine::interest::{FAINT, Preview, Walk, views_grid}
-use engine::landform::{Landform, Survey, landform}
+use engine::landform::{Landform, PlaceKind, Survey, landform}
 use engine::place::{Map, Relation}
 use std::collections::Vec
 use std::gpu::{Rgba8, Texture, begin_screen_pass, draw, texture}
@@ -431,10 +431,10 @@ fn dotted(ui: mut Ui, a: vec2, b: vec2, col: vec4, step: f32, size: f32) {
 }
 
 /// The geology's layers (`geology n`'s n, from 1): the final surface's relief, shaded and
-/// tinted by height; how much the making raised or cut each cell (red raised, blue cut); its
-/// uplift; its rock's erodibility; how much water gathers (the area that drains through each
-/// cell, on a log scale); the surface's slope, in the summary's bands; and its forms.
-pub const STRATA = ["relief", "rise", "uplift", "rock", "water", "slope", "landform"]
+/// tinted by height, from its lowest to its highest; how much the making raised or cut each cell
+/// (red raised, blue cut); its rock's erodibility; how much water gathers (the area that drains
+/// through each cell, on a log scale); the surface's slope, in the summary's bands; and its forms.
+pub const STRATA = ["relief", "rise", "rock", "water", "slope", "landform"]
 
 /// The area a cell drains (m²) past which the geology's summary counts it as a channel.
 pub const CHANNEL: f32 = 1.0e6
@@ -475,6 +475,20 @@ pub fn geology(lens: mut MapLens, survey: fn() -> Option<Survey>, layer: u32) {
                 .num("valley", m.forms[Landform::Valley])
                 .num("cliff", m.forms[Landform::Cliff])
                 .done()
+            var places = list()
+            for i in 0..s.places.len() {
+                let f = s.places[i]
+                places.add(
+                    obj()
+                        .text("name", s.names[i].as_str())
+                        .text("kind", kind_name(f.kind))
+                        .vec2("at", f.at)
+                        .num("height", f.height)
+                        .num("measure", f.measure)
+                        .done()
+                        .as_str(),
+                )
+            }
             let shown = if lens.stratum == 0 { "ground" } else { STRATA[lens.stratum - 1] }
             let a = obj()
                 .text("action", "geology")
@@ -488,9 +502,24 @@ pub fn geology(lens: mut MapLens, survey: fn() -> Option<Survey>, layer: u32) {
                 .raw("forms", forms.as_str())
                 .num("drainage_density", m.density)
                 .int("pits", m.pits)
+                .raw("places", (take places).done().as_str())
                 .done()
             lens.answer(a.as_str())
         },
+    }
+}
+
+/// What a place of each kind is, in the geology's answer.
+fn kind_name(k: PlaceKind) -> Text {
+    match k {
+        PlaceKind::Summit => "summit",
+        PlaceKind::Tor => "tor",
+        PlaceKind::Overlook => "overlook",
+        PlaceKind::Falls => "falls",
+        PlaceKind::Gorge => "gorge",
+        PlaceKind::Spring => "spring",
+        PlaceKind::Lake => "lake",
+        PlaceKind::Confluence => "confluence",
     }
 }
 
@@ -679,8 +708,9 @@ fn ground_colour(p: Preview, c: u32, shade: f32) -> vec3 {
     trail * shade * unwalkable
 }
 
-/// Layer `layer` of the geology `s` at `q` (in its grid), as a colour; `most`, its most uplift.
-fn stratum_colour(s: Survey, layer: u32, q: vec2, most: f32) -> vec3 {
+/// Layer `layer` of the geology `s` at `q` (in its grid), as a colour; `range`, its surface's
+/// lowest and highest (m).
+fn stratum_colour(s: Survey, layer: u32, q: vec2, range: vec2) -> vec3 {
     let g = s.made.grid
     let c = g.cell_at(q)
     let ij = g.ij(q)
@@ -692,7 +722,7 @@ fn stratum_colour(s: Survey, layer: u32, q: vec2, most: f32) -> vec3 {
         let dz = g.sample(s.surface, q + vec2(0.0, e)) - g.sample(s.surface, q - vec2(0.0, e))
         let n = normalize(vec3(-dx, 2.0 * e, -dz))
         let shade = 0.35 + 0.65 * max(dot(n, normalize(vec3(-1.0, 1.4, -1.0))), 0.0)
-        let t = saturate((g.sample(s.surface, q) + 100.0) / 2100.0)
+        let t = saturate((g.sample(s.surface, q) - range.x) / max(range.y - range.x, 1.0))
         let tint = if t < 0.35 {
             mix(vec3(0.25, 0.4, 0.2), vec3(0.45, 0.4, 0.25), vec3(t / 0.35))
         } else if t < 0.75 {
@@ -705,15 +735,13 @@ fn stratum_colour(s: Survey, layer: u32, q: vec2, most: f32) -> vec3 {
             mix(vec3(0.2), vec3(0.15, 0.35, 0.9), vec3(-r))
         }
     } else if layer == 3 {
-        mix(vec3(0.08), vec3(1.0, 0.6, 0.15), vec3(s.made.uplift[c] / most))
-    } else if layer == 4 {
         // Erodibility on a log scale over 1e-7 to 1e-4: hard rock dark red, soft pale.
         let k = saturate((log(max(s.made.erodibility[c], 1.0e-9)) - log(1.0e-7)) / log(1.0e3))
         mix(vec3(0.45, 0.08, 0.06), vec3(0.95, 0.88, 0.6), vec3(k))
-    } else if layer == 5 {
+    } else if layer == 4 {
         let a = saturate(log(s.made.area[c] / (g.cell * g.cell)) / log(1.0e4))
         mix(vec3(0.06, 0.06, 0.08), vec3(0.55, 0.85, 1.0), vec3(a * a))
-    } else if layer == 6 {
+    } else if layer == 5 {
         let slope = engine::landform::shape(g, s.surface, ij.x, ij.y).x
         let bands = [
             vec3(0.2, 0.45, 0.2),
@@ -751,15 +779,15 @@ fn draw_image(lens: mut MapLens, m: Map) {
     var px: Vec<u8> = Vec::filled(w * h * 4, 0)
     if lens.stratum > 0 && lens.geology.is_some() {
         if let Some(s) = lens.geology {
-            var most = 1.0e-9
-            for u in s.made.uplift {
-                most = max(most, u)
+            var range = vec2(1.0e9, -1.0e9)
+            for y in s.surface {
+                range = vec2(min(range.x, y), max(range.y, y))
             }
             for y in 0..h {
                 for x in 0..w {
                     let q = lens.world(vec2(f32(x) + 0.5, f32(y) + 0.5))
                     let col = if s.made.grid.holds(q) {
-                        stratum_colour(s, lens.stratum, q, most)
+                        stratum_colour(s, lens.stratum, q, range)
                     } else {
                         vec3(0.12, 0.12, 0.14)
                     }
@@ -855,7 +883,8 @@ fn dot_into(px: mut Vec<u8>, w: u32, h: u32, at: vec2, r: f32, col: vec3) {
 fn draw_marks(lens: mut MapLens, m: Map, screen: vec2) {
     let none: Vec<Event> = Vec::new()
     lens.ui.begin(screen, none)
-    if (lens.layers & MAP) != 0 {
+    // The map's own marks, over the ground (not over the geology's land, which they're not on).
+    if (lens.layers & MAP) != 0 && lens.stratum == 0 {
         let line = vec4(0.95, 0.85, 0.55, 0.9)
         for r in m.routes {
             for k in 1..r.points.len() {
@@ -904,6 +933,27 @@ fn draw_marks(lens: mut MapLens, m: Map, screen: vec2) {
                 p + vec2(5.0, -7.0),
                 vec4(1.0, 1.0, 1.0, 0.9),
             )
+        }
+    }
+    // The geology's places, where the lens shows a layer of it: each a gold dot and its name.
+    if lens.stratum > 0 {
+        if let Some(s) = lens.geology {
+            for i in 0..s.places.len() {
+                let p = lens.pixel(s.places[i].at)
+                lens.ui.draw.rect(
+                    Rect::new(p.x - 3.0, p.y - 3.0, w: 6.0, h: 6.0),
+                    vec4(1.0, 0.82, 0.3, 1.0),
+                    radius: 3.0,
+                )
+                let _ = lens.ui.draw.text(
+                    lens.ui.fonts,
+                    Face::Sans,
+                    s.names[i].as_str(),
+                    11.0,
+                    p + vec2(5.0, -7.0),
+                    vec4(1.0, 0.9, 0.6, 0.95),
+                )
+            }
         }
     }
     // The check's walkers: magpies orange, pilgrims blue, trail pilgrims green (their steps in
