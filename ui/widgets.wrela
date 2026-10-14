@@ -1424,7 +1424,7 @@ fn a_panel_press_clears_underlying_interaction_state() {
     let under = 17
     let down = Event::PointerDown { at: vec2(1.0), button: Button::Primary, mods: Mods {} }
     ui.begin(vec2(200.0, 100.0), [down])
-    let _ = ui.interact(under, panel, true)
+    let _ = ui.interact(under, panel, focusable: true)
     ui.last_rect = panel
     ui.drag_source(7)
     ui.begin_panel("", panel)
@@ -1433,7 +1433,7 @@ fn a_panel_press_clears_underlying_interaction_state() {
 
     let up = Event::PointerUp { at: vec2(1.0), button: Button::Primary, mods: Mods {} }
     ui.begin(vec2(200.0, 100.0), [up])
-    let (_, clicked) = ui.interact(under, panel, true)
+    let (_, clicked) = ui.interact(under, panel, focusable: true)
     ui.last_rect = panel
     let dropped = ui.dropped()
     ui.begin_panel("", panel)
@@ -1443,7 +1443,7 @@ fn a_panel_press_clears_underlying_interaction_state() {
 
     let enter = Event::KeyDown { key: Key::Enter, repeat: false, mods: Mods {} }
     ui.begin(vec2(200.0, 100.0), [enter])
-    let (_, keyed) = ui.interact(under, panel, true)
+    let (_, keyed) = ui.interact(under, panel, focusable: true)
     ui.begin_panel("", panel)
     ui.end_panel()
     assert(!keyed)

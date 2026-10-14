@@ -355,8 +355,8 @@ fn caller_fonts_keep_their_own_fields_and_atlas_places() {
     second.fields[0] = 231
     let fonts = Fonts::from_baked(first, second)
     first.fields[0] = 0
-    assert(fonts.sans.field_byte(0, 0) == 17)
-    assert(fonts.mono.field_byte(0, 0) == 231)
+    assert(fonts.sans.field_byte(i: 0, k: 0) == 17)
+    assert(fonts.mono.field_byte(i: 0, k: 0) == 231)
     let bytes = fonts.atlas()
     let a = fonts.sans.glyph(0)
     let b = fonts.mono.glyph(0)
