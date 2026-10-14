@@ -31,14 +31,17 @@
 // audio model`), except what notes recorded one at a time, without the pedal, can't show: the
 // dampers, the sympathy, the soft pedal, the board, the room.
 //
-// The piano reads the measured tables through the physics they come from, since a fit to one
-// recording is noisy where its numbers can't be told apart: some decays hit the fit's bounds
-// (300 s, 50 ms), A4's first decay is under a third of its neighbours', and the strike's noise
-// in a loud note's high bands reads as partials that ring for seconds (a held fizz over the
-// note). So the decays follow a string's losses (`Losses`) and the levels a hammer's spectrum
-// (`held`). And the recording is dull: its loud notes from C5 up are nearly a sine, so a blow
-// keeps at least the overtones a felt hammer gives (`overtones`), as loud in all as measured.
-// A fit by `wrela audio model` against renders of the piano now measures it through these.
+// At the top of the keyboard, the piano reads the measured tables through the physics they
+// come from, since there the recording's notes are short and its fits fail: decays hit the
+// fit's bounds (50 ms), a loud C6's first partial falls 30 dB in half a second while its
+// overtones outlast it (it thins to a whistle), and the strike's noise in a loud note's high
+// bands reads as partials that ring for seconds (a held fizz over the note). So from
+// `Model::physics_from` up, the decays follow a string's losses (`Losses`), the levels a
+// hammer's spectrum (`held`), and a blow keeps at least the overtones a felt hammer gives
+// (`overtones`), as loud in all as measured. Below, the measured tables are sound: read through
+// the same physics they lost their character (the overtones rang as long as the first partial),
+// and the owner heard the measured ones as the better piano. A fit by `wrela audio model`
+// against renders of the piano measures the top through these.
 //
 // There's no noise of the strike (a keybed's thump, a hammer's click): the strings' own attack
 // comes within 2.7 dB of the recorded piano's sharpness (a note's peak in its first 30 ms over
@@ -136,9 +139,11 @@ pub struct Model: Copy {
     pub soft_dark_db: f32 = -9.0,
     pub soft_after_db: f32 = 4.0,
     /// The whole piano's gain: the measured levels are of recordings, quieter than a piano is
-    /// heard; this brings them up 7.6 dB (its strings ring longer than the recording's fit
-    /// had them, so less brings them up as far, with the headroom they had).
-    pub gain: f32 = 2.4,
+    /// heard; this brings them up 9.5 dB.
+    pub gain: f32 = 3.0,
+    /// The first of the model's keys read through physics (`Losses`, `held`, `overtones`); the
+    /// keys below are as measured, and those between the last measured and this blend.
+    pub physics_from: f32 = 78.0,
     /// The overtones a blow keeps at least, beside its first partial's level: falling `tilt`
     /// dB an octave of the partial's number, and 12 dB an octave more past the hammer's
     /// `corner` (Hz); each at the softest and the hardest of the model's velocities (a harder
@@ -208,11 +213,13 @@ fn level_at(m: Model, at: (u32, f32), v: u32, hz: f32) -> f32 {
 /// own losses and the air's, which grow with frequency. Each key's are fitted to its measured
 /// decays, then each is the median of it and its neighbours', smoothed. The aftersound shares
 /// the prompt sound's b₃ (both are one string's); its b₁, lighter, is at least a tenth of the
-/// prompt sound's (it lasts at most ten times as long).
+/// prompt sound's (it lasts at most ten times as long). `read` is each key's share of the
+/// physics' reading: 1 from `Model::physics_from` up, 0 below.
 struct Losses: Copy {
     prompt: [f32; 16],
     after: [f32; 16],
     b3: [f32; 16],
+    read: [f32; 16],
 }
 
 /// The losses (b₁, b₃) that fit measured key `k`'s decays in `table` best, from its first
@@ -289,17 +296,23 @@ fn losses(m: Model) -> Losses {
         after[k] = fit_losses(m, m.after, k, Some(b3[k])).x
     }
     after = steadied(after)
+    var read = [0.0; 16]
     for k in 0..MODEL_KEYS {
         after[k] = clamp(after[k], 0.1 * prompt[k], prompt[k])
+        read[k] = if m.keys[k] >= m.physics_from { 1.0 } else { 0.0 }
     }
-    Losses { prompt, after, b3 }
+    Losses { prompt, after, b3, read }
 }
 
-/// The levels `levels` as a hammer's spectrum: above its peak, it never rises again. Each key's
-/// and velocity's row is held, band by band from its loudest, at or under the band before.
-fn held(levels: [f32; 1280]) -> [f32; 1280] {
-    var out = levels
+/// `m`'s levels, those of the keys read through physics as a hammer's spectrum: above its peak,
+/// it never rises again. Each such key's and velocity's row is held, band by band from its
+/// loudest, at or under the band before.
+fn held(m: Model) -> [f32; 1280] {
+    var out = m.levels
     for row in 0..MODEL_KEYS * MODEL_VELOCITIES {
+        if m.keys[row / MODEL_VELOCITIES] < m.physics_from {
+            continue
+        }
         let at = row * BANDS
         var peak = 0
         for b in 1..BANDS {
@@ -318,6 +331,13 @@ fn held(levels: [f32; 1280]) -> [f32; 1280] {
 fn t60(p: Losses, b1: [f32; 16], at: (u32, f32), hz: f32) -> f32 {
     let f = hz / 1000.0
     1.0 / (per_key(b1, at) + per_key(p.b3, at) * f * f)
+}
+
+/// Seconds a partial at `hz` falls 60 dB, at key `at` among the model's: the measured decays in
+/// `table`, read through the losses with b₁ from `b1` as far as the key is (`Losses::read`).
+fn decay(p: Losses, table: [f32; 256], b1: [f32; 16], at: (u32, f32), hz: f32) -> f32 {
+    let w = per_key(p.read, at)
+    pow(per_band(table, at, hz), 1.0 - w) * pow(t60(p, b1, at, hz), w)
 }
 
 /// The least a partial at `hz` keeps when struck at the model's velocity `v`, beside its first
@@ -486,7 +506,7 @@ pub struct Piano {
 pub fn piano(model: Model, performance: Performance) -> Piano {
     var p = Piano {
         // The measured levels as a hammer's spectrum (`held`).
-        model: Model { levels: held(model.levels), ..model },
+        model: Model { levels: held(model), ..model },
         losses: losses(model),
         events: events(performance),
         next: 0,
@@ -628,7 +648,8 @@ impl Piano {
             count += 1
         }
         // The first partial's level at each of the model's velocities: the overtones keep at
-        // least the hammer's (`overtones`).
+        // least the hammer's (`overtones`), as far as the key is read through physics.
+        let w = per_key(l.read, at)
         var first = [0.0; 5]
         for v in 0..MODEL_VELOCITIES {
             first[v] = level_at(m, at, v, partial(1))
@@ -636,10 +657,10 @@ impl Piano {
         // Where the hammer strikes: partials with a node there are quiet (as measured, no
         // quieter than 0.15 of their band).
         let comb = |n: u32| max(abs(sin(PI * f32(n) * x0)), 0.15)
-        let struck = |v: u32, n: u32| max(
-            level_at(m, at, v, partial(n)),
-            overtones(m, v, first[v], n, partial(n)),
-        )
+        let struck = |v: u32, n: u32| {
+            let measured = level_at(m, at, v, partial(n))
+            measured + w * max(overtones(m, v, first[v], n, partial(n)) - measured, 0.0)
+        }
         // The overtones a blow keeps take none of its loudness: at each velocity, the partials
         // together are as loud as the measured ones, the first partial giving way to them.
         var kept = [0.0; 5]
@@ -669,9 +690,9 @@ impl Piano {
             // The aftersound up or down by its own detune.
             let sign = if scatter(key, n, 2) < 0.5 { -1.0 } else { 1.0 }
             let cents = sign * m.detune * (0.3 + 1.4 * scatter(key, n, 3))
-            let prompt = t60(l, l.prompt, at, f) *
+            let prompt = decay(l, m.prompt, l.prompt, at, f) *
                 (1.0 + m.scatter_decay * (2.0 * scatter(key, n, 4) - 1.0))
-            let after = t60(l, l.after, at, f) *
+            let after = decay(l, m.after, l.after, at, f) *
                 (1.0 + m.scatter_decay * (2.0 * scatter(key, n, 5) - 1.0))
             // A damper stops the higher partials faster.
             let damped_rate = FALL_60_DB / damped * (1.0 + f / 2000.0)
@@ -702,8 +723,8 @@ impl Piano {
             // f₁ + f(n−1), beside partial n: a sum's decay is both parts' together.
             for n in 3..min(PHANTOMS, count) + 1 {
                 let f = partial(1) + partial(n - 1)
-                let t1 = t60(l, l.prompt, at, partial(1))
-                let t2 = t60(l, l.prompt, at, partial(n - 1))
+                let t1 = decay(l, m.prompt, l.prompt, at, partial(1))
+                let t2 = decay(l, m.prompt, l.prompt, at, partial(n - 1))
                 let t = 1.0 / (1.0 / t1 + 1.0 / t2)
                 var levels = [0.0; 5]
                 for v in 0..MODEL_VELOCITIES {
@@ -812,7 +833,7 @@ impl Piano {
                 let f = fundamental(m, key) / sqrt(1.0 + b) * f32(n) * sqrt(1.0 + b * f32(n * n))
                 // Free strings ring a while: shorter than an aftersound, the bridge coupling
                 // them loosely.
-                let t = 0.5 * t60(l, l.after, at, f)
+                let t = 0.5 * decay(l, m.after, l.after, at, f)
                 let r = exp(-decay_rate(t))
                 let w = TAU * f / RATE
                 self.sym_cw[g] = set(self.sym_cw[g], lane, 2.0 * cos(w))
@@ -1195,23 +1216,50 @@ fn heard(p: mut Piano, quanta: u32) -> vec2 {
 
 @test
 fn neighbouring_keys_ring_alike() {
-    // The fit gave A4 under a third of its neighbours' first decay; the losses keep each key's
-    // within half again of the next's.
+    // The fit's first decays at the top jump from its bound, 50 ms (A7), to 1.4 s (C8); where
+    // the piano reads them through physics, each key's is within half again of the next's.
     let m = piano_grand::GRAND
     let l = losses(m)
     var worst = 1.0
-    for key in LOWEST..LOWEST + KEYS - 1 {
-        let a = t60(l, l.prompt, key_at(m, key), fundamental(m, key))
-        let b = t60(l, l.prompt, key_at(m, key + 1), fundamental(m, key + 1))
+    for key in u32(m.physics_from)..LOWEST + KEYS - 1 {
+        let a = decay(l, m.prompt, l.prompt, key_at(m, key), fundamental(m, key))
+        let b = decay(l, m.prompt, l.prompt, key_at(m, key + 1), fundamental(m, key + 1))
         worst = max(worst, max(a / b, b / a))
     }
     assert(worst < 1.5, f"a key rings {worst} times as long as its neighbour")
 }
 
 @test
+fn below_the_top_the_piano_is_as_measured() {
+    // Read through physics, the middle's overtones rang as long as its first partials, and the
+    // owner heard the measured piano as the better one there.
+    let m = piano_grand::GRAND
+    let l = losses(m)
+    let levels = held(m)
+    for k in 0..MODEL_KEYS {
+        if m.keys[k + 1] >= m.physics_from {
+            break
+        }
+        for i in k * MODEL_VELOCITIES * BANDS..(k + 1) * MODEL_VELOCITIES * BANDS {
+            assert(levels[i] == m.levels[i])
+        }
+        let at = (k, 0.5)
+        for b in 0..BANDS {
+            let hz = band_hz(b)
+            assert(decay(l, m.prompt, l.prompt, at, hz) == per_band(m.prompt, at, hz))
+            assert(decay(l, m.after, l.after, at, hz) == per_band(m.after, at, hz))
+        }
+    }
+}
+
+@test
 fn a_hammers_spectrum_never_rises_past_its_peak() {
-    let levels = held(piano_grand::GRAND.levels)
+    let m = piano_grand::GRAND
+    let levels = held(m)
     for row in 0..MODEL_KEYS * MODEL_VELOCITIES {
+        if m.keys[row / MODEL_VELOCITIES] < m.physics_from {
+            continue
+        }
         var peak = 0
         for b in 1..BANDS {
             if levels[row * BANDS + b] > levels[row * BANDS + peak] {
@@ -1226,11 +1274,11 @@ fn a_hammers_spectrum_never_rises_past_its_peak() {
 
 @test
 fn a_hard_blow_keeps_its_overtones() {
-    // The recording's loud C5 and C6 are nearly a sine: their second partial 14 and 23 dB under
-    // the first. The hardest blow keeps it within 10 dB.
-    let m = Model { levels: held(piano_grand::GRAND.levels), ..piano_grand::GRAND }
+    // The recording's loud C6 is nearly a sine: its second partial 23 dB under the first. Read
+    // through physics, the hardest blow keeps it within 10 dB.
+    let m = Model { levels: held(piano_grand::GRAND), ..piano_grand::GRAND }
     let v = MODEL_VELOCITIES - 1
-    for key in [60, 72, 84] {
+    for key in [84, 96] {
         let at = key_at(m, key)
         let f = fundamental(m, key)
         let first = level_at(m, at, v, f)
