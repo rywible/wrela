@@ -201,7 +201,7 @@ const SQUARE_MAKING = Shaping { channel: 4.0e3, ..REGION_MAKING }
 /// How much faster the square's water cuts its rock than the region's: the stream power law
 /// cuts less on a finer grid, and at this the square is cut as deep as the region is over it
 /// (`the_square_is_cut_as_deep_as_the_region_round_it`).
-const SQUARE_GRAIN: f32 = 5.0
+const SQUARE_GRAIN: f32 = 6.0
 
 /// The region as its rivers, its creep and its rock made it from the old land: its border holds
 /// the base level, which the trunk river runs to.
