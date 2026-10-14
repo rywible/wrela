@@ -1,0 +1,30 @@
+// A closed state guard inside a dynamic counted loop, including nested useful work.
+use std::gpu::{GlobalId, GpuBuffer, Slots, buffer, dispatch}
+
+@compute(64)
+fn check(bound: u32, out: mut Slots<vec2>, id: GlobalId) {
+    var state = if id.x % 7 == 6 { 1.0 } else { f32(id.x % 5) * 0.0078125 }
+    var sum = 0.0
+    for i in 0..bound {
+        let dense = (id.x + i) % 3 != 0
+        if dense && state >= 0.015625 {
+            for j in 0..(2 + id.x % 3) {
+                sum += state * 0.25
+            }
+            state *= 0.5
+        }
+    }
+    out[id] = vec2(state, sum)
+}
+
+pub struct State {
+    out: GpuBuffer<vec2>,
+}
+
+pub fn init() -> State {
+    State { out: buffer(129) }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    dispatch(check.bind(bound: min(u32(time), 32), out: mut s.out), over: 129)
+}

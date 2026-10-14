@@ -82,6 +82,82 @@ fn the_gpu_computes_the_same_channels() {
     }
 }
 
+/// Deriving a distance gradient must preserve the ordinary payload, including fields carried
+/// through helpers and mutable loop state. Reuse the body/hoof field above; compare the direct
+/// and derived paths on hardware, including the last lane of a partial workgroup.
+#[test]
+#[ignore = "needs a GPU"]
+fn derived_payload_survives_helpers_and_loop_carried_fields() {
+    let fixture = include_str!("../../channels/main.wrela");
+    let prefix = fixture.split("pub struct Out {").next().expect("field fixture");
+    let src = format!(
+        "{prefix}\n{}",
+        r#"
+use std::derive::value_gradient_with
+
+fn accumulated<F: Field<Tissue>>(field: F, p: vec3, n: u32) -> (f32, Tissue) {
+    var result = field.distance_and_channels(p)
+    for i in 1..n {
+        let next = field.distance_and_channels(p + vec3(f32(i) * 0.03125, 0.0, 0.0))
+        result = (min(result.0, next.0), result.1.blend(next.1, 0.25))
+    }
+    result
+}
+
+@compute(64)
+fn direct_payload<F: Field<Tissue>>(field: F, out: mut Slots<Flat>, id: GlobalId) {
+    let p = vec3(-0.6 + 1.6 * f32(id.x) / 64.0, 0.1, 0.0)
+    out[id] = flat(accumulated(field, p, 1 + id.x % 4).1)
+}
+
+@compute(64)
+fn derived_payload<F: Field<Tissue>>(field: F, out: mut Slots<Flat>, id: GlobalId) {
+    let p = vec3(-0.6 + 1.6 * f32(id.x) / 64.0, 0.1, 0.0)
+    let (_, _, c) = value_gradient_with(|q| accumulated(field, q, 1 + id.x % 4), p)
+    out[id] = flat(c)
+}
+
+pub struct Out {
+    direct: GpuBuffer<Flat>,
+    derived: GpuBuffer<Flat>,
+}
+
+pub fn init() -> Out {
+    var direct: GpuBuffer<Flat> = buffer(65)
+    var derived: GpuBuffer<Flat> = buffer(65)
+    dispatch(direct_payload.bind(field: leg(1.0), out: mut direct), over: 65)
+    dispatch(derived_payload.bind(field: leg(1.0), out: mut derived), over: 65)
+    Out { direct, derived }
+}
+
+pub fn frame(state: mut Out, time: f32, width: u32, height: u32) {}
+"#
+    );
+    let package = crate::package("derived-payload-demand", &src);
+    let output = package.join("build");
+    wrela_tests::must_build(&package, &output);
+    let mut host = Host::load(&output).expect("hardware host");
+    let handles = host.buffers();
+    assert_eq!(handles.len(), 2, "both payload buffers stay live");
+    let direct = host.read_buffer(handles[0]).expect("direct payload");
+    let derived = host.read_buffer(handles[1]).expect("derived payload");
+    assert_eq!(direct.len(), 65 * 32);
+    assert_eq!(derived.len(), direct.len());
+    let (a, b) = (f32s(&direct), f32s(&derived));
+    let (aw, bw) = (u32s(&direct), u32s(&derived));
+    for i in 0..65 {
+        for k in 0..7 {
+            assert!(
+                (a[i * 8 + k] - b[i * 8 + k]).abs() < 1e-5,
+                "payload {i}, field {k}: {} vs {}",
+                a[i * 8 + k],
+                b[i * 8 + k]
+            );
+        }
+        assert_eq!(aw[i * 8 + 7], bw[i * 8 + 7], "categorical material at {i}");
+    }
+}
+
 /// A chain of blended parts evaluates each part once for its channels, not once per blend it's
 /// under: eight parts' channels in a kernel's WGSL evaluate eight distances (before joint
 /// evaluation, 35), and an `n`-ary union's channels do too. Each part's distance multiplies by
