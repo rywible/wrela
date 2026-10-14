@@ -39,7 +39,7 @@ use climber::figure::{Figure, figure}
 use climber::moves::{Act, drift_rate, locomotion}
 use climber::sounds::{Heard, cues, heard}
 use history::{BAKED, OBSTACLES, tiles_hi, tiles_lo}
-use ground::{FIGHT, FIGHT_WAY, STONE_FEET, STONE_MARGIN, fought, unbuilt}
+use ground::{FIGHT, FIGHT_WAY, GROUND, STONE_FEET, STONE_MARGIN, fought, unbuilt}
 use provenance::NearTile
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
@@ -50,7 +50,7 @@ use std::gpu::{
 }
 use std::input::{Button, Event, Key, events}
 use std::io::{Pending, print}
-use world::{GATE, GROUND, World, present as snapshot, spawn_world, tick}
+use world::{GATE, World, present as snapshot, spawn_world, tick}
 
 /// How far the player goes from the render origin before it moves (m), and the tiles it moves by
 /// (a whole number of the clipmap's coarsest snaps and of its fields' blocks: what's cooked stays).
@@ -635,7 +635,7 @@ fn to_build() -> Vec<blockouts::Built> {
         let at = DOOR.at + DOOR_POSTS[k]
         out.push(blockouts::Built::Standing { at, half: DOOR_POST, turn: 0.0, seed: 950 + k })
     }
-    let g = ground::ground()
+    borrow g = ground::GROUND
     for b in g.land.crag_beds(|q| g.under_crags(q)) {
         out.push(blockouts::Built::Rock { at: b.at, bed: b.bed })
     }

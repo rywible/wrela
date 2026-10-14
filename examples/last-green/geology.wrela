@@ -1,0 +1,237 @@
+// The floor's geology, the first level its land is made in: its rock, and what the uplift under
+// the land past the valley, that rock and the water on it made of the land the floor sketches
+// there (`engine::landform`). The sketch is the far land as `Ground::natural` draws it with no
+// relief: its hills and the mountain in their places. Over a little more than a million years
+// the uplift under them, in proportion to how high the sketch stands, raises them; the water
+// gathers, cuts its valleys back into them where the rock lets it, and fills their hollows; the
+// slopes creep. The granite under the summit holds it up. The rise this leaves over the sketch is
+// the relief the ground adds there (`FAR`), computed when the game is built.
+
+use engine::grow::Grid
+use engine::landform::{Landscape, Relief, Shaping, border, evolve}
+use engine::noise::fbm2_seen
+use engine::place::Land
+use engine::terrain::Terrain
+use ground::{GROUND, Ground, STAND, past_edge}
+
+// ---- the rock ---------------------------------------------------------------------------------
+
+/// The floor's rock at a place: its acidity (0 a base-rich mudstone, 1 an acid sandstone or
+/// granite), which the soil over it takes and the wood's floor's plants follow; its colour; and
+/// how easily water cuts it (the stream power law's K: m^0.5 a year per m of fall).
+pub struct Rock: Copy {
+    pub acid: f32,
+    pub colour: vec3,
+    pub erodibility: f32,
+}
+
+/// How easily water cuts each rock: the beds' sandstone and mudstone, and granite.
+pub const SANDSTONE_K: f32 = 2.0e-6
+pub const MUDSTONE_K: f32 = 4.0e-6
+pub const GRANITE_K: f32 = 1.8e-6
+
+/// The beds' share of sandstone, through a pair: what a sample many beds deep sees.
+const SANDSTONE_SHARE: f32 = 0.48
+
+/// The summit of the far mountain, the granite under it, how far it reaches whole and to its
+/// edge (m).
+pub const SUMMIT = vec2(-3300.0, 7600.0)
+const SUMMIT_GRANITE = vec2(1300.0, 2300.0)
+
+/// The rock under (`p`, `y`) as a sample `w` across sees it: beds of sandstone and mudstone,
+/// about 18 m a pair, dipping gently to the south-east and bent by broad folds, so a slope cuts
+/// across them in bands; granite under the crags (`land`'s), the Watch and the far mountain's
+/// summit. Its erodibility is the beds' own where the sample is finer than a bed, their mean where
+/// it's many beds wide.
+pub fn rock(land: Land, p: vec2, y: f32, w: f32) -> Rock {
+    let fold = 7.0 * (fbm2_seen(p * 0.004 + vec2(3.0, 9.0), 2, w * 0.004) - 0.5)
+    let lay = y + dot(p, vec2(0.05, -0.035)) + fold
+    let f = fract(lay / 18.0)
+    let sand = smoothstep(0.18, 0.3, f) * smoothstep(0.78, 0.66, f)
+    let watch = 1.0 - smoothstep(30.0, 60.0, length(p - vec2(560.0, -470.0)))
+    let summit = 1.0 - smoothstep(SUMMIT_GRANITE.x, SUMMIT_GRANITE.y, length(p - SUMMIT))
+    let granite = max(max(land.crag_rock(p), watch), summit)
+    let acid = max(mix(0.15, 0.85, sand), granite)
+    let beds = mix(vec3(0.19, 0.19, 0.205), vec3(0.31, 0.26, 0.19), vec3(sand))
+    let seen = mix(sand, SANDSTONE_SHARE, smoothstep(6.0, 36.0, w))
+    Rock {
+        acid,
+        colour: mix(beds, vec3(0.27, 0.25, 0.24), vec3(granite)),
+        erodibility: mix(mix(MUDSTONE_K, SANDSTONE_K, seen), GRANITE_K, granite),
+    }
+}
+
+// ---- the far land -----------------------------------------------------------------------------
+
+/// The far land's grid: 64 m cells over 10 by 16 km north-west of the floor, the valley's far
+/// side, its hills and the mountain; and its cells.
+pub const FAR_GRID = Grid { lo: vec2(-8000.0, -4000.0), nx: 160, nz: 256, cell: 64.0 }
+pub const FAR_N: u32 = 40960
+
+/// How far in from the grid's edge cells the far land's relief comes in fully (m).
+pub const FAR_COLLAR: f32 = 640.0
+
+/// Where the far land begins: past the plateau's edge, and from this far from where the
+/// clearing's camera stood, wholly from the next (m). Nearer, the floor's own land holds.
+pub const FAR_FROM: f32 = 1100.0
+pub const FAR_WHOLE: f32 = 1400.0
+pub const FAR_PAST: f32 = 60.0
+
+/// How the far land was made: 150 steps of 8000 years; the stream power law's exponent on
+/// the area a channel drains; and how fast its slopes creep (m² a year).
+pub const SHAPING = Shaping { steps: 150, years: 8000.0, m: 0.5, creep: 0.003 }
+
+/// The valley's floor under the far land (m), and the uplift (m a year) where the sketch stands
+/// `UPLIFT_SPAN` metres over it: in proportion between.
+const FLOOR: f32 = -95.0
+const UPLIFT: f32 = 4.0e-4
+const UPLIFT_SPAN: f32 = 1500.0
+
+/// The far land's relief: the rise over the sketch that its making left (`made`).
+@fuel(2 ** 40)
+pub const FAR: Relief<FAR_N> = Relief::of(made(), sketch())
+
+/// The far land as the floor sketches it, each cell's height (m).
+pub fn sketch() -> Vec<f32> {
+    let g = Ground::sketched()
+    Vec::from_fn(FAR_N, |c| {
+        let p = FAR_GRID.centre(c)
+        g.natural(p.x, p.y)
+    })
+}
+
+/// Whether the far land's cell at `p` holds the base level: the plateau and the land near the
+/// floor, which aren't made here, and the grid's border.
+pub fn held(p: vec2, edge: bool) -> bool {
+    edge || past_edge(p) <= 0.0 || length(p - STAND) < FAR_WHOLE
+}
+
+/// The far land as its uplift, its rock and its water made it from the sketch.
+pub fn made() -> Landscape {
+    let start = sketch()
+    let edges = border(FAR_GRID)
+    let base: Vec<bool> = Vec::from_fn(FAR_N, |c| held(FAR_GRID.centre(c), edges[c]))
+    let uplift: Vec<f32> = Vec::from_fn(FAR_N, |c| {
+        UPLIFT * saturate((start[c] - FLOOR) / UPLIFT_SPAN)
+    })
+    // The rock as a cell sees it: many beds deep, so its beds' mean, whatever its height.
+    let land = map::land()
+    let erodibility: Vec<f32> = Vec::from_fn(FAR_N, |c| {
+        rock(land, FAR_GRID.centre(c), start[c], FAR_GRID.cell).erodibility
+    })
+    evolve(FAR_GRID, start, base, uplift, erodibility, SHAPING)
+}
+
+/// How much of the far land's relief holds at `p`, `past` metres past the plateau's edge (0 to
+/// 1): none on the plateau or nearer the floor than `FAR_FROM`, all of it from `FAR_WHOLE` and
+/// `FAR_PAST` past the edge, and none past the grid's collar; smoothly between, so it adds no
+/// step to the ground.
+pub fn far_weight(far: Relief<FAR_N>, p: vec2, past: f32) -> f32 {
+    if past <= 0.0 {
+        return 0.0
+    }
+    smoothstep(0.0, FAR_PAST, past) *
+        smoothstep(FAR_FROM, FAR_WHOLE, length(p - STAND)) *
+        far.within(p, FAR_COLLAR)
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+/// Where its making leaves the far land, the ground falls along every channel its water takes:
+/// at each cell's middle where the relief holds whole, the ground is higher than at its
+/// receiver's.
+@test
+@fuel(2 ** 40)
+fn the_ground_falls_down_every_channel_the_far_land_made() {
+    let l = made()
+    borrow g = GROUND
+    var checked = 0
+    for c in 0..FAR_N {
+        let r = l.down[c]
+        if r == engine::grow::NONE {
+            continue
+        }
+        let p = FAR_GRID.centre(c)
+        let q = FAR_GRID.centre(r)
+        if far_weight(g.far, p, past_edge(p)) < 1.0 || far_weight(g.far, q, past_edge(q)) < 1.0 {
+            continue
+        }
+        let here = g.natural(p.x, p.y)
+        let there = g.natural(q.x, q.y)
+        assert(here > there, f"the ground rises from ({p.x}, {p.y}) to its receiver")
+        checked += 1
+    }
+    assert(checked > FAR_N / 2, f"only {checked} channels' steps held the relief whole")
+}
+
+/// Nearer the floor than the far land, and on the plateau, the ground is its sketch's, to the bit.
+@test
+fn the_near_land_is_its_sketch() {
+    let sketched = Ground::sketched()
+    for j in 0..60 {
+        for i in 0..60 {
+            let p = vec2(-1500.0, -1600.0) + vec2(f32(i), f32(j)) * vec2(60.0, 50.0)
+            let near = length(p - STAND) < FAR_FROM || past_edge(p) <= 0.0
+            if near {
+                assert(GROUND.at(p.x, p.y) == sketched.at(p.x, p.y), f"({p.x}, {p.y}) moved")
+            }
+        }
+    }
+}
+
+/// The far mountain's summit stands where the sketch puts it, as high within 5%, above the snow.
+@test
+fn the_summit_keeps_its_place_and_its_snow() {
+    let s = sketch()
+    var top = vec3(-1.0e9)
+    var was = vec3(-1.0e9)
+    for c in 0..FAR_N {
+        let p = FAR_GRID.centre(c)
+        let h = GROUND.natural(p.x, p.y)
+        if h > top.y {
+            top = vec3(p.x, h, p.y)
+        }
+        if s[c] > was.y {
+            was = vec3(p.x, s[c], p.y)
+        }
+    }
+    assert(length(top.xz - was.xz) < 800.0, f"the summit moved to ({top.x}, {top.z})")
+    assert(abs(top.y / was.y - 1.0) < 0.05, f"the summit is {top.y} m, sketched {was.y} m")
+    assert(top.y > 1000.0, "the summit is below the snow")
+}
+
+/// The far land's relief adds no step to the ground: across its grid's edges and corners, the
+/// plateau's edge and the land near the floor, nowhere does it change by more than `SMOOTH` metres
+/// over a metre (a step would be its whole rise, hundreds of metres); and on its grid's edges
+/// and past them the ground is the sketch's.
+@test
+fn the_far_land_meets_the_sketch_without_a_step() {
+    let sketched = Ground::sketched()
+    let lo = FAR_GRID.lo
+    let hi = lo + vec2(f32(FAR_GRID.nx), f32(FAR_GRID.nz)) * FAR_GRID.cell
+    let added = |p: vec2| GROUND.at(p.x, p.y) - sketched.at(p.x, p.y)
+    for k in 0..41 {
+        let t = f32(k) / 40.0
+        for p in [
+            vec2(lo.x, mix(lo.y, hi.y, t)),
+            vec2(hi.x, mix(lo.y, hi.y, t)),
+            vec2(mix(lo.x, hi.x, t), lo.y),
+            vec2(mix(lo.x, hi.x, t), hi.y),
+        ] {
+            assert(added(p) == 0.0, f"the edge at ({p.x}, {p.y}) moved")
+            assert(added(p + (p - 0.5 * (lo + hi)) * 0.01) == 0.0, "the land past the edge moved")
+        }
+    }
+    for j in 0..200 {
+        for i in 0..125 {
+            let p = lo + vec2(f32(i) + 0.37, f32(j) + 0.61) * (hi - lo) / vec2(125.0, 200.0)
+            for d in [vec2(0.5, 0.0), vec2(0.0, 0.5)] {
+                let step = abs(added(p + d) - added(p - d))
+                assert(step <= SMOOTH, f"the relief steps {step} m at ({p.x}, {p.y})")
+            }
+        }
+    }
+}
+
+/// The most the far land's relief changes over a metre (m).
+const SMOOTH: f32 = 12.0

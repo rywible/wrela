@@ -4,7 +4,7 @@
 // `wrela studio <floor>` writes one for the floor's `lens` module.
 
 use engine::interest::Preview
-use floor::{map, preview}
+use floor::{geology as survey, map, preview}
 use maplens::lens::MapLens
 use std::par::Task
 
@@ -22,7 +22,7 @@ pub fn init() -> MapLens {
 }
 
 pub fn frame(state: mut MapLens, time: f32, width: u32, height: u32) {
-    maplens::lens::frame(mut state, map, start, width, height)
+    maplens::lens::frame(mut state, map, start, survey, width, height)
 }
 
 pub fn busy(state: MapLens) -> u32 {
@@ -63,4 +63,8 @@ pub fn walk(state: mut MapLens) {
 
 pub fn point(state: mut MapLens, x: f32, z: f32) {
     maplens::lens::walk(mut state, Vec::from([x, z]))
+}
+
+pub fn geology(state: mut MapLens, layer: u32) {
+    maplens::lens::geology(mut state, survey, layer)
 }

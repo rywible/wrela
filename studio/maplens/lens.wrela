@@ -10,6 +10,7 @@
 // writes round it passes them): the map, the ground's height, and the preview.
 
 use engine::interest::{FAINT, Preview, Walk, views_grid}
+use engine::landform::{Landform, Survey, landform}
 use engine::place::{Map, Relation}
 use std::collections::Vec
 use std::gpu::{Rgba8, Texture, begin_screen_pass, draw, texture}
@@ -77,6 +78,10 @@ pub struct MapLens {
     pub answers: u32,
     /// Walks to draw (`walk`: a player's, from a replay's reports), each its points.
     pub walks: Vec<Vec<vec2>>,
+    /// The floor's geology as surveyed (made when it's first asked for), and which of its
+    /// layers the lens draws in place of the ground (`STRATA`; 0, none).
+    pub geology: Option<Survey>,
+    pub stratum: u32,
 }
 
 /// The lens on a floor whose map `map` gives; its preview starts at once.
@@ -105,6 +110,8 @@ pub fn open(map: fn() -> Map, start: fn() -> Task<Preview>) -> MapLens {
         renderer,
         answers: 0,
         walks: Vec::new(),
+        geology: None,
+        stratum: 0,
     }
     start_preview(mut lens, start)
     lens
@@ -423,6 +430,70 @@ fn dotted(ui: mut Ui, a: vec2, b: vec2, col: vec4, step: f32, size: f32) {
     }
 }
 
+/// The geology's layers (`geology n`'s n, from 1): the final surface's relief, shaded and
+/// tinted by height; how much the making raised or cut each cell (red raised, blue cut); its
+/// uplift; its rock's erodibility; how much water gathers (the area that drains through each
+/// cell, on a log scale); the surface's slope, in the summary's bands; and its forms.
+pub const STRATA = ["relief", "rise", "uplift", "rock", "water", "slope", "landform"]
+
+/// The area a cell drains (m²) past which the geology's summary counts it as a channel.
+pub const CHANNEL: f32 = 1.0e6
+
+/// `geology n`: layer `n` of the floor's geology (`STRATA`, from 1) drawn in place of the
+/// ground, the view on its whole grid the first time; `geology 0` the ground again. Its answer:
+/// the layer, and the final surface's summary where the relief holds whole (`landform::Summary`).
+/// It reads nothing of the preview, so it answers while the preview is still on its way.
+pub fn geology(lens: mut MapLens, survey: fn() -> Option<Survey>, layer: u32) {
+    if layer > 0 && lens.geology.is_none() {
+        lens.geology = survey()
+    }
+    let had = lens.stratum
+    lens.stratum = if lens.geology.is_some() { min(layer, STRATA.len()) } else { 0 }
+    lens.dirty = true
+    match lens.geology {
+        None => {
+            let a = obj().text("action", "geology").text("error", "the floor has no geology").done()
+            lens.answer(a.as_str())
+        },
+        Some(s) => {
+            let g = s.made.grid
+            if had == 0 && lens.stratum > 0 {
+                let size = vec2(f32(g.nx), f32(g.nz)) * g.cell
+                lens.view = vec3(g.lo.x + 0.5 * size.x, g.lo.y + 0.5 * size.y, 0.5 * size.x * 1.02)
+            }
+            let m = s.summary(CHANNEL)
+            var slopes = list()
+            for x in m.slopes {
+                slopes.add(f"{x}".as_str())
+            }
+            let forms = obj()
+                .num("flat", m.forms[Landform::Flat])
+                .num("ridge", m.forms[Landform::Ridge])
+                .num("spur", m.forms[Landform::Spur])
+                .num("slope", m.forms[Landform::Slope])
+                .num("hollow", m.forms[Landform::Hollow])
+                .num("valley", m.forms[Landform::Valley])
+                .num("cliff", m.forms[Landform::Cliff])
+                .done()
+            let shown = if lens.stratum == 0 { "ground" } else { STRATA[lens.stratum - 1] }
+            let a = obj()
+                .text("action", "geology")
+                .text("layer", shown)
+                .vec("view", lens.view)
+                .num("low", m.low)
+                .num("high", m.high)
+                .num("mean", m.mean)
+                .num("hypsometric", m.hypsometric)
+                .raw("slopes", (take slopes).done().as_str())
+                .raw("forms", forms.as_str())
+                .num("drainage_density", m.density)
+                .int("pits", m.pits)
+                .done()
+            lens.answer(a.as_str())
+        },
+    }
+}
+
 /// `zoom x z h`: the view `2 h` metres across at (x, z).
 pub fn zoom(lens: mut MapLens, x: f32, z: f32, half: f32) {
     lens.view = vec3(x, z, max(half, 10.0))
@@ -608,13 +679,100 @@ fn ground_colour(p: Preview, c: u32, shade: f32) -> vec3 {
     trail * shade * unwalkable
 }
 
+/// Layer `layer` of the geology `s` at `q` (in its grid), as a colour; `most`, its most uplift.
+fn stratum_colour(s: Survey, layer: u32, q: vec2, most: f32) -> vec3 {
+    let g = s.made.grid
+    let c = g.cell_at(q)
+    let ij = g.ij(q)
+    let col = if layer == 1 {
+        // The relief, lit from the north-west, tinted from the valleys' green through brown and
+        // grey to white on the heights.
+        let e = g.cell
+        let dx = g.sample(s.surface, q + vec2(e, 0.0)) - g.sample(s.surface, q - vec2(e, 0.0))
+        let dz = g.sample(s.surface, q + vec2(0.0, e)) - g.sample(s.surface, q - vec2(0.0, e))
+        let n = normalize(vec3(-dx, 2.0 * e, -dz))
+        let shade = 0.35 + 0.65 * max(dot(n, normalize(vec3(-1.0, 1.4, -1.0))), 0.0)
+        let t = saturate((g.sample(s.surface, q) + 100.0) / 2100.0)
+        let tint = if t < 0.35 {
+            mix(vec3(0.25, 0.4, 0.2), vec3(0.45, 0.4, 0.25), vec3(t / 0.35))
+        } else if t < 0.75 {
+            mix(vec3(0.45, 0.4, 0.25), vec3(0.55, 0.53, 0.5), vec3((t - 0.35) / 0.4))
+        } else { mix(vec3(0.55, 0.53, 0.5), vec3(0.95), vec3((t - 0.75) / 0.25)) }
+        tint * shade
+    } else if layer == 2 {
+        let r = clamp(s.rise[c] / 300.0, -1.0, 1.0)
+        if r > 0.0 { mix(vec3(0.2), vec3(0.85, 0.2, 0.12), vec3(r)) } else {
+            mix(vec3(0.2), vec3(0.15, 0.35, 0.9), vec3(-r))
+        }
+    } else if layer == 3 {
+        mix(vec3(0.08), vec3(1.0, 0.6, 0.15), vec3(s.made.uplift[c] / most))
+    } else if layer == 4 {
+        // Erodibility on a log scale over 1e-7 to 1e-4: hard rock dark red, soft pale.
+        let k = saturate((log(max(s.made.erodibility[c], 1.0e-9)) - log(1.0e-7)) / log(1.0e3))
+        mix(vec3(0.45, 0.08, 0.06), vec3(0.95, 0.88, 0.6), vec3(k))
+    } else if layer == 5 {
+        let a = saturate(log(s.made.area[c] / (g.cell * g.cell)) / log(1.0e4))
+        mix(vec3(0.06, 0.06, 0.08), vec3(0.55, 0.85, 1.0), vec3(a * a))
+    } else if layer == 6 {
+        let slope = engine::landform::shape(g, s.surface, ij.x, ij.y).x
+        let bands = [
+            vec3(0.2, 0.45, 0.2),
+            vec3(0.55, 0.7, 0.3),
+            vec3(0.9, 0.8, 0.3),
+            vec3(0.9, 0.45, 0.2),
+            vec3(0.6, 0.1, 0.1),
+        ]
+        var b = 0
+        let edges = [0.0875, 0.268, 0.577, 1.0]
+        while b < 4 && slope >= edges[b] {
+            b += 1
+        }
+        bands[b]
+    } else {
+        match landform(g, s.surface, ij.x, ij.y) {
+            Landform::Flat => vec3(0.6, 0.75, 0.5),
+            Landform::Ridge => vec3(0.9, 0.85, 0.75),
+            Landform::Spur => vec3(0.8, 0.6, 0.35),
+            Landform::Slope => vec3(0.5, 0.5, 0.45),
+            Landform::Hollow => vec3(0.35, 0.55, 0.75),
+            Landform::Valley => vec3(0.15, 0.3, 0.7),
+            Landform::Cliff => vec3(0.7, 0.15, 0.15),
+        }
+    }
+    // Where the relief doesn't hold whole (the base level, the collar), dimmed.
+    if s.counted[c] { col } else { col * 0.5 }
+}
+
 /// The image of the layers below the map's marks (the ground, the water, the check), the
-/// screen's size.
+/// screen's size; or the geology's layer, where the lens shows one.
 fn draw_image(lens: mut MapLens, m: Map) {
     let w = lens.width
     let h = lens.height
     var px: Vec<u8> = Vec::filled(w * h * 4, 0)
-    if let Some(p) = lens.preview {
+    if lens.stratum > 0 && lens.geology.is_some() {
+        if let Some(s) = lens.geology {
+            var most = 1.0e-9
+            for u in s.made.uplift {
+                most = max(most, u)
+            }
+            for y in 0..h {
+                for x in 0..w {
+                    let q = lens.world(vec2(f32(x) + 0.5, f32(y) + 0.5))
+                    let col = if s.made.grid.holds(q) {
+                        stratum_colour(s, lens.stratum, q, most)
+                    } else {
+                        vec3(0.12, 0.12, 0.14)
+                    }
+                    let o = (y * w + x) * 4
+                    let rgb = sqrt(clamp(col, vec3(0.0), vec3(1.0)))
+                    px[o] = u8(rgb.x * 255.0)
+                    px[o + 1] = u8(rgb.y * 255.0)
+                    px[o + 2] = u8(rgb.z * 255.0)
+                    px[o + 3] = 255
+                }
+            }
+        }
+    } else if let Some(p) = lens.preview {
         borrow s = p.checked.sight
         let g = s.grid
         let vg = views_grid(m, engine::interest::QUICK)
@@ -794,6 +952,7 @@ pub fn frame(
     lens: mut MapLens,
     map: fn() -> Map,
     start: fn() -> Task<Preview>,
+    survey: fn() -> Option<Survey>,
     width: u32,
     height: u32,
 ) {
@@ -843,7 +1002,7 @@ pub fn frame(
     poll_write(mut lens)
     while !busy(lens) && !lens.queue.is_empty() {
         let line = lens.queue.remove(0)
-        command(mut lens, map, start, line.as_str())
+        command(mut lens, map, start, survey, line.as_str())
     }
     let m = map()
     if lens.dirty {
@@ -865,7 +1024,13 @@ pub fn frame(
 }
 
 /// A typed command: an action's name and its numbers.
-pub fn command(lens: mut MapLens, map: fn() -> Map, start: fn() -> Task<Preview>, line: str) {
+pub fn command(
+    lens: mut MapLens,
+    map: fn() -> Map,
+    start: fn() -> Task<Preview>,
+    survey: fn() -> Option<Survey>,
+    line: str,
+) {
     var words: Vec<String> = Vec::new()
     var word = String::new()
     for i in 0..line.len() {
@@ -909,6 +1074,8 @@ pub fn command(lens: mut MapLens, map: fn() -> Map, start: fn() -> Task<Preview>
     } else if name == "point" {
         let p = Vec::from([arg(0), arg(1)])
         walk(mut lens, take p)
+    } else if name == "geology" {
+        geology(mut lens, survey, u32(arg(0)))
     } else {
         let a = obj().text("error", f"no action `{name}`".as_str()).done()
         lens.answer(a.as_str())

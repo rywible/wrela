@@ -2,11 +2,14 @@
 // the clipmap cooks on the GPU. The clearing's layout (M5's #28 §1) at the origin, and round it the
 // map's big shapes (`map::land`): the Spine and its crag, the Watch, the Sink and the Cut, the Fang
 // and the pines, on a plateau that rises gently to the south-east. Past the plateau's edge the land
-// falls about 95 m to the valley, with hills beyond and the far mountain.
+// falls about 95 m to the valley, with hills beyond and the far mountain, as the far land's geology
+// made them (`geology`).
 
+use engine::landform::Relief
 use engine::noise::{fbm2, fbm2_seen, noise2, noise2_seen, ridged2}
 use engine::place::Land
 use engine::terrain::{Cover, Terrain}
+use geology::{FAR, FAR_GRID, FAR_N, far_weight, rock}
 use std::field::smin
 
 /// The meadow's middle, the great tree's rise, and where the clearing's camera started (M5).
@@ -82,7 +85,7 @@ const SHORE_RISE: f32 = 0.06
 /// A mere round `at`, `r` across: its level 40 cm under the lowest of the land round it (to 1.3
 /// of its radius, where the sim reads its water), so it holds its water and spills nowhere.
 fn mere(at: vec2, r: f32) -> vec4 {
-    let g = ground()
+    borrow g = GROUND
     var low = 1.0e9
     for k in 0..96 {
         let a = 6.2831853 * f32(k) / 96.0
@@ -104,7 +107,7 @@ const PLUNGE_DEEP: f32 = 2.2
 /// edge, to where the cliff's foot is 4 m behind (13 m past the edge), its rim at the land's
 /// height there.
 fn plunge_site(lip: vec2, r: f32) -> vec4 {
-    let g = ground()
+    borrow g = GROUND
     var at = lip
     for _ in 0..6 {
         at += ACROSS * (13.0 - past_edge(at))
@@ -212,18 +215,23 @@ pub fn joints(p: vec2, size: f32) -> (f32, f32) {
     (saturate(raised), 0.5 * (next - near) * size)
 }
 
-/// The floor's ground: the map's land, and the clearing's.
+/// The floor's ground: the map's land, the clearing's, and the far land's relief (`geology`).
 pub struct Ground: Copy + GpuData {
     pub land: Land,
+    pub far: Relief<FAR_N>,
 }
 
-/// The ground of the floor's map.
-pub fn ground() -> Ground {
-    let g = Ground { land: map::land() }
-    Ground { land: g.land.settled(|q| g.under_crags(q)) }
-}
+/// The ground of the floor's map, with the relief its far land's making left (`geology::FAR`).
+pub const GROUND: Ground = Ground { far: FAR, ..Ground::sketched() }
 
 impl Ground {
+    /// The ground of the floor's map as it's sketched: the far land with no relief, as its
+    /// making starts from it (`geology::made`).
+    pub fn sketched() -> Ground {
+        let g = Ground { land: map::land(), far: Relief::none(FAR_GRID) }
+        Ground { land: g.land.settled(|q| g.under_crags(q)), far: Relief::none(FAR_GRID) }
+    }
+
     /// The ground's height at (x, z): the land, and the mere's basin in it.
     pub fn at(self, x: f32, z: f32) -> f32 {
         let p = vec2(x, z)
@@ -294,8 +302,7 @@ impl Ground {
                 smoothstep(0.5, 0.8, hills) *
                 ridged2(p * 0.0024 + vec2(2.0, 5.0), 4)
             let rise = 40.0 + 380.0 * smoothstep(0.3, 0.8, hills) + crests
-            let cut = foothill_drainage(p) * smoothstep(80.0, 180.0, rise)
-            y += smoothstep(1100.0, 3200.0, d) * (rise - cut)
+            y += smoothstep(1100.0, 3200.0, d) * rise
         }
         // The far mountain, across the valley: one peak, and a shoulder; spurs running down from
         // the peak, sharp-crested with gullies between (ridged noise round the peak), and its
@@ -312,10 +319,13 @@ impl Ground {
             let spurs = ridged2(m / max(out, 1.0) * 3.2 + vec2(out * 0.0009, 3.1 - out * 0.0005), 4)
             let crests = ridged2(p * 0.0021 + vec2(-5.3, 1.9), 4)
             let rise = mountain * (750.0 + 650.0 * spurs * spurs + 300.0 * crests)
-            // Retain the summit composition. Only the lower slopes lose material where
-            // tributaries join a broad valley, rather than repeated radial folds.
-            let cut = mountain_drainage(m) * (1.0 - smoothstep(650.0, 900.0, rise))
-            y += max(rise - cut, 0.0) * smoothstep(1.0e-3, 2.0e-2, mountain)
+            y += rise * smoothstep(1.0e-3, 2.0e-2, mountain)
+        }
+        // What the far land's uplift, rock and water made of the sketch above: its valleys cut
+        // and its hollows filled (`geology`).
+        let far = far_weight(self.far, p, past)
+        if far > 0.0 {
+            y += far * self.far.rise_at(p)
         }
         y
     }
@@ -343,21 +353,11 @@ impl Ground {
         y + smoothstep(70.0, 140.0, r) * self.land.base(p)
     }
 
-    /// The bedrock under (`p`, `y`) as a sample `w` across sees it (the floor's geology): beds of
-    /// sandstone and mudstone, about 18 m a pair, dipping gently to the south-east and bent by
-    /// broad folds, so a slope cuts across them in bands; granite under the crags and the
-    /// Watch. Its acidity (0 a base-rich mudstone, 1 an acid sandstone or granite), which the
-    /// soil over it takes and the wood's floor's plants follow, and its colour.
+    /// The bedrock under (`p`, `y`) as a sample `w` across sees it (`geology::rock`): its acidity
+    /// and its colour.
     pub fn bedrock(self, p: vec2, y: f32, w: f32) -> (f32, vec3) {
-        let fold = 7.0 * (fbm2_seen(p * 0.004 + vec2(3.0, 9.0), 2, w * 0.004) - 0.5)
-        let lay = y + dot(p, vec2(0.05, -0.035)) + fold
-        let f = fract(lay / 18.0)
-        let sand = smoothstep(0.18, 0.3, f) * smoothstep(0.78, 0.66, f)
-        let watch = 1.0 - smoothstep(30.0, 60.0, length(p - vec2(560.0, -470.0)))
-        let granite = max(self.land.crag_rock(p), watch)
-        let acid = max(mix(0.15, 0.85, sand), granite)
-        let beds = mix(vec3(0.19, 0.19, 0.205), vec3(0.31, 0.26, 0.19), vec3(sand))
-        (acid, mix(beds, vec3(0.27, 0.25, 0.24), vec3(granite)))
+        let r = rock(self.land, p, y, w)
+        (r.acid, r.colour)
     }
 
     /// How deep the soil is at `p` (0 bare rock, 1 deep), its normal `n`: thin where it's steep
@@ -366,6 +366,14 @@ impl Ground {
         let flat = smoothstep(0.6, 0.92, n.y)
         let near = smoothstep(0.62, 0.8, fbm2_seen(p * 0.035 + vec2(-5.0, 12.0), 3, w * 0.035))
         saturate(flat * (0.6 + 0.4 * fbm2_seen(p * 0.11, 2, w * 0.11)) - 0.7 * near)
+    }
+
+    /// Whether no tree can stand at `p`, past the floor (the wildwood's): on rock, a cliff, a
+    /// crag or the scarp's talus (`rocky`), or above the tree line, past the plateau's edge.
+    pub fn treeless(self, p: vec2) -> bool {
+        let y = self.at(p.x, p.y)
+        let n = self.normal(p.x, p.y, 1.0)
+        self.rocky(p, n) > 0.5 || past_edge(p) > 10.0 && above_trees(p, y, 0.0) > 0.5
     }
 
     /// How rocky the ground is at `p` (0 to 1): the crags and their scree, the Watch's granite top,
@@ -381,6 +389,13 @@ impl Ground {
         let talus = 0.85 * smoothstep(-0.5, 1.5, past) * (1.0 - smoothstep(12.0, 26.0, past))
         max(max(bald, steep), talus)
     }
+}
+
+/// How far past the tree line the land at `xz`, `y` high, is, as a sample `w` metres across sees it
+/// (0 below it, 1 above it): it lies at about 345 m, higher and lower with a broad noise.
+fn above_trees(xz: vec2, y: f32, w: f32) -> f32 {
+    let high = y + 70.0 * (fbm2_seen(xz * 0.004 + vec2(2.0, 8.0), 3, w * 0.004) - 0.5)
+    smoothstep(330.0, 360.0, high)
 }
 
 /// The light at the ground (the history's, `engine::bake::tile_fields`) under which the canopy is
@@ -491,6 +506,10 @@ impl Ground {
         if down > 0.0 {
             let valley = valley_land(xz, at.y, w)
             a = mix(a, valley, vec3(down))
+            // Where the far land's water gathers (its relief's wetness), the woods and meadows
+            // along its streams, darker and greener.
+            let wet = far_weight(self.far, xz, past) * self.far.wet_at(xz)
+            a = mix(a, vec3(0.03, 0.065, 0.025), vec3(0.6 * smoothstep(0.35, 0.9, wet) * down))
         }
         // Rock on the crags and the ravine's walls (`rock_albedo`: its greys, beds, cracks,
         // lichen and moss, cooked).
@@ -504,7 +523,7 @@ impl Ground {
         // it, high pasture; rock on the steep, scree fanned under it, snow high on what's not
         // steep. Each edge broken by a broad noise, not blurred.
         let high = at.y + 70.0 * (fbm2_seen(xz * 0.004 + vec2(2.0, 8.0), 3, w * 0.004) - 0.5)
-        let alpine = smoothstep(330.0, 360.0, high) * down
+        let alpine = above_trees(xz, at.y, w) * down
         a = mix(a, mix(vec3(0.15, 0.16, 0.06), vec3(0.20, 0.18, 0.09), vec3(patches)), vec3(alpine))
         let lean = n.y + 0.1 * (noise2_seen(xz * 0.012, w * 0.012) - 0.5)
         let up = smoothstep(180.0, 240.0, high) * down
@@ -815,37 +834,6 @@ pub fn rock_albedo(at: vec3, n: vec3, w: f32) -> vec3 {
     c
 }
 
-/// A valley segment: endpoints hold x/z, half-width and depth. Its joined branches
-/// share endpoint widths and depths; the outside ground is exactly unchanged.
-fn drainage_segment(p: vec2, a: vec4, b: vec4) -> f32 {
-    let (distance, t) = engine::place::to_segment(p, a.xy, b.xy)
-    let section = mix(a.zw, b.zw, vec2(t))
-    section.y * (1.0 - smoothstep(0.0, section.x, distance))
-}
-
-/// Joining gullies on the mountain's southern lower slopes, in metres from its summit.
-/// The cut is subordinate to the old mountain mass, never a new peak or a radial cone.
-fn mountain_drainage(p: vec2) -> f32 {
-    let join = vec4(500.0, -2600.0, 280.0, 75.0)
-    let bend = vec4(850.0, -3800.0, 380.0, 55.0)
-    var cut = drainage_segment(p, a: vec4(-650.0, -1500.0, 110.0, 0.0), b: join)
-    cut = max(cut, drainage_segment(p, a: vec4(1550.0, -1500.0, 130.0, 0.0), b: join))
-    cut = max(cut, drainage_segment(p, a: join, b: bend))
-    max(cut, drainage_segment(p, a: bend, b: vec4(1900.0, -5000.0, 420.0, 0.0)))
-}
-
-/// Broad branching cuts in the far foothills. They remove material from existing masses,
-/// leaving their original crests and their level meeting with the forest valley intact.
-fn foothill_drainage(p: vec2) -> f32 {
-    let join = vec4(-3700.0, -925.0, 220.0, 45.0)
-    let bend = vec4(-2600.0, -1200.0, 280.0, 35.0)
-    var cut = drainage_segment(p, a: vec4(-4800.0, -650.0, 100.0, 0.0), b: join)
-    cut = max(cut, drainage_segment(p, a: vec4(-5400.0, 1000.0, 100.0, 0.0), b: join))
-    cut = max(cut, drainage_segment(p, a: join, b: bend))
-    cut = max(cut, drainage_segment(p, a: vec4(-5300.0, -2200.0, 130.0, 0.0), b: bend))
-    max(cut, drainage_segment(p, a: bend, b: vec4(-1300.0, -1000.0, 340.0, 0.0)))
-}
-
 /// Exposed rim width and coverage: broad eroded patches with retained litter between them,
 /// rather than a continuous pale shoulder. Filter the thresholded coverage toward its mean;
 /// thresholding an averaged noise field would erase these material islands at a distance.
@@ -972,32 +960,27 @@ fn woodland_layers_share_connected_litter_openings_and_soil_support() {
     assert(openings > 0 && colonies > 0, "woodland lost either connected litter or rooted colonies")
 }
 
+/// No tree stands on the plateau's scarp past the floor, nor above the tree line on the far
+/// mountain; the plateau and the valley's floor below the scarp hold trees.
 @test
-fn drainage_cuts_join_without_changing_the_outer_ground() {
-    let join = vec4(500.0, -2600.0, 280.0, 75.0)
-    let a = vec4(-650.0, -1500.0, 110.0, 0.0)
-    let b = vec4(850.0, -3800.0, 380.0, 55.0)
-    assert(
-        abs(
-            drainage_segment(p: join.xy, a: a, b: join) -
-                drainage_segment(p: join.xy, a: join, b: b),
-        ) <
-            1.0e-5,
-        "tributary and main valley separated at their join",
-    )
-    assert(mountain_drainage(vec2(0.0)) == 0.0, "drainage changed the summit")
-    assert(foothill_drainage(vec2(0.0)) == 0.0, "far drainage reached the playable plateau")
-    for i in 0..41 {
-        for j in 0..41 {
-            let p = vec2(f32(i) * 250.0 - 6000.0, f32(j) * 250.0 - 6000.0)
-            let m = mountain_drainage(p)
-            let h = foothill_drainage(p)
+fn trees_find_no_footing_on_the_scarp_or_above_the_tree_line() {
+    // The plateau's edge past the floor's square, where its scarp is a cliff.
+    let along = vec2(-ACROSS.y, ACROSS.x)
+    var cliff = 0
+    for k in 0..40 {
+        let on = EDGE + along * (500.0 + 12.0 * f32(k))
+        let face = on + ACROSS * 4.0
+        if GROUND.normal(face.x, face.y, 1.0).y < 0.6 {
+            cliff += 1
             assert(
-                m >= 0.0 && m <= 75.0 && h >= 0.0 && h <= 45.0,
-                "drainage exceeded its bounded incision",
+                GROUND.treeless(face),
+                f"a tree could stand on the cliff at ({face.x}, {face.y})",
             )
         }
+        assert(!GROUND.treeless(on - ACROSS * 40.0), "the plateau holds no tree")
     }
+    assert(cliff > 20, f"the scarp is a cliff at only {cliff} of 40 places")
+    assert(GROUND.treeless(geology::SUMMIT), "a tree could stand on the summit")
 }
 
 @test
@@ -1024,7 +1007,7 @@ fn exposed_rock_joint_interiors_are_planes_not_rounded_bulges() {
 
 @test
 fn alpine_rock_uses_mineral_material_weights() {
-    let g = ground()
+    borrow g = GROUND
     let at = vec3(-3300.0, 650.0, 7600.0)
     let cover = g.cover_at(at, normalize(vec3(0.8, 0.55, 0.0)), 2.0)
     assert(cover.materials.z > 0.99, "steep alpine rock retained soil detail and paint")
@@ -1036,7 +1019,7 @@ fn alpine_rock_uses_mineral_material_weights() {
 /// the submerged bed keep their distinct cover.
 @test
 fn stream_bank_gravel_material_tracks_wet_edge() {
-    let g = ground()
+    borrow g = GROUND
     let p = vec3(0.0, g.at(x: 0.0, z: 0.0), 0.0)
     let n = vec3(0.0, 1.0, 0.0)
     let dry = g.covered(p, n, vec4(1.0, 0.0, 0.3, 0.0), 0.25)
@@ -1075,7 +1058,7 @@ fn stream_bank_gravel_material_tracks_wet_edge() {
 /// exposed ramp and talus. The complete physical height is already supplied by the cook.
 @test
 fn crag_substrate_preserves_lower_basins_and_exposed_ground() {
-    let g = ground()
+    borrow g = GROUND
     let mere = MERE.xy
     let lake = vec3(mere.x, g.at(x: mere.x, z: mere.y), mere.y)
     assert(g.substrate_height(lake) == lake.y, "the mere's basin changed")
@@ -1104,7 +1087,7 @@ fn crag_substrate_preserves_lower_basins_and_exposed_ground() {
 /// forest-floor litter. Canopy light still affects soil, grass and the actual illumination.
 @test
 fn canopy_litter_does_not_paint_the_ravines_rock_faces() {
-    let g = ground()
+    borrow g = GROUND
     let p = vec3(-60.0, g.at(x: -60.0, z: -262.0), -262.0)
     let n = normalize(vec3(1.0, 0.08, 0.0))
     let bare = g.cover_at(p, n, 0.25)
@@ -1115,7 +1098,7 @@ fn canopy_litter_does_not_paint_the_ravines_rock_faces() {
 
 @test
 fn closed_canopy_does_not_grow_plants_on_sheer_mineral_faces() {
-    let g = ground()
+    borrow g = GROUND
     let p = vec3(0.0, g.at(x: 0.0, z: 0.0), 0.0)
     let wetness = vec4(0.1, 0.0, 0.86, 0.0)
     let face = g.covered(p, n: normalize(vec3(1.0, 0.3, 0.0)), fields: wetness, footprint: 0.25)
@@ -1147,7 +1130,7 @@ fn creek_bank_viewpoint_stays_connected_to_its_outer_rim() {
     let lo = vec2(-76.0, -298.0)
     let hi = vec2(-42.0, -260.0)
     let m = map::map()
-    let g = ground()
+    borrow g = GROUND
     let no_trees: Vec<engine::grow::Tree> = Vec::new()
     let no_streams: Vec<engine::grow::Stream> = Vec::new()
     let obstacles = engine::footing::obstacles_of(
@@ -1204,7 +1187,7 @@ fn dry_ravine_rim_exposes_soil_without_planting_its_cut_face() {
     }
     land.ravines[0] = vec4(-100.0, -300.0, 7.0, 10.0)
     land.ravines[1] = vec4(100.0, -300.0, 7.0, 10.0)
-    let g = Ground { land }
+    let g = Ground { land, far: Relief::none(FAR_GRID) }
     // At 75 m along, halfway between walking slumps, the authored rim is exactly 10 m out.
     let rim = vec3(-25.0, 0.0, -290.0)
     let outside = vec3(-25.0, 0.0, -285.0)

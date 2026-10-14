@@ -366,7 +366,7 @@ pub fn moment(
     wind: Wind,
     time: f32,
 ) -> Moment {
-    let g = world::GROUND
+    borrow g = ground::GROUND
     let wading = max(
         engine::footing::mere_depth(world::MAP.water, feet.xz, feet.y),
         history::OBSTACLES.depth(feet.xz),
@@ -408,7 +408,7 @@ pub fn hear(h: mut Hearing, m: Moment, near: Bounded<Heard, WATERS>) {
         h.walked += moved / touch_every(speed)
         if h.walked >= 1.0 {
             h.walked -= 1.0
-            let s = surface_at(world::GROUND, m.feet, m.normal, m.fields, m.wading)
+            let s = surface_at(ground::GROUND, m.feet, m.normal, m.fields, m.wading)
             h.steps[s] += 1
             // Seeded by how many touches the floor's ears have heard: a replay's sound the same.
             h.taken += 1
@@ -420,7 +420,7 @@ pub fn hear(h: mut Hearing, m: Moment, near: Bounded<Heard, WATERS>) {
     h.feet = m.feet
     h.time = m.time
     // Pushing through grass and the wood's floor's plants (and thorn), or through water.
-    let c = engine::terrain::Terrain::cover_with(world::GROUND, m.feet, m.normal, m.fields)
+    let c = engine::terrain::Terrain::cover_with(ground::GROUND, m.feet, m.normal, m.fields)
     let plants = clamp(c.grass * (0.5 + c.tall) + max(m.fields.w, 0.0), 0.0, 1.0)
     let water = smoothstep(0.05, 0.5, m.wading)
     h.cues.push(

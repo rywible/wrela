@@ -208,7 +208,8 @@ const FORK: f32 = 0.24
 const ORDERED = [5, 7, 9, 15, 12, 14, 4, 2, 8, 6, 0, 10, 1, 11, 13, 3]
 
 /// Tile `t`'s trees as the history's records (`grow::Tree`), so the floor places and draws them as
-/// its own: each cell's tree over 1.2 m, a little off its cell's middle, its species the history's
+/// its own: each cell's tree over 1.2 m, a little off its cell's middle (none where that's within
+/// 3 m of a ride or kept clear, as no cell's tree grows there), its species the history's
 /// (`species`: the history's index of beech, oak, birch and pine), its crown and girth by its
 /// height (`habits`), born `year` less its age.
 pub fn tile_trees(
@@ -233,6 +234,11 @@ pub fn tile_trees(
                 vec2(0.5)) *
                 WCELL *
                 0.6
+            let at = (vec2(f32(wi), f32(wj)) + vec2(0.5)) * WCELL + jitter
+            // Where it stands, not only its cell's middle, is clear of rides and what's kept.
+            if ride(at) < 3.0 || clear(at) {
+                continue
+            }
             let kind = species[c.kind - 1]
             let h = habits[kind]
             // Its fork by its cell's place in the pattern: neighbours' differ (#54 §9).
@@ -240,7 +246,7 @@ pub fn tile_trees(
             let seed = u32(wi).wrapping_mul(2654435761) ^ u32(wj).wrapping_mul(40503)
             out.push(
                 Tree {
-                    at: (vec2(f32(wi), f32(wj)) + vec2(0.5)) * WCELL + jitter,
+                    at,
                     kind,
                     born: year - i32(c.age),
                     tall: c.tall,
@@ -298,3 +304,52 @@ pub fn seam_error(t: vec2i, margin: u32, ride: fn(vec2) -> f32, clear: fn(vec2) 
 
 /// The tile size the wildwood grows in is the floor's: a wild tile is a floor tile.
 const _SAME_TILE: bool = WCELL * f32(WTILE) == TILE
+
+// ---- tests --------------------------------------------------------------------------------------
+
+/// A habit that grows anywhere, for the wildwood's tests.
+fn habit() -> Habit {
+    Habit {
+        tallest: 24.0,
+        rate: 0.5,
+        need: 0.1,
+        lifespan: 300.0,
+        crown: 0.2,
+        shade: 0.8,
+        palatable: 0.5,
+        reach: 30.0,
+        mature: 30.0,
+        stands: 1.0,
+        rots: 1.0,
+        wet: 0.0,
+        thin: 0.0,
+        deep: 0.0,
+        beyond: 0.0,
+        windborne: false,
+        thorny: false,
+        suckers: false,
+    }
+}
+
+@test
+fn no_wild_tree_stands_where_its_jitter_takes_it_into_what_is_kept_clear() {
+    // Kept clear west of x = 130 m: the line through the middles of the cells at i = 32, so the
+    // trees of the cells just east of it are jittered across it as often as not.
+    let habits = [habit(), habit(), habit(), habit(), habit()]
+    let trees = tile_trees(
+        vec2i(0),
+        [1, 2, 3, 4],
+        habits,
+        year: 900,
+        ride: |p: vec2| 1.0e9,
+        clear: |p: vec2| p.x < 130.0,
+    )
+    var near = 0
+    for t in trees {
+        assert(t.at.x >= 130.0, "a wild tree stands in what's kept clear")
+        if t.at.x < 131.2 {
+            near += 1
+        }
+    }
+    assert(near > 0, "no tree stands near the edge of what's kept clear")
+}

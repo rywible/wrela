@@ -81,7 +81,7 @@ fn no_meadow_grass_under_a_closed_canopy() {
     let hi = tiles_hi()
     let habits = species::habits()
     let m = map::map()
-    let g = ground::ground()
+    borrow g = ground::GROUND
     var trees: Vec<Vec<Tree>> = Vec::new()
     for j in lo.y..(hi.y + 1) {
         for i in lo.x..(hi.x + 1) {
@@ -209,8 +209,8 @@ fn the_water_is_one_surface() {
                     sim > engine::water::NONE && drawn > engine::water::NONE,
                     f"no water at {p} down a course",
                 )
-                let skin = sim - world::GROUND.at(p.x, p.y) - engine::water::SKIN
-                let ground = world::GROUND.at(p.x, p.y)
+                let skin = sim - ground::GROUND.at(p.x, p.y) - engine::water::SKIN
+                let ground = ground::GROUND.at(p.x, p.y)
                 let in_mere = length(p - w.meres[0].xy) <
                     w.meres[0].z * engine::water::MERE_REACH &&
                     ground < w.meres[0].w
@@ -232,7 +232,7 @@ fn the_water_is_one_surface() {
             for i in 0..200 {
                 let a = f32(i) * 2.399963
                 let p = m.xy + vec2(cos(a), sin(a)) * m.z * sqrt(f32(i) / 200.0)
-                if world::GROUND.at(p.x, p.y) < m.w {
+                if ground::GROUND.at(p.x, p.y) < m.w {
                     let sim = laid.surface(p)
                     assert(
                         abs(sim - m.w) < 1.0e-4,
@@ -278,7 +278,7 @@ fn the_water_is_where_the_map_and_the_flow_put_it() {
     for t in decisions().trees {
         if t.state == State::Alive || t.state == State::Snag {
             let at = t.at
-            let deep = laid.surface(at) - world::GROUND.at(at.x, at.y)
+            let deep = laid.surface(at) - ground::GROUND.at(at.x, at.y)
             assert(
                 deep <= SHORE && !in_course(laid, at),
                 f"a tree stands in the water at {at}, {deep} m deep",
@@ -331,7 +331,7 @@ struct Walked {
 fn walk_toward(from: vec2, to: vec2, seconds: f32, run: bool, a: vec2, b: vec2, r: f32) -> Walked {
     let w = map::map().water
     let d = to - from
-    var p = engine::player::spawn(world::GROUND, engine::place::Place::of(from), atan2(d.x, d.y))
+    var p = engine::player::spawn(ground::GROUND, engine::place::Place::of(from), atan2(d.x, d.y))
     p.controls.forward = true
     p.controls.run_held = run
     p.controls.yaw = atan2(d.x, d.y)
@@ -344,7 +344,7 @@ fn walk_toward(from: vec2, to: vec2, seconds: f32, run: bool, a: vec2, b: vec2, 
     }
     var out = Walked { room: 1.0e9, stood: 1.0e9, closest: 1.0e9, wading_pace: 1.0, deepest: 0.0 }
     for _ in 0..u32(seconds * 60.0) {
-        engine::player::step(mut p, world::GROUND, w, history::OBSTACLES, 1.0 / 60.0)
+        engine::player::step(mut p, ground::GROUND, w, history::OBSTACLES, 1.0 / 60.0)
         let at = p.at.world()
         history::OBSTACLES.near(at, |o| {
             if o.thing != engine::footing::Thing::Stream {
@@ -353,11 +353,11 @@ fn walk_toward(from: vec2, to: vec2, seconds: f32, run: bool, a: vec2, b: vec2, 
         })
         out.stood = min(
             out.stood,
-            engine::footing::stands(world::GROUND, w, history::OBSTACLES, at),
+            engine::footing::stands(ground::GROUND, w, history::OBSTACLES, at),
         )
         out.closest = min(out.closest, target.reach(at).0)
         let deep = max(
-            engine::footing::mere_depth(w, at, world::GROUND.at(at.x, at.y)),
+            engine::footing::mere_depth(w, at, ground::GROUND.at(at.x, at.y)),
             history::OBSTACLES.depth(at),
         )
         if deep > out.deepest {
@@ -375,7 +375,7 @@ fn start_near(at: vec2, r: f32, away: f32) -> vec2 {
     for k in 0..16 {
         let a = 6.2831853 * f32(k) / 16.0
         let s = at + vec2(cos(a), sin(a)) * (r + away)
-        if engine::footing::stands(world::GROUND, w, history::OBSTACLES, s) > 0.0 &&
+        if engine::footing::stands(ground::GROUND, w, history::OBSTACLES, s) > 0.0 &&
             !history::OBSTACLES.blocked(s, engine::footing::BODY + 0.2) {
             return s
         }
@@ -632,10 +632,10 @@ fn the_camera_is_never_inside_a_thing() {
             c.pitch,
             history::OBSTACLES,
             vec2(0.0),
-            |p: vec2| world::GROUND.at(p.x, p.y),
+            |p: vec2| ground::GROUND.at(p.x, p.y),
         )
         let target = feet + vec3(0.0, framing.target, 0.0)
-        let ground = world::GROUND.at(eye.x, eye.z)
+        let ground = ground::GROUND.at(eye.x, eye.z)
         assert(eye.y - ground >= NEAR, f"at {at} the eye is {eye.y - ground} m over the ground")
         history::OBSTACLES.near(eye.xz, |o| {
             let solid = o.thing == engine::footing::Thing::Trunk ||
@@ -658,7 +658,7 @@ fn the_camera_is_never_inside_a_thing() {
                     continue
                 }
                 for ti in in_bin[u32(q.y) * bins.nx + u32(q.x)] {
-                    for pl in trees::placed([all[ti]], |p: vec2| world::GROUND.at(p.x, p.y)) {
+                    for pl in trees::placed([all[ti]], |p: vec2| ground::GROUND.at(p.x, p.y)) {
                         if length(pl.at.at - eye) > 40.0 {
                             continue
                         }
@@ -991,7 +991,7 @@ impl Listener {
             self.grounds.push(near_tile(t))
         }
         let time = f32(self.frame) / 60.0
-        let g = world::GROUND
+        borrow g = ground::GROUND
         let at = vec3(feet.x, g.at(x: feet.x, z: feet.y), feet.y)
         let f = normalize(facing)
         let eye = at - 3.0 * vec3(f.x, 0.0, f.y) + vec3(0.0, 1.8, 0.0)

@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use wrela_tests::repo_root;
 
 /// The floor's files that make its map: copied into a package with `main` as its program.
-const MAP_FILES: [&str; 4] = ["map.wrela", "ground.wrela", "species.wrela", "stones.wrela"];
+const MAP_FILES: [&str; 5] =
+    ["map.wrela", "ground.wrela", "geology.wrela", "species.wrela", "stones.wrela"];
 
 /// A scratch package `name` holding the floor's map files and `main` as its `main.wrela`,
 /// depending on the engine.
@@ -89,7 +90,7 @@ fn anatomy() {
 
 @test
 fn area() {
-    let a = floor_area(ground::ground(), map::map())
+    let a = floor_area(ground::GROUND, map::map())
     assert(a > 2.7 && a < 3.3, f"about 3 km², within 10%: {a}")
 }
 
@@ -116,7 +117,7 @@ const GROWN: u32 = grown()
 fn grown() -> u32 {{
     var m = map::map()
     {edit}
-    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, map::LO, map::HI, stones::stones(m), |land, year| Start::wild(land))
+    let h = simulate(ground::GROUND, m, species::habits(), PREVIEW, map::LO, map::HI, stones::stones(m), |land, year| Start::wild(land))
     h.trees.len()
 }}
 
@@ -292,7 +293,7 @@ fn grown(seed: u32) -> Vec<Tree> {
     var m = map::map()
     m.seed = seed
     let lo = vec2(500.0, -1100.0)
-    var h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, lo + vec2(160.0), stones::stones(m), |land, year| Start::wild(land))
+    var h = simulate(ground::GROUND, m, species::habits(), PREVIEW, lo, lo + vec2(160.0), stones::stones(m), |land, year| Start::wild(land))
     take h.trees
 }
 

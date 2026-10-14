@@ -2025,59 +2025,9 @@ fn smooth_course(points: mut Vec<vec4>) {
 }
 
 /// Where the water at each cell of the land goes next: the neighbour it falls to most steeply
-/// over the land with its pits filled (`NONE` at an outlet: the grid's border). The pits are
-/// filled by flooding from the border, lowest first, each cell raised to a little over the cell
-/// it's reached from (Barnes, Lehman and Mulla's priority flood, with an epsilon), so every cell
-/// drains to the border, across a pit by the way it would spill.
+/// over the land with its pits filled, every border cell an outlet (`landform::drainage`).
 fn drainage(land: Land) -> Vec<u32> {
-    let g = land.grid
-    let nn = g.cells()
-    let (nx, nz) = (g.nx, g.nz)
-    var filled: Vec<f32> = Vec::filled(nn, 0.0)
-    var done: Vec<bool> = Vec::filled(nn, value: false)
-    var heap = Heap { items: Vec::new() }
-    for c in 0..nn {
-        let (i, j) = (c % nx, c / nx)
-        if i == 0 || j == 0 || i == nx - 1 || j == nz - 1 {
-            filled[c] = land.heights[c]
-            done[c] = true
-            heap.push(filled[c], c)
-        }
-    }
-    while !heap.items.is_empty() {
-        let top = heap.pop()
-        let h = bitcast_f32(top.x)
-        let c = top.y
-        let (i, j) = (i32(c % nx), i32(c / nx))
-        for k in 0..8 {
-            let n = vec2i(i, j) + NEIGHBOURS[k]
-            if n.x >= 0 && n.y >= 0 && n.x < i32(nx) && n.y < i32(nz) {
-                let q = u32(n.y) * nx + u32(n.x)
-                if !done[q] {
-                    done[q] = true
-                    filled[q] = max(land.heights[q], h + 1.0e-3)
-                    heap.push(filled[q], q)
-                }
-            }
-        }
-    }
-    var down: Vec<u32> = Vec::filled(nn, NONE)
-    for c in 0..nn {
-        let (i, j) = (i32(c % nx), i32(c / nx))
-        var best = 0.0
-        for k in 0..8 {
-            let n = vec2i(i, j) + NEIGHBOURS[k]
-            if n.x >= 0 && n.y >= 0 && n.x < i32(nx) && n.y < i32(nz) {
-                let q = u32(n.y) * nx + u32(n.x)
-                let fall = (filled[c] - filled[q]) / length(vec2(NEIGHBOURS[k]))
-                if fall > best {
-                    best = fall
-                    down[c] = q
-                }
-            }
-        }
-    }
-    down
+    landform::drainage(land.grid, land.heights, landform::border(land.grid)).down
 }
 
 /// A cell's eight neighbours.

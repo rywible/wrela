@@ -134,7 +134,7 @@ pub fn pick(
     height: fn(vec2) -> f32,
     drawn: fn([Tree]) -> Vec<Drawn>,
 ) -> Picked {
-    let g = raycast(world::GROUND, eye, dir, REACH)
+    let g = raycast(ground::GROUND, eye, dir, REACH)
     var best = if g.hit { g.distance } else { REACH }
     var out = if g.hit {
         Picked::Ground { point: g.point, normal: g.normal, distance: g.distance }
@@ -347,7 +347,7 @@ pub fn fields_at(tiles: [NearTile], p: vec2) -> vec4 {
 /// What covers the ground, in words, from its cover and fields: the stream's bed, rock, a path's
 /// bare earth, worn grass, the meadow, the wood's floor (leaf litter, moss), under thorn, wet.
 pub fn cover_name(point: vec3, normal: vec3, f: vec4) -> String {
-    let g = world::GROUND
+    borrow g = ground::GROUND
     let c = engine::terrain::Terrain::cover_with(g, point, normal, f)
     let rock = g.rocky(point.xz, normal)
     var name = if f.z > engine::bake::STREAM_BED {
@@ -395,7 +395,7 @@ pub fn ground_json(tiles: [NearTile], point: vec3, normal: vec3, distance: f32, 
 /// The soil at `p` (`engine::soil::soil`, with the ground's wetness `wet` there), as JSON: its
 /// kind, its depth (m) and how well crops would do in it.
 fn soil_json(p: vec2, wet: f32) -> String {
-    let s = engine::soil::soil_of(ground::ground(), p, wet)
+    let s = engine::soil::soil_of(ground::GROUND, p, wet)
     let kind = SOIL_NAMES[u32(s.kind)]
     f"{{\"kind\": \"{kind}\", \"depth\": {s.depth}, \"fertile\": {s.fertile}}}"
 }

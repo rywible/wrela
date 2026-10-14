@@ -1,7 +1,9 @@
-// What the map lens needs of its floor: its map (as its literals say now), and its preview.
+// What the map lens needs of its floor: its map (as its literals say now), its preview, and its
+// geology if it has one.
 // `wrela studio <floor>` writes one for the floor's `lens` module; this one is the Last Green's.
 
 use engine::interest::Preview
+use engine::landform::Survey
 use engine::place::Map
 
 pub fn map() -> Map {
@@ -10,4 +12,9 @@ pub fn map() -> Map {
 
 pub fn preview() -> Preview {
     last_green::lens::preview()
+}
+
+/// The floor's geology, if its lens surveys one (`wrela studio` writes `None` where it doesn't).
+pub fn geology() -> Option<Survey> {
+    Some(last_green::lens::geology())
 }
