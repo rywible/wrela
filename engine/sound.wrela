@@ -76,11 +76,13 @@ pub struct Babble: Copy {
 }
 
 /// How the wind sounds at a gust of 1: a rush of low noise (loudest in the open), and the
-/// leaves' hiss, which flutters (loudest under a canopy).
+/// leaves' hush (loudest under a canopy). Each is noise through a resonant low-pass whose corner
+/// (`rush_hz`, `leaves_hz`) climbs with the wind, so a stronger gust is higher as well as louder;
+/// `rush` and `leaves` are their levels.
 pub struct Breath: Copy {
     pub rush_hz: f32 = 350.0,
     pub rush: f32 = 0.0,
-    pub leaves_hz: f32 = 4500.0,
+    pub leaves_hz: f32 = 1400.0,
     pub leaves: f32 = 0.0,
 }
 
@@ -181,12 +183,19 @@ impl Svf {
     /// `x` through the band: the band-pass output, at unit gain at the centre.
     @audio
     fn pass(mut self, b: Band, x: f32) -> f32 {
+        self.both(b, x).1
+    }
+
+    /// `x` through the band: the low-pass output and the band-pass output (unit gain at the
+    /// centre).
+    @audio
+    fn both(mut self, b: Band, x: f32) -> (f32, f32) {
         let v3 = x - self.ic2
         let v1 = b.a1 * self.ic1 + b.a2 * v3
         let v2 = self.ic2 + b.a2 * self.ic1 + b.a3 * v3
         self.ic1 = 2.0 * v1 - self.ic1
         self.ic2 = 2.0 * v2 - self.ic2
-        b.k * v1
+        (v2, b.k * v1)
     }
 }
 
@@ -235,18 +244,6 @@ impl Placed {
         self.left = g.x
         self.right = g.y
         self.air = 1.0 - exp(-TAU * air_hz(length(at - ears.at)) / RATE)
-    }
-
-    /// Starts a quantum heard from no place (the wind, all round): panned by `side` (-1 left
-    /// to 1 right), at `level`, through no air.
-    @audio
-    fn around(mut self, side: f32, level: f32) {
-        self.was_left = self.left
-        self.was_right = self.right
-        let angle = 0.25 * PI * (clamp(side, -1.0, 1.0) + 1.0)
-        self.left = 1.41421356 * level * cos(angle)
-        self.right = 1.41421356 * level * sin(angle)
-        self.air = 1.0
     }
 
     /// `x` (sample `i` of the quantum) through the air and into the two channels.
@@ -369,7 +366,7 @@ impl Ringing {
     }
 }
 
-/// Noise through a band, swelling and falling at random: a water source, or the wind's leaves.
+/// Noise through a band, swelling and falling at random: a water source, or a brush.
 struct Bed: Copy {
     band: Band,
     svf: Svf,
@@ -415,6 +412,146 @@ impl Bed {
     }
 }
 
+/// A slow random drift, about ±1: white noise through two one-poles, a step a quantum.
+struct Drift: Copy {
+    a: f32,
+    y1: f32,
+    y2: f32,
+    gain: f32,
+}
+
+/// A drift about `hz` times a second.
+@audio
+fn drift(hz: f32) -> Drift {
+    let a = 1.0 - exp(-TAU * hz * f32(QUANTUM) / RATE)
+    // Two one-poles in series pass about a / 4 of white noise's variance (1/3): this brings its
+    // spread to about ±1.
+    Drift { a, y1: 0.0, y2: 0.0, gain: sqrt(12.0 / a) }
+}
+
+impl Drift {
+    @audio
+    fn next(mut self, noise: mut Noise) -> f32 {
+        self.y1 += self.a * (noise.next() - self.y1)
+        self.y2 += self.a * (self.y1 - self.y2)
+        self.y2 * self.gain
+    }
+}
+
+/// How long the felt gust takes to come to the cue's (s), and how far the air's own drift
+/// stirs it (a fraction) and the canopy's sway stirs each ear's (a fraction).
+const GUST_EASE: f32 = 0.5
+const STIRRED: f32 = 0.22
+const SWAYED: f32 = 0.25
+
+/// The share of each ear's rush and hush that is its own noise: the rest both ears hear alike.
+/// Ears that heard the same noise would put the wind between them, not all round.
+const RUSH_APART: f32 = 0.7
+const HUSH_APART: f32 = 0.85
+
+/// The wind as the ears hear it: the gust they feel (eased toward the cue's, so a frame's change
+/// doesn't jump), stirred by the air's own drift (it swells and ebbs, never to silence), and for
+/// each ear its rush and its hush, each through a band set from the gust once a quantum.
+struct Blowing: Copy {
+    felt: f32,
+    drift: Drift,
+    sway: [Drift; 2],
+    shared: Noise,
+    ears: [Noise; 2],
+    rush_band: Band,
+    hush_band: [Band; 2],
+    rush: [Svf; 2],
+    hush: [Svf; 2],
+    /// One-pole low-passes, taken away to cut the lows: below 40 Hz from the rush (a speaker
+    /// can't play them, and they take headroom), below 250 Hz from the hush (that's the rush's).
+    rush_low: [f32; 2],
+    hush_low: [f32; 2],
+    /// The gains, now and as the quantum began: the rush's left and right, the hush's left and
+    /// right.
+    gains: vec4,
+    was: vec4,
+}
+
+fn blowing(seed: u32) -> Blowing {
+    let svf = Svf { ic1: 0.0, ic2: 0.0 }
+    let none = Band { a1: 0.0, a2: 0.0, a3: 0.0, k: 0.0 }
+    Blowing {
+        felt: 0.0,
+        drift: drift(0.35),
+        sway: [drift(0.5); 2],
+        shared: seeded(seed ^ 0x51ed),
+        ears: [seeded(seed ^ 0x1eef), seeded(seed ^ 0x219b)],
+        rush_band: none,
+        hush_band: [none; 2],
+        rush: [svf; 2],
+        hush: [svf; 2],
+        rush_low: [0.0; 2],
+        hush_low: [0.0; 2],
+        gains: vec4(0.0),
+        was: vec4(0.0),
+    }
+}
+
+/// A one-pole low-pass's coefficient for a corner at `hz`.
+fn one_pole(hz: f32) -> f32 {
+    1.0 - exp(-TAU * hz / RATE)
+}
+
+impl Blowing {
+    /// Starts a quantum of wind `b` blowing `gust` strong, with `canopy` of foliage round the
+    /// ears, coming from `side` (-1 left to 1 right), at the mix's `gain`.
+    @audio
+    fn begin(mut self, b: Breath, gust: f32, canopy: f32, side: f32, gain: f32) {
+        self.felt += (1.0 - exp(-f32(QUANTUM) / (GUST_EASE * RATE))) * (gust - self.felt)
+        let v = max(self.felt * (1.0 + STIRRED * self.drift.next(mut self.shared)), 0.0)
+        // The rush, higher in a stronger wind: 0.4 of its corner when still, 1.2 at a gust of 1.
+        self.rush_band = band(b.rush_hz * (0.4 + 0.8 * v), 1.4)
+        let rush = gain * b.rush * v * v * (1.0 - 0.7 * canopy)
+        let r = 0.25 * PI * (clamp(side, -1.0, 1.0) + 1.0)
+        // The leaves away from the wind's side, a little: the trees all round.
+        let h = 0.25 * PI * (clamp(-0.5 * side, -1.0, 1.0) + 1.0)
+        var hush = vec2(0.0)
+        for e in 0..2 {
+            let u = max(v * (1.0 + SWAYED * self.sway[e].next(mut self.ears[e])), 0.0)
+            self.hush_band[e] = band(b.leaves_hz * (0.5 + 0.5 * u), 0.6)
+            hush[e] = gain * b.leaves * canopy * u * sqrt(u)
+        }
+        self.was = self.gains
+        self.gains = 1.41421356 *
+            vec4(
+                rush * cos(r),
+                rush * sin(r),
+                hush.x * cos(h),
+                hush.y * sin(h),
+            )
+    }
+
+    /// Sample `i` of the quantum: left and right.
+    @audio
+    fn sample(mut self, i: u32) -> vec2 {
+        let t = (f32(i) + 1.0) / f32(QUANTUM)
+        let g = self.was + t * (self.gains - self.was)
+        let s = self.shared.next()
+        let s2 = self.shared.next()
+        var out = vec2(0.0)
+        for e in 0..2 {
+            let x = sqrt(1.0 - RUSH_APART) * s + sqrt(RUSH_APART) * self.ears[e].next()
+            let (low, bp) = self.rush[e].both(self.rush_band, x)
+            let y = 0.55 * low + 0.45 * bp
+            self.rush_low[e] += RUSH_CUT * (y - self.rush_low[e])
+            let x2 = sqrt(1.0 - HUSH_APART) * s2 + sqrt(HUSH_APART) * self.ears[e].next()
+            let (hush, _) = self.hush[e].both(self.hush_band[e], x2)
+            self.hush_low[e] += HUSH_CUT * (hush - self.hush_low[e])
+            out[e] = (y - self.rush_low[e]) * g[e] + (hush - self.hush_low[e]) * g[e + 2]
+        }
+        out
+    }
+}
+
+/// The one-pole coefficients of the rush's and the hush's low cuts.
+const RUSH_CUT: f32 = one_pole(40.0)
+const HUSH_CUT: f32 = one_pole(250.0)
+
 /// A water source the voice hears: its bed, its place and its flow.
 struct Stream: Copy {
     at: vec3,
@@ -437,8 +574,7 @@ pub struct Mixer {
     gust: f32,
     toward: vec2,
     canopy: f32,
-    rush: Bed,
-    leaves: Bed,
+    wind: Blowing,
     brushes: [Stream; BRUSHES],
     waters: [Stream; 4],
     noise: Noise,
@@ -448,11 +584,6 @@ pub struct Mixer {
 /// into. Start it with `std::audio::play(mixer, mix)`.
 pub fn mixer(palette: Palette, seed: u32 = 1) -> (RingWriter<Cue>, Mixer) {
     let (cues, reader) = ring::<Cue>(CUES)
-    var rush = bed()
-    var leaves = bed()
-    let w = palette.wind
-    rush.tune(0.6 * w.rush_hz, 1.6 * w.rush_hz, rate: 0.4, depth: 0.6)
-    leaves.tune(0.5 * w.leaves_hz, 2.0 * w.leaves_hz, rate: 5.0, depth: 0.8)
     let quiet = Stream { at: vec3(0.0), kind: 0, flow: 0.0, bed: bed() }
     var brushes = [quiet; BRUSHES]
     for i in 0..BRUSHES {
@@ -473,8 +604,7 @@ pub fn mixer(palette: Palette, seed: u32 = 1) -> (RingWriter<Cue>, Mixer) {
             gust: 0.0,
             toward: vec2(1.0, 0.0),
             canopy: 0.0,
-            rush,
-            leaves,
+            wind: blowing(seed),
             brushes,
             waters: [quiet; 4],
             noise: seeded(seed),
@@ -560,15 +690,11 @@ pub fn mix(m: mut Mixer, left: mut [f32], right: mut [f32]) {
     // The wind comes from upwind: to the side of the ears that faces it, a little.
     let from = -m.toward
     let side = if length(from) > 1e-6 { 0.5 * dot(normalize(from), ears.right) } else { 0.0 }
-    let g = m.gust
-    let open = 1.0 - 0.7 * m.canopy
-    m.rush.out.around(side, p.gain * p.wind.rush * g * g * open)
-    m.leaves.out.around(-0.5 * side, p.gain * p.wind.leaves * g * m.canopy)
+    m.wind.begin(p.wind, m.gust, m.canopy, side, p.gain)
     for i in 0..left.len() {
-        let r = m.rush.sample(mut m.noise)
-        m.rush.out.add(r, i, mut left, mut right)
-        let l = m.leaves.sample(mut m.noise)
-        m.leaves.out.add(l, i, mut left, mut right)
+        let w = m.wind.sample(i)
+        left[i] += w.x
+        right[i] += w.y
     }
     for s in 0..WATERS {
         let level = p.gain * p.waters[m.waters[s].kind].level * m.waters[s].flow
@@ -799,4 +925,91 @@ fn a_whoosh_swells_then_falls() {
     let late = render(mut m, 15)
     assert(db(top.x / 15.0) - db(start.x / 4.0) > 6.0)
     assert(db(top.x) - db(late.x) > 30.0)
+}
+
+/// A second of wind alone, `gust` strong with `leaves` of canopy, after `settle` seconds for the
+/// felt gust to come to it: each channel's energy, their product's sum, and the energy of the
+/// mean's sample-to-sample differences (the highs) over the mean's.
+fn wind_alone(gust: f32, leaves: f32, seconds: f32, settle: f32 = 3.0) -> (vec3, f32, Vec<f32>) {
+    let (c, mx) = mixer(test_palette())
+    var cues = take c
+    var m = take mx
+    cues.push(Cue::Listen { at: vec3(0.0), forward: vec2(0.0, 1.0) })
+    cues.push(Cue::Wind { gust, toward: vec2(1.0, 0.0), leaves })
+    var l = [0.0; QUANTUM]
+    var r = [0.0; QUANTUM]
+    for _ in 0..u32(settle * RATE) / QUANTUM {
+        mix(mut m, mut l, mut r)
+    }
+    var e = vec3(0.0)
+    var highs = 0.0
+    var mean = 0.0
+    var last = 0.0
+    // Each 50 ms's energy (dB): 19 quanta.
+    var windows: Vec<f32> = Vec::new()
+    var window = 0.0
+    let quanta = u32(seconds * RATE) / QUANTUM
+    for q in 0..quanta {
+        mix(mut m, mut l, mut r)
+        for i in 0..QUANTUM {
+            e += vec3(l[i] * l[i], r[i] * r[i], l[i] * r[i])
+            let x = 0.5 * (l[i] + r[i])
+            mean += x * x
+            highs += (x - last) * (x - last)
+            last = x
+            window += x * x
+        }
+        if q % 19 == 18 {
+            windows.push(db(window))
+            window = 0.0
+        }
+    }
+    (e, highs / mean, windows)
+}
+
+@test
+fn the_wind_is_all_round_not_between_the_ears() {
+    // Each ear hears its own noise, so the two channels are far from alike: in the open and
+    // under trees.
+    for leaves in [0.0, 1.0] {
+        let (e, _, _) = wind_alone(gust: 1.0, leaves: leaves, seconds: 1.0)
+        let alike = e.z / sqrt(e.x * e.y)
+        assert(alike < 0.5, f"under {leaves} of canopy, the channels are {alike} alike")
+    }
+}
+
+@test
+fn a_steady_wind_swells_and_ebbs_but_never_drops_out() {
+    let (_, _, windows) = wind_alone(gust: 1.0, leaves: 0.0, seconds: 12.0)
+    var sorted = windows.clone()
+    sorted.sort_by(|a, b| a < b)
+    let median = sorted[sorted.len() / 2]
+    let quietest = sorted[0]
+    let loudest = sorted[sorted.len() - 1]
+    // It lives (its 50 ms move a few dB), but its quietest is never far under its middle.
+    assert(
+        loudest - quietest > 3.0,
+        f"a still wind: {loudest - quietest} dB from its quietest to its loudest",
+    )
+    assert(
+        median - quietest < 12.0,
+        f"the wind dropped out: {median - quietest} dB under its middle",
+    )
+}
+
+@test
+fn a_stronger_wind_is_higher_as_well_as_louder() {
+    // (A band that stayed put, as the wind's once did, would give the same highs at any gust.)
+    let (soft, soft_highs, _) = wind_alone(gust: 0.5, leaves: 0.0, seconds: 2.0)
+    let (strong, strong_highs, _) = wind_alone(gust: 1.4, leaves: 0.0, seconds: 2.0)
+    assert(db(strong.x) - db(soft.x) > 12.0)
+    assert(db(strong_highs) - db(soft_highs) > 2.0)
+}
+
+@test
+fn under_the_trees_the_wind_hushes_without_a_hiss() {
+    // The highs over all: white noise's are 2; the leaves' hiss this replaced (a band about
+    // 4.5 kHz) had about 0.8 of them; a hush mostly under 2 kHz has under a tenth.
+    let (_, highs, _) = wind_alone(gust: 1.4, leaves: 1.0, seconds: 2.0)
+    assert(highs < 0.1, f"under the trees the wind's highs are {highs} of it")
 }
