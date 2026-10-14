@@ -4,11 +4,11 @@ MIT-licensed language, compiler, engine and agent-native studio for browser game
 
 ## Work
 
-- T3 Code manages worktrees and agent sessions. Use its assigned checkout and branch; never implement on `main`. Use direct commands and ordinary checkout-local build output.
+- Work in each machine's normal local checkout; do not create worktrees. Ryan assigns work across the machines. Keep one active task branch per checkout; never implement on `main`. Use direct commands and ordinary checkout-local build output.
 - Own implementation and verification. Routine work has standing permission. Ryan owns goals, architecture, lore and artistic direction; decide implementation details yourself.
 - Ship the smallest complete change. Preserve other sessions' work. Delete losing experiments, dead code and unused constants; avoid speculative abstractions and compatibility scaffolding. Preserve `milestone-6` unchanged.
 - Add focused regressions for new logic, fix failures at their cause, and run `tools/check.sh` before committing. Do not weaken assertions or skip tests for a pass.
-- End completed work with a committed, pushed branch and a pull request against `main`. Describe the change, checks and any blockers; leave merging and worktree cleanup to the PR/T3 workflow.
+- End completed work with a committed, pushed branch and a pull request against `main`. Describe the change, checks and any blockers; leave merging to Ryan through the PR workflow.
 - Report frame-time and gate-time effects honestly. Measure frame costs on the M4 with `tools/wrela profile examples/last-green --json`, against a baseline from the same machine and mode. Distinguish GPU timings, CPU frame calls and Chrome frame rates.
 
 ## Context and layers
