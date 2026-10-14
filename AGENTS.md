@@ -4,6 +4,7 @@ MIT-licensed language, compiler, engine and agent-native studio for browser game
 
 ## Work
 
+- Before starting work, fetch `origin` and pull the current branch with `--ff-only` if it has a remote branch. For a new task, run `git pull --ff-only origin main` on `main` before creating the task branch. Preserve local changes; report any sync blocker before editing.
 - Work in each machine's normal local checkout; do not create worktrees. Ryan assigns work across the machines. Keep one active task branch per checkout; never implement on `main`. Use direct commands and ordinary checkout-local build output.
 - Own implementation and verification. Routine work has standing permission. Ryan owns goals, architecture, lore and artistic direction; decide implementation details yourself.
 - Ship the smallest complete change. Preserve other sessions' work. Delete losing experiments, dead code and unused constants; avoid speculative abstractions and compatibility scaffolding. Preserve `milestone-6` unchanged.
