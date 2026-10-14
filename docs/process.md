@@ -59,6 +59,22 @@ are retired from automated verification; their past results remain historical ev
 passing suite does not re-establish whole-floor visual quality, prolonged stability or a
 reference machine's frame-rate claims. Ryan's play and visual judgments still decide those.
 
+On 2026-10-14 Ryan asked for a much faster development loop with the same single check. Claude
+measured the Linux machine. The warm suite took 316.9 s, and most of that time was the Rust test
+programs, which ran one test at a time. The programs now run 2 to 6 tests at a time (half the
+cores). The other steps run beside them, and every check runs even when another fails. Running
+tests at the same time exposed a race in the shared Chrome's lazy start: a second tab could
+receive no port. The start is now locked. Each scenario's console keeps only its own page's
+records, because one test uses the console to confirm a build arrived. A name that ends in `::`
+selects a group: a Rust module in one test program, a Wrela package or a browser test file.
+On the Linux machine (12 cores, Radeon integrated GPU, Chrome), five consecutive warm suites
+passed in 118.8 to 125.2 s with all 744 Rust tests. The sampled summed memory of the check's
+processes peaked at 3.5 to 3.7 GiB. A suite after a public change to `compiler/sema`, with its
+rebuild, passed in 125.2 s. Running the longest test program beside the others took 108 to
+110 s but used up to 5.1 GiB and slowed that program by a quarter, so it was not kept.
+One suite from an empty Cargo target directory, with every build, passed in 456.2 s.
+The M4 Air has not been measured; its times are reported separately.
+
 ## Tools and models
 
 | Tool | What it does here |
@@ -67,6 +83,7 @@ reference machine's frame-rate claims. Ryan's play and visual judgments still de
 | [OpenAI Codex](https://openai.com/codex/) | Reviews performance across the codebase, implements optimizations and regression tests, and measures their effects in a cloud session |
 | Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 | The authors in the blind authoring rounds that test thesis 1 (vision.md); Opus also in the first round |
 | Claude subagents with no context | Blind raters in the lookdev loop: they see only the before and after stills and the anchors |
+| Plan councils: Claude leads; OpenAI Codex GPT-6.1-Sol and GPT-6-Astra review | Since 2026-10-14, two Codex models review a measured plan independently, read-only, and then rebut the leader's answers. Claude decides, implements and verifies. First used for the faster check |
 | Claude projects (claude.ai) | Run several agent threads at once (lookdev items, fixes, rendering setup), with one coordinator |
 | [OpenAI Codex](https://openai.com/codex/) (GPT-6) and parallel subagents | Since 2026-10-10, audit performance across the compiler, runtimes, engine, studio, UI and tools; implement behavior-preserving improvements and run focused tests and repository gates. CPU gate work includes checks without rasterization, focused builds, isolated scratch directories, Linux compatibility, quota-aware scheduling, artifact-only studio builds, CPU literal inspection, and pipeline reuse between variant previews. On 2026-10-11, Ryan requested fixes for 19 visual and gameplay issues in The Last Green. Codex and parallel subagents inspected the renderer, procedural vegetation, water, clouds, character, and movement; implemented fixes and focused regressions; and used native M4 profiles, lookbook and motion captures, and interactive browser play to assess them. Live play exposed slow-frame cloth timing and fallen-log placement faults that the short captures missed. No generated art assets were used. Ryan requested a daily sweep from fresh `main` at 02:00 America/Denver. On 2026-10-11 Ryan also requested a repo-wide bug sweep: agents reproduced failures, fixed them, and added focused regressions across the codebase. |
 | [sfizz](https://sfz.tools/sfizz/) (BSD 2-clause), `sfizz_render` | Plays the reference piano's samples from a take's MIDI file, for the listening tests (`tools/listening.py`). Not part of the game |
