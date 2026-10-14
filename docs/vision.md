@@ -193,7 +193,7 @@ The owner's order of priority still holds:
 
 ## Milestones
 
-M0 to M6 were planned in GitHub issues on rywible/wrela, each with a scope issue listing what's in, what's out, and where the out-of-scope items go. Since 2026-10-11 there are no milestones: work merges into `main` as it's done, toward the outcomes after M6 below, in order, and TASKS.md has the open work.
+M0 to M6 were planned in GitHub issues on rywible/wrela, each with a scope issue listing what's in, what's out, and where the out-of-scope items go. Since 2026-10-11 there are no milestones: work merges into `main` as it's done, toward the outcomes after M6 below, in order.
 
 | Milestone or goal | Outcome |
 |---|---|

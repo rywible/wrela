@@ -903,6 +903,26 @@ and Rust's [file-lock API](https://doc.rust-lang.org/std/fs/struct.File.html#met
 They teach hardware/fallback classification and advisory-lock lifetime. These public documents
 were read as API references; no outside source code or art assets were copied.
 
+## Audit of recent main commits, 2026-10-14
+
+Ryan asked Claude Code (Claude Opus 5.5), working without subagents, to audit the commits
+Codex made on `main` from 2026-10-11 to 2026-10-13 and to refactor where needed. This was
+the first time one AI agent reviewed another agent's merged work in this repository. The
+review read the compiler, runtime, tooling and check changes and ran the complete check on
+this Linux machine. It found that the check passed here only with Chrome settings kept
+outside the repository. Without them, Chrome tests looked for the macOS app, and Linux Chrome
+then offered only its software WebGPU adapter. `tools/headless.py` now finds Chrome on PATH
+on Linux and adds the flags that expose the hardware adapter. `tools/check.py` installs the
+browser runtime's locked packages, which only the removed cloud script installed before.
+The audit also named the W0005 arguments in `ui/` and `console/`, removed unused imports and
+check controls, and removed a reference to the deleted task file. No outside source or asset
+was used.
+
+On `main`, without those outside settings, the complete check failed 28 Chrome agreement
+tests. On this branch, with no `WRELA_*` variables set, it passed all 744 Rust tests and every
+browser, tools and infrastructure check in 321.0 s. That time includes warm build output. It
+is not a paired gate-time comparison. No rendering code changed, so no frame-time claim is made.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
