@@ -141,7 +141,9 @@ pub const PALETTE: Palette = Palette {
     // The fight's (`climber::sounds`): its blows and its blade's swings.
     impacts: IMPACTS,
     whooshes: WHOOSHES,
-    wind: Breath { rush_hz: 300.0, rush: 0.1, leaves_hz: 4500.0, leaves: 0.035 },
+    // The wind: a low rush in the open, a soft hush under the trees; under the steps and the
+    // water, a bed that's there when listened for.
+    wind: Breath { rush_hz: 300.0, rush: 0.05, leaves_hz: 1400.0, leaves: 0.025 },
     near: 2.0,
     gain: 2.5,
 }
