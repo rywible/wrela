@@ -960,6 +960,17 @@ darkness is drawn as coverage kept by Wyman and McGuire's hashed alpha threshold
 (`engine::noise`, already in the engine). The sleeves swing as damped pendulums. No outside
 code, asset or data was used, and no art was made with a generative model.
 
+Ryan then had another AI agent review the branch (its transcript shows Google's Antigravity).
+Claude Code checked each point against the code and renders before acting. Much of the
+review's code detail was wrong, such as invented function names and wrong values. Its
+diagnoses held up: the torn hem cut rectangular holes, the grass hid the train, the line pass
+outlined each gap in the smoke, the robe had no waist or shoulder structure, the hood's peak
+stood up, and black cloth lost its rim light. The fixes are a scalloped hem, a grass contact
+that runs along the train, a `VEIL` tag class (thin for temporal AA, no lines), a mantle and a
+drooping cowl, a void material inside the hood, and an opt-in cloth sheen in the engine's
+character shading. A stronger waist pinch was tried and backed off: in motion the cloth clung
+to it like a body. No outside code or asset was used.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

@@ -19,6 +19,9 @@ pub const SHOULDER_RADIUS: f32 = 0.085
 /// How far round the cape stands out at its hem, on the ground (it narrows to the shoulders).
 pub const HEM_RADIUS: f32 = 0.72
 
+/// How far the end of the train lies out from its middle (m): it parts the grass that wide.
+pub const TRAIN_REACH: f32 = 0.35
+
 /// What the wolf can bite: a capsule up the middle, from over the hem to the head.
 pub const BODY_LOW = vec3(0.0, 0.3, 0.0)
 pub const BODY_HIGH = vec3(0.0, 1.8, 0.0)

@@ -8,7 +8,7 @@
 
 use climber::body::{BLADE_THICK, BLADE_WIDTH, GUARD_AT, POINT_AT}
 use climber::cape::{AROUND, DOWN, POINTS, body_frame, flat}
-use climber::draw::{TEARS, Tears, WolfCoat, corner, wolf_bones}
+use climber::draw::{WolfCoat, corner, wolf_bones}
 use climber::figure::{Figure, figure}
 use climber::fight::{World, present, spawn, sword_at, tick}
 use climber::moves::Act
@@ -108,11 +108,10 @@ fn cape_point(points: [vec4], i: u32, j: u32) -> vec3 {
     points[j * AROUND + i % AROUND].xyz
 }
 
-/// The cape's cloth: two triangles a cell (none across a tear), each corner's normal from its
-/// neighbours.
+/// The cape's cloth: two triangles a cell, each corner's normal from its neighbours.
 @vertex
-fn cloth(v: VertexIndex, points: [vec4], tears: Tears, view: View) -> Surfel {
-    let (i, j) = corner(v.index, tears)
+fn cloth(v: VertexIndex, points: [vec4], view: View) -> Surfel {
+    let (i, j) = corner(v.index)
     let p = cape_point(points, i, j)
     let around = cape_point(points, i + 1, j) - cape_point(points, i + AROUND - 1, j)
     let down = cape_point(points, i, min(j + 1, DOWN - 1)) - cape_point(points, i, max(j, 1) - 1)
@@ -275,7 +274,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     if !c.gone() {
         draw(
             pass,
-            cloth.bind(points: s.points.items(), tears: TEARS, view: v),
+            cloth.bind(points: s.points.items(), view: v),
             lit.bind(albedo: CAPE, rough: 0.85, view: v, lights: LIGHTS),
             vertices: AROUND * (DOWN - 1) * 6,
             cull: Cull::None,

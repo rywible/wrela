@@ -3,8 +3,8 @@
 // its points, written each frame (`figure`); empty hood and sleeves, and the sword, each a field
 // realized once as a mesh of one bone. Every pass uses the same connected cloth points.
 
-use cape::{AROUND, DOWN, POINTS, body_frame, torn_from}
-use darkness::{NODES, ROBE_WISPS, WISPS, WISP_POINTS, seed}
+use cape::{AROUND, DOWN, POINTS, body_frame}
+use darkness::{NODES, WISPS, WISP_POINTS, from_robe, seed}
 use engine::character::{
     Cast, CharacterVertex, MotionVertex, PartOf, Realized, cast, character, character_motion,
     character_shade, character_shadow, materials, motion,
@@ -22,7 +22,7 @@ use engine::render::ByChannels
 use engine::shadow::CASTER
 use engine::vegetation::nothing
 use engine::noise::{cell_size, fbm2, hashed_threshold_of}
-use engine::view::{CREATURE, Camera, NEAREST, SEEN}
+use engine::view::{Camera, NEAREST, SEEN, VEIL}
 use figure::Figure
 use look::{CAPE, CLOTH_ROUGH, Paint, empty_sleeve, hood, sword}
 use moves::Pose
@@ -37,8 +37,6 @@ use std::math::TAU
 const CAPE_PART: u32 = 1
 const HEAD_PART: u32 = 2
 const SWORD_PART: u32 = 3
-const WISP_PART: u32 = 4
-const POOL_PART: u32 = 5
 
 /// A creature of one bone realized: its mesh and colours (cells for a 3 mm tolerance, and no
 /// wider than `largest`: the sword's fittings use finer cells than the robe's broad folds).
@@ -59,22 +57,6 @@ const WISP_VERTICES: u32 = WISPS * (NODES - 1) * 6
 const POOL_RINGS: u32 = 4
 const POOL_POINTS: u32 = AROUND + 1
 const POOL_VERTICES: u32 = AROUND * POOL_RINGS * 6
-
-/// Which rows each seam of the cape is torn from (`cape::torn_from`), for its shaders: computed
-/// once on the CPU, so the GPU's arithmetic can't move a tear.
-pub struct Tears: Copy + GpuData {
-    pub from: [u32; 32],
-}
-
-fn tears() -> Tears {
-    var t = Tears { from: [0; 32] }
-    for i in 0..AROUND {
-        t.from[i] = torn_from(i)
-    }
-    t
-}
-
-pub const TEARS: Tears = tears()
 
 /// A rigid part drawn (the head, the sword): realized, its one bone's place this frame and the
 /// last, and its part id.
@@ -245,7 +227,7 @@ impl Drawn {
         }
         draw(
             pass,
-            cape_shadow.bind(points: self.points.items(), tears: TEARS, view: view),
+            cape_shadow.bind(points: self.points.items(), view: view),
             nothing,
             vertices: CAPE_VERTICES,
             cull: Cull::None,
@@ -265,7 +247,7 @@ impl Drawn {
         }
         draw(
             pass,
-            cape_vertex.bind(points: self.points.items(), tears: TEARS, cam: cam),
+            cape_vertex.bind(points: self.points.items(), cam: cam),
             character_shade.bind(lt),
             vertices: CAPE_VERTICES,
             cull: Cull::None,
@@ -304,7 +286,6 @@ impl Drawn {
             cape_motion.bind(
                 points: self.points.items(),
                 last: self.last_points.items(),
-                tears: TEARS,
                 cam: cam,
             ),
             motion.bind(cam),
@@ -342,18 +323,13 @@ fn cape_point(points: [vec4], i: u32, j: u32) -> vec3 {
     points[j * AROUND + i % AROUND].xyz
 }
 
-/// Vertex `v`'s cell and corner of the cape (`i` round, `j` down). A cell across a torn seam
-/// is drawn as nothing: all its corners at one point.
-pub fn corner(v: u32, tears: Tears) -> (u32, u32) {
+/// Vertex `v`'s cell and corner of the cape (`i` round, `j` down).
+pub fn corner(v: u32) -> (u32, u32) {
     let cell = v / 6
     let c = v % 6
-    let (i, j) = (cell % AROUND, cell / AROUND)
-    if j + 1 >= tears.from[i] {
-        return (i, j)
-    }
     let di = [0, 1, 0, 0, 1, 1]
     let dj = [0, 0, 1, 1, 0, 1]
-    (i + di[c], j + dj[c])
+    (cell % AROUND + di[c], cell / AROUND + dj[c])
 }
 
 /// How dark the robe's cloth is at column `i`, `j` rows down: its colour, sinking toward the
@@ -368,8 +344,8 @@ fn cloth_albedo(i: u32, j: u32) -> vec3 {
 
 /// The cape's cloth: two triangles a cell, each corner's normal from its neighbours (outward).
 @vertex
-pub fn cape_vertex(v: VertexIndex, points: [vec4], tears: Tears, cam: Camera) -> CharacterVertex {
-    let (i, j) = corner(v.index, tears)
+pub fn cape_vertex(v: VertexIndex, points: [vec4], cam: Camera) -> CharacterVertex {
+    let (i, j) = corner(v.index)
     let p = cape_point(points, i, j)
     let around = cape_point(points, i + 1, j) - cape_point(points, i + AROUND - 1, j)
     let down = cape_point(points, i, min(j + 1, DOWN - 1)) - cape_point(points, i, max(j, 1) - 1)
@@ -379,19 +355,14 @@ pub fn cape_vertex(v: VertexIndex, points: [vec4], tears: Tears, cam: Camera) ->
         normal: cross(down, around),
         albedo: cloth_albedo(i, j),
         rough: CLOTH_ROUGH,
+        sheen: 1.0,
         part: Flat { value: CAPE_PART },
     }
 }
 
 @vertex
-pub fn cape_motion(
-    v: VertexIndex,
-    points: [vec4],
-    last: [vec4],
-    tears: Tears,
-    cam: Camera,
-) -> MotionVertex {
-    let (i, j) = corner(v.index, tears)
+pub fn cape_motion(v: VertexIndex, points: [vec4], last: [vec4], cam: Camera) -> MotionVertex {
+    let (i, j) = corner(v.index)
     let now = cape_point(points, i, j)
     MotionVertex {
         clip: ClipPosition { position: cam.clip(now) },
@@ -401,8 +372,8 @@ pub fn cape_motion(
 }
 
 @vertex
-pub fn cape_shadow(v: VertexIndex, points: [vec4], tears: Tears, view: mat4) -> ClipPosition {
-    let (i, j) = corner(v.index, tears)
+pub fn cape_shadow(v: VertexIndex, points: [vec4], view: mat4) -> ClipPosition {
+    let (i, j) = corner(v.index)
     ClipPosition { position: view * vec4(cape_point(points, i, j), 1.0) }
 }
 
@@ -429,13 +400,14 @@ fn wisp_corner(v: u32) -> (u32, u32, f32) {
     (w, r / 6 + dk[r % 6], side[r % 6])
 }
 
-/// How wide wisp `w` is at `life` along it (m, each side of its line): a robe wisp swells as it
-/// spreads, a blade wisp stays thin.
+/// How wide wisp `w` is at `life` along it (m, each side of its line): it swells as it spreads
+/// and thins again toward its end; a robe wisp swells most, the rest stay thin.
 fn wisp_width(w: u32, life: f32) -> f32 {
-    if w < ROBE_WISPS {
-        return (0.04 + 0.2 * smoothstep(0.0, 0.6, life)) * (0.7 + 0.6 * seed(w))
+    let swell = pow(sin(3.1415927 * clamp(life, 0.0, 1.0)), 0.7)
+    if from_robe(w) {
+        return (0.03 + 0.17 * swell) * (0.7 + 0.6 * seed(w))
     }
-    0.015 + 0.05 * smoothstep(0.0, 0.7, life)
+    0.012 + 0.05 * swell
 }
 
 /// Wisp `w`'s point `k` of `nodes` (`WISP_POINTS`), and the ribbon's side there, square to the
@@ -538,7 +510,7 @@ fn dark_surface(d: DarkVertex, keyed: vec3) -> vec2 {
 
 /// The darkness's pixel: ink of the density it has there, kept that share of the time (Wyman and
 /// McGuire's hashed threshold, held still on its own surface), so temporal AA settles it into
-/// soft, thinning smoke; through the haze; tagged as the climber's for its lines.
+/// soft, thinning smoke; through the haze; tagged as a veil, so no line is drawn round each gap.
 @fragment
 pub fn dark_shade(d: DarkVertex, pixel: FragCoord, lt: Lighting) -> vec4 {
     let keyed = lt.cam.keyed()
@@ -548,8 +520,7 @@ pub fn dark_shade(d: DarkVertex, pixel: FragCoord, lt: Lighting) -> vec4 {
     if cover <= 0.0 || cover < 1.0 && cover < hashed_threshold_of(surface, 7 + d.wisp.value, size) {
         discard()
     }
-    let part = if d.wisp.value < WISPS { WISP_PART } else { POOL_PART }
-    vec4(through_air(lt, INK, d.world), CREATURE + f32(part))
+    vec4(through_air(lt, INK, d.world), VEIL + f32(d.wisp.value % 64))
 }
 
 // ---- the wolf ------------------------------------------------------------------------------------

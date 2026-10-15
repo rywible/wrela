@@ -11,7 +11,7 @@ use engine::character::{Cast, PartOf, cast}
 use engine::floor::{Doorway, Exit, Kept, fullscreen, near_tile_radius, tile_distance, tile_radius}
 use engine::stone::{Instances, Realized, stone_instance_vertex, stone_shade, stone_vertex}
 use engine::bake::{Decisions, Far, decode_far, decode_tile, tile_name}
-use engine::grass::{Blooms, Grass, GrassLook}
+use engine::grass::{Blooms, Contact, Grass, GrassLook}
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::lit::Lighting
 use engine::paint::{
@@ -32,7 +32,7 @@ use engine::vegetation::{Kind, Placed, kind}
 use engine::wood::Wood
 use engine::view::{BEHIND, Camera, NEAREST, camera, first_camera}
 use engine::water::{LOOKS, MistAt, WaterVert, copy_below, mist_over, water_shade, water_vertex}
-use climber::body::HEM_RADIUS
+use climber::body::{HEM_RADIUS, TRAIN_REACH}
 use climber::cape::Plane
 use climber::draw::{CastWolf, Drawn, cast_wolf, drawn, wolf_bones}
 use climber::figure::{Figure, figure}
@@ -2698,8 +2698,12 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     } else {
         s.wolf.hide()
     }
-    // The cloak bends contacting stems; it never clears or lowers the grass roots.
-    s.grass.contact = if gone { vec4(0.0) } else { vec4(stood, HEM_RADIUS) }
+    // The cloak bends contacting stems round its hem and along its train; it never clears or
+    // lowers the grass roots.
+    s.grass.contact = match s.climber.train_end() {
+        Some(end) if !gone => Contact { at: vec4(stood, HEM_RADIUS), tail: vec4(end, TRAIN_REACH) },
+        _ => Contact {},
+    }
     // The fawn's planted footprint, each its place and reach.
     let feet_of = |c: vec3, reach: f32| {
         let p = on_ground(c)

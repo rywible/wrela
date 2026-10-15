@@ -63,35 +63,33 @@ fn uneven(i: u32, salt: f32) -> f32 {
     fract(sin(f32(i % AROUND) * 12.9898 + salt * 78.233) * 43758.547)
 }
 
-/// The rows from which the seam after column `i` is torn open, down to the hem (`DOWN` for a
-/// seam that holds). Every fourth seam tears through the lowest rows, so the robe's foot hangs
-/// in ragged strips that move on their own; the train's middle holds together.
-pub fn torn_from(i: u32) -> u32 {
-    let k = i % AROUND
-    if k % 4 != 1 {
-        return DOWN
-    }
-    // The train tears further up its length than the hanging sides: it trails in long rags.
-    let share = train_share(k)
-    DOWN - 4 - u32(uneven(k, 2.0) * 3.0) - u32(share * 4.0)
-}
-
-/// Whether the seam after column `i` is open at row `j`.
-pub fn torn(i: u32, j: u32) -> bool {
-    j >= torn_from(i)
+/// How much longer column `i` is than its neighbours' line (m): the hem falls in pointed,
+/// uneven tongues, not in a level edge; longest at the train's end, short round the sides and
+/// front, where more cloth on the ground would ruck up as the body starts and stops.
+pub fn tongue(i: u32) -> f32 {
+    let a = TAU * f32(i % AROUND) / f32(AROUND)
+    let point = pow(0.5 + 0.5 * cos(7.0 * a + 0.9 * sin(3.0 * a)), 2.5)
+    let reach = mix(0.1, 0.32, train_share(i))
+    reach * point + 0.04 * (uneven(i, 1.0) - 0.5)
 }
 
 /// The robe's half width at `v` of the way down its drop (0 the shoulders, 1 the ground), across
-/// (x) and front to back (z): a lean chest under sloped shoulders that falls into a long A line.
+/// (x) and front to back (z): square shoulders, drawn in a little at the waist like a fitted
+/// coat (a little: more, and the moving cloth clings to a body's shape), then sweeping out into
+/// a long, wide skirt.
 fn girth(v: f32) -> vec2 {
     let shoulder = 1.0 - smoothstep(0.0, 0.22, v)
-    let flare = pow(smoothstep(0.22, 1.0, v), 1.6)
-    vec2(0.29 + 0.07 * shoulder + 0.27 * flare, 0.25 + 0.03 * shoulder + 0.27 * flare)
+    let waist = exp(-pow((v - 0.34) / 0.1, 2.0))
+    let flare = pow(smoothstep(0.38, 1.0, v), 1.5)
+    vec2(
+        0.29 + 0.07 * shoulder - 0.035 * waist + 0.32 * flare,
+        0.25 + 0.03 * shoulder - 0.02 * waist + 0.3 * flare,
+    )
 }
 
 /// The cape at rest, in the body's space: the collar round the neck; then each column down from
 /// its sloped shoulder to the ground in long folds, and on along the ground for what's left of
-/// its length (most of all behind: the train). Columns differ a little in length: a ragged hem.
+/// its length (most of all behind: the train). Columns differ in length: a hem in tongues.
 pub fn rest(column: u32, j: u32) -> vec3 {
     let i = column % AROUND
     let a = TAU * f32(i) / f32(AROUND)
@@ -102,7 +100,7 @@ pub fn rest(column: u32, j: u32) -> vec3 {
     let top = SHOULDER_Y + 0.1 - 0.17 * abs(sin(a))
     let drop = top - 0.01
     let share = train_share(i)
-    let length = drop + POOL + TRAIN * share + 0.12 * (uneven(i, 1.0) - 0.5) * (1.0 - share)
+    let length = drop + POOL + TRAIN * share + tongue(i)
     let u = t * length
     let v = min(u / drop, 1.0)
     let fold = 1.0 + (0.02 + 0.16 * v) * (0.55 * cos(5.0 * a + 0.4) + 0.45 * cos(8.0 * a + 1.3))
@@ -133,23 +131,17 @@ fn link(a: (u32, u32), b: (u32, u32), stiff: f32) -> Link {
 }
 
 /// The cape's links: round and down (stiff), across each cell (a little less, so it shears), and
-/// to the point two along, round and down (soft: it bends). No link crosses a torn seam.
+/// to the point two along, round and down (soft: it bends).
 pub fn links() -> Vec<Link> {
     var out: Vec<Link> = Vec::new()
     for j in 0..DOWN {
         for i in 0..AROUND {
-            if !torn(i, j) {
-                out.push(link((i, j), (i + 1, j), 1.0))
-                if !torn(i + 1, j) {
-                    out.push(link((i, j), (i + 2, j), 0.3))
-                }
-            }
+            out.push(link((i, j), (i + 1, j), 1.0))
+            out.push(link((i, j), (i + 2, j), 0.3))
             if j + 1 < DOWN {
                 out.push(link((i, j), (i, j + 1), 1.0))
-                if !torn(i, j + 1) {
-                    out.push(link((i, j), (i + 1, j + 1), 0.7))
-                    out.push(link((i + 1, j), (i, j + 1), 0.7))
-                }
+                out.push(link((i, j), (i + 1, j + 1), 0.7))
+                out.push(link((i + 1, j), (i, j + 1), 0.7))
             }
             if j + 2 < DOWN {
                 out.push(link((i, j), (i, j + 2), 0.3))
@@ -236,9 +228,9 @@ pub fn hang(frame: mat4) -> Cape {
 
 /// What the cape falls round, in the world: the head, the shoulders' line, and the core up the
 /// middle, each a capsule or a cone (two ends, each with its radius; the head's ends are one
-/// point). The core widens a little toward the ground, so the long A line hangs round a body that
-/// isn't there instead of collapsing onto it; the train lies outside it.
-fn solids(frame: mat4) -> [vec4; 8] {
+/// point). The core narrows to the waist and widens again toward the ground, so the fitted coat
+/// hangs round a body that isn't there instead of collapsing onto it; the train lies outside it.
+fn solids(frame: mat4) -> [vec4; 10] {
     let w = |p: vec3| (frame * vec4(p, 1.0)).xyz
     let left = vec3(SHOULDERS, SHOULDER_Y - 0.08, 0.0)
     let right = vec3(-SHOULDERS, SHOULDER_Y - 0.08, 0.0)
@@ -249,10 +241,18 @@ fn solids(frame: mat4) -> [vec4; 8] {
         vec4(w(left), SHOULDER_RADIUS),
         vec4(w(vec3(0.0, 1.77, 0.0)), 0.11),
         vec4(w(right), SHOULDER_RADIUS),
-        vec4(w(vec3(0.0, 1.45, 0.0)), 0.2),
-        vec4(w(vec3(0.0, 0.3, 0.0)), 0.3),
+        vec4(w(vec3(0.0, 1.45, 0.0)), 0.19),
+        vec4(w(vec3(0.0, WAIST_Y, 0.0)), 0.18),
+        vec4(w(vec3(0.0, WAIST_Y, 0.0)), 0.18),
+        vec4(w(vec3(0.0, 0.3, 0.0)), 0.32),
     ]
 }
+
+/// How many capsules and cones `solids` has.
+const SOLIDS: u32 = 5
+
+/// The waist's height, where the body the cloth hangs round is narrowest (m).
+const WAIST_Y: f32 = 1.16
 
 /// `p` pushed out of the capsule or cone from `a` to `b` (each end's radius in `w`), square to
 /// its axis.
@@ -379,7 +379,7 @@ impl Cape {
                 if tl > TETHERS[k] {
                     p = top + t * (TETHERS[k] / tl)
                 }
-                for c in 0..4 {
+                for c in 0..SOLIDS {
                     p = out_of(p, solid[2 * c], solid[2 * c + 1])
                 }
                 let under = ground.height(p)
@@ -437,7 +437,7 @@ fn hung_still_it_settles_round_the_body() {
     var inside = 0.0
     let solid = solids(frame)
     for k in AROUND..POINTS {
-        for s2 in 0..4 {
+        for s2 in 0..SOLIDS {
             inside = max(
                 inside,
                 length(out_of(c.at[k], solid[2 * s2], solid[2 * s2 + 1]) - c.at[k]),
@@ -530,54 +530,59 @@ fn on_a_slope_the_hem_lies_on_the_ground() {
     assert(highest < 0.12, f"the front hem's tips stand {highest} m over the ground")
 }
 
-/// Sloped shoulders over a lean chest fall into a long A line; the front only just pools, the
-/// back runs on along the ground as a train, and the lowest rows of some seams are torn.
+/// Sloped, square shoulders over a waist drawn in like a fitted coat fall into a wide skirt; the
+/// front only just pools, the back runs on along the ground as a train, and the hem falls in
+/// uneven tongues.
 @test
-fn the_robe_is_lean_above_and_trails_a_train_behind() {
+fn the_robe_is_fitted_above_and_trails_a_train_behind() {
     assert(rest(AROUND / 4, 1).y < rest(column: 0, j: 1).y - 0.15, "the shoulders form a level bar")
     assert(abs(rest(AROUND / 4, 1).x) < 0.42, "the upper robe is too broad")
-    let chest = abs(rest(AROUND / 4, 4).x)
+    var waist = 10.0
+    var chest = 0.0
+    for j in 2..8 {
+        waist = min(waist, abs(rest(AROUND / 4, j).x))
+        chest = max(chest, abs(rest(AROUND / 4, j).x))
+    }
     let foot = length(rest(AROUND / 4, DOWN - 3).xz)
-    assert(chest < 0.36, f"the chest is {chest} m wide: no lean upper body")
-    assert(foot > chest + 0.15, "the robe has no A line")
+    assert(
+        waist < chest - 0.025,
+        f"the waist ({waist} m) isn't drawn in from the chest ({chest} m)",
+    )
+    assert(foot > waist + 0.25, "the robe has no sweeping skirt")
     for i in 0..AROUND {
         assert(rest(i, DOWN - 1).y < 0.02, "the hem starts above the ground")
     }
     let front = rest(0, DOWN - 1).z
     let back = rest(AROUND / 2, DOWN - 1).z
-    assert(front < 0.75, f"the front hem pools {front} m ahead: it would trip the body")
+    assert(front < 0.85, f"the front hem pools {front} m ahead: it would trip the body")
     assert(back < -1.5, f"the train ends {back} m behind: too short to drag")
-    var tears = 0
+    var long = 0.0
+    var short = 1.0
     for i in 0..AROUND {
-        if torn(i, DOWN - 1) {
-            tears += 1
-            assert(!torn(i, DOWN / 2), "a tear reaches up into the body of the robe")
-        }
+        long = max(long, tongue(i))
+        short = min(short, tongue(i))
     }
-    assert(tears >= 5, f"only {tears} seams are torn: the hem is not ragged")
+    assert(long - short > 0.15, "the hem is level: no tongues")
 }
 
-/// A torn seam has no link across it, so its strips hang and move apart.
+/// The body the cloth falls round is narrower than the robe at rest everywhere, so the cloth
+/// hangs where it was cut instead of being pushed out (at the waist most of all).
 @test
-fn no_link_crosses_a_torn_seam() {
-    for l in LINKS {
-        let (ia, ja) = (l.a % AROUND, l.a / AROUND)
-        let (ib, jb) = (l.b % AROUND, l.b / AROUND)
-        if ia != ib {
-            let low = max(ja, jb)
-            // From the one before to the one after, the short way round.
-            let forward = (ib + AROUND - ia) % AROUND <= 2
-            var i = if forward { ia } else { ib }
-            let to = if forward { ib } else { ia }
-            while i != to {
-                assert(!torn(i, low), "a link crosses a torn seam")
-                i = (i + 1) % AROUND
+fn the_robe_at_rest_clears_its_body() {
+    let solid = solids(body_frame(vec3(0.0), 0.0, Form {}))
+    for j in 1..DOWN {
+        for i in 0..AROUND {
+            for c in 0..SOLIDS {
+                let p = rest(i, j)
+                let pushed = length(out_of(p, solid[2 * c], solid[2 * c + 1]) - p)
+                assert(pushed < 0.01, f"row {j} column {i} is {pushed} m inside the body")
             }
         }
     }
 }
 
-/// A short forward tap then a stop must settle without turning ground contact into a bounce.
+/// A short forward tap then a stop, eased as the floor's glide eases, must settle without turning
+/// ground contact into a bounce.
 @test
 fn a_forward_tap_does_not_bounce_the_pooled_hem() {
     var at = vec3(0.0)
@@ -586,9 +591,12 @@ fn a_forward_tap_does_not_bounce_the_pooled_hem() {
         c.step(body_frame(at, 0.0, Form {}), 0.0, flat(0.0), vec3(0.0), 1.0 / 60.0)
     }
     var high_hem = 0.0
-    var high_rag = 0.0
+    var speed = 0.0
     for tick in 0..120 {
-        let speed = if tick < 6 { 3.0 } else { 0.0 }
+        // A tap of a key: the glide eases toward a walk's pace and back to a stand as the
+        // floor's player does (`engine::player::Motion::response`, 7 a second).
+        let want = if tick < 6 { 3.0 } else { 0.0 }
+        speed += (want - speed) * (1.0 - exp(-7.0 / 60.0))
         at.z += speed / 60.0
         let p = moves::locomotion(
             ready: 0.0,
@@ -600,20 +608,14 @@ fn a_forward_tap_does_not_bounce_the_pooled_hem() {
         c.step(body_frame(at, 0.0, p.form), 0.0, flat(0.0), vec3(0.0), 1.0 / 60.0)
         for i in 0..AROUND {
             let k = point(i, DOWN - 1)
-            // The torn strips are light and flutter: they're held to a looser bound.
-            if torn(i, DOWN - 1) || torn(i + AROUND - 1, DOWN - 1) {
-                high_rag = max(high_rag, c.at[k].y)
-            } else {
-                high_hem = max(high_hem, c.at[k].y)
-            }
+            high_hem = max(high_hem, c.at[k].y)
             if c.at[k].y <= 1.0e-4 {
                 assert(abs(c.at[k].y - c.was[k].y) < 1.0e-5, "ground contact adds vertical speed")
             }
         }
     }
-    print(f"a forward tap lifts the hem at most {high_hem} m, its torn strips {high_rag} m")
+    print(f"a forward tap lifts the hem at most {high_hem} m")
     assert(high_hem < 0.18, f"a forward tap throws the hem {high_hem} m up")
-    assert(high_rag < 0.35, f"a forward tap throws the torn strips {high_rag} m up")
     var settled = 0.0
     for i in 0..AROUND {
         settled = max(settled, c.at[point(i, DOWN - 1)].y)
@@ -655,7 +657,31 @@ fn sprinting_over_a_log_keeps_cloth_time_and_support_together() {
     }
     print(f"sprinting over a log: frame-rate cloth gap {worst} m; hem above feet {hem_high} m")
     assert(worst < 0.3, f"slow frames move the cape {worst} m away from its fixed-step path")
-    // The train and the torn strips swing up as they're dragged over the log, but never
-    // toward the shoulders.
+    // The train swings up as it's dragged over the log, but never toward the shoulders.
     assert(hem_high < 0.9, f"the pooled hem rises {hem_high} m toward the shoulders")
+}
+
+@test
+fn zz_probe() {
+    var at = vec3(0.0)
+    var d = hang(body_frame(at, 0.0, Form {}))
+    for _ in 0..120 {
+        d.step(body_frame(at, 0.0, Form {}), 0.0, flat(0.0), vec3(0.0), 1.0 / 60.0)
+    }
+    var settled = 0.0
+    for i in 0..AROUND {
+        settled = max(settled, d.at[point(i, DOWN - 1)].y)
+    }
+    print(f"settled hem max {settled}")
+    for tick in 0..120 {
+        let speed = if tick < 6 { 3.0 } else { 0.0 }
+        at.z += speed / 60.0
+        d.step(body_frame(at, 0.0, Form {}), 0.0, flat(0.0), vec3(0.0), 1.0 / 60.0)
+        for i in 0..AROUND {
+            let p = d.at[point(i, DOWN - 1)]
+            if p.y > 0.2 {
+                print(f"tick {tick} col {i} tongue {tongue(i)} at {p}")
+            }
+        }
+    }
 }

@@ -92,7 +92,12 @@ impl Figure {
             self.velocity = velocity
         }
         let (grip, aim, _) = pose.sword.placed(feet, heading)
-        self.roots = roots(cape, grip, aim)
+        let cuffs = [
+            (frame * self.sleeve(0) * vec4(look::cuff(0), 1.0)).xyz,
+            (frame * self.sleeve(1) * vec4(look::cuff(1), 1.0)).xyz,
+        ]
+        let hood = (frame * vec4(body::HEAD + vec3(0.0, -0.13, 0.15), 1.0)).xyz
+        self.roots = roots(cape, cuffs, hood, grip, aim)
         if fresh {
             self.shroud.restart(self.roots.clone())
         } else {
@@ -158,6 +163,14 @@ impl Figure {
             None => {},
         }
         out
+    }
+
+    /// Where the end of the robe's train lies (none before the first step).
+    pub fn train_end(self) -> Option<vec3> {
+        match self.cape {
+            Some(c) => Some(c.at[cape::point(cape::AROUND / 2, cape::DOWN - 1)]),
+            None => None,
+        }
     }
 
     /// The darkness's wisps' points (`darkness::WISP_POINTS`; none before the first step).

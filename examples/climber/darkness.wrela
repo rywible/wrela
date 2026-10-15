@@ -1,18 +1,21 @@
-// The darkness off the climber: wisps of shadow that leave the robe's lower cloth and the blade,
-// and a pool of it on the ground round the robe's foot. Each wisp is a ribbon along the path its
+// The darkness off the climber: wisps of shadow that leave the robe's lower cloth, the empty
+// sleeves' cuffs, the hood's void and the blade, and a pool of it on the ground round the robe's
+// foot. Each wisp is a ribbon along the path its
 // root has taken over the last moments, each part of it carried up and out and curled as it ages
 // since it left: so when the climber stands, the darkness rises and curls off it, and when it
 // moves, the darkness streams behind (and on a blink, lies along the way between). The ribbons
-// and the pool are drawn as ink: hard where they're dense, broken up at their edges.
+// and the pool are drawn as coverage that temporal AA settles into soft smoke.
 
 use cape::{AROUND, Cape, DOWN, point}
 use std::math::TAU
 
-/// How many wisps leave the robe's foot, and the blade; and how many points each has, its root
-/// and its past.
-pub const ROBE_WISPS: u32 = 30
+/// How many wisps leave the robe's foot, the cuffs (two each), the hood and the blade (in that
+/// order); and how many points each has, its root and its past.
+pub const ROBE_WISPS: u32 = 22
+pub const CUFF_WISPS: u32 = 4
+pub const HOOD_WISPS: u32 = 2
 pub const BLADE_WISPS: u32 = 3
-pub const WISPS: u32 = ROBE_WISPS + BLADE_WISPS
+pub const WISPS: u32 = ROBE_WISPS + CUFF_WISPS + HOOD_WISPS + BLADE_WISPS
 pub const NODES: u32 = 16
 pub const WISP_POINTS: u32 = WISPS * NODES
 
@@ -29,7 +32,7 @@ const POOL_LIFT: f32 = 0.012
 /// clings to the robe and the blade, so a sprint draws it out behind a little way, not in a
 /// trail metres long.
 const CLING_ROBE: f32 = 0.75
-const CLING_BLADE: f32 = 0.9
+const CLING_REST: f32 = 0.9
 
 /// The darkness: each wisp's root's path, newest first (`NODES` - 1 a wisp), how long since its
 /// newest was kept, the time (s), and where each root was last.
@@ -55,14 +58,27 @@ pub fn seed(w: u32) -> f32 {
     fract(sin(f32(w) * 91.3458 + 3.17) * 47453.547)
 }
 
-/// Where each wisp's root is now: robe wisps on the cloth of the robe's foot, blade wisps along
-/// the blade from its middle to near its point (`grip`, `aim`: the sword's grip and the way to
-/// its point).
-pub fn roots(c: Cape, grip: vec3, aim: vec3) -> Vec<vec3> {
+/// Whether wisp `w` leaves the robe's foot (the rest leave a cuff, the hood or the blade, and
+/// rise thin off it).
+pub fn from_robe(w: u32) -> bool {
+    w < ROBE_WISPS
+}
+
+/// Where each wisp's root is now: robe wisps on the cloth of the robe's foot; two at each cuff
+/// (`cuffs`); in the hood's opening (`hood`), low in it, so its darkness spills over the lip;
+/// and along the blade from its middle to near its point (`grip`, `aim`: the sword's grip and
+/// the way to its point).
+pub fn roots(c: Cape, cuffs: [vec3; 2], hood: vec3, grip: vec3, aim: vec3) -> Vec<vec3> {
     var out: Vec<vec3> = Vec::new()
     for w in 0..ROBE_WISPS {
         let j = DOWN - 2 - (w * 5) % 6
         out.push(c.at[point(column(w), j)])
+    }
+    for k in 0..CUFF_WISPS {
+        out.push(cuffs[k / 2])
+    }
+    for _ in 0..HOOD_WISPS {
+        out.push(hood)
     }
     for k in 0..BLADE_WISPS {
         let along = body::GUARD_AT + (body::POINT_AT - body::GUARD_AT) * (0.25 + 0.3 * f32(k))
@@ -83,7 +99,7 @@ impl Shroud {
         self.since += dt
         if !left {
             for w in 0..WISPS {
-                let cling = if w < ROBE_WISPS { CLING_ROBE } else { CLING_BLADE }
+                let cling = if from_robe(w) { CLING_ROBE } else { CLING_REST }
                 let by = (at[w] - self.last[w]) * cling
                 for k in 0..(NODES - 1) {
                     self.past[w * (NODES - 1) + k] = self.past[w * (NODES - 1) + k] + by
@@ -161,13 +177,13 @@ impl Shroud {
 
 /// How far a part of wisp `w` has gone from where it left its root, `age` seconds after it left
 /// at time `left`, in `wind`: a robe wisp spreads out low over the ground and curls up as it
-/// thins; a blade wisp rises off the steel. Each part keeps its own turn of the curl (it's keyed
+/// thins; the others rise off what they leave. Each part keeps its own turn of the curl (it's keyed
 /// to when it left), so the darkness flows along the wisp rather than waving as one.
 pub fn drift(w: u32, age: f32, left: f32, wind: vec3) -> vec3 {
     let s = seed(w)
     let phase = left * (1.1 + 0.6 * s) + s * TAU
     let curl = vec3(sin(phase + age * 2.3), 0.0, cos(phase * 1.3 + age * 1.7))
-    if w < ROBE_WISPS {
+    if from_robe(w) {
         let a = TAU * f32(column(w)) / f32(AROUND)
         let out = vec3(sin(a), 0.0, cos(a))
         let spread = (0.16 + 0.2 * s) * (1.0 - exp(-age * 3.0))
@@ -254,8 +270,8 @@ fn moving_the_darkness_streams_a_little_behind() {
     let nodes = s.nodes(all_at(at), vec3(0.0))
     for w in 0..WISPS {
         let behind = at.z - nodes[w * NODES + NODES - 1].z
-        // The blade's aura clings closer than the robe's darkness.
-        let least = if w < ROBE_WISPS { 0.6 } else { 0.3 }
+        // The cuffs', the hood's and the blade's darkness clings closer than the robe's.
+        let least = if from_robe(w) { 0.6 } else { 0.3 }
         assert(behind > least, f"wisp {w}'s end is {behind} m behind the body: no stream")
         assert(behind < 2.6, f"wisp {w}'s end is {behind} m behind the body: it doesn't cling")
     }
