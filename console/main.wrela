@@ -4,8 +4,8 @@ use opening::{
     MARK_WIDTH, OPENING_SECONDS, RETURNING, artifact_place, clock_at, mark_place, moment,
     presentation_step, stage_light, turn_at,
 }
-use paint::{Emblem, Stage, block_corner, block_face, emblem, quad, stage}
-use room::{Camera, MARGIN, Row, SPIN, artifact_spot, bounds, camera, place, row}
+use paint::{Emblem, Pool, Stage, block_corner, block_face, emblem, pool, quad, stage}
+use room::{Camera, MARGIN, Row, artifact_spot, bounds, camera, place, row}
 use tesseract::{Artifact, artifact, corners}
 use facet::MarkRun
 use platform::host
@@ -41,6 +41,8 @@ const INPUT = vec4(1.0, 1.0, 1.0, 0.15)
 const SECONDARY = vec4(0.15, 0.15, 0.16, 0.9)
 const RAISED = vec4(0.21, 0.21, 0.22, 0.95)
 const RADIUS: f32 = 8.0
+// A button's label, in pixels.
+const LABEL: f32 = 15.0
 // Manrope's capital height, in ems.
 const SANS_CAP: f32 = 0.72
 // The mark's cap height in the header, in logical pixels.
@@ -194,6 +196,9 @@ pub struct Console {
     // Where the pointer is (logical pixels), what it is over, and the cursor shown for it.
     pointer: Option<vec2>,
     hover: Option<Action>,
+    // What glows (`glow`), and how far it has come on.
+    glowing: Option<Action>,
+    glow: f32,
     pointing: bool,
     cursor: Option<Pending<u8>>,
     // Whether this page load reloaded the tab, from the environment: a reload starts at the
@@ -231,7 +236,10 @@ fn page_icons() -> Vec<Pending<u8>> {
 }
 
 pub fn init() -> Console {
-    let fonts = Fonts::from_baked(BODY, facet::FONT)
+    var fonts = Fonts::from_baked(BODY, facet::FONT)
+    // Manrope set a little closer and a little heavier, so short labels hold together.
+    fonts.sans.tracking = -0.012
+    fonts.sans.weight = 0.012
     let renderer = Renderer::new(fonts)
     Console {
         fonts,
@@ -297,6 +305,8 @@ pub fn init() -> Console {
         pressed: None,
         pointer: None,
         hover: None,
+        glowing: None,
+        glow: 0.0,
         pointing: false,
         cursor: None,
         reloaded: None,
@@ -948,25 +958,29 @@ fn line_top(s: Console, face: Face, size: f32, middle: f32) -> f32 {
 }
 
 fn button_width(s: Console, label: str) -> f32 {
-    max(88.0, width_of(s, label, 14.0, Face::Sans) + 36.0)
+    max(88.0, width_of(s, label, LABEL, Face::Sans) + 36.0)
 }
 
 // A button: the primary one solid, the rest quiet behind a hairline. Under the pointer it
-// brightens; with keys or a pad the focus ring marks it.
+// eases a shade toward the light (`glow`); with keys or a pad the focus ring marks it.
 fn button(s: mut Console, action: Action, r: Rect, row: u32, label: str, primary: bool = false) {
-    let lit = control(mut s, action, r, row, Kind::Button)
-    let hover = lit && s.input == Input::Pointer
+    let _ = control(mut s, action, r, row, Kind::Button)
+    let hover = if s.input == Input::Pointer { glow(s, action) } else { 0.0 }
     if primary {
-        rect(mut s, r, if hover { vec4(0.86, 0.86, 0.87, 1.0) } else {
-            INK
-        }, RADIUS)
+        rect(mut s, r, mix(INK, vec4(0.9, 0.9, 0.91, 1.0), hover), RADIUS)
     } else {
-        rect(mut s, r, if hover { RAISED } else { SECONDARY }, RADIUS)
+        rect(mut s, r, mix(SECONDARY, RAISED, hover), RADIUS)
         ring(mut s, r, BORDER, RADIUS)
     }
     let c = r.center()
-    let y = line_top(s, Face::Sans, 14.0, c.y)
-    centered(mut s, label, 14.0, c.x, y, if primary { DARK } else { INK }, Face::Sans)
+    let y = line_top(s, Face::Sans, LABEL, c.y)
+    centered(mut s, label, LABEL, c.x, y, if primary { DARK } else { INK }, Face::Sans)
+}
+
+// How far the hover or focus on `action` has come on: from 0 when it arrives to 1 a quarter
+// second later, eased, so it settles rather than snaps.
+fn glow(s: Console, action: Action) -> f32 {
+    if s.glowing == Some(action) { smoothstep(0.0, 1.0, s.glow) } else { 0.0 }
 }
 
 // A line `stroke` wide from `a` to `b`, level or upright.
@@ -979,10 +993,10 @@ fn stroke(s: mut Console, a: vec2, b: vec2, width: f32) {
 // Settings: a quiet square button holding two sliders, as Lucide draws its settings-2 icon
 // on a 24-unit grid.
 fn settings_button(s: mut Console, r: Rect) {
-    let lit = control(mut s, Action::Settings, r, 0, Kind::Icon)
-    if (lit && s.input == Input::Pointer) || s.pane == Pane::Settings {
-        rect(mut s, r, RAISED, RADIUS)
-    }
+    let _ = control(mut s, Action::Settings, r, 0, Kind::Icon)
+    let hover = if s.input == Input::Pointer { glow(s, Action::Settings) } else { 0.0 }
+    let shown = if s.pane == Pane::Settings { 1.0 } else { hover }
+    if shown > 0.0 { rect(mut s, r, vec4(RAISED.xyz, RAISED.w * shown), RADIUS) }
     let unit = 20.0 / 24.0
     let o = r.center() - vec2(12.0 * unit)
     let width = 1.75
@@ -1077,9 +1091,8 @@ fn library(s: mut Console, w: f32, h: f32, cam: Camera, row: Row, margin: f32) {
         let offset = f32(i) - s.album
         if offset < -2.5 || offset > 12.0 { continue }
         let art = s.covers[i].image.is_some()
-        let ring = if lit(s, Action::Game { index: i }) { 1.0 } else { 0.0 }
-        let spin = if s.reduced { 0.0 } else { s.presentation * SPIN }
-        let card = place(i, s.album, ring, art, row, spin)
+        let ring = glow(s, Action::Game { index: i })
+        let card = place(i, s.album, ring, art, row)
         let b = bounds(cam, card) / s.zoom
         let r = Rect::new(b.x, b.y, b.z, b.w)
         s.placed.push(Placed { index: i, card, art })
@@ -1113,7 +1126,7 @@ fn library(s: mut Console, w: f32, h: f32, cam: Camera, row: Row, margin: f32) {
     let continuing = !s.saves.is_empty()
     // The title and actions hold still at the margin, above where the selection rests, while
     // blocks tumble beneath them.
-    let still = place(s.selected, f32(s.selected), ring: 0.0, has_art: true, row: row, spin: 0.0)
+    let still = place(s.selected, f32(s.selected), ring: 0.0, has_art: true, row: row)
     let resting = bounds(cam, still) / s.zoom
     slot = Rect::new(margin, resting.y, resting.z, resting.w)
     let x = slot.x
@@ -1409,6 +1422,13 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         Some(p) => under(s.shown, p),
         None => None,
     }
+    // What the pointer is over, or with keys or a pad what has focus, glows in from nothing.
+    let glowing = if s.input == Input::Pointer { s.hover } else { Some(s.focus) }
+    if glowing != s.glowing {
+        s.glowing = glowing
+        s.glow = 0.0
+    }
+    s.glow = if s.reduced { 1.0 } else { min(s.glow + dt / 0.25, 1.0) }
     let intro = motion && s.presentation < s.intro_until
     let phase = moment(s.presentation, intro)
     // Nothing is fetched ahead of time until the opening is over and the library has come up,
@@ -1513,7 +1533,8 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                 time: if motion { clock_at(s.presentation, opening: intro) } else {
                     s.presentation
                 },
-                light: if phase.settled { 0.9 } else { 1.0 },
+                // Dimmer in the library, as far off as it stands, so the games come first.
+                light: if phase.settled { 0.72 } else { 1.0 },
                 tint: s.tint,
             },
         ),
@@ -1533,6 +1554,22 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         vertices: 6,
     )
     if phase.library > 0.0 {
+        // The selection stands in a pool of its cover's light, as it settles.
+        for placed in s.placed {
+            if placed.index != s.selected { continue }
+            let b = bounds(cam, placed.card)
+            let foot = vec2(b.x + b.z * 0.5, b.y + b.w)
+            let radii = vec2(b.z * 0.85, b.w * 0.32)
+            let strength = 0.32 * placed.card.look.w * placed.card.look.w * phase.library
+            draw(
+                pass,
+                quad.bind(screen, rect: vec4(foot - radii * 1.6, radii * 3.2)),
+                pool.bind(
+                    look: Pool { ellipse: vec4(foot, radii), color: vec4(s.tint.xyz, strength) },
+                ),
+                vertices: 6,
+            )
+        }
         for k in depth_order(s.placed) {
             let placed = s.placed[k]
             let card = room::Card {

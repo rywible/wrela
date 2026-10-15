@@ -137,8 +137,8 @@ pub fn block_face(
     let surface = if face < 4 { cover } else { vec3(0.05, 0.05, 0.055) }
     let light = normalize(vec3(-0.35, 0.6, 0.75))
     var shade = 0.45 + 0.55 * saturate(dot(normalize(v.normal), light))
-    // The chosen block's front shows its cover as it is.
-    if face == 0 { shade = mix(shade, 1.0, card.look.w) }
+    // The chosen block's front (its back, after its half turn) shows its cover as it is.
+    if face == 0 || face == 2 { shade = mix(shade, 1.0, card.look.w) }
     let edge = min(
         min(v.uv.x, 1.0 - v.uv.x) * v.extent.x,
         min(v.uv.y, 1.0 - v.uv.y) * v.extent.y,
@@ -148,6 +148,20 @@ pub fn block_face(
     let silver = mix(vec3(0.55, 0.56, 0.6), vec3(1.0), card.look.y)
     let color = mix(surface * shade * card.look.x, silver, line)
     Over { color: vec4(color, card.look.z) }
+}
+
+// The light the selection stands in: an ellipse on the floor beneath it, in its cover's colour.
+pub struct Pool: Copy + GpuData {
+    // Its centre and its radii, in pixels; its colour and how strong it is.
+    pub ellipse: vec4,
+    pub color: vec4,
+}
+
+@fragment
+pub fn pool(v: Vertex, look: Pool) -> Over {
+    let d = length((v.pixel - look.ellipse.xy) / look.ellipse.zw)
+    let light = exp(-d * d * 2.5) * look.color.w
+    Over { color: vec4(look.color.xyz, light) }
 }
 
 pub struct Emblem: Copy + GpuData {

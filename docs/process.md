@@ -1740,6 +1740,13 @@ games to load ahead of time without slowing the console: once the library has se
 console has the browser fetch each game's pages, runtime, WASM and shaders at low priority,
 the selection first, and stops when a game opens. The console and the games are one site, so
 the browser's cache serves them to the game.
+Ryan then asked for tighter type, the selection always at the left, softer hover, more weight
+on the selection and a tesseract that sits lower and farther off. The UI's fonts gained
+optional tracking and weight (stroke added through the distance field); the console sets
+Manrope a little closer and heavier, with 15-pixel button labels. Hover and focus ease in over
+a quarter second. Resting cubes stand still and dimmer; the selection stands in a pool of its
+cover's light and makes a half turn as it arrives. The tesseract stands twice as deep at the
+same size on screen, lower and dimmer in the library.
 
 ## Keeping this record
 

@@ -1,7 +1,8 @@
 // The library's room: an endless dark. Each game is a cube in one row along the bottom of the
-// screen, turning slowly, its cover on its sides. The selection tumbles forward to face the
-// eye and widens into its whole cover; the one it leaves tumbles back into a cube. The
-// artifact, a four-dimensional cube, turns far behind them, up in the middle. The CPU and the
+// screen, standing still, its cover on its sides. The selection, always at the left, tumbles
+// forward to face the eye and widens into its whole cover; the one it leaves tumbles back into
+// a cube and away. The artifact, a four-dimensional cube, turns far behind them, up in the
+// middle. The CPU and the
 // GPU place and project everything with the same code, so what is drawn is exactly what the
 // pointer can hit.
 
@@ -22,12 +23,11 @@ pub struct Card: Copy + GpuData {
     pub look: vec4,
 }
 
-// Covers are 16:9. A block at rest is a cube as high as the selection; the next stands this
-// far from it (in cube edges). Resting cubes turn this fast (radians a second), each from its
-// own angle.
+// Covers are 16:9. A block at rest is a cube as high as the selection, turned this far
+// (radians) to show its depth; the next stands this far from it (in cube edges).
 const ASPECT: f32 = 0.5625
 const GAP: f32 = 0.6
-pub const SPIN: f32 = 0.3
+const REST: f32 = 0.6
 // How high (in cube edges) the chosen block hops as it tumbles, and how far it tips toward
 // the eye at the top of the hop (radians).
 const HOP: f32 = 0.15
@@ -36,7 +36,7 @@ const TIP: f32 = 0.35
 pub const MARGIN: f32 = 0.055
 const BASELINE: f32 = 0.88
 // The artifact floats this deep, far behind the cards.
-const ARTIFACT_DEPTH: f32 = -10.0
+const ARTIFACT_DEPTH: f32 = -20.0
 
 // The row fitted to a screen (world units on the cards' plane): the selected card's left
 // edge, the row's middle, the selected card's width and the gap between cards.
@@ -103,7 +103,7 @@ pub fn row(c: Camera) -> Row {
 // three tenths of its height across.
 pub fn artifact_spot(c: Camera) -> vec4 {
     let aspect = c.screen.x / c.screen.y
-    let at = vec2(0.5, 0.31)
+    let at = vec2(0.5, 0.35)
     let centre = on_plane(c, at, ARTIFACT_DEPTH)
     let tall = on_plane(c, at + vec2(0.0, 0.145), ARTIFACT_DEPTH).y - centre.y
     vec4(centre, abs(tall) * min(aspect, 1.0))
@@ -135,10 +135,10 @@ fn reach(index: u32, album: f32, edge: f32) -> f32 {
     x
 }
 
-// Block `index` while the row is at `album`, resting cubes turned to `spin` and on (radians).
-// The selection's front stands on the cards' plane, at the left margin, or, past the first,
-// with the cube before it whole at the margin. The rest stand to either side, a gap apart.
-pub fn place(index: u32, album: f32, ring: f32, has_art: bool, row: Row, spin: f32) -> Card {
+// Block `index` while the row is at `album` (its eased selection). The selection's front stands
+// on the cards' plane at the left margin; the rest stand after it, a gap apart, and those
+// before it slide off to the left and fade.
+pub fn place(index: u32, album: f32, ring: f32, has_art: bool, row: Row) -> Card {
     let edge = row.width * ASPECT
     let c = chosen(index, album)
     let eased = smoothstep(0.0, 1.0, c)
@@ -148,18 +148,15 @@ pub fn place(index: u32, album: f32, ring: f32, has_art: bool, row: Row, spin: f
         reach(below + 1, album, edge),
         album - f32(below),
     )
-    let start = row.left + min(max(album, 0.0), 1.0) * edge * (1.0 + GAP) - selection
     let width = edge * mix(1.0, 1.0 / ASPECT, c)
-    let x = start + reach(index, album, edge) + width * 0.5
-    // A cube at rest turns from its own angle; the chosen one turns back square to the eye,
-    // the short way, and tips forward at the top of its hop.
-    let rest = spin + 0.55 + f32(index) * 1.1
-    let wrapped = rest - floor(rest / 6.2831855 + 0.5) * 6.2831855
+    let x = row.left - selection + reach(index, album, edge) + width * 0.5
+    // Becoming the selection, a cube hops, tips toward the eye and makes a half turn, from its
+    // resting angle round to show its other face square to the eye.
     let hop = sin(c * 3.1415927)
     let shown = saturate((x + width * 0.5 - (row.left - edge * 0.25)) / (edge * 0.75))
-    let lit = mix(0.62, 1.0, eased) * if has_art { 1.0 } else { 0.9 }
+    let lit = mix(0.42, 1.0, eased) * if has_art { 1.0 } else { 0.9 }
     Card {
-        centre: vec4(x, row.middle + hop * HOP * edge, -edge * 0.5, wrapped * (1.0 - eased)),
+        centre: vec4(x, row.middle + hop * HOP * edge, -edge * 0.5, mix(REST, -3.1415927, eased)),
         size: vec4(width, edge, edge, -hop * TIP),
         look: vec4(lit, ring, shown, c),
     }
@@ -201,47 +198,41 @@ fn the_selection_faces_the_eye_at_the_margin_and_the_rest_are_cubes_beside_it() 
     ] {
         let c = camera(size, vec2(0.0))
         let r = row(c)
-        let at = |i: u32, album: f32| place(i, album, ring: 0.0, has_art: true, row: r, spin: 1.0)
-        // The first, chosen: square to the eye, its whole cover, at the margin on the baseline.
-        let first = at(0, 0.0)
-        assert(first.centre.w == 0.0 && abs(first.size.w) < 0.00001 && first.look.w == 1.0)
-        assert(abs(first.size.x * ASPECT - first.size.y) < 0.0001, "16:9")
-        let chosen = bounds(c, first)
-        assert(abs(chosen.x - size.x * MARGIN) < size.x * 0.01, "at the margin")
-        assert(abs(chosen.y + chosen.w - size.y * BASELINE) < size.y * 0.01, "on the baseline")
-        assert(chosen.x + chosen.z < size.x * 0.7, "leaving room for the rest of the row")
-        // The next: a turned cube a gap to the right, whole on screen.
-        let next = at(1, 0.0)
-        assert(next.size.x == next.size.y && next.size.y == next.size.z && next.centre.w != 0.0)
-        let b = bounds(c, next)
-        assert(b.x > chosen.x + chosen.z && b.x < size.x)
-        // On a wide screen it is whole; on a narrow one the row runs off the edge.
-        assert(size.x < size.y || b.x + b.z < size.x)
-        // Past the first, the cube before the selection stands whole at the margin.
-        let before = bounds(c, at(0, 1.0))
-        let second = bounds(c, at(1, 1.0))
-        assert(at(0, 1.0).look.z == 1.0 && before.x >= size.x * MARGIN * 0.9)
-        assert(before.x + before.z < second.x, "beside the selection, not over it")
-        assert(abs(second.y + second.w - size.y * BASELINE) < size.y * 0.01)
-        // Two before have faded out.
-        assert(at(0, 2.0).look.z == 0.0)
+        let at = |i: u32, album: f32| place(i, album, ring: 0.0, has_art: true, row: r)
+        for selected in [0, 1, 3] {
+            // The chosen: square to the eye, its whole cover, at the margin on the baseline.
+            let first = at(selected, f32(selected))
+            assert(abs(sin(first.centre.w)) < 0.00001 && abs(first.size.w) < 0.00001)
+            assert(first.look.w == 1.0 && abs(first.size.x * ASPECT - first.size.y) < 0.0001)
+            let chosen = bounds(c, first)
+            assert(abs(chosen.x - size.x * MARGIN) < size.x * 0.01, "at the margin")
+            assert(abs(chosen.y + chosen.w - size.y * BASELINE) < size.y * 0.01, "on the baseline")
+            assert(chosen.x + chosen.z < size.x * 0.7, "leaving room for the rest of the row")
+            // The next: a still, turned cube a gap to the right; whole on a wide screen.
+            let next = at(selected + 1, f32(selected))
+            assert(
+                next.size.x == next.size.y && next.size.y == next.size.z && next.centre.w == REST,
+            )
+            let b = bounds(c, next)
+            assert(b.x > chosen.x + chosen.z && b.x < size.x)
+            assert(size.x < size.y || b.x + b.z < size.x)
+            assert(next.look.x < first.look.x, "dimmer than the selection")
+            // The one before has slid off to the left, faded.
+            if selected > 0 { assert(at(selected - 1, f32(selected)).look.z == 0.0) }
+        }
         // Mid-move, the block hops and tips, between its two places.
         let moving = at(1, 0.5)
-        assert(moving.centre.y > next.centre.y && moving.size.w < 0.0)
+        let still = at(1, 0.0)
+        assert(moving.centre.y > still.centre.y && moving.size.w < 0.0)
         let m = bounds(c, moving)
-        assert(m.x > chosen.x && m.x < b.x)
+        assert(m.x > size.x * MARGIN * 0.5 && m.x < bounds(c, still).x)
     }
 }
 
 @test
-fn a_resting_cube_turns_and_a_still_one_holds_its_angle() {
+fn a_block_keeps_its_size_as_it_turns_and_tips() {
     let r = row(camera(vec2(1280.0, 720.0), vec2(0.0)))
-    let a = place(3, 0.0, ring: 0.0, has_art: true, row: r, spin: 0.0)
-    let b = place(3, 0.0, ring: 0.0, has_art: true, row: r, spin: 0.5)
-    assert(abs(b.centre.w - a.centre.w - 0.5) < 0.0001)
-    assert(abs(a.centre.w) <= 3.1415927, "the short way back to the front")
-    // A block's corners stay its size as it turns and tips.
-    let m = place(1, 0.5, ring: 0.0, has_art: true, row: r, spin: 2.0)
+    let m = place(1, 0.5, ring: 0.0, has_art: true, row: r)
     let span = corner(m, vec3(0.5, 0.5, 0.5)) - corner(m, vec3(-0.5, -0.5, -0.5))
     assert(abs(length(span) - length(m.size.xyz)) < 0.0001)
 }
