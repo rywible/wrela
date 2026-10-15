@@ -168,7 +168,7 @@ pub struct Typing: Copy + Eq {
 }
 
 /// Every item, bottom first, then the links over them. While `typing`, its item shows its caret
-/// when `blink` is on.
+/// when `blink` is on, and what an input method is composing (`composing`) underlined at it.
 pub fn items(
     list: mut DrawList,
     fonts: Fonts,
@@ -176,6 +176,7 @@ pub fn items(
     v: View,
     screen: vec2,
     typing: Option<Typing>,
+    composing: [u32],
     blink: bool,
 ) {
     borrow font = fonts.font(Face::Sans)
@@ -233,7 +234,24 @@ pub fn items(
                 Some(t) => if t.id == it.id { Some(t.at) } else { None },
                 None => None,
             }
-            text(mut list, fonts, font, it, v, color, typed, blink)
+            if typed.is_some() && !composing.is_empty() {
+                // The text as it would be with the composing put in at the caret.
+                var shown = it.clone()
+                var add = String::new()
+                for c in composing {
+                    add.push_char(c)
+                }
+                let at = match typed {
+                    Some(a) => a,
+                    None => 0,
+                }
+                let (with, after) = clip::inserted(it.text.as_str(), at, add.as_str())
+                shown.text = take with
+                text(mut list, fonts, font, shown, v, color, Some(after), blink)
+                underline(mut list, font, shown, v, at, after)
+            } else {
+                text(mut list, fonts, font, it, v, color, typed, blink)
+            }
         }
     }
     for it in b.items {
@@ -250,6 +268,19 @@ pub fn items(
             k,
         )
     }
+}
+
+/// A line under the text of `it` from byte `from` to `to`: what an input method is composing.
+fn underline(list: mut DrawList, font: Font, it: Item, v: View, from: u32, to: u32) {
+    let l = layout(font, it)
+    let a = caret(font, it, l, from)
+    let z = caret(font, it, l, to)
+    if a.y != z.y {
+        return
+    }
+    let y = a.y + 0.92 * l.line
+    let w = max(1.5 * v.unit, 1.0)
+    list.line(v.to_screen(vec2(a.x, y)), v.to_screen(vec2(z.x, y)), ACCENT, width: w)
 }
 
 /// A line from `a` to `z` with an arrowhead at `z`.

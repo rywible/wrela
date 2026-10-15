@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { BrowserPlatform, exportName, MESSAGE_LIMIT, PortRpc, programUrl, wordAt, wordBytes } from "../src/platform.ts";
+import type { Overlay } from "../src/assist.ts";
+import { ACCESSIBILITY, BrowserPlatform, exportName, MESSAGE_LIMIT, PASTE_EVENTS, PortRpc, programUrl, TEXT_INPUT, wordAt, wordBytes } from "../src/platform.ts";
+import { Reader, Writer } from "../src/wire.ts";
 
 test("program channels correlate replies and close outstanding requests", async () => {
   const channel = new MessageChannel();
@@ -136,5 +138,40 @@ test("a program sets the canvas cursor only to a listed shape", async () => {
   } finally {
     platform.dispose();
     if (oldWindow) Object.defineProperty(globalThis, "window", oldWindow); else Reflect.deleteProperty(globalThis, "window");
+  }
+});
+
+test("the environment says which input services the host has, and they reach them", async () => {
+  const names = ["window", "matchMedia"] as const;
+  const saved = names.map((n) => Object.getOwnPropertyDescriptor(globalThis, n));
+  Object.defineProperty(globalThis, "window", { configurable: true, value: { parent: {}, addEventListener: () => {}, devicePixelRatio: 2 } });
+  Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: () => ({ matches: false }) });
+  const canvas = { style: {}, tabIndex: -1, focus: () => {} } as HTMLCanvasElement;
+  const platform = new BrowserPlatform(canvas, () => {});
+  const capabilities = async () => wordAt((await platform.request("environment", new Uint8Array())).subarray(9));
+  const calls: unknown[] = [];
+  try {
+    const before = await capabilities();
+    expect(before & (PASTE_EVENTS | TEXT_INPUT | ACCESSIBILITY)).toBe(0);
+    await expect(platform.request("text/input", new Writer().u8(1).f32(1).f32(2).f32(3).f32(4).bytes())).rejects.toThrow("no text input");
+    const input = {
+      release() {},
+      textInput: (on: boolean, caret: unknown) => calls.push(["text", on, caret]),
+      pasted: (n: number) => (n === 3 ? { text: "hi", html: "" } : null),
+      offer: (text: string, html: string) => calls.push(["offer", text, html]),
+    };
+    const overlay = { tree: (b: Uint8Array) => calls.push(["tree", b.length]), announce: (t: string) => calls.push(["say", t]) };
+    platform.attach(input, overlay as unknown as Overlay);
+    expect((await capabilities()) & (PASTE_EVENTS | TEXT_INPUT | ACCESSIBILITY)).toBe(PASTE_EVENTS | TEXT_INPUT | ACCESSIBILITY);
+    await platform.request("text/input", new Writer().u8(1).f32(1).f32(2).f32(3).f32(4).bytes());
+    await platform.request("clipboard/offer", new Writer().str("a").str("<b>a</b>").bytes());
+    const pasted = new Reader(await platform.request("clipboard/pasted", wordBytes(3)));
+    expect([pasted.str(), pasted.str()]).toEqual(["hi", ""]);
+    await expect(platform.request("clipboard/pasted", wordBytes(4))).rejects.toThrow("isn't kept");
+    await platform.request("a11y/announce", new TextEncoder().encode("3 items selected"));
+    expect(calls).toEqual([["text", true, { x: 1, y: 2, w: 3, h: 4 }], ["offer", "a", "<b>a</b>"], ["say", "3 items selected"]]);
+  } finally {
+    platform.dispose();
+    names.forEach((n, i) => { const d = saved[i]; if (d) Object.defineProperty(globalThis, n, d); else Reflect.deleteProperty(globalThis, n); });
   }
 });

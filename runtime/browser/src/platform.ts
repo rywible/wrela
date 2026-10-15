@@ -1,10 +1,19 @@
 // Application-host mechanisms. Services transport opaque bytes; the Wrela application
 // owns its catalog, UI, session protocol and save policy.
+import type { Overlay } from "./assist.ts";
+import { glyph, type Paper } from "./glyph.ts";
+import type { Listener } from "./listen.ts";
 import type { Bytes } from "./stream.ts";
+import { Reader, Writer } from "./wire.ts";
 
 export const MESSAGE_LIMIT = 1024 * 1024 - 512;
 const DECODER = new TextDecoder("utf-8", { fatal: true });
 const CURSORS = new Set(["default", "pointer", "text"]);
+/** What `environment`'s capabilities word says this host has (runtime/browser): its bits. */
+export const PASTE_EVENTS = 1;
+export const TEXT_INPUT = 2;
+export const ACCESSIBILITY = 4;
+export const SYSTEM_GLYPHS = 8;
 export const wordBytes = (n: number): Bytes => {
   const b = new Uint8Array(4);
   new DataView(b.buffer).setUint32(0, n, true);
@@ -100,6 +109,10 @@ export class BrowserPlatform {
   #inbox: Bytes[] = [];
   #receiving: { resolve: (b: Bytes) => void; reject: (e: Error) => void } | null = null;
   #shown: number | null = null;
+  #input: Listener | null = null;
+  #overlay: Overlay | null = null;
+  /** Where glyphs are drawn: the page's OffscreenCanvas, unless a test gives its own. */
+  paper: (w: number, h: number) => Paper = (w, h) => new OffscreenCanvas(w, h);
   constructor(readonly canvas: HTMLCanvasElement, readonly visible: (v: boolean) => void) {
     canvas.style.position = "relative"; canvas.style.zIndex = "1"; canvas.style.outline = "none"; canvas.tabIndex = 0;
     window.addEventListener("message", (e: MessageEvent<unknown>) => {
@@ -117,6 +130,11 @@ export class BrowserPlatform {
     window.addEventListener("pagehide", () => this.dispose());
   }
   get active(): boolean { return this.#shown === null; }
+  /** The input services (listen.ts) and the accessibility overlay (assist.ts), once there. */
+  attach(input: Listener, overlay: Overlay | null): void { this.#input = input; this.#overlay = overlay; }
+  #capabilities(): number {
+    return (this.#input ? PASTE_EVENTS | TEXT_INPUT : 0) | (this.#overlay ? ACCESSIBILITY : 0) | (typeof OffscreenCanvas === "function" ? SYSTEM_GLYPHS : 0);
+  }
   presented(): void { this.#parent?.signal("frame"); }
   failed(): void { this.#parent?.signal("failed"); }
   dispose(): void {
@@ -170,7 +188,8 @@ export class BrowserPlatform {
   async request(service: string, body: Bytes): Promise<Bytes> {
     checked(body);
     if (service === "environment") {
-      const b = new Uint8Array(9); b[0] = Number(matchMedia("(prefers-reduced-motion: reduce)").matches); b.set(wordBytes(Math.floor(Date.now() / 1000)), 1); b.set(wordBytes(Math.round((window.devicePixelRatio || 1) * 1024)), 5); return b;
+      // Reduced motion, the time (epoch seconds), the pixel ratio (×1024), what this host has.
+      const b = new Uint8Array(13); b[0] = Number(matchMedia("(prefers-reduced-motion: reduce)").matches); b.set(wordBytes(Math.floor(Date.now() / 1000)), 1); b.set(wordBytes(Math.round((window.devicePixelRatio || 1) * 1024)), 5); b.set(wordBytes(this.#capabilities()), 9); return b;
     }
     if (service === "cursor") {
       // The pointer's shape over the program's canvas: a named CSS cursor, from a short list.
@@ -178,6 +197,30 @@ export class BrowserPlatform {
       if (!CURSORS.has(name)) throw new Error(`unsupported cursor: ${name.slice(0, 32)}`);
       this.canvas.style.cursor = name; return new Uint8Array();
     }
+    if (service === "text/input") {
+      // On (with the caret's rectangle, device pixels of the canvas) or off.
+      if (!this.#input) throw new Error("this host has no text input yet");
+      const r = new Reader(body); const on = r.u8() !== 0;
+      this.#input.textInput(on, { x: r.f32(), y: r.f32(), w: r.f32(), h: r.f32() }); return new Uint8Array();
+    }
+    if (service === "clipboard/offer") {
+      if (!this.#input) throw new Error("this host has no clipboard yet");
+      const r = new Reader(body); this.#input.offer(r.str(), r.str()); return new Uint8Array();
+    }
+    if (service === "clipboard/pasted") {
+      const pasted = this.#input?.pasted(new Reader(body).u32());
+      if (!pasted) throw new Error("that paste isn't kept");
+      return new Writer().str(pasted.text).str(pasted.html).bytes();
+    }
+    if (service === "a11y/tree") {
+      if (!this.#overlay) throw new Error("this host has no accessibility overlay");
+      this.#overlay.tree(body); return new Uint8Array();
+    }
+    if (service === "a11y/announce") {
+      if (!this.#overlay) throw new Error("this host has no accessibility overlay");
+      this.#overlay.announce(DECODER.decode(body)); return new Uint8Array();
+    }
+    if (service === "font/glyph") return glyph(body, this.paper);
     if (service === "surface/open") return this.#open(DECODER.decode(body));
     if (service === "channel/receive") {
       if (!this.#parent) throw new Error("this program has no parent channel");

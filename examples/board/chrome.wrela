@@ -146,7 +146,7 @@ pub fn over(c: Chrome, p: vec2) -> bool {
 }
 
 /// A control's name and its key, for its tip.
-fn tip(a: Action) -> Text {
+pub fn tip(a: Action) -> Text {
     match a {
         Action::Use { tool } => match tool {
             Tool::Select => "Select   V",

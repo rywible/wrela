@@ -82,6 +82,7 @@ The M4 Air has not been measured; its times are reported separately.
 | [Claude Code](https://claude.com/claude-code) (Anthropic), mostly Claude Opus 5.5 | Writes the code, tests and docs, on Ryan's MacBook Air and in cloud sessions |
 | [OpenAI Codex](https://openai.com/codex/) | Reviews performance across the codebase, implements optimizations and regression tests, and measures their effects in a cloud session |
 | Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 | The authors in the blind authoring rounds that test thesis 1 (vision.md); Opus also in the first round |
+| [GPT-6.1-Sol and GPT-6-Astra](https://openai.com/) (OpenAI), as T3 Code child tasks | Since 2026-10-14, reviewers in a council on an implementation plan: each reads the brief and the checkout, returns findings, and rebuts the leader's answers; they don't edit |
 | Claude subagents with no context | Blind raters in the lookdev loop: they see only the before and after stills and the anchors |
 | Plan councils: Claude leads; OpenAI Codex GPT-6.1-Sol and GPT-6-Astra review | Since 2026-10-14, two Codex models review a measured plan independently, read-only, and then rebut the leader's answers. Claude decides, implements and verifies. First used for the faster check |
 | Claude projects (claude.ai) | Run several agent threads at once (lookdev items, fixes, rendering setup), with one coordinator |
@@ -1343,6 +1344,46 @@ reimplemented in Wrela.
 new features. The gaps are the ones a canvas application expects: no system clipboard (copy
 and paste stay in the board), no input method for composed text, Latin-1 fonts only, and
 nothing for screen readers.
+
+## Clipboard, input methods, system glyphs and screen readers, 2026-10-14
+
+Ryan asked Claude Code (Opus 5.5) to fix the gaps the whiteboard found: ownership friction, two
+small API gaps, and no system clipboard, input method, text past Latin-1 or screen reader
+support. He asked for the plan to go through a council first: a review skill he supplied, in
+which the leader (Opus 5.5) sends one brief to two reviewers run as T3 Code child tasks, GPT-6.1-Sol
+and GPT-6-Astra (OpenAI, high effort), answers their findings, and runs a rebuttal round. The
+reviewers read the checkout but changed nothing. Two rounds ran; they found a kerning-table
+stride bug the plan would have caused, per-codepoint glyphs that would split emoji sequences,
+accessibility actions that would have hit whatever was drawn on top, spaces the hidden text field
+would have lost, a paste that could arrive twice or never, and composition events a full input
+ring could split. The plan changed for each. The language changes went in a PR of their own.
+
+**Input and the browser host.** Three input events: `Compose` (an input method's text as it
+changes, written all or nothing and checked for gaps), `Paste` (by a serial; the program asks for
+the data) and `Assist` (an assistive technology's action, by node). The browser host has three
+owners of the keys: the canvas, a hidden text field at the caret while the program edits text (so
+input methods compose there), and an accessibility overlay of real buttons and a listbox (F6 in,
+Escape out). Services: `text/input`, `clipboard/offer` (what a copy takes, offered before the
+keys that copy arrive), `clipboard/pasted`, `a11y/tree`, `a11y/announce`, `font/glyph`, and a
+capabilities word in `environment`. The keyboard's and the overlay's patterns follow the W3C's
+[ARIA Authoring Practices](https://www.w3.org/WAI/ARIA/apg/) (button and listbox) and the
+[UI Events](https://www.w3.org/TR/uievents/) and [Input Events](https://www.w3.org/TR/input-events-2/)
+specifications.
+
+**Glyphs.** Text is laid out by character group: an approximation of Unicode's extended grapheme
+clusters ([UAX #29](https://www.unicode.org/reports/tr29/)) for accents, emoji skin tones, flags
+and joined emoji sequences only, with no shaping between groups. A group past the baked fonts is
+drawn by the browser in the system's fonts and made into a glyph while the program runs: a
+signed distance field from the drawing's exact Euclidean distance transform, after Pedro
+Felzenszwalb and Daniel Huttenlocher, ["Distance Transforms of Sampled
+Functions"](https://theoryofcomputing.org/articles/v008a019/) (Theory of Computing 8, 2012),
+reimplemented in Wrela; an emoji stays a colour image. No font file was added.
+
+**Checks.** A real-browser test drives headless Chrome with trusted keys and an input method
+through Chrome's [DevTools protocol](https://chromedevtools.github.io/devtools-protocol/) (its
+Input domain, over a small WebSocket client in tools/chrome_session.py) and checks that each edit
+reaches the program once. A GPU frame test checks a colour glyph's pixels. VoiceOver and pasting
+into other applications were not tested.
 
 ## Keeping this record
 

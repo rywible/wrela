@@ -2,19 +2,23 @@
 // with the pointer and the keyboard, kept in the program's storage. Everything on the screen is
 // drawn here, from quads; the browser gives input and a canvas.
 //
-// Each frame: the host's answers (the display's pixel ratio, the saved board), the input, a
-// save if the board changed, then the drawing. Input hits what the frame before drew.
+// Each frame: the host's answers (the display's pixel ratio and what the host can do, the saved
+// board, pastes), the input, a save if the board changed, the drawing, then what the host is told:
+// text mode at the caret, what a copy would take, and the accessibility tree. Input hits what the
+// frame before drew.
 
 use board::{Board, History, Item, Kind, NOTE, SMALLEST, has}
 use chrome::{Action, Chrome, Tool}
+use clip::{Aim, Into, destination, inserted, items_of}
 use paint::{ACCENT, PAPER, Typing}
 use platform::host
+use platform::host::{Node, Pasted}
 use std::gpu::begin_screen_pass
-use std::input::{Button, Event, Key, Mods, events}
+use std::input::{Assist, Button, Composer, Event, Key, Mods, events}
 use std::io::{Pending, load as read_file, store}
 use std::serialize::{LoadError, load, save}
 use ui::draw::{DrawList, Rect, Renderer}
-use ui::text::{Face, Fonts, decode, previous}
+use ui::text::{Face, Fonts, next_cluster, previous_cluster}
 use view::View
 
 /// Where the board is kept.
@@ -39,6 +43,12 @@ enum Drag: Copy + Eq {
     Pen { id: u32 },
     /// Pressed on a control.
     Control,
+}
+
+/// A paste asked of the host: where it was aimed, and its answer on its way.
+struct Pasting {
+    aim: Aim,
+    answer: Pending<u8>,
 }
 
 /// A press on an item, to tell a double click.
@@ -78,6 +88,22 @@ pub struct App {
     /// The board as last saved, and when it last changed.
     saved: Board,
     changed_at: f32,
+    /// What the host can do (`environment`'s capabilities), once it has said.
+    capabilities: Option<u32>,
+    /// A Cmd+V before the host said whether a paste arrives as an event.
+    paste_waiting: bool,
+    pasting: Vec<Pasting>,
+    /// One more each time typed text changes: a paste aimed at text checks it's as it was.
+    revision: u32,
+    /// The text an input method is composing at the caret.
+    composer: Composer,
+    // What the host was last told: text mode's caret, what a copy takes, the accessibility tree,
+    // the selection it said; and its answers to them, on their way.
+    texting: Option<vec4>,
+    offered: Vec<Item>,
+    tree: Vec<Node>,
+    said: Vec<u32>,
+    told: Vec<Pending<u8>>,
 }
 
 pub fn init() -> App {
@@ -110,6 +136,16 @@ pub fn init() -> App {
         cursor: None,
         shown_cursor: "default",
         changed_at: 0.0,
+        capabilities: None,
+        paste_waiting: false,
+        pasting: Vec::new(),
+        revision: 0,
+        composer: Composer::new(),
+        texting: None,
+        offered: Vec::new(),
+        tree: Vec::new(),
+        said: Vec::new(),
+        told: Vec::new(),
     }
 }
 
@@ -186,12 +222,15 @@ pub fn frame(s: mut App, time: f32, width: u32, height: u32) {
     }
     keep(mut s)
     draw(mut s, screen)
+    tell(mut s)
 }
 
 /// The host's answers: the pixel ratio, the saved board, and the requests done.
 fn answers(s: mut App) {
     if let Some(result) = poll(mut s.environment) {
+        var capabilities = 0
         if let Ok(bytes) = result {
+            capabilities = host::capabilities(bytes)
             if let Some(ratio) = host::word(bytes, 5) {
                 let u = clamp(f32(ratio) / 1024.0, 0.5, 4.0)
                 // The same world point stays in the middle of the screen.
@@ -201,6 +240,32 @@ fn answers(s: mut App) {
                 if s.history.fresh() { s.placed = false }
             }
         }
+        s.capabilities = Some(capabilities)
+        // A Cmd+V before now pastes the board's own clipboard, unless a paste event brings it.
+        if replace(mut s.paste_waiting, value: false) && capabilities & host::PASTE_EVENTS == 0 {
+            let items = s.clipboard.clone()
+            paste(mut s, items)
+        }
+    }
+    var i = 0
+    while i < s.pasting.len() {
+        let Some(result) = s.pasting[i].answer.poll() else {
+            i += 1
+            continue
+        }
+        let aim = s.pasting.remove(i).aim
+        let got = match take result {
+            Ok(bytes) => match host::read_pasted(take bytes) {
+                Ok(p) => Some(take p),
+                Err(_) => None,
+            },
+            Err(_) => None,
+        }
+        pasted(mut s, aim, got)
+    }
+    i = 0
+    while i < s.told.len() {
+        if s.told[i].poll().is_some() { let _ = s.told.remove(i) } else { i += 1 }
     }
     if let Some(result) = poll(mut s.loading) {
         if let Ok(bytes) = result {
@@ -272,11 +337,13 @@ fn begin_typing(s: mut App, id: u32, at: u32, keep: bool) {
         checkpoint(mut s)
     }
     s.typing = Some(Typing { id, at })
+    s.composer = Composer::new()
     select(mut s, [id])
 }
 
 /// Stops typing: text left empty goes.
 fn stop_typing(s: mut App) {
+    s.composer = Composer::new()
     let Some(t) = replace(mut s.typing, None) else { return }
     let Some(i) = s.board.index(t.id) else { return }
     if s.board.items[i].kind == Kind::Text && s.board.items[i].text.trim().is_empty() {
@@ -290,6 +357,7 @@ fn retype(s: mut App, text: take String, at: u32) {
     let Some(t) = s.typing else { return }
     let Some(i) = s.board.index(t.id) else { return }
     s.board.items[i].text = take text
+    s.revision += 1
     if s.board.items[i].kind == Kind::Text {
         borrow font = s.fonts.font(Face::Sans)
         s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
@@ -320,19 +388,19 @@ fn typing_key(s: mut App, key: Key, mods: Mods) {
     } else if key == Key::Enter {
         type_char(mut s, 10)
     } else if key == Key::Backspace && t.at > 0 {
-        let from = previous(old, t.at)
+        let from = previous_cluster(old, t.at)
         var text = String::from(old.slice(0, from))
         text.push_str(old.slice(t.at, n))
         retype(mut s, take text, from)
     } else if key == Key::Delete && t.at < n {
-        let to = decode(old, t.at).1
+        let to = next_cluster(old, t.at)
         var text = String::from(old.slice(0, t.at))
         text.push_str(old.slice(to, n))
         retype(mut s, take text, t.at)
     } else if key == Key::Left {
-        s.typing = Some(Typing { id: t.id, at: previous(old, t.at) })
+        s.typing = Some(Typing { id: t.id, at: previous_cluster(old, t.at) })
     } else if key == Key::Right && t.at < n {
-        s.typing = Some(Typing { id: t.id, at: decode(old, t.at).1 })
+        s.typing = Some(Typing { id: t.id, at: next_cluster(old, t.at) })
     } else if key == Key::Home {
         s.typing = Some(Typing { id: t.id, at: 0 })
     } else if key == Key::End {
@@ -384,6 +452,89 @@ fn paste(s: mut App, items: [Item]) {
     s.pastes += 1
     let ids = s.board.paste(items, vec2(24.0 * f32(s.pastes)))
     select(mut s, ids)
+}
+
+/// A paste's answer, aimed at `aim`: a board's items onto the board, words into the text it was
+/// aimed at (or a new note); with no answer (a host without pastes), the board's own clipboard.
+fn pasted(s: mut App, aim: Aim, got: Option<Pasted>) {
+    let Some(p) = got else {
+        let items = s.clipboard.clone()
+        paste(mut s, items)
+        return
+    }
+    if let Some(items) = items_of(p.html.as_str()) {
+        stop_typing(mut s)
+        paste(mut s, items)
+        return
+    }
+    if p.text.is_empty() {
+        return
+    }
+    match destination(aim, s.typing, s.revision, s.board) {
+        Into::Text { id, at } => {
+            let Some(i) = s.board.index(id) else { return }
+            checkpoint(mut s)
+            let (text, after) = inserted(s.board.items[i].text.as_str(), at, p.text.as_str())
+            s.board.items[i].text = take text
+            s.revision += 1
+            if s.board.items[i].kind == Kind::Text {
+                borrow font = s.fonts.font(Face::Sans)
+                s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
+            }
+            if let Some(t) = s.typing {
+                if t.id == id {
+                    s.typing = Some(Typing { id, at: after })
+                }
+            }
+        },
+        Into::Board => {
+            checkpoint(mut s)
+            let middle = s.view.to_world(0.5 * s.screen)
+            var note = Item::new(Kind::Note, middle - vec2(0.5 * NOTE), vec2(NOTE), color: 0)
+            note.text = p.text.clone()
+            let id = s.board.add(take note)
+            select(mut s, [id])
+        },
+    }
+}
+
+/// An assistive technology's action on node `node`: a control's, or an item's.
+fn assist(s: mut App, node: u32, action: Assist) {
+    if node < access::ITEMS {
+        if let Some(a) = access::action_of(node) {
+            if action == Assist::Activate {
+                act(mut s, a)
+            }
+        }
+        return
+    }
+    let id = node - access::ITEMS
+    let Some(i) = s.board.index(id) else { return }
+    if action == Assist::Focus {
+        reveal(mut s, i)
+        return
+    }
+    if let Some(t) = s.typing {
+        if t.id != id {
+            stop_typing(mut s)
+        }
+    }
+    select(mut s, [id])
+    if action == Assist::Activate && s.board.items[i].has_text() && s.typing.is_none() {
+        let n = s.board.items[i].text.len()
+        begin_typing(mut s, id, n, keep: true)
+    }
+    reveal(mut s, i)
+}
+
+/// Brings item `i` into view, if it's off the screen: its middle to the screen's.
+fn reveal(s: mut App, i: u32) {
+    let r = s.view.rect(s.board.bounds(i))
+    if r.x >= 0.0 && r.y >= 0.0 && r.right() <= s.screen.x && r.bottom() <= s.screen.y {
+        return
+    }
+    let c = s.board.bounds(i).center()
+    s.view.pan = c - 0.5 * s.screen / s.view.scale()
 }
 
 fn zoom_by(s: mut App, factor: f32) {
@@ -454,9 +605,20 @@ fn handle(s: mut App, e: Event, chrome: Chrome) {
         },
         Event::KeyDown { key, repeat, mods } => key_down(mut s, key, repeat, mods),
         Event::KeyUp { key, .. } => if key == Key::Space { s.space = false },
-        Event::Text { char } => if s.typing.is_some() && char >= 32 && char != 127 {
-            type_char(mut s, char)
+        Event::Text { char } => if s.typing.is_some() {
+            let _ = s.composer.apply(e)
+            if char >= 32 && char != 127 {
+                type_char(mut s, char)
+            }
         },
+        Event::Compose { .. } => if s.typing.is_some() {
+            let _ = s.composer.apply(e)
+        },
+        Event::Paste { serial } => {
+            let aim = Aim { typing: s.typing, revision: s.revision }
+            s.pasting.push(Pasting { aim, answer: host::pasted(serial) })
+        },
+        Event::Assist { node, action } => assist(mut s, node, action),
         _ => {},
     }
 }
@@ -736,8 +898,14 @@ fn key_down(s: mut App, key: Key, repeat: bool, mods: Mods) {
                 delete_selection(mut s)
             }
         } else if key == Key::V {
-            let items = s.clipboard.clone()
-            paste(mut s, items)
+            // A paste event follows where the host has them; until it's said, wait to see.
+            match s.capabilities {
+                Some(c) => if c & host::PASTE_EVENTS == 0 {
+                    let items = s.clipboard.clone()
+                    paste(mut s, items)
+                },
+                None => s.paste_waiting = true,
+            }
         } else if key == Key::Equal {
             zoom_by(mut s, 1.25)
         } else if key == Key::Minus {
@@ -816,7 +984,7 @@ fn draw(s: mut App, screen: vec2) {
     mut list = s.draw
     list.clear(screen)
     paint::grid(mut list, s.view, screen)
-    paint::items(mut list, s.fonts, s.board, s.view, screen, s.typing, blink)
+    paint::items(mut list, s.fonts, s.board, s.view, screen, s.typing, s.composer.text, blink)
     // What's selected, and what the pointer is over or a marquee touches.
     let ring = max(1.5 * u, 1.0)
     let touched = match s.drag {
@@ -931,6 +1099,8 @@ fn draw(s: mut App, screen: vec2) {
         can_undo: s.history.can_undo(),
         can_redo: s.history.can_redo(),
     )
+    // Glyphs for what was drawn as `?`, from the host's fonts, for the frames after this one.
+    s.renderer.fetch(mut s.fonts, list)
     s.renderer.upload(list)
     let pass = begin_screen_pass(clear: PAPER)
     s.renderer.draw(pass, screen)
@@ -946,6 +1116,59 @@ fn draw(s: mut App, screen: vec2) {
     if want != s.shown_cursor && s.cursor.is_none() {
         s.shown_cursor = want
         s.cursor = Some(host::cursor(want))
+    }
+}
+
+// ---- what the host is told -------------------------------------------------------------------
+
+/// The caret's rectangle on the screen (device pixels), while typing.
+fn caret_rect(s: App) -> Option<vec4> {
+    let Some(t) = s.typing else { return None }
+    let Some(i) = s.board.index(t.id) else { return None }
+    borrow font = s.fonts.font(Face::Sans)
+    borrow it = s.board.items[i]
+    let l = paint::layout(font, it)
+    let c = s.view.to_screen(paint::caret(font, it, l, t.at))
+    Some(vec4(c.x, c.y, max(1.5 * unit(s), 1.0), l.line * s.view.scale()))
+}
+
+/// Tells the host what changed: text mode and its caret, what a copy takes (the selection; the
+/// words and the items), and, where it has one, the accessibility tree and the selection to say.
+fn tell(s: mut App) {
+    let caret = caret_rect(s)
+    if caret != s.texting {
+        s.told.push(host::text_input(caret.is_some(), if let Some(c) = caret { c } else {
+            vec4(0.0)
+        }))
+        s.texting = caret
+    }
+    let copied = if s.typing.is_some() { Vec::new() } else { s.board.copy(s.selected) }
+    if copied != s.offered {
+        s.told.push(host::offer(clip::plain(copied).as_str(), if copied.is_empty() {
+            String::new()
+        } else { clip::html(copied) }.as_str()))
+        s.offered = take copied
+    }
+    let Some(capabilities) = s.capabilities else { return }
+    if capabilities & host::ACCESSIBILITY == 0 {
+        return
+    }
+    let nodes = access::tree(
+        layout(s),
+        s.board,
+        s.view,
+        s.selected,
+        s.tool,
+        s.history.can_undo(),
+        s.history.can_redo(),
+    )
+    if nodes != s.tree {
+        s.told.push(host::accessibility("Board", "Items", nodes))
+        s.tree = take nodes
+    }
+    if s.selected != s.said {
+        s.told.push(host::announce(access::said(s.board, s.selected).as_str()))
+        s.said = s.selected.clone()
     }
 }
 
@@ -1010,4 +1233,44 @@ fn the_pen_draws_a_stroke(game: App) {
     let it = game.board.items[0].clone()
     assert(it.kind == Kind::Pen && it.points.len() == 4, f"{it.points.len()} points")
     assert(game.tool == Tool::Pen, "the pen stays in hand")
+}
+
+/// Without paste events (this host has none), Cmd+V and a paste both bring the board's own
+/// clipboard: the note copied, twice.
+@test(frames: 12, input: "scripts/paste.json")
+fn a_paste_without_the_hosts_clipboard_uses_the_boards(game: App) {
+    assert(game.capabilities == Some(0), "the host said it has nothing")
+    assert(game.board.items.len() == 3, f"{game.board.items.len()} items")
+    assert(game.board.items[2].kind == Kind::Note)
+}
+
+/// An input method's composing shows and goes; what it commits is typed once, after what was
+/// typed before.
+@test(frames: 12, input: "scripts/compose.json")
+fn composed_text_is_typed_once(game: App) {
+    let note = game.board.items[0].clone()
+    assert(note.text == "a仮名", f"`{note.text}`")
+    assert(game.composer.text.is_empty(), "nothing is composing")
+    assert(game.typing == Some(Typing { id: note.id, at: note.text.len() }))
+}
+
+/// An assistive technology's selection names the lower of two notes, though the upper one is
+/// drawn over it and the note tool is in hand: it's selected, and nothing is made. (The starter
+/// board's nine items take ids 1 to 9, so the first note made is 10, its node 1010.)
+@test(frames: 13, input: "scripts/assist.json")
+fn an_assistive_selection_names_its_item(game: App) {
+    assert(game.board.items.len() == 2, f"{game.board.items.len()} items")
+    assert(game.board.items[0].id == 10)
+    assert(game.selected.len() == 1 && game.selected[0] == 10, "the lower note")
+    assert(game.tool == Tool::Note)
+}
+
+/// Backspace and Delete take a whole character group: an accent with its letter, an emoji with
+/// its skin tone.
+@test(frames: 12, input: "scripts/groups.json")
+fn editing_moves_over_whole_groups(game: App) {
+    // "a", "e" + U+0301, 👍🏽, "x": Left to before "x", Backspace takes 👍🏽; Left to before
+    // "é", Delete takes it.
+    let note = game.board.items[0].clone()
+    assert(note.text == "ax", f"`{note.text}` ({note.text.len()} bytes)")
 }

@@ -260,6 +260,7 @@ impl Ui {
                 },
                 // A pad doesn't drive the widgets.
                 Event::PadButton { .. } | Event::PadAxis { .. } => {},
+                Event::Compose { .. } | Event::Paste { .. } | Event::Assist { .. } => {},
             }
         }
         if self.released {

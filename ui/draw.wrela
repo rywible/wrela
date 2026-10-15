@@ -3,7 +3,10 @@
 // earlier ones. A glyph's coverage comes from its distance field, so text is sharp at any size
 // from one atlas; a shape's comes from its own distance, so its edges are smooth at any angle.
 
-use text::{Face, Fonts}
+use raster::{Made, field, image, read_raster}
+use std::host::request
+use std::io::Pending
+use text::{Face, Fonts, next_cluster}
 use std::gpu::{
     ClipPosition, Flat, GpuBuffer, InstanceIndex, Over, RenderPass, Rgba8, Sampler, Texture,
     Unorm8x4, VertexIndex, buffer, draw, sampler, texture, write,
@@ -79,24 +82,42 @@ pub const BOX: u32 = 0
 pub const ELLIPSE: u32 = 1
 pub const DIAMOND: u32 = 2
 pub const LINE: u32 = 3
+/// A colour glyph: the atlas's texels themselves (an emoji's), not a field.
+pub const IMAGE: u32 = 4
+
+/// A character group drawn with `?` because its face hasn't a glyph for it yet: the renderer
+/// asks the host for one (`Renderer::fetch`).
+pub struct Wanted: Clone + Eq {
+    pub face: Face,
+    pub text: String,
+}
 
 /// What a frame draws: quads in order, and the rectangles they're clipped to.
 pub struct DrawList: Clone {
     pub quads: Vec<Quad>,
     pub clips: Vec<vec4>,
+    /// The groups this frame's text drew as `?`, each once.
+    pub wanted: Vec<Wanted>,
     stack: Vec<u32>,
     clip: u32,
 }
 
 impl DrawList {
     pub fn new() -> DrawList {
-        DrawList { quads: Vec::new(), clips: Vec::new(), stack: Vec::new(), clip: 0 }
+        DrawList {
+            quads: Vec::new(),
+            clips: Vec::new(),
+            wanted: Vec::new(),
+            stack: Vec::new(),
+            clip: 0,
+        }
     }
 
     /// Empties it for a frame `screen` pixels wide and high: nothing clipped but by the screen.
     pub fn clear(mut self, screen: vec2) {
         self.quads.clear()
         self.clips.clear()
+        self.wanted.clear()
         self.stack.clear()
         self.clips.push(vec4(0.0, 0.0, screen.x, screen.y))
         self.clip = 0
@@ -237,9 +258,46 @@ impl DrawList {
         let pad = ceil(font.spread) + 1.0
         let aw = f32(fonts.width)
         let ah = f32(fonts.height)
-        let end = font.walk(text, size, at.x, |_i, gi, pen| {
+        let end = font.walk(text, size, at.x, |i, gi, pen| {
             let g = font.glyph(gi)
-            if g.width > 0 {
+            if gi == font.missing() {
+                let group = text.slice(i, next_cluster(text, i))
+                if font.wants(group) {
+                    var seen = false
+                    for w in self.wanted {
+                        if w.face == face && w.text.as_str() == group {
+                            seen = true
+                        }
+                    }
+                    if !seen {
+                        self.wanted.push(Wanted { face, text: String::from(group) })
+                    }
+                }
+            }
+            if g.color {
+                // A colour glyph's texels are its image, a texel round the ink.
+                self.quads.push(
+                    Quad {
+                        rect: vec4(
+                            pen + g.left * k,
+                            baseline - g.top * k,
+                            f32(g.width) * k,
+                            f32(g.height) * k,
+                        ),
+                        uv: vec4(
+                            f32(g.atlas_x) / aw,
+                            f32(g.atlas_y) / ah,
+                            f32(g.atlas_x + g.width) / aw,
+                            f32(g.atlas_y + g.height) / ah,
+                        ),
+                        color: packed,
+                        clip: self.clip,
+                        scale: 0.0,
+                        radius: 0.0,
+                        kind: IMAGE,
+                    },
+                )
+            } else if g.width > 0 {
                 // The field reaches `pad` texels past the ink; only half a pixel of it is drawn,
                 // so the quad covers the ink and that half pixel (and a half texel, for
                 // filtering).
@@ -393,7 +451,13 @@ fn quad_color(v: QuadVertex, atlas: Texture<Rgba8>, linear: Sampler) -> Over {
     let s = v.shape.value
     var coverage = 1.0
     let kind = v.kind.value
-    if s.x > 0.0 {
+    var rgb = v.color.value.xyz
+    if kind == IMAGE {
+        // A colour glyph: the texel's colour, its alpha the coverage.
+        let t = atlas.sample_level(linear, v.uv, 0.0)
+        rgb = t.xyz
+        coverage = t.w
+    } else if s.x > 0.0 {
         // A glyph: the field's distance, scaled to this size's pixels.
         let d = atlas.sample_level(linear, v.uv, 0.0).x
         coverage = saturate((d - 0.5) * s.x + 0.5)
@@ -419,12 +483,25 @@ fn quad_color(v: QuadVertex, atlas: Texture<Rgba8>, linear: Sampler) -> Over {
     let c = v.clip.value
     let inside = v.pixel.x >= c.x && v.pixel.x < c.z && v.pixel.y >= c.y && v.pixel.y < c.w
     let a = if inside { v.color.value.w * coverage } else { 0.0 }
-    Over { color: vec4(v.color.value.xyz, a) }
+    Over { color: vec4(rgb, a) }
 }
+
+/// A glyph asked of the host: for which face and group, and its answer on its way.
+struct Asking {
+    face: Face,
+    text: String,
+    answer: Pending<u8>,
+}
+
+/// The pixels an em a host draws a glyph at: four times the fields' 32, for the field's edge.
+const DRAWN_PX: u32 = 128
+/// The most glyphs asked of the host at once.
+const ASKING: u32 = 16
 
 /// Draws lists on the GPU: the atlas, and buffers that grow to the largest list.
 pub struct Renderer {
     atlas: Texture<Rgba8>,
+    asking: Vec<Asking>,
     linear: Sampler,
     quads: GpuBuffer<Quad>,
     clips: GpuBuffer<vec4>,
@@ -437,9 +514,10 @@ impl Renderer {
     /// Makes the atlas from `fonts`' glyphs.
     pub fn new(fonts: Fonts) -> Renderer {
         var atlas = texture::<Rgba8>(width: fonts.width, height: fonts.height)
-        atlas.write(x: 0, y: 0, width: fonts.width, height: fonts.height, bytes: fonts.atlas())
+        atlas.write(x: 0, y: 0, width: fonts.width, height: fonts.baked, bytes: fonts.atlas())
         Renderer {
             atlas,
+            asking: Vec::new(),
             linear: sampler(),
             quads: buffer(1024),
             clips: buffer(64),
@@ -447,6 +525,67 @@ impl Renderer {
             clip_room: 64,
             count: 0,
         }
+    }
+
+    /// Asks the host for glyphs for the groups `list` drew as `?` (`font/glyph`, the system's
+    /// fonts), and makes those that have come into glyphs in `fonts` and the atlas: text drawn
+    /// next frame has them. A host without the service, or a group it can't draw, keeps `?`.
+    pub fn fetch(mut self, fonts: mut Fonts, list: DrawList) {
+        for w in list.wanted {
+            if self.asking.len() >= ASKING {
+                break
+            }
+            mut font = fonts.font_mut(w.face)
+            if !font.wants(w.text.as_str()) {
+                continue
+            }
+            font.ask(w.text.as_str())
+            var body: Vec<u8> = Vec::new()
+            body.push(if w.face == Face::Sans { 0 } else { 1 })
+            for b in [DRAWN_PX & 255, (DRAWN_PX >> 8) & 255, 0, 0] {
+                body.push(u8(b))
+            }
+            for i in 0..w.text.len() {
+                body.push(w.text.as_str().byte(i))
+            }
+            self.asking.push(
+                Asking { face: w.face, text: w.text.clone(), answer: request("font/glyph", body) },
+            )
+        }
+        var i = 0
+        while i < self.asking.len() {
+            let Some(answer) = self.asking[i].answer.poll() else {
+                i += 1
+                continue
+            }
+            let asked = self.asking.remove(i)
+            let Ok(bytes) = answer else { continue }
+            let Some(drawn) = read_raster(bytes, f32(DRAWN_PX)) else { continue }
+            borrow font = fonts.font(asked.face)
+            let made = if drawn.colored { image(drawn, font.em) } else {
+                field(drawn, font.em, font.spread)
+            }
+            let _ = self.install(mut fonts, asked.face, asked.text.as_str(), made)
+        }
+    }
+
+    /// Puts glyph `made` for `group` in the atlas and `face`'s font: false if the atlas's rows
+    /// for made glyphs are full, and the group keeps `?`.
+    pub fn install(mut self, fonts: mut Fonts, face: Face, group: str, made: Made) -> bool {
+        let Some(at) = fonts.place_made(w: made.width, h: made.height) else { return false }
+        self.atlas.write(
+            x: at.x,
+            y: at.y,
+            width: made.width,
+            height: made.height,
+            bytes: made.texels,
+        )
+        mut font = fonts.font_mut(face)
+        if font.wants(group) {
+            font.ask(group)
+        }
+        font.add(group, made, x: at.x, y: at.y)
+        true
     }
 
     /// Uploads `list`: before the pass that draws it begins.

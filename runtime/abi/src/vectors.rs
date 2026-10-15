@@ -1603,6 +1603,23 @@ fn input_scripts() -> Value {
   {"tick": 1, "type": "padaxis", "axis": "lefty", "value": -1, "pad": 2e0}
 ]"#,
         ),
+        (
+            "composing, pasting and assisting",
+            r#"[
+  {"frame": 0, "type": "compose", "text": "かな"},
+  {"frame": 1, "type": "compose", "text": ""},
+  {"frame": 1, "type": "paste", "serial": 3},
+  {"frame": 2, "type": "assist", "node": 9, "action": "focus"},
+  {"frame": 2, "type": "assist", "node": 10}
+]"#,
+        ),
+        ("an assist with no node", r#"[{"frame": 0, "type": "assist"}]"#),
+        (
+            "an unknown assist action",
+            r#"[{"frame": 0, "type": "assist", "node": 1, "action": "poke"}]"#,
+        ),
+        ("a fractional paste serial", r#"[{"frame": 0, "type": "paste", "serial": 1.5}]"#),
+        ("compose text that's missing", r#"[{"frame": 0, "type": "compose"}]"#),
         ("not an array", "{}"),
         ("not JSON", "[{"),
         ("no frame", r#"[{"type": "move"}]"#),
