@@ -1315,6 +1315,43 @@ clean. Native M4 GPU medians, back to back with a checkout at the previous commi
 Ryan's Chrome preview was also rendering: opening 2.9–3.3 ms against 2.5–2.8 ms; room
 4.5–5.6 ms against 4.1–4.4 ms. These are native samples, not Chrome frame rates.
 
+## A slower opening and a closer 4D eye, 2026-10-14
+
+Ryan asked for a steady turn, for the tesseract not to travel when the page loads, for the
+large tesseract and mark to fade out before the library fades in, and for a slower, more
+tasteful light along the mark. He then brought notes from another AI tool with five ideas
+for making the tesseract stranger, and asked Claude Code (Opus 5.5) to do two of them: a
+stronger 4D perspective, and a glint that travels through w. Claude Code judged the other
+three. A persistent mark on one cell would fight the shading by depth, which swaps colours
+as cells swap places. A solid cross-section is exact and cheap to trace, but dim behind the
+smoked glass. Turning in 4D under the cursor works against a steady turn. These are left
+for later. Claude Code made the changes and judged them in Chrome and in native captures.
+
+**Opening.** The tesseract and the mark come up out of black over 1.4 s. The light crosses
+the mark in 3.2 s (it was 1.3 s), with a wider ramp and a broader glint. Both hold, go down
+into black together, and the library comes up out of black with the tesseract already in
+its place. The library is up by 7.4 s. The tesseract no longer draws back. Its turn no
+longer eases each quarter turn: it turns at one steady rate.
+
+**A fix.** The mark's letters went black once the light had passed them, and the header's
+mark never showed. The glint squared a negative number with `pow`, which WGSL leaves
+undefined. It now squares by hand.
+
+**Perspective.** The notes found that the earlier entry's "three times" was wrong. Corners
+sit at ±0.5 in each coordinate, and the turn keeps them within 0.71 of w = 0, so with the
+eye at 2 the near nested cell was drawn 1.67 times the far one. The eye is now at 1.2: 2.4
+times nested, and from 0.63 to 2.43 times the base size across the turn. The spread fell
+from 1.4 to 0.94, so the farthest corner reaches where it did before.
+
+**Glint.** The slow glint on the struts no longer sweeps through 3D space. It is a band in
+w that passes from the near cell to the far one every 8 seconds. It lights pieces at one
+depth together, however far apart they are on screen, and slides along the struts that
+cross that depth.
+
+**Cost.** Native M4 GPU frame spans at 1280×800, three alternating pairs against the
+previous commit: opening 3.79 → 3.54 ms, room 5.35 → 5.71 ms. Both are inconclusive, with
+overlapping ranges. These are native samples, not Chrome frame rates.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

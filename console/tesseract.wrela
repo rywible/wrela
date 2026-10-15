@@ -14,10 +14,12 @@ const BOUNCES: u32 = 4
 // struts that meet there share one radius and weld seamlessly.
 const STRUT: f32 = 0.022
 // The 4D eye stands this far along w. A corner at `w` is drawn `EYE / (EYE - w)` times as far
-// out and as thick: from 0.67 (far) to 2 (near).
-const EYE: f32 = 2.0
-// The corners' spread in 3D, so the whole stays the size it was.
-const SPREAD: f32 = 1.4
+// out and as thick. The turn keeps corners within 0.71 of w = 0, so from 0.63 (far) to 2.43
+// (near); nested, the near cell is drawn 2.4 times the far one.
+const EYE: f32 = 1.2
+// The corners' spread in 3D. Mid-turn a near corner swells out past the nested near cell, so
+// this keeps the farthest corner where it was with the eye at 2 (1.62 times the size).
+const SPREAD: f32 = 0.94
 // However it turns, the tesseract stays inside a sphere this many times its size.
 const REACH: f32 = 1.7
 
@@ -332,21 +334,25 @@ pub fn metal(depth: f32) -> vec3 {
     mix(vec3(0.5, 0.51, 0.53), vec3(0.08, 0.082, 0.088), smoothstep(-0.5, 0.5, depth))
 }
 
-// Polished metal of reflectance `f0` under the studio, with a slow glint travelling along it.
-// `rough` (0 to 1) blurs what it mirrors, for struts too thin on screen to show it sharply.
-pub fn polished(p: vec3, n: vec3, rd: vec3, f0: vec3, time: f32, rough: f32) -> vec3 {
+// A band of light that passes through the fourth dimension, from the near cell to the far one
+// every 8 seconds: it catches everything at one depth in w at once, however far apart in 3D,
+// and slides along the struts that cross that depth.
+pub fn glint(depth: f32, time: f32) -> f32 {
+    pow(saturate(sin(depth * 2.9 + time * 0.8) * 0.5 + 0.5), 30.0) * 0.8
+}
+
+// Polished metal at 4D depth `depth` under the studio. `rough` (0 to 1) blurs what it mirrors,
+// for struts too thin on screen to show it sharply.
+pub fn polished(depth: f32, n: vec3, rd: vec3, time: f32, rough: f32) -> vec3 {
+    let f0 = metal(depth)
     let cosv = saturate(-dot(rd, n))
     // A strut's silhouette is thinner than a pixel at grazing angles; a full white rim there
     // would sparkle, so the rim stays mostly the metal's own colour.
     let fresnel = f0 + (vec3(1.0) - f0) * pow(1.0 - cosv, 5.0) * 0.25
     let r = rd - n * (2.0 * dot(rd, n))
     let key = normalize(vec3(-0.35, 0.9, 0.35))
-    let sweep = pow(
-        saturate(sin(dot(p, vec3(0.7, 0.45, 0.25)) * 1.6 - time * 0.9) * 0.5 + 0.5),
-        40.0,
-    )
     let sharp = studio(r) + pow(saturate(dot(r, key)), 12.0) * 1.3
-    mix(sharp, blurred(r), rough) * fresnel + f0 * (0.04 + sweep * 0.8)
+    mix(sharp, blurred(r), rough) * fresnel + f0 * 0.04 + (f0 + vec3(0.1)) * glint(depth, time)
 }
 
 // The glass ripples slowly, in broad folds.
@@ -388,7 +394,7 @@ fn trace(
         let m = metal_hit(ro, rd, verts, edges, radius, cone, past)
         let f = face_hit(ro, rd, skip, verts, faces, radius * swell(-1.0))
         if m.at < f.x {
-            let shine = polished(ro + rd * m.at, m.normal, rd, metal(m.depth), look.time, rough)
+            let shine = polished(m.depth, m.normal, rd, look.time, rough)
             gathered += through * shine * m.cover
             if m.cover >= 1.0 { return gathered }
             // A strut's rim covers part of the pixel; the rest sees on past it.
@@ -422,14 +428,7 @@ fn trace(
                 Hit { at: 1.0e9, normal: vec3(0.0), depth: 0.0, cover: 0.0, strut: -1.0 }
             }
             if seen.at < 1.0e8 {
-                let strut_seen = polished(
-                    p + r * seen.at,
-                    seen.normal,
-                    r,
-                    metal(seen.depth),
-                    look.time,
-                    rough,
-                )
+                let strut_seen = polished(seen.depth, seen.normal, r, look.time, rough)
                 mirrored = mix(mirrored, strut_seen, seen.cover)
             }
             let silvered = 0.03 + 0.55 * fresnel
@@ -612,6 +611,33 @@ fn a_tapered_strut_is_met_on_its_surface() {
     assert(round_cone(vec3(0.0, 0.5, 5.0), down, a, b, ra: 0.2, rb: 0.1).x < 0.0, "a miss")
     // Struts meeting at a corner share its radius, so they weld; near corners are thicker.
     assert(swell(1.0) > 1.9 && swell(-1.0) < 0.7 && swell(0.0) == 1.0)
+    // Nested, the near cell is drawn well over twice the far one.
+    assert(swell(0.5) / swell(-0.5) > 2.4)
+}
+
+@test
+fn the_glint_passes_from_the_near_cell_to_the_far_one() {
+    // Where the glint is brightest moves steadily toward -w, and lights one depth at a time.
+    var last = 1.0
+    for i in 0..20 {
+        let time = 1.6 + f32(i) * 0.2
+        var brightest = -1.0
+        var best = 0.0
+        var lit = 0
+        for k in 0..141 {
+            let depth = 0.7 - f32(k) * 0.01
+            let g = glint(depth, time)
+            if g > best {
+                best = g
+                brightest = depth
+            }
+            if g > 0.4 { lit += 1 }
+        }
+        assert(brightest < last + 0.011, "always toward the far cell")
+        assert(lit < 30, "a narrow band")
+        last = brightest
+    }
+    assert(last < -0.5)
 }
 
 @test
