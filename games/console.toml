@@ -1,14 +1,16 @@
-# Static release metadata. The console reads its generated catalog, not game source.
+# The released console and its games: each a Cloudflare Worker serving static assets on its own
+# domain (tools/console.py builds a release, tools/deploy.py deploys it). The console reads its
+# generated catalog, not game source.
 [console]
 package = "console"
-project = "wrela-games"
-domain = "games.wrela.dev"
+worker = "wrela-console"
+domain = "wrela.dev"
 
 [[games]]
 id = "leapling"
 title = "Leapling"
-project = "wrela-leapling"
-domain = "wrela-leapling.pages.dev"
+worker = "wrela-leapling"
+domain = "leapling.wrela.dev"
 session = "session"
 builds = { session = "games/leapling/session", leapling = "games/leapling" }
 cover = "games/leapling/cover.png"
@@ -16,8 +18,8 @@ cover = "games/leapling/cover.png"
 [[games]]
 id = "last-green"
 title = "The Last Green"
-project = "wrela-last-green"
-domain = "wrela-last-green.pages.dev"
+worker = "wrela-last-green"
+domain = "last-green.wrela.dev"
 session = "session"
 builds = { session = "games/last-green/session", last-green = "games/last-green", stair = "games/last-green/stair", test-floor = "games/last-green/test-floor" }
 cover = "games/last-green/cover.png"

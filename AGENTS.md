@@ -39,6 +39,6 @@ MIT-licensed language, compiler, engine and agent-native studio for browser game
 
 ## Records
 
-- `AGENTS.md` is the sole repo instruction file. Add no docs except grammar, lexical spec and `docs/process.md`; remove any temporary task notes before committing. Run checks locally; do not add CI here.
+- `AGENTS.md` is the sole repo instruction file. Add no docs except grammar, lexical spec and `docs/process.md`; remove any temporary task notes before committing. Run checks locally. CI only builds and deploys releases from `main` (`.github/workflows/deploy.yml`); add no checks to it.
 - Update `docs/process.md` for new references, outside assets/algorithms, AI tools/models or kinds of AI work: source, rights, what it teaches and how used. Keep style references outside the repo. Never trace/sample/recreate specific reference shots, characters or designs; never create assets with generative image/audio/music/voice/video models.
 - Use clear, concrete English, roughly 80% ASD-STE100.

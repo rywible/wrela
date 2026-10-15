@@ -89,6 +89,7 @@ The M4 Air has not been measured; its times are reported separately.
 | [sfizz](https://sfz.tools/sfizz/) (BSD 2-clause), `sfizz_render` | Plays the reference piano's samples from a take's MIDI file, for the listening tests (`tools/listening.py`). Not part of the game |
 | Mesa's lavapipe (Vulkan on the CPU), MIT, patched (`tools/cloud/`) | The GPU of a cloud machine, which has none (`tools/cloud.sh`) |
 | [FFmpeg](https://ffmpeg.org/) with x264, GPL | Makes the motion captures' clips and contact sheets from the frames the native host saves (`tools/motion.py`). Not part of the game |
+| [Wrangler](https://developers.cloudflare.com/workers/wrangler/) (Cloudflare, MIT/Apache 2.0) and GitHub Actions | Deploy each release from `main` to Cloudflare Workers (`.github/workflows/deploy.yml`, `tools/deploy.py`) |
 | [Binaryen](https://github.com/WebAssembly/binaryen) (Apache 2.0), `wasm-opt` 133 or later | Shrinks a released build's WASM (`wrela build --optimize`, `-Oz`), carrying its trap locations through as a source map. Runs at build time; nothing of it ships |
 | strace, LGPL; Linux mount namespaces (`unshare`) | Historical gate pass caching, retired 2026-10-11: what each slow test reads, so a pass is reused only while all of it is unchanged, or, for a test that builds a program, while its builds make the same files. The ideas are build systems' (Bazel's action cache, ccache's manifests, tup's and fabricate's traced dependencies, Shake's and Bazel's early cutoff) |
 
@@ -1701,6 +1702,28 @@ a local preview, ran the whole loop: the opening, the library, New, the game han
 inside the console, playing, F10 back, and the library offering Continue. Regressions cover
 the jump heights, coyote time and buffering, stomping and being hurt, prize blocks, springs,
 pits and checkpoints, type layout, the save, imports, and the visit rule.
+
+## wrela.dev, deployed from main, 2026-10-15
+
+Ryan asked for the live site to be made real: CI deploys on each merge to `main`, the games move
+to `games/`, the console is at `wrela.dev` with each game on its own origin
+(`<game>.wrela.dev`, so its saves are its own), and the download is smaller. A plan council
+(Claude leading; GPT-6.1-Sol and GPT-6-Astra reviewing, two rounds) shaped the plan; its
+reviewers asked for the release-retention rules `tools/deploy.py` keeps. Claude measured The
+Last Green's live download (game.wasm 5.11 MB at Cloudflare's on-the-fly brotli, which matches
+quality 3; 4.79 MB of WGSL sent uncompressed), tested on Cloudflare that static assets can't serve
+precompressed files and that serving WGSL as `text/plain` lets Cloudflare compress it, and kept
+requests free of Worker code. Binaryen shrinks the WASM (see Tools and models).
+
+The site is three Workers serving static assets, deployed from GitHub Actions with Wrangler.
+The live site is the archive: a deploy fetches each release it keeps from the Workers that
+serve it, checking each file's SHA-256, and fails rather than drop one. References: Cloudflare's
+[Workers static assets](https://developers.cloudflare.com/workers/static-assets/),
+[custom domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/),
+[Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/) and
+[GitHub Actions deployment](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/),
+and GitHub's [environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment).
+These are implementation references; nothing was copied.
 
 ## Keeping this record
 
