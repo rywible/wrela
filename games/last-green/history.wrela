@@ -44,7 +44,7 @@ pub fn rocks() -> Vec<vec3> {
 pub fn grown(grain: Grain) -> History {
     let m = map::map()
     simulate(
-        ground::ground(),
+        ground::GROUND,
         m,
         species::habits(),
         grain,
@@ -198,17 +198,17 @@ pub struct Courses: Clone {
 }
 
 fn courses_of(u: engine::bake::Unbaked) -> Courses {
-    let (courses, pools) = engine::water::courses(ground::ground(), map::map().water, u.streams)
+    let (courses, pools) = engine::water::courses(ground::GROUND, map::map().water, u.streams)
     Courses { courses, pools }
 }
 
 /// Where the falls' mist hangs (`engine::water::mists`).
-pub const MISTS: Vec<vec4> = engine::water::mists(ground::ground(), COURSES.courses)
+pub const MISTS: Vec<vec4> = engine::water::mists(ground::GROUND, COURSES.courses)
 
 /// The water laid (`engine::water`): its courses and pools, and its mesh, laid over the ground.
 pub fn waters() -> Laid {
     let mesh = engine::water::lay(
-        ground::ground(),
+        ground::GROUND,
         map::map().water,
         COURSES.courses,
         COURSES.pools,
@@ -247,11 +247,11 @@ fn checked() -> Vec<(String, Vec<u8>)> {
     // The crowns the renderer draws, and what's built (AC3's calibration).
     e.crowns = trees::drawn_crowns(e.trees)
     e.solids = blockouts::solids(m)
-    let c = check(ground::ground(), m, species::habits(), e, OBSTACLES, stones::stones(m), FULL)
-    let text = report(ground::ground(), m, c)
+    let c = check(ground::GROUND, m, species::habits(), e, OBSTACLES, stones::stones(m), FULL)
+    let text = report(ground::GROUND, m, c)
     // The floor's walk, on a walkable mask a metre a cell that knows the logs, walls and
     // thickets (the check's sight grid, 4 m a cell, doesn't).
-    let mask = walkable_of(ground::ground(), m.water, OBSTACLES, map::LO, map::HI, 1.0)
+    let mask = walkable_of(ground::GROUND, m.water, OBSTACLES, map::LO, map::HI, 1.0)
     let (walk, missed) = mask.tour(nearest_first(tour_stops()), 2.0)
     print(f"the floor's walk: {walk.len()} points; {missed.len()} stops it can't reach")
     for p in missed {
@@ -393,7 +393,7 @@ fn calibration(
     m: engine::place::Map,
     mask: engine::footing::Walkable,
 ) -> String {
-    let g = ground::ground()
+    borrow g = ground::GROUND
     var out = String::from(
         f"{{\n  \"eye\": {FULL.eye},\n  \"dist\": {CAL_DIST},\n  \"views\": {CAL_VIEWS},\n  \"places\": [\n",
     )

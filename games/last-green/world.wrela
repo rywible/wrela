@@ -12,7 +12,7 @@ use encounter::{Encounter, encounter, holds, step_encounter}
 use engine::run::{Asks, TickInput}
 use engine::senses::{Occluders, clear_over}
 use engine::sim::{SimState, Tick}
-use ground::Ground
+use ground::{GROUND, Ground}
 use history::{OBSTACLES, TOUR}
 use std::input::{Event, Key}
 use std::hash::StateHash
@@ -20,8 +20,7 @@ use std::math::TAU
 use std::serialize::Serialize
 use std::string::String
 
-/// The floor's ground and water, as the sim reads them.
-pub const GROUND: Ground = ground::ground()
+/// The floor's water, as the sim reads it.
 pub const WATER: Water = water()
 
 /// A brisk floating walk, Shift to sprint, and enough lift to cross low fallen trunks.

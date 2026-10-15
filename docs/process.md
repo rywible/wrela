@@ -519,6 +519,13 @@ the browser also receives the corresponding parity fixes.
 | Heini Hediger's flight distance (*Wild Animals in Captivity*, 1950), as field ethology uses it | A published idea; no code or data taken | The fawn's behaviour (`games/last-green/behaviour.wrela`): it notices a person first and watches, and flees when they come on within a distance; the distances are our own, tuned by test. |
 | Vadim Zavalishin, *The Art of VA Filter Design* (2012); George Marsaglia, "Xorshift RNGs" (2003) | Published algorithms; no code taken | The floor's sound (`engine/sound.wrela`): the state-variable filter that bands each source's noise, and the seeded noise itself. |
 | The soil production function: Heimsath, Dietrich, Nishiizumi and Finkel, "The soil production function and landscape equilibrium", *Nature* 388 (1997) | A published finding; we use its idea, not its text or data | `engine::soil::soil`: rock weathers to soil fastest under a thin soil and creep moves it downhill, so crests are thin and hollows deep (credited in the file). |
+| Landscape evolution by stream power: Jean Braun and Sean D. Willett, "A very efficient O(n), implicit and parallel method to solve the stream power equation governing fluvial incision and landscape evolution", *Geomorphology* 180–181 (2013) | A published method; no code taken | `engine::landform::incise`: a channel cuts down at K A^m S, solved implicitly in the order the water flows, so a step of any length is stable. The Last Green's world is made with it (`games/last-green/geology.wrela`). |
+| Priority-flood depression filling: Richard Barnes, Clarence Lehman and David Mulla, "Priority-flood: An optimal depression-filling and watershed-labeling algorithm for digital elevation models", *Computers & Geosciences* 62 (2014), its epsilon variant | A published method; no code taken | `engine::landform::drainage` (moved there from `engine::grow`, which already used it): water is routed across pits from the outlets, lowest first, so every cell drains. |
+| Terrain authored through its causes: Guillaume Cordonnier, Jean Braun, Marie-Paule Cani, Bedrich Benes, Éric Galin, Adrien Peytavie and Éric Guérin, "Large Scale Terrain Generation from Tectonic Uplift and Fluvial Erosion", *Computer Graphics Forum* 35(2) (2016) | A published idea; no code or data taken | The world's land is authored through its causes (its rock's layers, the old land, the base level its rivers run to) and not by drawing its valleys. |
+| Threshold slopes, as thermal erosion does: F. Kenton Musgrave, Craig E. Kolb and Robert S. Mace, "The synthesis and rendering of eroded fractal terrains", *SIGGRAPH* (1989) | A published idea; no code taken | `engine::landform::collapse`: a slope steeper than its rock stands at sheds its excess downhill, no faster than the rock weathers, so a hard cap stands in cliffs over the soft rock's talus. |
+| Erosion and deposition: Philippe Davy and Dimitri Lague, "Fluvial erosion/transport equation of landscape evolution models revisited", *Journal of Geophysical Research* 114 (2009) | A published method; no code taken | `engine::landform::settle`: what the water cuts it carries down and lays where its load is heavy for its water (D = G Qs / Q), so valley floors fill and fans spread where ravines meet them. |
+| Nonlinear hillslope creep: Joshua J. Roering, James W. Kirchner and William E. Dietrich, "Evidence for nonlinear, diffusive sediment transport on hillslopes and implications for landscape morphology", *Water Resources Research* 35(3) (1999) | A published method; no code taken | `engine::landform::diffuse`: soil creeps faster by 1 / (1 - (S / Sc)²) as its slope S nears a critical one, so hillsides run straight down from rounded crests instead of rounding all over. |
+| Channel initiation at a source area: David R. Montgomery and William E. Dietrich, "Where do channels begin?", *Nature* 336 (1988) | A published finding; we use its idea, not its data | `engine::landform::Shaping::channel`: water cuts only where enough of it gathers to run in a channel; below that, slopes only creep and fail. |
 | Johann Heinrich von Thünen's land-use rings (*Der isolirte Staat*, 1826); settlement site and budding as human geography teaches them | Published ideas; no code or data taken | The Last Green's elves (`games/last-green/peoples.wrela`): each settlement takes its fields nearest by walking cost, then pasture, then wood; it chooses its site by water, soil, slope and sun; when it outgrows its land, some of its people found another. |
 | W3C, Gamepad API, its "standard" mapping | A W3C specification; no code taken | The browser host reads pads by it (`runtime/browser/src/listen.ts`), and wrela's pad buttons and axes take its order and names (south, east, west, north, the shoulders and triggers, the sticks, the d-pad). |
 | Closest points of two segments (as in Christer Ericson, *Real-Time Collision Detection*, 2005, §5.1.9) | A standard method; no code taken | The climber's fight (`examples/climber/fight.wrela`): the sword's edge, swept between ticks, is tested against capsules on the wolf's body, and the wolf's bite against a capsule up the climber. |
@@ -942,6 +949,143 @@ On `main`, without those outside settings, the complete check failed 28 Chrome a
 tests. On this branch, with no `WRELA_*` variables set, it passed all 744 Rust tests and every
 browser, tools and infrastructure check in 321.0 s. That time includes warm build output. It
 is not a paired gate-time comparison. No rendering code changed, so no frame-time claim is made.
+
+## The world's geology, 2026-10-14
+
+Ryan asked for a deep visual pass on the Last Green, built in levels: geology first, then the
+stages that read it, such as ecology. He asked that an agent can see how the geology reads at
+several levels, and that he gives only what he likes and dislikes. Claude Code (Claude Opus
+5.5) proposed the plan. A plan council reviewed it: OpenAI Codex GPT-6.1-Sol and GPT-6-Astra,
+each in two rounds, read-only. Their findings changed the plan: drainage on level ground, a
+relief that adds no step where it meets the land, a tree's jittered root on a cliff, exact
+test fixtures, a GPU test of the relief, and a lens that does not wait for the history.
+Claude decided, implemented and verified the change, without subagents other than the
+council.
+
+A first version eroded the far mountains. Ryan then asked for no mountains, a forest that
+goes on to the horizon, and the authored square itself simulated, its named places derived
+from the land and not drawn. He chose a dissected plateau. The world is now made at build time
+(`engine::landform`, `games/last-green/geology.wrela`): an old plateau of bedded rock (a
+hard grit cap over shale, a sandstone band, granite bosses) is cut over 1.2 million years by
+rivers running to a trunk valley and to the lowland round it, at 64 m over 16 km and at 8 m
+over the floor's square. Slopes creep where their rock carries soil and fail where they are
+steeper than their rock stands, as fast as it weathers. Summits, tors, overlooks, falls,
+gorges, springs, lakes and the meetings of streams are found in the land and named for what
+and where they are; no lore names were added. The bare view (F8's fourth, `tools/lookbook.py
+--view bare`) draws this land alone, and the map lens draws its layers and its places and
+answers its numbers as JSON. The floor's play still stands on its old land until Ryan has
+judged this one. The wildwood also no longer grows trees on rock, cliffs or above the tree
+line. No outside asset was used.
+
+Ryan then asked for the rock as solids and a better simulation. The heightfield stays the
+ground; where it can't hold rock (faces steeper than a few of its cells), the geology places
+solids: each face of grit or sandstone as its beds' blocks, set into it at their own heights;
+the granite as its corestones; the scree's fallen pieces; the tors; and the streams' boulders.
+A few prototypes (jointed blocks weathered by noise, each a field realized to a mesh) are drawn
+many times, culled to the view each frame. In the bare view the rocks and the ground itself cast
+the sun's shadows. The water now lays down some of what it cuts, and thin bands of sandstone in
+the shale make benches along the valleys' sides.
+
+Ryan said the rocks looked good from far off but not up close. Each rock now has a near mesh
+and a far mesh; its blocks' edges are worn round and their faces weathered into broad lumps,
+grooves along their laminae, and pits. The granite is no longer cut into beds: its bosses
+weather to smooth domes whose skin splits into sheets, each ending in a low lip, and only its
+fallen corestones and tors stand as solids. A turned-angle sign error had set the blocks
+across every face that did not run north-south or east-west; they now lie along their faces,
+and a block reaches down to the land where the land drops away beside or behind it. A new
+test holds that no block hangs over the air. The bare view gained a close shot under the
+tallest bedded crag, and its overlooks now face the way the view is most open.
+
+Ryan then said some rocks looked like castle walls and the hills too regular, and asked for a
+better simulation. The rock now has its own beds, from about 1 m to 7 m thick, and two joint
+sets fixed across the region. Each cliff is joint columns that stand to the cliff's top and
+reach down to the scree. The cliff has bays and buttresses, gullies down its major joints, and
+a top that rises and falls; a column undercut too far has fallen. Creep is now nonlinear
+(Roering and others, 1999), and each face fails at its rock's slope give or take a fifth. Bands
+of shattered rock along the joint sets erode faster, so valleys follow them. The square's
+channels start where less water gathers, and its creep is slower. Its grain factor was
+recalibrated to 3.5. Soft rock's slopes carry rills. Shots now keep clear of the rocks as well as
+the land, and the close shot is taken where the most cliff rock stands.
+
+Ryan then said the crag still read as too regular, with regular undulations on the stone, and
+asked Claude to work as a hard look-development critic until it was satisfied. Claude judged
+each change on full-size stills of the bare view and on crops of them.
+- **Blocks:** a block is now a new solid (`stone::Block`). It has sharp joint faces a little
+  off square, with chips knocked off its top and upright edges. It wears in broad fracture
+  swells, a coarse grain, slanting laminae of uneven thickness, and pits; nothing in it is a
+  sine wave. Each block is made in one of nine shapes at its own proportions, so its detail is
+  not stretched.
+- **Colour:** a block is darker in its crust and under itself, paler where a chip broke it,
+  streaked where water ran, and patched with faint grey lichen.
+- **Cliff columns:** a column stands as one, its partings opening in some columns and not
+  others. Soft beds weather back under hard ones. Columns stand out or back by up to 3 m, the
+  joints are farther apart, and cap blocks are worn and lie flush with the land over them.
+- **Around the cliffs:** fallen blocks lie at the cliffs' feet. The land between blocks is
+  scree, not pale rock.
+- **Tors:** tors stand on the tops of the knobs where tors were found in the land.
+- **Shots:** the tor and lake shots look from the side that sees them best.
+- **Granite:** tried twice as jointed columns, the granite read as stacked sponges and then
+  as ruins, so it stands as smooth domes and tors only.
+
+Ryan then asked Claude to keep going. Claude critiqued each of the six bare shots again, on full
+stills and crops, and changed what still read wrong.
+- **Crag:** blocks from inside a cliff are no longer chipped along their top edges, so a
+  parting no longer shows as a notch like a mortar course. Most joints and partings are now
+  tight: a column meets its neighbour a little into it, so the face runs on across them, and
+  about a third weather open. Neighbouring columns stand back about as far as each other. Shade
+  varies over the rock in patches and streaks across its blocks, not block by block.
+- **Granite:** steep granite faces stand as joint blocks no more than 9 m across, split by
+  sheets 3 to 18 m thick and set back their own way. No block reaches into a stream's bed. The
+  sheet lips on the domes are now unevenly spaced and weather off in places. The granite is
+  stained in patches, and rock in a stream's bed is darker.
+- **Gentle ground:** the grit's and sandstone's beds crop out of gentler slopes as low ledges
+  along the contours, with fallen blocks below them. Each stratum weathers to its own soil:
+  peat on the grit, grey clay on the shale, brown loam on the sandstone.
+- **Tors:** a tor is one mass on a broad base of the knob's rock, with columns of worn slabs of
+  uneven height and breadth, and fallen blocks round it.
+- **Shots:** the summit looks across the square, where the land is finest and the rock is
+  solid, not out over the coarser region. The gorge shot stands on the stream's bed, and the
+  lake shot looks across the basin from its shore.
+
+Ryan then asked for a plan council on the simulation and the look. Claude led; OpenAI Codex
+GPT-6.1-Sol and GPT-6-Astra reviewed the plan, read-only, in two rounds. They showed that the
+lead step, a simulated soil layer in `engine::landform::evolve`, was unsound as written: soil
+could be spent twice, deposition and lake filling broke the bedrock-plus-soil sum, and its test
+had no equilibrium. They also showed that `engine::soil` already models soil from the land's
+shape (Heimsath and others, 1997). Claude deferred the simulated layer, with their accounting
+rules kept for later, and did this instead.
+- **Soil:** the square's soil is worked out once, when the world is built, by `engine::soil`
+  from each cell's curvature, slope and wetness. Wetness is the topographic index from the
+  drained area and the slope. Each kind of soil has its own tint over its rock's. Ledges crop
+  out where the soil is thin.
+- **Talus:** talus runs from each face of solid rock down the land's fall. Fallen blocks lie
+  only on talus, and scree shows there. A face's extent no longer crosses a gully's floor and
+  climbs the far side.
+- **Rills:** the rills that followed the slope's direction, and ringed hollows, are gone.
+- **Rock grain:** rock now has a grain per pixel where a pixel is small enough to show it, so
+  granite reads as crystals up close.
+- **Tried and reverted:** clustered joint spacing made narrow columns of stacked cubes up close,
+  and didn't remove the stripes seen from far off.
+- **Checked:** making the steep faces' colour flat showed that colour isn't what smears them.
+
+Ryan asked to keep using the council. In a second council (three rounds, the same reviewers), Claude
+proposed raising the made land into talus aprons below the cliffs. The reviewers showed that this
+would leave the drainage, wetness and lakes stale. It would also turn debris into bedrock and grow
+new cliff columns on the apron. Recomputing the drainage couldn't refresh the rock's erodibility or
+recover the solid land under shallow fill. In the third round, Claude moved the apron to the land
+as drawn instead, and the reviewers resolved those objections.
+- **Talus apron:** talus piles against the foot of each face of solid rock and buries a third of
+  the face. It falls away at 0.6 and thins to nothing 40 m out. Its surface is the highest of the
+  repose cones over each cell.
+- **Where none lies:** none lies in or beside a stream's bed, a lake or the square's collar.
+  Water is taken to run on under it, as through scree.
+- **Which land is used:** the land as made decides where cliffs and granite roofs stand. The land
+  as drawn decides what their blocks rest on, so columns end on the apron and fewer hang.
+- **Ledges:** none stands out of talus deeper than 0.5 m.
+- **Far stripes, still open:** Claude tested shut joints, even set-backs, columns ending at their
+  beds, sharp caps, every column standing, columns turned toward their face and no deep breaks.
+  None removed the stripes seen from 1.5 km, so the cause is still unknown, and the changes were
+  reverted.
 
 ## The climber's robe, darkness and glide, 2026-10-14
 

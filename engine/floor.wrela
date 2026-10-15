@@ -6,7 +6,8 @@
 use place::{TILE, tile_of}
 use plant::{Wind, full}
 use shadow::{CASTER, Cascade, Shadows, snapped_centre, sun_view}
-use stone::{Instances, Realized, stone_shadow}
+use stone::{Instances, Realized, Rocks, stone_shadow}
+use terrain::Clipmap
 use tower::{Journey, STAIR}
 use view::Camera
 use wood::Wood
@@ -262,13 +263,17 @@ impl Kept {
 
     /// A strip of the next map, if one's being drawn: the trees standing in the strip's part of
     /// its square (and a shadow's reach past it), chosen and drawn into the map (cleared first),
-    /// and with the first strip the built things (`built`: stones, the tower, walls); after the
-    /// last, the maps swap. `sh` gives the sun's basis.
+    /// and with the first strip the built things (`built`: stones, the tower, walls), the rocks
+    /// (`rocks`) and the ground itself where it casts (`ground`, if `ground_casts`); after the last, the maps swap.
+    /// `sh` gives the sun's basis.
     pub fn draw_strip(
         mut self,
         wood: mut Option<Wood>,
         built: [Realized],
         instances: Instances,
+        rocks: Option<Rocks>,
+        ground: Clipmap,
+        ground_casts: bool,
         sun: vec3,
         sh: Shadows,
         wind: Wind,
@@ -333,6 +338,12 @@ impl Kept {
                     indirect: st.mesh.draw.items(),
                     depth_bias: CASTER,
                 )
+            }
+            if let Some(r) = rocks {
+                r.cast(pass, view)
+            }
+            if ground_casts {
+                ground.cast(pass, view)
             }
         }
         pass.end()

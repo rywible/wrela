@@ -82,7 +82,7 @@ const SHORE_RISE: f32 = 0.06
 /// A mere round `at`, `r` across: its level 40 cm under the lowest of the land round it (to 1.3
 /// of its radius, where the sim reads its water), so it holds its water and spills nowhere.
 fn mere(at: vec2, r: f32) -> vec4 {
-    let g = ground()
+    borrow g = GROUND
     var low = 1.0e9
     for k in 0..96 {
         let a = 6.2831853 * f32(k) / 96.0
@@ -104,7 +104,7 @@ const PLUNGE_DEEP: f32 = 2.2
 /// edge, to where the cliff's foot is 4 m behind (13 m past the edge), its rim at the land's
 /// height there.
 fn plunge_site(lip: vec2, r: f32) -> vec4 {
-    let g = ground()
+    borrow g = GROUND
     var at = lip
     for _ in 0..6 {
         at += ACROSS * (13.0 - past_edge(at))
@@ -218,7 +218,9 @@ pub struct Ground: Copy + GpuData {
 }
 
 /// The ground of the floor's map.
-pub fn ground() -> Ground {
+pub const GROUND: Ground = ground()
+
+fn ground() -> Ground {
     let g = Ground { land: map::land() }
     Ground { land: g.land.settled(|q| g.under_crags(q)) }
 }
@@ -368,6 +370,14 @@ impl Ground {
         saturate(flat * (0.6 + 0.4 * fbm2_seen(p * 0.11, 2, w * 0.11)) - 0.7 * near)
     }
 
+    /// Whether no tree can stand at `p`, past the floor (the wildwood's): on rock, a cliff, a
+    /// crag or the scarp's talus (`rocky`), or above the tree line, past the plateau's edge.
+    pub fn treeless(self, p: vec2) -> bool {
+        let y = self.at(p.x, p.y)
+        let n = self.normal(p.x, p.y, 1.0)
+        self.rocky(p, n) > 0.5 || past_edge(p) > 10.0 && above_trees(p, y, 0.0) > 0.5
+    }
+
     /// How rocky the ground is at `p` (0 to 1): the crags and their scree, the Watch's granite top,
     /// and the ravine's walls (where `n`, the ground's normal, is steep).
     pub fn rocky(self, p: vec2, n: vec3) -> f32 {
@@ -381,6 +391,13 @@ impl Ground {
         let talus = 0.85 * smoothstep(-0.5, 1.5, past) * (1.0 - smoothstep(12.0, 26.0, past))
         max(max(bald, steep), talus)
     }
+}
+
+/// How far past the tree line the land at `xz`, `y` high, is, as a sample `w` metres across sees it
+/// (0 below it, 1 above it): it lies at about 345 m, higher and lower with a broad noise.
+fn above_trees(xz: vec2, y: f32, w: f32) -> f32 {
+    let high = y + 70.0 * (fbm2_seen(xz * 0.004 + vec2(2.0, 8.0), 3, w * 0.004) - 0.5)
+    smoothstep(330.0, 360.0, high)
 }
 
 /// The light at the ground (the history's, `engine::bake::tile_fields`) under which the canopy is
@@ -504,7 +521,7 @@ impl Ground {
         // it, high pasture; rock on the steep, scree fanned under it, snow high on what's not
         // steep. Each edge broken by a broad noise, not blurred.
         let high = at.y + 70.0 * (fbm2_seen(xz * 0.004 + vec2(2.0, 8.0), 3, w * 0.004) - 0.5)
-        let alpine = smoothstep(330.0, 360.0, high) * down
+        let alpine = above_trees(xz, at.y, w) * down
         a = mix(a, mix(vec3(0.15, 0.16, 0.06), vec3(0.20, 0.18, 0.09), vec3(patches)), vec3(alpine))
         let lean = n.y + 0.1 * (noise2_seen(xz * 0.012, w * 0.012) - 0.5)
         let up = smoothstep(180.0, 240.0, high) * down
@@ -972,6 +989,29 @@ fn woodland_layers_share_connected_litter_openings_and_soil_support() {
     assert(openings > 0 && colonies > 0, "woodland lost either connected litter or rooted colonies")
 }
 
+/// No tree stands on the plateau's scarp past the floor, nor above the tree line on the far
+/// mountain; the plateau and the valley's floor below the scarp hold trees.
+@test
+fn trees_find_no_footing_on_the_scarp_or_above_the_tree_line() {
+    // The plateau's edge past the floor's square, where its scarp is a cliff.
+    let along = vec2(-ACROSS.y, ACROSS.x)
+    var cliff = 0
+    for k in 0..40 {
+        let on = EDGE + along * (500.0 + 12.0 * f32(k))
+        let face = on + ACROSS * 4.0
+        if GROUND.normal(face.x, face.y, 1.0).y < 0.6 {
+            cliff += 1
+            assert(
+                GROUND.treeless(face),
+                f"a tree could stand on the cliff at ({face.x}, {face.y})",
+            )
+        }
+        assert(!GROUND.treeless(on - ACROSS * 40.0), "the plateau holds no tree")
+    }
+    assert(cliff > 20, f"the scarp is a cliff at only {cliff} of 40 places")
+    assert(GROUND.treeless(vec2(-3300.0, 7600.0)), "a tree could stand on the far summit")
+}
+
 @test
 fn drainage_cuts_join_without_changing_the_outer_ground() {
     let join = vec4(500.0, -2600.0, 280.0, 75.0)
@@ -1024,7 +1064,7 @@ fn exposed_rock_joint_interiors_are_planes_not_rounded_bulges() {
 
 @test
 fn alpine_rock_uses_mineral_material_weights() {
-    let g = ground()
+    borrow g = GROUND
     let at = vec3(-3300.0, 650.0, 7600.0)
     let cover = g.cover_at(at, normalize(vec3(0.8, 0.55, 0.0)), 2.0)
     assert(cover.materials.z > 0.99, "steep alpine rock retained soil detail and paint")
@@ -1036,7 +1076,7 @@ fn alpine_rock_uses_mineral_material_weights() {
 /// the submerged bed keep their distinct cover.
 @test
 fn stream_bank_gravel_material_tracks_wet_edge() {
-    let g = ground()
+    borrow g = GROUND
     let p = vec3(0.0, g.at(x: 0.0, z: 0.0), 0.0)
     let n = vec3(0.0, 1.0, 0.0)
     let dry = g.covered(p, n, vec4(1.0, 0.0, 0.3, 0.0), 0.25)
@@ -1075,7 +1115,7 @@ fn stream_bank_gravel_material_tracks_wet_edge() {
 /// exposed ramp and talus. The complete physical height is already supplied by the cook.
 @test
 fn crag_substrate_preserves_lower_basins_and_exposed_ground() {
-    let g = ground()
+    borrow g = GROUND
     let mere = MERE.xy
     let lake = vec3(mere.x, g.at(x: mere.x, z: mere.y), mere.y)
     assert(g.substrate_height(lake) == lake.y, "the mere's basin changed")
@@ -1104,7 +1144,7 @@ fn crag_substrate_preserves_lower_basins_and_exposed_ground() {
 /// forest-floor litter. Canopy light still affects soil, grass and the actual illumination.
 @test
 fn canopy_litter_does_not_paint_the_ravines_rock_faces() {
-    let g = ground()
+    borrow g = GROUND
     let p = vec3(-60.0, g.at(x: -60.0, z: -262.0), -262.0)
     let n = normalize(vec3(1.0, 0.08, 0.0))
     let bare = g.cover_at(p, n, 0.25)
@@ -1115,7 +1155,7 @@ fn canopy_litter_does_not_paint_the_ravines_rock_faces() {
 
 @test
 fn closed_canopy_does_not_grow_plants_on_sheer_mineral_faces() {
-    let g = ground()
+    borrow g = GROUND
     let p = vec3(0.0, g.at(x: 0.0, z: 0.0), 0.0)
     let wetness = vec4(0.1, 0.0, 0.86, 0.0)
     let face = g.covered(p, n: normalize(vec3(1.0, 0.3, 0.0)), fields: wetness, footprint: 0.25)
@@ -1147,7 +1187,7 @@ fn creek_bank_viewpoint_stays_connected_to_its_outer_rim() {
     let lo = vec2(-76.0, -298.0)
     let hi = vec2(-42.0, -260.0)
     let m = map::map()
-    let g = ground()
+    borrow g = GROUND
     let no_trees: Vec<engine::grow::Tree> = Vec::new()
     let no_streams: Vec<engine::grow::Stream> = Vec::new()
     let obstacles = engine::footing::obstacles_of(

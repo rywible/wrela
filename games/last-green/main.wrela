@@ -39,7 +39,7 @@ use climber::figure::{Figure, figure}
 use climber::moves::{Act, drift_rate, locomotion}
 use climber::sounds::{Heard, cues, heard}
 use history::{BAKED, OBSTACLES, tiles_hi, tiles_lo}
-use ground::{FIGHT, FIGHT_WAY, STONE_FEET, STONE_MARGIN, fought, unbuilt}
+use ground::{FIGHT, FIGHT_WAY, GROUND, STONE_FEET, STONE_MARGIN, fought, unbuilt}
 use provenance::NearTile
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
@@ -50,7 +50,7 @@ use std::gpu::{
 }
 use std::input::{Button, Event, Key, events}
 use std::io::{Pending, print}
-use world::{GATE, GROUND, World, present as snapshot, spawn_world, tick}
+use world::{GATE, World, present as snapshot, spawn_world, tick}
 
 /// How far the player goes from the render origin before it moves (m), and the tiles it moves by
 /// (a whole number of the clipmap's coarsest snaps and of its fields' blocks: what's cooked stays).
@@ -186,6 +186,35 @@ enum System: Copy + Eq + Fieldless {
 
 fn on(off: Flags<System>, system: System) -> bool {
     !off.has(system)
+}
+
+/// The bare view (F8's fourth, `Floor::view`): the world's land as its geology made it, alone
+/// (`geology`): nothing grows on it, no water, nothing built and no one on it; its shots are
+/// `geology::WORLD`'s, of the places found in it.
+const BARE: u32 = 3
+
+/// What's drawn in view `view`: in the bare view, no trees, grass or water.
+fn shown(off: Flags<System>, view: u32) -> Flags<System> {
+    if view == BARE {
+        off.with(System::Trees).with(System::Grass).with(System::Water)
+    } else { off }
+}
+
+/// The look in view `view`: in the bare view, no brush dabs on the land or the sky (on bare
+/// ground all one soil, the look's dabs read as spots, not brushwork: what grows on the floor
+/// carries them).
+fn look_of(view: u32) -> Look {
+    if view == BARE { Look { dabs_near: 0.0, dabs_far: 0.0, dabs_sky: 0.0 } } else { Look {} }
+}
+
+/// The view `engine::paint::Develop` draws in view `view`: the bare view in the look.
+fn look_view(view: u32) -> u32 {
+    if view == BARE { 0 } else { view }
+}
+
+/// The shots in view `view`: the bare view's of the places its land has, else the lookbook's.
+fn shot_count(view: u32) -> u32 {
+    if view == BARE { geology::WORLD.shots.len() } else { lookbook::SHOTS.len() }
 }
 
 /// The air the sun shines through, cooked from the gate's eye.
@@ -603,8 +632,12 @@ pub struct Floor {
     plain: bool,
     still: bool,
     /// A debug view of form (F8 the next): 0 the look, 1 clay, 2 silhouettes
-    /// (`engine::paint::Develop`'s `view`).
+    /// (`engine::paint::Develop`'s `view`), 3 the bare land (`BARE`); and whether the clipmap
+    /// holds the bare land.
     view: u32,
+    bare_cooked: bool,
+    /// The bare land's rock as solids (`geology::rock_placements`), made when it's first shown.
+    rocks: Option<engine::stone::Rocks>,
     /// How many of the clipmap's levels this frame cooked (a frame that cooks the ground draws
     /// no strip of shadows or probes).
     terrain_cooked: u32,
@@ -639,7 +672,7 @@ fn to_build() -> Vec<blockouts::Built> {
         let at = DOOR.at + DOOR_POSTS[k]
         out.push(blockouts::Built::Standing { at, half: DOOR_POST, turn: 0.0, seed: 950 + k })
     }
-    let g = ground::ground()
+    borrow g = ground::GROUND
     for b in g.land.crag_beds(|q| g.under_crags(q)) {
         out.push(blockouts::Built::Rock { at: b.at, bed: b.bed })
     }
@@ -849,6 +882,8 @@ pub fn init() -> Floor {
         plain: false,
         still: false,
         view: 0,
+        bare_cooked: false,
+        rocks: None,
         terrain_cooked: 0,
         strip_drawn: false,
         last_eye: vec2(0.0),
@@ -936,6 +971,12 @@ fn recentre(s: mut Floor, to: vec2i) {
     s.near.shift(d)
     s.far.shift(d)
     s.banks.shift(d)
+    // The rocks stay in the world; what they're drawn and cast from is the new origin.
+    let o = origin_of(s)
+    match mut s.rocks {
+        Some(r) => r.origin = o,
+        None => {},
+    }
     for mut b in s.built {
         b.at[3] = vec4(b.at[3].xyz + d, 1.0)
     }
@@ -1661,7 +1702,7 @@ fn keys(s: mut Floor, time: f32) {
                     s.shot_digits = s.shot_digits * 10 + d
                     continue
                 }
-                if key == Key::Enter && s.shot_digits < lookbook::SHOTS.len() {
+                if key == Key::Enter && s.shot_digits < shot_count(s.view) {
                     s.shot = Some(s.shot_digits)
                     s.shot_from = time
                     // Every shot waits for its own view to load before its movement clock
@@ -1711,8 +1752,12 @@ fn keys(s: mut Floor, time: f32) {
                 s.gathered = 0
             }
             if key == Key::F8 {
-                s.view = (s.view + 1) % 3
+                s.view = (s.view + 1) % 4
                 s.light.clay = if s.view == 1 { 1 } else { 0 }
+                s.shot = None
+                // The bare view casts other shadows (its land's): the cascades are drawn again.
+                s.near.changed()
+                s.far.changed()
             }
             if key == Key::F9 && s.hashing.is_empty() {
                 for i in 0..BAKED.len() {
@@ -1807,6 +1852,48 @@ fn static_shadows(s: mut Floor, sh: Shadows, wind: Wind) {
     if s.terrain_cooked > 0 && s.near.ready {
         return
     }
+    // The bare view's casters are its land's: its rocks and the ground itself, none of what grows
+    // or is built on the floor's.
+    if s.view == BARE {
+        s.strip_drawn = s.near.drawing() || s.far.drawing()
+        var none: Option<engine::wood::Wood> = None
+        let nothing: Vec<engine::stone::Realized> = Vec::new()
+        let no_banks = engine::stone::Instances { prototypes: Vec::new(), placements: Vec::new() }
+        if s.near.drawing() {
+            s.near.draw_strip(
+                mut none,
+                nothing,
+                no_banks,
+                s.rocks,
+                s.clipmap,
+                ground_casts: true,
+                sun: SUN,
+                sh: sh,
+                wind: wind,
+                s: s.linear,
+                cam: s.cam,
+                on: on,
+                name: "shadows near",
+            )
+        } else if s.far.drawing() {
+            s.far.draw_strip(
+                mut none,
+                nothing,
+                no_banks,
+                s.rocks,
+                s.clipmap,
+                ground_casts: true,
+                sun: SUN,
+                sh: sh,
+                wind: wind,
+                s: s.linear,
+                cam: s.cam,
+                on: on,
+                name: "shadows far",
+            )
+        }
+        return
+    }
     // The far cascade waits for all that casts into it at load (the far layer, the built
     // things): drawn before, it was drawn whole again as each came (on lavapipe, 48 s each of a
     // lookbook still's 390 s).
@@ -1817,26 +1904,32 @@ fn static_shadows(s: mut Floor, sh: Shadows, wind: Wind) {
             mut s.wood,
             s.built,
             s.banks,
-            SUN,
-            sh,
-            wind,
-            s.linear,
-            s.cam,
-            on,
-            "shadows near",
+            None,
+            s.clipmap,
+            ground_casts: false,
+            sun: SUN,
+            sh: sh,
+            wind: wind,
+            s: s.linear,
+            cam: s.cam,
+            on: on,
+            name: "shadows near",
         )
     } else if s.far.drawing() && far_casts {
         s.far.draw_strip(
             mut s.wood,
             s.built,
             s.banks,
-            SUN,
-            sh,
-            wind,
-            s.linear,
-            s.cam,
-            on,
-            "shadows far",
+            None,
+            s.clipmap,
+            ground_casts: false,
+            sun: SUN,
+            sh: sh,
+            wind: wind,
+            s: s.linear,
+            cam: s.cam,
+            on: on,
+            name: "shadows far",
         )
     }
 }
@@ -1845,6 +1938,10 @@ fn static_shadows(s: mut Floor, sh: Shadows, wind: Wind) {
 fn moving_shadow(s: mut Floor, sh: Shadows) {
     label("shadow moving")
     let mv = begin_depth_pass(mut s.moving, clear_depth: 1.0)
+    if s.view == BARE {
+        mv.end()
+        return
+    }
     if let Some(d) = s.drawn {
         d.shadow(mv, sh.moving)
     }
@@ -2132,9 +2229,18 @@ fn bake_probes(s: mut Floor, sh: Shadows, eye: vec2) {
 
 /// The scene's passes: the vegetation's depth prepass, the vegetation, the terrain and the sky.
 fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
-    let off = s.off
+    let off = shown(s.off, s.view)
+    let bare = s.view == BARE
+    // The rocks the camera sees, chosen before any pass begins.
+    if bare {
+        match mut s.rocks {
+            Some(r) => r.cull(cam, origin_of(s)),
+            None => {},
+        }
+    }
     var grid = s.probes.grid
-    if !s.probes.done() {
+    // The bare view lights its land without the probes, which were baked over the floor's.
+    if !s.probes.done() || bare {
         grid.cols = 0
     }
     borrow probes = s.probes.maps
@@ -2234,6 +2340,9 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         )
     }
     for i in 0..s.built.len() {
+        if bare {
+            break
+        }
         let to = s.built[i].at[3].xyz - cam.eye
         let d = length(to)
         let r = s.built_reach[i]
@@ -2260,7 +2369,7 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         }
     }
     for p in s.banks.placements {
-        if p.prototype >= s.banks.prototypes.len() {
+        if bare || p.prototype >= s.banks.prototypes.len() {
             continue
         }
         let to = p.at[3].xyz - cam.eye
@@ -2295,6 +2404,11 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         },
         None => {},
     }
+    if bare {
+        if let Some(r) = s.rocks {
+            r.draw(veg, lt)
+        }
+    }
     veg.end()
     label("terrain")
     let ter = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)
@@ -2327,11 +2441,13 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         keep_depth: true,
         join: true,
     )
-    if let Some(d) = s.drawn {
-        d.draw(cr, lt, cam)
+    if !bare {
+        if let Some(d) = s.drawn {
+            d.draw(cr, lt, cam)
+        }
+        s.fawn.draw(cr, lt, cam, PartOf { of: [0; 64] })
+        s.wolf.draw(cr, lt, cam, PartOf { of: [0; 64] })
     }
-    s.fawn.draw(cr, lt, cam, PartOf { of: [0; 64] })
-    s.wolf.draw(cr, lt, cam, PartOf { of: [0; 64] })
     cr.end()
     label("sky")
     let sky = begin_pass_with_depth(
@@ -2446,9 +2562,9 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
     s.settled = if !engine::temporal::held(cam) { 0 } else if again { 1 } else { s.settled + 1 }
     // The lines, on the scene's own samples, so temporal AA anti-aliases them (none in the
     // debug views of form).
-    if !s.plain && s.view == 0 {
+    if !s.plain && (s.view == 0 || s.view == BARE) {
         label("lines")
-        let d = Develop { cam, look: Look {}, out, view: s.view }
+        let d = Develop { cam, look: look_of(s.view), out, view: look_view(s.view) }
         let lp = begin_pass(mut s.scene_b)
         fullscreen(lp, lines.bind(d, s.scene, s.depth))
         lp.end()
@@ -2499,7 +2615,7 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
         screen.present()
         return
     }
-    let d = Develop { cam, look: Look {}, out, view: s.view }
+    let d = Develop { cam, look: look_of(s.view), out, view: look_view(s.view) }
     let dp = begin_pass(mut s.dabs)
     fullscreen(
         dp,
@@ -2602,7 +2718,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     let heading = engine::present::lerp_angle(pa.heading, pb.heading, b.alpha)
     // A shot that casts the characters stands them where it says (in render space), and the
     // moving shadow map goes round them.
-    let cast = held_cast(s.shot)
+    let cast = if s.view == BARE { None } else { held_cast(s.shot) }
     let on_ground = |c: vec3| vec3(c.x, height_at(c.xy), c.y) - o
     let (stood, facing) = match cast {
         Some(c) => (on_ground(c.player), c.player.z),
@@ -2730,6 +2846,11 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     let ground_r = |p: vec2| height_at(p + o2)
     s.shot_from = shot_clock(s.shot_from, time, s.arriving)
     let (eye, at, fovy) = match s.shot {
+        Some(i) if s.view == BARE => {
+            let shot = geology::WORLD.shots[i]
+            let (e, a) = lookbook::place(shot, time - s.shot_from, geology::height_at)
+            (e - o, a - o, shot.fovy)
+        },
         Some(i) => {
             let shot = lookbook::SHOTS[i]
             let (e, a) = lookbook::place(shot, time - s.shot_from, height_at)
@@ -2805,14 +2926,38 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         Some(w) => w.clear = vec4(clear_to, clear_r),
         None => {},
     }
-    s.terrain_cooked = s.clipmap.follow(GROUND, eye, again: false)
+    // The bare view cooks the bare land; the clipmap cooks every level again when the view
+    // changes which land it holds.
+    let bare = s.view == BARE
+    if bare && s.rocks.is_none() {
+        let began = std::time::now()
+        let placements = geology::rock_placements(
+            geology::WORLD.land,
+            geology::tor_points(geology::WORLD.places),
+        )
+        var rocks = engine::stone::Rocks::new(
+            geology::rock_prototypes(geology::NEAR_LOOK, cell: 4cm),
+            geology::rock_prototypes(geology::FAR_LOOK, cell: 4cm),
+            placements,
+        )
+        rocks.origin = origin_of(s)
+        rocks.grain = geology::rock_grain()
+        print(f"bare rocks: {rocks.len()} placed in {(std::time::now() - began) * 1000.0:.0} ms")
+        s.rocks = Some(take rocks)
+    }
+    let again = bare != s.bare_cooked
+    s.bare_cooked = bare
+    s.terrain_cooked = if bare { s.clipmap.follow(geology::WORLD.land, eye, again) } else {
+        s.clipmap.follow(GROUND, eye, again)
+    }
     let steps = load_steps(s.capture, filling: true)
     for _ in 0..steps {
         cook_load(mut s, eye_w.xz)
         stream(mut s, eye_w.xz)
     }
     // The near cascade round where the eye will be (a little ahead), the far round the floor.
-    s.near.follow(vec3(eye.x, height_at(eye_w.xz), eye.z), NEAR_MOVES)
+    let under = if bare { geology::height_at(eye_w.xz) } else { height_at(eye_w.xz) }
+    s.near.follow(vec3(eye.x, under, eye.z), NEAR_MOVES)
     s.far.follow(FAR_CASCADE.centre - o, 1.0e9)
     var sh = shadows(
         s.light.sun,
