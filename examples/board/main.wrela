@@ -12,6 +12,7 @@ use chrome::{Action, Chrome, Selection, Tool}
 use snap::{Guide, snap_point, snap_rect}
 use clip::{Aim, Into, destination, items_of}
 use edit::{Caret, Step}
+use minimap::Map
 use paint::{ACCENT, PAPER, Typing}
 use platform::host
 use platform::host::{Node, Pasted}
@@ -47,6 +48,9 @@ enum Drag: Copy + Eq {
     Pen { id: u32 },
     /// Selecting text in item `id` being typed into.
     Select { id: u32 },
+    /// Moving the camera from the minimap, `map` as it was at the press: the minimap fits the
+    /// view too, so it would move under the pointer as the camera does.
+    Map { map: Map },
     /// Pressed on a control.
     Control,
 }
@@ -128,6 +132,12 @@ pub struct App {
     flyout: bool,
     /// The control the pointer is over, and since when: its tip shows after a moment.
     hovering: Option<(Action, f32)>,
+    /// Whether the minimap shows.
+    map_on: bool,
+    /// The board's name being typed, its caret; and when its title was last pressed (a double
+    /// press renames).
+    naming: Option<Caret>,
+    title_pressed: f32,
 }
 
 pub fn init() -> App {
@@ -180,6 +190,9 @@ pub fn init() -> App {
         shape: Kind::Box,
         flyout: false,
         hovering: None,
+        map_on: false,
+        naming: None,
+        title_pressed: -1.0,
     }
 }
 
@@ -409,7 +422,42 @@ fn layout(s: App) -> Chrome {
         }
         chrome::menu(mut c, at, s.screen, unit(s), entries)
     }
+    // The board's name, top left, and the minimap: drawn here, hit as controls.
+    let title = title_rect(s)
+    c.panels.push(title)
+    c.controls.push(chrome::Control { action: Action::Title, rect: title })
+    if s.map_on {
+        let m = map_of(s)
+        c.panels.push(m.rect)
+        c.controls.push(chrome::Control { action: Action::Navigate, rect: m.rect })
+    }
     c
+}
+
+/// The title's pill: as wide as the board's name.
+fn title_rect(s: App) -> Rect {
+    let u = unit(s)
+    let w = s.fonts.font(Face::Sans).measure(s.board.name.as_str(), 15.0 * u) + 54.0 * u
+    Rect::new(x: 12.0 * u, y: 12.0 * u, w: max(w, 120.0 * u), h: 40.0 * u)
+}
+
+/// The minimap, as the board and the camera are now.
+fn map_of(s: App) -> Map {
+    map_with(s, s.view)
+}
+
+/// The minimap with the camera at `view`.
+fn map_with(s: App, view: View) -> Map {
+    let u = unit(s)
+    let seen = Rect::new(view.pan.x, view.pan.y, s.screen.x / view.scale(), s.screen.y / view.scale())
+    Map::place(s.screen, u, above: 12.0 * u + 48.0 * u + 10.0 * u, board: s.board.whole(), seen: seen)
+}
+
+/// Brings the camera's middle to the world point under point `at` on `map`.
+fn navigate(s: mut App, map: Map, at: vec2) {
+    let w = map.to_world(at)
+    s.goal = None
+    s.view.pan = w - 0.5 * s.screen / s.view.scale()
 }
 
 /// The selected connectors' style, changed by `change`.
@@ -651,6 +699,47 @@ fn lock(s: mut App) {
     }
 }
 
+/// A character typed into the board's name, over what's selected of it.
+fn name_char(s: mut App, c: u32) {
+    let Some(caret) = s.naming else { return }
+    var add = String::new()
+    add.push_char(c)
+    let (name, after) = edit::insert(s.board.name.as_str(), caret, add.as_str())
+    s.board.name = take name
+    s.naming = Some(after)
+}
+
+/// A key while the board's name is being typed: the same moves and deletes as text, and Enter
+/// or Escape to stop (an empty name goes back to "Untitled board").
+fn naming_key(s: mut App, c: Caret, key: Key, mods: Mods) {
+    let step = if mods.command() { Step::Line } else if mods.alt { Step::Word } else { Step::Char }
+    let old = s.board.name.as_str()
+    var next = c
+    var name: Option<String> = None
+    if key == Key::Escape || key == Key::Enter {
+        s.naming = None
+        if s.board.name.as_str().trim().is_empty() {
+            s.board.name = String::from("Untitled board")
+        }
+        return
+    } else if mods.command() && key == Key::A {
+        next = Caret { at: old.len(), anchor: 0 }
+    } else if key == Key::Backspace || key == Key::Delete {
+        let (text, after) = if key == Key::Backspace { edit::delete_back(old, c, step) } else { edit::delete_on(old, c, step) }
+        name = Some(take text)
+        next = after
+    } else if key == Key::Left || key == Key::Right || key == Key::Home || key == Key::End {
+        let forward = key == Key::Right || key == Key::End
+        let by = if key == Key::Home || key == Key::End { Step::Line } else { step }
+        next = edit::moved(old, c, forward: forward, step: by, extend: mods.shift)
+    }
+    match take name {
+        Some(n) => s.board.name = take n,
+        None => {},
+    }
+    s.naming = Some(next)
+}
+
 fn delete_selection(s: mut App) {
     // A frame takes what's inside it with it; a locked item stays.
     var gone: Vec<u32> = Vec::new()
@@ -885,6 +974,17 @@ fn act(s: mut App, a: Action) {
             paste(mut s, items)
         },
         Action::Lock => lock(mut s),
+        Action::Map => s.map_on = !s.map_on,
+        Action::Title => {
+            // A second press soon after the first renames the board, its name selected.
+            if s.time - s.title_pressed < 0.45 {
+                checkpoint(mut s)
+                stop_typing(mut s)
+                s.naming = Some(Caret { at: s.board.name.len(), anchor: 0 })
+            }
+            s.title_pressed = s.time
+        },
+        Action::Navigate => {},
     }
 }
 
@@ -919,7 +1019,11 @@ fn handle(s: mut App, e: Event, chrome: Chrome) {
         },
         Event::KeyDown { key, repeat, mods } => key_down(mut s, key, repeat, mods),
         Event::KeyUp { key, .. } => if key == Key::Space { s.space = false },
-        Event::Text { char } => if s.typing.is_some() {
+        Event::Text { char } => if s.naming.is_some() {
+            if char >= 32 && char != 127 {
+                name_char(mut s, char)
+            }
+        } else if s.typing.is_some() {
             let _ = s.composer.apply(e)
             if char >= 32 && char != 127 {
                 type_char(mut s, char)
@@ -985,11 +1089,21 @@ fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
         return
     }
     if let Some(a) = chrome::at(chrome, at) {
-        s.drag = Drag::Control
+        if a != Action::Title {
+            s.naming = None
+        }
         s.menu = None
+        if a == Action::Navigate {
+            let map = map_of(s)
+            navigate(mut s, map, at)
+            s.drag = Drag::Map { map }
+            return
+        }
+        s.drag = Drag::Control
         act(mut s, a)
         return
     }
+    s.naming = None
     // A press on the board closes the shapes' flyout.
     s.flyout = false
     // A press away from an open menu only closes it.
@@ -1194,6 +1308,7 @@ fn moved(s: mut App, at: vec2, mods: Mods) {
                 s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
             }
         },
+        Drag::Map { map } => navigate(mut s, map, at),
         Drag::Select { id } => {
             let Some(t) = s.typing else { return }
             let Some(i) = s.board.index(id) else { return }
@@ -1301,6 +1416,10 @@ fn released(s: mut App, at: vec2, mods: Mods) {
 }
 
 fn key_down(s: mut App, key: Key, repeat: bool, mods: Mods) {
+    if let Some(c) = s.naming {
+        naming_key(mut s, c, key, mods)
+        return
+    }
     if s.typing.is_some() {
         typing_key(mut s, key, mods)
         return
@@ -1398,6 +1517,10 @@ fn key_down(s: mut App, key: Key, repeat: bool, mods: Mods) {
             Key::L => Some(Tool::Link),
             Key::P => Some(Tool::Pen),
             Key::F => Some(Tool::Frame),
+            Key::M => {
+                s.map_on = !s.map_on
+                None
+            },
             _ => None,
         }
         if let Some(t) = tool {
@@ -1431,6 +1554,9 @@ fn draw(s: mut App, screen: vec2) {
     }
     let near = slack(s)
     let locked = all_locked(s)
+    let title = title_rect(s)
+    let naming = s.naming
+    let minimap = if s.map_on { Some(map_of(s)) } else { None }
     // A control's tip shows once the pointer has rested on it for a moment.
     let lit = if s.drag == Drag::Idle { hover_control } else { None }
     s.hovering = match lit {
@@ -1572,27 +1698,6 @@ fn draw(s: mut App, screen: vec2) {
             None => None,
         }
     }
-    // The board's name, top left.
-    let title = Rect::new(12.0 * u, 12.0 * u, 120.0 * u, 40.0 * u)
-    list.rect(
-        Rect::new(title.x, title.y + 2.0 * u, title.w, title.h),
-        vec4(0.0, 0.0, 0.0, 0.06),
-        radius: 12.0 * u,
-    )
-    list.rect(title, vec4(1.0), radius: 10.0 * u)
-    list.rect(
-        Rect::new(title.x + 12.0 * u, title.y + 12.0 * u, 16.0 * u, 16.0 * u),
-        ACCENT,
-        radius: 4.0 * u,
-    )
-    let _ = list.text(
-        s.fonts,
-        Face::Sans,
-        "Board",
-        15.0 * u,
-        vec2(title.x + 38.0 * u, title.y + 11.0 * u),
-        paint::TEXT,
-    )
     chrome::draw(
         mut list,
         s.fonts,
@@ -1608,6 +1713,43 @@ fn draw(s: mut App, screen: vec2) {
         shape: s.shape,
         tips: tips,
     )
+    // The board's name: a mark, then the name, with its caret or selection while it's typed.
+    let mark = Rect::new(title.x + 12.0 * u, title.y + 12.0 * u, 16.0 * u, 16.0 * u)
+    list.rect(mark, ACCENT, radius: 4.0 * u)
+    let name_at = vec2(title.x + 38.0 * u, title.y + 11.0 * u)
+    if let Some(c) = naming {
+        borrow font = s.fonts.font(Face::Sans)
+        let name = s.board.name.as_str()
+        let (lo, hi) = c.range()
+        let x0 = name_at.x + font.caret_at(name, 15.0 * u, lo)
+        let x1 = name_at.x + font.caret_at(name, 15.0 * u, hi)
+        if hi > lo {
+            list.rect(Rect::new(x0, name_at.y - 1.0 * u, x1 - x0, 20.0 * u), vec4(0.5, 0.68, 1.0, 0.5))
+        } else if blink {
+            list.rect(Rect::new(x0 - 0.75 * u, name_at.y - 1.0 * u, 1.5 * u, 20.0 * u), ACCENT)
+        }
+    }
+    let _ = list.text(s.fonts, Face::Sans, s.board.name.as_str(), 15.0 * u, name_at, paint::TEXT)
+    // The minimap: each item small, the screen's part outlined.
+    if let Some(m) = minimap {
+        list.push_clip(m.inner.shrink(-2.0 * u))
+        for it in s.board.items {
+            if it.kind == Kind::Link || it.kind == Kind::Pen {
+                continue
+            }
+            let r = m.rect_of(it.rect())
+            if it.kind == Kind::Frame {
+                list.rect(r, vec4(1.0), radius: 1.0 * u)
+                list.ring(r, vec4(0.0, 0.0, 0.0, 0.18), width: max(0.75 * u, 1.0))
+            } else {
+                list.rect(r, paint::FILLS[it.color % paint::COLORS], radius: 0.5 * u)
+            }
+        }
+        let seen = m.rect_of(Rect::new(s.view.pan.x, s.view.pan.y, screen.x / s.view.scale(), screen.y / s.view.scale()))
+        list.rect(seen, vec4(ACCENT.xyz, 0.08), radius: 2.0 * u)
+        list.ring(seen, ACCENT, radius: 2.0 * u, width: max(1.5 * u, 1.0))
+        list.pop_clip()
+    }
     // Glyphs for what was drawn as `?`, from the host's fonts, for the frames after this one.
     s.renderer.fetch(mut s.fonts, list)
     s.renderer.upload(list)
@@ -1665,6 +1807,12 @@ fn cursor_for(s: App, w: vec2, on_control: bool) -> Text {
 
 /// The caret's rectangle on the screen (device pixels), while typing.
 fn caret_rect(s: App) -> Option<vec4> {
+    if let Some(c) = s.naming {
+        let u = unit(s)
+        let title = title_rect(s)
+        let x = title.x + 38.0 * u + s.fonts.font(Face::Sans).caret_at(s.board.name.as_str(), 15.0 * u, c.at)
+        return Some(vec4(x, title.y + 10.0 * u, 1.5 * u, 20.0 * u))
+    }
     let Some(t) = s.typing else { return None }
     let Some(i) = s.board.index(t.id) else { return None }
     borrow font = s.fonts.font(Face::Sans)
@@ -1966,5 +2114,26 @@ fn text_size_steps_up(game: App) {
     let t = game.board.items[0].clone()
     assert(t.kind == Kind::Text && t.type_size == 40.0, f"{t.type_size}")
     assert(t.size.y > 40.0, "it grew to hold its words")
+}
+
+/// A double click on the board's name selects it; typing renames the board, and Enter keeps it.
+@test(frames: 10, input: "scripts/rename.json")
+fn the_board_is_renamed(game: App) {
+    assert(game.board.name == "Plans", f"`{game.board.name}`")
+    assert(game.naming.is_none())
+}
+
+/// M shows the minimap; a click in it brings the camera's middle to the world point there,
+/// on the minimap as it was at the press.
+@test(frames: 8, input: "scripts/minimap.json")
+fn the_minimap_moves_the_camera(game: App) {
+    assert(game.map_on)
+    // The minimap as it was at the press: the first frame's view, which fits the starting board.
+    var start = View::new()
+    start.fit(game.board.whole().unwrap(), game.screen, margin: 80.0, most: 1.0)
+    let m = map_with(game, start)
+    let middle = game.view.to_world(0.5 * game.screen)
+    let want = m.to_world(vec2(445.0, 344.0))
+    assert(length(middle - want) < 0.5, f"{middle.x}, {middle.y} against {want.x}, {want.y}")
 }
 

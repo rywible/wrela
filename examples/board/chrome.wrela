@@ -62,6 +62,12 @@ pub enum Action: Copy + Eq {
     Duplicate,
     Lock,
     SelectAll,
+    /// The minimap: shown or hidden.
+    Map,
+    /// The board's name, top left: a double click renames it.
+    Title,
+    /// The minimap itself: a press there moves the camera.
+    Navigate,
 }
 
 /// What's selected, for its bar: where it is on the screen, and whether it has connectors.
@@ -131,11 +137,11 @@ pub fn layout(screen: vec2, u: f32, selection: Option<Selection>, flyout: bool) 
     c.controls.push(Control { action: Action::Redo, rect: Rect::new(m + 2.0 * g + b, y + g, b, b) })
     // The zoom, bottom right: out, the percentage (back to 100%), in, and fit.
     let wide = 64.0 * u
-    let w = 3.0 * b + wide + 5.0 * g
+    let w = 4.0 * b + wide + 6.0 * g
     var x = screen.x - m - w
     c.panels.push(Rect::new(x, y, w, b + 2.0 * g))
     x += g
-    for a in [Action::ZoomOut, Action::Actual, Action::ZoomIn, Action::Fit] {
+    for a in [Action::Map, Action::ZoomOut, Action::Actual, Action::ZoomIn, Action::Fit] {
         let cw = if a == Action::Actual { wide } else { b }
         c.controls.push(Control { action: a, rect: Rect::new(x, y + g, cw, b) })
         x += cw + g
@@ -259,6 +265,9 @@ pub fn tip(a: Action) -> Text {
         Action::Duplicate => "Duplicate   Cmd D",
         Action::Lock => "Lock   Cmd Shift L",
         Action::SelectAll => "Select all   Cmd A",
+        Action::Map => "Minimap   M",
+        Action::Title => "Double-click to rename",
+        Action::Navigate => "Minimap",
         Action::Color { .. } => "",
     }
 }
@@ -298,6 +307,10 @@ pub fn draw(
         }
         if k.row {
             menu_row(mut list, fonts, k, u, lit, locked)
+            continue
+        }
+        // The board's name and the minimap draw themselves (main.wrela).
+        if k.action == Action::Title || k.action == Action::Navigate {
             continue
         }
         if let Action::Color { index } = k.action {
@@ -462,6 +475,10 @@ fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4,
         Action::Heads => {
             list.line(p(-8.0, 0.0), p(4.0, 0.0), ink, width: w)
             list.triangle(p(9.0, 0.0), p(3.0, -4.0), p(3.0, 4.0), ink)
+        },
+        Action::Map => {
+            list.ring(box(-9.0, -7.0, 18.0, 14.0), ink, radius: 2.0 * u, width: w)
+            list.rect(box(-5.0, -3.5, 7.0, 5.0), ink, radius: 1.0 * u)
         },
         Action::Fit => {
             for d in [vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0)] {

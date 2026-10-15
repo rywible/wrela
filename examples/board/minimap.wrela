@@ -1,0 +1,71 @@
+// The minimap: the whole board small, with the part the screen shows outlined, at the bottom
+// right above the zoom. A click or a drag in it brings the camera there.
+
+use ui::draw::Rect
+
+/// The minimap's size, in logical pixels, and its inner margin.
+pub const WIDTH: f32 = 200.0
+pub const HEIGHT: f32 = 132.0
+const INSET: f32 = 10.0
+
+/// Where the minimap is on the screen (`rect`, and `inner` inside its margin), and how the world
+/// maps into it: the world's point at `inner`'s top left (`origin`), and screen pixels a world
+/// unit (`scale`).
+pub struct Map: Copy + Eq {
+    pub rect: Rect,
+    pub inner: Rect,
+    pub origin: vec2,
+    pub scale: f32,
+}
+
+impl Map {
+    /// The minimap on a screen `screen` big (`u` device pixels a logical one), its bottom
+    /// `above` from the screen's bottom, showing `board` (the items' extent, if any) and `seen`
+    /// (the world the screen shows), centred.
+    pub fn place(screen: vec2, u: f32, above: f32, board: Option<Rect>, seen: Rect) -> Map {
+        let rect = Rect::new(screen.x - 12.0 * u - WIDTH * u, screen.y - above - HEIGHT * u, WIDTH * u, HEIGHT * u)
+        var lo = vec2(seen.x, seen.y)
+        var hi = vec2(seen.right(), seen.bottom())
+        if let Some(b) = board {
+            lo = min(lo, vec2(b.x, b.y))
+            hi = max(hi, vec2(b.right(), b.bottom()))
+        }
+        let inner = rect.shrink(INSET * u)
+        let size = max(hi - lo, vec2(1.0))
+        let scale = min(inner.w / size.x, inner.h / size.y)
+        // Centred in the inner rectangle.
+        let origin = lo - (vec2(inner.w, inner.h) / scale - size) * 0.5
+        Map { rect, inner, origin, scale }
+    }
+
+    /// A world point on the minimap.
+    pub fn to_map(self, w: vec2) -> vec2 {
+        vec2(self.inner.x, self.inner.y) + (w - self.origin) * self.scale
+    }
+
+    /// The world point under minimap point `p`.
+    pub fn to_world(self, p: vec2) -> vec2 {
+        self.origin + (p - vec2(self.inner.x, self.inner.y)) / self.scale
+    }
+
+    /// A world rectangle on the minimap.
+    pub fn rect_of(self, r: Rect) -> Rect {
+        let a = self.to_map(vec2(r.x, r.y))
+        Rect::new(a.x, a.y, r.w * self.scale, r.h * self.scale)
+    }
+}
+
+@test
+fn the_minimap_holds_the_board_and_the_view() {
+    let board = Rect::new(x: 0.0, y: 0.0, w: 1000.0, h: 400.0)
+    let seen = Rect::new(x: 200.0, y: 100.0, w: 300.0, h: 200.0)
+    let m = Map::place(vec2(1280.0, 800.0), 1.0, above: 60.0, board: Some(board), seen: seen)
+    assert(m.rect == Rect::new(x: 1068.0, y: 608.0, w: 200.0, h: 132.0))
+    // 1000 units across the inner 180 pixels: 0.18 a unit; 400 tall is 72, centred in 112.
+    assert(abs(m.scale - 0.18) < 1.0e-5, f"{m.scale}")
+    let corner = m.to_map(vec2(0.0))
+    assert(abs(corner.x - 1078.0) < 1.0e-3 && abs(corner.y - (618.0 + 20.0)) < 1.0e-3, f"{corner.x}, {corner.y}")
+    // And back.
+    let p = vec2(1150.0, 650.0)
+    assert(length(m.to_map(m.to_world(p)) - p) < 1.0e-3)
+}

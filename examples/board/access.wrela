@@ -34,6 +34,9 @@ pub fn node_of(a: Action) -> u32 {
             60 + n
         },
         Action::TypeSize => 57,
+        Action::Map => 58,
+        Action::Title => 59,
+        Action::Navigate => 70,
         Action::Front => 40,
         Action::Back => 41,
         Action::Delete => 42,
@@ -84,6 +87,9 @@ pub fn action_of(node: u32) -> Option<Action> {
         Action::Lock,
         Action::SelectAll,
         Action::TypeSize,
+        Action::Map,
+        Action::Title,
+        Action::Navigate,
     ]
     for a in all {
         if node_of(a) == node {

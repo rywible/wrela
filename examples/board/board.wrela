@@ -243,6 +243,8 @@ pub fn has(ids: [u32], id: u32) -> bool {
 }
 
 pub struct Board: Clone + Eq + Serialize {
+    /// What the board is called (top left; a double click renames it).
+    pub name: String,
     pub items: Vec<Item>,
     /// The id the next item gets.
     pub next: u32,
@@ -250,7 +252,7 @@ pub struct Board: Clone + Eq + Serialize {
 
 impl Board {
     pub fn new() -> Board {
-        Board { items: Vec::new(), next: 1 }
+        Board { name: String::from("Untitled board"), items: Vec::new(), next: 1 }
     }
 
     /// Adds `item` on top, with a new id, which it returns.
