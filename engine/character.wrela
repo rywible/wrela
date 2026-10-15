@@ -68,7 +68,6 @@ pub fn colours<C, F: Parts<C>, L: Look<C>>(
 pub struct Material: Copy + GpuData {
     pub colour: Unorm8x4,
     pub metallic: f32,
-    pub sheen: f32,
 }
 
 @compute(64)
@@ -90,7 +89,6 @@ pub fn cook_materials<C, F: Parts<C>, L: Look<C>>(
     materials[id] = Material {
         colour: Unorm8x4::encode(vec4(sqrt(saturate(albedo)), saturate(rough))),
         metallic: saturate(look.metallic(c, v.pos, fp)),
-        sheen: saturate(look.sheen(c, v.pos, fp)),
     }
 }
 
@@ -139,8 +137,6 @@ pub struct CharacterVertex: Copy {
     pub albedo: vec3,
     pub rough: f32 = 1.0,
     pub metallic: f32 = 0.0,
-    /// How much cloth sheen it has (0 to 1: `sheen`), which takes the place of its gloss.
-    pub sheen: f32 = 0.0,
     pub part: Flat<u32>,
 }
 
@@ -184,7 +180,6 @@ pub fn character(
         albedo: c.rgb * c.rgb,
         rough: c.a,
         metallic: surface.metallic,
-        sheen: surface.sheen,
         part: Flat { value: parts.of[min(sv.bones & 255, 63)] },
     }
 }
@@ -223,42 +218,9 @@ pub fn character_shade(c: CharacterVertex, pixel: FragCoord, lt: Lighting) -> ve
         Lit { albedo, n, sun, sky, through: vec3(0.0), rough, metallic, reflected, glint: 1.0 },
         normalize(lt.cam.eye - c.world),
     )
-    // Cloth's fibres scatter light into a sheen at the edge of the form, not a mirror's
-    // highlight: the sheen takes the gloss's place.
-    let cloth = saturate(c.sheen)
-    let colour = diffuse +
-        specular * (1.0 - cloth) +
-        sheen(lt.light, n, sun, sky, open, c.world, lt.cam.eye) * cloth
+    let colour = diffuse + specular
     vec4(through_air(lt, colour, c.world), CREATURE + f32(c.part.value % 63))
 }
-
-/// The cool light dark cloth catches where it turns away from the eye: a sheen on a fold's
-/// ridge and at the edge of the form, in the cel treatment's bands (a crisp band of it, over a
-/// softer falloff). It isn't the cloth's own colour, so black cloth keeps its folds' light,
-/// where a rim of its own colour would be black too. None in the clay view.
-pub fn sheen(
-    light: Light,
-    n: vec3,
-    sun: f32,
-    sky: vec3,
-    open: vec3,
-    world: vec3,
-    eye: vec3,
-) -> vec3 {
-    if light.clay != 0 {
-        return vec3(0.0)
-    }
-    let v = normalize(eye - world)
-    let away = 1.0 - max(dot(n, v), 0.0)
-    let edge = 0.6 * smoothstep(0.55, 0.7, away) + 0.4 * away * away * away
-    let t = smoothstep(0.0, 0.03, dot(n, light.sun)) * sun
-    let lit = light.sun_colour * 0.75 + open * 0.5
-    let shade = vec3(0.36, 0.40, 0.54) * (0.45 + 0.55 * saturate(dot(sky, vec3(0.6))))
-    SHEEN * edge * mix(shade * 0.6, lit, vec3(t))
-}
-
-/// The sheen's colour: a cool slate, a little bluer than grey.
-const SHEEN = vec3(0.065, 0.078, 0.105)
 
 /// B's cel treatment of a character's point (`albedo` its colour, `n` its normal, `sun` how much
 /// sun reaches it, `sky` the sky light there, `open` the open sky's): two bands with a narrow
@@ -472,41 +434,4 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
             }
         }
     }
-}
-
-/// Cloth sheen lights a form where it turns from the eye, not where it faces it, and is a cool
-/// grey whatever the cloth's own colour.
-@test
-fn sheen_lights_turned_away_cloth_not_facing_cloth() {
-    let light = Light {
-        sun: normalize(vec3(0.3, 1.0, 0.2)),
-        exposure: 1.0,
-        sun_colour: vec3(1.0),
-        eye: 1.6,
-        horizon: 0.0,
-    }
-    let eye = vec3(0.0, 0.0, 5.0)
-    let facing = sheen(light, vec3(0.0, 0.0, 1.0), 1.0, vec3(0.3), vec3(0.3), vec3(0.0), eye)
-    let edge = sheen(
-        light,
-        normalize(vec3(1.0, 0.3, 0.1)),
-        1.0,
-        vec3(0.3),
-        vec3(0.3),
-        vec3(0.0),
-        eye,
-    )
-    assert(length(facing) < 1.0e-4, "cloth facing the eye has a sheen")
-    assert(edge.z > 0.02 && edge.z > edge.x, "a turned-away ridge has no cool sheen")
-    let clay = Light { clay: 1, ..light }
-    let none = sheen(
-        clay,
-        normalize(vec3(1.0, 0.3, 0.1)),
-        1.0,
-        vec3(0.3),
-        vec3(0.3),
-        vec3(0.0),
-        eye,
-    )
-    assert(length(none) == 0.0, "the clay view has a sheen")
 }

@@ -1402,7 +1402,8 @@ pub fn cloth_contact(point: vec3, root: vec3, t: f32, cloth: Contact) -> vec3 {
     }
     let bend = smoothstep(0.0, 0.65, t) * above * height
     let offset = dir * min(overlap, 0.12) * bend
-    let pressed = mix(point.y, max(root.y, contact.y) + 0.02 * t, under * bend)
+    // Flat to the ground under the cloth, so the cloth lies over it.
+    let pressed = mix(point.y, root.y + 0.004 * t, under * bend)
     vec3(point.x + offset.x, pressed, point.z + offset.y)
 }
 

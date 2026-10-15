@@ -968,8 +968,8 @@ outlined each gap in the smoke, the robe had no waist or shoulder structure, the
 stood up, and black cloth lost its rim light. The fixes are a scalloped hem, a grass contact
 that runs along the train, a `VEIL` tag class (thin for temporal AA, no lines), a mantle and a
 drooping cowl, a void material inside the hood, and an opt-in cloth sheen in the engine's
-character shading. A stronger waist pinch was tried and backed off: in motion the cloth clung
-to it like a body. No outside code or asset was used.
+character shading (later removed). A stronger waist pinch was tried and backed off: in motion
+the cloth clung to it like a body. No outside code or asset was used.
 
 Ryan then asked for the darkness to be licks of shadow, like flame, rising subtly off the
 hem and the train's edge; for cloth that reads as cloth; for a tighter silhouette; for a
@@ -983,6 +983,18 @@ creases too, as a displacement of their fields. The sword rises into a raised gu
 the hood as a fight comes near. A guard straight in front of the face was considered and
 rejected: the player's camera, behind, would hide the blade behind the hood. Narrower
 shoulders were tried and reverted: the cloth fell inside the body it hangs round.
+
+Ryan judged the licks disconnected, the cloth's light still not cloth, and the figure parts
+stitched together, and asked to rethink all three and "turn everything up to 11". Claude Code
+proposed a restructure and Ryan agreed before code. The garment is now one simulated cloth of
+five sheets (hood, robe, mantle, two sleeves). The hood is the robe's top, held to the head
+and open at the face, so there are no rigid parts but the sword. The licks are the robe's own
+hem burning: the drawn surface runs on past the hem, and flame shapes are cut from it in the
+cloth's coordinates. The garment has its own coat shading in the climber's package; the engine
+sheen added in the second round is removed. A thread-direction highlight (Kajiya and Kay's
+model, read for principle) was tried and dropped: on black it read as wet latex. The coat now
+reads by a soft fibre sheen toward the form's edge, as velvet and wool do. No outside code or
+asset was used.
 
 ## Keeping this record
 

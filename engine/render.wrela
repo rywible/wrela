@@ -108,26 +108,17 @@ pub trait Look<C>: Copy + GpuData {
         0.0
     }
 
-    /// How much cloth sheen `character::materials` bakes (0 to 1; `character::sheen`).
-    fn sheen(self, c: C, rest: vec3, fp: f32) -> f32 {
-        0.0
-    }
-
     fn output(self, colour: vec3) -> vec4 {
         vec4(colour, 1.0)
     }
 }
 
-/// Channels that say their own albedo, roughness, conducting share and cloth sheen.
+/// Channels that say their own albedo, roughness and conducting share.
 pub trait Shaded {
     fn albedo(self) -> vec3
     fn roughness(self) -> f32
 
     fn metallic(self) -> f32 {
-        0.0
-    }
-
-    fn sheen(self) -> f32 {
         0.0
     }
 }
@@ -142,10 +133,6 @@ impl<C: Shaded> Look<C> for ByChannels {
 
     fn metallic(self, c: C, rest: vec3, fp: f32) -> f32 {
         c.metallic()
-    }
-
-    fn sheen(self, c: C, rest: vec3, fp: f32) -> f32 {
-        c.sheen()
     }
 }
 

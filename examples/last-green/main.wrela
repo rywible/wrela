@@ -525,8 +525,8 @@ pub struct Floor {
     shot_from: f32,
     typing_shot: bool,
     shot_digits: u32,
-    /// The climber, the player: its figure (the cape and the darkness off it) stepped each
-    /// frame, and drawn (`climber::draw`: its head and sword realized at the first frame); the
+    /// The climber, the player: its figure (its garment, whose hem burns) stepped each
+    /// frame, and drawn (`climber::draw`: its sword realized at the first frame); the
     /// frame's time it was last stepped to, and that step (s); its float's phase out of the
     /// fight (0 to 1); and its glide as last drawn: its velocity (m/s) and heading, and how fast
     /// it was speeding up (m/s²) and turning (rad/s), eased.
@@ -796,7 +796,7 @@ pub fn init() -> Floor {
         frames: 0,
         settled: 0,
         off: Flags::none(),
-        // Far enough back that the whole robe, its train and the darkness at its foot are seen.
+        // Far enough back that the whole robe, its train and the licks at its hem are seen.
         framing: Framing { target: 1.4, behind: 5.0 },
         arm: Arm {},
         focus: 0.0,

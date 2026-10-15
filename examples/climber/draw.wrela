@@ -1,45 +1,50 @@
-// The climber drawn as the floors draw characters (#30; `engine::character`: B's cel treatment,
-// the motion target, the moving shadow map, a line where its parts meet): the cape's cloth from
-// its points, written each frame (`figure`); empty hood and sleeves, and the sword, each a field
-// realized once as a mesh of one bone. Every pass uses the same connected cloth points.
+// The climber drawn (#30), as the floors draw characters where they can (`engine::character`:
+// the motion target, the moving shadow map, a line round its silhouette): its garment from its
+// cloth's points, written each frame (`figure`), as one surface in its own coat shading; and the
+// sword, a field realized once as a mesh of one bone, in the characters' cel treatment.
+//
+// The garment's sheets are drawn as smooth spline surfaces through their points, finer than the
+// cloth is simulated, with creases along them. The hood is the robe's top, open in front, its
+// inside black. The robe's hem burns: the surface runs on past it a little, rising, and licks
+// of shadow like flame are cut from the cloth's own edge.
 
-use cape::{AROUND, DOWN, POINTS, body_frame}
-use darkness::{LICKS, LICK_POINTS, NODES, from_hem, seed}
-use engine::character::{
-    Cast, CharacterVertex, MotionVertex, PartOf, Realized, cast, character, character_motion,
-    character_shade, character_shadow, materials, motion,
+use cape::{
+    AROUND, DOWN, HOOD_ROWS, MANTLE_ROWS, MANTLE_SHEET, OPEN_HALF, OPEN_ROWS, POINTS, SLEEVE_ROUND,
+    SLEEVE_ROWS, SLEEVE_SHEETS, body_frame,
 }
-use engine::creature::MAX_BONES
+use engine::character::{
+    Cast, MotionVertex, PartOf, Realized, cast, character, character_motion, character_shade,
+    character_shadow, materials, motion,
+}
+use engine::creature::{Creature, MAX_BONES}
 use engine::gait::{between, palette}
-use engine::render::Look
-use fight::{WOLF_BODY, WOLF_SKELETON, Wolf}
-use std::transform::translate
-use engine::creature::Creature
-use engine::lit::Lighting
+use engine::light::CLAY
+use engine::lit::{Lighting, sun_and_gloss, through_air}
 use engine::look::{CreatureLook, Mesh as Tolerance}
+use engine::noise::fbm2
+use engine::probes::open_light
 use engine::realize::realize_rigid
-use engine::render::ByChannels
+use engine::render::{ByChannels, Look}
 use engine::shadow::CASTER
 use engine::vegetation::nothing
-use engine::noise::fbm2
-use engine::view::{Camera, NEAREST, SEEN, VEIL}
+use engine::view::{CREATURE, Camera, NEAREST, SEEN, VEIL}
+use fight::{WOLF_BODY, WOLF_SKELETON, Wolf}
 use figure::Figure
-use look::{CAPE, CLOTH_ROUGH, Paint, empty_sleeve, hood, sword}
+use look::{Paint, sword}
 use moves::Pose
-use engine::lit::through_air
 use std::gpu::{
-    ClipPosition, Cull, Flat, FragCoord, GpuBuffer, RenderPass, VertexIndex, buffer, copy, discard,
-    draw, write,
+    ClipPosition, Cull, Flat, GpuBuffer, RenderPass, VertexIndex, buffer, copy, discard, draw,
+    write,
 }
 use std::math::TAU
+use std::transform::translate
 
-/// Each part's id, for the lines where parts meet.
-const CAPE_PART: u32 = 1
-const HEAD_PART: u32 = 2
+/// Each part's id, for the lines where parts meet: the garment is one.
+const GARMENT_PART: u32 = 1
 const SWORD_PART: u32 = 3
 
 /// A creature of one bone realized: its mesh and colours (cells for a 3 mm tolerance, and no
-/// wider than `largest`: the sword's fittings use finer cells than the robe's broad folds).
+/// wider than `largest`).
 fn realized<K: Creature<Paint>>(c: K, largest: f32) -> Realized {
     let look = CreatureLook { surface: Tolerance { tolerance: 3mm, largest } }
     let mesh = realize_rigid(c, look)
@@ -47,14 +52,8 @@ fn realized<K: Creature<Paint>>(c: K, largest: f32) -> Realized {
     Realized { mesh, materials }
 }
 
-/// The drawn cloth's vertices: two triangles a cell of its finer grid.
-const CAPE_VERTICES: u32 = DRAWN_ROUND * DRAWN_DOWN * 6
-
-/// The licks' vertices: two triangles between each two of a lick's points.
-const LICK_VERTICES: u32 = LICKS * (NODES - 1) * 6
-
-/// A rigid part drawn (the head, the sword): realized, its one bone's place this frame and the
-/// last, and its part id.
+/// A rigid part drawn (the sword): realized, its one bone's place this frame and the last, and
+/// its part id.
 pub struct Rigid {
     r: Realized,
     at: GpuBuffer<mat4>,
@@ -128,33 +127,393 @@ impl Rigid {
     }
 }
 
-/// The climber as it's drawn: the cape's and the darkness's points this frame and the last (for
-/// the motion target), the empty hood, its swinging sleeves and the sword; whether it's been
-/// written yet, and whether it's shown (not while a blink has it gone).
+// ---- the garment ---------------------------------------------------------------------------------
+
+/// A sheet of the garment as it's drawn: where its points start, how many round and down, how
+/// many times finer it's drawn round and down, how deep its creases are at its foot (m), whether
+/// its hem burns (1), and the rows (`open_rows`: from, before) and the columns either side of
+/// straight ahead (`open_half`) left open (none where `open_rows` is empty).
+pub struct Drawing: Copy + GpuData {
+    pub open_rows: vec2u,
+    pub first: u32,
+    pub around: u32,
+    pub down: u32,
+    pub finer_round: u32,
+    pub finer_down: u32,
+    pub crease: f32,
+    pub burns: u32,
+    pub open_half: u32,
+}
+
+/// The drawn rows a burning hem runs on past its last: the licks' height, in the drawn grid.
+const BURN_ROWS: u32 = 3
+
+/// How many vertices a drawing has: two triangles a cell of its finer grid, and of its burning
+/// edge.
+fn vertices_of(d: Drawing) -> u32 {
+    d.around * d.finer_round * ((d.down - 1) * d.finer_down + d.burns * BURN_ROWS) * 6
+}
+
+/// The garment's drawings: the hood and the robe as one, from the crown to the burning hem, open
+/// at the face; the mantle; and the sleeves.
+pub const DRAWINGS = [
+    Drawing {
+        first: 0,
+        around: AROUND,
+        down: HOOD_ROWS + DOWN,
+        finer_round: 3,
+        finer_down: 2,
+        crease: 0.016,
+        burns: 1,
+        open_rows: OPEN_ROWS,
+        open_half: OPEN_HALF,
+    },
+    Drawing {
+        first: MANTLE_SHEET.first,
+        around: AROUND,
+        down: MANTLE_ROWS,
+        finer_round: 3,
+        finer_down: 2,
+        crease: 0.01,
+        burns: 0,
+        open_rows: vec2u(0, 0),
+        open_half: 0,
+    },
+    Drawing {
+        first: SLEEVE_SHEETS[0].first,
+        around: SLEEVE_ROUND,
+        down: SLEEVE_ROWS,
+        finer_round: 3,
+        finer_down: 2,
+        crease: 0.006,
+        burns: 0,
+        open_rows: vec2u(0, 0),
+        open_half: 0,
+    },
+    Drawing {
+        first: SLEEVE_SHEETS[1].first,
+        around: SLEEVE_ROUND,
+        down: SLEEVE_ROWS,
+        finer_round: 3,
+        finer_down: 2,
+        crease: 0.006,
+        burns: 0,
+        open_rows: vec2u(0, 0),
+        open_half: 0,
+    },
+]
+
+/// The point `i` round and `j` down drawing `d`'s sheet.
+fn sheet_point(points: [vec4], d: Drawing, i: u32, j: u32) -> vec3 {
+    points[d.first + j * d.around + i % d.around].xyz
+}
+
+/// Catmull and Rom's spline through four points, `t` of the way from the second to the third.
+fn catmull_rom(a: vec3, b: vec3, c: vec3, e: vec3, t: f32) -> vec3 {
+    let t2 = t * t
+    0.5 *
+        (2.0 * b +
+            (c - a) * t +
+            (2.0 * a - 5.0 * b + 4.0 * c - e) * t2 +
+            (3.0 * b - a - 3.0 * c + e) * t2 * t)
+}
+
+/// The smooth cloth through drawing `d`'s points at `uv` (columns round, rows down): a spline
+/// through the four columns and four rows round it (round wraps; down holds at its ends).
+fn cloth_at(points: [vec4], d: Drawing, uv: vec2) -> vec3 {
+    // Round wraps: a column just before the first is one just before the last (a negative one
+    // turned to a u32 is 0 on the GPU, and the cloth there would fold back on itself).
+    let x = uv.x - floor(uv.x / f32(d.around)) * f32(d.around)
+    let i = u32(floor(x)) % d.around
+    let j = min(u32(floor(max(uv.y, 0.0))), d.down - 2)
+    let t = vec2(x - floor(x), clamp(uv.y - f32(j), 0.0, 1.0))
+    var rows = [vec3(0.0); 4]
+    for r in 0..4 {
+        let row = u32(clamp(i32(j) + i32(r) - 1, 0, i32(d.down) - 1))
+        rows[r] = catmull_rom(
+            sheet_point(points, d, i + d.around - 1, row),
+            sheet_point(points, d, i, row),
+            sheet_point(points, d, i + 1, row),
+            sheet_point(points, d, i + 2, row),
+            t.x,
+        )
+    }
+    catmull_rom(rows[0], rows[1], rows[2], rows[3], t.y)
+}
+
+/// The cloth's creases at `uv` on drawing `d`: long folds that hang down it, uneven round it,
+/// shallow at its top and deeper toward its foot (on the robe, running on down the train as the
+/// lines it drags in). How far the cloth stands out (m, along its normal), how fast that changes
+/// round it (m a column), and how far it is from a valley (-1) to a crest (1).
+fn crease(d: Drawing, uv: vec2) -> (f32, f32, f32) {
+    let a = TAU * uv.x / f32(d.around)
+    let n = f32(d.around) / 32.0
+    let depth = d.crease * (0.2 + 0.8 * smoothstep(0.0, f32(d.down - 1), uv.y))
+    let k1 = max(round(13.0 * n), 3.0)
+    let k2 = max(round(21.0 * n), 5.0)
+    let p1 = k1 * a + 1.7 * sin(3.0 * a) + 0.15 * uv.y
+    let p2 = k2 * a + 0.9 + 0.25 * uv.y
+    let f = 0.6 * sin(p1) + 0.4 * sin(p2)
+    let df = (0.6 * cos(p1) * (k1 + 5.1 * cos(3.0 * a)) + 0.4 * cos(p2) * k2) * TAU / f32(d.around)
+    (depth * f, depth * df, f)
+}
+
+/// Vertex `v`'s place on drawing `d`: how far round (in columns) and down (in rows; past the
+/// last row, the burning edge). A cell left open (the face's) is drawn as nothing: all its
+/// corners at one place.
+fn drawn_uv(d: Drawing, v: u32) -> vec2 {
+    let cell = v / 6
+    let c = v % 6
+    let round = d.around * d.finer_round
+    let (cu, cv) = (cell % round, cell / round)
+    let col = cu / d.finer_round
+    let row = cv / d.finer_down
+    let open = row >= d.open_rows.x &&
+        row < d.open_rows.y &&
+        (col < d.open_half || col >= d.around - d.open_half)
+    let di = if open { [0, 0, 0, 0, 0, 0] } else { [0, 1, 0, 0, 1, 1] }
+    let dj = if open { [0, 0, 0, 0, 0, 0] } else { [0, 0, 1, 1, 0, 1] }
+    vec2(
+        f32(cu + di[c]) / f32(d.finer_round),
+        f32(cv + dj[c]) / f32(d.finer_down),
+    )
+}
+
+/// How high the licks rise off a burning hem (m), and how far a metre a second of the body's
+/// speed leans them back (s).
+const LICK_RISE: f32 = 0.34
+const LICK_LEAN: f32 = 0.05
+
+/// How far into drawing `d`'s burning edge `uv` is: below 0 on the cloth (in rows up from the
+/// hem), 0 to 1 over the licks' height.
+fn burn_of(d: Drawing, uv: vec2) -> f32 {
+    (uv.y - f32(d.down - 1)) / (f32(BURN_ROWS) / f32(d.finer_down))
+}
+
+/// Drawing `d`'s place at `uv`, before its creases: the cloth; past its hem, the burning edge
+/// rising off it, leaning back by `lean` (m) toward its tips.
+fn garment_at(points: [vec4], d: Drawing, uv: vec2, lean: vec3) -> vec3 {
+    let s = burn_of(d, uv)
+    if s <= 0.0 {
+        return cloth_at(points, d, uv)
+    }
+    let last = f32(d.down - 1)
+    let hem = cloth_at(points, d, vec2(uv.x, last))
+    let out = hem - cloth_at(points, d, vec2(uv.x, last - 0.3))
+    let away = if length(out) > 1.0e-5 { normalize(out) } else { vec3(0.0) }
+    hem + away * (0.05 * s) + vec3(0.0, LICK_RISE * s, 0.0) + lean * s
+}
+
+/// A point of the garment as drawn: where it is, its normal as its creases turn it and as the
+/// cloth's own surface faces (outward: which side of the cloth is seen), the way down the cloth
+/// there, where it is on its sheet (columns round, rows down), how far from a crease's valley to
+/// its crest (-1 to 1), how far into the burning edge (`burn_of`), and whether its sheet burns.
+pub struct GarmentVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+    pub outward: vec3,
+    pub down: vec3,
+    pub uv: vec2,
+    pub fold: f32,
+    pub burn: f32,
+    pub burns: Flat<u32>,
+}
+
+/// The garment drawn: the smooth cloth through its points, its creases standing out along its
+/// normal, and that normal turned by the creases' slopes; past a burning hem, its licks.
+@vertex
+pub fn garment_vertex(
+    v: VertexIndex,
+    points: [vec4],
+    d: Drawing,
+    lean: vec3,
+    cam: Camera,
+) -> GarmentVertex {
+    let uv = drawn_uv(d, v.index)
+    let burn = burn_of(d, uv)
+    if burn > 0.0 && d.burns != 0 {
+        let p = garment_at(points, d, uv, lean)
+        return GarmentVertex {
+            clip: ClipPosition { position: cam.clip(p) },
+            world: p,
+            normal: vec3(0.0, 1.0, 0.0),
+            outward: vec3(0.0, 1.0, 0.0),
+            down: vec3(0.0, -1.0, 0.0),
+            uv,
+            fold: 0.0,
+            burn,
+            burns: Flat { value: 1 },
+        }
+    }
+    let e = 0.25
+    let last = f32(d.down - 1)
+    let p = cloth_at(points, d, uv)
+    let around = cloth_at(points, d, uv + vec2(e, 0.0)) - cloth_at(points, d, uv - vec2(e, 0.0))
+    let down = cloth_at(points, d, vec2(uv.x, min(uv.y + e, last))) -
+        cloth_at(points, d, vec2(uv.x, max(uv.y - e, 0.0)))
+    let n = normalize(cross(down, around) + vec3(0.0, 1.0e-6, 0.0))
+    let (out, slope, fold) = crease(d, uv)
+    // A crease tips the normal by its slope across the cloth, but never far: on the hood's small
+    // rings a column is a few millimetres, and an untamed slope there turns it right over.
+    let per_column = max(length(around) / (2.0 * e), 1.0e-4)
+    let tip = clamp(slope / per_column, -0.6, 0.6)
+    let turned = normalize(n - normalize(around + vec3(1.0e-6, 0.0, 0.0)) * tip)
+    let at = p + n * out
+    GarmentVertex {
+        clip: ClipPosition { position: cam.clip(at) },
+        world: at,
+        normal: turned,
+        outward: n,
+        down: normalize(down + vec3(0.0, -1.0e-6, 0.0)),
+        uv,
+        fold,
+        burn,
+        burns: Flat { value: d.burns },
+    }
+}
+
+@vertex
+pub fn garment_motion(
+    v: VertexIndex,
+    points: [vec4],
+    last: [vec4],
+    d: Drawing,
+    lean: vec3,
+    cam: Camera,
+) -> MotionVertex {
+    let uv = drawn_uv(d, v.index)
+    let now = garment_at(points, d, uv, lean)
+    MotionVertex {
+        clip: ClipPosition { position: cam.clip(now) },
+        now,
+        then: garment_at(last, d, uv, lean),
+    }
+}
+
+/// The garment cast into a shadow map: its cloth, not its licks (all of a lick's corners on the
+/// hem: it casts nothing).
+@vertex
+pub fn garment_shadow(v: VertexIndex, points: [vec4], d: Drawing, view: mat4) -> ClipPosition {
+    let uv = drawn_uv(d, v.index)
+    let on = vec2(uv.x, min(uv.y, f32(d.down - 1)))
+    ClipPosition { position: view * vec4(cloth_at(points, d, on), 1.0) }
+}
+
+// ---- the coat's shading ----------------------------------------------------------------------------
+
+/// The coat's colour, and the cool light its fibres scatter where it turns from the eye.
+const COAT = vec3(0.011, 0.011, 0.015)
+const SHEEN = vec3(0.05, 0.055, 0.075)
+
+/// The coat at a point (`n` its normal, `fold` from a crease's valley to its crest), in the
+/// characters' cel manner but its own: two bands, the lit and the shade, with a soft terminator,
+/// the valleys a little darker; and no gloss, which on black reads as wet latex. Heavy cloth reads
+/// by its fibres instead: a soft cool sheen that grows toward the edge of the form (a velvet's
+/// light, its fibres catching what's behind them), brighter on the lit side and where the sun is
+/// behind it, and less down in the creases.
+fn coat(lt: Lighting, world: vec3, n: vec3, fold: f32) -> vec3 {
+    let l = lt.light.sun
+    let v = normalize(lt.cam.eye - world)
+    let (sun, sky, _) = sun_and_gloss(lt, world, n, soft: 1.0)
+    let open = open_light(lt.probes, vec3(0.0, 1.0, 0.0))
+    let lit = lt.light.sun_colour * 0.75 + open * 0.5
+    let shade = vec3(0.36, 0.4, 0.54) * (0.45 + 0.55 * saturate(dot(sky, vec3(0.6))))
+    let t = smoothstep(-0.05, 0.15, dot(n, l)) * sun
+    if lt.light.clay != 0 {
+        return CLAY * mix(shade, lit, vec3(t))
+    }
+    let valley = 1.0 - smoothstep(-0.6, 0.0, fold)
+    let c = COAT * mix(shade, lit, vec3(t)) * (1.0 - 0.3 * valley)
+    let away = 1.0 - max(dot(n, v), 0.0)
+    let behind = saturate(-dot(v, l))
+    let fibres = pow(away, 2.5) * (1.0 - 0.6 * valley)
+    let light = open * 0.5 + lt.light.sun_colour * (0.35 * t + 0.6 * behind * sun)
+    c + SHEEN * light * fibres
+}
+
+// ---- the licks of shadow ---------------------------------------------------------------------------
+
+/// The licks' core: black, a little cold; and their edge, a thin band of a deep violet where each
+/// lick's shape ends (and where the cloth's edge burns), so black flame reads against black
+/// cloth. It's their own light, not the sun's. (Picked from violet, cold blue, ember and pale
+/// grey edges.)
+const INK = vec3(0.002, 0.002, 0.0035)
+const EDGE = vec3(0.055, 0.02, 0.14)
+const EDGE_BAND: f32 = 0.05
+
+/// How far inside the licks a point of a burning edge is (above 0 inside; its edge at 0), `u`
+/// columns round the hem (of `around`) and `burn` into it (`burn_of`): a low band of shadow-fire
+/// all along the edge, and tongues rising out of it, about one a column, full at their roots
+/// and drawn to points, tall and short, swaying round the hem and torn by noise that runs up
+/// them fast, so tips fork and reform; tallest along the train behind. Below the hem, the cloth,
+/// solid, but for notches the band eats out of its edge.
+fn licks(u: f32, around: f32, burn: f32, time: f32) -> f32 {
+    let a = TAU * u / around
+    let behind = 0.5 - 0.5 * cos(a)
+    let sway = 0.7 * sin(u * 0.8 + time * 1.3) + 0.5 * burn * sin(u * 1.9 - time * 4.5)
+    let fine = 0.5 + 0.5 * sin(u * TAU / 1.05 + sway + time * 0.9)
+    let broad = 0.5 + 0.5 * sin(u * TAU / 3.1 - 0.7 * sway + time * 0.4)
+    let tongue = pow(fine, 1.8) * (0.4 + 0.6 * broad)
+    let run = fbm2(vec2(u * 1.6 + 3.0, burn * 2.4 - time * 4.2), 3)
+    let reach = (0.22 + 0.78 * tongue) * mix(0.7, 1.15, behind)
+    reach * (0.7 + 0.6 * run) - burn - 0.06 + 2.5 * max(-burn, 0.0)
+}
+
+/// The garment's pixel: on its outside, the coat; on its inside (the hood's tunnel, a sleeve's
+/// mouth), black; at a burning hem, the cloth charred toward its edge and the licks of shadow
+/// cut from it, hard-edged; through the haze. The cloth is tagged as the climber's, the licks as
+/// a veil, so no line is drawn round each tongue.
+@fragment
+pub fn garment_shade(g: GarmentVertex, lt: Lighting) -> vec4 {
+    var colour = vec3(0.0)
+    var burning = false
+    var inside = 1.0
+    if g.burns.value != 0 && g.burn > -1.2 {
+        inside = licks(g.uv.x, f32(AROUND), burn: g.burn, time: lt.cam.time)
+        if inside <= 0.0 {
+            discard()
+        }
+        burning = g.burn > 0.0
+    }
+    let n = normalize(g.normal)
+    if burning {
+        colour = INK
+    } else if dot(g.outward, lt.cam.eye - g.world) < 0.0 {
+        colour = vec3(0.0)
+    } else {
+        colour = coat(lt, g.world, n, g.fold)
+        if g.burns.value != 0 {
+            colour = mix(colour, INK, vec3(smoothstep(-1.2, 0.0, g.burn)))
+        }
+    }
+    if inside < EDGE_BAND {
+        colour = EDGE
+    }
+    let tag = if burning { VEIL } else { CREATURE + f32(GARMENT_PART) }
+    vec4(through_air(lt, colour, g.world), tag)
+}
+
+// ---- the climber -------------------------------------------------------------------------------
+
+/// The climber as it's drawn: the garment's points this frame and the last (for the motion
+/// target), how far its licks lean back, and the sword; whether it's been written yet, and
+/// whether it's shown (not while a blink has it gone).
 pub struct Drawn {
     points: GpuBuffer<vec4>,
     last_points: GpuBuffer<vec4>,
-    licks: GpuBuffer<vec4>,
-    last_licks: GpuBuffer<vec4>,
-    hood: Rigid,
-    sleeves: [Rigid; 2],
+    lean: vec3,
     sword: Rigid,
     written: bool,
     shown: bool,
 }
 
-/// The climber ready to draw: its hood, sleeves and sword realized (once, at load).
+/// The climber ready to draw: its sword realized (once, at load).
 pub fn drawn() -> Drawn {
     Drawn {
         points: buffer(POINTS),
         last_points: buffer(POINTS),
-        licks: buffer(LICK_POINTS),
-        last_licks: buffer(LICK_POINTS),
-        hood: rigid(hood(), HEAD_PART, largest: 2cm),
-        sleeves: [
-            rigid(empty_sleeve(0), HEAD_PART, largest: 2cm),
-            rigid(empty_sleeve(1), HEAD_PART, largest: 2cm),
-        ],
+        lean: vec3(0.0),
         sword: rigid(sword(), SWORD_PART, largest: 12mm),
         written: false,
         shown: false,
@@ -186,344 +545,79 @@ impl Drawn {
         }
         let still = still || !self.written
         self.written = true
-        let licks = f.licks()
         if !still {
             copy(from: self.points.items(), to: self.last_points.items_mut())
-            copy(from: self.licks.items(), to: self.last_licks.items_mut())
         }
         write(mut self.points, 0, points.clone())
-        write(mut self.licks, 0, licks.clone())
         if still {
             write(mut self.last_points, 0, points)
-            write(mut self.last_licks, 0, licks)
         }
+        let back = -f.velocity * LICK_LEAN
+        self.lean = if length(back) > 0.3 { normalize(back) * 0.3 } else { back }
         let (at, aim, edge) = pose.sword.placed(feet, heading)
-        let body = body_frame(feet, heading, pose.form)
-        self.hood.place(body, still)
-        for k in 0..2 {
-            self.sleeves[k].place(body * f.sleeve(k), still)
-        }
         self.sword.place(sword_bone(at, aim, edge), still)
         self.shown = !gone
     }
 
-    /// The cape, the head and the sword cast into a shadow map (`view` its view).
+    /// The garment and the sword cast into a shadow map (`view` its view).
     pub fn shadow<P: RenderPass>(self, pass: P, view: mat4) {
         if !self.shown {
             return
         }
-        draw(
-            pass,
-            cape_shadow.bind(points: self.points.items(), view: view),
-            nothing,
-            vertices: CAPE_VERTICES,
-            cull: Cull::None,
-            depth_bias: CASTER,
-        )
-        self.hood.shadow(pass, view)
-        for k in 0..2 {
-            self.sleeves[k].shadow(pass, view)
+        for d in DRAWINGS {
+            draw(
+                pass,
+                garment_shadow.bind(points: self.points.items(), d: d, view: view),
+                nothing,
+                vertices: vertices_of(d),
+                cull: Cull::None,
+                depth_bias: CASTER,
+            )
         }
         self.sword.shadow(pass, view)
     }
 
-    /// The climber drawn into the scene: connected cape, empty hood and sleeves, and sword.
+    /// The climber drawn into the scene: its garment and its sword.
     pub fn draw<P: RenderPass>(self, pass: P, lt: Lighting, cam: Camera) {
         if !self.shown {
             return
         }
-        draw(
-            pass,
-            cape_vertex.bind(points: self.points.items(), cam: cam),
-            character_shade.bind(lt),
-            vertices: CAPE_VERTICES,
-            cull: Cull::None,
-            depth: NEAREST,
-        )
-        self.hood.draw(pass, lt, cam)
-        for k in 0..2 {
-            self.sleeves[k].draw(pass, lt, cam)
+        for d in DRAWINGS {
+            draw(
+                pass,
+                garment_vertex.bind(points: self.points.items(), d: d, lean: self.lean, cam: cam),
+                garment_shade.bind(lt),
+                vertices: vertices_of(d),
+                cull: Cull::None,
+                depth: NEAREST,
+            )
         }
         self.sword.draw(pass, lt, cam)
-        draw(
-            pass,
-            lick_vertex.bind(nodes: self.licks.items(), cam: cam),
-            lick_shade.bind(lt),
-            vertices: LICK_VERTICES,
-            cull: Cull::None,
-            depth: NEAREST,
-        )
     }
 
-    /// The climber's motion, from the actual preceding cloth and rigid-part positions.
+    /// The climber's motion, from the actual preceding cloth and sword positions.
     pub fn motion<P: RenderPass>(self, pass: P, cam: Camera) {
         if !self.shown {
             return
         }
-        draw(
-            pass,
-            cape_motion.bind(
-                points: self.points.items(),
-                last: self.last_points.items(),
-                cam: cam,
-            ),
-            motion.bind(cam),
-            vertices: CAPE_VERTICES,
-            cull: Cull::None,
-            depth: SEEN,
-        )
-        draw(
-            pass,
-            lick_motion.bind(nodes: self.licks.items(), last: self.last_licks.items(), cam: cam),
-            motion.bind(cam),
-            vertices: LICK_VERTICES,
-            cull: Cull::None,
-            depth: SEEN,
-        )
-        self.hood.motion(pass, cam)
-        for k in 0..2 {
-            self.sleeves[k].motion(pass, cam)
+        for d in DRAWINGS {
+            draw(
+                pass,
+                garment_motion.bind(
+                    points: self.points.items(),
+                    last: self.last_points.items(),
+                    d: d,
+                    lean: self.lean,
+                    cam: cam,
+                ),
+                motion.bind(cam),
+                vertices: vertices_of(d),
+                cull: Cull::None,
+                depth: SEEN,
+            )
         }
         self.sword.motion(pass, cam)
     }
-}
-
-// ---- the cape's cloth ----------------------------------------------------------------------------
-
-fn cape_point(points: [vec4], i: u32, j: u32) -> vec3 {
-    points[j * AROUND + i % AROUND].xyz
-}
-
-/// Vertex `v`'s cell and corner of the cape's grid of points (`i` round, `j` down): for a view
-/// that draws the cloth as it's simulated (the lab's).
-pub fn corner(v: u32) -> (u32, u32) {
-    let cell = v / 6
-    let c = v % 6
-    let di = [0, 1, 0, 0, 1, 1]
-    let dj = [0, 0, 1, 1, 0, 1]
-    (cell % AROUND + di[c], cell / AROUND + dj[c])
-}
-
-/// How many times finer the drawn cloth is than its simulated points, round and down: a smooth
-/// surface through them, fine enough to carry its creases.
-const FINER_ROUND: u32 = 3
-const FINER_DOWN: u32 = 2
-const DRAWN_ROUND: u32 = AROUND * FINER_ROUND
-const DRAWN_DOWN: u32 = (DOWN - 1) * FINER_DOWN
-
-/// Vertex `v`'s place on the drawn cloth: how far round (in columns, 0 to `AROUND`) and down (in
-/// rows, 0 to `DOWN` - 1).
-fn drawn_corner(v: u32) -> vec2 {
-    let cell = v / 6
-    let c = v % 6
-    let di = [0, 1, 0, 0, 1, 1]
-    let dj = [0, 0, 1, 1, 0, 1]
-    vec2(
-        f32(cell % DRAWN_ROUND + di[c]) / f32(FINER_ROUND),
-        f32(cell / DRAWN_ROUND + dj[c]) / f32(FINER_DOWN),
-    )
-}
-
-/// Catmull and Rom's spline through four points, `t` of the way from the second to the third.
-fn catmull_rom(a: vec3, b: vec3, c: vec3, d: vec3, t: f32) -> vec3 {
-    let t2 = t * t
-    0.5 *
-        (2.0 * b +
-            (c - a) * t +
-            (2.0 * a - 5.0 * b + 4.0 * c - d) * t2 +
-            (3.0 * b - a - 3.0 * c + d) * t2 * t)
-}
-
-/// The smooth cloth through the cape's points at `uv` (columns round, rows down): a spline
-/// through the four columns and four rows round it (round wraps; down holds at the collar and
-/// the hem).
-fn cloth_at(points: [vec4], uv: vec2) -> vec3 {
-    let i = u32(floor(uv.x)) % AROUND
-    let j = min(u32(floor(uv.y)), DOWN - 2)
-    let t = vec2(uv.x - floor(uv.x), uv.y - f32(j))
-    var rows = [vec3(0.0); 4]
-    for r in 0..4 {
-        let jr = clamp(i32(j) + i32(r) - 1, 0, i32(DOWN) - 1)
-        let row = u32(jr)
-        rows[r] = catmull_rom(
-            cape_point(points, i + AROUND - 1, row),
-            cape_point(points, i, row),
-            cape_point(points, i + 1, row),
-            cape_point(points, i + 2, row),
-            t.x,
-        )
-    }
-    catmull_rom(rows[0], rows[1], rows[2], rows[3], t.y)
-}
-
-/// The cloth's creases at `uv`: long folds that hang down it, uneven round it, shallow at the
-/// shoulders and deeper toward the hem, running on down the train as the lines it drags in.
-/// How far the cloth stands out (m, along its normal) and how fast that changes round it (m a
-/// column).
-fn crease(uv: vec2) -> (f32, f32) {
-    let a = TAU * uv.x / f32(AROUND)
-    let depth = 0.003 + 0.016 * smoothstep(1.0, f32(DOWN - 1), uv.y)
-    let p1 = 13.0 * a + 1.7 * sin(3.0 * a) + 0.15 * uv.y
-    let p2 = 21.0 * a + 0.9 + 0.25 * uv.y
-    let f = 0.6 * sin(p1) + 0.4 * sin(p2)
-    let df = (0.6 * cos(p1) * (13.0 + 5.1 * cos(3.0 * a)) + 0.4 * cos(p2) * 21.0) *
-        TAU /
-        f32(AROUND)
-    (depth * f, depth * df)
-}
-
-/// How dark the robe's cloth is at `uv`: its colour, darker down in its creases, sinking toward
-/// the dark at its foot and all along its train; and black at the collar's front, which shows
-/// through the hood's opening.
-fn cloth_albedo(uv: vec2, fold: f32) -> vec3 {
-    let down = uv.y / f32(DOWN - 1)
-    let front = smoothstep(0.2, 0.8, cos(TAU * uv.x / f32(AROUND)))
-    let collar = 1.0 - smoothstep(1.0, 3.0, uv.y)
-    let crest = mix(0.45, 1.0, smoothstep(-0.8, 0.6, fold))
-    CAPE * crest * mix(1.0, 0.2, smoothstep(0.6, 1.0, down)) * (1.0 - 0.95 * front * collar)
-}
-
-/// The cloth drawn: the smooth surface through its points, its creases standing out along its
-/// normal, and that normal turned by the creases' slopes.
-@vertex
-pub fn cape_vertex(v: VertexIndex, points: [vec4], cam: Camera) -> CharacterVertex {
-    let uv = drawn_corner(v.index)
-    let e = 0.25
-    let p = cloth_at(points, uv)
-    let around = cloth_at(points, uv + vec2(e, 0.0)) - cloth_at(points, uv - vec2(e, 0.0))
-    let down = cloth_at(points, vec2(uv.x, min(uv.y + e, f32(DOWN - 1)))) -
-        cloth_at(points, vec2(uv.x, max(uv.y - e, 0.0)))
-    let n = normalize(cross(down, around) + vec3(0.0, 1.0e-6, 0.0))
-    let (out, slope) = crease(uv)
-    let per_column = max(length(around) / (2.0 * e), 1.0e-4)
-    let turned = normalize(n - normalize(around + vec3(1.0e-6, 0.0, 0.0)) * (slope / per_column))
-    let fold = out / max(0.003 + 0.016 * smoothstep(1.0, f32(DOWN - 1), uv.y), 1.0e-4)
-    let at = p + n * out
-    CharacterVertex {
-        clip: ClipPosition { position: cam.clip(at) },
-        world: at,
-        normal: turned,
-        albedo: cloth_albedo(uv, fold),
-        rough: CLOTH_ROUGH,
-        // Little sheen where the cloth lies along the ground: seen low across it, the whole train
-        // is at the sheen's grazing angle, and shone like a wet sheet.
-        sheen: mix(1.0, 0.15, smoothstep(0.65, 0.95, uv.y / f32(DOWN - 1))),
-        part: Flat { value: CAPE_PART },
-    }
-}
-
-@vertex
-pub fn cape_motion(v: VertexIndex, points: [vec4], last: [vec4], cam: Camera) -> MotionVertex {
-    let uv = drawn_corner(v.index)
-    let now = cloth_at(points, uv)
-    MotionVertex { clip: ClipPosition { position: cam.clip(now) }, now, then: cloth_at(last, uv) }
-}
-
-@vertex
-pub fn cape_shadow(v: VertexIndex, points: [vec4], view: mat4) -> ClipPosition {
-    ClipPosition { position: view * vec4(cloth_at(points, drawn_corner(v.index)), 1.0) }
-}
-
-// ---- the darkness --------------------------------------------------------------------------------
-
-/// A point of a lick of shadow: where it is, how far up it (0 its root, 1 its tip) and across it
-/// (-1 to 1) it is, and which lick.
-pub struct LickVertex: Copy {
-    pub clip: ClipPosition,
-    pub world: vec3,
-    pub up: f32,
-    pub across: f32,
-    pub lick: Flat<u32>,
-}
-
-/// Vertex `v`'s lick, its point along it, and which side of the ribbon it's on.
-fn lick_corner(v: u32) -> (u32, u32, f32) {
-    let per = (NODES - 1) * 6
-    let w = v / per
-    let r = v % per
-    let dk = [0, 0, 1, 1, 0, 1]
-    let side = [-1.0, 1.0, -1.0, -1.0, 1.0, 1.0]
-    (w, r / 6 + dk[r % 6], side[r % 6])
-}
-
-/// How wide lick `w` is `up` it (m, each side of its line): broad at its root, narrowing toward
-/// its tip (its flame shape cuts the rest); hem licks wide enough to overlap their neighbours
-/// in a fringe, blade licks a finger.
-fn lick_width(w: u32, up: f32) -> f32 {
-    let base = if from_hem(w) { 0.07 + 0.05 * seed(w) } else { 0.02 }
-    base * (1.0 - 0.3 * clamp(up, 0.0, 1.0))
-}
-
-/// Lick `w`'s point `k` of `nodes` (`LICK_POINTS`), and the ribbon's side there, square to the
-/// way it goes and to the eye at `eye`.
-fn lick_point(nodes: [vec4], w: u32, k: u32, side: f32, eye: vec3) -> (vec3, f32) {
-    let base = w * NODES
-    let n = nodes[base + k]
-    let way = nodes[base + min(k + 1, NODES - 1)].xyz - nodes[base + max(k, 1) - 1].xyz
-    let to_eye = eye - n.xyz
-    var out = cross(way, to_eye)
-    if length(out) < 1.0e-6 {
-        out = cross(vec3(0.0, 1.0, 0.0), to_eye)
-    }
-    (n.xyz + normalize(out) * (lick_width(w, n.w) * side), n.w)
-}
-
-@vertex
-pub fn lick_vertex(v: VertexIndex, nodes: [vec4], cam: Camera) -> LickVertex {
-    let (w, k, side) = lick_corner(v.index)
-    let (p, up) = lick_point(nodes, w, k, side, cam.eye)
-    LickVertex {
-        clip: ClipPosition { position: cam.clip(p) },
-        world: p,
-        up,
-        across: side,
-        lick: Flat { value: w },
-    }
-}
-
-@vertex
-pub fn lick_motion(v: VertexIndex, nodes: [vec4], last: [vec4], cam: Camera) -> MotionVertex {
-    let (w, k, side) = lick_corner(v.index)
-    let (now, _) = lick_point(nodes, w, k, side, cam.eye)
-    let (then, _) = lick_point(last, w, k, side, cam.eye)
-    MotionVertex { clip: ClipPosition { position: cam.clip(now) }, now, then }
-}
-
-/// The licks' core: black, a little cold.
-const INK = vec3(0.002, 0.002, 0.0035)
-/// Their edge: a thin band of a deep, cold colour where each lick's shape ends, so black flame
-/// reads against black cloth. It's the lick's own light, not the sun's.
-const EDGE = vec3(0.055, 0.02, 0.14)
-/// How wide the edge band is, in the flame shape's own measure.
-const EDGE_BAND: f32 = 0.11
-
-/// How far inside lick `d`'s flame shape a pixel is (above 0 inside; its edge at 0): a teardrop,
-/// full near its root and curving in to its tip, whose middle sways in an S that runs up it,
-/// whose sides pulse, and whose top is torn by noise that runs up fast, so tips fork and reform
-/// and tongues break off as they rise.
-fn flame(d: LickVertex, time: f32) -> f32 {
-    let s = seed(d.lick.value)
-    let up = clamp(d.up, 0.0, 1.0)
-    let run = fbm2(vec2(d.across * 1.2 + s * 7.0, up * 2.2 - time * 6.5 + s * 13.0), 3)
-    let sway = (0.38 * sin(up * 5.0 - time * 9.0 + s * 6.3) + 0.5 * (run - 0.5)) * up
-    let x = abs(d.across - sway)
-    let pulse = 0.82 + 0.18 * sin(up * 9.0 - time * 12.0 + s * 4.0)
-    let width = pow(1.0 - up, 0.65) * pulse * 0.78
-    let tear = fbm2(vec2(d.across * 3.4 - s * 5.0, up * 4.5 - time * 10.0), 2)
-    width - x + (tear - 0.5) * 0.45 * up * up
-}
-
-/// A lick's pixel: inside its flame shape, ink; within `EDGE_BAND` of its edge, the edge's
-/// colour; outside, nothing. Hard-edged, as the characters' cel treatment is; through the haze;
-/// tagged as a veil, so no line is drawn round each tongue.
-@fragment
-pub fn lick_shade(d: LickVertex, lt: Lighting) -> vec4 {
-    let inside = flame(d, lt.cam.time)
-    if inside <= 0.0 {
-        discard()
-    }
-    let colour = if inside < EDGE_BAND { EDGE } else { INK }
-    vec4(through_air(lt, colour, d.world), VEIL + f32(d.lick.value % 64))
 }
 
 // ---- the wolf ------------------------------------------------------------------------------------
@@ -563,4 +657,74 @@ pub fn wolf_bones(a: Wolf, b: Wolf, alpha: f32, origin: vec3) -> [mat4; MAX_BONE
         bones[i] = to_render * posed[i]
     }
     bones
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+/// How high the licks reach at `u` round the hem (in the burning edge's measure), at `time`.
+fn reach_at(u: f32, time: f32) -> f32 {
+    var top = 0.0
+    for k in 0..80 {
+        let burn = f32(k) / 50.0
+        if licks(u, f32(AROUND), burn: burn, time: time) > 0.0 {
+            top = burn
+        }
+    }
+    top
+}
+
+/// The licks grow out of the cloth's own edge: the hem is solid cloth a little above its edge
+/// everywhere, a band of shadow-fire runs all along the edge, and tongues rise out of it, never
+/// as tall as a column of smoke, taller along the train behind than in front; and they move.
+@test
+fn the_licks_rise_from_the_hem_tallest_behind() {
+    var front = 0.0
+    var back = 0.0
+    var changed = 0.0
+    for k in 0..64 {
+        let u = f32(k) * 0.5
+        assert(licks(u, f32(AROUND), burn: -0.6, time: 1.0) > 0.0, "the cloth above the hem is cut")
+        assert(
+            licks(u, f32(AROUND), burn: 0.02, time: 1.0) > 0.0,
+            "the burning band breaks along the hem",
+        )
+        let r = reach_at(u, 1.0)
+        assert(r < 1.6, f"a lick reaches {r}: a column, not a lick")
+        let a = TAU * u / f32(AROUND)
+        if cos(a) > 0.7 {
+            front = max(front, r)
+        }
+        if cos(a) < -0.7 {
+            back = max(back, r)
+        }
+        changed = max(changed, abs(r - reach_at(u, 1.4)))
+    }
+    assert(back > front + 0.1, f"the licks reach {back} behind and {front} in front")
+    assert(changed > 0.1, "the licks don't move")
+}
+
+/// The face's cells are left open on the hood; everywhere else the garment is whole.
+@test
+fn the_face_is_left_open() {
+    let d = DRAWINGS[0]
+    let round = d.around * d.finer_round
+    var open = 0
+    var whole = 0
+    for cell in 0..(round * (d.down - 1) * d.finer_down) {
+        let uv = drawn_uv(d, cell * 6 + 1)
+        let corner = drawn_uv(d, cell * 6)
+        let col = (cell % round) / d.finer_round
+        let row = (cell / round) / d.finer_down
+        let face = row >= OPEN_ROWS.x &&
+            row < OPEN_ROWS.y &&
+            (col < OPEN_HALF || col >= AROUND - OPEN_HALF)
+        if face {
+            assert(length(uv - corner) == 0.0, "a cell of the face is drawn")
+            open += 1
+        } else {
+            assert(length(uv - corner) > 0.0, "a cell of the garment is left open")
+            whole += 1
+        }
+    }
+    assert(open > 0 && whole > open * 20, "the face's opening is the wrong size")
 }

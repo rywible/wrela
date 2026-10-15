@@ -1,21 +1,21 @@
 // The climber's lab: the fight drawn plainly, to judge its motion as stills. The fight's sim
 // runs as in the game (`engine::run`, the pad's presses as its records); each frame draws the
-// snapshots round the frame's time: the cape, stepped from the climber's body (`climber::cape`),
-// its connected curling hem, the empty hood and sleeves, a simple sword, and the wolf, on
+// snapshots round the frame's time: the garment, stepped from the climber's body
+// (`climber::cape`), each of its sheets as simulated, a simple sword, and the wolf, on
 // flat ground under one sun, seen from the side of the line between the two, far enough for both
 // (a judge's view; the player's camera is the shots thread's). No shadows, no grass: the motion
 // is the subject.
 
 use climber::body::{BLADE_THICK, BLADE_WIDTH, GUARD_AT, POINT_AT}
-use climber::cape::{AROUND, DOWN, POINTS, body_frame, flat}
-use climber::draw::{WolfCoat, corner, wolf_bones}
+use climber::cape::{POINTS, SHEETS, Sheet, flat}
+use climber::draw::{WolfCoat, wolf_bones}
 use climber::figure::{Figure, figure}
 use climber::fight::{World, present, spawn, sword_at, tick}
 use climber::moves::Act
 use engine::gait::between
 use engine::present::{Snapshots, short_way}
 use engine::realize::{Mesh, realize_once}
-use engine::render::{ByChannels, Lights, MAX_BONES, View, shade, skin, unlit_shadow, view}
+use engine::render::{Lights, MAX_BONES, View, shade, skin, unlit_shadow, view}
 use engine::run::run
 use std::gpu::{
     ClipPosition, ComparisonSampler, Cull, DepthTexture, GpuBuffer, VertexIndex,
@@ -36,8 +36,6 @@ pub struct Lab {
     cpu: f32,
     frames: u32,
     wolf: Mesh,
-    hood: Mesh,
-    hood_palette: GpuBuffer<mat4>,
     palette: GpuBuffer<mat4>,
     /// Where the camera is, eased.
     follow: vec3,
@@ -63,13 +61,6 @@ pub fn init() -> Lab {
         cpu: 0.0,
         frames: 0,
         wolf: realize_once(wolf::creature::wolf(), WOLF_REALIZED),
-        hood: realize_once(
-            climber::look::head(),
-            engine::look::CreatureLook {
-                surface: engine::look::Mesh { tolerance: 3mm, largest: 2cm },
-            },
-        ),
-        hood_palette: buffer(MAX_BONES),
         palette: buffer(MAX_BONES),
         follow: vec3(0.0),
         depth: depth_texture(width: 1, height: 1),
@@ -104,17 +95,24 @@ pub struct Surfel: Copy {
     pub normal: vec3,
 }
 
-fn cape_point(points: [vec4], i: u32, j: u32) -> vec3 {
-    points[j * AROUND + i % AROUND].xyz
+fn sheet_point(points: [vec4], sheet: Sheet, i: u32, j: u32) -> vec3 {
+    points[sheet.at(i, j)].xyz
 }
 
-/// The cape's cloth: two triangles a cell, each corner's normal from its neighbours.
+/// A sheet of the garment's cloth as simulated: two triangles a cell, each corner's normal from
+/// its neighbours.
 @vertex
-fn cloth(v: VertexIndex, points: [vec4], view: View) -> Surfel {
-    let (i, j) = corner(v.index)
-    let p = cape_point(points, i, j)
-    let around = cape_point(points, i + 1, j) - cape_point(points, i + AROUND - 1, j)
-    let down = cape_point(points, i, min(j + 1, DOWN - 1)) - cape_point(points, i, max(j, 1) - 1)
+fn cloth(v: VertexIndex, points: [vec4], sheet: Sheet, view: View) -> Surfel {
+    let cell = v.index / 6
+    let c = v.index % 6
+    let di = [0, 1, 0, 0, 1, 1]
+    let dj = [0, 0, 1, 1, 0, 1]
+    let (i, j) = (cell % sheet.around + di[c], cell / sheet.around + dj[c])
+    let p = sheet_point(points, sheet, i, j)
+    let around = sheet_point(points, sheet, i + 1, j) -
+        sheet_point(points, sheet, i + sheet.around - 1, j)
+    let down = sheet_point(points, sheet, i, min(j + 1, sheet.down - 1)) -
+        sheet_point(points, sheet, i, max(j, 1) - 1)
     Surfel {
         clip: ClipPosition { position: view.view_proj * vec4(p, 1.0) },
         world: p,
@@ -180,9 +178,8 @@ fn boxed(at: vec3, x: vec3, y: vec3, half: vec3) -> mat4 {
     mat4(vec4(x * half.x, 0.0), vec4(y * half.y, 0.0), vec4(z * half.z, 0.0), vec4(at, 1.0))
 }
 
-/// The colours: the cape near black, a little blue; the blade's steel; the
-/// hood; the ground.
-const CAPE = climber::look::CAPE
+/// The colours: the garment near black, a little blue; the blade's steel; the hilt; the ground.
+const CAPE = vec3(0.011, 0.011, 0.015)
 const STEEL = vec3(0.42, 0.43, 0.45)
 const HILT = vec3(0.12, 0.08, 0.05)
 const GROUND = vec3(0.16, 0.2, 0.1)
@@ -196,8 +193,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     c.at = mix(a.climber.at, w.climber.at, vec3(b.alpha))
     c.heading = a.climber.heading + short_way(w.climber.heading - a.climber.heading, TAU) * b.alpha
     let pose = c.pose(b.alpha)
-    let frame = body_frame(c.at, c.heading, pose.form)
-    // The cape and its connected lower fabric, stepped by the frame's time.
+    // The garment, stepped by the frame's time.
     let dt = clamp(time - s.stepped, 0.0, 0.1)
     s.stepped = time
     let start = now()
@@ -215,10 +211,9 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.frames += 1
     if s.frames % 120 == 0 {
         print(
-            f"the cape and its connected hem: {s.cpu / f32(s.frames)} ms a frame on the CPU",
+            f"the garment: {s.cpu / f32(s.frames)} ms a frame on the CPU",
         )
     }
-    write(mut s.hood_palette, 0, [frame; MAX_BONES])
     // The wolf between its two ticks.
     let walker = between(a.wolf.walker, w.wolf.walker, b.alpha)
     write(mut s.palette, 0, wolf_bones(a.wolf, w.wolf, b.alpha, origin: vec3(0.0)))
@@ -272,33 +267,15 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         cull: Cull::Back,
     )
     if !c.gone() {
-        draw(
-            pass,
-            cloth.bind(points: s.points.items(), view: v),
-            lit.bind(albedo: CAPE, rough: 0.85, view: v, lights: LIGHTS),
-            vertices: AROUND * (DOWN - 1) * 6,
-            cull: Cull::None,
-        )
-        draw(
-            pass,
-            skin.bind(
-                verts: s.hood.verts.items(),
-                palettes: s.hood_palette.items(),
-                first: 0,
-                view: v,
-            ),
-            shade.bind(
-                field: climber::look::head().field(),
-                look: ByChannels {},
-                view: v,
-                lights: LIGHTS,
-                shadow: s.shadow,
-                shadow_sampler: s.shadow_sampler,
-            ),
-            indices: s.hood.quads.items(),
-            indirect: s.hood.draw.items(),
-            cull: Cull::Back,
-        )
+        for sheet in SHEETS {
+            draw(
+                pass,
+                cloth.bind(points: s.points.items(), sheet: sheet, view: v),
+                lit.bind(albedo: CAPE, rough: 0.85, view: v, lights: LIGHTS),
+                vertices: sheet.around * (sheet.down - 1) * 6,
+                cull: Cull::None,
+            )
+        }
         // The sword: the blade, the guard, the grip.
         let (at, aim, edge) = sword_at(c, b.alpha)
         let mid = (GUARD_AT + POINT_AT) * 0.5

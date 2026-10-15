@@ -291,7 +291,7 @@ pub const BLINK_FRAMES = Frames {
 }
 
 /// The blink's ticks in which the climber is between its two places (`lo <= t < hi`): the frames
-/// draw it as gone, and its darkness as the trail between.
+/// draw it as gone.
 pub const BLINK_GONE = vec2u(3, 6)
 
 /// The blink's keys: the cape drawn in tight and the body sunk (2 ticks), gone (3 to 5), then
