@@ -1393,6 +1393,36 @@ clean. Native M4 GPU medians, back to back with a checkout at the previous commi
 Ryan's Chrome preview was also rendering: opening 2.9–3.3 ms against 2.5–2.8 ms; room
 4.5–5.6 ms against 4.1–4.4 ms. These are native samples, not Chrome frame rates.
 
+## Networking for Wrela programs, 2026-10-14
+
+Ryan asked for Wrela's own networking, "absolutely bulletproof and as compressed and performant
+as possible", designed to deploy (servers on Fly.io machines, clients as static files on
+Cloudflare) but not deployed. He decided: WebTransport only; servers are Wrela programs run by a
+Rust host, as clients are run by the browser host; and one program can build as a client, a
+server, both, or a client with a server API. Claude Code (Opus 5.5) led the design through a
+council: two reviewers run as T3 Code child tasks, GPT-6.1-Sol and GPT-6-Astra (OpenAI, high
+effort), read the checkout and the brief, and two rounds of findings and rebuttals followed, for
+the first plan and again for the reworked one. They found that edits could be lost or applied
+twice across reconnects, that a room's state must come only from a deterministic reducer of
+logged inputs, that a resource limit can look like a program's own panic, that payload bytes
+need lifetimes and must not cross a build change, and that the outcome window must follow the
+client's acknowledgements. The plan changed for each.
+
+**A spike, not kept.** A small WebTransport echo server (the `wtransport` crate) and a page ran in
+headless Chrome 155: sessions with a short-lived self-signed certificate passed by its hash
+(`serverCertificateHashes`), length-prefixed frames on a bidirectional stream split across
+writes, datagrams (Chrome reported 1,211 bytes at most), and a second session after closing, from
+the page and from a dedicated worker. All worked. Safari 26.6 waits on Ryan by hand; Firefox
+isn't installed here.
+
+**`std::pack`.** A `@fieldwise` trait that packs values in bits with no names, for bytes that only
+the build that wrote them reads. Its integers are varints in 7-bit groups with a continuation
+bit, as in LEB128 (the [DWARF](https://dwarfstd.org/) format's encoding) and
+[Protocol Buffers' varints](https://protobuf.dev/programming-guides/encoding/#varints); its
+signed integers are first mapped by Protocol Buffers' ZigZag encoding (0, -1, 1, -2 as 0, 1, 2,
+3). Both are reimplemented in Wrela; the rule that a value has exactly one packing (shortest
+varints, one NaN, zero padding, nothing left over) is ours.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
