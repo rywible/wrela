@@ -1432,6 +1432,16 @@ mistaken for the program's own panic) and a deadline on every call (Wasmtime's e
 interruption). Measured on this M4 Air with 500 rooms: 85 KiB resident each, about 16 µs to
 start one and 2.6 µs a `serve`.
 
+**`std::net`, and what the model found.** A room's ordered log is pure Wrela, tested against a
+seeded model of peers, connections that drop, and a server that crashes and loses what it hadn't
+kept. Its first run found that identity wasn't idempotent: a peer whose first hello's answer was
+lost asked again, got a second id, and had its pending proposal committed once for each. Peers
+now name themselves with a token they choose, which the room gives one id however many hellos
+carry it. Designing the room's reducer also found a hole in the language (#221): `@deterministic`
+code wasn't checked through trait methods of generic parameters. The model runs 10,000 seeds in
+the gate (about 2 s), and checks that its runs did crash the server with unkept records, drop
+connections and refuse proposals.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
