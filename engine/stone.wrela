@@ -384,25 +384,15 @@ pub struct Bed: Copy + GpuData {
     pub planes: [vec4; 9],
     /// A box it lies in, and its tone's seed.
     pub lo: vec3,
-    pub seed: u32,
     pub hi: vec3,
-    /// How fine its grain and its streaks are in its own frame (a unit prototype a placement
-    /// scales up needs it finer).
-    pub fine: f32 = 1.0,
-    /// Its rock's colours, its grain's darkest and lightest (linear): granite's unless given.
-    pub dark: vec3 = vec3(0.30, 0.29, 0.27),
-    /// How far its edges are rounded (none unless given): where its faces meet they blend over
-    /// about this much, as a joint's edges weather.
-    pub round: f32 = 0.0,
-    pub light: vec3 = vec3(0.40, 0.38, 0.34),
+    pub seed: u32,
 }
 
 impl Surface for Bed {
     fn distance(self, p: vec3) -> f32 {
         var d = -1.0e9
         for q in self.planes {
-            let e = dot(p, q.xyz) - q.w
-            d = if self.round > 0.0 { std::field::smax(d, e, self.round) } else { max(d, e) }
+            d = max(d, dot(p, q.xyz) - q.w)
         }
         d
     }
@@ -412,18 +402,18 @@ impl Surface for Bed {
     }
 }
 
-/// A bed's colour at `p` (in its own frame): its rock (granite's unless it says) of its own tone, one bed lighter or darker
+/// A bed's colour at `p` (in its own frame): granite of its own tone, one bed lighter or darker
 /// than the next, a darker seam along its foot where the bed over it sits, faint streaks down
 /// it where water runs. No spots, no crack lines: its form carries it.
 pub fn bed_colour(b: Bed, p: vec3) -> Rock {
     let tone = 0.85 + 0.3 * rand(b.seed, 3)
-    let g = grain(p * 0.9 * b.fine + vec3(f32(b.seed) * 1.3))
-    var c = tone * mix(b.dark, b.light, vec3(g))
+    let g = grain(p * 0.9 + vec3(f32(b.seed) * 1.3))
+    var c = tone * mix(vec3(0.30, 0.29, 0.27), vec3(0.40, 0.38, 0.34), vec3(g))
     // How far over its bedding plane under it `p` is (the last plane's: `-n` up, so `w - dot`).
     let under = b.planes[8]
     let above = -(dot(p, under.xyz) - under.w)
-    c *= 0.82 + 0.18 * smoothstep(0.0, 0.5 / b.fine, above)
-    let streak = noise3(vec3(p.x * 1.6, p.y * 0.12, p.z * 1.6) * b.fine + vec3(f32(b.seed)))
+    c *= 0.82 + 0.18 * smoothstep(0.0, 0.5, above)
+    let streak = noise3(vec3(p.x * 1.6, p.y * 0.12, p.z * 1.6) + vec3(f32(b.seed)))
     c *= 1.0 - 0.12 * smoothstep(0.6, 0.85, streak)
     Rock { albedo: c }
 }
@@ -433,79 +423,6 @@ pub fn bed(b: Bed) -> Creature<Rock> {
     var s = Skeleton::new()
     let root = s.root("bed", vec3(0.0))
     creature(s).part(root, b.with_at(|p| bed_colour(b, p))).bounded(Box3 { lo: b.lo, hi: b.hi })
-}
-
-/// How a block of rock weathers, as a noise over its surface: broad lumps where its joints
-/// opened, its laminae (the thin beds within it, `laminae` to a unit up it) weathered out as
-/// grooves round it, a little wavy, and fine pits; each by its weight (`weights`), each in [-1, 1]
-/// before it.
-pub struct Weathering: Copy + GpuData {
-    pub weights: vec3,
-    pub laminae: f32,
-    pub lumps: Fbm,
-    pub pits: Fbm,
-}
-
-/// A groove's profile: 1 on a lamina's middle, falling to -1 sharply at the grooves between.
-fn grooves(p: vec3, laminae: f32) -> f32 {
-    let phase = p.y * laminae + 0.3 * value_noise(p * 2.0)
-    1.0 - 2.0 * abs(sin(std::math::PI * phase))
-}
-
-impl Noise for Weathering {
-    fn value(self, p: vec3) -> f32 {
-        self.weights.x * self.lumps.value(p) +
-            self.weights.y * grooves(p, self.laminae) +
-            self.weights.z * self.pits.value(p)
-    }
-
-    fn range(self) -> Interval {
-        let a = self.lumps.range()
-        let c = self.pits.range()
-        let w = self.weights
-        Interval { lo: w.x * a.lo - w.y + w.z * c.lo, hi: w.x * a.hi + w.y + w.z * c.hi }
-    }
-
-    /// The parts' bounds, by their weights; a groove's slope is 2π times its phase's, which is
-    /// the laminae's rate up it and the wobble's (its value noise's bound, at twice the scale).
-    fn lipschitz(self) -> f32 {
-        let w = self.weights
-        let groove = 2.0 * std::math::PI * (self.laminae + 0.6 * VALUE_NOISE_LIPSCHITZ)
-        w.x * self.lumps.lipschitz() + w.y * groove + w.z * self.pits.lipschitz()
-    }
-
-    fn bandlimit(self) -> f32 {
-        max(max(self.lumps.bandlimit(), self.laminae * 2.0), self.pits.bandlimit())
-    }
-}
-
-/// A block of rock, bed `b` weathered: its faces lumped, grooved along its laminae and pitted by
-/// `rough` (of its own size, at its grain's fineness), not planes, as a creature of one bone to
-/// realize.
-pub fn weathered(b: Bed, rough: f32) -> Creature<Rock> {
-    var s = Skeleton::new()
-    let root = s.root("block", vec3(0.0))
-    let wear = Weathering {
-        lumps: fbm(freq: 0.35 * b.fine, octaves: 2, offset: vec3(f32(b.seed) * 2.3)),
-        laminae: 0.5 * b.fine,
-        pits: fbm(freq: 3.0 * b.fine, octaves: 2, offset: vec3(f32(b.seed) * 0.7)),
-        weights: vec3(0.75, 0.18, 0.05),
-    }
-    let worn = b.displace(wear, amp: rough)
-    let grow = vec3(rough * 1.5)
-    creature(s)
-        .part(root, worn.with_at(|p| bed_colour(b, p)))
-        .bounded(Box3 { lo: b.lo - grow, hi: b.hi + grow })
-}
-
-/// Bed `b` weathered by `rough` (`weathered`) and realized as a prototype (at the origin) to
-/// `look`'s tolerance, its colours a cell `cell` across: a rock's (`Rocks`), which its placements
-/// scale.
-pub fn realize_weathered(b: Bed, rough: f32, look: CreatureLook, cell: f32) -> Realized {
-    let c = weathered(b, rough)
-    let mesh = realize_rigid(c, look)
-    let colours = colours(mesh, c.field(), ByChannels {}, cell)
-    Realized { mesh, colours, at: translate(vec3(0.0)), seed: b.seed }
 }
 
 /// Bed `b` realized at `at` (its frame's origin in the world): cells of about 45 cm (its faces
@@ -520,27 +437,220 @@ pub fn realize_bed(b: Bed, at: vec3) -> Realized {
 
 // ---- rocks: many solids from a few ----------------------------------------------------------------
 
-/// A block of jointed rock a unit each way (its half extents 1), as a bed: four joint faces round
-/// it, each turned a little from square, its bedding planes over and under it tilted a little,
-/// and three of its edges cut off at random, so no two blocks are alike; in colours `dark` to
-/// `light`, its edges worn round by `worn`. A placement scales it to its size.
-pub fn block_bed(seed: u32, dark: vec3, light: vec3, worn: f32) -> Bed {
-    var planes = [vec4(0.0); 9]
+/// A block of jointed rock as a solid, `half` its half extents (the largest 1: a placement
+/// scales it to its size, about evenly, so what weathered it is as coarse each way): its four
+/// joint faces, each a little off square and off upright; its bedding planes over and under it,
+/// a little tilted; and the chips off its edges and corners where it broke, each a plane at its
+/// own depth. Its edges are worn by `round`. Its laminae (the thin beds it was laid down in, at
+/// a slant to its bedding: cross-beds) are a normal (xyz) and how many there are to a unit (w).
+pub struct Block: Copy + GpuData {
+    pub planes: [vec4; 14],
+    pub laminae: vec4,
+    pub half: vec3,
+    pub seed: u32,
+    pub dark: vec3,
+    pub round: f32,
+    pub light: vec3,
+}
+
+impl Surface for Block {
+    fn distance(self, p: vec3) -> f32 {
+        var d = -1.0e9
+        for q in self.planes {
+            d = std::field::smax(d, dot(p, q.xyz) - q.w, self.round)
+        }
+        d
+    }
+
+    fn lipschitz(self, near: f32) -> f32 {
+        1.0
+    }
+}
+
+/// A block of jointed rock, half extents `half` (the largest 1), seed `seed`, its rock's colours
+/// `dark` to `light` (`Block`): 3 to 8 chips off its top and upright edges and corners, a tenth to
+/// a third of its least half extent deep, and cross-beds dipping up to 25° whichever way, 6 to 14
+/// to a unit.
+pub fn block(seed: u32, half: vec3, dark: vec3, light: vec3) -> Block {
+    var planes = [vec4(0.0, 1.0, 0.0, 1.0e3); 14]
     for k in 0..4 {
-        let a = TAU * f32(k) / 4.0 + 0.14 * (rand(seed, 70 + k) - 0.5)
-        planes[k] = vec4(cos(a), 0.0, sin(a), 1.0 - 0.06 * rand(seed, 80 + k))
+        let a = TAU * f32(k) / 4.0 + 0.1 * (rand(seed, 70 + k) - 0.5)
+        let n = normalize(vec3(cos(a), 0.08 * (rand(seed, 75 + k) - 0.5), sin(a)))
+        let reach = if k % 2 == 0 { half.x } else { half.z }
+        planes[k] = vec4(n, reach * (1.0 - 0.05 * rand(seed, 80 + k)))
     }
-    for k in 0..3 {
-        let a = TAU * (f32(k) + rand(seed, 90 + k)) / 3.0
-        let up = 0.6 * (rand(seed, 100 + k) - 0.3)
-        let n = normalize(vec3(cos(a), up, sin(a)))
-        planes[4 + k] = vec4(n, 1.15 + 0.15 * rand(seed, 110 + k))
+    let tilt = vec2(rand(seed, 120) - 0.5, rand(seed, 121) - 0.5) * 0.015
+    planes[4] = vec4(normalize(vec3(tilt.x, 1.0, tilt.y)), half.y)
+    planes[5] = vec4(
+        normalize(vec3(-tilt.y, -1.0, tilt.x)),
+        half.y * (1.0 - 0.04 * rand(seed, 122)),
+    )
+    let least = min(half.x, min(half.y, half.z))
+    let chips = 4 + u32(5.0 * rand(seed, 130))
+    for k in 0..chips {
+        // A top corner, a top edge or an upright one (its foot sits tight on what's under it):
+        // each axis's side, or (for an edge) none on one of them.
+        let side = vec3(
+            if rand(seed, 140 + k) < 0.5 { -1.0 } else { 1.0 },
+            1.0,
+            if rand(seed, 160 + k) < 0.5 { -1.0 } else { 1.0 },
+        )
+        let edge = u32(4.0 * rand(seed, 170 + k))
+        let at = vec3(
+            if edge == 0 { 0.0 } else { side.x },
+            if edge == 1 { 0.0 } else { side.y },
+            if edge == 2 { 0.0 } else { side.z },
+        ) * half
+        let n = normalize(
+            sign(at) / max(half, vec3(1.0e-3)) +
+                0.6 * (vec3(rand(seed, 180 + k), rand(seed, 190 + k), rand(seed, 200 + k)) - 0.5),
+        )
+        let deep = least * (0.1 + 0.25 * rand(seed, 210 + k))
+        planes[6 + k] = vec4(n, dot(at, n) - deep)
     }
-    let tilt = vec2(rand(seed, 120) - 0.5, rand(seed, 121) - 0.5) * 0.1
-    let up = normalize(vec3(tilt.x, 1.0, tilt.y))
-    planes[7] = vec4(up, 1.0)
-    planes[8] = vec4(-up, 1.0)
-    Bed { planes, lo: vec3(-1.3), hi: vec3(1.3), seed, dark, light, fine: 6.0, round: worn }
+    let dip = 0.45 * rand(seed, 220)
+    let way = TAU * rand(seed, 221)
+    let lam = normalize(vec3(cos(way) * dip, 1.0, sin(way) * dip))
+    Block {
+        planes,
+        laminae: vec4(lam, 6.0 + 8.0 * rand(seed, 222)),
+        half,
+        seed,
+        dark,
+        round: 0.025,
+        light,
+    }
+}
+
+/// Where `p` is through its lamina (0 at a lamina's foot to 1 at its top), the laminae `lam`
+/// (`Block::laminae`), each a little thicker or thinner than the next as the current that laid
+/// it down ran faster or slower.
+fn lamina(lam: vec4, p: vec3) -> f32 {
+    fract(dot(p, lam.xyz) * lam.w + 0.8 * value_noise(p * 2.5 + vec3(3.0)))
+}
+
+/// How a block weathers, as a noise over its surface: its faces' broad swells and hollows where
+/// it fractured, no face a plane; its coarse grain's roughness, where it weathered most; its
+/// laminae weathered out as small steps (`step_of`); and pitting, where its pebbles fell out;
+/// each by its weight (`weights`). No two steps are as thick.
+pub struct Wear: Copy + GpuData {
+    pub laminae: vec4,
+    pub fracture: Fbm,
+    pub hollows: Fbm,
+    pub pits: Fbm,
+    pub weights: vec4,
+}
+
+/// A lamina's step (`lamina`'s fraction `f`): sinking across it, then rising back sharply, so
+/// each riser faces up, where the sky lights it (one facing down, under a lip, would be lit by
+/// the ground too, with nothing of the rock to shade it).
+fn step_of(f: f32) -> f32 {
+    1.25 * smoothstep(0.8, 1.0, f) - f
+}
+
+impl Noise for Wear {
+    fn value(self, p: vec3) -> f32 {
+        self.weights.w * self.fracture.value(p) +
+            self.weights.x * self.hollows.value(p) +
+            self.weights.y * step_of(lamina(self.laminae, p)) +
+            self.weights.z * self.pits.value(p)
+    }
+
+    fn range(self) -> Interval {
+        let f = self.fracture.range()
+        let a = self.hollows.range()
+        let c = self.pits.range()
+        let w = self.weights
+        Interval {
+            lo: w.w * f.lo + w.x * a.lo - w.y + w.z * c.lo,
+            hi: w.w * f.hi + w.x * a.hi + 0.25 * w.y + w.z * c.hi,
+        }
+    }
+
+    /// The parts' bounds, by their weights; a step's slope is at most 1 + 1.25 × 7.5 times its
+    /// phase's, which is its laminae's count to a unit and the wobble's (its value noise's bound
+    /// at 2.5 × the scale, by 0.8).
+    fn lipschitz(self) -> f32 {
+        let w = self.weights
+        let phase = self.laminae.w + 2.0 * VALUE_NOISE_LIPSCHITZ
+        w.w * self.fracture.lipschitz() +
+            w.x * self.hollows.lipschitz() +
+            w.y * 10.4 * phase +
+            w.z * self.pits.lipschitz()
+    }
+
+    fn bandlimit(self) -> f32 {
+        max(max(self.hollows.bandlimit(), self.laminae.w * 5.0), self.pits.bandlimit())
+    }
+}
+
+/// A block's colour at `p` (in its own frame): its rock's grain, its own tone; darker in broad
+/// patches of weathered crust, and down the few broad streaks water left, most low on it; paler
+/// and greyer where a chip broke fresh rock open; dark on its underside, in the crevice over what
+/// it stands on (nothing else shades it from the light the ground throws up); its top a little
+/// bleached; pale lichen in ragged patches, more toward its top.
+pub fn block_colour(b: Block, p: vec3) -> Rock {
+    // Its own tone and hue: some blocks darker, some paler, warmer or greyer.
+    let tone = 0.7 + 0.55 * rand(b.seed, 3)
+    let hue = mix(vec3(0.94, 0.98, 1.06), vec3(1.08, 1.0, 0.88), vec3(rand(b.seed, 4)))
+    let g = grain(p * 5.0 + vec3(f32(b.seed) * 1.3))
+    var c = tone * hue * mix(b.dark, b.light, vec3(g))
+    // Which face it's on: a chip's is fresh.
+    var d = -1.0e9
+    var face = 0
+    for k in 0..14 {
+        let e = dot(p, b.planes[k].xyz) - b.planes[k].w
+        if e > d {
+            d = e
+            face = k
+        }
+    }
+    if face >= 6 {
+        c = mix(c, vec3(dot(b.light, vec3(0.33))), vec3(0.2))
+    } else if face == 5 {
+        // Its underside: in the crevice over what it stands on, out of the light.
+        c *= 0.4
+    } else {
+        let crust = noise3(p * 0.9 + vec3(f32(b.seed) * 0.37))
+        c *= 0.85 + 0.2 * crust
+    }
+    let up = p.y / b.half.y
+    let streak = noise3(vec3(p.x * 2.5, p.y * 0.35, p.z * 2.5) + vec3(f32(b.seed)))
+    c *= 1.0 - 0.25 * smoothstep(0.6, 0.85, streak) * smoothstep(1.0, -0.5, up)
+    c *= 1.0 + 0.08 * smoothstep(0.6, 0.95, up)
+    // Lichen: pale grey crusts in ragged patches, more toward its top, faint (bold round spots
+    // read as a leopard's, and green as a cast over all of it).
+    let crust = 0.6 * noise3(p * 4.0 + vec3(f32(b.seed) * 0.13)) + 0.4 * noise3(p * 11.0)
+    let lichen = smoothstep(0.58, 0.72, crust) * smoothstep(-0.8, 0.6, up)
+    c = mix(c, vec3(0.34, 0.34, 0.31), vec3(0.3 * lichen))
+    Rock { albedo: c }
+}
+
+/// Block `b` weathered by `rough` (`Wear`, of its own size), as a creature of one bone to
+/// realize.
+pub fn worn(b: Block, rough: f32) -> Creature<Rock> {
+    let wear = Wear {
+        laminae: b.laminae,
+        fracture: fbm(freq: 1.0, octaves: 2, offset: vec3(f32(b.seed) * 1.1)),
+        hollows: fbm(freq: 5.0, octaves: 3, offset: vec3(f32(b.seed) * 2.3)),
+        pits: fbm(freq: 20.0, octaves: 2, offset: vec3(f32(b.seed) * 0.7)),
+        weights: vec4(0.18, 0.05, 0.07, 0.6),
+    }
+    let grow = b.half * 0.05 + vec3(rough * 2.0)
+    var s = Skeleton::new()
+    let root = s.root("block", vec3(0.0))
+    creature(s)
+        .part(root, b.displace(wear, amp: rough).with_at(|p| block_colour(b, p)))
+        .bounded(Box3 { lo: -b.half - grow, hi: b.half + grow })
+}
+
+/// Block `b` worn by `rough` (`worn`) and realized as a prototype (at the origin) to `look`'s
+/// tolerance, its colours a cell `cell` across: a rock's (`Rocks`), which its placements scale.
+pub fn realize_block(b: Block, rough: f32, look: CreatureLook, cell: f32) -> Realized {
+    let c = worn(b, rough)
+    let mesh = realize_rigid(c, look)
+    let colours = colours(mesh, c.field(), ByChannels {}, cell)
+    Realized { mesh, colours, at: translate(vec3(0.0)), seed: b.seed }
 }
 
 /// A rock's placement as the GPU reads it: where its prototype goes (its transform, and that

@@ -1005,6 +1005,26 @@ channels start where less water gathers, and its creep is slower. Its grain fact
 recalibrated to 3.5. Soft rock's slopes carry rills. Shots now keep clear of the rocks as well as
 the land, and the close shot is taken where the most cliff rock stands.
 
+Ryan then said the crag still read as too regular, with regular undulations on the stone, and
+asked Claude to work as a hard look-development critic until it was satisfied. Claude judged
+each change on full-size stills of the bare view and on crops of them.
+- **Blocks:** a block is now a new solid (`stone::Block`). It has sharp joint faces a little
+  off square, with chips knocked off its top and upright edges. It wears in broad fracture
+  swells, a coarse grain, slanting laminae of uneven thickness, and pits; nothing in it is a
+  sine wave. Each block is made in one of nine shapes at its own proportions, so its detail is
+  not stretched.
+- **Colour:** a block is darker in its crust and under itself, paler where a chip broke it,
+  streaked where water ran, and patched with faint grey lichen.
+- **Cliff columns:** a column stands as one, its partings opening in some columns and not
+  others. Soft beds weather back under hard ones. Columns stand out or back by up to 3 m, the
+  joints are farther apart, and cap blocks are worn and lie flush with the land over them.
+- **Around the cliffs:** fallen blocks lie at the cliffs' feet. The land between blocks is
+  scree, not pale rock.
+- **Tors:** tors stand on the tops of the knobs where tors were found in the land.
+- **Shots:** the tor and lake shots look from the side that sees them best.
+- **Granite:** tried twice as jointed columns, the granite read as stacked sponges and then
+  as ruins, so it stands as smooth domes and tors only.
+
 ## Wrela Facet, a recursive opening and a console dashboard, 2026-10-14
 
 Ryan asked for a sleek gaming-console feel, a custom font, and an alien artifact that

@@ -19,14 +19,14 @@ use engine::landform::{
 }
 use engine::noise::{fbm2, fbm2_seen, rand}
 use engine::look::{CreatureLook, Mesh as Tolerance}
-use engine::stone::{Placement, Realized, block_bed, normal_matrix, realize_weathered}
+use engine::stone::{Placement, Realized, block, normal_matrix, realize_block}
 use engine::terrain::{Cover, Terrain}
 use ground::{joints, rock_albedo}
 use lookbook::Shot
 use std::io::{Shipped, ship}
 use std::math::TAU
 use std::string::String
-use std::transform::{rotate_y, scale, translate}
+use std::transform::{rotate_x, rotate_y, rotate_z, scale, translate}
 
 // ---- the rock ---------------------------------------------------------------------------------
 
@@ -385,13 +385,10 @@ impl Bare {
         let s = stratum(p, m.x)
         if s == Stratum::Granite {
             // Granite isn't bedded: its boss's skin splits into sheets parallel to it, each
-            // ending in a lip a little proud of the one below, curved across the dome; and its
-            // few joints, far apart, as shallow clefts.
+            // ending in a lip a little proud of the one below, curved across the dome.
             let sheeted = smoothstep(0.2, 0.6, slope)
             let f = fract(sheet(p, m.x))
             y += sheeted * LIP * (0.5 - saturate(f / 0.86) + smoothstep(0.86, 1.0, f))
-            let (_, joint) = joints(p + vec2(13.0, 5.0), 14.0)
-            y -= face * 0.6 * (1.0 - smoothstep(0.0, 0.08, joint))
         } else if face > 0.0 && solid(s) {
             // The rock's own beds as ledges (`bed_of`, as its blocks), and the joints' blocks
             // each its own plane.
@@ -442,7 +439,8 @@ impl Terrain for Bare {
 impl Bare {
     /// The bare land as a sample `w` metres across sees it: its rock where it's too steep to
     /// hold soil, in its beds, joints and streaks (`ground::rock_albedo`) and its stratum's
-    /// colour; its soil elsewhere, darker and browner where it's wet; nothing growing.
+    /// colour; scree on steep slopes; its soil elsewhere, darker and browner where it's wet;
+    /// nothing growing.
     fn bare_cover(self, at: vec3, n: vec3, w: f32) -> Cover {
         let p = at.xz
         let slope = sqrt(max(1.0 - n.y * n.y, 0.0)) / max(n.y, 0.05)
@@ -453,20 +451,26 @@ impl Bare {
         } else {
             COLOUR[s] / 0.24 * rock_albedo(at, n, w)
         }
-        // (The granite's smooth domes shed what weathers off them: they're bare less steep.)
+        // (The granite's smooth domes shed what weathers off them: they're bare less steep. The
+        // bedded rock's cliffs stand as its blocks (`rock_placements`): what shows of the land
+        // between them is the scree they've shed.)
         let bare = if s == Stratum::Granite {
             max(smoothstep(0.35, 0.75, slope), 0.35)
-        } else {
-            max(smoothstep(0.75, 1.1, slope), if s == Stratum::Grit { 0.35 } else { 0.0 })
-        }
+        } else if solid(s) { smoothstep(1.4, 2.0, slope) } else { smoothstep(0.75, 1.1, slope) }
         let wet = self.wet(p)
         let soil = mix(
-            vec3(0.20, 0.15, 0.10),
-            vec3(0.11, 0.08, 0.05),
+            vec3(0.15, 0.125, 0.095),
+            vec3(0.09, 0.075, 0.055),
             vec3(smoothstep(0.3, 0.9, wet)),
         )
-        let a = mix(soil * grain, rock, vec3(bare))
-        Cover { albedo: a, grass: 0.0, materials: vec4(0.0, 1.0 - bare, bare, 0.0) }
+        // Steep slopes, under the cliffs and between their blocks, are scree: grey stones, not
+        // soil.
+        let scree = smoothstep(0.35, 0.6, slope) * (1.0 - bare)
+        let stones = vec3(0.12, 0.112, 0.10) *
+            (0.7 + 0.6 * fbm2_seen(p * 0.9 + vec2(-3.0, 8.0), 3, w * 0.9))
+        let a = mix(mix(soil * grain, stones, vec3(scree)), rock, vec3(bare))
+        let hard = bare + scree
+        Cover { albedo: a, grass: 0.0, materials: vec4(0.0, 1.0 - hard, hard, 0.0) }
     }
 }
 
@@ -477,8 +481,8 @@ impl Bare {
 fn granite_albedo(at: vec3, n: vec3, l: f32, w: f32) -> vec3 {
     let xz = at.xz
     let tone = fbm2_seen(xz * 0.04 + vec2(-3.0, 8.0), 3, w * 0.04)
-    var c = COLOUR[Stratum::Granite] * mix(vec3(0.5, 0.52, 0.55), vec3(0.9, 0.84, 0.78), vec3(tone))
-    c *= 0.8 + 0.4 * fbm2_seen(xz * 0.9 + vec2(1.0, 4.0), 2, w * 0.9)
+    var c = COLOUR[Stratum::Granite] * mix(vec3(0.6, 0.62, 0.64), vec3(0.84, 0.8, 0.75), vec3(tone))
+    c *= 0.88 + 0.24 * fbm2_seen(xz * 0.9 + vec2(1.0, 4.0), 2, w * 0.9)
     // Each sheet a little its own tone, and darker on its lip's riser, which faces down the dome.
     let f = fract(l)
     let own = engine::noise::hash2(i32(floor(l)), 41)
@@ -490,7 +494,7 @@ fn granite_albedo(at: vec3, n: vec3, l: f32, w: f32) -> vec3 {
         vec2((xz.x * 0.8 + xz.y * 1.1) * 0.7, at.y * 0.05),
         w * 0.7,
     )
-    c *= 1.0 - 0.3 * smoothstep(0.5, 0.75, runs) * steep
+    c *= 1.0 - 0.15 * smoothstep(0.5, 0.8, runs) * steep
     c
 }
 
@@ -520,66 +524,182 @@ fn world() -> World {
     let land = Bare { region: region_relief, square: Relief::of(s, Vec::filled(SQUARE_N, 0.0)) }
     let found = found_places(land, s)
     let names = named(found)
-    let (shots, shot_names) = shots_of(land, rock_placements(land), found, names)
+    let (shots, shot_names) = shots_of(land, rock_placements(land, tor_points(found)), found, names)
     World { land, places: found, names, shots, shot_names }
 }
 
 // ---- its rock as solids -----------------------------------------------------------------------
 
 /// The rocks that stand as solids where they show (the heightfield can't hold a face of rock
-/// steeper than a few cells): the grit, the sandstone and the granite, a set of jointed blocks of
-/// each (`BLOCKS` of them) and, of the granite, rounded corestones as well.
+/// steeper than a few cells), in blocks of every shape (`SHAPES`), `VARIANTS` of each: the grit,
+/// the sandstone and the granite; and the granite's corestones.
 const SOLID = [Stratum::Grit, Stratum::Sandstone, Stratum::Granite]
-pub const BLOCKS: u32 = 4
 
-/// The prototypes, each a unit each way (a placement scales it): for each of `SOLID`'s rocks its
-/// `BLOCKS` jointed blocks, then the granite's `BLOCKS` corestones, blocks weathered round; each
-/// realized to `look`'s tolerance, its colours a cell `cell` across.
+/// The shapes a block of the rock is made in, as its half extents with the largest 1 (along
+/// its first joints, up, across): slabs, flags, cubes, posts and beams. A block of any size and
+/// shape is the nearest of them, turned a quarter if that's nearer, scaled about evenly
+/// (`shaped`), so what weathered it is as coarse each way.
+const SHAPES = [
+    vec3(1.0, 0.22, 1.0),
+    vec3(1.0, 0.22, 0.5),
+    vec3(1.0, 0.45, 1.0),
+    vec3(1.0, 0.45, 0.5),
+    vec3(1.0, 1.0, 1.0),
+    vec3(1.0, 1.0, 0.5),
+    vec3(0.55, 1.0, 0.55),
+    vec3(0.3, 1.0, 0.3),
+    vec3(1.0, 0.6, 0.3),
+]
+/// How many of each shape there are: the first two sharp, from inside a cliff, the last worn
+/// round, a cliff's top or what fell from it.
+const VARIANTS: u32 = 3
+
+/// The prototypes, in order: each of `SOLID`'s rocks' blocks (`SHAPES`, `VARIANTS` of each), then
+/// the granite's 4 corestones (`CORE`).
+pub const CORESTONES: u32 = 3 * 9 * VARIANTS
+const CORE = vec3(1.0, 0.65, 0.85)
+
+/// The prototypes (`CORESTONES`), each realized to `look`'s tolerance, its colours a cell `cell`
+/// across. The bedded rock's colours are a little greyer than the land's (weathered, it reads
+/// olive in the sun), from its weathered crust to its fresh breaks; the granite's blocks are
+/// worn rounder along its joints.
 pub fn rock_prototypes(look: CreatureLook, cell: f32) -> Vec<Realized> {
     var out: Vec<Realized> = Vec::new()
     for r in 0..3 {
-        // (Its colour a little greyer than the land's: weathered, it reads olive in the sun.)
         let own = COLOUR[SOLID[r]]
-        let c = mix(own, vec3(dot(own, vec3(0.3, 0.55, 0.15))), vec3(0.4))
-        for k in 0..BLOCKS {
-            let b = block_bed(seed: 500 + r * 10 + k, dark: c * 0.3, light: c * 0.46, worn: 0.12)
-            out.push(realize_weathered(b, rough: 0.05, look: look, cell: cell))
+        let c = mix(own, vec3(dot(own, vec3(0.3, 0.55, 0.15))), vec3(0.55))
+        let granite = r == 2
+        for i in 0..9 {
+            for v in 0..VARIANTS {
+                var b = block(
+                    seed: 500 + r * 100 + i * 10 + v,
+                    half: SHAPES[i],
+                    dark: c * if granite { 0.5 } else { 0.36 },
+                    light: c * if granite { 0.72 } else { 0.52 },
+                )
+                b.round = if v == VARIANTS - 1 {
+                    if granite { 0.25 } else {
+                        0.08
+                    }
+                } else if granite {
+                    0.08
+                } else { b.round }
+                out.push(realize_block(b, rough: if granite { 0.05 } else {
+                    0.09
+                }, look: look, cell: cell))
+            }
         }
     }
-    // The granite's corestones: its blocks weathered round along their joints.
     let granite = COLOUR[Stratum::Granite]
-    for k in 0..BLOCKS {
-        let b = block_bed(
-            seed: 700 + k * 13,
-            dark: granite * 0.45,
-            light: granite * 0.7,
-            worn: 0.5,
-        )
-        out.push(realize_weathered(b, rough: 0.08, look: look, cell: cell))
+    // The corestones: the granite's blocks weathered round along their joints.
+    for k in 0..4 {
+        var b = block(seed: 800 + k * 13, half: CORE, dark: granite * 0.45, light: granite * 0.75)
+        b.round = 0.3
+        out.push(realize_block(b, rough: 0.05, look: look, cell: cell))
     }
     out
 }
 
 /// The rocks' near prototypes, for those close to the eye: fine enough to show their laminae and
-/// pits a few metres off; and their far ones.
+/// chips a few metres off; and their far ones.
 pub const NEAR_LOOK = CreatureLook { surface: Tolerance { tolerance: 1cm, largest: 3cm } }
 pub const FAR_LOOK = CreatureLook { surface: Tolerance { tolerance: 6cm, largest: 18cm } }
 
-/// The prototype of a jointed block of stratum `s` (a solid one), seed `seed`; and a corestone.
-fn block_of(s: Stratum, seed: u32) -> u32 {
+/// The prototype for a block of stratum `s` (a solid one) half `half` (along its turn, up,
+/// across), seed `seed`, worn round if `worn`: its index, how much further it's turned (a quarter, if that fits it
+/// nearer), and how it's scaled (each way about the same).
+fn shaped(s: Stratum, half: vec3, seed: u32, worn: bool) -> (u32, f32, vec3) {
     let r = if s == Stratum::Grit { 0 } else if s == Stratum::Sandstone { 1 } else { 2 }
-    r * BLOCKS + seed % BLOCKS
+    var best = 1.0e9
+    var pick = 0
+    var quarter = false
+    for i in 0..9 {
+        for w in 0..2 {
+            let t = if w == 0 { half } else { half.zyx }
+            let l = log(t / SHAPES[i])
+            let off = l - vec3((l.x + l.y + l.z) / 3.0)
+            if dot(off, off) < best {
+                best = dot(off, off)
+                pick = i
+                quarter = w == 1
+            }
+        }
+    }
+    let t = if quarter { half.zyx } else { half }
+    let variant = if worn { VARIANTS - 1 } else { seed % 2 }
+    let more = if quarter { 0.5 * std::math::PI } else { 0.0 }
+    (u32(r) * 9 * VARIANTS + u32(pick) * VARIANTS + variant, more, t / SHAPES[pick])
 }
 
-fn corestone(seed: u32) -> u32 {
-    3 * BLOCKS + seed % BLOCKS
-}
-
-/// A placement of prototype `k` at `centre`, turned `turn` about the vertical, its half sizes
-/// `half`.
-fn placed(k: u32, centre: vec3, turn: f32, half: vec3, seed: u32) -> Placement {
-    let at = translate(centre) * rotate_y(turn) * scale(half)
+/// A block of stratum `s` at `centre`, turned `turn` about the vertical and tilted by `tilt`
+/// (about its turn's x and z), its half extents `half` (along its turn, up, across): the nearest
+/// of its rock's prototypes (`shaped`), a worn one if `worn`.
+fn block_placed(
+    s: Stratum,
+    centre: vec3,
+    turn: f32,
+    half: vec3,
+    seed: u32,
+    tilt: vec2 = vec2(0.0),
+    worn: bool = false,
+) -> Placement {
+    let (k, more, size) = shaped(s, half, seed, worn)
+    let at = translate(centre) *
+        rotate_y(turn) *
+        rotate_x(tilt.x) *
+        rotate_z(tilt.y) *
+        rotate_y(more) *
+        scale(size)
     Placement { prototype: k, at, normal_at: normal_matrix(at), reach: length(half) * 1.3, seed }
+}
+
+/// Placement `p`'s box: what its prototype's half extents (`SHAPES`, `CORE`)
+/// are where it's placed, as a transform of the cube from -1 to 1 each way.
+pub fn box_of(p: Placement) -> mat4 {
+    let k = p.prototype
+    let shape = if k < CORESTONES { SHAPES[(k / VARIANTS) % 9] } else { CORE }
+    p.at * scale(shape)
+}
+
+/// A corestone at `centre`, turned `turn`, its half extents `half`.
+fn corestone_placed(centre: vec3, turn: f32, half: vec3, seed: u32) -> Placement {
+    let at = translate(centre) * rotate_y(turn) * scale(half / CORE)
+    Placement {
+        prototype: CORESTONES + seed % 4,
+        at,
+        normal_at: normal_matrix(at),
+        reach: length(half) * 1.3,
+        seed,
+    }
+}
+
+/// The top of the knob `p` is on: up from it, 2 m at a time, to the highest ground round it (24
+/// m at most).
+fn knob_top(land: Bare, p: vec2) -> vec2 {
+    var at = p
+    for _ in 0..12 {
+        var next = at
+        for d in 0..8 {
+            let a = TAU * f32(d) / 8.0
+            let q = at + vec2(cos(a), sin(a)) * 2.0
+            if land.made(q).x > land.made(next).x {
+                next = q
+            }
+        }
+        at = next
+    }
+    at
+}
+
+/// Where the tors among places `found` are.
+pub fn tor_points(found: [Feature]) -> Vec<vec2> {
+    var out: Vec<vec2> = Vec::new()
+    for f in found {
+        if f.kind == PlaceKind::Tor {
+            out.push(f.at)
+        }
+    }
+    out
 }
 
 /// Whether stratum `s` stands as solids where it shows.
@@ -588,11 +708,11 @@ fn solid(s: Stratum) -> bool {
 }
 
 /// The rock as solids over land `land`'s square: each face of solid rock steeper than the
-/// heightfield draws well, as its beds stacked up it, each bed a block a little proud of the
-/// ground at its own height, so the face steps back in ledges; the blocks fallen from it, on the
-/// scree under it, smaller the further they rolled; the granite's tors, its corestones stacked
-/// on the summits of its bosses; and boulders in the streams where they fall steeply.
-pub fn rock_placements(land: Bare) -> Vec<Placement> {
+/// heightfield draws well, as its cliffs' columns of beds (`beds`); the blocks fallen from it,
+/// on the scree under it, smaller the further they rolled; a tor on the knob each of `tors` (the
+/// tors found in the land, `tor_points`) is on; and boulders in the streams where they fall
+/// steeply.
+pub fn rock_placements(land: Bare, tors: [vec2]) -> Vec<Placement> {
     var out: Vec<Placement> = Vec::new()
     let g = SQUARE
     for c in 0..g.cells() {
@@ -603,31 +723,35 @@ pub fn rock_placements(land: Bare) -> Vec<Placement> {
         let m = land.made(p)
         let slope = length(m.yz)
         let seed = c * 7919
-        if slope > 0.7 {
+        if slope > 0.6 {
             beds(land, c, p, m, mut out)
         }
         if slope > 0.9 {
             scree(land, p, m, seed, mut out)
         }
         let s = stratum(p, m.x)
-        if s == Stratum::Granite {
-            tor(land, p, m, seed, mut out)
-        }
         if land.wet(p) > 0.62 && slope > 0.12 && slope < 0.9 && rand(seed, 5) < 0.35 {
             // A stream's boulder, where it falls steeply enough to have left it.
             let r = 0.5 + 0.8 * rand(seed, 6)
             let q = p + (vec2(rand(seed, 7), rand(seed, 8)) - vec2(0.5)) * g.cell
-            let k = if solid(s) { block_of(s, seed) } else { corestone(seed) }
-            let y = lowest(land, q, vec2(r), turn: TAU * rand(seed, 9))
+            let turn = TAU * rand(seed, 9)
+            let y = lowest(land, q, vec2(r), turn: turn)
+            let at = vec3(q.x, y + 0.3 * r, q.y)
+            let half = vec3(r, 0.7 * r, r)
             out.push(
-                placed(
-                    k,
-                    vec3(q.x, y + 0.3 * r, q.y),
-                    TAU * rand(seed, 9),
-                    vec3(r, 0.7 * r, r),
-                    seed,
-                ),
+                if solid(s) { block_placed(s, at, turn, half, seed) } else {
+                    corestone_placed(at, turn, half, seed)
+                },
             )
+        }
+    }
+    // The tors, each on the top of its knob.
+    for k in 0..tors.len() {
+        let p = knob_top(land, tors[k])
+        let m = land.made(p)
+        let s = stratum(p, m.x - 1.0)
+        if solid(s) {
+            tor(land, p, m, s, u32(k + 1).wrapping_mul(2654435761), mut out)
         }
     }
     out
@@ -666,7 +790,7 @@ fn beds(land: Bare, c: u32, p: vec2, m: vec3, out: mut Vec<Placement>) {
             }
             let seed = u32(kk + 70000).wrapping_mul(3266489917) ^ line
             // A gully down a major joint: most of the columns either side of it have fallen.
-            if (gully(k) || gully(k + 1)) && rand(seed, 9) < 0.7 {
+            if (gully(k) || gully(k + 1)) && rand(seed, 9) < 0.4 {
                 continue
             }
             // The cliff's bays and buttresses, a few tens of metres across: in a bay it stands
@@ -689,7 +813,7 @@ fn gully(k: i32) -> bool {
 const CLIFF: f32 = 0.6
 
 /// How far apart the first set of joints is (m), on average.
-const JOINT_APART: f32 = 6.5
+const JOINT_APART: f32 = 9.0
 
 /// Joint `k`'s place (in joint spacings) in its set, among the joints of `of` (the first set's
 /// between two, for the second) of set `set`: a little off its even place.
@@ -700,11 +824,13 @@ fn joint(k: i32, of: i32, set: i32) -> f32 {
 /// The column of rock at `mid` (its half extents along and across the joints `half`), the land
 /// rising `up`, if it's in its face's cliff (the land at its back over `cliff`) and not buried
 /// under the land past the cliff's top (`top` high): its beds (`bed_of`), from the one at the
-/// cliff's top (a bed or two lower in half, weathered off) down to the land in front of it, so
+/// cliff's top (a bed or two lower in a quarter, weathered off) down to the land in front of it, so
 /// the cliff stands as a wall the land as made is behind, its top level with the land over it.
-/// Its beds are blocks between its major bedding planes (`major`), up to 12 m each; it stops at
-/// soft rock or granite, its lowest block reaching down to the land in front. Each stands out of
-/// the face or back in it by its own amount, a few of its joints open. One in a dozen has
+/// Its beds are blocks between its major bedding planes (`major`), up to 9 m each, a soft bed's
+/// weathered back under the hard one over it (`softness`); it stops at soft rock or granite (a
+/// boss weathers to smooth domes and tors, not cliffs), its lowest block reaching down to the
+/// land in front. Each stands out of
+/// the face or back in it by its own amount, a few of its joints open. One in twenty-five has
 /// fallen, its joint opened to a gully, and one undercut more than `UNDERCUT` has fallen too.
 fn column(
     land: Bare,
@@ -716,18 +842,17 @@ fn column(
     seed: u32,
     out: mut Vec<Placement>,
 ) {
-    if rand(seed, 1) < 0.08 {
-        return
-    }
-    // It stands out of the face or back in it by its own amount: the land round it there.
-    let back = 2.5 * rand(seed, 7)
+    // It stands out of the face or back in it by its own amount: the land round it there (its
+    // corners, its sides' middles and its own).
+    let back = 3.0 * rand(seed, 7) * rand(seed, 12)
     let mid = mid + up * back
     let across = vec2(-JOINTS.y, JOINTS.x)
     var lo = 1.0e9
     var hi = -1.0e9
-    for e in 0..4 {
-        let corner = vec2(f32(e % 2) * 2.0 - 1.0, f32(e / 2) * 2.0 - 1.0)
-        let q = mid + JOINTS * (corner.x * half.x) + across * (corner.y * half.y)
+    for e in 0..9 {
+        let q = mid +
+            JOINTS * ((f32(e % 3) - 1.0) * half.x) +
+            across * ((f32(e / 3) - 1.0) * half.y)
         let y = land.at(q.x, q.y)
         lo = min(lo, y)
         hi = max(hi, y)
@@ -735,13 +860,21 @@ fn column(
     if hi < cliff || lo > top - 0.5 {
         return
     }
-    // The beds' heights here are their `lay` less this. Its top: the cliff's, at a bedding plane
-    // (the nearer one of the bed it's in), lower by a bed or two in a third of the columns.
+    if rand(seed, 1) < 0.04 {
+        // It has fallen: what's left of it lies at its foot.
+        let s = stratum(mid, hi - 1.0)
+        if solid(s) && s != Stratum::Granite {
+            rubble(land, mid, up, s, size: min(half.x, half.y), n: 3, seed: seed, out: mut out)
+        }
+        return
+    }
+    // The beds' heights here are their `lay` less this. Its top: the cliff's, at the bedding plane
+    // under it (the land over the cliff laps it), lower by a bed or two in a quarter of the
+    // columns.
     let shift = -lay(mid, 0.0)
-    let lower = if rand(seed, 2) < 0.5 { 0.5 + 5.5 * rand(seed, 3) } else { 0.0 }
-    let (under, over, _) = bed_of(top - shift - 0.3 - lower)
-    let l = top - shift - 0.3 - lower
-    var roof = (if over - l < l - under { over } else { under }) + shift
+    let lower = if rand(seed, 2) < 0.25 { 0.5 + 2.5 * rand(seed, 3) } else { 0.0 }
+    let (under, _, _) = bed_of(top - shift - 0.3 - lower)
+    var roof = under + shift
     // Its beds from the top down, while they're over the land in front and solid: each its
     // foot, its top and the unit that names it, and its rock.
     var feet = [vec3(0.0); 24]
@@ -765,46 +898,141 @@ fn column(
     }
     // The lowest reaches down to the land in front of it; undercut more than `UNDERCUT`, the
     // column has fallen.
-    let bottom = min(lo - 0.3, feet[n - 1].x)
+    let bottom = min(lo - 0.5, feet[n - 1].x)
     if feet[n - 1].x - bottom > UNDERCUT {
         return
     }
-    // (`rotate_y` turns +x toward -z.) Its joints are shut, but for one in ten, opened.
-    let turn = atan2(-JOINTS.y, JOINTS.x)
-    let shut = if rand(seed, 8) < 0.1 { 0.9 } else { 0.995 }
+    // (`rotate_y` turns +x toward -z.) It's turned a little its own way, and its joints are
+    // shut, but for one in ten, opened.
+    let turn = atan2(-JOINTS.y, JOINTS.x) + 0.08 * (rand(seed, 11) - 0.5)
+    let shut = if rand(seed, 8) < 0.1 { 0.92 } else { 1.0 }
     var from = 0
     for b in 0..n {
-        // A block ends at a major bedding plane, at a change of rock, at 12 m, or at the last bed.
+        // A block ends at a major bedding plane where it's opened here (in about half the
+        // columns: no parting runs the whole cliff, as a mortar course would), at a change of rock
+        // or of hardness, at 9 m, or at the last bed.
         let f = feet[b]
         let last = b == n - 1
-        let ends = last || rocks[b + 1] != rocks[b] || major(i32(f.z)) || feet[from].y - f.x > 12.0
+        let soft = softness(i32(f.z))
+        let ends = last ||
+            rocks[b + 1] != rocks[b] ||
+            (major(i32(f.z)) && rand(seed ^ u32(i32(f.z) + 9000), 13) < 0.45) ||
+            (soft > 0.0) != (softness(i32(feet[b + 1].z)) > 0.0) ||
+            feet[from].y - f.x > 9.0
         if !ends {
             continue
         }
         let bed_seed = u32(i32(f.z) + 100000).wrapping_mul(2654435761) ^ seed
-        let foot = if last { bottom } else { f.x }
         let roof = feet[from].y
-        // Each block set back into the face a little more its own way, a little turned, its top
-        // a little under the next one's foot.
-        let at = mid + up * (0.25 * rand(bed_seed, 4))
+        // Each block set back into the face a little its own way, its top a little under the next
+        // one's foot (the column stands as one, its partings lines across it); a soft bed's
+        // weathered back under the hard one over it, all round.
+        let at = mid + up * (0.1 * rand(bed_seed, 4))
         let high = roof - 0.02 * (roof - f.x) * rand(bed_seed, 5)
+        // (Not one low at the land in front, which would be under it.)
+        let inset = if high < lo + 2.0 { 0.0 } else { soft * min(0.25 * min(half.x, half.y), 0.6) }
+        // The land under it where it ends up (`rotate_y` turns +x toward -z): one the land buries
+        // all over is left out (what's over it stands on the land), and the lowest reaches down
+        // to it.
+        let t = turn + 0.02 * (rand(bed_seed, 6) - 0.5)
+        let (x, z) = (vec2(cos(t), -sin(t)), vec2(sin(t), cos(t)))
+        // (Buried, it's judged at its bed's full width, which the bed over it stands on; and a
+        // soft bed the land buries where it's weathered back isn't.)
+        var under = 1.0e9
+        var buried = true
+        var hidden = true
+        for e in 0..9 {
+            let (i, j) = (f32(e % 3) - 1.0, f32(e / 3) - 1.0)
+            let full = at + x * (i * half.x * shut) + z * (j * half.y * shut)
+            buried = buried && land.at(full.x, full.y) > high + 0.3
+            let q = at + x * (i * (half.x * shut - inset)) + z * (j * (half.y * shut - inset))
+            let y = land.at(q.x, q.y)
+            hidden = hidden && y > high + 0.3
+            under = min(under, y)
+        }
+        let recess = if hidden { 0.0 } else { inset }
+        let wide = vec2(half.x * shut - recess, half.y * shut - recess)
+        if hidden {
+            under = 1.0e9
+            for e in 0..9 {
+                let q = at + x * ((f32(e % 3) - 1.0) * wide.x) + z * ((f32(e / 3) - 1.0) * wide.y)
+                under = min(under, land.at(q.x, q.y))
+            }
+        }
+        let foot = if last { min(bottom, under - 0.5) } else { f.x }
+        if !buried {
+            out.push(
+                block_placed(
+                    rocks[b],
+                    vec3(at.x, 0.5 * (high + foot), at.y),
+                    t,
+                    vec3(wide.x, 0.5 * (high - foot), wide.y),
+                    bed_seed,
+                    worn: from == 0,
+                ),
+            )
+        }
+        from = b + 1
+    }
+    // Some of it has fallen already, and lies at its foot.
+    if rand(seed, 9) < 0.7 {
+        let size = min(min(half.x, half.y), feet[0].y - feet[0].x)
+        let n = 2 + u32(3.0 * rand(seed, 10))
+        rubble(land, mid, up, rocks[0], size: size, n: n, seed: seed ^ 77, out: mut out)
+    }
+}
+
+/// How soft the column's bed whose foot is unit `u` is (0 to 1): about a fifth of the beds are
+/// softer, and weather back under the harder ones over them.
+fn softness(u: i32) -> f32 {
+    saturate((0.2 - engine::noise::hash2(u, 77)) / 0.2)
+}
+
+/// What fell from the cliff at `mid` (the land rising `up`): `n` blocks of its rock `s`, a third
+/// to most of `size` each way, lying where they came to rest on the scree under it, a few metres
+/// out, tilted, half sunk in it.
+fn rubble(
+    land: Bare,
+    mid: vec2,
+    up: vec2,
+    s: Stratum,
+    size: f32,
+    n: u32,
+    seed: u32,
+    out: mut Vec<Placement>,
+) {
+    let along = vec2(-up.y, up.x)
+    for k in 0..n {
+        let q = mid -
+            up * (1.0 + 7.0 * rand(seed, 300 + k)) +
+            along * (rand(seed, 310 + k) - 0.5) * 5.0
+        let r = clamp(size * (0.3 + 0.5 * rand(seed, 320 + k)), 0.3, 3.0)
+        let half = vec3(
+            r * (0.8 + 0.5 * rand(seed, 330 + k)),
+            r * (0.45 + 0.4 * rand(seed, 340 + k)),
+            r * (0.6 + 0.5 * rand(seed, 350 + k)),
+        )
+        let turn = TAU * rand(seed, 360 + k)
+        let y = lowest(land, q, half.xz, turn: turn)
+        let tilt = (vec2(rand(seed, 370 + k), rand(seed, 380 + k)) - vec2(0.5)) * 0.3
         out.push(
-            placed(
-                block_of(rocks[b], bed_seed),
-                vec3(at.x, 0.5 * (high + foot), at.y),
-                turn + 0.04 * (rand(bed_seed, 6) - 0.5),
-                vec3(half.x * shut, 0.5 * (high - foot), half.y * shut),
-                bed_seed,
+            block_placed(
+                s,
+                vec3(q.x, y + 0.1 * half.y, q.y),
+                turn,
+                half,
+                seed + k,
+                tilt: tilt,
+                worn: true,
             ),
         )
-        from = b + 1
     }
 }
 
 /// Whether the bedding plane at the foot of the column's unit `u` is a major one, which the
-/// rock parts at: about one in five.
+/// rock parts at: about one in eight.
 fn major(u: i32) -> bool {
-    engine::noise::hash2(u, 71) < 0.2
+    engine::noise::hash2(u, 71) < 0.12
 }
 
 /// How far a column's lowest block reaches down past its bed's foot at most (m): undercut more,
@@ -834,17 +1062,15 @@ fn scree(land: Bare, p: vec2, m: vec3, seed: u32, out: mut Vec<Placement>) {
             let near = 1.0 - min(d / 25.0, 1.0)
             let r = 0.5 + 1.8 * rand(seed, 120 + k) * (0.4 + 0.6 * near)
             let y = lowest(land, q, vec2(r, 0.85 * r), turn: TAU * rand(seed, 140 + k))
-            let piece = if rand(seed, 125 + k) < near { block_of(s, seed + 130 + k) } else {
-                corestone(seed + 130 + k)
-            }
+            let at = vec3(q.x, y + 0.1 * r, q.y)
+            let turn = TAU * rand(seed, 140 + k)
+            let half = vec3(r, 0.55 * r, r * 0.85)
             out.push(
-                placed(
-                    piece,
-                    vec3(q.x, y + 0.1 * r, q.y),
-                    TAU * rand(seed, 140 + k),
-                    vec3(r, 0.55 * r, r * 0.85),
-                    seed + 130 + k,
-                ),
+                if rand(seed, 125 + k) < near {
+                    block_placed(s, at, turn, half, seed + 130 + k)
+                } else {
+                    corestone_placed(at, turn, half, seed + 130 + k)
+                },
             )
         }
     }
@@ -878,32 +1104,50 @@ fn extent(land: Bare, p: vec2, up: vec2) -> (f32, f32) {
     (top, foot)
 }
 
-/// A tor where `p` is the top of a granite boss within 12 m (the land `m` there): its corestones
-/// stacked, each smaller, a little off the one under it.
-fn tor(land: Bare, p: vec2, m: vec3, seed: u32, out: mut Vec<Placement>) {
+/// A tor on the top of a knob of solid rock `s` at `p` (the land `m` there): a few
+/// stacks of its blocks weathered round along their joints (the granite's corestones, the grit's
+/// and the sandstone's worn slabs), each stack its blocks as broad slabs one on another, each a
+/// little smaller and a little off the one under it, the stacks side by side along the joints
+/// (one, on a narrow top), each stood on the land at its middle (one on a narrow top, smaller,
+/// settled lower).
+fn tor(land: Bare, p: vec2, m: vec3, s: Stratum, seed: u32, out: mut Vec<Placement>) {
+    let along = JOINTS
+    let across = vec2(-along.y, along.x)
+    // As many stacks as its top is broad for: one on a narrow one.
+    var drop = 0.0
     for k in 0..8 {
         let a = TAU * f32(k) / 8.0
-        if land.made(p + vec2(cos(a), sin(a)) * 12.0).x > m.x {
-            return
-        }
+        drop = max(drop, m.x - land.made(p + vec2(cos(a), sin(a)) * 5.0).x)
     }
-    var y = land.at(p.x, p.y) - 0.4
-    var r = 2.2 + 1.2 * rand(seed, 200)
-    var at = p
-    for k in 0..(2 + u32(3.0 * rand(seed, 201))) {
-        let half = vec3(r, 0.6 * r, r * (0.8 + 0.3 * rand(seed, 210 + k)))
-        out.push(
-            placed(
-                corestone(seed + k),
-                vec3(at.x, y + half.y, at.y),
-                TAU * rand(seed, 220 + k),
-                half,
-                seed + k,
-            ),
-        )
-        y += 1.6 * half.y
-        at += (vec2(rand(seed, 230 + k), rand(seed, 240 + k)) - vec2(0.5)) * 0.6 * r
-        r *= 0.7 + 0.15 * rand(seed, 250 + k)
+    let stacks = if drop > 1.5 { 1 } else { 2 + u32(2.0 * rand(seed, 199)) }
+    for t in 0..stacks {
+        let spread = (f32(t) - 0.5 * f32(stacks - 1)) * 4.5 + 1.5 * (rand(seed, 190 + t) - 0.5)
+        let at0 = p + along * spread + across * 3.0 * (rand(seed, 180 + t) - 0.5)
+        let q = seed + t * 31
+        // (On a narrow top, smaller, and settled between its middle's land and its lowest.)
+        var r = if stacks == 1 { 1.5 + 1.0 * rand(q, 200) } else { 2.0 + 1.5 * rand(q, 200) }
+        let ground = land.at(at0.x, at0.y)
+        var y = mix(ground, lowest(land, at0, vec2(r), turn: 0.0), if stacks == 1 { 0.6 } else {
+            0.0
+        }) - 0.25 * r
+        var at = at0
+        for k in 0..(2 + u32(4.0 * rand(q, 201))) {
+            let half = vec3(
+                r,
+                r * (0.3 + 0.15 * rand(q, 205 + k)),
+                r * (0.75 + 0.3 * rand(q, 210 + k)),
+            )
+            let centre = vec3(at.x, y + half.y, at.y)
+            let turn = atan2(-along.y, along.x) + 0.3 * (rand(q, 220 + k) - 0.5)
+            out.push(
+                if s == Stratum::Granite { corestone_placed(centre, turn, half, q + k) } else {
+                    block_placed(s, centre, turn, half, q + k, worn: true)
+                },
+            )
+            y += 1.85 * half.y
+            at += (vec2(rand(q, 230 + k), rand(q, 240 + k)) - vec2(0.5)) * 0.4 * r
+            r *= 0.75 + 0.2 * rand(q, 250 + k)
+        }
     }
 }
 
@@ -999,7 +1243,8 @@ pub fn named(found: [Feature]) -> Vec<String> {
 /// The bare view's shots of the places on land `land`, and their names: from the best
 /// overlooks, below the tallest falls, in the deepest gorge, at the tallest tor, from the highest
 /// summit out to the horizon, and at the deepest lake; each where the place has one, its eye
-/// raised till it sees what it looks at (`clear`); and under the tallest crag (`crag`).
+/// raised till it sees what it looks at (`clear`: a lake or a tor no higher than 10 m, or not at
+/// all, as one seen from far over it isn't); and under the tallest crag (`crag`).
 pub fn shots_of(
     land: Bare,
     rocks: [Placement],
@@ -1063,17 +1308,23 @@ pub fn shots_of(
                     },
                 ),
             ),
-            PlaceKind::Tor => Some(
-                (
-                    f"{names[i]}",
-                    Shot {
-                        name: "",
-                        eye: vec3(at.x - out.x * 40.0, 1.7, at.y - out.y * 40.0),
-                        at: vec3(at.x, 3.0, at.y),
-                        moves: vec2(-out.y, out.x) * 3.0,
-                    },
-                ),
-            ),
+            PlaceKind::Tor => {
+                let top = knob_top(land, at)
+                let subject = vec3(top.x, 4.0, top.y)
+                let from = approach(land, rocks, subject, 45.0)
+                let side = normalize(subject.xz - from)
+                Some(
+                    (
+                        f"{names[i]}",
+                        Shot {
+                            name: "",
+                            eye: vec3(from.x, 1.7, from.y),
+                            at: subject,
+                            moves: vec2(-side.y, side.x) * 3.0,
+                        },
+                    ),
+                )
+            },
             PlaceKind::Summit => Some(
                 (
                     f"from {names[i]} to the horizon",
@@ -1085,24 +1336,32 @@ pub fn shots_of(
                     },
                 ),
             ),
-            PlaceKind::Lake => Some(
-                (
-                    f"{names[i]}",
-                    Shot {
-                        name: "",
-                        eye: vec3(at.x - out.x * 80.0, 1.7, at.y - out.y * 80.0),
-                        at: vec3(at.x, 0.5, at.y),
-                        moves: vec2(-out.y, out.x) * 3.0,
-                    },
-                ),
-            ),
+            PlaceKind::Lake => {
+                let subject = vec3(at.x, 0.5, at.y)
+                let from = approach(land, rocks, subject, 70.0)
+                let side = normalize(at - from)
+                Some(
+                    (
+                        f"{names[i]}",
+                        Shot {
+                            name: "",
+                            eye: vec3(from.x, 1.7, from.y),
+                            at: subject,
+                            moves: vec2(-side.y, side.x) * 3.0,
+                        },
+                    ),
+                )
+            },
             _ => None,
         }
         if let Some((name, s)) = shot {
             if f.kind != PlaceKind::Overlook && have[f.kind] {
                 continue
             }
-            if let Some(seen) = clear(land, rocks, s) {
+            let highest = if f.kind == PlaceKind::Lake || f.kind == PlaceKind::Tor { 10.0 } else {
+                40.0
+            }
+            if let Some(seen) = clear(land, rocks, s, highest: highest) {
                 have[f.kind] = true
                 shots.push(seen)
                 called.push(name.clone())
@@ -1117,15 +1376,16 @@ pub fn shots_of(
 }
 
 /// The bare view's shot of the rock up close: of where most of the cliffs' rock (`rocks`, the
-/// face of their grit and sandstone blocks) stands round a cell, from 40 m down its slope; none
+/// face of their grit and sandstone blocks) stands round a cell, from 60 m down its slope; none
 /// if it can't be seen from there.
 fn crag(land: Bare, rocks: [Placement]) -> Option<(String, Shot)> {
     let g = SQUARE
     // Each cell's cliff: its blocks' faces' area (m²).
     var face: Vec<f32> = Vec::filled(g.cells(), 0.0)
     for r in rocks {
-        if r.prototype < 2 * BLOCKS {
-            face[g.cell_at(r.at[3].xz)] += 4.0 * r.at[1].y * length(r.at[0].xyz)
+        if r.prototype < CORESTONES {
+            let b = box_of(r)
+            face[g.cell_at(b[3].xz)] += 4.0 * b[1].y * length(b[0].xyz)
         }
     }
     var most = 0.0
@@ -1145,11 +1405,11 @@ fn crag(land: Bare, rocks: [Placement]) -> Option<(String, Shot)> {
             continue
         }
         let up = m.yz / slope
-        let eye = p - up * 40.0
+        let eye = p - up * 60.0
         let shot = Shot {
             name: "",
             eye: vec3(eye.x, 1.7, eye.y),
-            at: vec3(p.x, 4.0, p.y),
+            at: vec3(p.x, 6.0, p.y),
             moves: vec2(-up.y, up.x) * 2.0,
         }
         if let Some(seen) = clear(land, rocks, shot) {
@@ -1184,6 +1444,33 @@ fn outlook(land: Bare, p: vec2) -> vec2 {
     best
 }
 
+/// Where to look at `subject` (x, z, and how far over the land there, y) from, `d` away: of 16
+/// ways round it, the one whose line from an eye 1.7 m over the land to it clears the land
+/// between by the most, of those clear of `rocks` (`past`; any, if none is).
+fn approach(land: Bare, rocks: [Placement], subject: vec3, d: f32) -> vec2 {
+    let to = vec3(subject.x, land.at(subject.x, subject.z) + subject.y, subject.z)
+    var best = subject.xz + vec2(d, 0.0)
+    var clearest = -1.0e9
+    for k in 0..16 {
+        let a = TAU * f32(k) / 16.0
+        let eye = subject.xz + vec2(cos(a), sin(a)) * d
+        let from = vec3(eye.x, land.at(eye.x, eye.y) + 1.7, eye.y)
+        var clear = 1.0e9
+        for j in 1..32 {
+            let p = mix(from, to, vec3(f32(j) / 32.0))
+            clear = min(clear, p.y - land.at(p.x, p.z))
+        }
+        if !past(rocks, from, mix(from, to, vec3(0.8))) {
+            clear -= 1.0e6
+        }
+        if clear > clearest {
+            clearest = clear
+            best = eye
+        }
+    }
+    best
+}
+
 /// Where overlook `f`'s land begins to drop (x, z): along the way it faces, 3 m short of where
 /// the ground first falls 2 m below it.
 fn lip(land: Bare, f: Feature) -> vec2 {
@@ -1198,14 +1485,14 @@ fn lip(land: Bare, f: Feature) -> vec2 {
     f.at
 }
 
-/// Shot `s` with its eye raised, 2 m at a time and to 40 m at most, till nothing of land `land`
+/// Shot `s` with its eye raised, 2 m at a time and to `highest` at most, till nothing of land `land`
 /// stands between it and what it looks at, its eye isn't in or against a rock of `rocks`, and
 /// none of them stands in the way (but near what it looks at, which may be rock); none if it
 /// can't see it from there.
-pub fn clear(land: Bare, rocks: [Placement], s: Shot) -> Option<Shot> {
+pub fn clear(land: Bare, rocks: [Placement], s: Shot, highest: f32 = 40.0) -> Option<Shot> {
     var shot = s
     let to = vec3(s.at.x, land.at(s.at.x, s.at.z) + s.at.y, s.at.z)
-    while shot.eye.y <= 40.0 {
+    while shot.eye.y <= highest {
         let from = vec3(s.eye.x, land.at(s.eye.x, s.eye.z) + shot.eye.y, s.eye.z)
         var seen = true
         for k in 1..48 {
@@ -1225,8 +1512,9 @@ pub fn clear(land: Bare, rocks: [Placement], s: Shot) -> Option<Shot> {
 fn past(rocks: [Placement], from: vec3, to: vec3) -> bool {
     let way = to - from
     for r in rocks {
-        let c = r.at[3].xyz
-        let (x, y, z) = (r.at[0].xyz, r.at[1].xyz, r.at[2].xyz)
+        let b = box_of(r)
+        let c = b[3].xyz
+        let (x, y, z) = (b[0].xyz, b[1].xyz, b[2].xyz)
         // In or against it: within a metre of its box.
         let d = from - c
         let near = abs(dot(d, x)) < dot(x, x) + length(x) &&
@@ -1314,14 +1602,15 @@ fn each_bare_shot_sees_its_subject() {
 @fuel(2 ** 40)
 fn the_rock_as_solids_lies_on_its_land() {
     borrow land = WORLD.land
-    let placed = rock_placements(land)
+    let placed = rock_placements(land, tor_points(WORLD.places))
     assert(placed.len() > 2000 && placed.len() < 100000, f"{placed.len()} rocks placed")
     let lo = SQUARE.lo
     let hi = lo + vec2(f32(SQUARE.nx), f32(SQUARE.nz)) * SQUARE.cell
     let (starts, order) = by_cell(placed)
     for i in 0..placed.len() {
         let p = placed[i]
-        let c = p.at[3].xyz
+        let b = box_of(p)
+        let c = b[3].xyz
         assert(c.x > lo.x && c.z > lo.y && c.x < hi.x && c.z < hi.y, "a rock lies past the square")
         // It meets the land: the land somewhere under its footprint (its middle, its corners and
         // its sides' middles) is between its foot and its top (a block set into a face has the
@@ -1330,25 +1619,28 @@ fn the_rock_as_solids_lies_on_its_land() {
         var land_lo = 1.0e9
         var land_hi = -1.0e9
         for k in 0..9 {
-            let q = p.at * vec4(f32(k % 3) - 1.0, 0.0, f32(k / 3) - 1.0, 1.0)
+            let q = b * vec4(f32(k % 3) - 1.0, 0.0, f32(k / 3) - 1.0, 1.0)
             let y = land.at(q.x, q.z)
             land_lo = min(land_lo, y)
             land_hi = max(land_hi, y)
         }
         // (A tor's corestones stand on each other, the top one a stack over the land.)
-        let stack = if p.prototype >= 3 * BLOCKS { 12.0 } else { 1.0 }
-        let rise = p.at[1].y
+        let stack = if p.prototype >= CORESTONES { 12.0 } else { 1.0 }
+        let rise = b[1].y
         // (A column's blocks stand on each other.)
         let stood = on_a_block(placed, starts, order, i, c - vec3(0.0, rise, 0.0))
         assert(
             (stood || c.y - rise < land_hi + stack) && c.y + rise > land_lo - 1.0,
             f"rock {p.prototype} at ({c.x}, {c.z}) floats or is buried: it spans {c.y - rise} to {c.y + rise} m, the land under it {land_lo} to {land_hi} m",
         )
-        if p.prototype < 2 * BLOCKS {
-            // A grit or sandstone block: of the rock its stratum is at its top (a column's lowest
-            // reaches down past its bed), or fallen from it.
+        if p.prototype < CORESTONES {
+            // A block: of the rock its stratum is at its top (a column's lowest reaches down past
+            // its bed), or fallen from it, or stacked on another (a tor's).
             let own = stratum(c.xz, c.y + rise - 0.5)
-            assert(solid(own) || c.y < under + 3.0, f"a block stands in soft rock at {c}")
+            assert(
+                solid(own) || c.y < under + 3.0 || stood,
+                f"a block stands in soft rock at {c}",
+            )
         }
     }
 }
@@ -1360,18 +1652,18 @@ fn the_rock_as_solids_lies_on_its_land() {
 @fuel(2 ** 40)
 fn no_block_of_the_rock_hangs_over_the_air() {
     borrow land = WORLD.land
-    let placed = rock_placements(land)
+    let placed = rock_placements(land, tor_points(WORLD.places))
     let (starts, order) = by_cell(placed)
     var hanging = 0
     var worst = 0.0
     var at = vec3(0.0)
     for i in 0..placed.len() {
         let p = placed[i]
-        if p.prototype >= 3 * BLOCKS {
+        if p.prototype >= CORESTONES {
             continue
         }
         for k in 0..4 {
-            let corner = p.at * vec4(f32(k % 2) * 2.0 - 1.0, -1.0, f32(k / 2) * 2.0 - 1.0, 1.0)
+            let corner = box_of(p) * vec4(f32(k % 2) * 2.0 - 1.0, -1.0, f32(k / 2) * 2.0 - 1.0, 1.0)
             let over = corner.y - land.at(corner.x, corner.z)
             if over <= 2.0 || on_a_block(placed, starts, order, i, corner.xyz) {
                 continue
@@ -1409,7 +1701,8 @@ fn by_cell(placed: [Placement]) -> (Vec<u32>, Vec<u32>) {
 
 /// Whether `corner` rests on the top of a block other than `i` of `placed` (found by the cells
 /// round it, `starts` and `order` listing each cell's blocks): within its footprint, and within
-/// 1 m of its top (and 0.6 m past its side: each block is set back and turned its own way).
+/// 1 m of its top, or overhanging its side by up to 1.6 m (each block is set back and turned its
+/// own way, and a soft bed is weathered back under a hard one).
 fn on_a_block(placed: [Placement], starts: [u32], order: [u32], i: u32, corner: vec3) -> bool {
     let g = SQUARE
     let ij = g.ij(corner.xz)
@@ -1423,14 +1716,15 @@ fn on_a_block(placed: [Placement], starts: [u32], order: [u32], i: u32, corner: 
             for n in starts[c]..starts[c + 1] {
                 let j = order[n]
                 let q = placed[j]
-                if j == i || q.prototype >= 3 * BLOCKS {
+                if j == i || q.prototype >= CORESTONES {
                     continue
                 }
-                let d = corner - q.at[3].xyz
-                let (x, z) = (q.at[0].xyz, q.at[2].xyz)
-                let inside = abs(dot(d, x)) < dot(x, x) + 0.6 * length(x) &&
-                    abs(dot(d, z)) < dot(z, z) + 0.6 * length(z)
-                if inside && abs(d.y - q.at[1].y) < 1.0 {
+                let b = box_of(q)
+                let d = corner - b[3].xyz
+                let (x, z) = (b[0].xyz, b[2].xyz)
+                let inside = abs(dot(d, x)) < dot(x, x) + 1.6 * length(x) &&
+                    abs(dot(d, z)) < dot(z, z) + 1.6 * length(z)
+                if inside && abs(d.y - b[1].y) < 1.0 {
                     return true
                 }
             }
