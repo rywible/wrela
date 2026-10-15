@@ -1484,6 +1484,17 @@ larger than a host request. The fixes add a host mechanism, a connection's tag, 
 again knows each connection's peer without trusting what a proposal says. Each fix has a
 regression test that fails without it.
 
+Once the stack had merged, Ryan asked for one more round, with an Opus 5.5 subagent as a third
+reviewer beside the two Codex models. All three found the same kind of gap: what a room does after
+a failure. An event past the host's limits during isolation was dropped with the events after it;
+a room at its limits waited for an event that might never come; a quarantined room kept its
+connections and every message they sent. Opus found that one connection could multiply a call's
+output by saying hello again, which made the room drop every peer in a loop, and that a few slow
+connections could exhaust the shared queue budget and get healthy ones closed. GPT-6.1-Sol and
+Opus both found that a build swapped away and back could leave two threads writing one journal.
+The fixes take every failed call one event at a time, close a quarantined room, hold a journal in
+one room host at a time, reserve each connection a share of the queue, and refuse a second hello.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
