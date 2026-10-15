@@ -426,17 +426,20 @@ fn trace(
     var cone = vec2(0.0, spread)
     let size = look.place.w
     let radius = STRUT * size
-    // Once its cells coincide, each strut and face of the cube is traced once.
+    // Once its cells coincide, each strut and face of the cube is traced once, and counted as
+    // the two that lie there, so the cube looks as it did a moment before.
     let whole = look.cube >= 1.0
     for _ in 0..BOUNCES {
         let m = metal_hit(ro, rd, verts, edges, radius, cone, past, whole)
         let f = face_hit(ro, rd, skip, verts, faces, radius * thickness(-1.0), whole)
         if m.at < f.x {
             let shine = polished(m.depth, m.normal, rd, look.time, rough)
-            gathered += through * shine * m.cover
-            if m.cover >= 1.0 { return gathered }
+            // Two struts in one place cover what one leaves of the pixel again.
+            let cover = if whole { 1.0 - (1.0 - m.cover) * (1.0 - m.cover) } else { m.cover }
+            gathered += through * shine * cover
+            if cover >= 1.0 { return gathered }
             // A strut's rim covers part of the pixel; the rest sees on past it.
-            through *= 1.0 - m.cover
+            through *= 1.0 - cover
             past = m.strut
             continue
         }
@@ -453,11 +456,12 @@ fn trace(
             // Where it mirrors the studio, each colour sees it a little shifted along the
             // fold: the spectrum at the glass's edges.
             let fold = warped - n
-            var mirrored = vec3(
+            let sky = vec3(
                 studio(normalize(r - fold * 0.05)).x,
                 studio(r).y,
                 studio(normalize(r + fold * 0.05)).z,
             )
+            var mirrored = sky
             // Only the nearest glass mirrors the struts: deeper layers are dim behind it, and
             // tracing their reflections too would cost as much again. It mirrors them as flat
             // glass, so they stay straight.
@@ -475,6 +479,12 @@ fn trace(
             gathered += through * mirrored * silvered * 0.7
             // Smoked glass: what lies behind it darkens through each face.
             through *= (1.0 - silvered) * 0.6
+            // The cube's face is two panes in one place; the second lies too deep to mirror
+            // the struts.
+            if whole {
+                gathered += through * sky * silvered * 0.7
+                through *= (1.0 - silvered) * 0.6
+            }
             cone = at_glass
             ro = p
             skip = f.y

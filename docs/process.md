@@ -1396,6 +1396,15 @@ camera holds still through the title and takes up its lean in the dark. The mark
 cube hold, fully lit, from 3.7 s to 4.9 s; native captures across that hold are identical
 byte for byte. They are dark by 6.1 s, and the library is up by 7.7 s.
 
+Ryan saw the lighting shift as the cube came to rest. Just before the cells meet, each face
+is two panes and each strut two struts, and the tracer counted both. When the cells met and
+only one cell was traced, the second pane's reflection and darkening went in one frame:
+the cube's region fell from 0.0567 to 0.0459 in mean brightness. The cube is still traced
+once, but each face now counts as its two panes (the second too deep to mirror the struts,
+as before) and each strut's cover as two struts'. At the switch the region goes from 0.0567
+to 0.0575. The pixels that change between those two frames are no more than between the two
+before them, and they lie on strut outlines finishing their last move.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
