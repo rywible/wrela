@@ -100,7 +100,7 @@ pub struct Aim: Copy + Eq {
 
 /// Where a paste goes now: into an item's text at a byte, or onto the board.
 pub enum Into: Copy + Eq {
-    Text { id: u32, at: u32 },
+    Text { id: u32, at: u32, anchor: u32 },
     Board,
 }
 
@@ -110,11 +110,11 @@ pub enum Into: Copy + Eq {
 pub fn destination(aim: Aim, typing: Option<Typing>, revision: u32, b: Board) -> Into {
     if let Some(t) = aim.typing {
         if revision == aim.revision && b.index(t.id).is_some() {
-            return Into::Text { id: t.id, at: t.at }
+            return Into::Text { id: t.id, at: t.at, anchor: t.anchor }
         }
     }
     match typing {
-        Some(t) => Into::Text { id: t.id, at: t.at },
+        Some(t) => Into::Text { id: t.id, at: t.at, anchor: t.anchor },
         None => Into::Board,
     }
 }
@@ -152,12 +152,12 @@ fn a_paste_goes_where_it_was_aimed_while_that_text_is_as_it_was() {
     var b = Board::new()
     let id = b.add(Item::new(Kind::Note, vec2(0.0), vec2(200.0), color: 0))
     let other = b.add(Item::new(Kind::Note, vec2(300.0), vec2(200.0), color: 0))
-    let aim = Aim { typing: Some(Typing { id, at: 3 }), revision: 7 }
-    assert(destination(aim, None, 7, b) == Into::Text { id, at: 3 })
+    let aim = Aim { typing: Some(Typing::caret(id, 3)), revision: 7 }
+    assert(destination(aim, None, 7, b) == Into::Text { id, at: 3, anchor: 3 })
     // The text changed while the paste was on its way: it goes to where the caret is now.
     assert(
-        destination(aim, Some(Typing { id: other, at: 1 }), 8, b) ==
-            Into::Text { id: other, at: 1 },
+        destination(aim, Some(Typing::caret(other, 1)), 8, b) ==
+            Into::Text { id: other, at: 1, anchor: 1 },
     )
     assert(destination(aim, None, 8, b) == Into::Board)
     // The item went.

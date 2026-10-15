@@ -10,7 +10,8 @@
 use board::{Board, ELBOW, END_ARROW, History, Item, Kind, NOTE, SMALLEST, START_ARROW, has}
 use chrome::{Action, Chrome, Selection, Tool}
 use snap::{Guide, snap_point, snap_rect}
-use clip::{Aim, Into, destination, inserted, items_of}
+use clip::{Aim, Into, destination, items_of}
+use edit::{Caret, Step}
 use paint::{ACCENT, PAPER, Typing}
 use platform::host
 use platform::host::{Node, Pasted}
@@ -44,6 +45,8 @@ enum Drag: Copy + Eq {
     /// Drawing a connector from item `from`.
     Link { from: u32 },
     Pen { id: u32 },
+    /// Selecting text in item `id` being typed into.
+    Select { id: u32 },
     /// Pressed on a control.
     Control,
 }
@@ -104,11 +107,18 @@ pub struct App {
     // the selection it said; and its answers to them, on their way.
     texting: Option<vec4>,
     offered: Vec<Item>,
+    offered_words: String,
     tree: Vec<Node>,
     said: Vec<u32>,
     told: Vec<Pending<u8>>,
     /// The lines what's being moved or resized snapped to, while it is.
     guides: Vec<Guide>,
+    /// Where the camera is easing to (a zoom button, fit, revealing an item), and whether the
+    /// person asked for less motion (then it goes there at once).
+    goal: Option<View>,
+    reduced: bool,
+    /// The last frame's time, for easing.
+    last_time: f32,
 }
 
 pub fn init() -> App {
@@ -148,10 +158,14 @@ pub fn init() -> App {
         composer: Composer::new(),
         texting: None,
         offered: Vec::new(),
+        offered_words: String::new(),
         tree: Vec::new(),
         said: Vec::new(),
         told: Vec::new(),
         guides: Vec::new(),
+        goal: None,
+        reduced: false,
+        last_time: 0.0,
     }
 }
 
@@ -226,9 +240,31 @@ pub fn frame(s: mut App, time: f32, width: u32, height: u32) {
     for e in events() {
         handle(mut s, e, chrome)
     }
+    ease(mut s)
     keep(mut s)
     draw(mut s, screen)
     tell(mut s)
+}
+
+/// The camera a step toward its goal: most of the way in a fifth of a second.
+fn ease(s: mut App) {
+    let dt = clamp(s.time - s.last_time, 0.0, 0.1)
+    s.last_time = s.time
+    let Some(goal) = s.goal else { return }
+    if s.reduced || s.view.near(goal, s.screen) {
+        s.view = goal
+        s.goal = None
+        return
+    }
+    s.view = s.view.toward(goal, s.screen, 1.0 - exp(-14.0 * dt))
+}
+
+/// Where the camera is going: its goal, or where it is.
+fn heading(s: App) -> View {
+    match s.goal {
+        Some(g) => g,
+        None => s.view,
+    }
 }
 
 /// The host's answers: the pixel ratio, the saved board, and the requests done.
@@ -237,6 +273,7 @@ fn answers(s: mut App) {
         var capabilities = 0
         if let Ok(bytes) = result {
             capabilities = host::capabilities(bytes)
+            s.reduced = !bytes.is_empty() && bytes[0] != 0
             if let Some(ratio) = host::word(bytes, 5) {
                 let u = clamp(f32(ratio) / 1024.0, 0.5, 4.0)
                 // The same world point stays in the middle of the screen.
@@ -425,7 +462,7 @@ fn begin_typing(s: mut App, id: u32, at: u32, keep: bool) {
     if keep {
         checkpoint(mut s)
     }
-    s.typing = Some(Typing { id, at })
+    s.typing = Some(Typing::caret(id, at))
     s.composer = Composer::new()
     select(mut s, [id])
 }
@@ -441,8 +478,8 @@ fn stop_typing(s: mut App) {
     }
 }
 
-/// Replaces the typed item's text with `text`, the caret at `at`.
-fn retype(s: mut App, text: take String, at: u32) {
+/// Replaces the typed item's text with `text`, the caret at `c`.
+fn retype(s: mut App, text: take String, c: Caret) {
     let Some(t) = s.typing else { return }
     let Some(i) = s.board.index(t.id) else { return }
     s.board.items[i].text = take text
@@ -451,49 +488,94 @@ fn retype(s: mut App, text: take String, at: u32) {
         borrow font = s.fonts.font(Face::Sans)
         s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
     }
-    s.typing = Some(Typing { id: t.id, at })
+    s.typing = Some(Typing { id: t.id, at: c.at, anchor: c.anchor })
 }
 
-/// Text typed at the caret.
+/// The caret of the text being typed.
+fn caret_of(t: Typing) -> Caret {
+    Caret { at: t.at, anchor: t.anchor }
+}
+
+/// Moves the caret of the text being typed to `c`.
+fn place(s: mut App, c: Caret) {
+    let Some(t) = s.typing else { return }
+    s.typing = Some(Typing { id: t.id, at: c.at, anchor: c.anchor })
+}
+
+/// Text typed at the caret, over what's selected.
 fn type_char(s: mut App, c: u32) {
     let Some(t) = s.typing else { return }
     let Some(i) = s.board.index(t.id) else { return }
-    let old = s.board.items[i].text.as_str()
-    var text = String::from(old.slice(0, t.at))
-    text.push_char(c)
-    let at = text.len()
-    text.push_str(old.slice(t.at, old.len()))
-    retype(mut s, take text, at)
+    var add = String::new()
+    add.push_char(c)
+    let (text, after) = edit::insert(s.board.items[i].text.as_str(), caret_of(t), add.as_str())
+    retype(mut s, take text, after)
 }
 
-/// A key while typing: the caret's moves, deleting, a new line, and Escape to stop.
+/// Where Up or Down (`down`) from the caret lands: the same place across, a line up or down, or
+/// the text's start or end past its first or last line.
+fn vertical(s: App, t: Typing, down: bool) -> u32 {
+    let Some(i) = s.board.index(t.id) else { return t.at }
+    borrow font = s.fonts.font(Face::Sans)
+    borrow it = s.board.items[i]
+    let l = paint::layout(font, it)
+    let p = paint::caret(font, it, l, t.at)
+    let y = p.y + 0.5 * l.line + if down { l.line } else { -l.line }
+    if y < l.top {
+        return 0
+    }
+    if y > l.top + f32(l.lines.len()) * l.line {
+        return it.text.len()
+    }
+    paint::offset_at(font, it, l, vec2(p.x, y))
+}
+
+/// A key while typing: the caret's moves (by character, word with Alt, or line with Cmd; Shift
+/// selects as it goes), deleting the same ways, a new line, select all, cut, undo, and Escape
+/// (or Cmd+Enter) to stop.
 fn typing_key(s: mut App, key: Key, mods: Mods) {
     let Some(t) = s.typing else { return }
     let Some(i) = s.board.index(t.id) else { return }
     let old = s.board.items[i].text.as_str()
-    let n = old.len()
+    let c = caret_of(t)
+    let step = if mods.command() { Step::Line } else if mods.alt { Step::Word } else { Step::Char }
     if key == Key::Escape || (key == Key::Enter && mods.command()) {
         stop_typing(mut s)
+    } else if mods.command() && key == Key::Z {
+        // Undo goes back over the whole edit, as it does over any change.
+        stop_typing(mut s)
+        if mods.shift { redo(mut s) } else { undo(mut s) }
+    } else if mods.command() && key == Key::A {
+        let all = Caret { at: old.len(), anchor: 0 }
+        place(mut s, all)
+    } else if mods.command() && key == Key::X {
+        // The copy took what was offered (the selection); now it goes.
+        if c.selects() {
+            let (text, after) = edit::insert(old, c, "")
+            retype(mut s, take text, after)
+        }
     } else if key == Key::Enter {
         type_char(mut s, 10)
-    } else if key == Key::Backspace && t.at > 0 {
-        let from = previous_cluster(old, t.at)
-        var text = String::from(old.slice(0, from))
-        text.push_str(old.slice(t.at, n))
-        retype(mut s, take text, from)
-    } else if key == Key::Delete && t.at < n {
-        let to = next_cluster(old, t.at)
-        var text = String::from(old.slice(0, t.at))
-        text.push_str(old.slice(to, n))
-        retype(mut s, take text, t.at)
-    } else if key == Key::Left {
-        s.typing = Some(Typing { id: t.id, at: previous_cluster(old, t.at) })
-    } else if key == Key::Right && t.at < n {
-        s.typing = Some(Typing { id: t.id, at: next_cluster(old, t.at) })
-    } else if key == Key::Home {
-        s.typing = Some(Typing { id: t.id, at: 0 })
-    } else if key == Key::End {
-        s.typing = Some(Typing { id: t.id, at: n })
+    } else if key == Key::Backspace {
+        let (text, after) = edit::delete_back(old, c, step)
+        retype(mut s, take text, after)
+    } else if key == Key::Delete {
+        let (text, after) = edit::delete_on(old, c, step)
+        retype(mut s, take text, after)
+    } else if key == Key::Left || key == Key::Right {
+        let to = edit::moved(old, c, forward: key == Key::Right, step: step, extend: mods.shift)
+        place(mut s, to)
+    } else if key == Key::Home || key == Key::End {
+        let to = edit::moved(old, c, forward: key == Key::End, step: Step::Line, extend: mods.shift)
+        place(mut s, to)
+    } else if key == Key::Up || key == Key::Down {
+        let n = old.len()
+        let at = if mods.command() {
+            if key == Key::Up { 0 } else { n }
+        } else {
+            vertical(s, t, down: key == Key::Down)
+        }
+        place(mut s, Caret { at, anchor: if mods.shift { c.anchor } else { at } })
     }
 }
 
@@ -560,10 +642,10 @@ fn pasted(s: mut App, aim: Aim, got: Option<Pasted>) {
         return
     }
     match destination(aim, s.typing, s.revision, s.board) {
-        Into::Text { id, at } => {
+        Into::Text { id, at, anchor } => {
             let Some(i) = s.board.index(id) else { return }
             checkpoint(mut s)
-            let (text, after) = inserted(s.board.items[i].text.as_str(), at, p.text.as_str())
+            let (text, after) = edit::insert(s.board.items[i].text.as_str(), Caret { at, anchor }, p.text.as_str())
             s.board.items[i].text = take text
             s.revision += 1
             if s.board.items[i].kind == Kind::Text {
@@ -572,7 +654,7 @@ fn pasted(s: mut App, aim: Aim, got: Option<Pasted>) {
             }
             if let Some(t) = s.typing {
                 if t.id == id {
-                    s.typing = Some(Typing { id, at: after })
+                    s.typing = Some(Typing::caret(id, after.at))
                 }
             }
         },
@@ -623,17 +705,24 @@ fn reveal(s: mut App, i: u32) {
         return
     }
     let c = s.board.bounds(i).center()
-    s.view.pan = c - 0.5 * s.screen / s.view.scale()
+    var goal = heading(s)
+    goal.pan = c - 0.5 * s.screen / goal.scale()
+    s.goal = Some(goal)
 }
 
+/// Zooms by `factor` about the middle of the screen, from where the camera is going.
 fn zoom_by(s: mut App, factor: f32) {
-    s.view.zoom_at(0.5 * s.screen, s.view.zoom * factor)
+    var goal = heading(s)
+    goal.zoom_at(0.5 * s.screen, goal.zoom * factor)
+    s.goal = Some(goal)
 }
 
 fn fit(s: mut App) {
     let u = unit(s)
     if let Some(r) = s.board.whole() {
-        s.view.fit(r, s.screen, margin: 80.0 * u, most: 2.0)
+        var goal = heading(s)
+        goal.fit(r, s.screen, margin: 80.0 * u, most: 2.0)
+        s.goal = Some(goal)
     }
 }
 
@@ -660,7 +749,11 @@ fn act(s: mut App, a: Action) {
         Action::Redo => redo(mut s),
         Action::ZoomIn => zoom_by(mut s, 1.25),
         Action::ZoomOut => zoom_by(mut s, 0.8),
-        Action::Actual => zoom_by(mut s, 1.0 / s.view.zoom),
+        Action::Actual => {
+            var goal = heading(s)
+            goal.zoom_at(0.5 * s.screen, 1.0)
+            s.goal = Some(goal)
+        },
         Action::Fit => fit(mut s),
         Action::Route => restyle(mut s, |style| style ^ ELBOW),
         Action::Heads => restyle(mut s, next_heads),
@@ -686,6 +779,8 @@ fn handle(s: mut App, e: Event, chrome: Chrome) {
             }
         },
         Event::Wheel { at, delta, mods } => {
+            // The person's own hand takes the camera.
+            s.goal = None
             if mods.command() {
                 let d = clamp(delta.y, -30.0, 30.0)
                 s.view.zoom_at(at, s.view.zoom * exp(-0.01 * d))
@@ -744,6 +839,7 @@ fn corner_at(s: App, at: vec2) -> Option<(u32, vec2)> {
 fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
     if button == Button::Middle ||
         (button == Button::Primary && (s.space || s.tool == Tool::Hand)) {
+        s.goal = None
         s.drag = Drag::Pan { from: at, pan: s.view.pan }
         return
     }
@@ -760,13 +856,28 @@ fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
         return
     }
     let w = s.view.to_world(at)
-    // A press in the text being typed moves its caret; anywhere else, typing stops.
+    // A press in the text being typed moves its caret (Shift keeps the selection's other end,
+    // a drag selects, a double click takes a word); anywhere else, typing stops.
     if let Some(t) = s.typing {
         if s.board.hit(w, 0.0) == Some(t.id) {
             let Some(i) = s.board.index(t.id) else { return }
             borrow font = s.fonts.font(Face::Sans)
-            let l = paint::layout(font, s.board.items[i])
-            s.typing = Some(Typing { id: t.id, at: paint::offset_at(font, s.board.items[i], l, w) })
+            borrow it = s.board.items[i]
+            let l = paint::layout(font, it)
+            let byte = paint::offset_at(font, it, l, w)
+            let double = match s.click {
+                Some(c) => c.id == t.id && s.time - c.time < 0.45 && length(c.at - at) < 6.0 * unit(s),
+                None => false,
+            }
+            if double {
+                let (from, to) = edit::word_at(it.text.as_str(), byte)
+                s.typing = Some(Typing { id: t.id, at: to, anchor: from })
+                s.click = None
+                return
+            }
+            s.click = Some(Click { time: s.time, at, id: t.id })
+            s.typing = Some(Typing { id: t.id, at: byte, anchor: if mods.shift { t.anchor } else { byte } })
+            s.drag = Drag::Select { id: t.id }
             return
         }
         stop_typing(mut s)
@@ -935,6 +1046,17 @@ fn moved(s: mut App, at: vec2, mods: Mods) {
                 borrow font = s.fonts.font(Face::Sans)
                 s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
             }
+        },
+        Drag::Select { id } => {
+            let Some(t) = s.typing else { return }
+            let Some(i) = s.board.index(id) else { return }
+            if t.id != id {
+                return
+            }
+            borrow font = s.fonts.font(Face::Sans)
+            let l = paint::layout(font, s.board.items[i])
+            let at = paint::offset_at(font, s.board.items[i], l, w)
+            s.typing = Some(Typing { id, at, anchor: t.anchor })
         },
         Drag::Pen { id } => {
             let Some(i) = s.board.index(id) else { return }
@@ -1327,6 +1449,14 @@ fn caret_rect(s: App) -> Option<vec4> {
     Some(vec4(c.x, c.y, max(1.5 * unit(s), 1.0), l.line * s.view.scale()))
 }
 
+/// The words selected in the text being typed (empty if none).
+fn selected_words(s: App) -> String {
+    let Some(t) = s.typing else { return String::new() }
+    let Some(i) = s.board.index(t.id) else { return String::new() }
+    let (from, to) = caret_of(t).range()
+    String::from(s.board.items[i].text.as_str().slice(from, to))
+}
+
 /// Tells the host what changed: text mode and its caret, what a copy takes (the selection; the
 /// words and the items), and, where it has one, the accessibility tree and the selection to say.
 fn tell(s: mut App) {
@@ -1337,12 +1467,18 @@ fn tell(s: mut App) {
         }))
         s.texting = caret
     }
+    // While typing, a copy takes the words selected; otherwise the items selected.
+    let words = selected_words(s)
     let copied = if s.typing.is_some() { Vec::new() } else { s.board.copy(s.selected) }
-    if copied != s.offered {
-        s.told.push(host::offer(clip::plain(copied).as_str(), if copied.is_empty() {
-            String::new()
-        } else { clip::html(copied) }.as_str()))
+    if copied != s.offered || words != s.offered_words {
+        if s.typing.is_some() {
+            s.told.push(host::offer(words.as_str(), ""))
+        } else {
+            let html = if copied.is_empty() { String::new() } else { clip::html(copied) }
+            s.told.push(host::offer(clip::plain(copied).as_str(), html.as_str()))
+        }
         s.offered = take copied
+        s.offered_words = take words
     }
     let Some(capabilities) = s.capabilities else { return }
     if capabilities & host::ACCESSIBILITY == 0 {
@@ -1446,7 +1582,7 @@ fn composed_text_is_typed_once(game: App) {
     let note = game.board.items[0].clone()
     assert(note.text == "a仮名", f"`{note.text}`")
     assert(game.composer.text.is_empty(), "nothing is composing")
-    assert(game.typing == Some(Typing { id: note.id, at: note.text.len() }))
+    assert(game.typing == Some(Typing::caret(note.id, note.text.len())))
 }
 
 /// An assistive technology's selection names the lower of two notes, though the upper one is
@@ -1512,7 +1648,7 @@ fn arrowheads_go_round() {
 
 /// A drag from the dot on a note's right side to another note joins them; a double click on the
 /// connector types its label.
-@test(frames: 30, input: "scripts/dots.json")
+@test(frames: 70, input: "scripts/dots.json")
 fn a_dot_drags_out_a_connector_with_a_label(game: App) {
     assert(game.board.items.len() == 3, f"{game.board.items.len()} items")
     // The right-hand note was made first; the connector runs from the left-hand one to it.
@@ -1525,5 +1661,37 @@ fn a_dot_drags_out_a_connector_with_a_label(game: App) {
     // The label sits on the connector's middle, between the notes.
     let mid = link.at + 0.5 * link.size
     assert(abs(mid.x - 0.5 * (a.at.x + a.size.x + b.at.x)) < 0.01 && link.size.x > 0.0)
+}
+
+/// Alt+Shift+Left selects the last word; typing replaces it, and nothing's selected after.
+@test(frames: 52, input: "scripts/replace.json")
+fn typing_replaces_a_selected_word(game: App) {
+    let note = game.board.items[0].clone()
+    assert(note.text == "hello there", f"`{note.text}`")
+    assert(game.typing == Some(Typing::caret(note.id, 11)))
+}
+
+/// Up keeps the caret where it was across: from after "two" to after "one".
+@test(frames: 54, input: "scripts/lines.json")
+fn up_moves_to_the_line_above(game: App) {
+    assert(game.board.items[0].text == "one!\ntwo", f"`{game.board.items[0].text}`")
+}
+
+/// Cmd+A and a letter replace everything; Alt+Backspace takes a word, Cmd+Backspace the line.
+@test(frames: 56, input: "scripts/whole.json")
+fn select_all_and_deleting_by_word_and_line(game: App) {
+    assert(game.board.items[0].text == "end", f"`{game.board.items[0].text}`")
+}
+
+/// The zoom buttons ease: a few frames after 100% is asked for, the camera is on its way; after
+/// half a second, it's there.
+@test(frames: 8, input: "scripts/ease.json")
+fn the_camera_eases_to_a_hundred_percent(game: App) {
+    assert(game.goal.is_some() && game.view.zoom != 1.0, f"zoom {game.view.zoom}")
+}
+
+@test(frames: 50, input: "scripts/ease.json")
+fn the_camera_arrives(game: App) {
+    assert(game.goal.is_none() && game.view.zoom == 1.0, f"zoom {game.view.zoom}")
 }
 

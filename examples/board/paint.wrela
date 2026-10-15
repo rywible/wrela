@@ -215,7 +215,19 @@ fn shows(r: Rect, screen: vec2) -> bool {
 pub struct Typing: Copy + Eq {
     pub id: u32,
     pub at: u32,
+    /// The selection's other end (`at` when nothing's selected).
+    pub anchor: u32,
 }
+
+impl Typing {
+    /// Typing into item `id`, the caret at byte `at`, nothing selected.
+    pub fn caret(id: u32, at: u32) -> Typing {
+        Typing { id, at, anchor: at }
+    }
+}
+
+/// What's selected of text being typed, drawn behind it.
+const SELECTED_TEXT = vec4(0.5, 0.68, 1.0, 0.5)
 
 /// Every item, bottom first, then the links over them. While `typing`, its item shows its caret
 /// when `blink` is on, and what an input method is composing (`composing`) underlined at it.
@@ -318,7 +330,7 @@ fn words(
     blink: bool,
 ) {
     let typed = match typing {
-        Some(t) => if t.id == it.id { Some(t.at) } else { None },
+        Some(t) => if t.id == it.id { Some(vec2u(t.at, t.anchor)) } else { None },
         None => None,
     }
     if typed.is_some() && !composing.is_empty() {
@@ -328,10 +340,10 @@ fn words(
         for c in composing {
             add.push_char(c)
         }
-        let at = match typed { Some(a) => a, None => 0 }
+        let at = match typed { Some(a) => a.x, None => 0 }
         let (with, after) = clip::inserted(it.text.as_str(), at, add.as_str())
         shown.text = take with
-        text(mut list, fonts, font, shown, v, color, Some(after), blink)
+        text(mut list, fonts, font, shown, v, color, Some(vec2u(after)), blink)
         underline(mut list, font, shown, v, at, after)
     } else {
         text(mut list, fonts, font, it, v, color, typed, blink)
@@ -412,7 +424,7 @@ fn text(
     it: Item,
     v: View,
     color: vec4,
-    typed: Option<u32>,
+    typed: Option<vec2u>,
     blink: bool,
 ) {
     if it.text.is_empty() && typed.is_none() {
@@ -426,6 +438,26 @@ fn text(
         list.push_clip(v.rect(it.rect()))
     }
     let text = it.text.as_str()
+    // What's selected, behind the words: on each line it reaches.
+    if let Some(c) = typed {
+        let lo = min(c.x, c.y)
+        let hi = max(c.x, c.y)
+        for i in 0..l.lines.len() {
+            let (from, to) = l.lines[i]
+            let a = max(lo, from)
+            let b = min(hi, to)
+            // Nothing here, unless the selection runs on over this line's end.
+            if lo == hi || b < a || (a == b && hi <= to) {
+                continue
+            }
+            let line = text.slice(from, to)
+            let x0 = l.xs[i] + font.caret_at(line, l.size, a - from)
+            // A selection that runs on past the line's end shows a little past it.
+            let x1 = l.xs[i] + font.caret_at(line, l.size, b - from) + if hi > to { 0.3 * l.size } else { 0.0 }
+            let top = v.to_screen(vec2(x0, l.top + f32(i) * l.line))
+            list.rect(Rect::new(top.x, top.y, (x1 - x0) * k, l.line * k), SELECTED_TEXT)
+        }
+    }
     for i in 0..l.lines.len() {
         let (from, to) = l.lines[i]
         let at = v.to_screen(vec2(l.xs[i], l.top + f32(i) * l.line))
@@ -440,8 +472,9 @@ fn text(
             let _ = list.text(fonts, Face::Sans, line, px, at, color)
         }
     }
-    if let Some(at) = typed {
-        if blink {
+    if let Some(c) = typed {
+        let at = c.x
+        if blink && c.x == c.y {
             let c = v.to_screen(caret(font, it, l, at))
             let w = max(1.5 * v.unit, 1.0)
             list.rect(Rect::new(c.x - 0.5 * w, c.y, w, l.line * k), ACCENT)

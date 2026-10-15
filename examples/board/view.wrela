@@ -56,6 +56,43 @@ impl View {
     }
 }
 
+impl View {
+    /// The view `t` of the way (0 to 1) from this one to `goal`, on a screen `screen` big: the
+    /// middle of the screen moves straight, and the zoom evenly in its logarithm, so each step
+    /// feels the same in and out.
+    pub fn toward(self, goal: View, screen: vec2, t: f32) -> View {
+        let middle = 0.5 * screen
+        let from = self.to_world(middle)
+        let to = goal.to_world(middle)
+        var v = goal
+        v.zoom = exp(mix(log(self.zoom), log(goal.zoom), t))
+        v.pan = mix(from, to, t) - middle / v.scale()
+        v
+    }
+
+    /// Whether this view shows what `other` does to within half a pixel.
+    pub fn near(self, other: View, screen: vec2) -> bool {
+        let middle = 0.5 * screen
+        abs(log(self.zoom) - log(other.zoom)) < 0.001 &&
+            length(self.to_screen(other.to_world(middle)) - middle) < 0.5
+    }
+}
+
+@test
+fn a_view_eases_evenly_toward_its_goal() {
+    let screen = vec2(800.0, 600.0)
+    let from = View { pan: vec2(0.0), zoom: 1.0, unit: 2.0 }
+    var goal = from
+    goal.zoom_at(vec2(100.0, 100.0), 4.0)
+    // Halfway: the zoom's geometric mean, the middle's world point halfway along.
+    let half = from.toward(goal, screen, 0.5)
+    assert(abs(half.zoom - 2.0) < 1.0e-4, f"{half.zoom}")
+    let mid = half.to_world(0.5 * screen)
+    let want = 0.5 * (from.to_world(0.5 * screen) + goal.to_world(0.5 * screen))
+    assert(length(mid - want) < 1.0e-3)
+    assert(from.toward(goal, screen, 1.0).near(goal, screen) && !half.near(goal, screen))
+}
+
 @test
 fn zooming_keeps_the_point_under_the_pointer() {
     var v = View { pan: vec2(-300.0, 40.0), zoom: 1.25, unit: 2.0 }
