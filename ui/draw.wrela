@@ -489,7 +489,7 @@ fn diamond_distance(p: vec2, b: vec2) -> f32 {
 }
 
 /// The distance from `p` to the edge of the triangle `a`, `b`, `c`: negative inside, whichever
-/// way round its corners go.
+/// way round its corners go (after Inigo Quilez's triangle).
 fn triangle_distance(p: vec2, a: vec2, b: vec2, c: vec2) -> f32 {
     let e0 = b - a
     let e1 = c - b

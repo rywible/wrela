@@ -1385,6 +1385,35 @@ Input domain, over a small WebSocket client in tools/chrome_session.py) and chec
 reaches the program once. A GPU frame test checks a colour glyph's pixels. VoiceOver and pasting
 into other applications were not tested.
 
+## Refining the whiteboard, 2026-10-14
+
+Ryan asked Claude Code (Opus 5.5) to keep refining the board towards Miro's features and
+polish, as a harsh critic, with more tests. The loop: capture the board in headless Chrome with
+trusted input over the DevTools protocol, judge the picture, list what falls short, fix it, test
+it, and capture again. The model judged its own captures; Ryan judges the result. Miro's
+conventions again come from general knowledge of the product only: smart guides, connection dots
+on an item's sides, elbow connectors, frames, a minimap, groups, Alt and a letter to align, and a
+click on a sticky's side to add the next one. No screen, asset or design was traced or copied.
+
+**What changed.** Moves and resizes snap to other items' edges and middles and show guides; Shift
+keeps a drag to one axis and Alt leaves a copy. Connectors route in elbows, can be dragged out of
+an item's side dots, take labels and arrowhead choices, and can have either end dragged to
+another item. Text editing has a selection, word and line steps, and a selection highlight. The
+camera eases. There is a context menu, locking, a cursor for each thing the pointer does, frames
+that carry what is inside them, a shapes flyout with a triangle and a pill, sizes for words, a
+minimap, an editable board name, groups, align and even spacing, a box with handles that scales a
+selection of several, and Shift+2 to zoom to the selection. Each has a frame test that drives the
+board with a script of input, or a unit test of the pure logic.
+
+**Outside algorithms.** A connector's elbow route is tested against items with Liang and Barsky's
+line clipping (Y.-D. Liang and B. A. Barsky, "A New Concept and Method for Line Clipping", ACM
+Transactions on Graphics 3(1), 1984). The triangle's distance in `ui/draw.wrela` follows Inigo
+Quilez's triangle in his [2D distance functions](https://iquilezles.org/articles/distfunctions2d/).
+Both are reimplemented in Wrela.
+
+**Not checked.** No frame-time measurement was made for this work; boards of thousands of items
+were not tried.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
