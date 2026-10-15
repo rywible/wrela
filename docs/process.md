@@ -1461,6 +1461,13 @@ length-prefixed frames, each room runs on a thread of its own, and every queue i
 connection too slow to keep up is closed and its peer comes back. A development certificate is
 self-signed and passed to the client by its hash, as Chrome's `serverCertificateHashes` takes it.
 
+**The browser's connections.** The browser host opens a program's connections with the
+[W3C WebTransport API](https://www.w3.org/TR/webtransport/) in its render worker and keeps
+messages' bytes as the native host does. A headless Chrome test runs a program's client build
+against its server build in `wrela-serve`: it joins a room another peer used first and sees its
+own proposal committed after that peer's. Its tests found that the host read a message's serial
+one word early, and that Chrome's `TextDecoder` refuses a view into the program's shared memory.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
