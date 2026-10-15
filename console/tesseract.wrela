@@ -85,22 +85,11 @@ pub fn swell(w: f32) -> f32 {
     EYE / (EYE - w)
 }
 
-// The angle of the double rotation at `turn`: each quarter turn eases in and out, lingering
-// where the cells nest in line and surging through the eversion between.
-pub fn phase(turn: f32) -> f32 {
-    let quarter = 1.5707963
-    let f = turn / quarter
-    let k = fract(f)
-    let s = k * k * k * (k * (k * 6.0 - 15.0) + 10.0)
-    (floor(f) + mix(k, s, 0.8)) * quarter
-}
-
 // An isoclinic double rotation, the x–w and y–z planes by one angle as only four dimensions
-// allow: the cells pass through each other and turn inside out. A slow yaw and a fixed tilt
-// show its depth.
+// allow: the cells pass through each other and turn inside out, at one steady rate. A slow
+// yaw and a fixed tilt show its depth.
 fn spin(q: vec4, t: f32) -> vec4 {
-    let angle = phase(t)
-    let everted = plane(plane(q, angle, a: 0, b: 3), angle, a: 1, b: 2)
+    let everted = plane(plane(q, t, a: 0, b: 3), t, a: 1, b: 2)
     plane(plane(everted, t * 0.3, a: 0, b: 2), 0.42, a: 1, b: 2)
 }
 
@@ -626,12 +615,18 @@ fn a_tapered_strut_is_met_on_its_surface() {
 }
 
 @test
-fn the_turn_lingers_where_the_cells_nest_and_surges_between() {
-    let quarter = 1.5707963
-    assert(abs(phase(0.0)) < 0.0001 && abs(phase(quarter) - quarter) < 0.0001)
-    // Slow by a nested pose, fast through the eversion, and always turning forward.
-    let slow = phase(0.05) - phase(0.0)
-    let fast = phase(quarter * 0.5 + 0.025) - phase(quarter * 0.5 - 0.025)
-    assert(fast > slow * 4.0)
-    for i in 0..40 { assert(phase(f32(i + 1) * 0.1) > phase(f32(i) * 0.1)) }
+fn the_tesseract_turns_at_one_steady_rate() {
+    // Every corner of an isoclinic rotation moves at the same speed, and the yaw keeps its own:
+    // with no easing, the corners move as far in each step, wherever the turn is.
+    let step = 0.05
+    var least = 1.0e9
+    var most = 0.0
+    for i in 0..60 {
+        let t = f32(i) * 0.13
+        var moved = 0.0
+        for c in 0..16 { moved += length(spin(corner(c), t + step) - spin(corner(c), t)) }
+        least = min(least, moved)
+        most = max(most, moved)
+    }
+    assert(most < least * 1.05)
 }

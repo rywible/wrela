@@ -1,6 +1,8 @@
 // Wrela's console. The catalog and game session protocol supply all title-specific content.
 use catalog::{Card, parse}
-use opening::{MARK_WIDTH, OPENING_SECONDS, artifact_place, mark_place, moment, presentation_step}
+use opening::{
+    MARK_WIDTH, OPENING_SECONDS, artifact_place, mark_place, moment, presentation_step, stage_light,
+}
 use paint::{Emblem, Stage, card_corner, card_face, emblem, quad, stage}
 use room::{Camera, MARGIN, Row, artifact_spot, bounds, camera, place, row}
 use tesseract::{Artifact, artifact, corners}
@@ -1330,7 +1332,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     }
     s.renderer.upload(s.draw)
     // The artifact, where the opening or the room has it, traced for the room's camera.
-    let place = artifact_place(phase.settle, artifact_spot(rest))
+    let place = artifact_place(phase, artifact_spot(rest))
     let size = traced_size(width, height, TRACED_PIXELS)
     if s.room.width() != size.0 || s.room.height() != size.1 {
         s.room = texture(width: size.0, height: size.1)
@@ -1353,7 +1355,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                 target: cam.target,
                 place,
                 time: s.presentation,
-                light: mix(1.0, 0.7, phase.settle),
+                light: if phase.settled { 0.7 } else { 1.0 },
             },
         ),
         vertices: 6,
@@ -1367,7 +1369,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
             room: s.room,
             linear: s.linear,
             camera: cam,
-            look: Stage { reveal: phase.light },
+            look: Stage { reveal: stage_light(phase) },
         ),
         vertices: 6,
     )
@@ -1406,7 +1408,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         }
     }
     // The mark: large beneath the tesseract, a light passing along it as the tesseract comes
-    // up, then fading away; small in the header with the library.
+    // up, then going down into the dark with it; small in the header with the library.
     let big = mark_place(w, h)
     let header = vec3(
         margin + MARK_WIDTH * HEADER_CAP / facet::CAP * 0.5,
@@ -1414,7 +1416,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         HEADER_CAP / facet::CAP,
     )
     for (at, alpha, reveal) in [
-        (big, phase.light * (1.0 - phase.fade), phase.reveal),
+        (big, phase.title, phase.reveal),
         (header, phase.library, 1.0),
     ] {
         if alpha <= 0.0 { continue }
