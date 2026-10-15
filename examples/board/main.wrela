@@ -2137,3 +2137,12 @@ fn the_minimap_moves_the_camera(game: App) {
     assert(length(middle - want) < 0.5, f"{middle.x}, {middle.y} against {want.x}, {want.y}")
 }
 
+/// A click away from a note stops typing in it and lets it go, and so does one after a click
+/// that selects it again.
+@test(frames: 48, input: "scripts/off.json")
+fn a_click_off_a_note_lets_it_go(game: App) {
+    assert(game.board.items.len() == 1 && game.board.items[0].text == "Hi")
+    assert(game.typing.is_none())
+    assert(game.selected.is_empty(), f"{game.selected.len()} selected")
+}
+

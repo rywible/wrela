@@ -8,6 +8,10 @@ use paint::{ACCENT, COLORS, FILLS, INKS, TEXT}
 use ui::draw::{DrawList, Rect}
 use ui::text::{Face, Fonts}
 
+/// A chosen control's background, and a lit one's.
+const CHOSEN = vec4(0.89, 0.92, 1.0, 1.0)
+const LIT = vec4(0.94, 0.94, 0.95, 1.0)
+
 pub enum Tool: Copy + Eq {
     Select,
     Hand,
@@ -325,10 +329,9 @@ pub fn draw(
             }), vec4(INKS[index].xyz, 0.45), width: 1.0 * u)
             continue
         }
-        if chosen {
-            list.rect(k.rect, vec4(0.89, 0.92, 1.0, 1.0), radius: 8.0 * u)
-        } else if lit {
-            list.rect(k.rect, vec4(0.94, 0.94, 0.95, 1.0), radius: 8.0 * u)
+        let back = if chosen { CHOSEN } else if lit { LIT } else { vec4(1.0) }
+        if chosen || lit {
+            list.rect(k.rect, back, radius: 8.0 * u)
         }
         let enabled = match k.action {
             Action::Undo => can_undo,
@@ -336,7 +339,7 @@ pub fn draw(
             _ => true,
         }
         let ink = if chosen { ACCENT } else if enabled { TEXT } else { vec4(0.75, 0.76, 0.78, 1.0) }
-        icon(mut list, fonts, k.action, k.rect, u, ink, zoom, shape)
+        icon(mut list, fonts, k.action, k.rect, u, ink, back, zoom, shape)
     }
     // The lit control's tip, beside a tool or above anything else.
     for k in c.controls {
@@ -371,8 +374,9 @@ pub fn draw(
     }
 }
 
-/// A control's icon in `r`: lines and shapes on a grid of logical pixels about its middle.
-fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4, zoom: f32, shape: Kind) {
+/// A control's icon in `r`: lines and shapes on a grid of logical pixels about its middle, on
+/// `back`.
+fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4, back: vec4, zoom: f32, shape: Kind) {
     let c = r.center()
     let w = 1.6 * u
     let p = |x: f32, y: f32| -> vec2 { c + vec2(x, y) * u }
@@ -389,13 +393,18 @@ fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4,
                 list.line(p(-0.5, 2.5), p(2.0, 8.0), ink, width: w)
             },
             Tool::Hand => {
-                list.line(p(-8.0, 0.0), p(8.0, 0.0), ink, width: w)
-                list.line(p(0.0, -8.0), p(0.0, 8.0), ink, width: w)
-                for d in [vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0)] {
-                    let tip = c + d * 8.0 * u
-                    let side = vec2(-d.y, d.x)
-                    list.line(tip, tip - d * 3.0 * u + side * 3.0 * u, ink, width: w)
-                    list.line(tip, tip - d * 3.0 * u - side * 3.0 * u, ink, width: w)
+                // An open hand in outline: the shapes in ink, then again smaller in the
+                // background's colour, so fingers side by side share one stroke.
+                let fingers = [(-4.5, -5.0), (-1.5, -7.5), (1.5, -7.0), (4.5, -5.0)]
+                let thumb = (p(-5.5, 3.5), p(-8.5, -0.5))
+                let palm = box(-6.0, -1.0, 12.0, 9.5)
+                for (inset, colour) in [(0.0, ink), (w, back)] {
+                    let width = 3.0 * u + w - 2.0 * inset
+                    list.line(thumb.0, thumb.1, colour, width: width)
+                    for (x, top) in fingers {
+                        list.line(p(x, top), p(x, 1.0), colour, width: width)
+                    }
+                    list.rect(palm.shrink(inset - 0.5 * w), colour, radius: 4.5 * u - inset)
                 }
             },
             Tool::Note => {
@@ -423,8 +432,11 @@ fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4,
                 list.line(p(7.0, -7.0), p(7.0, -1.0), ink, width: w)
             },
             Tool::Frame => {
-                list.ring(box(-8.0, -5.0, 16.0, 13.0), ink, radius: 1.5 * u, width: w)
-                list.line(p(-8.0, -8.5), p(-2.0, -8.5), ink, width: w)
+                // A square whose edges run past its corners, as a frame's crop marks do.
+                for k in [-4.5, 4.5] {
+                    list.line(p(k, -8.5), p(k, 8.5), ink, width: w)
+                    list.line(p(-8.5, k), p(8.5, k), ink, width: w)
+                }
             },
             Tool::Pen => {
                 var last = p(-8.0, 2.0)
