@@ -216,7 +216,7 @@ pub fn init() -> Console {
         sheet: 0.0,
         sheet_pane: Pane::Saves,
         dt: 0.0,
-        ring: Rect::new(0.0, 0.0, 0.0, 0.0),
+        ring: Rect::new(x: 0.0, y: 0.0, w: 0.0, h: 0.0),
         ring_alpha: 0.0,
         catalog_load: Some(fetch("catalog.tsv")),
         profile_load: Some(read_file("console/profile")),
@@ -950,7 +950,7 @@ fn library(s: mut Console, w: f32, h: f32, cam: Camera, row: Row, margin: f32) {
         centered(mut s, label, 15.0, w * 0.5, h * 0.5, MUTED, Face::Sans)
         return
     }
-    var slot = Rect::new(margin, h * 0.7, 0.0, 0.0)
+    var slot = Rect::new(margin, h * 0.7, w: 0.0, h: 0.0)
     for i in 0..s.cards.len() {
         let offset = f32(i) - s.album
         if offset < -1.5 || offset > 8.0 { continue }
@@ -1033,14 +1033,27 @@ fn library(s: mut Console, w: f32, h: f32, cam: Camera, row: Row, margin: f32) {
 
 fn sheet_frame(s: mut Console, w: f32, h: f32, title: str) -> Rect {
     let open = s.sheet * s.sheet * (3.0 - 2.0 * s.sheet)
-    rect(mut s, Rect::new(0.0, 0.0, w, h), vec4(0.0, 0.0, 0.0, 0.6 * open))
+    rect(mut s, Rect::new(x: 0.0, y: 0.0, w: w, h: h), vec4(0.0, 0.0, 0.0, 0.6 * open))
     let width = min(w, 440.0)
     let r = Rect::new(w - width * open, 0.0, width, h)
     rect(mut s, r, SHEET)
-    rect(mut s, Rect::new(r.x, 0.0, 1.0, h), BORDER)
+    rect(mut s, Rect::new(r.x, y: 0.0, w: 1.0, h: h), BORDER)
     if s.pane != Pane::Games { focus_ring(mut s) }
-    text(mut s, title, 22.0, vec2(r.x + 32.0, line_top(s, DISPLAY, 22.0, 56.0)), INK, DISPLAY)
-    button(mut s, Action::Games, Rect::new(r.right() - 32.0 - 80.0, 38.0, 80.0, 36.0), 0, "Close")
+    text(
+        mut s,
+        title,
+        22.0,
+        vec2(r.x + 32.0, line_top(s, DISPLAY, size: 22.0, middle: 56.0)),
+        INK,
+        DISPLAY,
+    )
+    button(
+        mut s,
+        Action::Games,
+        Rect::new(r.right() - 32.0 - 80.0, y: 38.0, w: 80.0, h: 36.0),
+        0,
+        "Close",
+    )
     r.shrink(32.0)
 }
 
@@ -1114,9 +1127,16 @@ fn settings(s: mut Console, w: f32, h: f32) {
     let blink = fract(s.presentation * 1.1) < 0.6
     if editing && blink {
         let caret = x + 15.0 + width_of(s, name, size, Face::Sans)
-        rect(mut s, Rect::new(caret, middle - 9.0, 1.5, 18.0), INK)
+        rect(mut s, Rect::new(caret, middle - 9.0, w: 1.5, h: 18.0), INK)
     }
-    button(mut s, Action::SaveProfile, Rect::new(x, 194.0, 120.0, 38.0), 2, "Save", primary: true)
+    button(
+        mut s,
+        Action::SaveProfile,
+        Rect::new(x, y: 194.0, w: 120.0, h: 38.0),
+        2,
+        "Save",
+        primary: true,
+    )
     let state = status(s)
     if !state.is_empty() { text(mut s, state, 13.0, vec2(x, 252.0), MUTED) }
 }
@@ -1153,7 +1173,7 @@ fn focus_ring(s: mut Console) {
 }
 
 fn header(s: mut Console, w: f32, margin: f32) {
-    settings_button(mut s, Rect::new(w - margin - 40.0, 22.0, 40.0, 40.0))
+    settings_button(mut s, Rect::new(w - margin - 40.0, y: 22.0, w: 40.0, h: 40.0))
 }
 
 pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
@@ -1480,17 +1500,17 @@ fn a_title_offers_new_alone_until_it_has_saves() {
         played[0] == Action::Continue && played[1] == Action::NewGame && played[2] == Action::Load,
     )
     assert(
-        action_label(Action::NewGame, false) == "New" &&
-            action_label(Action::Load, false) == "Load",
+        action_label(Action::NewGame, opening: false) == "New" &&
+            action_label(Action::Load, opening: false) == "Load",
     )
 }
 
 @test
 fn traced_layers_divide_the_screen_by_a_whole_number() {
-    assert(traced_size(1280, 720, TRACED_PIXELS) == (1280, 720))
-    assert(traced_size(2560, 1440, TRACED_PIXELS) == (1280, 720))
-    assert(traced_size(2880, 1800, TRACED_PIXELS) == (1440, 900))
-    assert(traced_size(390, 844, TRACED_PIXELS) == (390, 844))
+    assert(traced_size(width: 1280, height: 720, budget: TRACED_PIXELS) == (1280, 720))
+    assert(traced_size(width: 2560, height: 1440, budget: TRACED_PIXELS) == (1280, 720))
+    assert(traced_size(width: 2880, height: 1800, budget: TRACED_PIXELS) == (1440, 900))
+    assert(traced_size(width: 390, height: 844, budget: TRACED_PIXELS) == (390, 844))
 }
 
 @test
@@ -1507,7 +1527,7 @@ fn focus_moves_across_rows_and_along_them() {
     let row = |action: Action, x: f32, y: u32| -> Control {
         Control {
             action,
-            rect: Rect::new(x, f32(y) * 100.0, 80.0, 40.0),
+            rect: Rect::new(x, f32(y) * 100.0, w: 80.0, h: 40.0),
             row: y,
             kind: Kind::Button,
         }

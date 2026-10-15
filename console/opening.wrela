@@ -84,7 +84,7 @@ fn the_tesseract_ends_where_the_library_has_it_and_the_mark_fits() {
     assert(length(room - spot) < 0.0001)
     assert(length(artifact_place(0.0, spot).xyz - HERO) < 0.0001)
     // The mark is centred and fits a phone.
-    let opening = mark_place(390.0, 844.0)
+    let opening = mark_place(w: 390.0, h: 844.0)
     assert(opening.x == 195.0 && MARK_WIDTH * opening.z < 390.0 * 0.5)
 }
 

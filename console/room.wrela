@@ -160,17 +160,17 @@ fn the_selection_holds_its_slot_at_the_left_margin_on_any_screen() {
     ] {
         let c = camera(size, vec2(0.0))
         let r = row(c)
-        let chosen = bounds(c, place(2, 2.0, 1.0, true, r))
+        let chosen = bounds(c, place(2, album: 2.0, ring: 1.0, has_art: true, row: r))
         assert(abs(chosen.x - size.x * MARGIN) < size.x * 0.01, "at the margin")
         assert(abs(chosen.y + chosen.w - size.y * BASELINE) < size.y * 0.01, "on the baseline")
         assert(chosen.x + chosen.z < size.x * 0.7, "leaving room for the rest of the row")
         assert(chosen.w > size.y * 0.12 && chosen.w < size.y * 0.21)
         // The next stands a gap to the right, smaller; the one before has faded out.
-        let next = bounds(c, place(3, 2.0, 0.0, true, r))
+        let next = bounds(c, place(3, album: 2.0, ring: 0.0, has_art: true, row: r))
         assert(next.x > chosen.x + chosen.z && next.w < chosen.w)
-        assert(place(1, 2.0, 0.0, true, r).look.z == 0.0)
+        assert(place(1, album: 2.0, ring: 0.0, has_art: true, row: r).look.z == 0.0)
         // Mid-move, a card is between its two slots.
-        let moving = bounds(c, place(3, 2.5, 0.0, true, r))
+        let moving = bounds(c, place(3, album: 2.5, ring: 0.0, has_art: true, row: r))
         assert(moving.x > chosen.x && moving.x < next.x)
     }
 }

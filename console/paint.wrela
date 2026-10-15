@@ -102,7 +102,7 @@ pub fn card_face(
     let lit = mix(base, vec3(1.0), hairline) * card.look.x
     let gap = card.size.w * 0.5
     let band = saturate(1.0 - abs(d - gap) / pixel / 1.6) * card.look.y
-    var alpha = max(inside, band) * card.look.z
+    let alpha = max(inside, band) * card.look.z
     let color = lit * inside + vec3(0.97) * band
     Over { color: vec4(color / max(max(inside, band), 0.0001), alpha) }
 }

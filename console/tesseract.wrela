@@ -100,7 +100,8 @@ pub fn phase(turn: f32) -> f32 {
 // show its depth.
 fn spin(q: vec4, t: f32) -> vec4 {
     let angle = phase(t)
-    plane(plane(plane(plane(q, angle, 0, 3), angle, 1, 2), t * 0.3, 0, 2), 0.42, 1, 2)
+    let everted = plane(plane(q, angle, a: 0, b: 3), angle, a: 1, b: 2)
+    plane(plane(everted, t * 0.3, a: 0, b: 2), 0.42, a: 1, b: 2)
 }
 
 // The sixteen corners at `turn` (radians of the slow rotation), seen from a 4D eye and
@@ -613,13 +614,13 @@ fn a_tapered_strut_is_met_on_its_surface() {
     let a = vec3(-1.0, 0.0, 0.0)
     let b = vec3(1.0, 0.0, 0.0)
     let down = vec3(0.0, 0.0, -1.0)
-    let middle = round_cone(vec3(0.0, 0.0, 5.0), down, a, b, 0.2, 0.1)
+    let middle = round_cone(vec3(0.0, 0.0, 5.0), down, a, b, ra: 0.2, rb: 0.1)
     assert(abs(5.0 - middle.x - 0.15) < 0.01 && middle.w > 0.99, "halfway, halfway thick")
-    let thin = round_cone(vec3(1.0, 0.0, 5.0), down, a, b, 0.2, 0.1)
+    let thin = round_cone(vec3(1.0, 0.0, 5.0), down, a, b, ra: 0.2, rb: 0.1)
     assert(abs(5.0 - thin.x - 0.1) < 0.001, "the thin end")
-    let thick = round_cone(vec3(-1.0, 0.0, 5.0), down, a, b, 0.2, 0.1)
+    let thick = round_cone(vec3(-1.0, 0.0, 5.0), down, a, b, ra: 0.2, rb: 0.1)
     assert(abs(5.0 - thick.x - 0.2) < 0.001, "the thick end")
-    assert(round_cone(vec3(0.0, 0.5, 5.0), down, a, b, 0.2, 0.1).x < 0.0, "a miss")
+    assert(round_cone(vec3(0.0, 0.5, 5.0), down, a, b, ra: 0.2, rb: 0.1).x < 0.0, "a miss")
     // Struts meeting at a corner share its radius, so they weld; near corners are thicker.
     assert(swell(1.0) > 1.9 && swell(-1.0) < 0.7 && swell(0.0) == 1.0)
 }

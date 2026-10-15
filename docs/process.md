@@ -940,6 +940,7 @@ On `main`, without those outside settings, the complete check failed 28 Chrome a
 tests. On this branch, with no `WRELA_*` variables set, it passed all 744 Rust tests and every
 browser, tools and infrastructure check in 321.0 s. That time includes warm build output. It
 is not a paired gate-time comparison. No rendering code changed, so no frame-time claim is made.
+
 ## Wrela Facet, a recursive opening and a console dashboard, 2026-10-14
 
 Ryan asked for a sleek gaming-console feel, a custom font, and an alien artifact that
