@@ -5,7 +5,7 @@ use opening::{
     presentation_step, stage_light, turn_at,
 }
 use paint::{Emblem, Pool, Stage, block_corner, block_face, emblem, pool, quad, stage}
-use room::{Camera, MARGIN, Row, artifact_spot, bounds, camera, place, row}
+use room::{Camera, MARGIN, artifact_spot, bounds, camera, place, row, row_place}
 use tesseract::{Artifact, artifact, corners}
 use facet::MarkRun
 use platform::host
@@ -148,8 +148,8 @@ pub struct Console {
     placed: Vec<Placed>,
     // The save last chosen in the Load sheet: what Export writes.
     marked: u32,
-    // The selection's eased position along the row.
-    album: f32,
+    // Each game's eased place in the row (`room::row_place`).
+    slots: Vec<f32>,
     // The camera's drift toward the pointer.
     sway: vec2,
     reveal: f32,
@@ -255,7 +255,7 @@ pub fn init() -> Console {
         covers: Vec::new(),
         placed: Vec::new(),
         marked: 0,
-        album: 0.0,
+        slots: Vec::new(),
         sway: vec2(0.0),
         reveal: 0.0,
         sheet: 0.0,
@@ -1080,7 +1080,8 @@ fn action_label(a: Action, opening: bool) -> String {
 
 // The library: cards in the room (drawn by the GPU) in a row along the bottom, and above the
 // selection, from its left edge, its title, its state and its actions.
-fn library(s: mut Console, w: f32, h: f32, cam: Camera, row: Row, margin: f32) {
+fn library(s: mut Console, w: f32, h: f32, cam: Camera, rest: Camera, margin: f32) {
+    let row = row(rest)
     if s.cards.is_empty() {
         let label = empty_library_message(s.message)
         centered(mut s, label, 15.0, w * 0.5, h * 0.5, MUTED, Face::Sans)
@@ -1088,11 +1089,11 @@ fn library(s: mut Console, w: f32, h: f32, cam: Camera, row: Row, margin: f32) {
     }
     var slot = Rect::new(margin, h * 0.7, w: 0.0, h: 0.0)
     for i in 0..s.cards.len() {
-        let offset = f32(i) - s.album
-        if offset < -2.5 || offset > 12.0 { continue }
+        if s.slots[i] > 12.0 { continue }
         let art = s.covers[i].image.is_some()
         let ring = glow(s, Action::Game { index: i })
-        let card = place(i, s.album, ring, art, row)
+        let target = f32(row_place(i, s.selected, s.cards.len()))
+        let card = place(place: s.slots[i], target: target, ring: ring, has_art: art, row: row)
         let b = bounds(cam, card) / s.zoom
         let r = Rect::new(b.x, b.y, b.z, b.w)
         s.placed.push(Placed { index: i, card, art })
@@ -1126,8 +1127,9 @@ fn library(s: mut Console, w: f32, h: f32, cam: Camera, row: Row, margin: f32) {
     let continuing = !s.saves.is_empty()
     // The title and actions hold still at the margin, above where the selection rests, while
     // blocks tumble beneath them.
-    let still = place(s.selected, f32(s.selected), ring: 0.0, has_art: true, row: row)
-    let resting = bounds(cam, still) / s.zoom
+    // Laid out for the camera at rest, so its drift toward the pointer doesn't move them.
+    let still = place(place: 0.0, target: 0.0, ring: 0.0, has_art: true, row: row)
+    let resting = bounds(rest, still) / s.zoom
     slot = Rect::new(margin, resting.y, resting.z, resting.w)
     let x = slot.x
     let room = min(w - x - margin, 820.0)
@@ -1436,8 +1438,14 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     if phase.settled && phase.library >= 1.0 { prefetch_games(mut s) }
     s.reveal = phase.library
     let ease = |rate: f32| -> f32 { if motion { 1.0 - exp(-dt * rate) } else { 1.0 } }
-    // Slow enough to see the chosen block tumble forward and the one it leaves tumble back.
-    s.album = mix(s.album, f32(s.selected), ease(5.0))
+    // Each game eases to its place in the row: slow enough to see the chosen block tumble
+    // forward and the one it leaves tumble back. Until the library shows, they stand there.
+    let count = s.cards.len()
+    if s.slots.len() != count { s.slots = Vec::filled(count, 0.0) }
+    for i in 0..count {
+        let target = f32(row_place(i, s.selected, count))
+        s.slots[i] = if phase.library == 0.0 { target } else { mix(s.slots[i], target, ease(5.0)) }
+    }
     // Focus on the album row follows the selection, wherever the selection came from.
     match s.focus {
         Action::Game { index } => if index != s.selected {
@@ -1473,7 +1481,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         let games = s.pane == Pane::Games
         if games { focus_ring(mut s) }
         header(mut s, w, margin)
-        library(mut s, w, h, cam, row(rest), margin)
+        library(mut s, w, h, cam, rest, margin)
         if games { footer(mut s, w, h, margin) }
         // A sheet takes the controls; the library behind it only shows. A closing sheet
         // only shows too.

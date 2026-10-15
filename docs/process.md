@@ -1746,7 +1746,10 @@ optional tracking and weight (stroke added through the distance field); the cons
 Manrope a little closer and heavier, with 15-pixel button labels. Hover and focus ease in over
 a quarter second. Resting cubes stand still and dimmer; the selection stands in a pool of its
 cover's light and makes a half turn as it arrives. The tesseract stands twice as deep at the
-same size on screen, lower and dimmer in the library.
+same size on screen, lower and dimmer in the library. The row then became a carousel, as Ryan
+asked that the block left behind take the chosen one's place rather than leave the screen;
+the tesseract went deeper again, and the title was laid out for the still camera so it no
+longer rises and falls with the camera's drift.
 
 ## Keeping this record
 
