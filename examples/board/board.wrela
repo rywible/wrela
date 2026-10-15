@@ -121,6 +121,21 @@ impl Item {
         Rect::new(self.at.x, self.at.y, self.size.x, self.size.y)
     }
 
+    /// It scaled by `k` about `about`: where it is, its size and a stroke's points. `words` is the
+    /// size its words are at if it hasn't had one chosen, or 0 where they don't scale.
+    pub fn scaled(self, about: vec2, k: f32, words: f32) -> Item {
+        var out = self.clone()
+        out.at = about + (self.at - about) * k
+        out.size = self.size * k
+        for i in 0..out.points.len() {
+            out.points[i] = self.points[i] * k
+        }
+        if words > 0.0 {
+            out.type_size = (if self.type_size > 0.0 { self.type_size } else { words }) * k
+        }
+        out
+    }
+
     pub fn center(self) -> vec2 {
         self.at + 0.5 * self.size
     }
@@ -1031,4 +1046,19 @@ fn arranging_lines_up_edges_and_shares_gaps() {
     locked.items[0].locked = true
     locked.arrange([a, c], Align::Left)
     assert(rect(locked, a).x == 0.0 && rect(locked, c).x == 0.0)
+}
+
+@test
+fn an_item_scales_about_a_point() {
+    var pen = Item::new(Kind::Pen, vec2(10.0, 20.0), vec2(0.0), color: 7)
+    pen.points = Vec::from([vec2(0.0), vec2(4.0, -2.0)])
+    let half = pen.scaled(vec2(0.0), 0.5, words: 0.0)
+    assert(half.at == vec2(5.0, 10.0) && half.points[1] == vec2(2.0, -1.0) && half.type_size == 0.0)
+    let text = Item::new(Kind::Text, vec2(100.0), vec2(200.0, 30.0), color: 7)
+    let twice = text.scaled(vec2(100.0, 0.0), 2.0, words: 20.0)
+    assert(
+        twice.at == vec2(100.0, 200.0) &&
+            twice.size == vec2(400.0, 60.0) &&
+            twice.type_size == 40.0,
+    )
 }

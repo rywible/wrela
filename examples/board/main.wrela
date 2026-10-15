@@ -42,6 +42,9 @@ enum Drag: Copy + Eq {
     Marquee { from: vec2, add: bool },
     /// Resizing item `id` by a corner, the opposite corner held.
     Resize { id: u32, anchor: vec2 },
+    /// Scaling a selection of several by a corner of the box round it: the opposite corner,
+    /// which stays, the corner pressed, and where the pointer pressed (world).
+    Scale { anchor: vec2, corner: vec2, from: vec2 },
     /// Drawing a new shape from `from`.
     Shape { from: vec2 },
     /// Drawing a connector from item `from`.
@@ -128,6 +131,8 @@ pub struct App {
     menu: Option<vec2>,
     /// What a move carries: the selection, and what's inside the frames in it.
     carried: Vec<u32>,
+    /// What a scale changes, as it was when the scale began.
+    originals: Vec<Item>,
     /// The shape the Shapes tool makes, and whether its flyout is open.
     shape: Kind,
     flyout: bool,
@@ -190,6 +195,7 @@ pub fn init() -> App {
         last_time: 0.0,
         menu: None,
         carried: Vec::new(),
+        originals: Vec::new(),
         shape: Kind::Box,
         flyout: false,
         aligning: false,
@@ -1002,12 +1008,7 @@ fn act(s: mut App, a: Action) {
             for i in 0..s.board.items.len() {
                 borrow it = s.board.items[i]
                 if has(s.selected, it.id) && !it.locked && sizes_words(it.kind) {
-                    let usual = match it.kind {
-                        Kind::Text => paint::TEXT_SIZE,
-                        Kind::Link => 14.0,
-                        _ => 16.0,
-                    }
-                    let next = paint::next_size(it.type_size, usual)
+                    let next = paint::next_size(it.type_size, paint::usual(it.kind))
                     s.board.items[i].type_size = next
                     if s.board.items[i].kind == Kind::Text {
                         borrow font = s.fonts.font(Face::Sans)
@@ -1144,6 +1145,47 @@ fn handle(s: mut App, e: Event, chrome: Chrome) {
 /// How near the pointer must come to a thin thing to hit it, in world units.
 fn slack(s: App) -> f32 {
     6.0 * unit(s) / s.view.scale()
+}
+
+/// How many things (connectors aside) are selected.
+fn things(s: App) -> u32 {
+    var n = 0
+    for id in s.selected {
+        let Some(i) = s.board.index(id) else { continue }
+        if s.board.items[i].kind != Kind::Link {
+            n += 1
+        }
+    }
+    n
+}
+
+/// The box round a selection of several things, on the screen: its corners scale them.
+fn selection_box(s: App) -> Option<Rect> {
+    if things(s) < 2 || s.typing.is_some() {
+        return None
+    }
+    let Some(r) = s.board.extent(s.selected) else { return None }
+    Some(s.view.rect(r).shrink(-6.0 * unit(s)))
+}
+
+/// The corner of the box round a selection of several under screen point `at`: that corner of
+/// what's selected and the opposite one, in the world.
+fn box_corner_at(s: App, at: vec2) -> Option<(vec2, vec2)> {
+    let Some(b) = selection_box(s) else { return None }
+    let Some(r) = s.board.extent(s.selected) else { return None }
+    for c in [vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0)] {
+        if length(vec2(b.x, b.y) + c * vec2(b.w, b.h) - at) <= 8.0 * unit(s) {
+            let lo = vec2(r.x, r.y)
+            let size = vec2(r.w, r.h)
+            return Some((lo + c * size, lo + (vec2(1.0) - c) * size))
+        }
+    }
+    None
+}
+
+/// The resize cursor for a drag along `d`.
+fn diagonal(d: vec2) -> Text {
+    if d.x * d.y > 0.0 { "nwse-resize" } else { "nesw-resize" }
 }
 
 /// The corner of the one selected box under screen point `at`, and the opposite corner.
@@ -1294,6 +1336,18 @@ fn press_select(s: mut App, at: vec2, w: vec2, mods: Mods) {
         s.drag = Drag::Link { from: id }
         return
     }
+    if let Some((corner, anchor)) = box_corner_at(s, at) {
+        checkpoint(mut s)
+        s.originals.clear()
+        for id in s.board.with_contents(s.selected) {
+            let Some(i) = s.board.index(id) else { continue }
+            if s.board.items[i].kind != Kind::Link && !s.board.items[i].locked {
+                s.originals.push(s.board.items[i].clone())
+            }
+        }
+        s.drag = Drag::Scale { anchor, corner, from: w }
+        return
+    }
     if let Some((id, anchor)) = corner_at(s, at) {
         checkpoint(mut s)
         s.drag = Drag::Resize { id, anchor }
@@ -1424,6 +1478,20 @@ fn moved(s: mut App, at: vec2, mods: Mods) {
                 s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
             }
         },
+        Drag::Scale { anchor, corner, from } => {
+            // Evenly, by how far the pressed corner has come along its line from the anchor.
+            let d = corner - anchor
+            let k = max(dot(corner + (w - from) - anchor, d) / max(dot(d, d), 1.0e-6), 0.05)
+            borrow font = s.fonts.font(Face::Sans)
+            for o in s.originals {
+                let Some(i) = s.board.index(o.id) else { continue }
+                let words = if sizes_words(o.kind) { paint::usual(o.kind) } else { 0.0 }
+                s.board.items[i] = o.scaled(anchor, k, words)
+                if o.kind == Kind::Text {
+                    s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
+                }
+            }
+        },
         Drag::Map { map } => navigate(mut s, map, at),
         Drag::Select { id } => {
             let Some(t) = s.typing else { return }
@@ -1470,6 +1538,7 @@ fn released(s: mut App, at: vec2, mods: Mods) {
                 }
             }
         },
+        Drag::Scale { .. } => s.originals.clear(),
         Drag::Marquee { from, add } => {
             let lo = min(from, w)
             let hi = max(from, w)
@@ -1703,6 +1772,7 @@ fn draw(s: mut App, screen: vec2) {
     let near = slack(s)
     let locked = all_locked(s)
     let grouped = grouped(s)
+    let around = selection_box(s)
     let color = shared_color(s)
     // A group under the pointer lights whole, and one selected whole has its own outline.
     let hovered = match hover {
@@ -1759,7 +1829,8 @@ fn draw(s: mut App, screen: vec2) {
         if in_whole && !s.board.items[i].locked {
             continue
         }
-        let mark = if chosen { ACCENT } else { vec4(ACCENT.xyz, 0.5) }
+        // Of several selected, each is marked lightly within the box round them all.
+        let mark = if chosen && around.is_none() { ACCENT } else { vec4(ACCENT.xyz, 0.5) }
         if s.board.items[i].kind == Kind::Link && !in_whole {
             // A connector shows its own path, and its ends.
             let route = s.board.route(s.board.items[i])
@@ -1807,11 +1878,31 @@ fn draw(s: mut App, screen: vec2) {
             )
         }
     }
-    for g in whole {
-        let Some(r) = s.board.extent(s.board.members(g)) else { continue }
-        list.ring(s.view.rect(r).shrink(-8.0 * u), ACCENT, radius: 4.0 * u, width: ring)
+    // A group's outline, unless it's all that's selected: then the box round the selection is it.
+    if !grouped {
+        for g in whole {
+            let Some(r) = s.board.extent(s.board.members(g)) else { continue }
+            list.ring(
+                s.view.rect(r).shrink(-3.0 * u),
+                vec4(ACCENT.xyz, 0.5),
+                radius: 3.0 * u,
+                width: ring,
+            )
+        }
     }
-    if s.drag == Drag::Idle || s.drag == Drag::Control {
+    let idle = s.drag == Drag::Idle || s.drag == Drag::Control
+    if let Some(b) = around {
+        list.ring(b, ACCENT, radius: 2.0 * u, width: ring)
+        if idle {
+            for c in [vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0)] {
+                let p = vec2(b.x, b.y) + c * vec2(b.w, b.h)
+                let h = Rect::new(p.x - 4.5 * u, p.y - 4.5 * u, 9.0 * u, 9.0 * u)
+                list.rect(h, vec4(1.0), radius: 2.0 * u)
+                list.ring(h, ACCENT, radius: 2.0 * u, width: ring)
+            }
+        }
+    }
+    if idle {
         if s.selected.len() == 1 {
             if let Some(i) = s.board.index(s.selected[0]) {
                 if s.board.items[i].boxed() && s.typing.is_none() {
@@ -1989,11 +2080,9 @@ fn cursor_for(s: App, w: vec2, on_control: bool) -> Text {
         Drag::Move { .. } => return "move",
         Drag::Resize { id, anchor } => {
             let Some(i) = s.board.index(id) else { return "default" }
-            let c = s.board.items[i].center()
-            return if (c.x - anchor.x) * (c.y - anchor.y) > 0.0 { "nwse-resize" } else {
-                "nesw-resize"
-            }
+            return diagonal(s.board.items[i].center() - anchor)
         },
+        Drag::Scale { anchor, corner, .. } => return diagonal(corner - anchor),
         Drag::Select { .. } => return "text",
         _ => {},
     }
@@ -2005,8 +2094,10 @@ fn cursor_for(s: App, w: vec2, on_control: bool) -> Text {
     }
     if let Some((id, anchor)) = corner_at(s, s.pointer) {
         let Some(i) = s.board.index(id) else { return "default" }
-        let c = s.board.items[i].center()
-        return if (c.x - anchor.x) * (c.y - anchor.y) > 0.0 { "nwse-resize" } else { "nesw-resize" }
+        return diagonal(s.board.items[i].center() - anchor)
+    }
+    if let Some((corner, anchor)) = box_corner_at(s, s.pointer) {
+        return diagonal(corner - anchor)
     }
     if let Some(t) = s.typing {
         if s.board.hit(w, 0.0) == Some(t.id) {
@@ -2401,4 +2492,21 @@ fn the_align_row_lines_notes_up(game: App) {
         abs((b.x - a.right()) - (c.x - b.right())) < 1.0e-3,
         f"gaps {b.x - a.right()} and {c.x - b.right()}",
     )
+}
+
+/// Two notes at 100% selected (from x 100 to 540, y 140 to 340): dragging the box's bottom right
+/// handle 110 right and 50 down scales both by 1.25 about the top left.
+@test(frames: 66, input: "scripts/scale.json")
+fn the_box_round_several_scales_them(game: App) {
+    let a = screen_rect(game, 0)
+    let b = screen_rect(game, 1)
+    let close = |r: Rect, x: f32, y: f32, side: f32| -> bool {
+        abs(r.x - x) < 0.05 &&
+            abs(r.y - y) < 0.05 &&
+            abs(r.w - side) < 0.05 &&
+            abs(r.h - side) < 0.05
+    }
+    assert(close(a, 100.0, 140.0, 250.0), f"{a.x}, {a.y}, {a.w}")
+    assert(close(b, 400.0, 140.0, 250.0), f"{b.x}, {b.y}, {b.w}")
+    assert(game.originals.is_empty())
 }
