@@ -1413,6 +1413,11 @@ the one-cell tracing and the doubled count all go. The tesseract's clock still s
 2.5 s and stands still at 3.7 s, where the cells nest and it is seen three-quarters on.
 Native captures across the hold are identical byte for byte.
 
+**The mark's spacing.** Ryan asked whether Facet is distinctive enough. Claude Code rendered
+variants of the mark with the real renderer. Ryan chose the one where the A tucks in by
+0.07 em over the L's open side, which closes the hole between them, and turned down a
+shorter middle bar on the Ξ.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

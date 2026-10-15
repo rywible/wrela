@@ -775,7 +775,8 @@ fn mark_letters() -> Vec<Letter> {
     out.push(Letter { advance: 0.94, strokes: w, clip: true })
     out.push(Letter { advance: 0.63, strokes: r, clip: true })
     out.push(Letter { advance: 0.52, strokes: e, clip: true })
-    out.push(Letter { advance: 0.50, strokes: l, clip: true })
+    // The A tucks in over the L's open side, so the gap between them matches the others.
+    out.push(Letter { advance: 0.43, strokes: l, clip: true })
     out.push(Letter { advance: 0.68, strokes: a, clip: true })
     out
 }
