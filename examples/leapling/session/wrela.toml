@@ -1,0 +1,8 @@
+# Leapling's session program: the console's save list, backups and imports, before the game
+# itself is loaded.
+[package]
+name = "leapling_session"
+
+[dependencies]
+leapling = { path = ".." }
+platform = { path = "../../../platform" }

@@ -1,12 +1,14 @@
 // An embedded application's readiness and durable return, independent of game policy.
 use std::input::{Event, Key, Mods, Pad, PadButton, PADS}
 use std::io::{Pending, store}
-use host::{ready, return_to_parent}
+use host::{asked_to_return, ready, return_to_parent}
 
 pub struct Link {
     signalled: bool,
     pads: [Pad; PADS],
     ready_request: Option<Pending<u8>>,
+    // The parent's asking it to return, heard from the first useful frame.
+    asked: Option<Pending<u8>>,
     pub returning: bool,
     saving: Option<Pending<u8>>,
     leaving: Option<Pending<u8>>,
@@ -18,6 +20,7 @@ impl Link {
             signalled: false,
             pads: [Pad {}; PADS],
             ready_request: None,
+            asked: None,
             returning: false,
             saving: None,
             leaving: None,
@@ -51,7 +54,18 @@ impl Link {
     pub fn presented(mut self) {
         if !self.signalled {
             self.ready_request = Some(ready())
+            self.asked = Some(asked_to_return())
             self.signalled = true
+        }
+        // A host with no parent, or none that asks, never answers: the shortcuts still work.
+        match mut self.asked {
+            Some(p) => {
+                if let Some(result) = p.poll() {
+                    if result.is_ok() { self.returning = true }
+                    self.asked = None
+                }
+            },
+            None => {},
         }
         match mut self.ready_request {
             Some(p) => { if p.poll().is_some() { self.ready_request = None } },

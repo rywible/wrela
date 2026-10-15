@@ -118,7 +118,7 @@ pub struct Emblem: Copy + GpuData {
     pub width: f32,
 }
 
-// The flat mark. As the light passes, each part of it comes up behind a bright edge.
+// The flat mark. As the light passes, each part of it comes up softly behind a broad glint.
 @fragment
 pub fn emblem(v: Vertex, runs: [MarkRun], look: Emblem) -> Over {
     let p = vec2(v.pixel.x - look.centre.x, look.centre.y - v.pixel.y) / look.ems +
@@ -127,9 +127,12 @@ pub fn emblem(v: Vertex, runs: [MarkRun], look: Emblem) -> Over {
     for i in 0..look.count { d = min(d, mark_distance(p, runs[i])) }
     let coverage = saturate(0.5 - d * look.ems)
     let across = p.x / look.width + 0.5
-    let front = look.reveal * 1.3 - 0.15
-    let shown = saturate((front - across) / 0.12)
-    let edge = exp(-pow((across - front) * 14.0, 2.0)) * (1.0 - look.reveal)
+    let front = look.reveal * 1.45 - 0.15
+    let shown = saturate((front - across) / 0.25)
+    // Squared by hand: WGSL leaves `pow` undefined for a negative base, which blacked out the
+    // letters the light had passed.
+    let off = (across - front) * 9.0
+    let edge = exp(-off * off)
     let color = mix(vec3(0.9, 0.91, 0.92), vec3(1.0), edge)
     Over { color: vec4(color, coverage * max(shown, edge) * look.alpha) }
 }

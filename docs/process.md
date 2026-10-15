@@ -1495,6 +1495,212 @@ Opus both found that a build swapped away and back could leave two threads writi
 The fixes take every failed call one event at a time, close a quarantined room, hold a journal in
 one room host at a time, reserve each connection a share of the queue, and refuse a second hello.
 
+## A slower opening and a closer 4D eye, 2026-10-14
+
+Ryan asked for a steady turn, for the tesseract not to travel when the page loads, for the
+large tesseract and mark to fade out before the library fades in, and for a slower, more
+tasteful light along the mark. He then brought notes from another AI tool with five ideas
+for making the tesseract stranger, and asked Claude Code (Opus 5.5) to do two of them: a
+stronger 4D perspective, and a glint that travels through w. Claude Code judged the other
+three. A persistent mark on one cell would fight the shading by depth, which swaps colours
+as cells swap places. A solid cross-section is exact and cheap to trace, but dim behind the
+smoked glass. Turning in 4D under the cursor works against a steady turn. These are left
+for later. Claude Code made the changes and judged them in Chrome and in native captures.
+
+**Opening.** The tesseract and the mark come up out of black over 1.4 s. The light crosses
+the mark in 3.2 s (it was 1.3 s), with a wider ramp and a broader glint. Both hold, go down
+into black together, and the library comes up out of black with the tesseract already in
+its place. The library is up by 7.4 s. The tesseract no longer draws back. Its turn no
+longer eases each quarter turn: it turns at one steady rate.
+
+**A fix.** The mark's letters went black once the light had passed them, and the header's
+mark never showed. The glint squared a negative number with `pow`, which WGSL leaves
+undefined. It now squares by hand.
+
+**Perspective.** The notes found that the earlier entry's "three times" was wrong. Corners
+sit at ±0.5 in each coordinate, and the turn keeps them within 0.71 of w = 0, so with the
+eye at 2 the near nested cell was drawn 1.67 times the far one. The eye is now at 1.2: 2.4
+times nested, and from 0.63 to 2.43 times the base size across the turn. The spread fell
+from 1.4 to 0.94, so the farthest corner reaches where it did before.
+
+**Glint.** The slow glint on the struts no longer sweeps through 3D space. It is a band in
+w that passes from the near cell to the far one every 8 seconds. It lights pieces at one
+depth together, however far apart they are on screen, and slides along the struts that
+cross that depth.
+
+**Cost.** Native M4 GPU frame spans at 1280×800, three alternating pairs against the
+previous commit: opening 3.79 → 3.54 ms, room 5.35 → 5.71 ms. Both are inconclusive, with
+overlapping ranges. These are native samples, not Chrome frame rates.
+
+**Turn and highlights.** Ryan asked for a turn that is less predictable, with no seam, and
+for less light on struts that catch it just right. The turn now runs in four planes at
+rates that share no common period (x–w, y–z, y–w and a yaw), so it never repeats, and each
+corner keeps a steady speed (within 1% in a model of 800 s). The y–w turn carries corners
+almost to the 4D eye. There the perspective puts them near the middle, so the tesseract
+reaches no farther than 1.81 times the spread, which is now 0.895. Struts are drawn no
+thicker than 2.4 times their base radius. In native captures at 2560×1600, whole silver
+struts lit near white when the key light's hotspot and the w glint met. The hotspot fell
+from 1.3 to 0.5 and the glint from 0.8 to 0.55, and the worst frame's pixels above 0.75
+fell from 865 to 273, all on thin highlight lines. Native M4 GPU frame spans against the
+previous commit, three alternating pairs at 1280×800: opening 2.67 → 2.37 ms, room
+4.70 → 4.30 ms, both with separate ranges. The two builds turn differently, so the measured
+frames show different poses.
+
+**A cube.** Ryan asked for the tesseract to resolve into a perfect cube as the light finishes
+crossing the mark. Claude Code's first try blended each corner from the turning tesseract
+toward a cube in a straight line. Corners of two differently turned shapes cancel, so the
+shape shrank to a knot halfway. The second try eased the 4D turns forward to their next
+multiple of π, and Ryan saw them speed up into the cube. Now the turns through w (x–w and
+y–w) keep their own clock, measured from the pose where w is w and the cells nest one inside
+the other. From 2.5 s they only slow, smoothly, and come to rest at that pose at 3.7 s;
+they never run faster than the turn. Meanwhile each corner's 4D depth flattens: the far
+cell swells to the near cell's size, and they meet in one cube. The y–z turn, the yaw and
+the tilt go on, so the cube keeps turning in 3D. Once the cells coincide, only one cell's
+12 struts and 6 faces are traced. Back in the room, after the dark, it is a tesseract again.
+Native M4 GPU frame spans over 3.0–5.5 s against the commit before the cube, three
+alternating pairs at 1280×800: 2.21 → 1.98 ms.
+
+**Straight struts.** Ryan saw struts bent by the glass. The glass bent the view through each
+face along its folds, and mirrored struts in its rippled surface. It now bends neither: the
+view passes straight through, and struts are mirrored in the flat face. The ripples and the
+spectral fringe stay on the studio that the glass mirrors. Native M4 GPU frame spans
+against the previous commit, three alternating pairs at 1280×800, are inconclusive: cube
+beat 1.95 → 1.86 ms, room 4.43 → 4.37 ms.
+
+**A cube at rest.** Ryan asked for the cube to stop moving once resolved, and for the whole
+mark and the cube to hold for a moment before fading into the library. In the opening, the
+tesseract now runs on its own clock. From 2.5 s that clock only slows, smoothly, and it
+stands still at 3.7 s. The clock carries every turn, 3D as well as 4D, and the light and
+ripples on the glass. At rest the cells nest, and the cube is seen three-quarters on. The
+camera holds still through the title and takes up its lean in the dark. The mark and the
+cube hold, fully lit, from 3.7 s to 4.9 s; native captures across that hold are identical
+byte for byte. They are dark by 6.1 s, and the library is up by 7.7 s.
+
+Ryan saw the lighting shift as the cube came to rest. Just before the cells meet, each face
+is two panes and each strut two struts, and the tracer counted both. When the cells met and
+only one cell was traced, the second pane's reflection and darkening went in one frame:
+the cube's region fell from 0.0567 to 0.0459 in mean brightness. The cube is still traced
+once, but each face now counts as its two panes (the second too deep to mirror the struts,
+as before) and each strut's cover as two struts'. At the switch the region goes from 0.0567
+to 0.0575. The pixels that change between those two frames are no more than between the two
+before them, and they lie on strut outlines finishing their last move.
+
+**A cube inside a cube.** Ryan then asked whether the tesseract should come to rest as the
+cube inside the cube instead. Claude Code rendered both at rest side by side and recommended
+it. It is the image people know as a tesseract, and it keeps black chrome outside and
+silver inside. The opening ends on the same object the library shows, and the flattening,
+the one-cell tracing and the doubled count all go. The tesseract's clock still slows from
+2.5 s and stands still at 3.7 s, where the cells nest and it is seen three-quarters on.
+Native captures across the hold are identical byte for byte.
+
+**The mark's spacing.** Ryan asked whether Facet is distinctive enough. Claude Code rendered
+variants of the mark with the real renderer. Ryan chose the one where the A tucks in by
+0.07 em over the L's open side, which closes the hole between them, and turned down a
+shorter middle bar on the Ξ.
+
+## Facet's octagon rule and kerning, 2026-10-14
+
+Ryan asked what would make Facet Wrela's own. Claude Code (Opus 5.5) proposed an octagon rule
+and mocked it in the real renderer, and Ryan approved it with a kerning table.
+
+**Corners.** Facet's bowls were already cut at 45 degrees, its O is an octagon, and the
+favicon will be the tesseract's octagonal Petrie projection. Now every square outer corner of
+a letter or digit is cut at 45 degrees by the bowls' 0.10 em: 2, 4, 5, B, D, E, F, G, L and P
+(so R), and the mark's R and L. The mark's R is now one stroke round its top-left corner, so
+the mark has 21 runs (19 before). A square turn stays only where another stroke runs on
+through it, as where B's bowls meet its stem. Brackets keep their square corners, so they
+stay apart from parentheses. A regression checks the rule over the mark, the digits and the
+capitals.
+
+**Kerning.** Facet had no kerning. Claude Code first measured every pair from the strokes:
+the space between letters, averaged over 14 bands of the cap height and moved halfway toward
+the space between two stems. Open sides either dominated (every pair after a C at the cap)
+or, when their depth was limited, slopes did (AA closed by a tenth of an em). Both were
+dropped for a table of the classic open pairs: A with T, V, W and Y each way; L with T, V, W,
+Y and A; FA and PA; 0.04 to 0.07 em, in either case. Digits keep their widths. Native
+captures of game titles show the corners and the even spacing.
+
+## The tesseract's Petrie octagon as the console's icon, 2026-10-14
+
+Ryan asked whether the console could have a tesseract favicon and chose the Petrie octagon
+from Claude Code's mocks: the tesseract seen straight down its 4D axis of symmetry, an
+octagonal lattice of its 32 struts. Claude Code (Opus 5.5) worked out how to keep it legible
+when small and built it.
+
+**Sizes.** At 16 pixels the true projection is grey mush, because its inner ring is
+tan(22.5°) ≈ 0.41 of the outer and 32 struts meet in 13 pixels. Each size is therefore drawn
+for itself. The 180-pixel home-screen icon is the true projection, square and opaque. The
+32-pixel icon, which a Retina tab shows, opens its inner ring to 0.55 and puts every corner on
+a pixel's centre. The 16-pixel icon is the octagon and the star its long struts make. Each is
+silver on a black tile with rounded corners, so it shows in light and dark tab bars.
+
+**Build.** No image files: `console/icon.wrela` draws each size from `tesseract::edges()` as
+a constant, with each pixel covered as far as a stroke's edge crosses it, and writes it as a
+PNG with uncompressed (stored) deflate blocks: 0.6 KB, 2.1 KB and 32 KB. A `std::io::Shipped`
+constant ships them under `files/icons/`. std's `Shipped` gains `path(i)`, the path `fetch`
+already used. The platform package's new `icon` host request hands the page each icon's kind,
+size and path. The browser runtime accepts only a square PNG under `files/` and sets the
+page's `<link rel="icon">` or `apple-touch-icon` for it. The native host has no page and
+declines the request. Regressions read each PNG back strictly (CRCs, stored blocks,
+Adler-32) and check the true projection's two rings and the 32-pixel corners on pixel
+centres; Pillow also decodes the shipped files.
+
+## Leapling, and a console library that reads as a console, 2026-10-14
+
+Ryan asked for a basic 2D platformer in the spirit of Mario, "sick as fuck", deployed with the
+console, and for the console's landing page to read as a professional game console. Claude
+Code (Opus 5.5) designed and built both. Leapling borrows the genre's verbs (run, jump, stomp,
+coins, prize blocks, springs, a goal) and none of Nintendo's characters, worlds or designs. It
+has no story and no lore.
+
+**Game.** `examples/leapling`: one course, Dusk Ridge, 156 cells by 15, written as text. The
+simulation steps at 120 Hz, so the feel doesn't depend on the frame rate. Walking is 7 cells
+a second and running 10.5. A held jump climbs about 3.5 cells and a tap about 1.7. Coyote time
+is 90 ms and jump buffering 120 ms. Springs throw the hero high whether or not jump is held.
+Walkers can be stomped and spikers can't; spikers turn at edges. The game also has prize
+blocks, one-way ledges, spikes, two checkpoints and an octagonal gate. One fragment shader
+draws everything as fields: a dusk sky with a setting sun and rays, three parallax ridges
+(the nearest of pines) rim-lit by the sun, fireflies, the cells, the creatures, the hero
+(lit by its own antenna), sparks, and a stroke font of the game's own for the logo and HUD.
+Sound is synthesized as it plays: square, pulse, triangle and noise tones with slides for
+each cue, and a four-chord loop (vi, IV, I, V in C) of bass, arpeggio and hi-hat. No art,
+sound or music comes from a file or a generative model. The cover is the title screen,
+rendered natively.
+
+**Session.** `examples/leapling/session` adapts The Last Green's session program, keeping its
+journal, its backup before a new game, recovery of the save written on return, and its
+import checks. A shared `progress` module holds the save: courses cleared, coins, best time.
+
+**Console.** A first try filled the backdrop with the selected game's art. Ryan preferred the
+tesseract kept at the centre, with the light shifting subtly toward the game's palette. Now
+the console averages each cover's colourful, bright pixels into one colour. The studio's
+strips, back band and room take most of that colour, the key light little of it, and the
+low glow in the dark takes it too. The colour eases in with the library and from game to
+game. The opening stays white. Ryan then asked for the tesseract in the middle, larger and
+brighter, with a slight spotlight in the game's colour shining through it: a beam from high
+above that widens below it, and a soft glow behind it, both seen in the haze. He asked for
+the row to work as an album picker with the selection always at the left: the albums after
+it stand turned toward it and overlapping, and the one before it peeks in at the left edge,
+turned the other way, so the pointer can still reach it. A new selection is taken at once, even while the
+last one's session is still answering; that session is closed when it answers. The opening
+plays once per visit: within 30 minutes of the last one, the console waits at most half a
+second in the dark for the clock and the record, then starts in the dark just before the
+library.
+
+**Way back.** Ryan asked for a way back to the console from inside a game, and for the
+address to change so the browser's Back returns to it. The browser host now names the shown
+program in the page's address (`#leapling`). Back sends the program a request to return,
+which the platform's return link treats as its F10 shortcut, so the game saves first; a
+program that does not return within 10 seconds is closed. A game that returns by itself takes
+its address entry with it. In Leapling, Escape pauses play, and the pause screen and the title
+show Escape as the way back to the console.
+
+**Checks.** Real Chrome (headless, hardware WebGPU), driven over the DevTools protocol through
+a local preview, ran the whole loop: the opening, the library, New, the game handed over
+inside the console, playing, F10 back, and the library offering Continue. Regressions cover
+the jump heights, coyote time and buffering, stomping and being hurt, prize blocks, springs,
+pits and checkpoints, type layout, the save, imports, and the visit rule.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
