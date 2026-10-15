@@ -581,7 +581,7 @@ pub struct Rocks {
 pub const SEEN_SPAN: f32 = 0.004
 
 /// How near a rock is drawn from its near prototype: within this many times its own radius.
-pub const NEAR_RADII: f32 = 14.0
+pub const NEAR_RADII: f32 = 6.0
 
 /// Whether a sphere `sp` (its centre and radius, in the eye's space) is seen from `eye` looking
 /// along `forward`: in front of it, within a cone `wide` (the tangent of its widest half angle)

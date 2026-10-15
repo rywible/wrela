@@ -522,6 +522,7 @@ the browser also receives the corresponding parity fixes.
 | Terrain authored through its causes: Guillaume Cordonnier, Jean Braun, Marie-Paule Cani, Bedrich Benes, Éric Galin, Adrien Peytavie and Éric Guérin, "Large Scale Terrain Generation from Tectonic Uplift and Fluvial Erosion", *Computer Graphics Forum* 35(2) (2016) | A published idea; no code or data taken | The world's land is authored through its causes (its rock's layers, the old land, the base level its rivers run to) and not by drawing its valleys. |
 | Threshold slopes, as thermal erosion does: F. Kenton Musgrave, Craig E. Kolb and Robert S. Mace, "The synthesis and rendering of eroded fractal terrains", *SIGGRAPH* (1989) | A published idea; no code taken | `engine::landform::collapse`: a slope steeper than its rock stands at sheds its excess downhill, no faster than the rock weathers, so a hard cap stands in cliffs over the soft rock's talus. |
 | Erosion and deposition: Philippe Davy and Dimitri Lague, "Fluvial erosion/transport equation of landscape evolution models revisited", *Journal of Geophysical Research* 114 (2009) | A published method; no code taken | `engine::landform::settle`: what the water cuts it carries down and lays where its load is heavy for its water (D = G Qs / Q), so valley floors fill and fans spread where ravines meet them. |
+| Nonlinear hillslope creep: Joshua J. Roering, James W. Kirchner and William E. Dietrich, "Evidence for nonlinear, diffusive sediment transport on hillslopes and implications for landscape morphology", *Water Resources Research* 35(3) (1999) | A published method; no code taken | `engine::landform::diffuse`: soil creeps faster by 1 / (1 - (S / Sc)²) as its slope S nears a critical one, so hillsides run straight down from rounded crests instead of rounding all over. |
 | Channel initiation at a source area: David R. Montgomery and William E. Dietrich, "Where do channels begin?", *Nature* 336 (1988) | A published finding; we use its idea, not its data | `engine::landform::Shaping::channel`: water cuts only where enough of it gathers to run in a channel; below that, slopes only creep and fail. |
 | Johann Heinrich von Thünen's land-use rings (*Der isolirte Staat*, 1826); settlement site and budding as human geography teaches them | Published ideas; no code or data taken | The Last Green's elves (`examples/last-green/peoples.wrela`): each settlement takes its fields nearest by walking cost, then pasture, then wood; it chooses its site by water, soil, slope and sun; when it outgrows its land, some of its people found another. |
 | W3C, Gamepad API, its "standard" mapping | A W3C specification; no code taken | The browser host reads pads by it (`runtime/browser/src/listen.ts`), and wrela's pad buttons and axes take its order and names (south, east, west, north, the shoulders and triggers, the sticks, the d-pad). |
@@ -992,6 +993,17 @@ across every face that did not run north-south or east-west; they now lie along 
 and a block reaches down to the land where the land drops away beside or behind it. A new
 test holds that no block hangs over the air. The bare view gained a close shot under the
 tallest bedded crag, and its overlooks now face the way the view is most open.
+
+Ryan then said some rocks looked like castle walls and the hills too regular, and asked for a
+better simulation. The rock now has its own beds, from about 1 m to 7 m thick, and two joint
+sets fixed across the region. Each cliff is joint columns that stand to the cliff's top and
+reach down to the scree. The cliff has bays and buttresses, gullies down its major joints, and
+a top that rises and falls; a column undercut too far has fallen. Creep is now nonlinear
+(Roering and others, 1999), and each face fails at its rock's slope give or take a fifth. Bands
+of shattered rock along the joint sets erode faster, so valleys follow them. The square's
+channels start where less water gathers, and its creep is slower. Its grain factor was
+recalibrated to 3.5. Soft rock's slopes carry rills. Shots now keep clear of the rocks as well as
+the land, and the close shot is taken where the most cliff rock stands.
 
 ## Keeping this record
 

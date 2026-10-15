@@ -97,8 +97,10 @@ pub fn border(g: Grid) -> Vec<bool> {
 /// How a land is made: how many steps, each how many years; the stream power law's exponent on
 /// the area a channel drains (m, about 0.5; n is 1); how fast its slopes creep (m² a year); and
 /// the area (m²) that drains through a cell before its water runs in a channel and cuts it
-/// (below it, a slope only creeps and fails); and how readily the water lays down what it
-/// carries (`settle`'s G: 0 carries everything away).
+/// (below it, a slope only creeps and fails); how readily the water lays down what it
+/// carries (`settle`'s G: 0 carries everything away); the slope its creep runs away at, as a
+/// share of the slope its rock stands at (`diffuse`'s critical slope: 0 creeps linearly); and
+/// how much the slope a face fails at scatters from cell to cell and step to step (`collapse`).
 pub struct Shaping: Copy {
     pub steps: u32,
     pub years: f32,
@@ -106,6 +108,8 @@ pub struct Shaping: Copy {
     pub creep: f32,
     pub channel: f32 = 0.0,
     pub laying: f32 = 0.0,
+    pub critical: f32 = 0.0,
+    pub scatter: f32 = 0.0,
 }
 
 /// A rock's strength where it is: how easily water cuts it (the stream power law's K, m^(1-2m)
@@ -154,8 +158,9 @@ pub fn evolve(
     var down: Vec<u32> = Vec::filled(nn, NONE)
     var k: Vec<f32> = Vec::filled(nn, 0.0)
     var ease: Vec<f32> = Vec::filled(nn, 1.0)
+    var critical: Vec<f32> = Vec::filled(nn, 0.0)
     var was: Vec<f32> = Vec::filled(nn, 0.0)
-    for _ in 0..s.steps {
+    for step in 0..s.steps {
         for c in 0..nn {
             if !base[c] {
                 h[c] += uplift[c] * s.years
@@ -168,6 +173,7 @@ pub fn evolve(
             let r = rock(vec3(at.x, h[c], at.y))
             k[c] = r.erodibility
             ease[c] = r.creep
+            critical[c] = s.critical * r.standing
         }
         gather(g, d.order, down, mut area)
         for c in 0..nn {
@@ -177,8 +183,8 @@ pub fn evolve(
         if s.laying > 0.0 {
             settle(g, d.order, down, area, was, s.laying, mut h)
         }
-        diffuse(g, mut h, base, s.creep * s.years, ease)
-        collapse(g, mut h, base, rock, FAILS, s.years)
+        diffuse(g, mut h, base, s.creep * s.years, ease, critical)
+        collapse(g, mut h, base, rock, FAILS, s.years, scatter: s.scatter, step: step)
     }
     // The land as it's left: its pits filled once more (creep can open one), so every cell
     // stands over the one its water goes to; what the fill raised is a lake.
@@ -212,9 +218,10 @@ const LAKE: f32 = 0.25
 /// Slopes steeper than their rock stands at fail over `years` (threshold hillslopes, as thermal
 /// erosion does): each cell over its steepest lower neighbour by more than its rock's `standing`
 /// slope there (the rock half way down, so a cliff of hard rock over soft fails at the soft
-/// rock's) gives half the excess to it, but no more than that rock weathers in the time,
-/// `passes` times, all cells at once each time; the cells `held` keep their heights, and what
-/// falls onto one leaves the land.
+/// rock's), scattered by up to half `scatter` of it either way from cell to cell and from `step`
+/// to step (as slides do, here and not there), gives half the excess to it, but no more than that
+/// rock weathers in the time, `passes` times, all cells at once each time; the cells `held` keep
+/// their heights, and what falls onto one leaves the land.
 pub fn collapse(
     g: Grid,
     h: mut Vec<f32>,
@@ -222,6 +229,8 @@ pub fn collapse(
     rock: fn(vec3) -> Strength,
     passes: u32,
     years: f32,
+    scatter: f32 = 0.0,
+    step: u32 = 0,
 ) {
     let (nx, nz) = (g.nx, g.nz)
     var moved: Vec<f32> = Vec::filled(g.cells(), 0.0)
@@ -255,7 +264,8 @@ pub fn collapse(
             }
             let mid = 0.5 * (g.centre(c) + g.centre(to))
             let r = rock(vec3(mid.x, 0.5 * (h[c] + h[to]), mid.y))
-            let excess = (best - r.standing) * run
+            let spread = 1.0 + scatter * (noise::hash2(i32(c), i32(step)) - 0.5)
+            let excess = (best - r.standing * spread) * run
             if excess > 0.0 {
                 let falls = min(0.5 * excess, r.weathering * years / f32(passes))
                 moved[c] -= falls
@@ -347,16 +357,26 @@ pub fn settle(
     }
 }
 
-/// Slopes creeping for `kt` (a diffusivity times the time, m²): explicit linear diffusion over
-/// the four neighbours, in steps of at most a fifth of a cell's area each (stable), each pair
-/// of cells passing material at the mean of their rocks' `ease` (0 to 1) of it, the cells `held`
-/// keeping their heights and an edge passing nothing (a missing neighbour is the cell).
-pub fn diffuse(g: Grid, h: mut Vec<f32>, held: [bool], kt: f32, ease: [f32]) {
+/// Slopes creeping for `kt` (a diffusivity times the time, m²): explicit diffusion over the four
+/// neighbours, each pair of cells passing material at the mean of their rocks' `ease` (0 to 1)
+/// of it, the cells `held` keeping their heights and an edge passing nothing (a missing neighbour
+/// is the cell). Where a pair's `critical` slope (their mean) is over 0, the creep is nonlinear
+/// (Roering, Kirchner and Dietrich, 1999): faster by 1 / (1 - (S / Sc)²) as its slope S nears
+/// it, to `RUNAWAY` times at most (the faces past it fail, `collapse`), so slopes run straight
+/// down from rounded crests; linear where it's 0. In steps of at most a fifth of a cell's area
+/// each, at the fastest (stable).
+pub fn diffuse(g: Grid, h: mut Vec<f32>, held: [bool], kt: f32, ease: [f32], critical: [f32]) {
     if kt <= 0.0 {
         return
     }
     let a = kt / (g.cell * g.cell)
-    let parts = u32(ceil(a / 0.2))
+    var fastest = 1.0
+    for c in 0..g.cells() {
+        if critical[c] > 0.0 {
+            fastest = RUNAWAY
+        }
+    }
+    let parts = u32(ceil(a * fastest / 0.2))
     let each = a / f32(parts)
     let (nx, nz) = (g.nx, g.nz)
     var was: Vec<f32> = Vec::filled(g.cells(), 0.0)
@@ -369,25 +389,39 @@ pub fn diffuse(g: Grid, h: mut Vec<f32>, held: [bool], kt: f32, ease: [f32]) {
                 let c = j * nx + i
                 if !held[c] {
                     let here = was[c]
-                    let mine = ease[c]
                     var flow = 0.0
                     if i > 0 {
-                        flow += 0.5 * (mine + ease[c - 1]) * (was[c - 1] - here)
+                        flow += pass(g, was, ease, critical, c, c - 1)
                     }
                     if i + 1 < nx {
-                        flow += 0.5 * (mine + ease[c + 1]) * (was[c + 1] - here)
+                        flow += pass(g, was, ease, critical, c, c + 1)
                     }
                     if j > 0 {
-                        flow += 0.5 * (mine + ease[c - nx]) * (was[c - nx] - here)
+                        flow += pass(g, was, ease, critical, c, c - nx)
                     }
                     if j + 1 < nz {
-                        flow += 0.5 * (mine + ease[c + nx]) * (was[c + nx] - here)
+                        flow += pass(g, was, ease, critical, c, c + nx)
                     }
                     h[c] = here + each * flow
                 }
             }
         }
     }
+}
+
+/// How much nonlinear creep can run away by, at most (`diffuse`).
+const RUNAWAY: f32 = 3.0
+
+/// What cell `n` passes cell `c` in a part of a creep (`diffuse`), its heights `h`: their height's
+/// difference, by their mean `ease`, faster as their slope nears their mean `critical` one.
+fn pass(g: Grid, h: [f32], ease: [f32], critical: [f32], c: u32, n: u32) -> f32 {
+    let rise = h[n] - h[c]
+    let sc = 0.5 * (critical[c] + critical[n])
+    let faster = if sc > 0.0 {
+        let r = rise / (g.cell * sc)
+        min(1.0 / max(1.0 - r * r, 1.0e-6), RUNAWAY)
+    } else { 1.0 }
+    0.5 * (ease[c] + ease[n]) * faster * rise
 }
 
 // ---- the relief, as the terrain reads it --------------------------------------------------------
@@ -1120,7 +1154,14 @@ fn creep_damps_a_sine_by_its_exact_factor() {
     })
     let before = h.clone()
     let a = 0.15
-    diffuse(g, mut h, border(g), a * g.cell * g.cell, Vec::filled(g.cells(), 1.0))
+    diffuse(
+        g,
+        mut h,
+        border(g),
+        a * g.cell * g.cell,
+        Vec::filled(g.cells(), 1.0),
+        Vec::filled(g.cells(), 0.0),
+    )
     let s = sin(0.5 * w)
     let factor = 1.0 - 8.0 * a * s * s
     for c in 0..g.cells() {
@@ -1250,6 +1291,48 @@ fn a_summary_counts_forms_slopes_and_pits() {
         forms += f
     }
     assert(abs(forms - 1.0) < 1.0e-5)
+}
+
+/// Nonlinear creep runs faster as a slope nears its critical one: the crest of a ridge whose sides
+/// fall at 0.8 of it loses 1 / (1 - 0.8²) times what linear creep takes from it.
+@test
+fn creep_runs_faster_as_a_slope_nears_its_critical_one() {
+    let g = grid(nx: 9, nz: 9, cell: 1.0)
+    let ridge: Vec<f32> = Vec::from_fn(81, |c| -0.8 * abs(f32(c % 9) - 4.0))
+    let held: Vec<bool> = Vec::filled(81, value: false)
+    var linear = ridge.clone()
+    diffuse(g, mut linear, held, 0.01, Vec::filled(81, 1.0), Vec::filled(81, 0.0))
+    var steep = ridge.clone()
+    diffuse(g, mut steep, held, 0.01, Vec::filled(81, 1.0), Vec::filled(81, 1.0))
+    let c = 4 * 9 + 4
+    let ratio = (steep[c] - ridge[c]) / (linear[c] - ridge[c])
+    assert(abs(ratio - 1.0 / (1.0 - 0.64)) < 1.0e-3, f"the crest crept {ratio} times as fast")
+}
+
+/// Faces scattered fail at their rock's slope give or take: over many steps, the same wall falls
+/// to different slopes from cell to cell, all within the scatter of its rock's.
+@test
+fn scattered_faces_fail_at_their_rocks_slope_give_or_take() {
+    let g = grid(nx: 40, nz: 6, cell: 8.0)
+    var h: Vec<f32> = Vec::from_fn(g.cells(), |c| if c % 40 < 20 { 40.0 } else { 0.0 })
+    let held: Vec<bool> = Vec::filled(g.cells(), value: false)
+    let soft = |p: vec3| Strength { erodibility: 0.0, standing: 0.6, weathering: 1.0e9 }
+    for step in 0..200 {
+        collapse(g, mut h, held, soft, passes: 2, years: 1.0, scatter: 0.4, step: step)
+    }
+    var lo = 1.0e9
+    var hi = 0.0
+    for j in 0..6 {
+        var steepest = 0.0
+        for i in 1..40 {
+            let c = j * 40 + i
+            steepest = max(steepest, abs(h[c] - h[c - 1]) / 8.0)
+        }
+        assert(steepest <= 0.6 * 1.2 + 0.05, f"row {j} stands at {steepest}")
+        lo = min(lo, steepest)
+        hi = max(hi, steepest)
+    }
+    assert(hi - lo > 0.01, "every row fell to the same slope")
 }
 
 /// A wall 40 m high in soft rock (it stands at 0.6) falls to a slope it stands at, and keeps the
@@ -1427,10 +1510,10 @@ fn hard_rock_does_not_creep_and_soil_does() {
     let bump: Vec<f32> = Vec::from_fn(81, |c| if c == 40 { 10.0 } else { 0.0 })
     let held: Vec<bool> = Vec::filled(81, value: false)
     var rock = bump.clone()
-    diffuse(g, mut rock, held, 2.0, Vec::filled(81, 0.0))
+    diffuse(g, mut rock, held, 2.0, Vec::filled(81, 0.0), Vec::filled(81, 0.0))
     assert(rock[40] == 10.0, "hard rock crept")
     var soil = bump.clone()
-    diffuse(g, mut soil, held, 2.0, Vec::filled(81, 1.0))
+    diffuse(g, mut soil, held, 2.0, Vec::filled(81, 1.0), Vec::filled(81, 0.0))
     var total = 0.0
     for v in soil {
         total += v
