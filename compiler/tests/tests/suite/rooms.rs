@@ -180,28 +180,36 @@ pub fn serve(room: mut Room<Tags, u32>, time: f32) {
 }
 "#;
 
-/// The server build, its WASM's hash, and a fresh directory for its rooms.
+/// The server program's module, built once for every test here.
+fn wasm() -> &'static [u8] {
+    static WASM: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    WASM.get_or_init(|| {
+        let root = wrela_tests::scratch_root(env!("CARGO_TARGET_TMPDIR")).join("rooms-program");
+        let _ = std::fs::remove_dir_all(&root);
+        let pkg = root.join("pkg");
+        std::fs::create_dir_all(&pkg).expect("scratch package");
+        let platform = wrela_tests::repo_root().join("platform");
+        std::fs::write(
+            pkg.join("wrela.toml"),
+            format!(
+                "[package]\nname = \"rooms\"\n\n[dependencies]\nplatform = {{ path = \"{}\" }}\n",
+                platform.display()
+            ),
+        )
+        .expect("manifest");
+        std::fs::write(pkg.join("main.wrela"), PROGRAM).expect("main");
+        let out = root.join("build");
+        wrela_tests::must_build(&pkg, &out);
+        std::fs::read(out.join("server/game.wasm")).expect("the server build")
+    })
+}
+
+/// The server build, its WASM's hash, and a fresh directory for the test's rooms.
 fn build(name: &str) -> (ServerBuild, u64, PathBuf) {
-    let root = wrela_tests::scratch_root(env!("CARGO_TARGET_TMPDIR")).join(format!("rooms-{name}"));
-    let _ = std::fs::remove_dir_all(&root);
-    let pkg = root.join("pkg");
-    std::fs::create_dir_all(&pkg).expect("scratch package");
-    let platform = wrela_tests::repo_root().join("platform");
-    std::fs::write(
-        pkg.join("wrela.toml"),
-        format!(
-            "[package]\nname = \"rooms\"\n\n[dependencies]\nplatform = {{ path = \"{}\" }}\n",
-            platform.display()
-        ),
-    )
-    .expect("manifest");
-    std::fs::write(pkg.join("main.wrela"), PROGRAM).expect("main");
-    let out = root.join("build");
-    wrela_tests::must_build(&pkg, &out);
-    let wasm = std::fs::read(out.join("server/game.wasm")).expect("the server build");
-    let hash = wrela_abi::ticks::wasm_hash(&wasm);
-    let build = ServerBuild::from_wasm(&wasm).expect("a server build");
-    (build, hash, root.join("rooms"))
+    let dir = wrela_tests::scratch_root(env!("CARGO_TARGET_TMPDIR")).join(format!("rooms-{name}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let build = ServerBuild::from_wasm(wasm()).expect("a server build");
+    (build, wrela_abi::ticks::wasm_hash(wasm()), dir)
 }
 
 fn limits() -> Limits {
