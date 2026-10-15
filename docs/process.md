@@ -1025,6 +1025,84 @@ each change on full-size stills of the bare view and on crops of them.
 - **Granite:** tried twice as jointed columns, the granite read as stacked sponges and then
   as ruins, so it stands as smooth domes and tors only.
 
+## The climber's robe, darkness and glide, 2026-10-14
+
+Ryan found the Last Green's player character clunky to move and its cloth, robe, darkness and
+sword poor. He named a mix of a dementor (Harry Potter) and a ringwraith (the Nazgûl of
+Tolkien's *The Lord of the Rings*) as the mood, with Organization XIII's coats (*Kingdom
+Hearts*, Square Enix and Disney) as another reference: a long train that drags on the ground,
+a readable empty hood, nice movement. These works are copyright their rights holders. They
+were named, not looked at: no image, shot, mesh, texture or character design was traced,
+sampled or recreated, and the forms are original.
+
+Claude Code (Claude Opus 5.5) did the work alone, without subagents. It rebuilt the cloth's
+rest shape (a lean A line with a 1.35 m train and torn strips at its foot), the peaked hood,
+the slim swinging sleeves, the sword and its hanging pose, and replaced the hem's deformed
+tongues with wisps and a pool of darkness. It also eased the floor's glide. It judged each
+round from native-host lookbook stills and motion captures on this Linux machine. The
+darkness is drawn as coverage kept by Wyman and McGuire's hashed alpha threshold
+(`engine::noise`, already in the engine). The sleeves swing as damped pendulums. No outside
+code, asset or data was used, and no art was made with a generative model.
+
+Ryan then had another AI agent review the branch (its transcript shows Google's Antigravity).
+Claude Code checked each point against the code and renders before acting. Much of the
+review's code detail was wrong, such as invented function names and wrong values. Its
+diagnoses held up: the torn hem cut rectangular holes, the grass hid the train, the line pass
+outlined each gap in the smoke, the robe had no waist or shoulder structure, the hood's peak
+stood up, and black cloth lost its rim light. The fixes are a scalloped hem, a grass contact
+that runs along the train, a `VEIL` tag class (thin for temporal AA, no lines), a mantle and a
+drooping cowl, a void material inside the hood, and an opt-in cloth sheen in the engine's
+character shading (later removed). A stronger waist pinch was tried and backed off: in motion
+the cloth clung to it like a body. No outside code or asset was used.
+
+Ryan then asked for the darkness to be licks of shadow, like flame, rising subtly off the
+hem and the train's edge; for cloth that reads as cloth; for a tighter silhouette; for a
+better sword; and for a ready pose. Claude Code proposed the approach and Ryan agreed to it
+before any code. Ryan asked for a few edge colours to be tried and the best picked: violet,
+cold blue, ember red and pale grey were rendered from the same shot, and violet was picked.
+The licks are hard-edged flame shapes cut from short ribbons along each root's recent path.
+The cloth is drawn as a spline surface through the simulated points, with creases that
+darken in their valleys. Cloth sheen replaces gloss on cloth. The hood and the mantle carry
+creases too, as a displacement of their fields. The sword rises into a raised guard beside
+the hood as a fight comes near. A guard straight in front of the face was considered and
+rejected: the player's camera, behind, would hide the blade behind the hood. Narrower
+shoulders were tried and reverted: the cloth fell inside the body it hangs round.
+
+Ryan judged the licks disconnected, the cloth's light still not cloth, and the figure parts
+stitched together, and asked to rethink all three and "turn everything up to 11". Claude Code
+proposed a restructure and Ryan agreed before code. The garment is now one simulated cloth of
+five sheets (hood, robe, mantle, two sleeves). The hood is the robe's top, held to the head
+and open at the face, so there are no rigid parts but the sword. The licks are the robe's own
+hem burning: the drawn surface runs on past the hem, and flame shapes are cut from it in the
+cloth's coordinates. The garment has its own coat shading in the climber's package; the engine
+sheen added in the second round is removed. A thread-direction highlight (Kajiya and Kay's
+model, read for principle) was tried and dropped: on black it read as wet latex. The coat now
+reads by a soft fibre sheen toward the form's edge, as velvet and wool do. No outside code or
+asset was used.
+
+Ryan liked the licks, but judged the hood warped, the silhouette worse and the material still
+not cloth. The hood was a small sphere whose opening was cut in whole cells, so it came out
+blocky and bulged behind. It is now a taller cowl with an overhanging brow, and its opening is
+a smooth oval cut in the shader. The mantle had become a wide shelf; it is now a cowl collar,
+snug at the shoulders and falling to points in front and behind. The sleeves open into bells
+and bend stiffly enough not to stay buckled after a swing. On the coat, both regular creases
+and fold-keyed light read as pinstripes. Its folds are now fewer, broader and uneven, the hood
+carries almost none, and the light on them is hard-edged shapes where a fold's side turns to
+the sun: a third tone, as anime paints black coats. The frame-rate test now bounds the robe
+point by point and each free sheet on average, because the sleeves' and mantle's free ends whip
+apart over a log at a sprint.
+
+Ryan then noted an indent at the chin and a lumpy join from neck to cowl, a hood opening
+too perfectly oval and a hood too like a sphere, and light that striped the cloth; he asked
+that the climber look menacing, almost eating the light, as if made of shadow cloth. The
+robe's collar had pinched in round a neck between the hood and the cowl; it is now wide, under
+the hood's foot, and the cowl's top tucks under it. The hood is deeper than it is wide, with
+flat sides, a peak drawn up to a point and a back that slopes straight down. Its opening is a
+pointed arch with a flatter foot and slightly uneven sides. The cloth no longer models light on
+its folds at all: it is near-black whatever lights it, darker still toward the edge of its form
+so it reads as a hole in the scene, with a faint violet at the very edge. Pure black was tried
+first; the face's void then vanished into the cloth, so the cloth sits just above it.
+
 ## Wrela Facet, a recursive opening and a console dashboard, 2026-10-14
 
 Ryan asked for a sleek gaming-console feel, a custom font, and an alien artifact that

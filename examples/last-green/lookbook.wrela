@@ -207,6 +207,34 @@ pub const SHOTS = [
         moves: vec2(0.59, 0.54),
         cast: Cast { on: true, player: vec3(142.9, 40.3, 1.6), fawn: vec3(137.5, 47.9, 0.9) },
     },
+    // The climber close, from in front: the empty hood's depth, the sleeves, the sword's
+    // materials and the licks of shadow at its hem.
+    Shot {
+        name: "the climber close",
+        eye: vec3(145.4, 1.6, 38.3),
+        at: vec3(142.9, 1.15, 40.3),
+        reach: 1.0,
+        moves: vec2(0.3, 0.5),
+        cast: Cast { on: true, player: vec3(142.9, 40.3, 1.6), fawn: vec3(137.5, 47.9, 0.9) },
+    },
+    // The climber head on: the hood's dark tunnel, the mantle, the sleeves, the hem burning.
+    Shot {
+        name: "the climber's hood",
+        eye: vec3(145.6, 1.7, 40.2),
+        at: vec3(142.9, 1.35, 40.3),
+        reach: 1.0,
+        moves: vec2(0.0, 0.4),
+        cast: Cast { on: true, player: vec3(142.9, 40.3, 1.6), fawn: vec3(137.5, 47.9, 0.9) },
+    },
+    // The climber from behind and above, as the player sees it: its train on the ground.
+    Shot {
+        name: "the climber's train",
+        eye: vec3(139.4, 2.3, 41.6),
+        at: vec3(143.6, 0.9, 40.1),
+        reach: 1.0,
+        moves: vec2(0.0, -0.8),
+        cast: Cast { on: true, player: vec3(142.9, 40.3, 1.6), fawn: vec3(137.5, 47.9, 0.9) },
+    },
 ]
 
 /// Where shot `s`'s eye is and what it looks at, `t` seconds after it was chosen (it holds still
