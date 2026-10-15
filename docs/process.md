@@ -941,6 +941,84 @@ tests. On this branch, with no `WRELA_*` variables set, it passed all 744 Rust t
 browser, tools and infrastructure check in 321.0 s. That time includes warm build output. It
 is not a paired gate-time comparison. No rendering code changed, so no frame-time claim is made.
 
+## The climber's robe, darkness and glide, 2026-10-14
+
+Ryan found the Last Green's player character clunky to move and its cloth, robe, darkness and
+sword poor. He named a mix of a dementor (Harry Potter) and a ringwraith (the Nazgûl of
+Tolkien's *The Lord of the Rings*) as the mood, with Organization XIII's coats (*Kingdom
+Hearts*, Square Enix and Disney) as another reference: a long train that drags on the ground,
+a readable empty hood, nice movement. These works are copyright their rights holders. They
+were named, not looked at: no image, shot, mesh, texture or character design was traced,
+sampled or recreated, and the forms are original.
+
+Claude Code (Claude Opus 5.5) did the work alone, without subagents. It rebuilt the cloth's
+rest shape (a lean A line with a 1.35 m train and torn strips at its foot), the peaked hood,
+the slim swinging sleeves, the sword and its hanging pose, and replaced the hem's deformed
+tongues with wisps and a pool of darkness. It also eased the floor's glide. It judged each
+round from native-host lookbook stills and motion captures on this Linux machine. The
+darkness is drawn as coverage kept by Wyman and McGuire's hashed alpha threshold
+(`engine::noise`, already in the engine). The sleeves swing as damped pendulums. No outside
+code, asset or data was used, and no art was made with a generative model.
+
+Ryan then had another AI agent review the branch (its transcript shows Google's Antigravity).
+Claude Code checked each point against the code and renders before acting. Much of the
+review's code detail was wrong, such as invented function names and wrong values. Its
+diagnoses held up: the torn hem cut rectangular holes, the grass hid the train, the line pass
+outlined each gap in the smoke, the robe had no waist or shoulder structure, the hood's peak
+stood up, and black cloth lost its rim light. The fixes are a scalloped hem, a grass contact
+that runs along the train, a `VEIL` tag class (thin for temporal AA, no lines), a mantle and a
+drooping cowl, a void material inside the hood, and an opt-in cloth sheen in the engine's
+character shading (later removed). A stronger waist pinch was tried and backed off: in motion
+the cloth clung to it like a body. No outside code or asset was used.
+
+Ryan then asked for the darkness to be licks of shadow, like flame, rising subtly off the
+hem and the train's edge; for cloth that reads as cloth; for a tighter silhouette; for a
+better sword; and for a ready pose. Claude Code proposed the approach and Ryan agreed to it
+before any code. Ryan asked for a few edge colours to be tried and the best picked: violet,
+cold blue, ember red and pale grey were rendered from the same shot, and violet was picked.
+The licks are hard-edged flame shapes cut from short ribbons along each root's recent path.
+The cloth is drawn as a spline surface through the simulated points, with creases that
+darken in their valleys. Cloth sheen replaces gloss on cloth. The hood and the mantle carry
+creases too, as a displacement of their fields. The sword rises into a raised guard beside
+the hood as a fight comes near. A guard straight in front of the face was considered and
+rejected: the player's camera, behind, would hide the blade behind the hood. Narrower
+shoulders were tried and reverted: the cloth fell inside the body it hangs round.
+
+Ryan judged the licks disconnected, the cloth's light still not cloth, and the figure parts
+stitched together, and asked to rethink all three and "turn everything up to 11". Claude Code
+proposed a restructure and Ryan agreed before code. The garment is now one simulated cloth of
+five sheets (hood, robe, mantle, two sleeves). The hood is the robe's top, held to the head
+and open at the face, so there are no rigid parts but the sword. The licks are the robe's own
+hem burning: the drawn surface runs on past the hem, and flame shapes are cut from it in the
+cloth's coordinates. The garment has its own coat shading in the climber's package; the engine
+sheen added in the second round is removed. A thread-direction highlight (Kajiya and Kay's
+model, read for principle) was tried and dropped: on black it read as wet latex. The coat now
+reads by a soft fibre sheen toward the form's edge, as velvet and wool do. No outside code or
+asset was used.
+
+Ryan liked the licks, but judged the hood warped, the silhouette worse and the material still
+not cloth. The hood was a small sphere whose opening was cut in whole cells, so it came out
+blocky and bulged behind. It is now a taller cowl with an overhanging brow, and its opening is
+a smooth oval cut in the shader. The mantle had become a wide shelf; it is now a cowl collar,
+snug at the shoulders and falling to points in front and behind. The sleeves open into bells
+and bend stiffly enough not to stay buckled after a swing. On the coat, both regular creases
+and fold-keyed light read as pinstripes. Its folds are now fewer, broader and uneven, the hood
+carries almost none, and the light on them is hard-edged shapes where a fold's side turns to
+the sun: a third tone, as anime paints black coats. The frame-rate test now bounds the robe
+point by point and each free sheet on average, because the sleeves' and mantle's free ends whip
+apart over a log at a sprint.
+
+Ryan then noted an indent at the chin and a lumpy join from neck to cowl, a hood opening
+too perfectly oval and a hood too like a sphere, and light that striped the cloth; he asked
+that the climber look menacing, almost eating the light, as if made of shadow cloth. The
+robe's collar had pinched in round a neck between the hood and the cowl; it is now wide, under
+the hood's foot, and the cowl's top tucks under it. The hood is deeper than it is wide, with
+flat sides, a peak drawn up to a point and a back that slopes straight down. Its opening is a
+pointed arch with a flatter foot and slightly uneven sides. The cloth no longer models light on
+its folds at all: it is near-black whatever lights it, darker still toward the edge of its form
+so it reads as a hole in the scene, with a faint violet at the very edge. Pure black was tried
+first; the face's void then vanished into the cloth, so the cloth sits just above it.
+
 ## Wrela Facet, a recursive opening and a console dashboard, 2026-10-14
 
 Ryan asked for a sleek gaming-console feel, a custom font, and an alien artifact that
@@ -1314,6 +1392,108 @@ sent the close tesseract in the opening to four rays a pixel (12–14 ms). The c
 clean. Native M4 GPU medians, back to back with a checkout at the previous commit, while
 Ryan's Chrome preview was also rendering: opening 2.9–3.3 ms against 2.5–2.8 ms; room
 4.5–5.6 ms against 4.1–4.4 ms. These are native samples, not Chrome frame rates.
+
+## Networking for Wrela programs, 2026-10-14
+
+Ryan asked for Wrela's own networking, "absolutely bulletproof and as compressed and performant
+as possible", designed to deploy (servers on Fly.io machines, clients as static files on
+Cloudflare) but not deployed. He decided: WebTransport only; servers are Wrela programs run by a
+Rust host, as clients are run by the browser host; and one program can build as a client, a
+server, both, or a client with a server API. Claude Code (Opus 5.5) led the design through a
+council: two reviewers run as T3 Code child tasks, GPT-6.1-Sol and GPT-6-Astra (OpenAI, high
+effort), read the checkout and the brief, and two rounds of findings and rebuttals followed, for
+the first plan and again for the reworked one. They found that edits could be lost or applied
+twice across reconnects, that a room's state must come only from a deterministic reducer of
+logged inputs, that a resource limit can look like a program's own panic, that payload bytes
+need lifetimes and must not cross a build change, and that the outcome window must follow the
+client's acknowledgements. The plan changed for each.
+
+**A spike, not kept.** A small WebTransport echo server (the `wtransport` crate) and a page ran in
+headless Chrome 155: sessions with a short-lived self-signed certificate passed by its hash
+(`serverCertificateHashes`), length-prefixed frames on a bidirectional stream split across
+writes, datagrams (Chrome reported 1,211 bytes at most), and a second session after closing, from
+the page and from a dedicated worker. All worked. Safari 26.6 waits on Ryan by hand; Firefox
+isn't installed here.
+
+**`std::pack`.** A `@fieldwise` trait that packs values in bits with no names, for bytes that only
+the build that wrote them reads. Its integers are varints in 7-bit groups with a continuation
+bit, as in LEB128 (the [DWARF](https://dwarfstd.org/) format's encoding) and
+[Protocol Buffers' varints](https://protobuf.dev/programming-guides/encoding/#varints); its
+signed integers are first mapped by Protocol Buffers' ZigZag encoding (0, -1, 1, -2 as 0, 1, 2,
+3). Both are reimplemented in Wrela; the rule that a value has exactly one packing (shortest
+varints, one NaN, zero padding, nothing left over) is ours.
+
+**Roles and rooms.** A program that exports `serve` gets a server build beside its client
+build, each lowered from its own entries, with one pair id in both modules; `@client` and
+`@server` mark what only one role may run, checked per instance after monomorphization, so
+generics and closures are covered. The server host runs each room as its own instance with a
+memory cap (a limiter that fails with an error rather than refusing growth, so a cap is never
+mistaken for the program's own panic) and a deadline on every call (Wasmtime's epoch
+interruption). Measured on this M4 Air with 500 rooms: 85 KiB resident each, about 16 µs to
+start one and 2.6 µs a `serve`.
+
+**`std::net`, and what the model found.** A room's ordered log is pure Wrela, tested against a
+seeded model of peers, connections that drop, and a server that crashes and loses what it hadn't
+kept. Its first run found that identity wasn't idempotent: a peer whose first hello's answer was
+lost asked again, got a second id, and had its pending proposal committed once for each. Peers
+now name themselves with a token they choose, which the room gives one id however many hellos
+carry it. Designing the room's reducer also found a hole in the language (#221): `@deterministic`
+code wasn't checked through trait methods of generic parameters. The model runs 10,000 seeds in
+the gate (about 2 s), and checks that its runs did crash the server with unkept records, drop
+connections and refuse proposals.
+
+**Durable rooms.** The server host keeps each room's journal: records framed with their length
+and a CRC-32C (the Castagnoli polynomial, as iSCSI and many storage formats use it; [RFC
+3720](https://www.rfc-editor.org/rfc/rfc3720#appendix-B.4) gives its check value), flushed before
+anything a call sent goes out, compacted by writing a snapshot beside the journal and renaming it
+into place. Its tests found the host treating a failed journal write like a deadline (the call's
+events waited and ran later), a retry count that reset with each restart, and that an instance
+restarted to isolate a trapping message forgot which connection was which peer's, so a poisoned
+proposal couldn't be traced to its peer: proposals now say whose they are, and a peer sends them
+only after its welcome. Measured on this M4 Air's SSD (indicative, not a benchmark): a call of 400
+proposals, 256 committed, took about 5 ms with its one flush.
+
+**Rooms over the network.** `wrela-serve` runs a server build's rooms over WebTransport with the
+[`wtransport`](https://github.com/BiagioFesta/wtransport) crate (MIT or Apache-2.0, a Rust
+WebTransport implementation over [quinn](https://github.com/quinn-rs/quinn)'s QUIC) and
+[tokio](https://tokio.rs/) (MIT): a session at `/room/<name>?pair=<id>` opens one bidirectional
+stream of length-prefixed frames, and each room runs on a thread of its own. The sessions, the
+rooms running and the bytes every queue holds are bounded, so a connection too slow to keep up is
+closed and its peer comes back. A development certificate is self-signed and passed to the client
+by its hash, as Chrome's `serverCertificateHashes` takes it.
+
+**The browser's connections.** The browser host opens a program's connections with the
+[W3C WebTransport API](https://www.w3.org/TR/webtransport/) in its render worker and keeps
+messages' bytes as the native host does. A headless Chrome test runs a program's client build
+against its server build in `wrela-serve`: it joins a room another peer used first and sees its
+own proposal committed after that peer's. Its tests found that the host read a message's serial
+one word early, and that Chrome's `TextDecoder` refuses a view into the program's shared memory.
+
+**A council's review before merging.** On 2026-10-15 Ryan asked for a council to review the
+networking stack (#218–#226) before it merged: Claude led; Codex GPT-6.1-Sol and GPT-6-Astra
+reviewed the code read-only, then rebutted Claude's answers. They found what the tests had
+missed. Reading a long journal back could compact it before the end and drop the records after
+the snapshot. Events past a call's bytes waited for an event that might never come. A journal
+handle could outlive a failed rename. A connection could propose as any peer by naming its id. No
+client gave its pair id, though the spec said so. Rooms were never reclaimed, a full queue could
+drop a build's stop, and queues were bounded in messages but not bytes. Claude found one more: a
+peer far behind could be sent more of the log than its queue holds, again on every reconnect.
+Answering them, Claude found that a room rebuilt from its journal kept every outcome since its
+snapshot, as acknowledgements aren't kept: enough, after one large call, to make the snapshot
+larger than a host request. The fixes add a host mechanism, a connection's tag, so a room started
+again knows each connection's peer without trusting what a proposal says. Each fix has a
+regression test that fails without it.
+
+Once the stack had merged, Ryan asked for one more round, with an Opus 5.5 subagent as a third
+reviewer beside the two Codex models. All three found the same kind of gap: what a room does after
+a failure. An event past the host's limits during isolation was dropped with the events after it;
+a room at its limits waited for an event that might never come; a quarantined room kept its
+connections and every message they sent. Opus found that one connection could multiply a call's
+output by saying hello again, which made the room drop every peer in a loop, and that a few slow
+connections could exhaust the shared queue budget and get healthy ones closed. GPT-6.1-Sol and
+Opus both found that a build swapped away and back could leave two threads writing one journal.
+The fixes take every failed call one event at a time, close a quarantined room, hold a journal in
+one room host at a time, reserve each connection a share of the queue, and refuse a second hello.
 
 ## A slower opening and a closer 4D eye, 2026-10-14
 
