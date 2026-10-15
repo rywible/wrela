@@ -3,6 +3,7 @@
 // Each frame lays them out once (`layout`): input hits what's drawn. Icons are drawn from
 // lines and shapes, so they're sharp at every size.
 
+use board::Kind
 use paint::{ACCENT, COLORS, FILLS, INKS, TEXT}
 use ui::draw::{DrawList, Rect}
 use ui::text::{Face, Fonts}
@@ -11,22 +12,22 @@ pub enum Tool: Copy + Eq {
     Select,
     Hand,
     Note,
-    Box,
-    Ellipse,
-    Diamond,
+    /// The shape last picked from its flyout.
+    Shape,
     Text,
     Link,
     Pen,
     Frame,
 }
 
+/// The shapes the Shapes tool's flyout offers.
+pub const SHAPES = [Kind::Box, Kind::Ellipse, Kind::Diamond, Kind::Triangle, Kind::Pill]
+
 pub const TOOLS = [
     Tool::Select,
     Tool::Hand,
     Tool::Note,
-    Tool::Box,
-    Tool::Ellipse,
-    Tool::Diamond,
+    Tool::Shape,
     Tool::Text,
     Tool::Link,
     Tool::Pen,
@@ -36,6 +37,10 @@ pub const TOOLS = [
 /// What a control does.
 pub enum Action: Copy + Eq {
     Use { tool: Tool },
+    /// A shape from the flyout: the Shapes tool makes it from now on.
+    Pick { kind: Kind },
+    /// The selection's words a size up.
+    TypeSize,
     Color { index: u32 },
     Front,
     Back,
@@ -65,6 +70,8 @@ pub struct Selection: Copy {
     pub links: bool,
     /// Whether it's all connectors, strokes and text: coloured by ink, not fill.
     pub inks: bool,
+    /// Whether it has words whose size can change (a note's fit itself).
+    pub words: bool,
 }
 
 pub struct Control: Copy + Eq {
@@ -89,7 +96,7 @@ const SWATCH: f32 = 28.0
 
 /// Lays the controls out on a screen `screen` big, in device pixels `u` to a logical one; a
 /// selection brings its bar over it, with a connector's controls when it has one.
-pub fn layout(screen: vec2, u: f32, selection: Option<Selection>) -> Chrome {
+pub fn layout(screen: vec2, u: f32, selection: Option<Selection>, flyout: bool) -> Chrome {
     var c = Chrome {
         controls: Vec::new(),
         panels: Vec::new(),
@@ -106,6 +113,16 @@ pub fn layout(screen: vec2, u: f32, selection: Option<Selection>) -> Chrome {
     for i in 0..TOOLS.len() {
         let r = Rect::new(m + g, top + g + f32(i) * (b + g), b, b)
         c.controls.push(Control { action: Action::Use { tool: TOOLS[i] }, rect: r })
+        // The Shapes tool's flyout, beside it.
+        if flyout && TOOLS[i] == Tool::Shape {
+            let n = f32(SHAPES.len())
+            let x = r.right() + 2.0 * g + 6.0 * u
+            c.panels.push(Rect::new(x, r.y - g, n * b + (n + 1.0) * g, b + 2.0 * g))
+            for k in 0..SHAPES.len() {
+                let at = Rect::new(x + g + f32(k) * (b + g), r.y, b, b)
+                c.controls.push(Control { action: Action::Pick { kind: SHAPES[k] }, rect: at })
+            }
+        }
     }
     // Undo and redo, bottom left.
     let y = screen.y - m - b - 2.0 * g
@@ -127,6 +144,9 @@ pub fn layout(screen: vec2, u: f32, selection: Option<Selection>) -> Chrome {
     if let Some(chosen) = selection {
         let s = chosen.rect
         var buttons: Vec<Action> = Vec::new()
+        if chosen.words {
+            buttons.push(Action::TypeSize)
+        }
         if chosen.links {
             buttons.push(Action::Route)
             buttons.push(Action::Heads)
@@ -208,9 +228,7 @@ pub fn tip(a: Action) -> Text {
             Tool::Select => "Select   V",
             Tool::Hand => "Hand   H or Space",
             Tool::Note => "Sticky note   N",
-            Tool::Box => "Rectangle   R",
-            Tool::Ellipse => "Ellipse   O",
-            Tool::Diamond => "Diamond   D",
+            Tool::Shape => "Shapes   S",
             Tool::Text => "Text   T",
             Tool::Link => "Connector   L",
             Tool::Pen => "Pen   P",
@@ -225,6 +243,14 @@ pub fn tip(a: Action) -> Text {
         Action::ZoomOut => "Zoom out   Cmd -",
         Action::Actual => "Zoom to 100%   Cmd 0",
         Action::Fit => "Fit the board   Shift 1",
+        Action::Pick { kind } => match kind {
+            Kind::Ellipse => "Ellipse   O",
+            Kind::Diamond => "Diamond   D",
+            Kind::Triangle => "Triangle",
+            Kind::Pill => "Pill",
+            _ => "Rectangle   R",
+        },
+        Action::TypeSize => "Text size",
         Action::Route => "Elbow or straight",
         Action::Heads => "Arrowheads",
         Action::Cut => "Cut   Cmd X",
@@ -251,6 +277,8 @@ pub fn draw(
     can_undo: bool,
     can_redo: bool,
     locked: bool,
+    shape: Kind,
+    tips: bool,
 ) {
     for p in c.panels {
         list.rect(
@@ -265,6 +293,7 @@ pub fn draw(
         let lit = hover == Some(k.action)
         let chosen = match k.action {
             Action::Use { tool: t } => t == tool,
+            Action::Pick { kind } => kind == shape,
             _ => false,
         }
         if k.row {
@@ -294,11 +323,11 @@ pub fn draw(
             _ => true,
         }
         let ink = if chosen { ACCENT } else if enabled { TEXT } else { vec4(0.75, 0.76, 0.78, 1.0) }
-        icon(mut list, fonts, k.action, k.rect, u, ink, zoom)
+        icon(mut list, fonts, k.action, k.rect, u, ink, zoom, shape)
     }
     // The lit control's tip, beside a tool or above anything else.
     for k in c.controls {
-        if hover != Some(k.action) || k.row {
+        if !tips || hover != Some(k.action) || k.row {
             continue
         }
         let text = tip(k.action)
@@ -309,7 +338,7 @@ pub fn draw(
         let w = fonts.font(Face::Sans).measure(text, size) + 16.0 * u
         let h = 28.0 * u
         let r = match k.action {
-            Action::Use { .. } => Rect::new(
+            Action::Use { .. } | Action::Pick { .. } => Rect::new(
                 k.rect.right() + 14.0 * u,
                 k.rect.center().y - 0.5 * h,
                 w,
@@ -330,7 +359,7 @@ pub fn draw(
 }
 
 /// A control's icon in `r`: lines and shapes on a grid of logical pixels about its middle.
-fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4, zoom: f32) {
+fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4, zoom: f32, shape: Kind) {
     let c = r.center()
     let w = 1.6 * u
     let p = |x: f32, y: f32| -> vec2 { c + vec2(x, y) * u }
@@ -362,9 +391,7 @@ fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4,
                 list.line(p(-4.0, -2.0), p(4.0, -2.0), ink, width: 1.2 * u)
                 list.line(p(-4.0, 2.0), p(2.0, 2.0), ink, width: 1.2 * u)
             },
-            Tool::Box => list.ring(box(-9.0, -7.0, 18.0, 14.0), ink, radius: 2.0 * u, width: w),
-            Tool::Ellipse => list.ellipse(box(-9.0, -8.0, 18.0, 16.0), ink, width: w),
-            Tool::Diamond => list.diamond(box(-9.5, -9.5, 19.0, 19.0), ink, width: w),
+            Tool::Shape => shape_icon(mut list, shape, c, u, ink, w),
             Tool::Text => {
                 let size = 20.0 * u
                 let tw = fonts.font(Face::Sans).measure("T", size)
@@ -396,15 +423,17 @@ fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4,
                 }
             },
         },
-        Action::Undo => {
-            list.line(p(-7.0, 0.0), p(7.0, 0.0), ink, width: w)
-            list.line(p(-7.0, 0.0), p(-3.0, -4.0), ink, width: w)
-            list.line(p(-7.0, 0.0), p(-3.0, 4.0), ink, width: w)
-        },
-        Action::Redo => {
-            list.line(p(-7.0, 0.0), p(7.0, 0.0), ink, width: w)
-            list.line(p(7.0, 0.0), p(3.0, -4.0), ink, width: w)
-            list.line(p(7.0, 0.0), p(3.0, 4.0), ink, width: w)
+        Action::Undo => turn(mut list, c, u, ink, w, back: true),
+        Action::Redo => turn(mut list, c, u, ink, w, back: false),
+        Action::Pick { kind } => shape_icon(mut list, kind, c, u, ink, w),
+        Action::TypeSize => {
+            let big = 17.0 * u
+            let small = 12.0 * u
+            borrow font = fonts.font(Face::Sans)
+            let wa = font.measure("A", big)
+            let x = c.x - 0.5 * (wa + font.measure("a", small))
+            let _ = list.text(fonts, Face::Sans, "A", big, vec2(x, c.y - 0.66 * big), ink)
+            let _ = list.text(fonts, Face::Sans, "a", small, vec2(x + wa, c.y - 0.66 * big + 0.29 * big), ink)
         },
         Action::ZoomIn => {
             list.line(p(-6.0, 0.0), p(6.0, 0.0), ink, width: w)
@@ -465,7 +494,7 @@ fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4,
 fn the_selection_bar_stays_on_the_screen() {
     let screen = vec2(640.0, 480.0)
     // A selection at the top left: the bar goes below it, and inside the screen.
-    let c = layout(screen, 1.0, Some(Selection { rect: Rect::new(x: 0.0, y: 5.0, w: 40.0, h: 40.0), links: false, inks: false }))
+    let c = layout(screen, 1.0, Some(Selection { rect: Rect::new(x: 0.0, y: 5.0, w: 40.0, h: 40.0), links: false, inks: false, words: false }), flyout: false)
     let bar = c.panels[3]
     assert(bar.y > 45.0 && bar.x >= MARGIN, f"{bar.x}, {bar.y}")
     assert(at(c, bar.center()).is_some(), "the bar's middle is a control")
@@ -504,5 +533,37 @@ fn menu_row(list: mut DrawList, fonts: Fonts, k: Control, u: f32, lit: bool, loc
         let kw = fonts.font(Face::Sans).measure(keys, size)
         let _ = list.text(fonts, Face::Sans, keys, size, vec2(r.right() - 10.0 * u - kw, y), vec4(0.55, 0.56, 0.6, 1.0))
     }
+}
+
+/// A shape's icon, about `c`.
+fn shape_icon(list: mut DrawList, kind: Kind, c: vec2, u: f32, ink: vec4, w: f32) {
+    let box = |x: f32, y: f32, bw: f32, bh: f32| -> Rect { Rect::new(c.x + x * u, c.y + y * u, bw * u, bh * u) }
+    match kind {
+        Kind::Ellipse => list.ellipse(box(-9.0, -8.0, 18.0, 16.0), ink, width: w),
+        Kind::Diamond => list.diamond(box(-9.5, -9.5, 19.0, 19.0), ink, width: w),
+        Kind::Triangle => list.triangle(c + vec2(0.0, -8.5) * u, c + vec2(-9.5, 7.5) * u, c + vec2(9.5, 7.5) * u, ink, width: w),
+        Kind::Pill => list.ring(box(-10.0, -6.0, 20.0, 12.0), ink, radius: 6.0 * u, width: w),
+        _ => list.ring(box(-9.0, -7.0, 18.0, 14.0), ink, radius: 2.0 * u, width: w),
+    }
+}
+
+/// Undo's (`back`) or redo's arrow: a turn over the top, its head pointing back down.
+fn turn(list: mut DrawList, c: vec2, u: f32, ink: vec4, w: f32, back: bool) {
+    let side = if back { -1.0 } else { 1.0 }
+    // Half a circle over the top, from the head's side across.
+    let middle = c + vec2(0.0, 2.0) * u
+    let radius = 6.0 * u
+    var last = middle + vec2(side * radius, 0.0)
+    for i in 1..13 {
+        let a = 3.14159265 * f32(i) / 12.0
+        let next = middle + vec2(side * cos(a) * radius, -sin(a) * radius)
+        list.line(last, next, ink, width: w)
+        last = next
+    }
+    // The head, at the start of the arc, pointing down.
+    let tip = middle + vec2(side * radius, 3.5 * u)
+    list.line(tip, tip + vec2(-3.2, -3.2) * u, ink, width: w)
+    list.line(tip, tip + vec2(3.2, -3.2) * u, ink, width: w)
+    list.line(middle + vec2(side * radius, 0.0), tip, ink, width: w)
 }
 

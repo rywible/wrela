@@ -10,6 +10,10 @@ pub enum Kind: Copy + Eq + Serialize {
     Box,
     Ellipse,
     Diamond,
+    /// Its point at the middle of its top, its base along its bottom.
+    Triangle,
+    /// Rounded fully at its ends.
+    Pill,
     Text,
     Pen,
     Link,
@@ -39,6 +43,8 @@ pub struct Item: Clone + Eq + Serialize {
     /// A locked item stays as it is: it can be selected, but not moved, resized, recoloured,
     /// typed into or deleted until it's unlocked.
     pub locked: bool,
+    /// Its words' size (world units an em), or 0 for its kind's (a note's fits itself).
+    pub type_size: f32,
 }
 
 /// A link's style: bits for elbows (else straight), and an arrowhead at each end.
@@ -69,6 +75,7 @@ impl Item {
             to: 0,
             style: if kind == Kind::Link { CONNECTOR } else { 0 },
             locked: false,
+            type_size: 0.0,
         }
     }
 
@@ -86,7 +93,9 @@ impl Item {
     pub fn side(self, d: vec2) -> vec2 {
         let c = self.center()
         if abs(d.x) >= abs(d.y) {
-            vec2(if d.x >= 0.0 { self.at.x + self.size.x } else { self.at.x }, c.y)
+            // A triangle's slopes cross its middle height a quarter in from its corners.
+            let inset = if self.kind == Kind::Triangle { 0.25 * self.size.x } else { 0.0 }
+            vec2(if d.x >= 0.0 { self.at.x + self.size.x - inset } else { self.at.x + inset }, c.y)
         } else {
             vec2(c.x, if d.y >= 0.0 { self.at.y + self.size.y } else { self.at.y })
         }
@@ -101,12 +110,33 @@ impl Item {
     }
 
     /// Where the line from its centre toward `toward` leaves its edge.
+    /// A triangle's corners: its point, then its base's left and right.
+    pub fn corners(self) -> (vec2, vec2, vec2) {
+        let r = self.rect()
+        (vec2(r.x + 0.5 * r.w, r.y), vec2(r.x, r.bottom()), vec2(r.right(), r.bottom()))
+    }
+
     pub fn edge(self, toward: vec2) -> vec2 {
         let c = self.center()
         let d = toward - c
         let h = 0.5 * self.size
         if d.x == 0.0 && d.y == 0.0 {
             return c
+        }
+        if self.kind == Kind::Triangle {
+            // The nearest side the ray from the middle crosses.
+            let (a, b, z) = self.corners()
+            var reach = 1.0e9
+            for (p, q) in [(a, b), (b, z), (z, a)] {
+                let e = q - p
+                let den = d.x * e.y - d.y * e.x
+                if abs(den) > 1.0e-9 {
+                    let t = ((p.x - c.x) * e.y - (p.y - c.y) * e.x) / den
+                    let u = ((p.x - c.x) * d.y - (p.y - c.y) * d.x) / den
+                    if t > 0.0 && u >= 0.0 && u <= 1.0 { reach = min(reach, t) }
+                }
+            }
+            return c + d * reach
         }
         let q = abs(d) / h
         let reach = match self.kind {
@@ -139,6 +169,21 @@ impl Item {
             Kind::Diamond => {
                 let q = abs(p - self.center()) / (0.5 * self.size + vec2(slack))
                 q.x + q.y <= 1.0
+            },
+            Kind::Triangle => {
+                let (a, b, z) = self.corners()
+                let side = |p0: vec2, p1: vec2| -> f32 { (p1.x - p0.x) * (p.y - p0.y) - (p1.y - p0.y) * (p.x - p0.x) }
+                let inside = side(a, b) <= 0.0 && side(b, z) <= 0.0 && side(z, a) <= 0.0
+                inside || distance_to_line(p, a, b) <= slack || distance_to_line(p, b, z) <= slack ||
+                    distance_to_line(p, z, a) <= slack
+            },
+            Kind::Pill => {
+                // Within half its height (or width) of the line along its middle.
+                let r = self.rect()
+                let h = 0.5 * min(r.w, r.h)
+                let c = r.center()
+                let along = if r.w >= r.h { vec2(0.5 * r.w - h, 0.0) } else { vec2(0.0, 0.5 * r.h - h) }
+                distance_to_line(p, c - along, c + along) <= h + slack
             },
             _ => {
                 let r = self.rect()
@@ -730,5 +775,19 @@ fn a_frame_holds_what_is_inside_it_and_lies_under_it() {
     assert(b.touching(Rect::new(x: 40.0, y: 40.0, w: 200.0, h: 200.0)) == Vec::from([inner]))
     assert(b.touching(Rect::new(x: -10.0, y: -10.0, w: 420.0, h: 320.0)) == Vec::from([f, inner, across]))
     assert(b.with_contents([f, across]) == Vec::from([f, inner, across]))
+}
+
+@test
+fn triangles_and_pills_are_hit_where_they_are_drawn() {
+    var t = Item::new(Kind::Triangle, vec2(0.0), vec2(100.0), color: 0)
+    assert(t.holds(vec2(50.0, 60.0), slack: 0.0), "inside")
+    assert(!t.holds(vec2(5.0, 10.0), slack: 0.0), "the empty top left corner")
+    // A connector from its middle straight left meets its left slope.
+    let e = t.edge(vec2(-100.0, 50.0))
+    assert(abs(e.x - 25.0) < 1.0e-3 && abs(e.y - 50.0) < 1.0e-3, f"{e.x}, {e.y}")
+    assert(t.side(vec2(-1.0, 0.0)) == vec2(25.0, 50.0))
+    t.kind = Kind::Pill
+    t.size = vec2(200.0, 60.0)
+    assert(t.holds(vec2(100.0, 5.0), slack: 0.0) && !t.holds(vec2(3.0, 3.0), slack: 0.0), "its rounded end")
 }
 

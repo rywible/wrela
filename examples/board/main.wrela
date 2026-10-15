@@ -123,6 +123,11 @@ pub struct App {
     menu: Option<vec2>,
     /// What a move carries: the selection, and what's inside the frames in it.
     carried: Vec<u32>,
+    /// The shape the Shapes tool makes, and whether its flyout is open.
+    shape: Kind,
+    flyout: bool,
+    /// The control the pointer is over, and since when: its tip shows after a moment.
+    hovering: Option<(Action, f32)>,
 }
 
 pub fn init() -> App {
@@ -172,6 +177,9 @@ pub fn init() -> App {
         last_time: 0.0,
         menu: None,
         carried: Vec::new(),
+        shape: Kind::Box,
+        flyout: false,
+        hovering: None,
     }
 }
 
@@ -359,6 +367,7 @@ fn selection(s: App) -> Option<Selection> {
     let Some(r) = s.board.extent(s.selected) else { return None }
     var links = false
     var inks = true
+    var words = false
     for id in s.selected {
         if let Some(i) = s.board.index(id) {
             let kind = s.board.items[i].kind
@@ -368,9 +377,18 @@ fn selection(s: App) -> Option<Selection> {
             if kind != Kind::Link && kind != Kind::Pen && kind != Kind::Text {
                 inks = false
             }
+            if sizes_words(kind) {
+                words = true
+            }
         }
     }
-    Some(Selection { rect: s.view.rect(r), links, inks })
+    Some(Selection { rect: s.view.rect(r), links, inks, words })
+}
+
+/// Whether an item of `kind` has words whose size the bar changes: not a note (its words fit
+/// it), a frame (its title) or a stroke.
+fn sizes_words(kind: Kind) -> bool {
+    kind != Kind::Note && kind != Kind::Frame && kind != Kind::Pen
 }
 
 fn layout(s: App) -> Chrome {
@@ -379,7 +397,7 @@ fn layout(s: App) -> Chrome {
         Drag::Control => selection(s),
         _ => None,
     }
-    var c = chrome::layout(s.screen, unit(s), bar)
+    var c = chrome::layout(s.screen, unit(s), bar, flyout: s.flyout && s.drag == Drag::Idle)
     if let Some(at) = s.menu {
         let entries: Vec<Action> = if s.selected.is_empty() {
             Vec::from([Action::Paste, Action::SelectAll, Action::Fit])
@@ -791,7 +809,29 @@ fn act(s: mut App, a: Action) {
     match a {
         Action::Use { tool } => {
             stop_typing(mut s)
+            // The Shapes tool opens (or closes) its flyout.
+            s.flyout = tool == Tool::Shape && !(s.flyout && s.tool == Tool::Shape)
             s.tool = tool
+        },
+        Action::Pick { kind } => {
+            s.shape = kind
+            s.tool = Tool::Shape
+            s.flyout = false
+        },
+        Action::TypeSize => {
+            checkpoint(mut s)
+            for i in 0..s.board.items.len() {
+                borrow it = s.board.items[i]
+                if has(s.selected, it.id) && !it.locked && sizes_words(it.kind) {
+                    let usual = match it.kind { Kind::Text => paint::TEXT_SIZE, Kind::Link => 14.0, _ => 16.0 }
+                    let next = paint::next_size(it.type_size, usual)
+                    s.board.items[i].type_size = next
+                    if s.board.items[i].kind == Kind::Text {
+                        borrow font = s.fonts.font(Face::Sans)
+                        s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
+                    }
+                }
+            }
         },
         Action::Color { index } => recolor(mut s, index),
         Action::Front => if !s.selected.is_empty() {
@@ -950,6 +990,8 @@ fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
         act(mut s, a)
         return
     }
+    // A press on the board closes the shapes' flyout.
+    s.flyout = false
     // A press away from an open menu only closes it.
     if s.menu.is_some() {
         s.menu = None
@@ -1005,9 +1047,7 @@ fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
             begin_typing(mut s, id, 0, keep: false)
             s.tool = Tool::Select
         },
-        Tool::Box => s.drag = Drag::Shape { from: w },
-        Tool::Ellipse => s.drag = Drag::Shape { from: w },
-        Tool::Diamond => s.drag = Drag::Shape { from: w },
+        Tool::Shape => s.drag = Drag::Shape { from: w },
         Tool::Frame => s.drag = Drag::Shape { from: w },
         Tool::Link => if let Some(id) = s.board.hit(w, slack(s)) {
             let Some(i) = s.board.index(id) else { return }
@@ -1201,18 +1241,15 @@ fn released(s: mut App, at: vec2, mods: Mods) {
             }
         },
         Drag::Shape { from } => {
-            let kind = match s.tool {
-                Tool::Ellipse => Kind::Ellipse,
-                Tool::Diamond => Kind::Diamond,
-                Tool::Frame => Kind::Frame,
-                _ => Kind::Box,
-            }
+            let kind = if s.tool == Tool::Frame { Kind::Frame } else { s.shape }
             let d = abs(w - from) * s.view.scale()
             let (lo, size) = if d.x < 6.0 * unit(s) && d.y < 6.0 * unit(s) {
                 // A click: the shape's usual size, about it.
                 let size = match kind {
                     Kind::Ellipse => vec2(160.0),
                     Kind::Diamond => vec2(180.0),
+                    Kind::Triangle => vec2(180.0, 160.0),
+                    Kind::Pill => vec2(220.0, 80.0),
                     Kind::Frame => vec2(640.0, 420.0),
                     _ => vec2(200.0, 120.0),
                 }
@@ -1223,6 +1260,8 @@ fn released(s: mut App, at: vec2, mods: Mods) {
             let color = match kind {
                 Kind::Ellipse => 5,
                 Kind::Diamond => 3,
+                Kind::Triangle => 0,
+                Kind::Pill => 2,
                 Kind::Frame => 7,
                 _ => 4,
             }
@@ -1342,9 +1381,19 @@ fn key_down(s: mut App, key: Key, repeat: bool, mods: Mods) {
             Key::V => Some(Tool::Select),
             Key::H => Some(Tool::Hand),
             Key::N => Some(Tool::Note),
-            Key::R => Some(Tool::Box),
-            Key::O => Some(Tool::Ellipse),
-            Key::D => Some(Tool::Diamond),
+            Key::S => Some(Tool::Shape),
+            Key::R => {
+                s.shape = Kind::Box
+                Some(Tool::Shape)
+            },
+            Key::O => {
+                s.shape = Kind::Ellipse
+                Some(Tool::Shape)
+            },
+            Key::D => {
+                s.shape = Kind::Diamond
+                Some(Tool::Shape)
+            },
             Key::T => Some(Tool::Text),
             Key::L => Some(Tool::Link),
             Key::P => Some(Tool::Pen),
@@ -1382,6 +1431,16 @@ fn draw(s: mut App, screen: vec2) {
     }
     let near = slack(s)
     let locked = all_locked(s)
+    // A control's tip shows once the pointer has rested on it for a moment.
+    let lit = if s.drag == Drag::Idle { hover_control } else { None }
+    s.hovering = match lit {
+        Some(a) => match s.hovering {
+            Some((was, since)) => if was == a { Some((was, since)) } else { Some((a, s.time)) },
+            None => Some((a, s.time)),
+        },
+        None => None,
+    }
+    let tips = match s.hovering { Some((_, since)) => s.time - since > 0.45, None => false }
     mut list = s.draw
     list.clear(screen)
     paint::grid(mut list, s.view, screen)
@@ -1472,9 +1531,12 @@ fn draw(s: mut App, screen: vec2) {
             let hi = max(a, s.pointer)
             let r = Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)
             let ink = vec4(ACCENT.xyz, 0.9)
-            match s.tool {
-                Tool::Ellipse => list.ellipse(r, ink, width: ring),
-                Tool::Diamond => list.diamond(r, ink, width: ring),
+            let kind = if s.tool == Tool::Frame { Kind::Frame } else { s.shape }
+            match kind {
+                Kind::Ellipse => list.ellipse(r, ink, width: ring),
+                Kind::Diamond => list.diamond(r, ink, width: ring),
+                Kind::Triangle => list.triangle(vec2(r.center().x, r.y), vec2(r.x, r.bottom()), vec2(r.right(), r.bottom()), ink, width: ring),
+                Kind::Pill => list.ring(r, ink, radius: 0.5 * min(r.w, r.h), width: ring),
                 _ => list.ring(r, ink, radius: 6.0 * s.view.scale(), width: ring),
             }
         },
@@ -1543,6 +1605,8 @@ fn draw(s: mut App, screen: vec2) {
         can_undo: s.history.can_undo(),
         can_redo: s.history.can_redo(),
         locked: locked,
+        shape: s.shape,
+        tips: tips,
     )
     // Glyphs for what was drawn as `?`, from the host's fonts, for the frames after this one.
     s.renderer.fetch(mut s.fonts, list)
@@ -1886,5 +1950,21 @@ fn a_frame_carries_what_is_inside_it(game: App) {
     let note = screen_rect(game, 1)
     assert(abs(note.center().x - 310.0) < 0.01, f"the note at {note.center().x}")
     assert(abs(screen_rect(game, 0).x - 160.0) < 0.01)
+}
+
+/// The Shapes tool opens its flyout; its triangle is picked, and a click makes one.
+@test(frames: 13, input: "scripts/flyout.json")
+fn the_shapes_flyout_picks_a_triangle(game: App) {
+    assert(game.board.items.len() == 1, f"{game.board.items.len()} items")
+    assert(game.board.items[0].kind == Kind::Triangle)
+    assert(game.shape == Kind::Triangle && !game.flyout)
+}
+
+/// The text size control steps a text's words up twice: 20, then 28, then 40.
+@test(frames: 12, input: "scripts/size.json")
+fn text_size_steps_up(game: App) {
+    let t = game.board.items[0].clone()
+    assert(t.kind == Kind::Text && t.type_size == 40.0, f"{t.type_size}")
+    assert(t.size.y > 40.0, "it grew to hold its words")
 }
 

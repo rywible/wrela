@@ -70,9 +70,13 @@ fn room(it: Item) -> Rect {
     let keep = match it.kind {
         Kind::Ellipse => 0.72,
         Kind::Diamond => 0.5,
+        Kind::Triangle => 0.5,
         _ => 1.0,
     }
-    let c = r.center()
+    // A triangle's room is low in it, where it's widest.
+    let c = if it.kind == Kind::Triangle { vec2(r.center().x, r.y + 0.66 * r.h) } else {
+        r.center()
+    }
     let size = vec2(r.w, r.h) * keep
     Rect::new(c.x - 0.5 * size.x, c.y - 0.5 * size.y, size.x, size.y)
 }
@@ -90,21 +94,16 @@ pub fn layout(font: Font, it: Item) -> Layout {
         return Layout { size, lines, xs, top: it.at.y - TITLE + 0.5 * (TITLE - line) - 2.0, line }
     }
     if it.kind == Kind::Text {
-        let lines = font.wrap(text, TEXT_SIZE, it.size.x)
+        let size = sized(it, TEXT_SIZE)
+        let lines = font.wrap(text, size, it.size.x)
         var xs: Vec<f32> = Vec::new()
         for _l in lines {
             xs.push(it.at.x)
         }
-        return Layout {
-            size: TEXT_SIZE,
-            lines,
-            xs,
-            top: it.at.y,
-            line: font.line_height(TEXT_SIZE),
-        }
+        return Layout { size, lines, xs, top: it.at.y, line: font.line_height(size) }
     }
     let r = room(it)
-    var size = if it.kind == Kind::Link { LABEL_SIZE } else { SHAPE_SIZE }
+    var size = sized(it, if it.kind == Kind::Link { LABEL_SIZE } else { SHAPE_SIZE })
     var lines = font.wrap(text, size, r.w)
     if it.kind == Kind::Note {
         for s in NOTE_SIZES {
@@ -150,7 +149,10 @@ pub fn label(b: mut Board, font: Font, typing: Option<Typing>) {
         }
         let route = b.route(b.items[i])
         let mid = middle(route)
-        let typed = match typing { Some(t) => t.id == b.items[i].id, None => false }
+        let typed = match typing {
+            Some(t) => t.id == b.items[i].id,
+            None => false,
+        }
         let text = b.items[i].text.as_str()
         if text.is_empty() && !typed {
             b.items[i].at = mid
@@ -158,11 +160,15 @@ pub fn label(b: mut Board, font: Font, typing: Option<Typing>) {
             continue
         }
         var widest = 24.0
-        let lines = font.wrap(text, LABEL_SIZE, LABEL_WIDTH)
+        let em = sized(b.items[i], LABEL_SIZE)
+        let lines = font.wrap(text, em, LABEL_WIDTH)
         for l in lines {
-            widest = max(widest, font.measure(text.slice(l.0, l.1), LABEL_SIZE))
+            widest = max(widest, font.measure(text.slice(l.0, l.1), em))
         }
-        let size = vec2(widest + 2.0 * LABEL_PAD + 2.0, f32(max(lines.len(), 1)) * font.line_height(LABEL_SIZE) + 2.0 * LABEL_PAD)
+        let size = vec2(
+            widest + 2.0 * LABEL_PAD + 2.0,
+            f32(max(lines.len(), 1)) * font.line_height(em) + 2.0 * LABEL_PAD,
+        )
         b.items[i].size = size
         b.items[i].at = mid - 0.5 * size
     }
@@ -170,8 +176,29 @@ pub fn label(b: mut Board, font: Font, typing: Option<Typing>) {
 
 /// How tall a text item is for its text.
 pub fn text_height(font: Font, it: Item) -> f32 {
-    let lines = font.wrap(it.text.as_str(), TEXT_SIZE, it.size.x)
-    f32(max(lines.len(), 1)) * font.line_height(TEXT_SIZE)
+    let size = sized(it, TEXT_SIZE)
+    let lines = font.wrap(it.text.as_str(), size, it.size.x)
+    f32(max(lines.len(), 1)) * font.line_height(size)
+}
+
+/// An item's words' size: its own, or `usual`.
+fn sized(it: Item, usual: f32) -> f32 {
+    if it.type_size > 0.0 { it.type_size } else { usual }
+}
+
+/// The sizes the bar steps words through, smallest first.
+pub const TYPE_SIZES = [12.0, 16.0, 20.0, 28.0, 40.0, 56.0]
+
+/// The next size up from `now` (an item's, or its kind's `usual`), round to the smallest after
+/// the largest.
+pub fn next_size(now: f32, usual: f32) -> f32 {
+    let at = if now > 0.0 { now } else { usual }
+    for size in TYPE_SIZES {
+        if size > at + 0.01 {
+            return size
+        }
+    }
+    TYPE_SIZES[0]
 }
 
 /// Which line byte offset `at` is on.
@@ -265,7 +292,11 @@ pub fn items(
             continue
         }
         let r = v.rect(it.rect())
-        list.rect(Rect::new(r.x, r.y + 1.0 * k, r.w, r.h), vec4(0.0, 0.0, 0.0, 0.04), radius: 4.0 * k)
+        list.rect(
+            Rect::new(r.x, r.y + 1.0 * k, r.w, r.h),
+            vec4(0.0, 0.0, 0.0, 0.04),
+            radius: 4.0 * k,
+        )
         list.rect(r, FILLS[it.color % COLORS], radius: 4.0 * k)
         list.ring(r, FRAME_EDGE, radius: 4.0 * k, width: max(1.0 * v.unit, 1.0))
         words(mut list, fonts, font, it, v, FRAME_TITLE, typing, composing, blink)
@@ -304,6 +335,17 @@ pub fn items(
             Kind::Diamond => {
                 list.diamond(r, fill)
                 list.diamond(r, ink, width: edge)
+            },
+            Kind::Triangle => {
+                let (a, b0, z) = it.corners()
+                let (sa, sb, sz) = (v.to_screen(a), v.to_screen(b0), v.to_screen(z))
+                list.triangle(sa, sb, sz, fill)
+                list.triangle(sa, sb, sz, ink, width: edge)
+            },
+            Kind::Pill => {
+                let round = 0.5 * min(r.w, r.h)
+                list.rect(r, fill, radius: round)
+                list.ring(r, ink, radius: round, width: edge)
             },
             Kind::Pen => {
                 let w = max(PEN_WIDTH * k, 1.0)
@@ -367,7 +409,10 @@ fn words(
         for c in composing {
             add.push_char(c)
         }
-        let at = match typed { Some(a) => a.x, None => 0 }
+        let at = match typed {
+            Some(a) => a.x,
+            None => 0,
+        }
         let (with, after) = clip::inserted(it.text.as_str(), at, add.as_str())
         shown.text = take with
         text(mut list, fonts, font, shown, v, color, Some(vec2u(after)), blink)
@@ -481,7 +526,9 @@ fn text(
             let line = text.slice(from, to)
             let x0 = l.xs[i] + font.caret_at(line, l.size, a - from)
             // A selection that runs on past the line's end shows a little past it.
-            let x1 = l.xs[i] + font.caret_at(line, l.size, b - from) + if hi > to { 0.3 * l.size } else { 0.0 }
+            let x1 = l.xs[i] + font.caret_at(line, l.size, b - from) + if hi > to {
+                0.3 * l.size
+            } else { 0.0 }
             let top = v.to_screen(vec2(x0, l.top + f32(i) * l.line))
             list.rect(Rect::new(top.x, top.y, (x1 - x0) * k, l.line * k), SELECTED_TEXT)
         }
@@ -545,4 +592,16 @@ fn the_caret_and_a_click_agree() {
     assert(offset_at(font, t, l, c + vec2(0.5, 0.5 * l.line)) == 14)
     // A click below the last line goes to that line.
     assert(offset_at(font, t, l, vec2(1000.0, 500.0)) == t.text.len())
+}
+
+@test
+fn word_sizes_step_up_and_round() {
+    assert(next_size(now: 0.0, usual: 16.0) == 20.0, "from a kind's own size")
+    assert(next_size(now: 20.0, usual: 16.0) == 28.0)
+    assert(next_size(now: 56.0, usual: 16.0) == 12.0, "round to the smallest")
+    var t = Item::new(Kind::Text, vec2(0.0), vec2(400.0, 30.0), color: 7)
+    t.text = String::from("hi")
+    t.type_size = 40.0
+    let font = Font::of(Face::Sans)
+    assert(layout(font, t).size == 40.0 && text_height(font, t) == font.line_height(40.0))
 }
