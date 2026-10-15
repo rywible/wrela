@@ -7,9 +7,9 @@
 use body::{BLADE_THICK, BLADE_WIDTH, GUARD_AT, HEAD, POINT_AT}
 use engine::creature::{Creature, Skeleton, creature, smooth}
 use engine::render::Shaded
-use std::derive::Box3
+use std::derive::{Box3, Interval}
 use std::field::{
-    Blend, HalfSpace, RoundCone, SmoothSubtract, SmoothUnion, Translate, cuboid, ellipsoid,
+    Blend, HalfSpace, Noise, RoundCone, SmoothSubtract, SmoothUnion, Translate, cuboid, ellipsoid,
     half_space, round_cone, top, width,
 }
 use std::io::print
@@ -100,6 +100,46 @@ const HOOD_RECESS = HOOD_OUTER
         k: 0.004,
     )
 
+/// Creases in hanging cloth, as a noise for `displace`: `count` folds round the vertical axis
+/// (uneven round it), fading in from `top` down to `bottom` (heights in the shape's own space),
+/// and none at the axis itself.
+pub struct Folds: Copy + GpuData {
+    pub count: f32,
+    pub top: f32,
+    pub bottom: f32,
+}
+
+impl Noise for Folds {
+    fn value(self, p: vec3) -> f32 {
+        let a = atan2(p.x, p.z)
+        let f = sin(self.count * a + 1.7 * sin(3.0 * a) + 0.8 * sin(5.0 * a + 1.0))
+        f * smoothstep(self.top, self.bottom, p.y) * smoothstep(0.03, 0.12, length(p.xz))
+    }
+
+    fn range(self) -> Interval {
+        Interval { lo: -1.0, hi: 1.0 }
+    }
+
+    /// Steepest close to the axis, where the folds' fade holds it to about a tenth of a metre.
+    fn lipschitz(self) -> f32 {
+        (self.count + 8.6) / 0.1 + 1.0 / max(abs(self.top - self.bottom), 0.05)
+    }
+
+    fn bandlimit(self) -> f32 {
+        (self.count + 8.6) / (6.2831855 * 0.1)
+    }
+}
+
+/// The hood's size and where it sits: a little larger than the head it would hold, and pushed
+/// forward over it, so its void is deep from every side.
+const HOOD_SCALE: f32 = 1.08
+const HOOD_AT = HEAD + vec3(0.0, 0.0, 0.025)
+
+/// A point given in the hood's own measure (`HOOD_OUTER`'s), in the body's space.
+fn in_hood(p: vec3) -> vec3 {
+    HOOD_AT + p * HOOD_SCALE
+}
+
 /// A hanging empty sleeve on the climber's left (`side` 1) or right (-1): a slim bell from under
 /// the hood's drapes to below the hip, hollow from its mouth, with a ragged tail off its back edge. `ahead`
 /// and `low` vary the two, so they never mirror.
@@ -111,25 +151,25 @@ fn sleeve(
     let x = side * SLEEVE_OUT
     round_cone(
         vec3(0.0, 1.5, 0.02),
-        vec3(0.05 * side, 0.86 + low, 0.08 + ahead),
+        vec3(0.05 * side, 0.74 + low, 0.1 + ahead),
         r_top: 0.07,
-        r_bottom: 0.115,
+        r_bottom: 0.135,
     )
         .smooth_union(
             round_cone(
-                vec3(0.05 * side, 0.96 + low, -0.02 + ahead),
-                vec3(0.07 * side, 0.56 + low, -0.06 + ahead),
-                r_top: 0.06,
-                r_bottom: 0.006,
+                vec3(0.05 * side, 0.86 + low, -0.02 + ahead),
+                vec3(0.07 * side, 0.48 + low, -0.07 + ahead),
+                r_top: 0.075,
+                r_bottom: 0.025,
             ),
             k: 0.05,
         )
         .smooth_subtract(
             round_cone(
                 vec3(0.02 * side, 1.22, 0.05),
-                vec3(0.06 * side, 0.78 + low, 0.09 + ahead),
+                vec3(0.06 * side, 0.65 + low, 0.11 + ahead),
                 r_top: 0.035,
-                r_bottom: 0.095,
+                r_bottom: 0.115,
             ),
             k: 0.01,
         )
@@ -149,7 +189,7 @@ pub fn sleeve_pivot(k: u32) -> vec3 {
 
 /// Where sleeve `k`'s mouth is, in the body's space: its darkness leaves there.
 pub fn cuff(k: u32) -> vec3 {
-    vec3(SIDE[k] * (SLEEVE_OUT + 0.05), 0.86 + LOW[k], 0.08 + AHEAD[k])
+    vec3(SIDE[k] * (SLEEVE_OUT + 0.05), 0.74 + LOW[k], 0.1 + AHEAD[k])
 }
 
 /// How far out from the middle each sleeve hangs (m): in under the mantle's edge.
@@ -180,18 +220,25 @@ pub fn hood() -> Creature<Paint> {
             ellipsoid(vec3(0.355, 0.37, 0.265)).translate(vec3(0.0, 1.4, -0.01)),
             k: 0.01,
         )
-        .smooth_subtract(HOOD_OPENING.translate(HEAD), k: 0.01)
+        .smooth_subtract(HOOD_OPENING.scale(HOOD_SCALE).translate(HOOD_AT), k: 0.01)
     creature(s)
         .join(
             "hood",
             root,
-            HOOD_OUTER.smooth_subtract(HOOD_OPENING, k: 0.012)
+            HOOD_OUTER.displace(Folds { count: 9.0, top: 0.12, bottom: -0.3 }, amp: 0.006)
+                .smooth_subtract(HOOD_OPENING, k: 0.012)
                 .smooth_subtract(HOOD_LINING, k: 0.004)
-                .translate(HEAD)
+                .scale(HOOD_SCALE)
+                .translate(HOOD_AT)
                 .with(HOOD),
         )
-        .join("hood recess", root, HOOD_RECESS.translate(HEAD).with(VOID))
-        .join("mantle", root, mantle.with(HOOD), seam: smooth(0.03))
+        .join("hood recess", root, HOOD_RECESS.scale(HOOD_SCALE).translate(HOOD_AT).with(VOID))
+        .join(
+            "mantle",
+            root,
+            mantle.displace(Folds { count: 11.0, top: 1.74, bottom: 1.36 }, amp: 0.012).with(HOOD),
+            seam: smooth(0.03),
+        )
         .bounded(Box3 { lo: vec3(-0.46, 1.22, -0.45), hi: vec3(0.46, 2.16, 0.45) })
 }
 
@@ -221,10 +268,11 @@ pub fn head() -> Creature<Paint> {
             root,
             HOOD_OUTER.smooth_subtract(HOOD_OPENING, k: 0.012)
                 .smooth_subtract(HOOD_LINING, k: 0.004)
-                .translate(HEAD)
+                .scale(HOOD_SCALE)
+                .translate(HOOD_AT)
                 .with(HOOD),
         )
-        .join("hood recess", root, HOOD_RECESS.translate(HEAD).with(VOID))
+        .join("hood recess", root, HOOD_RECESS.scale(HOOD_SCALE).translate(HOOD_AT).with(VOID))
         .join(
             "left empty sleeve",
             root,
@@ -277,7 +325,12 @@ pub fn sword() -> Creature<Paint> {
         .smooth_intersect(side(TIP, shoulder, 0.0), k: 0.002)
     let wedge = half_space(vec3(taper, 0.0, 1.0), thick + taper * BACK)
         .smooth_intersect(half_space(vec3(taper, 0.0, -1.0), thick + taper * BACK), k: 0.002)
-    let blade = outline(0.0).smooth_intersect(wedge, k: 0.002)
+    // Two notches bitten out of the back toward the point.
+    let notches = [
+        ellipsoid(vec3(0.022, 0.016, 0.05)).translate(vec3(BACK, 1.4, 0.0)),
+        ellipsoid(vec3(0.018, 0.013, 0.05)).translate(vec3(BACK, 1.5, 0.0)),
+    ].union()
+    let blade = outline(0.0).smooth_intersect(wedge, k: 0.002).smooth_subtract(notches, k: 0.003)
     // The honed bevel: the blade less its outline moved in from the edge (the back is unground);
     // the flat is the rest, so the two meet at one line and never share a surface.
     let inner = side(edge_low, belly, 0.02).smooth_intersect(side(belly, TIP, 0.02), k: 0.003)
@@ -333,13 +386,13 @@ pub fn sword() -> Creature<Paint> {
     let guard = cuboid(vec3(0.08, 0.024, 0.026))
         .translate(vec3(0.0, GUARD_AT - 0.012, 0.0))
         .smooth_union(horns.union(), k: 0.012)
-    // Seven raised turns of binding up the leather. Eight short facets per turn keep the
+    // Eight raised turns of binding up the long leather grip. Eight short facets per turn keep the
     // binding in contact around the whole grip.
-    var wraps = [round_cone(vec3(0.0), vec3(0.0), r_top: 0.004, r_bottom: 0.004); 56]
-    for i in 0..56 {
+    var wraps = [round_cone(vec3(0.0), vec3(0.0), r_top: 0.004, r_bottom: 0.004); 64]
+    for i in 0..64 {
         let a = f32(i) * 0.7853982
         let b = f32(i + 1) * 0.7853982
-        let y = -0.2 + f32(i) * 0.0068
+        let y = -0.26 + f32(i) * 0.0068
         wraps[i] = round_cone(
             vec3(cos(a) * 0.027, y, sin(a) * 0.027),
             vec3(cos(b) * 0.027, y + 0.0068, sin(b) * 0.027),
@@ -350,9 +403,9 @@ pub fn sword() -> Creature<Paint> {
     // A heavy pommel: a faceted block that closes the hilt, so the hanging sword never reads as
     // a spear.
     let pommel = cuboid(vec3(0.042, 0.05, 0.03))
-        .translate(vec3(0.0, -0.255, 0.0))
-        .smooth_intersect(half_space(vec3(1.0, -0.7, 0.0), 0.218), k: 0.004)
-        .smooth_intersect(half_space(vec3(-1.0, -0.7, 0.0), 0.218), k: 0.004)
+        .translate(vec3(0.0, -0.315, 0.0))
+        .smooth_intersect(half_space(vec3(1.0, -0.7, 0.0), 0.26), k: 0.004)
+        .smooth_intersect(half_space(vec3(-1.0, -0.7, 0.0), 0.26), k: 0.004)
         .smooth_intersect(half_space(vec3(1.0, 0.0, 1.0), 0.05), k: 0.004)
         .smooth_intersect(half_space(vec3(-1.0, 0.0, 1.0), 0.05), k: 0.004)
     creature(s)
@@ -364,7 +417,7 @@ pub fn sword() -> Creature<Paint> {
             "grip",
             grip,
             round_cone(
-                vec3(0.0, -0.21, 0.0),
+                vec3(0.0, -0.27, 0.0),
                 vec3(0.0, GUARD_AT - 0.03, 0.0),
                 r_top: 0.026,
                 r_bottom: 0.024,
@@ -374,7 +427,7 @@ pub fn sword() -> Creature<Paint> {
         )
         .join("bindings", grip, wraps.union().with(WRAP), seam: smooth(0.001))
         .join("pommel", grip, pommel.with(DARK_STEEL), seam: smooth(0.003))
-        .bounded(Box3 { lo: vec3(-0.22, -0.38, -0.05), hi: vec3(0.22, POINT_AT + 0.03, 0.05) })
+        .bounded(Box3 { lo: vec3(-0.22, -0.44, -0.05), hi: vec3(0.22, POINT_AT + 0.03, 0.05) })
 }
 
 /// The blade keeps its physical measures, wedge section and continuous edge. The fuller is a
@@ -402,7 +455,8 @@ fn the_sword_reaches_its_point_and_its_edge_is_thin() {
     assert(f.distance(vec3(BACK + 0.028, 0.6, 0.0)) < 0.0, "the fuller must leave a solid core")
     assert(f.distance(vec3(BACK - 0.055, 0.72, 0.0)) < 0.0, "the thorn must hook off the back")
     assert(f.distance(vec3(0.17, GUARD_AT + 0.0875, 0.0)) < 0.0, "a horn must sweep up")
-    assert(f.distance(vec3(0.0, -0.29, 0.0)) < 0.0, "the pommel must close the hilt")
+    assert(f.distance(vec3(0.0, -0.35, 0.0)) < 0.0, "the pommel must close the hilt")
+    assert(f.distance(vec3(BACK + 0.004, 1.4, 0.0)) > 0.0, "the back has no notch near the point")
 }
 
 /// The hood has an actual open recess under a peak that stands over the head; cuffs remain open
@@ -410,16 +464,19 @@ fn the_sword_reaches_its_point_and_its_edge_is_thin() {
 @test
 fn the_hood_and_sleeves_are_empty() {
     let f = hood().field()
-    assert(f.distance(HEAD + vec3(0.0, 0.02, -0.29)) < 0.0, "the cowl doesn't fall behind the head")
-    assert(top(f, x: 0.0, z: HEAD.z - 0.2) < HEAD.y + 0.3, "the hood's peak stands up")
-    let inside = f.channels(HEAD + vec3(0.0, -0.05, -0.04))
+    assert(
+        f.distance(in_hood(vec3(0.0, 0.02, -0.29))) < 0.0,
+        "the cowl doesn't fall behind the head",
+    )
+    assert(top(f, x: 0.0, z: HOOD_AT.z - 0.2) < HOOD_AT.y + 0.33, "the hood's peak stands up")
+    let inside = f.channels(in_hood(vec3(0.0, -0.05, -0.04)))
     assert(length(inside.albedo) == 0.0 && inside.metal == 1.0, "the hood's inside reflects light")
     for x in [-0.375, 0.375] {
         assert(f.distance(vec3(x, 1.5, 0.0)) < 0.0, "no mantle covers the shoulder")
     }
-    assert(f.distance(HEAD + vec3(0.0, 0.0, 0.20)) > 0.03, "a face fills the hood opening")
-    assert(f.distance(HEAD + vec3(0.0, -0.05, -0.04)) < 0.0, "the recess has no dark back")
-    let cuffs = [vec3(0.37, 0.92, 0.1), vec3(-0.37, 0.98, 0.15)]
+    assert(f.distance(in_hood(vec3(0.0, 0.0, 0.20))) > 0.03, "a face fills the hood opening")
+    assert(f.distance(in_hood(vec3(0.0, -0.05, -0.04))) < 0.0, "the recess has no dark back")
+    let cuffs = [vec3(0.37, 0.8, 0.12), vec3(-0.37, 0.86, 0.17)]
     for k in 0..SLEEVES {
         let sleeve = empty_sleeve(k).field()
         assert(sleeve.distance(cuffs[k]) > 0.02, "an empty cuff has been filled")
@@ -442,7 +499,7 @@ fn the_hood_recess_cannot_escape_the_cloth_silhouette() {
                         "the dark backing extends outside the hood",
                     )
                     assert(
-                        f.distance(HEAD + p) > 0.0,
+                        f.distance(in_hood(p)) > 0.0,
                         "an interior part changes the crown silhouette",
                     )
                 }

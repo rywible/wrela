@@ -4,7 +4,7 @@
 // realized once as a mesh of one bone. Every pass uses the same connected cloth points.
 
 use cape::{AROUND, DOWN, POINTS, body_frame}
-use darkness::{NODES, WISPS, WISP_POINTS, from_robe, seed}
+use darkness::{LICKS, LICK_POINTS, NODES, from_hem, seed}
 use engine::character::{
     Cast, CharacterVertex, MotionVertex, PartOf, Realized, cast, character, character_motion,
     character_shade, character_shadow, materials, motion,
@@ -21,7 +21,7 @@ use engine::realize::realize_rigid
 use engine::render::ByChannels
 use engine::shadow::CASTER
 use engine::vegetation::nothing
-use engine::noise::{cell_size, fbm2, hashed_threshold_of}
+use engine::noise::fbm2
 use engine::view::{Camera, NEAREST, SEEN, VEIL}
 use figure::Figure
 use look::{CAPE, CLOTH_ROUGH, Paint, empty_sleeve, hood, sword}
@@ -47,16 +47,11 @@ fn realized<K: Creature<Paint>>(c: K, largest: f32) -> Realized {
     Realized { mesh, materials }
 }
 
-/// The cape's vertices: two triangles a cell between its rows.
-const CAPE_VERTICES: u32 = AROUND * (DOWN - 1) * 6
+/// The drawn cloth's vertices: two triangles a cell of its finer grid.
+const CAPE_VERTICES: u32 = DRAWN_ROUND * DRAWN_DOWN * 6
 
-/// The wisps' vertices: two triangles between each two of a wisp's points.
-const WISP_VERTICES: u32 = WISPS * (NODES - 1) * 6
-
-/// The pool's rings out from its middle, and its vertices: two triangles a cell.
-const POOL_RINGS: u32 = 4
-const POOL_POINTS: u32 = AROUND + 1
-const POOL_VERTICES: u32 = AROUND * POOL_RINGS * 6
+/// The licks' vertices: two triangles between each two of a lick's points.
+const LICK_VERTICES: u32 = LICKS * (NODES - 1) * 6
 
 /// A rigid part drawn (the head, the sword): realized, its one bone's place this frame and the
 /// last, and its part id.
@@ -139,10 +134,8 @@ impl Rigid {
 pub struct Drawn {
     points: GpuBuffer<vec4>,
     last_points: GpuBuffer<vec4>,
-    wisps: GpuBuffer<vec4>,
-    last_wisps: GpuBuffer<vec4>,
-    pool: GpuBuffer<vec4>,
-    last_pool: GpuBuffer<vec4>,
+    licks: GpuBuffer<vec4>,
+    last_licks: GpuBuffer<vec4>,
     hood: Rigid,
     sleeves: [Rigid; 2],
     sword: Rigid,
@@ -155,10 +148,8 @@ pub fn drawn() -> Drawn {
     Drawn {
         points: buffer(POINTS),
         last_points: buffer(POINTS),
-        wisps: buffer(WISP_POINTS),
-        last_wisps: buffer(WISP_POINTS),
-        pool: buffer(POOL_POINTS),
-        last_pool: buffer(POOL_POINTS),
+        licks: buffer(LICK_POINTS),
+        last_licks: buffer(LICK_POINTS),
         hood: rigid(hood(), HEAD_PART, largest: 2cm),
         sleeves: [
             rigid(empty_sleeve(0), HEAD_PART, largest: 2cm),
@@ -195,20 +186,16 @@ impl Drawn {
         }
         let still = still || !self.written
         self.written = true
-        let wisps = f.wisps()
-        let pool = f.pool()
+        let licks = f.licks()
         if !still {
             copy(from: self.points.items(), to: self.last_points.items_mut())
-            copy(from: self.wisps.items(), to: self.last_wisps.items_mut())
-            copy(from: self.pool.items(), to: self.last_pool.items_mut())
+            copy(from: self.licks.items(), to: self.last_licks.items_mut())
         }
         write(mut self.points, 0, points.clone())
-        write(mut self.wisps, 0, wisps.clone())
-        write(mut self.pool, 0, pool.clone())
+        write(mut self.licks, 0, licks.clone())
         if still {
             write(mut self.last_points, 0, points)
-            write(mut self.last_wisps, 0, wisps)
-            write(mut self.last_pool, 0, pool)
+            write(mut self.last_licks, 0, licks)
         }
         let (at, aim, edge) = pose.sword.placed(feet, heading)
         let body = body_frame(feet, heading, pose.form)
@@ -260,17 +247,9 @@ impl Drawn {
         self.sword.draw(pass, lt, cam)
         draw(
             pass,
-            pool_vertex.bind(pool: self.pool.items(), cam: cam),
-            dark_shade.bind(lt),
-            vertices: POOL_VERTICES,
-            cull: Cull::None,
-            depth: NEAREST,
-        )
-        draw(
-            pass,
-            wisp_vertex.bind(nodes: self.wisps.items(), cam: cam),
-            dark_shade.bind(lt),
-            vertices: WISP_VERTICES,
+            lick_vertex.bind(nodes: self.licks.items(), cam: cam),
+            lick_shade.bind(lt),
+            vertices: LICK_VERTICES,
             cull: Cull::None,
             depth: NEAREST,
         )
@@ -295,17 +274,9 @@ impl Drawn {
         )
         draw(
             pass,
-            pool_motion.bind(pool: self.pool.items(), last: self.last_pool.items(), cam: cam),
+            lick_motion.bind(nodes: self.licks.items(), last: self.last_licks.items(), cam: cam),
             motion.bind(cam),
-            vertices: POOL_VERTICES,
-            cull: Cull::None,
-            depth: SEEN,
-        )
-        draw(
-            pass,
-            wisp_motion.bind(nodes: self.wisps.items(), last: self.last_wisps.items(), cam: cam),
-            motion.bind(cam),
-            vertices: WISP_VERTICES,
+            vertices: LICK_VERTICES,
             cull: Cull::None,
             depth: SEEN,
         )
@@ -323,7 +294,8 @@ fn cape_point(points: [vec4], i: u32, j: u32) -> vec3 {
     points[j * AROUND + i % AROUND].xyz
 }
 
-/// Vertex `v`'s cell and corner of the cape (`i` round, `j` down).
+/// Vertex `v`'s cell and corner of the cape's grid of points (`i` round, `j` down): for a view
+/// that draws the cloth as it's simulated (the lab's).
 pub fn corner(v: u32) -> (u32, u32) {
     let cell = v / 6
     let c = v % 6
@@ -332,66 +304,140 @@ pub fn corner(v: u32) -> (u32, u32) {
     (cell % AROUND + di[c], cell / AROUND + dj[c])
 }
 
-/// How dark the robe's cloth is at column `i`, `j` rows down: its colour, sinking toward the
-/// dark at its foot and all along its train, where it gives way to the darkness off it; and
-/// black at the collar's front, which shows through the hood's opening.
-fn cloth_albedo(i: u32, j: u32) -> vec3 {
-    let down = f32(j) / f32(DOWN - 1)
-    let front = smoothstep(0.2, 0.8, cos(TAU * f32(i) / f32(AROUND)))
-    let collar = 1.0 - smoothstep(1.0, 3.0, f32(j))
-    CAPE * mix(1.0, 0.2, smoothstep(0.6, 1.0, down)) * (1.0 - 0.95 * front * collar)
+/// How many times finer the drawn cloth is than its simulated points, round and down: a smooth
+/// surface through them, fine enough to carry its creases.
+const FINER_ROUND: u32 = 3
+const FINER_DOWN: u32 = 2
+const DRAWN_ROUND: u32 = AROUND * FINER_ROUND
+const DRAWN_DOWN: u32 = (DOWN - 1) * FINER_DOWN
+
+/// Vertex `v`'s place on the drawn cloth: how far round (in columns, 0 to `AROUND`) and down (in
+/// rows, 0 to `DOWN` - 1).
+fn drawn_corner(v: u32) -> vec2 {
+    let cell = v / 6
+    let c = v % 6
+    let di = [0, 1, 0, 0, 1, 1]
+    let dj = [0, 0, 1, 1, 0, 1]
+    vec2(
+        f32(cell % DRAWN_ROUND + di[c]) / f32(FINER_ROUND),
+        f32(cell / DRAWN_ROUND + dj[c]) / f32(FINER_DOWN),
+    )
 }
 
-/// The cape's cloth: two triangles a cell, each corner's normal from its neighbours (outward).
+/// Catmull and Rom's spline through four points, `t` of the way from the second to the third.
+fn catmull_rom(a: vec3, b: vec3, c: vec3, d: vec3, t: f32) -> vec3 {
+    let t2 = t * t
+    0.5 *
+        (2.0 * b +
+            (c - a) * t +
+            (2.0 * a - 5.0 * b + 4.0 * c - d) * t2 +
+            (3.0 * b - a - 3.0 * c + d) * t2 * t)
+}
+
+/// The smooth cloth through the cape's points at `uv` (columns round, rows down): a spline
+/// through the four columns and four rows round it (round wraps; down holds at the collar and
+/// the hem).
+fn cloth_at(points: [vec4], uv: vec2) -> vec3 {
+    let i = u32(floor(uv.x)) % AROUND
+    let j = min(u32(floor(uv.y)), DOWN - 2)
+    let t = vec2(uv.x - floor(uv.x), uv.y - f32(j))
+    var rows = [vec3(0.0); 4]
+    for r in 0..4 {
+        let jr = clamp(i32(j) + i32(r) - 1, 0, i32(DOWN) - 1)
+        let row = u32(jr)
+        rows[r] = catmull_rom(
+            cape_point(points, i + AROUND - 1, row),
+            cape_point(points, i, row),
+            cape_point(points, i + 1, row),
+            cape_point(points, i + 2, row),
+            t.x,
+        )
+    }
+    catmull_rom(rows[0], rows[1], rows[2], rows[3], t.y)
+}
+
+/// The cloth's creases at `uv`: long folds that hang down it, uneven round it, shallow at the
+/// shoulders and deeper toward the hem, running on down the train as the lines it drags in.
+/// How far the cloth stands out (m, along its normal) and how fast that changes round it (m a
+/// column).
+fn crease(uv: vec2) -> (f32, f32) {
+    let a = TAU * uv.x / f32(AROUND)
+    let depth = 0.003 + 0.016 * smoothstep(1.0, f32(DOWN - 1), uv.y)
+    let p1 = 13.0 * a + 1.7 * sin(3.0 * a) + 0.15 * uv.y
+    let p2 = 21.0 * a + 0.9 + 0.25 * uv.y
+    let f = 0.6 * sin(p1) + 0.4 * sin(p2)
+    let df = (0.6 * cos(p1) * (13.0 + 5.1 * cos(3.0 * a)) + 0.4 * cos(p2) * 21.0) *
+        TAU /
+        f32(AROUND)
+    (depth * f, depth * df)
+}
+
+/// How dark the robe's cloth is at `uv`: its colour, darker down in its creases, sinking toward
+/// the dark at its foot and all along its train; and black at the collar's front, which shows
+/// through the hood's opening.
+fn cloth_albedo(uv: vec2, fold: f32) -> vec3 {
+    let down = uv.y / f32(DOWN - 1)
+    let front = smoothstep(0.2, 0.8, cos(TAU * uv.x / f32(AROUND)))
+    let collar = 1.0 - smoothstep(1.0, 3.0, uv.y)
+    let crest = mix(0.45, 1.0, smoothstep(-0.8, 0.6, fold))
+    CAPE * crest * mix(1.0, 0.2, smoothstep(0.6, 1.0, down)) * (1.0 - 0.95 * front * collar)
+}
+
+/// The cloth drawn: the smooth surface through its points, its creases standing out along its
+/// normal, and that normal turned by the creases' slopes.
 @vertex
 pub fn cape_vertex(v: VertexIndex, points: [vec4], cam: Camera) -> CharacterVertex {
-    let (i, j) = corner(v.index)
-    let p = cape_point(points, i, j)
-    let around = cape_point(points, i + 1, j) - cape_point(points, i + AROUND - 1, j)
-    let down = cape_point(points, i, min(j + 1, DOWN - 1)) - cape_point(points, i, max(j, 1) - 1)
+    let uv = drawn_corner(v.index)
+    let e = 0.25
+    let p = cloth_at(points, uv)
+    let around = cloth_at(points, uv + vec2(e, 0.0)) - cloth_at(points, uv - vec2(e, 0.0))
+    let down = cloth_at(points, vec2(uv.x, min(uv.y + e, f32(DOWN - 1)))) -
+        cloth_at(points, vec2(uv.x, max(uv.y - e, 0.0)))
+    let n = normalize(cross(down, around) + vec3(0.0, 1.0e-6, 0.0))
+    let (out, slope) = crease(uv)
+    let per_column = max(length(around) / (2.0 * e), 1.0e-4)
+    let turned = normalize(n - normalize(around + vec3(1.0e-6, 0.0, 0.0)) * (slope / per_column))
+    let fold = out / max(0.003 + 0.016 * smoothstep(1.0, f32(DOWN - 1), uv.y), 1.0e-4)
+    let at = p + n * out
     CharacterVertex {
-        clip: ClipPosition { position: cam.clip(p) },
-        world: p,
-        normal: cross(down, around),
-        albedo: cloth_albedo(i, j),
+        clip: ClipPosition { position: cam.clip(at) },
+        world: at,
+        normal: turned,
+        albedo: cloth_albedo(uv, fold),
         rough: CLOTH_ROUGH,
-        sheen: 1.0,
+        // Little sheen where the cloth lies along the ground: seen low across it, the whole train
+        // is at the sheen's grazing angle, and shone like a wet sheet.
+        sheen: mix(1.0, 0.15, smoothstep(0.65, 0.95, uv.y / f32(DOWN - 1))),
         part: Flat { value: CAPE_PART },
     }
 }
 
 @vertex
 pub fn cape_motion(v: VertexIndex, points: [vec4], last: [vec4], cam: Camera) -> MotionVertex {
-    let (i, j) = corner(v.index)
-    let now = cape_point(points, i, j)
-    MotionVertex {
-        clip: ClipPosition { position: cam.clip(now) },
-        now,
-        then: cape_point(last, i, j),
-    }
+    let uv = drawn_corner(v.index)
+    let now = cloth_at(points, uv)
+    MotionVertex { clip: ClipPosition { position: cam.clip(now) }, now, then: cloth_at(last, uv) }
 }
 
 @vertex
 pub fn cape_shadow(v: VertexIndex, points: [vec4], view: mat4) -> ClipPosition {
-    let (i, j) = corner(v.index)
-    ClipPosition { position: view * vec4(cape_point(points, i, j), 1.0) }
+    ClipPosition { position: view * vec4(cloth_at(points, drawn_corner(v.index)), 1.0) }
 }
 
 // ---- the darkness --------------------------------------------------------------------------------
 
-/// A point of the darkness: where it is, how far along its wisp (0 its root, 1 its end) or out
-/// across the pool (0 its middle, 1 its edge) it is, how far across the wisp (-1 to 1), and which
-/// wisp (`WISPS` for the pool).
-pub struct DarkVertex: Copy {
+/// A point of a lick of shadow: where it is, how far up it (0 its root, 1 its tip) and across it
+/// (-1 to 1) it is, and which lick.
+pub struct LickVertex: Copy {
     pub clip: ClipPosition,
     pub world: vec3,
-    pub along: f32,
+    pub up: f32,
     pub across: f32,
-    pub wisp: Flat<u32>,
+    pub lick: Flat<u32>,
 }
 
-/// Vertex `v`'s wisp, its point along it, and which side of the ribbon it's on.
-fn wisp_corner(v: u32) -> (u32, u32, f32) {
+/// Vertex `v`'s lick, its point along it, and which side of the ribbon it's on.
+fn lick_corner(v: u32) -> (u32, u32, f32) {
     let per = (NODES - 1) * 6
     let w = v / per
     let r = v % per
@@ -400,19 +446,17 @@ fn wisp_corner(v: u32) -> (u32, u32, f32) {
     (w, r / 6 + dk[r % 6], side[r % 6])
 }
 
-/// How wide wisp `w` is at `life` along it (m, each side of its line): it swells as it spreads
-/// and thins again toward its end; a robe wisp swells most, the rest stay thin.
-fn wisp_width(w: u32, life: f32) -> f32 {
-    let swell = pow(sin(3.1415927 * clamp(life, 0.0, 1.0)), 0.7)
-    if from_robe(w) {
-        return (0.03 + 0.17 * swell) * (0.7 + 0.6 * seed(w))
-    }
-    0.012 + 0.05 * swell
+/// How wide lick `w` is `up` it (m, each side of its line): broad at its root, narrowing toward
+/// its tip (its flame shape cuts the rest); hem licks wide enough to overlap their neighbours
+/// in a fringe, blade licks a finger.
+fn lick_width(w: u32, up: f32) -> f32 {
+    let base = if from_hem(w) { 0.07 + 0.05 * seed(w) } else { 0.02 }
+    base * (1.0 - 0.3 * clamp(up, 0.0, 1.0))
 }
 
-/// Wisp `w`'s point `k` of `nodes` (`WISP_POINTS`), and the ribbon's side there, square to the
+/// Lick `w`'s point `k` of `nodes` (`LICK_POINTS`), and the ribbon's side there, square to the
 /// way it goes and to the eye at `eye`.
-fn wisp_point(nodes: [vec4], w: u32, k: u32, side: f32, eye: vec3) -> (vec3, f32) {
+fn lick_point(nodes: [vec4], w: u32, k: u32, side: f32, eye: vec3) -> (vec3, f32) {
     let base = w * NODES
     let n = nodes[base + k]
     let way = nodes[base + min(k + 1, NODES - 1)].xyz - nodes[base + max(k, 1) - 1].xyz
@@ -421,106 +465,65 @@ fn wisp_point(nodes: [vec4], w: u32, k: u32, side: f32, eye: vec3) -> (vec3, f32
     if length(out) < 1.0e-6 {
         out = cross(vec3(0.0, 1.0, 0.0), to_eye)
     }
-    (n.xyz + normalize(out) * (wisp_width(w, n.w) * side), n.w)
+    (n.xyz + normalize(out) * (lick_width(w, n.w) * side), n.w)
 }
 
 @vertex
-pub fn wisp_vertex(v: VertexIndex, nodes: [vec4], cam: Camera) -> DarkVertex {
-    let (w, k, side) = wisp_corner(v.index)
-    let (p, life) = wisp_point(nodes, w, k, side, cam.eye)
-    DarkVertex {
+pub fn lick_vertex(v: VertexIndex, nodes: [vec4], cam: Camera) -> LickVertex {
+    let (w, k, side) = lick_corner(v.index)
+    let (p, up) = lick_point(nodes, w, k, side, cam.eye)
+    LickVertex {
         clip: ClipPosition { position: cam.clip(p) },
         world: p,
-        along: life,
+        up,
         across: side,
-        wisp: Flat { value: w },
+        lick: Flat { value: w },
     }
 }
 
 @vertex
-pub fn wisp_motion(v: VertexIndex, nodes: [vec4], last: [vec4], cam: Camera) -> MotionVertex {
-    let (w, k, side) = wisp_corner(v.index)
-    let (now, _) = wisp_point(nodes, w, k, side, cam.eye)
-    let (then, _) = wisp_point(last, w, k, side, cam.eye)
+pub fn lick_motion(v: VertexIndex, nodes: [vec4], last: [vec4], cam: Camera) -> MotionVertex {
+    let (w, k, side) = lick_corner(v.index)
+    let (now, _) = lick_point(nodes, w, k, side, cam.eye)
+    let (then, _) = lick_point(last, w, k, side, cam.eye)
     MotionVertex { clip: ClipPosition { position: cam.clip(now) }, now, then }
 }
 
-/// Vertex `v`'s place on the pool (`pool`: its ring, then its middle), and how far out it is.
-fn pool_point(pool: [vec4], v: u32) -> (vec3, f32, f32) {
-    let cell = v / 6
-    let c = v % 6
-    let di = [0, 1, 0, 0, 1, 1]
-    let dr = [0, 0, 1, 1, 0, 1]
-    let i = (cell % AROUND + di[c]) % AROUND
-    let t = f32(cell / AROUND + dr[c]) / f32(POOL_RINGS)
-    let p = mix(pool[AROUND].xyz, pool[i].xyz, vec3(t))
-    (p, t, f32(cell % AROUND + di[c]) / f32(AROUND))
+/// The licks' core: black, a little cold.
+const INK = vec3(0.002, 0.002, 0.0035)
+/// Their edge: a thin band of a deep, cold colour where each lick's shape ends, so black flame
+/// reads against black cloth. It's the lick's own light, not the sun's.
+const EDGE = vec3(0.055, 0.02, 0.14)
+/// How wide the edge band is, in the flame shape's own measure.
+const EDGE_BAND: f32 = 0.11
+
+/// How far inside lick `d`'s flame shape a pixel is (above 0 inside; its edge at 0): a teardrop,
+/// full near its root and curving in to its tip, whose middle sways in an S that runs up it,
+/// whose sides pulse, and whose top is torn by noise that runs up fast, so tips fork and reform
+/// and tongues break off as they rise.
+fn flame(d: LickVertex, time: f32) -> f32 {
+    let s = seed(d.lick.value)
+    let up = clamp(d.up, 0.0, 1.0)
+    let run = fbm2(vec2(d.across * 1.2 + s * 7.0, up * 2.2 - time * 6.5 + s * 13.0), 3)
+    let sway = (0.38 * sin(up * 5.0 - time * 9.0 + s * 6.3) + 0.5 * (run - 0.5)) * up
+    let x = abs(d.across - sway)
+    let pulse = 0.82 + 0.18 * sin(up * 9.0 - time * 12.0 + s * 4.0)
+    let width = pow(1.0 - up, 0.65) * pulse * 0.78
+    let tear = fbm2(vec2(d.across * 3.4 - s * 5.0, up * 4.5 - time * 10.0), 2)
+    width - x + (tear - 0.5) * 0.45 * up * up
 }
 
-@vertex
-pub fn pool_vertex(v: VertexIndex, pool: [vec4], cam: Camera) -> DarkVertex {
-    let (p, t, round) = pool_point(pool, v.index)
-    DarkVertex {
-        clip: ClipPosition { position: cam.clip(p) },
-        world: p,
-        along: t,
-        across: round,
-        wisp: Flat { value: WISPS },
-    }
-}
-
-@vertex
-pub fn pool_motion(v: VertexIndex, pool: [vec4], last: [vec4], cam: Camera) -> MotionVertex {
-    let (now, _, _) = pool_point(pool, v.index)
-    let (then, _, _) = pool_point(last, v.index)
-    MotionVertex { clip: ClipPosition { position: cam.clip(now) }, now, then }
-}
-
-/// The darkness's ink: near black, a little violet.
-const INK = vec3(0.0035, 0.003, 0.0055)
-
-/// How much of the darkness covers a pixel (0 to 1): a wisp dense along its middle, thinning to
-/// its end, its edges broken up by noise that flows along it; the pool dense under the robe,
-/// breaking into tendrils toward its edge, the tendrils keyed to the world so they stay put on
-/// the ground as the climber stands.
-fn dark_cover(d: DarkVertex, time: f32, keyed: vec3) -> f32 {
-    if d.wisp.value < WISPS {
-        let s = seed(d.wisp.value)
-        let body = 1.0 - abs(d.across)
-        let flow = vec2(d.along * 7.0 - time * 1.8 + s * 37.0, d.across * 1.6 + s * 11.0)
-        let n = fbm2(flow, 4)
-        let fade = 1.0 - smoothstep(0.25, 1.0, d.along)
-        let dense = smoothstep(0.0, 0.6, body * fade + (n - 0.5) * 0.8)
-        return dense * (0.9 - 0.3 * d.along)
-    }
-    let at = (d.world + keyed).xz
-    let n = fbm2(at * 3.0 + vec2(time * 0.15, -time * 0.11), 4)
-    let reach = 1.0 - d.along
-    smoothstep(0.05, 0.6, reach * 0.95 + (n - 0.5) * 1.2) * 0.8
-}
-
-/// Where a pixel of the darkness is on its own surface (about metres): along and across a wisp,
-/// or on the ground under the pool; the hashed threshold holds still there.
-fn dark_surface(d: DarkVertex, keyed: vec3) -> vec2 {
-    if d.wisp.value < WISPS {
-        return vec2(d.along * 3.0 + f32(d.wisp.value) * 7.0, d.across * 0.2)
-    }
-    (d.world + keyed).xz
-}
-
-/// The darkness's pixel: ink of the density it has there, kept that share of the time (Wyman and
-/// McGuire's hashed threshold, held still on its own surface), so temporal AA settles it into
-/// soft, thinning smoke; through the haze; tagged as a veil, so no line is drawn round each gap.
+/// A lick's pixel: inside its flame shape, ink; within `EDGE_BAND` of its edge, the edge's
+/// colour; outside, nothing. Hard-edged, as the characters' cel treatment is; through the haze;
+/// tagged as a veil, so no line is drawn round each tongue.
 @fragment
-pub fn dark_shade(d: DarkVertex, pixel: FragCoord, lt: Lighting) -> vec4 {
-    let keyed = lt.cam.keyed()
-    let surface = dark_surface(d, keyed)
-    let size = cell_size(surface, 1.0)
-    let cover = dark_cover(d, lt.cam.time, keyed)
-    if cover <= 0.0 || cover < 1.0 && cover < hashed_threshold_of(surface, 7 + d.wisp.value, size) {
+pub fn lick_shade(d: LickVertex, lt: Lighting) -> vec4 {
+    let inside = flame(d, lt.cam.time)
+    if inside <= 0.0 {
         discard()
     }
-    vec4(through_air(lt, INK, d.world), VEIL + f32(d.wisp.value % 64))
+    let colour = if inside < EDGE_BAND { EDGE } else { INK }
+    vec4(through_air(lt, colour, d.world), VEIL + f32(d.lick.value % 64))
 }
 
 // ---- the wolf ------------------------------------------------------------------------------------

@@ -137,13 +137,15 @@ pub const REST = Pose {
     },
 }
 
-/// The guard, when a fight is near: the sword hangs ahead on the right, its point toward the
-/// enemy and a little up, its edge away to the right; the body a little sunk and turned right.
+/// The guard, when a fight is near: the sword raised upright just ahead of the right shoulder,
+/// beside the hood (seen from behind, it stands by the head; from in front, it frames the
+/// hood's void, not covers it), its edge out to the right; the body a little sunk and turned
+/// right.
 pub const GUARD = Pose {
     form: Form { lift: -0.03, tilt: vec3(0.06, -0.12, 0.0) },
     sword: Sword {
-        at: vec3(-0.7, 1.14, 0.64),
-        aim: vec3(-0.1, 0.3, 1.0),
+        at: vec3(-0.42, 1.18, 0.4),
+        aim: vec3(0.06, 1.0, 0.14),
         edge: vec3(-1.0, 0.0, 0.0),
     },
 }
@@ -420,10 +422,11 @@ pub fn locomotion(ready: f32, speed: f32, accel: f32, turning: f32, drift: f32) 
     let lean = clamp(accel * 0.006, -0.07, 0.07)
     let bank = clamp(turning * speed * 0.012, -0.14, 0.14)
     p.form.lift += 0.012 * sin(TAU * drift)
-    p.form.tilt.x += min(0.016 * speed, 0.12) + lean
+    p.form.tilt.x += HUNCH + min(0.014 * speed, 0.1) + lean
     p.form.tilt.z += bank
     let free = 1.0 - ready
-    let trail = free * clamp(speed * 0.03 + lean * 0.8, 0.0, 0.26)
+    // At a stop it swings on a little past the body, as a thing held by force, not fixed.
+    let trail = free * clamp(speed * 0.03 + lean * 0.8, -0.08, 0.26)
     p.sword.at.z -= trail * 0.9
     p.sword.at.y -= trail * 0.25
     p.sword.at.x -= bank * 0.6 * free
@@ -437,6 +440,9 @@ pub fn locomotion(ready: f32, speed: f32, accel: f32, turning: f32, drift: f32) 
     p.sword.edge = vec3(e.x * cos(spin) + e.z * sin(spin), e.y, e.z * cos(spin) - e.x * sin(spin))
     p
 }
+
+/// How far the body leans forward at rest, its hood lowered: a stalking stoop (rad).
+pub const HUNCH: f32 = 0.07
 
 /// How far the hanging sword rises and falls as it floats (m), how far it rocks (its aim's
 /// sideways part), and how far it turns on its own axis (rad).
@@ -467,7 +473,7 @@ fn free_motion_keeps_the_blade_hanging_and_the_body_upright() {
                     assert(abs(dot(edge, aim)) < 1.0e-3, "the edge isn't square to the aim")
                     assert(abs(at.y - REST.sword.at.y) <= 0.11, "the floating blade bounces")
                     assert(abs(p.form.lift) <= 0.013, "the collar bounces")
-                    assert(abs(p.form.tilt.x) <= 0.2, "a tap throws the body over")
+                    assert(abs(p.form.tilt.x) <= 0.25, "a tap throws the body over")
                     assert(abs(p.form.tilt.z) <= 0.15, "a turn throws the body over")
                 }
             }
@@ -478,4 +484,21 @@ fn free_motion_keeps_the_blade_hanging_and_the_body_upright() {
     assert(fast.form.tilt.x > still.form.tilt.x + 0.08, "the body doesn't lean into its speed")
     let (_, aim, _) = fast.sword.placed(vec3(0.0), 0.0)
     assert(aim.z < -0.2, "at speed the blade's point doesn't trail")
+}
+
+/// The guard holds the blade upright beside the hood, not in front of it: its point over the
+/// hood, its grip ahead of the shoulder and out to the right, clear of the hood's opening; its
+/// edge out to the right.
+@test
+fn the_guard_raises_the_blade_beside_the_hood() {
+    let (at, aim, edge) = GUARD.sword.placed(vec3(0.0), 0.0)
+    let point = at + aim * body::POINT_AT
+    assert(point.y > body::HEAD.y + 0.4, "the guard's point isn't over the hood")
+    assert(at.x < -0.3 && at.z > 0.25, "the guard's grip isn't ahead of the right shoulder")
+    for k in 0..10 {
+        let p = at + aim * (body::GUARD_AT + f32(k) * 0.16)
+        let off = p - body::HEAD
+        assert(length(off.xz) > 0.25, "the blade crosses in front of the hood's opening")
+    }
+    assert(edge.x < -0.9, "the guard's edge doesn't face out")
 }

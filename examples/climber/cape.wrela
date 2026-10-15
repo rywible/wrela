@@ -112,7 +112,10 @@ pub fn rest(column: u32, j: u32) -> vec3 {
     // The rest of the column lies along the ground: outward, swept back as the train.
     let out = normalize(vec2(sin(a), cos(a)))
     let along = normalize(mix(out, vec2(0.0, -1.0), vec2(min(share * 1.6, 1.0) * 0.92)))
-    at + vec3(along.x, 0.0, along.y) * (u - drop)
+    let lying = at + vec3(along.x, 0.0, along.y) * (u - drop)
+    // The train narrows as it goes, to a point at its end.
+    let taper = share * 0.6 * smoothstep(0.0, TRAIN, u - drop)
+    vec3(lying.x * (1.0 - taper), lying.y, lying.z)
 }
 
 /// A link between two points, its length at rest, and how stiff it is (0 to 1, a share of the

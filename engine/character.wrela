@@ -139,7 +139,7 @@ pub struct CharacterVertex: Copy {
     pub albedo: vec3,
     pub rough: f32 = 1.0,
     pub metallic: f32 = 0.0,
-    /// How much cloth sheen it has (0 to 1: `sheen`).
+    /// How much cloth sheen it has (0 to 1: `sheen`), which takes the place of its gloss.
     pub sheen: f32 = 0.0,
     pub part: Flat<u32>,
 }
@@ -223,8 +223,12 @@ pub fn character_shade(c: CharacterVertex, pixel: FragCoord, lt: Lighting) -> ve
         Lit { albedo, n, sun, sky, through: vec3(0.0), rough, metallic, reflected, glint: 1.0 },
         normalize(lt.cam.eye - c.world),
     )
-    let cloth = sheen(lt.light, n, sun, sky, open, c.world, lt.cam.eye) * saturate(c.sheen)
-    let colour = diffuse + specular + cloth
+    // Cloth's fibres scatter light into a sheen at the edge of the form, not a mirror's
+    // highlight: the sheen takes the gloss's place.
+    let cloth = saturate(c.sheen)
+    let colour = diffuse +
+        specular * (1.0 - cloth) +
+        sheen(lt.light, n, sun, sky, open, c.world, lt.cam.eye) * cloth
     vec4(through_air(lt, colour, c.world), CREATURE + f32(c.part.value % 63))
 }
 

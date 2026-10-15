@@ -2647,8 +2647,9 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     s.glide_velocity = velocity
     s.glide_heading = facing
     let pose = if fighting { fc.pose(b.alpha) } else {
+        // The blade rises into its guard as a fight comes near (as the camera turns to it).
         locomotion(
-            ready: 0.0,
+            ready: s.focus,
             speed: speed,
             accel: s.glide_change.x,
             turning: s.glide_change.y,

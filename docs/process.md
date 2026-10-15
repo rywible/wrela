@@ -971,6 +971,19 @@ drooping cowl, a void material inside the hood, and an opt-in cloth sheen in the
 character shading. A stronger waist pinch was tried and backed off: in motion the cloth clung
 to it like a body. No outside code or asset was used.
 
+Ryan then asked for the darkness to be licks of shadow, like flame, rising subtly off the
+hem and the train's edge; for cloth that reads as cloth; for a tighter silhouette; for a
+better sword; and for a ready pose. Claude Code proposed the approach and Ryan agreed to it
+before any code. Ryan asked for a few edge colours to be tried and the best picked: violet,
+cold blue, ember red and pale grey were rendered from the same shot, and violet was picked.
+The licks are hard-edged flame shapes cut from short ribbons along each root's recent path.
+The cloth is drawn as a spline surface through the simulated points, with creases that
+darken in their valleys. Cloth sheen replaces gloss on cloth. The hood and the mantle carry
+creases too, as a displacement of their fields. The sword rises into a raised guard beside
+the hood as a fight comes near. A guard straight in front of the face was considered and
+rejected: the player's camera, behind, would hide the blade behind the hood. Narrower
+shoulders were tried and reverted: the cloth fell inside the body it hangs round.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

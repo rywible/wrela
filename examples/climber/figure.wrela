@@ -91,13 +91,8 @@ impl Figure {
             self.swing_sleeves(frame, (velocity - self.velocity) / dt, wind, dt)
             self.velocity = velocity
         }
-        let (grip, aim, _) = pose.sword.placed(feet, heading)
-        let cuffs = [
-            (frame * self.sleeve(0) * vec4(look::cuff(0), 1.0)).xyz,
-            (frame * self.sleeve(1) * vec4(look::cuff(1), 1.0)).xyz,
-        ]
-        let hood = (frame * vec4(body::HEAD + vec3(0.0, -0.13, 0.15), 1.0)).xyz
-        self.roots = roots(cape, cuffs, hood, grip, aim)
+        let (grip, aim, edge) = pose.sword.placed(feet, heading)
+        self.roots = roots(cape, grip, aim, edge)
         if fresh {
             self.shroud.restart(self.roots.clone())
         } else {
@@ -173,24 +168,12 @@ impl Figure {
         }
     }
 
-    /// The darkness's wisps' points (`darkness::WISP_POINTS`; none before the first step).
-    pub fn wisps(self) -> Vec<vec4> {
+    /// The darkness's licks' points (`darkness::LICK_POINTS`; none before the first step).
+    pub fn licks(self) -> Vec<vec4> {
         if self.roots.is_empty() {
             return Vec::new()
         }
         self.shroud.nodes(self.roots.clone(), self.wind)
-    }
-
-    /// The pool of darkness round the robe's foot (none before the first step).
-    pub fn pool(self) -> Vec<vec4> {
-        match self.cape {
-            Some(c) => {
-                let g = self.ground
-                let centre = (c.frame * vec4(0.0, 0.0, 0.0, 1.0)).xyz
-                darkness::pool(c, centre, |p: vec3| g.height(p))
-            },
-            None => Vec::new(),
-        }
     }
 }
 
