@@ -89,6 +89,8 @@ The M4 Air has not been measured; its times are reported separately.
 | [sfizz](https://sfz.tools/sfizz/) (BSD 2-clause), `sfizz_render` | Plays the reference piano's samples from a take's MIDI file, for the listening tests (`tools/listening.py`). Not part of the game |
 | Mesa's lavapipe (Vulkan on the CPU), MIT, patched (`tools/cloud/`) | The GPU of a cloud machine, which has none (`tools/cloud.sh`) |
 | [FFmpeg](https://ffmpeg.org/) with x264, GPL | Makes the motion captures' clips and contact sheets from the frames the native host saves (`tools/motion.py`). Not part of the game |
+| [Wrangler](https://developers.cloudflare.com/workers/wrangler/) (Cloudflare, MIT/Apache 2.0) and GitHub Actions | Deploy each release from `main` to Cloudflare Workers (`.github/workflows/deploy.yml`, `tools/deploy.py`) |
+| [Binaryen](https://github.com/WebAssembly/binaryen) (Apache 2.0), `wasm-opt` 133 or later | Shrinks a released build's WASM (`wrela build --optimize`, `-Oz`), carrying its trap locations through as a source map. Runs at build time; nothing of it ships |
 | strace, LGPL; Linux mount namespaces (`unshare`) | Historical gate pass caching, retired 2026-10-11: what each slow test reads, so a pass is reused only while all of it is unchanged, or, for a test that builds a program, while its builds make the same files. The ideas are build systems' (Bazel's action cache, ccache's manifests, tup's and fabricate's traced dependencies, Shake's and Bazel's early cutoff) |
 
 Not used, by decision: Suno or any music model (Ryan, 2026-10-06, #44), and any image, texture,
@@ -514,17 +516,17 @@ the browser also receives the corresponding parity fixes.
 | Inter and JetBrains Mono fonts (`ui/fonts/`) | SIL Open Font License 1.1, licence texts beside them | The studio's interface text. |
 | musl's libm; ARM's optimized-routines | MIT | `compiler/std/math.wrela` follows their algorithms and coefficients (credited in the file). |
 | Steven Worley, "A Cellular Texture Basis Function" (SIGGRAPH 1996) | A published algorithm; no code taken | Bark's plates (`engine/plant.wrela`, `plates_at`): the nearest and second-nearest of jittered cell points, written from the paper's idea. |
-| Heini Hediger's flight distance (*Wild Animals in Captivity*, 1950), as field ethology uses it | A published idea; no code or data taken | The fawn's behaviour (`examples/last-green/behaviour.wrela`): it notices a person first and watches, and flees when they come on within a distance; the distances are our own, tuned by test. |
+| Heini Hediger's flight distance (*Wild Animals in Captivity*, 1950), as field ethology uses it | A published idea; no code or data taken | The fawn's behaviour (`games/last-green/behaviour.wrela`): it notices a person first and watches, and flees when they come on within a distance; the distances are our own, tuned by test. |
 | Vadim Zavalishin, *The Art of VA Filter Design* (2012); George Marsaglia, "Xorshift RNGs" (2003) | Published algorithms; no code taken | The floor's sound (`engine/sound.wrela`): the state-variable filter that bands each source's noise, and the seeded noise itself. |
 | The soil production function: Heimsath, Dietrich, Nishiizumi and Finkel, "The soil production function and landscape equilibrium", *Nature* 388 (1997) | A published finding; we use its idea, not its text or data | `engine::soil::soil`: rock weathers to soil fastest under a thin soil and creep moves it downhill, so crests are thin and hollows deep (credited in the file). |
-| Landscape evolution by stream power: Jean Braun and Sean D. Willett, "A very efficient O(n), implicit and parallel method to solve the stream power equation governing fluvial incision and landscape evolution", *Geomorphology* 180–181 (2013) | A published method; no code taken | `engine::landform::incise`: a channel cuts down at K A^m S, solved implicitly in the order the water flows, so a step of any length is stable. The Last Green's world is made with it (`examples/last-green/geology.wrela`). |
+| Landscape evolution by stream power: Jean Braun and Sean D. Willett, "A very efficient O(n), implicit and parallel method to solve the stream power equation governing fluvial incision and landscape evolution", *Geomorphology* 180–181 (2013) | A published method; no code taken | `engine::landform::incise`: a channel cuts down at K A^m S, solved implicitly in the order the water flows, so a step of any length is stable. The Last Green's world is made with it (`games/last-green/geology.wrela`). |
 | Priority-flood depression filling: Richard Barnes, Clarence Lehman and David Mulla, "Priority-flood: An optimal depression-filling and watershed-labeling algorithm for digital elevation models", *Computers & Geosciences* 62 (2014), its epsilon variant | A published method; no code taken | `engine::landform::drainage` (moved there from `engine::grow`, which already used it): water is routed across pits from the outlets, lowest first, so every cell drains. |
 | Terrain authored through its causes: Guillaume Cordonnier, Jean Braun, Marie-Paule Cani, Bedrich Benes, Éric Galin, Adrien Peytavie and Éric Guérin, "Large Scale Terrain Generation from Tectonic Uplift and Fluvial Erosion", *Computer Graphics Forum* 35(2) (2016) | A published idea; no code or data taken | The world's land is authored through its causes (its rock's layers, the old land, the base level its rivers run to) and not by drawing its valleys. |
 | Threshold slopes, as thermal erosion does: F. Kenton Musgrave, Craig E. Kolb and Robert S. Mace, "The synthesis and rendering of eroded fractal terrains", *SIGGRAPH* (1989) | A published idea; no code taken | `engine::landform::collapse`: a slope steeper than its rock stands at sheds its excess downhill, no faster than the rock weathers, so a hard cap stands in cliffs over the soft rock's talus. |
 | Erosion and deposition: Philippe Davy and Dimitri Lague, "Fluvial erosion/transport equation of landscape evolution models revisited", *Journal of Geophysical Research* 114 (2009) | A published method; no code taken | `engine::landform::settle`: what the water cuts it carries down and lays where its load is heavy for its water (D = G Qs / Q), so valley floors fill and fans spread where ravines meet them. |
 | Nonlinear hillslope creep: Joshua J. Roering, James W. Kirchner and William E. Dietrich, "Evidence for nonlinear, diffusive sediment transport on hillslopes and implications for landscape morphology", *Water Resources Research* 35(3) (1999) | A published method; no code taken | `engine::landform::diffuse`: soil creeps faster by 1 / (1 - (S / Sc)²) as its slope S nears a critical one, so hillsides run straight down from rounded crests instead of rounding all over. |
 | Channel initiation at a source area: David R. Montgomery and William E. Dietrich, "Where do channels begin?", *Nature* 336 (1988) | A published finding; we use its idea, not its data | `engine::landform::Shaping::channel`: water cuts only where enough of it gathers to run in a channel; below that, slopes only creep and fail. |
-| Johann Heinrich von Thünen's land-use rings (*Der isolirte Staat*, 1826); settlement site and budding as human geography teaches them | Published ideas; no code or data taken | The Last Green's elves (`examples/last-green/peoples.wrela`): each settlement takes its fields nearest by walking cost, then pasture, then wood; it chooses its site by water, soil, slope and sun; when it outgrows its land, some of its people found another. |
+| Johann Heinrich von Thünen's land-use rings (*Der isolirte Staat*, 1826); settlement site and budding as human geography teaches them | Published ideas; no code or data taken | The Last Green's elves (`games/last-green/peoples.wrela`): each settlement takes its fields nearest by walking cost, then pasture, then wood; it chooses its site by water, soil, slope and sun; when it outgrows its land, some of its people found another. |
 | W3C, Gamepad API, its "standard" mapping | A W3C specification; no code taken | The browser host reads pads by it (`runtime/browser/src/listen.ts`), and wrela's pad buttons and axes take its order and names (south, east, west, north, the shoulders and triggers, the sticks, the d-pad). |
 | Closest points of two segments (as in Christer Ericson, *Real-Time Collision Detection*, 2005, §5.1.9) | A standard method; no code taken | The climber's fight (`examples/climber/fight.wrela`): the sword's edge, swept between ticks, is tested against capsules on the wolf's body, and the wolf's bite against a capsule up the climber. |
 | Position-based dynamics (Matthias Müller, Bruno Heidelberger, Marcus Hennix, John Ratcliff, "Position Based Dynamics", 2007); long-range attachments (Tae-Yong Kim, Nuttapong Chentanez, Matthias Müller-Fischer, "Long Range Attachments: A Method to Simulate Inextensible Clothing in Computer Games", 2012) | Published methods; no code taken | The climber's cape (`examples/climber/cape.wrela`): a grid of points held by links whose lengths are kept, each point tethered to the collar so the cloth can't stretch however fast the body moves. |
@@ -725,7 +727,7 @@ Measured on the Apple M4 against `b7a7e032`:
 | Last Green CPU frame call, controlled native run | 19.291 ms | 17.850 ms | Includes GPU synchronization; 1.3–7.5% less in each pair |
 
 The render measurements use 120 lockstep frames at 1280×720, span timing, and nine workers
-under exclusive measurement admission. `tools/wrela profile examples/last-green --json`
+under exclusive measurement admission. `tools/wrela profile games/last-green --json`
 ran twice on each checkout. Separate CLI pairs showed wide variation, including slower
 whole-frame candidate results, so they do not establish a whole-frame win on their own.
 A controlled comparison then held one host binary, device, allocator and compiled pipelines
@@ -876,13 +878,13 @@ with empty temporary storage, never the game's saved state.
 Save a baseline build before changing the source, in the normal checkout:
 
 ```sh
-tools/wrela build examples/last-green -o /tmp/last-green-before
+tools/wrela build games/last-green -o /tmp/last-green-before
 ```
 
 After the change, with builds and other GPU work idle:
 
 ```sh
-tools/wrela profile examples/last-green --compare /tmp/last-green-before --pairs 5 --json > /tmp/last-green-comparison.json
+tools/wrela profile games/last-green --compare /tmp/last-green-before --pairs 5 --json > /tmp/last-green-comparison.json
 ```
 
 The comparison alternates baseline/candidate and candidate/baseline, on one device with the
@@ -963,7 +965,7 @@ council.
 A first version eroded the far mountains. Ryan then asked for no mountains, a forest that
 goes on to the horizon, and the authored square itself simulated, its named places derived
 from the land and not drawn. He chose a dissected plateau. The world is now made at build time
-(`engine::landform`, `examples/last-green/geology.wrela`): an old plateau of bedded rock (a
+(`engine::landform`, `games/last-green/geology.wrela`): an old plateau of bedded rock (a
 hard grit cap over shale, a sandstone band, granite bosses) is cut over 1.2 million years by
 rivers running to a trunk valley and to the lowland round it, at 64 m over 16 km and at 8 m
 over the floor's square. Slopes creep where their rock carries soil and fail where they are
@@ -1797,7 +1799,7 @@ Code (Opus 5.5) designed and built both. Leapling borrows the genre's verbs (run
 coins, prize blocks, springs, a goal) and none of Nintendo's characters, worlds or designs. It
 has no story and no lore.
 
-**Game.** `examples/leapling`: one course, Dusk Ridge, 156 cells by 15, written as text. The
+**Game.** `games/leapling`: one course, Dusk Ridge, 156 cells by 15, written as text. The
 simulation steps at 120 Hz, so the feel doesn't depend on the frame rate. Walking is 7 cells
 a second and running 10.5. A held jump climbs about 3.5 cells and a tap about 1.7. Coyote time
 is 90 ms and jump buffering 120 ms. Springs throw the hero high whether or not jump is held.
@@ -1811,7 +1813,7 @@ each cue, and a four-chord loop (vi, IV, I, V in C) of bass, arpeggio and hi-hat
 sound or music comes from a file or a generative model. The cover is the title screen,
 rendered natively.
 
-**Session.** `examples/leapling/session` adapts The Last Green's session program, keeping its
+**Session.** `games/leapling/session` adapts The Last Green's session program, keeping its
 journal, its backup before a new game, recovery of the save written on return, and its
 import checks. A shared `progress` module holds the save: courses cleared, coins, best time.
 
@@ -1844,6 +1846,33 @@ a local preview, ran the whole loop: the opening, the library, New, the game han
 inside the console, playing, F10 back, and the library offering Continue. Regressions cover
 the jump heights, coyote time and buffering, stomping and being hurt, prize blocks, springs,
 pits and checkpoints, type layout, the save, imports, and the visit rule.
+
+## wrela.dev, deployed from main, 2026-10-15
+
+Ryan asked for the live site to be made real: CI deploys on each merge to `main`, the games move
+to `games/`, the console is at `wrela.dev` with each game on its own origin
+(`<game>.wrela.dev`, so its saves are its own), and the download is smaller. A plan council
+(Claude leading; GPT-6.1-Sol and GPT-6-Astra reviewing, two rounds) shaped the plan; its
+reviewers asked for the release-retention rules `tools/deploy.py` keeps. Claude measured The
+Last Green's live download (game.wasm 5.11 MB at Cloudflare's on-the-fly brotli, which matches
+quality 3; 4.79 MB of WGSL sent uncompressed), tested on Cloudflare that static assets can't serve
+precompressed files and that serving WGSL as `text/plain` lets Cloudflare compress it, and kept
+requests free of Worker code. Binaryen shrinks the WASM (see Tools and models).
+
+The site is three Workers serving static assets, deployed from GitHub Actions with Wrangler.
+The live site is the archive: a deploy fetches each release it keeps from the Workers that
+serve it, checking each file's SHA-256, and fails rather than drop one. References: Cloudflare's
+[Workers static assets](https://developers.cloudflare.com/workers/static-assets/),
+[custom domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/),
+[Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/) and
+[GitHub Actions deployment](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/),
+and GitHub's [environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment).
+These are implementation references; nothing was copied.
+
+Ryan then asked for the console's opening to play on every visit to `wrela.dev`, but not when
+a tab is reloaded. The browser host's environment now says whether the page load reloaded the
+tab (the [Navigation Timing](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceNavigationTiming/type)
+type), and the console's 30-minute rule and its stored time are gone.
 
 ## Keeping this record
 

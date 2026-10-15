@@ -1,4 +1,4 @@
-// The floor's own tests (`wrela test examples/last-green`, #55): what the bake leaves, read back
+// The floor's own tests (`wrela test games/last-green`, #55): what the bake leaves, read back
 // as the program reads it. They read the bake, so they're long (`suite/last_green.rs`).
 
 use engine::bake::{WEAR_N, decode_tile, reaching, tile_fields, tile_name}

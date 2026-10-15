@@ -1,0 +1,56 @@
+# Builds a release of the console and its games from each push to main and deploys it to
+# Cloudflare Workers (tools/console.py, tools/deploy.py). It only ships: every check stays local
+# (tools/check.sh). Its credentials are the `production` environment's, which only main can use.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One deploy at a time, in push order; a deploy whose commit is no longer main's head stops.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      BINARYEN: version_133
+      BINARYEN_SHA256: 2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Binaryen
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/binaryen.tgz" \
+            "https://github.com/WebAssembly/binaryen/releases/download/$BINARYEN/binaryen-$BINARYEN-x86_64-linux.tar.gz"
+          echo "$BINARYEN_SHA256  $RUNNER_TEMP/binaryen.tgz" | sha256sum -c -
+          tar xzf "$RUNNER_TEMP/binaryen.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/binaryen-$BINARYEN/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pillow==12.3.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the release
+        run: python3 tools/console.py --output "$RUNNER_TEMP/release"
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: python3 tools/deploy.py --release "$RUNNER_TEMP/release" --require-main-head
