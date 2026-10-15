@@ -1725,6 +1725,11 @@ serve it, checking each file's SHA-256, and fails rather than drop one. Referenc
 and GitHub's [environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment).
 These are implementation references; nothing was copied.
 
+Ryan then asked for the console's opening to play on every visit to `wrela.dev`, but not when
+a tab is reloaded. The browser host's environment now says whether the page load reloaded the
+tab (the [Navigation Timing](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceNavigationTiming/type)
+type), and the console's 30-minute rule and its stored time are gone.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
