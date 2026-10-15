@@ -1,6 +1,9 @@
-// The server host's networking (language.md §12): a room's journal and its connections. The host
-// carries the bytes and keeps the records durably; `std::net` decides what they are. Each of
-// these is a command the host never answers.
+// Networking (language.md §12): a client's connections to its server's rooms, and a room's
+// journal and connections. The hosts carry the bytes and keep the records durably; `std::net`
+// decides what they are. Each of these is a command the host never answers.
+//
+// A client opens a connection to a room by a number it chooses: a `Connection` event says when
+// it's open, and exactly one says when it's closed, whatever closes it; its messages come between.
 //
 // What the host does with a call's commands: it keeps every record the call gave it (`keep`,
 // `compact`) durably, in order, before it sends anything the call sent (`send`) or closes what
@@ -42,8 +45,20 @@ pub fn compact(snapshot: [u8]) {
     let _ = request("net/compact", snapshot)
 }
 
-/// Sends `bytes` on connection `conn`, once the call's records are kept.
-@server
+/// Opens connection `conn` (a number not open) to room `room` of the program's server: 1 to 64 of
+/// a-z, 0-9, `-` and `_`. The browser host finds the server in `net.json` beside the build.
+@client
+pub fn open(conn: u32, room: str) {
+    var body: Vec<u8> = Vec::with_capacity(4 + room.len())
+    word(mut body, conn)
+    for i in 0..room.len() {
+        body.push(room.byte(i))
+    }
+    let _ = request("net/open", body)
+}
+
+/// Sends `bytes` on connection `conn`: on a server, once the call's records are kept. Bytes for a
+/// connection that has closed go nowhere.
 pub fn send(conn: u32, bytes: [u8]) {
     var body: Vec<u8> = Vec::with_capacity(4 + bytes.len())
     word(mut body, conn)
@@ -54,7 +69,6 @@ pub fn send(conn: u32, bytes: [u8]) {
 }
 
 /// Closes connection `conn`, after the call's sends.
-@server
 pub fn close(conn: u32) {
     var body: Vec<u8> = Vec::new()
     word(mut body, conn)
