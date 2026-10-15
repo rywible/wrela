@@ -1423,6 +1423,15 @@ signed integers are first mapped by Protocol Buffers' ZigZag encoding (0, -1, 1,
 3). Both are reimplemented in Wrela; the rule that a value has exactly one packing (shortest
 varints, one NaN, zero padding, nothing left over) is ours.
 
+**Roles and rooms.** A program that exports `serve` gets a server build beside its client
+build, each lowered from its own entries, with one pair id in both modules; `@client` and
+`@server` mark what only one role may run, checked per instance after monomorphization, so
+generics and closures are covered. The server host runs each room as its own instance with a
+memory cap (a limiter that fails with an error rather than refusing growth, so a cap is never
+mistaken for the program's own panic) and a deadline on every call (Wasmtime's epoch
+interruption). Measured on this M4 Air with 500 rooms: 85 KiB resident each, about 16 µs to
+start one and 2.6 µs a `serve`.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
