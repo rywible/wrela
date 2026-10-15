@@ -10,7 +10,8 @@ title = "Leapling"
 project = "wrela-leapling"
 domain = "wrela-leapling.pages.dev"
 session = "session"
-builds = { session = "examples/leapling/session", leapling = "examples/leapling" }
+builds = { session = "games/leapling/session", leapling = "games/leapling" }
+cover = "games/leapling/cover.png"
 
 [[games]]
 id = "last-green"
@@ -18,4 +19,5 @@ title = "The Last Green"
 project = "wrela-last-green"
 domain = "wrela-last-green.pages.dev"
 session = "session"
-builds = { session = "examples/last-green/session", last-green = "examples/last-green", stair = "examples/stair", test-floor = "examples/test-floor" }
+builds = { session = "games/last-green/session", last-green = "games/last-green", stair = "games/last-green/stair", test-floor = "games/last-green/test-floor" }
+cover = "games/last-green/cover.png"
