@@ -4,7 +4,7 @@
 // Keys: the arrows or A and D to move, Space, W, Z or the up arrow to jump, Shift or X to run,
 // Enter to start and to pause. A controller: the stick or pad, A to jump, X to run, Start.
 use engine::plant::full
-use letters::{Typeset, measure, typeset}
+use engine::letters::{Typeset, typeset}
 use level::ROWS
 use look::{View, shade}
 use platform::presentation::Link

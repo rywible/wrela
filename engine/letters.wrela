@@ -1,6 +1,7 @@
-// The game's type: capitals, digits and a little punctuation drawn as strokes on a grid four
-// wide and six high, rounded at their ends. Text is set on the CPU into runs of segments in
-// pixels, which the shader draws with a glow and a shadow (look.wrela).
+// A stroke type for games' titles and HUDs: capitals, digits and a little punctuation drawn as
+// strokes on a grid four wide and six high, rounded at their ends. Text is set on the CPU into
+// runs of segments in pixels, which a game's shader draws with a glow and a shadow
+// (`type_over`).
 
 // A run's box, then its first segment, how many it has, a grey and a glow: two vec4s. Its first
 // segment slot holds the stroke's half width and its colour instead.
@@ -123,6 +124,44 @@ impl Typeset {
         self.runs.push(vec4(left, at.y, left + width, at.y + size))
         self.runs.push(vec4(f32(start), f32(count), grey, glow))
     }
+}
+
+/// `col` with the runs of `runs` and `segments` (as `Typeset` sets them) drawn over it at pixel
+/// `px`: a shadow below each stroke, the stroke in its tint and grey, and its glow.
+pub fn type_over(col: vec3, px: vec2, count: f32, runs: [vec4], segments: [vec4]) -> vec3 {
+    var out = col
+    let n = u32(count)
+    for r in 0..n {
+        let bounds = runs[r * 2]
+        let style = runs[r * 2 + 1]
+        if style.y < 0.5 { continue }
+        let reach = style.w * 3.0 + 4.0
+        if px.x < bounds.x - reach ||
+            px.y < bounds.y - reach ||
+            px.x > bounds.z + reach ||
+            px.y > bounds.w + reach {
+            continue
+        }
+        let width = segments[u32(style.x)].x
+        var d = 1.0e9
+        var shade = 1.0e9
+        for k in 0..u32(style.y) {
+            let s = segments[u32(style.x) + 1 + k]
+            let ab = s.zw - s.xy
+            let t = saturate(dot(px - s.xy, ab) / max(dot(ab, ab), 0.0001))
+            d = min(d, length(px - s.xy - ab * t))
+            let o = px - vec2(0.0, width * 0.9) - s.xy
+            let u = saturate(dot(o, ab) / max(dot(ab, ab), 0.0001))
+            shade = min(shade, length(o - ab * u))
+        }
+        let grey = style.z
+        let tint = segments[u32(style.x)].yzw
+        // A shadow below, the strokes, and their glow.
+        out = mix(out, out * 0.25, saturate(width - shade + 0.5) * 0.8)
+        out += tint * exp(-max(d - width, 0.0) / max(style.w, 0.001)) * 0.35 * min(style.w, 1.0)
+        out = mix(out, tint * grey, saturate(width - d + 0.5))
+    }
+    out
 }
 
 @test

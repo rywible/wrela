@@ -1,0 +1,81 @@
+// The course can be finished on both variants: test bots ride it, pressing as a player would and
+// reading only what a player sees. On the swell course a bot surfs a swell for speed when no
+// rock is near and launches off one before each rock; on the fixed course it dives down every
+// face it goes down and lets go as the next one rises.
+use course::ROCKS
+use sim::{HZ, Phase, SWELL, World, spawn, step}
+
+/// A run's time and its wipeouts, or a time of 0 if the run didn't finish in 90 s.
+struct Run: Copy {
+    time: f32,
+    wipeouts: u32,
+}
+
+fn run_of(w: World, finished: bool) -> Run {
+    Run { time: if finished { w.clock } else { 0.0 }, wipeouts: w.tally.wipeouts }
+}
+
+/// The swell course's bot: it starts a launch when the next rock is `0.45 s` at its speed and
+/// 6 more ahead, holding until it leaves the water (or 0.6 s); further from a rock, below 12 a
+/// second, it surfs a swell for 0.35 s.
+fn surf() -> Run {
+    var w = spawn()
+    step(mut w, SWELL)
+    w.controls.keys = 0
+    var held = 0.0
+    var pumping = false
+    for _ in 0..HZ * 90 {
+        let r = w.rider
+        let d = if w.cleared < 5 { ROCKS[w.cleared].x - r.at.x } else { 1000.0 }
+        var press = false
+        if w.controls.keys == 0 && r.grounded {
+            if d > 3.0 && d < r.vel.x * 0.45 + 6.0 {
+                press = true
+                pumping = false
+            } else if d > 28.0 && r.vel.x < 12.0 {
+                press = true
+                pumping = true
+            }
+        }
+        if press {
+            w.controls.keys = SWELL
+            held = 0.0
+        } else if w.controls.keys != 0 {
+            held += 1.0 / f32(HZ)
+            if (pumping && held > 0.35) || (!pumping && (held > 0.6 || !r.grounded)) {
+                w.controls.keys = 0
+            }
+        }
+        step(mut w, if press { SWELL } else { 0 })
+        if w.phase == Phase::Finished { return run_of(w, finished: true) }
+    }
+    run_of(w, finished: false)
+}
+
+/// The fixed course's bot: it dives down each face it goes down.
+fn dive() -> Run {
+    var w = spawn()
+    w.fixed = true
+    step(mut w, SWELL)
+    for _ in 0..HZ * 90 {
+        let r = w.rider
+        let down = r.grounded && r.slope * sign(r.vel.x) < -0.05
+        let was = w.controls.keys
+        w.controls.keys = if down { SWELL } else { 0 }
+        step(mut w, if was == 0 && down { SWELL } else { 0 })
+        if w.phase == Phase::Finished { return run_of(w, finished: true) }
+    }
+    run_of(w, finished: false)
+}
+
+@test
+fn a_bot_finishes_the_swell_course() {
+    let r = surf()
+    assert(r.time > 0.0 && r.time < 30.0 && r.wipeouts <= 2, f"{r.time} s, {r.wipeouts} wipeouts")
+}
+
+@test
+fn a_bot_finishes_the_fixed_course() {
+    let r = dive()
+    assert(r.time > 0.0 && r.time < 60.0 && r.wipeouts <= 2, f"{r.time} s, {r.wipeouts} wipeouts")
+}

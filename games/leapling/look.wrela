@@ -2,6 +2,7 @@
 // sky with its sun, three ridges behind the course at their own depths, the course's cells, the
 // things in it, the hero, sparks, and the type over all. The hero's antenna and the gate light
 // what is near them.
+use engine::letters::type_over
 use std::gpu::{FragCoord}
 
 // What the shader is told each frame. Counts are floats, as the GPU reads them.
@@ -52,7 +53,7 @@ pub fn shade(
     col = sparks_over(col, p, view, sparks, aa)
     // The title dims the course behind it.
     col = mix(col, col * vec3(0.32, 0.3, 0.42), view.mood.z)
-    col = type_over(col, px, view, runs, segments)
+    col = type_over(col, px, view.runs, runs, segments)
     // A soft vignette, and a little grain so the gradients don't band.
     let uv = px / view.screen
     let v = uv * (vec2(1.0) - uv)
@@ -526,44 +527,6 @@ fn sparks_over(col: vec3, p: vec2, view: View, sparks: [vec4], aa: f32) -> vec3 
             } else { vec3(1.0, 0.85, 0.35) }
             out = over(out, c, saturate(-d / aa) * fade)
         }
-    }
-    out
-}
-
-// ---- type --------------------------------------------------------------------------------------
-
-fn type_over(col: vec3, px: vec2, view: View, runs: [vec4], segments: [vec4]) -> vec3 {
-    var out = col
-    let n = u32(view.runs)
-    for r in 0..n {
-        let bounds = runs[r * 2]
-        let style = runs[r * 2 + 1]
-        if style.y < 0.5 { continue }
-        let reach = style.w * 3.0 + 4.0
-        if px.x < bounds.x - reach ||
-            px.y < bounds.y - reach ||
-            px.x > bounds.z + reach ||
-            px.y > bounds.w + reach {
-            continue
-        }
-        let width = segments[u32(style.x)].x
-        var d = 1.0e9
-        var shade = 1.0e9
-        for k in 0..u32(style.y) {
-            let s = segments[u32(style.x) + 1 + k]
-            let ab = s.zw - s.xy
-            let t = saturate(dot(px - s.xy, ab) / max(dot(ab, ab), 0.0001))
-            d = min(d, length(px - s.xy - ab * t))
-            let o = px - vec2(0.0, width * 0.9) - s.xy
-            let u = saturate(dot(o, ab) / max(dot(ab, ab), 0.0001))
-            shade = min(shade, length(o - ab * u))
-        }
-        let grey = style.z
-        let tint = segments[u32(style.x)].yzw
-        // A shadow below, the strokes, and their glow.
-        out = mix(out, out * 0.25, saturate(width - shade + 0.5) * 0.8)
-        out += tint * exp(-max(d - width, 0.0) / max(style.w, 0.001)) * 0.35 * min(style.w, 1.0)
-        out = mix(out, tint * grey, saturate(width - d + 0.5))
     }
     out
 }

@@ -1,0 +1,39 @@
+// The course: a run of sea from the start to the finish buoy, with rocks standing out of it to
+// clear in the air. A rock is `vec4(x, top, half width, 0)`: a column of stone from the sea
+// floor to `top` above the still sea, rounded at its top.
+
+pub const ROCKS: [vec4; 5] = [
+    vec4(45.0, 1.4, 0.8, 0.0),
+    vec4(90.0, 2.2, 1.0, 0.0),
+    vec4(135.0, 2.0, 1.6, 0.0),
+    vec4(180.0, 2.9, 1.1, 0.0),
+    vec4(225.0, 2.6, 1.9, 0.0),
+]
+
+/// Where the run starts, and the finish buoy.
+pub const START: f32 = 6.0
+pub const FINISH: f32 = 256.0
+
+/// How far behind a rock a rider who hit it starts again: on the fixed course, the crest of the
+/// hill two before it (sea.wrela).
+pub const RUNUP: f32 = 22.5
+
+/// The signed distance from `p` to rock `r`: a column, its top rounded by its half width.
+pub fn rock_distance(r: vec4, p: vec2) -> f32 {
+    let q = p - vec2(r.x, r.y - r.z)
+    if q.y > 0.0 { return length(q) - r.z }
+    abs(q.x) - r.z
+}
+
+@test
+fn the_rocks_are_in_order_and_inside_the_run() {
+    var last = START
+    for r in ROCKS {
+        assert(r.x - RUNUP > last, "a rock's run-up starts past the last rock")
+        last = r.x
+    }
+    assert(last < FINISH)
+    let r = ROCKS[0]
+    assert(abs(rock_distance(r, vec2(r.x, r.y + 1.0)) - 1.0) < 1e-5, "above its top")
+    assert(rock_distance(r, vec2(r.x, 0.0)) < 0.0, "inside it at the waterline")
+}
