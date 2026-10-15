@@ -79,7 +79,9 @@ pub enum Up<T>: Pack {
     /// token one id, however many hellos carry it), its session, that it has every outcome
     /// through counter `acked`, and the log through entry `have`.
     Hello { token: u64, session: u32, acked: u32, have: u64 },
-    Propose { counter: u32, value: T },
+    /// A proposal, which says whose it is (the id and session its `Welcome` gave), so a room
+    /// that started again knows it without a hello.
+    Propose { peer: u32, session: u32, counter: u32, value: T },
     /// Every outcome through counter `acked` has arrived.
     Ack { acked: u32 },
 }
@@ -353,7 +355,15 @@ impl<S: Reduce<T> + Clone + Pack, T: Clone + Pack> Room<S, T> {
                 acked,
                 have,
             ),
-            Up::Propose { counter, value } => self.propose(mut out, conn, counter, take value, at),
+            Up::Propose { peer, session, counter, value } => self.propose(
+                mut out,
+                conn,
+                peer,
+                session,
+                counter,
+                take value,
+                at,
+            ),
             Up::Ack { acked } => {
                 let Some(i) = self.peer_of(conn) else {
                     self.refuse(mut out, conn, NO_HELLO)
@@ -440,15 +450,7 @@ impl<S: Reduce<T> + Clone + Pack, T: Clone + Pack> Room<S, T> {
             return
         }
         // One live connection a peer: an older one is closed.
-        for k in 0..self.conns.len() {
-            if self.conns[k].1 == id && self.conns[k].0 != conn {
-                out.sends.push((self.conns[k].0, pack(Down::<S, T>::Refused { why: REPLACED })))
-                out.closes.push(self.conns[k].0)
-            }
-        }
-        self.conns.retain(|c| c.1 != id || c.0 == conn)
-        let c = self.conn_at(conn).unwrap()
-        self.conns[c].1 = id
+        self.attach(mut out, conn, i)
         out.sends.push(
             (
                 conn,
@@ -498,8 +500,8 @@ impl<S: Reduce<T> + Clone + Pack, T: Clone + Pack> Room<S, T> {
     pub fn poisoned(mut self, conn: u32, bytes: take Vec<u8>) -> Step<S, T> {
         var out = Step::new()
         let Ok(up) = unpack_within::<Up<T>>(take bytes, Budget::new()) else { return out }
-        let Up::Propose { counter, .. } = up else { return out }
-        let Some(i) = self.peer_of(conn) else { return out }
+        let Up::Propose { peer, session, counter, .. } = up else { return out }
+        let Some(i) = self.proposer(mut out, conn, peer, session) else { return out }
         if counter != self.peers[i].next {
             return out
         }
@@ -511,11 +513,60 @@ impl<S: Reduce<T> + Clone + Pack, T: Clone + Pack> Room<S, T> {
         out
     }
 
-    fn propose(mut self, out: mut Step<S, T>, conn: u32, counter: u32, value: take T, at: u64) {
-        let Some(i) = self.peer_of(conn) else {
-            self.refuse(mut out, conn, NO_HELLO)
-            return
+    /// The index of the peer a proposal names, from connection `conn`: the connection's peer,
+    /// or, for a connection the room doesn't know (it started again since the hello), the peer
+    /// the proposal says, which the connection is then the one of. Refused if they disagree.
+    fn proposer(mut self, out: mut Step<S, T>, conn: u32, peer: u32, session: u32) -> Option<u32> {
+        let i = match self.peer_of(conn) {
+            Some(i) => {
+                if self.peers[i].id != peer {
+                    self.refuse(mut out, conn, UNKNOWN_PEER)
+                    return None
+                }
+                i
+            },
+            None => {
+                let Some(i) = self.peer_at(peer) else {
+                    self.refuse(mut out, conn, NO_HELLO)
+                    return None
+                }
+                self.attach(mut out, conn, i)
+                i
+            },
         }
+        if self.peers[i].session != session {
+            self.refuse(mut out, conn, OLD_SESSION)
+            return None
+        }
+        Some(i)
+    }
+
+    /// Connection `conn` is peer `i`'s, and its only one: an older one is closed.
+    fn attach(mut self, out: mut Step<S, T>, conn: u32, i: u32) {
+        let id = self.peers[i].id
+        for k in 0..self.conns.len() {
+            if self.conns[k].1 == id && self.conns[k].0 != conn {
+                out.sends.push((self.conns[k].0, pack(Down::<S, T>::Refused { why: REPLACED })))
+                out.closes.push(self.conns[k].0)
+            }
+        }
+        self.conns.retain(|c| c.1 != id || c.0 == conn)
+        self.opened(conn)
+        let c = self.conn_at(conn).unwrap()
+        self.conns[c].1 = id
+    }
+
+    fn propose(
+        mut self,
+        out: mut Step<S, T>,
+        conn: u32,
+        peer: u32,
+        session: u32,
+        counter: u32,
+        value: take T,
+        at: u64,
+    ) {
+        let Some(i) = self.proposer(mut out, conn, peer, session) else { return }
         let p = self.peers[i].clone()
         if counter < p.next {
             // Sent again: its outcome, if it's still kept; else it was acknowledged.
@@ -594,6 +645,9 @@ pub struct Log<S, T> {
     acked: u32,
     pending: Vec<(u32, T)>,
     connected: bool,
+    /// Whether the room has answered this connection's hello: proposals go after that, so they
+    /// carry the id it gave.
+    welcomed: bool,
 }
 
 impl<S: Reduce<T> + Clone + Pack, T: Clone + Pack> Log<S, T> {
@@ -614,6 +668,7 @@ impl<S: Reduce<T> + Clone + Pack, T: Clone + Pack> Log<S, T> {
             acked: 0,
             pending: Vec::new(),
             connected: false,
+            welcomed: false,
         }
     }
 
@@ -642,10 +697,11 @@ impl<S: Reduce<T> + Clone + Pack, T: Clone + Pack> Log<S, T> {
         self.peer
     }
 
-    /// A new connection to the room: what to send first: a hello, then every unsettled proposal
-    /// again, with its counter.
+    /// A new connection to the room: what to send first, a hello. Its unsettled proposals go
+    /// again, with their counters, when the room answers it.
     pub fn connect(mut self) -> Vec<Vec<u8>> {
         self.connected = true
+        self.welcomed = false
         var out: Vec<Vec<u8>> = Vec::new()
         out.push(
             pack(
@@ -657,15 +713,13 @@ impl<S: Reduce<T> + Clone + Pack, T: Clone + Pack> Log<S, T> {
                 },
             ),
         )
-        for p in self.pending {
-            out.push(pack(Up::Propose { counter: p.0, value: p.1.clone() }))
-        }
         out
     }
 
     /// The connection is gone: proposals wait for the next.
     pub fn disconnect(mut self) {
         self.connected = false
+        self.welcomed = false
     }
 
     /// Proposes `value`: shown in the view at once, if the reducer takes it there; the bytes to
@@ -682,8 +736,17 @@ impl<S: Reduce<T> + Clone + Pack, T: Clone + Pack> Log<S, T> {
             applied(mut self.view, entry)
         }
         var out: Vec<Vec<u8>> = Vec::new()
-        if self.connected {
-            out.push(pack(Up::Propose { counter, value: value.clone() }))
+        if self.connected && self.welcomed {
+            out.push(
+                pack(
+                    Up::Propose {
+                        peer: self.peer,
+                        session: self.session,
+                        counter,
+                        value: value.clone(),
+                    },
+                ),
+            )
         }
         self.pending.push((counter, take value))
         Ok(out)
@@ -735,6 +798,20 @@ impl<S: Reduce<T> + Clone + Pack, T: Clone + Pack> Log<S, T> {
                 self.session = session
                 if seq < self.seq {
                     return Err(BAD_ACK)
+                }
+                // Now its unsettled proposals go, again, with their counters.
+                self.welcomed = true
+                for p in self.pending {
+                    out.push(
+                        pack(
+                            Up::Propose {
+                                peer: self.peer,
+                                session: self.session,
+                                counter: p.0,
+                                value: p.1.clone(),
+                            },
+                        ),
+                    )
                 }
             },
             Down::State { seq, state } => {
@@ -1071,8 +1148,16 @@ fn peers_converge_and_apply_each_proposal_once() {
 fn a_counter_sent_again_with_other_contents_is_applied_once() {
     var room: Room<Tags, u32> = Room::new(Tags { all: Vec::new() })
     let _ = room.receive(1, pack(Up::<u32>::Hello { token: 9, session: 1, acked: 0, have: 0 }), 0)
-    let _ = room.receive(1, pack(Up::<u32>::Propose { counter: 1, value: 5 }), 0)
-    let _ = room.receive(1, pack(Up::<u32>::Propose { counter: 1, value: 6 }), 0)
+    let _ = room.receive(
+        1,
+        pack(Up::<u32>::Propose { peer: 1, session: 1, counter: 1, value: 5 }),
+        0,
+    )
+    let _ = room.receive(
+        1,
+        pack(Up::<u32>::Propose { peer: 1, session: 1, counter: 1, value: 6 }),
+        0,
+    )
     assert(room.state().all == Vec::from([5]))
 }
 
@@ -1092,9 +1177,13 @@ fn a_second_connection_with_one_token_replaces_the_first() {
     // One peer, joined once: the second hello's records join no one.
     assert(first.records.len() == 2 && second.records.is_empty())
     assert(second.closes == Vec::from([1]))
-    // The first connection's proposals are no one's now.
-    let stale = room.receive(1, pack(Up::<u32>::Propose { counter: 1, value: 5 }), 0)
-    assert(stale.closes == Vec::from([1]) && room.state().all.is_empty())
+    // The host closes the first; the second's proposals are the peer's.
+    let step = room.receive(
+        2,
+        pack(Up::<u32>::Propose { peer: 1, session: 1, counter: 1, value: 5 }),
+        0,
+    )
+    assert(step.closes.is_empty() && room.state().all == Vec::from([5]))
 }
 
 @test
@@ -1109,10 +1198,18 @@ fn a_peer_waits_for_outcomes_past_its_window() {
     var room: Room<Tags, u32> = Room::new(Tags { all: Vec::new() })
     let _ = room.receive(1, pack(Up::<u32>::Hello { token: 1, session: 1, acked: 0, have: 0 }), 0)
     for c in 1..(WINDOW + 1) {
-        let step = room.receive(1, pack(Up::<u32>::Propose { counter: c, value: c * 7 + 1 }), 0)
+        let step = room.receive(
+            1,
+            pack(Up::<u32>::Propose { peer: 1, session: 1, counter: c, value: c * 7 + 1 }),
+            0,
+        )
         assert(step.closes.is_empty(), f"counter {c}")
     }
-    let past = room.receive(1, pack(Up::<u32>::Propose { counter: WINDOW + 1, value: 2 }), 0)
+    let past = room.receive(
+        1,
+        pack(Up::<u32>::Propose { peer: 1, session: 1, counter: WINDOW + 1, value: 2 }),
+        0,
+    )
     assert(past.closes == Vec::from([1]))
 }
 
@@ -1120,20 +1217,36 @@ fn a_peer_waits_for_outcomes_past_its_window() {
 fn a_settled_proposal_sent_again_isnt_applied_again() {
     var room: Room<Tags, u32> = Room::new(Tags { all: Vec::new() })
     let _ = room.receive(1, pack(Up::<u32>::Hello { token: 1, session: 1, acked: 0, have: 0 }), 0)
-    let _ = room.receive(1, pack(Up::<u32>::Propose { counter: 1, value: 5 }), 0)
-    let again = room.receive(1, pack(Up::<u32>::Propose { counter: 1, value: 5 }), 0)
+    let _ = room.receive(
+        1,
+        pack(Up::<u32>::Propose { peer: 1, session: 1, counter: 1, value: 5 }),
+        0,
+    )
+    let again = room.receive(
+        1,
+        pack(Up::<u32>::Propose { peer: 1, session: 1, counter: 1, value: 5 }),
+        0,
+    )
     assert(room.state().all == Vec::from([5]) && again.records.is_empty())
     // Its outcome is sent again until it's acknowledged; then it's `Done`.
     assert(again.sends.len() == 1)
     let _ = room.receive(1, pack(Up::<u32>::Ack { acked: 1 }), 0)
-    let done = room.receive(1, pack(Up::<u32>::Propose { counter: 1, value: 5 }), 0)
+    let done = room.receive(
+        1,
+        pack(Up::<u32>::Propose { peer: 1, session: 1, counter: 1, value: 5 }),
+        0,
+    )
     let (_, bytes) = done.sends[0].clone()
     match unpack_within::<Down<Tags, u32>>(take bytes, Budget::new()) {
         Ok(Down::Done { counter }) => assert(counter == 1),
         _ => panic("not done"),
     }
     // A gap is refused, and so is acknowledging what isn't settled.
-    let gap = room.receive(1, pack(Up::<u32>::Propose { counter: 3, value: 1 }), 0)
+    let gap = room.receive(
+        1,
+        pack(Up::<u32>::Propose { peer: 1, session: 1, counter: 3, value: 1 }),
+        0,
+    )
     assert(gap.closes == Vec::from([1]))
     let _ = room.receive(2, pack(Up::<u32>::Hello { token: 1, session: 1, acked: 1, have: 1 }), 0)
     let early = room.receive(2, pack(Up::<u32>::Ack { acked: 9 }), 0)
@@ -1144,11 +1257,18 @@ fn a_settled_proposal_sent_again_isnt_applied_again() {
 fn a_poisoned_proposal_is_refused_without_the_reducer() {
     var room: Room<Tags, u32> = Room::new(Tags { all: Vec::new() })
     let _ = room.receive(1, pack(Up::<u32>::Hello { token: 9, session: 1, acked: 0, have: 0 }), 0)
-    let step = room.poisoned(1, pack(Up::<u32>::Propose { counter: 1, value: 5 }))
+    let step = room.poisoned(
+        1,
+        pack(Up::<u32>::Propose { peer: 1, session: 1, counter: 1, value: 5 }),
+    )
     // Refused, durably, with TRAPPED; the state is as it was.
     assert(step.records.len() == 1 && room.state().all.is_empty())
     // Sent again, it's refused again from what the room kept, not run.
-    let again = room.receive(1, pack(Up::<u32>::Propose { counter: 1, value: 5 }), 0)
+    let again = room.receive(
+        1,
+        pack(Up::<u32>::Propose { peer: 1, session: 1, counter: 1, value: 5 }),
+        0,
+    )
     let (_, bytes) = again.sends[0].clone()
     match unpack_within::<Down<Tags, u32>>(take bytes, Budget::new()) {
         Ok(Down::Rejected { counter, reason }) => assert(counter == 1 && reason == TRAPPED),
@@ -1172,7 +1292,11 @@ fn a_peer_behind_the_snapshot_gets_the_state_and_its_proposals_done() {
         kept.push(r.clone())
     }
     for c in 1..4 {
-        let step = room.receive(1, pack(Up::<u32>::Propose { counter: c, value: c }), 0)
+        let step = room.receive(
+            1,
+            pack(Up::<u32>::Propose { peer: 1, session: 1, counter: c, value: c }),
+            0,
+        )
         for r in step.records {
             kept.push(r.clone())
         }
@@ -1204,4 +1328,29 @@ fn a_peer_behind_the_snapshot_gets_the_state_and_its_proposals_done() {
         }
     }
     assert(kinds == Vec::from([0, 1, 2, 2, 2]), f"{kinds.len()} messages")
+}
+
+@test
+fn a_proposal_after_a_restart_names_its_peer() {
+    var room: Room<Tags, u32> = Room::new(Tags { all: Vec::new() })
+    let hello = room.receive(
+        1,
+        pack(Up::<u32>::Hello { token: 9, session: 1, acked: 0, have: 0 }),
+        0,
+    )
+    // The room starts again from its records: it doesn't know whose connection 1 is.
+    var again = Room::replay(Tags { all: Vec::new() }, hello.records)
+    let step = again.receive(
+        1,
+        pack(Up::<u32>::Propose { peer: 1, session: 1, counter: 1, value: 5 }),
+        0,
+    )
+    assert(step.closes.is_empty() && again.state().all == Vec::from([5]))
+    // A proposal naming a peer the room never had is refused.
+    let stranger = again.receive(
+        2,
+        pack(Up::<u32>::Propose { peer: 7, session: 1, counter: 1, value: 5 }),
+        0,
+    )
+    assert(stranger.closes == Vec::from([2]))
 }
