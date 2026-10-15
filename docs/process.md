@@ -514,10 +514,10 @@ the browser also receives the corresponding parity fixes.
 | Inter and JetBrains Mono fonts (`ui/fonts/`) | SIL Open Font License 1.1, licence texts beside them | The studio's interface text. |
 | musl's libm; ARM's optimized-routines | MIT | `compiler/std/math.wrela` follows their algorithms and coefficients (credited in the file). |
 | Steven Worley, "A Cellular Texture Basis Function" (SIGGRAPH 1996) | A published algorithm; no code taken | Bark's plates (`engine/plant.wrela`, `plates_at`): the nearest and second-nearest of jittered cell points, written from the paper's idea. |
-| Heini Hediger's flight distance (*Wild Animals in Captivity*, 1950), as field ethology uses it | A published idea; no code or data taken | The fawn's behaviour (`examples/last-green/behaviour.wrela`): it notices a person first and watches, and flees when they come on within a distance; the distances are our own, tuned by test. |
+| Heini Hediger's flight distance (*Wild Animals in Captivity*, 1950), as field ethology uses it | A published idea; no code or data taken | The fawn's behaviour (`games/last-green/behaviour.wrela`): it notices a person first and watches, and flees when they come on within a distance; the distances are our own, tuned by test. |
 | Vadim Zavalishin, *The Art of VA Filter Design* (2012); George Marsaglia, "Xorshift RNGs" (2003) | Published algorithms; no code taken | The floor's sound (`engine/sound.wrela`): the state-variable filter that bands each source's noise, and the seeded noise itself. |
 | The soil production function: Heimsath, Dietrich, Nishiizumi and Finkel, "The soil production function and landscape equilibrium", *Nature* 388 (1997) | A published finding; we use its idea, not its text or data | `engine::soil::soil`: rock weathers to soil fastest under a thin soil and creep moves it downhill, so crests are thin and hollows deep (credited in the file). |
-| Johann Heinrich von Thünen's land-use rings (*Der isolirte Staat*, 1826); settlement site and budding as human geography teaches them | Published ideas; no code or data taken | The Last Green's elves (`examples/last-green/peoples.wrela`): each settlement takes its fields nearest by walking cost, then pasture, then wood; it chooses its site by water, soil, slope and sun; when it outgrows its land, some of its people found another. |
+| Johann Heinrich von Thünen's land-use rings (*Der isolirte Staat*, 1826); settlement site and budding as human geography teaches them | Published ideas; no code or data taken | The Last Green's elves (`games/last-green/peoples.wrela`): each settlement takes its fields nearest by walking cost, then pasture, then wood; it chooses its site by water, soil, slope and sun; when it outgrows its land, some of its people found another. |
 | W3C, Gamepad API, its "standard" mapping | A W3C specification; no code taken | The browser host reads pads by it (`runtime/browser/src/listen.ts`), and wrela's pad buttons and axes take its order and names (south, east, west, north, the shoulders and triggers, the sticks, the d-pad). |
 | Closest points of two segments (as in Christer Ericson, *Real-Time Collision Detection*, 2005, §5.1.9) | A standard method; no code taken | The climber's fight (`examples/climber/fight.wrela`): the sword's edge, swept between ticks, is tested against capsules on the wolf's body, and the wolf's bite against a capsule up the climber. |
 | Position-based dynamics (Matthias Müller, Bruno Heidelberger, Marcus Hennix, John Ratcliff, "Position Based Dynamics", 2007); long-range attachments (Tae-Yong Kim, Nuttapong Chentanez, Matthias Müller-Fischer, "Long Range Attachments: A Method to Simulate Inextensible Clothing in Computer Games", 2012) | Published methods; no code taken | The climber's cape (`examples/climber/cape.wrela`): a grid of points held by links whose lengths are kept, each point tethered to the collar so the cloth can't stretch however fast the body moves. |
@@ -718,7 +718,7 @@ Measured on the Apple M4 against `b7a7e032`:
 | Last Green CPU frame call, controlled native run | 19.291 ms | 17.850 ms | Includes GPU synchronization; 1.3–7.5% less in each pair |
 
 The render measurements use 120 lockstep frames at 1280×720, span timing, and nine workers
-under exclusive measurement admission. `tools/wrela profile examples/last-green --json`
+under exclusive measurement admission. `tools/wrela profile games/last-green --json`
 ran twice on each checkout. Separate CLI pairs showed wide variation, including slower
 whole-frame candidate results, so they do not establish a whole-frame win on their own.
 A controlled comparison then held one host binary, device, allocator and compiled pipelines
@@ -869,13 +869,13 @@ with empty temporary storage, never the game's saved state.
 Save a baseline build before changing the source, in the normal checkout:
 
 ```sh
-tools/wrela build examples/last-green -o /tmp/last-green-before
+tools/wrela build games/last-green -o /tmp/last-green-before
 ```
 
 After the change, with builds and other GPU work idle:
 
 ```sh
-tools/wrela profile examples/last-green --compare /tmp/last-green-before --pairs 5 --json > /tmp/last-green-comparison.json
+tools/wrela profile games/last-green --compare /tmp/last-green-before --pairs 5 --json > /tmp/last-green-comparison.json
 ```
 
 The comparison alternates baseline/candidate and candidate/baseline, on one device with the
@@ -1653,7 +1653,7 @@ Code (Opus 5.5) designed and built both. Leapling borrows the genre's verbs (run
 coins, prize blocks, springs, a goal) and none of Nintendo's characters, worlds or designs. It
 has no story and no lore.
 
-**Game.** `examples/leapling`: one course, Dusk Ridge, 156 cells by 15, written as text. The
+**Game.** `games/leapling`: one course, Dusk Ridge, 156 cells by 15, written as text. The
 simulation steps at 120 Hz, so the feel doesn't depend on the frame rate. Walking is 7 cells
 a second and running 10.5. A held jump climbs about 3.5 cells and a tap about 1.7. Coyote time
 is 90 ms and jump buffering 120 ms. Springs throw the hero high whether or not jump is held.
@@ -1667,7 +1667,7 @@ each cue, and a four-chord loop (vi, IV, I, V in C) of bass, arpeggio and hi-hat
 sound or music comes from a file or a generative model. The cover is the title screen,
 rendered natively.
 
-**Session.** `examples/leapling/session` adapts The Last Green's session program, keeping its
+**Session.** `games/leapling/session` adapts The Last Green's session program, keeping its
 journal, its backup before a new game, recovery of the save written on return, and its
 import checks. A shared `progress` module holds the save: courses cleared, coins, best time.
 

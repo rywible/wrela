@@ -25,7 +25,7 @@ MIT-licensed language, compiler, engine and agent-native studio for browser game
 | Language | `compiler/` (Rust: syntax → sema → IR → lower → WASM/WGSL), `compiler/std` (Wrela); compiler knows no engine |
 | Engine | `engine/` (Wrela); no game names, places or tuning |
 | Studio | `studio/`, `ui/` (Wrela), `tools/` |
-| Games | `examples/<game>/` (Wrela); depend on engine, never the reverse |
+| Games | `games/<game>/` (Wrela), with its cover; `games/console.toml` lists the released games. Games depend on engine and `examples/`; only studio fixtures depend on a game |
 
 ## Quality and checks
 
