@@ -1352,6 +1352,20 @@ cross that depth.
 previous commit: opening 3.79 → 3.54 ms, room 5.35 → 5.71 ms. Both are inconclusive, with
 overlapping ranges. These are native samples, not Chrome frame rates.
 
+**Turn and highlights.** Ryan asked for a turn that is less predictable, with no seam, and
+for less light on struts that catch it just right. The turn now runs in four planes at
+rates that share no common period (x–w, y–z, y–w and a yaw), so it never repeats, and each
+corner keeps a steady speed (within 1% in a model of 800 s). The y–w turn carries corners
+almost to the 4D eye. There the perspective puts them near the middle, so the tesseract
+reaches no farther than 1.81 times the spread, which is now 0.895. Struts are drawn no
+thicker than 2.4 times their base radius. In native captures at 2560×1600, whole silver
+struts lit near white when the key light's hotspot and the w glint met. The hotspot fell
+from 1.3 to 0.5 and the glint from 0.8 to 0.55, and the worst frame's pixels above 0.75
+fell from 865 to 273, all on thin highlight lines. Native M4 GPU frame spans against the
+previous commit, three alternating pairs at 1280×800: opening 2.67 → 2.37 ms, room
+4.70 → 4.30 ms, both with separate ranges. The two builds turn differently, so the measured
+frames show different poses.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

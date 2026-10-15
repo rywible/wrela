@@ -14,12 +14,16 @@ const BOUNCES: u32 = 4
 // struts that meet there share one radius and weld seamlessly.
 const STRUT: f32 = 0.022
 // The 4D eye stands this far along w. A corner at `w` is drawn `EYE / (EYE - w)` times as far
-// out and as thick. The turn keeps corners within 0.71 of w = 0, so from 0.63 (far) to 2.43
-// (near); nested, the near cell is drawn 2.4 times the far one.
+// out: nested, the near cell is drawn 2.4 times the far one. A corner can turn to w = 1, six
+// times as far out, but it is then at the middle in 3D: no corner is drawn farther out than
+// 1.81 times its distance from the centre.
 const EYE: f32 = 1.2
-// The corners' spread in 3D. Mid-turn a near corner swells out past the nested near cell, so
-// this keeps the farthest corner where it was with the eye at 2 (1.62 times the size).
-const SPREAD: f32 = 0.94
+// Struts are drawn no thicker than this many times `STRUT`, so a corner turned almost to the
+// eye does not balloon.
+const THICKEST: f32 = 2.4
+// The corners' spread in 3D: the farthest corner reaches 1.62 times the size, as it did with
+// the eye at 2.
+const SPREAD: f32 = 0.895
 // However it turns, the tesseract stays inside a sphere this many times its size.
 const REACH: f32 = 1.7
 
@@ -87,12 +91,20 @@ pub fn swell(w: f32) -> f32 {
     EYE / (EYE - w)
 }
 
-// An isoclinic double rotation, the x–w and y–z planes by one angle as only four dimensions
-// allow: the cells pass through each other and turn inside out, at one steady rate. A slow
-// yaw and a fixed tilt show its depth.
+// How thick a strut is drawn at a corner at `w`, against `STRUT`.
+pub fn thickness(w: f32) -> f32 {
+    min(swell(w), THICKEST)
+}
+
+// Steady turns in four planes at once, as only four dimensions allow. The x–w turn passes the
+// cells through each other and turns them inside out; the y–z turn beside it, at another rate,
+// unbalances the eversion; a y–w turn slowly carries the eversion round to new directions; a
+// yaw and a fixed tilt show its depth. The rates share no common period, so it never repeats,
+// and every corner moves at a steady speed throughout.
 fn spin(q: vec4, t: f32) -> vec4 {
-    let everted = plane(plane(q, t, a: 0, b: 3), t, a: 1, b: 2)
-    plane(plane(everted, t * 0.3, a: 0, b: 2), 0.42, a: 1, b: 2)
+    let everted = plane(plane(q, t * 1.19, a: 0, b: 3), t * 0.735, a: 1, b: 2)
+    let carried = plane(everted, t * 0.493, a: 1, b: 3)
+    plane(plane(carried, t * 0.357, a: 0, b: 2), 0.42, a: 1, b: 2)
 }
 
 // The sixteen corners at `turn` (radians of the slow rotation), seen from a 4D eye and
@@ -197,8 +209,8 @@ fn metal_hit(
         let edge = edges[e]
         let a = verts[u32(edge.x)]
         let b = verts[u32(edge.y)]
-        let ra = radius * swell(a.w)
-        let rb = radius * swell(b.w)
+        let ra = radius * thickness(a.w)
+        let rb = radius * thickness(b.w)
         let ba = b.xyz - a.xyz
         // Most struts are nowhere near the ray: a sphere about each rules it out cheaply.
         let mid = (a.xyz + b.xyz) * 0.5 - ro
@@ -338,7 +350,7 @@ pub fn metal(depth: f32) -> vec3 {
 // every 8 seconds: it catches everything at one depth in w at once, however far apart in 3D,
 // and slides along the struts that cross that depth.
 pub fn glint(depth: f32, time: f32) -> f32 {
-    pow(saturate(sin(depth * 2.9 + time * 0.8) * 0.5 + 0.5), 30.0) * 0.8
+    pow(saturate(sin(depth * 2.4 + time * 0.8) * 0.5 + 0.5), 30.0) * 0.55
 }
 
 // Polished metal at 4D depth `depth` under the studio. `rough` (0 to 1) blurs what it mirrors,
@@ -351,7 +363,7 @@ pub fn polished(depth: f32, n: vec3, rd: vec3, time: f32, rough: f32) -> vec3 {
     let fresnel = f0 + (vec3(1.0) - f0) * pow(1.0 - cosv, 5.0) * 0.25
     let r = rd - n * (2.0 * dot(rd, n))
     let key = normalize(vec3(-0.35, 0.9, 0.35))
-    let sharp = studio(r) + pow(saturate(dot(r, key)), 12.0) * 1.3
+    let sharp = studio(r) + pow(saturate(dot(r, key)), 12.0) * 0.5
     mix(sharp, blurred(r), rough) * fresnel + f0 * 0.04 + (f0 + vec3(0.1)) * glint(depth, time)
 }
 
@@ -392,7 +404,7 @@ fn trace(
     let radius = STRUT * size
     for _ in 0..BOUNCES {
         let m = metal_hit(ro, rd, verts, edges, radius, cone, past)
-        let f = face_hit(ro, rd, skip, verts, faces, radius * swell(-1.0))
+        let f = face_hit(ro, rd, skip, verts, faces, radius * thickness(-1.0))
         if m.at < f.x {
             let shine = polished(m.depth, m.normal, rd, look.time, rough)
             gathered += through * shine * m.cover
@@ -466,7 +478,7 @@ pub fn artifact(
 ) -> vec4 {
     let ro = look.eye.xyz
     // Rays that pass clear of it see only the dark.
-    let reach = look.place.w * (REACH + STRUT * swell(1.0))
+    let reach = look.place.w * (REACH + STRUT * THICKEST)
     let rd = direction(look, pixel.position.xy)
     let o = ro - look.place.xyz
     let b = dot(o, rd)
@@ -530,7 +542,7 @@ fn every_corner_meets_four_struts_and_six_faces() {
 
 @test
 fn the_tesseract_stays_within_its_reach_however_it_turns() {
-    for i in 0..60 {
+    for i in 0..400 {
         let turn = f32(i) * 0.37
         for p in corners(turn, vec3(1.0, 2.0, 3.0), 1.4) {
             assert(length(p.xyz - vec3(1.0, 2.0, 3.0)) < 1.4 * REACH, "inside the traced sphere")
@@ -576,7 +588,7 @@ fn a_strut_covers_the_share_of_a_pixel_it_fills() {
     let eye = mid + out * 0.6
     let side = normalize(cross(axis, out))
     // Its radius at its middle, between those at its two corners.
-    let radius = STRUT * (swell(ends.0.w) + swell(ends.1.w)) * 0.5
+    let radius = STRUT * (thickness(ends.0.w) + thickness(ends.1.w)) * 0.5
     let footprint = radius * 0.5
     let cover = |offset: f32| -> f32 {
         let hit = metal_hit(
@@ -620,12 +632,12 @@ fn the_glint_passes_from_the_near_cell_to_the_far_one() {
     // Where the glint is brightest moves steadily toward -w, and lights one depth at a time.
     var last = 1.0
     for i in 0..20 {
-        let time = 1.6 + f32(i) * 0.2
+        let time = 6.9 + f32(i) * 0.3
         var brightest = -1.0
         var best = 0.0
         var lit = 0
-        for k in 0..141 {
-            let depth = 0.7 - f32(k) * 0.01
+        for k in 0..201 {
+            let depth = 1.0 - f32(k) * 0.01
             let g = glint(depth, time)
             if g > best {
                 best = g
@@ -637,22 +649,35 @@ fn the_glint_passes_from_the_near_cell_to_the_far_one() {
         assert(lit < 30, "a narrow band")
         last = brightest
     }
-    assert(last < -0.5)
+    assert(last < -0.8)
 }
 
 @test
 fn the_tesseract_turns_at_one_steady_rate() {
-    // Every corner of an isoclinic rotation moves at the same speed, and the yaw keeps its own:
-    // with no easing, the corners move as far in each step, wherever the turn is.
+    // With no easing, the corners move as far in each step, wherever the turn is.
     let step = 0.05
     var least = 1.0e9
     var most = 0.0
-    for i in 0..60 {
-        let t = f32(i) * 0.13
+    for i in 0..200 {
+        let t = f32(i) * 0.37
         var moved = 0.0
         for c in 0..16 { moved += length(spin(corner(c), t + step) - spin(corner(c), t)) }
         least = min(least, moved)
         most = max(most, moved)
     }
     assert(most < least * 1.05)
+}
+
+@test
+fn the_turn_carries_every_corner_toward_the_eye_in_turn() {
+    // One double rotation keeps corners within 0.71 of w = 0, and repeats. The turn carried
+    // round through y–w brings each corner, in time, almost to the eye.
+    var nearest = [0.0; 16]
+    for i in 0..2000 {
+        let t = f32(i) * 0.1
+        for c in 0..16 { nearest[c] = max(nearest[c], spin(corner(c) * 0.5, t).w) }
+    }
+    for c in 0..16 { assert(nearest[c] > 0.9) }
+    // However near, its struts stay no thicker than they were.
+    assert(thickness(0.99) == THICKEST && thickness(0.0) == 1.0)
 }
