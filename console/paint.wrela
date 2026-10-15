@@ -1,6 +1,8 @@
-// A folded membrane projected from four coordinates; its six bands contract into Meridian.
-use meridian::{WEIGHT, letter}
-use std::gpu::{ClipPosition, FragCoord, Over, Rgba8, Sampler, Texture, VertexIndex}
+// The console's GPU work: the void around the traced artifact, the album cards in
+// perspective, and the flat mark.
+use room::{Camera, Card, corner, project}
+use std::gpu::{ClipPosition, FragCoord, Over, Rgba8, Rgba16Float, Sampler, Texture, VertexIndex}
+use facet::{CAP, MarkRun, mark_distance}
 
 pub struct Vertex {
     pub position: ClipPosition,
@@ -9,7 +11,7 @@ pub struct Vertex {
 }
 
 @vertex
-pub fn quad(v: VertexIndex, screen: vec2, rect: vec4, lean: f32 = 0.0) -> Vertex {
+pub fn quad(v: VertexIndex, screen: vec2, rect: vec4) -> Vertex {
     let corners = [
         vec2(0.0, 0.0),
         vec2(1.0, 0.0),
@@ -19,9 +21,7 @@ pub fn quad(v: VertexIndex, screen: vec2, rect: vec4, lean: f32 = 0.0) -> Vertex
         vec2(1.0, 1.0),
     ]
     let uv = corners[v.index]
-    let local = (uv - vec2(0.5)) * rect.zw
-    let perspective = 1.0 + local.x * sin(lean) / 700.0
-    let p = rect.xy + rect.zw * 0.5 + vec2(local.x * cos(lean), local.y) / perspective
+    let p = rect.xy + rect.zw * uv
     Vertex {
         position: ClipPosition {
             position: vec4(p.x / screen.x * 2.0 - 1.0, 1.0 - p.y / screen.y * 2.0, 0.0, 1.0),
@@ -31,313 +31,105 @@ pub fn quad(v: VertexIndex, screen: vec2, rect: vec4, lean: f32 = 0.0) -> Vertex
     }
 }
 
-pub struct Moment: Copy {
-    pub morph: f32,
-    pub light: f32,
-    pub library: f32,
+fn tone(x: vec3) -> vec3 {
+    saturate((x * (x * 2.51 + vec3(0.03))) / (x * (x * 2.43 + vec3(0.59)) + vec3(0.14)))
 }
 
-pub const OPENING_SECONDS: f32 = 8.3
-
-// A presentation clock, not simulation time. Initial compilation and a late frame must not
-// skip the black opening or jump over a fade. It never catches up a loading stall.
-pub fn presentation_step(previous: Option<f32>, now: f32) -> f32 {
-    match previous {
-        Some(before) => clamp(now - before, 0.0, 1.0 / 30.0),
-        None => 0.0,
-    }
+// How much of the room shows: the opening's light.
+pub struct Stage: Copy + GpuData {
+    pub reveal: f32,
 }
 
-pub fn moment(time: f32, opening: bool) -> Moment {
-    if !opening { return Moment { morph: 0.0, light: 0.48, library: 1.0 } }
-    let library = smoothstep(7.15, OPENING_SECONDS, time)
-    Moment {
-        morph: if time < 7.0 { smoothstep(3.4, 5.3, time) } else { 0.0 },
-        light: smoothstep(0.25, 1.5, time) * (1.0 - smoothstep(5.9, 6.9, time)) + library * 0.48,
-        library,
-    }
+// Everything behind the cards: the artifact turning in the void.
+@fragment
+pub fn stage(
+    v: Vertex,
+    room: Texture<Rgba16Float>,
+    linear: Sampler,
+    camera: Camera,
+    look: Stage,
+) -> vec4 {
+    let seen = room.sample_level(linear, v.pixel / camera.screen.xy, 0.0)
+    vec4(tone(seen.xyz * 1.6) * look.reveal, 1.0)
 }
 
-pub struct Field: Copy + GpuData {
-    pub screen: vec2,
-    pub time: f32,
-    pub morph: f32,
-    pub library: f32,
-}
-
-pub struct Station: Copy + GpuData {
-    pub point: vec2,
-    pub travel: f32,
-    pub vane: f32,
-}
-
-pub const SEGMENTS: u32 = 160
-pub const RINGS: u32 = SEGMENTS + 1
-const COLUMNS: u32 = 16
-pub const VERTICES_PER_VANE: u32 = SEGMENTS * COLUMNS * 6
-const WORD_SCALE: f32 = 0.55
-
-// Equal arc-length samples of the very same paths as the baked display font. No textured
-// word or second shape is crossfaded in. Each surface band ends at a glyph stroke.
-pub fn word_stations() -> Vec<Station> {
-    let word = [87, 114, 101, 108, 97]
-    var width = 0.0
-    for cp in word { width += letter(cp).advance }
-    var pen = -width * 0.5
-    var stations: Vec<Station> = Vec::new()
-    var vane = 0.0
-    for cp in word {
-        let glyph = letter(cp)
-        for path in glyph.paths {
-            var length_sum = 0.0
-            for i in 0..path.points.len() - 1 {
-                length_sum += length(path.points[i + 1] - path.points[i])
-            }
-            var segment = 0
-            var before = 0.0
-            for i in 0..RINGS {
-                let u = f32(i) / f32(SEGMENTS)
-                let wanted = u * length_sum
-                while segment + 2 < path.points.len() &&
-                    before + length(path.points[segment + 1] - path.points[segment]) < wanted {
-                    before += length(path.points[segment + 1] - path.points[segment])
-                    segment += 1
-                }
-                let a = path.points[segment]
-                let b = path.points[segment + 1]
-                let p = mix(a, b, saturate((wanted - before) / max(length(b - a), 0.00001)))
-                stations.push(
-                    Station {
-                        point: (p + vec2(pen, -0.36)) * WORD_SCALE,
-                        travel: u,
-                        vane,
-                    },
-                )
-            }
-            vane += 1.0
-        }
-        pen += glyph.advance
-    }
-    stations
-}
-
-fn turn(p: vec2, angle: f32) -> vec2 {
-    let c = cos(angle)
-    let s = sin(angle)
-    vec2(c * p.x - s * p.y, s * p.x + c * p.y)
-}
-
-// A closed curve in four coordinates. Rotations through the fourth coordinate change
-// which cavity lies inside another in the projected surface, without jumping between forms.
-fn membrane(u: f32, band: f32, across: f32, time: f32) -> vec3 {
-    let a = u * 6.28318531
-    let b = (band + across * 0.30) * 1.04719755
-    let q = vec4(
-        cos(a * 2.0) * cos(b),
-        sin(a * 2.0) * cos(b),
-        cos(a * 3.0) * sin(b),
-        sin(a * 3.0) * sin(b),
-    )
-    let xw = turn(vec2(q.x, q.w), time * 0.38 + 0.65)
-    let yz = turn(vec2(q.y, q.z), time * 0.21 + 0.40)
-    var p = vec3(xw.x, yz.x, yz.y) * (1.18 / (1.0 - xw.y * 0.48))
-    let xz = turn(p.xz, time * 0.12 - 0.25)
-    let xy = turn(vec2(xz.x, p.y), -0.28)
-    p = vec3(xy.x, xy.y, xz.y)
-    p * (0.92 + 0.12 * cos(a * 5.0 + b * 3.0))
-}
-
-fn local_morph(field: Field, vane: f32) -> f32 {
-    smoothstep(vane * 0.015, 0.925 + vane * 0.015, field.morph)
-}
-
-fn pose(station: Station, tangent: vec2, across: f32, field: Field) -> vec3 {
-    let m = local_morph(field, station.vane)
-    let p = membrane(station.travel, station.vane, across, field.time)
-    let side = vec2(-tangent.y, tangent.x)
-    let target = vec3(station.point + side * across * WEIGHT * WORD_SCALE, 0.0)
-    // The surface pulls inward before its folds straighten. No outward burst of giant letters.
-    mix(p * (1.0 - 0.58 * sin(m * 3.14159265)), target, m)
-}
-
-fn space_scale(aspect: f32, library: f32) -> f32 {
-    mix(max(1.0, 0.65 / aspect), max(1.0, 0.55 / aspect) * 2.25, library)
-}
-
-pub struct Metal {
+pub struct CardVertex {
     pub position: ClipPosition,
-    pub world: vec3,
-    pub normal: vec3,
-    pub weave: vec2,
+    // From 0 to 1 across the art; beyond, in the margin that holds the ring.
+    pub uv: vec2,
 }
 
 @vertex
-pub fn sculpture(id: VertexIndex, stations: [Station], field: Field) -> Metal {
-    let vane = id.index / VERTICES_PER_VANE
-    let local = id.index % VERTICES_PER_VANE
-    let corner = [0, 1, 2, 2, 1, 3][local % 6]
-    let sample = local / (COLUMNS * 6) + corner / 2
-    let column = (local / 6) % COLUMNS + corner % 2
-    let across = f32(column) / f32(COLUMNS) * 2.0 - 1.0
-    let station = stations[vane * RINGS + sample]
-    let previous = stations[vane * RINGS + max(sample, 1) - 1]
-    let next = stations[vane * RINGS + min(sample + 1, SEGMENTS)]
-    let tangent = normalize(next.point - previous.point)
-    let world = pose(station, tangent, across, field)
-    let along = pose(next, tangent, across, field) - pose(previous, tangent, across, field)
-    let over = pose(station, tangent, across + 0.01, field) -
-        pose(station, tangent, across - 0.01, field)
-    let n = normalize(cross(over, along))
-    let aspect = field.screen.x / field.screen.y
-    let scale = space_scale(aspect, field.library)
-    let perspective = 7.5 / (7.5 - world.z)
-    let center = vec2(0.0, mix(0.0, 0.46, field.library))
-    let xy = world.xy * perspective / vec2(aspect, 1.0) / (2.4 * scale) + center
-    Metal {
-        position: ClipPosition { position: vec4(xy, (7.5 - world.z) / 16.0, 1.0) },
-        world,
-        normal: n,
-        weave: vec2(station.travel, across),
-    }
+pub fn card_corner(v: VertexIndex, camera: Camera, card: Card) -> CardVertex {
+    let corners = [
+        vec2(0.0, 0.0),
+        vec2(1.0, 0.0),
+        vec2(0.0, 1.0),
+        vec2(0.0, 1.0),
+        vec2(1.0, 0.0),
+        vec2(1.0, 1.0),
+    ]
+    let margin = vec2(card.size.w) / card.size.xy
+    let uv = mix(-margin, vec2(1.0) + margin, corners[v.index])
+    let s = project(camera, corner(card, uv))
+    let ndc = vec2(s.x / camera.screen.x * 2.0 - 1.0, 1.0 - s.y / camera.screen.y * 2.0)
+    // Clip w is the depth, so the art is interpolated in perspective.
+    CardVertex { position: ClipPosition { position: vec4(ndc * s.z, 0.5, s.z) }, uv }
 }
+
+// An album card: art with rounded corners and a faint hairline edge, with a ring when it has
+// focus.
 
 @fragment
-pub fn titanium(v: Metal, field: Field) -> vec4 {
-    var n = normalize(v.normal)
-    let view = normalize(vec3(0.0, 0.0, 7.5) - v.world)
-    if dot(n, view) < 0.0 { n = -n }
-    let reflected = n * (2.0 * dot(n, view)) - view
-    let top = pow(max(dot(reflected, normalize(vec3(-0.55, 0.9, 1.2))), 0.0), 12.0)
-    let stripe = pow(max(dot(reflected, normalize(vec3(0.8, 0.3, 0.8))), 0.0), 44.0)
-    let violet = pow(max(dot(reflected, normalize(vec3(0.7, -0.3, -0.2))), 0.0), 10.0)
-    let fresnel = pow(1.0 - max(dot(n, view), 0.0), 3.0)
-    let diffuse = 0.07 + max(dot(n, normalize(vec3(-0.5, 0.8, 1.0))), 0.0) * 0.20
-    let lip = smoothstep(0.86, 1.0, abs(v.weave.y))
-    // Fine striations sit below the broad reflections. The cavities remain almost black.
-    let ribs = 0.90 + 0.10 * cos(v.weave.x * 6.28318531 * 64.0)
-    var color = vec3(0.18, 0.22, 0.28) * diffuse +
-        vec3(0.74, 0.83, 0.91) * top * 1.5 +
-        vec3(0.92, 0.95, 0.98) * stripe * 1.9 +
-        vec3(0.32, 0.25, 0.47) * violet * 0.70 +
-        vec3(0.37, 0.44, 0.53) * fresnel * (0.24 + lip * 0.22)
-    color *= ribs
-    color = pow(color / (vec3(1.0) + color), vec3(0.8))
-    // The small resolved word is matte, without an oversized chrome-light sweep.
-    color = mix(color, vec3(0.68, 0.72, 0.76), field.morph)
-    vec4(color, 1.0)
+pub fn card_face(
+    v: CardVertex,
+    art: Texture<Rgba8>,
+    linear: Sampler,
+    card: Card,
+    has_art: f32,
+) -> Over {
+    let size = card.size.xy
+    let local = (v.uv - vec2(0.5)) * size
+    let radius = card.size.z
+    let q = abs(local) - size * 0.5 + vec2(radius)
+    let d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - radius
+    let pixel = max(fwidth(d), 0.00001)
+    let inside = saturate(0.5 - d / pixel)
+    let sampled = art.sample_level(linear, saturate(v.uv), 0.0).xyz
+    let base = mix(vec3(0.11, 0.11, 0.12), sampled, has_art)
+    // A hairline just inside the edge, so dark art still has a shape against the dark.
+    let hairline = saturate(1.0 - abs(d + pixel) / pixel) * 0.1
+    let lit = mix(base, vec3(1.0), hairline) * card.look.x
+    let gap = card.size.w * 0.5
+    let band = saturate(1.0 - abs(d - gap) / pixel / 1.6) * card.look.y
+    var alpha = max(inside, band) * card.look.z
+    let color = lit * inside + vec3(0.97) * band
+    Over { color: vec4(color / max(max(inside, band), 0.0001), alpha) }
 }
 
+pub struct Emblem: Copy + GpuData {
+    // The mark's centre in pixels, and pixels per em.
+    pub centre: vec2,
+    pub ems: f32,
+    pub alpha: f32,
+    pub count: u32,
+    // The light passing along it: 0 before the mark, 1 once it has crossed.
+    pub reveal: f32,
+    pub width: f32,
+}
+
+// The flat mark. As the light passes, each part of it comes up behind a bright edge.
 @fragment
-pub fn chamber(pixel: FragCoord, field: Field) -> vec4 {
-    let uv = pixel.position.xy / field.screen
-    let aspect = field.screen.x / field.screen.y
-    let center = vec2(0.5, mix(0.78, 0.40, field.library))
-    let floor_uv = (uv - center) * vec2(aspect, 5.5)
-    let pool = exp(-dot(floor_uv, floor_uv) * 9.0)
-    let shadow = exp(-dot(floor_uv * vec2(2.0, 1.0), floor_uv * vec2(2.0, 1.0)) * 32.0)
-    let color = vec3(0.005, 0.007, 0.010) * field.library +
-        vec3(0.035, 0.048, 0.069) * pool * (1.0 - shadow * 0.82)
-    vec4(color, 1.0)
-}
-
-@fragment
-pub fn scene(v: Vertex, content: Texture<Rgba8>, linear: Sampler, exposure: f32) -> vec4 {
-    vec4(content.sample_level(linear, v.uv, 0.0).xyz * exposure, 1.0)
-}
-
-@test
-fn the_word_mesh_uses_every_meridian_path_and_closes_at_its_letter_positions() {
-    let stations = word_stations()
-    assert(stations.len() == RINGS * 6)
-    let field = Field {
-        screen: vec2(1280.0, 720.0),
-        time: 4.5,
-        morph: 1.0,
-        library: 0.0,
-    }
-    for s in stations {
-        assert(s.travel >= 0.0 && s.travel <= 1.0)
-        let end = pose(s, vec2(1.0, 0.0), 0.0, field)
-        assert(length(end - vec3(s.point, 0.0)) < 0.0001)
-        assert(abs(end.x) < 3.0 && abs(end.y) < 1.0)
-    }
-    for i in 0..6 {
-        assert(stations[i * RINGS].travel == 0.0)
-        assert(stations[(i + 1) * RINGS - 1].travel == 1.0)
-    }
-}
-
-@fragment
-pub fn image(v: Vertex, content: Texture<Rgba8>, linear: Sampler, size: vec2, alpha: f32) -> Over {
-    let p = abs((v.uv - vec2(0.5)) * size) - size * 0.5 + vec2(12.0)
-    let d = length(max(p, vec2(0.0))) + min(max(p.x, p.y), 0.0) - 12.0
-    let c = content.sample_level(linear, v.uv, 0.0)
-    let shade = 1.0 - smoothstep(0.2, 1.0, v.uv.y) * 0.16
-    Over { color: vec4(c.xyz * shade, c.w * saturate(0.5 - d) * alpha) }
-}
-
-@test
-fn the_opening_has_black_bookends_and_a_resolved_word_before_the_library() {
-    let start = moment(0.0, opening: true)
-    assert(start.light == 0.0 && start.morph == 0.0 && start.library == 0.0)
-    let solid = moment(2.0, opening: true)
-    assert(solid.light == 1.0 && solid.morph == 0.0)
-    let word = moment(5.5, opening: true)
-    assert(word.morph == 1.0 && word.light == 1.0 && word.library == 0.0)
-    let black = moment(7.0, opening: true)
-    assert(black.light == 0.0 && black.library == 0.0)
-    assert(moment(OPENING_SECONDS, opening: true).library == 1.0)
-    assert(moment(0.0, opening: false).library == 1.0)
-}
-
-@test
-fn portrait_keeps_the_word_in_frame_and_the_library_sculpture_present() {
-    for screen in [vec2(1280.0, 720.0), vec2(390.0, 844.0)] {
-        let aspect = screen.x / screen.y
-        // The word fits the camera's width, and the library form stands 140–240 px tall.
-        assert(space_scale(aspect, 0.0) * aspect * 2.4 > 1.0)
-        let height = 2.8 / (4.8 * space_scale(aspect, 1.0)) * screen.y
-        assert(height > 140.0 && height < 240.0)
-    }
-}
-
-@test
-fn a_late_first_frame_or_loading_stall_cannot_skip_the_presentation() {
-    assert(presentation_step(None, 3.8) == 0.0)
-    assert(abs(presentation_step(Some(3.8), 3.816) - 0.016) < 0.0001)
-    assert(presentation_step(Some(3.8), 8.5) <= 1.0 / 30.0)
-    assert(presentation_step(Some(8.5), 3.8) == 0.0)
-    var time = 5.9
-    for i in 0..40 {
-        time += presentation_step(Some(f32(i)), f32(i) + 0.25)
-        if time >= 6.9 && time <= 7.15 {
-            let black = moment(time, opening: true)
-            assert(black.light == 0.0 && black.library == 0.0)
-        }
-    }
-    assert(time < 7.3)
-}
-
-@test
-fn the_projection_is_bounded_and_the_word_is_quiet() {
-    for frame in 0..9 {
-        for band in 0..6 {
-            for i in 0..65 {
-                let u = f32(i) / 64.0
-                for across in [-1.0, 0.0, 1.0] {
-                    let p = membrane(u, f32(band), across, f32(frame) * 2.0)
-                    assert(length(p) < 2.4)
-                }
-            }
-        }
-    }
-    let stations = word_stations()
-    var lo = 0.0
-    var hi = 0.0
-    for s in stations {
-        lo = min(lo, s.point.x)
-        hi = max(hi, s.point.x)
-    }
-    let pixels = (hi - lo) / 4.8 * 720.0
-    assert(pixels > 200.0 && pixels < 300.0)
+pub fn emblem(v: Vertex, runs: [MarkRun], look: Emblem) -> Over {
+    let p = vec2(v.pixel.x - look.centre.x, look.centre.y - v.pixel.y) / look.ems +
+        vec2(0.0, CAP * 0.5)
+    var d = 100.0
+    for i in 0..look.count { d = min(d, mark_distance(p, runs[i])) }
+    let coverage = saturate(0.5 - d * look.ems)
+    let across = p.x / look.width + 0.5
+    let front = look.reveal * 1.3 - 0.15
+    let shown = saturate((front - across) / 0.12)
+    let edge = exp(-pow((across - front) * 14.0, 2.0)) * (1.0 - look.reveal)
+    let color = mix(vec3(0.9, 0.91, 0.92), vec3(1.0), edge)
+    Over { color: vec4(color, coverage * max(shown, edge) * look.alpha) }
 }

@@ -1,0 +1,991 @@
+// Wrela Facet: original unicase capitals for the console, drawn as stroke centrelines.
+// Joins are mitred, terminals are cut flat, and bowls are chamfered at 45 degrees. The same
+// strokes, heavier, make the WRΞLA mark. No external font outlines or raster assets are
+// used here.
+use ui::ttf::{Baked, BakedGlyph}
+
+// Design units are hundredths of an em. Capitals stand 0.70 em, on a 0.10 em stroke.
+pub const CAP: f32 = 0.70
+pub const HALF: f32 = 0.05
+pub const MARK_HALF: f32 = 0.07
+const SIDE: f32 = 0.07
+const MARK_GAP: f32 = 0.15
+
+@fuel(2 ** 38)
+pub const FONT: Baked = bake()
+
+pub struct Stroke: Clone {
+    pub points: Vec<vec2>,
+    pub closed: bool,
+}
+
+pub struct Letter: Clone {
+    pub advance: f32,
+    pub strokes: Vec<Stroke>,
+    // Cut to the baseline and cap height: diagonals run past both and end flat.
+    pub clip: bool,
+}
+
+// One straight run of a stroke: its centreline from `a` to `b`, and the planes through each
+// end that it shares with its neighbours (perpendicular at a free terminal).
+pub struct Piece: Copy {
+    pub a: vec2,
+    pub b: vec2,
+    pub start: vec2,
+    pub end: vec2,
+    // The next run's direction, when this one turns into it rather than ending.
+    pub after: Option<vec2>,
+    pub half: f32,
+    pub clip: bool,
+}
+
+fn units(points: [vec2]) -> Vec<vec2> {
+    var out: Vec<vec2> = Vec::new()
+    for p in points { out.push(p * 0.01) }
+    out
+}
+
+fn line(points: [vec2]) -> Stroke {
+    Stroke { points: units(points), closed: false }
+}
+
+fn ring(points: [vec2]) -> Stroke {
+    Stroke { points: units(points), closed: true }
+}
+
+// A closed rectangle of centrelines, its corners chamfered by `k`.
+fn facet(low: vec2, high: vec2, k: f32) -> Stroke {
+    let (x0, y0, x1, y1) = (low.x, low.y, high.x, high.y)
+    ring(
+        [
+            vec2(x0 + k, y0),
+            vec2(x1 - k, y0),
+            vec2(x1, y0 + k),
+            vec2(x1, y1 - k),
+            vec2(x1 - k, y1),
+            vec2(x0 + k, y1),
+            vec2(x0, y1 - k),
+            vec2(x0, y0 + k),
+        ],
+    )
+}
+
+pub fn pieces(stroke: Stroke, half: f32, clip: bool, shift: vec2 = vec2(0.0)) -> Vec<Piece> {
+    borrow p = stroke.points
+    let n = p.len()
+    let count = if stroke.closed { n } else { n - 1 }
+    var out: Vec<Piece> = Vec::new()
+    for i in 0..count {
+        let a = p[i]
+        let b = p[(i + 1) % n]
+        let u = normalize(b - a)
+        let before = if stroke.closed || i > 0 { normalize(a - p[(i + n - 1) % n]) } else { u }
+        let turns = stroke.closed || i + 2 < n
+        let after = if turns { normalize(p[(i + 2) % n] - b) } else { u }
+        out.push(
+            Piece {
+                a: a + shift,
+                b: b + shift,
+                start: normalize(before + u),
+                end: normalize(u + after),
+                after: if turns { Some(after) } else { None },
+                half,
+                clip,
+            },
+        )
+    }
+    out
+}
+
+// Signed distance to one mitred run: negative inside. Exact on the outline, and a lower
+// bound outside it, which is what a distance field and a sphere tracer both need.
+pub fn piece_distance(p: vec2, s: Piece) -> f32 {
+    let u = normalize(s.b - s.a)
+    let side = abs(dot(p - s.a, vec2(-u.y, u.x))) - s.half
+    var d = max(side, max(-dot(p - s.a, s.start), dot(p - s.b, s.end)))
+    // Where two runs overlap around their mitre, the shared cut is inside the ink; without
+    // this term a field would show it as a hairline.
+    if let Some(next) = s.after {
+        let across = abs(dot(p - s.b, vec2(-next.y, next.x))) - s.half
+        d = min(d, max(max(side, across), -dot(p - s.a, s.start)))
+    }
+    if s.clip { d = max(d, max(-p.y, p.y - CAP)) }
+    d
+}
+
+pub fn letter(codepoint: u32) -> Letter {
+    // A display face: lowercase shares the capitals.
+    if codepoint >= 97 && codepoint <= 122 { return letter(codepoint - 32) }
+    var s: Vec<Stroke> = Vec::new()
+    var clip = true
+    let width = match codepoint {
+        32 => 14.0,
+        33 => {
+            s.push(line([vec2(5.0, 70.0), vec2(5.0, 22.0)]))
+            s.push(line([vec2(5.0, 0.0), vec2(5.0, 10.0)]))
+            10.0
+        },
+        34 => {
+            s.push(line([vec2(5.0, 70.0), vec2(5.0, 52.0)]))
+            s.push(line([vec2(19.0, 70.0), vec2(19.0, 52.0)]))
+            24.0
+        },
+        35 => {
+            s.push(line([vec2(16.0, -10.0), vec2(26.0, 80.0)]))
+            s.push(line([vec2(38.0, -10.0), vec2(48.0, 80.0)]))
+            s.push(line([vec2(2.0, 24.0), vec2(60.0, 24.0)]))
+            s.push(line([vec2(4.0, 48.0), vec2(62.0, 48.0)]))
+            64.0
+        },
+        36 => {
+            clip = false
+            s.push(letter(83).strokes[0].clone())
+            s.push(line([vec2(30.0, -10.0), vec2(30.0, 80.0)]))
+            60.0
+        },
+        37 => {
+            s.push(facet(vec2(5.0, 44.0), vec2(23.0, 65.0), 5.0))
+            s.push(facet(vec2(37.0, 5.0), vec2(55.0, 26.0), 5.0))
+            s.push(line([vec2(2.0, -6.0), vec2(58.0, 76.0)]))
+            60.0
+        },
+        38 => {
+            s.push(
+                line(
+                    [
+                        vec2(58.0, -4.0),
+                        vec2(14.0, 46.0),
+                        vec2(14.0, 58.0),
+                        vec2(21.0, 65.0),
+                        vec2(38.0, 65.0),
+                        vec2(45.0, 58.0),
+                        vec2(45.0, 48.0),
+                        vec2(10.0, 24.0),
+                        vec2(5.0, 19.0),
+                        vec2(5.0, 12.0),
+                        vec2(12.0, 5.0),
+                        vec2(38.0, 5.0),
+                        vec2(56.0, 26.0),
+                    ],
+                ),
+            )
+            60.0
+        },
+        39 => {
+            s.push(line([vec2(5.0, 70.0), vec2(5.0, 52.0)]))
+            10.0
+        },
+        40 => {
+            clip = false
+            s.push(line([vec2(17.0, 80.0), vec2(5.0, 68.0), vec2(5.0, 2.0), vec2(17.0, -10.0)]))
+            20.0
+        },
+        41 => {
+            clip = false
+            s.push(line([vec2(3.0, 80.0), vec2(15.0, 68.0), vec2(15.0, 2.0), vec2(3.0, -10.0)]))
+            20.0
+        },
+        42 => {
+            s.push(line([vec2(25.0, 72.0), vec2(25.0, 32.0)]))
+            s.push(line([vec2(8.0, 62.0), vec2(42.0, 42.0)]))
+            s.push(line([vec2(8.0, 42.0), vec2(42.0, 62.0)]))
+            50.0
+        },
+        43 => {
+            s.push(line([vec2(5.0, 32.0), vec2(51.0, 32.0)]))
+            s.push(line([vec2(28.0, 9.0), vec2(28.0, 55.0)]))
+            56.0
+        },
+        44 => {
+            clip = false
+            s.push(line([vec2(6.0, 10.0), vec2(6.0, 0.0), vec2(1.0, -12.0)]))
+            11.0
+        },
+        45 => {
+            s.push(line([vec2(3.0, 32.0), vec2(33.0, 32.0)]))
+            36.0
+        },
+        46 => {
+            s.push(line([vec2(5.0, 0.0), vec2(5.0, 10.0)]))
+            10.0
+        },
+        47 => {
+            clip = false
+            s.push(line([vec2(2.0, -10.0), vec2(36.0, 80.0)]))
+            38.0
+        },
+        48 => {
+            s.push(facet(vec2(5.0, 5.0), vec2(51.0, 65.0), 12.0))
+            s.push(line([vec2(17.0, 20.0), vec2(39.0, 50.0)]))
+            56.0
+        },
+        49 => {
+            s.push(line([vec2(3.0, 54.0), vec2(19.0, 65.0), vec2(19.0, 0.0)]))
+            26.0
+        },
+        50 => {
+            s.push(
+                line(
+                    [
+                        vec2(5.0, 65.0),
+                        vec2(41.0, 65.0),
+                        vec2(51.0, 55.0),
+                        vec2(51.0, 46.0),
+                        vec2(41.0, 36.0),
+                        vec2(15.0, 36.0),
+                        vec2(5.0, 26.0),
+                        vec2(5.0, 5.0),
+                        vec2(56.0, 5.0),
+                    ],
+                ),
+            )
+            56.0
+        },
+        51 => {
+            s.push(
+                line(
+                    [
+                        vec2(5.0, 65.0),
+                        vec2(41.0, 65.0),
+                        vec2(51.0, 55.0),
+                        vec2(51.0, 45.0),
+                        vec2(41.0, 35.0),
+                        vec2(16.0, 35.0),
+                    ],
+                ),
+            )
+            s.push(
+                line(
+                    [
+                        vec2(41.0, 35.0),
+                        vec2(51.0, 25.0),
+                        vec2(51.0, 15.0),
+                        vec2(41.0, 5.0),
+                        vec2(5.0, 5.0),
+                    ],
+                ),
+            )
+            56.0
+        },
+        52 => {
+            s.push(line([vec2(5.0, 70.0), vec2(5.0, 25.0), vec2(56.0, 25.0)]))
+            s.push(line([vec2(43.0, 46.0), vec2(43.0, 0.0)]))
+            56.0
+        },
+        53 => {
+            s.push(
+                line(
+                    [
+                        vec2(51.0, 65.0),
+                        vec2(5.0, 65.0),
+                        vec2(5.0, 38.0),
+                        vec2(41.0, 38.0),
+                        vec2(51.0, 28.0),
+                        vec2(51.0, 15.0),
+                        vec2(41.0, 5.0),
+                        vec2(5.0, 5.0),
+                    ],
+                ),
+            )
+            56.0
+        },
+        54 => {
+            s.push(
+                line(
+                    [
+                        vec2(49.0, 65.0),
+                        vec2(15.0, 65.0),
+                        vec2(5.0, 55.0),
+                        vec2(5.0, 15.0),
+                        vec2(15.0, 5.0),
+                        vec2(41.0, 5.0),
+                        vec2(51.0, 15.0),
+                        vec2(51.0, 28.0),
+                        vec2(41.0, 38.0),
+                        vec2(5.0, 38.0),
+                    ],
+                ),
+            )
+            56.0
+        },
+        55 => {
+            s.push(line([vec2(5.0, 65.0), vec2(51.0, 65.0), vec2(22.0, -14.0)]))
+            56.0
+        },
+        56 => {
+            s.push(facet(vec2(9.0, 35.0), vec2(47.0, 65.0), 10.0))
+            s.push(facet(vec2(5.0, 5.0), vec2(51.0, 35.0), 10.0))
+            56.0
+        },
+        57 => {
+            s.push(
+                line(
+                    [
+                        vec2(5.0, 5.0),
+                        vec2(41.0, 5.0),
+                        vec2(51.0, 15.0),
+                        vec2(51.0, 55.0),
+                        vec2(41.0, 65.0),
+                        vec2(15.0, 65.0),
+                        vec2(5.0, 55.0),
+                        vec2(5.0, 42.0),
+                        vec2(15.0, 32.0),
+                        vec2(51.0, 32.0),
+                    ],
+                ),
+            )
+            56.0
+        },
+        58 => {
+            s.push(line([vec2(5.0, 0.0), vec2(5.0, 10.0)]))
+            s.push(line([vec2(5.0, 36.0), vec2(5.0, 46.0)]))
+            10.0
+        },
+        59 => {
+            clip = false
+            s.push(line([vec2(6.0, 10.0), vec2(6.0, 0.0), vec2(1.0, -12.0)]))
+            s.push(line([vec2(6.0, 36.0), vec2(6.0, 46.0)]))
+            11.0
+        },
+        60 => {
+            clip = false
+            s.push(line([vec2(53.0, 60.0), vec2(9.0, 32.0), vec2(53.0, 4.0)]))
+            58.0
+        },
+        61 => {
+            s.push(line([vec2(5.0, 22.0), vec2(51.0, 22.0)]))
+            s.push(line([vec2(5.0, 42.0), vec2(51.0, 42.0)]))
+            56.0
+        },
+        62 => {
+            clip = false
+            s.push(line([vec2(5.0, 60.0), vec2(49.0, 32.0), vec2(5.0, 4.0)]))
+            58.0
+        },
+        63 => {
+            s.push(
+                line(
+                    [
+                        vec2(5.0, 65.0),
+                        vec2(41.0, 65.0),
+                        vec2(51.0, 55.0),
+                        vec2(51.0, 46.0),
+                        vec2(41.0, 36.0),
+                        vec2(28.0, 36.0),
+                        vec2(28.0, 22.0),
+                    ],
+                ),
+            )
+            s.push(line([vec2(28.0, 0.0), vec2(28.0, 10.0)]))
+            56.0
+        },
+        64 => {
+            clip = false
+            s.push(facet(vec2(22.0, 16.0), vec2(46.0, 42.0), 5.0))
+            s.push(
+                line(
+                    [
+                        vec2(46.0, 16.0),
+                        vec2(62.0, 16.0),
+                        vec2(62.0, 56.0),
+                        vec2(52.0, 66.0),
+                        vec2(15.0, 66.0),
+                        vec2(5.0, 56.0),
+                        vec2(5.0, 4.0),
+                        vec2(15.0, -6.0),
+                        vec2(56.0, -6.0),
+                    ],
+                ),
+            )
+            67.0
+        },
+        65 => {
+            s.push(line([vec2(5.0, -12.0), vec2(32.0, 84.0), vec2(59.0, -12.0)]))
+            s.push(line([vec2(15.0, 22.0), vec2(49.0, 22.0)]))
+            64.0
+        },
+        66 => {
+            s.push(
+                ring(
+                    [
+                        vec2(5.0, 35.0),
+                        vec2(5.0, 65.0),
+                        vec2(41.0, 65.0),
+                        vec2(50.0, 56.0),
+                        vec2(50.0, 44.0),
+                        vec2(41.0, 35.0),
+                    ],
+                ),
+            )
+            s.push(
+                ring(
+                    [
+                        vec2(5.0, 5.0),
+                        vec2(5.0, 35.0),
+                        vec2(44.0, 35.0),
+                        vec2(55.0, 24.0),
+                        vec2(55.0, 16.0),
+                        vec2(44.0, 5.0),
+                    ],
+                ),
+            )
+            60.0
+        },
+        67 => {
+            s.push(
+                line(
+                    [
+                        vec2(55.0, 65.0),
+                        vec2(18.0, 65.0),
+                        vec2(5.0, 52.0),
+                        vec2(5.0, 18.0),
+                        vec2(18.0, 5.0),
+                        vec2(55.0, 5.0),
+                    ],
+                ),
+            )
+            60.0
+        },
+        68 => {
+            s.push(
+                ring(
+                    [
+                        vec2(5.0, 5.0),
+                        vec2(5.0, 65.0),
+                        vec2(42.0, 65.0),
+                        vec2(55.0, 52.0),
+                        vec2(55.0, 18.0),
+                        vec2(42.0, 5.0),
+                    ],
+                ),
+            )
+            60.0
+        },
+        69 => {
+            s.push(line([vec2(52.0, 65.0), vec2(5.0, 65.0), vec2(5.0, 5.0), vec2(52.0, 5.0)]))
+            s.push(line([vec2(5.0, 35.0), vec2(44.0, 35.0)]))
+            52.0
+        },
+        70 => {
+            s.push(line([vec2(52.0, 65.0), vec2(5.0, 65.0), vec2(5.0, 0.0)]))
+            s.push(line([vec2(5.0, 35.0), vec2(44.0, 35.0)]))
+            52.0
+        },
+        71 => {
+            s.push(
+                line(
+                    [
+                        vec2(55.0, 65.0),
+                        vec2(18.0, 65.0),
+                        vec2(5.0, 52.0),
+                        vec2(5.0, 18.0),
+                        vec2(18.0, 5.0),
+                        vec2(42.0, 5.0),
+                        vec2(55.0, 18.0),
+                        vec2(55.0, 35.0),
+                        vec2(33.0, 35.0),
+                    ],
+                ),
+            )
+            60.0
+        },
+        72 => {
+            s.push(line([vec2(5.0, 0.0), vec2(5.0, 70.0)]))
+            s.push(line([vec2(55.0, 0.0), vec2(55.0, 70.0)]))
+            s.push(line([vec2(5.0, 35.0), vec2(55.0, 35.0)]))
+            60.0
+        },
+        73 => {
+            s.push(line([vec2(5.0, 0.0), vec2(5.0, 70.0)]))
+            10.0
+        },
+        74 => {
+            s.push(
+                line(
+                    [
+                        vec2(48.0, 70.0),
+                        vec2(48.0, 18.0),
+                        vec2(35.0, 5.0),
+                        vec2(18.0, 5.0),
+                        vec2(5.0, 18.0),
+                        vec2(5.0, 26.0),
+                    ],
+                ),
+            )
+            53.0
+        },
+        75 => {
+            s.push(line([vec2(5.0, 0.0), vec2(5.0, 70.0)]))
+            s.push(line([vec2(5.0, 27.0), vec2(56.0, 84.0)]))
+            s.push(line([vec2(23.0, 47.1), vec2(60.0, -14.0)]))
+            58.0
+        },
+        76 => {
+            s.push(line([vec2(5.0, 70.0), vec2(5.0, 5.0), vec2(50.0, 5.0)]))
+            50.0
+        },
+        77 => {
+            s.push(
+                line(
+                    [
+                        vec2(5.0, 0.0),
+                        vec2(5.0, 65.0),
+                        vec2(37.0, 28.0),
+                        vec2(69.0, 65.0),
+                        vec2(69.0, 0.0),
+                    ],
+                ),
+            )
+            74.0
+        },
+        78 => {
+            s.push(line([vec2(5.0, 0.0), vec2(5.0, 65.0), vec2(55.0, 5.0), vec2(55.0, 70.0)]))
+            60.0
+        },
+        79 => {
+            s.push(facet(vec2(5.0, 5.0), vec2(55.0, 65.0), 13.0))
+            60.0
+        },
+        80 => {
+            s.push(
+                line(
+                    [
+                        vec2(5.0, 0.0),
+                        vec2(5.0, 65.0),
+                        vec2(42.0, 65.0),
+                        vec2(52.0, 55.0),
+                        vec2(52.0, 42.0),
+                        vec2(42.0, 32.0),
+                        vec2(5.0, 32.0),
+                    ],
+                ),
+            )
+            57.0
+        },
+        81 => {
+            s.push(facet(vec2(5.0, 5.0), vec2(55.0, 65.0), 13.0))
+            s.push(line([vec2(38.0, 24.0), vec2(62.0, -10.0)]))
+            62.0
+        },
+        82 => {
+            s.push(letter(80).strokes[0].clone())
+            s.push(line([vec2(30.0, 32.0), vec2(56.0, -14.0)]))
+            57.0
+        },
+        83 => {
+            s.push(
+                line(
+                    [
+                        vec2(55.0, 65.0),
+                        vec2(15.0, 65.0),
+                        vec2(5.0, 55.0),
+                        vec2(5.0, 45.0),
+                        vec2(15.0, 35.0),
+                        vec2(45.0, 35.0),
+                        vec2(55.0, 25.0),
+                        vec2(55.0, 15.0),
+                        vec2(45.0, 5.0),
+                        vec2(5.0, 5.0),
+                    ],
+                ),
+            )
+            60.0
+        },
+        84 => {
+            s.push(line([vec2(0.0, 65.0), vec2(60.0, 65.0)]))
+            s.push(line([vec2(30.0, 65.0), vec2(30.0, 0.0)]))
+            60.0
+        },
+        85 => {
+            s.push(
+                line(
+                    [
+                        vec2(5.0, 70.0),
+                        vec2(5.0, 18.0),
+                        vec2(18.0, 5.0),
+                        vec2(42.0, 5.0),
+                        vec2(55.0, 18.0),
+                        vec2(55.0, 70.0),
+                    ],
+                ),
+            )
+            60.0
+        },
+        86 => {
+            s.push(line([vec2(5.0, 84.0), vec2(32.0, -14.0), vec2(59.0, 84.0)]))
+            64.0
+        },
+        87 => {
+            s.push(
+                line(
+                    [
+                        vec2(4.0, 84.0),
+                        vec2(22.0, -14.0),
+                        vec2(43.0, 46.0),
+                        vec2(64.0, -14.0),
+                        vec2(82.0, 84.0),
+                    ],
+                ),
+            )
+            86.0
+        },
+        88 => {
+            s.push(line([vec2(5.0, 84.0), vec2(55.0, -14.0)]))
+            s.push(line([vec2(55.0, 84.0), vec2(5.0, -14.0)]))
+            60.0
+        },
+        89 => {
+            s.push(line([vec2(5.0, 84.0), vec2(30.0, 38.0), vec2(55.0, 84.0)]))
+            s.push(line([vec2(30.0, 40.0), vec2(30.0, 0.0)]))
+            60.0
+        },
+        90 => {
+            s.push(line([vec2(0.0, 65.0), vec2(60.0, 65.0)]))
+            s.push(line([vec2(0.0, 5.0), vec2(60.0, 5.0)]))
+            // Its outer edges meet the bars' outer corners exactly.
+            s.push(line([vec2(-2.2, -12.0), vec2(62.2, 82.0)]))
+            60.0
+        },
+        91 => {
+            clip = false
+            s.push(line([vec2(19.0, 80.0), vec2(5.0, 80.0), vec2(5.0, -10.0), vec2(19.0, -10.0)]))
+            24.0
+        },
+        92 => {
+            clip = false
+            s.push(line([vec2(2.0, 80.0), vec2(36.0, -10.0)]))
+            38.0
+        },
+        93 => {
+            clip = false
+            s.push(line([vec2(5.0, 80.0), vec2(19.0, 80.0), vec2(19.0, -10.0), vec2(5.0, -10.0)]))
+            24.0
+        },
+        94 => {
+            s.push(line([vec2(6.0, 44.0), vec2(27.0, 68.0), vec2(48.0, 44.0)]))
+            54.0
+        },
+        95 => {
+            clip = false
+            s.push(line([vec2(0.0, -10.0), vec2(56.0, -10.0)]))
+            56.0
+        },
+        96 => {
+            clip = false
+            s.push(line([vec2(5.0, 72.0), vec2(17.0, 58.0)]))
+            22.0
+        },
+        123 => {
+            clip = false
+            s.push(
+                line(
+                    [
+                        vec2(22.0, 80.0),
+                        vec2(14.0, 80.0),
+                        vec2(9.0, 75.0),
+                        vec2(9.0, 40.0),
+                        vec2(3.0, 35.0),
+                        vec2(9.0, 30.0),
+                        vec2(9.0, -5.0),
+                        vec2(14.0, -10.0),
+                        vec2(22.0, -10.0),
+                    ],
+                ),
+            )
+            24.0
+        },
+        124 => {
+            clip = false
+            s.push(line([vec2(5.0, -12.0), vec2(5.0, 82.0)]))
+            10.0
+        },
+        125 => {
+            clip = false
+            s.push(
+                line(
+                    [
+                        vec2(2.0, 80.0),
+                        vec2(10.0, 80.0),
+                        vec2(15.0, 75.0),
+                        vec2(15.0, 40.0),
+                        vec2(21.0, 35.0),
+                        vec2(15.0, 30.0),
+                        vec2(15.0, -5.0),
+                        vec2(10.0, -10.0),
+                        vec2(2.0, -10.0),
+                    ],
+                ),
+            )
+            24.0
+        },
+        126 => {
+            s.push(line([vec2(5.0, 28.0), vec2(17.0, 40.0), vec2(37.0, 28.0), vec2(49.0, 40.0)]))
+            54.0
+        },
+        _ => return letter(63),
+    }
+    Letter { advance: width * 0.01 + 2.0 * SIDE, strokes: s, clip }
+}
+
+fn glyph_pieces(l: Letter, shift: vec2) -> Vec<Piece> {
+    var out: Vec<Piece> = Vec::new()
+    for stroke in l.strokes { for p in pieces(stroke, HALF, l.clip, shift) { out.push(p) } }
+    out
+}
+
+// The wordmark: heavier strokes, and a stemless E. Each segment is one rigid piece.
+fn mark_letters() -> Vec<Letter> {
+    var w: Vec<Stroke> = Vec::new()
+    w.push(
+        line(
+            [
+                vec2(6.0, 90.0),
+                vec2(26.0, -20.0),
+                vec2(47.0, 40.0),
+                vec2(68.0, -20.0),
+                vec2(88.0, 90.0),
+            ],
+        ),
+    )
+    var r: Vec<Stroke> = Vec::new()
+    r.push(line([vec2(7.0, 0.0), vec2(7.0, 70.0)]))
+    r.push(
+        line(
+            [
+                vec2(7.0, 63.0),
+                vec2(46.0, 63.0),
+                vec2(56.0, 53.0),
+                vec2(56.0, 40.0),
+                vec2(46.0, 30.0),
+                vec2(7.0, 30.0),
+            ],
+        ),
+    )
+    r.push(line([vec2(32.0, 30.0), vec2(60.0, -16.0)]))
+    var e: Vec<Stroke> = Vec::new()
+    e.push(line([vec2(0.0, 63.0), vec2(52.0, 63.0)]))
+    e.push(line([vec2(6.0, 35.0), vec2(46.0, 35.0)]))
+    e.push(line([vec2(0.0, 7.0), vec2(52.0, 7.0)]))
+    var l: Vec<Stroke> = Vec::new()
+    l.push(line([vec2(7.0, 70.0), vec2(7.0, 7.0), vec2(50.0, 7.0)]))
+    var a: Vec<Stroke> = Vec::new()
+    a.push(line([vec2(5.0, -18.0), vec2(34.0, 88.0), vec2(63.0, -18.0)]))
+    a.push(line([vec2(19.0, 22.0), vec2(49.0, 22.0)]))
+    var out: Vec<Letter> = Vec::new()
+    out.push(Letter { advance: 0.94, strokes: w, clip: true })
+    out.push(Letter { advance: 0.63, strokes: r, clip: true })
+    out.push(Letter { advance: 0.52, strokes: e, clip: true })
+    out.push(Letter { advance: 0.50, strokes: l, clip: true })
+    out.push(Letter { advance: 0.68, strokes: a, clip: true })
+    out
+}
+
+// The mark's pieces in ems, centred on the origin horizontally, baseline at y = 0.
+pub fn mark() -> Vec<Piece> {
+    let letters = mark_letters()
+    var width = -MARK_GAP
+    for l in letters { width += l.advance + MARK_GAP }
+    var out: Vec<Piece> = Vec::new()
+    var pen = -width * 0.5
+    for l in letters {
+        for stroke in l.strokes {
+            for p in pieces(stroke, MARK_HALF, l.clip, vec2(pen, 0.0)) {
+                // The clip planes stay in the letter's own frame: baseline and cap height.
+                out.push(p)
+            }
+        }
+        pen += l.advance + MARK_GAP
+    }
+    out
+}
+
+// The mark's runs for the GPU: each run's ends, its cuts, the run it turns into, and its
+// half stroke with the baseline and cap height.
+pub struct MarkRun: Copy + GpuData {
+    pub ab: vec4,
+    pub cuts: vec4,
+    pub after: vec4,
+    pub shape: vec4,
+}
+
+pub fn mark_runs() -> Vec<MarkRun> {
+    var out: Vec<MarkRun> = Vec::new()
+    for p in mark() {
+        out.push(
+            MarkRun {
+                ab: vec4(p.a, p.b),
+                cuts: vec4(p.start, p.end),
+                after: match p.after {
+                    Some(n) => vec4(n, 1.0, 0.0),
+                    None => vec4(0.0),
+                },
+                shape: vec4(p.half, if p.clip { 0.0 } else { -100.0 }, if p.clip { CAP } else {
+                    100.0
+                }, 0.0),
+            },
+        )
+    }
+    out
+}
+
+// The flat mark's field at `p` (ems, mark centred, baseline at 0): the same as the font's
+// pieces, joined at their mitres without a seam.
+pub fn mark_distance(p: vec2, s: MarkRun) -> f32 {
+    let a = s.ab.xy
+    let b = s.ab.zw
+    let u = normalize(b - a)
+    let side = abs(dot(p - a, vec2(-u.y, u.x))) - s.shape.x
+    var d = max(side, max(-dot(p - a, s.cuts.xy), dot(p - b, s.cuts.zw)))
+    if s.after.z > 0.5 {
+        let next = s.after.xy
+        let across = abs(dot(p - b, vec2(-next.y, next.x))) - s.shape.x
+        d = min(d, max(max(side, across), -dot(p - a, s.cuts.xy)))
+    }
+    max(d, max(s.shape.y - p.y, p.y - s.shape.z))
+}
+
+pub fn mark_width() -> f32 {
+    var width = -MARK_GAP
+    for l in mark_letters() { width += l.advance + MARK_GAP }
+    width
+}
+
+// No font file or runtime outline processing: the compiler bakes the original drawings.
+pub fn bake() -> Baked {
+    let em = 64.0
+    let spread = 5.0
+    var glyphs: Vec<BakedGlyph> = Vec::new()
+    var fields: Vec<u8> = Vec::new()
+    for cp in 32..127 {
+        let l = letter(cp)
+        let parts = glyph_pieces(l, vec2(SIDE, 0.0))
+        var lo = vec2(100.0)
+        var hi = vec2(-100.0)
+        for p in parts {
+            lo = min(lo, min(p.a, p.b))
+            hi = max(hi, max(p.a, p.b))
+        }
+        // Mitres can reach past the centreline by a few stroke widths; clipped ones stop at
+        // the baseline and cap height.
+        lo -= vec2(HALF * 3.0)
+        hi += vec2(HALF * 3.0)
+        if l.clip {
+            lo.y = max(lo.y, 0.0)
+            hi.y = min(hi.y, CAP)
+        }
+        let empty = parts.is_empty()
+        let left = if empty { 0.0 } else { floor(lo.x * em - spread) }
+        let top = if empty { 0.0 } else { ceil(hi.y * em + spread) }
+        let width = if empty { 0 } else { u32(ceil(hi.x * em + spread) - left) }
+        let height = if empty { 0 } else { u32(top - floor(lo.y * em - spread)) }
+        glyphs.push(
+            BakedGlyph {
+                codepoint: cp,
+                advance: l.advance,
+                left,
+                top,
+                width,
+                height,
+                offset: fields.len(),
+            },
+        )
+        for y in 0..height {
+            for x in 0..width {
+                let p = vec2(left + f32(x) + 0.5, top - f32(y) - 0.5) / em
+                var distance = 100.0
+                for part in parts { distance = min(distance, piece_distance(p, part)) }
+                fields.push(u8(round(saturate(0.5 - distance * em / (2.0 * spread)) * 255.0)))
+            }
+        }
+    }
+    Baked {
+        em,
+        spread,
+        ascender: 0.80,
+        descender: -0.18,
+        line_gap: 0.12,
+        glyphs,
+        kerning: Vec::new(),
+        fields,
+    }
+}
+
+@test
+fn facet_has_printable_ascii_with_ink_and_shared_capitals() {
+    borrow font = FONT
+    assert(font.glyphs.len() == 95)
+    var end = 0
+    for i in 0..95 {
+        let g = font.glyphs[i]
+        assert(g.codepoint == i + 32 && g.advance > 0.0 && g.advance < 1.1)
+        assert(g.offset == end)
+        end += g.width * g.height
+        assert(end <= font.fields.len())
+        if i == 0 { assert(g.width == 0 && g.height == 0) } else {
+            var ink = 0
+            for k in g.offset..end { if font.fields[k] > 127 { ink += 1 } }
+            assert(ink > 0, "every visible ASCII character has ink")
+        }
+    }
+    assert(end == font.fields.len())
+    assert(letter(97).advance == letter(65).advance)
+    assert(letter(87).advance > letter(77).advance)
+}
+
+@test
+fn mitred_joins_close_corners_and_terminals_cut_flat() {
+    // L: the outer corner of a turn is filled to the square, and nothing passes the end.
+    let parts = glyph_pieces(letter(76), vec2(0.0))
+    let near = |p: vec2| -> f32 {
+        var d = 100.0
+        for s in parts { d = min(d, piece_distance(p, s)) }
+        d
+    }
+    assert(near(vec2(0.001, 0.001)) < 0.0)
+    assert(near(vec2(0.499, 0.05)) < 0.0)
+    assert(near(vec2(0.505, 0.05)) > 0.0)
+    // A mitred bowl has no seam: the middle of its stroke at a chamfer is deep inside.
+    let o = glyph_pieces(letter(79), vec2(0.0))
+    var deep = 100.0
+    for s in o { deep = min(deep, piece_distance(vec2(0.05, 0.18), s)) }
+    assert(deep < -0.03)
+    // V: diagonals stop flat at the baseline and the cap height.
+    let v = glyph_pieces(letter(86), vec2(0.0))
+    for s in v {
+        assert(piece_distance(vec2(0.32, -0.001), s) > 0.0)
+        assert(piece_distance(vec2(0.06, CAP + 0.001), s) > 0.0)
+    }
+}
+
+@test
+fn the_flat_mark_matches_its_pieces() {
+    let runs = mark_runs()
+    let parts = mark()
+    assert(runs.len() == parts.len())
+    for x in 0..40 {
+        for y in 0..8 {
+            let p = vec2(f32(x) * 0.1 - 2.0, f32(y) * 0.1)
+            var flat = 100.0
+            var pieces = 100.0
+            for r in runs { flat = min(flat, mark_distance(p, r)) }
+            for q in parts { pieces = min(pieces, piece_distance(p, q)) }
+            assert((flat < 0.0) == (pieces < 0.0), "the same ink")
+        }
+    }
+}
+
+@test
+fn the_mark_is_nineteen_pieces_on_one_baseline_and_centred() {
+    let parts = mark()
+    assert(parts.len() == 19)
+    var lo = 100.0
+    var hi = -100.0
+    for p in parts {
+        assert(p.clip && p.half == MARK_HALF)
+        assert(abs(length(p.start) - 1.0) < 0.001 && abs(length(p.end) - 1.0) < 0.001)
+        lo = min(lo, min(p.a.x, p.b.x))
+        hi = max(hi, max(p.a.x, p.b.x))
+    }
+    assert(abs(lo + hi) < 0.12)
+    assert(mark_width() > 3.5 && mark_width() < 4.2)
+}
