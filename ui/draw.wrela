@@ -59,7 +59,8 @@ impl Rect {
 
 /// One quad: a rectangle (`scale` 0) with rounded corners of `radius` pixels, or a glyph,
 /// whose field's coverage is `(v − 0.5) × scale + 0.5`. `uv` is the glyph's corners in the
-/// atlas, from 0 to 1; `clip` indexes the list's clipping rectangles.
+/// atlas, from 0 to 1; for a rectangle, `uv.x` above 0 draws only a ring that many pixels
+/// wide inside its edge. `clip` indexes the list's clipping rectangles.
 pub struct Quad: Copy + GpuData {
     pub rect: vec4,
     pub uv: vec4,
@@ -128,6 +129,23 @@ impl DrawList {
         )
     }
 
+    /// The rounded outline of `r`, `width` pixels wide, inside it.
+    pub fn ring(mut self, r: Rect, color: vec4, radius: f32 = 0.0, width: f32 = 1.0) {
+        if r.w <= 0.0 || r.h <= 0.0 || color.w <= 0.0 || width <= 0.0 {
+            return
+        }
+        self.quads.push(
+            Quad {
+                rect: vec4(r.x, r.y, r.w, r.h),
+                uv: vec4(width, 0.0, width, 0.0),
+                color: Unorm8x4::encode(color),
+                clip: self.clip,
+                scale: 0.0,
+                radius: min(radius, 0.5 * min(r.w, r.h)),
+            },
+        )
+    }
+
     /// The outline of `r`, `width` pixels wide, inside it.
     pub fn frame(mut self, r: Rect, color: vec4, width: f32 = 1.0) {
         let width = min(width, 0.5 * min(r.w, r.h))
@@ -185,6 +203,16 @@ impl DrawList {
         })
         end - at.x
     }
+}
+
+@test
+fn a_ring_is_one_quad_that_carries_its_width() {
+    var list = DrawList::new()
+    list.clear(vec2(100.0))
+    list.ring(Rect::new(x: 10.0, y: 20.0, w: 40.0, h: 20.0), vec4(1.0), radius: 10.0, width: 1.5)
+    assert(list.quads.len() == 1 && list.quads[0].uv.x == 1.5 && list.quads[0].scale == 0.0)
+    list.ring(Rect::new(x: 10.0, y: 20.0, w: 40.0, h: 20.0), vec4(1.0), width: 0.0)
+    assert(list.quads.len() == 1, "no width, no ring")
 }
 
 @test
@@ -258,11 +286,12 @@ fn quad_color(v: QuadVertex, atlas: Texture<Rgba8>, linear: Sampler) -> Over {
         // A glyph: the field's distance, scaled to this size's pixels.
         let d = atlas.sample_level(linear, v.uv, 0.0).x
         coverage = saturate((d - 0.5) * s.x + 0.5)
-    } else if s.y > 0.0 {
-        // A rounded rectangle: the distance to its edge.
+    } else if s.y > 0.0 || v.uv.x > 0.0 {
+        // A rounded rectangle: the distance to its edge; a ring keeps only its outer band.
         let q = abs(v.local) - s.zw + vec2(s.y)
         let d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - s.y
         coverage = saturate(0.5 - d)
+        if v.uv.x > 0.0 { coverage *= saturate(0.5 + d + v.uv.x) }
     }
     let c = v.clip.value
     let inside = v.pixel.x >= c.x && v.pixel.x < c.z && v.pixel.y >= c.y && v.pixel.y < c.w
