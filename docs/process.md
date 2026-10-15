@@ -1045,6 +1045,27 @@ stills and crops, and changed what still read wrong.
   solid, not out over the coarser region. The gorge shot stands on the stream's bed, and the
   lake shot looks across the basin from its shore.
 
+Ryan then asked for a plan council on the simulation and the look. Claude led; OpenAI Codex
+GPT-6.1-Sol and GPT-6-Astra reviewed the plan, read-only, in two rounds. They showed that the
+lead step, a simulated soil layer in `engine::landform::evolve`, was unsound as written: soil
+could be spent twice, deposition and lake filling broke the bedrock-plus-soil sum, and its test
+had no equilibrium. They also showed that `engine::soil` already models soil from the land's
+shape (Heimsath and others, 1997). Claude deferred the simulated layer, with their accounting
+rules kept for later, and did this instead.
+- **Soil:** the square's soil is worked out once, when the world is built, by `engine::soil`
+  from each cell's curvature, slope and wetness. Wetness is the topographic index from the
+  drained area and the slope. Each kind of soil has its own tint over its rock's. Ledges crop
+  out where the soil is thin.
+- **Talus:** talus runs from each face of solid rock down the land's fall. Fallen blocks lie
+  only on talus, and scree shows there. A face's extent no longer crosses a gully's floor and
+  climbs the far side.
+- **Rills:** the rills that followed the slope's direction, and ringed hollows, are gone.
+- **Rock grain:** rock now has a grain per pixel where a pixel is small enough to show it, so
+  granite reads as crystals up close.
+- **Tried and reverted:** clustered joint spacing made narrow columns of stacked cubes up close,
+  and didn't remove the stripes seen from far off.
+- **Checked:** making the steep faces' colour flat showed that colour isn't what smears them.
+
 ## The climber's robe, darkness and glide, 2026-10-14
 
 Ryan found the Last Green's player character clunky to move and its cloth, robe, darkness and

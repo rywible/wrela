@@ -18,6 +18,7 @@ use engine::landform::{
     Feature, Finding, Landscape, PlaceKind, Relief, Shaping, Strength, border, evolve, places,
 }
 use engine::noise::{fbm2, fbm2_seen, rand}
+use engine::soil::{SoilKind, soil}
 use engine::look::{CreatureLook, Mesh as Tolerance}
 use engine::stone::{Placement, Realized, block, normal_matrix, realize_block}
 use engine::terrain::{Cover, Terrain}
@@ -197,6 +198,35 @@ const COLOUR: [vec3; Stratum] = [
     vec3(0.30, 0.29, 0.29),
 ]
 
+/// A cell's soil (`pack_soil`'s `bits`) as the cover reads it, its stratum's soil `own`: its
+/// kind's colour (`kind_tint`), and whether it's bare (1 or 0) and its talus.
+fn corner_soil(bits: u32, own: vec3) -> (vec3, vec2) {
+    let (_, kind, fallen) = unpack_soil(bits)
+    let tint = kind_tint(kind)
+    (mix(own, tint.xyz, vec3(tint.w)), vec2(if kind == u32(SoilKind::Rock) { 1.0 } else {
+        0.0
+    }, fallen))
+}
+
+/// Soil of kind `kind` (`SoilKind`'s number) as a tint over its stratum's (`SOIL`): toward what
+/// (rgb) and how far (a). Rock's is stony, a thin soil's a little; loam is its stratum's own;
+/// colluvium darker; alluvium browner; gley grey; peat nearly black.
+fn kind_tint(kind: u32) -> vec4 {
+    if kind == u32(SoilKind::Rock) {
+        vec4(0.12, 0.112, 0.1, 0.8)
+    } else if kind == u32(SoilKind::Thin) {
+        vec4(0.12, 0.112, 0.1, 0.25)
+    } else if kind == u32(SoilKind::Colluvium) {
+        vec4(0.06, 0.05, 0.038, 0.3)
+    } else if kind == u32(SoilKind::Alluvium) {
+        vec4(0.12, 0.1, 0.075, 0.5)
+    } else if kind == u32(SoilKind::Gley) {
+        vec4(0.09, 0.09, 0.085, 0.6)
+    } else if kind == u32(SoilKind::Peat) {
+        vec4(0.05, 0.042, 0.033, 0.9)
+    } else { vec4(0.0) }
+}
+
 /// The soil each stratum weathers to: the grit's peat, the shale's grey clay, the sandstone's
 /// brown loam, the granite's pale grit (its crystals, loose).
 const SOIL: [vec3; Stratum] = [
@@ -349,20 +379,21 @@ pub fn square(region: Relief<REGION_N>) -> Landscape {
 // ---- the land, as the bare view draws it ------------------------------------------------------
 
 /// The world's land: the region's relief and the square's in it (each cell's height, m), and
-/// past the region the lowland. The bare view's terrain.
+/// past the region the lowland; and the square's soil (`soil_layer`), two cells to a word. The
+/// bare view's terrain.
 pub struct Bare: Copy + GpuData {
     pub region: Relief<REGION_N>,
     pub square: Relief<SQUARE_N>,
+    pub soil: [u32; SQUARE_SOIL],
 }
+
+/// How many words the square's soil takes, two cells to each.
+pub const SQUARE_SOIL: u32 = 32544
 
 /// How far in from the region's edge cells its land comes in fully over the lowland's, and the
 /// square's over the region's (m).
 const REGION_COLLAR: f32 = 1200.0
 const SQUARE_COLLAR: f32 = 64.0
-
-/// The rills down soft rock's slopes: how far apart they are, about (m), and how deep (m).
-const RILLS: f32 = 6.0
-const RILL: f32 = 1.2
 
 /// The granite's sheets: how thick the thinnest is (m; each is 1 to `THICKEST` of these), and
 /// how far a sheet's lip stands out over the next one down at most.
@@ -428,15 +459,6 @@ impl Bare {
             y += 0.7 * face * (stepped - l)
             let (block, joint) = joints(p, 5.0)
             y += face * 0.7 * (block - 0.5) * min(joint / 0.15, 1.0)
-        } else if !solid(s) && slope > 0.2 {
-            // Soft rock's slopes are cut by rills in patches, straight down them, deeper the
-            // steeper the slope: grooves a few metres apart, wavering, each running out after a
-            // few tens of metres.
-            let down = m.yz / slope
-            let q = vec2(dot(p, vec2(-down.y, down.x)) / RILLS, dot(p, down) / (6.0 * RILLS))
-            let groove = 1.0 - abs(2.0 * engine::noise::noise2(q + vec2(0.0, 0.3 * q.x)) - 1.0)
-            let patch = smoothstep(0.4, 0.65, fbm2(p * 0.02 + vec2(8.0, 5.0), 2))
-            y -= RILL * smoothstep(0.45, 0.8, slope) * patch * groove * groove * groove
         }
         y
     }
@@ -487,11 +509,9 @@ impl Bare {
         // (The granite's smooth domes shed what weathers off them: they're bare less steep. The
         // bedded rock's cliffs stand as its blocks in the square (`rock_placements`): what shows
         // of the land between them is the scree they've shed.)
-        let bare = if s == Stratum::Granite {
+        let bare_out = if s == Stratum::Granite {
             max(smoothstep(0.35, 0.75, slope), 0.35)
-        } else if solid(s) {
-            smoothstep(1.4, 2.0, slope) * (1.0 - self.square.within(p, SQUARE_COLLAR))
-        } else { smoothstep(0.75, 1.1, slope) }
+        } else if solid(s) { smoothstep(1.4, 2.0, slope) } else { smoothstep(0.75, 1.1, slope) }
         let wet = self.wet(p)
         // Its stratum's soil; on the grit, its peat worn through here and there to the pale sand
         // under it, most where it's steeper.
@@ -500,12 +520,40 @@ impl Bare {
             let worn = fbm2_seen(p * 0.05 + vec2(4.0, -7.0), 3, w * 0.05) + 0.4 * slope
             own = mix(own, vec3(0.16, 0.14, 0.108), vec3(smoothstep(0.6, 0.72, worn)))
         }
-        let soil = own * mix(1.0, 0.65, smoothstep(0.3, 0.9, wet))
-        // Steep slopes, under the cliffs and between their blocks, are scree: grey stones, not
-        // soil.
-        let scree = smoothstep(0.35, 0.6, slope) * (1.0 - bare)
         let stones = vec3(0.12, 0.112, 0.10) *
             (0.7 + 0.6 * fbm2_seen(p * 0.9 + vec2(-3.0, 8.0), 3, w * 0.9))
+        // Past the square, steep slopes are scree: grey stones, not soil.
+        let scree_out = smoothstep(0.35, 0.6, slope) * (1.0 - bare_out)
+        // In it, its soil (`soil_layer`): each of the four cells round `p` its own kind's colour
+        // (no kind is blended into another's number), and where it's bare (too steep or too sharp
+        // a crest to hold one), rock: the granite's and the soft rock's bare, the bedded rock's
+        // stony, its blocks standing for its rock; and its talus.
+        let f = (p - SQUARE.lo) / SQUARE.cell - vec2(0.5)
+        let ij = vec2i(floor(f))
+        let t = f - floor(f)
+        // (Each corner on its own, not in a loop: looped, the terrain's cook took the GPU's driver
+        // minutes to build.)
+        let c00 = corner_soil(self.soil_cell(ij.x, ij.y), own)
+        let c10 = corner_soil(self.soil_cell(ij.x + 1, ij.y), own)
+        let c01 = corner_soil(self.soil_cell(ij.x, ij.y + 1), own)
+        let c11 = corner_soil(self.soil_cell(ij.x + 1, ij.y + 1), own)
+        let (k0, k1) = (mix(c00.0, c10.0, vec3(t.x)), mix(c01.0, c11.0, vec3(t.x)))
+        let kinded = mix(k0, k1, vec3(t.y))
+        let (r0, r1) = (mix(c00.1, c10.1, t.x), mix(c01.1, c11.1, t.x))
+        let rt = mix(r0, r1, vec2(t.y))
+        let (rocky, talus) = (rt.x, rt.y)
+        let inside = self.square.within(p, SQUARE_COLLAR)
+        let bare_in = if s == Stratum::Granite { max(bare_out, rocky) } else if solid(s) {
+            0.0
+        } else {
+            rocky
+        }
+        let scree_in = saturate(max(talus, if solid(s) && s != Stratum::Granite { rocky } else {
+            0.0
+        })) * (1.0 - bare_in)
+        let bare = mix(bare_out, bare_in, inside)
+        let scree = mix(scree_out, scree_in, inside)
+        let soil = mix(own, kinded, vec3(inside)) * mix(1.0, 0.65, smoothstep(0.3, 0.9, wet))
         // (Rock in a stream's bed is wet, and darker.)
         let a = mix(
             mix(soil * grain, stones, vec3(scree)),
@@ -567,11 +615,135 @@ fn world() -> World {
     let r = region()
     let region_relief: Relief<REGION_N> = Relief::of(r, Vec::filled(REGION_N, 0.0))
     let s = square(region_relief)
-    let land = Bare { region: region_relief, square: Relief::of(s, Vec::filled(SQUARE_N, 0.0)) }
+    var land = Bare {
+        region: region_relief,
+        square: Relief::of(s, Vec::filled(SQUARE_N, 0.0)),
+        soil: [0; SQUARE_SOIL],
+    }
+    land.soil = soil_layer(land, s)
     let found = found_places(land, s)
     let names = named(found)
     let (shots, shot_names) = shots_of(land, rock_placements(land, tor_points(found)), found, names)
     World { land, places: found, names, shots, shot_names }
+}
+
+// ---- its soil ---------------------------------------------------------------------------------
+
+/// A cell's soil in 16 bits: its depth (0 to `DEEPEST` m, finer where it's thin: 7 bits of the
+/// root of its share of that), its kind (`SoilKind`, 3 bits) and how much talus lies on it (0 to
+/// 1, 6 bits).
+fn pack_soil(depth: f32, kind: SoilKind, talus: f32) -> u32 {
+    let d = u32(round(sqrt(saturate(depth / DEEPEST)) * 127.0))
+    d | (u32(kind) << 7) | (u32(round(saturate(talus) * 63.0)) << 10)
+}
+
+/// A cell's soil as `pack_soil` packed it: its depth (m), its kind (`SoilKind`'s number) and its
+/// talus.
+fn unpack_soil(bits: u32) -> (f32, u32, f32) {
+    let d = f32(bits & 127) / 127.0
+    (d * d * DEEPEST, (bits >> 7) & 7, f32((bits >> 10) & 63) / 63.0)
+}
+
+/// The deepest a soil is (m: `engine::soil::soil`'s).
+const DEEPEST: f32 = 2.5
+
+/// The square's soil, cell by cell (`pack_soil`), two to a word: what the ground's shape and its
+/// water make of it (`engine::soil::soil`, after Heimsath and others, 1997: its curvature at 12 and
+/// 32 m and its slope off the land as made, `s` its making; its wetness the topographic index,
+/// ln of the area draining through it a metre of its width over its slope), and its talus
+/// (`talus`). No rock is given it bare: where it's too steep or too sharp a crest to hold a soil,
+/// the soil says so.
+fn soil_layer(land: Bare, s: Landscape) -> [u32; SQUARE_SOIL] {
+    let g = SQUARE
+    let talus = talus(land)
+    var out = [0; SQUARE_SOIL]
+    for c in 0..g.cells() {
+        let p = g.centre(c)
+        let h = land.made(p).x
+        var lap = 0.0
+        var slope = 0.0
+        for k in 0..2 {
+            let d = engine::soil::SOIL_SPANS[k]
+            let e = land.made(p + vec2(d, 0.0)).x
+            let w = land.made(p - vec2(d, 0.0)).x
+            let n = land.made(p - vec2(0.0, d)).x
+            let so = land.made(p + vec2(0.0, d)).x
+            lap += 0.5 * (e + w + n + so - 4.0 * h) / (d * d)
+            if k == 0 {
+                slope = length(vec2(e - w, n - so)) / (2.0 * d)
+            }
+        }
+        let twi = log(s.area[c] / g.cell / (length(land.made(p).yz) + 0.01))
+        let here = soil(lap: lap, slope: slope, rock: 0.0, wet: smoothstep(4.2, 8.5, twi))
+        out[c / 2] |= pack_soil(here.depth, here.kind, talus[c]) << (16 * (c % 2))
+    }
+    out
+}
+
+/// How much talus lies on each of the square's cells (0 to 1): what falls from each face of solid
+/// rock (a cell steeper than `TALUS_FACE` whose rock is grit, sandstone or granite) lies all down
+/// the face, along the land's fall from it, and on past its foot, thinning out over three quarters
+/// of the face's height (20 m to 40 m); it stops where the ground is level, or would rise (across
+/// a gully's floor). None lies up a slope from its face or over a ridge.
+fn talus(land: Bare) -> Vec<f32> {
+    let g = SQUARE
+    var out: Vec<f32> = Vec::filled(g.cells(), 0.0)
+    for c in 0..g.cells() {
+        let p = g.centre(c)
+        let m = land.made(p)
+        if length(m.yz) < TALUS_FACE || !solid(stratum(p, m.x)) {
+            continue
+        }
+        let up = m.yz / length(m.yz)
+        let (top, _) = extent(land, p, up)
+        let crest = land.made(p + up * top).x
+        // Down the fall: on the face (steeper than 0.6), all of it; past its foot, thinning.
+        var q = p
+        var h = m.x
+        var past = -1.0
+        var reach = 20.0
+        var walked = 0.0
+        while walked < 90.0 {
+            let here = land.made(q)
+            let fall = length(here.yz)
+            if fall < 0.05 || here.x > h + 0.01 {
+                break
+            }
+            h = here.x
+            if past < 0.0 && fall < 0.6 {
+                past = 0.0
+                reach = clamp(0.75 * (crest - h), 20.0, 40.0)
+            }
+            if past >= reach {
+                break
+            }
+            let k = g.cell_at(q)
+            out[k] = max(out[k], if past < 0.0 { 1.0 } else { 1.0 - past / reach })
+            q -= here.yz / fall * 2.0
+            walked += 2.0
+            if past >= 0.0 {
+                past += 2.0
+            }
+        }
+    }
+    out
+}
+
+/// The slope over which a face of solid rock sheds talus (`talus`).
+const TALUS_FACE: f32 = 0.9
+
+impl Bare {
+    /// The soil of the square's cell (i, j) (`pack_soil`), clamped to the square.
+    fn soil_cell(self, i: i32, j: i32) -> u32 {
+        let c = SQUARE.index(i, j)
+        (self.soil[c / 2] >> (16 * (c % 2))) & 65535
+    }
+
+    /// The soil at `p` (`unpack_soil`): its nearest cell's.
+    pub fn soil_at(self, p: vec2) -> (f32, u32, f32) {
+        let ij = SQUARE.ij(p)
+        unpack_soil(self.soil_cell(ij.x, ij.y))
+    }
 }
 
 // ---- its rock as solids -----------------------------------------------------------------------
@@ -651,6 +823,27 @@ pub fn rock_prototypes(look: CreatureLook, cell: f32) -> Vec<Realized> {
         var b = block(seed: 800 + k * 13, half: CORE, dark: granite * 0.45, light: granite * 0.75)
         b.round = 0.3
         out.push(realize_block(b, rough: 0.08, look: look, cell: cell, steps: 0.0))
+    }
+    out
+}
+
+/// Each prototype's grain (`engine::stone::Rocks::grain`), in `rock_prototypes`' order: the grit's
+/// coarse sand; the sandstone's finer sand; the granite's crystals, about a centimetre across,
+/// pale feldspar and dark mica, the most contrasted. No mottling: the rock's tone over
+/// it is enough (`rock_shade`), and mottling a few decimetres across showed out to hundreds of
+/// metres, at a cost.
+pub fn rock_grain() -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for r in 0..3 {
+        let g = if r == 0 { vec4(0.008, 0.18, 0.0, 0.0) } else if r == 1 {
+            vec4(0.005, 0.12, 0.0, 0.0)
+        } else { vec4(0.012, 0.28, 0.0, 0.0) }
+        for _ in 0..9 * VARIANTS {
+            out.push(g)
+        }
+    }
+    for _ in 0..4 {
+        out.push(vec4(0.012, 0.28, 0.0, 0.0))
     }
     out
 }
@@ -892,11 +1085,12 @@ fn jointed(c: u32, p: vec2) -> Vec<Jointed> {
 }
 
 /// The rock's beds where they crop out of gentler ground (not granite: its domes are smooth) in
-/// square cell `c` (its middle `p`, its land `m`): in patches (soil covers them between), more on
-/// steeper ground, each column between the joints (`jointed`) as the bed whose top is just over
-/// the land at its downhill side, standing out of the slope as a low ledge, worn; the same bed
-/// along the slope, so a ledge runs along it a few columns and sinks under the soil. A block or
-/// two of it lies fallen below. Where it's too flat for a ledge, a worn block lies here and there.
+/// square cell `c` (its middle `p`, its land `m`): where its soil is thin or none (`soil_layer`;
+/// elsewhere the soil covers them), each column between the joints (`jointed`) as the bed whose
+/// top is just over the land at its downhill side, standing out of the slope as a low ledge,
+/// worn; the same bed along the slope, so a ledge runs along it a few columns and sinks under the
+/// soil. A block or two of it lies fallen below. Where it's too flat for a ledge, a worn block
+/// lies here and there.
 fn ledges(land: Bare, c: u32, p: vec2, m: vec3, out: mut Vec<Placement>) {
     let slope = length(m.yz)
     let up = m.yz / max(slope, 1.0e-4)
@@ -906,8 +1100,9 @@ fn ledges(land: Bare, c: u32, p: vec2, m: vec3, out: mut Vec<Placement>) {
         if !solid(s) || s == Stratum::Granite {
             continue
         }
-        let patch = fbm2(mid * 0.02 + vec2(11.0, -3.0), 2)
-        if patch < 0.62 - 0.25 * smoothstep(0.1, 0.5, slope) {
+        // (Only where its soil is thin or none: elsewhere the soil covers it.)
+        let (_, kind, _) = land.soil_at(mid)
+        if kind > u32(SoilKind::Thin) {
             continue
         }
         let w = j.half * (0.75 + 0.2 * rand(j.seed, 20))
@@ -1337,14 +1532,19 @@ fn scree(land: Bare, p: vec2, m: vec3, seed: u32, out: mut Vec<Placement>) {
     let low = land.made(p - up * foot).x
     let high = land.made(p + up * top).x
     let along = vec2(-up.y, up.x)
-    // What fell: pieces of the face's rock on the scree under it, the big ones angular near its
-    // foot, the ones that rolled further rounder and smaller, each half sunk in the scree.
+    // What fell: pieces of the face's rock on its talus under it (`talus`), the big ones angular
+    // near its foot, the ones that rolled further rounder and smaller, each half sunk in it.
     let s = stratum(p, 0.5 * (low + high))
     if solid(s) {
         for k in 0..2 {
             let d = foot + 2.0 + 20.0 * rand(seed, 100 + k)
             let q = p - up * d + along * (rand(seed, 110 + k) - 0.5) * 8.0
             let near = 1.0 - min(d / 25.0, 1.0)
+            // (Only where its talus lies: none up a slope, or over a ridge.)
+            let (_, _, fallen) = land.soil_at(q)
+            if fallen < 0.05 {
+                continue
+            }
             let r = 0.5 + 1.8 * rand(seed, 120 + k) * (0.4 + 0.6 * near)
             let y = lowest(land, q, vec2(r, 0.85 * r), turn: TAU * rand(seed, 140 + k))
             let at = vec3(q.x, y + 0.1 * r, q.y)
@@ -1376,14 +1576,27 @@ fn lowest(land: Bare, q: vec2, half: vec2, turn: f32) -> f32 {
 }
 
 /// How far the steep ground through `p` goes up (`up`) and down from it (m, a metre at a time,
-/// to 40 m at most): to its top and its foot.
+/// to 40 m at most): to its top and its foot, each where it stops being steep, or stops rising
+/// (or falling) — across a gully's floor the land rises again.
 fn extent(land: Bare, p: vec2, up: vec2) -> (f32, f32) {
     var top = 0.0
-    while top < 40.0 && length(land.made(p + up * (top + 1.0)).yz) > 0.6 {
+    var h = land.made(p).x
+    while top < 40.0 {
+        let m = land.made(p + up * (top + 1.0))
+        if length(m.yz) <= 0.6 || m.x < h {
+            break
+        }
+        h = m.x
         top += 1.0
     }
     var foot = 0.0
-    while foot < 40.0 && length(land.made(p - up * (foot + 1.0)).yz) > 0.6 {
+    h = land.made(p).x
+    while foot < 40.0 {
+        let m = land.made(p - up * (foot + 1.0))
+        if length(m.yz) <= 0.6 || m.x > h {
+            break
+        }
+        h = m.x
         foot += 1.0
     }
     (top, foot)
@@ -2166,6 +2379,143 @@ fn the_gorge_is_seen_from_its_floor() {
         }
     }
     assert(seen, "no shot in a gorge")
+}
+
+/// A cell's soil packs and unpacks as itself (`pack_soil`): its kind and talus exactly enough,
+/// and its depth within a centimetre round the depths the soil's kinds turn at (0.08 m, bare;
+/// 0.35 m, thin), so no cell changes its kind on the way to the GPU.
+@test
+fn a_cells_soil_packs_as_itself() {
+    for depth in [0.0, 0.07, 0.08, 0.09, 0.34, 0.35, 0.36, 1.2, 2.5] {
+        for kind in [SoilKind::Rock, SoilKind::Thin, SoilKind::Peat] {
+            let (d, k, t) = unpack_soil(pack_soil(depth, kind, 0.4))
+            let close = if depth < 0.5 { 0.01 } else { 0.05 }
+            assert(abs(d - depth) < close, f"a {depth} m soil unpacks {d} m deep")
+            assert(k == u32(kind) && abs(t - 0.4) < 0.01, f"a soil unpacks as kind {k}, talus {t}")
+        }
+    }
+    let both = pack_soil(0.3, SoilKind::Loam, 1.0) | (pack_soil(1.5, SoilKind::Peat, 0.0) << 16)
+    let (_, low, _) = unpack_soil(both & 65535)
+    let (_, high, _) = unpack_soil(both >> 16)
+    assert(low == u32(SoilKind::Loam) && high == u32(SoilKind::Peat), "a word's cells mixed")
+}
+
+/// The square's soil comes of its ground's shape, not its rock (`soil_layer`): on the grit,
+/// sandstone and granite as on the shale, nearly all its gentle hollows hold a soil and nearly
+/// all its faces steeper than 1.2 none.
+@test
+@fuel(2 ** 40)
+fn hard_rock_keeps_soil_in_its_hollows_and_bares_its_faces() {
+    borrow land = WORLD.land
+    var hollows = vec2(0.0)
+    var faces = vec2(0.0)
+    for c in 0..SQUARE_N {
+        let p = SQUARE.centre(c)
+        let m = land.made(p)
+        if !solid(stratum(p, m.x)) || land.square.within(p, SQUARE_COLLAR) < 1.0 {
+            continue
+        }
+        let slope = length(m.yz)
+        let around = 0.25 *
+            (land.made(p + vec2(12.0, 0.0)).x +
+                land.made(p - vec2(12.0, 0.0)).x +
+                land.made(p + vec2(0.0, 12.0)).x +
+                land.made(p - vec2(0.0, 12.0)).x)
+        let (depth, kind, _) = land.soil_at(p)
+        if slope < 0.3 && around > m.x + 0.2 {
+            hollows += vec2(if kind != u32(SoilKind::Rock) && depth > 0.3 { 1.0 } else { 0.0 }, 1.0)
+        }
+        if slope > 1.2 {
+            faces += vec2(if kind == u32(SoilKind::Rock) { 1.0 } else { 0.0 }, 1.0)
+        }
+    }
+    assert(hollows.y > 50.0 && faces.y > 50.0, f"{hollows.y} hollows, {faces.y} faces")
+    assert(hollows.x > 0.95 * hollows.y, f"{hollows.x} of {hollows.y} hard-rock hollows hold soil")
+    assert(faces.x > 0.95 * faces.y, f"{faces.x} of {faces.y} hard-rock faces are bare")
+}
+
+/// Talus lies only under faces of solid rock (`talus`): each cell with any has such a face in
+/// it, or one higher within 95 m (it runs down the face and up to 40 m past its foot, 90 m at
+/// most); and there's plenty of it.
+@test
+@fuel(2 ** 40)
+fn talus_lies_only_under_faces() {
+    borrow land = WORLD.land
+    var n = 0
+    for c in 0..SQUARE_N {
+        let p = SQUARE.centre(c)
+        let (_, _, fallen) = land.soil_at(p)
+        if fallen <= 0.0 {
+            continue
+        }
+        n += 1
+        var under = false
+        let h = land.made(p).x
+        SQUARE.each_within(p, 95.0, |q: u32, d: f32| {
+            let a = SQUARE.centre(q)
+            let m = land.made(a)
+            under = under ||
+                (length(m.yz) >= TALUS_FACE && solid(stratum(a, m.x)) && m.x >= h - 0.5)
+        })
+        assert(under, f"talus at {p} with no face over it")
+    }
+    assert(n > 1000, f"talus on only {n} cells")
+}
+
+/// A face's extent runs up and down its fall (`extent`): its top no lower than it, its foot no
+/// higher, even where its foot is a gully's floor and the land rises again past it.
+@test
+@fuel(2 ** 40)
+fn a_faces_extent_runs_up_and_down_its_fall() {
+    borrow land = WORLD.land
+    var n = 0
+    for c in 0..SQUARE_N {
+        let p = SQUARE.centre(c)
+        let m = land.made(p)
+        if length(m.yz) <= 0.6 {
+            continue
+        }
+        let up = m.yz / length(m.yz)
+        let (top, foot) = extent(land, p, up)
+        let (hi, lo) = (land.made(p + up * top).x, land.made(p - up * foot).x)
+        assert(hi >= m.x && lo <= m.x, f"the face at {p} ({m.x} m) runs {lo} to {hi} m")
+        n += 1
+    }
+    assert(n > 1000, f"only {n} faces")
+}
+
+/// Each rock prototype has its grain (`rock_grain`, `rock_prototypes`): as many of one as the other.
+@test
+fn each_rock_prototype_has_its_grain() {
+    assert(rock_grain().len() == CORESTONES + 4, f"{rock_grain().len()} grains")
+}
+
+/// What falls from a face lies on its talus: each block `scree` places stands where talus lies,
+/// at a finite place.
+@test
+@fuel(2 ** 40)
+fn fallen_blocks_lie_on_their_talus() {
+    borrow land = WORLD.land
+    var n = 0
+    for c in 0..SQUARE_N {
+        let p = SQUARE.centre(c)
+        let m = land.made(p)
+        if length(m.yz) <= 0.9 || land.square.within(p, SQUARE_COLLAR) < 1.0 {
+            continue
+        }
+        var out: Vec<Placement> = Vec::new()
+        scree(land, p, m, c * 7919, mut out)
+        for r in out {
+            let at = r.at[3].xyz
+            let (_, _, fallen) = land.soil_at(at.xz)
+            assert(
+                at.x == at.x && at.y == at.y && fallen > 0.0,
+                f"a fallen block at {at} off talus",
+            )
+            n += 1
+        }
+    }
+    assert(n > 200, f"only {n} fallen blocks")
 }
 
 /// Where `placed` are by the square's cells their middles are in: each cell's first in the

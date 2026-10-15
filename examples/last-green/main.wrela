@@ -2941,6 +2941,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
             placements,
         )
         rocks.origin = origin_of(s)
+        rocks.grain = geology::rock_grain()
         print(f"bare rocks: {rocks.len()} placed in {(std::time::now() - began) * 1000.0:.0} ms")
         s.rocks = Some(take rocks)
     }

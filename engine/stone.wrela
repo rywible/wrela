@@ -8,7 +8,7 @@ use creature::{Creature, Skeleton, creature}
 use light::{Lit}
 use lit::{Lighting, shown, sun_and_gloss}
 use look::{CreatureLook, Mesh as Tolerance}
-use noise::{noise3, rand}
+use noise::{hash3, noise3, rand}
 use realize::{Mesh, SkinVertex, realize_rigid}
 use render::{ByChannels, Shaded}
 use std::derive::Box3
@@ -729,6 +729,9 @@ pub struct Rocks {
     /// The render origin (its world point): placements are in the world, the camera and the
     /// shadows' views in render space, the world less it (`cull` sets it).
     pub origin: vec3,
+    /// Each kind's grain (`rock_shade`): how far across its grains are (m) and how much lighter or
+    /// darker each is; and how far across its mottling is (m) and how much. None, unless set.
+    pub grain: Vec<vec4>,
 }
 
 /// The least of the view's half height a rock must span to be drawn (its radius over its
@@ -830,6 +833,7 @@ impl Rocks {
             seen_first: Vec::filled(2 * n, 0),
             seen_count: Vec::filled(2 * n, 0),
             origin: vec3(0.0),
+            grain: Vec::filled(n, vec4(0.0)),
         }
     }
 
@@ -928,7 +932,7 @@ impl Rocks {
                         origin: self.origin,
                         cam: lt.cam,
                     ),
-                    rock_shade.bind(lt, origin: self.origin),
+                    rock_shade.bind(lt, origin: self.origin, grain: self.grain[k]),
                     indices: p.mesh.quads.items(),
                     indirect: self.seen_args[at].items(),
                     cull: std::gpu::Cull::Back,
@@ -942,15 +946,29 @@ impl Rocks {
 /// A rock's fragment `s` (`rock_vertex`, its world `origin` less): its colour toned over the rock
 /// where it stands, not block by block (a face whose every block is its own shade reads as
 /// masonry), in broad patches darker and paler a few blocks across, and in streaks down it where
-/// water runs, across its blocks; then lit as a stone (`lit_stone`). (Per pixel: a rock's
-/// near mesh has far more vertices than pixels it covers.)
+/// water runs, across its blocks; its kind's `grain` (`Rocks::grain`: each grain lighter or
+/// darker, where a pixel is small enough to see it, faded out where it isn't, so it doesn't
+/// shimmer; and mottled a little coarser); then lit as a stone (`lit_stone`). (Per pixel: a
+/// rock's near mesh has far more vertices than pixels it covers.)
 @fragment
-pub fn rock_shade(s: StoneVertex, lt: Lighting, origin: vec3) -> vec4 {
+pub fn rock_shade(s: StoneVertex, lt: Lighting, origin: vec3, grain: vec4) -> vec4 {
     let w = s.world + origin
     let broad = noise3(w * 0.04 + vec3(3.0, 7.0, 1.0))
     let streak = noise3(vec3(w.x * 0.35, w.y * 0.025, w.z * 0.35))
     var toned = s
     toned.albedo *= (0.78 + 0.44 * broad) * (1.0 - 0.3 * smoothstep(0.55, 0.8, streak))
+    // (Each only where it shows: most of a view's rock is too far off for either.)
+    let foot = lt.cam.footprint(length(s.world - lt.cam.eye))
+    let fine = grain.y * (1.0 - smoothstep(0.5 * grain.x, 2.0 * grain.x, foot))
+    if fine > 0.0 {
+        // A grain each `grain.x` cell, its own tone: crisp, as crystals are, and one hash.
+        let g = vec3i(floor(w / grain.x))
+        toned.albedo *= 1.0 + fine * (2.0 * hash3(g.x, g.y, g.z) - 1.0)
+    }
+    let coarse = grain.w * (1.0 - smoothstep(0.5 * grain.z, 2.0 * grain.z, foot))
+    if coarse > 0.0 {
+        toned.albedo *= 1.0 + coarse * (2.0 * noise3(w / grain.z + vec3(5.0, 1.0, 3.0)) - 1.0)
+    }
     lit_stone(toned, lt)
 }
 
