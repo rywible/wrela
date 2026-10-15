@@ -1387,6 +1387,15 @@ spectral fringe stay on the studio that the glass mirrors. Native M4 GPU frame s
 against the previous commit, three alternating pairs at 1280×800, are inconclusive: cube
 beat 1.95 → 1.86 ms, room 4.43 → 4.37 ms.
 
+**A cube at rest.** Ryan asked for the cube to stop moving once resolved, and for the whole
+mark and the cube to hold for a moment before fading into the library. In the opening, the
+tesseract now runs on its own clock. From 2.5 s that clock only slows, smoothly, and it
+stands still at 3.7 s. The clock carries every turn, 3D as well as 4D, and the light and
+ripples on the glass. At rest the cells nest, and the cube is seen three-quarters on. The
+camera holds still through the title and takes up its lean in the dark. The mark and the
+cube hold, fully lit, from 3.7 s to 4.9 s; native captures across that hold are identical
+byte for byte. They are dark by 6.1 s, and the library is up by 7.7 s.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

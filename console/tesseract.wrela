@@ -105,27 +105,22 @@ pub fn thickness(w: f32) -> f32 {
 // yaw and a fixed tilt show its depth. The rates share no common period, so it never repeats,
 // and every corner moves at a steady speed throughout.
 //
-// The turns through w (x–w and y–w) go by their own clock, `deep`; at `deep` = 0 they are at
-// rest, w is w, and the two cells nest exactly, one inside the other.
-fn spin(q: vec4, t: f32, deep: f32) -> vec4 {
-    let everted = plane(plane(q, deep * 1.19, a: 0, b: 3), t * 0.735, a: 1, b: 2)
-    pose(plane(everted, deep * 0.493, a: 1, b: 3), t)
+// At `t` = 0, w is w, so the two cells nest exactly, one inside the other, and the whole is
+// seen three-quarters on.
+fn spin(q: vec4, t: f32) -> vec4 {
+    let everted = plane(plane(q, t * 1.19, a: 0, b: 3), t * 0.735, a: 1, b: 2)
+    let carried = plane(everted, t * 0.493, a: 1, b: 3)
+    plane(plane(carried, t * 0.357 + 0.62, a: 0, b: 2), 0.42, a: 1, b: 2)
 }
 
-// The yaw and the tilt.
-fn pose(q: vec4, t: f32) -> vec4 {
-    plane(plane(q, t * 0.357, a: 0, b: 2), 0.42, a: 1, b: 2)
-}
-
-// The sixteen corners at `turn` (radians of the slow rotation) and `deep` (the turns through
-// w), seen from a 4D eye and placed at `centre` at `size`: world position, and 4D depth in
-// `w` (-1 far, 1 near). As `cube` goes from 0 to 1, the depth between the cells flattens: the
-// far cell swells and the near one holds until, with `deep` at rest, they meet in one cube,
-// which goes on turning in 3D.
-pub fn corners(turn: f32, deep: f32, centre: vec3, size: f32, cube: f32) -> Vec<vec4> {
+// The sixteen corners at `turn` (radians of the slow rotation), seen from a 4D eye and placed
+// at `centre` at `size`: world position, and 4D depth in `w` (-1 far, 1 near). As `cube` goes
+// from 0 to 1, the depth between the cells flattens: the far cell swells and the near one
+// holds until, at turn 0, they meet in one cube.
+pub fn corners(turn: f32, centre: vec3, size: f32, cube: f32) -> Vec<vec4> {
     var out: Vec<vec4> = Vec::new()
     for i in 0..16 {
-        let q = spin(corner(i) * 0.5, turn, deep)
+        let q = spin(corner(i) * 0.5, turn)
         let out_by = mix(swell(q.w), swell(0.5), cube)
         out.push(vec4(centre + q.xyz * (out_by * SPREAD * size), q.w * (1.0 - cube)))
     }
@@ -575,13 +570,13 @@ fn every_corner_meets_four_struts_and_six_faces() {
 fn the_tesseract_stays_within_its_reach_however_it_turns() {
     for i in 0..400 {
         let turn = f32(i) * 0.37
-        for p in corners(turn, turn, vec3(1.0, 2.0, 3.0), 1.4, cube: 0.0) {
+        for p in corners(turn, vec3(1.0, 2.0, 3.0), 1.4, cube: 0.0) {
             assert(length(p.xyz - vec3(1.0, 2.0, 3.0)) < 1.4 * REACH, "inside the traced sphere")
             assert(p.w >= -1.01 && p.w <= 1.01)
         }
     }
-    let a = corners(turn: 0.0, deep: 0.0, centre: vec3(0.0), size: 1.0, cube: 0.0)
-    let b = corners(turn: 0.5, deep: 0.5, centre: vec3(0.0), size: 1.0, cube: 0.0)
+    let a = corners(turn: 0.0, centre: vec3(0.0), size: 1.0, cube: 0.0)
+    let b = corners(turn: 0.5, centre: vec3(0.0), size: 1.0, cube: 0.0)
     var moved = 0.0
     for i in 0..16 { moved += length(a[i].xyz - b[i].xyz) }
     assert(moved > 0.5, "it turns")
@@ -599,7 +594,7 @@ fn far_struts_take_more_rays_than_near_ones() {
 @test
 fn a_strut_covers_the_share_of_a_pixel_it_fills() {
     // Look straight at the outermost strut from just outside it.
-    let verts = corners(turn: 0.0, deep: 0.0, centre: vec3(0.0), size: 1.0, cube: 0.0)
+    let verts = corners(turn: 0.0, centre: vec3(0.0), size: 1.0, cube: 0.0)
     let edges = edges()
     var outer = 0
     var far = 0.0
@@ -695,7 +690,7 @@ fn the_tesseract_turns_at_one_steady_rate() {
         var moved = 0.0
         for c in 0..16 {
             moved += length(
-                spin(corner(c), t + step, deep: t + step) - spin(corner(c), t, deep: t),
+                spin(corner(c), t + step) - spin(corner(c), t),
             )
         }
         least = min(least, moved)
@@ -705,10 +700,10 @@ fn the_tesseract_turns_at_one_steady_rate() {
 }
 
 @test
-fn the_tesseract_resolves_into_one_cube_that_keeps_turning() {
+fn the_tesseract_resolves_into_one_cube_at_rest() {
     let size = 1.3
-    for turn in [0.0, 1.7, 4.2] {
-        let cube = corners(turn, 0.0, vec3(1.0, 2.0, 3.0), size, cube: 1.0)
+    for centre in [vec3(1.0, 2.0, 3.0), vec3(-4.0, 0.5, 2.0)] {
+        let cube = corners(turn: 0.0, centre: centre, size: size, cube: 1.0)
         // The two cells meet: each corner lies on its twin, at w = 0.
         for i in 0..8 {
             assert(length(cube[i] - cube[i + 8]) < 0.0001 && abs(cube[i].w) < 0.0001)
@@ -726,15 +721,11 @@ fn the_tesseract_resolves_into_one_cube_that_keeps_turning() {
         assert(abs(side - swell(0.5) * SPREAD * size) < 0.0001)
         // Along the way, it stays within its reach.
         for k in 0..11 {
-            for p in corners(turn, f32(k) * 0.1 - 1.0, vec3(0.0), size, cube: f32(k) * 0.1) {
-                assert(length(p.xyz) < size * REACH)
+            for p in corners(f32(k) * 0.1 - 1.0, centre, size, cube: f32(k) * 0.1) {
+                assert(length(p.xyz - centre) < size * REACH)
             }
         }
     }
-    // It keeps turning in 3D.
-    let a = corners(turn: 1.0, deep: 0.0, centre: vec3(0.0), size: 1.0, cube: 1.0)
-    let b = corners(turn: 1.5, deep: 0.0, centre: vec3(0.0), size: 1.0, cube: 1.0)
-    assert(length(a[0] - b[0]) > 0.05)
     // Twelve struts and six faces draw it.
     var struts = 0
     for e in edges() { if in_cube(u32(e.x) | u32(e.y)) { struts += 1 } }
@@ -751,7 +742,7 @@ fn the_turn_carries_every_corner_toward_the_eye_in_turn() {
     for i in 0..2000 {
         let t = f32(i) * 0.1
         for c in 0..16 {
-            nearest[c] = max(nearest[c], spin(corner(c) * 0.5, t, deep: t).w)
+            nearest[c] = max(nearest[c], spin(corner(c) * 0.5, t).w)
         }
     }
     for c in 0..16 { assert(nearest[c] > 0.9) }

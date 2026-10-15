@@ -1,7 +1,7 @@
 // Wrela's console. The catalog and game session protocol supply all title-specific content.
 use catalog::{Card, parse}
 use opening::{
-    MARK_WIDTH, OPENING_SECONDS, artifact_place, deep_at, mark_place, moment, presentation_step,
+    MARK_WIDTH, OPENING_SECONDS, artifact_place, clock_at, mark_place, moment, presentation_step,
     stage_light, turn_at,
 }
 use paint::{Emblem, Stage, card_corner, card_face, emblem, quad, stage}
@@ -1286,13 +1286,19 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         _ => {},
     }
     s.sheet = mix(s.sheet, if s.pane == Pane::Games { 0.0 } else { 1.0 }, ease(14.0))
-    // The camera leans a little toward the pointer, and breathes when nothing moves it.
+    // The camera leans a little toward the pointer, and breathes when nothing moves it. It
+    // holds still through the opening's title, and takes up its lean in the dark after it.
     let toward = match s.pointer {
         Some(p) => vec2(p.x / w * 2.0 - 1.0, p.y / h * 2.0 - 1.0),
         None => vec2(0.0),
     }
     let breath = vec2(sin(s.presentation * 0.21), sin(s.presentation * 0.13) * 0.6) * 0.3
-    s.sway = mix(s.sway, if motion { toward * 0.7 + breath } else { vec2(0.0) }, ease(2.0))
+    let lean = if motion { toward * 0.7 + breath } else { vec2(0.0) }
+    s.sway = if intro && !phase.settled { vec2(0.0) } else if intro && phase.library == 0.0 {
+        lean
+    } else {
+        mix(s.sway, lean, ease(2.0))
+    }
     let screen = vec2(f32(width), f32(height))
     let cam = camera(screen, s.sway)
     // The layout is fitted to the camera at rest, so the sway moves the cards against the
@@ -1339,9 +1345,8 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         s.room = texture(width: size.0, height: size.1)
     }
     let target = vec2(f32(size.0), f32(size.1))
-    let turn = if motion { turn_at(s.presentation) } else { 2.0 }
-    let deep = if motion { deep_at(s.presentation, opening: intro) } else { 2.0 }
-    let verts = corners(turn, deep, place.xyz, place.w, phase.cube)
+    let turn = if motion { turn_at(s.presentation, opening: intro) } else { 2.0 }
+    let verts = corners(turn, place.xyz, place.w, phase.cube)
     write(mut s.room_corners, 0, verts)
     let space = begin_pass(mut s.room, clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
@@ -1357,7 +1362,10 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                 eye: cam.eye,
                 target: cam.target,
                 place,
-                time: s.presentation,
+                // The cube at rest in the opening is still: no light or ripple moves on it.
+                time: if motion { clock_at(s.presentation, opening: intro) } else {
+                    s.presentation
+                },
                 light: if phase.settled { 0.7 } else { 1.0 },
                 cube: phase.cube,
             },
