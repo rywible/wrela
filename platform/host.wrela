@@ -13,6 +13,9 @@ pub fn word(bytes: [u8], at: u32 = 0) -> Option<u32> {
     )
 }
 
+// Where the program runs: byte 0 whether the system asks for reduced motion, then words: the
+// seconds since 1970 (at 1) and the device pixel ratio × 1024 (at 5); byte 9 whether this page
+// load reloaded the tab, rather than visiting the page. A host may give fewer bytes.
 pub fn environment() -> Pending<u8> {
     request("environment", [u8(0); 0])
 }

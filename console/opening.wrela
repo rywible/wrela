@@ -12,11 +12,8 @@ const REST: f32 = 3.7
 // The tesseract and the mark start to go down, and have gone dark.
 const FADING: f32 = 4.9
 const DARK: f32 = 6.1
-// A visit soon after the last one starts here instead: in the dark, just before the library
-// comes up.
+// A reload of the tab starts here instead: in the dark, just before the library comes up.
 pub const RETURNING: f32 = DARK
-// How soon after the opening it counts as the same visit, in seconds.
-pub const VISIT: u32 = 1800
 // Radians of the slow rotation a second.
 const TURNING: f32 = 0.4
 // Where the tesseract turns while the mark resolves: up and toward the eye.
