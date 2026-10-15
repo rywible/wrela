@@ -47,6 +47,9 @@ enum Drag: Copy + Eq {
     Scale { anchor: vec2, corner: vec2, from: vec2 },
     /// Drawing a new shape from `from`.
     Shape { from: vec2 },
+    /// Pressed on item `from`'s dot on its side `d` (a unit step out), at screen point `at`: a
+    /// click makes an item beside it, a drag a connector.
+    Dot { from: u32, d: vec2, at: vec2 },
     /// Drawing a connector from item `from`.
     Link { from: u32 },
     /// Moving connector `id`'s start (`start`) or end to another item.
@@ -571,14 +574,33 @@ fn dots(s: App, id: u32) -> Vec<vec2> {
 }
 
 /// The item whose dot is under screen point `at`, if there's one.
-fn dot_at(s: App, at: vec2) -> Option<u32> {
+/// And the way its side faces, a unit step out.
+fn dot_at(s: App, at: vec2) -> Option<(u32, vec2)> {
     let Some(id) = dotted(s, s.view.to_world(at)) else { return None }
-    for p in dots(s, id) {
-        if length(s.view.to_screen(p) - at) <= 9.0 * unit(s) {
-            return Some(id)
+    let spots = dots(s, id)
+    let out = [vec2(0.0, -1.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(-1.0, 0.0)]
+    for k in 0..spots.len() {
+        if length(s.view.to_screen(spots[k]) - at) <= 9.0 * unit(s) {
+            return Some((id, out[k]))
         }
     }
     None
+}
+
+/// A click on item `id`'s dot facing `d`: a new item like it beside it that way, joined to it
+/// by a connector unless it's a note (notes sit side by side), and typed into.
+fn add_beside(s: mut App, id: u32, d: vec2) {
+    let Some(made) = s.board.beside(id, d) else { return }
+    checkpoint(mut s)
+    let note = made.kind == Kind::Note
+    let new = s.board.add(take made)
+    if !note {
+        var l = Item::new(Kind::Link, vec2(0.0), vec2(0.0), color: 7)
+        l.from = id
+        l.to = new
+        let _ = s.board.add(take l)
+    }
+    begin_typing(mut s, new, 0, keep: false)
 }
 
 // ---- changes ----------------------------------------------------------------------------------
@@ -1371,9 +1393,9 @@ fn press_select(s: mut App, at: vec2, w: vec2, mods: Mods) {
         s.drag = Drag::End { id, start }
         return
     }
-    // A dot on an item's side: drag out a connector.
-    if let Some(id) = dot_at(s, at) {
-        s.drag = Drag::Link { from: id }
+    // A dot on an item's side: drag out a connector, or click for an item beside it.
+    if let Some((id, d)) = dot_at(s, at) {
+        s.drag = Drag::Dot { from: id, d, at }
         return
     }
     if let Some((corner, anchor)) = box_corner_at(s, at) {
@@ -1518,6 +1540,9 @@ fn moved(s: mut App, at: vec2, mods: Mods) {
                 s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
             }
         },
+        Drag::Dot { from, at: start, .. } => if length(at - start) > 3.0 * unit(s) {
+            s.drag = Drag::Link { from }
+        },
         Drag::Scale { anchor, corner, from } => {
             // Evenly, by how far the pressed corner has come along its line from the anchor.
             let d = corner - anchor
@@ -1579,6 +1604,7 @@ fn released(s: mut App, at: vec2, mods: Mods) {
             }
         },
         Drag::Scale { .. } => s.originals.clear(),
+        Drag::Dot { from, d, .. } => add_beside(mut s, from, d),
         Drag::Marquee { from, add } => {
             let lo = min(from, w)
             let hi = max(from, w)
@@ -1972,10 +1998,16 @@ fn draw(s: mut App, screen: vec2) {
     }
     for p in spots {
         let c = s.view.to_screen(p)
-        let d = if length(c - s.pointer) <= 9.0 * u { 6.5 * u } else { 4.5 * u }
+        let lit = length(c - s.pointer) <= 9.0 * u
+        let d = if lit { 7.5 * u } else { 4.5 * u }
         let spot = Rect::new(x: c.x - d, y: c.y - d, w: 2.0 * d, h: 2.0 * d)
         list.ellipse(spot, vec4(1.0))
         list.ellipse(spot, ACCENT, width: max(1.5 * u, 1.0))
+        if lit {
+            // A click adds an item beside it.
+            list.line(c - vec2(3.0 * u, 0.0), c + vec2(3.0 * u, 0.0), ACCENT, width: 1.5 * u)
+            list.line(c - vec2(0.0, 3.0 * u), c + vec2(0.0, 3.0 * u), ACCENT, width: 1.5 * u)
+        }
     }
     // The lines a move or resize snapped to.
     for g in s.guides {
@@ -2593,4 +2625,14 @@ fn a_connectors_end_moves_to_another_item(game: App) {
     assert(link.kind == Kind::Link)
     assert(link.from == game.board.items[0].id, "its start stays")
     assert(link.to == game.board.items[2].id, f"it ends at {link.to}")
+}
+
+/// A click on a selected note's right dot makes a note beside it, 60 to the right, and typing
+/// goes into the new one.
+@test(frames: 60, input: "scripts/beside.json")
+fn a_dot_click_adds_a_note_beside(game: App) {
+    assert(game.board.items.len() == 2, f"{game.board.items.len()} items")
+    let r = screen_rect(game, 1)
+    assert(abs(r.x - 360.0) < 0.05 && abs(r.y - 140.0) < 0.05, f"{r.x}, {r.y}")
+    assert(game.board.items[1].kind == Kind::Note && game.board.items[1].text == "Next")
 }

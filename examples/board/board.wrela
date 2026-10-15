@@ -69,6 +69,9 @@ pub const END_ARROW: u32 = 4
 /// A new connector's: in elbows, with an arrowhead where it ends.
 pub const CONNECTOR: u32 = ELBOW | END_ARROW
 
+/// The space `Board::beside` leaves between an item and the new one beside it.
+pub const BESIDE: f32 = 60.0
+
 /// A note's side, and the smallest a box is made.
 pub const NOTE: f32 = 200.0
 pub const SMALLEST: f32 = 24.0
@@ -606,6 +609,33 @@ impl Board {
         }
     }
 
+    /// A new item like item `id` (its kind, size, colour and size of words, but no words) beside
+    /// it in direction `d`, a unit step along an axis: `BESIDE` past it, or on in steps of its
+    /// size and that space until it overlaps no other box (frames aside), up to 20 steps.
+    pub fn beside(self, id: u32, d: vec2) -> Option<Item> {
+        let Some(i) = self.index(id) else { return None }
+        borrow it = self.items[i]
+        var out = Item::new(it.kind, it.at, it.size, it.color)
+        out.type_size = it.type_size
+        let step = d * (it.size + vec2(BESIDE))
+        out.at = it.at + step
+        for _ in 0..20 {
+            var free = true
+            for o in self.items {
+                if o.boxed() &&
+                    o.kind != Kind::Frame &&
+                    overlaps(o.rect().shrink(0.5), out.rect()) {
+                    free = false
+                }
+            }
+            if free {
+                break
+            }
+            out.at += step
+        }
+        Some(out)
+    }
+
     /// Lines up the items in `ids` as `way` says. A group among them moves as one, a frame
     /// takes what's inside it, a connector follows its ends, and a locked item stays (but the
     /// rest still line up on it). Even gaps need three things; the outer two stay.
@@ -1061,4 +1091,15 @@ fn an_item_scales_about_a_point() {
             twice.size == vec2(400.0, 60.0) &&
             twice.type_size == 40.0,
     )
+}
+
+@test
+fn a_new_item_beside_another_skips_what_is_in_the_way() {
+    var b = Board::new()
+    let a = b.add(Item::new(Kind::Note, vec2(0.0), vec2(NOTE), color: 2))
+    let _ = b.add(Item::new(Kind::Box, vec2(260.0, 0.0), vec2(NOTE), color: 4))
+    let right = b.beside(a, vec2(1.0, 0.0)).unwrap()
+    assert(right.kind == Kind::Note && right.color == 2 && right.text.is_empty())
+    assert(right.at == vec2(520.0, 0.0), f"{right.at.x}, {right.at.y}")
+    assert(b.beside(a, vec2(0.0, 1.0)).unwrap().at == vec2(0.0, 260.0))
 }
