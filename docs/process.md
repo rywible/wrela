@@ -1019,6 +1019,380 @@ its folds at all: it is near-black whatever lights it, darker still toward the e
 so it reads as a hole in the scene, with a faint violet at the very edge. Pure black was tried
 first; the face's void then vanished into the cloth, so the cloth sits just above it.
 
+## Wrela Facet, a recursive opening and a console dashboard, 2026-10-14
+
+Ryan asked for a sleek gaming-console feel, a custom font, and an alien artifact that
+turns into Wrela and "breaks your brain". Claude Code (Opus 5.5) did the design and the code.
+
+**Type.** Wrela Facet (`console/facet.wrela`) replaces Meridian. It has 95 printable ASCII
+glyphs drawn as stroke centrelines: unicase capitals, a 0.10 em stroke, mitred joins,
+45-degree chamfered bowls and flat cut terminals. The build bakes them to distance fields.
+Joined runs of a stroke share an extra term at each mitre, so a field has no seam where
+two runs meet. The WRΞLA mark uses the same strokes at 0.14 em with a stemless E. Its 19
+straight runs are the rigid pieces of the opening. Manrope remains for sentences. For
+an HTML layout mock only, two OFL display faces from Google Fonts (Chakra Petch, Rajdhani)
+were compared. They showed that tracked unicase capitals read as console type. Neither
+face, nor any outline from them, is in the repository.
+
+**Opening.** The artifact is a hollow shell of 38 plates (both ends of 19 prisms, cut from
+the mark's runs and carved by a spherical shell). Smaller copies of the shell nest inside
+it, each 1/1.8 the size of the one around it, each turning about its own axis. New levels
+grow out of the core while the outer level thins and scatters, so the form never completes.
+The recursion then stops at a fixed phase. Its outer shell becomes 19 loose shards: each
+collapses into its front plate, flies out and in front of the eye, and locks into WRΞLA.
+The inner levels fall into the core, which flashes with an anamorphic streak. A light strip
+crosses the mark, which then flies to the header as the dashboard fades in. The opening
+lasts 7.9 s. A key, click or pad press skips it; reduced motion and the animation setting
+bypass it.
+
+The opening is sphere-traced signed distance fields in a Wrela fragment shader, rendered to
+HDR with a two-scale separable Gaussian bloom and the Narkowicz fit of the ACES filmic
+curve. Rotations are quaternion slerps. These are common published techniques, implemented
+here as original code. To keep the trace in budget, a point finds the two levels that
+bracket it from the logarithm of its radius. A build-time octahedral table of 24×24
+directions lists, for each cell, the plates within a margin of it, and a step never passes
+that margin. A per-ray bitmask lists the loose shards whose bounding spheres the ray
+crosses. The trace runs at about 360,000 pixels (a million once only the mark remains).
+
+**Dashboard.** The selected title's cover fills the screen with a slow drift and dark
+scrims. A row of albums leads with the selection, and a hero column shows the title in
+Facet, the save to continue, and Play/Continue and Saves. A white pill slides to the
+focused button. Arrow keys, Tab, a pad's d-pad and its left stick move focus by rows.
+Hovering focuses a control. Saves and Settings open as sheets from the right. The footer
+shows key or pad hints for the last device used. The protocol, profile and save logic is
+unchanged.
+
+**Checks.** Regressions cover Facet's coverage and seamless mitres, the mark's 19 pieces,
+the timeline's bookends and handoff continuity, every piece's final place, bounded and
+consecutive recursion levels, the direction table against off-grid shell points, layout
+at four screen sizes, and focus movement. Native captures and real headless Chrome
+(WebGPU) captures at 1280×720, 1440×900 and phone sizes checked the full opening and the
+dashboard. Scripted keys checked the sliding focus, the sheets, name entry and the toggle.
+DevTools device-metrics emulation in headless Chrome drew both this and the previous console
+1.5–2× too large at a device pixel ratio above 1. A real `--force-device-scale-factor=2`
+drew the intended size, so this is an emulation artifact. Captures are original renders,
+retained outside the checkout in `console-redesign-evidence`.
+
+**Cost.** Matched native M4 runs at 1280×720 (600 frames, not serial) measured the opening
+at 0.180 → 2.247 ms median GPU span (p95 0.732 → 5.426 ms, max 0.751 → 6.360 ms), about a
+third of a 16.7 ms frame at worst. The dashboard fell from 0.164 to 0.068 ms. `wrela
+profile` (480 frames) measured 0.688 → 2.800 ms CPU frame call, which on the native host
+includes the wait for the GPU. The console's own CPU work stays near 0.6 ms. These are
+native samples, not Chrome frame rates. Game rendering is unchanged.
+
+## A minimal sculpture and a game library, 2026-10-14
+
+Ryan found the recursive artifact cheesy and asked for something minimalist, and for a
+proper console dashboard: a library of several games. Claude Code (Opus 5.5) replaced both.
+Wrela Facet and the WRΞLA mark are unchanged.
+
+**Opening.** The recursion, its direction table, the bloom, the flare and the cyan accent
+are gone. The mark's 19 runs float as matte, bone-white slivers in a black room. Each lies
+on the line from one fixed eye point through its place in the word, at a depth factor from
+0.5 to 1.7. Its scale matches that factor, so from that point it covers exactly its place.
+Neighbouring strokes sit at far different depths. The eye glides on a sphere about the word,
+from low and well to the side, and the scatter, which first reads as fragments of a script,
+closes into WRΞLA at 4.3 s. One soft key light turns slightly, then the word flies to the
+header and the library fades in (6.4 s in all). This anamorphic idea was first planned, but
+not built, in an abandoned Codex branch; the code here is new. Lighting is one wrapped key,
+a low fill, a faint sheen and rim, and a gentle falloff with distance, so depth reads before
+alignment.
+
+**Library.** A row of uniform 16:9 albums, a little over three across, under a "Library"
+label and a game count. Selection moves along the row; the row scrolls only when the
+selection would leave it. A selected album has a white ring; the others are dimmed. An album
+without art shows its title on a quiet card. Below are the selected title, a line for its
+state ("Not started" or the save to continue), and Play/Continue and Saves. Down from any
+album reaches Play. The backdrop is near black, washed at the top by a 16-tap disc blur of
+the selected art. The palette is monochrome. Covers within six albums of the selection hold
+textures, enough for a full row on a wide screen.
+
+**Checks.** Regressions cover the anamorphic alignment (direction and scale from the eye),
+the depth spread, the eye's path, the mark's fit, row scrolling, layout at four screen sizes,
+cover reach and entering a row at its main action. Native captures with a six-title local
+catalog (one without art) and scripted keys checked scrolling, the placeholder card and
+focus. Real headless Chrome (WebGPU, device scale factor 2) checked the opening and library
+against the live Last Green session.
+
+**Cost.** Native M4, 1280×720, 600 frames: opening median GPU span 2.456 ms (p95 3.419 ms;
+the first seven frames, black while pipelines warm, reach 13.7 ms). The library is 0.191 ms.
+`wrela profile` measured 2.944 ms CPU frame call (it waits on the GPU on the native host).
+The trace is capped at 1.2 million pixels. These are native samples, not Chrome frame rates.
+Game rendering is unchanged.
+
+## Wrela Vale, a rune artifact and a lit room, 2026-10-14
+
+Ryan asked for Continue/New/Load actions, a font with modern fantasy flair, a dashboard that
+reads as a lit room in an endless void, a pointer cursor and exact hover, no transport error
+text or animation switch, the alien artifact always turning, and no game count. Claude Code
+(Opus 5.5) did the work.
+
+**Type.** Wrela Vale (`console/vale.wrela`) replaces Facet. Its 95 unicase glyphs are drawn
+as centrelines with round bowls (arcs in 6-degree runs). A broad pen at 20 degrees sets each
+run's width (stems and falling strokes thick, bars and rising strokes thin), free ends flare,
+the A's apex is pointed and the Q's tail sweeps below the line. Runs on a curve share their
+end widths; the overlap of two runs' slabs near a turn covers the seam, bounded so that it
+cannot reach outside the stroke. The WRΞLA mark uses the same hand at 1.4 times the weight,
+now with an E that has a stem.
+
+**Artifact and opening.** The artifact is an astrolabe of runes: three tilted rings turn
+against one another about a dark, polished core, each carrying the mark's nine strokes
+facing out, and each ring precesses slowly. In the opening the first ring's runes leave
+their orbits for the anamorphic sculpture, the others spiral into the core, and the core
+sinks away; the word then rises into the header. Behind the library the same artifact turns
+above the selection, dimmer, traced at 500,000 pixels.
+
+**Room.** The selected card stands forward under a light, the others fall back along an arc
+and turn in. A stage shader draws the void, a glossy floor with the light's pool, a faint
+beam, a screen-space reflection of the artifact, and fog to darkness. Cards are perspective
+quads with reflections under the floor. The camera leans toward the pointer and breathes.
+The CPU and GPU share one projection, so the pointer hits exactly what is drawn: a hovered
+card or button shows its ring or pill, and the cursor becomes a hand over anything pressable,
+through a new `cursor` host service limited to `default`, `pointer` and `text`.
+
+**Actions.** A title shows New alone until it has saves, then Continue (the newest save), New
+and Load. Load opens a sheet of saves; choosing one plays it; Export and Import stay there.
+A dropped request or a failed connection now retries after three seconds without a message.
+The animation setting and the storage note are gone; the system's reduced-motion setting is
+still honoured.
+
+**Checks.** Regressions cover Vale's coverage, contrast, flares, seamless bowls and pointed
+apex; the mark's nine strokes; the anamorphic alignment and the other rings vanishing; the
+artifact's orbits and rune facing; projection and ray agreement, card placement on three
+screen sizes and reflections; the action rule; quiet retries; and the cursor service's list.
+Chrome (WebGPU, scale factor 2 and 3) checked the opening, the room, hover rings and the
+cursor; native captures with a six-title local catalog checked the row.
+
+**Cost.** Native M4 1280×720: opening median GPU span 3.591 ms (p95 4.883 ms), room 1.039 ms
+(p95 1.287 ms). `wrela profile` (600 frames): 3.747 ms CPU frame call, which waits on the GPU
+on the native host. These are native samples, not Chrome frame rates. Game rendering is
+unchanged.
+
+## A gilded tesseract, 2026-10-14
+
+Ryan rejected the rune astrolabe and asked what 3D forms read as alien. Claude Code (Opus
+5.5) listed candidates (the tesseract and other 4D polytopes, the Clifford torus, sphere
+eversion, Klein bottle, Hopf fibration, Borromean rings, an impossible portal cube, gyroid
+surfaces, strange attractors) and rendered six as short clips in a throwaway Wrela package
+outside the repository, then four tesseract variants (gilded, unfolding into the Dali net of
+eight cubes, afterimage echoes, a glass lantern) and two gilded takes with prism faces. Ryan
+chose the gilded tesseract with mirror glass, asked for no ball joints, less light on the
+glass and welded-looking corners. The Dali net is a well-known construction of the
+tesseract (and the subject of Dali's Corpus Hypercubus, 1954); no image was used.
+
+**The artifact** (`console/tesseract.wrela`) is a tesseract turning by a double rotation,
+projected from four dimensions. Its 32 struts are polished metal, silver far in the fourth
+dimension and gold near, all of one width so every corner is one seamless weld. Its 24 faces
+are rippling mirror glass: nearly clear face-on, a soft mirror toward the edges, reflecting
+the studio and the struts; where they mirror the studio, each colour channel looks a little
+along the glass's fold, so the folds fringe into a spectrum. Rays meet struts and faces
+exactly: the ray-capsule intersection follows Inigo Quilez's published formula
+([intersectors](https://iquilezles.org/articles/intersectors/)), reimplemented here; quads are
+ray-plane tests with an inside test inset by the strut radius, so the glass begins at the
+metal's surface. A bounding sphere about each strut and face rules out most tests. Each pixel
+takes two samples in the opening and one in the room; traced layers divide the screen by a
+whole number, because resampling a one-pixel highlight by 0.93 broke it into dashes.
+
+**Opening.** The tesseract turns in the dark over a glossy floor that reflects it, then spins
+faster and folds into its centre; the mark's nine strokes, now polished gold, fly out of that
+point to their anamorphic places, the word reads at 4.6 s and rises into a gold header mark.
+**Room.** The tesseract rises behind the selected card at reduced light; the room's floor
+reflects it. The rune astrolabe and its core are removed.
+
+**Checks.** Regressions cover the tesseract's struts and faces (four struts and six faces at
+each corner, faces in order around their squares), its bounds as it turns, the fold before
+the strokes leave, the strokes' anamorphic homes, and traced sizes at whole divisors. Native
+captures and Chrome (WebGPU, scale factor 2) checked the opening and the room.
+
+**Cost.** Native M4: opening median GPU span 10.27 ms at 1280×720 (p95 11.98) and 10.24 ms at
+2560×1440, about 60% of a 16.7 ms frame while the tesseract fills the screen, then 2-3 ms once
+it has folded; room 2.08 ms (p95 2.47) and 2.35 ms (p95 2.72). The first take of the tracer
+cost 31 ms; one path per sample in full colour, bounding spheres, four bounces and a smaller
+traced layer brought it here. These are native samples, not Chrome frame rates. Game
+rendering is unchanged.
+
+## A sharper console and a continuous opening, 2026-10-14
+
+Ryan found the console blurry in the browser, did not want gold letters, preferred Facet to
+Vale, found the tesseract-to-WRΞLA animation bad, wanted the UI as sharp as traditional web
+UI, did not want the game reflected in the floor, and wanted the selected game to compose
+with the tesseract. Claude Code (Opus 5.5) made the changes below and judged them in Chrome
+(WebGPU, real device scale factor 2) and in native captures.
+
+**Type.** Wrela Facet returns (`console/facet.wrela`); Vale is removed. The header and the
+opening draw the WRΞLA mark from Facet's own strokes, flattened to 19 mitred runs, in pale
+silver-white instead of gold.
+
+**Opening.** One object and one camera, no cut. The tesseract turns alone near the eye, the
+mark resolves beneath it as a light passes along it, then the mark rises into the header while
+the tesseract draws back to its place in the room and the library comes up. The anamorphic
+strokes and the fold are removed.
+
+**Room.** The tesseract stands behind the selected game so its struts frame the card. Cards
+no longer reflect in the floor. The traced layer carries coverage in alpha, so the floor is
+drawn only where the tesseract does not stand in front.
+
+**Sharpness.** Traced layers keep at least half the screen's resolution on 2× displays. UI
+edges snap to device pixels; buttons, keycaps and the settings control are one-pixel
+outlines drawn by a new `ring` primitive in `ui/draw.wrela`; the focus pill is solid. Dashed
+highlights along the struts had two causes, found by turning off parts of the light path:
+the studio's narrow strips and tight key lobe were narrower than the arc a strut's
+reflection sweeps across one pixel (about 0.4 radians at six pixels a radius), and far or
+refracted struts thinner than a pixel. The studio's softboxes are now broader and softer
+than that arc; a one-dimensional model of a strut against a 64-sample reference cut the mean
+error about fourfold. Struts now cover each pixel analytically: a pixel's footprint grows
+along the path and widens at each glass fold, and a strut counts for the share of it that
+it fills. With that, one ray a pixel keeps edges clean. An energy-preserving prefilter of
+the softboxes and a silhouette fade were tried and dropped: the model showed them no better
+than broader softboxes.
+
+**Checks.** Regressions cover a strut's share of a pixel (whole, half on its rim, a quarter
+beside it, none clear of it), the flat mark matching its pieces, the opening's poses and
+end places, the selected card's placement, a ring as one quad carrying its width, and traced
+sizes. The tesseract's bounding sphere is tightened to 1.7 times its size, checked over 60
+turns.
+
+**Cost.** Native M4 GPU spans, median (p95), against `main` on the same machine: opening
+2.89 ms (3.47) at 1280×720 and 3.33 ms (3.67) at 2560×1440, from 10.12 and 10.24 ms; room
+3.73 ms (4.01) and 4.00 ms (4.30), from 2.09 and 2.31 ms. The room costs more because the
+tesseract now frames the card and fills more of the screen; one ray a pixel, gold mirrored
+only in the nearest glass, four bounces, a tighter bound and removing the unused floor path
+paid for most of it. Everything but the trace costs about 0.2 ms. These are native samples,
+not Chrome frame rates. Game rendering is unchanged.
+
+## The tesseract recedes behind the library, 2026-10-14
+
+Ryan asked for a smaller tesseract that looks farther back, floating behind everything; for
+the large WRΞLA to disappear instead of travelling to the header; and for no ghost image of
+the tesseract. Claude Code (Opus 5.5) made these changes and judged them in Chrome (WebGPU,
+device scale factor 2) and native captures.
+
+**Opening.** The large mark fades out where it resolved; the small header mark fades in
+with the library. The opening tesseract is about 15% smaller.
+
+**Room.** The tesseract floats far behind the cards (10 units back, 1.25 in size, about
+half a card wide) and rises above the selected card, which hides its lower part. It is
+dimmer than in the opening. The floor no longer mirrors it.
+
+**Far struts.** At that distance a strut is about two pixels in radius and its reflections
+broke into dashes again. Rendering the metal in a flat colour showed the geometry and
+coverage were clean, so the cause was the studio it mirrors. Pixels across a strut's edge
+are now shaded at the middle of the band of strut they see, not at the silhouette. Struts
+under three pixels in radius take four rays a pixel, each with half the footprint, and
+struts under four pixels see a blurred studio of broad lobes, as distant metal does in a
+renderer with specular level of detail. The opening, where struts are larger, keeps one ray
+and sharp reflections.
+
+**Checks.** Regressions cover the opening's timing (the mark gone before the library is up,
+its centring on a phone, the tesseract's end place) and the rays and blur chosen for near
+and far struts.
+
+**Cost.** Ryan's own Chrome was rendering the console preview during measurement, so native
+M4 GPU spans were inflated for every build. Measured back to back under the same load at
+1280×720, medians were: opening 10.42 ms against 11.14 ms on `main`, room 11.83 ms against
+12.50 ms. The tesseract covers about a sixth of the pixels it did, which pays for four rays
+where it is far. These are native samples, not Chrome frame rates. Game rendering is
+unchanged.
+
+## A black and silver console laid out like a console, 2026-10-14
+
+Ryan found the gold and silver cheesy and asked for black and silver; for the tesseract and
+the letters to come up sooner and together; for no floor spotlight and no separator line; for
+a study of how Xbox, Steam and PS5 place a game library; and for controls in the manner of
+shadcn/ui. Claude Code (Opus 5.5) made the changes and judged them in Chrome (WebGPU, device
+scale factor 2) and native captures.
+
+**Research.** A Claude Code subagent read public descriptions of the PS5 home screen, the
+2023 Xbox home, Steam Big Picture and its library asset guidelines (Steamworks), Microsoft's
+TV design guidance, Apple's tvOS layout, focus and typography guidelines, and shadcn/ui's
+theme and button source. No images were saved or traced. What they share: a row anchored at
+the left safe margin with the focused title in a fixed slot and the rest running off the
+right edge; the focused title's art filling the space above; its name, state and one main
+action left-aligned with the row; focus shown by size, brightness and a ring, never a tilt;
+quiet navigation at the top; a 5% safe area. From shadcn/ui: near-white primary buttons,
+quiet filled secondary buttons behind 10% white hairlines, 8 px radii, muted grey text, a
+ring outside the focused control, and stroked icons with no glow.
+
+**Layout.** The cards are one flat row along the bottom: the selection in a fixed slot at a
+5.5% margin, a fifth of the screen high, its lower edge at 88% of the height; the others at
+78% size and lower brightness to its right; the one before it slides out to the left and
+fades. Above the selection, from its left edge: the title in Facet, the state, and the
+actions, the first solid. The tesseract takes the place a console gives a game's art: far
+behind, up and to the right (centred on a tall screen). The row and the tesseract are fitted
+to the camera at rest, so the pointer's sway moves the cards against it. The floor, its pool
+of light and the beam are gone; the room is a void.
+
+**Controls.** Buttons are 40 px high with 8 px corners, the main action solid near-white and
+the rest dark grey behind a hairline. With keys or a pad a 2 px ring 3 px outside the focused
+button slides to the next; under the pointer the button brightens instead. The settings
+button is a quiet square with two sliders drawn after Lucide's settings-2 icon (ISC
+licence), recreated from its 24-unit geometry with rectangles and rings. Key hints are small
+bordered caps in Manrope. The sheets, rows and name field follow the same tokens. The
+separator line is gone.
+
+**Tesseract.** The struts shade from black chrome (far in the fourth dimension) to silver
+(near); the studio's lights are neutral; the glass faces are smoked, darkening what lies
+behind each, and their spectral fringe is about half as wide. The tesseract and the mark
+come up together in the first 0.6 s, hold, and the mark fades by 3 s; the library is up by
+4.4 s (5.4 s before).
+
+**Checks.** Regressions cover the row's slot, baseline and size on four screen shapes,
+cards between slots mid-move, the tesseract's place on screen, and the opening's timing.
+
+**Cost.** Ryan's Chrome was again rendering the preview during measurement, so native M4
+GPU spans are inflated. Back to back under that load at 1280×720, medians were: room
+4.1–4.2 ms against 5.3 ms on `main`; opening 2.5 ms on both. At 2560×1440 the room took
+4.2–4.3 ms against 5.5 ms. The tesseract covers fewer pixels and the floor is gone. These
+are native samples, not Chrome frame rates. Game rendering is unchanged.
+
+## Black metal and the mark's light back, 2026-10-14
+
+Ryan missed the light passing along the large WRΞLA and found the tesseract's metal too
+bright; he asked for something edgy, black and sleek, with silver tones allowed. Claude Code
+(Opus 5.5) brought the sweep back, now starting with the tesseract: the tesseract comes up
+in the first 0.6 s while the light crosses the mark from 0.1 s to 1.4 s; the mark holds,
+fades by 3.2 s, and the library is up by 4.6 s. The struts now shade from near-black chrome
+(reflectance 0.08) to a dark satin silver (0.42), so the tesseract reads as black with
+silver where the lights catch its edges. In the room it is lit at 70% of its opening light
+(50% before) so the darker metal still shows. Native and Chrome captures judged the look;
+the opening's timing regression covers the sweep. Only constants and the mark's existing
+sweep changed. Native M4 GPU medians, back to back with `main`: opening 2.5–2.7 ms on both;
+room 3.7–3.9 ms against 4.2–4.3 ms, within the noise of a shared machine. These are native
+samples, not Chrome frame rates.
+
+## A tesseract that reads as four-dimensional, 2026-10-14
+
+Ryan brought a recommendation (from another AI tool) for making the tesseract read as a 4D
+object rather than a 3D cage, and asked Claude Code (Opus 5.5) to try its two strongest
+parts. Claude Code judged the other three: per-face shifts of the 4D angle behind each pane
+have no geometric basis and would look like a rendering fault; curved stereographic struts
+have no cheap exact ray test and would need curved glass too; a bright line where the
+object meets w = 0 risked looking cheap and sparkling, so it was left for later.
+
+**Turn.** The tesseract now turns in an isoclinic double rotation (the x–w and y–z planes
+by one angle), so its cells pass through each other and turn inside out. Each quarter turn
+eases in and out (80% of a quintic ease), lingering where the cells nest and surging
+through the eversion; a slow yaw and a fixed tilt show its depth.
+
+**Perspective and taper.** The 4D eye moved from w = 2.2 to 2.0, so the near cell is drawn
+three times the far one. Each strut is a round cone whose radius at each corner scales as
+the corner does, from 0.67 to 2 times the base radius, so the struts that meet at a corner
+still weld. The ray test is after Inigo Quilez's ray–round-cone intersector (iquilezles.org
+articles on intersectors; MIT licence), rewritten in Wrela; a regression checks its hits on
+both ends, its middle and a miss. The pixel-coverage and edge-shading code now uses the
+radius where the ray passes.
+
+**Shade.** With the far cell small and thin, black far struts vanished and the tesseract read
+as a plain cube, so the shading flipped: heavy near struts are black chrome, the far needles
+satin silver.
+
+**Cost.** The four-ray cutoff first used the thinnest needles, then the base radius; both
+sent the close tesseract in the opening to four rays a pixel (12–14 ms). The cutoff is now
+2.5 pixels of base radius, and native captures of consecutive frames show the needles
+clean. Native M4 GPU medians, back to back with a checkout at the previous commit, while
+Ryan's Chrome preview was also rendering: opening 2.9–3.3 ms against 2.5–2.8 ms; room
+4.5–5.6 ms against 4.1–4.4 ms. These are native samples, not Chrome frame rates.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
