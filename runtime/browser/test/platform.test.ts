@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { BrowserPlatform, exportName, MESSAGE_LIMIT, PortRpc, programUrl, wordAt, wordBytes } from "../src/platform.ts";
+import { BrowserPlatform, exportName, iconLink, MESSAGE_LIMIT, PortRpc, programUrl, wordAt, wordBytes } from "../src/platform.ts";
 
 test("program channels correlate replies and close outstanding requests", async () => {
   const channel = new MessageChannel();
@@ -117,6 +117,19 @@ test("export filenames fit full session keys and reject traversal or truncation"
   expect(exportName(body(longest)).name).toBe(longest);
   for (const name of ["../save", "save/path", "", "x".repeat(241)]) expect(() => exportName(body(name))).toThrow("filename");
   expect(() => exportName(wordBytes(10))).toThrow("filename");
+});
+
+test("icons are square PNGs the build shipped, linked from the page", () => {
+  const body = (s: string) => new TextEncoder().encode(s);
+  const base = "https://play.example/console/";
+  expect(iconLink(body("icon 32 files/icons/icon-32.png"), base))
+    .toEqual({ rel: "icon", sizes: "32x32", href: "https://play.example/console/files/icons/icon-32.png" });
+  expect(iconLink(body("apple-touch-icon 180 files/icons/icon-180.png"), base).rel).toBe("apple-touch-icon");
+  for (const bad of [
+    "icon 32 https://x.example/i.png", "icon 32 files/../secret.png", "icon 32 files/icons/../x.png",
+    "icon 32 files/icons/i.svg", "icon 32 icons/i.png", "manifest 32 files/icons/i.png", "icon 0 files/icons/i.png",
+    "icon 4096 files/icons/i.png", "icon 32 files/icons/i.png extra", "icon 32 files/.icons/i.png",
+  ]) expect(() => iconLink(body(bad), base)).toThrow("invalid icon");
 });
 
 test("a program sets the canvas cursor only to a listed shape", async () => {

@@ -1440,6 +1440,31 @@ dropped for a table of the classic open pairs: A with T, V, W and Y each way; L 
 Y and A; FA and PA; 0.04 to 0.07 em, in either case. Digits keep their widths. Native
 captures of game titles show the corners and the even spacing.
 
+## The tesseract's Petrie octagon as the console's icon, 2026-10-14
+
+Ryan asked whether the console could have a tesseract favicon and chose the Petrie octagon
+from Claude Code's mocks: the tesseract seen straight down its 4D axis of symmetry, an
+octagonal lattice of its 32 struts. Claude Code (Opus 5.5) worked out how to keep it legible
+when small and built it.
+
+**Sizes.** At 16 pixels the true projection is grey mush, because its inner ring is
+tan(22.5°) ≈ 0.41 of the outer and 32 struts meet in 13 pixels. Each size is therefore drawn
+for itself. The 180-pixel home-screen icon is the true projection, square and opaque. The
+32-pixel icon, which a Retina tab shows, opens its inner ring to 0.55 and puts every corner on
+a pixel's centre. The 16-pixel icon is the octagon and the star its long struts make. Each is
+silver on a black tile with rounded corners, so it shows in light and dark tab bars.
+
+**Build.** No image files: `console/icon.wrela` draws each size from `tesseract::edges()` as
+a constant, with each pixel covered as far as a stroke's edge crosses it, and writes it as a
+PNG with uncompressed (stored) deflate blocks: 0.6 KB, 2.1 KB and 32 KB. A `std::io::Shipped`
+constant ships them under `files/icons/`. std's `Shipped` gains `path(i)`, the path `fetch`
+already used. The platform package's new `icon` host request hands the page each icon's kind,
+size and path. The browser runtime accepts only a square PNG under `files/` and sets the
+page's `<link rel="icon">` or `apple-touch-icon` for it. The native host has no page and
+declines the request. Regressions read each PNG back strictly (CRCs, stored blocks,
+Adler-32) and check the true projection's two rings and the 32-pixel corners on pixel
+centres; Pillow also decodes the shipped files.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

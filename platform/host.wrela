@@ -24,6 +24,15 @@ pub fn cursor(name: str) -> Pending<u8> {
     request("cursor", bytes)
 }
 
+// One of the page's icons: `rel` is `icon` or `apple-touch-icon`, `size` its pixels on a side,
+// and `path` a square PNG the build shipped (`Shipped::path`).
+pub fn icon(rel: str, size: u32, path: str) -> Pending<u8> {
+    let text = f"{rel} {size} {path}"
+    var bytes: Vec<u8> = Vec::new()
+    for i in 0..text.len() { bytes.push(text.byte(i)) }
+    request("icon", bytes)
+}
+
 pub fn open(url: str) -> Pending<u8> {
     var bytes: Vec<u8> = Vec::new()
     for i in 0..url.len() { bytes.push(url.byte(i)) }

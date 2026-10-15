@@ -21,6 +21,14 @@ export function exportName(body: Bytes): { name: string; offset: number } {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name)) throw new Error("invalid export filename");
   return { name, offset: 4 + n };
 }
+// One of the page's icons, `rel size path`: a square PNG the build shipped, under `files/`.
+const ICON = /^(icon|apple-touch-icon) ([1-9][0-9]{0,3}) (files\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.png)$/;
+export function iconLink(body: Bytes, base: string): { rel: string; sizes: string; href: string } {
+  const match = ICON.exec(DECODER.decode(body));
+  if (!match || Number(match[2]) > 1024) throw new Error("invalid icon");
+  const [, rel, size, path] = match;
+  return { rel: rel!, sizes: `${size}x${size}`, href: new URL(path!, base).href };
+}
 const checked = (body: unknown): Bytes => {
   if (!(body instanceof Uint8Array) || body.length > MESSAGE_LIMIT) throw new Error("invalid capability message");
   return new Uint8Array(body);
@@ -177,6 +185,17 @@ export class BrowserPlatform {
       const name = DECODER.decode(body);
       if (!CURSORS.has(name)) throw new Error(`unsupported cursor: ${name.slice(0, 32)}`);
       this.canvas.style.cursor = name; return new Uint8Array();
+    }
+    if (service === "icon") {
+      // The program's icon in the page's tab, bookmarks and home screen: one link per kind and size.
+      const { rel, sizes, href } = iconLink(body, document.baseURI);
+      let link = document.head.querySelector<HTMLLinkElement>(`link[rel="${rel}"][sizes="${sizes}"]`);
+      if (!link) {
+        link = document.createElement("link");
+        link.rel = rel; link.type = "image/png"; link.setAttribute("sizes", sizes);
+        document.head.append(link);
+      }
+      link.href = href; return new Uint8Array();
     }
     if (service === "surface/open") return this.#open(DECODER.decode(body));
     if (service === "channel/receive") {

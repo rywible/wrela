@@ -190,10 +190,24 @@ pub struct Console {
     hover: Option<Action>,
     pointing: bool,
     cursor: Option<Pending<u8>>,
+    // The page's icons, asked for once.
+    icons: Vec<Pending<u8>>,
     retry_at: f32,
     zoom: f32,
     time: Option<f32>,
     presentation: f32,
+}
+
+// Asks the host to show the console's icons in the page's tab, bookmarks and home screen. A
+// host without a page (the native one) declines, and nothing waits on it.
+fn page_icons() -> Vec<Pending<u8>> {
+    var out: Vec<Pending<u8>> = Vec::new()
+    for i in 0..icon::ICONS.len() {
+        let size = icon::SIZES[i]
+        let rel = if size >= 180 { "apple-touch-icon" } else { "icon" }
+        out.push(host::icon(rel, size, icon::ICONS.path(i).as_str()))
+    }
+    out
 }
 
 pub fn init() -> Console {
@@ -264,6 +278,7 @@ pub fn init() -> Console {
         hover: None,
         pointing: false,
         cursor: None,
+        icons: page_icons(),
         retry_at: 0.0,
         zoom: 1.0,
         time: None,
