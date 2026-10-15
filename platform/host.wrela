@@ -46,6 +46,16 @@ pub fn surface(service: str, id: u32) -> Pending<u8> {
     request(service, body)
 }
 
+// Shows a program in place of this one, `name` (a lowercase key) naming it in the page's
+// address, so the browser's Back asks it to return.
+pub fn show(id: u32, name: str) -> Pending<u8> {
+    var w = Writer::new()
+    w.write_u32(id)
+    var body = take w.into_bytes()
+    for i in 0..name.len() { body.push(name.byte(i)) }
+    request("surface/show", body)
+}
+
 pub fn send(id: u32, bytes: [u8]) -> Pending<u8> {
     var w = Writer::new()
     w.write_u32(id)
@@ -85,6 +95,11 @@ pub fn ready() -> Pending<u8> {
 
 pub fn return_to_parent() -> Pending<u8> {
     request("surface/return", [u8(0); 0])
+}
+
+// Answers when the parent asks this program to return, as the browser's Back does.
+pub fn asked_to_return() -> Pending<u8> {
+    request("surface/leave", [u8(0); 0])
 }
 
 @test

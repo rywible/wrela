@@ -146,6 +146,9 @@ pub fn frame(g: mut Game, time: f32, width: u32, height: u32) {
     g.input.read()
     g.console.input(g.input)
     let start = start_pressed(g)
+    // Escape pauses play; from the title, the pause or the results it goes back to the console.
+    let escape = g.input.pressed(Key::Escape)
+    if escape && g.mode != Mode::Play { g.console.returning = true }
     let pad_start = (pad_bits(g.input) & 4) != 0
     var c = controls(mut g)
     if !pad_start { g.pads = g.pads & !4 }
@@ -186,7 +189,9 @@ pub fn frame(g: mut Game, time: f32, width: u32, height: u32) {
                 c.jumped = false
             }
         },
-        Mode::Play => { if start && g.world.phase == Phase::Playing { g.mode = Mode::Paused } },
+        Mode::Play => {
+            if (start || escape) && g.world.phase == Phase::Playing { g.mode = Mode::Paused }
+        },
     }
     if g.mode == Mode::Play {
         g.owed += dt
@@ -401,13 +406,14 @@ fn hud(g: mut Game, screen: vec2) {
                 let best = clock_text(g.progress.best)
                 g.text.write(
                     f"BEST {best}",
-                    vec2(screen.x * 0.5, h * 0.82),
+                    vec2(screen.x * 0.5, h * 0.93),
                     small * 0.8,
                     white,
                     grey: 0.7,
                     align: 0.5,
                 )
             }
+            g.text.write("ESC  CONSOLE", vec2(pad, pad), small * 0.55, white, grey: 0.6)
         },
         _ => {
             g.text.write(f"*{w.coins}", vec2(pad, pad), small, gold, glow: 4.0)
@@ -432,6 +438,21 @@ fn hud(g: mut Game, screen: vec2) {
                     h * 0.08,
                     white,
                     glow: 10.0,
+                    align: 0.5,
+                )
+                g.text.write(
+                    "ENTER  RESUME",
+                    vec2(screen.x * 0.5, h * 0.53),
+                    small * 0.8,
+                    white,
+                    align: 0.5,
+                )
+                g.text.write(
+                    "ESC  BACK TO CONSOLE",
+                    vec2(screen.x * 0.5, h * 0.59),
+                    small * 0.8,
+                    white,
+                    grey: 0.7,
                     align: 0.5,
                 )
             }

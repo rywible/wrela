@@ -328,7 +328,7 @@ pub fn studio(d: vec3, tint: vec4) -> vec3 {
     let fill = panel(d, normalize(vec3(0.6, -0.05, 0.8)), vec2(0.6, 0.22), 0.3)
     let back = panel(d, normalize(vec3(0.0, 0.25, -1.0)), vec2(0.9, 0.12), 0.25)
     let room = vec3(0.095) * smoothstep(-0.25, 0.9, d.y) + vec3(0.04) * smoothstep(0.1, -0.6, d.y)
-    hued(vec3(1.0, 0.99, 0.98), tint, 0.2) * key * 1.8 +
+    hued(vec3(1.0, 0.99, 0.98), tint, 0.4) * key * 1.8 +
         hued(vec3(0.9, 0.94, 1.0), tint, 0.85) * (left * 1.3 + right * 1.1) +
         hued(vec3(0.95, 0.95, 1.0), tint, 0.5) * fill * 0.45 +
         hued(vec3(0.95, 0.96, 1.0), tint, 0.85) * back * 0.6 +
@@ -340,7 +340,7 @@ pub fn studio(d: vec3, tint: vec4) -> vec3 {
 fn blurred(d: vec3, tint: vec4) -> vec3 {
     let lobe = |axis: vec3, k: f32| -> f32 { pow(saturate(dot(d, normalize(axis))), k) }
     let room = vec3(0.095) * smoothstep(-0.25, 0.9, d.y) + vec3(0.04) * smoothstep(0.1, -0.6, d.y)
-    hued(vec3(1.0, 0.99, 0.98), tint, 0.2) * lobe(vec3(-0.35, 0.9, 0.35), 3.0) * 1.0 +
+    hued(vec3(1.0, 0.99, 0.98), tint, 0.4) * lobe(vec3(-0.35, 0.9, 0.35), 3.0) * 1.0 +
         hued(vec3(0.9, 0.94, 1.0), tint, 0.85) *
             (lobe(vec3(-0.92, 0.12, -0.38), 4.0) * 0.45 + lobe(vec3(0.9, 0.18, -0.4), 4.0) * 0.4) +
         hued(vec3(0.95, 0.95, 1.0), tint, 0.5) * lobe(vec3(0.6, -0.05, 0.8), 2.0) * 0.25 +
@@ -354,6 +354,34 @@ pub fn darkness(d: vec3, tint: vec4) -> vec3 {
     let low = exp(-abs(d.y + 0.05) * mix(6.0, 3.0, tint.w))
     vec3(0.004, 0.0042, 0.0052) * hued(vec3(1.0), tint, 0.6) +
         mix(vec3(0.012, 0.012, 0.013), tint.xyz * 0.03, tint.w) * low
+}
+
+// A spotlight in the tint's colour, seen in the haze along a ray from `ro`: a beam from high
+// above and a little behind that shines down through the tesseract and widens and fades
+// below it, and a soft glow behind it.
+fn beam(ro: vec3, rd: vec3, look: Artifact) -> vec3 {
+    if look.tint.w <= 0.0 { return vec3(0.0) }
+    let size = look.place.w
+    let centre = look.place.xyz
+    let source = centre + vec3(-0.5, 5.0, -1.6) * size
+    let axis = normalize(centre - source)
+    // Where the ray passes nearest the beam's axis.
+    let w0 = ro - source
+    let b = dot(rd, axis)
+    let d = dot(rd, w0)
+    let e = dot(axis, w0)
+    let across = max(1.0 - b * b, 0.0001)
+    let t = max((b * e - d) / across, 0.0)
+    let s = max((e - b * d) / across, 0.0)
+    let miss = length(w0 + rd * t - axis * s)
+    let through = length(centre - source)
+    let radius = size * 0.45 + s * 0.16
+    let lit = smoothstep(0.0, through * 0.6, s) * exp(-max(s - through, 0.0) / (size * 3.0))
+    let shaft = exp(-miss * miss / (radius * radius)) * lit * 0.035
+    let to = centre - ro
+    let off = length(cross(rd, normalize(to))) * length(to) / (size * REACH)
+    let glow = exp(-off * off * 0.9) * 0.035
+    look.tint.xyz * (shaft + glow) * look.tint.w
 }
 
 // Heavy struts near in the fourth dimension are black chrome; the needles far inside are
@@ -476,7 +504,7 @@ fn trace(
             skip = f.y
             continue
         }
-        return gathered + through * darkness(rd, look.tint)
+        return gathered + through * (darkness(rd, look.tint) + beam(ro, rd, look))
     }
     gathered
 }
@@ -505,7 +533,7 @@ pub fn artifact(
     let o = ro - look.place.xyz
     let b = dot(o, rd)
     if look.place.w <= 0.001 || b * b - dot(o, o) + reach * reach <= 0.0 {
-        return vec4(darkness(rd, look.tint) * look.light, 1.0)
+        return vec4((darkness(rd, look.tint) + beam(ro, rd, look)) * look.light, 1.0)
     }
     let spread = 2.0 * look.lens / look.screen.y
     // Struts at w = 0 decide how finely to sample: deciding by the far needles would take four

@@ -1496,12 +1496,24 @@ tesseract kept at the centre, with the light shifting subtly toward the game's p
 the console averages each cover's colourful, bright pixels into one colour. The studio's
 strips, back band and room take most of that colour, the key light little of it, and the
 low glow in the dark takes it too. The colour eases in with the library and from game to
-game. The opening stays white. The row now scrolls only to keep the selection on screen, so
-earlier games stay in reach of the pointer. A new selection is taken at once, even while the
+game. The opening stays white. Ryan then asked for the tesseract in the middle, larger and
+brighter, with a slight spotlight in the game's colour shining through it: a beam from high
+above that widens below it, and a soft glow behind it, both seen in the haze. He asked for
+the row to work as an album picker with the selection always at the left: the albums after
+it stand turned toward it and overlapping, and the one before it peeks in at the left edge,
+turned the other way, so the pointer can still reach it. A new selection is taken at once, even while the
 last one's session is still answering; that session is closed when it answers. The opening
 plays once per visit: within 30 minutes of the last one, the console waits at most half a
 second in the dark for the clock and the record, then starts in the dark just before the
 library.
+
+**Way back.** Ryan asked for a way back to the console from inside a game, and for the
+address to change so the browser's Back returns to it. The browser host now names the shown
+program in the page's address (`#leapling`). Back sends the program a request to return,
+which the platform's return link treats as its F10 shortcut, so the game saves first; a
+program that does not return within 10 seconds is closed. A game that returns by itself takes
+its address entry with it. In Leapling, Escape pauses play, and the pause screen and the title
+show Escape as the way back to the console.
 
 **Checks.** Real Chrome (headless, hardware WebGPU), driven over the DevTools protocol through
 a local preview, ran the whole loop: the opening, the library, New, the game handed over
