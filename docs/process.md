@@ -1025,6 +1025,26 @@ each change on full-size stills of the bare view and on crops of them.
 - **Granite:** tried twice as jointed columns, the granite read as stacked sponges and then
   as ruins, so it stands as smooth domes and tors only.
 
+Ryan then asked Claude to keep going. Claude critiqued each of the six bare shots again, on full
+stills and crops, and changed what still read wrong.
+- **Crag:** blocks from inside a cliff are no longer chipped along their top edges, so a
+  parting no longer shows as a notch like a mortar course. Most joints and partings are now
+  tight: a column meets its neighbour a little into it, so the face runs on across them, and
+  about a third weather open. Neighbouring columns stand back about as far as each other. Shade
+  varies over the rock in patches and streaks across its blocks, not block by block.
+- **Granite:** steep granite faces stand as joint blocks no more than 9 m across, split by
+  sheets 3 to 18 m thick and set back their own way. No block reaches into a stream's bed. The
+  sheet lips on the domes are now unevenly spaced and weather off in places. The granite is
+  stained in patches, and rock in a stream's bed is darker.
+- **Gentle ground:** the grit's and sandstone's beds crop out of gentler slopes as low ledges
+  along the contours, with fallen blocks below them. Each stratum weathers to its own soil:
+  peat on the grit, grey clay on the shale, brown loam on the sandstone.
+- **Tors:** a tor is one mass on a broad base of the knob's rock, with columns of worn slabs of
+  uneven height and breadth, and fallen blocks round it.
+- **Shots:** the summit looks across the square, where the land is finest and the rock is
+  solid, not out over the coarser region. The gorge shot stands on the stream's bed, and the
+  lake shot looks across the basin from its shore.
+
 ## The climber's robe, darkness and glide, 2026-10-14
 
 Ryan found the Last Green's player character clunky to move and its cloth, robe, darkness and
