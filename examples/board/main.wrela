@@ -69,10 +69,12 @@ pub struct App {
     pastes: u32,
     screen: vec2,
     time: f32,
-    // The host's answers: the environment, the saved board, the last save.
+    // The host's answers: the environment, the saved board, the last save, the cursor.
     environment: Option<Pending<u8>>,
     loading: Option<Pending<u8>>,
     writing: Option<Pending<u8>>,
+    cursor: Option<Pending<u8>>,
+    shown_cursor: Text,
     /// The board as last saved, and when it last changed.
     saved: Board,
     changed_at: f32,
@@ -105,6 +107,8 @@ pub fn init() -> App {
         environment: Some(host::environment()),
         loading: Some(read_file(SAVED)),
         writing: None,
+        cursor: None,
+        shown_cursor: "default",
         changed_at: 0.0,
     }
 }
@@ -212,6 +216,7 @@ fn answers(s: mut App) {
         }
     }
     let _ = poll(mut s.writing)
+    let _ = poll(mut s.cursor)
 }
 
 /// Saves the board once it has rested a moment after a change.
@@ -930,6 +935,18 @@ fn draw(s: mut App, screen: vec2) {
     let pass = begin_screen_pass(clear: PAPER)
     s.renderer.draw(pass, screen)
     pass.present()
+    // The pointer's shape: a hand over a control, a bar over the text being typed.
+    let typed_under = match s.typing {
+        Some(t) => s.board.hit(w, 0.0) == Some(t.id),
+        None => false,
+    }
+    let want: Text = if hover_control.is_some() { "pointer" } else if typed_under { "text" } else {
+        "default"
+    }
+    if want != s.shown_cursor && s.cursor.is_none() {
+        s.shown_cursor = want
+        s.cursor = Some(host::cursor(want))
+    }
 }
 
 // ---- tests: each a script of input (scripts/), as a person would use the board ---------------

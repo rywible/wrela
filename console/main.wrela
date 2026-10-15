@@ -1,16 +1,17 @@
 // Wrela's console. The catalog and game session protocol supply all title-specific content.
 use catalog::{Card, parse}
-use paint::{
-    Field, Station, VERTICES_PER_VANE, RINGS, OPENING_SECONDS, chamber, image, moment,
-    presentation_step, quad, scene, sculpture, titanium, word_stations,
-}
+use opening::{MARK_WIDTH, OPENING_SECONDS, artifact_place, mark_place, moment, presentation_step}
+use paint::{Emblem, Stage, card_corner, card_face, emblem, quad, stage}
+use room::{Camera, MARGIN, Row, artifact_spot, bounds, camera, place, row}
+use tesseract::{Artifact, artifact, corners}
+use facet::MarkRun
 use platform::host
 use platform::protocol::{Reply, Request, SaveInfo, valid_key}
 use std::gpu::{
-    Compare, Depth, DepthTexture, GpuBuffer, Rgba8, Sampler, Texture, begin_pass_with_depth,
-    begin_screen_pass, buffer_of, depth_texture, draw, sampler, texture,
+    GpuBuffer, Rgba8, Rgba16Float, Sampler, Texture, begin_pass, begin_screen_pass, buffer,
+    buffer_of, draw, sampler, texture, write,
 }
-use std::input::{Button, Event, Key, PadButton, events}
+use std::input::{Button, Event, Key, PadAxis, PadButton, events}
 use std::io::{Pending, fetch, load as read_file, store}
 use std::serialize::{LoadError, Serialize, load, save}
 use ui::draw::{DrawList, Rect, Renderer}
@@ -19,12 +20,35 @@ use ui::ttf::{Baked, bake}
 
 @fuel(2 ** 38)
 const BODY: Baked = bake(embed("fonts/Manrope-Medium.ttf"), em: 36.0, spread: 4.0)
-@fuel(2 ** 32)
-const STATIONS: Vec<Station> = word_stations()
-const INK = vec4(0.945, 0.969, 0.992, 1.0)
-const MUTED = vec4(0.48, 0.56, 0.59, 1.0)
-const LIGHT = vec4(0.82, 0.91, 0.94, 1.0)
-const SURFACE = vec4(0.035, 0.055, 0.065, 1.0)
+@fuel(2 ** 34)
+const MARK_RUNS: Vec<MarkRun> = facet::mark_runs()
+@fuel(2 ** 30)
+const TESSERACT_EDGES: Vec<vec4> = tesseract::edges()
+@fuel(2 ** 30)
+const TESSERACT_FACES: Vec<vec4> = tesseract::faces()
+// Colours and shapes after shadcn/ui's dark theme: near-white ink, muted grey text, quiet
+// filled controls behind hairline borders, small radii, no glow.
+const INK = vec4(0.98, 0.98, 0.98, 1.0)
+const MUTED = vec4(0.63, 0.63, 0.66, 1.0)
+const DARK = vec4(0.035, 0.035, 0.04, 1.0)
+const SHEET = vec4(0.04, 0.04, 0.045, 0.98)
+const WARN = vec4(0.95, 0.74, 0.6, 1.0)
+const BORDER = vec4(1.0, 1.0, 1.0, 0.1)
+const INPUT = vec4(1.0, 1.0, 1.0, 0.15)
+const SECONDARY = vec4(0.15, 0.15, 0.16, 0.9)
+const RAISED = vec4(0.21, 0.21, 0.22, 0.95)
+const RADIUS: f32 = 8.0
+// Manrope's capital height, in ems.
+const SANS_CAP: f32 = 0.72
+// The mark's cap height in the header, in logical pixels.
+const HEADER_CAP: f32 = 15.0
+// The room and its artifact are traced at the screen's size divided by a whole number, to
+// about this many pixels: at least one sample a CSS pixel on a 2x display.
+const TRACED_PIXELS: f32 = 1600000.0
+// A dropped request or connection is tried again after this pause, without a word.
+const RETRY_SECONDS: f32 = 3.0
+// Glyphs in the display face; the body face carries sentences.
+const DISPLAY = Face::Mono
 
 pub struct Profile: Clone + Serialize {
     version: u32,
@@ -64,17 +88,34 @@ enum Step: Copy + Eq {
 enum Action: Copy + Eq {
     Games,
     Settings,
-    Play,
+    Continue,
     NewGame,
-    ViewSaves,
+    Load,
     Export,
     Import,
     SaveProfile,
-    Motion,
+    Name,
     Game { index: u32 },
     Save { index: u32 },
+    Page { first: u32 },
     Retry,
 }
+
+// How a focused control shows it: a ring slides to buttons and the settings button; tiles
+// and rows light themselves.
+enum Kind: Copy + Eq { Button, Tile, Row, Icon }
+
+struct Control: Copy {
+    action: Action,
+    rect: Rect,
+    row: u32,
+    kind: Kind,
+}
+
+enum Move: Copy + Eq { Left, Right, Up, Down }
+
+// Which hints the footer shows: the last input device used.
+enum Input: Copy + Eq { Keys, Pad, Pointer }
 
 struct Cover {
     image: Option<Texture<Rgba8>>,
@@ -82,25 +123,32 @@ struct Cover {
     requested: bool,
 }
 
-struct Panel: Copy {
-    index: u32,
-    rect: Rect,
-    lean: f32,
-    alpha: f32,
-}
-
 pub struct Console {
     fonts: Fonts,
     renderer: Renderer,
     draw: DrawList,
     linear: Sampler,
-    sculpture: GpuBuffer<Station>,
-    scene: Texture<Rgba8>,
-    depth: DepthTexture,
+    blank: Texture<Rgba8>,
+    room: Texture<Rgba16Float>,
+    // The tesseract: its corners as the room sees it, and its struts and faces.
+    room_corners: GpuBuffer<vec4>,
+    edges: GpuBuffer<vec4>,
+    faces: GpuBuffer<vec4>,
+    mark: GpuBuffer<MarkRun>,
     covers: Vec<Cover>,
-    panels: Vec<Panel>,
+    placed: Vec<Placed>,
+    // The save last chosen in the Load sheet: what Export writes.
+    marked: u32,
+    // The selection's eased position along the row.
     album: f32,
+    // The camera's drift toward the pointer.
+    sway: vec2,
     reveal: f32,
+    sheet: f32,
+    sheet_pane: Pane,
+    dt: f32,
+    ring: Rect,
+    ring_alpha: f32,
     catalog_load: Option<Pending<u8>>,
     profile_load: Option<Pending<u8>>,
     profile_write: Option<Pending<u8>>,
@@ -125,33 +173,51 @@ pub struct Console {
     pixel_ratio: f32,
     reduced: bool,
     intro_until: f32,
-    focus: u32,
-    controls: u32,
+    focus: Action,
+    controls: Vec<Control>,
+    shown: Vec<Control>,
     activate: Option<Action>,
     enter: bool,
-    keyboard: bool,
+    input: Input,
+    stick: vec2,
     clicked: Option<vec2>,
     pressed: Option<vec2>,
+    // Where the pointer is (logical pixels), what it is over, and the cursor shown for it.
+    pointer: Option<vec2>,
+    hover: Option<Action>,
+    pointing: bool,
+    cursor: Option<Pending<u8>>,
+    retry_at: f32,
     zoom: f32,
     time: Option<f32>,
     presentation: f32,
 }
 
 pub fn init() -> Console {
-    let fonts = Fonts::from_baked(BODY, meridian::FONT)
+    let fonts = Fonts::from_baked(BODY, facet::FONT)
     let renderer = Renderer::new(fonts)
     Console {
         fonts,
         renderer,
         draw: DrawList::new(),
         linear: sampler(),
-        sculpture: buffer_of(STATIONS),
-        scene: texture(width: 1, height: 1),
-        depth: depth_texture(width: 1, height: 1),
+        blank: texture(width: 1, height: 1),
+        room: texture(width: 1, height: 1),
+        room_corners: buffer(16),
+        edges: buffer_of(TESSERACT_EDGES),
+        faces: buffer_of(TESSERACT_FACES),
+        mark: buffer_of(MARK_RUNS),
         covers: Vec::new(),
-        panels: Vec::new(),
+        placed: Vec::new(),
+        marked: 0,
         album: 0.0,
+        sway: vec2(0.0),
         reveal: 0.0,
+        sheet: 0.0,
+        sheet_pane: Pane::Saves,
+        dt: 0.0,
+        ring: Rect::new(x: 0.0, y: 0.0, w: 0.0, h: 0.0),
+        ring_alpha: 0.0,
         catalog_load: Some(fetch("catalog.tsv")),
         profile_load: Some(read_file("console/profile")),
         profile_write: None,
@@ -182,13 +248,20 @@ pub fn init() -> Console {
         pixel_ratio: 1.0,
         reduced: false,
         intro_until: OPENING_SECONDS,
-        focus: 1,
-        controls: 0,
+        focus: Action::Game { index: 0 },
+        controls: Vec::new(),
+        shown: Vec::new(),
         activate: None,
         enter: false,
-        keyboard: false,
+        input: Input::Keys,
+        stick: vec2(0.0),
         clicked: None,
         pressed: None,
+        pointer: None,
+        hover: None,
+        pointing: false,
+        cursor: None,
+        retry_at: 0.0,
         zoom: 1.0,
         time: None,
         presentation: 0.0,
@@ -276,6 +349,24 @@ fn failed(s: mut Console, message: str) {
     s.exporting = None
 }
 
+// A dropped request or a connection that fails is tried again after a pause: nothing to
+// read, nothing to press.
+fn quietly_retry(s: mut Console) {
+    s.play_intent = None
+    s.step = Step::Idle
+    s.prepared_slot = None
+    s.exporting = None
+    if let Some(id) = s.handle { s.closing = Some(host::surface("surface/close", id)) }
+    s.handle = None
+    s.need_open = false
+    s.retry_at = s.presentation + RETRY_SECONDS
+}
+
+// A quiet retry reopens the session once its pause is over and the old one has closed.
+fn retry_due(at: f32, now: f32, closing: bool) -> bool {
+    at > 0.0 && now >= at && !closing
+}
+
 fn export_plan(game: str, profile: str, slot: str) -> ExportPlan {
     ExportPlan { game: game.to_string(), profile: profile.to_string(), slot: slot.to_string() }
 }
@@ -288,7 +379,7 @@ fn answer(s: mut Console, bytes: take Vec<u8>) {
     match s.step {
         Step::Open => {
             let Some(id) = host::word(bytes) else {
-                failed(mut s, "The game could not connect. Try again.")
+                quietly_retry(mut s)
                 return
             }
             s.handle = Some(id)
@@ -379,8 +470,13 @@ fn catalog_result(bytes: Vec<u8>) -> Result<Vec<Card>, String> {
     Err(String::from("The game library could not be read."))
 }
 
+// Albums within reach of the selection hold textures and requests: enough for a full row.
+const COVER_REACH: u32 = 6
+
 fn near_cover(index: u32, selected: u32) -> bool {
-    if index >= selected { index - selected <= 2 } else { selected - index <= 2 }
+    if index >= selected { index - selected <= COVER_REACH } else {
+        selected - index <= COVER_REACH
+    }
 }
 
 fn update(s: mut Console) {
@@ -424,7 +520,7 @@ fn update(s: mut Console) {
         for i in 0..s.cards.len() { if s.cards[i].id == s.profile.game { s.selected = i } }
         open_selected(mut s)
     }
-    // Only the selected album and two neighbours on each side hold textures or requests.
+    // Only albums near the selection hold textures or requests.
     for i in 0..s.covers.len() {
         let visible = near_cover(i, s.selected)
         if !visible {
@@ -456,33 +552,56 @@ fn update(s: mut Console) {
     if let Some(result) = poll(mut s.pending) {
         match result {
             Ok(bytes) => answer(mut s, bytes.clone()),
-            Err(_) => failed(mut s, "The request could not finish. Try again."),
+            Err(_) => quietly_retry(mut s),
         }
     }
     if poll(mut s.closing).is_some() {
         s.handle = None
         s.step = Step::Idle
-        s.need_open = true
+        s.need_open = s.retry_at == 0.0
         s.play_intent = None
     }
+    if retry_due(s.retry_at, s.presentation, s.closing.is_some()) {
+        s.retry_at = 0.0
+        s.need_open = true
+    }
+    let _ = poll(mut s.cursor)
     fulfill_play(mut s)
+}
+
+fn open_pane(s: mut Console, pane: Pane) {
+    s.pane = pane
+    s.focus = match pane {
+        Pane::Games => Action::Game { index: s.selected },
+        Pane::Saves => if s.saves.is_empty() { Action::Import } else { Action::Save { index: 0 } },
+        Pane::Settings => Action::Name,
+    }
+}
+
+fn play(s: mut Console, intent: PlayIntent) {
+    if s.cards.is_empty() { return }
+    s.play_intent = Some(intent)
+    fulfill_play(mut s)
+}
+
+// The selected title's actions: Continue, New and Load once there are saves; only New before.
+fn actions(has_saves: bool) -> Vec<Action> {
+    var out: Vec<Action> = Vec::new()
+    if has_saves { out.push(Action::Continue) }
+    out.push(Action::NewGame)
+    if has_saves { out.push(Action::Load) }
+    out
 }
 
 fn act(s: mut Console, action: Action) {
     match action {
-        Action::Games => {
-            s.pane = Pane::Games
-            s.focus = 1
-        },
-        Action::ViewSaves => {
-            s.pane = Pane::Saves
-            s.focus = 1
-        },
+        Action::Games => open_pane(mut s, Pane::Games),
+        Action::Load => open_pane(mut s, Pane::Saves),
         Action::Settings => {
-            s.pane = if s.pane == Pane::Settings { Pane::Games } else { Pane::Settings }
-            s.focus = 1
+            let pane = if s.pane == Pane::Settings { Pane::Games } else { Pane::Settings }
+            open_pane(mut s, pane)
         },
-        Action::Motion => s.profile.motion = !s.profile.motion,
+        Action::Name => {},
         Action::SaveProfile => {
             if s.profile.name.trim().is_empty() {
                 s.message = String::from("Enter a name for this profile.")
@@ -493,30 +612,45 @@ fn act(s: mut Console, action: Action) {
             s.message = String::from("Profile saved.")
         },
         Action::Game { index } => {
-            if s.step != Step::Idle || s.closing.is_some() || index == s.selected { return }
+            // The selected album's own action is to play it: continue, or begin.
+            if index == s.selected {
+                act(mut s, if s.saves.is_empty() { Action::NewGame } else { Action::Continue })
+                return
+            }
+            if s.step != Step::Idle || s.closing.is_some() { return }
             s.need_open = s.handle.is_none()
             if let Some(id) = s.handle { s.closing = Some(host::surface("surface/close", id)) }
             s.handle = None
             s.selected = index
             s.profile.game = s.cards[index].id.clone()
         },
+        // Loading a save plays it.
         Action::Save { index } => {
+            if index != s.picked { s.prepared_slot = None }
             s.picked = index
-            s.prepared_slot = None
+            play(mut s, PlayIntent::Selected)
         },
-        Action::Play | Action::NewGame => {
-            if s.cards.is_empty() { return }
-            s.play_intent = Some(if action == Action::NewGame { PlayIntent::NewGame } else {
-                PlayIntent::Selected
-            })
-            fulfill_play(mut s)
+        // Continue plays the most recent save; with none there is only a new game.
+        Action::Continue => {
+            if s.saves.is_empty() {
+                play(mut s, PlayIntent::NewGame)
+                return
+            }
+            if s.picked != 0 { s.prepared_slot = None }
+            s.picked = 0
+            play(mut s, PlayIntent::Selected)
+        },
+        Action::NewGame => play(mut s, PlayIntent::NewGame),
+        Action::Page { first } => {
+            s.marked = first
+            s.focus = Action::Save { index: first }
         },
         Action::Export => {
             if s.step == Step::Idle && !s.saves.is_empty() {
                 let plan = export_plan(
                     s.cards[s.selected].id,
                     s.profile.key,
-                    s.saves[s.picked].slot,
+                    s.saves[min(s.marked, s.saves.len() - 1)].slot,
                 )
                 s.exporting = Some(plan.clone())
                 let request = Request::Export {
@@ -542,82 +676,240 @@ fn act(s: mut Console, action: Action) {
     }
 }
 
+// ---- focus ---------------------------------------------------------------------------------
+
+// The control a move reaches from `from`: across its row, or to the first control of the
+// next row in that direction. Rows are counted top to bottom.
+fn neighbour(controls: [Control], from: Action, to: Move) -> Option<Action> {
+    let dx = match to {
+        Move::Left => -1,
+        Move::Right => 1,
+        _ => 0,
+    }
+    let dy = match to {
+        Move::Up => -1,
+        Move::Down => 1,
+        _ => 0,
+    }
+    var at = None
+    for c in controls { if c.action == from { at = Some(c) } }
+    let Some(here) = at else {
+        if controls.len() == 0 { return None }
+        return Some(controls[0].action)
+    }
+    let centre = here.rect.center()
+    var best: Option<Action> = None
+    var score = 1.0e9
+    if dx != 0 {
+        for c in controls {
+            let ahead = (c.rect.center().x - centre.x) * f32(dx)
+            if c.row == here.row && ahead > 1.0 && ahead < score {
+                score = ahead
+                best = Some(c.action)
+            }
+        }
+        return best
+    }
+    var row = -1
+    for c in controls {
+        let gap = (i32(c.row) - i32(here.row)) * dy
+        if gap > 0 && (row < 0 || gap < row) { row = gap }
+    }
+    if row < 0 { return None }
+    // A row is entered at its first control: the main action leads each row.
+    for c in controls {
+        if (i32(c.row) - i32(here.row)) * dy == row {
+            let d = c.rect.x
+            if d < score {
+                score = d
+                best = Some(c.action)
+            }
+        }
+    }
+    best
+}
+
+fn under(controls: [Control], at: vec2) -> Option<Action> {
+    var found = None
+    for c in controls { if c.rect.contains(at) { found = Some(c.action) } }
+    found
+}
+
+fn navigate(s: mut Console, to: Move) {
+    let Some(next) = neighbour(s.shown, s.focus, to) else { return }
+    s.focus = next
+    // Moving along the album row selects the album, as a console does.
+    match next {
+        Action::Game { index } => if index != s.selected { act(mut s, next) },
+        _ => {},
+    }
+    if s.pane == Pane::Games {
+        match next {
+            Action::Game { .. } => s.focus = Action::Game { index: s.selected },
+            _ => {},
+        }
+    }
+}
+
+fn control(s: mut Console, action: Action, r: Rect, row: u32, kind: Kind) -> bool {
+    s.controls.push(Control { action, rect: r, row, kind })
+    let clicked = match (s.clicked, s.pressed) {
+        (Some(up), Some(down)) => r.contains(up / s.zoom) && r.contains(down / s.zoom),
+        _ => false,
+    }
+    let focus = s.focus == action
+    if s.reveal > 0.95 && s.activate.is_none() && ((focus && s.enter) || clicked) {
+        s.activate = Some(action)
+    }
+    lit(s, action)
+}
+
+// Which control shows as chosen: the one under the pointer while the pointer is in use,
+// otherwise the one with focus.
+fn lit(s: Console, action: Action) -> bool {
+    if s.input == Input::Pointer { s.hover == Some(action) } else { s.focus == action }
+}
+
+// ---- drawing -------------------------------------------------------------------------------
+
 fn text(s: mut Console, content: str, size: f32, at: vec2, color: vec4, face: Face = Face::Sans) {
+    // Glyphs start on a whole device pixel, as a browser lays out text.
     let _ = s.draw.text(
         s.fonts,
         face,
         content,
         size * s.zoom,
-        at * s.zoom,
+        vec2(round(at.x * s.zoom), at.y * s.zoom),
         vec4(color.xyz, color.w * s.reveal),
     )
 }
 
-fn centered(
-    s: mut Console,
-    content: str,
-    size: f32,
-    x: f32,
-    y: f32,
-    color: vec4,
-    face: Face = Face::Sans,
-) {
-    let width = s.fonts.font(face).measure(content, size)
-    text(mut s, content, size, vec2(x - width * 0.5, y), color, face)
+// A logical rectangle on whole device pixels: its edges, not its size, are rounded, so
+// neighbouring shapes meet exactly and every edge is crisp.
+fn snapped(r: Rect, zoom: f32) -> Rect {
+    let x0 = round(r.x * zoom)
+    let y0 = round(r.y * zoom)
+    Rect::new(x0, y0, round(r.right() * zoom) - x0, round(r.bottom() * zoom) - y0)
+}
+
+fn ring(s: mut Console, r: Rect, color: vec4, radius: f32 = 0.0, width: f32 = 1.0) {
+    s.draw.ring(
+        snapped(r, s.zoom),
+        vec4(color.xyz, color.w * s.reveal),
+        radius: radius * s.zoom,
+        width: max(round(width * s.zoom), 1.0),
+    )
+}
+
+fn width_of(s: Console, content: str, size: f32, face: Face) -> f32 {
+    s.fonts.font(face).measure(content, size)
+}
+
+// The size at most `size` that fits `content` in `room`.
+fn fitted(s: Console, content: str, size: f32, room: f32, face: Face) -> f32 {
+    min(size, size * room / max(width_of(s, content, size, face), 1.0))
+}
+
+fn centered(s: mut Console, content: str, size: f32, x: f32, y: f32, color: vec4, face: Face) {
+    let w = width_of(s, content, size, face)
+    text(mut s, content, size, vec2(x - w * 0.5, y), color, face)
 }
 
 fn rect(s: mut Console, r: Rect, color: vec4, radius: f32 = 0.0) {
-    s.draw.rect(
-        Rect::new(r.x * s.zoom, r.y * s.zoom, r.w * s.zoom, r.h * s.zoom),
-        vec4(color.xyz, color.w * s.reveal),
-        radius * s.zoom,
-    )
+    s.draw.rect(snapped(r, s.zoom), vec4(color.xyz, color.w * s.reveal), radius * s.zoom)
 }
 
-fn control(s: mut Console, action: Action, r: Rect) -> bool {
-    let focus = s.focus == s.controls
-    s.controls += 1
-    let clicked = match (s.clicked, s.pressed) {
-        (Some(up), Some(down)) => r.contains(up / s.zoom) && r.contains(down / s.zoom),
-        _ => false,
-    }
-    if s.reveal > 0.95 && s.activate.is_none() && ((focus && s.enter) || clicked) {
-        s.activate = Some(action)
-    }
-    focus && s.keyboard
+// Where a line of `face` at `size` starts so that its capitals stand centred on `middle`.
+fn line_top(s: Console, face: Face, size: f32, middle: f32) -> f32 {
+    let cap = if face == Face::Sans { SANS_CAP } else { facet::CAP }
+    middle - (s.fonts.font(face).ascender - cap * 0.5) * size
 }
 
-fn button(s: mut Console, action: Action, r: Rect, label: str, primary: bool = false) {
-    let focus = control(mut s, action, r)
+fn button_width(s: Console, label: str) -> f32 {
+    max(88.0, width_of(s, label, 14.0, Face::Sans) + 36.0)
+}
+
+// A button: the primary one solid, the rest quiet behind a hairline. Under the pointer it
+// brightens; with keys or a pad the focus ring marks it.
+fn button(s: mut Console, action: Action, r: Rect, row: u32, label: str, primary: bool = false) {
+    let lit = control(mut s, action, r, row, Kind::Button)
+    let hover = lit && s.input == Input::Pointer
     if primary {
-        if focus {
-            rect(
-                mut s,
-                Rect::new(r.x - 3.0, r.y - 3.0, r.w + 6.0, r.h + 6.0),
-                vec4(LIGHT.xyz, 0.32),
-                28.0,
-            )
-        }
-        rect(mut s, r, LIGHT, 25.0)
-    } else if focus { rect(mut s, r, vec4(LIGHT.xyz, 0.12), 12.0) }
-    centered(mut s, label, 16.0, r.x + r.w * 0.5, r.y + (r.h - 20.0) * 0.5, if primary {
-        vec4(0.015, 0.035, 0.045, 1.0)
-    } else { INK })
+        rect(mut s, r, if hover { vec4(0.86, 0.86, 0.87, 1.0) } else {
+            INK
+        }, RADIUS)
+    } else {
+        rect(mut s, r, if hover { RAISED } else { SECONDARY }, RADIUS)
+        ring(mut s, r, BORDER, RADIUS)
+    }
+    let c = r.center()
+    let y = line_top(s, Face::Sans, 14.0, c.y)
+    centered(mut s, label, 14.0, c.x, y, if primary { DARK } else { INK }, Face::Sans)
 }
 
-fn cog(s: mut Console, w: f32, margin: f32) {
-    let r = Rect::new(w - margin - 44.0, margin - 8.0, w: 44.0, h: 44.0)
-    let focus = control(mut s, Action::Settings, r)
-    if focus || s.pane == Pane::Settings { rect(mut s, r, vec4(LIGHT.xyz, 0.12), 22.0) }
-    let c = r.center()
-    for i in 0..8 {
-        let a = f32(i) * 0.78539816
-        let p = c + vec2(cos(a), sin(a)) * 9.0
-        rect(mut s, Rect::new(p.x - 2.0, p.y - 2.0, w: 4.0, h: 4.0), INK, 1.0)
+// A line `stroke` wide from `a` to `b`, level or upright.
+fn stroke(s: mut Console, a: vec2, b: vec2, width: f32) {
+    let lo = min(a, b) - vec2(width * 0.5)
+    let hi = max(a, b) + vec2(width * 0.5)
+    rect(mut s, Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y), INK, width * 0.5)
+}
+
+// Settings: a quiet square button holding two sliders, as Lucide draws its settings-2 icon
+// on a 24-unit grid.
+fn settings_button(s: mut Console, r: Rect) {
+    let lit = control(mut s, Action::Settings, r, 0, Kind::Icon)
+    if (lit && s.input == Input::Pointer) || s.pane == Pane::Settings {
+        rect(mut s, r, RAISED, RADIUS)
     }
-    rect(mut s, Rect::new(c.x - 8.0, c.y - 8.0, w: 16.0, h: 16.0), INK, 8.0)
-    rect(mut s, Rect::new(c.x - 5.5, c.y - 5.5, w: 11.0, h: 11.0), SURFACE, 6.0)
-    rect(mut s, Rect::new(c.x - 2.0, c.y - 2.0, w: 4.0, h: 4.0), INK, 2.0)
+    let unit = 20.0 / 24.0
+    let o = r.center() - vec2(12.0 * unit)
+    let width = 1.75
+    stroke(mut s, o + vec2(11.0, 7.0) * unit, o + vec2(20.0, 7.0) * unit, width)
+    stroke(mut s, o + vec2(5.0, 17.0) * unit, o + vec2(14.0, 17.0) * unit, width)
+    for centre in [vec2(7.0, 7.0), vec2(17.0, 17.0)] {
+        let c = o + centre * unit
+        let outer = 3.0 * unit + width * 0.5
+        let disc = Rect::new(c.x - outer, c.y - outer, outer * 2.0, outer * 2.0)
+        ring(mut s, disc, INK, outer, width)
+    }
+}
+
+fn key_width(s: Console, cap: str) -> f32 {
+    max(22.0, width_of(s, cap, 11.0, Face::Sans) + 12.0)
+}
+
+// A key hint: the key in a small bordered cap, then what it does. How wide it was.
+fn keycap(s: mut Console, at: vec2, cap: str, label: str) -> f32 {
+    let w = key_width(s, cap)
+    let r = Rect::new(at.x, at.y, w, 22.0)
+    rect(mut s, r, SECONDARY, 5.0)
+    ring(mut s, r, BORDER, 5.0)
+    let middle = r.center().y
+    centered(
+        mut s,
+        cap,
+        11.0,
+        at.x + w * 0.5,
+        line_top(s, Face::Sans, 11.0, middle),
+        MUTED,
+        Face::Sans,
+    )
+    text(mut s, label, 13.0, vec2(at.x + w + 8.0, line_top(s, Face::Sans, 13.0, middle)), MUTED)
+    w + 8.0 + width_of(s, label, 13.0, Face::Sans) + 24.0
+}
+
+fn footer(s: mut Console, w: f32, h: f32, margin: f32) {
+    if s.input == Input::Pointer || w < 560.0 { return }
+    let (select, back) = if s.input == Input::Pad { ("A", "B") } else { ("Enter", "Esc") }
+    let hints = if s.pane == Pane::Games {
+        [(select, "Select"), ("< >", "Browse"), (back, "Back")]
+    } else { [(select, "Select"), ("^ v", "Move"), (back, "Close")] }
+    var total = -24.0
+    for hint in hints {
+        total += key_width(s, hint.0) + 8.0 + width_of(s, hint.1, 13.0, Face::Sans) + 24.0
+    }
+    var x = w - margin - total
+    for hint in hints { x += keycap(mut s, vec2(x, h - 46.0), hint.0, hint.1) }
 }
 
 fn status(s: Console) -> String {
@@ -634,249 +926,299 @@ fn empty_library_message(message: str) -> String {
     if message.is_empty() { String::from("Loading games") } else { message.to_string() }
 }
 
-// Fit a landscape album to the actual viewport, without stretching its cover.
-fn album_rect(w: f32, h: f32, aspect: f32) -> Rect {
-    let width = min(320.0, w - 64.0)
-    let height = min(width / aspect, h * 0.27)
-    let fitted = min(width, height * aspect)
-    Rect::new((w - fitted) * 0.5, h * 0.57 - height * 0.5, fitted, height)
+struct Placed: Copy {
+    index: u32,
+    card: room::Card,
+    art: bool,
 }
 
-fn panel_rect(base: Rect, w: f32, delta: f32, aspect: f32) -> Rect {
-    let depth = min(abs(delta), 2.0)
-    let scale = 1.0 / (1.0 + depth * 0.24)
-    let height = min(base.h * scale, base.w * scale / aspect)
-    let width = height * aspect
-    let center = base.center() + vec2(delta * min(230.0, w * 0.46), depth * -10.0)
-    Rect::new(center.x - width * 0.5, center.y - height * 0.5, width, height)
+fn action_label(a: Action, opening: bool) -> String {
+    if opening { return String::from("Opening") }
+    String::from(match a {
+        Action::Continue => "Continue",
+        Action::NewGame => "New",
+        Action::Load => "Load",
+        _ => "",
+    })
 }
 
-fn library(s: mut Console, w: f32, h: f32) {
+// The library: cards in the room (drawn by the GPU) in a row along the bottom, and above the
+// selection, from its left edge, its title, its state and its actions.
+fn library(s: mut Console, w: f32, h: f32, cam: Camera, row: Row, margin: f32) {
     if s.cards.is_empty() {
         let label = empty_library_message(s.message)
-        centered(mut s, label, 18.0, w * 0.5, h * 0.64, MUTED)
+        centered(mut s, label, 15.0, w * 0.5, h * 0.5, MUTED, Face::Sans)
         return
     }
+    var slot = Rect::new(margin, h * 0.7, w: 0.0, h: 0.0)
+    for i in 0..s.cards.len() {
+        let offset = f32(i) - s.album
+        if offset < -1.5 || offset > 8.0 { continue }
+        let art = s.covers[i].image.is_some()
+        let ring = if lit(s, Action::Game { index: i }) { 1.0 } else { 0.0 }
+        let card = place(i, s.album, ring, art, row)
+        let b = bounds(cam, card) / s.zoom
+        let r = Rect::new(b.x, b.y, b.z, b.w)
+        // Cards sliding out to the left show but take no focus.
+        if card.look.z > 0.5 { let _ = control(mut s, Action::Game { index: i }, r, 2, Kind::Tile) }
+        s.placed.push(Placed { index: i, card, art })
+        if i == s.selected { slot = r }
+        if !art {
+            // No art: the title, set on the card.
+            let title = s.cards[i].title.clone()
+            let size = fitted(s, title, clamp(r.w * 0.05, 9.0, 20.0), r.w * 0.8, DISPLAY)
+            let shade = card.look.x * card.look.z
+            text(
+                mut s,
+                title,
+                size,
+                vec2(r.x + r.w * 0.08, r.bottom() - r.h * 0.12 - size),
+                vec4(INK.xyz, shade),
+                DISPLAY,
+            )
+        }
+    }
     let card = s.cards[s.selected].clone()
-    let base = album_rect(w, h, f32(card.width) / f32(card.height))
-    let selected_rect = panel_rect(
-        base,
-        w,
-        f32(s.selected) - s.album,
-        f32(card.width) / f32(card.height),
-    )
-    let selected_focus = control(mut s, Action::Play, selected_rect)
-    // Test nearer albums first; draw them in the reverse order below.
-    for offset in 0..3 {
-        for side in 0..2 {
-            let offset = i32(offset)
-            let index = i32(s.selected) + if side == 0 { -offset } else { offset }
-            if index < 0 || index >= i32(s.cards.len()) || (offset == 0 && side == 0) { continue }
-            let delta = f32(index) - s.album
-            let depth = min(abs(delta), 2.0)
-            let r = panel_rect(
-                base,
-                w,
-                delta,
-                f32(s.cards[u32(index)].width) / f32(s.cards[u32(index)].height),
-            )
-            let alpha = 1.0 / (1.0 + depth * 0.85)
-            let focus = if u32(index) == s.selected { selected_focus } else {
-                control(mut s, Action::Game { index: u32(index) }, r)
-            }
-            if s.covers[u32(index)].image.is_none() { rect(mut s, r, SURFACE, 12.0) }
-            if focus {
-                rect(mut s, Rect::new(r.x - 4.0, r.y - 4.0, r.w + 8.0, 2.0), LIGHT, 1.0)
-                rect(mut s, Rect::new(r.x - 4.0, r.bottom() + 2.0, r.w + 8.0, 2.0), LIGHT, 1.0)
-            }
-            s.panels.push(
-                Panel {
-                    index: u32(index),
-                    rect: r,
-                    lean: clamp(delta * -0.44, -0.75, 0.75),
-                    alpha,
-                },
-            )
-        }
+    let continuing = !s.saves.is_empty()
+    let x = slot.x
+    let room = min(w - x - margin, 820.0)
+    // From the row up: the actions, the state, the title.
+    let top = slot.y - 30.0 - 40.0
+    let picked = if continuing { s.saves[0].clone() } else {
+        SaveInfo { slot: String::new(), label: String::new(), description: String::new(), saved: 0 }
     }
-    let title_size = min(30.0, 30.0 * (w - 48.0) / max(s.fonts.mono.measure(card.title, 30.0), 1.0))
-    centered(mut s, card.title, title_size, w * 0.5, base.bottom() + 20.0, INK, Face::Mono)
-    let y = base.bottom() + 76.0
-    let playing = s.play_intent.is_some()
-    button(mut s, Action::Play, Rect::new(w * 0.5 - 72.0, y, w: 144.0, h: 48.0), if playing {
-        "Opening..."
-    } else if s.saves.is_empty() { "Play" } else { "Continue" }, primary: true)
-    button(mut s, Action::ViewSaves, Rect::new(w * 0.5 - 40.0, y + 57.0, w: 80.0, h: 36.0), "Saves")
     let state = status(s)
-    if !state.is_empty() {
-        centered(mut s, state, 14.0, w * 0.5, h - 52.0, MUTED)
-        if !s.message.is_empty() {
-            button(
-                mut s,
-                Action::Retry,
-                Rect::new(w * 0.5 - 50.0, h - 32.0, w: 100.0, h: 28.0),
-                "Try again",
-            )
+    let meta = if !state.is_empty() { state.clone() } else if continuing {
+        if picked.description.is_empty() { picked.label.clone() } else {
+            f"{picked.label}  ·  {picked.description}"
         }
+    } else { String::from("Not started") }
+    let meta_size = fitted(s, meta, 15.0, room, Face::Sans)
+    let meta_middle = top - 26.0
+    let tone = if s.message.is_empty() { MUTED } else { WARN }
+    text(mut s, meta, meta_size, vec2(x, line_top(s, Face::Sans, meta_size, meta_middle)), tone)
+    let title_size = fitted(s, card.title, 48.0, room, DISPLAY)
+    let title_middle = meta_middle -
+        meta_size * SANS_CAP * 0.5 -
+        20.0 -
+        title_size * facet::CAP * 0.5
+    text(
+        mut s,
+        card.title,
+        title_size,
+        vec2(x, line_top(s, DISPLAY, title_size, title_middle)),
+        INK,
+        DISPLAY,
+    )
+    // The actions in a line, the first the main one.
+    let acts = actions(continuing)
+    var at = x
+    for i in 0..acts.len() {
+        let a = acts[i]
+        let label = action_label(a, s.play_intent.is_some() && i == 0)
+        let width = button_width(s, label)
+        button(mut s, a, Rect::new(at, top, width, 40.0), 1, label, primary: i == 0)
+        at += width + 10.0
     }
-    if s.cards.len() > 1 {
-        // Navigation is quiet and only exists when there is somewhere to go.
-        if s.selected > 0 {
-            button(
-                mut s,
-                Action::Game { index: s.selected - 1 },
-                Rect::new(16.0, base.y + base.h * 0.5 - 22.0, w: 40.0, h: 44.0),
-                "<",
-            )
-        }
-        if s.selected + 1 < s.cards.len() {
-            button(
-                mut s,
-                Action::Game { index: s.selected + 1 },
-                Rect::new(w - 56.0, base.y + base.h * 0.5 - 22.0, w: 40.0, h: 44.0),
-                ">",
-            )
-        }
+    if !s.message.is_empty() {
+        button(
+            mut s,
+            Action::Retry,
+            Rect::new(at, top, button_width(s, "Try again"), 40.0),
+            1,
+            "Try again",
+        )
     }
 }
 
-fn dialog(s: mut Console, w: f32, h: f32, title: str) -> Rect {
-    rect(mut s, Rect::new(x: 0.0, y: 0.0, w: w, h: h), vec4(0.0, 0.0, 0.0, 0.72))
-    let r = Rect::new(
-        max(20.0, (w - 620.0) * 0.5),
-        max(48.0, (h - 590.0) * 0.5),
-        min(w - 40.0, 620.0),
-        min(h - 96.0, 590.0),
+fn sheet_frame(s: mut Console, w: f32, h: f32, title: str) -> Rect {
+    let open = s.sheet * s.sheet * (3.0 - 2.0 * s.sheet)
+    rect(mut s, Rect::new(x: 0.0, y: 0.0, w: w, h: h), vec4(0.0, 0.0, 0.0, 0.6 * open))
+    let width = min(w, 440.0)
+    let r = Rect::new(w - width * open, 0.0, width, h)
+    rect(mut s, r, SHEET)
+    rect(mut s, Rect::new(r.x, y: 0.0, w: 1.0, h: h), BORDER)
+    if s.pane != Pane::Games { focus_ring(mut s) }
+    text(
+        mut s,
+        title,
+        22.0,
+        vec2(r.x + 32.0, line_top(s, DISPLAY, size: 22.0, middle: 56.0)),
+        INK,
+        DISPLAY,
     )
-    rect(mut s, r, vec4(0.022, 0.033, 0.041, 0.98), 20.0)
-    text(mut s, title, 32.0, vec2(r.x + 28.0, r.y + 24.0), INK, Face::Mono)
-    button(mut s, Action::Games, Rect::new(r.right() - 62.0, r.y + 22.0, w: 40.0, h: 40.0), "×")
-    r
+    button(
+        mut s,
+        Action::Games,
+        Rect::new(r.right() - 32.0 - 80.0, y: 38.0, w: 80.0, h: 36.0),
+        0,
+        "Close",
+    )
+    r.shrink(32.0)
 }
 
 fn save_capacity(height: f32) -> u32 {
-    u32(clamp(floor((height - 304.0) / 76.0), 1.0, 3.0))
+    u32(clamp(floor((height - 300.0) / 74.0), 1.0, 6.0))
 }
 
+// Load: every save, newest first. Choosing one plays it.
 fn saves(s: mut Console, w: f32, h: f32) {
-    let panel = dialog(mut s, w, h, "Saves")
-    let x = panel.x + 28.0
-    let width = panel.w - 56.0
-    let top = panel.y + 98.0
+    let panel = sheet_frame(mut s, w, h, "Load")
+    let x = panel.x
+    let width = panel.w
+    let top = 104.0
     if s.cards.is_empty() { return }
-    let capacity = save_capacity(panel.h)
-    let first = s.picked / capacity * capacity
-    let count = min(s.saves.len() - first, capacity)
+    let capacity = save_capacity(h)
+    let first = s.marked / capacity * capacity
+    let count = min(s.saves.len() - min(first, s.saves.len()), capacity)
     if count == 0 {
         text(mut s, if s.step == Step::Open || s.step == Step::List { "Reading saves" } else {
             "No saves yet"
-        }, 18.0, vec2(x, top), MUTED)
+        }, 14.0, vec2(x, top), MUTED)
     }
     for i in first..first + count {
-        let r = Rect::new(x, top + f32(i - first) * 76.0, width, 64.0)
-        if i == s.picked { rect(mut s, r, SURFACE, 10.0) }
+        let r = Rect::new(x, top + f32(i - first) * 70.0, width, 62.0)
+        let chosen = control(mut s, Action::Save { index: i }, r, 1 + i - first, Kind::Row)
+        if chosen {
+            s.marked = i
+            rect(mut s, r, RAISED, RADIUS)
+            ring(mut s, r, BORDER, RADIUS)
+        }
         let save = s.saves[i].clone()
-        button(mut s, Action::Save { index: i }, Rect::new(r.x, r.y, r.w, 32.0), save.label)
-        let size = min(
-            13.0,
-            13.0 * (width - 24.0) / max(s.fonts.sans.measure(save.description, 13.0), 1.0),
-        )
-        centered(mut s, save.description, size, r.center().x, r.y + 37.0, MUTED)
+        let label_size = fitted(s, save.label, 15.0, width - 32.0, Face::Sans)
+        text(mut s, save.label, label_size, vec2(r.x + 16.0, r.y + 12.0), INK)
+        let size = fitted(s, save.description, 13.0, width - 32.0, Face::Sans)
+        text(mut s, save.description, size, vec2(r.x + 16.0, r.y + 35.0), MUTED)
     }
-    let y = top + f32(max(count, 1)) * 76.0 + 8.0
+    var y = top + f32(max(count, 1)) * 70.0 + 14.0
+    let row = 2 + capacity
     if s.saves.len() > capacity {
-        button(
-            mut s,
-            Action::Save { index: (first + capacity) % s.saves.len() },
-            Rect::new(x, y - 12.0, width, 32.0),
-            "More saves",
-        )
+        let next = if first + capacity < s.saves.len() { first + capacity } else { 0 }
+        button(mut s, Action::Page { first: next }, Rect::new(x, y, width, 38.0), row, "More saves")
+        y += 50.0
     }
-    let cell = (width - 12.0) * 0.5
-    button(mut s, Action::Play, Rect::new(x, y + 26.0, cell, 46.0), if s.saves.is_empty() {
-        "Play"
-    } else { "Continue" }, primary: true)
-    button(mut s, Action::NewGame, Rect::new(x + cell + 12.0, y + 26.0, cell, 46.0), "New game")
-    button(mut s, Action::Export, Rect::new(x, y + 91.0, cell, 36.0), "Export")
-    button(mut s, Action::Import, Rect::new(x + cell + 12.0, y + 91.0, cell, 36.0), "Import")
+    let cell = (width - 10.0) * 0.5
+    button(mut s, Action::Export, Rect::new(x, y, cell, 38.0), row + 1, "Export")
+    button(mut s, Action::Import, Rect::new(x + cell + 10.0, y, cell, 38.0), row + 1, "Import")
     let state = status(s)
-    if !state.is_empty() { centered(mut s, state, 13.0, w * 0.5, panel.bottom() - 20.0, MUTED) }
+    if !state.is_empty() {
+        let size = fitted(s, state, 13.0, width, Face::Sans)
+        text(mut s, state, size, vec2(x, y + 58.0), MUTED)
+    }
 }
 
 fn settings(s: mut Console, w: f32, h: f32) {
-    let panel = dialog(mut s, w, h, "Settings")
-    let x = panel.x + 28.0
-    let width = panel.w - 56.0
-    text(mut s, "Your name", 16.0, vec2(x, panel.y + 114.0), MUTED)
-    rect(mut s, Rect::new(x, panel.y + 148.0, width, 60.0), SURFACE, 10.0)
+    let panel = sheet_frame(mut s, w, h, "Settings")
+    let x = panel.x
+    let width = panel.w
+    text(mut s, "Profile name", 13.0, vec2(x, 110.0), MUTED)
+    let field = Rect::new(x, 134.0, width, 44.0)
+    let editing = control(mut s, Action::Name, field, 1, Kind::Row)
+    rect(mut s, field, vec4(1.0, 1.0, 1.0, 0.03), RADIUS)
+    if editing {
+        // As an input shows focus: a brighter border inside a soft ring.
+        ring(mut s, field.shrink(-3.0), vec4(1.0, 1.0, 1.0, 0.16), RADIUS + 3.0, 3.0)
+        ring(mut s, field, vec4(1.0, 1.0, 1.0, 0.55), RADIUS)
+    } else { ring(mut s, field, INPUT, RADIUS) }
     let name = s.profile.name.clone()
-    let size = min(23.0, 23.0 * (width - 32.0) / max(s.fonts.sans.measure(name, 23.0), 1.0))
-    text(mut s, name, size, vec2(x + 16.0, panel.y + 163.0), INK)
+    let size = fitted(s, name, 15.0, width - 32.0, Face::Sans)
+    let middle = field.center().y
+    text(mut s, name, size, vec2(x + 14.0, line_top(s, Face::Sans, size, middle)), INK)
+    let blink = fract(s.presentation * 1.1) < 0.6
+    if editing && blink {
+        let caret = x + 15.0 + width_of(s, name, size, Face::Sans)
+        rect(mut s, Rect::new(caret, middle - 9.0, w: 1.5, h: 18.0), INK)
+    }
     button(
         mut s,
         Action::SaveProfile,
-        Rect::new(x, panel.y + 242.0, w: 144.0, h: 48.0),
+        Rect::new(x, y: 194.0, w: 120.0, h: 38.0),
+        2,
         "Save",
         primary: true,
     )
-    button(mut s, Action::Motion, Rect::new(x, panel.y + 335.0, width, 48.0), if s.profile.motion {
-        "Animation on"
-    } else { "Animation off" })
-    text(mut s, "Saves stay on this device", 14.0, vec2(x, panel.bottom() - 64.0), MUTED)
     let state = status(s)
-    if !state.is_empty() { text(mut s, state, 13.0, vec2(x, panel.bottom() - 35.0), MUTED) }
+    if !state.is_empty() { text(mut s, state, 13.0, vec2(x, 252.0), MUTED) }
+}
+
+// The focus ring, with keys or a pad: a ring just outside the focused button, sliding from one
+// to the next.
+fn focus_ring(s: mut Console) {
+    let dt = s.dt
+    var target: Option<Rect> = None
+    if s.input != Input::Pointer {
+        for c in s.shown {
+            if lit(s, c.action) && (c.kind == Kind::Button || c.kind == Kind::Icon) {
+                target = Some(c.rect)
+            }
+        }
+    }
+    let k = if s.reduced { 1.0 } else { 1.0 - exp(-dt * 22.0) }
+    match target {
+        Some(r) => {
+            if s.ring_alpha < 0.01 { s.ring = r }
+            s.ring = Rect::new(
+                mix(s.ring.x, r.x, k),
+                mix(s.ring.y, r.y, k),
+                mix(s.ring.w, r.w, k),
+                mix(s.ring.h, r.h, k),
+            )
+            s.ring_alpha = mix(s.ring_alpha, 1.0, k)
+        },
+        None => s.ring_alpha = mix(s.ring_alpha, 0.0, k),
+    }
+    if s.ring_alpha < 0.01 { return }
+    let r = s.ring.shrink(-3.0)
+    ring(mut s, r, vec4(1.0, 1.0, 1.0, 0.9 * s.ring_alpha), RADIUS + 3.0, 2.0)
+}
+
+fn header(s: mut Console, w: f32, margin: f32) {
+    settings_button(mut s, Rect::new(w - margin - 40.0, y: 22.0, w: 40.0, h: 40.0))
 }
 
 pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     let dt = presentation_step(s.time, time)
     s.time = Some(time)
     s.presentation += dt
+    s.dt = dt
     update(mut s)
-    let logical = f32(width) / s.pixel_ratio
     s.zoom = s.pixel_ratio * clamp(f32(height) / s.pixel_ratio / 720.0, 0.7, 1.0)
     let w = f32(width) / s.zoom
     let h = f32(height) / s.zoom
-    let was_opening = s.profile.motion && !s.reduced && s.presentation < s.intro_until
+    // Motion follows the system's reduced-motion setting alone.
+    let motion = !s.reduced
+    let was_opening = motion && s.presentation < s.intro_until
     s.enter = false
     s.clicked = None
     s.activate = None
     for event in events() {
         match event {
+            Event::PointerMove { at, .. } => {
+                s.pointer = Some(at / s.zoom)
+                s.input = Input::Pointer
+            },
             Event::PointerDown { at, button: Button::Primary, .. } => {
+                s.pointer = Some(at / s.zoom)
                 s.pressed = Some(at)
                 s.intro_until = 0.0
-                s.keyboard = false
+                s.input = Input::Pointer
             },
             Event::PointerUp { at, button: Button::Primary, .. } => {
                 s.clicked = Some(at)
                 s.intro_until = 0.0
-                s.keyboard = false
+                s.input = Input::Pointer
             },
             Event::KeyDown { key, repeat, mods } => {
-                s.keyboard = true
+                s.input = Input::Keys
                 s.intro_until = 0.0
                 if key == Key::Enter && !repeat { s.enter = true }
-                if key == Key::Tab || key == Key::Down {
-                    s.focus = (s.focus + 1) % max(s.controls, 1)
+                if key == Key::Right { navigate(mut s, Move::Right) }
+                if key == Key::Left { navigate(mut s, Move::Left) }
+                if key == Key::Down || (key == Key::Tab && !mods.shift) {
+                    navigate(mut s, Move::Down)
                 }
-                if key == Key::Up {
-                    s.focus = (s.focus + max(s.controls, 1) - 1) % max(s.controls, 1)
-                }
-                if key == Key::Right || key == Key::Left {
-                    if s.pane == Pane::Games && s.cards.len() > 1 {
-                        let delta = if key == Key::Right { 1 } else { -1 }
-                        let index = u32(clamp(i32(s.selected) + delta, 0, i32(s.cards.len()) - 1))
-                        act(mut s, Action::Game { index })
-                    } else {
-                        s.focus = if key == Key::Right { (s.focus + 1) % max(s.controls, 1) } else {
-                            (s.focus + max(s.controls, 1) - 1) % max(s.controls, 1)
-                        }
-                    }
-                }
-                if key == Key::Escape {
-                    s.pane = Pane::Games
-                    s.focus = 1
-                }
+                if key == Key::Up || (key == Key::Tab && mods.shift) { navigate(mut s, Move::Up) }
+                if key == Key::Escape { open_pane(mut s, Pane::Games) }
                 if s.pane == Pane::Settings && key == Key::A && mods.command() {
                     s.profile.name.clear()
                 }
@@ -886,31 +1228,33 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                 }
             },
             Event::Text { char } => {
-                if s.pane == Pane::Settings && s.profile.name.len() < 120 {
+                if s.pane == Pane::Settings && s.profile.name.len() < 120 && char >= 32 {
                     s.profile.name.push_char(char)
                 }
             },
             Event::PadButton { button, pressed: true, .. } => {
-                s.keyboard = true
+                s.input = Input::Pad
                 s.intro_until = 0.0
                 if button == PadButton::South { s.enter = true }
-                if button == PadButton::East {
-                    s.pane = Pane::Games
-                    s.focus = 1
+                if button == PadButton::East { open_pane(mut s, Pane::Games) }
+                if button == PadButton::Start { act(mut s, Action::Settings) }
+                if button == PadButton::Right { navigate(mut s, Move::Right) }
+                if button == PadButton::Left { navigate(mut s, Move::Left) }
+                if button == PadButton::Down { navigate(mut s, Move::Down) }
+                if button == PadButton::Up { navigate(mut s, Move::Up) }
+            },
+            Event::PadAxis { axis, value, .. } => {
+                // The left stick moves once each time it leaves the middle.
+                let old = s.stick
+                if axis == PadAxis::LeftX { s.stick.x = value }
+                if axis == PadAxis::LeftY { s.stick.y = value }
+                if abs(old.x) < 0.6 && abs(s.stick.x) >= 0.6 {
+                    s.input = Input::Pad
+                    navigate(mut s, if s.stick.x > 0.0 { Move::Right } else { Move::Left })
                 }
-                if s.pane == Pane::Games &&
-                    s.cards.len() > 1 &&
-                    (button == PadButton::Right || button == PadButton::Left) {
-                    let delta = if button == PadButton::Right { 1 } else { -1 }
-                    let index = u32(clamp(i32(s.selected) + delta, 0, i32(s.cards.len()) - 1))
-                    act(mut s, Action::Game { index })
-                } else {
-                    if button == PadButton::Right || button == PadButton::Down {
-                        s.focus = (s.focus + 1) % max(s.controls, 1)
-                    }
-                    if button == PadButton::Left || button == PadButton::Up {
-                        s.focus = (s.focus + max(s.controls, 1) - 1) % max(s.controls, 1)
-                    }
+                if abs(old.y) < 0.6 && abs(s.stick.y) >= 0.6 {
+                    s.input = Input::Pad
+                    navigate(mut s, if s.stick.y > 0.0 { Move::Down } else { Move::Up })
                 }
             },
             _ => {},
@@ -921,110 +1265,300 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         s.clicked = None
         s.pressed = None
     }
-    let opening = s.profile.motion && !s.reduced && s.presentation < s.intro_until
-    let phase = moment(s.presentation, opening)
+    // What the pointer is over, by where things were drawn last frame.
+    s.hover = match s.pointer {
+        Some(p) => under(s.shown, p),
+        None => None,
+    }
+    let intro = motion && s.presentation < s.intro_until
+    let phase = moment(s.presentation, intro)
     s.reveal = phase.library
-    s.album = mix(s.album, f32(s.selected), if s.reduced || !s.profile.motion { 1.0 } else {
-        1.0 - exp(-dt * 12.0)
-    })
-    s.draw.clear(vec2(f32(width), f32(height)))
-    s.controls = 0
-    s.panels.clear()
+    let ease = |rate: f32| -> f32 { if motion { 1.0 - exp(-dt * rate) } else { 1.0 } }
+    s.album = mix(s.album, f32(s.selected), ease(9.0))
+    // Focus on the album row follows the selection, wherever the selection came from.
+    match s.focus {
+        Action::Game { index } => if index != s.selected {
+            s.focus = Action::Game { index: s.selected }
+        },
+        _ => {},
+    }
+    s.sheet = mix(s.sheet, if s.pane == Pane::Games { 0.0 } else { 1.0 }, ease(14.0))
+    // The camera leans a little toward the pointer, and breathes when nothing moves it.
+    let toward = match s.pointer {
+        Some(p) => vec2(p.x / w * 2.0 - 1.0, p.y / h * 2.0 - 1.0),
+        None => vec2(0.0),
+    }
+    let breath = vec2(sin(s.presentation * 0.21), sin(s.presentation * 0.13) * 0.6) * 0.3
+    s.sway = mix(s.sway, if motion { toward * 0.7 + breath } else { vec2(0.0) }, ease(2.0))
+    let screen = vec2(f32(width), f32(height))
+    let cam = camera(screen, s.sway)
+    // The layout is fitted to the camera at rest, so the sway moves the cards against the
+    // far artifact.
+    let rest = camera(screen, vec2(0.0))
+    let margin = w * MARGIN
+    s.draw.clear(screen)
+    s.controls.clear()
+    s.placed.clear()
+    if s.pane != Pane::Games { s.sheet_pane = s.pane }
     if phase.library > 0.0 {
-        let margin = if logical < 800.0 { 24.0 } else { 40.0 }
-        text(mut s, "Wrela", 26.0, vec2(margin, margin - 1.0), INK, Face::Mono)
-        cog(mut s, w, margin)
-        match s.pane {
-            Pane::Games => library(mut s, w, h),
-            Pane::Saves => saves(mut s, w, h),
-            Pane::Settings => settings(mut s, w, h),
+        let games = s.pane == Pane::Games
+        if games { focus_ring(mut s) }
+        header(mut s, w, margin)
+        library(mut s, w, h, cam, row(rest), margin)
+        if games { footer(mut s, w, h, margin) }
+        // A sheet takes the controls; the library behind it only shows. A closing sheet
+        // only shows too.
+        if !games { s.controls.clear() }
+        if s.sheet > 0.01 {
+            let before = s.controls.len()
+            match s.sheet_pane {
+                Pane::Saves => saves(mut s, w, h),
+                Pane::Settings => settings(mut s, w, h),
+                Pane::Games => {},
+            }
+            if games { s.controls.truncate(before) } else { footer(mut s, w, h, margin) }
         }
     }
-    s.renderer.upload(s.draw)
-    let screen = vec2(f32(width), f32(height))
-    if s.scene.width() != width || s.scene.height() != height {
-        s.scene = texture(width, height)
-        s.depth = depth_texture(width, height)
+    // Over anything it can press, the pointer becomes a hand.
+    let over = match s.pointer {
+        Some(p) => under(s.controls, p).is_some(),
+        None => false,
     }
-    let field = Field { screen, time: if s.reduced || !s.profile.motion { 1.8 } else {
-        s.presentation
-    }, morph: phase.morph, library: phase.library }
-    let space = begin_pass_with_depth(mut s.scene, mut s.depth, clear: vec4(0.0, 0.0, 0.0, 1.0))
+    if over != s.pointing {
+        s.pointing = over
+        s.cursor = Some(host::cursor(if over { "pointer" } else { "default" }))
+    }
+    s.renderer.upload(s.draw)
+    // The artifact, where the opening or the room has it, traced for the room's camera.
+    let place = artifact_place(phase.settle, artifact_spot(rest))
+    let size = traced_size(width, height, TRACED_PIXELS)
+    if s.room.width() != size.0 || s.room.height() != size.1 {
+        s.room = texture(width: size.0, height: size.1)
+    }
+    let target = vec2(f32(size.0), f32(size.1))
+    let turn = if motion { s.presentation * 0.4 + 2.0 } else { 2.0 }
+    write(mut s.room_corners, 0, corners(turn, place.xyz, place.w))
+    let space = begin_pass(mut s.room, clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         space,
-        quad.bind(screen, rect: vec4(0.0, 0.0, screen)),
-        chamber.bind(field),
+        quad.bind(target, rect: vec4(0.0, 0.0, target)),
+        artifact.bind(
+            verts: s.room_corners,
+            edges: s.edges,
+            faces: s.faces,
+            look: Artifact {
+                screen: target,
+                lens: cam.screen.z,
+                eye: cam.eye,
+                target: cam.target,
+                place,
+                time: s.presentation,
+                light: mix(1.0, 0.7, phase.settle),
+            },
+        ),
         vertices: 6,
-        depth: Depth { compare: Compare::Always, write: false },
-    )
-    draw(
-        space,
-        sculpture.bind(stations: s.sculpture, field: field),
-        titanium.bind(field),
-        vertices: STATIONS.len() / RINGS * VERTICES_PER_VANE,
     )
     space.end()
     let pass = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         pass,
         quad.bind(screen, rect: vec4(0.0, 0.0, screen)),
-        scene.bind(content: s.scene, linear: s.linear, exposure: phase.light),
+        stage.bind(
+            room: s.room,
+            linear: s.linear,
+            camera: cam,
+            look: Stage { reveal: phase.light },
+        ),
         vertices: 6,
     )
-    for index in 0..s.panels.len() {
-        let panel = s.panels[s.panels.len() - 1 - index]
-        if let Some(t) = s.covers[panel.index].image {
-            let r = panel.rect
-            draw(
-                pass,
-                quad.bind(screen, rect: vec4(r.x, r.y, r.w, r.h) * s.zoom, lean: panel.lean),
-                image.bind(
-                    content: t,
-                    linear: s.linear,
-                    size: vec2(r.w, r.h) * s.zoom,
-                    alpha: panel.alpha * s.reveal,
+    if phase.library > 0.0 {
+        for k in depth_order(s.placed) {
+            let placed = s.placed[k]
+            let card = room::Card {
+                look: vec4(
+                    placed.card.look.x * phase.library,
+                    placed.card.look.y,
+                    placed.card.look.z * phase.library,
+                    0.0,
                 ),
-                vertices: 6,
-            )
+                ..placed.card,
+            }
+            var drawn = false
+            if placed.art {
+                if let Some(t) = s.covers[placed.index].image {
+                    draw(
+                        pass,
+                        card_corner.bind(camera: cam, card: card),
+                        card_face.bind(art: t, linear: s.linear, card: card, has_art: 1.0),
+                        vertices: 6,
+                    )
+                    drawn = true
+                }
+            }
+            if !drawn {
+                draw(
+                    pass,
+                    card_corner.bind(camera: cam, card: card),
+                    card_face.bind(art: s.blank, linear: s.linear, card: card, has_art: 0.0),
+                    vertices: 6,
+                )
+            }
         }
+    }
+    // The mark: large beneath the tesseract, a light passing along it as the tesseract comes
+    // up, then fading away; small in the header with the library.
+    let big = mark_place(w, h)
+    let header = vec3(
+        margin + MARK_WIDTH * HEADER_CAP / facet::CAP * 0.5,
+        42.0,
+        HEADER_CAP / facet::CAP,
+    )
+    for (at, alpha, reveal) in [
+        (big, phase.light * (1.0 - phase.fade), phase.reveal),
+        (header, phase.library, 1.0),
+    ] {
+        if alpha <= 0.0 { continue }
+        let ems = at.z * s.zoom
+        let centre = at.xy * s.zoom
+        let extent = vec2(MARK_WIDTH * ems + 16.0, ems * 1.6)
+        draw(
+            pass,
+            quad.bind(screen, rect: vec4(centre - extent * 0.5, extent)),
+            emblem.bind(
+                runs: s.mark,
+                look: Emblem {
+                    centre,
+                    ems,
+                    alpha,
+                    count: MARK_RUNS.len(),
+                    reveal,
+                    width: MARK_WIDTH,
+                },
+            ),
+            vertices: 6,
+        )
     }
     s.renderer.draw(pass, screen)
     pass.present()
-    if let Some(action) = s.activate { act(mut s, action) }
+    s.shown = s.controls.clone()
+    if let Some(action) = s.activate {
+        match action {
+            Action::Game { index } => {
+                s.focus = action
+                act(mut s, action)
+                if index != s.selected { s.focus = Action::Game { index: s.selected } }
+            },
+            _ => {
+                s.focus = action
+                act(mut s, action)
+            },
+        }
+    }
     if s.clicked.is_some() { s.pressed = None }
 }
 
+// A traced layer's size: the screen divided by a whole number, so its thin bright lines are
+// not resampled into dashes, and about `budget` pixels.
+fn traced_size(width: u32, height: u32, budget: f32) -> (u32, u32) {
+    let divisor = max(u32(round(sqrt(f32(width) * f32(height) / budget))), 1)
+    (max(width / divisor, 4), max(height / divisor, 4))
+}
+
+// The placed cards' order from farthest to nearest.
+fn depth_order(placed: [Placed]) -> Vec<u32> {
+    var order: Vec<u32> = Vec::new()
+    for i in 0..placed.len() { order.push(i) }
+    for i in 0..order.len() {
+        for j in i + 1..order.len() {
+            if placed[order[j]].card.centre.z < placed[order[i]].card.centre.z {
+                let t = order[i]
+                order[i] = order[j]
+                order[j] = t
+            }
+        }
+    }
+    order
+}
+
 @test
-fn cover_requests_stay_within_two_neighbours_and_album_hits_follow_the_animation() {
-    for selected in 0..9 {
+fn cover_requests_stay_within_reach_of_the_selection() {
+    for selected in 0..20 {
         var count = 0
-        for index in 0..9 { if near_cover(index, selected) { count += 1 } }
-        assert(count <= 5 && near_cover(selected, selected))
+        for index in 0..20 { if near_cover(index, selected) { count += 1 } }
+        assert(count <= COVER_REACH * 2 + 1 && near_cover(selected, selected))
     }
     assert(!near_cover(index: 0, selected: 4294967295))
-    let base = album_rect(w: 1280.0, h: 720.0, aspect: 16.0 / 9.0)
-    let moving = panel_rect(base, w: 1280.0, delta: 1.0, aspect: 16.0 / 9.0)
-    assert(moving.center().x > base.right())
-    assert(!moving.contains(base.center()))
-    let portrait = panel_rect(base, w: 1280.0, delta: -1.0, aspect: 0.5)
-    assert(abs(portrait.w / portrait.h - 0.5) < 0.001 && portrait.h < base.h)
 }
 
 @test
-fn shorter_save_panels_page_the_rows_to_keep_actions_visible() {
-    assert(save_capacity(590.0) == 3)
-    assert(save_capacity(480.0) == 2)
-    assert(save_capacity(332.0) == 1)
+fn a_title_offers_new_alone_until_it_has_saves() {
+    let fresh = actions(has_saves: false)
+    assert(fresh.len() == 1 && fresh[0] == Action::NewGame)
+    let played = actions(has_saves: true)
+    assert(played.len() == 3)
+    assert(
+        played[0] == Action::Continue && played[1] == Action::NewGame && played[2] == Action::Load,
+    )
+    assert(
+        action_label(Action::NewGame, opening: false) == "New" &&
+            action_label(Action::Load, opening: false) == "Load",
+    )
 }
 
 @test
-fn albums_keep_the_cover_ratio_and_leave_room_for_the_play_action() {
-    for size in [vec2(1280.0, 720.0), vec2(390.0, 844.0), vec2(780.0, 720.0)] {
-        let r = album_rect(size.x, size.y, 16.0 / 9.0)
-        assert(abs(r.w / r.h - 16.0 / 9.0) < 0.001)
-        assert(r.x >= 24.0 && r.right() <= size.x - 24.0)
-        assert(r.bottom() + 169.0 < size.y)
+fn traced_layers_divide_the_screen_by_a_whole_number() {
+    assert(traced_size(width: 1280, height: 720, budget: TRACED_PIXELS) == (1280, 720))
+    assert(traced_size(width: 2560, height: 1440, budget: TRACED_PIXELS) == (1280, 720))
+    assert(traced_size(width: 2880, height: 1800, budget: TRACED_PIXELS) == (1440, 900))
+    assert(traced_size(width: 390, height: 844, budget: TRACED_PIXELS) == (390, 844))
+}
+
+@test
+fn a_failed_request_retries_quietly_after_a_pause() {
+    let at = 10.0 + RETRY_SECONDS
+    assert(!retry_due(at, now: 12.0, closing: false), "not before the pause is over")
+    assert(retry_due(at, now: 13.0, closing: false))
+    assert(!retry_due(at, now: 14.0, closing: true), "not while the old session closes")
+    assert(!retry_due(0.0, now: 14.0, closing: false), "nothing to retry")
+}
+
+@test
+fn focus_moves_across_rows_and_along_them() {
+    let row = |action: Action, x: f32, y: u32| -> Control {
+        Control {
+            action,
+            rect: Rect::new(x, f32(y) * 100.0, w: 80.0, h: 40.0),
+            row: y,
+            kind: Kind::Button,
+        }
     }
+    let controls = [
+        row(Action::Settings, 900.0, 0),
+        row(Action::Game { index: 0 }, 50.0, 1),
+        row(Action::Continue, 50.0, 2),
+        row(Action::Load, 200.0, 2),
+    ]
+    assert(neighbour(controls, Action::Continue, Move::Right) == Some(Action::Load))
+    assert(neighbour(controls, Action::Load, Move::Right).is_none())
+    assert(neighbour(controls, Action::Continue, Move::Up) == Some(Action::Game { index: 0 }))
+    assert(neighbour(controls, Action::Game { index: 0 }, Move::Up) == Some(Action::Settings))
+    assert(neighbour(controls, Action::Continue, Move::Down).is_none())
+    assert(neighbour(controls, Action::Retry, Move::Down) == Some(Action::Settings))
+    // From an album far to the right, down still reaches the main action first.
+    let wide = [
+        row(Action::Game { index: 4 }, 900.0, 1),
+        row(Action::Continue, 50.0, 2),
+        row(Action::Retry, 400.0, 2),
+    ]
+    assert(neighbour(wide, Action::Game { index: 4 }, Move::Down) == Some(Action::Continue))
+}
+
+@test
+fn shorter_save_sheets_page_the_rows_to_keep_actions_visible() {
+    assert(save_capacity(720.0) == 5)
+    assert(save_capacity(504.0) == 2)
+    assert(save_capacity(300.0) == 1)
+    assert(save_capacity(2000.0) == 6)
 }
 
 @test
