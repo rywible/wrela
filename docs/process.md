@@ -983,6 +983,16 @@ many times, culled to the view each frame. In the bare view the rocks and the gr
 the sun's shadows. The water now lays down some of what it cuts, and thin bands of sandstone in
 the shale make benches along the valleys' sides.
 
+Ryan said the rocks looked good from far off but not up close. Each rock now has a near mesh
+and a far mesh; its blocks' edges are worn round and their faces weathered into broad lumps,
+grooves along their laminae, and pits. The granite is no longer cut into beds: its bosses
+weather to smooth domes whose skin splits into sheets, each ending in a low lip, and only its
+fallen corestones and tors stand as solids. A turned-angle sign error had set the blocks
+across every face that did not run north-south or east-west; they now lie along their faces,
+and a block reaches down to the land where the land drops away beside or behind it. A new
+test holds that no block hangs over the air. The bare view gained a close shot under the
+tallest bedded crag, and its overlooks now face the way the view is most open.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

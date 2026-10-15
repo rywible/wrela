@@ -12,7 +12,8 @@ use noise::{noise3, rand}
 use realize::{Mesh, SkinVertex, realize_rigid}
 use render::{ByChannels, Shaded}
 use std::derive::Box3
-use std::field::{Blend, Surface, fbm, oval}
+use std::derive::Interval
+use std::field::{Blend, Fbm, Noise, Surface, VALUE_NOISE_LIPSCHITZ, fbm, oval, value_noise}
 use std::gpu::{
     ClipPosition, DrawIndexedArgs, Flat, FragCoord, GlobalId, GpuBuffer, InstanceIndex, RenderPass,
     Slots, Unorm8x4, VertexIndex, buffer, discard, dispatch, draw, write,
@@ -383,21 +384,25 @@ pub struct Bed: Copy + GpuData {
     pub planes: [vec4; 9],
     /// A box it lies in, and its tone's seed.
     pub lo: vec3,
-    pub hi: vec3,
     pub seed: u32,
-    /// Its rock's colours, its grain's darkest and lightest (linear): granite's unless given;
-    /// and how fine its grain and its streaks are in its own frame (a unit prototype a
-    /// placement scales up needs it finer).
-    pub dark: vec3 = vec3(0.30, 0.29, 0.27),
-    pub light: vec3 = vec3(0.40, 0.38, 0.34),
+    pub hi: vec3,
+    /// How fine its grain and its streaks are in its own frame (a unit prototype a placement
+    /// scales up needs it finer).
     pub fine: f32 = 1.0,
+    /// Its rock's colours, its grain's darkest and lightest (linear): granite's unless given.
+    pub dark: vec3 = vec3(0.30, 0.29, 0.27),
+    /// How far its edges are rounded (none unless given): where its faces meet they blend over
+    /// about this much, as a joint's edges weather.
+    pub round: f32 = 0.0,
+    pub light: vec3 = vec3(0.40, 0.38, 0.34),
 }
 
 impl Surface for Bed {
     fn distance(self, p: vec3) -> f32 {
         var d = -1.0e9
         for q in self.planes {
-            d = max(d, dot(p, q.xyz) - q.w)
+            let e = dot(p, q.xyz) - q.w
+            d = if self.round > 0.0 { std::field::smax(d, e, self.round) } else { max(d, e) }
         }
         d
     }
@@ -430,15 +435,63 @@ pub fn bed(b: Bed) -> Creature<Rock> {
     creature(s).part(root, b.with_at(|p| bed_colour(b, p))).bounded(Box3 { lo: b.lo, hi: b.hi })
 }
 
-/// A block of rock, bed `b` weathered: its faces pitted and lumped by `rough` (of its own size,
-/// at its grain's fineness), not planes, as a creature of one bone to realize.
+/// How a block of rock weathers, as a noise over its surface: broad lumps where its joints
+/// opened, its laminae (the thin beds within it, `laminae` to a unit up it) weathered out as
+/// grooves round it, a little wavy, and fine pits; each by its weight (`weights`), each in [-1, 1]
+/// before it.
+pub struct Weathering: Copy + GpuData {
+    pub weights: vec3,
+    pub laminae: f32,
+    pub lumps: Fbm,
+    pub pits: Fbm,
+}
+
+/// A groove's profile: 1 on a lamina's middle, falling to -1 sharply at the grooves between.
+fn grooves(p: vec3, laminae: f32) -> f32 {
+    let phase = p.y * laminae + 0.3 * value_noise(p * 2.0)
+    1.0 - 2.0 * abs(sin(std::math::PI * phase))
+}
+
+impl Noise for Weathering {
+    fn value(self, p: vec3) -> f32 {
+        self.weights.x * self.lumps.value(p) +
+            self.weights.y * grooves(p, self.laminae) +
+            self.weights.z * self.pits.value(p)
+    }
+
+    fn range(self) -> Interval {
+        let a = self.lumps.range()
+        let c = self.pits.range()
+        let w = self.weights
+        Interval { lo: w.x * a.lo - w.y + w.z * c.lo, hi: w.x * a.hi + w.y + w.z * c.hi }
+    }
+
+    /// The parts' bounds, by their weights; a groove's slope is 2π times its phase's, which is
+    /// the laminae's rate up it and the wobble's (its value noise's bound, at twice the scale).
+    fn lipschitz(self) -> f32 {
+        let w = self.weights
+        let groove = 2.0 * std::math::PI * (self.laminae + 0.6 * VALUE_NOISE_LIPSCHITZ)
+        w.x * self.lumps.lipschitz() + w.y * groove + w.z * self.pits.lipschitz()
+    }
+
+    fn bandlimit(self) -> f32 {
+        max(max(self.lumps.bandlimit(), self.laminae * 2.0), self.pits.bandlimit())
+    }
+}
+
+/// A block of rock, bed `b` weathered: its faces lumped, grooved along its laminae and pitted by
+/// `rough` (of its own size, at its grain's fineness), not planes, as a creature of one bone to
+/// realize.
 pub fn weathered(b: Bed, rough: f32) -> Creature<Rock> {
     var s = Skeleton::new()
     let root = s.root("block", vec3(0.0))
-    let worn = b.displace(
-        fbm(freq: 0.9 * b.fine, octaves: 3, offset: vec3(f32(b.seed) * 2.3)),
-        amp: rough,
-    )
+    let wear = Weathering {
+        lumps: fbm(freq: 0.35 * b.fine, octaves: 2, offset: vec3(f32(b.seed) * 2.3)),
+        laminae: 0.5 * b.fine,
+        pits: fbm(freq: 3.0 * b.fine, octaves: 2, offset: vec3(f32(b.seed) * 0.7)),
+        weights: vec3(0.75, 0.18, 0.05),
+    }
+    let worn = b.displace(wear, amp: rough)
     let grow = vec3(rough * 1.5)
     creature(s)
         .part(root, worn.with_at(|p| bed_colour(b, p)))
@@ -470,8 +523,8 @@ pub fn realize_bed(b: Bed, at: vec3) -> Realized {
 /// A block of jointed rock a unit each way (its half extents 1), as a bed: four joint faces round
 /// it, each turned a little from square, its bedding planes over and under it tilted a little,
 /// and three of its edges cut off at random, so no two blocks are alike; in colours `dark` to
-/// `light`. A placement scales it to its size.
-pub fn block_bed(seed: u32, dark: vec3, light: vec3) -> Bed {
+/// `light`, its edges worn round by `worn`. A placement scales it to its size.
+pub fn block_bed(seed: u32, dark: vec3, light: vec3, worn: f32) -> Bed {
     var planes = [vec4(0.0); 9]
     for k in 0..4 {
         let a = TAU * f32(k) / 4.0 + 0.14 * (rand(seed, 70 + k) - 0.5)
@@ -487,7 +540,7 @@ pub fn block_bed(seed: u32, dark: vec3, light: vec3) -> Bed {
     let up = normalize(vec3(tilt.x, 1.0, tilt.y))
     planes[7] = vec4(up, 1.0)
     planes[8] = vec4(-up, 1.0)
-    Bed { planes, lo: vec3(-1.3), hi: vec3(1.3), seed, dark, light, fine: 6.0 }
+    Bed { planes, lo: vec3(-1.3), hi: vec3(1.3), seed, dark, light, fine: 6.0, round: worn }
 }
 
 /// A rock's placement as the GPU reads it: where its prototype goes (its transform, and that
@@ -498,16 +551,19 @@ pub struct RockAt: Copy + GpuData {
     pub seed: u32,
 }
 
-/// Rocks: a few prototype solids, and many placements of them, each prototype's drawn with one
-/// instanced draw (`Rocks::draw`) over the placements of its run (`first`, `count`) the camera
-/// sees (`Rocks::cull`: `seen`, from `seen_first`, `seen_count` of them); its shadows from all of
-/// them (`Rocks::cast`).
+/// Rocks: a few kinds of prototype solid, each realized near (fine, for rocks close to the eye)
+/// and far (coarse), and many placements of them; each kind and level drawn with one instanced
+/// draw (`Rocks::draw`) over the placements of its run (`first`, `count`) the camera sees at that
+/// level (`Rocks::cull`: `seen`, from `seen_first`, `seen_count` of them, kind by kind, near then
+/// far); its shadows from all of them, far (`Rocks::cast`).
 pub struct Rocks {
-    pub prototypes: Vec<Realized>,
+    pub near: Vec<Realized>,
+    pub far: Vec<Realized>,
     pub placed: GpuBuffer<RockAt>,
     pub first: Vec<u32>,
     pub count: Vec<u32>,
-    /// Each prototype's draw for all its placements (shadows), and for those seen.
+    /// Each kind's draw of all its placements (shadows), and each kind's and level's of those
+    /// seen.
     pub args: Vec<GpuBuffer<DrawIndexedArgs>>,
     pub seen_args: Vec<GpuBuffer<DrawIndexedArgs>>,
     /// Where each placement is and how far it reaches (its centre and radius), on the CPU.
@@ -523,6 +579,9 @@ pub struct Rocks {
 /// The least of the view's half height a rock must span to be drawn (its radius over its
 /// distance, over the view's `tan_half`): a stone smaller than a few pixels far off isn't.
 pub const SEEN_SPAN: f32 = 0.004
+
+/// How near a rock is drawn from its near prototype: within this many times its own radius.
+pub const NEAR_RADII: f32 = 14.0
 
 /// Whether a sphere `sp` (its centre and radius, in the eye's space) is seen from `eye` looking
 /// along `forward`: in front of it, within a cone `wide` (the tangent of its widest half angle)
@@ -567,10 +626,14 @@ fn rock_args(mesh: [DrawIndexedArgs], count: u32, out: mut Slots<DrawIndexedArgs
 }
 
 impl Rocks {
-    /// Rocks of `prototypes` placed as `placements` say (each placement's `prototype` one of
-    /// them; others are left out).
-    pub fn new(prototypes: take Vec<Realized>, placements: [Placement]) -> Rocks {
-        let n = prototypes.len()
+    /// Rocks of the kinds `near` and `far` realize (the same kinds, fine and coarse) placed as
+    /// `placements` say (each placement's `prototype` a kind; others are left out).
+    pub fn new(
+        near: take Vec<Realized>,
+        far: take Vec<Realized>,
+        placements: [Placement],
+    ) -> Rocks {
+        let n = far.len()
         var sorted: Vec<RockAt> = Vec::with_capacity(placements.len())
         var spheres: Vec<vec4> = Vec::with_capacity(placements.len())
         var first: Vec<u32> = Vec::new()
@@ -593,13 +656,15 @@ impl Rocks {
         var seen_args: Vec<GpuBuffer<DrawIndexedArgs>> = Vec::new()
         for k in 0..n {
             var a: GpuBuffer<DrawIndexedArgs> = buffer(1)
-            dispatch(rock_args.bind(prototypes[k].mesh.draw.items(), count[k], mut a), groups: 1)
+            dispatch(rock_args.bind(far[k].mesh.draw.items(), count[k], mut a), groups: 1)
             args.push(take a)
+            seen_args.push(buffer(1))
             seen_args.push(buffer(1))
         }
         let total = max(sorted.len(), 1)
         Rocks {
-            prototypes,
+            near,
+            far,
             placed,
             first,
             count,
@@ -607,41 +672,50 @@ impl Rocks {
             seen_args,
             spheres,
             seen: buffer(total),
-            seen_first: Vec::filled(n, 0),
-            seen_count: Vec::filled(n, 0),
+            seen_first: Vec::filled(2 * n, 0),
+            seen_count: Vec::filled(2 * n, 0),
             origin: vec3(0.0),
         }
     }
 
     /// The rocks camera `cam` (in render space, the world less `origin`) sees: each whose sphere
-    /// meets its view, and spans at least `SEEN_SPAN` of it (a small stone far off is left out);
-    /// their indices written for the draws, each prototype's count into its draw.
+    /// meets its view and spans enough of it (`in_view`), near (within `NEAR_RADII` of its radii)
+    /// or far; their indices written for the draws, each kind's and level's count into its draw.
     pub fn cull(mut self, cam: Camera, origin: vec3) {
         self.origin = origin
         var seen: Vec<u32> = Vec::with_capacity(self.spheres.len())
         let wide = cam.tan_half * max(cam.aspect, 1.0) * 1.2
-        for k in 0..self.prototypes.len() {
-            self.seen_first[k] = seen.len()
-            for i in self.first[k]..(self.first[k] + self.count[k]) {
-                let sp = self.spheres[i]
-                if in_view(vec4(sp.xyz - origin, sp.w), cam.eye, cam.forward, cam.tan_half, wide) {
-                    seen.push(i)
+        for k in 0..self.far.len() {
+            for level in 0..2 {
+                let at = 2 * k + level
+                self.seen_first[at] = seen.len()
+                for i in self.first[k]..(self.first[k] + self.count[k]) {
+                    let sp = vec4(self.spheres[i].xyz - origin, self.spheres[i].w)
+                    let near = length(sp.xyz - cam.eye) < NEAR_RADII * sp.w
+                    if near == (level == 0) &&
+                        in_view(sp, cam.eye, cam.forward, cam.tan_half, wide) {
+                        seen.push(i)
+                    }
                 }
+                self.seen_count[at] = seen.len() - self.seen_first[at]
             }
-            self.seen_count[k] = seen.len() - self.seen_first[k]
         }
         if !seen.is_empty() {
             write(mut self.seen, 0, seen)
         }
-        for k in 0..self.prototypes.len() {
-            dispatch(
-                rock_args.bind(
-                    self.prototypes[k].mesh.draw.items(),
-                    self.seen_count[k],
-                    mut self.seen_args[k],
-                ),
-                groups: 1,
-            )
+        for k in 0..self.far.len() {
+            for level in 0..2 {
+                let at = 2 * k + level
+                borrow p = if level == 0 { self.near[k] } else { self.far[k] }
+                dispatch(
+                    rock_args.bind(
+                        p.mesh.draw.items(),
+                        self.seen_count[at],
+                        mut self.seen_args[at],
+                    ),
+                    groups: 1,
+                )
+            }
         }
     }
 
@@ -654,14 +728,14 @@ impl Rocks {
         n
     }
 
-    /// The rocks as shadow casters into `pass`, seen from the sun by `view`, biased as casters
-    /// are (`shadow::CASTER`).
+    /// The rocks as shadow casters into `pass`, seen from the sun by `view`, each far, biased as
+    /// casters are (`shadow::CASTER`).
     pub fn cast<P: RenderPass>(self, pass: P, view: mat4) {
-        for k in 0..self.prototypes.len() {
+        for k in 0..self.far.len() {
             if self.count[k] == 0 {
                 continue
             }
-            borrow p = self.prototypes[k]
+            borrow p = self.far[k]
             draw(
                 pass,
                 rock_shadow.bind(
@@ -679,30 +753,33 @@ impl Rocks {
         }
     }
 
-    /// The rocks the camera sees (`cull`) drawn into `pass`, lit by `lt`.
+    /// The rocks the camera sees (`cull`) drawn into `pass`, lit by `lt`, each at its level.
     pub fn draw<P: RenderPass>(self, pass: P, lt: Lighting) {
-        for k in 0..self.prototypes.len() {
-            if self.seen_count[k] == 0 {
-                continue
+        for k in 0..self.far.len() {
+            for level in 0..2 {
+                let at = 2 * k + level
+                if self.seen_count[at] == 0 {
+                    continue
+                }
+                borrow p = if level == 0 { self.near[k] } else { self.far[k] }
+                draw(
+                    pass,
+                    rock_vertex.bind(
+                        verts: p.mesh.verts.items(),
+                        colours: p.colours.items(),
+                        placed: self.placed.items(),
+                        seen: self.seen.items(),
+                        first: self.seen_first[at],
+                        origin: self.origin,
+                        cam: lt.cam,
+                    ),
+                    stone_shade.bind(lt),
+                    indices: p.mesh.quads.items(),
+                    indirect: self.seen_args[at].items(),
+                    cull: std::gpu::Cull::Back,
+                    depth: view::NEAREST,
+                )
             }
-            borrow p = self.prototypes[k]
-            draw(
-                pass,
-                rock_vertex.bind(
-                    verts: p.mesh.verts.items(),
-                    colours: p.colours.items(),
-                    placed: self.placed.items(),
-                    seen: self.seen.items(),
-                    first: self.seen_first[k],
-                    origin: self.origin,
-                    cam: lt.cam,
-                ),
-                stone_shade.bind(lt),
-                indices: p.mesh.quads.items(),
-                indirect: self.seen_args[k].items(),
-                cull: std::gpu::Cull::Back,
-                depth: view::NEAREST,
-            )
         }
     }
 }

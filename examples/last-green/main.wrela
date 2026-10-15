@@ -2903,7 +2903,11 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     if bare && s.rocks.is_none() {
         let began = std::time::now()
         let placements = geology::rock_placements(geology::WORLD.land)
-        var rocks = engine::stone::Rocks::new(geology::rock_prototypes(), placements)
+        var rocks = engine::stone::Rocks::new(
+            geology::rock_prototypes(geology::NEAR_LOOK, cell: 4cm),
+            geology::rock_prototypes(geology::FAR_LOOK, cell: 4cm),
+            placements,
+        )
         rocks.origin = origin_of(s)
         print(f"bare rocks: {rocks.len()} placed in {(std::time::now() - began) * 1000.0:.0} ms")
         s.rocks = Some(take rocks)
