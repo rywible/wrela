@@ -136,3 +136,45 @@ pub fn emblem(v: Vertex, runs: [MarkRun], look: Emblem) -> Over {
     let color = mix(vec3(0.9, 0.91, 0.92), vec3(1.0), edge)
     Over { color: vec4(color, coverage * max(shown, edge) * look.alpha) }
 }
+
+// The selected game's art behind the library, filling the screen as a console's home does:
+// softened, drifting slowly, and darkened where the title, the actions and the row sit over
+// it. `alpha` fades it in and out as the selection changes.
+pub struct Backdrop: Copy + GpuData {
+    pub screen: vec2,
+    pub art: vec2,
+    pub alpha: f32,
+    pub time: f32,
+}
+
+@fragment
+pub fn backdrop(v: Vertex, art: Texture<Rgba8>, linear: Sampler, look: Backdrop) -> Over {
+    let s = look.screen
+    let fill = max(s.x / look.art.x, s.y / look.art.y)
+    let size = look.art * fill
+    var uv = (v.pixel - (s - size) * vec2(0.5, 0.3)) / size
+    // A slow drift and breath, so the art is alive behind the still interface.
+    let zoom = 1.06 + 0.02 * sin(look.time * 0.05)
+    uv = (uv - vec2(0.5)) / zoom +
+        vec2(0.5) +
+        vec2(sin(look.time * 0.031), cos(look.time * 0.023)) * 0.006
+    // Softened: a ring of samples a couple of the art's pixels round each.
+    let step = vec2(1.5) / look.art
+    var c = art.sample_level(linear, uv, 0.0).xyz * 0.2
+    for k in 0..8 {
+        let a = f32(k) * 0.7853982
+        c += art.sample_level(linear, uv + vec2(cos(a), sin(a)) * step * 2.0, 0.0).xyz * 0.1
+    }
+    let p = v.pixel / s
+    // Darker toward the left, where the title and actions are; toward the bottom, where the
+    // row is; and a little at the top, under the header.
+    let left = smoothstep(0.62, 0.0, p.x)
+    let bottom = smoothstep(0.45, 1.0, p.y)
+    let top = smoothstep(0.16, 0.0, p.y)
+    var shade = 1.0 - left * 0.72
+    shade *= 1.0 - bottom * 0.8
+    shade *= 1.0 - top * 0.5
+    let edge = p * (vec2(1.0) - p)
+    shade *= pow(saturate(edge.x * edge.y * 16.0), 0.18)
+    Over { color: vec4(c * shade, look.alpha) }
+}

@@ -1,10 +1,10 @@
 // Wrela's console. The catalog and game session protocol supply all title-specific content.
 use catalog::{Card, parse}
 use opening::{
-    MARK_WIDTH, OPENING_SECONDS, artifact_place, clock_at, mark_place, moment, presentation_step,
-    stage_light, turn_at,
+    MARK_WIDTH, OPENING_SECONDS, RETURNING, VISIT, artifact_place, clock_at, mark_place, moment,
+    presentation_step, stage_light, turn_at,
 }
-use paint::{Emblem, Stage, card_corner, card_face, emblem, quad, stage}
+use paint::{Backdrop, Emblem, Stage, backdrop, card_corner, card_face, emblem, quad, stage}
 use room::{Camera, MARGIN, Row, artifact_spot, bounds, camera, place, row}
 use tesseract::{Artifact, artifact, corners}
 use facet::MarkRun
@@ -32,7 +32,7 @@ const TESSERACT_FACES: Vec<vec4> = tesseract::faces()
 // Colours and shapes after shadcn/ui's dark theme: near-white ink, muted grey text, quiet
 // filled controls behind hairline borders, small radii, no glow.
 const INK = vec4(0.98, 0.98, 0.98, 1.0)
-const MUTED = vec4(0.63, 0.63, 0.66, 1.0)
+const MUTED = vec4(0.72, 0.72, 0.75, 1.0)
 const DARK = vec4(0.035, 0.035, 0.04, 1.0)
 const SHEET = vec4(0.04, 0.04, 0.045, 0.98)
 const WARN = vec4(0.95, 0.74, 0.6, 1.0)
@@ -190,6 +190,17 @@ pub struct Console {
     hover: Option<Action>,
     pointing: bool,
     cursor: Option<Pending<u8>>,
+    // When the opening last played, read before it starts: a visit within `VISIT` of it
+    // starts at the library. The clock waits for the answer, briefly, in the dark.
+    now: Option<u32>,
+    seen: Option<Option<u32>>,
+    seen_load: Option<Pending<u8>>,
+    seen_write: Option<Pending<u8>>,
+    decided: bool,
+    waited: f32,
+    // The game whose art fills the backdrop, and how far it has faded in.
+    art_shown: Option<u32>,
+    art: f32,
     // The page's icons, asked for once.
     icons: Vec<Pending<u8>>,
     retry_at: f32,
@@ -278,6 +289,14 @@ pub fn init() -> Console {
         hover: None,
         pointing: false,
         cursor: None,
+        now: None,
+        seen: None,
+        seen_load: Some(read_file("console/opening")),
+        seen_write: None,
+        decided: false,
+        waited: 0.0,
+        art_shown: None,
+        art: 0.0,
         icons: page_icons(),
         retry_at: 0.0,
         zoom: 1.0,
@@ -498,9 +517,19 @@ fn near_cover(index: u32, selected: u32) -> bool {
 }
 
 fn update(s: mut Console) {
+    if let Some(result) = poll(mut s.seen_load) {
+        s.seen = Some(
+            match result {
+                Ok(bytes) => host::word(bytes, 0),
+                Err(_) => None,
+            },
+        )
+    }
+    if let Some(_) = poll(mut s.seen_write) {}
     if let Some(result) = poll(mut s.environment) {
         if let Ok(bytes) = result {
             if !bytes.is_empty() { s.reduced = bytes[0] != 0 }
+            s.now = host::word(bytes, 1)
             if let Some(ratio) = host::word(bytes, 5) {
                 s.pixel_ratio = clamp(f32(ratio) / 1024.0, 0.5, 4.0)
             }
@@ -1197,9 +1226,12 @@ fn header(s: mut Console, w: f32, margin: f32) {
 pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     let dt = presentation_step(s.time, time)
     s.time = Some(time)
-    s.presentation += dt
-    s.dt = dt
     update(mut s)
+    if !s.decided {
+        s.waited += dt
+        if (s.now.is_some() && s.seen.is_some()) || s.waited > 0.5 { decide_opening(mut s) }
+    } else { s.presentation += dt }
+    s.dt = dt
     s.zoom = s.pixel_ratio * clamp(f32(height) / s.pixel_ratio / 720.0, 0.7, 1.0)
     let w = f32(width) / s.zoom
     let h = f32(height) / s.zoom
@@ -1399,6 +1431,35 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         ),
         vertices: 6,
     )
+    // The selected game's art takes over the backdrop; changing the selection fades one out
+    // and the next in. With no art, the artifact stays.
+    let wanted = if !s.cards.is_empty() && s.covers[s.selected].image.is_some() {
+        Some(s.selected)
+    } else { None }
+    if s.art_shown != wanted {
+        s.art = max(s.art - dt * 5.0, 0.0)
+        if s.art == 0.0 { s.art_shown = wanted }
+    } else if s.art_shown.is_some() { s.art = min(s.art + dt * 2.5, 1.0) }
+    if let Some(i) = s.art_shown {
+        if let Some(t) = s.covers[i].image {
+            let card = s.cards[i].clone()
+            draw(
+                pass,
+                quad.bind(screen, rect: vec4(0.0, 0.0, screen)),
+                backdrop.bind(
+                    art: t,
+                    linear: s.linear,
+                    look: Backdrop {
+                        screen,
+                        art: vec2(f32(card.width), f32(card.height)),
+                        alpha: s.art * phase.library,
+                        time: s.presentation,
+                    },
+                ),
+                vertices: 6,
+            )
+        }
+    }
     if phase.library > 0.0 {
         for k in depth_order(s.placed) {
             let placed = s.placed[k]
@@ -1483,6 +1544,29 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         }
     }
     if s.clicked.is_some() { s.pressed = None }
+}
+
+// Whether this visit plays the opening: not if it played within `VISIT` seconds. Either way,
+// it notes when this visit began.
+fn decide_opening(s: mut Console) {
+    s.decided = true
+    let Some(now) = s.now else { return }
+    let last = match s.seen {
+        Some(seen) => seen,
+        None => None,
+    }
+    if returning_visit(now, last) { s.presentation = max(s.presentation, RETURNING) }
+    var bytes: Vec<u8> = Vec::new()
+    for shift in [0, 8, 16, 24] { bytes.push(u8((now >> shift) & 255)) }
+    s.seen_write = Some(store("console/opening", bytes))
+}
+
+// Whether a visit at `now` comes soon after the opening last played at `last`, in seconds.
+fn returning_visit(now: u32, last: Option<u32>) -> bool {
+    match last {
+        Some(t) => now >= t && now - t < VISIT,
+        None => false,
+    }
 }
 
 // A traced layer's size: the screen divided by a whole number, so its thin bright lines are
@@ -1653,4 +1737,12 @@ fn an_empty_library_displays_its_error_instead_of_loading() {
     let message = "The game library could not be read."
     assert(empty_library_message(message) == message)
     assert(empty_library_message("") == "Loading games")
+}
+
+@test
+fn a_visit_soon_after_the_opening_starts_at_the_library() {
+    assert(!returning_visit(5000, None), "a first visit plays the opening")
+    assert(returning_visit(5000, Some(4000)))
+    assert(!returning_visit(5000 + VISIT, Some(5000)), "a later visit plays it again")
+    assert(!returning_visit(4000, Some(5000)), "a clock set back plays it")
 }

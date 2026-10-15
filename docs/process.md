@@ -1465,6 +1465,44 @@ declines the request. Regressions read each PNG back strictly (CRCs, stored bloc
 Adler-32) and check the true projection's two rings and the 32-pixel corners on pixel
 centres; Pillow also decodes the shipped files.
 
+## Leapling, and a console library that reads as a console, 2026-10-14
+
+Ryan asked for a basic 2D platformer in the spirit of Mario, "sick as fuck", deployed with the
+console, and for the console's landing page to read as a professional game console. Claude
+Code (Opus 5.5) designed and built both. Leapling borrows the genre's verbs (run, jump, stomp,
+coins, prize blocks, springs, a goal) and none of Nintendo's characters, worlds or designs. It
+has no story and no lore.
+
+**Game.** `examples/leapling`: one course, Dusk Ridge, 156 cells by 15, written as text. The
+simulation steps at 120 Hz, so the feel doesn't depend on the frame rate. Walking is 7 cells
+a second and running 10.5. A held jump climbs about 3.5 cells and a tap about 1.7. Coyote time
+is 90 ms and jump buffering 120 ms. Springs throw the hero high whether or not jump is held.
+Walkers can be stomped and spikers can't; spikers turn at edges. The game also has prize
+blocks, one-way ledges, spikes, two checkpoints and an octagonal gate. One fragment shader
+draws everything as fields: a dusk sky with a setting sun and rays, three parallax ridges
+(the nearest of pines) rim-lit by the sun, fireflies, the cells, the creatures, the hero
+(lit by its own antenna), sparks, and a stroke font of the game's own for the logo and HUD.
+Sound is synthesized as it plays: square, pulse, triangle and noise tones with slides for
+each cue, and a four-chord loop (vi, IV, I, V in C) of bass, arpeggio and hi-hat. No art,
+sound or music comes from a file or a generative model. The cover is the title screen,
+rendered natively.
+
+**Session.** `examples/leapling/session` adapts The Last Green's session program, keeping its
+journal, its backup before a new game, recovery of the save written on return, and its
+import checks. A shared `progress` module holds the save: courses cleared, coins, best time.
+
+**Console.** The selected game's art now fills the backdrop, softened, drifting slowly and
+darkened under the title, the actions and the row. It crossfades as the selection changes.
+With no art, the artifact stays. Muted text is lighter (0.72 grey). The opening plays once
+per visit: within 30 minutes of the last one, the console waits at most half a second in the
+dark for the clock and the record, then starts in the dark just before the library.
+
+**Checks.** Real Chrome (headless, hardware WebGPU), driven over the DevTools protocol through
+a local preview, ran the whole loop: the opening, the library, New, the game handed over
+inside the console, playing, F10 back, and the library offering Continue. Regressions cover
+the jump heights, coyote time and buffering, stomping and being hurt, prize blocks, springs,
+pits and checkpoints, type layout, the save, imports, and the visit rule.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
