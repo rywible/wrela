@@ -9,6 +9,10 @@
 // `compact`) durably, in order, before it sends anything the call sent (`send`) or closes what
 // it closed (`close`). If it can't keep them, it sends nothing and starts the room again from
 // what it had kept.
+//
+// A server tags a connection (`tag`) with what it learned of it, its peer say: when the host
+// starts the room again on a fresh instance, the `Connection` events that tell it of its open
+// connections carry their tags.
 
 use std::host::request
 use std::input::{Event, events, payload}
@@ -23,7 +27,7 @@ pub const JOURNAL: u32 = 0
 /// room alone, on a fresh instance (`Room::poisoned`).
 pub const POISONED: u32 = 2147483648
 
-/// A room compacts once its journal holds this many entries past its snapshot.
+/// A room compacts once its journal holds this many records past its snapshot.
 pub const COMPACT_AFTER: u64 = 1024
 
 fn word(bytes: mut Vec<u8>, x: u32) {
@@ -75,11 +79,24 @@ pub fn close(conn: u32) {
     let _ = request("net/close", body)
 }
 
-/// Carries out a room's step: its records kept, then its sends, then its closes.
+/// Tags connection `conn` with `tag`, once the call's records are kept: the `Connection` event
+/// that tells a room started again of the connection carries it.
+@server
+pub fn tag(conn: u32, tag: u32) {
+    var body: Vec<u8> = Vec::new()
+    word(mut body, conn)
+    word(mut body, tag)
+    let _ = request("net/tag", body)
+}
+
+/// Carries out a room's step: its records kept, then its tags, sends and closes.
 @server
 pub fn carry_out<S: Clone + Pack, T: Clone + Pack>(step: Step<S, T>) {
     for r in step.records {
         keep(pack(r.clone()))
+    }
+    for t in step.tags {
+        tag(t.0, t.1)
     }
     for s in step.sends {
         send(s.0, s.1)
@@ -110,9 +127,9 @@ pub fn serve_room<S: Reduce<T> + Clone + Pack, T: Clone + Pack>(room: mut Room<S
                     carry_out(room.receive(conn, take bytes, at))
                 }
             },
-            Event::Connection { conn, open } => {
+            Event::Connection { conn, open, tag } => {
                 if open {
-                    room.opened(conn)
+                    room.opened(conn, tag)
                 } else {
                     room.closed(conn)
                 }
