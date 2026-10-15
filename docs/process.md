@@ -1456,10 +1456,11 @@ proposals, 256 committed, took about 5 ms with its one flush.
 **Rooms over the network.** `wrela-serve` runs a server build's rooms over WebTransport with the
 [`wtransport`](https://github.com/BiagioFesta/wtransport) crate (MIT or Apache-2.0, a Rust
 WebTransport implementation over [quinn](https://github.com/quinn-rs/quinn)'s QUIC) and
-[tokio](https://tokio.rs/) (MIT): a session at `/room/<name>` opens one bidirectional stream of
-length-prefixed frames, each room runs on a thread of its own, and every queue is bounded, so a
-connection too slow to keep up is closed and its peer comes back. A development certificate is
-self-signed and passed to the client by its hash, as Chrome's `serverCertificateHashes` takes it.
+[tokio](https://tokio.rs/) (MIT): a session at `/room/<name>?pair=<id>` opens one bidirectional
+stream of length-prefixed frames, and each room runs on a thread of its own. The sessions, the
+rooms running and the bytes every queue holds are bounded, so a connection too slow to keep up is
+closed and its peer comes back. A development certificate is self-signed and passed to the client
+by its hash, as Chrome's `serverCertificateHashes` takes it.
 
 **The browser's connections.** The browser host opens a program's connections with the
 [W3C WebTransport API](https://www.w3.org/TR/webtransport/) in its render worker and keeps
@@ -1467,6 +1468,21 @@ messages' bytes as the native host does. A headless Chrome test runs a program's
 against its server build in `wrela-serve`: it joins a room another peer used first and sees its
 own proposal committed after that peer's. Its tests found that the host read a message's serial
 one word early, and that Chrome's `TextDecoder` refuses a view into the program's shared memory.
+
+**A council's review before merging.** On 2026-10-15 Ryan asked for a council to review the
+networking stack (#218–#226) before it merged: Claude led; Codex GPT-6.1-Sol and GPT-6-Astra
+reviewed the code read-only, then rebutted Claude's answers. They found what the tests had
+missed. Reading a long journal back could compact it before the end and drop the records after
+the snapshot. Events past a call's bytes waited for an event that might never come. A journal
+handle could outlive a failed rename. A connection could propose as any peer by naming its id. No
+client gave its pair id, though the spec said so. Rooms were never reclaimed, a full queue could
+drop a build's stop, and queues were bounded in messages but not bytes. Claude found one more: a
+peer far behind could be sent more of the log than its queue holds, again on every reconnect.
+Answering them, Claude found that a room rebuilt from its journal kept every outcome since its
+snapshot, as acknowledgements aren't kept: enough, after one large call, to make the snapshot
+larger than a host request. The fixes add a host mechanism, a connection's tag, so a room started
+again knows each connection's peer without trusting what a proposal says. Each fix has a
+regression test that fails without it.
 
 ## Keeping this record
 
