@@ -3,7 +3,7 @@
 // Each frame lays them out once (`layout`): input hits what's drawn. Icons are drawn from
 // lines and shapes, so they're sharp at every size.
 
-use board::Kind
+use board::{Align, Kind}
 use paint::{ACCENT, COLORS, FILLS, INKS, TEXT}
 use ui::draw::{DrawList, Rect}
 use ui::text::{Face, Fonts}
@@ -23,6 +23,18 @@ pub enum Tool: Copy + Eq {
     Pen,
     Frame,
 }
+
+/// The ways the Align row lines things up, in its order.
+pub const ALIGNS = [
+    Align::Left,
+    Align::Center,
+    Align::Right,
+    Align::Top,
+    Align::Middle,
+    Align::Bottom,
+    Align::Across,
+    Align::Down,
+]
 
 /// The shapes the Shapes tool's flyout offers.
 pub const SHAPES = [Kind::Box, Kind::Ellipse, Kind::Diamond, Kind::Triangle, Kind::Pill]
@@ -64,6 +76,10 @@ pub enum Action: Copy + Eq {
     Copy,
     Paste,
     Duplicate,
+    /// Opens (or closes) the Align row over a selection of several.
+    Align,
+    /// Lines up what's selected.
+    Arrange { way: Align },
     /// Groups what's selected, or ungroups it if it's one group.
     Group,
     Lock,
@@ -84,6 +100,8 @@ pub struct Selection: Copy {
     pub inks: bool,
     /// Whether it has words whose size can change (a note's fit itself).
     pub words: bool,
+    /// Whether it's several things, which can be lined up.
+    pub many: bool,
 }
 
 pub struct Control: Copy + Eq {
@@ -108,7 +126,13 @@ const SWATCH: f32 = 28.0
 
 /// Lays the controls out on a screen `screen` big, in device pixels `u` to a logical one; a
 /// selection brings its bar over it, with a connector's controls when it has one.
-pub fn layout(screen: vec2, u: f32, selection: Option<Selection>, flyout: bool) -> Chrome {
+pub fn layout(
+    screen: vec2,
+    u: f32,
+    selection: Option<Selection>,
+    flyout: bool,
+    aligning: bool,
+) -> Chrome {
     var c = Chrome {
         controls: Vec::new(),
         panels: Vec::new(),
@@ -166,6 +190,9 @@ pub fn layout(screen: vec2, u: f32, selection: Option<Selection>, flyout: bool) 
             buttons.push(Action::Route)
             buttons.push(Action::Heads)
         }
+        if chosen.many {
+            buttons.push(Action::Align)
+        }
         for a in [Action::Front, Action::Back, Action::Delete] {
             buttons.push(a)
         }
@@ -190,9 +217,29 @@ pub fn layout(screen: vec2, u: f32, selection: Option<Selection>, flyout: bool) 
             x += sw + g
         }
         x += g
+        let above = y < s.y
         for a in buttons {
-            c.controls.push(Control { action: a, rect: Rect::new(x, y + g, bh, bh) })
+            let r = Rect::new(x, y + g, bh, bh)
+            c.controls.push(Control { action: a, rect: r })
             x += bh + g
+            // The Align row, further from the selection than the bar, about its button.
+            if a == Action::Align && aligning {
+                let n = f32(ALIGNS.len())
+                let rw = n * (bh + g) + 3.0 * g
+                let ry = if above { y - 6.0 * u - ph } else { y + ph + 6.0 * u }
+                var rx = clamp(r.center().x - 0.5 * rw, m, max(screen.x - m - rw, m))
+                c.panels.push(Rect::new(rx, ry, rw, ph))
+                rx += 2.0 * g
+                for way in ALIGNS {
+                    c.controls.push(
+                        Control {
+                            action: Action::Arrange { way },
+                            rect: Rect::new(rx, ry + g, bh, bh),
+                        },
+                    )
+                    rx += bh + g
+                }
+            }
         }
     }
     c
@@ -273,6 +320,17 @@ pub fn tip(a: Action) -> Text {
         Action::Paste => "Paste   Cmd V",
         Action::Duplicate => "Duplicate   Cmd D",
         Action::Group => "Group   Cmd G",
+        Action::Align => "Align and space",
+        Action::Arrange { way } => match way {
+            Align::Left => "Align left   Alt A",
+            Align::Center => "Align centres   Alt H",
+            Align::Right => "Align right   Alt D",
+            Align::Top => "Align tops   Alt W",
+            Align::Middle => "Align middles   Alt V",
+            Align::Bottom => "Align bottoms   Alt S",
+            Align::Across => "Space evenly across   Alt Shift H",
+            Align::Down => "Space evenly down   Alt Shift V",
+        },
         Action::Lock => "Lock   Cmd Shift L",
         Action::SelectAll => "Select all   Cmd A",
         Action::Map => "Minimap   M",
@@ -297,6 +355,7 @@ pub fn draw(
     can_redo: bool,
     locked: bool,
     grouped: bool,
+    aligning: bool,
     shape: Kind,
     tips: bool,
 ) {
@@ -314,6 +373,7 @@ pub fn draw(
         let chosen = match k.action {
             Action::Use { tool: t } => t == tool,
             Action::Pick { kind } => kind == shape,
+            Action::Align => aligning,
             _ => false,
         }
         if k.row {
@@ -367,7 +427,12 @@ pub fn draw(
                 w,
                 h,
             ),
-            _ => Rect::new(k.rect.center().x - 0.5 * w, k.rect.y - 12.0 * u - h, w, h),
+            // Above, or below where there's no room above.
+            _ => {
+                let above = k.rect.y - 12.0 * u - h
+                let y = if above < 4.0 * u { k.rect.bottom() + 12.0 * u } else { above }
+                Rect::new(max(k.rect.center().x - 0.5 * w, 4.0 * u), y, w, h)
+            },
         }
         list.rect(r, vec4(0.13, 0.14, 0.16, 0.94), radius: 6.0 * u)
         let _ = list.text(
@@ -527,9 +592,11 @@ fn icon(
             list.ring(box(-8.0, -8.0, 11.0, 11.0), ink, radius: 1.5 * u, width: 1.2 * u)
             list.rect(box(-3.0, -3.0, 11.0, 11.0), ink, radius: 1.5 * u)
         },
+        Action::Align => align_icon(mut list, Align::Left, c, u, ink, w),
+        Action::Arrange { way } => align_icon(mut list, way, c, u, ink, w),
         Action::Back => {
             list.rect(box(-8.0, -8.0, 11.0, 11.0), ink, radius: 1.5 * u)
-            list.rect(box(-3.0, -3.0, 11.0, 11.0), vec4(1.0), radius: 1.5 * u)
+            list.rect(box(-3.0, -3.0, 11.0, 11.0), back, radius: 1.5 * u)
             list.ring(box(-3.0, -3.0, 11.0, 11.0), ink, radius: 1.5 * u, width: 1.2 * u)
         },
         Action::Delete => {
@@ -556,9 +623,11 @@ fn the_selection_bar_stays_on_the_screen() {
                 links: false,
                 inks: false,
                 words: false,
+                many: false,
             },
         ),
         flyout: false,
+        aligning: false,
     )
     let bar = c.panels[3]
     assert(bar.y > 45.0 && bar.x >= MARGIN, f"{bar.x}, {bar.y}")
@@ -618,6 +687,39 @@ fn menu_row(
             vec2(r.right() - 10.0 * u - kw, y),
             vec4(0.55, 0.56, 0.6, 1.0),
         )
+    }
+}
+
+/// A way of lining up's icon, about `c`: the line things meet on and two bars on it, or two
+/// lines and a bar evenly between them. The ways down are the ways across turned.
+fn align_icon(list: mut DrawList, way: Align, c: vec2, u: f32, ink: vec4, w: f32) {
+    let down = way == Align::Top ||
+        way == Align::Middle ||
+        way == Align::Bottom ||
+        way == Align::Down
+    // A point and a rectangle on the icon's grid, turned for the ways down.
+    let p = |x: f32, y: f32| -> vec2 { if down { c + vec2(y, x) * u } else { c + vec2(x, y) * u } }
+    let bar = |x: f32, y: f32, bw: f32, bh: f32| -> Rect {
+        if down { Rect::new(c.x + y * u, c.y + x * u, bh * u, bw * u) } else {
+            Rect::new(c.x + x * u, c.y + y * u, bw * u, bh * u)
+        }
+    }
+    if way == Align::Across || way == Align::Down {
+        list.line(p(-8.0, -8.0), p(-8.0, 8.0), ink, width: w)
+        list.line(p(8.0, -8.0), p(8.0, 8.0), ink, width: w)
+        list.rect(bar(-2.5, -5.0, 5.0, 10.0), ink, radius: 1.0 * u)
+        return
+    }
+    // Where the bars meet: their left (or top), middle, or right (or bottom).
+    let side = match way {
+        Align::Left | Align::Top => -1.0,
+        Align::Right | Align::Bottom => 1.0,
+        _ => 0.0,
+    }
+    list.line(p(8.0 * side, -8.5), p(8.0 * side, 8.5), ink, width: w)
+    for (y, bw) in [(-5.5, 13.0), (1.5, 8.0)] {
+        let x = if side < 0.0 { -6.0 } else if side > 0.0 { 6.0 - bw } else { -0.5 * bw }
+        list.rect(bar(x, y, bw, 4.0), ink, radius: 1.0 * u)
     }
 }
 

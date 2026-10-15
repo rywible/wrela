@@ -49,6 +49,19 @@ pub struct Item: Clone + Eq + Serialize {
     pub group: u32,
 }
 
+/// How `Board::arrange` lines things up: their left edges, centres or right edges together; their
+/// tops, middles or bottoms; or with even gaps between them, across or down.
+pub enum Align: Copy + Eq {
+    Left,
+    Center,
+    Right,
+    Top,
+    Middle,
+    Bottom,
+    Across,
+    Down,
+}
+
 /// A link's style: bits for elbows (else straight), and an arrowhead at each end.
 pub const ELBOW: u32 = 1
 pub const START_ARROW: u32 = 2
@@ -578,6 +591,98 @@ impl Board {
         }
     }
 
+    /// Lines up the items in `ids` as `way` says. A group among them moves as one, a frame
+    /// takes what's inside it, a connector follows its ends, and a locked item stays (but the
+    /// rest still line up on it). Even gaps need three things; the outer two stay.
+    pub fn arrange(mut self, ids: [u32], way: Align) {
+        // What moves as one: a group, or an item in none.
+        var units: Vec<Vec<u32>> = Vec::new()
+        var groups: Vec<u32> = Vec::new()
+        for id in ids {
+            let Some(i) = self.index(id) else { continue }
+            let g = self.items[i].group
+            if self.items[i].kind == Kind::Link || g != 0 && has(groups, g) {
+                continue
+            }
+            if g == 0 {
+                units.push(Vec::from([id]))
+                continue
+            }
+            groups.push(g)
+            var members: Vec<u32> = Vec::new()
+            for k in ids {
+                let Some(j) = self.index(k) else { continue }
+                if self.items[j].group == g && self.items[j].kind != Kind::Link {
+                    members.push(k)
+                }
+            }
+            units.push(take members)
+        }
+        let spaced = way == Align::Across || way == Align::Down
+        if units.len() < (if spaced { 3 } else { 2 }) {
+            return
+        }
+        var rects: Vec<Rect> = Vec::new()
+        for u in units {
+            rects.push(self.extent(u).unwrap())
+        }
+        var lo = vec2(rects[0].x, rects[0].y)
+        var hi = vec2(rects[0].right(), rects[0].bottom())
+        for r in rects {
+            lo = min(lo, vec2(r.x, r.y))
+            hi = max(hi, vec2(r.right(), r.bottom()))
+        }
+        let middle = 0.5 * (lo + hi)
+        var shifts: Vec<vec2> = Vec::new()
+        for r in rects {
+            shifts.push(match way {
+                Align::Left => vec2(lo.x - r.x, 0.0),
+                Align::Center => vec2(middle.x - r.center().x, 0.0),
+                Align::Right => vec2(hi.x - r.right(), 0.0),
+                Align::Top => vec2(0.0, lo.y - r.y),
+                Align::Middle => vec2(0.0, middle.y - r.center().y),
+                Align::Bottom => vec2(0.0, hi.y - r.bottom()),
+                _ => vec2(0.0),
+            })
+        }
+        if spaced {
+            // In order of their centres along the way, with what's left over shared between them.
+            let across = way == Align::Across
+            let along = |r: Rect| -> f32 { if across { r.center().x } else { r.center().y } }
+            var order: Vec<u32> = Vec::new()
+            for k in 0..rects.len() {
+                var at = order.len()
+                while at > 0 && along(rects[order[at - 1]]) > along(rects[k]) {
+                    at -= 1
+                }
+                order.insert(at, k)
+            }
+            var used = 0.0
+            for r in rects {
+                used += if across { r.w } else { r.h }
+            }
+            let gap = ((if across { hi.x - lo.x } else {
+                hi.y - lo.y
+            }) - used) / f32(rects.len() - 1)
+            var at = if across { lo.x } else { lo.y }
+            for k in order {
+                let r = rects[k]
+                shifts[k] = if across { vec2(at - r.x, 0.0) } else { vec2(0.0, at - r.y) }
+                at += (if across { r.w } else { r.h }) + gap
+            }
+        }
+        for k in 0..units.len() {
+            // A frame's contents come too, unless they're lined up themselves.
+            var carried: Vec<u32> = Vec::new()
+            for id in self.with_contents(units[k]) {
+                if has(units[k], id) || !has(ids, id) {
+                    carried.push(id)
+                }
+            }
+            self.move_by(carried, shifts[k])
+        }
+    }
+
     /// Copies of the items in `ids`, and of the links between them, bottom first.
     pub fn copy(self, ids: [u32]) -> Vec<Item> {
         var out: Vec<Item> = Vec::new()
@@ -888,4 +993,42 @@ fn a_group_is_selected_whole_and_pasted_as_a_new_one() {
     let g = b.items[b.index(copies[0]).unwrap()].group
     assert(g != 0 && g != 9, f"the copies' group is new: {g}")
     assert(b.members(g) == copies, "the copies, their connector too, are one group")
+}
+
+@test
+fn arranging_lines_up_edges_and_shares_gaps() {
+    var b = Board::new()
+    let a = b.add(Item::new(Kind::Box, vec2(0.0, 0.0), vec2(100.0, 50.0), color: 4))
+    let c = b.add(Item::new(Kind::Box, vec2(150.0, 40.0), vec2(40.0, 40.0), color: 4))
+    let d = b.add(Item::new(Kind::Box, vec2(400.0, 10.0), vec2(60.0, 20.0), color: 4))
+    let rect = |b: Board, id: u32| -> Rect { b.items[b.index(id).unwrap()].rect() }
+    var right = b.clone()
+    right.arrange([a, c, d], Align::Right)
+    assert(
+        rect(right, a).right() == 460.0 &&
+            rect(right, c).right() == 460.0 &&
+            rect(right, d).x == 400.0,
+    )
+    var middle = b.clone()
+    middle.arrange([a, c, d], Align::Middle)
+    // From y 0 to 80: middles at 40.
+    assert(rect(middle, a).center().y == 40.0 && rect(middle, d).center().y == 40.0)
+    // 460 across holds 200 of boxes: two gaps of 130, the outer two staying.
+    var spread = b.clone()
+    spread.arrange([d, a, c], Align::Across)
+    assert(
+        rect(spread, a).x == 0.0 && rect(spread, c).x == 230.0 && rect(spread, d).x == 400.0,
+        f"{rect(spread, c).x}",
+    )
+    // A group lines up whole, and a locked item stays.
+    var grouped = b.clone()
+    for i in 0..grouped.items.len() {
+        if grouped.items[i].id != d { grouped.items[i].group = 7 }
+    }
+    grouped.arrange([a, c, d], Align::Top)
+    assert(rect(grouped, a).y == 0.0 && rect(grouped, c).y == 40.0 && rect(grouped, d).y == 0.0)
+    var locked = b.clone()
+    locked.items[0].locked = true
+    locked.arrange([a, c], Align::Left)
+    assert(rect(locked, a).x == 0.0 && rect(locked, c).x == 0.0)
 }

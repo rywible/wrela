@@ -4,7 +4,7 @@
 // node is `ITEMS` plus its id, so what's drawn over it never decides what's acted on.
 
 use board::{Board, Kind, has}
-use chrome::{Action, Chrome, SHAPES, Selection, TOOLS, Tool, tip}
+use chrome::{ALIGNS, Action, Chrome, SHAPES, Selection, TOOLS, Tool, tip}
 use paint::COLORS
 use platform::host::{Node, Role}
 use ui::draw::Rect
@@ -53,6 +53,14 @@ pub fn node_of(a: Action) -> u32 {
         Action::Paste => 53,
         Action::Duplicate => 54,
         Action::Group => 71,
+        Action::Align => 72,
+        Action::Arrange { way } => {
+            var n = 0
+            for i in 0..ALIGNS.len() {
+                if ALIGNS[i] == way { n = i }
+            }
+            80 + n
+        },
         Action::Lock => 55,
         Action::SelectAll => 56,
     }
@@ -68,6 +76,9 @@ pub fn action_of(node: u32) -> Option<Action> {
     }
     if node >= 60 && node < 60 + SHAPES.len() {
         return Some(Action::Pick { kind: SHAPES[node - 60] })
+    }
+    if node >= 80 && node < 80 + ALIGNS.len() {
+        return Some(Action::Arrange { way: ALIGNS[node - 80] })
     }
     let all = [
         Action::Front,
@@ -86,6 +97,7 @@ pub fn action_of(node: u32) -> Option<Action> {
         Action::Paste,
         Action::Duplicate,
         Action::Group,
+        Action::Align,
         Action::Lock,
         Action::SelectAll,
         Action::TypeSize,
@@ -213,9 +225,11 @@ fn every_control_has_its_own_node() {
                 links: true,
                 inks: true,
                 words: true,
+                many: true,
             },
         ),
         flyout: true,
+        aligning: true,
     )
     var seen: Vec<u32> = Vec::new()
     for k in c.controls {
@@ -241,7 +255,7 @@ fn items_are_named_by_kind_and_words() {
     assert(name(b, 0) == "Sticky note: Plan")
     assert(name(b, 2) == "Connector from Plan to a shape")
     let nodes = tree(
-        chrome::layout(vec2(640.0), 1.0, None, flyout: false),
+        chrome::layout(vec2(640.0), 1.0, None, flyout: false, aligning: false),
         b,
         View::new(),
         [a],

@@ -7,7 +7,7 @@
 // text mode at the caret, what a copy would take, and the accessibility tree. Input hits what the
 // frame before drew.
 
-use board::{Board, ELBOW, END_ARROW, History, Item, Kind, NOTE, SMALLEST, START_ARROW, has}
+use board::{Align, Board, ELBOW, END_ARROW, History, Item, Kind, NOTE, SMALLEST, START_ARROW, has}
 use chrome::{Action, Chrome, Selection, Tool}
 use snap::{Guide, snap_point, snap_rect}
 use clip::{Aim, Into, destination, items_of}
@@ -131,6 +131,8 @@ pub struct App {
     /// The shape the Shapes tool makes, and whether its flyout is open.
     shape: Kind,
     flyout: bool,
+    /// Whether the Align row is open over a selection of several.
+    aligning: bool,
     /// The control the pointer is over, and since when: its tip shows after a moment.
     hovering: Option<(Action, f32)>,
     /// Whether the minimap shows.
@@ -190,6 +192,7 @@ pub fn init() -> App {
         carried: Vec::new(),
         shape: Kind::Box,
         flyout: false,
+        aligning: false,
         hovering: None,
         map_on: false,
         naming: None,
@@ -382,11 +385,14 @@ fn selection(s: App) -> Option<Selection> {
     var links = false
     var inks = true
     var words = false
+    var things = 0
     for id in s.selected {
         if let Some(i) = s.board.index(id) {
             let kind = s.board.items[i].kind
             if kind == Kind::Link {
                 links = true
+            } else {
+                things += 1
             }
             if kind != Kind::Link && kind != Kind::Pen && kind != Kind::Text {
                 inks = false
@@ -396,7 +402,7 @@ fn selection(s: App) -> Option<Selection> {
             }
         }
     }
-    Some(Selection { rect: s.view.rect(r), links, inks, words })
+    Some(Selection { rect: s.view.rect(r), links, inks, words, many: things > 1 })
 }
 
 /// Whether an item of `kind` has words whose size the bar changes: not a note (its words fit
@@ -411,7 +417,13 @@ fn layout(s: App) -> Chrome {
         Drag::Control => selection(s),
         _ => None,
     }
-    var c = chrome::layout(s.screen, unit(s), bar, flyout: s.flyout && s.drag == Drag::Idle)
+    var c = chrome::layout(
+        s.screen,
+        unit(s),
+        bar,
+        flyout: s.flyout && s.drag == Drag::Idle,
+        aligning: s.aligning,
+    )
     if let Some(at) = s.menu {
         var entries: Vec<Action> = if s.selected.is_empty() {
             Vec::from([Action::Paste, Action::SelectAll, Action::Fit])
@@ -1056,6 +1068,11 @@ fn act(s: mut App, a: Action) {
             paste(mut s, items)
         },
         Action::Group => group(mut s, !grouped(s)),
+        Action::Align => s.aligning = !s.aligning,
+        Action::Arrange { way } => {
+            checkpoint(mut s)
+            s.board.arrange(s.selected, way)
+        },
         Action::Lock => lock(mut s),
         Action::Map => s.map_on = !s.map_on,
         Action::Title => {
@@ -1190,8 +1207,9 @@ fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
         return
     }
     s.naming = None
-    // A press on the board closes the shapes' flyout.
+    // A press on the board closes the shapes' flyout and the Align row.
     s.flyout = false
+    s.aligning = false
     // A press away from an open menu only closes it.
     if s.menu.is_some() {
         s.menu = None
@@ -1571,6 +1589,22 @@ fn key_down(s: mut App, key: Key, repeat: bool, mods: Mods) {
         }
         return
     }
+    // Alt and a letter line up what's selected.
+    if mods.alt {
+        let way = match key {
+            Key::A => Some(Align::Left),
+            Key::H => Some(if mods.shift { Align::Across } else { Align::Center }),
+            Key::D => Some(Align::Right),
+            Key::W => Some(Align::Top),
+            Key::V => Some(if mods.shift { Align::Down } else { Align::Middle }),
+            Key::S => Some(Align::Bottom),
+            _ => None,
+        }
+        if let Some(w) = way {
+            act(mut s, Action::Arrange { way: w })
+        }
+        return
+    }
     if key == Key::Space {
         s.space = true
     } else if key == Key::Escape {
@@ -1876,6 +1910,7 @@ fn draw(s: mut App, screen: vec2) {
         can_redo: s.history.can_redo(),
         locked: locked,
         grouped: grouped,
+        aligning: s.aligning,
         shape: s.shape,
         tips: tips,
     )
@@ -2353,3 +2388,17 @@ fn shift_two_zooms_to_the_selection(game: App) {
     assert(length(r.center() - vec2(320.0, 240.0)) < 0.05, f"{r.center().x}, {r.center().y}")
 }
 
+/// Three notes selected: the Align row's "tops" puts their tops together, and Alt+Shift+H
+/// spaces them evenly across, the outer two staying.
+@test(frames: 20, input: "scripts/align.json")
+fn the_align_row_lines_notes_up(game: App) {
+    assert(game.aligning, "the row is open")
+    let a = game.board.items[0].rect()
+    let b = game.board.items[1].rect()
+    let c = game.board.items[2].rect()
+    assert(a.y == b.y && b.y == c.y, f"tops {a.y}, {b.y}, {c.y}")
+    assert(
+        abs((b.x - a.right()) - (c.x - b.right())) < 1.0e-3,
+        f"gaps {b.x - a.right()} and {c.x - b.right()}",
+    )
+}
