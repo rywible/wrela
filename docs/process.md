@@ -1008,6 +1008,17 @@ the sun: a third tone, as anime paints black coats. The frame-rate test now boun
 point by point and each free sheet on average, because the sleeves' and mantle's free ends whip
 apart over a log at a sprint.
 
+Ryan then noted an indent at the chin and a lumpy join from neck to cowl, a hood opening
+too perfectly oval and a hood too like a sphere, and light that striped the cloth; he asked
+that the climber look menacing, almost eating the light, as if made of shadow cloth. The
+robe's collar had pinched in round a neck between the hood and the cowl; it is now wide, under
+the hood's foot, and the cowl's top tucks under it. The hood is deeper than it is wide, with
+flat sides, a peak drawn up to a point and a back that slopes straight down. Its opening is a
+pointed arch with a flatter foot and slightly uneven sides. The cloth no longer models light on
+its folds at all: it is near-black whatever lights it, darker still toward the edge of its form
+so it reads as a hole in the scene, with a faint violet at the very edge. Pure black was tried
+first; the face's void then vanished into the cloth, so the cloth sits just above it.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

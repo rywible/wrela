@@ -402,17 +402,17 @@ pub fn garment_shadow(v: VertexIndex, points: [vec4], d: Drawing, view: mat4) ->
 
 // ---- the coat's shading ----------------------------------------------------------------------------
 
-/// The coat's colour, the flat light its folds' crests catch, and the cool light its fibres
-/// scatter where it turns from the eye.
-const COAT = vec3(0.011, 0.011, 0.015)
-const CREST = vec3(0.016, 0.018, 0.026)
-const SHEEN = vec3(0.05, 0.055, 0.075)
+/// The shadow-cloth's colour: all but black, a little cold; and the faint violet its edge
+/// gives off (the licks' colour, much dimmer).
+const COAT = vec3(0.012, 0.012, 0.016)
+const GLOW = vec3(0.012, 0.004, 0.03)
 
-/// The coat at a point (`n` its normal, `fold` from a crease's valley to its crest), in the
-/// characters' cel manner but its own: three flat tones, as anime paints a black coat. The
-/// shade; the lit; and on the lit side, hard-edged shapes of light along the crests of its
-/// folds, which make it read as hanging cloth. The valleys are a band darker. No gloss, which
-/// on black reads as wet latex; a soft cool fibre sheen at the very edge of the form instead.
+/// The garment at a point (`n` its normal, `fold` from a crease's valley to its crest): cloth
+/// made of shadow, that seems to eat the light round it rather than reflect it. The sun barely
+/// lifts it: its lit side is only a little less black than its shade, so no stripes of light lie
+/// on its folds; its folds show only as a little more dark in their valleys. Toward the edge of
+/// its form it goes darker still, a hole in the scene, and at the very edge it gives off a thin
+/// faint violet, its own, not the sun's.
 fn coat(lt: Lighting, world: vec3, n: vec3, fold: f32) -> vec3 {
     let l = lt.light.sun
     let v = normalize(lt.cam.eye - world)
@@ -420,22 +420,16 @@ fn coat(lt: Lighting, world: vec3, n: vec3, fold: f32) -> vec3 {
     let open = open_light(lt.probes, vec3(0.0, 1.0, 0.0))
     let lit = lt.light.sun_colour * 0.75 + open * 0.5
     let shade = vec3(0.36, 0.4, 0.54) * (0.45 + 0.55 * saturate(dot(sky, vec3(0.6))))
-    let facing = dot(n, l)
-    let t = smoothstep(-0.02, 0.06, facing) * sun
+    let t = smoothstep(-0.1, 0.3, dot(n, l)) * sun
     if lt.light.clay != 0 {
         return CLAY * mix(shade, lit, vec3(t))
     }
-    let valley = 1.0 - smoothstep(-0.55, -0.4, fold)
-    var c = COAT * mix(shade, lit, vec3(t)) * (1.0 - 0.45 * valley)
-    // Where a fold's side turns square to the sun, not wherever there's a crest: shapes of
-    // light that move across the form as it turns, not stripes down it.
-    let crest = smoothstep(0.0, 0.2, fold) * smoothstep(0.72, 0.78, facing) * sun
-    c += CREST * lit * crest
+    let valley = 1.0 - smoothstep(-0.6, 0.0, fold)
+    let light = mix(shade, lit, vec3(t * 0.5))
     let away = 1.0 - max(dot(n, v), 0.0)
-    let behind = saturate(-dot(v, l))
-    let fibres = pow(away, 4.0) * (1.0 - 0.6 * valley)
-    let light = open * 0.5 + lt.light.sun_colour * (0.35 * t + 0.6 * behind * sun)
-    c + SHEEN * light * fibres
+    let hole = 1.0 - 0.75 * smoothstep(0.45, 0.85, away)
+    let c = COAT * light * (1.0 - 0.4 * valley) * hole
+    c + GLOW * smoothstep(0.88, 0.97, away)
 }
 
 // ---- the licks of shadow ---------------------------------------------------------------------------
