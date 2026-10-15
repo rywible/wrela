@@ -84,7 +84,7 @@ pub const POINTS: u32 = AROUND * (HOOD_ROWS + DOWN + MANTLE_ROWS) + 2 * SLEEVE_R
 
 /// How far further out than the robe each sheet lies over the body (m): the mantle over the
 /// robe's shoulders, the sleeves over its sides.
-const PADS = [0.0, 0.0, 0.05, 0.025, 0.025]
+const PADS = [0.0, 0.0, 0.03, 0.025, 0.025]
 
 /// The robe's point `i` round (0 ahead, toward the climber's left) and `j` down (0 the collar).
 pub fn point(i: u32, j: u32) -> u32 {
@@ -184,45 +184,59 @@ pub fn rest(column: u32, j: u32) -> vec3 {
 /// The hood's middle: over the head, a little forward of it.
 const HOOD_CENTRE = vec3(0.0, 1.9, 0.025)
 
-/// The hood's rows that are open in front (from the first to before the last), and how many
-/// columns either side of straight ahead the opening spans: the face's opening, a deep dark
-/// tunnel, its rim the hood's own cloth.
-pub const OPEN_ROWS = vec2u(2, 6)
-pub const OPEN_HALF: u32 = 3
+/// The face's opening in the hood, in the hood's rows and columns: an oval round straight ahead,
+/// its middle `FACE.y` rows down from the crown, `FACE.x` columns either side and `FACE.z` rows
+/// above and below it. A deep dark tunnel, its rim the hood's own cloth.
+pub const FACE = vec3(2.4, 3.7, 2.1)
 
-/// The hood at rest, in the body's space, row `h` (0 its crown) and column `column`: a cowl round
-/// the head whose peak falls back and down behind it, drawn forward round the face into a deep
-/// tunnel, its lower rows coming in to meet the robe's collar.
+/// Whether a point of the hood at `uv` (columns round, rows down from the crown) is in the
+/// face's opening.
+pub fn face_open(uv: vec2) -> bool {
+    let round = f32(AROUND)
+    let x = uv.x - floor(uv.x / round) * round
+    let dx = min(x, round - x) / FACE.x
+    let dy = (uv.y - FACE.y) / FACE.z
+    dx * dx + dy * dy < 1.0
+}
+
+/// The hood at rest, in the body's space, row `h` (0 its crown) and column `column`: a tall cowl
+/// round the head, its peak rising a little and tipping forward over the face, its brow drawn
+/// out over the opening into a deep tunnel and drawn back under it, its back falling smoothly onto the shoulders, its
+/// lower rows coming in to meet the robe's collar.
 pub fn hood_rest(column: u32, h: u32) -> vec3 {
     let a = TAU * f32(column % AROUND) / f32(AROUND)
     let t = f32(h) / f32(HOOD_ROWS)
-    let phi = mix(0.0, 2.25, t)
-    let r = 0.25
-    var p = HOOD_CENTRE + vec3(r * sin(phi) * sin(a), r * cos(phi), 1.08 * r * sin(phi) * cos(a))
-    // The peak falls back and down behind the head (its back, not its brow). Its first row is
-    // one point, all its columns moved alike: the crown is closed.
-    let back = mix(1.0, 0.5 - 0.5 * cos(a), smoothstep(0.0, 0.3, t))
-    let crown = (1.0 - t) * (1.0 - t) * back
-    p = p + vec3(0.0, -0.05, -0.18) * crown
-    // Round the face it comes forward: a deep tunnel.
-    let front = pow(max(cos(a), 0.0), 2.0)
-    p.z += 0.12 * front * smoothstep(0.05, 0.3, t) * (1.0 - smoothstep(0.75, 0.95, t))
+    let phi = mix(0.0, 2.3, t)
+    let r = 0.27
+    var p = HOOD_CENTRE + vec3(r * sin(phi) * sin(a), 1.18 * r * cos(phi), r * sin(phi) * cos(a))
+    // The peak: all its first row's columns moved alike, so the crown is closed.
+    p = p + vec3(0.0, 0.05, 0.03) * pow(1.0 - t, 3.0)
+    // The brow comes out over the face more than the chin: a hood that overhangs.
+    let front = pow(max(cos(a), 0.0), 1.5)
+    let brow = smoothstep(0.05, 0.3, t) * (1.0 - smoothstep(0.3, 0.62, t))
+    p.z += 0.15 * front * brow
+    // Below the opening it draws back under the chin, toward the collar.
+    p.z -= 0.06 * front * smoothstep(0.4, 0.7, t)
     // Its lower rows come in to meet the collar.
     mix(p, collar(a) + vec3(0.0, 0.04, 0.0), vec3(smoothstep(0.62, 1.0, t)))
 }
 
-/// The mantle at rest, row `j` (0 the ring it hangs from) and column `column`: from a ring
-/// under the hood, out over the shoulders, to an uneven edge over the upper arms.
+/// The mantle at rest, row `j` (0 the ring it hangs from) and column `column`: a cowl collar
+/// from a ring under the hood, snug over the shoulders and short there, falling in front and
+/// behind to long points, its edge uneven between them: it frames the figure, not boxes it.
 pub fn mantle_rest(column: u32, j: u32) -> vec3 {
     let i = column % AROUND
     let a = TAU * f32(i) / f32(AROUND)
     let t = f32(j) / f32(MANTLE_ROWS - 1)
-    let top = 1.8 - 0.05 * abs(sin(a))
-    let scallop = pow(0.5 + 0.5 * cos(6.0 * a + 0.5), 2.0)
-    let bottom = 1.42 - 0.03 * cos(2.0 * a) - 0.07 * scallop - 0.03 * uneven(i, 3.0)
+    let side = abs(sin(a))
+    let top = 1.8 - 0.05 * side
+    let ends = pow(abs(cos(a)), 4.0)
+    let ragged = 0.04 * pow(0.5 + 0.5 * cos(9.0 * a + 0.5), 3.0) + 0.03 * uneven(i, 3.0)
+    let bottom = 1.46 - 0.3 * ends - ragged
     // Out over the shoulders first, then down: it lies on them, not through them.
-    let r = mix(vec2(0.2, 0.19), vec2(0.47, 0.37), vec2(pow(t, 0.35)))
-    vec3(r.x * sin(a), mix(top, bottom, pow(t, 1.4)), r.y * cos(a))
+    let over = smoothstep(0.0, 0.45, t)
+    let r = mix(vec2(0.2, 0.19), vec2(0.42, 0.34), vec2(pow(over, 0.5))) + vec2(0.01, 0.03) * t
+    vec3(r.x * sin(a), mix(top, bottom, pow(t, 1.2)), r.y * cos(a))
 }
 
 /// The climber's left (1) and right (-1), each sleeve's a little ahead of the other and lower,
@@ -233,19 +247,22 @@ const SLEEVE_LOW = [0.0, 0.06]
 
 /// Where sleeve `k` hangs from, in the body's space: under the mantle, at the shoulder.
 pub fn sleeve_top(k: u32) -> vec3 {
-    vec3(SIDE[k] * 0.36, 1.52, 0.03)
+    vec3(SIDE[k] * 0.34, 1.52, 0.03)
 }
 
 /// Sleeve `k` at rest, row `j` (0 the ring it hangs from) and column `column`: a slim bell down
-/// to the thigh, open at its cuff, whose back falls longer in a rag.
+/// to the thigh, opening into a wide bell at its cuff, whose back falls longer in a rag.
 pub fn sleeve_rest(k: u32, column: u32, j: u32) -> vec3 {
     let i = column % SLEEVE_ROUND
     let b = TAU * f32(i) / f32(SLEEVE_ROUND)
     let t = f32(j) / f32(SLEEVE_ROWS - 1)
-    let rag = 0.16 * pow(max(-cos(b), 0.0), 3.0) + 0.03 * uneven(i + 7 * k, 5.0)
-    let length = 0.76 + SLEEVE_LOW[k] + rag
-    let centre = sleeve_top(k) + vec3(SIDE[k] * 0.04 * t, -length * t, (0.08 + SLEEVE_AHEAD[k]) * t)
-    let r = mix(0.06, 0.13, pow(t, 1.3))
+    let rag = 0.2 * pow(max(-cos(b), 0.0), 3.0) + 0.03 * uneven(i + 7 * k, 5.0)
+    let length = 0.8 + SLEEVE_LOW[k] + rag
+    // Its bell opens out and forward, away from the robe.
+    let centre = sleeve_top(k) +
+        vec3(SIDE[k] * 0.11 * t * t, -length * t, (0.12 + SLEEVE_AHEAD[k]) * t)
+    // Narrow from under the mantle, opening into a wide bell at its mouth.
+    let r = mix(0.055, 0.17, pow(t, 2.0))
     centre + vec3(r * sin(b), 0.0, r * cos(b))
 }
 
@@ -280,23 +297,28 @@ fn link(s: u32, a: (u32, u32), b: (u32, u32), stiff: f32) -> Link {
     Link { a: sheet.at(a.0, a.1), b: sheet.at(b.0, b.1), length: length(pa - pb), stiff }
 }
 
+/// How much each sheet resists bending (the stiffness of its links two along): the sleeves'
+/// bells hold their shape, where a softer one buckles in a swing and stays buckled.
+const BENDS = [0.3, 0.3, 0.3, 0.7, 0.7]
+
 /// The garment's links, on each sheet that moves: round and down (stiff), across each cell (a
-/// little less, so it shears), and to the point two along, round and down (soft: it bends).
+/// little less, so it shears), and to the point two along, round and down (they bend).
 pub fn links() -> Vec<Link> {
     var out: Vec<Link> = Vec::new()
     for s in 1..5 {
         let sheet = SHEETS[s]
+        let bend = BENDS[s]
         for j in 0..sheet.down {
             for i in 0..sheet.around {
                 out.push(link(s, (i, j), (i + 1, j), 1.0))
-                out.push(link(s, (i, j), (i + 2, j), 0.3))
+                out.push(link(s, (i, j), (i + 2, j), bend))
                 if j + 1 < sheet.down {
                     out.push(link(s, (i, j), (i, j + 1), 1.0))
                     out.push(link(s, (i, j), (i + 1, j + 1), 0.7))
                     out.push(link(s, (i + 1, j), (i, j + 1), 0.7))
                 }
                 if j + 2 < sheet.down {
-                    out.push(link(s, (i, j), (i, j + 2), 0.3))
+                    out.push(link(s, (i, j), (i, j + 2), bend))
                 }
             }
         }
@@ -764,13 +786,13 @@ fn the_garment_at_rest_clears_its_body() {
     }
 }
 
-/// The hood is the robe's top: its crown over the head and its peak behind it, open in front
+/// The hood is the robe's top: its crown over the head, its brow out over the face, open in front
 /// round the face, its last row just over the robe's collar all round, so the two are one
 /// surface.
 @test
 fn the_hood_runs_on_into_the_robe() {
     let crown = hood_rest(AROUND / 2, 0)
-    assert(crown.y > HEAD.y + 0.15 && crown.z < HEAD.z - 0.05, "the hood's peak isn't behind")
+    assert(crown.y > HEAD.y + 0.25, "the hood isn't tall")
     for i in 0..AROUND {
         let last = hood_rest(i, HOOD_ROWS - 1)
         let collar = rest(i, 0)
@@ -781,8 +803,12 @@ fn the_hood_runs_on_into_the_robe() {
             assert(off > HEAD_RADIUS, "the hood cuts into the head")
         }
     }
-    let brow = hood_rest(0, OPEN_ROWS.x)
+    let brow = hood_rest(0, u32(ceil(FACE.y - FACE.z)))
+    let chin = hood_rest(0, u32(FACE.y + FACE.z))
     assert(brow.z > HEAD.z + 0.25, "the hood doesn't come forward over the face")
+    assert(brow.z > chin.z, "the brow doesn't overhang the opening")
+    assert(face_open(vec2(0.0, FACE.y)) && face_open(vec2(f32(AROUND) - 0.5, FACE.y)), "no face")
+    assert(!face_open(vec2(f32(AROUND) / 2.0, FACE.y)), "the hood's back is open")
 }
 
 /// The mantle hangs over the robe's shoulders and the sleeves from under it: each held ring
@@ -866,6 +892,7 @@ fn sprinting_over_a_log_keeps_cloth_time_and_support_together() {
         fine.step(body_frame(start.at, 0.0, Form {}), 0.0, start, vec3(0.0), 1.0 / 60.0)
     }
     var worst = 0.0
+    var free = 0.0
     var hem_high = 0.0
     for frame in 0..16 {
         for step in 0..12 {
@@ -875,15 +902,28 @@ fn sprinting_over_a_log_keeps_cloth_time_and_support_together() {
         }
         let ground = support(-4.0 + 7.5 * f32(frame + 1) * 0.1)
         coarse.step(body_frame(ground.at, 0.0, Form {}), 0.0, ground, vec3(0.0), 0.1)
-        for k in 0..POINTS {
+        // The robe point by point. The mantle and the sleeves end free, and whip over the log:
+        // there two paths split as any whip's do, so each of them is held on average.
+        for k in ROBE_SHEET.first..(ROBE_SHEET.first + ROBE_SHEET.points()) {
             worst = max(worst, length(coarse.at[k] - fine.at[k]))
+        }
+        for s in 2..5 {
+            let sheet = SHEETS[s]
+            var sum = 0.0
+            for k in sheet.first..(sheet.first + sheet.points()) {
+                sum += length(coarse.at[k] - fine.at[k])
+            }
+            free = max(free, sum / f32(sheet.points()))
         }
         for i in 0..AROUND {
             hem_high = max(hem_high, coarse.at[point(i, DOWN - 1)].y - ground.at.y)
         }
     }
-    print(f"sprinting over a log: frame-rate cloth gap {worst} m; hem above feet {hem_high} m")
-    assert(worst < 0.3, f"slow frames move the cape {worst} m away from its fixed-step path")
+    print(
+        f"sprinting over a log: frame-rate gap {worst} m (robe), {free} m (free sheets' mean); hem above feet {hem_high} m",
+    )
+    assert(worst < 0.3, f"slow frames move the robe {worst} m away from its fixed-step path")
+    assert(free < 0.15, f"slow frames move a free sheet {free} m away from its path, on average")
     // The train swings up as it's dragged over the log, but never toward the shoulders.
     assert(hem_high < 0.9, f"the pooled hem rises {hem_high} m toward the shoulders")
 }

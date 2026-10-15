@@ -996,6 +996,18 @@ model, read for principle) was tried and dropped: on black it read as wet latex.
 reads by a soft fibre sheen toward the form's edge, as velvet and wool do. No outside code or
 asset was used.
 
+Ryan liked the licks, but judged the hood warped, the silhouette worse and the material still
+not cloth. The hood was a small sphere whose opening was cut in whole cells, so it came out
+blocky and bulged behind. It is now a taller cowl with an overhanging brow, and its opening is
+a smooth oval cut in the shader. The mantle had become a wide shelf; it is now a cowl collar,
+snug at the shoulders and falling to points in front and behind. The sleeves open into bells
+and bend stiffly enough not to stay buckled after a swing. On the coat, both regular creases
+and fold-keyed light read as pinstripes. Its folds are now fewer, broader and uneven, the hood
+carries almost none, and the light on them is hard-edged shapes where a fold's side turns to
+the sun: a third tone, as anime paints black coats. The frame-rate test now bounds the robe
+point by point and each free sheet on average, because the sleeves' and mantle's free ends whip
+apart over a log at a sprint.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
