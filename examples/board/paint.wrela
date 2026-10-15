@@ -67,7 +67,7 @@ fn room(it: Item) -> Rect {
 }
 
 pub fn layout(font: Font, it: Item) -> Layout {
-    borrow text = it.text.as_str()
+    let text = it.text.as_str()
     if it.kind == Kind::Text {
         let lines = font.wrap(text, TEXT_SIZE, it.size.x)
         var xs: Vec<f32> = Vec::new()
@@ -289,11 +289,11 @@ fn text(
     if boxed {
         list.push_clip(v.rect(it.rect()))
     }
-    borrow text = it.text.as_str()
+    let text = it.text.as_str()
     for i in 0..l.lines.len() {
         let (from, to) = l.lines[i]
         let at = v.to_screen(vec2(l.xs[i], l.top + f32(i) * l.line))
-        borrow line = text.slice(from, to)
+        let line = text.slice(from, to)
         if px < 4.0 {
             let w = font.measure(line, l.size) * k
             list.rect(

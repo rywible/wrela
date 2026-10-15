@@ -210,7 +210,7 @@ impl Board {
 
     /// The rectangle around every item, if there are any.
     pub fn whole(self) -> Option<Rect> {
-        self.span([u32(0); 0], every: true)
+        self.span([], every: true)
     }
 
     /// The rectangle around the items in `ids`, if there are any.

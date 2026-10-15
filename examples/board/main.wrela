@@ -301,7 +301,7 @@ fn retype(s: mut App, text: take String, at: u32) {
 fn type_char(s: mut App, c: u32) {
     let Some(t) = s.typing else { return }
     let Some(i) = s.board.index(t.id) else { return }
-    borrow old = s.board.items[i].text.as_str()
+    let old = s.board.items[i].text.as_str()
     var text = String::from(old.slice(0, t.at))
     text.push_char(c)
     let at = text.len()
@@ -313,7 +313,7 @@ fn type_char(s: mut App, c: u32) {
 fn typing_key(s: mut App, key: Key, mods: Mods) {
     let Some(t) = s.typing else { return }
     let Some(i) = s.board.index(t.id) else { return }
-    borrow old = s.board.items[i].text.as_str()
+    let old = s.board.items[i].text.as_str()
     let n = old.len()
     if key == Key::Escape || (key == Key::Enter && mods.command()) {
         stop_typing(mut s)
@@ -377,7 +377,7 @@ fn redo(s: mut App) {
 
 /// Pastes `items` a step further each time, selected.
 fn paste(s: mut App, items: [Item]) {
-    if items.len() == 0 {
+    if items.is_empty() {
         return
     }
     checkpoint(mut s)

@@ -338,7 +338,7 @@ fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4,
         Action::ZoomOut => list.line(p(-6.0, 0.0), p(6.0, 0.0), ink, width: w),
         Action::Actual => {
             let label = f"{u32(round(zoom * 100.0))}%"
-            borrow text = label.as_str()
+            let text = label.as_str()
             let size = 13.0 * u
             let tw = fonts.font(Face::Sans).measure(text, size)
             let _ = list.text(
