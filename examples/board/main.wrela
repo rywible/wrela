@@ -49,6 +49,8 @@ enum Drag: Copy + Eq {
     Shape { from: vec2 },
     /// Drawing a connector from item `from`.
     Link { from: u32 },
+    /// Moving connector `id`'s start (`start`) or end to another item.
+    End { id: u32, start: bool },
     Pen { id: u32 },
     /// Selecting text in item `id` being typed into.
     Select { id: u32 },
@@ -1147,6 +1149,39 @@ fn slack(s: App) -> f32 {
     6.0 * unit(s) / s.view.scale()
 }
 
+/// The selected connector whose start or end (`true` for the start) is under screen point `at`.
+fn end_at(s: App, at: vec2) -> Option<(u32, bool)> {
+    if s.typing.is_some() {
+        return None
+    }
+    for id in s.selected {
+        let Some(i) = s.board.index(id) else { continue }
+        if s.board.items[i].kind != Kind::Link || s.board.items[i].locked {
+            continue
+        }
+        let route = s.board.route(s.board.items[i])
+        if route.len() < 2 {
+            continue
+        }
+        for (p, start) in [(route[0], true), (route[route.len() - 1], false)] {
+            if length(s.view.to_screen(p) - at) <= 8.0 * unit(s) {
+                return Some((id, start))
+            }
+        }
+    }
+    None
+}
+
+/// The item a connector's end dragged to world point `w` would join: not a connector, nor the
+/// item at its other end.
+fn end_target(s: App, id: u32, start: bool, w: vec2) -> Option<u32> {
+    let Some(to) = s.board.hit(w, slack(s)) else { return None }
+    let Some(i) = s.board.index(id) else { return None }
+    let Some(k) = s.board.index(to) else { return None }
+    let other = if start { s.board.items[i].to } else { s.board.items[i].from }
+    if to == other || s.board.items[k].kind == Kind::Link { None } else { Some(to) }
+}
+
 /// How many things (connectors aside) are selected.
 fn things(s: App) -> u32 {
     var n = 0
@@ -1331,6 +1366,11 @@ fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
 }
 
 fn press_select(s: mut App, at: vec2, w: vec2, mods: Mods) {
+    // A selected connector's end: drag it to another item.
+    if let Some((id, start)) = end_at(s, at) {
+        s.drag = Drag::End { id, start }
+        return
+    }
     // A dot on an item's side: drag out a connector.
     if let Some(id) = dot_at(s, at) {
         s.drag = Drag::Link { from: id }
@@ -1593,6 +1633,15 @@ fn released(s: mut App, at: vec2, mods: Mods) {
             select(mut s, [id])
             s.tool = Tool::Select
         },
+        Drag::End { id, start } => if let Some(to) = end_target(s, id, start, w) {
+            checkpoint(mut s)
+            let Some(i) = s.board.index(id) else { return }
+            if start {
+                s.board.items[i].from = to
+            } else {
+                s.board.items[i].to = to
+            }
+        },
         Drag::Link { from } => {
             if let Some(to) = s.board.hit(w, slack(s)) {
                 let Some(i) = s.board.index(to) else { return }
@@ -1773,6 +1822,10 @@ fn draw(s: mut App, screen: vec2) {
     let locked = all_locked(s)
     let grouped = grouped(s)
     let around = selection_box(s)
+    let end_to = match s.drag {
+        Drag::End { id, start } => end_target(s, id, start, w),
+        _ => None,
+    }
     let color = shared_color(s)
     // A group under the pointer lights whole, and one selected whole has its own outline.
     let hovered = match hover {
@@ -1964,6 +2017,22 @@ fn draw(s: mut App, screen: vec2) {
                 _ => list.ring(r, ink, radius: 6.0 * s.view.scale(), width: ring),
             }
         },
+        Drag::End { id, start } => {
+            // The item it would join, ringed, and a line to the pointer from its other end.
+            if let Some(to) = end_to {
+                if let Some(k) = s.board.index(to) {
+                    let r = s.view.rect(s.board.bounds(k)).shrink(-4.0 * u)
+                    list.ring(r, ACCENT, radius: 6.0 * u, width: max(2.0 * u, 1.0))
+                }
+            }
+            if let Some(i) = s.board.index(id) {
+                let other = if start { s.board.items[i].to } else { s.board.items[i].from }
+                if let Some(k) = s.board.index(other) {
+                    let a = s.view.to_screen(s.board.items[k].edge(w))
+                    list.line(a, s.pointer, ACCENT, width: max(2.0 * u, 1.0))
+                }
+            }
+        },
         Drag::Link { from } => {
             // The item it would join, ringed.
             if let Some(to) = s.board.hit(w, near) {
@@ -2083,6 +2152,7 @@ fn cursor_for(s: App, w: vec2, on_control: bool) -> Text {
             return diagonal(s.board.items[i].center() - anchor)
         },
         Drag::Scale { anchor, corner, .. } => return diagonal(corner - anchor),
+        Drag::End { .. } => return "grabbing",
         Drag::Select { .. } => return "text",
         _ => {},
     }
@@ -2098,6 +2168,9 @@ fn cursor_for(s: App, w: vec2, on_control: bool) -> Text {
     }
     if let Some((corner, anchor)) = box_corner_at(s, s.pointer) {
         return diagonal(corner - anchor)
+    }
+    if end_at(s, s.pointer).is_some() {
+        return "grab"
     }
     if let Some(t) = s.typing {
         if s.board.hit(w, 0.0) == Some(t.id) {
@@ -2509,4 +2582,15 @@ fn the_box_round_several_scales_them(game: App) {
     assert(close(a, 100.0, 140.0, 250.0), f"{a.x}, {a.y}, {a.w}")
     assert(close(b, 400.0, 140.0, 250.0), f"{b.x}, {b.y}, {b.w}")
     assert(game.originals.is_empty())
+}
+
+/// A connector from one note to a second, selected: its end, dragged from the second note's side
+/// to a third note, joins the third instead.
+@test(frames: 74, input: "scripts/end.json")
+fn a_connectors_end_moves_to_another_item(game: App) {
+    assert(game.board.items.len() == 4, f"{game.board.items.len()} items")
+    let link = game.board.items[3].clone()
+    assert(link.kind == Kind::Link)
+    assert(link.from == game.board.items[0].id, "its start stays")
+    assert(link.to == game.board.items[2].id, f"it ends at {link.to}")
 }
