@@ -460,7 +460,8 @@ impl Bare {
             let (block, joint) = joints(p, 5.0)
             y += face * 0.7 * (block - 0.5) * min(joint / 0.15, 1.0)
         }
-        y
+        // The talus piled against the faces' feet (`talus`).
+        y + self.talus_at(p)
     }
 
     /// How wet the land is at `p` (0 to 1): the region's, the square's in it.
@@ -548,9 +549,9 @@ impl Bare {
         } else {
             rocky
         }
-        let scree_in = saturate(max(talus, if solid(s) && s != Stratum::Granite { rocky } else {
-            0.0
-        })) * (1.0 - bare_in)
+        let scree_in = max(smoothstep(0.0, 0.6, talus), if solid(s) && s != Stratum::Granite {
+            rocky
+        } else { 0.0 }) * (1.0 - bare_in)
         let bare = mix(bare_out, bare_in, inside)
         let scree = mix(scree_out, scree_in, inside)
         let soil = mix(own, kinded, vec3(inside)) * mix(1.0, 0.65, smoothstep(0.3, 0.9, wet))
@@ -630,19 +631,22 @@ fn world() -> World {
 // ---- its soil ---------------------------------------------------------------------------------
 
 /// A cell's soil in 16 bits: its depth (0 to `DEEPEST` m, finer where it's thin: 7 bits of the
-/// root of its share of that), its kind (`SoilKind`, 3 bits) and how much talus lies on it (0 to
-/// 1, 6 bits).
+/// root of its share of that), its kind (`SoilKind`, 3 bits) and how deep the talus on it lies (0
+/// to 12.6 m, in steps of `TALUS_STEP`, 6 bits).
 fn pack_soil(depth: f32, kind: SoilKind, talus: f32) -> u32 {
     let d = u32(round(sqrt(saturate(depth / DEEPEST)) * 127.0))
-    d | (u32(kind) << 7) | (u32(round(saturate(talus) * 63.0)) << 10)
+    d | (u32(kind) << 7) | (min(u32(round(max(talus, 0.0) / TALUS_STEP)), 63) << 10)
 }
 
 /// A cell's soil as `pack_soil` packed it: its depth (m), its kind (`SoilKind`'s number) and its
-/// talus.
+/// talus's depth (m).
 fn unpack_soil(bits: u32) -> (f32, u32, f32) {
     let d = f32(bits & 127) / 127.0
-    (d * d * DEEPEST, (bits >> 7) & 7, f32((bits >> 10) & 63) / 63.0)
+    (d * d * DEEPEST, (bits >> 7) & 7, f32((bits >> 10) & 63) * TALUS_STEP)
 }
+
+/// How finely a cell's talus's depth is kept (m).
+const TALUS_STEP: f32 = 0.2
 
 /// The deepest a soil is (m: `engine::soil::soil`'s).
 const DEEPEST: f32 = 2.5
@@ -655,7 +659,7 @@ const DEEPEST: f32 = 2.5
 /// the soil says so.
 fn soil_layer(land: Bare, s: Landscape) -> [u32; SQUARE_SOIL] {
     let g = SQUARE
-    let talus = talus(land)
+    let talus = talus(land, s)
     var out = [0; SQUARE_SOIL]
     for c in 0..g.cells() {
         let p = g.centre(c)
@@ -680,13 +684,19 @@ fn soil_layer(land: Bare, s: Landscape) -> [u32; SQUARE_SOIL] {
     out
 }
 
-/// How much talus lies on each of the square's cells (0 to 1): what falls from each face of solid
-/// rock (a cell steeper than `TALUS_FACE` whose rock is grit, sandstone or granite) lies all down
-/// the face, along the land's fall from it, and on past its foot, thinning out over three quarters
-/// of the face's height (20 m to 40 m); it stops where the ground is level, or would rise (across
-/// a gully's floor). None lies up a slope from its face or over a ridge.
-fn talus(land: Bare) -> Vec<f32> {
+/// How deep the talus lies on each of the square's cells (m): what falls from each face of solid
+/// rock (a cell steeper than `TALUS_FACE` whose rock is grit, sandstone or granite) piles against
+/// it, burying its lower part, a third of its height up it from its foot (8 m at most), as a cone
+/// round where it meets the face, falling away at `REPOSE` and thinning to nothing 40 m out; the
+/// talus is the highest of the cones over each cell, less the land there, so it's nowhere steeper
+/// than its slope. The face's foot is found down the land's fall, stopping where the ground is
+/// level, or would rise (across a gully's floor). None lies in a stream's bed, a lake or the
+/// square's collar, nor in a cell next to one (the terrain's reading between cells would carry it
+/// in); it thins away from them. Water runs on under it, as through scree: it's on the land as
+/// it's drawn (`Bare::at`), not as it was made.
+fn talus(land: Bare, s: Landscape) -> Vec<f32> {
     let g = SQUARE
+    let heights: Vec<f32> = Vec::from_fn(g.cells(), |c| land.made(g.centre(c)).x)
     var out: Vec<f32> = Vec::filled(g.cells(), 0.0)
     for c in 0..g.cells() {
         let p = g.centre(c)
@@ -697,37 +707,79 @@ fn talus(land: Bare) -> Vec<f32> {
         let up = m.yz / length(m.yz)
         let (top, _) = extent(land, p, up)
         let crest = land.made(p + up * top).x
-        // Down the fall: on the face (steeper than 0.6), all of it; past its foot, thinning.
+        // Down the fall to the face's foot (where it's gentler than 0.6), noting each step.
+        var path = [vec3(0.0); 64]
+        var n = 0
         var q = p
         var h = m.x
-        var past = -1.0
-        var reach = 20.0
-        var walked = 0.0
-        while walked < 90.0 {
+        var foot = -1
+        while n < 64 {
             let here = land.made(q)
             let fall = length(here.yz)
             if fall < 0.05 || here.x > h + 0.01 {
                 break
             }
             h = here.x
-            if past < 0.0 && fall < 0.6 {
-                past = 0.0
-                reach = clamp(0.75 * (crest - h), 20.0, 40.0)
+            path[n] = vec3(q.x, q.y, h)
+            if foot < 0 && fall < 0.6 {
+                foot = i32(n)
             }
-            if past >= reach {
+            q -= here.yz / fall * 2.0
+            n += 1
+        }
+        if foot < 0 {
+            continue
+        }
+        // The apron's top against the face, and where it meets it: its cone's peak.
+        let base = path[foot].z
+        let apron = base + min(0.35 * (crest - base), 8.0)
+        var peak = path[foot].xy
+        for k in 0..foot + 1 {
+            if path[k].z <= apron {
+                peak = path[k].xy
                 break
             }
-            let k = g.cell_at(q)
-            out[k] = max(out[k], if past < 0.0 { 1.0 } else { 1.0 - past / reach })
-            q -= here.yz / fall * 2.0
-            walked += 2.0
-            if past >= 0.0 {
-                past += 2.0
+        }
+        g.each_within(peak, 40.0, |k: u32, r: f32| {
+            let deep = min(apron - REPOSE * r - heights[k], TAPER * (40.0 - r))
+            out[k] = max(out[k], deep)
+        })
+    }
+    // None in or beside a stream's bed (as the square's channels are), a lake or the square's
+    // collar (where its land gives way to the region's), and thinning away from them (`TAPER` a
+    // metre), not walled off.
+    var room: Vec<f32> = Vec::filled(g.cells(), 8.0)
+    for c in 0..g.cells() {
+        let collar = land.square.within(g.centre(c), SQUARE_COLLAR) < 1.0
+        if s.area[c] >= SQUARE_MAKING.channel || s.lakes[c] > 0.0 || collar {
+            let (i, j) = (i32(c % g.nx), i32(c / g.nx))
+            for d in 0..49 {
+                let (di, dj) = (i32(d % 7) - 3, i32(d / 7) - 3)
+                let k = g.index(i + di, j + dj)
+                // (Its eight neighbours none: reading between cells, a diagonal one's carries
+                // into its corner.)
+                let apart = max(f32(max(abs(di), abs(dj))) - 1.0, 0.0) * g.cell
+                room[k] = min(room[k], TAPER * apart)
             }
         }
     }
-    out
+    // Smoothed a cell's width (the terrain reads it between cells, over the land's own smoother
+    // reading: unsmoothed, its steps showed as steeper ground at its toes).
+    Vec::from_fn(g.cells(), |c| {
+        let (i, j) = (i32(c % g.nx), i32(c / g.nx))
+        var sum = 0.0
+        for d in 0..9 {
+            let w = if d == 4 { 0.36 } else if d % 2 == 1 { 0.12 } else { 0.04 }
+            sum += w * max(out[g.index(i + i32(d % 3) - 1, j + i32(d / 3) - 1)], 0.0)
+        }
+        clamp(sum, 0.0, room[c])
+    })
 }
+
+/// The slope talus rests at (rise over run: about 31°), and how fast it thins (m a metre) to
+/// nothing at its edges: at its reach, and beside a stream or a lake.
+const REPOSE: f32 = 0.6
+const TAPER: f32 = 0.15
 
 /// The slope over which a face of solid rock sheds talus (`talus`).
 const TALUS_FACE: f32 = 0.9
@@ -743,6 +795,20 @@ impl Bare {
     pub fn soil_at(self, p: vec2) -> (f32, u32, f32) {
         let ij = SQUARE.ij(p)
         unpack_soil(self.soil_cell(ij.x, ij.y))
+    }
+
+    /// How deep the talus lies at `p` (m, `talus`): between the four cells round it, faded out
+    /// through the square's collar (none past the square).
+    pub fn talus_at(self, p: vec2) -> f32 {
+        let f = (p - SQUARE.lo) / SQUARE.cell - vec2(0.5)
+        let ij = vec2i(floor(f))
+        let t = f - floor(f)
+        // (Each corner on its own, not in a loop: see `bare_cover`.)
+        let (_, _, a) = unpack_soil(self.soil_cell(ij.x, ij.y))
+        let (_, _, b) = unpack_soil(self.soil_cell(ij.x + 1, ij.y))
+        let (_, _, c) = unpack_soil(self.soil_cell(ij.x, ij.y + 1))
+        let (_, _, d) = unpack_soil(self.soil_cell(ij.x + 1, ij.y + 1))
+        mix(mix(a, b, t.x), mix(c, d, t.x), t.y) * self.square.within(p, SQUARE_COLLAR)
     }
 }
 
@@ -1100,9 +1166,9 @@ fn ledges(land: Bare, c: u32, p: vec2, m: vec3, out: mut Vec<Placement>) {
         if !solid(s) || s == Stratum::Granite {
             continue
         }
-        // (Only where its soil is thin or none: elsewhere the soil covers it.)
+        // (Only where its soil is thin or none, and no talus buries it: elsewhere they cover it.)
         let (_, kind, _) = land.soil_at(mid)
-        if kind > u32(SoilKind::Thin) {
+        if kind > u32(SoilKind::Thin) || land.talus_at(mid) > 0.5 {
             continue
         }
         let w = j.half * (0.75 + 0.2 * rand(j.seed, 20))
@@ -1380,9 +1446,9 @@ fn granite_block(land: Bare, mid: vec2, half: vec2, up: vec2, seed: u32, out: mu
         let q = mid +
             JOINTS * ((f32(e % 5) - 2.0) * 0.5 * wide.x) +
             across * ((f32(e / 5) - 2.0) * 0.5 * wide.y)
-        let y = land.at(q.x, q.y)
-        lo = min(lo, y)
-        hi = max(hi, y)
+        // (Its roof by the land as made, not its talus; its foot on the land as drawn.)
+        lo = min(lo, land.at(q.x, q.y))
+        hi = max(hi, land.made(q).x)
         wet = max(wet, land.wet(q))
     }
     // (None reaches down into its stream's bed, which it would choke.)
@@ -2307,7 +2373,8 @@ fn the_granites_sheets_are_unevenly_thick() {
 
 /// The bedded rock crops out of its gentler ground as low ledges, rooted in it: each piece
 /// `ledges` places on the grit's slopes too gentle for a cliff has its foot under the land at its
-/// middle and its top less than 8 m over it; and over the square there are hundreds.
+/// middle and its top less than 8 m over it, and none stands out of talus deeper than 0.5 m (it
+/// buries them); and over the square there are hundreds.
 @test
 @fuel(2 ** 40)
 fn ledges_crop_out_of_gentle_bedded_ground_rooted_in_it() {
@@ -2332,6 +2399,12 @@ fn ledges_crop_out_of_gentle_bedded_ground_rooted_in_it() {
                 mid.y - rise < under && mid.y + rise < under + 8.0,
                 f"a ledge at {mid} spans {mid.y - rise} to {mid.y + rise} m, the land {under} m",
             )
+            for j in jointed(c, p) {
+                assert(
+                    land.talus_at(j.mid) <= 0.5 || length(mid.xz - j.mid) > 0.01,
+                    f"a ledge stands out of {land.talus_at(j.mid)} m of talus at {mid}",
+                )
+            }
             n += 1
         }
     }
@@ -2435,8 +2508,8 @@ fn hard_rock_keeps_soil_in_its_hollows_and_bares_its_faces() {
 }
 
 /// Talus lies only under faces of solid rock (`talus`): each cell with any has such a face in
-/// it, or one higher within 95 m (it runs down the face and up to 40 m past its foot, 90 m at
-/// most); and there's plenty of it.
+/// it, or one whose crest is higher within 170 m (a face's foot is up to 128 m down its fall, its talus up to 40 m
+/// round where it meets it, smoothed a cell); and there's plenty of it.
 @test
 @fuel(2 ** 40)
 fn talus_lies_only_under_faces() {
@@ -2451,15 +2524,104 @@ fn talus_lies_only_under_faces() {
         n += 1
         var under = false
         let h = land.made(p).x
-        SQUARE.each_within(p, 95.0, |q: u32, d: f32| {
+        SQUARE.each_within(p, 170.0, |q: u32, d: f32| {
             let a = SQUARE.centre(q)
             let m = land.made(a)
-            under = under ||
-                (length(m.yz) >= TALUS_FACE && solid(stratum(a, m.x)) && m.x >= h - 0.5)
+            if !under && length(m.yz) >= TALUS_FACE && solid(stratum(a, m.x)) {
+                let (top, _) = extent(land, a, m.yz / length(m.yz))
+                under = land.made(a + m.yz / length(m.yz) * top).x >= h - 0.5
+            }
         })
         assert(under, f"talus at {p} with no face over it")
     }
     assert(n > 1000, f"talus on only {n} cells")
+}
+
+/// The talus rests near its slope (`talus`, `REPOSE`): the land as drawn (`Bare::at`, its
+/// roughness and all), read a quarter of a cell apart on talus a metre deep or more, away from the
+/// faces it lies against (a cell from them, and where the ground under it is a face), is nowhere
+/// more than 0.15 steeper than 1.0 or than the ground it covers: its slope is 0.6, and reading an
+/// 8 m cell's talus over the land's own reading between cells, and its thinning, add a little
+/// where it thins out over steep ground (0.12 at the most, measured). And there's plenty of it.
+@test
+@fuel(2 ** 40)
+fn talus_rests_near_its_slope() {
+    borrow land = WORLD.land
+    var n = 0
+    for c in 0..SQUARE_N {
+        let p = SQUARE.centre(c)
+        if land.talus_at(p) < 1.0 {
+            continue
+        }
+        var by_face = false
+        SQUARE.each_within(p, 1.5 * SQUARE.cell, |q: u32, d: f32| {
+            by_face = by_face || length(land.made(SQUARE.centre(q)).yz) >= TALUS_FACE
+        })
+        if by_face {
+            continue
+        }
+        for k in 0..16 {
+            let a = p + (vec2(f32(k % 4), f32(k / 4)) - vec2(1.5)) * 0.25 * SQUARE.cell
+            let e = 0.5
+            let (ex, ez) = (vec2(e, 0.0), vec2(0.0, e))
+            let drawn = vec2(
+                land.at(a.x + e, a.y) - land.at(a.x - e, a.y),
+                land.at(a.x, a.y + e) - land.at(a.x, a.y - e),
+            ) /
+                (2.0 * e)
+            let under = drawn -
+                vec2(
+                    land.talus_at(a + ex) - land.talus_at(a - ex),
+                    land.talus_at(a + ez) - land.talus_at(a - ez),
+                ) /
+                    (2.0 * e)
+            if length(under) >= TALUS_FACE {
+                continue
+            }
+            assert(
+                length(drawn) <= max(1.0, length(under)) + 0.15,
+                f"talus at {a} slopes {length(drawn)}, the ground under it {length(under)}",
+            )
+            n += 1
+        }
+    }
+    assert(n > 2000, f"only {n} points on talus")
+}
+
+/// No talus lies in a stream's bed or past the square: wherever the square's water gathers into a
+/// stream (its land wet at all), and anywhere past the square's collar, the land as drawn carries
+/// none, read a quarter of a cell apart (the reading between cells mustn't carry it in).
+@test
+@fuel(2 ** 40)
+fn no_talus_lies_in_a_stream_or_past_the_square() {
+    borrow land = WORLD.land
+    var n = 0
+    for c in 0..SQUARE_N {
+        let p = SQUARE.centre(c)
+        if land.wet(p) <= 0.0 || land.square.within(p, SQUARE_COLLAR) < 1.0 {
+            continue
+        }
+        for k in 0..16 {
+            let a = p + (vec2(f32(k % 4), f32(k / 4)) - vec2(1.5)) * 0.25 * SQUARE.cell
+            if land.wet(a) > 0.0 {
+                assert(land.talus_at(a) == 0.0, f"{land.talus_at(a)} m of talus in a stream at {a}")
+                n += 1
+            }
+        }
+    }
+    assert(n > 1000, f"only {n} points in streams")
+    let hi = SQUARE.lo + vec2(f32(SQUARE.nx), f32(SQUARE.nz)) * SQUARE.cell
+    for k in 0..400 {
+        let t = f32(k) / 400.0
+        for p in [
+            vec2(mix(SQUARE.lo.x, hi.x, t), SQUARE.lo.y - 4.0),
+            vec2(mix(SQUARE.lo.x, hi.x, t), hi.y + 4.0),
+            vec2(SQUARE.lo.x - 4.0, mix(SQUARE.lo.y, hi.y, t)),
+            vec2(hi.x + 4.0, mix(SQUARE.lo.y, hi.y, t)),
+        ] {
+            assert(land.talus_at(p) == 0.0, f"talus past the square at {p}")
+        }
+    }
 }
 
 /// A face's extent runs up and down its fall (`extent`): its top no lower than it, its foot no

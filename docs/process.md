@@ -1066,6 +1066,25 @@ rules kept for later, and did this instead.
   and didn't remove the stripes seen from far off.
 - **Checked:** making the steep faces' colour flat showed that colour isn't what smears them.
 
+Ryan asked to keep using the council. In a second council (three rounds, the same reviewers), Claude
+proposed raising the made land into talus aprons below the cliffs. The reviewers showed that this
+would leave the drainage, wetness and lakes stale. It would also turn debris into bedrock and grow
+new cliff columns on the apron. Recomputing the drainage couldn't refresh the rock's erodibility or
+recover the solid land under shallow fill. In the third round, Claude moved the apron to the land
+as drawn instead, and the reviewers resolved those objections.
+- **Talus apron:** talus piles against the foot of each face of solid rock and buries a third of
+  the face. It falls away at 0.6 and thins to nothing 40 m out. Its surface is the highest of the
+  repose cones over each cell.
+- **Where none lies:** none lies in or beside a stream's bed, a lake or the square's collar.
+  Water is taken to run on under it, as through scree.
+- **Which land is used:** the land as made decides where cliffs and granite roofs stand. The land
+  as drawn decides what their blocks rest on, so columns end on the apron and fewer hang.
+- **Ledges:** none stands out of talus deeper than 0.5 m.
+- **Far stripes, still open:** Claude tested shut joints, even set-backs, columns ending at their
+  beds, sharp caps, every column standing, columns turned toward their face and no deep breaks.
+  None removed the stripes seen from 1.5 km, so the cause is still unknown, and the changes were
+  reverted.
+
 ## The climber's robe, darkness and glide, 2026-10-14
 
 Ryan found the Last Green's player character clunky to move and its cloth, robe, darkness and
