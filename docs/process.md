@@ -521,6 +521,7 @@ the browser also receives the corresponding parity fixes.
 | Priority-flood depression filling: Richard Barnes, Clarence Lehman and David Mulla, "Priority-flood: An optimal depression-filling and watershed-labeling algorithm for digital elevation models", *Computers & Geosciences* 62 (2014), its epsilon variant | A published method; no code taken | `engine::landform::drainage` (moved there from `engine::grow`, which already used it): water is routed across pits from the outlets, lowest first, so every cell drains. |
 | Terrain authored through its causes: Guillaume Cordonnier, Jean Braun, Marie-Paule Cani, Bedrich Benes, Éric Galin, Adrien Peytavie and Éric Guérin, "Large Scale Terrain Generation from Tectonic Uplift and Fluvial Erosion", *Computer Graphics Forum* 35(2) (2016) | A published idea; no code or data taken | The world's land is authored through its causes (its rock's layers, the old land, the base level its rivers run to) and not by drawing its valleys. |
 | Threshold slopes, as thermal erosion does: F. Kenton Musgrave, Craig E. Kolb and Robert S. Mace, "The synthesis and rendering of eroded fractal terrains", *SIGGRAPH* (1989) | A published idea; no code taken | `engine::landform::collapse`: a slope steeper than its rock stands at sheds its excess downhill, no faster than the rock weathers, so a hard cap stands in cliffs over the soft rock's talus. |
+| Erosion and deposition: Philippe Davy and Dimitri Lague, "Fluvial erosion/transport equation of landscape evolution models revisited", *Journal of Geophysical Research* 114 (2009) | A published method; no code taken | `engine::landform::settle`: what the water cuts it carries down and lays where its load is heavy for its water (D = G Qs / Q), so valley floors fill and fans spread where ravines meet them. |
 | Channel initiation at a source area: David R. Montgomery and William E. Dietrich, "Where do channels begin?", *Nature* 336 (1988) | A published finding; we use its idea, not its data | `engine::landform::Shaping::channel`: water cuts only where enough of it gathers to run in a channel; below that, slopes only creep and fail. |
 | Johann Heinrich von Thünen's land-use rings (*Der isolirte Staat*, 1826); settlement site and budding as human geography teaches them | Published ideas; no code or data taken | The Last Green's elves (`examples/last-green/peoples.wrela`): each settlement takes its fields nearest by walking cost, then pasture, then wood; it chooses its site by water, soil, slope and sun; when it outgrows its land, some of its people found another. |
 | W3C, Gamepad API, its "standard" mapping | A W3C specification; no code taken | The browser host reads pads by it (`runtime/browser/src/listen.ts`), and wrela's pad buttons and axes take its order and names (south, east, west, north, the shoulders and triggers, the sticks, the d-pad). |
@@ -972,6 +973,15 @@ and where they are; no lore names were added. The bare view (F8's fourth, `tools
 answers its numbers as JSON. The floor's play still stands on its old land until Ryan has
 judged this one. The wildwood also no longer grows trees on rock, cliffs or above the tree
 line. No outside asset was used.
+
+Ryan then asked for the rock as solids and a better simulation. The heightfield stays the
+ground; where it can't hold rock (faces steeper than a few of its cells), the geology places
+solids: each face of grit or sandstone as its beds' blocks, set into it at their own heights;
+the granite as its corestones; the scree's fallen pieces; the tors; and the streams' boulders.
+A few prototypes (jointed blocks weathered by noise, each a field realized to a mesh) are drawn
+many times, culled to the view each frame. In the bare view the rocks and the ground itself cast
+the sun's shadows. The water now lays down some of what it cuts, and thin bands of sandstone in
+the shale make benches along the valleys' sides.
 
 ## Keeping this record
 

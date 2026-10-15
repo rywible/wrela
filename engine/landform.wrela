@@ -97,13 +97,15 @@ pub fn border(g: Grid) -> Vec<bool> {
 /// How a land is made: how many steps, each how many years; the stream power law's exponent on
 /// the area a channel drains (m, about 0.5; n is 1); how fast its slopes creep (m² a year); and
 /// the area (m²) that drains through a cell before its water runs in a channel and cuts it
-/// (below it, a slope only creeps and fails).
+/// (below it, a slope only creeps and fails); and how readily the water lays down what it
+/// carries (`settle`'s G: 0 carries everything away).
 pub struct Shaping: Copy {
     pub steps: u32,
     pub years: f32,
     pub m: f32,
     pub creep: f32,
     pub channel: f32 = 0.0,
+    pub laying: f32 = 0.0,
 }
 
 /// A rock's strength where it is: how easily water cuts it (the stream power law's K, m^(1-2m)
@@ -152,6 +154,7 @@ pub fn evolve(
     var down: Vec<u32> = Vec::filled(nn, NONE)
     var k: Vec<f32> = Vec::filled(nn, 0.0)
     var ease: Vec<f32> = Vec::filled(nn, 1.0)
+    var was: Vec<f32> = Vec::filled(nn, 0.0)
     for _ in 0..s.steps {
         for c in 0..nn {
             if !base[c] {
@@ -167,7 +170,13 @@ pub fn evolve(
             ease[c] = r.creep
         }
         gather(g, d.order, down, mut area)
+        for c in 0..nn {
+            was[c] = h[c]
+        }
         incise(g, d.order, down, area, k, s, mut h)
+        if s.laying > 0.0 {
+            settle(g, d.order, down, area, was, s.laying, mut h)
+        }
         diffuse(g, mut h, base, s.creep * s.years, ease)
         collapse(g, mut h, base, rock, FAILS, s.years)
     }
@@ -299,6 +308,42 @@ pub fn incise(
             let f = k[c] * s.years * pow(area[c], s.m) / run
             h[c] = (h[c] + f * h[r]) / (1.0 + f)
         }
+    }
+}
+
+/// What the water cut in a step (each cell's fall from `was`, its height before) carried down
+/// and laid where its load is heavy for its water (Davy and Lague's erosion and deposition:
+/// D = G Qs / Q, the water's discharge as the area that drains): each cell, from the highest, takes
+/// in what its donors pass on and what it lost itself, lays down `laying` (G, 0 to 1) times its
+/// load over the area that drains through it, but not so much that it stands over half way to its
+/// lowest donor (its water still flows), and passes the rest on. What reaches a cell with no
+/// receiver leaves the land.
+pub fn settle(
+    g: Grid,
+    order: [u32],
+    down: [u32],
+    area: [f32],
+    was: [f32],
+    laying: f32,
+    h: mut Vec<f32>,
+) {
+    let own = g.cell * g.cell
+    var load: Vec<f32> = Vec::filled(g.cells(), 0.0)
+    var donor: Vec<f32> = Vec::filled(g.cells(), 1.0e9)
+    var n = order.len()
+    while n > 0 {
+        n -= 1
+        let c = order[n]
+        load[c] += max(was[c] - h[c], 0.0) * own
+        let r = down[c]
+        if r == NONE {
+            continue
+        }
+        let room = max(0.5 * (donor[c] - h[c]), 0.0)
+        let lay = min(laying * load[c] / area[c], room)
+        h[c] += lay
+        load[r] += load[c] - lay * own
+        donor[r] = min(donor[r], h[c])
     }
 }
 
@@ -1391,4 +1436,45 @@ fn hard_rock_does_not_creep_and_soil_does() {
         total += v
     }
     assert(soil[40] < 10.0 && abs(total - 10.0) < 1.0e-4, "soil didn't creep, or lost material")
+}
+
+/// What the water cuts it carries down and lays where its load is heavy, losing none: a channel
+/// cut from a steep reach into a level one lays some of its load on the level reach, and what it
+/// laid and what left the land add up to what it cut.
+@test
+fn what_is_cut_is_laid_down_or_carried_away() {
+    let g = grid(nx: 12, nz: 1, cell: 10.0)
+    // Level for its first six cells from its outlet, then steep.
+    let was: Vec<f32> = Vec::from_fn(12, |i| if i < 6 { f32(i) * 0.01 } else { f32(i - 5) * 4.0 })
+    var h = was.clone()
+    var down: Vec<u32> = Vec::filled(12, NONE)
+    var area: Vec<f32> = Vec::filled(12, 100.0)
+    for i in 1..12 {
+        down[i] = i - 1
+        area[i] = f32(12 - i) * 100.0
+    }
+    area[0] = 1200.0
+    // The flood's order: each cell after its receiver.
+    let order: Vec<u32> = Vec::from_fn(12, |i| i)
+    // The steep reach cut 2 m a cell.
+    for i in 6..12 {
+        h[i] -= 2.0
+    }
+    let cut = h.clone()
+    settle(g, order, down, area, was, laying: 0.5, h: mut h)
+    var laid = 0.0
+    for i in 0..12 {
+        laid += (h[i] - cut[i]) * 100.0
+    }
+    assert(laid > 0.0, "nothing was laid down")
+    var level = 0.0
+    for i in 1..6 {
+        level += h[i] - cut[i]
+    }
+    assert(level > 0.0, "the level reach took none of the load")
+    // What left by the outlet: what reached it, which it can't lay (it has no receiver).
+    assert(laid <= 6.0 * 2.0 * 100.0 + 1.0e-3, "more was laid than was cut")
+    for i in 1..12 {
+        assert(h[i] > h[i - 1] - 1.0e-5 || i < 6, "a laid cell stands over its donor")
+    }
 }

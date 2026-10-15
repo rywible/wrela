@@ -20,8 +20,8 @@ use sim::Hit
 use noise::{hash2, noise2_wrapped}
 use std::gpu::{
     Address, ClipPosition, DrawIndexedArgs, FragCoord, GlobalId, GpuBuffer, GpuSpan, Oct32, Rgba8,
-    Sampler, Slots, Texture, Unorm8x4, VertexIndex, begin_pass, buffer, buffer_of, dispatch, draw,
-    label, sampler, texture, write,
+    RenderPass, Sampler, Slots, Texture, Unorm8x4, VertexIndex, begin_pass, buffer, buffer_of,
+    dispatch, draw, label, sampler, texture, write,
 }
 use view::Camera
 
@@ -433,6 +433,22 @@ impl Clipmap {
     pub fn draw_args(self, l: u32) -> GpuSpan<DrawIndexedArgs> {
         self.args.span(start: l, count: 1)
     }
+
+    /// The ground as a shadow caster into `pass`, seen from the sun by `view`: each level drawn
+    /// (its depth alone), biased as casters are (`shadow::CASTER`).
+    pub fn cast<P: RenderPass>(self, pass: P, view: mat4) {
+        let levels = self.levels()
+        for l in 0..levels.count {
+            draw(
+                pass,
+                ground_shadow.bind(levels, self.texels(), view),
+                vegetation::nothing,
+                indices: self.indices(),
+                indirect: self.draw_args(l),
+                depth_bias: shadow::CASTER,
+            )
+        }
+    }
 }
 
 /// Where the finer level's hole is in run `r` of the ground's indices (`r < HOLES`).
@@ -621,8 +637,20 @@ pub struct GroundVertex: Copy {
 /// level's edge to the coarser level's heights; it never evaluates the field.
 @vertex
 pub fn ground(v: VertexIndex, cam: Camera, levels: Levels, texels: [Texel]) -> GroundVertex {
-    let l = v.index / LEVEL_POINTS
-    let p = v.index % LEVEL_POINTS
+    let world = ground_world(v.index, levels, texels)
+    GroundVertex { clip: ClipPosition { position: cam.clip(world) }, world }
+}
+
+/// The ground's point `v` as a shadow caster, seen from the sun by `view` (`Clipmap::cast`).
+@vertex
+pub fn ground_shadow(v: VertexIndex, levels: Levels, texels: [Texel], view: mat4) -> ClipPosition {
+    ClipPosition { position: view * vec4(ground_world(v.index, levels, texels), 1.0) }
+}
+
+/// Where the ground's point `index` is (render space): `ground`'s and `ground_shadow`'s.
+fn ground_world(index: u32, levels: Levels, texels: [Texel]) -> vec3 {
+    let l = index / LEVEL_POINTS
+    let p = index % LEVEL_POINTS
     let a = levels.at[l]
     let s = a.z
     var gx = 0
@@ -677,8 +705,7 @@ pub fn ground(v: VertexIndex, cam: Camera, levels: Levels, texels: [Texel]) -> G
     if m > 0.0 {
         h = mix(h, level_height(levels, texels, l + 1, xz), m)
     }
-    let world = vec3(xz.x, h - drop, xz.y)
-    GroundVertex { clip: ClipPosition { position: cam.clip(world) }, world }
+    vec3(xz.x, h - drop, xz.y)
 }
 
 /// The ground at `xz` as the clipmap holds it: its normal, albedo (linear) and height (as

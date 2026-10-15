@@ -13,7 +13,10 @@ use realize::{Mesh, SkinVertex, realize_rigid}
 use render::{ByChannels, Shaded}
 use std::derive::Box3
 use std::field::{Blend, Surface, fbm, oval}
-use std::gpu::{ClipPosition, Flat, FragCoord, GpuBuffer, Unorm8x4, VertexIndex, discard}
+use std::gpu::{
+    ClipPosition, DrawIndexedArgs, Flat, FragCoord, GlobalId, GpuBuffer, InstanceIndex, RenderPass,
+    Slots, Unorm8x4, VertexIndex, buffer, discard, dispatch, draw, write,
+}
 use std::math::TAU
 use std::transform::{rotate_y, translate}
 use view::{Camera, ROCK}
@@ -382,6 +385,12 @@ pub struct Bed: Copy + GpuData {
     pub lo: vec3,
     pub hi: vec3,
     pub seed: u32,
+    /// Its rock's colours, its grain's darkest and lightest (linear): granite's unless given;
+    /// and how fine its grain and its streaks are in its own frame (a unit prototype a
+    /// placement scales up needs it finer).
+    pub dark: vec3 = vec3(0.30, 0.29, 0.27),
+    pub light: vec3 = vec3(0.40, 0.38, 0.34),
+    pub fine: f32 = 1.0,
 }
 
 impl Surface for Bed {
@@ -398,18 +407,18 @@ impl Surface for Bed {
     }
 }
 
-/// A bed's colour at `p` (in its own frame): granite of its own tone, one bed lighter or darker
+/// A bed's colour at `p` (in its own frame): its rock (granite's unless it says) of its own tone, one bed lighter or darker
 /// than the next, a darker seam along its foot where the bed over it sits, faint streaks down
 /// it where water runs. No spots, no crack lines: its form carries it.
 pub fn bed_colour(b: Bed, p: vec3) -> Rock {
     let tone = 0.85 + 0.3 * rand(b.seed, 3)
-    let g = grain(p * 0.9 + vec3(f32(b.seed) * 1.3))
-    var c = tone * mix(vec3(0.30, 0.29, 0.27), vec3(0.40, 0.38, 0.34), vec3(g))
+    let g = grain(p * 0.9 * b.fine + vec3(f32(b.seed) * 1.3))
+    var c = tone * mix(b.dark, b.light, vec3(g))
     // How far over its bedding plane under it `p` is (the last plane's: `-n` up, so `w - dot`).
     let under = b.planes[8]
     let above = -(dot(p, under.xyz) - under.w)
-    c *= 0.82 + 0.18 * smoothstep(0.0, 0.5, above)
-    let streak = noise3(vec3(p.x * 1.6, p.y * 0.12, p.z * 1.6) + vec3(f32(b.seed)))
+    c *= 0.82 + 0.18 * smoothstep(0.0, 0.5 / b.fine, above)
+    let streak = noise3(vec3(p.x * 1.6, p.y * 0.12, p.z * 1.6) * b.fine + vec3(f32(b.seed)))
     c *= 1.0 - 0.12 * smoothstep(0.6, 0.85, streak)
     Rock { albedo: c }
 }
@@ -421,6 +430,31 @@ pub fn bed(b: Bed) -> Creature<Rock> {
     creature(s).part(root, b.with_at(|p| bed_colour(b, p))).bounded(Box3 { lo: b.lo, hi: b.hi })
 }
 
+/// A block of rock, bed `b` weathered: its faces pitted and lumped by `rough` (of its own size,
+/// at its grain's fineness), not planes, as a creature of one bone to realize.
+pub fn weathered(b: Bed, rough: f32) -> Creature<Rock> {
+    var s = Skeleton::new()
+    let root = s.root("block", vec3(0.0))
+    let worn = b.displace(
+        fbm(freq: 0.9 * b.fine, octaves: 3, offset: vec3(f32(b.seed) * 2.3)),
+        amp: rough,
+    )
+    let grow = vec3(rough * 1.5)
+    creature(s)
+        .part(root, worn.with_at(|p| bed_colour(b, p)))
+        .bounded(Box3 { lo: b.lo - grow, hi: b.hi + grow })
+}
+
+/// Bed `b` weathered by `rough` (`weathered`) and realized as a prototype (at the origin) to
+/// `look`'s tolerance, its colours a cell `cell` across: a rock's (`Rocks`), which its placements
+/// scale.
+pub fn realize_weathered(b: Bed, rough: f32, look: CreatureLook, cell: f32) -> Realized {
+    let c = weathered(b, rough)
+    let mesh = realize_rigid(c, look)
+    let colours = colours(mesh, c.field(), ByChannels {}, cell)
+    Realized { mesh, colours, at: translate(vec3(0.0)), seed: b.seed }
+}
+
 /// Bed `b` realized at `at` (its frame's origin in the world): cells of about 45 cm (its faces
 /// are planes; an edge rounds by about a cell), its colours a cell 25 cm.
 pub fn realize_bed(b: Bed, at: vec3) -> Realized {
@@ -429,4 +463,284 @@ pub fn realize_bed(b: Bed, at: vec3) -> Realized {
     let mesh = realize_rigid(c, look)
     let colours = colours(mesh, c.field(), ByChannels {}, cell: 25cm)
     Realized { mesh, colours, at: translate(at), seed: b.seed }
+}
+
+// ---- rocks: many solids from a few ----------------------------------------------------------------
+
+/// A block of jointed rock a unit each way (its half extents 1), as a bed: four joint faces round
+/// it, each turned a little from square, its bedding planes over and under it tilted a little,
+/// and three of its edges cut off at random, so no two blocks are alike; in colours `dark` to
+/// `light`. A placement scales it to its size.
+pub fn block_bed(seed: u32, dark: vec3, light: vec3) -> Bed {
+    var planes = [vec4(0.0); 9]
+    for k in 0..4 {
+        let a = TAU * f32(k) / 4.0 + 0.14 * (rand(seed, 70 + k) - 0.5)
+        planes[k] = vec4(cos(a), 0.0, sin(a), 1.0 - 0.06 * rand(seed, 80 + k))
+    }
+    for k in 0..3 {
+        let a = TAU * (f32(k) + rand(seed, 90 + k)) / 3.0
+        let up = 0.6 * (rand(seed, 100 + k) - 0.3)
+        let n = normalize(vec3(cos(a), up, sin(a)))
+        planes[4 + k] = vec4(n, 1.15 + 0.15 * rand(seed, 110 + k))
+    }
+    let tilt = vec2(rand(seed, 120) - 0.5, rand(seed, 121) - 0.5) * 0.1
+    let up = normalize(vec3(tilt.x, 1.0, tilt.y))
+    planes[7] = vec4(up, 1.0)
+    planes[8] = vec4(-up, 1.0)
+    Bed { planes, lo: vec3(-1.3), hi: vec3(1.3), seed, dark, light, fine: 6.0 }
+}
+
+/// A rock's placement as the GPU reads it: where its prototype goes (its transform, and that
+/// transform's inverse transpose for its normals), and its tone's seed.
+pub struct RockAt: Copy + GpuData {
+    pub at: mat4,
+    pub normal_at: mat3,
+    pub seed: u32,
+}
+
+/// Rocks: a few prototype solids, and many placements of them, each prototype's drawn with one
+/// instanced draw (`Rocks::draw`) over the placements of its run (`first`, `count`) the camera
+/// sees (`Rocks::cull`: `seen`, from `seen_first`, `seen_count` of them); its shadows from all of
+/// them (`Rocks::cast`).
+pub struct Rocks {
+    pub prototypes: Vec<Realized>,
+    pub placed: GpuBuffer<RockAt>,
+    pub first: Vec<u32>,
+    pub count: Vec<u32>,
+    /// Each prototype's draw for all its placements (shadows), and for those seen.
+    pub args: Vec<GpuBuffer<DrawIndexedArgs>>,
+    pub seen_args: Vec<GpuBuffer<DrawIndexedArgs>>,
+    /// Where each placement is and how far it reaches (its centre and radius), on the CPU.
+    pub spheres: Vec<vec4>,
+    pub seen: GpuBuffer<u32>,
+    pub seen_first: Vec<u32>,
+    pub seen_count: Vec<u32>,
+    /// The render origin (its world point): placements are in the world, the camera and the
+    /// shadows' views in render space, the world less it (`cull` sets it).
+    pub origin: vec3,
+}
+
+/// The least of the view's half height a rock must span to be drawn (its radius over its
+/// distance, over the view's `tan_half`): a stone smaller than a few pixels far off isn't.
+pub const SEEN_SPAN: f32 = 0.004
+
+/// Whether a sphere `sp` (its centre and radius, in the eye's space) is seen from `eye` looking
+/// along `forward`: in front of it, within a cone `wide` (the tangent of its widest half angle)
+/// round its line of sight, and spanning at least `SEEN_SPAN` of a view whose half height's
+/// tangent is `tan_half`.
+pub fn in_view(sp: vec4, eye: vec3, forward: vec3, tan_half: f32, wide: f32) -> bool {
+    let to = sp.xyz - eye
+    let ahead = dot(to, forward)
+    if ahead < -sp.w || length(to - forward * ahead) > wide * max(ahead, 0.0) + sp.w {
+        return false
+    }
+    sp.w >= SEEN_SPAN * tan_half * length(to)
+}
+
+@test
+fn a_rock_is_drawn_where_it_is_seen_and_big_enough_to_be() {
+    let eye = vec3(0.0, 2.0, 0.0)
+    let ahead = vec3(0.0, 0.0, 1.0)
+    let (t, w) = (0.4, 0.7)
+    assert(in_view(vec4(0.0, 2.0, 50.0, 1.0), eye, ahead, t, w), "a rock ahead isn't drawn")
+    assert(!in_view(vec4(0.0, 2.0, -50.0, 1.0), eye, ahead, t, w), "a rock behind is drawn")
+    assert(!in_view(vec4(200.0, 2.0, 50.0, 1.0), eye, ahead, t, w), "a rock off to the side is")
+    // Its sphere reaching into the view from just outside it counts.
+    assert(in_view(vec4(37.0, 2.0, 50.0, 3.0), eye, ahead, t, w), "a rock at the edge isn't")
+    // A stone a metre across 2 km off spans a pixel or less: left out.
+    assert(!in_view(vec4(0.0, 2.0, 2000.0, 0.5), eye, ahead, t, w), "a far pebble is drawn")
+    // One round the eye is always drawn.
+    assert(in_view(vec4(0.0, 2.0, -1.0, 3.0), eye, ahead, t, w), "a rock round the eye isn't")
+}
+
+/// Prototype `k`'s mesh's draw arguments, for `count` instances.
+@compute(1)
+fn rock_args(mesh: [DrawIndexedArgs], count: u32, out: mut Slots<DrawIndexedArgs>, id: GlobalId) {
+    let m = mesh[0]
+    out[id] = DrawIndexedArgs {
+        indices: m.indices,
+        instances: count,
+        first_index: m.first_index,
+        base_vertex: m.base_vertex,
+        first_instance: 0,
+    }
+}
+
+impl Rocks {
+    /// Rocks of `prototypes` placed as `placements` say (each placement's `prototype` one of
+    /// them; others are left out).
+    pub fn new(prototypes: take Vec<Realized>, placements: [Placement]) -> Rocks {
+        let n = prototypes.len()
+        var sorted: Vec<RockAt> = Vec::with_capacity(placements.len())
+        var spheres: Vec<vec4> = Vec::with_capacity(placements.len())
+        var first: Vec<u32> = Vec::new()
+        var count: Vec<u32> = Vec::new()
+        for k in 0..n {
+            first.push(sorted.len())
+            for p in placements {
+                if p.prototype == k {
+                    sorted.push(RockAt { at: p.at, normal_at: p.normal_at, seed: p.seed })
+                    spheres.push(vec4(p.at[3].xyz, p.reach))
+                }
+            }
+            count.push(sorted.len() - first[k])
+        }
+        var placed: GpuBuffer<RockAt> = buffer(max(sorted.len(), 1))
+        if !sorted.is_empty() {
+            write(mut placed, 0, sorted)
+        }
+        var args: Vec<GpuBuffer<DrawIndexedArgs>> = Vec::new()
+        var seen_args: Vec<GpuBuffer<DrawIndexedArgs>> = Vec::new()
+        for k in 0..n {
+            var a: GpuBuffer<DrawIndexedArgs> = buffer(1)
+            dispatch(rock_args.bind(prototypes[k].mesh.draw.items(), count[k], mut a), groups: 1)
+            args.push(take a)
+            seen_args.push(buffer(1))
+        }
+        let total = max(sorted.len(), 1)
+        Rocks {
+            prototypes,
+            placed,
+            first,
+            count,
+            args,
+            seen_args,
+            spheres,
+            seen: buffer(total),
+            seen_first: Vec::filled(n, 0),
+            seen_count: Vec::filled(n, 0),
+            origin: vec3(0.0),
+        }
+    }
+
+    /// The rocks camera `cam` (in render space, the world less `origin`) sees: each whose sphere
+    /// meets its view, and spans at least `SEEN_SPAN` of it (a small stone far off is left out);
+    /// their indices written for the draws, each prototype's count into its draw.
+    pub fn cull(mut self, cam: Camera, origin: vec3) {
+        self.origin = origin
+        var seen: Vec<u32> = Vec::with_capacity(self.spheres.len())
+        let wide = cam.tan_half * max(cam.aspect, 1.0) * 1.2
+        for k in 0..self.prototypes.len() {
+            self.seen_first[k] = seen.len()
+            for i in self.first[k]..(self.first[k] + self.count[k]) {
+                let sp = self.spheres[i]
+                if in_view(vec4(sp.xyz - origin, sp.w), cam.eye, cam.forward, cam.tan_half, wide) {
+                    seen.push(i)
+                }
+            }
+            self.seen_count[k] = seen.len() - self.seen_first[k]
+        }
+        if !seen.is_empty() {
+            write(mut self.seen, 0, seen)
+        }
+        for k in 0..self.prototypes.len() {
+            dispatch(
+                rock_args.bind(
+                    self.prototypes[k].mesh.draw.items(),
+                    self.seen_count[k],
+                    mut self.seen_args[k],
+                ),
+                groups: 1,
+            )
+        }
+    }
+
+    /// How many rocks are placed.
+    pub fn len(self) -> u32 {
+        var n = 0
+        for c in self.count {
+            n += c
+        }
+        n
+    }
+
+    /// The rocks as shadow casters into `pass`, seen from the sun by `view`, biased as casters
+    /// are (`shadow::CASTER`).
+    pub fn cast<P: RenderPass>(self, pass: P, view: mat4) {
+        for k in 0..self.prototypes.len() {
+            if self.count[k] == 0 {
+                continue
+            }
+            borrow p = self.prototypes[k]
+            draw(
+                pass,
+                rock_shadow.bind(
+                    verts: p.mesh.verts.items(),
+                    placed: self.placed.items(),
+                    first: self.first[k],
+                    origin: self.origin,
+                    view: view,
+                ),
+                vegetation::nothing,
+                indices: p.mesh.quads.items(),
+                indirect: self.args[k].items(),
+                depth_bias: shadow::CASTER,
+            )
+        }
+    }
+
+    /// The rocks the camera sees (`cull`) drawn into `pass`, lit by `lt`.
+    pub fn draw<P: RenderPass>(self, pass: P, lt: Lighting) {
+        for k in 0..self.prototypes.len() {
+            if self.seen_count[k] == 0 {
+                continue
+            }
+            borrow p = self.prototypes[k]
+            draw(
+                pass,
+                rock_vertex.bind(
+                    verts: p.mesh.verts.items(),
+                    colours: p.colours.items(),
+                    placed: self.placed.items(),
+                    seen: self.seen.items(),
+                    first: self.seen_first[k],
+                    origin: self.origin,
+                    cam: lt.cam,
+                ),
+                stone_shade.bind(lt),
+                indices: p.mesh.quads.items(),
+                indirect: self.seen_args[k].items(),
+                cull: std::gpu::Cull::Back,
+                depth: view::NEAREST,
+            )
+        }
+    }
+}
+
+/// Vertex `v` of a rock prototype's mesh, in its placement `first + i`, seen from the sun by
+/// `view`.
+@vertex
+pub fn rock_shadow(
+    v: VertexIndex,
+    i: InstanceIndex,
+    verts: [SkinVertex],
+    placed: [RockAt],
+    first: u32,
+    origin: vec3,
+    view: mat4,
+) -> ClipPosition {
+    let r = placed[first + i.index]
+    ClipPosition { position: view * vec4((r.at * vec4(verts[v.index].pos, 1.0)).xyz - origin, 1.0) }
+}
+
+/// Vertex `v` of a rock prototype's mesh, in the placement seen `first + i`: its colour in its
+/// placement's own tone (lighter or darker by its seed, so the rocks placed with one seed, a
+/// bed's, share theirs).
+@vertex
+pub fn rock_vertex(
+    v: VertexIndex,
+    i: InstanceIndex,
+    verts: [SkinVertex],
+    colours: [Unorm8x4],
+    placed: [RockAt],
+    seen: [u32],
+    first: u32,
+    origin: vec3,
+    cam: Camera,
+) -> StoneVertex {
+    let r = placed[seen[first + i.index]]
+    let at = mat4(r.at[0], r.at[1], r.at[2], vec4(r.at[3].xyz - origin, 1.0))
+    var sv = stone_point(v.index, verts, colours, at, r.normal_at, r.seed, cam)
+    sv.albedo *= 0.78 + 0.44 * rand(r.seed, 1)
+    sv
 }

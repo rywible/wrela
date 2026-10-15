@@ -632,6 +632,8 @@ pub struct Floor {
     /// holds the bare land.
     view: u32,
     bare_cooked: bool,
+    /// The bare land's rock as solids (`geology::rock_placements`), made when it's first shown.
+    rocks: Option<engine::stone::Rocks>,
     /// How many of the clipmap's levels this frame cooked (a frame that cooks the ground draws
     /// no strip of shadows or probes).
     terrain_cooked: u32,
@@ -873,6 +875,7 @@ pub fn init() -> Floor {
         still: false,
         view: 0,
         bare_cooked: false,
+        rocks: None,
         terrain_cooked: 0,
         strip_drawn: false,
         last_eye: vec2(0.0),
@@ -960,6 +963,12 @@ fn recentre(s: mut Floor, to: vec2i) {
     s.near.shift(d)
     s.far.shift(d)
     s.banks.shift(d)
+    // The rocks stay in the world; what they're drawn and cast from is the new origin.
+    let o = origin_of(s)
+    match mut s.rocks {
+        Some(r) => r.origin = o,
+        None => {},
+    }
     for mut b in s.built {
         b.at[3] = vec4(b.at[3].xyz + d, 1.0)
     }
@@ -1738,6 +1747,9 @@ fn keys(s: mut Floor, time: f32) {
                 s.view = (s.view + 1) % 4
                 s.light.clay = if s.view == 1 { 1 } else { 0 }
                 s.shot = None
+                // The bare view casts other shadows (its land's): the cascades are drawn again.
+                s.near.changed()
+                s.far.changed()
             }
             if key == Key::F9 && s.hashing.is_empty() {
                 for i in 0..BAKED.len() {
@@ -1827,10 +1839,51 @@ fn resize(s: mut Floor, width: u32, height: u32, w: u32, h: u32) {
 /// cook and a strip together passed 16.7 ms on the walk), unless the near map isn't ready.
 /// (One moving cache's work a frame: the probes skip a frame that draws a strip.)
 fn static_shadows(s: mut Floor, sh: Shadows, wind: Wind) {
-    // The bare view casts no shadows of what isn't on its land.
-    let on = on(s.off, System::Shadows) && s.view != BARE
+    let on = on(s.off, System::Shadows)
     s.strip_drawn = false
     if s.terrain_cooked > 0 && s.near.ready {
+        return
+    }
+    // The bare view's casters are its land's: its rocks and the ground itself, none of what grows
+    // or is built on the floor's.
+    if s.view == BARE {
+        s.strip_drawn = s.near.drawing() || s.far.drawing()
+        var none: Option<engine::wood::Wood> = None
+        let nothing: Vec<engine::stone::Realized> = Vec::new()
+        let no_banks = engine::stone::Instances { prototypes: Vec::new(), placements: Vec::new() }
+        if s.near.drawing() {
+            s.near.draw_strip(
+                mut none,
+                nothing,
+                no_banks,
+                s.rocks,
+                s.clipmap,
+                ground_casts: true,
+                sun: SUN,
+                sh: sh,
+                wind: wind,
+                s: s.linear,
+                cam: s.cam,
+                on: on,
+                name: "shadows near",
+            )
+        } else if s.far.drawing() {
+            s.far.draw_strip(
+                mut none,
+                nothing,
+                no_banks,
+                s.rocks,
+                s.clipmap,
+                ground_casts: true,
+                sun: SUN,
+                sh: sh,
+                wind: wind,
+                s: s.linear,
+                cam: s.cam,
+                on: on,
+                name: "shadows far",
+            )
+        }
         return
     }
     // The far cascade waits for all that casts into it at load (the far layer, the built
@@ -1843,26 +1896,32 @@ fn static_shadows(s: mut Floor, sh: Shadows, wind: Wind) {
             mut s.wood,
             s.built,
             s.banks,
-            SUN,
-            sh,
-            wind,
-            s.linear,
-            s.cam,
-            on,
-            "shadows near",
+            None,
+            s.clipmap,
+            ground_casts: false,
+            sun: SUN,
+            sh: sh,
+            wind: wind,
+            s: s.linear,
+            cam: s.cam,
+            on: on,
+            name: "shadows near",
         )
     } else if s.far.drawing() && far_casts {
         s.far.draw_strip(
             mut s.wood,
             s.built,
             s.banks,
-            SUN,
-            sh,
-            wind,
-            s.linear,
-            s.cam,
-            on,
-            "shadows far",
+            None,
+            s.clipmap,
+            ground_casts: false,
+            sun: SUN,
+            sh: sh,
+            wind: wind,
+            s: s.linear,
+            cam: s.cam,
+            on: on,
+            name: "shadows far",
         )
     }
 }
@@ -2164,6 +2223,13 @@ fn bake_probes(s: mut Floor, sh: Shadows, eye: vec2) {
 fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
     let off = shown(s.off, s.view)
     let bare = s.view == BARE
+    // The rocks the camera sees, chosen before any pass begins.
+    if bare {
+        match mut s.rocks {
+            Some(r) => r.cull(cam, origin_of(s)),
+            None => {},
+        }
+    }
     var grid = s.probes.grid
     // The bare view lights its land without the probes, which were baked over the floor's.
     if !s.probes.done() || bare {
@@ -2329,6 +2395,11 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
             }
         },
         None => {},
+    }
+    if bare {
+        if let Some(r) = s.rocks {
+            r.draw(veg, lt)
+        }
     }
     veg.end()
     label("terrain")
@@ -2829,6 +2900,14 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     // The bare view cooks the bare land; the clipmap cooks every level again when the view
     // changes which land it holds.
     let bare = s.view == BARE
+    if bare && s.rocks.is_none() {
+        let began = std::time::now()
+        let placements = geology::rock_placements(geology::WORLD.land)
+        var rocks = engine::stone::Rocks::new(geology::rock_prototypes(), placements)
+        rocks.origin = origin_of(s)
+        print(f"bare rocks: {rocks.len()} placed in {(std::time::now() - began) * 1000.0:.0} ms")
+        s.rocks = Some(take rocks)
+    }
     let again = bare != s.bare_cooked
     s.bare_cooked = bare
     s.terrain_cooked = if bare { s.clipmap.follow(geology::WORLD.land, eye, again) } else {
