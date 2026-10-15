@@ -14,8 +14,8 @@ const FADING: f32 = 4.9
 const DARK: f32 = 6.1
 // A reload of the tab starts here instead: in the dark, just before the library comes up.
 pub const RETURNING: f32 = DARK
-// Radians of the slow rotation a second.
-const TURNING: f32 = 0.4
+// Radians of the slow rotation a second: slow, so it stays in the background.
+const TURNING: f32 = 0.28
 // Where the tesseract turns while the mark resolves: up and toward the eye.
 const HERO = vec3(0.0, 1.95, 1.4)
 const HERO_SIZE: f32 = 0.66

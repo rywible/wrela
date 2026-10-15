@@ -20,6 +20,23 @@ pub fn environment() -> Pending<u8> {
     request("environment", [u8(0); 0])
 }
 
+// A compressed image (PNG, WebP or JPEG), decoded by the host to its RGBA8 pixels, rows top to
+// bottom, as the file holds them. It must be `width` by `height`: another size fails.
+pub fn decode_image(bytes: [u8], width: u32, height: u32) -> Pending<u8> {
+    var body: Vec<u8> = Vec::new()
+    for n in [width, height] {
+        for shift in [0, 8, 16, 24] { body.push(u8((n >> shift) & 255)) }
+    }
+    for b in bytes { body.push(b) }
+    request("image/decode", body)
+}
+
+// Fetches each URL of `list` (absolute, one a line) into the host's cache ahead of time, at
+// low priority; a program opening stops it. Answers once all are done or it stopped.
+pub fn prefetch(list: [u8]) -> Pending<u8> {
+    request("prefetch", list)
+}
+
 // The pointer's shape over the program: `default`, `pointer` or `text`.
 pub fn cursor(name: str) -> Pending<u8> {
     var bytes: Vec<u8> = Vec::new()
