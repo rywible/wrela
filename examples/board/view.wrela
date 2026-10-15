@@ -1,0 +1,84 @@
+// The camera over the board: which world point is at the screen's top left, and how far in it
+// is. A world unit is a logical pixel at 100%; `unit` is the screen's device pixels for one
+// logical pixel, so the board reads the same on every display.
+
+use ui::draw::Rect
+
+/// How far out and in the camera goes.
+pub const ZOOM_MIN: f32 = 0.05
+pub const ZOOM_MAX: f32 = 8.0
+
+pub struct View: Copy + Eq {
+    pub pan: vec2,
+    pub zoom: f32,
+    pub unit: f32,
+}
+
+impl View {
+    pub fn new() -> View {
+        View { pan: vec2(0.0), zoom: 1.0, unit: 1.0 }
+    }
+
+    /// Device pixels for one world unit.
+    pub fn scale(self) -> f32 {
+        self.zoom * self.unit
+    }
+
+    pub fn to_screen(self, w: vec2) -> vec2 {
+        (w - self.pan) * self.scale()
+    }
+
+    pub fn to_world(self, s: vec2) -> vec2 {
+        s / self.scale() + self.pan
+    }
+
+    /// A world rectangle on the screen.
+    pub fn rect(self, r: Rect) -> Rect {
+        let p = self.to_screen(vec2(r.x, r.y))
+        let k = self.scale()
+        Rect::new(p.x, p.y, r.w * k, r.h * k)
+    }
+
+    /// Zooms to `zoom` (kept in range) about screen point `s`: the world point under it stays.
+    pub fn zoom_at(mut self, s: vec2, zoom: f32) {
+        let w = self.to_world(s)
+        self.zoom = clamp(zoom, ZOOM_MIN, ZOOM_MAX)
+        self.pan = w - s / self.scale()
+    }
+
+    /// Fits world rectangle `r` on a screen `screen` device pixels big, `margin` pixels in from
+    /// its edges, no further in than `most`.
+    pub fn fit(mut self, r: Rect, screen: vec2, margin: f32, most: f32) {
+        let room = max(screen - vec2(2.0 * margin), vec2(1.0))
+        let size = max(vec2(r.w, r.h), vec2(1.0))
+        self.zoom = clamp(min(room.x / size.x, room.y / size.y) / self.unit, ZOOM_MIN, most)
+        self.pan = r.center() - 0.5 * screen / self.scale()
+    }
+}
+
+@test
+fn zooming_keeps_the_point_under_the_pointer() {
+    var v = View { pan: vec2(-300.0, 40.0), zoom: 1.25, unit: 2.0 }
+    let s = vec2(410.0, 222.0)
+    let before = v.to_world(s)
+    v.zoom_at(s, 3.0)
+    assert(v.zoom == 3.0)
+    assert(length(v.to_world(s) - before) < 1.0e-3, "the point moved")
+    v.zoom_at(s, 100.0)
+    assert(v.zoom == ZOOM_MAX, "the zoom stays in range")
+    assert(length(v.to_screen(before) - s) < 1.0e-2)
+}
+
+@test
+fn fitting_centres_the_rectangle() {
+    var v = View::new()
+    v.fit(
+        Rect::new(x: 100.0, y: -50.0, w: 400.0, h: 100.0),
+        vec2(1000.0, 500.0),
+        margin: 50.0,
+        most: 4.0,
+    )
+    // 900 pixels across hold 400 units.
+    assert(abs(v.zoom - 2.25) < 1.0e-5, f"zoom {v.zoom}")
+    assert(length(v.to_screen(vec2(300.0, 0.0)) - vec2(500.0, 250.0)) < 1.0e-3)
+}

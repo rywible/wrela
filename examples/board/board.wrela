@@ -1,0 +1,492 @@
+// What's on a board: notes, shapes, text, pen strokes and the links between them, in world
+// units, in the order they're drawn. Hit tests, selection, copies and undo work on it here;
+// main.wrela turns input into these calls and paint.wrela draws it.
+
+use std::serialize::Serialize
+use ui::draw::Rect
+
+pub enum Kind: Copy + Eq + Serialize {
+    Note,
+    Box,
+    Ellipse,
+    Diamond,
+    Text,
+    Pen,
+    Link,
+}
+
+/// One thing on the board. A box's place is `at` (its top left) and `size`; a pen stroke's
+/// `points` are from `at`; a link joins items `from` and `to`, and is drawn from edge to edge.
+/// `color` indexes the palette (paint.wrela).
+pub struct Item: Clone + Eq + Serialize {
+    pub id: u32,
+    pub kind: Kind,
+    pub at: vec2,
+    pub size: vec2,
+    pub color: u32,
+    pub text: String,
+    pub points: Vec<vec2>,
+    pub from: u32,
+    pub to: u32,
+}
+
+/// A note's side, and the smallest a box is made.
+pub const NOTE: f32 = 200.0
+pub const SMALLEST: f32 = 24.0
+/// How wide a pen's stroke and a link's line are.
+pub const PEN_WIDTH: f32 = 3.0
+pub const LINK_WIDTH: f32 = 2.0
+
+impl Item {
+    pub fn new(kind: Kind, at: vec2, size: vec2, color: u32) -> Item {
+        Item {
+            id: 0,
+            kind,
+            at,
+            size,
+            color,
+            text: String::new(),
+            points: Vec::new(),
+            from: 0,
+            to: 0,
+        }
+    }
+
+    /// Whether a person types into it.
+    pub fn has_text(self) -> bool {
+        self.kind != Kind::Pen && self.kind != Kind::Link
+    }
+
+    /// Whether it's a box that resizes by its corners.
+    pub fn boxed(self) -> bool {
+        self.has_text()
+    }
+
+    pub fn rect(self) -> Rect {
+        Rect::new(self.at.x, self.at.y, self.size.x, self.size.y)
+    }
+
+    pub fn center(self) -> vec2 {
+        self.at + 0.5 * self.size
+    }
+
+    /// Where the line from its centre toward `toward` leaves its edge.
+    pub fn edge(self, toward: vec2) -> vec2 {
+        let c = self.center()
+        let d = toward - c
+        let h = 0.5 * self.size
+        if d.x == 0.0 && d.y == 0.0 {
+            return c
+        }
+        let q = abs(d) / h
+        let reach = match self.kind {
+            Kind::Ellipse => 1.0 / length(q),
+            Kind::Diamond => 1.0 / (q.x + q.y),
+            _ => 1.0 / max(q.x, q.y),
+        }
+        c + d * reach
+    }
+
+    /// Whether world point `p` is on it, or within `slack` of a stroke or the box's edge.
+    fn holds(self, p: vec2, slack: f32) -> bool {
+        match self.kind {
+            Kind::Pen => {
+                let reach = slack + 0.5 * PEN_WIDTH
+                if self.points.len() == 1 {
+                    return length(p - self.at - self.points[0]) <= reach
+                }
+                for i in 1..self.points.len() {
+                    let a = self.at + self.points[i - 1]
+                    let b = self.at + self.points[i]
+                    if distance_to_line(p, a, b) <= reach {
+                        return true
+                    }
+                }
+                false
+            },
+            Kind::Link => false,
+            Kind::Ellipse => length((p - self.center()) / (0.5 * self.size + vec2(slack))) <= 1.0,
+            Kind::Diamond => {
+                let q = abs(p - self.center()) / (0.5 * self.size + vec2(slack))
+                q.x + q.y <= 1.0
+            },
+            _ => {
+                let r = self.rect()
+                p.x >= r.x - slack &&
+                    p.y >= r.y - slack &&
+                    p.x <= r.right() + slack &&
+                    p.y <= r.bottom() + slack
+            },
+        }
+    }
+}
+
+/// The distance from `p` to the line from `a` to `b`.
+pub fn distance_to_line(p: vec2, a: vec2, b: vec2) -> f32 {
+    let ab = b - a
+    let along = dot(ab, ab)
+    let t = if along > 0.0 { clamp(dot(p - a, ab) / along, 0.0, 1.0) } else { 0.0 }
+    length(p - a - ab * t)
+}
+
+/// Whether `ids` holds `id`.
+pub fn has(ids: [u32], id: u32) -> bool {
+    for i in ids {
+        if i == id {
+            return true
+        }
+    }
+    false
+}
+
+pub struct Board: Clone + Eq + Serialize {
+    pub items: Vec<Item>,
+    /// The id the next item gets.
+    pub next: u32,
+}
+
+impl Board {
+    pub fn new() -> Board {
+        Board { items: Vec::new(), next: 1 }
+    }
+
+    /// Adds `item` on top, with a new id, which it returns.
+    pub fn add(mut self, item: take Item) -> u32 {
+        var it = take item
+        it.id = self.next
+        self.next += 1
+        let id = it.id
+        self.items.push(take it)
+        id
+    }
+
+    pub fn index(self, id: u32) -> Option<u32> {
+        for i in 0..self.items.len() {
+            if self.items[i].id == id {
+                return Some(i)
+            }
+        }
+        None
+    }
+
+    /// A link's ends: on the edges of the items it joins, each on the line between their
+    /// centres. `None` if either is gone.
+    pub fn ends(self, link: Item) -> Option<(vec2, vec2)> {
+        let Some(a) = self.index(link.from) else { return None }
+        let Some(b) = self.index(link.to) else { return None }
+        borrow from = self.items[a]
+        borrow to = self.items[b]
+        Some((from.edge(to.center()), to.edge(from.center())))
+    }
+
+    /// The world rectangle item `i` covers.
+    pub fn bounds(self, i: u32) -> Rect {
+        borrow it = self.items[i]
+        match it.kind {
+            Kind::Pen => {
+                var lo = it.points[0]
+                var hi = it.points[0]
+                for p in it.points {
+                    lo = min(lo, p)
+                    hi = max(hi, p)
+                }
+                let h = vec2(0.5 * PEN_WIDTH)
+                lo = it.at + lo - h
+                hi = it.at + hi + h
+                Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)
+            },
+            Kind::Link => match self.ends(it) {
+                Some((a, b)) => {
+                    let h = vec2(0.5 * LINK_WIDTH)
+                    let lo = min(a, b) - h
+                    let hi = max(a, b) + h
+                    Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)
+                },
+                None => Rect::new(it.at.x, it.at.y, w: 0.0, h: 0.0),
+            },
+            _ => it.rect(),
+        }
+    }
+
+    /// The rectangle around every item, if there are any.
+    pub fn whole(self) -> Option<Rect> {
+        self.span([u32(0); 0], every: true)
+    }
+
+    /// The rectangle around the items in `ids`, if there are any.
+    pub fn extent(self, ids: [u32]) -> Option<Rect> {
+        self.span(ids, every: false)
+    }
+
+    fn span(self, ids: [u32], every: bool) -> Option<Rect> {
+        var lo = vec2(0.0)
+        var hi = vec2(0.0)
+        var any = false
+        for i in 0..self.items.len() {
+            if !every && !has(ids, self.items[i].id) {
+                continue
+            }
+            let r = self.bounds(i)
+            if r.w <= 0.0 && r.h <= 0.0 {
+                continue
+            }
+            lo = if any { min(lo, vec2(r.x, r.y)) } else { vec2(r.x, r.y) }
+            hi = if any { max(hi, vec2(r.right(), r.bottom())) } else {
+                vec2(r.right(), r.bottom())
+            }
+            any = true
+        }
+        if any { Some(Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)) } else { None }
+    }
+
+    /// The topmost item at world point `p`, within `slack` units: links lie over the rest.
+    pub fn hit(self, p: vec2, slack: f32) -> Option<u32> {
+        var i = self.items.len()
+        while i > 0 {
+            i -= 1
+            borrow it = self.items[i]
+            if it.kind == Kind::Link {
+                if let Some((a, b)) = self.ends(it) {
+                    if distance_to_line(p, a, b) <= slack + LINK_WIDTH {
+                        return Some(it.id)
+                    }
+                }
+            }
+        }
+        i = self.items.len()
+        while i > 0 {
+            i -= 1
+            if self.items[i].holds(p, slack) {
+                return Some(self.items[i].id)
+            }
+        }
+        None
+    }
+
+    /// Every item that touches world rectangle `r`, bottom first.
+    pub fn touching(self, r: Rect) -> Vec<u32> {
+        var out: Vec<u32> = Vec::new()
+        for i in 0..self.items.len() {
+            let b = self.bounds(i)
+            if b.x <= r.right() && b.right() >= r.x && b.y <= r.bottom() && b.bottom() >= r.y {
+                out.push(self.items[i].id)
+            }
+        }
+        out
+    }
+
+    /// Removes the items in `ids`, and the links to them.
+    pub fn remove(mut self, ids: [u32]) {
+        self.items.retain(|it| !has(ids, it.id) && !has(ids, it.from) && !has(ids, it.to))
+    }
+
+    /// Moves the items in `ids` by `d`; links follow what they join.
+    pub fn move_by(mut self, ids: [u32], d: vec2) {
+        for i in 0..self.items.len() {
+            if has(ids, self.items[i].id) {
+                self.items[i].at += d
+            }
+        }
+    }
+
+    /// Copies of the items in `ids`, and of the links between them, bottom first.
+    pub fn copy(self, ids: [u32]) -> Vec<Item> {
+        var out: Vec<Item> = Vec::new()
+        for it in self.items {
+            let joined = it.kind == Kind::Link && has(ids, it.from) && has(ids, it.to)
+            let picked = it.kind != Kind::Link && has(ids, it.id)
+            if joined || picked {
+                out.push(it.clone())
+            }
+        }
+        out
+    }
+
+    /// Adds copies of `items` on top, moved by `d`, with new ids: a link joins the copies of
+    /// what it joined, and is left out if they aren't both there. The new ids.
+    pub fn paste(mut self, items: [Item], d: vec2) -> Vec<u32> {
+        var old: Vec<u32> = Vec::new()
+        var new: Vec<u32> = Vec::new()
+        for it in items {
+            if it.kind != Kind::Link {
+                var copy = it.clone()
+                copy.at += d
+                old.push(it.id)
+                new.push(self.add(take copy))
+            }
+        }
+        var out = new.clone()
+        for it in items {
+            if it.kind == Kind::Link {
+                var from = 0
+                var to = 0
+                for k in 0..old.len() {
+                    if old[k] == it.from { from = new[k] }
+                    if old[k] == it.to { to = new[k] }
+                }
+                if from != 0 && to != 0 {
+                    var copy = it.clone()
+                    copy.from = from
+                    copy.to = to
+                    out.push(self.add(take copy))
+                }
+            }
+        }
+        out
+    }
+
+    /// Moves the items in `ids` above everything else (`front`) or below it, keeping their
+    /// order.
+    pub fn restack(mut self, ids: [u32], front: bool) {
+        var moved: Vec<Item> = Vec::new()
+        var kept: Vec<Item> = Vec::new()
+        for it in self.items {
+            if has(ids, it.id) { moved.push(it.clone()) } else { kept.push(it.clone()) }
+        }
+        self.items.clear()
+        if front {
+            self.items.append(mut kept)
+            self.items.append(mut moved)
+        } else {
+            self.items.append(mut moved)
+            self.items.append(mut kept)
+        }
+    }
+}
+
+/// The boards before and after each change, for undo and redo.
+pub struct History {
+    undo: Vec<Board>,
+    redo: Vec<Board>,
+}
+
+/// How many changes undo goes back.
+const KEPT: u32 = 100
+
+impl History {
+    pub fn new() -> History {
+        History { undo: Vec::new(), redo: Vec::new() }
+    }
+
+    /// Whether nothing has changed yet.
+    pub fn fresh(self) -> bool {
+        self.undo.is_empty() && self.redo.is_empty()
+    }
+
+    pub fn can_undo(self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub fn can_redo(self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    /// Keeps `b` as it is before a change.
+    pub fn checkpoint(mut self, b: Board) {
+        if self.undo.len() == KEPT {
+            let _ = self.undo.remove(0)
+        }
+        self.undo.push(b.clone())
+        self.redo.clear()
+    }
+
+    /// Puts `b` back as it was before its last change; false if there's none.
+    pub fn undo(mut self, b: mut Board) -> bool {
+        let Some(before) = self.undo.pop() else { return false }
+        self.redo.push(replace(mut b, take before))
+        true
+    }
+
+    /// Makes the last change undone again; false if there's none.
+    pub fn redo(mut self, b: mut Board) -> bool {
+        let Some(after) = self.redo.pop() else { return false }
+        self.undo.push(replace(mut b, take after))
+        true
+    }
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+fn sample() -> Board {
+    var b = Board::new()
+    let _ = b.add(Item::new(Kind::Box, vec2(0.0, 0.0), vec2(100.0, 50.0), color: 0))
+    let _ = b.add(Item::new(Kind::Ellipse, vec2(50.0, 20.0), vec2(100.0, 100.0), color: 1))
+    let _ = b.add(Item::new(Kind::Note, vec2(400.0, 0.0), vec2(NOTE), color: 2))
+    var link = Item::new(Kind::Link, vec2(0.0), vec2(0.0), color: 3)
+    link.from = 1
+    link.to = 3
+    let _ = b.add(take link)
+    b
+}
+
+@test
+fn the_topmost_item_is_hit() {
+    let b = sample()
+    // Inside both the box and the ellipse: the ellipse is on top.
+    assert(b.hit(vec2(90.0, 45.0), slack: 0.0) == Some(2))
+    // In the box, outside the ellipse's curve.
+    assert(b.hit(vec2(55.0, 22.0), slack: 0.0) == Some(1))
+    // On the link, between the box and the note.
+    assert(b.hit(vec2(250.0, 58.0), slack: 2.0) == Some(4))
+    assert(b.hit(vec2(250.0, 300.0), slack: 2.0) == None)
+}
+
+@test
+fn a_link_ends_on_its_items_edges() {
+    let b = sample()
+    let Some((a, z)) = b.ends(b.items[3]) else { panic("the link has ends") }
+    // From the box's centre (50, 25) toward the note's (500, 100): it leaves the box's right side.
+    assert(abs(a.x - 100.0) < 1.0e-3, f"{a.x}")
+    assert(abs(z.x - 400.0) < 1.0e-3, f"{z.x}")
+    var e = Item::new(Kind::Ellipse, vec2(0.0), vec2(100.0, 50.0), color: 0)
+    let p = e.edge(vec2(50.0, 125.0))
+    assert(length(p - vec2(50.0, 50.0)) < 1.0e-3, "straight down, to the bottom of the curve")
+    e.kind = Kind::Diamond
+    assert(length(e.edge(vec2(200.0, 25.0)) - vec2(100.0, 25.0)) < 1.0e-3)
+}
+
+@test
+fn a_marquee_selects_what_it_touches() {
+    let b = sample()
+    let ids = b.touching(Rect::new(x: 120.0, y: 95.0, w: 20.0, h: 20.0))
+    assert(ids.len() == 1 && ids[0] == 2, "only the ellipse reaches there")
+    assert(b.touching(Rect::new(x: -10.0, y: -10.0, w: 1000.0, h: 1000.0)).len() == 4)
+}
+
+@test
+fn removing_an_item_removes_its_links() {
+    var b = sample()
+    b.remove([3])
+    assert(b.items.len() == 2, f"{b.items.len()} left")
+    assert(b.index(4).is_none(), "the link to the note went with it")
+}
+
+@test
+fn pasting_joins_the_copies() {
+    var b = sample()
+    let items = b.copy([1, 3])
+    assert(items.len() == 3, "the box, the note and the link between them")
+    let ids = b.paste(items, vec2(10.0, 0.0))
+    assert(ids.len() == 3 && b.items.len() == 7)
+    let link = b.items[6].clone()
+    assert(link.kind == Kind::Link && link.from == ids[0] && link.to == ids[1])
+    assert(b.items[4].at == vec2(10.0, 0.0))
+}
+
+@test
+fn undo_and_redo_restore_the_board() {
+    var b = sample()
+    var h = History::new()
+    let first = b.clone()
+    h.checkpoint(b)
+    b.move_by([1, 2], vec2(5.0, 5.0))
+    let moved = b.clone()
+    h.checkpoint(b)
+    b.remove([1])
+    assert(h.undo(mut b) && b == moved)
+    assert(h.undo(mut b) && b == first)
+    assert(!h.undo(mut b), "nothing before the first change")
+    assert(h.redo(mut b) && b == moved)
+    b.restack([1], front: true)
+    assert(b.items[3].id == 1, "the box is on top")
+}

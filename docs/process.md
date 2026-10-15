@@ -941,6 +941,36 @@ tests. On this branch, with no `WRELA_*` variables set, it passed all 744 Rust t
 browser, tools and infrastructure check in 321.0 s. That time includes warm build output. It
 is not a paired gate-time comparison. No rendering code changed, so no frame-time claim is made.
 
+## A whiteboard, 2026-10-14
+
+Ryan asked whether Wrela could build web applications without HTML or CSS, and then asked
+Claude Code (Opus 5.5) to build a Miro-like board for fun, as a forcing function on the
+engine's UI layer. Miro and Lucid are product references for interaction conventions only,
+from general knowledge of such tools: a tool rail on the left, a colour bar over a
+selection, sticky notes whose text shrinks to fit, connectors that follow their shapes, and
+single-key tools. No screen, asset or design was traced or copied.
+
+**The board** (`examples/board/`) is a Wrela program drawn entirely from the `ui` package's
+quads: an endless dot grid, sticky notes, rectangles, ellipses, diamonds, free text, pen
+strokes and arrows between items. It has select, shift-select and marquee; move, resize and
+nudge; double-click to type, with a caret, Backspace, Delete and arrows; a colour bar; front
+and back; undo and redo; duplicate, copy, cut and paste; pan by Space, the hand tool, the
+middle button or scrolling; zoom about the pointer with Cmd or a pinch; fit and 100%; and a
+save to the program's storage after each change settles. Its tests drive it with scripts of
+input in the native host, as a person would.
+
+**The `ui` layer** gained ellipses, diamonds and lines with round ends (`ui/draw.wrela`) and
+word wrapping (`ui/text.wrela`), and rounded outlines (`ring`) for the board's shapes,
+selection and icons. The ellipse's distance is Inigo Quilez's approximation
+([ellipse distance](https://iquilezles.org/articles/ellipsedist/)) and the diamond's his
+rhombus ([2D distance functions](https://iquilezles.org/articles/distfunctions2d/)), both
+reimplemented in Wrela.
+
+**What it found.** The language and the `ui` layer carried an ordinary application without
+new features. The gaps are the ones a canvas application expects: no system clipboard (copy
+and paste stay in the board), no input method for composed text, Latin-1 fonts only, and
+nothing for screen readers, and no way to change the pointer's shape.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

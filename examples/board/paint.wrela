@@ -1,0 +1,351 @@
+// How the board looks: a dot grid on paper, notes with a soft shadow, outlined shapes, ink, and
+// arrows. Each item's text is laid out in world units (`layout`), so the same layout places
+// what's drawn, the caret and a click in the text.
+
+use board::{Board, Item, Kind, LINK_WIDTH, PEN_WIDTH}
+use ui::draw::{DrawList, Rect}
+use ui::text::{Face, Font, Fonts}
+use view::View
+
+/// The palette: fills for notes and shapes, and inks for strokes, text and outlines, each
+/// colour's pair at one index.
+pub const FILLS = [
+    vec4(1.0, 0.91, 0.52, 1.0),
+    vec4(1.0, 0.77, 0.55, 1.0),
+    vec4(0.99, 0.73, 0.8, 1.0),
+    vec4(0.8, 0.75, 0.98, 1.0),
+    vec4(0.67, 0.84, 1.0, 1.0),
+    vec4(0.75, 0.92, 0.67, 1.0),
+    vec4(0.88, 0.88, 0.89, 1.0),
+    vec4(1.0, 1.0, 1.0, 1.0),
+]
+pub const INKS = [
+    vec4(0.82, 0.6, 0.0, 1.0),
+    vec4(0.93, 0.44, 0.1, 1.0),
+    vec4(0.86, 0.2, 0.45, 1.0),
+    vec4(0.46, 0.3, 0.86, 1.0),
+    vec4(0.15, 0.45, 0.92, 1.0),
+    vec4(0.2, 0.6, 0.27, 1.0),
+    vec4(0.45, 0.46, 0.5, 1.0),
+    vec4(0.11, 0.12, 0.14, 1.0),
+]
+pub const COLORS: u32 = 8
+
+pub const PAPER = vec4(0.965, 0.965, 0.955, 1.0)
+pub const TEXT = vec4(0.11, 0.12, 0.14, 1.0)
+pub const ACCENT = vec4(0.27, 0.4, 1.0, 1.0)
+const DOT = vec4(0.79, 0.8, 0.82, 1.0)
+
+/// Text sizes (world units an em): a note's text takes the largest that fits it.
+const NOTE_SIZES = [34.0, 28.0, 24.0, 20.0, 17.0, 14.0, 12.0, 10.0, 8.0]
+const SHAPE_SIZE: f32 = 16.0
+pub const TEXT_SIZE: f32 = 20.0
+/// How far a box's text stays from its edges.
+const PAD: f32 = 14.0
+
+/// An item's text laid out: its size, its lines (byte ranges), where each line starts, and the
+/// first line's top, all in world units.
+pub struct Layout: Clone {
+    pub size: f32,
+    pub lines: Vec<(u32, u32)>,
+    pub xs: Vec<f32>,
+    pub top: f32,
+    pub line: f32,
+}
+
+/// The room a box gives its text: less in an ellipse or a diamond, whose corners are empty.
+fn room(it: Item) -> Rect {
+    let r = it.rect().shrink(PAD)
+    let keep = match it.kind {
+        Kind::Ellipse => 0.72,
+        Kind::Diamond => 0.5,
+        _ => 1.0,
+    }
+    let c = r.center()
+    let size = vec2(r.w, r.h) * keep
+    Rect::new(c.x - 0.5 * size.x, c.y - 0.5 * size.y, size.x, size.y)
+}
+
+pub fn layout(font: Font, it: Item) -> Layout {
+    borrow text = it.text.as_str()
+    if it.kind == Kind::Text {
+        let lines = font.wrap(text, TEXT_SIZE, it.size.x)
+        var xs: Vec<f32> = Vec::new()
+        for _l in lines {
+            xs.push(it.at.x)
+        }
+        return Layout {
+            size: TEXT_SIZE,
+            lines,
+            xs,
+            top: it.at.y,
+            line: font.line_height(TEXT_SIZE),
+        }
+    }
+    let r = room(it)
+    var size = SHAPE_SIZE
+    var lines = font.wrap(text, size, r.w)
+    if it.kind == Kind::Note {
+        for s in NOTE_SIZES {
+            size = s
+            lines = font.wrap(text, size, r.w)
+            if f32(lines.len()) * font.line_height(size) <= r.h {
+                break
+            }
+        }
+    }
+    let line = font.line_height(size)
+    var xs: Vec<f32> = Vec::new()
+    for l in lines {
+        xs.push(r.center().x - 0.5 * font.measure(text.slice(l.0, l.1), size))
+    }
+    let top = r.center().y - 0.5 * f32(lines.len()) * line
+    Layout { size, lines, xs, top, line }
+}
+
+/// How tall a text item is for its text.
+pub fn text_height(font: Font, it: Item) -> f32 {
+    let lines = font.wrap(it.text.as_str(), TEXT_SIZE, it.size.x)
+    f32(max(lines.len(), 1)) * font.line_height(TEXT_SIZE)
+}
+
+/// Which line byte offset `at` is on.
+fn line_of(l: Layout, at: u32) -> u32 {
+    for i in 0..l.lines.len() {
+        if at <= l.lines[i].1 {
+            return i
+        }
+    }
+    l.lines.len() - 1
+}
+
+/// Where the caret at byte `at` is: its top, in world units.
+pub fn caret(font: Font, it: Item, l: Layout, at: u32) -> vec2 {
+    let i = line_of(l, at)
+    let (from, to) = l.lines[i]
+    let x = font.caret_at(it.text.as_str().slice(from, to), l.size, min(at, to) - from)
+    vec2(l.xs[i] + x, l.top + f32(i) * l.line)
+}
+
+/// The byte offset nearest world point `p` in the text: where a click puts the caret.
+pub fn offset_at(font: Font, it: Item, l: Layout, p: vec2) -> u32 {
+    let row = clamp(floor((p.y - l.top) / l.line), 0.0, f32(l.lines.len() - 1))
+    let i = u32(row)
+    let (from, to) = l.lines[i]
+    from + font.offset_at(it.text.as_str().slice(from, to), l.size, p.x - l.xs[i])
+}
+
+/// The dots, every 20 units, or every 100 or 500 as the camera goes out.
+pub fn grid(list: mut DrawList, v: View, screen: vec2) {
+    var step = 20.0
+    while step * v.scale() < 18.0 * v.unit {
+        step *= 5.0
+    }
+    let lo = v.to_world(vec2(0.0))
+    let hi = v.to_world(screen)
+    let d = max(1.5 * v.unit, 1.0)
+    var y = ceil(lo.y / step) * step
+    while y <= hi.y {
+        var x = ceil(lo.x / step) * step
+        while x <= hi.x {
+            let p = v.to_screen(vec2(x, y))
+            list.rect(Rect::new(p.x - 0.5 * d, p.y - 0.5 * d, d, d), DOT, radius: 0.5 * d)
+            x += step
+        }
+        y += step
+    }
+}
+
+/// Whether screen rectangle `r` shows on a screen `screen` big.
+fn shows(r: Rect, screen: vec2) -> bool {
+    r.right() >= 0.0 && r.bottom() >= 0.0 && r.x <= screen.x && r.y <= screen.y
+}
+
+/// The text being typed: which item, and the caret.
+pub struct Typing: Copy + Eq {
+    pub id: u32,
+    pub at: u32,
+}
+
+/// Every item, bottom first, then the links over them. While `typing`, its item shows its caret
+/// when `blink` is on.
+pub fn items(
+    list: mut DrawList,
+    fonts: Fonts,
+    b: Board,
+    v: View,
+    screen: vec2,
+    typing: Option<Typing>,
+    blink: bool,
+) {
+    borrow font = fonts.font(Face::Sans)
+    let k = v.scale()
+    for i in 0..b.items.len() {
+        borrow it = b.items[i]
+        if it.kind == Kind::Link || !shows(v.rect(b.bounds(i)), screen) {
+            continue
+        }
+        let r = v.rect(it.rect())
+        let fill = FILLS[it.color % COLORS]
+        let ink = INKS[it.color % COLORS]
+        let edge = max(2.0 * k, 1.0)
+        match it.kind {
+            Kind::Note => {
+                list.rect(
+                    Rect::new(r.x, r.y + 4.0 * k, r.w, r.h),
+                    vec4(0.0, 0.0, 0.0, 0.05),
+                    radius: 6.0 * k,
+                )
+                list.rect(
+                    Rect::new(r.x, r.y + 1.5 * k, r.w, r.h),
+                    vec4(0.0, 0.0, 0.0, 0.08),
+                    radius: 3.0 * k,
+                )
+                list.rect(r, fill, radius: 2.0 * k)
+            },
+            Kind::Box => {
+                list.rect(r, fill, radius: 6.0 * k)
+                list.ring(r, ink, radius: 6.0 * k, width: edge)
+            },
+            Kind::Ellipse => {
+                list.ellipse(r, fill)
+                list.ellipse(r, ink, width: edge)
+            },
+            Kind::Diamond => {
+                list.diamond(r, fill)
+                list.diamond(r, ink, width: edge)
+            },
+            Kind::Pen => {
+                let w = max(PEN_WIDTH * k, 1.0)
+                var last = v.to_screen(it.at + it.points[0])
+                list.line(last, last, ink, width: w)
+                for p in it.points {
+                    let next = v.to_screen(it.at + p)
+                    list.line(last, next, ink, width: w)
+                    last = next
+                }
+            },
+            _ => {},
+        }
+        if it.has_text() {
+            let color = if it.kind == Kind::Text { ink } else { TEXT }
+            let typed = match typing {
+                Some(t) => if t.id == it.id { Some(t.at) } else { None },
+                None => None,
+            }
+            text(mut list, fonts, font, it, v, color, typed, blink)
+        }
+    }
+    for it in b.items {
+        if it.kind != Kind::Link {
+            continue
+        }
+        let Some((a, z)) = b.ends(it) else { continue }
+        arrow(
+            mut list,
+            v.to_screen(a),
+            v.to_screen(z),
+            INKS[it.color % COLORS],
+            max(LINK_WIDTH * k, 1.0),
+            k,
+        )
+    }
+}
+
+/// A line from `a` to `z` with an arrowhead at `z`.
+pub fn arrow(list: mut DrawList, a: vec2, z: vec2, color: vec4, width: f32, k: f32) {
+    list.line(a, z, color, width)
+    let d = z - a
+    let n = length(d)
+    if n < 1.0e-3 {
+        return
+    }
+    let dir = d / n
+    let side = vec2(-dir.y, dir.x)
+    let head = max(12.0 * k, 6.0)
+    list.line(z, z - dir * head + side * 0.55 * head, color, width)
+    list.line(z, z - dir * head - side * 0.55 * head, color, width)
+}
+
+/// An item's text, clipped to its box; tiny text is drawn as grey bars, as it would read from
+/// far away. `typed`: the caret's byte, while it's being typed into.
+fn text(
+    list: mut DrawList,
+    fonts: Fonts,
+    font: Font,
+    it: Item,
+    v: View,
+    color: vec4,
+    typed: Option<u32>,
+    blink: bool,
+) {
+    if it.text.is_empty() && typed.is_none() {
+        return
+    }
+    let l = layout(font, it)
+    let k = v.scale()
+    let px = l.size * k
+    let boxed = it.kind != Kind::Text
+    if boxed {
+        list.push_clip(v.rect(it.rect()))
+    }
+    borrow text = it.text.as_str()
+    for i in 0..l.lines.len() {
+        let (from, to) = l.lines[i]
+        let at = v.to_screen(vec2(l.xs[i], l.top + f32(i) * l.line))
+        borrow line = text.slice(from, to)
+        if px < 4.0 {
+            let w = font.measure(line, l.size) * k
+            list.rect(
+                Rect::new(at.x, at.y + 0.3 * l.line * k, w, 0.4 * l.line * k),
+                vec4(color.xyz, 0.35),
+            )
+        } else {
+            let _ = list.text(fonts, Face::Sans, line, px, at, color)
+        }
+    }
+    if let Some(at) = typed {
+        if blink {
+            let c = v.to_screen(caret(font, it, l, at))
+            let w = max(1.5 * v.unit, 1.0)
+            list.rect(Rect::new(c.x - 0.5 * w, c.y, w, l.line * k), ACCENT)
+        }
+    }
+    if boxed {
+        list.pop_clip()
+    }
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+@test
+fn a_notes_text_takes_the_largest_size_that_fits() {
+    let font = Font::of(Face::Sans)
+    var note = Item::new(Kind::Note, vec2(0.0), vec2(200.0), color: 0)
+    note.text = String::from("Hi")
+    let short = layout(font, note)
+    note.text = String::from(
+        "A longer note, with enough words in it to need several lines to hold them all",
+    )
+    let long = layout(font, note)
+    assert(short.size > long.size, f"{short.size} against {long.size}")
+    assert(f32(long.lines.len()) * long.line <= 200.0 - 2.0 * PAD)
+    // The short line is centred in the note.
+    let w = font.measure("Hi", short.size)
+    assert(abs(short.xs[0] + 0.5 * w - 100.0) < 1.0e-3)
+}
+
+@test
+fn the_caret_and_a_click_agree() {
+    let font = Font::of(Face::Sans)
+    var t = Item::new(Kind::Text, vec2(10.0, 20.0), vec2(400.0, 30.0), color: 7)
+    t.text = String::from("first line\nsecond")
+    let l = layout(font, t)
+    assert(l.lines.len() == 2)
+    // The caret after "sec", and a click just there.
+    let c = caret(font, t, l, 14)
+    assert(c.y == 20.0 + l.line)
+    assert(offset_at(font, t, l, c + vec2(0.5, 0.5 * l.line)) == 14)
+    // A click below the last line goes to that line.
+    assert(offset_at(font, t, l, vec2(1000.0, 500.0)) == t.text.len())
+}

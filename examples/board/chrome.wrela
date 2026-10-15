@@ -1,0 +1,393 @@
+// The board's controls, floating over it: the tools down the left, undo and redo at the bottom
+// left, the zoom at the bottom right, and over a selection its colours, its order and delete.
+// Each frame lays them out once (`layout`): input hits what's drawn. Icons are drawn from
+// lines and shapes, so they're sharp at every size.
+
+use paint::{ACCENT, COLORS, FILLS, INKS, TEXT}
+use ui::draw::{DrawList, Rect}
+use ui::text::{Face, Fonts}
+
+pub enum Tool: Copy + Eq {
+    Select,
+    Hand,
+    Note,
+    Box,
+    Ellipse,
+    Diamond,
+    Text,
+    Link,
+    Pen,
+}
+
+pub const TOOLS = [
+    Tool::Select,
+    Tool::Hand,
+    Tool::Note,
+    Tool::Box,
+    Tool::Ellipse,
+    Tool::Diamond,
+    Tool::Text,
+    Tool::Link,
+    Tool::Pen,
+]
+
+/// What a control does.
+pub enum Action: Copy + Eq {
+    Use { tool: Tool },
+    Color { index: u32 },
+    Front,
+    Back,
+    Delete,
+    Undo,
+    Redo,
+    ZoomIn,
+    ZoomOut,
+    Actual,
+    Fit,
+}
+
+pub struct Control: Copy + Eq {
+    pub action: Action,
+    pub rect: Rect,
+}
+
+/// The controls, and the panels they sit on.
+pub struct Chrome: Clone {
+    pub controls: Vec<Control>,
+    pub panels: Vec<Rect>,
+}
+
+const BUTTON: f32 = 40.0
+const GAP: f32 = 4.0
+const MARGIN: f32 = 12.0
+const SWATCH: f32 = 28.0
+
+/// Lays the controls out on a screen `screen` big, in device pixels `u` to a logical one; a
+/// selection's screen rectangle brings its bar over it.
+pub fn layout(screen: vec2, u: f32, selection: Option<Rect>) -> Chrome {
+    var c = Chrome { controls: Vec::new(), panels: Vec::new() }
+    let b = BUTTON * u
+    let g = GAP * u
+    let m = MARGIN * u
+    // The tools, down the left, in the middle.
+    let n = f32(TOOLS.len())
+    let h = n * b + (n + 1.0) * g
+    let top = max(0.5 * (screen.y - h), 60.0 * u)
+    c.panels.push(Rect::new(m, top, b + 2.0 * g, h))
+    for i in 0..TOOLS.len() {
+        let r = Rect::new(m + g, top + g + f32(i) * (b + g), b, b)
+        c.controls.push(Control { action: Action::Use { tool: TOOLS[i] }, rect: r })
+    }
+    // Undo and redo, bottom left.
+    let y = screen.y - m - b - 2.0 * g
+    c.panels.push(Rect::new(m, y, 2.0 * b + 3.0 * g, b + 2.0 * g))
+    c.controls.push(Control { action: Action::Undo, rect: Rect::new(m + g, y + g, b, b) })
+    c.controls.push(Control { action: Action::Redo, rect: Rect::new(m + 2.0 * g + b, y + g, b, b) })
+    // The zoom, bottom right: out, the percentage (back to 100%), in, and fit.
+    let wide = 64.0 * u
+    let w = 3.0 * b + wide + 5.0 * g
+    var x = screen.x - m - w
+    c.panels.push(Rect::new(x, y, w, b + 2.0 * g))
+    x += g
+    for a in [Action::ZoomOut, Action::Actual, Action::ZoomIn, Action::Fit] {
+        let cw = if a == Action::Actual { wide } else { b }
+        c.controls.push(Control { action: a, rect: Rect::new(x, y + g, cw, b) })
+        x += cw + g
+    }
+    // Over the selection: its colours, then up, down and delete.
+    if let Some(s) = selection {
+        let sw = SWATCH * u
+        let bh = 36.0 * u
+        let w = f32(COLORS) * (sw + g) + 3.0 * (bh + g) + 3.0 * g
+        let ph = bh + 2.0 * g
+        var y = s.y - 14.0 * u - ph
+        if y < m {
+            y = s.bottom() + 14.0 * u
+        }
+        var x = clamp(s.center().x - 0.5 * w, m, max(screen.x - m - w, m))
+        c.panels.push(Rect::new(x, y, w, ph))
+        x += 2.0 * g
+        for i in 0..COLORS {
+            c.controls.push(
+                Control {
+                    action: Action::Color { index: i },
+                    rect: Rect::new(x, y + 0.5 * (ph - sw), sw, sw),
+                },
+            )
+            x += sw + g
+        }
+        x += g
+        for a in [Action::Front, Action::Back, Action::Delete] {
+            c.controls.push(Control { action: a, rect: Rect::new(x, y + g, bh, bh) })
+            x += bh + g
+        }
+    }
+    c
+}
+
+/// The control at screen point `p`, if there's one.
+pub fn at(c: Chrome, p: vec2) -> Option<Action> {
+    for k in c.controls {
+        if k.rect.contains(p) {
+            return Some(k.action)
+        }
+    }
+    None
+}
+
+/// Whether `p` is on a panel.
+pub fn over(c: Chrome, p: vec2) -> bool {
+    for r in c.panels {
+        if r.contains(p) {
+            return true
+        }
+    }
+    false
+}
+
+/// A control's name and its key, for its tip.
+fn tip(a: Action) -> Text {
+    match a {
+        Action::Use { tool } => match tool {
+            Tool::Select => "Select   V",
+            Tool::Hand => "Hand   H or Space",
+            Tool::Note => "Sticky note   N",
+            Tool::Box => "Rectangle   R",
+            Tool::Ellipse => "Ellipse   O",
+            Tool::Diamond => "Diamond   D",
+            Tool::Text => "Text   T",
+            Tool::Link => "Connector   L",
+            Tool::Pen => "Pen   P",
+        },
+        Action::Front => "Bring to front   ]",
+        Action::Back => "Send to back   [",
+        Action::Delete => "Delete   Backspace",
+        Action::Undo => "Undo   Cmd Z",
+        Action::Redo => "Redo   Cmd Shift Z",
+        Action::ZoomIn => "Zoom in   Cmd +",
+        Action::ZoomOut => "Zoom out   Cmd -",
+        Action::Actual => "Zoom to 100%   Cmd 0",
+        Action::Fit => "Fit the board   Shift 1",
+        Action::Color { .. } => "",
+    }
+}
+
+/// Draws the controls. `tool` shows as chosen, `color` as the selection's colour, `hover` lit
+/// with its tip, and `zoom` in the zoom's middle.
+pub fn draw(
+    list: mut DrawList,
+    fonts: Fonts,
+    c: Chrome,
+    u: f32,
+    tool: Tool,
+    color: Option<u32>,
+    hover: Option<Action>,
+    zoom: f32,
+    can_undo: bool,
+    can_redo: bool,
+) {
+    for p in c.panels {
+        list.rect(
+            Rect::new(p.x, p.y + 2.0 * u, p.w, p.h),
+            vec4(0.0, 0.0, 0.0, 0.06),
+            radius: 12.0 * u,
+        )
+        list.rect(p.shrink(-1.0 * u), vec4(0.0, 0.0, 0.0, 0.05), radius: 11.0 * u)
+        list.rect(p, vec4(1.0), radius: 10.0 * u)
+    }
+    for k in c.controls {
+        let lit = hover == Some(k.action)
+        let chosen = match k.action {
+            Action::Use { tool: t } => t == tool,
+            _ => false,
+        }
+        if let Action::Color { index } = k.action {
+            let r = k.rect
+            if color == Some(index) {
+                list.ellipse(r.shrink(-3.0 * u), ACCENT, width: 2.0 * u)
+            }
+            list.ellipse(r.shrink(if lit { 0.0 } else { 1.5 * u }), FILLS[index])
+            list.ellipse(r.shrink(if lit { 0.0 } else {
+                1.5 * u
+            }), vec4(INKS[index].xyz, 0.45), width: 1.0 * u)
+            continue
+        }
+        if chosen {
+            list.rect(k.rect, vec4(0.89, 0.92, 1.0, 1.0), radius: 8.0 * u)
+        } else if lit {
+            list.rect(k.rect, vec4(0.94, 0.94, 0.95, 1.0), radius: 8.0 * u)
+        }
+        let enabled = match k.action {
+            Action::Undo => can_undo,
+            Action::Redo => can_redo,
+            _ => true,
+        }
+        let ink = if chosen { ACCENT } else if enabled { TEXT } else { vec4(0.75, 0.76, 0.78, 1.0) }
+        icon(mut list, fonts, k.action, k.rect, u, ink, zoom)
+    }
+    // The lit control's tip, beside a tool or above anything else.
+    for k in c.controls {
+        if hover != Some(k.action) {
+            continue
+        }
+        let text = tip(k.action)
+        if text.len() == 0 {
+            continue
+        }
+        let size = 13.0 * u
+        let w = fonts.font(Face::Sans).measure(text, size) + 16.0 * u
+        let h = 28.0 * u
+        let r = match k.action {
+            Action::Use { .. } => Rect::new(
+                k.rect.right() + 14.0 * u,
+                k.rect.center().y - 0.5 * h,
+                w,
+                h,
+            ),
+            _ => Rect::new(k.rect.center().x - 0.5 * w, k.rect.y - 12.0 * u - h, w, h),
+        }
+        list.rect(r, vec4(0.13, 0.14, 0.16, 0.94), radius: 6.0 * u)
+        let _ = list.text(
+            fonts,
+            Face::Sans,
+            text,
+            size,
+            vec2(r.x + 8.0 * u, r.y + 0.5 * (h - 1.25 * size)),
+            vec4(1.0),
+        )
+    }
+}
+
+/// A control's icon in `r`: lines and shapes on a grid of logical pixels about its middle.
+fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4, zoom: f32) {
+    let c = r.center()
+    let w = 1.6 * u
+    let p = |x: f32, y: f32| -> vec2 { c + vec2(x, y) * u }
+    let box = |x: f32, y: f32, bw: f32, bh: f32| -> Rect {
+        Rect::new(c.x + x * u, c.y + y * u, bw * u, bh * u)
+    }
+    match a {
+        Action::Use { tool } => match tool {
+            Tool::Select => {
+                let pts = [p(-4.0, -8.0), p(-4.0, 6.0), p(-0.5, 2.5), p(5.0, 2.5), p(-4.0, -8.0)]
+                for i in 1..pts.len() {
+                    list.line(pts[i - 1], pts[i], ink, width: w)
+                }
+                list.line(p(-0.5, 2.5), p(2.0, 8.0), ink, width: w)
+            },
+            Tool::Hand => {
+                list.line(p(-8.0, 0.0), p(8.0, 0.0), ink, width: w)
+                list.line(p(0.0, -8.0), p(0.0, 8.0), ink, width: w)
+                for d in [vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0)] {
+                    let tip = c + d * 8.0 * u
+                    let side = vec2(-d.y, d.x)
+                    list.line(tip, tip - d * 3.0 * u + side * 3.0 * u, ink, width: w)
+                    list.line(tip, tip - d * 3.0 * u - side * 3.0 * u, ink, width: w)
+                }
+            },
+            Tool::Note => {
+                list.rect(box(-8.0, -8.0, 16.0, 16.0), FILLS[0], radius: 1.5 * u)
+                list.ring(box(-8.0, -8.0, 16.0, 16.0), ink, radius: 1.5 * u, width: 1.2 * u)
+                list.line(p(-4.0, -2.0), p(4.0, -2.0), ink, width: 1.2 * u)
+                list.line(p(-4.0, 2.0), p(2.0, 2.0), ink, width: 1.2 * u)
+            },
+            Tool::Box => list.ring(box(-9.0, -7.0, 18.0, 14.0), ink, radius: 2.0 * u, width: w),
+            Tool::Ellipse => list.ellipse(box(-9.0, -8.0, 18.0, 16.0), ink, width: w),
+            Tool::Diamond => list.diamond(box(-9.5, -9.5, 19.0, 19.0), ink, width: w),
+            Tool::Text => {
+                let size = 20.0 * u
+                let tw = fonts.font(Face::Sans).measure("T", size)
+                let _ = list.text(
+                    fonts,
+                    Face::Sans,
+                    "T",
+                    size,
+                    vec2(c.x - 0.5 * tw, c.y - 0.62 * size),
+                    ink,
+                )
+            },
+            Tool::Link => {
+                list.line(p(-7.0, 7.0), p(7.0, -7.0), ink, width: w)
+                list.line(p(7.0, -7.0), p(1.0, -7.0), ink, width: w)
+                list.line(p(7.0, -7.0), p(7.0, -1.0), ink, width: w)
+            },
+            Tool::Pen => {
+                var last = p(-8.0, 2.0)
+                for i in 1..9 {
+                    let t = f32(i) / 8.0
+                    let next = p(-8.0 + 16.0 * t, 2.0 - 5.0 * sin(t * 6.0))
+                    list.line(last, next, ink, width: w)
+                    last = next
+                }
+            },
+        },
+        Action::Undo => {
+            list.line(p(-7.0, 0.0), p(7.0, 0.0), ink, width: w)
+            list.line(p(-7.0, 0.0), p(-3.0, -4.0), ink, width: w)
+            list.line(p(-7.0, 0.0), p(-3.0, 4.0), ink, width: w)
+        },
+        Action::Redo => {
+            list.line(p(-7.0, 0.0), p(7.0, 0.0), ink, width: w)
+            list.line(p(7.0, 0.0), p(3.0, -4.0), ink, width: w)
+            list.line(p(7.0, 0.0), p(3.0, 4.0), ink, width: w)
+        },
+        Action::ZoomIn => {
+            list.line(p(-6.0, 0.0), p(6.0, 0.0), ink, width: w)
+            list.line(p(0.0, -6.0), p(0.0, 6.0), ink, width: w)
+        },
+        Action::ZoomOut => list.line(p(-6.0, 0.0), p(6.0, 0.0), ink, width: w),
+        Action::Actual => {
+            let label = f"{u32(round(zoom * 100.0))}%"
+            borrow text = label.as_str()
+            let size = 13.0 * u
+            let tw = fonts.font(Face::Sans).measure(text, size)
+            let _ = list.text(
+                fonts,
+                Face::Sans,
+                text,
+                size,
+                vec2(c.x - 0.5 * tw, c.y - 0.62 * size),
+                ink,
+            )
+        },
+        Action::Fit => {
+            for d in [vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0)] {
+                let corner = c + d * 7.0 * u
+                list.line(corner, corner - vec2(d.x * 4.0, 0.0) * u, ink, width: w)
+                list.line(corner, corner - vec2(0.0, d.y * 4.0) * u, ink, width: w)
+            }
+        },
+        Action::Front => {
+            list.ring(box(-8.0, -8.0, 11.0, 11.0), ink, radius: 1.5 * u, width: 1.2 * u)
+            list.rect(box(-3.0, -3.0, 11.0, 11.0), ink, radius: 1.5 * u)
+        },
+        Action::Back => {
+            list.rect(box(-8.0, -8.0, 11.0, 11.0), ink, radius: 1.5 * u)
+            list.rect(box(-3.0, -3.0, 11.0, 11.0), vec4(1.0), radius: 1.5 * u)
+            list.ring(box(-3.0, -3.0, 11.0, 11.0), ink, radius: 1.5 * u, width: 1.2 * u)
+        },
+        Action::Delete => {
+            list.line(p(-7.0, -5.0), p(7.0, -5.0), ink, width: w)
+            list.line(p(-2.0, -7.5), p(2.0, -7.5), ink, width: w)
+            list.ring(box(-5.0, -4.0, 10.0, 12.0), ink, radius: 1.5 * u, width: w)
+        },
+        Action::Color { .. } => {},
+    }
+}
+
+@test
+fn the_selection_bar_stays_on_the_screen() {
+    let screen = vec2(640.0, 480.0)
+    // A selection at the top left: the bar goes below it, and inside the screen.
+    let c = layout(screen, 1.0, Some(Rect::new(x: 0.0, y: 5.0, w: 40.0, h: 40.0)))
+    let bar = c.panels[3]
+    assert(bar.y > 45.0 && bar.x >= MARGIN, f"{bar.x}, {bar.y}")
+    assert(at(c, bar.center()).is_some(), "the bar's middle is a control")
+    assert(at(c, vec2(320.0, 240.0)).is_none(), "the board's middle isn't")
+    // Every tool is a control.
+    var tools = 0
+    for k in c.controls {
+        if let Action::Use { .. } = k.action { tools += 1 }
+    }
+    assert(tools == TOOLS.len())
+}

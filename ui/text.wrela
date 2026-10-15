@@ -198,6 +198,53 @@ impl Font {
         self.walk(text, size, 0.0, |i, _g, _pen| i != at)
     }
 
+    /// `text` broken into lines no wider than `width` at `size` pixels per em, each line's
+    /// byte range `(from, to)`: at each newline, and at the last space that keeps a line narrow
+    /// enough (the space left out). A word wider than a line breaks where it meets the edge. An
+    /// empty line is still a line, so a caret has somewhere to be.
+    pub fn wrap(self, text: str, size: f32, width: f32) -> Vec<(u32, u32)> {
+        var lines: Vec<(u32, u32)> = Vec::new()
+        for part in text.split("\n") {
+            var from = part.0
+            while true {
+                let end = self.fit(text, from, part.1, size, width)
+                if end >= part.1 {
+                    lines.push((from, part.1))
+                    break
+                }
+                // Back to the last space that fits, if the line has one past its start.
+                var cut = end
+                while cut > from && text.byte(cut) != 32 {
+                    cut = previous(text, cut)
+                }
+                if cut > from {
+                    lines.push((from, cut))
+                    from = cut + 1
+                } else {
+                    lines.push((from, end))
+                    from = end
+                }
+            }
+        }
+        lines
+    }
+
+    /// Where the longest run of `text` from byte `from` (before `to`) no wider than `width`
+    /// ends: at least one character, so a line always moves on.
+    fn fit(self, text: str, from: u32, to: u32, size: f32, width: f32) -> u32 {
+        var end = to
+        var first = true
+        self.walk(text.slice(from, to), size, 0.0, |i, g, pen| {
+            if !first && pen + self.glyphs[g].advance * size > width {
+                end = from + i
+                return false
+            }
+            first = false
+            true
+        })
+        end
+    }
+
     /// Glyph `i`'s place in the atlas.
     pub fn place(mut self, i: u32, x: u32, y: u32) {
         self.glyphs[i].atlas_x = x
@@ -232,6 +279,32 @@ pub fn previous(s: str, i: u32) -> u32 {
 fn decode_replaces_what_isnt_a_character() {
     assert(decode("a狼", 1) == (29436, 4))
     assert(decode("a狼", 2) == (65533, 3))
+}
+
+@test
+fn wrapping_breaks_at_spaces_newlines_and_long_words() {
+    let font = Font::of(Face::Sans)
+    let size = 16.0
+    let text = "one two three\n\nfour"
+    // Wide enough for "one two" but not "one two three".
+    let width = font.measure("one two", size) + 1.0
+    let lines = font.wrap(text, size, width)
+    assert(lines.len() == 4, f"{lines.len()} lines")
+    assert(text.slice(lines[0].0, lines[0].1) == "one two")
+    assert(text.slice(lines[1].0, lines[1].1) == "three")
+    assert(lines[2].0 == lines[2].1, "the empty line between the newlines")
+    assert(text.slice(lines[3].0, lines[3].1) == "four")
+    // A word wider than a line breaks inside it, and every line fits.
+    let long = "abcdefghijklmnop"
+    let narrow = font.measure("abcd", size) + 0.5
+    let parts = font.wrap(long, size, narrow)
+    assert(parts.len() >= 4, f"{parts.len()} parts")
+    var total = 0
+    for p in parts {
+        assert(font.measure(long.slice(p.0, p.1), size) <= narrow)
+        total += p.1 - p.0
+    }
+    assert(total == long.len(), "every byte is on a line once")
 }
 
 @test
