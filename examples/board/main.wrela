@@ -1271,11 +1271,15 @@ fn corner_at(s: App, at: vec2) -> Option<(u32, vec2)> {
     None
 }
 
+/// Starts moving the camera with the pointer, from screen point `at`.
+fn pan_from(s: mut App, at: vec2) {
+    s.goal = None
+    s.drag = Drag::Pan { from: at, pan: s.view.pan }
+}
+
 fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
-    if button == Button::Middle ||
-        (button == Button::Primary && (s.space || s.tool == Tool::Hand)) {
-        s.goal = None
-        s.drag = Drag::Pan { from: at, pan: s.view.pan }
+    if button == Button::Middle {
+        pan_from(mut s, at)
         return
     }
     if button == Button::Secondary {
@@ -1321,6 +1325,11 @@ fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
     }
     if chrome::over(chrome, at) {
         s.drag = Drag::Control
+        return
+    }
+    // The hand, or Space held, pans the board; the controls still work (above).
+    if s.space || s.tool == Tool::Hand {
+        pan_from(mut s, at)
         return
     }
     let w = s.view.to_world(at)
@@ -2648,4 +2657,12 @@ fn the_camera_goes_to_an_item_added_past_the_edge(game: App) {
     assert(game.board.items.len() == 2)
     let r = screen_rect(game, 1)
     assert(r.y >= 0.0 && r.bottom() <= 480.0, f"{r.y} to {r.bottom()}")
+}
+
+/// With the hand chosen from the rail (its second button), a click on the rail's first button,
+/// Select, chooses it: the hand pans the board, not the controls over it.
+@test(frames: 8, input: "scripts/hand.json")
+fn the_hand_lets_go_for_another_tool(game: App) {
+    assert(game.tool == Tool::Select, "the select tool is chosen again")
+    assert(game.drag == Drag::Idle)
 }
