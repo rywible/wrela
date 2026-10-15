@@ -4,8 +4,8 @@ use opening::{
     MARK_WIDTH, OPENING_SECONDS, RETURNING, VISIT, artifact_place, clock_at, mark_place, moment,
     presentation_step, stage_light, turn_at,
 }
-use paint::{Backdrop, Emblem, Stage, backdrop, card_corner, card_face, emblem, quad, stage}
-use room::{Camera, MARGIN, Row, artifact_spot, bounds, camera, place, row}
+use paint::{Emblem, Stage, card_corner, card_face, emblem, quad, stage}
+use room::{Camera, MARGIN, Row, artifact_spot, bounds, camera, place, row, scrolled}
 use tesseract::{Artifact, artifact, corners}
 use facet::MarkRun
 use platform::host
@@ -32,7 +32,7 @@ const TESSERACT_FACES: Vec<vec4> = tesseract::faces()
 // Colours and shapes after shadcn/ui's dark theme: near-white ink, muted grey text, quiet
 // filled controls behind hairline borders, small radii, no glow.
 const INK = vec4(0.98, 0.98, 0.98, 1.0)
-const MUTED = vec4(0.72, 0.72, 0.75, 1.0)
+const MUTED = vec4(0.63, 0.63, 0.66, 1.0)
 const DARK = vec4(0.035, 0.035, 0.04, 1.0)
 const SHEET = vec4(0.04, 0.04, 0.045, 0.98)
 const WARN = vec4(0.95, 0.74, 0.6, 1.0)
@@ -122,6 +122,8 @@ enum Input: Copy + Eq { Keys, Pad, Pointer }
 
 struct Cover {
     image: Option<Texture<Rgba8>>,
+    // The colour its art lends the room's light.
+    tint: vec3,
     load: Option<Pending<u8>>,
     requested: bool,
 }
@@ -142,8 +144,11 @@ pub struct Console {
     placed: Vec<Placed>,
     // The save last chosen in the Load sheet: what Export writes.
     marked: u32,
-    // The selection's eased position along the row.
+    // The selection's eased position along the row; the row's first shown card, and its
+    // eased position.
     album: f32,
+    first: u32,
+    scroll: f32,
     // The camera's drift toward the pointer.
     sway: vec2,
     reveal: f32,
@@ -158,6 +163,8 @@ pub struct Console {
     environment: Option<Pending<u8>>,
     pending: Option<Pending<u8>>,
     closing: Option<Pending<u8>>,
+    // The session answering is for a selection made before.
+    stale: bool,
     cards: Vec<Card>,
     selected: u32,
     profile: Profile,
@@ -198,9 +205,8 @@ pub struct Console {
     seen_write: Option<Pending<u8>>,
     decided: bool,
     waited: f32,
-    // The game whose art fills the backdrop, and how far it has faded in.
-    art_shown: Option<u32>,
-    art: f32,
+    // The room's light: the colour of the selected game's art, and how far it takes it.
+    tint: vec4,
     // The page's icons, asked for once.
     icons: Vec<Pending<u8>>,
     retry_at: f32,
@@ -239,6 +245,8 @@ pub fn init() -> Console {
         placed: Vec::new(),
         marked: 0,
         album: 0.0,
+        first: 0,
+        scroll: 0.0,
         sway: vec2(0.0),
         reveal: 0.0,
         sheet: 0.0,
@@ -252,6 +260,7 @@ pub fn init() -> Console {
         environment: Some(host::environment()),
         pending: None,
         closing: None,
+        stale: false,
         cards: Vec::new(),
         selected: 0,
         profile: Profile {
@@ -295,8 +304,7 @@ pub fn init() -> Console {
         seen_write: None,
         decided: false,
         waited: 0.0,
-        art_shown: None,
-        art: 0.0,
+        tint: vec4(1.0, 1.0, 1.0, 0.0),
         icons: page_icons(),
         retry_at: 0.0,
         zoom: 1.0,
@@ -364,6 +372,24 @@ fn fulfill_play(s: mut Console) {
     }
 }
 
+// Whether the console is only reading the selection's saves, so another may be selected: not
+// while a game starts or shows, or a save moves.
+fn browsing(step: Step) -> bool {
+    step == Step::Idle || step == Step::Open || step == Step::List || step == Step::Prepare
+}
+
+// Drops the session of a selection made before, once its answer is in: `id` if it opened.
+fn abandon(s: mut Console, id: Option<u32>) {
+    s.stale = false
+    s.step = Step::Idle
+    s.prepared_slot = None
+    match id {
+        Some(id) => s.closing = Some(host::surface("surface/close", id)),
+        None => s.need_open = true,
+    }
+    s.handle = None
+}
+
 fn open_selected(s: mut Console) {
     if s.cards.is_empty() { return }
     s.message.clear()
@@ -413,6 +439,11 @@ fn export_name(plan: ExportPlan) -> String {
 }
 
 fn answer(s: mut Console, bytes: take Vec<u8>) {
+    if s.stale {
+        let id = if s.step == Step::Open { host::word(bytes) } else { s.handle }
+        abandon(mut s, id)
+        return
+    }
     match s.step {
         Step::Open => {
             let Some(id) = host::word(bytes) else {
@@ -510,6 +541,25 @@ fn catalog_result(bytes: Vec<u8>) -> Result<Vec<Card>, String> {
 // Albums within reach of the selection hold textures and requests: enough for a full row.
 const COVER_REACH: u32 = 6
 
+// The colour a cover's art lends the light: its colourful, bright parts averaged, at full
+// brightness. Grey art lends white.
+fn palette(bytes: Vec<u8>, width: u32, height: u32) -> vec3 {
+    var sum = vec3(0.0)
+    var weight = 0.0
+    for y in 0..height / 4 {
+        for x in 0..width / 4 {
+            let i = (y * 4 * width + x * 4) * 4
+            let c = vec3(f32(bytes[i]), f32(bytes[i + 1]), f32(bytes[i + 2])) / 255.0
+            let top = max(c.x, max(c.y, c.z))
+            let w = (top - min(c.x, min(c.y, c.z))) * top
+            sum += c * w
+            weight += w
+        }
+    }
+    let top = max(sum.x, max(sum.y, sum.z))
+    if top <= 0.0 { vec3(1.0) } else { sum / top }
+}
+
 fn near_cover(index: u32, selected: u32) -> bool {
     if index >= selected { index - selected <= COVER_REACH } else {
         selected - index <= COVER_REACH
@@ -552,7 +602,9 @@ fn update(s: mut Console) {
                 Ok(cards) => {
                     s.cards = cards.clone()
                     for _ in 0..cards.len() {
-                        s.covers.push(Cover { image: None, load: None, requested: false })
+                        s.covers.push(
+                            Cover { image: None, tint: vec3(1.0), load: None, requested: false },
+                        )
                     }
                     s.need_open = true
                 },
@@ -584,6 +636,7 @@ fn update(s: mut Console) {
             if let Ok(bytes) = result {
                 let card = s.cards[i].clone()
                 if bytes.len() == card.width * card.height * 4 {
+                    s.covers[i].tint = palette(bytes, card.width, card.height)
                     var image = texture::<Rgba8>(width: card.width, height: card.height)
                     image.write(x: 0, y: 0, width: card.width, height: card.height, bytes: bytes)
                     s.covers[i].image = Some(take image)
@@ -599,14 +652,19 @@ fn update(s: mut Console) {
     if let Some(result) = poll(mut s.pending) {
         match result {
             Ok(bytes) => answer(mut s, bytes.clone()),
-            Err(_) => quietly_retry(mut s),
+            Err(_) => if s.stale {
+                let id = s.handle
+                abandon(mut s, id)
+            } else { quietly_retry(mut s) },
         }
     }
     if poll(mut s.closing).is_some() {
+        // A game that was starting or playing has closed; a session closed only to change the
+        // selection keeps a play already asked of the new one.
+        if s.step != Step::Idle { s.play_intent = None }
         s.handle = None
         s.step = Step::Idle
         s.need_open = s.retry_at == 0.0
-        s.play_intent = None
     }
     if retry_due(s.retry_at, s.presentation, s.closing.is_some()) {
         s.retry_at = 0.0
@@ -664,12 +722,21 @@ fn act(s: mut Console, action: Action) {
                 act(mut s, if s.saves.is_empty() { Action::NewGame } else { Action::Continue })
                 return
             }
-            if s.step != Step::Idle || s.closing.is_some() { return }
-            s.need_open = s.handle.is_none()
-            if let Some(id) = s.handle { s.closing = Some(host::surface("surface/close", id)) }
-            s.handle = None
+            if !browsing(s.step) { return }
             s.selected = index
             s.profile.game = s.cards[index].id.clone()
+            s.saves.clear()
+            s.play_intent = None
+            s.retry_at = 0.0
+            // A session still answering is the last selection's: it is closed when it answers,
+            // and one closing already opens the selection's when it has closed.
+            if s.step != Step::Idle {
+                s.stale = true
+            } else if s.closing.is_none() {
+                s.need_open = s.handle.is_none()
+                if let Some(id) = s.handle { s.closing = Some(host::surface("surface/close", id)) }
+                s.handle = None
+            }
         },
         // Loading a save plays it.
         Action::Save { index } => {
@@ -999,11 +1066,11 @@ fn library(s: mut Console, w: f32, h: f32, cam: Camera, row: Row, margin: f32) {
     }
     var slot = Rect::new(margin, h * 0.7, w: 0.0, h: 0.0)
     for i in 0..s.cards.len() {
-        let offset = f32(i) - s.album
-        if offset < -1.5 || offset > 8.0 { continue }
+        let along = f32(i) - s.scroll
+        if along < -1.5 || along > 8.0 { continue }
         let art = s.covers[i].image.is_some()
         let ring = if lit(s, Action::Game { index: i }) { 1.0 } else { 0.0 }
-        let card = place(i, s.album, ring, art, row)
+        let card = place(i, s.album, s.scroll, ring, art, row)
         let b = bounds(cam, card) / s.zoom
         let r = Rect::new(b.x, b.y, b.z, b.w)
         // Cards sliding out to the left show but take no focus.
@@ -1351,6 +1418,9 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     // The layout is fitted to the camera at rest, so the sway moves the cards against the
     // far artifact.
     let rest = camera(screen, vec2(0.0))
+    let lineup = row(rest)
+    s.first = scrolled(s.first, s.selected, lineup.span)
+    s.scroll = mix(s.scroll, f32(s.first), ease(9.0))
     let margin = w * MARGIN
     s.draw.clear(screen)
     s.controls.clear()
@@ -1360,7 +1430,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         let games = s.pane == Pane::Games
         if games { focus_ring(mut s) }
         header(mut s, w, margin)
-        library(mut s, w, h, cam, row(rest), margin)
+        library(mut s, w, h, cam, lineup, margin)
         if games { footer(mut s, w, h, margin) }
         // A sheet takes the controls; the library behind it only shows. A closing sheet
         // only shows too.
@@ -1394,6 +1464,13 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     let target = vec2(f32(size.0), f32(size.1))
     let turn = if motion { turn_at(s.presentation, opening: intro) } else { 2.0 }
     let verts = corners(turn, place.xyz, place.w)
+    // The room's light takes the colour of the selected game's art as the library comes up,
+    // and eases to the next as the selection changes. The opening stays white.
+    let wanted = if !s.cards.is_empty() && s.covers[s.selected].image.is_some() {
+        vec4(s.covers[s.selected].tint, phase.library)
+    } else { vec4(s.tint.xyz, 0.0) }
+    s.tint = if s.tint.w == 0.0 { vec4(wanted.xyz, 0.0) } else { s.tint }
+    s.tint = mix(s.tint, wanted, ease(2.5))
     write(mut s.room_corners, 0, verts)
     let space = begin_pass(mut s.room, clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
@@ -1414,6 +1491,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                     s.presentation
                 },
                 light: if phase.settled { 0.7 } else { 1.0 },
+                tint: s.tint,
             },
         ),
         vertices: 6,
@@ -1431,35 +1509,6 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         ),
         vertices: 6,
     )
-    // The selected game's art takes over the backdrop; changing the selection fades one out
-    // and the next in. With no art, the artifact stays.
-    let wanted = if !s.cards.is_empty() && s.covers[s.selected].image.is_some() {
-        Some(s.selected)
-    } else { None }
-    if s.art_shown != wanted {
-        s.art = max(s.art - dt * 5.0, 0.0)
-        if s.art == 0.0 { s.art_shown = wanted }
-    } else if s.art_shown.is_some() { s.art = min(s.art + dt * 2.5, 1.0) }
-    if let Some(i) = s.art_shown {
-        if let Some(t) = s.covers[i].image {
-            let card = s.cards[i].clone()
-            draw(
-                pass,
-                quad.bind(screen, rect: vec4(0.0, 0.0, screen)),
-                backdrop.bind(
-                    art: t,
-                    linear: s.linear,
-                    look: Backdrop {
-                        screen,
-                        art: vec2(f32(card.width), f32(card.height)),
-                        alpha: s.art * phase.library,
-                        time: s.presentation,
-                    },
-                ),
-                vertices: 6,
-            )
-        }
-    }
     if phase.library > 0.0 {
         for k in depth_order(s.placed) {
             let placed = s.placed[k]
@@ -1745,4 +1794,34 @@ fn a_visit_soon_after_the_opening_starts_at_the_library() {
     assert(returning_visit(5000, Some(4000)))
     assert(!returning_visit(5000 + VISIT, Some(5000)), "a later visit plays it again")
     assert(!returning_visit(4000, Some(5000)), "a clock set back plays it")
+}
+
+@test
+fn a_cover_lends_its_colour_and_grey_art_lends_white() {
+    var grey: Vec<u8> = Vec::new()
+    var green: Vec<u8> = Vec::new()
+    for i in 0..16 * 8 {
+        for c in [128, 128, 128, 255] { grey.push(u8(c)) }
+        // Mostly dark grass, with a few dull grey pixels that must not wash it out.
+        let pixel = if i % 3 == 0 { [90, 90, 90, 255] } else { [40, 160, 60, 255] }
+        for c in pixel { green.push(u8(c)) }
+    }
+    assert(palette(grey, width: 16, height: 8) == vec3(1.0))
+    let t = palette(green, width: 16, height: 8)
+    assert(t.y == 1.0 && t.x < 0.4 && t.z < 0.5)
+}
+
+@test
+fn another_game_is_chosen_while_saves_are_read_but_not_while_one_starts() {
+    for step in [Step::Idle, Step::Open, Step::List, Step::Prepare] { assert(browsing(step)) }
+    for step in [
+        Step::Start,
+        Step::Frame,
+        Step::Show,
+        Step::Closed,
+        Step::Export,
+        Step::Download,
+        Step::PickFile,
+        Step::Import,
+    ] { assert(!browsing(step)) }
 }

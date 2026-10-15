@@ -1491,11 +1491,17 @@ rendered natively.
 journal, its backup before a new game, recovery of the save written on return, and its
 import checks. A shared `progress` module holds the save: courses cleared, coins, best time.
 
-**Console.** The selected game's art now fills the backdrop, softened, drifting slowly and
-darkened under the title, the actions and the row. It crossfades as the selection changes.
-With no art, the artifact stays. Muted text is lighter (0.72 grey). The opening plays once
-per visit: within 30 minutes of the last one, the console waits at most half a second in the
-dark for the clock and the record, then starts in the dark just before the library.
+**Console.** A first try filled the backdrop with the selected game's art. Ryan preferred the
+tesseract kept at the centre, with the light shifting subtly toward the game's palette. Now
+the console averages each cover's colourful, bright pixels into one colour. The studio's
+strips, back band and room take most of that colour, the key light little of it, and the
+low glow in the dark takes it too. The colour eases in with the library and from game to
+game. The opening stays white. The row now scrolls only to keep the selection on screen, so
+earlier games stay in reach of the pointer. A new selection is taken at once, even while the
+last one's session is still answering; that session is closed when it answers. The opening
+plays once per visit: within 30 minutes of the last one, the console waits at most half a
+second in the dark for the clock and the record, then starts in the dark just before the
+library.
 
 **Checks.** Real Chrome (headless, hardware WebGPU), driven over the DevTools protocol through
 a local preview, ran the whole loop: the opening, the library, New, the game handed over

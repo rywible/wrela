@@ -1,6 +1,6 @@
 // The library's room: an endless dark. Albums stand as cards in one row along the bottom of
-// the screen, the selection in a fixed slot at the left margin and the rest running off to
-// the right, as consoles lay out a library. The artifact turns far behind them, up and to
+// the screen from the left margin, the selection full size among them and the rest running
+// off to the right; the row scrolls only to keep the selection on screen. The artifact turns far behind them, up and to
 // the right, where a console shows a game's art. The CPU and the GPU place and project
 // everything with the same code, so what is drawn is exactly what the pointer can hit.
 
@@ -31,13 +31,15 @@ const BASELINE: f32 = 0.88
 // The artifact floats this deep, far behind the cards.
 const ARTIFACT_DEPTH: f32 = -10.0
 
-// The row fitted to a screen (world units on the cards' plane): the selected card's left
-// edge, the row's middle, the selected card's width and the gap between cards.
+// The row fitted to a screen (world units on the cards' plane): its left edge, its middle,
+// the selected card's width, the gap between cards, and how many cards fit before the
+// selection with all of it still on screen.
 pub struct Row: Copy {
     pub left: f32,
     pub middle: f32,
     pub width: f32,
     pub gap: f32,
+    pub span: u32,
 }
 
 pub fn camera(screen: vec2, sway: vec2) -> Camera {
@@ -82,14 +84,32 @@ pub fn on_plane(c: Camera, at: vec2, z: f32) -> vec3 {
 }
 
 // The row for a camera at rest: the selection about a fifth of the screen high (less on a
-// narrow screen, where it may take at most 62% of the width), at the left margin, its lower
-// edge at the baseline.
+// narrow screen, where it may take at most 62% of the width), the row from the left margin,
+// its lower edge at the baseline. At most three cards stand before the selection, so its
+// title, set above it, keeps room.
 pub fn row(c: Camera) -> Row {
     let aspect = c.screen.x / c.screen.y
     let wide = min(0.2 / ASPECT / aspect, 0.62)
     let low = on_plane(c, vec2(MARGIN, BASELINE), 0.0)
     let width = on_plane(c, vec2(MARGIN + wide, BASELINE), 0.0).x - low.x
-    Row { left: low.x, middle: low.y + width * ASPECT * 0.5, width, gap: width * 0.07 }
+    let right = on_plane(c, vec2(1.0 - MARGIN, BASELINE), 0.0).x
+    let gap = width * 0.07
+    let fit = (right - low.x - width) / (width * SMALL + gap)
+    Row {
+        left: low.x,
+        middle: low.y + width * ASPECT * 0.5,
+        width,
+        gap,
+        span: u32(clamp(floor(fit), 0.0, 3.0)),
+    }
+}
+
+// The row's first shown card once `selected` is chosen, if `first` was before: unchanged
+// while the selection is still on screen.
+pub fn scrolled(first: u32, selected: u32, span: u32) -> u32 {
+    if selected < first { selected } else if selected > first + span { selected - span } else {
+        first
+    }
 }
 
 // The artifact's centre and size for a camera at rest: up and to the right of a wide screen,
@@ -109,22 +129,23 @@ pub fn corner(card: Card, uv: vec2) -> vec3 {
     card.centre.xyz + vec3(cos(turn) * local.x, local.y, -sin(turn) * local.x)
 }
 
-// Album `index` while the row is at `album` (its eased selection): the selection full size
-// in its slot, the rest smaller and dimmer to its right; those before it slide out to the
-// left and fade.
-pub fn place(index: u32, album: f32, ring: f32, has_art: bool, row: Row) -> Card {
+// Album `index` while the selection is at `album` and the row is scrolled to `scroll` (both
+// eased): the selection full size, the rest smaller and dimmer; those before the first shown
+// card slide out to the left and fade.
+pub fn place(index: u32, album: f32, scroll: f32, ring: f32, has_art: bool, row: Row) -> Card {
     let offset = f32(index) - album
+    let slot = f32(index) - scroll
     let reach = min(abs(offset), 1.0)
     let scale = mix(1.0, SMALL, reach)
     let left = row.left +
-        offset * (row.width * SMALL + row.gap) +
+        slot * (row.width * SMALL + row.gap) +
         saturate(offset) * row.width * (1.0 - SMALL)
     let width = row.width * scale
     let lit = mix(1.0, 0.55, reach) * if has_art { 1.0 } else { 0.9 }
     Card {
         centre: vec4(left + width * 0.5, row.middle, 0.0, 0.0),
         size: vec4(width, width * ASPECT, width * 0.035, row.width * 0.016),
-        look: vec4(lit, ring, saturate(1.0 + min(offset, 0.0) * 1.25), 0.0),
+        look: vec4(lit, ring, saturate(1.0 + min(slot, 0.0) * 1.25), 0.0),
     }
 }
 
@@ -160,19 +181,51 @@ fn the_selection_holds_its_slot_at_the_left_margin_on_any_screen() {
     ] {
         let c = camera(size, vec2(0.0))
         let r = row(c)
-        let chosen = bounds(c, place(2, album: 2.0, ring: 1.0, has_art: true, row: r))
+        let chosen = bounds(c, place(2, album: 2.0, scroll: 2.0, ring: 1.0, has_art: true, row: r))
         assert(abs(chosen.x - size.x * MARGIN) < size.x * 0.01, "at the margin")
         assert(abs(chosen.y + chosen.w - size.y * BASELINE) < size.y * 0.01, "on the baseline")
         assert(chosen.x + chosen.z < size.x * 0.7, "leaving room for the rest of the row")
         assert(chosen.w > size.y * 0.12 && chosen.w < size.y * 0.21)
         // The next stands a gap to the right, smaller; the one before has faded out.
-        let next = bounds(c, place(3, album: 2.0, ring: 0.0, has_art: true, row: r))
+        let next = bounds(c, place(3, album: 2.0, scroll: 2.0, ring: 0.0, has_art: true, row: r))
         assert(next.x > chosen.x + chosen.z && next.w < chosen.w)
-        assert(place(1, album: 2.0, ring: 0.0, has_art: true, row: r).look.z == 0.0)
+        assert(place(1, album: 2.0, scroll: 2.0, ring: 0.0, has_art: true, row: r).look.z == 0.0)
         // Mid-move, a card is between its two slots.
-        let moving = bounds(c, place(3, album: 2.5, ring: 0.0, has_art: true, row: r))
+        let moving = bounds(c, place(3, album: 2.5, scroll: 2.5, ring: 0.0, has_art: true, row: r))
         assert(moving.x > chosen.x && moving.x < next.x)
     }
+}
+
+@test
+fn earlier_cards_stay_on_screen_until_the_selection_would_leave_it() {
+    for size in [vec2(1280.0, 720.0), vec2(1440.0, 900.0), vec2(2560.0, 1080.0)] {
+        let c = camera(size, vec2(0.0))
+        let r = row(c)
+        assert(r.span >= 1, "a wide screen shows a card before the selection")
+        // The second of two chosen: the first stays, smaller, at the margin, and the second
+        // stands whole to its right.
+        let first = place(0, album: 1.0, scroll: 0.0, ring: 0.0, has_art: true, row: r)
+        let chosen = place(1, album: 1.0, scroll: 0.0, ring: 1.0, has_art: true, row: r)
+        let a = bounds(c, first)
+        let b = bounds(c, chosen)
+        assert(first.look.z == 1.0 && abs(a.x - size.x * MARGIN) < size.x * 0.01)
+        assert(b.x > a.x + a.z && b.w > a.w && b.x + b.z < size.x * (1.0 - MARGIN))
+        // Past the span, the row scrolls just enough.
+        let last = place(
+            r.span + 1,
+            album: f32(r.span + 1),
+            scroll: 1.0,
+            ring: 1.0,
+            has_art: true,
+            row: r,
+        )
+        let l = bounds(c, last)
+        assert(l.x + l.z < size.x * (1.0 - MARGIN) + 1.0)
+    }
+    assert(scrolled(first: 0, selected: 1, span: 1) == 0)
+    assert(scrolled(first: 0, selected: 3, span: 1) == 2)
+    assert(scrolled(first: 2, selected: 1, span: 1) == 1)
+    assert(scrolled(first: 2, selected: 2, span: 0) == 2)
 }
 
 @test
