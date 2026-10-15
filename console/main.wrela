@@ -4,7 +4,10 @@ use opening::{
     MARK_WIDTH, OPENING_SECONDS, RETURNING, artifact_place, clock_at, mark_place, moment,
     presentation_step, stage_light, turn_at,
 }
-use paint::{Emblem, Pool, Stage, block_corner, block_face, emblem, pool, quad, stage}
+use paint::{
+    Edges, Emblem, Pool, Stage, block_corner, block_edge, block_face, block_line, emblem, pool,
+    quad, stage,
+}
 use room::{Camera, MARGIN, artifact_spot, bounds, camera, place, row, row_place}
 use tesseract::{Artifact, artifact, corners}
 use facet::MarkRun
@@ -1642,6 +1645,14 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                     vertices: 36,
                 )
             }
+            // Its edges over it: one CSS pixel wide, on any screen.
+            let edges = Edges { width: max(s.pixel_ratio, 1.0) }
+            draw(
+                pass,
+                block_edge.bind(camera: cam, card: card, look: edges),
+                block_line.bind(card: card, look: edges),
+                vertices: 72,
+            )
         }
     }
     // The mark: large beneath the tesseract, a light passing along it as the tesseract comes

@@ -1753,6 +1753,9 @@ longer rises and falls with the camera's drift.
 On a switch the title and state now ease out and the new ones in; the blocks' edges are a steady
 silver line a pixel wide, their outline smoothed, brightening, eased, only under the pointer
 (it had followed the keyboard focus from block to block); and the tesseract turns 30% slower.
+The blocks' edges then moved out of the faces' shading into lines of their own on the screen,
+one CSS pixel wide: drawn inside each face, an edge took its width from the face's angle, and
+the top face, seen almost edge on, made its back edge flicker.
 
 ## Keeping this record
 
