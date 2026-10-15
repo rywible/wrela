@@ -30,6 +30,9 @@ pub struct Item: Clone + Eq + Serialize {
     pub from: u32,
     pub to: u32,
     pub style: u32,
+    /// A locked item stays as it is: it can be selected, but not moved, resized, recoloured,
+    /// typed into or deleted until it's unlocked.
+    pub locked: bool,
 }
 
 /// A link's style: bits for elbows (else straight), and an arrowhead at each end.
@@ -59,6 +62,7 @@ impl Item {
             from: 0,
             to: 0,
             style: if kind == Kind::Link { CONNECTOR } else { 0 },
+            locked: false,
         }
     }
 
@@ -363,8 +367,12 @@ impl Board {
             if !(b.x <= r.right() && b.right() >= r.x && b.y <= r.bottom() && b.bottom() >= r.y) {
                 continue
             }
-            // A connector or a stroke touches it where a line of it does, not its bounds.
+            // A connector or a stroke touches it where a line of it does, not its bounds; a
+            // locked item isn't swept up.
             borrow it = self.items[i]
+            if it.locked {
+                continue
+            }
             let touches = match it.kind {
                 Kind::Link => {
                     let route = self.route(it)
@@ -398,7 +406,7 @@ impl Board {
     /// Moves the items in `ids` by `d`; links follow what they join.
     pub fn move_by(mut self, ids: [u32], d: vec2) {
         for i in 0..self.items.len() {
-            if has(ids, self.items[i].id) {
+            if has(ids, self.items[i].id) && !self.items[i].locked {
                 self.items[i].at += d
             }
         }

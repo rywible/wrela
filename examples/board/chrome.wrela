@@ -48,6 +48,13 @@ pub enum Action: Copy + Eq {
     Route,
     /// A connector's arrowheads: at its end, both ends, or none.
     Heads,
+    // The context menu's.
+    Cut,
+    Copy,
+    Paste,
+    Duplicate,
+    Lock,
+    SelectAll,
 }
 
 /// What's selected, for its bar: where it is on the screen, and whether it has connectors.
@@ -61,6 +68,8 @@ pub struct Selection: Copy {
 pub struct Control: Copy + Eq {
     pub action: Action,
     pub rect: Rect,
+    /// A row of the context menu: its name and keys, not an icon.
+    pub row: bool = false,
 }
 
 /// The controls, and the panels they sit on.
@@ -152,6 +161,24 @@ pub fn layout(screen: vec2, u: f32, selection: Option<Selection>) -> Chrome {
     c
 }
 
+/// How wide the context menu is, and each of its rows.
+const MENU_WIDTH: f32 = 220.0
+const ROW: f32 = 30.0
+
+/// Adds the context menu at `at` (kept on a screen `screen` big): a row for each of `entries`.
+pub fn menu(c: mut Chrome, at: vec2, screen: vec2, u: f32, entries: [Action]) {
+    let pad = 6.0 * u
+    let w = MENU_WIDTH * u
+    let h = f32(entries.len()) * ROW * u + 2.0 * pad
+    let x = clamp(at.x, 4.0 * u, max(screen.x - w - 4.0 * u, 4.0 * u))
+    let y = clamp(at.y, 4.0 * u, max(screen.y - h - 4.0 * u, 4.0 * u))
+    c.panels.push(Rect::new(x, y, w, h))
+    for i in 0..entries.len() {
+        let r = Rect::new(x + pad, y + pad + f32(i) * ROW * u, w - 2.0 * pad, ROW * u)
+        c.controls.push(Control { action: entries[i], rect: r, row: true })
+    }
+}
+
 /// The control at screen point `p`, if there's one.
 pub fn at(c: Chrome, p: vec2) -> Option<Action> {
     for k in c.controls {
@@ -197,6 +224,12 @@ pub fn tip(a: Action) -> Text {
         Action::Fit => "Fit the board   Shift 1",
         Action::Route => "Elbow or straight",
         Action::Heads => "Arrowheads",
+        Action::Cut => "Cut   Cmd X",
+        Action::Copy => "Copy   Cmd C",
+        Action::Paste => "Paste   Cmd V",
+        Action::Duplicate => "Duplicate   Cmd D",
+        Action::Lock => "Lock   Cmd Shift L",
+        Action::SelectAll => "Select all   Cmd A",
         Action::Color { .. } => "",
     }
 }
@@ -214,6 +247,7 @@ pub fn draw(
     zoom: f32,
     can_undo: bool,
     can_redo: bool,
+    locked: bool,
 ) {
     for p in c.panels {
         list.rect(
@@ -229,6 +263,10 @@ pub fn draw(
         let chosen = match k.action {
             Action::Use { tool: t } => t == tool,
             _ => false,
+        }
+        if k.row {
+            menu_row(mut list, fonts, k, u, lit, locked)
+            continue
         }
         if let Action::Color { index } = k.action {
             let r = k.rect
@@ -257,7 +295,7 @@ pub fn draw(
     }
     // The lit control's tip, beside a tool or above anything else.
     for k in c.controls {
-        if hover != Some(k.action) {
+        if hover != Some(k.action) || k.row {
             continue
         }
         let text = tip(k.action)
@@ -411,6 +449,8 @@ fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4,
             list.ring(box(-5.0, -4.0, 10.0, 12.0), ink, radius: 1.5 * u, width: w)
         },
         Action::Color { .. } => {},
+        // The menu's rows have no icons.
+        _ => {},
     }
 }
 
@@ -430,3 +470,32 @@ fn the_selection_bar_stays_on_the_screen() {
     }
     assert(tools == TOOLS.len())
 }
+
+/// A row of the context menu: its name, and its keys in grey at the right; a hairline above the
+/// first of each group.
+fn menu_row(list: mut DrawList, fonts: Fonts, k: Control, u: f32, lit: bool, locked: bool) {
+    let r = k.rect
+    if lit {
+        list.rect(r, vec4(0.27, 0.4, 1.0, 0.1), radius: 6.0 * u)
+    }
+    if k.action == Action::Front || k.action == Action::Lock {
+        list.rect(Rect::new(r.x + 8.0 * u, r.y, r.w - 16.0 * u, max(1.0 * u, 1.0)), vec4(0.0, 0.0, 0.0, 0.08))
+    }
+    let full = tip(k.action)
+    let parts = full.split("   ")
+    let name = if k.action == Action::Lock && locked {
+        String::from("Unlock")
+    } else {
+        String::from(full.slice(parts[0].0, parts[0].1))
+    }
+    let size = 13.0 * u
+    let y = r.y + 0.5 * (r.h - 1.25 * size)
+    let ink = if k.action == Action::Delete { vec4(0.82, 0.18, 0.2, 1.0) } else { TEXT }
+    let _ = list.text(fonts, Face::Sans, name.as_str(), size, vec2(r.x + 10.0 * u, y), ink)
+    if parts.len() > 1 {
+        let keys = full.slice(parts[1].0, parts[1].1)
+        let kw = fonts.font(Face::Sans).measure(keys, size)
+        let _ = list.text(fonts, Face::Sans, keys, size, vec2(r.right() - 10.0 * u - kw, y), vec4(0.55, 0.56, 0.6, 1.0))
+    }
+}
+

@@ -8,7 +8,7 @@ import { Reader, Writer } from "./wire.ts";
 
 export const MESSAGE_LIMIT = 1024 * 1024 - 512;
 const DECODER = new TextDecoder("utf-8", { fatal: true });
-const CURSORS = new Set(["default", "pointer", "text"]);
+const CURSORS = new Set(["default", "pointer", "text", "grab", "grabbing", "crosshair", "move", "nwse-resize", "nesw-resize"]);
 /** What `environment`'s capabilities word says this host has (runtime/browser): its bits. */
 export const PASTE_EVENTS = 1;
 export const TEXT_INPUT = 2;

@@ -119,6 +119,8 @@ pub struct App {
     reduced: bool,
     /// The last frame's time, for easing.
     last_time: f32,
+    /// Where the context menu is open (screen pixels), if it is.
+    menu: Option<vec2>,
 }
 
 pub fn init() -> App {
@@ -166,6 +168,7 @@ pub fn init() -> App {
         goal: None,
         reduced: false,
         last_time: 0.0,
+        menu: None,
     }
 }
 
@@ -369,7 +372,19 @@ fn layout(s: App) -> Chrome {
         Drag::Control => selection(s),
         _ => None,
     }
-    chrome::layout(s.screen, unit(s), bar)
+    var c = chrome::layout(s.screen, unit(s), bar)
+    if let Some(at) = s.menu {
+        let entries: Vec<Action> = if s.selected.is_empty() {
+            Vec::from([Action::Paste, Action::SelectAll, Action::Fit])
+        } else {
+            Vec::from([
+                Action::Cut, Action::Copy, Action::Paste, Action::Duplicate, Action::Front, Action::Back,
+                Action::Lock, Action::Delete,
+            ])
+        }
+        chrome::menu(mut c, at, s.screen, unit(s), entries)
+    }
+    c
 }
 
 /// The selected connectors' style, changed by `change`.
@@ -579,22 +594,55 @@ fn typing_key(s: mut App, key: Key, mods: Mods) {
     }
 }
 
-fn delete_selection(s: mut App) {
+/// The selected items that aren't locked.
+fn unlocked(s: App) -> Vec<u32> {
+    var out: Vec<u32> = Vec::new()
+    for id in s.selected {
+        if let Some(i) = s.board.index(id) {
+            if !s.board.items[i].locked {
+                out.push(id)
+            }
+        }
+    }
+    out
+}
+
+/// Whether everything selected is locked (and something is).
+fn all_locked(s: App) -> bool {
+    !s.selected.is_empty() && unlocked(s).is_empty()
+}
+
+/// Locks what's selected, or unlocks it if it's all locked.
+fn lock(s: mut App) {
     if s.selected.is_empty() {
         return
     }
     checkpoint(mut s)
-    s.board.remove(s.selected)
-    s.selected.clear()
+    let to = !all_locked(s)
+    for i in 0..s.board.items.len() {
+        if has(s.selected, s.board.items[i].id) {
+            s.board.items[i].locked = to
+        }
+    }
+}
+
+fn delete_selection(s: mut App) {
+    let gone = unlocked(s)
+    if gone.is_empty() {
+        return
+    }
+    checkpoint(mut s)
+    s.board.remove(gone)
+    s.selected.retain(|id| s.board.index(id).is_some())
 }
 
 fn recolor(s: mut App, index: u32) {
-    if s.selected.is_empty() {
+    if unlocked(s).is_empty() {
         return
     }
     checkpoint(mut s)
     for i in 0..s.board.items.len() {
-        if has(s.selected, s.board.items[i].id) {
+        if has(s.selected, s.board.items[i].id) && !s.board.items[i].locked {
             s.board.items[i].color = index
         }
     }
@@ -691,7 +739,7 @@ fn assist(s: mut App, node: u32, action: Assist) {
         }
     }
     select(mut s, [id])
-    if action == Assist::Activate && s.board.items[i].has_text() && s.typing.is_none() {
+    if action == Assist::Activate && s.board.items[i].has_text() && !s.board.items[i].locked && s.typing.is_none() {
         let n = s.board.items[i].text.len()
         begin_typing(mut s, id, n, keep: true)
     }
@@ -757,6 +805,33 @@ fn act(s: mut App, a: Action) {
         Action::Fit => fit(mut s),
         Action::Route => restyle(mut s, |style| style ^ ELBOW),
         Action::Heads => restyle(mut s, next_heads),
+        Action::SelectAll => {
+            var all: Vec<u32> = Vec::new()
+            for it in s.board.items {
+                all.push(it.id)
+            }
+            select(mut s, all)
+        },
+        Action::Duplicate => {
+            let items = s.board.copy(s.selected)
+            s.pastes = 0
+            paste(mut s, items)
+        },
+        Action::Copy => {
+            s.clipboard = s.board.copy(s.selected)
+            s.pastes = 0
+        },
+        Action::Cut => {
+            s.clipboard = s.board.copy(s.selected)
+            s.pastes = 0
+            delete_selection(mut s)
+        },
+        // The menu's paste: the board's own clipboard (only a key press reaches the system's).
+        Action::Paste => {
+            let items = s.clipboard.clone()
+            paste(mut s, items)
+        },
+        Action::Lock => lock(mut s),
     }
 }
 
@@ -822,7 +897,7 @@ fn corner_at(s: App, at: vec2) -> Option<(u32, vec2)> {
     let id = s.selected[0]
     let Some(i) = s.board.index(id) else { return None }
     borrow it = s.board.items[i]
-    if !it.boxed() {
+    if !it.boxed() || it.locked {
         return None
     }
     let r = it.rect()
@@ -843,12 +918,29 @@ fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
         s.drag = Drag::Pan { from: at, pan: s.view.pan }
         return
     }
+    if button == Button::Secondary {
+        // The context menu, for what's under the pointer (selected first) or the board.
+        stop_typing(mut s)
+        match s.board.hit(s.view.to_world(at), slack(s)) {
+            Some(id) => if !has(s.selected, id) { select(mut s, [id]) },
+            None => s.selected.clear(),
+        }
+        s.menu = Some(at)
+        return
+    }
     if button != Button::Primary {
         return
     }
     if let Some(a) = chrome::at(chrome, at) {
         s.drag = Drag::Control
+        s.menu = None
         act(mut s, a)
+        return
+    }
+    // A press away from an open menu only closes it.
+    if s.menu.is_some() {
+        s.menu = None
+        s.drag = Drag::Control
         return
     }
     if chrome::over(chrome, at) {
@@ -946,7 +1038,7 @@ fn press_select(s: mut App, at: vec2, w: vec2, mods: Mods) {
     }
     s.click = Some(Click { time: s.time, at, id })
     let Some(i) = s.board.index(id) else { return }
-    if double && s.board.items[i].has_text() {
+    if double && s.board.items[i].has_text() && !s.board.items[i].locked {
         borrow font = s.fonts.font(Face::Sans)
         let l = paint::layout(font, s.board.items[i])
         let caret = paint::offset_at(font, s.board.items[i], l, w)
@@ -1152,22 +1244,16 @@ fn key_down(s: mut App, key: Key, repeat: bool, mods: Mods) {
             redo(mut s)
         } else if key == Key::Z {
             undo(mut s)
+        } else if key == Key::L && mods.shift {
+            act(mut s, Action::Lock)
         } else if key == Key::A {
-            var all: Vec<u32> = Vec::new()
-            for it in s.board.items {
-                all.push(it.id)
-            }
-            select(mut s, all)
+            act(mut s, Action::SelectAll)
         } else if key == Key::D {
-            let items = s.board.copy(s.selected)
-            s.pastes = 0
-            paste(mut s, items)
-        } else if key == Key::C || key == Key::X {
-            s.clipboard = s.board.copy(s.selected)
-            s.pastes = 0
-            if key == Key::X {
-                delete_selection(mut s)
-            }
+            act(mut s, Action::Duplicate)
+        } else if key == Key::C {
+            act(mut s, Action::Copy)
+        } else if key == Key::X {
+            act(mut s, Action::Cut)
         } else if key == Key::V {
             // A paste event follows where the host has them; until it's said, wait to see.
             match s.capabilities {
@@ -1189,6 +1275,10 @@ fn key_down(s: mut App, key: Key, repeat: bool, mods: Mods) {
     if key == Key::Space {
         s.space = true
     } else if key == Key::Escape {
+        if s.menu.is_some() {
+            s.menu = None
+            return
+        }
         s.selected.clear()
         s.tool = Tool::Select
     } else if key == Key::Backspace || key == Key::Delete {
@@ -1196,7 +1286,7 @@ fn key_down(s: mut App, key: Key, repeat: bool, mods: Mods) {
     } else if key == Key::Enter && !repeat && s.selected.len() == 1 {
         let id = s.selected[0]
         let Some(i) = s.board.index(id) else { return }
-        if s.board.items[i].has_text() {
+        if s.board.items[i].has_text() && !s.board.items[i].locked {
             let n = s.board.items[i].text.len()
             begin_typing(mut s, id, n, keep: true)
         }
@@ -1262,6 +1352,7 @@ fn draw(s: mut App, screen: vec2) {
         }
     }
     let near = slack(s)
+    let locked = all_locked(s)
     mut list = s.draw
     list.clear(screen)
     paint::grid(mut list, s.view, screen)
@@ -1302,6 +1393,13 @@ fn draw(s: mut App, screen: vec2) {
         }
         let r = s.view.rect(s.board.bounds(i)).shrink(-3.0 * u)
         list.ring(r, mark, radius: 3.0 * u, width: ring)
+        if chosen && s.board.items[i].locked {
+            // A lock at its top right: a body and a shackle.
+            let at = vec2(r.right() - 7.0 * u, r.y - 14.0 * u)
+            list.rect(Rect::new(at.x - 9.0 * u, at.y - 9.0 * u, 18.0 * u, 18.0 * u), ACCENT, radius: 5.0 * u)
+            list.rect(Rect::new(at.x - 4.5 * u, at.y - 1.0 * u, 9.0 * u, 6.5 * u), vec4(1.0), radius: 1.5 * u)
+            list.ring(Rect::new(at.x - 3.0 * u, at.y - 5.5 * u, 6.0 * u, 8.0 * u), vec4(1.0), radius: 3.0 * u, width: 1.4 * u)
+        }
     }
     if s.drag == Drag::Idle || s.drag == Drag::Control {
         if s.selected.len() == 1 {
@@ -1415,6 +1513,7 @@ fn draw(s: mut App, screen: vec2) {
         s.view.zoom,
         can_undo: s.history.can_undo(),
         can_redo: s.history.can_redo(),
+        locked: locked,
     )
     // Glyphs for what was drawn as `?`, from the host's fonts, for the frames after this one.
     s.renderer.fetch(mut s.fonts, list)
@@ -1422,18 +1521,51 @@ fn draw(s: mut App, screen: vec2) {
     let pass = begin_screen_pass(clear: PAPER)
     s.renderer.draw(pass, screen)
     pass.present()
-    // The pointer's shape: a hand over a control, a bar over the text being typed.
-    let typed_under = match s.typing {
-        Some(t) => s.board.hit(w, 0.0) == Some(t.id),
-        None => false,
-    }
-    let want: Text = if hover_control.is_some() { "pointer" } else if typed_under { "text" } else {
-        "default"
-    }
+    let want = cursor_for(s, w, hover_control.is_some())
     if want != s.shown_cursor && s.cursor.is_none() {
         s.shown_cursor = want
         s.cursor = Some(host::cursor(want))
     }
+}
+
+/// The pointer's shape: a hand over a control; a closed hand panning and an open one ready to;
+/// a cross for making something; resize arrows on a corner; a bar over the text being typed;
+/// the four-way arrows while moving.
+fn cursor_for(s: App, w: vec2, on_control: bool) -> Text {
+    if on_control {
+        return "pointer"
+    }
+    if s.menu.is_some() {
+        return "default"
+    }
+    match s.drag {
+        Drag::Pan { .. } => return "grabbing",
+        Drag::Move { .. } => return "move",
+        Drag::Resize { id, anchor } => {
+            let Some(i) = s.board.index(id) else { return "default" }
+            let c = s.board.items[i].center()
+            return if (c.x - anchor.x) * (c.y - anchor.y) > 0.0 { "nwse-resize" } else { "nesw-resize" }
+        },
+        Drag::Select { .. } => return "text",
+        _ => {},
+    }
+    if s.space || s.tool == Tool::Hand {
+        return "grab"
+    }
+    if s.tool != Tool::Select {
+        return "crosshair"
+    }
+    if let Some((id, anchor)) = corner_at(s, s.pointer) {
+        let Some(i) = s.board.index(id) else { return "default" }
+        let c = s.board.items[i].center()
+        return if (c.x - anchor.x) * (c.y - anchor.y) > 0.0 { "nwse-resize" } else { "nesw-resize" }
+    }
+    if let Some(t) = s.typing {
+        if s.board.hit(w, 0.0) == Some(t.id) {
+            return "text"
+        }
+    }
+    "default"
 }
 
 // ---- what the host is told -------------------------------------------------------------------
@@ -1693,5 +1825,24 @@ fn the_camera_eases_to_a_hundred_percent(game: App) {
 @test(frames: 50, input: "scripts/ease.json")
 fn the_camera_arrives(game: App) {
     assert(game.goal.is_none() && game.view.zoom == 1.0, f"zoom {game.view.zoom}")
+}
+
+/// A right click on a note opens the menu (moved up to stay on the screen: its fourth row,
+/// Duplicate, is at y 335); the row makes a copy and closes it; a right click on empty board
+/// opens one, and a click away closes it doing nothing else.
+@test(frames: 18, input: "scripts/menu.json")
+fn the_context_menu_acts_and_closes(game: App) {
+    assert(game.board.items.len() == 2, f"{game.board.items.len()} items")
+    assert(game.menu.is_none(), "closed")
+    assert(game.selected.is_empty(), "the right click on the board let go of the copy")
+}
+
+/// A locked note can't be dragged or deleted.
+@test(frames: 16, input: "scripts/lock.json")
+fn a_locked_note_stays(game: App) {
+    assert(game.board.items.len() == 1)
+    assert(game.board.items[0].locked)
+    let r = screen_rect(game, 0)
+    assert(abs(r.center().x - 320.0) < 0.01, f"x {r.center().x}")
 }
 

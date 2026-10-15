@@ -135,6 +135,10 @@ test("a program sets the canvas cursor only to a listed shape", async () => {
     expect(canvas.style.cursor).toBe("pointer");
     await platform.request("cursor", encode("default"));
     expect(canvas.style.cursor).toBe("default");
+    for (const name of ["grab", "grabbing", "crosshair", "move", "nwse-resize", "nesw-resize"]) {
+      await platform.request("cursor", encode(name));
+      expect(canvas.style.cursor).toBe(name);
+    }
   } finally {
     platform.dispose();
     if (oldWindow) Object.defineProperty(globalThis, "window", oldWindow); else Reflect.deleteProperty(globalThis, "window");

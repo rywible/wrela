@@ -37,6 +37,12 @@ pub fn node_of(a: Action) -> u32 {
         Action::Fit => 48,
         Action::Route => 49,
         Action::Heads => 50,
+        Action::Cut => 51,
+        Action::Copy => 52,
+        Action::Paste => 53,
+        Action::Duplicate => 54,
+        Action::Lock => 55,
+        Action::SelectAll => 56,
     }
 }
 
@@ -60,6 +66,12 @@ pub fn action_of(node: u32) -> Option<Action> {
         Action::Fit,
         Action::Route,
         Action::Heads,
+        Action::Cut,
+        Action::Copy,
+        Action::Paste,
+        Action::Duplicate,
+        Action::Lock,
+        Action::SelectAll,
     ]
     for a in all {
         if node_of(a) == node {

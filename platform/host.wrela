@@ -17,7 +17,8 @@ pub fn environment() -> Pending<u8> {
     request("environment", [u8(0); 0])
 }
 
-// The pointer's shape over the program: `default`, `pointer` or `text`.
+// The pointer's shape over the program: `default`, `pointer`, `text`, `grab`, `grabbing`,
+// `crosshair`, `move`, `nwse-resize` or `nesw-resize`.
 pub fn cursor(name: str) -> Pending<u8> {
     var bytes: Vec<u8> = Vec::new()
     for i in 0..name.len() { bytes.push(name.byte(i)) }
