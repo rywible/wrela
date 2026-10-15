@@ -1,514 +1,670 @@
-// How the game looks: one fragment shader that draws the whole screen as fields over it. A low
-// sun in a late afternoon sky, the open sea to the horizon with the sun's path glittering on it,
-// and the near sea: the one height function the sim rides (sea.wrela), drawn with light through
-// its swells, depth that drinks the reds, caustics and shafts of light below, foam on its
-// crests and in the board's track, and spray. Rocks stand out of it; a tortoise surfs it.
-use course::{FINISH, ROCKS, rock_distance}
+// How the game looks, in 3D: the face the sim rides drawn as a grid the vertex shader lifts by the
+// same height function (finest near the eye and across the face), the lip curling over it and
+// the whitewater churning behind the curl (drawn from the same wave, never ridden), the rocks,
+// logs and the tortoise as lit ellipsoids with ink outlines, spray, and the sky with the open sea
+// to the horizon behind it all. The scene is drawn into a target; a last pass brings it to the
+// screen with a vignette, grain and the type.
 use engine::letters::type_over
-use engine::noise::{fbm2, hash2, noise2}
-use sea::{SLOTS, Sea, level}
-use std::derive::value_and_gradient
-use std::gpu::FragCoord
+use engine::noise::{fbm2, hash2, noise2, noise3}
+use std::gpu::{ClipPosition, FragCoord, Over, Texture, Rgba16Float, VertexIndex}
+use wave::{HEIGHT, Wave, face, height, lip, set, standing}
 
-/// What the shader is told each frame. Counts are floats, as the GPU reads them.
-pub struct View: Copy + GpuData {
-    pub sea: Sea,
-    // The course point at the screen's middle, the screen, and pixels to a unit.
-    pub camera: vec2,
-    pub screen: vec2,
-    pub scale: f32,
-    // The sea's time to draw (sim seconds), and the frames' clock (for what only moves).
+/// What every pass reads.
+pub struct Scene: Copy + GpuData {
+    pub view_proj: mat4,
+    pub eye: vec3,
     pub time: f32,
+    // The camera's basis, its field's half height (tan) and the screen's aspect.
+    pub forward: vec3,
+    pub tan_half: f32,
+    pub right: vec3,
+    pub aspect: f32,
+    pub up: vec3,
     pub clock: f32,
-    pub drops: f32,
+    pub wave: Wave,
+    // Where the sea's grid starts down the line, and how many closeouts and marks there are.
+    pub grid_x: f32,
+    pub closeouts: f32,
     pub marks: f32,
-    pub runs: f32,
-    // The rider: its feet, the board's tilt (radians), and how far its neck is out (0 to 1).
-    pub rider: vec4,
-    // Its velocity, 1 while it's aloft, and its tumble (radians, while wiped out; else 0).
-    pub motion: vec4,
-    // How lit the screen is (0 black), how much the title dims the sea, the finish's glow, and
-    // 1 on the fixed course.
-    pub mood: vec4,
+    pub drops: f32,
+    pub washes: f32,
 }
 
-// The sun's way, from the sea towards it: low, ahead and to the right.
-const SUN: vec2 = vec2(0.62, 0.78)
+// The sun: low, beyond the wave and a little down the line, so the light comes through its lip.
+const SUN: vec3 = vec3(0.32, 0.26, 0.91)
+const SUN_LIGHT: vec3 = vec3(1.0, 0.86, 0.62)
+
+// ---- the sky and the open sea --------------------------------------------------------------------
+
+fn sky(d: vec3, clock: f32) -> vec3 {
+    let up = d.y
+    let sun = normalize(SUN)
+    let toward = max(dot(d, sun), 0.0)
+    if up < 0.0 {
+        // The open sea to the horizon, the sun's path glittering on it.
+        let down = -up
+        var sea = mix(vec3(0.5, 0.58, 0.66), vec3(0.03, 0.18, 0.28), smoothstep(0.0, 0.25, down))
+        let path = pow(
+            max(dot(normalize(vec3(d.x, 0.0, d.z)), normalize(vec3(sun.x, 0.0, sun.z))), 0.0),
+            60.0,
+        )
+        let glint = hash2(i32(d.x * 900.0 / (down + 0.02)), i32(down * 4000.0 + clock * 4.0))
+        sea += SUN_LIGHT * path * (0.25 + step(0.93, glint) * 0.9) * exp(-down * 6.0)
+        return sea
+    }
+    var col = mix(vec3(1.0, 0.78, 0.56), vec3(0.95, 0.62, 0.5), smoothstep(0.0, 0.06, up))
+    col = mix(col, vec3(0.5, 0.64, 0.84), smoothstep(0.04, 0.3, up))
+    col = mix(col, vec3(0.16, 0.32, 0.62), smoothstep(0.3, 0.9, up))
+    col += SUN_LIGHT * (pow(toward, 8.0) * 0.45 + pow(toward, 200.0) * 0.8)
+    col = mix(col, vec3(1.0, 0.97, 0.9), smoothstep(0.9993, 0.9996, toward))
+    // Clouds in long bands, lit gold from the sun's side.
+    let cp = vec2(d.x, d.z) / (up + 0.08)
+    let n = fbm2(cp * 0.9 + vec2(clock * 0.01, 0.0), 4)
+    let cloud = smoothstep(0.5, 0.75, n) *
+        smoothstep(0.02, 0.12, up) *
+        (1.0 - smoothstep(0.35, 0.7, up))
+    let lit = mix(vec3(0.95, 0.72, 0.68), vec3(1.0, 0.9, 0.7), pow(toward, 3.0))
+    mix(col, lit, cloud * 0.7)
+}
 
 @fragment
-pub fn shade(
-    pixel: FragCoord,
-    view: View,
-    drops: [vec4],
-    marks: [vec4],
-    runs: [vec4],
-    segments: [vec4],
-) -> vec4 {
-    let px = pixel.position.xy
-    let p = view.camera + vec2(px.x - view.screen.x * 0.5, view.screen.y * 0.5 - px.y) / view.scale
-    let aa = 1.0 / view.scale
-    let (h, g) = value_and_gradient(|q: vec2| level(view.sea, q), vec2(p.x, view.time))
-    var col = vec3(0.0)
-    if p.y > h {
-        col = far(px, p, view)
-        col = rocks_over(col, p, h, view, aa)
-    } else {
-        col = water(px, p, h, g.x, view, marks)
-        col = rocks_over(col, p, h, view, aa)
-    }
-    col = foam_over(col, p, h, g.x, view, marks, aa)
-    col = buoy_over(col, p, h, view, aa)
-    col = rider_over(col, p, h, view, aa)
-    col = drops_over(col, p, view, drops, aa)
-    col = mix(col, col * vec3(0.35, 0.42, 0.55), view.mood.y)
-    col = type_over(col, px, view.runs, runs, segments)
-    // A soft vignette, and grain so the gradients don't band.
-    let uv = px / view.screen
-    let v = uv * (vec2(1.0) - uv)
-    col *= pow(saturate(v.x * v.y * 16.0), 0.18)
-    col += vec3((hash2(i32(px.x), i32(px.y) + i32(view.clock * 61.0)) - 0.5) / 255.0)
-    vec4(col * view.mood.x, 1.0)
+pub fn sky_shade(pixel: FragCoord, s: Scene, width: f32, height: f32) -> vec4 {
+    let uv = vec2(pixel.position.x / width * 2.0 - 1.0, 1.0 - pixel.position.y / height * 2.0)
+    let d = normalize(s.forward + s.right * uv.x * s.tan_half * s.aspect + s.up * uv.y * s.tan_half)
+    vec4(sky(d, s.clock), 0.0)
 }
 
-fn over(col: vec3, c: vec3, a: f32) -> vec3 {
-    mix(col, c, saturate(a))
+/// A triangle over the whole screen at the far plane (reversed depth: 0).
+@vertex
+pub fn behind(v: VertexIndex) -> ClipPosition {
+    let x = f32((v.index << 1) & 2) * 2.0 - 1.0
+    let y = f32(v.index & 2) * 2.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.0, 1.0) }
 }
 
-fn ellipse(q: vec2, r: vec2) -> f32 {
-    (length(q / r) - 1.0) * min(r.x, r.y)
+// ---- the sea's grid ----------------------------------------------------------------------------
+
+/// The sea's grid: `ACROSS` cells down the line, `UP` across the face.
+pub const ALONG: u32 = 160
+pub const ACROSS: u32 = 192
+const BEHIND_EYE: f32 = 16.0
+const REACH: f32 = 280.0
+const BUNCH: f32 = 4.0
+const MIDFACE: f32 = 7.0
+const SPAN: f32 = 150.0
+const SQUEEZE: f32 = 4.5
+
+/// Where the grid's line `u` (0 to 1) lies down the line: finest at the eye.
+pub fn grid_x(start: f32, u: f32) -> f32 {
+    start - BEHIND_EYE + (BEHIND_EYE + REACH) * (exp(BUNCH * u) - 1.0) / (exp(BUNCH) - 1.0)
 }
 
-fn capsule(q: vec2, a: vec2, b: vec2, r: f32) -> f32 {
-    let ab = b - a
-    let t = saturate(dot(q - a, ab) / dot(ab, ab))
-    length(q - a - ab * t) - r
+/// Where the grid's line `v` (0 to 1) lies across the face: finest on the face.
+pub fn grid_z(v: f32) -> f32 {
+    let k = SQUEEZE * (2.0 * v - 1.0)
+    MIDFACE + SPAN * (exp(k) - exp(-k)) / (exp(SQUEEZE) - exp(-SQUEEZE))
 }
 
-fn rotate(q: vec2, a: f32) -> vec2 {
-    let c = cos(a)
-    let s = sin(a)
-    vec2(c * q.x + s * q.y, -s * q.x + c * q.y)
+/// Grid point `(i, j)` in the world.
+pub fn grid_point(w: Wave, start: f32, i: u32, j: u32) -> vec3 {
+    let x = grid_x(start, f32(i) / f32(ALONG))
+    let z = grid_z(f32(j) / f32(ACROSS))
+    vec3(x, height(w, vec2(x, z)), z)
 }
 
-// ---- the sky and the far sea -------------------------------------------------------------------
-
-// Where the horizon is on the screen (from the top), a little lower as the view rises.
-fn horizon(view: View) -> f32 {
-    view.screen.y * 0.4 + (view.camera.y - 4.0) * view.scale * 0.04
+/// The grid's vertices: two triangles a cell, six vertices.
+pub fn grid_vertices() -> u32 {
+    ALONG * ACROSS * 6
 }
 
-fn sun_at(view: View) -> vec2 {
-    vec2(view.screen.x * 0.74, horizon(view) - view.screen.y * 0.15)
+/// Vertex `index`'s grid point, `(i, j)`.
+pub fn grid_corner(index: u32) -> vec2u {
+    let cell = index / 6
+    let c = index % 6
+    let i = cell % ALONG
+    let j = cell / ALONG
+    let du: [u32; 6] = [0, 1, 0, 0, 1, 1]
+    let dv: [u32; 6] = [0, 0, 1, 1, 0, 1]
+    vec2u(i + du[c], j + dv[c])
 }
 
-fn sky(px: vec2, view: View) -> vec3 {
-    let hy = horizon(view)
-    let up = saturate((hy - px.y) / hy)
-    var col = mix(vec3(1.0, 0.8, 0.58), vec3(0.98, 0.66, 0.5), smoothstep(0.0, 0.12, up))
-    col = mix(col, vec3(0.56, 0.68, 0.86), smoothstep(0.08, 0.45, up))
-    col = mix(col, vec3(0.2, 0.38, 0.72), smoothstep(0.4, 1.0, up))
-    let sun = sun_at(view)
-    let d = length(px - sun) / view.screen.y
-    col += vec3(1.0, 0.62, 0.32) * exp(-d * 5.5) * 0.55
-    col += vec3(1.0, 0.85, 0.6) * exp(-d * 22.0) * 0.7
-    // Long clouds, drifting, lit gold from below and the sun's side.
-    let cx = (px.x + view.camera.x * view.scale * 0.03) / view.screen.y
-    let cy = px.y / view.screen.y
-    for k in 0..3 {
-        let fk = f32(k)
-        let band = 0.08 + fk * 0.09
-        let n = fbm2(vec2(cx * (1.6 + fk * 0.7) + view.clock * 0.006 + fk * 13.0, cy * 7.0), 4)
-        let shape = exp(-pow((cy - band) * (14.0 - fk * 3.0), 2.0))
-        let cloud = smoothstep(0.42, 0.7, n) * shape
-        let toward = exp(-length(vec2(px.x - sun.x, (px.y - sun.y) * 2.0)) / view.screen.y * 3.0)
-        let tint = mix(vec3(0.95, 0.72, 0.68), vec3(1.0, 0.86, 0.62), toward)
-        let lit = mix(tint * 0.85, vec3(1.0, 0.95, 0.85), smoothstep(0.55, 0.8, n) * toward)
-        col = mix(col, lit, cloud * (0.7 - fk * 0.12))
-    }
-    // Gulls far off, gliding, their wings beating now and then.
-    for k in 0..3 {
-        let fk = f32(k)
-        let at = vec2(
-            fract(view.clock * (0.008 + fk * 0.003) + fk * 0.37) * 1.4 - 0.2,
-            0.16 + fk * 0.05 + 0.01 * sin(view.clock * 0.5 + fk),
-        ) *
-            vec2(view.screen.x, hy)
-        let q = (px - at) / (view.screen.y * (0.022 - fk * 0.004))
-        let flap = 0.35 + 0.25 * sin(view.clock * (3.0 + fk) + fk * 2.0)
-        let wing = abs(q.y + abs(q.x) * flap - 0.1 * q.x * q.x) - 0.1 * (1.0 - abs(q.x) * 0.6)
-        if abs(q.x) < 1.0 && wing < 0.0 { col = mix(col, vec3(0.25, 0.22, 0.3), 0.8) }
-    }
-    // The sun's disc over the clouds, its rim soft.
-    col = mix(col, vec3(1.0, 0.97, 0.88), 1.0 - smoothstep(0.044, 0.05, d))
-    col
+pub struct SeaVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
 }
 
-// Above the near water: the sky, and below the horizon the open sea, with islands far off, the
-// sun's path glittering, and long swells coming in.
-fn far(px: vec2, p: vec2, view: View) -> vec3 {
-    let hy = horizon(view)
-    var col = sky(px, view)
-    let sun = sun_at(view)
-    let s = view.screen.y
-    // Islands on the horizon, hazed into the sky.
-    let ix = (px.x + view.camera.x * view.scale * 0.05) / s
-    let isle = max(noise2(vec2(ix * 3.0, 7.0)) - 0.55, 0.0) * 0.09 +
-        max(noise2(vec2(ix * 9.0, 3.0)) - 0.6, 0.0) * 0.02
-    if px.y < hy && px.y > hy - isle * s {
-        col = mix(col, vec3(0.55, 0.5, 0.6), 0.55)
-    }
-    if px.y >= hy {
-        // How far down the open sea, 0 at the horizon.
-        let down = (px.y - hy) / s
-        var sea = mix(vec3(0.62, 0.7, 0.78), vec3(0.08, 0.36, 0.52), smoothstep(0.0, 0.28, down))
-        sea = mix(sea, vec3(0.03, 0.22, 0.36), smoothstep(0.2, 0.6, down))
-        // The sky in it, near the horizon.
-        sea = mix(sea, col, exp(-down * 40.0) * 0.6)
-        // Long swells: lines that rise and fall, closer together far off, moving in.
-        let depth = 1.0 / (down * 6.0 + 0.04)
-        let wx = (px.x / s + view.camera.x * view.scale / s * (0.12 + 0.6 * down))
-        let line = sin(depth * 2.2 + noise2(vec2(wx * 2.0, depth * 0.3)) * 3.0 - view.clock * 0.8)
-        sea *= 0.94 + 0.08 * line
-        // The sun's path: a column below the sun, wider nearer, glittering.
-        let off = abs(px.x - sun.x) / s
-        let width = 0.02 + down * 0.5
-        let path = exp(-pow(off / width, 2.0))
-        let cell = floor(vec2(px.x / 3.0, px.y / 2.0))
-        let spark = hash2(i32(cell.x), i32(cell.y) + i32(view.clock * 6.0) * 7919)
-        let twinkle = step(1.0 - path * 0.08 - 0.002, spark)
-        sea += vec3(1.0, 0.9, 0.7) * (path * 0.3 + twinkle * (0.4 + path))
-        col = sea
-    }
-    col
-}
-
-// ---- the near water ----------------------------------------------------------------------------
-
-// Caustics: bright threads where the surface focuses the light, a little apart in colour.
-fn caustic(q: vec2, t: f32) -> f32 {
-    var c = 0.0
-    var p = q
-    for k in 0..3 {
-        let fk = f32(k)
-        p += vec2(sin(p.y * 1.7 + t * (0.6 + fk * 0.2)), cos(p.x * 1.3 - t * 0.5)) * 0.35
-        c += 1.0 / (1.0 + 30.0 * abs(sin(p.x * 2.1 + p.y * 1.4 + fk)))
-    }
-    c
-}
-
-// The sea under its surface at `p`, `h` its height there and `slope` its slope.
-fn water(px: vec2, p: vec2, h: f32, slope: f32, view: View, marks: [vec4]) -> vec3 {
-    let d = h - p.y
-    let t = view.time
-    // Depth drinks the light, the reds first.
-    var col = mix(vec3(0.01, 0.07, 0.16), vec3(0.02, 0.3, 0.42), exp(-d * 0.32))
-    col = mix(col, vec3(0.08, 0.62, 0.66), exp(-d * 1.4) * 0.75)
-    // The low sun through a swell's thin upper part: the water there glows green.
-    let lift = max(h - 0.1, 0.0)
-    let thin = exp(-d * 1.1)
-    col += vec3(0.22, 0.95, 0.62) * smoothstep(0.15, 2.0, lift) * thin * 0.75
-    col += vec3(0.9, 0.85, 0.45) * smoothstep(1.2, 2.6, lift) * exp(-d * 2.5) * 0.35
-    // Caustics and shafts of light, fading with depth.
-    let c = caustic(vec2(p.x * 0.8 - t * 0.2, p.y * 0.8), t)
-    col += vec3(0.45, 0.95, 0.85) * c * 0.11 * exp(-d * 0.35) * smoothstep(0.1, 0.8, d)
-    let slant = p.x * 0.78 + p.y * SUN.x
-    let shafts = noise2(vec2(slant * 0.7 + t * 0.12, 1.0)) *
-        noise2(vec2(slant * 1.9 - t * 0.07, 4.0))
-    col += vec3(0.35, 0.85, 0.8) * pow(shafts, 2.0) * 0.5 * exp(-d * 0.15) * smoothstep(0.2, 1.5, d)
-    // Small fish deep down, a school drifting, flickering silver when they turn.
-    let school = vec2(p.x * 0.35 - t * 0.05, p.y * 0.5)
-    let fc = floor(school * vec2(6.0, 4.0))
-    let fseed = hash2(i32(fc.x), i32(fc.y))
-    if fseed > 0.8 && d > 2.5 {
-        let fq = fract(school * vec2(6.0, 4.0)) -
-            vec2(0.5) +
-            vec2(0.3 * sin(t * 0.7 + fseed * 30.0), 0.15 * sin(t * 1.1 + fseed * 20.0))
-        let fish = min(
-            ellipse(fq, vec2(0.2, 0.07)),
-            ellipse(fq + vec2(0.22, 0.0), vec2(0.05, 0.08)),
-        )
-        let turn = 0.5 + 0.5 * sin(t * 1.3 + fseed * 50.0)
-        let tint = mix(vec3(0.01, 0.08, 0.14), vec3(0.55, 0.85, 0.9), turn * exp(-d * 0.1))
-        col = mix(col, tint, saturate(-fish * 40.0) * 0.75)
-    }
-    // Bubbles rising in cells, and more where the board has passed.
-    let cell = floor(vec2(p.x * 2.2, (p.y + t * 0.6) * 2.2))
-    let seed = hash2(i32(cell.x), i32(cell.y))
-    if seed > 0.93 && d > 0.25 {
-        let at = (cell + vec2(0.5 + 0.3 * sin(t * 2.0 + seed * 40.0), 0.5)) / 2.2 -
-            vec2(0.0, t * 0.6)
-        let r = 0.025 + seed * 0.04
-        let b = abs(length(p - at) - r) - 0.006
-        col += vec3(0.6, 1.0, 0.95) * saturate(-b * view.scale) * 0.5 * exp(-d * 0.4)
-    }
-    // At the surface: a sliver of the sky, then a bright line where the light catches it, with
-    // the sun glinting where the surface faces between it and the eye.
-    let band = d * view.scale
-    let n = normalize(vec2(-slope, 1.0))
-    let sky_in = mix(vec3(0.75, 0.8, 0.85), vec3(1.0, 0.85, 0.65), saturate(n.x * 2.0 + 0.5))
-    col = mix(col, sky_in, exp(-band * 0.22) * 0.45)
-    let half = normalize(SUN + vec2(0.0, 1.0))
-    let glint = pow(max(dot(n, half), 0.0), 90.0)
-    let sparkle = hash2(i32(p.x * 14.0), i32(t * 8.0))
-    col += vec3(1.0, 0.95, 0.8) * exp(-band * 0.5) * (0.35 + glint * 1.2 + step(0.9, sparkle) * 0.6)
-    col
+@vertex
+pub fn sea_vertex(v: VertexIndex, s: Scene) -> SeaVertex {
+    let ij = grid_corner(v.index)
+    let p = grid_point(s.wave, s.grid_x, ij.x, ij.y)
+    SeaVertex { clip: ClipPosition { position: s.view_proj * vec4(p, 1.0) }, world: p }
 }
 
 // Lace: foam's pattern, holes in white, drifting.
 fn lace(q: vec2, t: f32) -> f32 {
-    let n = fbm2(vec2(q.x * 2.4 - t * 0.5, q.y * 5.0 + t * 0.3), 4)
-    smoothstep(0.42, 0.62, n) * (0.6 + 0.4 * noise2(q * 9.0 + vec2(t, 0.0)))
+    let n = fbm2(vec2(q.x * 0.8 - t * 0.3, q.y * 1.6 + t * 0.5), 4)
+    smoothstep(0.45, 0.62, n) * (0.55 + 0.45 * noise2(q * 3.0 + vec2(t, 0.0)))
 }
 
-// Foam: on the swells' crests while they surge, on any face steep enough to spill, and where the
-// board has passed (`marks`: `vec4(x, seconds old, how much, 0)`), lying on the surface.
-fn foam_over(col: vec3, p: vec2, h: f32, slope: f32, view: View, marks: [vec4], aa: f32) -> vec3 {
-    let d = h - p.y
-    if d < -0.25 || d > 0.9 { return col }
-    let t = view.time
-    var amount = smoothstep(0.7, 1.4, abs(slope)) * 0.7
-    for i in 0..SLOTS {
-        let s = view.sea.swells[i]
-        if s.z > 0.05 {
-            let at = s.x + view.sea.drift[i] * (t - view.sea.time)
-            let u = (p.x - at) / s.y
-            let crest = exp(-u * u * 6.0)
-            amount += crest * smoothstep(0.5, 4.0, s.w) * 1.2 +
-                crest * smoothstep(1.4, 2.2, s.z) * 0.3
+/// How much foam lies on the sea at `(x, z)`: over the slumped wave behind the curl, along the lip,
+/// pouring down closeouts, washing round rocks and logs (`wash`: `vec4(x, z, radius, length)`),
+/// and in the board's track.
+fn foam_at(s: Scene, x: f32, z: f32, closeouts: [vec4], wash: [vec4], marks: [vec4]) -> f32 {
+    let w = s.wave
+    let l = lip(w, x)
+    var f = (1.0 - standing(w, x)) * 1.8
+    f += smoothstep(l - 1.2, l, z) * (1.0 - smoothstep(l, l + 4.0, z)) * 0.8
+    // The foam sliding down the face from the lip, in streaks.
+    f += smoothstep(0.55, 1.0, z / l) *
+        smoothstep(0.55, 0.8, noise2(vec2(x * 0.25, z * 0.08 - s.time * 0.4))) *
+        0.5
+    // Lines of old foam drifting on the flat sea before the wave.
+    if z < 0.0 {
+        let line = noise2(vec2(x * 0.12, z * 0.9 + s.time * 0.2)) * noise2(vec2(x * 0.5, z * 2.0))
+        f += smoothstep(0.32, 0.5, line) * 0.45 * smoothstep(-60.0, -4.0, z)
+    }
+    for i in 0..u32(s.closeouts) {
+        let c = closeouts[i]
+        if x > c.x - 2.0 && x < c.y + 2.0 && z > c.z - 1.5 {
+            f += smoothstep(c.z - 1.5, c.z + 0.5, z) *
+                smoothstep(c.x - 2.0, c.x + 1.0, x) *
+                (1.0 - smoothstep(c.y - 1.0, c.y + 2.0, x)) *
+                1.6
         }
     }
-    // The wash round each rock, rising and falling.
-    for i in 0..5 {
-        let r = ROCKS[i]
-        let k = (abs(p.x - r.x) - r.z) / 0.5
-        if k < 3.0 { amount += exp(-max(k, 0.0) * 1.2) * (0.55 + 0.35 * sin(t * 2.3 + r.x)) }
+    for i in 0..u32(s.washes) {
+        let r = wash[i]
+        let t = clamp(x - r.x, 0.0, r.w)
+        let d = length(vec2(x - r.x - t, z - r.y)) - r.z
+        if d < 2.0 { f += exp(-max(d, 0.0) * 2.2) * (0.7 + 0.3 * sin(s.time * 3.0 + r.x)) }
     }
-    for i in 0..u32(view.marks) {
+    for i in 0..u32(s.marks) {
         let m = marks[i]
-        let k = (p.x - m.x) / (0.6 + m.y * 0.5)
-        amount += exp(-k * k) * m.z * exp(-m.y * 0.9)
+        let d = length(vec2(x, z) - m.xy) / (0.3 + m.z * 0.35)
+        f += exp(-d * d) * exp(-m.z * 1.2) * m.w * 0.6
     }
-    amount = saturate(amount)
-    if amount < 0.01 { return col }
-    let l = lace(p, t)
-    // The foam's top is ragged, above the surface a little, and it thins downwards.
-    let top = (noise2(vec2(p.x * 7.0, t * 2.0)) - 0.3) * 0.12 * amount
-    let body = (1.0 - smoothstep(top - aa * 1.5, top, -d)) * (1.0 - smoothstep(0.05, 0.9, d))
-    let a = body * amount * (0.35 + 0.65 * l)
-    let white = mix(vec3(0.72, 0.9, 0.92), vec3(1.0, 0.99, 0.95), saturate(1.0 - d * 2.0))
-    over(col, white, a)
+    saturate(f)
 }
 
-// ---- rocks and the buoy ------------------------------------------------------------------------
-
-fn rocks_over(col: vec3, p: vec2, h: f32, view: View, aa: f32) -> vec3 {
-    var out = col
-    for i in 0..5 {
-        let r = ROCKS[i]
-        if abs(p.x - r.x) > r.z + 1.5 { continue }
-        let rough = (noise2(p * 2.6 + vec2(f32(i) * 9.0, 0.0)) - 0.5) * 0.22 +
-            (noise2(p * 7.0) - 0.5) * 0.06
-        let d = rock_distance(r, p) + rough
-        if d > aa * 2.0 { continue }
-        // Dark basalt, lit from the sun's side, wet and darker low down, ledges catching light.
-        let side = saturate((p.x - r.x) / r.z * 0.5 + 0.5)
-        var stone = mix(vec3(0.1, 0.1, 0.13), vec3(0.3, 0.27, 0.27), side * 0.8)
-        let ledge = smoothstep(0.55, 0.75, noise2(vec2(p.x * 3.0, p.y * 11.0)))
-        stone += vec3(0.2, 0.17, 0.12) * ledge * side
-        stone *= 0.6 + 0.4 * smoothstep(-0.3, 1.0, p.y - h)
-        // Just above the water: a band of wet green weed, and pale barnacles.
-        let wet = 1.0 - smoothstep(0.0, 0.5, p.y - h - 0.05)
-        stone = mix(stone, vec3(0.12, 0.24, 0.12), wet * 0.6 * step(0.0, p.y - h + 0.3))
-        let barnacle = hash2(i32(p.x * 18.0), i32(p.y * 18.0))
-        if barnacle > 0.86 && p.y - h > 0.05 && p.y - h < 0.9 {
-            stone = mix(stone, vec3(0.75, 0.72, 0.62), 0.7)
-        }
-        // Light along its rim towards the sun.
-        stone += vec3(1.0, 0.75, 0.45) * exp(-abs(d) * view.scale * 0.15) * side * 0.35
-        if p.y < h {
-            // Under the water: seen through it.
-            let depth = h - p.y
-            stone = mix(stone * vec3(0.5, 0.85, 0.85), out, 1.0 - exp(-depth * 0.7))
-        }
-        out = over(out, stone, saturate(-d / aa))
-    }
-    out
+@fragment
+pub fn sea_shade(f: SeaVertex, s: Scene, closeouts: [vec4], wash: [vec4], marks: [vec4]) -> vec4 {
+    let p = f.world
+    let w = s.wave
+    let fc = face(w, p.xz)
+    var n = normalize(vec3(-fc.slope.x, 1.0, -fc.slope.y))
+    // Fine ripples in the light, not the shape.
+    let r = vec2(
+        noise2(p.xz * 1.3 + vec2(s.time * 0.7, 0.0)),
+        noise2(p.xz * 1.1 - vec2(0.0, s.time * 0.6)),
+    ) -
+        vec2(0.5)
+    n = normalize(n + vec3(r.x, 0.0, r.y) * 0.18)
+    let to_eye = normalize(s.eye - p)
+    let fres = 0.02 + 0.98 * pow(1.0 - saturate(dot(n, to_eye)), 5.0)
+    let reflected = sky(-to_eye + n * (2.0 * dot(to_eye, n)), s.clock)
+    // The body of the water, darker where it's deep under the eye, glowing green where the face
+    // stands thin against the low sun behind it.
+    let top = HEIGHT * set(w, p.x) * standing(w, p.x)
+    let rise = saturate(p.y / max(top, 0.01))
+    let l = lip(w, p.x)
+    let on_face = 1.0 - smoothstep(l - 0.2, l + 0.6, p.z)
+    var body = mix(
+        vec3(0.01, 0.1, 0.17),
+        vec3(0.03, 0.3, 0.38),
+        rise * on_face + 0.25 * rise * (1.0 - on_face),
+    )
+    // Streaks running down the face, the water's grain.
+    let streak = noise2(vec2(p.x * 0.6, p.y * 0.12 + s.time * 0.5))
+    body *= 0.85 + 0.3 * streak * on_face
+    let thin = smoothstep(0.72, 1.0, p.z / l) * on_face
+    // Light comes through where the eye looks toward the sun through the water.
+    // (Seen from above, looking down into the water, little comes through.)
+    let level = saturate(1.0 - max(to_eye.y, 0.0) * 1.8)
+    let through = (0.35 + 0.65 * saturate(dot(-to_eye, normalize(SUN)) + 0.4)) * level
+    body += vec3(0.16, 0.85, 0.55) * thin * 1.1 * through * SUN_LIGHT
+    // A softer green deeper in the upper face.
+    body += vec3(0.02, 0.18, 0.12) * smoothstep(0.4, 0.8, p.z / l) * on_face * level
+    body += vec3(0.95, 0.85, 0.45) * smoothstep(0.85, 1.0, p.z / l) * thin * 0.35
+    var col = mix(body, reflected, fres)
+    // The sun's glint.
+    let half = normalize(normalize(SUN) + to_eye)
+    col += SUN_LIGHT * pow(max(dot(n, half), 0.0), 220.0) * 2.5
+    // Foam lies on top, lit by the sun and the sky.
+    let foam = foam_at(s, p.x, p.z, closeouts, wash, marks) * lace(p.xz * 2.0, s.time)
+    let lit_foam = mix(
+        vec3(0.62, 0.72, 0.8),
+        vec3(1.0, 0.97, 0.9),
+        saturate(dot(n, normalize(SUN)) * 0.6 + 0.6),
+    )
+    col = mix(col, lit_foam, saturate(foam * 1.6))
+    vec4(fog(col, p, s), 0.0)
 }
 
-// The finish: a striped buoy riding the swell, its light blinking.
-fn buoy_over(col: vec3, p: vec2, h: f32, view: View, aa: f32) -> vec3 {
-    let at = vec2(FINISH, level(view.sea, vec2(FINISH, view.time)))
-    let q = p - at
-    if abs(q.x) > 1.5 || q.y > 4.5 || q.y < -1.0 { return col }
-    var out = col
-    let body = capsule(q, vec2(0.0, -0.3), vec2(0.0, 2.6), 0.32 - q.y * 0.04)
-    let stripe = if fract(q.y * 1.2) < 0.5 { vec3(0.92, 0.2, 0.15) } else { vec3(0.98, 0.95, 0.9) }
-    let lit = 0.65 + 0.45 * saturate(q.x * 3.0 + 0.5)
-    out = over(out, vec3(0.08, 0.05, 0.06), saturate(-(body - 0.04) / aa))
-    out = over(out, stripe * lit, saturate(-body / aa))
-    let lamp = length(q - vec2(0.0, 2.95)) - 0.16
-    let blink = 0.5 + 0.5 * sin(view.clock * 4.0)
-    out = over(out, mix(vec3(0.5, 0.4, 0.2), vec3(1.0, 0.95, 0.6), blink), saturate(-lamp / aa))
-    out += vec3(1.0, 0.8, 0.4) * exp(-max(lamp, 0.0) * 5.0) * blink * (0.5 + view.mood.z)
-    if p.y < h { out = mix(out, col, 0.55) }
-    out
+/// Haze with distance, toward the sky at the horizon.
+fn fog(col: vec3, p: vec3, s: Scene) -> vec3 {
+    let d = length(p - s.eye)
+    let toward = normalize(p - s.eye)
+    let haze = sky(vec3(toward.x, max(toward.y, 0.0) * 0.3 - 0.01, toward.z), s.clock)
+    mix(col, haze, 1.0 - exp(-max(d - 30.0, 0.0) * 0.006))
 }
 
-// ---- the tortoise ------------------------------------------------------------------------------
+// ---- the lip and the whitewater -----------------------------------------------------------------
 
-// A deadpan old desert tortoise on a longboard, in its board's frame: x along the board, y up
-// from its underside. Its dome is tall and amber, in plates with growth rings; its legs are
-// stout columns; its wrinkled neck comes further out the faster it goes. Wiped out, it's in its
-// shell, tumbling, the board apart from it.
-fn rider_over(col: vec3, p: vec2, h: f32, view: View, aa_world: f32) -> vec3 {
-    let at = view.rider.xy
-    if length(p - at) > 3.0 { return col }
-    // Drawn a little larger than the body the rocks meet: a near miss looks like one.
-    let size = 1.2
-    let aa = aa_world / size
-    var out = col
-    let tilt = view.rider.z
-    let neck = view.rider.w
-    let aloft = view.motion.z
-    let tumble = view.motion.w
-    let ink = vec3(0.1, 0.06, 0.05)
-    // The board.
-    let local = (p - at) / size
-    var bq = rotate(local, tilt)
-    if tumble != 0.0 { bq = rotate(local - vec2(-0.9, 0.3), tumble * 0.6) }
-    let nose = max(bq.x - 0.55, 0.0)
-    let deck = capsule(bq - vec2(0.0, nose * nose * 0.5), vec2(-1.0, 0.08), vec2(0.95, 0.08), 0.075)
-    let fin = ellipse(bq - vec2(-0.72, 0.0), vec2(0.08, 0.16))
-    let board = min(deck, max(fin, bq.y - 0.02))
-    let red = abs(bq.y - 0.08 - nose * nose * 0.5) < 0.022
-    let cream = mix(vec3(0.85, 0.8, 0.7), vec3(1.0, 0.97, 0.88), saturate(bq.y * 6.0))
-    let wood = if red { vec3(0.9, 0.22, 0.16) } else { cream }
-    out = over(out, ink, saturate(-(board - 0.025) / aa))
-    out = over(out, wood, saturate(-board / aa))
-    // The tortoise's frame: on the board, or tumbling in its shell.
-    var q = bq
-    if tumble != 0.0 { q = rotate(local - vec2(0.0, 0.5), tumble) + vec2(0.0, 0.5) }
-    let lit = 0.72 + 0.4 * saturate(dot(normalize(q - vec2(-0.2, 0.2)), SUN))
-    if tumble == 0.0 {
-        // Far legs, then near: stout, wider at the foot, three pale nails each.
-        for k in 0..4 {
-            let far = k < 2
-            let x = if k % 2 == 0 { -0.36 } else { 0.3 }
-            let off = if far { 0.09 } else { 0.0 }
-            let lq = q - vec2(x + off, 0.0)
-            let leg = capsule(
-                lq,
-                vec2(0.0, 0.18),
-                vec2(0.0, 0.42),
-                0.1 + max(0.3 - lq.y, 0.0) * 0.12,
-            )
-            let skin = vec3(0.55, 0.5, 0.38) * (if far { 0.62 } else { lit })
-            out = over(out, ink, saturate(-(leg - 0.022) / aa))
-            out = over(out, skin, saturate(-leg / aa))
-            if !far {
-                for n in 0..3 {
-                    let nail = ellipse(lq - vec2(-0.06 + f32(n) * 0.06, 0.17), vec2(0.025, 0.02))
-                    out = over(out, vec3(0.88, 0.82, 0.68), saturate(-nail / aa))
-                }
-            }
-        }
-        // The neck, wrinkled across, and the head: a blunt beak, a heavy-lidded eye, wider
-        // open in the air.
-        let base = vec2(0.42, 0.5)
-        let head = base + vec2(0.1 + neck * 0.42, 0.06 + neck * 0.1)
-        let nk = capsule(q, base, head, 0.085)
-        let along = dot(q - base, normalize(head - base))
-        let skin = vec3(0.6, 0.55, 0.42) * lit * (0.9 + 0.1 * sin(along * 55.0))
-        out = over(out, ink, saturate(-(nk - 0.022) / aa))
-        out = over(out, skin, saturate(-nk / aa))
-        let hq = q - head
-        let skull = min(
-            ellipse(hq, vec2(0.16, 0.12)),
-            ellipse(hq - vec2(0.1, -0.035), vec2(0.09, 0.07)),
+/// The lip's ribbon: `LIP_ALONG` steps down the line ahead of the curl, `LIP_ACROSS` across it.
+pub const LIP_ALONG: u32 = 320
+pub const LIP_ACROSS: u32 = 10
+const LIP_REACH: f32 = 300.0
+
+pub fn lip_vertices() -> u32 {
+    LIP_ALONG * LIP_ACROSS * 6
+}
+
+/// How far the lip throws at `x`: most at the curl, little far ahead of it, and much over
+/// closeouts (`vec4(from x, to x, above z, 0)`), where it pitches early.
+fn throw_at(w: Wave, x: f32, count: f32, closeouts: [vec4]) -> f32 {
+    var t = 1.0 - smoothstep(0.0, 12.0, x - w.curl)
+    for i in 0..u32(count) {
+        let c = closeouts[i]
+        t = max(
+            t,
+            smoothstep(c.x - 6.0, c.x + 2.0, x) *
+                (1.0 - smoothstep(c.y - 2.0, c.y + 6.0, x)) *
+                0.85,
         )
-        let face = mix(vec3(0.66, 0.6, 0.45), vec3(0.75, 0.69, 0.52), saturate(hq.y * 5.0 + 0.5)) *
-            lit
-        out = over(out, ink, saturate(-(skull - 0.022) / aa))
-        out = over(out, face, saturate(-skull / aa))
-        let mouth = abs(hq.y + 0.045 + hq.x * 0.15) < 0.007 && hq.x > 0.02 && hq.x < 0.17
-        if mouth { out = ink }
-        let eq = hq - vec2(0.05, 0.03)
-        let eye = length(eq) - 0.034
-        out = over(out, vec3(0.06, 0.04, 0.03), saturate(-eye / aa))
-        out = over(out, vec3(1.0), saturate(-(length(eq - vec2(0.012, 0.012)) - 0.009) / aa))
-        let lid = 0.005 - aloft * 0.02
-        if eye < 0.0 && eq.y > lid { out = face * 0.92 }
-        if abs(eye) < 0.006 && eq.y > lid - 0.004 { out = ink }
     }
-    // The shell: a tall dome on a flat underside, a rim of plates, plates with growth rings.
-    let sq = q - vec2(0.0, 0.47)
-    let dome = max(ellipse(sq, vec2(0.6, 0.47)), -0.08 - sq.y)
-    out = over(out, ink, saturate(-(dome - 0.028) / aa))
-    if dome < 0.0 {
-        // Plates: the nearest of a few fixed centres, its seam dark, its rings lighter.
-        let centres = [
-            vec2(0.0, 0.33),
-            vec2(-0.3, 0.2),
-            vec2(0.3, 0.2),
-            vec2(-0.48, 0.02),
-            vec2(0.48, 0.02),
-            vec2(-0.17, -0.02),
-            vec2(0.17, -0.02),
-        ]
-        var first = 9.0
-        var second = 9.0
-        for c in centres {
-            let e = length((sq - c) * vec2(1.0, 1.25))
-            if e < first {
-                second = first
-                first = e
-            } else if e < second {
-                second = e
-            }
-        }
-        let seam = second - first
-        var plate = mix(vec3(0.6, 0.37, 0.14), vec3(0.88, 0.62, 0.27), saturate(sq.y * 1.6 + 0.6))
-        plate = mix(plate, vec3(0.96, 0.8, 0.42), exp(-first * 9.0) * 0.8)
-        let ring = abs(fract(first * 14.0) - 0.5)
-        plate *= 0.9 + 0.12 * smoothstep(0.35, 0.5, ring)
-        plate *= lit
-        plate = mix(vec3(0.24, 0.13, 0.05), plate, smoothstep(0.012, 0.03, seam))
-        // The rim along its foot.
-        if sq.y < -0.01 {
-            let rim = fract((sq.x + 0.6) * 5.0)
-            plate = mix(
-                plate * 0.8,
-                vec3(0.24, 0.13, 0.05),
-                1.0 - smoothstep(0.0, 0.08, min(rim, 1.0 - rim)),
-            )
-        }
-        // A wet sheen on top, towards the sun.
-        plate += vec3(1.0, 0.9, 0.7) * exp(-length(sq - vec2(0.18, 0.32)) * 10.0) * 0.35
-        out = over(out, plate, saturate(-dome / aa))
+    t
+}
+
+/// The lip's point `(u, v)`: from its crest it throws forward over the face and down, as far as
+/// `throw_at` says.
+fn lip_point(w: Wave, u: f32, v: f32, t: f32, count: f32, closeouts: [vec4]) -> vec3 {
+    let x = w.curl + LIP_REACH * pow(u, 1.6)
+    let l = lip(w, x)
+    let crest = vec3(x, height(w, vec2(x, l)), l)
+    let throw = throw_at(w, x, count, closeouts)
+    let radius = HEIGHT * set(w, x) * (0.08 + 0.3 * throw)
+    let angle = v * 3.1415927 * (0.15 + 0.8 * throw)
+    let wobble = 0.15 * sin(x * 0.7 - t * 3.0) * throw
+    crest + vec3(0.0, radius * (cos(angle) - 1.0), -radius * sin(angle) + wobble)
+}
+
+pub struct LipVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub across: f32,
+}
+
+@vertex
+pub fn lip_vertex(v: VertexIndex, s: Scene, closeouts: [vec4]) -> LipVertex {
+    let cell = v.index / 6
+    let c = v.index % 6
+    let du = [0.0, 1.0, 0.0, 0.0, 1.0, 1.0]
+    let dv = [0.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+    let u = (f32(cell % LIP_ALONG) + du[c]) / f32(LIP_ALONG)
+    let a = (f32(cell / LIP_ALONG) + dv[c]) / f32(LIP_ACROSS)
+    let p = lip_point(s.wave, u, a, s.time, s.closeouts, closeouts)
+    LipVertex { clip: ClipPosition { position: s.view_proj * vec4(p, 1.0) }, world: p, across: a }
+}
+
+@fragment
+pub fn lip_shade(f: LipVertex, s: Scene) -> vec4 {
+    let p = f.world
+    let to_eye = normalize(s.eye - p)
+    // Water, its surface facing the eye: the sky in it at a glance, deep teal looked into, lit
+    // green through by the sun where the eye looks toward it (thinnest at its edge), whitening
+    // to its edge.
+    var n = normalize(cross(dpdx(p), dpdy(p)))
+    if dot(n, to_eye) < 0.0 { n = -n }
+    let fres = 0.02 + 0.98 * pow(1.0 - saturate(dot(n, to_eye)), 5.0)
+    let level = saturate(1.0 - max(to_eye.y, 0.0) * 1.8)
+    let through = saturate(dot(-to_eye, normalize(SUN)) + 0.3) * level
+    var col = mix(
+        vec3(0.02, 0.2, 0.26),
+        vec3(0.2, 0.9, 0.6) * SUN_LIGHT,
+        through * (0.3 + 0.7 * f.across),
+    )
+    col = mix(col, sky(-to_eye + n * (2.0 * dot(to_eye, n)), s.clock), fres)
+    col += SUN_LIGHT * pow(max(dot(n, normalize(normalize(SUN) + to_eye)), 0.0), 120.0) * 1.5
+    let edge = smoothstep(0.55, 1.0, f.across) * lace(p.xz * vec2(1.0, 2.0), s.time * 2.0)
+    col = mix(
+        col,
+        vec3(1.0, 0.98, 0.92),
+        saturate(edge * 1.4 + smoothstep(0.85, 1.0, f.across) * 0.5),
+    )
+    vec4(fog(col, p, s), 0.0)
+}
+
+/// The whitewater: a tube of churning foam down the line behind the curl, `FOAM_ALONG` rings of
+/// `FOAM_AROUND` points.
+pub const FOAM_ALONG: u32 = 96
+pub const FOAM_AROUND: u32 = 24
+const FOAM_REACH: f32 = 80.0
+
+pub fn foam_vertices() -> u32 {
+    FOAM_ALONG * FOAM_AROUND * 6
+}
+
+pub struct FoamVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+}
+
+@vertex
+pub fn foam_vertex(v: VertexIndex, s: Scene) -> FoamVertex {
+    let cell = v.index / 6
+    let c = v.index % 6
+    let du = [0.0, 1.0, 0.0, 0.0, 1.0, 1.0]
+    let dv = [0.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+    let u = (f32(cell % FOAM_ALONG) + du[c]) / f32(FOAM_ALONG)
+    let a = (f32(cell / FOAM_ALONG) + dv[c]) / f32(FOAM_AROUND) * 6.2831853
+    let w = s.wave
+    let back = u * FOAM_REACH
+    let x = w.curl + 1.5 - back
+    let l = lip(w, x)
+    let top = HEIGHT * set(w, x)
+    // Full at the curl, the churn sinking behind it.
+    let size = top *
+        0.42 *
+        smoothstep(-0.5, 6.0, back) *
+        (1.0 - 0.55 * smoothstep(10.0, FOAM_REACH, back))
+    let centre = vec3(x, top * 0.42 * (1.0 - 0.6 * smoothstep(0.0, FOAM_REACH, back)), l * 0.62)
+    let ring = vec3(0.0, sin(a), cos(a))
+    let churn = 1.0 + 0.28 * (noise3(vec3(x * 0.35, a * 1.3, s.time * 1.6)) - 0.5) * 2.0
+    let p = centre + ring * size * churn
+    FoamVertex {
+        clip: ClipPosition { position: s.view_proj * vec4(p, 1.0) },
+        world: p,
+        normal: ring,
     }
-    out
+}
+
+@fragment
+pub fn foam_shade(f: FoamVertex, s: Scene) -> vec4 {
+    let p = f.world
+    let n = normalize(f.normal)
+    let l = saturate(dot(n, normalize(SUN)) * 0.5 + 0.55)
+    let grain = noise3(vec3(p.x * 1.4, p.y * 1.4 + s.time * 2.0, p.z * 1.4))
+    var col = mix(vec3(0.55, 0.66, 0.74), vec3(1.0, 0.98, 0.93), l) * (0.88 + 0.2 * grain)
+    col = mix(col, vec3(0.6, 0.85, 0.85), 0.15 * (1.0 - l))
+    vec4(fog(col, p, s), 0.0)
+}
+
+// ---- the solid things: rocks, logs and the tortoise ----------------------------------------------
+
+/// A part: an ellipsoid at `centre`, its axes (unit, scale in w), its material and a seed.
+pub struct Part: Copy + GpuData {
+    pub centre: vec3,
+    pub material: f32,
+    pub ax: vec4,
+    pub ay: vec4,
+    pub az: vec4,
+    pub seed: vec4,
+}
+
+pub const SKIN: f32 = 0.0
+pub const SHELL: f32 = 1.0
+pub const RIM: f32 = 2.0
+pub const BOARD: f32 = 3.0
+pub const EYE: f32 = 4.0
+pub const ROCK_STONE: f32 = 5.0
+pub const BARK: f32 = 6.0
+
+/// A part's sphere: `STACKS` bands of `SLICES`.
+pub const STACKS: u32 = 14
+pub const SLICES: u32 = 20
+
+pub fn part_vertices() -> u32 {
+    STACKS * SLICES * 6
+}
+
+pub struct PartVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+    pub local: vec3,
+    pub material: std::gpu::Flat<f32>,
+    pub seed: std::gpu::Flat<f32>,
+}
+
+// The unit sphere's point for vertex `index`, as it's shaped by the part's material.
+fn sphere_point(index: u32, material: f32, seed: f32) -> vec3 {
+    let cell = index / 6
+    let c = index % 6
+    let du = [0.0, 1.0, 0.0, 0.0, 1.0, 1.0]
+    let dv = [0.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+    let theta = (f32(cell / SLICES) + dv[c]) / f32(STACKS) * 3.1415927
+    let phi = (f32(cell % SLICES) + du[c]) / f32(SLICES) * 6.2831853
+    var p = vec3(sin(theta) * cos(phi), cos(theta), sin(theta) * sin(phi))
+    if material == SHELL { p.y = max(p.y, -0.3) }
+    if material == ROCK_STONE {
+        let n = noise3(p * 1.6 + vec3(seed * 13.0)) * 0.6 + noise3(p * 4.1 + vec3(seed)) * 0.4
+        p *= 0.72 + 0.5 * n
+        // Broader low, broken at the top, like a reef head.
+        p.xz *= 1.0 + 0.25 * saturate(-p.y)
+        p.y = min(p.y, 0.7 + 0.25 * noise3(p * 3.0 + vec3(seed * 5.0)) + 0.2 * (1.0 - length(p.xz)))
+    }
+    p
+}
+
+fn place(part: Part, p: vec3) -> vec3 {
+    part.centre +
+        part.ax.xyz * p.x * part.ax.w +
+        part.ay.xyz * p.y * part.ay.w +
+        part.az.xyz * p.z * part.az.w
+}
+
+fn turn_normal(part: Part, p: vec3) -> vec3 {
+    normalize(
+        part.ax.xyz * p.x / part.ax.w +
+            part.ay.xyz * p.y / part.ay.w +
+            part.az.xyz * p.z / part.az.w,
+    )
+}
+
+@vertex
+pub fn part_vertex(
+    v: VertexIndex,
+    i: std::gpu::InstanceIndex,
+    s: Scene,
+    parts: [Part],
+) -> PartVertex {
+    let part = parts[i.index]
+    let p = sphere_point(v.index, part.material, part.seed.x)
+    let world = place(part, p)
+    PartVertex {
+        clip: ClipPosition { position: s.view_proj * vec4(world, 1.0) },
+        world,
+        normal: turn_normal(part, p),
+        local: p,
+        material: std::gpu::Flat { value: part.material },
+        seed: std::gpu::Flat { value: part.seed.x },
+    }
+}
+
+/// The ink outline: each part again, a little bigger, its inside showing (front faces culled).
+@vertex
+pub fn ink_vertex(
+    v: VertexIndex,
+    i: std::gpu::InstanceIndex,
+    s: Scene,
+    parts: [Part],
+) -> ClipPosition {
+    let part = parts[i.index]
+    let p = sphere_point(v.index, part.material, part.seed.x)
+    let world = place(part, p) + turn_normal(part, p) * 0.035
+    ClipPosition { position: s.view_proj * vec4(world, 1.0) }
+}
+
+@fragment
+pub fn ink() -> vec4 {
+    vec4(0.07, 0.045, 0.04, 0.0)
+}
+
+// The shell's plates: the nearest of fixed centres on the dome, its seam dark, rings lighter.
+fn plates(q: vec3) -> vec3 {
+    let centres = [
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.6, 0.8, 0.0),
+        vec3(-0.6, 0.8, 0.0),
+        vec3(0.0, 0.75, 0.66),
+        vec3(0.0, 0.75, -0.66),
+        vec3(0.75, 0.3, 0.6),
+        vec3(-0.75, 0.3, 0.6),
+        vec3(0.75, 0.3, -0.6),
+        vec3(-0.75, 0.3, -0.6),
+    ]
+    var first = 9.0
+    var second = 9.0
+    for c in centres {
+        let e = length(q - normalize(c))
+        if e < first {
+            second = first
+            first = e
+        } else if e < second {
+            second = e
+        }
+    }
+    var plate = mix(vec3(0.62, 0.38, 0.14), vec3(0.9, 0.64, 0.28), saturate(q.y))
+    plate = mix(plate, vec3(0.97, 0.8, 0.42), exp(-first * 7.0) * 0.8)
+    plate *= 0.9 + 0.12 * smoothstep(0.35, 0.5, abs(fract(first * 11.0) - 0.5))
+    mix(vec3(0.24, 0.13, 0.05), plate, smoothstep(0.02, 0.05, second - first))
+}
+
+@fragment
+pub fn part_shade(f: PartVertex, s: Scene) -> vec4 {
+    let n = normalize(f.normal)
+    let m = f.material.value
+    let q = f.local
+    var base = vec3(0.6, 0.55, 0.42)
+    if m == SHELL { base = plates(q) }
+    if m == RIM { base = vec3(0.32, 0.19, 0.08) }
+    if m == BOARD {
+        base = if abs(q.z) < 0.12 { vec3(0.9, 0.22, 0.16) } else { vec3(0.98, 0.95, 0.86) }
+    }
+    if m == EYE { base = vec3(0.05, 0.035, 0.03) }
+    if m == ROCK_STONE {
+        let g = noise3(f.world * 1.8 + vec3(f.seed.value * 7.0))
+        let fine = noise3(f.world * 7.0)
+        base = mix(vec3(0.16, 0.14, 0.13), vec3(0.42, 0.37, 0.32), g) * (0.8 + 0.4 * fine)
+        let above = f.world.y - height(s.wave, f.world.xz)
+        let wet = 1.0 - smoothstep(0.0, 0.9, above)
+        base = mix(base, vec3(0.08, 0.16, 0.09), wet * 0.6)
+        if fine > 0.78 && above > 0.2 && above < 1.2 { base = mix(base, vec3(0.8, 0.78, 0.7), 0.5) }
+    }
+    if m == BARK {
+        let ring = 0.5 + 0.5 * sin(q.x * 40.0 + noise3(q * 6.0) * 3.0)
+        base = mix(vec3(0.3, 0.2, 0.12), vec3(0.5, 0.36, 0.22), ring)
+    }
+    // Light in three steps, with the sky's fill and a rim of sun.
+    let sun = normalize(SUN)
+    let lambert = dot(n, sun)
+    let step3 = if lambert > 0.45 { 1.0 } else if lambert > 0.0 { 0.72 } else { 0.5 }
+    let to_eye = normalize(s.eye - f.world)
+    let rim = pow(1.0 - saturate(dot(n, to_eye)), 3.0) * saturate(dot(-to_eye, sun) + 0.3)
+    var col = base * (SUN_LIGHT * step3 * 0.85 + vec3(0.25, 0.3, 0.38))
+    col += SUN_LIGHT * rim * 0.6
+    if m == EYE { col += vec3(1.0) * step(0.85, dot(n, normalize(to_eye + sun))) }
+    vec4(fog(col, f.world, s), 0.0)
 }
 
 // ---- spray ---------------------------------------------------------------------------------------
 
-// Drops: `vec4(x, y, size, age 0 to 1)` and `vec4(vx, vy, kind, 0)`; kind 0 a drop, 1 mist.
-fn drops_over(col: vec3, p: vec2, view: View, drops: [vec4], aa: f32) -> vec3 {
-    var out = col
-    for i in 0..u32(view.drops) {
-        let a = drops[i * 2]
-        let q = p - a.xy
-        if abs(q.x) > 0.9 || abs(q.y) > 0.9 { continue }
-        let b = drops[i * 2 + 1]
-        let fade = 1.0 - a.w
-        if b.z < 0.5 {
-            // A drop, drawn along its velocity.
-            let v = b.xy * 0.012
-            let d = capsule(q, vec2(0.0), -v, a.z * (0.5 + 0.5 * fade))
-            out = over(out, vec3(0.88, 1.0, 1.0), saturate(-d / aa) * fade * 0.9)
-        } else {
-            let d = length(q) / max(a.z, 0.01)
-            out = mix(out, vec3(0.92, 0.98, 1.0), exp(-d * d * 2.0) * fade * 0.18)
+/// Spray: `vec4(centre, size)` and `vec4(velocity, age 0 to 1)` each, drawn as soft discs facing
+/// the eye.
+pub struct DropVertex: Copy {
+    pub clip: ClipPosition,
+    pub corner: vec2,
+    pub fade: std::gpu::Flat<f32>,
+}
+
+@vertex
+pub fn drop_vertex(v: VertexIndex, s: Scene, drops: [vec4]) -> DropVertex {
+    let i = v.index / 6
+    let c = v.index % 6
+    let cx = [-1.0, 1.0, -1.0, -1.0, 1.0, 1.0]
+    let cy = [-1.0, -1.0, 1.0, 1.0, -1.0, 1.0]
+    let a = drops[i * 2]
+    let b = drops[i * 2 + 1]
+    let corner = vec2(cx[c], cy[c])
+    let p = a.xyz + (s.right * corner.x + s.up * corner.y) * a.w * (0.6 + 0.4 * (1.0 - b.w))
+    let near = smoothstep(2.0, 6.0, length(a.xyz - s.eye))
+    DropVertex {
+        clip: ClipPosition { position: s.view_proj * vec4(p, 1.0) },
+        corner,
+        fade: std::gpu::Flat { value: (1.0 - b.w) * near },
+    }
+}
+
+@fragment
+pub fn drop_shade(f: DropVertex) -> Over {
+    let d = length(f.corner)
+    let a = (1.0 - smoothstep(0.3, 1.0, d)) * f.fade.value * 0.7
+    Over { color: vec4(0.95, 0.98, 1.0, a) }
+}
+
+// ---- to the screen -------------------------------------------------------------------------------
+
+/// The scene to the screen: a gentle curve on the light, a vignette, grain, the title's dimming,
+/// and the type over all.
+@fragment
+pub fn develop(
+    pixel: FragCoord,
+    scene: Texture<Rgba16Float>,
+    dim: f32,
+    fade: f32,
+    clock: f32,
+    runs_count: f32,
+    runs: [vec4],
+    segments: [vec4],
+) -> vec4 {
+    let px = pixel.position.xy
+    var col = scene.load(x: u32(px.x), y: u32(px.y)).rgb
+    col = col / (1.0 + col * 0.25)
+    col = mix(col, col * vec3(0.35, 0.42, 0.55), dim)
+    let size = vec2(f32(scene.width()), f32(scene.height()))
+    let uv = px / size
+    let v = uv * (vec2(1.0) - uv)
+    col *= pow(saturate(v.x * v.y * 16.0), 0.18)
+    col = type_over(col, px, runs_count, runs, segments)
+    col += vec3((hash2(i32(px.x), i32(px.y) + i32(clock * 61.0) * 7919) - 0.5) / 255.0)
+    vec4(col * fade, 1.0)
+}
+
+@test
+fn the_grid_follows_the_face_closely_near_the_rider() {
+    // The surface the GPU's triangles make, against the height function, at the middles of the
+    // cells' two triangles from the flat before the wave over the crest, from the eye to 20
+    // ahead (where the board is), the curl near (the face slumping) and far. Sampled: within
+    // 1 cm on the face the board rides, within 2 cm on the rounded crest beyond the lip (flown
+    // over, never ridden).
+    var face_worst = 0.0
+    var crest_worst = 0.0
+    for curl in [-30.0, 10.0] {
+        let w = Wave { curl, seed: 7.0 }
+        let start = 40.0
+        for i in 0..ALONG {
+            let x0 = grid_x(start, f32(i) / f32(ALONG))
+            if x0 < start - 2.0 || x0 > start + 20.0 { continue }
+            for j in 0..ACROSS {
+                let z0 = grid_z(f32(j) / f32(ACROSS))
+                if z0 < -6.0 || z0 > 12.0 { continue }
+                let a = grid_point(w, start, i, j)
+                let b = grid_point(w, start, i + 1, j)
+                let c = grid_point(w, start, i, j + 1)
+                let d = grid_point(w, start, i + 1, j + 1)
+                // The two triangles (a, b, c) and (c, b, d), at their centres.
+                for t in [(a + b + c) / 3.0, (c + b + d) / 3.0] {
+                    let e = abs(t.y - height(w, t.xz))
+                    if t.z <= lip(w, t.x) { face_worst = max(face_worst, e) } else {
+                        crest_worst = max(crest_worst, e)
+                    }
+                }
+            }
         }
     }
-    out
+    std::io::print(
+        f"the grid's surface off the face by {face_worst}, off the crest by {crest_worst}",
+    )
+    assert(face_worst < 0.01 && crest_worst < 0.02, f"{face_worst}, {crest_worst}")
 }

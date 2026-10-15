@@ -1,0 +1,101 @@
+// The wave: one giant breaking wave that never ends, in its own frame, where it stands still and
+// the sea runs through it. x runs down the line (the way the rider goes), z up the face (0 at
+// the trough, the lip at `lip(x)`), y up. Its face is the one height function the sim rides and
+// the GPU draws (`height`); the lip that curls over and the whitewater behind the curl are drawn
+// from the same state but never carry the rider (look.wrela).
+//
+// Down the line the face's height rises and falls in long sets. Behind the curl, which chases the
+// rider down the line, the face has broken and slumped into whitewater. Closeout sections are
+// stretches ahead where the lip pitches early over the upper face: the lower face stays open.
+use engine::noise::noise2
+use std::field::smin
+
+/// The wave's shape, as the sim and the GPU both read it: where the curl is, and the course's
+/// seed (the face's height down the line comes from it).
+pub struct Wave: Copy + GpuData {
+    pub curl: f32,
+    pub seed: f32,
+}
+
+/// The face's height at its tallest and its lip's distance up the face, on average.
+pub const HEIGHT: f32 = 9.0
+pub const LIP: f32 = 10.0
+// How the face steepens to the lip: its height goes as (z / lip)^STEEP.
+const STEEP: f32 = 2.2
+// How far behind the lip the wave's back falls away to flat sea, and how round its crest is (as
+// a smooth minimum's reach, in height).
+const BACK: f32 = 22.0
+const ROUND: f32 = 1.8
+// Behind the curl, how far the face takes to slump, and to how much of its height.
+const SLUMP: f32 = 28.0
+const SLUMPED: f32 = 0.42
+
+/// How tall the face stands at `x`, as a share of `HEIGHT`: long sets, 0.82 to 1.1.
+pub fn set(w: Wave, x: f32) -> f32 {
+    0.96 + 0.14 * (noise2(vec2(x / 90.0, w.seed)) * 2.0 - 1.0)
+}
+
+/// The lip's distance up the face at `x`.
+pub fn lip(w: Wave, x: f32) -> f32 {
+    LIP * set(w, x)
+}
+
+/// How much of the face still stands at `x`: 1 ahead of the curl, slumping to `SLUMPED` behind
+/// it.
+pub fn standing(w: Wave, x: f32) -> f32 {
+    let behind = max(w.curl - x, 0.0) / SLUMP
+    mix(1.0, SLUMPED, smoothstep(0.0, 1.0, behind))
+}
+
+/// The sea's height at `(x, z)`: the face up to the lip, the back beyond it, the flat sea before
+/// it, and a little chop over all.
+pub fn height(w: Wave, p: vec2) -> f32 {
+    let x = p.x
+    let z = p.y
+    let s = set(w, x)
+    let top = HEIGHT * s * standing(w, x)
+    let l = LIP * s
+    // The face rising (on past the lip), and the back falling away from it: the lower of the
+    // two, its crest rounded.
+    let rising = top * pow(max(z, 0.0) / l, STEEP)
+    let u = clamp((z - l) / BACK, 0.0, 1.0)
+    let k = 1.0 - u * u
+    let falling = top * k * k
+    max(smin(rising, falling, ROUND * top / HEIGHT), 0.0) + chop(p)
+}
+
+// Small waves over the whole sea, so no part of it is glassy.
+fn chop(p: vec2) -> f32 {
+    0.06 * sin(p.x * 0.9 + p.y * 0.4) + 0.04 * sin(p.x * 0.37 - p.y * 1.3 + 1.7)
+}
+
+/// The face at `(x, z)`: its height and its slope along x and up the face.
+pub struct Face: Copy {
+    pub height: f32,
+    pub slope: vec2,
+}
+
+pub fn face(w: Wave, p: vec2) -> Face {
+    let (h, g) = std::derive::value_and_gradient(|q: vec2| height(w, q), p)
+    Face { height: h, slope: g }
+}
+
+@test
+fn the_face_rises_to_the_lip_and_slumps_behind_the_curl() {
+    let w = Wave { curl: 0.0, seed: 3.0 }
+    let x = 200.0
+    let l = lip(w, x)
+    let low = face(w, vec2(x, l * 0.3))
+    let high = face(w, vec2(x, l * 0.9))
+    assert(high.height > low.height + 3.0, "the face rises")
+    assert(high.slope.y > low.slope.y * 2.0, "and steepens towards the lip")
+    assert(abs(face(w, vec2(x, -30.0)).height) < 0.2, "the sea before it is flat")
+    // Behind the curl the face stands lower.
+    let broken = Wave { curl: x + 60.0, seed: 3.0 }
+    assert(height(broken, vec2(x, l)) < height(w, vec2(x, l)) * 0.5)
+    // The sets keep the face between 0.82 and 1.1 of its height.
+    for k in 0..200 {
+        let s = set(w, f32(k) * 13.7)
+        assert(s > 0.81 && s < 1.11)
+    }
+}

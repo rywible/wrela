@@ -1,20 +1,20 @@
 // The game's sound, synthesized as it plays: the open sea under everything (noise, filtered low,
-// breathing with the swells), the rush of the board on the water as loud as it's fast, and a
-// sound for each moment the frames send: a swell rising, a launch, a splash as hard as the
-// landing, a chime for a clean one, a wipeout's bonk and the shell clattering, and the start's
-// and the finish's notes, struck like a marimba.
+// breathing), the rush of the board on the water as loud as it's fast, the wave's roar as loud as
+// the curl is close, and a sound for each moment the frames send: a launch, a splash, a chime for
+// a clean landing, a bail's bonk, a wipeout's crash and the shell clattering, and the start's
+// notes, struck like a marimba.
 use std::audio::{QUANTUM, RingReader, RingWriter, SAMPLE_RATE, play, ring}
 
-// What the frames send, in a cue's low byte; LAND and RUSH carry a level in the next (0 to 255).
-pub const RAISE: u32 = 1
+// What the frames send, in a cue's low byte; LAND, RUSH and ROAR carry a level in the next (0 to
+// 255).
 pub const LAUNCH: u32 = 2
 pub const LAND: u32 = 3
 pub const CLEAN: u32 = 4
 pub const WIPEOUT: u32 = 5
-pub const REFUSED: u32 = 6
+pub const BAIL: u32 = 6
 pub const START: u32 = 7
-pub const FINISH: u32 = 8
 pub const RUSH: u32 = 9
+pub const ROAR: u32 = 10
 
 const TONES: u32 = 16
 const SINE: u32 = 0
@@ -63,6 +63,10 @@ pub struct Voice {
     rush: f32,
     rush_target: f32,
     hiss: f32,
+    // The roar's level and target, and its two low noises.
+    roar: f32,
+    roar_target: f32,
+    rumble: vec2,
 }
 
 // Starts the game's voice: the writer is how the frames send it cues.
@@ -78,6 +82,9 @@ pub fn start() -> RingWriter<u32> {
         rush: 0.0,
         rush_target: 0.0,
         hiss: 0.0,
+        roar: 0.0,
+        roar_target: 0.0,
+        rumble: vec2(0.0),
     }
     play(take voice, render)
     writer
@@ -132,10 +139,7 @@ fn cue(v: mut Voice, c: u32) {
     let kind = c & 255
     let level = f32((c >> 8) & 255) / 255.0
     if kind == RUSH { v.rush_target = level }
-    if kind == RAISE {
-        tone(mut v, from: 180.0, to: 900.0, length: 0.7, wave: NOISE, gain: 0.35, decay: 1.2)
-        tone(mut v, from: 55.0, to: 82.0, length: 0.6, wave: SINE, gain: 0.25, decay: 1.5)
-    }
+    if kind == ROAR { v.roar_target = level }
     if kind == LAUNCH {
         tone(mut v, from: 600.0, to: 4000.0, length: 0.35, wave: NOISE, gain: 0.3, decay: 1.5)
         tone(mut v, from: 260.0, to: 520.0, length: 0.12, wave: TRIANGLE, gain: 0.18, decay: 2.0)
@@ -189,17 +193,12 @@ fn cue(v: mut Voice, c: u32) {
             delay: 0.25,
         )
     }
-    if kind == REFUSED {
-        tone(mut v, from: 320.0, to: 260.0, length: 0.08, wave: TRIANGLE, gain: 0.1)
+    if kind == BAIL {
+        tone(mut v, from: 240.0, to: 110.0, length: 0.25, wave: TRIANGLE, gain: 0.3, decay: 1.5)
+        tone(mut v, from: 2500.0, to: 400.0, length: 0.5, wave: NOISE, gain: 0.3, decay: 2.0)
     }
     if kind == START {
         for k in 0..3 { strike(mut v, [69.0, 73.0, 76.0][k], 0.14, f32(k) * 0.09) }
-    }
-    if kind == FINISH {
-        for k in 0..6 {
-            strike(mut v, [69.0, 73.0, 76.0, 81.0, 76.0, 81.0][k], 0.16, f32(k) * 0.11)
-        }
-        strike(mut v, midi: 85.0, gain: 0.18, delay: 0.72)
     }
 }
 
@@ -226,6 +225,12 @@ fn render(v: mut Voice, left: mut [f32], right: mut [f32]) {
         let w = white(mut v)
         v.hiss += (w - v.hiss) * 0.25
         let rush = (w - v.hiss) * v.rush * 0.18
+        // The roar: deep noise each side, swelling as the curl closes.
+        v.roar += (v.roar_target - v.roar) * 0.0002
+        let ra = white(mut v)
+        let rb = white(mut v)
+        v.rumble = v.rumble * 0.995 + vec2(ra, rb) * 0.05
+        let roar = v.rumble * v.roar * 0.5
         var out = 0.0
         for k in 0..TONES {
             var t = v.tones[k]
@@ -254,8 +259,8 @@ fn render(v: mut Voice, left: mut [f32], right: mut [f32]) {
             v.tones[k] = t
         }
         // A soft limit, so stacked sounds never clip.
-        let l = out + sea.x + rush
-        let r = out + sea.y + rush
+        let l = out + sea.x + rush + roar.x
+        let r = out + sea.y + rush + roar.y
         left[i] = l / (1.0 + abs(l))
         right[i] = r / (1.0 + abs(r))
     }

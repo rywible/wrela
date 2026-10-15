@@ -1,87 +1,80 @@
-// The ride: a tortoise on a board, riding a sea it raises. Stepped 120 times a second on the
-// ticker's thread from the tick's input records alone, so a run is its records: it replays to
-// the same state in every host. Nothing here draws or sounds; the tally's counts tell the frames
-// what happened.
+// The ride: a tortoise on a longboard on an endless breaking wave, stepped 120 times a second on
+// the ticker's thread from the tick's input records alone, so a run is its records and replays
+// to the same state in every host. Nothing here draws or sounds; the tally's counts tell the
+// frames what happened.
 //
-// How the rider meets the water (the contact rule):
-// - On the water it follows the surface: its height is the sea's, and its rise is the sea's
-//   over the step, so water rising under it carries it up.
-// - It leaves the water when its path under gravity would be above the surface: off a crest at
-//   speed, or when the water carrying it up stops rising (a released swell throws it).
-// - Landing keeps the part of its velocity along the surface and loses the part into it; a
-//   landing nearly along the surface is clean, and pays a little speed.
-// - Gravity along the slope speeds it down a face and slows it up one; a face rising under it
-//   (as it moves) pushes it down that face, as a wave pushes a surfer. Flat water drags it back
-//   to paddling speed.
-// - A held swell rises just behind the rider and keeps pace with it, so the rider surfs its
-//   front face, up to `SURGE` faster than the rider was going when it raised it (a faster rider
-//   outruns it); a swell held at its highest for a while lets go by itself. Let go, and the
-//   swell surges forward, rising, until its crest has passed under the rider: passing fast, it
-//   throws the rider into the air. Then it settles and slows.
-// - One swell grows or snaps at a time, at a bounded rate up to a bounded height, travelling no
-//   faster than the top speed; the others only settle. When every slot is taken, a press
-//   raises nothing, and no standing swell is taken away.
-// - On the fixed course (the playtest's control) the sea has hills of its own, and the button
-//   dives instead: the rider is heavier on the water while it's held, gaining speed down a face
-//   and holding to it over a crest; let go on a rising face to fly.
-use course::{FINISH, ROCKS, RUNUP, START, rock_distance}
+// How the rider rides (the contact rule):
+// - On the face it carves by heading: up the face (toward the lip) or down it, at a bounded turn
+//   rate, the heading relaxing down the line when let be. Gravity along its heading slows it
+//   climbing and speeds it dropping, the face's steepness pushes it on (the wave's energy), and
+//   the water drags. It stays on the face (the one height function, wave.wrela).
+// - The face ends at the lip line, fixed in the wave's frame. A rider whose step carries it across
+//   the lip line (outward, relative to it) leaves the water there, once, rising as fast as the
+//   face was rising under it (bounded).
+// - In the air it falls, drifts back toward the face (the wave coming on under it), and can turn
+//   its board. Holding the trick button pulls the tortoise into its shell and spins it (the
+//   Shell Spin); letting go brings it out.
+// - It lands when it meets the face again: cleanly if it's out of its shell, its spin is near a
+//   whole turn and its board points down the line or the face, banking the trick's points times
+//   the combo; else it bails, tumbling a moment, slowed, the combo lost.
+// - The curl chases it down the line; the curl catching it, a closeout's lip pitching onto it, or
+//   a rock or log in its way ends the run. How long it rides and its banked tricks are its score.
+use course::{CLOSEOUT, LOG, ROCK, SEGMENT, corridor, difficulty, hazards, segment_of}
+use engine::noise::rand
 use engine::run::{Asks, TickInput}
 use engine::sim::{SimState, Tick}
-use sea::{SLOTS, Sea, Surface, level, surface, surface_at}
 use std::hash::StateHash
 use std::input::{Event, Key, PadAxis, PadButton}
+use std::math::TAU
 use std::serialize::Serialize
+use wave::{Wave, face, height, lip}
 
 pub const HZ: u32 = 120
 pub const STEP: f32 = 1.0 / 120.0
 
-// Gravity, on the water and in the air, and on the water while diving (the fixed course).
+// Gravity, on the face and in the air; how the face's steepness pushes the rider on; the water's
+// drag, linear and quadratic; the top speed.
 const G: f32 = 30.0
-const DIVE: f32 = 4.0
-// How hard a rising face pushes the rider down it, per unit of its rise.
-const PUSH: f32 = 2.5
-// Paddling: the speed the rider paddles back up to on flat water, and how hard.
-pub const CRUISE: f32 = 6.0
-const PADDLE: f32 = 6.0
-// The water's drag, linear and quadratic in speed; tucked (right) less, braking (left) more.
-const DRAG: f32 = 0.03
+const G_AIR: f32 = 26.0
+const PUSH: f32 = 4.2
+const DRAG: f32 = 0.1
 const QUAD: f32 = 0.004
-const TUCK: f32 = 0.55
-const BRAKE: f32 = 2.6
-const TOP_SPEED: f32 = 30.0
-// A swell: how fast a held one rises and how high it gets, and how long it's held there before
-// it lets go by itself; its half width; how far behind the rider it rises, where behind the
-// rider it keeps (and how firmly), and how much faster than the rider's speed when raised it can
-// travel. Let go, it surges `THROW` faster than the rider and rises at `SNAP_RISE`, until its
-// crest is past the rider or for `SNAP` seconds, then settles (a share of its height a second,
-// and at least this rate), slowing by a share of its speed a second.
-pub const RISE: f32 = 3.6
-pub const HIGHEST: f32 = 2.2
-const HOLD: f32 = 0.6
-pub const HALF_WIDTH: f32 = 3.2
-const BEHIND: f32 = 2.2
-const KEEP: f32 = 1.7
-const FIRM: f32 = 4.0
-const SURGE: f32 = 5.0
-const THROW: f32 = 12.0
-const SNAP_RISE: f32 = 4.0
-const SNAP: f32 = 0.6
-const SETTLE: f32 = 1.4
-const SETTLE_LEAST: f32 = 0.6
-const SLOWING: f32 = 2.5
-// The rider leaves the water only when its path clears it by this much: no flicker on ripples.
-const CLEAR: f32 = 0.002
-// A clean landing: into the water slower than this, after this long aloft, pays this speed.
-const CLEAN: f32 = 3.0
-const CLEAN_AIR: f32 = 0.35
-const CLEAN_BOOST: f32 = 1.5
-// The rider's body against rocks: a circle this far above its feet, this big.
-pub const BODY_UP: f32 = 0.45
-pub const BODY_RADIUS: f32 = 0.4
-// A wipeout lasts this long before the rider starts again.
-const WIPE: f32 = 1.6
+pub const TOP_SPEED: f32 = 30.0
+// Carving: the steepest heading up or down the face (radians from down the line), how fast it
+// turns, and how fast it relaxes down the line when let be.
+pub const STEEPEST: f32 = 1.0
+pub const TURN: f32 = 2.6
+const RELAX: f32 = 1.6
+// Leaving the lip: the rise at most, and a pop on top of it.
+const RISE_MOST: f32 = 15.0
+const POP: f32 = 2.0
+// In the air: the drift back toward the face, the board's turn, the Shell Spin's rate.
+const PULL: f32 = 9.0
+const AIR_TURN: f32 = 2.4
+pub const SPIN: f32 = 12.0
+// A clean landing: within this of a whole turn, out of the shell, the board pointing no more
+// than this up the face.
+const SQUARE: f32 = 0.6
+const UP_MOST: f32 = 0.45
+// A bail: how long it tumbles, and the speed it keeps.
+const TUMBLE: f32 = 0.9
+const KEPT: f32 = 0.35
+// The curl: its speed, rising with the course's difficulty, and how close it may come.
+const CURL_SPEED: f32 = 10.0
+const CURL_RAMP: f32 = 5.0
+const CATCH: f32 = 2.0
+// The rider's body against hazards: its radius, and its height above the board.
+pub const BODY: f32 = 0.45
+const TALL: f32 = 1.0
+// Where a run starts, and how far behind the curl starts.
+pub const START: f32 = 20.0
+const CURL_START: f32 = 32.0
+// Points: per second aloft, per whole turn spun; the most the combo multiplies by.
+const AIR_POINTS: f32 = 100.0
+const TURN_POINTS: u32 = 500
+const COMBO_MOST: u32 = 5
 
-// ---- the controls --------------------------------------------------------------------------------
+// ---- the controls ------------------------------------------------------------------------------
 
 /// What the player holds, as the tick's records left it: keys and pad buttons as bits, and the
 /// pad's stick.
@@ -91,40 +84,34 @@ pub struct Controls: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub stick: f32 = 0.0,
 }
 
-pub const SWELL: u32 = 1
-pub const RIGHT: u32 = 2
-pub const LEFT: u32 = 4
+pub const UP: u32 = 1
+pub const DOWN: u32 = 2
+pub const TRICK: u32 = 4
 pub const START_RUN: u32 = 8
 pub const RESTART: u32 = 16
-pub const VARIANT: u32 = 32
 
 fn key_bit(k: Key) -> u32 {
     match k {
-        Key::Space => SWELL,
-        Key::Up => SWELL,
-        Key::W => SWELL,
-        Key::Z => SWELL,
-        Key::Right => RIGHT,
-        Key::D => RIGHT,
-        Key::Left => LEFT,
-        Key::A => LEFT,
+        Key::Up => UP,
+        Key::W => UP,
+        Key::Down => DOWN,
+        Key::S => DOWN,
+        Key::Space => TRICK,
+        Key::Z => TRICK,
         Key::Enter => START_RUN,
         Key::R => RESTART,
-        Key::Tab => VARIANT,
-        Key::V => VARIANT,
         _ => 0,
     }
 }
 
 fn pad_bit(b: PadButton) -> u32 {
     match b {
-        PadButton::South => SWELL,
-        PadButton::East => SWELL,
-        PadButton::Right => RIGHT,
-        PadButton::Left => LEFT,
+        PadButton::Up => UP,
+        PadButton::Down => DOWN,
+        PadButton::South => TRICK,
+        PadButton::East => TRICK,
         PadButton::Start => START_RUN,
         PadButton::Select => RESTART,
-        PadButton::North => VARIANT,
         _ => 0,
     }
 }
@@ -144,17 +131,18 @@ impl Controls {
                 }
             },
             Event::PadAxis { pad, axis, value } => {
-                if pad == 0 && axis == PadAxis::LeftX { self.stick = value }
+                // The pad's y is down positive.
+                if pad == 0 && axis == PadAxis::LeftY { self.stick = -value }
             },
             _ => {},
         }
     }
 
-    /// The bits held, the stick's lean among them past its dead zone.
+    /// The bits held, the stick's tilt among them past its dead zone.
     pub fn held(self) -> u32 {
         var bits = self.keys | self.pad
-        if self.stick > 0.4 { bits = bits | RIGHT }
-        if self.stick < -0.4 { bits = bits | LEFT }
+        if self.stick > 0.4 { bits = bits | UP }
+        if self.stick < -0.4 { bits = bits | DOWN }
         bits
     }
 }
@@ -162,63 +150,61 @@ impl Controls {
 // ---- the world -----------------------------------------------------------------------------------
 
 pub enum Phase: Copy + Eq + Plain + StateHash + Serialize + SimState + Fieldless {
-    // Bobbing at the start, waiting for a press.
+    // The tortoise riding by itself, waiting for a press.
     Title,
     Riding,
-    // Hit a rock: tumbling, then back before it.
-    Wiped,
-    // Past the finish buoy.
-    Finished,
+    // The run is over: caught or wiped out.
+    Over,
 }
 
 pub struct Rider: Copy + Eq + Plain + StateHash + Serialize + SimState {
-    // Where its feet are, and its velocity.
-    pub at: vec2 = vec2(0.0),
-    pub vel: vec2 = vec2(0.0),
+    // Where its board is (x down the line, y up, z up the face), and its velocity.
+    pub at: vec3 = vec3(0.0),
+    pub vel: vec3 = vec3(0.0),
+    // Its heading (radians up the face from down the line) and its speed along it, on the face.
+    pub heading: f32 = 0.0,
+    pub speed: f32 = 0.0,
     pub grounded: bool = true,
-    // Seconds aloft, and since it last landed.
+    // Seconds aloft; the spin so far (radians); in its shell, and seconds since it came out.
     pub aloft: f32 = 0.0,
+    pub spin: f32 = 0.0,
+    pub shell: bool = false,
+    pub out: f32 = 1.0,
+    // Seconds of tumbling left after a bail, and since it last landed.
+    pub tumble: f32 = 0.0,
     pub landed: f32 = 1.0,
-    // The slope of the water under it when it last stood on it.
-    pub slope: f32 = 0.0,
 }
 
-/// What has happened in the world, counted: the frames compare counts to find the moments to
-/// show and sound. `impact` is the last landing's speed into the water.
+/// What has happened, counted: the frames compare counts to find the moments to show and sound.
 pub struct Tally: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub runs: u32 = 0,
-    pub raised: u32 = 0,
-    pub refused: u32 = 0,
+    pub launches: u32 = 0,
     pub landings: u32 = 0,
     pub clean: u32 = 0,
+    pub turns: u32 = 0,
+    pub bails: u32 = 0,
     pub wipeouts: u32 = 0,
-    pub finishes: u32 = 0,
-    pub impact: f32 = 0.0,
+    pub caught: u32 = 0,
 }
 
 pub struct World: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub phase: Phase = Phase::Title,
-    // The fixed course: hills stand in the sea, and the button dives.
-    pub fixed: bool = false,
     pub controls: Controls = Controls {},
     pub rider: Rider = Rider {},
-    // Each slot's swell, `vec4(centre, half width, height, rate)`, and its speed (sea.wrela);
-    // empty at height 0. The one growing, or `SLOTS` for none, and each one's snap left.
-    pub swells: [vec4; SLOTS] = [vec4(0.0); SLOTS],
-    pub drift: vec4 = vec4(0.0),
-    pub growing: u32 = SLOTS,
-    pub snaps: vec4 = vec4(0.0),
-    // How long the growing swell has been held at its highest, and its top speed.
-    pub topped: f32 = 0.0,
-    pub cap: f32 = 0.0,
+    // The curl's place down the line, and the run's seed.
+    pub curl: f32 = 0.0,
+    pub seed: u32 = 1,
     pub ticks: u32 = 0,
     // The run's time, and the time in this phase.
     pub clock: f32 = 0.0,
     pub since: f32 = 0.0,
-    // How many rocks the rider has passed this run.
-    pub cleared: u32 = 0,
-    // The open sea's swell: 1 in play, 0 for a flat sea in tests.
-    pub calm: f32 = 1.0,
+    // The score: banked tricks plus distance; the combo; the last trick banked (its points and
+    // whole turns); the best score.
+    pub tricks: u32 = 0,
+    pub combo: u32 = 0,
+    pub last_points: u32 = 0,
+    pub last_turns: u32 = 0,
+    pub best: u32 = 0,
     pub tally: Tally = Tally {},
 }
 
@@ -237,28 +223,33 @@ impl Asks for World {
     }
 }
 
-/// The game as it opens: the rider bobbing at the start.
+/// The wave as the world shapes it.
+pub fn wave_of(w: World) -> Wave {
+    Wave { curl: w.curl, seed: f32(w.seed % 1000) }
+}
+
+/// The game as it opens: the tortoise riding by itself.
 pub fn spawn() -> World {
     var w = World {}
-    w.rider = afloat(w, START)
+    w.rider = dropped_in(w, START)
+    w.curl = START - CURL_START
     w
 }
 
-/// The sea now.
-pub fn sea_of(w: World) -> Sea {
-    Sea {
-        swells: w.swells,
-        drift: w.drift,
-        time: f32(w.ticks) * STEP,
-        calm: w.calm,
-        hills: if w.fixed { 1.0 } else { 0.0 },
-    }
+/// A rider dropping in at `x`, mid face, at a fair speed.
+fn dropped_in(w: World, x: f32) -> Rider {
+    let z = 4.0
+    Rider { at: vec3(x, height(wave_of(w), vec2(x, z)), z), speed: 14.0 }
 }
 
-/// A rider standing still on the water at `x`.
-fn afloat(w: World, x: f32) -> Rider {
-    let s = surface(sea_of(w), x)
-    Rider { at: vec2(x, s.height), slope: s.slope }
+/// How far the run has gone.
+pub fn distance(w: World) -> f32 {
+    max(w.rider.at.x - START, 0.0)
+}
+
+/// The run's score: distance and banked tricks.
+pub fn score(w: World) -> u32 {
+    u32(distance(w)) + w.tricks
 }
 
 /// The present for the frames: the world itself.
@@ -291,16 +282,20 @@ pub fn read(w: mut World, records: Vec<Event>) -> u32 {
 /// One tick, after its presses.
 @deterministic
 pub fn step(w: mut World, pressed: u32) {
-    let held = w.controls.held()
     w.since += STEP
     match w.phase {
         Phase::Title => {
-            if (pressed & VARIANT) != 0 { w.fixed = !w.fixed }
-            if (pressed & (START_RUN | SWELL)) != 0 {
+            if (pressed & (START_RUN | TRICK)) != 0 {
                 start_run(mut w)
             } else {
-                swells(mut w, pressed: 0, held: 0)
-                ride(mut w, 0, paddling: false)
+                // It rides by itself, the curl kept back.
+                ride(mut w, autopilot(w))
+                w.curl = max(w.curl, w.rider.at.x - CURL_START)
+                if w.phase != Phase::Title {
+                    w.phase = Phase::Title
+                    w.rider = dropped_in(w, w.rider.at.x + 10.0)
+                    w.curl = w.rider.at.x - CURL_START
+                }
             }
         },
         Phase::Riding => {
@@ -308,375 +303,362 @@ pub fn step(w: mut World, pressed: u32) {
                 start_run(mut w)
             } else {
                 w.clock += STEP
-                swells(mut w, pressed, held)
-                ride(mut w, held, paddling: true)
-                rocks(mut w)
-                if w.phase == Phase::Riding && w.rider.at.x >= FINISH {
-                    w.phase = Phase::Finished
-                    w.since = 0.0
-                    w.tally.finishes += 1
-                }
+                ride(mut w, w.controls.held())
             }
         },
-        Phase::Wiped => {
-            swells(mut w, pressed: 0, held: 0)
-            tumble(mut w)
-            if w.since >= WIPE { come_back(mut w) }
-        },
-        Phase::Finished => {
-            if w.since > 1.0 && (pressed & (START_RUN | SWELL | RESTART)) != 0 {
-                start_run(mut w)
-            } else {
-                swells(mut w, pressed: 0, held: 0)
-                ride(mut w, 0, paddling: false)
-            }
+        Phase::Over => {
+            if w.since > 1.0 && (pressed & (START_RUN | TRICK | RESTART)) != 0 { start_run(mut w) }
         },
     }
     w.ticks += 1
 }
 
 fn start_run(w: mut World) {
+    w.tally.runs += 1
+    w.seed = (w.tally.runs.wrapping_mul(2654435761) ^ 0x9e3779b9) | 1
     w.phase = Phase::Riding
     w.since = 0.0
     w.clock = 0.0
-    w.cleared = 0
-    w.swells = [vec4(0.0); SLOTS]
-    w.drift = vec4(0.0)
-    w.growing = SLOTS
-    w.snaps = vec4(0.0)
-    w.rider = afloat(w, START)
-    w.rider.vel.x = CRUISE * 0.5
-    w.tally.runs += 1
+    w.tricks = 0
+    w.combo = 0
+    w.last_points = 0
+    w.last_turns = 0
+    w.rider = dropped_in(w, START)
+    w.curl = START - CURL_START
 }
 
-/// The swells' rates for this step: a press raises a new one where a slot is free; the held one
-/// rises, a released one snaps and then settles. The step that follows moves them.
-fn swells(w: mut World, pressed: u32, held: u32) {
-    if (pressed & SWELL) != 0 && !w.fixed {
-        var free = SLOTS
-        for i in 0..SLOTS {
-            if free == SLOTS && w.swells[i].z <= 0.0 && w.snaps[i] <= 0.0 { free = i }
-        }
-        if free < SLOTS {
-            let r = w.rider
-            w.swells[free] = vec4(r.at.x - BEHIND, HALF_WIDTH, 0.0, 0.0)
-            w.drift[free] = r.vel.x
-            w.growing = free
-            w.topped = 0.0
-            w.cap = min(r.vel.x + SURGE, TOP_SPEED)
-            w.tally.raised += 1
-        } else { w.tally.refused += 1 }
-    }
-    if w.growing < SLOTS && ((held & SWELL) == 0 || w.topped >= HOLD) {
-        w.snaps[w.growing] = SNAP
-        w.drift[w.growing] = min(w.rider.vel.x + THROW, TOP_SPEED)
-        w.growing = SLOTS
-    }
-    for i in 0..SLOTS {
-        var s = w.swells[i]
-        if i == w.growing {
-            s.w = min(RISE, (HIGHEST - s.z) / STEP)
-            let r = w.rider
-            w.drift[i] = clamp(r.vel.x + FIRM * (r.at.x - KEEP - s.x), 0.0, w.cap)
-            if s.z >= HIGHEST { w.topped += STEP }
-        } else if w.snaps[i] > 0.0 && s.x < w.rider.at.x + 0.5 {
-            s.w = SNAP_RISE
-        } else if s.z > 0.0 {
-            s.w = -min(max(s.z * SETTLE, SETTLE_LEAST), s.z / STEP)
-        } else {
-            s = vec4(0.0)
-            w.drift[i] = 0.0
-        }
-        w.swells[i] = s
-    }
+/// One step of the ride with `held` held: the curl, the rider, then what it meets.
+fn ride(w: mut World, held: u32) {
+    let d = difficulty(w.rider.at.x)
+    w.curl += (CURL_SPEED + CURL_RAMP * d) * STEP
+    if w.rider.grounded { carve(mut w, held) } else { fly(mut w, held) }
+    meet(mut w)
 }
 
-/// The swells after this step, at the rates `swells` set: moved, risen or settled, and slowed.
-fn settle(w: mut World) {
-    for i in 0..SLOTS {
-        var s = w.swells[i]
-        s.x += w.drift[i] * STEP
-        s.z = max(s.z + s.w * STEP, 0.0)
-        w.swells[i] = s
-        if w.snaps[i] > 0.0 {
-            // A surge ends when its crest is past the rider, or its time is up.
-            w.snaps[i] = if s.x < w.rider.at.x + 0.5 { max(w.snaps[i] - STEP, 0.0) } else { 0.0 }
-        } else if i != w.growing {
-            w.drift[i] *= 1.0 - SLOWING * STEP
-        }
-    }
+fn toward(x: f32, target: f32, by: f32) -> f32 {
+    if x < target { min(x + by, target) } else { max(x - by, target) }
 }
 
-/// The rider over one step, then the swells. `held` leans it; a paddling rider paddles back up
-/// to `CRUISE`.
-fn ride(w: mut World, held: u32, paddling: bool) {
-    let sea = sea_of(w)
-    let t1 = sea.time + STEP
+/// On the face: carve, speed up or slow, move, and leave at the lip.
+fn carve(w: mut World, held: u32) {
+    let wv = wave_of(w)
     var r = w.rider
-    if r.grounded {
-        let s = surface(sea, r.at.x)
-        let k = s.slope
-        let n2 = 1.0 + k * k
-        let g = if w.fixed && (held & SWELL) != 0 { G * DIVE } else { G }
-        let v = r.vel.x
-        var ax = -g * k / n2 + PUSH * max(s.rise + k * v, 0.0) * -k / sqrt(n2)
-        var drag = 1.0
-        if (held & RIGHT) != 0 { drag = TUCK }
-        if (held & LEFT) != 0 { drag = BRAKE }
-        ax -= (DRAG * v + QUAD * v * v) * drag
-        if paddling && v < CRUISE { ax += PADDLE * (CRUISE - v) / CRUISE }
-        r.vel.x = clamp(v + ax * STEP, -TOP_SPEED, TOP_SPEED)
-        r.at.x += r.vel.x * STEP
-        let h1 = level(sea, vec2(r.at.x, t1))
-        let up = r.vel.y - g * STEP
-        let y = r.at.y + up * STEP
-        if y > h1 + CLEAR {
-            r.grounded = false
-            r.aloft = 0.0
-            r.at.y = y
-            r.vel.y = up
-        } else {
-            r.vel.y = (h1 - r.at.y) / STEP
-            r.at.y = h1
-            r.slope = k
-        }
+    let tumbling = r.tumble > 0.0
+    if tumbling {
+        r.tumble = max(r.tumble - STEP, 0.0)
+        r.heading = toward(r.heading, 0.0, RELAX * STEP)
+    } else if (held & UP) != 0 {
+        r.heading = toward(r.heading, STEEPEST, TURN * STEP)
+    } else if (held & DOWN) != 0 {
+        r.heading = toward(r.heading, -STEEPEST, TURN * STEP)
     } else {
-        r.vel.y -= G * STEP
-        r.at += r.vel * STEP
-        r.aloft += STEP
-        let h1 = level(sea, vec2(r.at.x, t1))
-        if r.at.y <= h1 {
-            land(mut w, mut r, surface_at(sea, r.at.x, t1))
-        }
+        r.heading = toward(r.heading, 0.0, RELAX * STEP)
+    }
+    let p = vec2(r.at.x, r.at.z)
+    let f = face(wv, p)
+    let along = vec2(cos(r.heading), sin(r.heading))
+    let grade = dot(f.slope, along)
+    let v = r.speed
+    var a = -G * grade / sqrt(1.0 + grade * grade) + PUSH * max(f.slope.y, 0.0)
+    a -= (DRAG * v + QUAD * v * v) * (if tumbling { 3.0 } else { 1.0 })
+    r.speed = clamp(v + a * STEP, 0.0, TOP_SPEED)
+    let flat = along * r.speed
+    let next = p + flat * STEP
+    let before = p.y - lip(wv, p.x)
+    let after = next.y - lip(wv, next.x)
+    if before < 0.0 && after >= 0.0 {
+        // Across the lip line, outward relative to it: off the lip, once.
+        let rise = min(max(dot(f.slope, flat), 0.0), RISE_MOST) + POP
+        r.at = vec3(next.x, height(wv, next), next.y)
+        r.vel = vec3(flat.x, rise, flat.y)
+        r.grounded = false
+        r.aloft = 0.0
+        r.spin = 0.0
+        w.tally.launches += 1
+    } else {
+        let y = height(wv, next)
+        r.vel = vec3(flat.x, (y - r.at.y) / STEP, flat.y)
+        r.at = vec3(next.x, y, next.y)
     }
     r.landed += STEP
     w.rider = r
-    settle(mut w)
 }
 
-/// The rider meets the water `s` from the air.
-fn land(w: mut World, r: mut Rider, s: Surface) {
-    let k = s.slope
-    let n = sqrt(1.0 + k * k)
-    let rel = vec2(r.vel.x, r.vel.y - s.rise)
-    let along = (rel.x + k * rel.y) / n
-    let into = (k * rel.x - rel.y) / n
-    r.vel.x = clamp(along / n, -TOP_SPEED, TOP_SPEED)
-    if r.aloft > 0.15 {
-        w.tally.landings += 1
-        w.tally.impact = into
-        if into < CLEAN && r.aloft > CLEAN_AIR {
-            r.vel.x = min(r.vel.x + CLEAN_BOOST, TOP_SPEED)
-            w.tally.clean += 1
-        }
-        r.landed = 0.0
+/// In the air: fall, drift back to the face, turn, spin; land.
+fn fly(w: mut World, held: u32) {
+    let wv = wave_of(w)
+    var r = w.rider
+    r.aloft += STEP
+    r.vel.y -= G_AIR * STEP
+    r.vel.z -= PULL * STEP
+    r.at += r.vel * STEP
+    if (held & UP) != 0 { r.heading += AIR_TURN * STEP }
+    if (held & DOWN) != 0 { r.heading -= AIR_TURN * STEP }
+    r.heading = clamp(r.heading, -1.6, 1.6)
+    if (held & TRICK) != 0 {
+        r.shell = true
+        r.spin += SPIN * STEP
+    } else {
+        if r.shell { r.out = 0.0 }
+        r.shell = false
+        r.out += STEP
     }
-    r.vel.y = s.rise + k * r.vel.x
-    r.at.y = s.height
-    r.slope = k
+    let ground = height(wv, vec2(r.at.x, r.at.z))
+    if r.at.y <= ground {
+        land(mut w, mut r, wv)
+    }
+    w.rider = r
+}
+
+/// The rider meets the face from the air.
+fn land(w: mut World, r: mut Rider, wv: Wave) {
+    let turns = u32(round(r.spin / TAU))
+    let off = abs(r.spin - f32(turns) * TAU)
+    let clean = !r.shell && off < SQUARE && r.heading < UP_MOST && r.heading > -1.3
+    w.tally.landings += 1
+    if clean {
+        w.combo = min(w.combo + 1, COMBO_MOST)
+        let points = u32(r.aloft * AIR_POINTS) + turns * TURN_POINTS
+        w.tricks += points * w.combo
+        w.last_points = points * w.combo
+        w.last_turns = turns
+        w.tally.clean += 1
+        w.tally.turns += turns
+    } else {
+        w.combo = 0
+        r.tumble = TUMBLE
+        w.tally.bails += 1
+    }
+    let flat = vec2(r.vel.x, r.vel.z)
+    r.speed = min(length(flat), TOP_SPEED) * (if clean { 1.0 } else { KEPT })
+    r.heading = if clean { clamp(r.heading, -STEEPEST, STEEPEST) } else { 0.0 }
+    // Back on the face, never past its lip.
+    r.at.z = min(r.at.z, lip(wv, r.at.x) - 0.2)
+    r.at.y = height(wv, vec2(r.at.x, r.at.z))
+    r.vel = vec3(flat.x, 0.0, flat.y)
     r.grounded = true
     r.aloft = 0.0
+    r.spin = 0.0
+    r.shell = false
+    r.out = 1.0
+    r.landed = 0.0
 }
 
-/// Rocks: passing one counts it; touching one wipes the rider out.
-fn rocks(w: mut World) {
-    let body = w.rider.at + vec2(0.0, BODY_UP)
-    for i in 0..5 {
-        let r = ROCKS[i]
-        if rock_distance(r, body) < BODY_RADIUS {
-            w.phase = Phase::Wiped
-            w.since = 0.0
-            w.tally.wipeouts += 1
-            w.rider.vel = vec2(-3.0, 7.0)
-            w.rider.grounded = false
-            w.growing = SLOTS
-            return
+/// What the rider meets: the curl, closeouts, rocks and logs. Any of them ends the run.
+fn meet(w: mut World) {
+    let wv = wave_of(w)
+    let r = w.rider
+    let p = vec2(r.at.x, r.at.z)
+    if r.at.x < w.curl + CATCH {
+        over(mut w, caught: true)
+        return
+    }
+    let k = segment_of(r.at.x)
+    let first = if k > 0 { k - 1 } else { 0 }
+    for s in first..k + 2 {
+        let h = hazards(w.seed, wv, s)
+        for i in 0..h.count {
+            let z = h.items[i]
+            if z.kind == ROCK {
+                let top = height(wv, z.at) + z.size.y
+                if length(p - z.at) < z.size.x * 0.5 + BODY && r.at.y < top {
+                    over(mut w, caught: false)
+                    return
+                }
+            } else if z.kind == LOG {
+                let t = clamp(p.x - z.at.x, 0.0, z.size.y)
+                let near = vec2(z.at.x + t, z.at.y)
+                let top = height(wv, near) + z.size.x + 0.2
+                if length(p - near) < z.size.x * 0.5 + BODY && r.at.y < top {
+                    over(mut w, caught: false)
+                    return
+                }
+            } else if z.kind == CLOSEOUT {
+                let inside = p.x >= z.at.x && p.x <= z.at.x + z.size.y && p.y > z.at.y - 0.3
+                if inside && r.at.y < height(wv, p) + TALL + 2.0 {
+                    over(mut w, caught: true)
+                    return
+                }
+            }
         }
-        if w.cleared == i && w.rider.at.x > r.x + r.z { w.cleared = i + 1 }
     }
 }
 
-/// A wiped-out rider: thrown back off the rock, then afloat where it falls.
-fn tumble(w: mut World) {
-    let sea = sea_of(w)
-    var r = w.rider
-    let h = level(sea, vec2(r.at.x, sea.time + STEP))
-    if r.at.y > h || r.vel.y > 0.0 {
-        r.vel.y -= G * STEP
-        r.at += r.vel * STEP
-        if r.at.y < h { r.vel = vec2(0.0) }
-    }
-    if r.at.y <= h { r.at.y = h }
-    w.rider = r
-    settle(mut w)
-}
-
-fn come_back(w: mut World) {
-    let x = if w.cleared < 5 { ROCKS[w.cleared].x - RUNUP } else { START }
-    w.phase = Phase::Riding
+fn over(w: mut World, caught: bool) {
+    w.phase = Phase::Over
     w.since = 0.0
-    w.swells = [vec4(0.0); SLOTS]
-    w.drift = vec4(0.0)
-    w.growing = SLOTS
-    w.snaps = vec4(0.0)
-    w.rider = afloat(w, x)
-    w.rider.vel.x = CRUISE
+    if caught { w.tally.caught += 1 } else { w.tally.wipeouts += 1 }
+    w.best = max(w.best, score(w))
+}
+
+/// The title's rider, and the tests' bot: steer for the corridor's centre a quarter of a second
+/// ahead (pure pursuit).
+pub fn autopilot(w: World) -> u32 {
+    let r = w.rider
+    let ahead = max(r.speed * 0.25, 2.0)
+    let want = corridor(w.seed, r.at.x + ahead).x
+    let aim = clamp(atan2(want - r.at.z, ahead), -STEEPEST, STEEPEST)
+    if r.heading < aim - 0.02 { UP } else if r.heading > aim + 0.02 { DOWN } else { 0 }
 }
 
 // ---- tests -----------------------------------------------------------------------------------------
 
-// A flat sea, riding, the rider at `x` at speed `v` on the water (before the course's first
-// rock, for the tests at negative `x`).
-fn calm_ride(x: f32, v: f32) -> World {
-    var w = World { calm: 0.0 }
+// A run, riding, the rider at `(x, z)` on the face at `speed`, heading `heading`.
+fn riding_at(x: f32, z: f32, speed: f32, heading: f32) -> World {
+    var w = spawn()
     start_run(mut w)
-    w.rider = afloat(w, x)
-    w.rider.vel.x = v
+    w.rider = Rider {
+        at: vec3(x, height(wave_of(w), vec2(x, z)), z),
+        speed,
+        heading,
+    }
+    w.curl = x - 200.0
+    w.seed = 3
     w
 }
 
-fn holding(w: mut World, ticks: u32) {
-    w.controls.keys = SWELL
-    for i in 0..ticks { step(mut w, if i == 0 { SWELL } else { 0 }) }
-}
-
-fn letting_go(w: mut World, ticks: u32) {
-    w.controls.keys = 0
+fn holding(w: mut World, bits: u32, ticks: u32) {
+    w.controls.keys = bits
     for _ in 0..ticks { step(mut w, 0) }
 }
 
-fn sea_height(w: World) -> f32 {
-    surface(sea_of(w), w.rider.at.x).height
-}
-
-// Holds the rider still on top of the swell it raises, for `ticks` ticks.
-fn held_on_top(w: mut World, ticks: u32) -> f32 {
-    w.controls.keys = SWELL
-    w.swells[0] = vec4(w.rider.at.x, HALF_WIDTH, 0.0, 0.0)
-    w.drift = vec4(0.0)
-    w.growing = 0
-    let x = w.rider.at.x
-    var top = 0.0
-    for _ in 0..ticks {
-        w.rider.vel.x = 0.0
-        step(mut w, 0)
-        w.rider.at.x = x
-        top = max(top, w.rider.at.y)
-        assert(w.rider.grounded, "carried, not thrown")
-    }
-    top
+@test
+fn climbing_the_face_slows_and_dropping_speeds() {
+    var up = riding_at(x: 40.0, z: 4.0, speed: 15.0, heading: 0.0)
+    var down = up
+    holding(mut up, UP, 45)
+    holding(mut down, DOWN, 45)
+    assert(up.rider.at.z > 5.0 && down.rider.at.z < 3.0, "carved up and down")
+    assert(down.rider.speed > up.rider.speed + 4.0, f"{down.rider.speed} against {up.rider.speed}")
+    // The heading never passes its steepest, and comes back down the line when let be.
+    assert(up.rider.heading <= STEEPEST)
+    holding(mut up, bits: 0, ticks: 120)
+    assert(abs(up.rider.heading) < 0.01)
 }
 
 @test
-fn water_rising_under_a_still_rider_carries_it_up() {
-    var w = calm_ride(x: -100.0, v: 0.0)
-    // 50 ticks of rising, short of the swell's highest (where the water stops, and throws it).
-    let top = held_on_top(mut w, 50)
-    assert(abs(top - RISE * 50.0 * STEP) < 1e-3, f"carried to the swell's top: {top}")
-}
-
-@test
-fn surfing_a_held_swell_speeds_the_rider_and_letting_go_throws_it_high() {
-    var w = calm_ride(x: -100.0, v: CRUISE)
-    holding(mut w, 100)
-    assert(w.rider.grounded && w.rider.vel.x > CRUISE + 3.0, f"surfed to {w.rider.vel.x}")
-    let x = w.rider.at.x
-    letting_go(mut w, 1)
-    var peak = 0.0
+fn crossing_the_lip_launches_once_and_riding_along_it_does_not() {
+    // Up the face at speed: off the lip, once.
+    var w = riding_at(x: 40.0, z: 6.0, speed: 20.0, heading: 0.8)
+    holding(mut w, UP, 1)
+    var launches = 0
+    var was = true
     for _ in 0..240 {
         step(mut w, 0)
-        peak = max(peak, w.rider.at.y)
+        if was && !w.rider.grounded { launches += 1 }
+        was = w.rider.grounded
     }
-    // High enough to clear the tallest rock, and down again beyond the launch.
-    assert(w.tally.landings == 1, f"landed {w.tally.landings} times")
-    assert(peak > 3.5, f"the launch's peak {peak}")
-    assert(w.rider.grounded && w.rider.at.x > x + 10.0)
+    assert(launches == 1 && w.tally.launches == 1, f"{launches} launches")
+    // Down the line just under the lip, never crossing it: never airborne, never past it.
+    var along = riding_at(x: 40.0, z: 0.0, speed: 18.0, heading: 0.0)
+    for _ in 0..240 {
+        let wv = wave_of(along)
+        along.rider.at.z = lip(wv, along.rider.at.x) - 0.3
+        along.rider.heading = 0.0
+        step(mut along, 0)
+        assert(along.rider.grounded, "launched riding along the lip")
+        assert(along.rider.at.z < lip(wave_of(along), along.rider.at.x), "past the lip")
+    }
+}
+
+// Off the lip and into the air, the trick button held for `held` ticks of it (0 for none), the
+// board turned down the face before it lands.
+fn air(held: u32) -> World {
+    var w = riding_at(x: 40.0, z: 6.0, speed: 20.0, heading: 0.8)
+    w.controls.keys = UP
+    while w.rider.grounded { step(mut w, 0) }
+    w.controls.keys = TRICK
+    for _ in 0..held { step(mut w, 0) }
+    w.controls.keys = DOWN
+    var guard = 0
+    while !w.rider.grounded && guard < 600 {
+        if w.rider.heading < 0.0 { w.controls.keys = 0 }
+        step(mut w, 0)
+        guard += 1
+    }
+    w
 }
 
 @test
-fn the_rider_never_sinks_into_the_water() {
-    // Presses at seeded times on the open sea: the rider is never below the surface.
-    var w = spawn()
-    start_run(mut w)
-    var seed: u32 = 77
+fn a_whole_shell_spin_lands_clean_and_half_of_one_bails() {
+    // A whole turn: the spin rate is 12 a second, so 63 ticks is 6.3 radians.
+    let whole = air(held: 63)
+    assert(whole.tally.clean == 1 && whole.tally.turns == 1, "a clean Shell Spin")
+    assert(whole.tricks >= TURN_POINTS && whole.combo == 1)
+    let half = air(held: 31)
+    assert(half.tally.bails == 1 && half.combo == 0 && half.rider.tumble > 0.0, "half a turn bails")
+    // No trick at all, the board turned down: clean, a little banked for the air.
+    let plain = air(held: 0)
+    assert(plain.tally.clean == 1 && plain.tricks > 0)
+}
+
+@test
+fn landing_still_in_the_shell_bails() {
+    var w = riding_at(x: 40.0, z: 6.0, speed: 20.0, heading: 0.8)
+    w.controls.keys = UP
+    while w.rider.grounded { step(mut w, 0) }
+    w.controls.keys = TRICK
+    var guard = 0
+    while !w.rider.grounded && guard < 600 {
+        step(mut w, 0)
+        guard += 1
+    }
+    assert(w.tally.bails == 1 && w.tally.clean == 0)
+}
+
+@test
+fn the_curl_catches_a_rider_who_falls_behind() {
+    // Down in the flat water, slowing: caught.
+    var slow = riding_at(x: 40.0, z: -4.0, speed: 6.0, heading: 0.0)
+    slow.curl = 30.0
+    holding(mut slow, 0, 120 * 8)
+    assert(slow.phase == Phase::Over && slow.tally.caught == 1)
+    // High on the face (before the first hazards), it keeps ahead.
+    var fast = riding_at(x: 10.0, z: 6.5, speed: 18.0, heading: 0.0)
+    fast.curl = 0.0
+    for _ in 0..120 * 3 {
+        let wv = wave_of(fast)
+        fast.controls.keys = if fast.rider.at.z < lip(wv, fast.rider.at.x) * 0.7 { UP } else {
+            DOWN
+        }
+        step(mut fast, 0)
+    }
+    assert(fast.phase == Phase::Riding, "kept ahead of the curl")
+}
+
+@test
+fn the_rider_never_sinks_into_the_face() {
+    var w = riding_at(x: 40.0, z: 4.0, speed: 15.0, heading: 0.0)
+    var seed: u32 = 11
     for i in 0..3000 {
         seed = seed.wrapping_mul(1664525).wrapping_add(1013904223)
-        let roll = seed >> 24
-        if roll < 6 { w.controls.keys = w.controls.keys ^ SWELL }
-        let pressed = if roll < 6 && (w.controls.keys & SWELL) != 0 { SWELL } else { 0 }
-        step(mut w, pressed)
-        if w.phase != Phase::Riding { start_run(mut w) }
-        assert(w.rider.at.y >= sea_height(w) - 1e-3, f"below the water at tick {i}")
+        if (seed >> 24) < 8 { w.controls.keys = (seed >> 8) & (UP | DOWN | TRICK) }
+        step(mut w, 0)
+        if w.phase != Phase::Riding {
+            w = riding_at(x: w.rider.at.x + 30.0, z: 4.0, speed: 15.0, heading: 0.0)
+        }
+        let ground = height(wave_of(w), vec2(w.rider.at.x, w.rider.at.z))
+        assert(w.rider.at.y >= ground - 1e-3, f"below the face at tick {i}")
     }
 }
 
 @test
-fn a_press_with_every_slot_taken_raises_nothing_and_takes_nothing_away() {
-    var w = calm_ride(x: -100.0, v: 8.0)
-    for _ in 0..SLOTS {
-        holding(mut w, 10)
-        letting_go(mut w, 2)
+fn a_bot_on_the_corridor_rides_the_hardest_course_without_harm() {
+    // Following the corridor from deep in the run (where the course is at its hardest), at the
+    // slowest speed the face sustains and at the top speed: no hazard, no closeout.
+    for speed in [9.0, TOP_SPEED] {
+        for seed in [3, 41, 977] {
+            var w = riding_at(x: 2600.0, z: 4.0, speed: speed, heading: 0.0)
+            w.seed = seed
+            w.rider.at.z = corridor(seed, 2600.0).x
+            for _ in 0..120 * 20 {
+                w.controls.keys = autopilot(w)
+                // Hold the speed where it's being tested, as a rider pumping or braking would.
+                w.rider.speed = speed
+                w.curl = w.rider.at.x - 100.0
+                step(mut w, 0)
+                assert(w.phase == Phase::Riding, f"hit something at {w.rider.at.x}, seed {seed}")
+            }
+        }
     }
-    assert(w.tally.raised == SLOTS && w.tally.refused == 0)
-    holding(mut w, 1)
-    assert(w.tally.refused == 1 && w.tally.raised == SLOTS, "refused")
-    for i in 0..SLOTS { assert(w.swells[i].z > 0.0, "every swell still standing") }
-    // A held swell stops at its highest, and lets go by itself after a while there.
-    var w = calm_ride(x: -100.0, v: 0.0)
-    holding(mut w, 100)
-    assert(abs(w.swells[0].z - HIGHEST) < 1e-4 && w.growing == 0)
-    for _ in 0..60 { step(mut w, 0) }
-    assert(w.growing == SLOTS)
-}
-
-@test
-fn a_press_and_its_release_in_one_tick_still_raise_a_swell() {
-    var w = calm_ride(x: -100.0, v: 5.0)
-    var records: Vec<Event> = Vec::new()
-    records.push(Event::KeyDown { key: Key::Space, repeat: false, mods: std::input::Mods {} })
-    records.push(Event::KeyUp { key: Key::Space, mods: std::input::Mods {} })
-    let pressed = read(mut w, records)
-    step(mut w, pressed)
-    assert(w.tally.raised == 1 && w.growing == SLOTS)
-}
-
-@test
-fn landing_along_a_face_keeps_speed_and_into_it_loses_speed() {
-    // The same fall onto the far face of a fixed swell, and onto its near face.
-    var down = calm_ride(x: 0.0, v: 0.0)
-    down.swells[0] = vec4(30.0, HALF_WIDTH, 2.0, 0.0)
-    var up = down
-    // Just above the water, falling at the far face's slope, and at the near face.
-    down.rider = Rider { at: vec2(30.6, 1.8), vel: vec2(8.0, -8.0), grounded: false, aloft: 0.5 }
-    up.rider = Rider { at: vec2(28.0, 0.37), vel: vec2(8.0, -8.0), grounded: false, aloft: 0.5 }
-    for _ in 0..30 {
-        step(mut down, 0)
-        step(mut up, 0)
-    }
-    assert(down.tally.clean == 1 && up.tally.clean == 0)
-    assert(down.rider.vel.x > up.rider.vel.x + 2.0)
-}
-
-@test
-fn hitting_a_rock_wipes_out_and_starts_again_before_it() {
-    let r = ROCKS[0]
-    var w = calm_ride(r.x - 4.0, 10.0)
-    for _ in 0..120 { step(mut w, 0) }
-    assert(w.tally.wipeouts == 1, "hit the rock")
-    for _ in 0..240 { step(mut w, 0) }
-    assert(w.phase == Phase::Riding && w.rider.at.x < r.x && w.rider.at.x > r.x - RUNUP - 1.0)
-}
-
-@test
-fn the_fixed_course_raises_nothing_and_diving_down_a_hill_is_faster() {
-    // From the top of the course's fifth hill, diving and not.
-    let top = (4.0 + 0.5) * sea::SPACING
-    var dive = World { calm: 0.0, fixed: true }
-    start_run(mut dive)
-    dive.rider = afloat(dive, top + 0.5)
-    var coast = dive
-    holding(mut dive, 40)
-    letting_go(mut coast, 40)
-    assert(dive.tally.raised == 0 && dive.tally.refused == 0)
-    assert(dive.rider.vel.x > coast.rider.vel.x + 2.0)
 }

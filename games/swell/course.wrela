@@ -1,39 +1,187 @@
-// The course: a run of sea from the start to the finish buoy, with rocks standing out of it to
-// clear in the air. A rock is `vec4(x, top, half width, 0)`: a column of stone from the sea
-// floor to `top` above the still sea, rounded at its top.
+// The course down the line: what stands in the rider's way, made from the run's seed as it goes,
+// a segment at a time, each a pure function of the seed and the segment's number (nothing is
+// stored, and any host makes the same).
+//
+// Fairness first: a safe corridor runs down the face, and hazards stand only outside it. Its
+// centre line wanders smoothly, its slope (z per x) and its curvature bounded, so a rider who
+// steers by heading can follow it at any speed up to the top (sim.wrela's steering); it narrows
+// as the run goes on, to a floor. A closeout pitches the lip over the upper face only where the
+// corridor runs low, so the lower face always stays open. Difficulty rises with distance to a
+// cap the tests show a bot surviving; after that the course keeps varying, no harder.
+use engine::noise::{pick, rand}
+use wave::{Wave, lip}
 
-pub const ROCKS: [vec4; 5] = [
-    vec4(45.0, 1.4, 0.8, 0.0),
-    vec4(90.0, 2.2, 1.0, 0.0),
-    vec4(135.0, 2.0, 1.6, 0.0),
-    vec4(180.0, 2.9, 1.1, 0.0),
-    vec4(225.0, 2.6, 1.9, 0.0),
-]
+/// A segment's length down the line.
+pub const SEGMENT: f32 = 24.0
+/// No hazards in the first segments: the drop in.
+pub const CLEAR_START: u32 = 4
+/// Hazards in a segment, at most.
+pub const PER_SEGMENT: u32 = 4
 
-/// Where the run starts, and the finish buoy.
-pub const START: f32 = 6.0
-pub const FINISH: f32 = 256.0
+pub const ROCK: u32 = 1
+pub const LOG: u32 = 2
+pub const CLOSEOUT: u32 = 3
 
-/// How far behind a rock a rider who hit it starts again: on the fixed course, the crest of the
-/// hill two before it (sea.wrela).
-pub const RUNUP: f32 = 22.5
+/// Something in the way. A rock: a column of reef at `at` (x, z), `size.x` across, its top
+/// `size.y` above the face. A log: lying down the line from `at` for `size.y`, `size.x` thick.
+/// A closeout: the lip pitching over the face above `at.y` from x `at.x` for `size.y`.
+pub struct Hazard: Copy + Eq {
+    pub kind: u32,
+    pub at: vec2,
+    pub size: vec2,
+}
 
-/// The signed distance from `p` to rock `r`: a column, its top rounded by its half width.
-pub fn rock_distance(r: vec4, p: vec2) -> f32 {
-    let q = p - vec2(r.x, r.y - r.z)
-    if q.y > 0.0 { return length(q) - r.z }
-    abs(q.x) - r.z
+/// How far into the run (0 to 1) a point down the line is: the course is easy for the first
+/// 300, hardest from 2,400 on.
+pub fn difficulty(x: f32) -> f32 {
+    saturate((x - 300.0) / 2100.0)
+}
+
+// The corridor's centre: two waves of bounded slope and curvature (see `CORRIDOR_SLOPE` and
+// `CORRIDOR_BEND`), mid face.
+const MID: f32 = 4.0
+const A1: f32 = 2.2
+const F1: f32 = 0.045
+const A2: f32 = 1.0
+const F2: f32 = 0.11
+/// The corridor centre's steepest slope (dz/dx) and sharpest bend (d²z/dx²), at most.
+pub const CORRIDOR_SLOPE: f32 = A1 * F1 + A2 * F2
+pub const CORRIDOR_BEND: f32 = A1 * F1 * F1 + A2 * F2 * F2
+
+/// The corridor at `x`: its centre's z, and its half width.
+pub fn corridor(seed: u32, x: f32) -> vec2 {
+    let p1 = rand(seed, 1) * 6.2831853
+    let p2 = rand(seed, 2) * 6.2831853
+    let centre = MID + A1 * sin(x * F1 + p1) + A2 * sin(x * F2 + p2)
+    vec2(centre, mix(3.0, 1.7, difficulty(x)))
+}
+
+// The rider's reach, as hazards keep from the corridor: its body's radius.
+const BODY: f32 = 0.5
+
+fn clear_of_corridor(seed: u32, x: f32, z: f32, r: f32) -> bool {
+    let c = corridor(seed, x)
+    abs(z - c.x) > c.y + r + BODY
+}
+
+/// Segment `k`'s hazards (the first `count` of them).
+pub struct Hazards: Copy {
+    pub items: [Hazard; PER_SEGMENT],
+    pub count: u32,
+}
+
+pub fn hazards(seed: u32, w: Wave, k: u32) -> Hazards {
+    var out = Hazards {
+        items: [Hazard { kind: 0, at: vec2(0.0), size: vec2(0.0) }; PER_SEGMENT],
+        count: 0,
+    }
+    if k < CLEAR_START { return out }
+    let x0 = f32(k) * SEGMENT
+    let d = difficulty(x0)
+    let n = seed ^ k.wrapping_mul(2654435761)
+    // A closeout, sometimes, where the corridor runs low through the whole segment.
+    if rand(n, 9) < 0.08 + 0.2 * d {
+        var top = 0.0
+        for i in 0..9 {
+            let c = corridor(seed, x0 + f32(i) * SEGMENT / 8.0)
+            top = max(top, c.x + c.y + BODY)
+        }
+        let above = top + 0.3
+        if above < lip(w, x0) * 0.75 {
+            out.items[0] = Hazard {
+                kind: CLOSEOUT,
+                at: vec2(x0 + 2.0, above),
+                size: vec2(0.0, SEGMENT - 4.0),
+            }
+            out.count = 1
+        }
+    }
+    let wanted = u32(floor(rand(n, 3) * (1.6 + 2.6 * d)))
+    var tries: u32 = 0
+    while out.count < PER_SEGMENT && out.count <= wanted && tries < 12 {
+        let t = tries + 10
+        tries += 1
+        let x = x0 + pick(n, t * 4, 1.0, SEGMENT - 7.0)
+        let z = pick(n, t * 4 + 1, -2.5, lip(w, x) - 1.2)
+        if rand(n, t * 4 + 2) < 0.7 - 0.3 * d {
+            let r = pick(n, t * 4 + 3, lo: 0.6, hi: 1.3)
+            if clear_of_corridor(seed, x, z, r) {
+                out.items[out.count] = Hazard {
+                    kind: ROCK,
+                    at: vec2(x, z),
+                    size: vec2(r * 2.0, 1.2 + r),
+                }
+                out.count += 1
+            }
+        } else {
+            let length = pick(n, t * 4 + 3, lo: 3.0, hi: 6.0)
+            let r = 0.32
+            var clear = true
+            for i in 0..7 {
+                clear = clear && clear_of_corridor(seed, x + length * f32(i) / 6.0, z, r)
+            }
+            if clear {
+                out.items[out.count] = Hazard {
+                    kind: LOG,
+                    at: vec2(x, z),
+                    size: vec2(r * 2.0, length),
+                }
+                out.count += 1
+            }
+        }
+    }
+    out
+}
+
+/// The segment holding `x`.
+pub fn segment_of(x: f32) -> u32 {
+    u32(max(floor(x / SEGMENT), 0.0))
 }
 
 @test
-fn the_rocks_are_in_order_and_inside_the_run() {
-    var last = START
-    for r in ROCKS {
-        assert(r.x - RUNUP > last, "a rock's run-up starts past the last rock")
-        last = r.x
+fn the_corridor_is_smooth_and_hazards_keep_out_of_it() {
+    // Its slope and bend, sampled, stay within the bounds the steering is checked against.
+    for seed in [1, 77, 4096] {
+        var x = 0.0
+        while x < 3000.0 {
+            let e = 0.05
+            let a = corridor(seed, x - e).x
+            let b = corridor(seed, x).x
+            let c = corridor(seed, x + e).x
+            assert(abs(c - a) / (2.0 * e) <= CORRIDOR_SLOPE + 1e-3)
+            assert(abs(c - 2.0 * b + a) / (e * e) <= CORRIDOR_BEND + 2e-2)
+            x += 7.3
+        }
     }
-    assert(last < FINISH)
-    let r = ROCKS[0]
-    assert(abs(rock_distance(r, vec2(r.x, r.y + 1.0)) - 1.0) < 1e-5, "above its top")
-    assert(rock_distance(r, vec2(r.x, 0.0)) < 0.0, "inside it at the waterline")
+    // No hazard reaches into the corridor anywhere along it, and closeouts stand above it.
+    let w = Wave { curl: 0.0, seed: 1.0 }
+    for seed in [1, 77, 4096] {
+        for k in 0..140 {
+            let h = hazards(seed, w, k)
+            for i in 0..h.count {
+                let at = h.items[i].at
+                let s = h.items[i].size
+                if h.items[i].kind == CLOSEOUT {
+                    var x = at.x
+                    while x <= at.x + s.y {
+                        let c = corridor(seed, x)
+                        assert(c.x + c.y + BODY < at.y, "a closeout over the corridor")
+                        x += 0.5
+                    }
+                } else {
+                    let span = if h.items[i].kind == LOG { s.y } else { 0.0 }
+                    var x = at.x
+                    while x <= at.x + span {
+                        assert(
+                            clear_of_corridor(seed, x, at.y, s.x * 0.5),
+                            "a hazard in the corridor",
+                        )
+                        x += 0.5
+                    }
+                }
+            }
+        }
+    }
+    // The same seed and segment make the same hazards.
+    assert(hazards(77, w, 50).items[0] == hazards(77, w, 50).items[0])
 }
