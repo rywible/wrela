@@ -1453,6 +1453,14 @@ proposal couldn't be traced to its peer: proposals now say whose they are, and a
 only after its welcome. Measured on this M4 Air's SSD (indicative, not a benchmark): a call of 400
 proposals, 256 committed, took about 5 ms with its one flush.
 
+**Rooms over the network.** `wrela-serve` runs a server build's rooms over WebTransport with the
+[`wtransport`](https://github.com/BiagioFesta/wtransport) crate (MIT or Apache-2.0, a Rust
+WebTransport implementation over [quinn](https://github.com/quinn-rs/quinn)'s QUIC) and
+[tokio](https://tokio.rs/) (MIT): a session at `/room/<name>` opens one bidirectional stream of
+length-prefixed frames, each room runs on a thread of its own, and every queue is bounded, so a
+connection too slow to keep up is closed and its peer comes back. A development certificate is
+self-signed and passed to the client by its hash, as Chrome's `serverCertificateHashes` takes it.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
