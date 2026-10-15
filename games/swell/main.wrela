@@ -1,5 +1,476 @@
-pub fn init() -> u32 {
-    0
+// Swell: a tortoise surfs a sea it raises. Hold to raise a swell behind you and surf it for speed;
+// let go and it surges past, throwing you off its crest. Clear the rocks to the finish buoy.
+//
+// Keys: Space (or W, Z, the up arrow) to raise a swell, the right arrow (D) to tuck, the left (A)
+// to brake, Enter to start, R to start again, Tab (V) on the title for the fixed course, the
+// playtest's control, where the same button dives. A controller: A, the stick, Start, Select, Y.
+//
+// The sim runs on the ticker's thread (sim.wrela); each frame draws between its two newest
+// snapshots. Spray and the board's foam are the frames' own, and never reach the sim.
+use engine::letters::{Typeset, clock_text, typeset}
+use engine::plant::full
+use engine::present::Snapshots
+use engine::run::run
+use look::{View, shade}
+use sea::{SLOTS, Sea, level}
+use sim::{CRUISE, HZ, Phase, STEP, Tally, World, present, sea_of, spawn, tick}
+use std::audio::RingWriter
+use std::derive::value_and_gradient
+use std::gpu::{
+    GlobalId, GpuBuffer, Slots, begin_screen_pass, buffer, buffer_of, dispatch, draw, write,
 }
 
-pub fn frame(g: mut u32, time: f32, width: u32, height: u32) {}
+// How many units high the view is, at rest and at the top speed.
+const VIEW: f32 = 11.0
+const VIEW_FAST: f32 = 14.0
+const DROPS: u32 = 220
+const MARKS: u32 = 48
+const RUNS: u32 = 16
+const SEGMENTS: u32 = 900
+
+// A drop of spray, or a puff of mist (`kind` 1).
+struct Drop: Copy {
+    at: vec2,
+    vel: vec2,
+    age: f32,
+    life: f32,
+    size: f32,
+    kind: u32,
+}
+
+pub struct Game {
+    snaps: Snapshots<World>,
+    last: Option<f32>,
+    clock: f32,
+    camera: vec2,
+    zoom: f32,
+    shake: f32,
+    // The tally and the rider's time aloft as last seen, to find what happened since.
+    seen: Tally,
+    aloft: f32,
+    drops: Vec<Drop>,
+    // Where the board touched the water: `vec4(x, seconds old, how much, 0)`, and how far it
+    // has gone since the last.
+    marks: Vec<vec4>,
+    travelled: f32,
+    seed: u32,
+    tilt: f32,
+    // The best times this visit, on the swell course and the fixed one (0 for none).
+    best: vec2,
+    drop_buffer: GpuBuffer<vec4>,
+    mark_buffer: GpuBuffer<vec4>,
+    runs: GpuBuffer<vec4>,
+    segments: GpuBuffer<vec4>,
+    text: Typeset,
+    sound: RingWriter<u32>,
+    // The sea sampled on the GPU, for the agreement test (`probe_sea`).
+    probe: GpuBuffer<vec4>,
+}
+
+pub fn init() -> Game {
+    let first = spawn()
+    let latest = run(spawn(), hz: HZ, step: tick, present: present)
+    Game {
+        snaps: Snapshots::new(take latest, hz: HZ),
+        last: None,
+        clock: 0.0,
+        camera: first.rider.at + vec2(4.0, 3.0),
+        zoom: VIEW,
+        shake: 0.0,
+        seen: first.tally,
+        aloft: 0.0,
+        drops: Vec::new(),
+        marks: Vec::new(),
+        travelled: 0.0,
+        seed: 0x2545f491,
+        tilt: 0.0,
+        best: vec2(0.0),
+        drop_buffer: buffer_of(Vec::filled(DROPS * 2, vec4(0.0))),
+        mark_buffer: buffer_of(Vec::filled(MARKS, vec4(0.0))),
+        runs: buffer_of(Vec::filled(RUNS * 2, vec4(0.0))),
+        segments: buffer_of(Vec::filled(SEGMENTS, vec4(0.0))),
+        text: typeset(),
+        sound: sound::start(),
+        probe: buffer(0),
+    }
+}
+
+pub fn frame(g: mut Game, time: f32, width: u32, height: u32) {
+    let dt = match g.last {
+        Some(before) => clamp(time - before, 0.0, 0.1),
+        None => 0.0,
+    }
+    g.last = Some(time)
+    g.clock += dt
+    g.snaps.update()
+    let b = g.snaps.at(g.snaps.sim_time(time))
+    let w = b.b
+    let at = mix(b.a.rider.at, w.rider.at, vec2(b.alpha))
+    // The sea's time to draw: between the two snapshots, as the rider is.
+    let t = (f32(w.ticks) - (1.0 - b.alpha)) * STEP
+    let sea = sea_of(w)
+    happenings(mut g, w, at)
+    spray(mut g, w, at, sea, t, dt)
+    follow(mut g, w, at, dt)
+    present_frame(mut g, w, at, sea, t, width, height)
+}
+
+fn random(g: mut Game) -> f32 {
+    g.seed = g.seed.wrapping_mul(1664525).wrapping_add(1013904223)
+    f32(g.seed >> 8) / 16777216.0
+}
+
+fn drop(g: mut Game, at: vec2, vel: vec2, life: f32, size: f32, kind: u32) {
+    if g.drops.len() >= DROPS { g.drops.remove(0) }
+    g.drops.push(Drop { at, vel, age: 0.0, life, size, kind })
+}
+
+// A burst of `n` drops from `at`, thrown up and along `along` at about `speed`.
+fn burst(g: mut Game, at: vec2, n: u32, speed: f32, along: f32) {
+    for _ in 0..n {
+        let a = 1.57 + (random(mut g) - 0.5) * 2.2
+        let s = speed * (0.35 + 0.65 * random(mut g))
+        let v = vec2(cos(a) * s + along * random(mut g), sin(a) * s)
+        let size = 0.025 + 0.035 * random(mut g)
+        let from = at + vec2((random(mut g) - 0.5) * 0.6, 0.0)
+        let life = 0.6 + 0.5 * random(mut g)
+        drop(mut g, from, v, life, size, kind: 0)
+    }
+    for _ in 0..n / 4 {
+        let v = vec2(along * 0.3 + (random(mut g) - 0.5) * 2.0, 1.0 + random(mut g))
+        let life = 1.0 + random(mut g)
+        let size = 0.4 + 0.4 * random(mut g)
+        drop(mut g, at, v, life, size, kind: 1)
+    }
+}
+
+// What happened since the last frame, from the tally's counts: splashes and sounds.
+fn happenings(g: mut Game, w: World, at: vec2) {
+    let t = w.tally
+    let s = g.seen
+    let v = w.rider.vel.x
+    if t.landings > s.landings {
+        let hard = saturate(t.impact / 12.0)
+        burst(mut g, at, 10 + u32(hard * 26.0), 3.0 + hard * 7.0, v * 0.5)
+        g.shake = max(g.shake, hard * 0.25)
+        let _ = g.sound.push(sound::LAND | (u32(hard * 255.0) << 8))
+    }
+    if t.clean > s.clean { let _ = g.sound.push(sound::CLEAN) }
+    if t.raised > s.raised { let _ = g.sound.push(sound::RAISE) }
+    if t.refused > s.refused { let _ = g.sound.push(sound::REFUSED) }
+    if t.wipeouts > s.wipeouts {
+        burst(mut g, at + vec2(0.3, 0.5), 40, speed: 8.0, along: -2.0)
+        g.shake = 0.45
+        let _ = g.sound.push(sound::WIPEOUT)
+    }
+    if t.finishes > s.finishes {
+        let k = if w.fixed { 1 } else { 0 }
+        if g.best[k] == 0.0 || w.clock < g.best[k] { g.best[k] = w.clock }
+        let _ = g.sound.push(sound::FINISH)
+    }
+    if t.runs > s.runs {
+        g.marks.clear()
+        let _ = g.sound.push(sound::START)
+    }
+    // Off the water for a tenth of a second: a launch.
+    let r = w.rider
+    if !r.grounded && r.aloft >= 0.1 && g.aloft < 0.1 && w.phase == Phase::Riding {
+        burst(mut g, at, 18, 5.0, v * 0.7)
+        let _ = g.sound.push(sound::LAUNCH)
+    }
+    g.aloft = if r.grounded { 0.0 } else { r.aloft }
+    g.seen = t
+    // The water's rush under the board, as loud as it's fast.
+    let rush = if r.grounded && w.phase != Phase::Wiped { saturate(abs(v) / 24.0) } else { 0.0 }
+    let _ = g.sound.push(sound::RUSH | (u32(rush * 255.0) << 8))
+}
+
+// The frames' spray: the board's wake and its foam track, and the spindrift a surging swell
+// throws off its crest; drops fall and die in the water.
+fn spray(g: mut Game, w: World, at: vec2, sea: Sea, t: f32, dt: f32) {
+    let r = w.rider
+    let speed = abs(r.vel.x)
+    if r.grounded && w.phase != Phase::Wiped && dt > 0.0 {
+        // The wake: drops off the tail, more the faster.
+        let n = speed * dt * 3.5
+        var k = n + random(mut g)
+        while k >= 1.0 {
+            let tail = at + vec2(-0.85 * sign(r.vel.x), 0.05)
+            let v = vec2(
+                -r.vel.x * (0.15 + 0.2 * random(mut g)),
+                1.5 + speed * 0.18 * random(mut g),
+            )
+            let life = 0.35 + 0.3 * random(mut g)
+            let size = 0.02 + 0.025 * random(mut g)
+            drop(mut g, tail, v, life, size, kind: 0)
+            k -= 1.0
+        }
+        g.travelled += speed * dt
+        if g.travelled > 0.35 {
+            g.travelled = 0.0
+            if g.marks.len() >= MARKS { g.marks.remove(0) }
+            g.marks.push(vec4(at.x, 0.0, saturate(speed / 16.0) * 0.9 + 0.1, 0.0))
+        }
+    }
+    for i in 0..sea::SLOTS {
+        let s = sea.swells[i]
+        if s.w > 2.0 && s.z > 0.4 && random(mut g) < dt * 40.0 {
+            let x = s.x + sea.drift[i] * (t - sea.time) + (random(mut g) - 0.3) * 0.8
+            let top = vec2(x, level(sea, vec2(x, t)))
+            let v = vec2(sea.drift[i] * 0.4 - 3.0 * random(mut g), 1.5 + 2.5 * random(mut g))
+            let life = 0.6 + 0.4 * random(mut g)
+            drop(mut g, top, v, life, size: 0.025, kind: 0)
+            if random(mut g) < 0.3 { drop(mut g, top, v * 0.3, life: 1.2, size: 0.5, kind: 1) }
+        }
+    }
+    var kept: Vec<Drop> = Vec::new()
+    for d in g.drops {
+        var d = d
+        d.age += dt
+        if d.kind == 0 {
+            d.vel.y -= 22.0 * dt
+            d.vel *= 1.0 - 0.6 * dt
+        } else {
+            d.vel *= 1.0 - 1.5 * dt
+            d.size += dt * 0.4
+        }
+        d.at += d.vel * dt
+        let under = d.kind == 0 && d.vel.y < 0.0 && d.at.y < level(sea, vec2(d.at.x, t))
+        if d.age < d.life && !under { kept.push(d) }
+    }
+    g.drops = take kept
+    var marks: Vec<vec4> = Vec::new()
+    for m in g.marks {
+        var m = m
+        m.y += dt
+        if m.y < 5.0 { marks.push(m) }
+    }
+    g.marks = take marks
+}
+
+// The view follows the rider, ahead of it by its speed, rising with it, drawing back when fast.
+fn follow(g: mut Game, w: World, at: vec2, dt: f32) {
+    let r = w.rider
+    let speed = abs(r.vel.x)
+    let fast = saturate((speed - CRUISE) / 18.0)
+    g.zoom += (mix(VIEW, VIEW_FAST, fast) - g.zoom) * (1.0 - exp(-dt * 1.5))
+    let ahead = clamp(r.vel.x * 0.3, -2.0, 7.0) + 2.0
+    let target = vec2(at.x + ahead, max(at.y * 0.6, 0.0) + g.zoom * 0.1)
+    g.camera += (target - g.camera) * (1.0 - exp(-dt * 4.0))
+    g.shake = max(g.shake - dt * 1.2, 0.0)
+    // The board leans with the water under it, and with its flight in the air.
+    let want = if w.phase == Phase::Wiped { 0.0 } else if r.grounded {
+        atan(r.slope)
+    } else { atan2(r.vel.y, max(abs(r.vel.x), 4.0)) * 0.6 }
+    g.tilt += (want - g.tilt) * (1.0 - exp(-dt * 14.0))
+}
+
+fn present_frame(g: mut Game, w: World, at: vec2, sea: Sea, t: f32, width: u32, height: u32) {
+    let screen = vec2(f32(width), f32(height))
+    let scale = screen.y / g.zoom
+    var drops: Vec<vec4> = Vec::new()
+    for d in g.drops {
+        drops.push(vec4(d.at.x, d.at.y, d.size, d.age / d.life))
+        drops.push(vec4(d.vel.x, d.vel.y, f32(d.kind), 0.0))
+    }
+    if !drops.is_empty() { write(mut g.drop_buffer, 0, drops.clone()) }
+    if !g.marks.is_empty() { write(mut g.mark_buffer, 0, g.marks.clone()) }
+    hud(mut g, w, screen)
+    let run_count = g.text.runs.len() / 2
+    if !g.text.runs.is_empty() {
+        write(mut g.runs, 0, g.text.runs.clone())
+        write(mut g.segments, 0, g.text.segments.clone())
+    }
+    let r = w.rider
+    let neck = saturate((abs(r.vel.x) - 3.0) / 15.0)
+    let tumble = if w.phase == Phase::Wiped { w.since * 11.0 + 0.001 } else { 0.0 }
+    let shake = vec2(sin(g.clock * 91.0), cos(g.clock * 77.0)) * g.shake * 0.3
+    let title = match w.phase {
+        Phase::Title => 0.25,
+        Phase::Finished => saturate(w.since * 2.0) * 0.35,
+        _ => 0.0,
+    }
+    let view = View {
+        sea,
+        camera: g.camera + shake,
+        screen,
+        scale,
+        time: t,
+        clock: g.clock,
+        drops: f32(drops.len() / 2),
+        marks: f32(g.marks.len()),
+        runs: f32(run_count),
+        rider: vec4(at.x, at.y, g.tilt, neck),
+        motion: vec4(r.vel.x, r.vel.y, if r.grounded { 0.0 } else { 1.0 }, tumble),
+        mood: vec4(
+            saturate(g.clock * 1.5),
+            title,
+            if w.phase == Phase::Finished { 1.0 } else { 0.0 },
+            if w.fixed { 1.0 } else { 0.0 },
+        ),
+    }
+    let pass = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(
+        pass,
+        full.bind(z: 0.0),
+        shade.bind(
+            view,
+            drops: g.drop_buffer,
+            marks: g.mark_buffer,
+            runs: g.runs,
+            segments: g.segments,
+        ),
+        vertices: 3,
+    )
+    pass.present()
+}
+
+fn hud(g: mut Game, w: World, screen: vec2) {
+    g.text.clear()
+    let h = screen.y
+    let small = h * 0.036
+    let pad = h * 0.045
+    let white = vec3(1.0, 0.98, 0.94)
+    let sand = vec3(1.0, 0.86, 0.55)
+    let sea_green = vec3(0.55, 1.0, 0.85)
+    let blink = if fract(g.clock * 0.9) < 0.65 { 1.0 } else { 0.0 }
+    let course = if w.fixed { "FIXED HILLS" } else { "SWELLS" }
+    let k = if w.fixed { 1 } else { 0 }
+    match w.phase {
+        Phase::Title => {
+            g.text.write(
+                "SWELL",
+                vec2(screen.x * 0.5, h * 0.1),
+                h * 0.15,
+                white,
+                glow: 16.0,
+                align: 0.5,
+            )
+            g.text.write(
+                "HOLD SPACE TO RAISE A SWELL AND SURF IT",
+                vec2(screen.x * 0.5, h * 0.3),
+                small * 0.8,
+                sea_green,
+                glow: 4.0,
+                align: 0.5,
+            )
+            g.text.write(
+                "LET GO AND IT THROWS YOU",
+                vec2(screen.x * 0.5, h * 0.35),
+                small * 0.8,
+                sea_green,
+                glow: 4.0,
+                align: 0.5,
+            )
+            if blink > 0.5 {
+                g.text.write(
+                    "PRESS SPACE",
+                    vec2(screen.x * 0.5, h * 0.82),
+                    small * 1.1,
+                    sand,
+                    glow: 6.0,
+                    align: 0.5,
+                )
+            }
+            g.text.write(
+                f"TAB  COURSE: {course}",
+                vec2(screen.x * 0.5, h * 0.9),
+                small * 0.6,
+                white,
+                grey: 0.75,
+                align: 0.5,
+            )
+        },
+        _ => {
+            let time = clock_text(w.clock)
+            g.text.write(
+                time.as_str(),
+                vec2(screen.x - pad, pad),
+                small,
+                white,
+                glow: 3.0,
+                align: 1.0,
+            )
+            g.text.write(course, vec2(pad, pad), small * 0.6, white, grey: 0.7)
+            if w.phase == Phase::Finished {
+                g.text.write(
+                    "FINISH!",
+                    vec2(screen.x * 0.5, h * 0.16),
+                    h * 0.09,
+                    sand,
+                    glow: 14.0,
+                    align: 0.5,
+                )
+                g.text.write(
+                    f"TIME {time}",
+                    vec2(screen.x * 0.5, h * 0.3),
+                    small * 1.1,
+                    white,
+                    glow: 4.0,
+                    align: 0.5,
+                )
+                if g.best[k] > 0.0 {
+                    let best = clock_text(g.best[k])
+                    g.text.write(
+                        f"BEST {best}",
+                        vec2(screen.x * 0.5, h * 0.36),
+                        small * 0.8,
+                        sand,
+                        align: 0.5,
+                    )
+                }
+                if blink > 0.5 && w.since > 1.0 {
+                    g.text.write(
+                        "PRESS SPACE TO RIDE AGAIN",
+                        vec2(screen.x * 0.5, h * 0.44),
+                        small,
+                        sea_green,
+                        glow: 5.0,
+                        align: 0.5,
+                    )
+                }
+            }
+        },
+    }
+}
+
+// ---- the agreement test's probes ---------------------------------------------------------------
+
+/// A busy sea: the open sea's swell, the fixed course's hills, and three swells overlapping,
+/// one rising, one surging, one settling, at the narrowest and tallest the sim makes them.
+fn busy_sea() -> Sea {
+    var swells = [vec4(0.0); SLOTS]
+    swells[0] = vec4(40.0, sim::HALF_WIDTH, sim::HIGHEST, sim::RISE)
+    swells[1] = vec4(42.5, sim::HALF_WIDTH, sim::HIGHEST + 0.8, 4.0)
+    swells[2] = vec4(37.0, sim::HALF_WIDTH, 1.1, -1.5)
+    Sea { swells, drift: vec4(9.0, 21.0, 3.0, 0.0), time: 37.3, calm: 1.0, hills: 1.0 }
+}
+
+/// The busy sea's surface at `count` points from `from`, `step` apart, a moment after its time,
+/// on the GPU, as the shader draws it: `vec4(x, height, slope, 0)` each, into the probe buffer.
+@testing
+pub fn probe_sea(g: mut Game, from: f32, step: f32, count: u32) {
+    var out: GpuBuffer<vec4> = buffer(count)
+    dispatch(
+        sample_sea.bind(busy_sea(), from, step, count, out: mut out),
+        groups: (count + 63) / 64,
+    )
+    g.probe = take out
+}
+
+/// The busy sea's surface at `x`, on the CPU, as the sim reads it.
+@testing
+pub fn sea_on_cpu(x: f32) -> vec4 {
+    let sea = busy_sea()
+    let s = sea::surface_at(sea, x, sea.time + 0.004)
+    vec4(x, s.height, s.slope, 0.0)
+}
+
+@compute(64)
+fn sample_sea(sea: Sea, from: f32, step: f32, count: u32, out: mut Slots<vec4>, id: GlobalId) {
+    if id.x < count {
+        let x = from + f32(id.x) * step
+        let (h, g) = value_and_gradient(|q: vec2| level(sea, q), vec2(x, sea.time + 0.004))
+        out[id] = vec4(x, h, g.x, 0.0)
+    }
+}

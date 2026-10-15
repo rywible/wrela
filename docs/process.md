@@ -1874,6 +1874,56 @@ a tab is reloaded. The browser host's environment now says whether the page load
 tab (the [Navigation Timing](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceNavigationTiming/type)
 type), and the console's 30-minute rule and its stored time are gone.
 
+## Swell, a tortoise surfs a sea it raises, 2026-10-15
+
+Ryan asked for a 2D game like Leapling that is genuinely outstanding and fun, and leans on what
+wrela does unusually. A council (Claude Opus 5.5 leading; GPT-6.1-Sol and GPT-6-Astra
+reviewing, two rounds) weighed four ideas. Both reviewers proposed the same one on their own:
+the player shapes the ground under a moving rider. Ryan named it Swell, asked for a tortoise
+on a surfboard (not a sea turtle, and nothing like Pixar's surfing sea turtle), water effects
+that are "really outstanding and sick", and a build on a worktree off `main`. Claude Code
+(Opus 5.5) designed and built it as a prototype for Ryan to play; it isn't in the console's
+catalogue.
+
+**The verb.** The sea is one function of x and time (`games/swell/sea.wrela`). The sim reads
+its height, and the compiler's derived slope and rise, for the contact rule; the shader draws
+the same function. Hold to raise a swell behind the rider: it keeps pace, so the rider surfs
+its face, faster the longer it's held (up to 5 units a second above its speed when raised).
+Let go, and the swell surges forward until its crest has passed under the rider: passing fast,
+it throws the rider into the air. Three swells stand at most. A first version raised a hill
+ahead of the rider; the tests showed it gave no speed (the water's lift was taken back as it
+settled), and a rider who outran its swell was never thrown, so the swell became a wave that
+travels.
+
+**The control.** The council asked for the same course without the verb, to test whether the
+verb carries the fun. Flat water and fixed ramps can't give speed, so they'd lose by
+construction; the control has rolling hills and a dive instead (heavier on the water while
+held), a strong design of its own. Test bots finish both courses; the hills' heights and widths
+and the rocks' places came from a search over layouts (a Python script outside the repo, about
+200 runs of the bot tests) for the fewest wipeouts on both.
+
+**The look.** One fragment shader: a late-afternoon sky with clouds and a low sun, the open sea
+to the horizon with the sun's path glittering, and the near sea with light through its swells,
+depth that drinks the reds first, caustics, shafts of light, bubbles, foam on surging crests and
+in the board's track, and spray the frames throw. The tortoise is an original design: an old
+desert tortoise with a tall amber dome in plates with growth rings, stout legs, a wrinkled neck
+that comes further out the faster it goes, and a heavy-lidded eye, on a longboard. Wiped out, it
+tumbles in its shell. Sound is synthesized as it plays: the sea, the board's rush, a swell
+rising, splashes and a marimba's notes. Nothing comes from a file or a generative model.
+
+**Design references** (named, not traced; no art, code or level taken):
+
+| Reference | What it teaches |
+|---|---|
+| *Tiny Wings* (Andreas Illiger, 2011) | Momentum over rolling hills: dive down, let go on the way up, a clean landing on a far face. The fixed course's control. |
+| *Wavespark* (Nathan McCoy, about 2010), which *Tiny Wings* is said to follow | One-button gravity over terrain. |
+| *Kirby: Canvas Curse* (HAL Laboratory, 2005) | The player makes the path a rider who can't jump rides on, in a limited supply that fades: Swell's three swells, which settle. |
+| *Raise It!* (Ben Fulkerson-Bird, a prototype on itch.io) | Raising the ground under a rider who can't jump, quickly to launch: the nearest prior art for the verb. |
+| *Waveform* (Eden Industries, 2012) | Shaping the wave a rider follows. |
+
+**Engine.** Leapling's stroke type moved to `engine::letters` with its shader function and
+`clock_text`, so both games share one copy; Leapling's pixels are unchanged.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

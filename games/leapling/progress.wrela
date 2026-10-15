@@ -1,5 +1,6 @@
 // What the game keeps between visits, and how the console's save list describes it. The game
 // and its session program (session/) both read it.
+use engine::letters::clock_text
 use level::COURSES
 use std::serialize::{LoadError, Serialize, load}
 
@@ -22,15 +23,6 @@ pub fn read(bytes: take Vec<u8>) -> Option<Progress> {
         return None
     }
     Some(p.clone())
-}
-
-// A time as minutes, seconds and tenths: 1:05.3.
-pub fn clock_text(seconds: f32) -> String {
-    let s = u32(seconds)
-    let tenths = u32(seconds * 10.0) % 10
-    let secs = s % 60
-    let pad = if secs < 10 { "0" } else { "" }
-    f"{s / 60}:{pad}{secs}.{tenths}"
 }
 
 // One line for the save list.

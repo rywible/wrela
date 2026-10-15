@@ -4,11 +4,11 @@
 // Keys: the arrows or A and D to move, Space, W, Z or the up arrow to jump, Shift or X to run,
 // Enter to start and to pause. A controller: the stick or pad, A to jump, X to run, Start.
 use engine::plant::full
-use engine::letters::{Typeset, typeset}
+use engine::letters::{Typeset, clock_text, typeset}
 use level::ROWS
 use look::{View, shade}
 use platform::presentation::Link
-use progress::{Progress, clock_text}
+use progress::Progress
 use sim::{Controls, Cue, Phase, STEP, TALL, World, step, world}
 use std::audio::RingWriter
 use std::gpu::{GpuBuffer, begin_screen_pass, buffer_of, draw, write}

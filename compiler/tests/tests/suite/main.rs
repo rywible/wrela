@@ -63,6 +63,7 @@ mod std_docs;
 mod studio;
 mod subjects;
 mod sweep;
+mod swell;
 mod test_items;
 mod text;
 mod threads;

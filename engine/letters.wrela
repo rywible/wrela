@@ -126,6 +126,15 @@ impl Typeset {
     }
 }
 
+/// A time as minutes, seconds and tenths: 1:05.3.
+pub fn clock_text(seconds: f32) -> String {
+    let s = u32(seconds)
+    let tenths = u32(seconds * 10.0) % 10
+    let secs = s % 60
+    let pad = if secs < 10 { "0" } else { "" }
+    f"{s / 60}:{pad}{secs}.{tenths}"
+}
+
 /// `col` with the runs of `runs` and `segments` (as `Typeset` sets them) drawn over it at pixel
 /// `px`: a shadow below each stroke, the stroke in its tint and grey, and its glow.
 pub fn type_over(col: vec3, px: vec2, count: f32, runs: [vec4], segments: [vec4]) -> vec3 {
@@ -185,6 +194,7 @@ fn text_sets_as_segments_inside_its_box() {
             )
         }
     }
+    assert(clock_text(65.3) == "1:05.3")
     // Lower case is the same as capitals.
     var u = typeset()
     u.write("leap 1:2", vec2(100.0, 50.0), 30.0, vec3(1.0), align: 0.5)
