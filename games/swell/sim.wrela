@@ -39,6 +39,11 @@ const G_AIR: f32 = 26.0
 const PUSH: f32 = 4.2
 const DRAG: f32 = 0.1
 const QUAD: f32 = 0.004
+// The pocket: within this of the curl the face pushes harder, up to this much more (the risk and
+// the reward of riding close to it). The flats before the wave drag this much harder.
+const POCKET: f32 = 18.0
+const POCKET_PUSH: f32 = 0.8
+const FLATS: f32 = 3.0
 pub const TOP_SPEED: f32 = 30.0
 // Carving: the steepest heading up or down the face (radians from down the line), how fast it
 // turns, and how fast it relaxes down the line when let be.
@@ -62,7 +67,7 @@ const UP_MOST: f32 = 0.45
 const TUMBLE: f32 = 0.9
 const KEPT: f32 = 0.35
 // The curl: its speed, rising with the course's difficulty, and how close it may come.
-const CURL_SPEED: f32 = 10.0
+const CURL_SPEED: f32 = 11.0
 const CURL_RAMP: f32 = 5.0
 const CATCH: f32 = 2.0
 // The rider's body against hazards: its radius, and its height above the board.
@@ -361,8 +366,10 @@ fn carve(w: mut World, held: u32) {
     let along = vec2(cos(r.heading), sin(r.heading))
     let grade = dot(f.slope, along)
     let v = r.speed
-    var a = -G * grade / sqrt(1.0 + grade * grade) + PUSH * max(f.slope.y, 0.0)
-    a -= (DRAG * v + QUAD * v * v) * (if tumbling { 3.0 } else { 1.0 })
+    let pocket = 1.0 + POCKET_PUSH * saturate(1.0 - (r.at.x - w.curl) / POCKET)
+    var a = -G * grade / sqrt(1.0 + grade * grade) + PUSH * pocket * max(f.slope.y, 0.0)
+    let flats = 1.0 + (FLATS - 1.0) * (1.0 - smoothstep(-1.0, 1.5, p.y))
+    a -= (DRAG * v + QUAD * v * v) * (if tumbling { 3.0 } else { 1.0 }) * flats
     r.speed = clamp(v + a * STEP, 0.0, TOP_SPEED)
     let flat = along * r.speed
     let next = p + flat * STEP

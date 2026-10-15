@@ -32,10 +32,26 @@ use std::gpu::{
 use std::transform::look_at
 use wave::{Wave, face, height, lip}
 
-const FOV: f32 = 1.0
-// The camera: out in front of the face, behind the rider, looking down the line across the face.
-const EYE_FROM: vec3 = vec3(-8.0, 2.6, -7.5)
-const LOOK_AT: vec3 = vec3(12.0, 1.2, 2.5)
+const FOV: f32 = 0.95
+// How much larger the tortoise is drawn than its body.
+const DRAWN: f32 = 1.6
+
+/// The three-quarter camera: on the shore side of the wave, up and out in front of its face,
+/// looking at it as it rolls in, a little ahead of the rider down the line so what's coming has
+/// the screen. It holds the wave nearly still on the screen and lets the rider move about its
+/// face: it follows the rider down the line, and only partly up the face and into the air.
+fn camera_of(at: vec3) -> (vec3, vec3) {
+    let eye = vec3(at.x - 14.0, 9.0 + at.y * 0.55, -15.0 + at.z * 0.2)
+    let look = vec3(at.x + 10.0, 2.5 + at.y * 0.7, 4.0 + at.z * 0.25)
+    (eye, look)
+}
+
+/// The view is drawn mirrored across x, so the rider goes from left to right on the screen as
+/// the eye looks out to sea at the wave's face.
+fn mirrored(p: vec3) -> vec3 {
+    vec3(-p.x, p.y, p.z)
+}
+
 const PARTS: u32 = 64
 const CLOSEOUTS: u32 = 8
 const WASHES: u32 = 40
@@ -91,6 +107,8 @@ pub struct Game {
     clock: f32,
     eye: vec3,
     look: vec3,
+    // How hard the view shakes, dying away.
+    shake: f32,
     width: u32,
     height: u32,
     depth: DepthTexture,
@@ -131,8 +149,9 @@ pub fn init() -> Game {
         snaps: Snapshots::new(take latest, hz: HZ),
         last: None,
         clock: 0.0,
-        eye: first.rider.at + EYE_FROM,
-        look: first.rider.at + LOOK_AT,
+        eye: camera_of(first.rider.at).0,
+        look: camera_of(first.rider.at).1,
+        shake: 0.0,
         width: 0,
         height: 0,
         depth: depth_texture(width: 1, height: 1),
@@ -207,13 +226,15 @@ fn happenings(g: mut Game, w: World, at: vec3) {
         let _ = g.sound.push(sound::LAUNCH)
     }
     if t.landings > s.landings {
-        burst(mut g, at, n: 26, speed: 5.0, carry: carry)
+        burst(mut g, at, n: 40, speed: 6.5, carry: carry)
+        g.shake = max(g.shake, 0.5)
         let _ = g.sound.push(sound::LAND | (180 << 8))
     }
     if t.clean > s.clean { let _ = g.sound.push(sound::CLEAN) }
     if t.bails > s.bails { let _ = g.sound.push(sound::BAIL) }
     if t.wipeouts > s.wipeouts || t.caught > s.caught {
-        burst(mut g, at, n: 60, speed: 9.0, carry: vec3(0.0, 2.0, 0.0))
+        burst(mut g, at, n: 90, speed: 10.0, carry: vec3(0.0, 2.0, 0.0))
+        g.shake = 1.0
         let _ = g.sound.push(sound::WIPEOUT)
     }
     if t.runs > s.runs {
@@ -326,8 +347,7 @@ fn spray(g: mut Game, s: Shown, wv: Wave, at: vec3, dt: f32) {
 
 // The camera behind the rider, looking down the line, the face rising to its right.
 fn follow(g: mut Game, w: World, at: vec3, dt: f32) {
-    let want_eye = at + EYE_FROM
-    let want_look = at + LOOK_AT
+    let (want_eye, want_look) = camera_of(at)
     let k = 1.0 - exp(-dt * 5.0)
     let ky = 1.0 - exp(-dt * (if w.rider.grounded { 4.0 } else { 1.5 }))
     g.eye = vec3(
@@ -340,6 +360,7 @@ fn follow(g: mut Game, w: World, at: vec3, dt: f32) {
         mix(g.look.y, want_look.y, ky),
         mix(g.look.z, want_look.z, k),
     )
+    g.shake = max(g.shake - dt * 2.5, 0.0)
     // Never under the sea.
     g.eye.y = max(g.eye.y, height(wave_of(w), g.eye.xz) + 1.0)
 }
@@ -394,6 +415,12 @@ fn tortoise(s: Shown, wv: Wave, at: vec3) -> Vec<Part> {
         u = normalize(up * cos(roll) + right * sin(roll))
         right = normalize(cross(forward, u))
     }
+    // On the face it leans into its carve: toward the face going up it, away going down.
+    if r.grounded && !over && r.tumble == 0.0 {
+        let lean = clamp(s.heading * 0.5, -0.45, 0.45)
+        u = normalize(u * cos(lean) + right * sin(lean))
+        right = normalize(cross(forward, u))
+    }
     let frame = mat3(forward, u, right)
     let tucked = r.shell || r.tumble > 0.0 || over
     let stretch = saturate((r.speed - 8.0) / 16.0)
@@ -425,6 +452,19 @@ fn tortoise(s: Shown, wv: Wave, at: vec3) -> Vec<Part> {
     }
     parts.push(part(frame, at, vec3(0.0, 0.42, 0.0), vec3(0.66, 0.09, 0.54), RIM))
     parts.push(part(frame, at, vec3(0.0, 0.52, 0.0), vec3(0.62, 0.47, 0.5), SHELL))
+    // Drawn larger than the body the hazards meet, so it reads at the camera's distance (a near
+    // miss looks like one); crouching as it lands.
+    let crouch = if r.grounded { 0.3 * exp(-r.landed * 9.0) } else { 0.0 }
+    for i in 0..parts.len() {
+        var p = parts[i]
+        let off = p.centre - at
+        let high = dot(off, u)
+        p.centre = at + (off - u * (high * crouch)) * DRAWN
+        p.ax.w *= DRAWN
+        p.ay.w *= DRAWN
+        p.az.w *= DRAWN
+        parts[i] = p
+    }
     parts
 }
 
@@ -484,11 +524,24 @@ fn draw_frame(g: mut Game, s: Shown, wv: Wave, at: vec3, width: u32, height: u32
     }
     let w = s.world
     let aspect = f32(width) / f32(height)
-    let view = look_at(g.eye, g.look)
+    // The view in mirrored space, and its basis taken back to the world's.
+    let shake = vec3(sin(g.clock * 83.0), cos(g.clock * 71.0), 0.0) * g.shake * 0.35
+    let eye_m = mirrored(g.eye + shake)
+    let look_m = mirrored(g.look + shake)
+    let flip = mat4(
+        vec4(-1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0),
+    )
+    let view = look_at(eye_m, look_m) * flip
     let proj = reversed_perspective(FOV, aspect, 0.2)
-    let forward = normalize(g.look - g.eye)
-    let right = normalize(cross(forward, vec3(0.0, 1.0, 0.0)))
-    let up = cross(right, forward)
+    let forward_m = normalize(look_m - eye_m)
+    let right_m = normalize(cross(forward_m, vec3(0.0, 1.0, 0.0)))
+    let up_m = cross(right_m, forward_m)
+    let forward = mirrored(forward_m)
+    let right = mirrored(right_m)
+    let up = mirrored(up_m)
     var parts = tortoise(s, wv, at)
     var closeouts: Vec<vec4> = Vec::new()
     var washes: Vec<vec4> = Vec::new()
@@ -505,7 +558,7 @@ fn draw_frame(g: mut Game, s: Shown, wv: Wave, at: vec3, width: u32, height: u32
     if !drops.is_empty() { write(mut g.drop_buffer, 0, drops.clone()) }
     let scene = Scene {
         view_proj: proj * view,
-        eye: g.eye,
+        eye: g.eye + shake,
         time: s.time,
         forward,
         tan_half: tan(FOV * 0.5),
@@ -514,7 +567,7 @@ fn draw_frame(g: mut Game, s: Shown, wv: Wave, at: vec3, width: u32, height: u32
         up,
         clock: g.clock,
         wave: wv,
-        grid_x: g.eye.x,
+        grid_x: g.look.x,
         closeouts: f32(closeouts.len()),
         marks: f32(g.marks.len()),
         drops: f32(drops.len() / 2),
@@ -556,7 +609,7 @@ fn draw_frame(g: mut Game, s: Shown, wv: Wave, at: vec3, width: u32, height: u32
         vertices: part_vertices(),
         instances: count,
         depth: NEAREST,
-        cull: Cull::Back,
+        cull: Cull::Front,
     )
     draw(
         pass,
@@ -565,7 +618,7 @@ fn draw_frame(g: mut Game, s: Shown, wv: Wave, at: vec3, width: u32, height: u32
         vertices: part_vertices(),
         instances: count,
         depth: NEAREST,
-        cull: Cull::Front,
+        cull: Cull::Back,
     )
     draw(
         pass,
@@ -598,6 +651,9 @@ fn draw_frame(g: mut Game, s: Shown, wv: Wave, at: vec3, width: u32, height: u32
             dim: dim,
             fade: saturate(g.clock * 1.5),
             clock: g.clock,
+            danger: if w.phase == Phase::Riding {
+                saturate(1.0 - (w.rider.at.x - w.curl - 2.0) / 16.0)
+            } else { 0.0 },
             runs_count: f32(run_count),
             runs: g.runs,
             segments: g.segments,
@@ -691,28 +747,46 @@ fn hud(g: mut Game, w: World, screen: vec2) {
                     glow: 6.0 * blink,
                 )
             }
-            // The last trick banked, for a moment.
-            let fresh = w.rider.landed < 1.6 && w.rider.grounded && w.rider.tumble == 0.0
+            // The spin as it's spun, and the last trick banked, popping up, for a moment.
+            let r = w.rider
+            if w.phase == Phase::Riding && !r.grounded && r.spin > 0.3 {
+                let degrees = u32(r.spin * 57.29578 / 30.0) * 30
+                let colour = if r.shell { sea_green } else { white }
+                g.text.write(
+                    f"{degrees}",
+                    vec2(mid, h * 0.16),
+                    small * 1.6,
+                    colour,
+                    glow: 10.0,
+                    align: 0.5,
+                )
+            }
+            let fresh = r.landed < 1.6 && r.grounded && r.tumble == 0.0
             if w.phase == Phase::Riding && fresh && w.last_points > 0 {
+                let pop = 1.0 + 0.6 * exp(-r.landed * 7.0)
                 let name = if w.last_turns > 0 { f"SHELL SPIN {w.last_turns * 360}" } else {
                     String::from("AIR")
                 }
                 g.text.write(
                     name.as_str(),
-                    vec2(mid, h * 0.2),
-                    small * 1.1,
+                    vec2(mid, h * 0.15),
+                    small * 1.8 * pop,
                     sand,
-                    glow: 8.0,
+                    glow: 14.0,
                     align: 0.5,
                 )
+                let combo = if w.combo > 1 { f"  X{w.combo}" } else { String::new() }
                 g.text.write(
-                    f"+{w.last_points}",
-                    vec2(mid, h * 0.27),
-                    small * 0.9,
+                    f"+{w.last_points}{combo}",
+                    vec2(mid, h * 0.15 + small * 2.3 * pop),
+                    small * 1.2 * pop,
                     white,
-                    glow: 4.0,
+                    glow: 6.0,
                     align: 0.5,
                 )
+            }
+            if w.phase == Phase::Riding && r.tumble > 0.0 {
+                g.text.write("BAIL", vec2(mid, h * 0.16), small * 1.6, red, glow: 10.0, align: 0.5)
             }
             if w.phase == Phase::Over {
                 let why = if w.rider.at.x < w.curl + 3.0 { "CAUGHT BY THE CURL" } else {
@@ -840,8 +914,8 @@ pub fn runs_started(g: mut Game) -> f32 {
 
 // Whether `p` is in the camera's view with the rider at `at`, and not hidden by the sea.
 fn in_sight(wv: Wave, at: vec3, p: vec3) -> bool {
-    let eye = at + EYE_FROM
-    let forward = normalize(at + LOOK_AT - eye)
+    let (eye, look) = camera_of(at)
+    let forward = normalize(look - eye)
     let right = normalize(cross(forward, vec3(0.0, 1.0, 0.0)))
     let up = cross(right, forward)
     let d = p - eye

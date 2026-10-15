@@ -1888,6 +1888,17 @@ surfing down the face of a giant wave, obstacles coming at you and getting harde
 score from tricks and how long you ride. A second council (the same roster, two rounds) shaped
 the 3D plan; v1 stays in the branch's history. It isn't in the console's catalogue.
 
+Ryan then judged the first 3D build still bad, asked for a harsh critique, and asked for a
+three-quarter perspective with the wave moving forward. Claude's critique: the wave read as a
+static ramp; the camera, behind the rider, showed a speck of shell; the curl was never seen;
+hazards were dark lumps; nothing hit. The camera now stands on the shore side of the wave, up and
+out in front of its face and a little behind the rider, looking ahead along the face (drawn
+mirrored, so the rider goes left to right); the sea streams in to the wave and its face's water
+is drawn up; closeouts ahead pitch their lips over the upper face; the curl closing in boils
+whitewater in from the left edge of the screen; the tortoise is drawn larger, leans into its
+carves and crouches as it lands; spins count up on the screen and banked tricks pop up. The ride
+gained a pocket (the face pushes harder near the curl) and slow flats before the wave.
+
 **The ride.** One wave, in its own frame (`games/swell/wave.wrela`): x down the line, z up the
 face, its height one function the sim rides and the vertex shader lifts the sea's grid by. The
 reviewers pointed out that a height function can't curl over, so the lip and the whitewater are
@@ -1904,10 +1915,11 @@ follow it at any speed up to the top; rocks and logs only outside it; closeouts 
 corridor runs low, so the lower face stays open. Difficulty rises over the first 2,400 and stops
 there, where a test bot survives; after that the course keeps varying, no harder.
 
-**The look.** The sea is a grid (160 × 192 cells, finest at the eye and on the upper face) lifted
-by the height function, shaded per fragment: deep water, the sky in it, light coming green
-through the thin crest when the eye looks toward the low sun behind the wave, foam on the lip, in
-the board's track, round rocks and over closeouts, and spray. The lip is a ribbon throwing over
+**The look.** The sea is a grid (200 × 192 cells, finest where the eye looks and on the upper
+face) lifted by the height function, shaded per fragment: deep water, the sky in it, light coming
+green through the thin crest when the eye looks toward the low sun behind the wave (no sun on the
+water in its shadow), foam as a warped cellular lace (on the lip, in the board's track, round
+rocks and logs, over closeouts, and in lines on the sea coming in), and spray. The lip is a ribbon throwing over
 the face near the curl and over closeouts ahead; the whitewater a churning tube behind the curl.
 Rocks, logs and the tortoise are lit ellipsoids with ink outlines: the tortoise an old desert
 tortoise, a tall amber dome in plates, stout legs, a neck that comes out further the faster it
@@ -1942,10 +1954,12 @@ state between snapshots, adjacent or not. Suite: a scripted ride that launches, 
 Shell Spin, bails and starts again (checked), replaying from its tick log with 1, 2 and 8
 helpers, a changed record failing at its tick; the same ride in Chrome, the native host's tick for
 tick; on the M4's GPU the face within 2.4e-6 in height and 3e-6 in slope of the CPU's. On this
-MacBook Air M4 at 1080p: `tools/wrela profile` (native, Metal), 4.6 ms of GPU time a frame at the
-median and 6.1 ms at the 95th percentile; Chrome (frames back to back), 4.5 and 6.0; the sim's
-tick 0.005 ms at the median; cold, all eight pipelines made in 242 ms and the first frame 196 ms
-after the page opened, about 620 KB fetched from this machine. Chrome's paced frame rate and the
+MacBook Air M4 at 1080p, with the three-quarter camera on a 10 s scripted run: `tools/wrela
+profile` (native, Metal), 6.0 ms of GPU time a frame at the median and 7.8 ms at the 95th
+percentile; Chrome (frames back to back), 5.9 and 7.7 (the first 3D camera's were 4.6 and 6.1
+native; the foam's lace is most of the difference); the sim's tick 0.005 ms at the median; cold
+(the first 3D build), all eight pipelines made in 242 ms and the first frame 196 ms after the
+page opened, about 620 KB fetched from this machine. Chrome's paced frame rate and the
 Linux GPUs weren't measured. Not checked: whether it's fun; that's Ryan's playtest.
 
 ## Keeping this record

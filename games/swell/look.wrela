@@ -31,7 +31,7 @@ pub struct Scene: Copy + GpuData {
 }
 
 // The sun: low, beyond the wave and a little down the line, so the light comes through its lip.
-const SUN: vec3 = vec3(0.32, 0.26, 0.91)
+const SUN: vec3 = vec3(0.3, 0.13, 0.95)
 const SUN_LIGHT: vec3 = vec3(1.0, 0.86, 0.62)
 
 // ---- the sky and the open sea --------------------------------------------------------------------
@@ -56,7 +56,7 @@ fn sky(d: vec3, clock: f32) -> vec3 {
     col = mix(col, vec3(0.5, 0.64, 0.84), smoothstep(0.04, 0.3, up))
     col = mix(col, vec3(0.16, 0.32, 0.62), smoothstep(0.3, 0.9, up))
     col += SUN_LIGHT * (pow(toward, 8.0) * 0.45 + pow(toward, 200.0) * 0.8)
-    col = mix(col, vec3(1.0, 0.97, 0.9), smoothstep(0.9993, 0.9996, toward))
+    col = mix(col, vec3(5.0, 4.6, 3.8), smoothstep(0.99984, 0.9999, toward))
     // Clouds in long bands, lit gold from the sun's side.
     let cp = vec2(d.x, d.z) / (up + 0.08)
     let n = fbm2(cp * 0.9 + vec2(clock * 0.01, 0.0), 4)
@@ -85,24 +85,26 @@ pub fn behind(v: VertexIndex) -> ClipPosition {
 // ---- the sea's grid ----------------------------------------------------------------------------
 
 /// The sea's grid: `ACROSS` cells down the line, `UP` across the face.
-pub const ALONG: u32 = 160
+pub const ALONG: u32 = 200
 pub const ACROSS: u32 = 192
-const BEHIND_EYE: f32 = 16.0
-const REACH: f32 = 280.0
-const BUNCH: f32 = 4.0
+const SPAN_ALONG: f32 = 160.0
+const SQUEEZE_ALONG: f32 = 2.6
 const MIDFACE: f32 = 7.0
-const SPAN: f32 = 150.0
-const SQUEEZE: f32 = 4.5
+const SPAN: f32 = 320.0
+const SQUEEZE: f32 = 5.4
 
-/// Where the grid's line `u` (0 to 1) lies down the line: finest at the eye.
-pub fn grid_x(start: f32, u: f32) -> f32 {
-    start - BEHIND_EYE + (BEHIND_EYE + REACH) * (exp(BUNCH * u) - 1.0) / (exp(BUNCH) - 1.0)
+fn stretch(k: f32, t: f32) -> f32 {
+    (exp(k * t) - exp(-k * t)) / (exp(k) - exp(-k))
+}
+
+/// Where the grid's line `u` (0 to 1) lies down the line: finest where the eye looks, `centre`.
+pub fn grid_x(centre: f32, u: f32) -> f32 {
+    centre + SPAN_ALONG * stretch(SQUEEZE_ALONG, 2.0 * u - 1.0)
 }
 
 /// Where the grid's line `v` (0 to 1) lies across the face: finest on the face.
 pub fn grid_z(v: f32) -> f32 {
-    let k = SQUEEZE * (2.0 * v - 1.0)
-    MIDFACE + SPAN * (exp(k) - exp(-k)) / (exp(SQUEEZE) - exp(-SQUEEZE))
+    MIDFACE + SPAN * stretch(SQUEEZE, 2.0 * v - 1.0)
 }
 
 /// Grid point `(i, j)` in the world.
@@ -140,10 +142,46 @@ pub fn sea_vertex(v: VertexIndex, s: Scene) -> SeaVertex {
     SeaVertex { clip: ClipPosition { position: s.view_proj * vec4(p, 1.0) }, world: p }
 }
 
-// Lace: foam's pattern, holes in white, drifting.
-fn lace(q: vec2, t: f32) -> f32 {
-    let n = fbm2(vec2(q.x * 0.8 - t * 0.3, q.y * 1.6 + t * 0.5), 4)
-    smoothstep(0.45, 0.62, n) * (0.55 + 0.45 * noise2(q * 3.0 + vec2(t, 0.0)))
+// The sea comes on at this speed in the wave's frame (it runs into the wave from the shore side).
+const WAVE_SPEED: f32 = 6.0
+
+// Foam's lattice: cells of clear water parted by threads of foam (a cellular pattern: the gap
+// between a point's nearest and second-nearest cell centres is small along the threads). As
+// `amount` rises the threads thicken until the foam is solid.
+fn cells(q: vec2) -> f32 {
+    let i = floor(q)
+    var first = 9.0
+    var second = 9.0
+    for y in -1..2 {
+        for x in -1..2 {
+            let c = i + vec2(f32(x), f32(y))
+            let jitter = vec2(hash2(i32(c.x), i32(c.y)), hash2(i32(c.x) + 101, i32(c.y) + 57))
+            let d = length(q - c - jitter)
+            if d < first {
+                second = first
+                first = d
+            } else if d < second {
+                second = d
+            }
+        }
+    }
+    second - first
+}
+
+fn lace(q: vec2, t: f32, amount: f32) -> f32 {
+    // Warped, so the threads wander and the cells aren't a net; the threads thick and thin by
+    // place, and broken where they're thin.
+    let warp = vec2(noise2(q * 0.7 + vec2(t * 0.1, 0.0)), noise2(q * 0.7 + vec2(5.2, 1.3))) -
+        vec2(0.5)
+    let drift = q + warp * 1.6
+    let fine = cells(drift * 1.9)
+    let coarse = cells(drift * 0.6 + vec2(3.7, 1.3))
+    let vary = 0.4 + 0.9 * noise2(q * 1.3 + vec2(9.0, t * 0.2))
+    let width = mix(0.03, 0.9, amount * amount) * vary
+    let fine_threads = 1.0 - smoothstep(width * 0.3, width, fine)
+    let coarse_threads = (1.0 - smoothstep(width * 0.5, width * 1.8, coarse)) * 0.8
+    let broken = smoothstep(0.25, 0.6, noise2(q * 2.3 - vec2(0.0, t * 0.3)) + amount * 0.6)
+    saturate(max(fine_threads * 0.75, coarse_threads) * broken * (0.45 + amount))
 }
 
 /// How much foam lies on the sea at `(x, z)`: over the slumped wave behind the curl, along the lip,
@@ -154,14 +192,15 @@ fn foam_at(s: Scene, x: f32, z: f32, closeouts: [vec4], wash: [vec4], marks: [ve
     let l = lip(w, x)
     var f = (1.0 - standing(w, x)) * 1.8
     f += smoothstep(l - 1.2, l, z) * (1.0 - smoothstep(l, l + 4.0, z)) * 0.8
-    // The foam sliding down the face from the lip, in streaks.
-    f += smoothstep(0.55, 1.0, z / l) *
-        smoothstep(0.55, 0.8, noise2(vec2(x * 0.25, z * 0.08 - s.time * 0.4))) *
-        0.5
-    // Lines of old foam drifting on the flat sea before the wave.
+    // Thin streaks of foam on the upper face, along its fall line, drawn up into the lip.
+    let streak = noise2(vec2(x * 1.6, z * 0.1 - s.time * 0.35)) * noise2(vec2(x * 0.4, 3.0))
+    f += smoothstep(0.6, 1.0, z / l) * smoothstep(0.5, 0.66, streak) * 0.3
+    // Long lines of old foam on the sea before the wave, parallel to it, coming in to it as it
+    // comes on.
     if z < 0.0 {
-        let line = noise2(vec2(x * 0.12, z * 0.9 + s.time * 0.2)) * noise2(vec2(x * 0.5, z * 2.0))
-        f += smoothstep(0.32, 0.5, line) * 0.45 * smoothstep(-60.0, -4.0, z)
+        let line = noise2(vec2(x * 0.05, (z - s.time * WAVE_SPEED) * 0.8)) *
+            noise2(vec2(x * 0.3, (z - s.time * WAVE_SPEED) * 0.25))
+        f += smoothstep(0.39, 0.45, line) * 0.25 * smoothstep(-80.0, -3.0, z)
     }
     for i in 0..u32(s.closeouts) {
         let c = closeouts[i]
@@ -214,7 +253,7 @@ pub fn sea_shade(f: SeaVertex, s: Scene, closeouts: [vec4], wash: [vec4], marks:
         rise * on_face + 0.25 * rise * (1.0 - on_face),
     )
     // Streaks running down the face, the water's grain.
-    let streak = noise2(vec2(p.x * 0.6, p.y * 0.12 + s.time * 0.5))
+    let streak = noise2(vec2(p.x * 0.6, p.y * 0.12 - s.time * 0.5))
     body *= 0.85 + 0.3 * streak * on_face
     let thin = smoothstep(0.72, 1.0, p.z / l) * on_face
     // Light comes through where the eye looks toward the sun through the water.
@@ -227,16 +266,22 @@ pub fn sea_shade(f: SeaVertex, s: Scene, closeouts: [vec4], wash: [vec4], marks:
     body += vec3(0.95, 0.85, 0.45) * smoothstep(0.85, 1.0, p.z / l) * thin * 0.35
     var col = mix(body, reflected, fres)
     // The sun's glint.
+    // The sun's glint, where the sun reaches: not the water before the wave, in its shadow.
     let half = normalize(normalize(SUN) + to_eye)
-    col += SUN_LIGHT * pow(max(dot(n, half), 0.0), 220.0) * 2.5
+    let sunlit = smoothstep(l - 1.0, l + 1.0, p.z)
+    col += SUN_LIGHT * pow(max(dot(n, half), 0.0), 220.0) * 2.5 * sunlit
     // Foam lies on top, lit by the sun and the sky.
-    let foam = foam_at(s, p.x, p.z, closeouts, wash, marks) * lace(p.xz * 2.0, s.time)
+    let amount = foam_at(s, p.x, p.z, closeouts, wash, marks)
+    // Before the wave the sea streams in to it as it comes on; on its face, the water is drawn up.
+    let flow = if p.z < l { vec2(0.0, -s.time * WAVE_SPEED) } else { vec2(0.0) }
+    var foam = 0.0
+    if amount > 0.02 { foam = lace(p.xz + flow, s.time, amount) * smoothstep(0.02, 0.15, amount) }
     let lit_foam = mix(
         vec3(0.62, 0.72, 0.8),
         vec3(1.0, 0.97, 0.9),
         saturate(dot(n, normalize(SUN)) * 0.6 + 0.6),
     )
-    col = mix(col, lit_foam, saturate(foam * 1.6))
+    col = mix(col, lit_foam, saturate(foam))
     vec4(fog(col, p, s), 0.0)
 }
 
@@ -282,7 +327,7 @@ fn lip_point(w: Wave, u: f32, v: f32, t: f32, count: f32, closeouts: [vec4]) -> 
     let l = lip(w, x)
     let crest = vec3(x, height(w, vec2(x, l)), l)
     let throw = throw_at(w, x, count, closeouts)
-    let radius = HEIGHT * set(w, x) * (0.08 + 0.3 * throw)
+    let radius = HEIGHT * set(w, x) * 0.38 * throw
     let angle = v * 3.1415927 * (0.15 + 0.8 * throw)
     let wobble = 0.15 * sin(x * 0.7 - t * 3.0) * throw
     crest + vec3(0.0, radius * (cos(angle) - 1.0), -radius * sin(angle) + wobble)
@@ -325,7 +370,7 @@ pub fn lip_shade(f: LipVertex, s: Scene) -> vec4 {
     )
     col = mix(col, sky(-to_eye + n * (2.0 * dot(to_eye, n)), s.clock), fres)
     col += SUN_LIGHT * pow(max(dot(n, normalize(normalize(SUN) + to_eye)), 0.0), 120.0) * 1.5
-    let edge = smoothstep(0.55, 1.0, f.across) * lace(p.xz * vec2(1.0, 2.0), s.time * 2.0)
+    let edge = lace(p.xz * vec2(1.0, 2.0), s.time * 2.0, smoothstep(0.4, 1.0, f.across))
     col = mix(
         col,
         vec3(1.0, 0.98, 0.92),
@@ -553,8 +598,9 @@ pub fn part_shade(f: PartVertex, s: Scene) -> vec4 {
         if fine > 0.78 && above > 0.2 && above < 1.2 { base = mix(base, vec3(0.8, 0.78, 0.7), 0.5) }
     }
     if m == BARK {
-        let ring = 0.5 + 0.5 * sin(q.x * 40.0 + noise3(q * 6.0) * 3.0)
-        base = mix(vec3(0.3, 0.2, 0.12), vec3(0.5, 0.36, 0.22), ring)
+        // Driftwood, bleached pale by the sun, its grain running along it.
+        let grain = 0.5 + 0.5 * sin(q.z * 30.0 + q.y * 22.0 + noise3(q * 5.0) * 4.0)
+        base = mix(vec3(0.55, 0.47, 0.38), vec3(0.82, 0.76, 0.66), grain)
     }
     // Light in three steps, with the sky's fill and a rim of sun.
     let sun = normalize(SUN)
@@ -588,7 +634,7 @@ pub fn drop_vertex(v: VertexIndex, s: Scene, drops: [vec4]) -> DropVertex {
     let b = drops[i * 2 + 1]
     let corner = vec2(cx[c], cy[c])
     let p = a.xyz + (s.right * corner.x + s.up * corner.y) * a.w * (0.6 + 0.4 * (1.0 - b.w))
-    let near = smoothstep(2.0, 6.0, length(a.xyz - s.eye))
+    let near = smoothstep(4.0, 10.0, length(a.xyz - s.eye))
     DropVertex {
         clip: ClipPosition { position: s.view_proj * vec4(p, 1.0) },
         corner,
@@ -614,6 +660,7 @@ pub fn develop(
     dim: f32,
     fade: f32,
     clock: f32,
+    danger: f32,
     runs_count: f32,
     runs: [vec4],
     segments: [vec4],
@@ -626,6 +673,22 @@ pub fn develop(
     let uv = px / size
     let v = uv * (vec2(1.0) - uv)
     col *= pow(saturate(v.x * v.y * 16.0), 0.18)
+    // The curl closing in: whitewater and mist boiling in from the left edge (behind the rider),
+    // further the closer it comes.
+    if danger > 0.0 {
+        let boil = noise2(vec2(uv.y * 7.0, clock * 1.7)) * 0.6 +
+            noise2(vec2(uv.y * 19.0, clock * 3.1)) * 0.4
+        let reach = danger * (0.22 + 0.12 * boil)
+        let edge = 1.0 - smoothstep(reach * 0.55, reach, uv.x)
+        let threads = lace(vec2(uv.x * 9.0 - clock * 1.2, uv.y * 6.0), clock, 0.5)
+        let foam = edge * (0.6 + 0.4 * threads)
+        col = mix(col, vec3(0.93, 0.97, 1.0), saturate(foam))
+        col = mix(
+            col,
+            vec3(0.85, 0.92, 0.98),
+            (1.0 - smoothstep(0.0, reach * 1.8, uv.x)) * danger * 0.35,
+        )
+    }
     col = type_over(col, px, runs_count, runs, segments)
     col += vec3((hash2(i32(px.x), i32(px.y) + i32(clock * 61.0) * 7919) - 0.5) / 255.0)
     vec4(col * fade, 1.0)

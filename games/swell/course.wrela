@@ -80,7 +80,7 @@ pub fn hazards(seed: u32, w: Wave, k: u32) -> Hazards {
     let d = difficulty(x0)
     let n = seed ^ k.wrapping_mul(2654435761)
     // A closeout, sometimes, where the corridor runs low through the whole segment.
-    if rand(n, 9) < 0.08 + 0.2 * d {
+    if rand(n, 9) < 0.18 + 0.17 * d {
         var top = 0.0
         for i in 0..9 {
             let c = corridor(seed, x0 + f32(i) * SEGMENT / 8.0)
@@ -115,7 +115,7 @@ pub fn hazards(seed: u32, w: Wave, k: u32) -> Hazards {
             }
         } else {
             let length = pick(n, t * 4 + 3, lo: 3.0, hi: 6.0)
-            let r = 0.32
+            let r = 0.45
             var clear = true
             for i in 0..7 {
                 clear = clear && clear_of_corridor(seed, x + length * f32(i) / 6.0, z, r)
