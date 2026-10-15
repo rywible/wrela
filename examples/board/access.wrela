@@ -52,6 +52,7 @@ pub fn node_of(a: Action) -> u32 {
         Action::Copy => 52,
         Action::Paste => 53,
         Action::Duplicate => 54,
+        Action::Group => 71,
         Action::Lock => 55,
         Action::SelectAll => 56,
     }
@@ -84,6 +85,7 @@ pub fn action_of(node: u32) -> Option<Action> {
         Action::Copy,
         Action::Paste,
         Action::Duplicate,
+        Action::Group,
         Action::Lock,
         Action::SelectAll,
         Action::TypeSize,
@@ -205,7 +207,14 @@ fn every_control_has_its_own_node() {
     let c = chrome::layout(
         vec2(640.0, 480.0),
         1.0,
-        Some(Selection { rect: Rect::new(x: 200.0, y: 200.0, w: 40.0, h: 40.0), links: true, inks: true, words: true }),
+        Some(
+            Selection {
+                rect: Rect::new(x: 200.0, y: 200.0, w: 40.0, h: 40.0),
+                links: true,
+                inks: true,
+                words: true,
+            },
+        ),
         flyout: true,
     )
     var seen: Vec<u32> = Vec::new()

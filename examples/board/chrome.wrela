@@ -64,6 +64,8 @@ pub enum Action: Copy + Eq {
     Copy,
     Paste,
     Duplicate,
+    /// Groups what's selected, or ungroups it if it's one group.
+    Group,
     Lock,
     SelectAll,
     /// The minimap: shown or hidden.
@@ -110,7 +112,10 @@ pub fn layout(screen: vec2, u: f32, selection: Option<Selection>, flyout: bool) 
     var c = Chrome {
         controls: Vec::new(),
         panels: Vec::new(),
-        inks: match selection { Some(chosen) => chosen.inks, None => false },
+        inks: match selection {
+            Some(chosen) => chosen.inks,
+            None => false,
+        },
     }
     let b = BUTTON * u
     let g = GAP * u
@@ -267,6 +272,7 @@ pub fn tip(a: Action) -> Text {
         Action::Copy => "Copy   Cmd C",
         Action::Paste => "Paste   Cmd V",
         Action::Duplicate => "Duplicate   Cmd D",
+        Action::Group => "Group   Cmd G",
         Action::Lock => "Lock   Cmd Shift L",
         Action::SelectAll => "Select all   Cmd A",
         Action::Map => "Minimap   M",
@@ -290,6 +296,7 @@ pub fn draw(
     can_undo: bool,
     can_redo: bool,
     locked: bool,
+    grouped: bool,
     shape: Kind,
     tips: bool,
 ) {
@@ -310,7 +317,7 @@ pub fn draw(
             _ => false,
         }
         if k.row {
-            menu_row(mut list, fonts, k, u, lit, locked)
+            menu_row(mut list, fonts, k, u, lit, locked, grouped)
             continue
         }
         // The board's name and the minimap draw themselves (main.wrela).
@@ -376,7 +383,17 @@ pub fn draw(
 
 /// A control's icon in `r`: lines and shapes on a grid of logical pixels about its middle, on
 /// `back`.
-fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4, back: vec4, zoom: f32, shape: Kind) {
+fn icon(
+    list: mut DrawList,
+    fonts: Fonts,
+    a: Action,
+    r: Rect,
+    u: f32,
+    ink: vec4,
+    back: vec4,
+    zoom: f32,
+    shape: Kind,
+) {
     let c = r.center()
     let w = 1.6 * u
     let p = |x: f32, y: f32| -> vec2 { c + vec2(x, y) * u }
@@ -458,7 +475,14 @@ fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4,
             let wa = font.measure("A", big)
             let x = c.x - 0.5 * (wa + font.measure("a", small))
             let _ = list.text(fonts, Face::Sans, "A", big, vec2(x, c.y - 0.66 * big), ink)
-            let _ = list.text(fonts, Face::Sans, "a", small, vec2(x + wa, c.y - 0.66 * big + 0.29 * big), ink)
+            let _ = list.text(
+                fonts,
+                Face::Sans,
+                "a",
+                small,
+                vec2(x + wa, c.y - 0.66 * big + 0.29 * big),
+                ink,
+            )
         },
         Action::ZoomIn => {
             list.line(p(-6.0, 0.0), p(6.0, 0.0), ink, width: w)
@@ -523,7 +547,19 @@ fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4,
 fn the_selection_bar_stays_on_the_screen() {
     let screen = vec2(640.0, 480.0)
     // A selection at the top left: the bar goes below it, and inside the screen.
-    let c = layout(screen, 1.0, Some(Selection { rect: Rect::new(x: 0.0, y: 5.0, w: 40.0, h: 40.0), links: false, inks: false, words: false }), flyout: false)
+    let c = layout(
+        screen,
+        1.0,
+        Some(
+            Selection {
+                rect: Rect::new(x: 0.0, y: 5.0, w: 40.0, h: 40.0),
+                links: false,
+                inks: false,
+                words: false,
+            },
+        ),
+        flyout: false,
+    )
     let bar = c.panels[3]
     assert(bar.y > 45.0 && bar.x >= MARGIN, f"{bar.x}, {bar.y}")
     assert(at(c, bar.center()).is_some(), "the bar's middle is a control")
@@ -538,39 +574,68 @@ fn the_selection_bar_stays_on_the_screen() {
 
 /// A row of the context menu: its name, and its keys in grey at the right; a hairline above the
 /// first of each group.
-fn menu_row(list: mut DrawList, fonts: Fonts, k: Control, u: f32, lit: bool, locked: bool) {
+fn menu_row(
+    list: mut DrawList,
+    fonts: Fonts,
+    k: Control,
+    u: f32,
+    lit: bool,
+    locked: bool,
+    grouped: bool,
+) {
     let r = k.rect
     if lit {
         list.rect(r, vec4(0.27, 0.4, 1.0, 0.1), radius: 6.0 * u)
     }
     if k.action == Action::Front || k.action == Action::Lock {
-        list.rect(Rect::new(r.x + 8.0 * u, r.y, r.w - 16.0 * u, max(1.0 * u, 1.0)), vec4(0.0, 0.0, 0.0, 0.08))
+        list.rect(
+            Rect::new(r.x + 8.0 * u, r.y, r.w - 16.0 * u, max(1.0 * u, 1.0)),
+            vec4(0.0, 0.0, 0.0, 0.08),
+        )
     }
-    let full = tip(k.action)
-    let parts = full.split("   ")
-    let name = if k.action == Action::Lock && locked {
-        String::from("Unlock")
+    // Lock and Group undo themselves when what's selected is already locked, or one group.
+    let full = if k.action == Action::Lock && locked {
+        "Unlock   Cmd Shift L"
+    } else if k.action == Action::Group && grouped {
+        "Ungroup   Cmd Shift G"
     } else {
-        String::from(full.slice(parts[0].0, parts[0].1))
+        tip(k.action)
     }
+    let parts = full.split("   ")
+    let name = full.slice(parts[0].0, parts[0].1)
     let size = 13.0 * u
     let y = r.y + 0.5 * (r.h - 1.25 * size)
     let ink = if k.action == Action::Delete { vec4(0.82, 0.18, 0.2, 1.0) } else { TEXT }
-    let _ = list.text(fonts, Face::Sans, name.as_str(), size, vec2(r.x + 10.0 * u, y), ink)
+    let _ = list.text(fonts, Face::Sans, name, size, vec2(r.x + 10.0 * u, y), ink)
     if parts.len() > 1 {
         let keys = full.slice(parts[1].0, parts[1].1)
         let kw = fonts.font(Face::Sans).measure(keys, size)
-        let _ = list.text(fonts, Face::Sans, keys, size, vec2(r.right() - 10.0 * u - kw, y), vec4(0.55, 0.56, 0.6, 1.0))
+        let _ = list.text(
+            fonts,
+            Face::Sans,
+            keys,
+            size,
+            vec2(r.right() - 10.0 * u - kw, y),
+            vec4(0.55, 0.56, 0.6, 1.0),
+        )
     }
 }
 
 /// A shape's icon, about `c`.
 fn shape_icon(list: mut DrawList, kind: Kind, c: vec2, u: f32, ink: vec4, w: f32) {
-    let box = |x: f32, y: f32, bw: f32, bh: f32| -> Rect { Rect::new(c.x + x * u, c.y + y * u, bw * u, bh * u) }
+    let box = |x: f32, y: f32, bw: f32, bh: f32| -> Rect {
+        Rect::new(c.x + x * u, c.y + y * u, bw * u, bh * u)
+    }
     match kind {
         Kind::Ellipse => list.ellipse(box(-9.0, -8.0, 18.0, 16.0), ink, width: w),
         Kind::Diamond => list.diamond(box(-9.5, -9.5, 19.0, 19.0), ink, width: w),
-        Kind::Triangle => list.triangle(c + vec2(0.0, -8.5) * u, c + vec2(-9.5, 7.5) * u, c + vec2(9.5, 7.5) * u, ink, width: w),
+        Kind::Triangle => list.triangle(
+            c + vec2(0.0, -8.5) * u,
+            c + vec2(-9.5, 7.5) * u,
+            c + vec2(9.5, 7.5) * u,
+            ink,
+            width: w,
+        ),
         Kind::Pill => list.ring(box(-10.0, -6.0, 20.0, 12.0), ink, radius: 6.0 * u, width: w),
         _ => list.ring(box(-9.0, -7.0, 18.0, 14.0), ink, radius: 2.0 * u, width: w),
     }
@@ -595,4 +660,3 @@ fn turn(list: mut DrawList, c: vec2, u: f32, ink: vec4, w: f32, back: bool) {
     list.line(tip, tip + vec2(3.2, -3.2) * u, ink, width: w)
     list.line(middle + vec2(side * radius, 0.0), tip, ink, width: w)
 }
-

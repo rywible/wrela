@@ -32,8 +32,9 @@ enum Drag: Copy + Eq {
     Idle,
     /// Moving the camera: where the pointer and the camera began.
     Pan { from: vec2, pan: vec2 },
-    /// Pressed on item `id`: it moves the selection once it travels.
-    Press { at: vec2, id: u32, shift: bool },
+    /// Pressed on item `id`: it moves the selection once it travels. `held`: it was selected
+    /// before the press.
+    Press { at: vec2, id: u32, shift: bool, held: bool },
     /// Moving the selection: where the pointer began, the shift moved so far, and the
     /// selection's rectangle when it began (what snaps).
     Move { start: vec2, moved: vec2, from: Rect },
@@ -412,13 +413,24 @@ fn layout(s: App) -> Chrome {
     }
     var c = chrome::layout(s.screen, unit(s), bar, flyout: s.flyout && s.drag == Drag::Idle)
     if let Some(at) = s.menu {
-        let entries: Vec<Action> = if s.selected.is_empty() {
+        var entries: Vec<Action> = if s.selected.is_empty() {
             Vec::from([Action::Paste, Action::SelectAll, Action::Fit])
         } else {
-            Vec::from([
-                Action::Cut, Action::Copy, Action::Paste, Action::Duplicate, Action::Front, Action::Back,
-                Action::Lock, Action::Delete,
-            ])
+            Vec::from(
+                [
+                    Action::Cut,
+                    Action::Copy,
+                    Action::Paste,
+                    Action::Duplicate,
+                    Action::Front,
+                    Action::Back,
+                    Action::Lock,
+                    Action::Delete,
+                ],
+            )
+        }
+        if s.selected.len() > 1 {
+            entries.insert(4, Action::Group)
         }
         chrome::menu(mut c, at, s.screen, unit(s), entries)
     }
@@ -449,8 +461,19 @@ fn map_of(s: App) -> Map {
 /// The minimap with the camera at `view`.
 fn map_with(s: App, view: View) -> Map {
     let u = unit(s)
-    let seen = Rect::new(view.pan.x, view.pan.y, s.screen.x / view.scale(), s.screen.y / view.scale())
-    Map::place(s.screen, u, above: 12.0 * u + 48.0 * u + 10.0 * u, board: s.board.whole(), seen: seen)
+    let seen = Rect::new(
+        view.pan.x,
+        view.pan.y,
+        s.screen.x / view.scale(),
+        s.screen.y / view.scale(),
+    )
+    Map::place(
+        s.screen,
+        u,
+        above: 12.0 * u + 48.0 * u + 10.0 * u,
+        board: s.board.whole(),
+        seen: seen,
+    )
 }
 
 /// Brings the camera's middle to the world point under point `at` on `map`.
@@ -474,7 +497,9 @@ fn restyle(s: mut App, change: fn(u32) -> u32) {
 /// end again.
 fn next_heads(style: u32) -> u32 {
     let heads = style & (START_ARROW | END_ARROW)
-    let next = if heads == END_ARROW { START_ARROW | END_ARROW } else if heads == 0 { END_ARROW } else { 0 }
+    let next = if heads == END_ARROW { START_ARROW | END_ARROW } else if heads == 0 {
+        END_ARROW
+    } else { 0 }
     (style & !(START_ARROW | END_ARROW)) | next
 }
 
@@ -514,7 +539,12 @@ fn dots(s: App, id: u32) -> Vec<vec2> {
     let r = s.board.items[i].rect()
     let gap = DOT_GAP * unit(s) / s.view.scale()
     let c = r.center()
-    for p in [vec2(c.x, r.y - gap), vec2(r.right() + gap, c.y), vec2(c.x, r.bottom() + gap), vec2(r.x - gap, c.y)] {
+    for p in [
+        vec2(c.x, r.y - gap),
+        vec2(r.right() + gap, c.y),
+        vec2(c.x, r.bottom() + gap),
+        vec2(r.x - gap, c.y),
+    ] {
         out.push(p)
     }
     out
@@ -685,6 +715,43 @@ fn all_locked(s: App) -> bool {
     !s.selected.is_empty() && unlocked(s).is_empty()
 }
 
+/// The colour everything selected has, if it's one.
+fn shared_color(s: App) -> Option<u32> {
+    var out: Option<u32> = None
+    for id in s.selected {
+        let Some(i) = s.board.index(id) else { continue }
+        let c = s.board.items[i].color
+        match out {
+            Some(o) => if o != c { return None },
+            None => out = Some(c),
+        }
+    }
+    out
+}
+
+/// Whether what's selected is one group, whole.
+fn grouped(s: App) -> bool {
+    let groups = s.board.groups(s.selected)
+    groups.len() == 1 && s.board.members(groups[0]).len() == s.selected.len()
+}
+
+/// Makes what's selected one group (`on`), or takes it out of its groups.
+fn group(s: mut App, on: bool) {
+    if on && s.selected.len() < 2 || !on && s.board.groups(s.selected).is_empty() {
+        return
+    }
+    checkpoint(mut s)
+    let g = if on { s.board.next } else { 0 }
+    if on {
+        s.board.next += 1
+    }
+    for i in 0..s.board.items.len() {
+        if has(s.selected, s.board.items[i].id) {
+            s.board.items[i].group = g
+        }
+    }
+}
+
 /// Locks what's selected, or unlocks it if it's all locked.
 fn lock(s: mut App) {
     if s.selected.is_empty() {
@@ -725,7 +792,9 @@ fn naming_key(s: mut App, c: Caret, key: Key, mods: Mods) {
     } else if mods.command() && key == Key::A {
         next = Caret { at: old.len(), anchor: 0 }
     } else if key == Key::Backspace || key == Key::Delete {
-        let (text, after) = if key == Key::Backspace { edit::delete_back(old, c, step) } else { edit::delete_on(old, c, step) }
+        let (text, after) = if key == Key::Backspace { edit::delete_back(old, c, step) } else {
+            edit::delete_on(old, c, step)
+        }
         name = Some(take text)
         next = after
     } else if key == Key::Left || key == Key::Right || key == Key::Home || key == Key::End {
@@ -813,7 +882,11 @@ fn pasted(s: mut App, aim: Aim, got: Option<Pasted>) {
         Into::Text { id, at, anchor } => {
             let Some(i) = s.board.index(id) else { return }
             checkpoint(mut s)
-            let (text, after) = edit::insert(s.board.items[i].text.as_str(), Caret { at, anchor }, p.text.as_str())
+            let (text, after) = edit::insert(
+                s.board.items[i].text.as_str(),
+                Caret { at, anchor },
+                p.text.as_str(),
+            )
             s.board.items[i].text = take text
             s.revision += 1
             if s.board.items[i].kind == Kind::Text {
@@ -859,7 +932,10 @@ fn assist(s: mut App, node: u32, action: Assist) {
         }
     }
     select(mut s, [id])
-    if action == Assist::Activate && s.board.items[i].has_text() && !s.board.items[i].locked && s.typing.is_none() {
+    if action == Assist::Activate &&
+        s.board.items[i].has_text() &&
+        !s.board.items[i].locked &&
+        s.typing.is_none() {
         let n = s.board.items[i].text.len()
         begin_typing(mut s, id, n, keep: true)
     }
@@ -912,7 +988,11 @@ fn act(s: mut App, a: Action) {
             for i in 0..s.board.items.len() {
                 borrow it = s.board.items[i]
                 if has(s.selected, it.id) && !it.locked && sizes_words(it.kind) {
-                    let usual = match it.kind { Kind::Text => paint::TEXT_SIZE, Kind::Link => 14.0, _ => 16.0 }
+                    let usual = match it.kind {
+                        Kind::Text => paint::TEXT_SIZE,
+                        Kind::Link => 14.0,
+                        _ => 16.0,
+                    }
                     let next = paint::next_size(it.type_size, usual)
                     s.board.items[i].type_size = next
                     if s.board.items[i].kind == Kind::Text {
@@ -973,6 +1053,7 @@ fn act(s: mut App, a: Action) {
             let items = s.clipboard.clone()
             paste(mut s, items)
         },
+        Action::Group => group(mut s, !grouped(s)),
         Action::Lock => lock(mut s),
         Action::Map => s.map_on = !s.map_on,
         Action::Title => {
@@ -1079,7 +1160,10 @@ fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
         // The context menu, for what's under the pointer (selected first) or the board.
         stop_typing(mut s)
         match s.board.hit(s.view.to_world(at), slack(s)) {
-            Some(id) => if !has(s.selected, id) { select(mut s, [id]) },
+            Some(id) => if !has(s.selected, id) {
+                let group = s.board.with_groups([id])
+                select(mut s, group)
+            },
             None => s.selected.clear(),
         }
         s.menu = Some(at)
@@ -1127,7 +1211,9 @@ fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
             let l = paint::layout(font, it)
             let byte = paint::offset_at(font, it, l, w)
             let double = match s.click {
-                Some(c) => c.id == t.id && s.time - c.time < 0.45 && length(c.at - at) < 6.0 * unit(s),
+                Some(c) => c.id == t.id &&
+                    s.time - c.time < 0.45 &&
+                    length(c.at - at) < 6.0 * unit(s),
                 None => false,
             }
             if double {
@@ -1137,7 +1223,9 @@ fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
                 return
             }
             s.click = Some(Click { time: s.time, at, id: t.id })
-            s.typing = Some(Typing { id: t.id, at: byte, anchor: if mods.shift { t.anchor } else { byte } })
+            s.typing = Some(Typing { id: t.id, at: byte, anchor: if mods.shift { t.anchor } else {
+                byte
+            } })
             s.drag = Drag::Select { id: t.id }
             return
         }
@@ -1214,18 +1302,24 @@ fn press_select(s: mut App, at: vec2, w: vec2, mods: Mods) {
         s.click = None
         return
     }
-    // Shift adds an item at once, so it can be dragged with the rest; one already selected
-    // leaves the selection only on a click (`released`), not a drag.
+    // Shift adds an item (and its group) at once, so it can be dragged with the rest; one
+    // already selected leaves the selection only on a click (`released`), not a drag.
+    let held = has(s.selected, id)
+    let group = s.board.with_groups([id])
     if mods.shift {
-        if !has(s.selected, id) {
-            s.selected.push(id)
-            s.drag = Drag::Press { at: w, id, shift: false }
+        if !held {
+            for k in group {
+                if !has(s.selected, k) {
+                    s.selected.push(k)
+                }
+            }
+            s.drag = Drag::Press { at: w, id, shift: false, held: false }
             return
         }
-    } else if !has(s.selected, id) {
-        select(mut s, [id])
+    } else if !held {
+        select(mut s, group)
     }
-    s.drag = Drag::Press { at: w, id, shift: mods.shift }
+    s.drag = Drag::Press { at: w, id, shift: mods.shift, held }
 }
 
 /// The rectangles of the items, other than those in `besides`, that what's moved can snap to:
@@ -1273,7 +1367,9 @@ fn moved(s: mut App, at: vec2, mods: Mods) {
             var want = w - start
             // Shift keeps it to one axis: the one it has gone further along.
             if mods.shift {
-                want = if abs(want.x) >= abs(want.y) { vec2(want.x, 0.0) } else { vec2(0.0, want.y) }
+                want = if abs(want.x) >= abs(want.y) { vec2(want.x, 0.0) } else {
+                    vec2(0.0, want.y)
+                }
             }
             s.guides.clear()
             let targets = snap_targets(s, s.carried)
@@ -1335,17 +1431,31 @@ fn moved(s: mut App, at: vec2, mods: Mods) {
 fn released(s: mut App, at: vec2, mods: Mods) {
     let w = s.view.to_world(at)
     match s.drag {
-        Drag::Press { id, shift, .. } => if shift {
-            // A shift-click on a selected item takes it out of the selection.
-            s.selected.retain(|k| k != id)
-        } else if s.selected.len() > 1 && !mods.shift {
-            // A click (not a drag) in a selection picks the one item.
-            select(mut s, [id])
+        Drag::Press { id, shift, held, .. } => {
+            let group = s.board.with_groups([id])
+            if shift {
+                // A shift-click on a selected item takes it, and its group, out of the selection.
+                s.selected.retain(|k| !has(group, k))
+            } else if held && !mods.shift {
+                // A click (not a drag) in a selection picks the item's group; in its group,
+                // picked whole, the one item.
+                var whole = group.len() > 1 && s.selected.len() == group.len()
+                for k in group {
+                    if !has(s.selected, k) { whole = false }
+                }
+                if whole {
+                    select(mut s, [id])
+                } else if s.selected.len() > 1 {
+                    select(mut s, group)
+                }
+            }
         },
         Drag::Marquee { from, add } => {
             let lo = min(from, w)
             let hi = max(from, w)
-            let ids = s.board.touching(Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y))
+            let ids = s.board.with_groups(
+                s.board.touching(Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)),
+            )
             if !add {
                 s.selected.clear()
             }
@@ -1431,6 +1541,8 @@ fn key_down(s: mut App, key: Key, repeat: bool, mods: Mods) {
             undo(mut s)
         } else if key == Key::L && mods.shift {
             act(mut s, Action::Lock)
+        } else if key == Key::G {
+            group(mut s, !mods.shift)
         } else if key == Key::A {
             act(mut s, Action::SelectAll)
         } else if key == Key::D {
@@ -1554,6 +1666,22 @@ fn draw(s: mut App, screen: vec2) {
     }
     let near = slack(s)
     let locked = all_locked(s)
+    let grouped = grouped(s)
+    let color = shared_color(s)
+    // A group under the pointer lights whole, and one selected whole has its own outline.
+    let hovered = match hover {
+        Some(id) => s.board.with_groups([id]),
+        None => Vec::new(),
+    }
+    var whole: Vec<u32> = Vec::new()
+    for g in s.board.groups(s.selected) {
+        let members = s.board.members(g)
+        var all = true
+        for k in members {
+            if !has(s.selected, k) { all = false }
+        }
+        if all { whole.push(g) }
+    }
     let title = title_rect(s)
     let naming = s.naming
     let minimap = if s.map_on { Some(map_of(s)) } else { None }
@@ -1566,7 +1694,10 @@ fn draw(s: mut App, screen: vec2) {
         },
         None => None,
     }
-    let tips = match s.hovering { Some((_, since)) => s.time - since > 0.45, None => false }
+    let tips = match s.hovering {
+        Some((_, since)) => s.time - since > 0.45,
+        None => false,
+    }
     mut list = s.draw
     list.clear(screen)
     paint::grid(mut list, s.view, screen)
@@ -1577,23 +1708,33 @@ fn draw(s: mut App, screen: vec2) {
         Drag::Marquee { from, .. } => {
             let lo = min(from, w)
             let hi = max(from, w)
-            s.board.touching(Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y))
+            s.board.with_groups(s.board.touching(Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)))
         },
         _ => Vec::new(),
     }
     for i in 0..s.board.items.len() {
         let id = s.board.items[i].id
         let chosen = has(s.selected, id)
-        if !chosen && hover != Some(id) && !has(touched, id) {
+        if !chosen && !has(hovered, id) && !has(touched, id) {
+            continue
+        }
+        // A group selected whole shows only its own outline (and its members' locks).
+        let in_whole = chosen && has(whole, s.board.items[i].group)
+        if in_whole && !s.board.items[i].locked {
             continue
         }
         let mark = if chosen { ACCENT } else { vec4(ACCENT.xyz, 0.5) }
-        if s.board.items[i].kind == Kind::Link {
+        if s.board.items[i].kind == Kind::Link && !in_whole {
             // A connector shows its own path, and its ends.
             let route = s.board.route(s.board.items[i])
             let width = max((board::LINK_WIDTH + 2.0) * s.view.scale(), 3.0 * u)
             for k in 1..route.len() {
-                list.line(s.view.to_screen(route[k - 1]), s.view.to_screen(route[k]), vec4(mark.xyz, 0.45), width)
+                list.line(
+                    s.view.to_screen(route[k - 1]),
+                    s.view.to_screen(route[k]),
+                    vec4(mark.xyz, 0.45),
+                    width,
+                )
             }
             if chosen && route.len() >= 2 {
                 for p in [route[0], route[route.len() - 1]] {
@@ -1606,14 +1747,33 @@ fn draw(s: mut App, screen: vec2) {
             continue
         }
         let r = s.view.rect(s.board.bounds(i)).shrink(-3.0 * u)
-        list.ring(r, mark, radius: 3.0 * u, width: ring)
+        if !in_whole {
+            list.ring(r, mark, radius: 3.0 * u, width: ring)
+        }
         if chosen && s.board.items[i].locked {
             // A lock at its top right: a body and a shackle.
             let at = vec2(r.right() - 7.0 * u, r.y - 14.0 * u)
-            list.rect(Rect::new(at.x - 9.0 * u, at.y - 9.0 * u, 18.0 * u, 18.0 * u), ACCENT, radius: 5.0 * u)
-            list.rect(Rect::new(at.x - 4.5 * u, at.y - 1.0 * u, 9.0 * u, 6.5 * u), vec4(1.0), radius: 1.5 * u)
-            list.ring(Rect::new(at.x - 3.0 * u, at.y - 5.5 * u, 6.0 * u, 8.0 * u), vec4(1.0), radius: 3.0 * u, width: 1.4 * u)
+            list.rect(
+                Rect::new(at.x - 9.0 * u, at.y - 9.0 * u, 18.0 * u, 18.0 * u),
+                ACCENT,
+                radius: 5.0 * u,
+            )
+            list.rect(
+                Rect::new(at.x - 4.5 * u, at.y - 1.0 * u, 9.0 * u, 6.5 * u),
+                vec4(1.0),
+                radius: 1.5 * u,
+            )
+            list.ring(
+                Rect::new(at.x - 3.0 * u, at.y - 5.5 * u, 6.0 * u, 8.0 * u),
+                vec4(1.0),
+                radius: 3.0 * u,
+                width: 1.4 * u,
+            )
         }
+    }
+    for g in whole {
+        let Some(r) = s.board.extent(s.board.members(g)) else { continue }
+        list.ring(s.view.rect(r).shrink(-8.0 * u), ACCENT, radius: 4.0 * u, width: ring)
     }
     if s.drag == Drag::Idle || s.drag == Drag::Control {
         if s.selected.len() == 1 {
@@ -1639,7 +1799,12 @@ fn draw(s: mut App, screen: vec2) {
     }
     // The lines a move or resize snapped to.
     for g in s.guides {
-        list.line(s.view.to_screen(g.from), s.view.to_screen(g.to), paint::GUIDE, width: max(1.0 * u, 1.0))
+        list.line(
+            s.view.to_screen(g.from),
+            s.view.to_screen(g.to),
+            paint::GUIDE,
+            width: max(1.0 * u, 1.0),
+        )
     }
     // What the pointer is making.
     match s.drag {
@@ -1661,7 +1826,13 @@ fn draw(s: mut App, screen: vec2) {
             match kind {
                 Kind::Ellipse => list.ellipse(r, ink, width: ring),
                 Kind::Diamond => list.diamond(r, ink, width: ring),
-                Kind::Triangle => list.triangle(vec2(r.center().x, r.y), vec2(r.x, r.bottom()), vec2(r.right(), r.bottom()), ink, width: ring),
+                Kind::Triangle => list.triangle(
+                    vec2(r.center().x, r.y),
+                    vec2(r.x, r.bottom()),
+                    vec2(r.right(), r.bottom()),
+                    ink,
+                    width: ring,
+                ),
                 Kind::Pill => list.ring(r, ink, radius: 0.5 * min(r.w, r.h), width: ring),
                 _ => list.ring(r, ink, radius: 6.0 * s.view.scale(), width: ring),
             }
@@ -1690,14 +1861,6 @@ fn draw(s: mut App, screen: vec2) {
         },
         _ => {},
     }
-    let color = if s.selected.is_empty() {
-        None
-    } else {
-        match s.board.index(s.selected[0]) {
-            Some(i) => Some(s.board.items[i].color),
-            None => None,
-        }
-    }
     chrome::draw(
         mut list,
         s.fonts,
@@ -1710,6 +1873,7 @@ fn draw(s: mut App, screen: vec2) {
         can_undo: s.history.can_undo(),
         can_redo: s.history.can_redo(),
         locked: locked,
+        grouped: grouped,
         shape: s.shape,
         tips: tips,
     )
@@ -1724,7 +1888,10 @@ fn draw(s: mut App, screen: vec2) {
         let x0 = name_at.x + font.caret_at(name, 15.0 * u, lo)
         let x1 = name_at.x + font.caret_at(name, 15.0 * u, hi)
         if hi > lo {
-            list.rect(Rect::new(x0, name_at.y - 1.0 * u, x1 - x0, 20.0 * u), vec4(0.5, 0.68, 1.0, 0.5))
+            list.rect(
+                Rect::new(x0, name_at.y - 1.0 * u, x1 - x0, 20.0 * u),
+                vec4(0.5, 0.68, 1.0, 0.5),
+            )
         } else if blink {
             list.rect(Rect::new(x0 - 0.75 * u, name_at.y - 1.0 * u, 1.5 * u, 20.0 * u), ACCENT)
         }
@@ -1745,7 +1912,14 @@ fn draw(s: mut App, screen: vec2) {
                 list.rect(r, paint::FILLS[it.color % paint::COLORS], radius: 0.5 * u)
             }
         }
-        let seen = m.rect_of(Rect::new(s.view.pan.x, s.view.pan.y, screen.x / s.view.scale(), screen.y / s.view.scale()))
+        let seen = m.rect_of(
+            Rect::new(
+                s.view.pan.x,
+                s.view.pan.y,
+                screen.x / s.view.scale(),
+                screen.y / s.view.scale(),
+            ),
+        )
         list.rect(seen, vec4(ACCENT.xyz, 0.08), radius: 2.0 * u)
         list.ring(seen, ACCENT, radius: 2.0 * u, width: max(1.5 * u, 1.0))
         list.pop_clip()
@@ -1779,7 +1953,9 @@ fn cursor_for(s: App, w: vec2, on_control: bool) -> Text {
         Drag::Resize { id, anchor } => {
             let Some(i) = s.board.index(id) else { return "default" }
             let c = s.board.items[i].center()
-            return if (c.x - anchor.x) * (c.y - anchor.y) > 0.0 { "nwse-resize" } else { "nesw-resize" }
+            return if (c.x - anchor.x) * (c.y - anchor.y) > 0.0 { "nwse-resize" } else {
+                "nesw-resize"
+            }
         },
         Drag::Select { .. } => return "text",
         _ => {},
@@ -1810,7 +1986,9 @@ fn caret_rect(s: App) -> Option<vec4> {
     if let Some(c) = s.naming {
         let u = unit(s)
         let title = title_rect(s)
-        let x = title.x + 38.0 * u + s.fonts.font(Face::Sans).caret_at(s.board.name.as_str(), 15.0 * u, c.at)
+        let x = title.x +
+            38.0 * u +
+            s.fonts.font(Face::Sans).caret_at(s.board.name.as_str(), 15.0 * u, c.at)
         return Some(vec4(x, title.y + 10.0 * u, 1.5 * u, 20.0 * u))
     }
     let Some(t) = s.typing else { return None }
@@ -2146,3 +2324,19 @@ fn a_click_off_a_note_lets_it_go(game: App) {
     assert(game.selected.is_empty(), f"{game.selected.len()} selected")
 }
 
+/// Cmd+G makes two notes one group: a click on one selects both, a drag moves both, and a
+/// later click on it, with the group selected, picks it alone.
+@test(frames: 64, input: "scripts/grouping.json")
+fn a_group_moves_whole_and_opens_to_a_click(game: App) {
+    assert(game.board.items.len() == 2)
+    let a = game.board.items[0].clone()
+    let b = game.board.items[1].clone()
+    assert(a.group != 0 && a.group == b.group, f"groups {a.group} and {b.group}")
+    let ra = screen_rect(game, 0)
+    let rb = screen_rect(game, 1)
+    assert(
+        abs(ra.center().x - 260.0) < 0.05 && abs(rb.center().x - 500.0) < 0.05,
+        f"{ra.center().x}, {rb.center().x}",
+    )
+    assert(game.selected.len() == 1 && game.selected[0] == a.id, f"{game.selected.len()} selected")
+}

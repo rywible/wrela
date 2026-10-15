@@ -23,7 +23,12 @@ impl Map {
     /// `above` from the screen's bottom, showing `board` (the items' extent, if any) and `seen`
     /// (the world the screen shows), centred.
     pub fn place(screen: vec2, u: f32, above: f32, board: Option<Rect>, seen: Rect) -> Map {
-        let rect = Rect::new(screen.x - 12.0 * u - WIDTH * u, screen.y - above - HEIGHT * u, WIDTH * u, HEIGHT * u)
+        let rect = Rect::new(
+            screen.x - 12.0 * u - WIDTH * u,
+            screen.y - above - HEIGHT * u,
+            WIDTH * u,
+            HEIGHT * u,
+        )
         var lo = vec2(seen.x, seen.y)
         var hi = vec2(seen.right(), seen.bottom())
         if let Some(b) = board {
@@ -64,7 +69,10 @@ fn the_minimap_holds_the_board_and_the_view() {
     // 1000 units across the inner 180 pixels: 0.18 a unit; 400 tall is 72, centred in 112.
     assert(abs(m.scale - 0.18) < 1.0e-5, f"{m.scale}")
     let corner = m.to_map(vec2(0.0))
-    assert(abs(corner.x - 1078.0) < 1.0e-3 && abs(corner.y - (618.0 + 20.0)) < 1.0e-3, f"{corner.x}, {corner.y}")
+    assert(
+        abs(corner.x - 1078.0) < 1.0e-3 && abs(corner.y - (618.0 + 20.0)) < 1.0e-3,
+        f"{corner.x}, {corner.y}",
+    )
     // And back.
     let p = vec2(1150.0, 650.0)
     assert(length(m.to_map(m.to_world(p)) - p) < 1.0e-3)

@@ -28,7 +28,11 @@ impl Caret {
 
 /// Whether `cp` is part of a word: a letter, a digit, `_`, or anything past ASCII.
 fn wordy(cp: u32) -> bool {
-    (cp >= 48 && cp <= 57) || (cp >= 65 && cp <= 90) || (cp >= 97 && cp <= 122) || cp == 95 || cp >= 128
+    (cp >= 48 && cp <= 57) ||
+        (cp >= 65 && cp <= 90) ||
+        (cp >= 97 && cp <= 122) ||
+        cp == 95 ||
+        cp >= 128
 }
 
 /// Where the word at or after byte `i` ends, past the spaces before it.
@@ -193,10 +197,22 @@ fn the_caret_moves_and_extends() {
     let t = "one two\nthree"
     assert(moved(t, Caret::at(0), forward: true, step: Step::Word, extend: false) == Caret::at(3))
     assert(moved(t, Caret::at(5), forward: true, step: Step::Line, extend: false) == Caret::at(7))
-    assert(moved(t, Caret::at(5), forward: false, step: Step::Line, extend: true) == Caret { at: 0, anchor: 5 })
+    assert(
+        moved(t, Caret::at(5), forward: false, step: Step::Line, extend: true) ==
+            Caret { at: 0, anchor: 5 },
+    )
     // A selection collapses to its side on a plain move.
-    assert(moved(t, Caret { at: 2, anchor: 6 }, forward: false, step: Step::Char, extend: false) == Caret::at(2))
-    assert(moved(t, Caret { at: 6, anchor: 2 }, forward: true, step: Step::Char, extend: false) == Caret::at(6))
+    assert(
+        moved(t, Caret { at: 2, anchor: 6 }, forward: false, step: Step::Char, extend: false) ==
+            Caret::at(2),
+    )
+    assert(
+        moved(t, Caret { at: 6, anchor: 2 }, forward: true, step: Step::Char, extend: false) ==
+            Caret::at(6),
+    )
     // Shift and a word: the selection grows by a word.
-    assert(moved(t, Caret { at: 3, anchor: 0 }, forward: true, step: Step::Word, extend: true) == Caret { at: 7, anchor: 0 })
+    assert(
+        moved(t, Caret { at: 3, anchor: 0 }, forward: true, step: Step::Word, extend: true) ==
+            Caret { at: 7, anchor: 0 },
+    )
 }
