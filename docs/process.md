@@ -1730,6 +1730,17 @@ a tab is reloaded. The browser host's environment now says whether the page load
 tab (the [Navigation Timing](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceNavigationTiming/type)
 type), and the console's 30-minute rule and its stored time are gone.
 
+Ryan found the raw covers wasteful and the album row hard to read. Covers now ship as WebP
+(quality 90: 29 and 107 KB, from 2 MB of pixels each), decoded by the browser through a new
+host mechanism (`image/decode`) at the size the catalog promises. Asked for a direction, Ryan
+proposed cubes: each game is now a cube in the tesseract's room, its cover on its sides,
+turning slowly; the selection tumbles forward and widens into its whole cover. Claude judged
+the look from headless Chrome captures at rest, mid-tumble and settled. Ryan also asked for the
+games to load ahead of time without slowing the console: once the library has settled, the
+console has the browser fetch each game's pages, runtime, WASM and shaders at low priority,
+the selection first, and stops when a game opens. The console and the games are one site, so
+the browser's cache serves them to the game.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

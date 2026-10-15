@@ -1,6 +1,6 @@
-// The console's GPU work: the void around the traced artifact, the album cards in
+// The console's GPU work: the void around the traced artifact, the games' blocks in
 // perspective, and the flat mark.
-use room::{Camera, Card, corner, project}
+use room::{Camera, Card, corner, project, turned}
 use std::gpu::{ClipPosition, FragCoord, Over, Rgba8, Rgba16Float, Sampler, Texture, VertexIndex}
 use facet::{CAP, MarkRun, mark_distance}
 
@@ -53,14 +53,20 @@ pub fn stage(
     vec4(tone(seen.xyz * 1.6) * look.reveal, 1.0)
 }
 
-pub struct CardVertex {
+pub struct BlockVertex {
     pub position: ClipPosition,
-    // From 0 to 1 across the art; beyond, in the margin that holds the ring.
+    // Across its face from 0 to 1 (v down), and the face's width and height (world units).
     pub uv: vec2,
+    pub extent: vec2,
+    // The face: 0 to 3 the sides, from the front round to the right; 4 the top, 5 the bottom.
+    pub face: f32,
+    pub normal: vec3,
 }
 
+// A block's 36 corners: two triangles a face. A face turned away from the eye collapses, so
+// the faces drawn never overlap: a block is convex.
 @vertex
-pub fn card_corner(v: VertexIndex, camera: Camera, card: Card) -> CardVertex {
+pub fn block_corner(v: VertexIndex, camera: Camera, card: Card) -> BlockVertex {
     let corners = [
         vec2(0.0, 0.0),
         vec2(1.0, 0.0),
@@ -69,42 +75,79 @@ pub fn card_corner(v: VertexIndex, camera: Camera, card: Card) -> CardVertex {
         vec2(1.0, 0.0),
         vec2(1.0, 1.0),
     ]
-    let margin = vec2(card.size.w) / card.size.xy
-    let uv = mix(-margin, vec2(1.0) + margin, corners[v.index])
-    let s = project(camera, corner(card, uv))
+    // Each face's outward normal, the way across it and the way up it.
+    let normals = [
+        vec3(0.0, 0.0, 1.0),
+        vec3(1.0, 0.0, 0.0),
+        vec3(0.0, 0.0, -1.0),
+        vec3(-1.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, -1.0, 0.0),
+    ]
+    let acrosses = [
+        vec3(1.0, 0.0, 0.0),
+        vec3(0.0, 0.0, -1.0),
+        vec3(-1.0, 0.0, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(1.0, 0.0, 0.0),
+        vec3(1.0, 0.0, 0.0),
+    ]
+    let ups = [
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, 0.0, -1.0),
+        vec3(0.0, 0.0, 1.0),
+    ]
+    let face = v.index / 6
+    let uv = corners[v.index % 6]
+    let (n, across, up) = (normals[face], acrosses[face], ups[face])
+    let normal = turned(card, n)
+    let middle = corner(card, n * 0.5)
+    let facing = dot(normal, camera.eye.xyz - middle) > 0.0
+    let s = project(camera, corner(card, n * 0.5 + across * (uv.x - 0.5) + up * (0.5 - uv.y)))
     let ndc = vec2(s.x / camera.screen.x * 2.0 - 1.0, 1.0 - s.y / camera.screen.y * 2.0)
     // Clip w is the depth, so the art is interpolated in perspective.
-    CardVertex { position: ClipPosition { position: vec4(ndc * s.z, 0.5, s.z) }, uv }
+    let position = if facing { vec4(ndc * s.z, 0.5, s.z) } else { vec4(2.0, 2.0, 2.0, 1.0) }
+    BlockVertex {
+        position: ClipPosition { position },
+        uv,
+        extent: vec2(length(across * card.size.xyz), length(up * card.size.xyz)),
+        face: f32(face),
+        normal,
+    }
 }
 
-// An album card: art with rounded corners and a faint hairline edge, with a ring when it has
-// focus.
-
+// A game's block: its cover on its sides, the middle of it as wide as each face allows, so the
+// chosen block's front shows all of it; the top and bottom dark. Lit from above and in front,
+// with a fine silver line along each edge, as the artifact's struts, bright when it has focus.
 @fragment
-pub fn card_face(
-    v: CardVertex,
+pub fn block_face(
+    v: BlockVertex,
     art: Texture<Rgba8>,
     linear: Sampler,
     card: Card,
     has_art: f32,
 ) -> Over {
-    let size = card.size.xy
-    let local = (v.uv - vec2(0.5)) * size
-    let radius = card.size.z
-    let q = abs(local) - size * 0.5 + vec2(radius)
-    let d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - radius
-    let pixel = max(fwidth(d), 0.00001)
-    let inside = saturate(0.5 - d / pixel)
-    let sampled = art.sample_level(linear, saturate(v.uv), 0.0).xyz
-    let base = mix(vec3(0.11, 0.11, 0.12), sampled, has_art)
-    // A hairline just inside the edge, so dark art still has a shape against the dark.
-    let hairline = saturate(1.0 - abs(d + pixel) / pixel) * 0.1
-    let lit = mix(base, vec3(1.0), hairline) * card.look.x
-    let gap = card.size.w * 0.5
-    let band = saturate(1.0 - abs(d - gap) / pixel / 1.6) * card.look.y
-    let alpha = max(inside, band) * card.look.z
-    let color = lit * inside + vec3(0.97) * band
-    Over { color: vec4(color / max(max(inside, band), 0.0001), alpha) }
+    let face = u32(v.face + 0.5)
+    let shown = min(v.extent.x / v.extent.y * 0.5625, 1.0)
+    let sampled = art.sample_level(linear, vec2(0.5 + (v.uv.x - 0.5) * shown, v.uv.y), 0.0).xyz
+    let cover = mix(vec3(0.11, 0.11, 0.12), sampled, has_art)
+    let surface = if face < 4 { cover } else { vec3(0.05, 0.05, 0.055) }
+    let light = normalize(vec3(-0.35, 0.6, 0.75))
+    var shade = 0.45 + 0.55 * saturate(dot(normalize(v.normal), light))
+    // The chosen block's front shows its cover as it is.
+    if face == 0 { shade = mix(shade, 1.0, card.look.w) }
+    let edge = min(
+        min(v.uv.x, 1.0 - v.uv.x) * v.extent.x,
+        min(v.uv.y, 1.0 - v.uv.y) * v.extent.y,
+    )
+    let pixel = max(fwidth(edge), 0.00001)
+    let line = saturate(1.5 - edge / pixel) * mix(0.35, 1.0, card.look.y)
+    let silver = mix(vec3(0.55, 0.56, 0.6), vec3(1.0), card.look.y)
+    let color = mix(surface * shade * card.look.x, silver, line)
+    Over { color: vec4(color, card.look.z) }
 }
 
 pub struct Emblem: Copy + GpuData {

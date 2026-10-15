@@ -4,8 +4,8 @@ use opening::{
     MARK_WIDTH, OPENING_SECONDS, RETURNING, artifact_place, clock_at, mark_place, moment,
     presentation_step, stage_light, turn_at,
 }
-use paint::{Emblem, Stage, card_corner, card_face, emblem, quad, stage}
-use room::{Camera, MARGIN, Row, artifact_spot, bounds, camera, place, row}
+use paint::{Emblem, Stage, block_corner, block_face, emblem, quad, stage}
+use room::{Camera, MARGIN, Row, SPIN, artifact_spot, bounds, camera, place, row}
 use tesseract::{Artifact, artifact, corners}
 use facet::MarkRun
 use platform::host
@@ -124,7 +124,9 @@ struct Cover {
     image: Option<Texture<Rgba8>>,
     // The colour its art lends the room's light.
     tint: vec3,
+    // The compressed art, fetched, then decoded by the host (`host::decode_image`).
     load: Option<Pending<u8>>,
+    decode: Option<Pending<u8>>,
     requested: bool,
 }
 
@@ -200,6 +202,12 @@ pub struct Console {
     reloaded: Option<bool>,
     decided: bool,
     waited: f32,
+    // The games' files, fetched ahead of time once the library has settled
+    // (`prefetch_games`): how many games are done, counting from which, and what is pending.
+    prefetched: u32,
+    prefetch_from: Option<u32>,
+    prefetch_list: Option<Pending<u8>>,
+    prefetching: Option<Pending<u8>>,
     // The room's light: the colour of the selected game's art, and how far it takes it.
     tint: vec4,
     // The page's icons, asked for once.
@@ -294,6 +302,10 @@ pub fn init() -> Console {
         reloaded: None,
         decided: false,
         waited: 0.0,
+        prefetched: 0,
+        prefetch_from: None,
+        prefetch_list: None,
+        prefetching: None,
         tint: vec4(1.0, 1.0, 1.0, 0.0),
         icons: page_icons(),
         retry_at: 0.0,
@@ -585,7 +597,13 @@ fn update(s: mut Console) {
                     s.cards = cards.clone()
                     for _ in 0..cards.len() {
                         s.covers.push(
-                            Cover { image: None, tint: vec3(1.0), load: None, requested: false },
+                            Cover {
+                                image: None,
+                                tint: vec3(1.0),
+                                load: None,
+                                decode: None,
+                                requested: false,
+                            },
                         )
                     }
                     s.need_open = true
@@ -607,6 +625,7 @@ fn update(s: mut Console) {
         if !visible {
             s.covers[i].image = None
             s.covers[i].load = None
+            s.covers[i].decode = None
             s.covers[i].requested = false
             continue
         }
@@ -617,6 +636,13 @@ fn update(s: mut Console) {
         if let Some(result) = poll(mut s.covers[i].load) {
             if let Ok(bytes) = result {
                 let card = s.cards[i].clone()
+                s.covers[i].decode = Some(host::decode_image(bytes, card.width, card.height))
+            }
+        }
+        if let Some(result) = poll(mut s.covers[i].decode) {
+            if let Ok(bytes) = result {
+                let card = s.cards[i].clone()
+                // The host decodes only art of the size the catalog says.
                 if bytes.len() == card.width * card.height * 4 {
                     s.covers[i].tint = palette(bytes, card.width, card.height)
                     var image = texture::<Rgba8>(width: card.width, height: card.height)
@@ -1052,7 +1078,8 @@ fn library(s: mut Console, w: f32, h: f32, cam: Camera, row: Row, margin: f32) {
         if offset < -2.5 || offset > 12.0 { continue }
         let art = s.covers[i].image.is_some()
         let ring = if lit(s, Action::Game { index: i }) { 1.0 } else { 0.0 }
-        let card = place(i, s.album, ring, art, row)
+        let spin = if s.reduced { 0.0 } else { s.presentation * SPIN }
+        let card = place(i, s.album, ring, art, row, spin)
         let b = bounds(cam, card) / s.zoom
         let r = Rect::new(b.x, b.y, b.z, b.w)
         s.placed.push(Placed { index: i, card, art })
@@ -1084,10 +1111,15 @@ fn library(s: mut Console, w: f32, h: f32, cam: Camera, row: Row, margin: f32) {
     }
     let card = s.cards[s.selected].clone()
     let continuing = !s.saves.is_empty()
+    // The title and actions hold still at the margin, above where the selection rests, while
+    // blocks tumble beneath them.
+    let still = place(s.selected, f32(s.selected), ring: 0.0, has_art: true, row: row, spin: 0.0)
+    let resting = bounds(cam, still) / s.zoom
+    slot = Rect::new(margin, resting.y, resting.z, resting.w)
     let x = slot.x
     let room = min(w - x - margin, 820.0)
     // From the row up: the actions, the state, the title.
-    let top = slot.y - 30.0 - 40.0
+    let top = slot.y - 30.0 - 40.0 - 14.0
     let picked = if continuing { s.saves[0].clone() } else {
         SaveInfo { slot: String::new(), label: String::new(), description: String::new(), saved: 0 }
     }
@@ -1379,9 +1411,13 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     }
     let intro = motion && s.presentation < s.intro_until
     let phase = moment(s.presentation, intro)
+    // Nothing is fetched ahead of time until the opening is over and the library has come up,
+    // so it never slows the console's own start.
+    if phase.settled && phase.library >= 1.0 { prefetch_games(mut s) }
     s.reveal = phase.library
     let ease = |rate: f32| -> f32 { if motion { 1.0 - exp(-dt * rate) } else { 1.0 } }
-    s.album = mix(s.album, f32(s.selected), ease(9.0))
+    // Slow enough to see the chosen block tumble forward and the one it leaves tumble back.
+    s.album = mix(s.album, f32(s.selected), ease(5.0))
     // Focus on the album row follows the selection, wherever the selection came from.
     match s.focus {
         Action::Game { index } => if index != s.selected {
@@ -1504,7 +1540,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                     placed.card.look.x * phase.library,
                     placed.card.look.y,
                     placed.card.look.z * phase.library,
-                    0.0,
+                    placed.card.look.w,
                 ),
                 ..placed.card,
             }
@@ -1513,9 +1549,9 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                 if let Some(t) = s.covers[placed.index].image {
                     draw(
                         pass,
-                        card_corner.bind(camera: cam, card: card),
-                        card_face.bind(art: t, linear: s.linear, card: card, has_art: 1.0),
-                        vertices: 6,
+                        block_corner.bind(camera: cam, card: card),
+                        block_face.bind(art: t, linear: s.linear, card: card, has_art: 1.0),
+                        vertices: 36,
                     )
                     drawn = true
                 }
@@ -1523,9 +1559,9 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
             if !drawn {
                 draw(
                     pass,
-                    card_corner.bind(camera: cam, card: card),
-                    card_face.bind(art: s.blank, linear: s.linear, card: card, has_art: 0.0),
-                    vertices: 6,
+                    block_corner.bind(camera: cam, card: card),
+                    block_face.bind(art: s.blank, linear: s.linear, card: card, has_art: 0.0),
+                    vertices: 36,
                 )
             }
         }
@@ -1580,6 +1616,32 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         }
     }
     if s.clicked.is_some() { s.pressed = None }
+}
+
+// Fetches the games' files ahead of time, while the library waits: one game at a time, the
+// selection first, then the rest in order, and never while a game is starting (the host
+// stops it when a game opens). Each game's list is beside the catalog
+// (tools/console.py's `prefetch_list`).
+fn prefetch_games(s: mut Console) {
+    if let Some(_) = poll(mut s.prefetching) { s.prefetched += 1 }
+    if let Some(result) = poll(mut s.prefetch_list) {
+        match result {
+            Ok(bytes) => s.prefetching = Some(host::prefetch(bytes)),
+            Err(_) => s.prefetched += 1,
+        }
+    }
+    let n = s.cards.len()
+    if s.step != Step::Idle || s.prefetched >= n { return }
+    if s.prefetch_list.is_some() || s.prefetching.is_some() { return }
+    if s.prefetch_from.is_none() { s.prefetch_from = Some(s.selected) }
+    let from = s.prefetch_from.unwrap_or(0)
+    let id = s.cards[prefetch_order(from, s.prefetched, n)].id.clone()
+    s.prefetch_list = Some(fetch(f"prefetch-{id}.txt"))
+}
+
+// The `done`-th game to fetch ahead of time of `n`, starting from the selection, `from`.
+fn prefetch_order(from: u32, done: u32, n: u32) -> u32 {
+    (from + done) % n
 }
 
 // Whether this page load plays the opening: every visit does, and a reload of the tab starts
@@ -1763,6 +1825,13 @@ fn an_empty_library_displays_its_error_instead_of_loading() {
     let message = "The game library could not be read."
     assert(empty_library_message(message) == message)
     assert(empty_library_message("") == "Loading games")
+}
+
+@test
+fn games_are_fetched_ahead_from_the_selection_round_to_the_rest() {
+    var order: Vec<u32> = Vec::new()
+    for done in 0..4 { order.push(prefetch_order(2, done, 4)) }
+    assert(order[0] == 2 && order[1] == 3 && order[2] == 0 && order[3] == 1)
 }
 
 @test
