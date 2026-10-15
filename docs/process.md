@@ -1874,72 +1874,79 @@ a tab is reloaded. The browser host's environment now says whether the page load
 tab (the [Navigation Timing](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceNavigationTiming/type)
 type), and the console's 30-minute rule and its stored time are gone.
 
-## Swell, a tortoise surfs a sea it raises, 2026-10-15
+## Swell, a tortoise on an endless breaking wave, 2026-10-15
 
 Ryan asked for a 2D game like Leapling that is genuinely outstanding and fun, and leans on what
 wrela does unusually. A council (Claude Opus 5.5 leading; GPT-6.1-Sol and GPT-6-Astra
-reviewing, two rounds) weighed four ideas. Both reviewers proposed the same one on their own:
-the player shapes the ground under a moving rider. Ryan named it Swell, asked for a tortoise
-on a surfboard (not a sea turtle, and nothing like Pixar's surfing sea turtle), water effects
-that are "really outstanding and sick", and a build on a worktree off `main`. Claude Code
-(Opus 5.5) designed and built it as a prototype for Ryan to play; it isn't in the console's
-catalogue.
+reviewing, two rounds) weighed four ideas; both reviewers proposed, on their own, the player
+shaping the ground under a moving rider. Ryan named it Swell, asked for a tortoise on a
+surfboard (not a sea turtle, and nothing like Pixar's surfing sea turtle), water effects that are
+"really outstanding and sick", and a build on a worktree off `main`. Claude Code (Opus 5.5)
+built a side-view first version: hold to raise a swell behind you and surf it, let go and it
+throws you. Ryan liked the tortoise but found it hard to see what was coming, and asked for 3D:
+surfing down the face of a giant wave, obstacles coming at you and getting harder, no end, a
+score from tricks and how long you ride. A second council (the same roster, two rounds) shaped
+the 3D plan; v1 stays in the branch's history. It isn't in the console's catalogue.
 
-**The verb.** The sea is one function of x and time (`games/swell/sea.wrela`). The sim reads
-its height, and the compiler's derived slope and rise, for the contact rule; the shader draws
-the same function. Hold to raise a swell behind the rider: it keeps pace, so the rider surfs
-its face, faster the longer it's held (up to 5 units a second above its speed when raised).
-Let go, and the swell surges forward until its crest has passed under the rider: passing fast,
-it throws the rider into the air. Three swells stand at most. A first version raised a hill
-ahead of the rider; the tests showed it gave no speed (the water's lift was taken back as it
-settled), and a rider who outran its swell was never thrown, so the swell became a wave that
-travels.
+**The ride.** One wave, in its own frame (`games/swell/wave.wrela`): x down the line, z up the
+face, its height one function the sim rides and the vertex shader lifts the sea's grid by. The
+reviewers pointed out that a height function can't curl over, so the lip and the whitewater are
+drawn from the same wave but never carry the rider. The sim (120 Hz, on the ticker's thread)
+carves by heading, launches once across the lip line (measured relative to it), spins the
+tortoise in its shell while the button is held (the Shell Spin), and lands clean (out of the
+shell, near a whole turn, the board pointing down) or bails. The curl chases the rider; the curl,
+a closeout's lip, a rock or a log ends the run. Gravity along the face is gentler than in the air
+(an arcade's), so a rider can carry speed up to the lip.
 
-**The control.** The council asked for the same course without the verb, to test whether the
-verb carries the fun. Flat water and fixed ramps can't give speed, so they'd lose by
-construction; the control has rolling hills and a dive instead (heavier on the water while
-held), a strong design of its own. Test bots finish both courses; the hills' heights and widths
-and the rocks' places came from a search over layouts (a Python script outside the repo, about
-200 runs of the bot tests) for the fewest wipeouts on both.
+**Fairness.** The course is made a segment at a time from the run's seed (`course.wrela`),
+nothing stored: a safe corridor first, its slope and bend bounded so steering by heading can
+follow it at any speed up to the top; rocks and logs only outside it; closeouts only where the
+corridor runs low, so the lower face stays open. Difficulty rises over the first 2,400 and stops
+there, where a test bot survives; after that the course keeps varying, no harder.
 
-**The look.** One fragment shader: a late-afternoon sky with clouds and a low sun, the open sea
-to the horizon with the sun's path glittering, and the near sea with light through its swells,
-depth that drinks the reds first, caustics, shafts of light, bubbles, foam on surging crests and
-in the board's track, and spray the frames throw. The tortoise is an original design: an old
-desert tortoise with a tall amber dome in plates with growth rings, stout legs, a wrinkled neck
-that comes further out the faster it goes, and a heavy-lidded eye, on a longboard. Wiped out, it
-tumbles in its shell. Sound is synthesized as it plays: the sea, the board's rush, a swell
-rising, splashes and a marimba's notes. Nothing comes from a file or a generative model.
+**The look.** The sea is a grid (160 × 192 cells, finest at the eye and on the upper face) lifted
+by the height function, shaded per fragment: deep water, the sky in it, light coming green
+through the thin crest when the eye looks toward the low sun behind the wave, foam on the lip, in
+the board's track, round rocks and over closeouts, and spray. The lip is a ribbon throwing over
+the face near the curl and over closeouts ahead; the whitewater a churning tube behind the curl.
+Rocks, logs and the tortoise are lit ellipsoids with ink outlines: the tortoise an old desert
+tortoise, a tall amber dome in plates, stout legs, a neck that comes out further the faster it
+goes. One state between two snapshots draws everything (a reviewer found that v1 drew the water
+at another time than the rider when the snapshots weren't adjacent). Sound is synthesized: the
+sea, the board's rush, the wave's roar as loud as the curl is close, splashes, chimes. Nothing
+comes from a file or a generative model.
 
 **Design references** (named, not traced; no art, code or level taken):
 
 | Reference | What it teaches |
 |---|---|
-| *Tiny Wings* (Andreas Illiger, 2011) | Momentum over rolling hills: dive down, let go on the way up, a clean landing on a far face. The fixed course's control. |
+| *Tiny Wings* (Andreas Illiger, 2011) | Momentum over rolling hills (v1's control course). |
 | *Wavespark* (Nathan McCoy, about 2010), which *Tiny Wings* is said to follow | One-button gravity over terrain. |
-| *Kirby: Canvas Curse* (HAL Laboratory, 2005) | The player makes the path a rider who can't jump rides on, in a limited supply that fades: Swell's three swells, which settle. |
-| *Raise It!* (Ben Fulkerson-Bird, a prototype on itch.io) | Raising the ground under a rider who can't jump, quickly to launch: the nearest prior art for the verb. |
-| *Waveform* (Eden Industries, 2012) | Shaping the wave a rider follows. |
+| *Kirby: Canvas Curse* (HAL Laboratory, 2005) | A path the player makes for a rider who can't jump (v1). |
+| *Raise It!* (Ben Fulkerson-Bird, a prototype on itch.io) | Raising the ground under a rider to launch it (v1). |
+| *Waveform* (Eden Industries, 2012) | Shaping the wave a rider follows (v1). |
 
 **Engine.** Leapling's stroke type moved to `engine::letters` with its shader function and
 `clock_text`, so both games share one copy; Leapling's pixels are unchanged.
 
-**Checks.** Regressions cover the contact rule (water rising carries a still rider; surfing a
-held swell speeds it up and letting go throws it higher than the tallest rock; the rider never
-sinks below the water over 3,000 seeded ticks; a full set of swells refuses a press and keeps
-every swell; a press and its release in one tick still raise one; a clean landing keeps speed
-and one into a face loses it; rocks wipe out and the rider starts again before them; the fixed
-course's dive), and bots finishing both courses. A scripted ride of 2,400 ticks replays from
-its tick log with 1, 2 and 8 helpers, and fails at the tick of a changed record; the same ride
-in Chrome (lockstep, frames at other ticks) has the native host's records and hashes, tick for
-tick. On the M4's GPU, the sea the shader draws is within 0.06 mm of the sim's in height and
-5e-5 in slope over 4,096 points of a busy sea. The audio rendered offline in Chrome is finite
-and peaks at 0.36. `tools/wrela profile` on this MacBook Air M4 (native host, Metal, 1080p, the
-same 300-frame ride, 60 warmup): Swell's frame takes 3.8 ms of GPU time at the median and 7.2 ms
-at the 95th percentile; Leapling's run, 1.8 and 4.3. Chrome's frame rate and the Linux GPUs
-weren't measured. Not checked: whether it's fun. That's Ryan's playtest, both courses, with
-practice and the order reversed, and the council asked for players who haven't seen it before
-calling it outstanding.
+**Checks.** Package tests: the face rises and slumps behind the curl; the corridor's bounds hold
+and no hazard reaches it; carving up slows and down speeds; crossing the lip launches once and
+riding along it never does; a whole Shell Spin lands clean, half of one bails, landing in the
+shell bails; the curl catches a rider who falls behind; the rider never sinks into the face over
+3,000 seeded ticks; a corridor bot rides the hardest course at the slowest and top speeds on
+three seeds without harm; the grid's triangles stay within 0.9 cm of the face near the rider
+(1.3 cm on the crest, flown over); every one of 217 rocks and logs on three courses is in the
+camera's view, unhidden by the wave, at least 5.7 s before the last moment a swerve still misses
+it at the top speed (the tortoise's own body and spray hiding it aren't counted); one presented
+state between snapshots, adjacent or not. Suite: a scripted ride that launches, lands a clean
+Shell Spin, bails and starts again (checked), replaying from its tick log with 1, 2 and 8
+helpers, a changed record failing at its tick; the same ride in Chrome, the native host's tick for
+tick; on the M4's GPU the face within 2.4e-6 in height and 3e-6 in slope of the CPU's. On this
+MacBook Air M4 at 1080p: `tools/wrela profile` (native, Metal), 4.6 ms of GPU time a frame at the
+median and 6.1 ms at the 95th percentile; Chrome (frames back to back), 4.5 and 6.0; the sim's
+tick 0.005 ms at the median; cold, all eight pipelines made in 242 ms and the first frame 196 ms
+after the page opened, about 620 KB fetched from this machine. Chrome's paced frame rate and the
+Linux GPUs weren't measured. Not checked: whether it's fun; that's Ryan's playtest.
 
 ## Keeping this record
 

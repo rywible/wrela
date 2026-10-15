@@ -32,9 +32,9 @@ use wave::{Wave, face, height, lip}
 pub const HZ: u32 = 120
 pub const STEP: f32 = 1.0 / 120.0
 
-// Gravity, on the face and in the air; how the face's steepness pushes the rider on; the water's
-// drag, linear and quadratic; the top speed.
-const G: f32 = 30.0
+// Gravity along the face (gentler than in the air: an arcade's surfing) and in the air; how the
+// face's steepness pushes the rider on; the water's drag, linear and quadratic; the top speed.
+const G: f32 = 16.0
 const G_AIR: f32 = 26.0
 const PUSH: f32 = 4.2
 const DRAG: f32 = 0.1
@@ -45,11 +45,13 @@ pub const TOP_SPEED: f32 = 30.0
 pub const STEEPEST: f32 = 1.0
 pub const TURN: f32 = 2.6
 const RELAX: f32 = 1.6
-// Leaving the lip: the rise at most, and a pop on top of it.
+// Leaving the lip: the rise at most, a pop on top of it, and the share of its speed up the face
+// it keeps (an air goes up, and comes back down to the face).
 const RISE_MOST: f32 = 15.0
-const POP: f32 = 2.0
+const POP: f32 = 4.0
+const OUT: f32 = 0.4
 // In the air: the drift back toward the face, the board's turn, the Shell Spin's rate.
-const PULL: f32 = 9.0
+const PULL: f32 = 8.0
 const AIR_TURN: f32 = 2.4
 pub const SPIN: f32 = 12.0
 // A clean landing: within this of a whole turn, out of the shell, the board pointing no more
@@ -370,7 +372,7 @@ fn carve(w: mut World, held: u32) {
         // Across the lip line, outward relative to it: off the lip, once.
         let rise = min(max(dot(f.slope, flat), 0.0), RISE_MOST) + POP
         r.at = vec3(next.x, height(wv, next), next.y)
-        r.vel = vec3(flat.x, rise, flat.y)
+        r.vel = vec3(flat.x, rise, flat.y * OUT)
         r.grounded = false
         r.aloft = 0.0
         r.spin = 0.0
@@ -529,11 +531,14 @@ fn climbing_the_face_slows_and_dropping_speeds() {
     holding(mut up, UP, 45)
     holding(mut down, DOWN, 45)
     assert(up.rider.at.z > 5.0 && down.rider.at.z < 3.0, "carved up and down")
-    assert(down.rider.speed > up.rider.speed + 4.0, f"{down.rider.speed} against {up.rider.speed}")
-    // The heading never passes its steepest, and comes back down the line when let be.
+    // (Gravity along the face is an arcade's, gentler than the air's: 2 a second apart here.)
+    assert(down.rider.speed > up.rider.speed + 2.0, f"{down.rider.speed} against {up.rider.speed}")
+    // The heading never passes its steepest, and comes back down the line when let be (a slow
+    // rider, low on the face, stays on it meanwhile).
     assert(up.rider.heading <= STEEPEST)
-    holding(mut up, bits: 0, ticks: 120)
-    assert(abs(up.rider.heading) < 0.01)
+    var slow = riding_at(x: 40.0, z: 2.0, speed: 6.0, heading: 0.8)
+    holding(mut slow, bits: 0, ticks: 120)
+    assert(slow.rider.grounded && abs(slow.rider.heading) < 0.01)
 }
 
 @test

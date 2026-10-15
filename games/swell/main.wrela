@@ -1,3 +1,7 @@
+use std::gpu::GlobalId
+use std::gpu::Slots
+use std::gpu::dispatch
+use std::gpu::buffer
 // Swell: a tortoise on a longboard rides an endless breaking wave. Carve up and down the face,
 // stay ahead of the curl, dodge the reef and the logs, keep low under closeouts, launch off the
 // lip and pull a Shell Spin. Ride as long as you can.
@@ -105,6 +109,8 @@ pub struct Game {
     segments: GpuBuffer<vec4>,
     text: Typeset,
     sound: RingWriter<u32>,
+    // The face sampled on the GPU, for the agreement test (`probe_face`).
+    probe: GpuBuffer<vec4>,
 }
 
 fn blank_part() -> Part {
@@ -145,6 +151,7 @@ pub fn init() -> Game {
         segments: buffer_of(Vec::filled(SEGMENTS, vec4(0.0))),
         text: typeset(),
         sound: sound::start(),
+        probe: buffer(0),
     }
 }
 
@@ -769,6 +776,66 @@ fn a_frame_draws_one_state_between_its_snapshots() {
     c.rider.at = vec3(20.0, 1.0, 4.0)
     let fresh = shown(b, c, 0.3)
     assert(fresh.at == c.rider.at && fresh.curl == c.curl)
+}
+
+// ---- the agreement test's probes ---------------------------------------------------------------
+
+/// A wave with its curl close, so the face slumps behind it over the samples.
+fn probe_wave() -> Wave {
+    Wave { curl: 60.0, seed: 417.0 }
+}
+
+/// The face at `count` points of a grid over it (`across` up the face, from `(x, z)`, `step`
+/// apart), on the GPU, as the vertex and fragment shaders compute it: `vec4(x, z, height, slope
+/// up the face)` each, into the probe buffer.
+@testing
+pub fn probe_face(g: mut Game, x: f32, z: f32, step: f32, across: u32, count: u32) {
+    var out: GpuBuffer<vec4> = buffer(count)
+    dispatch(
+        sample_face.bind(probe_wave(), x, z, step, across, count, out: mut out),
+        groups: (count + 63) / 64,
+    )
+    g.probe = take out
+}
+
+/// The face at `(x, z)`, on the CPU, as the sim reads it: `vec4(x, z, height, slope up the face)`.
+@testing
+pub fn face_on_cpu(x: f32, z: f32) -> vec4 {
+    let f = face(probe_wave(), vec2(x, z))
+    vec4(x, z, f.height, f.slope.y)
+}
+
+@compute(64)
+fn sample_face(
+    w: Wave,
+    x: f32,
+    z: f32,
+    step: f32,
+    across: u32,
+    count: u32,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x < count {
+        let p = vec2(x + f32(id.x / across) * step, z + f32(id.x % across) * step)
+        let f = face(w, p)
+        out[id] = vec4(p, f.height, f.slope.y)
+    }
+}
+
+/// What the newest snapshot's run has done, for the replay tests: its launches, clean landings,
+/// whole turns spun, and bails and wipeouts and catches together; and the runs started.
+@testing
+pub fn milestones(g: mut Game) -> vec4 {
+    g.snaps.update()
+    let t = g.snaps.newest().snap.tally
+    vec4(f32(t.launches), f32(t.clean), f32(t.turns), f32(t.bails + t.wipeouts + t.caught))
+}
+
+@testing
+pub fn runs_started(g: mut Game) -> f32 {
+    g.snaps.update()
+    f32(g.snaps.newest().snap.tally.runs)
 }
 
 // Whether `p` is in the camera's view with the rider at `at`, and not hidden by the sea.
