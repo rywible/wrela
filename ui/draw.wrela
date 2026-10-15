@@ -65,8 +65,9 @@ impl Rect {
 /// whose field's coverage is `(v − 0.5) × scale + 0.5`. `uv` is the glyph's corners in the
 /// atlas, from 0 to 1; for a rectangle, `uv.x` above 0 draws only a ring that many pixels
 /// wide inside its edge. `kind` makes it an ellipse or a diamond in `rect` instead (a ring the
-/// same way), or a line from `uv.xy` to `uv.zw` (pixels), `radius` wide on each side, with
-/// round ends. `clip` indexes the list's clipping rectangles.
+/// same way), a line from `uv.xy` to `uv.zw` (pixels), `radius` wide on each side, with
+/// round ends, or a triangle with corners `uv.xy`, `uv.zw` and `third` (a ring `radius` wide
+/// inside its edge when `radius` is above 0). `clip` indexes the list's clipping rectangles.
 pub struct Quad: Copy + GpuData {
     pub rect: vec4,
     pub uv: vec4,
@@ -75,6 +76,7 @@ pub struct Quad: Copy + GpuData {
     pub scale: f32,
     pub radius: f32,
     pub kind: u32,
+    pub third: vec2,
 }
 
 /// A quad's `kind`.
@@ -82,6 +84,7 @@ pub const BOX: u32 = 0
 pub const ELLIPSE: u32 = 1
 pub const DIAMOND: u32 = 2
 pub const LINE: u32 = 3
+pub const TRIANGLE: u32 = 5
 /// A colour glyph: the atlas's texels themselves (an emoji's), not a field.
 pub const IMAGE: u32 = 4
 
@@ -157,6 +160,7 @@ impl DrawList {
                 scale: 0.0,
                 radius: min(radius, 0.5 * min(r.w, r.h)),
                 kind: BOX,
+                third: vec2(0.0),
             },
         )
     }
@@ -175,6 +179,7 @@ impl DrawList {
                 scale: 0.0,
                 radius: min(radius, 0.5 * min(r.w, r.h)),
                 kind: BOX,
+                third: vec2(0.0),
             },
         )
     }
@@ -203,6 +208,7 @@ impl DrawList {
                 scale: 0.0,
                 radius: 0.0,
                 kind,
+                third: vec2(0.0),
             },
         )
     }
@@ -225,6 +231,30 @@ impl DrawList {
                 scale: 0.0,
                 radius: h,
                 kind: LINE,
+                third: vec2(0.0),
+            },
+        )
+    }
+
+    /// The triangle with corners `a`, `b` and `c`; with `width` above 0, only its outline, that
+    /// wide inside it.
+    pub fn triangle(mut self, a: vec2, b: vec2, c: vec2, color: vec4, width: f32 = 0.0) {
+        if color.w <= 0.0 {
+            return
+        }
+        // Its quad holds the corners, and a pixel more for the edge's smoothing.
+        let lo = min(min(a, b), c) - vec2(1.0)
+        let hi = max(max(a, b), c) + vec2(1.0)
+        self.quads.push(
+            Quad {
+                rect: vec4(lo, hi - lo),
+                uv: vec4(a, b),
+                color: Unorm8x4::encode(color),
+                clip: self.clip,
+                scale: 0.0,
+                radius: width,
+                kind: TRIANGLE,
+                third: c,
             },
         )
     }
@@ -295,6 +325,7 @@ impl DrawList {
                         scale: 0.0,
                         radius: 0.0,
                         kind: IMAGE,
+                        third: vec2(0.0),
                     },
                 )
             } else if g.width > 0 {
@@ -317,6 +348,7 @@ impl DrawList {
                         scale,
                         radius: 0.0,
                         kind: BOX,
+                        third: vec2(0.0),
                     },
                 )
             }
@@ -351,6 +383,22 @@ fn a_line_holds_its_ends_and_its_width() {
 }
 
 @test
+fn a_triangle_holds_its_corners() {
+    var list = DrawList::new()
+    list.clear(vec2(100.0))
+    list.triangle(vec2(10.0, 50.0), vec2(30.0, 10.0), vec2(50.0, 50.0), vec4(1.0), width: 2.0)
+    let q = list.quads[0]
+    assert(q.kind == TRIANGLE && q.third == vec2(50.0, 50.0) && q.radius == 2.0)
+    assert(q.rect == vec4(9.0, 9.0, 42.0, 42.0))
+    // Inside, on the edge and outside, whichever way round.
+    let (a, b, c) = (vec2(10.0, 50.0), vec2(30.0, 10.0), vec2(50.0, 50.0))
+    assert(triangle_distance(vec2(30.0, 40.0), a, b, c) < 0.0)
+    assert(triangle_distance(vec2(30.0, 40.0), c, b, a) < 0.0)
+    assert(abs(triangle_distance(vec2(30.0, 50.0), a, b, c)) < 1.0e-4)
+    assert(abs(triangle_distance(vec2(30.0, 60.0), a, b, c) - 10.0) < 1.0e-4)
+}
+
+@test
 fn a_thick_frame_stays_inside_its_rectangle() {
     var list = DrawList::new()
     list.clear(vec2(100.0))
@@ -380,8 +428,9 @@ pub struct QuadVertex: Copy {
     pub clip: Flat<vec4>,
     /// `scale`, `radius`, and the quad's half width and height.
     pub shape: Flat<vec4>,
-    /// The quad's `uv` as it was: a line's ends.
+    /// The quad's `uv` as it was: a line's ends, or a triangle's first two corners.
     pub ends: Flat<vec4>,
+    pub third: Flat<vec2>,
     pub kind: Flat<u32>,
 }
 
@@ -414,6 +463,7 @@ fn quad_corner(
         clip: Flat { value: clips[q.clip] },
         shape: Flat { value: vec4(q.scale, q.radius, 0.5 * q.rect.zw) },
         ends: Flat { value: q.uv },
+        third: Flat { value: q.third },
         kind: Flat { value: q.kind },
     }
 }
@@ -436,6 +486,27 @@ fn diamond_distance(p: vec2, b: vec2) -> f32 {
     let h = clamp(((b.x - 2.0 * q.x) * b.x - (b.y - 2.0 * q.y) * b.y) / dot(b, b), -1.0, 1.0)
     let d = length(q - 0.5 * b * vec2(1.0 - h, 1.0 + h))
     if q.x * b.y + q.y * b.x - b.x * b.y > 0.0 { d } else { -d }
+}
+
+/// The distance from `p` to the edge of the triangle `a`, `b`, `c`: negative inside, whichever
+/// way round its corners go.
+fn triangle_distance(p: vec2, a: vec2, b: vec2, c: vec2) -> f32 {
+    let e0 = b - a
+    let e1 = c - b
+    let e2 = a - c
+    let v0 = p - a
+    let v1 = p - b
+    let v2 = p - c
+    let q0 = v0 - e0 * clamp(dot(v0, e0) / max(dot(e0, e0), 1.0e-9), 0.0, 1.0)
+    let q1 = v1 - e1 * clamp(dot(v1, e1) / max(dot(e1, e1), 1.0e-9), 0.0, 1.0)
+    let q2 = v2 - e2 * clamp(dot(v2, e2) / max(dot(e2, e2), 1.0e-9), 0.0, 1.0)
+    let d = sqrt(min(min(dot(q0, q0), dot(q1, q1)), dot(q2, q2)))
+    // Inside when p is on the same side of all three edges.
+    let w = e0.x * e2.y - e0.y * e2.x
+    let s0 = (v0.x * e0.y - v0.y * e0.x) * w
+    let s1 = (v1.x * e1.y - v1.y * e1.x) * w
+    let s2 = (v2.x * e2.y - v2.y * e2.x) * w
+    if s0 >= 0.0 && s1 >= 0.0 && s2 >= 0.0 { -d } else { d }
 }
 
 /// The distance from `p` to the line from `a` to `b`.
@@ -461,6 +532,11 @@ fn quad_color(v: QuadVertex, atlas: Texture<Rgba8>, linear: Sampler) -> Over {
         // A glyph: the field's distance, scaled to this size's pixels.
         let d = atlas.sample_level(linear, v.uv, 0.0).x
         coverage = saturate((d - 0.5) * s.x + 0.5)
+    } else if kind == TRIANGLE {
+        let e = v.ends.value
+        let d = triangle_distance(v.pixel, e.xy, e.zw, v.third.value)
+        coverage = saturate(0.5 - d)
+        if s.y > 0.0 { coverage *= saturate(0.5 + d + s.y) }
     } else if kind == LINE {
         let e = v.ends.value
         coverage = saturate(0.5 - (line_distance(v.pixel, e.xy, e.zw) - s.y))

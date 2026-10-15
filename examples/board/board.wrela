@@ -16,7 +16,8 @@ pub enum Kind: Copy + Eq + Serialize {
 }
 
 /// One thing on the board. A box's place is `at` (its top left) and `size`; a pen stroke's
-/// `points` are from `at`; a link joins items `from` and `to`, and is drawn from edge to edge.
+/// `points` are from `at`; a link joins items `from` and `to`, drawn from edge to edge (`route`),
+/// with `style`'s bends and arrowheads, and its label's box is `at` and `size` (`paint::label`).
 /// `color` indexes the palette (paint.wrela).
 pub struct Item: Clone + Eq + Serialize {
     pub id: u32,
@@ -28,7 +29,15 @@ pub struct Item: Clone + Eq + Serialize {
     pub points: Vec<vec2>,
     pub from: u32,
     pub to: u32,
+    pub style: u32,
 }
+
+/// A link's style: bits for elbows (else straight), and an arrowhead at each end.
+pub const ELBOW: u32 = 1
+pub const START_ARROW: u32 = 2
+pub const END_ARROW: u32 = 4
+/// A new connector's: in elbows, with an arrowhead where it ends.
+pub const CONNECTOR: u32 = ELBOW | END_ARROW
 
 /// A note's side, and the smallest a box is made.
 pub const NOTE: f32 = 200.0
@@ -49,17 +58,28 @@ impl Item {
             points: Vec::new(),
             from: 0,
             to: 0,
+            style: if kind == Kind::Link { CONNECTOR } else { 0 },
         }
     }
 
-    /// Whether a person types into it.
+    /// Whether a person types into it: a link's text is its label.
     pub fn has_text(self) -> bool {
-        self.kind != Kind::Pen && self.kind != Kind::Link
+        self.kind != Kind::Pen
     }
 
     /// Whether it's a box that resizes by its corners.
     pub fn boxed(self) -> bool {
-        self.has_text()
+        self.kind != Kind::Pen && self.kind != Kind::Link
+    }
+
+    /// The middle of its side facing `d` (a direction): where an elbow leaves it.
+    pub fn side(self, d: vec2) -> vec2 {
+        let c = self.center()
+        if abs(d.x) >= abs(d.y) {
+            vec2(if d.x >= 0.0 { self.at.x + self.size.x } else { self.at.x }, c.y)
+        } else {
+            vec2(c.x, if d.y >= 0.0 { self.at.y + self.size.y } else { self.at.y })
+        }
     }
 
     pub fn rect(self) -> Rect {
@@ -129,6 +149,29 @@ pub fn distance_to_line(p: vec2, a: vec2, b: vec2) -> f32 {
     length(p - a - ab * t)
 }
 
+/// Whether rectangles `a` and `b` overlap.
+fn overlaps(a: Rect, b: Rect) -> bool {
+    a.x <= b.right() && a.right() >= b.x && a.y <= b.bottom() && a.bottom() >= b.y
+}
+
+/// Whether the line from `a` to `b` passes through rectangle `r` (Liang and Barsky's clipping).
+pub fn crosses(a: vec2, b: vec2, r: Rect) -> bool {
+    let d = b - a
+    var lo = 0.0
+    var hi = 1.0
+    for (p, q) in [(-d.x, a.x - r.x), (d.x, r.right() - a.x), (-d.y, a.y - r.y), (d.y, r.bottom() - a.y)] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return false
+            }
+        } else {
+            let t = q / p
+            if p < 0.0 { lo = max(lo, t) } else { hi = min(hi, t) }
+        }
+    }
+    lo <= hi
+}
+
 /// Whether `ids` holds `id`.
 pub fn has(ids: [u32], id: u32) -> bool {
     for i in ids {
@@ -179,6 +222,41 @@ impl Board {
         Some((from.edge(to.center()), to.edge(from.center())))
     }
 
+    /// Where link `link` runs, its ends on its items' edges: straight, the line between their
+    /// middles; in elbows, from the sides that face each other, across and back. Empty if either
+    /// item is gone.
+    pub fn route(self, link: Item) -> Vec<vec2> {
+        var out: Vec<vec2> = Vec::new()
+        let Some(a) = self.index(link.from) else { return out }
+        let Some(b) = self.index(link.to) else { return out }
+        borrow from = self.items[a]
+        borrow to = self.items[b]
+        if link.style & ELBOW == 0 {
+            out.push(from.edge(to.center()))
+            out.push(to.edge(from.center()))
+            return out
+        }
+        let d = to.center() - from.center()
+        let start = from.side(d)
+        let end = to.side(-d)
+        out.push(start)
+        if abs(d.x) >= abs(d.y) {
+            let mid = 0.5 * (start.x + end.x)
+            if start.y != end.y {
+                out.push(vec2(mid, start.y))
+                out.push(vec2(mid, end.y))
+            }
+        } else {
+            let mid = 0.5 * (start.y + end.y)
+            if start.x != end.x {
+                out.push(vec2(start.x, mid))
+                out.push(vec2(end.x, mid))
+            }
+        }
+        out.push(end)
+        out
+    }
+
     /// The world rectangle item `i` covers.
     pub fn bounds(self, i: u32) -> Rect {
         borrow it = self.items[i]
@@ -195,14 +273,24 @@ impl Board {
                 hi = it.at + hi + h
                 Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)
             },
-            Kind::Link => match self.ends(it) {
-                Some((a, b)) => {
-                    let h = vec2(0.5 * LINK_WIDTH)
-                    let lo = min(a, b) - h
-                    let hi = max(a, b) + h
-                    Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)
-                },
-                None => Rect::new(it.at.x, it.at.y, w: 0.0, h: 0.0),
+            Kind::Link => {
+                let route = self.route(it)
+                if route.is_empty() {
+                    return Rect::new(it.at.x, it.at.y, w: 0.0, h: 0.0)
+                }
+                var lo = route[0]
+                var hi = route[0]
+                for p in route {
+                    lo = min(lo, p)
+                    hi = max(hi, p)
+                }
+                // Its label, where it has one.
+                if it.size.x > 0.0 {
+                    lo = min(lo, it.at)
+                    hi = max(hi, it.at + it.size)
+                }
+                let h = vec2(0.5 * LINK_WIDTH)
+                Rect::new(lo.x - h.x, lo.y - h.y, hi.x - lo.x + 2.0 * h.x, hi.y - lo.y + 2.0 * h.y)
             },
             _ => it.rect(),
         }
@@ -246,8 +334,12 @@ impl Board {
             i -= 1
             borrow it = self.items[i]
             if it.kind == Kind::Link {
-                if let Some((a, b)) = self.ends(it) {
-                    if distance_to_line(p, a, b) <= slack + LINK_WIDTH {
+                if it.size.x > 0.0 && it.rect().contains(p) {
+                    return Some(it.id)
+                }
+                let route = self.route(it)
+                for k in 1..route.len() {
+                    if distance_to_line(p, route[k - 1], route[k]) <= slack + LINK_WIDTH {
                         return Some(it.id)
                     }
                 }
@@ -268,8 +360,31 @@ impl Board {
         var out: Vec<u32> = Vec::new()
         for i in 0..self.items.len() {
             let b = self.bounds(i)
-            if b.x <= r.right() && b.right() >= r.x && b.y <= r.bottom() && b.bottom() >= r.y {
-                out.push(self.items[i].id)
+            if !(b.x <= r.right() && b.right() >= r.x && b.y <= r.bottom() && b.bottom() >= r.y) {
+                continue
+            }
+            // A connector or a stroke touches it where a line of it does, not its bounds.
+            borrow it = self.items[i]
+            let touches = match it.kind {
+                Kind::Link => {
+                    let route = self.route(it)
+                    var any = it.size.x > 0.0 && overlaps(it.rect(), r)
+                    for k in 1..route.len() {
+                        if crosses(route[k - 1], route[k], r) { any = true }
+                    }
+                    any
+                },
+                Kind::Pen => {
+                    var any = it.points.len() == 1 && r.contains(it.at + it.points[0])
+                    for k in 1..it.points.len() {
+                        if crosses(it.at + it.points[k - 1], it.at + it.points[k], r) { any = true }
+                    }
+                    any
+                },
+                _ => true,
+            }
+            if touches {
+                out.push(it.id)
             }
         }
         out
@@ -490,3 +605,43 @@ fn undo_and_redo_restore_the_board() {
     b.restack([1], front: true)
     assert(b.items[3].id == 1, "the box is on top")
 }
+
+@test
+fn a_connector_runs_in_elbows_between_facing_sides() {
+    var b = Board::new()
+    let a = b.add(Item::new(Kind::Box, vec2(0.0, 0.0), vec2(100.0, 50.0), color: 0))
+    let z = b.add(Item::new(Kind::Box, vec2(300.0, 200.0), vec2(100.0, 50.0), color: 0))
+    var link = Item::new(Kind::Link, vec2(0.0), vec2(0.0), color: 7)
+    link.from = a
+    link.to = z
+    assert(link.style == CONNECTOR)
+    // Wider apart than tall: out of the right side, across at the middle, into the left side.
+    let r = b.route(link)
+    assert(r.len() == 4)
+    assert(r[0] == vec2(100.0, 25.0) && r[1] == vec2(200.0, 25.0))
+    assert(r[2] == vec2(200.0, 225.0) && r[3] == vec2(300.0, 225.0))
+    // In line, it's one straight run.
+    b.items[1].at = vec2(300.0, 0.0)
+    assert(b.route(link).len() == 2)
+    // Straight style: centre to centre, from edge to edge.
+    link.style = END_ARROW
+    let line = b.route(link)
+    assert(line.len() == 2 && line[0] == vec2(100.0, 25.0) && line[1] == vec2(300.0, 25.0))
+    // The bend is hit; empty space beside it isn't.
+    link.style = CONNECTOR
+    b.items[1].at = vec2(300.0, 200.0)
+    let l = b.add(take link)
+    assert(b.hit(vec2(200.0, 120.0), slack: 2.0) == Some(l))
+    assert(b.hit(vec2(250.0, 120.0), slack: 2.0).is_none())
+}
+
+@test
+fn a_line_crosses_a_rectangle_only_where_it_passes_through() {
+    let r = Rect::new(x: 10.0, y: 10.0, w: 20.0, h: 20.0)
+    assert(crosses(vec2(0.0, 20.0), vec2(40.0, 20.0), r), "straight through")
+    assert(crosses(vec2(15.0, 15.0), vec2(16.0, 16.0), r), "inside")
+    assert(!crosses(vec2(0.0, 0.0), vec2(40.0, 5.0), r), "above it")
+    assert(!crosses(vec2(0.0, 65.0), vec2(65.0, 0.0), r), "past its corner")
+    assert(crosses(vec2(0.0, 35.0), vec2(35.0, 0.0), r), "across its corner")
+}
+

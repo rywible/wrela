@@ -7,8 +7,9 @@
 // text mode at the caret, what a copy would take, and the accessibility tree. Input hits what the
 // frame before drew.
 
-use board::{Board, History, Item, Kind, NOTE, SMALLEST, has}
-use chrome::{Action, Chrome, Tool}
+use board::{Board, ELBOW, END_ARROW, History, Item, Kind, NOTE, SMALLEST, START_ARROW, has}
+use chrome::{Action, Chrome, Selection, Tool}
+use snap::{Guide, snap_point, snap_rect}
 use clip::{Aim, Into, destination, inserted, items_of}
 use paint::{ACCENT, PAPER, Typing}
 use platform::host
@@ -31,7 +32,9 @@ enum Drag: Copy + Eq {
     Pan { from: vec2, pan: vec2 },
     /// Pressed on item `id`: it moves the selection once it travels.
     Press { at: vec2, id: u32, shift: bool },
-    Move { last: vec2 },
+    /// Moving the selection: where the pointer began, the shift moved so far, and the
+    /// selection's rectangle when it began (what snaps).
+    Move { start: vec2, moved: vec2, from: Rect },
     /// Selecting what a rectangle touches, added to the selection or instead of it.
     Marquee { from: vec2, add: bool },
     /// Resizing item `id` by a corner, the opposite corner held.
@@ -104,6 +107,8 @@ pub struct App {
     tree: Vec<Node>,
     said: Vec<u32>,
     told: Vec<Pending<u8>>,
+    /// The lines what's being moved or resized snapped to, while it is.
+    guides: Vec<Guide>,
 }
 
 pub fn init() -> App {
@@ -146,6 +151,7 @@ pub fn init() -> App {
         tree: Vec::new(),
         said: Vec::new(),
         told: Vec::new(),
+        guides: Vec::new(),
     }
 }
 
@@ -298,23 +304,106 @@ fn keep(s: mut App) {
 }
 
 /// The selection's rectangle on the screen, if anything's selected.
-fn selection_rect(s: App) -> Option<Rect> {
+/// What's selected, for its bar: its rectangle on the screen, and whether it has connectors.
+fn selection(s: App) -> Option<Selection> {
     if s.selected.is_empty() {
         return None
     }
-    match s.board.extent(s.selected) {
-        Some(r) => Some(s.view.rect(r)),
-        None => None,
+    let Some(r) = s.board.extent(s.selected) else { return None }
+    var links = false
+    var inks = true
+    for id in s.selected {
+        if let Some(i) = s.board.index(id) {
+            let kind = s.board.items[i].kind
+            if kind == Kind::Link {
+                links = true
+            }
+            if kind != Kind::Link && kind != Kind::Pen && kind != Kind::Text {
+                inks = false
+            }
+        }
     }
+    Some(Selection { rect: s.view.rect(r), links, inks })
 }
 
 fn layout(s: App) -> Chrome {
     let bar = match s.drag {
-        Drag::Idle => selection_rect(s),
-        Drag::Control => selection_rect(s),
+        Drag::Idle => selection(s),
+        Drag::Control => selection(s),
         _ => None,
     }
     chrome::layout(s.screen, unit(s), bar)
+}
+
+/// The selected connectors' style, changed by `change`.
+fn restyle(s: mut App, change: fn(u32) -> u32) {
+    checkpoint(mut s)
+    for i in 0..s.board.items.len() {
+        if s.board.items[i].kind == Kind::Link && has(s.selected, s.board.items[i].id) {
+            s.board.items[i].style = change(s.board.items[i].style)
+        }
+    }
+}
+
+/// A connector's arrowheads after `style`'s: at the end, then both ends, then none, then at the
+/// end again.
+fn next_heads(style: u32) -> u32 {
+    let heads = style & (START_ARROW | END_ARROW)
+    let next = if heads == END_ARROW { START_ARROW | END_ARROW } else if heads == 0 { END_ARROW } else { 0 }
+    (style & !(START_ARROW | END_ARROW)) | next
+}
+
+// ---- connection dots: the middles of an item's sides, to drag a connector from ---------------
+
+/// How far out from an item's sides its dots sit, in pixels.
+const DOT_GAP: f32 = 14.0
+
+/// The item whose dots show: the one item selected, or the topmost box the pointer is near.
+fn dotted(s: App, w: vec2) -> Option<u32> {
+    if s.tool != Tool::Select || s.typing.is_some() || s.drag != Drag::Idle {
+        return None
+    }
+    if s.selected.len() == 1 {
+        if let Some(i) = s.board.index(s.selected[0]) {
+            if s.board.items[i].boxed() {
+                return Some(s.selected[0])
+            }
+        }
+    }
+    let near = (DOT_GAP + 10.0) * unit(s) / s.view.scale()
+    var i = s.board.items.len()
+    while i > 0 {
+        i -= 1
+        borrow it = s.board.items[i]
+        if it.boxed() && it.rect().shrink(-near).contains(w) {
+            return Some(it.id)
+        }
+    }
+    None
+}
+
+/// Item `id`'s four dots, in world units.
+fn dots(s: App, id: u32) -> Vec<vec2> {
+    var out: Vec<vec2> = Vec::new()
+    let Some(i) = s.board.index(id) else { return out }
+    let r = s.board.items[i].rect()
+    let gap = DOT_GAP * unit(s) / s.view.scale()
+    let c = r.center()
+    for p in [vec2(c.x, r.y - gap), vec2(r.right() + gap, c.y), vec2(c.x, r.bottom() + gap), vec2(r.x - gap, c.y)] {
+        out.push(p)
+    }
+    out
+}
+
+/// The item whose dot is under screen point `at`, if there's one.
+fn dot_at(s: App, at: vec2) -> Option<u32> {
+    let Some(id) = dotted(s, s.view.to_world(at)) else { return None }
+    for p in dots(s, id) {
+        if length(s.view.to_screen(p) - at) <= 9.0 * unit(s) {
+            return Some(id)
+        }
+    }
+    None
 }
 
 // ---- changes ----------------------------------------------------------------------------------
@@ -573,6 +662,8 @@ fn act(s: mut App, a: Action) {
         Action::ZoomOut => zoom_by(mut s, 0.8),
         Action::Actual => zoom_by(mut s, 1.0 / s.view.zoom),
         Action::Fit => fit(mut s),
+        Action::Route => restyle(mut s, |style| style ^ ELBOW),
+        Action::Heads => restyle(mut s, next_heads),
     }
 }
 
@@ -584,9 +675,9 @@ fn handle(s: mut App, e: Event, chrome: Chrome) {
             s.pointer = at
             press(mut s, at, button, mods, chrome)
         },
-        Event::PointerMove { at, .. } => {
+        Event::PointerMove { at, mods } => {
             s.pointer = at
-            moved(mut s, at)
+            moved(mut s, at, mods)
         },
         Event::PointerUp { at, button, mods } => {
             s.pointer = at
@@ -719,6 +810,11 @@ fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
 }
 
 fn press_select(s: mut App, at: vec2, w: vec2, mods: Mods) {
+    // A dot on an item's side: drag out a connector.
+    if let Some(id) = dot_at(s, at) {
+        s.drag = Drag::Link { from: id }
+        return
+    }
     if let Some((id, anchor)) = corner_at(s, at) {
         checkpoint(mut s)
         s.drag = Drag::Resize { id, anchor }
@@ -747,11 +843,13 @@ fn press_select(s: mut App, at: vec2, w: vec2, mods: Mods) {
         s.click = None
         return
     }
+    // Shift adds an item at once, so it can be dragged with the rest; one already selected
+    // leaves the selection only on a click (`released`), not a drag.
     if mods.shift {
-        if has(s.selected, id) {
-            s.selected.retain(|k| k != id)
-        } else {
+        if !has(s.selected, id) {
             s.selected.push(id)
+            s.drag = Drag::Press { at: w, id, shift: false }
+            return
         }
     } else if !has(s.selected, id) {
         select(mut s, [id])
@@ -759,22 +857,69 @@ fn press_select(s: mut App, at: vec2, w: vec2, mods: Mods) {
     s.drag = Drag::Press { at: w, id, shift: mods.shift }
 }
 
-fn moved(s: mut App, at: vec2) {
+/// The rectangles of the items, other than those in `besides`, that what's moved can snap to:
+/// those on the screen, links and pen strokes aside.
+fn snap_targets(s: App, besides: [u32]) -> Vec<Rect> {
+    var out: Vec<Rect> = Vec::new()
+    let screen = Rect::new(x: 0.0, y: 0.0, w: s.screen.x, h: s.screen.y)
+    for i in 0..s.board.items.len() {
+        borrow it = s.board.items[i]
+        if it.kind == Kind::Link || it.kind == Kind::Pen || has(besides, it.id) {
+            continue
+        }
+        let r = s.board.bounds(i)
+        let on = s.view.rect(r).intersect(screen)
+        if on.w > 0.0 && on.h > 0.0 {
+            out.push(r)
+        }
+    }
+    out
+}
+
+/// How near (world units) something must come to a line to snap to it: 6 pixels.
+fn reach(s: App) -> f32 {
+    6.0 * unit(s) / s.view.scale()
+}
+
+fn moved(s: mut App, at: vec2, mods: Mods) {
     let w = s.view.to_world(at)
     match s.drag {
         Drag::Pan { from, pan } => s.view.pan = pan - (at - from) / s.view.scale(),
         Drag::Press { at: start, .. } => if length(w - start) * s.view.scale() > 3.0 * unit(s) {
             checkpoint(mut s)
-            s.board.move_by(s.selected, w - start)
-            s.drag = Drag::Move { last: w }
+            // Alt drags out a copy, leaving the originals where they were.
+            if mods.alt {
+                let items = s.board.copy(s.selected)
+                let ids = s.board.paste(items, vec2(0.0))
+                select(mut s, ids)
+            }
+            let Some(from) = s.board.extent(s.selected) else { return }
+            s.drag = Drag::Move { start, moved: vec2(0.0), from }
+            moved(mut s, at, mods)
         },
-        Drag::Move { last } => {
-            s.board.move_by(s.selected, w - last)
-            s.drag = Drag::Move { last: w }
+        Drag::Move { start, moved, from } => {
+            var want = w - start
+            // Shift keeps it to one axis: the one it has gone further along.
+            if mods.shift {
+                want = if abs(want.x) >= abs(want.y) { vec2(want.x, 0.0) } else { vec2(0.0, want.y) }
+            }
+            s.guides.clear()
+            let targets = snap_targets(s, s.selected)
+            let r = Rect::new(from.x + want.x, from.y + want.y, from.w, from.h)
+            var shift = snap_rect(r, targets, reach: reach(s), out: mut s.guides)
+            if mods.shift {
+                shift = if want.y == 0.0 { vec2(shift.x, 0.0) } else { vec2(0.0, shift.y) }
+            }
+            let to = want + shift
+            s.board.move_by(s.selected, to - moved)
+            s.drag = Drag::Move { start, moved: to, from }
         },
         Drag::Resize { id, anchor } => {
             let Some(i) = s.board.index(id) else { return }
-            var d = w - anchor
+            s.guides.clear()
+            let targets = snap_targets(s, [id])
+            let corner = snap_point(w, targets, reach: reach(s), out: mut s.guides)
+            var d = corner - anchor
             if s.board.items[i].kind == Kind::Note {
                 // A note stays square.
                 let side = max(abs(d.x), abs(d.y))
@@ -806,7 +951,10 @@ fn moved(s: mut App, at: vec2) {
 fn released(s: mut App, at: vec2, mods: Mods) {
     let w = s.view.to_world(at)
     match s.drag {
-        Drag::Press { id, shift, .. } => if !shift && s.selected.len() > 1 {
+        Drag::Press { id, shift, .. } => if shift {
+            // A shift-click on a selected item takes it out of the selection.
+            s.selected.retain(|k| k != id)
+        } else if s.selected.len() > 1 && !mods.shift {
             // A click (not a drag) in a selection picks the one item.
             select(mut s, [id])
         },
@@ -868,6 +1016,7 @@ fn released(s: mut App, at: vec2, mods: Mods) {
         _ => {},
     }
     let _ = mods
+    s.guides.clear()
     s.drag = Drag::Idle
 }
 
@@ -981,6 +1130,16 @@ fn draw(s: mut App, screen: vec2) {
         None
     }
     let blink = (s.time * 1.6) % 2.0 < 1.3
+    // Connectors' labels sit at their routes' middles, as the items are now.
+    paint::label(mut s.board, s.fonts.font(Face::Sans), s.typing)
+    // The dots to drag a connector from, on the item the pointer is near.
+    let spots = if on_chrome { Vec::new() } else {
+        match dotted(s, w) {
+            Some(id) => dots(s, id),
+            None => Vec::new(),
+        }
+    }
+    let near = slack(s)
     mut list = s.draw
     list.clear(screen)
     paint::grid(mut list, s.view, screen)
@@ -1001,10 +1160,26 @@ fn draw(s: mut App, screen: vec2) {
         if !chosen && hover != Some(id) && !has(touched, id) {
             continue
         }
+        let mark = if chosen { ACCENT } else { vec4(ACCENT.xyz, 0.5) }
+        if s.board.items[i].kind == Kind::Link {
+            // A connector shows its own path, and its ends.
+            let route = s.board.route(s.board.items[i])
+            let width = max((board::LINK_WIDTH + 2.0) * s.view.scale(), 3.0 * u)
+            for k in 1..route.len() {
+                list.line(s.view.to_screen(route[k - 1]), s.view.to_screen(route[k]), vec4(mark.xyz, 0.45), width)
+            }
+            if chosen && route.len() >= 2 {
+                for p in [route[0], route[route.len() - 1]] {
+                    let c = s.view.to_screen(p)
+                    let spot = Rect::new(x: c.x - 4.0 * u, y: c.y - 4.0 * u, w: 8.0 * u, h: 8.0 * u)
+                    list.ellipse(spot, vec4(1.0))
+                    list.ellipse(spot, ACCENT, width: ring)
+                }
+            }
+            continue
+        }
         let r = s.view.rect(s.board.bounds(i)).shrink(-3.0 * u)
-        list.ring(r, if chosen { ACCENT } else {
-            vec4(ACCENT.xyz, 0.5)
-        }, radius: 3.0 * u, width: ring)
+        list.ring(r, mark, radius: 3.0 * u, width: ring)
     }
     if s.drag == Drag::Idle || s.drag == Drag::Control {
         if s.selected.len() == 1 {
@@ -1020,6 +1195,17 @@ fn draw(s: mut App, screen: vec2) {
                 }
             }
         }
+    }
+    for p in spots {
+        let c = s.view.to_screen(p)
+        let d = if length(c - s.pointer) <= 9.0 * u { 6.5 * u } else { 4.5 * u }
+        let spot = Rect::new(x: c.x - d, y: c.y - d, w: 2.0 * d, h: 2.0 * d)
+        list.ellipse(spot, vec4(1.0))
+        list.ellipse(spot, ACCENT, width: max(1.5 * u, 1.0))
+    }
+    // The lines a move or resize snapped to.
+    for g in s.guides {
+        list.line(s.view.to_screen(g.from), s.view.to_screen(g.to), paint::GUIDE, width: max(1.0 * u, 1.0))
     }
     // What the pointer is making.
     match s.drag {
@@ -1044,6 +1230,15 @@ fn draw(s: mut App, screen: vec2) {
             }
         },
         Drag::Link { from } => {
+            // The item it would join, ringed.
+            if let Some(to) = s.board.hit(w, near) {
+                if let Some(k) = s.board.index(to) {
+                    if to != from && s.board.items[k].boxed() {
+                        let r = s.view.rect(s.board.items[k].rect()).shrink(-4.0 * u)
+                        list.ring(r, ACCENT, radius: 6.0 * u, width: max(2.0 * u, 1.0))
+                    }
+                }
+            }
             if let Some(i) = s.board.index(from) {
                 let a = s.board.items[i].edge(w)
                 paint::arrow(
@@ -1274,3 +1469,61 @@ fn editing_moves_over_whole_groups(game: App) {
     let note = game.board.items[0].clone()
     assert(note.text == "ax", f"`{note.text}` ({note.text.len()} bytes)")
 }
+
+/// A note dragged to within a few pixels of its neighbour's top lands exactly on it.
+@test(frames: 18, input: "scripts/snap.json")
+fn a_dragged_note_snaps_to_its_neighbour(game: App) {
+    let a = game.board.items[0].clone()
+    let b = game.board.items[1].clone()
+    assert(b.at.y == a.at.y, f"{b.at.y} against {a.at.y}")
+    assert(b.at.x > a.at.x + 200.0, "it moved across too, unsnapped")
+    assert(game.guides.is_empty(), "no guides once it's let go")
+}
+
+/// Alt and a drag leave the note where it was and take a copy.
+@test(frames: 14, input: "scripts/alt.json")
+fn an_alt_drag_leaves_a_copy(game: App) {
+    assert(game.board.items.len() == 2, f"{game.board.items.len()} items")
+    let first = game.board.items[0].clone()
+    let copy = game.board.items[1].clone()
+    let moved = (copy.at - first.at) * game.view.scale()
+    // 80 pixels across and 20 down: nowhere near the original's lines, so nothing snaps.
+    assert(length(moved - vec2(80.0, 20.0)) < 0.01, f"moved {moved.x}, {moved.y}")
+    assert(game.selected.len() == 1 && game.selected[0] == copy.id, "the copy is selected")
+}
+
+/// Shift keeps a drag on the axis it has gone further along.
+@test(frames: 14, input: "scripts/shift.json")
+fn a_shift_drag_keeps_to_one_axis(game: App) {
+    let r = screen_rect(game, 0)
+    assert(abs(r.center().y - 240.0) < 0.01, f"y {r.center().y}")
+    assert(abs(r.center().x - 420.0) < 0.01, f"x {r.center().x}")
+}
+
+@test
+fn arrowheads_go_round() {
+    var style = board::CONNECTOR
+    style = next_heads(style)
+    assert(style == ELBOW | START_ARROW | END_ARROW)
+    style = next_heads(style)
+    assert(style == ELBOW, "none, still in elbows")
+    assert(next_heads(style) == board::CONNECTOR)
+}
+
+/// A drag from the dot on a note's right side to another note joins them; a double click on the
+/// connector types its label.
+@test(frames: 30, input: "scripts/dots.json")
+fn a_dot_drags_out_a_connector_with_a_label(game: App) {
+    assert(game.board.items.len() == 3, f"{game.board.items.len()} items")
+    // The right-hand note was made first; the connector runs from the left-hand one to it.
+    let b = game.board.items[0].clone()
+    let a = game.board.items[1].clone()
+    let link = game.board.items[2].clone()
+    assert(link.kind == Kind::Link && link.from == a.id && link.to == b.id)
+    assert(link.style == board::CONNECTOR)
+    assert(link.text == "yes", f"`{link.text}`")
+    // The label sits on the connector's middle, between the notes.
+    let mid = link.at + 0.5 * link.size
+    assert(abs(mid.x - 0.5 * (a.at.x + a.size.x + b.at.x)) < 0.01 && link.size.x > 0.0)
+}
+

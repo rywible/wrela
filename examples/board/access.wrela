@@ -4,7 +4,7 @@
 // node is `ITEMS` plus its id, so what's drawn over it never decides what's acted on.
 
 use board::{Board, Kind, has}
-use chrome::{Action, Chrome, TOOLS, Tool, tip}
+use chrome::{Action, Chrome, Selection, TOOLS, Tool, tip}
 use paint::COLORS
 use platform::host::{Node, Role}
 use ui::draw::Rect
@@ -35,6 +35,8 @@ pub fn node_of(a: Action) -> u32 {
         Action::ZoomOut => 46,
         Action::Actual => 47,
         Action::Fit => 48,
+        Action::Route => 49,
+        Action::Heads => 50,
     }
 }
 
@@ -56,6 +58,8 @@ pub fn action_of(node: u32) -> Option<Action> {
         Action::ZoomOut,
         Action::Actual,
         Action::Fit,
+        Action::Route,
+        Action::Heads,
     ]
     for a in all {
         if node_of(a) == node {
@@ -168,7 +172,7 @@ fn every_control_has_its_own_node() {
     let c = chrome::layout(
         vec2(640.0, 480.0),
         1.0,
-        Some(Rect::new(x: 200.0, y: 200.0, w: 40.0, h: 40.0)),
+        Some(Selection { rect: Rect::new(x: 200.0, y: 200.0, w: 40.0, h: 40.0), links: true, inks: true }),
     )
     var seen: Vec<u32> = Vec::new()
     for k in c.controls {

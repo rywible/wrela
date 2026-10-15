@@ -1,0 +1,109 @@
+// Smart guides: what's being moved or resized snaps to the edges and middles of the other items
+// near it, and a guide shows each line it snapped to, across both, while the pointer is down.
+
+use ui::draw::Rect
+
+/// A guide: a line in world units, from `from` to `to`.
+pub struct Guide: Copy + Eq {
+    pub from: vec2,
+    pub to: vec2,
+}
+
+/// A rectangle's three lines across an axis: its low edge, its middle and its high edge.
+fn lines(r: Rect, vertical: bool) -> [f32; 3] {
+    if vertical { [r.x, r.x + 0.5 * r.w, r.right()] } else { [r.y, r.y + 0.5 * r.h, r.bottom()] }
+}
+
+/// The least shift, within `reach`, that puts one of `moving`'s lines on one of an `other`'s,
+/// along x (`vertical` lines) or y; 0 if none is within reach.
+fn nearest(moving: [f32], others: [Rect], vertical: bool, reach: f32) -> f32 {
+    var best = reach
+    var shift = 0.0
+    for o in others {
+        let theirs = lines(o, vertical)
+        for m in moving {
+            for t in theirs {
+                let d = t - m
+                if abs(d) < best {
+                    best = abs(d)
+                    shift = d
+                }
+            }
+        }
+    }
+    shift
+}
+
+/// The guides for `moving` where it lies on `others`' lines, each across both rectangles.
+fn guides_for(moving: Rect, others: [Rect], out: mut Vec<Guide>) {
+    for vertical in [true, false] {
+        let mine = lines(moving, vertical)
+        for o in others {
+            let theirs = lines(o, vertical)
+            for m in mine {
+                for t in theirs {
+                    if abs(t - m) < 0.01 {
+                        if vertical {
+                            out.push(Guide { from: vec2(m, min(moving.y, o.y)), to: vec2(m, max(moving.bottom(), o.bottom())) })
+                        } else {
+                            out.push(Guide { from: vec2(min(moving.x, o.x), m), to: vec2(max(moving.right(), o.right()), m) })
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Snaps rectangle `r`, being moved, to `others` within `reach` (world units): the shift to add
+/// to it, and the guides where it then lies on their lines.
+pub fn snap_rect(r: Rect, others: [Rect], reach: f32, out: mut Vec<Guide>) -> vec2 {
+    let shift = vec2(
+        nearest(lines(r, vertical: true), others, vertical: true, reach: reach),
+        nearest(lines(r, vertical: false), others, vertical: false, reach: reach),
+    )
+    guides_for(Rect::new(r.x + shift.x, r.y + shift.y, r.w, r.h), others, mut out)
+    shift
+}
+
+/// Snaps point `p`, a corner being dragged, to `others`' lines within `reach`: the point snapped,
+/// and the guides through it.
+pub fn snap_point(p: vec2, others: [Rect], reach: f32, out: mut Vec<Guide>) -> vec2 {
+    let q = p + vec2(nearest([p.x], others, vertical: true, reach: reach), nearest([p.y], others, vertical: false, reach: reach))
+    guides_for(Rect::new(q.x, q.y, w: 0.0, h: 0.0), others, mut out)
+    q
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+@test
+fn a_moved_rectangle_snaps_to_the_nearest_edge_or_middle() {
+    let other = Rect::new(x: 100.0, y: 100.0, w: 200.0, h: 100.0)
+    var guides: Vec<Guide> = Vec::new()
+    // Its left 3 units right of the other's left, its top 40 below the other's: only x snaps.
+    let shift = snap_rect(Rect::new(x: 103.0, y: 240.0, w: 50.0, h: 50.0), [other], reach: 6.0, out: mut guides)
+    assert(shift == vec2(-3.0, 0.0), f"{shift.x}, {shift.y}")
+    assert(guides.len() == 1)
+    // The guide runs from the other's top to the moved one's bottom, at x 100.
+    assert(guides[0] == Guide { from: vec2(100.0, 100.0), to: vec2(100.0, 290.0) })
+    // Middles snap too: a 50-wide one whose middle is 2 from the other's (200).
+    guides.clear()
+    let mid = snap_rect(Rect::new(x: 177.0, y: 400.0, w: 50.0, h: 10.0), [other], reach: 6.0, out: mut guides)
+    assert(mid.x == -2.0)
+    // Out of reach: nothing.
+    guides.clear()
+    assert(snap_rect(Rect::new(x: 500.0, y: 500.0, w: 10.0, h: 10.0), [other], reach: 6.0, out: mut guides) == vec2(0.0))
+    assert(guides.is_empty())
+}
+
+@test
+fn the_nearest_line_wins_across_items() {
+    let a = Rect::new(x: 0.0, y: 0.0, w: 100.0, h: 100.0)
+    let b = Rect::new(x: 0.0, y: 300.0, w: 98.0, h: 100.0)
+    var guides: Vec<Guide> = Vec::new()
+    // Its right edge at 99.5: b's right (98) is 1.5 away, a's right (100) only 0.5.
+    let shift = snap_rect(Rect::new(x: 49.5, y: 150.0, w: 50.0, h: 50.0), [a, b], reach: 6.0, out: mut guides)
+    assert(shift.x == 0.5)
+    let p = snap_point(vec2(97.0, 299.0), [a, b], reach: 6.0, out: mut guides)
+    assert(p == vec2(98.0, 300.0), f"{p.x}, {p.y}")
+}

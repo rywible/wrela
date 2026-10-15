@@ -44,6 +44,18 @@ pub enum Action: Copy + Eq {
     ZoomOut,
     Actual,
     Fit,
+    /// A connector's route: in elbows, or straight.
+    Route,
+    /// A connector's arrowheads: at its end, both ends, or none.
+    Heads,
+}
+
+/// What's selected, for its bar: where it is on the screen, and whether it has connectors.
+pub struct Selection: Copy {
+    pub rect: Rect,
+    pub links: bool,
+    /// Whether it's all connectors, strokes and text: coloured by ink, not fill.
+    pub inks: bool,
 }
 
 pub struct Control: Copy + Eq {
@@ -55,6 +67,8 @@ pub struct Control: Copy + Eq {
 pub struct Chrome: Clone {
     pub controls: Vec<Control>,
     pub panels: Vec<Rect>,
+    /// Whether the selection's colours are inks (connectors, strokes, text), not fills.
+    pub inks: bool,
 }
 
 const BUTTON: f32 = 40.0
@@ -63,9 +77,13 @@ const MARGIN: f32 = 12.0
 const SWATCH: f32 = 28.0
 
 /// Lays the controls out on a screen `screen` big, in device pixels `u` to a logical one; a
-/// selection's screen rectangle brings its bar over it.
-pub fn layout(screen: vec2, u: f32, selection: Option<Rect>) -> Chrome {
-    var c = Chrome { controls: Vec::new(), panels: Vec::new() }
+/// selection brings its bar over it, with a connector's controls when it has one.
+pub fn layout(screen: vec2, u: f32, selection: Option<Selection>) -> Chrome {
+    var c = Chrome {
+        controls: Vec::new(),
+        panels: Vec::new(),
+        inks: match selection { Some(chosen) => chosen.inks, None => false },
+    }
     let b = BUTTON * u
     let g = GAP * u
     let m = MARGIN * u
@@ -94,11 +112,20 @@ pub fn layout(screen: vec2, u: f32, selection: Option<Rect>) -> Chrome {
         c.controls.push(Control { action: a, rect: Rect::new(x, y + g, cw, b) })
         x += cw + g
     }
-    // Over the selection: its colours, then up, down and delete.
-    if let Some(s) = selection {
+    // Over the selection: its colours, a connector's route and heads, then up, down and delete.
+    if let Some(chosen) = selection {
+        let s = chosen.rect
+        var buttons: Vec<Action> = Vec::new()
+        if chosen.links {
+            buttons.push(Action::Route)
+            buttons.push(Action::Heads)
+        }
+        for a in [Action::Front, Action::Back, Action::Delete] {
+            buttons.push(a)
+        }
         let sw = SWATCH * u
         let bh = 36.0 * u
-        let w = f32(COLORS) * (sw + g) + 3.0 * (bh + g) + 3.0 * g
+        let w = f32(COLORS) * (sw + g) + f32(buttons.len()) * (bh + g) + 3.0 * g
         let ph = bh + 2.0 * g
         var y = s.y - 14.0 * u - ph
         if y < m {
@@ -117,7 +144,7 @@ pub fn layout(screen: vec2, u: f32, selection: Option<Rect>) -> Chrome {
             x += sw + g
         }
         x += g
-        for a in [Action::Front, Action::Back, Action::Delete] {
+        for a in buttons {
             c.controls.push(Control { action: a, rect: Rect::new(x, y + g, bh, bh) })
             x += bh + g
         }
@@ -168,6 +195,8 @@ pub fn tip(a: Action) -> Text {
         Action::ZoomOut => "Zoom out   Cmd -",
         Action::Actual => "Zoom to 100%   Cmd 0",
         Action::Fit => "Fit the board   Shift 1",
+        Action::Route => "Elbow or straight",
+        Action::Heads => "Arrowheads",
         Action::Color { .. } => "",
     }
 }
@@ -206,7 +235,8 @@ pub fn draw(
             if color == Some(index) {
                 list.ellipse(r.shrink(-3.0 * u), ACCENT, width: 2.0 * u)
             }
-            list.ellipse(r.shrink(if lit { 0.0 } else { 1.5 * u }), FILLS[index])
+            let swatch = if c.inks { INKS[index] } else { FILLS[index] }
+            list.ellipse(r.shrink(if lit { 0.0 } else { 1.5 * u }), swatch)
             list.ellipse(r.shrink(if lit { 0.0 } else {
                 1.5 * u
             }), vec4(INKS[index].xyz, 0.45), width: 1.0 * u)
@@ -350,6 +380,15 @@ fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4,
                 ink,
             )
         },
+        Action::Route => {
+            list.line(p(-8.0, 6.0), p(-1.0, 6.0), ink, width: w)
+            list.line(p(-1.0, 6.0), p(-1.0, -6.0), ink, width: w)
+            list.line(p(-1.0, -6.0), p(8.0, -6.0), ink, width: w)
+        },
+        Action::Heads => {
+            list.line(p(-8.0, 0.0), p(4.0, 0.0), ink, width: w)
+            list.triangle(p(9.0, 0.0), p(3.0, -4.0), p(3.0, 4.0), ink)
+        },
         Action::Fit => {
             for d in [vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0)] {
                 let corner = c + d * 7.0 * u
@@ -379,7 +418,7 @@ fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4,
 fn the_selection_bar_stays_on_the_screen() {
     let screen = vec2(640.0, 480.0)
     // A selection at the top left: the bar goes below it, and inside the screen.
-    let c = layout(screen, 1.0, Some(Rect::new(x: 0.0, y: 5.0, w: 40.0, h: 40.0)))
+    let c = layout(screen, 1.0, Some(Selection { rect: Rect::new(x: 0.0, y: 5.0, w: 40.0, h: 40.0), links: false, inks: false }))
     let bar = c.panels[3]
     assert(bar.y > 45.0 && bar.x >= MARGIN, f"{bar.x}, {bar.y}")
     assert(at(c, bar.center()).is_some(), "the bar's middle is a control")
