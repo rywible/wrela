@@ -1,0 +1,287 @@
+// The water and the forest over the geology: the layer over `geology`. Its water is the land's
+// own (`geology::Water`: its ponds, and its streams down its own drainage); its forest grows by the
+// floor's history (`engine::grow::simulate_given`) on the land as its water left it, from the soil
+// its rock and its shape made (`geology::soil_layer`) and as wet as its drainage makes it: with no
+// people, no herd and no events (those are a later layer's). Drawn in the grown view.
+
+use engine::bake::{bake, unbake}
+use engine::grow::{BAKE, Given, Grain, Grid, Ground, History, Land, Start, simulate_given}
+use engine::place::{Character, Herd, Kind, Map, Region, tile_of}
+use engine::soil::SoilKind
+use engine::terrain::{Cover, Terrain}
+use geology::{Bare, SQUARE, SQUARE_COLLAR, SQUARE_N, SQUARE_SOIL, WORLD}
+use std::io::{Shipped, ship}
+
+// ---- the land as its water left it ---------------------------------------------------------------
+
+/// The land as its water left it: the bare land (`geology::Bare`), and each pond's bed under its
+/// water (each square cell's lake depth, `geology::Water::depth`, in centimetres, two cells to a
+/// word). The grown view's terrain, and the ground its forest grows on.
+pub struct Grown: Copy + GpuData {
+    pub land: Bare,
+    pub beds: [u32; SQUARE_SOIL],
+}
+
+/// The grown land.
+@fuel(2 ** 36)
+pub const LAND: Grown = grown_land()
+
+fn grown_land() -> Grown {
+    borrow w = WORLD
+    var beds = [0; SQUARE_SOIL]
+    for c in 0..SQUARE_N {
+        let cm = min(u32(round(w.water.depth[c] * 100.0)), 65535)
+        beds[c / 2] |= cm << (16 * (c % 2))
+    }
+    Grown { land: w.land, beds }
+}
+
+impl Grown {
+    /// How deep the square's cell (i, j) lies under its pond (m), clamped to the square.
+    fn bed_cell(self, i: i32, j: i32) -> f32 {
+        let c = SQUARE.index(i, j)
+        f32((self.beds[c / 2] >> (16 * (c % 2))) & 65535) * 0.01
+    }
+
+    /// How far under the land as made the pond's bed lies at `p` (m): between the four cells round
+    /// it, faded out through the square's collar.
+    pub fn bed_at(self, p: vec2) -> f32 {
+        let f = (p - SQUARE.lo) / SQUARE.cell - vec2(0.5)
+        let ij = vec2i(floor(f))
+        let t = f - floor(f)
+        // (Each corner on its own, not in a loop: see `geology::Bare::bare_cover`.)
+        let a = self.bed_cell(ij.x, ij.y)
+        let b = self.bed_cell(ij.x + 1, ij.y)
+        let c = self.bed_cell(ij.x, ij.y + 1)
+        let d = self.bed_cell(ij.x + 1, ij.y + 1)
+        mix(mix(a, b, t.x), mix(c, d, t.x), t.y) * self.land.square.within(p, SQUARE_COLLAR)
+    }
+
+    /// The grown land's height at (x, z): the bare land's, less its ponds' depth.
+    pub fn at(self, x: f32, z: f32) -> f32 {
+        self.land.at(x, z) - self.bed_at(vec2(x, z))
+    }
+}
+
+impl Terrain for Grown {
+    fn height(self, x: f32, z: f32) -> f32 {
+        self.at(x, z)
+    }
+
+    fn cover(self, at: vec3, n: vec3) -> Cover {
+        self.land.bare_cover(at, n, 0.0)
+    }
+
+    fn cover_seen(self, at: vec3, n: vec3, fields: vec4, footprint: f32) -> Cover {
+        self.land.bare_cover(at, n, footprint)
+    }
+
+    fn steepest(self) -> f32 {
+        12.0
+    }
+}
+
+/// The square's corners.
+fn square_hi() -> vec2 {
+    SQUARE.lo + vec2(f32(SQUARE.nx), f32(SQUARE.nz)) * SQUARE.cell
+}
+
+impl Ground for Grown {
+    fn height(self, x: f32, z: f32) -> f32 {
+        self.at(x, z)
+    }
+
+    /// How far past the square's edge `p` is (negative within it): the history grows over all of
+    /// it, its collar too.
+    fn past_edge(self, p: vec2) -> f32 {
+        let hi = square_hi()
+        -min(min(p.x - SQUARE.lo.x, hi.x - p.x), min(p.y - SQUARE.lo.y, hi.y - p.y))
+    }
+
+    /// Whether a tree can stand at `p` (`ROCK`): 1 where none can, 0 where one can.
+    fn rock(self, p: vec2) -> f32 {
+        let i = vec2i(floor((p - ROCKS.lo) / ROCKS.cell))
+        if i.x < 0 || i.y < 0 || i.x >= i32(ROCKS.nx) || i.y >= i32(ROCKS.nz) {
+            return 1.0
+        }
+        if ROCK[u32(i.y) * ROCKS.nx + u32(i.x)] { 1.0 } else { 0.0 }
+    }
+}
+
+// ---- where no tree stands --------------------------------------------------------------------------
+
+/// The grid where no tree stands is kept on (`ROCK`): the square's, at 2 m.
+pub const ROCKS = Grid { lo: SQUARE.lo, nx: SQUARE.nx * 4, nz: SQUARE.nz * 4, cell: 2.0 }
+
+/// How far round what no tree stands on it's kept clear (m): a tree is jittered off its cell's
+/// middle by up to half a cell each way (1.41 m at the bake's 2 m, 2.83 m at the preview's 4 m),
+/// so one whose cell's middle is clear still stands clear.
+pub const CLEAR: f32 = 3.0
+
+/// Where no tree stands, on `ROCKS`: the land's faces (steeper than 0.9 over solid rock), talus
+/// over half a metre deep, its ponds, and its rock's solids' footprints
+/// (`geology::rock_placements`); each spread `CLEAR` round. Its bare rock elsewhere (`SoilKind::Rock`,
+/// on its crests) is the thinnest soil (`given`), where a pine takes and an oak starves.
+@fuel(2 ** 42)
+pub const ROCK: Vec<bool> = rock_mask()
+
+fn rock_mask() -> Vec<bool> {
+    let g = ROCKS
+    borrow land = WORLD.land
+    var hard: Vec<bool> = Vec::filled(g.cells(), value: false)
+    for c in 0..g.cells() {
+        let p = g.centre(c)
+        let m = land.made(p)
+        let face = length(m.yz) >= 0.9 && geology::solid(geology::stratum(p, m.x))
+        let (_, _, talus) = land.soil_at(p)
+        let pond = WORLD.water.depth[SQUARE.cell_at(p)] > 0.0
+        hard[c] = face || talus > 0.5 || pond
+    }
+    // The rock's solids: each block's footprint, its box's (x, z) extent round its middle.
+    for r in geology::rock_placements(land, geology::tor_points(WORLD.places)) {
+        let b = geology::box_of(r)
+        let (mid, x, z) = (b[3].xz, b[0].xz, b[2].xz)
+        let reach = length(x) + length(z)
+        let lo = g.ij(mid - vec2(reach))
+        let hi = g.ij(mid + vec2(reach))
+        for j in max(lo.y, 0)..min(hi.y + 1, i32(g.nz)) {
+            for i in max(lo.x, 0)..min(hi.x + 1, i32(g.nx)) {
+                let d = g.centre(u32(j) * g.nx + u32(i)) - mid
+                if abs(dot(d, x)) <= dot(x, x) && abs(dot(d, z)) <= dot(z, z) {
+                    hard[u32(j) * g.nx + u32(i)] = true
+                }
+            }
+        }
+    }
+    // Spread `CLEAR` round.
+    let r = i32(ceil(CLEAR / g.cell))
+    var out: Vec<bool> = Vec::filled(g.cells(), value: false)
+    for c in 0..g.cells() {
+        if !hard[c] {
+            continue
+        }
+        let (i, j) = (i32(c % g.nx), i32(c / g.nx))
+        for dj in -r..r + 1 {
+            for di in -r..r + 1 {
+                if length(vec2(f32(di), f32(dj))) * g.cell <= CLEAR {
+                    out[g.index(i + di, j + dj)] = true
+                }
+            }
+        }
+    }
+    out
+}
+
+// ---- its forest ------------------------------------------------------------------------------------
+
+/// The history's present: the floor's.
+pub const PRESENT: i32 = map::PRESENT
+
+/// The wood's mix (`engine::place::Character::mix`, by `species::habits`): its trees alike, so the
+/// ground picks among them as it suits each (`engine::grow::takes`); its shrubs few, as in each of
+/// the floor's regions (`map`), which a wood with no mix would fill with them.
+const WOOD = [0.2, 0.2, 0.15, 0.05, 0.0, 0.2, 0.2, 0.0]
+
+/// The grown land's map, as the history reads it: the square; no sites, openings, routes, events
+/// or kept trees (a later layer's); no herd before the present; and one wood all over (`WOOD`).
+pub fn growth_map() -> Map {
+    let middle = 0.5 * (SQUARE.lo + square_hi())
+    var regions: Vec<Region> = Vec::new()
+    regions.push(
+        Region {
+            name: "the wood",
+            kind: Kind::HighForest,
+            at: middle,
+            character: Character { mix: WOOD },
+        },
+    )
+    Map {
+        lo: SQUARE.lo,
+        hi: square_hi(),
+        present: PRESENT,
+        land: engine::place::Land {
+            hills: [vec4(0.0); 8],
+            hollows: [vec4(0.0); 8],
+            ridges: [vec4(0.0); 24],
+            ravines: [vec4(0.0); 16],
+            ravine_fall: 0.0,
+            crags: [vec4(0.0); 4],
+            ramps: vec4(0.0),
+            floors: vec4(0.0),
+            tilt: vec4(0.0),
+        },
+        sites: Vec::new(),
+        relations: Vec::new(),
+        openings: Vec::new(),
+        routes: Vec::new(),
+        water: engine::place::Water {
+            meres: [vec4(0.0); 2],
+            springs: [vec2(0.0); 8],
+            spring_count: 0,
+            falls: [vec2(0.0); 2],
+        },
+        events: Vec::new(),
+        wind: vec2(0.75, -0.66),
+        kept: Vec::new(),
+        regions,
+        herd: Herd { arrives: PRESENT + 1000000, trips: 0, drink: middle, rest: middle },
+    }
+}
+
+/// What the grown land gives the history (`engine::grow::Given`), on its grid at `grain`: its
+/// streams (`geology::Water::streams`); how wet each cell is (`geology::Water::wet`, between the
+/// square's cells); how thin its soil is (from its depth, `geology::soil_layer`: bare rock 1, a
+/// soil 10 cm deep nearly, half a metre none, as `engine::soil`'s thin soil is under 35 cm); and its
+/// ponds' water.
+pub fn given(grain: Grain) -> Given {
+    let g = Grid::over(SQUARE.lo, square_hi(), grain.cell)
+    borrow w = WORLD
+    Given {
+        streams: w.water.streams.clone(),
+        wet: Vec::from_fn(g.cells(), |c| SQUARE.sample(w.water.wet, g.centre(c))),
+        thin: Vec::from_fn(g.cells(), |c| {
+            let (depth, kind, _) = w.land.soil_at(g.centre(c))
+            if kind == u32(SoilKind::Rock) { 1.0 } else { 1.0 - smoothstep(0.1, 0.5, depth) }
+        }),
+        water: Vec::from_fn(g.cells(), |c| LAND.bed_at(g.centre(c)) > 0.05),
+    }
+}
+
+/// The grown land's history at `grain`.
+pub fn grown(grain: Grain) -> History {
+    let none: Vec<vec3> = Vec::new()
+    simulate_given(
+        LAND,
+        growth_map(),
+        species::habits(),
+        grain,
+        SQUARE.lo,
+        square_hi(),
+        none,
+        wild,
+        given(grain),
+    )
+}
+
+/// No past: the land an old wood when its history begins.
+fn wild(land: Land, year: i32) -> Start {
+    Start::wild(land)
+}
+
+/// The tiles the grown land streams in: those the square touches.
+pub fn tiles_lo() -> vec2i {
+    tile_of(SQUARE.lo)
+}
+
+pub fn tiles_hi() -> vec2i {
+    tile_of(square_hi() - vec2(0.01))
+}
+
+/// Its bake, at the floor's grain (`engine::grow::BAKE`): a file a tile and the far layer.
+@fuel(2 ** 43)
+pub const GROWN: Shipped = ship("grown", bake(grown(BAKE), tiles_lo(), tiles_hi()))
+
+/// The bake read back.
+pub fn decisions() -> engine::bake::Unbaked {
+    unbake(GROWN, tiles_lo(), tiles_hi())
+}

@@ -424,6 +424,98 @@ fn pass(g: Grid, h: [f32], ease: [f32], critical: [f32], c: u32, n: u32) -> f32 
     0.5 * (ease[c] + ease[n]) * faster * rise
 }
 
+// ---- its water, as it shows ----------------------------------------------------------------------
+
+/// A land's lakes as basins: each run of its lake cells (`Landscape::lakes` over 0) joined side to
+/// side (not corner to corner: a divide a cell wide keeps two apart), numbered from 0 (`of`,
+/// `NONE` past them), and each one's level (m): the height its pit was filled to, which it spills
+/// at.
+pub struct Basins: Clone {
+    pub of: Vec<u32>,
+    pub level: Vec<f32>,
+}
+
+/// The lakes of `l` (`Basins`).
+pub fn basins(l: Landscape) -> Basins {
+    let g = l.grid
+    var of: Vec<u32> = Vec::filled(g.cells(), NONE)
+    var level: Vec<f32> = Vec::new()
+    var todo: Vec<u32> = Vec::new()
+    for c in 0..g.cells() {
+        if l.lakes[c] <= 0.0 || of[c] != NONE {
+            continue
+        }
+        let id = level.len()
+        var top = l.heights[c]
+        of[c] = id
+        todo.push(c)
+        while !todo.is_empty() {
+            let at = todo.pop().unwrap()
+            top = max(top, l.heights[at])
+            let (i, j) = (i32(at % g.nx), i32(at / g.nx))
+            for k in 0..4 {
+                let n = vec2i(i, j) + SIDES[k]
+                if n.x >= 0 && n.y >= 0 && n.x < i32(g.nx) && n.y < i32(g.nz) {
+                    let q = u32(n.y) * g.nx + u32(n.x)
+                    if l.lakes[q] > 0.0 && of[q] == NONE {
+                        of[q] = id
+                        todo.push(q)
+                    }
+                }
+            }
+        }
+        level.push(top)
+    }
+    Basins { of, level }
+}
+
+/// A cell's four sides' neighbours.
+const SIDES = [vec2i(-1, 0), vec2i(1, 0), vec2i(0, -1), vec2i(0, 1)]
+
+/// The channels of `l` as they show, `lakes` its basins: every cell outside a lake that `threshold`
+/// m² or more drains through, as courses of cells down their receivers. Each starts at a head (a
+/// channel cell no other channel cell outside a lake drains into: a channel's top, or where one
+/// leaves a lake) and runs down to where it enters a lake (that cell its last), leaves the land
+/// (an outlet), or meets a course traced before it (that cell its last: a tributary ends on the
+/// stream it joins). The heads draining most are traced first, so a lake's outflow runs unbroken.
+pub fn channels(l: Landscape, threshold: f32, lakes: Basins) -> Vec<Vec<u32>> {
+    let g = l.grid
+    let open = |c: u32| l.area[c] >= threshold && lakes.of[c] == NONE
+    var fed: Vec<bool> = Vec::filled(g.cells(), value: false)
+    for c in 0..g.cells() {
+        if open(c) && l.down[c] != NONE {
+            fed[l.down[c]] = true
+        }
+    }
+    var heads: Vec<u32> = Vec::new()
+    for c in 0..g.cells() {
+        if open(c) && !fed[c] {
+            heads.push(c)
+        }
+    }
+    heads.sort_by(|a, b| l.area[a] > l.area[b])
+    var taken: Vec<bool> = Vec::filled(g.cells(), value: false)
+    var out: Vec<Vec<u32>> = Vec::new()
+    for h in heads {
+        var course: Vec<u32> = Vec::new()
+        var c = h
+        loop {
+            course.push(c)
+            if taken[c] || lakes.of[c] != NONE {
+                break
+            }
+            taken[c] = true
+            let r = l.down[c]
+            if r == NONE {
+                break
+            }
+            c = r
+        }
+        out.push(take course)
+    }
+    out
+}
+
 // ---- the relief, as the terrain reads it --------------------------------------------------------
 
 /// A land's relief over its grid, `N` cells (`nx` × `nz`, from `lo`, `cell` metres a side), as a
@@ -1559,5 +1651,109 @@ fn what_is_cut_is_laid_down_or_carried_away() {
     assert(laid <= 6.0 * 2.0 * 100.0 + 1.0e-3, "more was laid than was cut")
     for i in 1..12 {
         assert(h[i] > h[i - 1] - 1.0e-5 || i < 6, "a laid cell stands over its donor")
+    }
+}
+
+/// Land `h` over grid `g` as its water leaves it, unmade: drained to its border, its pits filled
+/// and their fill its lakes (as `evolve` leaves a land).
+fn still(g: Grid, h: [f32]) -> Landscape {
+    let outlets = border(g)
+    let d = drainage(g, h, outlets)
+    let down: Vec<u32> = Vec::from_fn(g.cells(), |c| if outlets[c] { NONE } else { d.down[c] })
+    var area: Vec<f32> = Vec::filled(g.cells(), 0.0)
+    gather(g, d.order, down, mut area)
+    Landscape {
+        grid: g,
+        heights: Vec::from_fn(g.cells(), |c| d.filled[c]),
+        down,
+        area,
+        uplift: Vec::filled(g.cells(), 0.0),
+        erodibility: Vec::filled(g.cells(), 0.0),
+        base: outlets,
+        lakes: Vec::from_fn(g.cells(), |c| if d.filled[c] - h[c] > LAKE {
+            d.filled[c] - h[c]
+        } else { 0.0 }),
+    }
+}
+
+/// Two bowls a cell's divide apart, and two touching only corner to corner, are each its own lake,
+/// each at the level its pit was filled to.
+@test
+fn lakes_a_divide_apart_are_two_basins() {
+    let g = grid(nx: 13, nz: 7, cell: 10.0)
+    // A plain falling west, with two pits in it: x 2..4 and x 6..8 (a divide at x 5), each 3 deep;
+    // and two cells meeting corner to corner at (10, 2) and (11, 3).
+    var h: Vec<f32> = Vec::from_fn(g.cells(), |c| 20.0 + 0.5 * f32(c % 13))
+    for c in 0..g.cells() {
+        let (i, j) = (c % 13, c / 13)
+        if j >= 2 && j <= 4 && ((i >= 2 && i <= 4) || (i >= 6 && i <= 8)) {
+            h[c] -= 3.0
+        }
+    }
+    h[2 * 13 + 10] -= 3.0
+    h[3 * 13 + 11] -= 3.0
+    let l = still(g, h)
+    let b = basins(l)
+    let (west, east) = (b.of[3 * 13 + 3], b.of[3 * 13 + 7])
+    assert(west != NONE && east != NONE && west != east, "the divided bowls are one lake")
+    assert(b.of[3 * 13 + 5] == NONE, "a lake over the divide")
+    assert(b.of[2 * 13 + 10] != b.of[3 * 13 + 11], "corner-to-corner cells are one lake")
+    for c in 0..g.cells() {
+        if b.of[c] != NONE {
+            assert(abs(l.heights[c] - b.level[b.of[c]]) < 0.05, "a lake's cell off its level")
+        }
+    }
+}
+
+/// The channels cover every channel cell outside a lake, the reach below a lake's spill among them
+/// (its head is where it leaves the lake), and a tributary ends on the stream it joins.
+@test
+fn channels_run_on_past_a_lake_and_join_where_they_meet() {
+    // A valley falling south (j) to its border, its floor at i = 6; a bowl across the floor at
+    // j 4..6; and a side valley joining from the east at j = 12.
+    let g = grid(nx: 13, nz: 20, cell: 10.0)
+    var h: Vec<f32> = Vec::from_fn(g.cells(), |c| {
+        let (i, j) = (f32(c % 13), f32(c / 13))
+        60.0 - 2.0 * j + 3.0 * abs(i - 6.0)
+    })
+    for c in 0..g.cells() {
+        let (i, j) = (c % 13, c / 13)
+        if j >= 4 && j <= 6 && i >= 5 && i <= 7 {
+            h[c] -= 6.0
+        }
+        if j == 12 && i > 6 {
+            h[c] -= 2.5 * f32(i - 6)
+        }
+    }
+    let l = still(g, h)
+    let b = basins(l)
+    assert(b.of[5 * 13 + 6] != NONE, "no lake in the bowl")
+    let courses = channels(l, 300.0, b)
+    var covered: Vec<bool> = Vec::filled(g.cells(), value: false)
+    for course in courses {
+        for c in course {
+            covered[c] = true
+        }
+    }
+    var below = false
+    for c in 0..g.cells() {
+        if l.area[c] >= 300.0 && b.of[c] == NONE {
+            assert(covered[c], f"channel cell {c} in no course")
+            below = below || (c / 13 > 7 && c % 13 == 6)
+        }
+    }
+    assert(below, "no channel below the lake")
+    // Each course ends in a lake, at an outlet, or on a cell of another course.
+    for k in 0..courses.len() {
+        let last = courses[k][courses[k].len() - 1]
+        var on = b.of[last] != NONE || l.down[last] == NONE
+        for m in 0..courses.len() {
+            if m != k {
+                for c in courses[m] {
+                    on = on || c == last
+                }
+            }
+        }
+        assert(on, f"course {k} ends nowhere")
     }
 }
