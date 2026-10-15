@@ -1369,15 +1369,23 @@ frames show different poses.
 **A cube.** Ryan asked for the tesseract to resolve into a perfect cube as the light finishes
 crossing the mark. Claude Code's first try blended each corner from the turning tesseract
 toward a cube in a straight line. Corners of two differently turned shapes cancel, so the
-shape shrank to a knot halfway. Instead, from 2.5 s to 3.7 s the x–w and y–w turns ease
-forward to rest at their next multiple of π. There w is again w, so the cells nest one inside
-the other. Meanwhile each corner's 4D depth flattens: the far cell swells to the near cell's
-size, and they meet in one cube that goes on turning in 3D. The turn's phase at the start
-(30.19) puts those multiples of π within 0.1 rad of where the turns would be anyway, so they
-come to rest without hurrying. Once the cells coincide, only one cell's 12 struts and 6 faces
-are traced. Back in the room, after the dark, it is a tesseract again. Native M4 GPU frame
-spans over 3.0–5.5 s against the previous commit, three alternating pairs at 1280×800:
-2.21 → 1.98 ms.
+shape shrank to a knot halfway. The second try eased the 4D turns forward to their next
+multiple of π, and Ryan saw them speed up into the cube. Now the turns through w (x–w and
+y–w) keep their own clock, measured from the pose where w is w and the cells nest one inside
+the other. From 2.5 s they only slow, smoothly, and come to rest at that pose at 3.7 s;
+they never run faster than the turn. Meanwhile each corner's 4D depth flattens: the far
+cell swells to the near cell's size, and they meet in one cube. The y–z turn, the yaw and
+the tilt go on, so the cube keeps turning in 3D. Once the cells coincide, only one cell's
+12 struts and 6 faces are traced. Back in the room, after the dark, it is a tesseract again.
+Native M4 GPU frame spans over 3.0–5.5 s against the commit before the cube, three
+alternating pairs at 1280×800: 2.21 → 1.98 ms.
+
+**Straight struts.** Ryan saw struts bent by the glass. The glass bent the view through each
+face along its folds, and mirrored struts in its rippled surface. It now bends neither: the
+view passes straight through, and struts are mirrored in the flat face. The ripples and the
+spectral fringe stay on the studio that the glass mirrors. Native M4 GPU frame spans
+against the previous commit, three alternating pairs at 1280×800, are inconclusive: cube
+beat 1.95 → 1.86 ms, room 4.43 → 4.37 ms.
 
 ## Keeping this record
 

@@ -5,8 +5,8 @@
 // satin silver (far) to black chrome (near). Rays meet struts and faces exactly (no stepping), so
 // edges stay sharp. Where the glass mirrors the studio, each colour sees it a little
 // shifted along the glass's folds, so its edges fringe into a spectrum, and nothing else does.
+// The glass bends only the studio it mirrors: struts seen through it or in it stay straight.
 use std::gpu::{FragCoord}
-use std::math::PI
 
 pub const EDGES: u32 = 32
 pub const FACES: u32 = 24
@@ -105,23 +105,11 @@ pub fn thickness(w: f32) -> f32 {
 // yaw and a fixed tilt show its depth. The rates share no common period, so it never repeats,
 // and every corner moves at a steady speed throughout.
 //
-// As `cube` goes from 0 to 1, the x–w and y–w turns ease forward to rest at the multiple of π
-// next after where they would be at turn `land`: there w is still w, so the two cells nest
-// exactly, one inside the other.
-fn spin(q: vec4, t: f32, cube: f32, land: f32) -> vec4 {
-    let xw = mix(t * 1.19, rest(land * 1.19), cube)
-    let yw = mix(t * 0.493, rest(land * 0.493), cube)
-    let everted = plane(plane(q, xw, a: 0, b: 3), t * 0.735, a: 1, b: 2)
-    pose(plane(everted, yw, a: 1, b: 3), t)
-}
-
-fn rest(angle: f32) -> f32 {
-    ceil(angle / PI) * PI
-}
-
-// How far the 4D turns must hurry ahead of themselves to come to rest at turn `land`.
-pub fn hurry(land: f32) -> f32 {
-    max(rest(land * 1.19) - land * 1.19, rest(land * 0.493) - land * 0.493)
+// The turns through w (x–w and y–w) go by their own clock, `deep`; at `deep` = 0 they are at
+// rest, w is w, and the two cells nest exactly, one inside the other.
+fn spin(q: vec4, t: f32, deep: f32) -> vec4 {
+    let everted = plane(plane(q, deep * 1.19, a: 0, b: 3), t * 0.735, a: 1, b: 2)
+    pose(plane(everted, deep * 0.493, a: 1, b: 3), t)
 }
 
 // The yaw and the tilt.
@@ -129,15 +117,15 @@ fn pose(q: vec4, t: f32) -> vec4 {
     plane(plane(q, t * 0.357, a: 0, b: 2), 0.42, a: 1, b: 2)
 }
 
-// The sixteen corners at `turn` (radians of the slow rotation), seen from a 4D eye and
-// placed at `centre` at `size`: world position, and 4D depth in `w` (-1 far, 1 near). As
-// `cube` goes from 0 to 1, the 4D turns come to rest at turn `land` with the cells nested,
-// and the depth between them flattens: the far cell swells and the near one holds until they
-// meet in one cube, which goes on turning in 3D.
-pub fn corners(turn: f32, centre: vec3, size: f32, cube: f32, land: f32) -> Vec<vec4> {
+// The sixteen corners at `turn` (radians of the slow rotation) and `deep` (the turns through
+// w), seen from a 4D eye and placed at `centre` at `size`: world position, and 4D depth in
+// `w` (-1 far, 1 near). As `cube` goes from 0 to 1, the depth between the cells flattens: the
+// far cell swells and the near one holds until, with `deep` at rest, they meet in one cube,
+// which goes on turning in 3D.
+pub fn corners(turn: f32, deep: f32, centre: vec3, size: f32, cube: f32) -> Vec<vec4> {
     var out: Vec<vec4> = Vec::new()
     for i in 0..16 {
-        let q = spin(corner(i) * 0.5, turn, cube, land)
+        let q = spin(corner(i) * 0.5, turn, deep)
         let out_by = mix(swell(q.w), swell(0.5), cube)
         out.push(vec4(centre + q.xyz * (out_by * SPREAD * size), q.w * (1.0 - cube)))
     }
@@ -422,9 +410,6 @@ fn ripple(p: vec3, n: vec3, time: f32, size: f32) -> vec3 {
     normalize(n + (w - n * dot(w, n)) * 0.16)
 }
 
-// The glass's folds spread a pixel's footprint where it bends or mirrors the view.
-const FOLD_SPREAD: f32 = 1.6
-
 // One path of light from the eye: its colour.
 fn trace(
     start: vec3,
@@ -437,7 +422,7 @@ fn trace(
     rough: f32,
 ) -> vec3 {
     var ro = start
-    var rd = dir
+    let rd = dir
     var gathered = vec3(0.0)
     var through = vec3(1.0)
     var skip = -1.0
@@ -467,7 +452,7 @@ fn trace(
             if dot(n, rd) > 0.0 { n = -n }
             let warped = ripple(p - look.place.xyz, n, look.time, size)
             let fresnel = 0.04 + 0.96 * pow(1.0 - saturate(-dot(rd, warped)), 5.0)
-            let at_glass = vec2(cone.x + cone.y * f.x, cone.y * FOLD_SPREAD)
+            let at_glass = vec2(cone.x + cone.y * f.x, cone.y)
             // A soft mirror toward the edges, faint face-on: the studio and the struts it faces.
             let r = rd - warped * (2.0 * dot(rd, warped))
             // Where it mirrors the studio, each colour sees it a little shifted along the
@@ -479,22 +464,22 @@ fn trace(
                 studio(normalize(r + fold * 0.05)).z,
             )
             // Only the nearest glass mirrors the struts: deeper layers are dim behind it, and
-            // tracing their reflections too would cost as much again.
+            // tracing their reflections too would cost as much again. It mirrors them as flat
+            // glass, so they stay straight.
+            let flat = rd - n * (2.0 * dot(rd, n))
             let seen = if skip < 0.0 {
-                metal_hit(p + r * 0.001, r, verts, edges, radius, at_glass, -1.0, whole)
+                metal_hit(p + flat * 0.001, flat, verts, edges, radius, at_glass, -1.0, whole)
             } else {
                 Hit { at: 1.0e9, normal: vec3(0.0), depth: 0.0, cover: 0.0, strut: -1.0 }
             }
             if seen.at < 1.0e8 {
-                let strut_seen = polished(seen.depth, seen.normal, r, look.time, rough)
+                let strut_seen = polished(seen.depth, seen.normal, flat, look.time, rough)
                 mirrored = mix(mirrored, strut_seen, seen.cover)
             }
             let silvered = 0.03 + 0.55 * fresnel
             gathered += through * mirrored * silvered * 0.7
             // Smoked glass: what lies behind it darkens through each face.
             through *= (1.0 - silvered) * 0.6
-            // Through the glass the view bends with its folds.
-            rd = normalize(rd + fold * 0.35)
             cone = at_glass
             ro = p
             skip = f.y
@@ -590,13 +575,13 @@ fn every_corner_meets_four_struts_and_six_faces() {
 fn the_tesseract_stays_within_its_reach_however_it_turns() {
     for i in 0..400 {
         let turn = f32(i) * 0.37
-        for p in corners(turn, vec3(1.0, 2.0, 3.0), 1.4, cube: 0.0, land: 0.0) {
+        for p in corners(turn, turn, vec3(1.0, 2.0, 3.0), 1.4, cube: 0.0) {
             assert(length(p.xyz - vec3(1.0, 2.0, 3.0)) < 1.4 * REACH, "inside the traced sphere")
             assert(p.w >= -1.01 && p.w <= 1.01)
         }
     }
-    let a = corners(0.0, vec3(0.0), 1.0, cube: 0.0, land: 0.0)
-    let b = corners(0.5, vec3(0.0), 1.0, cube: 0.0, land: 0.0)
+    let a = corners(turn: 0.0, deep: 0.0, centre: vec3(0.0), size: 1.0, cube: 0.0)
+    let b = corners(turn: 0.5, deep: 0.5, centre: vec3(0.0), size: 1.0, cube: 0.0)
     var moved = 0.0
     for i in 0..16 { moved += length(a[i].xyz - b[i].xyz) }
     assert(moved > 0.5, "it turns")
@@ -614,7 +599,7 @@ fn far_struts_take_more_rays_than_near_ones() {
 @test
 fn a_strut_covers_the_share_of_a_pixel_it_fills() {
     // Look straight at the outermost strut from just outside it.
-    let verts = corners(0.0, vec3(0.0), 1.0, cube: 0.0, land: 0.0)
+    let verts = corners(turn: 0.0, deep: 0.0, centre: vec3(0.0), size: 1.0, cube: 0.0)
     let edges = edges()
     var outer = 0
     var far = 0.0
@@ -710,8 +695,7 @@ fn the_tesseract_turns_at_one_steady_rate() {
         var moved = 0.0
         for c in 0..16 {
             moved += length(
-                spin(corner(c), t + step, cube: 0.0, land: 0.0) -
-                    spin(corner(c), t, cube: 0.0, land: 0.0),
+                spin(corner(c), t + step, deep: t + step) - spin(corner(c), t, deep: t),
             )
         }
         least = min(least, moved)
@@ -724,7 +708,7 @@ fn the_tesseract_turns_at_one_steady_rate() {
 fn the_tesseract_resolves_into_one_cube_that_keeps_turning() {
     let size = 1.3
     for turn in [0.0, 1.7, 4.2] {
-        let cube = corners(turn, vec3(1.0, 2.0, 3.0), size, cube: 1.0, land: turn + 0.3)
+        let cube = corners(turn, 0.0, vec3(1.0, 2.0, 3.0), size, cube: 1.0)
         // The two cells meet: each corner lies on its twin, at w = 0.
         for i in 0..8 {
             assert(length(cube[i] - cube[i + 8]) < 0.0001 && abs(cube[i].w) < 0.0001)
@@ -742,14 +726,14 @@ fn the_tesseract_resolves_into_one_cube_that_keeps_turning() {
         assert(abs(side - swell(0.5) * SPREAD * size) < 0.0001)
         // Along the way, it stays within its reach.
         for k in 0..11 {
-            for p in corners(turn, vec3(0.0), size, cube: f32(k) * 0.1, land: turn + 0.3) {
+            for p in corners(turn, f32(k) * 0.1 - 1.0, vec3(0.0), size, cube: f32(k) * 0.1) {
                 assert(length(p.xyz) < size * REACH)
             }
         }
     }
     // It keeps turning in 3D.
-    let a = corners(1.0, vec3(0.0), 1.0, cube: 1.0, land: 0.8)
-    let b = corners(1.5, vec3(0.0), 1.0, cube: 1.0, land: 0.8)
+    let a = corners(turn: 1.0, deep: 0.0, centre: vec3(0.0), size: 1.0, cube: 1.0)
+    let b = corners(turn: 1.5, deep: 0.0, centre: vec3(0.0), size: 1.0, cube: 1.0)
     assert(length(a[0] - b[0]) > 0.05)
     // Twelve struts and six faces draw it.
     var struts = 0
@@ -767,7 +751,7 @@ fn the_turn_carries_every_corner_toward_the_eye_in_turn() {
     for i in 0..2000 {
         let t = f32(i) * 0.1
         for c in 0..16 {
-            nearest[c] = max(nearest[c], spin(corner(c) * 0.5, t, cube: 0.0, land: 0.0).w)
+            nearest[c] = max(nearest[c], spin(corner(c) * 0.5, t, deep: t).w)
         }
     }
     for c in 0..16 { assert(nearest[c] > 0.9) }
