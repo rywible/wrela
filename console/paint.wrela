@@ -61,6 +61,9 @@ pub struct BlockVertex {
     // The face: 0 to 3 the sides, from the front round to the right; 4 the top, 5 the bottom.
     pub face: f32,
     pub normal: vec3,
+    // Which of its sides (u = 0 and 1, v = 0 and 1) are on the block's outline: 1 where the
+    // face beyond is turned away.
+    pub outline: vec4,
 }
 
 // A block's 36 corners: two triangles a face. A face turned away from the eye collapses, so
@@ -104,8 +107,15 @@ pub fn block_corner(v: VertexIndex, camera: Camera, card: Card) -> BlockVertex {
     let uv = corners[v.index % 6]
     let (n, across, up) = (normals[face], acrosses[face], ups[face])
     let normal = turned(card, n)
-    let middle = corner(card, n * 0.5)
-    let facing = dot(normal, camera.eye.xyz - middle) > 0.0
+    let eye = camera.eye.xyz
+    let facing = dot(normal, eye - corner(card, n * 0.5)) > 0.0
+    // A side is on the outline where the face beyond it is turned away from the eye.
+    var outline = vec4(0.0)
+    let beyond = [-across, across, up, -up]
+    for k in 0..4 {
+        let m = beyond[k]
+        if dot(turned(card, m), eye - corner(card, m * 0.5)) <= 0.0 { outline[k] = 1.0 }
+    }
     let s = project(camera, corner(card, n * 0.5 + across * (uv.x - 0.5) + up * (0.5 - uv.y)))
     let ndc = vec2(s.x / camera.screen.x * 2.0 - 1.0, 1.0 - s.y / camera.screen.y * 2.0)
     // Clip w is the depth, so the art is interpolated in perspective.
@@ -116,12 +126,14 @@ pub fn block_corner(v: VertexIndex, camera: Camera, card: Card) -> BlockVertex {
         extent: vec2(length(across * card.size.xyz), length(up * card.size.xyz)),
         face: f32(face),
         normal,
+        outline,
     }
 }
 
 // A game's block: its cover on its sides, the middle of it as wide as each face allows, so the
 // chosen block's front shows all of it; the top and bottom dark. Lit from above and in front,
-// with a fine silver line along each edge, as the artifact's struts, bright when it has focus.
+// with a silver line a pixel wide along each edge, as the artifact's struts, brighter under
+// the pointer, and its outline smoothed over the pixel it crosses.
 @fragment
 pub fn block_face(
     v: BlockVertex,
@@ -139,15 +151,20 @@ pub fn block_face(
     var shade = 0.45 + 0.55 * saturate(dot(normalize(v.normal), light))
     // The chosen block's front (its back, after its half turn) shows its cover as it is.
     if face == 0 || face == 2 { shade = mix(shade, 1.0, card.look.w) }
-    let edge = min(
-        min(v.uv.x, 1.0 - v.uv.x) * v.extent.x,
-        min(v.uv.y, 1.0 - v.uv.y) * v.extent.y,
-    )
-    let pixel = max(fwidth(edge), 0.00001)
-    let line = saturate(1.5 - edge / pixel) * mix(0.35, 1.0, card.look.y)
-    let silver = mix(vec3(0.55, 0.56, 0.6), vec3(1.0), card.look.y)
+    // Each side's distance in pixels, across and up the face.
+    let across = v.uv.x * v.extent.x
+    let up = v.uv.y * v.extent.y
+    let pa = max(fwidth(across), 0.00001)
+    let pu = max(fwidth(up), 0.00001)
+    let sides = vec4(across / pa, (v.extent.x - across) / pa, up / pu, (v.extent.y - up) / pu)
+    let nearest = min(min(sides.x, sides.y), min(sides.z, sides.w))
+    // The line fills the pixel along the edge and stops: one pixel, sharp.
+    let line = saturate(1.5 - nearest) * mix(0.6, 1.0, card.look.y)
+    let silver = mix(vec3(0.78, 0.79, 0.82), vec3(1.0), card.look.y)
     let color = mix(surface * shade * card.look.x, silver, line)
-    Over { color: vec4(color, card.look.z) }
+    var cover = 1.0
+    for k in 0..4 { if v.outline[k] > 0.5 { cover *= saturate(sides[k] + 0.5) } }
+    Over { color: vec4(color, card.look.z * cover) }
 }
 
 // The light the selection stands in: an ellipse on the floor beneath it, in its cover's colour.

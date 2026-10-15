@@ -199,6 +199,9 @@ pub struct Console {
     // What glows (`glow`), and how far it has come on.
     glowing: Option<Action>,
     glow: f32,
+    // The game whose title shows, and how far it has eased in (out, while another is chosen).
+    title_shown: u32,
+    title_in: f32,
     pointing: bool,
     cursor: Option<Pending<u8>>,
     // Whether this page load reloaded the tab, from the environment: a reload starts at the
@@ -307,6 +310,8 @@ pub fn init() -> Console {
         hover: None,
         glowing: None,
         glow: 0.0,
+        title_shown: 0,
+        title_in: 1.0,
         pointing: false,
         cursor: None,
         reloaded: None,
@@ -977,6 +982,15 @@ fn button(s: mut Console, action: Action, r: Rect, row: u32, label: str, primary
     centered(mut s, label, LABEL, c.x, y, if primary { DARK } else { INK }, Face::Sans)
 }
 
+// The title showing, and how far it has eased in, `dt` seconds on with `selected` chosen: one
+// that isn't the selection's eases out in an eighth of a second, then the selection's eases in
+// over three tenths.
+fn title_step(shown: u32, eased: f32, selected: u32, dt: f32) -> (u32, f32) {
+    if shown == selected { return (shown, min(eased + dt / 0.3, 1.0)) }
+    let out = max(eased - dt / 0.12, 0.0)
+    if out == 0.0 { (selected, 0.0) } else { (shown, out) }
+}
+
 // How far the hover or focus on `action` has come on: from 0 when it arrives to 1 a quarter
 // second later, eased, so it settles rather than snaps.
 fn glow(s: Console, action: Action) -> f32 {
@@ -1091,9 +1105,12 @@ fn library(s: mut Console, w: f32, h: f32, cam: Camera, rest: Camera, margin: f3
     for i in 0..s.cards.len() {
         if s.slots[i] > 12.0 { continue }
         let art = s.covers[i].image.is_some()
-        let ring = glow(s, Action::Game { index: i })
         let target = f32(row_place(i, s.selected, s.cards.len()))
-        let card = place(place: s.slots[i], target: target, ring: ring, has_art: art, row: row)
+        // Under the pointer, a block's edges brighten, eased in; keys and pads move the
+        // selection itself, so it needs no mark of its own.
+        let pointing = s.input == Input::Pointer
+        let hover = if pointing { glow(s, Action::Game { index: i }) } else { 0.0 }
+        let card = place(place: s.slots[i], target: target, hover: hover, has_art: art, row: row)
         let b = bounds(cam, card) / s.zoom
         let r = Rect::new(b.x, b.y, b.z, b.w)
         s.placed.push(Placed { index: i, card, art })
@@ -1123,12 +1140,22 @@ fn library(s: mut Console, w: f32, h: f32, cam: Camera, rest: Camera, margin: f3
             let _ = control(mut s, Action::Game { index: placed.index }, r, 2, Kind::Tile)
         }
     }
-    let card = s.cards[s.selected].clone()
+    // Choosing another game, its title and state ease out, and the new ones ease in, rising.
+    let (shown, eased) = title_step(s.title_shown, s.title_in, s.selected, s.dt)
+    s.title_shown = shown
+    s.title_in = eased
+    if s.reduced || s.reveal < 1.0 || s.title_shown >= s.cards.len() {
+        s.title_shown = s.selected
+        s.title_in = 1.0
+    }
+    let fade = smoothstep(0.0, 1.0, s.title_in)
+    let lift = (1.0 - fade) * 8.0
+    let card = s.cards[s.title_shown].clone()
     let continuing = !s.saves.is_empty()
     // The title and actions hold still at the margin, above where the selection rests, while
     // blocks tumble beneath them.
     // Laid out for the camera at rest, so its drift toward the pointer doesn't move them.
-    let still = place(place: 0.0, target: 0.0, ring: 0.0, has_art: true, row: row)
+    let still = place(place: 0.0, target: 0.0, hover: 0.0, has_art: true, row: row)
     let resting = bounds(rest, still) / s.zoom
     slot = Rect::new(margin, resting.y, resting.z, resting.w)
     let x = slot.x
@@ -1147,7 +1174,13 @@ fn library(s: mut Console, w: f32, h: f32, cam: Camera, rest: Camera, margin: f3
     let meta_size = fitted(s, meta, 15.0, room, Face::Sans)
     let meta_middle = top - 26.0
     let tone = if s.message.is_empty() { MUTED } else { WARN }
-    text(mut s, meta, meta_size, vec2(x, line_top(s, Face::Sans, meta_size, meta_middle)), tone)
+    text(
+        mut s,
+        meta,
+        meta_size,
+        vec2(x, line_top(s, Face::Sans, meta_size, meta_middle) + lift),
+        vec4(tone.xyz, tone.w * fade),
+    )
     let title_size = fitted(s, card.title, 48.0, room, DISPLAY)
     let title_middle = meta_middle -
         meta_size * SANS_CAP * 0.5 -
@@ -1157,8 +1190,8 @@ fn library(s: mut Console, w: f32, h: f32, cam: Camera, rest: Camera, margin: f3
         mut s,
         card.title,
         title_size,
-        vec2(x, line_top(s, DISPLAY, title_size, title_middle)),
-        INK,
+        vec2(x, line_top(s, DISPLAY, title_size, title_middle) + lift),
+        vec4(INK.xyz, fade),
         DISPLAY,
     )
     // The actions in a line, the first the main one.
@@ -1870,6 +1903,25 @@ fn an_empty_library_displays_its_error_instead_of_loading() {
     let message = "The game library could not be read."
     assert(empty_library_message(message) == message)
     assert(empty_library_message("") == "Loading games")
+}
+
+@test
+fn a_new_title_waits_for_the_old_one_to_ease_out() {
+    // Choosing the second game: the first's title eases out, then the second's in.
+    var shown: u32 = 0
+    var eased = 1.0
+    var seen_out = false
+    for _ in 0..30 {
+        let (next_shown, next_eased) = title_step(shown, eased, selected: 1, dt: 1.0 / 60.0)
+        if next_shown == 0 { assert(next_eased < eased, "the old title only fades") }
+        if next_shown == 1 && shown == 0 {
+            seen_out = true
+            assert(next_eased == 0.0, "the new one starts unseen")
+        }
+        shown = next_shown
+        eased = next_eased
+    }
+    assert(seen_out && shown == 1 && eased > 0.5)
 }
 
 @test

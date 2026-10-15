@@ -1750,6 +1750,9 @@ same size on screen, lower and dimmer in the library. The row then became a caro
 asked that the block left behind take the chosen one's place rather than leave the screen;
 the tesseract went deeper again, and the title was laid out for the still camera so it no
 longer rises and falls with the camera's drift.
+On a switch the title and state now ease out and the new ones in; the blocks' edges are a steady
+silver line a pixel wide, their outline smoothed, brightening, eased, only under the pointer
+(it had followed the keyboard focus from block to block); and the tesseract turns 30% slower.
 
 ## Keeping this record
 
