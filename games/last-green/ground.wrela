@@ -578,153 +578,172 @@ impl Ground {
     /// `footprint` metres across sees it (`cover_at`).
     pub fn covered(self, at: vec3, n: vec3, fields: vec4, footprint: f32) -> Cover {
         let w = footprint
-        var c = self.cover_at(at, n, w)
+        let c = self.cover_at(at, n, w)
         if fields.x < 0.0 {
             return c
         }
         let xz = at.xz
-        let (light, trodden, wet, thorn) = (fields.x, fields.y, fields.z, fields.w)
         // The fight's disc and the trail into it worn short, so feet and paws read.
-        let trodden = max(trodden, FIGHT_WEAR * fought(xz, w))
-        // Canopy light and a shared colony boundary own both live blades and their backing
-        // colour. Between woodland colonies the surface is litter, not a green carpet.
-        let rock = c.materials.z
-        let habitat = woodland_cover(xz, light, soil: 1.0 - rock, footprint: w)
-        let open = habitat.x
-        // Litter in drifts a few metres across and in patches under them: dark and damp in the
-        // hollows, dry and coppery where it's heaped (one even brown read as paint: round 5).
-        let leaves = fbm2_seen(xz * 0.21 + vec2(5.0, 1.0), 3, w * 0.21) * 0.65 +
-            noise2_seen(xz * 0.9 + vec2(-3.0, 2.0), w * 0.9) * 0.35
-        // Umber, not orange: the heaped leaves' copper in sun read as bare orange earth (pass 1:
-        // the ring).
-        let litter = mix(
-            vec3(0.05, 0.037, 0.025),
-            vec3(0.13, 0.085, 0.05),
-            vec3(smoothstep(0.2, 0.85, leaves)),
-        )
-        let mossy = smoothstep(0.55, 0.8, fbm2_seen(xz * 0.09 + vec2(-7.0, 2.0), 3, w * 0.09)) *
-            (1.0 - open)
-        var floor = mix(litter, vec3(0.042, 0.06, 0.035), vec3(mossy * 0.5))
-        // Under thorn, darker and bare.
-        floor = floor * (1.0 - 0.3 * thorn)
-        // Canopy litter covers soil, not the exposed face of the ravine's bedrock.
-        c.albedo = mix(floor, c.albedo, vec3(max(open, rock)))
-        // Thinning faster than it fades: a few blades in a gap's half light, a meadow in the open.
-        c.grass *= habitat.y
-        c.flowers *= habitat.y
+        let trodden = max(fields.y, FIGHT_WEAR * fought(xz, w))
         // No trail wears under a built stone: its wear stops a hand's breadth from the stone's
         // foot (a route that ended at a stone's middle drew bare lit earth under it, a stem: the
         // arena's centre stone, 14).
         let trodden = if trodden > 0.0 { trodden * unbuilt(xz) } else { trodden }
-        // The trails: bare earth down a path's middle, the grass worn short and thin on the ground
-        // the herd wears beside it. The earth is packed and dry, lighter than the leaf litter
-        // round it in the wood (a path shows from 20 m: #55 AC10).
-        let bare = smoothstep(0.5, 0.8, trodden)
-        let short = smoothstep(0.1, 0.45, trodden)
-        let earth = mix(
-            vec3(0.21, 0.16, 0.105),
-            vec3(0.27, 0.21, 0.14),
-            vec3(noise2_seen(xz * 0.7, w * 0.7)),
-        )
-        c.albedo = mix(c.albedo, earth, vec3(bare * 0.9))
-        c.albedo = mix(c.albedo, c.albedo * vec3(1.05, 1.0, 0.85), vec3(short * 0.5))
-        c.grass *= (1.0 - bare) * (1.0 - 0.5 * short)
-        c.flowers *= 1.0 - short
-        c.tall *= 1.0 - max(bare, short * 0.8)
-        // Wet ground darker, its grass a deeper green.
-        let soaked = smoothstep(0.6, 0.95, wet)
-        c.albedo *= 1.0 - 0.35 * soaked
-        c.deep = max(c.deep, soaked)
-        // What the ground is made of where it shows: litter under the canopy (moss in its
-        // patches), soil in the open and on the paths, the rock where it crops out; the habitat
-        // the wood's floor's plants follow (`grass::species_of`).
-        let shaded = (1.0 - open) * (1.0 - bare)
-        c.materials = vec4(
-            shaded * (1.0 - mossy * 0.5) * (1.0 - rock),
-            (1.0 - shaded) * (1.0 - rock),
-            rock,
-            shaded * mossy * 0.5 * (1.0 - rock),
-        )
-        c.flora = vec4(c.flora.x, wet, light, trodden)
-        // The wood's floor's own plants where the canopy closes (#54 §9): low herbs all through
-        // it with litter visible between their colonies, ferns in patches in deep shade, bracken where light comes through
-        // in gaps; thinner under thorn and in the wet, none on a path. Where the meadow opens,
-        // the grass takes over.
-        let fern = smoothstep(0.45, 0.62, fbm2_seen(xz * 0.09 + vec2(13.0, 7.0), 3, w * 0.09)) *
-            (1.0 - smoothstep(0.2, 0.6, light))
-        let bracken = smoothstep(
-            0.48,
-            0.66,
-            fbm2_seen(xz * 0.045 + vec2(-21.0, 4.0), 3, w * 0.045),
-        ) *
-            smoothstep(0.12, 0.4, light)
-        let herbs = 0.22
-        // Broad colonies have real litter gaps, including in the sparse meadow layer.
-        // Frond kinds vary within these rooted patches rather than filling every gap.
-        c.under = vec4(
-            habitat.z *
-                (0.10 + 0.48 * max(fern, bracken)) *
-                (1.0 - bare) *
-                (1.0 - 0.3 * thorn) *
-                (1.0 - 0.25 * soaked),
-            fern,
-            bracken,
-            herbs,
-        )
-        // Under a stream: its bed of gravel and wet stones; no grass (the mere's bed is `cover`'s).
-        // The bed's field is 2 m a texel, read between texels: the bed reaches out to where it's
-        // read halfway to the bank's wet (else grass stood in the water between its texels).
-        // Its banks are mud and rush, the grass thinning toward the water.
-        let stones = noise2_seen(xz * 1.7, w * 1.7)
-        let bed = smoothstep(0.9, 0.985, wet)
-        // Exposed gravel continues onto the bank. Patchy gravel leaves damp pockets for
-        // rushes rather than a straight strip of meadow grass against the water.
-        let bank = smoothstep(0.72, 0.92, wet) * (0.55 + 0.45 * stones)
-        let gentle = smoothstep(0.68, 0.9, n.y)
-        let bank_colony = smoothstep(0.4, 0.7, noise2_seen(xz * 0.18 + vec2(9.0, 2.0), w * 0.18))
         // The dry lip loses its litter before it meets the cut face. Fine soil remains
         // between exposed fragments on a gentle shoulder; sheer rock keeps its ownership.
-        let rim = self.upper_bank(xz, footprint: w) * (1.0 - rock)
-        c.materials = mix(c.materials, vec4(0.0, 0.8, 0.2, 0.0), vec4(0.65 * rim))
+        let rim = self.upper_bank(xz, footprint: w) * (1.0 - c.materials.z)
+        wood_floor(c, at, n, fields, w, trodden, rim)
+    }
+}
+
+/// The wood's floor over the history's fields (#54 §9, `engine::bake::tile_fields`: their light,
+/// wear, wet and thorn), on a cover `c` as a sample `w` metres across sees it: where the canopy
+/// closes, no meadow grass but leaf litter, moss in patches and the wood's floor's plants; where
+/// trails wear it (`trodden`), bare earth and worn grass; darker where it's wet, and a stream's
+/// bed and banks under its water; and where a cut's dry lip is (`rim`), bare soil.
+pub fn wood_floor(
+    c: Cover,
+    at: vec3,
+    n: vec3,
+    fields: vec4,
+    w: f32,
+    trodden: f32,
+    rim: f32,
+) -> Cover {
+    var c = c
+    let xz = at.xz
+    let (light, wet, thorn) = (fields.x, fields.z, fields.w)
+    // Canopy light and a shared colony boundary own both live blades and their backing
+    // colour. Between woodland colonies the surface is litter, not a green carpet.
+    let rock = c.materials.z
+    let habitat = woodland_cover(xz, light, soil: 1.0 - rock, footprint: w)
+    let open = habitat.x
+    // Litter in drifts a few metres across and in patches under them: dark and damp in the
+    // hollows, dry and coppery where it's heaped (one even brown read as paint: round 5).
+    let leaves = fbm2_seen(xz * 0.21 + vec2(5.0, 1.0), 3, w * 0.21) * 0.65 +
+        noise2_seen(xz * 0.9 + vec2(-3.0, 2.0), w * 0.9) * 0.35
+    // Umber, not orange: the heaped leaves' copper in sun read as bare orange earth (pass 1:
+    // the ring).
+    let litter = mix(
+        vec3(0.05, 0.037, 0.025),
+        vec3(0.13, 0.085, 0.05),
+        vec3(smoothstep(0.2, 0.85, leaves)),
+    )
+    let mossy = smoothstep(0.55, 0.8, fbm2_seen(xz * 0.09 + vec2(-7.0, 2.0), 3, w * 0.09)) *
+        (1.0 - open)
+    var floor = mix(litter, vec3(0.042, 0.06, 0.035), vec3(mossy * 0.5))
+    // Under thorn, darker and bare.
+    floor = floor * (1.0 - 0.3 * thorn)
+    // Canopy litter covers soil, not the exposed face of the ravine's bedrock.
+    c.albedo = mix(floor, c.albedo, vec3(max(open, rock)))
+    // Thinning faster than it fades: a few blades in a gap's half light, a meadow in the open.
+    c.grass *= habitat.y
+    c.flowers *= habitat.y
+    // The trails: bare earth down a path's middle, the grass worn short and thin on the ground
+    // the herd wears beside it. The earth is packed and dry, lighter than the leaf litter
+    // round it in the wood (a path shows from 20 m: #55 AC10).
+    let bare = smoothstep(0.5, 0.8, trodden)
+    let short = smoothstep(0.1, 0.45, trodden)
+    let earth = mix(
+        vec3(0.21, 0.16, 0.105),
+        vec3(0.27, 0.21, 0.14),
+        vec3(noise2_seen(xz * 0.7, w * 0.7)),
+    )
+    c.albedo = mix(c.albedo, earth, vec3(bare * 0.9))
+    c.albedo = mix(c.albedo, c.albedo * vec3(1.05, 1.0, 0.85), vec3(short * 0.5))
+    c.grass *= (1.0 - bare) * (1.0 - 0.5 * short)
+    c.flowers *= 1.0 - short
+    c.tall *= 1.0 - max(bare, short * 0.8)
+    // Wet ground darker, its grass a deeper green.
+    let soaked = smoothstep(0.6, 0.95, wet)
+    c.albedo *= 1.0 - 0.35 * soaked
+    c.deep = max(c.deep, soaked)
+    // What the ground is made of where it shows: litter under the canopy (moss in its
+    // patches), soil in the open and on the paths, the rock where it crops out; the habitat
+    // the wood's floor's plants follow (`grass::species_of`).
+    let shaded = (1.0 - open) * (1.0 - bare)
+    c.materials = vec4(
+        shaded * (1.0 - mossy * 0.5) * (1.0 - rock),
+        (1.0 - shaded) * (1.0 - rock),
+        rock,
+        shaded * mossy * 0.5 * (1.0 - rock),
+    )
+    c.flora = vec4(c.flora.x, wet, light, trodden)
+    // The wood's floor's own plants where the canopy closes (#54 §9): low herbs all through
+    // it with litter visible between their colonies, ferns in patches in deep shade, bracken where light comes through
+    // in gaps; thinner under thorn and in the wet, none on a path. Where the meadow opens,
+    // the grass takes over.
+    let fern = smoothstep(0.45, 0.62, fbm2_seen(xz * 0.09 + vec2(13.0, 7.0), 3, w * 0.09)) *
+        (1.0 - smoothstep(0.2, 0.6, light))
+    let bracken = smoothstep(
+        0.48,
+        0.66,
+        fbm2_seen(xz * 0.045 + vec2(-21.0, 4.0), 3, w * 0.045),
+    ) *
+        smoothstep(0.12, 0.4, light)
+    let herbs = 0.22
+    // Broad colonies have real litter gaps, including in the sparse meadow layer.
+    // Frond kinds vary within these rooted patches rather than filling every gap.
+    c.under = vec4(
+        habitat.z *
+            (0.10 + 0.48 * max(fern, bracken)) *
+            (1.0 - bare) *
+            (1.0 - 0.3 * thorn) *
+            (1.0 - 0.25 * soaked),
+        fern,
+        bracken,
+        herbs,
+    )
+    // Under a stream: its bed of gravel and wet stones; no grass (the mere's bed is `cover`'s).
+    // The bed's field is 2 m a texel, read between texels: the bed reaches out to where it's
+    // read halfway to the bank's wet (else grass stood in the water between its texels).
+    // Its banks are mud and rush, the grass thinning toward the water.
+    let stones = noise2_seen(xz * 1.7, w * 1.7)
+    let bed = smoothstep(0.9, 0.985, wet)
+    // Exposed gravel continues onto the bank. Patchy gravel leaves damp pockets for
+    // rushes rather than a straight strip of meadow grass against the water.
+    let bank = smoothstep(0.72, 0.92, wet) * (0.55 + 0.45 * stones)
+    let gentle = smoothstep(0.68, 0.9, n.y)
+    let bank_colony = smoothstep(0.4, 0.7, noise2_seen(xz * 0.18 + vec2(9.0, 2.0), w * 0.18))
+    c.materials = mix(c.materials, vec4(0.0, 0.8, 0.2, 0.0), vec4(0.65 * rim))
+    c.albedo = mix(
+        c.albedo,
+        mix(vec3(0.06, 0.05, 0.038), vec3(0.1, 0.085, 0.064), vec3(leaves)),
+        vec3(0.65 * rim),
+    )
+    c.under.x = max(c.under.x, 0.12 * rim * gentle * bank_colony * (1.0 - bare))
+    let gravel = max(bed, bank)
+    // Deposited fine sediment on low shelves, exposed wet rock on the cut bank.
+    let mineral = mix(mix(1.0, 0.55 + 0.3 * stones, gentle), 0.85, bed)
+    c.materials = mix(c.materials, vec4(0.0, 1.0 - mineral, mineral, 0.0), vec4(gravel))
+    // Wet open banks need an understory slot too, so the habitat can place rushes
+    // where ordinary meadow grass has thinned. The submerged bed removes these below.
+    c.under.x = max(c.under.x, 0.7 * bank * gentle * bank_colony * (1.0 - bare))
+    c.under.w = max(c.under.w, bank * gentle * bank_colony)
+    if gravel > 0.0 {
         c.albedo = mix(
             c.albedo,
-            mix(vec3(0.06, 0.05, 0.038), vec3(0.1, 0.085, 0.064), vec3(leaves)),
-            vec3(0.65 * rim),
+            mix(
+                rock_albedo(at, n, w) * 0.62,
+                mix(vec3(0.075, 0.065, 0.045), vec3(0.16, 0.15, 0.12), vec3(stones)),
+                vec3(gentle),
+            ),
+            vec3(gravel),
         )
-        c.under.x = max(c.under.x, 0.12 * rim * gentle * bank_colony * (1.0 - bare))
-        let gravel = max(bed, bank)
-        // Deposited fine sediment on low shelves, exposed wet rock on the cut bank.
-        let mineral = mix(mix(1.0, 0.55 + 0.3 * stones, gentle), 0.85, bed)
-        c.materials = mix(c.materials, vec4(0.0, 1.0 - mineral, mineral, 0.0), vec4(gravel))
-        // Wet open banks need an understory slot too, so the habitat can place rushes
-        // where ordinary meadow grass has thinned. The submerged bed removes these below.
-        c.under.x = max(c.under.x, 0.7 * bank * gentle * bank_colony * (1.0 - bare))
-        c.under.w = max(c.under.w, bank * gentle * bank_colony)
-        if gravel > 0.0 {
-            c.albedo = mix(
-                c.albedo,
-                mix(
-                    rock_albedo(at, n, w) * 0.62,
-                    mix(vec3(0.075, 0.065, 0.045), vec3(0.16, 0.15, 0.12), vec3(stones)),
-                    vec3(gentle),
-                ),
-                vec3(gravel),
-            )
-        }
-        // No blade stands in the water: the grass is gone a texel's half before the bed shows
-        // (between a stream's texel, 1, and its bank's, 0.98 at most).
-        c.grass *= (1.0 - smoothstep(0.93, 0.97, wet)) * (1.0 - 0.6 * smoothstep(0.75, 0.9, wet))
-        c.flowers *= 1.0 - bed
-        c.tall *= 1.0 - bed
-        c.under *= 1.0 - bed
-        // Every habitat obeys the supporting surface, including closed-canopy fern slots.
-        // A sediment pocket may hold roots; sheer faces and bare mineral slabs cannot.
-        let growth = smoothstep(0.55, 0.85, n.y) * (1.0 - smoothstep(0.82, 0.98, c.materials.z))
-        c.grass *= growth
-        c.flowers *= growth
-        c.under.x *= growth
-        c
     }
+    // No blade stands in the water: the grass is gone a texel's half before the bed shows
+    // (between a stream's texel, 1, and its bank's, 0.98 at most).
+    c.grass *= (1.0 - smoothstep(0.93, 0.97, wet)) * (1.0 - 0.6 * smoothstep(0.75, 0.9, wet))
+    c.flowers *= 1.0 - bed
+    c.tall *= 1.0 - bed
+    c.under *= 1.0 - bed
+    // Every habitat obeys the supporting surface, including closed-canopy fern slots.
+    // A sediment pocket may hold roots; sheer faces and bare mineral slabs cannot.
+    let growth = smoothstep(0.55, 0.85, n.y) * (1.0 - smoothstep(0.82, 0.98, c.materials.z))
+    c.grass *= growth
+    c.flowers *= growth
+    c.under.x *= growth
+    c
 }
 
 impl engine::grow::Ground for Ground {

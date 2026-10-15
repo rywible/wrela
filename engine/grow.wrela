@@ -2536,3 +2536,96 @@ fn simulated<G: Ground>(
         log,
     }
 }
+
+// ---- tests ----------------------------------------------------------------------------------------
+
+/// Level ground, rock past x = 40 m.
+struct Level: Copy {}
+
+impl Ground for Level {
+    fn height(self, x: f32, z: f32) -> f32 {
+        0.0
+    }
+
+    fn past_edge(self, p: vec2) -> f32 {
+        -100.0
+    }
+
+    fn rock(self, p: vec2) -> f32 {
+        if p.x > 40.0 { 1.0 } else { 0.0 }
+    }
+}
+
+/// A map of nothing but one wood over `lo` to `hi`.
+fn a_wood(lo: vec2, hi: vec2) -> Map {
+    var regions: Vec<place::Region> = Vec::new()
+    regions.push(
+        place::Region {
+            name: "a wood",
+            kind: place::Kind::HighForest,
+            at: 0.5 * (lo + hi),
+            character: place::Character {},
+        },
+    )
+    Map {
+        lo,
+        hi,
+        present: 0,
+        land: place::Land {
+            hills: [vec4(0.0); 8],
+            hollows: [vec4(0.0); 8],
+            ridges: [vec4(0.0); 24],
+            ravines: [vec4(0.0); 16],
+            ravine_fall: 0.0,
+            crags: [vec4(0.0); 4],
+            ramps: vec4(0.0),
+            floors: vec4(0.0),
+            tilt: vec4(0.0),
+        },
+        sites: Vec::new(),
+        relations: Vec::new(),
+        openings: Vec::new(),
+        routes: Vec::new(),
+        water: place::Water {
+            meres: [vec4(0.0); 2],
+            springs: [vec2(0.0); 8],
+            spring_count: 0,
+            falls: [vec2(0.0); 2],
+        },
+        events: Vec::new(),
+        wind: vec2(1.0, 0.0),
+        kept: Vec::new(),
+        regions,
+        herd: place::Herd { arrives: 1000000, trips: 0, drink: lo, rest: lo },
+    }
+}
+
+/// A land given the survey (`Given`) is the land it surveys: its wetness, its soil as thin as
+/// it's given (or as the ground's rock, thinner), and its open water, where no tree stands; a
+/// land not given is its own.
+@test
+fn a_survey_takes_the_land_it_is_given() {
+    let g = Grid::over(vec2(0.0), vec2(64.0), 4.0)
+    let m = a_wood(vec2(0.0), vec2(64.0))
+    let given = Given {
+        streams: Vec::new(),
+        wet: Vec::from_fn(g.cells(), |c| f32(c % g.nx) / f32(g.nx)),
+        thin: Vec::from_fn(g.cells(), |c| if c / g.nx < 4 { 0.8 } else { 0.1 }),
+        water: Vec::from_fn(g.cells(), |c| c % g.nx == 3),
+    }
+    let land = surveyed(Level {}, m, g, Some(given.clone()))
+    for c in 0..g.cells() {
+        let rock = Level {}.rock(g.centre(c))
+        assert(land.wet[c] == given.wet[c], f"cell {c}: not as wet as given")
+        assert(land.thin[c] == max(given.thin[c], rock), f"cell {c}: not as thin as given")
+        if given.water[c] {
+            assert(land.water[c] && !land.habitable[c], f"cell {c}: a tree can stand in its water")
+        }
+    }
+    let own = survey(Level {}, m, g)
+    var same = true
+    for c in 0..g.cells() {
+        same = same && own.wet[c] == given.wet[c] && !own.water[c] == !given.water[c]
+    }
+    assert(!same, "a land not given took the given land")
+}

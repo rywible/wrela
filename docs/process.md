@@ -521,6 +521,8 @@ the browser also receives the corresponding parity fixes.
 | The soil production function: Heimsath, Dietrich, Nishiizumi and Finkel, "The soil production function and landscape equilibrium", *Nature* 388 (1997) | A published finding; we use its idea, not its text or data | `engine::soil::soil`: rock weathers to soil fastest under a thin soil and creep moves it downhill, so crests are thin and hollows deep (credited in the file). |
 | Landscape evolution by stream power: Jean Braun and Sean D. Willett, "A very efficient O(n), implicit and parallel method to solve the stream power equation governing fluvial incision and landscape evolution", *Geomorphology* 180–181 (2013) | A published method; no code taken | `engine::landform::incise`: a channel cuts down at K A^m S, solved implicitly in the order the water flows, so a step of any length is stable. The Last Green's world is made with it (`games/last-green/geology.wrela`). |
 | Priority-flood depression filling: Richard Barnes, Clarence Lehman and David Mulla, "Priority-flood: An optimal depression-filling and watershed-labeling algorithm for digital elevation models", *Computers & Geosciences* 62 (2014), its epsilon variant | A published method; no code taken | `engine::landform::drainage` (moved there from `engine::grow`, which already used it): water is routed across pits from the outlets, lowest first, so every cell drains. |
+| Corner cutting: George Chaikin, "An algorithm for high-speed curve generation", *Computer Graphics and Image Processing* 3 (1974) | A published algorithm; no code taken | `games/last-green/geology.wrela`, `rounded`: a stream's course of cell centres smoothed, its ends kept. |
+| The topographic wetness index: Keith Beven and Mike Kirkby, "A physically based, variable contributing area model of basin hydrology", *Hydrological Sciences Bulletin* 24 (1979) | A published idea; no code taken | `games/last-green/geology.wrela`, `wetness`: how wet the land is, from the area draining through it and its slope; the grown wood takes it. |
 | Terrain authored through its causes: Guillaume Cordonnier, Jean Braun, Marie-Paule Cani, Bedrich Benes, Éric Galin, Adrien Peytavie and Éric Guérin, "Large Scale Terrain Generation from Tectonic Uplift and Fluvial Erosion", *Computer Graphics Forum* 35(2) (2016) | A published idea; no code or data taken | The world's land is authored through its causes (its rock's layers, the old land, the base level its rivers run to) and not by drawing its valleys. |
 | Threshold slopes, as thermal erosion does: F. Kenton Musgrave, Craig E. Kolb and Robert S. Mace, "The synthesis and rendering of eroded fractal terrains", *SIGGRAPH* (1989) | A published idea; no code taken | `engine::landform::collapse`: a slope steeper than its rock stands at sheds its excess downhill, no faster than the rock weathers, so a hard cap stands in cliffs over the soft rock's talus. |
 | Erosion and deposition: Philippe Davy and Dimitri Lague, "Fluvial erosion/transport equation of landscape evolution models revisited", *Journal of Geophysical Research* 114 (2009) | A published method; no code taken | `engine::landform::settle`: what the water cuts it carries down and lays where its load is heavy for its water (D = G Qs / Q), so valley floors fill and fans spread where ravines meet them. |
@@ -1086,6 +1088,35 @@ as drawn instead, and the reviewers resolved those objections.
   beds, sharp caps, every column standing, columns turned toward their face and no deep breaks.
   None removed the stripes seen from 1.5 km, so the cause is still unknown, and the changes were
   reverted.
+
+## The world's water and forest, 2026-10-15
+
+Ryan merged the geology and asked for the next layer, water and ecology as one, with a plan
+council first. Claude led; OpenAI Codex GPT-6.1-Sol and GPT-6-Astra reviewed the plan,
+read-only, over three rounds. Their findings changed the plan: lakes keep their beds and fill only
+their own basin to its spill level; streams cover every channel, lake outlets included, and are
+held so their water never rises down them; the forest takes its wetness and soil from the
+geology, not from the floor's rules; a tree's jitter is kept clear of rock by its whole reach; the
+world switch drops every fetch and job from the source it left; and the play floor's bake and
+shaders stay as they were.
+- **Water:** each pond is a basin of the drained land (`engine::landform::basins`), still at the
+  height it spills over, with its bed under it; small and shallow ones are left dry. Streams run
+  down every channel from where enough water gathers (`engine::landform::channels`), joined where
+  they meet, smoothed by corner cutting, and as wide and deep as their catchment.
+- **Forest:** the floor's history (`engine::grow`) grows the wood, given the land's wetness (its
+  topographic index), its soil's depth and its ponds, over the tiles the geology's square touches.
+  No tree stands on a cliff face, a rock's block or in a pond; trees stand on scree and bare
+  crests as on the thinnest soil, where pines take and oaks starve and nothing grows tall. No
+  people, herd or events touch it; those are later layers. Past its bake, the wildwood grows,
+  kept off the land's faces.
+- **The grown view** (F8's fifth, `tools/lookbook.py --view grown`): the world's land under its
+  water and wood, with its rock, the wood's floor of the play floor (litter, moss, ferns and
+  grass by the canopy's light), its places' shots moved off the stems, and two of the wood: in
+  it and over it. The play view is unchanged: its bake's files and every one of its shaders are
+  the same bytes as before, and the wood's floor, now shared, gives the same cover bit for bit.
+  The wood holds 192 tiles, not 160, so the grown bake and the wildwood ring at its edge fit.
+- **Still open:** the wood's floor plants (ferns, herbs, grass) hardly show in the grown view,
+  though its cover asks for them as the play floor's does.
 
 ## The climber's robe, darkness and glide, 2026-10-14
 

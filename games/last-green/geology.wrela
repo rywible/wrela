@@ -597,14 +597,12 @@ fn granite_albedo(at: vec3, n: vec3, f: f32, u: i32, shows: f32, w: f32) -> vec3
 
 /// The world's land as its making left it, its places, their names, and the shots of them the
 /// bare view's lookbook takes (`shots`).
-pub struct World {
+pub struct World: Clone {
     pub land: Bare,
     pub places: Vec<Feature>,
     pub names: Vec<String>,
     pub shots: Vec<Shot>,
     pub shot_names: Vec<String>,
-    /// Its water (`Water`).
-    pub water: Water,
 }
 
 /// The square's water as its making left it: each cell's lake depth (m: how far its pit was
@@ -617,15 +615,36 @@ pub struct Water: Clone {
     pub wet: Vec<f32>,
 }
 
+/// The world and its water, made together (from the same drained land): each its own constant,
+/// so what reads the one doesn't carry the other.
+struct Made {
+    world: World,
+    water: Water,
+}
+
 @fuel(2 ** 42)
-pub const WORLD: World = world()
+const MADE: Made = made()
+
+@fuel(2 ** 32)
+pub const WORLD: World = MADE.world.clone()
+
+/// The world's water (`Water`).
+@fuel(2 ** 32)
+pub const WATER: Water = MADE.water.clone()
+
+/// What the program reads of the world as it runs (`WORLD` is the build's, too big to carry): the
+/// bare view's shots, and where the tors stand. Its land is the grown land's (`growth::LAND`).
+@fuel(2 ** 30)
+pub const SHOTS: Vec<Shot> = WORLD.shots.clone()
+@fuel(2 ** 30)
+pub const TORS: Vec<vec2> = tor_points(WORLD.places)
 
 /// The land's height at `p` (the bare view's `height_at`).
 pub fn height_at(p: vec2) -> f32 {
     WORLD.land.at(p.x, p.y)
 }
 
-fn world() -> World {
+fn made() -> Made {
     // Each relief over a level land at 0 m: its rise is the land's height.
     let r = region()
     let region_relief: Relief<REGION_N> = Relief::of(r, Vec::filled(REGION_N, 0.0))
@@ -647,8 +666,10 @@ fn world() -> World {
         s.lakes[c]
     })
     let wet: Vec<f32> = Vec::from_fn(SQUARE_N, |c| wetness(land, s, c))
-    let water = Water { depth, lakes, streams, wet }
-    World { land, places: found, names, shots, shot_names, water }
+    Made {
+        world: World { land, places: found, names, shots, shot_names },
+        water: Water { depth, lakes, streams, wet },
+    }
 }
 
 // ---- its water --------------------------------------------------------------------------------
