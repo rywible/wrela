@@ -1924,6 +1924,23 @@ rising, splashes and a marimba's notes. Nothing comes from a file or a generativ
 **Engine.** Leapling's stroke type moved to `engine::letters` with its shader function and
 `clock_text`, so both games share one copy; Leapling's pixels are unchanged.
 
+**Checks.** Regressions cover the contact rule (water rising carries a still rider; surfing a
+held swell speeds it up and letting go throws it higher than the tallest rock; the rider never
+sinks below the water over 3,000 seeded ticks; a full set of swells refuses a press and keeps
+every swell; a press and its release in one tick still raise one; a clean landing keeps speed
+and one into a face loses it; rocks wipe out and the rider starts again before them; the fixed
+course's dive), and bots finishing both courses. A scripted ride of 2,400 ticks replays from
+its tick log with 1, 2 and 8 helpers, and fails at the tick of a changed record; the same ride
+in Chrome (lockstep, frames at other ticks) has the native host's records and hashes, tick for
+tick. On the M4's GPU, the sea the shader draws is within 0.06 mm of the sim's in height and
+5e-5 in slope over 4,096 points of a busy sea. The audio rendered offline in Chrome is finite
+and peaks at 0.36. `tools/wrela profile` on this MacBook Air M4 (native host, Metal, 1080p, the
+same 300-frame ride, 60 warmup): Swell's frame takes 3.8 ms of GPU time at the median and 7.2 ms
+at the 95th percentile; Leapling's run, 1.8 and 4.3. Chrome's frame rate and the Linux GPUs
+weren't measured. Not checked: whether it's fun. That's Ryan's playtest, both courses, with
+practice and the order reversed, and the council asked for players who haven't seen it before
+calling it outstanding.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
