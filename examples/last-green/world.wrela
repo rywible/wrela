@@ -25,7 +25,7 @@ pub const GROUND: Ground = ground::ground()
 pub const WATER: Water = water()
 
 /// A brisk floating walk, Shift to sprint, and enough lift to cross low fallen trunks.
-pub const TRAVEL = Motion { walk: 3.0, run: 7.5, clearance: 1.2, turn: 6.0 }
+pub const TRAVEL = Motion { walk: 3.0, run: 7.5, clearance: 1.2, turn: 10.0, response: 7.0 }
 
 fn water() -> Water {
     map::map().water

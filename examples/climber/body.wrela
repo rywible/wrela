@@ -19,14 +19,17 @@ pub const SHOULDER_RADIUS: f32 = 0.085
 /// How far round the cape stands out at its hem, on the ground (it narrows to the shoulders).
 pub const HEM_RADIUS: f32 = 0.72
 
+/// How far the end of the train lies out from its middle (m): it parts the grass that wide.
+pub const TRAIN_REACH: f32 = 0.35
+
 /// What the wolf can bite: a capsule up the middle, from over the hem to the head.
 pub const BODY_LOW = vec3(0.0, 0.3, 0.0)
 pub const BODY_HIGH = vec3(0.0, 1.8, 0.0)
 pub const BODY_RADIUS: f32 = 0.3
 
 /// The sword, along its aim from the grip's middle: the guard, and the point; and how wide and
-/// thick its blade is (a heavy blade, wide and blunt-backed).
+/// thick its blade is (a long, slender blade with a thick back).
 pub const GUARD_AT: f32 = 0.25
 pub const POINT_AT: f32 = 1.85
-pub const BLADE_WIDTH: f32 = 0.24
-pub const BLADE_THICK: f32 = 0.04
+pub const BLADE_WIDTH: f32 = 0.16
+pub const BLADE_THICK: f32 = 0.03
