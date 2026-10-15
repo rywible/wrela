@@ -17,6 +17,7 @@ pub enum Tool: Copy + Eq {
     Text,
     Link,
     Pen,
+    Frame,
 }
 
 pub const TOOLS = [
@@ -29,6 +30,7 @@ pub const TOOLS = [
     Tool::Text,
     Tool::Link,
     Tool::Pen,
+    Tool::Frame,
 ]
 
 /// What a control does.
@@ -212,6 +214,7 @@ pub fn tip(a: Action) -> Text {
             Tool::Text => "Text   T",
             Tool::Link => "Connector   L",
             Tool::Pen => "Pen   P",
+            Tool::Frame => "Frame   F",
         },
         Action::Front => "Bring to front   ]",
         Action::Back => "Send to back   [",
@@ -378,6 +381,10 @@ fn icon(list: mut DrawList, fonts: Fonts, a: Action, r: Rect, u: f32, ink: vec4,
                 list.line(p(-7.0, 7.0), p(7.0, -7.0), ink, width: w)
                 list.line(p(7.0, -7.0), p(1.0, -7.0), ink, width: w)
                 list.line(p(7.0, -7.0), p(7.0, -1.0), ink, width: w)
+            },
+            Tool::Frame => {
+                list.ring(box(-8.0, -5.0, 16.0, 13.0), ink, radius: 1.5 * u, width: w)
+                list.line(p(-8.0, -8.5), p(-2.0, -8.5), ink, width: w)
             },
             Tool::Pen => {
                 var last = p(-8.0, 2.0)

@@ -92,6 +92,7 @@ pub fn name(b: Board, i: u32) -> String {
         Kind::Text => "Text",
         Kind::Pen => "Pen stroke",
         Kind::Link => "Connector",
+        Kind::Frame => "Frame",
     }
     var out = String::from(kind)
     if it.kind == Kind::Link {

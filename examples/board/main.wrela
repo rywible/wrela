@@ -121,6 +121,8 @@ pub struct App {
     last_time: f32,
     /// Where the context menu is open (screen pixels), if it is.
     menu: Option<vec2>,
+    /// What a move carries: the selection, and what's inside the frames in it.
+    carried: Vec<u32>,
 }
 
 pub fn init() -> App {
@@ -169,6 +171,7 @@ pub fn init() -> App {
         reduced: false,
         last_time: 0.0,
         menu: None,
+        carried: Vec::new(),
     }
 }
 
@@ -190,6 +193,10 @@ fn starter() -> Board {
         n.text = String::from(notes[i])
         let _ = b.add(take n)
     }
+    // The flow sits in a frame.
+    var flow = Item::new(Kind::Frame, vec2(-380.0, -10.0), vec2(780.0, 215.0), color: 7)
+    flow.text = String::from("Flow")
+    let _ = b.add(take flow)
     var idea = Item::new(Kind::Box, vec2(-340.0, 40.0), vec2(200.0, 110.0), color: 5)
     idea.text = String::from("Idea")
     let idea = b.add(take idea)
@@ -627,7 +634,13 @@ fn lock(s: mut App) {
 }
 
 fn delete_selection(s: mut App) {
-    let gone = unlocked(s)
+    // A frame takes what's inside it with it; a locked item stays.
+    var gone: Vec<u32> = Vec::new()
+    for id in s.board.with_contents(unlocked(s)) {
+        if let Some(i) = s.board.index(id) {
+            if !s.board.items[i].locked { gone.push(id) }
+        }
+    }
     if gone.is_empty() {
         return
     }
@@ -813,16 +826,16 @@ fn act(s: mut App, a: Action) {
             select(mut s, all)
         },
         Action::Duplicate => {
-            let items = s.board.copy(s.selected)
+            let items = s.board.copy(s.board.with_contents(s.selected))
             s.pastes = 0
             paste(mut s, items)
         },
         Action::Copy => {
-            s.clipboard = s.board.copy(s.selected)
+            s.clipboard = s.board.copy(s.board.with_contents(s.selected))
             s.pastes = 0
         },
         Action::Cut => {
-            s.clipboard = s.board.copy(s.selected)
+            s.clipboard = s.board.copy(s.board.with_contents(s.selected))
             s.pastes = 0
             delete_selection(mut s)
         },
@@ -995,6 +1008,7 @@ fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
         Tool::Box => s.drag = Drag::Shape { from: w },
         Tool::Ellipse => s.drag = Drag::Shape { from: w },
         Tool::Diamond => s.drag = Drag::Shape { from: w },
+        Tool::Frame => s.drag = Drag::Shape { from: w },
         Tool::Link => if let Some(id) = s.board.hit(w, slack(s)) {
             let Some(i) = s.board.index(id) else { return }
             if s.board.items[i].kind != Kind::Link {
@@ -1092,11 +1106,12 @@ fn moved(s: mut App, at: vec2, mods: Mods) {
             checkpoint(mut s)
             // Alt drags out a copy, leaving the originals where they were.
             if mods.alt {
-                let items = s.board.copy(s.selected)
+                let items = s.board.copy(s.board.with_contents(s.selected))
                 let ids = s.board.paste(items, vec2(0.0))
                 select(mut s, ids)
             }
             let Some(from) = s.board.extent(s.selected) else { return }
+            s.carried = s.board.with_contents(s.selected)
             s.drag = Drag::Move { start, moved: vec2(0.0), from }
             moved(mut s, at, mods)
         },
@@ -1107,14 +1122,14 @@ fn moved(s: mut App, at: vec2, mods: Mods) {
                 want = if abs(want.x) >= abs(want.y) { vec2(want.x, 0.0) } else { vec2(0.0, want.y) }
             }
             s.guides.clear()
-            let targets = snap_targets(s, s.selected)
+            let targets = snap_targets(s, s.carried)
             let r = Rect::new(from.x + want.x, from.y + want.y, from.w, from.h)
             var shift = snap_rect(r, targets, reach: reach(s), out: mut s.guides)
             if mods.shift {
                 shift = if want.y == 0.0 { vec2(shift.x, 0.0) } else { vec2(0.0, shift.y) }
             }
             let to = want + shift
-            s.board.move_by(s.selected, to - moved)
+            s.board.move_by(s.carried, to - moved)
             s.drag = Drag::Move { start, moved: to, from }
         },
         Drag::Resize { id, anchor } => {
@@ -1189,6 +1204,7 @@ fn released(s: mut App, at: vec2, mods: Mods) {
             let kind = match s.tool {
                 Tool::Ellipse => Kind::Ellipse,
                 Tool::Diamond => Kind::Diamond,
+                Tool::Frame => Kind::Frame,
                 _ => Kind::Box,
             }
             let d = abs(w - from) * s.view.scale()
@@ -1197,6 +1213,7 @@ fn released(s: mut App, at: vec2, mods: Mods) {
                 let size = match kind {
                     Kind::Ellipse => vec2(160.0),
                     Kind::Diamond => vec2(180.0),
+                    Kind::Frame => vec2(640.0, 420.0),
                     _ => vec2(200.0, 120.0),
                 }
                 (from - 0.5 * size, size)
@@ -1206,10 +1223,20 @@ fn released(s: mut App, at: vec2, mods: Mods) {
             let color = match kind {
                 Kind::Ellipse => 5,
                 Kind::Diamond => 3,
+                Kind::Frame => 7,
                 _ => 4,
             }
             checkpoint(mut s)
-            let id = s.board.add(Item::new(kind, lo, size, color))
+            var made = Item::new(kind, lo, size, color)
+            if kind == Kind::Frame {
+                // Frames are numbered as they're made.
+                var frames = 1
+                for it in s.board.items {
+                    if it.kind == Kind::Frame { frames += 1 }
+                }
+                made.text = f"Frame {frames}"
+            }
+            let id = s.board.add(take made)
             select(mut s, [id])
             s.tool = Tool::Select
         },
@@ -1308,7 +1335,8 @@ fn key_down(s: mut App, key: Key, repeat: bool, mods: Mods) {
             Key::Up => vec2(0.0, -step),
             _ => vec2(0.0, step),
         }
-        s.board.move_by(s.selected, d)
+        let carried = s.board.with_contents(s.selected)
+        s.board.move_by(carried, d)
     } else {
         let tool = match key {
             Key::V => Some(Tool::Select),
@@ -1320,6 +1348,7 @@ fn key_down(s: mut App, key: Key, repeat: bool, mods: Mods) {
             Key::T => Some(Tool::Text),
             Key::L => Some(Tool::Link),
             Key::P => Some(Tool::Pen),
+            Key::F => Some(Tool::Frame),
             _ => None,
         }
         if let Some(t) = tool {
@@ -1719,12 +1748,12 @@ fn composed_text_is_typed_once(game: App) {
 
 /// An assistive technology's selection names the lower of two notes, though the upper one is
 /// drawn over it and the note tool is in hand: it's selected, and nothing is made. (The starter
-/// board's nine items take ids 1 to 9, so the first note made is 10, its node 1010.)
+/// board's ten items take ids 1 to 10, so the first note made is 11, its node 1011.)
 @test(frames: 13, input: "scripts/assist.json")
 fn an_assistive_selection_names_its_item(game: App) {
     assert(game.board.items.len() == 2, f"{game.board.items.len()} items")
-    assert(game.board.items[0].id == 10)
-    assert(game.selected.len() == 1 && game.selected[0] == 10, "the lower note")
+    assert(game.board.items[0].id == 11)
+    assert(game.selected.len() == 1 && game.selected[0] == 11, "the lower note")
     assert(game.tool == Tool::Note)
 }
 
@@ -1844,5 +1873,18 @@ fn a_locked_note_stays(game: App) {
     assert(game.board.items[0].locked)
     let r = screen_rect(game, 0)
     assert(abs(r.center().x - 320.0) < 0.01, f"x {r.center().x}")
+}
+
+/// F and a drag make a frame, numbered; a note put inside it goes with it when the frame is
+/// dragged by its empty space.
+@test(frames: 20, input: "scripts/frame.json")
+fn a_frame_carries_what_is_inside_it(game: App) {
+    assert(game.board.items.len() == 2)
+    let frame = game.board.items[0].clone()
+    assert(frame.kind == Kind::Frame && frame.text == "Frame 1", f"`{frame.text}`")
+    assert(game.selected.len() == 1 && game.selected[0] == frame.id)
+    let note = screen_rect(game, 1)
+    assert(abs(note.center().x - 310.0) < 0.01, f"the note at {note.center().x}")
+    assert(abs(screen_rect(game, 0).x - 160.0) < 0.01)
 }
 

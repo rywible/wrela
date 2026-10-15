@@ -2,7 +2,7 @@
 // arrows. Each item's text is laid out in world units (`layout`), so the same layout places
 // what's drawn, the caret and a click in the text.
 
-use board::{Board, END_ARROW, Item, Kind, LINK_WIDTH, PEN_WIDTH, START_ARROW}
+use board::{Board, END_ARROW, Item, Kind, LINK_WIDTH, PEN_WIDTH, START_ARROW, TITLE}
 use ui::draw::{DrawList, Rect}
 use ui::text::{Face, Font, Fonts}
 use view::View
@@ -42,6 +42,11 @@ const DOT = vec4(0.79, 0.8, 0.82, 1.0)
 const NOTE_SIZES = [34.0, 28.0, 24.0, 20.0, 17.0, 14.0, 12.0, 10.0, 8.0]
 const SHAPE_SIZE: f32 = 16.0
 pub const TEXT_SIZE: f32 = 20.0
+/// A frame's title's size.
+const FRAME_SIZE: f32 = 14.0
+/// A frame's title's colour, and its edge's.
+const FRAME_TITLE = vec4(0.36, 0.37, 0.41, 1.0)
+const FRAME_EDGE = vec4(0.0, 0.0, 0.0, 0.1)
 /// How far a box's text stays from its edges, and a connector's label's from its box's.
 const PAD: f32 = 14.0
 const LABEL_PAD: f32 = 6.0
@@ -74,6 +79,16 @@ fn room(it: Item) -> Rect {
 
 pub fn layout(font: Font, it: Item) -> Layout {
     let text = it.text.as_str()
+    if it.kind == Kind::Frame {
+        // A frame's title: one line in its strip above it, from its left.
+        let size = FRAME_SIZE
+        let line = font.line_height(size)
+        var lines: Vec<(u32, u32)> = Vec::new()
+        lines.push((0, text.len()))
+        var xs: Vec<f32> = Vec::new()
+        xs.push(it.at.x + 2.0)
+        return Layout { size, lines, xs, top: it.at.y - TITLE + 0.5 * (TITLE - line) - 2.0, line }
+    }
     if it.kind == Kind::Text {
         let lines = font.wrap(text, TEXT_SIZE, it.size.x)
         var xs: Vec<f32> = Vec::new()
@@ -243,9 +258,21 @@ pub fn items(
 ) {
     borrow font = fonts.font(Face::Sans)
     let k = v.scale()
+    // Frames first, under everything: a sheet with a soft edge, its title above it.
     for i in 0..b.items.len() {
         borrow it = b.items[i]
-        if it.kind == Kind::Link || !shows(v.rect(b.bounds(i)), screen) {
+        if it.kind != Kind::Frame || !shows(v.rect(it.rect().shrink(-TITLE)), screen) {
+            continue
+        }
+        let r = v.rect(it.rect())
+        list.rect(Rect::new(r.x, r.y + 1.0 * k, r.w, r.h), vec4(0.0, 0.0, 0.0, 0.04), radius: 4.0 * k)
+        list.rect(r, FILLS[it.color % COLORS], radius: 4.0 * k)
+        list.ring(r, FRAME_EDGE, radius: 4.0 * k, width: max(1.0 * v.unit, 1.0))
+        words(mut list, fonts, font, it, v, FRAME_TITLE, typing, composing, blink)
+    }
+    for i in 0..b.items.len() {
+        borrow it = b.items[i]
+        if it.kind == Kind::Link || it.kind == Kind::Frame || !shows(v.rect(b.bounds(i)), screen) {
             continue
         }
         let r = v.rect(it.rect())
@@ -433,7 +460,8 @@ fn text(
     let l = layout(font, it)
     let k = v.scale()
     let px = l.size * k
-    let boxed = it.kind != Kind::Text
+    // A frame's title sits outside it; free text has no box.
+    let boxed = it.kind != Kind::Text && it.kind != Kind::Frame
     if boxed {
         list.push_clip(v.rect(it.rect()))
     }

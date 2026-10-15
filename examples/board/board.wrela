@@ -13,7 +13,13 @@ pub enum Kind: Copy + Eq + Serialize {
     Text,
     Pen,
     Link,
+    /// A titled region that holds what's inside it: drawn behind everything, and what's in it
+    /// moves, copies and goes with it.
+    Frame,
 }
+
+/// How tall a frame's title strip is, above it.
+pub const TITLE: f32 = 26.0
 
 /// One thing on the board. A box's place is `at` (its top left) and `size`; a pen stroke's
 /// `points` are from `at`; a link joins items `from` and `to`, drawn from edge to edge (`route`),
@@ -151,6 +157,11 @@ pub fn distance_to_line(p: vec2, a: vec2, b: vec2) -> f32 {
     let along = dot(ab, ab)
     let t = if along > 0.0 { clamp(dot(p - a, ab) / along, 0.0, 1.0) } else { 0.0 }
     length(p - a - ab * t)
+}
+
+/// A frame's title strip, above it.
+pub fn title_strip(f: Item) -> Rect {
+    Rect::new(f.at.x, f.at.y - TITLE, f.size.x, TITLE)
 }
 
 /// Whether rectangles `a` and `b` overlap.
@@ -352,11 +363,57 @@ impl Board {
         i = self.items.len()
         while i > 0 {
             i -= 1
-            if self.items[i].holds(p, slack) {
+            if self.items[i].kind != Kind::Frame && self.items[i].holds(p, slack) {
                 return Some(self.items[i].id)
             }
         }
+        // Frames lie under everything: hit last, on their area or their title.
+        i = self.items.len()
+        while i > 0 {
+            i -= 1
+            borrow it = self.items[i]
+            if it.kind == Kind::Frame && (it.holds(p, slack) || title_strip(it).contains(p)) {
+                return Some(it.id)
+            }
+        }
         None
+    }
+
+    /// The items inside frame `id`, bounds and all (frames aside): what goes with it.
+    pub fn inside(self, id: u32) -> Vec<u32> {
+        var out: Vec<u32> = Vec::new()
+        let Some(f) = self.index(id) else { return out }
+        let r = self.items[f].rect()
+        for i in 0..self.items.len() {
+            borrow it = self.items[i]
+            if it.kind == Kind::Frame || it.kind == Kind::Link {
+                continue
+            }
+            let b = self.bounds(i)
+            if b.x >= r.x && b.y >= r.y && b.right() <= r.right() && b.bottom() <= r.bottom() {
+                out.push(it.id)
+            }
+        }
+        out
+    }
+
+    /// `ids` with what's inside the frames among them.
+    pub fn with_contents(self, ids: [u32]) -> Vec<u32> {
+        var out: Vec<u32> = Vec::new()
+        for id in ids {
+            if !has(out, id) {
+                out.push(id)
+            }
+            let Some(i) = self.index(id) else { continue }
+            if self.items[i].kind == Kind::Frame {
+                for k in self.inside(id) {
+                    if !has(out, k) {
+                        out.push(k)
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Every item that touches world rectangle `r`, bottom first.
@@ -371,6 +428,11 @@ impl Board {
             // locked item isn't swept up.
             borrow it = self.items[i]
             if it.locked {
+                continue
+            }
+            // A frame only when the rectangle holds it all: a drag inside one selects its
+            // contents, not it.
+            if it.kind == Kind::Frame && !(b.x >= r.x && b.y >= r.y && b.right() <= r.right() && b.bottom() <= r.bottom()) {
                 continue
             }
             let touches = match it.kind {
@@ -651,5 +713,22 @@ fn a_line_crosses_a_rectangle_only_where_it_passes_through() {
     assert(!crosses(vec2(0.0, 0.0), vec2(40.0, 5.0), r), "above it")
     assert(!crosses(vec2(0.0, 65.0), vec2(65.0, 0.0), r), "past its corner")
     assert(crosses(vec2(0.0, 35.0), vec2(35.0, 0.0), r), "across its corner")
+}
+
+@test
+fn a_frame_holds_what_is_inside_it_and_lies_under_it() {
+    var b = Board::new()
+    let f = b.add(Item::new(Kind::Frame, vec2(0.0), vec2(400.0, 300.0), color: 7))
+    let inner = b.add(Item::new(Kind::Note, vec2(50.0), vec2(100.0), color: 0))
+    let across = b.add(Item::new(Kind::Box, vec2(350.0, 50.0), vec2(100.0), color: 0))
+    assert(b.inside(f) == Vec::from([inner]), "the note, not the box across its edge")
+    // Frames lie under everything: the note is hit over it; its empty space and its title hit it.
+    assert(b.hit(vec2(100.0), slack: 0.0) == Some(inner))
+    assert(b.hit(vec2(20.0, 250.0), slack: 0.0) == Some(f))
+    assert(b.hit(vec2(20.0, -10.0), slack: 0.0) == Some(f), "its title")
+    // A marquee inside it takes the note, not the frame; one round it takes both.
+    assert(b.touching(Rect::new(x: 40.0, y: 40.0, w: 200.0, h: 200.0)) == Vec::from([inner]))
+    assert(b.touching(Rect::new(x: -10.0, y: -10.0, w: 420.0, h: 320.0)) == Vec::from([f, inner, across]))
+    assert(b.with_contents([f, across]) == Vec::from([f, inner, across]))
 }
 
