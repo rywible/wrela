@@ -594,6 +594,10 @@ fn add_beside(s: mut App, id: u32, d: vec2) {
     checkpoint(mut s)
     let note = made.kind == Kind::Note
     let new = s.board.add(take made)
+    // It may be past the screen's edge: the camera goes to it.
+    if let Some(i) = s.board.index(new) {
+        reveal(mut s, i)
+    }
     if !note {
         var l = Item::new(Kind::Link, vec2(0.0), vec2(0.0), color: 7)
         l.from = id
@@ -2635,4 +2639,13 @@ fn a_dot_click_adds_a_note_beside(game: App) {
     let r = screen_rect(game, 1)
     assert(abs(r.x - 360.0) < 0.05 && abs(r.y - 140.0) < 0.05, f"{r.x}, {r.y}")
     assert(game.board.items[1].kind == Kind::Note && game.board.items[1].text == "Next")
+}
+
+/// A note made below one near the screen's bottom edge, past it: the camera eases until it's
+/// all on the screen.
+@test(frames: 120, input: "scripts/below.json")
+fn the_camera_goes_to_an_item_added_past_the_edge(game: App) {
+    assert(game.board.items.len() == 2)
+    let r = screen_rect(game, 1)
+    assert(r.y >= 0.0 && r.bottom() <= 480.0, f"{r.y} to {r.bottom()}")
 }
