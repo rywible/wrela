@@ -4,6 +4,11 @@
 // behind. The tesseract never travels: it only turns, at one steady rate throughout.
 
 pub const OPENING_SECONDS: f32 = 7.4
+// When the tesseract has become a cube: as the light finishes its pass along the mark.
+pub const CUBE_AT: f32 = 3.7
+// The turn's phase at the start, so its 4D turns reach a multiple of π just as the cube lands
+// and ease to rest there instead of hurrying.
+const TURN_PHASE: f32 = 30.19
 // Where the tesseract turns while the mark resolves: up and toward the eye.
 const HERO = vec3(0.0, 1.95, 1.4)
 const HERO_SIZE: f32 = 0.66
@@ -15,6 +20,8 @@ pub struct Moment: Copy {
     pub title: f32,
     // The light passing along the mark: 0 before it, 1 once it has crossed.
     pub reveal: f32,
+    // The tesseract resolving into a cube as the light finishes its pass.
+    pub cube: f32,
     // The opening has gone dark, and the tesseract has its place in the room.
     pub settled: bool,
     // The room, the cards and the controls.
@@ -31,14 +38,23 @@ pub fn presentation_step(previous: Option<f32>, now: f32) -> f32 {
 }
 
 pub fn moment(time: f32, opening: bool) -> Moment {
-    if !opening { return Moment { title: 0.0, reveal: 1.0, settled: true, library: 1.0 } }
+    if !opening {
+        return Moment { title: 0.0, reveal: 1.0, cube: 0.0, settled: true, library: 1.0 }
+    }
     let out = smoothstep(4.6, 5.8, time)
     Moment {
         title: smoothstep(0.0, 1.4, time) * (1.0 - out),
         reveal: smoothstep(0.5, 3.7, time),
+        // Back in the room, after the dark, it is a tesseract again.
+        cube: if out >= 1.0 { 0.0 } else { smoothstep(2.5, CUBE_AT, time) },
         settled: out >= 1.0,
         library: smoothstep(6.0, OPENING_SECONDS, time),
     }
+}
+
+// The tesseract's turn, in radians of its slow rotation, at presentation time `time`.
+pub fn turn_at(time: f32) -> f32 {
+    time * 0.4 + TURN_PHASE
 }
 
 // How lit the stage behind the cards is: the opening's tesseract, then the room's.
@@ -67,6 +83,15 @@ fn the_opening_goes_dark_between_the_mark_and_the_library() {
     assert(up.title == 1.0 && up.reveal > 0.1 && up.reveal < 0.4)
     let held = moment(4.6, opening: true)
     assert(held.title == 1.0 && held.reveal == 1.0 && held.library == 0.0, "the mark holds")
+    // The tesseract becomes a cube as the light finishes, and stays one until it is dark.
+    assert(moment(2.4, opening: true).cube == 0.0 && moment(3.1, opening: true).cube > 0.3)
+    assert(moment(CUBE_AT, opening: true).cube == 1.0 && moment(5.7, opening: true).cube == 1.0)
+    // Its 4D turns come to rest there without hurrying.
+    assert(tesseract::hurry(turn_at(CUBE_AT)) < 0.1)
+    for i in 0..75 {
+        let m = moment(f32(i) * 0.1, opening: true)
+        assert(m.cube == 0.0 || m.title > 0.0, "a tesseract wherever it shows in the room")
+    }
     // The mark and the tesseract go down together; the room stays dark until they are gone.
     let going = moment(5.2, opening: true)
     assert(going.title > 0.0 && going.title < 1.0 && !going.settled && going.library == 0.0)
@@ -78,7 +103,7 @@ fn the_opening_goes_dark_between_the_mark_and_the_library() {
     let done = moment(OPENING_SECONDS, opening: true)
     assert(done.settled && done.title == 0.0 && done.library == 1.0)
     let skipped = moment(0.0, opening: false)
-    assert(skipped.settled && skipped.library == 1.0 && skipped.title == 0.0)
+    assert(skipped.settled && skipped.library == 1.0 && skipped.title == 0.0 && skipped.cube == 0.0)
 }
 
 @test

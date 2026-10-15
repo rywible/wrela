@@ -1,7 +1,8 @@
 // Wrela's console. The catalog and game session protocol supply all title-specific content.
 use catalog::{Card, parse}
 use opening::{
-    MARK_WIDTH, OPENING_SECONDS, artifact_place, mark_place, moment, presentation_step, stage_light,
+    CUBE_AT, MARK_WIDTH, OPENING_SECONDS, artifact_place, mark_place, moment, presentation_step,
+    stage_light, turn_at,
 }
 use paint::{Emblem, Stage, card_corner, card_face, emblem, quad, stage}
 use room::{Camera, MARGIN, Row, artifact_spot, bounds, camera, place, row}
@@ -1338,8 +1339,9 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         s.room = texture(width: size.0, height: size.1)
     }
     let target = vec2(f32(size.0), f32(size.1))
-    let turn = if motion { s.presentation * 0.4 + 2.0 } else { 2.0 }
-    write(mut s.room_corners, 0, corners(turn, place.xyz, place.w))
+    let turn = if motion { turn_at(s.presentation) } else { 2.0 }
+    let verts = corners(turn, place.xyz, place.w, phase.cube, land: turn_at(CUBE_AT))
+    write(mut s.room_corners, 0, verts)
     let space = begin_pass(mut s.room, clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         space,
@@ -1356,6 +1358,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                 place,
                 time: s.presentation,
                 light: if phase.settled { 0.7 } else { 1.0 },
+                cube: phase.cube,
             },
         ),
         vertices: 6,
