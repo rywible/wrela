@@ -1,8 +1,24 @@
 // The opening. The artifact, a black and silver tesseract, comes up out of the dark close to
-// the eye while a light passes along the WRΞLA mark beneath it; then the mark fades away and
-// the tesseract draws back to float far behind the library as it comes up. One object, one camera, no cut.
+// the eye while a light passes slowly along the WRΞLA mark beneath it. As the light finishes,
+// the tesseract slows to rest with its cells nested, a cube inside a cube. It and the mark
+// hold, then go down into the dark together, and the library comes up out of it with the
+// tesseract far behind. The tesseract never travels, and never turns faster than its steady
+// rate.
 
-pub const OPENING_SECONDS: f32 = 4.6
+pub const OPENING_SECONDS: f32 = 7.7
+// The tesseract starts to slow, and is at rest as the light finishes its pass along the mark.
+const SLOWING: f32 = 2.5
+const REST: f32 = 3.7
+// The tesseract and the mark start to go down, and have gone dark.
+const FADING: f32 = 4.9
+const DARK: f32 = 6.1
+// A visit soon after the last one starts here instead: in the dark, just before the library
+// comes up.
+pub const RETURNING: f32 = DARK
+// How soon after the opening it counts as the same visit, in seconds.
+pub const VISIT: u32 = 1800
+// Radians of the slow rotation a second.
+const TURNING: f32 = 0.4
 // Where the tesseract turns while the mark resolves: up and toward the eye.
 const HERO = vec3(0.0, 1.95, 1.4)
 const HERO_SIZE: f32 = 0.66
@@ -10,15 +26,13 @@ const HERO_SIZE: f32 = 0.66
 pub const MARK_WIDTH: f32 = facet::mark_width()
 
 pub struct Moment: Copy {
-    // How lit the room is.
-    pub light: f32,
+    // How lit the opening's tesseract and mark are: up out of the dark, then down into it.
+    pub title: f32,
     // The light passing along the mark: 0 before it, 1 once it has crossed.
     pub reveal: f32,
-    // The mark fading away.
-    pub fade: f32,
-    // The tesseract from close to the eye (0) to far behind the library (1).
-    pub settle: f32,
-    // The cards and controls.
+    // The opening has gone dark, and the tesseract has its place in the room.
+    pub settled: bool,
+    // The room, the cards and the controls.
     pub library: f32,
 }
 
@@ -31,26 +45,46 @@ pub fn presentation_step(previous: Option<f32>, now: f32) -> f32 {
     }
 }
 
-pub fn smoother(x: f32) -> f32 {
-    let t = saturate(x)
-    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
-}
-
 pub fn moment(time: f32, opening: bool) -> Moment {
-    if !opening { return Moment { light: 1.0, reveal: 1.0, fade: 1.0, settle: 1.0, library: 1.0 } }
+    if !opening {
+        return Moment { title: 0.0, reveal: 1.0, settled: true, library: 1.0 }
+    }
+    let out = smoothstep(FADING, DARK, time)
     Moment {
-        light: smoothstep(0.0, 0.6, time),
-        reveal: smoother((time - 0.1) / 1.3),
-        fade: smoothstep(2.5, 3.2, time),
-        settle: smoother((time - 2.7) / 1.3),
-        library: smoothstep(3.2, OPENING_SECONDS, time),
+        title: smoothstep(0.0, 1.4, time) * (1.0 - out),
+        reveal: smoothstep(0.5, REST, time),
+        settled: out >= 1.0,
+        library: smoothstep(DARK + 0.2, OPENING_SECONDS, time),
     }
 }
 
-// The tesseract's centre and size as it settles from the opening to `spot`, its place in the
-// room.
-pub fn artifact_place(settle: f32, spot: vec4) -> vec4 {
-    vec4(mix(HERO, spot.xyz, settle), mix(HERO_SIZE, spot.w, settle))
+// The tesseract's clock, in seconds, at presentation time `time`: its turn and the light and
+// ripples on it go by it. In the opening it runs with the presentation, then only slows,
+// smoothly, to stand still at 0 as the light finishes its pass, and stays there until dark.
+// It never runs faster. In the room it runs on.
+pub fn clock_at(time: f32, opening: bool) -> f32 {
+    if !opening || time >= DARK { return time + 5.0 }
+    let span = REST - SLOWING
+    // How far through the slowing, and how far it has gone at a speed falling as `1 - smoothstep`.
+    let k = saturate((time - SLOWING) / span)
+    let slowed = min(time, SLOWING) + span * (k - k * k * k + k * k * k * k * 0.5)
+    slowed - (SLOWING + span * 0.5)
+}
+
+// The tesseract's turn, in radians of its slow rotation: at rest at 0, where its cells nest.
+pub fn turn_at(time: f32, opening: bool) -> f32 {
+    clock_at(time, opening) * TURNING
+}
+
+// How lit the stage behind the cards is: the opening's tesseract, then the room's.
+pub fn stage_light(m: Moment) -> f32 {
+    if m.settled { m.library } else { m.title }
+}
+
+// The tesseract's centre and size: close to the eye in the opening, else `spot`, its place
+// in the room.
+pub fn artifact_place(m: Moment, spot: vec4) -> vec4 {
+    if m.settled { spot } else { vec4(HERO, HERO_SIZE) }
 }
 
 // The mark's centre and pixels per em (logical pixels), under the tesseract.
@@ -60,29 +94,74 @@ pub fn mark_place(w: f32, h: f32) -> vec3 {
 }
 
 @test
-fn the_opening_has_a_black_start_a_resolved_mark_and_a_settled_room() {
+fn the_opening_goes_dark_between_the_mark_and_the_library() {
     let start = moment(0.0, opening: true)
-    assert(start.light == 0.0 && start.reveal == 0.0 && start.settle == 0.0 && start.library == 0.0)
-    // The tesseract comes up as the light starts along the mark; both hold once it has crossed.
-    let up = moment(0.6, opening: true)
-    assert(up.light == 1.0 && up.reveal > 0.2 && up.reveal < 0.8 && up.fade == 0.0)
-    let held = moment(2.5, opening: true)
-    assert(held.reveal == 1.0 && held.fade == 0.0 && held.settle == 0.0, "the mark holds")
-    // The mark is gone before the library is fully up.
-    let gone = moment(3.2, opening: true)
-    assert(gone.fade == 1.0 && gone.library < 1.0)
+    assert(start.title == 0.0 && start.reveal == 0.0 && !start.settled && start.library == 0.0)
+    // The light is still on its way along the mark when the tesseract is fully up.
+    let up = moment(1.4, opening: true)
+    assert(up.title == 1.0 && up.reveal > 0.1 && up.reveal < 0.4)
+    let held = moment(4.6, opening: true)
+    assert(held.title == 1.0 && held.reveal == 1.0 && held.library == 0.0, "the mark holds")
+    // The tesseract comes to rest, nested, as the light finishes and stays at rest until dark,
+    // never running faster than its rate.
+    assert(turn_at(REST, opening: true) == 0.0 && turn_at(DARK - 0.01, opening: true) == 0.0)
+    let step = 0.01
+    // Up to the dark, where the room's turn takes over.
+    for i in 0..605 {
+        let t = f32(i) * step
+        let moved = turn_at(t + step, opening: true) - turn_at(t, opening: true)
+        assert(moved >= 0.0 && moved <= TURNING * step * 1.001)
+        if t < SLOWING { assert(abs(moved - TURNING * step) < 0.0001, "steady until it slows") }
+    }
+    assert(turn_at(9.0, opening: true) == turn_at(9.0, opening: false))
+    // The whole mark and the tesseract at rest hold, fully lit, for over a second.
+    for i in 0..12 {
+        let m = moment(REST + f32(i) * 0.1, opening: true)
+        assert(
+            m.title == 1.0 && m.reveal == 1.0 && turn_at(REST + f32(i) * 0.1, opening: true) == 0.0,
+        )
+    }
+    // The mark and the tesseract go down together; the room stays dark until they are gone.
+    let going = moment(5.2, opening: true)
+    assert(going.title > 0.0 && going.title < 1.0 && !going.settled && going.library == 0.0)
+    for i in 0..78 {
+        let m = moment(f32(i) * 0.1, opening: true)
+        assert(m.title == 0.0 || m.library == 0.0, "never both at once")
+        assert(!m.settled || m.title == 0.0)
+    }
     let done = moment(OPENING_SECONDS, opening: true)
-    assert(done.settle == 1.0 && done.library == 1.0)
+    assert(done.settled && done.title == 0.0 && done.library == 1.0)
     let skipped = moment(0.0, opening: false)
-    assert(skipped.settle == 1.0 && skipped.library == 1.0 && skipped.fade == 1.0)
+    assert(skipped.settled && skipped.library == 1.0 && skipped.title == 0.0)
 }
 
 @test
-fn the_tesseract_ends_where_the_library_has_it_and_the_mark_fits() {
+fn the_light_passes_along_the_mark_slowly() {
+    // Over three seconds, never faster than half again its mean.
+    let step = 0.05
+    var fastest = 0.0
+    for i in 0..100 {
+        let t = f32(i) * step
+        fastest = max(
+            fastest,
+            moment(t + step, opening: true).reveal - moment(t, opening: true).reveal,
+        )
+    }
+    assert(fastest / step <= 1.5 / 3.0)
+}
+
+@test
+fn the_tesseract_holds_its_place_and_only_its_light_changes() {
     let spot = vec4(4.0, 3.0, -10.0, 1.3)
-    let room = artifact_place(1.0, spot)
-    assert(length(room - spot) < 0.0001)
-    assert(length(artifact_place(0.0, spot).xyz - HERO) < 0.0001)
+    for i in 0..78 {
+        let m = moment(f32(i) * 0.1, opening: true)
+        let place = artifact_place(m, spot)
+        assert(place == spot || place == vec4(HERO, HERO_SIZE), "it never travels between them")
+        // It is dark at the change of place.
+        if m.settled { assert(stage_light(m) == m.library) }
+    }
+    assert(artifact_place(moment(0.0, opening: false), spot) == spot)
+    assert(stage_light(moment(0.0, opening: false)) == 1.0)
     // The mark is centred and fits a phone.
     let opening = mark_place(w: 390.0, h: 844.0)
     assert(opening.x == 195.0 && MARK_WIDTH * opening.z < 390.0 * 0.5)

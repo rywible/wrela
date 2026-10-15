@@ -1,0 +1,56 @@
+// What the game keeps between visits, and how the console's save list describes it. The game
+// and its session program (session/) both read it.
+use level::COURSES
+use std::serialize::{LoadError, Serialize, load}
+
+pub struct Progress: Clone + Serialize {
+    // Courses cleared, coins taken in all, and the best time over a course (0 for none).
+    pub cleared: u32,
+    pub coins: u32,
+    pub best: f32,
+}
+
+pub fn fresh() -> Progress {
+    Progress { cleared: 0, coins: 0, best: 0.0 }
+}
+
+// The progress in `bytes`, if they hold a game this one could have played.
+pub fn read(bytes: take Vec<u8>) -> Option<Progress> {
+    let loaded: Result<Progress, LoadError> = load(take bytes)
+    let Ok(p) = loaded else { return None }
+    if p.cleared > COURSES || p.coins > 1000000 || !(p.best >= 0.0 && p.best < 360000.0) {
+        return None
+    }
+    Some(p.clone())
+}
+
+// A time as minutes, seconds and tenths: 1:05.3.
+pub fn clock_text(seconds: f32) -> String {
+    let s = u32(seconds)
+    let tenths = u32(seconds * 10.0) % 10
+    let secs = s % 60
+    let pad = if secs < 10 { "0" } else { "" }
+    f"{s / 60}:{pad}{secs}.{tenths}"
+}
+
+// One line for the save list.
+pub fn describe(p: Progress) -> String {
+    if p.cleared == 0 { return String::from("Dusk Ridge, not yet cleared") }
+    let best = clock_text(p.best)
+    f"Course cleared, best {best}, {p.coins} coins"
+}
+
+@test
+fn progress_round_trips_and_nonsense_is_refused() {
+    let p = Progress { cleared: 1, coins: 23, best: 65.3 }
+    let Some(back) = read(std::serialize::save(p)) else {
+        assert(false, "a saved progress reads back")
+        return
+    }
+    assert(back.cleared == 1 && back.coins == 23 && back.best == 65.3)
+    assert(read(Vec::new()).is_none())
+    assert(read(std::serialize::save(Progress { cleared: 9, coins: 0, best: 0.0 })).is_none())
+    assert(
+        clock_text(65.3) == "1:05.3" && describe(back) == "Course cleared, best 1:05.3, 23 coins",
+    )
+}

@@ -1,0 +1,682 @@
+// The play: the hero, the things and the course, stepped 120 times a second so the game plays
+// the same at any frame rate. Nothing here draws or sounds: each step leaves cues for that.
+use level::{
+    AIR, BRICK, Course, GROUND, Kind, LEDGE, PRIZE, ROWS, SPIKES, Thing, USED, course, solid,
+}
+
+pub const STEP: f32 = 1.0 / 120.0
+
+// The hero's box: half its width, and its height, from the middle of its feet.
+pub const HALF: f32 = 0.36
+pub const TALL: f32 = 0.86
+
+// How it moves, in cells and seconds.
+const WALK: f32 = 7.0
+const RUN: f32 = 10.5
+const ACCEL: f32 = 55.0
+const TURN: f32 = 95.0
+const AIR_ACCEL: f32 = 38.0
+const FRICTION: f32 = 48.0
+// Gravity while it rises with the jump held, and otherwise: a held jump floats up, and every
+// fall is quick.
+const RISE: f32 = 52.0
+const FALL: f32 = 105.0
+const TERMINAL: f32 = 22.0
+const LEAP: f32 = 19.0
+// The extra speed of a jump at a run.
+const RUN_LEAP: f32 = 1.6
+// A jump still counts this long after the hero walks off an edge, and a press this long before
+// it lands.
+const COYOTE: f32 = 0.09
+const BUFFER: f32 = 0.12
+const BOUNCE: f32 = 13.0
+const BOUNCE_HELD: f32 = 18.0
+const SPRING: f32 = 27.0
+// The things' pace.
+const WALKER: f32 = 2.0
+const SPIKER: f32 = 1.1
+
+// What the player asks for this step: a direction from -1 to 1, the jump button held and just
+// pressed, and running.
+pub struct Controls: Copy {
+    pub dir: f32,
+    pub jump: bool,
+    pub jumped: bool,
+    pub run: bool,
+}
+
+pub fn idle() -> Controls {
+    Controls { dir: 0.0, jump: false, jumped: false, run: false }
+}
+
+pub struct Hero: Copy {
+    // The middle of its feet.
+    pub at: vec2,
+    pub vel: vec2,
+    pub facing: f32,
+    pub grounded: bool,
+    coyote: f32,
+    buffer: f32,
+    // Seconds since it last landed, and since it last left the ground.
+    pub landed: f32,
+    pub aloft: f32,
+    // Seconds it can't be hurt, after coming back.
+    pub grace: f32,
+    // Thrown by a spring: it rises at the held jump's gravity until it turns down.
+    pub sprung: bool,
+}
+
+fn hero_at(at: vec2) -> Hero {
+    Hero {
+        at,
+        vel: vec2(0.0),
+        facing: 1.0,
+        grounded: true,
+        coyote: 0.0,
+        buffer: 0.0,
+        landed: 1.0,
+        aloft: 0.0,
+        grace: 0.0,
+        sprung: false,
+    }
+}
+
+pub enum Phase: Copy + Eq {
+    Playing,
+    // Hurt: the hero pops up and falls away, then comes back at the last checkpoint.
+    Dying,
+    // At the gate.
+    Clear,
+}
+
+// What happened in a step, for the sound and the eye.
+pub enum Cue: Copy + Eq {
+    Jump,
+    Land,
+    Coin,
+    Stomp,
+    Bump,
+    Spring,
+    Checkpoint,
+    Hurt,
+    Clear,
+}
+
+// A spark: a mote of dust, a glint of gold, a shard, or confetti.
+pub struct Spark: Copy {
+    pub at: vec2,
+    pub vel: vec2,
+    pub age: f32,
+    pub life: f32,
+    pub kind: u32,
+    pub size: f32,
+}
+
+pub const DUST: u32 = 0
+pub const GOLD: u32 = 1
+pub const SHARD: u32 = 2
+pub const CONFETTI: u32 = 3
+const SPARKS: u32 = 160
+
+// A cell knocked from below, which jumps a little.
+pub struct Bump: Copy {
+    pub x: i32,
+    pub y: i32,
+    pub age: f32,
+}
+
+pub struct World: Clone {
+    pub course: Course,
+    pub number: u32,
+    pub hero: Hero,
+    pub phase: Phase,
+    pub since: f32,
+    pub coins: u32,
+    pub clock: f32,
+    pub checkpoint: vec2,
+    pub cues: Vec<Cue>,
+    pub sparks: Vec<Spark>,
+    pub bumps: Vec<Bump>,
+    // How hard the view shakes, decaying.
+    pub shake: f32,
+    // The cells changed since the GPU last had them.
+    pub dirty: bool,
+    seed: u32,
+}
+
+pub fn world(number: u32) -> World {
+    let c = course(number)
+    let start = c.start
+    World {
+        course: c,
+        number,
+        hero: hero_at(start),
+        phase: Phase::Playing,
+        since: 0.0,
+        coins: 0,
+        clock: 0.0,
+        checkpoint: start,
+        cues: Vec::new(),
+        sparks: Vec::new(),
+        bumps: Vec::new(),
+        shake: 0.0,
+        dirty: true,
+        seed: 0x9e3779b9 ^ number,
+    }
+}
+
+fn approach(x: f32, target: f32, by: f32) -> f32 {
+    if x < target { min(x + by, target) } else { max(x - by, target) }
+}
+
+fn random(w: mut World) -> f32 {
+    w.seed = w.seed.wrapping_mul(1664525).wrapping_add(1013904223)
+    f32(w.seed >> 8) / 16777216.0
+}
+
+fn spark(w: mut World, at: vec2, vel: vec2, life: f32, kind: u32, size: f32) {
+    if w.sparks.len() >= SPARKS { w.sparks.remove(0) }
+    w.sparks.push(Spark { at, vel, age: 0.0, life, kind, size })
+}
+
+fn burst(w: mut World, at: vec2, n: u32, speed: f32, kind: u32, size: f32, life: f32) {
+    for _ in 0..n {
+        let a = random(mut w) * 6.2831853
+        let s = speed * (0.4 + 0.6 * random(mut w))
+        let v = vec2(cos(a), abs(sin(a)) * 0.8 + 0.4) * s
+        let lasts = life * (0.6 + 0.4 * random(mut w))
+        spark(mut w, at, v, lasts, kind, size)
+    }
+}
+
+// Whether any cell in rows `y0` to `y1` of column `x` stops the hero going sideways.
+fn wall(c: Course, x: i32, y0: i32, y1: i32) -> bool {
+    for y in y0..y1 + 1 { if solid(c.cell(x, y)) { return true } }
+    false
+}
+
+// A box `half` wide either side and `tall` high from `at`, moved by `vel` over a step against
+// the course's cells: where it ends, whether it hit a wall, whether it landed, and the cell it
+// struck from below, if any (`vec2(-1)` for none).
+struct Moved: Copy {
+    at: vec2,
+    walled: bool,
+    landed: bool,
+    struck: vec2,
+}
+
+fn moved(c: Course, at: vec2, vel: vec2, half: f32, tall: f32) -> Moved {
+    var p = at
+    var walled = false
+    var landed = false
+    var struck = vec2(-1.0)
+    // Across first.
+    p.x += vel.x * STEP
+    let y0 = i32(floor(p.y + 0.01))
+    let y1 = i32(floor(p.y + tall - 0.01))
+    if vel.x > 0.0 {
+        let x = i32(floor(p.x + half))
+        if wall(c, x, y0, y1) {
+            p.x = f32(x) - half - 0.001
+            walled = true
+        }
+    } else if vel.x < 0.0 {
+        let x = i32(floor(p.x - half))
+        if wall(c, x, y0, y1) {
+            p.x = f32(x + 1) + half + 0.001
+            walled = true
+        }
+    }
+    // Then up or down.
+    let before = p.y
+    p.y += vel.y * STEP
+    let x0 = i32(floor(p.x - half + 0.01))
+    let x1 = i32(floor(p.x + half - 0.01))
+    if vel.y <= 0.0 {
+        let y = i32(floor(p.y))
+        for x in x0..x1 + 1 {
+            let cell = c.cell(x, y)
+            // A ledge holds only what comes down onto it from above.
+            if solid(cell) || (cell == LEDGE && before >= f32(y + 1) - 0.01) {
+                p.y = f32(y + 1)
+                landed = true
+            }
+        }
+    } else {
+        let y = i32(floor(p.y + tall))
+        var best = 100.0
+        for x in x0..x1 + 1 {
+            if solid(c.cell(x, y)) {
+                p.y = f32(y) - tall - 0.001
+                // The cell most under the box's middle is the one struck.
+                let off = abs(f32(x) + 0.5 - p.x)
+                if off < best {
+                    best = off
+                    struck = vec2(f32(x), f32(y))
+                }
+            }
+        }
+    }
+    Moved { at: p, walled, landed, struck }
+}
+
+pub fn step(w: mut World, c: Controls) {
+    w.since += STEP
+    w.shake = max(w.shake - STEP * 1.5, 0.0)
+    age(mut w)
+    match w.phase {
+        Phase::Playing => {
+            w.clock += STEP
+            hero(mut w, c)
+            things(mut w)
+            if w.phase == Phase::Playing { touch(mut w, c) }
+        },
+        Phase::Dying => {
+            w.hero.vel.y = max(w.hero.vel.y - FALL * 0.55 * STEP, -TERMINAL)
+            w.hero.at += w.hero.vel * STEP
+            things(mut w)
+            if w.since > 1.6 { come_back(mut w) }
+        },
+        Phase::Clear => {
+            things(mut w)
+            if w.since < 2.4 && random(mut w) < 0.18 {
+                let at = w.hero.at + vec2((random(mut w) - 0.5) * 9.0, 4.0 + random(mut w) * 3.0)
+                burst(mut w, at, 14, 7.0, CONFETTI, size: 0.11, life: 1.6)
+            }
+        },
+    }
+}
+
+// A step of the hero alone, the course waiting: for the title, where it hops in place.
+pub fn pose(w: mut World, c: Controls) {
+    age(mut w)
+    hero(mut w, c)
+}
+
+fn age(w: mut World) {
+    var kept: Vec<Spark> = Vec::new()
+    for s in w.sparks {
+        var s = s
+        s.age += STEP
+        let fall = if s.kind == DUST { 2.0 } else if s.kind == CONFETTI { 7.0 } else { 26.0 }
+        s.vel.y -= fall * STEP
+        s.vel *= if s.kind == DUST { 0.97 } else if s.kind == CONFETTI { 0.985 } else { 1.0 }
+        s.at += s.vel * STEP
+        if s.age < s.life { kept.push(s) }
+    }
+    w.sparks = take kept
+    var bumps: Vec<Bump> = Vec::new()
+    for b in w.bumps {
+        var b = b
+        b.age += STEP
+        if b.age < 0.25 { bumps.push(b) }
+    }
+    w.bumps = take bumps
+}
+
+fn hero(w: mut World, c: Controls) {
+    var h = w.hero
+    let top = if c.run { RUN } else { WALK }
+    let want = c.dir * top
+    let reversing = want * h.vel.x < 0.0
+    let accel = if !h.grounded { AIR_ACCEL } else if abs(c.dir) < 0.01 {
+        FRICTION
+    } else if reversing {
+        TURN
+    } else { ACCEL }
+    h.vel.x = approach(h.vel.x, want, accel * STEP)
+    if abs(c.dir) > 0.01 { h.facing = if c.dir > 0.0 { 1.0 } else { -1.0 } }
+    h.buffer = if c.jumped { BUFFER } else { max(h.buffer - STEP, 0.0) }
+    h.coyote = if h.grounded { COYOTE } else { max(h.coyote - STEP, 0.0) }
+    if h.buffer > 0.0 && h.coyote > 0.0 {
+        let pace = saturate((abs(h.vel.x) - WALK) / (RUN - WALK))
+        h.vel.y = LEAP + RUN_LEAP * pace
+        h.buffer = 0.0
+        h.coyote = 0.0
+        h.grounded = false
+        h.aloft = 0.0
+        w.cues.push(Cue::Jump)
+        w.hero = h
+        burst(mut w, h.at, 6, 2.5, DUST, size: 0.12, life: 0.45)
+        h = w.hero
+    }
+    if h.vel.y <= 0.0 { h.sprung = false }
+    let gravity = if h.vel.y > 0.0 && (c.jump || h.sprung) { RISE } else { FALL }
+    h.vel.y = max(h.vel.y - gravity * STEP, -TERMINAL)
+    let m = moved(w.course, h.at, h.vel, half: HALF, tall: TALL)
+    h.at = m.at
+    if m.walled { h.vel.x = 0.0 }
+    let was = h.grounded
+    h.grounded = m.landed
+    if m.landed {
+        if !was && h.vel.y < -6.0 {
+            w.cues.push(Cue::Land)
+            h.landed = 0.0
+            w.hero = h
+            burst(mut w, h.at, 5, 2.0, DUST, size: 0.1, life: 0.35)
+            h = w.hero
+        }
+        h.vel.y = 0.0
+    }
+    if m.struck.x >= 0.0 {
+        h.vel.y = min(h.vel.y, 0.0)
+        w.hero = h
+        strike(mut w, i32(m.struck.x), i32(m.struck.y))
+        h = w.hero
+    }
+    h.landed += STEP
+    h.aloft = if h.grounded { 0.0 } else { h.aloft + STEP }
+    h.grace = max(h.grace - STEP, 0.0)
+    w.hero = h
+    // Spikes, and the pit.
+    let x0 = i32(floor(h.at.x - HALF + 0.1))
+    let x1 = i32(floor(h.at.x + HALF - 0.1))
+    let y = i32(floor(h.at.y + 0.05))
+    for x in x0..x1 + 1 {
+        if w.course.cell(x, y) == SPIKES && h.at.y < f32(y) + 0.7 { hurt(mut w) }
+    }
+    if h.at.y < -1.5 { hurt(mut w) }
+}
+
+// The hero's head strikes cell (`x`, `y`) from below.
+fn strike(w: mut World, x: i32, y: i32) {
+    let cell = w.course.cell(x, y)
+    w.bumps.push(Bump { x, y, age: 0.0 })
+    if cell == PRIZE {
+        w.course.set(x, y, USED)
+        w.dirty = true
+        w.coins += 1
+        w.cues.push(Cue::Coin)
+        w.course.things.push(
+            Thing {
+                kind: Kind::Popped,
+                at: vec2(f32(x) + 0.5, f32(y) + 1.0),
+                vel: vec2(0.0, 13.0),
+                dir: 1.0,
+                since: 0.0,
+                gone: false,
+            },
+        )
+    } else { w.cues.push(Cue::Bump) }
+    // Whatever walks on the struck cell is knocked off it.
+    for i in 0..w.course.things.len() {
+        let t = w.course.things[i]
+        if (t.kind == Kind::Walker || t.kind == Kind::Spiker) &&
+            !t.gone &&
+            t.since == 0.0 &&
+            abs(t.at.x - (f32(x) + 0.5)) < 0.9 &&
+            abs(t.at.y - f32(y + 1)) < 0.15 {
+            w.course.things[i].since = STEP
+            w.course.things[i].vel = vec2(0.0, 9.0)
+            w.cues.push(Cue::Stomp)
+        }
+    }
+}
+
+fn things(w: mut World) {
+    for i in 0..w.course.things.len() {
+        var t = w.course.things[i]
+        if t.gone { continue }
+        match t.kind {
+            Kind::Walker | Kind::Spiker => {
+                if t.since > 0.0 {
+                    // Squashed or knocked away: it lingers, then goes.
+                    t.since += STEP
+                    if t.vel.y != 0.0 {
+                        t.vel.y -= FALL * 0.5 * STEP
+                        t.at += t.vel * STEP
+                    }
+                    if t.since > 0.6 { t.gone = true }
+                } else {
+                    let pace = if t.kind == Kind::Walker { WALKER } else { SPIKER }
+                    t.vel.x = t.dir * pace
+                    t.vel.y = max(t.vel.y - FALL * STEP, -TERMINAL)
+                    let m = moved(w.course, t.at, t.vel, half: 0.4, tall: 0.8)
+                    t.at = m.at
+                    if m.landed { t.vel.y = 0.0 }
+                    if m.walled { t.dir = -t.dir }
+                    // A spiker keeps to its ground: it turns at an edge.
+                    if t.kind == Kind::Spiker && m.landed {
+                        let ahead = i32(floor(t.at.x + t.dir * 0.45))
+                        let below = i32(floor(t.at.y - 0.5))
+                        if !solid(w.course.cell(ahead, below)) { t.dir = -t.dir }
+                    }
+                    if t.at.y < -3.0 { t.gone = true }
+                }
+            },
+            Kind::Popped => {
+                t.since += STEP
+                t.vel.y -= 34.0 * STEP
+                t.at += t.vel * STEP
+                if t.since > 0.55 { t.gone = true }
+            },
+            _ => { if t.since > 0.0 { t.since += STEP } },
+        }
+        if t.kind == Kind::Coin && t.since > 0.3 { t.gone = true }
+        w.course.things[i] = t
+    }
+}
+
+fn overlaps(a_lo: vec2, a_hi: vec2, b_lo: vec2, b_hi: vec2) -> bool {
+    a_lo.x < b_hi.x && b_lo.x < a_hi.x && a_lo.y < b_hi.y && b_lo.y < a_hi.y
+}
+
+fn touch(w: mut World, c: Controls) {
+    let h = w.hero
+    let lo = vec2(h.at.x - HALF, h.at.y)
+    let hi = vec2(h.at.x + HALF, h.at.y + TALL)
+    for i in 0..w.course.things.len() {
+        let t = w.course.things[i]
+        if t.gone || w.phase != Phase::Playing { continue }
+        match t.kind {
+            Kind::Coin => {
+                if t.since == 0.0 &&
+                    overlaps(lo, hi, t.at + vec2(-0.3, 0.2), t.at + vec2(0.3, 0.8)) {
+                    w.course.things[i].since = STEP
+                    w.coins += 1
+                    w.cues.push(Cue::Coin)
+                    burst(mut w, t.at + vec2(0.0, 0.5), 8, 4.0, GOLD, size: 0.09, life: 0.5)
+                }
+            },
+            Kind::Walker | Kind::Spiker => {
+                if t.since > 0.0 ||
+                    !overlaps(lo, hi, t.at + vec2(-0.4, 0.0), t.at + vec2(0.4, 0.8)) {
+                    continue
+                }
+                if t.kind == Kind::Walker && w.hero.vel.y < 0.0 && w.hero.at.y > t.at.y + 0.3 {
+                    w.course.things[i].since = STEP
+                    w.course.things[i].vel = vec2(0.0)
+                    w.hero.vel.y = if c.jump { BOUNCE_HELD } else { BOUNCE }
+                    w.hero.grounded = false
+                    w.cues.push(Cue::Stomp)
+                    w.shake = max(w.shake, 0.12)
+                    burst(mut w, t.at + vec2(0.0, 0.3), 10, 5.0, SHARD, size: 0.1, life: 0.5)
+                } else if w.hero.grace == 0.0 { hurt(mut w) }
+            },
+            Kind::Spring => {
+                if w.hero.vel.y < 0.0 &&
+                    overlaps(lo, hi, t.at + vec2(-0.45, 0.0), t.at + vec2(0.45, 0.6)) &&
+                    w.hero.at.y > t.at.y + 0.2 {
+                    w.hero.at.y = t.at.y + 0.6
+                    w.hero.vel.y = SPRING
+                    w.hero.sprung = true
+                    w.hero.grounded = false
+                    w.course.things[i].since = STEP
+                    w.cues.push(Cue::Spring)
+                }
+            },
+            Kind::Checkpoint => {
+                if t.since == 0.0 &&
+                    overlaps(lo, hi, t.at + vec2(-0.5, 0.0), t.at + vec2(0.5, 2.5)) {
+                    w.course.things[i].since = STEP
+                    w.checkpoint = t.at
+                    w.cues.push(Cue::Checkpoint)
+                    burst(mut w, t.at + vec2(0.0, 2.2), 12, 4.0, GOLD, size: 0.08, life: 0.7)
+                }
+            },
+            Kind::Gate => {
+                if overlaps(lo, hi, t.at + vec2(-0.7, 0.0), t.at + vec2(0.7, 2.6)) {
+                    w.course.things[i].since = STEP
+                    w.phase = Phase::Clear
+                    w.since = 0.0
+                    w.hero.vel = vec2(0.0)
+                    w.cues.push(Cue::Clear)
+                }
+            },
+            _ => {},
+        }
+    }
+}
+
+fn hurt(w: mut World) {
+    if w.phase != Phase::Playing { return }
+    w.phase = Phase::Dying
+    w.since = 0.0
+    w.hero.vel = vec2(0.0, 15.0)
+    w.cues.push(Cue::Hurt)
+    w.shake = 0.3
+}
+
+fn come_back(w: mut World) {
+    w.hero = hero_at(w.checkpoint)
+    w.hero.grace = 1.2
+    w.phase = Phase::Playing
+    w.since = 0.0
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+// A world on the first course, the hero at `at`, the things cleared but `keep`'s kind.
+fn bare(at: vec2) -> World {
+    var w = world(0)
+    w.course.things.clear()
+    w.hero = hero_at(at)
+    w
+}
+
+fn press() -> Controls {
+    Controls { dir: 0.0, jump: true, jumped: true, run: false }
+}
+
+fn hold() -> Controls {
+    Controls { dir: 0.0, jump: true, jumped: false, run: false }
+}
+
+// How high the hero rises from the ground with the jump held for `held` seconds.
+fn peak(held: f32) -> f32 {
+    var w = bare(vec2(5.5, 2.0))
+    step(mut w, press())
+    var top = 0.0
+    for i in 0..240 {
+        step(mut w, if f32(i) * STEP < held { hold() } else { idle() })
+        top = max(top, w.hero.at.y - 2.0)
+    }
+    top
+}
+
+@test
+fn a_held_jump_climbs_three_and_a_half_cells_and_a_tap_under_two() {
+    let full = peak(1.0)
+    let tap = peak(0.0)
+    assert(full > 3.2 && full < 3.8)
+    assert(tap > 1.3 && tap < 2.0)
+}
+
+@test
+fn a_jump_counts_just_after_walking_off_an_edge_and_just_before_landing() {
+    // Off the edge of the first pit: a press within the coyote time still jumps.
+    var w = bare(vec2(30.8, 5.0))
+    w.hero.grounded = true
+    for _ in 0..4 { step(mut w, Controls { dir: 1.0, jump: false, jumped: false, run: false }) }
+    var left = 0
+    while w.hero.grounded && left < 200 {
+        step(mut w, Controls { dir: 1.0, jump: false, jumped: false, run: false })
+        left += 1
+    }
+    for _ in 0..6 { step(mut w, Controls { dir: 1.0, jump: false, jumped: false, run: false }) }
+    step(mut w, Controls { dir: 1.0, jump: true, jumped: true, run: false })
+    assert(w.hero.vel.y > 15.0, "coyote jump")
+    // A press 0.1 s before landing jumps on landing.
+    var w = bare(vec2(5.5, 2.6))
+    w.hero.grounded = false
+    w.hero.vel.y = -4.0
+    step(mut w, press())
+    var jumped = false
+    for _ in 0..30 {
+        step(mut w, hold())
+        if w.hero.vel.y > 15.0 { jumped = true }
+    }
+    assert(jumped, "buffered jump")
+}
+
+@test
+fn stomping_a_walker_bounces_and_touching_it_hurts() {
+    var w = bare(vec2(8.5, 3.2))
+    w.hero.grounded = false
+    w.hero.vel.y = -6.0
+    w.course.things.push(
+        level::Thing {
+            kind: Kind::Walker,
+            at: vec2(8.5, 2.0),
+            vel: vec2(0.0),
+            dir: -1.0,
+            since: 0.0,
+            gone: false,
+        },
+    )
+    for _ in 0..12 { step(mut w, idle()) }
+    assert(w.phase == Phase::Playing && w.course.things[0].since > 0.0, "squashed")
+    assert(w.hero.vel.y > 5.0, "bounced")
+    var w = bare(vec2(7.0, 2.0))
+    w.course.things.push(
+        level::Thing {
+            kind: Kind::Walker,
+            at: vec2(8.2, 2.0),
+            vel: vec2(0.0),
+            dir: -1.0,
+            since: 0.0,
+            gone: false,
+        },
+    )
+    for _ in 0..60 { step(mut w, idle()) }
+    assert(w.phase == Phase::Dying, "walked into")
+}
+
+@test
+fn a_prize_block_struck_from_below_gives_a_coin_once() {
+    // The prize block at (15, 5): its underside is at y = 5, three cells above the ground.
+    var w = bare(vec2(15.5, 2.0))
+    step(mut w, press())
+    for _ in 0..60 { step(mut w, hold()) }
+    assert(w.coins == 1 && w.course.cell(x: 15, y: 5) == USED)
+    for _ in 0..120 { step(mut w, idle()) }
+    step(mut w, press())
+    for _ in 0..60 { step(mut w, hold()) }
+    assert(w.coins == 1, "a used block gives nothing")
+}
+
+@test
+fn a_spring_throws_the_hero_high_and_the_pit_brings_it_back_to_the_checkpoint() {
+    var w = bare(vec2(50.5, 4.0))
+    w.hero.grounded = false
+    w.course.things.push(
+        level::Thing {
+            kind: Kind::Spring,
+            at: vec2(50.5, 2.0),
+            vel: vec2(0.0),
+            dir: 1.0,
+            since: 0.0,
+            gone: false,
+        },
+    )
+    var top = 0.0
+    for _ in 0..200 {
+        step(mut w, idle())
+        top = max(top, w.hero.at.y)
+    }
+    assert(top > 9.0, "sprung")
+    var w = bare(vec2(32.5, 2.0))
+    w.checkpoint = vec2(20.5, 2.0)
+    for _ in 0..400 { step(mut w, idle()) }
+    assert(w.phase == Phase::Playing && w.hero.at == vec2(20.5, 2.0), "back at the checkpoint")
+}

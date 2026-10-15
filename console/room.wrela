@@ -1,8 +1,9 @@
 // The library's room: an endless dark. Albums stand as cards in one row along the bottom of
-// the screen, the selection in a fixed slot at the left margin and the rest running off to
-// the right, as consoles lay out a library. The artifact turns far behind them, up and to
-// the right, where a console shows a game's art. The CPU and the GPU place and project
-// everything with the same code, so what is drawn is exactly what the pointer can hit.
+// the screen, as in an album picker: the selection flat and full size at the left margin,
+// the albums after it turned toward it and overlapping off to the right, and those before it
+// turned the other way at the left edge. The artifact turns far behind them, up in the
+// middle. The CPU and the GPU place and project everything with the same code, so what is
+// drawn is exactly what the pointer can hit.
 
 // The camera: where it stands and looks, and the tangent of half its vertical view.
 pub struct Camera: Copy + GpuData {
@@ -22,9 +23,14 @@ pub struct Card: Copy + GpuData {
     pub look: vec4,
 }
 
-// Cards are 16:9; the others stand at this size beside the selection.
+// Cards are 16:9; the others stand at this size beside the selection, turned this far
+// toward it (radians), set back this far (in selected widths), and each a further one steps
+// out by this share of its width as seen from the front, and back a little more.
 const ASPECT: f32 = 0.5625
 const SMALL: f32 = 0.78
+const TURN: f32 = 0.8
+const BACK: f32 = 0.3
+const STEP: f32 = 0.5
 // The left safe margin and the row's lower edge, as fractions of the screen.
 pub const MARGIN: f32 = 0.055
 const BASELINE: f32 = 0.88
@@ -92,13 +98,13 @@ pub fn row(c: Camera) -> Row {
     Row { left: low.x, middle: low.y + width * ASPECT * 0.5, width, gap: width * 0.07 }
 }
 
-// The artifact's centre and size for a camera at rest: up and to the right of a wide screen,
-// up and centred on a tall one, about a tenth of the screen in size.
+// The artifact's centre and size for a camera at rest: up in the middle of the screen, about
+// three tenths of its height across.
 pub fn artifact_spot(c: Camera) -> vec4 {
     let aspect = c.screen.x / c.screen.y
-    let at = vec2(mix(0.5, 0.7, saturate((aspect - 0.8) / 0.6)), 0.3)
+    let at = vec2(0.5, 0.31)
     let centre = on_plane(c, at, ARTIFACT_DEPTH)
-    let tall = on_plane(c, at + vec2(0.0, 0.11), ARTIFACT_DEPTH).y - centre.y
+    let tall = on_plane(c, at + vec2(0.0, 0.145), ARTIFACT_DEPTH).y - centre.y
     vec4(centre, abs(tall) * min(aspect, 1.0))
 }
 
@@ -109,22 +115,32 @@ pub fn corner(card: Card, uv: vec2) -> vec3 {
     card.centre.xyz + vec3(cos(turn) * local.x, local.y, -sin(turn) * local.x)
 }
 
-// Album `index` while the row is at `album` (its eased selection): the selection full size
-// in its slot, the rest smaller and dimmer to its right; those before it slide out to the
-// left and fade.
+// Album `index` while the row is at `album` (its eased selection): the selection flat and
+// full size in its slot. The rest stand smaller, dimmer, set back and turned toward it, their
+// outer edges nearest: those after it overlapping off to the right, each nearer one in front;
+// those before it at the left edge, the nearest peeking in and the rest fading out beyond.
 pub fn place(index: u32, album: f32, ring: f32, has_art: bool, row: Row) -> Card {
     let offset = f32(index) - album
+    let side = if offset < 0.0 { -1.0 } else { 1.0 }
     let reach = min(abs(offset), 1.0)
-    let scale = mix(1.0, SMALL, reach)
-    let left = row.left +
-        offset * (row.width * SMALL + row.gap) +
-        saturate(offset) * row.width * (1.0 - SMALL)
-    let width = row.width * scale
+    let beyond = max(abs(offset) - 1.0, 0.0)
+    let width = row.width * mix(1.0, SMALL, reach)
+    // A side album's width as seen from the front.
+    let across = row.width * SMALL * cos(TURN)
+    let slot = row.left + row.width * 0.5
+    // The nearest stand just clear of the selection's edges, their inner edges tucked a
+    // little behind it.
+    let first = if side > 0.0 { row.left + row.width + across * 0.3 } else {
+        row.left - across * 0.3
+    }
+    let x = mix(slot, first, reach) + side * beyond * across * STEP
+    let z = -(reach * BACK + beyond * 0.05) * row.width
     let lit = mix(1.0, 0.55, reach) * if has_art { 1.0 } else { 0.9 }
+    let shown = if side < 0.0 { saturate(1.0 - beyond * 1.5) } else { 1.0 }
     Card {
-        centre: vec4(left + width * 0.5, row.middle, 0.0, 0.0),
+        centre: vec4(x, row.middle, z, -side * reach * TURN),
         size: vec4(width, width * ASPECT, width * 0.035, row.width * 0.016),
-        look: vec4(lit, ring, saturate(1.0 + min(offset, 0.0) * 1.25), 0.0),
+        look: vec4(lit, ring, shown, 0.0),
     }
 }
 
@@ -165,13 +181,23 @@ fn the_selection_holds_its_slot_at_the_left_margin_on_any_screen() {
         assert(abs(chosen.y + chosen.w - size.y * BASELINE) < size.y * 0.01, "on the baseline")
         assert(chosen.x + chosen.z < size.x * 0.7, "leaving room for the rest of the row")
         assert(chosen.w > size.y * 0.12 && chosen.w < size.y * 0.21)
-        // The next stands a gap to the right, smaller; the one before has faded out.
-        let next = bounds(c, place(3, album: 2.0, ring: 0.0, has_art: true, row: r))
-        assert(next.x > chosen.x + chosen.z && next.w < chosen.w)
-        assert(place(1, album: 2.0, ring: 0.0, has_art: true, row: r).look.z == 0.0)
+        // The next stands a gap to the right, smaller and turned, the one after it further
+        // out, behind it.
+        let next = place(3, album: 2.0, ring: 0.0, has_art: true, row: r)
+        let after = place(4, album: 2.0, ring: 0.0, has_art: true, row: r)
+        let b = bounds(c, next)
+        assert(b.x + b.z > chosen.x + chosen.z + b.z * 0.5 && b.w < chosen.w && next.centre.w < 0.0)
+        assert(bounds(c, after).x > b.x && after.centre.z < next.centre.z)
+        // The one before peeks in at the left edge, still to be pointed at; the one before
+        // that has faded out.
+        let before = place(1, album: 2.0, ring: 0.0, has_art: true, row: r)
+        let a = bounds(c, before)
+        assert(before.look.z == 1.0 && before.centre.w > 0.0)
+        assert(a.x + a.z > size.x * 0.03 && a.x < chosen.x, "in view, left of the slot")
+        assert(place(0, album: 2.0, ring: 0.0, has_art: true, row: r).look.z == 0.0)
         // Mid-move, a card is between its two slots.
         let moving = bounds(c, place(3, album: 2.5, ring: 0.0, has_art: true, row: r))
-        assert(moving.x > chosen.x && moving.x < next.x)
+        assert(moving.x > chosen.x && moving.x < b.x)
     }
 }
 

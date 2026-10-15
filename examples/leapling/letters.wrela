@@ -1,0 +1,153 @@
+// The game's type: capitals, digits and a little punctuation drawn as strokes on a grid four
+// wide and six high, rounded at their ends. Text is set on the CPU into runs of segments in
+// pixels, which the shader draws with a glow and a shadow (look.wrela).
+
+// A run's box, then its first segment, how many it has, a grey and a glow: two vec4s. Its first
+// segment slot holds the stroke's half width and its colour instead.
+pub struct Typeset: Clone {
+    pub runs: Vec<vec4>,
+    pub segments: Vec<vec4>,
+}
+
+pub fn typeset() -> Typeset {
+    Typeset { runs: Vec::new(), segments: Vec::new() }
+}
+
+// Each glyph's strokes: polylines of points, each two digits, the lines apart by spaces.
+fn glyph(c: u32) -> Text {
+    match c {
+        33 => "2622 2020",
+        42 => "1133 3113",
+        45 => "1333",
+        46 => "2020",
+        48 => "100105163645413010 1135",
+        49 => "152620 1030",
+        50 => "05163645440040",
+        51 => "0646243443413000",
+        52 => "30360242",
+        53 => "4606033342413000",
+        54 => "36160501103041423303",
+        55 => "064610",
+        56 => "13040516364544331302011030414233",
+        57 => "43130405163645413010",
+        58 => "2121 2424",
+        65 => "0004264440 0343",
+        66 => "00063645443303 3342413000",
+        67 => "461605011040",
+        68 => "00063645413000",
+        69 => "46060040 0333",
+        70 => "460600 0333",
+        71 => "4616050110404323",
+        72 => "0006 4046 0343",
+        73 => "1636 2620 1030",
+        74 => "4641301001",
+        75 => "0006 4602 1340",
+        76 => "060040",
+        77 => "0006234640",
+        78 => "00064046",
+        79 => "100105163645413010",
+        80 => "00063645443303",
+        81 => "100105163645413010 2240",
+        82 => "00063645443303 2340",
+        83 => "46160504133342413000",
+        84 => "0646 2620",
+        85 => "060110304146",
+        86 => "062046",
+        87 => "0610233046",
+        88 => "0640 4600",
+        89 => "062346 2320",
+        90 => "06460040",
+        _ => "",
+    }
+}
+
+// How wide `text` sets at `size` pixels high: six grid units to a character, less the last's
+// gap.
+pub fn measure(text: str, size: f32) -> f32 {
+    let unit = size / 6.0
+    max(f32(text.len()) * 6.0 - 2.0, 0.0) * unit
+}
+
+impl Typeset {
+    pub fn clear(mut self) {
+        self.runs.clear()
+        self.segments.clear()
+    }
+
+    // Sets `text` with its top at `at.y` and, by `align`, its left (0), middle (0.5) or right
+    // (1) at `at.x`, `size` pixels high, in `tint` times `grey`, glowing out `glow` pixels.
+    pub fn write(
+        mut self,
+        text: str,
+        at: vec2,
+        size: f32,
+        tint: vec3,
+        grey: f32 = 1.0,
+        glow: f32 = 0.0,
+        align: f32 = 0.0,
+    ) {
+        let unit = size / 6.0
+        let left = at.x - measure(text, size) * align
+        let start = self.segments.len()
+        self.segments.push(vec4(unit * 0.5, tint.x, tint.y, tint.z))
+        var count = 0
+        for i in 0..text.len() {
+            var c = u32(text.byte(i))
+            // Lower case sets as capitals.
+            if c >= 97 && c <= 122 { c -= 32 }
+            let strokes = glyph(c)
+            let origin = vec2(left + f32(i) * 6.0 * unit, at.y)
+            var k = 0
+            while k < strokes.len() {
+                // One polyline: points until a space or the end.
+                var last: Option<vec2> = None
+                while k + 1 < strokes.len() && strokes.byte(k) != 32 {
+                    let gx = f32(u32(strokes.byte(k)) - 48)
+                    let gy = f32(u32(strokes.byte(k + 1)) - 48)
+                    let point = origin + vec2(gx, 6.0 - gy) * unit
+                    if let Some(from) = last {
+                        self.segments.push(vec4(from.x, from.y, point.x, point.y))
+                        count += 1
+                    } else if k + 2 >= strokes.len() || strokes.byte(k + 2) == 32 {
+                        // A single point: a dot.
+                        self.segments.push(vec4(point.x, point.y, point.x, point.y))
+                        count += 1
+                    }
+                    last = Some(point)
+                    k += 2
+                }
+                k += 1
+            }
+        }
+        let width = measure(text, size)
+        self.runs.push(vec4(left, at.y, left + width, at.y + size))
+        self.runs.push(vec4(f32(start), f32(count), grey, glow))
+    }
+}
+
+@test
+fn text_sets_as_segments_inside_its_box() {
+    var t = typeset()
+    t.write("LEAP 1:2", vec2(100.0, 50.0), 30.0, vec3(1.0), align: 0.5)
+    assert(t.runs.len() == 2)
+    let bounds = t.runs[0]
+    assert(abs((bounds.x + bounds.z) * 0.5 - 100.0) < 0.001 && bounds.y == 50.0 && bounds.w == 80.0)
+    let count = u32(t.runs[1].y)
+    // L 2, E 4, A 2? (A is two lines: 4 + 1), P 6, space 0, 1 3, : 2 dots, 2 6.
+    assert(count == 2 + 4 + 5 + 6 + 3 + 2 + 6)
+    for k in 0..count {
+        let s = t.segments[1 + k]
+        for p in [s.xy, s.zw] {
+            assert(
+                p.x >= bounds.x - 0.01 &&
+                    p.x <= bounds.z + 0.01 &&
+                    p.y >= bounds.y &&
+                    p.y <= bounds.w,
+            )
+        }
+    }
+    // Lower case is the same as capitals.
+    var u = typeset()
+    u.write("leap 1:2", vec2(100.0, 50.0), 30.0, vec3(1.0), align: 0.5)
+    assert(u.segments.len() == t.segments.len())
+}

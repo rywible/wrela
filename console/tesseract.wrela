@@ -5,6 +5,7 @@
 // satin silver (far) to black chrome (near). Rays meet struts and faces exactly (no stepping), so
 // edges stay sharp. Where the glass mirrors the studio, each colour sees it a little
 // shifted along the glass's folds, so its edges fringe into a spectrum, and nothing else does.
+// The glass bends only the studio it mirrors: struts seen through it or in it stay straight.
 use std::gpu::{FragCoord}
 
 pub const EDGES: u32 = 32
@@ -14,10 +15,16 @@ const BOUNCES: u32 = 4
 // struts that meet there share one radius and weld seamlessly.
 const STRUT: f32 = 0.022
 // The 4D eye stands this far along w. A corner at `w` is drawn `EYE / (EYE - w)` times as far
-// out and as thick: from 0.67 (far) to 2 (near).
-const EYE: f32 = 2.0
-// The corners' spread in 3D, so the whole stays the size it was.
-const SPREAD: f32 = 1.4
+// out: nested, the near cell is drawn 2.4 times the far one. A corner can turn to w = 1, six
+// times as far out, but it is then at the middle in 3D: no corner is drawn farther out than
+// 1.81 times its distance from the centre.
+const EYE: f32 = 1.2
+// Struts are drawn no thicker than this many times `STRUT`, so a corner turned almost to the
+// eye does not balloon.
+const THICKEST: f32 = 2.4
+// The corners' spread in 3D: the farthest corner reaches 1.62 times the size, as it did with
+// the eye at 2.
+const SPREAD: f32 = 0.895
 // However it turns, the tesseract stays inside a sphere this many times its size.
 const REACH: f32 = 1.7
 
@@ -31,6 +38,8 @@ pub struct Artifact: Copy + GpuData {
     pub place: vec4,
     pub time: f32,
     pub light: f32,
+    // The colour its studio's lights take (at full brightness), and how far they take it.
+    pub tint: vec4,
 }
 
 fn corner(i: u32) -> vec4 {
@@ -85,27 +94,27 @@ pub fn swell(w: f32) -> f32 {
     EYE / (EYE - w)
 }
 
-// The angle of the double rotation at `turn`: each quarter turn eases in and out, lingering
-// where the cells nest in line and surging through the eversion between.
-pub fn phase(turn: f32) -> f32 {
-    let quarter = 1.5707963
-    let f = turn / quarter
-    let k = fract(f)
-    let s = k * k * k * (k * (k * 6.0 - 15.0) + 10.0)
-    (floor(f) + mix(k, s, 0.8)) * quarter
+// How thick a strut is drawn at a corner at `w`, against `STRUT`.
+pub fn thickness(w: f32) -> f32 {
+    min(swell(w), THICKEST)
 }
 
-// An isoclinic double rotation, the x–w and y–z planes by one angle as only four dimensions
-// allow: the cells pass through each other and turn inside out. A slow yaw and a fixed tilt
-// show its depth.
+// Steady turns in four planes at once, as only four dimensions allow. The x–w turn passes the
+// cells through each other and turns them inside out; the y–z turn beside it, at another rate,
+// unbalances the eversion; a y–w turn slowly carries the eversion round to new directions; a
+// yaw and a fixed tilt show its depth. The rates share no common period, so it never repeats,
+// and every corner moves at a steady speed throughout.
+//
+// At `t` = 0, w is w, so the two cells nest exactly, one inside the other, and the whole is
+// seen three-quarters on.
 fn spin(q: vec4, t: f32) -> vec4 {
-    let angle = phase(t)
-    let everted = plane(plane(q, angle, a: 0, b: 3), angle, a: 1, b: 2)
-    plane(plane(everted, t * 0.3, a: 0, b: 2), 0.42, a: 1, b: 2)
+    let everted = plane(plane(q, t * 1.19, a: 0, b: 3), t * 0.735, a: 1, b: 2)
+    let carried = plane(everted, t * 0.493, a: 1, b: 3)
+    plane(plane(carried, t * 0.357 + 0.62, a: 0, b: 2), 0.42, a: 1, b: 2)
 }
 
-// The sixteen corners at `turn` (radians of the slow rotation), seen from a 4D eye and
-// placed at `centre` at `size`: world position, and 4D depth in `w` (-1 far, 1 near).
+// The sixteen corners at `turn` (radians of the slow rotation), seen from a 4D eye and placed
+// at `centre` at `size`: world position, and 4D depth in `w` (-1 far, 1 near).
 pub fn corners(turn: f32, centre: vec3, size: f32) -> Vec<vec4> {
     var out: Vec<vec4> = Vec::new()
     for i in 0..16 {
@@ -206,8 +215,8 @@ fn metal_hit(
         let edge = edges[e]
         let a = verts[u32(edge.x)]
         let b = verts[u32(edge.y)]
-        let ra = radius * swell(a.w)
-        let rb = radius * swell(b.w)
+        let ra = radius * thickness(a.w)
+        let rb = radius * thickness(b.w)
         let ba = b.xyz - a.xyz
         // Most struts are nowhere near the ray: a sphere about each rules it out cheaply.
         let mid = (a.xyz + b.xyz) * 0.5 - ro
@@ -301,40 +310,78 @@ fn panel(d: vec3, axis: vec3, size: vec2, soft: f32) -> f32 {
     saturate(1.0 - max(edge.x, edge.y) / soft)
 }
 
+// A light's colour `base`, taken `k` of the way toward the tint.
+fn hued(base: vec3, tint: vec4, k: f32) -> vec3 {
+    mix(base, tint.xyz, tint.w * k)
+}
+
 // The studio as polished things see it: a broad key overhead, two tall strips
 // behind, a low fill, a band behind, and a soft room so metal always has something to show.
 // Across one pixel a strut's reflection sweeps about 0.4 radians of it, so no softbox is
 // narrower or harder-edged than that: a finer one would break into dashes along the struts.
-pub fn studio(d: vec3) -> vec3 {
+// The tint colours the strips, the band and the room most, and the key least, so the
+// tesseract keeps its white highlights.
+pub fn studio(d: vec3, tint: vec4) -> vec3 {
     let key = panel(d, normalize(vec3(-0.35, 0.9, 0.35)), vec2(0.6, 0.32), 0.35)
     let left = panel(d, normalize(vec3(-0.92, 0.12, -0.38)), vec2(0.16, 0.95), 0.3)
     let right = panel(d, normalize(vec3(0.9, 0.18, -0.4)), vec2(0.14, 0.95), 0.3)
     let fill = panel(d, normalize(vec3(0.6, -0.05, 0.8)), vec2(0.6, 0.22), 0.3)
     let back = panel(d, normalize(vec3(0.0, 0.25, -1.0)), vec2(0.9, 0.12), 0.25)
     let room = vec3(0.095) * smoothstep(-0.25, 0.9, d.y) + vec3(0.04) * smoothstep(0.1, -0.6, d.y)
-    vec3(1.0, 0.99, 0.98) * key * 1.8 +
-        vec3(0.9, 0.94, 1.0) * (left * 1.3 + right * 1.1) +
-        vec3(0.95, 0.95, 1.0) * fill * 0.45 +
-        vec3(0.95, 0.96, 1.0) * back * 0.6 +
-        room
+    hued(vec3(1.0, 0.99, 0.98), tint, 0.4) * key * 1.8 +
+        hued(vec3(0.9, 0.94, 1.0), tint, 0.85) * (left * 1.3 + right * 1.1) +
+        hued(vec3(0.95, 0.95, 1.0), tint, 0.5) * fill * 0.45 +
+        hued(vec3(0.95, 0.96, 1.0), tint, 0.85) * back * 0.6 +
+        room * hued(vec3(1.0), tint, 0.85)
 }
 
 // The studio blurred, as a strut too thin to resolve its softboxes sees it: each softbox a
 // broad lobe toward it.
-fn blurred(d: vec3) -> vec3 {
+fn blurred(d: vec3, tint: vec4) -> vec3 {
     let lobe = |axis: vec3, k: f32| -> f32 { pow(saturate(dot(d, normalize(axis))), k) }
     let room = vec3(0.095) * smoothstep(-0.25, 0.9, d.y) + vec3(0.04) * smoothstep(0.1, -0.6, d.y)
-    vec3(1.0, 0.99, 0.98) * lobe(vec3(-0.35, 0.9, 0.35), 3.0) * 1.0 +
-        vec3(0.9, 0.94, 1.0) *
+    hued(vec3(1.0, 0.99, 0.98), tint, 0.4) * lobe(vec3(-0.35, 0.9, 0.35), 3.0) * 1.0 +
+        hued(vec3(0.9, 0.94, 1.0), tint, 0.85) *
             (lobe(vec3(-0.92, 0.12, -0.38), 4.0) * 0.45 + lobe(vec3(0.9, 0.18, -0.4), 4.0) * 0.4) +
-        vec3(0.95, 0.95, 1.0) * lobe(vec3(0.6, -0.05, 0.8), 2.0) * 0.25 +
-        vec3(0.95, 0.96, 1.0) * lobe(vec3(0.0, 0.25, -1.0), 3.0) * 0.25 +
-        room
+        hued(vec3(0.95, 0.95, 1.0), tint, 0.5) * lobe(vec3(0.6, -0.05, 0.8), 2.0) * 0.25 +
+        hued(vec3(0.95, 0.96, 1.0), tint, 0.85) * lobe(vec3(0.0, 0.25, -1.0), 3.0) * 0.25 +
+        room * hued(vec3(1.0), tint, 0.85)
 }
 
-// The dark the camera sees straight on: no softboxes, a faint glow low down.
-pub fn darkness(d: vec3) -> vec3 {
-    vec3(0.004, 0.0042, 0.0052) + vec3(0.012, 0.012, 0.013) * exp(-abs(d.y + 0.05) * 6.0)
+// The dark the camera sees straight on: no softboxes, a faint glow low down. A tint colours
+// the glow and spreads it a little higher.
+pub fn darkness(d: vec3, tint: vec4) -> vec3 {
+    let low = exp(-abs(d.y + 0.05) * mix(6.0, 3.0, tint.w))
+    vec3(0.004, 0.0042, 0.0052) * hued(vec3(1.0), tint, 0.6) +
+        mix(vec3(0.012, 0.012, 0.013), tint.xyz * 0.03, tint.w) * low
+}
+
+// A spotlight in the tint's colour, seen in the haze along a ray from `ro`: a beam from high
+// above and a little behind that shines down through the tesseract and widens and fades
+// below it, and a soft glow behind it.
+fn beam(ro: vec3, rd: vec3, look: Artifact) -> vec3 {
+    if look.tint.w <= 0.0 { return vec3(0.0) }
+    let size = look.place.w
+    let centre = look.place.xyz
+    let source = centre + vec3(-0.5, 5.0, -1.6) * size
+    let axis = normalize(centre - source)
+    // Where the ray passes nearest the beam's axis.
+    let w0 = ro - source
+    let b = dot(rd, axis)
+    let d = dot(rd, w0)
+    let e = dot(axis, w0)
+    let across = max(1.0 - b * b, 0.0001)
+    let t = max((b * e - d) / across, 0.0)
+    let s = max((e - b * d) / across, 0.0)
+    let miss = length(w0 + rd * t - axis * s)
+    let through = length(centre - source)
+    let radius = size * 0.45 + s * 0.16
+    let lit = smoothstep(0.0, through * 0.6, s) * exp(-max(s - through, 0.0) / (size * 3.0))
+    let shaft = exp(-miss * miss / (radius * radius)) * lit * 0.035
+    let to = centre - ro
+    let off = length(cross(rd, normalize(to))) * length(to) / (size * REACH)
+    let glow = exp(-off * off * 0.9) * 0.035
+    look.tint.xyz * (shaft + glow) * look.tint.w
 }
 
 // Heavy struts near in the fourth dimension are black chrome; the needles far inside are
@@ -343,21 +390,27 @@ pub fn metal(depth: f32) -> vec3 {
     mix(vec3(0.5, 0.51, 0.53), vec3(0.08, 0.082, 0.088), smoothstep(-0.5, 0.5, depth))
 }
 
-// Polished metal of reflectance `f0` under the studio, with a slow glint travelling along it.
-// `rough` (0 to 1) blurs what it mirrors, for struts too thin on screen to show it sharply.
-pub fn polished(p: vec3, n: vec3, rd: vec3, f0: vec3, time: f32, rough: f32) -> vec3 {
+// A band of light that passes through the fourth dimension, from the near cell to the far one
+// every 8 seconds: it catches everything at one depth in w at once, however far apart in 3D,
+// and slides along the struts that cross that depth.
+pub fn glint(depth: f32, time: f32) -> f32 {
+    pow(saturate(sin(depth * 2.4 + time * 0.8) * 0.5 + 0.5), 30.0) * 0.55
+}
+
+// Polished metal at 4D depth `depth` under the studio. `rough` (0 to 1) blurs what it mirrors,
+// for struts too thin on screen to show it sharply.
+pub fn polished(depth: f32, n: vec3, rd: vec3, time: f32, rough: f32, tint: vec4) -> vec3 {
+    let f0 = metal(depth)
     let cosv = saturate(-dot(rd, n))
     // A strut's silhouette is thinner than a pixel at grazing angles; a full white rim there
     // would sparkle, so the rim stays mostly the metal's own colour.
     let fresnel = f0 + (vec3(1.0) - f0) * pow(1.0 - cosv, 5.0) * 0.25
     let r = rd - n * (2.0 * dot(rd, n))
     let key = normalize(vec3(-0.35, 0.9, 0.35))
-    let sweep = pow(
-        saturate(sin(dot(p, vec3(0.7, 0.45, 0.25)) * 1.6 - time * 0.9) * 0.5 + 0.5),
-        40.0,
-    )
-    let sharp = studio(r) + pow(saturate(dot(r, key)), 12.0) * 1.3
-    mix(sharp, blurred(r), rough) * fresnel + f0 * (0.04 + sweep * 0.8)
+    let sharp = studio(r, tint) + pow(saturate(dot(r, key)), 12.0) * 0.5
+    mix(sharp, blurred(r, tint), rough) * fresnel +
+        f0 * 0.04 +
+        (f0 + vec3(0.1)) * glint(depth, time)
 }
 
 // The glass ripples slowly, in broad folds.
@@ -371,9 +424,6 @@ fn ripple(p: vec3, n: vec3, time: f32, size: f32) -> vec3 {
     normalize(n + (w - n * dot(w, n)) * 0.16)
 }
 
-// The glass's folds spread a pixel's footprint where it bends or mirrors the view.
-const FOLD_SPREAD: f32 = 1.6
-
 // One path of light from the eye: its colour.
 fn trace(
     start: vec3,
@@ -386,7 +436,7 @@ fn trace(
     rough: f32,
 ) -> vec3 {
     var ro = start
-    var rd = dir
+    let rd = dir
     var gathered = vec3(0.0)
     var through = vec3(1.0)
     var skip = -1.0
@@ -397,9 +447,9 @@ fn trace(
     let radius = STRUT * size
     for _ in 0..BOUNCES {
         let m = metal_hit(ro, rd, verts, edges, radius, cone, past)
-        let f = face_hit(ro, rd, skip, verts, faces, radius * swell(-1.0))
+        let f = face_hit(ro, rd, skip, verts, faces, radius * thickness(-1.0))
         if m.at < f.x {
-            let shine = polished(ro + rd * m.at, m.normal, rd, metal(m.depth), look.time, rough)
+            let shine = polished(m.depth, m.normal, rd, look.time, rough, look.tint)
             gathered += through * shine * m.cover
             if m.cover >= 1.0 { return gathered }
             // A strut's rim covers part of the pixel; the rest sees on past it.
@@ -414,32 +464,34 @@ fn trace(
             if dot(n, rd) > 0.0 { n = -n }
             let warped = ripple(p - look.place.xyz, n, look.time, size)
             let fresnel = 0.04 + 0.96 * pow(1.0 - saturate(-dot(rd, warped)), 5.0)
-            let at_glass = vec2(cone.x + cone.y * f.x, cone.y * FOLD_SPREAD)
+            let at_glass = vec2(cone.x + cone.y * f.x, cone.y)
             // A soft mirror toward the edges, faint face-on: the studio and the struts it faces.
             let r = rd - warped * (2.0 * dot(rd, warped))
             // Where it mirrors the studio, each colour sees it a little shifted along the
             // fold: the spectrum at the glass's edges.
             let fold = warped - n
             var mirrored = vec3(
-                studio(normalize(r - fold * 0.05)).x,
-                studio(r).y,
-                studio(normalize(r + fold * 0.05)).z,
+                studio(normalize(r - fold * 0.05), look.tint).x,
+                studio(r, look.tint).y,
+                studio(normalize(r + fold * 0.05), look.tint).z,
             )
             // Only the nearest glass mirrors the struts: deeper layers are dim behind it, and
-            // tracing their reflections too would cost as much again.
+            // tracing their reflections too would cost as much again. It mirrors them as flat
+            // glass, so they stay straight.
+            let flat = rd - n * (2.0 * dot(rd, n))
             let seen = if skip < 0.0 {
-                metal_hit(p + r * 0.001, r, verts, edges, radius, at_glass, -1.0)
+                metal_hit(p + flat * 0.001, flat, verts, edges, radius, at_glass, -1.0)
             } else {
                 Hit { at: 1.0e9, normal: vec3(0.0), depth: 0.0, cover: 0.0, strut: -1.0 }
             }
             if seen.at < 1.0e8 {
                 let strut_seen = polished(
-                    p + r * seen.at,
+                    seen.depth,
                     seen.normal,
-                    r,
-                    metal(seen.depth),
+                    flat,
                     look.time,
                     rough,
+                    look.tint,
                 )
                 mirrored = mix(mirrored, strut_seen, seen.cover)
             }
@@ -447,14 +499,12 @@ fn trace(
             gathered += through * mirrored * silvered * 0.7
             // Smoked glass: what lies behind it darkens through each face.
             through *= (1.0 - silvered) * 0.6
-            // Through the glass the view bends with its folds.
-            rd = normalize(rd + fold * 0.35)
             cone = at_glass
             ro = p
             skip = f.y
             continue
         }
-        return gathered + through * darkness(rd)
+        return gathered + through * (darkness(rd, look.tint) + beam(ro, rd, look))
     }
     gathered
 }
@@ -478,12 +528,12 @@ pub fn artifact(
 ) -> vec4 {
     let ro = look.eye.xyz
     // Rays that pass clear of it see only the dark.
-    let reach = look.place.w * (REACH + STRUT * swell(1.0))
+    let reach = look.place.w * (REACH + STRUT * THICKEST)
     let rd = direction(look, pixel.position.xy)
     let o = ro - look.place.xyz
     let b = dot(o, rd)
     if look.place.w <= 0.001 || b * b - dot(o, o) + reach * reach <= 0.0 {
-        return vec4(darkness(rd) * look.light, 1.0)
+        return vec4((darkness(rd, look.tint) + beam(ro, rd, look)) * look.light, 1.0)
     }
     let spread = 2.0 * look.lens / look.screen.y
     // Struts at w = 0 decide how finely to sample: deciding by the far needles would take four
@@ -542,7 +592,7 @@ fn every_corner_meets_four_struts_and_six_faces() {
 
 @test
 fn the_tesseract_stays_within_its_reach_however_it_turns() {
-    for i in 0..60 {
+    for i in 0..400 {
         let turn = f32(i) * 0.37
         for p in corners(turn, vec3(1.0, 2.0, 3.0), 1.4) {
             assert(length(p.xyz - vec3(1.0, 2.0, 3.0)) < 1.4 * REACH, "inside the traced sphere")
@@ -588,7 +638,7 @@ fn a_strut_covers_the_share_of_a_pixel_it_fills() {
     let eye = mid + out * 0.6
     let side = normalize(cross(axis, out))
     // Its radius at its middle, between those at its two corners.
-    let radius = STRUT * (swell(ends.0.w) + swell(ends.1.w)) * 0.5
+    let radius = STRUT * (thickness(ends.0.w) + thickness(ends.1.w)) * 0.5
     let footprint = radius * 0.5
     let cover = |offset: f32| -> f32 {
         let hit = metal_hit(
@@ -623,15 +673,91 @@ fn a_tapered_strut_is_met_on_its_surface() {
     assert(round_cone(vec3(0.0, 0.5, 5.0), down, a, b, ra: 0.2, rb: 0.1).x < 0.0, "a miss")
     // Struts meeting at a corner share its radius, so they weld; near corners are thicker.
     assert(swell(1.0) > 1.9 && swell(-1.0) < 0.7 && swell(0.0) == 1.0)
+    // Nested, the near cell is drawn well over twice the far one.
+    assert(swell(0.5) / swell(-0.5) > 2.4)
 }
 
 @test
-fn the_turn_lingers_where_the_cells_nest_and_surges_between() {
-    let quarter = 1.5707963
-    assert(abs(phase(0.0)) < 0.0001 && abs(phase(quarter) - quarter) < 0.0001)
-    // Slow by a nested pose, fast through the eversion, and always turning forward.
-    let slow = phase(0.05) - phase(0.0)
-    let fast = phase(quarter * 0.5 + 0.025) - phase(quarter * 0.5 - 0.025)
-    assert(fast > slow * 4.0)
-    for i in 0..40 { assert(phase(f32(i + 1) * 0.1) > phase(f32(i) * 0.1)) }
+fn the_glint_passes_from_the_near_cell_to_the_far_one() {
+    // Where the glint is brightest moves steadily toward -w, and lights one depth at a time.
+    var last = 1.0
+    for i in 0..20 {
+        let time = 6.9 + f32(i) * 0.3
+        var brightest = -1.0
+        var best = 0.0
+        var lit = 0
+        for k in 0..201 {
+            let depth = 1.0 - f32(k) * 0.01
+            let g = glint(depth, time)
+            if g > best {
+                best = g
+                brightest = depth
+            }
+            if g > 0.4 { lit += 1 }
+        }
+        assert(brightest < last + 0.011, "always toward the far cell")
+        assert(lit < 30, "a narrow band")
+        last = brightest
+    }
+    assert(last < -0.8)
+}
+
+@test
+fn the_tesseract_turns_at_one_steady_rate() {
+    // With no easing, the corners move as far in each step, wherever the turn is.
+    let step = 0.05
+    var least = 1.0e9
+    var most = 0.0
+    for i in 0..200 {
+        let t = f32(i) * 0.37
+        var moved = 0.0
+        for c in 0..16 {
+            moved += length(
+                spin(corner(c), t + step) - spin(corner(c), t),
+            )
+        }
+        least = min(least, moved)
+        most = max(most, moved)
+    }
+    assert(most < least * 1.05)
+}
+
+@test
+fn at_rest_the_tesseract_is_a_cube_inside_a_cube() {
+    let centre = vec3(1.0, 2.0, 3.0)
+    let rest = corners(turn: 0.0, centre: centre, size: 1.3)
+    // The far cell is the near one drawn smaller about the centre: each far corner lies on the
+    // line from the centre to its near twin.
+    let inner = swell(-0.5) / swell(0.5)
+    for i in 0..8 {
+        let far = rest[i]
+        let near = rest[i + 8]
+        assert(abs(far.w + 0.5) < 0.0001 && abs(near.w - 0.5) < 0.0001)
+        assert(length((far.xyz - centre) - (near.xyz - centre) * inner) < 0.0001)
+    }
+    // Each cell is a true cube: its struts are one length and meet square.
+    let edge = |a: u32, b: u32| -> vec3 { rest[b].xyz - rest[a].xyz }
+    let side = length(edge(8, 9))
+    for (a, b) in [(8, 9), (8, 10), (8, 12), (11, 15), (13, 15), (14, 15)] {
+        assert(abs(length(edge(a, b)) - side) < 0.0001)
+    }
+    assert(
+        abs(dot(edge(8, 9), edge(8, 10))) < 0.0001 && abs(dot(edge(8, 10), edge(8, 12))) < 0.0001,
+    )
+}
+
+@test
+fn the_turn_carries_every_corner_toward_the_eye_in_turn() {
+    // One double rotation keeps corners within 0.71 of w = 0, and repeats. The turn carried
+    // round through y–w brings each corner, in time, almost to the eye.
+    var nearest = [0.0; 16]
+    for i in 0..2000 {
+        let t = f32(i) * 0.1
+        for c in 0..16 {
+            nearest[c] = max(nearest[c], spin(corner(c) * 0.5, t).w)
+        }
+    }
+    for c in 0..16 { assert(nearest[c] > 0.9) }
+    // However near, its struts stay no thicker than they were.
+    assert(thickness(0.99) == THICKEST && thickness(0.0) == 1.0)
 }

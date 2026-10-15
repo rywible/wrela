@@ -5,6 +5,14 @@ project = "wrela-games"
 domain = "games.wrela.dev"
 
 [[games]]
+id = "leapling"
+title = "Leapling"
+project = "wrela-leapling"
+domain = "wrela-leapling.pages.dev"
+session = "session"
+builds = { session = "examples/leapling/session", leapling = "examples/leapling" }
+
+[[games]]
 id = "last-green"
 title = "The Last Green"
 project = "wrela-last-green"

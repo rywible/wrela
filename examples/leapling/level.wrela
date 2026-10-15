@@ -1,0 +1,158 @@
+// The courses. Each is a grid of cells, 15 high, read from text with the top row first:
+//
+//   .  air            #  ground         B  brick          ?  prize block (a coin inside)
+//   =  ledge (stood on from above, jumped through from below)            ^  spikes
+//   o  coin           g  walker         p  spiker         J  spring
+//   C  checkpoint     F  the gate       P  where the hero starts
+//
+// A cell is a unit square; row 0 is the bottom one, so the ground's top in the first course
+// is at y = 2.
+
+pub const ROWS: u32 = 15
+
+// What a cell is, as the GPU reads it too.
+pub const AIR: u32 = 0
+pub const GROUND: u32 = 1
+pub const BRICK: u32 = 2
+pub const PRIZE: u32 = 3
+pub const USED: u32 = 4
+pub const LEDGE: u32 = 5
+pub const SPIKES: u32 = 6
+
+// What stands in the course: things that move, are picked up or are touched.
+pub enum Kind: Copy + Eq {
+    Coin,
+    // A coin knocked out of a prize block: it rises and is taken by itself.
+    Popped,
+    Walker,
+    Spiker,
+    Spring,
+    Checkpoint,
+    Gate,
+}
+
+pub struct Thing: Copy {
+    pub kind: Kind,
+    // The middle of its foot.
+    pub at: vec2,
+    pub vel: vec2,
+    // Which way it walks: -1 or 1.
+    pub dir: f32,
+    // Seconds since something happened to it: taken, stomped, sprung, reached. 0 for nothing.
+    pub since: f32,
+    pub gone: bool,
+}
+
+pub struct Course: Clone {
+    pub name: Text,
+    pub width: u32,
+    // Row by row from the bottom.
+    pub cells: Vec<u32>,
+    pub start: vec2,
+    pub things: Vec<Thing>,
+}
+
+impl Course {
+    pub fn cell(self, x: i32, y: i32) -> u32 {
+        // The course's ends are walls; below it is the pit, above it the sky.
+        if x < 0 || x >= i32(self.width) { return GROUND }
+        if y < 0 || y >= i32(ROWS) { return AIR }
+        self.cells[u32(y) * self.width + u32(x)]
+    }
+
+    pub fn set(mut self, x: i32, y: i32, cell: u32) {
+        if x >= 0 && x < i32(self.width) && y >= 0 && y < i32(ROWS) {
+            self.cells[u32(y) * self.width + u32(x)] = cell
+        }
+    }
+}
+
+pub fn solid(cell: u32) -> bool {
+    cell == GROUND || cell == BRICK || cell == PRIZE || cell == USED
+}
+
+fn thing(kind: Kind, x: u32, y: u32) -> Thing {
+    let at = vec2(f32(x) + 0.5, f32(y))
+    let dir = if kind == Kind::Spiker { 1.0 } else { -1.0 }
+    Thing { kind, at, vel: vec2(0.0), dir, since: 0.0, gone: false }
+}
+
+pub fn parse(name: Text, rows: [Text]) -> Course {
+    let width = rows[0].len()
+    var cells: Vec<u32> = Vec::filled(width * ROWS, AIR)
+    var things: Vec<Thing> = Vec::new()
+    var start = vec2(2.5, 2.0)
+    for r in 0..ROWS {
+        let text = rows[r]
+        assert(text.len() == width, "every row is as wide as the first")
+        let y = ROWS - 1 - r
+        for x in 0..width {
+            let c = text.byte(x)
+            let at = y * width + x
+            if c == 35 { cells[at] = GROUND }
+            if c == 66 { cells[at] = BRICK }
+            if c == 63 { cells[at] = PRIZE }
+            if c == 61 { cells[at] = LEDGE }
+            if c == 94 { cells[at] = SPIKES }
+            if c == 111 { things.push(thing(Kind::Coin, x, y)) }
+            if c == 103 { things.push(thing(Kind::Walker, x, y)) }
+            if c == 112 { things.push(thing(Kind::Spiker, x, y)) }
+            if c == 74 { things.push(thing(Kind::Spring, x, y)) }
+            if c == 67 { things.push(thing(Kind::Checkpoint, x, y)) }
+            if c == 70 { things.push(thing(Kind::Gate, x, y)) }
+            if c == 80 { start = vec2(f32(x) + 0.5, f32(y)) }
+        }
+    }
+    Course { name, width, cells, start, things }
+}
+
+pub const COURSES: u32 = 1
+
+pub fn course(i: u32) -> Course {
+    assert(i < COURSES)
+    parse("DUSK RIDGE", FIRST)
+}
+
+const FIRST: [Text; 15] = [
+    "............................................................................................................................................................",
+    "............................................................................................................................................................",
+    "............................................................................................................................................................",
+    "....................................................ooooo...................................................................................................",
+    "....................................................=====...................................................................................................",
+    "................?...........................................................ooo..........................................................###................",
+    "........................................ooooo..........................................................o................................####................",
+    "...............................ooo.............................o.................................#####....o............................#####................",
+    "..........................oo............BB?BB..............o....................................######.==...........BB?BB.............######................",
+    ".........oo...B?B?B...........................................===..........BB?BB....????.......#######....==......o.o.o.o.o..........#######................",
+    "........o..o.................##...........................===.................................########..............................########................",
+    "..........................##.##..............................................................#########.............................#########................",
+    "...P..................g...##.##........g.....g....J.................C.....g...g..p....g.....##########..........C....g...g...p....##########.......F........",
+    "###############################...#######################^^^^^^^^^####################################......################################################",
+    "###############################...####################################################################......################################################",
+]
+
+@test
+fn the_first_course_has_a_start_a_gate_and_its_ends_are_walls() {
+    let c = course(0)
+    assert(c.width == 156 && c.cells.len() == 156 * ROWS)
+    assert(c.start == vec2(3.5, 2.0))
+    var gates = 0
+    var walkers = 0
+    for t in c.things {
+        if t.kind == Kind::Gate { gates += 1 }
+        if t.kind == Kind::Walker { walkers += 1 }
+    }
+    assert(gates == 1 && walkers >= 8)
+    // Ground under the start, walls at the ends, a pit below.
+    assert(
+        c.cell(x: 3, y: 1) == GROUND &&
+            c.cell(x: -1, y: 5) == GROUND &&
+            c.cell(x: 156, y: 5) == GROUND,
+    )
+    assert(c.cell(x: 32, y: 1) == AIR && c.cell(x: 32, y: -1) == AIR)
+    assert(
+        c.cell(x: 15, y: 5) == PRIZE &&
+            c.cell(x: 58, y: 4) == LEDGE &&
+            c.cell(x: 60, y: 1) == SPIKES,
+    )
+}

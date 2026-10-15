@@ -1,0 +1,236 @@
+// The game's sound, synthesized as it plays: tones of square, triangle and noise, each with its
+// own slide and fade, for its cues, and a little loop of music under them (vi, IV, I, V in C:
+// bass, an arpeggio and a hi-hat).
+use std::audio::{QUANTUM, RingReader, RingWriter, SAMPLE_RATE, play, ring}
+
+// What a cue asks for, as the ring carries it.
+pub const JUMP: u32 = 0
+pub const LAND: u32 = 1
+pub const COIN: u32 = 2
+pub const STOMP: u32 = 3
+pub const BUMP: u32 = 4
+pub const SPRING: u32 = 5
+pub const CHECKPOINT: u32 = 6
+pub const HURT: u32 = 7
+pub const CLEAR: u32 = 8
+
+const TONES: u32 = 12
+// The first three tones are the music's: bass, arpeggio, hat.
+const MUSIC: u32 = 3
+const SQUARE: u32 = 0
+const PULSE: u32 = 1
+const TRIANGLE: u32 = 2
+const NOISE: u32 = 3
+// A sixteenth at 128 beats a minute.
+const SIXTEENTH: f32 = 0.1171875
+
+struct Tone: Copy {
+    // From `from` to `to` hertz over `length` seconds, starting `age` seconds ago (negative:
+    // not yet).
+    from: f32,
+    to: f32,
+    length: f32,
+    age: f32,
+    wave: u32,
+    gain: f32,
+    phase: f32,
+    held: f32,
+}
+
+fn silent() -> Tone {
+    Tone { from: 0.0, to: 0.0, length: 0.0, age: 1.0, wave: 0, gain: 0.0, phase: 0.0, held: 0.0 }
+}
+
+pub struct Voice {
+    events: RingReader<u32>,
+    tones: [Tone; TONES],
+    next: u32,
+    noise: u32,
+    music: f32,
+    step: u32,
+}
+
+// Starts the game's voice: the writer is how the game sends it cues.
+pub fn start() -> RingWriter<u32> {
+    let (writer, reader) = ring::<u32>(64)
+    let voice = Voice {
+        events: reader,
+        tones: [silent(); TONES],
+        next: MUSIC,
+        noise: 0x12345678,
+        music: 0.0,
+        step: 0,
+    }
+    play(take voice, render)
+    writer
+}
+
+@audio
+fn note(midi: f32) -> f32 {
+    440.0 * pow(2.0, (midi - 69.0) / 12.0)
+}
+
+@audio
+fn tone(v: mut Voice, from: f32, to: f32, length: f32, wave: u32, gain: f32, delay: f32 = 0.0) {
+    let i = v.next
+    v.next = if v.next + 1 >= TONES { MUSIC } else { v.next + 1 }
+    v.tones[i] = Tone { from, to, length, age: -delay, wave, gain, phase: 0.0, held: 0.0 }
+}
+
+@audio
+fn cue(v: mut Voice, c: u32) {
+    if c == JUMP { tone(mut v, from: 330.0, to: 760.0, length: 0.13, wave: PULSE, gain: 0.16) }
+    if c == LAND { tone(mut v, from: 180.0, to: 90.0, length: 0.06, wave: NOISE, gain: 0.1) }
+    if c == COIN {
+        tone(mut v, from: note(83.0), to: note(83.0), length: 0.08, wave: SQUARE, gain: 0.12)
+        tone(
+            mut v,
+            from: note(88.0),
+            to: note(88.0),
+            length: 0.32,
+            wave: SQUARE,
+            gain: 0.12,
+            delay: 0.07,
+        )
+    }
+    if c == STOMP {
+        tone(mut v, from: 260.0, to: 70.0, length: 0.16, wave: TRIANGLE, gain: 0.35)
+        tone(mut v, from: 900.0, to: 300.0, length: 0.08, wave: NOISE, gain: 0.12)
+    }
+    if c == BUMP { tone(mut v, from: 160.0, to: 110.0, length: 0.09, wave: TRIANGLE, gain: 0.3) }
+    if c == SPRING { tone(mut v, from: 220.0, to: 1300.0, length: 0.32, wave: PULSE, gain: 0.14) }
+    if c == CHECKPOINT {
+        for k in 0..4 {
+            let m = [72.0, 76.0, 79.0, 84.0][k]
+            tone(
+                mut v,
+                from: note(m),
+                to: note(m),
+                length: 0.18,
+                wave: SQUARE,
+                gain: 0.1,
+                delay: f32(k) * 0.07,
+            )
+        }
+    }
+    if c == HURT { tone(mut v, from: 700.0, to: 90.0, length: 0.7, wave: SQUARE, gain: 0.13) }
+    if c == CLEAR {
+        for k in 0..7 {
+            let m = [72.0, 76.0, 79.0, 84.0, 79.0, 84.0, 88.0][k]
+            let length = if k == 6 { 0.9 } else { 0.14 }
+            tone(
+                mut v,
+                from: note(m),
+                to: note(m),
+                length: length,
+                wave: SQUARE,
+                gain: 0.11,
+                delay: f32(k) * 0.12,
+            )
+        }
+        v.music = -3.0
+    }
+}
+
+// The music's next sixteenth: the chord changes each bar.
+@audio
+fn music(v: mut Voice) {
+    let bar = (v.step / 16) % 4
+    let at = v.step % 16
+    let roots = [45.0, 41.0, 48.0, 43.0]
+    let arps = [
+        [69.0, 72.0, 76.0, 81.0],
+        [65.0, 69.0, 72.0, 77.0],
+        [67.0, 72.0, 76.0, 79.0],
+        [67.0, 71.0, 74.0, 79.0],
+    ]
+    if at % 2 == 0 {
+        let up = if at % 8 == 6 { 12.0 } else { 0.0 }
+        let f = note(roots[bar] + up)
+        v.tones[0] = Tone {
+            from: f,
+            to: f,
+            length: SIXTEENTH * 1.8,
+            age: 0.0,
+            wave: TRIANGLE,
+            gain: 0.22,
+            phase: v.tones[0].phase,
+            held: 0.0,
+        }
+    }
+    let f = note(arps[bar][(at * 3) % 4] + if at >= 8 { 12.0 } else { 0.0 })
+    v.tones[1] = Tone {
+        from: f,
+        to: f,
+        length: SIXTEENTH * 0.9,
+        age: 0.0,
+        wave: PULSE,
+        gain: 0.045,
+        phase: v.tones[1].phase,
+        held: 0.0,
+    }
+    if at % 4 == 2 {
+        v.tones[2] = Tone {
+            from: 7000.0,
+            to: 7000.0,
+            length: 0.04,
+            age: 0.0,
+            wave: NOISE,
+            gain: 0.05,
+            phase: 0.0,
+            held: 0.0,
+        }
+    }
+    v.step += 1
+}
+
+@audio
+fn render(v: mut Voice, left: mut [f32], right: mut [f32]) {
+    var more = true
+    while more {
+        match v.events.pop() {
+            Some(c) => cue(mut v, c),
+            None => more = false,
+        }
+    }
+    let dt = 1.0 / f32(SAMPLE_RATE)
+    for i in 0..QUANTUM {
+        // The music waits out a fanfare, then carries on.
+        v.music += dt
+        if v.music >= SIXTEENTH {
+            v.music -= SIXTEENTH
+            music(mut v)
+        }
+        var out = 0.0
+        for k in 0..TONES {
+            var t = v.tones[k]
+            t.age += dt
+            if t.age < 0.0 || t.age > t.length {
+                v.tones[k] = t
+                continue
+            }
+            let f = t.from * pow(t.to / t.from, t.age / t.length)
+            t.phase = fract(t.phase + f * dt)
+            var s = 0.0
+            if t.wave == SQUARE { s = if t.phase < 0.5 { 1.0 } else { -1.0 } }
+            if t.wave == PULSE { s = if t.phase < 0.25 { 1.0 } else { -1.0 } }
+            if t.wave == TRIANGLE { s = 1.0 - 4.0 * abs(t.phase - 0.5) }
+            if t.wave == NOISE {
+                // A new random level each cycle of its pitch.
+                if t.phase < t.held {
+                    v.noise = v.noise.wrapping_mul(1664525).wrapping_add(1013904223)
+                }
+                t.held = t.phase
+                s = f32(v.noise >> 9) / 4194304.0 - 1.0
+            }
+            let attack = saturate(t.age / 0.004)
+            let fade = pow(1.0 - t.age / t.length, 1.5)
+            out += s * t.gain * attack * fade
+            v.tones[k] = t
+        }
+        // A soft limit, so stacked tones never clip.
+        let y = out / (1.0 + abs(out))
+        left[i] = y
+        right[i] = y
+    }
+}
