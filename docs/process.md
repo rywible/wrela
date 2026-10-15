@@ -1442,6 +1442,17 @@ code wasn't checked through trait methods of generic parameters. The model runs 
 the gate (about 2 s), and checks that its runs did crash the server with unkept records, drop
 connections and refuse proposals.
 
+**Durable rooms.** The server host keeps each room's journal: records framed with their length
+and a CRC-32C (the Castagnoli polynomial, as iSCSI and many storage formats use it; [RFC
+3720](https://www.rfc-editor.org/rfc/rfc3720#appendix-B.4) gives its check value), flushed before
+anything a call sent goes out, compacted by writing a snapshot beside the journal and renaming it
+into place. Its tests found the host treating a failed journal write like a deadline (the call's
+events waited and ran later), a retry count that reset with each restart, and that an instance
+restarted to isolate a trapping message forgot which connection was which peer's, so a poisoned
+proposal couldn't be traced to its peer: proposals now say whose they are, and a peer sends them
+only after its welcome. Measured on this M4 Air's SSD (indicative, not a benchmark): a call of 400
+proposals, 256 committed, took about 5 ms with its one flush.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
