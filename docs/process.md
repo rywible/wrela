@@ -1405,6 +1405,14 @@ as before) and each strut's cover as two struts'. At the switch the region goes 
 to 0.0575. The pixels that change between those two frames are no more than between the two
 before them, and they lie on strut outlines finishing their last move.
 
+**A cube inside a cube.** Ryan then asked whether the tesseract should come to rest as the
+cube inside the cube instead. Claude Code rendered both at rest side by side and recommended
+it. It is the image people know as a tesseract, and it keeps black chrome outside and
+silver inside. The opening ends on the same object the library shows, and the flattening,
+the one-cell tracing and the doubled count all go. The tesseract's clock still slows from
+2.5 s and stands still at 3.7 s, where the cells nest and it is seen three-quarters on.
+Native captures across the hold are identical byte for byte.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

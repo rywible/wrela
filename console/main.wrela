@@ -1346,7 +1346,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     }
     let target = vec2(f32(size.0), f32(size.1))
     let turn = if motion { turn_at(s.presentation, opening: intro) } else { 2.0 }
-    let verts = corners(turn, place.xyz, place.w, phase.cube)
+    let verts = corners(turn, place.xyz, place.w)
     write(mut s.room_corners, 0, verts)
     let space = begin_pass(mut s.room, clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
@@ -1362,12 +1362,11 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                 eye: cam.eye,
                 target: cam.target,
                 place,
-                // The cube at rest in the opening is still: no light or ripple moves on it.
+                // The tesseract at rest in the opening is still: no light or ripple moves on it.
                 time: if motion { clock_at(s.presentation, opening: intro) } else {
                     s.presentation
                 },
                 light: if phase.settled { 0.7 } else { 1.0 },
-                cube: phase.cube,
             },
         ),
         vertices: 6,

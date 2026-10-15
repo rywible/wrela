@@ -38,8 +38,6 @@ pub struct Artifact: Copy + GpuData {
     pub place: vec4,
     pub time: f32,
     pub light: f32,
-    // How far it has resolved into a cube: 1 once its two cells coincide.
-    pub cube: f32,
 }
 
 fn corner(i: u32) -> vec4 {
@@ -114,24 +112,14 @@ fn spin(q: vec4, t: f32) -> vec4 {
 }
 
 // The sixteen corners at `turn` (radians of the slow rotation), seen from a 4D eye and placed
-// at `centre` at `size`: world position, and 4D depth in `w` (-1 far, 1 near). As `cube` goes
-// from 0 to 1, the depth between the cells flattens: the far cell swells and the near one
-// holds until, at turn 0, they meet in one cube.
-pub fn corners(turn: f32, centre: vec3, size: f32, cube: f32) -> Vec<vec4> {
+// at `centre` at `size`: world position, and 4D depth in `w` (-1 far, 1 near).
+pub fn corners(turn: f32, centre: vec3, size: f32) -> Vec<vec4> {
     var out: Vec<vec4> = Vec::new()
     for i in 0..16 {
         let q = spin(corner(i) * 0.5, turn)
-        let out_by = mix(swell(q.w), swell(0.5), cube)
-        out.push(vec4(centre + q.xyz * (out_by * SPREAD * size), q.w * (1.0 - cube)))
+        out.push(vec4(centre + q.xyz * (swell(q.w) * SPREAD * size), q.w))
     }
     out
-}
-
-// Whether a strut or face whose corners' bits ORed are `parts` lies in the cell of corners 0 to
-// 7, the one drawn once the tesseract is a cube: the other cell then lies on it, and the struts
-// and faces between the two shrink to nothing.
-fn in_cube(parts: u32) -> bool {
-    (parts & 8) == 0
 }
 
 // ---- exact ray tests -----------------------------------------------------------------------
@@ -218,13 +206,11 @@ fn metal_hit(
     radius: f32,
     cone: vec2,
     skip: f32,
-    whole: bool,
 ) -> Hit {
     var hit = Hit { at: 1.0e9, normal: vec3(0.0), depth: 0.0, cover: 0.0, strut: -1.0 }
     for e in 0..EDGES {
         if f32(e) == skip { continue }
         let edge = edges[e]
-        if whole && !in_cube(u32(edge.x) | u32(edge.y)) { continue }
         let a = verts[u32(edge.x)]
         let b = verts[u32(edge.y)]
         let ra = radius * thickness(a.w)
@@ -283,21 +269,12 @@ fn metal_hit(
 }
 
 // The nearest face other than `skip`: distance and which (-1 for none).
-fn face_hit(
-    ro: vec3,
-    rd: vec3,
-    skip: f32,
-    verts: [vec4],
-    faces: [vec4],
-    inset: f32,
-    whole: bool,
-) -> vec2 {
+fn face_hit(ro: vec3, rd: vec3, skip: f32, verts: [vec4], faces: [vec4], inset: f32) -> vec2 {
     var best = 1.0e9
     var which = -1.0
     for f in 0..FACES {
         if f32(f) == skip { continue }
         let q = faces[f]
-        if whole && !in_cube(u32(q.x) | u32(q.y) | u32(q.z) | u32(q.w)) { continue }
         let a = verts[u32(q.x)].xyz
         let c = verts[u32(q.z)].xyz
         let mid = (a + c) * 0.5 - ro
@@ -426,20 +403,15 @@ fn trace(
     var cone = vec2(0.0, spread)
     let size = look.place.w
     let radius = STRUT * size
-    // Once its cells coincide, each strut and face of the cube is traced once, and counted as
-    // the two that lie there, so the cube looks as it did a moment before.
-    let whole = look.cube >= 1.0
     for _ in 0..BOUNCES {
-        let m = metal_hit(ro, rd, verts, edges, radius, cone, past, whole)
-        let f = face_hit(ro, rd, skip, verts, faces, radius * thickness(-1.0), whole)
+        let m = metal_hit(ro, rd, verts, edges, radius, cone, past)
+        let f = face_hit(ro, rd, skip, verts, faces, radius * thickness(-1.0))
         if m.at < f.x {
             let shine = polished(m.depth, m.normal, rd, look.time, rough)
-            // Two struts in one place cover what one leaves of the pixel again.
-            let cover = if whole { 1.0 - (1.0 - m.cover) * (1.0 - m.cover) } else { m.cover }
-            gathered += through * shine * cover
-            if cover >= 1.0 { return gathered }
+            gathered += through * shine * m.cover
+            if m.cover >= 1.0 { return gathered }
             // A strut's rim covers part of the pixel; the rest sees on past it.
-            through *= 1.0 - cover
+            through *= 1.0 - m.cover
             past = m.strut
             continue
         }
@@ -456,18 +428,17 @@ fn trace(
             // Where it mirrors the studio, each colour sees it a little shifted along the
             // fold: the spectrum at the glass's edges.
             let fold = warped - n
-            let sky = vec3(
+            var mirrored = vec3(
                 studio(normalize(r - fold * 0.05)).x,
                 studio(r).y,
                 studio(normalize(r + fold * 0.05)).z,
             )
-            var mirrored = sky
             // Only the nearest glass mirrors the struts: deeper layers are dim behind it, and
             // tracing their reflections too would cost as much again. It mirrors them as flat
             // glass, so they stay straight.
             let flat = rd - n * (2.0 * dot(rd, n))
             let seen = if skip < 0.0 {
-                metal_hit(p + flat * 0.001, flat, verts, edges, radius, at_glass, -1.0, whole)
+                metal_hit(p + flat * 0.001, flat, verts, edges, radius, at_glass, -1.0)
             } else {
                 Hit { at: 1.0e9, normal: vec3(0.0), depth: 0.0, cover: 0.0, strut: -1.0 }
             }
@@ -479,12 +450,6 @@ fn trace(
             gathered += through * mirrored * silvered * 0.7
             // Smoked glass: what lies behind it darkens through each face.
             through *= (1.0 - silvered) * 0.6
-            // The cube's face is two panes in one place; the second lies too deep to mirror
-            // the struts.
-            if whole {
-                gathered += through * sky * silvered * 0.7
-                through *= (1.0 - silvered) * 0.6
-            }
             cone = at_glass
             ro = p
             skip = f.y
@@ -580,13 +545,13 @@ fn every_corner_meets_four_struts_and_six_faces() {
 fn the_tesseract_stays_within_its_reach_however_it_turns() {
     for i in 0..400 {
         let turn = f32(i) * 0.37
-        for p in corners(turn, vec3(1.0, 2.0, 3.0), 1.4, cube: 0.0) {
+        for p in corners(turn, vec3(1.0, 2.0, 3.0), 1.4) {
             assert(length(p.xyz - vec3(1.0, 2.0, 3.0)) < 1.4 * REACH, "inside the traced sphere")
             assert(p.w >= -1.01 && p.w <= 1.01)
         }
     }
-    let a = corners(turn: 0.0, centre: vec3(0.0), size: 1.0, cube: 0.0)
-    let b = corners(turn: 0.5, centre: vec3(0.0), size: 1.0, cube: 0.0)
+    let a = corners(0.0, vec3(0.0), 1.0)
+    let b = corners(0.5, vec3(0.0), 1.0)
     var moved = 0.0
     for i in 0..16 { moved += length(a[i].xyz - b[i].xyz) }
     assert(moved > 0.5, "it turns")
@@ -604,7 +569,7 @@ fn far_struts_take_more_rays_than_near_ones() {
 @test
 fn a_strut_covers_the_share_of_a_pixel_it_fills() {
     // Look straight at the outermost strut from just outside it.
-    let verts = corners(turn: 0.0, centre: vec3(0.0), size: 1.0, cube: 0.0)
+    let verts = corners(0.0, vec3(0.0), 1.0)
     let edges = edges()
     var outer = 0
     var far = 0.0
@@ -635,7 +600,6 @@ fn a_strut_covers_the_share_of_a_pixel_it_fills() {
             STRUT,
             vec2(footprint, 0.0),
             -1.0,
-            whole: false,
         )
         if hit.strut == f32(outer) { hit.cover } else { 0.0 }
     }
@@ -710,38 +674,27 @@ fn the_tesseract_turns_at_one_steady_rate() {
 }
 
 @test
-fn the_tesseract_resolves_into_one_cube_at_rest() {
-    let size = 1.3
-    for centre in [vec3(1.0, 2.0, 3.0), vec3(-4.0, 0.5, 2.0)] {
-        let cube = corners(turn: 0.0, centre: centre, size: size, cube: 1.0)
-        // The two cells meet: each corner lies on its twin, at w = 0.
-        for i in 0..8 {
-            assert(length(cube[i] - cube[i + 8]) < 0.0001 && abs(cube[i].w) < 0.0001)
-        }
-        // A cube: every strut it keeps is one length, and each corner's three meet square.
-        let edge = |a: u32, b: u32| -> vec3 { cube[b].xyz - cube[a].xyz }
-        let side = length(edge(0, 1))
-        for (a, b) in [(0, 1), (0, 2), (0, 4), (3, 7), (5, 7), (6, 7)] {
-            assert(abs(length(edge(a, b)) - side) < 0.0001)
-        }
-        assert(
-            abs(dot(edge(0, 1), edge(0, 2))) < 0.0001 && abs(dot(edge(0, 2), edge(0, 4))) < 0.0001,
-        )
-        // The size of the nested near cell.
-        assert(abs(side - swell(0.5) * SPREAD * size) < 0.0001)
-        // Along the way, it stays within its reach.
-        for k in 0..11 {
-            for p in corners(f32(k) * 0.1 - 1.0, centre, size, cube: f32(k) * 0.1) {
-                assert(length(p.xyz - centre) < size * REACH)
-            }
-        }
+fn at_rest_the_tesseract_is_a_cube_inside_a_cube() {
+    let centre = vec3(1.0, 2.0, 3.0)
+    let rest = corners(turn: 0.0, centre: centre, size: 1.3)
+    // The far cell is the near one drawn smaller about the centre: each far corner lies on the
+    // line from the centre to its near twin.
+    let inner = swell(-0.5) / swell(0.5)
+    for i in 0..8 {
+        let far = rest[i]
+        let near = rest[i + 8]
+        assert(abs(far.w + 0.5) < 0.0001 && abs(near.w - 0.5) < 0.0001)
+        assert(length((far.xyz - centre) - (near.xyz - centre) * inner) < 0.0001)
     }
-    // Twelve struts and six faces draw it.
-    var struts = 0
-    for e in edges() { if in_cube(u32(e.x) | u32(e.y)) { struts += 1 } }
-    var squares = 0
-    for q in faces() { if in_cube(u32(q.x) | u32(q.y) | u32(q.z) | u32(q.w)) { squares += 1 } }
-    assert(struts == 12 && squares == 6)
+    // Each cell is a true cube: its struts are one length and meet square.
+    let edge = |a: u32, b: u32| -> vec3 { rest[b].xyz - rest[a].xyz }
+    let side = length(edge(8, 9))
+    for (a, b) in [(8, 9), (8, 10), (8, 12), (11, 15), (13, 15), (14, 15)] {
+        assert(abs(length(edge(a, b)) - side) < 0.0001)
+    }
+    assert(
+        abs(dot(edge(8, 9), edge(8, 10))) < 0.0001 && abs(dot(edge(8, 10), edge(8, 12))) < 0.0001,
+    )
 }
 
 @test
