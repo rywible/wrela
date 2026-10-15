@@ -2,7 +2,7 @@
 // Joins are mitred, terminals are cut flat, and bowls are chamfered at 45 degrees. The same
 // strokes, heavier, make the WRΞLA mark. No external font outlines or raster assets are
 // used here.
-use ui::ttf::{Baked, BakedGlyph}
+use ui::ttf::{Baked, BakedGlyph, Kern}
 
 // Design units are hundredths of an em. Capitals stand 0.70 em, on a 0.10 em stroke.
 pub const CAP: f32 = 0.70
@@ -234,7 +234,8 @@ pub fn letter(codepoint: u32) -> Letter {
                         vec2(41.0, 36.0),
                         vec2(15.0, 36.0),
                         vec2(5.0, 26.0),
-                        vec2(5.0, 5.0),
+                        vec2(5.0, 15.0),
+                        vec2(15.0, 5.0),
                         vec2(56.0, 5.0),
                     ],
                 ),
@@ -268,7 +269,7 @@ pub fn letter(codepoint: u32) -> Letter {
             56.0
         },
         52 => {
-            s.push(line([vec2(5.0, 70.0), vec2(5.0, 25.0), vec2(56.0, 25.0)]))
+            s.push(line([vec2(5.0, 70.0), vec2(5.0, 35.0), vec2(15.0, 25.0), vec2(56.0, 25.0)]))
             s.push(line([vec2(43.0, 46.0), vec2(43.0, 0.0)]))
             56.0
         },
@@ -277,8 +278,10 @@ pub fn letter(codepoint: u32) -> Letter {
                 line(
                     [
                         vec2(51.0, 65.0),
-                        vec2(5.0, 65.0),
-                        vec2(5.0, 38.0),
+                        vec2(15.0, 65.0),
+                        vec2(5.0, 55.0),
+                        vec2(5.0, 48.0),
+                        vec2(15.0, 38.0),
                         vec2(41.0, 38.0),
                         vec2(51.0, 28.0),
                         vec2(51.0, 15.0),
@@ -386,7 +389,8 @@ pub fn letter(codepoint: u32) -> Letter {
                 line(
                     [
                         vec2(46.0, 16.0),
-                        vec2(62.0, 16.0),
+                        vec2(52.0, 16.0),
+                        vec2(62.0, 26.0),
                         vec2(62.0, 56.0),
                         vec2(52.0, 66.0),
                         vec2(15.0, 66.0),
@@ -409,7 +413,8 @@ pub fn letter(codepoint: u32) -> Letter {
                 ring(
                     [
                         vec2(5.0, 35.0),
-                        vec2(5.0, 65.0),
+                        vec2(5.0, 55.0),
+                        vec2(15.0, 65.0),
                         vec2(41.0, 65.0),
                         vec2(50.0, 56.0),
                         vec2(50.0, 44.0),
@@ -420,12 +425,13 @@ pub fn letter(codepoint: u32) -> Letter {
             s.push(
                 ring(
                     [
-                        vec2(5.0, 5.0),
+                        vec2(5.0, 15.0),
                         vec2(5.0, 35.0),
                         vec2(44.0, 35.0),
                         vec2(55.0, 24.0),
                         vec2(55.0, 16.0),
                         vec2(44.0, 5.0),
+                        vec2(15.0, 5.0),
                     ],
                 ),
             )
@@ -450,24 +456,37 @@ pub fn letter(codepoint: u32) -> Letter {
             s.push(
                 ring(
                     [
-                        vec2(5.0, 5.0),
-                        vec2(5.0, 65.0),
+                        vec2(5.0, 15.0),
+                        vec2(5.0, 55.0),
+                        vec2(15.0, 65.0),
                         vec2(42.0, 65.0),
                         vec2(55.0, 52.0),
                         vec2(55.0, 18.0),
                         vec2(42.0, 5.0),
+                        vec2(15.0, 5.0),
                     ],
                 ),
             )
             60.0
         },
         69 => {
-            s.push(line([vec2(52.0, 65.0), vec2(5.0, 65.0), vec2(5.0, 5.0), vec2(52.0, 5.0)]))
+            s.push(
+                line(
+                    [
+                        vec2(52.0, 65.0),
+                        vec2(15.0, 65.0),
+                        vec2(5.0, 55.0),
+                        vec2(5.0, 15.0),
+                        vec2(15.0, 5.0),
+                        vec2(52.0, 5.0),
+                    ],
+                ),
+            )
             s.push(line([vec2(5.0, 35.0), vec2(44.0, 35.0)]))
             52.0
         },
         70 => {
-            s.push(line([vec2(52.0, 65.0), vec2(5.0, 65.0), vec2(5.0, 0.0)]))
+            s.push(line([vec2(52.0, 65.0), vec2(15.0, 65.0), vec2(5.0, 55.0), vec2(5.0, 0.0)]))
             s.push(line([vec2(5.0, 35.0), vec2(44.0, 35.0)]))
             52.0
         },
@@ -482,7 +501,8 @@ pub fn letter(codepoint: u32) -> Letter {
                         vec2(18.0, 5.0),
                         vec2(42.0, 5.0),
                         vec2(55.0, 18.0),
-                        vec2(55.0, 35.0),
+                        vec2(55.0, 25.0),
+                        vec2(45.0, 35.0),
                         vec2(33.0, 35.0),
                     ],
                 ),
@@ -521,7 +541,7 @@ pub fn letter(codepoint: u32) -> Letter {
             58.0
         },
         76 => {
-            s.push(line([vec2(5.0, 70.0), vec2(5.0, 5.0), vec2(50.0, 5.0)]))
+            s.push(line([vec2(5.0, 70.0), vec2(5.0, 15.0), vec2(15.0, 5.0), vec2(50.0, 5.0)]))
             50.0
         },
         77 => {
@@ -551,7 +571,8 @@ pub fn letter(codepoint: u32) -> Letter {
                 line(
                     [
                         vec2(5.0, 0.0),
-                        vec2(5.0, 65.0),
+                        vec2(5.0, 55.0),
+                        vec2(15.0, 65.0),
                         vec2(42.0, 65.0),
                         vec2(52.0, 55.0),
                         vec2(52.0, 42.0),
@@ -733,6 +754,44 @@ fn glyph_pieces(l: Letter, shift: vec2) -> Vec<Piece> {
     out
 }
 
+// ---- kerning ---------------------------------------------------------------------------------
+
+// Pairs whose open sides face each other leave a hole that even side bearings can't close: a
+// slope beside a slope, or beside the open side of an L, F, P or T. Each moves together by
+// hundredths of an em. Only capitals pair; digits keep their widths, so figures line up.
+const KERNING: [(u32, u32, f32); 15] = [
+    (65, 84, -5.0),
+    (65, 86, -6.0),
+    (65, 87, -4.0),
+    (65, 89, -6.0),
+    (84, 65, -5.0),
+    (86, 65, -6.0),
+    (87, 65, -4.0),
+    (89, 65, -6.0),
+    (76, 84, -7.0),
+    (76, 86, -6.0),
+    (76, 87, -4.0),
+    (76, 89, -7.0),
+    (76, 65, -4.0),
+    (70, 65, -4.0),
+    (80, 65, -4.0),
+]
+
+// The table as the font carries it: each pair in either case, in 1/8192 ems.
+fn kerns() -> Vec<Kern> {
+    var out: Vec<Kern> = Vec::new()
+    for (a, b, hundredths) in KERNING {
+        for left in [a, a + 32] {
+            for right in [b, b + 32] {
+                out.push(
+                    Kern { left: left - 32, right: right - 32, units: i32(hundredths * 81.92) },
+                )
+            }
+        }
+    }
+    out
+}
+
 // The wordmark: heavier strokes, and a stemless E. Each segment is one rigid piece.
 fn mark_letters() -> Vec<Letter> {
     var w: Vec<Stroke> = Vec::new()
@@ -748,11 +807,12 @@ fn mark_letters() -> Vec<Letter> {
         ),
     )
     var r: Vec<Stroke> = Vec::new()
-    r.push(line([vec2(7.0, 0.0), vec2(7.0, 70.0)]))
     r.push(
         line(
             [
-                vec2(7.0, 63.0),
+                vec2(7.0, 0.0),
+                vec2(7.0, 53.0),
+                vec2(17.0, 63.0),
                 vec2(46.0, 63.0),
                 vec2(56.0, 53.0),
                 vec2(56.0, 40.0),
@@ -767,7 +827,7 @@ fn mark_letters() -> Vec<Letter> {
     e.push(line([vec2(6.0, 35.0), vec2(46.0, 35.0)]))
     e.push(line([vec2(0.0, 7.0), vec2(52.0, 7.0)]))
     var l: Vec<Stroke> = Vec::new()
-    l.push(line([vec2(7.0, 70.0), vec2(7.0, 7.0), vec2(50.0, 7.0)]))
+    l.push(line([vec2(7.0, 70.0), vec2(7.0, 17.0), vec2(17.0, 7.0), vec2(50.0, 7.0)]))
     var a: Vec<Stroke> = Vec::new()
     a.push(line([vec2(5.0, -18.0), vec2(34.0, 88.0), vec2(63.0, -18.0)]))
     a.push(line([vec2(19.0, 22.0), vec2(49.0, 22.0)]))
@@ -906,7 +966,7 @@ pub fn bake() -> Baked {
         descender: -0.18,
         line_gap: 0.12,
         glyphs,
-        kerning: Vec::new(),
+        kerning: kerns(),
         fields,
     }
 }
@@ -935,16 +995,18 @@ fn facet_has_printable_ascii_with_ink_and_shared_capitals() {
 
 @test
 fn mitred_joins_close_corners_and_terminals_cut_flat() {
-    // L: the outer corner of a turn is filled to the square, and nothing passes the end.
-    let parts = glyph_pieces(letter(76), vec2(0.0))
-    let near = |p: vec2| -> f32 {
+    let near_in = |cp: u32, p: vec2| -> f32 {
         var d = 100.0
-        for s in parts { d = min(d, piece_distance(p, s)) }
+        for s in glyph_pieces(letter(cp), vec2(0.0)) { d = min(d, piece_distance(p, s)) }
         d
     }
-    assert(near(vec2(0.001, 0.001)) < 0.0)
-    assert(near(vec2(0.499, 0.05)) < 0.0)
-    assert(near(vec2(0.505, 0.05)) > 0.0)
+    // [: the outer corner of a square turn is filled to the square.
+    assert(near_in(91, vec2(0.001, 0.849)) < 0.0)
+    // L: its corner is cut at 45 degrees, and nothing passes the end of its foot.
+    assert(near_in(76, vec2(0.001, 0.001)) > 0.0)
+    assert(near_in(76, vec2(0.075, 0.075)) < 0.0)
+    assert(near_in(76, vec2(0.499, 0.05)) < 0.0)
+    assert(near_in(76, vec2(0.505, 0.05)) > 0.0)
     // A mitred bowl has no seam: the middle of its stroke at a chamfer is deep inside.
     let o = glyph_pieces(letter(79), vec2(0.0))
     var deep = 100.0
@@ -976,9 +1038,9 @@ fn the_flat_mark_matches_its_pieces() {
 }
 
 @test
-fn the_mark_is_nineteen_pieces_on_one_baseline_and_centred() {
+fn the_mark_is_twenty_one_pieces_on_one_baseline_and_centred() {
     let parts = mark()
-    assert(parts.len() == 19)
+    assert(parts.len() == 21)
     var lo = 100.0
     var hi = -100.0
     for p in parts {
@@ -989,4 +1051,51 @@ fn the_mark_is_nineteen_pieces_on_one_baseline_and_centred() {
     }
     assert(abs(lo + hi) < 0.12)
     assert(mark_width() > 3.5 && mark_width() < 4.2)
+}
+
+@test
+fn every_square_corner_of_a_letter_or_digit_is_cut_at_45_degrees() {
+    // The octagon is the console's shape: Facet's bowls and outer corners are cut at 45
+    // degrees. A square turn stays only where another stroke runs on through it. Brackets
+    // keep their square corners, so they stay apart from parentheses.
+    var letters: Vec<Letter> = mark_letters()
+    for cp in 48..58 { letters.push(letter(cp)) }
+    for cp in 65..91 { letters.push(letter(cp)) }
+    for l in letters {
+        for k in 0..l.strokes.len() {
+            let stroke = l.strokes[k].clone()
+            let p = stroke.points.clone()
+            let n = p.len()
+            for i in 0..n {
+                if !stroke.closed && (i == 0 || i + 1 == n) { continue }
+                let before = normalize(p[i] - p[(i + n - 1) % n])
+                let after = normalize(p[(i + 1) % n] - p[i])
+                if abs(dot(before, after)) > 0.01 { continue }
+                // A square turn: another stroke must run through its corner.
+                var through = false
+                for j in 0..l.strokes.len() {
+                    if j == k { continue }
+                    for q in l.strokes[j].points {
+                        if length(q - p[i]) < 0.0001 { through = true }
+                    }
+                }
+                assert(through, "a square corner is cut")
+            }
+        }
+    }
+}
+
+@test
+fn open_pairs_kern_together_in_either_case_and_stems_and_digits_do_not() {
+    borrow font = FONT
+    let kern = |a: u32, b: u32| -> i32 {
+        var units = 0
+        for k in font.kerning { if k.left == a - 32 && k.right == b - 32 { units = k.units } }
+        units
+    }
+    for (a, b) in [(76, 65), (108, 65), (76, 97), (108, 97)] { assert(kern(a, b) < 0, "LA") }
+    assert(kern(65, 86) < 0 && kern(84, 65) < 0)
+    assert(kern(72, 72) == 0 && kern(49, 49) == 0 && kern(55, 65) == 0)
+    // No pair moves by more than a tenth of an em.
+    for k in font.kerning { assert(k.units < 0 && k.units > -820) }
 }

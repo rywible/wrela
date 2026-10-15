@@ -1418,6 +1418,28 @@ variants of the mark with the real renderer. Ryan chose the one where the A tuck
 0.07 em over the L's open side, which closes the hole between them, and turned down a
 shorter middle bar on the Ξ.
 
+## Facet's octagon rule and kerning, 2026-10-14
+
+Ryan asked what would make Facet Wrela's own. Claude Code (Opus 5.5) proposed an octagon rule
+and mocked it in the real renderer, and Ryan approved it with a kerning table.
+
+**Corners.** Facet's bowls were already cut at 45 degrees, its O is an octagon, and the
+favicon will be the tesseract's octagonal Petrie projection. Now every square outer corner of
+a letter or digit is cut at 45 degrees by the bowls' 0.10 em: 2, 4, 5, B, D, E, F, G, L and P
+(so R), and the mark's R and L. The mark's R is now one stroke round its top-left corner, so
+the mark has 21 runs (19 before). A square turn stays only where another stroke runs on
+through it, as where B's bowls meet its stem. Brackets keep their square corners, so they
+stay apart from parentheses. A regression checks the rule over the mark, the digits and the
+capitals.
+
+**Kerning.** Facet had no kerning. Claude Code first measured every pair from the strokes:
+the space between letters, averaged over 14 bands of the cap height and moved halfway toward
+the space between two stems. Open sides either dominated (every pair after a C at the cap)
+or, when their depth was limited, slopes did (AA closed by a tenth of an em). Both were
+dropped for a table of the classic open pairs: A with T, V, W and Y each way; L with T, V, W,
+Y and A; FA and PA; 0.04 to 0.07 em, in either case. Digits keep their widths. Native
+captures of game titles show the corners and the even spacing.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
