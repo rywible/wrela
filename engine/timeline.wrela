@@ -1,7 +1,10 @@
-// The engine's rollback driver (sketch 03 §4), generic over any game's world and inputs. Sim
-// state is ordinary values (§6.11): a keyframe is a clone, every `KEYFRAME_TICKS` ticks; a
-// correction for an earlier tick restores the last keyframe at or before it, fixes the input,
-// and replays to the present. The checksum is the derived `StateHash` of the whole world.
+// The rollback driver: a `Timeline` steps a world, keeps its inputs and keyframes, and replays
+// from a keyframe when a correction arrives for an earlier tick.
+//
+// It is generic over any game's world and inputs. Sim state is ordinary values (language.md
+// §6.11): a keyframe is a clone, every `KEYFRAME_TICKS` ticks. A correction for an earlier tick
+// restores the last keyframe at or before it, fixes the input, and replays to the present. The
+// checksum is the derived `StateHash` of the whole world.
 
 use sim::Tick
 use std::hash::{StateHash, state_hash}
@@ -82,7 +85,7 @@ pub struct Saved<W>: Clone {
 
 impl<W: Clone> Ring<Saved<W>> {
     /// Keeps `world` as tick `tick`'s keyframe: copied into the oldest one's place once the
-    /// ring is full (`clone_into`), so a steady timeline allocates nothing for it (#43 §5.2).
+    /// ring is full (`clone_into`), so a steady timeline allocates nothing for it.
     pub fn keep(mut self, tick: Tick, world: W) {
         if self.capacity == 0 {
             self.first += 1
@@ -169,7 +172,7 @@ impl<W: Clone + StateHash, I: Clone> Timeline<W, I> {
         self.tick += 1
     }
 
-    /// A correction arrived for tick `t`, for example from the server (D-042): restore the last
+    /// A correction arrived for tick `t`, for example from the server: restore the last
     /// copy at or before `t`, fix the input, and replay to the present. The replayed ticks'
     /// checksums replace the ones recorded; how many of them changed.
     pub fn correct<F: @deterministic fn(mut W, I)>(

@@ -1,17 +1,21 @@
-// The board for screen readers and the keyboard: its controls and its items as an accessibility
-// tree (`platform::host::accessibility`), and what an assistive technology does to them
-// (`Event::Assist`) as actions by node number. Controls are numbered below `ITEMS`; an item's
-// node is `ITEMS` plus its id, so what's drawn over it never decides what's acted on.
+// The board for screen readers and the keyboard: its controls and its items as a semantic tree
+// (std::semantics, `platform::host::publish`), and what a person does to them (`Event::Assist`)
+// as actions by node number. Controls are numbered below `ITEMS`, in a group; the items are a
+// list's options, and an item's node is `ITEMS` plus its id, so what's drawn over it never decides
+// what's acted on.
 
 use board::{Board, Kind, has}
 use chrome::{ALIGNS, Action, Chrome, SHAPES, Selection, TOOLS, Tool, tip}
 use paint::COLORS
-use platform::host::{Node, Role}
+use std::semantics::{Node, Role}
 use ui::draw::Rect
 use view::View
 
 /// Where items' node numbers start.
 pub const ITEMS: u32 = 1000
+/// The controls' group and the items' list.
+const CONTROLS: u32 = 998
+const LIST: u32 = 999
 
 const COLOR_NAMES = ["Yellow", "Orange", "Pink", "Violet", "Blue", "Green", "Grey", "White"]
 
@@ -165,6 +169,7 @@ pub fn tree(
     can_redo: bool,
 ) -> Vec<Node> {
     var nodes: Vec<Node> = Vec::new()
+    nodes.push(Node { id: CONTROLS, role: Role::Group, label: String::from("Tools") })
     for k in c.controls {
         let label = match k.action {
             Action::Color { index } => String::from(COLOR_NAMES[index]),
@@ -173,6 +178,7 @@ pub fn tree(
         nodes.push(
             Node {
                 id: node_of(k.action),
+                parent: CONTROLS,
                 role: Role::Button,
                 pressed: k.action == Action::Use { tool },
                 disabled: (k.action == Action::Undo && !can_undo) ||
@@ -182,13 +188,15 @@ pub fn tree(
             },
         )
     }
+    nodes.push(Node { id: LIST, role: Role::ListBox, label: String::from("Items") })
     for i in 0..b.items.len() {
         let r = v.rect(b.bounds(i))
         let id = b.items[i].id
         nodes.push(
             Node {
                 id: ITEMS + id,
-                role: Role::Item,
+                parent: LIST,
+                role: Role::Option,
                 selected: has(selected, id),
                 rect: vec4(r.x, r.y, r.w, r.h),
                 label: name(b, i),
@@ -267,7 +275,7 @@ fn items_are_named_by_kind_and_words() {
     var found = 0
     for n in items {
         if n.id == ITEMS + a {
-            assert(n.selected && n.role == Role::Item)
+            assert(n.selected && n.role == Role::Option && n.parent == LIST)
             found += 1
         }
         if n.id == node_of(Action::Use { tool: Tool::Note }) {

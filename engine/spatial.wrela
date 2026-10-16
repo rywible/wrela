@@ -1,9 +1,11 @@
-// Spatial queries (sketch 03 §3): a grid of positions copied at the start of a tick (D-085),
-// so a system reads them while the entities themselves change. Built in iteration order and
-// sorted by cell, ties kept in that order, so its answers depend on nothing but the positions.
+// Spatial queries: a grid of entities' positions that answers which entities are near a point.
+//
+// The grid is a copy of the positions made at the start of a tick, so a system reads them while
+// the entities themselves change. It is built in iteration order and sorted by cell, ties kept
+// in that order, so its answers depend on nothing but the positions.
 // There are no iterator types: a query takes a closure (`each_within`) or returns an owned
 // `Vec` (`within`), language.md §6.6. A grid kept in the world and rebuilt each tick
-// (`rebuild`) reuses its buffers, so a steady tick allocates nothing for it (#43 §5.2).
+// (`rebuild`) reuses its buffers, so a steady tick allocates nothing for it.
 
 use sim::{Sim, SimState}
 use std::arena::{Arena, Handle}
