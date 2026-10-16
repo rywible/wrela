@@ -26,6 +26,7 @@ use std::gpu::{
     VertexIndex, append_buffer, buffer, buffer_of, discard, dispatch, draw,
 }
 use std::math::TAU
+use temporal::deforming_of
 use terrain::{Levels, Texel, ground_cover_at}
 use view::Camera
 
@@ -1518,6 +1519,59 @@ pub fn blade(
     }
 }
 
+/// What a blade's motion passes on: its clip position, and its point now and last frame.
+pub struct BladeMotion: Copy {
+    pub clip: ClipPosition,
+    pub now: vec3,
+    pub then: vec3,
+}
+
+/// A tier's blades as `blade` draws them, with where each point was last frame: bent by the
+/// wind (`last_wind`) and a cloth's contact (`last_contact`) as they were then. The same blade
+/// both times, so a point's motion is its own (`temporal::deforming_of`).
+@vertex
+pub fn blade_motion(
+    v: VertexIndex,
+    g: InstanceIndex,
+    cam: Camera,
+    wind: Wind,
+    last_wind: Wind,
+    contact: Contact,
+    last_contact: Contact,
+    tier: Tier,
+    blades: [Blade],
+    count: [u32],
+) -> BladeMotion {
+    let per = blade_points(tier.segments)
+    let which = g.index * GROUP + v.index / per
+    if which >= min(count[0], blades.len()) {
+        return BladeMotion {
+            clip: ClipPosition { position: vec4(0.0) },
+            now: vec3(0.0),
+            then: vec3(0.0),
+        }
+    }
+    let b = blades[which]
+    let d = length(b.root - cam.eye)
+    let m = smoothstep(tier.morph_from, tier.morph_to, d)
+    let (i, side) = blade_point_of(v.index % per, tier.segments)
+    let t = f32(i) / f32(tier.segments)
+    let now = cloth_contact(blade_vertex(b, i, side, tier.segments, m, wind), b.root, t, contact)
+    let then = cloth_contact(
+        blade_vertex(b, i, side, tier.segments, m, last_wind),
+        b.root,
+        t,
+        last_contact,
+    )
+    BladeMotion { clip: ClipPosition { position: cam.clip(now) }, now, then }
+}
+
+/// A blade's pixel's motion (`temporal::deforming_of`).
+@fragment
+pub fn blade_moved(m: BladeMotion, cam: Camera) -> vec4 {
+    deforming_of(cam, m.now, m.then)
+}
+
 /// A blade's colour at `t` up it, with variation `tint`, in a patch this `dry` and this `deep`
 /// a green.
 pub fn grass_colour(look: GrassLook, t: f32, tint: f32, dry: f32, deep: f32) -> vec3 {
@@ -1696,6 +1750,36 @@ impl Grass {
             flower_cut,
             indirect: self.blooms.items(),
             depth: view::NEAREST,
+        )
+    }
+
+    /// The near blades' motion, where the shading drew them (the depth equal to theirs): bent by
+    /// `wind` and the contact now, by `last_wind` and `last_contact` last frame. Only the near
+    /// tier's: farther, a blade's sway is a fraction of a pixel.
+    pub fn motion<P: RenderPass>(
+        self,
+        pass: P,
+        cam: Camera,
+        wind: Wind,
+        last_wind: Wind,
+        last_contact: Contact,
+    ) {
+        draw(
+            pass,
+            blade_motion.bind(
+                cam,
+                wind,
+                last_wind,
+                contact: self.contact,
+                last_contact: last_contact,
+                tier: tier(0),
+                blades: self.near.items(),
+                count: self.near.count(),
+            ),
+            blade_moved.bind(cam),
+            indices: self.indices,
+            indirect: self.tiers.span(start: 0, count: 1),
+            depth: view::BEHIND,
         )
     }
 

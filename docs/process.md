@@ -2285,6 +2285,18 @@ Every third round saved 35% and every fourth 42%; a turn's tile waits longer the
 tile's number alone, a whole phase rested or marched together (every tile of a phase is the same
 modulo 32), and the median frame saved only 13%.
 
+Grass now draws its motion (W1.4): the near blades again in the motion pass, each point bent by
+this frame's wind and cloak and by last frame's, with 0.5 in the target's z
+(`temporal::deforming_of`), where the depth equals the shading's (so a leaflet's cut and what's
+in front write nothing). A resolve reprojects thin geometry by it, and treats it as still
+otherwise; only where the history at that point showed thin geometry too, since grass the cloak
+pushes aside points back at where the cloak was. In a test of blades sliding 1.5 pixels a frame
+it is 31% nearer a fresh resolve after 12 frames than without (whose blades fade toward the
+ground). In the floor the grass stays crisper in a hard turn; the held gust's frame-to-frame
+change is 1.2% more (its blades move rather than smear). It costs 0.86 ms of GPU time in the
+opening (3%), the blades' second draw. It's the motion that a resolve shading a share of the
+pixels each frame would need; that spike isn't done.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

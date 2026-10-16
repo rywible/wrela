@@ -331,8 +331,21 @@ fn resolved(
     var expected_depth = 0.0
     // Where this pixel's point was last frame, in output pixels.
     var last = vec2(0.0)
-    if moved.z > 0.5 {
-        last = (q - moved.xy) / scale
+    // Thin geometry the wind bends (`deforming_of`): its point's own motion, the camera's with
+    // it, where the history there showed thin geometry too. Grass a cloak pushes aside points
+    // back at where the cloak was: there it's reprojected by the camera, as before. It's still
+    // to everything else here, so its coverage blends as before.
+    let bent = (q - moved.xy) / scale
+    let deforming = moved.z > 0.25 &&
+        moved.z <= 0.5 &&
+        coverage &&
+        bent.x >= 0.0 &&
+        bent.y >= 0.0 &&
+        bent.x < r.out.x &&
+        bent.y < r.out.y &&
+        thin(class_of(history.load(x: u32(bent.x), y: u32(bent.y)).a))
+    if moved.z > 0.5 || deforming {
+        last = bent
     } else if z > 0.0 {
         let world = cam.unjittered().world_at(q, z)
         let previous = cam.last_view_proj * vec4(world, 1.0)
@@ -419,10 +432,20 @@ fn resolved(
 }
 
 /// What the motion target holds: in a pixel something moved in, where it was last frame
-/// relative to now (scene pixels, `now - last`), and 1 in z; elsewhere 0 (the camera's own
-/// motion is found from the depth).
+/// relative to now (scene pixels, `now - last`), and 1 in z; in a pixel of thin geometry the wind
+/// bends (`deforming_of`), the same with 0.5 in z; elsewhere 0 (the camera's own motion is found
+/// from the depth).
 pub fn motion_of(cam: Camera, world: vec3, last_world: vec3) -> vec4 {
     let now = cam.pixel(world)
     let then = cam.last_pixel(last_world)
     vec4(now - then, 1.0, 1.0)
+}
+
+/// `motion_of` for thin geometry the wind bends (grass): 0.5 in z, so a resolve reprojects its
+/// pixels by it but treats them as still otherwise (its samples blend with what's beside them,
+/// and nothing is left behind where it was).
+pub fn deforming_of(cam: Camera, world: vec3, last_world: vec3) -> vec4 {
+    let now = cam.pixel(world)
+    let then = cam.last_pixel(last_world)
+    vec4(now - then, 0.5, 1.0)
 }
