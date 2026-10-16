@@ -1,7 +1,9 @@
 // A page laid out at a width: its text as pieces placed on lines, the shapes behind and between
 // them (code's ground, rules, a table's lines), where its links are, where each heading is, and
 // its parts for screen readers, in reading order. Positions are pixels from the page's top left;
-// the program draws only what's on screen, from this.
+// the program draws only what's on screen, from this. A block of code that builds a field
+// (live.wrela) has a figure under it, where the field is drawn, and its numbers that the field
+// reads are marked as numbers to drag.
 use markdown::{BOLD, Block, CODE, ITALIC, Kind, LINK, MUTED, Run, TAG, plain}
 use highlight::{Token, spans}
 use theme::{
@@ -54,10 +56,26 @@ pub struct Part: Clone {
     pub target: String,
 }
 
-/// A block of code: its ground, and its text as written, for a copy of it.
+/// A block of code: its ground, its text as written, for a copy of it, and its block.
 pub struct Snippet: Clone {
     pub rect: Rect,
     pub text: String,
+    pub block: u32,
+}
+
+/// A number in a block of code that builds a field: its piece, its block, and its bytes in the
+/// block's code. A drag changes it, and the field drawn under the block with it.
+pub struct Knob: Copy {
+    pub piece: u32,
+    pub block: u32,
+    pub start: u32,
+    pub end: u32,
+}
+
+/// The place under a block of code where the field it builds is drawn, and the block.
+pub struct Figure: Copy {
+    pub rect: Rect,
+    pub block: u32,
 }
 
 /// A heading with an anchor under the page's title: the anchor, where the heading is, how tall its
@@ -77,6 +95,8 @@ pub struct Laid: Clone {
     pub parts: Vec<Part>,
     pub snippets: Vec<Snippet>,
     pub titles: Vec<Title>,
+    pub knobs: Vec<Knob>,
+    pub figures: Vec<Figure>,
     pub height: f32,
     /// The block being laid out.
     block: u32,
@@ -94,6 +114,8 @@ impl Laid {
             parts: Vec::new(),
             snippets: Vec::new(),
             titles: Vec::new(),
+            knobs: Vec::new(),
+            figures: Vec::new(),
             height: 0.0,
             block: 0,
             code_blocks: Vec::new(),
@@ -401,7 +423,15 @@ pub fn lay_out(
             },
             Kind::Code => {
                 if k > 0 && previous != Kind::Heading && previous != Kind::Meta { y += 4.0 * u }
-                y = code(mut laid, p, fonts, b.code.as_str(), y, wide, u)
+                let read = if b.lang.is_empty() || b.lang.as_str() == "wrela" {
+                    live::read(b.code.as_str(), 0.0)
+                } else { None }
+                let knobs = match read {
+                    Some(r) => r.knobs.clone(),
+                    None => Vec::new(),
+                }
+                y = code(mut laid, p, fonts, b.code.as_str(), y, wide, u, knobs)
+                if read.is_some() { y = figure(mut laid, p, fonts, y, wide, u) }
                 y += 16.0 * u
             },
             Kind::Table => {
@@ -711,7 +741,16 @@ fn end_segment(
 
 /// A block of code on its ground, coloured by its tokens, its long lines wrapped under
 /// themselves. The bottom of its ground.
-fn code(laid: mut Laid, p: Palette, fonts: Fonts, text: str, y: f32, width: f32, u: f32) -> f32 {
+fn code(
+    laid: mut Laid,
+    p: Palette,
+    fonts: Fonts,
+    text: str,
+    y: f32,
+    width: f32,
+    u: f32,
+    knobs: [(u32, u32)],
+) -> f32 {
     let size = CODE_SIZE * u
     let line = size * CODE_LEADING
     let pad = 14.0 * u
@@ -737,7 +776,14 @@ fn code(laid: mut Laid, p: Palette, fonts: Fonts, text: str, y: f32, width: f32,
                 Token::Comment => hex(p.comment),
                 Token::Plain => hex(p.text),
             }
-            // A span past the line's end goes on under it, indented.
+            // A span past the line's end goes on under it, indented: whole, where it fits on a line
+            // of its own, so a name or a number isn't cut.
+            let whole = char_count(src, s, e)
+            if col > 4 && col + whole > columns && whole <= columns - 4 && token != Token::Comment {
+                top += line
+                col = 4
+                x = pad + 4.0 * advance
+            }
             var from = s
             while from < e {
                 let room = columns - col
@@ -748,6 +794,40 @@ fn code(laid: mut Laid, p: Palette, fonts: Fonts, text: str, y: f32, width: f32,
                     count += 1
                 }
                 let piece = src.slice(from, to)
+                // A number the field reads: in the field's light, over a dotted line.
+                var knob = false
+                if token == Token::Number {
+                    for (ks, ke) in knobs {
+                        if ks == a + from && ke == a + to { knob = true }
+                    }
+                }
+                if knob {
+                    laid.knobs.push(
+                        Knob {
+                            piece: laid.pieces.len(),
+                            block: laid.block,
+                            start: a + from,
+                            end: a + to,
+                        },
+                    )
+                    let w = f32(count) * advance
+                    var dx = 0.0
+                    while dx < w {
+                        laid.shapes.push(
+                            Shape {
+                                rect: Rect::new(
+                                    x + dx,
+                                    top + line - 2.0 * u,
+                                    min(2.0 * u, w - dx),
+                                    max(1.0, u),
+                                ),
+                                color: hex(p.field, 0.8),
+                                radius: 0.0,
+                            },
+                        )
+                        dx += 4.0 * u
+                    }
+                }
                 if !piece.trim().is_empty() {
                     let _ = put(
                         mut laid,
@@ -760,7 +840,7 @@ fn code(laid: mut Laid, p: Palette, fonts: Fonts, text: str, y: f32, width: f32,
                         Face::Mono,
                         size,
                         Face::Mono,
-                        color,
+                        if knob { hex(p.field) } else { color },
                         0.0,
                     )
                 }
@@ -779,7 +859,11 @@ fn code(laid: mut Laid, p: Palette, fonts: Fonts, text: str, y: f32, width: f32,
     let bottom = top + pad - line * 0.15
     laid.shapes[shape].rect.h = bottom - start
     laid.snippets.push(
-        Snippet { rect: Rect::new(0.0, start, width, bottom - start), text: text.to_string() },
+        Snippet {
+            rect: Rect::new(0.0, start, width, bottom - start),
+            text: text.to_string(),
+            block: laid.block,
+        },
     )
     laid.parts.push(
         Part {
@@ -793,10 +877,56 @@ fn code(laid: mut Laid, p: Palette, fonts: Fonts, text: str, y: f32, width: f32,
     bottom
 }
 
+/// How many characters `s` has from byte `a` to byte `b`.
+fn char_count(s: str, a: u32, b: u32) -> u32 {
+    var n = 0
+    var i = a
+    while i < b {
+        i = next_char(s, i)
+        n += 1
+    }
+    n
+}
+
 fn next_char(s: str, i: u32) -> u32 {
     var j = i + 1
     while j < s.len() && s.byte(j) >= 128 && s.byte(j) < 192 { j += 1 }
     j
+}
+
+/// The figure under a block of code that builds a field, `width` wide, and the words under it
+/// that say what it is and how to move it. The bottom of those words.
+fn figure(laid: mut Laid, p: Palette, fonts: Fonts, y: f32, width: f32, u: f32) -> f32 {
+    let top = y + 10.0 * u
+    let h = clamp(width * 0.5, 220.0 * u, 380.0 * u)
+    laid.figures.push(Figure { rect: Rect::new(0.0, top, width, h), block: laid.block })
+    let words = "The field this code builds, drawn live. Drag a number in the code to change it, drag the field to turn it, or choose what the compiler derives from it."
+    let runs = Vec::from([Run { text: words.to_string(), style: 0, link: String::new() }])
+    let under = top + h + 8.0 * u
+    let bottom = flow(
+        mut laid,
+        p,
+        fonts,
+        runs,
+        0.0,
+        under,
+        width,
+        13.0 * u,
+        1.5,
+        Face::Sans,
+        hex(p.quiet),
+        0.0,
+    )
+    laid.parts.push(
+        Part {
+            role: Role::Text,
+            level: 0,
+            rect: Rect::new(0.0, top, width, bottom - top),
+            label: words.to_string(),
+            target: String::new(),
+        },
+    )
+    bottom
 }
 
 /// A table: its columns as wide as their cells need, narrowed together to fit `width`, the header
@@ -1001,6 +1131,31 @@ fn a_block_of_code_keeps_its_text_and_a_section_its_place_for_a_link() {
     borrow t = page.titles[0]
     assert(t.anchor.as_str() == "values-copies-and-moves" && t.rect.y == page.anchors[1].1)
     assert(t.label.as_str() == "Values, copies and moves" && t.line > 20.0 && t.rect.h >= t.line)
+}
+
+@test
+fn a_long_line_of_code_wraps_between_its_tokens() {
+    // About 30 columns: the line wraps, and each name and number stays whole on a line.
+    let page = laid(
+        "```wrela\nlet cone = round_cone(vec3(), vec3(y: 1.0), r_top: 0.3, r_bottom: 0.125)\n```\n",
+        260.0,
+    )
+    var lines = 0
+    var last = -1.0
+    for p in page.pieces {
+        if p.at.y != last {
+            lines += 1
+            last = p.at.y
+        }
+    }
+    assert(lines >= 3, f"{lines} lines")
+    for want in ["round_cone", "r_bottom", "0.125", "0.3"] {
+        var whole = false
+        for p in page.pieces {
+            if p.text.as_str() == want { whole = true }
+        }
+        assert(whole, want)
+    }
 }
 
 @test
