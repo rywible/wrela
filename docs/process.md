@@ -2325,6 +2325,23 @@ for 64 copies, of which the cut uses about 3 MB of lists); the smooth creature c
 the clusters' errors are measured, not certified, and noisy fields (bark, stone) aren't tried;
 and no game draws with it.
 
+Two planned spikes found no subject in this frame. Half floats (W2.3) were to go into one kernel
+that computes colour alone, where an error can't move a position or a branch: the frame's passes
+on colour alone are bound by their reads (the look's `develop` reads seven texels a pixel; its
+glow is a quarter of the screen), and those heavy in arithmetic (the clouds' march, the dab map,
+the shading) compute in world coordinates, which the council kept in 32 bits. A cache of
+shading that doesn't change (W2.4) found the terrain's detail and the dab map bound to the view's
+footprint, and the shadows already cached (their median in the baseline was its frames drawing
+them after load). What the baseline shows is the clouds, so a cache's other half went there: the
+dome's tiles out of sight (more than half a radian past the view's corners) are marched one
+round in two, each in its turn. Gates set first: stills within 2/255 at p99 and 8/255 at p99.9,
+the camera's hard turn's frame-to-frame change within 2%, the clouds a quarter faster. Met: 2/255
+and 5/255 (the probes, which light every surface from the whole dome, move a little); 30.5292
+against 30.5293/255; the clouds 28% faster and the GPU span 8% shorter in the opening, every pair.
+Every third round saved 35% and every fourth 42%; a turn's tile waits longer there. Staggered by a
+tile's number alone, a whole phase rested or marched together (every tile of a phase is the same
+modulo 32), and the median frame saved only 13%.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

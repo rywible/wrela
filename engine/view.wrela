@@ -240,6 +240,11 @@ impl Camera {
         vec2((ndc.x * 0.5 + 0.5) * self.screen.x, (0.5 - ndc.y * 0.5) * self.screen.y)
     }
 
+    /// The angle between where it looks and its view's corners (radians).
+    pub fn corner_angle(self) -> f32 {
+        atan(self.tan_half * sqrt(1.0 + self.aspect * self.aspect))
+    }
+
     /// Where a world point is on the target this frame, in pixels, unjittered.
     pub fn pixel(self, world: vec3) -> vec2 {
         let c = self.view_proj * vec4(world, 1.0)

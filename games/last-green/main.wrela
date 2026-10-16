@@ -2292,6 +2292,8 @@ fn cook_sky(s: mut Floor, eye: vec3, wind: Wind) {
             rep: s.repeat,
             s: s.linear,
             still: false,
+            forward: s.cam.forward,
+            view: s.cam.corner_angle(),
         )
     }
 }
