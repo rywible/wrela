@@ -49,7 +49,7 @@ impl Pointer {
     fn events(self) -> Vec<Event> {
         var out: Vec<Event> = Vec::new()
         let mods = Mods {}
-        out.push(Event::PointerMove { at: self.pos, mods })
+        out.push(Event::PointerMove { at: self.pos, locked: false, mods })
         if self.pressed {
             out.push(Event::PointerDown { at: self.pos, button: Button::Primary, mods })
         }

@@ -6,25 +6,31 @@
 // `place::Place`), so a walk keeps its precision however far it goes. The camera pulls in when a
 // trunk, a stone or a wall comes between it and the player (`third_person`, `follow`).
 //
-// The controls are the keyboard and the mouse, held as a person holds them, and taps for an
-// agent, whose key presses don't hold: a tap turns walking on and off, running on and off, and
-// the look by a step.
+// The controls are the keyboard and the mouse, or a gamepad, held as a person holds them, and
+// taps for an agent, whose key presses don't hold: a tap turns walking on and off, running on and
+// off, and the look by a step. Directions are the camera's: right is the right of the screen.
 //
 //     W S A D, the arrows   walk forward, back, to the side (held); the arrows turn the look
-//     Shift                 run while held
-//     drag (left button)    look round
+//     Shift, Space          run while held
+//     the mouse             look round: while the host locks the pointer, any move; else a drag
+//                           (left button)
 //     T                     walk on or off (a tap)
 //     R                     run on or off (a tap)
 //     Q E                   turn the look 20° left or right (a tap)
 //     Z X                   look down or up a step (a tap)
 //     G, digits, Enter      travel to a site by its number (the floor's sim moves the player)
+//     the left stick        walk, as far as it's pushed; East held runs
+//     the right stick       look round
+//
+// A game may let the camera turn by itself: behind a moving player (`Motion::follow`), or toward
+// something (`look_toward`). It waits while the player is turning the look (`LOOK_GRACE`).
 
 use footing::{BODY, Obstacles, stands}
 use grow::Ground
 use place::{Place, Water}
 use sim::SimState
 use std::hash::StateHash
-use std::input::{Button, Event, Key}
+use std::input::{Button, Event, Key, PadAxis, PadButton}
 use std::math::{PI, TAU}
 use std::serialize::Serialize
 
@@ -43,6 +49,9 @@ pub struct Motion: Copy {
     pub clearance: f32 = 0.0,
     pub turn: f32 = 6.0,
     pub response: f32 = 0.0,
+    /// How fast the look swings round behind a moving player once it's left alone (the share of
+    /// the angle between them a second, at the run's pace; slower as slower; 0 not at all).
+    pub follow: f32 = 0.0,
 }
 
 /// How much faster each glide goes: 2, 4, 8 and 16 times a run, over what's on the ground. Each
@@ -56,6 +65,15 @@ pub const PITCH_STEP: f32 = 0.12
 /// How fast the arrows turn the look (radians a second), and a dragged pixel's turn.
 pub const TURN_RATE: f32 = 2.2
 pub const DRAG_TURN: f32 = 0.005
+/// How fast the right stick, all the way over, turns the look and tips it (radians a second).
+pub const PAD_TURN: f32 = 3.0
+pub const PAD_PITCH: f32 = 1.8
+/// How far a stick moves before it counts (radially).
+pub const DEAD_ZONE: f32 = 0.15
+/// How long after the player last turned the look the camera may turn by itself (ticks), and
+/// the most the count goes to.
+pub const LOOK_GRACE: u32 = 60
+const IDLE_MOST: u32 = 100000
 /// The pitch's limits (radians: down is negative).
 pub const PITCH_LO: f32 = -0.9
 pub const PITCH_HI: f32 = 0.35
@@ -83,6 +101,16 @@ pub struct Controls: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub travel: u32,
     /// Which glide (`GLIDES`: 0 none; H the next).
     pub glide: u32,
+    /// Pad 0's sticks as it gives them (x right, y up; no dead zone yet), and whether East or
+    /// Space is held (a run).
+    pub move_pad: vec2 = vec2(0.0),
+    pub look_pad: vec2 = vec2(0.0),
+    pub east: bool = false,
+    /// Whether the host has the pointer locked to the program, as its last move said: then every
+    /// move looks round, as a drag does.
+    pub locked: bool = false,
+    /// Ticks since the player last turned the look (`LOOK_GRACE`).
+    pub idle_look: u32 = 0,
 }
 
 /// The player: where it stands (and the ground's height there), which way it faces, how fast it
@@ -179,14 +207,15 @@ pub fn control(c: mut Controls, e: Event) {
                 Key::Right => c.turn_right = true,
                 Key::ShiftLeft => c.run_held = true,
                 Key::ShiftRight => c.run_held = true,
+                Key::Space => c.east = true,
                 _ => {},
             }
             if !repeat {
                 match key {
                     Key::T => c.walk_on = !c.walk_on,
                     Key::R => c.run_on = !c.run_on,
-                    Key::Q => c.yaw -= TURN_STEP,
-                    Key::E => c.yaw += TURN_STEP,
+                    Key::Q => c.yaw += TURN_STEP,
+                    Key::E => c.yaw -= TURN_STEP,
                     Key::Z => c.pitch = max(c.pitch - PITCH_STEP, PITCH_LO),
                     Key::X => c.pitch = min(c.pitch + PITCH_STEP, PITCH_HI),
                     Key::G => {
@@ -195,6 +224,9 @@ pub fn control(c: mut Controls, e: Event) {
                     },
                     Key::H => c.glide = (c.glide + 1) % GLIDES.len(),
                     _ => {},
+                }
+                if key == Key::Q || key == Key::E || key == Key::Z || key == Key::X {
+                    c.idle_look = 0
                 }
             }
         },
@@ -210,6 +242,7 @@ pub fn control(c: mut Controls, e: Event) {
                 Key::Right => c.turn_right = false,
                 Key::ShiftLeft => c.run_held = false,
                 Key::ShiftRight => c.run_held = false,
+                Key::Space => c.east = false,
                 _ => {},
             }
         },
@@ -224,13 +257,34 @@ pub fn control(c: mut Controls, e: Event) {
                 c.dragging = false
             }
         },
-        Event::PointerMove { at, .. } => {
-            if c.dragging {
+        Event::PointerMove { at, locked, .. } => {
+            // A lock begins or ends: the pointer's place starts afresh, so it doesn't turn.
+            if (c.dragging || locked) && locked == c.locked {
                 let d = at - c.pointer
-                c.yaw += d.x * DRAG_TURN
+                c.yaw -= d.x * DRAG_TURN
                 c.pitch = clamp(c.pitch - d.y * DRAG_TURN, PITCH_LO, PITCH_HI)
+                if dot(d, d) > 0.0 {
+                    c.idle_look = 0
+                }
             }
+            c.locked = locked
             c.pointer = at
+        },
+        Event::PadAxis { pad, axis, value } => {
+            if pad == 0 {
+                // The pad's y is down positive; the controls' up.
+                match axis {
+                    PadAxis::LeftX => c.move_pad.x = value,
+                    PadAxis::LeftY => c.move_pad.y = -value,
+                    PadAxis::RightX => c.look_pad.x = value,
+                    PadAxis::RightY => c.look_pad.y = -value,
+                }
+            }
+        },
+        Event::PadButton { pad, button, pressed, .. } => {
+            if pad == 0 && button == PadButton::East {
+                c.east = pressed
+            }
         },
         _ => {},
     }
@@ -255,11 +309,27 @@ fn wrap(a: f32) -> f32 {
     x
 }
 
-/// Where the controls ask the player to go, as a direction on the plane (length 0 or 1), and
-/// whether at a run.
+/// A stick past its dead zone: its travel past `DEAD_ZONE`, from 0 to 1, radially.
+pub fn dead_zone(v: vec2) -> vec2 {
+    let m = length(v)
+    if m <= DEAD_ZONE {
+        return vec2(0.0)
+    }
+    v * (min((m - DEAD_ZONE) / (1.0 - DEAD_ZONE), 1.0) / m)
+}
+
+/// The camera's right on the plane, for a look along `yaw`: the screen's right (`look_at` has
+/// a camera looking along +z see +x on its left).
+pub fn screen_right(yaw: f32) -> vec2 {
+    let f = facing(yaw)
+    vec2(-f.y, f.x)
+}
+
+/// Where the controls ask the player to go, as a direction on the plane (the keys' length 0 or
+/// 1; the stick's as far as it's pushed), and whether at a run.
 pub fn wish(c: Controls) -> (vec2, bool) {
     let f = facing(c.yaw)
-    let side = vec2(f.y, -f.x)
+    let right = screen_right(c.yaw)
     var d = vec2(0.0)
     if c.forward || c.walk_on {
         d += f
@@ -268,14 +338,34 @@ pub fn wish(c: Controls) -> (vec2, bool) {
         d -= f
     }
     if c.right {
-        d += side
+        d += right
     }
     if c.left {
-        d -= side
+        d -= right
     }
     let len = length(d)
-    (if len > 1.0e-4 { d / len } else { vec2(0.0) }, c.run_held || c.run_on)
+    let stick = dead_zone(c.move_pad)
+    let dir = if len > 1.0e-4 { d / len } else { right * stick.x + f * stick.y }
+    (dir, c.run_held || c.run_on || c.east)
 }
+
+/// The look turned toward `at` from a player at `from` (both on the plane) by `weight` (0 to 1)
+/// of `FOCUS_RATE`, at most `FOCUS_MOST`: a game's soft lock on a foe. It waits while the player
+/// turns the look themselves (`LOOK_GRACE`).
+pub fn look_toward(c: mut Controls, from: vec2, at: vec2, weight: f32, dt: f32) {
+    let to = at - from
+    if c.idle_look < LOOK_GRACE || length(to) < 0.1 || weight <= 0.0 {
+        return
+    }
+    let d = wrap(atan2(to.x, to.y) - c.yaw)
+    let turn = d * min(dt * FOCUS_RATE * min(weight, 1.0), 1.0)
+    c.yaw = wrap(c.yaw + clamp(turn, -FOCUS_MOST * dt, FOCUS_MOST * dt))
+}
+
+/// How fast `look_toward` closes on its bearing at full weight (the share of the angle a
+/// second), and the fastest it turns (radians a second): a foe circling close can't whip it.
+pub const FOCUS_RATE: f32 = 3.0
+pub const FOCUS_MOST: f32 = 3.5
 
 /// A tick of `dt` seconds: the look turns with the arrows held, the player speeds up toward its
 /// wish (at its pace, the ground's: slopes and shallow water slow it) and steps as `footing`
@@ -296,14 +386,8 @@ pub fn step_with<G: Ground>(
     motion: Motion,
     dt: f32,
 ) {
-    var c = p.controls
-    if c.turn_left {
-        c.yaw = wrap(c.yaw - TURN_RATE * dt)
-    }
-    if c.turn_right {
-        c.yaw = wrap(c.yaw + TURN_RATE * dt)
-    }
-    p.controls = c
+    turn_look(mut p.controls, dt)
+    let c = p.controls
     let (dir, running) = wish(c)
     let at = p.at.world()
     // A glide goes over what's on the ground (as the game's gliding will), at its pace on any
@@ -341,6 +425,37 @@ pub fn step_with<G: Ground>(
         p.pace = pace
     }
     p.y = standing_height(ground, o, p.at) + o.lift(p.at.world(), BODY, motion.clearance)
+    // Left alone, the look swings round behind a player going away from it, as a person
+    // following would; not one coming toward it, nor one crossing it.
+    let speed = length(p.velocity)
+    if motion.follow > 0.0 && p.controls.idle_look >= LOOK_GRACE && speed > 0.5 {
+        let d = wrap(p.heading - p.controls.yaw)
+        let k = motion.follow * min(speed / motion.run, 1.0) * max(cos(d), 0.0)
+        p.controls.yaw = wrap(p.controls.yaw + d * min(k * dt, 1.0))
+    }
+}
+
+/// A tick of `dt` seconds of the look alone: the arrows and the right stick turn it, and the
+/// time since the player last turned it counts on (`step_with` does this; a game whose move
+/// holds the body still calls it, so the look stays the player's).
+@deterministic
+pub fn turn_look(c: mut Controls, dt: f32) {
+    c.idle_look = min(c.idle_look + 1, IDLE_MOST)
+    if c.turn_left {
+        c.yaw = wrap(c.yaw + TURN_RATE * dt)
+        c.idle_look = 0
+    }
+    if c.turn_right {
+        c.yaw = wrap(c.yaw - TURN_RATE * dt)
+        c.idle_look = 0
+    }
+    // The right stick: past its dead zone, slower near its middle, for aim.
+    let look = dead_zone(c.look_pad) * length(dead_zone(c.look_pad))
+    if dot(look, look) > 0.0 {
+        c.yaw = wrap(c.yaw - look.x * PAD_TURN * dt)
+        c.pitch = clamp(c.pitch + look.y * PAD_PITCH * dt, PITCH_LO, PITCH_HI)
+        c.idle_look = 0
+    }
 }
 
 /// Puts the player at `at`, facing `heading`, on the ground as walking does: for a move that isn't
@@ -373,10 +488,11 @@ pub struct Framing: Copy {
     pub fovy: f32 = 0.82,
 }
 
-/// What the camera turns to besides its player (render space), and how much: 0 not at all (the
-/// player's look alone), 1 fully (the point ahead, past the player, and looked at a third of the
-/// way from the target to it). A game sets it (a fight, on its foe) and eases the weight in and
-/// out.
+/// What the camera keeps in view besides its player (render space), and how much: 0 not at all
+/// (the player's look alone), 1 fully (the eye out past the shoulder, and, while it's ahead,
+/// looked at a third of the way from the target to it). A game sets it (a fight, on its foe) and
+/// eases the weight in and out; the look itself turns to it in the sim (`look_toward`), so the
+/// controls stay the camera's.
 pub struct Focus: Copy {
     pub at: vec3 = vec3(0.0),
     pub weight: f32 = 0.0,
@@ -405,9 +521,9 @@ pub fn third_person(
     focused(f, feet, yaw, pitch, Focus {}, o, o_from, height)
 }
 
-/// `third_person`, turned toward `focus` by its weight: the arm swings from the look's `yaw`
-/// toward the focus's bearing from the feet, and the eye looks from the player's own point
-/// toward a third of the way from the target to the focus.
+/// `third_person`, with `focus` by its weight: the eye goes out past the shoulder, and looks
+/// from the player's own point toward a third of the way from the target to the focus, as far
+/// as the focus is ahead of the look.
 pub fn focused(
     f: Framing,
     feet: vec3,
@@ -427,13 +543,42 @@ pub fn focused(
 /// the camera and the player doesn't make the eye jump in and out.
 pub const ARM_OUT: f32 = 4.0
 
-/// The camera's arm as it was last frame: how far out the eye stood (m).
+/// How long the camera takes to catch up with the player (s: its lag falls by e each), across
+/// and up: it trails a sprint a little and a blink over a few frames, and rides out a step up.
+/// A move further than `SNAP` in a frame (a travel) it doesn't follow but is at once.
+pub const LAG: f32 = 0.07
+pub const LAG_UP: f32 = 0.14
+pub const SNAP: f32 = 8.0
+
+/// The camera's arm as it was last frame: how far out the eye stood (m), where it held the player
+/// from its feet (its lag), and where the feet were (none yet).
 pub struct Arm: Copy {
     pub reach: f32 = 1.0e9,
+    pub lag: vec3 = vec3(0.0),
+    pub feet: vec3 = vec3(1.0e9),
 }
 
-/// `focused`, its arm going back out at `ARM_OUT` from where `arm` left it, `dt` seconds ago;
-/// `arm` takes this frame's.
+impl Arm {
+    /// The arm moved by `by`, as it is (the render origin moved).
+    pub fn carry(mut self, by: vec3) {
+        self.feet = self.feet + by
+    }
+
+    /// Where the camera holds a player whose feet are at `feet`, `dt` seconds on: behind it by
+    /// its lag, which eases out.
+    pub fn held(mut self, feet: vec3, dt: f32) -> vec3 {
+        let jump = feet - self.feet
+        self.lag = if length(jump) > SNAP { vec3(0.0) } else { self.lag - jump }
+        let t = clamp(dt, 0.0, 0.25)
+        let across = exp(-t / LAG)
+        self.lag = self.lag * vec3(across, exp(-t / LAG_UP), across)
+        self.feet = feet
+        feet + self.lag
+    }
+}
+
+/// `focused`, round where the arm holds the player (`Arm::held`), its arm going back out at
+/// `ARM_OUT` from where `arm` left it, `dt` seconds ago; `arm` takes this frame's.
 pub fn follow(
     arm: mut Arm,
     dt: f32,
@@ -447,6 +592,7 @@ pub fn follow(
     height: fn(vec2) -> f32,
 ) -> (vec3, vec3) {
     let most = arm.reach + ARM_OUT * clamp(dt, 0.0, 0.25)
+    let feet = arm.held(feet, dt)
     let (eye, at, reach) = framed(f, feet, yaw, pitch, focus, most, o, o_from, height)
     arm.reach = reach
     (eye, at)
@@ -467,12 +613,13 @@ fn framed(
     let target = feet + vec3(0.0, f.target, 0.0)
     let to = focus.at.xz - feet.xz
     let w = if length(to) > 0.1 { clamp(focus.weight, 0.0, 1.0) } else { 0.0 }
-    let ahead = facing(wrap(yaw + wrap(atan2(to.x, to.y) - yaw) * w))
-    let right = vec2(-ahead.y, ahead.x) * -1.0
+    let ahead = facing(yaw)
+    let right = screen_right(yaw)
     let back = vec3(-ahead.x * cos(pitch), -sin(pitch), -ahead.y * cos(pitch))
     let side = vec3(right.x, 0.0, right.y) * mix(f.shoulder, f.focus_shoulder, w)
     let want = target + back * f.behind + side
-    // March from the target out along the arm; stop before what's in the way.
+    // March from the target out along the arm, riding up over the ground (a slope behind lifts
+    // the eye rather than pulling it in to the player's back); stop before what's in the way.
     let arm = want - target
     let len = length(arm)
     let steps = 24
@@ -480,12 +627,13 @@ fn framed(
     if len > 0.0 {
         for k in 1..(steps + 1) {
             let t = len * f32(k) / f32(steps)
-            if in_the_way(target + arm * (t / len), o, o_from, height) {
+            if in_the_way(over_ground(target + arm * (t / len), height), o, o_from, height) {
                 // At least 0.4 m from the target where that's clear; where it isn't, the last point
                 // that was (with the 0.4 m always kept, a player against a trunk had the eye inside
                 // the trunk).
                 reach = len * f32(k - 1) / f32(steps)
-                if reach < 0.4 && !in_the_way(target + arm * (0.4 / len), o, o_from, height) {
+                let near = over_ground(target + arm * (0.4 / len), height)
+                if reach < 0.4 && !in_the_way(near, o, o_from, height) {
                     reach = 0.4
                 }
                 break
@@ -497,11 +645,18 @@ fn framed(
     // Where no point 0.4 m or more out on the arm is clear (a player backed into a trunk or a
     // wall), the eye goes over the head, where the player stands clear, not inside it.
     let eye = if reach < 0.4 { target + vec3(0.0, OVER_HEAD, 0.0) } else {
-        target + arm * (reach / len)
+        over_ground(target + arm * (reach / len), height)
     }
-    // Look a little over the target, so the player sits low in the frame.
+    // Look a little over the target, so the player sits low in the frame; toward the focus as
+    // far as it's ahead (one behind the player is the player's to turn to).
     let own = target + vec3(ahead.x, 0.0, ahead.y) * 2.0 + vec3(0.0, 0.25, 0.0)
-    (eye, mix(own, target + (focus.at - target) / 3.0, vec3(w)), reach)
+    let seen = if w > 0.0 { w * smoothstep(0.2, 0.7, dot(ahead, normalize(to))) } else { 0.0 }
+    (eye, mix(own, target + (focus.at - target) / 3.0, vec3(seen)), reach)
+}
+
+/// `p`, raised to `ABOVE_GROUND` over the ground where it's lower.
+fn over_ground(p: vec3, height: fn(vec2) -> f32) -> vec3 {
+    vec3(p.x, max(p.y, height(p.xz) + ABOVE_GROUND), p.z)
 }
 
 /// Whether an eye at `p` would be too near the ground, a trunk, a stone or a wall (`third_person`).
@@ -569,16 +724,52 @@ fn a_blocked_arm_puts_the_eye_over_the_head() {
     assert(!in_the_way(eye, o, vec2(0.0), |p: vec2| 0.0), f"the eye {eye} is in the way")
 }
 
-/// A focus at full weight puts what it's on ahead, past the player, and looks a third of the way
-/// to it; at no weight the camera is the player's own.
+/// Ground rising behind the player lifts the eye over it, at the arm's full length, rather than
+/// pulling it in to the player's back.
 @test
-fn a_focus_turns_the_camera_to_put_it_ahead() {
+fn a_slope_behind_lifts_the_eye_rather_than_pulling_it_in() {
+    let f = Framing {}
+    let feet = vec3(0.0)
+    let nothing: Vec<footing::Obstacle> = Vec::new()
+    let none = Obstacles::of(nothing, vec2(-50.0), vec2(50.0))
+    // Looking along +z; behind, the ground rises 0.6 m a metre.
+    let (eye, _) = third_person(
+        f,
+        feet,
+        yaw: 0.0,
+        pitch: 0.0,
+        o: none,
+        o_from: vec2(0.0),
+        height: |p: vec2| max(-p.y, 0.0) * 0.6,
+    )
+    let target = feet + vec3(0.0, f.target, 0.0)
+    assert(length(eye.xz - target.xz) > f.behind * 0.9, f"the slope pulled the eye in to {eye}")
+    assert(
+        eye.y >= max(-eye.z, 0.0) * 0.6 + ABOVE_GROUND - 1.0e-4,
+        f"the eye {eye} is in the slope",
+    )
+}
+
+/// A focus never turns the camera's look by itself: the controls' look is the camera's, so a
+/// stick or a key goes where the screen shows. At full weight it looks a third of the way to a
+/// focus ahead, and its own way past one behind; at no weight the camera is the player's own.
+@test
+fn a_focus_keeps_the_look_and_looks_toward_what_is_ahead() {
     let f = Framing {}
     let feet = vec3(10.0, 0.0, 10.0)
     let nothing: Vec<footing::Obstacle> = Vec::new()
     let none = Obstacles::of(nothing, vec2(0.0), vec2(20.0))
-    // Looking along +z; the foe 5 m off to the player's side, along +x.
-    let foe = vec3(15.0, 0.6, 10.0)
+    let target = feet + vec3(0.0, f.target, 0.0)
+    let view = |foe: vec3, weight: f32| focused(
+        f,
+        feet,
+        yaw: 0.0,
+        pitch: 0.0,
+        focus: Focus { at: foe, weight },
+        o: none,
+        o_from: vec2(0.0),
+        height: |p: vec2| 0.0,
+    )
     let (e0, a0) = third_person(
         f,
         feet,
@@ -588,33 +779,59 @@ fn a_focus_turns_the_camera_to_put_it_ahead() {
         o_from: vec2(0.0),
         height: |p: vec2| 0.0,
     )
-    let (e1, a1) = focused(
-        f,
-        feet,
-        yaw: 0.0,
-        pitch: 0.0,
-        focus: Focus { at: foe, weight: 0.0 },
-        o: none,
-        o_from: vec2(0.0),
-        height: |p: vec2| 0.0,
-    )
+    let ahead = vec3(10.0, 0.6, 15.0)
+    let (e1, a1) = view(ahead, 0.0)
     assert(length(e1 - e0) < 1.0e-5 && length(a1 - a0) < 1.0e-5, "no weight: the player's camera")
-    let (eye, at) = focused(
-        f,
-        feet,
-        yaw: 0.0,
-        pitch: 0.0,
-        focus: Focus { at: foe, weight: 1.0 },
-        o: none,
-        o_from: vec2(0.0),
-        height: |p: vec2| 0.0,
+    let (eye, at) = view(ahead, 1.0)
+    assert(length(at - (target + (ahead - target) / 3.0)) < 1.0e-4, f"looks at {at}")
+    assert(eye.z < feet.z - 3.0, f"the focus swung the eye {eye} off the look")
+    let (_, away) = view(vec3(10.0, 0.6, 5.0), 1.0)
+    assert(length(away.xz - a0.xz) < 1.0e-4, "a focus behind the player turned where it looks")
+}
+
+/// The soft lock turns the look toward a foe, no faster than `FOCUS_MOST`, not while the player
+/// turns the look, and so that a foe crossing behind doesn't flip it.
+@test
+fn the_soft_lock_turns_the_look_smoothly_toward_a_foe() {
+    var c = spawn(Shelf { high: 1.0 }, Place::of(vec2(0.0)), 0.0).controls
+    c.idle_look = LOOK_GRACE
+    let dt = 1.0 / 60.0
+    // A foe straight behind, a hair to either side: the turn starts the short way, slowly.
+    look_toward(mut c, vec2(0.0), vec2(0.01, -5.0), 1.0, dt)
+    assert(c.yaw > 0.0 && c.yaw <= FOCUS_MOST * dt + 1.0e-6, f"turned {c.yaw} in a tick")
+    for _ in 0..120 {
+        look_toward(mut c, vec2(0.0), vec2(0.01, -5.0), 1.0, dt)
+    }
+    assert(abs(wrap(c.yaw - atan2(0.01, -5.0))) < 0.02, "the look didn't come round to the foe")
+    c.idle_look = 0
+    let before = c.yaw
+    look_toward(mut c, vec2(0.0), vec2(5.0, 0.0), 1.0, dt)
+    assert(c.yaw == before, "the lock fought the player's own look")
+}
+
+/// The camera trails a blink over a few frames, not one, and has caught up in a quarter second;
+/// a travel it doesn't trail; the render origin moving carries it as it is.
+@test
+fn the_camera_glides_after_a_blink_and_jumps_with_a_travel() {
+    var arm = Arm {}
+    let dt = 1.0 / 60.0
+    let at = arm.held(vec3(0.0), dt)
+    assert(at == vec3(0.0), "the first frame trails")
+    let next = arm.held(vec3(3.6, 0.0, 0.0), dt)
+    assert(next.x > 0.0 && next.x < 3.6 * 0.4, f"the blink's first frame held the player at {next}")
+    var last = next
+    for _ in 0..14 {
+        last = arm.held(vec3(3.6, 0.0, 0.0), dt)
+    }
+    assert(abs(last.x - 3.6) < 0.12, f"a quarter second on the camera trails at {last}")
+    assert(arm.held(vec3(40.0, 0.0, 0.0), dt) == vec3(40.0, 0.0, 0.0), "a travel trailed")
+    let before = arm.held(vec3(40.0, 0.0, 0.0), dt)
+    arm.carry(vec3(-384.0, 0.0, 0.0))
+    let carried = arm.held(vec3(-344.0, 0.0, 0.0), dt)
+    assert(
+        length(carried - (before - vec3(384.0, 0.0, 0.0))) < 1.0e-3,
+        "the origin's move jolted it",
     )
-    let target = feet + vec3(0.0, f.target, 0.0)
-    assert(length(at - (target + (foe - target) / 3.0)) < 1.0e-4, f"looks at {at}")
-    // The eye behind the player from the foe: the player between the eye and the foe.
-    let back = normalize((eye - target).xz)
-    let toward = normalize((foe - feet).xz)
-    assert(dot(back, toward) < -0.95, f"the eye {eye} isn't behind the player from the foe")
 }
 
 /// A move that isn't a walk puts the player on the ground where walking would.
@@ -756,34 +973,157 @@ impl Ground for Shelf {
     }
 }
 
-/// At yaw zero, +x is the camera's right: D asks for +x and A for -x.
+/// The side keys and the left stick move the way they're named on the screen, and the turn keys,
+/// a drag and the right stick turn the look the way they're named, at any look: judged through
+/// the camera's own view (`third_person`, `look_at`), not by a convention of axes.
 @test
-fn the_side_keys_move_the_way_they_are_named() {
-    var c = Controls {
-        forward: false,
-        back: false,
-        left: false,
-        right: true,
-        turn_left: false,
-        turn_right: false,
-        run_held: false,
-        walk_on: false,
-        run_on: false,
-        yaw: 0.0,
-        pitch: 0.0,
-        dragging: false,
-        pointer: vec2(0.0),
-        typing: false,
-        digits: 0,
-        travel: NONE,
-        glide: 0,
+fn the_controls_move_and_turn_as_the_screen_shows() {
+    let nothing: Vec<footing::Obstacle> = Vec::new()
+    let none = Obstacles::of(nothing, vec2(-50.0), vec2(50.0))
+    // A direction on the plane, as the camera at `yaw` sees it (x right, z toward the eye).
+    let seen = |yaw: f32, d: vec2| {
+        let (eye, at) = third_person(
+            Framing {},
+            vec3(0.0),
+            yaw: yaw,
+            pitch: 0.0,
+            o: none,
+            o_from: vec2(0.0),
+            height: |p: vec2| -10.0,
+        )
+        (std::transform::look_at(eye, at) * vec4(d.x, 0.0, d.y, 0.0)).xyz
     }
-    let (right, _) = wish(c)
-    c.right = false
-    c.left = true
-    let (left, _) = wish(c)
-    assert(right == vec2(1.0, 0.0), f"D moved {right}")
-    assert(left == vec2(-1.0, 0.0), f"A moved {left}")
+    for yaw in [0.0, 1.2, -2.5] {
+        var c = spawn(Shelf { high: 1.0 }, Place::of(vec2(0.0)), yaw).controls
+        c.right = true
+        let (right, _) = wish(c)
+        c.right = false
+        c.left = true
+        let (left, _) = wish(c)
+        c.left = false
+        assert(seen(yaw, right).x > 0.99, f"D moves {seen(yaw, right)} on the screen")
+        assert(seen(yaw, left).x < -0.99, f"A moves {seen(yaw, left)} on the screen")
+        c.move_pad = vec2(1.0, 0.0)
+        let (stick, _) = wish(c)
+        assert(seen(yaw, stick).x > 0.99, "the stick pushed right moves left on the screen")
+        c.move_pad = vec2(0.0, 1.0)
+        let (up, _) = wish(c)
+        assert(seen(yaw, up).z < -0.99, "the stick pushed up doesn't go into the screen")
+        c.move_pad = vec2(0.0)
+        // Turned right a little, what was ahead is on the left of the screen.
+        let ahead = facing(yaw)
+        var p = spawn(Shelf { high: 1.0 }, Place::of(vec2(0.0)), yaw)
+        p.controls.turn_right = true
+        step(mut p, Shelf { high: 1.0 }, still_water(), none, 0.1)
+        assert(seen(p.controls.yaw, ahead).x < -0.05, "the right arrow turns the look left")
+        var q = spawn(Shelf { high: 1.0 }, Place::of(vec2(0.0)), yaw)
+        control(
+            mut q.controls,
+            Event::KeyDown { key: Key::E, repeat: false, mods: std::input::Mods {} },
+        )
+        assert(seen(q.controls.yaw, ahead).x < -0.05, "E turns the look left")
+        var r = spawn(Shelf { high: 1.0 }, Place::of(vec2(0.0)), yaw)
+        let mods = std::input::Mods {}
+        control(
+            mut r.controls,
+            Event::PointerDown { at: vec2(100.0), button: Button::Primary, mods },
+        )
+        control(mut r.controls, Event::PointerMove { at: vec2(140.0, 100.0), locked: false, mods })
+        assert(seen(r.controls.yaw, ahead).x < -0.05, "dragging right turns the look left")
+        var t = spawn(Shelf { high: 1.0 }, Place::of(vec2(0.0)), yaw)
+        t.controls.look_pad = vec2(1.0, 0.0)
+        step(mut t, Shelf { high: 1.0 }, still_water(), none, 0.1)
+        assert(seen(t.controls.yaw, ahead).x < -0.05, "the right stick turns the look left")
+    }
+}
+
+/// Locked to the program, the pointer looks round as it moves, with no button held; the move
+/// that tells of a lock beginning or ending doesn't turn it, and a moved look is a turned one.
+@test
+fn a_locked_pointer_looks_round_without_a_drag() {
+    let mods = std::input::Mods {}
+    var c = spawn(Shelf { high: 1.0 }, Place::of(vec2(0.0)), 0.0).controls
+    c.idle_look = 500
+    control(mut c, Event::PointerMove { at: vec2(300.0), locked: false, mods })
+    assert(c.yaw == 0.0, "an unlocked move with no drag turned the look")
+    control(mut c, Event::PointerMove { at: vec2(900.0), locked: true, mods })
+    assert(c.yaw == 0.0 && c.locked, "the move that locked the pointer turned the look")
+    control(mut c, Event::PointerMove { at: vec2(940.0, 900.0), locked: true, mods })
+    assert(abs(c.yaw + 40.0 * DRAG_TURN) < 1.0e-5, f"the locked move turned the look to {c.yaw}")
+    assert(c.idle_look == 0, "a locked move didn't count as turning the look")
+    control(mut c, Event::PointerMove { at: vec2(20.0), locked: false, mods })
+    assert(abs(c.yaw + 40.0 * DRAG_TURN) < 1.0e-5 && !c.locked, "the lock's end turned the look")
+}
+
+/// The left stick walks as far as it's pushed, not past its dead zone near the middle; East
+/// held runs.
+@test
+fn the_left_stick_walks_as_far_as_it_is_pushed() {
+    var c = spawn(Shelf { high: 1.0 }, Place::of(vec2(0.0)), 0.0).controls
+    c.move_pad = vec2(0.1, 0.05)
+    let (still, _) = wish(c)
+    assert(length(still) == 0.0, "a stick in its dead zone walks")
+    c.move_pad = vec2(0.0, 0.575)
+    let (half, run) = wish(c)
+    assert(abs(length(half) - 0.5) < 1.0e-4 && !run, f"half the stick's travel walks {half}")
+    let mods = std::input::Mods {}
+    control(mut c, Event::PadButton { pad: 0, button: PadButton::East, value: 1.0, pressed: true })
+    let (_, run) = wish(c)
+    assert(run, "East held doesn't run")
+    control(mut c, Event::KeyDown { key: Key::Space, repeat: false, mods })
+    control(mut c, Event::PadButton { pad: 0, button: PadButton::East, value: 0.0, pressed: false })
+    control(mut c, Event::KeyUp { key: Key::Space, mods })
+    let (_, run) = wish(c)
+    assert(!run, "letting go of East and Space still runs")
+}
+
+/// Left alone, the look swings round behind a player running away from the camera, and sooner
+/// at a run than a walk; it doesn't while the player is turning the look, nor for one running
+/// toward the camera.
+@test
+fn the_look_follows_behind_a_running_player_left_alone() {
+    let nothing: Vec<footing::Obstacle> = Vec::new()
+    let o = Obstacles::of(nothing, vec2(-200.0), vec2(200.0))
+    let motion = Motion { walk: 3.0, run: 7.5, turn: 10.0, response: 7.0, follow: 1.0 }
+    let run = |running: bool, from: f32, look: bool| {
+        var p = spawn(Shelf { high: 1.0 }, Place::of(vec2(0.0)), 0.0)
+        p.controls.idle_look = LOOK_GRACE
+        p.controls.yaw = from
+        // Running along +z, the look starting `from` it.
+        for _ in 0..60 {
+            p.controls.move_pad = vec2(0.0)
+            p.controls.forward = false
+            p.velocity = facing(0.0) * (if running { 7.5 } else { 3.0 })
+            p.heading = 0.0
+            if look {
+                p.controls.turn_left = true
+            }
+            step_with(
+                mut p,
+                Shelf { high: 1.0 },
+                still_water(),
+                o,
+                Motion { response: 0.0, ..motion },
+                1.0 / 60.0,
+            )
+            p.controls.turn_left = false
+        }
+        abs(wrap(p.controls.yaw))
+    }
+    assert(run(true, 0.6, false) < 0.6 * 0.5, "a run left alone didn't bring the look behind")
+    assert(run(false, 0.6, false) > run(true, 0.6, false), "a walk swings the look round as fast")
+    assert(run(true, 2.9, false) > 2.85, "a run toward the camera swung the look round")
+    assert(run(true, 0.6, true) > 0.6, "the look followed while the player turned it")
+}
+
+/// The water of the tests: none.
+fn still_water() -> Water {
+    Water {
+        meres: [vec4(0.0), vec4(0.0)],
+        springs: [vec2(0.0), ..vec2(0.0)],
+        spring_count: 0,
+        falls: [vec2(0.0), vec2(0.0)],
+    }
 }
 
 /// Facing follows the camera-relative travel request during a reversal without a flip key,
@@ -843,7 +1183,8 @@ fn travel_policy_has_distinct_walk_and_shift_sprint_speeds() {
         }
         let want = if running { 7.5 } else { 3.0 }
         assert(abs(length(p.velocity) - want) < 0.001, f"travel speed was {length(p.velocity)}")
-        assert(abs(p.velocity.x - p.velocity.y) < 0.001, "diagonal travel drifted")
+        // Forward and right: ahead (+z) and to the screen's right (-x), equally.
+        assert(abs(p.velocity.x + p.velocity.y) < 0.001, "diagonal travel drifted")
     }
 }
 

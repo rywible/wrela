@@ -134,11 +134,18 @@ export class FakeElement extends EventTarget {
     return { left, top, width, height, right: left + width, bottom: top + height } as DOMRect;
   }
   setPointerCapture(): void {}
+  /** Locks the pointer to this at once (a browser does it after the call, on a gesture). */
+  requestPointerLock(): Promise<void> {
+    this.page.pointerLockElement = this;
+    this.page.dispatchEvent(new Event("pointerlockchange"));
+    return Promise.resolve();
+  }
 }
 
 /** `window` and `document` together. */
 export class FakePage extends EventTarget {
   activeElement: FakeElement | null = null;
+  pointerLockElement: FakeElement | null = null;
   readonly body = new FakeElement(this, "BODY");
   readonly head = new FakeElement(this, "HEAD");
   /** Animation-frame callbacks waiting: `frame()` runs them. */
@@ -148,6 +155,10 @@ export class FakePage extends EventTarget {
   }
   frame(): void {
     for (const f of this.frames.splice(0)) f();
+  }
+  exitPointerLock(): void {
+    this.pointerLockElement = null;
+    this.dispatchEvent(new Event("pointerlockchange"));
   }
 }
 

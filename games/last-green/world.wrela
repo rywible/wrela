@@ -23,8 +23,16 @@ use std::string::String
 /// The floor's water, as the sim reads it.
 pub const WATER: Water = water()
 
-/// A brisk floating walk, Shift to sprint, and enough lift to cross low fallen trunks.
-pub const TRAVEL = Motion { walk: 3.0, run: 7.5, clearance: 1.2, turn: 10.0, response: 7.0 }
+/// A brisk floating walk, Shift (or East) to sprint, and enough lift to cross low fallen trunks;
+/// left alone, the look swings round behind a player going away from it.
+pub const TRAVEL = Motion {
+    walk: 3.0,
+    run: 7.5,
+    clearance: 1.2,
+    turn: 10.0,
+    response: 7.0,
+    follow: 0.9,
+}
 
 fn water() -> Water {
     map::map().water
@@ -236,7 +244,10 @@ pub fn tick(w: mut World, input: TickInput<World>) {
     // capsules stay in the full floor's creature/sight field, never in this player set.
     let o = player_obstacles(w.wild, at, OBSTACLES)
     let before = w.player.at
-    if !holds(w.fight) {
+    if holds(w.fight) {
+        // In a move the fight has the body; the look is still the player's.
+        engine::player::turn_look(mut w.player.controls, input.dt)
+    } else {
         step_with(mut w.player, GROUND, WATER, o, TRAVEL, input.dt)
     }
     if !w.tour.on {
@@ -361,6 +372,8 @@ fn walk_the_tour(w: mut World) {
         yaw += w.tour.side * AROUND_TURN
     }
     w.player.controls.yaw = turn_to(from: w.player.controls.yaw, to: yaw, most: TURN)
+    // The walk turns the look itself: the camera doesn't follow on its own.
+    w.player.controls.idle_look = 0
     w.player.controls.forward = true
     w.player.controls.run_held = true
 }

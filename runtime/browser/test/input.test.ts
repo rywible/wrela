@@ -102,6 +102,29 @@ test("losing focus or a pointer releases controls whose up event cannot arrive",
   expect(ring.read().events.length).toBe(0);
 }));
 
+test("a program's pointer lock: a press locks it, a locked move goes on by its movement, and off lets it go", () => onPage((page) => {
+  const canvas = page.createElement("canvas");
+  const ring = InputRing.create();
+  const input = listen(canvas as unknown as HTMLCanvasElement, ring, () => 1, () => ({ width: 200, height: 200 }));
+  // Not wanted: a press doesn't lock.
+  canvas.dispatchEvent(domEvent("pointerdown", { clientX: 5, clientY: 6, pointerId: 1, button: 0, pointerType: "mouse" }));
+  canvas.dispatchEvent(domEvent("pointerup", { clientX: 5, clientY: 6, pointerId: 1, button: 0, pointerType: "mouse" }));
+  expect(page.pointerLockElement).toBe(null);
+  ring.read();
+  input.lockPointer(true);
+  canvas.dispatchEvent(domEvent("pointerdown", { clientX: 5, clientY: 6, pointerId: 1, button: 0, pointerType: "mouse" }));
+  expect(page.pointerLockElement).toBe(canvas);
+  // The canvas is 100 css pixels for 200 of the program's.
+  expect(ring.read().events).toEqual(bytes([
+    pointerEvent(EventKind.PointerMove, 10, 12, 1, 0), pointerEvent(EventKind.PointerDown, 10, 12, 0, 0),
+  ]));
+  canvas.dispatchEvent(domEvent("pointermove", { clientX: 5, clientY: 6, movementX: 300, movementY: -4, pointerId: 1 }));
+  expect(ring.read().events).toEqual(pointerEvent(EventKind.PointerMove, 610, 4, 1, 0));
+  input.lockPointer(false);
+  expect(page.pointerLockElement).toBe(null);
+  expect(ring.read().events).toEqual(pointerEvent(EventKind.PointerMove, 610, 4, 0, 0));
+}));
+
 const bytes = (events: Uint8Array[]) => new Uint8Array(events.flatMap((e) => [...e]));
 const chars = (text: string) => [...text].map((c) => textEvent(c.codePointAt(0)!));
 
