@@ -1,14 +1,18 @@
-// A wood that streams (M6 §6, §7): the forest of a floor, its instances loaded a tile at a time
-// into slots and dropped when their tile is, and chosen each frame on the GPU, not the CPU.
+// A wood that streams: the forest of a floor, its instances loaded a tile at a time into slots
+// and dropped when their tile is, and chosen each frame on the GPU, not the CPU.
+//
+// Make a `Wood` (`Wood::new`), `load` and `drop` tiles as the player moves, and each frame
+// `select` the lists and draw them (`prepass_cards`, `occlude`, `prepass_far`, `shade`; `shadow`
+// for a cascade chosen by `select_shadow`).
 //
 // `vegetation::Forest` chooses each instance's way (its cards' level, an impostor, a volume) on
-// the CPU and writes the frame's lists; that was the clearing's few thousand. A floor streams
+// the CPU and writes the frame's lists, which suits a few thousand instances. A floor streams
 // tens of thousands round the player, and a moving player changes them every frame. Here every
 // loaded instance stays on the GPU, in its tile's slot; each frame a kernel chooses each one's
 // ways (`lod::place`, the same function the draws read its shares by) and writes its index and
 // marks into its list's room, counted with atomics; a second gathers each list's instances into
 // place, and a third writes each list's indirect draws. The draws are `vegetation`'s own shaders,
-// unchanged: the same cards, limbs, impostors and volumes as the clearing's.
+// unchanged: the same cards, limbs, impostors and volumes as a `vegetation::Forest` draws.
 //
 // A list is a kind drawn one way. Its room is the kind's loaded instances (an instance is in at
 // most two ways), laid out on the CPU when tiles come and go.
@@ -934,8 +938,7 @@ impl Wood {
     }
 
     /// The far crowns behind the near ones' cards (what `prepass_cards` left in `depth`), put out
-    /// of the far draws: in a dense wood most of them (#54 §7: "most crowns past 30 m in a wood are
-    /// hidden by the near ones").
+    /// of the far draws: in a dense wood, most of them.
     pub fn occlude(mut self, cam: Camera, depth: DepthTexture) {
         self.seen.occlude(cam, depth, self.every, self.lods)
     }

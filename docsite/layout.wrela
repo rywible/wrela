@@ -223,16 +223,17 @@ pub fn lay_out(blocks: [Block], fonts: Fonts, width: f32, u: f32, code_headings:
                     hex(QUIET),
                     0.0,
                 )
-                laid.spots.push(
-                    Spot { rect: Rect::new(sx, y, sw, line), target: f"source:{source}" },
-                )
+                // The export links the source to its line at the release's commit.
+                let link = b.runs[2].link.as_str()
+                let target = if link.is_empty() { f"source:{source}" } else { link.to_string() }
+                laid.spots.push(Spot { rect: Rect::new(sx, y, sw, line), target: target.clone() })
                 laid.parts.push(
                     Part {
                         role: Role::Link,
                         level: 0,
                         rect: Rect::new(sx, y, sw, line),
                         label: f"{kind}, defined at {source}",
-                        target: f"source:{source}",
+                        target,
                     },
                 )
                 y += line + 8.0 * u

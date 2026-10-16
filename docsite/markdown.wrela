@@ -198,12 +198,13 @@ fn flush(blocks: mut Vec<Block>, para: mut String) {
     para.clear()
 }
 
-/// Whether runs are an item's kind and source: code, " · ", code.
+/// Whether runs are an item's kind and source: code, " · ", code (a link to the source's line, or
+/// not).
 fn is_meta(runs: [Run]) -> bool {
     runs.len() == 3 &&
         runs[0].style == CODE &&
         runs[1].text.as_str().trim() == "·" &&
-        runs[2].style == CODE
+        (runs[2].style == CODE || runs[2].style == CODE | LINK)
 }
 
 fn count_of(t: str, b: u8) -> u32 {
@@ -470,7 +471,7 @@ fn is_letter(cp: u32) -> bool {
 
 @test
 fn blocks_read_as_the_export_and_the_spec_write_them() {
-    let src = "# std::arena\n\nArenas and handles.\nOn two lines.\n\n## Arena\n\n`struct` · `compiler/std/arena.wrela:12`\n\n```wrela\npub struct Arena<T>\n```\n\n- one **bold**\n  more of one\n  - two `code`\n3. three\n\n> a quote\n\n| A | B |\n|---|:-:|\n| `x\\|y` | *z* |\n\n---\n\n## Arena\n"
+    let src = "# std::arena\n\nArenas and handles.\nOn two lines.\n\n## Arena\n\n`struct` · [`compiler/std/arena.wrela:12`](https://x.dev/arena.wrela#L12)\n\n```wrela\npub struct Arena<T>\n```\n\n- one **bold**\n  more of one\n  - two `code`\n3. three\n\n> a quote\n\n| A | B |\n|---|:-:|\n| `x\\|y` | *z* |\n\n---\n\n## Arena\n"
     let b = parse(src)
     let kinds: Vec<Kind> = Vec::from_fn(b.len(), |i| b[i].kind)
     assert(
@@ -498,6 +499,8 @@ fn blocks_read_as_the_export_and_the_spec_write_them() {
     assert(para.as_str() == "Arenas and handles. On two lines.")
     // A repeated heading's anchor is numbered, as the export numbers it.
     assert(b[2].anchor.as_str() == "arena" && b[11].anchor.as_str() == "arena-2")
+    // An item's source links to its line.
+    assert(b[3].runs[2].link.as_str() == "https://x.dev/arena.wrela#L12")
     assert(b[4].lang.as_str() == "wrela" && b[4].code.as_str() == "pub struct Arena<T>")
     let item = plain(b[5].runs)
     assert(item.as_str() == "one bold more of one" && b[5].runs[1].style == BOLD)

@@ -1,19 +1,23 @@
-// Creatures (sketch 01 §3, and the authoring surface of M3): a skeleton, and parts, which are
-// fields in their bones' spaces, joined in order across the joints. A creature's structure is
-// its type, so every individual of a kind has one type and shares one set of pipelines; its
-// numbers are data (D-070).
+// Creatures as fields: a skeleton, and parts that are fields in their bones' spaces, joined in
+// order across the joints.
 //
-// Bones have positions, not rotations, at rest: a part is placed by its bone's rest position,
-// and skinning (sketch 02) moves it with the bone's pose.
+// Start with a `Skeleton`, then give it parts: `creature(skeleton)` returns a builder, and
+// `.part`, `.join`, `.group`, `.each_leg`, `.then` and `.blend` add to it. A type that offers
+// a field and a skeleton is a `Creature`; the renderer reads its field through `Parts`.
 //
-// Each part has a name, which tools show (std::field's parts, language.md §22), and joins what
-// comes before it by its own seam: smoothly over a width, hard, as a cut or as a clip. Parts can
-// be grouped: a group's parts join each other first, in the group's own space (moved, turned and
-// scaled), and the group joins the rest as one. A part or a group can be mirrored in x = 0: it
-// is written for x ≥ 0, and its image moves with the bones the skeleton pairs with its own (the
-// right legs' with the left's). A modifier changes the distance of everything before it in its
-// group (a cape, the ground). A creature is built from values, never heap memory, so a lifted
-// build derives gradients through all of it, its skeleton included (§22).
+// - A creature's structure is its type, so every individual of a kind has one type and shares
+//   one set of pipelines. Its numbers are data.
+// - Bones have positions, not rotations, at rest: a part is placed by its bone's rest position,
+//   and skinning moves it with the bone's pose (`SkinBinding`).
+// - Each part has a name, which tools show (std::field's parts, language.md §20). It joins what
+//   comes before it by its own seam: smoothly over a width, hard, as a cut or as a clip.
+// - A group's parts join each other first, in the group's own space (moved, turned and scaled),
+//   and the group joins the rest as one.
+// - A part or a group can be mirrored in x = 0: it is written for x ≥ 0, and its image moves
+//   with the bones the skeleton pairs with its own (the right legs' with the left's).
+// - A modifier changes the distance of everything before it in its group (a cape, the ground).
+// - A creature is built from values, never heap memory, so a lifted build derives gradients
+//   through all of it, its skeleton included (§20).
 
 use physique
 use physique::{Capsule, Mass, Per}
@@ -545,7 +549,7 @@ impl Modifier for Ground {
 
 // ---- parts -------------------------------------------------------------------------------------
 
-/// How a part's mesh moves with the skeleton (#43 §12): its weight goes to its bone, along a
+/// How a part's mesh moves with the skeleton: its weight goes to its bone, along a
 /// chain of bones, or between two bones. The axis's ends are in the space the part is placed
 /// in (the creature's rest space, outside a group). They're kept as their bits: a binding is
 /// fixed, not a shape that a lifted build's gradients move (each part would carry their
@@ -644,7 +648,7 @@ pub fn split(from: Bone, to: Bone, a: vec3, b: vec3) -> SkinBinding {
     SkinBinding { kind: 2, first: from.index, count: to.index, a: bits3(a), b: bits3(b) }
 }
 
-/// Skin weights being gathered, by bone, as spike 01 gathers them: adding to one is a single
+/// Skin weights being gathered, by bone: adding to one is a single
 /// write, wherever a part's binding is, and the four heaviest are found once, at the end. `top`
 /// is one past the highest bone given any weight.
 pub struct BoneWeights: Copy {
@@ -673,7 +677,7 @@ impl BoneWeights {
 
     /// The four heaviest bones (ties to the lower bone), then, where fewer have weight, the
     /// lowest bones not chosen, with none; and their weights, normalized and quantized to bytes
-    /// that add up to 255, as spike 01 quantizes them. The bones a byte each, low byte first,
+    /// that add up to 255. The bones a byte each, low byte first,
     /// and the weights the same.
     pub fn quantized(self) -> (u32, u32) {
         var idx = [0; 4]
@@ -972,7 +976,7 @@ pub trait PartList: Copy + GpuData {
         out
     }
 
-    /// Skin weights at `p`, spike 01's: each of its parts gives the bones its binding names
+    /// Skin weights at `p`: each of its parts gives the bones its binding names
     /// (`SkinBinding`) 1 − smoothstep(0, `falloff`, d − `dmin`), where d is its own distance,
     /// seen `fp` wide, times `scale`, and `dmin` the smallest (`nearest`). `image`: `p` was
     /// reflected on its way here.
@@ -1038,7 +1042,7 @@ pub trait PartList: Copy + GpuData {
     }
 
     /// How far from the surface a part's distance can be where the fold is within `near` of
-    /// it: each modifier's widening, and 1.25 times each seam's width (sketch 01's bound: a
+    /// it: each modifier's widening, and 1.25 times each seam's width (the bound within which a
     /// part keeps a weight only while each later join lowers the fold by at most that). A
     /// group's own seams count inside it, at its scale. The last item first: each widens the
     /// reach of those before it.
@@ -1209,7 +1213,7 @@ pub struct Group<P>: Copy + GpuData {
 pub const FAR: f32 = 1000000.0
 
 /// Which of a creature's items (its top-level parts, groups and modifiers, in fold order) can
-/// matter somewhere: a bit for each of the first 64 (D-080). An item past the 64th has none, and
+/// matter somewhere: a bit for each of the first 64. An item past the 64th has none, and
 /// is always in (it's never culled), so a creature may have any number of items.
 pub struct PartMask: Copy + GpuData + Eq {
     pub lo: u32,
@@ -1601,7 +1605,7 @@ pub trait PartChannels<C>: PartList {
     /// `dc` joined at `p` by item `i` alone (counted in this list), seen `fp` wide, its channels
     /// blended as its seam weighs them: a step of a masked fold
     /// (`CreatureField::fold_masked_channels`). Its distance is `x` already if `use_x` (as
-    /// spike 01's pruned sample has its nearest part's).
+    /// a pruned sample has its nearest part's).
     fn item_fold_channels(
         self,
         p: vec3,
@@ -2073,9 +2077,9 @@ pub trait Creature<C> {
     }
 }
 
-/// A creature's field: its items joined in order, from a distance far outside (as spike 01's
-/// `BIG`), which the first part's join gives back exactly. `k` is the width of a seam that
-/// gives none (`Body::blend`).
+/// A creature's field: its items joined in order, from a distance far outside (`FAR`), which
+/// the first part's join gives back exactly. `k` is the width of a seam that gives none
+/// (`Body::blend`).
 pub struct CreatureField<P>: Copy + GpuData {
     pub parts: P,
     pub k: f32,
@@ -2117,16 +2121,16 @@ impl<P: PartList> Surface for CreatureField<P> {
     }
 }
 
-/// A field made of items (parts, groups and modifiers), as the renderer reads it (D-080, #43
-/// §7): its distance and channels from some of its items, culling over a block, and skin
-/// weights. The compiler knows nothing of parts: this is ordinary code.
+/// A field made of items (parts, groups and modifiers), as the renderer reads it: its distance and
+/// channels from some of its items, culling over a block, and skin weights. The compiler knows
+/// nothing of parts: this is ordinary code.
 pub trait Parts<C>: Field<C> {
     /// Its distance at `p` from the items in `mask` alone, seen `fp` wide: the whole field's,
     /// wherever the others can't change it.
     fn distance_masked(self, p: vec3, mask: PartMask, fp: f32) -> f32
 
     /// Its distance at `p`, its gradient and its channels, from the items in `mask` alone,
-    /// seen `fp` wide: one derived evaluation (a pixel's shading, #43 §8.3).
+    /// seen `fp` wide: one derived evaluation (a pixel's shading).
     fn sample_masked(self, p: vec3, mask: PartMask, fp: f32) -> (f32, vec3, C)
 
     /// Culling over `b`: the items that can change the field there, and its interval there.
@@ -2139,7 +2143,7 @@ pub trait Parts<C>: Field<C> {
     /// Each item's bound (`Surface::bound`), in order.
     fn item_bounds(self) -> Vec<Bound>
 
-    /// Its distance and channels at `p` from only the items that can matter there (spike 01's
+    /// Its distance and channels at `p` from only the items that can matter there (a
     /// pruned sample): of the items `bounds` bounds, the one with the least lower bound at `p`
     /// is evaluated, and every other whose lower bound is at least the creature's width above
     /// that is left out (a smooth union then leaves the fold as it is). Items past the 64th,
@@ -2150,7 +2154,7 @@ pub trait Parts<C>: Field<C> {
 impl<C: Blend + Copy, P: PartChannels<C>> Parts<C> for CreatureField<P> {
     /// The items in `mask` alone, in order, one set bit at a time: a block's mask holds a few
     /// of a creature's items, and skipping the rest one by one cost as much as joining these
-    /// (spike 01's fold tests each part's bit; a creature's items are a tree of types).
+    /// (a creature's items are a tree of types).
     fn distance_masked(self, p: vec3, mask: PartMask, fp: f32) -> f32 {
         var items = InMask::new(mask.or(self.parts.modifiers(0)), self.parts.items())
         var d = FAR

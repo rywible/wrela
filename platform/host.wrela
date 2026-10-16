@@ -1,4 +1,8 @@
-// Typed application mechanisms over the shared std::host request. All payloads are bytes.
+// Services of the browser host for an application: the page's environment, images, the cursor
+// and icons, other programs shown in this one's place, files, the clipboard, text input, the
+// semantic tree and the page's address. Each function sends one request through
+// `std::host::request` and gives the `Pending` that its answer comes back on. Every request and
+// answer is bytes; a host that doesn't have a service fails the request.
 use std::host::request
 use std::io::Pending
 use std::semantics
@@ -15,16 +19,16 @@ pub fn word(bytes: [u8], at: u32 = 0) -> Option<u32> {
     )
 }
 
-// Where the program runs: byte 0 whether the system asks for reduced motion, then words: the
-// seconds since 1970 (at 1) and the device pixel ratio × 1024 (at 5); byte 9 whether this page
-// load reloaded the tab, rather than visiting the page; then the word of what the host has (at
-// 10, `capabilities`). A host may give fewer bytes.
+/// Where the program runs: byte 0 whether the system asks for reduced motion, then words: the
+/// seconds since 1970 (at 1) and the device pixel ratio × 1024 (at 5); byte 9 whether this page
+/// load reloaded the tab, rather than visiting the page; then the word of what the host has (at
+/// 10, `capabilities`). A host may give fewer bytes.
 pub fn environment() -> Pending<u8> {
     request("environment", [u8(0); 0])
 }
 
-// A compressed image (PNG, WebP or JPEG), decoded by the host to its RGBA8 pixels, rows top to
-// bottom, as the file holds them. It must be `width` by `height`: another size fails.
+/// A compressed image (PNG, WebP or JPEG), decoded by the host to its RGBA8 pixels, rows top to
+/// bottom, as the file holds them. It must be `width` by `height`: another size fails.
 pub fn decode_image(bytes: [u8], width: u32, height: u32) -> Pending<u8> {
     var body: Vec<u8> = Vec::new()
     for n in [width, height] {
@@ -34,22 +38,22 @@ pub fn decode_image(bytes: [u8], width: u32, height: u32) -> Pending<u8> {
     request("image/decode", body)
 }
 
-// Fetches each URL of `list` (absolute, one a line) into the host's cache ahead of time, at
-// low priority; a program opening stops it. Answers once all are done or it stopped.
+/// Fetches each URL of `list` (absolute, one a line) into the host's cache ahead of time, at
+/// low priority; a program opening stops it. Answers once all are done or it stopped.
 pub fn prefetch(list: [u8]) -> Pending<u8> {
     request("prefetch", list)
 }
 
-// The pointer's shape over the program: `default`, `pointer`, `text`, `grab`, `grabbing`,
-// `crosshair`, `move`, `nwse-resize` or `nesw-resize`.
+/// The pointer's shape over the program: `default`, `pointer`, `text`, `grab`, `grabbing`,
+/// `crosshair`, `move`, `nwse-resize` or `nesw-resize`.
 pub fn cursor(name: str) -> Pending<u8> {
     var bytes: Vec<u8> = Vec::new()
     for i in 0..name.len() { bytes.push(name.byte(i)) }
     request("cursor", bytes)
 }
 
-// One of the page's icons: `rel` is `icon` or `apple-touch-icon`, `size` its pixels on a side,
-// and `path` a square PNG the build shipped (`Shipped::path`).
+/// One of the page's icons: `rel` is `icon` or `apple-touch-icon`, `size` its pixels on a side,
+/// and `path` a square PNG the build shipped (`Shipped::path`).
 pub fn icon(rel: str, size: u32, path: str) -> Pending<u8> {
     let text = f"{rel} {size} {path}"
     var bytes: Vec<u8> = Vec::new()
@@ -70,8 +74,8 @@ pub fn surface(service: str, id: u32) -> Pending<u8> {
     request(service, body)
 }
 
-// Shows a program in place of this one, `name` (a lowercase key) naming it in the page's
-// address, so the browser's Back asks it to return.
+/// Shows a program in place of this one, `name` (a lowercase key) naming it in the page's
+/// address, so the browser's Back asks it to return.
 pub fn show(id: u32, name: str) -> Pending<u8> {
     var w = Writer::new()
     w.write_u32(id)
@@ -123,10 +127,15 @@ pub fn return_to_parent() -> Pending<u8> {
 
 // ---- input services (runtime/browser: listen.ts, semantics.ts) -------------------------------------
 
-/// What an `environment` answer's capabilities word says the host has.
+/// A bit of the capabilities word (`capabilities`): the host sends `Event::Paste` and takes what
+/// a program `offer`s to the clipboard.
 pub const PASTE_EVENTS: u32 = 1
+/// A bit of the capabilities word: the host takes `text_input`.
 pub const TEXT_INPUT: u32 = 2
+/// A bit of the capabilities word: the host takes the semantic tree (`publish`), `field_state`,
+/// `submit` and `announce`.
 pub const SEMANTICS: u32 = 4
+/// A bit of the capabilities word: the host draws glyphs with the system's fonts (`font/glyph`).
 pub const SYSTEM_GLYPHS: u32 = 8
 
 /// The capabilities word of an `environment` answer: 0 from a host that says nothing of them.
@@ -283,7 +292,7 @@ fn a_paste_has_the_hosts_layout() {
     assert(capabilities([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 5, 0, 0, 0]) == 5 && capabilities([0]) == 0)
 }
 
-// Answers when the parent asks this program to return, as the browser's Back does.
+/// Answers when the parent asks this program to return, as the browser's Back does.
 pub fn asked_to_return() -> Pending<u8> {
     request("surface/leave", [u8(0); 0])
 }

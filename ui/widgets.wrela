@@ -1,7 +1,9 @@
-// An immediate-mode toolkit: widgets are calls a program makes each frame, which draw
-// themselves and say what the person did to them. Between frames the `Ui` keeps only what a
-// person's actions leave behind: which widget is pressed, which has the keyboard's focus, how
-// far each region is scrolled, which tree nodes are open, a text field's cursor.
+// An immediate-mode toolkit for user interfaces: widgets are calls a program makes each frame,
+// which draw themselves and say what the person did to them. A program keeps one `Ui`, calls
+// `begin` with the frame's input events, calls its widgets, calls `end`, and draws the `Ui`'s
+// `draw` list (draw.wrela). Between frames the `Ui` keeps only what a person's actions leave
+// behind: which widget is pressed, which has the keyboard's focus, how far each region is
+// scrolled, which tree nodes are open, a text field's cursor.
 //
 // Layout is a stack of areas: a panel, a column or a row, a split, a scrolling region. Each
 // places widgets one after another; a widget's width is what it needs, or the rest of the row

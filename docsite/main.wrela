@@ -1497,7 +1497,7 @@ fn an_address_without_a_fragment_is_the_front_page_and_groups_rank_the_language_
     assert(rank("std/io.md", "module") < rank("engine/floor.md", "module"))
     let shown = fit(
         Fonts::from_baked(MANROPE, MONO),
-        "How wrela differs from Rust and TypeScript",
+        "How Wrela differs from Rust and TypeScript",
         size: 14.0,
         width: 120.0,
     )

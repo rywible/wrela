@@ -1,18 +1,23 @@
-// Plants (#28 §4, §9): trees and shrubs as fields, authored like creatures. A plant is limbs
-// (tapered tubes along curves) and a crown (clumps of leaves on the limbs, blended into one
-// soft field); its leaf kind, card size and colours are parameters. Its field is a `Surface`, so
-// the lens draws it, probes it and drags its literals.
+// Plants: trees and shrubs as fields, authored like creatures, and cooked on the GPU into leaf
+// cards that the renderer draws.
 //
-// Cooking a plant (once, on the GPU) turns its crown into leaf cards: each a cluster of leaves
-// cut from a square by `discard`, placed over the clumps' surfaces, with the crown's normal there
-// and how deep in the crown it is (from the crown's field). The cards come in three nested
-// levels: level L draws the first half^L of them, each sqrt(2)^L times its own size, so every
-// level covers the crown as often (spike 15: 472K cards became 120K with no visible loss). Each
-// level's own share is spread over all the clumps, so the first cards are a coarse crown.
+// A plant is limbs (tapered tubes along curves) and a crown (clumps of leaves on the limbs,
+// blended into one soft field). Start with `plant` (its `Leaves` and `Bark`), then add limbs
+// (`Plant::limb`) and clumps (`Plant::clump`). Its leaf kind, card size and colours are
+// parameters. Its field is a `Surface`, so the lens draws it, probes it and drags its literals.
 //
-// A plant is cooked once as a kind; the world places instances of it (where, turned, scaled,
-// tinted). Near instances draw their kind's cards and limbs; impostors and volumes stand in
-// farther away (`vegetation`).
+// Cooking a plant (once, on the GPU: `cook_cards`) turns its crown into leaf cards. Each card is
+// a cluster of leaves cut from a square by `discard`, placed over the clumps' surfaces, with the
+// crown's normal there and how deep in the crown it is (from the crown's field). The cards come
+// in three nested levels (`CARD_LEVELS`): level L draws the first half^L of them, each
+// sqrt(2)^L times its own size, so every level covers the crown as often, with far fewer cards
+// and no visible loss. Each level's own share is spread over all the clumps, so the first cards
+// are a coarse crown.
+//
+// A plant is cooked once as a kind; the world places instances of it (`Instance`: where,
+// turned, scaled, tinted). Near instances draw their kind's cards and limbs; impostors and
+// volumes stand in farther away (`vegetation`, `impostor`). The wind (`Wind`, `sway`) moves
+// every instance.
 
 use noise::{direction, hash2, pick, rand}
 use std::field::{Surface, PartName, Tube, unnamed}
@@ -198,8 +203,7 @@ impl Plant {
     /// A root: a buttress grown from a trunk `girth` thick (m) standing at `foot`, swelling down
     /// from it toward `dir` in a hollow curve, running a little way along the ground, winding by
     /// `across`, and diving under it `out` metres out; `r` thick where it leaves the trunk.
-    /// (Straight ramps from the trunk into the ground, all alike, read as radial wedges: the
-    /// lookdev reviews' A12, F4.)
+    /// (Straight ramps from the trunk into the ground, all alike, read as radial wedges.)
     pub fn root(mut self, foot: vec3, dir: vec3, girth: f32, out: f32, across: vec3, r: f32) {
         self.tube(
             [
@@ -455,8 +459,8 @@ pub fn corner_of(inst: Instance, mid: f32, eye: vec3) -> u32 {
 /// The plant's `n` cards (cooked by `seed`) in each corner's order (`CORNERS`, one after
 /// another): each level's own share front to back seen from the corner, the nearest it first,
 /// each share's run where it was (a level draws the first of them). A cut fragment behind the
-/// depth already written is dropped before it's cut, so the prepass draws a crown's cards so:
-/// 0.62 ms, 0.57. Found once, at load, from where each card is (`card_place`).
+/// depth already written is dropped before it's cut, so the prepass draws a crown's cards so.
+/// Found once, at load, from where each card is (`card_place`).
 pub fn card_orders(plant: Plant, n: u32, seed: u32) -> Vec<u32> {
     var centres: Vec<vec3> = Vec::new()
     for c in 0..n {
@@ -532,7 +536,7 @@ pub fn cook_cards(plant: Plant, n: u32, seed: u32, out: mut Slots<Card>, id: Glo
     let (which, p, k) = card_place(plant, n, seed, id.x)
     let (d, g) = plant.crown(p)
     // The crown's normal alone: mixed with its own clump's, each clump read as its own lump of
-    // light, a crown as confetti (M6's lookdev, the arbiter's G2).
+    // light, a crown as confetti.
     let normal = normalize(g)
     let size = plant.leaves.size * pick(k, 6, lo: 0.8, hi: 1.2)
     let tint = vec4(rand(k, 7), rand(k, 8), rand(k, 9), rand(which, 10))
@@ -564,8 +568,8 @@ pub fn card_tint(card: Card) -> vec3 {
 
 /// A leaf's colour by its age: young where its crown faces up (`up`, the y of the crown's
 /// normal), old deep down. A leaf has no tilt or age of its own: each leaf lit and coloured apart
-/// from its neighbours read as confetti, not as a mass turning from light to shade (M6's lookdev,
-/// forms.md row 1); a leaf's own shape shows at a mass's edge.
+/// from its neighbours read as confetti, not as a mass turning from light to shade; a leaf's own
+/// shape shows at a mass's edge.
 pub fn leaf_age(leaves: Leaves, up: f32) -> vec3 {
     mix(leaves.old, leaves.young, vec3(saturate(0.35 + 0.65 * up)))
 }
@@ -754,7 +758,7 @@ pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, f32, vec2) {
     let closing = if piece == 2 && ring == RINGS { 0.0 } else { 1.0 }
     // A joint's ring is worked out twice, as one piece's end and the next's start: exactly the
     // same both times (`mix(a, b, 1.0)` isn't always `b` on the GPU, and the two rings a rounding
-    // apart left a dotted crack round the limb: the lookdev reviews' pale rings on logs).
+    // apart left a dotted crack round the limb: pale rings on logs).
     let radius = r_axis * closing
     // How far along the limb (m), from its start: the bark's ridges run on across the joints.
     var walked = 0.0
@@ -769,7 +773,7 @@ pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, f32, vec2) {
 /// A plant placed in the world: where its base is, its turn about +y, its tint (added to its
 /// leaves' red and green, packed: `tint_of`), its size, its fork: how much higher its trunk
 /// forks than its kind's (below 0, lower), as a share of the height there (`bend`), so two trees
-/// of a kind don't fork at the same height (#54 §9); and how wide its crown is drawn against its
+/// of a kind don't fork at the same height; and how wide its crown is drawn against its
 /// kind's (below 1 where neighbours constrain it, above 1 for a distant group; its trunk and
 /// limbs keep their girth); and how thick its trunk and limbs are against its kind's at its size
 /// (`thick`: an old tree's thicker than its kind's, as tall).
@@ -894,7 +898,7 @@ pub fn unoriented(yaw: f32, pitch: f32, v: vec3) -> vec3 {
     vec3(q.x, c * q.y - s * q.z, s * q.y + c * q.z)
 }
 
-/// The wind (#28 §4, Q5 of #51): gusts carried over the land (`gust`), a function of time and
+/// The wind: gusts carried over the land (`gust`), a function of time and
 /// place only: its mean direction, how far it bends a plant, its time, and how fast its gusts
 /// travel downwind (m/s).
 pub struct Wind: Copy + GpuData {
@@ -924,7 +928,7 @@ pub fn gust(wind: Wind, p: vec2, time: f32) -> f32 {
 /// reach it (`gust`): a little behind them (its bend follows the gust of a moment ago and of a
 /// second ago), rocking only while the gust it feels changes (a gust's front, its passing) and
 /// most at its own pace (taller sways slower), and its leaves fluttering more in a strong gust.
-/// A function of the wind (its time) and the place, nothing else (AC4).
+/// A function of the wind (its time) and the place, nothing else.
 pub fn sway(wind: Wind, at: vec3, height: f32) -> vec3 {
     let world = at + wind.origin
     let t = wind.time
@@ -1016,9 +1020,9 @@ pub const OUTLINE: u32 = 4
 /// turns) round every point of the card where its cut can keep a pixel, about 0.77 of the card.
 /// A bilinear sample reads the texels within one texel of its point, so wherever `leaf_at` is
 /// above 0 is in a square a texel each way round a covered texel's centre (clamped to the card).
-/// A card's corners are shaded once each (an indexed draw) and its cut runs on fewer pixels:
-/// the prepass 0.71 ms, 0.63, the cards' shading 0.65, 0.58. More corners hold the leaves
-/// closer but cost more than they save (an octagon's six triangles: 0.75, 0.70).
+/// A card's corners are shaded once each (an indexed draw) and its cut runs on fewer pixels.
+/// More corners hold the leaves closer but cost more than they save (an octagon's six
+/// triangles).
 @compute(64)
 pub fn cook_outlines(atlas: Texture<Rgba8>, out: mut Slots<vec2>, id: GlobalId) {
     let k = id.x / OUTLINE
@@ -1073,7 +1077,7 @@ pub fn leaf_atlas(n: u32) -> Texture<Rgba8> {
     atlas
 }
 
-/// Bark's patterns, cooked once (#55 AC12: no field per pixel per frame for bark): a tile
+/// Bark's patterns, cooked once (no field per pixel per frame for bark): a tile
 /// `BARK_ACROSS` m across a limb (a limb round takes a whole number of them, `bark_round`) and
 /// `RIDGES_ALONG` m along it (down), read through a repeating sampler. Its channels: ridges (r:
 /// 26 across, one a metre along: broad ridges between narrow fissures that run along the limb and
@@ -1114,7 +1118,7 @@ fn ridge_texel(pixel: FragCoord) -> vec4 {
     // Fissures where the noise crosses its middle, each as wide as the next however steep the
     // noise is there (its distance to its middle, over its slope, in m): lines that run along the
     // limb, parting and joining (a noise's own bumps read as blotches, and where it lay flat by
-    // its middle its fissures swelled into a leopard's spots: specimens' bark, rounds 1 and 2).
+    // its middle its fissures swelled into a leopard's spots).
     let ta = vec2(1.0 / f32(RIDGES_W), 0.0)
     let tb = vec2(0.0, 1.0 / f32(RIDGES_H))
     let n = fissure_noise(uv)
@@ -1124,7 +1128,7 @@ fn ridge_texel(pixel: FragCoord) -> vec4 {
     )
     let apart = abs(n - 0.5) / max(length(slope), 1.0e-3)
     let ridges = smoothstep(0.006, 0.03, apart) * (0.7 + 0.3 * n)
-    // Plates longer than wide, their edges bent (straight, they read as paving: round 2).
+    // Plates longer than wide, their edges bent (straight, they read as paving).
     let bend = vec2(
         noise::noise2_wrapped(vec2(uv.x * 9.0, uv.y * RIDGES_ALONG * 1.0), period: vec2i(9, 40)),
         noise::noise2_wrapped(
@@ -1151,8 +1155,8 @@ fn ridge_texel(pixel: FragCoord) -> vec4 {
 /// Plates at `p` (cells one unit a side, `period` cells each way, wrapping): each cell's point
 /// placed at random in it, a plate the points' nearest region; its tone its own (0.35 to 1),
 /// dark in the crack where two plates meet, deeper where the cracks run deep (told apart by their
-/// tones alone, the plates read as paving, not bark: specimens' bark, round 1; dark lines of one
-/// width round every plate read as a crack maze: round 1's blind judges).
+/// tones alone, the plates read as paving, not bark; dark lines of one width round every plate
+/// read as a crack maze).
 fn plates_at(p: vec2, period: vec2i) -> f32 {
     let c = floor(p)
     var near = 9.0

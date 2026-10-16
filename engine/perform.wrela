@@ -1,20 +1,22 @@
-// Performances (spike 14, #48): how a score is played. A pianist controls four things for each
-// note, and nothing else: when the key goes down, how fast the hammer hits it, when the key
-// comes up, and the pedals. So a performance is each note's onset, velocity and release, and
-// the pedals' depth over time; every "feel" is made of those.
+// Performances: how a piano score is played, as each note's onset, velocity and release, and the
+// pedals' depth over time.
 //
-// `perform` makes one from a score (engine::score: what the composer wrote), a taste (the
-// player's habits, true of any piece) and marks (this piece, this time, at places in the
-// score). The score says what; the taste and the marks say how much. With a taste of only a
-// tempo and no marks, it gives the deadpan: the score played exactly.
+// A pianist controls four things for each note, and nothing else: when the key goes down, how
+// fast the hammer hits it, when the key comes up, and the pedals. Every "feel" is made of those.
 //
-// The rules follow the KTH performance rules in spirit (Friberg, Bresin and Sundberg's Director
-// Musices): each is a small change, scaled by a strength, and a strength of 0 turns it off. The
-// phrase arch is Todd's (1992), and the final ritardando Friberg and Sundberg's (1999). Times a
-// flourish takes (a roll, a breath, the melody's lead) are in seconds, not beats: they don't
-// stretch with the tempo (Desain and Honing, "Tempo curves considered harmful").
+// `perform` makes a `Performance` from three inputs:
+// - a score (engine::score: what the composer wrote);
+// - a taste (`Taste`: the player's habits, true of any piece);
+// - marks (`Mark`: this piece, this time, at places in the score).
+// The score says what; the taste and the marks say how much. With a taste of only a tempo and no
+// marks, it gives the deadpan: the score played exactly (`deadpan`).
 //
-// A performance is made when the program loads, not in a constant, so a lifted build lifts the
+// The rules follow the KTH performance rules in spirit: each is a small change, scaled by a
+// strength, and a strength of 0 turns it off. They include a phrase arch and a final
+// ritardando. Times a flourish takes (a roll, a breath, the melody's lead) are in seconds, not
+// beats: they do not stretch with the tempo.
+//
+// Make a performance when the program loads, not in a constant, so a lifted build lifts the
 // taste's and the marks' literals, and the lens's tools can change them as it runs.
 
 use rng::{Rng, seed}
@@ -90,7 +92,7 @@ pub struct Taste: Copy {
     /// Seconds taken before each phrase but the first: a breath.
     pub breath: f32 = 0.0,
     /// The last bars' ritardando: the tempo falls to `1 - final_rit` of itself, over
-    /// `final_bars`, along Friberg and Sundberg's curve with exponent `final_curve`.
+    /// `final_bars`, along a power curve with exponent `final_curve`.
     pub final_rit: f32 = 0.0,
     pub final_bars: u32 = 4,
     pub final_curve: f32 = 2.0,
@@ -352,7 +354,7 @@ fn time_map(score: Score, taste: Taste, marks: [Mark], lead: u32) -> TimeMap {
         var m = 1.0 + f64(arch(score, taste, lead, c) * taste.arch_tempo)
         m = m * f64(1.0 - taste.phrase_end * phrase_end(score, lead, c))
         if taste.final_rit > 0.0 && c >= last_bar {
-            // Friberg and Sundberg: v(x) = (1 + (w^q - 1) x)^(1/q), x from 0 to 1 over the
+            // v(x) = (1 + (w^q - 1) x)^(1/q), x from 0 to 1 over the
             // ritardando, w the tempo it ends at.
             let x = f32(c - last_bar) / f32(score.length() - last_bar)
             let q = taste.final_curve
