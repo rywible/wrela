@@ -1999,6 +1999,22 @@ The blocks' edges then moved out of the faces' shading into lines of their own o
 one CSS pixel wide: drawn inside each face, an edge took its width from the face's angle, and
 the top face, seen almost edge on, made its back edge flicker.
 
+## Addresses, links, find and documents for programs, 2026-10-15
+
+For docs.wrela.dev written in Wrela, Ryan asked for everything HTML gives a page that a canvas
+lacks; the whiteboard had brought the clipboard, input methods, glyphs and the screen-reader
+overlay. The browser host now gives a top-level program its page's address: it reads it, adds
+or replaces an entry on the page's own origin, and hears Back and Forward (`nav/*`). It opens a
+link in a new tab, goes to another page of its origin (another version of a site), and may take
+the browser's find keys for a find of its own (`keys/find`). The host no longer drops a fragment
+from the address on load; the console does that itself, so a program with routes keeps its
+deep links. The accessibility overlay gained a document: headings with their levels,
+paragraphs, links and code, in the tree's order whether or not they are on screen, as the plan
+council asked, with a link's focus and activation going to the program. The roles follow the
+W3C's [WAI-ARIA](https://www.w3.org/TR/wai-aria-1.2/) (`heading`, `link`, `document`). Writing a
+console test found a compiler bug: a closure with a `str` parameter gives malformed IR (#238).
+Claude (Opus 5.5) wrote it.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
