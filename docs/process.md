@@ -82,6 +82,7 @@ The M4 Air has not been measured; its times are reported separately.
 | [Claude Code](https://claude.com/claude-code) (Anthropic), mostly Claude Opus 5.5 | Writes the code, tests and docs, on Ryan's MacBook Air and in cloud sessions |
 | [OpenAI Codex](https://openai.com/codex/) | Reviews performance across the codebase, implements optimizations and regression tests, and measures their effects in a cloud session |
 | Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 | The authors in the blind authoring rounds that test thesis 1 (vision.md); Opus also in the first round |
+| [GPT-6.1-Sol and GPT-6-Astra](https://openai.com/) (OpenAI), as T3 Code child tasks | Since 2026-10-14, reviewers in a council on an implementation plan: each reads the brief and the checkout, returns findings, and rebuts the leader's answers; they don't edit |
 | Claude subagents with no context | Blind raters in the lookdev loop: they see only the before and after stills and the anchors |
 | Plan councils: Claude leads; OpenAI Codex GPT-6.1-Sol and GPT-6-Astra review | Since 2026-10-14, two Codex models review a measured plan independently, read-only, and then rebut the leader's answers. Claude decides, implements and verifies. First used for the faster check |
 | Claude projects (claude.ai) | Run several agent threads at once (lookdev items, fixes, rendering setup), with one coordinator |
@@ -1539,6 +1540,103 @@ clean. Native M4 GPU medians, back to back with a checkout at the previous commi
 Ryan's Chrome preview was also rendering: opening 2.9–3.3 ms against 2.5–2.8 ms; room
 4.5–5.6 ms against 4.1–4.4 ms. These are native samples, not Chrome frame rates.
 
+## A whiteboard, 2026-10-14
+
+Ryan asked whether Wrela could build web applications without HTML or CSS, and then asked
+Claude Code (Opus 5.5) to build a Miro-like board for fun, as a forcing function on the
+engine's UI layer. Miro and Lucid are product references for interaction conventions only,
+from general knowledge of such tools: a tool rail on the left, a colour bar over a
+selection, sticky notes whose text shrinks to fit, connectors that follow their shapes, and
+single-key tools. No screen, asset or design was traced or copied.
+
+**The board** (`examples/board/`) is a Wrela program drawn entirely from the `ui` package's
+quads: an endless dot grid, sticky notes, rectangles, ellipses, diamonds, free text, pen
+strokes and arrows between items. It has select, shift-select and marquee; move, resize and
+nudge; double-click to type, with a caret, Backspace, Delete and arrows; a colour bar; front
+and back; undo and redo; duplicate, copy, cut and paste; pan by Space, the hand tool, the
+middle button or scrolling; zoom about the pointer with Cmd or a pinch; fit and 100%; and a
+save to the program's storage after each change settles. Its tests drive it with scripts of
+input in the native host, as a person would.
+
+**The `ui` layer** gained ellipses, diamonds and lines with round ends (`ui/draw.wrela`) and
+word wrapping (`ui/text.wrela`). The ellipse's distance is Inigo Quilez's approximation
+([ellipse distance](https://iquilezles.org/articles/ellipsedist/)) and the diamond's his
+rhombus ([2D distance functions](https://iquilezles.org/articles/distfunctions2d/)), both
+reimplemented in Wrela.
+
+**What it found.** The language and the `ui` layer carried an ordinary application without
+new features. The gaps are the ones a canvas application expects: no system clipboard (copy
+and paste stay in the board), no input method for composed text, Latin-1 fonts only, and
+nothing for screen readers.
+
+## Clipboard, input methods, system glyphs and screen readers, 2026-10-14
+
+Ryan asked Claude Code (Opus 5.5) to fix the gaps the whiteboard found: ownership friction, two
+small API gaps, and no system clipboard, input method, text past Latin-1 or screen reader
+support. He asked for the plan to go through a council first: a review skill he supplied, in
+which the leader (Opus 5.5) sends one brief to two reviewers run as T3 Code child tasks, GPT-6.1-Sol
+and GPT-6-Astra (OpenAI, high effort), answers their findings, and runs a rebuttal round. The
+reviewers read the checkout but changed nothing. Two rounds ran; they found a kerning-table
+stride bug the plan would have caused, per-codepoint glyphs that would split emoji sequences,
+accessibility actions that would have hit whatever was drawn on top, spaces the hidden text field
+would have lost, a paste that could arrive twice or never, and composition events a full input
+ring could split. The plan changed for each. The language changes went in a PR of their own.
+
+**Input and the browser host.** Three input events: `Compose` (an input method's text as it
+changes, written all or nothing and checked for gaps), `Paste` (by a serial; the program asks for
+the data) and `Assist` (an assistive technology's action, by node). The browser host has three
+owners of the keys: the canvas, a hidden text field at the caret while the program edits text (so
+input methods compose there), and an accessibility overlay of real buttons and a listbox (F6 in,
+Escape out). Services: `text/input`, `clipboard/offer` (what a copy takes, offered before the
+keys that copy arrive), `clipboard/pasted`, `a11y/tree`, `a11y/announce`, `font/glyph`, and a
+capabilities word in `environment`. The keyboard's and the overlay's patterns follow the W3C's
+[ARIA Authoring Practices](https://www.w3.org/WAI/ARIA/apg/) (button and listbox) and the
+[UI Events](https://www.w3.org/TR/uievents/) and [Input Events](https://www.w3.org/TR/input-events-2/)
+specifications.
+
+**Glyphs.** Text is laid out by character group: an approximation of Unicode's extended grapheme
+clusters ([UAX #29](https://www.unicode.org/reports/tr29/)) for accents, emoji skin tones, flags
+and joined emoji sequences only, with no shaping between groups. A group past the baked fonts is
+drawn by the browser in the system's fonts and made into a glyph while the program runs: a
+signed distance field from the drawing's exact Euclidean distance transform, after Pedro
+Felzenszwalb and Daniel Huttenlocher, ["Distance Transforms of Sampled
+Functions"](https://theoryofcomputing.org/articles/v008a019/) (Theory of Computing 8, 2012),
+reimplemented in Wrela; an emoji stays a colour image. No font file was added.
+
+**Checks.** A real-browser test drives headless Chrome with trusted keys and an input method
+through Chrome's [DevTools protocol](https://chromedevtools.github.io/devtools-protocol/) (its
+Input domain, over a small WebSocket client in tools/chrome_session.py) and checks that each edit
+reaches the program once. A GPU frame test checks a colour glyph's pixels. VoiceOver and pasting
+into other applications were not tested.
+
+## Refining the whiteboard, 2026-10-14
+
+Ryan asked Claude Code (Opus 5.5) to keep refining the board towards Miro's features and
+polish, as a harsh critic, with more tests. The loop: capture the board in headless Chrome with
+trusted input over the DevTools protocol, judge the picture, list what falls short, fix it, test
+it, and capture again. The model judged its own captures; Ryan judges the result. Miro's
+conventions again come from general knowledge of the product only: smart guides, connection dots
+on an item's sides, elbow connectors, frames, a minimap, groups, Alt and a letter to align, and a
+click on a sticky's side to add the next one. No screen, asset or design was traced or copied.
+
+**What changed.** Moves and resizes snap to other items' edges and middles and show guides; Shift
+keeps a drag to one axis and Alt leaves a copy. Connectors route in elbows, can be dragged out of
+an item's side dots, take labels and arrowhead choices, and can have either end dragged to
+another item. Text editing has a selection, word and line steps, and a selection highlight. The
+camera eases. There is a context menu, locking, a cursor for each thing the pointer does, frames
+that carry what is inside them, a shapes flyout with a triangle and a pill, sizes for words, a
+minimap, an editable board name, groups, align and even spacing, a box with handles that scales a
+selection of several, and Shift+2 to zoom to the selection. Each has a frame test that drives the
+board with a script of input, or a unit test of the pure logic.
+
+**Outside algorithms.** A connector's elbow route is tested against items with Liang and Barsky's
+line clipping (Y.-D. Liang and B. A. Barsky, "A New Concept and Method for Line Clipping", ACM
+Transactions on Graphics 3(1), 1984). The triangle's distance in `ui/draw.wrela` follows Inigo
+Quilez's triangle in his [2D distance functions](https://iquilezles.org/articles/distfunctions2d/).
+Both are reimplemented in Wrela.
+
+**Not checked.** No frame-time measurement was made for this work; boards of thousands of items
+were not tried.
 ## Networking for Wrela programs, 2026-10-14
 
 Ryan asked for Wrela's own networking, "absolutely bulletproof and as compressed and performant
@@ -1900,6 +1998,37 @@ silver line a pixel wide, their outline smoothed, brightening, eased, only under
 The blocks' edges then moved out of the faces' shading into lines of their own on the screen,
 one CSS pixel wide: drawn inside each face, an edge took its width from the face's angle, and
 the top face, seen almost edge on, made its back edge flicker.
+
+## wrela.dev after launch, and a plan for its docs, 2026-10-15
+
+Ryan asked Claude (Opus 5.5) to look at wrela.dev as a showcase. In Chrome, Claude found that
+the console's fetches ahead had never run: its Content Security Policy let it connect only to
+its own origin, and the browser refused each game file (about 80 console errors). Opening a
+game put the release's directory in the address (`wrela.dev/releases/<id>/#leapling`): the
+history entry's relative address resolved against the page's `<base>`, and a deploy removes
+that directory 14 days later. A browser without WebGPU showed the red failure box, and the page
+had no description for a link to show where it is shared. The Last Green appeared to hang; it
+ran at about one frame a second on that Chromium's Intel gen-9 adapter, so its first frame took
+over a minute.
+
+Ryan then asked for docs at docs.wrela.dev, agent-native and written in Wrela, and for a plan
+council on the plan. Claude led; OpenAI Codex GPT-6.1-Sol and GPT-6-Astra reviewed it, read-only,
+in two rounds. Both found that opening the policy was not enough: a `no-cors` fetch of a shader
+or a manifest served with `nosniff` is an opaque response that Chromium's
+[opaque response blocking](https://chromium.googlesource.com/chromium/src/+/main/services/network/public/cpp/orb/)
+withholds, so the cache need not keep it for the game. The console's subdomains share one
+[HTTP cache partition](https://developer.chrome.com/blog/http-cache-partitioning), so the
+partition was not the obstacle. The console now fetches each file as a readable CORS request
+with credentials, as the game's page later does; each game's Worker lets the console's origin
+read its files; and pages are no longer fetched ahead, since a frame's page is a navigation. The
+history entry keeps the page's own path. A browser or machine without WebGPU, a hardware adapter
+or OffscreenCanvas is told what a program needs. The console's page has a description and an
+[Open Graph](https://ogp.me/) card with its first game's cover. Whether the game's frame reuses
+the fetched files can only be seen on the deployed site; it is to be checked there. The council
+also shaped the docs plan: versioned docs kept apart from 14-day releases, each version's
+corpus beside its app so the app's own fetch reads it, and screen-reader document roles and
+in-page find before the docs are public. These are implementation references; nothing was
+copied.
 
 ## Reference docs from source, 2026-10-15
 

@@ -1,0 +1,7 @@
+# A glyph made while the program runs, drawn on the GPU: a colour image glyph's pixels are its
+# colour (the IMAGE quad kind in ui/draw.wrela), checked on the hardware GPU.
+[package]
+name = "glyphs"
+
+[dependencies]
+ui = { path = "../.." }

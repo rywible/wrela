@@ -1,0 +1,2668 @@
+// A whiteboard: an endless board of sticky notes, shapes, text, pen strokes and connectors, made
+// with the pointer and the keyboard, kept in the program's storage. Everything on the screen is
+// drawn here, from quads; the browser gives input and a canvas.
+//
+// Each frame: the host's answers (the display's pixel ratio and what the host can do, the saved
+// board, pastes), the input, a save if the board changed, the drawing, then what the host is told:
+// text mode at the caret, what a copy would take, and the accessibility tree. Input hits what the
+// frame before drew.
+
+use board::{Align, Board, ELBOW, END_ARROW, History, Item, Kind, NOTE, SMALLEST, START_ARROW, has}
+use chrome::{Action, Chrome, Selection, Tool}
+use snap::{Guide, snap_point, snap_rect}
+use clip::{Aim, Into, destination, items_of}
+use edit::{Caret, Step}
+use minimap::Map
+use paint::{ACCENT, PAPER, Typing}
+use platform::host
+use platform::host::{Node, Pasted}
+use std::gpu::begin_screen_pass
+use std::input::{Assist, Button, Composer, Event, Key, Mods, events}
+use std::io::{Pending, load as read_file, store}
+use std::serialize::{LoadError, load, save}
+use ui::draw::{DrawList, Rect, Renderer}
+use ui::text::{Face, Fonts, next_cluster, previous_cluster}
+use view::View
+
+/// Where the board is kept.
+const SAVED: Text = "board/board"
+
+/// What the pointer is doing while it's held.
+enum Drag: Copy + Eq {
+    Idle,
+    /// Moving the camera: where the pointer and the camera began.
+    Pan { from: vec2, pan: vec2 },
+    /// Pressed on item `id`: it moves the selection once it travels. `held`: it was selected
+    /// before the press.
+    Press { at: vec2, id: u32, shift: bool, held: bool },
+    /// Moving the selection: where the pointer began, the shift moved so far, and the
+    /// selection's rectangle when it began (what snaps).
+    Move { start: vec2, moved: vec2, from: Rect },
+    /// Selecting what a rectangle touches, added to the selection or instead of it.
+    Marquee { from: vec2, add: bool },
+    /// Resizing item `id` by a corner, the opposite corner held.
+    Resize { id: u32, anchor: vec2 },
+    /// Scaling a selection of several by a corner of the box round it: the opposite corner,
+    /// which stays, the corner pressed, and where the pointer pressed (world).
+    Scale { anchor: vec2, corner: vec2, from: vec2 },
+    /// Drawing a new shape from `from`.
+    Shape { from: vec2 },
+    /// Pressed on item `from`'s dot on its side `d` (a unit step out), at screen point `at`: a
+    /// click makes an item beside it, a drag a connector.
+    Dot { from: u32, d: vec2, at: vec2 },
+    /// Drawing a connector from item `from`.
+    Link { from: u32 },
+    /// Moving connector `id`'s start (`start`) or end to another item.
+    End { id: u32, start: bool },
+    Pen { id: u32 },
+    /// Selecting text in item `id` being typed into.
+    Select { id: u32 },
+    /// Moving the camera from the minimap, `map` as it was at the press: the minimap fits the
+    /// view too, so it would move under the pointer as the camera does.
+    Map { map: Map },
+    /// Pressed on a control.
+    Control,
+}
+
+/// A paste asked of the host: where it was aimed, and its answer on its way.
+struct Pasting {
+    aim: Aim,
+    answer: Pending<u8>,
+}
+
+/// A press on an item, to tell a double click.
+struct Click: Copy {
+    time: f32,
+    at: vec2,
+    id: u32,
+}
+
+pub struct App {
+    fonts: Fonts,
+    renderer: Renderer,
+    draw: DrawList,
+    board: Board,
+    history: History,
+    view: View,
+    /// Whether the camera has been fitted to the board.
+    placed: bool,
+    tool: Tool,
+    selected: Vec<u32>,
+    typing: Option<Typing>,
+    drag: Drag,
+    /// Where the pointer is, in device pixels, and whether Space is held (a pan).
+    pointer: vec2,
+    space: bool,
+    click: Option<Click>,
+    clipboard: Vec<Item>,
+    pastes: u32,
+    screen: vec2,
+    time: f32,
+    // The host's answers: the environment, the saved board, the last save, the cursor.
+    environment: Option<Pending<u8>>,
+    loading: Option<Pending<u8>>,
+    writing: Option<Pending<u8>>,
+    cursor: Option<Pending<u8>>,
+    shown_cursor: Text,
+    /// The board as last saved, and when it last changed.
+    saved: Board,
+    changed_at: f32,
+    /// What the host can do (`environment`'s capabilities), once it has said.
+    capabilities: Option<u32>,
+    /// A Cmd+V before the host said whether a paste arrives as an event.
+    paste_waiting: bool,
+    pasting: Vec<Pasting>,
+    /// One more each time typed text changes: a paste aimed at text checks it's as it was.
+    revision: u32,
+    /// The text an input method is composing at the caret.
+    composer: Composer,
+    // What the host was last told: text mode's caret, what a copy takes, the accessibility tree,
+    // the selection it said; and its answers to them, on their way.
+    texting: Option<vec4>,
+    offered: Vec<Item>,
+    offered_words: String,
+    tree: Vec<Node>,
+    said: Vec<u32>,
+    told: Vec<Pending<u8>>,
+    /// The lines what's being moved or resized snapped to, while it is.
+    guides: Vec<Guide>,
+    /// Where the camera is easing to (a zoom button, fit, revealing an item), and whether the
+    /// person asked for less motion (then it goes there at once).
+    goal: Option<View>,
+    reduced: bool,
+    /// The last frame's time, for easing.
+    last_time: f32,
+    /// Where the context menu is open (screen pixels), if it is.
+    menu: Option<vec2>,
+    /// What a move carries: the selection, and what's inside the frames in it.
+    carried: Vec<u32>,
+    /// What a scale changes, as it was when the scale began.
+    originals: Vec<Item>,
+    /// The shape the Shapes tool makes, and whether its flyout is open.
+    shape: Kind,
+    flyout: bool,
+    /// Whether the Align row is open over a selection of several.
+    aligning: bool,
+    /// The control the pointer is over, and since when: its tip shows after a moment.
+    hovering: Option<(Action, f32)>,
+    /// Whether the minimap shows.
+    map_on: bool,
+    /// The board's name being typed, its caret; and when its title was last pressed (a double
+    /// press renames).
+    naming: Option<Caret>,
+    title_pressed: f32,
+}
+
+pub fn init() -> App {
+    let fonts = Fonts::load()
+    let renderer = Renderer::new(fonts)
+    let board = starter()
+    App {
+        fonts,
+        renderer,
+        draw: DrawList::new(),
+        saved: board.clone(),
+        board,
+        history: History::new(),
+        view: View::new(),
+        placed: false,
+        tool: Tool::Select,
+        selected: Vec::new(),
+        typing: None,
+        drag: Drag::Idle,
+        pointer: vec2(-1.0),
+        space: false,
+        click: None,
+        clipboard: Vec::new(),
+        pastes: 0,
+        screen: vec2(640.0, 480.0),
+        time: 0.0,
+        environment: Some(host::environment()),
+        loading: Some(read_file(SAVED)),
+        writing: None,
+        cursor: None,
+        shown_cursor: "default",
+        changed_at: 0.0,
+        capabilities: None,
+        paste_waiting: false,
+        pasting: Vec::new(),
+        revision: 0,
+        composer: Composer::new(),
+        texting: None,
+        offered: Vec::new(),
+        offered_words: String::new(),
+        tree: Vec::new(),
+        said: Vec::new(),
+        told: Vec::new(),
+        guides: Vec::new(),
+        goal: None,
+        reduced: false,
+        last_time: 0.0,
+        menu: None,
+        carried: Vec::new(),
+        originals: Vec::new(),
+        shape: Kind::Box,
+        flyout: false,
+        aligning: false,
+        hovering: None,
+        map_on: false,
+        naming: None,
+        title_pressed: -1.0,
+    }
+}
+
+/// The board a person first sees: what it can do, on itself.
+fn starter() -> Board {
+    var b = Board::new()
+    let notes = [
+        "Welcome to the board! Double-click a note to write on it",
+        "N  note\nR  rectangle\nO  ellipse\nD  diamond\nT  text\nL  connector\nP  pen",
+        "Drag empty space to select. Space + drag pans, Cmd + scroll zooms",
+    ]
+    for i in 0..notes.len() {
+        var n = Item::new(
+            Kind::Note,
+            vec2(-340.0 + 240.0 * f32(i), -260.0),
+            vec2(NOTE),
+            color: [0, 4, 2][i],
+        )
+        n.text = String::from(notes[i])
+        let _ = b.add(take n)
+    }
+    // The flow sits in a frame.
+    var flow = Item::new(Kind::Frame, vec2(-380.0, -10.0), vec2(780.0, 215.0), color: 7)
+    flow.text = String::from("Flow")
+    let _ = b.add(take flow)
+    var idea = Item::new(Kind::Box, vec2(-340.0, 40.0), vec2(200.0, 110.0), color: 5)
+    idea.text = String::from("Idea")
+    let idea = b.add(take idea)
+    var plan = Item::new(Kind::Ellipse, vec2(-50.0, 30.0), vec2(160.0, 130.0), color: 3)
+    plan.text = String::from("Plan")
+    let plan = b.add(take plan)
+    var ship = Item::new(Kind::Diamond, vec2(200.0, 15.0), vec2(160.0, 160.0), color: 1)
+    ship.text = String::from("Ship it?")
+    let ship = b.add(take ship)
+    for (from, to) in [(idea, plan), (plan, ship)] {
+        var l = Item::new(Kind::Link, vec2(0.0), vec2(0.0), color: 7)
+        l.from = from
+        l.to = to
+        let _ = b.add(take l)
+    }
+    var note = Item::new(Kind::Text, vec2(-340.0, 230.0), vec2(760.0, 30.0), color: 7)
+    note.text = String::from(
+        "Cmd+Z undoes, Cmd+D duplicates, Backspace deletes. The board saves itself.",
+    )
+    let _ = b.add(take note)
+    b
+}
+
+fn poll(pending: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>> {
+    var answer = None
+    match mut pending {
+        Some(p) => answer = p.poll(),
+        None => {},
+    }
+    if answer.is_some() { pending = None }
+    answer
+}
+
+/// Device pixels to a logical one.
+fn unit(s: App) -> f32 {
+    s.view.unit
+}
+
+pub fn frame(s: mut App, time: f32, width: u32, height: u32) {
+    let screen = vec2(f32(width), f32(height))
+    s.screen = screen
+    s.time = time
+    answers(mut s)
+    if !s.placed {
+        if let Some(r) = s.board.whole() {
+            s.view.fit(r, screen, margin: 80.0 * unit(s), most: 1.0)
+        }
+        s.placed = true
+    }
+    let chrome = layout(s)
+    for e in events() {
+        handle(mut s, e, chrome)
+    }
+    ease(mut s)
+    keep(mut s)
+    draw(mut s, screen)
+    tell(mut s)
+}
+
+/// The camera a step toward its goal: most of the way in a fifth of a second.
+fn ease(s: mut App) {
+    let dt = clamp(s.time - s.last_time, 0.0, 0.1)
+    s.last_time = s.time
+    let Some(goal) = s.goal else { return }
+    if s.reduced || s.view.near(goal, s.screen) {
+        s.view = goal
+        s.goal = None
+        return
+    }
+    s.view = s.view.toward(goal, s.screen, 1.0 - exp(-14.0 * dt))
+}
+
+/// Where the camera is going: its goal, or where it is.
+fn heading(s: App) -> View {
+    match s.goal {
+        Some(g) => g,
+        None => s.view,
+    }
+}
+
+/// The host's answers: the pixel ratio, the saved board, and the requests done.
+fn answers(s: mut App) {
+    if let Some(result) = poll(mut s.environment) {
+        var capabilities = 0
+        if let Ok(bytes) = result {
+            capabilities = host::capabilities(bytes)
+            s.reduced = !bytes.is_empty() && bytes[0] != 0
+            if let Some(ratio) = host::word(bytes, 5) {
+                let u = clamp(f32(ratio) / 1024.0, 0.5, 4.0)
+                // The same world point stays in the middle of the screen.
+                let middle = s.view.to_world(0.5 * s.screen)
+                s.view.unit = u
+                s.view.pan = middle - 0.5 * s.screen / s.view.scale()
+                if s.history.fresh() { s.placed = false }
+            }
+        }
+        s.capabilities = Some(capabilities)
+        // A Cmd+V before now pastes the board's own clipboard, unless a paste event brings it.
+        if replace(mut s.paste_waiting, value: false) && capabilities & host::PASTE_EVENTS == 0 {
+            let items = s.clipboard.clone()
+            paste(mut s, items)
+        }
+    }
+    var i = 0
+    while i < s.pasting.len() {
+        let Some(result) = s.pasting[i].answer.poll() else {
+            i += 1
+            continue
+        }
+        let aim = s.pasting.remove(i).aim
+        let got = match take result {
+            Ok(bytes) => match host::read_pasted(take bytes) {
+                Ok(p) => Some(take p),
+                Err(_) => None,
+            },
+            Err(_) => None,
+        }
+        pasted(mut s, aim, got)
+    }
+    i = 0
+    while i < s.told.len() {
+        if s.told[i].poll().is_some() { let _ = s.told.remove(i) } else { i += 1 }
+    }
+    if let Some(result) = poll(mut s.loading) {
+        if let Ok(bytes) = result {
+            let kept: Result<Board, LoadError> = load(bytes.clone())
+            // A board kept from before, unless the person has already changed this one.
+            if let Ok(b) = kept {
+                if s.history.fresh() {
+                    s.saved = b.clone()
+                    s.board = b.clone()
+                    s.placed = false
+                }
+            }
+        }
+    }
+    let _ = poll(mut s.writing)
+    let _ = poll(mut s.cursor)
+}
+
+/// Saves the board once it has rested a moment after a change.
+fn keep(s: mut App) {
+    if s.board == s.saved {
+        s.changed_at = s.time
+        return
+    }
+    if s.writing.is_none() && s.drag == Drag::Idle && s.time - s.changed_at > 0.75 {
+        let bytes = save(s.board)
+        s.writing = Some(store(SAVED, bytes))
+        s.saved = s.board.clone()
+    }
+}
+
+/// The selection's rectangle on the screen, if anything's selected.
+/// What's selected, for its bar: its rectangle on the screen, and whether it has connectors.
+fn selection(s: App) -> Option<Selection> {
+    if s.selected.is_empty() {
+        return None
+    }
+    let Some(r) = s.board.extent(s.selected) else { return None }
+    var links = false
+    var inks = true
+    var words = false
+    var things = 0
+    for id in s.selected {
+        if let Some(i) = s.board.index(id) {
+            let kind = s.board.items[i].kind
+            if kind == Kind::Link {
+                links = true
+            } else {
+                things += 1
+            }
+            if kind != Kind::Link && kind != Kind::Pen && kind != Kind::Text {
+                inks = false
+            }
+            if sizes_words(kind) {
+                words = true
+            }
+        }
+    }
+    Some(Selection { rect: s.view.rect(r), links, inks, words, many: things > 1 })
+}
+
+/// Whether an item of `kind` has words whose size the bar changes: not a note (its words fit
+/// it), a frame (its title) or a stroke.
+fn sizes_words(kind: Kind) -> bool {
+    kind != Kind::Note && kind != Kind::Frame && kind != Kind::Pen
+}
+
+fn layout(s: App) -> Chrome {
+    let bar = match s.drag {
+        Drag::Idle => selection(s),
+        Drag::Control => selection(s),
+        _ => None,
+    }
+    var c = chrome::layout(
+        s.screen,
+        unit(s),
+        bar,
+        flyout: s.flyout && s.drag == Drag::Idle,
+        aligning: s.aligning,
+    )
+    if let Some(at) = s.menu {
+        var entries: Vec<Action> = if s.selected.is_empty() {
+            Vec::from([Action::Paste, Action::SelectAll, Action::Fit])
+        } else {
+            Vec::from(
+                [
+                    Action::Cut,
+                    Action::Copy,
+                    Action::Paste,
+                    Action::Duplicate,
+                    Action::Front,
+                    Action::Back,
+                    Action::Lock,
+                    Action::Delete,
+                ],
+            )
+        }
+        if s.selected.len() > 1 {
+            entries.insert(4, Action::Group)
+        }
+        chrome::menu(mut c, at, s.screen, unit(s), entries)
+    }
+    // The board's name, top left, and the minimap: drawn here, hit as controls.
+    let title = title_rect(s)
+    c.panels.push(title)
+    c.controls.push(chrome::Control { action: Action::Title, rect: title })
+    if s.map_on {
+        let m = map_of(s)
+        c.panels.push(m.rect)
+        c.controls.push(chrome::Control { action: Action::Navigate, rect: m.rect })
+    }
+    c
+}
+
+/// The title's pill: as wide as the board's name.
+fn title_rect(s: App) -> Rect {
+    let u = unit(s)
+    let w = s.fonts.font(Face::Sans).measure(s.board.name.as_str(), 15.0 * u) + 54.0 * u
+    Rect::new(x: 12.0 * u, y: 12.0 * u, w: max(w, 120.0 * u), h: 40.0 * u)
+}
+
+/// The minimap, as the board and the camera are now.
+fn map_of(s: App) -> Map {
+    map_with(s, s.view)
+}
+
+/// The minimap with the camera at `view`.
+fn map_with(s: App, view: View) -> Map {
+    let u = unit(s)
+    let seen = Rect::new(
+        view.pan.x,
+        view.pan.y,
+        s.screen.x / view.scale(),
+        s.screen.y / view.scale(),
+    )
+    Map::place(
+        s.screen,
+        u,
+        above: 12.0 * u + 48.0 * u + 10.0 * u,
+        board: s.board.whole(),
+        seen: seen,
+    )
+}
+
+/// Brings the camera's middle to the world point under point `at` on `map`.
+fn navigate(s: mut App, map: Map, at: vec2) {
+    let w = map.to_world(at)
+    s.goal = None
+    s.view.pan = w - 0.5 * s.screen / s.view.scale()
+}
+
+/// The selected connectors' style, changed by `change`.
+fn restyle(s: mut App, change: fn(u32) -> u32) {
+    checkpoint(mut s)
+    for i in 0..s.board.items.len() {
+        if s.board.items[i].kind == Kind::Link && has(s.selected, s.board.items[i].id) {
+            s.board.items[i].style = change(s.board.items[i].style)
+        }
+    }
+}
+
+/// A connector's arrowheads after `style`'s: at the end, then both ends, then none, then at the
+/// end again.
+fn next_heads(style: u32) -> u32 {
+    let heads = style & (START_ARROW | END_ARROW)
+    let next = if heads == END_ARROW { START_ARROW | END_ARROW } else if heads == 0 {
+        END_ARROW
+    } else { 0 }
+    (style & !(START_ARROW | END_ARROW)) | next
+}
+
+// ---- connection dots: the middles of an item's sides, to drag a connector from ---------------
+
+/// How far out from an item's sides its dots sit, in pixels.
+const DOT_GAP: f32 = 14.0
+
+/// The item whose dots show: the one item selected, or the topmost box the pointer is near.
+fn dotted(s: App, w: vec2) -> Option<u32> {
+    if s.tool != Tool::Select || s.typing.is_some() || s.drag != Drag::Idle {
+        return None
+    }
+    if s.selected.len() == 1 {
+        if let Some(i) = s.board.index(s.selected[0]) {
+            if s.board.items[i].boxed() {
+                return Some(s.selected[0])
+            }
+        }
+    }
+    let near = (DOT_GAP + 10.0) * unit(s) / s.view.scale()
+    var i = s.board.items.len()
+    while i > 0 {
+        i -= 1
+        borrow it = s.board.items[i]
+        if it.boxed() && it.rect().shrink(-near).contains(w) {
+            return Some(it.id)
+        }
+    }
+    None
+}
+
+/// Item `id`'s four dots, in world units.
+fn dots(s: App, id: u32) -> Vec<vec2> {
+    var out: Vec<vec2> = Vec::new()
+    let Some(i) = s.board.index(id) else { return out }
+    let r = s.board.items[i].rect()
+    let gap = DOT_GAP * unit(s) / s.view.scale()
+    let c = r.center()
+    for p in [
+        vec2(c.x, r.y - gap),
+        vec2(r.right() + gap, c.y),
+        vec2(c.x, r.bottom() + gap),
+        vec2(r.x - gap, c.y),
+    ] {
+        out.push(p)
+    }
+    out
+}
+
+/// The item whose dot is under screen point `at`, if there's one.
+/// And the way its side faces, a unit step out.
+fn dot_at(s: App, at: vec2) -> Option<(u32, vec2)> {
+    let Some(id) = dotted(s, s.view.to_world(at)) else { return None }
+    let spots = dots(s, id)
+    let out = [vec2(0.0, -1.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(-1.0, 0.0)]
+    for k in 0..spots.len() {
+        if length(s.view.to_screen(spots[k]) - at) <= 9.0 * unit(s) {
+            return Some((id, out[k]))
+        }
+    }
+    None
+}
+
+/// A click on item `id`'s dot facing `d`: a new item like it beside it that way, joined to it
+/// by a connector unless it's a note (notes sit side by side), and typed into.
+fn add_beside(s: mut App, id: u32, d: vec2) {
+    let Some(made) = s.board.beside(id, d) else { return }
+    checkpoint(mut s)
+    let note = made.kind == Kind::Note
+    let new = s.board.add(take made)
+    // It may be past the screen's edge: the camera goes to it.
+    if let Some(i) = s.board.index(new) {
+        reveal(mut s, i)
+    }
+    if !note {
+        var l = Item::new(Kind::Link, vec2(0.0), vec2(0.0), color: 7)
+        l.from = id
+        l.to = new
+        let _ = s.board.add(take l)
+    }
+    begin_typing(mut s, new, 0, keep: false)
+}
+
+// ---- changes ----------------------------------------------------------------------------------
+
+/// Keeps the board as it is, before a change.
+fn checkpoint(s: mut App) {
+    s.history.checkpoint(s.board)
+}
+
+fn select(s: mut App, ids: [u32]) {
+    s.selected.clear()
+    for id in ids {
+        s.selected.push(id)
+    }
+}
+
+/// Starts typing into item `id`, the caret at byte `at`; `keep` keeps the board for undo first.
+fn begin_typing(s: mut App, id: u32, at: u32, keep: bool) {
+    if keep {
+        checkpoint(mut s)
+    }
+    s.typing = Some(Typing::caret(id, at))
+    s.composer = Composer::new()
+    select(mut s, [id])
+}
+
+/// Stops typing: text left empty goes.
+fn stop_typing(s: mut App) {
+    s.composer = Composer::new()
+    let Some(t) = replace(mut s.typing, None) else { return }
+    let Some(i) = s.board.index(t.id) else { return }
+    if s.board.items[i].kind == Kind::Text && s.board.items[i].text.trim().is_empty() {
+        s.board.remove([t.id])
+        s.selected.clear()
+    }
+}
+
+/// Replaces the typed item's text with `text`, the caret at `c`.
+fn retype(s: mut App, text: take String, c: Caret) {
+    let Some(t) = s.typing else { return }
+    let Some(i) = s.board.index(t.id) else { return }
+    s.board.items[i].text = take text
+    s.revision += 1
+    if s.board.items[i].kind == Kind::Text {
+        borrow font = s.fonts.font(Face::Sans)
+        s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
+    }
+    s.typing = Some(Typing { id: t.id, at: c.at, anchor: c.anchor })
+}
+
+/// The caret of the text being typed.
+fn caret_of(t: Typing) -> Caret {
+    Caret { at: t.at, anchor: t.anchor }
+}
+
+/// Moves the caret of the text being typed to `c`.
+fn place(s: mut App, c: Caret) {
+    let Some(t) = s.typing else { return }
+    s.typing = Some(Typing { id: t.id, at: c.at, anchor: c.anchor })
+}
+
+/// Text typed at the caret, over what's selected.
+fn type_char(s: mut App, c: u32) {
+    let Some(t) = s.typing else { return }
+    let Some(i) = s.board.index(t.id) else { return }
+    var add = String::new()
+    add.push_char(c)
+    let (text, after) = edit::insert(s.board.items[i].text.as_str(), caret_of(t), add.as_str())
+    retype(mut s, take text, after)
+}
+
+/// Where Up or Down (`down`) from the caret lands: the same place across, a line up or down, or
+/// the text's start or end past its first or last line.
+fn vertical(s: App, t: Typing, down: bool) -> u32 {
+    let Some(i) = s.board.index(t.id) else { return t.at }
+    borrow font = s.fonts.font(Face::Sans)
+    borrow it = s.board.items[i]
+    let l = paint::layout(font, it)
+    let p = paint::caret(font, it, l, t.at)
+    let y = p.y + 0.5 * l.line + if down { l.line } else { -l.line }
+    if y < l.top {
+        return 0
+    }
+    if y > l.top + f32(l.lines.len()) * l.line {
+        return it.text.len()
+    }
+    paint::offset_at(font, it, l, vec2(p.x, y))
+}
+
+/// A key while typing: the caret's moves (by character, word with Alt, or line with Cmd; Shift
+/// selects as it goes), deleting the same ways, a new line, select all, cut, undo, and Escape
+/// (or Cmd+Enter) to stop.
+fn typing_key(s: mut App, key: Key, mods: Mods) {
+    let Some(t) = s.typing else { return }
+    let Some(i) = s.board.index(t.id) else { return }
+    let old = s.board.items[i].text.as_str()
+    let c = caret_of(t)
+    let step = if mods.command() { Step::Line } else if mods.alt { Step::Word } else { Step::Char }
+    if key == Key::Escape || (key == Key::Enter && mods.command()) {
+        stop_typing(mut s)
+    } else if mods.command() && key == Key::Z {
+        // Undo goes back over the whole edit, as it does over any change.
+        stop_typing(mut s)
+        if mods.shift { redo(mut s) } else { undo(mut s) }
+    } else if mods.command() && key == Key::A {
+        let all = Caret { at: old.len(), anchor: 0 }
+        place(mut s, all)
+    } else if mods.command() && key == Key::X {
+        // The copy took what was offered (the selection); now it goes.
+        if c.selects() {
+            let (text, after) = edit::insert(old, c, "")
+            retype(mut s, take text, after)
+        }
+    } else if key == Key::Enter {
+        type_char(mut s, 10)
+    } else if key == Key::Backspace {
+        let (text, after) = edit::delete_back(old, c, step)
+        retype(mut s, take text, after)
+    } else if key == Key::Delete {
+        let (text, after) = edit::delete_on(old, c, step)
+        retype(mut s, take text, after)
+    } else if key == Key::Left || key == Key::Right {
+        let to = edit::moved(old, c, forward: key == Key::Right, step: step, extend: mods.shift)
+        place(mut s, to)
+    } else if key == Key::Home || key == Key::End {
+        let to = edit::moved(old, c, forward: key == Key::End, step: Step::Line, extend: mods.shift)
+        place(mut s, to)
+    } else if key == Key::Up || key == Key::Down {
+        let n = old.len()
+        let at = if mods.command() {
+            if key == Key::Up { 0 } else { n }
+        } else {
+            vertical(s, t, down: key == Key::Down)
+        }
+        place(mut s, Caret { at, anchor: if mods.shift { c.anchor } else { at } })
+    }
+}
+
+/// The selected items that aren't locked.
+fn unlocked(s: App) -> Vec<u32> {
+    var out: Vec<u32> = Vec::new()
+    for id in s.selected {
+        if let Some(i) = s.board.index(id) {
+            if !s.board.items[i].locked {
+                out.push(id)
+            }
+        }
+    }
+    out
+}
+
+/// Whether everything selected is locked (and something is).
+fn all_locked(s: App) -> bool {
+    !s.selected.is_empty() && unlocked(s).is_empty()
+}
+
+/// The colour everything selected has, if it's one.
+fn shared_color(s: App) -> Option<u32> {
+    var out: Option<u32> = None
+    for id in s.selected {
+        let Some(i) = s.board.index(id) else { continue }
+        let c = s.board.items[i].color
+        match out {
+            Some(o) => if o != c { return None },
+            None => out = Some(c),
+        }
+    }
+    out
+}
+
+/// Whether what's selected is one group, whole.
+fn grouped(s: App) -> bool {
+    let groups = s.board.groups(s.selected)
+    groups.len() == 1 && s.board.members(groups[0]).len() == s.selected.len()
+}
+
+/// Makes what's selected one group (`on`), or takes it out of its groups.
+fn group(s: mut App, on: bool) {
+    if on && s.selected.len() < 2 || !on && s.board.groups(s.selected).is_empty() {
+        return
+    }
+    checkpoint(mut s)
+    let g = if on { s.board.next } else { 0 }
+    if on {
+        s.board.next += 1
+    }
+    for i in 0..s.board.items.len() {
+        if has(s.selected, s.board.items[i].id) {
+            s.board.items[i].group = g
+        }
+    }
+}
+
+/// Locks what's selected, or unlocks it if it's all locked.
+fn lock(s: mut App) {
+    if s.selected.is_empty() {
+        return
+    }
+    checkpoint(mut s)
+    let to = !all_locked(s)
+    for i in 0..s.board.items.len() {
+        if has(s.selected, s.board.items[i].id) {
+            s.board.items[i].locked = to
+        }
+    }
+}
+
+/// A character typed into the board's name, over what's selected of it.
+fn name_char(s: mut App, c: u32) {
+    let Some(caret) = s.naming else { return }
+    var add = String::new()
+    add.push_char(c)
+    let (name, after) = edit::insert(s.board.name.as_str(), caret, add.as_str())
+    s.board.name = take name
+    s.naming = Some(after)
+}
+
+/// A key while the board's name is being typed: the same moves and deletes as text, and Enter
+/// or Escape to stop (an empty name goes back to "Untitled board").
+fn naming_key(s: mut App, c: Caret, key: Key, mods: Mods) {
+    let step = if mods.command() { Step::Line } else if mods.alt { Step::Word } else { Step::Char }
+    let old = s.board.name.as_str()
+    var next = c
+    var name: Option<String> = None
+    if key == Key::Escape || key == Key::Enter {
+        s.naming = None
+        if s.board.name.as_str().trim().is_empty() {
+            s.board.name = String::from("Untitled board")
+        }
+        return
+    } else if mods.command() && key == Key::A {
+        next = Caret { at: old.len(), anchor: 0 }
+    } else if key == Key::Backspace || key == Key::Delete {
+        let (text, after) = if key == Key::Backspace { edit::delete_back(old, c, step) } else {
+            edit::delete_on(old, c, step)
+        }
+        name = Some(take text)
+        next = after
+    } else if key == Key::Left || key == Key::Right || key == Key::Home || key == Key::End {
+        let forward = key == Key::Right || key == Key::End
+        let by = if key == Key::Home || key == Key::End { Step::Line } else { step }
+        next = edit::moved(old, c, forward: forward, step: by, extend: mods.shift)
+    }
+    match take name {
+        Some(n) => s.board.name = take n,
+        None => {},
+    }
+    s.naming = Some(next)
+}
+
+fn delete_selection(s: mut App) {
+    // A frame takes what's inside it with it; a locked item stays.
+    var gone: Vec<u32> = Vec::new()
+    for id in s.board.with_contents(unlocked(s)) {
+        if let Some(i) = s.board.index(id) {
+            if !s.board.items[i].locked { gone.push(id) }
+        }
+    }
+    if gone.is_empty() {
+        return
+    }
+    checkpoint(mut s)
+    s.board.remove(gone)
+    s.selected.retain(|id| s.board.index(id).is_some())
+}
+
+fn recolor(s: mut App, index: u32) {
+    if unlocked(s).is_empty() {
+        return
+    }
+    checkpoint(mut s)
+    for i in 0..s.board.items.len() {
+        if has(s.selected, s.board.items[i].id) && !s.board.items[i].locked {
+            s.board.items[i].color = index
+        }
+    }
+}
+
+fn undo(s: mut App) {
+    stop_typing(mut s)
+    if s.history.undo(mut s.board) {
+        s.selected.retain(|id| s.board.index(id).is_some())
+    }
+}
+
+fn redo(s: mut App) {
+    stop_typing(mut s)
+    if s.history.redo(mut s.board) {
+        s.selected.retain(|id| s.board.index(id).is_some())
+    }
+}
+
+/// Pastes `items` a step further each time, selected.
+fn paste(s: mut App, items: [Item]) {
+    if items.is_empty() {
+        return
+    }
+    checkpoint(mut s)
+    s.pastes += 1
+    let ids = s.board.paste(items, vec2(24.0 * f32(s.pastes)))
+    select(mut s, ids)
+}
+
+/// A paste's answer, aimed at `aim`: a board's items onto the board, words into the text it was
+/// aimed at (or a new note); with no answer (a host without pastes), the board's own clipboard.
+fn pasted(s: mut App, aim: Aim, got: Option<Pasted>) {
+    let Some(p) = got else {
+        let items = s.clipboard.clone()
+        paste(mut s, items)
+        return
+    }
+    if let Some(items) = items_of(p.html.as_str()) {
+        stop_typing(mut s)
+        paste(mut s, items)
+        return
+    }
+    if p.text.is_empty() {
+        return
+    }
+    match destination(aim, s.typing, s.revision, s.board) {
+        Into::Text { id, at, anchor } => {
+            let Some(i) = s.board.index(id) else { return }
+            checkpoint(mut s)
+            let (text, after) = edit::insert(
+                s.board.items[i].text.as_str(),
+                Caret { at, anchor },
+                p.text.as_str(),
+            )
+            s.board.items[i].text = take text
+            s.revision += 1
+            if s.board.items[i].kind == Kind::Text {
+                borrow font = s.fonts.font(Face::Sans)
+                s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
+            }
+            if let Some(t) = s.typing {
+                if t.id == id {
+                    s.typing = Some(Typing::caret(id, after.at))
+                }
+            }
+        },
+        Into::Board => {
+            checkpoint(mut s)
+            let middle = s.view.to_world(0.5 * s.screen)
+            var note = Item::new(Kind::Note, middle - vec2(0.5 * NOTE), vec2(NOTE), color: 0)
+            note.text = p.text.clone()
+            let id = s.board.add(take note)
+            select(mut s, [id])
+        },
+    }
+}
+
+/// An assistive technology's action on node `node`: a control's, or an item's.
+fn assist(s: mut App, node: u32, action: Assist) {
+    if node < access::ITEMS {
+        if let Some(a) = access::action_of(node) {
+            if action == Assist::Activate {
+                act(mut s, a)
+            }
+        }
+        return
+    }
+    let id = node - access::ITEMS
+    let Some(i) = s.board.index(id) else { return }
+    if action == Assist::Focus {
+        reveal(mut s, i)
+        return
+    }
+    if let Some(t) = s.typing {
+        if t.id != id {
+            stop_typing(mut s)
+        }
+    }
+    select(mut s, [id])
+    if action == Assist::Activate &&
+        s.board.items[i].has_text() &&
+        !s.board.items[i].locked &&
+        s.typing.is_none() {
+        let n = s.board.items[i].text.len()
+        begin_typing(mut s, id, n, keep: true)
+    }
+    reveal(mut s, i)
+}
+
+/// Brings item `i` into view, if it's off the screen: its middle to the screen's.
+fn reveal(s: mut App, i: u32) {
+    let r = s.view.rect(s.board.bounds(i))
+    if r.x >= 0.0 && r.y >= 0.0 && r.right() <= s.screen.x && r.bottom() <= s.screen.y {
+        return
+    }
+    let c = s.board.bounds(i).center()
+    var goal = heading(s)
+    goal.pan = c - 0.5 * s.screen / goal.scale()
+    s.goal = Some(goal)
+}
+
+/// Zooms by `factor` about the middle of the screen, from where the camera is going.
+fn zoom_by(s: mut App, factor: f32) {
+    var goal = heading(s)
+    goal.zoom_at(0.5 * s.screen, goal.zoom * factor)
+    s.goal = Some(goal)
+}
+
+/// Eases the camera to show the whole board (`selection` false) or what's selected.
+fn fit(s: mut App, selection: bool) {
+    let u = unit(s)
+    let r = if selection { s.board.extent(s.selected) } else { s.board.whole() }
+    if let Some(r) = r {
+        var goal = heading(s)
+        goal.fit(r, s.screen, margin: 80.0 * u, most: 2.0)
+        s.goal = Some(goal)
+    }
+}
+
+fn act(s: mut App, a: Action) {
+    match a {
+        Action::Use { tool } => {
+            stop_typing(mut s)
+            // The Shapes tool opens (or closes) its flyout.
+            s.flyout = tool == Tool::Shape && !(s.flyout && s.tool == Tool::Shape)
+            s.tool = tool
+        },
+        Action::Pick { kind } => {
+            s.shape = kind
+            s.tool = Tool::Shape
+            s.flyout = false
+        },
+        Action::TypeSize => {
+            checkpoint(mut s)
+            for i in 0..s.board.items.len() {
+                borrow it = s.board.items[i]
+                if has(s.selected, it.id) && !it.locked && sizes_words(it.kind) {
+                    let next = paint::next_size(it.type_size, paint::usual(it.kind))
+                    s.board.items[i].type_size = next
+                    if s.board.items[i].kind == Kind::Text {
+                        borrow font = s.fonts.font(Face::Sans)
+                        s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
+                    }
+                }
+            }
+        },
+        Action::Color { index } => recolor(mut s, index),
+        Action::Front => if !s.selected.is_empty() {
+            checkpoint(mut s)
+            s.board.restack(s.selected, front: true)
+        },
+        Action::Back => if !s.selected.is_empty() {
+            checkpoint(mut s)
+            s.board.restack(s.selected, front: false)
+        },
+        Action::Delete => {
+            stop_typing(mut s)
+            delete_selection(mut s)
+        },
+        Action::Undo => undo(mut s),
+        Action::Redo => redo(mut s),
+        Action::ZoomIn => zoom_by(mut s, 1.25),
+        Action::ZoomOut => zoom_by(mut s, 0.8),
+        Action::Actual => {
+            var goal = heading(s)
+            goal.zoom_at(0.5 * s.screen, 1.0)
+            s.goal = Some(goal)
+        },
+        Action::Fit => fit(mut s, selection: false),
+        Action::Route => restyle(mut s, |style| style ^ ELBOW),
+        Action::Heads => restyle(mut s, next_heads),
+        Action::SelectAll => {
+            var all: Vec<u32> = Vec::new()
+            for it in s.board.items {
+                all.push(it.id)
+            }
+            select(mut s, all)
+        },
+        Action::Duplicate => {
+            let items = s.board.copy(s.board.with_contents(s.selected))
+            s.pastes = 0
+            paste(mut s, items)
+        },
+        Action::Copy => {
+            s.clipboard = s.board.copy(s.board.with_contents(s.selected))
+            s.pastes = 0
+        },
+        Action::Cut => {
+            s.clipboard = s.board.copy(s.board.with_contents(s.selected))
+            s.pastes = 0
+            delete_selection(mut s)
+        },
+        // The menu's paste: the board's own clipboard (only a key press reaches the system's).
+        Action::Paste => {
+            let items = s.clipboard.clone()
+            paste(mut s, items)
+        },
+        Action::Group => group(mut s, !grouped(s)),
+        Action::Align => s.aligning = !s.aligning,
+        Action::Arrange { way } => {
+            checkpoint(mut s)
+            s.board.arrange(s.selected, way)
+        },
+        Action::Lock => lock(mut s),
+        Action::Map => s.map_on = !s.map_on,
+        Action::Title => {
+            // A second press soon after the first renames the board, its name selected.
+            if s.time - s.title_pressed < 0.45 {
+                checkpoint(mut s)
+                stop_typing(mut s)
+                s.naming = Some(Caret { at: s.board.name.len(), anchor: 0 })
+            }
+            s.title_pressed = s.time
+        },
+        Action::Navigate => {},
+    }
+}
+
+// ---- input ------------------------------------------------------------------------------------
+
+fn handle(s: mut App, e: Event, chrome: Chrome) {
+    match e {
+        Event::PointerDown { at, button, mods } => {
+            s.pointer = at
+            press(mut s, at, button, mods, chrome)
+        },
+        Event::PointerMove { at, mods } => {
+            s.pointer = at
+            moved(mut s, at, mods)
+        },
+        Event::PointerUp { at, button, mods } => {
+            s.pointer = at
+            if button == Button::Primary || button == Button::Middle {
+                released(mut s, at, mods)
+            }
+        },
+        Event::Wheel { at, delta, mods } => {
+            // The person's own hand takes the camera.
+            s.goal = None
+            if mods.command() {
+                let d = clamp(delta.y, -30.0, 30.0)
+                s.view.zoom_at(at, s.view.zoom * exp(-0.01 * d))
+            } else {
+                let d = if mods.shift { vec2(delta.y, delta.x) } else { delta }
+                s.view.pan += d / s.view.scale()
+            }
+        },
+        Event::KeyDown { key, repeat, mods } => key_down(mut s, key, repeat, mods),
+        Event::KeyUp { key, .. } => if key == Key::Space { s.space = false },
+        Event::Text { char } => if s.naming.is_some() {
+            if char >= 32 && char != 127 {
+                name_char(mut s, char)
+            }
+        } else if s.typing.is_some() {
+            let _ = s.composer.apply(e)
+            if char >= 32 && char != 127 {
+                type_char(mut s, char)
+            }
+        },
+        Event::Compose { .. } => if s.typing.is_some() {
+            let _ = s.composer.apply(e)
+        },
+        Event::Paste { serial } => {
+            let aim = Aim { typing: s.typing, revision: s.revision }
+            s.pasting.push(Pasting { aim, answer: host::pasted(serial) })
+        },
+        Event::Assist { node, action } => assist(mut s, node, action),
+        _ => {},
+    }
+}
+
+/// How near the pointer must come to a thin thing to hit it, in world units.
+fn slack(s: App) -> f32 {
+    6.0 * unit(s) / s.view.scale()
+}
+
+/// The selected connector whose start or end (`true` for the start) is under screen point `at`.
+fn end_at(s: App, at: vec2) -> Option<(u32, bool)> {
+    if s.typing.is_some() {
+        return None
+    }
+    for id in s.selected {
+        let Some(i) = s.board.index(id) else { continue }
+        if s.board.items[i].kind != Kind::Link || s.board.items[i].locked {
+            continue
+        }
+        let route = s.board.route(s.board.items[i])
+        if route.len() < 2 {
+            continue
+        }
+        for (p, start) in [(route[0], true), (route[route.len() - 1], false)] {
+            if length(s.view.to_screen(p) - at) <= 8.0 * unit(s) {
+                return Some((id, start))
+            }
+        }
+    }
+    None
+}
+
+/// The item a connector's end dragged to world point `w` would join: not a connector, nor the
+/// item at its other end.
+fn end_target(s: App, id: u32, start: bool, w: vec2) -> Option<u32> {
+    let Some(to) = s.board.hit(w, slack(s)) else { return None }
+    let Some(i) = s.board.index(id) else { return None }
+    let Some(k) = s.board.index(to) else { return None }
+    let other = if start { s.board.items[i].to } else { s.board.items[i].from }
+    if to == other || s.board.items[k].kind == Kind::Link { None } else { Some(to) }
+}
+
+/// How many things (connectors aside) are selected.
+fn things(s: App) -> u32 {
+    var n = 0
+    for id in s.selected {
+        let Some(i) = s.board.index(id) else { continue }
+        if s.board.items[i].kind != Kind::Link {
+            n += 1
+        }
+    }
+    n
+}
+
+/// The box round a selection of several things, on the screen: its corners scale them.
+fn selection_box(s: App) -> Option<Rect> {
+    if things(s) < 2 || s.typing.is_some() {
+        return None
+    }
+    let Some(r) = s.board.extent(s.selected) else { return None }
+    Some(s.view.rect(r).shrink(-6.0 * unit(s)))
+}
+
+/// The corner of the box round a selection of several under screen point `at`: that corner of
+/// what's selected and the opposite one, in the world.
+fn box_corner_at(s: App, at: vec2) -> Option<(vec2, vec2)> {
+    let Some(b) = selection_box(s) else { return None }
+    let Some(r) = s.board.extent(s.selected) else { return None }
+    for c in [vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0)] {
+        if length(vec2(b.x, b.y) + c * vec2(b.w, b.h) - at) <= 8.0 * unit(s) {
+            let lo = vec2(r.x, r.y)
+            let size = vec2(r.w, r.h)
+            return Some((lo + c * size, lo + (vec2(1.0) - c) * size))
+        }
+    }
+    None
+}
+
+/// The resize cursor for a drag along `d`.
+fn diagonal(d: vec2) -> Text {
+    if d.x * d.y > 0.0 { "nwse-resize" } else { "nesw-resize" }
+}
+
+/// The corner of the one selected box under screen point `at`, and the opposite corner.
+fn corner_at(s: App, at: vec2) -> Option<(u32, vec2)> {
+    if s.selected.len() != 1 {
+        return None
+    }
+    let id = s.selected[0]
+    let Some(i) = s.board.index(id) else { return None }
+    borrow it = s.board.items[i]
+    if !it.boxed() || it.locked {
+        return None
+    }
+    let r = it.rect()
+    for c in [vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0)] {
+        let p = vec2(r.x, r.y) + c * vec2(r.w, r.h)
+        if length(s.view.to_screen(p) - at) <= 8.0 * unit(s) {
+            let o = vec2(r.x, r.y) + (vec2(1.0) - c) * vec2(r.w, r.h)
+            return Some((id, o))
+        }
+    }
+    None
+}
+
+/// Starts moving the camera with the pointer, from screen point `at`.
+fn pan_from(s: mut App, at: vec2) {
+    s.goal = None
+    s.drag = Drag::Pan { from: at, pan: s.view.pan }
+}
+
+fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
+    if button == Button::Middle {
+        pan_from(mut s, at)
+        return
+    }
+    if button == Button::Secondary {
+        // The context menu, for what's under the pointer (selected first) or the board.
+        stop_typing(mut s)
+        match s.board.hit(s.view.to_world(at), slack(s)) {
+            Some(id) => if !has(s.selected, id) {
+                let group = s.board.with_groups([id])
+                select(mut s, group)
+            },
+            None => s.selected.clear(),
+        }
+        s.menu = Some(at)
+        return
+    }
+    if button != Button::Primary {
+        return
+    }
+    if let Some(a) = chrome::at(chrome, at) {
+        if a != Action::Title {
+            s.naming = None
+        }
+        s.menu = None
+        if a == Action::Navigate {
+            let map = map_of(s)
+            navigate(mut s, map, at)
+            s.drag = Drag::Map { map }
+            return
+        }
+        s.drag = Drag::Control
+        act(mut s, a)
+        return
+    }
+    s.naming = None
+    // A press on the board closes the shapes' flyout and the Align row.
+    s.flyout = false
+    s.aligning = false
+    // A press away from an open menu only closes it.
+    if s.menu.is_some() {
+        s.menu = None
+        s.drag = Drag::Control
+        return
+    }
+    if chrome::over(chrome, at) {
+        s.drag = Drag::Control
+        return
+    }
+    // The hand, or Space held, pans the board; the controls still work (above).
+    if s.space || s.tool == Tool::Hand {
+        pan_from(mut s, at)
+        return
+    }
+    let w = s.view.to_world(at)
+    // A press in the text being typed moves its caret (Shift keeps the selection's other end,
+    // a drag selects, a double click takes a word); anywhere else, typing stops.
+    if let Some(t) = s.typing {
+        if s.board.hit(w, 0.0) == Some(t.id) {
+            let Some(i) = s.board.index(t.id) else { return }
+            borrow font = s.fonts.font(Face::Sans)
+            borrow it = s.board.items[i]
+            let l = paint::layout(font, it)
+            let byte = paint::offset_at(font, it, l, w)
+            let double = match s.click {
+                Some(c) => c.id == t.id &&
+                    s.time - c.time < 0.45 &&
+                    length(c.at - at) < 6.0 * unit(s),
+                None => false,
+            }
+            if double {
+                let (from, to) = edit::word_at(it.text.as_str(), byte)
+                s.typing = Some(Typing { id: t.id, at: to, anchor: from })
+                s.click = None
+                return
+            }
+            s.click = Some(Click { time: s.time, at, id: t.id })
+            s.typing = Some(Typing { id: t.id, at: byte, anchor: if mods.shift { t.anchor } else {
+                byte
+            } })
+            s.drag = Drag::Select { id: t.id }
+            return
+        }
+        stop_typing(mut s)
+    }
+    match s.tool {
+        Tool::Select => press_select(mut s, at, w, mods),
+        Tool::Note => {
+            checkpoint(mut s)
+            let id = s.board.add(Item::new(Kind::Note, w - vec2(0.5 * NOTE), vec2(NOTE), color: 0))
+            begin_typing(mut s, id, 0, keep: false)
+            s.tool = Tool::Select
+        },
+        Tool::Text => {
+            checkpoint(mut s)
+            borrow font = s.fonts.font(Face::Sans)
+            let h = font.line_height(paint::TEXT_SIZE)
+            let id = s.board.add(
+                Item::new(Kind::Text, w - vec2(0.0, 0.5 * h), vec2(280.0, h), color: 7),
+            )
+            begin_typing(mut s, id, 0, keep: false)
+            s.tool = Tool::Select
+        },
+        Tool::Shape => s.drag = Drag::Shape { from: w },
+        Tool::Frame => s.drag = Drag::Shape { from: w },
+        Tool::Link => if let Some(id) = s.board.hit(w, slack(s)) {
+            let Some(i) = s.board.index(id) else { return }
+            if s.board.items[i].kind != Kind::Link {
+                s.drag = Drag::Link { from: id }
+            }
+        },
+        Tool::Pen => {
+            checkpoint(mut s)
+            var stroke = Item::new(Kind::Pen, w, vec2(0.0), color: 7)
+            stroke.points.push(vec2(0.0))
+            let id = s.board.add(take stroke)
+            s.drag = Drag::Pen { id }
+        },
+        Tool::Hand => {},
+    }
+}
+
+fn press_select(s: mut App, at: vec2, w: vec2, mods: Mods) {
+    // A selected connector's end: drag it to another item.
+    if let Some((id, start)) = end_at(s, at) {
+        s.drag = Drag::End { id, start }
+        return
+    }
+    // A dot on an item's side: drag out a connector, or click for an item beside it.
+    if let Some((id, d)) = dot_at(s, at) {
+        s.drag = Drag::Dot { from: id, d, at }
+        return
+    }
+    if let Some((corner, anchor)) = box_corner_at(s, at) {
+        checkpoint(mut s)
+        s.originals.clear()
+        for id in s.board.with_contents(s.selected) {
+            let Some(i) = s.board.index(id) else { continue }
+            if s.board.items[i].kind != Kind::Link && !s.board.items[i].locked {
+                s.originals.push(s.board.items[i].clone())
+            }
+        }
+        s.drag = Drag::Scale { anchor, corner, from: w }
+        return
+    }
+    if let Some((id, anchor)) = corner_at(s, at) {
+        checkpoint(mut s)
+        s.drag = Drag::Resize { id, anchor }
+        return
+    }
+    let Some(id) = s.board.hit(w, slack(s)) else {
+        if !mods.shift {
+            s.selected.clear()
+        }
+        s.click = None
+        s.drag = Drag::Marquee { from: w, add: mods.shift }
+        return
+    }
+    // A second press on the same item, soon and near: type into it.
+    let double = match s.click {
+        Some(c) => c.id == id && s.time - c.time < 0.45 && length(c.at - at) < 6.0 * unit(s),
+        None => false,
+    }
+    s.click = Some(Click { time: s.time, at, id })
+    let Some(i) = s.board.index(id) else { return }
+    if double && s.board.items[i].has_text() && !s.board.items[i].locked {
+        borrow font = s.fonts.font(Face::Sans)
+        let l = paint::layout(font, s.board.items[i])
+        let caret = paint::offset_at(font, s.board.items[i], l, w)
+        begin_typing(mut s, id, caret, keep: true)
+        s.click = None
+        return
+    }
+    // Shift adds an item (and its group) at once, so it can be dragged with the rest; one
+    // already selected leaves the selection only on a click (`released`), not a drag.
+    let held = has(s.selected, id)
+    let group = s.board.with_groups([id])
+    if mods.shift {
+        if !held {
+            for k in group {
+                if !has(s.selected, k) {
+                    s.selected.push(k)
+                }
+            }
+            s.drag = Drag::Press { at: w, id, shift: false, held: false }
+            return
+        }
+    } else if !held {
+        select(mut s, group)
+    }
+    s.drag = Drag::Press { at: w, id, shift: mods.shift, held }
+}
+
+/// The rectangles of the items, other than those in `besides`, that what's moved can snap to:
+/// those on the screen, links and pen strokes aside.
+fn snap_targets(s: App, besides: [u32]) -> Vec<Rect> {
+    var out: Vec<Rect> = Vec::new()
+    let screen = Rect::new(x: 0.0, y: 0.0, w: s.screen.x, h: s.screen.y)
+    for i in 0..s.board.items.len() {
+        borrow it = s.board.items[i]
+        if it.kind == Kind::Link || it.kind == Kind::Pen || has(besides, it.id) {
+            continue
+        }
+        let r = s.board.bounds(i)
+        let on = s.view.rect(r).intersect(screen)
+        if on.w > 0.0 && on.h > 0.0 {
+            out.push(r)
+        }
+    }
+    out
+}
+
+/// How near (world units) something must come to a line to snap to it: 6 pixels.
+fn reach(s: App) -> f32 {
+    6.0 * unit(s) / s.view.scale()
+}
+
+fn moved(s: mut App, at: vec2, mods: Mods) {
+    let w = s.view.to_world(at)
+    match s.drag {
+        Drag::Pan { from, pan } => s.view.pan = pan - (at - from) / s.view.scale(),
+        Drag::Press { at: start, .. } => if length(w - start) * s.view.scale() > 3.0 * unit(s) {
+            checkpoint(mut s)
+            // Alt drags out a copy, leaving the originals where they were.
+            if mods.alt {
+                let items = s.board.copy(s.board.with_contents(s.selected))
+                let ids = s.board.paste(items, vec2(0.0))
+                select(mut s, ids)
+            }
+            let Some(from) = s.board.extent(s.selected) else { return }
+            s.carried = s.board.with_contents(s.selected)
+            s.drag = Drag::Move { start, moved: vec2(0.0), from }
+            moved(mut s, at, mods)
+        },
+        Drag::Move { start, moved, from } => {
+            var want = w - start
+            // Shift keeps it to one axis: the one it has gone further along.
+            if mods.shift {
+                want = if abs(want.x) >= abs(want.y) { vec2(want.x, 0.0) } else {
+                    vec2(0.0, want.y)
+                }
+            }
+            s.guides.clear()
+            let targets = snap_targets(s, s.carried)
+            let r = Rect::new(from.x + want.x, from.y + want.y, from.w, from.h)
+            var shift = snap_rect(r, targets, reach: reach(s), out: mut s.guides)
+            if mods.shift {
+                shift = if want.y == 0.0 { vec2(shift.x, 0.0) } else { vec2(0.0, shift.y) }
+            }
+            let to = want + shift
+            s.board.move_by(s.carried, to - moved)
+            s.drag = Drag::Move { start, moved: to, from }
+        },
+        Drag::Resize { id, anchor } => {
+            let Some(i) = s.board.index(id) else { return }
+            s.guides.clear()
+            let targets = snap_targets(s, [id])
+            let corner = snap_point(w, targets, reach: reach(s), out: mut s.guides)
+            var d = corner - anchor
+            if s.board.items[i].kind == Kind::Note {
+                // A note stays square.
+                let side = max(abs(d.x), abs(d.y))
+                d = vec2(if d.x < 0.0 { -side } else { side }, if d.y < 0.0 { -side } else { side })
+            }
+            let size = max(abs(d), vec2(SMALLEST))
+            let lo = vec2(if d.x < 0.0 { anchor.x - size.x } else { anchor.x }, if d.y < 0.0 {
+                anchor.y - size.y
+            } else { anchor.y })
+            s.board.items[i].at = lo
+            s.board.items[i].size = size
+            if s.board.items[i].kind == Kind::Text {
+                borrow font = s.fonts.font(Face::Sans)
+                s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
+            }
+        },
+        Drag::Dot { from, at: start, .. } => if length(at - start) > 3.0 * unit(s) {
+            s.drag = Drag::Link { from }
+        },
+        Drag::Scale { anchor, corner, from } => {
+            // Evenly, by how far the pressed corner has come along its line from the anchor.
+            let d = corner - anchor
+            let k = max(dot(corner + (w - from) - anchor, d) / max(dot(d, d), 1.0e-6), 0.05)
+            borrow font = s.fonts.font(Face::Sans)
+            for o in s.originals {
+                let Some(i) = s.board.index(o.id) else { continue }
+                let words = if sizes_words(o.kind) { paint::usual(o.kind) } else { 0.0 }
+                s.board.items[i] = o.scaled(anchor, k, words)
+                if o.kind == Kind::Text {
+                    s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
+                }
+            }
+        },
+        Drag::Map { map } => navigate(mut s, map, at),
+        Drag::Select { id } => {
+            let Some(t) = s.typing else { return }
+            let Some(i) = s.board.index(id) else { return }
+            if t.id != id {
+                return
+            }
+            borrow font = s.fonts.font(Face::Sans)
+            let l = paint::layout(font, s.board.items[i])
+            let at = paint::offset_at(font, s.board.items[i], l, w)
+            s.typing = Some(Typing { id, at, anchor: t.anchor })
+        },
+        Drag::Pen { id } => {
+            let Some(i) = s.board.index(id) else { return }
+            let p = w - s.board.items[i].at
+            let n = s.board.items[i].points.len()
+            if length(p - s.board.items[i].points[n - 1]) * s.view.scale() >= 2.0 * unit(s) {
+                s.board.items[i].points.push(p)
+            }
+        },
+        _ => {},
+    }
+}
+
+fn released(s: mut App, at: vec2, mods: Mods) {
+    let w = s.view.to_world(at)
+    match s.drag {
+        Drag::Press { id, shift, held, .. } => {
+            let group = s.board.with_groups([id])
+            if shift {
+                // A shift-click on a selected item takes it, and its group, out of the selection.
+                s.selected.retain(|k| !has(group, k))
+            } else if held && !mods.shift {
+                // A click (not a drag) in a selection picks the item's group; in its group,
+                // picked whole, the one item.
+                var whole = group.len() > 1 && s.selected.len() == group.len()
+                for k in group {
+                    if !has(s.selected, k) { whole = false }
+                }
+                if whole {
+                    select(mut s, [id])
+                } else if s.selected.len() > 1 {
+                    select(mut s, group)
+                }
+            }
+        },
+        Drag::Scale { .. } => s.originals.clear(),
+        Drag::Dot { from, d, .. } => add_beside(mut s, from, d),
+        Drag::Marquee { from, add } => {
+            let lo = min(from, w)
+            let hi = max(from, w)
+            let ids = s.board.with_groups(
+                s.board.touching(Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)),
+            )
+            if !add {
+                s.selected.clear()
+            }
+            for id in ids {
+                if !has(s.selected, id) {
+                    s.selected.push(id)
+                }
+            }
+        },
+        Drag::Shape { from } => {
+            let kind = if s.tool == Tool::Frame { Kind::Frame } else { s.shape }
+            let d = abs(w - from) * s.view.scale()
+            let (lo, size) = if d.x < 6.0 * unit(s) && d.y < 6.0 * unit(s) {
+                // A click: the shape's usual size, about it.
+                let size = match kind {
+                    Kind::Ellipse => vec2(160.0),
+                    Kind::Diamond => vec2(180.0),
+                    Kind::Triangle => vec2(180.0, 160.0),
+                    Kind::Pill => vec2(220.0, 80.0),
+                    Kind::Frame => vec2(640.0, 420.0),
+                    _ => vec2(200.0, 120.0),
+                }
+                (from - 0.5 * size, size)
+            } else {
+                (min(from, w), max(abs(w - from), vec2(SMALLEST)))
+            }
+            let color = match kind {
+                Kind::Ellipse => 5,
+                Kind::Diamond => 3,
+                Kind::Triangle => 0,
+                Kind::Pill => 2,
+                Kind::Frame => 7,
+                _ => 4,
+            }
+            checkpoint(mut s)
+            var made = Item::new(kind, lo, size, color)
+            if kind == Kind::Frame {
+                // Frames are numbered as they're made.
+                var frames = 1
+                for it in s.board.items {
+                    if it.kind == Kind::Frame { frames += 1 }
+                }
+                made.text = f"Frame {frames}"
+            }
+            let id = s.board.add(take made)
+            select(mut s, [id])
+            s.tool = Tool::Select
+        },
+        Drag::End { id, start } => if let Some(to) = end_target(s, id, start, w) {
+            checkpoint(mut s)
+            let Some(i) = s.board.index(id) else { return }
+            if start {
+                s.board.items[i].from = to
+            } else {
+                s.board.items[i].to = to
+            }
+        },
+        Drag::Link { from } => {
+            if let Some(to) = s.board.hit(w, slack(s)) {
+                let Some(i) = s.board.index(to) else { return }
+                if to != from && s.board.items[i].kind != Kind::Link {
+                    checkpoint(mut s)
+                    var l = Item::new(Kind::Link, vec2(0.0), vec2(0.0), color: 7)
+                    l.from = from
+                    l.to = to
+                    let id = s.board.add(take l)
+                    select(mut s, [id])
+                    s.tool = Tool::Select
+                }
+            }
+        },
+        _ => {},
+    }
+    let _ = mods
+    s.guides.clear()
+    s.drag = Drag::Idle
+}
+
+fn key_down(s: mut App, key: Key, repeat: bool, mods: Mods) {
+    if let Some(c) = s.naming {
+        naming_key(mut s, c, key, mods)
+        return
+    }
+    if s.typing.is_some() {
+        typing_key(mut s, key, mods)
+        return
+    }
+    if mods.command() {
+        if key == Key::Z && mods.shift || key == Key::Y {
+            redo(mut s)
+        } else if key == Key::Z {
+            undo(mut s)
+        } else if key == Key::L && mods.shift {
+            act(mut s, Action::Lock)
+        } else if key == Key::G {
+            group(mut s, !mods.shift)
+        } else if key == Key::A {
+            act(mut s, Action::SelectAll)
+        } else if key == Key::D {
+            act(mut s, Action::Duplicate)
+        } else if key == Key::C {
+            act(mut s, Action::Copy)
+        } else if key == Key::X {
+            act(mut s, Action::Cut)
+        } else if key == Key::V {
+            // A paste event follows where the host has them; until it's said, wait to see.
+            match s.capabilities {
+                Some(c) => if c & host::PASTE_EVENTS == 0 {
+                    let items = s.clipboard.clone()
+                    paste(mut s, items)
+                },
+                None => s.paste_waiting = true,
+            }
+        } else if key == Key::Equal {
+            zoom_by(mut s, 1.25)
+        } else if key == Key::Minus {
+            zoom_by(mut s, 0.8)
+        } else if key == Key::Digit0 {
+            act(mut s, Action::Actual)
+        }
+        return
+    }
+    // Alt and a letter line up what's selected.
+    if mods.alt {
+        let way = match key {
+            Key::A => Some(Align::Left),
+            Key::H => Some(if mods.shift { Align::Across } else { Align::Center }),
+            Key::D => Some(Align::Right),
+            Key::W => Some(Align::Top),
+            Key::V => Some(if mods.shift { Align::Down } else { Align::Middle }),
+            Key::S => Some(Align::Bottom),
+            _ => None,
+        }
+        if let Some(w) = way {
+            act(mut s, Action::Arrange { way: w })
+        }
+        return
+    }
+    if key == Key::Space {
+        s.space = true
+    } else if key == Key::Escape {
+        if s.menu.is_some() {
+            s.menu = None
+            return
+        }
+        s.selected.clear()
+        s.tool = Tool::Select
+    } else if key == Key::Backspace || key == Key::Delete {
+        delete_selection(mut s)
+    } else if key == Key::Enter && !repeat && s.selected.len() == 1 {
+        let id = s.selected[0]
+        let Some(i) = s.board.index(id) else { return }
+        if s.board.items[i].has_text() && !s.board.items[i].locked {
+            let n = s.board.items[i].text.len()
+            begin_typing(mut s, id, n, keep: true)
+        }
+    } else if (key == Key::Digit1 || key == Key::Digit2) && mods.shift {
+        fit(mut s, selection: key == Key::Digit2)
+    } else if key == Key::BracketRight || key == Key::BracketLeft {
+        act(mut s, if key == Key::BracketRight { Action::Front } else { Action::Back })
+    } else if key == Key::Left || key == Key::Right || key == Key::Up || key == Key::Down {
+        if s.selected.is_empty() {
+            return
+        }
+        if !repeat {
+            checkpoint(mut s)
+        }
+        let step = if mods.shift { 10.0 } else { 1.0 }
+        let d = match key {
+            Key::Left => vec2(-step, 0.0),
+            Key::Right => vec2(step, 0.0),
+            Key::Up => vec2(0.0, -step),
+            _ => vec2(0.0, step),
+        }
+        let carried = s.board.with_contents(s.selected)
+        s.board.move_by(carried, d)
+    } else {
+        let tool = match key {
+            Key::V => Some(Tool::Select),
+            Key::H => Some(Tool::Hand),
+            Key::N => Some(Tool::Note),
+            Key::S => Some(Tool::Shape),
+            Key::R => {
+                s.shape = Kind::Box
+                Some(Tool::Shape)
+            },
+            Key::O => {
+                s.shape = Kind::Ellipse
+                Some(Tool::Shape)
+            },
+            Key::D => {
+                s.shape = Kind::Diamond
+                Some(Tool::Shape)
+            },
+            Key::T => Some(Tool::Text),
+            Key::L => Some(Tool::Link),
+            Key::P => Some(Tool::Pen),
+            Key::F => Some(Tool::Frame),
+            Key::M => {
+                s.map_on = !s.map_on
+                None
+            },
+            _ => None,
+        }
+        if let Some(t) = tool {
+            s.tool = t
+        }
+    }
+}
+
+// ---- drawing ----------------------------------------------------------------------------------
+
+fn draw(s: mut App, screen: vec2) {
+    let u = unit(s)
+    let chrome = layout(s)
+    let w = s.view.to_world(s.pointer)
+    let hover_control = chrome::at(chrome, s.pointer)
+    let on_chrome = chrome::over(chrome, s.pointer)
+    let hover = if s.drag == Drag::Idle && !on_chrome && s.tool == Tool::Select {
+        s.board.hit(w, slack(s))
+    } else {
+        None
+    }
+    let blink = (s.time * 1.6) % 2.0 < 1.3
+    // Connectors' labels sit at their routes' middles, as the items are now.
+    paint::label(mut s.board, s.fonts.font(Face::Sans), s.typing)
+    // The dots to drag a connector from, on the item the pointer is near.
+    let spots = if on_chrome { Vec::new() } else {
+        match dotted(s, w) {
+            Some(id) => dots(s, id),
+            None => Vec::new(),
+        }
+    }
+    let near = slack(s)
+    let locked = all_locked(s)
+    let grouped = grouped(s)
+    let around = selection_box(s)
+    let end_to = match s.drag {
+        Drag::End { id, start } => end_target(s, id, start, w),
+        _ => None,
+    }
+    let color = shared_color(s)
+    // A group under the pointer lights whole, and one selected whole has its own outline.
+    let hovered = match hover {
+        Some(id) => s.board.with_groups([id]),
+        None => Vec::new(),
+    }
+    var whole: Vec<u32> = Vec::new()
+    for g in s.board.groups(s.selected) {
+        let members = s.board.members(g)
+        var all = true
+        for k in members {
+            if !has(s.selected, k) { all = false }
+        }
+        if all { whole.push(g) }
+    }
+    let title = title_rect(s)
+    let naming = s.naming
+    let minimap = if s.map_on { Some(map_of(s)) } else { None }
+    // A control's tip shows once the pointer has rested on it for a moment.
+    let lit = if s.drag == Drag::Idle { hover_control } else { None }
+    s.hovering = match lit {
+        Some(a) => match s.hovering {
+            Some((was, since)) => if was == a { Some((was, since)) } else { Some((a, s.time)) },
+            None => Some((a, s.time)),
+        },
+        None => None,
+    }
+    let tips = match s.hovering {
+        Some((_, since)) => s.time - since > 0.45,
+        None => false,
+    }
+    mut list = s.draw
+    list.clear(screen)
+    paint::grid(mut list, s.view, screen)
+    paint::items(mut list, s.fonts, s.board, s.view, screen, s.typing, s.composer.text, blink)
+    // What's selected, and what the pointer is over or a marquee touches.
+    let ring = max(1.5 * u, 1.0)
+    let touched = match s.drag {
+        Drag::Marquee { from, .. } => {
+            let lo = min(from, w)
+            let hi = max(from, w)
+            s.board.with_groups(s.board.touching(Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)))
+        },
+        _ => Vec::new(),
+    }
+    for i in 0..s.board.items.len() {
+        let id = s.board.items[i].id
+        let chosen = has(s.selected, id)
+        if !chosen && !has(hovered, id) && !has(touched, id) {
+            continue
+        }
+        // A group selected whole shows only its own outline (and its members' locks).
+        let in_whole = chosen && has(whole, s.board.items[i].group)
+        if in_whole && !s.board.items[i].locked {
+            continue
+        }
+        // Of several selected, each is marked lightly within the box round them all.
+        let mark = if chosen && around.is_none() { ACCENT } else { vec4(ACCENT.xyz, 0.5) }
+        if s.board.items[i].kind == Kind::Link && !in_whole {
+            // A connector shows its own path, and its ends.
+            let route = s.board.route(s.board.items[i])
+            let width = max((board::LINK_WIDTH + 2.0) * s.view.scale(), 3.0 * u)
+            for k in 1..route.len() {
+                list.line(
+                    s.view.to_screen(route[k - 1]),
+                    s.view.to_screen(route[k]),
+                    vec4(mark.xyz, 0.45),
+                    width,
+                )
+            }
+            if chosen && route.len() >= 2 {
+                for p in [route[0], route[route.len() - 1]] {
+                    let c = s.view.to_screen(p)
+                    let spot = Rect::new(x: c.x - 4.0 * u, y: c.y - 4.0 * u, w: 8.0 * u, h: 8.0 * u)
+                    list.ellipse(spot, vec4(1.0))
+                    list.ellipse(spot, ACCENT, width: ring)
+                }
+            }
+            continue
+        }
+        let r = s.view.rect(s.board.bounds(i)).shrink(-3.0 * u)
+        if !in_whole {
+            list.ring(r, mark, radius: 3.0 * u, width: ring)
+        }
+        if chosen && s.board.items[i].locked {
+            // A lock at its top right: a body and a shackle.
+            let at = vec2(r.right() - 7.0 * u, r.y - 14.0 * u)
+            list.rect(
+                Rect::new(at.x - 9.0 * u, at.y - 9.0 * u, 18.0 * u, 18.0 * u),
+                ACCENT,
+                radius: 5.0 * u,
+            )
+            list.rect(
+                Rect::new(at.x - 4.5 * u, at.y - 1.0 * u, 9.0 * u, 6.5 * u),
+                vec4(1.0),
+                radius: 1.5 * u,
+            )
+            list.ring(
+                Rect::new(at.x - 3.0 * u, at.y - 5.5 * u, 6.0 * u, 8.0 * u),
+                vec4(1.0),
+                radius: 3.0 * u,
+                width: 1.4 * u,
+            )
+        }
+    }
+    // A group's outline, unless it's all that's selected: then the box round the selection is it.
+    if !grouped {
+        for g in whole {
+            let Some(r) = s.board.extent(s.board.members(g)) else { continue }
+            list.ring(
+                s.view.rect(r).shrink(-3.0 * u),
+                vec4(ACCENT.xyz, 0.5),
+                radius: 3.0 * u,
+                width: ring,
+            )
+        }
+    }
+    let idle = s.drag == Drag::Idle || s.drag == Drag::Control
+    if let Some(b) = around {
+        list.ring(b, ACCENT, radius: 2.0 * u, width: ring)
+        if idle {
+            for c in [vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0)] {
+                let p = vec2(b.x, b.y) + c * vec2(b.w, b.h)
+                let h = Rect::new(p.x - 4.5 * u, p.y - 4.5 * u, 9.0 * u, 9.0 * u)
+                list.rect(h, vec4(1.0), radius: 2.0 * u)
+                list.ring(h, ACCENT, radius: 2.0 * u, width: ring)
+            }
+        }
+    }
+    if idle {
+        if s.selected.len() == 1 {
+            if let Some(i) = s.board.index(s.selected[0]) {
+                if s.board.items[i].boxed() && s.typing.is_none() {
+                    let r = s.view.rect(s.board.items[i].rect())
+                    for c in [vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0)] {
+                        let p = vec2(r.x, r.y) + c * vec2(r.w, r.h)
+                        let h = Rect::new(p.x - 4.5 * u, p.y - 4.5 * u, 9.0 * u, 9.0 * u)
+                        list.rect(h, vec4(1.0), radius: 2.0 * u)
+                        list.ring(h, ACCENT, radius: 2.0 * u, width: ring)
+                    }
+                }
+            }
+        }
+    }
+    for p in spots {
+        let c = s.view.to_screen(p)
+        let lit = length(c - s.pointer) <= 9.0 * u
+        let d = if lit { 7.5 * u } else { 4.5 * u }
+        let spot = Rect::new(x: c.x - d, y: c.y - d, w: 2.0 * d, h: 2.0 * d)
+        list.ellipse(spot, vec4(1.0))
+        list.ellipse(spot, ACCENT, width: max(1.5 * u, 1.0))
+        if lit {
+            // A click adds an item beside it.
+            list.line(c - vec2(3.0 * u, 0.0), c + vec2(3.0 * u, 0.0), ACCENT, width: 1.5 * u)
+            list.line(c - vec2(0.0, 3.0 * u), c + vec2(0.0, 3.0 * u), ACCENT, width: 1.5 * u)
+        }
+    }
+    // The lines a move or resize snapped to.
+    for g in s.guides {
+        list.line(
+            s.view.to_screen(g.from),
+            s.view.to_screen(g.to),
+            paint::GUIDE,
+            width: max(1.0 * u, 1.0),
+        )
+    }
+    // What the pointer is making.
+    match s.drag {
+        Drag::Marquee { from, .. } => {
+            let a = s.view.to_screen(from)
+            let lo = min(a, s.pointer)
+            let hi = max(a, s.pointer)
+            let r = Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)
+            list.rect(r, vec4(ACCENT.xyz, 0.08))
+            list.ring(r, vec4(ACCENT.xyz, 0.8), width: max(1.0 * u, 1.0))
+        },
+        Drag::Shape { from } => {
+            let a = s.view.to_screen(from)
+            let lo = min(a, s.pointer)
+            let hi = max(a, s.pointer)
+            let r = Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)
+            let ink = vec4(ACCENT.xyz, 0.9)
+            let kind = if s.tool == Tool::Frame { Kind::Frame } else { s.shape }
+            match kind {
+                Kind::Ellipse => list.ellipse(r, ink, width: ring),
+                Kind::Diamond => list.diamond(r, ink, width: ring),
+                Kind::Triangle => list.triangle(
+                    vec2(r.center().x, r.y),
+                    vec2(r.x, r.bottom()),
+                    vec2(r.right(), r.bottom()),
+                    ink,
+                    width: ring,
+                ),
+                Kind::Pill => list.ring(r, ink, radius: 0.5 * min(r.w, r.h), width: ring),
+                _ => list.ring(r, ink, radius: 6.0 * s.view.scale(), width: ring),
+            }
+        },
+        Drag::End { id, start } => {
+            // The item it would join, ringed, and a line to the pointer from its other end.
+            if let Some(to) = end_to {
+                if let Some(k) = s.board.index(to) {
+                    let r = s.view.rect(s.board.bounds(k)).shrink(-4.0 * u)
+                    list.ring(r, ACCENT, radius: 6.0 * u, width: max(2.0 * u, 1.0))
+                }
+            }
+            if let Some(i) = s.board.index(id) {
+                let other = if start { s.board.items[i].to } else { s.board.items[i].from }
+                if let Some(k) = s.board.index(other) {
+                    let a = s.view.to_screen(s.board.items[k].edge(w))
+                    list.line(a, s.pointer, ACCENT, width: max(2.0 * u, 1.0))
+                }
+            }
+        },
+        Drag::Link { from } => {
+            // The item it would join, ringed.
+            if let Some(to) = s.board.hit(w, near) {
+                if let Some(k) = s.board.index(to) {
+                    if to != from && s.board.items[k].boxed() {
+                        let r = s.view.rect(s.board.items[k].rect()).shrink(-4.0 * u)
+                        list.ring(r, ACCENT, radius: 6.0 * u, width: max(2.0 * u, 1.0))
+                    }
+                }
+            }
+            if let Some(i) = s.board.index(from) {
+                let a = s.board.items[i].edge(w)
+                paint::arrow(
+                    mut list,
+                    s.view.to_screen(a),
+                    s.pointer,
+                    ACCENT,
+                    max(2.0 * u, 1.0),
+                    s.view.scale(),
+                )
+            }
+        },
+        _ => {},
+    }
+    chrome::draw(
+        mut list,
+        s.fonts,
+        chrome,
+        u,
+        s.tool,
+        color,
+        if s.drag == Drag::Idle { hover_control } else { None },
+        s.view.zoom,
+        can_undo: s.history.can_undo(),
+        can_redo: s.history.can_redo(),
+        locked: locked,
+        grouped: grouped,
+        aligning: s.aligning,
+        shape: s.shape,
+        tips: tips,
+    )
+    // The board's name: a mark, then the name, with its caret or selection while it's typed.
+    let mark = Rect::new(title.x + 12.0 * u, title.y + 12.0 * u, 16.0 * u, 16.0 * u)
+    list.rect(mark, ACCENT, radius: 4.0 * u)
+    let name_at = vec2(title.x + 38.0 * u, title.y + 11.0 * u)
+    if let Some(c) = naming {
+        borrow font = s.fonts.font(Face::Sans)
+        let name = s.board.name.as_str()
+        let (lo, hi) = c.range()
+        let x0 = name_at.x + font.caret_at(name, 15.0 * u, lo)
+        let x1 = name_at.x + font.caret_at(name, 15.0 * u, hi)
+        if hi > lo {
+            list.rect(
+                Rect::new(x0, name_at.y - 1.0 * u, x1 - x0, 20.0 * u),
+                vec4(0.5, 0.68, 1.0, 0.5),
+            )
+        } else if blink {
+            list.rect(Rect::new(x0 - 0.75 * u, name_at.y - 1.0 * u, 1.5 * u, 20.0 * u), ACCENT)
+        }
+    }
+    let _ = list.text(s.fonts, Face::Sans, s.board.name.as_str(), 15.0 * u, name_at, paint::TEXT)
+    // The minimap: each item small, the screen's part outlined.
+    if let Some(m) = minimap {
+        list.push_clip(m.inner.shrink(-2.0 * u))
+        for it in s.board.items {
+            if it.kind == Kind::Link || it.kind == Kind::Pen {
+                continue
+            }
+            let r = m.rect_of(it.rect())
+            if it.kind == Kind::Frame {
+                list.rect(r, vec4(1.0), radius: 1.0 * u)
+                list.ring(r, vec4(0.0, 0.0, 0.0, 0.18), width: max(0.75 * u, 1.0))
+            } else {
+                list.rect(r, paint::FILLS[it.color % paint::COLORS], radius: 0.5 * u)
+            }
+        }
+        let seen = m.rect_of(
+            Rect::new(
+                s.view.pan.x,
+                s.view.pan.y,
+                screen.x / s.view.scale(),
+                screen.y / s.view.scale(),
+            ),
+        )
+        list.rect(seen, vec4(ACCENT.xyz, 0.08), radius: 2.0 * u)
+        list.ring(seen, ACCENT, radius: 2.0 * u, width: max(1.5 * u, 1.0))
+        list.pop_clip()
+    }
+    // Glyphs for what was drawn as `?`, from the host's fonts, for the frames after this one.
+    s.renderer.fetch(mut s.fonts, list)
+    s.renderer.upload(list)
+    let pass = begin_screen_pass(clear: PAPER)
+    s.renderer.draw(pass, screen)
+    pass.present()
+    let want = cursor_for(s, w, hover_control.is_some())
+    if want != s.shown_cursor && s.cursor.is_none() {
+        s.shown_cursor = want
+        s.cursor = Some(host::cursor(want))
+    }
+}
+
+/// The pointer's shape: a hand over a control; a closed hand panning and an open one ready to;
+/// a cross for making something; resize arrows on a corner; a bar over the text being typed;
+/// the four-way arrows while moving.
+fn cursor_for(s: App, w: vec2, on_control: bool) -> Text {
+    if on_control {
+        return "pointer"
+    }
+    if s.menu.is_some() {
+        return "default"
+    }
+    match s.drag {
+        Drag::Pan { .. } => return "grabbing",
+        Drag::Move { .. } => return "move",
+        Drag::Resize { id, anchor } => {
+            let Some(i) = s.board.index(id) else { return "default" }
+            return diagonal(s.board.items[i].center() - anchor)
+        },
+        Drag::Scale { anchor, corner, .. } => return diagonal(corner - anchor),
+        Drag::End { .. } => return "grabbing",
+        Drag::Select { .. } => return "text",
+        _ => {},
+    }
+    if s.space || s.tool == Tool::Hand {
+        return "grab"
+    }
+    if s.tool != Tool::Select {
+        return "crosshair"
+    }
+    if let Some((id, anchor)) = corner_at(s, s.pointer) {
+        let Some(i) = s.board.index(id) else { return "default" }
+        return diagonal(s.board.items[i].center() - anchor)
+    }
+    if let Some((corner, anchor)) = box_corner_at(s, s.pointer) {
+        return diagonal(corner - anchor)
+    }
+    if end_at(s, s.pointer).is_some() {
+        return "grab"
+    }
+    if let Some(t) = s.typing {
+        if s.board.hit(w, 0.0) == Some(t.id) {
+            return "text"
+        }
+    }
+    "default"
+}
+
+// ---- what the host is told -------------------------------------------------------------------
+
+/// The caret's rectangle on the screen (device pixels), while typing.
+fn caret_rect(s: App) -> Option<vec4> {
+    if let Some(c) = s.naming {
+        let u = unit(s)
+        let title = title_rect(s)
+        let x = title.x +
+            38.0 * u +
+            s.fonts.font(Face::Sans).caret_at(s.board.name.as_str(), 15.0 * u, c.at)
+        return Some(vec4(x, title.y + 10.0 * u, 1.5 * u, 20.0 * u))
+    }
+    let Some(t) = s.typing else { return None }
+    let Some(i) = s.board.index(t.id) else { return None }
+    borrow font = s.fonts.font(Face::Sans)
+    borrow it = s.board.items[i]
+    let l = paint::layout(font, it)
+    let c = s.view.to_screen(paint::caret(font, it, l, t.at))
+    Some(vec4(c.x, c.y, max(1.5 * unit(s), 1.0), l.line * s.view.scale()))
+}
+
+/// The words selected in the text being typed (empty if none).
+fn selected_words(s: App) -> String {
+    let Some(t) = s.typing else { return String::new() }
+    let Some(i) = s.board.index(t.id) else { return String::new() }
+    let (from, to) = caret_of(t).range()
+    String::from(s.board.items[i].text.as_str().slice(from, to))
+}
+
+/// Tells the host what changed: text mode and its caret, what a copy takes (the selection; the
+/// words and the items), and, where it has one, the accessibility tree and the selection to say.
+fn tell(s: mut App) {
+    let caret = caret_rect(s)
+    if caret != s.texting {
+        s.told.push(host::text_input(caret.is_some(), if let Some(c) = caret { c } else {
+            vec4(0.0)
+        }))
+        s.texting = caret
+    }
+    // While typing, a copy takes the words selected; otherwise the items selected.
+    let words = selected_words(s)
+    let copied = if s.typing.is_some() { Vec::new() } else { s.board.copy(s.selected) }
+    if copied != s.offered || words != s.offered_words {
+        if s.typing.is_some() {
+            s.told.push(host::offer(words.as_str(), ""))
+        } else {
+            let html = if copied.is_empty() { String::new() } else { clip::html(copied) }
+            s.told.push(host::offer(clip::plain(copied).as_str(), html.as_str()))
+        }
+        s.offered = take copied
+        s.offered_words = take words
+    }
+    let Some(capabilities) = s.capabilities else { return }
+    if capabilities & host::ACCESSIBILITY == 0 {
+        return
+    }
+    let nodes = access::tree(
+        layout(s),
+        s.board,
+        s.view,
+        s.selected,
+        s.tool,
+        s.history.can_undo(),
+        s.history.can_redo(),
+    )
+    if nodes != s.tree {
+        s.told.push(host::accessibility("Board", "Items", nodes))
+        s.tree = take nodes
+    }
+    if s.selected != s.said {
+        s.told.push(host::announce(access::said(s.board, s.selected).as_str()))
+        s.said = s.selected.clone()
+    }
+}
+
+// ---- tests: each a script of input (scripts/), as a person would use the board ---------------
+
+fn screen_rect(game: App, i: u32) -> Rect {
+    game.view.rect(game.board.items[i].rect())
+}
+
+/// N, a click, typing and Escape leave one note with the text.
+@test(frames: 14, input: "scripts/note.json")
+fn a_note_is_placed_and_typed(game: App) {
+    assert(game.board.items.len() == 1, f"{game.board.items.len()} items")
+    let it = game.board.items[0].clone()
+    assert(it.kind == Kind::Note && it.text == "Hi there", f"`{it.text}`")
+    assert(game.typing.is_none(), "Escape stopped the typing")
+    let r = screen_rect(game, 0)
+    assert(length(r.center() - vec2(320.0, 240.0)) < 1.0e-2, "the note is centred on the click")
+}
+
+/// R and a drag make a rectangle where the pointer went; dragging it moves it.
+@test(frames: 16, input: "scripts/move.json")
+fn a_dragged_shape_follows_the_pointer(game: App) {
+    assert(game.board.items.len() == 1)
+    assert(game.board.items[0].kind == Kind::Box)
+    let r = screen_rect(game, 0)
+    let want = Rect::new(x: 280.0, y: 200.0, w: 100.0, h: 60.0)
+    assert(abs(r.x - want.x) < 0.05 && abs(r.y - want.y) < 0.05, f"at {r.x}, {r.y}")
+    assert(abs(r.w - want.w) < 0.05 && abs(r.h - want.h) < 0.05, f"{r.w} by {r.h}")
+}
+
+/// The same, then Cmd+Z: the rectangle is back where it was made.
+@test(frames: 18, input: "scripts/undo.json")
+fn undo_puts_a_move_back(game: App) {
+    assert(game.board.items.len() == 1)
+    let r = screen_rect(game, 0)
+    assert(abs(r.x - 200.0) < 0.05 && abs(r.y - 200.0) < 0.05, f"at {r.x}, {r.y}")
+    assert(game.history.can_redo(), "the move can be made again")
+}
+
+/// L and a drag from one note to another join them.
+@test(frames: 20, input: "scripts/link.json")
+fn a_connector_joins_two_notes(game: App) {
+    assert(game.board.items.len() == 3, f"{game.board.items.len()} items")
+    let link = game.board.items[2].clone()
+    assert(link.kind == Kind::Link, "the connector is on top")
+    assert(link.from == game.board.items[0].id && link.to == game.board.items[1].id)
+}
+
+/// A marquee over one of two notes selects it alone, and Backspace deletes it.
+@test(frames: 20, input: "scripts/marquee.json")
+fn a_marquee_selects_and_backspace_deletes(game: App) {
+    assert(game.board.items.len() == 1, f"{game.board.items.len()} items")
+    assert(screen_rect(game, 0).x > 320.0, "the right-hand note is left")
+    assert(game.selected.is_empty())
+}
+
+/// P and a drag draw a stroke through the pointer's path.
+@test(frames: 12, input: "scripts/pen.json")
+fn the_pen_draws_a_stroke(game: App) {
+    assert(game.board.items.len() == 1)
+    let it = game.board.items[0].clone()
+    assert(it.kind == Kind::Pen && it.points.len() == 4, f"{it.points.len()} points")
+    assert(game.tool == Tool::Pen, "the pen stays in hand")
+}
+
+/// Without paste events (this host has none), Cmd+V and a paste both bring the board's own
+/// clipboard: the note copied, twice.
+@test(frames: 12, input: "scripts/paste.json")
+fn a_paste_without_the_hosts_clipboard_uses_the_boards(game: App) {
+    assert(game.capabilities == Some(0), "the host said it has nothing")
+    assert(game.board.items.len() == 3, f"{game.board.items.len()} items")
+    assert(game.board.items[2].kind == Kind::Note)
+}
+
+/// An input method's composing shows and goes; what it commits is typed once, after what was
+/// typed before.
+@test(frames: 12, input: "scripts/compose.json")
+fn composed_text_is_typed_once(game: App) {
+    let note = game.board.items[0].clone()
+    assert(note.text == "a仮名", f"`{note.text}`")
+    assert(game.composer.text.is_empty(), "nothing is composing")
+    assert(game.typing == Some(Typing::caret(note.id, note.text.len())))
+}
+
+/// An assistive technology's selection names the lower of two notes, though the upper one is
+/// drawn over it and the note tool is in hand: it's selected, and nothing is made. (The starter
+/// board's ten items take ids 1 to 10, so the first note made is 11, its node 1011.)
+@test(frames: 13, input: "scripts/assist.json")
+fn an_assistive_selection_names_its_item(game: App) {
+    assert(game.board.items.len() == 2, f"{game.board.items.len()} items")
+    assert(game.board.items[0].id == 11)
+    assert(game.selected.len() == 1 && game.selected[0] == 11, "the lower note")
+    assert(game.tool == Tool::Note)
+}
+
+/// Backspace and Delete take a whole character group: an accent with its letter, an emoji with
+/// its skin tone.
+@test(frames: 12, input: "scripts/groups.json")
+fn editing_moves_over_whole_groups(game: App) {
+    // "a", "e" + U+0301, 👍🏽, "x": Left to before "x", Backspace takes 👍🏽; Left to before
+    // "é", Delete takes it.
+    let note = game.board.items[0].clone()
+    assert(note.text == "ax", f"`{note.text}` ({note.text.len()} bytes)")
+}
+
+/// A note dragged to within a few pixels of its neighbour's top lands exactly on it.
+@test(frames: 18, input: "scripts/snap.json")
+fn a_dragged_note_snaps_to_its_neighbour(game: App) {
+    let a = game.board.items[0].clone()
+    let b = game.board.items[1].clone()
+    assert(b.at.y == a.at.y, f"{b.at.y} against {a.at.y}")
+    assert(b.at.x > a.at.x + 200.0, "it moved across too, unsnapped")
+    assert(game.guides.is_empty(), "no guides once it's let go")
+}
+
+/// Alt and a drag leave the note where it was and take a copy.
+@test(frames: 14, input: "scripts/alt.json")
+fn an_alt_drag_leaves_a_copy(game: App) {
+    assert(game.board.items.len() == 2, f"{game.board.items.len()} items")
+    let first = game.board.items[0].clone()
+    let copy = game.board.items[1].clone()
+    let moved = (copy.at - first.at) * game.view.scale()
+    // 80 pixels across and 20 down: nowhere near the original's lines, so nothing snaps.
+    assert(length(moved - vec2(80.0, 20.0)) < 0.01, f"moved {moved.x}, {moved.y}")
+    assert(game.selected.len() == 1 && game.selected[0] == copy.id, "the copy is selected")
+}
+
+/// Shift keeps a drag on the axis it has gone further along.
+@test(frames: 14, input: "scripts/shift.json")
+fn a_shift_drag_keeps_to_one_axis(game: App) {
+    let r = screen_rect(game, 0)
+    assert(abs(r.center().y - 240.0) < 0.01, f"y {r.center().y}")
+    assert(abs(r.center().x - 420.0) < 0.01, f"x {r.center().x}")
+}
+
+@test
+fn arrowheads_go_round() {
+    var style = board::CONNECTOR
+    style = next_heads(style)
+    assert(style == ELBOW | START_ARROW | END_ARROW)
+    style = next_heads(style)
+    assert(style == ELBOW, "none, still in elbows")
+    assert(next_heads(style) == board::CONNECTOR)
+}
+
+/// A drag from the dot on a note's right side to another note joins them; a double click on the
+/// connector types its label.
+@test(frames: 70, input: "scripts/dots.json")
+fn a_dot_drags_out_a_connector_with_a_label(game: App) {
+    assert(game.board.items.len() == 3, f"{game.board.items.len()} items")
+    // The right-hand note was made first; the connector runs from the left-hand one to it.
+    let b = game.board.items[0].clone()
+    let a = game.board.items[1].clone()
+    let link = game.board.items[2].clone()
+    assert(link.kind == Kind::Link && link.from == a.id && link.to == b.id)
+    assert(link.style == board::CONNECTOR)
+    assert(link.text == "yes", f"`{link.text}`")
+    // The label sits on the connector's middle, between the notes.
+    let mid = link.at + 0.5 * link.size
+    assert(abs(mid.x - 0.5 * (a.at.x + a.size.x + b.at.x)) < 0.01 && link.size.x > 0.0)
+}
+
+/// Alt+Shift+Left selects the last word; typing replaces it, and nothing's selected after.
+@test(frames: 52, input: "scripts/replace.json")
+fn typing_replaces_a_selected_word(game: App) {
+    let note = game.board.items[0].clone()
+    assert(note.text == "hello there", f"`{note.text}`")
+    assert(game.typing == Some(Typing::caret(note.id, 11)))
+}
+
+/// Up keeps the caret where it was across: from after "two" to after "one".
+@test(frames: 54, input: "scripts/lines.json")
+fn up_moves_to_the_line_above(game: App) {
+    assert(game.board.items[0].text == "one!\ntwo", f"`{game.board.items[0].text}`")
+}
+
+/// Cmd+A and a letter replace everything; Alt+Backspace takes a word, Cmd+Backspace the line.
+@test(frames: 56, input: "scripts/whole.json")
+fn select_all_and_deleting_by_word_and_line(game: App) {
+    assert(game.board.items[0].text == "end", f"`{game.board.items[0].text}`")
+}
+
+/// The zoom buttons ease: a few frames after 100% is asked for, the camera is on its way; after
+/// half a second, it's there.
+@test(frames: 8, input: "scripts/ease.json")
+fn the_camera_eases_to_a_hundred_percent(game: App) {
+    assert(game.goal.is_some() && game.view.zoom != 1.0, f"zoom {game.view.zoom}")
+}
+
+@test(frames: 50, input: "scripts/ease.json")
+fn the_camera_arrives(game: App) {
+    assert(game.goal.is_none() && game.view.zoom == 1.0, f"zoom {game.view.zoom}")
+}
+
+/// A right click on a note opens the menu (moved up to stay on the screen: its fourth row,
+/// Duplicate, is at y 335); the row makes a copy and closes it; a right click on empty board
+/// opens one, and a click away closes it doing nothing else.
+@test(frames: 18, input: "scripts/menu.json")
+fn the_context_menu_acts_and_closes(game: App) {
+    assert(game.board.items.len() == 2, f"{game.board.items.len()} items")
+    assert(game.menu.is_none(), "closed")
+    assert(game.selected.is_empty(), "the right click on the board let go of the copy")
+}
+
+/// A locked note can't be dragged or deleted.
+@test(frames: 16, input: "scripts/lock.json")
+fn a_locked_note_stays(game: App) {
+    assert(game.board.items.len() == 1)
+    assert(game.board.items[0].locked)
+    let r = screen_rect(game, 0)
+    assert(abs(r.center().x - 320.0) < 0.01, f"x {r.center().x}")
+}
+
+/// F and a drag make a frame, numbered; a note put inside it goes with it when the frame is
+/// dragged by its empty space.
+@test(frames: 20, input: "scripts/frame.json")
+fn a_frame_carries_what_is_inside_it(game: App) {
+    assert(game.board.items.len() == 2)
+    let frame = game.board.items[0].clone()
+    assert(frame.kind == Kind::Frame && frame.text == "Frame 1", f"`{frame.text}`")
+    assert(game.selected.len() == 1 && game.selected[0] == frame.id)
+    let note = screen_rect(game, 1)
+    assert(abs(note.center().x - 310.0) < 0.01, f"the note at {note.center().x}")
+    assert(abs(screen_rect(game, 0).x - 160.0) < 0.01)
+}
+
+/// The Shapes tool opens its flyout; its triangle is picked, and a click makes one.
+@test(frames: 13, input: "scripts/flyout.json")
+fn the_shapes_flyout_picks_a_triangle(game: App) {
+    assert(game.board.items.len() == 1, f"{game.board.items.len()} items")
+    assert(game.board.items[0].kind == Kind::Triangle)
+    assert(game.shape == Kind::Triangle && !game.flyout)
+}
+
+/// The text size control steps a text's words up twice: 20, then 28, then 40.
+@test(frames: 12, input: "scripts/size.json")
+fn text_size_steps_up(game: App) {
+    let t = game.board.items[0].clone()
+    assert(t.kind == Kind::Text && t.type_size == 40.0, f"{t.type_size}")
+    assert(t.size.y > 40.0, "it grew to hold its words")
+}
+
+/// A double click on the board's name selects it; typing renames the board, and Enter keeps it.
+@test(frames: 10, input: "scripts/rename.json")
+fn the_board_is_renamed(game: App) {
+    assert(game.board.name == "Plans", f"`{game.board.name}`")
+    assert(game.naming.is_none())
+}
+
+/// M shows the minimap; a click in it brings the camera's middle to the world point there,
+/// on the minimap as it was at the press.
+@test(frames: 8, input: "scripts/minimap.json")
+fn the_minimap_moves_the_camera(game: App) {
+    assert(game.map_on)
+    // The minimap as it was at the press: the first frame's view, which fits the starting board.
+    var start = View::new()
+    start.fit(game.board.whole().unwrap(), game.screen, margin: 80.0, most: 1.0)
+    let m = map_with(game, start)
+    let middle = game.view.to_world(0.5 * game.screen)
+    let want = m.to_world(vec2(445.0, 344.0))
+    assert(length(middle - want) < 0.5, f"{middle.x}, {middle.y} against {want.x}, {want.y}")
+}
+
+/// A click away from a note stops typing in it and lets it go, and so does one after a click
+/// that selects it again.
+@test(frames: 48, input: "scripts/off.json")
+fn a_click_off_a_note_lets_it_go(game: App) {
+    assert(game.board.items.len() == 1 && game.board.items[0].text == "Hi")
+    assert(game.typing.is_none())
+    assert(game.selected.is_empty(), f"{game.selected.len()} selected")
+}
+
+/// Cmd+G makes two notes one group: a click on one selects both, a drag moves both, and a
+/// later click on it, with the group selected, picks it alone.
+@test(frames: 64, input: "scripts/grouping.json")
+fn a_group_moves_whole_and_opens_to_a_click(game: App) {
+    assert(game.board.items.len() == 2)
+    let a = game.board.items[0].clone()
+    let b = game.board.items[1].clone()
+    assert(a.group != 0 && a.group == b.group, f"groups {a.group} and {b.group}")
+    let ra = screen_rect(game, 0)
+    let rb = screen_rect(game, 1)
+    assert(
+        abs(ra.center().x - 260.0) < 0.05 && abs(rb.center().x - 500.0) < 0.05,
+        f"{ra.center().x}, {rb.center().x}",
+    )
+    assert(game.selected.len() == 1 && game.selected[0] == a.id, f"{game.selected.len()} selected")
+}
+
+/// Shift+2 eases the camera onto what's selected: the starter's first note, 200 units square,
+/// fills the 480 pixels' height but 80 each side, in the middle.
+@test(frames: 70, input: "scripts/zoom.json")
+fn shift_two_zooms_to_the_selection(game: App) {
+    assert(game.goal.is_none())
+    let r = screen_rect(game, game.board.index(1).unwrap())
+    assert(abs(r.h - 320.0) < 0.05, f"{r.h}")
+    assert(length(r.center() - vec2(320.0, 240.0)) < 0.05, f"{r.center().x}, {r.center().y}")
+}
+
+/// Three notes selected: the Align row's "tops" puts their tops together, and Alt+Shift+H
+/// spaces them evenly across, the outer two staying.
+@test(frames: 20, input: "scripts/align.json")
+fn the_align_row_lines_notes_up(game: App) {
+    assert(game.aligning, "the row is open")
+    let a = game.board.items[0].rect()
+    let b = game.board.items[1].rect()
+    let c = game.board.items[2].rect()
+    assert(a.y == b.y && b.y == c.y, f"tops {a.y}, {b.y}, {c.y}")
+    assert(
+        abs((b.x - a.right()) - (c.x - b.right())) < 1.0e-3,
+        f"gaps {b.x - a.right()} and {c.x - b.right()}",
+    )
+}
+
+/// Two notes at 100% selected (from x 100 to 540, y 140 to 340): dragging the box's bottom right
+/// handle 110 right and 50 down scales both by 1.25 about the top left.
+@test(frames: 66, input: "scripts/scale.json")
+fn the_box_round_several_scales_them(game: App) {
+    let a = screen_rect(game, 0)
+    let b = screen_rect(game, 1)
+    let close = |r: Rect, x: f32, y: f32, side: f32| -> bool {
+        abs(r.x - x) < 0.05 &&
+            abs(r.y - y) < 0.05 &&
+            abs(r.w - side) < 0.05 &&
+            abs(r.h - side) < 0.05
+    }
+    assert(close(a, 100.0, 140.0, 250.0), f"{a.x}, {a.y}, {a.w}")
+    assert(close(b, 400.0, 140.0, 250.0), f"{b.x}, {b.y}, {b.w}")
+    assert(game.originals.is_empty())
+}
+
+/// A connector from one note to a second, selected: its end, dragged from the second note's side
+/// to a third note, joins the third instead.
+@test(frames: 74, input: "scripts/end.json")
+fn a_connectors_end_moves_to_another_item(game: App) {
+    assert(game.board.items.len() == 4, f"{game.board.items.len()} items")
+    let link = game.board.items[3].clone()
+    assert(link.kind == Kind::Link)
+    assert(link.from == game.board.items[0].id, "its start stays")
+    assert(link.to == game.board.items[2].id, f"it ends at {link.to}")
+}
+
+/// A click on a selected note's right dot makes a note beside it, 60 to the right, and typing
+/// goes into the new one.
+@test(frames: 60, input: "scripts/beside.json")
+fn a_dot_click_adds_a_note_beside(game: App) {
+    assert(game.board.items.len() == 2, f"{game.board.items.len()} items")
+    let r = screen_rect(game, 1)
+    assert(abs(r.x - 360.0) < 0.05 && abs(r.y - 140.0) < 0.05, f"{r.x}, {r.y}")
+    assert(game.board.items[1].kind == Kind::Note && game.board.items[1].text == "Next")
+}
+
+/// A note made below one near the screen's bottom edge, past it: the camera eases until it's
+/// all on the screen.
+@test(frames: 120, input: "scripts/below.json")
+fn the_camera_goes_to_an_item_added_past_the_edge(game: App) {
+    assert(game.board.items.len() == 2)
+    let r = screen_rect(game, 1)
+    assert(r.y >= 0.0 && r.bottom() <= 480.0, f"{r.y} to {r.bottom()}")
+}
+
+/// With the hand chosen from the rail (its second button), a click on the rail's first button,
+/// Select, chooses it: the hand pans the board, not the controls over it.
+@test(frames: 8, input: "scripts/hand.json")
+fn the_hand_lets_go_for_another_tool(game: App) {
+    assert(game.tool == Tool::Select, "the select tool is chosen again")
+    assert(game.drag == Drag::Idle)
+}

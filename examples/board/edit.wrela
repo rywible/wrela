@@ -1,0 +1,218 @@
+// Editing text: a caret and the selection it drags out (`Caret`), and what keys do to them and
+// to the text, by character group (ui::text's `next_cluster`), word or line. Pure: each takes the
+// text and a caret and gives back new ones, so main.wrela only applies them.
+
+use ui::text::{decode, next_cluster, previous_cluster}
+
+/// A caret at byte `at`, and the other end of the selection at `anchor` (the same byte when
+/// nothing is selected).
+pub struct Caret: Copy + Eq {
+    pub at: u32,
+    pub anchor: u32,
+}
+
+impl Caret {
+    pub fn at(at: u32) -> Caret {
+        Caret { at, anchor: at }
+    }
+
+    /// The selection's bytes, low then high.
+    pub fn range(self) -> (u32, u32) {
+        (min(self.at, self.anchor), max(self.at, self.anchor))
+    }
+
+    pub fn selects(self) -> bool {
+        self.at != self.anchor
+    }
+}
+
+/// Whether `cp` is part of a word: a letter, a digit, `_`, or anything past ASCII.
+fn wordy(cp: u32) -> bool {
+    (cp >= 48 && cp <= 57) ||
+        (cp >= 65 && cp <= 90) ||
+        (cp >= 97 && cp <= 122) ||
+        cp == 95 ||
+        cp >= 128
+}
+
+/// Where the word at or after byte `i` ends, past the spaces before it.
+pub fn next_word(text: str, i: u32) -> u32 {
+    var j = i
+    while j < text.len() && !wordy(decode(text, j).0) {
+        j = next_cluster(text, j)
+    }
+    while j < text.len() && wordy(decode(text, j).0) {
+        j = next_cluster(text, j)
+    }
+    j
+}
+
+/// Where the word before byte `i` starts, past the spaces after it.
+pub fn previous_word(text: str, i: u32) -> u32 {
+    var j = i
+    while j > 0 && !wordy(decode(text, previous_cluster(text, j)).0) {
+        j = previous_cluster(text, j)
+    }
+    while j > 0 && wordy(decode(text, previous_cluster(text, j)).0) {
+        j = previous_cluster(text, j)
+    }
+    j
+}
+
+/// The word round byte `i`, for a double click: the run of word characters it's in, or of
+/// others.
+pub fn word_at(text: str, i: u32) -> (u32, u32) {
+    if text.is_empty() {
+        return (0, 0)
+    }
+    let at = min(i, previous_cluster(text, text.len()))
+    let kind = wordy(decode(text, at).0)
+    var from = at
+    while from > 0 && wordy(decode(text, previous_cluster(text, from)).0) == kind {
+        from = previous_cluster(text, from)
+    }
+    var to = at
+    while to < text.len() && wordy(decode(text, to).0) == kind {
+        to = next_cluster(text, to)
+    }
+    (from, to)
+}
+
+/// The start and end of the line (between newlines) byte `i` is on.
+pub fn line_of(text: str, i: u32) -> (u32, u32) {
+    var from = min(i, text.len())
+    while from > 0 && text.byte(from - 1) != 10 {
+        from -= 1
+    }
+    var to = min(i, text.len())
+    while to < text.len() && text.byte(to) != 10 {
+        to += 1
+    }
+    (from, to)
+}
+
+/// `text` with the selection replaced by `add`, and the caret after it.
+pub fn insert(text: str, c: Caret, add: str) -> (String, Caret) {
+    let (from, to) = c.range()
+    var out = String::from(text.slice(0, from))
+    out.push_str(add)
+    let at = out.len()
+    out.push_str(text.slice(to, text.len()))
+    (out, Caret::at(at))
+}
+
+/// How far a key moves or deletes: a character group, a word, or to the line's end.
+pub enum Step: Copy + Eq {
+    Char,
+    Word,
+    Line,
+}
+
+/// Where `step` back from byte `i` is.
+fn back(text: str, i: u32, step: Step) -> u32 {
+    match step {
+        Step::Char => previous_cluster(text, i),
+        Step::Word => previous_word(text, i),
+        Step::Line => {
+            let (from, _) = line_of(text, i)
+            // At a line's start, back over its newline.
+            if from == i && i > 0 { i - 1 } else { from }
+        },
+    }
+}
+
+/// Where `step` on from byte `i` is.
+fn on(text: str, i: u32, step: Step) -> u32 {
+    match step {
+        Step::Char => next_cluster(text, i),
+        Step::Word => next_word(text, i),
+        Step::Line => {
+            let (_, to) = line_of(text, i)
+            if to == i && i < text.len() { i + 1 } else { to }
+        },
+    }
+}
+
+/// Backspace: the selection, or `step` back from the caret, goes.
+pub fn delete_back(text: str, c: Caret, step: Step) -> (String, Caret) {
+    if c.selects() || c.at == 0 {
+        return insert(text, c, "")
+    }
+    insert(text, Caret { at: back(text, c.at, step), anchor: c.at }, "")
+}
+
+/// Delete: the selection, or `step` on from the caret, goes.
+pub fn delete_on(text: str, c: Caret, step: Step) -> (String, Caret) {
+    if c.selects() || c.at >= text.len() {
+        return insert(text, c, "")
+    }
+    insert(text, Caret { at: on(text, c.at, step), anchor: c.at }, "")
+}
+
+/// Left (`forward` false) or right by `step`; `extend` (Shift) keeps the anchor, else a move
+/// with a selection only collapses it to the side it's going.
+pub fn moved(text: str, c: Caret, forward: bool, step: Step, extend: bool) -> Caret {
+    if c.selects() && !extend && step == Step::Char {
+        let (from, to) = c.range()
+        return Caret::at(if forward { to } else { from })
+    }
+    let at = if forward {
+        if step == Step::Line { line_of(text, c.at).1 } else { on(text, c.at, step) }
+    } else {
+        if step == Step::Line { line_of(text, c.at).0 } else { back(text, c.at, step) }
+    }
+    if extend { Caret { at, anchor: c.anchor } } else { Caret::at(at) }
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+@test
+fn words_and_lines_are_found_by_their_edges() {
+    let t = "one, two  three\nfour"
+    assert(next_word(t, 0) == 3 && next_word(t, 3) == 8 && next_word(t, 8) == 15)
+    assert(previous_word(t, 15) == 10 && previous_word(t, 10) == 5 && previous_word(t, 3) == 0)
+    assert(word_at(t, 6) == (5, 8) && word_at(t, 8) == (8, 10), "a word, then the spaces after it")
+    assert(word_at(t, 99) == (16, 20), "past the end, the last word")
+    assert(line_of(t, 3) == (0, 15) && line_of(t, 17) == (16, 20))
+}
+
+@test
+fn typing_replaces_the_selection() {
+    let (text, c) = insert("hello world", Caret { at: 6, anchor: 11 }, "there")
+    assert(text == "hello there" && c == Caret::at(11))
+    let (back_one, c1) = delete_back("abc", Caret::at(3), Step::Char)
+    assert(back_one == "ab" && c1 == Caret::at(2))
+    let (gone, c2) = delete_back("say hello there", Caret::at(15), Step::Word)
+    assert(gone == "say hello " && c2 == Caret::at(10))
+    let (line, c3) = delete_back("one\ntwo three", Caret::at(13), Step::Line)
+    assert(line == "one\n" && c3 == Caret::at(4))
+    let (sel, c4) = delete_on("abcdef", Caret { at: 1, anchor: 4 }, Step::Word)
+    assert(sel == "aef" && c4 == Caret::at(1), "a selection goes whatever the step")
+    let (fwd, c5) = delete_on("one two", Caret::at(0), Step::Word)
+    assert(fwd == " two" && c5 == Caret::at(0))
+}
+
+@test
+fn the_caret_moves_and_extends() {
+    let t = "one two\nthree"
+    assert(moved(t, Caret::at(0), forward: true, step: Step::Word, extend: false) == Caret::at(3))
+    assert(moved(t, Caret::at(5), forward: true, step: Step::Line, extend: false) == Caret::at(7))
+    assert(
+        moved(t, Caret::at(5), forward: false, step: Step::Line, extend: true) ==
+            Caret { at: 0, anchor: 5 },
+    )
+    // A selection collapses to its side on a plain move.
+    assert(
+        moved(t, Caret { at: 2, anchor: 6 }, forward: false, step: Step::Char, extend: false) ==
+            Caret::at(2),
+    )
+    assert(
+        moved(t, Caret { at: 6, anchor: 2 }, forward: true, step: Step::Char, extend: false) ==
+            Caret::at(6),
+    )
+    // Shift and a word: the selection grows by a word.
+    assert(
+        moved(t, Caret { at: 3, anchor: 0 }, forward: true, step: Step::Word, extend: true) ==
+            Caret { at: 7, anchor: 0 },
+    )
+}
