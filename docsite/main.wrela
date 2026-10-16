@@ -1663,7 +1663,10 @@ fn result_text(index: Index, h: Hit) -> (String, String) {
             Some(p) => index.pages[p].title.clone(),
             None => page.to_string(),
         }
-        (index.sections[h.at].title.clone(), f"In {title.as_str()}")
+        // What the section says; where it is, if it says nothing first.
+        let says = index.sections[h.at].summary.as_str()
+        let under = if says.is_empty() { f"In {title.as_str()}" } else { unticked(says) }
+        (index.sections[h.at].title.clone(), under)
     }
 }
 
