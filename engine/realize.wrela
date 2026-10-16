@@ -1,5 +1,9 @@
-// Realization (#43 §7): a creature's field cooked into a skinned mesh on the GPU, by code
-// compiled from wrela (D-091, D-097). Each individual at each level (a cell size):
+// Realization: a creature's field cooked into a skinned mesh on the GPU, by kernels written in
+// Wrela.
+//
+// A `Realizer` keeps the meshes of every instance of one creature type, at the levels of detail
+// their size on screen asks for (`Realizer::frame`). `realize_once` and `realizing` give one
+// creature's mesh. Each individual at each level (a cell size) is realized in five passes:
 //
 //   1. cull_blocks: one invocation per block of 4×4×4 cells. Each item's interval over the block
 //      grown by a cell gives its bit in the block's `PartMask`, and the creature's interval,
@@ -11,7 +15,7 @@
 //      5³ corners are evaluated once each, into workgroup memory, each under one mask: its
 //      block's inside it, and on the block's boundary the union of the masks of the live blocks
 //      that share it, so every block that evaluates a corner gets the same bits and no quad goes
-//      missing (§7.5). Each cell the surface crosses gets a vertex: each crossed edge's root
+//      missing. Each cell the surface crosses gets a vertex: each crossed edge's root
 //      (regula falsi) and gradient, a QEF pulled toward their mean, clamped to the cell. The cell
 //      map keeps each cell's signs and vertex.
 //   3. emit_quads: each cell with a vertex emits a quad for each crossed edge leaving its low
@@ -23,7 +27,7 @@
 //   5. skin_vertices: each vertex's skin weights.
 //
 // No count is read back in this path. Meshes live in pools, one per creature type and level,
-// cut into slabs (§7.8); the queue realizes as many as a frame's budget allows (§7.7).
+// cut into slabs; the queue realizes as many as a frame's budget allows.
 
 use creature::{Creature, NONE, PartMask, Parts}
 use look::{CreatureLook, Detail}
@@ -65,7 +69,7 @@ pub struct Tally: Copy + GpuData + Plain {
 pub const VERTICES_FULL: u32 = 2
 pub const QUADS_FULL: u32 = 4
 
-/// Root-finding steps for each crossed edge (sketch 02).
+/// Root-finding steps for each crossed edge.
 pub const ROOT_STEPS: u32 = 4
 
 /// The QEF's pull toward the crossings' mean.
@@ -81,7 +85,7 @@ pub struct Grid: Copy + GpuData {
 }
 
 impl Grid {
-    /// The grid around `b` (spike 01's `gridFor`): its origin two cells below `b`'s low corner,
+    /// The grid around `b`: its origin two cells below `b`'s low corner,
     /// and enough blocks to reach two cells past its high one.
     pub fn around(b: Box3, cell: f32) -> Grid {
         let pad = 2.0 * cell
@@ -104,7 +108,7 @@ impl Grid {
     /// The lattice's corner `c`, in cells from the origin. Every block that shares a corner
     /// gets the same point from it, bit for bit, which a block's corner plus an offset doesn't
     /// give: two blocks evaluating one corner at points an ulp apart can disagree on its sign,
-    /// and a quad between them is lost (spike 01's holes, #43 §7.5).
+    /// and a quad between them is lost.
     pub fn corner(self, c: vec3u) -> vec3 {
         self.origin + vec3(c) * self.cell
     }
@@ -137,8 +141,8 @@ pub struct LiveBlock: Copy + GpuData {
     pub mask: PartMask,
 }
 
-/// The boundary corners one invocation of `place_vertices` evaluated, in a debug build (#42 AC2:
-/// every block that evaluates a corner gets the same bits): for each of its two, the corner's
+/// The boundary corners one invocation of `place_vertices` evaluated, in a debug build (to check
+/// that every block that evaluates a corner gets the same bits): for each of its two, the corner's
 /// index in the grid's lattice (x fastest) plus 1 (0: none), and its value's bits.
 pub struct CornerProbe: Copy + GpuData {
     pub corners: [u32; 2],
@@ -148,7 +152,7 @@ pub struct CornerProbe: Copy + GpuData {
 /// The most blocks a grid a debug build probes has (`Scratch::probe`).
 pub const PROBE_BLOCKS: u32 = 32768
 
-/// One vertex of a realized mesh, 48 bytes as spike 01's: its rest position, its four bones (a
+/// One vertex of a realized mesh, 48 bytes: its rest position, its four bones (a
 /// byte each), its normal, their weights (a byte each, adding up to 255), and the items that
 /// matter near it, for shading.
 pub struct SkinVertex: Copy + GpuData {
@@ -222,7 +226,7 @@ fn neighbour_mask(grid: Grid, blocks: [LiveBlock], block_map: [u32], b: vec3u, i
 }
 
 /// The mask a corner `c` of a block whose own is `own` is evaluated under: its own, and on its
-/// boundary the union with each live block that shares the corner (§7.5), from the masks of the
+/// boundary the union with each live block that shares the corner, from the masks of the
 /// blocks around it (`neighbour_mask`).
 fn corner_mask(near: Shared<PartMask, 27>, own: PartMask, c: vec3u) -> PartMask {
     let (cx, cy, cz) = (c.x, c.y, c.z)
@@ -310,7 +314,7 @@ fn normal_at<C, F: Parts<C>>(field: F, mask: PartMask, fp: f32, x: vec3) -> vec3
 /// In each live block, a vertex for every cell the surface crosses: where the planes through
 /// its edges' crossings, with the gradient there, best meet (dual contouring). Its cell map
 /// entry: its signs, and the vertex. Its skin weights come in a pass of their own
-/// (`skin_vertices`, #43 §7.3: this pass's WGSL has no room for them in its 256 KiB).
+/// (`skin_vertices`: this pass's WGSL has no room for them in its 256 KiB).
 @compute(4, 4, 4)
 pub fn place_vertices<C, F: Parts<C>>(
     field: F,
@@ -588,7 +592,7 @@ pub fn finish_mesh(
 
 // ---- pass 5: skin weights ------------------------------------------------------------------------
 
-/// Each vertex's skin weights (spike 01's: from the parts of the items in its mask, falling off
+/// Each vertex's skin weights (from the parts of the items in its mask, falling off
 /// over `falloff`, the field seen `fp` wide, a cell), as `place_vertices` would give them.
 @compute(64)
 pub fn skin_vertices<C, F: Parts<C>>(
@@ -607,7 +611,7 @@ pub fn skin_vertices<C, F: Parts<C>>(
     verts[id] = SkinVertex { pos: v.pos, bones, normal: v.normal, weights, mask: v.mask }
 }
 
-// ---- meshes, scratch and pools (§7.8) -------------------------------------------------------
+// ---- meshes, scratch and pools --------------------------------------------------------------
 
 /// What every realization shares, one after another: the live list (whose count is the next
 /// passes' indirect dispatch), the block map and the cell map, for grids of up to `blocks`
@@ -739,16 +743,16 @@ fn prepare<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Prepared {
 }
 
 /// The slices realizing over frames takes for `grid` (as the realizer counts them,
-/// `Realizer::advance`): live blocks go as the grid's surface, about 6 × blocks^(2/3) (spike
-/// 01's grazers at every level); a quarter more, so the last slice, which takes the rest, is
+/// `Realizer::advance`): live blocks go as the grid's surface, about 6 × blocks^(2/3); a
+/// quarter more, so the last slice, which takes the rest, is
 /// seldom more than one.
 fn slices_for(grid: Grid) -> u32 {
     let expected = 7.5 * pow(f32(grid.blocks), 2.0 / 3.0)
     clamp(u32(ceil(expected / f32(SLICE_BLOCKS))), 1, MAX_SLICES)
 }
 
-/// `creature`'s mesh, realized once as `look` says, for a program that keeps one (`walk`,
-/// sketch 02): on the grid around its bounds grown by the look's tolerance, its cells for a
+/// `creature`'s mesh, realized once as `look` says, for a program that keeps one (`walk`): on
+/// the grid around its bounds grown by the look's tolerance, its cells for a
 /// surface that bends no tighter than 5 cm.
 pub fn realize_once<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Mesh {
     var p = prepare(creature, look)
@@ -762,9 +766,9 @@ pub struct Whole {
     pub bounds: Box3,
 }
 
-/// Realizes `creature` as `look` says, as `realize_once` does but over frames (§6.18), so no
-/// submission runs long (the GPU safety rule: under 100 ms, #51 AC6; realized at 1 cm in one
-/// submission, the clearing's creature took 0.4 s): its first `resume` finds its live blocks,
+/// Realizes `creature` as `look` says, as `realize_once` does but over frames (language.md
+/// §6.18), so no submission runs long (the GPU safety rule: under 100 ms): its first `resume`
+/// finds its live blocks,
 /// each after places the vertices of `per_frame` slices of them (`SLICE_BLOCKS` blocks each),
 /// then the last finishes the mesh. Its result is the whole mesh; its scratch goes with it.
 @job
@@ -968,7 +972,7 @@ fn record_mesh(grid: Grid, scratch: mut Scratch, mesh: mut Mesh) {
     )
 }
 
-// ---- the realization queue, levels of detail and mesh memory (§7.6–§7.8) --------------------------
+// ---- the realization queue, levels of detail and mesh memory --------------------------------------
 
 /// Where an instance is this frame: its root and heading, which place its rest space.
 pub struct Placement: Copy {
@@ -1012,7 +1016,7 @@ struct Check {
 }
 
 /// A mesh's room after seeing a realization push `vertices` and `quads`: a quarter more, and
-/// room to spare (spike 01's).
+/// room to spare.
 fn room_for(vertices: u32, quads: u32) -> Room {
     Room { vertices: vertices + vertices / 4 + 1024, quads: quads + quads / 4 + 1024 }
 }
@@ -1040,8 +1044,7 @@ impl LevelRoom {
     }
 }
 
-/// The live blocks a frame's slice of a level change takes (`Realizer::advance`): about 0.4 ms
-/// of the GPU at 3 cm in Chrome, 1.1 ms at its slowest clocks.
+/// The live blocks a frame's slice of a level change takes (`Realizer::advance`).
 pub const SLICE_BLOCKS: u32 = 384
 
 /// The most slices a level change is cut into: the last takes the rest.
@@ -1061,7 +1064,7 @@ struct Slicing {
     calibration: bool,
 }
 
-/// The meshes of every instance of one creature type (#43 §7.6–§7.8): realized at their levels
+/// The meshes of every instance of one creature type: realized at their levels
 /// of detail as their size on screen asks, a frame's budget at a time, the largest on screen
 /// first; a new one at its coarsest level first. Each level's room is calibrated once, from the
 /// largest grid waiting; each realization's counts are read back to catch an overflow, which
@@ -1228,7 +1231,7 @@ fn on_screen(centre: vec3, radius: f32, view_proj: mat4, scale: f32) -> bool {
 }
 
 impl<C, F: Parts<C>> Realizer<F> {
-    /// This frame (#43 §6, steps 3, 4 and 7): the readbacks that have arrived; each instance's
+    /// This frame: the readbacks that have arrived; each instance's
     /// target level, from how large its cells look; then the queue, realized within the budget.
     pub fn frame(mut self, eye: Eye, placed: [Placement]) {
         self.answer()
@@ -1293,8 +1296,8 @@ impl<C, F: Parts<C>> Realizer<F> {
 
     /// Realizes the waiting instances, largest on screen first, until the budget is spent; and
     /// with what's left, at most one new instance off screen, at its coarsest level, so a camera
-    /// that turns to it finds it drawn: moving from the close-up to the herd asked for 39
-    /// realizations at once, and in Chrome the first frame's ran 2.7 times as long (#42 AC4).
+    /// that turns to it finds it drawn, and a camera that suddenly sees many new instances
+    /// doesn't ask for all of them in one frame.
     fn spend(mut self) {
         var spent = 0.0
         var off_screen = 0
@@ -1388,9 +1391,8 @@ impl<C, F: Parts<C>> Realizer<F> {
     /// One step of the level change in progress, or the start of the next (`begin`): culling,
     /// then a slice of the live blocks' vertices (`SLICE_BLOCKS`) each frame, the last slice
     /// taking the rest, then the quads and skin weights; meanwhile the instance draws the mesh
-    /// it has. A frame's share of a level change is so at most about 0.4 ms of the GPU: in
-    /// Chrome, paced, the GPU's clocks fall and rise, and the herd's frame took up to 14 ms where
-    /// it took 5.5, so a whole realization (2 to 6 ms) in such a frame passed 16.7 ms (#42 AC1).
+    /// it has. So a frame takes only a slice of a level change: when the GPU's clocks fall, a
+    /// whole realization in one frame can make that frame late.
     /// New instances aren't spread so: they're realized whole within the budget, to draw soon.
     fn advance(mut self) {
         if self.slicing.is_none() && !self.begin() {
@@ -1450,10 +1452,10 @@ impl<C, F: Parts<C>> Realizer<F> {
         true
     }
 
-    /// Calibrates `level`'s room (§7.8): the instance with the largest grid at that level, of all
+    /// Calibrates `level`'s room: the instance with the largest grid at that level, of all
     /// of them, is realized into room for the most its grid could hold, and its counts are read
-    /// back once. Of all, not of those waiting (#43 §7.8's choice): a larger one realized later
-    /// would overflow the room, and on a 10-minute tour two did. If it's waiting for the level,
+    /// back once. Of all, not of those waiting: a larger one realized later would overflow the
+    /// room. If it's waiting for the level,
     /// it draws that mesh until the room is known and it's realized again.
     fn calibrate(mut self, level: u32, force: bool) -> f32 {
         let best = self.largest(level)

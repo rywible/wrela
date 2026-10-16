@@ -1,13 +1,18 @@
-// Where a player can stand, and how fast they go (M6 §5): one rule for the sim's collision, the
-// interest check's walkers and the map lens's reachability, so what the check says can be
-// reached can be walked to.
+// Where a player can stand, and how fast they go: one rule for the sim's collision, the interest
+// check's walkers and the map's reachability, so what the check says a player can reach, a
+// player can walk to.
 //
-// The ground decides most of it: how steep it is, the plateau's edge (past it the land falls
-// away), and water's depth (a mere's, a stream's): shallow water slows a player, deep water stops
-// them. What stands on the ground stops them too: trunks, stones and walls, thorny shrubs, big
-// logs. Those are the obstacles, circles and capsules binned on a grid, packed in 8 bytes each so
-// the sim can hold every one of a floor's in its program (a build's constant), and test a step
-// against those near it.
+// - The ground decides most of it (`pace`): how steep it is (`STEEPEST`), the plateau's edge
+//   (past it the land falls away) and water's depth (a mere's, a stream's). Shallow water slows
+//   a player; deep water stops them.
+// - What stands on the ground stops a player too: trunks, stones and walls, thorny shrubs and
+//   big logs. These are the obstacles (`obstacles_of`): circles and capsules binned on a grid,
+//   packed in 8 bytes each. The sim holds all of a floor's obstacles in its program (a build's
+//   constant) and tests a step only against those near it.
+//
+// The sim moves a player with `step` (or `step_over`, which crosses low logs). `stands` says how
+// fast a player goes at a point, and `walkable_of` gives a grid of the places a player can
+// stand.
 
 use grow::{Grid, Ground, Habit, Heap, LOG_LENGTH, State, Stream, Tree}
 use place::{Map, Water}
@@ -826,9 +831,9 @@ fn dry() -> (Water, Obstacles) {
 }
 
 /// A band too steep to stand on that lies between two cells' middles closes the cells beside it,
-/// so no way crosses it (the floor's walk was led onto one across the crag's talus); a band a
-/// player can stand on is crossed. The band, 2.2 m wide at 0.95, is too steep (`slope` over a
-/// metre each way) only within 0.2 m of x = 11, which no cell's middle (x = 10.5, 11.5) is.
+/// so no way crosses it; a band a player can stand on is crossed. The band, 2.2 m wide at 0.95,
+/// is too steep (`slope` over a metre each way) only within 0.2 m of x = 11, which no cell's
+/// middle (x = 10.5, 11.5) is.
 @test
 fn a_way_doesnt_cross_a_steep_band_between_two_cells() {
     let (w, o) = dry()
