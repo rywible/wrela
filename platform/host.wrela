@@ -190,10 +190,17 @@ pub fn read_pasted(bytes: take Vec<u8>) -> Result<Pasted, LoadError> {
     Ok(Pasted { text, html })
 }
 
-/// What an accessibility node is: a control to press, or an item to choose.
+/// What an accessibility node is: a control to press, an item to choose, or a part of a
+/// document (a heading, a paragraph, a link or a block of code), which a screen reader reads in
+/// the tree's order whether or not it's on screen. A link's focus and activation come back as
+/// `Event::Assist`.
 pub enum Role: Copy + Eq {
     Button,
     Item,
+    Heading,
+    Text,
+    Link,
+    Code,
 }
 
 /// A node of the program's accessibility tree: its number (an `Event::Assist` names it), what it
@@ -204,6 +211,8 @@ pub struct Node: Clone + Eq {
     pub pressed: bool = false,
     pub selected: bool = false,
     pub disabled: bool = false,
+    /// A heading's level, 1 to 6.
+    pub level: u32 = 0,
     pub rect: vec4,
     pub label: String,
 }
@@ -216,11 +225,20 @@ pub fn tree_bytes(name: str, items: str, nodes: [Node]) -> Vec<u8> {
     w.write_u32(nodes.len())
     for n in nodes {
         w.write_u32(n.id)
-        w.write_u8(if n.role == Role::Button { 0 } else { 1 })
+        w.write_u8(match n.role {
+            Role::Button => 0,
+            Role::Item => 1,
+            Role::Heading => 2,
+            Role::Text => 3,
+            Role::Link => 4,
+            Role::Code => 5,
+        })
         var flags = 0
         if n.pressed { flags = flags | 1 }
         if n.selected { flags = flags | 2 }
         if n.disabled { flags = flags | 4 }
+        // A heading's level, in bits 4 to 6.
+        if n.role == Role::Heading { flags = flags | (clamp(n.level, 1, 6) << 4) }
         w.write_u8(u8(flags))
         write_rect(mut w, n.rect)
         w.write_str(n.label.as_str())
@@ -236,9 +254,55 @@ pub fn accessibility(name: str, items: str, nodes: [Node]) -> Pending<u8> {
 
 /// Says `text` to a screen reader, after what it's saying (`a11y/announce`).
 pub fn announce(text: str) -> Pending<u8> {
+    request("a11y/announce", utf8(text))
+}
+
+fn utf8(text: str) -> Vec<u8> {
     var bytes: Vec<u8> = Vec::new()
     for i in 0..text.len() { bytes.push(text.byte(i)) }
-    request("a11y/announce", bytes)
+    bytes
+}
+
+// ---- the page's address and links (runtime/browser: platform.ts) ------------------------------
+
+/// The page's address: its path, query and fragment (`/v0.1/#std/io`), as UTF-8.
+pub fn address() -> Pending<u8> {
+    request("nav/location", [u8(0); 0])
+}
+
+/// A new entry in the page's history at `address`, on the page's own origin and resolved against
+/// its address (`#std/io`, `/v0.2/`): the browser's Back returns to the one before. A program in
+/// a frame has no address of its own.
+pub fn push_address(address: str) -> Pending<u8> {
+    request("nav/push", utf8(address))
+}
+
+/// The page's address is now `address`, with no new history entry.
+pub fn replace_address(address: str) -> Pending<u8> {
+    request("nav/replace", utf8(address))
+}
+
+/// Answers with the page's address (UTF-8) when Back or Forward moves through the addresses the
+/// program gave; ask again for the next.
+pub fn address_changed() -> Pending<u8> {
+    request("nav/changed", [u8(0); 0])
+}
+
+/// Opens `url`, an http or https URL, in a new tab, with no way back to this page.
+pub fn open_link(url: str) -> Pending<u8> {
+    request("nav/open", utf8(url))
+}
+
+/// Goes to another page of this origin in this tab (`/v0.2/`): another build, such as another
+/// version of a site.
+pub fn go(address: str) -> Pending<u8> {
+    request("nav/go", utf8(address))
+}
+
+/// Whether the program takes the browser's find keys (Ctrl or Cmd with F or G, and F3) for a find
+/// of its own: the browser's finds nothing in a canvas. The program hears the keys either way.
+pub fn claim_find(on: bool) -> Pending<u8> {
+    request("keys/find", [if on { u8(1) } else { u8(0) }])
 }
 
 @test
@@ -250,6 +314,19 @@ fn a_tree_and_a_paste_have_the_hosts_layout() {
         rect: vec4(1.0, 2.0, 3.0, 4.0),
         label: String::from("é"),
     }
+    let heading = Node {
+        id: 7,
+        role: Role::Heading,
+        level: 2,
+        rect: vec4(0.0),
+        label: String::from("A"),
+    }
+    let link = Node { id: 8, role: Role::Link, rect: vec4(0.0), label: String::from("B") }
+    let d = tree_bytes("", "", [take heading, take link])
+    // Each node's role and flags: a heading's level is in bits 4 to 6.
+    assert(d[16] == 2 && d[17] == 2 << 4, f"{d[16]} {d[17]}")
+    // The second node starts after the first's 27 bytes and its one-byte name, at 39.
+    assert(d[43] == 4 && d[44] == 0, f"{d[43]} {d[44]}")
     let b = tree_bytes("B", "", [take node])
     // "B" (4 + 1 bytes), "" (4), one node: its number, role, flags, rectangle, then its name.
     assert(b.len() == 5 + 4 + 4 + 4 + 1 + 1 + 16 + 4 + 2, f"{b.len()} bytes")
