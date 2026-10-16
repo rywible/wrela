@@ -2285,6 +2285,19 @@ Every third round saved 35% and every fourth 42%; a turn's tile waits longer the
 tile's number alone, a whole phase rested or marched together (every tile of a phase is the same
 modulo 32), and the median frame saved only 13%.
 
+The software raster (S2, on the branch `clusters-sw-raster`, a draft) takes each listed quad
+whose box on screen is at most 16 pixels: one pass keeps each pixel's nearest depth with a 32-bit
+atomic maximum, a second keeps the largest id among the quads at that depth (so a tie always
+gives the same quad), and a pass a level over the target shades what won; larger quads, and those
+reaching behind the near plane, go to the hardware. With corners snapped to a sixteenth of a
+pixel it left 30 pixels off silhouettes and 10 shaded wrongly against the hardware's; snapped to
+a 256th, as the hardware snaps, it covers exactly what the hardware covers (the frame within
+1/255 in 0.007% of pixels). It is slower on this Radeon: 9.6 ms of GPU time against 7.0, each pass
+3.0 ms where the hardware's whole draw took 5.3. At 320×180 with the same cut the hardware's
+draw took 4.9 ms of its 5.3, so the cost is each quad's corners (four reads in a chain, and each
+corner transformed once a quad), not its pixels; a raster that gathers a cluster's vertices once
+into a workgroup's memory would be the next try. The M4 isn't measured.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

@@ -33,10 +33,11 @@ use realize::{
 use std::collections::replace
 use std::derive::{Box3, gradient}
 use std::gpu::{
-    Append, AppendBuffer, Atomics, ClipPosition, Cull, DispatchArgs, DrawArgs, GlobalId, GpuBuffer,
-    GpuSpan, LocalId, One, RenderPass, Shared, Slots, VertexIndex, WorkgroupId, append_buffer,
-    barrier, buffer, dispatch, draw, read, write,
+    Append, AppendBuffer, Atomics, ClipPosition, Cull, DispatchArgs, DrawArgs, FragCoord, GlobalId,
+    GpuBuffer, WithDepth, discard, GpuSpan, LocalId, One, RenderPass, Shared, Slots, VertexIndex,
+    WorkgroupId, append_buffer, barrier, buffer, dispatch, draw, read, write,
 }
+use std::gpu::label
 use std::io::Pending
 use view::Camera
 
@@ -95,6 +96,11 @@ pub struct Level {
     pub select_args: GpuBuffer<DispatchArgs>,
     pub gather_args: GpuBuffer<DispatchArgs>,
     pub draw_args: GpuBuffer<DrawArgs>,
+    /// The frame's listed quads too large on screen (or too near) to raster in software: the
+    /// hardware draws them (a list, as `list`).
+    pub big: GpuBuffer<u32>,
+    pub raster_args: GpuBuffer<DispatchArgs>,
+    pub big_args: GpuBuffer<DrawArgs>,
     /// How deep its skirts hang (m): a cell.
     pub skirt: f32,
 }
@@ -107,6 +113,11 @@ pub struct Clusters {
     pub visible: AppendBuffer<u32>,
     pub here: GpuBuffer<u32>,
     pub below: GpuBuffer<u32>,
+    /// The software raster's targets, a `u32` a pixel (`raster`): the nearest depth's bits, and
+    /// the id of what's drawn there; and their size.
+    pub depth: GpuBuffer<u32>,
+    pub ids: GpuBuffer<u32>,
+    pub size: vec2u,
     /// Each level's block map (each block's live slot + 1, or 0), kept apart from its level so
     /// the walk reads the level below's while it changes its own.
     pub maps: Vec<GpuBuffer<u32>>,
@@ -251,6 +262,9 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
                 picks: empty_list(1),
                 list: empty_list(1),
                 seed_args: buffer(1),
+                big: empty_list(1),
+                raster_args: buffer(1),
+                big_args: buffer(1),
                 select_args: buffer(1),
                 gather_args: buffer(1),
                 draw_args: buffer(1),
@@ -280,6 +294,9 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
         visible: append_buffer(1),
         here: empty_list(1),
         below: empty_list(1),
+        depth: buffer(1),
+        ids: buffer(1),
+        size: vec2u(1),
         maps,
     }
 }
@@ -793,6 +810,272 @@ pub fn draw_counts(list: [u32], args: mut One<DrawArgs>, id: GlobalId) {
     )
 }
 
+// ---- the software raster (S2) --------------------------------------------------------------------
+
+/// The widest a quad's box on screen may be (pixels) for the software raster to take it: wider,
+/// or reaching behind the near plane, the hardware draws it (`Level::big`). The hardware spends a
+/// triangle's setup and a 2 × 2 block of pixels on each one however small; most of a cut's are
+/// a pixel or two.
+pub const SMALL: f32 = 16.0
+
+/// Subpixel steps a pixel. Corners are snapped to them, as the hardware snaps them, so the edge
+/// two triangles share is the same integers in both, and the fill rule (`owns`) gives each pixel
+/// on it to exactly one.
+const SUBPIXELS: i32 = 256
+
+/// The most workgroups along x in a raster dispatch (WebGPU's limit): more go along y.
+const GROUPS_X: u32 = 65535
+
+/// What the raster passes read: the camera, the target's size, the level, the pass (0: each
+/// pixel's nearest depth; 1: the id of what's at that depth), and the level's skirts' depth.
+pub struct Raster: Copy + GpuData {
+    pub cam: Camera,
+    pub size: vec2u,
+    pub level: u32,
+    pub pass: u32,
+    pub skirt: f32,
+}
+
+/// The raster's id of listed quad `i`'s triangle `t` at level `level`: never 0 (nothing drawn),
+/// and larger for a later quad, which wins a tie of depths.
+fn raster_code(level: u32, i: u32, t: u32) -> u32 {
+    (level << 27) | (2 * i + t + 1)
+}
+
+/// Clip position `c` on a target `size` pixels large: where it falls, in subpixels (snapped), and
+/// its depth.
+fn on_screen(c: vec4, size: vec2u) -> (vec2i, f32) {
+    let ndc = c.xyz / c.w
+    let px = vec2((ndc.x * 0.5 + 0.5) * f32(size.x), (0.5 - ndc.y * 0.5) * f32(size.y))
+    (vec2i(round(px * f32(SUBPIXELS))), ndc.z)
+}
+
+/// Twice the signed area of `a`, `b`, `p` (subpixels squared): positive with `p` to one side of
+/// `a` to `b`.
+fn edge(a: vec2i, b: vec2i, p: vec2i) -> i32 {
+    (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
+}
+
+/// Whether a pixel centre exactly on the edge from `a` to `b` is inside: the same edge the other
+/// way round (as the triangle beside it has it) says the opposite.
+fn owns(a: vec2i, b: vec2i) -> bool {
+    let d = b - a
+    d.y > 0 || (d.y == 0 && d.x > 0)
+}
+
+/// The pixel centre `p` (subpixels) in the triangle `v0`, `v1`, `v2` of positive area `area`: its
+/// three weights (each its opposite corner's share, times the area), or a negative first weight
+/// where it's outside.
+fn weights(v0: vec2i, v1: vec2i, v2: vec2i, p: vec2i) -> vec3i {
+    let w0 = edge(v1, v2, p)
+    let w1 = edge(v2, v0, p)
+    let w2 = edge(v0, v1, p)
+    let inside = (w0 > 0 || (w0 == 0 && owns(v1, v2))) &&
+        (w1 > 0 || (w1 == 0 && owns(v2, v0))) &&
+        (w2 > 0 || (w2 == 0 && owns(v0, v1)))
+    if inside { vec3i(w0, w1, w2) } else { vec3i(-1, 0, 0) }
+}
+
+/// Triangle `v` (subpixels; either way round) with depths `z`, rastered: each pixel it covers
+/// takes its depth at most (`r.pass` 0), or where that's the pixel's depth, `code` at most (1).
+fn raster_triangle(
+    r: Raster,
+    a: vec2i,
+    b: vec2i,
+    c: vec2i,
+    z: vec3,
+    code: u32,
+    depth: mut Atomics<u32>,
+    ids: mut Atomics<u32>,
+) {
+    var area = edge(a, b, c)
+    if area == 0 {
+        return
+    }
+    // Either way round: the corners ordered so the area is positive.
+    let (v1, v2, z1, z2) = if area > 0 { (b, c, z.y, z.z) } else { (c, b, z.z, z.y) }
+    area = abs(area)
+    let lo = min(min(a, v1), v2)
+    let hi = max(max(a, v1), v2)
+    let half = SUBPIXELS / 2
+    // The pixels whose centres the box holds, on the target.
+    let x0 = max((lo.x - half + SUBPIXELS - 1) / SUBPIXELS, 0)
+    let y0 = max((lo.y - half + SUBPIXELS - 1) / SUBPIXELS, 0)
+    let x1 = min((hi.x - half) / SUBPIXELS, i32(r.size.x) - 1)
+    let y1 = min((hi.y - half) / SUBPIXELS, i32(r.size.y) - 1)
+    var y = y0
+    while y <= y1 {
+        var x = x0
+        while x <= x1 {
+            let w = weights(a, v1, v2, vec2i(x * SUBPIXELS + half, y * SUBPIXELS + half))
+            if w.x >= 0 {
+                let d = (f32(w.x) * z.x + f32(w.y) * z1 + f32(w.z) * z2) / f32(area)
+                let i = u32(y) * r.size.x + u32(x)
+                let bits = bitcast_u32(max(d, 0.0))
+                if r.pass == 0 {
+                    let _ = depth.max(i: i, value: bits)
+                } else if depth.load(i: i) == bits {
+                    let _ = ids.max(i: i, value: code)
+                }
+            }
+            x += 1
+        }
+        y += 1
+    }
+}
+
+/// The software raster's targets cleared: no depth (reversed: 0 is the farthest), nothing drawn.
+@compute(64)
+pub fn clear_raster(pixels: u32, depth: mut Slots<u32>, ids: mut Slots<u32>, id: GlobalId) {
+    if id.x >= pixels {
+        return
+    }
+    depth[id] = 0
+    ids[id] = 0
+}
+
+/// A raster pass's group counts: one invocation a listed quad, `GROUPS_X` groups a row.
+@compute(1)
+pub fn raster_counts(list: [u32], args: mut One<DispatchArgs>, id: GlobalId) {
+    let groups = (listed(list) + 63) / 64
+    args.set(
+        id,
+        DispatchArgs { x: min(groups, GROUPS_X), y: (groups + GROUPS_X - 1) / GROUPS_X, z: 1 },
+    )
+}
+
+/// Listed quad `i` of a level (`list`), rastered as `r.pass` says (`raster_triangle`): its four
+/// corners placed and projected once. One too wide on screen (`SMALL`) or reaching behind the
+/// near plane is pushed onto `big` instead (in pass 0), for the hardware.
+@compute(64)
+pub fn raster_quads(
+    r: Raster,
+    list: [u32],
+    picks: [u32],
+    words: [u32],
+    verts: [SkinVertex],
+    places: [Placed],
+    depth: mut Atomics<u32>,
+    ids: mut Atomics<u32>,
+    big: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    let i = id.x + id.y * GROUPS_X * 64
+    if i >= listed(list) {
+        return
+    }
+    let pick = list[1 + 2 * i]
+    let q = list[2 + 2 * i]
+    let p = places[picks[1 + 2 * pick]]
+    // A quad's two triangles are its corners 0, 1, 2 and 0, 2, 5 (`cell_quads`): four corners.
+    var at = [vec2i(0); 4]
+    var z = [0.0; 4]
+    var near = false
+    for k in 0..4 {
+        let word = words[6 * q + (if k == 3 { 5 } else { k })]
+        let (world, _) = placed_vertex(verts, p, word, r.skirt)
+        let c = r.cam.clip(world)
+        near = near || c.w <= r.cam.near
+        let (s, d) = on_screen(c, r.size)
+        at[k] = s
+        z[k] = d
+    }
+    let lo = min(min(at[0], at[1]), min(at[2], at[3]))
+    let hi = max(max(at[0], at[1]), max(at[2], at[3]))
+    let small = i32(SMALL) * SUBPIXELS
+    if near || hi.x - lo.x > small || hi.y - lo.y > small {
+        if r.pass == 0 {
+            push_pair(mut big, pick, q)
+        }
+        return
+    }
+    let extent = vec2i(r.size) * SUBPIXELS
+    if hi.x < 0 || hi.y < 0 || lo.x >= extent.x || lo.y >= extent.y {
+        return
+    }
+    raster_triangle(
+        r,
+        at[0],
+        at[1],
+        at[2],
+        vec3(z[0], z[1], z[2]),
+        raster_code(r.level, i, 0),
+        mut depth,
+        mut ids,
+    )
+    raster_triangle(
+        r,
+        at[0],
+        at[2],
+        at[3],
+        vec3(z[0], z[2], z[3]),
+        raster_code(r.level, i, 1),
+        mut depth,
+        mut ids,
+    )
+}
+
+/// A pixel the software raster drew at level `r.level` (`ids`), shaded: its triangle's corners
+/// fetched and projected again as the raster projected them, its normal interpolated (corrected
+/// for perspective) and lit as `look` says, at the depth the raster found. Any other pixel is
+/// left as it was.
+@fragment
+pub fn raster_shade(
+    pixel: FragCoord,
+    r: Raster,
+    look: ClusterLook,
+    ids: [u32],
+    list: [u32],
+    picks: [u32],
+    words: [u32],
+    verts: [SkinVertex],
+    places: [Placed],
+) -> WithDepth<vec4> {
+    let at = vec2u(pixel.position.xy)
+    let code = ids[at.y * r.size.x + at.x]
+    if code == 0 || (code >> 27) != r.level {
+        discard()
+        return WithDepth { color: vec4(0.0), depth: 0.0 }
+    }
+    let n = (code & ((1 << 27) - 1)) - 1
+    let i = n / 2
+    let pick = list[1 + 2 * i]
+    let q = list[2 + 2 * i]
+    let p = places[picks[1 + 2 * pick]]
+    let corners = if n % 2 == 0 { vec3u(0, 1, 2) } else { vec3u(0, 2, 5) }
+    var s = [vec2i(0); 3]
+    var z = vec3(0.0)
+    var w = vec3(0.0)
+    var normals = [vec3(0.0); 3]
+    for k in 0..3 {
+        let (world, normal) = placed_vertex(verts, p, words[6 * q + corners[k]], r.skirt)
+        let c = r.cam.clip(world)
+        let (sk, dk) = on_screen(c, r.size)
+        s[k] = sk
+        z[k] = dk
+        w[k] = c.w
+        normals[k] = normal
+    }
+    // The pixel's weights as the raster found them (either way round).
+    let area = edge(s[0], s[1], s[2])
+    let half = SUBPIXELS / 2
+    let centre = vec2i(i32(at.x) * SUBPIXELS + half, i32(at.y) * SUBPIXELS + half)
+    let (v1, v2, z1, z2, w1, w2, n1, n2) = if area > 0 {
+        (s[1], s[2], z.y, z.z, w.y, w.z, normals[1], normals[2])
+    } else { (s[2], s[1], z.z, z.y, w.z, w.y, normals[2], normals[1]) }
+    let e = vec3(
+        f32(edge(v1, v2, centre)),
+        f32(edge(v2, s[0], centre)),
+        f32(edge(s[0], v1, centre)),
+    )
+    let total = f32(abs(area))
+    let d = (e.x * z.x + e.y * z1 + e.z * z2) / total
+    // Perspective-correct: each corner's share over its clip w.
+    let b = vec3(e.x / w.x, e.y / w1, e.z / w2)
+    let normal = (normals[0] * b.x + n1 * b.y + n2 * b.z) / max(b.x + b.y + b.z, 1.0e-12)
+    WithDepth { color: vec4(lit(look, normal), 1.0), depth: max(d, 0.0) }
+}
+
 /// A cluster vertex as the fragment shader reads it: its clip position, its world position and
 /// its normal.
 pub struct ClusterVertex: Copy {
@@ -822,11 +1105,16 @@ pub fn cluster_vertex(
     let q = v.index / 6
     let pick = list[1 + 2 * q]
     let word = words[6 * list[2 + 2 * q] + v.index % 6]
+    let (world, normal) = placed_vertex(verts, places[picks[1 + 2 * pick]], word, d.skirt)
+    ClusterVertex { clip: ClipPosition { position: d.cam.clip(world) }, world, normal }
+}
+
+/// Vertex `word` of a cluster's quad (an index, `SKIRT` flagged) placed by `p`: where it is in
+/// the world (a skirt's corner pushed `skirt` into the surface), and its normal.
+fn placed_vertex(verts: [SkinVertex], p: Placed, word: u32, skirt: f32) -> (vec3, vec3) {
     let sv = verts[word & (SKIRT - 1)]
-    let p = places[picks[1 + 2 * pick]]
-    let rest = if (word & SKIRT) != 0 { sv.pos - sv.normal * d.skirt } else { sv.pos }
-    let world = p.at + rest * p.scale
-    ClusterVertex { clip: ClipPosition { position: d.cam.clip(world) }, world, normal: sv.normal }
+    let rest = if (word & SKIRT) != 0 { sv.pos - sv.normal * skirt } else { sv.pos }
+    (p.at + rest * p.scale, sv.normal)
 }
 
 /// How clusters are lit: their colour, the sun's direction, and how much of the sky's light
@@ -840,9 +1128,14 @@ pub struct ClusterLook: Copy + GpuData {
 /// A cluster's pixel: its colour lit by the sun along its normal and by the sky above it.
 @fragment
 pub fn cluster_shade(v: ClusterVertex, look: ClusterLook) -> vec4 {
-    let n = normalize(v.normal)
+    vec4(lit(look, v.normal), 1.0)
+}
+
+/// The colour of a cluster's surface facing `normal`, lit as `look` says.
+fn lit(look: ClusterLook, normal: vec3) -> vec3 {
+    let n = normalize(normal)
     let diffuse = max(dot(n, look.sun), 0.0)
-    vec4(look.albedo * (look.sky * (0.5 + 0.5 * n.y) + diffuse), 1.0)
+    look.albedo * (look.sky * (0.5 + 0.5 * n.y) + diffuse)
 }
 
 /// The most picks and listed quads a level is given room for.
@@ -865,6 +1158,7 @@ impl Level {
         let listed = min(u64(self.words.len() / 6) * n, u64(MOST_LISTED))
         fit_list(mut self.picks, u32(picks))
         fit_list(mut self.list, u32(listed))
+        fit_list(mut self.big, u32(listed))
     }
 }
 
@@ -991,8 +1285,56 @@ impl Clusters {
         }
     }
 
-    /// The frame's clusters drawn into `pass`, lit as `look` says, a level a draw, both faces (a
-    /// skirt is seen from either side).
+    /// The frame's listed quads small on screen rastered in software, for a target `width` ×
+    /// `height` (after `select`, before the pass `draw` draws into): each pixel's nearest depth
+    /// over every level, then what's at that depth; the rest listed for the hardware.
+    pub fn raster(mut self, cam: Camera, places: GpuBuffer<Placed>, width: u32, height: u32) {
+        let size = vec2u(width, height)
+        if self.size != size {
+            self.depth = buffer(width * height)
+            self.ids = buffer(width * height)
+            self.size = size
+        }
+        dispatch(
+            clear_raster.bind(width * height, mut self.depth, mut self.ids),
+            over: width * height,
+        )
+        for pass in 0..2 {
+            label(if pass == 0 { "clusters raster depth" } else { "clusters raster ids" })
+            var k = 0
+            for mut l in self.levels {
+                if pass == 0 {
+                    write(mut l.big, 0, [0])
+                    dispatch(
+                        raster_counts.bind(list: l.list.items(), args: mut l.raster_args),
+                        groups: 1,
+                    )
+                }
+                dispatch(
+                    raster_quads.bind(
+                        Raster { cam, size, level: k, pass, skirt: l.skirt },
+                        list: l.list.items(),
+                        picks: l.picks.items(),
+                        words: l.words.items(),
+                        verts: l.mesh.verts.items(),
+                        places: places.items(),
+                        depth: mut self.depth,
+                        ids: mut self.ids,
+                        big: mut l.big,
+                    ),
+                    groups: l.raster_args.items(),
+                )
+                if pass == 0 {
+                    dispatch(draw_counts.bind(list: l.big.items(), args: mut l.big_args), groups: 1)
+                }
+                k += 1
+            }
+        }
+    }
+
+    /// The frame's clusters drawn into `pass`, lit as `look` says: the quads the hardware draws
+    /// (`raster`'s big ones), a level a draw, both faces (a skirt is seen from either side); then
+    /// the software raster's pixels, a level a pass over the target.
     pub fn draw<P: RenderPass>(
         self,
         pass: P,
@@ -1005,17 +1347,37 @@ impl Clusters {
                 pass,
                 cluster_vertex.bind(
                     LevelDraw { cam, skirt: l.skirt },
-                    list: l.list.items(),
+                    list: l.big.items(),
                     picks: l.picks.items(),
                     words: l.words.items(),
                     verts: l.mesh.verts.items(),
                     places: places.items(),
                 ),
                 cluster_shade.bind(look),
-                indirect: l.draw_args.items(),
+                indirect: l.big_args.items(),
                 cull: Cull::None,
                 depth: view::NEAREST,
             )
+        }
+        var k = 0
+        for l in self.levels {
+            draw(
+                pass,
+                plant::full.bind(z: 0.0),
+                raster_shade.bind(
+                    Raster { cam, size: self.size, level: k, pass: 1, skirt: l.skirt },
+                    look,
+                    ids: self.ids.items(),
+                    list: l.list.items(),
+                    picks: l.picks.items(),
+                    words: l.words.items(),
+                    verts: l.mesh.verts.items(),
+                    places: places.items(),
+                ),
+                vertices: 3,
+                depth: view::NEAREST,
+            )
+            k += 1
         }
     }
 }

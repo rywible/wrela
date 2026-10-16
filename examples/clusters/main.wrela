@@ -173,6 +173,8 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let cam = camera_at(s, time, width, height)
     label("clusters select")
     s.clusters.select(cam, s.places, s.pixels)
+    label("clusters raster")
+    s.clusters.raster(cam, s.places, width, height)
     label("clusters draw")
     let p = begin_screen_pass_with_depth(
         mut s.depth,
