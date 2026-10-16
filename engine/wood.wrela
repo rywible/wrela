@@ -600,8 +600,10 @@ pub struct Wood {
     pub far_kinds: Vec<u32>,
     pub atlas: Texture<Rgba8>,
     outlines: GpuBuffer<vec2>,
-    /// Bark's ridges, cooked once (`plant::cook_ridges`), and the sampler that repeats them.
+    /// Bark's ridges, cooked once (`plant::cook_ridges`, and coarse: `plant::cook_coarse`), and the
+    /// sampler that repeats them.
     ridges: Texture<Rgba8>,
+    coarse: Texture<Rgba8>,
     repeat: Sampler,
     card_triangles: GpuBuffer<u32>,
     limb_triangles: GpuBuffer<u32>,
@@ -654,12 +656,15 @@ impl Wood {
         // Empty slots return at NO_KIND before reading their unused visibility words.
         write(mut metadata, 0, Vec::filled(slots * SLOT, NO_KIND))
         let n = kinds.len() + far_kinds.len()
+        let ridges = plant::cook_ridges()
+        let coarse = plant::cook_coarse(ridges)
         var w = Wood {
             kinds,
             far_kinds,
             atlas,
             outlines,
-            ridges: plant::cook_ridges(),
+            ridges,
+            coarse,
             repeat: std::gpu::sampler(address: std::gpu::Address::Repeat),
             card_triangles: buffer_of(card_indices(most)),
             limb_triangles: buffer_of(limb_indices(most_limbs)),
@@ -1041,7 +1046,13 @@ impl Wood {
                         instances: self.seen.instances_of(l),
                         marks: self.seen.marks_of(l),
                     ),
-                    bark_shade.bind(lt, k.plant.bark, ridges: self.ridges, rs: self.repeat),
+                    bark_shade.bind(
+                        lt,
+                        k.plant.bark,
+                        ridges: self.ridges,
+                        coarse: self.coarse,
+                        rs: self.repeat,
+                    ),
                     indices: self.limb_triangles,
                     indirect: self.seen.args.at(li).limbs,
                     cull: std::gpu::Cull::Back,

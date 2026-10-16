@@ -583,7 +583,7 @@ const NEAR: f32 = 0.1
 /// eye) is faded away (`vegetation::faded`, the leaves between the camera and the player kept
 /// clear): no frame's camera is inside foliage.
 @test
-@fuel(2 ** 44)
+@fuel(2 ** 45)
 fn the_camera_is_never_inside_a_thing() {
     // Each kind's cards, as cooked (`main.wrela` cooks kind `k` with seed `k + 1`).
     var cards: Vec<Vec<vec4>> = Vec::new()
