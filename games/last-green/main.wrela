@@ -734,6 +734,9 @@ pub struct Floor {
     /// A test's: frames drawn as plain rendering (the scene at the output's size, no jitter, no
     /// temporal history and no look: `test_plain`), and the wind stilled (`test_wind`).
     plain: bool,
+    /// Last frame's wind and cloth contact: where the near grass was (`Grass::motion`).
+    last_wind: Option<Wind>,
+    last_contact: Contact,
     still: bool,
     /// A debug view of form (F8 the next): 0 the look, 1 clay, 2 silhouettes
     /// (`engine::paint::Develop`'s `view`), 3 the bare land (`BARE`), 4 the grown land (`GROWN`);
@@ -986,6 +989,8 @@ pub fn init() -> Floor {
         scene_b: texture::<Rgba16Float>(width: 1, height: 1),
         mists: buffer_of(history::MISTS, at_least: 1),
         plain: false,
+        last_wind: None,
+        last_contact: Contact {},
         still: false,
         view: 0,
         land_cooked: 0,
@@ -2862,6 +2867,16 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         s.fawn.motion(mo, cam)
         s.wolf.motion(mo, cam)
     }
+    // The near grass's sway, the wind's and the cloak's, against last frame's.
+    if on(off, System::Grass) {
+        let last = match s.last_wind {
+            Some(w) => w,
+            None => wind,
+        }
+        s.grass.motion(mo, cam, wind, last_wind: last, last_contact: s.last_contact)
+    }
+    s.last_wind = Some(wind)
+    s.last_contact = s.grass.contact
     mo.end()
 }
 
