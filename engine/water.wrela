@@ -1013,6 +1013,13 @@ pub fn reflected_on_screen(
 ) -> vec4 {
     var len = FIRST
     var at = world
+    // Where the march meets a surface: its pixel, the surface's distance, and the step's
+    // distance and length. The hit is filtered after the loop, so a group of pixels whose rays
+    // meet surfaces at different steps filters them together, once.
+    var hit = false
+    var px = vec2(0.0)
+    var seen = 0.0
+    var d = 0.0
     for _ in 0..MARCH {
         at += r * len
         // Under the water's surface: nothing there is reflected.
@@ -1021,32 +1028,50 @@ pub fn reflected_on_screen(
         }
         // `below` was rasterized with this frame's jitter. An unjittered lookup walks
         // across a different silhouette every frame even when the water does not move.
-        let px = cam.pixel(at) + cam.jitter * cam.screen * vec2(0.5, -0.5)
+        px = cam.pixel(at) + cam.jitter * cam.screen * vec2(0.5, -0.5)
         if px.x < 0.0 || px.y < 0.0 || px.x >= cam.screen.x || px.y >= cam.screen.y {
             return vec4(0.0)
         }
-        let seen = below.load(x: u32(px.x), y: u32(px.y))
-        let d = dot(at - cam.eye, cam.forward)
+        seen = below.load(x: u32(px.x), y: u32(px.y)).a
+        d = dot(at - cam.eye, cam.forward)
         if d <= cam.near {
             return vec4(0.0)
         }
-        if seen.a < d && d - seen.a < len * 1.5 + 0.2 {
-            let edge = min(min(px.x, cam.screen.x - px.x), min(px.y, cam.screen.y - px.y))
-            // A hit close to the ray thickness limit is uncertain. Fade it before the
-            // next frame can lose it; nearest-depth tests still prevent foreground leaks.
-            let trust = smoothstep(0.0, 0.08 * cam.screen.y, edge) *
-                (1.0 - smoothstep(0.25, 1.0, (d - seen.a) / (len * 1.5 + 0.2)))
-            let spread = 1.0 + rough * 4.0
-            let tolerance = min(len * 1.5 + 0.2, 0.05 + seen.a * 0.02)
-            let filtered = reflection_colour(below, px + vec2(spread, 0.0), seen.a, tolerance) +
-                reflection_colour(below, px - vec2(spread, 0.0), seen.a, tolerance) +
-                reflection_colour(below, px + vec2(0.0, spread), seen.a, tolerance) +
-                reflection_colour(below, px - vec2(0.0, spread), seen.a, tolerance)
-            return vec4(filtered.rgb / max(filtered.a, 1.0e-6), trust * filtered.a * 0.25)
+        if seen < d && d - seen < len * 1.5 + 0.2 {
+            hit = true
+            break
         }
         len *= 1.18
     }
-    vec4(0.0)
+    if !hit {
+        return vec4(0.0)
+    }
+    reflection_at(below, cam, px, seen, d, len, rough)
+}
+
+/// The reflection where the march found it (`reflected_on_screen`): at `px`, a surface at
+/// distance `seen` that the step of length `len` reached at `d`.
+fn reflection_at(
+    below: Texture<Rgba16Float>,
+    cam: Camera,
+    px: vec2,
+    seen: f32,
+    d: f32,
+    len: f32,
+    rough: f32,
+) -> vec4 {
+    let edge = min(min(px.x, cam.screen.x - px.x), min(px.y, cam.screen.y - px.y))
+    // A hit close to the ray thickness limit is uncertain. Fade it before the next frame can
+    // lose it; nearest-depth tests still prevent foreground leaks.
+    let trust = smoothstep(0.0, 0.08 * cam.screen.y, edge) *
+        (1.0 - smoothstep(0.25, 1.0, (d - seen) / (len * 1.5 + 0.2)))
+    let spread = 1.0 + rough * 4.0
+    let tolerance = min(len * 1.5 + 0.2, 0.05 + seen * 0.02)
+    let filtered = reflection_colour(below, px + vec2(spread, 0.0), seen, tolerance) +
+        reflection_colour(below, px - vec2(spread, 0.0), seen, tolerance) +
+        reflection_colour(below, px + vec2(0.0, spread), seen, tolerance) +
+        reflection_colour(below, px - vec2(0.0, spread), seen, tolerance)
+    vec4(filtered.rgb / max(filtered.a, 1.0e-6), trust * filtered.a * 0.25)
 }
 
 /// The water's pixel: what's under it through it, the world reflected, the sun's glint, foam.
