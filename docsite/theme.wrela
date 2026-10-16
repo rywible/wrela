@@ -35,6 +35,9 @@ pub const CODE: f32 = 13.5
 pub const H1: f32 = 34.0
 pub const H2: f32 = 24.0
 pub const H3: f32 = 19.0
+/// A page's lead (its first paragraph, its summary), and the front page's statement.
+pub const LEAD: f32 = 18.5
+pub const STATEMENT: f32 = 24.0
 pub const LEADING: f32 = 1.65
 pub const CODE_LEADING: f32 = 1.55
 
@@ -43,9 +46,11 @@ pub const REGULAR: f32 = 0.0
 pub const BOLD: f32 = 0.018
 pub const HEADING: f32 = 0.014
 
-// The layout: the header band, the list of pages, the text's measure and the room around it.
+// The layout: the header band, the list of pages, the text's measure and the room around it, and
+// the outline of the page at its right where the screen has room.
 pub const HEADER: f32 = 64.0
 pub const NAV: f32 = 264.0
 pub const MEASURE: f32 = 680.0
 pub const WIDE: f32 = 780.0
 pub const GUTTER: f32 = 56.0
+pub const RAIL: f32 = 220.0

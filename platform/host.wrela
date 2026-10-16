@@ -201,9 +201,9 @@ pub fn read_pasted(bytes: take Vec<u8>) -> Result<Pasted, LoadError> {
     Ok(Pasted { text, html })
 }
 
-/// The program's semantic tree is now `nodes` (std::semantics): what changed of it since `sent`
-/// goes to the host, the structure (`semantics/tree`) before the places (`semantics/geometry`,
-/// clipped to `view`). Screen readers, the keyboard, links and fields work on the nodes, and what a
+/// The program's semantic tree is now `nodes` (std::semantics), named `name`, which a browser
+/// shows as the page's title: what changed of it since `sent` goes to the host, the structure
+/// (`semantics/tree`) before the places (`semantics/geometry`, clipped to `view`). Screen readers, the keyboard, links and fields work on the nodes, and what a
 /// person does comes back as `Event::Assist` and `Event::Field`. The requests go on `told`. A tree
 /// the host would refuse (`semantics::problem`) isn't sent: the console says why.
 pub fn publish(told: mut Vec<Pending<u8>>, sent: mut Sent, name: str, nodes: [Node], view: vec4) {
