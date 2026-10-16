@@ -1,7 +1,8 @@
 // The climber's moves, keyframed as code (#30): each a few poses at the ticks they're reached
 // (60 a second), and its frame data: when it can hit (wind-up, active, recovery), when another
 // move can cancel it, when it can't be hurt, what it costs, and how far it carries the body.
-// Between keys a move eases (smoothstep); the body's travel is a curve of its own.
+// Between keys a move eases (smoothstep); the body's travel is a curve of its own. (The blend
+// into a move eases out, `fight::Climber::pose`, so a press shows on the tick after it.)
 //
 // A pose is two things the climber moves apart: its body's form (it has no arms or legs: it's a
 // cape all the way round over a head and shoulders, so its form is how it sinks, tips, turns and

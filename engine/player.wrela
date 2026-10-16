@@ -11,7 +11,7 @@
 // off, and the look by a step. Directions are the camera's: right is the right of the screen.
 //
 //     W S A D, the arrows   walk forward, back, to the side (held); the arrows turn the look
-//     Shift, Space          run while held
+//     Shift                 run while held
 //     the mouse             look round: while the host locks the pointer, any move; else a drag
 //                           (left button)
 //     T                     walk on or off (a tap)
@@ -19,7 +19,7 @@
 //     Q E                   turn the look 20° left or right (a tap)
 //     Z X                   look down or up a step (a tap)
 //     G, digits, Enter      travel to a site by its number (the floor's sim moves the player)
-//     the left stick        walk, as far as it's pushed; East held runs
+//     the left stick        walk, as far as it's pushed; pressed in, run until it's let go
 //     the right stick       look round
 //
 // A game may let the camera turn by itself: behind a moving player (`Motion::follow`), or toward
@@ -31,6 +31,8 @@ use place::{Place, Water}
 use sim::SimState
 use std::hash::StateHash
 use std::input::{Button, Event, Key, PadAxis, PadButton}
+use std::io::print
+use std::string::String
 use std::math::{PI, TAU}
 use std::serialize::Serialize
 
@@ -39,16 +41,17 @@ pub const WALK: f32 = 1.4
 pub const RUN: f32 = 5.0
 
 /// A body's travel policy, supplied by the game. `clearance` is the tallest low log it can
-/// rise over; zero keeps a grounded walker. Turning is bounded in radians per second.
-/// `response` is how its velocity closes on what's asked: 0 takes it up and down at a steady
-/// `ACCELERATION`; above 0, it closes that share of the gap a second, eased (it answers a start,
-/// a stop or a reversal at once and settles softly, the gap halving every 0.69 / `response` s).
+/// rise over; zero keeps a grounded walker. The body goes the way it faces: it turns toward
+/// where it's asked to go at `turn` (rad/s), gets up to the pace asked at `accel` and slows at
+/// `brake` (m/s²), and asked to go further round than it has turned, slows as it turns, so it
+/// never slides sideways. The defaults answer within a tenth of a second (`feel`).
 pub struct Motion: Copy {
     pub walk: f32 = WALK,
     pub run: f32 = RUN,
     pub clearance: f32 = 0.0,
-    pub turn: f32 = 6.0,
-    pub response: f32 = 0.0,
+    pub turn: f32 = 18.0,
+    pub accel: f32 = 35.0,
+    pub brake: f32 = 50.0,
     /// How fast the look swings round behind a moving player once it's left alone (the share of
     /// the angle between them a second, at the run's pace; slower as slower; 0 not at all).
     pub follow: f32 = 0.0,
@@ -57,8 +60,6 @@ pub struct Motion: Copy {
 /// How much faster each glide goes: 2, 4, 8 and 16 times a run, over what's on the ground. Each
 /// press of H selects the next glide; the play harness and the streaming tests use them.
 pub const GLIDES = [1.0, 2.0, 4.0, 8.0, 16.0]
-/// How quickly the player gets up to its pace, and stops (m/s²).
-pub const ACCELERATION: f32 = 10.0
 /// A tap's turn of the look (radians: 20°), and a step of its pitch.
 pub const TURN_STEP: f32 = 0.34906585
 pub const PITCH_STEP: f32 = 0.12
@@ -101,11 +102,11 @@ pub struct Controls: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub travel: u32,
     /// Which glide (`GLIDES`: 0 none; H the next).
     pub glide: u32,
-    /// Pad 0's sticks as it gives them (x right, y up; no dead zone yet), and whether East or
-    /// Space is held (a run).
+    /// Pad 0's sticks as it gives them (x right, y up; no dead zone yet), and whether the left
+    /// stick was pressed in since it was last let go (a run).
     pub move_pad: vec2 = vec2(0.0),
     pub look_pad: vec2 = vec2(0.0),
-    pub east: bool = false,
+    pub stick_run: bool = false,
     /// Whether the host has the pointer locked to the program, as its last move said: then every
     /// move looks round, as a drag does.
     pub locked: bool = false,
@@ -207,7 +208,6 @@ pub fn control(c: mut Controls, e: Event) {
                 Key::Right => c.turn_right = true,
                 Key::ShiftLeft => c.run_held = true,
                 Key::ShiftRight => c.run_held = true,
-                Key::Space => c.east = true,
                 _ => {},
             }
             if !repeat {
@@ -242,7 +242,6 @@ pub fn control(c: mut Controls, e: Event) {
                 Key::Right => c.turn_right = false,
                 Key::ShiftLeft => c.run_held = false,
                 Key::ShiftRight => c.run_held = false,
-                Key::Space => c.east = false,
                 _ => {},
             }
         },
@@ -282,8 +281,8 @@ pub fn control(c: mut Controls, e: Event) {
             }
         },
         Event::PadButton { pad, button, pressed, .. } => {
-            if pad == 0 && button == PadButton::East {
-                c.east = pressed
+            if pad == 0 && button == PadButton::LeftStick && pressed {
+                c.stick_run = true
             }
         },
         _ => {},
@@ -346,7 +345,7 @@ pub fn wish(c: Controls) -> (vec2, bool) {
     let len = length(d)
     let stick = dead_zone(c.move_pad)
     let dir = if len > 1.0e-4 { d / len } else { right * stick.x + f * stick.y }
-    (dir, c.run_held || c.run_on || c.east)
+    (dir, c.run_held || c.run_on || c.stick_run)
 }
 
 /// The look turned toward `at` from a player at `from` (both on the plane) by `weight` (0 to 1)
@@ -387,29 +386,23 @@ pub fn step_with<G: Ground>(
     dt: f32,
 ) {
     turn_look(mut p.controls, dt)
+    // The stick's run lasts until the stick is let go.
+    if length(dead_zone(p.controls.move_pad)) == 0.0 {
+        p.controls.stick_run = false
+    }
     let c = p.controls
-    let (dir, running) = wish(c)
+    let (dir, _) = wish(c)
     let at = p.at.world()
-    // A glide goes over what's on the ground (as the game's gliding will), at its pace on any
-    // ground.
     let gliding = c.glide > 0
     let pace = if gliding { 1.0 } else { stands(ground, water, o, at) }
-    let target = dir * (if running { motion.run } else {
-        motion.walk
-    }) * max(pace, 0.2) * GLIDES[c.glide]
     if length(dir) > 1.0e-4 {
         p.heading = turn_to(p.heading, atan2(dir.x, dir.y), motion.turn * dt)
     }
-    let dv = target - p.velocity
-    if motion.response > 0.0 {
-        p.velocity += dv * (1.0 - exp(-motion.response * dt))
-        if length(target - p.velocity) < 0.01 {
-            p.velocity = target
-        }
-    } else {
-        let most = ACCELERATION * dt
-        p.velocity += if length(dv) > most { dv * (most / length(dv)) } else { dv }
-    }
+    let aim = asked(p, motion, pace)
+    var speed = length(p.velocity)
+    let a = if aim > speed { motion.accel * max(GLIDES[c.glide], 1.0) } else { motion.brake }
+    speed += clamp(aim - speed, -a * dt, a * dt)
+    p.velocity = facing(p.heading) * speed
     let d = p.velocity * dt
     if length(d) > 1.0e-6 {
         let (moved, k) = if gliding { (d, 1.0) } else {
@@ -434,6 +427,60 @@ pub fn step_with<G: Ground>(
         p.controls.yaw = wrap(p.controls.yaw + d * min(k * dt, 1.0))
     }
 }
+
+/// The pace the controls ask of `p` the way it faces (m/s), on ground that lets it go `pace` of
+/// its way: the walk's or the run's, as far as the stick is pushed, less as the way asked turns
+/// from the way it faces (none past a right angle: it turns first).
+fn asked(p: Player, motion: Motion, pace: f32) -> f32 {
+    let (dir, running) = wish(p.controls)
+    let m = length(dir)
+    if m < 1.0e-4 {
+        return 0.0
+    }
+    let off = wrap(atan2(dir.x, dir.y) - p.heading)
+    let top = (if running { motion.run } else {
+        motion.walk
+    }) * max(pace, 0.2) * GLIDES[p.controls.glide]
+    top * m * max(cos(off), 0.0)
+}
+
+/// `p` at once at the pace the controls ask the way it faces: a game's move ended, the body
+/// goes on at a run if the stick asks for one, rather than starting again from a stand.
+pub fn resume<G: Ground>(p: mut Player, ground: G, water: Water, o: Obstacles, motion: Motion) {
+    let pace = if p.controls.glide > 0 { 1.0 } else { stands(ground, water, o, p.at.world()) }
+    p.velocity = facing(p.heading) * asked(p, motion, pace)
+}
+
+/// `p` moved by `d` (m on the plane) as footing lets it, facing `heading`: for a move that isn't
+/// a walk (a game's swing, blink or knock-back). It goes in steps no longer than `SWEPT`, so a
+/// blink's metre in a tick doesn't jump a stone, up to the first that's blocked; then it stands
+/// where walking would, over a low log by `clearance`.
+pub fn carry<G: Ground>(
+    p: mut Player,
+    ground: G,
+    water: Water,
+    o: Obstacles,
+    d: vec2,
+    heading: f32,
+    clearance: f32,
+) {
+    let from = p.at.world()
+    let n = max(u32(ceil(length(d) / SWEPT)), 1)
+    let piece = d / f32(n)
+    var at = from
+    for _ in 0..n {
+        let (moved, _) = footing::step_over(ground, water, o, at, piece, BODY, clearance)
+        at += moved
+        if length(moved) < 0.5 * length(piece) {
+            break
+        }
+    }
+    place_at(mut p, ground, o, p.at.moved(at - from), heading)
+    p.y += o.lift(p.at.world(), BODY, clearance)
+}
+
+/// The longest step `carry` takes (m): under half a body's width.
+pub const SWEPT: f32 = 0.15
 
 /// A tick of `dt` seconds of the look alone: the arrows and the right stick turn it, and the
 /// time since the player last turned it counts on (`step_with` does this; a game whose move
@@ -471,6 +518,122 @@ pub fn place_at<G: Ground>(p: mut Player, ground: G, o: Obstacles, at: Place, he
 fn standing_height<G: Ground>(ground: G, o: Obstacles, at: Place) -> f32 {
     let q = at.world()
     ground.height(q.x, q.y) - o.depth(q)
+}
+
+// ---- the feel ---------------------------------------------------------------------------------------
+
+/// How a motion answers the controls, measured by stepping a body on open level ground at 60
+/// ticks a second: the time from a stand to 90% of the walk's pace and of the run's, from a run
+/// to a stand (and how far it goes meanwhile), to face a right angle at a walk, and from a run
+/// to 90% of a run back the other way (s, m).
+pub struct Feel: Copy {
+    pub walk: f32,
+    pub run: f32,
+    pub stop: f32,
+    pub stop_m: f32,
+    pub turn: f32,
+    pub reverse: f32,
+}
+
+impl Feel {
+    /// The measures as a table's rows (Markdown).
+    pub fn table(self) -> String {
+        f"| walk to pace | run to pace | run to stand | right angle | run reversed |\n|---:|---:|---:|---:|---:|\n| {self.walk:.3} s | {self.run:.3} s | {self.stop:.3} s, {self.stop_m:.2} m | {self.turn:.3} s | {self.reverse:.3} s |"
+    }
+}
+
+/// Open level ground, for `feel`.
+struct Open: Copy {}
+
+impl Ground for Open {
+    fn height(self, x: f32, z: f32) -> f32 {
+        0.0
+    }
+
+    fn past_edge(self, p: vec2) -> f32 {
+        -1000.0
+    }
+
+    fn rock(self, p: vec2) -> f32 {
+        0.0
+    }
+}
+
+/// `motion`'s feel (`Feel`).
+pub fn feel(motion: Motion) -> Feel {
+    let most = 240
+    var p = spawn(Open {}, Place::of(vec2(0.0)), 0.0)
+    p.controls.forward = true
+    var n = 0
+    while length(p.velocity) < 0.9 * motion.walk && n < most {
+        open_step(mut p, motion)
+        n += 1
+    }
+    let walk = f32(n) * OPEN_TICK
+    var q = spawn(Open {}, Place::of(vec2(0.0)), 0.0)
+    q.controls.forward = true
+    q.controls.run_held = true
+    n = 0
+    while length(q.velocity) < 0.9 * motion.run && n < most {
+        open_step(mut q, motion)
+        n += 1
+    }
+    let run = f32(n) * OPEN_TICK
+    n = 0
+    while length(q.velocity) < motion.run && n < most {
+        open_step(mut q, motion)
+        n += 1
+    }
+    var r = q
+    let from = r.at.world()
+    r.controls.forward = false
+    n = 0
+    while length(r.velocity) > 0.0 && n < most {
+        open_step(mut r, motion)
+        n += 1
+    }
+    let stop = f32(n) * OPEN_TICK
+    let stop_m = length(r.at.world() - from)
+    q.controls.forward = false
+    q.controls.back = true
+    n = 0
+    while q.velocity.y > -0.9 * motion.run && n < most {
+        open_step(mut q, motion)
+        n += 1
+    }
+    let reverse = f32(n) * OPEN_TICK
+    var t = spawn(Open {}, Place::of(vec2(0.0)), 0.0)
+    t.controls.forward = true
+    n = 0
+    while length(t.velocity) < motion.walk && n < most {
+        open_step(mut t, motion)
+        n += 1
+    }
+    t.controls.forward = false
+    t.controls.right = true
+    n = 0
+    while abs(wrap(t.heading + PI / 2.0)) > 0.05 && n < most {
+        open_step(mut t, motion)
+        n += 1
+    }
+    let turn = f32(n) * OPEN_TICK
+    Feel { walk, run, stop, stop_m, turn, reverse }
+}
+
+/// `feel`'s tick (s).
+const OPEN_TICK: f32 = 1.0 / 60.0
+
+/// A tick of `p` with `motion` on open level ground (`feel`).
+fn open_step(p: mut Player, motion: Motion) {
+    let nothing: Vec<footing::Obstacle> = Vec::new()
+    let o = Obstacles::of(nothing, vec2(-500.0), vec2(500.0))
+    let water = Water {
+        meres: [vec4(0.0), vec4(0.0)],
+        springs: [vec2(0.0), ..vec2(0.0)],
+        spring_count: 0,
+        falls: [vec2(0.0), vec2(0.0)],
+    }
+    step_with(mut p, Open {}, water, o, motion, OPEN_TICK)
 }
 
 // ---- the camera -----------------------------------------------------------------------------------
@@ -543,11 +706,12 @@ pub fn focused(
 /// the camera and the player doesn't make the eye jump in and out.
 pub const ARM_OUT: f32 = 4.0
 
-/// How long the camera takes to catch up with the player (s: its lag falls by e each), across
-/// and up: it trails a sprint a little and a blink over a few frames, and rides out a step up.
-/// A move further than `SNAP` in a frame (a travel) it doesn't follow but is at once.
-pub const LAG: f32 = 0.07
-pub const LAG_UP: f32 = 0.14
+/// The camera holds a walking or running player exactly: only a jump (faster than `LEAP`, m/s:
+/// a blink, a lift onto a log) it trails, catching up over `LAG` (s: the lag falls by e each),
+/// so a blink glides rather than cuts. A move further than `SNAP` in a frame (a travel) it
+/// doesn't follow but is at once.
+pub const LEAP: f32 = 15.0
+pub const LAG: f32 = 0.06
 pub const SNAP: f32 = 8.0
 
 /// The camera's arm as it was last frame: how far out the eye stood (m), where it held the player
@@ -564,14 +728,17 @@ impl Arm {
         self.feet = self.feet + by
     }
 
-    /// Where the camera holds a player whose feet are at `feet`, `dt` seconds on: behind it by
-    /// its lag, which eases out.
+    /// Where the camera holds a player whose feet are at `feet`, `dt` seconds on: behind a
+    /// jump by its lag, which eases out.
     pub fn held(mut self, feet: vec3, dt: f32) -> vec3 {
         let jump = feet - self.feet
-        self.lag = if length(jump) > SNAP { vec3(0.0) } else { self.lag - jump }
         let t = clamp(dt, 0.0, 0.25)
-        let across = exp(-t / LAG)
-        self.lag = self.lag * vec3(across, exp(-t / LAG_UP), across)
+        if length(jump) > SNAP {
+            self.lag = vec3(0.0)
+        } else if length(jump) > LEAP * max(t, 1.0 / 240.0) {
+            self.lag = self.lag - jump
+        }
+        self.lag = self.lag * exp(-t / LAG)
         self.feet = feet
         feet + self.lag
     }
@@ -1055,8 +1222,8 @@ fn a_locked_pointer_looks_round_without_a_drag() {
     assert(abs(c.yaw + 40.0 * DRAG_TURN) < 1.0e-5 && !c.locked, "the lock's end turned the look")
 }
 
-/// The left stick walks as far as it's pushed, not past its dead zone near the middle; East
-/// held runs.
+/// The left stick walks as far as it's pushed, not past its dead zone near the middle; East and
+/// Space (a game's dodge) don't run.
 @test
 fn the_left_stick_walks_as_far_as_it_is_pushed() {
     var c = spawn(Shelf { high: 1.0 }, Place::of(vec2(0.0)), 0.0).controls
@@ -1068,13 +1235,9 @@ fn the_left_stick_walks_as_far_as_it_is_pushed() {
     assert(abs(length(half) - 0.5) < 1.0e-4 && !run, f"half the stick's travel walks {half}")
     let mods = std::input::Mods {}
     control(mut c, Event::PadButton { pad: 0, button: PadButton::East, value: 1.0, pressed: true })
-    let (_, run) = wish(c)
-    assert(run, "East held doesn't run")
     control(mut c, Event::KeyDown { key: Key::Space, repeat: false, mods })
-    control(mut c, Event::PadButton { pad: 0, button: PadButton::East, value: 0.0, pressed: false })
-    control(mut c, Event::KeyUp { key: Key::Space, mods })
     let (_, run) = wish(c)
-    assert(!run, "letting go of East and Space still runs")
+    assert(!run, "East or Space runs")
 }
 
 /// Left alone, the look swings round behind a player running away from the camera, and sooner
@@ -1084,7 +1247,7 @@ fn the_left_stick_walks_as_far_as_it_is_pushed() {
 fn the_look_follows_behind_a_running_player_left_alone() {
     let nothing: Vec<footing::Obstacle> = Vec::new()
     let o = Obstacles::of(nothing, vec2(-200.0), vec2(200.0))
-    let motion = Motion { walk: 3.0, run: 7.5, turn: 10.0, response: 7.0, follow: 1.0 }
+    let motion = Motion { walk: 3.0, run: 7.5, follow: 1.0 }
     let run = |running: bool, from: f32, look: bool| {
         var p = spawn(Shelf { high: 1.0 }, Place::of(vec2(0.0)), 0.0)
         p.controls.idle_look = LOOK_GRACE
@@ -1098,14 +1261,7 @@ fn the_look_follows_behind_a_running_player_left_alone() {
             if look {
                 p.controls.turn_left = true
             }
-            step_with(
-                mut p,
-                Shelf { high: 1.0 },
-                still_water(),
-                o,
-                Motion { response: 0.0, ..motion },
-                1.0 / 60.0,
-            )
+            step_with(mut p, Shelf { high: 1.0 }, still_water(), o, motion, 1.0 / 60.0)
             p.controls.turn_left = false
         }
         abs(wrap(p.controls.yaw))
@@ -1126,28 +1282,29 @@ fn still_water() -> Water {
     }
 }
 
-/// Facing follows the camera-relative travel request during a reversal without a flip key,
-/// with no discontinuity across the angle seam. A stopped player can look round independently.
+/// The body goes the way it faces: through a reversal it turns no faster than its turn, with no
+/// discontinuity across the angle seam, and never slides sideways; a stopped player can look
+/// round without turning it.
 @test
-fn movement_turns_toward_the_camera_relative_wish_without_snapping() {
+fn the_body_goes_the_way_it_faces_and_turns_without_snapping() {
     let ground = Shelf { high: 1.0 }
     let none: Vec<footing::Obstacle> = Vec::new()
     let o = Obstacles::of(none, vec2(-20.0), vec2(20.0))
-    let water = Water {
-        meres: [vec4(0.0), vec4(0.0)],
-        springs: [vec2(0.0), ..vec2(0.0)],
-        spring_count: 0,
-        falls: [vec2(0.0), vec2(0.0)],
-    }
+    let motion = Motion { walk: 3.0, run: 7.5 }
     var p = spawn(ground, Place::of(vec2(0.0)), 0.0)
     p.velocity = vec2(0.0, 3.0)
     p.controls.yaw = PI - 0.01
     p.controls.forward = true
-    let motion = Motion { walk: 3.0, run: 7.5 }
     for _ in 0..40 {
         let before = p.heading
-        step_with(mut p, ground, water, o, motion, 1.0 / 60.0)
-        assert(abs(wrap(p.heading - before)) <= 0.10001, "the body snapped into its reversal")
+        step_with(mut p, ground, still_water(), o, motion, 1.0 / 60.0)
+        assert(
+            abs(wrap(p.heading - before)) <= motion.turn / 60.0 + 1.0e-4,
+            "the body snapped into its reversal",
+        )
+        let v = p.velocity
+        let ahead = facing(p.heading)
+        assert(abs(v.x * ahead.y - v.y * ahead.x) < 1.0e-4, "the body slid sideways")
     }
     assert(dot(facing(p.heading), facing(p.controls.yaw)) > 0.999, "the body did not face travel")
     assert(p.velocity.y < -2.9, "forward did not follow the rotated camera")
@@ -1155,23 +1312,17 @@ fn movement_turns_toward_the_camera_relative_wish_without_snapping() {
     p.velocity = vec2(0.0)
     let before = p.heading
     p.controls.yaw = 0.0
-    step_with(mut p, ground, water, o, motion, 1.0 / 60.0)
+    step_with(mut p, ground, still_water(), o, motion, 1.0 / 60.0)
     assert(p.heading == before, "looking round spun the stopped body")
 }
 
-/// Shift selects the game's sprint speed; releasing it returns to a distinct walk. Diagonal
-/// input retains that speed instead of adding the two axes.
+/// Shift selects the game's run; letting it go returns to a distinct walk. Diagonal input keeps
+/// that pace instead of adding the two axes; the pad's stick pressed in runs until it's let go.
 @test
-fn travel_policy_has_distinct_walk_and_shift_sprint_speeds() {
+fn shift_or_the_stick_pressed_in_runs_and_a_diagonal_keeps_its_pace() {
     let ground = Shelf { high: 1.0 }
     let none: Vec<footing::Obstacle> = Vec::new()
     let o = Obstacles::of(none, vec2(-100.0), vec2(100.0))
-    let water = Water {
-        meres: [vec4(0.0), vec4(0.0)],
-        springs: [vec2(0.0), ..vec2(0.0)],
-        spring_count: 0,
-        falls: [vec2(0.0), vec2(0.0)],
-    }
     var p = spawn(ground, Place::of(vec2(0.0)), 0.0)
     let motion = Motion { walk: 3.0, run: 7.5 }
     p.controls.forward = true
@@ -1179,49 +1330,43 @@ fn travel_policy_has_distinct_walk_and_shift_sprint_speeds() {
     for running in [false, true, false] {
         p.controls.run_held = running
         for _ in 0..90 {
-            step_with(mut p, ground, water, o, motion, 1.0 / 60.0)
+            step_with(mut p, ground, still_water(), o, motion, 1.0 / 60.0)
         }
         let want = if running { 7.5 } else { 3.0 }
         assert(abs(length(p.velocity) - want) < 0.001, f"travel speed was {length(p.velocity)}")
         // Forward and right: ahead (+z) and to the screen's right (-x), equally.
         assert(abs(p.velocity.x + p.velocity.y) < 0.001, "diagonal travel drifted")
     }
+    p.controls.forward = false
+    p.controls.right = false
+    let press = Event::PadButton { pad: 0, button: PadButton::LeftStick, value: 1.0, pressed: true }
+    control(mut p.controls, Event::PadAxis { pad: 0, axis: PadAxis::LeftY, value: -1.0 })
+    control(mut p.controls, press)
+    for _ in 0..60 {
+        step_with(mut p, ground, still_water(), o, motion, 1.0 / 60.0)
+    }
+    assert(abs(length(p.velocity) - 7.5) < 0.001, "the stick pressed in didn't run")
+    control(mut p.controls, Event::PadAxis { pad: 0, axis: PadAxis::LeftY, value: 0.0 })
+    step_with(mut p, ground, still_water(), o, motion, 1.0 / 60.0)
+    control(mut p.controls, Event::PadAxis { pad: 0, axis: PadAxis::LeftY, value: -1.0 })
+    for _ in 0..60 {
+        step_with(mut p, ground, still_water(), o, motion, 1.0 / 60.0)
+    }
+    assert(abs(length(p.velocity) - 3.0) < 0.001, "the run outlasted the stick being let go")
 }
 
-/// An eased response answers at once and settles: from a stand to most of a run in a quarter of
-/// a second, a reversal at a run turned in under half a second, and a stop that comes to rest
-/// rather than creeping.
+/// The default motion answers as a hand expects (`feel`): at a walk's pace or a run's within a
+/// tenth or a fifth of a second, stopped from a run within a sixth, a right angle faced within a
+/// tenth, and a run reversed within under half a second.
 @test
-fn an_eased_response_answers_starts_stops_and_reversals_quickly() {
-    let ground = Shelf { high: 1.0 }
-    let none: Vec<footing::Obstacle> = Vec::new()
-    let o = Obstacles::of(none, vec2(-100.0), vec2(100.0))
-    let water = Water {
-        meres: [vec4(0.0), vec4(0.0)],
-        springs: [vec2(0.0), ..vec2(0.0)],
-        spring_count: 0,
-        falls: [vec2(0.0), vec2(0.0)],
-    }
-    let motion = Motion { walk: 3.0, run: 7.5, turn: 10.0, response: 8.0 }
-    var p = spawn(ground, Place::of(vec2(0.0)), 0.0)
-    p.controls.forward = true
-    p.controls.run_held = true
-    for _ in 0..15 {
-        step_with(mut p, ground, water, o, motion, 1.0 / 60.0)
-    }
-    assert(length(p.velocity) > 0.8 * 7.5, f"a quarter second in it goes {length(p.velocity)} m/s")
-    for _ in 0..45 {
-        step_with(mut p, ground, water, o, motion, 1.0 / 60.0)
-    }
-    p.controls.forward = false
-    p.controls.back = true
-    for _ in 0..27 {
-        step_with(mut p, ground, water, o, motion, 1.0 / 60.0)
-    }
-    assert(p.velocity.y < -0.5 * 7.5, f"after 0.45 s of reversal it goes {p.velocity.y} m/s")
-    p.controls.back = false
-    for _ in 0..60 {
-        step_with(mut p, ground, water, o, motion, 1.0 / 60.0)
-    }
-    assert(length(p.velocity) == 0.0, "a stop creeps on")
+fn the_default_motion_answers_within_a_tenth_of_a_second() {
+    let f = feel(Motion { walk: 3.0, run: 7.5 })
+    print(f.table())
+    // (A tick's rounding over.)
+    let e = 1.0e-3
+    assert(f.walk <= 0.1 + e, f"a walk takes {f.walk} s to reach its pace")
+    assert(f.run <= 0.2 + e, f"a run takes {f.run} s to reach its pace")
+    assert(f.stop <= 0.17 + e, f"a run takes {f.stop} s to stop")
+    assert(f.turn <= 0.1 + e, f"a right angle takes {f.turn} s to face")
+    assert(f.reverse <= 0.45 + e, f"a run takes {f.reverse} s to reverse")
 }

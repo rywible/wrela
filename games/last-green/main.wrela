@@ -3111,10 +3111,10 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     let breeze = vec3(gust.dir.x, 0.0, gust.dir.y) * (0.5 + if s.still { 0.0 } else {
         1.5 * gust.strength
     })
-    // In the fight (in play), its pose, its swings and its blink are the fight's climber's; out
-    // of it, it glides, floating as it goes.
+    // In a move (in play) and as it settles out of one, its pose, its swings and its blink are the
+    // climber's moves'; else it glides, floating as it goes.
     let fc = b.b.fight.fight.climber
-    let fighting = cast.is_none() && b.b.fight.awake
+    let acting = cast.is_none() && fc.moving()
     let velocity = mix(pa.velocity, pb.velocity, vec2(b.alpha))
     let speed = length(velocity)
     s.drift = fract(s.drift + drift_rate(speed) * s.dt)
@@ -3130,7 +3130,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     }
     s.glide_velocity = velocity
     s.glide_heading = facing
-    let pose = if fighting { fc.pose(b.alpha) } else {
+    let pose = if acting { fc.pose(b.alpha) } else {
         // The blade rises into its guard as a fight comes near (as the camera turns to it).
         locomotion(
             ready: s.focus,
@@ -3142,7 +3142,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     }
     // Gone for the frames between a tick gone and the next: the blink's last step is the
     // garment's carry, not a drag.
-    let gone = fighting && (fc.gone() || b.a.fight.fight.climber.gone())
+    let gone = cast.is_none() && (fc.gone() || b.a.fight.fight.climber.gone())
     s.climber.step(
         stood,
         facing,

@@ -1,8 +1,12 @@
 // The fight's tests: its frame data holds together, a player who swings hits the wolf, a blink
 // through a lunge isn't bitten, a blink goes where the stick points, the sword's cut sweeps the
-// space ahead, and a replay of the same presses comes out the same. A test bot plays: it reads the world and presses as a player would.
+// space ahead, a replay of the same presses comes out the same, and the climber answers as a hand
+// expects: a press shows on the next tick, the stick lets a move go in its recovery at its pace,
+// and its moves work with no wolf. A test bot plays: it reads the world and presses as a player
+// would.
 
-use fight::{BITE, CROUCH, Level, Mood, Walked, World, blade_at, bout, on_screen, read, spawn, tick}
+use fight::{BITE, CROUCH, Duel, Level, MOTION, Mood, World, blade_at, dry, open, spawn, tick}
+use engine::player::{facing, screen_right}
 use engine::run::TickInput
 use moves::{Act, BLINK_GONE, frames}
 use std::hash::state_hash
@@ -61,9 +65,9 @@ pub fn print_frames() {
     )
 }
 
-fn step(w: mut World, events: take Vec<Event>) {
-    let t = w.ticks
-    tick(mut w, TickInput { tick: t, dt: 1.0 / 60.0, records: events, answers: Vec::new() })
+fn step(d: mut Duel, events: take Vec<Event>) {
+    let t = d.fight.ticks
+    tick(mut d, TickInput { tick: t, dt: 1.0 / 60.0, records: events, answers: Vec::new() })
 }
 
 fn stick(x: f32, y: f32) -> Vec<Event> {
@@ -77,22 +81,25 @@ fn button(b: PadButton, down: bool) -> Event {
     Event::PadButton { pad: 0, button: b, value: if down { 1.0 } else { 0.0 }, pressed: down }
 }
 
+/// The stick that points the way `dir` goes on the plane, as the camera at `yaw` sees it.
+fn stick_toward(dir: vec2, yaw: f32) -> vec2 {
+    vec2(dot(dir, screen_right(yaw)), dot(dir, facing(yaw)))
+}
+
 /// The bot's presses this tick: the stick toward the wolf (as the camera sees it) until it's
 /// near, an attack (if it `attacks`) when it's in reach and prowling, a blink toward it (through
 /// it) when it has crouched long enough (if it `blinks`). It holds each button a few ticks. (fight.json, the
 /// scripted fight, is this bot's presses, its stick rounded to hundredths.)
-fn bot(w: World, blinks: bool, attacks: bool, held: mut u32) -> Vec<Event> {
+fn bot(d: Duel, blinks: bool, attacks: bool, held: mut u32) -> Vec<Event> {
+    let w = d.fight
     let c = w.climber
     let to = w.wolf.pos() - c.at.xz
-    let d = length(to)
-    // The stick that points at the wolf, given the camera's yaw.
-    let ahead = vec2(sin(w.yaw), cos(w.yaw))
-    let right = vec2(-cos(w.yaw), sin(w.yaw))
-    let dir = to / max(d, 1.0e-4)
-    let s = vec2(dot(dir, right), dot(dir, ahead))
+    let dist = length(to)
+    let dir = to / max(dist, 1.0e-4)
+    let s = stick_toward(dir, d.body.controls.yaw)
     // Near, only a nudge: enough to turn toward it.
-    let facing = dot(dir, c.forward())
-    let push = if d > 1.9 { 1.0 } else if facing < 0.9 { 0.3 } else { 0.0 }
+    let facing_it = dot(dir, c.forward())
+    let push = if dist > 1.9 { 1.0 } else if facing_it < 0.9 { 0.3 } else { 0.0 }
     var out = stick(s.x * push, s.y * push)
     if held > 0 {
         held -= 1
@@ -109,7 +116,7 @@ fn bot(w: World, blinks: bool, attacks: bool, held: mut u32) -> Vec<Event> {
         held = 3
         return out
     }
-    if attacks && d < 2.0 && wolf.mood == Mood::Prowl && c.act == Act::Free {
+    if attacks && dist < 2.0 && wolf.mood == Mood::Prowl && c.act == Act::Free {
         out.push(button(PadButton::RightShoulder, down: true))
         held = 4
     }
@@ -117,22 +124,21 @@ fn bot(w: World, blinks: bool, attacks: bool, held: mut u32) -> Vec<Event> {
 }
 
 /// Plays `ticks` ticks with the bot.
-fn play(ticks: u32, blinks: bool, attacks: bool) -> World {
-    var w = spawn()
+fn play(ticks: u32, blinks: bool, attacks: bool) -> Duel {
+    var d = spawn()
     var held = 0
     for _ in 0..ticks {
-        let e = bot(w, blinks, attacks, mut held)
-        step(mut w, take e)
+        let e = bot(d, blinks, attacks, mut held)
+        step(mut d, take e)
     }
-    w
+    d
 }
 
 /// A player who walks up and swings, again and again, hits the wolf, and puts it down; a hit
 /// stops the fight for its ticks.
 @test
 fn swinging_hits_the_wolf() {
-    let w = play(1800, blinks: true, attacks: true)
-    let t = w.tally
+    let t = play(1800, blinks: true, attacks: true).fight.tally
     print(
         f"30 s: {t.swings} swings, {t.hits} hits, {t.lunges} lunges, {t.bites} bites, {t.dodged} blinked through, {t.blinks} blinks, wolf down {t.wolf_downs}, climber down {t.climber_downs}",
     )
@@ -145,8 +151,8 @@ fn swinging_hits_the_wolf() {
 /// who never blinks is bitten.
 @test
 fn a_blink_at_the_lunge_isnt_bitten() {
-    let blinked = play(1800, blinks: true, attacks: false).tally
-    let stood = play(1800, blinks: false, attacks: false).tally
+    let blinked = play(1800, blinks: true, attacks: false).fight.tally
+    let stood = play(1800, blinks: false, attacks: false).fight.tally
     print(f"blinking: {blinked.lunges} lunges, {blinked.bites} bites, {blinked.blinks} blinks")
     print(f"standing: {stood.lunges} lunges, {stood.bites} bites")
     assert(blinked.lunges >= 3, f"only {blinked.lunges} lunges")
@@ -162,27 +168,28 @@ fn a_blink_at_the_lunge_isnt_bitten() {
 @test
 fn the_blinks_invulnerable_ticks_pass_the_bite() {
     for t in [1, frames(Act::Blink).invulnerable.y] {
-        var w = spawn()
-        let c = w.climber.at.xz
-        let f = w.climber.forward()
-        w.wolf = fight::new_wolf(Level {}, c + f * 0.75, w.climber.heading + 3.14159265)
-        w.wolf.mood = Mood::Lunge
-        w.wolf.t = BITE.x
-        w.wolf.aim = -f
-        w.climber.start(Act::Blink)
+        var d = spawn()
+        let c = d.fight.climber.at.xz
+        let f = d.fight.climber.forward()
+        d.fight.wolf = fight::new_wolf(Level {}, c + f * 0.75, d.fight.climber.heading + 3.14159265)
+        d.fight.wolf.mood = Mood::Lunge
+        d.fight.wolf.t = BITE.x
+        d.fight.wolf.aim = -f
+        d.fight.climber.start(Act::Blink)
         // Blinking straight ahead, so the travel keeps it on the jaws (the blink's own path).
-        w.climber.going = f
-        w.climber.t = t
-        w.climber.fade = 10
-        step(mut w, Vec::new())
-        print(f"blink tick {t}: bitten {w.tally.bites}, passed through {w.tally.dodged}")
+        d.fight.climber.going = f
+        d.fight.climber.t = t
+        d.fight.climber.fade = 10
+        step(mut d, Vec::new())
+        let tally = d.fight.tally
+        print(f"blink tick {t}: bitten {tally.bites}, passed through {tally.dodged}")
         if t < frames(Act::Blink).invulnerable.y {
             assert(
-                w.tally.bites == 0 && w.tally.dodged == 1,
+                tally.bites == 0 && tally.dodged == 1,
                 "bitten in the blink's invulnerable ticks",
             )
         } else {
-            assert(w.tally.bites == 1, "not bitten after the blink's invulnerable ticks")
+            assert(tally.bites == 1, "not bitten after the blink's invulnerable ticks")
         }
     }
 }
@@ -199,48 +206,51 @@ fn the_fight_is_the_same_twice() {
         let f = bot(b, blinks: true, attacks: true, held: mut hb)
         step(mut a, take e)
         step(mut b, take f)
-        assert(state_hash(a) == state_hash(b), f"the hashes differ at tick {a.ticks}")
+        assert(state_hash(a) == state_hash(b), f"the hashes differ at tick {a.fight.ticks}")
     }
 }
 
-/// A blink carries the climber 3.6 m the way the stick pointed as East was let go, as the camera
-/// sees it, still facing the way it faced; with the stick let go, straight back. It's gone for its middle ticks.
+/// A blink starts as East goes down and carries the climber's body 3.6 m the way the stick
+/// points, as the camera sees it, still facing the way it faced; with the stick let go, straight
+/// back. It's gone for its middle ticks.
 @test
 fn a_blink_goes_where_the_stick_points() {
     for (sx, sy) in [(1.0, 0.0), (0.0, 0.0)] {
-        var w = spawn()
-        w.wolf = fight::new_wolf(Level {}, vec2(-60.0, -20.0), 0.0)
-        let start = w.climber.at.xz
-        let want = if sx == 0.0 && sy == 0.0 { -w.climber.forward() } else {
-            on_screen(vec2(sx, sy), w.yaw)
+        var d = spawn()
+        d.fight.wolf = fight::new_wolf(Level {}, vec2(-60.0, -20.0), 0.0)
+        let start = d.body.at.world()
+        let yaw = d.body.controls.yaw
+        let want = if sx == 0.0 && sy == 0.0 { -d.fight.climber.forward() } else {
+            screen_right(yaw) * sx + facing(yaw) * sy
         }
         var e = stick(sx, sy)
         e.push(button(PadButton::East, down: true))
-        step(mut w, take e)
-        var up: Vec<Event> = Vec::new()
+        step(mut d, take e)
+        assert(d.fight.climber.act == Act::Blink, "no blink as East went down")
+        let heading = d.fight.climber.heading
+        var gone = if d.fight.climber.gone() { 1 } else { 0 }
+        var up = stick(x: 0.0, y: 0.0)
         up.push(button(PadButton::East, down: false))
-        step(mut w, take up)
-        // The blink starts as East is let go: from there it keeps its facing.
-        assert(w.climber.act == Act::Blink, "no blink")
-        let heading = w.climber.heading
-        var gone = 0
+        step(mut d, take up)
         for _ in 0..30 {
-            step(mut w, stick(x: 0.0, y: 0.0))
-            if w.climber.gone() {
+            if d.fight.climber.gone() {
                 gone += 1
             }
-            if w.climber.act == Act::Free {
+            if d.fight.climber.act == Act::Free {
                 break
             }
+            step(mut d, stick(x: 0.0, y: 0.0))
         }
-        let moved = w.climber.at.xz - start
+        let moved = d.body.at.world() - start
         print(
             f"stick ({sx}, {sy}): moved {length(moved)} m, {dot(normalize(moved), want)} along the stick, gone {gone} ticks",
         )
         assert(abs(length(moved) - 3.6) < 0.05, f"the blink went {length(moved)} m")
         assert(dot(normalize(moved), want) > 0.999, "the blink went astray")
-        assert(abs(w.climber.heading - heading) < 1.0e-5, "the blink turned the climber")
+        assert(abs(d.fight.climber.heading - heading) < 1.0e-5, "the blink turned the climber")
         assert(gone == BLINK_GONE.y - BLINK_GONE.x, f"gone {gone} ticks")
+        let c = d.fight.climber.at.xz
+        assert(length(c - d.body.at.world()) < 1.0e-5, "the climber isn't where its body is")
     }
 }
 
@@ -248,21 +258,21 @@ fn a_blink_goes_where_the_stick_points() {
 /// ahead and falls through more than a metre, from over the head to the wolf's height.
 @test
 fn the_slash_sweeps_ahead() {
-    var w = spawn()
-    w.climber.start(Act::Slash)
+    var c = spawn().fight.climber
+    c.start(Act::Slash)
     let f = frames(Act::Slash)
     var lo = 10.0
     var hi = -10.0
     var reach = 0.0
     for t in f.windup..(f.windup + f.active) {
-        w.climber.t = t
-        w.climber.fade = 10
-        let (_, b) = blade_at(w.climber, 0.0)
-        let ahead = dot((b - w.climber.at).xz, w.climber.forward())
-        lo = min(lo, b.y - w.climber.at.y)
-        hi = max(hi, b.y - w.climber.at.y)
+        c.t = t
+        c.fade = 10
+        let (_, b) = blade_at(c, 0.0)
+        let ahead = dot((b - c.at).xz, c.forward())
+        lo = min(lo, b.y - c.at.y)
+        hi = max(hi, b.y - c.at.y)
         reach = max(reach, ahead)
-        print(f"tick {t}: tip {b.y - w.climber.at.y} m up, {ahead} m ahead")
+        print(f"tick {t}: tip {b.y - c.at.y} m up, {ahead} m ahead")
     }
     assert(reach > 1.5 && reach < 2.8, f"the slash reaches {reach} m ahead")
     assert(hi - lo > 1.0, f"the slash's point only falls {hi - lo} m")
@@ -274,21 +284,21 @@ fn the_slash_sweeps_ahead() {
 /// the time the wolf crouches to answer.
 @test
 fn a_hit_throws_the_wolfs_head_along_the_cut() {
-    var w = spawn()
-    let c = w.climber.at.xz
-    let f = w.climber.forward()
-    w.wolf = fight::new_wolf(Level {}, c + f * 1.7, w.climber.heading + 3.14159265)
-    w.wolf.wait = 1000
-    w.climber.start(Act::Slash)
-    w.climber.t = frames(Act::Slash).windup
-    w.climber.fade = 10
+    var d = spawn()
+    let c = d.fight.climber.at.xz
+    let f = d.fight.climber.forward()
+    d.fight.wolf = fight::new_wolf(Level {}, c + f * 1.7, d.fight.climber.heading + 3.14159265)
+    d.fight.wolf.wait = 1000
+    d.fight.climber.start(Act::Slash)
+    d.fight.climber.t = frames(Act::Slash).windup
+    d.fight.climber.fade = 10
     var ticks = 0
-    while w.tally.hits == 0 && ticks < 8 {
-        step(mut w, Vec::new())
+    while d.fight.tally.hits == 0 && ticks < 8 {
+        step(mut d, Vec::new())
         ticks += 1
     }
-    assert(w.tally.hits == 1, "the slash missed")
-    let head = w.wolf.walker.springs[0]
+    assert(d.fight.tally.hits == 1, "the slash missed")
+    let head = d.fight.wolf.walker.springs[0]
     let left = vec2(f.y, -f.x)
     let across = dot(head.vel.xz, left)
     print(
@@ -298,12 +308,12 @@ fn a_hit_throws_the_wolfs_head_along_the_cut() {
     assert(across > 0.5, "the head wasn't thrown the way the cut went")
     // On through the hit stop and the flinch, into the crouch that answers it (it stands still).
     for _ in 0..45 {
-        step(mut w, Vec::new())
+        step(mut d, Vec::new())
     }
-    assert(w.wolf.mood == Mood::Crouch, "the wolf isn't crouching")
-    let rest = (engine::gait::body_frame(w.wolf.walker) *
+    assert(d.fight.wolf.mood == Mood::Crouch, "the wolf isn't crouching")
+    let rest = (engine::gait::body_frame(d.fight.wolf.walker) *
         vec4(fight::WOLF_BODY.spring_tips[0], 1.0)).xyz
-    let off = length(w.wolf.walker.springs[0].pos - rest)
+    let off = length(d.fight.wolf.walker.springs[0].pos - rest)
     print(f"0.75 s on, crouched: the head {off} m from its place")
     assert(off < 0.05, f"the head is {off} m from its place")
 }
@@ -311,16 +321,16 @@ fn a_hit_throws_the_wolfs_head_along_the_cut() {
 /// What the fight did, heard tick by tick: (whooshes of the sword, hits, blink goings, blink
 /// comings), and where the last hit and the last coming were.
 fn listen(
-    w: mut World,
+    d: mut Duel,
     ticks: u32,
     presses: fn(u32) -> Vec<Event>,
     counts: mut vec4u,
     at: mut [vec3; 2],
 ) {
-    var h = sounds::heard(w)
+    var h = sounds::heard(d.fight)
     for k in 0..ticks {
-        step(mut w, presses(k))
-        for cue in sounds::cues(mut h, w) {
+        step(mut d, presses(k))
+        for cue in sounds::cues(mut h, d.fight) {
             match cue {
                 engine::sound::Cue::Whoosh { kind, .. } if kind == sounds::SWORD => counts.x += 1,
                 engine::sound::Cue::Whoosh { kind, .. } if kind == sounds::GONE => counts.z += 1,
@@ -342,11 +352,11 @@ fn listen(
 /// as it goes and as it comes, where it comes.
 @test
 fn the_fight_sounds_its_swings_hits_and_blinks() {
-    var w = spawn()
-    let c = w.climber.at.xz
-    let f = w.climber.forward()
-    w.wolf = fight::new_wolf(Level {}, c + f * 1.7, w.climber.heading + 3.14159265)
-    w.wolf.wait = 1000
+    var d = spawn()
+    let c = d.fight.climber.at.xz
+    let f = d.fight.climber.forward()
+    d.fight.wolf = fight::new_wolf(Level {}, c + f * 1.7, d.fight.climber.heading + 3.14159265)
+    d.fight.wolf.wait = 1000
     var counts = vec4u(0)
     var at = [vec3(0.0); 2]
     let slash = |k: u32| -> Vec<Event> {
@@ -356,12 +366,12 @@ fn the_fight_sounds_its_swings_hits_and_blinks() {
         }
         take e
     }
-    listen(mut w, 40, slash, mut counts, mut at)
+    listen(mut d, 40, slash, mut counts, mut at)
     print(
-        f"slash: {counts.x} whooshes, {counts.y} hits, the hit {length(at[0].xz - w.wolf.pos())} m from the wolf",
+        f"slash: {counts.x} whooshes, {counts.y} hits, the hit {length(at[0].xz - d.fight.wolf.pos())} m from the wolf",
     )
     assert(counts.x == 1 && counts.y == 1, f"{counts.x} whooshes, {counts.y} hits")
-    assert(length(at[0].xz - w.wolf.pos()) < 0.5, "the hit sounded away from the wolf")
+    assert(length(at[0].xz - d.fight.wolf.pos()) < 0.5, "the hit sounded away from the wolf")
     let blink = |k: u32| -> Vec<Event> {
         var e: Vec<Event> = Vec::new()
         if k < 2 {
@@ -369,43 +379,124 @@ fn the_fight_sounds_its_swings_hits_and_blinks() {
         }
         take e
     }
-    listen(mut w, 30, blink, mut counts, mut at)
+    listen(mut d, 30, blink, mut counts, mut at)
+    let me = d.fight.climber.at.xz
     print(
-        f"blink: {counts.z} goings, {counts.w} comings, the coming {length(at[1].xz - w.climber.at.xz)} m from the climber",
+        f"blink: {counts.z} goings, {counts.w} comings, the coming {length(at[1].xz - me)} m from the climber",
     )
     assert(counts.z == 1 && counts.w == 1, f"{counts.z} goings, {counts.w} comings")
-    assert(length(at[1].xz - w.climber.at.xz) < 0.1, "the coming sounded away from the climber")
+    assert(length(at[1].xz - me) < 0.1, "the coming sounded away from the climber")
 }
 
-/// Walked by another sim (`bout`, a floor's player): while free, the climber stands where the
-/// walk put it, however the stick is held; a blink then carries it from there, 3.6 m back.
+/// How far the sword's point and the body's form have moved from pose `a` to pose `b` (m, and the
+/// form's lift and tilt together), for the climber facing +z at the origin.
+fn shown(a: moves::Pose, b: moves::Pose) -> f32 {
+    let (at_a, aim_a, _) = a.sword.placed(vec3(0.0), 0.0)
+    let (at_b, aim_b, _) = b.sword.placed(vec3(0.0), 0.0)
+    let tip = length((at_b + aim_b * body::POINT_AT) - (at_a + aim_a * body::POINT_AT))
+    let form = abs(b.form.lift - a.form.lift) + length(b.form.tilt - a.form.tilt)
+    tip + form
+}
+
+/// A press shows on the tick after it, as a hand expects: a slash, a backslash out of the slash,
+/// and a blink each move the sword's point or the body more than 5 cm (or the body's form) by
+/// then; the press isn't buffered past its tick when the climber is free.
 @test
-fn walked_by_another_the_climber_moves_only_in_its_moves() {
-    var w = spawn()
-    w.wolf = fight::new_wolf(Level {}, vec2(-60.0, -20.0), 0.0)
-    let walked = Walked { feet: vec3(4.0, 0.0, 2.0), heading: 0.0, speed: 1.4 }
-    for _ in 0..10 {
-        read(mut w, stick(x: 1.0, y: 1.0))
-        bout(Level {}, mut w, walked, yaw: 0.0, dt: 1.0 / 60.0)
-    }
-    assert(length(w.climber.at - walked.feet) < 1.0e-5, "the free climber glided off")
-    var e = stick(x: 0.0, y: 0.0)
-    e.push(button(PadButton::East, down: true))
-    read(mut w, e)
-    bout(Level {}, mut w, walked, yaw: 0.0, dt: 1.0 / 60.0)
-    var up: Vec<Event> = Vec::new()
-    up.push(button(PadButton::East, down: false))
-    read(mut w, up)
-    for _ in 0..40 {
-        bout(Level {}, mut w, walked, yaw: 0.0, dt: 1.0 / 60.0)
-        if w.climber.act == Act::Free {
-            break
+fn a_press_shows_on_the_tick_after_it() {
+    for (b, follow) in [
+        (PadButton::RightShoulder, false),
+        (PadButton::RightShoulder, true),
+        (PadButton::East, false),
+    ] {
+        var d = spawn()
+        d.fight.wolf = fight::new_wolf(Level {}, vec2(-60.0, -20.0), 0.0)
+        if follow {
+            // In the slash, from the tick it can first be cancelled.
+            var e: Vec<Event> = Vec::new()
+            e.push(button(PadButton::RightShoulder, down: true))
+            step(mut d, take e)
+            var up: Vec<Event> = Vec::new()
+            up.push(button(PadButton::RightShoulder, down: false))
+            step(mut d, take up)
+            while d.fight.climber.t < frames(Act::Slash).cancel {
+                step(mut d, Vec::new())
+            }
         }
-        read(mut w, Vec::new())
+        let before = d.fight.climber.pose(0.0)
+        var e: Vec<Event> = Vec::new()
+        e.push(button(b, down: true))
+        step(mut d, take e)
+        let c = d.fight.climber
+        let after = c.pose(0.0)
+        let moved = shown(before, after)
+        print(f"{name(c.act)}: {moved} shown a tick after the press")
+        assert(c.act != Act::Free && c.t == 1, "the press didn't start its move on its tick")
+        assert(moved > 0.05, f"a tick after the press, only {moved} shows")
     }
-    let back = walked.feet.z - w.climber.at.z
-    print(f"walked: the blink went {back} m back")
-    assert(abs(back - 3.6) < 0.05, f"the blink went {back} m back")
+}
+
+/// Pushing the stick in a move's recovery lets the move go, and the body goes on at once at the
+/// pace the stick asks, not from a stand; before the move can be cancelled the stick waits.
+@test
+fn the_stick_lets_a_move_go_in_its_recovery_at_its_pace() {
+    var d = spawn()
+    d.fight.wolf = fight::new_wolf(Level {}, vec2(-60.0, -20.0), 0.0)
+    var e: Vec<Event> = Vec::new()
+    e.push(button(PadButton::RightShoulder, down: true))
+    step(mut d, take e)
+    var up = stick(x: 0.0, y: 1.0)
+    up.push(button(PadButton::RightShoulder, down: false))
+    step(mut d, take up)
+    let f = frames(Act::Slash)
+    var last = 0
+    while d.fight.climber.act == Act::Slash && d.fight.climber.t < f.total {
+        last = d.fight.climber.t
+        assert(last <= f.cancel, "the stick didn't let the slash go")
+        step(mut d, Vec::new())
+    }
+    assert(d.fight.climber.act == Act::Free, "the slash went on past the stick")
+    let speed = length(d.body.velocity)
+    print(f"let go after tick {last} of {f.total}: on at {speed} m/s at once")
+    assert(abs(speed - MOTION.walk) < 1.0e-3, f"the body went on at {speed} m/s, not the walk's")
+}
+
+/// The moves are the climber's, not the fight's: with no wolf, a press still swings and blinks,
+/// and the body walks between them.
+@test
+fn moves_work_with_no_wolf() {
+    var d = spawn()
+    var w = d.fight
+    let at = d.body.at.world()
+    var e: Vec<Event> = Vec::new()
+    e.push(button(PadButton::RightShoulder, down: true))
+    fight::step(
+        Level {},
+        dry(),
+        open(),
+        MOTION,
+        mut d.body,
+        mut w,
+        e,
+        wolf_on: false,
+        dt: 1.0 / 60.0,
+    )
+    assert(w.climber.act == Act::Slash, "no slash with no wolf")
+    for _ in 0..60 {
+        fight::step(
+            Level {},
+            dry(),
+            open(),
+            MOTION,
+            mut d.body,
+            mut w,
+            stick(x: 0.0, y: 1.0),
+            wolf_on: false,
+            dt: 1.0 / 60.0,
+        )
+    }
+    assert(w.climber.act == Act::Free, "the slash didn't end")
+    assert(length(d.body.at.world() - at) > 1.0, "the body didn't walk after the slash")
+    assert(w.wolf.pos() == spawn().fight.wolf.pos(), "the wolf moved while off")
 }
 
 /// The sword at rest floats on its own: a hand's width clear of the cape all along its blade, it

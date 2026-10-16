@@ -3,7 +3,7 @@
 // one (redder as it crouches and lunges, darker when it's down). It sounds as the fight does
 // (`climber::sounds`), heard from the climber.
 
-use climber::fight::{Mood, World, present, spawn, tick}
+use climber::fight::{Duel, Mood, present, spawn, tick}
 use climber::moves::Act
 use climber::sounds::{Heard, IMPACTS, WHOOSHES, cues, heard}
 use engine::present::Snapshots
@@ -13,7 +13,7 @@ use std::audio::{RingWriter, play}
 use std::gpu::{ClipPosition, VertexIndex, begin_screen_pass, draw}
 
 pub struct Arena {
-    snaps: Snapshots<World>,
+    snaps: Snapshots<Duel>,
     cues: RingWriter<Cue>,
     heard: Heard,
 }
@@ -32,7 +32,7 @@ pub fn init() -> Arena {
     let latest = run(spawn(), hz: 60, step: tick, present: present)
     let (cues, m) = mixer(PALETTE)
     play(take m, engine::sound::mix)
-    Arena { snaps: Snapshots::new(take latest, hz: 60), cues, heard: heard(spawn()) }
+    Arena { snaps: Snapshots::new(take latest, hz: 60), cues, heard: heard(spawn().fight) }
 }
 
 /// A square of `size` (clip space) at `at`, two triangles.
@@ -61,9 +61,9 @@ const MIDDLE = vec2(-1.0, 23.0)
 pub fn frame(arena: mut Arena, time: f32, width: u32, height: u32) {
     arena.snaps.update()
     let b = arena.snaps.at(arena.snaps.sim_time(time))
-    let w = b.b
-    let c = mix(b.a.climber.at.xz, w.climber.at.xz, vec2(b.alpha))
-    let f = mix(b.a.wolf.pos(), w.wolf.pos(), vec2(b.alpha))
+    let w = b.b.fight
+    let c = mix(b.a.fight.climber.at.xz, w.climber.at.xz, vec2(b.alpha))
+    let f = mix(b.a.fight.wolf.pos(), w.wolf.pos(), vec2(b.alpha))
     let _ = arena.cues.push(
         Cue::Listen {
             at: vec3(c.x, w.climber.at.y + 1.6, c.y),
