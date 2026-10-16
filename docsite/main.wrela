@@ -2330,6 +2330,17 @@ fn parts_tree(s: Docs, f: Frame) -> Vec<Node> {
     for k in 0..all.len() {
         let g = all[k].as_str()
         let (name, _) = group_title(g)
+        // Where the row for `path` (the group's title, for no path) is, within the list; empty
+        // where the row isn't laid out, as a closed group's pages and a list not shown aren't.
+        let rect_of = |path: str| -> vec4 {
+            if !shown { return vec4(0.0) }
+            for row in rows {
+                if row.group.as_str() == g && row.path.as_str() == path {
+                    return semantics::clip(vec4(0.0, row.y, f.nav, row.h), list)
+                }
+            }
+            vec4(0.0)
+        }
         nodes.push(
             Node {
                 id: NAV_GROUPS + k,
@@ -2345,7 +2356,7 @@ fn parts_tree(s: Docs, f: Frame) -> Vec<Node> {
                 role: semantics::Role::Button,
                 label: name,
                 expanded: is_open(s, g),
-                rect: if shown { row_rect(rows, g, "", f.nav, list) } else { vec4(0.0) },
+                rect: rect_of(""),
             },
         )
         for i in 0..s.index.pages.len() {
@@ -2360,25 +2371,12 @@ fn parts_tree(s: Docs, f: Frame) -> Vec<Node> {
                     role: semantics::Role::Link,
                     label,
                     href,
-                    rect: if shown { row_rect(rows, g, p.path.as_str(), f.nav, list) } else {
-                        vec4(0.0)
-                    },
+                    rect: rect_of(p.path.as_str()),
                 },
             )
         }
     }
     take nodes
-}
-
-/// Where the list's row for `path` of group `group` (its title, for no path) is, within `list`;
-/// empty where the row isn't laid out, as a closed group's pages aren't.
-fn row_rect(rows: [NavRow], group: str, path: str, width: f32, list: vec4) -> vec4 {
-    for row in rows {
-        if row.group.as_str() == group && row.path.as_str() == path {
-            return semantics::clip(vec4(0.0, row.y, width, row.h), list)
-        }
-    }
-    vec4(0.0)
 }
 
 /// A box as the host's field: its text and selection, set when a replacement is asked for.
@@ -2510,33 +2508,25 @@ fn the_front_page_lists_each_group_and_the_engine_by_topic() {
     }
     let md = front(index)
     let page = md.as_str()
+    // Where `t` first is in the page, or its end.
+    let at = |t: str| -> u32 { page.find(t).unwrap_or(page.len()) }
     assert(
-        place_of(page, "## The language") <
-            place_of(page, "- [6. Memory](spec/language/6-memory.md)"),
+        at("## The language") < at("- [6. Memory](spec/language/6-memory.md)"),
     )
     assert(
-        place_of(page, "## Standard library: `std`") <
-            place_of(page, "- [builtins](std/builtins.md)"),
+        at("## Standard library: `std`") < at("- [builtins](std/builtins.md)"),
     )
     // The engine's modules under their topics, in the topics' order; one no topic names, last.
     assert(
-        place_of(page, "### Rendering and light") < place_of(page, "- [air]") &&
-            place_of(page, "- [air]") < place_of(page, "- [lit]"),
+        at("### Rendering and light") < at("- [air]") && at("- [air]") < at("- [lit]"),
     )
     assert(
-        place_of(page, "- [lit]") < place_of(page, "### Sound and music") &&
-            place_of(page, "### Sound and music") < place_of(page, "- [piano]"),
+        at("- [lit]") < at("### Sound and music") && at("### Sound and music") < at("- [piano]"),
     )
     assert(
-        place_of(page, "### More") < place_of(page, "- [novel]") &&
-            place_of(page, "- [piano]") < place_of(page, "### More"),
+        at("### More") < at("- [novel]") && at("- [piano]") < at("### More"),
     )
     assert(engine_topic("piano_grand") == 6 && engine_topic("novel") == TOPICS)
-}
-
-/// Where `t` first is in `page`, or its end.
-fn place_of(page: str, t: str) -> u32 {
-    page.find(t).unwrap_or(page.len())
 }
 
 @test
