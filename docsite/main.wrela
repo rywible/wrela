@@ -5,11 +5,13 @@
 // finds items by name and the spec's rules by their words. The page's address says where the
 // reader is, so Back, Forward and links work as on any page, and Back returns to the place the
 // reader left; its title names the tab. A block of code has a button that copies it, a section's
-// heading a link to it, and a page a copy of its Markdown, for an agent.
+// heading a link to it, and a page a copy of its Markdown, for an agent. A block that builds a
+// field has the field drawn live under it (live.wrela): its numbers drag, and the field turns.
 //
 // Each frame: the host's answers (the display, the index, a page, the address), the input, the
 // layout if the page or the width changed, the drawing, then what the host is told: the pointer's
-// shape and the page's parts for screen readers.
+// shape and the page's parts for screen readers. A frame draws only when the picture changes or
+// something on it moves: a page left open costs the GPU nothing.
 
 use brand::facet
 use brand::facet::MarkRun
@@ -17,6 +19,7 @@ use brand::manrope::MANROPE
 use field::{Look, field, quad}
 use index::{Hit, Index, lower}
 use layout::{Laid, Role, lay_out}
+use live::{Read, View, read, view, with_number}
 use markdown::{Block, Kind, parse, plain}
 use platform::host
 use route::{Route, Target, follow}
@@ -54,6 +57,8 @@ const NAV_BUTTONS: u32 = 5000000
 const CONTROL_NODES: u32 = 6000000
 /// How long a copy's result shows, in seconds.
 const SAID: f32 = 1.6
+/// A live field's numbers, as sliders.
+const KNOB_NODES: u32 = 7000000
 
 pub struct Docs {
     fonts: Fonts,
@@ -161,6 +166,25 @@ pub struct Docs {
     copy_ok: bool,
     /// A scrollbar's thumb held: where the press was, the scroll then, and whether it's the list's.
     thumb: Option<(f32, f32, bool)>,
+    /// Whether the picture changed since it was last drawn: an answer, input, a new size.
+    dirty: bool,
+    /// Each live figure's field, in the page's order.
+    lives: Vec<Live>,
+    /// A number held, to drag: its knob, where the press was and its value then.
+    knob_held: Option<(u32, f32, f32)>,
+    /// A figure held, to turn: its figure, where the press was, its turn and tilt then, and
+    /// whether a finger holds it, whose up and down scroll the page.
+    orbit: Option<(u32, vec2, f32, f32, bool)>,
+}
+
+/// A live figure's field: its block, its code as the reader's drags have changed it, what it
+/// builds, and the camera's turn and tilt about it.
+struct Live: Clone {
+    block: u32,
+    code: String,
+    read: Option<Read>,
+    turn: f32,
+    tilt: f32,
 }
 
 /// A box the host keeps as a field (std::semantics): the newest revision heard of, the newest read,
@@ -251,10 +275,16 @@ pub fn init() -> Docs {
         copied_at: -10.0,
         copy_ok: false,
         thumb: None,
+        dirty: true,
+        lives: Vec::new(),
+        knob_held: None,
+        orbit: None,
     }
 }
 
 pub fn frame(s: mut Docs, time: f32, width: u32, height: u32) {
+    // A new size clears the canvas.
+    if vec2(f32(width), f32(height)) != s.screen { s.dirty = true }
     s.screen = vec2(f32(width), f32(height))
     let dt = clamp(time - s.time, 0.0, 0.1)
     s.time = time
@@ -267,13 +297,32 @@ pub fn frame(s: mut Docs, time: f32, width: u32, height: u32) {
     answers(mut s)
     let frame = frame_of(s)
     for e in events() {
+        s.dirty = true
         handle(mut s, e, frame)
     }
     keep_laid_out(mut s, frame)
+    keep_lives(mut s, frame)
     glide_on(mut s, frame, dt)
     keep_nav(mut s, frame)
-    draw_all(mut s, frame)
+    if s.dirty || moving(s, frame) {
+        draw_all(mut s, frame)
+        s.dirty = false
+    }
     tell(mut s, frame)
+}
+
+/// Whether something on the screen moves, so each frame draws: the front page's lines while
+/// they're in view, search's or find's caret, the bar of a page on its way, a glide, a copy's
+/// word while it shows (and the frame after), glyphs on their way. The lines, the caret and the
+/// bar stay still when the system asks for less motion.
+fn moving(s: Docs, f: Frame) -> bool {
+    let opening = s.route.page.is_empty() && s.scroll < opening_height(s, f.beside)
+    let lively = opening || s.searching || s.finding || s.page_load.is_some()
+    (lively && !s.reduced) ||
+        (live_moves(s, f) && !s.reduced) ||
+        s.glide.is_some() ||
+        s.time - s.copied_at < SAID + 0.25 ||
+        s.renderer.waiting()
 }
 
 /// Where everything goes on this screen.
@@ -341,6 +390,7 @@ fn opening_ems(s: Docs, beside: bool) -> f32 {
 
 fn answers(s: mut Docs) {
     if let Some(result) = poll(mut s.environment) {
+        s.dirty = true
         if let Ok(bytes) = result {
             s.reduced = !bytes.is_empty() && bytes[0] != 0
             if let Some(ratio) = host::word(bytes, 5) { s.u = clamp(f32(ratio) / 1024.0, 0.5, 4.0) }
@@ -354,6 +404,7 @@ fn answers(s: mut Docs) {
         }
     }
     if let Some(result) = poll(mut s.index_load) {
+        s.dirty = true
         match result {
             Ok(bytes) => match Index::read(bytes) {
                 Ok(index) => {
@@ -384,6 +435,7 @@ fn answers(s: mut Docs) {
         }
     }
     if let Some(Ok(bytes)) = poll(mut s.address) {
+        s.dirty = true
         if let Some(text) = String::from_utf8(take bytes) {
             let t = text.as_str()
             let k = t.find("#").unwrap_or(t.len())
@@ -393,12 +445,14 @@ fn answers(s: mut Docs) {
         s.changed = Some(host::address_changed())
     }
     if let Some(Ok(bytes)) = poll(mut s.changed) {
+        s.dirty = true
         if let Some(text) = String::from_utf8(take bytes) {
             go_to(mut s, Route::of(text.as_str()), push: false)
         }
         s.changed = Some(host::address_changed())
     }
     if let Some(result) = poll(mut s.page_load) {
+        s.dirty = true
         let path = s.loading.clone()
         match result {
             Ok(bytes) => match String::from_utf8(bytes.clone()) {
@@ -420,6 +474,7 @@ fn answers(s: mut Docs) {
         }
     }
     if let Some(Ok(bytes)) = poll(mut s.pasting) {
+        s.dirty = true
         if let Ok(p) = host::read_pasted(take bytes) {
             if s.finding {
                 put_typed(mut s.find, mut s.caret, mut s.other_end, first_line(p.text.as_str()))
@@ -432,6 +487,7 @@ fn answers(s: mut Docs) {
         }
     }
     if let Some(result) = poll(mut s.copying) {
+        s.dirty = true
         s.copy_ok = result.is_ok()
         s.copied_at = s.time
         if s.capabilities & host::SEMANTICS != 0 {
@@ -439,6 +495,7 @@ fn answers(s: mut Docs) {
         }
     }
     if let Some(Ok(bytes)) = poll(mut s.reading) {
+        s.dirty = true
         if let Ok(state) = semantics::read_field_state(take bytes) { typed(mut s, state) }
     }
     // A box changed since it was last read: read it.
@@ -594,10 +651,7 @@ fn front(index: Index) -> String {
         md.push_str(".\n\n")
     }
     md.push_str(
-        "## Content is fields\n\nA field is a function over space, such as the distance from a point to a surface. `std::field` joins, cuts, moves and displaces fields, and the compiler derives each field's gradient and its bounds over a box from the field's own code ([§13](spec/language/13-derived-interpretations.md)). This field, from [a complete program](spec/language/19-a-complete-program.md), is drawn with normals that nobody wrote:\n\n",
-    )
-    md.push_str(
-        "```wrela\nfn blob(r: f32) -> Surface {\n    let cone = round_cone(vec3(), vec3(y: 1.0), r_top: 0.3, r_bottom: 0.1)\n    sphere(radius: r).smooth_union(cone, k: 0.1)\n}\n\n@fragment\nfn normals<F: Surface>(pixel: FragCoord, field: F) -> vec4 {\n    let p = vec3(pixel.position.xy * 0.004 - 1.0, 0.0)\n    let n = normalize(field.gradient(p))\n    vec4(n * 0.5 + 0.5, 1.0)\n}\n```\n\n## Where to start\n\n",
+        "## Content is fields\n\nA field is a function over space, such as the distance from a point to a surface. `std::field` joins, cuts, moves and displaces fields, and the compiler derives each field's gradient and its bounds over a box from the field's own code ([§13](spec/language/13-derived-interpretations.md)). The field below is drawn live from its code, lit by that gradient, which nobody wrote; [a complete program](spec/language/19-a-complete-program.md) draws it with a shader of its own.\n\n```wrela\nlet cone = round_cone(vec3(), vec3(y: 1.0), r_top: 0.3, r_bottom: 0.1)\nlet blob = sphere(radius: 0.5).smooth_union(cone, k: 0.1)\n```\n\n## Where to start\n\n",
     )
     md.push_str(
         "- [Read the language](spec/language/how-wrela-differs-from-rust-and-typescript.md): how Wrela differs from Rust and TypeScript, then the spec's 20 sections in order.\n",
@@ -790,6 +844,12 @@ fn handle(s: mut Docs, e: Event, f: Frame) {
         },
         Event::PointerUp { at, button, .. } => if button == Button::Primary {
             s.thumb = None
+            if s.knob_held.is_some() || s.orbit.is_some() {
+                s.knob_held = None
+                s.orbit = None
+                s.press = None
+                s.swipe = None
+            }
             release(mut s, at)
         },
         Event::Wheel { at, delta, .. } => {
@@ -1123,6 +1183,25 @@ fn press(s: mut Docs, at: vec2, f: Frame) {
             return
         }
     }
+    // A live field's number: it drags.
+    for i in 0..s.laid.knobs.len() {
+        if knob_rect(s, f, i).contains(at) {
+            s.knob_held = Some((i, at.x, knob_value(s, i)))
+            return
+        }
+    }
+    // A live figure: it turns; a finger's up and down still scroll the page.
+    for i in 0..s.laid.figures.len() {
+        if figure_rect(s, f, i).contains(at) {
+            let (turn, tilt) = match live_of(s, s.laid.figures[i].block) {
+                Some(l) => (s.lives[l].turn, s.lives[l].tilt),
+                None => (0.0, 0.0),
+            }
+            s.orbit = Some((i, at, turn, tilt, !hovered))
+            if !hovered { s.swipe = Some((s.scroll, false)) }
+            return
+        }
+    }
     let link = link_at(s, at, f).unwrap_or(String::new())
     // A mouse hovers where it presses; a finger lands without hovering, and its drag scrolls.
     s.press = Some((at, false, take link))
@@ -1147,6 +1226,27 @@ fn place(s: Docs, at: vec2, f: Frame) -> Option<u32> {
 
 /// The pointer moved while it's held on the page: the selection goes to it.
 fn drag(s: mut Docs, at: vec2, f: Frame) {
+    if let Some((i, x0, v0)) = s.knob_held {
+        // A pixel's worth of drag: a 250th of the number's size, or of a quarter where it's small.
+        let step = max(abs(v0), 0.25) * 0.004
+        var v = v0 + (at.x - x0) / s.u * step
+        if v0 >= 0.0 { v = max(v, 0.0) }
+        set_knob(mut s, i, v)
+        return
+    }
+    if let Some((i, from, turn, tilt, finger)) = s.orbit {
+        let block = s.laid.figures[i].block
+        let Some(l) = live_of(s, block) else { return }
+        let d = (at - from) / s.u
+        s.lives[l].turn = turn - d.x * 0.008
+        if finger {
+            s.glide = None
+            if let Some((start, _)) = s.swipe {
+                s.scroll = clamp(start - (at.y - from.y), 0.0, max_scroll(s, f))
+            }
+        } else { s.lives[l].tilt = clamp(tilt + d.y * 0.006, 0.1, 1.3) }
+        return
+    }
     if let Some((from, start, nav)) = s.thumb {
         let Some((track, thumb)) = scrollbar(s, f, nav) else { return }
         let room = scroll_room(s, f, nav)
@@ -1281,6 +1381,15 @@ fn assisted(s: mut Docs, node: u32, action: Assist, f: Frame) {
     // The focus reaching search's box opens search.
     if node == SEARCH_FIELD {
         if action == Assist::Focus && !s.searching && !s.finding { open_search(mut s) }
+        return
+    }
+    if node >= KNOB_NODES {
+        let i = node - KNOB_NODES
+        if i < s.laid.knobs.len() && (action == Assist::Increment || action == Assist::Decrement) {
+            let v = knob_value(s, i)
+            let by = if action == Assist::Increment { knob_step(v) } else { -knob_step(v) }
+            set_knob(mut s, i, if v >= 0.0 { max(v + by, 0.0) } else { v + by })
+        }
         return
     }
     if node >= CONTROL_NODES {
@@ -1873,6 +1982,24 @@ fn keep_laid_out(s: mut Docs, f: Frame) {
     s.text = take text
     s.starts = take starts
     s.selected = None
+    // Each figure's field, keeping its turn where the block is the same.
+    var lives: Vec<Live> = Vec::new()
+    for fig in s.laid.figures {
+        let code = s.blocks[fig.block].code.clone()
+        var turn = 0.7
+        var tilt = 0.32
+        for l in s.lives {
+            if l.block == fig.block {
+                turn = l.turn
+                tilt = l.tilt
+            }
+        }
+        let r = read(code.as_str(), 0.0)
+        lives.push(Live { block: fig.block, code, read: r, turn, tilt })
+    }
+    s.lives = take lives
+    s.knob_held = None
+    s.orbit = None
     // A place kept at another width may be past the page's end at this one.
     s.scroll = clamp(s.scroll, 0.0, max_scroll(s, f))
     refresh_matches(mut s, f)
@@ -1932,6 +2059,17 @@ fn draw_all(s: mut Docs, f: Frame) {
     }
     if let Some((a, b)) = s.selected {
         if a != b { mark_range(mut s, min(a, b), max(a, b), origin, f, hex(s.p.selection, 0.55)) }
+    }
+    // The number under the pointer, or held, that drags.
+    for i in 0..s.laid.knobs.len() {
+        let held = match s.knob_held {
+            Some((k, _, _)) => k == i,
+            None => false,
+        }
+        let r = knob_rect(s, f, i)
+        if held || (s.knob_held.is_none() && r.contains(s.pointer)) {
+            s.list.rect(r, hex(s.p.field, if held { 0.28 } else { 0.16 }), radius: 4.0 * u)
+        }
     }
     for p in s.laid.pieces {
         let y = p.at.y + origin.y
@@ -2012,6 +2150,7 @@ fn draw_all(s: mut Docs, f: Frame) {
         0.0,
         moving: false,
     )
+    draw_figures(s, pass, f)
     s.renderer.draw(pass, screen)
     pass.present()
 }
@@ -2633,6 +2772,168 @@ fn draw_controls(s: mut Docs, f: Frame) {
     s.list.pop_clip()
 }
 
+// ---- live fields --------------------------------------------------------------------------------
+
+/// The live figure of block `block`, if it has one.
+fn live_of(s: Docs, block: u32) -> Option<u32> {
+    for i in 0..s.lives.len() {
+        if s.lives[i].block == block { return Some(i) }
+    }
+    None
+}
+
+/// Where figure `i` is on the screen.
+fn figure_rect(s: Docs, f: Frame, i: u32) -> Rect {
+    let r = s.laid.figures[i].rect
+    Rect::new(r.x + f.x, r.y + f.top - s.scroll, r.w, r.h)
+}
+
+/// Where knob `i`'s number is on the screen, with room around it for a finger.
+fn knob_rect(s: Docs, f: Frame, i: u32) -> Rect {
+    borrow p = s.laid.pieces[s.laid.knobs[i].piece]
+    let pad = 3.0 * s.u
+    Rect::new(
+        p.at.x + f.x - pad,
+        p.at.y + f.top - s.scroll - pad,
+        p.w + 2.0 * pad,
+        p.size * 1.35 + 2.0 * pad,
+    )
+}
+
+/// How far a keyboard's step moves a number: a hundredth of it where it's 1 or more, else 0.01.
+fn knob_step(v: f32) -> f32 {
+    max(abs(v), 1.0) * 0.01
+}
+
+/// Knob `i`'s number, as its code says now.
+fn knob_value(s: Docs, i: u32) -> f32 {
+    let k = s.laid.knobs[i]
+    let Some(l) = live_of(s, k.block) else { return 0.0 }
+    live::number(s.lives[l].code.as_str().slice(from: k.start, to: k.end)).unwrap_or(0.0)
+}
+
+/// What knob `i` is to a screen reader: the name it's given in the code (`radius` of
+/// `radius: 0.5`), or "number".
+fn knob_name(s: Docs, i: u32) -> String {
+    let k = s.laid.knobs[i]
+    let Some(l) = live_of(s, k.block) else { return String::from("number") }
+    let code = s.lives[l].code.as_str()
+    var e = k.start
+    while e > 0 && code.byte(e - 1) == 32 { e -= 1 }
+    if e == 0 || code.byte(e - 1) != 58 { return String::from("number") }
+    e -= 1
+    var a = e
+    while a > 0 && (live::is_word(code.byte(a - 1))) { a -= 1 }
+    if a == e { String::from("number") } else { code.slice(from: a, to: e).to_string() }
+}
+
+/// Sets knob `i`'s number to `value`: in its code, in the piece that shows it (the pieces after it
+/// on its line move with its width), in the block, so the page keeps it, and in the field drawn.
+fn set_knob(s: mut Docs, i: u32, value: f32) {
+    let k = s.laid.knobs[i]
+    let Some(l) = live_of(s, k.block) else { return }
+    let (code, end) = with_number(s.lives[l].code.as_str(), k.start, k.end, value)
+    let grown = i32(end) - i32(k.end)
+    let piece = k.piece
+    let shown = code.as_str().slice(from: k.start, to: end).to_string()
+    let old_w = s.laid.pieces[piece].w
+    let new_w = s.fonts
+        .font(s.laid.pieces[piece].face)
+        .measure(shown.as_str(), s.laid.pieces[piece].size)
+    s.laid.pieces[piece].text = take shown
+    s.laid.pieces[piece].w = new_w
+    let y = s.laid.pieces[piece].at.y
+    for j in piece + 1..s.laid.pieces.len() {
+        if s.laid.pieces[j].block != k.block || abs(s.laid.pieces[j].at.y - y) > 0.5 { break }
+        s.laid.pieces[j].at.x += new_w - old_w
+    }
+    for j in 0..s.laid.knobs.len() {
+        if s.laid.knobs[j].block == k.block && s.laid.knobs[j].start > k.start {
+            s.laid.knobs[j].start = u32(i32(s.laid.knobs[j].start) + grown)
+            s.laid.knobs[j].end = u32(i32(s.laid.knobs[j].end) + grown)
+        }
+    }
+    s.laid.knobs[i].end = end
+    for j in 0..s.laid.snippets.len() {
+        if s.laid.snippets[j].block == k.block { s.laid.snippets[j].text = code.clone() }
+    }
+    s.blocks[k.block].code = code.clone()
+    s.lives[l].read = read(code.as_str(), live_time(s))
+    s.lives[l].code = take code
+    let (text, starts) = s.laid.text()
+    s.lowered = lower(text.as_str())
+    s.text = take text
+    s.starts = take starts
+}
+
+/// The time a moving field is read at: the program's, or still when the system asks for less
+/// motion.
+fn live_time(s: Docs) -> f32 {
+    if s.reduced { 0.0 } else { s.time }
+}
+
+/// Whether a figure on the screen draws a field that moves with time.
+fn live_moves(s: Docs, f: Frame) -> bool {
+    for i in 0..s.laid.figures.len() {
+        let r = figure_rect(s, f, i)
+        if r.bottom() < f.header || r.y > s.screen.y { continue }
+        let Some(l) = live_of(s, s.laid.figures[i].block) else { continue }
+        if let Some(rd) = s.lives[l].read {
+            if rd.moves { return true }
+        }
+    }
+    false
+}
+
+/// Reads again, at this frame's time, each field on the screen that moves with time.
+fn keep_lives(s: mut Docs, f: Frame) {
+    if s.reduced { return }
+    for i in 0..s.laid.figures.len() {
+        let r = figure_rect(s, f, i)
+        if r.bottom() < f.header || r.y > s.screen.y { continue }
+        let Some(l) = live_of(s, s.laid.figures[i].block) else { continue }
+        let moves = match s.lives[l].read {
+            Some(rd) => rd.moves,
+            None => false,
+        }
+        if moves { s.lives[l].read = read(s.lives[l].code.as_str(), s.time) }
+    }
+}
+
+/// Each figure on the screen: its field, drawn under the page's text and clipped under the
+/// header, its corners round.
+fn draw_figures(s: Docs, pass: std::gpu::ScreenPass, f: Frame) {
+    let light = s.p == theme::LIGHT
+    for i in 0..s.laid.figures.len() {
+        let r = figure_rect(s, f, i)
+        if r.bottom() < f.header || r.y > s.screen.y { continue }
+        let Some(l) = live_of(s, s.laid.figures[i].block) else { continue }
+        let Some(rd) = s.lives[l].read else { continue }
+        let top = max(r.y, f.header)
+        let shown = vec4(r.x, top, r.w, min(r.bottom(), s.screen.y) - top)
+        let look = View {
+            rect: vec4(r.x, r.y, r.w, r.h),
+            turn: s.lives[l].turn,
+            tilt: s.lives[l].tilt,
+            centre: rd.centre,
+            radius: rd.radius,
+            floor: rd.floor,
+            u: s.u,
+            light: if light { 1.0 } else { 0.0 },
+            ground: hex(s.p.surface),
+            line: hex(s.p.field, if light { 0.55 } else { 0.5 }),
+            body: hex(s.p.figure),
+            rim: hex(s.p.field),
+        }
+        draw(
+            pass,
+            quad.bind(screen: s.screen, rect: shown),
+            view.bind(scene: rd.scene, look: look),
+            vertices: 6,
+        )
+    }
+}
+
 // ---- scrollbars --------------------------------------------------------------------------------
 
 /// How far the page, or the list of pages (`nav`), scrolls: 0 where it fits on the screen.
@@ -2697,15 +2998,27 @@ fn tell(s: mut Docs, f: Frame) {
     for c in controls(s, f, s.pointer, all: false) {
         if c.rect.contains(s.pointer) { over_control = true }
     }
+    var over_knob = s.knob_held.is_some()
+    for i in 0..s.laid.knobs.len() {
+        if knob_rect(s, f, i).contains(s.pointer) { over_knob = true }
+    }
+    var over_figure = false
+    for i in 0..s.laid.figures.len() {
+        if figure_rect(s, f, i).contains(s.pointer) && s.pointer.y > f.header {
+            over_figure = true
+        }
+    }
     let over_link = link_at(s, s.pointer, f).is_some() ||
         extra_at(s, s.pointer, f).is_some() ||
         over_control ||
         (over_nav(s, s.pointer, f) && nav_at(s, s.pointer, f).is_some())
-    let want = if over_link ||
+    let want = if over_knob { "ew-resize" } else if s.orbit.is_some() {
+        "grabbing"
+    } else if over_link ||
         f.search.contains(s.pointer) ||
         (s.pointer.y < f.header && s.pointer.x < mark_right(s, f)) {
         "pointer"
-    } else { "default" }
+    } else if over_figure { "grab" } else { "default" }
     if s.cursor.as_str() != want {
         s.cursor = want.to_string()
         s.told.push(host::cursor(want))
@@ -2867,6 +3180,23 @@ fn parts_tree(s: Docs, f: Frame) -> Vec<Node> {
                     href: href_of(s, c.target.as_str()),
                     rect,
                 }
+            },
+        )
+    }
+    // A live field's numbers, as sliders a keyboard steps.
+    for i in 0..s.laid.knobs.len() {
+        let r = knob_rect(s, f, i)
+        let v = knob_value(s, i)
+        nodes.push(
+            Node {
+                id: KNOB_NODES + i,
+                role: semantics::Role::Slider,
+                label: knob_name(s, i),
+                rect: semantics::clip(vec4(r.x, r.y, r.w, r.h), page),
+                value: v,
+                min: if v >= 0.0 { 0.0 } else { -100.0 },
+                max: 100.0,
+                step: knob_step(v),
             },
         )
     }

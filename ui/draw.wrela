@@ -693,6 +693,12 @@ impl Renderer {
         }
     }
 
+    /// Whether glyphs asked of the host are on their way: a program that draws only when its
+    /// picture changes draws again until they come, as text drawn after has them.
+    pub fn waiting(self) -> bool {
+        !self.asking.is_empty()
+    }
+
     /// Puts glyph `made` for `group` in the atlas and `face`'s font: false if the atlas's rows
     /// for made glyphs are full, and the group keeps `?`.
     pub fn install(mut self, fonts: mut Fonts, face: Face, group: str, made: Made) -> bool {
