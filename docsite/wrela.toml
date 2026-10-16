@@ -1,0 +1,9 @@
+# docs.wrela.dev: the reference docs that `wrela doc --export` writes, read in a Wrela program
+# drawn with the ui layer, as the console is.
+[package]
+name = "docsite"
+
+[dependencies]
+ui = { path = "../ui" }
+brand = { path = "../ui/brand" }
+platform = { path = "../platform" }

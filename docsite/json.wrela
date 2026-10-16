@@ -1,0 +1,295 @@
+// JSON read into a flat list of values, as `index.json` is: each value's kind, its text (a
+// string's, or a number as written), and for an array or an object the values it holds, kept
+// together in one list of children. An object's children are its keys and values in turn, in
+// order. A malformed document is an error, never a panic.
+
+pub enum Kind: Copy + Eq {
+    Null,
+    False,
+    True,
+    Number,
+    Text,
+    Array,
+    Object,
+}
+
+pub struct Value: Clone {
+    pub kind: Kind,
+    /// A string's text, or a number as it was written.
+    text: String,
+    /// An array's or an object's children: where they start in `children`, and how many.
+    first: u32,
+    count: u32,
+}
+
+pub struct Json: Clone {
+    values: Vec<Value>,
+    children: Vec<u32>,
+    pub root: u32,
+}
+
+/// How deep arrays and objects may nest.
+const DEEPEST: u32 = 64
+
+impl Json {
+    /// The document `bytes` holds, or why it isn't one.
+    pub fn read(bytes: [u8]) -> Result<Json, String> {
+        var json = Json { values: Vec::new(), children: Vec::new(), root: 0 }
+        var at = skip_space(bytes, 0)
+        let root = value(mut json, bytes, mut at, 0)?
+        if skip_space(bytes, at) != bytes.len() {
+            return Err(f"something follows the value, at byte {at}")
+        }
+        json.root = root
+        Ok(take json)
+    }
+
+    pub fn kind(self, v: u32) -> Kind {
+        self.values[v].kind
+    }
+
+    /// A string's text, or a number as written; empty for anything else.
+    pub fn text(self, v: u32) -> borrow str {
+        self.values[v].text.as_str()
+    }
+
+    /// A number as a whole number, if it is one that fits.
+    pub fn whole(self, v: u32) -> Option<u32> {
+        if self.values[v].kind != Kind::Number { return None }
+        let t = self.values[v].text.as_str()
+        if t.is_empty() || t.len() > 9 { return None }
+        var n = 0
+        for i in 0..t.len() {
+            let b = t.byte(i)
+            if b < 48 || b > 57 { return None }
+            n = n * 10 + u32(b - 48)
+        }
+        Some(n)
+    }
+
+    /// How many values an array holds (keys and values together, for an object).
+    pub fn count(self, v: u32) -> u32 {
+        self.values[v].count
+    }
+
+    /// An array's `i`th value.
+    pub fn at(self, v: u32, i: u32) -> u32 {
+        self.children[self.values[v].first + i]
+    }
+
+    /// An object's value for `key`.
+    pub fn get(self, v: u32, key: str) -> Option<u32> {
+        if self.values[v].kind != Kind::Object { return None }
+        let first = self.values[v].first
+        var i = 0
+        while i + 1 < self.values[v].count {
+            if self.values[self.children[first + i]].text.as_str() == key {
+                return Some(self.children[first + i + 1])
+            }
+            i += 2
+        }
+        None
+    }
+
+    /// An object's string or number for `key` (a number as written); empty if there's none.
+    pub fn field(self, v: u32, key: str) -> borrow str {
+        match self.get(v, key) {
+            Some(f) => self.values[f].text.as_str(),
+            None => self.values[self.root].text.slice(from: 0, to: 0),
+        }
+    }
+
+    fn push(mut self, kind: Kind, text: take String) -> u32 {
+        self.values.push(Value { kind, text, first: 0, count: 0 })
+        self.values.len() - 1
+    }
+}
+
+fn skip_space(b: [u8], from: u32) -> u32 {
+    var i = from
+    while i < b.len() && (b[i] == 32 || b[i] == 10 || b[i] == 13 || b[i] == 9) { i += 1 }
+    i
+}
+
+/// The value at `at`, which moves past it.
+fn value(json: mut Json, b: [u8], at: mut u32, depth: u32) -> Result<u32, String> {
+    if at >= b.len() { return Err(String::from("the document ends before a value")) }
+    let c = b[at]
+    if c == 123 || c == 91 {
+        if depth >= DEEPEST { return Err(f"arrays and objects nest deeper than {DEEPEST}") }
+        let object = c == 123
+        let close = if object { u8(125) } else { u8(93) }
+        at += 1
+        var held: Vec<u32> = Vec::new()
+        at = skip_space(b, at)
+        if at < b.len() && b[at] == close {
+            at += 1
+        } else {
+            loop {
+                at = skip_space(b, at)
+                if object {
+                    if at >= b.len() || b[at] != 34 { return Err(f"a key isn't a string, at byte {at}") }
+                    held.push(value(mut json, b, mut at, depth + 1)?)
+                    at = skip_space(b, at)
+                    if at >= b.len() || b[at] != 58 { return Err(f"a key has no `:`, at byte {at}") }
+                    at = skip_space(b, at + 1)
+                }
+                held.push(value(mut json, b, mut at, depth + 1)?)
+                at = skip_space(b, at)
+                if at < b.len() && b[at] == 44 {
+                    at += 1
+                    continue
+                }
+                if at < b.len() && b[at] == close {
+                    at += 1
+                    break
+                }
+                return Err(f"expected `,` or the end, at byte {at}")
+            }
+        }
+        let v = json.push(if object { Kind::Object } else { Kind::Array }, String::new())
+        json.values[v].first = json.children.len()
+        json.values[v].count = held.len()
+        json.children.append(mut held)
+        return Ok(v)
+    }
+    if c == 34 { return string(mut json, b, mut at) }
+    for (word, kind) in [("null", Kind::Null), ("true", Kind::True), ("false", Kind::False)] {
+        if at + word.len() <= b.len() {
+            var same = true
+            for i in 0..word.len() {
+                if b[at + i] != word.byte(i) { same = false }
+            }
+            if same {
+                at += word.len()
+                return Ok(json.push(kind, String::new()))
+            }
+        }
+    }
+    // A number: written as it is, checked only for its characters.
+    let start = at
+    while at < b.len() {
+        let d = b[at]
+        let ok = (d >= 48 && d <= 57) || d == 45 || d == 43 || d == 46 || d == 101 || d == 69
+        if !ok { break }
+        at += 1
+    }
+    if at == start { return Err(f"no value at byte {start}") }
+    var text = String::new()
+    for i in start..at { text.push_byte(b[i]) }
+    Ok(json.push(Kind::Number, take text))
+}
+
+/// The string at `at` (its opening quote), with its escapes read.
+fn string(json: mut Json, b: [u8], at: mut u32) -> Result<u32, String> {
+    var text: Vec<u8> = Vec::new()
+    at += 1
+    loop {
+        if at >= b.len() { return Err(String::from("a string doesn't end")) }
+        let c = b[at]
+        if c == 34 {
+            at += 1
+            break
+        }
+        if c < 32 { return Err(f"a control character in a string, at byte {at}") }
+        if c != 92 {
+            text.push(c)
+            at += 1
+            continue
+        }
+        if at + 1 >= b.len() { return Err(String::from("a string ends in an escape")) }
+        let e = b[at + 1]
+        at += 2
+        if e == 117 {
+            var cp = hex4(b, at)?
+            at += 4
+            // A surrogate pair is one character.
+            if cp >= 0xD800 && cp < 0xDC00 && at + 6 <= b.len() && b[at] == 92 && b[at + 1] == 117 {
+                let low = hex4(b, at + 2)?
+                if low >= 0xDC00 && low < 0xE000 {
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00)
+                    at += 6
+                }
+            }
+            if cp >= 0xD800 && cp < 0xE000 { cp = 0xFFFD }
+            utf8(mut text, cp)
+            continue
+        }
+        let out = if e == 110 { 10 } else if e == 116 { 9 } else if e == 114 { 13 } else if e == 98 {
+            8
+        } else if e == 102 { 12 } else if e == 34 || e == 92 || e == 47 { e } else {
+            return Err(f"an unknown escape, at byte {at - 1}")
+        }
+        text.push(u8(out))
+    }
+    let Some(t) = String::from_utf8(take text) else { return Err(f"a string isn't UTF-8, before byte {at}") }
+    Ok(json.push(Kind::Text, take t))
+}
+
+/// `cp` in UTF-8.
+fn utf8(out: mut Vec<u8>, cp: u32) {
+    if cp < 0x80 {
+        out.push(u8(cp))
+    } else if cp < 0x800 {
+        out.push(u8(0xC0 | (cp >> 6)))
+        out.push(u8(0x80 | (cp & 0x3F)))
+    } else if cp < 0x10000 {
+        out.push(u8(0xE0 | (cp >> 12)))
+        out.push(u8(0x80 | ((cp >> 6) & 0x3F)))
+        out.push(u8(0x80 | (cp & 0x3F)))
+    } else {
+        out.push(u8(0xF0 | (cp >> 18)))
+        out.push(u8(0x80 | ((cp >> 12) & 0x3F)))
+        out.push(u8(0x80 | ((cp >> 6) & 0x3F)))
+        out.push(u8(0x80 | (cp & 0x3F)))
+    }
+}
+
+fn hex4(b: [u8], at: u32) -> Result<u32, String> {
+    if at + 4 > b.len() { return Err(String::from("a `\\u` escape is cut short")) }
+    var n = 0
+    for i in 0..4 {
+        let d = u32(b[at + i])
+        let v = if d >= 48 && d <= 57 { d - 48 } else if d >= 97 && d <= 102 { d - 87 } else if d >= 65 && d <= 70 {
+            d - 55
+        } else {
+            return Err(f"`\\u` needs four hexadecimal digits, at byte {at}")
+        }
+        n = n * 16 + v
+    }
+    Ok(n)
+}
+
+fn bytes(t: str) -> Vec<u8> {
+    var b: Vec<u8> = Vec::new()
+    for i in 0..t.len() { b.push(t.byte(i)) }
+    take b
+}
+
+@test
+fn a_document_reads_into_values_and_their_fields() {
+    let doc = bytes("{\"pages\": [{\"path\": \"std/io.md\", \"line\": 123}, {\"path\": \"a\\\"b\\u00e9\\ud83c\\udf32\"}], \"commit\": null, \"ok\": true}")
+    let Ok(json) = Json::read(doc) else { panic("it reads") }
+    let pages = json.get(json.root, "pages").unwrap()
+    assert(json.kind(pages) == Kind::Array && json.count(pages) == 2)
+    let first = json.at(pages, 0)
+    assert(json.field(first, "path") == "std/io.md" && json.whole(json.get(first, "line").unwrap()) == Some(123))
+    assert(json.field(json.at(pages, 1), "path") == "a\"bé🌲", json.field(json.at(pages, 1), "path"))
+    // Raw UTF-8, as the export writes it.
+    let Ok(raw) = Json::read(bytes("[\"ρ × é\"]")) else { panic("raw UTF-8 reads") }
+    assert(raw.text(raw.at(raw.root, 0)) == "ρ × é")
+    assert(json.kind(json.get(json.root, "commit").unwrap()) == Kind::Null)
+    assert(json.kind(json.get(json.root, "ok").unwrap()) == Kind::True)
+    assert(json.get(json.root, "missing").is_none() && json.field(json.root, "missing") == "")
+}
+
+@test
+fn a_malformed_document_says_why_and_never_panics() {
+    for bad in ["", "{", "[1, 2", "{\"a\" 1}", "{1: 2}", "[1] 2", "\"no end", "[tru]", "\"\\x\"", "\"\\u12\""] {
+        assert(Json::read(bytes(bad)).is_err(), bad)
+    }
+    var deep = String::new()
+    for _ in 0..100 { deep.push_str("[") }
+    assert(Json::read(bytes(deep.as_str())).is_err(), "too deep")
+    assert(Json::read(bytes(" [ ] ")).is_ok() && Json::read(bytes("{}")).is_ok())
+}

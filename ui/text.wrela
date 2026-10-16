@@ -20,7 +20,7 @@ use ttf::{Baked, bake}
 const SANS: Baked = bake(embed("fonts/Inter-Regular-Latin1.ttf"), em: 32.0, spread: 4.0)
 
 @fuel(2 ** 38)
-const MONO: Baked = bake(embed("fonts/JetBrainsMono-Regular-Latin1.ttf"), em: 32.0, spread: 4.0)
+pub const MONO: Baked = bake(embed("fonts/JetBrainsMono-Regular-Latin1.ttf"), em: 32.0, spread: 4.0)
 
 /// A face's baked font.
 fn baked(face: Face) -> borrow Baked {

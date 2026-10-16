@@ -1,0 +1,92 @@
+// The WRΞLA mark as a field: the void band behind the header (and the front page's opening), the
+// mark in it, and the lines along which the distance to the mark is the same, a few pixels apart,
+// fading as they spread from it and drifting slowly outward. Wrela's content is fields; so is the
+// mark, and the lines show it. The letters take the mark's exact field; the lines take the
+// distance to each stroke's centre line, the strokes joined smoothly, so they round as they
+// spread, as a map's contours do.
+use brand::facet::{CAP, MarkRun, mark_distance}
+use std::gpu::{ClipPosition, Over, VertexIndex}
+
+pub struct Vertex {
+    pub position: ClipPosition,
+    pub pixel: vec2,
+}
+
+@vertex
+pub fn quad(v: VertexIndex, screen: vec2, rect: vec4) -> Vertex {
+    let corners = [
+        vec2(0.0, 0.0),
+        vec2(1.0, 0.0),
+        vec2(0.0, 1.0),
+        vec2(0.0, 1.0),
+        vec2(1.0, 0.0),
+        vec2(1.0, 1.0),
+    ]
+    let p = rect.xy + rect.zw * corners[v.index]
+    Vertex {
+        position: ClipPosition {
+            position: vec4(p.x / screen.x * 2.0 - 1.0, 1.0 - p.y / screen.y * 2.0, 0.0, 1.0),
+        },
+        pixel: p,
+    }
+}
+
+pub struct Look: Copy + GpuData {
+    /// The mark's centre in pixels, and pixels per em.
+    pub centre: vec2,
+    pub ems: f32,
+    pub count: u32,
+    /// How far apart the lines are, and how far they reach before they fade (pixels).
+    pub spacing: f32,
+    pub reach: f32,
+    /// How far the lines have drifted outward, in spacings.
+    pub drift: f32,
+    /// The band's colour, the lines' and the mark's.
+    pub ground: vec4,
+    pub line: vec4,
+    pub ink: vec4,
+    /// Where the band's foot fades into `below`, the page's colour, and over how many pixels
+    /// (0: a hard edge).
+    pub foot: f32,
+    pub soft: f32,
+    pub below: vec4,
+}
+
+@fragment
+pub fn field(v: Vertex, runs: [MarkRun], look: Look) -> Over {
+    let p = vec2(v.pixel.x - look.centre.x, look.centre.y - v.pixel.y) / look.ems + vec2(0.0, CAP * 0.5)
+    var exact = 100.0
+    var round = 100.0
+    for i in 0..look.count {
+        let r = runs[i]
+        exact = min(exact, mark_distance(p, r))
+        round = smooth_min(round, stroke_distance(p, r), 0.12)
+    }
+    let ink = saturate(0.5 - exact * look.ems)
+    let px = max(round, 0.0) * look.ems
+    // The nearest line, in pixels: a line about a pixel wide, smoothed at its edges.
+    let phase = px / look.spacing - look.drift
+    let f = phase - floor(phase)
+    let off = min(f, 1.0 - f) * look.spacing
+    let on = saturate(1.0 - off / 0.7)
+    let fade = exp(-px / look.reach) * saturate(px / look.spacing - 0.5)
+    // Toward its foot, the band fades into the page, and its lines with it.
+    let down = if look.soft > 0.0 { saturate((v.pixel.y - (look.foot - look.soft)) / look.soft) } else { 0.0 }
+    let ground = mix(look.ground.xyz, look.below.xyz, down * down * (3.0 - 2.0 * down))
+    let color = mix(ground, look.line.xyz, on * fade * look.line.w * (1.0 - down))
+    Over { color: vec4(mix(color, look.ink.xyz, ink), 1.0) }
+}
+
+/// The distance to a run's centre line, less its half stroke: round at its ends.
+fn stroke_distance(p: vec2, r: MarkRun) -> f32 {
+    let a = r.ab.xy
+    let ab = r.ab.zw - a
+    let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 0.000001), 0.0, 1.0)
+    length(p - a - ab * t) - r.shape.x
+}
+
+/// The smaller of `a` and `b`, rounded over `k`: two strokes' fields join without a crease.
+fn smooth_min(a: f32, b: f32, k: f32) -> f32 {
+    let h = saturate(0.5 + 0.5 * (b - a) / k)
+    mix(b, a, h) - k * h * (1.0 - h)
+}

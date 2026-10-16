@@ -1,0 +1,118 @@
+// Where the reader is: a page and a place on it, kept in the page's address after `#` as the
+// page's path without `.md`, then `:` and the place (`#std/arena:arena-push`). The front page is
+// the address without a fragment. Links in the pages are relative to the page they're on.
+
+pub struct Route: Clone + Eq {
+    /// The page's Markdown, beside the index (`std/arena.md`); empty for the front page.
+    pub page: String,
+    /// A heading's anchor on it; empty for its top.
+    pub anchor: String,
+}
+
+/// Where a link takes the reader: a page of the docs, or a link out.
+pub enum Target: Clone + Eq {
+    Docs(Route),
+    Out(String),
+}
+
+impl Route {
+    pub fn front() -> Route {
+        Route { page: String::new(), anchor: String::new() }
+    }
+
+    /// The route an address's fragment names (`/v0.1/#std/arena:arena-push`).
+    pub fn of(address: str) -> Route {
+        let Some(hash) = address.find("#") else { return Route::front() }
+        let frag = address.slice(hash + 1, address.len())
+        if frag.is_empty() { return Route::front() }
+        // The page runs to `:`, the place after it.
+        let k = frag.find(":").unwrap_or(frag.len())
+        let page = frag.slice(from: 0, to: k)
+        let anchor = frag.slice(from: min(k + 1, frag.len()), to: frag.len())
+        if page.is_empty() || !safe(page) || !safe(anchor) { return Route::front() }
+        Route { page: f"{page}.md", anchor: anchor.to_string() }
+    }
+
+    /// The fragment that names it: `#std/arena:arena-push`, or `` for the front page.
+    pub fn fragment(self) -> String {
+        if self.page.is_empty() { return String::new() }
+        let p = self.page.as_str()
+        let end = if p.ends_with(".md") { p.len() - 3 } else { p.len() }
+        let path = p.slice(from: 0, to: end)
+        if self.anchor.is_empty() { f"#{path}" } else { f"#{path}:{self.anchor.as_str()}" }
+    }
+}
+
+/// Whether a route's part is a page's path or an anchor: letters, digits, `-`, `_`, `.` and `/`,
+/// with no `..`. Anything else leads to the front page.
+fn safe(part: str) -> bool {
+    if part.find("..").is_some() { return false }
+    for i in 0..part.len() {
+        let b = part.byte(i)
+        let ok = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 45 || b == 95 ||
+            b == 46 || b == 47 || b >= 128
+        if !ok { return false }
+    }
+    true
+}
+
+/// Where a link on page `from` (`std/arena.md`) to `to` leads: another page relative to it
+/// (`io.md`, `../spec/lexical.md#l11`), a place on the same page (`#arena`), or out (`https://`).
+pub fn follow(from: str, to: str) -> Option<Target> {
+    if to.starts_with("https://") || to.starts_with("http://") { return Some(Target::Out(to.to_string())) }
+    if to.find(":").is_some() { return None }
+    let k = to.find("#").unwrap_or(to.len())
+    let path = to.slice(from: 0, to: k)
+    let anchor = to.slice(from: min(k + 1, to.len()), to: to.len())
+    if path.is_empty() {
+        return Some(Target::Docs(Route { page: from.to_string(), anchor: anchor.to_string() }))
+    }
+    // The page's directory, then each part of the path.
+    var parts: Vec<String> = Vec::new()
+    for (a, b) in from.split("/") { parts.push(from.slice(a, b).to_string()) }
+    let _ = parts.pop()
+    for (a, b) in path.split("/") {
+        let part = path.slice(a, b)
+        if part == ".." {
+            if parts.is_empty() { return None }
+            let _ = parts.pop()
+        } else if part != "." && !part.is_empty() {
+            parts.push(part.to_string())
+        }
+    }
+    var page = String::new()
+    for p in parts {
+        if !page.is_empty() { page.push_str("/") }
+        page.push_str(p.as_str())
+    }
+    if !page.as_str().ends_with(".md") || !safe(page.as_str()) || !safe(anchor) { return None }
+    Some(Target::Docs(Route { page, anchor: anchor.to_string() }))
+}
+
+@test
+fn an_address_names_a_page_and_a_place_and_back() {
+    let r = Route::of("/v0.1/?x=1#std/arena:arena-push")
+    assert(r == Route { page: String::from("std/arena.md"), anchor: String::from("arena-push") })
+    let frag = r.fragment()
+    assert(frag.as_str() == "#std/arena:arena-push")
+    let top = Route::of("/#spec/lexical")
+    assert(top.anchor.is_empty() && top.page.as_str() == "spec/lexical.md")
+    for front in ["/", "/#", "/#../secret", "/#a b", "/#std/io:<x>"] {
+        assert(Route::of(front) == Route::front(), front)
+    }
+    let none = Route::front().fragment()
+    assert(none.is_empty())
+}
+
+@test
+fn a_link_leads_relative_to_its_page_or_out() {
+    let next = follow("std/arena.md", "io.md")
+    assert(next == Some(Target::Docs(Route { page: String::from("std/io.md"), anchor: String::new() })))
+    let up = follow("spec/language/6-memory.md", "../lexical.md#l11")
+    assert(up == Some(Target::Docs(Route { page: String::from("spec/lexical.md"), anchor: String::from("l11") })))
+    let here = follow("std/arena.md", "#arena")
+    assert(here == Some(Target::Docs(Route { page: String::from("std/arena.md"), anchor: String::from("arena") })))
+    assert(follow("a.md", "https://llmstxt.org/") == Some(Target::Out(String::from("https://llmstxt.org/"))))
+    assert(follow("a.md", "javascript:alert(1)").is_none() && follow("a.md", "../../x.md").is_none())
+    assert(follow("std/a.md", "vision.md#x").is_some() && follow("a.md", "b.txt").is_none())
+}
