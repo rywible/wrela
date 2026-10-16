@@ -112,10 +112,12 @@ pub struct Forest {
     every: GpuBuffer<Instance>,
     pub every_lists: Vec<List>,
     /// The leaf patterns cards read, cooked once, and each one's outline (`cook_outlines`); bark's
-    /// ridges, cooked once (`plant::cook_ridges`), and the sampler that repeats them.
+    /// ridges, cooked once (`plant::cook_ridges`, and coarse: `plant::cook_coarse`), and the
+    /// sampler that repeats them.
     pub atlas: Texture<Rgba8>,
     outlines: GpuBuffer<vec2>,
     ridges: Texture<Rgba8>,
+    coarse: Texture<Rgba8>,
     repeat: Sampler,
     /// The cards' and the limbs' triangles (`card_indices`, `limb_indices`), and each list's
     /// draws of them (`ListDraws`: `lists`'s, then `every_lists`'s).
@@ -226,6 +228,8 @@ impl Forest {
         var every_args: GpuBuffer<ListDraws> = buffer(kinds.len())
         write(mut every_args, 0, args_of(kinds, every_lists, 1))
         let room_args = kinds.len() * WAYS
+        let ridges = plant::cook_ridges()
+        let coarse = plant::cook_coarse(ridges)
         Forest {
             kinds,
             placed,
@@ -236,7 +240,8 @@ impl Forest {
             every_lists,
             atlas,
             outlines,
-            ridges: plant::cook_ridges(),
+            ridges,
+            coarse,
             repeat: std::gpu::sampler(address: std::gpu::Address::Repeat),
             card_triangles,
             limb_triangles,
@@ -787,9 +792,6 @@ fn mossy(n: vec3, along: f32, patch: f32) -> f32 {
     place * smoothstep(0.42, 0.58, patch)
 }
 
-/// How wide bark's grain is (m): a pixel past it sees its pattern's mean (`bark_shade`).
-const BARK_GRAIN: f32 = 0.05
-
 /// Turns a surface by the gradient of its height, measured along two screen directions.
 /// Unlike height alone, opposite sides of a furrow face opposite ways. The surface basis
 /// follows horizontal limbs as well as trunks; unresolved or edge-on relief stays bounded.
@@ -804,11 +806,12 @@ fn bark_normal(n: vec3, dx: vec3, dy: vec3, height: vec2) -> vec3 {
     normalize(n - gradient / max(1.0, length(gradient) / 1.2))
 }
 
-/// A limb's pixel: its bark, its ridges read from their cooked tile (`plant::cook_ridges`,
-/// through a repeating sampler `rs`), darker in its furrows; its foot's bark low on its trunk
-/// (`Bark::foot`), lichen in its pale patches and its moss from its corners: no field is
-/// evaluated here. Its pattern fades to its mean as a pixel grows past its grain (`BARK_GRAIN`),
-/// so a far trunk doesn't sparkle.
+/// A limb's pixel: its bark, its ridges read from their cooked tiles (`plant::cook_ridges`, and
+/// `plant::cook_coarse` as a pixel grows past their texels, through a repeating sampler `rs`),
+/// darker in its furrows; its foot's bark low on its trunk (`Bark::foot`), lichen in its pale
+/// patches and its moss from its corners: no field is evaluated here. Its pattern fades to its
+/// mean as a pixel grows past the coarse tile's texels (`plant::bark_at`), so a far trunk doesn't
+/// sparkle.
 @fragment
 pub fn bark_shade(
     b: BarkVertex,
@@ -816,13 +819,15 @@ pub fn bark_shade(
     lt: Lighting,
     bark: Bark,
     ridges: Texture<Rgba8>,
+    coarse: Texture<Rgba8>,
     rs: Sampler,
 ) -> vec4 {
     // Derivatives run before the coverage discard, so every lane has a surface and height.
-    let t = ridges.sample_level(rs, vec2(b.along.x, b.along.y / plant::RIDGES_ALONG))
+    let uv = vec2(b.along.x, b.along.y / plant::RIDGES_ALONG)
+    let size = vec2(f32(plant::RIDGES_W), f32(plant::RIDGES_H))
+    let texels = max(length(dpdx(uv) * size), length(dpdy(uv) * size))
+    let (t, fine) = plant::bark_at(ridges, coarse, rs, uv, texels)
     let smooth_n = normalize(b.normal)
-    let px = max(length(dpdx(b.world)), length(dpdy(b.world)))
-    let fine = 1.0 - smoothstep(BARK_GRAIN * 0.3, BARK_GRAIN, px)
     // The foot's bark, fading up into the trunk's over its last metre or so, unevenly.
     let foot = if bark.foot.w > 0.0 {
         1.0 - smoothstep(bark.foot.w - 0.6, bark.foot.w + 0.9, b.up + 1.4 * (t.a - 0.6))
@@ -830,8 +835,22 @@ pub fn bark_shade(
     // The foot's bark: cracked plates, the ridges' fissures through them.
     let foot_tone = t.g * (0.6 + 0.4 * t.r)
     let raised = mix(bark.raised(t), (foot_tone - 0.5) * 1.6, foot)
-    let height = raised * 0.035 * fine
-    let n = bark_normal(smooth_n, dpdx(b.world), dpdy(b.world), vec2(dpdx(height), dpdy(height)))
+    // Its relief's slope, read from the tiles a texel (of those read) each way along them, turned
+    // into the screen's by the tiles' own derivatives: the height's own screen derivatives are one
+    // a 2x2 block of pixels, and on fine bark the blocks' normals read as stitches (the owner's
+    // lookdev).
+    let height = |p: vec4| mix(bark.raised(p), (p.g * (0.6 + 0.4 * p.r) - 0.5) * 1.6, foot) * 0.035
+    let step = vec2(max(texels, 1.0)) / size
+    let (tu, _) = plant::bark_at(ridges, coarse, rs, uv + vec2(step.x, 0.0), texels)
+    let (tv, _) = plant::bark_at(ridges, coarse, rs, uv + vec2(0.0, step.y), texels)
+    let h = height(t)
+    let slope = vec2(height(tu) - h, height(tv) - h) / step * fine
+    let n = bark_normal(
+        smooth_n,
+        dpdx(b.world),
+        dpdy(b.world),
+        vec2(dot(slope, dpdx(uv)), dot(slope, dpdy(uv))),
+    )
     if !keeps_packed(b.keep.value, pixel.position.xy) {
         discard()
     }
@@ -1047,7 +1066,13 @@ impl Forest {
                             instances: self.instances(l),
                             marks: self.marks(l),
                         ),
-                        bark_shade.bind(lt, k.plant.bark, ridges: self.ridges, rs: self.repeat),
+                        bark_shade.bind(
+                            lt,
+                            k.plant.bark,
+                            ridges: self.ridges,
+                            coarse: self.coarse,
+                            rs: self.repeat,
+                        ),
                         indices: self.limb_triangles,
                         indirect: self.args.at(li).limbs,
                         cull: std::gpu::Cull::Back,

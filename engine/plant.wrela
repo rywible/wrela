@@ -807,14 +807,15 @@ impl Instance {
         reach * self.scale * max(self.wide, 1.0)
     }
 
-    /// A point of the plant's frame in the world: its crown narrowed (`wide`), bent at its fork,
-    /// sized and turned.
+    /// A point of the plant's frame in the world: its crown narrowed (`wide`), its foot spread as
+    /// its trunk is thickened (`thick`, below `FLARE_TO`), bent at its fork, sized and turned.
     pub fn place(self, p: vec3) -> vec3 {
+        let out = self.wide * (1.0 + (self.thick - 1.0) * (1.0 - smoothstep(0.0, FLARE_TO, p.y)))
         self.at +
             oriented(
                 self.yaw,
                 self.pitch,
-                vec3(p.x * self.wide, bend(p.y, self.fork), p.z * self.wide) * self.scale,
+                vec3(p.x * out, bend(p.y, self.fork), p.z * out) * self.scale,
             )
     }
 
@@ -841,6 +842,11 @@ impl Instance {
         vec3(self.tint.decode().xy * 0.16 - vec2(0.08), 0.0)
     }
 }
+
+/// How far up a plant's frame (m) a thickened trunk's foot spreads (`Instance::place`): its roots
+/// reach out as far as it's thick (only their girth thickened, an ancient's roots were knobs round
+/// its foot: the owner's lookdev).
+pub const FLARE_TO: f32 = 1.5
 
 /// How far up a plant's frame (m) the bend of its fork reaches: nothing above it moves.
 pub const BEND_TO: f32 = 32.0
@@ -1075,11 +1081,14 @@ pub fn leaf_atlas(n: u32) -> Texture<Rgba8> {
 
 /// Bark's patterns, cooked once (#55 AC12: no field per pixel per frame for bark): a tile
 /// `BARK_ACROSS` m across a limb (a limb round takes a whole number of them, `bark_round`) and
-/// `RIDGES_ALONG` m along it (down), read through a repeating sampler. Its channels: ridges (r:
-/// 26 across, one a metre along: broad ridges between narrow fissures that run along the limb and
-/// part and join, as an oak's: stretched less, they closed into loops, a map's contours), plates (g: 18 across, 2 a metre along, bent, their tones different, cracks between), bands
-/// (b: 0 in a short dash across the limb, about 20 rows a metre: a birch's lenticels) and mottle
-/// (a: soft patches, 5 across, 0.8 a metre, 0.25 to 0.95).
+/// `RIDGES_ALONG` m along it (down), read through a repeating sampler. Its channels are its shape,
+/// each 0 deep in a fissure or crack and 1 on its surface, so its tone and its relief are one
+/// (a pattern whose tone stepped from plate to plate raised each plate to its own height: shells,
+/// the owner's lookdev): ridges (r: 26 across, one a metre along: flat-topped ridges between
+/// fissures 2 to 5 cm wide that run along the limb and part and join, as an oak's, broken into
+/// long blocks by cross-checks: `ridges_at`), plates (g: a pine's, `plates_at`), bands (b: 0 in a short dash across the
+/// limb, about 20 rows a metre: a birch's lenticels) and mottle (a: soft patches, 5 across, 0.8 a
+/// metre, 0.25 to 0.95).
 pub const RIDGES_ALONG: f32 = 40.0
 pub const BARK_ACROSS: f32 = 2.0
 
@@ -1088,8 +1097,8 @@ pub fn bark_round(girth: f32) -> f32 {
     max(round(girth / BARK_ACROSS), 1.0)
 }
 
-const RIDGES_W: u32 = 256
-const RIDGES_H: u32 = 2048
+pub const RIDGES_W: u32 = 256
+pub const RIDGES_H: u32 = 4096
 
 pub fn cook_ridges() -> Texture<Rgba8> {
     var t = texture::<Rgba8>(width: RIDGES_W, height: RIDGES_H)
@@ -1099,44 +1108,57 @@ pub fn cook_ridges() -> Texture<Rgba8> {
     t
 }
 
-/// The noise bark's fissures follow (`ridge_texel`), at `uv` on its tile: stretched along the limb.
-fn fissure_noise(uv: vec2) -> f32 {
-    noise::noise2_wrapped(vec2(uv.x * 26.0, uv.y * RIDGES_ALONG * 1.0), period: vec2i(26, 40)) *
-        0.85 +
-        noise::noise2_wrapped(vec2(uv.x * 52.0, uv.y * RIDGES_ALONG * 2.0), period: vec2i(52, 80)) *
-            0.15
+/// How many of the patterns' texels a coarse texel holds each way (`cook_coarse`).
+pub const COARSE: u32 = 4
+
+/// The patterns' tile seen from farther (`cook_ridges`'s, each `COARSE` by `COARSE` of its texels
+/// a texel, their mean): textures have one level, and the tile read by a pixel many texels wide
+/// sparkled into dots (the owner's lookdev: an old oak's fissures as stitches).
+pub fn cook_coarse(fine: Texture<Rgba8>) -> Texture<Rgba8> {
+    var t = texture::<Rgba8>(width: RIDGES_W / COARSE, height: RIDGES_H / COARSE)
+    let p = begin_pass(mut t)
+    draw(p, full.bind(z: 0.5), coarse_texel.bind(fine), vertices: 3)
+    p.end()
+    t
 }
+
+@fragment
+fn coarse_texel(pixel: FragCoord, fine: Texture<Rgba8>) -> vec4 {
+    let at = vec2u(pixel.position.xy) * COARSE
+    var sum = vec4(0.0)
+    for j in 0..COARSE {
+        for i in 0..COARSE {
+            sum += fine.load(x: at.x + i, y: at.y + j)
+        }
+    }
+    sum / f32(COARSE * COARSE)
+}
+
+/// The patterns at `uv` on their tile for a pixel `texels` of the fine tile's texels wide: the
+/// fine tile's, toward the coarse's as the pixel grows to `COARSE` texels, and toward the coarse's
+/// mean (`BARK_MEAN`) as it grows to `COARSE` of the coarse's. Its second value: how much of the
+/// pattern is left (1, all, to 0, its mean alone).
+pub fn bark_at(
+    fine: Texture<Rgba8>,
+    coarse: Texture<Rgba8>,
+    s: Sampler,
+    uv: vec2,
+    texels: f32,
+) -> (vec4, f32) {
+    let level = log2(max(texels, 1.0)) / log2(f32(COARSE))
+    let a = fine.sample_level(s, uv)
+    let b = coarse.sample_level(s, uv)
+    let shown = 1.0 - smoothstep(1.0, 2.0, level)
+    (mix(mix(a, b, vec4(saturate(level))), BARK_MEAN, vec4(1.0 - shown)), shown)
+}
+
+/// The patterns' mean texel, about: what a far trunk's bark shows (`bark_at`).
+pub const BARK_MEAN = vec4(0.75, 0.75, 0.92, 0.6)
 
 /// A texel of the patterns' tile, wrapping each way.
 @fragment
 fn ridge_texel(pixel: FragCoord) -> vec4 {
     let uv = pixel.position.xy / vec2(f32(RIDGES_W), f32(RIDGES_H))
-    // Fissures where the noise crosses its middle, each as wide as the next however steep the
-    // noise is there (its distance to its middle, over its slope, in m): lines that run along the
-    // limb, parting and joining (a noise's own bumps read as blotches, and where it lay flat by
-    // its middle its fissures swelled into a leopard's spots: specimens' bark, rounds 1 and 2).
-    let ta = vec2(1.0 / f32(RIDGES_W), 0.0)
-    let tb = vec2(0.0, 1.0 / f32(RIDGES_H))
-    let n = fissure_noise(uv)
-    let slope = vec2(
-        (fissure_noise(uv + ta) - fissure_noise(uv - ta)) / (2.0 * BARK_ACROSS / f32(RIDGES_W)),
-        (fissure_noise(uv + tb) - fissure_noise(uv - tb)) / (2.0 * RIDGES_ALONG / f32(RIDGES_H)),
-    )
-    let apart = abs(n - 0.5) / max(length(slope), 1.0e-3)
-    let ridges = smoothstep(0.006, 0.03, apart) * (0.7 + 0.3 * n)
-    // Plates longer than wide, their edges bent (straight, they read as paving: round 2).
-    let bend = vec2(
-        noise::noise2_wrapped(vec2(uv.x * 9.0, uv.y * RIDGES_ALONG * 1.0), period: vec2i(9, 40)),
-        noise::noise2_wrapped(
-            vec2(uv.x * 9.0 + 4.0, uv.y * RIDGES_ALONG * 1.0 + 7.0),
-            period: vec2i(9, 40),
-        ),
-    ) -
-        vec2(0.5)
-    let plates = plates_at(
-        vec2(uv.x * 18.0, uv.y * RIDGES_ALONG * 2.0) + bend * 0.9,
-        vec2i(18, 80),
-    )
     let bands = band_at(vec2(uv.x, uv.y * RIDGES_ALONG * 20.0), 800)
     let mottle = noise::noise2_wrapped(
         vec2(uv.x * 5.0, uv.y * RIDGES_ALONG * 0.8),
@@ -1145,43 +1167,118 @@ fn ridge_texel(pixel: FragCoord) -> vec4 {
         0.65 +
         noise::noise2_wrapped(vec2(uv.x * 10.0, uv.y * RIDGES_ALONG * 1.6), period: vec2i(10, 64)) *
             0.35
-    vec4(ridges, plates, bands, 0.25 + 0.7 * smoothstep(0.15, 0.85, mottle))
+    vec4(ridges_at(uv), plates_at(uv), bands, 0.25 + 0.7 * smoothstep(0.15, 0.85, mottle))
 }
 
-/// Plates at `p` (cells one unit a side, `period` cells each way, wrapping): each cell's point
-/// placed at random in it, a plate the points' nearest region; its tone its own (0.35 to 1),
-/// dark in the crack where two plates meet, deeper where the cracks run deep (told apart by their
-/// tones alone, the plates read as paving, not bark: specimens' bark, round 1; dark lines of one
-/// width round every plate read as a crack maze: round 1's blind judges).
-fn plates_at(p: vec2, period: vec2i) -> f32 {
-    let c = floor(p)
+/// Fissured bark at `uv` on the tile: 0 in a fissure, 1 on the face between. `lines` fissures
+/// round the tile, unevenly spaced, each running along the limb and wandering across it (up to
+/// `wander` of the way to the next, by a noise of its own, `bends` a metre), so neighbours meet and
+/// part again (past a half, they cross: fissures that join, as an oak's);
+/// each `half` to `half + spread` m wide each side, the faces between them flat-topped and rounding
+/// over into them. The faces are cut across by checks, rows `checks` a metre (each face's own, a
+/// little tilted), a
+/// `share` of them, `check` deep (1 as deep as a fissure). (Where a noise's middle was the fissure,
+/// its contours closed into loops and a map's contours; checks wider than a face joined them into a
+/// maze: specimens' bark, rounds 1 and 2, the owner's lookdev.)
+fn furrows(
+    uv: vec2,
+    lines: i32,
+    seed: i32,
+    wander: f32,
+    bends: f32,
+    half: f32,
+    spread: f32,
+    checks: f32,
+    share: f32,
+    check: f32,
+) -> f32 {
+    let x = uv.x * f32(lines)
+    let k = i32(floor(x))
+    let y = uv.y * RIDGES_ALONG * bends
+    let period = vec2i(lines + 1, i32(RIDGES_ALONG * bends))
+    // The lines round `x` (in lines from the tile's edge), the nearest and the one to its left.
     var near = 9.0
-    var next = 9.0
-    var tone = 0.0
-    for dy in 0..3 {
-        for dx in 0..3 {
-            let o = vec2(f32(dx) - 1.0, f32(dy) - 1.0)
-            let (x, y) = (
-                noise::wrapped(i32(c.x + o.x), period.x),
-                noise::wrapped(i32(c.y + o.y), period.y),
-            )
-            let at = c +
-                o +
-                vec2(noise::hash2(x, y), noise::hash2(x + 101, y + 37)) * 0.8 +
-                vec2(0.1)
-            let d = length(p - at)
-            if d < near {
-                next = near
-                near = d
-                tone = 0.35 + 0.65 * noise::hash2(x + 211, y + 53)
-            } else if d < next {
-                next = d
-            }
+    var left = k - 3
+    var left_at = -9.0
+    for j in 0..6 {
+        let line = k - 2 + j
+        let w = noise::wrapped(line, lines)
+        let at = f32(line) +
+            0.5 +
+            0.6 * (noise::hash2(w, seed + 3) - 0.5) +
+            wander *
+                2.0 *
+                (noise::noise2_wrapped(vec2(f32(w) + 0.5, y + f32(seed)), period: period) - 0.5)
+        near = min(near, abs(x - at))
+        if at <= x && at > left_at {
+            left = w
+            left_at = at
         }
     }
-    let deep = noise::noise2_wrapped(p * 0.5, period: period / vec2i(2))
-    let crack = smoothstep(0.02, 0.06 + 0.12 * deep, next - near)
-    tone * (0.15 + 0.85 * crack)
+    let apart = near * BARK_ACROSS / f32(lines)
+    let wide = half +
+        spread *
+            noise::noise2_wrapped(
+                vec2(uv.x * 6.0 + f32(seed), uv.y * RIDGES_ALONG * 0.5),
+                period: vec2i(6, 20),
+            )
+    let face = smoothstep(wide, wide + 0.012, apart)
+    // The face's checks: its rows, set off by its own draw.
+    let rows = RIDGES_ALONG * checks
+    let along = uv.y * rows +
+        noise::hash2(left, seed + 5) +
+        (x - left_at) * (noise::hash2(left, seed + 9) - 0.5) * 0.12
+    // The nearest edge between rows, where a check may run, and how far it is (m).
+    let edge = round(along)
+    let cut = noise::hash2(noise::wrapped(i32(edge), i32(rows)), left * 7 + seed + 71) < share
+    let d = abs(along - edge) / checks
+    let checked = if cut { 1.0 - check * (1.0 - smoothstep(0.008, 0.016, d)) } else { 1.0 }
+    face * checked
+}
+
+/// The ridges at `uv` on the tile (`ridge_texel`'s red): an oak's, alder's and char's bark, 26
+/// across a tile, broad flat-topped ridges between fissures 2 to 5 cm across, two texels at least
+/// (a centimetre's fissures, a texel across, broke into dashes: the owner's lookdev), cut here and
+/// there by a shallower check: an old oak's long blocks.
+pub fn ridges_at(uv: vec2) -> f32 {
+    furrows(
+        uv,
+        lines: 26,
+        seed: 0,
+        wander: 0.85,
+        bends: 0.7,
+        half: 0.009,
+        spread: 0.012,
+        checks: 3.0,
+        share: 0.4,
+        check: 0.65,
+    )
+}
+
+/// The plates at `uv` on the tile (`ridge_texel`'s green): a pine's, broad (14 across a tile),
+/// their fissures deep and running along the limb, the faces between cut across by deep checks
+/// into plates longer than wide, each face flaking faintly across. Every plate's face is as high as
+/// the next, and as pale: its tone is the bark's mottle. (A Voronoi's cells read as paving with a
+/// tone of their own, as shells with a height of their own, and their bent edges as stacked arcs:
+/// specimens' bark, round 1, and the owner's lookdev.)
+pub fn plates_at(uv: vec2) -> f32 {
+    let flakes = noise::noise2_wrapped(
+        vec2(uv.x * 30.0, uv.y * RIDGES_ALONG * 9.0),
+        period: vec2i(30, 360),
+    )
+    furrows(
+        uv,
+        lines: 14,
+        seed: 13,
+        wander: 0.6,
+        bends: 0.6,
+        half: 0.007,
+        spread: 0.012,
+        checks: 3.0,
+        share: 0.65,
+        check: 0.9,
+    ) *
+        (0.86 + 0.14 * flakes)
 }
 
 /// Bands at `p` (`p.x` once round, `p.y` a row a unit, `rows` rows round the tile): each row a
@@ -1466,6 +1563,63 @@ fn barks_tiles_meet_round_a_limb_at_their_own_size() {
                 each >= BARK_ACROSS * 0.66 && each <= BARK_ACROSS * 1.34,
                 f"a tile {each} m across round a limb {girth} m round",
             )
+        }
+    }
+}
+
+/// Bark's faces stand at one height, plate to plate (each plate a tone and a height of its own,
+/// pine's bark read as shells), and its fissures are two texels across at least (a texel's broke
+/// into dashes): the cooked patterns, read at their texels.
+@test
+fn barks_faces_stand_level_and_its_fissures_are_two_texels_wide() {
+    for which in 0..2 {
+        let f = |x: u32, y: u32| {
+            let uv = (vec2(f32(x), f32(y)) + vec2(0.5)) / vec2(f32(RIDGES_W), f32(RIDGES_H))
+            if which == 0 { ridges_at(uv) } else { plates_at(uv) }
+        }
+        var faces = 0
+        var level = 0
+        var narrowest = 1.0e9
+        // Across the limb, a row of texels every 32; along it, a column every 16.
+        for pass in 0..2 {
+            let lines = if pass == 0 { RIDGES_H / 32 } else { RIDGES_W / 16 }
+            let length = if pass == 0 { RIDGES_W } else { RIDGES_H }
+            for l in 0..lines {
+                var run = 0
+                var started = false
+                for i in 0..length {
+                    let t = if pass == 0 { f(i, l * 32) } else { f(l * 16, i) }
+                    if t > 0.5 {
+                        faces += 1
+                        if t >= 0.8 {
+                            level += 1
+                        }
+                        if started && run > 0 {
+                            narrowest = min(narrowest, f32(run))
+                        }
+                        started = true
+                        run = 0
+                    } else {
+                        run += 1
+                    }
+                }
+            }
+        }
+        let share = f32(level) / f32(max(faces, 1))
+        assert(share >= 0.85, f"pattern {which}: only {share} of its faces stand level")
+        assert(narrowest >= 2.0, f"pattern {which} has a fissure {narrowest} texels across")
+    }
+}
+
+/// Bark's tile meets itself each way, so a limb's round and length show no seam.
+@test
+fn barks_tile_wraps_each_way() {
+    for i in 0..32 {
+        let a = (f32(i) + 0.37) / 32.0
+        for which in 0..2 {
+            let f = |uv: vec2| if which == 0 { ridges_at(uv) } else { plates_at(uv) }
+            assert(abs(f(vec2(0.0, a)) - f(vec2(1.0, a))) < 1.0e-4, "the tile's sides don't meet")
+            assert(abs(f(vec2(a, 0.0)) - f(vec2(a, 1.0))) < 1.0e-4, "the tile's ends don't meet")
         }
     }
 }
