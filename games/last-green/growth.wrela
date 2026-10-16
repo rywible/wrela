@@ -494,8 +494,8 @@ pub fn wild_decisions(t: vec2i, own: take Vec<engine::grow::Tree>) -> engine::ba
 // ---- its shots -------------------------------------------------------------------------------------
 
 /// The grown view's shots, and their names: the bare view's of the world's places
-/// (`geology::World::shots`), each eye moved to see past the wood (`off_wood`); and two of the
-/// wood itself (`in_wood`): in it, and over it.
+/// (`geology::World::shots`), each eye moved to see past the wood (`off_wood`); and three of the
+/// wood itself: in it, and over it (`in_wood`), and its oldest tree (`ancient`).
 pub struct Shots: Clone {
     pub shots: Vec<Shot>,
     pub names: Vec<String>,
@@ -534,8 +534,63 @@ fn shots() -> Shots {
     out.names.push(String::from("in the wood"))
     out.shots.push(over)
     out.names.push(String::from("over the wood"))
+    out.shots.push(ancient(trees, stems))
+    out.names.push(String::from("an ancient"))
     out
 }
+
+/// The wood's oldest: its thickest oak or beech within the square, off its collar, seen from
+/// `ANCIENT_FROM` m away, of 16 ways round it the one whose way to it is clearest of the stems
+/// (x, z, radius) and on gentle ground, looking at its trunk a third of the way up its crown.
+fn ancient(trees: [engine::grow::Tree], stems: [vec3]) -> Shot {
+    var best = trees[0]
+    var thickest = -1.0
+    for t in trees {
+        let kind = species::Species::from_u32(t.kind).unwrap()
+        let broad = kind == species::Species::Oak || kind == species::Species::Beech
+        if t.state == State::Alive &&
+            broad &&
+            t.girth > thickest &&
+            WORLD.land.square.within(t.at, SQUARE_COLLAR) >= 1.0 {
+            thickest = t.girth
+            best = t
+        }
+    }
+    var near: Vec<vec3> = Vec::new()
+    for st in stems {
+        if length(st.xy - best.at) < ANCIENT_FROM + 10.0 && length(st.xy - best.at) > 0.5 {
+            near.push(st)
+        }
+    }
+    var from = best.at + vec2(0.0, -ANCIENT_FROM)
+    var clearest = -1.0
+    for k in 0..16 {
+        let a = 6.2831853 * f32(k) / 16.0
+        let eye = best.at + vec2(sin(a), cos(a)) * ANCIENT_FROM
+        if hard_at(eye) || length(LAND.land.made(eye).yz) > 0.4 {
+            continue
+        }
+        let toward = normalize(best.at - eye)
+        var d = 0.0
+        while d < ANCIENT_FROM - best.reach * 0.3 && clear_of(near, eye, toward, d + 1.0) {
+            d += 1.0
+        }
+        if d > clearest {
+            clearest = d
+            from = eye
+        }
+    }
+    Shot {
+        name: "",
+        eye: vec3(from.x, 1.7, from.y),
+        at: vec3(best.at.x, best.tall * 0.3, best.at.y),
+        moves: normalize(best.at - from) * 2.0,
+        fovy: 1.0,
+    }
+}
+
+/// How far from the wood's oldest its shot stands (m).
+const ANCIENT_FROM: f32 = 34.0
 
 /// How far a shot's eye sees past the wood's stems (m): its first `SIGHT` clear of any by a stem's
 /// girth and `STEM_ROOM`.
@@ -811,7 +866,10 @@ fn the_history_is_given_the_lands_water_and_soil() {
 @test
 fn the_grown_views_shots_see_past_the_stems() {
     let n = WORLD.shots.len()
-    assert(SHOTS.shots.len() == n + 2 && SHOTS.names.len() == n + 2, "not a shot a place, and two")
+    assert(
+        SHOTS.shots.len() == n + 3 && SHOTS.names.len() == n + 3,
+        "not a shot a place, and three",
+    )
     for i in 0..n {
         let (moved, place) = (SHOTS.shots[i].eye.xz, WORLD.shots[i].eye.xz)
         let off = abs(moved - place)

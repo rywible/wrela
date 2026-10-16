@@ -1158,6 +1158,19 @@ life, and its look should be mythic.
   herbs; its gentle rock is grown over; sun shafts fall through its canopy and its light glows
   more.
 
+Ryan agreed and asked to keep tightening it, saying the bark had to read much better.
+- **Bark:** its pattern was laid once round every limb, so a twig and an ancient trunk had as
+  many plates. It's now laid in metres (a whole number of 2 m tiles round each limb) and fades
+  to its mean where a pixel is coarser than its grain. Oak's fissures are cooked an even width
+  and run along the trunk, parting and joining; pine's plates are long, bent and cracked, grey
+  low on the trunk under its orange; birch has a black fissured foot; beech has faint dashes and
+  green algae; furrows are darker in their depths; lichen grows in the pale patches. The
+  specimen view shoots each bark close.
+- **Mist:** the air can carry a low mist (`engine::air::Air::mist`) that lies in the valleys and
+  over the water and thins over the tops; the grown land's air has it, the floor's doesn't.
+- **Shrubs:** hawthorn and sloe are many small clusters on their stems with a ragged edge.
+- **An ancient:** a grown-view shot of the wood's oldest tree.
+
 ## The climber's robe, darkness and glide, 2026-10-14
 
 Ryan found the Last Green's player character clunky to move and its cloth, robe, darkness and

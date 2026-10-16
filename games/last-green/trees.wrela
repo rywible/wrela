@@ -331,17 +331,23 @@ fn shrub(s: u32, size: f32, count: u32, leaves: Leaves, stems: u32) -> Plant {
         tops.push(top)
         outs.push(out)
     }
+    // Small clusters, many, round each stem's top and out along it, some far out on their own
+    // and some left out: a ragged edge with sky through it (a few big clusters read as topiary:
+    // the ancient wood's stills).
     for i in 0..count {
         let j = i % stems
+        if rand(s, 60 + i) < 0.12 {
+            continue
+        }
         let a = TAU * rand(s, 10 + i)
-        let up = pick(s, 20 + i, lo: -0.4, hi: 0.9)
+        let up = pick(s, 20 + i, lo: -0.5, hi: 0.9)
         let ring = sqrt(max(1.0 - up * up, 0.0))
         let d = normalize(vec3(ring * cos(a), up, ring * sin(a)) + outs[j] * 0.6)
-        let at = tops[j] + d * size * pick(s, 30 + i, lo: 0.08, hi: 0.4)
+        let out = pick(s, 30 + i, lo: 0.1, hi: 0.55) * if rand(s, 70 + i) < 0.2 { 1.5 } else { 1.0 }
         p.cushion(
-            at,
-            radius: size * pick(s, 40 + i, lo: 0.2, hi: 0.36),
-            squash: pick(s, 50 + i, lo: 0.7, hi: 0.95),
+            tops[j] + d * size * out,
+            radius: size * pick(s, 40 + i, lo: 0.1, hi: 0.2),
+            squash: pick(s, 50 + i, lo: 0.65, hi: 0.95),
         )
     }
     p
@@ -731,7 +737,7 @@ pub fn kind_plant(k: u32) -> Plant {
         shrub(
             111,
             5.0,
-            34,
+            110,
             Leaves {
                 young: vec3(0.11, 0.18, 0.04),
                 old: vec3(0.03, 0.07, 0.02),
@@ -744,7 +750,7 @@ pub fn kind_plant(k: u32) -> Plant {
         shrub(
             112,
             3.0,
-            30,
+            96,
             Leaves {
                 young: vec3(0.07, 0.12, 0.03),
                 old: vec3(0.02, 0.05, 0.02),
