@@ -12,10 +12,11 @@ pub fn great_tree() -> Plant {
     // Old bark: darker than a young tree's, so the trunk stays a shape in shade under the crown;
     // deep furrows broken into blocks, as an old oak's.
     let bark = Bark {
-        dark: vec3(0.06, 0.047, 0.036),
-        light: vec3(0.21, 0.17, 0.125),
-        grain: vec3(0.65, 0.35, 0.0),
-        relief: 1.5,
+        dark: vec3(0.04, 0.032, 0.026),
+        light: vec3(0.24, 0.2, 0.15),
+        grain: vec3(0.75, 0.25, 0.0),
+        relief: 1.7,
+        lichen: vec4(0.34, 0.38, 0.3, 0.3),
     }
     var p = plant(
         leaves: Leaves {

@@ -24,6 +24,7 @@ use plant::{
 }
 use shadow::{CASTER, Shadows}
 use std::field::Tube
+use std::math::TAU
 use std::gpu::{
     Atomics, ClipPosition, Compare, Depth, DepthTexture, DrawIndexedArgs, Flat, FragCoord,
     GpuBuffer, GpuSpan, InstanceIndex, R32Uint, RenderPass, Rgba8, Sampler, Texture, VertexIndex,
@@ -705,7 +706,10 @@ pub struct BarkVertex: Copy {
     pub clip: ClipPosition,
     pub world: vec3,
     pub normal: vec3,
+    /// Where it is on its bark's tiles (round in tiles, `plant::bark_round`; along in m), and how
+    /// high it is over its plant's foot (m of the plant as it's built: `Bark::foot`).
     pub along: vec2,
+    pub up: f32,
     /// How mossy it is: on its upper side, in patches (worked out at its corners).
     pub moss: f32,
     /// The part of a pixel's draws its instance keeps this way, packed (`Forest::marks`).
@@ -723,11 +727,16 @@ pub fn limb_indices(n: u32) -> Vec<u32> {
     out
 }
 
-/// Point `v % LIMB_POINTS` of limb `v / LIMB_POINTS`, of instance `i`, in the world.
+/// Point `v % LIMB_POINTS` of limb `v / LIMB_POINTS`, of instance `i`, in the world, and where it
+/// is on its bark (`BarkVertex::along`: round a whole number of bark's tiles, as round as its
+/// limb is at its foot in the world; along, in the world's metres).
 fn limb_world(v: u32, i: u32, limbs: [Tube<4>], instances: [Instance]) -> (vec3, vec3, vec2) {
-    let (centre, n, radius, along) = limb_point(limbs[v / LIMB_POINTS], v % LIMB_POINTS)
+    let limb = limbs[v / LIMB_POINTS]
+    let (centre, n, radius, along) = limb_point(limb, v % LIMB_POINTS)
     let inst = instances[i]
-    (inst.place_round(centre, n * radius), inst.turn_normal(n, centre.y), along)
+    let girth = TAU * limb.radii[0] * inst.scale * inst.thick
+    let on_bark = vec2(along.x * plant::bark_round(girth), along.y * inst.scale)
+    (inst.place_round(centre, n * radius), inst.turn_normal(n, centre.y), on_bark)
 }
 
 @vertex
@@ -740,11 +749,13 @@ pub fn limb(
     marks: [vec2u],
 ) -> BarkVertex {
     let (world, n, along) = limb_world(v.index, i.index, limbs, instances)
+    let inst = instances[i.index]
     BarkVertex {
         clip: ClipPosition { position: cam.clip(world) },
         world,
         normal: n,
         along,
+        up: (world.y - inst.at.y) / max(inst.scale, 1.0e-3),
         moss: mossy(n, along.y, noise::noise2((world.xz + cam.keyed().xz) * 3.0 + world.y * 0.7)),
         keep: Flat { value: marks[i.index].x },
     }
@@ -776,6 +787,9 @@ fn mossy(n: vec3, along: f32, patch: f32) -> f32 {
     place * smoothstep(0.42, 0.58, patch)
 }
 
+/// How wide bark's grain is (m): a pixel past it sees its pattern's mean (`bark_shade`).
+const BARK_GRAIN: f32 = 0.05
+
 /// Turns a surface by the gradient of its height, measured along two screen directions.
 /// Unlike height alone, opposite sides of a furrow face opposite ways. The surface basis
 /// follows horizontal limbs as well as trunks; unresolved or edge-on relief stays bounded.
@@ -791,7 +805,10 @@ fn bark_normal(n: vec3, dx: vec3, dy: vec3, height: vec2) -> vec3 {
 }
 
 /// A limb's pixel: its bark, its ridges read from their cooked tile (`plant::cook_ridges`,
-/// through a repeating sampler `rs`) and its moss from its corners: no field is evaluated here.
+/// through a repeating sampler `rs`), darker in its furrows; its foot's bark low on its trunk
+/// (`Bark::foot`), lichen in its pale patches and its moss from its corners: no field is
+/// evaluated here. Its pattern fades to its mean as a pixel grows past its grain (`BARK_GRAIN`),
+/// so a far trunk doesn't sparkle.
 @fragment
 pub fn bark_shade(
     b: BarkVertex,
@@ -804,12 +821,33 @@ pub fn bark_shade(
     // Derivatives run before the coverage discard, so every lane has a surface and height.
     let t = ridges.sample_level(rs, vec2(b.along.x, b.along.y / plant::RIDGES_ALONG))
     let smooth_n = normalize(b.normal)
-    let height = bark.raised(t) * 0.035
+    let px = max(length(dpdx(b.world)), length(dpdy(b.world)))
+    let fine = 1.0 - smoothstep(BARK_GRAIN * 0.3, BARK_GRAIN, px)
+    // The foot's bark, fading up into the trunk's over its last metre or so, unevenly.
+    let foot = if bark.foot.w > 0.0 {
+        1.0 - smoothstep(bark.foot.w - 0.6, bark.foot.w + 0.9, b.up + 1.4 * (t.a - 0.6))
+    } else { 0.0 }
+    // The foot's bark: cracked plates, the ridges' fissures through them.
+    let foot_tone = t.g * (0.6 + 0.4 * t.r)
+    let raised = mix(bark.raised(t), (foot_tone - 0.5) * 1.6, foot)
+    let height = raised * 0.035 * fine
     let n = bark_normal(smooth_n, dpdx(b.world), dpdy(b.world), vec2(dpdx(height), dpdy(height)))
     if !keeps_packed(b.keep.value, pixel.position.xy) {
         discard()
     }
-    let albedo = mix(bark.dark, bark.light, vec3(bark.tone(t)))
+    let tone = mix(0.55, bark.tone(t), fine)
+    var albedo = mix(bark.dark, bark.light, vec3(tone))
+    albedo = mix(albedo, bark.foot.xyz * (0.45 + 1.1 * mix(0.5, foot_tone, fine)), vec3(foot))
+    // Darker down its furrows and cracks, as their depth hides them from the light: as much as
+    // the bark is rough (a smooth bark's mottle isn't a furrow).
+    let rough = max(bark.relief, 1.6 * foot)
+    let depth = clamp(raised / max(rough, 1.0e-3) + 0.5, 0.0, 1.0)
+    albedo *= 1.0 - fine * 0.5 * min(rough / 1.6, 1.0) * (1.0 - depth)
+    albedo = mix(
+        albedo,
+        bark.lichen.xyz,
+        vec3(bark.lichen.w * smoothstep(0.72, 0.88, t.a) * (1.0 - foot)),
+    )
     let a = mix(albedo, bark.moss, vec3(b.moss))
     // No gloss: bark is rough, and its impostor lights it as its leaves (`leaf_light`).
     let (sun, sky) = sun_and_sky(lt, b.world, n, sky_n: n, soft: 1.5)

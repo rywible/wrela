@@ -65,11 +65,31 @@ pub struct WaterMesh: Clone {
 /// The bins' size (m).
 const BIN: f32 = 8.0
 
-/// A stream's course as the water lays it: its points (x, z, width, depth), and whether it falls.
+/// A stream's course as the water lays it: its points (x, z, width, depth), whether it falls, and
+/// whether its water is held to a level that never rises down it (`held`: a course a land's own
+/// drainage traced, over ground whose detail can rise across its way; the water lies under a rise
+/// there, a stone in its bed showing through, and never climbs it).
 pub struct Course: Clone {
     pub points: Vec<vec4>,
     pub falls: bool,
+    pub held: bool = false,
 }
+
+/// A lake's sheet: still water at `level` over the cells of a grid (from `lo`, `nx` × `nz`, each
+/// `cell` m a side) that `holds` marks (its basin's), and on round them as far as its water runs
+/// under its level, to the shore, under which its edge hides; but no further than a cell, and into
+/// no hollow the shore cuts off (`sheet`).
+pub struct Sheet: Clone {
+    pub lo: vec2,
+    pub nx: u32,
+    pub nz: u32,
+    pub cell: f32,
+    pub level: f32,
+    pub holds: Vec<bool>,
+}
+
+/// How far apart a sheet's points are (m).
+const SHEET_STEP: f32 = 2.0
 
 /// No water: a height's answer where there's none.
 pub const NONE: f32 = -1.0e9
@@ -95,6 +115,18 @@ const POOL_STEP: f32 = 0.4
 /// apart, `ACROSS` points wide), and each pool (x, z, radius, level) a disc: a skin over the
 /// ground (its level `NONE`: a spring's), or still at its level (a hollow the water fills).
 pub fn lay<G: Ground>(g: G, w: Water, courses: [Course], pools: [vec4]) -> WaterMesh {
+    let none: Vec<Sheet> = Vec::new()
+    lay_with(g, w, courses, pools, none)
+}
+
+/// `lay`, and lakes' sheets (`Sheet`).
+pub fn lay_with<G: Ground>(
+    g: G,
+    w: Water,
+    courses: [Course],
+    pools: [vec4],
+    sheets: [Sheet],
+) -> WaterMesh {
     var m = WaterMesh {
         verts: Vec::new(),
         tris: Vec::new(),
@@ -115,9 +147,128 @@ pub fn lay<G: Ground>(g: G, w: Water, courses: [Course], pools: [vec4]) -> Water
     for q in pools {
         disc(mut m, g, q.xy, q.z, q.w, POOL_STEP, spills: true)
     }
+    for sh in sheets {
+        sheet(mut m, g, sh)
+    }
     binned(mut m)
     m
 }
+
+/// A lake's sheet (`Sheet`): a point each `SHEET_STEP` at its level, over its cells, and from
+/// them out through each point round them (within a cell) whose ground lies under its level, as
+/// its water would run; and a point past each of those, on the shore, so its edge hides under the
+/// ground. A hollow the shore cuts off stays dry. A triangle where all three of its points are.
+fn sheet<G: Ground>(m: mut WaterMesh, g: G, sh: Sheet) {
+    let ix = i32(sh.nx)
+    let iz = i32(sh.nz)
+    let held = |i: i32, j: i32| i >= 0 &&
+        j >= 0 &&
+        i < ix &&
+        j < iz &&
+        sh.holds[u32(j) * sh.nx + u32(i)]
+    // Its points' grid: over the cells it holds and one round them.
+    var lo = vec2i(ix, iz)
+    var hi = vec2i(-1, -1)
+    for j in 0..iz {
+        for i in 0..ix {
+            if held(i, j) {
+                lo = min(lo, vec2i(i - 1, j - 1))
+                hi = max(hi, vec2i(i + 1, j + 1))
+            }
+        }
+    }
+    if hi.x < lo.x {
+        return
+    }
+    let per = sh.cell / SHEET_STEP
+    let a = sh.lo + vec2(lo) * sh.cell
+    let n = vec2u(ceil(vec2(hi - lo + vec2i(1)) * per)) + vec2u(1)
+    let count = n.x * n.y
+    let at = |k: u32| a + vec2(f32(k % n.x), f32(k / n.x)) * SHEET_STEP
+    let cell_of = |p: vec2| vec2i(floor((p - sh.lo) / sh.cell))
+    // Each point's ground, whether it's in the basin's cells or its ring, and whether its water
+    // reaches it: flooded from the basin's cells through the ring's points under the level.
+    var ground: Vec<f32> = Vec::with_capacity(count)
+    var ring: Vec<bool> = Vec::with_capacity(count)
+    var wet: Vec<bool> = Vec::filled(count, value: false)
+    var front: Vec<u32> = Vec::new()
+    for k in 0..count {
+        let p = at(k)
+        let c = cell_of(p)
+        var near = false
+        for q in 0..9 {
+            near = near || held(c.x + i32(q % 3) - 1, c.y + i32(q / 3) - 1)
+        }
+        ground.push(g.height(p.x, p.y))
+        ring.push(near)
+        if held(c.x, c.y) {
+            wet[k] = true
+            front.push(k)
+        }
+    }
+    while front.len() > 0 {
+        let k = front.pop().unwrap()
+        let (u, v) = (i32(k % n.x), i32(k / n.x))
+        for q in [vec2i(-1, 0), vec2i(1, 0), vec2i(0, -1), vec2i(0, 1)] {
+            let (x, z) = (u + q.x, v + q.y)
+            if x < 0 || z < 0 || x >= i32(n.x) || z >= i32(n.y) {
+                continue
+            }
+            let o = u32(z) * n.x + u32(x)
+            if !wet[o] && ring[o] && ground[o] < sh.level {
+                wet[o] = true
+                front.push(o)
+            }
+        }
+    }
+    let first = m.verts.len()
+    var index: Vec<u32> = Vec::filled(count, NO_POINT)
+    for k in 0..count {
+        let (u, v) = (i32(k % n.x), i32(k / n.x))
+        var shore = false
+        for q in 0..9 {
+            let (x, z) = (u + i32(q % 3) - 1, v + i32(q / 3) - 1)
+            shore = shore ||
+                (x >= 0 && z >= 0 && x < i32(n.x) && z < i32(n.y) && wet[u32(z) * n.x + u32(x)])
+        }
+        if wet[k] || shore {
+            let p = at(k)
+            index[k] = m.verts.len() - first
+            m.verts.push(
+                WaterVert {
+                    at: vec3(p.x, sh.level, p.y),
+                    depth: max(sh.level - ground[k], 0.0),
+                    flow: vec2(0.0),
+                    kind: STILL,
+                    bank: 0.0,
+                },
+            )
+        }
+    }
+    for v in 0..n.y - 1 {
+        for u in 0..n.x - 1 {
+            let q = [
+                index[v * n.x + u],
+                index[v * n.x + u + 1],
+                index[(v + 1) * n.x + u],
+                index[(v + 1) * n.x + u + 1],
+            ]
+            if q[0] != NO_POINT && q[1] != NO_POINT && q[2] != NO_POINT {
+                m.tris.push(first + q[0])
+                m.tris.push(first + q[2])
+                m.tris.push(first + q[1])
+            }
+            if q[1] != NO_POINT && q[2] != NO_POINT && q[3] != NO_POINT {
+                m.tris.push(first + q[1])
+                m.tris.push(first + q[2])
+                m.tris.push(first + q[3])
+            }
+        }
+    }
+}
+
+/// No point of a sheet's grid.
+const NO_POINT: u32 = 4294967295
 
 /// The mesh's triangles binned (`WaterMesh`'s bins): each in every bin its bounds touch.
 fn binned(m: mut WaterMesh) {
@@ -277,9 +428,10 @@ fn ribbon<G: Ground>(m: mut WaterMesh, g: G, c: Course) {
     let count = sections.len()
     let skin = if c.falls { FALL_SKIN } else { SKIN }
     // The lip, once the fall's ground first drops steeply: the sheet's height there, and how far
-    // the water has gone past it.
+    // the water has gone past it. A held course's level so far down it (`Course::held`).
     var lip = NONE
     var past = 0.0
+    var level = 1.0e9
     for i in 0..count {
         let s = sections[i]
         let prev = sections[if i > 0 { i - 1 } else { 0 }].xy
@@ -287,6 +439,7 @@ fn ribbon<G: Ground>(m: mut WaterMesh, g: G, c: Course) {
         let along = normalize(next - prev + vec2(1.0e-6, 0.0))
         let side = vec2(-along.y, along.x)
         let ground = g.height(s.x, s.y)
+        level = min(level, ground + skin)
         let fall = g.height(prev.x, prev.y) - g.height(next.x, next.y)
         let slope = max(fall, 0.0) / max(length(next - prev), 0.1)
         if c.falls && lip <= NONE && slope > 0.7 {
@@ -313,9 +466,10 @@ fn ribbon<G: Ground>(m: mut WaterMesh, g: G, c: Course) {
             }
             let p = s.xy + side * (u * 0.5 * s.z)
             let wet = max(1.0 - u * u, 0.0)
+            let on = g.height(p.x, p.y) + skin
             m.verts.push(
                 WaterVert {
-                    at: vec3(p.x, max(g.height(p.x, p.y) + skin, sheet), p.y),
+                    at: vec3(p.x, max(if c.held { min(on, level) } else { on }, sheet), p.y),
                     depth: s.w * wet,
                     flow: along * speed * (1.0 - 0.5 * min(u * u, 1.0)),
                     kind,
@@ -1189,5 +1343,124 @@ fn water_glint_spreads_without_creating_reflected_energy() {
                 "water's direct reflection creates energy or is not finite",
             )
         }
+    }
+}
+
+/// A test's ground: a plain falling to +x at `fall` a metre, with a bump `bump` m high round x = 20
+/// (4 m wide).
+struct Plain: Copy {
+    fall: f32,
+    bump: f32,
+}
+
+impl Ground for Plain {
+    fn height(self, x: f32, z: f32) -> f32 {
+        -self.fall * x + self.bump * max(1.0 - abs(x - 20.0) / 2.0, 0.0)
+    }
+
+    fn past_edge(self, p: vec2) -> f32 {
+        -100.0
+    }
+
+    fn rock(self, p: vec2) -> f32 {
+        0.0
+    }
+}
+
+/// A held course (`Course::held`) never rises down its way: over a bump in its bed its water lies
+/// under the bump, and its middle's height only falls (it climbs nothing in all); an unheld one
+/// rides over it.
+@test
+fn a_held_course_never_rises_down_its_way() {
+    let g = Plain { fall: 0.05, bump: 1.5 }
+    let pts = Vec::from_fn(11, |i| vec4(f32(i) * 4.0, 0.0, 2.0, 0.3))
+    let none = Water {
+        meres: [vec4(0.0); 2],
+        springs: [vec2(0.0); 8],
+        spring_count: 0,
+        falls: [vec2(0.0); 2],
+    }
+    for held in [true, false] {
+        let pools: Vec<vec4> = Vec::new()
+        let m = lay(g, none, [Course { points: pts.clone(), falls: false, held }], pools)
+        // Each section's middle point: the ribbon's sixth of its `ACROSS + 2` a section.
+        var last = 1.0e9
+        var rises = 0.0
+        var i = (ACROSS + 2) / 2
+        while i < m.verts.len() {
+            let y = m.verts[i].at.y
+            rises += max(y - last, 0.0)
+            last = y
+            i += ACROSS + 2
+        }
+        if held {
+            assert(rises <= 0.0, f"a held course rises {rises} m")
+        } else {
+            assert(rises > 1.0, f"an unheld course climbs only {rises} m over the bump")
+        }
+    }
+}
+
+/// A test's basin: level ground at 0 m over x 32 to 56, z -24 to 0, and 0.5 m round it, with a
+/// round hollow a metre deep, 3 m across, at (`hole`, -12).
+struct Bowl: Copy {
+    hole: f32,
+}
+
+impl Ground for Bowl {
+    fn height(self, x: f32, z: f32) -> f32 {
+        let inside = x >= 32.0 && x <= 56.0 && z >= -24.0 && z <= 0.0
+        (if inside { 0.0 } else {
+            0.5
+        }) - max(1.0 - length(vec2(x - self.hole, z + 12.0)) / 1.5, 0.0)
+    }
+
+    fn past_edge(self, p: vec2) -> f32 {
+        -100.0
+    }
+
+    fn rock(self, p: vec2) -> f32 {
+        0.0
+    }
+}
+
+/// A lake's sheet covers its basin to the shore and keeps to it: no water in a hollow beside it
+/// that its shore cuts off (in its ring, at 61 m) or past it (at 90 m); none farther than a point
+/// up its shore.
+@test
+fn a_lakes_sheet_keeps_to_its_basin() {
+    for hole in [61.0, 90.0] {
+        let g = Bowl { hole }
+        var holds: Vec<bool> = Vec::filled(100, value: false)
+        for c in 0..100 {
+            let (i, j) = (c % 10, c / 10)
+            holds[c] = i >= 2 && i <= 4 && j >= 2 && j <= 4
+        }
+        let sh = Sheet { lo: vec2(16.0, -40.0), nx: 10, nz: 10, cell: 8.0, level: 0.2, holds }
+        let none = Water {
+            meres: [vec4(0.0); 2],
+            springs: [vec2(0.0); 8],
+            spring_count: 0,
+            falls: [vec2(0.0); 2],
+        }
+        let (courses, pools): (Vec<Course>, Vec<vec4>) = (Vec::new(), Vec::new())
+        let m = lay_with(g, none, courses, pools, [take sh])
+        var inside = 0
+        for v in m.verts {
+            assert(v.at.y == 0.2, "a sheet's point off its level")
+            assert(length(v.at.xz - vec2(hole, -12.0)) > 1.4, f"water over the hollow at {hole}")
+            let p = v.at.xz
+            assert(
+                p.x >= 32.0 - SHEET_STEP - 0.01 &&
+                    p.x <= 56.0 + SHEET_STEP + 0.01 &&
+                    p.y >= -24.0 - SHEET_STEP - 0.01 &&
+                    p.y <= SHEET_STEP + 0.01,
+                f"water at {p}, past the shore",
+            )
+            if p.x >= 32.0 && p.x <= 56.0 && p.y >= -24.0 && p.y <= 0.0 {
+                inside += 1
+            }
+        }
+        assert(inside >= 169, f"only {inside} of the basin's points")
     }
 }

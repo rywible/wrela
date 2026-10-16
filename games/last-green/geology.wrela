@@ -14,8 +14,10 @@
 // to be judged before what grows on it is.
 
 use engine::grow::Grid
+use engine::grow::Stream
 use engine::landform::{
-    Feature, Finding, Landscape, PlaceKind, Relief, Shaping, Strength, border, evolve, places,
+    Basins, Feature, Finding, Landscape, PlaceKind, Relief, Shaping, Strength, basins, border,
+    channels, evolve, places,
 }
 use engine::noise::{fbm2, fbm2_seen, rand}
 use engine::soil::{SoilKind, soil}
@@ -393,7 +395,7 @@ pub const SQUARE_SOIL: u32 = 32544
 /// How far in from the region's edge cells its land comes in fully over the lowland's, and the
 /// square's over the region's (m).
 const REGION_COLLAR: f32 = 1200.0
-const SQUARE_COLLAR: f32 = 64.0
+pub const SQUARE_COLLAR: f32 = 64.0
 
 /// The granite's sheets: how thick the thinnest is (m; each is 1 to `THICKEST` of these), and
 /// how far a sheet's lip stands out over the next one down at most.
@@ -420,7 +422,7 @@ fn sheeted(p: vec2, slope: f32) -> f32 {
 impl Bare {
     /// The land's height at `p` before its rock's own detail (m), and its slope there (its rise
     /// per metre along x and z).
-    fn made(self, p: vec2) -> vec3 {
+    pub fn made(self, p: vec2) -> vec3 {
         let r = self.region.rise_grad(p)
         let w = self.region.within(p, REGION_COLLAR)
         var y = vec3(mix(lowland(p), r.x, w), r.y * w, r.z * w)
@@ -495,7 +497,7 @@ impl Bare {
     /// hold soil, in its beds, joints and streaks (`ground::rock_albedo`) and its stratum's
     /// colour; scree on steep slopes; its soil elsewhere, darker and browner where it's wet;
     /// nothing growing.
-    fn bare_cover(self, at: vec3, n: vec3, w: f32) -> Cover {
+    pub(package) fn bare_cover(self, at: vec3, n: vec3, w: f32) -> Cover {
         let p = at.xz
         let slope = sqrt(max(1.0 - n.y * n.y, 0.0)) / max(n.y, 0.05)
         let s = stratum(p, at.y)
@@ -595,7 +597,7 @@ fn granite_albedo(at: vec3, n: vec3, f: f32, u: i32, shows: f32, w: f32) -> vec3
 
 /// The world's land as its making left it, its places, their names, and the shots of them the
 /// bare view's lookbook takes (`shots`).
-pub struct World {
+pub struct World: Clone {
     pub land: Bare,
     pub places: Vec<Feature>,
     pub names: Vec<String>,
@@ -603,15 +605,46 @@ pub struct World {
     pub shot_names: Vec<String>,
 }
 
+/// The square's water as its making left it: each cell's lake depth (m: how far its pit was
+/// filled; none where it isn't a pond's, `ponds`), its lakes (`Basins`), its streams
+/// (`streams_of`), and how wet each cell's soil is (`wetness`).
+pub struct Water: Clone {
+    pub depth: Vec<f32>,
+    pub lakes: Basins,
+    pub streams: Vec<Stream>,
+    pub wet: Vec<f32>,
+}
+
+/// The world and its water, made together (from the same drained land): each its own constant,
+/// so what reads the one doesn't carry the other.
+struct Made {
+    world: World,
+    water: Water,
+}
+
 @fuel(2 ** 42)
-pub const WORLD: World = world()
+const MADE: Made = made()
+
+@fuel(2 ** 32)
+pub const WORLD: World = MADE.world.clone()
+
+/// The world's water (`Water`).
+@fuel(2 ** 32)
+pub const WATER: Water = MADE.water.clone()
+
+/// What the program reads of the world as it runs (`WORLD` is the build's, too big to carry): the
+/// bare view's shots, and where the tors stand. Its land is the grown land's (`growth::LAND`).
+@fuel(2 ** 30)
+pub const SHOTS: Vec<Shot> = WORLD.shots.clone()
+@fuel(2 ** 30)
+pub const TORS: Vec<vec2> = tor_points(WORLD.places)
 
 /// The land's height at `p` (the bare view's `height_at`).
 pub fn height_at(p: vec2) -> f32 {
     WORLD.land.at(p.x, p.y)
 }
 
-fn world() -> World {
+fn made() -> Made {
     // Each relief over a level land at 0 m: its rise is the land's height.
     let r = region()
     let region_relief: Relief<REGION_N> = Relief::of(r, Vec::filled(REGION_N, 0.0))
@@ -625,7 +658,162 @@ fn world() -> World {
     let found = found_places(land, s)
     let names = named(found)
     let (shots, shot_names) = shots_of(land, rock_placements(land, tor_points(found)), found, names)
-    World { land, places: found, names, shots, shot_names }
+    let lakes = ponds(basins(s), s.lakes)
+    let streams = streams_of(s, lakes)
+    let depth: Vec<f32> = Vec::from_fn(SQUARE_N, |c| if lakes.of[c] == engine::grow::NONE {
+        0.0
+    } else {
+        s.lakes[c]
+    })
+    let wet: Vec<f32> = Vec::from_fn(SQUARE_N, |c| wetness(land, s, c))
+    Made {
+        world: World { land, places: found, names, shots, shot_names },
+        water: Water { depth, lakes, streams, wet },
+    }
+}
+
+// ---- its water --------------------------------------------------------------------------------
+
+/// The drained area (m²) past which a channel shows as a stream: about 2 ha.
+pub const STREAM: f32 = 2.0e4
+
+/// Of the square's filled pits `b` (each cell's fill `depth`), those that hold a pond: three
+/// cells or more, or a metre deep; the rest (a cell's dip in a channel's bed, a hand deep: what
+/// the grid's coarseness leaves) the streams run through.
+fn ponds(b: Basins, depth: [f32]) -> Basins {
+    let n = b.level.len()
+    var cells: Vec<u32> = Vec::filled(n, 0)
+    var deepest: Vec<f32> = Vec::filled(n, 0.0)
+    for c in 0..b.of.len() {
+        let k = b.of[c]
+        if k != engine::grow::NONE {
+            cells[k] += 1
+            deepest[k] = max(deepest[k], depth[c])
+        }
+    }
+    var renumber: Vec<u32> = Vec::filled(n, engine::grow::NONE)
+    var level: Vec<f32> = Vec::new()
+    for k in 0..n {
+        if cells[k] >= 3 || deepest[k] >= 1.0 {
+            renumber[k] = level.len()
+            level.push(b.level[k])
+        }
+    }
+    Basins {
+        of: Vec::from_fn(b.of.len(), |c| if b.of[c] == engine::grow::NONE { b.of[c] } else {
+            renumber[b.of[c]]
+        }),
+        level,
+    }
+}
+
+/// The square's streams (`engine::grow::Stream`: x, z, width, depth a point): each of its
+/// channels (`engine::landform::channels`, over `STREAM`, its lakes `lakes`) through its cells'
+/// middles, rounded off (twice cut at its corners, its ends kept) and taken every 4 m; as wide and
+/// as deep as the area draining through it makes it (the root of the area: a few hectares a
+/// trickle, a few square kilometres a river 20 m across). One that ends on another ends on that
+/// one's own point nearest it, so the two meet.
+pub fn streams_of(s: Landscape, lakes: Basins) -> Vec<Stream> {
+    let g = s.grid
+    let courses = channels(s, STREAM, lakes)
+    var lines: Vec<Vec<vec2>> = Vec::new()
+    for course in courses {
+        var line: Vec<vec2> = Vec::from_fn(course.len(), |k| g.centre(course[k]))
+        for _ in 0..2 {
+            line = rounded(line)
+        }
+        lines.push(every(line, 4.0))
+    }
+    var out: Vec<Stream> = Vec::new()
+    for k in 0..lines.len() {
+        var line = lines[k].clone()
+        let n = line.len()
+        if n < 2 {
+            continue
+        }
+        // (Ending on another course: on that one's nearest point.)
+        let last = courses[k][courses[k].len() - 1]
+        for m in 0..courses.len() {
+            var holds = false
+            for c in courses[m] {
+                holds = holds || c == last
+            }
+            if m != k && lines[m].len() > 1 && holds {
+                var best = line[n - 1]
+                var near = 1.0e9
+                for q in lines[m] {
+                    if length(q - line[n - 1]) < near {
+                        near = length(q - line[n - 1])
+                        best = q
+                    }
+                }
+                line[n - 1] = best
+            }
+        }
+        out.push(
+            Stream {
+                points: Vec::from_fn(n, |i| {
+                    let a = s.area[g.cell_at(line[i])]
+                    vec4(
+                        line[i].x,
+                        line[i].y,
+                        clamp(0.012 * sqrt(a), 0.6, 24.0),
+                        clamp(0.1 + 0.0012 * sqrt(a), 0.15, 1.6),
+                    )
+                }),
+            },
+        )
+    }
+    out
+}
+
+/// Line `line` cut at each corner (Chaikin's), its ends kept.
+fn rounded(line: [vec2]) -> Vec<vec2> {
+    let n = line.len()
+    if n < 3 {
+        return Vec::from_fn(n, |i| line[i])
+    }
+    var out: Vec<vec2> = Vec::new()
+    out.push(line[0])
+    for i in 0..n - 1 {
+        let (a, b) = (line[i], line[i + 1])
+        if i > 0 {
+            out.push(mix(a, b, vec2(0.25)))
+        }
+        if i + 1 < n - 1 {
+            out.push(mix(a, b, vec2(0.75)))
+        }
+    }
+    out.push(line[n - 1])
+    out
+}
+
+/// Line `line`'s points every `step` m along it, its ends kept.
+fn every(line: [vec2], step: f32) -> Vec<vec2> {
+    var out: Vec<vec2> = Vec::new()
+    if line.len() == 0 {
+        return out
+    }
+    out.push(line[0])
+    var left = step
+    for i in 0..line.len() - 1 {
+        let (a, b) = (line[i], line[i + 1])
+        let len = length(b - a)
+        var t = 0.0
+        while len - t >= left {
+            t += left
+            out.push(mix(a, b, vec2(t / max(len, 1.0e-6))))
+            left = step
+        }
+        left -= len - t
+    }
+    if length(out[out.len() - 1] - line[line.len() - 1]) > 0.5 {
+        out.push(line[line.len() - 1])
+    } else {
+        let k = out.len() - 1
+        out[k] = line[line.len() - 1]
+    }
+    out
 }
 
 // ---- its soil ---------------------------------------------------------------------------------
@@ -677,11 +865,18 @@ fn soil_layer(land: Bare, s: Landscape) -> [u32; SQUARE_SOIL] {
                 slope = length(vec2(e - w, n - so)) / (2.0 * d)
             }
         }
-        let twi = log(s.area[c] / g.cell / (length(land.made(p).yz) + 0.01))
-        let here = soil(lap: lap, slope: slope, rock: 0.0, wet: smoothstep(4.2, 8.5, twi))
+        let here = soil(lap: lap, slope: slope, rock: 0.0, wet: wetness(land, s, c))
         out[c / 2] |= pack_soil(here.depth, here.kind, talus[c]) << (16 * (c % 2))
     }
     out
+}
+
+/// How wet the soil of the square's cell `c` is (0 to 1): its topographic index, ln of the area
+/// draining through it (`s`) a metre of its width over its slope, as `engine::soil` reads it.
+pub fn wetness(land: Bare, s: Landscape, c: u32) -> f32 {
+    let p = SQUARE.centre(c)
+    let twi = log(s.area[c] / SQUARE.cell / (length(land.made(p).yz) + 0.01))
+    smoothstep(4.2, 8.5, twi)
 }
 
 /// How deep the talus lies on each of the square's cells (m): what falls from each face of solid
@@ -1017,7 +1212,7 @@ pub fn tor_points(found: [Feature]) -> Vec<vec2> {
 }
 
 /// Whether stratum `s` stands as solids where it shows.
-fn solid(s: Stratum) -> bool {
+pub fn solid(s: Stratum) -> bool {
     s == Stratum::Grit || s == Stratum::Sandstone || s == Stratum::Granite
 }
 

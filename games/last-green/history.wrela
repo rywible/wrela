@@ -82,7 +82,7 @@ pub const ELVES_LIVED: i32 = 500
 pub const BAKED: Shipped = ship("floor", bake(forked(grown(BAKE)), tiles_lo(), tiles_hi()))
 
 /// The history with each standing tree's fork chosen among its neighbours (`trees::forked`).
-fn forked(h: take History) -> History {
+pub fn forked(h: take History) -> History {
     let all = h.trees.clone()
     History { trees: trees::forked(take all), ..h }
 }

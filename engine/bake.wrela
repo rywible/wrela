@@ -78,6 +78,30 @@ fn unq8s(b: u8, step: f32) -> f32 {
     (f32(b) - 128.0) * step
 }
 
+/// The greatest trunk radius a bake keeps (m).
+pub const GIRTHIEST: f32 = 3.0
+
+/// A trunk's radius as a byte: the square root of its share of `GIRTHIEST`, so a sapling's keeps
+/// millimetres and an ancient's centimetres.
+fn put_girth(g: f32) -> u8 {
+    u8(clamp(sqrt(max(g, 0.0) / GIRTHIEST) * 255.0 + 0.5, 0.0, 255.0))
+}
+
+fn get_girth(b: u8) -> f32 {
+    let u = f32(b) / 255.0
+    u * u * GIRTHIEST
+}
+
+@test
+fn a_trunk_keeps_its_radius_from_a_sapling_to_an_ancient() {
+    for g in [0.01, 0.05, 0.2, 0.9, 1.5, 2.4, 3.0] {
+        let back = get_girth(put_girth(g))
+        let step = 2.0 * sqrt(g * GIRTHIEST) / 255.0 + 1.0e-4
+        assert(abs(back - g) <= step, f"a trunk {g} m kept as {back} m")
+    }
+    assert(get_girth(put_girth(9.0)) == GIRTHIEST, "a trunk past the greatest not kept at it")
+}
+
 /// A year as a `u16` (years from -10000).
 fn qyear(y: i32) -> u32 {
     u32(clamp(y + 10000, 0, 65535))
@@ -85,7 +109,8 @@ fn qyear(y: i32) -> u32 {
 
 /// A tree as 22 bytes, its place from tile `t`'s corner: its place (two `u16`s), its kind, state
 /// and cause (a byte: 3, 2 and 3 bits) and whether it's pinned (a byte with its browse line, in
-/// 2 cm steps to 2.5 m, and its pin in the top bit), its height (cm), crown (5 cm) and trunk (4 mm),
+/// 2 cm steps to 2.5 m, and its pin in the top bit), its height (cm), crown (10 cm, to 25.5 m) and
+/// trunk (`put_girth`: finest when thin, to `GIRTHIEST`),
 /// lean (each way, 10 cm), light, a log's fall's direction or a standing tree's fork (`FORK_STEP`
 /// a unit), years (born; died and fell as years after it), and what shaped it (`grow::shaped`'s
 /// code, a `u16`). Its seed isn't kept: it's drawn again from its place (`get_tree`).
@@ -96,8 +121,8 @@ fn put_tree(out: mut Vec<u8>, tr: Tree, t: vec2i) {
     out.push(u8((tr.kind & 7) | ((u32(tr.state) & 3) << 3) | ((u32(tr.cause) & 7) << 5)))
     out.push(u8(min(u32(tr.lift * 50.0), 127) | (if tr.pinned { 128 } else { 0 })))
     put_u16(mut out, u32(clamp(tr.tall * 100.0, 0.0, 65535.0)))
-    out.push(u8(clamp(tr.reach * 20.0, 0.0, 255.0)))
-    out.push(u8(clamp(tr.girth * 250.0, 0.0, 255.0)))
+    out.push(u8(clamp(tr.reach * 10.0 + 0.5, 0.0, 255.0)))
+    out.push(put_girth(tr.girth))
     out.push(q8s(tr.lean.x, 0.1))
     out.push(q8s(tr.lean.y, 0.1))
     out.push(u8(clamp(tr.light, 0.0, 1.0) * 255.0 + 0.5))
@@ -130,8 +155,8 @@ pub fn get_tree(b: [u8], at: u32, t: vec2i) -> Tree {
         pinned: flags >= 128,
         lift: f32(flags & 127) / 50.0,
         tall: f32(get_u16(b, at + 6)) / 100.0,
-        reach: f32(b[at + 8]) / 20.0,
-        girth: f32(b[at + 9]) / 250.0,
+        reach: f32(b[at + 8]) / 10.0,
+        girth: get_girth(b[at + 9]),
         lean: vec2(unq8s(b[at + 10], 0.1), unq8s(b[at + 11], 0.1)),
         light: f32(b[at + 12]) / 255.0,
         vigour: 0.5,
@@ -769,9 +794,9 @@ fn memories(b: [u8]) -> Vec<Memory> {
 
 // ---- the consequences, a tile at a time -----------------------------------------------------------
 
-/// How far past a tile's edge a tree's crown can reach over it (m): an oak's reaches 10 m, and a
-/// crown leans.
-pub const CROWN_MARGIN: f32 = 16.0
+/// How far past a tile's edge a tree's crown can reach over it (m): an ancient oak's reaches
+/// 20 m, and a crown leans.
+pub const CROWN_MARGIN: f32 = 26.0
 
 /// The trees of `trees` (a neighbour's) whose crowns may reach over tile `t`'s edge, added to
 /// `into`.

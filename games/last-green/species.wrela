@@ -191,3 +191,28 @@ pub fn habits() -> [Habit; Species] {
         },
     ]
 }
+
+/// The species as a wood left to itself for ages grows them (the grown world, `growth`): the
+/// floor's (`habits`), larger than life (the owner, 2026-10-16): each grows taller, lives longer,
+/// and its trunk thickens further, to a girth no tree of ours reaches.
+pub fn ancient() -> [Habit; Species] {
+    var h = habits()
+    // (tallest, lifespan, greatest trunk radius, how fast its trunk thickens against the others'),
+    // a species each, in `Species`' order.
+    let ages = [
+        vec4(34.0, 1200.0, 2.4, 3.0),
+        vec4(38.0, 700.0, 1.6, 2.0),
+        vec4(24.0, 160.0, 0.5, 1.0),
+        vec4(8.5, 220.0, 0.35, 1.0),
+        vec4(4.5, 60.0, 0.12, 1.0),
+        vec4(38.0, 650.0, 1.3, 1.6),
+        vec4(26.0, 250.0, 0.9, 1.2),
+    ]
+    for k in 0..h.len() {
+        h[k].tallest = ages[k].x
+        h[k].lifespan = ages[k].y
+        h[k].girthiest = ages[k].z
+        h[k].girth = ages[k].w
+    }
+    h
+}
