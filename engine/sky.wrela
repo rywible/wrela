@@ -116,8 +116,9 @@ pub struct Clouds: Copy + GpuData {
 
 /// How many rounds a tile out of sight waits between its marches: it's marched one round in
 /// this many, tiles in turn (`march_dome`). What it holds drifts on meanwhile (`PHASES` frames a
-/// round: at most 13 m, two rounds, half a degree overhead), unseen.
-pub const RESTING: u32 = 2
+/// round: at most 20 m over three rounds, three quarters of a degree overhead), unseen, and the
+/// probes read it a little stale.
+pub const RESTING: u32 = 3
 
 /// How far past the view's corners a tile counts as in sight (radians): what the eye can turn
 /// in a round of the dome (half a second) without meeting a tile that waited.

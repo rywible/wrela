@@ -2382,6 +2382,21 @@ keeps both coverage and silhouettes. Cooking's peak is still the finest level's 
 440 MB at 4 mm, freed as soon as its clusters are emitted), and cooking itself takes about 0.7 s,
 on the device.
 
+A second council (the same reviewers) reviewed the stack and the next cloud work. Cooking the
+far sunlight's optical depth into a volume in the field's frame was dropped before it was built.
+The field doesn't repeat every 48 km: its shape noise repeats every 3.6 km, so the common period
+is 144 km. The dome's rays reach 60 km, so a volume that doesn't wrap would cover about 120 km a
+side. And `R16Float` can't be stored to. An exact skip of the march's empty samples, through a max
+hierarchy of the weather map, was measured first and dropped too. Ablations of the march
+(Radeon, 1280×720, three pairs) found that the coarse marking costs 0.53 ms of the opening's
+6.90 ms for clouds, and the fine samples' weather tests 0.78 ms more (0.76 and 0.72 of 7.29 at the
+mere). So such a skip saves at most about 11%, under its 10% gate in practice, and the other
+5.6 ms is the shape, detail and lighting of samples the weather admits. Tiles out of sight rest
+three rounds in place of two (`RESTING`): clouds -9.5% at the opening and -12.6% at the mere, GPU
+span -3.0% and -2.5% (five pairs). Its stills are within p99 1–2/255 and p99.9 1–4/255 of two
+rounds' on nine lookbook views. The reversal capture's frame-to-frame change is the same
+(30.556/255 against 30.557), and its frames are within p99.9 4/255 of two rounds'.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
