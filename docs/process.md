@@ -1999,6 +1999,49 @@ The blocks' edges then moved out of the faces' shading into lines of their own o
 one CSS pixel wide: drawn inside each face, an edge took its width from the face's angle, and
 the top face, seen almost edge on, made its back edge flicker.
 
+## wrela.dev after launch, and a plan for its docs, 2026-10-15
+
+Ryan asked Claude (Opus 5.5) to look at wrela.dev as a showcase. In Chrome, Claude found that
+the console's fetches ahead had never run: its Content Security Policy let it connect only to
+its own origin, and the browser refused each game file (about 80 console errors). Opening a
+game put the release's directory in the address (`wrela.dev/releases/<id>/#leapling`): the
+history entry's relative address resolved against the page's `<base>`, and a deploy removes
+that directory 14 days later. A browser without WebGPU showed the red failure box, and the page
+had no description for a link to show where it is shared. The Last Green appeared to hang; it
+ran at about one frame a second on that Chromium's Intel gen-9 adapter, so its first frame took
+over a minute.
+
+Ryan then asked for docs at docs.wrela.dev, agent-native and written in Wrela, and for a plan
+council on the plan. Claude led; OpenAI Codex GPT-6.1-Sol and GPT-6-Astra reviewed it, read-only,
+in two rounds. Both found that opening the policy was not enough: a `no-cors` fetch of a shader
+or a manifest served with `nosniff` is an opaque response that Chromium's
+[opaque response blocking](https://chromium.googlesource.com/chromium/src/+/main/services/network/public/cpp/orb/)
+withholds, so the cache need not keep it for the game. The console's subdomains share one
+[HTTP cache partition](https://developer.chrome.com/blog/http-cache-partitioning), so the
+partition was not the obstacle. The console now fetches each file as a readable CORS request
+with credentials, as the game's page later does; each game's Worker lets the console's origin
+read its files; and pages are no longer fetched ahead, since a frame's page is a navigation. The
+history entry keeps the page's own path. A browser or machine without WebGPU, a hardware adapter
+or OffscreenCanvas is told what a program needs. The console's page has a description and an
+[Open Graph](https://ogp.me/) card with its first game's cover. Whether the game's frame reuses
+the fetched files can only be seen on the deployed site; it is to be checked there. The council
+also shaped the docs plan: versioned docs kept apart from 14-day releases, each version's
+corpus beside its app so the app's own fetch reads it, and screen-reader document roles and
+in-page find before the docs are public. These are implementation references; nothing was
+copied.
+
+## Reference docs from source, 2026-10-15
+
+Ryan asked for docs at docs.wrela.dev that agents and people read alike, useful first to the
+agents building the games, and for the plan to go through a council (recorded with the site's
+fixes). The reference comes from the sources: `wrela doc --export` writes the spec by section, a
+page per module of std and of each package, an index of every item and every section of the
+spec with its page, anchor and source, and a map of the pages in the form the
+[llms.txt proposal](https://llmstxt.org/) describes. The council asked that live lookup stay as
+it was (an export would go stale while an item is edited) and that the spec's prose be indexed
+beside the items, so a search finds a rule as well as a name. AGENTS.md now says reference docs
+come from source, and that doc comments are the reference. Claude (Opus 5.5) wrote it.
+
 ## Addresses, links, find and documents for programs, 2026-10-15
 
 For docs.wrela.dev written in Wrela, Ryan asked for everything HTML gives a page that a canvas
