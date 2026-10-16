@@ -1,7 +1,11 @@
-// Physical properties from a creature's field (sketch 01 §4): what the simulation reads, so
-// it's computed by `@deterministic` code and comes out the same on every client (D-052). The
-// derived interval classifies cells as inside, outside or straddling; only straddling cells
-// are refined, so the cost follows the surface's area, not the volume (T3).
+// Physical properties from a creature's field: its mass, centre of mass, moments of inertia and
+// collision capsules, per bone or whole, for the simulation to read.
+//
+// The simulation reads these, so they are computed by `@deterministic` code and come out the
+// same on every client. Use `integrate` or `adaptive_physique` for mass, and `fit_capsules` for
+// capsules; a `Creature` offers the same as methods. The derived interval classifies cells as
+// inside, outside or straddling the surface; only straddling cells are refined, so the cost
+// follows the surface's area, not the volume.
 
 use creature::{Bone, Creature, Parts}
 use std::derive::{Box3, interval}
@@ -228,7 +232,7 @@ pub fn segment_distance(p: vec3, a: vec3, b: vec3) -> f32 {
     length(p - (a + t * ab))
 }
 
-// ---- mass by spike 01's method (#43 §9) ----------------------------------------------------------
+// ---- mass by an adaptive octree -----------------------------------------------------------------
 
 /// What `adaptive_mass` finds: the mass (kg), the volume (m³), the centre of mass, and how many
 /// samples it took.
@@ -249,7 +253,7 @@ trait Gather<C> {
     fn sampled(mut self)
 }
 
-/// Sums, in f64, as spike 01 keeps them.
+/// Sums, in f64.
 struct Sums {
     mass: f64,
     volume: f64,
@@ -273,7 +277,7 @@ impl<C> Gather<C> for Sums {
 }
 
 /// How far a node's centre's distance may be from the surface's where the node holds none: its
-/// half-diagonal times 1.5, spike 01's assumption about the gradient near the surface.
+/// half-diagonal times 1.5, an assumption that the gradient is at most 1.5 near the surface.
 const CLASSIFY: f32 = 1.5
 
 /// The octree's root: a cube around the items' bounds (those that bound something), its centre
@@ -291,7 +295,7 @@ fn root_cube(bounds: [Bound]) -> (vec3, f32) {
     ((lo + hi) * 0.5, max(e.x, max(e.y, e.z)) * 0.5)
 }
 
-/// A creature's mass by spike 01's method (#43 §9): an adaptive octree from a cube around the
+/// A creature's mass by an adaptive octree from a cube around the
 /// bounds of its items, each node classified by the distance at its centre (empty where it's
 /// more than 1.5 h √3, whole where it's less than minus that, h the node's half-edge), down to
 /// cells `finest` wide, which count where their centre is inside (the midpoint rule). Each
@@ -396,7 +400,7 @@ fn props(mass: f64, first: vec3d, second: vec3d, own: f64) -> MassProps {
 
 /// A creature's mass, centre of mass and moments of inertia, each bone's (the bone whose part
 /// is nearest each counted cube) and the whole's: `adaptive_mass`'s octree, cells down to
-/// `finest`, sums in f64 (#43 §9). The whole is the bones' sum.
+/// `finest`, sums in f64. The whole is the bones' sum.
 @deterministic
 pub fn adaptive_physique<C, K: Creature<C>>(
     creature: take K,

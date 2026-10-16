@@ -4,7 +4,7 @@
 //
 // Each frame: the host's answers (the display's pixel ratio and what the host can do, the saved
 // board, pastes), the input, a save if the board changed, the drawing, then what the host is told:
-// text mode at the caret, what a copy would take, and the accessibility tree. Input hits what the
+// text mode at the caret, what a copy would take, and the semantic tree. Input hits what the
 // frame before drew.
 
 use board::{Align, Board, ELBOW, END_ARROW, History, Item, Kind, NOTE, SMALLEST, START_ARROW, has}
@@ -15,10 +15,11 @@ use edit::{Caret, Step}
 use minimap::Map
 use paint::{ACCENT, PAPER, Typing}
 use platform::host
-use platform::host::{Node, Pasted}
+use platform::host::Pasted
 use std::gpu::begin_screen_pass
 use std::input::{Assist, Button, Composer, Event, Key, Mods, events}
 use std::io::{Pending, load as read_file, store}
+use std::semantics::Sent
 use std::serialize::{LoadError, load, save}
 use ui::draw::{DrawList, Rect, Renderer}
 use ui::text::{Face, Fonts, next_cluster, previous_cluster}
@@ -116,12 +117,12 @@ pub struct App {
     revision: u32,
     /// The text an input method is composing at the caret.
     composer: Composer,
-    // What the host was last told: text mode's caret, what a copy takes, the accessibility tree,
+    // What the host was last told: text mode's caret, what a copy takes, the semantic tree,
     // the selection it said; and its answers to them, on their way.
     texting: Option<vec4>,
     offered: Vec<Item>,
     offered_words: String,
-    tree: Vec<Node>,
+    tree: Sent,
     said: Vec<u32>,
     told: Vec<Pending<u8>>,
     /// The lines what's being moved or resized snapped to, while it is.
@@ -191,7 +192,7 @@ pub fn init() -> App {
         texting: None,
         offered: Vec::new(),
         offered_words: String::new(),
-        tree: Vec::new(),
+        tree: Sent {},
         said: Vec::new(),
         told: Vec::new(),
         guides: Vec::new(),
@@ -2255,7 +2256,7 @@ fn selected_words(s: App) -> String {
 }
 
 /// Tells the host what changed: text mode and its caret, what a copy takes (the selection; the
-/// words and the items), and, where it has one, the accessibility tree and the selection to say.
+/// words and the items), and, where it has one, the semantic tree and the selection to say.
 fn tell(s: mut App) {
     let caret = caret_rect(s)
     if caret != s.texting {
@@ -2278,7 +2279,7 @@ fn tell(s: mut App) {
         s.offered_words = take words
     }
     let Some(capabilities) = s.capabilities else { return }
-    if capabilities & host::ACCESSIBILITY == 0 {
+    if capabilities & host::SEMANTICS == 0 {
         return
     }
     let nodes = access::tree(
@@ -2290,10 +2291,7 @@ fn tell(s: mut App) {
         s.history.can_undo(),
         s.history.can_redo(),
     )
-    if nodes != s.tree {
-        s.told.push(host::accessibility("Board", "Items", nodes))
-        s.tree = take nodes
-    }
+    host::publish(mut s.told, mut s.tree, "Board", nodes, vec4(0.0, 0.0, s.screen.x, s.screen.y))
     if s.selected != s.said {
         s.told.push(host::announce(access::said(s.board, s.selected).as_str()))
         s.said = s.selected.clone()

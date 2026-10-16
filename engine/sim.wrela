@@ -1,7 +1,10 @@
-// The simulation's vocabulary (sketches 01 §6 and 03): sim state is ordinary values, rolled
-// back by cloning and checked by the derived `StateHash` (§6.11). `SimState` is a declared
-// trait with a structural check (D-078): every field of a type that declares it must have it,
-// so presentation data can't slip into what's rolled back. The engine writes its message.
+// The simulation's vocabulary: the traits that mark sim state, and the sim's values for a
+// creature (its place, gait, pose and the ground it stands on).
+//
+// Sim state is ordinary values, rolled back by cloning and checked by the derived `StateHash`
+// (language.md §6.11). `SimState` is a declared trait with a structural check: every field of a
+// type that declares it must have it, so presentation data can't slip into what's rolled back.
+// The engine writes the check's error message (`@diagnostic` on `SimState`).
 
 use creature::{Bone, Chain, Skeleton}
 use rng::{Rng, Seed}
@@ -107,13 +110,13 @@ impl Transform {
 }
 
 /// What a creature is, as sim state names it: a definition plus a seed, never a handle into
-/// something outside the state (D-084).
+/// something outside the state.
 pub struct CreatureKey: SimValue {
     pub kind: u32,
     pub seed: Seed,
 }
 
-/// How much of a creature the simulation runs (D-034): `Full`, its pose too; `Ambient`, its
+/// How much of a creature the simulation runs: `Full`, its pose too; `Ambient`, its
 /// root and gait only.
 pub enum SimTier: SimValue {
     Full,
@@ -378,7 +381,7 @@ impl Frame {
     }
 }
 
-/// A small learned controller, trained offline (D-036): a multilayer perceptron whose weights
+/// A small learned controller, trained offline: a multilayer perceptron whose weights
 /// are embedded bytes, read in place (little-endian f32s: 8 inputs to 8 hidden units, tanh,
 /// to 4 outputs, each layer's weights row by row then its biases).
 pub struct GaitNet: Copy {

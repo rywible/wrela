@@ -1,9 +1,9 @@
-// Written by `wrela audio model examples/piano/build/reference2` (spike 14, #48); edit the tool, not this file.
+// A grand piano for engine::piano: the model's numbers, fitted to the Salamander Grand Piano V3
+// (a Yamaha C5, recorded by Alexander Holm; CC BY 3.0), the whole instrument as FreePats'
+// retuned SFZ, played by sfizz: 80 notes, 16 keys at 5 velocities each. They are measurements
+// of those recordings, moved by rounds of the model's own notes measured against them.
 //
-// engine::piano's model fitted to the Salamander Grand Piano V3 (a Yamaha C5, recorded by
-// Alexander Holm; CC BY 3.0), the whole instrument as FreePats' retuned SFZ, played by
-// sfizz: 80 notes, 16 keys at 5 velocities each. The numbers are measurements of
-// those recordings, moved by rounds of the model's own notes measured against them.
+// Written by `wrela audio model examples/piano/build/reference2`; edit the tool, not this file.
 
 use piano::Model
 

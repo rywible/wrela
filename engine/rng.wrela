@@ -1,5 +1,8 @@
-// Seeds and random streams. A grazer's numbers come from its seed, so a herd's variation costs
-// no bytes; each sim entity has its own stream, so results don't depend on which worker ran it.
+// Seeds and random streams: deterministic random numbers for content and for the sim.
+//
+// An individual's numbers come from its seed (`Seed`, `Rng::new`), so a herd's variation costs
+// no bytes. Each sim entity has its own stream (`Rng::split`), so results don't depend on which
+// worker ran it.
 
 use std::hash::StateHash
 use std::serialize::Serialize
@@ -13,8 +16,8 @@ pub fn seed(value: u32) -> Seed {
     Seed { value }
 }
 
-/// mulberry32, as spike 01's `rng` (grazer.js): its draws are f64s in [0, 1), so a creature
-/// built from a seed has the spike's numbers, bit for bit before they're rounded to f32.
+/// A mulberry32 generator. Its draws are f64s in [0, 1); `range` and `unit` round a draw to f32
+/// once.
 pub struct Rng: Copy + StateHash + Serialize {
     state: u32,
 }
@@ -24,8 +27,7 @@ impl Rng {
         Rng { state: seed.value.wrapping_mul(7919).wrapping_add(17) }
     }
 
-    /// A generator whose state is `state` as it is: spike 01's `rng(state)`, which a seed's
-    /// stream (`new`) mixes first.
+    /// A generator whose state is `state` as it is, not mixed: `new` mixes a seed first.
     pub fn raw(state: u32) -> Rng {
         Rng { state }
     }

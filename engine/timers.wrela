@@ -1,7 +1,8 @@
-// Timers (the gameplay paper test §4): work due at a later tick, as data. Generic over the
-// game's action type, so pending timers are cloned, hashed and saved with the world, which a
-// closure couldn't be: each closure has its own type, there's no `dyn` to put two in one `Vec`,
-// and a closure has no `Serialize` (§6.7).
+// Timers: work due at a later tick, as data.
+//
+// `Timers` is generic over the game's action type, so pending timers are cloned, hashed and saved
+// with the world, which a closure couldn't be: each closure has its own type, there's no `dyn` to
+// put two in one `Vec`, and a closure has no `Serialize` (language.md §6.7).
 
 use sim::{Sim, Tick}
 

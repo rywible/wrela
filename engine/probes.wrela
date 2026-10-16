@@ -1,20 +1,25 @@
-// Sky light, occlusion and bounce (#28 §5.2, §5.3; spike 05): a grid of probes baked at load
-// from cooked fields, then a strip of them again each frame, and read by every surface's
-// shading. Each probe holds the irradiance of the light that reaches it from all round, as
-// first-order spherical harmonics, so a surface reads its light by its normal; in two parts:
-// the sky's (the sky and its clouds, through the crowns; the ground's light from the sky; the
-// crowns' own dim green), and the sun's (the ground's light from the sun), which a cloud's
-// shadow passing over dims (`sky_light`).
+// Sky light probes: a grid of probes that gives every surface the light of the sky, the clouds
+// and the ground round it, with occlusion and bounce, baked on the GPU.
+//
+// Make a grid (`grid`) and a `Baked` with its occluders (`Baked::new`); `cook` the occluders,
+// map the open sky (`open`), then call `bake_strip` each frame. Shading reads the light at a
+// point with `sky_light`.
+//
+// Each probe holds the irradiance of the light that reaches it from all round, as first-order
+// spherical harmonics, so a surface reads its light by its normal. It holds two parts:
+//
+// - the sky's: the sky and its clouds, through the crowns; the ground's light from the sky; the
+//   crowns' own dim green;
+// - the sun's: the ground's light from the sun, which a cloud's shadow passing over dims.
 //
 // The probes stand in columns over a square of the land, each column's layers at heights above
 // the ground there, so they follow it. Baking traces rays from each probe through the occluders
 // (a volume of densities cooked from the crowns, limbs and stones, which the GPU filters as it
-// reads them) to the ground (the terrain's
-// clipmap) or the sky, a strip of columns at a time, so no submission runs long. Once every
-// column is baked, a strip a frame is baked again, blended with what it held: the sky's clouds
-// drift, and the probes follow them. Those rays read the probes where they land (the ground's
-// light, the crowns' leaves lit by the sun and the probes round them), so each round of them
-// adds a bounce of light.
+// reads them) to the ground (the terrain's clipmap) or the sky, a strip of columns at a time, so
+// no submission runs long. Once every column is baked, a strip a frame is baked again, blended
+// with what it held: the sky's clouds drift, and the probes follow them. Those rays read the
+// probes where they land (the ground's light, the crowns' leaves lit by the sun and the probes
+// round them), so each round of them adds a bounce of light.
 
 use light::{LUMA, Light, sky}
 use sky::{Clouds, cloud_shadow, clouded_sky}
@@ -462,8 +467,7 @@ pub struct Ray: Copy + GpuData {
 
 /// A strip baked again, a ray an invocation (`AGAIN_RAYS` a probe, the strip's probes in
 /// order): a strip is a few hundred probes, and a probe an invocation tracing its rays one
-/// after another would leave the GPU nearly idle (each ray waits on its reads), 4 ms for what
-/// a ray an invocation traces in a tenth of that.
+/// after another would leave the GPU nearly idle (each ray waits on its reads).
 @compute(64)
 pub fn trace_again(
     t: Trace,
@@ -1069,7 +1073,7 @@ fn surface_at(cam: Camera, depth: DepthTexture, p: vec2i) -> (vec3, f32) {
     (cam.world_at(vec2(q) + vec2(0.5), z), z)
 }
 
-/// A brute-force reference for the probes (#51 AC5, spike 05's method): at the surface each
+/// A brute-force reference for the probes: at the surface each
 /// sampled pixel shows, its sky light traced from the point itself with `rays` rays over the
 /// sphere (each weighted by its cosine to the normal) through the same occluders, ground and
 /// sky as the probes', beside the probes' estimate there. The normal is the depth's (the same
