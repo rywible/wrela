@@ -1,4 +1,13 @@
-// An embedded application's readiness and durable return, independent of game policy.
+// The link between a game and the console that embeds it: the game says when it shows its first
+// useful frame, and goes back to the console when the player asks, once its save is stored.
+//
+// A game keeps one `Link` and, each frame:
+// - gives it the frame's input (`input`), and sets `returning` for a return of its own;
+// - calls `presented` once it shows a useful frame, never a loading or black one;
+// - while `returning` is set, calls `save_and_return` with its save's path and bytes.
+//
+// The player asks to return with F10, the pad's Home button, or Select and Start held on one
+// pad. The console can also ask, as the browser's Back does.
 use std::input::{Event, Key, Mods, Pad, PadButton, PADS}
 use std::io::{Pending, store}
 use host::{asked_to_return, ready, return_to_parent}
@@ -27,7 +36,7 @@ impl Link {
         }
     }
 
-    /// One deliberate console shortcut, after the game's ordinary input read.
+    /// Reads `input`'s events for the return shortcuts. Call it after the game reads its own input.
     pub fn input(mut self, input: std::input::Input) {
         for e in input.events { self.event(e) }
     }
@@ -50,7 +59,9 @@ impl Link {
         }
     }
 
-    /// Called after an application's first useful frame, never from a loading/black frame.
+    /// Tells the console the game is ready, the first time, and polls whether the console asks the
+    /// game to return. Call it each frame from the first useful frame on, never from a loading or
+    /// black frame.
     pub fn presented(mut self) {
         if !self.signalled {
             self.ready_request = Some(ready())
@@ -73,7 +84,8 @@ impl Link {
         }
     }
 
-    /// The application supplies its save bytes. Return is sent only after storage commits.
+    /// Stores `bytes` at `path`, then asks the console to take the game back. The game returns only
+    /// once the store succeeds; if it fails, `returning` goes back to false.
     pub fn save_and_return(mut self, path: str, bytes: [u8]) {
         if self.returning && self.saving.is_none() && self.leaving.is_none() {
             self.saving = Some(store(path, bytes))

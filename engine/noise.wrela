@@ -1,7 +1,11 @@
-// Cheap value noise for content that's cooked or placed (#28 §3, §4): the same on the CPU and
-// the GPU, bit for bit where their arithmetic is (a lattice's hash is integer arithmetic). std's
-// `value_noise` hashes three times a corner and filters by a footprint, which a field drawn per
-// pixel needs; this is for terrain, placement and dabs, which evaluate many points once each.
+// Cheap hashes and value noise for content that is cooked or placed: the same on the CPU and the
+// GPU, bit for bit where their arithmetic is (a lattice's hash is integer arithmetic).
+//
+// Use it for terrain, placement and brush dabs, which evaluate many points once each: hashes
+// and draws (`hash2`, `rand`, `pick`), value noise (`noise2`, `noise3`, `fbm2`, `ridged2`), noise
+// filtered for a sample's width (`noise2_seen`, `fbm2_seen`), and hashed thresholds that hold
+// still on a surface (`hashed_threshold_of`). A field drawn per pixel needs std's `value_noise`
+// instead, which hashes three times a corner and filters by a footprint.
 
 use std::field::hash_u32
 use std::math::TAU
@@ -135,8 +139,8 @@ pub fn noise2_seen(p: vec2, w: f32) -> f32 {
 
 /// `fbm2` as a sample `w` of its first layer's cells wide sees it: each layer finer than the
 /// sample fades to its mean (each is twice as fine as the last), so a far level of a clipmap,
-/// whose texels are many cells apart, gets its broad shapes and not their aliases (the far land's
-/// marbling, playing spike 17). 0 wide, `fbm2` itself; 0 with no layers.
+/// whose texels are many cells apart, gets its broad shapes and not their aliases (a marbling on
+/// the far land). 0 wide, `fbm2` itself; 0 with no layers.
 pub fn fbm2_seen(p: vec2, octaves: u32, w: f32) -> f32 {
     if octaves == 0 {
         return 0.0
@@ -194,7 +198,7 @@ fn octave_of(size: f32) -> (f32, f32) {
     (exp2(floor(level)), fract(level))
 }
 
-/// Wyman and McGuire's hashed alpha threshold (I3D 2017): a draw in (0, 1] for the point `p` of
+/// A hashed alpha threshold: a draw in (0, 1] for the point `p` of
 /// a surface's own coordinates, which holds still on the surface. `p` is cut into cells `size`
 /// wide in its units (`cell_size`: a few pixels; at the two powers of two round that size, the
 /// draws blended by where it falls between them and made uniform again), so as temporal AA's
