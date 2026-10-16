@@ -79,6 +79,8 @@ pub struct Docs {
     pasting: Option<Pending<u8>>,
     /// On a narrow screen, whether the list of pages is open over the page.
     nav_open: bool,
+    /// Whether the list of pages should bring the page being read into view: a new page was shown.
+    nav_follow: bool,
     told: Vec<Pending<u8>>,
     cursor: String,
     tree: Vec<Node>,
@@ -150,6 +152,7 @@ pub fn init() -> Docs {
         chosen: 0,
         pasting: None,
         nav_open: false,
+        nav_follow: false,
         told,
         cursor: String::from("default"),
         tree: Vec::new(),
@@ -357,6 +360,7 @@ fn go_to(s: mut Docs, route: Route, push: bool) {
 fn show(s: mut Docs, path: str, blocks: take Vec<Block>) {
     s.blocks = take blocks
     s.shown = path.to_string()
+    s.nav_follow = true
     s.laid_width = 0.0
     if s.seek.is_none() { s.scroll = 0.0 }
 }
@@ -779,16 +783,21 @@ fn nav_rows(s: Docs, f: Frame) -> Vec<(String, String, f32)> {
             y += 30.0 * u
         }
         // A module by its own name: `arena` under std.
-        let t = p.title.as_str()
-        var k = t.len()
-        while k >= 2 && !(t.byte(k - 1) == 58 && t.byte(k - 2) == 58) { k -= 1 }
-        let label = if p.kind.as_str() == "spec" { t.to_string() } else {
-            t.slice(from: k, to: t.len()).to_string()
+        let label = if p.kind.as_str() == "spec" { p.title.clone() } else {
+            own_name(p.title.as_str())
         }
         rows.push((take label, p.path.clone(), y))
         y += 28.0 * u
     }
     take rows
+}
+
+/// A path's last name (`arena` of `std::arena`), or the whole of a title that isn't a path.
+fn own_name(t: str) -> String {
+    var k = t.len()
+    while k >= 2 && !(t.byte(k - 1) == 58 && t.byte(k - 2) == 58) { k -= 1 }
+    if k < 2 { return t.to_string() }
+    t.slice(from: k, to: t.len()).to_string()
 }
 
 fn nav_at(s: Docs, at: vec2, f: Frame) -> Option<String> {
@@ -1033,6 +1042,15 @@ fn draw_nav(s: mut Docs, f: Frame) {
         hex(RULE),
     )
     s.list.push_clip(r)
+    // A page just shown is brought into the list's view, a third of the way down.
+    if s.nav_follow && !s.index.pages.is_empty() {
+        s.nav_follow = false
+        for (_, path, y) in nav_rows(s, f) {
+            if path == s.shown && (y < f.header + 24.0 * u || y > screen.y - 40.0 * u) {
+                s.nav_scroll = max(s.nav_scroll + y - (f.header + (screen.y - f.header) / 3.0), 0.0)
+            }
+        }
+    }
     let rows = nav_rows(s, f)
     for (label, path, y) in rows {
         if y > screen.y || y < f.header - 30.0 * u { continue }
@@ -1375,6 +1393,14 @@ fn an_address_without_a_fragment_is_the_front_page_and_groups_rank_the_language_
         width: 120.0,
     )
     assert(shown.as_str().ends_with("…") && shown.len() < 42, shown.as_str())
+    for (title, want) in [
+        ("std::arena", "arena"),
+        ("engine::grow", "grow"),
+        ("Built-in functions", "Built-in functions"),
+    ] {
+        let got = own_name(title)
+        assert(got.as_str() == want, got.as_str())
+    }
     let plain = unticked("Adds `value` at `the` end.")
     assert(plain.as_str() == "Adds value at the end.", plain.as_str())
 }
