@@ -1,0 +1,778 @@
+// A page laid out at a width: its text as pieces placed on lines, the shapes behind and between
+// them (code's ground, rules, a table's lines), where its links are, where each heading is, and
+// its parts for screen readers, in reading order. Positions are pixels from the page's top left;
+// the program draws only what's on screen, from this.
+use markdown::{BOLD, Block, CODE, ITALIC, Kind, LINK, Run, plain}
+use highlight::{Token, spans}
+use theme::{
+    BODY, CODE as CODE_SIZE, CODE_LEADING, COMMENT, H1, H2, H3, HEADING, KEYWORD, LEADING, NUMBER,
+    QUIET, RULE, SMALL, STRING, STRONG, SURFACE, TEXT, TYPE, FIELD, hex,
+}
+use theme::BOLD as BOLD_WEIGHT
+use ui::draw::Rect
+use ui::text::{Face, Fonts}
+
+/// Text placed on a line: its top left, face, size, colour and weight.
+pub struct Piece: Clone {
+    pub at: vec2,
+    pub text: String,
+    pub face: Face,
+    pub size: f32,
+    pub color: vec4,
+    pub weight: f32,
+    /// How wide it is, and the block it's in.
+    pub w: f32,
+    pub block: u32,
+}
+
+pub struct Shape: Copy {
+    pub rect: Rect,
+    pub color: vec4,
+    pub radius: f32,
+}
+
+/// A link's place, and where it leads (a Markdown link's target).
+pub struct Spot: Clone {
+    pub rect: Rect,
+    pub target: String,
+}
+
+/// What a screen reader reads, in order: a heading (its level), text, a link or code.
+pub enum Role: Copy + Eq {
+    Heading,
+    Text,
+    Link,
+    Code,
+}
+
+pub struct Part: Clone {
+    pub role: Role,
+    pub level: u32,
+    pub rect: Rect,
+    pub label: String,
+    /// A link's target.
+    pub target: String,
+}
+
+pub struct Laid: Clone {
+    pub pieces: Vec<Piece>,
+    pub shapes: Vec<Shape>,
+    pub spots: Vec<Spot>,
+    pub anchors: Vec<(String, f32)>,
+    pub parts: Vec<Part>,
+    pub height: f32,
+    /// The block being laid out.
+    block: u32,
+    /// Whether each block is code, whose lines join with line breaks.
+    code_blocks: Vec<bool>,
+}
+
+impl Laid {
+    pub fn empty() -> Laid {
+        Laid {
+            pieces: Vec::new(),
+            shapes: Vec::new(),
+            spots: Vec::new(),
+            anchors: Vec::new(),
+            parts: Vec::new(),
+            height: 0.0,
+            block: 0,
+            code_blocks: Vec::new(),
+        }
+    }
+
+    /// The page as plain text, as it's read and copied: pieces on a line joined as they're set,
+    /// a prose line's end a space, a code line's a line break, and a blank line between blocks;
+    /// and where each piece starts in it.
+    pub fn text(self) -> (String, Vec<u32>) {
+        var out = String::new()
+        var starts: Vec<u32> = Vec::new()
+        for i in 0..self.pieces.len() {
+            borrow p = self.pieces[i]
+            if i > 0 {
+                borrow q = self.pieces[i - 1]
+                if p.block != q.block {
+                    out.push_str("\n\n")
+                } else if abs(p.at.y - q.at.y) > q.size * 0.5 {
+                    out.push_str(if self.code_blocks[p.block] { "\n" } else { " " })
+                } else {
+                    // Gaps on a line: a space a space's width, at least one.
+                    let gap = p.at.x - (q.at.x + q.w)
+                    if gap > q.size * 0.12 {
+                        let spaces = if self.code_blocks[p.block] {
+                            max(u32(gap / (q.size * 0.6) + 0.5), 1)
+                        } else { 1 }
+                        for _ in 0..spaces { out.push_str(" ") }
+                    }
+                }
+            }
+            starts.push(out.len())
+            out.push_str(p.text.as_str())
+        }
+        (take out, take starts)
+    }
+
+    /// The piece and the byte in it nearest `at`: on the line `at` is on, else the nearest line.
+    pub fn place_at(self, fonts: Fonts, at: vec2) -> Option<(u32, u32)> {
+        var best: Option<(u32, f32)> = None
+        for i in 0..self.pieces.len() {
+            borrow p = self.pieces[i]
+            let top = p.at.y - p.size * 0.3
+            let bottom = p.at.y + p.size * 1.35
+            let dy = if at.y < top { top - at.y } else if at.y > bottom { at.y - bottom } else {
+                0.0
+            }
+            let dx = if at.x < p.at.x { p.at.x - at.x } else if at.x > p.at.x + p.w {
+                at.x - p.at.x - p.w
+            } else { 0.0 }
+            let d = dy * 1000.0 + dx
+            let better = match best {
+                Some((_, b)) => d < b,
+                None => true,
+            }
+            if better { best = Some((i, d)) }
+        }
+        let Some((i, _)) = best else { return None }
+        borrow p = self.pieces[i]
+        let k = fonts.font(p.face).offset_at(p.text.as_str(), p.size, at.x - p.at.x)
+        Some((i, k))
+    }
+}
+
+/// Lays out `blocks` `width` pixels wide, `u` pixels to the CSS pixel. On a module's page
+/// (`code_headings`), item headings are set in the code face, as the names they are.
+pub fn lay_out(blocks: [Block], fonts: Fonts, width: f32, u: f32, code_headings: bool) -> Laid {
+    var laid = Laid::empty()
+    let measure = min(width, theme::MEASURE * u)
+    var y = 0.0
+    var previous = Kind::Rule
+    for k in 0..blocks.len() {
+        borrow b = blocks[k]
+        laid.block = k
+        laid.code_blocks.push(b.kind == Kind::Code)
+        match b.kind {
+            Kind::Heading => {
+                let (size, above, face) = match b.level {
+                    1 => (H1, 0.0, Face::Sans),
+                    2 => (H2, 44.0, if code_headings { Face::Mono } else { Face::Sans }),
+                    3 => (H3, 30.0, if code_headings { Face::Mono } else { Face::Sans }),
+                    _ => (BODY, 22.0, Face::Sans),
+                }
+                if k > 0 { y += above * u }
+                laid.anchors.push((b.anchor.clone(), y))
+                let s = if face == Face::Mono { size * 0.86 } else { size }
+                let start = y
+                y = flow(
+                    mut laid,
+                    fonts,
+                    b.runs,
+                    0.0,
+                    y,
+                    measure,
+                    s * u,
+                    1.25,
+                    face,
+                    hex(STRONG),
+                    HEADING,
+                )
+                laid.parts.push(
+                    Part {
+                        role: Role::Heading,
+                        level: b.level,
+                        rect: Rect::new(0.0, start, measure, y - start),
+                        label: plain(b.runs),
+                        target: String::new(),
+                    },
+                )
+                y += (if b.level == 1 { 18.0 } else { 10.0 }) * u
+            },
+            Kind::Meta => {
+                // An item's kind, then its source, small and quiet, under its heading.
+                y -= 4.0 * u
+                let size = SMALL * u
+                let line = size * 1.5
+                let kind = b.runs[0].text.as_str()
+                let kw = fonts.font(Face::Mono).measure(kind, size)
+                let _ = put(
+                    mut laid,
+                    fonts,
+                    kind,
+                    0.0,
+                    y,
+                    line,
+                    size,
+                    Face::Mono,
+                    size,
+                    Face::Mono,
+                    hex(FIELD),
+                    0.0,
+                )
+                let source = b.runs[2].text.as_str()
+                let sx = kw + 12.0 * u
+                let sw = put(
+                    mut laid,
+                    fonts,
+                    source,
+                    sx,
+                    y,
+                    line,
+                    size,
+                    Face::Mono,
+                    size,
+                    Face::Mono,
+                    hex(QUIET),
+                    0.0,
+                )
+                laid.spots.push(
+                    Spot { rect: Rect::new(sx, y, sw, line), target: f"source:{source}" },
+                )
+                laid.parts.push(
+                    Part {
+                        role: Role::Link,
+                        level: 0,
+                        rect: Rect::new(sx, y, sw, line),
+                        label: f"{kind}, defined at {source}",
+                        target: f"source:{source}",
+                    },
+                )
+                y += line + 8.0 * u
+            },
+            Kind::Paragraph | Kind::Quote => {
+                if k > 0 && previous != Kind::Heading { y += 4.0 * u }
+                let indent = if b.kind == Kind::Quote { 18.0 * u } else { 0.0 }
+                let start = y
+                let color = if b.kind == Kind::Quote { hex(QUIET) } else { hex(TEXT) }
+                y = flow(
+                    mut laid,
+                    fonts,
+                    b.runs,
+                    indent,
+                    y,
+                    measure - indent,
+                    BODY * u,
+                    LEADING,
+                    Face::Sans,
+                    color,
+                    0.0,
+                )
+                if b.kind == Kind::Quote {
+                    laid.shapes.push(
+                        Shape {
+                            rect: Rect::new(0.0, start + 4.0 * u, 3.0 * u, y - start - 8.0 * u),
+                            color: hex(FIELD, 0.5),
+                            radius: 1.5 * u,
+                        },
+                    )
+                }
+                text_part(mut laid, b, Rect::new(0.0, start, measure, y - start))
+                y += 12.0 * u
+            },
+            Kind::Item => {
+                let indent = (22.0 + 22.0 * f32(b.level)) * u
+                let start = y
+                let line = BODY * u * LEADING
+                if b.number > 0 {
+                    let label = f"{b.number}."
+                    let w = fonts.font(Face::Sans).measure(label.as_str(), BODY * u)
+                    let _ = put(
+                        mut laid,
+                        fonts,
+                        label.as_str(),
+                        indent - w - 8.0 * u,
+                        y,
+                        line,
+                        BODY * u,
+                        Face::Sans,
+                        BODY * u,
+                        Face::Sans,
+                        hex(QUIET),
+                        0.0,
+                    )
+                } else {
+                    let r = 2.5 * u
+                    let cy = y + line * 0.5
+                    laid.shapes.push(
+                        Shape {
+                            rect: Rect::new(indent - 12.0 * u - r, cy - r, 2.0 * r, 2.0 * r),
+                            color: hex(QUIET),
+                            radius: r,
+                        },
+                    )
+                }
+                y = flow(
+                    mut laid,
+                    fonts,
+                    b.runs,
+                    indent,
+                    y,
+                    measure - indent,
+                    BODY * u,
+                    LEADING,
+                    Face::Sans,
+                    hex(TEXT),
+                    0.0,
+                )
+                text_part(mut laid, b, Rect::new(indent, start, measure - indent, y - start))
+                let next_item = k + 1 < blocks.len() && blocks[k + 1].kind == Kind::Item
+                y += (if next_item { 4.0 } else { 14.0 }) * u
+            },
+            Kind::Code => {
+                if k > 0 && previous != Kind::Heading && previous != Kind::Meta { y += 4.0 * u }
+                y = code(mut laid, fonts, b.code.as_str(), y, min(width, theme::WIDE * u), u)
+                y += 16.0 * u
+            },
+            Kind::Table => {
+                y += 4.0 * u
+                y = table(mut laid, fonts, b, y, min(width, theme::WIDE * u), u)
+                y += 18.0 * u
+            },
+            Kind::Rule => {
+                y += 18.0 * u
+                laid.shapes.push(
+                    Shape {
+                        rect: Rect::new(0.0, y, measure, max(1.0, u)),
+                        color: hex(RULE),
+                        radius: 0.0,
+                    },
+                )
+                y += 26.0 * u
+            },
+        }
+        previous = b.kind
+    }
+    laid.height = y
+    take laid
+}
+
+/// A block's text, for a screen reader, and each of its links after it.
+fn text_part(laid: mut Laid, b: Block, rect: Rect) {
+    laid.parts.push(
+        Part { role: Role::Text, level: 0, rect, label: plain(b.runs), target: String::new() },
+    )
+    for r in b.runs {
+        if r.style & LINK != 0 {
+            laid.parts.push(
+                Part {
+                    role: Role::Link,
+                    level: 0,
+                    rect,
+                    label: r.text.clone(),
+                    target: r.link.clone(),
+                },
+            )
+        }
+    }
+}
+
+/// Places `text` in `face` at `size`, at `x` on the line whose top is `y`, `line` pixels tall:
+/// its baseline is the line's, which `line_face` at `line_size` sets. How wide it is.
+fn put(
+    laid: mut Laid,
+    fonts: Fonts,
+    text: str,
+    x: f32,
+    y: f32,
+    line: f32,
+    line_size: f32,
+    line_face: Face,
+    size: f32,
+    face: Face,
+    color: vec4,
+    weight: f32,
+) -> f32 {
+    borrow lf = fonts.font(line_face)
+    let content = (lf.ascender - lf.descender) * line_size
+    let baseline = y + (line - content) * 0.5 + lf.ascender * line_size
+    borrow f = fonts.font(face)
+    let w = f.measure(text, size)
+    laid.pieces.push(
+        Piece {
+            at: vec2(x, baseline - f.ascender * size),
+            text: text.to_string(),
+            face,
+            size,
+            color,
+            weight,
+            w,
+            block: laid.block,
+        },
+    )
+    w
+}
+
+/// Sets `runs` from `x`, `y` on lines `width` wide, wrapping at spaces: the styles of the runs
+/// give each piece its face, colour and weight. The bottom of the last line.
+fn flow(
+    laid: mut Laid,
+    fonts: Fonts,
+    runs: [Run],
+    x: f32,
+    y: f32,
+    width: f32,
+    size: f32,
+    leading: f32,
+    face: Face,
+    color: vec4,
+    weight: f32,
+) -> f32 {
+    let line = size * leading
+    var pen = x
+    var top = y
+    var any = false
+    // Whether what was placed last ends in a space: a word after it may start a line.
+    var after_space = true
+    for r in runs {
+        let code = r.style & CODE != 0
+        let f = if code { Face::Mono } else { face }
+        let fs = if code && face == Face::Sans { size * 0.88 } else { size }
+        let c = if r.style & LINK != 0 { hex(STRONG) } else if code { hex(TEXT) } else if r.style &
+            (BOLD | ITALIC) !=
+            0 {
+            hex(STRONG)
+        } else { color }
+        let wt = if r.style & BOLD != 0 { BOLD_WEIGHT } else { weight }
+        let text = r.text.as_str()
+        // Each word, with the spaces after it, goes where it fits.
+        var seg = String::new()
+        var seg_x = pen
+        var i = 0
+        while i < text.len() {
+            var j = i
+            while j < text.len() && text.byte(j) == 32 { j += 1 }
+            var e = j
+            while e < text.len() && text.byte(e) != 32 { e += 1 }
+            let spaces = text.slice(i, j)
+            let word = text.slice(j, e)
+            let sw = fonts.font(f).measure(spaces, fs)
+            let ww = fonts.font(f).measure(word, fs)
+            // Punctuation glued to the word before it (`mut`, then `,`) stays on its line; a longer
+            // word glued to another breaks with it.
+            let glued = spaces.is_empty() && !after_space && pen > x && ww <= fs * 0.9
+            if pen > x && pen + sw + ww > x + width && !word.is_empty() && !glued {
+                // To the next line: what's gathered stays on this one, without the spaces.
+                end_segment(mut laid, fonts, mut seg, seg_x, top, line, size, face, fs, f, c, wt, r)
+                top += line
+                pen = x
+                seg_x = x
+                seg.push_str(word)
+                pen += ww
+            } else {
+                if pen > x || any { seg.push_str(spaces) } else { seg_x = pen }
+                if pen > x || any { pen += sw }
+                if seg.is_empty() { seg_x = pen }
+                seg.push_str(word)
+                pen += ww
+            }
+            if !word.is_empty() { any = true }
+            if !word.is_empty() { after_space = false } else if !spaces.is_empty() {
+                after_space = true
+            }
+            i = e
+        }
+        end_segment(mut laid, fonts, mut seg, seg_x, top, line, size, face, fs, f, c, wt, r)
+    }
+    top + line
+}
+
+/// Places a run's gathered words, with code's ground behind them and a link's line under them.
+fn end_segment(
+    laid: mut Laid,
+    fonts: Fonts,
+    seg: mut String,
+    x: f32,
+    top: f32,
+    line: f32,
+    line_size: f32,
+    line_face: Face,
+    size: f32,
+    face: Face,
+    color: vec4,
+    weight: f32,
+    r: Run,
+) {
+    // Spaces that end a line aren't drawn.
+    let t = seg.as_str()
+    var end = t.len()
+    while end > 0 && t.byte(end - 1) == 32 { end -= 1 }
+    if end == 0 {
+        seg.clear()
+        return
+    }
+    let text = t.slice(0, end).to_string()
+    seg.clear()
+    let w = put(
+        mut laid,
+        fonts,
+        text.as_str(),
+        x,
+        top,
+        line,
+        line_size,
+        line_face,
+        size,
+        face,
+        color,
+        weight,
+    )
+    if r.style & CODE != 0 && line_face == Face::Sans {
+        let h = line * 0.78
+        laid.shapes.push(
+            Shape {
+                rect: Rect::new(
+                    x - 3.0 * size / 16.0,
+                    top + (line - h) * 0.5,
+                    w + 6.0 * size / 16.0,
+                    h,
+                ),
+                color: hex(SURFACE),
+                radius: 3.0 * size / 16.0,
+            },
+        )
+    }
+    if r.style & LINK != 0 {
+        let under = top + line * 0.5 + line_size * 0.62
+        laid.shapes.push(
+            Shape {
+                rect: Rect::new(x, under, w, max(1.0, line_size / 16.0)),
+                color: hex(FIELD, 0.55),
+                radius: 0.0,
+            },
+        )
+        laid.spots.push(Spot { rect: Rect::new(x, top, w, line), target: r.link.clone() })
+    }
+}
+
+/// A block of code on its ground, coloured by its tokens, its long lines wrapped under
+/// themselves. The bottom of its ground.
+fn code(laid: mut Laid, fonts: Fonts, text: str, y: f32, width: f32, u: f32) -> f32 {
+    let size = CODE_SIZE * u
+    let line = size * CODE_LEADING
+    let pad = 14.0 * u
+    let start = y
+    let shape = laid.shapes.len()
+    laid.shapes.push(
+        Shape { rect: Rect::new(0.0, y, width, 0.0), color: hex(SURFACE), radius: 6.0 * u },
+    )
+    borrow mono = fonts.font(Face::Mono)
+    let advance = max(mono.measure("M", size), 1.0)
+    let columns = max(u32((width - 2.0 * pad) / advance), 20)
+    var top = y + pad
+    for (a, b) in text.lines() {
+        let src = text.slice(a, b)
+        var col = 0
+        var x = pad
+        for (s, e, token) in spans(src) {
+            let color = match token {
+                Token::Keyword => hex(KEYWORD),
+                Token::Type => hex(TYPE),
+                Token::Text => hex(STRING),
+                Token::Number => hex(NUMBER),
+                Token::Comment => hex(COMMENT),
+                Token::Plain => hex(TEXT),
+            }
+            // A span past the line's end goes on under it, indented.
+            var from = s
+            while from < e {
+                let room = columns - col
+                var to = from
+                var count = 0
+                while to < e && count < room {
+                    to = next_char(src, to)
+                    count += 1
+                }
+                let piece = src.slice(from, to)
+                if !piece.trim().is_empty() {
+                    let _ = put(
+                        mut laid,
+                        fonts,
+                        piece,
+                        x,
+                        top,
+                        line,
+                        size,
+                        Face::Mono,
+                        size,
+                        Face::Mono,
+                        color,
+                        0.0,
+                    )
+                }
+                x += f32(count) * advance
+                col += count
+                from = to
+                if from < e && col >= columns {
+                    top += line
+                    col = 4
+                    x = pad + 4.0 * advance
+                }
+            }
+        }
+        top += line
+    }
+    let bottom = top + pad - line * 0.15
+    laid.shapes[shape].rect.h = bottom - start
+    laid.parts.push(
+        Part {
+            role: Role::Code,
+            level: 0,
+            rect: Rect::new(0.0, start, width, bottom - start),
+            label: text.to_string(),
+            target: String::new(),
+        },
+    )
+    bottom
+}
+
+fn next_char(s: str, i: u32) -> u32 {
+    var j = i + 1
+    while j < s.len() && s.byte(j) >= 128 && s.byte(j) < 192 { j += 1 }
+    j
+}
+
+/// A table: its columns as wide as their cells need, narrowed together to fit `width`, the header
+/// row strong over a rule. The bottom of its last row.
+fn table(laid: mut Laid, fonts: Fonts, b: Block, y: f32, width: f32, u: f32) -> f32 {
+    let cols = max(b.columns, 1)
+    let rows = b.cells.len() / cols
+    let size = SMALL * u
+    let pad = 10.0 * u
+    // Each column's widest cell, on one line.
+    var natural: Vec<f32> = Vec::filled(cols, 0.0)
+    for i in 0..b.cells.len() {
+        let w = runs_width(fonts, b.cells[i], size) + 2.0 * pad
+        let c = i % cols
+        if w > natural[c] { natural[c] = w }
+    }
+    var total = 0.0
+    for w in natural { total += w }
+    // Narrowed together to fit, none narrower than a short word, unless the table can't fit then.
+    let least = min(72.0 * u, width / f32(cols) * 0.6)
+    var widths: Vec<f32> = Vec::filled(cols, 0.0)
+    for c in 0..cols {
+        widths[c] = if total <= width { natural[c] } else { max(natural[c] * width / total, least) }
+    }
+    var sum = 0.0
+    for w in widths { sum += w }
+    if sum > width {
+        for c in 0..cols { widths[c] = widths[c] * width / sum }
+    }
+    var top = y
+    for r in 0..rows {
+        var x = 0.0
+        var bottom = top
+        let header = r == 0
+        for c in 0..cols {
+            borrow cell = b.cells[r * cols + c]
+            let color = if header { hex(STRONG) } else { hex(TEXT) }
+            let end = flow(
+                mut laid,
+                fonts,
+                cell,
+                x + pad,
+                top + pad * 0.6,
+                widths[c] - 2.0 * pad,
+                size,
+                1.5,
+                Face::Sans,
+                color,
+                if header { BOLD_WEIGHT } else { 0.0 },
+            )
+            if end > bottom { bottom = end }
+            x += widths[c]
+        }
+        bottom += pad * 0.6
+        laid.shapes.push(Shape { rect: Rect::new(0.0, bottom, x, max(1.0, u)), color: if header {
+            hex(QUIET, 0.6)
+        } else { hex(RULE) }, radius: 0.0 })
+        var label = String::new()
+        for c in 0..cols {
+            if c > 0 { label.push_str(", ") }
+            label.push_str(plain(b.cells[r * cols + c]).as_str())
+        }
+        laid.parts.push(
+            Part {
+                role: Role::Text,
+                level: 0,
+                rect: Rect::new(0.0, top, x, bottom - top),
+                label,
+                target: String::new(),
+            },
+        )
+        top = bottom
+    }
+    top
+}
+
+/// How wide runs are on one line.
+fn runs_width(fonts: Fonts, runs: [Run], size: f32) -> f32 {
+    var w = 0.0
+    for r in runs {
+        let code = r.style & CODE != 0
+        let f = if code { Face::Mono } else { Face::Sans }
+        w += fonts.font(f).measure(r.text.as_str(), if code { size * 0.88 } else { size })
+    }
+    w
+}
+
+fn laid(src: str, width: f32) -> Laid {
+    let fonts = Fonts::from_baked(brand::manrope::MANROPE, ui::text::MONO)
+    let blocks = markdown::parse(src)
+    lay_out(blocks, fonts, width, u: 1.0, code_headings: false)
+}
+
+@test
+fn prose_stays_within_its_measure_and_punctuation_stays_with_its_word() {
+    let page = laid(
+        "A paragraph long enough to wrap a few times in a narrow column, calling a `mut self` method doesn't repeat `mut`, because the name says what it does.",
+        260.0,
+    )
+    var lines = 0
+    var last = -1.0
+    for p in page.pieces {
+        // Glued punctuation may pass the edge by its own width; nothing else does.
+        assert(p.at.x + p.w <= 260.0 + p.size * 0.9, f"`{p.text.as_str()}` ends at {p.at.x + p.w}")
+        if p.at.x == 0.0 {
+            let first = p.text.as_str().byte(0)
+            assert(first != 44 && first != 46, f"a line starts with `{p.text.as_str()}`")
+        }
+        if p.at.y != last {
+            lines += 1
+            last = p.at.y
+        }
+    }
+    assert(lines >= 4, f"{lines} lines")
+}
+
+@test
+fn the_page_reads_as_text_in_order_and_its_headings_are_in_its_parts() {
+    let page = laid(
+        "# Title\n\nSome `code` here.\n\n## Next\n\n```wrela\nlet a = 1\nlet b = 2\n```\n",
+        600.0,
+    )
+    let (text, starts) = page.text()
+    assert(
+        text.as_str() == "Title\n\nSome code here.\n\nNext\n\nlet a = 1\nlet b = 2",
+        f"[{text.as_str()}]",
+    )
+    assert(starts.len() == page.pieces.len() && starts[0] == 0)
+    // The headings' anchors, down the page.
+    assert(page.anchors.len() == 2 && page.anchors[0].1 < page.anchors[1].1)
+    let roles: Vec<Role> = Vec::from_fn(page.parts.len(), |i| page.parts[i].role)
+    assert(roles == Vec::from([Role::Heading, Role::Text, Role::Heading, Role::Code]))
+    assert(page.parts[2].level == 2)
+    // A point on the first line finds a byte in the title.
+    let fonts = Fonts::from_baked(brand::manrope::MANROPE, ui::text::MONO)
+    let at = page.place_at(fonts, vec2(page.pieces[0].at.x + 2.0, page.pieces[0].at.y + 4.0))
+    assert(at == Some((0, 0)))
+}
+
+@test
+fn a_table_narrows_to_its_width() {
+    let page = laid(
+        "| Rule | Tier |\n|---|---|\n| A rule long enough that it would run far past the edge of a phone's screen | T0 |\n",
+        300.0,
+    )
+    for p in page.pieces {
+        assert(p.at.x + p.w <= 300.0 + 2.0, f"`{p.text.as_str()}` ends at {p.at.x + p.w}")
+    }
+}

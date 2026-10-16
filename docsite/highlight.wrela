@@ -1,0 +1,175 @@
+// Wrela code's colours: keywords, types (a name that starts with a capital, or a scalar or vector
+// type), strings, numbers and comments, by the lexical structure's rules (spec/lexical.md),
+// line by line. It colours; it never fails.
+
+pub enum Token: Copy + Eq {
+    Plain,
+    Keyword,
+    Type,
+    Text,
+    Number,
+    Comment,
+}
+
+const KEYWORDS = [
+    "as",
+    "borrow",
+    "break",
+    "const",
+    "continue",
+    "dyn",
+    "else",
+    "enum",
+    "false",
+    "fn",
+    "for",
+    "if",
+    "impl",
+    "in",
+    "let",
+    "loop",
+    "match",
+    "mut",
+    "package",
+    "pub",
+    "return",
+    "self",
+    "Self",
+    "struct",
+    "take",
+    "trait",
+    "true",
+    "type",
+    "unsafe",
+    "use",
+    "var",
+    "while",
+    "yield",
+]
+
+const TYPES = [
+    "bool",
+    "i32",
+    "u32",
+    "f32",
+    "f64",
+    "i64",
+    "u64",
+    "u8",
+    "u16",
+    "str",
+    "vec2",
+    "vec3",
+    "vec4",
+    "vec2u",
+    "vec3u",
+    "vec4u",
+    "vec2i",
+    "vec3i",
+    "vec4i",
+    "mat2",
+    "mat3",
+    "mat4",
+]
+
+/// A line's spans: each a byte range and what it is, in order, covering the line.
+pub fn spans(line: str) -> Vec<(u32, u32, Token)> {
+    var out: Vec<(u32, u32, Token)> = Vec::new()
+    var i = 0
+    let n = line.len()
+    while i < n {
+        let b = line.byte(i)
+        let start = i
+        if b == 47 && i + 1 < n && line.byte(i + 1) == 47 {
+            out.push((i, n, Token::Comment))
+            break
+        }
+        if b == 34 {
+            i += 1
+            while i < n && line.byte(i) != 34 {
+                if line.byte(i) == 92 { i += 1 }
+                i += 1
+            }
+            i = min(i + 1, n)
+            out.push((start, i, Token::Text))
+            continue
+        }
+        if b >= 48 && b <= 57 {
+            while i < n && is_name(line.byte(i)) { i += 1 }
+            // A fraction, but not a range (`0..4`).
+            if i + 1 < n && line.byte(i) == 46 && line.byte(i + 1) >= 48 && line.byte(i + 1) <= 57 {
+                i += 1
+                while i < n && is_name(line.byte(i)) { i += 1 }
+            }
+            out.push((start, i, Token::Number))
+            continue
+        }
+        if is_name(b) {
+            while i < n && is_name(line.byte(i)) { i += 1 }
+            let word = line.slice(start, i)
+            var kind = Token::Plain
+            for k in KEYWORDS { if word == k { kind = Token::Keyword } }
+            if kind == Token::Plain {
+                for t in TYPES { if word == t { kind = Token::Type } }
+                if b >= 65 && b <= 90 && word != "Self" { kind = Token::Type }
+            }
+            out.push((start, i, kind))
+            continue
+        }
+        // Anything else up to the next word, number, string or comment, as one span. A character
+        // past ASCII is taken whole.
+        while i < n {
+            let c = line.byte(i)
+            if is_name(c) || c == 34 || (c == 47 && i + 1 < n && line.byte(i + 1) == 47) { break }
+            i += 1
+            while i < n && line.byte(i) >= 128 && line.byte(i) < 192 { i += 1 }
+        }
+        out.push((start, i, Token::Plain))
+    }
+    take out
+}
+
+fn is_name(b: u8) -> bool {
+    (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95
+}
+
+@test
+fn code_is_coloured_by_its_tokens() {
+    let line = "pub fn push(mut self, v: Arena<T>) -> u32 { let s = \"a\\\"b\" // done"
+    let got = spans(line)
+    var kinds: Vec<Token> = Vec::new()
+    var words: Vec<String> = Vec::new()
+    for (a, b, k) in got {
+        if k != Token::Plain {
+            kinds.push(k)
+            words.push(line.slice(a, b).to_string())
+        }
+    }
+    assert(
+        kinds ==
+            Vec::from(
+                [
+                    Token::Keyword,
+                    Token::Keyword,
+                    Token::Keyword,
+                    Token::Keyword,
+                    Token::Type,
+                    Token::Type,
+                    Token::Type,
+                    Token::Keyword,
+                    Token::Text,
+                    Token::Comment,
+                ],
+            ),
+    )
+    assert(words[4].as_str() == "Arena" && words[8].as_str() == "\"a\\\"b\"")
+    // The spans cover the line, in order.
+    var at = 0
+    for (a, b, _) in got {
+        assert(a == at)
+        at = b
+    }
+    assert(at == line.len())
+    let range = spans("0..4 1.5e3 0xFF")
+    assert(range[0].2 == Token::Number && range[0].1 == 1 && range[2].2 == Token::Number)
+}

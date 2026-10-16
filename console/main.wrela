@@ -10,7 +10,9 @@ use paint::{
 }
 use room::{Camera, MARGIN, artifact_spot, bounds, camera, place, row, row_place}
 use tesseract::{Artifact, artifact, corners}
-use facet::MarkRun
+use brand::facet
+use brand::facet::MarkRun
+use brand::manrope::MANROPE
 use platform::host
 use platform::protocol::{Reply, Request, SaveInfo, valid_key}
 use std::gpu::{
@@ -22,10 +24,7 @@ use std::io::{Pending, fetch, load as read_file, store}
 use std::serialize::{LoadError, Serialize, load, save}
 use ui::draw::{DrawList, Rect, Renderer}
 use ui::text::{Face, Fonts, previous}
-use ui::ttf::{Baked, bake}
 
-@fuel(2 ** 38)
-const BODY: Baked = bake(embed("fonts/Manrope-Medium.ttf"), em: 36.0, spread: 4.0)
 @fuel(2 ** 34)
 const MARK_RUNS: Vec<MarkRun> = facet::mark_runs()
 @fuel(2 ** 30)
@@ -245,7 +244,7 @@ fn page_icons() -> Vec<Pending<u8>> {
 }
 
 pub fn init() -> Console {
-    var fonts = Fonts::from_baked(BODY, facet::FONT)
+    var fonts = Fonts::from_baked(MANROPE, facet::FONT)
     // Manrope set a little closer and a little heavier, so short labels hold together.
     fonts.sans.tracking = -0.012
     fonts.sans.weight = 0.012

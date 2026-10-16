@@ -1,0 +1,533 @@
+// The Markdown the docs are written in, read into blocks: headings (with the anchors
+// `wrela doc --export` gives them), paragraphs, list items, quotes, tables, rules and code. A
+// block's text is runs, each bold, italic, code or a link, or plain. It reads what the export
+// and the spec write, and anything else as plain text; it never fails.
+
+pub const BOLD: u32 = 1
+pub const ITALIC: u32 = 2
+pub const CODE: u32 = 4
+pub const LINK: u32 = 8
+
+/// Text of one style, and a link's target.
+pub struct Run: Clone + Eq {
+    pub text: String,
+    pub style: u32,
+    pub link: String = String::new(),
+}
+
+pub enum Kind: Copy + Eq {
+    Heading,
+    Paragraph,
+    /// An item's kind and source, under its heading on a module's page: "`struct` · `file:line`".
+    Meta,
+    Item,
+    Quote,
+    Table,
+    Rule,
+    Code,
+}
+
+pub struct Block: Clone {
+    pub kind: Kind,
+    /// A heading's level; a list item's depth, 0 at the margin.
+    pub level: u32 = 0,
+    /// A numbered item's number; 0 for a bullet.
+    pub number: u32 = 0,
+    pub runs: Vec<Run> = Vec::new(),
+    /// A code block's text and language.
+    pub code: String = String::new(),
+    pub lang: String = String::new(),
+    /// A table's cells, row by row, the header first, and how many to a row.
+    pub cells: Vec<Vec<Run>> = Vec::new(),
+    pub columns: u32 = 0,
+    /// A heading's anchor on its page.
+    pub anchor: String = String::new(),
+}
+
+impl Block {
+    /// The block's words without their styles: a heading's or a paragraph's text, a table's cells
+    /// one after another, a code block's code.
+    pub fn plain(self) -> String {
+        if self.kind == Kind::Code { return self.code.clone() }
+        var out = plain(self.runs)
+        for cell in self.cells {
+            if !out.is_empty() { out.push_str(" ") }
+            out.push_str(plain(cell).as_str())
+        }
+        take out
+    }
+}
+
+/// Runs' text, one after another.
+pub fn plain(runs: [Run]) -> String {
+    var out = String::new()
+    for r in runs { out.push_str(r.text.as_str()) }
+    take out
+}
+
+/// `src`'s blocks.
+pub fn parse(src: str) -> Vec<Block> {
+    let lines = src.lines()
+    var blocks: Vec<Block> = Vec::new()
+    var anchors = Anchors::new()
+    var para = String::new()
+    var i = 0
+    while i < lines.len() {
+        let (a, b) = lines[i]
+        let line = src.slice(a, b)
+        let t = line.trim()
+        // A fenced block of code, to its closing fence.
+        if t.starts_with("```") {
+            flush(mut blocks, mut para)
+            let lang = t.slice(3, t.len()).trim().to_string()
+            var code = String::new()
+            i += 1
+            while i < lines.len() {
+                let (ca, cb) = lines[i]
+                let c = src.slice(ca, cb)
+                if c.trim().starts_with("```") { break }
+                if !code.is_empty() { code.push_str("\n") }
+                code.push_str(c)
+                i += 1
+            }
+            blocks.push(Block { kind: Kind::Code, code, lang })
+            i += 1
+            continue
+        }
+        if t.is_empty() {
+            flush(mut blocks, mut para)
+            i += 1
+            continue
+        }
+        let hashes = count_of(t, 35)
+        if hashes >= 1 && hashes <= 6 && t.len() > hashes && t.byte(hashes) == 32 {
+            flush(mut blocks, mut para)
+            let text = t.slice(hashes + 1, t.len()).trim()
+            let runs = inlines(text)
+            let anchor = anchors.of(plain(runs).as_str())
+            blocks.push(Block { kind: Kind::Heading, level: hashes, runs, anchor })
+            i += 1
+            continue
+        }
+        if t == "---" || t == "***" || t == "___" {
+            flush(mut blocks, mut para)
+            blocks.push(Block { kind: Kind::Rule })
+            i += 1
+            continue
+        }
+        // A table: a row of cells, then a row of dashes under it.
+        if t.starts_with("|") && i + 1 < lines.len() {
+            let (na, nb) = lines[i + 1]
+            if is_divider(src.slice(na, nb).trim()) {
+                flush(mut blocks, mut para)
+                let header = cells_of(t)
+                let columns = header.len()
+                var cells: Vec<Vec<Run>> = Vec::new()
+                for c in header { cells.push(inlines(c.as_str())) }
+                i += 2
+                while i < lines.len() {
+                    let (ra, rb) = lines[i]
+                    let row = src.slice(ra, rb).trim()
+                    if !row.starts_with("|") { break }
+                    let got = cells_of(row)
+                    for k in 0..columns {
+                        if k < got.len() { cells.push(inlines(got[k].as_str())) } else {
+                            cells.push(Vec::new())
+                        }
+                    }
+                    i += 1
+                }
+                blocks.push(Block { kind: Kind::Table, cells, columns })
+                continue
+            }
+        }
+        if t.starts_with("> ") || t == ">" {
+            flush(mut blocks, mut para)
+            var text = String::new()
+            while i < lines.len() {
+                let (qa, qb) = lines[i]
+                let q = src.slice(qa, qb).trim()
+                if !(q.starts_with(">")) { break }
+                if !text.is_empty() { text.push_str(" ") }
+                text.push_str(q.slice(1, q.len()).trim())
+                i += 1
+            }
+            blocks.push(Block { kind: Kind::Quote, runs: inlines(text.as_str()) })
+            continue
+        }
+        if let Some((depth, number, from)) = item_start(line) {
+            flush(mut blocks, mut para)
+            var text = line.slice(from, line.len()).trim().to_string()
+            i += 1
+            // Its lines go on until a blank line, another item or another block.
+            while i < lines.len() {
+                let (ca, cb) = lines[i]
+                let c = src.slice(ca, cb)
+                let ct = c.trim()
+                let other = ct.starts_with("```") || ct.starts_with("|") || ct.starts_with("#")
+                if ct.is_empty() || item_start(c).is_some() || other { break }
+                text.push_str(" ")
+                text.push_str(ct)
+                i += 1
+            }
+            blocks.push(
+                Block { kind: Kind::Item, level: depth, number, runs: inlines(text.as_str()) },
+            )
+            continue
+        }
+        if !para.is_empty() { para.push_str(" ") }
+        para.push_str(t)
+        i += 1
+    }
+    flush(mut blocks, mut para)
+    // An item's kind and source, just under its heading.
+    for k in 1..blocks.len() {
+        if blocks[k].kind == Kind::Paragraph &&
+            blocks[k - 1].kind == Kind::Heading &&
+            is_meta(blocks[k].runs) {
+            blocks[k].kind = Kind::Meta
+        }
+    }
+    take blocks
+}
+
+/// Ends the paragraph being gathered, if there is one.
+fn flush(blocks: mut Vec<Block>, para: mut String) {
+    if para.is_empty() { return }
+    blocks.push(Block { kind: Kind::Paragraph, runs: inlines(para.as_str()) })
+    para.clear()
+}
+
+/// Whether runs are an item's kind and source: code, " · ", code.
+fn is_meta(runs: [Run]) -> bool {
+    runs.len() == 3 &&
+        runs[0].style == CODE &&
+        runs[1].text.as_str().trim() == "·" &&
+        runs[2].style == CODE
+}
+
+fn count_of(t: str, b: u8) -> u32 {
+    var n = 0
+    while n < t.len() && t.byte(n) == b { n += 1 }
+    n
+}
+
+/// A list item's depth (two spaces a level), its number (0 for a bullet) and where its text
+/// starts.
+fn item_start(line: str) -> Option<(u32, u32, u32)> {
+    let indent = count_of(line, 32)
+    let rest = line.slice(indent, line.len())
+    if rest.starts_with("- ") || rest.starts_with("* ") || rest.starts_with("+ ") {
+        return Some((indent / 2, 0, indent + 2))
+    }
+    var n = 0
+    var k = 0
+    while k < rest.len() && k < 4 && rest.byte(k) >= 48 && rest.byte(k) <= 57 {
+        n = n * 10 + u32(rest.byte(k) - 48)
+        k += 1
+    }
+    if k > 0 && k + 1 < rest.len() && rest.byte(k) == 46 && rest.byte(k + 1) == 32 {
+        return Some((indent / 2, n, indent + k + 2))
+    }
+    None
+}
+
+/// Whether a line is a table's divider: `|---|:--:|`.
+fn is_divider(t: str) -> bool {
+    if !t.starts_with("|") || t.len() < 3 { return false }
+    var dash = false
+    for i in 0..t.len() {
+        let b = t.byte(i)
+        if b == 45 { dash = true } else if b != 124 && b != 58 && b != 32 { return false }
+    }
+    dash
+}
+
+/// A table row's cells, without the bars at its ends; `\|` is a bar in a cell.
+fn cells_of(row: str) -> Vec<String> {
+    var cells: Vec<String> = Vec::new()
+    var cell = String::new()
+    var i = 0
+    // The bar the row starts with.
+    if row.starts_with("|") { i = 1 }
+    var code = false
+    while i < row.len() {
+        let b = row.byte(i)
+        if b == 92 && i + 1 < row.len() && row.byte(i + 1) == 124 {
+            cell.push_byte(124)
+            i += 2
+            continue
+        }
+        if b == 96 { code = !code }
+        if b == 124 && !code {
+            cells.push(cell.as_str().trim().to_string())
+            cell.clear()
+            i += 1
+        } else {
+            i = copy_char(mut cell, row, i)
+        }
+    }
+    if !cell.as_str().trim().is_empty() { cells.push(cell.as_str().trim().to_string()) }
+    take cells
+}
+
+/// `text`'s runs: `code`, **bold**, *italic* (or _italic_ between words), [links](to), and `\`
+/// before a mark to write it.
+pub fn inlines(text: str) -> Vec<Run> {
+    var runs: Vec<Run> = Vec::new()
+    var style = 0
+    var cur = String::new()
+    var i = 0
+    let n = text.len()
+    while i < n {
+        let b = text.byte(i)
+        if b == 92 && i + 1 < n && is_mark(text.byte(i + 1)) {
+            cur.push_byte(text.byte(i + 1))
+            i += 2
+            continue
+        }
+        if b == 96 {
+            // Code: to the next run of as many backticks.
+            let ticks = count_of(text.slice(i, n), 96)
+            let close = find_from(text, i + ticks, text.slice(i, i + ticks))
+            if let Some(end) = close {
+                add(mut runs, mut cur, style)
+                var code = text.slice(i + ticks, end).to_string()
+                // A space at both ends is padding.
+                let c = code.as_str()
+                if c.len() >= 2 && c.byte(0) == 32 && c.byte(c.len() - 1) == 32 {
+                    code = c.slice(1, c.len() - 1).to_string()
+                }
+                runs.push(Run { text: code, style: style | CODE })
+                i = end + ticks
+                continue
+            }
+        }
+        if b == 42 && i + 1 < n && text.byte(i + 1) == 42 {
+            add(mut runs, mut cur, style)
+            style = style ^ BOLD
+            i += 2
+            continue
+        }
+        if b == 42 || b == 95 {
+            let before = if i > 0 { text.byte(i - 1) } else { u8(32) }
+            let after = if i + 1 < n { text.byte(i + 1) } else { u8(32) }
+            let opening = style & ITALIC == 0 && after != 32 && (b == 42 || !is_word(before))
+            let closing = style & ITALIC != 0 && before != 32 && (b == 42 || !is_word(after))
+            if opening || closing {
+                add(mut runs, mut cur, style)
+                style = style ^ ITALIC
+                i += 1
+                continue
+            }
+        }
+        if b == 91 {
+            if let Some(mid) = find_from(text, i + 1, "](") {
+                if let Some(end) = find_from(text, mid + 2, ")") {
+                    add(mut runs, mut cur, style)
+                    let label = text.slice(i + 1, mid)
+                    let target = text.slice(mid + 2, end).to_string()
+                    for r in inlines(label) {
+                        runs.push(
+                            Run {
+                                text: r.text.clone(),
+                                style: r.style | style | LINK,
+                                link: target.clone(),
+                            },
+                        )
+                    }
+                    i = end + 1
+                    continue
+                }
+            }
+        }
+        i = copy_char(mut cur, text, i)
+    }
+    add(mut runs, mut cur, style)
+    take runs
+}
+
+/// Copies the character at byte `i` of `text` to `out`, and gives the byte after it.
+fn copy_char(out: mut String, text: str, i: u32) -> u32 {
+    let b = text.byte(i)
+    if b < 128 {
+        out.push_byte(b)
+        return i + 1
+    }
+    let len = match text.char_at(i) {
+        Some((_, len)) => len,
+        None => 1,
+    }
+    out.push_str(text.slice(i, i + len))
+    i + len
+}
+
+fn is_mark(b: u8) -> bool {
+    b == 42 || b == 95 || b == 96 || b == 91 || b == 93 || b == 92 || b == 124 || b == 35
+}
+
+fn is_word(b: u8) -> bool {
+    (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b >= 128
+}
+
+/// Where `needle` next occurs in `text`, from byte `from`.
+fn find_from(text: str, from: u32, needle: str) -> Option<u32> {
+    if from > text.len() { return None }
+    match text.slice(from, text.len()).find(needle) {
+        Some(k) => Some(from + k),
+        None => None,
+    }
+}
+
+/// Ends the run being gathered, joining it to the one before when their styles are the same.
+fn add(runs: mut Vec<Run>, cur: mut String, style: u32) {
+    if cur.is_empty() { return }
+    let n = runs.len()
+    if n > 0 && runs[n - 1].style == style && style & LINK == 0 {
+        runs[n - 1].text.push_str(cur.as_str())
+    } else {
+        runs.push(Run { text: cur.clone(), style })
+    }
+    cur.clear()
+}
+
+/// A heading's anchor: its slug, numbered from the second time it occurs on a page. The same
+/// rule as `wrela doc --export`'s, so an index's anchors are a page's.
+pub struct Anchors {
+    seen: Vec<(String, u32)>,
+}
+
+impl Anchors {
+    pub fn new() -> Anchors {
+        Anchors { seen: Vec::new() }
+    }
+
+    pub fn of(mut self, heading: str) -> String {
+        let base = slug(heading)
+        for k in 0..self.seen.len() {
+            if self.seen[k].0 == base {
+                self.seen[k].1 += 1
+                return f"{base}-{self.seen[k].1}"
+            }
+        }
+        self.seen.push((base.clone(), 1))
+        take base
+    }
+}
+
+/// Lowercase letters, digits and `-`: a space, `-`, `_`, `:` or `.` is a `-`, never two in a row,
+/// and anything else is left out. Past ASCII, a letter stays as it is and punctuation and symbols
+/// (`…`, `×`, `→`) are left out, as the export's Unicode test leaves them.
+pub fn slug(heading: str) -> String {
+    var out = String::new()
+    var dash = false
+    var i = 0
+    while i < heading.len() {
+        let b = heading.byte(i)
+        if b >= 128 {
+            let (cp, len) = match heading.char_at(i) {
+                Some(c) => c,
+                None => (0, 1),
+            }
+            if is_letter(cp) {
+                out.push_str(heading.slice(i, i + len))
+                dash = false
+            }
+            i += len
+            continue
+        }
+        if b >= 65 && b <= 90 {
+            out.push_byte(b + 32)
+            dash = false
+        } else if (b >= 97 && b <= 122) || (b >= 48 && b <= 57) {
+            out.push_byte(b)
+            dash = false
+        } else if (b == 32 || b == 45 || b == 95 || b == 58 || b == 46) &&
+            !dash &&
+            !out.is_empty() {
+            out.push_byte(45)
+            dash = true
+        }
+        i += 1
+    }
+    if dash { out.truncate(out.len() - 1) }
+    take out
+}
+
+/// Whether a character past ASCII is a letter rather than punctuation or a symbol: outside
+/// Latin-1's signs, the general punctuation, the arrows, the mathematical and technical signs,
+/// the boxes and the shapes.
+fn is_letter(cp: u32) -> bool {
+    let sign = (cp >= 0x80 && cp <= 0xBF) ||
+        cp == 0xD7 ||
+        cp == 0xF7 ||
+        (cp >= 0x2000 && cp <= 0x2BFF) ||
+        (cp >= 0x3000 && cp <= 0x303F) ||
+        (cp >= 0xFE30 && cp <= 0xFE4F) ||
+        cp >= 0x1F000
+    !sign
+}
+
+@test
+fn blocks_read_as_the_export_and_the_spec_write_them() {
+    let src = "# std::arena\n\nArenas and handles.\nOn two lines.\n\n## Arena\n\n`struct` · `compiler/std/arena.wrela:12`\n\n```wrela\npub struct Arena<T>\n```\n\n- one **bold**\n  more of one\n  - two `code`\n3. three\n\n> a quote\n\n| A | B |\n|---|:-:|\n| `x\\|y` | *z* |\n\n---\n\n## Arena\n"
+    let b = parse(src)
+    let kinds: Vec<Kind> = Vec::from_fn(b.len(), |i| b[i].kind)
+    assert(
+        kinds ==
+            Vec::from(
+                [
+                    Kind::Heading,
+                    Kind::Paragraph,
+                    Kind::Heading,
+                    Kind::Meta,
+                    Kind::Code,
+                    Kind::Item,
+                    Kind::Item,
+                    Kind::Item,
+                    Kind::Quote,
+                    Kind::Table,
+                    Kind::Rule,
+                    Kind::Heading,
+                ],
+            ),
+    )
+    assert(b[0].level == 1 && b[0].anchor.as_str() == "std-arena")
+    // Each value is bound before it's compared: `assert` frees a temporary too soon (#240).
+    let para = plain(b[1].runs)
+    assert(para.as_str() == "Arenas and handles. On two lines.")
+    // A repeated heading's anchor is numbered, as the export numbers it.
+    assert(b[2].anchor.as_str() == "arena" && b[11].anchor.as_str() == "arena-2")
+    assert(b[4].lang.as_str() == "wrela" && b[4].code.as_str() == "pub struct Arena<T>")
+    let item = plain(b[5].runs)
+    assert(item.as_str() == "one bold more of one" && b[5].runs[1].style == BOLD)
+    assert(b[6].level == 1 && b[6].runs[1].style == CODE && b[7].number == 3)
+    assert(b[9].columns == 2 && b[9].cells.len() == 4 && b[9].cells[2][0].text.as_str() == "x|y")
+    assert(b[9].cells[3][0].style == ITALIC)
+}
+
+@test
+fn inline_marks_style_runs_but_words_and_sums_stay_plain() {
+    let r = inlines("a **b** *c* `d` [e](f.md) snake_case_name 2 * 3 \\*g\\*")
+    assert(r[1].style == BOLD && r[1].text.as_str() == "b")
+    assert(r[3].style == ITALIC && r[5].style == CODE)
+    assert(r[7].style == LINK && r[7].link.as_str() == "f.md" && r[7].text.as_str() == "e")
+    let all = plain(r)
+    assert(
+        all.as_str() == "a b c d e snake_case_name 2 * 3 *g*",
+        f"{all.len()} bytes: [{all.as_str()}]",
+    )
+    let accents = plain(inlines("é **ü** `ρ`"))
+    assert(accents.as_str() == "é ü ρ")
+    assert(r[r.len() - 1].style == 0)
+    for (heading, want) in [
+        ("6.1 Values, copies and moves", "6-1-values-copies-and-moves"),
+        ("Arena::push", "arena-push"),
+        ("--A  b--", "a-b"),
+        ("`let … else`", "let-else"),
+        ("ρ × 2", "ρ-2"),
+    ] {
+        let got = slug(heading)
+        assert(got.as_str() == want, got.as_str())
+    }
+}

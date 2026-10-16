@@ -1,0 +1,1406 @@
+// docs.wrela.dev: the reference docs that `wrela doc --export` writes, beside this program in its
+// build, read here. A band of the console's dark holds the WRΞLA mark as a field; under it, the
+// pages listed at the left and the page being read, laid out from its Markdown and drawn from
+// quads. Search finds items by name and the spec's rules by their words. The page's address
+// says where the reader is, so Back, Forward and links work as on any page.
+//
+// Each frame: the host's answers (the display, the index, a page, the address), the input, the
+// layout if the page or the width changed, the drawing, then what the host is told: the pointer's
+// shape and the page's parts for screen readers.
+
+use brand::facet
+use brand::facet::MarkRun
+use brand::manrope::MANROPE
+use field::{Look, field, quad}
+use index::{Hit, Index, lower}
+use layout::{Laid, Role, lay_out}
+use markdown::{Block, parse}
+use platform::host
+use platform::host::Node
+use route::{Route, Target, follow}
+use std::gpu::{GpuBuffer, begin_screen_pass, buffer_of, draw}
+use std::input::{Assist, Button, Event, Key, events}
+use std::io::{Pending, fetch}
+use theme::{
+    FIELD, GUTTER, HEADER, MEASURE, NAV, QUIET, RULE, SLATE, SMALL, STRONG, SURFACE, TEXT, VOID,
+    WIDE, hex,
+}
+use ui::draw::{DrawList, Rect, Renderer}
+use ui::text::{Face, Fonts, MONO, previous_cluster}
+
+const MARK_RUNS: Vec<MarkRun> = facet::mark_runs()
+const MARK_WIDTH: f32 = facet::mark_width()
+
+/// How many results search shows, and how many pages are kept read.
+const RESULTS: u32 = 10
+const KEPT: u32 = 24
+/// The accessibility tree's numbers for search's results; the page's parts are numbered from 0.
+const RESULT_NODES: u32 = 1000000
+
+pub struct Docs {
+    fonts: Fonts,
+    renderer: Renderer,
+    list: DrawList,
+    mark: GpuBuffer<MarkRun>,
+    environment: Option<Pending<u8>>,
+    /// Device pixels to the CSS pixel, whether the system asks for less motion, and what the host
+    /// can do.
+    u: f32,
+    reduced: bool,
+    capabilities: u32,
+    index_load: Option<Pending<u8>>,
+    index: Index,
+    trouble: String,
+    /// The address without its fragment, and the reader's place.
+    address: Option<Pending<u8>>,
+    changed: Option<Pending<u8>>,
+    base: Option<String>,
+    route: Route,
+    /// The page being read: its blocks, laid out at a width, and how far down it is scrolled.
+    page_load: Option<Pending<u8>>,
+    loading: String,
+    pages: Vec<(String, Vec<Block>)>,
+    blocks: Vec<Block>,
+    shown: String,
+    laid: Laid,
+    laid_width: f32,
+    scroll: f32,
+    nav_scroll: f32,
+    /// Where to scroll to once the page is laid out: a heading's anchor.
+    seek: Option<String>,
+    screen: vec2,
+    pointer: vec2,
+    time: f32,
+    /// Search: whether it's open, what's typed, what it found and which is chosen.
+    searching: bool,
+    query: String,
+    hits: Vec<Hit>,
+    chosen: u32,
+    pasting: Option<Pending<u8>>,
+    /// On a narrow screen, whether the list of pages is open over the page.
+    nav_open: bool,
+    /// Whether the list of pages should bring the page being read into view: a new page was shown.
+    nav_follow: bool,
+    told: Vec<Pending<u8>>,
+    cursor: String,
+    tree: Vec<Node>,
+    /// Whether the host's text mode is on, for search's or find's box.
+    texting: bool,
+    /// The scroll the tree was last made at, and when the scroll last changed: the tree waits for
+    /// a scroll to settle, rather than going to the host every frame of it.
+    tree_scroll: f32,
+    scrolled_at: f32,
+    /// The page as plain text, its lowercase for find, and where each piece starts in it.
+    text: String,
+    lowered: String,
+    starts: Vec<u32>,
+    /// A selection: where it began and where it ends, each a byte of `text`.
+    selected: Option<(u32, u32)>,
+    /// The pointer's press on the page: where, whether it has moved, and the link under it.
+    press: Option<(vec2, bool, String)>,
+    /// A press that scrolls rather than selects (a finger's, which didn't hover first): the
+    /// scroll it began at, and whether it scrolls the list of pages rather than the page.
+    swipe: Option<(f32, bool)>,
+    offered: String,
+    /// Find on the page: whether it's open, what's typed, where it matches and which is current.
+    finding: bool,
+    find: String,
+    matches: Vec<u32>,
+    current: u32,
+}
+
+pub fn init() -> Docs {
+    var fonts = Fonts::from_baked(MANROPE, MONO)
+    // Manrope set a touch closer: it's wide for long reading.
+    fonts.sans.tracking = -0.005
+    let renderer = Renderer::new(fonts)
+    var told: Vec<Pending<u8>> = Vec::new()
+    // The browser's find finds nothing in a canvas: this program has its own.
+    told.push(host::claim_find(true))
+    Docs {
+        fonts,
+        renderer,
+        list: DrawList::new(),
+        mark: buffer_of(MARK_RUNS),
+        environment: Some(host::environment()),
+        u: 1.0,
+        reduced: false,
+        capabilities: 0,
+        index_load: Some(fetch("index.json")),
+        index: Index::empty(),
+        trouble: String::new(),
+        address: Some(host::address()),
+        changed: None,
+        base: None,
+        route: Route::front(),
+        page_load: None,
+        loading: String::new(),
+        pages: Vec::new(),
+        blocks: Vec::new(),
+        shown: String::from("?"),
+        laid: Laid::empty(),
+        laid_width: 0.0,
+        scroll: 0.0,
+        nav_scroll: 0.0,
+        seek: None,
+        screen: vec2(1.0),
+        pointer: vec2(-1.0),
+        time: 0.0,
+        searching: false,
+        query: String::new(),
+        hits: Vec::new(),
+        chosen: 0,
+        pasting: None,
+        nav_open: false,
+        nav_follow: false,
+        told,
+        cursor: String::from("default"),
+        tree: Vec::new(),
+        texting: false,
+        tree_scroll: 0.0,
+        scrolled_at: 0.0,
+        text: String::new(),
+        lowered: String::new(),
+        starts: Vec::new(),
+        selected: None,
+        press: None,
+        swipe: None,
+        offered: String::new(),
+        finding: false,
+        find: String::new(),
+        matches: Vec::new(),
+        current: 0,
+    }
+}
+
+pub fn frame(s: mut Docs, time: f32, width: u32, height: u32) {
+    s.screen = vec2(f32(width), f32(height))
+    s.time = time
+    answers(mut s)
+    let frame = frame_of(s)
+    for e in events() {
+        handle(mut s, e, frame)
+    }
+    keep_laid_out(mut s, frame)
+    draw_all(mut s, frame)
+    tell(mut s, frame)
+}
+
+/// Where everything goes on this screen.
+pub struct Frame: Copy {
+    header: f32,
+    /// The list of pages: its width, and whether it shows beside the page.
+    nav: f32,
+    beside: bool,
+    /// The page's text: its left, its width, and where its top is (the front page's opening
+    /// above it).
+    x: f32,
+    w: f32,
+    top: f32,
+    /// The search box.
+    search: Rect,
+}
+
+fn frame_of(s: Docs) -> Frame {
+    let u = s.u
+    let header = HEADER * u
+    let beside = s.screen.x >= 960.0 * u
+    let nav = if beside { NAV * u } else { min(NAV * u, s.screen.x * 0.85) }
+    let left = if beside { nav } else { 0.0 }
+    let gutter = if beside { GUTTER * u } else { 20.0 * u }
+    let x = left + gutter
+    let w = max(min(WIDE * u, s.screen.x - x - gutter), 120.0 * u)
+    let top = header + (if s.route.page.is_empty() { opening_height(s) } else { 40.0 * u })
+    // Search keeps clear of the mark and the word beside it.
+    let mark_end = (if beside { 28.0 } else { 64.0 }) * u + MARK_WIDTH * mark_ems(s) + 64.0 * u
+    let sw = clamp(s.screen.x - mark_end - 20.0 * u, 120.0 * u, 320.0 * u)
+    let search = Rect::new(s.screen.x - sw - 20.0 * u, 14.0 * u, sw, 36.0 * u)
+    Frame { header, nav, beside, x, w, top, search }
+}
+
+/// How tall the front page's opening is: the mark large, in its field.
+fn opening_height(s: Docs) -> f32 {
+    min(320.0 * s.u, s.screen.y * 0.42)
+}
+
+// ---- the host's answers ------------------------------------------------------------------------
+
+fn answers(s: mut Docs) {
+    if let Some(result) = poll(mut s.environment) {
+        if let Ok(bytes) = result {
+            s.reduced = !bytes.is_empty() && bytes[0] != 0
+            if let Some(ratio) = host::word(bytes, 5) { s.u = clamp(f32(ratio) / 1024.0, 0.5, 4.0) }
+            s.capabilities = host::capabilities(bytes)
+        }
+    }
+    if let Some(result) = poll(mut s.index_load) {
+        match result {
+            Ok(bytes) => match Index::read(bytes) {
+                Ok(index) => {
+                    s.index = take index
+                    // The language first, then std, then the packages: the order a reader learns
+                    // them in. The sort keeps each group's own order.
+                    s.index.pages.sort_by(
+                        |a, b| rank(a.path.as_str(), a.kind.as_str()) <
+                            rank(b.path.as_str(), b.kind.as_str()),
+                    )
+                    // The front page lists the pages, and the list now has them.
+                    s.laid_width = 0.0
+                },
+                Err(e) => s.trouble = f"The index couldn't be read: {e.as_str()}",
+            },
+            Err(e) => s.trouble = f"The index couldn't be fetched: {e.message()}",
+        }
+    }
+    if let Some(Ok(bytes)) = poll(mut s.address) {
+        if let Some(text) = String::from_utf8(take bytes) {
+            let t = text.as_str()
+            let k = t.find("#").unwrap_or(t.len())
+            s.base = Some(t.slice(from: 0, to: k).to_string())
+            go_to(mut s, Route::of(t), push: false)
+        }
+        s.changed = Some(host::address_changed())
+    }
+    if let Some(Ok(bytes)) = poll(mut s.changed) {
+        if let Some(text) = String::from_utf8(take bytes) {
+            go_to(mut s, Route::of(text.as_str()), push: false)
+        }
+        s.changed = Some(host::address_changed())
+    }
+    if let Some(result) = poll(mut s.page_load) {
+        let path = s.loading.clone()
+        match result {
+            Ok(bytes) => match String::from_utf8(bytes.clone()) {
+                Some(text) => {
+                    let blocks = parse(text.as_str())
+                    if s.pages.len() >= KEPT { let _ = s.pages.remove(0) }
+                    s.pages.push((path.clone(), blocks.clone()))
+                    if s.route.page == path { show(mut s, path.as_str(), take blocks) }
+                },
+                None => s.trouble = f"{path.as_str()} isn't UTF-8",
+            },
+            Err(e) => s.trouble = f"{path.as_str()} couldn't be fetched: {e.message()}",
+        }
+    }
+    if let Some(Ok(bytes)) = poll(mut s.pasting) {
+        if let Ok(p) = host::read_pasted(take bytes) {
+            if s.finding {
+                s.find.push_str(first_line(p.text.as_str()))
+                let f = frame_of(s)
+                refresh_matches(mut s, f)
+            } else {
+                s.query.push_str(first_line(p.text.as_str()))
+                refresh_hits(mut s)
+            }
+        }
+    }
+    var i = 0
+    while i < s.told.len() {
+        if s.told[i].poll().is_some() { let _ = s.told.remove(i) } else { i += 1 }
+    }
+}
+
+fn poll(pending: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>> {
+    var answer = None
+    match mut pending {
+        Some(p) => answer = p.poll(),
+        None => {},
+    }
+    if answer.is_some() { pending = None }
+    answer
+}
+
+fn first_line(t: str) -> borrow str {
+    var k = 0
+    while k < t.len() && t.byte(k) != 10 && t.byte(k) != 13 { k += 1 }
+    t.slice(from: 0, to: k)
+}
+
+// ---- where the reader is -----------------------------------------------------------------------
+
+/// Takes the reader to `route`, and adds it to the page's history if `push`.
+fn go_to(s: mut Docs, route: Route, push: bool) {
+    let same_page = route.page == s.route.page && s.shown == route.page
+    s.route = route.clone()
+    s.searching = false
+    s.nav_open = false
+    s.trouble.clear()
+    if push {
+        let fragment = route.fragment()
+        let address = if fragment.is_empty() {
+            match s.base {
+                Some(b) => b.clone(),
+                None => String::from("#"),
+            }
+        } else { take fragment }
+        s.told.push(host::push_address(address.as_str()))
+    }
+    s.seek = if route.anchor.is_empty() { None } else { Some(route.anchor.clone()) }
+    if same_page {
+        if s.seek.is_none() { s.scroll = 0.0 }
+        return
+    }
+    if route.page.is_empty() {
+        show(mut s, "", Vec::new())
+        return
+    }
+    var kept: Option<Vec<Block>> = None
+    for (path, blocks) in s.pages {
+        if path == route.page { kept = Some(blocks.clone()) }
+    }
+    if let Some(blocks) = take kept {
+        show(mut s, route.page.as_str(), take blocks)
+        return
+    }
+    s.loading = route.page.clone()
+    s.page_load = Some(fetch(route.page.as_str()))
+}
+
+/// Shows the page at `path` (`` for the front page), its blocks read.
+fn show(s: mut Docs, path: str, blocks: take Vec<Block>) {
+    s.blocks = take blocks
+    s.shown = path.to_string()
+    s.nav_follow = true
+    s.laid_width = 0.0
+    if s.seek.is_none() { s.scroll = 0.0 }
+}
+
+/// The front page's Markdown: what the docs are, then each group of pages with its summaries.
+fn front(index: Index) -> String {
+    var md = String::from(
+        "The language, its standard library, and the engine, ui and platform packages, as the compiler",
+    )
+    if !index.version.is_empty() { md.push_str(f" at {index.version.as_str()}") }
+    md.push_str(
+        " knows them. Search finds an item by its name and a rule by its words. Every page here is plain Markdown too, for agents: `llms.txt` maps them and `index.json` lists every item.\n\n",
+    )
+    var group = String::new()
+    for p in index.pages {
+        let g = group_of(p.path.as_str(), p.kind.as_str())
+        if g != group.as_str() {
+            group = g.to_string()
+            md.push_str(f"\n## {group_title(g)}\n\n")
+        }
+        md.push_str(f"- [{p.title.as_str()}]({p.path.as_str()})")
+        if !p.summary.is_empty() { md.push_str(f": {p.summary.as_str()}") }
+        md.push_str("\n")
+    }
+    take md
+}
+
+/// The group a page is listed in: `spec`, or its package.
+fn group_of(path: str, kind: str) -> borrow str {
+    if kind == "spec" { return kind }
+    let k = path.find("/").unwrap_or(path.len())
+    path.slice(from: 0, to: k)
+}
+
+fn rank(path: str, kind: str) -> u32 {
+    let g = group_of(path, kind)
+    if g == "spec" { 0 } else if g == "std" { 1 } else { 2 }
+}
+
+fn group_title(g: str) -> String {
+    if g == "spec" { String::from("The language") } else { g.to_string() }
+}
+
+// ---- input -------------------------------------------------------------------------------------
+
+fn handle(s: mut Docs, e: Event, f: Frame) {
+    let u = s.u
+    match e {
+        Event::PointerMove { at, .. } => {
+            s.pointer = at
+            drag(mut s, at, f)
+        },
+        Event::PointerDown { at, button, .. } => {
+            if button != Button::Primary {
+                s.pointer = at
+                return
+            }
+            press(mut s, at, f)
+            s.pointer = at
+        },
+        Event::PointerUp { at, button, .. } => if button == Button::Primary { release(mut s, at) },
+        Event::Wheel { at, delta, .. } => {
+            if over_nav(s, at, f) { s.nav_scroll += delta.y } else if !s.searching {
+                scroll_by(mut s, delta.y, f)
+            }
+        },
+        Event::KeyDown { key, mods, .. } => {
+            // Find: Command-F opens it, and Command-G (or F3) goes to the next match, from anywhere.
+            if mods.command() && key == Key::F {
+                s.finding = true
+                s.searching = false
+                return
+            }
+            if (mods.command() && key == Key::G) || key == Key::F3 {
+                step_match(mut s, if mods.shift { -1 } else { 1 }, f)
+                return
+            }
+            if s.searching {
+                if key == Key::Escape { s.searching = false }
+                if key == Key::Backspace {
+                    erase(mut s.query, mods.command())
+                    refresh_hits(mut s)
+                }
+                if key == Key::Down && s.chosen + 1 < s.hits.len() { s.chosen += 1 }
+                if key == Key::Up && s.chosen > 0 { s.chosen -= 1 }
+                if key == Key::Enter && s.chosen < s.hits.len() { choose(mut s, s.chosen) }
+                return
+            }
+            if s.finding {
+                if key == Key::Escape { s.finding = false }
+                if key == Key::Backspace {
+                    erase(mut s.find, mods.command())
+                    refresh_matches(mut s, f)
+                }
+                if key == Key::Enter { step_match(mut s, if mods.shift { -1 } else { 1 }, f) }
+                return
+            }
+            if mods.command() && key == Key::K { open_search(mut s) }
+            if mods.command() && key == Key::A { s.selected = Some((0, s.text.len())) }
+            if key == Key::Escape { s.selected = None }
+            let page = s.screen.y - f.header - 80.0 * u
+            if key == Key::Space || key == Key::PageDown {
+                scroll_by(mut s, if mods.shift {
+                    -page
+                } else { page }, f)
+            }
+            if key == Key::PageUp { scroll_by(mut s, -page, f) }
+            if key == Key::Down { scroll_by(mut s, 48.0 * u, f) }
+            if key == Key::Up { scroll_by(mut s, -48.0 * u, f) }
+            if key == Key::Home { s.scroll = 0.0 }
+            if key == Key::End { scroll_by(mut s, s.laid.height + f.top, f) }
+            if key == Key::Escape { s.nav_open = false }
+        },
+        Event::Text { char } => {
+            if s.finding {
+                if char >= 32 && char != 127 && s.find.len() < 120 {
+                    s.find.push_char(char)
+                    refresh_matches(mut s, f)
+                }
+                return
+            }
+            if !s.searching {
+                // `/` opens search, as on many sites.
+                if char == 47 { open_search(mut s) }
+                return
+            }
+            if char >= 32 && char != 127 && s.query.len() < 120 {
+                s.query.push_char(char)
+                refresh_hits(mut s)
+            }
+        },
+        Event::Paste { serial } => if s.searching || s.finding {
+            s.pasting = Some(host::pasted(serial))
+        },
+        Event::Assist { node, action } => assisted(mut s, node, action, f),
+        _ => {},
+    }
+}
+
+/// Takes the last character from `q`, or all of it with Command.
+fn erase(q: mut String, all: bool) {
+    if all {
+        q.clear()
+    } else if !q.is_empty() {
+        let k = previous_cluster(q.as_str(), q.len())
+        q.truncate(k)
+    }
+}
+
+/// Where find's query is on the page, and the match nearest the reader's place made current.
+fn refresh_matches(s: mut Docs, f: Frame) {
+    s.matches.clear()
+    s.current = 0
+    let q = lower(s.find.as_str())
+    if q.is_empty() { return }
+    var from = 0
+    while from < s.lowered.len() {
+        let Some(k) = s.lowered
+            .as_str()
+            .slice(from: from, to: s.lowered.len())
+            .find(q.as_str()) else { break }
+        s.matches.push(from + k)
+        from = from + k + q.len()
+    }
+    // The first match below the top of what's on screen.
+    for i in 0..s.matches.len() {
+        if y_of(s, s.matches[i]) >= s.scroll {
+            s.current = i
+            break
+        }
+    }
+    reveal(mut s, f)
+}
+
+/// The next match (`by` 1) or the one before (-1), round the page.
+fn step_match(s: mut Docs, by: i32, f: Frame) {
+    let n = s.matches.len()
+    if n == 0 {
+        s.finding = true
+        return
+    }
+    s.current = if by > 0 { (s.current + 1) % n } else { (s.current + n - 1) % n }
+    reveal(mut s, f)
+}
+
+/// Scrolls the current match into view.
+fn reveal(s: mut Docs, f: Frame) {
+    if s.current >= s.matches.len() { return }
+    let y = y_of(s, s.matches[s.current])
+    let view = s.screen.y - f.top
+    if y < s.scroll + 40.0 * s.u || y > s.scroll + view - 80.0 * s.u {
+        s.scroll = clamp(y - view * 0.35, 0.0, max_scroll(s, f))
+    }
+}
+
+/// The top of the piece where byte `at` of the page's text is.
+fn y_of(s: Docs, at: u32) -> f32 {
+    let i = piece_of(s, at)
+    if i < s.laid.pieces.len() { s.laid.pieces[i].at.y } else { 0.0 }
+}
+
+/// The piece that holds byte `at` of the page's text.
+fn piece_of(s: Docs, at: u32) -> u32 {
+    var lo = 0
+    var hi = s.starts.len()
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2
+        if s.starts[mid] <= at { lo = mid } else { hi = mid }
+    }
+    lo
+}
+
+fn open_search(s: mut Docs) {
+    s.searching = true
+    s.query.clear()
+    s.hits.clear()
+    s.chosen = 0
+}
+
+fn refresh_hits(s: mut Docs) {
+    s.hits = s.index.search(s.query.as_str(), RESULTS)
+    s.chosen = 0
+}
+
+/// Goes to search result `i`.
+fn choose(s: mut Docs, i: u32) {
+    let h = s.hits[i]
+    let route = if h.item {
+        Route { page: s.index.items[h.at].page.clone(), anchor: s.index.items[h.at].anchor.clone() }
+    } else {
+        Route {
+            page: s.index.sections[h.at].page.clone(),
+            anchor: s.index.sections[h.at].anchor.clone(),
+        }
+    }
+    go_to(mut s, route, push: true)
+}
+
+fn over_nav(s: Docs, at: vec2, f: Frame) -> bool {
+    at.y > f.header && at.x < f.nav && (f.beside || s.nav_open)
+}
+
+fn scroll_by(s: mut Docs, dy: f32, f: Frame) {
+    s.scroll = clamp(s.scroll + dy, 0.0, max_scroll(s, f))
+}
+
+fn max_scroll(s: Docs, f: Frame) -> f32 {
+    max(f.top + s.laid.height + 120.0 * s.u - s.screen.y, 0.0)
+}
+
+fn press(s: mut Docs, at: vec2, f: Frame) {
+    // Search: its box opens it; a result goes there; anywhere else closes it.
+    if s.searching {
+        if let Some(i) = result_at(s, at, f) {
+            choose(mut s, i)
+            return
+        }
+        if !f.search.contains(at) {
+            s.searching = false
+            return
+        }
+    }
+    if f.search.contains(at) {
+        if !s.searching && !s.finding { open_search(mut s) }
+        return
+    }
+    if at.y < f.header {
+        // The mark goes to the front page; on a narrow screen, the button beside it opens the list.
+        if !f.beside && at.x < 56.0 * s.u {
+            s.nav_open = !s.nav_open
+            return
+        }
+        if at.x < mark_right(s, f) { go_to(mut s, Route::front(), push: true) }
+        return
+    }
+    let hovered = length(s.pointer - at) < 2.0
+    if over_nav(s, at, f) {
+        // A page of the list opens when the press lets go without moving; a finger's drag
+        // scrolls the list.
+        let path = nav_at(s, at, f).unwrap_or(String::new())
+        let held = if path.is_empty() { String::new() } else { f"nav:{path.as_str()}" }
+        s.press = Some((at, false, take held))
+        if !hovered { s.swipe = Some((s.nav_scroll, true)) }
+        return
+    }
+    if s.nav_open {
+        s.nav_open = false
+        return
+    }
+    let link = link_at(s, at, f).unwrap_or(String::new())
+    // A mouse hovers where it presses; a finger lands without hovering, and its drag scrolls.
+    s.press = Some((at, false, take link))
+    if !hovered {
+        s.swipe = Some((s.scroll, false))
+        return
+    }
+    s.selected = match place(s, at, f) {
+        Some(k) => Some((k, k)),
+        None => None,
+    }
+}
+
+/// Where `at` is in the page's text, as a byte.
+fn place(s: Docs, at: vec2, f: Frame) -> Option<u32> {
+    let p = vec2(at.x - f.x, at.y - f.top + s.scroll)
+    match s.laid.place_at(s.fonts, p) {
+        Some((i, k)) => Some(s.starts[i] + k),
+        None => None,
+    }
+}
+
+/// The pointer moved while it's held on the page: the selection goes to it.
+fn drag(s: mut Docs, at: vec2, f: Frame) {
+    let Some((from, moved, held)) = s.press else { return }
+    let link = held.clone()
+    let far = length(at - from) > 4.0 * s.u
+    if !moved && !far { return }
+    s.press = Some((from, true, link.clone()))
+    if let Some((start, nav)) = s.swipe {
+        if nav {
+            s.nav_scroll = max(start - (at.y - from.y), 0.0)
+        } else {
+            s.scroll = clamp(start - (at.y - from.y), 0.0, max_scroll(s, f))
+        }
+        return
+    }
+    // A press on the list of pages selects nothing.
+    if link.as_str().starts_with("nav:") || s.selected.is_none() { return }
+    let Some((start, _)) = s.selected else { return }
+    if let Some(k) = place(s, at, f) { s.selected = Some((start, k)) }
+}
+
+/// The pointer let go: a press that didn't move follows the link it was on, and selects nothing.
+fn release(s: mut Docs, at: vec2) {
+    let Some((_, moved, held)) = s.press else { return }
+    let link = held.clone()
+    let still = !moved
+    s.press = None
+    s.swipe = None
+    let _ = at
+    if !still { return }
+    s.selected = None
+    if link.as_str().starts_with("nav:") {
+        let path = link.as_str().slice(from: 4, to: link.len()).to_string()
+        go_to(mut s, Route { page: path, anchor: String::new() }, push: true)
+        return
+    }
+    if !link.is_empty() { follow_link(mut s, link.as_str()) }
+}
+
+/// Where a link on the page being read leads: another page, a place, out, or an item's source.
+fn follow_link(s: mut Docs, target: str) {
+    if target.starts_with("source:") {
+        if s.index.repository.is_empty() || s.index.commit.is_empty() { return }
+        let at = target.slice(from: 7, to: target.len())
+        let k = at.find(":").unwrap_or(at.len())
+        let path = at.slice(from: 0, to: k)
+        let line = at.slice(from: min(k + 1, at.len()), to: at.len())
+        let url = f"{s.index.repository.as_str()}/blob/{s.index.commit.as_str()}/{path}#L{line}"
+        s.told.push(host::open_link(url.as_str()))
+        return
+    }
+    match follow(s.shown.as_str(), target) {
+        Some(Target::Docs(route)) => go_to(mut s, route, push: true),
+        Some(Target::Out(url)) => s.told.push(host::open_link(url.as_str())),
+        None => {},
+    }
+}
+
+/// The link under `at` on the page, if there is one.
+fn link_at(s: Docs, at: vec2, f: Frame) -> Option<String> {
+    if at.y < f.header { return None }
+    let p = vec2(at.x - f.x, at.y - f.top + s.scroll)
+    for spot in s.laid.spots {
+        if spot.rect.contains(p) { return Some(spot.target.clone()) }
+    }
+    None
+}
+
+/// An assistive technology acted on node `node`: a link is followed, and one it reaches is
+/// brought into view.
+fn assisted(s: mut Docs, node: u32, action: Assist, f: Frame) {
+    if node >= RESULT_NODES {
+        let i = node - RESULT_NODES
+        if i >= s.hits.len() { return }
+        match action {
+            Assist::Activate => choose(mut s, i),
+            _ => s.chosen = i,
+        }
+        return
+    }
+    if node >= s.laid.parts.len() { return }
+    let target = s.laid.parts[node].target.clone()
+    let top = s.laid.parts[node].rect.y
+    match action {
+        Assist::Activate => if !target.is_empty() { follow_link(mut s, target.as_str()) },
+        _ => {
+            let view = s.screen.y - f.top
+            if top < s.scroll || top > s.scroll + view * 0.8 {
+                s.scroll = clamp(top - 80.0 * s.u, 0.0, max_scroll(s, f))
+            }
+        },
+    }
+}
+
+// ---- the list of pages -------------------------------------------------------------------------
+
+/// The list's rows: a group's title (no page) or a page, each with its label and its top.
+fn nav_rows(s: Docs, f: Frame) -> Vec<(String, String, f32)> {
+    let u = s.u
+    var rows: Vec<(String, String, f32)> = Vec::new()
+    var y = f.header + 24.0 * u - s.nav_scroll
+    var group = String::new()
+    for p in s.index.pages {
+        let g = group_of(p.path.as_str(), p.kind.as_str())
+        if g != group.as_str() {
+            group = g.to_string()
+            if !rows.is_empty() { y += 14.0 * u }
+            rows.push((group_title(g), String::new(), y))
+            y += 30.0 * u
+        }
+        // A module by its own name: `arena` under std.
+        let label = if p.kind.as_str() == "spec" { p.title.clone() } else {
+            own_name(p.title.as_str())
+        }
+        rows.push((take label, p.path.clone(), y))
+        y += 28.0 * u
+    }
+    take rows
+}
+
+/// A path's last name (`arena` of `std::arena`), or the whole of a title that isn't a path.
+fn own_name(t: str) -> String {
+    var k = t.len()
+    while k >= 2 && !(t.byte(k - 1) == 58 && t.byte(k - 2) == 58) { k -= 1 }
+    if k < 2 { return t.to_string() }
+    t.slice(from: k, to: t.len()).to_string()
+}
+
+fn nav_at(s: Docs, at: vec2, f: Frame) -> Option<String> {
+    for (_, path, y) in nav_rows(s, f) {
+        if !path.is_empty() && at.y >= y && at.y < y + 28.0 * s.u { return Some(path.clone()) }
+    }
+    None
+}
+
+fn result_at(s: Docs, at: vec2, f: Frame) -> Option<u32> {
+    let row = 58.0 * s.u
+    let top = f.search.bottom() + 8.0 * s.u
+    if at.x < f.search.x - 200.0 * s.u || at.x > f.search.right() || at.y < top { return None }
+    let i = u32((at.y - top) / row)
+    if i < s.hits.len() { Some(i) } else { None }
+}
+
+// ---- layout and drawing ------------------------------------------------------------------------
+
+fn keep_laid_out(s: mut Docs, f: Frame) {
+    if s.laid_width == f.w {
+        seek(mut s, f)
+        return
+    }
+    if s.shown.is_empty() {
+        s.blocks = parse(front(s.index).as_str())
+    }
+    let module = s.shown.as_str().find("spec/").is_none() && !s.shown.is_empty()
+    s.laid = lay_out(s.blocks, s.fonts, f.w, s.u, module)
+    s.laid_width = f.w
+    let (text, starts) = s.laid.text()
+    s.lowered = lower(text.as_str())
+    s.text = take text
+    s.starts = take starts
+    s.selected = None
+    refresh_matches(mut s, f)
+    seek(mut s, f)
+}
+
+/// Scrolls to the anchor the reader asked for, once the page is laid out.
+fn seek(s: mut Docs, f: Frame) {
+    let Some(anchor) = s.seek else { return }
+    if s.shown != s.route.page { return }
+    for (a, y) in s.laid.anchors {
+        if a == anchor {
+            s.scroll = clamp(y - 8.0 * s.u, 0.0, max_scroll(s, f))
+            break
+        }
+    }
+    s.seek = None
+}
+
+fn mark_ems(s: Docs) -> f32 {
+    15.0 * s.u / facet::CAP
+}
+
+fn mark_right(s: Docs, f: Frame) -> f32 {
+    mark_left(s, f) + MARK_WIDTH * mark_ems(s) + 80.0 * s.u
+}
+
+fn mark_left(s: Docs, f: Frame) -> f32 {
+    if f.beside { 28.0 * s.u } else { 64.0 * s.u }
+}
+
+fn draw_all(s: mut Docs, f: Frame) {
+    let u = s.u
+    let screen = s.screen
+    s.list.clear(screen)
+    // The page.
+    s.list.push_clip(Rect::new(0.0, f.header, screen.x, screen.y - f.header))
+    let origin = vec2(f.x, f.top - s.scroll)
+    for sh in s.laid.shapes {
+        let r = Rect::new(sh.rect.x + origin.x, sh.rect.y + origin.y, sh.rect.w, sh.rect.h)
+        if r.bottom() < f.header || r.y > screen.y { continue }
+        s.list.rect(r, sh.color, radius: sh.radius)
+    }
+    if s.finding {
+        let n = lower(s.find.as_str()).len()
+        for i in 0..s.matches.len() {
+            let a = s.matches[i]
+            mark_range(mut s, a, a + n, origin, f, hex(FIELD, if i == s.current { 0.55 } else {
+                0.2
+            }))
+        }
+    }
+    if let Some((a, b)) = s.selected {
+        if a != b { mark_range(mut s, min(a, b), max(a, b), origin, f, hex(0x4D6A8C, 0.55)) }
+    }
+    for p in s.laid.pieces {
+        let y = p.at.y + origin.y
+        if y > screen.y || y + p.size * 2.0 < f.header { continue }
+        s.fonts.font_mut(p.face).weight = p.weight
+        let _ = s.list.text(
+            s.fonts,
+            p.face,
+            p.text.as_str(),
+            p.size,
+            vec2(p.at.x + origin.x, y),
+            p.color,
+        )
+    }
+    s.fonts.sans.weight = 0.0
+    s.fonts.mono.weight = 0.0
+    if !s.trouble.is_empty() {
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            s.trouble.as_str(),
+            15.0 * u,
+            vec2(f.x, f.header + 24.0 * u),
+            hex(QUIET),
+        )
+    } else if s.blocks.is_empty() && !s.loading.is_empty() && s.shown != s.route.page {
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            "Opening the page…",
+            15.0 * u,
+            vec2(f.x, f.top),
+            hex(QUIET),
+        )
+    }
+    s.list.pop_clip()
+    draw_nav(mut s, f)
+    draw_header(mut s, f)
+    s.renderer.fetch(mut s.fonts, s.list)
+    s.renderer.upload(s.list)
+    let pass = begin_screen_pass(clear: hex(SLATE))
+    // The fields first, under the quads: the front page's opening, then the header band.
+    if s.route.page.is_empty() {
+        let h = opening_height(s)
+        let ems = min(64.0 * u, screen.x / (MARK_WIDTH + 1.0) * 0.6) / facet::CAP
+        let centre = vec2(f.x + MARK_WIDTH * ems * 0.5, f.header + h * 0.52 - s.scroll)
+        let foot = f.header + h - s.scroll
+        mark_field(
+            s,
+            pass,
+            Rect::new(0.0, f.header - s.scroll, screen.x, h),
+            centre,
+            ems,
+            11.0 * u,
+            150.0 * u,
+            0.42,
+            foot,
+            h * 0.45,
+            moving: true,
+        )
+    }
+    let ems = mark_ems(s)
+    let centre = vec2(mark_left(s, f) + MARK_WIDTH * ems * 0.5, f.header * 0.5)
+    mark_field(
+        s,
+        pass,
+        Rect::new(x: 0.0, y: 0.0, w: screen.x, h: f.header),
+        centre,
+        ems,
+        6.0 * u,
+        34.0 * u,
+        0.3,
+        f.header,
+        0.0,
+        moving: false,
+    )
+    s.renderer.draw(pass, screen)
+    pass.present()
+}
+
+/// The mark at `centre` in its field, over `rect`: its lines `spacing` apart, fading over `reach`
+/// and drawn at `strength`; its foot fading into the page over `soft` pixels above `foot`.
+fn mark_field(
+    s: Docs,
+    pass: std::gpu::ScreenPass,
+    rect: Rect,
+    centre: vec2,
+    ems: f32,
+    spacing: f32,
+    reach: f32,
+    strength: f32,
+    foot: f32,
+    soft: f32,
+    moving: bool,
+) {
+    // The front page's lines drift outward a spacing every four seconds, unless the system asks
+    // for less motion; the header's stay still beside what's being read.
+    let drift = if s.reduced || !moving { 0.0 } else { s.time * 0.25 }
+    draw(
+        pass,
+        quad.bind(screen: s.screen, rect: vec4(rect.x, rect.y, rect.w, rect.h)),
+        field.bind(
+            runs: s.mark,
+            look: Look {
+                centre,
+                ems,
+                count: MARK_RUNS.len(),
+                spacing,
+                reach,
+                drift,
+                ground: hex(VOID),
+                line: hex(FIELD, strength),
+                ink: hex(0xF4F5F7),
+                foot,
+                soft,
+                below: hex(SLATE),
+            },
+        ),
+        vertices: 6,
+    )
+}
+
+/// Marks bytes `a` to `b` of the page's text, piece by piece, behind the text.
+fn mark_range(s: mut Docs, a: u32, b: u32, origin: vec2, f: Frame, color: vec4) {
+    if a >= b || s.starts.is_empty() { return }
+    var i = piece_of(s, a)
+    while i < s.laid.pieces.len() && s.starts[i] < b {
+        borrow p = s.laid.pieces[i]
+        let start = s.starts[i]
+        let end = start + p.text.len()
+        if end > a {
+            let from = if a > start { a - start } else { 0 }
+            let to = if b < end { b - start } else { p.text.len() }
+            borrow font = s.fonts.font(p.face)
+            let x0 = font.caret_at(p.text.as_str(), p.size, from)
+            let x1 = font.caret_at(p.text.as_str(), p.size, to)
+            let y = p.at.y + origin.y
+            if y < s.screen.y && y + p.size * 1.4 > f.header {
+                let r = Rect::new(p.at.x + origin.x + x0, y - p.size * 0.12, x1 - x0, p.size * 1.32)
+                s.list.rect(r, color, radius: 2.0 * s.u)
+            }
+        }
+        i += 1
+    }
+}
+
+fn draw_nav(s: mut Docs, f: Frame) {
+    if !f.beside && !s.nav_open { return }
+    let u = s.u
+    let screen = s.screen
+    let r = Rect::new(0.0, f.header, f.nav, screen.y - f.header)
+    s.list.rect(r, hex(if f.beside { SLATE } else { SURFACE }))
+    s.list.rect(
+        Rect::new(f.nav - max(1.0, u), f.header, max(1.0, u), screen.y - f.header),
+        hex(RULE),
+    )
+    s.list.push_clip(r)
+    // A page just shown is brought into the list's view, a third of the way down.
+    if s.nav_follow && !s.index.pages.is_empty() {
+        s.nav_follow = false
+        for (_, path, y) in nav_rows(s, f) {
+            if path == s.shown && (y < f.header + 24.0 * u || y > screen.y - 40.0 * u) {
+                s.nav_scroll = max(s.nav_scroll + y - (f.header + (screen.y - f.header) / 3.0), 0.0)
+            }
+        }
+    }
+    let rows = nav_rows(s, f)
+    for (label, path, y) in rows {
+        if y > screen.y || y < f.header - 30.0 * u { continue }
+        if path.is_empty() {
+            s.fonts.sans.weight = theme::BOLD
+            let _ = s.list.text(
+                s.fonts,
+                Face::Sans,
+                label.as_str(),
+                12.5 * u,
+                vec2(24.0 * u, y + 6.0 * u),
+                hex(QUIET),
+            )
+            s.fonts.sans.weight = 0.0
+            continue
+        }
+        let here = path == s.shown
+        let hover = s.pointer.y >= y && s.pointer.y < y + 28.0 * u && s.pointer.x < f.nav
+        if here {
+            s.list.rect(Rect::new(14.0 * u, y + 5.0 * u, 2.0 * u, 18.0 * u), hex(FIELD), radius: u)
+        }
+        let color = if here { hex(STRONG) } else if hover { hex(TEXT) } else { hex(QUIET) }
+        let shown = fit(s.fonts, label.as_str(), SMALL * u, f.nav - 40.0 * u)
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            shown.as_str(),
+            SMALL * u,
+            vec2(24.0 * u, y + 5.0 * u),
+            color,
+        )
+    }
+    s.list.pop_clip()
+}
+
+fn draw_header(s: mut Docs, f: Frame) {
+    let u = s.u
+    let ems = mark_ems(s)
+    // Beside the mark, what this site is.
+    let x = mark_left(s, f) + MARK_WIDTH * ems + 14.0 * u
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        "docs",
+        15.0 * u,
+        vec2(x, f.header * 0.5 - 10.5 * u),
+        hex(QUIET),
+    )
+    if !f.beside {
+        // The button that opens the list of pages: three short lines.
+        for k in 0..3 {
+            s.list.rect(
+                Rect::new(20.0 * u, f.header * 0.5 - 6.0 * u + f32(k) * 5.5 * u, 18.0 * u, 1.5 * u),
+                hex(TEXT),
+                radius: u,
+            )
+        }
+    }
+    // Search: a box, then what it found under it.
+    let b = f.search
+    let hover = b.contains(s.pointer)
+    s.list.rect(b, hex(0x101215), radius: 8.0 * u)
+    s.list.ring(b, hex(if s.searching || s.finding { FIELD } else if hover { 0x3A3F47 } else {
+        RULE
+    }), radius: 8.0 * u, width: max(1.0, u))
+    let tx = b.x + 14.0 * u
+    let ty = b.y + b.h * 0.5 - 10.0 * u
+    if s.finding {
+        let w = s.list.text(
+            s.fonts,
+            Face::Sans,
+            s.find.as_str(),
+            15.0 * u,
+            vec2(tx, ty),
+            hex(STRONG),
+        )
+        let on = s.reduced || (s.time * 2.0) - floor(s.time * 2.0) < 0.6
+        if on {
+            s.list.rect(
+                Rect::new(tx + w + 1.0 * u, b.y + 9.0 * u, 1.5 * u, b.h - 18.0 * u),
+                hex(FIELD),
+            )
+        }
+        if s.find.is_empty() {
+            let _ = s.list.text(
+                s.fonts,
+                Face::Sans,
+                "Find on this page",
+                15.0 * u,
+                vec2(tx + 4.0 * u, ty),
+                hex(QUIET),
+            )
+        } else {
+            let count = if s.matches.is_empty() { String::from("No matches") } else {
+                f"{s.current + 1} of {s.matches.len()}"
+            }
+            let cw = s.fonts.font(Face::Sans).measure(count.as_str(), 13.0 * u)
+            let _ = s.list.text(
+                s.fonts,
+                Face::Sans,
+                count.as_str(),
+                13.0 * u,
+                vec2(b.right() - cw - 14.0 * u, ty + 1.5 * u),
+                hex(QUIET),
+            )
+        }
+    } else if s.searching {
+        let w = s.list.text(
+            s.fonts,
+            Face::Sans,
+            s.query.as_str(),
+            15.0 * u,
+            vec2(tx, ty),
+            hex(STRONG),
+        )
+        // The caret, steady when the system asks for less motion.
+        let on = s.reduced || (s.time * 2.0) - floor(s.time * 2.0) < 0.6
+        if on {
+            s.list.rect(
+                Rect::new(tx + w + 1.0 * u, b.y + 9.0 * u, 1.5 * u, b.h - 18.0 * u),
+                hex(FIELD),
+            )
+        }
+        draw_results(mut s, f)
+    } else {
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            "Search the docs",
+            15.0 * u,
+            vec2(tx, ty),
+            hex(QUIET),
+        )
+        let _ = s.list.text(
+            s.fonts,
+            Face::Mono,
+            "/",
+            13.0 * u,
+            vec2(b.right() - 26.0 * u, ty + 1.0 * u),
+            hex(QUIET),
+        )
+    }
+}
+
+fn draw_results(s: mut Docs, f: Frame) {
+    let u = s.u
+    let row = 58.0 * u
+    let x = f.search.x - 200.0 * u
+    let w = f.search.right() - x
+    let top = f.search.bottom() + 8.0 * u
+    let n = s.hits.len()
+    if s.query.is_empty() { return }
+    let h = if n == 0 { 52.0 * u } else { f32(n) * row + 8.0 * u }
+    let panel = Rect::new(x, top, w, h)
+    s.list.rect(panel, hex(SURFACE), radius: 10.0 * u)
+    s.list.ring(panel, hex(RULE), radius: 10.0 * u, width: max(1.0, u))
+    if n == 0 {
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            "Nothing matches. Try a name, like Arena, or a word from the spec.",
+            14.0 * u,
+            vec2(x + 16.0 * u, top + 16.0 * u),
+            hex(QUIET),
+        )
+        return
+    }
+    s.list.push_clip(panel)
+    for i in 0..n {
+        let y = top + 4.0 * u + f32(i) * row
+        let h = s.hits[i]
+        if i == s.chosen {
+            s.list.rect(Rect::new(x + 4.0 * u, y, w - 8.0 * u, row), hex(0x262A31), radius: 7.0 * u)
+        }
+        let (title, under) = result_text(s.index, h)
+        let face = if h.item { Face::Mono } else { Face::Sans }
+        let _ = s.list.text(s.fonts, face, title.as_str(), (if h.item { 13.5 } else {
+            15.0
+        }) * u, vec2(x + 16.0 * u, y + 9.0 * u), hex(STRONG))
+        let shown = fit(s.fonts, under.as_str(), 13.0 * u, w - 32.0 * u)
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            shown.as_str(),
+            13.0 * u,
+            vec2(x + 16.0 * u, y + 32.0 * u),
+            hex(QUIET),
+        )
+    }
+    s.list.pop_clip()
+}
+
+/// A result's title, and what's under it: an item's summary, or the page a section is on. Code's
+/// backticks go: the result is plain text.
+fn result_text(index: Index, h: Hit) -> (String, String) {
+    if h.item {
+        (index.items[h.at].path.clone(), unticked(index.items[h.at].summary.as_str()))
+    } else {
+        let page = index.sections[h.at].page.as_str()
+        let title = match index.page(page) {
+            Some(p) => index.pages[p].title.clone(),
+            None => page.to_string(),
+        }
+        (index.sections[h.at].title.clone(), f"In {title.as_str()}")
+    }
+}
+
+fn unticked(t: str) -> String {
+    var out = String::new()
+    var start = 0
+    for i in 0..t.len() {
+        if t.byte(i) == 96 {
+            out.push_str(t.slice(from: start, to: i))
+            start = i + 1
+        }
+    }
+    out.push_str(t.slice(from: start, to: t.len()))
+    take out
+}
+
+/// `text` as it fits in `width` at `size`: whole, or cut at a character with `…` after it.
+fn fit(fonts: Fonts, text: str, size: f32, width: f32) -> String {
+    borrow font = fonts.font(Face::Sans)
+    if font.measure(text, size) <= width { return text.to_string() }
+    var end = text.len()
+    while end > 0 {
+        end = previous_cluster(text, end)
+        let cut = f"{text.slice(from: 0, to: end).trim()}…"
+        if font.measure(cut.as_str(), size) <= width { return cut }
+    }
+    String::from("…")
+}
+
+// ---- what the host is told ---------------------------------------------------------------------
+
+fn tell(s: mut Docs, f: Frame) {
+    let over_link = link_at(s, s.pointer, f).is_some() ||
+        (over_nav(s, s.pointer, f) && nav_at(s, s.pointer, f).is_some())
+    let want = if over_link ||
+        f.search.contains(s.pointer) ||
+        (s.pointer.y < f.header && s.pointer.x < mark_right(s, f)) {
+        "pointer"
+    } else { "default" }
+    if s.cursor.as_str() != want {
+        s.cursor = want.to_string()
+        s.told.push(host::cursor(want))
+    }
+    // While search is open, its box is a text field: an input method composes there, and a
+    // screen reader hears what's typed.
+    let typing = s.searching || s.finding
+    if typing != s.texting && s.capabilities & host::TEXT_INPUT != 0 {
+        let b = f.search
+        s.told.push(
+            host::text_input(
+                typing,
+                vec4(b.x + 14.0 * s.u, b.y + 8.0 * s.u, 1.0, b.h - 16.0 * s.u),
+            ),
+        )
+        s.texting = typing
+    }
+    // A copy takes what's selected; the host has it before the keys that copy arrive.
+    let words = match s.selected {
+        Some((a, b)) => if a == b { String::new() } else {
+            s.text.as_str().slice(from: min(a, b), to: max(a, b)).to_string()
+        },
+        None => String::new(),
+    }
+    if words != s.offered && s.capabilities & host::PASTE_EVENTS != 0 {
+        s.told.push(host::offer(words.as_str(), ""))
+        s.offered = take words
+    }
+    if s.capabilities & host::ACCESSIBILITY == 0 { return }
+    if s.scroll != s.tree_scroll {
+        s.tree_scroll = s.scroll
+        s.scrolled_at = s.time
+    }
+    if s.time - s.scrolled_at < 0.25 { return }
+    let nodes = parts_tree(s, f)
+    if nodes != s.tree {
+        s.told.push(host::accessibility("wrela docs", "Search results", nodes))
+        s.tree = take nodes
+    }
+}
+
+/// The page's parts for a screen reader, in reading order, whether or not they're on screen: a
+/// node's number is its part's.
+fn parts_tree(s: Docs, f: Frame) -> Vec<Node> {
+    var nodes: Vec<Node> = Vec::new()
+    for i in 0..s.laid.parts.len() {
+        borrow p = s.laid.parts[i]
+        let rect = vec4(p.rect.x + f.x, p.rect.y + f.top - s.scroll, p.rect.w, p.rect.h)
+        let role = match p.role {
+            Role::Heading => host::Role::Heading,
+            Role::Text => host::Role::Text,
+            Role::Link => host::Role::Link,
+            Role::Code => host::Role::Code,
+        }
+        nodes.push(Node { id: i, role, level: p.level, rect, label: p.label.clone() })
+    }
+    // Search's results, as the options of a list, after the page.
+    if s.searching && !s.query.is_empty() {
+        let row = 58.0 * s.u
+        let x = f.search.x - 200.0 * s.u
+        let top = f.search.bottom() + 8.0 * s.u
+        for i in 0..s.hits.len() {
+            let (title, under) = result_text(s.index, s.hits[i])
+            nodes.push(
+                Node {
+                    id: RESULT_NODES + i,
+                    role: host::Role::Item,
+                    selected: i == s.chosen,
+                    rect: vec4(x, top + f32(i) * row, f.search.right() - x, row),
+                    label: f"{title.as_str()}: {under.as_str()}",
+                },
+            )
+        }
+    }
+    take nodes
+}
+
+/// `/` opens search, which types what follows but not the `/`; Backspace takes a character back.
+/// Command-F opens find in its place, which takes the typing then; Enter there doesn't leave it.
+@test(frames: 12, input: "scripts/keys.json")
+fn search_and_find_take_the_typing(docs: Docs) {
+    assert(!docs.searching, "find took search's place")
+    assert(docs.query.as_str() == "aren", docs.query.as_str())
+    assert(docs.finding && docs.find.as_str() == "a", docs.find.as_str())
+    // No index here: the program says so rather than failing.
+    assert(!docs.trouble.is_empty())
+}
+
+@test
+fn an_address_without_a_fragment_is_the_front_page_and_groups_rank_the_language_first() {
+    assert(rank("spec/lexical.md", "spec") < rank("std/io.md", "module"))
+    assert(rank("std/io.md", "module") < rank("engine/floor.md", "module"))
+    let shown = fit(
+        Fonts::from_baked(MANROPE, MONO),
+        "How wrela differs from Rust and TypeScript",
+        size: 14.0,
+        width: 120.0,
+    )
+    assert(shown.as_str().ends_with("…") && shown.len() < 42, shown.as_str())
+    for (title, want) in [
+        ("std::arena", "arena"),
+        ("engine::grow", "grow"),
+        ("Built-in functions", "Built-in functions"),
+    ] {
+        let got = own_name(title)
+        assert(got.as_str() == want, got.as_str())
+    }
+    let plain = unticked("Adds `value` at `the` end.")
+    assert(plain.as_str() == "Adds value at the end.", plain.as_str())
+}
