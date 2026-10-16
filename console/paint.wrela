@@ -2,7 +2,7 @@
 // perspective, and the flat mark.
 use room::{Camera, Card, corner, project, turned}
 use std::gpu::{ClipPosition, FragCoord, Over, Rgba8, Rgba16Float, Sampler, Texture, VertexIndex}
-use facet::{CAP, MarkRun, mark_distance}
+use brand::facet::{CAP, MarkRun, mark_distance}
 
 pub struct Vertex {
     pub position: ClipPosition,

@@ -4,6 +4,7 @@
 // hold, then go down into the dark together, and the library comes up out of it with the
 // tesseract far behind. The tesseract never travels, and never turns faster than its steady
 // rate.
+use brand::facet
 
 pub const OPENING_SECONDS: f32 = 7.7
 // The tesseract starts to slow, and is at rest as the light finishes its pass along the mark.

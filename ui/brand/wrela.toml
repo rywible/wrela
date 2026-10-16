@@ -1,0 +1,8 @@
+# Wrela's look, shared by its sites: Facet, the capitals of the WRΞLA mark and of display text,
+# and Manrope, the face the console and the docs read in. Its own package, so the fonts it bakes
+# are built only for the programs that use them.
+[package]
+name = "brand"
+
+[dependencies]
+ui = { path = ".." }

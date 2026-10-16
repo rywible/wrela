@@ -164,9 +164,18 @@ cover = "cover.png"
             fonts = root / "console/fonts"
             fonts.mkdir(parents=True)
             (fonts / "OFL-example.txt").write_text("Font license")
+            # A font a dependency bakes ships too, through a dependency of a dependency.
+            (root / "console/wrela.toml").write_text('[package]\nname = "console"\n[dependencies]\nbrand = { path = "../ui/brand" }\n')
+            (root / "ui/brand/fonts").mkdir(parents=True)
+            (root / "ui/brand/wrela.toml").write_text('[package]\nname = "brand"\n[dependencies]\nui = { path = ".." }\n')
+            (root / "ui/brand/fonts/OFL-Brand.txt").write_text("Brand font license")
+            (root / "ui/fonts").mkdir(parents=True)
+            (root / "ui/fonts/OFL-Ui.txt").write_text("UI font license")
             output = root / "release"
             output.mkdir()
             with patch.object(console, "ROOT", root):
                 console.copy_licenses("console", output)
             self.assertEqual((output / "LICENSE").read_text(), "MIT software license")
             self.assertEqual((output / "OFL-example.txt").read_text(), "Font license")
+            self.assertEqual((output / "OFL-Brand.txt").read_text(), "Brand font license")
+            self.assertEqual((output / "OFL-Ui.txt").read_text(), "UI font license")

@@ -122,10 +122,28 @@ def release_files(directory):
     return files
 
 
+def package_dirs(package):
+    """The package at `package` (relative to the repository) and every package it depends on:
+    a font any of them bakes ships in the build."""
+    seen = []
+    stack = [(ROOT / package).resolve()]
+    while stack:
+        directory = stack.pop()
+        if directory in seen:
+            continue
+        seen.append(directory)
+        manifest = directory / "wrela.toml"
+        if manifest.is_file():
+            dependencies = tomllib.loads(manifest.read_text()).get("dependencies", {})
+            stack.extend((directory / d["path"]).resolve() for d in dependencies.values())
+    return seen
+
+
 def copy_licenses(package, output):
     shutil.copy2(ROOT / "LICENSE", output / "LICENSE")
-    for license_file in (ROOT / package / "fonts").glob("OFL-*.txt"):
-        shutil.copy2(license_file, output / license_file.name)
+    for directory in package_dirs(package):
+        for license_file in (directory / "fonts").glob("OFL-*.txt"):
+            shutil.copy2(license_file, output / license_file.name)
 
 
 def build_package(package, output):
