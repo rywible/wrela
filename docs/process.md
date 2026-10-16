@@ -2281,6 +2281,19 @@ pixels whose rays stop at different steps filters together once, made the water 
 (5.68 to 5.56 ms, every pair) with the same bits in the mere, the stream and the waterfall; that
 change is kept, the others aren't.
 
+Since the march's reads wait on each other, the water's march now reads one texel in three
+(`water::reflection_march`): every step is checked for where the march ends, but only each third
+step's texel is read, and where that lands behind a surface the two before it are read and
+tested first. Over surfaces thick enough that none lies between its reads it meets what single
+steps meet, at the same step (a GPU test, over walls met at 21 of the 24 steps); a thin surface
+whose only hit falls on a first or second step is passed by. Its gates were set before it was
+measured: the mere's, the stream's and the waterfall's stills within 2/255 in 99% of pixels and
+8/255 in 99.9%, the mere's frame-to-frame change within 2% of before, and a sixth less water time
+at least. It met them: 1/255 and 3/255; 0.6020 against 0.6018/255; the water 16.2% faster in the
+mere (5.55 to 4.65 ms) and the GPU span 2.4% shorter, in every pair. The stills differ in single
+pixels of the sun's glint. Pairs of steps saved 10.7%; groups held in arrays were slower than
+before, as the arrays' registers cost more than the reads saved.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
