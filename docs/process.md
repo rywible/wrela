@@ -2229,6 +2229,34 @@ in the docs. Each was a reference only: the code is Wrela's own, and none was co
 | Chris Wellons's `lowbias32` (hash-prospector, public domain) | A 32-bit integer hash's constants | `std::derive`'s scramble |
 | [ttf-parser](https://github.com/RazrFalcon/ttf-parser) (MIT or Apache-2.0) | How a TrueType font's `cmap`, `hhea`, `OS/2`, `glyf` and `kern` tables are read, and their fallbacks | `ui::ttf` |
 
+## Rendering moonshots: plan, baseline and exact skips, 2026-10-16
+
+Ryan asked for moonshot ideas that make rendering much faster with no loss of quality, and for
+a council to vet them before he had them implemented. Claude (Opus 5.5) proposed seven: work
+skipped where it's proven to change nothing, caches for shading that doesn't change, motion for
+everything, prefiltering derived by the compiler, virtual geometry cooked from fields, certified
+half floats and fused passes. The council (GPT-6.1-Sol and GPT-6-Astra, two rounds) found that the
+first spikes leaned on the compiler's intervals where they can't go (texture reads), that a
+reflection tracer which moves its samples isn't exact, that motion vectors don't make a history
+valid, and that the gates named no statistic. The plan became: a hand-written Wrela version
+proves each gain on hardware before the compiler generalizes it, and every spike freezes its
+image and timing gates first. The papers it named (Keeter's interval rendering, McGuire and
+Mara's screen-space tracing, Uludag's Hi-Z, Proudfoot et al., Spire, shading atlases, Dorn et
+al. and Yang and Barnes on prefiltering, Ragan-Kelley's Halide, Karis's Nanite talk) are the
+ideas' published sources, cited from the models' knowledge; no code was taken.
+
+The baseline (AMD Radeon, Lucienne iGPU, RADV, native host, 1280×720, the Last Green's opening,
+120 frames after 60): a GPU span of 37.2 ms, of which the clouds' march took 10.0 ms, the trees'
+shading 5.7, the grass 3.5, the trees' prepass 3.0 and the terrain 2.4 (labels overlap).
+
+The first change skips only work whose result is discarded: the clouds' march stops sampling its
+field once a ray is opaque, the terrain reads no material tile of zero weight and no detail size
+faded out, and noise layers faded to their mean aren't evaluated. Eight lookbook views rendered
+at 1280×720 are the same bits as before; the opening differs by at most 1/255 in 0.001% of its
+pixels, as two runs of the unchanged build do. Five alternating pairs (`wrela profile --compare`)
+measured a GPU span 3.6% shorter (37.25 to 35.92 ms, every pair faster), the terrain 36% faster
+(2.43 to 1.55 ms) and the clouds 4.6% (10.02 to 9.54 ms). No M4 or Chrome measurement was made.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

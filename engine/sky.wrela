@@ -425,16 +425,23 @@ fn march(
     let fine = view_samples(ct)
     let dt = ct / f32(fine)
     for i in 0..cells {
-        if ((marked >> i) & 1) == 0 || through < 0.01 {
+        if through < 0.01 {
+            break
+        }
+        if ((marked >> i) & 1) == 0 {
             continue
         }
         for j in 0..fine {
+            // Opaque: nothing further along changes what's seen, so its field isn't sampled.
+            if through < 0.01 {
+                break
+            }
             let t = enter + (f32(i) + (f32(j) + jitter) / f32(fine)) * ct
             let h = height_along(y, dir.y, t) - BASE
             let p = c.eye + dir * t
             let q = vec3(p.x - c.drift.x, h + BASE, p.z - c.drift.y)
             let dens = field(q, h, weather, shape, detail, rep, detailed: true)
-            if dens > 0.0 && through >= 0.01 {
+            if dens > 0.0 {
                 // Resolve the sunlit skin before the deep shadow. Equal 150 m intervals
                 // missed this skin and made the whole cloud a soft, evenly shaded patch.
                 // Eight intervals cover 3.15 km. Midpoints keep the sunlight estimate
