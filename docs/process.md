@@ -2212,6 +2212,18 @@ frame, the held gust, the canopy, the walk and the mere change as much as before
 1.9527/255 in the gust). On this RADV driver the shared pass's half floats are truncated, not
 rounded: a resolve that truncated as it does gave the same bits.
 
+The water's reflection from the screen costs about 2.9 ms of its 4.7 ms draw in the mere's view
+(measured by leaving it out), and halving its 24 steps saved 1.6 ms, so its loop dominates. Four
+exact changes were tried. A map of the nearest distance over 8 × 8 tiles, which let a step skip a
+texel nothing in front of it could hold, gave the same bits (a test compared it with a march
+that skips nothing) but made the water 2.2% slower, its own pass included: a step still waited on
+a load, the map's instead of the scene's. Reading four steps' texels at once made it 2% slower,
+and projecting the ray's points linearly changed nothing; neither the reads' order nor the
+arithmetic is what limits it. Filtering a hit after the loop instead of inside it, so a group of
+pixels whose rays stop at different steps filters together once, made the water 2.2% faster
+(5.68 to 5.56 ms, every pair) with the same bits in the mere, the stream and the waterfall; that
+change is kept, the others aren't.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
