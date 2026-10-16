@@ -2257,6 +2257,18 @@ pixels, as two runs of the unchanged build do. Five alternating pairs (`wrela pr
 measured a GPU span 3.6% shorter (37.25 to 35.92 ms, every pair faster), the terrain 36% faster
 (2.43 to 1.55 ms) and the clouds 4.6% (10.02 to 9.54 ms). No M4 or Chrome measurement was made.
 
+Temporal AA's resolve at the output's size now finds its nearest sample's neighbourhood itself
+(`temporal::resolve_gathered`) instead of reading the two targets a separate pass wrote. At half
+the output's size the shared pass still pays, since four output pixels read each neighbourhood:
+the clearing's resolve gathering its own took 11% longer. In the Last Green's opening (same
+machine and settings as above) the resolve took 35.5% less time (2.11 to 1.36 ms) and the GPU
+span 2.6% less, in every pair. Held in 32 bits rather than half floats, the neighbourhood clips a
+little differently: a test scene agrees within 1/255; settled stills differ by at most 2/255 in
+99% of pixels, up to 55/255 in a few, where the history's clip crosses its box's edge; frame to
+frame, the held gust, the canopy, the walk and the mere change as much as before (1.9526 against
+1.9527/255 in the gust). On this RADV driver the shared pass's half floats are truncated, not
+rounded: a resolve that truncated as it does gave the same bits.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
