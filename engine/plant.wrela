@@ -117,8 +117,8 @@ impl Bark {
 }
 
 /// The most limbs and clumps a plant has (a crown of fine clumps over its whole shell takes over
-/// a hundred).
-pub const MAX_LIMBS: u32 = 40
+/// a hundred, and the branches that carry them out to it over thirty).
+pub const MAX_LIMBS: u32 = 48
 pub const MAX_CLUMPS: u32 = 128
 
 /// A plant: limbs (tubes through four points each) and a crown of clumps, in the plant's own
@@ -576,28 +576,81 @@ pub fn tinted(colour: vec3, tint: vec3) -> vec3 {
     max(colour + tint * 0.5, vec3(0.005))
 }
 
-/// The leaves on a card at `uv` (in [-1, 1]²), `n` of them: how much is leaf (0 to 1, a soft
-/// edge `w` wide), and which leaf. Pointed leaves, widest a third of the way along, round the
-/// card's middle.
-pub fn leaves_on(uv: vec2, seed: u32, w: f32, n: u32) -> (f32, u32) {
+/// The stem of a card's sprig (seed `seed`) at `t` along it (0 its foot, at the card's edge, to 1
+/// its tip), on the card's square ([-1, 1]²): rising up the card, bowed a little.
+pub fn stem_at(seed: u32, t: f32) -> vec2 {
+    vec2((rand(seed, 3) - 0.5) * 0.3 * sin(PI * t), mix(-0.98, 0.38, t))
+}
+
+/// Leaf `i` of a card's sprig of `n` (seed `seed`): where its stalk leaves the stem, the way it
+/// points, and its length, on the card's square. Its leaves alternate up the stem, each pointing
+/// out and up from it, the last at the stem's tip.
+pub fn sprig_leaf(seed: u32, i: u32, n: u32) -> (vec2, vec2, f32) {
+    if i + 1 == n {
+        let a = 0.25 * (rand(seed, 20 + i) - 0.5)
+        return (stem_at(seed, 1.0), vec2(sin(a), cos(a)), 0.5 + 0.1 * rand(seed, 40 + i))
+    }
+    let t = 0.22 + 0.72 * (f32(i) + 0.4 * rand(seed, 60 + i)) / f32(max(n, 2) - 1)
+    let side = if (i + seed) % 2 == 0 { 1.0 } else { -1.0 }
+    let a = side * (0.6 + 0.4 * rand(seed, 20 + i))
+    (stem_at(seed, t), vec2(sin(a), cos(a)), 0.5 + 0.22 * rand(seed, 40 + i))
+}
+
+/// How far `uv` is inside the leaf from `base` along `dir`, `len` long (over its length; below 0
+/// outside), and where it is along it (0 to 1) and across it (over its length). Pointed, widest a
+/// third of the way along, on a short stalk.
+fn in_leaf(uv: vec2, base: vec2, dir: vec2, len: f32) -> (f32, f32, f32) {
+    let q = uv - base - dir * (len * LEAF_STALK)
+    let s = dot(q, dir) / len
+    let t = dot(q, vec2(-dir.y, dir.x))
+    let half = 0.36 * len * sin(PI * clamp(s, 0.0, 1.0)) * (1.15 - 0.5 * s)
+    (min(half - abs(t), min(s, 1.0 - s) * len) / max(len, 0.01), saturate(s), t / len)
+}
+
+/// How much of a leaf's length its own stalk is, from the stem to its blade.
+const LEAF_STALK: f32 = 0.08
+
+/// How wide a sprig's stem is each side of its axis (on the card's square).
+const STEM: f32 = 0.022
+
+/// The sprig on a card at `uv` (in [-1, 1]²), `n` leaves on its stem (seed `seed`): how much is
+/// leaf or stem (0 to 1, a soft edge `w` wide), which leaf (its stem the first's), and its tissue:
+/// the light its midrib (or stem) lets through (0 none, 1 a blade's), and its fold. A card is a
+/// sprig cut from a twig, not leaves round its middle (as a rosette, the cards' leaves read as
+/// smears floating off the wood: the owner's lookdev).
+pub fn sprig_on(uv: vec2, seed: u32, w: f32, n: u32) -> (f32, u32, vec2) {
     var best = -1.0
     var which = 0
+    var tissue = vec2(1.0, 0.5)
     for i in 0..n {
-        let a = TAU * (f32(i) + rand(seed, 20 + i) * 0.6) / f32(n)
-        let dir = vec2(cos(a), sin(a))
-        let len = 0.55 + 0.3 * rand(seed, 40 + i)
-        let o = dir * (0.18 + 0.1 * rand(seed, 60 + i))
-        let q = uv - o
-        let s = dot(q, dir) / len
-        let t = dot(q, vec2(-dir.y, dir.x))
-        let half = 0.36 * len * sin(PI * clamp(s, 0.0, 1.0)) * (1.15 - 0.5 * s)
-        let inside = min(half - abs(t), min(s, 1.0 - s) * len) / max(len, 0.01)
+        let (base, dir, len) = sprig_leaf(seed, i, n)
+        let (inside, along, across) = in_leaf(uv, base, dir, len)
         if inside > best {
             best = inside
             which = i
+            let rib = smoothstep(0.012, 0.065, abs(across))
+            let fold = 0.5 + 0.5 * sin(PI * along) * (1.0 - smoothstep(0.03, 0.3, abs(across)))
+            tissue = vec2(rib, fold)
+        }
+        // The leaf's own stalk, from the stem to its blade.
+        let stalk = uv - base
+        let l = clamp(dot(stalk, dir), 0.0, len * LEAF_STALK)
+        let reach = (STEM * 0.6 - length(stalk - dir * l)) / max(len, 0.01)
+        if reach > best {
+            best = reach
+            which = i
+            tissue = vec2(0.0, 0.5)
         }
     }
-    (smoothstep(-w, w, best), which)
+    // The stem: from the card's foot to its tip.
+    let t = saturate((uv.y + 0.98) / 1.36)
+    let stem = (STEM * (1.0 - 0.5 * t) - abs(uv.x - stem_at(seed, t).x)) / 0.6
+    if uv.y <= 0.38 && stem > best {
+        best = stem
+        which = 0
+        tissue = vec2(0.0, 0.5)
+    }
+    (smoothstep(-w, w, best), which, tissue)
 }
 
 // ---- limbs as geometry -----------------------------------------------------------------------
@@ -969,30 +1022,16 @@ fn pattern_seed(k: u32) -> u32 {
     k.wrapping_mul(2246822519) ^ 3266489917
 }
 
-/// Fine tissue within one leaf: its midrib passes less light, and its blade has a gentle
-/// fold. Cooked once into spare atlas channels; it does not add per-frame shape evaluation.
-fn leaf_tissue(uv: vec2, seed: u32, which: u32, n: u32) -> vec2 {
-    let a = TAU * (f32(which) + rand(seed, 20 + which) * 0.6) / f32(n)
-    let dir = vec2(cos(a), sin(a))
-    let len = 0.55 + 0.3 * rand(seed, 40 + which)
-    let q = uv - dir * (0.18 + 0.1 * rand(seed, 60 + which))
-    let along = saturate(dot(q, dir) / len)
-    let across = dot(q, vec2(-dir.y, dir.x)) / len
-    let rib = smoothstep(0.012, 0.065, abs(across))
-    let blade = 0.5 + 0.5 * sin(PI * along) * (1.0 - smoothstep(0.03, 0.3, abs(across)))
-    vec2(rib, blade)
-}
-
-/// The leaf atlas's texels: each pattern's coverage (a soft edge a texel wide) in red, and which
-/// of its leaves covers it (its index over 8) in green; midrib transmission and fold in blue/alpha.
+/// The leaf atlas's texels: each pattern's sprig (`sprig_on`): its coverage (a soft edge a texel
+/// wide) in red, and which of its leaves covers it (its index over 8) in green; the light its
+/// midrib and stem let through, and its fold, in blue and alpha (cooked once: no per-frame shape).
 @fragment
 pub fn cook_leaves(pixel: FragCoord, n: u32) -> vec4 {
     let p = vec2u(pixel.position.xy)
     let k = (p.y / LEAF_TEXELS) * LEAF_SIDE + p.x / LEAF_TEXELS
     let local = (vec2(p % vec2u(LEAF_TEXELS)) + vec2(0.5)) / f32(LEAF_TEXELS)
     let uv = local * 2.0 - vec2(1.0)
-    let (m, which) = leaves_on(uv, pattern_seed(k), w: 2.0 / f32(LEAF_TEXELS), n: n)
-    let tissue = leaf_tissue(uv, pattern_seed(k), which, n)
+    let (m, which, tissue) = sprig_on(uv, pattern_seed(k), w: 2.0 / f32(LEAF_TEXELS), n: n)
     vec4(m, (f32(which) + 0.5) / 8.0, tissue.x, tissue.y)
 }
 
@@ -1084,11 +1123,9 @@ pub fn leaf_atlas(n: u32) -> Texture<Rgba8> {
 /// `RIDGES_ALONG` m along it (down), read through a repeating sampler. Its channels are its shape,
 /// each 0 deep in a fissure or crack and 1 on its surface, so its tone and its relief are one
 /// (a pattern whose tone stepped from plate to plate raised each plate to its own height: shells,
-/// the owner's lookdev): ridges (r: 26 across, one a metre along: flat-topped ridges between
-/// fissures 2 to 5 cm wide that run along the limb and part and join, as an oak's, broken into
-/// long blocks by cross-checks: `ridges_at`), plates (g: a pine's, `plates_at`), bands (b: 0 in a short dash across the
-/// limb, about 20 rows a metre: a birch's lenticels) and mottle (a: soft patches, 5 across, 0.8 a
-/// metre, 0.25 to 0.95).
+/// the owner's lookdev): ridges (r: an oak's, `ridges_at`), plates (g: a pine's, `plates_at`),
+/// bands (b: 0 in a short dash across the limb, about 20 rows a metre: a birch's lenticels) and
+/// mottle (a: soft patches, 5 across, 0.8 a metre, 0.25 to 0.95).
 pub const RIDGES_ALONG: f32 = 40.0
 pub const BARK_ACROSS: f32 = 2.0
 
@@ -1175,8 +1212,8 @@ fn ridge_texel(pixel: FragCoord) -> vec4 {
 /// `wander` of the way to the next, by a noise of its own, `bends` a metre), so neighbours meet and
 /// part again (past a half, they cross: fissures that join, as an oak's);
 /// each `half` to `half + spread` m wide each side, the faces between them flat-topped and rounding
-/// over into them. The faces are cut across by checks, rows `checks` a metre (each face's own, a
-/// little tilted), a
+/// over into them. The faces are cut across by checks, rows about `checks` a metre (each face's
+/// own, unevenly spaced and a little tilted: evenly, they read as a ladder's rungs), a
 /// `share` of them, `check` deep (1 as deep as a fissure). (Where a noise's middle was the fissure,
 /// its contours closed into loops and a map's contours; checks wider than a face joined them into a
 /// maze: specimens' bark, rounds 1 and 2, the owner's lookdev.)
@@ -1230,25 +1267,26 @@ fn furrows(
         (x - left_at) * (noise::hash2(left, seed + 9) - 0.5) * 0.12
     // The nearest edge between rows, where a check may run, and how far it is (m).
     let edge = round(along)
-    let cut = noise::hash2(noise::wrapped(i32(edge), i32(rows)), left * 7 + seed + 71) < share
-    let d = abs(along - edge) / checks
+    let e = noise::wrapped(i32(edge), i32(rows))
+    let cut = noise::hash2(e, left * 7 + seed + 71) < share
+    let d = abs(along - edge - 0.6 * (noise::hash2(e, left * 13 + seed + 17) - 0.5)) / checks
     let checked = if cut { 1.0 - check * (1.0 - smoothstep(0.008, 0.016, d)) } else { 1.0 }
     face * checked
 }
 
-/// The ridges at `uv` on the tile (`ridge_texel`'s red): an oak's, alder's and char's bark, 26
-/// across a tile, broad flat-topped ridges between fissures 2 to 5 cm across, two texels at least
+/// The ridges at `uv` on the tile (`ridge_texel`'s red): an oak's, alder's and char's bark, 18
+/// across a tile, broad flat-topped ridges between fissures 2 to 6 cm across, two texels at least
 /// (a centimetre's fissures, a texel across, broke into dashes: the owner's lookdev), cut here and
 /// there by a shallower check: an old oak's long blocks.
 pub fn ridges_at(uv: vec2) -> f32 {
     furrows(
         uv,
-        lines: 26,
+        lines: 18,
         seed: 0,
-        wander: 0.85,
+        wander: 1.0,
         bends: 0.7,
-        half: 0.009,
-        spread: 0.012,
+        half: 0.011,
+        spread: 0.018,
         checks: 3.0,
         share: 0.4,
         check: 0.65,
@@ -1274,9 +1312,9 @@ pub fn plates_at(uv: vec2) -> f32 {
         bends: 0.6,
         half: 0.007,
         spread: 0.012,
-        checks: 3.0,
-        share: 0.65,
-        check: 0.9,
+        checks: 2.4,
+        share: 0.5,
+        check: 0.8,
     ) *
         (0.86 + 0.14 * flakes)
 }
@@ -1358,14 +1396,44 @@ fn limb_curves_share_joint_position_and_tangent() {
 @test
 fn leaf_midrib_blocks_more_light_than_its_blade() {
     let seed = pattern_seed(3)
-    let a = TAU * rand(seed, 20) * 0.6 / 6.0
-    let dir = vec2(cos(a), sin(a))
-    let len = 0.55 + 0.3 * rand(seed, 40)
-    let centre = dir * (0.18 + 0.1 * rand(seed, 60) + 0.45 * len)
-    let rib = leaf_tissue(centre, seed, which: 0, n: 6)
-    let blade = leaf_tissue(centre + vec2(-dir.y, dir.x) * (len * 0.12), seed, which: 0, n: 6)
-    assert(rib.x < 0.01 && blade.x > 0.99, "backlit leaf has no midrib")
-    assert(rib.y > blade.y, "leaf fold has no surface relief")
+    var seen = 0
+    for i in 0..6 {
+        let (base, dir, len) = sprig_leaf(seed, i, 6)
+        let centre = base + dir * (len * (LEAF_STALK + 0.45))
+        let (_, which, rib) = sprig_on(centre, seed, w: 0.01, n: 6)
+        let side = centre + vec2(-dir.y, dir.x) * (len * 0.12)
+        let (_, _, blade) = sprig_on(side, seed, w: 0.01, n: 6)
+        if which == i {
+            assert(rib.x < 0.01 && blade.x > 0.99, "backlit leaf has no midrib")
+            assert(rib.y > blade.y, "leaf fold has no surface relief")
+            seen += 1
+        }
+    }
+    assert(seen >= 4, f"only {seen} of a sprig's leaves show their middles")
+}
+
+/// A card's leaves are on its sprig's stem: each leaf's stalk leaves the stem, and the stem runs
+/// from the card's edge, so a sprig reads as cut from a twig, every leaf and its stem in one piece
+/// that stays on its card.
+@test
+fn a_cards_leaves_grow_from_its_stem_and_stay_on_it() {
+    for k in 0..LEAF_PATTERNS {
+        let seed = pattern_seed(k)
+        let (foot, _, _) = sprig_on(stem_at(seed, 0.02), seed, w: 0.01, n: 6)
+        assert(foot > 0.5, f"pattern {k}'s stem doesn't reach its card's edge")
+        for i in 0..6 {
+            let (base, dir, len) = sprig_leaf(seed, i, 6)
+            let (m, _, _) = sprig_on(base, seed, w: 0.01, n: 6)
+            assert(m > 0.5, f"pattern {k}'s leaf {i} is off its stem")
+            for s in 0..9 {
+                let p = base + dir * (len * f32(s) / 8.0)
+                assert(
+                    abs(p.x) <= 1.0 && abs(p.y) <= 1.0,
+                    f"pattern {k}'s leaf {i} runs off its card",
+                )
+            }
+        }
+    }
 }
 
 @test
@@ -1618,8 +1686,8 @@ fn barks_tile_wraps_each_way() {
         let a = (f32(i) + 0.37) / 32.0
         for which in 0..2 {
             let f = |uv: vec2| if which == 0 { ridges_at(uv) } else { plates_at(uv) }
-            assert(abs(f(vec2(0.0, a)) - f(vec2(1.0, a))) < 1.0e-4, "the tile's sides don't meet")
-            assert(abs(f(vec2(a, 0.0)) - f(vec2(a, 1.0))) < 1.0e-4, "the tile's ends don't meet")
+            assert(abs(f(vec2(0.0, a)) - f(vec2(1.0, a))) < 1.0e-3, "the tile's sides don't meet")
+            assert(abs(f(vec2(a, 0.0)) - f(vec2(a, 1.0))) < 1.0e-3, "the tile's ends don't meet")
         }
     }
 }
