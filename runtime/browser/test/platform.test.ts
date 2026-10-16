@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Overlay } from "../src/assist.ts";
-import { ACCESSIBILITY, BrowserPlatform, exportName, MESSAGE_LIMIT, PASTE_EVENTS, PortRpc, programUrl, TEXT_INPUT, wordAt, wordBytes } from "../src/platform.ts";
+import { ACCESSIBILITY, BrowserPlatform, decodeImage, environment, exportName, iconLink, MESSAGE_LIMIT, PASTE_EVENTS, PortRpc, prefetch, programUrl, TEXT_INPUT, wordAt, wordBytes } from "../src/platform.ts";
 import { Reader, Writer } from "../src/wire.ts";
 
 test("program channels correlate replies and close outstanding requests", async () => {
@@ -16,6 +16,53 @@ test("program channels correlate replies and close outstanding requests", async 
     await expect(waiting).rejects.toThrow("closed");
     await expect(left.call(new Uint8Array())).rejects.toThrow("closed");
   } finally { left.close(); right.close(); }
+});
+
+test("the environment says whether this page load reloaded the tab, then what the host has", () => {
+  const load = (type: string) => [{ type } as unknown as PerformanceEntry];
+  const b = environment(true, 1_700_000_000_999, 2, load("navigate"), PASTE_EVENTS | ACCESSIBILITY);
+  expect([b[0], wordAt(b.subarray(1)), wordAt(b.subarray(5)), b[9], wordAt(b.subarray(10))]).toEqual([1, 1_700_000_000, 2048, 0, PASTE_EVENTS | ACCESSIBILITY]);
+  expect(b.length).toBe(14);
+  expect(environment(false, 0, 1, load("reload"), 0)[9]).toBe(1);
+  // Back and forward are visits, and so is a page whose navigation the browser didn't record.
+  expect(environment(false, 0, 1, load("back_forward"), 0)[9]).toBe(0);
+  expect(environment(false, 0, 1, [], 0)[9]).toBe(0);
+});
+
+test("an image decodes only at the size the program expects", async () => {
+  const pixels = new Uint8ClampedArray(3 * 2 * 4).fill(7);
+  const decoder = async (image: Uint8Array) => {
+    expect([...image]).toEqual([9, 9]);
+    return { width: 3, height: 2, pixels };
+  };
+  const body = (w: number, h: number) => { const b = new Uint8Array(10); b.set(wordBytes(w)); b.set(wordBytes(h), 4); b.set([9, 9], 8); return b; };
+  expect([...await decodeImage(body(3, 2), decoder)]).toEqual([...pixels]);
+  await expect(decodeImage(body(2, 3), decoder)).rejects.toThrow("not 2x3");
+  await expect(decodeImage(body(0, 2), decoder)).rejects.toThrow("invalid image size");
+  await expect(decodeImage(body(5000, 5000), decoder)).rejects.toThrow("invalid image size");
+  await expect(decodeImage(new Uint8Array(3), decoder)).rejects.toThrow();
+});
+
+test("prefetching fetches each URL at low priority until it is stopped", async () => {
+  const seen: { url: string; init: RequestInit | undefined }[] = [];
+  const controller = new AbortController();
+  const fetchFn = (async (url: URL, init?: RequestInit) => {
+    seen.push({ url: url.href, init });
+    if (url.pathname.endsWith("/missing")) throw new Error("offline");
+    if (url.pathname.endsWith("/stop")) controller.abort();
+    return new Response("x");
+  }) as unknown as typeof fetch;
+  const list = "https://a.example/one\n\nhttps://a.example/missing\nhttps://a.example/two\n";
+  await prefetch(list, "https://console.example/", new AbortController().signal, fetchFn);
+  expect(seen.map(s => s.url).sort()).toEqual(["https://a.example/missing", "https://a.example/one", "https://a.example/two"]);
+  expect(seen[0]!.init).toMatchObject({ mode: "no-cors", credentials: "omit", priority: "low" });
+  // Stopped (a program opening), nothing more starts.
+  seen.length = 0;
+  const many = ["stop", ...Array.from({ length: 20 }, (_, i) => `f${i}`)].map(n => `https://a.example/${n}`).join("\n");
+  await prefetch(many, "https://console.example/", controller.signal, fetchFn);
+  expect(seen.length).toBeLessThanOrEqual(3);
+  // A URL that isn't a secure, plain address is refused before anything is fetched.
+  await expect(prefetch("javascript:alert(1)", "https://console.example/", new AbortController().signal, fetchFn)).rejects.toThrow();
 });
 
 test("program channels reject oversized requests before transmission", () => {
@@ -121,6 +168,19 @@ test("export filenames fit full session keys and reject traversal or truncation"
   expect(() => exportName(wordBytes(10))).toThrow("filename");
 });
 
+test("icons are square PNGs the build shipped, linked from the page", () => {
+  const body = (s: string) => new TextEncoder().encode(s);
+  const base = "https://play.example/console/";
+  expect(iconLink(body("icon 32 files/icons/icon-32.png"), base))
+    .toEqual({ rel: "icon", sizes: "32x32", href: "https://play.example/console/files/icons/icon-32.png" });
+  expect(iconLink(body("apple-touch-icon 180 files/icons/icon-180.png"), base).rel).toBe("apple-touch-icon");
+  for (const bad of [
+    "icon 32 https://x.example/i.png", "icon 32 files/../secret.png", "icon 32 files/icons/../x.png",
+    "icon 32 files/icons/i.svg", "icon 32 icons/i.png", "manifest 32 files/icons/i.png", "icon 0 files/icons/i.png",
+    "icon 4096 files/icons/i.png", "icon 32 files/icons/i.png extra", "icon 32 files/.icons/i.png",
+  ]) expect(() => iconLink(body(bad), base)).toThrow("invalid icon");
+});
+
 test("a program sets the canvas cursor only to a listed shape", async () => {
   const oldWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", { configurable: true, value: { parent: {}, addEventListener: () => {} } });
@@ -152,7 +212,7 @@ test("the environment says which input services the host has, and they reach the
   Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: () => ({ matches: false }) });
   const canvas = { style: {}, tabIndex: -1, focus: () => {} } as HTMLCanvasElement;
   const platform = new BrowserPlatform(canvas, () => {});
-  const capabilities = async () => wordAt((await platform.request("environment", new Uint8Array())).subarray(9));
+  const capabilities = async () => wordAt((await platform.request("environment", new Uint8Array())).subarray(10));
   const calls: unknown[] = [];
   try {
     const before = await capabilities();
@@ -177,5 +237,84 @@ test("the environment says which input services the host has, and they reach the
   } finally {
     platform.dispose();
     names.forEach((n, i) => { const d = saved[i]; if (d) Object.defineProperty(globalThis, n, d); else Reflect.deleteProperty(globalThis, n); });
+  }
+});
+
+test("a shown program is named in the address, and Back asks it to return", async () => {
+  const oldWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const oldDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const oldHistory = Object.getOwnPropertyDescriptor(globalThis, "history");
+  const oldLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
+  const ports: MessagePort[] = [];
+  const heard: unknown[] = [];
+  const frame = {
+    style: {},
+    onload: null as (() => void) | null,
+    onerror: null as (() => void) | null,
+    contentWindow: {
+      postMessage: (_message: unknown, _origin: string, transferred: MessagePort[]) => {
+        const port = transferred[0]!;
+        ports.push(port);
+        port.onmessage = ({ data }) => heard.push(data);
+        port.postMessage({ type: "connected" });
+      },
+      focus: () => {},
+    },
+    remove: () => {},
+  };
+  const listeners = new Map<string, () => void>();
+  const page: { parent?: unknown; addEventListener: (type: string, listener: () => void) => void } = {
+    addEventListener: (type, listener) => listeners.set(type, listener),
+  };
+  page.parent = page;
+  // The session history: entries of state and address, and the one shown.
+  const entries: { state: unknown; url: string }[] = [{ state: null, url: "/" }];
+  let at = 0;
+  const pages = {
+    get state() { return entries[at]!.state; },
+    pushState: (state: unknown, _title: string, url: string) => { entries.splice(at + 1); entries.push({ state, url }); at++; },
+    replaceState: (state: unknown, _title: string, url: string) => { entries[at] = { state, url }; },
+    back: () => { at--; queueMicrotask(() => listeners.get("popstate")!()); },
+  };
+  Object.defineProperty(globalThis, "window", { configurable: true, value: page });
+  Object.defineProperty(globalThis, "history", { configurable: true, value: pages });
+  Object.defineProperty(globalThis, "location", { configurable: true, value: { hash: "", pathname: "/", search: "" } });
+  Object.defineProperty(globalThis, "document", { configurable: true, value: {
+    baseURI: "https://console.example/",
+    createElement: () => frame,
+    body: { append: () => queueMicrotask(() => frame.onload?.()) },
+  } });
+  const canvas = { style: {}, tabIndex: -1, focus: () => {} } as HTMLCanvasElement;
+  const platform = new BrowserPlatform(canvas, () => {});
+  const show = (handle: Uint8Array, name: string) => {
+    const body = new Uint8Array(handle.length + name.length);
+    body.set(handle); body.set(new TextEncoder().encode(name), handle.length);
+    return platform.request("surface/show", body);
+  };
+  try {
+    const first = await platform.request("surface/open", new TextEncoder().encode("https://game.example/session/"));
+    await expect(show(first, "../evil")).rejects.toThrow("invalid program name");
+    await show(first, "leapling");
+    expect(entries.map(e => e.url)).toEqual(["/", "#leapling"]);
+    // Back: the program is asked to return, and the page is the console's again.
+    pages.back();
+    await new Promise(r => setTimeout(r, 0));
+    expect(heard).toContainEqual({ type: "leave" });
+    expect(platform.active).toBe(false);
+    frame.onload?.();
+    expect(platform.active).toBe(true);
+    expect(at).toBe(0);
+    // A program that returns by itself takes its entry with it.
+    const second = await platform.request("surface/open", new TextEncoder().encode("https://game.example/session/"));
+    await show(second, "last-green");
+    expect(at).toBe(1);
+    frame.onload?.();
+    expect(at).toBe(0);
+  } finally {
+    platform.dispose();
+    for (const port of ports) port.close();
+    for (const [name, old] of [["window", oldWindow], ["document", oldDocument], ["history", oldHistory], ["location", oldLocation]] as const) {
+      if (old) Object.defineProperty(globalThis, name, old); else Reflect.deleteProperty(globalThis, name);
+    }
   }
 });

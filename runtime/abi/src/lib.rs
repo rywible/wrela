@@ -57,7 +57,7 @@ pub mod typescript;
 pub mod vectors;
 pub mod wrela;
 
-pub use input::IMPORT_INPUT;
+pub use input::{IMPORT_INPUT, IMPORT_PAYLOAD};
 pub use manifest::Manifest;
 pub use typescript::typescript;
 
@@ -140,13 +140,14 @@ impl HostFunction {
 }
 
 /// Every function a program may import besides its memory ([`IMPORT_MEMORY`]).
-pub const HOST_FUNCTIONS: [HostFunction; 12] = [
+pub const HOST_FUNCTIONS: [HostFunction; 13] = [
     HostFunction { name: IMPORT_SUBMIT, params: 2, results: 0 },
     HostFunction { name: IMPORT_REQUEST_STATUS, params: 1, results: 1 },
     HostFunction { name: IMPORT_REQUEST_TAKE, params: 2, results: 0 },
     HostFunction { name: IMPORT_LIMIT, params: 1, results: 1 },
     HostFunction { name: IMPORT_AUDIO, params: 2, results: 0 },
     HostFunction { name: IMPORT_INPUT, params: 2, results: 1 },
+    HostFunction { name: IMPORT_PAYLOAD, params: 4, results: 1 },
     HostFunction { name: IMPORT_TICK, params: 3, results: 0 },
     HostFunction { name: IMPORT_KEEP, params: 2, results: 0 },
     HostFunction { name: IMPORT_KEPT, params: 2, results: 1 },
@@ -160,6 +161,65 @@ pub const EXPORT_FRAME: &str = "frame";
 /// The export a program with state has (language.md §12): the host calls it once, after
 /// instantiating the program and before any other export.
 pub const EXPORT_INIT: &str = "init";
+/// A server build's exports (language.md §12): the server host calls `serve_init` once, when it
+/// starts the program, and `serve` whenever something happens (an event, a timer).
+pub const EXPORT_SERVE_INIT: &str = "serve_init";
+pub const EXPORT_SERVE: &str = "serve";
+/// The custom section both of a program's builds carry (language.md §12): eight bytes,
+/// little-endian, the [`pair_id`] of its client and server modules, which a client and a server
+/// compare to know they're one program's.
+pub const PAIR_SECTION: &str = "wrela.pair";
+
+/// The pair id of a program's modules, each without its [`PAIR_SECTION`]: FNV-1a 64 over each
+/// one's length (eight bytes, little-endian, 0 for a role the program hasn't) and bytes, the
+/// client's first.
+pub fn pair_id(client: Option<&[u8]>, server: Option<&[u8]>) -> u64 {
+    let mut hash = crate::hash::StateHash::new();
+    for wasm in [client, server] {
+        let bytes = wasm.unwrap_or(&[]);
+        hash.update(&(bytes.len() as u64).to_le_bytes());
+        hash.update(bytes);
+    }
+    hash.value()
+}
+
+/// The pair id in a module's [`PAIR_SECTION`], if it has one: the module's sections are read
+/// in order, and anything malformed gives `None`.
+pub fn read_pair(wasm: &[u8]) -> Option<u64> {
+    fn leb(b: &[u8], at: &mut usize) -> Option<usize> {
+        let mut x = 0usize;
+        for shift in (0..35).step_by(7) {
+            let byte = *b.get(*at)?;
+            *at += 1;
+            x |= usize::from(byte & 127) << shift;
+            if byte < 128 {
+                return Some(x);
+            }
+        }
+        None
+    }
+    let mut at = 8;
+    if wasm.get(..4)? != b"\0asm" {
+        return None;
+    }
+    while at < wasm.len() {
+        let id = wasm[at];
+        at += 1;
+        let size = leb(wasm, &mut at)?;
+        let body = wasm.get(at..at.checked_add(size)?)?;
+        at += size;
+        if id != 0 {
+            continue;
+        }
+        let mut k = 0;
+        let len = leb(body, &mut k)?;
+        if body.get(k..k.checked_add(len)?)? == PAIR_SECTION.as_bytes() {
+            let id: [u8; 8] = body.get(k + len..)?.try_into().ok()?;
+            return Some(u64::from_le_bytes(id));
+        }
+    }
+    None
+}
 pub const EXPORT_MEMORY: &str = "memory";
 
 /// The GPU limits a program can ask for (`wrela.limit(index)`, by index in this order) and the
@@ -234,6 +294,27 @@ pub fn generated_files() -> [(PathBuf, String); 3] {
 
 #[cfg(test)]
 mod tests {
+    /// A module's pair section reads back; one without, a cut one and not a module give none.
+    #[test]
+    fn a_pair_section_reads_back() {
+        let header = b"\0asm\x01\0\0\0".to_vec();
+        let id = super::pair_id(Some(b"client"), None);
+        let mut wasm = header.clone();
+        // A custom section: id 0, its size, the name's length and bytes, the eight bytes.
+        let name = super::PAIR_SECTION.as_bytes();
+        wasm.push(0);
+        wasm.push((1 + name.len() + 8) as u8);
+        wasm.push(name.len() as u8);
+        wasm.extend_from_slice(name);
+        wasm.extend_from_slice(&id.to_le_bytes());
+        assert_eq!(super::read_pair(&wasm), Some(id));
+        assert_eq!(super::read_pair(&header), None);
+        assert_eq!(super::read_pair(&wasm[..wasm.len() - 1]), None);
+        assert_eq!(super::read_pair(b"not a module"), None);
+        // The ids of the two roles' modules differ by which is which.
+        assert_ne!(super::pair_id(Some(b"a"), None), super::pair_id(None, Some(b"a")));
+    }
+
     /// The checked-in generated files are this crate's output (the browser runtime and std
     /// read them).
     #[test]

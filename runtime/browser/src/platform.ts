@@ -30,12 +30,82 @@ export function exportName(body: Bytes): { name: string; offset: number } {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name)) throw new Error("invalid export filename");
   return { name, offset: 4 + n };
 }
+// One of the page's icons, `rel size path`: a square PNG the build shipped, under `files/`.
+const ICON = /^(icon|apple-touch-icon) ([1-9][0-9]{0,3}) (files\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.png)$/;
+export function iconLink(body: Bytes, base: string): { rel: string; sizes: string; href: string } {
+  const match = ICON.exec(DECODER.decode(body));
+  if (!match || Number(match[2]) > 1024) throw new Error("invalid icon");
+  const [, rel, size, path] = match;
+  return { rel: rel!, sizes: `${size}x${size}`, href: new URL(path!, base).href };
+}
 const checked = (body: unknown): Bytes => {
   if (!(body instanceof Uint8Array) || body.length > MESSAGE_LIMIT) throw new Error("invalid capability message");
   return new Uint8Array(body);
 };
 
 /** A bounded request/reply channel. Closing it rejects every outstanding request. */
+/** The environment a program asks for (platform/host.wrela): whether the system asks for reduced
+ * motion, the seconds since 1970, the device pixel ratio × 1024, whether this page load is a
+ * reload of the tab (its navigation's type), rather than a visit, and what this host has. */
+export function environment(reducedMotion: boolean, nowMs: number, pixelRatio: number, navigations: PerformanceEntryList, capabilities: number): Bytes {
+  const b = new Uint8Array(14);
+  b[0] = Number(reducedMotion);
+  b.set(wordBytes(Math.floor(nowMs / 1000)), 1);
+  b.set(wordBytes(Math.round(pixelRatio * 1024)), 5);
+  b[9] = Number(navigations.some((n) => (n as PerformanceNavigationTiming).type === "reload"));
+  b.set(wordBytes(capabilities), 10);
+  return b;
+}
+
+/** How many prefetches run at once. */
+const PREFETCHES = 3;
+
+/** `prefetch` (platform/host.wrela): fetches each URL of `list`, one a line, into the browser's
+ * cache at low priority, a few at a time, until `signal` aborts. A URL that fails is skipped:
+ * the program fetches it again when it needs it. Answers once all are done or it is aborted. */
+export async function prefetch(list: string, base: string, signal: AbortSignal, fetchFn: typeof fetch): Promise<Bytes> {
+  const urls = list.split("\n").map(line => line.trim()).filter(line => line !== "").map(line => programUrl(line, base));
+  let next = 0;
+  const run = async () => {
+    while (next < urls.length && !signal.aborted) {
+      const url = urls[next++]!;
+      try { await (await fetchFn(url, { mode: "no-cors", credentials: "omit", priority: "low", signal })).arrayBuffer(); } catch { /* skipped */ }
+    }
+  };
+  await Promise.all(Array.from({ length: PREFETCHES }, run));
+  return new Uint8Array();
+}
+
+/** Decoded pixels: RGBA8, rows top to bottom. */
+export interface Decoded { width: number; height: number; pixels: Uint8ClampedArray }
+
+/** The most pixels a decoded image may have. */
+const IMAGE_PIXELS = 4096 * 4096;
+
+/** `image/decode` (platform/host.wrela): the width and height the program expects (words), then
+ * a compressed image, which `decode` turns into its pixels. Another size fails. */
+export async function decodeImage(body: Bytes, decode: (image: Bytes) => Promise<Decoded>): Promise<Bytes> {
+  const width = wordAt(body), height = wordAt(body.subarray(4));
+  if (width === 0 || height === 0 || width * height > IMAGE_PIXELS) throw new Error("invalid image size");
+  const image = await decode(body.slice(8));
+  if (image.width !== width || image.height !== height) throw new Error(`the image is ${image.width}x${image.height}, not ${width}x${height}`);
+  return new Uint8Array(image.pixels.buffer, image.pixels.byteOffset, image.pixels.byteLength) as Bytes;
+}
+
+/** The browser's own decoder, without colour conversion, so the pixels are the file's. */
+async function browserDecode(image: Bytes): Promise<Decoded> {
+  const bitmap = await createImageBitmap(new Blob([image]), { colorSpaceConversion: "none", premultiplyAlpha: "none" });
+  try {
+    const { width, height } = bitmap;
+    if (width * height > IMAGE_PIXELS) throw new Error("the image is too large");
+    const canvas = new OffscreenCanvas(width, height);
+    const g = canvas.getContext("2d", { willReadFrequently: true });
+    if (!g) throw new Error("no canvas to decode on");
+    g.drawImage(bitmap, 0, 0);
+    return { width, height, pixels: g.getImageData(0, 0, width, height).data };
+  } finally { bitmap.close(); }
+}
+
 export class PortRpc {
   #next = 1;
   #closed = false;
@@ -44,7 +114,7 @@ export class PortRpc {
     port.onmessage = ({ data }: MessageEvent<unknown>) => {
       if (!data || typeof data !== "object" || !("type" in data)) return;
       const m = data as { type: unknown; id?: unknown; body?: unknown; ok?: unknown };
-      if (m.type === "frame" || m.type === "ready" || m.type === "return" || m.type === "failed") { this.event(m.type); return; }
+      if (m.type === "frame" || m.type === "ready" || m.type === "return" || m.type === "failed" || m.type === "leave") { this.event(m.type); return; }
       if (!Number.isSafeInteger(m.id) || Number(m.id) <= 0) return;
       if (m.type === "call") {
         try { this.receive(Number(m.id), checked(m.body).slice()); } catch { this.reply(Number(m.id), new Uint8Array(), false); }
@@ -76,7 +146,7 @@ export class PortRpc {
     checked(body);
     this.port.postMessage({ type: "reply", id, body: body.slice(), ok });
   }
-  signal(type: "frame" | "ready" | "return" | "failed"): void { if (!this.#closed) this.port.postMessage({ type }); }
+  signal(type: "frame" | "ready" | "return" | "failed" | "leave"): void { if (!this.#closed) this.port.postMessage({ type }); }
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
@@ -84,6 +154,15 @@ export class PortRpc {
     for (const call of this.#calls.values()) { clearTimeout(call.timer); call.reject(new Error("the program channel closed")); }
     this.#calls.clear();
   }
+}
+
+// A shown program's name in the page's address, `#name`: a lowercase key.
+const SHOWN_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+export function shownName(body: Bytes): string | null {
+  if (body.length <= 4) return null;
+  const name = DECODER.decode(body.subarray(4));
+  if (!SHOWN_NAME.test(name)) throw new Error("invalid program name");
+  return name;
 }
 
 export function programUrl(text: string, base: string): URL {
@@ -113,6 +192,12 @@ export class BrowserPlatform {
   #overlay: Overlay | null = null;
   /** Where glyphs are drawn: the page's OffscreenCanvas, unless a test gives its own. */
   paper: (w: number, h: number) => Paper = (w, h) => new OffscreenCanvas(w, h);
+  // The parent asked this program to return (its page's Back): requests waiting to hear it,
+  // or that it was asked before any waited.
+  #leaving = new Set<() => void>();
+  #asked = false;
+  // Prefetches in flight, which an opening program cancels.
+  #prefetching = new AbortController();
   constructor(readonly canvas: HTMLCanvasElement, readonly visible: (v: boolean) => void) {
     canvas.style.position = "relative"; canvas.style.zIndex = "1"; canvas.style.outline = "none"; canvas.tabIndex = 0;
     window.addEventListener("message", (e: MessageEvent<unknown>) => {
@@ -124,10 +209,30 @@ export class BrowserPlatform {
         if (this.#receiving) { const give = this.#receiving; this.#receiving = null; give.resolve(b); }
         else if (this.#inbox.length < 32) this.#inbox.push(b);
         else this.#parent?.reply(id, new Uint8Array(), false);
+      }, kind => {
+        if (kind !== "leave") return;
+        if (this.#leaving.size === 0) this.#asked = true;
+        for (const resolve of this.#leaving) resolve();
+        this.#leaving.clear();
       });
       e.ports[0]!.postMessage({ type: "connected" });
     });
     window.addEventListener("pagehide", () => this.dispose());
+    // A top-level page names the program it shows in its address, so the browser's Back asks
+    // that program to return, as its own return shortcut does. A reload drops the stale name.
+    if (window.parent === window && typeof history !== "undefined") {
+      if (location.hash && history.state?.wrela === undefined) history.replaceState(null, "", location.pathname + location.search);
+      window.addEventListener("popstate", () => this.#back());
+    }
+  }
+  #back(): void {
+    const id = this.#shown;
+    if (id === null || history.state?.wrela === id) return;
+    const s = this.#surfaces.get(id); if (!s) return;
+    s.rpc.signal("leave");
+    // A program that does not return in time is closed.
+    const timer = setTimeout(() => s.close(), 10_000);
+    void s.closed.then(() => clearTimeout(timer));
   }
   get active(): boolean { return this.#shown === null; }
   /** The input services (listen.ts) and the accessibility overlay (assist.ts), once there. */
@@ -144,6 +249,8 @@ export class BrowserPlatform {
   }
   async #open(text: string): Promise<Bytes> {
     if (this.#surfaces.size >= 4) throw new Error("too many embedded programs");
+    // The program opening takes the network: what was fetched ahead of time stops.
+    this.#prefetching.abort(); this.#prefetching = new AbortController();
     const url = programUrl(text, document.baseURI);
     const frame = document.createElement("iframe");
     frame.src = url.href;
@@ -165,7 +272,10 @@ export class BrowserPlatform {
       if (removed) return; removed = true;
       frame.onload = null; frame.onerror = null;
       rpc.close(); frame.remove(); this.#surfaces.delete(id); resolveClosed();
-      if (this.#shown === id) { this.#shown = null; this.canvas.style.visibility = "visible"; this.visible(true); this.canvas.focus(); }
+      if (this.#shown === id) {
+        this.#shown = null; this.canvas.style.visibility = "visible"; this.visible(true); this.canvas.focus();
+        if (window.parent === window && typeof history !== "undefined" && history.state?.wrela === id) history.back();
+      }
     } };
     this.#surfaces.set(id, surface);
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -188,9 +298,9 @@ export class BrowserPlatform {
   async request(service: string, body: Bytes): Promise<Bytes> {
     checked(body);
     if (service === "environment") {
-      // Reduced motion, the time (epoch seconds), the pixel ratio (×1024), what this host has.
-      const b = new Uint8Array(13); b[0] = Number(matchMedia("(prefers-reduced-motion: reduce)").matches); b.set(wordBytes(Math.floor(Date.now() / 1000)), 1); b.set(wordBytes(Math.round((window.devicePixelRatio || 1) * 1024)), 5); b.set(wordBytes(this.#capabilities()), 9); return b;
+      return environment(matchMedia("(prefers-reduced-motion: reduce)").matches, Date.now(), window.devicePixelRatio || 1, performance.getEntriesByType("navigation"), this.#capabilities());
     }
+    if (service === "image/decode") return decodeImage(body, browserDecode);
     if (service === "cursor") {
       // The pointer's shape over the program's canvas: a named CSS cursor, from a short list.
       const name = DECODER.decode(body);
@@ -221,7 +331,19 @@ export class BrowserPlatform {
       this.#overlay.announce(DECODER.decode(body)); return new Uint8Array();
     }
     if (service === "font/glyph") return glyph(body, this.paper);
+    if (service === "icon") {
+      // The program's icon in the page's tab, bookmarks and home screen: one link per kind and size.
+      const { rel, sizes, href } = iconLink(body, document.baseURI);
+      let link = document.head.querySelector<HTMLLinkElement>(`link[rel="${rel}"][sizes="${sizes}"]`);
+      if (!link) {
+        link = document.createElement("link");
+        link.rel = rel; link.type = "image/png"; link.setAttribute("sizes", sizes);
+        document.head.append(link);
+      }
+      link.href = href; return new Uint8Array();
+    }
     if (service === "surface/open") return this.#open(DECODER.decode(body));
+    if (service === "prefetch") return prefetch(DECODER.decode(body), document.baseURI, this.#prefetching.signal, fetch);
     if (service === "channel/receive") {
       if (!this.#parent) throw new Error("this program has no parent channel");
       if (this.#receiving) throw new Error("a channel receive is already pending");
@@ -235,6 +357,12 @@ export class BrowserPlatform {
     if (service === "surface/failed") { this.#parent?.signal("failed"); return new Uint8Array(); }
     if (service === "surface/ready") { this.#parent?.signal("ready"); return new Uint8Array(); }
     if (service === "surface/return") { this.#parent?.signal("return"); return new Uint8Array(); }
+    if (service === "surface/leave") {
+      // Answers once the parent asks this program to return.
+      if (!this.#parent) throw new Error("this program has no parent channel");
+      if (this.#asked) { this.#asked = false; return new Uint8Array(); }
+      return new Promise<Bytes>(resolve => { this.#leaving.add(() => resolve(new Uint8Array())); });
+    }
     if (service.startsWith("surface/")) {
       const s = this.#surfaces.get(wordAt(body)); if (!s) throw new Error("the program surface is closed");
       if (service === "surface/call") return s.rpc.call(body.subarray(4));
@@ -246,7 +374,13 @@ export class BrowserPlatform {
         return new Uint8Array();
       }
       if (service === "surface/closed") { await s.closed; return new Uint8Array(); }
-      if (service === "surface/show") { if (this.#shown !== null) throw new Error("a program surface is already shown"); this.#shown = wordAt(body); s.frame.style.zIndex = "2"; s.frame.style.pointerEvents = "auto"; this.canvas.style.visibility = "hidden"; this.visible(false); s.frame.contentWindow?.focus(); return new Uint8Array(); }
+      if (service === "surface/show") {
+        if (this.#shown !== null) throw new Error("a program surface is already shown");
+        const name = shownName(body);
+        this.#shown = wordAt(body); s.frame.style.zIndex = "2"; s.frame.style.pointerEvents = "auto"; this.canvas.style.visibility = "hidden"; this.visible(false); s.frame.contentWindow?.focus();
+        if (name && window.parent === window && typeof history !== "undefined") history.pushState({ wrela: this.#shown }, "", `#${name}`);
+        return new Uint8Array();
+      }
       if (service === "surface/close") { s.close(); return new Uint8Array(); }
     }
     if (service === "file/export") {

@@ -187,6 +187,12 @@ pub enum Event: Copy + Eq + StateHash + Serialize {
     Paste { serial: u32 },
     /// An assistive technology acted on the program's accessibility node `node` (`a11y/tree`).
     Assist { node: u32, action: Assist },
+    /// `len` bytes from connection `conn` (language.md §12): `payload(e)` reads them, in the call
+    /// that was given the event. `serial` is the host's and is never used twice.
+    Message { conn: u32, serial: u64, len: u32 },
+    /// Connection `conn` opened, or closed. On a server, `tag` is the tag the program gave it
+    /// (`platform::net::tag`), when the host tells a room it started again of it; else 0.
+    Connection { conn: u32, open: bool, tag: u32 },
 }
 
 /// What an assistive technology does to a node.
@@ -343,8 +349,30 @@ pub(package) fn event_of(r: RawEvent) -> Option<Event> {
             Some(action) => Some(Event::Assist { node: r.a, action }),
             None => None,
         },
+        13 => Some(Event::Message { conn: r.a, serial: u64(r.b) | (u64(r.c) << 32), len: r.d }),
+        14 => Some(Event::Connection { conn: r.a, open: r.b != 0, tag: r.c }),
         _ => None,
     }
+}
+
+/// The bytes of a message (`Event::Message`), read during the call that was given it: `None`
+/// for another event, or for a message an earlier call was given, whose bytes are gone. It's
+/// `nondet` (§8), as reading input is.
+///
+/// ```wrela
+/// use std::input::{Event, events, payload}
+///
+/// pub fn frame(time: f32, width: u32, height: u32) {
+///     for e in events() {
+///         if let Some(bytes) = payload(e) {
+///             std::io::print(f"{bytes.len()} bytes")
+///         }
+///     }
+/// }
+/// ```
+pub fn payload(e: Event) -> Option<Vec<u8>> {
+    let Event::Message { serial, len, .. } = e else { return None }
+    Vec::from_payload(u32(serial & 4294967295), u32(serial >> 32), len)
 }
 
 /// The key numbered `code` (runtime/abi `input`'s `KEYS`): `Key::Unknown` for another.
@@ -571,8 +599,9 @@ impl Input {
                 Event::Compose { .. } => {
                     let _ = self.composer.apply(e)
                 },
-                Event::Paste { .. } => {},
-                Event::Assist { .. } => {},
+                // A paste, an assistive action and the network's events hold nothing down.
+                Event::Paste { .. } | Event::Assist { .. } => {},
+                Event::Message { .. } | Event::Connection { .. } => {},
                 Event::PadButton { pad, .. } => {
                     if pad < PADS {
                         self.pads[pad].update(pad, e)

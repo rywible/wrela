@@ -12,7 +12,7 @@ const MAP_FILES: [&str; 4] = ["map.wrela", "ground.wrela", "species.wrela", "sto
 /// depending on the engine.
 fn map_package(name: &str, main: &str) -> PathBuf {
     let dir = scratch(name);
-    let floor = repo_root().join("examples/last-green");
+    let floor = repo_root().join("games/last-green");
     for f in MAP_FILES {
         std::fs::copy(floor.join(f), dir.join(f)).expect("copy the floor's map");
     }
@@ -39,6 +39,23 @@ fn declared_tests(file: &Path) -> usize {
         .count()
 }
 
+/// The world's geology (`geology.wrela`, its land made and its places found, which the bare view
+/// draws), its own tests run beside the map's: the square is cut as deep as the region round it,
+/// and each shot of a place sees it. Its making runs once, in this package's build.
+#[test]
+fn the_worlds_geology_is_made_and_its_places_seen() {
+    let dir =
+        map_package("last-green/geology", "pub fn frame(time: f32, width: u32, height: u32) {}\n");
+    let floor = repo_root().join("games/last-green");
+    let extra = ["geology.wrela", "lookbook.wrela"];
+    for file in extra {
+        std::fs::copy(floor.join(file), dir.join(file)).expect("copy the geology's modules");
+    }
+    let declared = copied_map_test_count(&dir)
+        + extra.iter().map(|file| declared_tests(&dir.join(file))).sum::<usize>();
+    assert_eq!(super::tests_pass(&dir), declared);
+}
+
 /// Terrain, trees and masonry use bounded fields and small seeded fixtures. Copy only their
 /// modules, so discovering their tests cannot prepare the full game's history constants.
 #[test]
@@ -47,7 +64,7 @@ fn the_environments_bounded_art_and_collision_regressions_pass() {
         "last-green/environment-art",
         "pub fn frame(time: f32, width: u32, height: u32) {}\n",
     );
-    let floor = repo_root().join("examples/last-green");
+    let floor = repo_root().join("games/last-green");
     let extra = ["trees.wrela", "blockouts.wrela"];
     for file in extra {
         std::fs::copy(floor.join(file), dir.join(file)).expect("copy environment fixture module");
@@ -89,7 +106,7 @@ fn anatomy() {
 
 @test
 fn area() {
-    let a = floor_area(ground::ground(), map::map())
+    let a = floor_area(ground::GROUND, map::map())
     assert(a > 2.7 && a < 3.3, f"about 3 km², within 10%: {a}")
 }
 
@@ -116,7 +133,7 @@ const GROWN: u32 = grown()
 fn grown() -> u32 {{
     var m = map::map()
     {edit}
-    let h = simulate(ground::ground(), m, species::habits(), PREVIEW, map::LO, map::HI, stones::stones(m), |land, year| Start::wild(land))
+    let h = simulate(ground::GROUND, m, species::habits(), PREVIEW, map::LO, map::HI, stones::stones(m), |land, year| Start::wild(land))
     h.trees.len()
 }}
 
@@ -276,7 +293,7 @@ fn left_long_before_the_plague_is_wood_again() {
 }
 "#;
     let dir = map_package("last-green/elves", tests);
-    let floor = repo_root().join("examples/last-green");
+    let floor = repo_root().join("games/last-green");
     std::fs::copy(floor.join("peoples.wrela"), dir.join("peoples.wrela")).expect("copy the elves");
     assert_eq!(super::tests_pass(&dir), 4 + copied_map_test_count(&dir));
 }
@@ -292,7 +309,7 @@ fn grown(seed: u32) -> Vec<Tree> {
     var m = map::map()
     m.seed = seed
     let lo = vec2(500.0, -1100.0)
-    var h = simulate(ground::ground(), m, species::habits(), PREVIEW, lo, lo + vec2(160.0), stones::stones(m), |land, year| Start::wild(land))
+    var h = simulate(ground::GROUND, m, species::habits(), PREVIEW, lo, lo + vec2(160.0), stones::stones(m), |land, year| Start::wild(land))
     take h.trees
 }
 

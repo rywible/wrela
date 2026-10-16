@@ -1,0 +1,627 @@
+// The floor's simulation (#54 §5): the climber walking and running over the floor, in the
+// sim's tick (`engine::run`) at 60 Hz, colliding with what the bake left (`history::OBSTACLES`)
+// and stopped by deep water and steep ground (`engine::footing`'s one rule). Its input records
+// are the walk's replay. A travel (the play harness's) moves the player beside a site. The fawn
+// grazes in the glade and notices the player (behaviour.wrela).
+
+use engine::footing::{BODY, Obstacle, Obstacles, Thing, stands}
+use engine::place::{Place, Water}
+use engine::player::{Motion, NONE, Player, control, spawn, step_with, turn_to}
+use behaviour::{Fawn, STEPPED_WITHIN, presence, spawn_fawn, step_fawn}
+use encounter::{Encounter, encounter, holds, step_encounter}
+use engine::run::{Asks, TickInput}
+use engine::senses::{Occluders, clear_over}
+use engine::sim::{SimState, Tick}
+use ground::{GROUND, Ground}
+use history::{OBSTACLES, TOUR}
+use std::input::{Event, Key}
+use std::hash::StateHash
+use std::math::TAU
+use std::serialize::Serialize
+use std::string::String
+
+/// The floor's water, as the sim reads it.
+pub const WATER: Water = water()
+
+/// A brisk floating walk, Shift to sprint, and enough lift to cross low fallen trunks.
+pub const TRAVEL = Motion { walk: 3.0, run: 7.5, clearance: 1.2, turn: 10.0, response: 7.0 }
+
+fn water() -> Water {
+    map::map().water
+}
+
+/// The sites' places and reaches, for travel: (x, z, reach).
+pub const SITES: Vec<vec3> = sites()
+
+fn sites() -> Vec<vec3> {
+    var out: Vec<vec3> = Vec::new()
+    for s in map::map().sites {
+        out.push(vec3(s.at.x, s.at.y, s.reach))
+    }
+    out
+}
+
+/// The world: the player, where it is on the floor's walk when it's walking it, the wildwood's
+/// trunks round it when it's past the floor, the fawn, and the fight at the ring's glade.
+pub struct World: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub player: Player,
+    pub tour: Tour,
+    pub wild: Wildside,
+    pub fawn: Fawn,
+    pub fight: Encounter,
+}
+
+/// What hides the player from a creature on the floor: its ground, and what the bake left
+/// standing on it (`history::OBSTACLES`).
+struct FloorSight: Copy {}
+
+impl Occluders for FloorSight {
+    @deterministic
+    fn clear(self, from: vec3, to: vec3) -> f32 {
+        clear_over(GROUND, OBSTACLES, from, to)
+    }
+}
+
+/// Local fitted wood on the authored floor and wildwood (`wildwood::trunks_round`), plus
+/// wild standing solids: requested round the player and kept until it moves on (`ASK_AGAIN`).
+/// How many, each (x, z, radius, log height),
+/// with zero height for standing solids, and where
+/// they were asked round; whether this tick asks again, where, and whether an answer's on its way.
+pub struct Wildside: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub count: u32,
+    pub trunks: [vec4; 512],
+    pub around: vec2,
+    pub asking: bool,
+    pub ask_at: vec2,
+    pub pending: bool,
+}
+
+/// How far the player moves before asking for local wood again (m), and when an answer is due.
+const ASK_AGAIN: f32 = 20.0
+const ASK_DUE: u32 = 30
+
+/// The floor's walk (`history::TOUR`), walked by the sim when P is pressed: whether it's on, the
+/// point it's making for, the nearest it's come to it and the ticks since it came nearer; and a
+/// way round what's in its way: the ticks left of it, and which side it goes round by.
+pub struct Tour: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub on: bool,
+    /// Which walk: the floor's (`TOUR`), or the egg's road (`EGG_ROAD`, Y).
+    pub road: bool,
+    pub leg: u32,
+    pub best: f32,
+    pub since: u32,
+    pub around: u32,
+    pub side: f32,
+    /// The points it gave up (`GIVE_UP`), and the ticks it's walked.
+    pub skipped: u32,
+    pub ticks: u32,
+}
+
+/// How long the walk goes no nearer its point before it goes round what's in its way (ticks),
+/// how long it goes round (ticks), how far it turns from the point (radians: 75°), and how long
+/// before it gives the point up for the next.
+const HELD: u32 = 120
+const AROUND: u32 = 180
+const AROUND_TURN: f32 = 1.31
+const GIVE_UP: u32 = 480
+
+/// How far the walk's heading turns in a tick at most (radians; 4.8 a second): the camera behind
+/// it turns with it, not in one frame, and at a run its circle (1 m round) still comes within
+/// `REACHED` of a point.
+const TURN: f32 = 0.08
+
+/// The egg's road, a point every 40 m (`wildwood::road_points`): Y walks it.
+pub const EGG_ROAD: Vec<vec2> = wildwood::road_points(40.0)
+
+/// How near a point of the walk the player comes before it makes for the next (m).
+const REACHED: f32 = 1.5
+
+impl Asks for World {
+    type Ask = vec2
+    type Answer = Vec<vec4>
+
+    @deterministic
+    fn asks(self, tick: Tick) -> Vec<(vec2, Tick)> {
+        if self.wild.asking { Vec::from([(self.wild.ask_at, tick + ASK_DUE)]) } else { Vec::new() }
+    }
+
+    @deterministic
+    fn work(ask: vec2) -> Vec<vec4> {
+        wildwood::trunks_round(ask, wildwood::REACH)
+    }
+}
+
+/// Where a player arrives: the gate (the clearing's foot), facing the meadow.
+pub const GATE = vec2(-1.5, -2.0)
+
+/// The world at tick 0: the player at the gate.
+pub fn spawn_world() -> World {
+    World {
+        player: spawn(GROUND, Place::of(GATE), 0.0),
+        tour: Tour {
+            on: false,
+            road: false,
+            leg: 0,
+            best: 1.0e9,
+            since: 0,
+            around: 0,
+            side: 1.0,
+            skipped: 0,
+            ticks: 0,
+        },
+        wild: Wildside {
+            count: 0,
+            trunks: [vec4(0.0); 512],
+            around: vec2(1.0e9),
+            asking: false,
+            ask_at: vec2(0.0),
+            pending: false,
+        },
+        fawn: spawn_fawn(GROUND),
+        fight: encounter(GROUND),
+    }
+}
+
+/// One tick: the input's records turn the controls; a travel asked for moves the player; then
+/// it steps.
+@deterministic
+pub fn tick(w: mut World, input: TickInput<World>) {
+    for e in input.records {
+        control(mut w.player.controls, e)
+        if let Event::KeyDown { key, repeat, .. } = e {
+            if (key == Key::P || key == Key::Y) && !repeat {
+                w.tour.on = !w.tour.on
+                w.tour.road = key == Key::Y
+                // The egg's road from its point nearest the player; the floor's walk from its start.
+                w.tour.leg = 0
+                if w.tour.road {
+                    let at = w.player.at.world()
+                    for k in 0..EGG_ROAD.len() {
+                        if length(EGG_ROAD[k] - at) < length(EGG_ROAD[w.tour.leg] - at) {
+                            w.tour.leg = k
+                        }
+                    }
+                }
+                w.tour.best = 1.0e9
+                w.tour.since = 0
+                w.player.controls.forward = w.tour.on
+                w.player.controls.run_held = w.tour.on
+            }
+        }
+    }
+    if w.tour.on {
+        walk_the_tour(mut w)
+    }
+    let asked = w.player.controls.travel
+    if asked != NONE {
+        if asked < SITES.len() {
+            travel(mut w.player, SITES[asked], 0.0)
+        } else if asked == SITES.len() {
+            // One past the sites: the egg's place; two past, its road in the wildwood.
+            travel(mut w.player, vec3(wildwood::EGG, 16.0), 0.0)
+        } else if asked == SITES.len() + 1 {
+            travel(mut w.player, vec3(wildwood::ROAD_START, 0.0), 0.0)
+        } else if asked == SITES.len() + 2 {
+            // Three past: in front of the fawn, `MEET` m off, to walk up to it.
+            let f = w.fawn.walker.root
+            travel(mut w.player, vec3(f.pos.x, f.pos.z, MEET - 3.0), f.heading)
+        } else if asked == SITES.len() + 3 {
+            // Four past: east of the fight's wolf, by the shore trail, near enough to wake it.
+            travel(mut w.player, vec3(encounter::WOLF_HOME, 12.0), 1.5707964)
+        }
+        w.player.controls.travel = NONE
+    }
+    // The wildwood's trunks: an answer come; asked for again where the player has moved on.
+    w.wild.asking = false
+    for a in input.answers {
+        let n = min(a.answer.len(), wildwood::MOST_TRUNKS)
+        for i in 0..n {
+            w.wild.trunks[i] = a.answer[i]
+        }
+        w.wild.count = n
+        w.wild.around = a.ask
+        w.wild.pending = false
+    }
+    let at = w.player.at.world()
+    let last = w.wild.trunks[if w.wild.count > 0 { w.wild.count - 1 } else { 0 }]
+    let covered = wildwood::covered(last, w.wild.count, w.wild.around)
+    // A dense group of log pieces can fill the bounded answer inside its normal radius.
+    // Refresh before crossing that nearer boundary, allowing for the job's due time at a sprint.
+    if !w.wild.pending && needs_wild_answer(at, w.wild.around, covered) {
+        w.wild.asking = true
+        w.wild.ask_at = at
+        w.wild.pending = true
+    }
+    // One local set carries the player through ordinary travel and combat. Coarse log
+    // capsules stay in the full floor's creature/sight field, never in this player set.
+    let o = player_obstacles(w.wild, at, OBSTACLES)
+    let before = w.player.at
+    if !holds(w.fight) {
+        step_with(mut w.player, GROUND, WATER, o, TRAVEL, input.dt)
+    }
+    if !w.tour.on {
+        step_encounter(
+            mut w.fight,
+            mut w.player,
+            GROUND,
+            WATER,
+            o,
+            FloorSight {},
+            input.records,
+            input.dt,
+        )
+    }
+    let moved = w.player.at.world() - before.world()
+    let safe = within_known_wild(before.world(), w.wild.around, covered, moved)
+    if length(safe - moved) > 1.0e-5 {
+        w.player.velocity = vec2(0.0)
+    }
+    // Also refresh a stationary body's lift when a replacement answer arrives. The initial
+    // answer and any teleport hold the body inside known coverage until local wood is ready.
+    engine::player::place_at(mut w.player, GROUND, o, before.moved(safe), w.player.heading)
+    let feet = w.player.at.world()
+    w.player.y += o.lift(feet, BODY, TRAVEL.clearance)
+    if w.fight.awake {
+        w.fight.fight.climber.at = vec3(feet.x, w.player.y, feet.y)
+    }
+    // The fawn, near enough the player to matter.
+    let p = w.player
+    let feet = p.at.world()
+    if length(w.fawn.walker.root.pos.xz - feet) < STEPPED_WITHIN {
+        let me = presence(vec3(feet.x, p.y, feet.y), p.velocity)
+        step_fawn(mut w.fawn, GROUND, WATER, OBSTACLES, FloorSight {}, me, input.dt)
+    }
+}
+
+/// Whether a report's position is outside the authored floor's tiles.
+fn near_wild(p: vec2, d: f32) -> bool {
+    let lo = vec2(history::tiles_lo()) * engine::place::TILE + vec2(d)
+    let hi = vec2(history::tiles_hi() + vec2i(1)) * engine::place::TILE - vec2(d)
+    p.x < lo.x || p.y < lo.y || p.x >= hi.x || p.y >= hi.y
+}
+
+/// Combine fitted local wood with nearby static standing solids, walls, and water. The
+/// static disk covers the lift collar and a full blink; its bin margin includes capsule starts.
+fn player_obstacles(
+    w: Wildside,
+    at: vec2,
+    fixed: engine::footing::Obstacles,
+) -> engine::footing::Obstacles {
+    var all: Vec<engine::footing::Obstacle> = Vec::with_capacity(w.count)
+    for i in 0..w.count {
+        let t = w.trunks[i]
+        all.push(
+            engine::footing::Obstacle {
+                a: t.xy,
+                b: t.xy,
+                r: t.z,
+                thing: if t.w > 0.0 { engine::footing::Thing::Log } else {
+                    engine::footing::Thing::Trunk
+                },
+                depth: t.w,
+            },
+        )
+    }
+    fixed.within(at, 16.0, |o| {
+        if o.thing != engine::footing::Thing::Log {
+            all.push(o)
+        }
+    })
+    engine::footing::Obstacles::of(
+        all,
+        at - vec2(wildwood::REACH + 32.0),
+        at + vec2(wildwood::REACH + 32.0),
+    )
+}
+
+/// A tick of the floor's walk: the look turned to the point it's making for, forward held at a
+/// run; on to the next point once it's within `REACHED`. Coming no nearer it for `HELD` ticks
+/// (something's in its way), it goes round, turned `AROUND_TURN` to one side for `AROUND` ticks
+/// (the other side the next time); after `GIVE_UP`, it makes for the next point. Off at the
+/// walk's end.
+@deterministic
+fn walk_the_tour(w: mut World) {
+    borrow points = if w.tour.road { EGG_ROAD } else { TOUR }
+    w.tour.ticks += 1
+    let at = w.player.at.world()
+    while w.tour.leg < points.len() && length(points[w.tour.leg] - at) < REACHED {
+        w.tour.leg += 1
+        w.tour.best = 1.0e9
+        w.tour.since = 0
+    }
+    if w.tour.leg < points.len() {
+        let dist = length(points[w.tour.leg] - at)
+        if dist < w.tour.best - 0.5 {
+            w.tour.best = dist
+            w.tour.since = 0
+        } else {
+            w.tour.since += 1
+        }
+        if w.tour.since == HELD {
+            w.tour.around = AROUND
+            w.tour.side = -w.tour.side
+        }
+        if w.tour.since >= GIVE_UP {
+            w.tour.leg += 1
+            w.tour.skipped += 1
+            w.tour.best = 1.0e9
+            w.tour.since = 0
+        }
+    }
+    if w.tour.leg >= points.len() {
+        w.tour.on = false
+        w.player.controls.forward = false
+        w.player.controls.run_held = false
+        return
+    }
+    let d = points[w.tour.leg] - at
+    var yaw = atan2(d.x, d.y)
+    if w.tour.around > 0 {
+        w.tour.around -= 1
+        yaw += w.tour.side * AROUND_TURN
+    }
+    w.player.controls.yaw = turn_to(from: w.player.controls.yaw, to: yaw, most: TURN)
+    w.player.controls.forward = true
+    w.player.controls.run_held = true
+}
+
+/// How far in front of the fawn a travel to it puts the player (m): out of its notice.
+const MEET: f32 = 46.0
+
+/// The player moved beside site `s` (x, z, reach): the first place a player can stand round it,
+/// just outside its reach, facing it, looking round it from `from` (radians from +z toward +x).
+@deterministic
+fn travel(p: mut Player, s: vec3, from: f32) {
+    let at = s.xy
+    for ring in 0..6 {
+        let r = s.z + 3.0 + 4.0 * f32(ring)
+        for k in 0..16 {
+            let a = from + TAU * f32(k) / 16.0
+            let q = at + vec2(sin(a), cos(a)) * r
+            if stands(GROUND, WATER, OBSTACLES, q) > 0.0 && !OBSTACLES.blocked(q, BODY) {
+                p.at = Place::of(q)
+                p.y = GROUND.at(q.x, q.y)
+                p.velocity = vec2(0.0)
+                let to = at - q
+                p.heading = atan2(to.x, to.y)
+                p.controls.yaw = p.heading
+                return
+            }
+        }
+    }
+}
+
+/// The floor's map, for the frames' reports.
+pub const MAP: engine::place::Map = map::map()
+
+/// The play harness's report on world `w` after `ticks` ticks (#55 AC5: every 2 s, the same in
+/// both hosts): one line of JSON, from the sim's state alone: the time, where the player is and
+/// how it goes, the region it's in, the nearest site and how far, the water it stands in, what
+/// draws by the check here and ahead, and the floor's walk. (The frames' times are the host's:
+/// the floor prints them on a line of their own, `frames`.)
+pub fn report(w: World, ticks: u32) -> String {
+    let p = w.player
+    let at = p.at.world()
+    var near = 0
+    for i in 0..MAP.sites.len() {
+        if length(MAP.sites[i].at - at) < length(MAP.sites[near].at - at) {
+            near = i
+        }
+    }
+    let site = MAP.sites[near]
+    let region = if near_wild(at, 0.0) { "the wildwood" } else {
+        MAP.regions[MAP.region_of(at)].name
+    }
+    let water = max(
+        engine::footing::mere_depth(WATER, at, GROUND.at(at.x, at.y)),
+        OBSTACLES.depth(at),
+    )
+    let t = f32(ticks) / 60.0
+    let heading = p.heading * 57.29578
+    let site_m = length(site.at - at)
+    let tour_points = if w.tour.road { EGG_ROAD.len() } else { TOUR.len() }
+    // What draws here and ahead, by the check (its strongest draw at 20, 40 and 60 m the way the
+    // player faces).
+    let draw = history::draw_at(at)
+    let toward = vec2(sin(p.heading), cos(p.heading))
+    var ahead = -1.0
+    for d in [20.0, 40.0, 60.0] {
+        ahead = max(ahead, history::draw_at(at + toward * d))
+    }
+    f"{{\"report\": {t}, \"at\": [{at.x}, {at.y}], \"y\": {p.y}, \"heading\": {heading}, \"pace\": {p.pace}, \"speed\": {length(p.velocity)}, \"region\": \"{region}\", \"site\": \"{site.name}\", \"site_m\": {site_m}, \"water\": {water}, \"draw\": {draw:.3}, \"ahead\": {ahead:.3}, \"tour\": [{w.tour.on}, {w.tour.leg}, {tour_points}], \"fawn\": {behaviour::report(w.fawn)}, \"fight\": {encounter::report(w.fight)}}}"
+}
+
+/// The snapshot the frames read.
+@deterministic
+pub fn present(w: World) -> World {
+    w
+}
+
+@test
+fn reports_the_active_tours_waypoint_count() {
+    var w = spawn_world()
+    w.tour.on = true
+    w.tour.road = true
+    let expected = f"\"tour\": [true, 0, {EGG_ROAD.len()}]"
+    assert(report(w, 0).find(expected.as_str()).is_some())
+}
+
+/// The wildwood answer's explicit height selects low-log clearance, while zero remains a
+/// standing obstacle. Decoding must not turn either case into the other.
+@test
+fn wildwood_log_answers_decode_height_and_preserve_standing_solids() {
+    var w = Wildside {
+        count: 2,
+        trunks: [vec4(0.0); 512],
+        around: vec2(0.0),
+        asking: false,
+        ask_at: vec2(0.0),
+        pending: false,
+    }
+    w.trunks[0] = vec4(0.0, 0.0, 0.4, 0.8)
+    w.trunks[1] = vec4(4.0, 0.0, 0.4, 0.0)
+    let none: Vec<Obstacle> = Vec::new()
+    let empty = engine::footing::Obstacles::of(none, vec2(-64.0), vec2(64.0))
+    let o = player_obstacles(w, vec2(0.0), empty)
+    assert(!o.blocked_over(vec2(0.0), BODY, TRAVEL.clearance), "low wildwood log blocked travel")
+    assert(o.lift(vec2(0.0), BODY, TRAVEL.clearance) >= 0.8, "wildwood log lost its lift")
+    assert(o.blocked_over(vec2(4.0, 0.0), BODY, TRAVEL.clearance), "standing tree became a low log")
+}
+
+/// The bounded answer can be crowded enough that the next answer is due after a sprint would
+/// leave its coverage. Stop at the known boundary until that answer arrives. A first entry or
+/// teleport outside the known disc also waits for its requested local collision data.
+fn needs_wild_answer(at: vec2, around: vec2, covered: f32) -> bool {
+    let safe = max(covered - BODY - 0.04, 0.0)
+    let reserve = TRAVEL.run * f32(ASK_DUE) / 60.0 + BODY + 2.0
+    let after = min(ASK_AGAIN, max(covered - reserve, min(1.0, safe * 0.5)))
+    safe == 0.0 || length(at - around) > after
+}
+
+fn within_known_wild(from: vec2, around: vec2, covered: f32, moved: vec2) -> vec2 {
+    let radius = max(covered - BODY - 0.04, 0.0)
+    let at = from - around
+    let end = at + moved
+    if dot(end, end) <= radius * radius {
+        return moved
+    }
+    let c = dot(at, at) - radius * radius
+    let a = dot(moved, moved)
+    if c > 1.0e-4 || a < 1.0e-12 {
+        return vec2(0.0)
+    }
+    let b = dot(at, moved)
+    let t = clamp((-b + sqrt(max(b * b - a * c, 0.0))) / a, 0.0, 1.0)
+    moved * t
+}
+
+@test
+fn dense_wildwood_coverage_holds_a_sprint_until_its_due_answer_arrives() {
+    let covered = 4.0
+    let moved = vec2(TRAVEL.run / 60.0, 0.0)
+    var at = vec2(0.0)
+    var requested = false
+    var due = 0
+    var held = false
+    for tick in 0..60 {
+        if !requested && needs_wild_answer(at, vec2(0.0), covered) {
+            requested = true
+            due = tick + ASK_DUE
+        }
+        if requested && tick >= due {
+            break
+        }
+        let safe = within_known_wild(at, vec2(0.0), covered, moved)
+        held = held || length(safe) < length(moved) - 1.0e-5
+        at += safe
+        assert(length(at) + BODY < covered, "sprint outran its bounded collision answer")
+    }
+    assert(requested && held, "fixture did not reach the dense answer's boundary")
+    let resumed = within_known_wild(at, at, covered, moved)
+    assert(length(resumed - moved) < 1.0e-6, "fresh nearby answer did not restore travel")
+    assert(
+        length(within_known_wild(vec2(100.0), vec2(0.0), covered, moved)) == 0.0,
+        "travel beyond known collision data was allowed",
+    )
+}
+
+/// Even a tiny full answer requests its replacement before travel stops. If no safe room is
+/// known at all, request again without requiring movement and hold until useful data arrives.
+@test
+fn tiny_wildwood_answers_refresh_before_the_body_reaches_their_boundary() {
+    let moved = vec2(TRAVEL.run / 60.0, 0.0)
+    for covered in [0.0, 0.2, 0.5, 0.8, 1.2, 4.0] {
+        var at = vec2(0.0)
+        var requested = false
+        var stopped = false
+        for _ in 0..ASK_DUE {
+            requested = requested || needs_wild_answer(at, vec2(0.0), covered)
+            let safe = within_known_wild(at, vec2(0.0), covered, moved)
+            if length(safe) < 1.0e-6 {
+                stopped = true
+                assert(requested, f"coverage {covered} stopped before requesting an answer")
+                break
+            }
+            at += safe
+        }
+        assert(requested && stopped, f"coverage {covered} did not exercise its bounded answer")
+        if covered <= BODY + 0.04 {
+            assert(
+                length(at) == 0.0 && needs_wild_answer(at, at, covered),
+                "an answer with no safe room silently deadlocked travel",
+            )
+        }
+    }
+}
+
+/// A local authored answer replaces coarse log blockers, while the same obstacle set keeps
+/// walls and stream depth. A lift cannot push the player through the wall beside the log.
+@test
+fn authored_local_logs_combine_with_static_walls_and_streams() {
+    let fixed = Obstacles::of(
+        [
+            Obstacle {
+                a: vec2(0.0, -4.0),
+                b: vec2(0.0, 4.0),
+                r: 1.0,
+                thing: Thing::Log,
+                depth: 2.0,
+            },
+            Obstacle {
+                a: vec2(2.0, -6.0),
+                b: vec2(2.0, 6.0),
+                r: 0.4,
+                thing: Thing::Wall,
+                depth: 0.0,
+            },
+            Obstacle {
+                a: vec2(-4.0, -6.0),
+                b: vec2(-4.0, 6.0),
+                r: 1.0,
+                thing: Thing::Stream,
+                depth: 0.9,
+            },
+        ],
+        vec2(-32.0),
+        vec2(32.0),
+    )
+    var local = spawn_world().wild
+    local.around = vec2(0.0)
+    local.count = 1
+    local.trunks[0] = vec4(0.0, 0.0, 0.5, 0.8)
+    let combined = player_obstacles(local, vec2(0.0), fixed)
+    assert(
+        !combined.blocked_over(vec2(0.0), BODY, TRAVEL.clearance),
+        "coarse authored log survived",
+    )
+    assert(combined.lift(vec2(0.0), BODY, TRAVEL.clearance) >= 0.8, "authored log lost lift")
+    assert(combined.depth(vec2(-4.0, 0.0)) > 0.8, "static deep stream disappeared")
+    var at = vec2(-2.0, 0.0)
+    var high = 0.0
+    for _ in 0..100 {
+        let (moved, _) = engine::footing::step_over(
+            behaviour::Flat {},
+            behaviour::DRY,
+            combined,
+            at,
+            vec2(0.05, 0.0),
+            BODY,
+            TRAVEL.clearance,
+        )
+        at += moved
+        high = max(high, combined.lift(at, BODY, TRAVEL.clearance))
+    }
+    assert(
+        at.x > 1.0 && at.x < 1.3 && high >= 0.8,
+        "lift crossed the wall or failed to cross the log",
+    )
+    let initial = spawn_world().wild
+    assert(
+        needs_wild_answer(GATE, initial.around, wildwood::REACH),
+        "initial authored logs were never requested",
+    )
+    assert(
+        length(within_known_wild(GATE, initial.around, wildwood::REACH, vec2(0.1, 0.0))) == 0.0,
+        "spawn moved before its authored collision answer",
+    )
+}

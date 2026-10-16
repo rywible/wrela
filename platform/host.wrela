@@ -13,8 +13,29 @@ pub fn word(bytes: [u8], at: u32 = 0) -> Option<u32> {
     )
 }
 
+// Where the program runs: byte 0 whether the system asks for reduced motion, then words: the
+// seconds since 1970 (at 1) and the device pixel ratio × 1024 (at 5); byte 9 whether this page
+// load reloaded the tab, rather than visiting the page; then the word of what the host has (at
+// 10, `capabilities`). A host may give fewer bytes.
 pub fn environment() -> Pending<u8> {
     request("environment", [u8(0); 0])
+}
+
+// A compressed image (PNG, WebP or JPEG), decoded by the host to its RGBA8 pixels, rows top to
+// bottom, as the file holds them. It must be `width` by `height`: another size fails.
+pub fn decode_image(bytes: [u8], width: u32, height: u32) -> Pending<u8> {
+    var body: Vec<u8> = Vec::new()
+    for n in [width, height] {
+        for shift in [0, 8, 16, 24] { body.push(u8((n >> shift) & 255)) }
+    }
+    for b in bytes { body.push(b) }
+    request("image/decode", body)
+}
+
+// Fetches each URL of `list` (absolute, one a line) into the host's cache ahead of time, at
+// low priority; a program opening stops it. Answers once all are done or it stopped.
+pub fn prefetch(list: [u8]) -> Pending<u8> {
+    request("prefetch", list)
 }
 
 // The pointer's shape over the program: `default`, `pointer`, `text`, `grab`, `grabbing`,
@@ -23,6 +44,15 @@ pub fn cursor(name: str) -> Pending<u8> {
     var bytes: Vec<u8> = Vec::new()
     for i in 0..name.len() { bytes.push(name.byte(i)) }
     request("cursor", bytes)
+}
+
+// One of the page's icons: `rel` is `icon` or `apple-touch-icon`, `size` its pixels on a side,
+// and `path` a square PNG the build shipped (`Shipped::path`).
+pub fn icon(rel: str, size: u32, path: str) -> Pending<u8> {
+    let text = f"{rel} {size} {path}"
+    var bytes: Vec<u8> = Vec::new()
+    for i in 0..text.len() { bytes.push(text.byte(i)) }
+    request("icon", bytes)
 }
 
 pub fn open(url: str) -> Pending<u8> {
@@ -36,6 +66,16 @@ pub fn surface(service: str, id: u32) -> Pending<u8> {
     w.write_u32(id)
     let body = take w.into_bytes()
     request(service, body)
+}
+
+// Shows a program in place of this one, `name` (a lowercase key) naming it in the page's
+// address, so the browser's Back asks it to return.
+pub fn show(id: u32, name: str) -> Pending<u8> {
+    var w = Writer::new()
+    w.write_u32(id)
+    var body = take w.into_bytes()
+    for i in 0..name.len() { body.push(name.byte(i)) }
+    request("surface/show", body)
 }
 
 pub fn send(id: u32, bytes: [u8]) -> Pending<u8> {
@@ -89,7 +129,7 @@ pub const SYSTEM_GLYPHS: u32 = 8
 
 /// The capabilities word of an `environment` answer: 0 from a host that says nothing of them.
 pub fn capabilities(environment: [u8]) -> u32 {
-    match word(environment, 9) {
+    match word(environment, 10) {
         Some(w) => w,
         None => 0,
     }
@@ -221,7 +261,12 @@ fn a_tree_and_a_paste_have_the_hosts_layout() {
     let p = read_pasted(take w.into_bytes())
     assert(p == Ok(Pasted { text: String::from("hi"), html: String::from("<b>hi</b>") }))
     assert(read_pasted(Vec::from([u8(9), 0, 0, 0])).is_err(), "a short answer")
-    assert(capabilities([0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0]) == 5 && capabilities([0]) == 0)
+    assert(capabilities([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 5, 0, 0, 0]) == 5 && capabilities([0]) == 0)
+}
+
+// Answers when the parent asks this program to return, as the browser's Back does.
+pub fn asked_to_return() -> Pending<u8> {
+    request("surface/leave", [u8(0); 0])
 }
 
 @test

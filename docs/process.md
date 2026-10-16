@@ -90,6 +90,8 @@ The M4 Air has not been measured; its times are reported separately.
 | [sfizz](https://sfz.tools/sfizz/) (BSD 2-clause), `sfizz_render` | Plays the reference piano's samples from a take's MIDI file, for the listening tests (`tools/listening.py`). Not part of the game |
 | Mesa's lavapipe (Vulkan on the CPU), MIT, patched (`tools/cloud/`) | The GPU of a cloud machine, which has none (`tools/cloud.sh`) |
 | [FFmpeg](https://ffmpeg.org/) with x264, GPL | Makes the motion captures' clips and contact sheets from the frames the native host saves (`tools/motion.py`). Not part of the game |
+| [Wrangler](https://developers.cloudflare.com/workers/wrangler/) (Cloudflare, MIT/Apache 2.0) and GitHub Actions | Deploy each release from `main` to Cloudflare Workers (`.github/workflows/deploy.yml`, `tools/deploy.py`) |
+| [Binaryen](https://github.com/WebAssembly/binaryen) (Apache 2.0), `wasm-opt` 133 or later | Shrinks a released build's WASM (`wrela build --optimize`, `-Oz`), carrying its trap locations through as a source map. Runs at build time; nothing of it ships |
 | strace, LGPL; Linux mount namespaces (`unshare`) | Historical gate pass caching, retired 2026-10-11: what each slow test reads, so a pass is reused only while all of it is unchanged, or, for a test that builds a program, while its builds make the same files. The ideas are build systems' (Bazel's action cache, ccache's manifests, tup's and fabricate's traced dependencies, Shake's and Bazel's early cutoff) |
 
 Not used, by decision: Suno or any music model (Ryan, 2026-10-06, #44), and any image, texture,
@@ -515,10 +517,17 @@ the browser also receives the corresponding parity fixes.
 | Inter and JetBrains Mono fonts (`ui/fonts/`) | SIL Open Font License 1.1, licence texts beside them | The studio's interface text. |
 | musl's libm; ARM's optimized-routines | MIT | `compiler/std/math.wrela` follows their algorithms and coefficients (credited in the file). |
 | Steven Worley, "A Cellular Texture Basis Function" (SIGGRAPH 1996) | A published algorithm; no code taken | Bark's plates (`engine/plant.wrela`, `plates_at`): the nearest and second-nearest of jittered cell points, written from the paper's idea. |
-| Heini Hediger's flight distance (*Wild Animals in Captivity*, 1950), as field ethology uses it | A published idea; no code or data taken | The fawn's behaviour (`examples/last-green/behaviour.wrela`): it notices a person first and watches, and flees when they come on within a distance; the distances are our own, tuned by test. |
+| Heini Hediger's flight distance (*Wild Animals in Captivity*, 1950), as field ethology uses it | A published idea; no code or data taken | The fawn's behaviour (`games/last-green/behaviour.wrela`): it notices a person first and watches, and flees when they come on within a distance; the distances are our own, tuned by test. |
 | Vadim Zavalishin, *The Art of VA Filter Design* (2012); George Marsaglia, "Xorshift RNGs" (2003) | Published algorithms; no code taken | The floor's sound (`engine/sound.wrela`): the state-variable filter that bands each source's noise, and the seeded noise itself. |
 | The soil production function: Heimsath, Dietrich, Nishiizumi and Finkel, "The soil production function and landscape equilibrium", *Nature* 388 (1997) | A published finding; we use its idea, not its text or data | `engine::soil::soil`: rock weathers to soil fastest under a thin soil and creep moves it downhill, so crests are thin and hollows deep (credited in the file). |
-| Johann Heinrich von Thünen's land-use rings (*Der isolirte Staat*, 1826); settlement site and budding as human geography teaches them | Published ideas; no code or data taken | The Last Green's elves (`examples/last-green/peoples.wrela`): each settlement takes its fields nearest by walking cost, then pasture, then wood; it chooses its site by water, soil, slope and sun; when it outgrows its land, some of its people found another. |
+| Landscape evolution by stream power: Jean Braun and Sean D. Willett, "A very efficient O(n), implicit and parallel method to solve the stream power equation governing fluvial incision and landscape evolution", *Geomorphology* 180–181 (2013) | A published method; no code taken | `engine::landform::incise`: a channel cuts down at K A^m S, solved implicitly in the order the water flows, so a step of any length is stable. The Last Green's world is made with it (`games/last-green/geology.wrela`). |
+| Priority-flood depression filling: Richard Barnes, Clarence Lehman and David Mulla, "Priority-flood: An optimal depression-filling and watershed-labeling algorithm for digital elevation models", *Computers & Geosciences* 62 (2014), its epsilon variant | A published method; no code taken | `engine::landform::drainage` (moved there from `engine::grow`, which already used it): water is routed across pits from the outlets, lowest first, so every cell drains. |
+| Terrain authored through its causes: Guillaume Cordonnier, Jean Braun, Marie-Paule Cani, Bedrich Benes, Éric Galin, Adrien Peytavie and Éric Guérin, "Large Scale Terrain Generation from Tectonic Uplift and Fluvial Erosion", *Computer Graphics Forum* 35(2) (2016) | A published idea; no code or data taken | The world's land is authored through its causes (its rock's layers, the old land, the base level its rivers run to) and not by drawing its valleys. |
+| Threshold slopes, as thermal erosion does: F. Kenton Musgrave, Craig E. Kolb and Robert S. Mace, "The synthesis and rendering of eroded fractal terrains", *SIGGRAPH* (1989) | A published idea; no code taken | `engine::landform::collapse`: a slope steeper than its rock stands at sheds its excess downhill, no faster than the rock weathers, so a hard cap stands in cliffs over the soft rock's talus. |
+| Erosion and deposition: Philippe Davy and Dimitri Lague, "Fluvial erosion/transport equation of landscape evolution models revisited", *Journal of Geophysical Research* 114 (2009) | A published method; no code taken | `engine::landform::settle`: what the water cuts it carries down and lays where its load is heavy for its water (D = G Qs / Q), so valley floors fill and fans spread where ravines meet them. |
+| Nonlinear hillslope creep: Joshua J. Roering, James W. Kirchner and William E. Dietrich, "Evidence for nonlinear, diffusive sediment transport on hillslopes and implications for landscape morphology", *Water Resources Research* 35(3) (1999) | A published method; no code taken | `engine::landform::diffuse`: soil creeps faster by 1 / (1 - (S / Sc)²) as its slope S nears a critical one, so hillsides run straight down from rounded crests instead of rounding all over. |
+| Channel initiation at a source area: David R. Montgomery and William E. Dietrich, "Where do channels begin?", *Nature* 336 (1988) | A published finding; we use its idea, not its data | `engine::landform::Shaping::channel`: water cuts only where enough of it gathers to run in a channel; below that, slopes only creep and fail. |
+| Johann Heinrich von Thünen's land-use rings (*Der isolirte Staat*, 1826); settlement site and budding as human geography teaches them | Published ideas; no code or data taken | The Last Green's elves (`games/last-green/peoples.wrela`): each settlement takes its fields nearest by walking cost, then pasture, then wood; it chooses its site by water, soil, slope and sun; when it outgrows its land, some of its people found another. |
 | W3C, Gamepad API, its "standard" mapping | A W3C specification; no code taken | The browser host reads pads by it (`runtime/browser/src/listen.ts`), and wrela's pad buttons and axes take its order and names (south, east, west, north, the shoulders and triggers, the sticks, the d-pad). |
 | Closest points of two segments (as in Christer Ericson, *Real-Time Collision Detection*, 2005, §5.1.9) | A standard method; no code taken | The climber's fight (`examples/climber/fight.wrela`): the sword's edge, swept between ticks, is tested against capsules on the wolf's body, and the wolf's bite against a capsule up the climber. |
 | Position-based dynamics (Matthias Müller, Bruno Heidelberger, Marcus Hennix, John Ratcliff, "Position Based Dynamics", 2007); long-range attachments (Tae-Yong Kim, Nuttapong Chentanez, Matthias Müller-Fischer, "Long Range Attachments: A Method to Simulate Inextensible Clothing in Computer Games", 2012) | Published methods; no code taken | The climber's cape (`examples/climber/cape.wrela`): a grid of points held by links whose lengths are kept, each point tethered to the collar so the cloth can't stretch however fast the body moves. |
@@ -719,7 +728,7 @@ Measured on the Apple M4 against `b7a7e032`:
 | Last Green CPU frame call, controlled native run | 19.291 ms | 17.850 ms | Includes GPU synchronization; 1.3–7.5% less in each pair |
 
 The render measurements use 120 lockstep frames at 1280×720, span timing, and nine workers
-under exclusive measurement admission. `tools/wrela profile examples/last-green --json`
+under exclusive measurement admission. `tools/wrela profile games/last-green --json`
 ran twice on each checkout. Separate CLI pairs showed wide variation, including slower
 whole-frame candidate results, so they do not establish a whole-frame win on their own.
 A controlled comparison then held one host binary, device, allocator and compiled pipelines
@@ -870,13 +879,13 @@ with empty temporary storage, never the game's saved state.
 Save a baseline build before changing the source, in the normal checkout:
 
 ```sh
-tools/wrela build examples/last-green -o /tmp/last-green-before
+tools/wrela build games/last-green -o /tmp/last-green-before
 ```
 
 After the change, with builds and other GPU work idle:
 
 ```sh
-tools/wrela profile examples/last-green --compare /tmp/last-green-before --pairs 5 --json > /tmp/last-green-comparison.json
+tools/wrela profile games/last-green --compare /tmp/last-green-before --pairs 5 --json > /tmp/last-green-comparison.json
 ```
 
 The comparison alternates baseline/candidate and candidate/baseline, on one device with the
@@ -941,6 +950,221 @@ On `main`, without those outside settings, the complete check failed 28 Chrome a
 tests. On this branch, with no `WRELA_*` variables set, it passed all 744 Rust tests and every
 browser, tools and infrastructure check in 321.0 s. That time includes warm build output. It
 is not a paired gate-time comparison. No rendering code changed, so no frame-time claim is made.
+
+## The world's geology, 2026-10-14
+
+Ryan asked for a deep visual pass on the Last Green, built in levels: geology first, then the
+stages that read it, such as ecology. He asked that an agent can see how the geology reads at
+several levels, and that he gives only what he likes and dislikes. Claude Code (Claude Opus
+5.5) proposed the plan. A plan council reviewed it: OpenAI Codex GPT-6.1-Sol and GPT-6-Astra,
+each in two rounds, read-only. Their findings changed the plan: drainage on level ground, a
+relief that adds no step where it meets the land, a tree's jittered root on a cliff, exact
+test fixtures, a GPU test of the relief, and a lens that does not wait for the history.
+Claude decided, implemented and verified the change, without subagents other than the
+council.
+
+A first version eroded the far mountains. Ryan then asked for no mountains, a forest that
+goes on to the horizon, and the authored square itself simulated, its named places derived
+from the land and not drawn. He chose a dissected plateau. The world is now made at build time
+(`engine::landform`, `games/last-green/geology.wrela`): an old plateau of bedded rock (a
+hard grit cap over shale, a sandstone band, granite bosses) is cut over 1.2 million years by
+rivers running to a trunk valley and to the lowland round it, at 64 m over 16 km and at 8 m
+over the floor's square. Slopes creep where their rock carries soil and fail where they are
+steeper than their rock stands, as fast as it weathers. Summits, tors, overlooks, falls,
+gorges, springs, lakes and the meetings of streams are found in the land and named for what
+and where they are; no lore names were added. The bare view (F8's fourth, `tools/lookbook.py
+--view bare`) draws this land alone, and the map lens draws its layers and its places and
+answers its numbers as JSON. The floor's play still stands on its old land until Ryan has
+judged this one. The wildwood also no longer grows trees on rock, cliffs or above the tree
+line. No outside asset was used.
+
+Ryan then asked for the rock as solids and a better simulation. The heightfield stays the
+ground; where it can't hold rock (faces steeper than a few of its cells), the geology places
+solids: each face of grit or sandstone as its beds' blocks, set into it at their own heights;
+the granite as its corestones; the scree's fallen pieces; the tors; and the streams' boulders.
+A few prototypes (jointed blocks weathered by noise, each a field realized to a mesh) are drawn
+many times, culled to the view each frame. In the bare view the rocks and the ground itself cast
+the sun's shadows. The water now lays down some of what it cuts, and thin bands of sandstone in
+the shale make benches along the valleys' sides.
+
+Ryan said the rocks looked good from far off but not up close. Each rock now has a near mesh
+and a far mesh; its blocks' edges are worn round and their faces weathered into broad lumps,
+grooves along their laminae, and pits. The granite is no longer cut into beds: its bosses
+weather to smooth domes whose skin splits into sheets, each ending in a low lip, and only its
+fallen corestones and tors stand as solids. A turned-angle sign error had set the blocks
+across every face that did not run north-south or east-west; they now lie along their faces,
+and a block reaches down to the land where the land drops away beside or behind it. A new
+test holds that no block hangs over the air. The bare view gained a close shot under the
+tallest bedded crag, and its overlooks now face the way the view is most open.
+
+Ryan then said some rocks looked like castle walls and the hills too regular, and asked for a
+better simulation. The rock now has its own beds, from about 1 m to 7 m thick, and two joint
+sets fixed across the region. Each cliff is joint columns that stand to the cliff's top and
+reach down to the scree. The cliff has bays and buttresses, gullies down its major joints, and
+a top that rises and falls; a column undercut too far has fallen. Creep is now nonlinear
+(Roering and others, 1999), and each face fails at its rock's slope give or take a fifth. Bands
+of shattered rock along the joint sets erode faster, so valleys follow them. The square's
+channels start where less water gathers, and its creep is slower. Its grain factor was
+recalibrated to 3.5. Soft rock's slopes carry rills. Shots now keep clear of the rocks as well as
+the land, and the close shot is taken where the most cliff rock stands.
+
+Ryan then said the crag still read as too regular, with regular undulations on the stone, and
+asked Claude to work as a hard look-development critic until it was satisfied. Claude judged
+each change on full-size stills of the bare view and on crops of them.
+- **Blocks:** a block is now a new solid (`stone::Block`). It has sharp joint faces a little
+  off square, with chips knocked off its top and upright edges. It wears in broad fracture
+  swells, a coarse grain, slanting laminae of uneven thickness, and pits; nothing in it is a
+  sine wave. Each block is made in one of nine shapes at its own proportions, so its detail is
+  not stretched.
+- **Colour:** a block is darker in its crust and under itself, paler where a chip broke it,
+  streaked where water ran, and patched with faint grey lichen.
+- **Cliff columns:** a column stands as one, its partings opening in some columns and not
+  others. Soft beds weather back under hard ones. Columns stand out or back by up to 3 m, the
+  joints are farther apart, and cap blocks are worn and lie flush with the land over them.
+- **Around the cliffs:** fallen blocks lie at the cliffs' feet. The land between blocks is
+  scree, not pale rock.
+- **Tors:** tors stand on the tops of the knobs where tors were found in the land.
+- **Shots:** the tor and lake shots look from the side that sees them best.
+- **Granite:** tried twice as jointed columns, the granite read as stacked sponges and then
+  as ruins, so it stands as smooth domes and tors only.
+
+Ryan then asked Claude to keep going. Claude critiqued each of the six bare shots again, on full
+stills and crops, and changed what still read wrong.
+- **Crag:** blocks from inside a cliff are no longer chipped along their top edges, so a
+  parting no longer shows as a notch like a mortar course. Most joints and partings are now
+  tight: a column meets its neighbour a little into it, so the face runs on across them, and
+  about a third weather open. Neighbouring columns stand back about as far as each other. Shade
+  varies over the rock in patches and streaks across its blocks, not block by block.
+- **Granite:** steep granite faces stand as joint blocks no more than 9 m across, split by
+  sheets 3 to 18 m thick and set back their own way. No block reaches into a stream's bed. The
+  sheet lips on the domes are now unevenly spaced and weather off in places. The granite is
+  stained in patches, and rock in a stream's bed is darker.
+- **Gentle ground:** the grit's and sandstone's beds crop out of gentler slopes as low ledges
+  along the contours, with fallen blocks below them. Each stratum weathers to its own soil:
+  peat on the grit, grey clay on the shale, brown loam on the sandstone.
+- **Tors:** a tor is one mass on a broad base of the knob's rock, with columns of worn slabs of
+  uneven height and breadth, and fallen blocks round it.
+- **Shots:** the summit looks across the square, where the land is finest and the rock is
+  solid, not out over the coarser region. The gorge shot stands on the stream's bed, and the
+  lake shot looks across the basin from its shore.
+
+Ryan then asked for a plan council on the simulation and the look. Claude led; OpenAI Codex
+GPT-6.1-Sol and GPT-6-Astra reviewed the plan, read-only, in two rounds. They showed that the
+lead step, a simulated soil layer in `engine::landform::evolve`, was unsound as written: soil
+could be spent twice, deposition and lake filling broke the bedrock-plus-soil sum, and its test
+had no equilibrium. They also showed that `engine::soil` already models soil from the land's
+shape (Heimsath and others, 1997). Claude deferred the simulated layer, with their accounting
+rules kept for later, and did this instead.
+- **Soil:** the square's soil is worked out once, when the world is built, by `engine::soil`
+  from each cell's curvature, slope and wetness. Wetness is the topographic index from the
+  drained area and the slope. Each kind of soil has its own tint over its rock's. Ledges crop
+  out where the soil is thin.
+- **Talus:** talus runs from each face of solid rock down the land's fall. Fallen blocks lie
+  only on talus, and scree shows there. A face's extent no longer crosses a gully's floor and
+  climbs the far side.
+- **Rills:** the rills that followed the slope's direction, and ringed hollows, are gone.
+- **Rock grain:** rock now has a grain per pixel where a pixel is small enough to show it, so
+  granite reads as crystals up close.
+- **Tried and reverted:** clustered joint spacing made narrow columns of stacked cubes up close,
+  and didn't remove the stripes seen from far off.
+- **Checked:** making the steep faces' colour flat showed that colour isn't what smears them.
+
+Ryan asked to keep using the council. In a second council (three rounds, the same reviewers), Claude
+proposed raising the made land into talus aprons below the cliffs. The reviewers showed that this
+would leave the drainage, wetness and lakes stale. It would also turn debris into bedrock and grow
+new cliff columns on the apron. Recomputing the drainage couldn't refresh the rock's erodibility or
+recover the solid land under shallow fill. In the third round, Claude moved the apron to the land
+as drawn instead, and the reviewers resolved those objections.
+- **Talus apron:** talus piles against the foot of each face of solid rock and buries a third of
+  the face. It falls away at 0.6 and thins to nothing 40 m out. Its surface is the highest of the
+  repose cones over each cell.
+- **Where none lies:** none lies in or beside a stream's bed, a lake or the square's collar.
+  Water is taken to run on under it, as through scree.
+- **Which land is used:** the land as made decides where cliffs and granite roofs stand. The land
+  as drawn decides what their blocks rest on, so columns end on the apron and fewer hang.
+- **Ledges:** none stands out of talus deeper than 0.5 m.
+- **Far stripes, still open:** Claude tested shut joints, even set-backs, columns ending at their
+  beds, sharp caps, every column standing, columns turned toward their face and no deep breaks.
+  None removed the stripes seen from 1.5 km, so the cause is still unknown, and the changes were
+  reverted.
+
+## The climber's robe, darkness and glide, 2026-10-14
+
+Ryan found the Last Green's player character clunky to move and its cloth, robe, darkness and
+sword poor. He named a mix of a dementor (Harry Potter) and a ringwraith (the Nazgûl of
+Tolkien's *The Lord of the Rings*) as the mood, with Organization XIII's coats (*Kingdom
+Hearts*, Square Enix and Disney) as another reference: a long train that drags on the ground,
+a readable empty hood, nice movement. These works are copyright their rights holders. They
+were named, not looked at: no image, shot, mesh, texture or character design was traced,
+sampled or recreated, and the forms are original.
+
+Claude Code (Claude Opus 5.5) did the work alone, without subagents. It rebuilt the cloth's
+rest shape (a lean A line with a 1.35 m train and torn strips at its foot), the peaked hood,
+the slim swinging sleeves, the sword and its hanging pose, and replaced the hem's deformed
+tongues with wisps and a pool of darkness. It also eased the floor's glide. It judged each
+round from native-host lookbook stills and motion captures on this Linux machine. The
+darkness is drawn as coverage kept by Wyman and McGuire's hashed alpha threshold
+(`engine::noise`, already in the engine). The sleeves swing as damped pendulums. No outside
+code, asset or data was used, and no art was made with a generative model.
+
+Ryan then had another AI agent review the branch (its transcript shows Google's Antigravity).
+Claude Code checked each point against the code and renders before acting. Much of the
+review's code detail was wrong, such as invented function names and wrong values. Its
+diagnoses held up: the torn hem cut rectangular holes, the grass hid the train, the line pass
+outlined each gap in the smoke, the robe had no waist or shoulder structure, the hood's peak
+stood up, and black cloth lost its rim light. The fixes are a scalloped hem, a grass contact
+that runs along the train, a `VEIL` tag class (thin for temporal AA, no lines), a mantle and a
+drooping cowl, a void material inside the hood, and an opt-in cloth sheen in the engine's
+character shading (later removed). A stronger waist pinch was tried and backed off: in motion
+the cloth clung to it like a body. No outside code or asset was used.
+
+Ryan then asked for the darkness to be licks of shadow, like flame, rising subtly off the
+hem and the train's edge; for cloth that reads as cloth; for a tighter silhouette; for a
+better sword; and for a ready pose. Claude Code proposed the approach and Ryan agreed to it
+before any code. Ryan asked for a few edge colours to be tried and the best picked: violet,
+cold blue, ember red and pale grey were rendered from the same shot, and violet was picked.
+The licks are hard-edged flame shapes cut from short ribbons along each root's recent path.
+The cloth is drawn as a spline surface through the simulated points, with creases that
+darken in their valleys. Cloth sheen replaces gloss on cloth. The hood and the mantle carry
+creases too, as a displacement of their fields. The sword rises into a raised guard beside
+the hood as a fight comes near. A guard straight in front of the face was considered and
+rejected: the player's camera, behind, would hide the blade behind the hood. Narrower
+shoulders were tried and reverted: the cloth fell inside the body it hangs round.
+
+Ryan judged the licks disconnected, the cloth's light still not cloth, and the figure parts
+stitched together, and asked to rethink all three and "turn everything up to 11". Claude Code
+proposed a restructure and Ryan agreed before code. The garment is now one simulated cloth of
+five sheets (hood, robe, mantle, two sleeves). The hood is the robe's top, held to the head
+and open at the face, so there are no rigid parts but the sword. The licks are the robe's own
+hem burning: the drawn surface runs on past the hem, and flame shapes are cut from it in the
+cloth's coordinates. The garment has its own coat shading in the climber's package; the engine
+sheen added in the second round is removed. A thread-direction highlight (Kajiya and Kay's
+model, read for principle) was tried and dropped: on black it read as wet latex. The coat now
+reads by a soft fibre sheen toward the form's edge, as velvet and wool do. No outside code or
+asset was used.
+
+Ryan liked the licks, but judged the hood warped, the silhouette worse and the material still
+not cloth. The hood was a small sphere whose opening was cut in whole cells, so it came out
+blocky and bulged behind. It is now a taller cowl with an overhanging brow, and its opening is
+a smooth oval cut in the shader. The mantle had become a wide shelf; it is now a cowl collar,
+snug at the shoulders and falling to points in front and behind. The sleeves open into bells
+and bend stiffly enough not to stay buckled after a swing. On the coat, both regular creases
+and fold-keyed light read as pinstripes. Its folds are now fewer, broader and uneven, the hood
+carries almost none, and the light on them is hard-edged shapes where a fold's side turns to
+the sun: a third tone, as anime paints black coats. The frame-rate test now bounds the robe
+point by point and each free sheet on average, because the sleeves' and mantle's free ends whip
+apart over a log at a sprint.
+
+Ryan then noted an indent at the chin and a lumpy join from neck to cowl, a hood opening
+too perfectly oval and a hood too like a sphere, and light that striped the cloth; he asked
+that the climber look menacing, almost eating the light, as if made of shadow cloth. The
+robe's collar had pinched in round a neck between the hood and the cowl; it is now wide, under
+the hood's foot, and the cowl's top tucks under it. The hood is deeper than it is wide, with
+flat sides, a peak drawn up to a point and a back that slopes straight down. Its opening is a
+pointed arch with a flatter foot and slightly uneven sides. The cloth no longer models light on
+its folds at all: it is near-black whatever lights it, darker still toward the edge of its form
+so it reads as a hole in the scene, with a faint violet at the very edge. Pure black was tried
+first; the face's void then vanished into the cloth, so the cloth sits just above it.
 
 ## Wrela Facet, a recursive opening and a console dashboard, 2026-10-14
 
@@ -1413,6 +1637,367 @@ Both are reimplemented in Wrela.
 
 **Not checked.** No frame-time measurement was made for this work; boards of thousands of items
 were not tried.
+## Networking for Wrela programs, 2026-10-14
+
+Ryan asked for Wrela's own networking, "absolutely bulletproof and as compressed and performant
+as possible", designed to deploy (servers on Fly.io machines, clients as static files on
+Cloudflare) but not deployed. He decided: WebTransport only; servers are Wrela programs run by a
+Rust host, as clients are run by the browser host; and one program can build as a client, a
+server, both, or a client with a server API. Claude Code (Opus 5.5) led the design through a
+council: two reviewers run as T3 Code child tasks, GPT-6.1-Sol and GPT-6-Astra (OpenAI, high
+effort), read the checkout and the brief, and two rounds of findings and rebuttals followed, for
+the first plan and again for the reworked one. They found that edits could be lost or applied
+twice across reconnects, that a room's state must come only from a deterministic reducer of
+logged inputs, that a resource limit can look like a program's own panic, that payload bytes
+need lifetimes and must not cross a build change, and that the outcome window must follow the
+client's acknowledgements. The plan changed for each.
+
+**A spike, not kept.** A small WebTransport echo server (the `wtransport` crate) and a page ran in
+headless Chrome 155: sessions with a short-lived self-signed certificate passed by its hash
+(`serverCertificateHashes`), length-prefixed frames on a bidirectional stream split across
+writes, datagrams (Chrome reported 1,211 bytes at most), and a second session after closing, from
+the page and from a dedicated worker. All worked. Safari 26.6 waits on Ryan by hand; Firefox
+isn't installed here.
+
+**`std::pack`.** A `@fieldwise` trait that packs values in bits with no names, for bytes that only
+the build that wrote them reads. Its integers are varints in 7-bit groups with a continuation
+bit, as in LEB128 (the [DWARF](https://dwarfstd.org/) format's encoding) and
+[Protocol Buffers' varints](https://protobuf.dev/programming-guides/encoding/#varints); its
+signed integers are first mapped by Protocol Buffers' ZigZag encoding (0, -1, 1, -2 as 0, 1, 2,
+3). Both are reimplemented in Wrela; the rule that a value has exactly one packing (shortest
+varints, one NaN, zero padding, nothing left over) is ours.
+
+**Roles and rooms.** A program that exports `serve` gets a server build beside its client
+build, each lowered from its own entries, with one pair id in both modules; `@client` and
+`@server` mark what only one role may run, checked per instance after monomorphization, so
+generics and closures are covered. The server host runs each room as its own instance with a
+memory cap (a limiter that fails with an error rather than refusing growth, so a cap is never
+mistaken for the program's own panic) and a deadline on every call (Wasmtime's epoch
+interruption). Measured on this M4 Air with 500 rooms: 85 KiB resident each, about 16 µs to
+start one and 2.6 µs a `serve`.
+
+**`std::net`, and what the model found.** A room's ordered log is pure Wrela, tested against a
+seeded model of peers, connections that drop, and a server that crashes and loses what it hadn't
+kept. Its first run found that identity wasn't idempotent: a peer whose first hello's answer was
+lost asked again, got a second id, and had its pending proposal committed once for each. Peers
+now name themselves with a token they choose, which the room gives one id however many hellos
+carry it. Designing the room's reducer also found a hole in the language (#221): `@deterministic`
+code wasn't checked through trait methods of generic parameters. The model runs 10,000 seeds in
+the gate (about 2 s), and checks that its runs did crash the server with unkept records, drop
+connections and refuse proposals.
+
+**Durable rooms.** The server host keeps each room's journal: records framed with their length
+and a CRC-32C (the Castagnoli polynomial, as iSCSI and many storage formats use it; [RFC
+3720](https://www.rfc-editor.org/rfc/rfc3720#appendix-B.4) gives its check value), flushed before
+anything a call sent goes out, compacted by writing a snapshot beside the journal and renaming it
+into place. Its tests found the host treating a failed journal write like a deadline (the call's
+events waited and ran later), a retry count that reset with each restart, and that an instance
+restarted to isolate a trapping message forgot which connection was which peer's, so a poisoned
+proposal couldn't be traced to its peer: proposals now say whose they are, and a peer sends them
+only after its welcome. Measured on this M4 Air's SSD (indicative, not a benchmark): a call of 400
+proposals, 256 committed, took about 5 ms with its one flush.
+
+**Rooms over the network.** `wrela-serve` runs a server build's rooms over WebTransport with the
+[`wtransport`](https://github.com/BiagioFesta/wtransport) crate (MIT or Apache-2.0, a Rust
+WebTransport implementation over [quinn](https://github.com/quinn-rs/quinn)'s QUIC) and
+[tokio](https://tokio.rs/) (MIT): a session at `/room/<name>?pair=<id>` opens one bidirectional
+stream of length-prefixed frames, and each room runs on a thread of its own. The sessions, the
+rooms running and the bytes every queue holds are bounded, so a connection too slow to keep up is
+closed and its peer comes back. A development certificate is self-signed and passed to the client
+by its hash, as Chrome's `serverCertificateHashes` takes it.
+
+**The browser's connections.** The browser host opens a program's connections with the
+[W3C WebTransport API](https://www.w3.org/TR/webtransport/) in its render worker and keeps
+messages' bytes as the native host does. A headless Chrome test runs a program's client build
+against its server build in `wrela-serve`: it joins a room another peer used first and sees its
+own proposal committed after that peer's. Its tests found that the host read a message's serial
+one word early, and that Chrome's `TextDecoder` refuses a view into the program's shared memory.
+
+**A council's review before merging.** On 2026-10-15 Ryan asked for a council to review the
+networking stack (#218–#226) before it merged: Claude led; Codex GPT-6.1-Sol and GPT-6-Astra
+reviewed the code read-only, then rebutted Claude's answers. They found what the tests had
+missed. Reading a long journal back could compact it before the end and drop the records after
+the snapshot. Events past a call's bytes waited for an event that might never come. A journal
+handle could outlive a failed rename. A connection could propose as any peer by naming its id. No
+client gave its pair id, though the spec said so. Rooms were never reclaimed, a full queue could
+drop a build's stop, and queues were bounded in messages but not bytes. Claude found one more: a
+peer far behind could be sent more of the log than its queue holds, again on every reconnect.
+Answering them, Claude found that a room rebuilt from its journal kept every outcome since its
+snapshot, as acknowledgements aren't kept: enough, after one large call, to make the snapshot
+larger than a host request. The fixes add a host mechanism, a connection's tag, so a room started
+again knows each connection's peer without trusting what a proposal says. Each fix has a
+regression test that fails without it.
+
+Once the stack had merged, Ryan asked for one more round, with an Opus 5.5 subagent as a third
+reviewer beside the two Codex models. All three found the same kind of gap: what a room does after
+a failure. An event past the host's limits during isolation was dropped with the events after it;
+a room at its limits waited for an event that might never come; a quarantined room kept its
+connections and every message they sent. Opus found that one connection could multiply a call's
+output by saying hello again, which made the room drop every peer in a loop, and that a few slow
+connections could exhaust the shared queue budget and get healthy ones closed. GPT-6.1-Sol and
+Opus both found that a build swapped away and back could leave two threads writing one journal.
+The fixes take every failed call one event at a time, close a quarantined room, hold a journal in
+one room host at a time, reserve each connection a share of the queue, and refuse a second hello.
+
+## A slower opening and a closer 4D eye, 2026-10-14
+
+Ryan asked for a steady turn, for the tesseract not to travel when the page loads, for the
+large tesseract and mark to fade out before the library fades in, and for a slower, more
+tasteful light along the mark. He then brought notes from another AI tool with five ideas
+for making the tesseract stranger, and asked Claude Code (Opus 5.5) to do two of them: a
+stronger 4D perspective, and a glint that travels through w. Claude Code judged the other
+three. A persistent mark on one cell would fight the shading by depth, which swaps colours
+as cells swap places. A solid cross-section is exact and cheap to trace, but dim behind the
+smoked glass. Turning in 4D under the cursor works against a steady turn. These are left
+for later. Claude Code made the changes and judged them in Chrome and in native captures.
+
+**Opening.** The tesseract and the mark come up out of black over 1.4 s. The light crosses
+the mark in 3.2 s (it was 1.3 s), with a wider ramp and a broader glint. Both hold, go down
+into black together, and the library comes up out of black with the tesseract already in
+its place. The library is up by 7.4 s. The tesseract no longer draws back. Its turn no
+longer eases each quarter turn: it turns at one steady rate.
+
+**A fix.** The mark's letters went black once the light had passed them, and the header's
+mark never showed. The glint squared a negative number with `pow`, which WGSL leaves
+undefined. It now squares by hand.
+
+**Perspective.** The notes found that the earlier entry's "three times" was wrong. Corners
+sit at ±0.5 in each coordinate, and the turn keeps them within 0.71 of w = 0, so with the
+eye at 2 the near nested cell was drawn 1.67 times the far one. The eye is now at 1.2: 2.4
+times nested, and from 0.63 to 2.43 times the base size across the turn. The spread fell
+from 1.4 to 0.94, so the farthest corner reaches where it did before.
+
+**Glint.** The slow glint on the struts no longer sweeps through 3D space. It is a band in
+w that passes from the near cell to the far one every 8 seconds. It lights pieces at one
+depth together, however far apart they are on screen, and slides along the struts that
+cross that depth.
+
+**Cost.** Native M4 GPU frame spans at 1280×800, three alternating pairs against the
+previous commit: opening 3.79 → 3.54 ms, room 5.35 → 5.71 ms. Both are inconclusive, with
+overlapping ranges. These are native samples, not Chrome frame rates.
+
+**Turn and highlights.** Ryan asked for a turn that is less predictable, with no seam, and
+for less light on struts that catch it just right. The turn now runs in four planes at
+rates that share no common period (x–w, y–z, y–w and a yaw), so it never repeats, and each
+corner keeps a steady speed (within 1% in a model of 800 s). The y–w turn carries corners
+almost to the 4D eye. There the perspective puts them near the middle, so the tesseract
+reaches no farther than 1.81 times the spread, which is now 0.895. Struts are drawn no
+thicker than 2.4 times their base radius. In native captures at 2560×1600, whole silver
+struts lit near white when the key light's hotspot and the w glint met. The hotspot fell
+from 1.3 to 0.5 and the glint from 0.8 to 0.55, and the worst frame's pixels above 0.75
+fell from 865 to 273, all on thin highlight lines. Native M4 GPU frame spans against the
+previous commit, three alternating pairs at 1280×800: opening 2.67 → 2.37 ms, room
+4.70 → 4.30 ms, both with separate ranges. The two builds turn differently, so the measured
+frames show different poses.
+
+**A cube.** Ryan asked for the tesseract to resolve into a perfect cube as the light finishes
+crossing the mark. Claude Code's first try blended each corner from the turning tesseract
+toward a cube in a straight line. Corners of two differently turned shapes cancel, so the
+shape shrank to a knot halfway. The second try eased the 4D turns forward to their next
+multiple of π, and Ryan saw them speed up into the cube. Now the turns through w (x–w and
+y–w) keep their own clock, measured from the pose where w is w and the cells nest one inside
+the other. From 2.5 s they only slow, smoothly, and come to rest at that pose at 3.7 s;
+they never run faster than the turn. Meanwhile each corner's 4D depth flattens: the far
+cell swells to the near cell's size, and they meet in one cube. The y–z turn, the yaw and
+the tilt go on, so the cube keeps turning in 3D. Once the cells coincide, only one cell's
+12 struts and 6 faces are traced. Back in the room, after the dark, it is a tesseract again.
+Native M4 GPU frame spans over 3.0–5.5 s against the commit before the cube, three
+alternating pairs at 1280×800: 2.21 → 1.98 ms.
+
+**Straight struts.** Ryan saw struts bent by the glass. The glass bent the view through each
+face along its folds, and mirrored struts in its rippled surface. It now bends neither: the
+view passes straight through, and struts are mirrored in the flat face. The ripples and the
+spectral fringe stay on the studio that the glass mirrors. Native M4 GPU frame spans
+against the previous commit, three alternating pairs at 1280×800, are inconclusive: cube
+beat 1.95 → 1.86 ms, room 4.43 → 4.37 ms.
+
+**A cube at rest.** Ryan asked for the cube to stop moving once resolved, and for the whole
+mark and the cube to hold for a moment before fading into the library. In the opening, the
+tesseract now runs on its own clock. From 2.5 s that clock only slows, smoothly, and it
+stands still at 3.7 s. The clock carries every turn, 3D as well as 4D, and the light and
+ripples on the glass. At rest the cells nest, and the cube is seen three-quarters on. The
+camera holds still through the title and takes up its lean in the dark. The mark and the
+cube hold, fully lit, from 3.7 s to 4.9 s; native captures across that hold are identical
+byte for byte. They are dark by 6.1 s, and the library is up by 7.7 s.
+
+Ryan saw the lighting shift as the cube came to rest. Just before the cells meet, each face
+is two panes and each strut two struts, and the tracer counted both. When the cells met and
+only one cell was traced, the second pane's reflection and darkening went in one frame:
+the cube's region fell from 0.0567 to 0.0459 in mean brightness. The cube is still traced
+once, but each face now counts as its two panes (the second too deep to mirror the struts,
+as before) and each strut's cover as two struts'. At the switch the region goes from 0.0567
+to 0.0575. The pixels that change between those two frames are no more than between the two
+before them, and they lie on strut outlines finishing their last move.
+
+**A cube inside a cube.** Ryan then asked whether the tesseract should come to rest as the
+cube inside the cube instead. Claude Code rendered both at rest side by side and recommended
+it. It is the image people know as a tesseract, and it keeps black chrome outside and
+silver inside. The opening ends on the same object the library shows, and the flattening,
+the one-cell tracing and the doubled count all go. The tesseract's clock still slows from
+2.5 s and stands still at 3.7 s, where the cells nest and it is seen three-quarters on.
+Native captures across the hold are identical byte for byte.
+
+**The mark's spacing.** Ryan asked whether Facet is distinctive enough. Claude Code rendered
+variants of the mark with the real renderer. Ryan chose the one where the A tucks in by
+0.07 em over the L's open side, which closes the hole between them, and turned down a
+shorter middle bar on the Ξ.
+
+## Facet's octagon rule and kerning, 2026-10-14
+
+Ryan asked what would make Facet Wrela's own. Claude Code (Opus 5.5) proposed an octagon rule
+and mocked it in the real renderer, and Ryan approved it with a kerning table.
+
+**Corners.** Facet's bowls were already cut at 45 degrees, its O is an octagon, and the
+favicon will be the tesseract's octagonal Petrie projection. Now every square outer corner of
+a letter or digit is cut at 45 degrees by the bowls' 0.10 em: 2, 4, 5, B, D, E, F, G, L and P
+(so R), and the mark's R and L. The mark's R is now one stroke round its top-left corner, so
+the mark has 21 runs (19 before). A square turn stays only where another stroke runs on
+through it, as where B's bowls meet its stem. Brackets keep their square corners, so they
+stay apart from parentheses. A regression checks the rule over the mark, the digits and the
+capitals.
+
+**Kerning.** Facet had no kerning. Claude Code first measured every pair from the strokes:
+the space between letters, averaged over 14 bands of the cap height and moved halfway toward
+the space between two stems. Open sides either dominated (every pair after a C at the cap)
+or, when their depth was limited, slopes did (AA closed by a tenth of an em). Both were
+dropped for a table of the classic open pairs: A with T, V, W and Y each way; L with T, V, W,
+Y and A; FA and PA; 0.04 to 0.07 em, in either case. Digits keep their widths. Native
+captures of game titles show the corners and the even spacing.
+
+## The tesseract's Petrie octagon as the console's icon, 2026-10-14
+
+Ryan asked whether the console could have a tesseract favicon and chose the Petrie octagon
+from Claude Code's mocks: the tesseract seen straight down its 4D axis of symmetry, an
+octagonal lattice of its 32 struts. Claude Code (Opus 5.5) worked out how to keep it legible
+when small and built it.
+
+**Sizes.** At 16 pixels the true projection is grey mush, because its inner ring is
+tan(22.5°) ≈ 0.41 of the outer and 32 struts meet in 13 pixels. Each size is therefore drawn
+for itself. The 180-pixel home-screen icon is the true projection, square and opaque. The
+32-pixel icon, which a Retina tab shows, opens its inner ring to 0.55 and puts every corner on
+a pixel's centre. The 16-pixel icon is the octagon and the star its long struts make. Each is
+silver on a black tile with rounded corners, so it shows in light and dark tab bars.
+
+**Build.** No image files: `console/icon.wrela` draws each size from `tesseract::edges()` as
+a constant, with each pixel covered as far as a stroke's edge crosses it, and writes it as a
+PNG with uncompressed (stored) deflate blocks: 0.6 KB, 2.1 KB and 32 KB. A `std::io::Shipped`
+constant ships them under `files/icons/`. std's `Shipped` gains `path(i)`, the path `fetch`
+already used. The platform package's new `icon` host request hands the page each icon's kind,
+size and path. The browser runtime accepts only a square PNG under `files/` and sets the
+page's `<link rel="icon">` or `apple-touch-icon` for it. The native host has no page and
+declines the request. Regressions read each PNG back strictly (CRCs, stored blocks,
+Adler-32) and check the true projection's two rings and the 32-pixel corners on pixel
+centres; Pillow also decodes the shipped files.
+
+## Leapling, and a console library that reads as a console, 2026-10-14
+
+Ryan asked for a basic 2D platformer in the spirit of Mario, "sick as fuck", deployed with the
+console, and for the console's landing page to read as a professional game console. Claude
+Code (Opus 5.5) designed and built both. Leapling borrows the genre's verbs (run, jump, stomp,
+coins, prize blocks, springs, a goal) and none of Nintendo's characters, worlds or designs. It
+has no story and no lore.
+
+**Game.** `games/leapling`: one course, Dusk Ridge, 156 cells by 15, written as text. The
+simulation steps at 120 Hz, so the feel doesn't depend on the frame rate. Walking is 7 cells
+a second and running 10.5. A held jump climbs about 3.5 cells and a tap about 1.7. Coyote time
+is 90 ms and jump buffering 120 ms. Springs throw the hero high whether or not jump is held.
+Walkers can be stomped and spikers can't; spikers turn at edges. The game also has prize
+blocks, one-way ledges, spikes, two checkpoints and an octagonal gate. One fragment shader
+draws everything as fields: a dusk sky with a setting sun and rays, three parallax ridges
+(the nearest of pines) rim-lit by the sun, fireflies, the cells, the creatures, the hero
+(lit by its own antenna), sparks, and a stroke font of the game's own for the logo and HUD.
+Sound is synthesized as it plays: square, pulse, triangle and noise tones with slides for
+each cue, and a four-chord loop (vi, IV, I, V in C) of bass, arpeggio and hi-hat. No art,
+sound or music comes from a file or a generative model. The cover is the title screen,
+rendered natively.
+
+**Session.** `games/leapling/session` adapts The Last Green's session program, keeping its
+journal, its backup before a new game, recovery of the save written on return, and its
+import checks. A shared `progress` module holds the save: courses cleared, coins, best time.
+
+**Console.** A first try filled the backdrop with the selected game's art. Ryan preferred the
+tesseract kept at the centre, with the light shifting subtly toward the game's palette. Now
+the console averages each cover's colourful, bright pixels into one colour. The studio's
+strips, back band and room take most of that colour, the key light little of it, and the
+low glow in the dark takes it too. The colour eases in with the library and from game to
+game. The opening stays white. Ryan then asked for the tesseract in the middle, larger and
+brighter, with a slight spotlight in the game's colour shining through it: a beam from high
+above that widens below it, and a soft glow behind it, both seen in the haze. He asked for
+the row to work as an album picker with the selection always at the left: the albums after
+it stand turned toward it and overlapping, and the one before it peeks in at the left edge,
+turned the other way, so the pointer can still reach it. A new selection is taken at once, even while the
+last one's session is still answering; that session is closed when it answers. The opening
+plays once per visit: within 30 minutes of the last one, the console waits at most half a
+second in the dark for the clock and the record, then starts in the dark just before the
+library.
+
+**Way back.** Ryan asked for a way back to the console from inside a game, and for the
+address to change so the browser's Back returns to it. The browser host now names the shown
+program in the page's address (`#leapling`). Back sends the program a request to return,
+which the platform's return link treats as its F10 shortcut, so the game saves first; a
+program that does not return within 10 seconds is closed. A game that returns by itself takes
+its address entry with it. In Leapling, Escape pauses play, and the pause screen and the title
+show Escape as the way back to the console.
+
+**Checks.** Real Chrome (headless, hardware WebGPU), driven over the DevTools protocol through
+a local preview, ran the whole loop: the opening, the library, New, the game handed over
+inside the console, playing, F10 back, and the library offering Continue. Regressions cover
+the jump heights, coyote time and buffering, stomping and being hurt, prize blocks, springs,
+pits and checkpoints, type layout, the save, imports, and the visit rule.
+
+## wrela.dev, deployed from main, 2026-10-15
+
+Ryan asked for the live site to be made real: CI deploys on each merge to `main`, the games move
+to `games/`, the console is at `wrela.dev` with each game on its own origin
+(`<game>.wrela.dev`, so its saves are its own), and the download is smaller. A plan council
+(Claude leading; GPT-6.1-Sol and GPT-6-Astra reviewing, two rounds) shaped the plan; its
+reviewers asked for the release-retention rules `tools/deploy.py` keeps. Claude measured The
+Last Green's live download (game.wasm 5.11 MB at Cloudflare's on-the-fly brotli, which matches
+quality 3; 4.79 MB of WGSL sent uncompressed), tested on Cloudflare that static assets can't serve
+precompressed files and that serving WGSL as `text/plain` lets Cloudflare compress it, and kept
+requests free of Worker code. Binaryen shrinks the WASM (see Tools and models).
+
+The site is three Workers serving static assets, deployed from GitHub Actions with Wrangler.
+The live site is the archive: a deploy fetches each release it keeps from the Workers that
+serve it, checking each file's SHA-256, and fails rather than drop one. References: Cloudflare's
+[Workers static assets](https://developers.cloudflare.com/workers/static-assets/),
+[custom domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/),
+[Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/) and
+[GitHub Actions deployment](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/),
+and GitHub's [environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment).
+These are implementation references; nothing was copied.
+
+Ryan then asked for the console's opening to play on every visit to `wrela.dev`, but not when
+a tab is reloaded. The browser host's environment now says whether the page load reloaded the
+tab (the [Navigation Timing](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceNavigationTiming/type)
+type), and the console's 30-minute rule and its stored time are gone.
+
+Ryan found the raw covers wasteful and the album row hard to read. Covers now ship as WebP
+(quality 90: 29 and 107 KB, from 2 MB of pixels each), decoded by the browser through a new
+host mechanism (`image/decode`) at the size the catalog promises. Asked for a direction, Ryan
+proposed cubes: each game is now a cube in the tesseract's room, its cover on its sides,
+turning slowly; the selection tumbles forward and widens into its whole cover. Claude judged
+the look from headless Chrome captures at rest, mid-tumble and settled. Ryan also asked for the
+games to load ahead of time without slowing the console: once the library has settled, the
+console has the browser fetch each game's pages, runtime, WASM and shaders at low priority,
+the selection first, and stops when a game opens. The console and the games are one site, so
+the browser's cache serves them to the game.
+Ryan then asked for tighter type, the selection always at the left, softer hover, more weight
+on the selection and a tesseract that sits lower and farther off. The UI's fonts gained
+optional tracking and weight (stroke added through the distance field); the console sets
+Manrope a little closer and heavier, with 15-pixel button labels. Hover and focus ease in over
+a quarter second. Resting cubes stand still and dimmer; the selection stands in a pool of its
+cover's light and makes a half turn as it arrives. The tesseract stands twice as deep at the
+same size on screen, lower and dimmer in the library. The row then became a carousel, as Ryan
+asked that the block left behind take the chosen one's place rather than leave the screen;
+the tesseract went deeper again, and the title was laid out for the still camera so it no
+longer rises and falls with the camera's drift.
+On a switch the title and state now ease out and the new ones in; the blocks' edges are a steady
+silver line a pixel wide, their outline smoothed, brightening, eased, only under the pointer
+(it had followed the keyboard focus from block to block); and the tesseract turns 30% slower.
+The blocks' edges then moved out of the faces' shading into lines of their own on the screen,
+one CSS pixel wide: drawn inside each face, an edge took its width from the face's angle, and
+the top face, seen almost edge on, made its back edge flicker.
 
 ## Keeping this record
 

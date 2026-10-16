@@ -1,0 +1,317 @@
+// The console's icon: the tesseract seen straight down its 4D axis of symmetry (its Petrie
+// projection), an octagonal lattice of its 32 struts in silver on a black tile. Each size is
+// drawn for itself. From 64 pixels up it is the projection as it is. At 32 its inner ring
+// opens out, so the middle doesn't knot, and every corner sits on a pixel. At 16, where 32
+// struts can't fit, it is the octagon and the star its long struts make. The build computes
+// them and ships them as PNGs.
+use std::io::{Shipped, ship}
+use tesseract::edges
+
+pub const SIZES: [u32; 3] = [16, 32, 180]
+
+@fuel(2 ** 36)
+pub const ICONS: Shipped = ship("icons", files())
+
+// The greys of the tile and of the struts: the outer ring brightest, the inner star dimmest.
+const TILE: f32 = 11.0
+const OUTER: f32 = 240.0
+const SPOKE: f32 = 205.0
+const INNER: f32 = 165.0
+// The inner ring's radius against the outer's in the true projection: tan(22.5 degrees).
+const TRUE_INNER: f32 = 0.41421357
+
+fn files() -> Vec<(String, Vec<u8>)> {
+    var out: Vec<(String, Vec<u8>)> = Vec::new()
+    for size in SIZES { out.push((f"icon-{size}.png", image(size))) }
+    out
+}
+
+// The icon `size` pixels on a side, as a PNG. Below 180 it is a rounded tile on a transparent
+// page; at 180, a home screen's, it is square and opaque, as the screen rounds it.
+pub fn image(size: u32) -> Vec<u8> {
+    if size <= 16 { return png(size, 2, paint(size, badge(size), rounded: true)) }
+    if size <= 32 {
+        let inks = petrie(size, inner: 0.55, widths: vec3(0.032, 0.04, 0.07), snap: true)
+        return png(size, 2, paint(size, inks, rounded: true))
+    }
+    let inks = petrie(size, inner: TRUE_INNER, widths: vec3(0.015, 0.02, 0.035), snap: false)
+    png(size, 1, paint(size, inks, rounded: false))
+}
+
+// ---- drawing ---------------------------------------------------------------------------------
+
+// A straight stroke of grey `grey`, `half` pixels to either side of `a` to `b`.
+struct Ink: Copy {
+    a: vec2,
+    b: vec2,
+    half: f32,
+    grey: f32,
+}
+
+// Where corner `i` of the tesseract lands in the Petrie projection: each of its four axes lies
+// 45 degrees from the last, and the corner is the sum of those directions, each signed.
+fn petrie_corner(i: u32) -> vec2 {
+    var p = vec2(0.0)
+    for k in 0..4 {
+        let angle = f32(k) * 0.7853982
+        let along = vec2(cos(angle), sin(angle))
+        p += if ((i >> k) & 1) == 1 { along } else { -along }
+    }
+    p
+}
+
+// The 32 struts of the projection on a tile `size` pixels wide: the outer ring's corners
+// 0.42 of the size from the middle, the inner ring's `inner` times as far. `widths` are the
+// inner star's, the spokes' and the outer ring's, against the size. With `snap`, each corner
+// sits on a pixel's centre.
+fn petrie(size: u32, inner: f32, widths: vec3, snap: bool) -> Vec<Ink> {
+    let s = f32(size)
+    var reach = 0.0
+    for i in 0..16 { reach = max(reach, length(petrie_corner(i))) }
+    var at: Vec<vec2> = Vec::new()
+    var outer: Vec<bool> = Vec::new()
+    for i in 0..16 {
+        let p = petrie_corner(i)
+        let ring = length(p) / reach
+        let on_outer = ring > 0.9
+        let k = if on_outer { 1.0 } else { inner / ring }
+        var q = vec2(s * 0.5) + vec2(p.x, -p.y) / reach * k * s * 0.42
+        if snap { q = floor(q) + vec2(0.5) }
+        at.push(q)
+        outer.push(on_outer)
+    }
+    let greys = vec3(INNER, SPOKE, OUTER)
+    var inks: Vec<Ink> = Vec::new()
+    // The inner star first, then the spokes, then the outer ring over them.
+    for kind in 0..3 {
+        for e in edges() {
+            let (i, j) = (u32(e.x), u32(e.y))
+            let on = (if outer[i] { 1 } else { 0 }) + (if outer[j] { 1 } else { 0 })
+            if on != kind { continue }
+            inks.push(Ink { a: at[i], b: at[j], half: widths[kind] * s * 0.5, grey: greys[kind] })
+        }
+    }
+    inks
+}
+
+// The smallest icon: the projection's octagon, and the star its long struts make.
+fn badge(size: u32) -> Vec<Ink> {
+    let s = f32(size)
+    var at: Vec<vec2> = Vec::new()
+    for k in 0..8 {
+        let angle = 0.3926991 + f32(k) * 0.7853982
+        at.push(vec2(s * 0.5) + vec2(cos(angle), -sin(angle)) * s * 0.40)
+    }
+    var inks: Vec<Ink> = Vec::new()
+    for k in 0..8 {
+        inks.push(Ink { a: at[k], b: at[(k + 3) % 8], half: s * 0.0275, grey: SPOKE })
+    }
+    for k in 0..8 {
+        inks.push(Ink { a: at[k], b: at[(k + 1) % 8], half: s * 0.0425, grey: OUTER })
+    }
+    inks
+}
+
+fn segment(p: vec2, a: vec2, b: vec2) -> f32 {
+    let ab = b - a
+    let t = saturate(dot(p - a, ab) / max(dot(ab, ab), 0.000001))
+    length(p - a - ab * t)
+}
+
+// The struts drawn in order over the tile, each pixel covered as far as a stroke's edge
+// crosses it: a grey for each pixel, and with `rounded`, an alpha for the tile's rounded
+// corners after it.
+fn paint(size: u32, inks: [Ink], rounded: bool) -> Vec<u8> {
+    let s = f32(size)
+    var out: Vec<u8> = Vec::new()
+    for y in 0..size {
+        for x in 0..size {
+            let p = vec2(f32(x) + 0.5, f32(y) + 0.5)
+            var grey = TILE
+            for ink in inks {
+                grey = mix(grey, ink.grey, saturate(0.5 - (segment(p, ink.a, ink.b) - ink.half)))
+            }
+            out.push(u8(round(grey)))
+            if rounded {
+                let r = s * 0.22
+                let q = abs(p - vec2(s * 0.5)) - vec2(s * 0.5 - r)
+                let d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r
+                out.push(u8(round(saturate(0.5 - d) * 255.0)))
+            }
+        }
+    }
+    out
+}
+
+// ---- PNG -------------------------------------------------------------------------------------
+
+// A PNG of a square grey image, `channels` 1 (grey) or 2 (grey and alpha), 8 bits each. Its
+// data is stored uncompressed (deflate's stored blocks), which every reader accepts.
+fn png(size: u32, channels: u32, pixels: [u8]) -> Vec<u8> {
+    let table = crc_table()
+    var out: Vec<u8> = Vec::new()
+    for b in [137, 80, 78, 71, 13, 10, 26, 10] { out.push(u8(b)) }
+    var header: Vec<u8> = Vec::new()
+    word(mut header, size)
+    word(mut header, size)
+    for b in [8, if channels == 2 { 4 } else { 0 }, 0, 0, 0] { header.push(u8(b)) }
+    chunk(mut out, "IHDR", header, table)
+    // Each row starts with its filter: none.
+    var rows: Vec<u8> = Vec::new()
+    let stride = size * channels
+    for y in 0..size {
+        rows.push(u8(0))
+        for i in 0..stride { rows.push(pixels[y * stride + i]) }
+    }
+    var z: Vec<u8> = Vec::new()
+    z.push(u8(0x78))
+    z.push(u8(0x01))
+    var at = 0
+    while at < rows.len() {
+        let n = min(rows.len() - at, 65535)
+        z.push(u8(if at + n == rows.len() { 1 } else { 0 }))
+        z.push(u8(n & 255))
+        z.push(u8(n >> 8))
+        z.push(u8((n ^ 0xffff) & 255))
+        z.push(u8(((n ^ 0xffff) >> 8) & 255))
+        for i in 0..n { z.push(rows[at + i]) }
+        at += n
+    }
+    word(mut z, adler(rows))
+    chunk(mut out, "IDAT", z, table)
+    chunk(mut out, "IEND", [u8(0); 0], table)
+    out
+}
+
+fn word(out: mut Vec<u8>, v: u32) {
+    for shift in [24, 16, 8, 0] { out.push(u8((v >> shift) & 255)) }
+}
+
+fn chunk(out: mut Vec<u8>, kind: str, data: [u8], table: [u32]) {
+    word(mut out, data.len())
+    var crc = 0xffffffff
+    for i in 0..4 {
+        out.push(kind.byte(i))
+        crc = table[(crc ^ u32(kind.byte(i))) & 255] ^ (crc >> 8)
+    }
+    for b in data {
+        out.push(b)
+        crc = table[(crc ^ u32(b)) & 255] ^ (crc >> 8)
+    }
+    word(mut out, crc ^ 0xffffffff)
+}
+
+fn crc_table() -> Vec<u32> {
+    var table: Vec<u32> = Vec::new()
+    for n in 0..256 {
+        var c = n
+        for _ in 0..8 { c = if (c & 1) == 1 { 0xedb88320 ^ (c >> 1) } else { c >> 1 } }
+        table.push(c)
+    }
+    table
+}
+
+fn adler(bytes: [u8]) -> u32 {
+    var a = 1
+    var b = 0
+    for x in bytes {
+        a = (a + u32(x)) % 65521
+        b = (b + a) % 65521
+    }
+    (b << 16) | a
+}
+
+// ---- tests -----------------------------------------------------------------------------------
+
+// The image a PNG of `png` holds, read back strictly: the signature, each chunk's CRC, the
+// header, the stored blocks and the Adler-32 sum must all hold. Its rows, filters removed.
+fn read_back(png: [u8], size: u32, channels: u32) -> Vec<u8> {
+    let table = crc_table()
+    let be = |at: u32| -> u32 {
+        (u32(png[at]) << 24) | (u32(png[at + 1]) << 16) | (u32(png[at + 2]) << 8) | u32(png[at + 3])
+    }
+    let signature = [137, 80, 78, 71, 13, 10, 26, 10]
+    for i in 0..8 { assert(u32(png[i]) == signature[i]) }
+    var at = 8
+    var data: Vec<u8> = Vec::new()
+    var kinds: Vec<u32> = Vec::new()
+    while at < png.len() {
+        let n = be(at)
+        var crc = 0xffffffff
+        for i in 0..n + 4 { crc = table[(crc ^ u32(png[at + 4 + i])) & 255] ^ (crc >> 8) }
+        assert((crc ^ 0xffffffff) == be(at + 8 + n), "every chunk's CRC holds")
+        let kind = be(at + 4)
+        kinds.push(kind)
+        if kind == 0x49484452 {
+            assert(be(at + 8) == size && be(at + 12) == size && png[at + 16] == 8)
+            assert(u32(png[at + 17]) == (if channels == 2 { 4 } else { 0 }))
+        }
+        if kind == 0x49444154 { for i in 0..n { data.push(png[at + 8 + i]) } }
+        at += n + 12
+    }
+    assert(kinds.len() == 3 && kinds[2] == 0x49454e44, "IHDR, IDAT and IEND")
+    assert(data[0] == 0x78 && (u32(data[0]) * 256 + u32(data[1])) % 31 == 0)
+    var rows: Vec<u8> = Vec::new()
+    var k = 2
+    var last = false
+    while !last {
+        last = (data[k] & 1) == 1
+        let n = u32(data[k + 1]) | (u32(data[k + 2]) << 8)
+        assert((n ^ (u32(data[k + 3]) | (u32(data[k + 4]) << 8))) == 0xffff)
+        for i in 0..n { rows.push(data[k + 5 + i]) }
+        k += 5 + n
+    }
+    assert(
+        ((u32(data[k]) << 24) |
+            (u32(data[k + 1]) << 16) |
+            (u32(data[k + 2]) << 8) |
+            u32(data[k + 3])) ==
+            adler(rows),
+    )
+    var pixels: Vec<u8> = Vec::new()
+    let stride = size * channels
+    for y in 0..size {
+        assert(rows[y * (stride + 1)] == 0, "no filter")
+        for i in 0..stride { pixels.push(rows[y * (stride + 1) + 1 + i]) }
+    }
+    pixels
+}
+
+@test
+fn each_icon_is_a_valid_png_of_its_drawing() {
+    for size in SIZES {
+        let channels = if size < 180 { 2 } else { 1 }
+        let drawn = image(size)
+        let pixels = read_back(drawn, size, channels)
+        assert(pixels.len() == size * size * channels)
+        // Small tiles are rounded on a transparent page; the home screen's is opaque.
+        if channels == 2 {
+            assert(pixels[1] == 0 && pixels[(size * size / 2 + size / 2) * 2 + 1] == 255)
+        }
+    }
+}
+
+@test
+fn the_large_icon_is_the_true_projection_and_the_32_sits_on_pixels() {
+    // The true projection's inner ring is tan(22.5 degrees) of its outer.
+    var rings: Vec<f32> = Vec::new()
+    for i in 0..16 { rings.push(length(petrie_corner(i))) }
+    var lo = 100.0
+    var hi = 0.0
+    for r in rings {
+        lo = min(lo, r)
+        hi = max(hi, r)
+    }
+    assert(abs(lo / hi - TRUE_INNER) < 0.0001)
+    for r in rings { assert(abs(r - lo) < 0.0001 || abs(r - hi) < 0.0001, "two rings") }
+    // Its outer ring is drawn in its brightest grey, through a corner of it.
+    let size = 180
+    let pixels = read_back(image(size), size, 1)
+    let top = petrie(size, inner: TRUE_INNER, widths: vec3(0.015, 0.02, 0.035), snap: false)
+    let corner = top[top.len() - 1].a
+    assert(u32(pixels[u32(corner.y) * size + u32(corner.x)]) > 220)
+    // At 32, every strut starts and ends on a pixel's centre.
+    for ink in petrie(32, inner: 0.55, widths: vec3(0.032, 0.04, 0.07), snap: true) {
+        assert(fract(ink.a.x) == 0.5 && fract(ink.a.y) == 0.5 && fract(ink.b.y) == 0.5)
+    }
+}

@@ -31,6 +31,8 @@ mod handover;
 #[cfg(feature = "gpu")]
 pub mod image;
 mod program;
+pub mod rooms;
+pub mod server;
 mod shared;
 mod trace;
 
@@ -272,7 +274,11 @@ fn compile_build_with_shaders(dir: &Path, fuel: Option<u64>, shaders: bool) -> R
     let (manifest, wasm, shaders) = read_build(dir, shaders)?;
     let wasm_hash = wrela_abi::ticks::wasm_hash(&wasm);
     let beside = fuel.is_none().then_some(dir);
-    let compiled = program::compile_cached(&wasm, wasm_hash, beside, fuel)?;
+    // An optimized build keeps its trap locations beside its WASM; without them, a trap gives
+    // its code offset.
+    let sidecar = Path::new(&manifest.wasm).with_extension(wrela_abi::lines::SIDECAR);
+    let sidecar = std::fs::read(dir.join(sidecar)).ok();
+    let compiled = program::compile_cached(&wasm, wasm_hash, beside, fuel, sidecar.as_deref())?;
     Ok(Build { manifest, shaders, wasm_hash, compiled })
 }
 
@@ -738,8 +744,8 @@ impl Host {
     ) -> Result<RunResult> {
         self.p().executor().set_screen(width, height)?;
         for (i, &time) in times.iter().enumerate() {
-            for e in wrela_abi::input::events_at(script, i as u32) {
-                self.p().push_input(e);
+            for s in wrela_abi::input::events_at(script, i as u32) {
+                self.p().push_scripted(s);
             }
             self.p().executor().set_frame(i);
             self.p().frame(time, width, height)?;
@@ -773,6 +779,17 @@ impl Host {
     /// Queues an input event, which the program reads from its next call on.
     pub fn push_input(&mut self, e: Event) {
         self.p().push_input(e);
+    }
+
+    /// Queues a script's event (a message with its bytes), which the program reads from its
+    /// next call on.
+    pub fn push_scripted(&mut self, s: &Scripted) {
+        self.p().push_scripted(s);
+    }
+
+    /// Queues a message of `bytes` from connection `conn` (language.md §12).
+    pub fn push_message(&mut self, conn: u32, bytes: Vec<u8>) {
+        self.p().push_message(conn, bytes);
     }
 
     /// Calls `frame(time, width, height)` once, and ends the frame: for a caller that drives
@@ -1039,6 +1056,16 @@ impl CpuHost {
     /// Queues an input event, which the program reads from its next call on.
     pub fn push_input(&mut self, e: Event) {
         self.program.push_input(e);
+    }
+
+    /// Queues a script's event (a message with its bytes).
+    pub fn push_scripted(&mut self, s: &Scripted) {
+        self.program.push_scripted(s);
+    }
+
+    /// Queues a message of `bytes` from connection `conn` (language.md §12).
+    pub fn push_message(&mut self, conn: u32, bytes: Vec<u8>) {
+        self.program.push_message(conn, bytes);
     }
 
     /// The batches submitted since the last call (or load).

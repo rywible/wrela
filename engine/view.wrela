@@ -261,17 +261,32 @@ pub const CREATURE: f32 = 320.0
 pub const ROCK: f32 = 384.0
 pub const FLOWER: f32 = 448.0
 pub const WATER: f32 = 512.0
+/// A veil: drifting, see-through matter (smoke, mist) drawn as coverage kept a share of the time,
+/// which temporal AA settles. Thin, so the AA's history keeps it; no line is drawn round it.
+pub const VEIL: f32 = 576.0
 
-/// A tag's class (0 the sky, 1 the ground, ... 7 flowers, 8 water).
+/// A tag's class (0 the sky, 1 the ground, ... 7 flowers, 8 water, 9 veils).
 pub fn class_of(tag: f32) -> u32 {
     u32(max(tag, 0.0) / 64.0 + 0.001)
 }
 
-/// The classes of thin geometry, which covers part of a pixel (a bit each: grass, leaves and
-/// flowers).
-const THIN: u32 = (1 << class_of(GRASS)) | (1 << class_of(LEAVES)) | (1 << class_of(FLOWER))
+/// The classes of thin geometry, which covers part of a pixel (a bit each: grass, leaves,
+/// flowers and veils).
+const THIN: u32 = (1 << class_of(GRASS)) |
+    (1 << class_of(LEAVES)) |
+    (1 << class_of(FLOWER)) |
+    (1 << class_of(VEIL))
 
 /// Whether a class (`class_of`) is thin geometry (`THIN`).
 pub fn thin(class: u32) -> bool {
     ((THIN >> class) & 1) != 0
+}
+
+/// A veil is a class of its own, and thin: temporal AA keeps its partial coverage.
+@test
+fn a_veil_is_thin_and_its_own_class() {
+    assert(class_of(VEIL) == 9, "a veil shares another class")
+    assert(class_of(VEIL + 63.0) == 9, "a veil's last tag leaves its class")
+    assert(thin(class_of(VEIL)), "a veil isn't thin")
+    assert(!thin(class_of(CREATURE)), "a creature is thin")
 }

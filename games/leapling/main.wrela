@@ -1,0 +1,508 @@
+// Leapling: a side-scrolling platformer for the console. Run, jump, stomp the walkers, keep off
+// the spikers, take the coins and reach the gate.
+//
+// Keys: the arrows or A and D to move, Space, W, Z or the up arrow to jump, Shift or X to run,
+// Enter to start and to pause. A controller: the stick or pad, A to jump, X to run, Start.
+use engine::plant::full
+use letters::{Typeset, measure, typeset}
+use level::ROWS
+use look::{View, shade}
+use platform::presentation::Link
+use progress::{Progress, clock_text}
+use sim::{Controls, Cue, Phase, STEP, TALL, World, step, world}
+use std::audio::RingWriter
+use std::gpu::{GpuBuffer, begin_screen_pass, buffer_of, draw, write}
+use std::input::{Input, Key, PadButton}
+use std::reload::kept
+use std::serialize::save
+
+const SAVE: Text = "leapling/save"
+// How many cells high the view is.
+const VIEW_ROWS: f32 = 10.5
+const THINGS: u32 = 96
+const SPARKS: u32 = 160
+const BUMPS: u32 = 8
+const RUNS: u32 = 16
+const SEGMENTS: u32 = 900
+
+enum Mode: Copy + Eq {
+    Title,
+    Play,
+    Paused,
+    Results,
+}
+
+pub struct Game {
+    console: Link,
+    input: Input,
+    pads: u32,
+    mode: Mode,
+    since: f32,
+    world: World,
+    progress: Progress,
+    last: Option<f32>,
+    owed: f32,
+    camera: vec2,
+    ahead: f32,
+    clock: f32,
+    cells: GpuBuffer<vec4>,
+    things: GpuBuffer<vec4>,
+    sparks: GpuBuffer<vec4>,
+    bumps: GpuBuffer<vec4>,
+    runs: GpuBuffer<vec4>,
+    segments: GpuBuffer<vec4>,
+    text: Typeset,
+    hops: u32,
+    sound: RingWriter<u32>,
+}
+
+fn kept_progress() -> Progress {
+    match progress::read(kept()) {
+        Some(p) => p,
+        None => progress::fresh(),
+    }
+}
+
+pub fn init() -> Game {
+    let w = world(0)
+    let start = w.course.start
+    Game {
+        console: Link::new(),
+        input: Input::new(),
+        pads: 0,
+        mode: Mode::Title,
+        since: 0.0,
+        world: w,
+        progress: kept_progress(),
+        last: None,
+        owed: 0.0,
+        camera: vec2(start.x + 5.0, 5.25),
+        ahead: 1.0,
+        clock: 0.0,
+        cells: buffer_of(Vec::filled(156 * ROWS / 4 + 1, vec4(0.0))),
+        things: buffer_of(Vec::filled(THINGS * 2, vec4(0.0))),
+        sparks: buffer_of(Vec::filled(SPARKS * 2, vec4(0.0))),
+        bumps: buffer_of(Vec::filled(BUMPS, vec4(0.0))),
+        runs: buffer_of(Vec::filled(RUNS * 2, vec4(0.0))),
+        segments: buffer_of(Vec::filled(SEGMENTS, vec4(0.0))),
+        text: typeset(),
+        hops: 0,
+        sound: sound::start(),
+    }
+}
+
+// ---- input -------------------------------------------------------------------------------------
+
+// The controller buttons held, as bits: jump, run, start, left, right.
+fn pad_bits(i: Input) -> u32 {
+    var bits = 0
+    for pad in i.pads {
+        let stick = pad.left().x
+        if pad.held(PadButton::South) || pad.held(PadButton::East) { bits = bits | 1 }
+        if pad.held(PadButton::West) || pad.held(PadButton::North) { bits = bits | 2 }
+        if pad.held(PadButton::Start) { bits = bits | 4 }
+        if pad.held(PadButton::Left) || stick < -0.4 { bits = bits | 8 }
+        if pad.held(PadButton::Right) || stick > 0.4 { bits = bits | 16 }
+    }
+    bits
+}
+
+fn controls(g: mut Game) -> Controls {
+    borrow i = g.input
+    let bits = pad_bits(i)
+    let fresh = bits & !g.pads
+    g.pads = bits
+    let left = i.held(Key::Left) || i.held(Key::A) || (bits & 8) != 0
+    let right = i.held(Key::Right) || i.held(Key::D) || (bits & 16) != 0
+    let jump = i.held(Key::Space) ||
+        i.held(Key::Up) ||
+        i.held(Key::W) ||
+        i.held(Key::Z) ||
+        (bits & 1) != 0
+    let jumped = i.pressed(Key::Space) ||
+        i.pressed(Key::Up) ||
+        i.pressed(Key::W) ||
+        i.pressed(Key::Z) ||
+        (fresh & 1) != 0
+    let run = i.held(Key::ShiftLeft) || i.held(Key::ShiftRight) || i.held(Key::X) || (bits & 2) != 0
+    let dir = (if right { 1.0 } else { 0.0 }) - (if left { 1.0 } else { 0.0 })
+    Controls { dir, jump, jumped, run }
+}
+
+fn start_pressed(g: Game) -> bool {
+    g.input.pressed(Key::Enter) || (pad_bits(g.input) & 4) != 0 && (g.pads & 4) == 0
+}
+
+// ---- the frame ---------------------------------------------------------------------------------
+
+pub fn frame(g: mut Game, time: f32, width: u32, height: u32) {
+    let dt = match g.last {
+        Some(before) => clamp(time - before, 0.0, 0.1),
+        None => 0.0,
+    }
+    g.last = Some(time)
+    g.clock += dt
+    g.since += dt
+    g.input.read()
+    g.console.input(g.input)
+    let start = start_pressed(g)
+    // Escape pauses play; from the title, the pause or the results it goes back to the console.
+    let escape = g.input.pressed(Key::Escape)
+    if escape && g.mode != Mode::Play { g.console.returning = true }
+    let pad_start = (pad_bits(g.input) & 4) != 0
+    var c = controls(mut g)
+    if !pad_start { g.pads = g.pads & !4 }
+    match g.mode {
+        Mode::Title => {
+            if start || c.jumped {
+                // A fresh run, from where the hero stands.
+                g.world = world(0)
+                g.mode = Mode::Play
+                g.since = 0.0
+                c.jumped = false
+            } else {
+                // On the title, the hero hops where it stands.
+                let beat = fract(g.since / 1.4)
+                let due = u32(g.since / 1.4) + 1 > g.hops
+                if due { g.hops += 1 }
+                g.owed += dt
+                var first = true
+                while g.owed >= STEP {
+                    let hop = Controls {
+                        dir: 0.0,
+                        jump: beat < 0.25,
+                        jumped: due && first,
+                        run: false,
+                    }
+                    sim::pose(mut g.world, hop)
+                    first = false
+                    g.owed -= STEP
+                }
+            }
+        },
+        Mode::Paused => { if start { g.mode = Mode::Play } },
+        Mode::Results => {
+            if g.since > 1.0 && (start || c.jumped) {
+                g.world = world(0)
+                g.mode = Mode::Play
+                g.since = 0.0
+                c.jumped = false
+            }
+        },
+        Mode::Play => {
+            if (start || escape) && g.world.phase == Phase::Playing { g.mode = Mode::Paused }
+        },
+    }
+    if g.mode == Mode::Play {
+        g.owed += dt
+        var first = true
+        while g.owed >= STEP {
+            var now = c
+            now.jumped = c.jumped && first
+            step(mut g.world, now)
+            first = false
+            g.owed -= STEP
+        }
+        if g.world.phase == Phase::Clear && g.world.since > 3.6 { finish(mut g) }
+    }
+    for c in g.world.cues {
+        let code = match c {
+            Cue::Jump => sound::JUMP,
+            Cue::Land => sound::LAND,
+            Cue::Coin => sound::COIN,
+            Cue::Stomp => sound::STOMP,
+            Cue::Bump => sound::BUMP,
+            Cue::Spring => sound::SPRING,
+            Cue::Checkpoint => sound::CHECKPOINT,
+            Cue::Hurt => sound::HURT,
+            Cue::Clear => sound::CLEAR,
+        }
+        let _ = g.sound.push(code)
+    }
+    g.world.cues.clear()
+    follow(mut g, dt, width, height)
+    present(mut g, width, height)
+    g.console.presented()
+    if g.console.returning {
+        let bytes = save(g.progress)
+        g.console.save_and_return(SAVE, bytes)
+    }
+}
+
+fn finish(g: mut Game) {
+    let w = g.world.clone()
+    g.progress.cleared = max(g.progress.cleared, w.number + 1)
+    g.progress.coins += w.coins
+    if g.progress.best == 0.0 || w.clock < g.progress.best { g.progress.best = w.clock }
+    g.mode = Mode::Results
+    g.since = 0.0
+}
+
+// The view follows the hero, a little ahead of where it faces.
+fn follow(g: mut Game, dt: f32, width: u32, height: u32) {
+    let h = g.world.hero
+    let half = vec2(f32(width) / f32(height) * VIEW_ROWS * 0.5, VIEW_ROWS * 0.5)
+    g.ahead += (h.facing - g.ahead) * (1.0 - exp(-dt * 2.5))
+    let course = f32(g.world.course.width)
+    var target = vec2(h.at.x + g.ahead * 2.2, h.at.y + 2.0)
+    target.x = clamp(target.x, half.x, max(course - half.x, half.x))
+    target.y = clamp(target.y, half.y, max(f32(ROWS) - half.y, half.y))
+    if g.mode == Mode::Title { target.x = max(h.at.x + 3.0, half.x) }
+    g.camera += (target - g.camera) * (1.0 - exp(-dt * 6.0))
+}
+
+// ---- drawing -----------------------------------------------------------------------------------
+
+fn present(g: mut Game, width: u32, height: u32) {
+    let w = g.world.clone()
+    let screen = vec2(f32(width), f32(height))
+    let scale = screen.y / VIEW_ROWS
+    // The course's cells, when they change.
+    if w.dirty {
+        var packed: Vec<vec4> = Vec::new()
+        var i = 0
+        while i < w.course.cells.len() {
+            var v = vec4(0.0)
+            for k in 0..4 {
+                if i + k < w.course.cells.len() { v[k] = f32(w.course.cells[i + k]) }
+            }
+            packed.push(v)
+            i += 4
+        }
+        write(mut g.cells, 0, packed)
+        g.world.dirty = false
+    }
+    // The things near the view.
+    let reach = screen.x / scale * 0.5 + 4.0
+    var things: Vec<vec4> = Vec::new()
+    for t in w.course.things {
+        if t.gone || abs(t.at.x - g.camera.x) > reach || things.len() >= THINGS * 2 { continue }
+        let kind = match t.kind {
+            level::Kind::Coin => 1.0,
+            level::Kind::Popped => 1.0,
+            level::Kind::Walker => 2.0,
+            level::Kind::Spiker => 3.0,
+            level::Kind::Spring => 4.0,
+            level::Kind::Checkpoint => 5.0,
+            level::Kind::Gate => 6.0,
+        }
+        let since = if t.kind == level::Kind::Popped { max(t.since, 0.0001) } else { t.since }
+        things.push(vec4(kind, t.at.x, t.at.y, since))
+        things.push(vec4(t.dir, t.vel.x, t.vel.y, 0.0))
+    }
+    let thing_count = things.len() / 2
+    if !things.is_empty() { write(mut g.things, 0, things) }
+    var sparks: Vec<vec4> = Vec::new()
+    for s in w.sparks {
+        if sparks.len() >= SPARKS * 2 { break }
+        sparks.push(vec4(s.at.x, s.at.y, s.size, f32(s.kind)))
+        sparks.push(vec4(s.age / s.life, fract(s.at.x * 0.37 + s.life * 3.1), 0.0, 0.0))
+    }
+    let spark_count = sparks.len() / 2
+    if !sparks.is_empty() { write(mut g.sparks, 0, sparks) }
+    var bumps: Vec<vec4> = Vec::new()
+    for b in w.bumps {
+        if bumps.len() < BUMPS { bumps.push(vec4(f32(b.x), f32(b.y), b.age, 0.0)) }
+    }
+    let bump_count = bumps.len()
+    if !bumps.is_empty() { write(mut g.bumps, 0, bumps) }
+    hud(mut g, screen)
+    let run_count = g.text.runs.len() / 2
+    if !g.text.runs.is_empty() {
+        write(mut g.runs, 0, g.text.runs.clone())
+        write(mut g.segments, 0, g.text.segments.clone())
+    }
+    // The hero squashes as it lands and stretches as it rises.
+    let h = w.hero
+    let landing = exp(-h.landed * 14.0) * 0.35
+    let stretch = clamp(h.vel.y / 60.0, -0.25, 0.3)
+    let squash = if h.grounded { landing } else { -stretch }
+    let shake = vec2(sin(g.clock * 91.0), cos(g.clock * 77.0)) * w.shake * 0.35
+    let dying = if w.phase == Phase::Dying { 1.0 } else { 0.0 }
+    let gate = if w.phase == Phase::Clear { saturate(w.since) } else { 0.0 }
+    let title = match g.mode {
+        Mode::Title => 0.22,
+        Mode::Paused => 0.6,
+        Mode::Results => saturate(g.since * 2.0) * 0.55,
+        Mode::Play => 0.0,
+    }
+    let view = View {
+        screen,
+        camera: g.camera + shake,
+        scale,
+        time: g.clock,
+        width: f32(w.course.width),
+        things: f32(thing_count),
+        sparks: f32(spark_count),
+        bumps: f32(bump_count),
+        runs: f32(run_count),
+        hero: vec4(h.at.x, h.at.y, h.facing, squash),
+        motion: vec4(h.vel.x, h.vel.y, h.grace, dying),
+        // At the gate the hero goes in, and is gone.
+        mood: vec4(
+            saturate(g.clock * 1.6),
+            gate,
+            title,
+            if w.phase == Phase::Clear && w.since > 0.45 { 1.0 } else { 0.0 },
+        ),
+    }
+    let pass = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(
+        pass,
+        full.bind(z: 0.0),
+        shade.bind(
+            view,
+            cells: g.cells,
+            things: g.things,
+            sparks: g.sparks,
+            bumps: g.bumps,
+            runs: g.runs,
+            segments: g.segments,
+        ),
+        vertices: 3,
+    )
+    pass.present()
+}
+
+fn hud(g: mut Game, screen: vec2) {
+    g.text.clear()
+    let w = g.world.clone()
+    let h = screen.y
+    let small = h * 0.038
+    let pad = h * 0.045
+    let white = vec3(1.0, 0.97, 0.92)
+    let gold = vec3(1.0, 0.8, 0.35)
+    let mint = vec3(0.55, 1.0, 0.85)
+    let blink = if fract(g.clock * 0.9) < 0.65 { 1.0 } else { 0.0 }
+    match g.mode {
+        Mode::Title => {
+            g.text.write(
+                "LEAPLING",
+                vec2(screen.x * 0.5, h * 0.1),
+                h * 0.13,
+                white,
+                glow: 14.0,
+                align: 0.5,
+            )
+            g.text.write(
+                "DUSK RIDGE",
+                vec2(screen.x * 0.5, h * 0.27),
+                small,
+                mint,
+                glow: 4.0,
+                align: 0.5,
+            )
+            if blink > 0.5 {
+                g.text.write(
+                    "PRESS ENTER",
+                    vec2(screen.x * 0.5, h * 0.84),
+                    small * 1.1,
+                    gold,
+                    glow: 6.0,
+                    align: 0.5,
+                )
+            }
+            if g.progress.best > 0.0 {
+                let best = clock_text(g.progress.best)
+                g.text.write(
+                    f"BEST {best}",
+                    vec2(screen.x * 0.5, h * 0.93),
+                    small * 0.8,
+                    white,
+                    grey: 0.7,
+                    align: 0.5,
+                )
+            }
+            g.text.write("ESC  CONSOLE", vec2(pad, pad), small * 0.55, white, grey: 0.6)
+        },
+        _ => {
+            g.text.write(f"*{w.coins}", vec2(pad, pad), small, gold, glow: 4.0)
+            let t = clock_text(w.clock)
+            g.text.write(t.as_str(), vec2(screen.x - pad, pad), small, white, glow: 3.0, align: 1.0)
+            if g.mode == Mode::Play && g.since < 2.4 {
+                let fade = saturate((2.4 - g.since) * 2.0)
+                g.text.write(
+                    "DUSK RIDGE",
+                    vec2(screen.x * 0.5, h * 0.2),
+                    h * 0.06,
+                    white,
+                    grey: fade,
+                    glow: 8.0 * fade,
+                    align: 0.5,
+                )
+            }
+            if g.mode == Mode::Paused {
+                g.text.write(
+                    "PAUSED",
+                    vec2(screen.x * 0.5, h * 0.4),
+                    h * 0.08,
+                    white,
+                    glow: 10.0,
+                    align: 0.5,
+                )
+                g.text.write(
+                    "ENTER  RESUME",
+                    vec2(screen.x * 0.5, h * 0.53),
+                    small * 0.8,
+                    white,
+                    align: 0.5,
+                )
+                g.text.write(
+                    "ESC  BACK TO CONSOLE",
+                    vec2(screen.x * 0.5, h * 0.59),
+                    small * 0.8,
+                    white,
+                    grey: 0.7,
+                    align: 0.5,
+                )
+            }
+            if w.phase == Phase::Clear && g.mode == Mode::Play {
+                g.text.write(
+                    "COURSE CLEAR!",
+                    vec2(screen.x * 0.5, h * 0.22),
+                    h * 0.08,
+                    gold,
+                    glow: 14.0,
+                    align: 0.5,
+                )
+            }
+            if g.mode == Mode::Results {
+                g.text.write(
+                    "COURSE CLEAR!",
+                    vec2(screen.x * 0.5, h * 0.12),
+                    h * 0.08,
+                    gold,
+                    glow: 14.0,
+                    align: 0.5,
+                )
+                let t = clock_text(w.clock)
+                g.text.write(
+                    f"TIME {t}",
+                    vec2(screen.x * 0.5, h * 0.27),
+                    small * 1.2,
+                    white,
+                    glow: 4.0,
+                    align: 0.5,
+                )
+                g.text.write(
+                    f"COINS {w.coins}",
+                    vec2(screen.x * 0.5, h * 0.34),
+                    small * 1.2,
+                    gold,
+                    glow: 4.0,
+                    align: 0.5,
+                )
+                if blink > 0.5 && g.since > 1.0 {
+                    g.text.write(
+                        "PRESS ENTER TO RUN AGAIN",
+                        vec2(screen.x * 0.5, h * 0.44),
+                        small,
+                        mint,
+                        glow: 5.0,
+                        align: 0.5,
+                    )
+                }
+            }
+        },
+    }
+}

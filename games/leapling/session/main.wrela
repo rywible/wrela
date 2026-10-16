@@ -1,0 +1,475 @@
+// Leapling's small session program: save policy before its renderer is loaded. The game keeps
+// its progress in `SAVE` when it returns to the console; this program files it under the
+// player's profile, backs it up before a new game, and hands it to the game it starts.
+use leapling::progress::{Progress, describe, read}
+use platform::host
+use platform::protocol::{Reply, Request, SaveFile, SaveInfo, valid_key}
+use std::io::{Pending, load as read_file, store}
+use std::reload::{hand_over, keep, prepare}
+use std::serialize::{LoadError, Serialize, load, save}
+
+const GAME: Text = "leapling"
+const SAVE: Text = "leapling/save"
+const ENTRY: Text = "../leapling"
+const ACTIVE: Text = "session/profile"
+const JOURNAL: Text = "session/preparing"
+
+enum Phase: Copy + Eq {
+    Journal,
+    Active,
+    Recover,
+    WriteRecovery,
+    Idle,
+    ReadSlot,
+    Backup,
+    BackupSaved,
+    MarkPrepare,
+    WriteSave,
+    WriteProfile,
+    CommitPrepare,
+    Prepare,
+    Reply,
+    Launch,
+}
+
+pub struct Session {
+    phase: Phase,
+    io: Option<Pending<u8>>,
+    incoming: Option<Pending<u8>>,
+    request: Option<Request>,
+    call: u32,
+    profile: String,
+    active: String,
+    slot: String,
+    entries: Vec<SaveInfo>,
+    list_slot: u32,
+    bytes: Vec<u8>,
+    saved: u32,
+    environment: Option<Pending<u8>>,
+    entry: String,
+    launch: bool,
+    prepared: bool,
+    interrupted: bool,
+    recovery_failed: bool,
+    recovery_exported: bool,
+    recovered: Vec<u8>,
+}
+
+pub fn init() -> Session {
+    Session {
+        phase: Phase::Journal,
+        io: Some(read_file(JOURNAL)),
+        incoming: None,
+        request: None,
+        call: 0,
+        profile: String::new(),
+        active: String::from("player-1"),
+        slot: String::new(),
+        entries: Vec::new(),
+        list_slot: 0,
+        bytes: Vec::new(),
+        saved: 0,
+        environment: Some(host::environment()),
+        entry: String::from(ENTRY),
+        launch: false,
+        prepared: false,
+        interrupted: false,
+        recovery_failed: false,
+        recovery_exported: false,
+        recovered: Vec::new(),
+    }
+}
+
+fn path(profile: str, slot: str) -> String {
+    f"profiles/{profile}/{slot}"
+}
+
+fn slot_name(i: u32) -> Text {
+    if i == 0 { "continue" } else if i == 1 { "imported" } else { "previous" }
+}
+
+/// Only this game reads its progress. Imports can't name another game or build.
+fn checked(bytes: Vec<u8>) -> Option<SaveFile> {
+    let file: Result<SaveFile, LoadError> = load(bytes.clone())
+    let Ok(file) = file else { return None }
+    if file.game != GAME || file.version != 1 { return None }
+    let Some(progress) = read(file.body.clone()) else { return None }
+    Some(SaveFile { game: file.game.clone(), version: 1, saved: file.saved, body: save(progress) })
+}
+
+fn summary(file: SaveFile, slot: str) -> SaveInfo {
+    let description = match read(file.body.clone()) {
+        Some(p) => describe(p),
+        None => String::new(),
+    }
+    SaveInfo {
+        slot: slot.to_string(),
+        label: String::from(if slot == "continue" { "Continue" } else if slot == "imported" {
+            "Imported save"
+        } else { "Previous game" }),
+        description,
+        saved: file.saved,
+    }
+}
+
+fn respond(s: mut Session, reply: Reply) {
+    let bytes = save(reply)
+    s.io = Some(host::reply(s.call, bytes))
+    s.phase = Phase::Reply
+}
+
+fn error(s: mut Session, message: str) {
+    respond(mut s, Reply::Error { message: message.to_string() })
+}
+
+fn begin(s: mut Session, request: Request) {
+    s.request = Some(request.clone())
+    match request {
+        Request::Start => {
+            if !s.prepared {
+                error(mut s, "The game is not ready. Try preparing it again.")
+                return
+            }
+            s.launch = true
+            respond(mut s, Reply::Started)
+        },
+        Request::List { profile } => {
+            if !valid_key(profile) {
+                error(mut s, "Invalid profile.")
+                return
+            }
+            s.profile = profile.clone()
+            s.entries.clear()
+            s.list_slot = 0
+            s.io = Some(read_file(path(profile, slot_name(0))))
+            s.phase = Phase::ReadSlot
+        },
+        Request::Prepare { profile, slot } => {
+            if s.recovery_failed && !s.recovery_exported {
+                error(
+                    mut s,
+                    "The latest save could not be backed up. Export it before starting another game.",
+                )
+                return
+            }
+            if !valid_key(profile) || (!slot.is_empty() && !valid_key(slot)) {
+                error(mut s, "Invalid save selection.")
+                return
+            }
+            s.profile = profile.clone()
+            s.slot = slot.clone()
+            s.prepared = false
+            s.launch = false
+            if slot.is_empty() {
+                s.bytes.clear()
+                s.entry = String::from(ENTRY)
+                s.io = Some(read_file(path(profile, "continue")))
+                s.phase = Phase::Backup
+            } else {
+                s.io = Some(read_file(path(profile, slot)))
+                s.phase = Phase::ReadSlot
+            }
+        },
+        Request::Export { profile, slot } => {
+            if s.recovery_failed && profile == s.active && slot == "continue" {
+                let file = SaveFile {
+                    game: String::from(GAME),
+                    version: 1,
+                    saved: s.saved,
+                    body: s.recovered.clone(),
+                }
+                respond(mut s, Reply::Exported { bytes: save(file) })
+                return
+            }
+            if !valid_key(profile) || !valid_key(slot) {
+                error(mut s, "Invalid save selection.")
+                return
+            }
+            s.profile = profile.clone()
+            s.slot = slot.clone()
+            s.io = Some(read_file(path(profile, slot)))
+            s.phase = Phase::ReadSlot
+        },
+        Request::Import { profile, bytes } => {
+            if !valid_key(profile) {
+                error(mut s, "Invalid profile.")
+                return
+            }
+            let Some(file) = checked(bytes) else {
+                error(mut s, "This file is not a Leapling save.")
+                return
+            }
+            s.profile = profile.clone()
+            s.slot = String::from("imported")
+            s.bytes = save(file)
+            s.io = Some(store(path(profile, "imported"), s.bytes))
+            s.phase = Phase::WriteSave
+        },
+    }
+}
+
+fn slot_file(s: Session, result: Result<Vec<u8>, std::io::IoError>) -> Option<SaveFile> {
+    var file = match result {
+        Ok(bytes) => checked(bytes),
+        Err(_) => None,
+    }
+    let recovered_slot = match s.request {
+        Some(Request::List { .. }) => s.list_slot == 0,
+        Some(Request::Prepare { slot, .. }) => {
+            s.recovery_exported && (slot.is_empty() || slot == "continue")
+        },
+        _ => false,
+    }
+    if s.recovery_failed && s.profile == s.active && recovered_slot {
+        file = Some(
+            SaveFile {
+                game: String::from(GAME),
+                version: 1,
+                saved: s.saved,
+                body: s.recovered.clone(),
+            },
+        )
+    }
+    file
+}
+
+fn answered(s: mut Session, result: Result<Vec<u8>, std::io::IoError>) {
+    match s.phase {
+        Phase::Journal => {
+            if let Ok(bytes) = result { s.interrupted = !bytes.is_empty() }
+            s.io = Some(read_file(ACTIVE))
+            s.phase = Phase::Active
+        },
+        Phase::Active => {
+            if let Ok(bytes) = result {
+                let key: Result<String, LoadError> = load(bytes.clone())
+                if let Ok(key) = key { if valid_key(key) { s.active = key.clone() } }
+            }
+            s.io = Some(read_file(SAVE))
+            s.phase = Phase::Recover
+        },
+        Phase::Recover => {
+            if s.interrupted {
+                s.phase = Phase::Idle
+                return
+            }
+            if let Ok(bytes) = result {
+                if let Some(progress) = read(bytes.clone()) {
+                    s.recovered = save(progress)
+                    let file = SaveFile {
+                        game: String::from(GAME),
+                        version: 1,
+                        saved: s.saved,
+                        body: s.recovered.clone(),
+                    }
+                    let envelope = save(file)
+                    s.io = Some(store(path(s.active, "continue"), envelope))
+                    s.phase = Phase::WriteRecovery
+                    return
+                }
+            }
+            s.phase = Phase::Idle
+        },
+        Phase::WriteRecovery => {
+            s.recovery_failed = result.is_err()
+            s.recovery_exported = false
+            s.phase = Phase::Idle
+        },
+        Phase::ReadSlot => {
+            let file = slot_file(s, result)
+            let request = s.request.clone()
+            match request {
+                Some(Request::List { .. }) => {
+                    if let Some(file) = file {
+                        s.entries.push(summary(file, slot_name(s.list_slot)))
+                    }
+                    s.list_slot += 1
+                    if s.list_slot < 3 {
+                        s.io = Some(read_file(path(s.profile, slot_name(s.list_slot))))
+                    } else {
+                        let entries = s.entries.clone()
+                        respond(mut s, Reply::Saves { entries })
+                    }
+                },
+                Some(Request::Export { .. }) => {
+                    if let Some(file) = file {
+                        respond(mut s, Reply::Exported { bytes: save(file) })
+                    } else { error(mut s, "This save cannot be read.") }
+                },
+                Some(Request::Prepare { .. }) => {
+                    let Some(file) = file else {
+                        error(
+                            mut s,
+                            "This save cannot be read. Import a backup or start a new game.",
+                        )
+                        return
+                    }
+                    s.entry = String::from(ENTRY)
+                    s.bytes = file.body.clone()
+                    s.io = Some(store(JOURNAL, [u8(1)]))
+                    s.phase = Phase::MarkPrepare
+                },
+                _ => error(mut s, "Unexpected session request."),
+            }
+        },
+        Phase::Backup => {
+            if let Some(file) = slot_file(s, result) {
+                let body = save(file)
+                s.io = Some(store(path(s.profile, "previous"), body))
+                s.phase = Phase::BackupSaved
+                return
+            }
+            s.io = Some(store(JOURNAL, [u8(1)]))
+            s.phase = Phase::MarkPrepare
+        },
+        Phase::BackupSaved => {
+            if result.is_err() {
+                error(mut s, "Your previous save could not be backed up.")
+                return
+            }
+            s.io = Some(store(JOURNAL, [u8(1)]))
+            s.phase = Phase::MarkPrepare
+        },
+        Phase::MarkPrepare => {
+            if result.is_err() {
+                error(mut s, "The save preparation could not commit. Your existing saves are kept.")
+                return
+            }
+            s.io = Some(store(SAVE, s.bytes))
+            s.phase = Phase::WriteSave
+        },
+        Phase::WriteSave => {
+            if result.is_err() {
+                error(mut s, "The save could not be written. Your previous save is kept.")
+                return
+            }
+            if let Some(Request::Import { .. }) = s.request {
+                respond(mut s, Reply::Imported)
+            } else {
+                let active = save(s.profile)
+                s.io = Some(store(ACTIVE, active))
+                s.phase = Phase::WriteProfile
+            }
+        },
+        Phase::WriteProfile => {
+            if result.is_err() {
+                error(mut s, "The profile could not be saved.")
+                return
+            }
+            s.io = Some(store(JOURNAL, [u8(0); 0]))
+            s.phase = Phase::CommitPrepare
+        },
+        Phase::CommitPrepare => {
+            if result.is_err() {
+                error(mut s, "Save preparation could not commit. Try again.")
+                return
+            }
+            s.interrupted = false
+            keep(s.bytes)
+            s.io = Some(prepare(s.entry))
+            s.phase = Phase::Prepare
+        },
+        Phase::Prepare => {
+            if result.is_err() {
+                error(mut s, "The game could not load. Check your connection and try again.")
+                return
+            }
+            s.prepared = true
+            respond(mut s, Reply::Ready)
+        },
+        Phase::Reply => {
+            if result.is_ok() && s.recovery_failed {
+                if let Some(Request::Export { profile, slot }) = s.request {
+                    if profile == s.active && slot == "continue" { s.recovery_exported = true }
+                }
+            }
+            s.request = None
+            if s.launch {
+                s.io = Some(hand_over(s.entry))
+                s.phase = Phase::Launch
+            } else { s.phase = Phase::Idle }
+        },
+        Phase::Launch => {
+            // A failed hand-over leaves this session running; close its surface so the
+            // console's readiness wait fails and can offer Retry.
+            s.io = Some(std::host::request("surface/failed", [u8(0); 0]))
+            s.phase = Phase::Idle
+        },
+        Phase::Idle => {},
+    }
+}
+
+pub fn frame(s: mut Session, time: f32, width: u32, height: u32) {
+    var environment = None
+    match mut s.environment {
+        Some(p) => environment = p.poll(),
+        None => {},
+    }
+    if let Some(result) = environment {
+        s.environment = None
+        if let Ok(bytes) = result { if let Some(now) = host::word(bytes, 1) { s.saved = now } }
+    }
+    var answer = None
+    match mut s.io {
+        Some(p) => answer = p.poll(),
+        None => {},
+    }
+    if let Some(result) = answer {
+        s.io = None
+        answered(mut s, result)
+    }
+    if s.phase != Phase::Idle { return }
+    if s.incoming.is_none() { s.incoming = Some(host::receive()) }
+    var incoming = None
+    match mut s.incoming {
+        Some(p) => incoming = p.poll(),
+        None => {},
+    }
+    if let Some(result) = incoming {
+        s.incoming = None
+        if let Ok(bytes) = result {
+            let Some(id) = host::word(bytes) else { return }
+            s.call = id
+            var body = Vec::new()
+            for i in 4..bytes.len() { body.push(bytes[i]) }
+            let request: Result<Request, LoadError> = load(take body)
+            match request {
+                Ok(r) => begin(mut s, r),
+                Err(_) => error(mut s, "Unsupported session message."),
+            }
+        }
+    }
+}
+
+@test
+fn foreign_truncated_or_impossible_saves_are_rejected_before_writing() {
+    let foreign = SaveFile {
+        game: String::from("different-game"),
+        version: 1,
+        saved: 0,
+        body: save(leapling::progress::fresh()),
+    }
+    assert(checked(save(foreign)).is_none())
+    assert(checked(Vec::new()).is_none())
+    assert(checked(Vec::filled(12, 255)).is_none())
+    let impossible = SaveFile {
+        game: String::from(GAME),
+        version: 1,
+        saved: 0,
+        body: save(Progress { cleared: 40, coins: 0, best: 0.0 }),
+    }
+    assert(checked(save(impossible)).is_none())
+    let good = SaveFile {
+        game: String::from(GAME),
+        version: 1,
+        saved: 7,
+        body: save(Progress { cleared: 1, coins: 31, best: 72.5 }),
+    }
+    let Some(file) = checked(save(good)) else {
+        assert(false, "a Leapling save imports")
+        return
+    }
+    let info = summary(file, "continue")
+    assert(info.label == "Continue" && info.saved == 7)
+    assert(info.description == "Course cleared, best 1:12.5, 31 coins")
+}

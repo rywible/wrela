@@ -1,8 +1,10 @@
-// The library's room: an endless dark. Albums stand as cards in one row along the bottom of
-// the screen, the selection in a fixed slot at the left margin and the rest running off to
-// the right, as consoles lay out a library. The artifact turns far behind them, up and to
-// the right, where a console shows a game's art. The CPU and the GPU place and project
-// everything with the same code, so what is drawn is exactly what the pointer can hit.
+// The library's room: an endless dark. Each game is a cube in one row along the bottom of the
+// screen, standing still, its cover on its sides. The row turns like a carousel: the selection
+// takes the first place, at the left, tumbling forward to face the eye and widening into its
+// whole cover, and the rest follow it in order, the one it leaves tumbling back into a cube. The artifact, a four-dimensional cube, turns far behind them, up in the
+// middle. The CPU and the
+// GPU place and project everything with the same code, so what is drawn is exactly what the
+// pointer can hit.
 
 // The camera: where it stands and looks, and the tangent of half its vertical view.
 pub struct Camera: Copy + GpuData {
@@ -12,24 +14,30 @@ pub struct Camera: Copy + GpuData {
     pub screen: vec4,
 }
 
-// A card in the room: its centre and its turn about the vertical, its width and height, and
-// how it is lit.
+// A game's block in the room: its centre and its turn about the vertical (radians); its width,
+// height and depth, and its tumble about the horizontal (radians); and its look.
 pub struct Card: Copy + GpuData {
     pub centre: vec4,
-    // Width, height, corner radius (world units) and the ring's distance from the edge.
     pub size: vec4,
-    // Brightness, ring (0 to 1) and opacity.
+    // Brightness, how far the pointer's hover has come on (0 to 1), opacity, and how chosen it
+    // is: 0 a cube, 1 the whole cover.
     pub look: vec4,
 }
 
-// Cards are 16:9; the others stand at this size beside the selection.
+// Covers are 16:9. A block at rest is a cube as high as the selection, turned this far
+// (radians) to show its depth; the next stands this far from it (in cube edges).
 const ASPECT: f32 = 0.5625
-const SMALL: f32 = 0.78
+const GAP: f32 = 0.6
+const REST: f32 = 0.6
+// How high (in cube edges) the chosen block hops as it tumbles, and how far it tips toward
+// the eye at the top of the hop (radians).
+const HOP: f32 = 0.15
+const TIP: f32 = 0.35
 // The left safe margin and the row's lower edge, as fractions of the screen.
 pub const MARGIN: f32 = 0.055
 const BASELINE: f32 = 0.88
 // The artifact floats this deep, far behind the cards.
-const ARTIFACT_DEPTH: f32 = -10.0
+const ARTIFACT_DEPTH: f32 = -32.0
 
 // The row fitted to a screen (world units on the cards' plane): the selected card's left
 // edge, the row's middle, the selected card's width and the gap between cards.
@@ -92,50 +100,74 @@ pub fn row(c: Camera) -> Row {
     Row { left: low.x, middle: low.y + width * ASPECT * 0.5, width, gap: width * 0.07 }
 }
 
-// The artifact's centre and size for a camera at rest: up and to the right of a wide screen,
-// up and centred on a tall one, about a tenth of the screen in size.
+// The artifact's centre and size for a camera at rest: up in the middle of the screen, about
+// three tenths of its height across.
 pub fn artifact_spot(c: Camera) -> vec4 {
     let aspect = c.screen.x / c.screen.y
-    let at = vec2(mix(0.5, 0.7, saturate((aspect - 0.8) / 0.6)), 0.3)
+    let at = vec2(0.5, 0.35)
     let centre = on_plane(c, at, ARTIFACT_DEPTH)
-    let tall = on_plane(c, at + vec2(0.0, 0.11), ARTIFACT_DEPTH).y - centre.y
+    let tall = on_plane(c, at + vec2(0.0, 0.145), ARTIFACT_DEPTH).y - centre.y
     vec4(centre, abs(tall) * min(aspect, 1.0))
 }
 
-// A card's corner (u and v from 0 to 1, v down) in the world.
-pub fn corner(card: Card, uv: vec2) -> vec3 {
-    let local = vec2(uv.x - 0.5, 0.5 - uv.y) * card.size.xy
-    let turn = card.centre.w
-    card.centre.xyz + vec3(cos(turn) * local.x, local.y, -sin(turn) * local.x)
+// `v` in a block's frame turned as the block is: tipped about the horizontal, then turned
+// about the vertical.
+pub fn turned(card: Card, v: vec3) -> vec3 {
+    let (tip, turn) = (card.size.w, card.centre.w)
+    let t = vec3(v.x, v.y * cos(tip) - v.z * sin(tip), v.y * sin(tip) + v.z * cos(tip))
+    vec3(t.x * cos(turn) + t.z * sin(turn), t.y, t.z * cos(turn) - t.x * sin(turn))
 }
 
-// Album `index` while the row is at `album` (its eased selection): the selection full size
-// in its slot, the rest smaller and dimmer to its right; those before it slide out to the
-// left and fade.
-pub fn place(index: u32, album: f32, ring: f32, has_art: bool, row: Row) -> Card {
-    let offset = f32(index) - album
-    let reach = min(abs(offset), 1.0)
-    let scale = mix(1.0, SMALL, reach)
-    let left = row.left +
-        offset * (row.width * SMALL + row.gap) +
-        saturate(offset) * row.width * (1.0 - SMALL)
-    let width = row.width * scale
-    let lit = mix(1.0, 0.55, reach) * if has_art { 1.0 } else { 0.9 }
+// A point of a block (each coordinate from -0.5 to 0.5 across it) in the world.
+pub fn corner(card: Card, at: vec3) -> vec3 {
+    card.centre.xyz + turned(card, at * card.size.xyz)
+}
+
+// The place in the row of game `index` of `count` with `selected` chosen: the selection first,
+// then the rest in order, round from the end to the start.
+pub fn row_place(index: u32, selected: u32, count: u32) -> u32 {
+    (index + count - selected) % count
+}
+
+// The block at `place` in the row (eased, so between places as it moves), on its way to
+// `target`. The first place is the selection's: its front stands on the cards' plane at the
+// left margin, a cube widened to its whole cover. The others stand after it, a gap apart.
+// Moving, a block hops, tips and turns half round; one coming forward in the row comes toward
+// the eye and one going back goes away from it, so two that cross pass each other.
+pub fn place(place: f32, target: f32, hover: f32, has_art: bool, row: Row) -> Card {
+    let edge = row.width * ASPECT
+    let full = edge / ASPECT
+    let c = saturate(1.0 - place)
+    let eased = smoothstep(0.0, 1.0, c)
+    let width = mix(edge, full, c)
+    let left = row.left + place * edge * (1.0 + GAP) + min(place, 1.0) * (full - edge)
+    let hop = sin(c * 3.1415927)
+    let passing = clamp(place - target, -1.0, 1.0) * edge * 0.8
+    let lit = mix(0.42, 1.0, eased) * if has_art { 1.0 } else { 0.9 }
     Card {
-        centre: vec4(left + width * 0.5, row.middle, 0.0, 0.0),
-        size: vec4(width, width * ASPECT, width * 0.035, row.width * 0.016),
-        look: vec4(lit, ring, saturate(1.0 + min(offset, 0.0) * 1.25), 0.0),
+        centre: vec4(
+            left + width * 0.5,
+            row.middle + hop * HOP * edge,
+            -edge * 0.5 + passing,
+            mix(REST, -3.1415927, eased),
+        ),
+        size: vec4(width, edge, edge, -hop * TIP),
+        look: vec4(lit, hover, 1.0, c),
     }
 }
 
-// The screen rectangle that holds a card: what the pointer hits.
+// The screen rectangle that holds a block: what the pointer hits.
 pub fn bounds(c: Camera, card: Card) -> vec4 {
     var lo = vec2(1.0e9)
     var hi = vec2(-1.0e9)
-    for uv in [vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0)] {
-        let s = project(c, corner(card, uv)).xy
-        lo = min(lo, s)
-        hi = max(hi, s)
+    for x in [-0.5, 0.5] {
+        for y in [-0.5, 0.5] {
+            for z in [-0.5, 0.5] {
+                let s = project(c, corner(card, vec3(x, y, z))).xy
+                lo = min(lo, s)
+                hi = max(hi, s)
+            }
+        }
     }
     vec4(lo, hi - lo)
 }
@@ -151,7 +183,7 @@ fn projection_and_rays_agree() {
 }
 
 @test
-fn the_selection_holds_its_slot_at_the_left_margin_on_any_screen() {
+fn the_selection_faces_the_eye_at_the_margin_and_the_rest_are_cubes_beside_it() {
     for size in [
         vec2(1280.0, 720.0),
         vec2(1440.0, 900.0),
@@ -160,19 +192,49 @@ fn the_selection_holds_its_slot_at_the_left_margin_on_any_screen() {
     ] {
         let c = camera(size, vec2(0.0))
         let r = row(c)
-        let chosen = bounds(c, place(2, album: 2.0, ring: 1.0, has_art: true, row: r))
+        let at = |p: f32| place(place: p, target: p, hover: 0.0, has_art: true, row: r)
+        // The first place: square to the eye, its whole cover, at the margin on the baseline.
+        let first = at(0.0)
+        assert(abs(sin(first.centre.w)) < 0.00001 && abs(first.size.w) < 0.00001)
+        assert(first.look.w == 1.0 && abs(first.size.x * ASPECT - first.size.y) < 0.0001)
+        let chosen = bounds(c, first)
         assert(abs(chosen.x - size.x * MARGIN) < size.x * 0.01, "at the margin")
         assert(abs(chosen.y + chosen.w - size.y * BASELINE) < size.y * 0.01, "on the baseline")
         assert(chosen.x + chosen.z < size.x * 0.7, "leaving room for the rest of the row")
-        assert(chosen.w > size.y * 0.12 && chosen.w < size.y * 0.21)
-        // The next stands a gap to the right, smaller; the one before has faded out.
-        let next = bounds(c, place(3, album: 2.0, ring: 0.0, has_art: true, row: r))
-        assert(next.x > chosen.x + chosen.z && next.w < chosen.w)
-        assert(place(1, album: 2.0, ring: 0.0, has_art: true, row: r).look.z == 0.0)
-        // Mid-move, a card is between its two slots.
-        let moving = bounds(c, place(3, album: 2.5, ring: 0.0, has_art: true, row: r))
-        assert(moving.x > chosen.x && moving.x < next.x)
+        // The second: a still, turned cube a gap to the right, dimmer; whole on a wide screen.
+        let next = at(1.0)
+        assert(next.size.x == next.size.y && next.size.y == next.size.z && next.centre.w == REST)
+        let b = bounds(c, next)
+        assert(b.x > chosen.x + chosen.z && b.x < size.x)
+        assert(size.x < size.y || b.x + b.z < size.x)
+        assert(next.look.x < first.look.x, "dimmer than the selection")
+        assert(bounds(c, at(2.0)).x > b.x + b.z, "the third after the second")
+        // Two swapping places cross halfway, hopping and tipping: the one coming to the front
+        // nearer the eye than the one going back.
+        let coming = place(place: 0.5, target: 0.0, hover: 0.0, has_art: true, row: r)
+        let going = place(place: 0.5, target: 1.0, hover: 0.0, has_art: true, row: r)
+        assert(coming.centre.y > next.centre.y && coming.size.w < 0.0)
+        assert(coming.centre.z > going.centre.z + 0.5 * next.size.z)
+        let m = bounds(c, coming)
+        assert(m.x > size.x * MARGIN * 0.5 && m.x < b.x)
     }
+}
+
+@test
+fn the_row_turns_like_a_carousel_from_the_selection() {
+    // Of four, with the third chosen: it first, then the fourth, then round to the first two.
+    assert(row_place(2, selected: 2, count: 4) == 0 && row_place(3, selected: 2, count: 4) == 1)
+    assert(row_place(0, selected: 2, count: 4) == 2 && row_place(1, selected: 2, count: 4) == 3)
+    // Of two, choosing the other swaps them.
+    assert(row_place(0, selected: 1, count: 2) == 1 && row_place(1, selected: 1, count: 2) == 0)
+}
+
+@test
+fn a_block_keeps_its_size_as_it_turns_and_tips() {
+    let r = row(camera(vec2(1280.0, 720.0), vec2(0.0)))
+    let m = place(place: 0.5, target: 0.0, hover: 0.0, has_art: true, row: r)
+    let span = corner(m, vec3(0.5, 0.5, 0.5)) - corner(m, vec3(-0.5, -0.5, -0.5))
+    assert(abs(length(span) - length(m.size.xyz)) < 0.0001)
 }
 
 @test

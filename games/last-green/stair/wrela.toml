@@ -1,0 +1,9 @@
+# The stair (vision.md, "The lore"): an endless spiral staircase in a void, a door to each world
+# off it. A build of its own, which hands its place to a world's build at its door
+# (std::reload::hand_over) and gets the place back when the player comes down.
+[package]
+name = "stair"
+
+[dependencies]
+engine = { path = "../../../engine" }
+platform = { path = "../../../platform" }

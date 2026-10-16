@@ -74,6 +74,10 @@ pub struct Font: Clone {
     pub ascender: f32,
     pub descender: f32,
     pub line_gap: f32,
+    /// What a caller sets for its look, both 0 unless it does: the space added between
+    /// glyphs, and the stroke added to each side of a glyph's ink, both ems.
+    pub tracking: f32,
+    pub weight: f32,
     glyphs: Vec<Glyph>,
     /// Each code point below 256: its glyph's index plus one (0: none).
     index: [u32; 256],
@@ -130,6 +134,8 @@ impl Font {
             ascender: b.ascender,
             descender: b.descender,
             line_gap: b.line_gap,
+            tracking: 0.0,
+            weight: 0.0,
             glyphs,
             index,
             kerning,
@@ -253,7 +259,7 @@ impl Font {
             if !visit(i, g, x) {
                 return x
             }
-            x += self.glyphs[g].advance * size
+            x += (self.glyphs[g].advance + self.tracking) * size
             prev = g
             i = next
         }

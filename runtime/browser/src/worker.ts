@@ -10,8 +10,10 @@ import { fitSize, frameSeconds, VisibleClock } from "./frame.ts";
 import { alignTo, type GpuExecutor, type PipelineCache, type Timing, timeEachPipeline } from "./gpu.ts";
 import { arrivals, epochNow, InputRing, parseScript, type Scripted } from "./input.ts";
 import { type Asked, HandOvers } from "./handover.ts";
-import { browserIo, type Build, loadBuild, startProgram } from "./loader.ts";
+import { browserIo, type Build, loadBuild, loadLines, startProgram } from "./loader.ts";
+import { locate } from "./lines.ts";
 import { Live } from "./live.ts";
+import { type Inbox, Net } from "./net.ts";
 import { type PrintSink, type Program, type ProgramOptions, runWorker, type SpawnWorker } from "./program.ts";
 import type { FromHelper, FromTicker, FromWorker, Loaded, Replay, TickerOptions, TickerStart, TickReport, ToWorker, VoiceOptions } from "./messages.ts";
 import { encodePng } from "./png.ts";
@@ -52,25 +54,40 @@ let failed = false;
 /** Input events from the main thread (input.ts). */
 let ring: InputRing | null = null;
 
-/** Gives the program the events the main thread has written: it reads them in its next call.
- * Their times, for the latency test. */
+/** The program's connections: one set for the page, which a reload to another program closes.
+ * Its server is in `net.json` beside the running build. */
+const net = new Net(
+  () => buildBase,
+  (line) => {
+    console.warn(`wrela: ${line}`);
+    hostLine?.(line);
+  },
+);
+
+/** Gives the program the events the main thread has written, and what its connections had: it
+ * reads them in its next call. The input's times, for the latency test. */
 function deliverInput(program: Program): readonly number[] {
+  net.deliver(program.inbox);
   if (!ring) return [];
   const { events, times } = ring.read();
   program.queueInput(events);
   return times;
 }
 
-/** Stops everything and reports `e`: to the page, and in test mode to `results/DONE`. */
+/** Stops everything and reports `e`: to the page, and in test mode to `results/DONE`. A trap in
+ * an optimized build is reported once its location is fetched (`locate`). */
 function fatal(e: unknown): void {
   if (failed) return;
   failed = true;
   ticker.control.stop();
-  const text = errorMessage(e);
-  self.postMessage({ type: "fatal", message: text } satisfies FromWorker);
-  if (testing) {
-    putResult(base, "DONE", text).catch((err: unknown) => console.error(`can't report the failure: ${errorMessage(err)}`));
-  }
+  const build = running;
+  const at = buildBase;
+  void locate(errorMessage(e), async () => (build ? loadLines(at, build.manifest) : null)).then((text) => {
+    self.postMessage({ type: "fatal", message: text } satisfies FromWorker);
+    if (testing) {
+      putResult(base, "DONE", text).catch((err: unknown) => console.error(`can't report the failure: ${errorMessage(err)}`));
+    }
+  });
 }
 
 let storageNamespace: string | null = null;
@@ -166,7 +183,7 @@ const helpers: Worker[] = [];
  * and its ticks to run again. */
 interface Carried {
   kept: Uint8Array;
-  input: Uint8Array[];
+  inbox: Inbox;
   replay: Replay | null;
 }
 
@@ -181,7 +198,8 @@ function programOptions(b: Build, ticks: TickSettings, carried: Carried | null):
     startVoice,
     startTicker: tickerStarter(b.wasm, ticks, carried?.replay ?? null),
     kept: carried?.kept,
-    input: carried?.input,
+    inbox: carried?.inbox,
+    net,
   };
 }
 
@@ -203,7 +221,7 @@ async function stop(old: Program, frames: number, replaying: boolean): Promise<C
   stopHelpers();
   (old.executor as GpuExecutor).destroyAll();
   newTicker(frames);
-  return { kept: old.keeping, input: old.unreadInput, replay };
+  return { kept: old.keeping, inbox: old.inbox, replay };
 }
 
 function stopHelpers(): void {
@@ -585,7 +603,7 @@ async function runTest(canvas: OffscreenCanvas, device: GPUDevice, build: Build,
       // The ticker's thread reports its trap (`tickerStarter`).
       if (control.failed) return;
     }
-    for (const e of frameEvents.get(i) ?? []) r.program.queueInput(e);
+    for (const e of frameEvents.get(i) ?? []) r.program.queueScripted(e);
     if (params.clip > 0 && i === params.clipfrom) self.postMessage({ type: "clip-start" } satisfies FromWorker);
     if (params.clip > 0 && i === params.clipfrom + params.clip) self.postMessage({ type: "clip-stop" } satisfies FromWorker);
     record.latency.frames.push(epochNow());

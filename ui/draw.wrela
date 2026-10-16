@@ -62,7 +62,8 @@ impl Rect {
 }
 
 /// One quad: a rectangle (`scale` 0) with rounded corners of `radius` pixels, or a glyph,
-/// whose field's coverage is `(v − 0.5) × scale + 0.5`. `uv` is the glyph's corners in the
+/// whose field's coverage is `(v − 0.5) × scale + 0.5 + radius`: a glyph's `radius` is the
+/// pixels of stroke its font's weight adds. `uv` is the glyph's corners in the
 /// atlas, from 0 to 1; for a rectangle, `uv.x` above 0 draws only a ring that many pixels
 /// wide inside its edge. `kind` makes it an ellipse or a diamond in `rect` instead (a ring the
 /// same way), a line from `uv.xy` to `uv.zw` (pixels), `radius` wide on each side, with
@@ -330,9 +331,10 @@ impl DrawList {
                 )
             } else if g.width > 0 {
                 // The field reaches `pad` texels past the ink; only half a pixel of it is drawn,
-                // so the quad covers the ink and that half pixel (and a half texel, for
-                // filtering).
-                let inset = clamp(pad - 0.5 / k - 0.5, 0.0, 0.5 * min(f32(g.width), f32(g.height)))
+                // and the stroke the weight adds, so the quad covers the ink, those, and a half
+                // texel, for filtering.
+                let reach = (0.5 + font.weight * size) / k
+                let inset = clamp(pad - reach - 0.5, 0.0, 0.5 * min(f32(g.width), f32(g.height)))
                 let x = pen + (g.left + inset) * k
                 let y = baseline - (g.top - inset) * k
                 let fw = f32(g.width) - 2.0 * inset
@@ -346,7 +348,7 @@ impl DrawList {
                         color: packed,
                         clip: self.clip,
                         scale,
-                        radius: 0.0,
+                        radius: font.weight * size,
                         kind: BOX,
                         third: vec2(0.0),
                     },
@@ -396,6 +398,45 @@ fn a_triangle_holds_its_corners() {
     assert(triangle_distance(vec2(30.0, 40.0), c, b, a) < 0.0)
     assert(abs(triangle_distance(vec2(30.0, 50.0), a, b, c)) < 1.0e-4)
     assert(abs(triangle_distance(vec2(30.0, 60.0), a, b, c) - 10.0) < 1.0e-4)
+}
+
+@test
+fn a_font_s_tracking_and_weight_space_and_thicken_its_glyphs() {
+    // One glyph, `N`, with ink: a field 12 texels square, half an em wide.
+    let glyph = ttf::BakedGlyph {
+        codepoint: 78,
+        advance: 0.5,
+        left: 0.0,
+        top: 10.0,
+        width: 12,
+        height: 12,
+        offset: 0,
+    }
+    let baked = ttf::Baked {
+        em: 32.0,
+        spread: 4.0,
+        ascender: 0.8,
+        descender: -0.2,
+        line_gap: 0.0,
+        glyphs: Vec::from([glyph]),
+        kerning: Vec::new(),
+        fields: Vec::filled(144, u8(128)),
+    }
+    var fonts = Fonts::from_baked(baked.clone(), baked)
+    let plain = fonts.sans.measure("NNN", 20.0)
+    var list = DrawList::new()
+    list.clear(vec2(200.0))
+    let _ = list.text(fonts, Face::Sans, "N", 20.0, vec2(0.0), vec4(1.0))
+    let thin = list.quads[0]
+    assert(thin.radius == 0.0, "no weight unless the caller sets one")
+    fonts.sans.tracking = -0.02
+    fonts.sans.weight = 0.01
+    assert(abs(fonts.sans.measure("NNN", 20.0) - (plain - 3.0 * 0.02 * 20.0)) < 0.001)
+    let _ = list.text(fonts, Face::Sans, "N", 20.0, vec2(0.0), vec4(1.0))
+    let bold = list.quads[1]
+    assert(abs(bold.radius - 0.2) < 0.0001)
+    // Its quad grows to hold the stroke the weight adds.
+    assert(bold.rect.z > thin.rect.z && bold.rect.x < thin.rect.x)
 }
 
 @test
@@ -531,7 +572,7 @@ fn quad_color(v: QuadVertex, atlas: Texture<Rgba8>, linear: Sampler) -> Over {
     } else if s.x > 0.0 {
         // A glyph: the field's distance, scaled to this size's pixels.
         let d = atlas.sample_level(linear, v.uv, 0.0).x
-        coverage = saturate((d - 0.5) * s.x + 0.5)
+        coverage = saturate((d - 0.5) * s.x + 0.5 + s.y)
     } else if kind == TRIANGLE {
         let e = v.ends.value
         let d = triangle_distance(v.pixel, e.xy, e.zw, v.third.value)
