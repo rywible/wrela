@@ -1,15 +1,16 @@
-// Text: two fonts as signed distance fields (Inter for the UI, JetBrains Mono for source), baked
-// from ui/fonts when the program is built (ttf.wrela), and laid out a line at a time. A glyph's
+// Fonts and text layout for a user interface: fonts as signed distance fields, baked when the
+// program is built (ttf.wrela), and text laid out a line at a time. The default fonts are Inter
+// for the UI and JetBrains Mono for source, from ui/fonts; a program may bake others. A glyph's
 // field is sampled at 32 pixels per em; the GPU reads it at any size (draw.wrela), from 10 to
 // 72 pixels.
 //
-// Text is laid out by character group (`next_cluster`): a letter with its accents, an emoji with
-// its skin tone, a flag's two letters, an emoji sequence joined by U+200D, each one glyph. A group
-// the baked fonts haven't (past Latin-1) gets a glyph made while the program runs from the host's
-// system fonts (`Renderer::fetch`, raster.wrela), and until it has, `?`'s. Groups are an
-// approximation of Unicode's extended grapheme clusters (UAX #29) for those cases only, and there's
-// no shaping between groups: Arabic letters don't join, Indic conjuncts don't form, and there are
-// no ligatures.
+// Text is laid out by character group (`next_cluster`): a letter with its accents, an emoji
+// with its skin tone, a flag's two letters, an emoji sequence joined by U+200D, each one glyph.
+// A group the baked fonts haven't (past Latin-1) gets a glyph made while the program runs from
+// the host's system fonts (`Renderer::fetch`, raster.wrela), and until it has, `?`'s. Groups
+// are an approximation of Unicode's extended grapheme clusters for those cases only, and
+// there's no shaping between groups: Arabic letters don't join, Indic conjuncts don't form, and
+// there are no ligatures.
 
 use raster::Made
 use ttf::{Baked, bake}
@@ -99,7 +100,7 @@ impl Font {
         Font::from_baked(baked(face))
     }
 
-    /// A caller-selected baked font, independent of the default UI faces.
+    /// The font of `b`, a baked face of the program's choice rather than one of `Face`'s.
     pub fn from_baked(b: Baked) -> Font {
         let n = b.glyphs.len()
         var glyphs: Vec<Glyph> = Vec::with_capacity(n)
@@ -604,8 +605,8 @@ impl Fonts {
         Fonts { sans, mono, width, height: baked + MADE_ROWS, baked, shelf: vec3u(1, baked, 0) }
     }
 
-    /// Two application-selected faces. `Sans` selects the first; `Mono` selects the second.
-    /// The default loader keeps the studio's proportional/source pair.
+    /// Fonts of two baked faces of the program's choice: `Face::Sans` draws with the first and
+    /// `Face::Mono` with the second. `load` gives the default pair, Inter and JetBrains Mono.
     pub fn from_baked(first: Baked, second: Baked) -> Fonts {
         var sans = Font::from_baked(first)
         var mono = Font::from_baked(second)

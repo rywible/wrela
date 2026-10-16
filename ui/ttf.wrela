@@ -1,8 +1,7 @@
-// TrueType fonts baked into distance fields when the program is built (§10): each Latin-1
-// glyph's outline as a signed distance field, its metrics, and the font's kerning, from the
-// font's file (`embed`). text.wrela's fonts are constants of it. It was tools/wfont, in Rust,
-// whose files the build embedded; this bakes the same bytes (checked field by field when it
-// replaced it).
+// TrueType fonts baked into signed distance fields when the program is built (language.md
+// §10): each Latin-1 glyph's outline as a field, its metrics, and the font's kerning, from the
+// font's file (`embed`). A program calls `bake` in a constant; text.wrela's fonts are
+// constants made this way.
 //
 // What it reads of the file: `head`'s units per em and `loca`'s format, `maxp`, `hhea` and
 // `hmtx` for the advances, `OS/2` for the metrics a font says to use, `cmap` (formats 4 and
@@ -198,7 +197,7 @@ fn glyph_index(b: Bytes, t: Tables, c: u32) -> i32 {
     -1
 }
 
-/// A `cmap` format 4 subtable's glyph for `c`, as ttf-parser reads it.
+/// A `cmap` format 4 subtable's glyph for `c`.
 fn format4(b: Bytes, sub: u32, c: u32) -> i32 {
     if c > 0xffff {
         return -1
@@ -252,7 +251,7 @@ fn advance(b: Bytes, t: Tables, id: u32) -> u32 {
 }
 
 /// The ascender, descender and line gap, in font units: `OS/2`'s typographic ones if it says
-/// to use them, else `hhea`'s (as ttf-parser reads them).
+/// to use them, else `hhea`'s.
 fn metrics(b: Bytes, t: Tables) -> (i32, i32, i32) {
     if t.os2 > 0 && (u16_at(b, t.os2 + 62) & 0x80) != 0 {
         return (i16_at(b, t.os2 + 68), i16_at(b, t.os2 + 70), i16_at(b, t.os2 + 72))
@@ -285,8 +284,8 @@ fn metrics(b: Bytes, t: Tables) -> (i32, i32, i32) {
     (ascender, descender, line_gap)
 }
 
-/// `ttf-parser`'s fallback when the hhea ascender or descender is absent: use the OS/2
-/// typographic line gap when either typographic height is present, otherwise no gap.
+/// The line gap when the hhea ascender or descender is absent: the OS/2 typographic line gap
+/// when either typographic height is present, otherwise no gap.
 fn fallback_line_gap(
     hhea_ascender: i32,
     hhea_descender: i32,
@@ -398,7 +397,7 @@ struct Contours {
 }
 
 /// What draws an outline into `contours`: TrueType's quadratic outline, its points on and off
-/// the curve, turned into lines and curves as ttf-parser does, each curve flattened.
+/// the curve, turned into lines and curves, each curve flattened.
 struct Pen {
     scale: f64,
     contours: Contours,
@@ -574,7 +573,7 @@ impl Pen {
     }
 }
 
-/// Half way from `(ax, ay)` to `(bx, by)`, as ttf-parser takes it.
+/// Half way from `(ax, ay)` to `(bx, by)`.
 fn half_way(ax: f32, ay: f32, bx: f32, by: f32) -> (f32, f32) {
     (ax + 0.5 * (bx - ax), ay + 0.5 * (by - ay))
 }
@@ -834,7 +833,7 @@ impl Segment {
 
 /// The kerning between the glyphs `ids` (each a character's, in order) from the font's `GPOS`
 /// pair adjustments, in 1/8192 ems: for each pair, the first subtable that covers it decides,
-/// lookup by lookup (as ttf-parser reads them). Only pairs not 0.
+/// lookup by lookup. Only pairs not 0.
 fn kerning(b: Bytes, t: Tables, ids: [u32], upem: f64) -> Vec<Kern> {
     var out: Vec<Kern> = Vec::new()
     if t.gpos == 0 {

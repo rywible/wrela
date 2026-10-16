@@ -1,12 +1,14 @@
-// Wrela Facet: original unicase capitals for the console, drawn as stroke centrelines.
-// Joins are mitred, terminals are cut flat, and bowls are chamfered at 45 degrees. The same
-// strokes, heavier, make the WRΞLA mark. No external font outlines or raster assets are
-// used here.
+// Wrela Facet: the console's display face, unicase capitals drawn as stroke centrelines and
+// baked into a font (`FONT`) when the program is built. Joins are mitred, terminals are cut
+// flat, and bowls are chamfered at 45 degrees. The same strokes, heavier, make the WRΞLA mark
+// (`mark`, `mark_distance`).
 use ui::ttf::{Baked, BakedGlyph, Kern}
 
-// Design units are hundredths of an em. Capitals stand 0.70 em, on a 0.10 em stroke.
+/// The capitals' height: 0.70 em. Design units are hundredths of an em.
 pub const CAP: f32 = 0.70
+/// Half the stroke's width: capitals are drawn with a 0.10 em stroke.
 pub const HALF: f32 = 0.05
+/// Half the wordmark's heavier stroke's width.
 pub const MARK_HALF: f32 = 0.07
 const SIDE: f32 = 0.07
 const MARK_GAP: f32 = 0.15
@@ -26,8 +28,8 @@ pub struct Letter: Clone {
     pub clip: bool,
 }
 
-// One straight run of a stroke: its centreline from `a` to `b`, and the planes through each
-// end that it shares with its neighbours (perpendicular at a free terminal).
+/// One straight run of a stroke: its centreline from `a` to `b`, and the planes through each
+/// end that it shares with its neighbours (perpendicular at a free terminal).
 pub struct Piece: Copy {
     pub a: vec2,
     pub b: vec2,
@@ -97,8 +99,8 @@ pub fn pieces(stroke: Stroke, half: f32, clip: bool, shift: vec2 = vec2(0.0)) ->
     out
 }
 
-// Signed distance to one mitred run: negative inside. Exact on the outline, and a lower
-// bound outside it, which is what a distance field and a sphere tracer both need.
+/// Signed distance to one mitred run: negative inside. Exact on the outline, and a lower
+/// bound outside it, which is what a distance field and a sphere tracer both need.
 pub fn piece_distance(p: vec2, s: Piece) -> f32 {
     let u = normalize(s.b - s.a)
     let side = abs(dot(p - s.a, vec2(-u.y, u.x))) - s.half
@@ -841,7 +843,7 @@ fn mark_letters() -> Vec<Letter> {
     out
 }
 
-// The mark's pieces in ems, centred on the origin horizontally, baseline at y = 0.
+/// The mark's pieces in ems, centred on the origin horizontally, baseline at y = 0.
 pub fn mark() -> Vec<Piece> {
     let letters = mark_letters()
     var width = -MARK_GAP
@@ -860,8 +862,8 @@ pub fn mark() -> Vec<Piece> {
     out
 }
 
-// The mark's runs for the GPU: each run's ends, its cuts, the run it turns into, and its
-// half stroke with the baseline and cap height.
+/// The mark's runs for the GPU: each run's ends, its cuts, the run it turns into, and its
+/// half stroke with the baseline and cap height.
 pub struct MarkRun: Copy + GpuData {
     pub ab: vec4,
     pub cuts: vec4,
@@ -889,8 +891,8 @@ pub fn mark_runs() -> Vec<MarkRun> {
     out
 }
 
-// The flat mark's field at `p` (ems, mark centred, baseline at 0): the same as the font's
-// pieces, joined at their mitres without a seam.
+/// The flat mark's field at `p` (ems, mark centred, baseline at 0): the same as the font's
+/// pieces, joined at their mitres without a seam.
 pub fn mark_distance(p: vec2, s: MarkRun) -> f32 {
     let a = s.ab.xy
     let b = s.ab.zw
@@ -911,7 +913,8 @@ pub fn mark_width() -> f32 {
     width
 }
 
-// No font file or runtime outline processing: the compiler bakes the original drawings.
+/// The font, baked from the drawings when the program is built: no font file, and no outline
+/// processing while the program runs.
 pub fn bake() -> Baked {
     let em = 64.0
     let spread = 5.0
