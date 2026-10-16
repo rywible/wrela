@@ -1905,6 +1905,33 @@ a tab is reloaded. The browser host's environment now says whether the page load
 tab (the [Navigation Timing](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceNavigationTiming/type)
 type), and the console's 30-minute rule and its stored time are gone.
 
+Ryan found the raw covers wasteful and the album row hard to read. Covers now ship as WebP
+(quality 90: 29 and 107 KB, from 2 MB of pixels each), decoded by the browser through a new
+host mechanism (`image/decode`) at the size the catalog promises. Asked for a direction, Ryan
+proposed cubes: each game is now a cube in the tesseract's room, its cover on its sides,
+turning slowly; the selection tumbles forward and widens into its whole cover. Claude judged
+the look from headless Chrome captures at rest, mid-tumble and settled. Ryan also asked for the
+games to load ahead of time without slowing the console: once the library has settled, the
+console has the browser fetch each game's pages, runtime, WASM and shaders at low priority,
+the selection first, and stops when a game opens. The console and the games are one site, so
+the browser's cache serves them to the game.
+Ryan then asked for tighter type, the selection always at the left, softer hover, more weight
+on the selection and a tesseract that sits lower and farther off. The UI's fonts gained
+optional tracking and weight (stroke added through the distance field); the console sets
+Manrope a little closer and heavier, with 15-pixel button labels. Hover and focus ease in over
+a quarter second. Resting cubes stand still and dimmer; the selection stands in a pool of its
+cover's light and makes a half turn as it arrives. The tesseract stands twice as deep at the
+same size on screen, lower and dimmer in the library. The row then became a carousel, as Ryan
+asked that the block left behind take the chosen one's place rather than leave the screen;
+the tesseract went deeper again, and the title was laid out for the still camera so it no
+longer rises and falls with the camera's drift.
+On a switch the title and state now ease out and the new ones in; the blocks' edges are a steady
+silver line a pixel wide, their outline smoothed, brightening, eased, only under the pointer
+(it had followed the keyboard focus from block to block); and the tesseract turns 30% slower.
+The blocks' edges then moved out of the faces' shading into lines of their own on the screen,
+one CSS pixel wide: drawn inside each face, an edge took its width from the face's angle, and
+the top face, seen almost edge on, made its back edge flicker.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
