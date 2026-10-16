@@ -16,8 +16,9 @@ const H: u32 = 360;
 const EYE: [f32; 3] = [-2.0, 0.9, -1.5];
 const AT: [f32; 3] = [6.0, 0.3, 9.0];
 
-fn host() -> Host {
-    let (dir, _) = page("examples/clusters", "clusters");
+/// The example built as page `name` (each test its own: two tests building one page race).
+fn host(name: &str) -> Host {
+    let (dir, _) = page("examples/clusters", name);
     let mut host = Host::load(&dir).expect("load");
     host.init().expect("init");
     host
@@ -83,7 +84,7 @@ fn levels_listed(host: &mut Host) -> u32 {
 #[test]
 #[ignore = "needs a GPU"]
 fn a_cut_holds_every_quad_it_wants() {
-    let mut host = host();
+    let mut host = host("clusters-rooms");
     frame(&mut host, 0.5, 8);
     let levels = levels_listed(&mut host);
     assert!(levels >= 3, "the cut took {levels} levels");
@@ -97,7 +98,7 @@ fn a_cut_holds_every_quad_it_wants() {
 #[test]
 #[ignore = "needs a GPU"]
 fn a_cut_opens_no_crack_and_keeps_its_silhouettes() {
-    let mut host = host();
+    let mut host = host("clusters-cracks");
     let cut_frame = frame(&mut host, 0.5, 3);
     let levels = levels_listed(&mut host);
     assert!(levels >= 3, "the cut took {levels} levels");
