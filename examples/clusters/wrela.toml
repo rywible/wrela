@@ -1,0 +1,8 @@
+# The rendering moonshots' virtual geometry spike (S1a): a smooth field drawn as clusters
+# (`engine::clusters`), each place of it at the coarsest level whose error is under a fraction
+# of a pixel.
+[package]
+name = "clusters"
+
+[dependencies]
+engine = { path = "../../engine" }

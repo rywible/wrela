@@ -44,9 +44,9 @@ pub const NO_VERTEX: u32 = 0xffffff
 
 /// A cell's word in the cell map: its vertex (`NO_VERTEX` for none), and which of its eight
 /// corners are inside (a bit each).
-struct CellWord: Packed + Copy {
-    vertex: Bits<24>,
-    signs: Bits<8>,
+pub struct CellWord: Packed + Copy {
+    pub vertex: Bits<24>,
+    pub signs: Bits<8>,
 }
 
 /// What a realization's passes counted (`Mesh::tally`), which `finish_mesh` writes: its
@@ -172,7 +172,7 @@ pub struct Quad: Copy + GpuData {
 /// Where cell `c` of the block in live slot `slot` is in a cell map with room for `blocks`
 /// blocks (its length over `BLOCK³`): row by row, as one dispatch of that many blocks would
 /// number its invocations.
-fn cell_key(slot: u32, c: vec3u, blocks: u32) -> u32 {
+pub fn cell_key(slot: u32, c: vec3u, blocks: u32) -> u32 {
     (slot * BLOCK + c.x) + c.y * blocks * BLOCK + c.z * blocks * BLOCK * BLOCK
 }
 
@@ -466,7 +466,14 @@ pub fn place_vertices<C, F: Parts<C>>(
 
 /// The vertex of the cell at grid cell `c` (which may be outside the grid), through the block
 /// map and the cell map: none outside the grid, in a culled block, or past the vertices' room.
-fn vertex_at(grid: Grid, block_map: [u32], cells: [u32], blocks: u32, room: u32, c: vec3i) -> u32 {
+pub fn vertex_at(
+    grid: Grid,
+    block_map: [u32],
+    cells: [u32],
+    blocks: u32,
+    room: u32,
+    c: vec3i,
+) -> u32 {
     let (u, n) = (vec3u(c), grid.size * BLOCK)
     if c.x < 0 || c.y < 0 || c.z < 0 || u.x >= n.x || u.y >= n.y || u.z >= n.z {
         return NO_VERTEX
