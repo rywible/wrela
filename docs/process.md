@@ -533,6 +533,8 @@ the browser also receives the corresponding parity fixes.
 | W3C, Gamepad API, its "standard" mapping | A W3C specification; no code taken | The browser host reads pads by it (`runtime/browser/src/listen.ts`), and wrela's pad buttons and axes take its order and names (south, east, west, north, the shoulders and triggers, the sticks, the d-pad). |
 | Closest points of two segments (as in Christer Ericson, *Real-Time Collision Detection*, 2005, §5.1.9) | A standard method; no code taken | The climber's fight (`examples/climber/fight.wrela`): the sword's edge, swept between ticks, is tested against capsules on the wolf's body, and the wolf's bite against a capsule up the climber. |
 | Position-based dynamics (Matthias Müller, Bruno Heidelberger, Marcus Hennix, John Ratcliff, "Position Based Dynamics", 2007); long-range attachments (Tae-Yong Kim, Nuttapong Chentanez, Matthias Müller-Fischer, "Long Range Attachments: A Method to Simulate Inextensible Clothing in Computer Games", 2012) | Published methods; no code taken | The climber's cape (`examples/climber/cape.wrela`): a grid of points held by links whose lengths are kept, each point tethered to the collar so the cloth can't stretch however fast the body moves. |
+| The 100STYLE Dataset (Ian Mason, Sebastian Starke and Taku Komura, "Real-Time Style Modelling of Human Locomotion via Feature-Wise Transformations and Local Motion Phases", I3D 2022) | [Zenodo](https://zenodo.org/records/8127870), CC BY 4.0; credit: "The 100STYLE Dataset - Ian Mason" | The humanoid bake-off (`examples/humanoid`): six Neutral and StartStop clips were downloaded outside the repo and read by `tools/bvh.py`. Its skeleton's proportions are `rig`'s, and an idle, a walk and a run, each cut to one averaged loop of 32 samples, are `clips.wrela` (side B). It is an adaptation, so the files say so, and a game that ships it credits the dataset. |
+| Catmull-Rom splines (Edwin Catmull and Raphael Rom, 1974); two-bone inverse kinematics by the law of cosines | Standard methods; no code taken | The bake-off's shared layer (`examples/humanoid/motion.wrela`): poses sampled smoothly round a cycle, and legs reaching held feet. |
 
 ### Style influences (named, not traced)
 
@@ -2408,6 +2410,25 @@ GPU span -1.3%) and -3.4% at the mere (span inconclusive), five pairs. The still
 before to within what two runs of one build differ by (at most 3/255 at a handful of pixels), and
 a test checks it chooses what scoring every species chooses over 4096 seeded habitats and on every
 range's edges. Bitmasks of the species each of 32 bins of a habitat's acid, wet and light might admit (so the walk reads only those) gained nothing more (-0.3%, inconclusive): the rest of the choice is scoring the species a habitat is within reach of.
+
+## A humanoid bake-off, 2026-10-16
+
+Ryan decided the Last Green's wraith goes: the player becomes a masked samurai, a humanoid that
+moves as one does in *Elden Ring* (FromSoftware, Bandai Namco), which he has played and can judge
+by. That game was named, not looked at: no image, animation, shot or design was traced, sampled
+or recreated. To choose how the humanoid is animated before it is built, Claude Code (Claude
+Opus 5.5) set up a bake-off, alone and without subagents: one stand-in mannequin, one controller
+and camera, two sources of motion behind the same procedural layer (gait blend by speed, stride
+warp, held feet, IK over the ground, hip sink, lean), playable side by side
+(`examples/humanoid`).
+
+- **A, keyed:** a walk, a run and an idle written as a few poses each by the agent.
+- **B, captured:** 100STYLE's Neutral clips (see the table above), cut to loops by `tools/bvh.py`.
+
+The capture has no real run (its fastest is about 2 m/s), so B's run is its slow run warped to
+jog and sprint speeds; that is a finding about this dataset, not about capture. Judged from
+native-host captures on the M4 Air and in Chrome; no outside code was used and nothing was made
+with a generative model.
 
 ## Keeping this record
 

@@ -1,0 +1,10 @@
+# The humanoid bake-off: one stand-in figure (the Last Green's samurai, before its design) on one
+# rig, walked and run by the same controller and camera two ways, to choose how the samurai is
+# animated: A, a few keyed poses a cycle with a procedural layer (`keyed`); B, motion capture
+# (100STYLE, CC BY 4.0) with the same layer (`mocap`). Tab switches between them; B shows both
+# side by side.
+[package]
+name = "humanoid"
+
+[dependencies]
+engine = { path = "../../engine" }

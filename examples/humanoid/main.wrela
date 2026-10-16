@@ -1,0 +1,478 @@
+// The bake-off, played: the stand-in walked and run by the engine's player (`engine::player`, its
+// controller and camera, tuned toward a game's run) over a test ground (level, a ramp, stairs up
+// and down, a landing), its motion from side A (keyed poses) or side B (motion capture), both
+// through the same procedural layer (`motion`). Tab: A, then B, then both side by side (A where
+// the player is, B a step to its right). The ground is chequered a metre a square, to judge pace
+// and slipping feet. A is tinted cool, B warm.
+//
+//     W A S D, the left stick   go (the keys and the stick all the way: a jog)
+//     Shift, the stick pressed  sprint
+//     the mouse (drag), arrows  look round
+//     Tab                       A, B, both
+//     C                         the camera ahead and to the side (a judge's view), or behind
+
+use engine::creature::MAX_BONES
+use engine::footing::Obstacles
+use engine::grow::Ground
+use engine::look::{CreatureLook, Mesh as Tolerance}
+use engine::place::{Place, Water}
+use engine::player::{Arm, Focus, Framing, Motion, Player, control, follow, spawn, step_with}
+use engine::present::{Snapshots, lerp_angle, short_way}
+use engine::realize::{Mesh, realize_once}
+use engine::render::{Lights, View, depth_only, shade, skin, skin_shadow, view}
+use engine::run::{Asks, TickInput, run}
+use engine::sim::{SimState, Tick}
+use mannequin::{A_TINT, B_TINT, mannequin}
+use motion::{Mover, Source}
+use rig::{body_frame, bones, place}
+use std::gpu::{
+    ClipPosition, ComparisonSampler, Cull, DepthBias, DepthTexture, GpuBuffer, VertexIndex,
+    begin_depth_pass, begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture, draw,
+    write,
+}
+use std::hash::StateHash
+use std::input::{Event, Key, events}
+use std::io::print
+use std::math::TAU
+use std::serialize::Serialize
+
+// ---- the sim -------------------------------------------------------------------------------------
+
+/// The motion: a jog with the keys (or the stick all the way), a sprint with Shift, the
+/// engine's quick answer to the stick; the look swings behind a run left alone.
+pub const MOTION = Motion { walk: 3.0, run: 5.0, follow: 0.9 }
+
+/// The sim: the stand-in's body, and its ticks.
+pub struct Sim: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub body: Player,
+    pub ticks: u32,
+}
+
+impl Asks for Sim {
+    type Ask = u32
+    type Answer = u32
+
+    @deterministic
+    fn asks(self, tick: Tick) -> Vec<(u32, Tick)> {
+        Vec::new()
+    }
+
+    @deterministic
+    fn work(ask: u32) -> u32 {
+        ask
+    }
+}
+
+/// The test ground: level, with a ramp up to a platform and stairs down from it, and a flight
+/// of stairs up to a landing beside them (`land_height`).
+pub struct Land: Copy {}
+
+impl Ground for Land {
+    fn height(self, x: f32, z: f32) -> f32 {
+        land_height(vec2(x, z))
+    }
+
+    fn past_edge(self, p: vec2) -> f32 {
+        -1000.0
+    }
+
+    fn rock(self, p: vec2) -> f32 {
+        0.0
+    }
+}
+
+/// The ground's height at `p` (m): the ramp (x within 4 m, z 10 to 18, rising a quarter), the
+/// platform (z 18 to 24, 2 m up), twelve steps down (z 24 to 30, each 0.5 m deep and 0.16 high);
+/// ten steps up (x 7 to 11, z 2 to 6, each 0.4 deep and 0.15 high) to a landing 1.5 m up (z 6 to
+/// 10); level elsewhere.
+fn land_height(p: vec2) -> f32 {
+    let (x, z) = (p.x, p.y)
+    if abs(x) <= 4.0 {
+        if z >= 10.0 && z < 18.0 {
+            return (z - 10.0) * 0.25
+        }
+        if z >= 18.0 && z < 24.0 {
+            return 2.0
+        }
+        if z >= 24.0 && z < 30.0 {
+            return 2.0 - 0.16 * (floor((z - 24.0) / 0.5) + 1.0)
+        }
+    }
+    if x >= 7.0 && x <= 11.0 {
+        if z >= 2.0 && z < 6.0 {
+            return 0.15 * (floor((z - 2.0) / 0.4) + 1.0)
+        }
+        if z >= 6.0 && z < 10.0 {
+            return 1.5
+        }
+    }
+    0.0
+}
+
+fn dry() -> Water {
+    Water {
+        meres: [vec4(0.0), vec4(0.0)],
+        springs: [vec2(0.0), ..vec2(0.0)],
+        spring_count: 0,
+        falls: [vec2(0.0), vec2(0.0)],
+    }
+}
+
+fn open() -> Obstacles {
+    let nothing: Vec<engine::footing::Obstacle> = Vec::new()
+    Obstacles::of(nothing, vec2(-512.0), vec2(512.0))
+}
+
+fn spawn_sim() -> Sim {
+    Sim { body: spawn(Land {}, Place::of(vec2(0.0, 0.0)), 0.0), ticks: 0 }
+}
+
+/// A tick: the records turn the controls, and the body goes.
+@deterministic
+fn tick(s: mut Sim, input: TickInput<Sim>) {
+    for e in input.records {
+        control(mut s.body.controls, e)
+    }
+    step_with(mut s.body, Land {}, dry(), open(), MOTION, input.dt)
+    s.ticks += 1
+}
+
+@deterministic
+fn present(s: Sim) -> Sim {
+    s
+}
+
+// ---- the frames ----------------------------------------------------------------------------------
+
+/// What's shown: side A, side B, or both side by side.
+const SIDES: u32 = 3
+
+pub struct Bake {
+    snaps: Snapshots<Sim>,
+    mesh: Mesh,
+    palettes: GpuBuffer<mat4>,
+    a: Source,
+    b: Source,
+    mover_a: Mover,
+    mover_b: Mover,
+    side: u32,
+    /// Whether the camera is beside the figure (C), not behind it.
+    beside: bool,
+    arm: Arm,
+    /// The frame's time when last drawn (s); the body's speed and heading then, and how fast
+    /// they change (eased).
+    stepped: f32,
+    speed: f32,
+    heading: f32,
+    accel: f32,
+    turning: f32,
+    depth: DepthTexture,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+    width: u32,
+    height: u32,
+}
+
+/// The camera: over the shoulder at a game's distance.
+const FRAMING = Framing { target: 1.5, behind: 4.0, fovy: 0.9 }
+
+const LIGHTS = Lights {
+    sun_colour: vec3(1.6, 1.5, 1.35),
+    sky: vec3(0.55, 0.65, 0.8),
+    ground: vec3(0.3, 0.27, 0.22),
+    ambient: 0.55,
+    exposure: 0.9,
+    f0: 0.04,
+    normal_offset: 3.0e-2,
+    compare_bias: 0.002,
+}
+
+const SUN = vec3(0.45, 0.8, 0.35)
+
+pub fn init() -> Bake {
+    let latest = run(spawn_sim(), hz: 60, step: tick, present: present)
+    print(
+        "the bake-off: W A S D or the stick to go, Shift to sprint, drag or the arrows to look; Tab for A, B, both; C for the judge's view",
+    )
+    Bake {
+        snaps: Snapshots::new(take latest, hz: 60),
+        mesh: realize_once(mannequin(), CreatureLook { surface: Tolerance { tolerance: 3mm } }),
+        palettes: buffer(2 * MAX_BONES),
+        a: keyed::source(),
+        b: mocap::source(),
+        mover_a: Mover {},
+        mover_b: Mover {},
+        side: 0,
+        beside: false,
+        arm: Arm {},
+        stepped: 0.0,
+        speed: 0.0,
+        heading: 0.0,
+        accel: 0.0,
+        turning: 0.0,
+        depth: depth_texture(width: 1, height: 1),
+        shadow: depth_texture(width: 2048, height: 2048),
+        shadow_sampler: comparison_sampler(),
+        width: 0,
+        height: 0,
+    }
+}
+
+/// What every block drawn here passes on: its world point and normal.
+pub struct Surfel: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+}
+
+/// A unit cube's corner (each side from -1 to 1), six faces of two triangles, moved by `model`.
+@vertex
+fn block(v: VertexIndex, model: mat4, view: View) -> Surfel {
+    let face = v.index / 6
+    let corner = v.index % 6
+    let normals = [
+        vec3(1.0, 0.0, 0.0),
+        vec3(-1.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, -1.0, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(0.0, 0.0, -1.0),
+    ]
+    let us = [
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(1.0, 0.0, 0.0),
+        vec3(1.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+    ]
+    let cu = [-1.0, 1.0, -1.0, -1.0, 1.0, 1.0]
+    let cv = [-1.0, -1.0, 1.0, 1.0, -1.0, 1.0]
+    let n = normals[face]
+    let u = us[face]
+    let w = cross(n, u)
+    let p = n + u * cu[corner] + w * cv[corner]
+    let world = (model * vec4(p, 1.0)).xyz
+    let (x, y, z) = (model[0].xyz, model[1].xyz, model[2].xyz)
+    Surfel {
+        clip: ClipPosition { position: view.view_proj * vec4(world, 1.0) },
+        world,
+        normal: x * (n.x / dot(x, x)) + y * (n.y / dot(y, y)) + z * (n.z / dot(z, z)),
+    }
+}
+
+/// The ground's pixel: `albedo` chequered a metre a square, lit by the sun (in its shadow map)
+/// and the sky.
+@fragment
+fn ground_lit(
+    s: Surfel,
+    albedo: vec3,
+    view: View,
+    lights: Lights,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+) -> vec4 {
+    let n = normalize(s.normal)
+    let c = floor(s.world.x) + floor(s.world.z)
+    let check = if c - 2.0 * floor(c * 0.5) > 0.5 { 0.85 } else { 1.0 }
+    let lit = lights.shadow(view, s.world, n, shadow, shadow_sampler)
+    vec4(lights.light(albedo * check, 0.85, n, s.world, view, lit), 1.0)
+}
+
+/// A box: its middle at `at`, its axes `x` and `y` (unit, square to each other), each side `half`
+/// from the middle.
+fn boxed(at: vec3, x: vec3, y: vec3, half: vec3) -> mat4 {
+    let z = cross(x, y)
+    mat4(vec4(x * half.x, 0.0), vec4(y * half.y, 0.0), vec4(z * half.z, 0.0), vec4(at, 1.0))
+}
+
+/// A box from `lo` to `hi`, square to the axes.
+fn span(lo: vec3, hi: vec3) -> mat4 {
+    boxed((lo + hi) * 0.5, vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), (hi - lo) * 0.5)
+}
+
+/// The test ground as boxes, as `land_height` has it: the level ground, the ramp, the platform, its
+/// steps down, the steps up and their landing, and four posts a metre and a half tall.
+fn blocks() -> Vec<mat4> {
+    var out: Vec<mat4> = Vec::new()
+    out.push(span(vec3(-60.0, -1.0, -60.0), vec3(60.0, 0.0, 60.0)))
+    let up = normalize(vec3(0.0, 1.0, -0.25))
+    let run_len = length(vec2(8.0, 2.0))
+    out.push(
+        boxed(
+            vec3(0.0, 1.0, 14.0) - up * 0.05,
+            vec3(1.0, 0.0, 0.0),
+            up,
+            vec3(4.0, 0.05, run_len * 0.5),
+        ),
+    )
+    out.push(span(vec3(-4.0, 0.0, 18.0), vec3(4.0, 2.0, 24.0)))
+    for k in 0..12 {
+        let z = 24.0 + 0.5 * f32(k)
+        out.push(span(vec3(-4.0, 0.0, z), vec3(4.0, 2.0 - 0.16 * f32(k + 1), z + 0.5)))
+    }
+    for k in 0..10 {
+        let z = 2.0 + 0.4 * f32(k)
+        out.push(span(vec3(7.0, 0.0, z), vec3(11.0, 0.15 * f32(k + 1), z + 0.4)))
+    }
+    out.push(span(vec3(7.0, 0.0, 6.0), vec3(11.0, 1.5, 10.0)))
+    for p in [vec2(-6.0, 3.0), vec2(-6.0, 7.0), vec2(-10.0, 3.0), vec2(-10.0, 7.0)] {
+        out.push(span(vec3(p.x - 0.05, 0.0, p.y - 0.05), vec3(p.x + 0.05, 1.5, p.y + 0.05)))
+    }
+    out
+}
+
+const BLOCKS: Vec<mat4> = blocks()
+const GROUND = vec3(0.32, 0.36, 0.28)
+const STONE = vec3(0.45, 0.43, 0.4)
+
+fn keys(s: mut Bake) {
+    for e in events() {
+        if let Event::KeyDown { key, repeat, .. } = e {
+            if key == Key::Tab && !repeat {
+                s.side = (s.side + 1) % SIDES
+                let name = ["A (keyed)", "B (motion capture)", "A and B side by side"][s.side]
+                print(f"showing {name}")
+            }
+            if key == Key::C && !repeat {
+                s.beside = !s.beside
+            }
+        }
+    }
+}
+
+pub fn frame(s: mut Bake, time: f32, width: u32, height: u32) {
+    keys(mut s)
+    s.snaps.update()
+    let b = s.snaps.at(s.snaps.sim_time(time))
+    let (pa, pb) = (b.a.body, b.b.body)
+    let feet2 = mix(pa.at.world(), pb.at.world(), vec2(b.alpha))
+    let feet = vec3(feet2.x, mix(pa.y, pb.y, b.alpha), feet2.y)
+    let heading = lerp_angle(pa.heading, pb.heading, b.alpha)
+    let yaw = lerp_angle(pa.controls.yaw, pb.controls.yaw, b.alpha)
+    let pitch = mix(pa.controls.pitch, pb.controls.pitch, b.alpha)
+    let speed = length(mix(pa.velocity, pb.velocity, vec2(b.alpha)))
+    let dt = clamp(time - s.stepped, 0.0, 0.1)
+    s.stepped = time
+    // How fast the speed and the heading change, eased over a tenth of a second.
+    if dt > 1.0e-4 {
+        let ease = 1.0 - exp(-dt / 0.1)
+        s.accel += ((speed - s.speed) / dt - s.accel) * ease
+        s.turning += (short_way(heading - s.heading, TAU) / dt - s.turning) * ease
+    }
+    s.speed = speed
+    s.heading = heading
+    // A where the player is; B there too, or a step to its right beside A.
+    let shows_a = s.side != 1
+    let shows_b = s.side != 0
+    let body_a = body_frame(feet, heading)
+    let right = vec3(-cos(heading), 0.0, sin(heading))
+    let beside = feet2 + right.xz * (if s.side == 2 { 1.4 } else { 0.0 })
+    let body_b = body_frame(vec3(beside.x, land_height(beside), beside.y), heading)
+    if shows_a {
+        let (p, reach) = s.mover_a.pose(s.a, speed, s.accel, s.turning, dt)
+        let placed = s.mover_a.ground(p, reach, body_a, land_height, dt)
+        write(mut s.palettes, 0, bones(placed, body_a))
+    }
+    if shows_b {
+        let (p, reach) = s.mover_b.pose(s.b, speed, s.accel, s.turning, dt)
+        let placed = s.mover_b.ground(p, reach, body_b, land_height, dt)
+        write(mut s.palettes, MAX_BONES, bones(placed, body_b))
+    }
+    // The camera: over the shoulder, round the player's look.
+    let (behind_eye, behind_at) = follow(
+        mut s.arm,
+        dt,
+        FRAMING,
+        feet,
+        yaw: yaw,
+        pitch: pitch,
+        focus: Focus {},
+        o: open(),
+        o_from: vec2(0.0),
+        height: land_height,
+    )
+    // Beside: ahead and off to the figure's left, three-quarters on (both: round the middle of
+    // the two, so each shows clear of the other), level with its chest.
+    let middle = (feet + vec3(beside.x, feet.y, beside.y)) * 0.5
+    let ahead = vec3(sin(heading), 0.0, cos(heading))
+    let (eye, at) = if s.beside {
+        (middle - right * 3.6 + ahead * 2.8 + vec3(0.0, 1.2, 0.0), middle + vec3(0.0, 0.95, 0.0))
+    } else {
+        (behind_eye, behind_at)
+    }
+    if width != s.width || height != s.height {
+        s.depth = depth_texture(width, height)
+        s.width = width
+        s.height = height
+    }
+    let v = view(
+        eye,
+        at,
+        fovy: FRAMING.fovy,
+        aspect: f32(width) / f32(height),
+        sun: SUN,
+        extent: 6.0,
+    )
+    // The sun's shadow map: the figures.
+    let figures = [(shows_a, 0, A_TINT), (shows_b, MAX_BONES, B_TINT)]
+    let shadow_pass = begin_depth_pass(mut s.shadow, clear_depth: 1.0)
+    for (shown, first, _) in figures {
+        if shown {
+            draw(
+                shadow_pass,
+                skin_shadow.bind(
+                    verts: s.mesh.verts.items(),
+                    palettes: s.palettes.items(),
+                    first: first,
+                    view: v,
+                ),
+                depth_only,
+                indices: s.mesh.quads.items(),
+                indirect: s.mesh.draw.items(),
+                depth_bias: DepthBias { constant: 4, slope: 2.0, clamp: 0.0 },
+            )
+        }
+    }
+    shadow_pass.end()
+    let pass = begin_screen_pass_with_depth(mut s.depth, clear: vec4(0.55, 0.65, 0.75, 1.0))
+    for k in 0..BLOCKS.len() {
+        draw(
+            pass,
+            block.bind(model: BLOCKS[k], view: v),
+            ground_lit.bind(
+                albedo: if k == 0 { GROUND } else { STONE },
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.shadow_sampler,
+            ),
+            vertices: 36,
+        )
+    }
+    for (shown, first, tint) in figures {
+        if shown {
+            draw(
+                pass,
+                skin.bind(
+                    verts: s.mesh.verts.items(),
+                    palettes: s.palettes.items(),
+                    first: first,
+                    view: v,
+                ),
+                shade.bind(
+                    field: mannequin().field(),
+                    look: tint,
+                    view: v,
+                    lights: LIGHTS,
+                    shadow: s.shadow,
+                    shadow_sampler: s.shadow_sampler,
+                ),
+                indices: s.mesh.quads.items(),
+                indirect: s.mesh.draw.items(),
+                cull: Cull::Back,
+            )
+        }
+    }
+    pass.present()
+}

@@ -31,6 +31,7 @@ mod grazer;
 mod handover;
 mod hello_field;
 mod herd;
+mod humanoid;
 mod input;
 mod keys;
 mod landform;
