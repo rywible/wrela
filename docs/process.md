@@ -2058,6 +2058,36 @@ it was (an export would go stale while an item is edited) and that the spec's pr
 beside the items, so a search finds a rule as well as a name. AGENTS.md now says reference docs
 come from source, and that doc comments are the reference. Claude (Opus 5.5) wrote it.
 
+## docs.wrela.dev, a Wrela program, 2026-10-15
+
+Ryan asked for the docs site to be written in Wrela, however much a browser's HTML and CSS would
+have given for free, and for its look to sit between the console's and a calmer page to read:
+"add flair where you can but keep it readable". He asked Claude (Opus 5.5) to follow Anthropic's
+frontend-design skill (a Claude Code plugin, `frontend-design@claude-plugins-official`, installed
+for this): a short plan of colours, type, layout and one bold element, checked against the brief
+and against the looks such pages fall into, then built and judged from screenshots.
+
+The plan kept the console's black only in the header band, set the page on a quieter slate, and
+read in Manrope, the console's face; code and the names of items are set in JetBrains Mono. Its
+one bold element is the WRΞLA mark drawn as a field: lines of equal distance to the mark spread
+from it as a map's contours do, fading, and on the front page drift slowly outward, still when
+the system asks for less motion. Wrela's content is fields, and its text is drawn from distance
+fields too. The first lines took the mark's own field, a lower bound outside its strokes, and
+came out as stacked rectangles; the lines now take the distance to each stroke's centre line,
+joined with a smooth minimum (after Inigo Quilez's [smooth minimum](https://iquilezles.org/articles/smin/),
+reimplemented). Facet and Manrope moved from the console into `ui/brand`, which both now use.
+
+The program (`docsite/`) reads the export's `index.json` with a small JSON reader, its Markdown
+into blocks, and lays a page out at the screen's width: prose wrapped across styled runs, code
+coloured by Wrela's lexical rules and wrapped under itself, tables narrowed to fit. It lists the
+pages, searches items by name and the spec's sections by their words, selects and copies text,
+finds on the page (taking Ctrl or Cmd+F from the browser), keeps the reader's place in the
+page's address, and gives screen readers the whole page, in order, whether or not it is on
+screen. A finger's drag scrolls; a mouse's selects. The docs Worker serves the program and the
+export side by side in each release, with stable addresses for the raw files (`/llms.txt`,
+`/std/io.md`) that lead to the current release. Writing its tests found a second compiler bug: a
+temporary `String` borrowed inside `assert(...)` is freed before the comparison (#240).
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

@@ -73,15 +73,19 @@ impl Index {
         index.version = json.field(root, "version").to_string()
         index.commit = json.field(root, "commit").to_string()
         index.repository = json.field(root, "repository").to_string()
-        let Some(pages) = json.get(root, "pages") else { return Err(String::from("the index has no pages")) }
+        let Some(pages) = json.get(root, "pages") else {
+            return Err(String::from("the index has no pages"))
+        }
         for i in 0..json.count(pages) {
             let p = json.at(pages, i)
-            index.pages.push(Page {
-                path: json.field(p, "path").to_string(),
-                title: json.field(p, "title").to_string(),
-                summary: json.field(p, "summary").to_string(),
-                kind: json.field(p, "kind").to_string(),
-            })
+            index.pages.push(
+                Page {
+                    path: json.field(p, "path").to_string(),
+                    title: json.field(p, "title").to_string(),
+                    summary: json.field(p, "summary").to_string(),
+                    kind: json.field(p, "kind").to_string(),
+                },
+            )
         }
         if let Some(items) = json.get(root, "items") {
             for i in 0..json.count(items) {
@@ -95,18 +99,20 @@ impl Index {
                     Some(l) => json.whole(l).unwrap_or(0),
                     None => 0,
                 }
-                index.items.push(Item {
-                    path,
-                    kind: json.field(v, "kind").to_string(),
-                    summary,
-                    page: json.field(v, "page").to_string(),
-                    anchor: json.field(v, "anchor").to_string(),
-                    source: json.field(v, "source").to_string(),
-                    line,
-                    name,
-                    lower: lower_path,
-                    words,
-                })
+                index.items.push(
+                    Item {
+                        path,
+                        kind: json.field(v, "kind").to_string(),
+                        summary,
+                        page: json.field(v, "page").to_string(),
+                        anchor: json.field(v, "anchor").to_string(),
+                        source: json.field(v, "source").to_string(),
+                        line,
+                        name,
+                        lower: lower_path,
+                        words,
+                    },
+                )
             }
         }
         if let Some(sections) = json.get(root, "sections") {
@@ -121,13 +127,15 @@ impl Index {
                         if k + 1 == json.count(h) { heading = lower(json.text(json.at(h, k))) }
                     }
                 }
-                index.sections.push(Section {
-                    page: json.field(v, "page").to_string(),
-                    anchor: json.field(v, "anchor").to_string(),
-                    title,
-                    heading,
-                    words: lower(json.field(v, "text")),
-                })
+                index.sections.push(
+                    Section {
+                        page: json.field(v, "page").to_string(),
+                        anchor: json.field(v, "anchor").to_string(),
+                        title,
+                        heading,
+                        words: lower(json.field(v, "text")),
+                    },
+                )
             }
         }
         Ok(take index)
@@ -156,9 +164,14 @@ impl Index {
                 let w = q.as_str().slice(a, b)
                 if w.is_empty() { continue }
                 let name = it.name.as_str()
-                let s = if name == w { 1000 } else if name.starts_with(w) { 800 } else if name.find(w).is_some() {
+                let s = if name == w { 1000 } else if name.starts_with(w) { 800 } else if name
+                    .find(w)
+                    .is_some() {
                     600
-                } else if it.lower.as_str().find(w).is_some() { 400 } else if it.words.as_str().find(w).is_some() {
+                } else if it.lower.as_str().find(w).is_some() { 400 } else if it.words
+                    .as_str()
+                    .find(w)
+                    .is_some() {
                     150
                 } else { 0 }
                 if s == 0 { all = false }
@@ -179,7 +192,10 @@ impl Index {
             for (a, b) in words {
                 let w = q.as_str().slice(a, b)
                 if w.is_empty() { continue }
-                let s = if sec.heading.as_str().find(w).is_some() { 500 } else if sec.words.as_str().find(w).is_some() {
+                let s = if sec.heading.as_str().find(w).is_some() { 500 } else if sec.words
+                    .as_str()
+                    .find(w)
+                    .is_some() {
                     100
                 } else { 0 }
                 if s == 0 { all = false }
@@ -201,7 +217,7 @@ fn last_name(path: str) -> borrow str {
             var k = path.len()
             while k >= 2 && !(path.byte(k - 1) == 58 && path.byte(k - 2) == 58) { k -= 1 }
             path.slice(k, path.len())
-        }
+        },
     }
 }
 

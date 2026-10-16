@@ -128,10 +128,14 @@ fn value(json: mut Json, b: [u8], at: mut u32, depth: u32) -> Result<u32, String
             loop {
                 at = skip_space(b, at)
                 if object {
-                    if at >= b.len() || b[at] != 34 { return Err(f"a key isn't a string, at byte {at}") }
+                    if at >= b.len() || b[at] != 34 {
+                        return Err(f"a key isn't a string, at byte {at}")
+                    }
                     held.push(value(mut json, b, mut at, depth + 1)?)
                     at = skip_space(b, at)
-                    if at >= b.len() || b[at] != 58 { return Err(f"a key has no `:`, at byte {at}") }
+                    if at >= b.len() || b[at] != 58 {
+                        return Err(f"a key has no `:`, at byte {at}")
+                    }
                     at = skip_space(b, at + 1)
                 }
                 held.push(value(mut json, b, mut at, depth + 1)?)
@@ -215,14 +219,17 @@ fn string(json: mut Json, b: [u8], at: mut u32) -> Result<u32, String> {
             utf8(mut text, cp)
             continue
         }
-        let out = if e == 110 { 10 } else if e == 116 { 9 } else if e == 114 { 13 } else if e == 98 {
+        let out = if e == 110 { 10 } else if e == 116 { 9 } else if e == 114 { 13 } else if e ==
+            98 {
             8
         } else if e == 102 { 12 } else if e == 34 || e == 92 || e == 47 { e } else {
             return Err(f"an unknown escape, at byte {at - 1}")
         }
         text.push(u8(out))
     }
-    let Some(t) = String::from_utf8(take text) else { return Err(f"a string isn't UTF-8, before byte {at}") }
+    let Some(t) = String::from_utf8(take text) else {
+        return Err(f"a string isn't UTF-8, before byte {at}")
+    }
     Ok(json.push(Kind::Text, take t))
 }
 
@@ -250,7 +257,9 @@ fn hex4(b: [u8], at: u32) -> Result<u32, String> {
     var n = 0
     for i in 0..4 {
         let d = u32(b[at + i])
-        let v = if d >= 48 && d <= 57 { d - 48 } else if d >= 97 && d <= 102 { d - 87 } else if d >= 65 && d <= 70 {
+        let v = if d >= 48 && d <= 57 { d - 48 } else if d >= 97 && d <= 102 { d - 87 } else if d >=
+            65 &&
+            d <= 70 {
             d - 55
         } else {
             return Err(f"`\\u` needs four hexadecimal digits, at byte {at}")
@@ -268,12 +277,17 @@ fn bytes(t: str) -> Vec<u8> {
 
 @test
 fn a_document_reads_into_values_and_their_fields() {
-    let doc = bytes("{\"pages\": [{\"path\": \"std/io.md\", \"line\": 123}, {\"path\": \"a\\\"b\\u00e9\\ud83c\\udf32\"}], \"commit\": null, \"ok\": true}")
+    let doc = bytes(
+        "{\"pages\": [{\"path\": \"std/io.md\", \"line\": 123}, {\"path\": \"a\\\"b\\u00e9\\ud83c\\udf32\"}], \"commit\": null, \"ok\": true}",
+    )
     let Ok(json) = Json::read(doc) else { panic("it reads") }
     let pages = json.get(json.root, "pages").unwrap()
     assert(json.kind(pages) == Kind::Array && json.count(pages) == 2)
     let first = json.at(pages, 0)
-    assert(json.field(first, "path") == "std/io.md" && json.whole(json.get(first, "line").unwrap()) == Some(123))
+    assert(
+        json.field(first, "path") == "std/io.md" &&
+            json.whole(json.get(first, "line").unwrap()) == Some(123),
+    )
     assert(json.field(json.at(pages, 1), "path") == "a\"bé🌲", json.field(json.at(pages, 1), "path"))
     // Raw UTF-8, as the export writes it.
     let Ok(raw) = Json::read(bytes("[\"ρ × é\"]")) else { panic("raw UTF-8 reads") }
@@ -285,7 +299,18 @@ fn a_document_reads_into_values_and_their_fields() {
 
 @test
 fn a_malformed_document_says_why_and_never_panics() {
-    for bad in ["", "{", "[1, 2", "{\"a\" 1}", "{1: 2}", "[1] 2", "\"no end", "[tru]", "\"\\x\"", "\"\\u12\""] {
+    for bad in [
+        "",
+        "{",
+        "[1, 2",
+        "{\"a\" 1}",
+        "{1: 2}",
+        "[1] 2",
+        "\"no end",
+        "[tru]",
+        "\"\\x\"",
+        "\"\\u12\"",
+    ] {
         assert(Json::read(bytes(bad)).is_err(), bad)
     }
     var deep = String::new()

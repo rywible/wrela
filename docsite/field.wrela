@@ -54,7 +54,8 @@ pub struct Look: Copy + GpuData {
 
 @fragment
 pub fn field(v: Vertex, runs: [MarkRun], look: Look) -> Over {
-    let p = vec2(v.pixel.x - look.centre.x, look.centre.y - v.pixel.y) / look.ems + vec2(0.0, CAP * 0.5)
+    let p = vec2(v.pixel.x - look.centre.x, look.centre.y - v.pixel.y) / look.ems +
+        vec2(0.0, CAP * 0.5)
     var exact = 100.0
     var round = 100.0
     for i in 0..look.count {
@@ -71,7 +72,9 @@ pub fn field(v: Vertex, runs: [MarkRun], look: Look) -> Over {
     let on = saturate(1.0 - off / 0.7)
     let fade = exp(-px / look.reach) * saturate(px / look.spacing - 0.5)
     // Toward its foot, the band fades into the page, and its lines with it.
-    let down = if look.soft > 0.0 { saturate((v.pixel.y - (look.foot - look.soft)) / look.soft) } else { 0.0 }
+    let down = if look.soft > 0.0 {
+        saturate((v.pixel.y - (look.foot - look.soft)) / look.soft)
+    } else { 0.0 }
     let ground = mix(look.ground.xyz, look.below.xyz, down * down * (3.0 - 2.0 * down))
     let color = mix(ground, look.line.xyz, on * fade * look.line.w * (1.0 - down))
     Over { color: vec4(mix(color, look.ink.xyz, ink), 1.0) }

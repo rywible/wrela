@@ -131,7 +131,9 @@ pub fn parse(src: str) -> Vec<Block> {
                     if !row.starts_with("|") { break }
                     let got = cells_of(row)
                     for k in 0..columns {
-                        if k < got.len() { cells.push(inlines(got[k].as_str())) } else { cells.push(Vec::new()) }
+                        if k < got.len() { cells.push(inlines(got[k].as_str())) } else {
+                            cells.push(Vec::new())
+                        }
                     }
                     i += 1
                 }
@@ -168,7 +170,9 @@ pub fn parse(src: str) -> Vec<Block> {
                 text.push_str(ct)
                 i += 1
             }
-            blocks.push(Block { kind: Kind::Item, level: depth, number, runs: inlines(text.as_str()) })
+            blocks.push(
+                Block { kind: Kind::Item, level: depth, number, runs: inlines(text.as_str()) },
+            )
             continue
         }
         if !para.is_empty() { para.push_str(" ") }
@@ -178,7 +182,9 @@ pub fn parse(src: str) -> Vec<Block> {
     flush(mut blocks, mut para)
     // An item's kind and source, just under its heading.
     for k in 1..blocks.len() {
-        if blocks[k].kind == Kind::Paragraph && blocks[k - 1].kind == Kind::Heading && is_meta(blocks[k].runs) {
+        if blocks[k].kind == Kind::Paragraph &&
+            blocks[k - 1].kind == Kind::Heading &&
+            is_meta(blocks[k].runs) {
             blocks[k].kind = Kind::Meta
         }
     }
@@ -194,7 +200,10 @@ fn flush(blocks: mut Vec<Block>, para: mut String) {
 
 /// Whether runs are an item's kind and source: code, " · ", code.
 fn is_meta(runs: [Run]) -> bool {
-    runs.len() == 3 && runs[0].style == CODE && runs[1].text.as_str().trim() == "·" && runs[2].style == CODE
+    runs.len() == 3 &&
+        runs[0].style == CODE &&
+        runs[1].text.as_str().trim() == "·" &&
+        runs[2].style == CODE
 }
 
 fn count_of(t: str, b: u8) -> u32 {
@@ -286,7 +295,9 @@ pub fn inlines(text: str) -> Vec<Run> {
                 var code = text.slice(i + ticks, end).to_string()
                 // A space at both ends is padding.
                 let c = code.as_str()
-                if c.len() >= 2 && c.byte(0) == 32 && c.byte(c.len() - 1) == 32 { code = c.slice(1, c.len() - 1).to_string() }
+                if c.len() >= 2 && c.byte(0) == 32 && c.byte(c.len() - 1) == 32 {
+                    code = c.slice(1, c.len() - 1).to_string()
+                }
                 runs.push(Run { text: code, style: style | CODE })
                 i = end + ticks
                 continue
@@ -317,7 +328,13 @@ pub fn inlines(text: str) -> Vec<Run> {
                     let label = text.slice(i + 1, mid)
                     let target = text.slice(mid + 2, end).to_string()
                     for r in inlines(label) {
-                        runs.push(Run { text: r.text.clone(), style: r.style | style | LINK, link: target.clone() })
+                        runs.push(
+                            Run {
+                                text: r.text.clone(),
+                                style: r.style | style | LINK,
+                                link: target.clone(),
+                            },
+                        )
                     }
                     i = end + 1
                     continue
@@ -425,7 +442,9 @@ pub fn slug(heading: str) -> String {
         } else if (b >= 97 && b <= 122) || (b >= 48 && b <= 57) {
             out.push_byte(b)
             dash = false
-        } else if (b == 32 || b == 45 || b == 95 || b == 58 || b == 46) && !dash && !out.is_empty() {
+        } else if (b == 32 || b == 45 || b == 95 || b == 58 || b == 46) &&
+            !dash &&
+            !out.is_empty() {
             out.push_byte(45)
             dash = true
         }
@@ -439,8 +458,13 @@ pub fn slug(heading: str) -> String {
 /// Latin-1's signs, the general punctuation, the arrows, the mathematical and technical signs,
 /// the boxes and the shapes.
 fn is_letter(cp: u32) -> bool {
-    let sign = (cp >= 0x80 && cp <= 0xBF) || cp == 0xD7 || cp == 0xF7 || (cp >= 0x2000 && cp <= 0x2BFF) ||
-        (cp >= 0x3000 && cp <= 0x303F) || (cp >= 0xFE30 && cp <= 0xFE4F) || cp >= 0x1F000
+    let sign = (cp >= 0x80 && cp <= 0xBF) ||
+        cp == 0xD7 ||
+        cp == 0xF7 ||
+        (cp >= 0x2000 && cp <= 0x2BFF) ||
+        (cp >= 0x3000 && cp <= 0x303F) ||
+        (cp >= 0xFE30 && cp <= 0xFE4F) ||
+        cp >= 0x1F000
     !sign
 }
 
@@ -449,7 +473,25 @@ fn blocks_read_as_the_export_and_the_spec_write_them() {
     let src = "# std::arena\n\nArenas and handles.\nOn two lines.\n\n## Arena\n\n`struct` · `compiler/std/arena.wrela:12`\n\n```wrela\npub struct Arena<T>\n```\n\n- one **bold**\n  more of one\n  - two `code`\n3. three\n\n> a quote\n\n| A | B |\n|---|:-:|\n| `x\\|y` | *z* |\n\n---\n\n## Arena\n"
     let b = parse(src)
     let kinds: Vec<Kind> = Vec::from_fn(b.len(), |i| b[i].kind)
-    assert(kinds == Vec::from([Kind::Heading, Kind::Paragraph, Kind::Heading, Kind::Meta, Kind::Code, Kind::Item, Kind::Item, Kind::Item, Kind::Quote, Kind::Table, Kind::Rule, Kind::Heading]))
+    assert(
+        kinds ==
+            Vec::from(
+                [
+                    Kind::Heading,
+                    Kind::Paragraph,
+                    Kind::Heading,
+                    Kind::Meta,
+                    Kind::Code,
+                    Kind::Item,
+                    Kind::Item,
+                    Kind::Item,
+                    Kind::Quote,
+                    Kind::Table,
+                    Kind::Rule,
+                    Kind::Heading,
+                ],
+            ),
+    )
     assert(b[0].level == 1 && b[0].anchor.as_str() == "std-arena")
     // Each value is bound before it's compared: `assert` frees a temporary too soon (#240).
     let para = plain(b[1].runs)
@@ -471,7 +513,10 @@ fn inline_marks_style_runs_but_words_and_sums_stay_plain() {
     assert(r[3].style == ITALIC && r[5].style == CODE)
     assert(r[7].style == LINK && r[7].link.as_str() == "f.md" && r[7].text.as_str() == "e")
     let all = plain(r)
-    assert(all.as_str() == "a b c d e snake_case_name 2 * 3 *g*", f"{all.len()} bytes: [{all.as_str()}]")
+    assert(
+        all.as_str() == "a b c d e snake_case_name 2 * 3 *g*",
+        f"{all.len()} bytes: [{all.as_str()}]",
+    )
     let accents = plain(inlines("é **ü** `ρ`"))
     assert(accents.as_str() == "é ü ρ")
     assert(r[r.len() - 1].style == 0)

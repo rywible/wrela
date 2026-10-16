@@ -84,6 +84,10 @@ pub struct Docs {
     tree: Vec<Node>,
     /// Whether the host's text mode is on, for search's or find's box.
     texting: bool,
+    /// The scroll the tree was last made at, and when the scroll last changed: the tree waits for
+    /// a scroll to settle, rather than going to the host every frame of it.
+    tree_scroll: f32,
+    scrolled_at: f32,
     /// The page as plain text, its lowercase for find, and where each piece starts in it.
     text: String,
     lowered: String,
@@ -150,6 +154,8 @@ pub fn init() -> Docs {
         cursor: String::from("default"),
         tree: Vec::new(),
         texting: false,
+        tree_scroll: 0.0,
+        scrolled_at: 0.0,
         text: String::new(),
         lowered: String::new(),
         starts: Vec::new(),
@@ -231,7 +237,10 @@ fn answers(s: mut Docs) {
                     s.index = take index
                     // The language first, then std, then the packages: the order a reader learns
                     // them in. The sort keeps each group's own order.
-                    s.index.pages.sort_by(|a, b| rank(a.path.as_str(), a.kind.as_str()) < rank(b.path.as_str(), b.kind.as_str()))
+                    s.index.pages.sort_by(
+                        |a, b| rank(a.path.as_str(), a.kind.as_str()) <
+                            rank(b.path.as_str(), b.kind.as_str()),
+                    )
                     // The front page lists the pages, and the list now has them.
                     s.laid_width = 0.0
                 },
@@ -250,7 +259,9 @@ fn answers(s: mut Docs) {
         s.changed = Some(host::address_changed())
     }
     if let Some(Ok(bytes)) = poll(mut s.changed) {
-        if let Some(text) = String::from_utf8(take bytes) { go_to(mut s, Route::of(text.as_str()), push: false) }
+        if let Some(text) = String::from_utf8(take bytes) {
+            go_to(mut s, Route::of(text.as_str()), push: false)
+        }
         s.changed = Some(host::address_changed())
     }
     if let Some(result) = poll(mut s.page_load) {
@@ -352,9 +363,13 @@ fn show(s: mut Docs, path: str, blocks: take Vec<Block>) {
 
 /// The front page's Markdown: what the docs are, then each group of pages with its summaries.
 fn front(index: Index) -> String {
-    var md = String::from("The language, its standard library, and the engine, ui and platform packages, as the compiler")
+    var md = String::from(
+        "The language, its standard library, and the engine, ui and platform packages, as the compiler",
+    )
     if !index.version.is_empty() { md.push_str(f" at {index.version.as_str()}") }
-    md.push_str(" knows them. Search finds an item by its name and a rule by its words. Every page here is plain Markdown too, for agents: `llms.txt` maps them and `index.json` lists every item.\n\n")
+    md.push_str(
+        " knows them. Search finds an item by its name and a rule by its words. Every page here is plain Markdown too, for agents: `llms.txt` maps them and `index.json` lists every item.\n\n",
+    )
     var group = String::new()
     for p in index.pages {
         let g = group_of(p.path.as_str(), p.kind.as_str())
@@ -404,7 +419,9 @@ fn handle(s: mut Docs, e: Event, f: Frame) {
         },
         Event::PointerUp { at, button, .. } => if button == Button::Primary { release(mut s, at) },
         Event::Wheel { at, delta, .. } => {
-            if over_nav(s, at, f) { s.nav_scroll += delta.y } else if !s.searching { scroll_by(mut s, delta.y, f) }
+            if over_nav(s, at, f) { s.nav_scroll += delta.y } else if !s.searching {
+                scroll_by(mut s, delta.y, f)
+            }
         },
         Event::KeyDown { key, mods, .. } => {
             // Find: Command-F opens it, and Command-G (or F3) goes to the next match, from anywhere.
@@ -441,7 +458,11 @@ fn handle(s: mut Docs, e: Event, f: Frame) {
             if mods.command() && key == Key::A { s.selected = Some((0, s.text.len())) }
             if key == Key::Escape { s.selected = None }
             let page = s.screen.y - f.header - 80.0 * u
-            if key == Key::Space || key == Key::PageDown { scroll_by(mut s, if mods.shift { -page } else { page }, f) }
+            if key == Key::Space || key == Key::PageDown {
+                scroll_by(mut s, if mods.shift {
+                    -page
+                } else { page }, f)
+            }
             if key == Key::PageUp { scroll_by(mut s, -page, f) }
             if key == Key::Down { scroll_by(mut s, 48.0 * u, f) }
             if key == Key::Up { scroll_by(mut s, -48.0 * u, f) }
@@ -467,7 +488,9 @@ fn handle(s: mut Docs, e: Event, f: Frame) {
                 refresh_hits(mut s)
             }
         },
-        Event::Paste { serial } => if s.searching || s.finding { s.pasting = Some(host::pasted(serial)) },
+        Event::Paste { serial } => if s.searching || s.finding {
+            s.pasting = Some(host::pasted(serial))
+        },
         Event::Assist { node, action } => assisted(mut s, node, action, f),
         _ => {},
     }
@@ -491,7 +514,10 @@ fn refresh_matches(s: mut Docs, f: Frame) {
     if q.is_empty() { return }
     var from = 0
     while from < s.lowered.len() {
-        let Some(k) = s.lowered.as_str().slice(from: from, to: s.lowered.len()).find(q.as_str()) else { break }
+        let Some(k) = s.lowered
+            .as_str()
+            .slice(from: from, to: s.lowered.len())
+            .find(q.as_str()) else { break }
         s.matches.push(from + k)
         from = from + k + q.len()
     }
@@ -561,7 +587,10 @@ fn choose(s: mut Docs, i: u32) {
     let route = if h.item {
         Route { page: s.index.items[h.at].page.clone(), anchor: s.index.items[h.at].anchor.clone() }
     } else {
-        Route { page: s.index.sections[h.at].page.clone(), anchor: s.index.sections[h.at].anchor.clone() }
+        Route {
+            page: s.index.sections[h.at].page.clone(),
+            anchor: s.index.sections[h.at].anchor.clone(),
+        }
     }
     go_to(mut s, route, push: true)
 }
@@ -753,7 +782,9 @@ fn nav_rows(s: Docs, f: Frame) -> Vec<(String, String, f32)> {
         let t = p.title.as_str()
         var k = t.len()
         while k >= 2 && !(t.byte(k - 1) == 58 && t.byte(k - 2) == 58) { k -= 1 }
-        let label = if p.kind.as_str() == "spec" { t.to_string() } else { t.slice(from: k, to: t.len()).to_string() }
+        let label = if p.kind.as_str() == "spec" { t.to_string() } else {
+            t.slice(from: k, to: t.len()).to_string()
+        }
         rows.push((take label, p.path.clone(), y))
         y += 28.0 * u
     }
@@ -838,7 +869,9 @@ fn draw_all(s: mut Docs, f: Frame) {
         let n = lower(s.find.as_str()).len()
         for i in 0..s.matches.len() {
             let a = s.matches[i]
-            mark_range(mut s, a, a + n, origin, f, hex(FIELD, if i == s.current { 0.55 } else { 0.2 }))
+            mark_range(mut s, a, a + n, origin, f, hex(FIELD, if i == s.current { 0.55 } else {
+                0.2
+            }))
         }
     }
     if let Some((a, b)) = s.selected {
@@ -848,14 +881,35 @@ fn draw_all(s: mut Docs, f: Frame) {
         let y = p.at.y + origin.y
         if y > screen.y || y + p.size * 2.0 < f.header { continue }
         s.fonts.font_mut(p.face).weight = p.weight
-        let _ = s.list.text(s.fonts, p.face, p.text.as_str(), p.size, vec2(p.at.x + origin.x, y), p.color)
+        let _ = s.list.text(
+            s.fonts,
+            p.face,
+            p.text.as_str(),
+            p.size,
+            vec2(p.at.x + origin.x, y),
+            p.color,
+        )
     }
     s.fonts.sans.weight = 0.0
     s.fonts.mono.weight = 0.0
     if !s.trouble.is_empty() {
-        let _ = s.list.text(s.fonts, Face::Sans, s.trouble.as_str(), 15.0 * u, vec2(f.x, f.header + 24.0 * u), hex(QUIET))
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            s.trouble.as_str(),
+            15.0 * u,
+            vec2(f.x, f.header + 24.0 * u),
+            hex(QUIET),
+        )
     } else if s.blocks.is_empty() && !s.loading.is_empty() && s.shown != s.route.page {
-        let _ = s.list.text(s.fonts, Face::Sans, "Opening the page…", 15.0 * u, vec2(f.x, f.top), hex(QUIET))
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            "Opening the page…",
+            15.0 * u,
+            vec2(f.x, f.top),
+            hex(QUIET),
+        )
     }
     s.list.pop_clip()
     draw_nav(mut s, f)
@@ -869,11 +923,35 @@ fn draw_all(s: mut Docs, f: Frame) {
         let ems = min(64.0 * u, screen.x / (MARK_WIDTH + 1.0) * 0.6) / facet::CAP
         let centre = vec2(f.x + MARK_WIDTH * ems * 0.5, f.header + h * 0.52 - s.scroll)
         let foot = f.header + h - s.scroll
-        mark_field(s, pass, Rect::new(0.0, f.header - s.scroll, screen.x, h), centre, ems, 11.0 * u, 150.0 * u, 0.42, foot, h * 0.45)
+        mark_field(
+            s,
+            pass,
+            Rect::new(0.0, f.header - s.scroll, screen.x, h),
+            centre,
+            ems,
+            11.0 * u,
+            150.0 * u,
+            0.42,
+            foot,
+            h * 0.45,
+            moving: true,
+        )
     }
     let ems = mark_ems(s)
     let centre = vec2(mark_left(s, f) + MARK_WIDTH * ems * 0.5, f.header * 0.5)
-    mark_field(s, pass, Rect::new(0.0, 0.0, screen.x, f.header), centre, ems, 6.0 * u, 34.0 * u, 0.3, f.header, 0.0)
+    mark_field(
+        s,
+        pass,
+        Rect::new(x: 0.0, y: 0.0, w: screen.x, h: f.header),
+        centre,
+        ems,
+        6.0 * u,
+        34.0 * u,
+        0.3,
+        f.header,
+        0.0,
+        moving: false,
+    )
     s.renderer.draw(pass, screen)
     pass.present()
 }
@@ -891,9 +969,11 @@ fn mark_field(
     strength: f32,
     foot: f32,
     soft: f32,
+    moving: bool,
 ) {
-    // The lines drift outward a spacing every four seconds, unless the system asks for less motion.
-    let drift = if s.reduced { 0.0 } else { s.time * 0.25 }
+    // The front page's lines drift outward a spacing every four seconds, unless the system asks
+    // for less motion; the header's stay still beside what's being read.
+    let drift = if s.reduced || !moving { 0.0 } else { s.time * 0.25 }
     draw(
         pass,
         quad.bind(screen: s.screen, rect: vec4(rect.x, rect.y, rect.w, rect.h)),
@@ -948,14 +1028,24 @@ fn draw_nav(s: mut Docs, f: Frame) {
     let screen = s.screen
     let r = Rect::new(0.0, f.header, f.nav, screen.y - f.header)
     s.list.rect(r, hex(if f.beside { SLATE } else { SURFACE }))
-    s.list.rect(Rect::new(f.nav - max(1.0, u), f.header, max(1.0, u), screen.y - f.header), hex(RULE))
+    s.list.rect(
+        Rect::new(f.nav - max(1.0, u), f.header, max(1.0, u), screen.y - f.header),
+        hex(RULE),
+    )
     s.list.push_clip(r)
     let rows = nav_rows(s, f)
     for (label, path, y) in rows {
         if y > screen.y || y < f.header - 30.0 * u { continue }
         if path.is_empty() {
             s.fonts.sans.weight = theme::BOLD
-            let _ = s.list.text(s.fonts, Face::Sans, label.as_str(), 12.5 * u, vec2(24.0 * u, y + 6.0 * u), hex(QUIET))
+            let _ = s.list.text(
+                s.fonts,
+                Face::Sans,
+                label.as_str(),
+                12.5 * u,
+                vec2(24.0 * u, y + 6.0 * u),
+                hex(QUIET),
+            )
             s.fonts.sans.weight = 0.0
             continue
         }
@@ -966,7 +1056,14 @@ fn draw_nav(s: mut Docs, f: Frame) {
         }
         let color = if here { hex(STRONG) } else if hover { hex(TEXT) } else { hex(QUIET) }
         let shown = fit(s.fonts, label.as_str(), SMALL * u, f.nav - 40.0 * u)
-        let _ = s.list.text(s.fonts, Face::Sans, shown.as_str(), SMALL * u, vec2(24.0 * u, y + 5.0 * u), color)
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            shown.as_str(),
+            SMALL * u,
+            vec2(24.0 * u, y + 5.0 * u),
+            color,
+        )
     }
     s.list.pop_clip()
 }
@@ -976,43 +1073,107 @@ fn draw_header(s: mut Docs, f: Frame) {
     let ems = mark_ems(s)
     // Beside the mark, what this site is.
     let x = mark_left(s, f) + MARK_WIDTH * ems + 14.0 * u
-    let _ = s.list.text(s.fonts, Face::Sans, "docs", 15.0 * u, vec2(x, f.header * 0.5 - 10.5 * u), hex(QUIET))
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        "docs",
+        15.0 * u,
+        vec2(x, f.header * 0.5 - 10.5 * u),
+        hex(QUIET),
+    )
     if !f.beside {
         // The button that opens the list of pages: three short lines.
         for k in 0..3 {
-            s.list.rect(Rect::new(20.0 * u, f.header * 0.5 - 6.0 * u + f32(k) * 5.5 * u, 18.0 * u, 1.5 * u), hex(TEXT), radius: u)
+            s.list.rect(
+                Rect::new(20.0 * u, f.header * 0.5 - 6.0 * u + f32(k) * 5.5 * u, 18.0 * u, 1.5 * u),
+                hex(TEXT),
+                radius: u,
+            )
         }
     }
     // Search: a box, then what it found under it.
     let b = f.search
     let hover = b.contains(s.pointer)
     s.list.rect(b, hex(0x101215), radius: 8.0 * u)
-    s.list.ring(b, hex(if s.searching || s.finding { FIELD } else if hover { 0x3A3F47 } else { RULE }), radius: 8.0 * u, width: max(1.0, u))
+    s.list.ring(b, hex(if s.searching || s.finding { FIELD } else if hover { 0x3A3F47 } else {
+        RULE
+    }), radius: 8.0 * u, width: max(1.0, u))
     let tx = b.x + 14.0 * u
     let ty = b.y + b.h * 0.5 - 10.0 * u
     if s.finding {
-        let w = s.list.text(s.fonts, Face::Sans, s.find.as_str(), 15.0 * u, vec2(tx, ty), hex(STRONG))
+        let w = s.list.text(
+            s.fonts,
+            Face::Sans,
+            s.find.as_str(),
+            15.0 * u,
+            vec2(tx, ty),
+            hex(STRONG),
+        )
         let on = s.reduced || (s.time * 2.0) - floor(s.time * 2.0) < 0.6
-        if on { s.list.rect(Rect::new(tx + w + 1.0 * u, b.y + 9.0 * u, 1.5 * u, b.h - 18.0 * u), hex(FIELD)) }
+        if on {
+            s.list.rect(
+                Rect::new(tx + w + 1.0 * u, b.y + 9.0 * u, 1.5 * u, b.h - 18.0 * u),
+                hex(FIELD),
+            )
+        }
         if s.find.is_empty() {
-            let _ = s.list.text(s.fonts, Face::Sans, "Find on this page", 15.0 * u, vec2(tx + 4.0 * u, ty), hex(QUIET))
+            let _ = s.list.text(
+                s.fonts,
+                Face::Sans,
+                "Find on this page",
+                15.0 * u,
+                vec2(tx + 4.0 * u, ty),
+                hex(QUIET),
+            )
         } else {
             let count = if s.matches.is_empty() { String::from("No matches") } else {
                 f"{s.current + 1} of {s.matches.len()}"
             }
             let cw = s.fonts.font(Face::Sans).measure(count.as_str(), 13.0 * u)
-            let _ = s.list.text(s.fonts, Face::Sans, count.as_str(), 13.0 * u, vec2(b.right() - cw - 14.0 * u, ty + 1.5 * u), hex(QUIET))
+            let _ = s.list.text(
+                s.fonts,
+                Face::Sans,
+                count.as_str(),
+                13.0 * u,
+                vec2(b.right() - cw - 14.0 * u, ty + 1.5 * u),
+                hex(QUIET),
+            )
         }
     } else if s.searching {
-        let w = s.list.text(s.fonts, Face::Sans, s.query.as_str(), 15.0 * u, vec2(tx, ty), hex(STRONG))
+        let w = s.list.text(
+            s.fonts,
+            Face::Sans,
+            s.query.as_str(),
+            15.0 * u,
+            vec2(tx, ty),
+            hex(STRONG),
+        )
         // The caret, steady when the system asks for less motion.
         let on = s.reduced || (s.time * 2.0) - floor(s.time * 2.0) < 0.6
-        if on { s.list.rect(Rect::new(tx + w + 1.0 * u, b.y + 9.0 * u, 1.5 * u, b.h - 18.0 * u), hex(FIELD)) }
+        if on {
+            s.list.rect(
+                Rect::new(tx + w + 1.0 * u, b.y + 9.0 * u, 1.5 * u, b.h - 18.0 * u),
+                hex(FIELD),
+            )
+        }
         draw_results(mut s, f)
     } else {
-        let _ = s.list.text(s.fonts, Face::Sans, "Search the docs", 15.0 * u, vec2(tx, ty), hex(QUIET))
-        let k = s.list.text(s.fonts, Face::Mono, "/", 13.0 * u, vec2(b.right() - 26.0 * u, ty + 1.0 * u), hex(QUIET))
-        let _ = k
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            "Search the docs",
+            15.0 * u,
+            vec2(tx, ty),
+            hex(QUIET),
+        )
+        let _ = s.list.text(
+            s.fonts,
+            Face::Mono,
+            "/",
+            13.0 * u,
+            vec2(b.right() - 26.0 * u, ty + 1.0 * u),
+            hex(QUIET),
+        )
     }
 }
 
@@ -1029,19 +1190,37 @@ fn draw_results(s: mut Docs, f: Frame) {
     s.list.rect(panel, hex(SURFACE), radius: 10.0 * u)
     s.list.ring(panel, hex(RULE), radius: 10.0 * u, width: max(1.0, u))
     if n == 0 {
-        let _ = s.list.text(s.fonts, Face::Sans, "Nothing matches. Try a name, like Arena, or a word from the spec.", 14.0 * u, vec2(x + 16.0 * u, top + 16.0 * u), hex(QUIET))
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            "Nothing matches. Try a name, like Arena, or a word from the spec.",
+            14.0 * u,
+            vec2(x + 16.0 * u, top + 16.0 * u),
+            hex(QUIET),
+        )
         return
     }
     s.list.push_clip(panel)
     for i in 0..n {
         let y = top + 4.0 * u + f32(i) * row
         let h = s.hits[i]
-        if i == s.chosen { s.list.rect(Rect::new(x + 4.0 * u, y, w - 8.0 * u, row), hex(0x262A31), radius: 7.0 * u) }
+        if i == s.chosen {
+            s.list.rect(Rect::new(x + 4.0 * u, y, w - 8.0 * u, row), hex(0x262A31), radius: 7.0 * u)
+        }
         let (title, under) = result_text(s.index, h)
         let face = if h.item { Face::Mono } else { Face::Sans }
-        let _ = s.list.text(s.fonts, face, title.as_str(), (if h.item { 13.5 } else { 15.0 }) * u, vec2(x + 16.0 * u, y + 9.0 * u), hex(STRONG))
+        let _ = s.list.text(s.fonts, face, title.as_str(), (if h.item { 13.5 } else {
+            15.0
+        }) * u, vec2(x + 16.0 * u, y + 9.0 * u), hex(STRONG))
         let shown = fit(s.fonts, under.as_str(), 13.0 * u, w - 32.0 * u)
-        let _ = s.list.text(s.fonts, Face::Sans, shown.as_str(), 13.0 * u, vec2(x + 16.0 * u, y + 32.0 * u), hex(QUIET))
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            shown.as_str(),
+            13.0 * u,
+            vec2(x + 16.0 * u, y + 32.0 * u),
+            hex(QUIET),
+        )
     }
     s.list.pop_clip()
 }
@@ -1090,8 +1269,11 @@ fn fit(fonts: Fonts, text: str, size: f32, width: f32) -> String {
 // ---- what the host is told ---------------------------------------------------------------------
 
 fn tell(s: mut Docs, f: Frame) {
-    let over_link = link_at(s, s.pointer, f).is_some() || (over_nav(s, s.pointer, f) && nav_at(s, s.pointer, f).is_some())
-    let want = if over_link || f.search.contains(s.pointer) || (s.pointer.y < f.header && s.pointer.x < mark_right(s, f)) {
+    let over_link = link_at(s, s.pointer, f).is_some() ||
+        (over_nav(s, s.pointer, f) && nav_at(s, s.pointer, f).is_some())
+    let want = if over_link ||
+        f.search.contains(s.pointer) ||
+        (s.pointer.y < f.header && s.pointer.x < mark_right(s, f)) {
         "pointer"
     } else { "default" }
     if s.cursor.as_str() != want {
@@ -1103,12 +1285,19 @@ fn tell(s: mut Docs, f: Frame) {
     let typing = s.searching || s.finding
     if typing != s.texting && s.capabilities & host::TEXT_INPUT != 0 {
         let b = f.search
-        s.told.push(host::text_input(typing, vec4(b.x + 14.0 * s.u, b.y + 8.0 * s.u, 1.0, b.h - 16.0 * s.u)))
+        s.told.push(
+            host::text_input(
+                typing,
+                vec4(b.x + 14.0 * s.u, b.y + 8.0 * s.u, 1.0, b.h - 16.0 * s.u),
+            ),
+        )
         s.texting = typing
     }
     // A copy takes what's selected; the host has it before the keys that copy arrive.
     let words = match s.selected {
-        Some((a, b)) => if a == b { String::new() } else { s.text.as_str().slice(from: min(a, b), to: max(a, b)).to_string() },
+        Some((a, b)) => if a == b { String::new() } else {
+            s.text.as_str().slice(from: min(a, b), to: max(a, b)).to_string()
+        },
         None => String::new(),
     }
     if words != s.offered && s.capabilities & host::PASTE_EVENTS != 0 {
@@ -1116,6 +1305,11 @@ fn tell(s: mut Docs, f: Frame) {
         s.offered = take words
     }
     if s.capabilities & host::ACCESSIBILITY == 0 { return }
+    if s.scroll != s.tree_scroll {
+        s.tree_scroll = s.scroll
+        s.scrolled_at = s.time
+    }
+    if s.time - s.scrolled_at < 0.25 { return }
     let nodes = parts_tree(s, f)
     if nodes != s.tree {
         s.told.push(host::accessibility("wrela docs", "Search results", nodes))
@@ -1145,14 +1339,42 @@ fn parts_tree(s: Docs, f: Frame) -> Vec<Node> {
         let top = f.search.bottom() + 8.0 * s.u
         for i in 0..s.hits.len() {
             let (title, under) = result_text(s.index, s.hits[i])
-            nodes.push(Node {
-                id: RESULT_NODES + i,
-                role: host::Role::Item,
-                selected: i == s.chosen,
-                rect: vec4(x, top + f32(i) * row, f.search.right() - x, row),
-                label: f"{title.as_str()}: {under.as_str()}",
-            })
+            nodes.push(
+                Node {
+                    id: RESULT_NODES + i,
+                    role: host::Role::Item,
+                    selected: i == s.chosen,
+                    rect: vec4(x, top + f32(i) * row, f.search.right() - x, row),
+                    label: f"{title.as_str()}: {under.as_str()}",
+                },
+            )
         }
     }
     take nodes
+}
+
+/// `/` opens search, which types what follows but not the `/`; Backspace takes a character back.
+/// Command-F opens find in its place, which takes the typing then; Enter there doesn't leave it.
+@test(frames: 12, input: "scripts/keys.json")
+fn search_and_find_take_the_typing(docs: Docs) {
+    assert(!docs.searching, "find took search's place")
+    assert(docs.query.as_str() == "aren", docs.query.as_str())
+    assert(docs.finding && docs.find.as_str() == "a", docs.find.as_str())
+    // No index here: the program says so rather than failing.
+    assert(!docs.trouble.is_empty())
+}
+
+@test
+fn an_address_without_a_fragment_is_the_front_page_and_groups_rank_the_language_first() {
+    assert(rank("spec/lexical.md", "spec") < rank("std/io.md", "module"))
+    assert(rank("std/io.md", "module") < rank("engine/floor.md", "module"))
+    let shown = fit(
+        Fonts::from_baked(MANROPE, MONO),
+        "How wrela differs from Rust and TypeScript",
+        size: 14.0,
+        width: 120.0,
+    )
+    assert(shown.as_str().ends_with("…") && shown.len() < 42, shown.as_str())
+    let plain = unticked("Adds `value` at `the` end.")
+    assert(plain.as_str() == "Adds value at the end.", plain.as_str())
 }

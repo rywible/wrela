@@ -49,8 +49,14 @@ fn safe(part: str) -> bool {
     if part.find("..").is_some() { return false }
     for i in 0..part.len() {
         let b = part.byte(i)
-        let ok = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 45 || b == 95 ||
-            b == 46 || b == 47 || b >= 128
+        let ok = (b >= 48 && b <= 57) ||
+            (b >= 65 && b <= 90) ||
+            (b >= 97 && b <= 122) ||
+            b == 45 ||
+            b == 95 ||
+            b == 46 ||
+            b == 47 ||
+            b >= 128
         if !ok { return false }
     }
     true
@@ -59,7 +65,9 @@ fn safe(part: str) -> bool {
 /// Where a link on page `from` (`std/arena.md`) to `to` leads: another page relative to it
 /// (`io.md`, `../spec/lexical.md#l11`), a place on the same page (`#arena`), or out (`https://`).
 pub fn follow(from: str, to: str) -> Option<Target> {
-    if to.starts_with("https://") || to.starts_with("http://") { return Some(Target::Out(to.to_string())) }
+    if to.starts_with("https://") || to.starts_with("http://") {
+        return Some(Target::Out(to.to_string()))
+    }
     if to.find(":").is_some() { return None }
     let k = to.find("#").unwrap_or(to.len())
     let path = to.slice(from: 0, to: k)
@@ -107,12 +115,34 @@ fn an_address_names_a_page_and_a_place_and_back() {
 @test
 fn a_link_leads_relative_to_its_page_or_out() {
     let next = follow("std/arena.md", "io.md")
-    assert(next == Some(Target::Docs(Route { page: String::from("std/io.md"), anchor: String::new() })))
+    assert(
+        next ==
+            Some(Target::Docs(Route { page: String::from("std/io.md"), anchor: String::new() })),
+    )
     let up = follow("spec/language/6-memory.md", "../lexical.md#l11")
-    assert(up == Some(Target::Docs(Route { page: String::from("spec/lexical.md"), anchor: String::from("l11") })))
+    assert(
+        up ==
+            Some(
+                Target::Docs(
+                    Route { page: String::from("spec/lexical.md"), anchor: String::from("l11") },
+                ),
+            ),
+    )
     let here = follow("std/arena.md", "#arena")
-    assert(here == Some(Target::Docs(Route { page: String::from("std/arena.md"), anchor: String::from("arena") })))
-    assert(follow("a.md", "https://llmstxt.org/") == Some(Target::Out(String::from("https://llmstxt.org/"))))
-    assert(follow("a.md", "javascript:alert(1)").is_none() && follow("a.md", "../../x.md").is_none())
+    assert(
+        here ==
+            Some(
+                Target::Docs(
+                    Route { page: String::from("std/arena.md"), anchor: String::from("arena") },
+                ),
+            ),
+    )
+    assert(
+        follow("a.md", "https://llmstxt.org/") ==
+            Some(Target::Out(String::from("https://llmstxt.org/"))),
+    )
+    assert(
+        follow("a.md", "javascript:alert(1)").is_none() && follow("a.md", "../../x.md").is_none(),
+    )
     assert(follow("std/a.md", "vision.md#x").is_some() && follow("a.md", "b.txt").is_none())
 }

@@ -4,7 +4,12 @@
 
 /// A colour from its sRGB hex, as the screen takes it.
 pub fn hex(rgb: u32, alpha: f32 = 1.0) -> vec4 {
-    vec4(f32((rgb >> 16) & 255) / 255.0, f32((rgb >> 8) & 255) / 255.0, f32(rgb & 255) / 255.0, alpha)
+    vec4(
+        f32((rgb >> 16) & 255) / 255.0,
+        f32((rgb >> 8) & 255) / 255.0,
+        f32(rgb & 255) / 255.0,
+        alpha,
+    )
 }
 
 pub const VOID: u32 = 0x000000

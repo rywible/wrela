@@ -12,14 +12,64 @@ pub enum Token: Copy + Eq {
 }
 
 const KEYWORDS = [
-    "as", "borrow", "break", "const", "continue", "dyn", "else", "enum", "false", "fn", "for", "if",
-    "impl", "in", "let", "loop", "match", "mut", "package", "pub", "return", "self", "Self",
-    "struct", "take", "trait", "true", "type", "unsafe", "use", "var", "while", "yield",
+    "as",
+    "borrow",
+    "break",
+    "const",
+    "continue",
+    "dyn",
+    "else",
+    "enum",
+    "false",
+    "fn",
+    "for",
+    "if",
+    "impl",
+    "in",
+    "let",
+    "loop",
+    "match",
+    "mut",
+    "package",
+    "pub",
+    "return",
+    "self",
+    "Self",
+    "struct",
+    "take",
+    "trait",
+    "true",
+    "type",
+    "unsafe",
+    "use",
+    "var",
+    "while",
+    "yield",
 ]
 
 const TYPES = [
-    "bool", "i32", "u32", "f32", "f64", "i64", "u64", "u8", "u16", "str", "vec2", "vec3", "vec4",
-    "vec2u", "vec3u", "vec4u", "vec2i", "vec3i", "vec4i", "mat2", "mat3", "mat4",
+    "bool",
+    "i32",
+    "u32",
+    "f32",
+    "f64",
+    "i64",
+    "u64",
+    "u8",
+    "u16",
+    "str",
+    "vec2",
+    "vec3",
+    "vec4",
+    "vec2u",
+    "vec3u",
+    "vec4u",
+    "vec2i",
+    "vec3i",
+    "vec4i",
+    "mat2",
+    "mat3",
+    "mat4",
 ]
 
 /// A line's spans: each a byte range and what it is, in order, covering the line.
@@ -95,7 +145,23 @@ fn code_is_coloured_by_its_tokens() {
             words.push(line.slice(a, b).to_string())
         }
     }
-    assert(kinds == Vec::from([Token::Keyword, Token::Keyword, Token::Keyword, Token::Keyword, Token::Type, Token::Type, Token::Type, Token::Keyword, Token::Text, Token::Comment]))
+    assert(
+        kinds ==
+            Vec::from(
+                [
+                    Token::Keyword,
+                    Token::Keyword,
+                    Token::Keyword,
+                    Token::Keyword,
+                    Token::Type,
+                    Token::Type,
+                    Token::Type,
+                    Token::Keyword,
+                    Token::Text,
+                    Token::Comment,
+                ],
+            ),
+    )
     assert(words[4].as_str() == "Arena" && words[8].as_str() == "\"a\\\"b\"")
     // The spans cover the line, in order.
     var at = 0
