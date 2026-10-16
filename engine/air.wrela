@@ -71,6 +71,10 @@ pub struct Air: Copy + GpuData + Eq {
     /// The eye's height in the world (m): the sky's and aerial perspective's tables are
     /// cooked from it.
     pub eye: f32,
+    /// Mist: haze lying low, its scattering at the world's y = 0 (per km) and its scale height
+    /// (km); thick in the land's hollows and thin over its tops (none by default).
+    pub mist: f32 = 0.0,
+    pub mist_height: f32 = 0.06,
 }
 
 /// Earth's air on a hazy afternoon, the sun toward `sun` with `sun_top` its light above the air,
@@ -111,7 +115,8 @@ impl Medium {
 pub fn medium(air: Air, h: f32) -> Medium {
     let rayleigh = air.rayleigh * exp(-max(h, 0.0) / air.rayleigh_height)
     let haze = exp(-max(h, 0.0) / air.mie_height)
-    let mie = air.mie_scattering * haze
+    let mist = air.mist * exp(-max(h - ALTITUDE, 0.0) / air.mist_height)
+    let mie = air.mie_scattering * haze + mist
     let ozone = air.ozone * max(0.0, 1.0 - abs(h - 25.0) / 15.0)
     Medium { rayleigh, mie, extinction: rayleigh + vec3(mie + air.mie_absorption * haze) + ozone }
 }
@@ -608,4 +613,22 @@ fn each_tables_reader_finds_its_cooks_texels() {
             f"the {names[t]} table's reader is {worst[t]} texels from its cook",
         )
     }
+}
+
+/// Mist lies low: none in an air that has none (the same medium as before at every height); with
+/// some, thickest at the world's y = 0, falling off by its scale height, a hill's top above it
+/// almost clear.
+@test
+fn mist_lies_in_the_hollows() {
+    let clear = hazy(vec3(0.6, 0.5, 0.0), vec3(5.0), eye: 0.0)
+    let misty = Air { mist: 2.0, mist_height: 0.05, ..clear }
+    for h in [0.0, 0.2, 0.25, 0.4, 2.0] {
+        let a = medium(clear, h)
+        let b = medium(Air { mist: 0.0, ..misty }, h)
+        assert(a.mie == b.mie && a.extinction == b.extinction, f"no mist changed the air at {h} km")
+    }
+    let low = medium(misty, ALTITUDE + 0.05).mie - medium(clear, ALTITUDE + 0.05).mie
+    let top = medium(misty, ALTITUDE + 0.2).mie - medium(clear, ALTITUDE + 0.2).mie
+    assert(abs(low - 2.0 * exp(-1.0)) < 1.0e-4, f"mist 50 m up is {low} per km")
+    assert(top < 0.04 && top > 0.0, f"mist 200 m up is {top} per km")
 }

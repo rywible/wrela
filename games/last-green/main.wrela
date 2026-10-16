@@ -307,6 +307,23 @@ fn air_of() -> Air {
     hazy(SUN, SUN_TOP, eye: GROUND.at(x: 0.0, z: 0.0) + 2.0)
 }
 
+/// The grown land's air (`source`'s): the floor's, with mist lying in its hollows
+/// (`engine::air::Air::mist`), its light glowing through it: an old wood's damp air.
+fn air_for(source: u32) -> Air {
+    if source == GROWN_LAND {
+        Air { mist: GROWN_MIST, mist_height: GROWN_MIST_HEIGHT, ..air_of() }
+    } else {
+        air_of()
+    }
+}
+
+/// How thick the grown land's mist is at the world's y = 0 (per km), and how fast it thins up
+/// (its scale height, km): over its valleys' floors (50 to 100 m) about a third of it, over its
+/// tops (200 m) almost none (at 3 per km and 60 m, its sky went grey and the wood was lost
+/// from over it).
+const GROWN_MIST: f32 = 1.8
+const GROWN_MIST_HEIGHT: f32 = 0.045
+
 fn sun_light() -> Light {
     sunlight(air_of())
 }
@@ -1148,6 +1165,10 @@ fn restream(s: mut Floor, source: u32) {
     s.footprints = buffer_of(footprints_in(origin_of(s), source), at_least: 1)
     s.probes = probes_at(s.probes_at, Vec::new(), origin_of(s).xz, source)
     s.occluders_cooked = false
+    // Its air's tables cooked again (`cook_sky`), and the sky's dome.
+    s.air = air_for(source)
+    s.air_cooked = false
+    s.sky.frames = 0
     s.next_probes = None
     s.near.changed()
     s.far.changed()
