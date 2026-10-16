@@ -28,7 +28,9 @@ use std::gpu::{
     GpuBuffer, InstanceIndex, One, RenderPass, Rgba16Float, Sampler, Slots, Texture, Unorm8x4,
     VertexIndex, append_buffer, buffer, buffer_of, discard, dispatch, draw,
 }
+use std::derive::Box2
 use std::math::TAU
+use temporal::deforming_of
 use terrain::{Levels, Texel, ground_cover_at}
 use view::Camera
 
@@ -936,13 +938,18 @@ fn rush_habitat(h: vec4) -> f32 {
 /// colony: mostly its colony's (the species that suits the habitat best, weighed by the colony's
 /// draw), some its own, so patches have stragglers.
 pub fn species_of(flora: Flora, w: vec2, h: vec4, seed: u32) -> u32 {
-    let warped = w + 3.0 * vec2(noise::noise2(w * 0.11), noise::noise2(w * 0.11 + vec2(7.0, 3.0)))
-    let cell = vec2i(floor(warped / COLONY))
     let own = rand(seed, 30) < 0.22
-    let draw_seed = if own { seed } else { hash2u(cell.x, cell.y, 977) }
+    let draw_seed = if own { seed } else { colony_seed(w) }
     var best = 0
     var score = 0.05
     for i in 1..SPECIES_N {
+        // A species whose acid, wet or light range the habitat is past (by 0.15: `suits`'s
+        // `within` is 0 there) scores 0 and can't be chosen; its score isn't worked out. (Each
+        // place's habitat is past most species' ranges: a third of the grass's placing.)
+        let sp = flora.species[i]
+        if !(admits(sp.acid, h.x) && admits(sp.wet, h.y) && admits(sp.light, h.z)) {
+            continue
+        }
         let bank = if i == RUSH { 1.0 + 3.0 * rush_habitat(h) } else { 1.0 }
         let s = suits(flora, i, h) * (0.25 + rand(draw_seed, 40 + i)) * bank
         if s > score {
@@ -951,6 +958,20 @@ pub fn species_of(flora: Flora, w: vec2, h: vec4, seed: u32) -> u32 {
         }
     }
     best
+}
+
+/// The seed a colony of one species round `w` draws its species by (`species_of`): its cell of
+/// `COLONY`, warped so colonies aren't square.
+fn colony_seed(w: vec2) -> u32 {
+    let warped = w + 3.0 * vec2(noise::noise2(w * 0.11), noise::noise2(w * 0.11 + vec2(7.0, 3.0)))
+    let cell = vec2i(floor(warped / COLONY))
+    hash2u(cell.x, cell.y, 977)
+}
+
+/// Whether `x` is within 0.15 of range `r`, where `suits`'s `within` can be above 0
+/// (`smoothstep` is 0 at and past its first edge).
+fn admits(r: vec2, x: f32) -> bool {
+    x > r.x - 0.15 && x < r.y + 0.15
 }
 
 /// A world-keyed crown shared by its fronds at every density. Let crowns cross their cell
@@ -1521,6 +1542,59 @@ pub fn blade(
     }
 }
 
+/// What a blade's motion passes on: its clip position, and its point now and last frame.
+pub struct BladeMotion: Copy {
+    pub clip: ClipPosition,
+    pub now: vec3,
+    pub then: vec3,
+}
+
+/// A tier's blades as `blade` draws them, with where each point was last frame: bent by the
+/// wind (`last_wind`) and a cloth's contact (`last_contact`) as they were then. The same blade
+/// both times, so a point's motion is its own (`temporal::deforming_of`).
+@vertex
+pub fn blade_motion(
+    v: VertexIndex,
+    g: InstanceIndex,
+    cam: Camera,
+    wind: Wind,
+    last_wind: Wind,
+    contact: Contact,
+    last_contact: Contact,
+    tier: Tier,
+    blades: [Blade],
+    count: [u32],
+) -> BladeMotion {
+    let per = blade_points(tier.segments)
+    let which = g.index * GROUP + v.index / per
+    if which >= min(count[0], blades.len()) {
+        return BladeMotion {
+            clip: ClipPosition { position: vec4(0.0) },
+            now: vec3(0.0),
+            then: vec3(0.0),
+        }
+    }
+    let b = blades[which]
+    let d = length(b.root - cam.eye)
+    let m = smoothstep(tier.morph_from, tier.morph_to, d)
+    let (i, side) = blade_point_of(v.index % per, tier.segments)
+    let t = f32(i) / f32(tier.segments)
+    let now = cloth_contact(blade_vertex(b, i, side, tier.segments, m, wind), b.root, t, contact)
+    let then = cloth_contact(
+        blade_vertex(b, i, side, tier.segments, m, last_wind),
+        b.root,
+        t,
+        last_contact,
+    )
+    BladeMotion { clip: ClipPosition { position: cam.clip(now) }, now, then }
+}
+
+/// A blade's pixel's motion (`temporal::deforming_of`).
+@fragment
+pub fn blade_moved(m: BladeMotion, cam: Camera) -> vec4 {
+    deforming_of(cam, m.now, m.then)
+}
+
 /// A blade's colour at `t` up it, with variation `tint`, in a patch this `dry` and this `deep`
 /// a green.
 pub fn grass_colour(look: GrassLook, t: f32, tint: f32, dry: f32, deep: f32) -> vec3 {
@@ -1702,6 +1776,36 @@ impl Grass {
         )
     }
 
+    /// The near blades' motion, where the shading drew them (the depth equal to theirs): bent by
+    /// `wind` and the contact now, by `last_wind` and `last_contact` last frame. Only the near
+    /// tier's: farther, a blade's sway is a fraction of a pixel.
+    pub fn motion<P: RenderPass>(
+        self,
+        pass: P,
+        cam: Camera,
+        wind: Wind,
+        last_wind: Wind,
+        last_contact: Contact,
+    ) {
+        draw(
+            pass,
+            blade_motion.bind(
+                cam,
+                wind,
+                last_wind,
+                contact: self.contact,
+                last_contact: last_contact,
+                tier: tier(0),
+                blades: self.near.items(),
+                count: self.near.count(),
+            ),
+            blade_moved.bind(cam),
+            indices: self.indices,
+            indirect: self.tiers.span(start: 0, count: 1),
+            depth: view::BEHIND,
+        )
+    }
+
     /// The blades' and flowers' shading draws.
     pub fn shade<P: RenderPass>(
         self,
@@ -1849,6 +1953,53 @@ fn a_train_parts_the_grass_along_it() {
         length(cloth_contact(wide, wide - vec3(0.0, 0.4, 0.0), 1.0, cloth) - wide) < 1.0e-6,
         "the train's narrow end parts grass as wide as the hem",
     )
+}
+
+/// `species_of` as it was before it passed over the species a habitat is past: every one's score
+/// worked out.
+fn species_scoring_every_one(flora: Flora, w: vec2, h: vec4, seed: u32) -> u32 {
+    let draw_seed = if rand(seed, 30) < 0.22 { seed } else { colony_seed(w) }
+    var best = 0
+    var score = 0.05
+    for i in 1..SPECIES_N {
+        let bank = if i == RUSH { 1.0 + 3.0 * rush_habitat(h) } else { 1.0 }
+        let s = suits(flora, i, h) * (0.25 + rand(draw_seed, 40 + i)) * bank
+        if s > score {
+            score = s
+            best = i
+        }
+    }
+    best
+}
+
+/// Passing over the species a habitat is past chooses what scoring every one chooses: over 4096
+/// seeded habitats (each within and past every range), places and seeds, and on every range's
+/// edges, where `within` turns 0.
+@test
+fn species_passed_over_could_not_have_been_chosen() {
+    let flora = Flora { species: SPECIES }
+    let unit = Box2 { lo: vec2(-0.2), hi: vec2(1.2) }
+    for i in 0..4096 {
+        let a = unit.sample(11, i)
+        let b = unit.sample(12, i)
+        let h = vec4(a.x, a.y, b.x, saturate(b.y))
+        let w = Box2 { lo: vec2(-400.0), hi: vec2(400.0) }.sample(13, i)
+        let seed = hash2u(i32(i), 5, 61)
+        let got = species_of(flora, w, h, seed)
+        let want = species_scoring_every_one(flora, w, h, seed)
+        assert(got == want, f"habitat {h}: {got}, not {want}")
+    }
+    for i in 1..SPECIES_N {
+        let sp = flora.species[i]
+        for x in [sp.acid.x - 0.15, sp.acid.y + 0.15, sp.acid.x, sp.acid.y] {
+            let h = vec4(x, 0.5 * (sp.wet.x + sp.wet.y), 0.5 * (sp.light.x + sp.light.y), 0.3)
+            for seed in 0..8 {
+                let w = vec2(f32(seed) * 5.3, f32(i))
+                let got = species_of(flora, w, h, seed)
+                assert(got == species_scoring_every_one(flora, w, h, seed), f"edge {x}")
+            }
+        }
+    }
 }
 
 @test

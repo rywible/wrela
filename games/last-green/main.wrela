@@ -26,7 +26,7 @@ use engine::run::run
 use engine::shadow::{Cascade, Shadows, shadows}
 use engine::shafts::{Shafts, add_shafts, march_shafts}
 use engine::sky::{Clouds, Sky, new_sky, sky_shade}
-use engine::temporal::{Resolve, neighbourhoods, resolve}
+use engine::temporal::{Resolve, resolve_gathered}
 use engine::terrain::{Clipmap, Terrain, ground, ground_shade}
 use engine::vegetation::{Kind, Placed, kind}
 use engine::wood::Wood
@@ -634,8 +634,6 @@ pub struct Floor {
     ids: Texture<R32Uint>,
     motion: Texture<Rgba16Float>,
     last_motion: Texture<Rgba16Float>,
-    means: Texture<Rgba16Float>,
-    spreads: Texture<Rgba16Float>,
     last_history: Texture<Rgba16Float>,
     history: Texture<Rgba16Float>,
     dabs: Texture<Rgba16Float>,
@@ -753,6 +751,9 @@ pub struct Floor {
     /// A test's: frames drawn as plain rendering (the scene at the output's size, no jitter, no
     /// temporal history and no look: `test_plain`), and the wind stilled (`test_wind`).
     plain: bool,
+    /// Last frame's wind and cloth contact: where the near grass was (`Grass::motion`).
+    last_wind: Option<Wind>,
+    last_contact: Contact,
     still: bool,
     /// A debug view of form (F8 the next): 0 the look, 1 clay, 2 silhouettes
     /// (`engine::paint::Develop`'s `view`), 3 the bare land (`BARE`), 4 the grown land (`GROWN`);
@@ -939,8 +940,6 @@ pub fn init() -> Floor {
         ids: texture::<R32Uint>(width: 1, height: 1),
         motion: texture::<Rgba16Float>(width: 1, height: 1),
         last_motion: texture::<Rgba16Float>(width: 1, height: 1),
-        means: writable_texture::<Rgba16Float>(width: 1, height: 1),
-        spreads: writable_texture::<Rgba16Float>(width: 1, height: 1),
         last_history: texture::<Rgba16Float>(width: 1, height: 1),
         history: texture::<Rgba16Float>(width: 1, height: 1),
         dabs: texture::<Rgba16Float>(width: 1, height: 1),
@@ -1012,6 +1011,8 @@ pub fn init() -> Floor {
         scene_b: texture::<Rgba16Float>(width: 1, height: 1),
         mists: buffer_of(history::MISTS, at_least: 1),
         plain: false,
+        last_wind: None,
+        last_contact: Contact {},
         still: false,
         view: 0,
         land_cooked: 0,
@@ -2130,8 +2131,6 @@ fn resize(s: mut Floor, width: u32, height: u32, w: u32, h: u32) {
     s.motion = texture::<Rgba16Float>(width: w, height: h)
     s.below = texture::<Rgba16Float>(width: w, height: h)
     s.last_motion = texture::<Rgba16Float>(width: w, height: h)
-    s.means = writable_texture::<Rgba16Float>(width: w, height: h)
-    s.spreads = writable_texture::<Rgba16Float>(width: w, height: h)
     s.dabs = texture::<Rgba16Float>(width: w, height: h)
     s.last_history = texture::<Rgba16Float>(width: width, height: height)
     s.history = texture::<Rgba16Float>(width: width, height: height)
@@ -2325,6 +2324,8 @@ fn cook_sky(s: mut Floor, eye: vec3, wind: Wind) {
             rep: s.repeat,
             s: s.linear,
             still: false,
+            forward: s.cam.forward,
+            view: s.cam.corner_angle(),
         )
     }
 }
@@ -2893,6 +2894,16 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         s.fawn.motion(mo, cam)
         s.wolf.motion(mo, cam)
     }
+    // The near grass's sway, the wind's and the cloak's, against last frame's.
+    if on(off, System::Grass) {
+        let last = match s.last_wind {
+            Some(w) => w,
+            None => wind,
+        }
+        s.grass.motion(mo, cam, wind, last_wind: last, last_contact: s.last_contact)
+    }
+    s.last_wind = Some(wind)
+    s.last_contact = s.grass.contact
     mo.end()
 }
 
@@ -2925,11 +2936,12 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
     }
     label("temporal")
     swap(mut s.history, mut s.last_history)
-    dispatch(neighbourhoods.bind(s.scene, mut s.means, mut s.spreads), over: s.scene)
+    // The scene is drawn at the output's size (`SCALE`), so each output pixel finds its own
+    // sample's neighbourhood.
     let p = begin_pass(mut s.history)
     fullscreen(
         p,
-        resolve.bind(
+        resolve_gathered.bind(
             r,
             s.scene,
             s.depth,
@@ -2937,8 +2949,6 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
             s.motion,
             s.last_motion,
             s.last_history,
-            s.means,
-            s.spreads,
             s.linear,
         ),
     )

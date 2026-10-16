@@ -384,6 +384,97 @@ fn temporal_depth_rejects_occluded_history_and_keeps_matching_surfaces() {
     );
 }
 
+/// At the output's size, a resolve that gathers its nearest sample's neighbourhood itself gives
+/// what one reading the shared neighbourhoods gives: the same samples, held in 32 bits rather than
+/// stored in half floats, so within a step of 8 bits. The history is clipped (it's a blue the
+/// scene doesn't hold), so the clip reads the neighbourhoods too.
+#[test]
+#[ignore = "needs a GPU"]
+fn temporal_resolve_gathering_its_neighbourhood_matches_the_shared_one() {
+    let (dir, _) = page("compiler/tests/temporal-gathered", "temporal-gathered");
+    let run = Host::load(&dir).expect("load").run_frames(&[0.0], 48, 24).expect("run");
+    let px = |x: usize, y: usize| -> &[u8] { &run.frame[4 * (y * 48 + x)..4 * (y * 48 + x) + 3] };
+    let mut clipped = 0;
+    for y in 0..24 {
+        for x in 0..24 {
+            let (shared, gathered) = (px(x, y), px(x + 24, y));
+            assert!(
+                shared.iter().zip(gathered).all(|(a, b)| a.abs_diff(*b) <= 1),
+                "({x}, {y}): shared {shared:?}, gathered {gathered:?}"
+            );
+            // The history's blue, 204 in 8 bits: clipped toward the scene wherever it differs.
+            if shared[2] < 190 {
+                clipped += 1;
+            }
+        }
+    }
+    assert!(clipped > 24 * 24 / 2, "the history wasn't clipped: {clipped} pixels");
+}
+
+/// Grass the wind moves keeps its blades through temporal AA when its motion is in the motion
+/// target (`deforming_of`): after 12 frames of blades sliding 1.5 pixels a frame, the resolve
+/// with their motion is at most three quarters as far from a fresh resolve (no history) as the
+/// one without, which fades them toward the ground. (Not half: at a blade's leading edge its
+/// motion can point at the ground's history, and there the camera reprojects it, as before.)
+#[test]
+#[ignore = "needs a GPU"]
+fn temporal_keeps_swaying_grass_that_draws_its_motion() {
+    let (dir, _) = page("compiler/tests/temporal-sway", "temporal-sway");
+    let times: Vec<f32> = (0..12).map(|i| i as f32 / 60.0).collect();
+    let frame = Host::load(&dir).expect("load").run_frames(&times, 192, 32).expect("run").frame;
+    let px = |x: usize, y: usize, c: usize| i32::from(frame[4 * (y * 192 + x) + c]);
+    let (mut with, mut without) = (0, 0);
+    for y in 0..32 {
+        for x in 0..64 {
+            for c in 0..3 {
+                with += (px(x, y, c) - px(x + 128, y, c)).abs();
+                without += (px(x + 64, y, c) - px(x + 128, y, c)).abs();
+            }
+        }
+    }
+    eprintln!("distance from a fresh resolve: {with} with motion, {without} without");
+    assert!(4 * with <= 3 * without, "with motion {with}, without {without}");
+}
+
+/// `std::derive::filtered` antialiases a checkered ground plane at a sample a pixel: against the
+/// mean of 256 samples a pixel, its error is at most a quarter of a point sample's (which breaks
+/// into moiré past a few metres), on the GPU; and Chrome draws what the native host draws.
+#[test]
+#[ignore = "needs a GPU and Chrome"]
+fn a_filtered_checker_fades_where_a_point_sample_aliases() {
+    let (dir, rel) = page("compiler/tests/filtered-aa", "filtered-aa");
+    let run = Host::load(&dir).expect("load").run_frames(&[0.0], 384, 96).expect("run");
+    let at = |x: usize, y: usize| f64::from(run.frame[4 * (y * 384 + x)]);
+    let (mut point, mut filtered) = (0.0, 0.0);
+    for y in 0..96 {
+        for x in 0..128 {
+            let reference = at(x + 256, y);
+            point += (at(x, y) - reference).abs();
+            filtered += (at(x + 128, y) - reference).abs();
+        }
+    }
+    let n = 128.0 * 96.0;
+    eprintln!("against 256 samples: point {:.2}/255, filtered {:.2}/255", point / n, filtered / n);
+    assert!(4.0 * filtered <= point, "filtered {filtered}, point {point}");
+    let browser = run_in_chrome(&rel, 1, 384, 96, 60.0);
+    frames_match(&browser.frame, &run.frame);
+}
+
+/// `std::derive::filtered` gives each builtin its footprint's average on the GPU, as on the CPU:
+/// the fixture's 16 pixels, a case each (std's `filtered_builtins_are_their_footprints_average`),
+/// are all white, natively and in Chrome.
+#[test]
+#[ignore = "needs a GPU and Chrome"]
+fn filtered_builtins_are_their_footprints_average_on_the_gpu() {
+    let (dir, rel) = page("compiler/tests/filtered-cases", "filtered-cases");
+    let native = Host::load(&dir).expect("load").run_frames(&[0.0], 16, 1).expect("run").frame;
+    let browser = run_in_chrome(&rel, 1, 16, 1, 60.0).frame;
+    for (host, frame) in [("native", &native), ("Chrome", &browser)] {
+        let failed: Vec<usize> = (0..16).filter(|&k| frame[4 * k + 1] != 255).collect();
+        assert!(failed.is_empty(), "{host}: cases {failed:?} are not their average");
+    }
+}
+
 /// Leaves and a solid silhouette against sky are partial coverage. Their stored depth can
 /// change with jitter without the history becoming invalid. Keep that history and the
 /// spatial background contribution, while the opaque rows above retain depth rejection.
@@ -680,6 +771,28 @@ fn character_materials_reflect_by_view_roughness_and_metallicity() {
 }
 
 /// A moving sampling grid must not borrow an occluder's colour or detach from its depth.
+/// The reflection's march reads every third step's texel and, where that lands behind a surface,
+/// tests the two before it first. Over walls thick enough that no surface lies between its reads,
+/// it meets each where one step at a time met it: the same step, distance and pixel, for walls
+/// met at every step of the march.
+#[test]
+#[ignore = "needs a GPU"]
+fn water_reflections_marched_in_threes_meet_what_single_steps_meet() {
+    let (dir, _) = page("compiler/tests/water-steps", "water-steps");
+    let frame = Host::load(&dir).expect("load").run_frames(&[0.0], 192, 32).expect("run").frame;
+    let mut steps = std::collections::BTreeSet::new();
+    for y in 0..32 {
+        for x in 0..96 {
+            let (i, j) = (4 * (y * 192 + x), 4 * (y * 192 + x + 96));
+            assert_eq!(frame[i..i + 4], frame[j..j + 4], "({x}, {y}): threes against single steps");
+            if frame[i + 3] > 0 {
+                steps.insert(frame[i]);
+            }
+        }
+    }
+    assert!(steps.len() >= 15, "walls met at too few of the march's steps: {steps:?}");
+}
+
 #[test]
 #[ignore = "needs a GPU"]
 fn water_reflections_follow_raster_jitter_without_foreground_colour_leaks() {

@@ -2229,6 +2229,186 @@ in the docs. Each was a reference only: the code is Wrela's own, and none was co
 | Chris Wellons's `lowbias32` (hash-prospector, public domain) | A 32-bit integer hash's constants | `std::derive`'s scramble |
 | [ttf-parser](https://github.com/RazrFalcon/ttf-parser) (MIT or Apache-2.0) | How a TrueType font's `cmap`, `hhea`, `OS/2`, `glyf` and `kern` tables are read, and their fallbacks | `ui::ttf` |
 
+## Rendering moonshots: plan, baseline and exact skips, 2026-10-16
+
+Ryan asked for moonshot ideas that make rendering much faster with no loss of quality, and for
+a council to vet them before he had them implemented. Claude (Opus 5.5) proposed seven: work
+skipped where it's proven to change nothing, caches for shading that doesn't change, motion for
+everything, prefiltering derived by the compiler, virtual geometry cooked from fields, certified
+half floats and fused passes. The council (GPT-6.1-Sol and GPT-6-Astra, two rounds) found that the
+first spikes leaned on the compiler's intervals where they can't go (texture reads), that a
+reflection tracer which moves its samples isn't exact, that motion vectors don't make a history
+valid, and that the gates named no statistic. The plan became: a hand-written Wrela version
+proves each gain on hardware before the compiler generalizes it, and every spike freezes its
+image and timing gates first. The papers it named (Keeter's interval rendering, McGuire and
+Mara's screen-space tracing, Uludag's Hi-Z, Proudfoot et al., Spire, shading atlases, Dorn et
+al. and Yang and Barnes on prefiltering, Ragan-Kelley's Halide, Karis's Nanite talk) are the
+ideas' published sources, cited from the models' knowledge; no code was taken.
+
+The baseline (AMD Radeon, Lucienne iGPU, RADV, native host, 1280×720, the Last Green's opening,
+120 frames after 60): a GPU span of 37.2 ms, of which the clouds' march took 10.0 ms, the trees'
+shading 5.7, the grass 3.5, the trees' prepass 3.0 and the terrain 2.4 (labels overlap).
+
+The first change skips only work whose result is discarded: the clouds' march stops sampling its
+field once a ray is opaque, the terrain reads no material tile of zero weight and no detail size
+faded out, and noise layers faded to their mean aren't evaluated. Eight lookbook views rendered
+at 1280×720 are the same bits as before; the opening differs by at most 1/255 in 0.001% of its
+pixels, as two runs of the unchanged build do. Five alternating pairs (`wrela profile --compare`)
+measured a GPU span 3.6% shorter (37.25 to 35.92 ms, every pair faster), the terrain 36% faster
+(2.43 to 1.55 ms) and the clouds 4.6% (10.02 to 9.54 ms). No M4 or Chrome measurement was made.
+
+Temporal AA's resolve at the output's size now finds its nearest sample's neighbourhood itself
+(`temporal::resolve_gathered`) instead of reading the two targets a separate pass wrote. At half
+the output's size the shared pass still pays, since four output pixels read each neighbourhood:
+the clearing's resolve gathering its own took 11% longer. In the Last Green's opening (same
+machine and settings as above) the resolve took 35.5% less time (2.11 to 1.36 ms) and the GPU
+span 2.6% less, in every pair. Held in 32 bits rather than half floats, the neighbourhood clips a
+little differently: a test scene agrees within 1/255; settled stills differ by at most 2/255 in
+99% of pixels, up to 55/255 in a few, where the history's clip crosses its box's edge; frame to
+frame, the held gust, the canopy, the walk and the mere change as much as before (1.9526 against
+1.9527/255 in the gust). On this RADV driver the shared pass's half floats are truncated, not
+rounded: a resolve that truncated as it does gave the same bits.
+
+The water's reflection from the screen costs about 2.9 ms of its 4.7 ms draw in the mere's view
+(measured by leaving it out), and halving its 24 steps saved 1.6 ms, so its loop dominates. Four
+exact changes were tried. A map of the nearest distance over 8 × 8 tiles, which let a step skip a
+texel nothing in front of it could hold, gave the same bits (a test compared it with a march
+that skips nothing) but made the water 2.2% slower, its own pass included: a step still waited on
+a load, the map's instead of the scene's. Reading four steps' texels at once made it 2% slower,
+and projecting the ray's points linearly changed nothing; neither the reads' order nor the
+arithmetic is what limits it. Filtering a hit after the loop instead of inside it, so a group of
+pixels whose rays stop at different steps filters together once, made the water 2.2% faster
+(5.68 to 5.56 ms, every pair) with the same bits in the mere, the stream and the waterfall; that
+change is kept, the others aren't.
+
+Since the march's reads wait on each other, the water's march now reads one texel in three
+(`water::reflection_march`): every step is checked for where the march ends, but only each third
+step's texel is read, and where that lands behind a surface the two before it are read and
+tested first. Over surfaces thick enough that none lies between its reads it meets what single
+steps meet, at the same step (a GPU test, over walls met at 21 of the 24 steps); a thin surface
+whose only hit falls on a first or second step is passed by. Its gates were set before it was
+measured: the mere's, the stream's and the waterfall's stills within 2/255 in 99% of pixels and
+8/255 in 99.9%, the mere's frame-to-frame change within 2% of before, and a sixth less water time
+at least. It met them: 1/255 and 3/255; 0.6020 against 0.6018/255; the water 16.2% faster in the
+mere (5.55 to 4.65 ms) and the GPU span 2.4% shorter, in every pair. The stills differ in single
+pixels of the sun's glint. Pairs of steps saved 10.7%; groups held in arrays were slower than
+before, as the arrays' registers cost more than the reads saved.
+
+The virtual geometry spike (S1a, `engine::clusters`, `examples/clusters`) cooks a field's surface
+at six levels, each cell twice the last's (4 mm to 128 mm), on grids from one origin so a coarse
+block covers eight finer ones exactly. Each block's quads are a cluster: extracted as
+`engine::realize` extracts them, kept together, with an error measured from the field (its
+vertices' distance from the surface, at least a quarter of a cell) and raised to its children's.
+Each frame walks down the levels from the coarsest: a cluster whose error looks at most half a
+pixel from its nearest point is drawn, one that doesn't hands its live children down, and a
+cluster with no live parent starts the walk at its level, so the work grows with the cut. Where
+neighbours are drawn at different levels, each cluster's skirt (its boundary edges' quads pushed
+a cell into the surface) covers the gap. The ideas are Nanite's (Karis et al., "Nanite: A Deep
+Dive", SIGGRAPH 2021 Advances in Real-Time Rendering: clusters, a cut by projected error, a
+parent's error never under its children's) and chunked terrain's skirts (Ulrich, "Rendering
+Massive Terrains using Chunked Level of Detail Control", SIGGRAPH 2002); the clusters here are
+extraction's blocks, re-extracted at each level rather than simplified, and no code was taken.
+The subject is spike 13's smooth creature without its bark.
+
+Gates, on this Radeon, 1280×720 unless said: no crack and every silhouette within a pixel of the
+finest level drawn everywhere (GPU test, 9 copies: 0 cracks, 33 pixels differ, all on
+silhouettes); every quad within its room; Chrome draws the native host's frame (the same bits).
+The cut over 64 copies lists 359,000 quads; the finest level is 669,000 quads a copy (43 million
+for the field). Nine copies take 5.2 ms of GPU time drawn as the cut and 21.6 ms as the finest
+level (Chrome: 5.3 and 22.8 ms); 64 copies take 7.0 ms (the finest level overflows its room).
+Hidden copies cost nothing that shows: 0, 1,000, 10,000 and 100,000 more under the ground, 7.08,
+7.02, 7.02 and 7.05 ms. Visible ones cost little: 64, 144 and 256 copies, 7.05, 7.58 and 8.77 ms.
+Detail costs a little: a finest level twice as fine (8 mm to 4 mm, a level more) took 7.05 ms
+against 6.18. Selection is 1.2 ms of the 7.0 (walking the levels from the top took it from 2.0).
+Not yet good enough to ship: the rooms are sized for every copy at the finest level (about 500 MB
+for 64 copies, of which the cut uses about 3 MB of lists); the smooth creature certifies, but
+the clusters' errors are measured, not certified, and noisy fields (bark, stone) aren't tried;
+and no game draws with it.
+
+Two planned spikes found no subject in this frame. Half floats (W2.3) were to go into one kernel
+that computes colour alone, where an error can't move a position or a branch: the frame's passes
+on colour alone are bound by their reads (the look's `develop` reads seven texels a pixel; its
+glow is a quarter of the screen), and those heavy in arithmetic (the clouds' march, the dab map,
+the shading) compute in world coordinates, which the council kept in 32 bits. A cache of
+shading that doesn't change (W2.4) found the terrain's detail and the dab map bound to the view's
+footprint, and the shadows already cached (their median in the baseline was its frames drawing
+them after load). What the baseline shows is the clouds, so a cache's other half went there: the
+dome's tiles out of sight (more than half a radian past the view's corners) are marched one
+round in two, each in its turn. Gates set first: stills within 2/255 at p99 and 8/255 at p99.9,
+the camera's hard turn's frame-to-frame change within 2%, the clouds a quarter faster. Met: 2/255
+and 5/255 (the probes, which light every surface from the whole dome, move a little); 30.5292
+against 30.5293/255; the clouds 28% faster and the GPU span 8% shorter in the opening, every pair.
+Every third round saved 35% and every fourth 42%; a turn's tile waits longer there. Staggered by a
+tile's number alone, a whole phase rested or marched together (every tile of a phase is the same
+modulo 32), and the median frame saved only 13%.
+
+Grass now draws its motion (W1.4): the near blades again in the motion pass, each point bent by
+this frame's wind and cloak and by last frame's, with 0.5 in the target's z
+(`temporal::deforming_of`), where the depth equals the shading's (so a leaflet's cut and what's
+in front write nothing). A resolve reprojects thin geometry by it, and treats it as still
+otherwise; only where the history at that point showed thin geometry too, since grass the cloak
+pushes aside points back at where the cloak was. In a test of blades sliding 1.5 pixels a frame
+it is 31% nearer a fresh resolve after 12 frames than without (whose blades fade toward the
+ground). In the floor the grass stays crisper in a hard turn; the held gust's frame-to-frame
+change is 1.2% more (its blades move rather than smear). It costs 0.86 ms of GPU time in the
+opening (3%), the blades' second draw. It's the motion that a resolve shading a share of the
+pixels each frame would need; that spike isn't done.
+
+Prefiltering derived by the compiler (idea 4) is `std::derive::filtered` (language.md §13): the
+gradient's forward mode with each direction's seed the footprint's width along it, and each
+discontinuous builtin (`fract`, `floor`, `step`, `abs`, `min`, `max`, the clamps and the rest)
+averaged over the range its operand spans, from closed forms of its integral. The idea is Dorn,
+Barnes, Yang and Wolff's ("Automatically Antialiasing Procedural Shaders", 2015) and Yang and
+Barnes's ("Approximate Program Smoothing Using Mean-Variance Statistics", 2018), which carry a
+value's spread through a program and smooth the operations that jump; this one carries first
+order spreads only, so a product of patterns along different axes averages exactly and `abs`
+of a difference of two doesn't (std's test writes a checker as a product). Its gate was the
+council's: judged against supersampling. A checkered ground plane to its horizon at a sample a
+pixel is 13/255 from the mean of 256 samples a pixel, where point samples are 87/255 off (130
+against 12 in the far rows, where they turn to moiré), the same bits in Chrome as natively. No
+code was taken from either paper; its cost per pixel against a point sample wasn't measured.
+
+The clusters' memory (S4's question for the spike) came down from about 500 MB to 357 MB for
+the 64 copies: once cooking's counts are read back, each level's quads and vertices are copied
+into buffers of exactly that size, and the frame's lists, with room for every quad of every copy
+at their level (at most 8M), shrink with them. A first version also sized the frame's lists from
+counts read back every 8 frames (twice what a recent frame needed): 78 MB, for +0.11 ms of 7.0.
+A council review (two reviewers, gpt-6.1-sol and gpt-6-astra, through T3 Code) found that it
+dropped clusters after a jump of the view or more copies until the rooms grew, and that its tests
+waited for the rooms to settle, so they missed it. A fallback that draws a cluster in place of
+children with no room was rejected too: it leaves the cut's error test, and the skirts close
+gaps of one level only. So the lists stay whole; sizing them to need is left for a fallback that
+keeps both coverage and silhouettes. Cooking's peak is still the finest level's cell map (about
+440 MB at 4 mm, freed as soon as its clusters are emitted), and cooking itself takes about 0.7 s,
+on the device.
+
+A second council (the same reviewers) reviewed the stack and the next cloud work. Cooking the
+far sunlight's optical depth into a volume in the field's frame was dropped before it was built.
+The field doesn't repeat every 48 km: its shape noise repeats every 3.6 km, so the common period
+is 144 km. The dome's rays reach 60 km, so a volume that doesn't wrap would cover about 120 km a
+side. And `R16Float` can't be stored to. An exact skip of the march's empty samples, through a max
+hierarchy of the weather map, was measured first and dropped too. Ablations of the march
+(Radeon, 1280×720, three pairs) found that the coarse marking costs 0.53 ms of the opening's
+6.90 ms for clouds, and the fine samples' weather tests 0.78 ms more (0.76 and 0.72 of 7.29 at the
+mere). So such a skip saves at most about 11%, under its 10% gate in practice, and the other
+5.6 ms is the shape, detail and lighting of samples the weather admits. Tiles out of sight rest
+three rounds in place of two (`RESTING`): clouds -9.5% at the opening and -12.6% at the mere, GPU
+span -3.0% and -2.5% (five pairs). Its stills are within p99 1–2/255 and p99.9 1–4/255 of two
+rounds' on nine lookbook views. The reversal capture's frame-to-frame change is the same
+(30.556/255 against 30.557), and its frames are within p99.9 4/255 of two rounds'.
+
+The grass's placing (3.49 ms at the opening) was measured before anything was cached, as the
+council asked: ablations, each returning at a later point of `grass::place`, found the cells' walk
+and tests 0.97 ms, the stones and the clipmap's ground 0.67 ms, the meadow's noises and lighting
+0.5 ms, appending 0.1 ms, and the wood's floor's plants (`under_plant`) 1.2 ms, of which choosing a
+herb's species (`species_of`, scoring all 32 species) was 1.05 ms. A species whose acid, wet or
+light range the habitat is more than 0.15 past scores exactly 0 (`smoothstep` is 0 there), so it
+is now passed over before its score is worked out: grass 3.49 -> 3.05 ms at the opening (-12.6%,
+GPU span -1.3%) and -3.4% at the mere (span inconclusive), five pairs. The stills are the same as
+before to within what two runs of one build differ by (at most 3/255 at a handful of pixels), and
+a test checks it chooses what scoring every species chooses over 4096 seeded habitats and on every
+range's edges. Bitmasks of the species each of 32 bins of a habitat's acid, wet and light might admit (so the walk reads only those) gained nothing more (-0.3%, inconclusive): the rest of the choice is scoring the species a habitat is within reach of.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

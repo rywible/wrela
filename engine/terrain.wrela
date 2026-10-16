@@ -926,14 +926,20 @@ pub fn ground_shade(
     let a4 = abs(n)
     let tri = a4 * a4 * a4 * a4 / max(dot(a4 * a4, a4 * a4), 1.0e-6)
     // Rock across the planes the normal faces (a face's grain doesn't smear); the rest flat.
+    // A material of no weight adds nothing to the sum, so its tiles aren't read.
     let rk = DETAIL_SIZES[2]
-    let detail = detail_of(litter, ds, wp.xz, DETAIL_SIZES[0], foot) * w.x +
-        detail_of(soil, ds, wp.xz, DETAIL_SIZES[1], foot) * w.y +
+    let rocky = if w.z == 0.0 {
+        vec3(0.0)
+    } else {
         (detail_of(rock, ds, wp.zy, rk, foot) * tri.x +
             detail_of(rock, ds, wp.xz, rk, foot) * tri.y +
             detail_of(rock, ds, wp.xy, rk, foot) * tri.z) *
-            w.z +
-        detail_of(moss, ds, wp.xz, DETAIL_SIZES[3], foot) * w.w
+            w.z
+    }
+    let detail = weighted_detail(litter, ds, wp.xz, DETAIL_SIZES[0], foot, w.x) +
+        weighted_detail(soil, ds, wp.xz, DETAIL_SIZES[1], foot, w.y) +
+        rocky +
+        weighted_detail(moss, ds, wp.xz, DETAIL_SIZES[3], foot, w.w)
     let albedo = coarse * detail
     // The sky's reflection, but no glint of the sun: the ground is covered (grass, and far off
     // trees), whose blades and leaves shade each other's glints where the ground's would show
@@ -1077,7 +1083,11 @@ fn detail_texel(pixel: FragCoord, k: u32) -> vec4 {
 fn detail_of(t: Texture<Rgba8>, ds: Sampler, q: vec2, size: f32, foot: f32) -> vec3 {
     let fine = smoothstep(2.5, 0.8, foot * f32(DETAIL_TEXELS) / size)
     let far = smoothstep(2.5, 0.8, foot * f32(DETAIL_TEXELS) / (size * 4.0))
-    let f = t.sample_level(ds, q / size).rgb * 2.0
+    // Faded out at both sizes it's 1, and faded out at the finer the finer read adds nothing
+    // (a mix's weight of 0 keeps its first value exactly): what isn't seen isn't read.
+    if far == 0.0 {
+        return vec3(1.0)
+    }
     // The coarser read at half strength: at four times the size its shapes (a stone, a crust)
     // are the size of a footstep, and read as a printed pattern at full strength.
     let c = mix(
@@ -1085,7 +1095,20 @@ fn detail_of(t: Texture<Rgba8>, ds: Sampler, q: vec2, size: f32, foot: f32) -> v
         t.sample_level(ds, q / (size * 4.0) + vec2(0.37, 0.71)).rgb * 2.0,
         vec3(0.5),
     )
+    if fine == 0.0 {
+        return mix(vec3(1.0), c, vec3(far))
+    }
+    let f = t.sample_level(ds, q / size).rgb * 2.0
     mix(vec3(1.0), mix(c, f * c, vec3(fine)), vec3(far))
+}
+
+/// `detail_of` times its material's weight `w`; a weight of 0 adds nothing to a sum of them, so
+/// the material's tile isn't read.
+fn weighted_detail(t: Texture<Rgba8>, ds: Sampler, q: vec2, size: f32, foot: f32, w: f32) -> vec3 {
+    if w == 0.0 {
+        return vec3(0.0)
+    }
+    detail_of(t, ds, q, size, foot) * w
 }
 
 /// What the ground is made of at `xz` (`Cover::materials`), from level `l` (the level it's

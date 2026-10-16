@@ -1,0 +1,190 @@
+// The virtual geometry spike (S1a of the rendering moonshots): spike 13's smooth creature
+// (`compiler/tests/spike13`, its bark left off) cooked as clusters (`engine::clusters`) and
+// drawn at the coarsest level whose error is at most `PIXELS` from where the eye is, block by
+// block. The scene: a field of copies on a plane, the eye moving between them; a test sets its
+// own eye and level of error (`view`).
+use engine::clusters::{ClusterLook, Clusters, Placed, cook_creature}
+use engine::creature::{Creature, Skeleton, creature}
+use engine::view::{Camera, first_camera}
+use std::derive::Box3
+use std::field::{Surface, ellipsoid, round_cone, sphere}
+use std::io::Pending
+use std::gpu::{
+    DepthTexture, GpuBuffer, begin_screen_pass_with_depth, buffer, depth_texture, label, write,
+}
+
+/// The error a cluster may show, in pixels.
+pub const PIXELS: f32 = 0.5
+
+/// The copies along each side of the field.
+pub const SIDE: u32 = 8
+
+/// Copies placed far under the ground, never in view (the spike's measure of hidden copies).
+pub const HIDDEN: u32 = 0
+
+/// The finest level's cells (m) and the levels.
+pub const CELL: f32 = 4mm
+pub const LEVELS: u32 = 6
+
+/// Spike 13's creature without its bark, at rest.
+fn smooth_creature() -> Surface {
+    let body = ellipsoid(vec3(0.62, 0.42, 0.42))
+    let neck = round_cone(vec3(0.35, 0.15, 0.0), vec3(0.75, 0.62, 0.0), r_top: 0.16, r_bottom: 0.1)
+    let head = sphere(radius: 0.2).translate(vec3(0.82, 0.72, 0.0))
+    body.smooth_union(neck, k: 0.12).smooth_union(head, k: 0.08)
+}
+
+/// It as a creature of one part (channels it has none of: a number), in its box.
+fn body() -> Creature<f32> {
+    var sk = Skeleton::new()
+    let root = sk.root("body", vec3(0.0))
+    creature(sk).part(root, smooth_creature().with(1.0)).bounded(BOUNDS)
+}
+
+/// The box that holds it.
+pub const BOUNDS = Box3 { lo: vec3(-0.7, -0.5, -0.5), hi: vec3(1.1, 1.0, 0.5) }
+
+pub struct State {
+    clusters: Clusters,
+    places: GpuBuffer<Placed>,
+    depth: DepthTexture,
+    /// A test's eye and where it looks, and its error in pixels; none: the moving eye.
+    eye: Option<(vec3, vec3)>,
+    pixels: f32,
+    side: u32,
+    /// A test's readback of the clusters' counts (`Clusters::counts`), and what's arrived.
+    asked: Vec<Pending<u32>>,
+    answered: Vec<u32>,
+}
+
+/// `side` × `side` copies on the plane, 3 m apart, each a little larger than the last.
+fn placements(side: u32) -> GpuBuffer<Placed> {
+    var out: Vec<Placed> = Vec::new()
+    for i in 0..side * side {
+        let (x, z) = (f32(i % side), f32(i / side))
+        out.push(Placed { at: vec3(x * 3.0, 0.0, z * 3.0), scale: 1.0 + 0.05 * f32(i % 7) })
+    }
+    for i in 0..HIDDEN {
+        out.push(Placed { at: vec3(f32(i % 100) * 3.0, -500.0, f32(i / 100) * 3.0), scale: 1.0 })
+    }
+    var b: GpuBuffer<Placed> = buffer(out.len())
+    write(mut b, 0, out)
+    b
+}
+
+pub fn init() -> State {
+    let clusters = cook_creature(body(), CELL, LEVELS)
+    State {
+        clusters,
+        places: placements(SIDE),
+        depth: depth_texture(width: 1, height: 1),
+        eye: None,
+        pixels: PIXELS,
+        side: SIDE,
+        asked: Vec::new(),
+        answered: Vec::new(),
+    }
+}
+
+/// A test's view: the eye at (`ex`, `ey`, `ez`) looking at (`ax`, `ay`, `az`), `pixels` of
+/// error, `side` × `side` copies.
+@testing
+pub fn view(
+    s: mut State,
+    ex: f32,
+    ey: f32,
+    ez: f32,
+    ax: f32,
+    ay: f32,
+    az: f32,
+    pixels: f32,
+    side: u32,
+) {
+    s.eye = Some((vec3(ex, ey, ez), vec3(ax, ay, az)))
+    s.pixels = pixels
+    if side != s.side {
+        s.places = placements(side)
+        s.side = side
+    }
+}
+
+/// A count not yet read back.
+const NOT_YET: u32 = 0xffffffff
+
+/// Asks for the clusters' counts (`Clusters::counts`), which `counts` gives once they arrive.
+@testing
+pub fn ask_counts(s: mut State) {
+    s.asked = s.clusters.counts()
+    s.answered = Vec::new()
+    for _ in 0..s.asked.len() {
+        s.answered.push(NOT_YET)
+    }
+}
+
+/// How many of the counts asked for (`ask_counts`) there are, each beside its room
+/// (`Clusters::rooms`: wanted, room, listed, room, a level at a time); 0 until every answer has
+/// arrived.
+@testing
+pub fn counts(s: mut State) -> u32 {
+    var waiting = false
+    for i in 0..s.asked.len() {
+        if s.answered[i] == NOT_YET {
+            if let Some(Ok(v)) = s.asked[i].poll() {
+                s.answered[i] = v[0]
+            } else {
+                waiting = true
+            }
+        }
+    }
+    if waiting { 0 } else { 2 * s.answered.len() }
+}
+
+/// Count `i` of those `counts` says there are.
+@testing
+pub fn count(s: State, i: u32) -> u32 {
+    if i % 2 == 0 { s.answered[i / 2] } else { s.clusters.rooms()[i / 2] }
+}
+
+/// The clusters' bytes in megabytes (`Clusters::bytes`).
+@testing
+pub fn megabytes(s: State) -> u32 {
+    u32(s.clusters.bytes() / 1000000)
+}
+
+fn camera_at(s: State, time: f32, width: u32, height: u32) -> Camera {
+    let (eye, at) = match s.eye {
+        Some(v) => v,
+        None => {
+            // Round the field's middle, a little outside it.
+            let a = 0.2 * time
+            let middle = 1.5 * f32(s.side - 1)
+            let r = middle + 1.5
+            (vec3(middle + r * sin(a), 1.4, middle + r * cos(a)), vec3(middle, 0.4, middle))
+        },
+    }
+    first_camera(eye, at, 1.0, width, height)
+}
+
+/// The copies' colour and light.
+const LOOK = ClusterLook {
+    albedo: vec3(0.62, 0.5, 0.38),
+    sun: vec3(0.5, 0.8, 0.3) / 0.9899495,
+    sky: 0.25,
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if s.depth.width() != width || s.depth.height() != height {
+        s.depth = depth_texture(width, height)
+    }
+    let cam = camera_at(s, time, width, height)
+    label("clusters select")
+    s.clusters.select(cam, s.places, s.pixels)
+    label("clusters draw")
+    let p = begin_screen_pass_with_depth(
+        mut s.depth,
+        clear: vec4(0.55, 0.68, 0.85, 1.0),
+        clear_depth: 0.0,
+    )
+    s.clusters.draw(p, cam, s.places, LOOK)
+    p.present()
+}

@@ -784,6 +784,9 @@ fn cook_sky(s: mut Clearing, eye: vec3, wind: Wind) {
             rep: s.repeat,
             s: s.linear,
             still: !on(off, System::Wind),
+            // Every tile in sight: the clearing's dome is marched whole each round.
+            forward: vec3(0.0, 0.0, 1.0),
+            view: std::math::PI,
         )
     }
 }
