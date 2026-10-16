@@ -5,5 +5,14 @@
   {"until": "Array.from(document.querySelectorAll('[aria-label=\"On this page\"] a')).map((a) => a.textContent).join('|') === '6.1 Values|6.2 Parameter modes'"},
   {"until": "Array.from(document.querySelectorAll('a')).some((a) => a.textContent === 'Next page: std::io')"},
   {"until": "(Array.from(document.querySelectorAll('a')).find((a) => a.textContent === 'Next page: std::io').click(), true)"},
-  {"until": "document.title === 'std::io | Wrela docs' && location.hash === '#std/io'"}
+  {"until": "document.title === 'std::io | Wrela docs' && location.hash === '#std/io'"},
+  {"method": "Browser.grantPermissions", "params": {"permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"]}},
+  {"method": "Emulation.setFocusEmulationEnabled", "params": {"enabled": true}},
+  {"until": "Array.from(document.querySelectorAll('button')).some((b) => b.textContent === 'Copy code')"},
+  {"until": "(Array.from(document.querySelectorAll('button')).find((b) => b.textContent === 'Copy code').click(), true)"},
+  {"until": "Array.from(document.querySelectorAll('button')).some((b) => b.textContent === 'Copied')"},
+  {"until": "(navigator.clipboard.readText().then((t) => { window.copied = t }), window.copied === 'pub fn fetch(url: str) -> Pending<u8>')"},
+  {"until": "(Array.from(document.querySelectorAll('button')).find((b) => b.textContent === 'Copy as Markdown').click(), true)"},
+  {"until": "(navigator.clipboard.readText().then((t) => { window.copied = t }), typeof window.copied === 'string' && window.copied.startsWith('# std::io\\n\\nRequests to the host.'))"},
+  {"until": "Array.from(document.querySelectorAll('a')).some((a) => a.textContent === 'Link to fetch' && a.getAttribute('href').endsWith('#std/io:fetch'))"}
 ]

@@ -54,12 +54,29 @@ pub struct Part: Clone {
     pub target: String,
 }
 
+/// A block of code: its ground, and its text as written, for a copy of it.
+pub struct Snippet: Clone {
+    pub rect: Rect,
+    pub text: String,
+}
+
+/// A heading with an anchor under the page's title: the anchor, where the heading is, how tall its
+/// first line is, and its words.
+pub struct Title: Clone {
+    pub anchor: String,
+    pub rect: Rect,
+    pub line: f32,
+    pub label: String,
+}
+
 pub struct Laid: Clone {
     pub pieces: Vec<Piece>,
     pub shapes: Vec<Shape>,
     pub spots: Vec<Spot>,
     pub anchors: Vec<(String, f32)>,
     pub parts: Vec<Part>,
+    pub snippets: Vec<Snippet>,
+    pub titles: Vec<Title>,
     pub height: f32,
     /// The block being laid out.
     block: u32,
@@ -75,6 +92,8 @@ impl Laid {
             spots: Vec::new(),
             anchors: Vec::new(),
             parts: Vec::new(),
+            snippets: Vec::new(),
+            titles: Vec::new(),
             height: 0.0,
             block: 0,
             code_blocks: Vec::new(),
@@ -204,6 +223,16 @@ pub fn lay_out(
                     }
                 }
                 heading_line = vec3(y - line, right, line)
+                if b.level >= 2 && !b.anchor.is_empty() {
+                    laid.titles.push(
+                        Title {
+                            anchor: b.anchor.clone(),
+                            rect: Rect::new(0.0, start, measure, y - start),
+                            line,
+                            label: plain(b.runs),
+                        },
+                    )
+                }
                 laid.parts.push(
                     Part {
                         role: Role::Heading,
@@ -749,6 +778,9 @@ fn code(laid: mut Laid, p: Palette, fonts: Fonts, text: str, y: f32, width: f32,
     }
     let bottom = top + pad - line * 0.15
     laid.shapes[shape].rect.h = bottom - start
+    laid.snippets.push(
+        Snippet { rect: Rect::new(0.0, start, width, bottom - start), text: text.to_string() },
+    )
     laid.parts.push(
         Part {
             role: Role::Code,
@@ -952,6 +984,23 @@ fn the_page_reads_as_text_in_order_and_its_headings_are_in_its_parts() {
     let fonts = Fonts::from_baked(brand::manrope::MANROPE, ui::text::MONO)
     let at = page.place_at(fonts, vec2(page.pieces[0].at.x + 2.0, page.pieces[0].at.y + 4.0))
     assert(at == Some((0, 0)))
+}
+
+@test
+fn a_block_of_code_keeps_its_text_and_a_section_its_place_for_a_link() {
+    let page = laid(
+        "# Title\n\n## Values, copies and moves\n\nText.\n\n```wrela\nlet a = 1\n    a + 1\n```\n",
+        600.0,
+    )
+    // The code as written, indent and all, over its ground.
+    assert(page.snippets.len() == 1 && page.snippets[0].text.as_str() == "let a = 1\n    a + 1")
+    let ground = page.snippets[0].rect
+    assert(ground.w == 600.0 && ground.h > 40.0 && ground.y > page.anchors[1].1)
+    // The section, not the page's title, has a place for a link to it, at its heading.
+    assert(page.titles.len() == 1, f"{page.titles.len()} titles")
+    borrow t = page.titles[0]
+    assert(t.anchor.as_str() == "values-copies-and-moves" && t.rect.y == page.anchors[1].1)
+    assert(t.label.as_str() == "Values, copies and moves" && t.line > 20.0 && t.rect.h >= t.line)
 }
 
 @test
