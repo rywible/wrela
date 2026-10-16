@@ -1,12 +1,14 @@
-// The stand-in player and its camera (M6 §5): a body the climber's height that walks at 1.4 m/s
-// and runs at about 5 m/s over a floor's ground, in the sim's tick, where `footing`'s one rule
-// lets it; and the third-person camera that follows it, pulled in when a trunk, a stone or a
-// wall comes between them.
+// The player and its camera: a body that walks and runs over a floor's ground in the sim's tick,
+// and the third-person camera that follows it.
 //
-// Its position is a place (a tile and an offset, `place::Place`), so a walk keeps its precision
-// however far it goes. Its controls are the keyboard and the mouse, held as a person holds them,
-// and taps for an agent, whose key presses don't hold (spike 17's play: taps worked where held
-// keys didn't): a tap turns walking on and off, running on and off, and the look by a step.
+// The body is a person's height. It walks at 1.4 m/s (`WALK`) and runs at about 5 m/s (`RUN`),
+// where `footing`'s one rule lets it. Its position is a place (a tile and an offset,
+// `place::Place`), so a walk keeps its precision however far it goes. The camera pulls in when a
+// trunk, a stone or a wall comes between it and the player (`third_person`, `follow`).
+//
+// The controls are the keyboard and the mouse, held as a person holds them, and taps for an
+// agent, whose key presses don't hold: a tap turns walking on and off, running on and off, and
+// the look by a step.
 //
 //     W S A D, the arrows   walk forward, back, to the side (held); the arrows turn the look
 //     Shift                 run while held
@@ -43,9 +45,8 @@ pub struct Motion: Copy {
     pub response: f32 = 0.0,
 }
 
-/// How much faster each glide goes (the play harness's, H: each press the next; for the
-/// streaming's tests, and the game's gliding to come): 2, 4, 8 and 16 times a run, over what's on
-/// the ground.
+/// How much faster each glide goes: 2, 4, 8 and 16 times a run, over what's on the ground. Each
+/// press of H selects the next glide; the play harness and the streaming tests use them.
 pub const GLIDES = [1.0, 2.0, 4.0, 8.0, 16.0]
 /// How quickly the player gets up to its pace, and stops (m/s²).
 pub const ACCELERATION: f32 = 10.0
@@ -359,7 +360,7 @@ fn standing_height<G: Ground>(ground: G, o: Obstacles, at: Place) -> f32 {
 
 // ---- the camera -----------------------------------------------------------------------------------
 
-/// The third person's framing (#54 Q4, the duel's): the point it looks at (above the feet), how
+/// The third person's framing: the point it looks at (above the feet), how
 /// far behind and how far to the right of it the eye is, and the field of view. With a focus
 /// (`Focus`) the eye goes out to `focus_shoulder` to the right as the weight comes up, so a foe
 /// coming straight at the player shows past the player's side, not behind its back: at 1.35 m, the

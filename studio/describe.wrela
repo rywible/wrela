@@ -1,7 +1,7 @@
 // What a subject is, in one answer (`describe`): its parts (each one's volume, its box and the
 // parts it touches), and the whole's box, volume, mass, pieces and lowest point, and how nearly
 // mirror-symmetric it is. For any surface: the field and the part that decides it (provenance,
-// language.md §22) are sampled on the diagnosis's grid on the GPU, and the rest is counted on
+// language.md §20) are sampled on the diagnosis's grid on the GPU, and the rest is counted on
 // the CPU.
 
 use diagnose::{Grid, report}

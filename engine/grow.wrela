@@ -1,20 +1,29 @@
-// A floor's history (M6 §3), from spikes 16's and 17's: centuries over a map, on the CPU, from the
-// land up. Water finds the hollows and runs down the land from the map's springs and meres; thin
-// soil lies on the crests. A forest of the floor's species grows, competes for light, dies,
-// stands, falls and rots. People keep what they kept while they live there; a herd walks the
-// map's routes, crops its openings and wears its trails; the map's events happen in their years,
-// a fire running as its fuel and the wind let it and a gale throwing what it finds exposed, and
-// the land remembers each (`Memories`). Each relation is a pin: no crown that could reach into a
-// sightline's cone grows above it.
+// A forest's history: centuries of growth over a floor's map, worked out on the CPU from the
+// land up, that decide where each tree stands and how the land wears.
 //
-// What's left in the present is the floor: its decisions (which trees stand where, of what kind,
-// how they died; the trails; the water's courses; what the land remembers) are baked when the
-// game is built (`bake`), and their consequences (light, wetness, soil, thorn, litter) are
-// worked out where a tile streams in (`consequences`). The soil itself (`soil`) is the ground's:
-// from its shape, its rock and its water.
+// Call `simulate` with the ground, the map (`place::Map`), the species (`Habit`) and the grain
+// (`Grain`); it returns a `History`. Over the years:
+// - water finds the hollows and runs down the land from the map's springs and meres, and thin
+//   soil lies on the crests;
+// - a forest of the floor's species grows, competes for light, dies, stands, falls and rots;
+// - people keep what they kept while they live there, and a herd walks the map's routes, crops
+//   its openings and wears its trails;
+// - the map's events happen in their years (`events`): a fire runs as its fuel and the wind let
+//   it, and a gale throws what it finds exposed;
+// - the land remembers each event (`Memories`).
 //
-// The species are data (`Habit`), the floor's; so is the grain: 2 m cells and 2-year steps for the
-// bake, 4 m cells and 10-year steps for the preview an editor shows after each edit.
+// Each relation in the map is a pin: no crown that could reach into a sightline's cone grows
+// above it.
+//
+// The history's decisions (which trees stand where, of what kind, how they died; the trails; the
+// water's courses; what the land remembers) are baked when the game is built (`bake`). Their
+// consequences (light, wetness, soil, thorn, litter) are worked out where a tile streams in
+// (`bake::tile_fields`). The soil itself (`soil`) comes from the ground's shape, its rock and its
+// water.
+//
+// The species and the grain are the floor's data: 2 m cells and 2-year steps for the bake
+// (`BAKE`), 4 m cells and 10-year steps for the preview an editor shows after each edit
+// (`PREVIEW`).
 
 use noise::{noise2, rand}
 use place::{Event, EventKind, Keeper, Map, Relation, RouteKind, to_segment}
@@ -378,7 +387,7 @@ pub struct Tree: Copy {
     pub fall: vec2,
     pub cause: Cause,
     /// Kept by the author (a pin), and what in the map shaped it (`shaped`; `NONE` for nothing):
-    /// its provenance (#54 §4).
+    /// its provenance.
     pub pinned: bool,
     pub shaped: u32,
     /// The lowest a branch of it comes (m): browsing keeps a line below which few grow.
@@ -896,7 +905,7 @@ fn surveyed<G: Ground>(ground: G, m: Map, g: Grid, given: Option<Given>) -> Land
         region.append(mut r.region)
     }
     // A tree is held by the lowest cap its crown can reach, not only its trunk's: an edge tree
-    // leans into a ride's light, and an oak's crown reaches 10 m (spike 17).
+    // leans into a ride's light, and an oak's crown reaches 10 m.
     let reach = i32(ceil(12.0 / g.cell))
     let (held, by) = g.reach_min_by(cap, capped_by, reach)
     Land {
@@ -918,7 +927,7 @@ fn surveyed<G: Ground>(ground: G, m: Map, g: Grid, given: Option<Given>) -> Land
     }
 }
 
-/// What in a map shaped a tree (its provenance, #54 §4): a relation's sightline capped it, an
+/// What in a map shaped a tree (its provenance): a relation's sightline capped it, an
 /// opening's or route's people felled it, an event killed it, or it's a kept tree.
 pub enum Shaper: Copy + Eq + Fieldless {
     Relation,
@@ -2233,8 +2242,8 @@ pub fn grown(at: vec2, kind: u32, born: i32, year: i32, seed: u32, h: Habit, ope
 
 /// The first forest: a wood grown in a stroke, each tree where its ground suits it, of an age
 /// drawn from an old wood's, its height and crown from its age; and saplings between. The
-/// history's centuries then sort it out (spike 17 grew its first 400 years a step at a time, for
-/// the same structure).
+/// history's centuries then sort it out (this gives the structure that growing the first 400
+/// years a step at a time gives).
 fn first_forest(cx: Cx, start: Start, year: i32) -> Vec<Tree> {
     let g = cx.land.grid
     var rows: Vec<Row> = Vec::from_fn(g.nz, |j| Row { j, out: Vec::new() })
