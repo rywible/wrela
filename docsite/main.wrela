@@ -806,9 +806,10 @@ fn assisted(s: mut Docs, node: u32, action: Assist, f: Frame) {
         }
         return
     }
-    if node >= s.laid.parts.len() { return }
-    let target = s.laid.parts[node].target.clone()
-    let top = s.laid.parts[node].rect.y
+    // The page's parts are numbered from 1: 0 is the tree's root.
+    if node == 0 || node > s.laid.parts.len() { return }
+    let target = s.laid.parts[node - 1].target.clone()
+    let top = s.laid.parts[node - 1].rect.y
     match action {
         Assist::Activate => if !target.is_empty() { follow_link(mut s, target.as_str()) },
         _ => {
@@ -1242,12 +1243,16 @@ fn draw_caret(s: mut Docs, tx: f32, b: Rect, find: bool) {
     let u = s.u
     let w = if find { caret_x(s, s.find.as_str()) } else { caret_x(s, s.query.as_str()) }
     let on = s.reduced || (s.time * 2.0) - floor(s.time * 2.0) < 0.6
-    if on { s.list.rect(Rect::new(tx + w + 1.0 * u, b.y + 9.0 * u, 1.5 * u, b.h - 18.0 * u), hex(FIELD)) }
+    if on {
+        s.list.rect(Rect::new(tx + w + 1.0 * u, b.y + 9.0 * u, 1.5 * u, b.h - 18.0 * u), hex(FIELD))
+    }
 }
 
 /// How far into `text`, at the box's size, the caret is.
 fn caret_x(s: Docs, text: str) -> f32 {
-    let at = if s.capabilities & host::SEMANTICS != 0 { min(s.caret, text.len()) } else { text.len() }
+    let at = if s.capabilities & host::SEMANTICS != 0 { min(s.caret, text.len()) } else {
+        text.len()
+    }
     s.fonts.font(Face::Sans).measure(text.slice(from: 0, to: at), 15.0 * s.u)
 }
 
@@ -1357,7 +1362,9 @@ fn tell(s: mut Docs, f: Frame) {
     // While search is open, its box is a text field: an input method composes there, and a
     // screen reader hears what's typed.
     let typing = s.searching || s.finding
-    if typing != s.texting && s.capabilities & host::TEXT_INPUT != 0 && s.capabilities & host::SEMANTICS == 0 {
+    if typing != s.texting &&
+        s.capabilities & host::TEXT_INPUT != 0 &&
+        s.capabilities & host::SEMANTICS == 0 {
         let b = f.search
         s.told.push(
             host::text_input(
@@ -1385,8 +1392,8 @@ fn tell(s: mut Docs, f: Frame) {
 }
 
 /// The page's parts as a semantic tree, in reading order, whether or not they're on screen (a
-/// node's number is its part's, and a link has its address); then search's and find's boxes, as
-/// fields, and search's results, as a list's options.
+/// node's number is its part's plus 1, and a link has its address); then search's and find's
+/// boxes, as fields, and search's results, as a list's options.
 fn parts_tree(s: Docs, f: Frame) -> Vec<Node> {
     var nodes: Vec<Node> = Vec::new()
     for i in 0..s.laid.parts.len() {
@@ -1401,7 +1408,9 @@ fn parts_tree(s: Docs, f: Frame) -> Vec<Node> {
             Role::Code => semantics::Role::Code,
         }
         let href = if p.role == Role::Link { href_of(s, p.target.as_str()) } else { String::new() }
-        nodes.push(Node { id: i, role, level: p.level, rect: shown, label: p.label.clone(), href })
+        nodes.push(
+            Node { id: i + 1, role, level: p.level, rect: shown, label: p.label.clone(), href },
+        )
     }
     let b = vec4(f.search.x, f.search.y, f.search.w, f.search.h)
     nodes.push(
@@ -1430,7 +1439,13 @@ fn parts_tree(s: Docs, f: Frame) -> Vec<Node> {
         let row = 58.0 * s.u
         let x = f.search.x - 200.0 * s.u
         let top = f.search.bottom() + 8.0 * s.u
-        nodes.push(Node { id: RESULT_LIST, role: semantics::Role::ListBox, label: String::from("Search results") })
+        nodes.push(
+            Node {
+                id: RESULT_LIST,
+                role: semantics::Role::ListBox,
+                label: String::from("Search results"),
+            },
+        )
         for i in 0..s.hits.len() {
             let (title, under) = result_text(s.index, s.hits[i])
             nodes.push(
@@ -1474,7 +1489,9 @@ fn href_of(s: Docs, target: str) -> String {
     }
     match follow(s.shown.as_str(), target) {
         // The front page has no fragment.
-        Some(Target::Docs(route)) => if route.page.is_empty() { String::from("#") } else { route.fragment() },
+        Some(Target::Docs(route)) => if route.page.is_empty() { String::from("#") } else {
+            route.fragment()
+        },
         Some(Target::Out(url)) => url,
         None => String::new(),
     }

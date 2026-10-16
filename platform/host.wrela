@@ -4,7 +4,7 @@
 // `std::host::request` and gives the `Pending` that its answer comes back on. Every request and
 // answer is bytes; a host that doesn't have a service fails the request.
 use std::host::request
-use std::io::Pending
+use std::io::{Pending, print}
 use std::semantics
 use std::semantics::{Node, Sent}
 use std::serialize::{LoadError, Reader, Writer}
@@ -204,10 +204,17 @@ pub fn read_pasted(bytes: take Vec<u8>) -> Result<Pasted, LoadError> {
 /// The program's semantic tree is now `nodes` (std::semantics): what changed of it since `sent`
 /// goes to the host, the structure (`semantics/tree`) before the places (`semantics/geometry`,
 /// clipped to `view`). Screen readers, the keyboard, links and fields work on the nodes, and what a
-/// person does comes back as `Event::Assist` and `Event::Field`. The requests go on `told`.
+/// person does comes back as `Event::Assist` and `Event::Field`. The requests go on `told`. A tree
+/// the host would refuse (`semantics::problem`) isn't sent: the console says why.
 pub fn publish(told: mut Vec<Pending<u8>>, sent: mut Sent, name: str, nodes: [Node], view: vec4) {
     let (tree, places) = semantics::changes(mut sent, name, nodes, view)
-    if let Some(b) = tree { told.push(request("semantics/tree", b)) }
+    if let Some(b) = tree {
+        if let Some(why) = semantics::problem(nodes) {
+            print(f"the semantic tree isn't sent: {why.as_str()}")
+            return
+        }
+        told.push(request("semantics/tree", b))
+    }
     if let Some(b) = places { told.push(request("semantics/geometry", b)) }
 }
 
