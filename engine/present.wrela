@@ -1,9 +1,10 @@
-// Presentation's view of the sim (#43 §6): the snapshots a frame reads from the ticker's
-// hand-off, kept three deep, and where between two of them a frame draws. A frame draws sim
-// time s = (now − t₀)·hz − MARGIN, in ticks run, where t₀ is the sim clock's origin
-// (`std::tick::origin`): between the two kept snapshots around s, or the newest (or oldest) if s
-// is past it, with no extrapolation. In test mode's lockstep schedule t₀ is 0, so s is the
-// schedule's and frames compare across hosts.
+// The sim as the frames see it: the snapshots a frame reads from the ticker's hand-off, kept
+// three deep, and where between two of them a frame draws.
+//
+// A frame draws sim time s = (now − t₀)·hz − MARGIN, in ticks run, where t₀ is the sim clock's
+// origin (`std::tick::origin`). It draws between the two kept snapshots around s, or the newest
+// (or oldest) if s is past it, with no extrapolation. In test mode's lockstep schedule t₀ is 0,
+// so s is the schedule's and frames compare across hosts.
 
 use run::Stamped
 use std::handoff::Latest

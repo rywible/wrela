@@ -32,6 +32,8 @@ pub struct Section: Clone {
     pub anchor: String,
     /// The headings from the page's down to it, the last its own.
     pub title: String,
+    /// What it says, in its first sentence.
+    pub summary: String,
     heading: String,
     words: String,
 }
@@ -132,6 +134,7 @@ impl Index {
                         page: json.field(v, "page").to_string(),
                         anchor: json.field(v, "anchor").to_string(),
                         title,
+                        summary: first_sentence(json.field(v, "text")),
                         heading,
                         words: lower(json.field(v, "text")),
                     },
@@ -246,7 +249,7 @@ pub fn lower(text: str) -> String {
 }
 
 fn fixture() -> Index {
-    let doc = "{\"version\": \"0.1.0\", \"commit\": \"abcdef1\", \"repository\": \"https://github.com/rywible/wrela\", \"pages\": [{\"path\": \"std/arena.md\", \"title\": \"std::arena\", \"summary\": \"Arenas.\", \"kind\": \"module\"}], \"items\": [{\"path\": \"std::arena::ArenaMap::push\", \"kind\": \"method\", \"summary\": \"Adds a value.\", \"page\": \"std/arena.md\", \"anchor\": \"arenamap-push\", \"source\": \"compiler/std/arena.wrela\", \"line\": 300}, {\"path\": \"std::arena::Arena\", \"kind\": \"struct\", \"summary\": \"Values by handle.\", \"page\": \"std/arena.md\", \"anchor\": \"arena\", \"source\": \"compiler/std/arena.wrela\", \"line\": 12}, {\"path\": \"std::arena::Arena::push\", \"kind\": \"method\", \"summary\": \"Adds a value and gives its handle.\", \"page\": \"std/arena.md\", \"anchor\": \"arena-push\", \"source\": \"compiler/std/arena.wrela\", \"line\": 40}], \"sections\": [{\"page\": \"spec/language/6-memory.md\", \"anchor\": \"6-8-handles-and-arenas\", \"headings\": [\"6. Memory\", \"6.8 Handles and arenas\"], \"text\": \"Arenas hold values without a garbage collector.\"}]}"
+    let doc = "{\"version\": \"0.1.0\", \"commit\": \"abcdef1\", \"repository\": \"https://github.com/rywible/wrela\", \"pages\": [{\"path\": \"std/arena.md\", \"title\": \"std::arena\", \"summary\": \"Arenas.\", \"kind\": \"module\"}], \"items\": [{\"path\": \"std::arena::ArenaMap::push\", \"kind\": \"method\", \"summary\": \"Adds a value.\", \"page\": \"std/arena.md\", \"anchor\": \"arenamap-push\", \"source\": \"compiler/std/arena.wrela\", \"line\": 300}, {\"path\": \"std::arena::Arena\", \"kind\": \"struct\", \"summary\": \"Values by handle.\", \"page\": \"std/arena.md\", \"anchor\": \"arena\", \"source\": \"compiler/std/arena.wrela\", \"line\": 12}, {\"path\": \"std::arena::Arena::push\", \"kind\": \"method\", \"summary\": \"Adds a value and gives its handle.\", \"page\": \"std/arena.md\", \"anchor\": \"arena-push\", \"source\": \"compiler/std/arena.wrela\", \"line\": 40}], \"sections\": [{\"page\": \"spec/language/6-memory.md\", \"anchor\": \"6-8-handles-and-arenas\", \"headings\": [\"6. Memory\", \"6.8 Handles and arenas\"], \"text\": \"**Arenas** hold values without a garbage\\ncollector. Each is a `Vec`.\\n\\nMore.\"}]}"
     var bytes: Vec<u8> = Vec::new()
     for i in 0..doc.len() { bytes.push(doc.byte(i)) }
     match Index::read(bytes) {
@@ -255,12 +258,58 @@ fn fixture() -> Index {
     }
 }
 
+/// Markdown's first sentence of prose, on one line, without its bold: the first line that isn't
+/// code, a table or a heading, and those after it in its paragraph, to the first full stop that
+/// ends a sentence.
+fn first_sentence(text: str) -> String {
+    var out = String::new()
+    var fenced = false
+    for (a, b) in text.lines() {
+        let line = text.slice(a, b).trim()
+        if line.starts_with("```") {
+            fenced = !fenced
+            continue
+        }
+        if fenced || line.starts_with("|") || line.starts_with("#") { continue }
+        if line.is_empty() {
+            if out.is_empty() { continue } else { break }
+        }
+        let skip = if line.starts_with("- ") { 2 } else { 0 }
+        if !out.is_empty() { out.push_str(" ") }
+        out.push_str(line.slice(from: skip, to: line.len()))
+        if out.as_str().find(". ").is_some() { break }
+    }
+    let t = out.as_str()
+    let end = match t.find(". ") {
+        Some(k) => k + 1,
+        None => t.len(),
+    }
+    var plain = String::new()
+    var from = 0
+    while from < end {
+        let rest = t.slice(from: from, to: end)
+        match rest.find("**") {
+            Some(k) => {
+                plain.push_str(rest.slice(from: 0, to: k))
+                from += k + 2
+            },
+            None => {
+                plain.push_str(rest)
+                from = end
+            },
+        }
+    }
+    take plain
+}
+
 @test
 fn the_index_reads_its_pages_items_and_sections() {
     let index = fixture()
     assert(index.commit.as_str() == "abcdef1" && index.pages.len() == 1 && index.items.len() == 3)
     assert(index.items[2].line == 40 && index.items[2].anchor.as_str() == "arena-push")
     assert(index.sections[0].title.as_str() == "6. Memory › 6.8 Handles and arenas")
+    let summary = index.sections[0].summary.clone()
+    assert(summary.as_str() == "Arenas hold values without a garbage collector.", summary.as_str())
     assert(index.page("std/arena.md") == Some(0) && index.page("nope.md").is_none())
 }
 

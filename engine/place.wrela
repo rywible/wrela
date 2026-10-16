@@ -1,13 +1,20 @@
-// A floor's map (M6 §2): what its author decides, as types. The land's big shapes, the sites and
-// keystones, what each must do for a player (relations), the openings and what keeps each open in
-// the present (keepers), the water, the routes, the events by year, and the regions with the
-// character of their forest. A history (`grow`) grows the floor round it, and the interest check
-// (`interest`) measures what a player standing anywhere would see.
+// A floor's map, as types: what its author decides, and positions that keep their precision far
+// from the origin.
 //
-// And positions that keep their precision however far a player walks: a tile and an offset in it
-// (`Place`), the unit a floor streams in.
+// The map (`Map`) holds:
+// - the land's big shapes (`Land`, the crags);
+// - the sites and keystones (`Site`), and what each must do for a player (`Relation`);
+// - the openings, and what keeps each open in the present (`Opening`, `Keeper`);
+// - the water, the routes (`Route`) and the events by year (`Event`);
+// - the regions, with the character of their forest (`Region`, `Kind`).
+// `refusals` lists every reason a map cannot be grown, and `refuse` panics, naming each. A history
+// (`grow`) then grows the floor round the map, and the interest check (`interest`) measures what
+// a player standing anywhere would see.
 //
 //     map ──refuse──▶ (every opening kept in the present) ──grow──▶ history ──interest──▶ check
+//
+// A position that keeps its precision however far a player walks is a tile and an offset in it
+// (`Place`); the tile is the unit a floor streams in.
 //
 // Names are `Text` in the map's tables, which only CPU code reads (the GPU reads a site's place).
 
@@ -24,7 +31,7 @@ pub const TILE: f32 = 256.0
 
 /// A place on the plane: a tile and where in it (from its corner, each in [0, TILE)), so a
 /// position keeps its precision however far it is from the origin. An `f32` world position is a
-/// metre wrong after a minute's walk 10 km out (spike 17); a place's offset is never larger than a
+/// metre wrong after a minute's walk 10 km out; a place's offset is never larger than a
 /// tile.
 pub struct Place: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub tile: vec2i,
@@ -291,7 +298,7 @@ impl Land {
     /// How much of `p` is a ravine's wall (0 to 1; not where it's slumped to a walkable slope). A
     /// floor gives these faces rock's own relief, so close up they read as rock. (A bedded crag's
     /// cliffs are its slabs', `crag_slabs`; an outcrop takes none: its relief's lines read as a
-    /// crack maze, round 13.)
+    /// crack maze.)
     pub fn faces(self, p: vec2) -> f32 {
         var f = 0.0
         var walked = 0.0
@@ -421,13 +428,13 @@ pub fn tier_shrink(i: u32, s: u32, tier: u32) -> f32 {
 /// Whether crag `c` stands as beds of rock, its cliffs solids (`crag_slabs`): one of two tiers
 /// or more. A lower one is an outcrop, one rounded mass of the heightfield, its outline rough and
 /// its top crowned, with soil in pockets: seen from a few metres off, a 4 m rock cut as one flat
-/// slab read as a blank sheet (round 13, the plateau's edge).
+/// slab reads as a blank sheet.
 pub fn bedded(c: vec4) -> bool {
     c.z >= 20.0
 }
 
 /// How many tiers a crag rises in: one a bed about 10 m thick, at most four (a crag as one
-/// drum read as a barrel: round 5).
+/// drum reads as a barrel).
 pub fn crag_tiers(c: vec4) -> u32 {
     u32(clamp(floor(c.z / 10.0), 1.0, 4.0))
 }
@@ -441,7 +448,7 @@ pub fn tier_height(c: vec4) -> f32 {
 /// about 80°: at 2.6 a crag read as the dome it was), within the ground's steepest
 /// (`Terrain::steepest`); a rock a few metres tall less steep (a slope of 1.5 at 9 m and under),
 /// as a player sees it from a few metres off, where a sheer face in the clipmap is a stretched
-/// curtain (round 8, the edge's rock).
+/// curtain.
 pub fn cliff_width(c: vec4) -> f32 {
     tier_height(c) / clamp(c.z / 6.0, 1.5, 6.0)
 }
@@ -656,7 +663,7 @@ fn crag_ramp(p: vec2, c: vec4, ramp: f32, i: u32, rise: f32) -> f32 {
 
 // ---- sites, relations, openings and keepers ----------------------------------------------------
 
-/// What a site is for (#44's anatomy): where a player arrives, the town's site, an anchor (room
+/// What a site is for: where a player arrives, the town's site, an anchor (room
 /// for an elite's fight), the Warden's arena, a rest point, a waystone, an echo's site, a view, or
 /// a landmark seen from afar.
 pub enum SiteKind: Copy + Eq + Fieldless {
@@ -905,7 +912,7 @@ pub struct Character: Copy {
     pub mix: [f32; 8] = [0.0; 8],
 }
 
-/// What a region's forest is like, by name (#54 §1).
+/// What a region's forest is like, by name.
 pub enum Kind: Copy + Eq + Fieldless {
     WoodPasture,
     HighForest,
@@ -1121,8 +1128,7 @@ fn empty_route_refusal(route: Route, which: u32) -> Option<Refusal> {
 
 /// Every reason the map can't be grown: each opening with no keeper, or one not at work in the
 /// present; each route kept clear by people who left (an old road with no herd on it). Checked
-/// before the history runs, which would otherwise close them (spike 17's first round lost three
-/// openings this way, found only after a 34 s history).
+/// before the history runs, which would otherwise close them.
 pub fn refusals(m: Map) -> Vec<Refusal> {
     var out: Vec<Refusal> = Vec::new()
     var i = 0
@@ -1212,7 +1218,7 @@ fn an_empty_route_refusal_explains_the_problem() {
 }
 
 /// A place stepped a minute at a walk, 60 Hz, ends where an `f64` walk does within 5 cm, 10 km and
-/// 1,000 km out; `f32` positions drift a metre at 10 km (spike 17: 1.03 m).
+/// 1,000 km out; `f32` positions drift a metre at 10 km.
 @test
 fn a_place_keeps_its_precision_far_out() {
     for far in [0.0, 10000.0, 1000000.0] {

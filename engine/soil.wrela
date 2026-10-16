@@ -1,7 +1,8 @@
 // The soil: what a place's ground is, how deep, and how well it feeds what grows in it, from the
-// ground's shape, its rock and its water (after the soil production function: Heimsath and
-// others, 1997). The history's survey keeps it per cell (`grow::Land::soil`); `soil_of` gives it
-// at any point.
+// ground's shape, its rock and its water.
+//
+// The history's survey keeps the soil per cell (`grow::Land::soil`); `soil_of` gives it at any
+// point. Its depth comes from the soil production function: weathering against creep.
 
 use grow::Ground
 
@@ -34,7 +35,7 @@ pub const SOIL_SPANS = [12.0, 32.0]
 /// positive in a hollow), its slope, how much of it is rock, and its wetness (`water`'s).
 ///
 /// Weathering makes soil from rock, fastest under a thin soil and slower as the soil deepens
-/// (Heimsath and others, 1997); creep moves it downhill in proportion to the slope. Where the
+/// (the soil production function); creep moves it downhill in proportion to the slope. Where the
 /// ground is convex the two balance at a depth that is thinner the sharper the crest; where it is
 /// concave the soil gathers (colluvium). Past the angle a soil can hold (about 30°), it slides
 /// off. The valley floors, wet from their catchment and nearly level, hold what the water laid

@@ -1,6 +1,8 @@
-// A creature walking on the spot with sketch 01's cycle (`sim::GaitState`), posed by
-// `render::palette`: what the examples and the lens draw, and the record a frame test checks
-// (AC7 of #39: each creature walks for 120 frames).
+// A creature walking on the spot: a `Walker` steps its gait's cycle (`sim::GaitState`), poses
+// it on the CPU (`render::palette`) and draws it.
+//
+// The examples and the lens draw creatures this way. A walk keeps a record of what it has done
+// (`Walked`: bone lengths, foot places, finite matrices), which a frame test checks.
 
 use creature::{Creature, Skeleton}
 use look::CreatureLook
@@ -112,7 +114,7 @@ const LIGHTS = Lights {
     compare_bias: 0.002,
 }
 
-/// `creature`, its mesh realized as `look` says, ready to walk on the spot with sketch 01's
+/// `creature`, its mesh realized as `look` says, ready to walk on the spot with its gait's
 /// cycle.
 pub fn walker<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Walker {
     let gait = GaitState { phase: 0.0, speed: 0.8, turn: 0.0, mode: Mode::Walk }

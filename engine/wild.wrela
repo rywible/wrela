@@ -1,11 +1,14 @@
-// The wildwood (#55 AC7, Q9; spike 17's): the forest past the floor's authored square, without
-// end, grown a tile at a time where the player walks, from the place alone. It's cheap where the
-// floor's history is costly: a cell of 4 m holds one canopy tree (its species, age and height),
-// and three hundred years run in thirty steps. Gaps open where the wind throws trees; pioneers
-// fill them; the shade-tolerant take over. Every draw is keyed by the world's cell and the step,
-// so two tiles that both hold a cell (in their margins) draw the same for it; what differs is
-// only what each can see past its own edge. A margin of cells round each tile, grown and thrown
-// away, keeps the seam's error out of the tile (`seam_error`).
+// The wildwood: the forest past the floor's authored square, without end, grown a tile at a time
+// where the player walks, from the place alone.
+//
+// `tile_trees` grows a tile and gives its trees as the history's records, so the floor places and
+// draws them as its own. The wildwood is cheap where the floor's history is costly: a cell of
+// 4 m holds one canopy tree (its species, age and height), and three hundred years run in thirty
+// steps. Gaps open where the wind throws trees; pioneers fill them; the shade-tolerant take over.
+// Every draw is keyed by the world's cell and the step, so two tiles that both hold a cell (in
+// their margins) draw the same for it; what differs is only what each can see past its own edge.
+// A margin of cells round each tile, grown and thrown away, keeps the seam's error out of the
+// tile (`seam_error`).
 
 use grow::{Cause, Habit, NONE as NO_PIN, State, Tree}
 use noise::{fbm2, rand}
@@ -241,7 +244,7 @@ pub fn tile_trees(
             }
             let kind = species[c.kind - 1]
             let h = habits[kind]
-            // Its fork by its cell's place in the pattern: neighbours' differ (#54 §9).
+            // Its fork by its cell's place in the pattern: neighbours' differ.
             let order = ORDERED[u32(wi & 3) + 4 * u32(wj & 3)]
             let seed = u32(wi).wrapping_mul(2654435761) ^ u32(wj).wrapping_mul(40503)
             out.push(

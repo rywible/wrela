@@ -1,7 +1,10 @@
-// Drawing: a frame's list of quads (rectangles, rounded or not, ellipses, diamonds, lines and
-// glyphs), each clipped to a rectangle, drawn by one instanced draw in order, later quads over
-// earlier ones. A glyph's coverage comes from its distance field, so text is sharp at any size
-// from one atlas; a shape's comes from its own distance, so its edges are smooth at any angle.
+// Drawing a user interface on the GPU: a frame's list of quads (rectangles, rounded or not,
+// ellipses, diamonds, lines, triangles and glyphs), each clipped to a rectangle, drawn by one
+// instanced draw in order, later quads over earlier ones. A program fills a `DrawList` each
+// frame, then a `Renderer` uploads it and draws it in a pass.
+//
+// A glyph's coverage comes from its distance field, so text is sharp at any size from one
+// atlas; a shape's comes from its own distance, so its edges are smooth at any angle.
 
 use raster::{Made, field, image, read_raster}
 use std::host::request
@@ -80,11 +83,15 @@ pub struct Quad: Copy + GpuData {
     pub third: vec2,
 }
 
-/// A quad's `kind`.
+/// A quad's `kind`: a rectangle, rounded or not, or a glyph's field.
 pub const BOX: u32 = 0
+/// A quad's `kind`: the ellipse that fills its rectangle.
 pub const ELLIPSE: u32 = 1
+/// A quad's `kind`: the diamond whose corners are the middles of its rectangle's sides.
 pub const DIAMOND: u32 = 2
+/// A quad's `kind`: a line with round ends.
 pub const LINE: u32 = 3
+/// A quad's `kind`: a triangle.
 pub const TRIANGLE: u32 = 5
 /// A colour glyph: the atlas's texels themselves (an emoji's), not a field.
 pub const IMAGE: u32 = 4
@@ -530,7 +537,7 @@ fn diamond_distance(p: vec2, b: vec2) -> f32 {
 }
 
 /// The distance from `p` to the edge of the triangle `a`, `b`, `c`: negative inside, whichever
-/// way round its corners go (after Inigo Quilez's triangle).
+/// way round its corners go.
 fn triangle_distance(p: vec2, a: vec2, b: vec2, c: vec2) -> f32 {
     let e0 = b - a
     let e1 = c - b

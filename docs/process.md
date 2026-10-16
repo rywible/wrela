@@ -2172,6 +2172,63 @@ export side by side in each release, with stable addresses for the raw files (`/
 `/std/io.md`) that lead to the current release. Writing its tests found a second compiler bug: a
 temporary `String` borrowed inside `assert(...)` is freed before the comparison (#240).
 
+## A semantic tree for web apps, 2026-10-16
+
+Ryan asked what a Wrela web app still lacks that HTML and CSS give a page, and for each gap to
+be closed without breaking Wrela's architecture, the browser still WebGPU only. A plan council
+(Claude leading; OpenAI Codex GPT-6.1-Sol and GPT-6-Astra reviewing, read-only) shaped the
+first step. A program now publishes a semantic tree (`std::semantics`): each node's role, its
+label, its link and its rectangle, with structure and geometry sent apart, and only when they
+change. The browser host keeps a real element for each node over the canvas: links are `<a
+href>` (a plain click is the program's; a modified one opens what the browser opens), fields are
+real `<input>` and `<textarea>` elements in their forms, with `name` and `autocomplete`, so a
+password manager and an input method work as on any page. A field's text is the host's; the
+program hears that it changed (`Event::Field`, by revision), reads it, and replaces it only if it
+has read the newest revision and nothing is being composed, so a person's typing is never
+lost. The keyboard patterns of composite widgets (tabs, menus, a listbox, a slider, a modal
+dialog) are the host's, after the W3C's [ARIA Authoring
+Practices](https://www.w3.org/WAI/ARIA/apg/patterns/); a field's names for its values follow
+HTML's [autofill](https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#autofill)
+tokens. The docs site and the whiteboard publish their trees this way. A real-Chrome test
+clicks, types and composes through it. Whether a password manager saves and fills a form was
+checked by hand only. Writing that test found that each fresh test Chrome held its pages for
+25 s while it waited for the system keyring, and that a scripted page passed before its
+script had run; both are fixed. These are implementation references; nothing was copied.
+Claude (Opus 5.5) wrote it.
+
+## The reference docs: facts only, 2026-10-16
+
+Ryan asked for docs at docs.wrela.dev that people and agents read with ease, with "just the meat
+and the facts": provenance does not matter to a reader. Claude (Opus 5.5) led a content pass and
+gave its parts to eight Claude subagents: five on parts of the spec and three on the doc comments
+of std, ui, platform and the engine. All worked to one standard: about 80% ASD-STE100 (one fact
+to a sentence, the active voice, one word for one thing), and each page, section and module
+opens with a sentence that can stand alone as its summary, since `llms.txt` and `index.json`
+use it. Claude checked each part against the original: the same code blocks, rule IDs and
+diagnostic codes. The spec and the comments lost their decision IDs, tiers, milestones, design
+references, measurements made once, and the names of the tests that hold each rule. The spec's
+"Tiers at a glance" and "Settled in milestone 2" went; their rules moved to the sections they
+belong to, and "Lifted builds, provenance and the tools" became §20. The export now links each
+reference to a section of the spec, and each item to its line in the repository.
+
+The comments named outside work that some code follows. Those names are recorded here now, not
+in the docs. Each was a reference only: the code is Wrela's own, and none was copied.
+
+| Source | What it teaches | Where |
+|---|---|---|
+| Sébastien Hillaire, ["A Scalable and Production Ready Sky and Atmosphere Rendering Technique"](https://sebh.github.io/publications/egsr2020.pdf) (EGSR 2020) | A sky and aerial perspective from transmittance, multiple-scattering and sky-view tables; Earth's Rayleigh and ozone values | `engine::air` |
+| Jorge Jimenez's interleaved gradient noise | A per-pixel jitter whose neighbours spread evenly | `engine::sky`'s cloud march |
+| Brian Karis's analytic fit of the environment BRDF, and his squash of bright samples before a temporal resolve | The specular scale and bias for a roughness; a history that bright samples don't dominate | `engine::light`, `engine::temporal` |
+| Sébastien Lagarde's fit of specular occlusion | How much of its sky light a surface keeps, from its ambient occlusion and roughness | `engine::light` |
+| Anders Friberg, Roberto Bresin and Johan Sundberg's KTH performance rules (Director Musices); Neil Todd's phrase arch (1992); Friberg and Sundberg's final ritardando (1999); Peter Desain and Henkjan Honing, "Tempo curves considered harmful" | Rules for playing a score with expression: phrase arches, the final slowing, ornaments that keep their time | `engine::perform` |
+| Gabriel Weinreich on coupled piano strings; Harold Conklin on phantom partials | A unison's aftersound; partials from the string's stretching, louder for a harder blow | `engine::piano` |
+| Pierre Bénard and others (2009), dynamic solid textures | Texture octaves a power of two apart, blended by distance, so marks keep their size on screen | `engine::paint` |
+| The British National Vegetation Classification (W14, W10, W16, W8, W7, MG5, U4, M23) | Which plants grow together in a woodland's floor and an open meadow | `engine::grass`'s species |
+| Matthew Keeter's interval pruning | Removing the operations of a field's tape that can't change its value over a box | `std::stage`'s `Tape::prune` |
+| Guy Steele and Jon White's free-format printing, with Robert Burger and Kent Dybvig's fixes | The fewest digits that read back as the same float | `std::fmt` |
+| Chris Wellons's `lowbias32` (hash-prospector, public domain) | A 32-bit integer hash's constants | `std::derive`'s scramble |
+| [ttf-parser](https://github.com/RazrFalcon/ttf-parser) (MIT or Apache-2.0) | How a TrueType font's `cmap`, `hhea`, `OS/2`, `glyf` and `kern` tables are read, and their fallbacks | `ui::ttf` |
+
 ## Rendering moonshots: plan, baseline and exact skips, 2026-10-16
 
 Ryan asked for moonshot ideas that make rendering much faster with no loss of quality, and for
