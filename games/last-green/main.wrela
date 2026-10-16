@@ -26,7 +26,7 @@ use engine::run::run
 use engine::shadow::{Cascade, Shadows, shadows}
 use engine::shafts::{Shafts, add_shafts, march_shafts}
 use engine::sky::{Clouds, Sky, new_sky, sky_shade}
-use engine::temporal::{Resolve, neighbourhoods, resolve}
+use engine::temporal::{Resolve, resolve_gathered}
 use engine::terrain::{Clipmap, Terrain, ground, ground_shade}
 use engine::vegetation::{Kind, Placed, kind}
 use engine::wood::Wood
@@ -626,8 +626,6 @@ pub struct Floor {
     ids: Texture<R32Uint>,
     motion: Texture<Rgba16Float>,
     last_motion: Texture<Rgba16Float>,
-    means: Texture<Rgba16Float>,
-    spreads: Texture<Rgba16Float>,
     last_history: Texture<Rgba16Float>,
     history: Texture<Rgba16Float>,
     dabs: Texture<Rgba16Float>,
@@ -922,8 +920,6 @@ pub fn init() -> Floor {
         ids: texture::<R32Uint>(width: 1, height: 1),
         motion: texture::<Rgba16Float>(width: 1, height: 1),
         last_motion: texture::<Rgba16Float>(width: 1, height: 1),
-        means: writable_texture::<Rgba16Float>(width: 1, height: 1),
-        spreads: writable_texture::<Rgba16Float>(width: 1, height: 1),
         last_history: texture::<Rgba16Float>(width: 1, height: 1),
         history: texture::<Rgba16Float>(width: 1, height: 1),
         dabs: texture::<Rgba16Float>(width: 1, height: 1),
@@ -2103,8 +2099,6 @@ fn resize(s: mut Floor, width: u32, height: u32, w: u32, h: u32) {
     s.motion = texture::<Rgba16Float>(width: w, height: h)
     s.below = texture::<Rgba16Float>(width: w, height: h)
     s.last_motion = texture::<Rgba16Float>(width: w, height: h)
-    s.means = writable_texture::<Rgba16Float>(width: w, height: h)
-    s.spreads = writable_texture::<Rgba16Float>(width: w, height: h)
     s.dabs = texture::<Rgba16Float>(width: w, height: h)
     s.last_history = texture::<Rgba16Float>(width: width, height: height)
     s.history = texture::<Rgba16Float>(width: width, height: height)
@@ -2898,11 +2892,12 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
     }
     label("temporal")
     swap(mut s.history, mut s.last_history)
-    dispatch(neighbourhoods.bind(s.scene, mut s.means, mut s.spreads), over: s.scene)
+    // The scene is drawn at the output's size (`SCALE`), so each output pixel finds its own
+    // sample's neighbourhood.
     let p = begin_pass(mut s.history)
     fullscreen(
         p,
-        resolve.bind(
+        resolve_gathered.bind(
             r,
             s.scene,
             s.depth,
@@ -2910,8 +2905,6 @@ fn finish(s: mut Floor, cam: Camera, width: u32, height: u32, feet: vec2, headin
             s.motion,
             s.last_motion,
             s.last_history,
-            s.means,
-            s.spreads,
             s.linear,
         ),
     )
