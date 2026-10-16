@@ -10,6 +10,7 @@
 // `smooth_union`, `intersect`, `smooth_intersect`, `smooth_subtract`, `translate`, `scale`). A
 // block it can't read is shown as code alone.
 use field::Vertex
+use std::derive::{Box3, interval}
 use std::field::{Bound, Surface, cuboid, ellipsoid, oval, round_cone, smax, smin, sphere}
 use std::gpu::Over
 
@@ -860,23 +861,46 @@ pub fn written(v: f32, decimals: u32) -> String {
 
 // ---- drawing -----------------------------------------------------------------------------------
 
-/// How a live field is drawn: where it is on the screen, the camera's turn and tilt about the
-/// field's centre and how far it stands, the field's centre and size and its floor, and the
-/// scheme's colours (sRGB): the ground, its lines, the field's own, and its rim.
+/// What a figure shows: the field lit (`SURFACE`), or on a slice through its centre, its
+/// distance (`DISTANCE`), its derived gradient (`GRADIENT`) or its derived bounds over boxes
+/// (`BOUNDS`).
+pub const SURFACE: u32 = 0
+pub const DISTANCE: u32 = 1
+pub const GRADIENT: u32 = 2
+pub const BOUNDS: u32 = 3
+
+/// How deep the bounds' boxes divide.
+const DEPTH: u32 = 7
+
+/// The point of the slice at pixel `pixel` of a figure at `rect`: the slice through the field's
+/// centre, facing the camera's start, the field's size a little under the figure's height.
+pub fn slice_point(rect: vec4, centre: vec3, radius: f32, pixel: vec2) -> vec3 {
+    let per = radius * 2.4 / rect.w
+    let c = rect.xy + rect.zw * 0.5
+    centre + vec3((pixel.x - c.x) * per, (c.y - pixel.y) * per, 0.0)
+}
+
+/// How a live field is drawn: where it is on the screen; the field's centre, size and floor; the
+/// camera's turn and tilt about its centre; and the scheme's colours (sRGB): the ground, its
+/// lines, the field's own, and its rim.
 pub struct View: Copy + GpuData {
     pub rect: vec4,
-    pub turn: f32,
-    pub tilt: f32,
     pub centre: vec3,
-    pub radius: f32,
-    pub floor: f32,
-    /// Pixels to the CSS pixel, and whether the scheme is light (1) or dark (0).
-    pub u: f32,
-    pub light: f32,
+    pub turn: f32,
     pub ground: vec4,
     pub line: vec4,
     pub body: vec4,
     pub rim: vec4,
+    /// The pointer's point on the slice (w: 1 where the pointer is on it).
+    pub probe: vec4,
+    pub tilt: f32,
+    pub radius: f32,
+    pub floor: f32,
+    /// Pixels to the CSS pixel, whether the scheme is light (1) or dark (0), and what the figure
+    /// shows.
+    pub u: f32,
+    pub light: f32,
+    pub mode: u32,
 }
 
 /// The field, lit, standing on a floor that shows its distance as lines a fixed step apart: the
@@ -884,6 +908,7 @@ pub struct View: Copy + GpuData {
 @fragment
 pub fn view(v: Vertex, scene: Scene, look: View) -> Over {
     let size = look.rect.zw
+    if look.mode != SURFACE { return slice(v, scene, look) }
     let uv = (v.pixel - look.rect.xy - size * 0.5) / size.y
     // The camera: on a sphere about the field's centre, looking at it.
     let reach = look.radius * 3.2
@@ -981,6 +1006,124 @@ pub fn view(v: Vertex, scene: Scene, look: View) -> Over {
     let edge = abs(v.pixel - look.rect.xy - size * 0.5) - size * 0.5 + vec2(round)
     let out = length(max(edge, vec2(0.0))) + min(max(edge.x, edge.y), 0.0) - round
     Over { color: vec4(srgb(color * vignette), saturate(0.5 - out)) }
+}
+
+/// A slice through the field: its distance as lines a fixed step apart, the surface a brighter
+/// line and its inside tinted; then its derived gradient as arrows, or its derived bounds as
+/// boxes that divide only where the surface may cross them; or, at the pointer, the circle as
+/// wide as the distance there, which touches the surface.
+fn slice(v: Vertex, scene: Scene, look: View) -> Over {
+    let size = look.rect.zw
+    let p = slice_point(vec4(look.rect.xy, size), look.centre, look.radius, v.pixel)
+    // World units to the pixel.
+    let per = look.radius * 2.4 / size.y
+    let ground = linear(look.ground.xyz)
+    let line = linear(look.line.xyz)
+    let rim = linear(look.rim.xyz)
+    let body = linear(look.body.xyz)
+    let d = evaluate(scene, p)
+    var color = if d < 0.0 { mix(ground, body, 0.16) } else { ground }
+    let step = look.radius * 0.08
+    let f = d / step - floor(d / step)
+    let off = min(f, 1.0 - f) * step
+    let quiet = if look.mode == DISTANCE { 1.0 } else { 0.45 }
+    let lines = saturate(1.0 - off / (per * 1.1)) * exp(-abs(d) / (look.radius * 1.2)) * quiet
+    color = mix(color, line, lines * look.line.w)
+    if look.mode == BOUNDS {
+        // From a square over the figure down: a box whose bounds hold no zero is wholly in or
+        // out, and stops; one whose bounds may is cut in four, to `DEPTH`.
+        let side = max(size.x, size.y) * per
+        var lo = vec2(look.centre.x - side * 0.5, look.centre.y - side * 0.5)
+        var s = side
+        for depth in 0..DEPTH + 1 {
+            let b = Box3 {
+                lo: vec3(lo.x, lo.y, look.centre.z),
+                hi: vec3(lo.x + s, lo.y + s, look.centre.z),
+            }
+            let r = interval(|q: vec3| evaluate(scene, q), b)
+            // The box's edge, a pixel wide.
+            let local = (p.xy - lo) / per
+            let edge = min(min(local.x, local.y), min(s / per - local.x, s / per - local.y))
+            let outline = saturate(1.0 - edge)
+            if r.lo > 0.0 || r.hi < 0.0 || depth == DEPTH {
+                let fill = if r.hi < 0.0 { mix(ground, body, 0.3) } else if r.lo > 0.0 {
+                    ground
+                } else { mix(ground, rim, 0.55) }
+                color = mix(fill, line, outline * 0.45 + lines * 0.35)
+                break
+            }
+            s *= 0.5
+            if p.x >= lo.x + s { lo.x += s }
+            if p.y >= lo.y + s { lo.y += s }
+        }
+    }
+    if look.mode == GRADIENT {
+        // An arrow in each cell, from the derived gradient at the cell's centre: as long as the
+        // gradient is, a cell's width at 1, fading away from the surface.
+        let cell = 26.0 * look.u
+        let at = (floor((v.pixel - look.rect.xy) / cell) + 0.5) * cell + look.rect.xy
+        let c = slice_point(vec4(look.rect.xy, size), look.centre, look.radius, at)
+        let g = scene.gradient(c)
+        let dir = vec2(g.x, -g.y)
+        let n = length(dir)
+        if n > 0.0001 {
+            let u = dir / n
+            let half = cell * 0.36 * min(n, 1.5)
+            let a = at - u * half
+            let b = at + u * half
+            let side = vec2(-u.y, u.x)
+            let head = cell * 0.16
+            let w = min(
+                segment(v.pixel, a, b),
+                min(
+                    segment(v.pixel, b, b - u * head + side * head * 0.7),
+                    segment(v.pixel, b, b - u * head - side * head * 0.7),
+                ),
+            )
+            let near = exp(-abs(evaluate(scene, c)) / (look.radius * 0.9))
+            color = mix(color, rim, saturate(1.2 * look.u - w) * (0.25 + 0.7 * near))
+        }
+    }
+    // The surface: a line twice a pixel wide.
+    color = mix(color, rim, saturate(1.6 - abs(d) / per) * 0.9)
+    if look.probe.w > 0.0 && look.mode == DISTANCE {
+        let q = look.probe.xyz
+        let dq = evaluate(scene, q)
+        let ring = saturate(1.3 - abs(length(p - q) - abs(dq)) / per)
+        let dot = saturate(3.5 - length(p - q) / per)
+        color = mix(color, vec3(1.0), max(ring * 0.8, dot))
+    }
+    let round = 6.0 * look.u
+    let e = abs(v.pixel - look.rect.xy - size * 0.5) - size * 0.5 + vec2(round)
+    let out = length(max(e, vec2(0.0))) + min(max(e.x, e.y), 0.0) - round
+    Over { color: vec4(srgb(color), saturate(0.5 - out)) }
+}
+
+/// The bounds the compiler derives for `scene` over the smallest box of the bounds' view that
+/// holds `q`, a point on the slice of a figure `aspect` times as wide as it is high: as the
+/// view's boxes divide.
+pub fn box_bounds(scene: Scene, centre: vec3, radius: f32, aspect: f32, q: vec3) -> (f32, f32) {
+    let side = radius * 2.4 * max(aspect, 1.0)
+    var lo = vec2(centre.x - side * 0.5, centre.y - side * 0.5)
+    var s = side
+    var last = (0.0, 0.0)
+    for depth in 0..DEPTH + 1 {
+        let b = Box3 { lo: vec3(lo.x, lo.y, centre.z), hi: vec3(lo.x + s, lo.y + s, centre.z) }
+        let r = interval(|p: vec3| evaluate(scene, p), b)
+        last = (r.lo, r.hi)
+        if r.lo > 0.0 || r.hi < 0.0 || depth == DEPTH { break }
+        s *= 0.5
+        if q.x >= lo.x + s { lo.x += s }
+        if q.y >= lo.y + s { lo.y += s }
+    }
+    last
+}
+
+/// The distance from `p` to the segment from `a` to `b`.
+fn segment(p: vec2, a: vec2, b: vec2) -> f32 {
+    let ab = b - a
+    let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 0.000001), 0.0, 1.0)
+    length(p - a - ab * t)
 }
 
 /// How lit `p` is from `light`, by how near the field comes to the ray toward it: 0 to 1.

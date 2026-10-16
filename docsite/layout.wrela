@@ -776,7 +776,14 @@ fn code(
                 Token::Comment => hex(p.comment),
                 Token::Plain => hex(p.text),
             }
-            // A span past the line's end goes on under it, indented.
+            // A span past the line's end goes on under it, indented: whole, where it fits on a line
+            // of its own, so a name or a number isn't cut.
+            let whole = char_count(src, s, e)
+            if col > 4 && col + whole > columns && whole <= columns - 4 && token != Token::Comment {
+                top += line
+                col = 4
+                x = pad + 4.0 * advance
+            }
             var from = s
             while from < e {
                 let room = columns - col
@@ -870,6 +877,17 @@ fn code(
     bottom
 }
 
+/// How many characters `s` has from byte `a` to byte `b`.
+fn char_count(s: str, a: u32, b: u32) -> u32 {
+    var n = 0
+    var i = a
+    while i < b {
+        i = next_char(s, i)
+        n += 1
+    }
+    n
+}
+
 fn next_char(s: str, i: u32) -> u32 {
     var j = i + 1
     while j < s.len() && s.byte(j) >= 128 && s.byte(j) < 192 { j += 1 }
@@ -882,7 +900,7 @@ fn figure(laid: mut Laid, p: Palette, fonts: Fonts, y: f32, width: f32, u: f32) 
     let top = y + 10.0 * u
     let h = clamp(width * 0.5, 220.0 * u, 380.0 * u)
     laid.figures.push(Figure { rect: Rect::new(0.0, top, width, h), block: laid.block })
-    let words = "The field this code builds, drawn live: drag it to turn it, or drag a number in the code to change it."
+    let words = "The field this code builds, drawn live. Drag a number in the code to change it, drag the field to turn it, or choose what the compiler derives from it."
     let runs = Vec::from([Run { text: words.to_string(), style: 0, link: String::new() }])
     let under = top + h + 8.0 * u
     let bottom = flow(
@@ -1113,6 +1131,31 @@ fn a_block_of_code_keeps_its_text_and_a_section_its_place_for_a_link() {
     borrow t = page.titles[0]
     assert(t.anchor.as_str() == "values-copies-and-moves" && t.rect.y == page.anchors[1].1)
     assert(t.label.as_str() == "Values, copies and moves" && t.line > 20.0 && t.rect.h >= t.line)
+}
+
+@test
+fn a_long_line_of_code_wraps_between_its_tokens() {
+    // About 30 columns: the line wraps, and each name and number stays whole on a line.
+    let page = laid(
+        "```wrela\nlet cone = round_cone(vec3(), vec3(y: 1.0), r_top: 0.3, r_bottom: 0.125)\n```\n",
+        260.0,
+    )
+    var lines = 0
+    var last = -1.0
+    for p in page.pieces {
+        if p.at.y != last {
+            lines += 1
+            last = p.at.y
+        }
+    }
+    assert(lines >= 3, f"{lines} lines")
+    for want in ["round_cone", "r_bottom", "0.125", "0.3"] {
+        var whole = false
+        for p in page.pieces {
+            if p.text.as_str() == want { whole = true }
+        }
+        assert(whole, want)
+    }
 }
 
 @test

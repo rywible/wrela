@@ -19,7 +19,7 @@ use brand::manrope::MANROPE
 use field::{Look, field, quad}
 use index::{Hit, Index, lower}
 use layout::{Laid, Role, lay_out}
-use live::{Read, View, read, view, with_number}
+use live::{BOUNDS, DISTANCE, GRADIENT, Read, SURFACE, View, read, slice_point, view, with_number}
 use markdown::{Block, Kind, parse, plain}
 use platform::host
 use route::{Route, Target, follow}
@@ -59,6 +59,9 @@ const CONTROL_NODES: u32 = 6000000
 const SAID: f32 = 1.6
 /// A live field's numbers, as sliders.
 const KNOB_NODES: u32 = 7000000
+/// Each figure's tabs: its list, then a tab for each of its views.
+const TAB_LISTS: u32 = 8000000
+const TABS: u32 = 8500000
 
 pub struct Docs {
     fonts: Fonts,
@@ -168,6 +171,12 @@ pub struct Docs {
     thumb: Option<(f32, f32, bool)>,
     /// Whether the picture changed since it was last drawn: an answer, input, a new size.
     dirty: bool,
+    /// The pointer's disc in the mark's field: where it is, following the pointer, and how much
+    /// it joins, rising while the pointer is over the field.
+    hover_at: vec2,
+    hover: f32,
+    /// When the page being read was shown: it comes in over a moment.
+    shown_at: f32,
     /// Each live figure's field, in the page's order.
     lives: Vec<Live>,
     /// A number held, to drag: its knob, where the press was and its value then.
@@ -185,6 +194,8 @@ struct Live: Clone {
     read: Option<Read>,
     turn: f32,
     tilt: f32,
+    /// What it shows (live.wrela's `SURFACE`, `DISTANCE`, `GRADIENT`, `BOUNDS`).
+    mode: u32,
 }
 
 /// A box the host keeps as a field (std::semantics): the newest revision heard of, the newest read,
@@ -276,6 +287,9 @@ pub fn init() -> Docs {
         copy_ok: false,
         thumb: None,
         dirty: true,
+        hover_at: vec2(-1000.0),
+        hover: 0.0,
+        shown_at: -10.0,
         lives: Vec::new(),
         knob_held: None,
         orbit: None,
@@ -303,6 +317,7 @@ pub fn frame(s: mut Docs, time: f32, width: u32, height: u32) {
     keep_laid_out(mut s, frame)
     keep_lives(mut s, frame)
     glide_on(mut s, frame, dt)
+    keep_hover(mut s, frame, dt)
     keep_nav(mut s, frame)
     if s.dirty || moving(s, frame) {
         draw_all(mut s, frame)
@@ -311,13 +326,47 @@ pub fn frame(s: mut Docs, time: f32, width: u32, height: u32) {
     tell(mut s, frame)
 }
 
+/// How long a page takes to come in, in seconds.
+const APPEAR: f32 = 0.22
+
+/// Whether the pointer is over a field of the mark's: the header's band, or the front page's
+/// opening: its disc joins there.
+fn hover_target(s: Docs, f: Frame) -> f32 {
+    let p = s.pointer
+    if p.x < 0.0 || s.reduced { return 0.0 }
+    let band = p.y < f.header && !f.search.contains(p)
+    let opening = s.route.page.is_empty() &&
+        p.y >= f.header &&
+        p.y < f.header + opening_height(s, f.beside) - s.scroll &&
+        (f.beside && p.x >= f.nav || !f.beside)
+    if band || opening { 1.0 } else { 0.0 }
+}
+
+/// The pointer's disc follows the pointer, and rises or falls, over a moment.
+fn keep_hover(s: mut Docs, f: Frame, dt: f32) {
+    let target = hover_target(s, f)
+    let rise = 1.0 - exp(-dt * 6.0)
+    s.hover = if abs(target - s.hover) < 0.002 { target } else {
+        s.hover + (target - s.hover) * rise
+    }
+    if s.hover_at.x < -999.0 || s.hover < 0.002 { s.hover_at = s.pointer } else {
+        s.hover_at = s.hover_at + (s.pointer - s.hover_at) * (1.0 - exp(-dt * 14.0))
+    }
+}
+
 /// Whether something on the screen moves, so each frame draws: the front page's lines while
 /// they're in view, search's or find's caret, the bar of a page on its way, a glide, a copy's
 /// word while it shows (and the frame after), glyphs on their way. The lines, the caret and the
 /// bar stay still when the system asks for less motion.
 fn moving(s: Docs, f: Frame) -> bool {
     let opening = s.route.page.is_empty() && s.scroll < opening_height(s, f.beside)
-    let lively = opening || s.searching || s.finding || s.page_load.is_some()
+    let lively = opening ||
+        s.searching ||
+        s.finding ||
+        s.page_load.is_some() ||
+        s.time - s.shown_at < APPEAR + 0.05 ||
+        abs(s.hover - hover_target(s, f)) > 0.002 ||
+        (s.hover > 0.001 && length(s.hover_at - s.pointer) > 0.3)
     (lively && !s.reduced) ||
         (live_moves(s, f) && !s.reduced) ||
         s.glide.is_some() ||
@@ -609,6 +658,7 @@ fn show(s: mut Docs, path: str, blocks: take Vec<Block>, markdown: take String) 
     open_shown_group(mut s)
     s.laid_width = 0.0
     s.glide = None
+    s.shown_at = s.time
     if s.seek.is_none() { s.scroll = s.restore.unwrap_or(0.0) }
     s.restore = None
 }
@@ -1190,9 +1240,30 @@ fn press(s: mut Docs, at: vec2, f: Frame) {
             return
         }
     }
-    // A live figure: it turns; a finger's up and down still scroll the page.
+    // A figure's tab: it shows that view.
+    for i in 0..s.laid.figures.len() {
+        for (r, mode, _) in figure_tabs(s, f, i) {
+            if r.contains(at) {
+                if let Some(l) = live_of(s, s.laid.figures[i].block) { s.lives[l].mode = mode }
+                return
+            }
+        }
+    }
+    // A live figure: it turns; a finger's up and down still scroll the page. A slice doesn't
+    // turn.
     for i in 0..s.laid.figures.len() {
         if figure_rect(s, f, i).contains(at) {
+            let flat = match live_of(s, s.laid.figures[i].block) {
+                Some(l) => s.lives[l].mode != SURFACE,
+                None => true,
+            }
+            if flat {
+                if !hovered {
+                    s.press = Some((at, false, String::new()))
+                    s.swipe = Some((s.scroll, false))
+                }
+                return
+            }
             let (turn, tilt) = match live_of(s, s.laid.figures[i].block) {
                 Some(l) => (s.lives[l].turn, s.lives[l].tilt),
                 None => (0.0, 0.0),
@@ -1383,6 +1454,15 @@ fn assisted(s: mut Docs, node: u32, action: Assist, f: Frame) {
         if action == Assist::Focus && !s.searching && !s.finding { open_search(mut s) }
         return
     }
+    if node >= TABS {
+        let i = (node - TABS) / 4
+        let mode = (node - TABS) % 4
+        if i < s.laid.figures.len() && (action == Assist::Activate || action == Assist::Select) {
+            if let Some(l) = live_of(s, s.laid.figures[i].block) { s.lives[l].mode = mode }
+        }
+        return
+    }
+    if node >= TAB_LISTS { return }
     if node >= KNOB_NODES {
         let i = node - KNOB_NODES
         if i < s.laid.knobs.len() && (action == Assist::Increment || action == Assist::Decrement) {
@@ -1988,14 +2068,16 @@ fn keep_laid_out(s: mut Docs, f: Frame) {
         let code = s.blocks[fig.block].code.clone()
         var turn = 0.7
         var tilt = 0.32
+        var mode = SURFACE
         for l in s.lives {
             if l.block == fig.block {
                 turn = l.turn
                 tilt = l.tilt
+                mode = l.mode
             }
         }
         let r = read(code.as_str(), 0.0)
-        lives.push(Live { block: fig.block, code, read: r, turn, tilt })
+        lives.push(Live { block: fig.block, code, read: r, turn, tilt, mode })
     }
     s.lives = take lives
     s.knob_held = None
@@ -2042,11 +2124,13 @@ fn draw_all(s: mut Docs, f: Frame) {
     s.list.clear(screen)
     // The page.
     s.list.push_clip(Rect::new(0.0, f.header, screen.x, screen.y - f.header))
-    let origin = vec2(f.x, f.top - s.scroll)
+    // A page just shown comes in: it rises a few pixels and its ink deepens.
+    let appear = if s.reduced { 1.0 } else { smoothstep(0.0, APPEAR, s.time - s.shown_at) }
+    let origin = vec2(f.x, f.top - s.scroll + (1.0 - appear) * 8.0 * u)
     for sh in s.laid.shapes {
         let r = Rect::new(sh.rect.x + origin.x, sh.rect.y + origin.y, sh.rect.w, sh.rect.h)
         if r.bottom() < f.header || r.y > screen.y { continue }
-        s.list.rect(r, sh.color, radius: sh.radius)
+        s.list.rect(r, vec4(sh.color.xyz, sh.color.w * appear), radius: sh.radius)
     }
     if s.finding {
         let n = lower(s.find.as_str()).len()
@@ -2081,7 +2165,7 @@ fn draw_all(s: mut Docs, f: Frame) {
             p.text.as_str(),
             p.size,
             vec2(p.at.x + origin.x, y),
-            p.color,
+            vec4(p.color.xyz, p.color.w * appear),
         )
     }
     s.fonts.sans.weight = 0.0
@@ -2106,6 +2190,7 @@ fn draw_all(s: mut Docs, f: Frame) {
         )
     }
     s.list.pop_clip()
+    draw_figure_overlays(mut s, f)
     draw_controls(mut s, f)
     draw_extras(mut s, f)
     draw_scrollbar(mut s, f, nav: false)
@@ -2133,6 +2218,7 @@ fn draw_all(s: mut Docs, f: Frame) {
             foot,
             h * 0.45,
             moving: true,
+            disc: 46.0 * u,
         )
     }
     let ems = mark_ems(s)
@@ -2149,6 +2235,7 @@ fn draw_all(s: mut Docs, f: Frame) {
         f.header,
         0.0,
         moving: false,
+        disc: 14.0 * u,
     )
     draw_figures(s, pass, f)
     s.renderer.draw(pass, screen)
@@ -2169,6 +2256,7 @@ fn mark_field(
     foot: f32,
     soft: f32,
     moving: bool,
+    disc: f32,
 ) {
     // The front page's lines drift outward a spacing every four seconds, unless the system asks
     // for less motion; the header's stay still beside what's being read.
@@ -2188,6 +2276,7 @@ fn mark_field(
                 ground: hex(VOID),
                 line: hex(DARK.field, strength),
                 ink: hex(0xF4F5F7),
+                pointer: vec4(s.hover_at, disc, s.hover),
                 foot,
                 soft,
                 below: hex(s.p.page),
@@ -2697,9 +2786,8 @@ struct Control: Clone {
 
 /// The controls over the page, where they are on the screen. A section's link shows while the
 /// pointer is at its heading, beside the list of pages, where the gutter has room for it; a copy
-/// button shows while the pointer is on its code, and always where the list isn't beside the page,
-/// on a screen a finger reads more often than a mouse. `all` gives every one, shown or not, for the
-/// semantic tree.
+/// button shows while the pointer is on its code, or after a finger taps it, so it never hides
+/// code that's being read. `all` gives every one, shown or not, for the semantic tree.
 fn controls(s: Docs, f: Frame, at: vec2, all: bool) -> Vec<Control> {
     var out: Vec<Control> = Vec::new()
     if s.shown != s.route.page { return out }
@@ -2711,7 +2799,8 @@ fn controls(s: Docs, f: Frame, at: vec2, all: bool) -> Vec<Control> {
         let target = f"copy:code:{i}"
         let said = copy_said(s, target.as_str())
         let on_screen = ground.bottom() > f.header && ground.y < s.screen.y
-        if !all && !(on_screen && (said.is_some() || !f.beside || ground.contains(at))) { continue }
+        // A finger's tap puts the pointer where it lands, so a tap on the code shows it too.
+        if !all && !(on_screen && (said.is_some() || ground.contains(at))) { continue }
         let label = take said.unwrap_or(String::from("Copy"))
         let w = s.fonts.font(Face::Sans).measure(label.as_str(), 12.5 * u) + 20.0 * u
         let rect = Rect::new(ground.right() - w - 8.0 * u, ground.y + 8.0 * u, w, 26.0 * u)
@@ -2924,6 +3013,10 @@ fn draw_figures(s: Docs, pass: std::gpu::ScreenPass, f: Frame) {
             line: hex(s.p.field, if light { 0.55 } else { 0.5 }),
             body: hex(s.p.figure),
             rim: hex(s.p.field),
+            mode: s.lives[l].mode,
+            probe: if r.contains(s.pointer) && s.pointer.y > f.header {
+                vec4(slice_point(vec4(r.x, r.y, r.w, r.h), rd.centre, rd.radius, s.pointer), 1.0)
+            } else { vec4(0.0) },
         }
         draw(
             pass,
@@ -2932,6 +3025,109 @@ fn draw_figures(s: Docs, pass: std::gpu::ScreenPass, f: Frame) {
             vertices: 6,
         )
     }
+}
+
+/// Figure `i`'s tabs, at its top left: each its place, its view and its name.
+fn figure_tabs(s: Docs, f: Frame, i: u32) -> Vec<(Rect, u32, String)> {
+    var out: Vec<(Rect, u32, String)> = Vec::new()
+    let r = figure_rect(s, f, i)
+    if r.bottom() < f.header || r.y > s.screen.y { return out }
+    let u = s.u
+    var x = r.x + 10.0 * u
+    for (mode, name) in [
+        (SURFACE, "Surface"),
+        (DISTANCE, "Distance"),
+        (GRADIENT, "Gradient"),
+        (BOUNDS, "Bounds"),
+    ] {
+        let w = s.fonts.font(Face::Sans).measure(name, 12.5 * u) + 20.0 * u
+        out.push((Rect::new(x, r.y + 10.0 * u, w, 26.0 * u), mode, name.to_string()))
+        x += w + 4.0 * u
+    }
+    out
+}
+
+/// What each view shows, said under it.
+fn view_note(mode: u32) -> String {
+    String::from(match mode {
+        DISTANCE => "The distance to the surface, on a slice through it. The circle at the pointer is as wide as the distance there, so it touches the surface.",
+        GRADIENT => "The gradient the compiler derives from the field's code: it points away from the surface, and is shorter where a blend joins two parts.",
+        BOUNDS => "The bounds the compiler derives over each box: a box wholly outside or inside the surface stops, and one the surface may cross is cut in four.",
+        _ => "Lit by the gradient the compiler derives from the field's code; nobody wrote its normals.",
+    })
+}
+
+/// Over each figure: its tabs, what its view shows, and at the pointer, on a slice, what the
+/// field is there: its distance, its gradient, or its bounds over the box the pointer is in.
+fn draw_figure_overlays(s: mut Docs, f: Frame) {
+    let u = s.u
+    s.list.push_clip(Rect::new(0.0, f.header, s.screen.x, s.screen.y - f.header))
+    for i in 0..s.laid.figures.len() {
+        let r = figure_rect(s, f, i)
+        if r.bottom() < f.header || r.y > s.screen.y { continue }
+        let Some(l) = live_of(s, s.laid.figures[i].block) else { continue }
+        let mode = s.lives[l].mode
+        for (t, m, name) in figure_tabs(s, f, i) {
+            let here = m == mode
+            let hover = t.contains(s.pointer)
+            s.list.rect(t, hex(if here { s.p.field } else { s.p.page }, if here { 0.9 } else {
+                0.7
+            }), radius: 13.0 * u)
+            let _ = s.list.text(
+                s.fonts,
+                Face::Sans,
+                name.as_str(),
+                12.5 * u,
+                vec2(t.x + 10.0 * u, t.y + 5.0 * u),
+                hex(if here { s.p.page } else if hover { s.p.strong } else { s.p.text }),
+            )
+        }
+        // What the view shows, at its foot.
+        let lines = wrap(s.fonts, view_note(mode).as_str(), 12.5 * u, r.w - 40.0 * u, 2)
+        let h = f32(lines.len()) * 18.0 * u + 12.0 * u
+        var widest = 0.0
+        for line in lines {
+            widest = max(widest, s.fonts.font(Face::Sans).measure(line.as_str(), 12.5 * u))
+        }
+        let note = Rect::new(r.x + 10.0 * u, r.bottom() - h - 10.0 * u, widest + 20.0 * u, h)
+        s.list.rect(note, hex(s.p.page, 0.72), radius: 6.0 * u)
+        for k in 0..lines.len() {
+            let _ = s.list.text(
+                s.fonts,
+                Face::Sans,
+                lines[k].as_str(),
+                12.5 * u,
+                vec2(note.x + 10.0 * u, note.y + 6.0 * u + f32(k) * 18.0 * u),
+                hex(s.p.text),
+            )
+        }
+        if mode == SURFACE || !r.contains(s.pointer) { continue }
+        let Some(rd) = s.lives[l].read else { continue }
+        let q = slice_point(vec4(r.x, r.y, r.w, r.h), rd.centre, rd.radius, s.pointer)
+        let scene = rd.scene
+        let said = if mode == DISTANCE {
+            f"distance {live::evaluate(scene, q):.3}"
+        } else if mode == GRADIENT {
+            let g = std::derive::gradient(|p: vec3| live::evaluate(scene, p), q)
+            f"gradient ({g.x:.2}, {g.y:.2}, {g.z:.2}), length {length(g):.2}"
+        } else {
+            let (lo, hi) = live::box_bounds(scene, rd.centre, rd.radius, r.w / r.h, q)
+            f"over this box: {lo:.3} to {hi:.3}"
+        }
+        let w = s.fonts.font(Face::Mono).measure(said.as_str(), 12.0 * u) + 16.0 * u
+        let at = vec2(min(s.pointer.x + 14.0 * u, r.right() - w - 6.0 * u), s.pointer.y - 34.0 * u)
+        let tag = Rect::new(at.x, at.y, w, 24.0 * u)
+        s.list.rect(tag, hex(s.p.page, 0.85), radius: 5.0 * u)
+        let _ = s.list.text(
+            s.fonts,
+            Face::Mono,
+            said.as_str(),
+            12.0 * u,
+            vec2(tag.x + 8.0 * u, tag.y + 5.0 * u),
+            hex(s.p.strong),
+        )
+    }
+    s.list.pop_clip()
 }
 
 // ---- scrollbars --------------------------------------------------------------------------------
@@ -3182,6 +3378,38 @@ fn parts_tree(s: Docs, f: Frame) -> Vec<Node> {
                 }
             },
         )
+    }
+    // Each figure's views, as tabs.
+    for i in 0..s.laid.figures.len() {
+        let Some(l) = live_of(s, s.laid.figures[i].block) else { continue }
+        let r = figure_rect(s, f, i)
+        nodes.push(
+            Node {
+                id: TAB_LISTS + i,
+                role: semantics::Role::TabList,
+                label: String::from("What the figure shows"),
+                rect: semantics::clip(vec4(r.x, r.y, r.w, r.h), page),
+            },
+        )
+        let tabs = figure_tabs(s, f, i)
+        for k in 0..4 {
+            let (mode, name) = if k < tabs.len() { (tabs[k].1, tabs[k].2.clone()) } else {
+                (k, String::from(["Surface", "Distance", "Gradient", "Bounds"][k]))
+            }
+            let rect = if k < tabs.len() {
+                semantics::clip(vec4(tabs[k].0.x, tabs[k].0.y, tabs[k].0.w, tabs[k].0.h), page)
+            } else { vec4(0.0) }
+            nodes.push(
+                Node {
+                    id: TABS + i * 4 + k,
+                    parent: TAB_LISTS + i,
+                    role: semantics::Role::Tab,
+                    label: name,
+                    selected: s.lives[l].mode == mode,
+                    rect,
+                },
+            )
+        }
     }
     // A live field's numbers, as sliders a keyboard steps.
     for i in 0..s.laid.knobs.len() {

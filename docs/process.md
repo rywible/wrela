@@ -2409,6 +2409,18 @@ before to within what two runs of one build differ by (at most 3/255 at a handfu
 a test checks it chooses what scoring every species chooses over 4096 seeded habitats and on every
 range's edges. Bitmasks of the species each of 32 bins of a habitat's acid, wet and light might admit (so the walk reads only those) gained nothing more (-0.3%, inconclusive): the rest of the choice is scoring the species a habitat is within reach of.
 
+## Live fields in the docs, 2026-10-16
+
+Ryan asked for docs that show what only Wrela can draw. A block of code that builds a field now has
+the field drawn live under it: the docs read the block into a scene of std::field's own primitives
+and combinators, evaluated on the GPU by their own `distance`, and lit by the gradient the
+compiler derives. A reader drags the code's numbers and the field follows, and can see the
+field's distance, its derived gradient and its derived bounds over boxes on a slice through it.
+The shading's soft shadows (the nearest approach of a ray toward the light) and its ambient
+occlusion (a few samples along the normal) follow [Inigo Quilez's articles on soft
+shadows](https://iquilezles.org/articles/rmshadows/) and on raymarched [occlusion](https://iquilezles.org/articles/nvscene2008/),
+reimplemented; nothing was copied. Claude (Opus 5.5) wrote it.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
