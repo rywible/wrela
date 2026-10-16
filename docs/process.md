@@ -2350,7 +2350,7 @@ is now passed over before its score is worked out: grass 3.49 -> 3.05 ms at the 
 GPU span -1.3%) and -3.4% at the mere (span inconclusive), five pairs. The stills are the same as
 before to within what two runs of one build differ by (at most 3/255 at a handful of pixels), and
 a test checks it chooses what scoring every species chooses over 4096 seeded habitats and on every
-range's edges.
+range's edges. Bitmasks of the species each of 32 bins of a habitat's acid, wet and light might admit (so the walk reads only those) gained nothing more (-0.3%, inconclusive): the rest of the choice is scoring the species a habitat is within reach of.
 
 ## Keeping this record
 
