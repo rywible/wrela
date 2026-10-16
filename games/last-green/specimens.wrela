@@ -93,8 +93,14 @@ impl Terrain for Level {
     }
 }
 
+/// The species whose bark is shot close (`shots`), by their rows in `SHOWN`, and the column (age)
+/// each is shot at.
+const BARKS = [0, 1, 2, 3]
+const BARK_AGES = [5, 3]
+
 /// The specimens' shots: each species' row from the side, the open-grown then those grown among
-/// others; and their names.
+/// others; then the bark of the trees of `BARKS` close, at each of `BARK_AGES` (5 m from the
+/// trunk, at the eye's height); and their names.
 pub fn shots() -> Vec<Shot> {
     var out: Vec<Shot> = Vec::new()
     for open in [true, false] {
@@ -108,6 +114,20 @@ pub fn shots() -> Vec<Shot> {
                     at: vec3(mid.x, 9.0, mid.y),
                     moves: vec2(0.0),
                     fovy: 1.1,
+                },
+            )
+        }
+    }
+    for c in BARK_AGES {
+        for r in BARKS {
+            let at = OPEN_AT + vec2(f32(c) * COLUMN, f32(r) * ROW)
+            out.push(
+                Shot {
+                    name: "",
+                    eye: vec3(at.x + 1.5, 1.7, at.y - if c == BARK_AGES[0] { 14.0 } else { 5.0 }),
+                    at: vec3(at.x, if c == BARK_AGES[0] { 4.0 } else { 2.2 }, at.y),
+                    moves: vec2(0.0),
+                    fovy: 0.82,
                 },
             )
         }
@@ -127,6 +147,12 @@ fn shot_files() -> Vec<(String, Vec<u8>)> {
                 json.push_str(", ")
             }
             json.push_str(f"\"{names[r]} {if open { "open" } else { "among others" }}\"".as_str())
+        }
+    }
+    let ages = ["old", "mature"]
+    for a in ages {
+        for r in 0..4 {
+            json.push_str(f", \"{names[r]} bark, {a}\"".as_str())
         }
     }
     json.push_str("]\n")

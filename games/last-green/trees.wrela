@@ -250,12 +250,13 @@ fn pine(s: u32, tall: f32, open: bool) -> Plant {
         size: 0.75,
         cover: 1.5,
     }
-    // Scales: warm plates with dark cracks between.
+    // Its upper stem's thin orange flakes; low on it, thick grey-brown plates with deep cracks.
     let bark = Bark {
-        dark: vec3(0.11, 0.065, 0.045),
-        light: vec3(0.50, 0.28, 0.14),
+        dark: vec3(0.2, 0.09, 0.045),
+        light: vec3(0.6, 0.31, 0.14),
         grain: vec3(0.2, 0.8, 0.0),
-        relief: 1.1,
+        relief: 1.3,
+        foot: vec4(0.24, 0.19, 0.15, tall * 0.4),
     }
     var p = plant(leaves, bark)
     let lean = vec3(0.0, 0.0, tall * 0.03)
@@ -559,14 +560,17 @@ pub fn kind_plant(k: u32) -> Plant {
         size: 0.26,
         cover: 1.0,
     }
-    // Bark per species (the lookdev reviews' A13): oak's deep furrows broken into blocks;
-    // beech's smooth silver-grey, mottled, a little cool so a green wood's light doesn't turn it
-    // olive (A6, P5); birch's white, banded with dark lenticels; alder's dark fissures.
+    // Bark per species (the lookdev reviews' A13): oak's long fissures, parting and joining, lichen
+    // in its pale patches; beech's smooth silver-grey, mottled, with faint dashes across it and
+    // green algae in patches, a little cool so a green wood's light doesn't turn it olive (A6, P5;
+    // with its mottle alone, it read as a white post: specimens' bark, round 3); birch's white,
+    // banded with dark lenticels, its foot black and fissured; alder's dark fissures.
     let oak_bark = Bark {
-        dark: vec3(0.07, 0.055, 0.042),
-        light: vec3(0.25, 0.205, 0.155),
-        grain: vec3(0.7, 0.3, 0.0),
-        relief: 1.4,
+        dark: vec3(0.045, 0.036, 0.029),
+        light: vec3(0.29, 0.25, 0.2),
+        grain: vec3(0.85, 0.15, 0.0),
+        relief: 1.6,
+        lichen: vec4(0.36, 0.4, 0.32, 0.25),
     }
     let beech_leaves = Leaves {
         young: vec3(0.13, 0.20, 0.065),
@@ -575,11 +579,13 @@ pub fn kind_plant(k: u32) -> Plant {
         cover: 1.05,
     }
     let beech_bark = Bark {
-        dark: vec3(0.07, 0.075, 0.07),
-        light: vec3(0.25, 0.26, 0.245),
+        dark: vec3(0.06, 0.065, 0.062),
+        light: vec3(0.27, 0.28, 0.265),
+        bands: 0.55,
         moss: vec3(0.13, 0.13, 0.10),
-        grain: vec3(0.0, 0.0, 1.0),
-        relief: 0.6,
+        grain: vec3(0.12, 0.0, 0.88),
+        relief: 0.35,
+        lichen: vec4(0.15, 0.19, 0.11, 0.6),
     }
     let birch_leaves = Leaves {
         young: vec3(0.16, 0.23, 0.075),
@@ -589,10 +595,11 @@ pub fn kind_plant(k: u32) -> Plant {
     }
     let birch_bark = Bark {
         dark: vec3(0.05, 0.045, 0.045),
-        light: vec3(0.64, 0.62, 0.58),
+        light: vec3(0.66, 0.64, 0.6),
         grain: vec3(0.1, 0.0, 0.9),
         bands: 0.95,
         relief: 0.2,
+        foot: vec4(0.07, 0.062, 0.055, 1.8),
     }
     let alder_leaves = Leaves {
         young: vec3(0.09, 0.17, 0.04),
@@ -601,10 +608,11 @@ pub fn kind_plant(k: u32) -> Plant {
         cover: 1.0,
     }
     let alder_bark = Bark {
-        dark: vec3(0.07, 0.063, 0.058),
+        dark: vec3(0.05, 0.045, 0.042),
         light: vec3(0.24, 0.215, 0.195),
-        grain: vec3(0.7, 0.3, 0.0),
-        relief: 1.1,
+        grain: vec3(0.55, 0.45, 0.0),
+        relief: 1.2,
+        lichen: vec4(0.34, 0.38, 0.3, 0.3),
     }
     // (Each species' cover is per clump: a crown's shell of overlapping clumps, `crown_on`, covers
     // its outside more than once at lower cover; at the floor's earlier cover its cards cost a
