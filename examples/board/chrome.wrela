@@ -1,0 +1,764 @@
+// The board's controls, floating over it: the tools down the left, undo and redo at the bottom
+// left, the zoom at the bottom right, and over a selection its colours, its order and delete.
+// Each frame lays them out once (`layout`): input hits what's drawn. Icons are drawn from
+// lines and shapes, so they're sharp at every size.
+
+use board::{Align, Kind}
+use paint::{ACCENT, COLORS, FILLS, INKS, TEXT}
+use ui::draw::{DrawList, Rect}
+use ui::text::{Face, Fonts}
+
+/// A chosen control's background, and a lit one's.
+const CHOSEN = vec4(0.89, 0.92, 1.0, 1.0)
+const LIT = vec4(0.94, 0.94, 0.95, 1.0)
+
+pub enum Tool: Copy + Eq {
+    Select,
+    Hand,
+    Note,
+    /// The shape last picked from its flyout.
+    Shape,
+    Text,
+    Link,
+    Pen,
+    Frame,
+}
+
+/// The ways the Align row lines things up, in its order.
+pub const ALIGNS = [
+    Align::Left,
+    Align::Center,
+    Align::Right,
+    Align::Top,
+    Align::Middle,
+    Align::Bottom,
+    Align::Across,
+    Align::Down,
+]
+
+/// The shapes the Shapes tool's flyout offers.
+pub const SHAPES = [Kind::Box, Kind::Ellipse, Kind::Diamond, Kind::Triangle, Kind::Pill]
+
+pub const TOOLS = [
+    Tool::Select,
+    Tool::Hand,
+    Tool::Note,
+    Tool::Shape,
+    Tool::Text,
+    Tool::Link,
+    Tool::Pen,
+    Tool::Frame,
+]
+
+/// What a control does.
+pub enum Action: Copy + Eq {
+    Use { tool: Tool },
+    /// A shape from the flyout: the Shapes tool makes it from now on.
+    Pick { kind: Kind },
+    /// The selection's words a size up.
+    TypeSize,
+    Color { index: u32 },
+    Front,
+    Back,
+    Delete,
+    Undo,
+    Redo,
+    ZoomIn,
+    ZoomOut,
+    Actual,
+    Fit,
+    /// A connector's route: in elbows, or straight.
+    Route,
+    /// A connector's arrowheads: at its end, both ends, or none.
+    Heads,
+    // The context menu's.
+    Cut,
+    Copy,
+    Paste,
+    Duplicate,
+    /// Opens (or closes) the Align row over a selection of several.
+    Align,
+    /// Lines up what's selected.
+    Arrange { way: Align },
+    /// Groups what's selected, or ungroups it if it's one group.
+    Group,
+    Lock,
+    SelectAll,
+    /// The minimap: shown or hidden.
+    Map,
+    /// The board's name, top left: a double click renames it.
+    Title,
+    /// The minimap itself: a press there moves the camera.
+    Navigate,
+}
+
+/// What's selected, for its bar: where it is on the screen, and whether it has connectors.
+pub struct Selection: Copy {
+    pub rect: Rect,
+    pub links: bool,
+    /// Whether it's all connectors, strokes and text: coloured by ink, not fill.
+    pub inks: bool,
+    /// Whether it has words whose size can change (a note's fit itself).
+    pub words: bool,
+    /// Whether it's several things, which can be lined up.
+    pub many: bool,
+}
+
+pub struct Control: Copy + Eq {
+    pub action: Action,
+    pub rect: Rect,
+    /// A row of the context menu: its name and keys, not an icon.
+    pub row: bool = false,
+}
+
+/// The controls, and the panels they sit on.
+pub struct Chrome: Clone {
+    pub controls: Vec<Control>,
+    pub panels: Vec<Rect>,
+    /// Whether the selection's colours are inks (connectors, strokes, text), not fills.
+    pub inks: bool,
+}
+
+const BUTTON: f32 = 40.0
+const GAP: f32 = 4.0
+const MARGIN: f32 = 12.0
+const SWATCH: f32 = 28.0
+
+/// Lays the controls out on a screen `screen` big, in device pixels `u` to a logical one; a
+/// selection brings its bar over it, with a connector's controls when it has one.
+pub fn layout(
+    screen: vec2,
+    u: f32,
+    selection: Option<Selection>,
+    flyout: bool,
+    aligning: bool,
+) -> Chrome {
+    var c = Chrome {
+        controls: Vec::new(),
+        panels: Vec::new(),
+        inks: match selection {
+            Some(chosen) => chosen.inks,
+            None => false,
+        },
+    }
+    let b = BUTTON * u
+    let g = GAP * u
+    let m = MARGIN * u
+    // The tools, down the left, in the middle.
+    let n = f32(TOOLS.len())
+    let h = n * b + (n + 1.0) * g
+    let top = max(0.5 * (screen.y - h), 60.0 * u)
+    c.panels.push(Rect::new(m, top, b + 2.0 * g, h))
+    for i in 0..TOOLS.len() {
+        let r = Rect::new(m + g, top + g + f32(i) * (b + g), b, b)
+        c.controls.push(Control { action: Action::Use { tool: TOOLS[i] }, rect: r })
+        // The Shapes tool's flyout, beside it.
+        if flyout && TOOLS[i] == Tool::Shape {
+            let n = f32(SHAPES.len())
+            let x = r.right() + 2.0 * g + 6.0 * u
+            c.panels.push(Rect::new(x, r.y - g, n * b + (n + 1.0) * g, b + 2.0 * g))
+            for k in 0..SHAPES.len() {
+                let at = Rect::new(x + g + f32(k) * (b + g), r.y, b, b)
+                c.controls.push(Control { action: Action::Pick { kind: SHAPES[k] }, rect: at })
+            }
+        }
+    }
+    // Undo and redo, bottom left.
+    let y = screen.y - m - b - 2.0 * g
+    c.panels.push(Rect::new(m, y, 2.0 * b + 3.0 * g, b + 2.0 * g))
+    c.controls.push(Control { action: Action::Undo, rect: Rect::new(m + g, y + g, b, b) })
+    c.controls.push(Control { action: Action::Redo, rect: Rect::new(m + 2.0 * g + b, y + g, b, b) })
+    // The zoom, bottom right: out, the percentage (back to 100%), in, and fit.
+    let wide = 64.0 * u
+    let w = 4.0 * b + wide + 6.0 * g
+    var x = screen.x - m - w
+    c.panels.push(Rect::new(x, y, w, b + 2.0 * g))
+    x += g
+    for a in [Action::Map, Action::ZoomOut, Action::Actual, Action::ZoomIn, Action::Fit] {
+        let cw = if a == Action::Actual { wide } else { b }
+        c.controls.push(Control { action: a, rect: Rect::new(x, y + g, cw, b) })
+        x += cw + g
+    }
+    // Over the selection: its colours, a connector's route and heads, then up, down and delete.
+    if let Some(chosen) = selection {
+        let s = chosen.rect
+        var buttons: Vec<Action> = Vec::new()
+        if chosen.words {
+            buttons.push(Action::TypeSize)
+        }
+        if chosen.links {
+            buttons.push(Action::Route)
+            buttons.push(Action::Heads)
+        }
+        if chosen.many {
+            buttons.push(Action::Align)
+        }
+        for a in [Action::Front, Action::Back, Action::Delete] {
+            buttons.push(a)
+        }
+        let sw = SWATCH * u
+        let bh = 36.0 * u
+        let w = f32(COLORS) * (sw + g) + f32(buttons.len()) * (bh + g) + 3.0 * g
+        let ph = bh + 2.0 * g
+        var y = s.y - 14.0 * u - ph
+        if y < m {
+            y = s.bottom() + 14.0 * u
+        }
+        var x = clamp(s.center().x - 0.5 * w, m, max(screen.x - m - w, m))
+        c.panels.push(Rect::new(x, y, w, ph))
+        x += 2.0 * g
+        for i in 0..COLORS {
+            c.controls.push(
+                Control {
+                    action: Action::Color { index: i },
+                    rect: Rect::new(x, y + 0.5 * (ph - sw), sw, sw),
+                },
+            )
+            x += sw + g
+        }
+        x += g
+        let above = y < s.y
+        for a in buttons {
+            let r = Rect::new(x, y + g, bh, bh)
+            c.controls.push(Control { action: a, rect: r })
+            x += bh + g
+            // The Align row, further from the selection than the bar, about its button.
+            if a == Action::Align && aligning {
+                let n = f32(ALIGNS.len())
+                let rw = n * (bh + g) + 3.0 * g
+                let ry = if above { y - 6.0 * u - ph } else { y + ph + 6.0 * u }
+                var rx = clamp(r.center().x - 0.5 * rw, m, max(screen.x - m - rw, m))
+                c.panels.push(Rect::new(rx, ry, rw, ph))
+                rx += 2.0 * g
+                for way in ALIGNS {
+                    c.controls.push(
+                        Control {
+                            action: Action::Arrange { way },
+                            rect: Rect::new(rx, ry + g, bh, bh),
+                        },
+                    )
+                    rx += bh + g
+                }
+            }
+        }
+    }
+    c
+}
+
+/// How wide the context menu is, and each of its rows.
+const MENU_WIDTH: f32 = 220.0
+const ROW: f32 = 30.0
+
+/// Adds the context menu at `at` (kept on a screen `screen` big): a row for each of `entries`.
+pub fn menu(c: mut Chrome, at: vec2, screen: vec2, u: f32, entries: [Action]) {
+    let pad = 6.0 * u
+    let w = MENU_WIDTH * u
+    let h = f32(entries.len()) * ROW * u + 2.0 * pad
+    let x = clamp(at.x, 4.0 * u, max(screen.x - w - 4.0 * u, 4.0 * u))
+    let y = clamp(at.y, 4.0 * u, max(screen.y - h - 4.0 * u, 4.0 * u))
+    c.panels.push(Rect::new(x, y, w, h))
+    for i in 0..entries.len() {
+        let r = Rect::new(x + pad, y + pad + f32(i) * ROW * u, w - 2.0 * pad, ROW * u)
+        c.controls.push(Control { action: entries[i], rect: r, row: true })
+    }
+}
+
+/// The control at screen point `p`, if there's one.
+pub fn at(c: Chrome, p: vec2) -> Option<Action> {
+    for k in c.controls {
+        if k.rect.contains(p) {
+            return Some(k.action)
+        }
+    }
+    None
+}
+
+/// Whether `p` is on a panel.
+pub fn over(c: Chrome, p: vec2) -> bool {
+    for r in c.panels {
+        if r.contains(p) {
+            return true
+        }
+    }
+    false
+}
+
+/// A control's name and its key, for its tip.
+pub fn tip(a: Action) -> Text {
+    match a {
+        Action::Use { tool } => match tool {
+            Tool::Select => "Select   V",
+            Tool::Hand => "Hand   H or Space",
+            Tool::Note => "Sticky note   N",
+            Tool::Shape => "Shapes   S",
+            Tool::Text => "Text   T",
+            Tool::Link => "Connector   L",
+            Tool::Pen => "Pen   P",
+            Tool::Frame => "Frame   F",
+        },
+        Action::Front => "Bring to front   ]",
+        Action::Back => "Send to back   [",
+        Action::Delete => "Delete   Backspace",
+        Action::Undo => "Undo   Cmd Z",
+        Action::Redo => "Redo   Cmd Shift Z",
+        Action::ZoomIn => "Zoom in   Cmd +",
+        Action::ZoomOut => "Zoom out   Cmd -",
+        Action::Actual => "Zoom to 100%   Cmd 0",
+        Action::Fit => "Fit the board   Shift 1",
+        Action::Pick { kind } => match kind {
+            Kind::Ellipse => "Ellipse   O",
+            Kind::Diamond => "Diamond   D",
+            Kind::Triangle => "Triangle",
+            Kind::Pill => "Pill",
+            _ => "Rectangle   R",
+        },
+        Action::TypeSize => "Text size",
+        Action::Route => "Elbow or straight",
+        Action::Heads => "Arrowheads",
+        Action::Cut => "Cut   Cmd X",
+        Action::Copy => "Copy   Cmd C",
+        Action::Paste => "Paste   Cmd V",
+        Action::Duplicate => "Duplicate   Cmd D",
+        Action::Group => "Group   Cmd G",
+        Action::Align => "Align and space",
+        Action::Arrange { way } => match way {
+            Align::Left => "Align left   Alt A",
+            Align::Center => "Align centres   Alt H",
+            Align::Right => "Align right   Alt D",
+            Align::Top => "Align tops   Alt W",
+            Align::Middle => "Align middles   Alt V",
+            Align::Bottom => "Align bottoms   Alt S",
+            Align::Across => "Space evenly across   Alt Shift H",
+            Align::Down => "Space evenly down   Alt Shift V",
+        },
+        Action::Lock => "Lock   Cmd Shift L",
+        Action::SelectAll => "Select all   Cmd A",
+        Action::Map => "Minimap   M",
+        Action::Title => "Double-click to rename",
+        Action::Navigate => "Minimap",
+        Action::Color { .. } => "",
+    }
+}
+
+/// Draws the controls. `tool` shows as chosen, `color` as the selection's colour, `hover` lit
+/// with its tip, and `zoom` in the zoom's middle.
+pub fn draw(
+    list: mut DrawList,
+    fonts: Fonts,
+    c: Chrome,
+    u: f32,
+    tool: Tool,
+    color: Option<u32>,
+    hover: Option<Action>,
+    zoom: f32,
+    can_undo: bool,
+    can_redo: bool,
+    locked: bool,
+    grouped: bool,
+    aligning: bool,
+    shape: Kind,
+    tips: bool,
+) {
+    for p in c.panels {
+        list.rect(
+            Rect::new(p.x, p.y + 2.0 * u, p.w, p.h),
+            vec4(0.0, 0.0, 0.0, 0.06),
+            radius: 12.0 * u,
+        )
+        list.rect(p.shrink(-1.0 * u), vec4(0.0, 0.0, 0.0, 0.05), radius: 11.0 * u)
+        list.rect(p, vec4(1.0), radius: 10.0 * u)
+    }
+    for k in c.controls {
+        let lit = hover == Some(k.action)
+        let chosen = match k.action {
+            Action::Use { tool: t } => t == tool,
+            Action::Pick { kind } => kind == shape,
+            Action::Align => aligning,
+            _ => false,
+        }
+        if k.row {
+            menu_row(mut list, fonts, k, u, lit, locked, grouped)
+            continue
+        }
+        // The board's name and the minimap draw themselves (main.wrela).
+        if k.action == Action::Title || k.action == Action::Navigate {
+            continue
+        }
+        if let Action::Color { index } = k.action {
+            let r = k.rect
+            if color == Some(index) {
+                list.ellipse(r.shrink(-3.0 * u), ACCENT, width: 2.0 * u)
+            }
+            let swatch = if c.inks { INKS[index] } else { FILLS[index] }
+            list.ellipse(r.shrink(if lit { 0.0 } else { 1.5 * u }), swatch)
+            list.ellipse(r.shrink(if lit { 0.0 } else {
+                1.5 * u
+            }), vec4(INKS[index].xyz, 0.45), width: 1.0 * u)
+            continue
+        }
+        let back = if chosen { CHOSEN } else if lit { LIT } else { vec4(1.0) }
+        if chosen || lit {
+            list.rect(k.rect, back, radius: 8.0 * u)
+        }
+        let enabled = match k.action {
+            Action::Undo => can_undo,
+            Action::Redo => can_redo,
+            _ => true,
+        }
+        let ink = if chosen { ACCENT } else if enabled { TEXT } else { vec4(0.75, 0.76, 0.78, 1.0) }
+        icon(mut list, fonts, k.action, k.rect, u, ink, back, zoom, shape)
+    }
+    // The lit control's tip, beside a tool or above anything else.
+    for k in c.controls {
+        if !tips || hover != Some(k.action) || k.row {
+            continue
+        }
+        let text = tip(k.action)
+        if text.len() == 0 {
+            continue
+        }
+        let size = 13.0 * u
+        let w = fonts.font(Face::Sans).measure(text, size) + 16.0 * u
+        let h = 28.0 * u
+        let r = match k.action {
+            Action::Use { .. } | Action::Pick { .. } => Rect::new(
+                k.rect.right() + 14.0 * u,
+                k.rect.center().y - 0.5 * h,
+                w,
+                h,
+            ),
+            // Above, or below where there's no room above.
+            _ => {
+                let above = k.rect.y - 12.0 * u - h
+                let y = if above < 4.0 * u { k.rect.bottom() + 12.0 * u } else { above }
+                Rect::new(max(k.rect.center().x - 0.5 * w, 4.0 * u), y, w, h)
+            },
+        }
+        list.rect(r, vec4(0.13, 0.14, 0.16, 0.94), radius: 6.0 * u)
+        let _ = list.text(
+            fonts,
+            Face::Sans,
+            text,
+            size,
+            vec2(r.x + 8.0 * u, r.y + 0.5 * (h - 1.25 * size)),
+            vec4(1.0),
+        )
+    }
+}
+
+/// A control's icon in `r`: lines and shapes on a grid of logical pixels about its middle, on
+/// `back`.
+fn icon(
+    list: mut DrawList,
+    fonts: Fonts,
+    a: Action,
+    r: Rect,
+    u: f32,
+    ink: vec4,
+    back: vec4,
+    zoom: f32,
+    shape: Kind,
+) {
+    let c = r.center()
+    let w = 1.6 * u
+    let p = |x: f32, y: f32| -> vec2 { c + vec2(x, y) * u }
+    let box = |x: f32, y: f32, bw: f32, bh: f32| -> Rect {
+        Rect::new(c.x + x * u, c.y + y * u, bw * u, bh * u)
+    }
+    match a {
+        Action::Use { tool } => match tool {
+            Tool::Select => {
+                let pts = [p(-4.0, -8.0), p(-4.0, 6.0), p(-0.5, 2.5), p(5.0, 2.5), p(-4.0, -8.0)]
+                for i in 1..pts.len() {
+                    list.line(pts[i - 1], pts[i], ink, width: w)
+                }
+                list.line(p(-0.5, 2.5), p(2.0, 8.0), ink, width: w)
+            },
+            Tool::Hand => {
+                // An open hand in outline: the shapes in ink, then again smaller in the
+                // background's colour, so fingers side by side share one stroke.
+                let fingers = [(-4.5, -5.0), (-1.5, -7.5), (1.5, -7.0), (4.5, -5.0)]
+                let thumb = (p(-5.5, 3.5), p(-8.5, -0.5))
+                let palm = box(-6.0, -1.0, 12.0, 9.5)
+                for (inset, colour) in [(0.0, ink), (w, back)] {
+                    let width = 3.0 * u + w - 2.0 * inset
+                    list.line(thumb.0, thumb.1, colour, width: width)
+                    for (x, top) in fingers {
+                        list.line(p(x, top), p(x, 1.0), colour, width: width)
+                    }
+                    list.rect(palm.shrink(inset - 0.5 * w), colour, radius: 4.5 * u - inset)
+                }
+            },
+            Tool::Note => {
+                list.rect(box(-8.0, -8.0, 16.0, 16.0), FILLS[0], radius: 1.5 * u)
+                list.ring(box(-8.0, -8.0, 16.0, 16.0), ink, radius: 1.5 * u, width: 1.2 * u)
+                list.line(p(-4.0, -2.0), p(4.0, -2.0), ink, width: 1.2 * u)
+                list.line(p(-4.0, 2.0), p(2.0, 2.0), ink, width: 1.2 * u)
+            },
+            Tool::Shape => shape_icon(mut list, shape, c, u, ink, w),
+            Tool::Text => {
+                let size = 20.0 * u
+                let tw = fonts.font(Face::Sans).measure("T", size)
+                let _ = list.text(
+                    fonts,
+                    Face::Sans,
+                    "T",
+                    size,
+                    vec2(c.x - 0.5 * tw, c.y - 0.62 * size),
+                    ink,
+                )
+            },
+            Tool::Link => {
+                list.line(p(-7.0, 7.0), p(7.0, -7.0), ink, width: w)
+                list.line(p(7.0, -7.0), p(1.0, -7.0), ink, width: w)
+                list.line(p(7.0, -7.0), p(7.0, -1.0), ink, width: w)
+            },
+            Tool::Frame => {
+                // A square whose edges run past its corners, as a frame's crop marks do.
+                for k in [-4.5, 4.5] {
+                    list.line(p(k, -8.5), p(k, 8.5), ink, width: w)
+                    list.line(p(-8.5, k), p(8.5, k), ink, width: w)
+                }
+            },
+            Tool::Pen => {
+                var last = p(-8.0, 2.0)
+                for i in 1..9 {
+                    let t = f32(i) / 8.0
+                    let next = p(-8.0 + 16.0 * t, 2.0 - 5.0 * sin(t * 6.0))
+                    list.line(last, next, ink, width: w)
+                    last = next
+                }
+            },
+        },
+        Action::Undo => turn(mut list, c, u, ink, w, back: true),
+        Action::Redo => turn(mut list, c, u, ink, w, back: false),
+        Action::Pick { kind } => shape_icon(mut list, kind, c, u, ink, w),
+        Action::TypeSize => {
+            let big = 17.0 * u
+            let small = 12.0 * u
+            borrow font = fonts.font(Face::Sans)
+            let wa = font.measure("A", big)
+            let x = c.x - 0.5 * (wa + font.measure("a", small))
+            let _ = list.text(fonts, Face::Sans, "A", big, vec2(x, c.y - 0.66 * big), ink)
+            let _ = list.text(
+                fonts,
+                Face::Sans,
+                "a",
+                small,
+                vec2(x + wa, c.y - 0.66 * big + 0.29 * big),
+                ink,
+            )
+        },
+        Action::ZoomIn => {
+            list.line(p(-6.0, 0.0), p(6.0, 0.0), ink, width: w)
+            list.line(p(0.0, -6.0), p(0.0, 6.0), ink, width: w)
+        },
+        Action::ZoomOut => list.line(p(-6.0, 0.0), p(6.0, 0.0), ink, width: w),
+        Action::Actual => {
+            let label = f"{u32(round(zoom * 100.0))}%"
+            let text = label.as_str()
+            let size = 13.0 * u
+            let tw = fonts.font(Face::Sans).measure(text, size)
+            let _ = list.text(
+                fonts,
+                Face::Sans,
+                text,
+                size,
+                vec2(c.x - 0.5 * tw, c.y - 0.62 * size),
+                ink,
+            )
+        },
+        Action::Route => {
+            list.line(p(-8.0, 6.0), p(-1.0, 6.0), ink, width: w)
+            list.line(p(-1.0, 6.0), p(-1.0, -6.0), ink, width: w)
+            list.line(p(-1.0, -6.0), p(8.0, -6.0), ink, width: w)
+        },
+        Action::Heads => {
+            list.line(p(-8.0, 0.0), p(4.0, 0.0), ink, width: w)
+            list.triangle(p(9.0, 0.0), p(3.0, -4.0), p(3.0, 4.0), ink)
+        },
+        Action::Map => {
+            list.ring(box(-9.0, -7.0, 18.0, 14.0), ink, radius: 2.0 * u, width: w)
+            list.rect(box(-5.0, -3.5, 7.0, 5.0), ink, radius: 1.0 * u)
+        },
+        Action::Fit => {
+            for d in [vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0)] {
+                let corner = c + d * 7.0 * u
+                list.line(corner, corner - vec2(d.x * 4.0, 0.0) * u, ink, width: w)
+                list.line(corner, corner - vec2(0.0, d.y * 4.0) * u, ink, width: w)
+            }
+        },
+        Action::Front => {
+            list.ring(box(-8.0, -8.0, 11.0, 11.0), ink, radius: 1.5 * u, width: 1.2 * u)
+            list.rect(box(-3.0, -3.0, 11.0, 11.0), ink, radius: 1.5 * u)
+        },
+        Action::Align => align_icon(mut list, Align::Left, c, u, ink, w),
+        Action::Arrange { way } => align_icon(mut list, way, c, u, ink, w),
+        Action::Back => {
+            list.rect(box(-8.0, -8.0, 11.0, 11.0), ink, radius: 1.5 * u)
+            list.rect(box(-3.0, -3.0, 11.0, 11.0), back, radius: 1.5 * u)
+            list.ring(box(-3.0, -3.0, 11.0, 11.0), ink, radius: 1.5 * u, width: 1.2 * u)
+        },
+        Action::Delete => {
+            list.line(p(-7.0, -5.0), p(7.0, -5.0), ink, width: w)
+            list.line(p(-2.0, -7.5), p(2.0, -7.5), ink, width: w)
+            list.ring(box(-5.0, -4.0, 10.0, 12.0), ink, radius: 1.5 * u, width: w)
+        },
+        Action::Color { .. } => {},
+        // The menu's rows have no icons.
+        _ => {},
+    }
+}
+
+@test
+fn the_selection_bar_stays_on_the_screen() {
+    let screen = vec2(640.0, 480.0)
+    // A selection at the top left: the bar goes below it, and inside the screen.
+    let c = layout(
+        screen,
+        1.0,
+        Some(
+            Selection {
+                rect: Rect::new(x: 0.0, y: 5.0, w: 40.0, h: 40.0),
+                links: false,
+                inks: false,
+                words: false,
+                many: false,
+            },
+        ),
+        flyout: false,
+        aligning: false,
+    )
+    let bar = c.panels[3]
+    assert(bar.y > 45.0 && bar.x >= MARGIN, f"{bar.x}, {bar.y}")
+    assert(at(c, bar.center()).is_some(), "the bar's middle is a control")
+    assert(at(c, vec2(320.0, 240.0)).is_none(), "the board's middle isn't")
+    // Every tool is a control.
+    var tools = 0
+    for k in c.controls {
+        if let Action::Use { .. } = k.action { tools += 1 }
+    }
+    assert(tools == TOOLS.len())
+}
+
+/// A row of the context menu: its name, and its keys in grey at the right; a hairline above the
+/// first of each group.
+fn menu_row(
+    list: mut DrawList,
+    fonts: Fonts,
+    k: Control,
+    u: f32,
+    lit: bool,
+    locked: bool,
+    grouped: bool,
+) {
+    let r = k.rect
+    if lit {
+        list.rect(r, vec4(0.27, 0.4, 1.0, 0.1), radius: 6.0 * u)
+    }
+    if k.action == Action::Front || k.action == Action::Lock {
+        list.rect(
+            Rect::new(r.x + 8.0 * u, r.y, r.w - 16.0 * u, max(1.0 * u, 1.0)),
+            vec4(0.0, 0.0, 0.0, 0.08),
+        )
+    }
+    // Lock and Group undo themselves when what's selected is already locked, or one group.
+    let full = if k.action == Action::Lock && locked {
+        "Unlock   Cmd Shift L"
+    } else if k.action == Action::Group && grouped {
+        "Ungroup   Cmd Shift G"
+    } else {
+        tip(k.action)
+    }
+    let parts = full.split("   ")
+    let name = full.slice(parts[0].0, parts[0].1)
+    let size = 13.0 * u
+    let y = r.y + 0.5 * (r.h - 1.25 * size)
+    let ink = if k.action == Action::Delete { vec4(0.82, 0.18, 0.2, 1.0) } else { TEXT }
+    let _ = list.text(fonts, Face::Sans, name, size, vec2(r.x + 10.0 * u, y), ink)
+    if parts.len() > 1 {
+        let keys = full.slice(parts[1].0, parts[1].1)
+        let kw = fonts.font(Face::Sans).measure(keys, size)
+        let _ = list.text(
+            fonts,
+            Face::Sans,
+            keys,
+            size,
+            vec2(r.right() - 10.0 * u - kw, y),
+            vec4(0.55, 0.56, 0.6, 1.0),
+        )
+    }
+}
+
+/// A way of lining up's icon, about `c`: the line things meet on and two bars on it, or two
+/// lines and a bar evenly between them. The ways down are the ways across turned.
+fn align_icon(list: mut DrawList, way: Align, c: vec2, u: f32, ink: vec4, w: f32) {
+    let down = way == Align::Top ||
+        way == Align::Middle ||
+        way == Align::Bottom ||
+        way == Align::Down
+    // A point and a rectangle on the icon's grid, turned for the ways down.
+    let p = |x: f32, y: f32| -> vec2 { if down { c + vec2(y, x) * u } else { c + vec2(x, y) * u } }
+    let bar = |x: f32, y: f32, bw: f32, bh: f32| -> Rect {
+        if down { Rect::new(c.x + y * u, c.y + x * u, bh * u, bw * u) } else {
+            Rect::new(c.x + x * u, c.y + y * u, bw * u, bh * u)
+        }
+    }
+    if way == Align::Across || way == Align::Down {
+        list.line(p(-8.0, -8.0), p(-8.0, 8.0), ink, width: w)
+        list.line(p(8.0, -8.0), p(8.0, 8.0), ink, width: w)
+        list.rect(bar(-2.5, -5.0, 5.0, 10.0), ink, radius: 1.0 * u)
+        return
+    }
+    // Where the bars meet: their left (or top), middle, or right (or bottom).
+    let side = match way {
+        Align::Left | Align::Top => -1.0,
+        Align::Right | Align::Bottom => 1.0,
+        _ => 0.0,
+    }
+    list.line(p(8.0 * side, -8.5), p(8.0 * side, 8.5), ink, width: w)
+    for (y, bw) in [(-5.5, 13.0), (1.5, 8.0)] {
+        let x = if side < 0.0 { -6.0 } else if side > 0.0 { 6.0 - bw } else { -0.5 * bw }
+        list.rect(bar(x, y, bw, 4.0), ink, radius: 1.0 * u)
+    }
+}
+
+/// A shape's icon, about `c`.
+fn shape_icon(list: mut DrawList, kind: Kind, c: vec2, u: f32, ink: vec4, w: f32) {
+    let box = |x: f32, y: f32, bw: f32, bh: f32| -> Rect {
+        Rect::new(c.x + x * u, c.y + y * u, bw * u, bh * u)
+    }
+    match kind {
+        Kind::Ellipse => list.ellipse(box(-9.0, -8.0, 18.0, 16.0), ink, width: w),
+        Kind::Diamond => list.diamond(box(-9.5, -9.5, 19.0, 19.0), ink, width: w),
+        Kind::Triangle => list.triangle(
+            c + vec2(0.0, -8.5) * u,
+            c + vec2(-9.5, 7.5) * u,
+            c + vec2(9.5, 7.5) * u,
+            ink,
+            width: w,
+        ),
+        Kind::Pill => list.ring(box(-10.0, -6.0, 20.0, 12.0), ink, radius: 6.0 * u, width: w),
+        _ => list.ring(box(-9.0, -7.0, 18.0, 14.0), ink, radius: 2.0 * u, width: w),
+    }
+}
+
+/// Undo's (`back`) or redo's arrow: a turn over the top, its head pointing back down.
+fn turn(list: mut DrawList, c: vec2, u: f32, ink: vec4, w: f32, back: bool) {
+    let side = if back { -1.0 } else { 1.0 }
+    // Half a circle over the top, from the head's side across.
+    let middle = c + vec2(0.0, 2.0) * u
+    let radius = 6.0 * u
+    var last = middle + vec2(side * radius, 0.0)
+    for i in 1..13 {
+        let a = 3.14159265 * f32(i) / 12.0
+        let next = middle + vec2(side * cos(a) * radius, -sin(a) * radius)
+        list.line(last, next, ink, width: w)
+        last = next
+    }
+    // The head, at the start of the arc, pointing down.
+    let tip = middle + vec2(side * radius, 3.5 * u)
+    list.line(tip, tip + vec2(-3.2, -3.2) * u, ink, width: w)
+    list.line(tip, tip + vec2(3.2, -3.2) * u, ink, width: w)
+    list.line(middle + vec2(side * radius, 0.0), tip, ink, width: w)
+}

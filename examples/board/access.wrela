@@ -1,0 +1,284 @@
+// The board for screen readers and the keyboard: its controls and its items as an accessibility
+// tree (`platform::host::accessibility`), and what an assistive technology does to them
+// (`Event::Assist`) as actions by node number. Controls are numbered below `ITEMS`; an item's
+// node is `ITEMS` plus its id, so what's drawn over it never decides what's acted on.
+
+use board::{Board, Kind, has}
+use chrome::{ALIGNS, Action, Chrome, SHAPES, Selection, TOOLS, Tool, tip}
+use paint::COLORS
+use platform::host::{Node, Role}
+use ui::draw::Rect
+use view::View
+
+/// Where items' node numbers start.
+pub const ITEMS: u32 = 1000
+
+const COLOR_NAMES = ["Yellow", "Orange", "Pink", "Violet", "Blue", "Green", "Grey", "White"]
+
+/// A control's node number.
+pub fn node_of(a: Action) -> u32 {
+    match a {
+        Action::Use { tool } => {
+            var n = 0
+            for i in 0..TOOLS.len() {
+                if TOOLS[i] == tool { n = i }
+            }
+            1 + n
+        },
+        Action::Color { index } => 20 + index,
+        Action::Pick { kind } => {
+            var n = 0
+            for i in 0..SHAPES.len() {
+                if SHAPES[i] == kind { n = i }
+            }
+            60 + n
+        },
+        Action::TypeSize => 57,
+        Action::Map => 58,
+        Action::Title => 59,
+        Action::Navigate => 70,
+        Action::Front => 40,
+        Action::Back => 41,
+        Action::Delete => 42,
+        Action::Undo => 43,
+        Action::Redo => 44,
+        Action::ZoomIn => 45,
+        Action::ZoomOut => 46,
+        Action::Actual => 47,
+        Action::Fit => 48,
+        Action::Route => 49,
+        Action::Heads => 50,
+        Action::Cut => 51,
+        Action::Copy => 52,
+        Action::Paste => 53,
+        Action::Duplicate => 54,
+        Action::Group => 71,
+        Action::Align => 72,
+        Action::Arrange { way } => {
+            var n = 0
+            for i in 0..ALIGNS.len() {
+                if ALIGNS[i] == way { n = i }
+            }
+            80 + n
+        },
+        Action::Lock => 55,
+        Action::SelectAll => 56,
+    }
+}
+
+/// The control numbered `node`, if there's one.
+pub fn action_of(node: u32) -> Option<Action> {
+    if node >= 1 && node <= TOOLS.len() {
+        return Some(Action::Use { tool: TOOLS[node - 1] })
+    }
+    if node >= 20 && node < 20 + COLORS {
+        return Some(Action::Color { index: node - 20 })
+    }
+    if node >= 60 && node < 60 + SHAPES.len() {
+        return Some(Action::Pick { kind: SHAPES[node - 60] })
+    }
+    if node >= 80 && node < 80 + ALIGNS.len() {
+        return Some(Action::Arrange { way: ALIGNS[node - 80] })
+    }
+    let all = [
+        Action::Front,
+        Action::Back,
+        Action::Delete,
+        Action::Undo,
+        Action::Redo,
+        Action::ZoomIn,
+        Action::ZoomOut,
+        Action::Actual,
+        Action::Fit,
+        Action::Route,
+        Action::Heads,
+        Action::Cut,
+        Action::Copy,
+        Action::Paste,
+        Action::Duplicate,
+        Action::Group,
+        Action::Align,
+        Action::Lock,
+        Action::SelectAll,
+        Action::TypeSize,
+        Action::Map,
+        Action::Title,
+        Action::Navigate,
+    ]
+    for a in all {
+        if node_of(a) == node {
+            return Some(a)
+        }
+    }
+    None
+}
+
+/// What an item is called: its kind, and its words.
+pub fn name(b: Board, i: u32) -> String {
+    borrow it = b.items[i]
+    let kind: Text = match it.kind {
+        Kind::Note => "Sticky note",
+        Kind::Box => "Rectangle",
+        Kind::Ellipse => "Ellipse",
+        Kind::Diamond => "Diamond",
+        Kind::Triangle => "Triangle",
+        Kind::Pill => "Pill",
+        Kind::Text => "Text",
+        Kind::Pen => "Pen stroke",
+        Kind::Link => "Connector",
+        Kind::Frame => "Frame",
+    }
+    var out = String::from(kind)
+    if it.kind == Kind::Link {
+        for (word, id) in [(" from ", it.from), (" to ", it.to)] {
+            if let Some(k) = b.index(id) {
+                out.push_str(word)
+                out.push_str(short(b, k).as_str())
+            }
+        }
+    } else if !it.text.is_empty() {
+        out.push_str(": ")
+        out.push_str(it.text.as_str())
+    }
+    out
+}
+
+/// An item's words, or its kind if it has none: for naming what a connector joins.
+fn short(b: Board, i: u32) -> String {
+    borrow it = b.items[i]
+    if it.text.is_empty() {
+        String::from(match it.kind {
+            Kind::Note => "a note",
+            _ => "a shape",
+        })
+    } else { it.text.clone() }
+}
+
+/// The tree: the controls as `chrome` lays them out, then the items, bottom first.
+pub fn tree(
+    c: Chrome,
+    b: Board,
+    v: View,
+    selected: [u32],
+    tool: Tool,
+    can_undo: bool,
+    can_redo: bool,
+) -> Vec<Node> {
+    var nodes: Vec<Node> = Vec::new()
+    for k in c.controls {
+        let label = match k.action {
+            Action::Color { index } => String::from(COLOR_NAMES[index]),
+            _ => String::from(tip(k.action)),
+        }
+        nodes.push(
+            Node {
+                id: node_of(k.action),
+                role: Role::Button,
+                pressed: k.action == Action::Use { tool },
+                disabled: (k.action == Action::Undo && !can_undo) ||
+                    (k.action == Action::Redo && !can_redo),
+                rect: vec4(k.rect.x, k.rect.y, k.rect.w, k.rect.h),
+                label,
+            },
+        )
+    }
+    for i in 0..b.items.len() {
+        let r = v.rect(b.bounds(i))
+        let id = b.items[i].id
+        nodes.push(
+            Node {
+                id: ITEMS + id,
+                role: Role::Item,
+                selected: has(selected, id),
+                rect: vec4(r.x, r.y, r.w, r.h),
+                label: name(b, i),
+            },
+        )
+    }
+    nodes
+}
+
+/// What a screen reader says of a selection.
+pub fn said(b: Board, selected: [u32]) -> String {
+    if selected.len() == 1 {
+        if let Some(i) = b.index(selected[0]) {
+            var out = name(b, i)
+            out.push_str(", selected")
+            return out
+        }
+    }
+    if selected.is_empty() { String::from("Nothing selected") } else {
+        f"{selected.len()} items selected"
+    }
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+@test
+fn every_control_has_its_own_node() {
+    let c = chrome::layout(
+        vec2(640.0, 480.0),
+        1.0,
+        Some(
+            Selection {
+                rect: Rect::new(x: 200.0, y: 200.0, w: 40.0, h: 40.0),
+                links: true,
+                inks: true,
+                words: true,
+                many: true,
+            },
+        ),
+        flyout: true,
+        aligning: true,
+    )
+    var seen: Vec<u32> = Vec::new()
+    for k in c.controls {
+        let n = node_of(k.action)
+        assert(n < ITEMS && !has(seen, n), f"node {n}")
+        assert(action_of(n) == Some(k.action))
+        seen.push(n)
+    }
+    assert(action_of(0).is_none() && action_of(999).is_none())
+}
+
+@test
+fn items_are_named_by_kind_and_words() {
+    var b = Board::new()
+    var note = board::Item::new(Kind::Note, vec2(0.0), vec2(200.0), color: 0)
+    note.text = String::from("Plan")
+    let a = b.add(take note)
+    let z = b.add(board::Item::new(Kind::Ellipse, vec2(400.0, 0.0), vec2(100.0), color: 0))
+    var link = board::Item::new(Kind::Link, vec2(0.0), vec2(0.0), color: 7)
+    link.from = a
+    link.to = z
+    let _ = b.add(take link)
+    assert(name(b, 0) == "Sticky note: Plan")
+    assert(name(b, 2) == "Connector from Plan to a shape")
+    let nodes = tree(
+        chrome::layout(vec2(640.0), 1.0, None, flyout: false, aligning: false),
+        b,
+        View::new(),
+        [a],
+        Tool::Note,
+        can_undo: false,
+        can_redo: false,
+    )
+    let items: Vec<Node> = nodes.clone()
+    var found = 0
+    for n in items {
+        if n.id == ITEMS + a {
+            assert(n.selected && n.role == Role::Item)
+            found += 1
+        }
+        if n.id == node_of(Action::Use { tool: Tool::Note }) {
+            assert(n.pressed)
+            found += 1
+        }
+        if n.id == node_of(Action::Undo) {
+            assert(n.disabled)
+            found += 1
+        }
+    }
+    assert(found == 3)
+    assert(said(b, [a]) == "Sticky note: Plan, selected" && said(b, [a, z]) == "2 items selected")
+}

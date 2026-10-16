@@ -1,0 +1,616 @@
+// How the board looks: a dot grid on paper, notes with a soft shadow, outlined shapes, ink, and
+// arrows. Each item's text is laid out in world units (`layout`), so the same layout places
+// what's drawn, the caret and a click in the text.
+
+use board::{Board, END_ARROW, Item, Kind, LINK_WIDTH, PEN_WIDTH, START_ARROW, TITLE}
+use ui::draw::{DrawList, Rect}
+use ui::text::{Face, Font, Fonts}
+use view::View
+
+/// The palette: fills for notes and shapes, and inks for strokes, text and outlines, each
+/// colour's pair at one index.
+pub const FILLS = [
+    vec4(1.0, 0.91, 0.52, 1.0),
+    vec4(1.0, 0.77, 0.55, 1.0),
+    vec4(0.99, 0.73, 0.8, 1.0),
+    vec4(0.8, 0.75, 0.98, 1.0),
+    vec4(0.67, 0.84, 1.0, 1.0),
+    vec4(0.75, 0.92, 0.67, 1.0),
+    vec4(0.88, 0.88, 0.89, 1.0),
+    vec4(1.0, 1.0, 1.0, 1.0),
+]
+pub const INKS = [
+    vec4(0.82, 0.6, 0.0, 1.0),
+    vec4(0.93, 0.44, 0.1, 1.0),
+    vec4(0.86, 0.2, 0.45, 1.0),
+    vec4(0.46, 0.3, 0.86, 1.0),
+    vec4(0.15, 0.45, 0.92, 1.0),
+    vec4(0.2, 0.6, 0.27, 1.0),
+    vec4(0.45, 0.46, 0.5, 1.0),
+    vec4(0.11, 0.12, 0.14, 1.0),
+]
+pub const COLORS: u32 = 8
+
+pub const PAPER = vec4(0.965, 0.965, 0.955, 1.0)
+pub const TEXT = vec4(0.11, 0.12, 0.14, 1.0)
+pub const ACCENT = vec4(0.27, 0.4, 1.0, 1.0)
+/// Smart guides: a line what's moved snapped to.
+pub const GUIDE = vec4(0.98, 0.26, 0.55, 1.0)
+const DOT = vec4(0.79, 0.8, 0.82, 1.0)
+
+/// Text sizes (world units an em): a note's text takes the largest that fits it.
+const NOTE_SIZES = [34.0, 28.0, 24.0, 20.0, 17.0, 14.0, 12.0, 10.0, 8.0]
+const SHAPE_SIZE: f32 = 16.0
+pub const TEXT_SIZE: f32 = 20.0
+/// A frame's title's size.
+const FRAME_SIZE: f32 = 14.0
+/// A frame's title's colour, and its edge's.
+const FRAME_TITLE = vec4(0.36, 0.37, 0.41, 1.0)
+const FRAME_EDGE = vec4(0.0, 0.0, 0.0, 0.1)
+/// How far a box's text stays from its edges, and a connector's label's from its box's.
+const PAD: f32 = 14.0
+const LABEL_PAD: f32 = 6.0
+/// A connector's label's size, and how wide it grows before it wraps.
+const LABEL_SIZE: f32 = 14.0
+const LABEL_WIDTH: f32 = 200.0
+
+/// An item's text laid out: its size, its lines (byte ranges), where each line starts, and the
+/// first line's top, all in world units.
+pub struct Layout: Clone {
+    pub size: f32,
+    pub lines: Vec<(u32, u32)>,
+    pub xs: Vec<f32>,
+    pub top: f32,
+    pub line: f32,
+}
+
+/// The room a box gives its text: less in an ellipse or a diamond, whose corners are empty.
+fn room(it: Item) -> Rect {
+    let r = it.rect().shrink(if it.kind == Kind::Link { LABEL_PAD } else { PAD })
+    let keep = match it.kind {
+        Kind::Ellipse => 0.72,
+        Kind::Diamond => 0.5,
+        Kind::Triangle => 0.5,
+        _ => 1.0,
+    }
+    // A triangle's room is low in it, where it's widest.
+    let c = if it.kind == Kind::Triangle { vec2(r.center().x, r.y + 0.66 * r.h) } else {
+        r.center()
+    }
+    let size = vec2(r.w, r.h) * keep
+    Rect::new(c.x - 0.5 * size.x, c.y - 0.5 * size.y, size.x, size.y)
+}
+
+pub fn layout(font: Font, it: Item) -> Layout {
+    let text = it.text.as_str()
+    if it.kind == Kind::Frame {
+        // A frame's title: one line in its strip above it, from its left.
+        let size = FRAME_SIZE
+        let line = font.line_height(size)
+        var lines: Vec<(u32, u32)> = Vec::new()
+        lines.push((0, text.len()))
+        var xs: Vec<f32> = Vec::new()
+        xs.push(it.at.x + 2.0)
+        return Layout { size, lines, xs, top: it.at.y - TITLE + 0.5 * (TITLE - line) - 2.0, line }
+    }
+    if it.kind == Kind::Text {
+        let size = sized(it, TEXT_SIZE)
+        let lines = font.wrap(text, size, it.size.x)
+        var xs: Vec<f32> = Vec::new()
+        for _l in lines {
+            xs.push(it.at.x)
+        }
+        return Layout { size, lines, xs, top: it.at.y, line: font.line_height(size) }
+    }
+    let r = room(it)
+    var size = sized(it, if it.kind == Kind::Link { LABEL_SIZE } else { SHAPE_SIZE })
+    var lines = font.wrap(text, size, r.w)
+    if it.kind == Kind::Note {
+        for s in NOTE_SIZES {
+            size = s
+            lines = font.wrap(text, size, r.w)
+            if f32(lines.len()) * font.line_height(size) <= r.h {
+                break
+            }
+        }
+    }
+    let line = font.line_height(size)
+    var xs: Vec<f32> = Vec::new()
+    for l in lines {
+        xs.push(r.center().x - 0.5 * font.measure(text.slice(l.0, l.1), size))
+    }
+    let top = r.center().y - 0.5 * f32(lines.len()) * line
+    Layout { size, lines, xs, top, line }
+}
+
+/// The middle of a route, by its length: where a connector's label sits.
+pub fn middle(route: [vec2]) -> vec2 {
+    var total = 0.0
+    for k in 1..route.len() {
+        total += length(route[k] - route[k - 1])
+    }
+    var left = 0.5 * total
+    for k in 1..route.len() {
+        let n = length(route[k] - route[k - 1])
+        if n >= left && n > 0.0 {
+            return route[k - 1] + (route[k] - route[k - 1]) * (left / n)
+        }
+        left -= n
+    }
+    if route.is_empty() { vec2(0.0) } else { route[0] }
+}
+
+/// Places each connector's label (its `at` and `size`): a box round its words at the middle of
+/// its route, or none for one without words, unless it's being typed into (`typing`).
+pub fn label(b: mut Board, font: Font, typing: Option<Typing>) {
+    for i in 0..b.items.len() {
+        if b.items[i].kind != Kind::Link {
+            continue
+        }
+        let route = b.route(b.items[i])
+        let mid = middle(route)
+        let typed = match typing {
+            Some(t) => t.id == b.items[i].id,
+            None => false,
+        }
+        let text = b.items[i].text.as_str()
+        if text.is_empty() && !typed {
+            b.items[i].at = mid
+            b.items[i].size = vec2(0.0)
+            continue
+        }
+        var widest = 24.0
+        let em = sized(b.items[i], LABEL_SIZE)
+        let lines = font.wrap(text, em, LABEL_WIDTH)
+        for l in lines {
+            widest = max(widest, font.measure(text.slice(l.0, l.1), em))
+        }
+        let size = vec2(
+            widest + 2.0 * LABEL_PAD + 2.0,
+            f32(max(lines.len(), 1)) * font.line_height(em) + 2.0 * LABEL_PAD,
+        )
+        b.items[i].size = size
+        b.items[i].at = mid - 0.5 * size
+    }
+}
+
+/// How tall a text item is for its text.
+pub fn text_height(font: Font, it: Item) -> f32 {
+    let size = sized(it, TEXT_SIZE)
+    let lines = font.wrap(it.text.as_str(), size, it.size.x)
+    f32(max(lines.len(), 1)) * font.line_height(size)
+}
+
+/// An item's words' size: its own, or `usual`.
+/// The size of words on an item of `kind` that hasn't had its own chosen.
+pub fn usual(kind: Kind) -> f32 {
+    match kind {
+        Kind::Text => TEXT_SIZE,
+        Kind::Link => LABEL_SIZE,
+        _ => SHAPE_SIZE,
+    }
+}
+
+fn sized(it: Item, usual: f32) -> f32 {
+    if it.type_size > 0.0 { it.type_size } else { usual }
+}
+
+/// The sizes the bar steps words through, smallest first.
+pub const TYPE_SIZES = [12.0, 16.0, 20.0, 28.0, 40.0, 56.0]
+
+/// The next size up from `now` (an item's, or its kind's `usual`), round to the smallest after
+/// the largest.
+pub fn next_size(now: f32, usual: f32) -> f32 {
+    let at = if now > 0.0 { now } else { usual }
+    for size in TYPE_SIZES {
+        if size > at + 0.01 {
+            return size
+        }
+    }
+    TYPE_SIZES[0]
+}
+
+/// Which line byte offset `at` is on.
+fn line_of(l: Layout, at: u32) -> u32 {
+    for i in 0..l.lines.len() {
+        if at <= l.lines[i].1 {
+            return i
+        }
+    }
+    l.lines.len() - 1
+}
+
+/// Where the caret at byte `at` is: its top, in world units.
+pub fn caret(font: Font, it: Item, l: Layout, at: u32) -> vec2 {
+    let i = line_of(l, at)
+    let (from, to) = l.lines[i]
+    let x = font.caret_at(it.text.as_str().slice(from, to), l.size, min(at, to) - from)
+    vec2(l.xs[i] + x, l.top + f32(i) * l.line)
+}
+
+/// The byte offset nearest world point `p` in the text: where a click puts the caret.
+pub fn offset_at(font: Font, it: Item, l: Layout, p: vec2) -> u32 {
+    let row = clamp(floor((p.y - l.top) / l.line), 0.0, f32(l.lines.len() - 1))
+    let i = u32(row)
+    let (from, to) = l.lines[i]
+    from + font.offset_at(it.text.as_str().slice(from, to), l.size, p.x - l.xs[i])
+}
+
+/// The dots, every 20 units, or every 100 or 500 as the camera goes out.
+pub fn grid(list: mut DrawList, v: View, screen: vec2) {
+    var step = 20.0
+    while step * v.scale() < 18.0 * v.unit {
+        step *= 5.0
+    }
+    let lo = v.to_world(vec2(0.0))
+    let hi = v.to_world(screen)
+    let d = max(1.5 * v.unit, 1.0)
+    var y = ceil(lo.y / step) * step
+    while y <= hi.y {
+        var x = ceil(lo.x / step) * step
+        while x <= hi.x {
+            let p = v.to_screen(vec2(x, y))
+            list.rect(Rect::new(p.x - 0.5 * d, p.y - 0.5 * d, d, d), DOT, radius: 0.5 * d)
+            x += step
+        }
+        y += step
+    }
+}
+
+/// Whether screen rectangle `r` shows on a screen `screen` big.
+fn shows(r: Rect, screen: vec2) -> bool {
+    r.right() >= 0.0 && r.bottom() >= 0.0 && r.x <= screen.x && r.y <= screen.y
+}
+
+/// The text being typed: which item, and the caret.
+pub struct Typing: Copy + Eq {
+    pub id: u32,
+    pub at: u32,
+    /// The selection's other end (`at` when nothing's selected).
+    pub anchor: u32,
+}
+
+impl Typing {
+    /// Typing into item `id`, the caret at byte `at`, nothing selected.
+    pub fn caret(id: u32, at: u32) -> Typing {
+        Typing { id, at, anchor: at }
+    }
+}
+
+/// What's selected of text being typed, drawn behind it.
+const SELECTED_TEXT = vec4(0.5, 0.68, 1.0, 0.5)
+
+/// Every item, bottom first, then the links over them. While `typing`, its item shows its caret
+/// when `blink` is on, and what an input method is composing (`composing`) underlined at it.
+pub fn items(
+    list: mut DrawList,
+    fonts: Fonts,
+    b: Board,
+    v: View,
+    screen: vec2,
+    typing: Option<Typing>,
+    composing: [u32],
+    blink: bool,
+) {
+    borrow font = fonts.font(Face::Sans)
+    let k = v.scale()
+    // Frames first, under everything: a sheet with a soft edge, its title above it.
+    for i in 0..b.items.len() {
+        borrow it = b.items[i]
+        if it.kind != Kind::Frame || !shows(v.rect(it.rect().shrink(-TITLE)), screen) {
+            continue
+        }
+        let r = v.rect(it.rect())
+        list.rect(
+            Rect::new(r.x, r.y + 1.0 * k, r.w, r.h),
+            vec4(0.0, 0.0, 0.0, 0.04),
+            radius: 4.0 * k,
+        )
+        list.rect(r, FILLS[it.color % COLORS], radius: 4.0 * k)
+        list.ring(r, FRAME_EDGE, radius: 4.0 * k, width: max(1.0 * v.unit, 1.0))
+        words(mut list, fonts, font, it, v, FRAME_TITLE, typing, composing, blink)
+    }
+    for i in 0..b.items.len() {
+        borrow it = b.items[i]
+        if it.kind == Kind::Link || it.kind == Kind::Frame || !shows(v.rect(b.bounds(i)), screen) {
+            continue
+        }
+        let r = v.rect(it.rect())
+        let fill = FILLS[it.color % COLORS]
+        let ink = INKS[it.color % COLORS]
+        let edge = max(2.0 * k, 1.0)
+        match it.kind {
+            Kind::Note => {
+                list.rect(
+                    Rect::new(r.x, r.y + 4.0 * k, r.w, r.h),
+                    vec4(0.0, 0.0, 0.0, 0.05),
+                    radius: 6.0 * k,
+                )
+                list.rect(
+                    Rect::new(r.x, r.y + 1.5 * k, r.w, r.h),
+                    vec4(0.0, 0.0, 0.0, 0.08),
+                    radius: 3.0 * k,
+                )
+                list.rect(r, fill, radius: 2.0 * k)
+            },
+            Kind::Box => {
+                list.rect(r, fill, radius: 6.0 * k)
+                list.ring(r, ink, radius: 6.0 * k, width: edge)
+            },
+            Kind::Ellipse => {
+                list.ellipse(r, fill)
+                list.ellipse(r, ink, width: edge)
+            },
+            Kind::Diamond => {
+                list.diamond(r, fill)
+                list.diamond(r, ink, width: edge)
+            },
+            Kind::Triangle => {
+                let (a, b0, z) = it.corners()
+                let (sa, sb, sz) = (v.to_screen(a), v.to_screen(b0), v.to_screen(z))
+                list.triangle(sa, sb, sz, fill)
+                list.triangle(sa, sb, sz, ink, width: edge)
+            },
+            Kind::Pill => {
+                let round = 0.5 * min(r.w, r.h)
+                list.rect(r, fill, radius: round)
+                list.ring(r, ink, radius: round, width: edge)
+            },
+            Kind::Pen => {
+                let w = max(PEN_WIDTH * k, 1.0)
+                var last = v.to_screen(it.at + it.points[0])
+                list.line(last, last, ink, width: w)
+                for p in it.points {
+                    let next = v.to_screen(it.at + p)
+                    list.line(last, next, ink, width: w)
+                    last = next
+                }
+            },
+            _ => {},
+        }
+        if it.has_text() {
+            let color = if it.kind == Kind::Text { ink } else { TEXT }
+            words(mut list, fonts, font, it, v, color, typing, composing, blink)
+        }
+    }
+    for it in b.items {
+        if it.kind != Kind::Link {
+            continue
+        }
+        let route = b.route(it)
+        if route.len() < 2 {
+            continue
+        }
+        var points: Vec<vec2> = Vec::new()
+        for p in route {
+            points.push(v.to_screen(p))
+        }
+        connector(mut list, points, it.style, INKS[it.color % COLORS], max(LINK_WIDTH * k, 1.0), k)
+        if it.size.x > 0.0 {
+            let r = v.rect(it.rect())
+            list.rect(r, PAPER, radius: 4.0 * k)
+            words(mut list, fonts, font, it, v, TEXT, typing, composing, blink)
+        }
+    }
+}
+
+/// An item's words: with the caret while `typing` it, and what an input method is composing
+/// underlined there.
+fn words(
+    list: mut DrawList,
+    fonts: Fonts,
+    font: Font,
+    it: Item,
+    v: View,
+    color: vec4,
+    typing: Option<Typing>,
+    composing: [u32],
+    blink: bool,
+) {
+    let typed = match typing {
+        Some(t) => if t.id == it.id { Some(vec2u(t.at, t.anchor)) } else { None },
+        None => None,
+    }
+    if typed.is_some() && !composing.is_empty() {
+        // The text as it would be with the composing put in at the caret.
+        var shown = it.clone()
+        var add = String::new()
+        for c in composing {
+            add.push_char(c)
+        }
+        let at = match typed {
+            Some(a) => a.x,
+            None => 0,
+        }
+        let (with, after) = clip::inserted(it.text.as_str(), at, add.as_str())
+        shown.text = take with
+        text(mut list, fonts, font, shown, v, color, Some(vec2u(after)), blink)
+        underline(mut list, font, shown, v, at, after)
+    } else {
+        text(mut list, fonts, font, it, v, color, typed, blink)
+    }
+}
+
+/// A connector through `points` (screen pixels), with the arrowheads its `style` asks for:
+/// filled, as long as eleven of its widths.
+pub fn connector(list: mut DrawList, points: [vec2], style: u32, color: vec4, width: f32, k: f32) {
+    let n = points.len()
+    let head = max(11.0 * k, 7.0)
+    // The line stops short where a head covers its end, so the head's tip stays sharp.
+    var ends: Vec<vec2> = Vec::new()
+    for p in points {
+        ends.push(p)
+    }
+    if style & END_ARROW != 0 {
+        ends[n - 1] = shortened(points[n - 1], points[n - 2], head)
+    }
+    if style & START_ARROW != 0 {
+        ends[0] = shortened(points[0], points[1], head)
+    }
+    for i in 1..n {
+        list.line(ends[i - 1], ends[i], color, width)
+    }
+    if style & END_ARROW != 0 {
+        arrowhead(mut list, points[n - 1], points[n - 2], color, head)
+    }
+    if style & START_ARROW != 0 {
+        arrowhead(mut list, points[0], points[1], color, head)
+    }
+}
+
+/// `tip` moved toward `from` by `by`, but not past it.
+fn shortened(tip: vec2, from: vec2, by: f32) -> vec2 {
+    let d = from - tip
+    let n = length(d)
+    if n <= 0.0 { tip } else { tip + d * min(by * 0.8 / n, 0.5) }
+}
+
+/// A filled arrowhead with its tip at `tip`, pointing away from `from`, `head` long.
+fn arrowhead(list: mut DrawList, tip: vec2, from: vec2, color: vec4, head: f32) {
+    let d = tip - from
+    let n = length(d)
+    if n < 1.0e-3 {
+        return
+    }
+    let dir = d / n
+    let side = vec2(-dir.y, dir.x)
+    let back = tip - dir * head
+    list.triangle(tip, back + side * 0.5 * head, back - side * 0.5 * head, color)
+}
+
+/// A line under the text of `it` from byte `from` to `to`: what an input method is composing.
+fn underline(list: mut DrawList, font: Font, it: Item, v: View, from: u32, to: u32) {
+    let l = layout(font, it)
+    let a = caret(font, it, l, from)
+    let z = caret(font, it, l, to)
+    if a.y != z.y {
+        return
+    }
+    let y = a.y + 0.92 * l.line
+    let w = max(1.5 * v.unit, 1.0)
+    list.line(v.to_screen(vec2(a.x, y)), v.to_screen(vec2(z.x, y)), ACCENT, width: w)
+}
+
+/// A line from `a` to `z` with an arrowhead at `z`.
+pub fn arrow(list: mut DrawList, a: vec2, z: vec2, color: vec4, width: f32, k: f32) {
+    connector(mut list, [a, z], END_ARROW, color, width, k)
+}
+
+/// An item's text, clipped to its box; tiny text is drawn as grey bars, as it would read from
+/// far away. `typed`: the caret's byte, while it's being typed into.
+fn text(
+    list: mut DrawList,
+    fonts: Fonts,
+    font: Font,
+    it: Item,
+    v: View,
+    color: vec4,
+    typed: Option<vec2u>,
+    blink: bool,
+) {
+    if it.text.is_empty() && typed.is_none() {
+        return
+    }
+    let l = layout(font, it)
+    let k = v.scale()
+    let px = l.size * k
+    // A frame's title sits outside it; free text has no box.
+    let boxed = it.kind != Kind::Text && it.kind != Kind::Frame
+    if boxed {
+        list.push_clip(v.rect(it.rect()))
+    }
+    let text = it.text.as_str()
+    // What's selected, behind the words: on each line it reaches.
+    if let Some(c) = typed {
+        let lo = min(c.x, c.y)
+        let hi = max(c.x, c.y)
+        for i in 0..l.lines.len() {
+            let (from, to) = l.lines[i]
+            let a = max(lo, from)
+            let b = min(hi, to)
+            // Nothing here, unless the selection runs on over this line's end.
+            if lo == hi || b < a || (a == b && hi <= to) {
+                continue
+            }
+            let line = text.slice(from, to)
+            let x0 = l.xs[i] + font.caret_at(line, l.size, a - from)
+            // A selection that runs on past the line's end shows a little past it.
+            let x1 = l.xs[i] + font.caret_at(line, l.size, b - from) + if hi > to {
+                0.3 * l.size
+            } else { 0.0 }
+            let top = v.to_screen(vec2(x0, l.top + f32(i) * l.line))
+            list.rect(Rect::new(top.x, top.y, (x1 - x0) * k, l.line * k), SELECTED_TEXT)
+        }
+    }
+    for i in 0..l.lines.len() {
+        let (from, to) = l.lines[i]
+        let at = v.to_screen(vec2(l.xs[i], l.top + f32(i) * l.line))
+        let line = text.slice(from, to)
+        if px < 4.0 {
+            let w = font.measure(line, l.size) * k
+            list.rect(
+                Rect::new(at.x, at.y + 0.3 * l.line * k, w, 0.4 * l.line * k),
+                vec4(color.xyz, 0.35),
+            )
+        } else {
+            let _ = list.text(fonts, Face::Sans, line, px, at, color)
+        }
+    }
+    if let Some(c) = typed {
+        let at = c.x
+        if blink && c.x == c.y {
+            let c = v.to_screen(caret(font, it, l, at))
+            let w = max(1.5 * v.unit, 1.0)
+            list.rect(Rect::new(c.x - 0.5 * w, c.y, w, l.line * k), ACCENT)
+        }
+    }
+    if boxed {
+        list.pop_clip()
+    }
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+@test
+fn a_notes_text_takes_the_largest_size_that_fits() {
+    let font = Font::of(Face::Sans)
+    var note = Item::new(Kind::Note, vec2(0.0), vec2(200.0), color: 0)
+    note.text = String::from("Hi")
+    let short = layout(font, note)
+    note.text = String::from(
+        "A longer note, with enough words in it to need several lines to hold them all",
+    )
+    let long = layout(font, note)
+    assert(short.size > long.size, f"{short.size} against {long.size}")
+    assert(f32(long.lines.len()) * long.line <= 200.0 - 2.0 * PAD)
+    // The short line is centred in the note.
+    let w = font.measure("Hi", short.size)
+    assert(abs(short.xs[0] + 0.5 * w - 100.0) < 1.0e-3)
+}
+
+@test
+fn the_caret_and_a_click_agree() {
+    let font = Font::of(Face::Sans)
+    var t = Item::new(Kind::Text, vec2(10.0, 20.0), vec2(400.0, 30.0), color: 7)
+    t.text = String::from("first line\nsecond")
+    let l = layout(font, t)
+    assert(l.lines.len() == 2)
+    // The caret after "sec", and a click just there.
+    let c = caret(font, t, l, 14)
+    assert(c.y == 20.0 + l.line)
+    assert(offset_at(font, t, l, c + vec2(0.5, 0.5 * l.line)) == 14)
+    // A click below the last line goes to that line.
+    assert(offset_at(font, t, l, vec2(1000.0, 500.0)) == t.text.len())
+}
+
+@test
+fn word_sizes_step_up_and_round() {
+    assert(next_size(now: 0.0, usual: 16.0) == 20.0, "from a kind's own size")
+    assert(next_size(now: 20.0, usual: 16.0) == 28.0)
+    assert(next_size(now: 56.0, usual: 16.0) == 12.0, "round to the smallest")
+    var t = Item::new(Kind::Text, vec2(0.0), vec2(400.0, 30.0), color: 7)
+    t.text = String::from("hi")
+    t.type_size = 40.0
+    let font = Font::of(Face::Sans)
+    assert(layout(font, t).size == 40.0 && text_height(font, t) == font.line_height(40.0))
+}

@@ -1,0 +1,126 @@
+// A colour glyph made from a host's drawing (ui/raster.wrela) and drawn through the ui's quads
+// into a texture, whose pixels come back to the test: where the glyph is, they're its colour;
+// beside it, the clear colour.
+
+use std::gpu::{
+    GlobalId, GpuBuffer, Rgba8, Slots, Texture, begin_pass, buffer, dispatch, read, texture,
+}
+use std::io::Pending
+use ui::draw::{DrawList, Renderer}
+use ui::raster::{Raster, image}
+use ui::text::{Face, Fonts}
+
+const SIDE: u32 = 64
+
+pub struct State {
+    fonts: Fonts,
+    renderer: Renderer,
+    target: Texture<Rgba8>,
+    pixels: GpuBuffer<u32>,
+    pending: Option<Pending<u32>>,
+    got: Vec<u32>,
+}
+
+/// A texture's texels packed as RGBA8 in a word each, row by row.
+@compute(64)
+fn copy(t: Texture<Rgba8>, out: mut Slots<u32>, id: GlobalId) {
+    let w = t.width()
+    let c = t.load(x: id.x % w, y: id.x / w)
+    let b = vec4u(round(c * 255.0))
+    out[id] = b.x | (b.y << 8) | (b.z << 16) | (b.w << 24)
+}
+
+/// A host's drawing of a group: an orange square, 64 pixels at 128 an em.
+fn orange() -> Raster {
+    var pixels: Vec<u8> = Vec::filled(64 * 64 * 4, 0)
+    for i in 0..64 * 64 {
+        pixels[i * 4] = 255
+        pixels[i * 4 + 1] = 128
+        pixels[i * 4 + 3] = 255
+    }
+    Raster {
+        px: 128.0,
+        advance: 64.0,
+        left: 0.0,
+        top: 64.0,
+        width: 64,
+        height: 64,
+        colored: true,
+        pixels,
+    }
+}
+
+/// U+72FC, a CJK character the baked fonts haven't.
+fn wolf() -> String {
+    var s = String::new()
+    s.push_char(0x72FC)
+    s
+}
+
+pub fn init() -> State {
+    var fonts = Fonts::load()
+    var renderer = Renderer::new(fonts)
+    let made = image(orange(), em: 32.0)
+    assert(renderer.install(mut fonts, Face::Sans, wolf().as_str(), made), "room for it")
+    State {
+        fonts,
+        renderer,
+        target: texture(width: SIDE, height: SIDE),
+        pixels: buffer(SIDE * SIDE),
+        pending: None,
+        got: Vec::new(),
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if !s.got.is_empty() {
+        return
+    }
+    match mut s.pending {
+        Some(p) => {
+            if let Some(Ok(v)) = p.poll() {
+                s.got = take v
+            }
+        },
+        None => {
+            // The made glyph, at 32 pixels an em: its image covers 16 × 16 pixels from the pen,
+            // up from the baseline.
+            var list = DrawList::new()
+            list.clear(vec2(f32(SIDE)))
+            let _ = list.text(
+                s.fonts,
+                Face::Sans,
+                wolf().as_str(),
+                size: 32.0,
+                at: vec2(8.0, 8.0),
+                color: vec4(1.0),
+            )
+            assert(list.wanted.is_empty(), "the group has its glyph")
+            s.renderer.upload(list)
+            let pass = begin_pass(mut s.target, clear: vec4(0.0, 0.0, 1.0, 1.0))
+            s.renderer.draw(pass, vec2(f32(SIDE)))
+            pass.end()
+            dispatch(copy.bind(s.target, out: mut s.pixels), over: SIDE * SIDE)
+            s.pending = Some(read(s.pixels.items()))
+        },
+    }
+}
+
+fn at(s: State, x: u32, y: u32) -> u32 {
+    s.got[y * SIDE + x]
+}
+
+/// The glyph's pixels are its own orange, not the text's white; the clear blue is round it.
+@test(frames: 4, gpu: true)
+fn a_colour_glyph_draws_its_own_colour(s: State) {
+    assert(s.got.len() == SIDE * SIDE, f"{s.got.len()} pixels")
+    let blue = 0xFFFF0000
+    assert(at(s, x: 2, y: 2) == blue, f"{at(s, x: 2, y: 2)}")
+    // The baseline is the text's top plus the font's ascent; the image's middle is 8 above it.
+    let baseline = u32(floor(8.0 + s.fonts.sans.ascender * 32.0 + 0.5))
+    let middle = at(s, x: 16, y: baseline - 8)
+    let r = middle & 255
+    let g = (middle >> 8) & 255
+    let b = (middle >> 16) & 255
+    assert(r > 240 && g > 110 && g < 145 && b < 16, f"{r}, {g}, {b}")
+}
