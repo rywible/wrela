@@ -2014,6 +2014,17 @@ council asked, with a link's focus and activation going to the program. The role
 W3C's [WAI-ARIA](https://www.w3.org/TR/wai-aria-1.2/) (`heading`, `link`, `document`). Writing a
 console test found a compiler bug: a closure with a `str` parameter gives malformed IR (#238).
 Claude (Opus 5.5) wrote it.
+## Reference docs from source, 2026-10-15
+
+Ryan asked for docs at docs.wrela.dev that agents and people read alike, useful first to the
+agents building the games, and for the plan to go through a council (recorded with the site's
+fixes). The reference comes from the sources: `wrela doc --export` writes the spec by section, a
+page per module of std and of each package, an index of every item and every section of the
+spec with its page, anchor and source, and a map of the pages in the form the
+[llms.txt proposal](https://llmstxt.org/) describes. The council asked that live lookup stay as
+it was (an export would go stale while an item is edited) and that the spec's prose be indexed
+beside the items, so a search finds a rule as well as a name. AGENTS.md now says reference docs
+come from source, and that doc comments are the reference. Claude (Opus 5.5) wrote it.
 
 ## Keeping this record
 
