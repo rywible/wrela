@@ -1,19 +1,21 @@
-// The look's passes (#28 §7): the owner's pick, gouache and light for the world, cel for
-// characters. They run after temporal AA, at the output's resolution, on its colour, the scene's
-// depth and the tags; but the lines (`lines`) run before it, on the scene's own samples.
+// The look's passes: brush dabs and a paper's tooth on the world, lines on characters and solid
+// forms, bloom and the tone curve, which turn the lit scene into a painted image.
 //
-// - The world: brush dabs anchored on its surfaces (spike 12's stroke cells: space cut into
-//   cells in the surface's plane, each holding one stroke), moving the paint's value and hue a
-//   little; stronger on broad areas (far ground, crowns, the sky, whose dabs are anchored to
-//   directions) so the painted feel shows at a glance. A paper's tooth anchored in the world too
-//   (Q6 of #51: a grain anchored to the screen is a shower door in motion).
-// - Characters: their two bands are their shading's (`light::character`); thin lines in a
-//   darker shade of their colour on their silhouettes and where their parts meet (from the
-//   depth and the tags, before temporal AA, which anti-aliases them), and the world's dabs at
-//   half strength.
-// - Bloom: the bright light, brought down to a quarter and blurred; then the tone curve.
+// They run after temporal AA, at the output's resolution, on its colour, the scene's depth and
+// the tags. The lines (`lines`) run before temporal AA, on the scene's own samples, so temporal
+// AA anti-aliases them. `Look` holds the settings; `develop` is the last pass.
+// - The world: brush dabs anchored on its surfaces (`dabs`: space cut into cells in the
+//   surface's plane, each holding one stroke) move the paint's value and hue a little. They are
+//   stronger on broad areas (far ground, crowns, the sky, whose dabs are anchored to directions),
+//   so the painted feel shows at a glance. A paper's tooth is anchored in the world too: a grain
+//   anchored to the screen looks like a shower door in motion.
+// - Characters: their two bands are their shading's (`light::character`). Thin lines in a
+//   darker shade of their colour lie on their silhouettes and where their parts meet, from the
+//   depth and the tags. The world's dabs lie on them at half strength.
+// - Bloom: the bright light, brought down to a quarter and blurred (`glow_down`, `glow_blur`);
+//   then the tone curve, at an exposure metered from the scene (`meter`).
 //
-// Every texture the look lays on is anchored in the world (AC1).
+// Every texture the look lays on is anchored in the world.
 
 use light::{LUMA, tone}
 use noise::{hash2, noise3}
@@ -68,19 +70,19 @@ fn strokes(q: vec2) -> f32 {
     value * smoothstep(0.0, 0.4, best)
 }
 
-/// Where the world planes' dabs start (a constant, as the coarser size's own offset is). Where
-/// the ground's dabs fall behind a far crown's edge moves #51's levels test (kind 11 at 1000 m:
-/// 3.6 to 4.2/255 against its 4.0 as this moves; that crown's levels are close to the limit).
+/// Where the world planes' dabs start (a constant, as the coarser size's own offset is). It moves
+/// where the ground's dabs fall behind a far crown's edge, and so the levels test's difference
+/// between a far crown's levels at 1000 m (3.6 to 4.2/255 as this moves, against a limit of 4.0).
 const PHASE = vec2(3.0, 1.0)
 
 /// Brush dabs on a surface at `world` whose normal is `n`, about `px` pixels long wherever
 /// they're seen (a pixel `footprint` metres wide there): in [-1, 1]. Two sizes of cells, a
-/// power of two apart, blended by distance (Bénard et al. 2009), so the dabs keep their size on
+/// power of two apart, blended by distance, so the dabs keep their size on
 /// screen and stay on the surface. They lie on the world's planes across the normal's strongest
 /// axes (the ground's on its plane, a wall's on its own), blended where two are near alike, so
 /// they don't follow the surface's curvature: anchored to a frame turned with the normal, a
-/// small turn moved them by metres where the world's coordinates are hundreds (the far hills'
-/// and the crag's contour-like marbling, playing spike 17 and M6).
+/// small turn moved them by metres where the world's coordinates are hundreds (a contour-like
+/// marbling on the far hills and crags).
 pub fn dabs(world: vec3, n: vec3, footprint: f32, px: f32) -> f32 {
     let s = max(footprint * px, 1.0e-4)
     let l = log2(s)
@@ -102,8 +104,8 @@ pub fn dabs(world: vec3, n: vec3, footprint: f32, px: f32) -> f32 {
 
 /// Brush dabs on a plane across `n` (a crown's: its dabs lie across the line of sight), anchored
 /// to a frame turned with it: a crown's levels of detail lie at different depths along the same
-/// line, and the world planes' blend (`dabs`) moved the dabs between them (#51's levels test:
-/// 4.4/255 at 1000 m); across the line of sight, they stay.
+/// line, and the world planes' blend (`dabs`) moved the dabs between them (4.4/255 at 1000 m
+/// in the levels test); across the line of sight, they stay.
 pub fn dabs_across(world: vec3, n: vec3, footprint: f32, px: f32) -> f32 {
     let s = max(footprint * px, 1.0e-4)
     let l = log2(s)
@@ -201,7 +203,7 @@ pub fn glow_blur(
 /// same mean, 0 doesn't meter), within `lo` to `hi`; reached a fraction `rate` of the way each
 /// frame, or at once (`fresh` 1); but never more than `flash` times it, so a scene that
 /// brightens at once (a turn from the wood's shade to a sunlit clearing) shows no more than that
-/// over its settled brightness, while one that darkens adapts at `rate` (#55 AC11: no flash). A
+/// over its settled brightness, while one that darkens adapts at `rate`. A
 /// hazy sky toward a low sun is ten times the rest of it: a fixed exposure shows it white.
 pub struct Metering: Copy + GpuData {
     pub base: f32,
@@ -351,7 +353,7 @@ fn outline(
     line
 }
 
-/// How much of the world's line the scene pixel at `p` is (one line, the owner's pick: the same
+/// How much of the world's line the scene pixel at `p` is (one line: the same
 /// line as the characters', a darker shade of the colour under it). On solid forms only: rock,
 /// what's built, trunks and the ground's near crests; none on grass, flowers, water or crowns,
 /// where a line round each blade or leaf is noise. Where a neighbour a line's width away is well
@@ -404,7 +406,7 @@ pub fn lines(
 }
 
 /// The dabs and the paper's tooth at a scene pixel (the scene's resolution: the look allows
-/// them there, #28 §7): its surface from its depth and its neighbours' (its world point and
+/// them there): its surface from its depth and its neighbours' (its world point and
 /// normal, as the jittered sample saw it), or its sky direction; each the amount it moves the
 /// paint, for the output's pass to read between texels. Their sizes are in the output's
 /// pixels (`out` its size), whatever the scene's. The ground and what grows on it take the
@@ -497,12 +499,12 @@ pub fn dab_map(
     var strength = mix(look.dabs_near, look.dabs_far, broad)
     // The far ground's dabs softer than a crown's: on the world's planes they lie flat on a
     // slope or a rock face, and at the crowns' strength read as dots (the crag, the plateau's
-    // lip, the fall's cliff: round 1's lookbook).
+    // lip, the fall's cliff).
     if class == class_of(GROUND) {
         strength = mix(look.dabs_near, look.dabs_far * 0.6, broad)
     }
-    // No dabs and no tooth on rock, stone and bark, near or far: the owner picked clean, solid
-    // form over a painted surface (carved light and one line), and on a rock face the dabs read
+    // No dabs and no tooth on rock, stone and bark, near or far: clean, solid form, not a
+    // painted surface (carved light and one line), and on a rock face the dabs read
     // as dark ovals. A steep slope of the ground is a rock face.
     var grain = 1.0
     if class == class_of(ROCK) || class == class_of(BARK) {

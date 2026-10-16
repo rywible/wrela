@@ -1,9 +1,9 @@
-// Scores (spike 14, #48): what a composer wrote, as values the build makes. Each voice's notes
-// are text, read by `voice` in a constant; the form (which passage plays after which) is code.
+// Scores: music as a composer wrote it, as values the build makes. Each voice's notes are
+// text, read by `voice` in a constant; the form (which passage plays after which) is code.
 // Time is in ticks, 960 to a quarter note, so nothing in a score is rounded. This module says
 // *what* is played; how much (how long a fermata, how loud a `p`) is engine::perform's.
 //
-// The notation, one voice at a time, after LilyPond's:
+// The notation, one voice at a time, is like LilyPond's:
 //
 //   e4 f#4 bb3        a pitch: a letter, then sharps (#) or flats (b), then an octave (C4 is
 //                     middle C). Pitches are absolute: a key signature changes none of them.

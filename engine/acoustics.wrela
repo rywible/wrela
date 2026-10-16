@@ -1,6 +1,13 @@
-// Acoustics (sketch 01 §7): engine code, not stdlib (D-081). A part's vibration modes come from
-// its field, shape and density, by an eigenvalue solve that a constant runs when the program is
-// built (`const HOOF_MODES = modal_modes(hoof())`); a strike excites them on the audio thread.
+// Impact sounds from a body's shape: the vibration modes of a part's field, and resonators that
+// ring them when something strikes it.
+//
+// - `modal_modes` finds a body's lowest modes from its field's shape, density and stiffness, by
+//   an eigenvalue solve. It is slow, so run it in a constant, when the program is built:
+//   `const HOOF_MODES = modal_modes(hoof(1.0), extent: 15cm)`.
+// - `modal` turns the modes into a `Voice` for one strike, from its impulse and the `Absorption`
+//   of the surface it hits.
+// - A `Bank` of resonators rings the voices on the audio thread: `strike` adds a voice, and
+//   `sample` gives the next sample.
 
 use std::audio::SAMPLE_RATE
 use std::derive::{Box3, interval}
@@ -49,7 +56,7 @@ const LATTICE: u32 = 6
 /// The modes of the body a field describes, from a lattice of masses inside it, joined by
 /// springs to their neighbours: the lowest eigenvalues of the lattice's stiffness over its
 /// mass. Run it in a constant: an eigenvalue solve is far too slow for the audio thread, and
-/// staging is never left to the optimizer (D-072). `extent` bounds the field around its origin.
+/// staging is never left to the optimizer. `extent` bounds the field around its origin.
 pub fn modal_modes<C: Acoustic, F: Field<C>>(field: F, extent: f32) -> ModalModes {
     // The body's box: the cells of a coarse grid whose interval reaches inside (the derived
     // interval, so a thin part isn't missed between samples).

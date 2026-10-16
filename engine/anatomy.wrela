@@ -1,11 +1,14 @@
-// An anatomy kit: building blocks at the level a creature artist works in (muscles from origin to
-// insertion, bones that show at the joints, a canid's skull, ears and paws, colour that changes
-// across a part), and a canine built from them from a few proportions. An author changes the
-// canine's proportions and its muscles' bulk, or builds their own creature from the blocks,
-// instead of placing ellipsoids.
+// An anatomy kit for creature fields: muscles, bones, a canid's skull, ears and paws, and colour
+// that changes across a part, with a canine built from them.
 //
-// It's molded clay: forms only, no fur. A coat's mass (a ruff, a tail's brush) is part of the
-// forms, and fine surface detail is left to materials, later.
+// The blocks work at the level a creature artist works in: a muscle runs from origin to insertion
+// (`muscle`, `bundle`), a bone shows at a joint (`knob`), and colour shades across a part
+// (`painted`). The canine (`canine`, from a `Canine` such as `wolf()` and a `Coat`) is built from
+// a few proportions. Change its proportions and its muscles' bulk, or build a creature of your
+// own from the blocks.
+//
+// The forms are bare, like moulded clay: there is no fur. A coat's mass (a ruff, a tail's brush)
+// is part of the forms; fine surface detail belongs to materials.
 //
 // Units: metres. +y up, the animal faces +z, +x is its left; a part is written for the left side
 // and mirrored. Every block is a union of exact distances (round cones, spheres, ovals inside),

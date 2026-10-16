@@ -1,12 +1,19 @@
-// Landforms: a land's relief as its rock, the uplift under it and its water made it, worked out
-// at build time over a grid. Each step raises the land, routes its water to the base level (pits
-// flooded, Barnes, Lehman and Mulla's priority flood with an epsilon), cuts the channels by the
-// stream power law (Braun and Willett, 2013: implicit, n = 1, in the order the water flows) and
-// lets the slopes creep (linear diffusion). Rock that's hard to erode keeps its height; soft rock
-// goes. A game gives the land it starts from, which cells hold the base level, the uplift and
-// the rock; what it keeps is the relief (`Relief`), which its terrain reads on the CPU and the
-// GPU alike, and what an agent reads of it (`Landscape`, `summary`): heights, where the water
-// goes, how much gathers, and the land's forms.
+// Landforms: a land's relief, worked out at build time over a grid from its rock, the uplift
+// under it and its water.
+//
+// Call `evolve` with the land to start from, the cells that hold the base level, the uplift and
+// the rock. Each step:
+// - raises the land by its uplift;
+// - routes its water to the base level, its pits flooded by a priority flood with an epsilon
+//   (`drainage`);
+// - cuts the channels by the stream power law, implicit, n = 1, in the order the water flows
+//   (`incise`);
+// - lets the slopes creep, by diffusion (`diffuse`).
+// Rock that is hard to erode keeps its height; soft rock goes.
+//
+// A game keeps the relief (`Relief`), which its terrain reads on the CPU and the GPU alike. An
+// agent reads the land through `Landscape` and `summary`: heights, where the water goes, how
+// much gathers, and the land's forms.
 
 use grow::{Grid, Heap, NEIGHBOURS, NONE}
 use std::string::String
@@ -30,8 +37,8 @@ pub struct Drainage {
 
 /// Where the water on the land `heights` (over grid `g`) goes, `outlets` the cells it leaves the
 /// land by. The pits are filled by flooding from the outlets, lowest first, each cell raised to
-/// `RISE` over the cell it's reached from (Barnes, Lehman and Mulla's priority flood, with an
-/// epsilon), so every cell drains to an outlet, across a pit by the way it would spill.
+/// `RISE` over the cell it's reached from (a priority flood, with an epsilon), so every cell drains
+/// to an outlet, across a pit by the way it would spill.
 pub fn drainage(g: Grid, heights: [f32], outlets: [bool]) -> Drainage {
     let nn = g.cells()
     let (nx, nz) = (g.nx, g.nz)
@@ -298,7 +305,7 @@ fn gather(g: Grid, order: [u32], down: [u32], area: mut Vec<f32>) {
 }
 
 /// One step of the stream power law, dh/dt = -K A^m S, n = 1, implicit in the receiver's new
-/// height (Braun and Willett, 2013), so it holds at any step: each cell after its receiver, in
+/// height, so it holds at any step: each cell after its receiver, in
 /// the flood's order, where its water runs in a channel (`Shaping::channel`). A cell with no
 /// receiver holds, and so does one in a pit, under the receiver its water spills to: a lake's
 /// floor isn't cut, but its outlet is, so it drains.
@@ -322,7 +329,7 @@ pub fn incise(
 }
 
 /// What the water cut in a step (each cell's fall from `was`, its height before) carried down
-/// and laid where its load is heavy for its water (Davy and Lague's erosion and deposition:
+/// and laid where its load is heavy for its water (an erosion and deposition model:
 /// D = G Qs / Q, the water's discharge as the area that drains): each cell, from the highest, takes
 /// in what its donors pass on and what it lost itself, lays down `laying` (G, 0 to 1) times its
 /// load over the area that drains through it, but not so much that it stands over half way to its
@@ -360,8 +367,8 @@ pub fn settle(
 /// Slopes creeping for `kt` (a diffusivity times the time, m²): explicit diffusion over the four
 /// neighbours, each pair of cells passing material at the mean of their rocks' `ease` (0 to 1)
 /// of it, the cells `held` keeping their heights and an edge passing nothing (a missing neighbour
-/// is the cell). Where a pair's `critical` slope (their mean) is over 0, the creep is nonlinear
-/// (Roering, Kirchner and Dietrich, 1999): faster by 1 / (1 - (S / Sc)²) as its slope S nears
+/// is the cell). Where a pair's `critical` slope (their mean) is over 0, the creep is nonlinear:
+/// faster by 1 / (1 - (S / Sc)²) as its slope S nears
 /// it, to `RUNAWAY` times at most (the faces past it fail, `collapse`), so slopes run straight
 /// down from rounded crests; linear where it's 0. In steps of at most a fifth of a cell's area
 /// each, at the fastest (stable).

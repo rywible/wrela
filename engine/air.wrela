@@ -1,20 +1,24 @@
-// The air (#28 §6): a physically based sky and aerial perspective (Hillaire 2020, "A Scalable
-// and Production Ready Sky and Atmosphere Rendering Technique"). A planet's atmosphere scatters
-// the sun's light: air molecules (Rayleigh: blue more than red), haze (Mie: grey, mostly
-// forward), and ozone absorbs some. One scattering is marched along each ray; the rest (light
-// scattered twice and more) comes from a table.
+// A physically based sky and aerial perspective: the colour of the sky and of the air between the
+// eye and what it sees, for any sun.
 //
-// The sun stays where it is, so every table is cooked at load, by kernels:
+// A planet's atmosphere scatters the sun's light: air molecules by Rayleigh scattering (blue more
+// than red), haze by Mie scattering (grey, mostly forward), and ozone absorbs some. Each ray is
+// marched for light scattered once; light scattered twice and more comes from a table.
+//
+// To use it, describe the air (`Air`, or `hazy` for Earth's air on a hazy afternoon), make its
+// tables (`tables`) and cook them on the GPU (`Tables::cook`). Cook them again only when the air
+// or the sun moves. Shading passes then read the tables (`light`, `lit`). The tables, each cooked
+// from the ones before:
 // - transmittance: how much light gets from a point to the atmosphere's top, by its height and
 //   the ray's angle (256 × 64);
 // - multiple scattering: the light scattered twice and more at a point, by its height and the
 //   sun's angle (32 × 32);
-// - the sky: the light along each direction from the eye's height (192 × 108), azimuth from the
-//   sun and elevation;
+// - the sky: the light along each direction from the eye's height (192 × 108), by azimuth from
+//   the sun and elevation;
 // - aerial perspective: along each direction from the eye, the light scattered toward the eye
 //   and how much gets through, out to `AERIAL_REACH` (a 3D table, 32 × 64 × 32: azimuth from
-//   the sun, elevation, distance). As the sun stays put, it's cooked once; a table that follows
-//   the camera (Hillaire's) would be cooked every frame.
+//   the sun, elevation, distance). It does not follow the camera, so a still sun needs no cook
+//   each frame.
 //
 // Units: kilometres in this module's functions, with the planet's centre at the origin; the
 // world's metres elsewhere, its y = 0 `ALTITUDE` above the planet's surface. The light is in
@@ -78,8 +82,8 @@ pub struct Air: Copy + GpuData + Eq {
 }
 
 /// Earth's air on a hazy afternoon, the sun toward `sun` with `sun_top` its light above the air,
-/// seen from an eye at `eye` metres (the world's y). Rayleigh and ozone are Earth's (Hillaire's
-/// values); the haze is thicker than his, in a layer near the ground.
+/// seen from an eye at `eye` metres (the world's y). Rayleigh scattering and ozone are Earth's; the
+/// haze is thick, in a layer near the ground.
 pub fn hazy(sun: vec3, sun_top: vec3, eye: f32) -> Air {
     Air {
         rayleigh: vec3(5.802, 13.558, 33.1) * 0.001,
@@ -227,7 +231,7 @@ pub fn horizon_of(r: f32) -> f32 {
 
 /// Where the sky's table holds the direction whose cosine from the zenith is `mu` and whose
 /// azimuth's cosine from the sun's is `c`, from radius `r`: elevations crowded toward the
-/// horizon, azimuths toward the sun (Hillaire's mapping).
+/// horizon, azimuths toward the sun.
 pub fn view_uv(r: f32, mu: f32, c: f32) -> vec2 {
     view_uv_at(horizon_of(r), mu, c)
 }
@@ -365,7 +369,7 @@ fn march(
             source += multiple(m, s, r, mu_s) * md.scattering()
         }
         let step = exp(-md.extinction * dt)
-        // Each sample's light integrated over its step (Hillaire's), as the step thins it.
+        // Each sample's light integrated over its step, as the step thins it.
         let ext = max(md.extinction, vec3(1.0e-9))
         light += through * (source - source * step) / ext
         as_one += through * (md.scattering() - md.scattering() * step) / ext
@@ -425,8 +429,7 @@ pub fn cook_transmittance(air: Air, out: mut Texels<Rgba16Float>, id: GlobalId) 
 
 /// The multiple scattering table's texel: from its height, the light scattered once more
 /// toward it from every direction (64, each marched 20 steps with even scattering), and the
-/// sum of every further scattering (a geometric series of the fraction scattered back,
-/// Hillaire's).
+/// sum of every further scattering (a geometric series of the fraction scattered back).
 @compute(8, 8)
 pub fn cook_multiple(
     air: Air,

@@ -1,15 +1,23 @@
-// Histories run at build time or at load. The calendar orders a world's events; the world owns
-// their meaning. Equal-time events keep insertion order. A work budget stops at an event seam,
-// so a caller can resume exactly, including events queued by an earlier event.
+// A calendar of timed events for histories that run at build time or at load: a world queues
+// events, and `run` hands them back in order for the world to react to.
+//
+// - The calendar orders a world's events; the world owns their meaning (`Process`).
+// - Events at the same time keep the order they were queued in.
+// - A work budget stops `run` between two events, so a caller can resume exactly, including
+//   events that an earlier event queued.
+// - `Calendar::draw` gives randomness addressed by a subject and a purpose, so the result does
+//   not depend on how the work is split.
 
 use noise::rand
 
+/// An event in a calendar: its time, its place in the queue's order, and the world's value.
 pub struct Event<E>: Copy {
     pub at: u32,
     pub order: u32,
     pub value: E,
 }
 
+/// The events a world has queued, in time order, and the present time.
 pub struct Calendar<E>: Clone {
     now: u32,
     seed: u32,
@@ -17,6 +25,7 @@ pub struct Calendar<E>: Clone {
     pending: Vec<Event<E>>,
 }
 
+/// Why `run` stopped: it reached its time, or it used its budget.
 pub enum Progress: Copy + Eq {
     Reached,
     Budget,
@@ -79,8 +88,9 @@ fn earlier<E: Copy>(a: Event<E>, b: Event<E>) -> bool {
     a.at < b.at || (a.at == b.at && a.order < b.order)
 }
 
-/// An implementation belongs to a world. It may apply ecology, construction, trade or other
-/// processes to shared state and queue their next reactions through the same calendar.
+/// A world's reaction to its events. An implementation belongs to a world. It may apply ecology,
+/// construction, trade or other processes to shared state and queue their next reactions through
+/// the same calendar.
 pub trait Process<E: Copy> {
     fn react(mut self, event: Event<E>, calendar: mut Calendar<E>)
 }

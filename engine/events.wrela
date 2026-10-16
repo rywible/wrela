@@ -1,5 +1,8 @@
-// The events of a history: the map's gales, fires, falls, strikes and the wind's gaps, each in
-// its year (`events`), and what each leaves on the trees and on the land's memory.
+// The events of a forest's history: the map's gales, fires, falls, lightning strikes and wind
+// gaps, and what each leaves on the trees and in the land's memory.
+//
+// A history (`grow`) calls `events` once a year; it runs the events the map (`place::Event`)
+// puts in that year. Nothing outside the package calls it.
 
 use grow::{
     Cause, Cx, Fields, Grid, Habit, Heap, Land, Mark, Memories, NEIGHBOURS, NEVER, NONE, Shaper,

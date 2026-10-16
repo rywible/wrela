@@ -1,8 +1,8 @@
-// The renderer's camera (#28 §2): what every pass of a frame reads. It's jittered within its
+// The renderer's camera: what every pass of a frame reads. It's jittered within its
 // pixel each frame by the Halton (2, 3) sequence, which temporal AA averages, and it keeps last
 // frame's matrix, so a pixel's world point is found where it was (reprojection).
 //
-// Rendering is camera-relative (#54 §5, Q3): what's drawn is in render space, the world less the
+// Rendering is camera-relative: what's drawn is in render space, the world less the
 // render origin (`Camera::origin`), a whole number of tiles near the eye that a game moves as
 // the eye travels. So what's near the camera keeps its precision however far it is from the
 // world's origin; what's keyed to the world (noise, a ground's height) adds the origin back.
@@ -256,7 +256,7 @@ impl Camera {
 // ---- tags ----------------------------------------------------------------------------------
 
 /// What a pixel shows, in the scene's alpha: its class times 64, plus which one of it (a crown,
-/// a stone, a creature's part). The sky's tag is 0. The look's passes read them (#28 §2).
+/// a stone, a creature's part). The sky's tag is 0. The look's passes read them.
 pub const SKY: f32 = 0.0
 pub const GROUND: f32 = 64.0
 pub const GRASS: f32 = 128.0
