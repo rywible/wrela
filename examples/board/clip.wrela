@@ -1,0 +1,172 @@
+// The board and the system clipboard. A copy offers the selection (`platform::host::offer`) as
+// plain text, its items' words, and as HTML that carries the items themselves, so a paste in
+// another board brings them back whole and a paste anywhere else brings the words. A paste goes
+// where it was aimed when it happened: into the text being typed at its caret, if that text
+// hasn't changed since, or onto the board.
+
+use board::{Board, Item, Kind}
+use paint::Typing
+use std::serialize::{LoadError, load, save}
+
+/// The attribute that carries a board's items in a copy's HTML.
+const MARK: Text = "data-wrela-board=\""
+
+const HEX: Text = "0123456789abcdef"
+
+fn escaped(s: str) -> String {
+    var out = String::new()
+    // The runs between the characters HTML gives meaning to, as they are.
+    var from = 0
+    for i in 0..s.len() {
+        let c = s.byte(i)
+        let entity: Text = if c == 38 { "&amp;" } else if c == 60 { "&lt;" } else if c == 62 {
+            "&gt;"
+        } else if c == 34 { "&quot;" } else { "" }
+        if entity.len() > 0 {
+            out.push_str(s.slice(from, i))
+            out.push_str(entity)
+            from = i + 1
+        }
+    }
+    out.push_str(s.slice(from, s.len()))
+    out
+}
+
+/// The words of `items`, a line each: what a paste outside a board gets.
+pub fn plain(items: [Item]) -> String {
+    var out = String::new()
+    for it in items {
+        if it.text.is_empty() {
+            continue
+        }
+        if !out.is_empty() {
+            out.push_str("\n")
+        }
+        out.push_str(it.text.as_str())
+    }
+    out
+}
+
+/// `items` as HTML: their words, and the items themselves in an attribute.
+pub fn html(items: [Item]) -> String {
+    var all: Vec<Item> = Vec::new()
+    for it in items {
+        all.push(it.clone())
+    }
+    let bytes = save(all)
+    var out = String::from("<div ")
+    out.push_str(MARK)
+    for b in bytes {
+        out.push_byte(HEX.byte(u32(b) >> 4))
+        out.push_byte(HEX.byte(u32(b) & 15))
+    }
+    out.push_str("\">")
+    out.push_str(escaped(plain(items).as_str()).as_str())
+    out.push_str("</div>")
+    out
+}
+
+fn nibble(c: u8) -> Option<u32> {
+    let x = u32(c)
+    if x >= 48 && x <= 57 { Some(x - 48) } else if x >= 97 && x <= 102 { Some(x - 87) } else {
+        None
+    }
+}
+
+/// The items a board's HTML carries, if it carries any.
+pub fn items_of(html: str) -> Option<Vec<Item>> {
+    let Some(at) = html.find(MARK) else { return None }
+    var bytes: Vec<u8> = Vec::new()
+    var i = at + MARK.len()
+    while i + 1 < html.len() && html.byte(i) != 34 {
+        let Some(hi) = nibble(html.byte(i)) else { return None }
+        let Some(lo) = nibble(html.byte(i + 1)) else { return None }
+        bytes.push(u8(hi * 16 + lo))
+        i += 2
+    }
+    let items: Result<Vec<Item>, LoadError> = load(take bytes)
+    match take items {
+        Ok(v) => Some(v),
+        Err(_) => None,
+    }
+}
+
+/// Where a paste was aimed when it happened: the text being typed (its item, the caret, and the
+/// text's revision then), or the board.
+pub struct Aim: Copy + Eq {
+    pub typing: Option<Typing>,
+    pub revision: u32,
+}
+
+/// Where a paste goes now: into an item's text at a byte, or onto the board.
+pub enum Into: Copy + Eq {
+    Text { id: u32, at: u32, anchor: u32 },
+    Board,
+}
+
+/// Where a paste aimed at `aim` goes, the board as it is now: into the text it was aimed at if
+/// nothing has changed that text since (`revision`), else into the text being typed now, at
+/// its caret, else onto the board.
+pub fn destination(aim: Aim, typing: Option<Typing>, revision: u32, b: Board) -> Into {
+    if let Some(t) = aim.typing {
+        if revision == aim.revision && b.index(t.id).is_some() {
+            return Into::Text { id: t.id, at: t.at, anchor: t.anchor }
+        }
+    }
+    match typing {
+        Some(t) => Into::Text { id: t.id, at: t.at, anchor: t.anchor },
+        None => Into::Board,
+    }
+}
+
+/// `text` with `add` put in at byte `at`, and the byte after it.
+pub fn inserted(text: str, at: u32, add: str) -> (String, u32) {
+    let at = min(at, text.len())
+    var out = String::from(text.slice(0, at))
+    out.push_str(add)
+    let after = out.len()
+    out.push_str(text.slice(at, text.len()))
+    (out, after)
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+@test
+fn a_copy_carries_its_items_and_its_words() {
+    var note = Item::new(Kind::Note, vec2(1.0, 2.0), vec2(200.0), color: 2)
+    note.text = String::from("Fish & <chips> 世界 👍🏽")
+    var line = Item::new(Kind::Pen, vec2(0.0), vec2(0.0), color: 7)
+    line.points.push(vec2(3.0, 4.0))
+    let items = [note.clone(), line.clone()]
+    assert(plain(items) == "Fish & <chips> 世界 👍🏽")
+    let h = html(items)
+    assert(h.as_str().find("Fish &amp; &lt;chips&gt; 世界 👍🏽").is_some(), "the words, escaped")
+    let Some(back) = items_of(h.as_str()) else { panic("the items come back") }
+    assert(back.len() == 2 && back[0] == note && back[1] == line)
+    assert(items_of("<b>just words</b>").is_none())
+    assert(items_of("<div data-wrela-board=\"zz\">").is_none(), "not hex")
+}
+
+@test
+fn a_paste_goes_where_it_was_aimed_while_that_text_is_as_it_was() {
+    var b = Board::new()
+    let id = b.add(Item::new(Kind::Note, vec2(0.0), vec2(200.0), color: 0))
+    let other = b.add(Item::new(Kind::Note, vec2(300.0), vec2(200.0), color: 0))
+    let aim = Aim { typing: Some(Typing::caret(id, 3)), revision: 7 }
+    assert(destination(aim, None, 7, b) == Into::Text { id, at: 3, anchor: 3 })
+    // The text changed while the paste was on its way: it goes to where the caret is now.
+    assert(
+        destination(aim, Some(Typing::caret(other, 1)), 8, b) ==
+            Into::Text { id: other, at: 1, anchor: 1 },
+    )
+    assert(destination(aim, None, 8, b) == Into::Board)
+    // The item went.
+    b.remove([id])
+    assert(destination(aim, None, 7, b) == Into::Board)
+    assert(destination(Aim { typing: None, revision: 0 }, None, 0, b) == Into::Board)
+    // Put in at a byte past the end: at the end.
+    let (text, after) = inserted("abc", 9, "de")
+    assert(text == "abcde" && after == 5)
+    let (mid, at) = inserted("abc", 1, "XY")
+    assert(mid == "aXYbc" && at == 3)
+}

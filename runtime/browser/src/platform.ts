@@ -1,10 +1,42 @@
 // Application-host mechanisms. Services transport opaque bytes; the Wrela application
 // owns its catalog, UI, session protocol and save policy.
+import type { Overlay } from "./assist.ts";
+import { glyph, type Paper } from "./glyph.ts";
+import type { Listener } from "./listen.ts";
 import type { Bytes } from "./stream.ts";
+import { Reader, Writer } from "./wire.ts";
 
 export const MESSAGE_LIMIT = 1024 * 1024 - 512;
 const DECODER = new TextDecoder("utf-8", { fatal: true });
-const CURSORS = new Set(["default", "pointer", "text"]);
+const ENCODER = new TextEncoder();
+
+/** The longest address or link a program may give (`nav/*`). */
+const ADDRESS_LIMIT = 2048;
+
+/** `text` as an address on the page's own origin (`#std/io`, `/v0.1/?q=x`), resolved against
+ * the page's address `here`: its path, query and fragment. Another origin, another scheme, or
+ * text with control characters fails. */
+export function sameOriginAddress(text: string, here: string): string {
+  if (text.length === 0 || text.length > ADDRESS_LIMIT || /[\u0000-\u001f\u007f\\]/.test(text)) throw new Error("invalid address");
+  const base = new URL(here);
+  const url = new URL(text, base);
+  if (url.origin !== base.origin) throw new Error("an address stays on the page's own origin");
+  return url.pathname + url.search + url.hash;
+}
+
+/** `text` as a link to follow: an absolute http or https URL without credentials. */
+export function linkUrl(text: string): string {
+  if (text.length === 0 || text.length > ADDRESS_LIMIT || /[\u0000-\u001f\u007f]/.test(text)) throw new Error("invalid link");
+  const url = new URL(text);
+  if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password) throw new Error("a link is an http or https URL");
+  return url.href;
+}
+const CURSORS = new Set(["default", "pointer", "text", "grab", "grabbing", "crosshair", "move", "nwse-resize", "nesw-resize"]);
+/** What `environment`'s capabilities word says this host has (runtime/browser): its bits. */
+export const PASTE_EVENTS = 1;
+export const TEXT_INPUT = 2;
+export const ACCESSIBILITY = 4;
+export const SYSTEM_GLYPHS = 8;
 export const wordBytes = (n: number): Bytes => {
   const b = new Uint8Array(4);
   new DataView(b.buffer).setUint32(0, n, true);
@@ -36,14 +68,15 @@ const checked = (body: unknown): Bytes => {
 
 /** A bounded request/reply channel. Closing it rejects every outstanding request. */
 /** The environment a program asks for (platform/host.wrela): whether the system asks for reduced
- * motion, the seconds since 1970, the device pixel ratio × 1024, and whether this page load is a
- * reload of the tab (its navigation's type), rather than a visit. */
-export function environment(reducedMotion: boolean, nowMs: number, pixelRatio: number, navigations: PerformanceEntryList): Bytes {
-  const b = new Uint8Array(10);
+ * motion, the seconds since 1970, the device pixel ratio × 1024, whether this page load is a
+ * reload of the tab (its navigation's type), rather than a visit, and what this host has. */
+export function environment(reducedMotion: boolean, nowMs: number, pixelRatio: number, navigations: PerformanceEntryList, capabilities: number): Bytes {
+  const b = new Uint8Array(14);
   b[0] = Number(reducedMotion);
   b.set(wordBytes(Math.floor(nowMs / 1000)), 1);
   b.set(wordBytes(Math.round(pixelRatio * 1024)), 5);
   b[9] = Number(navigations.some((n) => (n as PerformanceNavigationTiming).type === "reload"));
+  b.set(wordBytes(capabilities), 10);
   return b;
 }
 
@@ -52,14 +85,17 @@ const PREFETCHES = 3;
 
 /** `prefetch` (platform/host.wrela): fetches each URL of `list`, one a line, into the browser's
  * cache at low priority, a few at a time, until `signal` aborts. A URL that fails is skipped:
- * the program fetches it again when it needs it. Answers once all are done or it is aborted. */
+ * the program fetches it again when it needs it. Answers once all are done or it is aborted.
+ * Each is a readable request with credentials, as the page that later loads it makes: an opaque
+ * response (`no-cors`) of a shader or a manifest is blocked, and the cache may keep requests
+ * with and without credentials apart. */
 export async function prefetch(list: string, base: string, signal: AbortSignal, fetchFn: typeof fetch): Promise<Bytes> {
   const urls = list.split("\n").map(line => line.trim()).filter(line => line !== "").map(line => programUrl(line, base));
   let next = 0;
   const run = async () => {
     while (next < urls.length && !signal.aborted) {
       const url = urls[next++]!;
-      try { await (await fetchFn(url, { mode: "no-cors", credentials: "omit", priority: "low", signal })).arrayBuffer(); } catch { /* skipped */ }
+      try { await (await fetchFn(url, { mode: "cors", credentials: "include", priority: "low", signal })).arrayBuffer(); } catch { /* skipped */ }
     }
   };
   await Promise.all(Array.from({ length: PREFETCHES }, run));
@@ -178,14 +214,24 @@ export class BrowserPlatform {
   #inbox: Bytes[] = [];
   #receiving: { resolve: (b: Bytes) => void; reject: (e: Error) => void } | null = null;
   #shown: number | null = null;
+  #input: Listener | null = null;
+  #overlay: Overlay | null = null;
+  /** Where glyphs are drawn: the page's OffscreenCanvas, unless a test gives its own. */
+  paper: (w: number, h: number) => Paper = (w, h) => new OffscreenCanvas(w, h);
   // The parent asked this program to return (its page's Back): requests waiting to hear it,
   // or that it was asked before any waited.
   #leaving = new Set<() => void>();
   #asked = false;
   // Prefetches in flight, which an opening program cancels.
   #prefetching = new AbortController();
+  // Requests waiting to hear that Back or Forward changed the page's address (`nav/changed`), or
+  // that it changed before any waited.
+  #navigating = new Set<() => void>();
+  #navigated = false;
   constructor(readonly canvas: HTMLCanvasElement, readonly visible: (v: boolean) => void) {
     canvas.style.position = "relative"; canvas.style.zIndex = "1"; canvas.style.outline = "none"; canvas.tabIndex = 0;
+    // A touch's moves are the program's: the browser doesn't pan or zoom the page under it.
+    canvas.style.touchAction = "none";
     window.addEventListener("message", (e: MessageEvent<unknown>) => {
       if (window.parent === window || e.source !== window.parent || this.#parent || !document.referrer) return;
       if (e.origin !== new URL(document.referrer).origin) return;
@@ -205,10 +251,17 @@ export class BrowserPlatform {
     });
     window.addEventListener("pagehide", () => this.dispose());
     // A top-level page names the program it shows in its address, so the browser's Back asks
-    // that program to return, as its own return shortcut does. A reload drops the stale name.
+    // that program to return, as its own return shortcut does. Otherwise Back and Forward move
+    // through the addresses the program gave (`nav/push`), and it hears of each (`nav/changed`).
+    // A shown program's name goes after the page's own path: a relative address would resolve
+    // against the page's <base>, a release's directory, which a later deploy removes.
     if (window.parent === window && typeof history !== "undefined") {
-      if (location.hash && history.state?.wrela === undefined) history.replaceState(null, "", location.pathname + location.search);
-      window.addEventListener("popstate", () => this.#back());
+      window.addEventListener("popstate", () => {
+        if (this.#shown !== null) { this.#back(); return; }
+        if (this.#navigating.size === 0) this.#navigated = true;
+        for (const resolve of this.#navigating) resolve();
+        this.#navigating.clear();
+      });
     }
   }
   #back(): void {
@@ -221,6 +274,11 @@ export class BrowserPlatform {
     void s.closed.then(() => clearTimeout(timer));
   }
   get active(): boolean { return this.#shown === null; }
+  /** The input services (listen.ts) and the accessibility overlay (assist.ts), once there. */
+  attach(input: Listener, overlay: Overlay | null): void { this.#input = input; this.#overlay = overlay; }
+  #capabilities(): number {
+    return (this.#input ? PASTE_EVENTS | TEXT_INPUT : 0) | (this.#overlay ? ACCESSIBILITY : 0) | (typeof OffscreenCanvas === "function" ? SYSTEM_GLYPHS : 0);
+  }
   presented(): void { this.#parent?.signal("frame"); }
   failed(): void { this.#parent?.signal("failed"); }
   dispose(): void {
@@ -279,7 +337,7 @@ export class BrowserPlatform {
   async request(service: string, body: Bytes): Promise<Bytes> {
     checked(body);
     if (service === "environment") {
-      return environment(matchMedia("(prefers-reduced-motion: reduce)").matches, Date.now(), window.devicePixelRatio || 1, performance.getEntriesByType("navigation"));
+      return environment(matchMedia("(prefers-reduced-motion: reduce)").matches, Date.now(), window.devicePixelRatio || 1, performance.getEntriesByType("navigation"), this.#capabilities());
     }
     if (service === "image/decode") return decodeImage(body, browserDecode);
     if (service === "cursor") {
@@ -288,6 +346,30 @@ export class BrowserPlatform {
       if (!CURSORS.has(name)) throw new Error(`unsupported cursor: ${name.slice(0, 32)}`);
       this.canvas.style.cursor = name; return new Uint8Array();
     }
+    if (service === "text/input") {
+      // On (with the caret's rectangle, device pixels of the canvas) or off.
+      if (!this.#input) throw new Error("this host has no text input yet");
+      const r = new Reader(body); const on = r.u8() !== 0;
+      this.#input.textInput(on, { x: r.f32(), y: r.f32(), w: r.f32(), h: r.f32() }); return new Uint8Array();
+    }
+    if (service === "clipboard/offer") {
+      if (!this.#input) throw new Error("this host has no clipboard yet");
+      const r = new Reader(body); this.#input.offer(r.str(), r.str()); return new Uint8Array();
+    }
+    if (service === "clipboard/pasted") {
+      const pasted = this.#input?.pasted(new Reader(body).u32());
+      if (!pasted) throw new Error("that paste isn't kept");
+      return new Writer().str(pasted.text).str(pasted.html).bytes();
+    }
+    if (service === "a11y/tree") {
+      if (!this.#overlay) throw new Error("this host has no accessibility overlay");
+      this.#overlay.tree(body); return new Uint8Array();
+    }
+    if (service === "a11y/announce") {
+      if (!this.#overlay) throw new Error("this host has no accessibility overlay");
+      this.#overlay.announce(DECODER.decode(body)); return new Uint8Array();
+    }
+    if (service === "font/glyph") return glyph(body, this.paper);
     if (service === "icon") {
       // The program's icon in the page's tab, bookmarks and home screen: one link per kind and size.
       const { rel, sizes, href } = iconLink(body, document.baseURI);
@@ -314,6 +396,30 @@ export class BrowserPlatform {
     if (service === "surface/failed") { this.#parent?.signal("failed"); return new Uint8Array(); }
     if (service === "surface/ready") { this.#parent?.signal("ready"); return new Uint8Array(); }
     if (service === "surface/return") { this.#parent?.signal("return"); return new Uint8Array(); }
+    if (service === "nav/location") return ENCODER.encode(location.pathname + location.search + location.hash);
+    if (service === "nav/push" || service === "nav/replace" || service === "nav/changed") {
+      if (window.parent !== window) throw new Error("an embedded program has no address of its own");
+      if (service === "nav/changed") {
+        const here = () => ENCODER.encode(location.pathname + location.search + location.hash);
+        if (this.#navigated) { this.#navigated = false; return here(); }
+        return new Promise<Bytes>(resolve => { this.#navigating.add(() => resolve(here())); });
+      }
+      const address = sameOriginAddress(DECODER.decode(body), location.href);
+      if (service === "nav/push") history.pushState(null, "", address);
+      else history.replaceState(null, "", address);
+      return new Uint8Array();
+    }
+    if (service === "nav/open") {
+      // A new tab with no way back to this page.
+      window.open(linkUrl(DECODER.decode(body)), "_blank", "noopener,noreferrer"); return new Uint8Array();
+    }
+    if (service === "nav/go") {
+      location.assign(sameOriginAddress(DECODER.decode(body), location.href)); return new Uint8Array();
+    }
+    if (service === "keys/find") {
+      if (!this.#input) throw new Error("this host has no keys to claim yet");
+      this.#input.claimFind(body[0] === 1); return new Uint8Array();
+    }
     if (service === "surface/leave") {
       // Answers once the parent asks this program to return.
       if (!this.#parent) throw new Error("this program has no parent channel");
@@ -335,7 +441,7 @@ export class BrowserPlatform {
         if (this.#shown !== null) throw new Error("a program surface is already shown");
         const name = shownName(body);
         this.#shown = wordAt(body); s.frame.style.zIndex = "2"; s.frame.style.pointerEvents = "auto"; this.canvas.style.visibility = "hidden"; this.visible(false); s.frame.contentWindow?.focus();
-        if (name && window.parent === window && typeof history !== "undefined") history.pushState({ wrela: this.#shown }, "", `#${name}`);
+        if (name && window.parent === window && typeof history !== "undefined") history.pushState({ wrela: this.#shown }, "", `${location.pathname}${location.search}#${name}`);
         return new Uint8Array();
       }
       if (service === "surface/close") { s.close(); return new Uint8Array(); }

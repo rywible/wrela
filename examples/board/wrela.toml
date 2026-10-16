@@ -1,0 +1,9 @@
+# A whiteboard: sticky notes, shapes, text, pen strokes and connectors on an endless board,
+# drawn with the ui package's quads. Not a game: a check that the language and the ui layer
+# make an ordinary application.
+[package]
+name = "board"
+
+[dependencies]
+ui = { path = "../../ui" }
+platform = { path = "../../platform" }

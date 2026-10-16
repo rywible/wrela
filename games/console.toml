@@ -5,6 +5,16 @@
 package = "console"
 worker = "wrela-console"
 domain = "wrela.dev"
+description = "Games made in Wrela, a language and engine for games that run in the browser."
+
+# The reference docs, docs.wrela.dev: a Wrela program (docsite) beside the docs `wrela doc
+# --export` writes of std and these packages.
+[docs]
+package = "docsite"
+worker = "wrela-docs"
+domain = "docs.wrela.dev"
+description = "The reference for Wrela: the language, its standard library, and the engine, ui and platform packages."
+packages = ["engine", "ui", "platform"]
 
 [[games]]
 id = "leapling"

@@ -1,7 +1,7 @@
 // Typed application mechanisms over the shared std::host request. All payloads are bytes.
 use std::host::request
 use std::io::Pending
-use std::serialize::Writer
+use std::serialize::{LoadError, Reader, Writer}
 
 pub fn word(bytes: [u8], at: u32 = 0) -> Option<u32> {
     if at > bytes.len() || bytes.len() - at < 4 { return None }
@@ -15,7 +15,8 @@ pub fn word(bytes: [u8], at: u32 = 0) -> Option<u32> {
 
 // Where the program runs: byte 0 whether the system asks for reduced motion, then words: the
 // seconds since 1970 (at 1) and the device pixel ratio × 1024 (at 5); byte 9 whether this page
-// load reloaded the tab, rather than visiting the page. A host may give fewer bytes.
+// load reloaded the tab, rather than visiting the page; then the word of what the host has (at
+// 10, `capabilities`). A host may give fewer bytes.
 pub fn environment() -> Pending<u8> {
     request("environment", [u8(0); 0])
 }
@@ -37,7 +38,8 @@ pub fn prefetch(list: [u8]) -> Pending<u8> {
     request("prefetch", list)
 }
 
-// The pointer's shape over the program: `default`, `pointer` or `text`.
+// The pointer's shape over the program: `default`, `pointer`, `text`, `grab`, `grabbing`,
+// `crosshair`, `move`, `nwse-resize` or `nesw-resize`.
 pub fn cursor(name: str) -> Pending<u8> {
     var bytes: Vec<u8> = Vec::new()
     for i in 0..name.len() { bytes.push(name.byte(i)) }
@@ -115,6 +117,228 @@ pub fn ready() -> Pending<u8> {
 
 pub fn return_to_parent() -> Pending<u8> {
     request("surface/return", [u8(0); 0])
+}
+
+// ---- input services (runtime/browser: listen.ts, assist.ts) -------------------------------------
+
+/// What an `environment` answer's capabilities word says the host has.
+pub const PASTE_EVENTS: u32 = 1
+pub const TEXT_INPUT: u32 = 2
+pub const ACCESSIBILITY: u32 = 4
+pub const SYSTEM_GLYPHS: u32 = 8
+
+/// The capabilities word of an `environment` answer: 0 from a host that says nothing of them.
+pub fn capabilities(environment: [u8]) -> u32 {
+    match word(environment, 10) {
+        Some(w) => w,
+        None => 0,
+    }
+}
+
+fn write_f32(w: mut Writer, x: f32) {
+    w.write_u32(bitcast_u32(x))
+}
+
+fn write_rect(w: mut Writer, r: vec4) {
+    write_f32(mut w, r.x)
+    write_f32(mut w, r.y)
+    write_f32(mut w, r.z)
+    write_f32(mut w, r.w)
+}
+
+/// Text mode (`text/input`): on while the program edits text, its caret at `caret` (x, y, width,
+/// height in device pixels), so an input method composes there and its keys arrive as `Text` and
+/// `Compose`; off gives the keys back to the canvas.
+pub fn text_input(active: bool, caret: vec4) -> Pending<u8> {
+    var w = Writer::new()
+    w.write_u8(if active { 1 } else { 0 })
+    write_rect(mut w, caret)
+    let body = take w.into_bytes()
+    request("text/input", body)
+}
+
+/// What a copy or cut puts on the system clipboard from now on (`clipboard/offer`), as plain text
+/// and HTML: a copy happens before the keys that ask for it arrive, so a program offers what it
+/// would copy whenever that changes. Empty text offers nothing.
+pub fn offer(text: str, html: str) -> Pending<u8> {
+    var w = Writer::new()
+    w.write_str(text)
+    w.write_str(html)
+    let body = take w.into_bytes()
+    request("clipboard/offer", body)
+}
+
+/// What paste `serial` (`Event::Paste`) carried (`clipboard/pasted`); `read_pasted` reads the
+/// answer.
+pub fn pasted(serial: u32) -> Pending<u8> {
+    var w = Writer::new()
+    w.write_u32(serial)
+    let body = take w.into_bytes()
+    request("clipboard/pasted", body)
+}
+
+/// A paste's plain text and HTML.
+pub struct Pasted: Clone + Eq {
+    pub text: String,
+    pub html: String,
+}
+
+pub fn read_pasted(bytes: take Vec<u8>) -> Result<Pasted, LoadError> {
+    var r = Reader::new(take bytes)
+    let text = r.read_string()?
+    let html = r.read_string()?
+    Ok(Pasted { text, html })
+}
+
+/// What an accessibility node is: a control to press, an item to choose, or a part of a
+/// document (a heading, a paragraph, a link or a block of code), which a screen reader reads in
+/// the tree's order whether or not it's on screen. A link's focus and activation come back as
+/// `Event::Assist`.
+pub enum Role: Copy + Eq {
+    Button,
+    Item,
+    Heading,
+    Text,
+    Link,
+    Code,
+}
+
+/// A node of the program's accessibility tree: its number (an `Event::Assist` names it), what it
+/// is, its state, where it's drawn (x, y, width, height in device pixels) and its name.
+pub struct Node: Clone + Eq {
+    pub id: u32,
+    pub role: Role,
+    pub pressed: bool = false,
+    pub selected: bool = false,
+    pub disabled: bool = false,
+    /// A heading's level, 1 to 6.
+    pub level: u32 = 0,
+    pub rect: vec4,
+    pub label: String,
+}
+
+/// A tree's bytes: its name, its items' list's name, then each node.
+pub fn tree_bytes(name: str, items: str, nodes: [Node]) -> Vec<u8> {
+    var w = Writer::new()
+    w.write_str(name)
+    w.write_str(items)
+    w.write_u32(nodes.len())
+    for n in nodes {
+        w.write_u32(n.id)
+        w.write_u8(match n.role {
+            Role::Button => 0,
+            Role::Item => 1,
+            Role::Heading => 2,
+            Role::Text => 3,
+            Role::Link => 4,
+            Role::Code => 5,
+        })
+        var flags = 0
+        if n.pressed { flags = flags | 1 }
+        if n.selected { flags = flags | 2 }
+        if n.disabled { flags = flags | 4 }
+        // A heading's level, in bits 4 to 6.
+        if n.role == Role::Heading { flags = flags | (clamp(n.level, 1, 6) << 4) }
+        w.write_u8(u8(flags))
+        write_rect(mut w, n.rect)
+        w.write_str(n.label.as_str())
+    }
+    take w.into_bytes()
+}
+
+/// The program's accessibility tree is now `nodes` (`a11y/tree`): screen readers and the keyboard
+/// reach them, and what they do comes back as `Event::Assist`.
+pub fn accessibility(name: str, items: str, nodes: [Node]) -> Pending<u8> {
+    request("a11y/tree", tree_bytes(name, items, nodes))
+}
+
+/// Says `text` to a screen reader, after what it's saying (`a11y/announce`).
+pub fn announce(text: str) -> Pending<u8> {
+    request("a11y/announce", utf8(text))
+}
+
+fn utf8(text: str) -> Vec<u8> {
+    var bytes: Vec<u8> = Vec::new()
+    for i in 0..text.len() { bytes.push(text.byte(i)) }
+    bytes
+}
+
+// ---- the page's address and links (runtime/browser: platform.ts) ------------------------------
+
+/// The page's address: its path, query and fragment (`/v0.1/#std/io`), as UTF-8.
+pub fn address() -> Pending<u8> {
+    request("nav/location", [u8(0); 0])
+}
+
+/// A new entry in the page's history at `address`, on the page's own origin and resolved against
+/// its address (`#std/io`, `/v0.2/`): the browser's Back returns to the one before. A program in
+/// a frame has no address of its own.
+pub fn push_address(address: str) -> Pending<u8> {
+    request("nav/push", utf8(address))
+}
+
+/// The page's address is now `address`, with no new history entry.
+pub fn replace_address(address: str) -> Pending<u8> {
+    request("nav/replace", utf8(address))
+}
+
+/// Answers with the page's address (UTF-8) when Back or Forward moves through the addresses the
+/// program gave; ask again for the next.
+pub fn address_changed() -> Pending<u8> {
+    request("nav/changed", [u8(0); 0])
+}
+
+/// Opens `url`, an http or https URL, in a new tab, with no way back to this page.
+pub fn open_link(url: str) -> Pending<u8> {
+    request("nav/open", utf8(url))
+}
+
+/// Goes to another page of this origin in this tab (`/v0.2/`): another build, such as another
+/// version of a site.
+pub fn go(address: str) -> Pending<u8> {
+    request("nav/go", utf8(address))
+}
+
+/// Whether the program takes the browser's find keys (Ctrl or Cmd with F or G, and F3) for a find
+/// of its own: the browser's finds nothing in a canvas. The program hears the keys either way.
+pub fn claim_find(on: bool) -> Pending<u8> {
+    request("keys/find", [if on { u8(1) } else { u8(0) }])
+}
+
+@test
+fn a_tree_and_a_paste_have_the_hosts_layout() {
+    let node = Node {
+        id: 1001,
+        role: Role::Item,
+        selected: true,
+        rect: vec4(1.0, 2.0, 3.0, 4.0),
+        label: String::from("é"),
+    }
+    let heading = Node {
+        id: 7,
+        role: Role::Heading,
+        level: 2,
+        rect: vec4(0.0),
+        label: String::from("A"),
+    }
+    let link = Node { id: 8, role: Role::Link, rect: vec4(0.0), label: String::from("B") }
+    let d = tree_bytes("", "", [take heading, take link])
+    // Each node's role and flags: a heading's level is in bits 4 to 6.
+    assert(d[16] == 2 && d[17] == 2 << 4, f"{d[16]} {d[17]}")
+    // The second node starts after the first's 27 bytes and its one-byte name, at 39.
+    assert(d[43] == 4 && d[44] == 0, f"{d[43]} {d[44]}")
+    let b = tree_bytes("B", "", [take node])
+    // "B" (4 + 1 bytes), "" (4), one node: its number, role, flags, rectangle, then its name.
+    assert(b.len() == 5 + 4 + 4 + 4 + 1 + 1 + 16 + 4 + 2, f"{b.len()} bytes")
+    assert(word(b, 13) == Some(1001) && b[17] == 1 && b[18] == 2)
+    assert(word(b, 19) == Some(bitcast_u32(1.0)) && word(b, 35) == Some(2))
+    var w = Writer::new()
+    w.write_str("hi")
+    w.write_str("<b>hi</b>")
+    let p = read_pasted(take w.into_bytes())
+    assert(p == Ok(Pasted { text: String::from("hi"), html: String::from("<b>hi</b>") }))
+    assert(read_pasted(Vec::from([u8(9), 0, 0, 0])).is_err(), "a short answer")
+    assert(capabilities([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 5, 0, 0, 0]) == 5 && capabilities([0]) == 0)
 }
 
 // Answers when the parent asks this program to return, as the browser's Back does.

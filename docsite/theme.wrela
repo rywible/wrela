@@ -1,0 +1,51 @@
+// The docs' look: the console's dark only in the header band, a quieter slate to read on, silver
+// text, and the mark's silver light for its field and for links. Sizes are CSS pixels; the
+// program multiplies them by the display's pixel ratio.
+
+/// A colour from its sRGB hex, as the screen takes it.
+pub fn hex(rgb: u32, alpha: f32 = 1.0) -> vec4 {
+    vec4(
+        f32((rgb >> 16) & 255) / 255.0,
+        f32((rgb >> 8) & 255) / 255.0,
+        f32(rgb & 255) / 255.0,
+        alpha,
+    )
+}
+
+pub const VOID: u32 = 0x000000
+pub const SLATE: u32 = 0x15171B
+pub const SURFACE: u32 = 0x1C1F24
+pub const RULE: u32 = 0x262A31
+pub const TEXT: u32 = 0xC9CED5
+pub const STRONG: u32 = 0xF1F3F5
+pub const QUIET: u32 = 0x8B929C
+pub const FIELD: u32 = 0xA9BCD0
+
+// Code's colours: keywords, types, strings, numbers, comments; the rest is TEXT.
+pub const KEYWORD: u32 = 0xC3B6EE
+pub const TYPE: u32 = 0x9ACBE5
+pub const STRING: u32 = 0xD9C597
+pub const NUMBER: u32 = 0xE6AD8A
+pub const COMMENT: u32 = 0x6F7782
+
+// The type scale (The Elements of Typographic Style's: 14, 16, 19, 24, 34) and its leading.
+pub const BODY: f32 = 16.0
+pub const SMALL: f32 = 14.0
+pub const CODE: f32 = 13.5
+pub const H1: f32 = 34.0
+pub const H2: f32 = 24.0
+pub const H3: f32 = 19.0
+pub const LEADING: f32 = 1.65
+pub const CODE_LEADING: f32 = 1.55
+
+// How much the weight thickens a face's strokes (`Font::weight`): body, bold, headings.
+pub const REGULAR: f32 = 0.0
+pub const BOLD: f32 = 0.018
+pub const HEADING: f32 = 0.014
+
+// The layout: the header band, the list of pages, the text's measure and the room around it.
+pub const HEADER: f32 = 64.0
+pub const NAV: f32 = 264.0
+pub const MEASURE: f32 = 680.0
+pub const WIDE: f32 = 780.0
+pub const GUTTER: f32 = 56.0
