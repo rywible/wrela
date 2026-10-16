@@ -1,0 +1,136 @@
+// The specimens: each of the history's species at a run of ages, grown in the open and among
+// others (`engine::grow::grown`), stood apart on level ground and drawn as the floor draws its
+// trees (`trees::placed`). The specimen view (F8's sixth, `tools/lookbook.py --view specimens`)
+// shows them a species a shot, to judge their forms beside each other.
+
+use engine::bake::{Decisions, WET_N, WEAR_N}
+use engine::grow::{Tree, grown}
+use engine::place::TILE
+use engine::terrain::{Cover, Terrain}
+use lookbook::Shot
+use species::Species
+
+/// The ages each species is shown at (years), a column each.
+pub const AGES = [10, 25, 50, 100, 200, 400]
+
+/// How far apart the columns stand, and the rows (m): a tile a row, so no other stands in a row's
+/// shot.
+const COLUMN: f32 = 30.0
+const ROW: f32 = TILE
+
+/// Where the rows start: the open-grown in tiles (0, 0) on, those grown among others two tiles
+/// east of them.
+const OPEN_AT = vec2(30.0, 120.0)
+const FOREST_AT = vec2(2.0 * TILE + 30.0, 120.0)
+
+/// The species shown, a row each.
+const SHOWN = [
+    Species::Oak,
+    Species::Beech,
+    Species::Birch,
+    Species::Pine,
+    Species::Alder,
+    Species::Thorn,
+    Species::Sloe,
+]
+
+/// The year the specimens are seen in.
+const YEAR: i32 = 1000
+
+/// Every specimen: each species a row, each age a column; open-grown, then among others.
+pub fn trees() -> Vec<Tree> {
+    let habits = species::ancient()
+    var out: Vec<Tree> = Vec::new()
+    for open in [true, false] {
+        let corner = if open { OPEN_AT } else { FOREST_AT }
+        for r in 0..SHOWN.len() {
+            let kind = u32(SHOWN[r])
+            for c in 0..AGES.len() {
+                let at = corner + vec2(f32(c) * COLUMN, f32(r) * ROW)
+                let seed = 7919 * (r + 1) + 104729 * (c + 1) + if open { 0 } else { 13 }
+                out.push(grown(at, kind, YEAR - AGES[c], YEAR, seed, habits[kind], open))
+            }
+        }
+    }
+    out
+}
+
+/// Tile `t`'s decisions: its specimens, dry and unworn.
+pub fn decisions(t: vec2i) -> Decisions {
+    var mine: Vec<Tree> = Vec::new()
+    for tr in trees() {
+        if engine::place::tile_of(tr.at) == t {
+            mine.push(tr)
+        }
+    }
+    Decisions {
+        tile: t,
+        trees: mine,
+        wear: Vec::filled(WEAR_N * WEAR_N, 0.0),
+        wet: Vec::filled(WET_N * WET_N, 0.3),
+        water: Vec::new(),
+    }
+}
+
+/// The specimens' ground: level, at 0 m.
+pub struct Level: Copy + GpuData {
+    pub tint: vec3,
+}
+
+pub const LEVEL = Level { tint: vec3(0.11, 0.1, 0.075) }
+
+impl Terrain for Level {
+    fn height(self, x: f32, z: f32) -> f32 {
+        0.0
+    }
+
+    fn cover(self, at: vec3, n: vec3) -> Cover {
+        Cover { albedo: self.tint, grass: 0.0 }
+    }
+
+    fn steepest(self) -> f32 {
+        1.0
+    }
+}
+
+/// The specimens' shots: each species' row from the side, the open-grown then those grown among
+/// others; and their names.
+pub fn shots() -> Vec<Shot> {
+    var out: Vec<Shot> = Vec::new()
+    for open in [true, false] {
+        let corner = if open { OPEN_AT } else { FOREST_AT }
+        for r in 0..SHOWN.len() {
+            let mid = corner + vec2(0.5 * f32(AGES.len() - 1) * COLUMN, f32(r) * ROW)
+            out.push(
+                Shot {
+                    name: "",
+                    eye: vec3(mid.x, 7.0, mid.y - 75.0),
+                    at: vec3(mid.x, 9.0, mid.y),
+                    moves: vec2(0.0),
+                    fovy: 1.1,
+                },
+            )
+        }
+    }
+    out
+}
+
+/// The shots' names, as `tools/lookbook.py` reads them (`files/specimens/shots.json`).
+pub const FILES: std::io::Shipped = std::io::ship("specimens", shot_files())
+
+fn shot_files() -> Vec<(String, Vec<u8>)> {
+    let names = ["oak", "beech", "birch", "pine", "alder", "hawthorn", "sloe"]
+    var json = String::from("[")
+    for open in [true, false] {
+        for r in 0..names.len() {
+            if json.len() > 1 {
+                json.push_str(", ")
+            }
+            json.push_str(f"\"{names[r]} {if open { "open" } else { "among others" }}\"".as_str())
+        }
+    }
+    json.push_str("]\n")
+    var out: Vec<(String, Vec<u8>)> = Vec::new()
+    out.push((String::from("shots.json"), Vec::from(json.as_bytes())))
+    out
+}

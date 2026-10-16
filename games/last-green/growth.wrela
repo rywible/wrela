@@ -26,7 +26,12 @@ pub struct Grown: Copy + GpuData {
     pub beds: [u32; SQUARE_SOIL],
 }
 
-/// How much of the talus the wood has grown over (`Grown::covered`).
+/// How densely the old wood's floor plants cover its shade (`engine::terrain::Cover::under`), and
+/// its low carpet (`Cover::grass`).
+const FLOOR_LUSH: f32 = 0.5
+const FLOOR_GRASS: f32 = 0.6
+
+/// How much of the talus and the gentle rock the wood has grown over (`Grown::covered`).
 const SCREE_GROWN: f32 = 0.75
 
 /// The grown land.
@@ -70,14 +75,17 @@ impl Grown {
     }
 
     /// Its cover, as a sample `w` metres across sees it: the bare land's (`geology::Bare`), its
-    /// talus old scree, grown over (`SCREE_GROWN`: moss on its stones, soil between them, which
-    /// the wood's litter covers), grass where its soil shows, and over the forest's fields
+    /// talus old scree and its rock that isn't a face (gentler than 0.86 of level: the crests'),
+    /// grown over (`SCREE_GROWN`: moss on its stones, soil between them, which the wood's litter
+    /// covers), grass where its soil shows, and over the forest's fields
     /// (`fields`) the wood's floor (`ground::wood_floor`). Where no tile's fields are
     /// (`fields.x` below 0: past the trees streamed in), the wood seen from far off: its canopy's
     /// greens over all but its rock.
     fn covered(self, at: vec3, n: vec3, fields: vec4, w: f32) -> Cover {
         var c = self.land.bare_cover(at, n, w)
-        let scree = smoothstep(0.05, 0.5, self.land.talus_at(at.xz)) * SCREE_GROWN
+        // Talus, and rock that isn't a face (the crests' bare rock, `SoilKind::Rock`), grown over.
+        let gentle = smoothstep(0.72, 0.86, n.y)
+        let scree = max(smoothstep(0.05, 0.5, self.land.talus_at(at.xz)), gentle) * SCREE_GROWN
         let hard = c.materials.z * (1.0 - scree)
         c.materials = vec4(0.0, 1.0 - hard, hard, 0.0)
         c.albedo = mix(c.albedo, vec3(0.06, 0.07, 0.05), vec3(scree))
@@ -88,7 +96,28 @@ impl Grown {
             c.albedo = mix(c.albedo, canopy, vec3(0.9 * (1.0 - hard)))
             return c
         }
-        ground::wood_floor(c, at, n, fields, w, trodden: fields.y, rim: 0.0)
+        var floor = ground::wood_floor(c, at, n, fields, w, trodden: fields.y, rim: 0.0)
+        // An old wood's floor, lush in its shade: a low green carpet (moss, the wood's grasses and
+        // sorrel), ferns through it and herbs between them, as the ground holds them (a floor left
+        // alone for ages; the floor's own, in colonies with litter between, read as bare ground
+        // under the ancient wood).
+        let shade = 1.0 - smoothstep(0.75, 0.97, fields.x)
+        let holds = smoothstep(0.55, 0.85, n.y) *
+            (1.0 - smoothstep(0.82, 0.98, floor.materials.z)) *
+            (1.0 - smoothstep(0.85, 0.95, fields.z))
+        floor.under.x = max(floor.under.x, FLOOR_LUSH * shade * holds)
+        floor.under.y = max(floor.under.y, 0.7 * shade)
+        floor.grass = max(floor.grass, FLOOR_GRASS * shade * holds)
+        floor.tall = min(floor.tall, 0.35)
+        // Under it, moss: the ground's colour as the carpet's, so past where its blades are drawn
+        // it reads as it does near.
+        let moss = mix(
+            vec3(0.035, 0.055, 0.025),
+            vec3(0.06, 0.085, 0.035),
+            vec3(fbm2_seen(at.xz * 0.15, 2, w * 0.15)),
+        )
+        floor.albedo = mix(floor.albedo, moss, vec3(0.7 * shade * holds))
+        floor
     }
 }
 
@@ -396,7 +425,7 @@ pub fn grown(grain: Grain) -> History {
     simulate_given(
         LAND,
         growth_map(),
-        species::habits(),
+        species::ancient(),
         grain,
         LO,
         HI,
@@ -420,9 +449,13 @@ pub fn tiles_hi() -> vec2i {
     tile_of(square_hi() - vec2(0.01))
 }
 
-/// Its bake, at the floor's grain (`engine::grow::BAKE`): a file a tile and the far layer.
+/// Its bake, at the floor's grain (`engine::grow::BAKE`), each standing tree's fork chosen among
+/// its neighbours as the floor's are (`history::forked`): a file a tile and the far layer.
 @fuel(2 ** 43)
-pub const GROWN: Shipped = ship("grown", bake(grown(BAKE), tiles_lo(), tiles_hi()))
+pub const GROWN: Shipped = ship(
+    "grown",
+    bake(history::forked(grown(BAKE)), tiles_lo(), tiles_hi()),
+)
 
 /// The bake read back.
 pub fn decisions() -> engine::bake::Unbaked {
@@ -455,7 +488,7 @@ fn no_ride(p: vec2) -> f32 {
 
 /// Wild tile `t`'s decisions in the grown view (`wildwood::decisions_with`).
 pub fn wild_decisions(t: vec2i, own: take Vec<engine::grow::Tree>) -> engine::bake::Decisions {
-    wildwood::decisions_with(t, take own, no_ride, kept_clear)
+    wildwood::decisions_with(t, take own, no_ride, kept_clear, species::ancient())
 }
 
 // ---- its shots -------------------------------------------------------------------------------------
@@ -572,10 +605,10 @@ fn off_wood(s: Shot, wood: [vec3]) -> Shot {
     best
 }
 
-/// The wood's own shots: in it, where it's tallest and most even on gentle ground (the square's
-/// 16 m cell, not in its collar, round which most trees stand over 15 m, on ground gentler than
-/// 0.25 that no tree is kept off), looking along the longest way clear of its stems (of 16, to 60
-/// m); and over it, 45 m up there, out across it to the horizon the same way.
+/// The wood's own shots: in it, where it's tallest on gentle ground (of the square's 16 m cells,
+/// not in its collar, on ground gentler than 0.25 that no tree is kept off, one of those round
+/// which most trees stand over 15 m, with a way clear of its stems: `CANDIDATES`, `LONG_WAY`),
+/// looking along that way; and over it, 45 m up there, out across it to the horizon the same way.
 fn in_wood(trees: [engine::grow::Tree], stems: [vec3]) -> (Shot, Shot) {
     let g = Grid::over(SQUARE.lo, square_hi(), 16.0)
     var tall: Vec<u32> = Vec::filled(g.cells(), 0)
@@ -587,8 +620,9 @@ fn in_wood(trees: [engine::grow::Tree], stems: [vec3]) -> (Shot, Shot) {
             }
         }
     }
-    var best = SQUARE.lo
-    var most = 0
+    // Each gentle cell clear of rock, and how many trees over 15 m stand round it.
+    var cells: Vec<vec2> = Vec::new()
+    var counts: Vec<u32> = Vec::new()
     for c in 0..g.cells() {
         let p = g.centre(c)
         let (i, j) = (i32(c % g.nx), i32(c / g.nx))
@@ -601,29 +635,37 @@ fn in_wood(trees: [engine::grow::Tree], stems: [vec3]) -> (Shot, Shot) {
         for k in 0..9 {
             n += tall[g.index(i + i32(k % 3) - 1, j + i32(k / 3) - 1)]
         }
-        if n > most {
-            most = n
-            best = p
-        }
+        cells.push(p)
+        counts.push(n)
     }
-    var near: Vec<vec3> = Vec::new()
-    for st in stems {
-        if length(st.xy - best) < 80.0 {
-            near.push(st)
-        }
-    }
+    // Of the `CANDIDATES` most crowded, the most crowded with a way clear of the stems for
+    // `LONG_WAY` (else the one whose way is longest); and that way.
+    var best = SQUARE.lo
     var way = vec2(0.0, 1.0)
-    var longest = 0.0
-    for k in 0..16 {
-        let a = 6.2831853 * f32(k) / 16.0
-        let along = vec2(sin(a), cos(a))
-        var d = 0.0
-        while d < 60.0 && clear_of(near, best, along, d + 2.0) {
-            d += 2.0
+    var longest = -1.0
+    var most = 0
+    var taken: Vec<bool> = Vec::filled(cells.len(), value: false)
+    for _ in 0..CANDIDATES {
+        var pick = cells.len()
+        var top = 0
+        for k in 0..cells.len() {
+            if !taken[k] && (pick == cells.len() || counts[k] > top) {
+                pick = k
+                top = counts[k]
+            }
         }
-        if d > longest {
-            longest = d
+        if pick == cells.len() {
+            break
+        }
+        taken[pick] = true
+        let p = cells[pick]
+        let (d, along) = longest_way(stems, p)
+        let better = if longest >= LONG_WAY { d >= LONG_WAY && top > most } else { d > longest }
+        if better {
+            best = p
             way = along
+            longest = d
+            most = top
         }
     }
     let side = vec2(-way.y, way.x)
@@ -640,6 +682,37 @@ fn in_wood(trees: [engine::grow::Tree], stems: [vec3]) -> (Shot, Shot) {
         moves: side * 3.0,
     }
     (inside, over)
+}
+
+/// How many of the most crowded cells `in_wood` looks from, and the way clear of the stems it
+/// wants (m).
+const CANDIDATES: u32 = 40
+const LONG_WAY: f32 = 40.0
+
+/// The longest of 16 ways from `p` clear of `stems` (x, z, radius), to 60 m: its length and its
+/// direction.
+fn longest_way(stems: [vec3], p: vec2) -> (f32, vec2) {
+    var near: Vec<vec3> = Vec::new()
+    for st in stems {
+        if length(st.xy - p) < 80.0 {
+            near.push(st)
+        }
+    }
+    var way = vec2(0.0, 1.0)
+    var longest = 0.0
+    for k in 0..16 {
+        let a = 6.2831853 * f32(k) / 16.0
+        let along = vec2(sin(a), cos(a))
+        var d = 0.0
+        while d < 60.0 && clear_of(near, p, along, d + 2.0) {
+            d += 2.0
+        }
+        if d > longest {
+            longest = d
+            way = along
+        }
+    }
+    (longest, way)
 }
 
 /// The grown view's shots' names, as a file beside the build (`files/growth/shots.json`).

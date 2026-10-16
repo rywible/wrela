@@ -764,7 +764,8 @@ pub fn limb_point(limb: Tube<4>, p: u32) -> (vec3, vec3, f32, vec2) {
 /// forks than its kind's (below 0, lower), as a share of the height there (`bend`), so two trees
 /// of a kind don't fork at the same height (#54 §9); and how wide its crown is drawn against its
 /// kind's (below 1 where neighbours constrain it, above 1 for a distant group; its trunk and
-/// limbs keep their girth).
+/// limbs keep their girth); and how thick its trunk and limbs are against its kind's at its size
+/// (`thick`: an old tree's thicker than its kind's, as tall).
 pub struct Instance: Copy + GpuData {
     pub at: vec3,
     pub yaw: f32,
@@ -774,6 +775,7 @@ pub struct Instance: Copy + GpuData {
     pub wide: f32,
     /// Tilt of local +z above the ground plane, in radians, before yaw.
     pub pitch: f32 = 0.0,
+    pub thick: f32 = 1.0,
 }
 
 /// No plant: an empty place in an instances' buffer.
@@ -810,10 +812,10 @@ impl Instance {
     }
 
     /// A point of a limb's surface in the world: its axis's point `centre` placed, and the
-    /// surface's offset `off` from it sized and turned (a limb keeps its girth where its crown
-    /// is narrowed).
+    /// surface's offset `off` from it sized, thickened (`thick`) and turned (a limb keeps its girth
+    /// where its crown is narrowed).
     pub fn place_round(self, centre: vec3, off: vec3) -> vec3 {
-        self.place(centre) + self.turn(off * self.scale)
+        self.place(centre) + self.turn(off * (self.scale * self.thick))
     }
 
     /// A direction of the plant's frame in the world.

@@ -3,7 +3,7 @@
 rendered settled at 1080p, as a still on the native host and as a 10 s clip in Chrome (its move),
 into a directory.
 
-    tools/lookbook.py <out-dir> [--stills] [--capture] [--view clay|silhouette|bare|grown]
+    tools/lookbook.py <out-dir> [--stills] [--capture] [--view clay|silhouette|bare|grown|specimens]
                       [--size WxH] [--jobs N] [shot-number ...]
 
 The floor must be built (`wrela build games/last-green`). A shot is chosen as a player would
@@ -16,7 +16,8 @@ the look (F8 in the floor): `clay`, the scene's light on its forms all one matte
 of distance; or `bare`, the world's land as its geology made it, alone, whose shots are of the
 places found in it (the build's `files/geology/shots.json`, numbered as there); or `grown`, the
 world's land as its water and its forest left it, whose shots are of those places and of its wood
-(`files/growth/shots.json`). `--size` renders the stills at another size than 1920x1080 (1280x720 while
+(`files/growth/shots.json`); or `specimens`, each species at a run of ages on level ground, a
+species a shot (`files/specimens/shots.json`). `--size` renders the stills at another size than 1920x1080 (1280x720 while
 iterating). Stills run one at a time by default. `--jobs` renders the requested number of
 stills concurrently, with the same pixels. Each shot's numbers, the
 interest check's view at its eye (the build's `files/check/shots.json`), are printed beside it and saved as
@@ -45,8 +46,8 @@ MOVE_FRAMES = 600
 
 def names(view="look"):
     """The shots' names: the lookbook's, or the bare or grown view's, which the build found."""
-    if view in ("bare", "grown"):
-        where = "geology" if view == "bare" else "growth"
+    if view in ("bare", "grown", "specimens"):
+        where = {"bare": "geology", "grown": "growth", "specimens": "specimens"}[view]
         with open(os.path.join(BUILD, "files", where, "shots.json")) as f:
             return json.load(f)
     text = open(os.path.join(ROOT, "games/last-green/lookbook.wrela")).read()
@@ -54,7 +55,7 @@ def names(view="look"):
 
 
 # How many presses of F8 draw each debug view of form (`view` in games/last-green/main.wrela).
-VIEWS = {"look": 0, "clay": 1, "silhouette": 2, "bare": 3, "grown": 4}
+VIEWS = {"look": 0, "clay": 1, "silhouette": 2, "bare": 3, "grown": 4, "specimens": 5}
 
 
 def keys(i, view="look"):
@@ -145,7 +146,7 @@ def main():
     pick = [int(a) for a in args[1:]] or range(len(shots))
     jobs = min(jobs, max(1, len(pick)))
     numbers = os.path.join(BUILD, "files", "check", "shots.json")
-    views = json.load(open(numbers)) if os.path.exists(numbers) and view not in ("bare", "grown") else []
+    views = json.load(open(numbers)) if os.path.exists(numbers) and view not in ("bare", "grown", "specimens") else []
     if views:
         shutil.copyfile(numbers, os.path.join(out, "check.json"))
     # The stills at once, `jobs` at a time (each printed, in order, as it and those before it end);

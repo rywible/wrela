@@ -314,8 +314,10 @@ pub struct Habit: Copy {
     /// into the light (a thicket).
     pub thorny: bool,
     pub suckers: bool,
-    /// How much its trunk thickens against the others' (an oak's 1.7).
+    /// How much its trunk thickens against the others' (an oak's 1.7), and the greatest radius
+    /// it thickens to (m).
     pub girth: f32 = 1.0,
+    pub girthiest: f32 = 0.9,
     /// How well its bark keeps a ground fire from its trunk's living wood once the trunk is
     /// thick (0 to 1: a beech's thin bark 0.1, an oak's 0.85); how readily its crown takes a
     /// fire (a pine's resin 1); and how firmly its roots hold it against a gale.
@@ -1464,7 +1466,11 @@ fn live(l: mut Life, cx: Cx, f: Fields, year: i32) {
             t.shaped = shaped(Shaper::Relation, cx.land.capped_by[c])
         }
         t.vigour = 0.72 * t.vigour + 0.28 * fl
-        t.girth += 0.0011 * h.girth * step * (0.25 + n.light) * max(1.0 - t.girth / 0.9, 0.0)
+        t.girth += 0.0011 *
+            h.girth *
+            step *
+            (0.25 + n.light) *
+            max(1.0 - t.girth / h.girthiest, 0.0)
         let want = max(h.crown * t.tall * (0.6 + 0.4 * n.light), 0.3)
         let target = if t.pinned { want } else { min(want, max(n.space, 0.3)) }
         let target = if h.suckers {
@@ -2220,7 +2226,7 @@ pub fn grown(at: vec2, kind: u32, born: i32, year: i32, seed: u32, h: Habit, ope
     let tall = h.tallest * (1.0 - exp(-age * h.rate / h.tallest))
     var t = sapling(at, kind, born, tall, seed, h)
     t.reach = h.crown * tall * if open { 1.0 } else { 0.75 }
-    t.girth = min(0.9, 0.0011 * h.girth * age * if open { 1.0 } else { 0.8 })
+    t.girth = min(h.girthiest, 0.0011 * h.girth * age * if open { 1.0 } else { 0.8 })
     t.light = if open { 1.0 } else { 0.5 }
     t
 }

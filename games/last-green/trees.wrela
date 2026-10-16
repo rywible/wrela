@@ -16,7 +16,7 @@ use engine::vegetation::Placed
 use great_tree::tree::great_tree
 use map::PRESENT
 use species::Species
-use std::math::TAU
+use std::math::{PI, TAU}
 
 // ---- the kinds ---------------------------------------------------------------------------------
 
@@ -139,46 +139,20 @@ fn broadleaf(
         tips.push(tip)
         branches.push(p.limbs[p.limbs.len() - 1])
     }
-    // Low limbs: one to three from the trunk under the crown, each out and a little down to a
-    // small mass of its own, so the crown's foot is ragged and the limbs show leaving the trunk
-    // (the round 5 stills: crowns sat on their trunks with one flat, dark edge, the trunks
-    // seeming to stop at it).
-    if girth > 0.1 && scaffolds > 0 {
-        for j in 0..(1 + s % 3) {
-            let h = pick(s, 260 + j, lo: 0.55, hi: 0.9)
-            let (foot, axis, radius) = limb_at_height(p.limbs[0], crown_y * h)
-            let a = 2.39996 * f32(j + scaffolds) + 1.2 + pick(s, 270 + j, lo: -0.4, hi: 0.4)
-            let reach = w * pick(s, 280 + j, lo: 0.5, hi: 0.85)
-            let tip = foot +
-                vec3(
-                    cos(a) * reach,
-                    crown_y * pick(s, 290 + j, lo: -0.05, hi: 0.12),
-                    sin(a) * reach,
-                )
-            p.branch(
-                foot,
-                axis,
-                foot + axis * (reach * 0.16) + (tip - foot) * 0.35,
-                tip,
-                r_from: radius * 0.32,
-                r_to: 0.03,
-            )
-            p.clump(
-                tip + vec3(0.0, clump * 0.3, 0.0),
-                radius: clump * pick(s, 300 + j, lo: 0.6, hi: 0.9),
-            )
-        }
-    }
-    // Broad unequal masses around the scaffold ends, with smaller lateral sprays. Their
-    // gaps separate major limbs; foliage does not trace each ascending limb as a tall lobe.
+    // The crown's shell over the scaffolds (low limbs under it, bare, read as dead sticks:
+    // specimens, round 2).
     crown_on(mut p, s, tips, branches, tall, crown_y, lean, w, clump, count, limbs)
     p
 }
 
-/// A broad-leaved crown on its limbs: a mass round each of `tips` (each grown from its foot in
-/// `branches`) and one at the tree's own top, `count` clumps `clump` across in all, `limbs` of them
-/// with a branch of their own; a sapling's (no tips) round its trunk's top. (Split from
-/// `broadleaf` so that each species grows its own trunk and limbs, and the crowns item owns this.)
+/// A broad-leaved crown on its limbs: `count` clumps about `clump` across over its shell, an
+/// ellipsoid from `crown_y` to `tall` and `w` each way, bulging over each of `tips` (each grown
+/// from its foot in `branches`) and falling back between them; spread evenly over it (by the
+/// golden angle), its lowest part left open so the limbs show under it, some left out for the sky
+/// to show through (`CROWN_HOLES`), some deeper in; the first `limbs` twice over with a branch of
+/// their own from the nearest scaffold. A sapling's (no tips) is the same shell, round its trunk's
+/// top. (Masses round each scaffold's end, with gaps between, read as topiary: a few puffballs
+/// on bare limbs; and before them, even blobs: the playing rounds.)
 fn crown_on(
     p: mut Plant,
     s: u32,
@@ -193,101 +167,76 @@ fn crown_on(
     limbs: u32,
 ) {
     let scaffolds = tips.len()
-    let half = (tall - crown_y) * 0.5
-    let mid = vec3(0.0, crown_y + half, 0.0) + lean * 1.3
+    // At least two thirds as deep as it's wide each way, hanging from the tree's top: a crown, not
+    // a cap (as deep as its trunk left it, crowns were flat discs: specimens, round 1).
+    let half = max((tall - crown_y) * 0.5, CROWN_DEPTH * w)
+    let mid = vec3(0.0, tall - half, 0.0) + lean * 1.3
+    let shape = vec3(w, half, w)
     if scaffolds > 0 {
         p.blend = MASS_BLEND
     }
+    // Each scaffold's end, as a direction on the shell from its middle.
+    var toward: Vec<vec3> = Vec::new()
+    for t in tips {
+        toward.push(normalize((t - mid) / shape + vec3(0.0, 1.0e-4, 0.0)))
+    }
+    var branched = 0
     for i in 0..count {
-        let r_clump = clump * pick(s, 80 + i, lo: 0.35, hi: 0.72)
-        if scaffolds == 0 {
-            let a = TAU * rand(s, 20 + i)
-            let up = pick(s, 40 + i, lo: -0.75, hi: 1.0)
-            let r = sqrt(max(1.0 - up * up, 0.0)) * pick(s, 60 + i, lo: 0.45, hi: 1.0)
-            p.clump(
-                mid + vec3(r * cos(a) * w, up * (half - clump * 0.4), r * sin(a) * w),
-                radius: r_clump,
-            )
+        if rand(s, 400 + i) < CROWN_HOLES {
             continue
         }
-        // Which mass: a scaffold's, or (one in five) the leader's at the top.
-        let j = i % (scaffolds + 1)
-        let core = clump * MASS_CORE * pick(s, 205 + j, lo: 0.8, hi: 1.25)
-        let (centre, parent) = if j == scaffolds {
-            (vec3(0.0, tall - core * 0.9, 0.0) + lean * 1.4, p.limbs[0])
-        } else {
-            // A little in from the scaffold's end, so its outer clumps hang over it and the
-            // limb shows leaving the trunk under the mass (bare limbs to a ball of leaves read
-            // as a broom: round 5's quick round).
-            (mix(branches[j].points[0], tips[j], vec3(0.85)), branches[j])
+        // From the top down to the open underside, a turn of the golden angle each.
+        let u = (f32(i) + 0.5) / f32(count)
+        let y = mix(1.0, CROWN_OPEN, u)
+        let ring = sqrt(max(1.0 - y * y, 0.0))
+        let a = 2.39996 * f32(i) + pick(s, 20 + i, lo: -0.45, hi: 0.45)
+        let dir = vec3(ring * cos(a), y, ring * sin(a))
+        // The shell out over the scaffolds' ends, back between them.
+        var bulge = 0.0
+        var nearest = 0
+        var best = -2.0
+        for j in 0..scaffolds {
+            let d = dot(dir, toward[j])
+            bulge = max(bulge, smoothstep(0.55, 0.95, d))
+            if d > best {
+                best = d
+                nearest = j
+            }
         }
-        let branch_out = (parent.points[3] - parent.points[0]).xz
-        let axis = if length(branch_out) > 0.05 { normalize(branch_out) } else {
-            let a = TAU * rand(s, 310 + j)
-            vec2(cos(a), sin(a))
-        }
-        let side_axis = vec2(-axis.y, axis.x)
-        // Cores differ in height and thickness. Smaller sprays follow each scaffold
-        // outward, with gaps between their branches rather than one flat canopy shelf.
-        let squash = if i <= scaffolds { pick(s, 231 + i, lo: 0.55, hi: 0.82) } else {
-            pick(s, 231 + i, lo: 0.58, hi: 0.95)
-        }
-        let (at, r, attach) = if i <= scaffolds {
-            (centre + vec3(0.0, core * 0.18, 0.0), core, 0.72)
-        } else {
-            let attach = pick(s, 100 + i, lo: 0.52, hi: 0.94)
-            let a = pick(s, 210 + i, lo: -1.25, hi: 1.25)
-            let reach = core * pick(s, 250 + i, lo: 0.4, hi: 0.95)
-            let spread = (axis * cos(a) + side_axis * sin(a)) * reach
-            let side = vec3(
-                spread.x,
-                core * pick(s, 230 + i, lo: -0.35, hi: 0.45),
-                spread.y,
-            )
-            (centre + side, r_clump, attach)
-        }
-        if i <= scaffolds {
-            // A main mass is an unequal overlapping pair stretched along its branch.
-            // A single large ellipsoid kept reading as a round pillow under its sprays.
-            let along = vec3(axis.x, 0.0, axis.y)
-            let across = vec3(side_axis.x, 0.0, side_axis.y)
-            p.cushion(
-                at - along * (r * 0.22),
-                radius: r * pick(s, 330 + j, lo: 0.77, hi: 0.9),
-                squash: squash,
-            )
-            p.cushion(
-                at +
-                    along * (r * 0.46) +
-                    across * (r * pick(s, 340 + j, lo: -0.22, hi: 0.22)) +
-                    vec3(0.0, r * pick(s, 350 + j, lo: -0.25, hi: 0.3), 0.0),
-                radius: r * pick(s, 360 + j, lo: 0.55, hi: 0.72),
-                squash: pick(s, 370 + j, lo: 0.4, hi: 0.72),
-            )
-        } else {
-            p.cushion(at, radius: r, squash: squash)
-        }
-        if i > scaffolds && i < limbs * 2 + scaffolds {
-            let (from, axis, radius) = limb_axis(parent, attach)
+        let deep = if i % 5 == 4 { 0.7 } else { 1.0 }
+        let out = (0.8 + 0.2 * bulge + pick(s, 40 + i, lo: -0.06, hi: 0.06)) * deep
+        let r = clump * pick(s, 80 + i, lo: 0.6, hi: 0.95)
+        let at = mid + dir * shape * out - dir * (r * 0.45)
+        p.cushion(at, radius: r, squash: pick(s, 231 + i, lo: 0.62, hi: 0.9))
+        // Its own branch from the nearest scaffold, as far as the limbs go.
+        if scaffolds > 0 && branched < limbs * 2 {
+            let parent = branches[nearest]
+            let (from, axis, radius) = limb_axis(parent, pick(s, 100 + i, lo: 0.5, hi: 0.9))
             let reach = length(at - from)
             p.branch(
                 from,
                 axis,
                 from + axis * (reach * 0.2) + (at - from) * 0.55,
-                at,
+                at - dir * (r * 0.3),
                 r_from: radius * 0.38,
                 r_to: min(radius * 0.08, 0.018),
             )
+            branched += 1
         }
     }
 }
 
-/// A broad-leaved crown's mass: its core's radius against the kind's clump, and how softly its
-/// clumps blend (per metre, `Plant::blend`: softer than a plant's own, so a mass's clumps merge
-/// into one lump and its light turns over it as one form).
-const MASS_CORE: f32 = 1.15
+/// The share of a crown's clumps left out, for the sky to show through it; and how far down its
+/// shell its clumps go (the shell's height there, -1 its foot: below, it's open, and its limbs
+/// show).
+const CROWN_HOLES: f32 = 0.14
+const CROWN_OPEN: f32 = -0.6
 
-/// Keep neighbouring sprays distinct while their lighting still follows their shared crown.
+/// How deep a crown's shell is against its width (each way from its middle).
+const CROWN_DEPTH: f32 = 0.65
+
+/// How softly a crown's clumps blend (per metre, `Plant::blend`: softer than a plant's own, so
+/// its clumps merge into one crown and its light turns over it as one form).
 const MASS_BLEND: f32 = 1.35
 
 /// A pine, seed `s`, `tall` high: a straight trunk, bare low, and a flat-topped crown of dark
@@ -318,23 +267,38 @@ fn pine(s: u32, tall: f32, open: bool) -> Plant {
         ],
         [0.42, 0.3, 0.22, 0.08],
     )
-    let from = if open { 0.45 } else { 0.68 }
-    let width = if open { 0.3 } else { 0.2 }
-    let count = if open { 22 } else { 16 }
-    for i in 0..count {
-        let h = pick(s, 10 + i, lo: from, hi: 0.97)
-        // Wider in the crown's upper middle, flat on top.
-        let w = tall *
+    // Its crown: whorls of limbs, near level, shorter up the stem, each carrying flat plates of
+    // needles along most of it (only on its outer half, its limbs read as a pole's cross-arms);
+    // flat on top (a Scots pine's: clumps round the stem read as a
+    // pom-pom on a pole: specimens, round 2).
+    let from = if open { 0.42 } else { 0.66 }
+    let width = if open { 0.32 } else { 0.21 }
+    let whorls = if open { 10 } else { 8 }
+    for i in 0..whorls {
+        let u = (f32(i) + pick(s, 10 + i, lo: 0.0, hi: 0.8)) / f32(whorls)
+        let h = mix(from, 0.94, u)
+        let stem = vec3(0.0, tall * h, 0.0) + lean * h
+        // Longest a third of the way up the crown, short at its top; unequal.
+        let reach = tall *
             width *
-            (0.5 + 0.5 * sin(3.1 * (h - from) / (1.0 - from))) *
-            pick(s, 30 + i, lo: 0.4, hi: 1.0)
-        let a = TAU * rand(s, 50 + i)
-        let at = vec3(w * cos(a), tall * h, w * sin(a)) + lean * h
-        p.clump(at, radius: pick(s, 70 + i, lo: 1.1, hi: 1.7))
-        if i < 10 {
-            let stem = vec3(0.0, tall * h, 0.0) + lean * h
-            p.straight(stem, at, r_from: 0.06, r_to: 0.025)
+            (0.45 + 0.55 * sin(PI * min(u * 1.4 + 0.15, 1.0))) *
+            pick(s, 30 + i, lo: 0.6, hi: 1.1)
+        let a = 2.39996 * f32(i) + pick(s, 50 + i, lo: -0.5, hi: 0.5)
+        let dir = vec3(cos(a), pick(s, 60 + i, lo: -0.05, hi: 0.18), sin(a))
+        let tip = stem + dir * reach
+        p.straight(stem, tip, r_from: 0.05 + 0.04 * (1.0 - u), r_to: 0.02)
+        let plates = 3
+        for q in 0..plates {
+            let along = mix(0.25, 1.0, (f32(q) + 0.5) / f32(plates))
+            let at = stem + dir * reach * along + vec3(0.0, 0.25, 0.0)
+            p.cushion(at, radius: pick(s, 70 + 4 * i + q, lo: 1.0, hi: 1.6), squash: 0.42)
         }
+    }
+    // Its top: a flat head over the last whorl.
+    for q in 0..3 {
+        let a = TAU * (f32(q) / 3.0 + rand(s, 90 + q))
+        let at = vec3(cos(a) * 0.9, tall * 0.96, sin(a) * 0.9) + lean
+        p.cushion(at, radius: pick(s, 95 + q, lo: 1.1, hi: 1.5), squash: 0.5)
     }
     p
 }
@@ -345,20 +309,38 @@ fn shrub(s: u32, size: f32, count: u32, leaves: Leaves, stems: u32) -> Plant {
         leaves,
         bark: Bark { dark: vec3(0.10, 0.08, 0.06), light: vec3(0.22, 0.18, 0.13) },
     )
+    // A thicket: its stems from the ground, out and up, each its own length; its leaves in
+    // clusters round their tops and down their outer sides, unevenly (one dome of clumps read as
+    // a ball: specimens, round 2).
+    var tops: Vec<vec3> = Vec::new()
+    var outs: Vec<vec3> = Vec::new()
+    for j in 0..stems {
+        let a = 2.39996 * f32(j) + pick(s, 5 + j, lo: -0.6, hi: 0.6)
+        let out = vec3(cos(a), 0.0, sin(a))
+        let top = out * size * pick(s, 15 + j, lo: 0.3, hi: 0.95) +
+            vec3(0.0, size * pick(s, 25 + j, lo: 0.55, hi: 1.0), 0.0)
+        p.limb(
+            out * size * 0.06,
+            top * 0.45 + vec3(0.0, size * 0.1, 0.0),
+            top,
+            r_from: 0.03 + 0.012 * size,
+            r_to: 0.015,
+        )
+        tops.push(top)
+        outs.push(out)
+    }
     for i in 0..count {
+        let j = i % stems
         let a = TAU * rand(s, 10 + i)
-        let r = size * 0.9 * sqrt(rand(s, 20 + i))
-        let at = vec3(r * cos(a), size * pick(s, 30 + i, lo: 0.35, hi: 0.95), r * sin(a))
-        p.clump(at, radius: size * pick(s, 40 + i, lo: 0.4, hi: 0.65))
-        if i < stems {
-            p.limb(
-                vec3(0.0, -0.2, 0.0),
-                vec3(r * 0.3 * cos(a), size * 0.3, r * 0.3 * sin(a)),
-                at * 0.8,
-                r_from: 0.07,
-                r_to: 0.03,
-            )
-        }
+        let up = pick(s, 20 + i, lo: -0.4, hi: 0.9)
+        let ring = sqrt(max(1.0 - up * up, 0.0))
+        let d = normalize(vec3(ring * cos(a), up, ring * sin(a)) + outs[j] * 0.6)
+        let at = tops[j] + d * size * pick(s, 30 + i, lo: 0.08, hi: 0.4)
+        p.cushion(
+            at,
+            radius: size * pick(s, 40 + i, lo: 0.2, hi: 0.36),
+            squash: pick(s, 50 + i, lo: 0.7, hi: 0.95),
+        )
     }
     p
 }
@@ -574,7 +556,7 @@ pub fn kind_plant(k: u32) -> Plant {
         young: vec3(0.105, 0.16, 0.055),
         old: vec3(0.055, 0.095, 0.035),
         size: 0.26,
-        cover: 1.6,
+        cover: 1.0,
     }
     // Bark per species (the lookdev reviews' A13): oak's deep furrows broken into blocks;
     // beech's smooth silver-grey, mottled, a little cool so a green wood's light doesn't turn it
@@ -589,7 +571,7 @@ pub fn kind_plant(k: u32) -> Plant {
         young: vec3(0.13, 0.20, 0.065),
         old: vec3(0.075, 0.115, 0.05),
         size: 0.25,
-        cover: 1.7,
+        cover: 1.05,
     }
     let beech_bark = Bark {
         dark: vec3(0.07, 0.075, 0.07),
@@ -602,7 +584,7 @@ pub fn kind_plant(k: u32) -> Plant {
         young: vec3(0.16, 0.23, 0.075),
         old: vec3(0.08, 0.125, 0.06),
         size: 0.19,
-        cover: 1.2,
+        cover: 0.85,
     }
     let birch_bark = Bark {
         dark: vec3(0.05, 0.045, 0.045),
@@ -615,7 +597,7 @@ pub fn kind_plant(k: u32) -> Plant {
         young: vec3(0.09, 0.17, 0.04),
         old: vec3(0.025, 0.07, 0.02),
         size: 0.42,
-        cover: 1.6,
+        cover: 1.0,
     }
     let alder_bark = Bark {
         dark: vec3(0.07, 0.063, 0.058),
@@ -623,6 +605,9 @@ pub fn kind_plant(k: u32) -> Plant {
         grain: vec3(0.7, 0.3, 0.0),
         relief: 1.1,
     }
+    // (Each species' cover is per clump: a crown's shell of overlapping clumps, `crown_on`, covers
+    // its outside more than once at lower cover; at the floor's earlier cover its cards cost a
+    // third more of the frame: lookdev round 3's profile.)
     if k == GREAT {
         great_tree()
     } else if k == OAK_OPEN {
@@ -632,7 +617,7 @@ pub fn kind_plant(k: u32) -> Plant {
             base: 0.28,
             width: 0.52,
             clump: 2.6,
-            count: 30,
+            count: 54,
             limbs: 8,
             girth: 0.55,
             leaves: oak_leaves,
@@ -645,7 +630,7 @@ pub fn kind_plant(k: u32) -> Plant {
             base: 0.52,
             width: 0.36,
             clump: 2.3,
-            count: 22,
+            count: 42,
             limbs: 6,
             girth: 0.42,
             leaves: oak_leaves,
@@ -658,7 +643,7 @@ pub fn kind_plant(k: u32) -> Plant {
             base: 0.22,
             width: 0.5,
             clump: 2.5,
-            count: 32,
+            count: 56,
             limbs: 6,
             girth: 0.45,
             leaves: beech_leaves,
@@ -671,7 +656,7 @@ pub fn kind_plant(k: u32) -> Plant {
             base: 0.6,
             width: 0.3,
             clump: 2.2,
-            count: 20,
+            count: 40,
             limbs: 5,
             girth: 0.36,
             leaves: beech_leaves,
@@ -684,7 +669,7 @@ pub fn kind_plant(k: u32) -> Plant {
             base: 0.35,
             width: 0.24,
             clump: 1.5,
-            count: 22,
+            count: 36,
             limbs: 5,
             girth: 0.17,
             leaves: birch_leaves,
@@ -697,7 +682,7 @@ pub fn kind_plant(k: u32) -> Plant {
             base: 0.6,
             width: 0.18,
             clump: 1.4,
-            count: 14,
+            count: 26,
             limbs: 4,
             girth: 0.14,
             leaves: birch_leaves,
@@ -711,10 +696,10 @@ pub fn kind_plant(k: u32) -> Plant {
         broadleaf(
             109,
             tall: 15.0,
-            base: 0.3,
+            base: 0.38,
             width: 0.26,
             clump: 1.7,
-            count: 20,
+            count: 36,
             limbs: 5,
             girth: 0.22,
             leaves: alder_leaves,
@@ -727,7 +712,7 @@ pub fn kind_plant(k: u32) -> Plant {
             base: 0.42,
             width: 0.22,
             clump: 1.6,
-            count: 16,
+            count: 36,
             limbs: 4,
             girth: 0.2,
             leaves: alder_leaves,
@@ -737,27 +722,27 @@ pub fn kind_plant(k: u32) -> Plant {
         shrub(
             111,
             5.0,
-            12,
+            34,
             Leaves {
                 young: vec3(0.11, 0.18, 0.04),
                 old: vec3(0.03, 0.07, 0.02),
                 size: 0.36,
                 cover: 1.8,
             },
-            4,
+            6,
         )
     } else if k == SLOE {
         shrub(
             112,
             3.0,
-            14,
+            30,
             Leaves {
                 young: vec3(0.07, 0.12, 0.03),
                 old: vec3(0.02, 0.05, 0.02),
                 size: 0.32,
                 cover: 2.0,
             },
-            3,
+            7,
         )
     } else if k == YOUNG_BROAD {
         broadleaf(
@@ -766,7 +751,7 @@ pub fn kind_plant(k: u32) -> Plant {
             base: 0.3,
             width: 0.3,
             clump: 0.6,
-            count: 9,
+            count: 16,
             limbs: 3,
             girth: 0.04,
             leaves: beech_leaves,
@@ -1275,8 +1260,19 @@ pub fn as_drawn(trees: [Tree]) -> Vec<Tree> {
 
 /// The scale an instance of kind `k` is placed at to stand `tall` high.
 pub fn scale_of(k: u32, tall: f32) -> f32 {
-    clamp(tall / BUILT[k], 0.15, 1.8)
+    clamp(tall / BUILT[k], 0.15, 2.6)
 }
+
+/// How thick a living tree's trunk and limbs are drawn against its kind's at its height
+/// (`engine::plant::Instance::thick`): as thick as its history grew it at breast height, never
+/// thinner than its kind's, to `THICKEST` times (an ancient's trunk, its kind's scaled to its
+/// height, was a pole: the owner's ancients, larger than life).
+pub fn thickness(t: Tree, k: u32) -> f32 {
+    let kinds = trunk_at(k, drawn_tall(k, t.tall), 1.2, t.fork)
+    clamp(t.girth / max(kinds, 1.0e-3), 1.0, THICKEST)
+}
+
+const THICKEST: f32 = 3.0
 
 /// The kind a standing tree (living, or a snag) is drawn as.
 pub fn kind_of(t: Tree) -> u32 {
@@ -1319,15 +1315,27 @@ pub fn drawn_kind(t: Tree) -> u32 {
     }
 }
 
-/// An open-grown kind drawn in its forest form where its neighbours crowd it (its crown is drawn
-/// narrower than its kind's: `crown_wide`): a canopy tree whose crown top reaches the light is
+/// Whether tree `t`'s neighbours crowd it: its crown narrower than its species' in the open at its
+/// height (`Habit::crown`) by more than `UNCROWDED`.
+pub fn crowded(t: Tree) -> bool {
+    t.reach < UNCROWDED * species::habits()[t.kind].crown * t.tall
+}
+
+/// How wide a crown is, against its species' in the open at its height, that its neighbours
+/// don't crowd: all but as wide (at 0.8, a third of the woods' broadleaves were drawn open, their
+/// low wide crowns closing the views and costing a tenth more of the frame).
+const UNCROWDED: f32 = 0.95
+
+/// An open-grown kind drawn in its forest form where its neighbours crowd it (its crown narrower
+/// than its species' in the open at its height, `UNCROWDED`; against its kind's drawn crown,
+/// wider than any the history grows, even a lone oak was crowded: specimens, round 1): a canopy tree whose crown top reaches the light is
 /// still a forest tree below it, with no wide, low crown and no limbs at the eye's height (the
 /// shots item's exploration check: open forms in closed woods closed the views, dead 27% of the
 /// floor and 53% of the beech wood). Where browsing keeps a line (its `lift`: the wood pasture,
 /// the edge), an open tree keeps its open form: the pasture's spreading oaks are its subject.
 pub fn crowded_form(t: Tree, k: u32) -> u32 {
     let open = k == OAK_OPEN || k == BEECH_OPEN || k == BIRCH_OPEN
-    if !open || t.lift > 0.0 || crown_wide(t, k, drawn_tall(k, t.tall)) >= 1.0 {
+    if !open || t.lift > 0.0 || !crowded(t) {
         k
     } else if k == OAK_OPEN {
         OAK_FOREST
@@ -1340,7 +1348,9 @@ pub fn crowded_form(t: Tree, k: u32) -> u32 {
 
 fn living_kind(t: Tree) -> u32 {
     let open = t.light > 0.55
-    if t.kind == THORN {
+    if (t.kind == OAK || t.kind == BEECH) && t.girth >= VETERAN {
+        GREAT
+    } else if t.kind == THORN {
         HAWTHORN
     } else if t.kind == BLACKTHORN {
         SLOE
@@ -1358,6 +1368,11 @@ fn living_kind(t: Tree) -> u32 {
         if t.seed % 2 == 0 { ALDER_A } else { ALDER_B }
     }
 }
+
+/// How thick an oak's or a beech's trunk is (its radius, m) that it's drawn as the great tree
+/// (`GREAT`, `examples/great-tree`): a veteran of the grown world's ancient wood (`species::ancient`),
+/// broad and spreading over its younger neighbours.
+const VETERAN: f32 = 1.2
 
 /// Lowest point of a trunk section, including its tilt. Its circular section stays round.
 fn log_support(inst: Instance, trunk: Tube<4>, t: f32) -> vec3 {
@@ -1454,20 +1469,20 @@ pub fn placed(trees: [Tree], height: fn(vec2) -> f32) -> Vec<Placed> {
                 let tall = drawn_tall(k, t.tall)
                 let wide = crown_wide(t, k, tall)
                 let tint = stand_tint(t.at, height, t.seed)
-                out.push(
-                    instance(
-                        k,
-                        t.at,
-                        y,
-                        tall,
-                        t.lean,
-                        t.seed,
-                        sink: 0.0,
-                        fork: t.fork,
-                        wide: wide,
-                        tint: tint,
-                    ),
+                var p = instance(
+                    k,
+                    t.at,
+                    y,
+                    tall,
+                    t.lean,
+                    t.seed,
+                    sink: 0.0,
+                    fork: t.fork,
+                    wide: wide,
+                    tint: tint,
                 )
+                p.at.thick = thickness(t, k)
+                out.push(p)
             }
         } else if t.state == State::Snag {
             let k = snag_kind(t)

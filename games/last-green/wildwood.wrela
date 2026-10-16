@@ -73,19 +73,20 @@ pub fn is_wild(t: vec2i) -> bool {
 /// Wild tile `t`'s decisions, as a baked tile's: its trees (`own`, or grown when it's empty), no
 /// trails, damp ground, no streams.
 pub fn decisions(t: vec2i, own: take Vec<Tree>) -> Decisions {
-    decisions_with(t, take own, road_distance, kept_clear)
+    decisions_with(t, take own, road_distance, kept_clear, species::habits())
 }
 
 /// `decisions`, its trees kept `clear` of what `ride` gives the distance to and of where `clear`
-/// holds (`engine::wild::tile_trees`).
+/// holds, of the species' `habits` (`engine::wild::tile_trees`).
 pub fn decisions_with(
     t: vec2i,
     own: take Vec<Tree>,
     ride: fn(vec2) -> f32,
     clear: fn(vec2) -> bool,
+    habits: [engine::grow::Habit],
 ) -> Decisions {
     let trees = if own.is_empty() {
-        engine::wild::tile_trees(t, SPECIES, species::habits(), map::PRESENT, ride, clear)
+        engine::wild::tile_trees(t, SPECIES, habits, map::PRESENT, ride, clear)
     } else {
         take own
     }
