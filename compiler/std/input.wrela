@@ -1,7 +1,11 @@
-// Input (language.md §6.15's polled requests' neighbour): the pointer, keyboard and gamepad
-// events the host has queued since the program last read them. Reading them is `nondet` (§8): what a call
-// reads depends on when a person moved the mouse, so `@deterministic` code takes input as data,
-// as it takes the time (`Input::update` is ordinary code over a run of events).
+// Keyboard, pointer and gamepad input: the events the host queued since the program last read
+// them. A program reads them once a frame with `Input::read`, then asks what's held and what
+// was pressed; `events()` gives the events themselves. The events also carry text, an input
+// method's composition, pastes, semantic nodes' actions and network messages.
+//
+// Reading events is `nondet` (language.md §8): what a call reads depends on when a person moved
+// the mouse. So `@deterministic` code takes input as data, as it takes the time:
+// `Input::update` is ordinary code over a run of events.
 //
 // The hosts deliver events through `wrela.input` (runtime/abi `input`): the same events in the
 // same order in Chrome and in the native host, which plays a script of them for tests.
@@ -169,7 +173,7 @@ pub enum Event: Copy + Eq + StateHash + Serialize {
     PointerUp { at: vec2, button: Button, mods: Mods },
     /// A scroll: right and down are positive, in pixels.
     Wheel { at: vec2, delta: vec2, mods: Mods },
-    /// `repeat` is true when the key is held and the keyboard repeats it.
+    /// A key went down. `repeat` is true when the key is held and the keyboard repeats it.
     KeyDown { key: Key, repeat: bool, mods: Mods },
     KeyUp { key: Key, mods: Mods },
     /// A character typed: a Unicode scalar value.
@@ -185,7 +189,8 @@ pub enum Event: Copy + Eq + StateHash + Serialize {
     Compose { char: u32, index: u32, length: u32 },
     /// A person pasted: the host keeps what by `serial` (`clipboard/pasted`).
     Paste { serial: u32 },
-    /// An assistive technology acted on the program's accessibility node `node` (`a11y/tree`).
+    /// A person, or an assistive technology, acted on the program's semantic node `node`
+    /// (`std::semantics`). A focus on node 0: the focus left the program's nodes for the canvas.
     Assist { node: u32, action: Assist },
     /// `len` bytes from connection `conn` (language.md §12): `payload(e)` reads them, in the call
     /// that was given the event. `serial` is the host's and is never used twice.
@@ -193,6 +198,10 @@ pub enum Event: Copy + Eq + StateHash + Serialize {
     /// Connection `conn` opened, or closed. On a server, `tag` is the tag the program gave it
     /// (`platform::net::tag`), when the host tells a room it started again of it; else 0.
     Connection { conn: u32, open: bool, tag: u32 },
+    /// The field the host keeps for semantic node `node` changed (`std::semantics`): its newest
+    /// revision. The program reads the field by the node (`field/state`); the host says so again
+    /// until it has.
+    Field { node: u32, revision: u32 },
 }
 
 /// What an assistive technology does to a node.
@@ -201,8 +210,14 @@ pub enum Assist: Copy + Eq + StateHash + Serialize + Fieldless {
     Activate,
     /// Make it the selection.
     Select,
-    /// Move the focus to it.
+    /// The focus moved to it (node 0: to the canvas).
     Focus,
+    /// Step a slider's value up.
+    Increment,
+    /// Step a slider's value down.
+    Decrement,
+    /// Close a dialog or a menu.
+    Dismiss,
 }
 
 /// The text an input method is composing, put together from `Compose` events: a change counts
@@ -351,13 +366,14 @@ pub(package) fn event_of(r: RawEvent) -> Option<Event> {
         },
         13 => Some(Event::Message { conn: r.a, serial: u64(r.b) | (u64(r.c) << 32), len: r.d }),
         14 => Some(Event::Connection { conn: r.a, open: r.b != 0, tag: r.c }),
+        15 => Some(Event::Field { node: r.a, revision: r.b }),
         _ => None,
     }
 }
 
-/// The bytes of a message (`Event::Message`), read during the call that was given it: `None`
-/// for another event, or for a message an earlier call was given, whose bytes are gone. It's
-/// `nondet` (§8), as reading input is.
+/// The bytes of a message (`Event::Message`), read during the call that was given it. It gives
+/// `None` for another event, or for a message an earlier call was given, whose bytes are gone.
+/// It's `nondet` (§8), as reading input is.
 ///
 /// ```wrela
 /// use std::input::{Event, events, payload}
@@ -600,7 +616,7 @@ impl Input {
                     let _ = self.composer.apply(e)
                 },
                 // A paste, an assistive action and the network's events hold nothing down.
-                Event::Paste { .. } | Event::Assist { .. } => {},
+                Event::Paste { .. } | Event::Assist { .. } | Event::Field { .. } => {},
                 Event::Message { .. } | Event::Connection { .. } => {},
                 Event::PadButton { pad, .. } => {
                     if pad < PADS {

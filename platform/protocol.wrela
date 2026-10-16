@@ -1,4 +1,7 @@
-// Shared Wrela session protocol. Hosts carry these bytes without interpreting save policy.
+// The messages between the console and a game's session program: list a profile's saves,
+// prepare a save, start the game, and export or import a save. The console sends a `Request`
+// and the session program answers with a `Reply`. The hosts carry the bytes and never read
+// them; how a game keeps its saves is the session program's choice.
 use std::serialize::{Serialize, load, save}
 
 pub struct SaveInfo: Clone + Serialize {
@@ -25,7 +28,8 @@ pub enum Reply: Clone + Serialize {
     Error { message: String },
 }
 
-/// Exported saves identify their game and schema before the game reads the payload.
+/// An exported save: the game's name and its save format's version come before the save's
+/// bytes, so a game checks them before it reads `body`.
 pub struct SaveFile: Clone + Serialize {
     pub game: String,
     pub version: u32,
@@ -33,7 +37,8 @@ pub struct SaveFile: Clone + Serialize {
     pub body: Vec<u8>,
 }
 
-/// A profile key is a bounded storage component, separate from its editable display name.
+/// Whether `key` is a valid profile key: 1 to 64 of a-z, 0-9 and `-`. A key is part of a storage
+/// path, so it can't leave its directory; the profile's name, which a person can change, is apart.
 pub fn valid_key(key: str) -> bool {
     if key.is_empty() || key.len() > 64 { return false }
     for i in 0..key.len() {

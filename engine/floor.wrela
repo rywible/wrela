@@ -1,7 +1,12 @@
-// The floor kit: what a floor's program uses to stream its world round the player and keep its
-// caches, with none of a floor's own content (its map, ground, history, kinds, tuning). A floor is
-// a build of its own (`std::reload`, engine::tower); each one's main.wrela holds its content and
-// calls these.
+// The floor kit: shared code a floor's program uses to stream its world round the player, keep
+// its caches and send the player back down to the stair.
+//
+// A floor is a build of its own (`std::reload`, engine::tower). Its main.wrela holds its content
+// (its map, ground, history, kinds and tuning) and calls these:
+// - `Exit` and `Doorway`: the way back down to the stair, taken when the player steps into it;
+// - `tile_distance`, `tile_radius` and `near_tile_radius`: which tiles to stream round the eye;
+// - `Kept`: a static shadow cascade that follows the player, drawn a strip a frame;
+// - `fullscreen`: a pass that draws each pixel of its target once.
 
 use place::{TILE, tile_of}
 use plant::{Wind, full}
@@ -166,10 +171,10 @@ fn the_near_tile_search_keeps_every_candidate_in_order() {
 
 // ---- Caches that follow the player ----------------------------------------------------------
 
-/// A static shadow cascade kept round a moving middle (#54 §7), with no frame drawing it whole:
-/// the map in use stays while the next is drawn beside it, a strip of its trees a frame (the wood
-/// chooses each strip's on the GPU), and the two swap when the last strip is drawn. Playing spike
-/// 17, each time the probes and the shadows re-centred one frame took 67–300 ms.
+/// A static shadow cascade kept round a moving middle, with no frame drawing it whole: the map
+/// in use stays while the next is drawn beside it, a strip of its trees a frame (the wood
+/// chooses each strip's on the GPU), and the two swap when the last strip is drawn. So the
+/// shadows re-centre with no long frame.
 ///
 /// It holds the map in use and its middle; the map being drawn beside it and its middle, and the
 /// strip it's at; its square's size and reach, how far past the square a shadow can reach into

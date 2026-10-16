@@ -1,7 +1,10 @@
-// What every surface's shading reads (#28 §5), as one parameter (a group, language.md §12): the
-// frame's camera and light, the sun's shadows, the probes' sky light, the clouds' shadows and
-// the air. A shading pass binds it, and asks `sun_at` (or `sun_and_sky`, `sun_and_gloss`) and
-// `shown`.
+// The lighting that every shading pass reads, as one parameter (`Lighting`, a group:
+// language.md §12): the frame's camera and light, the sun's shadows, the probes' sky light, the
+// clouds' shadows and the air.
+//
+// A shading pass binds a `Lighting`, then asks how much sun reaches a point (`sun_at`, or
+// `sun_and_sky` and `sun_and_gloss` for more), and `shown` for a lit surface's colour as the
+// eye sees it through the air.
 
 use light::{Light, Lit}
 use probes::{ProbeGrid, sky_light, sky_lights}

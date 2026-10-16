@@ -1,9 +1,13 @@
-// Trees and shrubs drawn (#28 §4): each kind of plant cooked once (its leaf cards and its limbs
-// on the GPU); instances of the kinds placed in the world; and each frame, the instances in view
-// sorted by kind and by how they're drawn: near ones as cards at a level by their distance, far
-// ones as impostors, the farthest as volumes (`impostor`).
+// Trees and shrubs: plants cooked once on the GPU, placed in the world, and drawn each frame by
+// how far they are, as leaf cards, impostors or volumes.
 //
-// Cut cards cost their shading only once a pixel (AC4): a depth prepass draws the cards cut by
+// `kind` cooks a kind of plant once (its leaf cards and its limbs, on the GPU). A `Forest` holds
+// the kinds and the instances placed in the world (`Forest::new`, `Forest::place`). Each frame,
+// `Forest::select` sorts the instances in view by kind and by how they're drawn: near ones as
+// cards at a level by their distance, far ones as impostors, the farthest as volumes
+// (`impostor`). `Forest::prepass`, `Forest::shade` and `Forest::shadow` draw them.
+//
+// Cut cards cost their shading only once a pixel: a depth prepass draws the cards cut by
 // `discard` into the depth target alone; the shading pass draws them again where the depth is
 // equal and writes none, so only the nearest leaf at each pixel is shaded, and the shading needs
 // no `discard` (which would turn off the GPU's early depth test).
@@ -89,8 +93,8 @@ pub struct Placed: Copy {
 /// The ways an instance is drawn: its cards' levels, an impostor, a volume (`lod`).
 pub const WAYS: u32 = VOLUME + 1
 
-/// A list of instances drawn one way: a kind, how (a card level, `IMPOSTOR` or `VOLUME`), and where its
-/// instances start in the frame's buffer and how many.
+/// A list of instances drawn one way: a kind, how (a card level, `IMPOSTOR` or `VOLUME`), and
+/// where its instances start in the frame's buffer and how many.
 pub struct List: Copy {
     pub kind: u32,
     pub how: u32,
@@ -105,17 +109,18 @@ pub struct Forest {
     pub placed: Vec<Placed>,
     instances: GpuBuffer<Instance>,
     /// Each list's instances' marks (`mark_of`), laid out as `instances`: found once a frame on
-    /// the CPU, not at each corner of each card, limb and far quad (the limbs 0.33 ms, 0.30; the
-    /// cards' passes 0.01 less each).
+    /// the CPU, not at each corner of each card, limb and far quad.
     marks: GpuBuffer<vec2u>,
     pub lists: Vec<List>,
     every: GpuBuffer<Instance>,
     pub every_lists: Vec<List>,
     /// The leaf patterns cards read, cooked once, and each one's outline (`cook_outlines`); bark's
-    /// ridges, cooked once (`plant::cook_ridges`), and the sampler that repeats them.
+    /// ridges, cooked once (`plant::cook_ridges`, and coarse: `plant::cook_coarse`), and the
+    /// sampler that repeats them.
     pub atlas: Texture<Rgba8>,
     outlines: GpuBuffer<vec2>,
     ridges: Texture<Rgba8>,
+    coarse: Texture<Rgba8>,
     repeat: Sampler,
     /// The cards' and the limbs' triangles (`card_indices`, `limb_indices`), and each list's
     /// draws of them (`ListDraws`: `lists`'s, then `every_lists`'s).
@@ -226,6 +231,8 @@ impl Forest {
         var every_args: GpuBuffer<ListDraws> = buffer(kinds.len())
         write(mut every_args, 0, args_of(kinds, every_lists, 1))
         let room_args = kinds.len() * WAYS
+        let ridges = plant::cook_ridges()
+        let coarse = plant::cook_coarse(ridges)
         Forest {
             kinds,
             placed,
@@ -236,7 +243,8 @@ impl Forest {
             every_lists,
             atlas,
             outlines,
-            ridges: plant::cook_ridges(),
+            ridges,
+            coarse,
             repeat: std::gpu::sampler(address: std::gpu::Address::Repeat),
             card_triangles,
             limb_triangles,
@@ -424,8 +432,8 @@ pub struct CardDraw: Copy + GpuData {
     /// How wide a cut's hashed cell is, in the scene's pixels (`Lod::cell`).
     pub cell: f32,
     /// What a third person's camera keeps clear of leaves: the point it looks at (the player)
-    /// and, in `w`, how far round the line from the eye to it a card fades (0: none). M6 §5: the
-    /// camera never shows the inside of foliage.
+    /// and, in `w`, how far round the line from the eye to it a card fades (0: none). The camera
+    /// never shows the inside of foliage.
     pub clear: vec4 = vec4(0.0),
 }
 
@@ -442,7 +450,7 @@ pub fn faded(c: vec3, half: f32, eye: vec3, clear: vec4) -> f32 {
     let t = clamp(dot(c - eye, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
     let d = length(c - (eye + ab * t))
     let reach = length(c - eye) - half
-    // Over a short way (a card part faded for long reads as a curtain of dots: the reviews).
+    // Over a short way (a card part faded for long reads as a curtain of dots).
     max(1.0 - smoothstep(clear.w, clear.w * 1.25, d), 1.0 - smoothstep(1.0, 1.4, reach))
 }
 
@@ -500,9 +508,8 @@ fn card_corner(
 }
 
 /// A card's corner, seen by the camera. Its vertices carry little (a tile-based GPU writes every
-/// vertex's outputs to memory before it draws, and the cards are many: 23 floats a vertex cost
-/// the prepass and the shading 0.4 ms more than 10): the shading reads the card's normal, depth
-/// and tint from the card and its instance, and its point from the depth.
+/// vertex's outputs to memory before it draws, and the cards are many): the shading reads the
+/// card's normal, depth and tint from the card and its instance, and its point from the depth.
 @vertex
 pub fn card(
     v: VertexIndex,
@@ -777,7 +784,7 @@ pub fn limb_shadow(
 /// there: near its foot (a trunk's base, a limb's fork), on faces turned up or to the north (-z,
 /// where the sun doesn't reach), in patches with edges: moss is a material on the bark, not a
 /// tint over it. (All over a trunk's sides, it turned the wood's trunks green; soft and wide at
-/// a big trunk's foot, it still tinted its lower half: round 2's blind judges, shot 17.)
+/// a big trunk's foot, it still tinted its lower half.)
 fn mossy(n: vec3, along: f32, patch: f32) -> f32 {
     let foot = 1.0 - smoothstep(0.2, 1.4, along)
     let place = max(
@@ -786,9 +793,6 @@ fn mossy(n: vec3, along: f32, patch: f32) -> f32 {
     )
     place * smoothstep(0.42, 0.58, patch)
 }
-
-/// How wide bark's grain is (m): a pixel past it sees its pattern's mean (`bark_shade`).
-const BARK_GRAIN: f32 = 0.05
 
 /// Turns a surface by the gradient of its height, measured along two screen directions.
 /// Unlike height alone, opposite sides of a furrow face opposite ways. The surface basis
@@ -804,11 +808,12 @@ fn bark_normal(n: vec3, dx: vec3, dy: vec3, height: vec2) -> vec3 {
     normalize(n - gradient / max(1.0, length(gradient) / 1.2))
 }
 
-/// A limb's pixel: its bark, its ridges read from their cooked tile (`plant::cook_ridges`,
-/// through a repeating sampler `rs`), darker in its furrows; its foot's bark low on its trunk
-/// (`Bark::foot`), lichen in its pale patches and its moss from its corners: no field is
-/// evaluated here. Its pattern fades to its mean as a pixel grows past its grain (`BARK_GRAIN`),
-/// so a far trunk doesn't sparkle.
+/// A limb's pixel: its bark, its ridges read from their cooked tiles (`plant::cook_ridges`, and
+/// `plant::cook_coarse` as a pixel grows past their texels, through a repeating sampler `rs`),
+/// darker in its furrows; its foot's bark low on its trunk (`Bark::foot`), lichen in its pale
+/// patches and its moss from its corners: no field is evaluated here. Its pattern fades to its
+/// mean as a pixel grows past the coarse tile's texels (`plant::bark_at`), so a far trunk doesn't
+/// sparkle.
 @fragment
 pub fn bark_shade(
     b: BarkVertex,
@@ -816,13 +821,15 @@ pub fn bark_shade(
     lt: Lighting,
     bark: Bark,
     ridges: Texture<Rgba8>,
+    coarse: Texture<Rgba8>,
     rs: Sampler,
 ) -> vec4 {
     // Derivatives run before the coverage discard, so every lane has a surface and height.
-    let t = ridges.sample_level(rs, vec2(b.along.x, b.along.y / plant::RIDGES_ALONG))
+    let uv = vec2(b.along.x, b.along.y / plant::RIDGES_ALONG)
+    let size = vec2(f32(plant::RIDGES_W), f32(plant::RIDGES_H))
+    let texels = max(length(dpdx(uv) * size), length(dpdy(uv) * size))
+    let (t, fine) = plant::bark_at(ridges, coarse, rs, uv, texels)
     let smooth_n = normalize(b.normal)
-    let px = max(length(dpdx(b.world)), length(dpdy(b.world)))
-    let fine = 1.0 - smoothstep(BARK_GRAIN * 0.3, BARK_GRAIN, px)
     // The foot's bark, fading up into the trunk's over its last metre or so, unevenly.
     let foot = if bark.foot.w > 0.0 {
         1.0 - smoothstep(bark.foot.w - 0.6, bark.foot.w + 0.9, b.up + 1.4 * (t.a - 0.6))
@@ -830,8 +837,21 @@ pub fn bark_shade(
     // The foot's bark: cracked plates, the ridges' fissures through them.
     let foot_tone = t.g * (0.6 + 0.4 * t.r)
     let raised = mix(bark.raised(t), (foot_tone - 0.5) * 1.6, foot)
-    let height = raised * 0.035 * fine
-    let n = bark_normal(smooth_n, dpdx(b.world), dpdy(b.world), vec2(dpdx(height), dpdy(height)))
+    // Its relief's slope, read from the tiles a texel (of those read) each way along them, turned
+    // into the screen's by the tiles' own derivatives: the height's own screen derivatives are one
+    // a 2x2 block of pixels, and on fine bark the blocks' normals read as stitches.
+    let height = |p: vec4| mix(bark.raised(p), (p.g * (0.6 + 0.4 * p.r) - 0.5) * 1.6, foot) * 0.035
+    let step = vec2(max(texels, 1.0)) / size
+    let (tu, _) = plant::bark_at(ridges, coarse, rs, uv + vec2(step.x, 0.0), texels)
+    let (tv, _) = plant::bark_at(ridges, coarse, rs, uv + vec2(0.0, step.y), texels)
+    let h = height(t)
+    let slope = vec2(height(tu) - h, height(tv) - h) / step * fine
+    let n = bark_normal(
+        smooth_n,
+        dpdx(b.world),
+        dpdy(b.world),
+        vec2(dot(slope, dpdx(uv)), dot(slope, dpdy(uv))),
+    )
     if !keeps_packed(b.keep.value, pixel.position.xy) {
         discard()
     }
@@ -884,7 +904,7 @@ fn bark_relief_follows_surface_slopes_and_stays_bounded() {
     )
 }
 
-/// The leaves a card holds in the sun's shadow maps (spike 15's).
+/// The leaves a card holds in the sun's shadow maps.
 pub const SHADOW_LEAVES: u32 = 3
 
 /// A depth-only draw's fragment: its colour goes nowhere.
@@ -895,8 +915,8 @@ pub fn nothing() -> vec4 {
 
 // ---- drawing a forest ----------------------------------------------------------------------
 
-/// The cards' draw state for a level: they grow sqrt(2)^level, and face `right` and `up`; their cut's
-/// cells are `cell` pixels wide.
+/// The cards' draw state for a level: they grow sqrt(2)^level, and face `right` and `up`; their
+/// cut's cells are `cell` pixels wide.
 pub fn card_draw(
     wind: Wind,
     level: u32,
@@ -1001,8 +1021,8 @@ impl Forest {
     /// The shading pass's draws: each list of cards where the prepass left its depth, then the
     /// limbs (which write depth), then the far instances. What can't drop a fragment comes
     /// first: a fragment shader that can (the limbs' and the far instances', with `discard`)
-    /// keeps a tile-based GPU from hiding what's behind it, so Apple's GPUs draw those last
-    /// (the frame's median 4.94 ms against 5.04).
+    /// keeps a tile-based GPU (such as Apple's) from hiding what's behind it, so those draw
+    /// last.
     pub fn shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
         let cam = lt.cam
         for li in 0..self.lists.len() {
@@ -1047,7 +1067,13 @@ impl Forest {
                             instances: self.instances(l),
                             marks: self.marks(l),
                         ),
-                        bark_shade.bind(lt, k.plant.bark, ridges: self.ridges, rs: self.repeat),
+                        bark_shade.bind(
+                            lt,
+                            k.plant.bark,
+                            ridges: self.ridges,
+                            coarse: self.coarse,
+                            rs: self.repeat,
+                        ),
                         indices: self.limb_triangles,
                         indirect: self.args.at(li).limbs,
                         cull: std::gpu::Cull::Back,
@@ -1152,7 +1178,7 @@ impl Forest {
 
 /// A card's fragment, counted at its pixel (row by row, `width` to a row) where its depth is
 /// the prepass's (`depth`), and drawn as nothing: the cards' shading pass's work, pixel by
-/// pixel (AC4). A fragment shader that writes a buffer runs before the depth test, so it makes
+/// pixel. A fragment shader that writes a buffer runs before the depth test, so it makes
 /// the shading pass's equal test itself.
 @fragment
 pub fn leaf_counted(
@@ -1228,7 +1254,7 @@ impl Forest {
     }
 
     /// Every card's leaves counted into `covering` at their pixels, with no depth test: how many
-    /// cards cover each pixel (what spike 15 shaded, with no prepass).
+    /// cards cover each pixel (what the shading would shade with no prepass).
     pub fn count_covering<P: RenderPass>(
         self,
         pass: P,

@@ -65,10 +65,12 @@ def chrome_binary(environ=os.environ, platform=sys.platform, which=shutil.which)
 
 def platform_args(platform=sys.platform):
     """Linux Chrome keeps WebGPU behind flags, and without Vulkan through ANGLE it offers only
-    its software adapter, which the runtime refuses."""
+    its software adapter, which the runtime refuses. It also reads cookies only after the
+    system keyring answers, which can take 25 s; a test profile is thrown away and needs no
+    keyring."""
     if platform.startswith("linux"):
         return ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-angle=vulkan",
-                "--ignore-gpu-blocklist"]
+                "--ignore-gpu-blocklist", "--password-store=basic"]
     return []
 
 
@@ -307,7 +309,8 @@ def run(argv, commands):
         fail(2, f"can't make {results}: {e}")
 
     done = []
-    driven = []
+    driven = []  # why the DevTools input failed
+    drove = []  # it finished
     server = None
     if url is None:
         server = start_server(page, done)
@@ -333,6 +336,7 @@ def run(argv, commands):
                 def drive():
                     try:
                         request(shared, "cdp", {"target": tab["target"], "commands": commands}, timeout=timeout)
+                        drove.append(True)
                     except Exception as error:
                         driven.append(f"the DevTools input failed: {error}")
                 threading.Thread(target=drive, daemon=True).start()
@@ -373,7 +377,8 @@ def run(argv, commands):
             if driven:
                 reason = driven[0]
                 break
-            if done:
+            # A scripted page passes only once its script has run, too.
+            if done and (commands is None or drove or done[0] != "ok"):
                 status, reason = (0, None) if done[0] == "ok" else (1, f"page failed: {done[0]}")
                 break
             if (shared and not request(shared, "alive", {})["alive"]) or (proc is not None and proc.poll() is not None):

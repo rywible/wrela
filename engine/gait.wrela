@@ -1,12 +1,17 @@
-// A creature walking on terrain (#28 §8, D-023): a procedural gait whose speed and turn come
-// from a path; each foot planted where a raycast against the terrain field meets the ground,
-// and held there until it lifts; two-bone IK per leg; the pelvis lowered to the lowest plant;
-// and secondary motion, a damped spring per bone of the head's and the tail's chains. The sim
-// steps it with the tick (deterministic); the frames draw it between two ticks' snapshots.
+// A procedural walk for a creature on terrain: its speed and turn come from a path, and each
+// foot is planted on the ground and held there until it lifts.
 //
-// A walk's legs lift one at a time, hind then fore on each side (left hind, left fore, right
-// hind, right fore), each on the ground for most of its cycle. A foot lands ahead of its hip by
-// half its stance's travel, so it's under the hip mid-stance, and lifts as far behind.
+// Make a `Body` from a skeleton (`body`) and a `Walker` that stands on the terrain (`stand`).
+// The sim calls `step` each tick, which is deterministic. A frame draws the walker between two
+// ticks' states (`between`) and poses the skeleton with `palette`.
+//
+// - Each foot is planted where a ray cast against the terrain field meets the ground, and held
+//   there until it lifts.
+// - Each leg bends by two-bone IK, and the pelvis lowers to the lowest plant.
+// - The head's and the tail's chains move as secondary motion: a damped spring a bone.
+// - The legs lift one at a time, hind then fore on each side (left hind, left fore, right hind,
+//   right fore), each on the ground for most of its cycle. A foot lands ahead of its hip by
+//   half its stance's travel, so it is under the hip mid-stance, and lifts as far behind.
 
 use creature::{Bone, Skeleton}
 use present::short_way

@@ -1,12 +1,11 @@
-// Glyphs made from a host's drawing (runtime/browser glyph.ts, `font/glyph`): a character group
-// the baked fonts haven't, drawn by the system's fonts at a few times the fields' size. Ink
-// without colour of its own becomes a signed distance field like the baked ones (ttf.wrela), from
-// the drawing's exact Euclidean distance transform, so it's sharp at any size; an emoji's colour
+// Glyphs for the character groups that the baked fonts don't have, made from the host's drawing
+// (`font/glyph`): the system's fonts draw the group at a few times the fields' size. Ink without
+// colour of its own becomes a signed distance field like the baked ones (ttf.wrela), from the
+// drawing's exact Euclidean distance transform, so it's sharp at any size; an emoji's colour
 // stays a small image.
 //
-// The distance transform is Felzenszwalb and Huttenlocher's ("Distance Transforms of Sampled
-// Functions", Theory of Computing 8, 2012): the squared distance to the nearest feature, one
-// line at a time as the lower envelope of parabolas, columns then rows.
+// The distance transform gives the squared distance to the nearest feature, one line at a time
+// as the lower envelope of parabolas, columns then rows.
 
 /// A host's drawing: its advance, where its pixels sit from the pen (left, and top above the
 /// baseline), all in pixels at `px` an em; its size, whether it has colour of its own, and its

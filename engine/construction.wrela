@@ -1,6 +1,13 @@
-// Construction leaves values which are continuous fields, usable by CPU queries and GPU
-// cooking. A world supplies plans, terrain and material knowledge. This module owns the stock,
-// work and support rules, so an unsuccessful action cannot spend resources or leave geometry.
+// Building with pieces: a worksite gathers material, then installs solid pieces that the ground
+// or other pieces support.
+//
+// A world supplies its plans, its ground (`Ground`) and what its materials can do (`Material`).
+// This module owns the rules for stock, work and support: `Worksite::gather` moves material
+// from a finite source into stock, and `Worksite::install` places a `Piece` only if every check
+// passes. A refused piece (`Refusal`) spends no stock or work and leaves no geometry.
+//
+// What is built (`Built`) is a continuous field (a `Surface`), so CPU queries and GPU cooking
+// read the same value.
 
 use std::field::{Surface, cuboid}
 use std::math::is_finite
@@ -82,6 +89,7 @@ pub trait Ground {
     fn height(self, at: vec2) -> f32
 }
 
+/// Why `Worksite::install` refused a piece.
 pub enum Refusal: Copy + Eq {
     Shape,
     Material,
@@ -92,6 +100,8 @@ pub enum Refusal: Copy + Eq {
     Overlap,
 }
 
+/// A place where things are built: what stands there, the stock of each material, and the
+/// work spent.
 pub struct Worksite: Clone {
     pub built: Built,
     stock: Vec<f32>,
