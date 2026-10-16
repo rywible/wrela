@@ -2368,6 +2368,20 @@ pixel is 13/255 from the mean of 256 samples a pixel, where point samples are 87
 against 12 in the far rows, where they turn to moiré), the same bits in Chrome as natively. No
 code was taken from either paper; its cost per pixel against a point sample wasn't measured.
 
+The clusters' memory (S4's question for the spike) came down from about 500 MB to 357 MB for
+the 64 copies: once cooking's counts are read back, each level's quads and vertices are copied
+into buffers of exactly that size, and the frame's lists, with room for every quad of every copy
+at their level (at most 8M), shrink with them. A first version also sized the frame's lists from
+counts read back every 8 frames (twice what a recent frame needed): 78 MB, for +0.11 ms of 7.0.
+A council review (two reviewers, gpt-6.1-sol and gpt-6-astra, through T3 Code) found that it
+dropped clusters after a jump of the view or more copies until the rooms grew, and that its tests
+waited for the rooms to settle, so they missed it. A fallback that draws a cluster in place of
+children with no room was rejected too: it leaves the cut's error test, and the skirts close
+gaps of one level only. So the lists stay whole; sizing them to need is left for a fallback that
+keeps both coverage and silhouettes. Cooking's peak is still the finest level's cell map (about
+440 MB at 4 mm, freed as soon as its clusters are emitted), and cooking itself takes about 0.7 s,
+on the device.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

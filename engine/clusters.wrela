@@ -35,7 +35,7 @@ use std::derive::{Box3, gradient}
 use std::gpu::{
     Append, AppendBuffer, Atomics, ClipPosition, Cull, DispatchArgs, DrawArgs, GlobalId, GpuBuffer,
     GpuSpan, LocalId, One, RenderPass, Shared, Slots, VertexIndex, WorkgroupId, append_buffer,
-    barrier, buffer, dispatch, draw, read, write,
+    barrier, buffer, copy, dispatch, draw, read, write,
 }
 use std::io::Pending
 use view::Camera
@@ -97,6 +97,10 @@ pub struct Level {
     pub draw_args: GpuBuffer<DrawArgs>,
     /// How deep its skirts hang (m): a cell.
     pub skirt: f32,
+    /// The quads and vertices cooking emitted, read back to fit their buffers to them
+    /// (`settle`), and what's arrived (`NOT_YET` until it has); empty once they're fitted.
+    pub emitted: Vec<Pending<u32>>,
+    pub emitted_got: Vec<u32>,
 }
 
 /// A surface's clusters at every level, the frame's instances in view, and the candidates of the
@@ -255,6 +259,8 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
                 gather_args: buffer(1),
                 draw_args: buffer(1),
                 skirt: grid.cell,
+                emitted: Vec::new(),
+                emitted_got: Vec::new(),
             },
         )
     }
@@ -271,6 +277,9 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
     }
     var maps: Vec<GpuBuffer<u32>> = Vec::new()
     for mut l in out {
+        l.emitted.push(read(l.spans.span(start: 0, count: 1)))
+        l.emitted.push(read(l.mesh.verts.count()))
+        l.emitted_got = Vec::from([NOT_YET, NOT_YET])
         let map = replace(mut l.scratch.block_map, buffer(1))
         maps.push(take map)
     }
@@ -849,22 +858,69 @@ pub fn cluster_shade(v: ClusterVertex, look: ClusterLook) -> vec4 {
 const MOST_PICKS: u32 = 1 << 22
 const MOST_LISTED: u32 = 1 << 23
 
-/// `list` given room for `room` items, if it hasn't that room (emptied then).
-fn fit_list(list: mut GpuBuffer<u32>, room: u32) {
-    if list.len() < 1 + 2 * room {
-        list = empty_list(room)
-    }
-}
-
 impl Level {
     /// Room for the picks and the listed quads of `instances` placements all drawn at this level:
-    /// every live block's cluster of each (at most `MOST_PICKS` and `MOST_LISTED`).
+    /// every live block's cluster of each, and every quad cooking emitted for each, once its
+    /// quads are fitted (`settle`); at most `MOST_PICKS` and `MOST_LISTED`. A frame can't list
+    /// more than that, however the view jumps (a room sized from the counts a frame read back
+    /// dropped what a jump wanted until it grew).
     fn fit(mut self, instances: u32) {
         let n = u64(max(instances, 1))
         let picks = min(u64(self.pairs.len()) * n, u64(MOST_PICKS))
         let listed = min(u64(self.words.len() / 6) * n, u64(MOST_LISTED))
         fit_list(mut self.picks, u32(picks))
         fit_list(mut self.list, u32(listed))
+    }
+
+    /// The quads and vertices cooking emitted, once read back: their buffers fitted to them
+    /// (copied).
+    fn settle(mut self) {
+        if self.emitted.len() > 0 && answered(mut self.emitted, mut self.emitted_got) {
+            let total = min(self.emitted_got[0], self.words.len() / 6)
+            var words: GpuBuffer<u32> = buffer(max(total, 1) * 6)
+            if total > 0 {
+                copy(
+                    self.words.span(start: 0, count: total * 6),
+                    words.span_mut(start: 0, count: total * 6),
+                )
+            }
+            self.words = take words
+            let count = min(self.emitted_got[1], self.mesh.verts.capacity())
+            var mesh = Mesh::new(Room { vertices: max(count, 1), quads: 1 })
+            if count > 0 {
+                let from = self.mesh.verts.items()
+                copy(GpuSpan { buffer: from.buffer, start: 0, count }, mesh.verts.items_mut())
+            }
+            self.mesh = take mesh
+            self.emitted = Vec::new()
+        }
+    }
+}
+
+/// A count not yet read back.
+const NOT_YET: u32 = 0xffffffff
+
+/// Each of `asked` not yet answered polled into `got` (`NOT_YET` until it is): whether all have
+/// been. (A readback answers once, so an answer is kept when it comes.)
+fn answered(asked: mut Vec<Pending<u32>>, got: mut Vec<u32>) -> bool {
+    var all = true
+    for i in 0..asked.len() {
+        if got[i] == NOT_YET {
+            if let Some(Ok(v)) = asked[i].poll() {
+                got[i] = v[0]
+            } else {
+                all = false
+            }
+        }
+    }
+    all
+}
+
+/// `list` given room for `room` items, if it hasn't that room exactly (emptied then): it shrinks
+/// when its level's quads are fitted.
+fn fit_list(list: mut GpuBuffer<u32>, room: u32) {
+    if list.len() != 1 + 2 * room {
+        list = empty_list(room)
     }
 }
 
@@ -878,6 +934,26 @@ impl Clusters {
             out.push(read(l.list.span(start: 0, count: 1)))
         }
         out
+    }
+
+    /// The bytes its buffers take: every level's vertices, quads, spans, errors, roots, lists and
+    /// block map, and the frame's candidates.
+    pub fn bytes(self) -> u64 {
+        var n = u64(4 * (self.here.len() + self.below.len()))
+        for l in self.levels {
+            n += l.mesh.bytes()
+            n += u64(4 * (l.words.len() + l.spans.len() + l.errors.len()))
+            n += u64(8 * l.pairs.len() + 4 * l.roots.capacity())
+            n += u64(4 * (l.picks.len() + l.list.len()))
+            n += u64(
+                8 * l.scratch.live.capacity() +
+                    4 * (l.scratch.cells.len() + l.scratch.chunks.len()),
+            )
+        }
+        for m in self.maps {
+            n += u64(4 * m.len())
+        }
+        n
     }
 
     /// Each level's room for quads, and for listed quads: two a level.
@@ -907,6 +983,7 @@ impl Clusters {
         // Room for candidates: as many as any level could pick.
         var most = 1
         for mut l in self.levels {
+            l.settle()
             l.fit(places.len())
             most = max(most, (l.picks.len() - 1) / 2)
         }
