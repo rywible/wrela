@@ -85,14 +85,17 @@ const PREFETCHES = 3;
 
 /** `prefetch` (platform/host.wrela): fetches each URL of `list`, one a line, into the browser's
  * cache at low priority, a few at a time, until `signal` aborts. A URL that fails is skipped:
- * the program fetches it again when it needs it. Answers once all are done or it is aborted. */
+ * the program fetches it again when it needs it. Answers once all are done or it is aborted.
+ * Each is a readable request with credentials, as the page that later loads it makes: an opaque
+ * response (`no-cors`) of a shader or a manifest is blocked, and the cache may keep requests
+ * with and without credentials apart. */
 export async function prefetch(list: string, base: string, signal: AbortSignal, fetchFn: typeof fetch): Promise<Bytes> {
   const urls = list.split("\n").map(line => line.trim()).filter(line => line !== "").map(line => programUrl(line, base));
   let next = 0;
   const run = async () => {
     while (next < urls.length && !signal.aborted) {
       const url = urls[next++]!;
-      try { await (await fetchFn(url, { mode: "no-cors", credentials: "omit", priority: "low", signal })).arrayBuffer(); } catch { /* skipped */ }
+      try { await (await fetchFn(url, { mode: "cors", credentials: "include", priority: "low", signal })).arrayBuffer(); } catch { /* skipped */ }
     }
   };
   await Promise.all(Array.from({ length: PREFETCHES }, run));
@@ -250,6 +253,8 @@ export class BrowserPlatform {
     // A top-level page names the program it shows in its address, so the browser's Back asks
     // that program to return, as its own return shortcut does. Otherwise Back and Forward move
     // through the addresses the program gave (`nav/push`), and it hears of each (`nav/changed`).
+    // A shown program's name goes after the page's own path: a relative address would resolve
+    // against the page's <base>, a release's directory, which a later deploy removes.
     if (window.parent === window && typeof history !== "undefined") {
       window.addEventListener("popstate", () => {
         if (this.#shown !== null) { this.#back(); return; }
@@ -436,7 +441,7 @@ export class BrowserPlatform {
         if (this.#shown !== null) throw new Error("a program surface is already shown");
         const name = shownName(body);
         this.#shown = wordAt(body); s.frame.style.zIndex = "2"; s.frame.style.pointerEvents = "auto"; this.canvas.style.visibility = "hidden"; this.visible(false); s.frame.contentWindow?.focus();
-        if (name && window.parent === window && typeof history !== "undefined") history.pushState({ wrela: this.#shown }, "", `#${name}`);
+        if (name && window.parent === window && typeof history !== "undefined") history.pushState({ wrela: this.#shown }, "", `${location.pathname}${location.search}#${name}`);
         return new Uint8Array();
       }
       if (service === "surface/close") { s.close(); return new Uint8Array(); }
