@@ -16,11 +16,12 @@ use index::{Hit, Index, lower}
 use layout::{Laid, Role, lay_out}
 use markdown::{Block, parse}
 use platform::host
-use platform::host::Node
 use route::{Route, Target, follow}
 use std::gpu::{GpuBuffer, begin_screen_pass, buffer_of, draw}
 use std::input::{Assist, Button, Event, Key, events}
 use std::io::{Pending, fetch}
+use std::semantics
+use std::semantics::{Field, FieldKind, Node, Sent}
 use theme::{
     FIELD, GUTTER, HEADER, MEASURE, NAV, QUIET, RULE, SLATE, SMALL, STRONG, SURFACE, TEXT, VOID,
     WIDE, hex,
@@ -34,8 +35,12 @@ const MARK_WIDTH: f32 = facet::mark_width()
 /// How many results search shows, and how many pages are kept read.
 const RESULTS: u32 = 10
 const KEPT: u32 = 24
-/// The accessibility tree's numbers for search's results; the page's parts are numbered from 0.
+/// The semantic tree's numbers: the page's parts from 0, search's results from `RESULT_NODES`,
+/// in their list; search's and find's boxes.
 const RESULT_NODES: u32 = 1000000
+const RESULT_LIST: u32 = 999997
+const SEARCH_FIELD: u32 = 999998
+const FIND_FIELD: u32 = 999999
 
 pub struct Docs {
     fonts: Fonts,
@@ -83,13 +88,15 @@ pub struct Docs {
     nav_follow: bool,
     told: Vec<Pending<u8>>,
     cursor: String,
-    tree: Vec<Node>,
+    tree: Sent,
     /// Whether the host's text mode is on, for search's or find's box.
     texting: bool,
-    /// The scroll the tree was last made at, and when the scroll last changed: the tree waits for
-    /// a scroll to settle, rather than going to the host every frame of it.
-    tree_scroll: f32,
-    scrolled_at: f32,
+    /// Search's and find's boxes, where the host keeps them as fields, and a read of one on its way.
+    search_box: Kept,
+    find_box: Kept,
+    reading: Option<Pending<u8>>,
+    /// The caret in what search or find has typed (a byte of it).
+    caret: u32,
     /// The page as plain text, its lowercase for find, and where each piece starts in it.
     text: String,
     lowered: String,
@@ -107,6 +114,14 @@ pub struct Docs {
     find: String,
     matches: Vec<u32>,
     current: u32,
+}
+
+/// A box the host keeps as a field (std::semantics): the newest revision heard of, the newest read,
+/// and the replacements of its text asked for.
+struct Kept: Clone + Eq {
+    heard: u32 = 0,
+    seen: u32 = 0,
+    replace: u32 = 0,
 }
 
 pub fn init() -> Docs {
@@ -155,10 +170,12 @@ pub fn init() -> Docs {
         nav_follow: false,
         told,
         cursor: String::from("default"),
-        tree: Vec::new(),
+        tree: Sent {},
         texting: false,
-        tree_scroll: 0.0,
-        scrolled_at: 0.0,
+        search_box: Kept {},
+        find_box: Kept {},
+        reading: None,
+        caret: 0,
         text: String::new(),
         lowered: String::new(),
         starts: Vec::new(),
@@ -294,10 +311,40 @@ fn answers(s: mut Docs) {
             }
         }
     }
+    if let Some(Ok(bytes)) = poll(mut s.reading) {
+        if let Ok(state) = semantics::read_field_state(take bytes) { typed(mut s, state) }
+    }
+    // A box changed since it was last read: read it.
+    if s.reading.is_none() {
+        if s.search_box.heard > s.search_box.seen {
+            s.reading = Some(host::field_state(SEARCH_FIELD))
+        } else if s.find_box.heard > s.find_box.seen {
+            s.reading = Some(host::field_state(FIND_FIELD))
+        }
+    }
     var i = 0
     while i < s.told.len() {
         if s.told[i].poll().is_some() { let _ = s.told.remove(i) } else { i += 1 }
     }
+}
+
+/// What a person typed in search's or find's box, as the host's field has it.
+fn typed(s: mut Docs, state: semantics::FieldState) {
+    if state.node == SEARCH_FIELD {
+        s.search_box.seen = max(s.search_box.seen, state.revision)
+        if s.searching && state.text != s.query {
+            s.query = state.text.clone()
+            refresh_hits(mut s)
+        }
+    } else {
+        s.find_box.seen = max(s.find_box.seen, state.revision)
+        if s.finding && state.text != s.find {
+            s.find = state.text.clone()
+            let f = frame_of(s)
+            refresh_matches(mut s, f)
+        }
+    }
+    s.caret = state.start
 }
 
 fn poll(pending: mut Option<Pending<u8>>) -> Option<Result<Vec<u8>, std::io::IoError>> {
@@ -496,6 +543,10 @@ fn handle(s: mut Docs, e: Event, f: Frame) {
             s.pasting = Some(host::pasted(serial))
         },
         Event::Assist { node, action } => assisted(mut s, node, action, f),
+        Event::Field { node, revision } => {
+            if node == SEARCH_FIELD { s.search_box.heard = max(s.search_box.heard, revision) }
+            if node == FIND_FIELD { s.find_box.heard = max(s.find_box.heard, revision) }
+        },
         _ => {},
     }
 }
@@ -576,6 +627,9 @@ fn piece_of(s: Docs, at: u32) -> u32 {
 fn open_search(s: mut Docs) {
     s.searching = true
     s.query.clear()
+    // The host's field starts empty too.
+    s.search_box.replace += 1
+    s.caret = 0
     s.hits.clear()
     s.chosen = 0
 }
@@ -714,13 +768,8 @@ fn release(s: mut Docs, at: vec2) {
 /// Where a link on the page being read leads: another page, a place, out, or an item's source.
 fn follow_link(s: mut Docs, target: str) {
     if target.starts_with("source:") {
-        if s.index.repository.is_empty() || s.index.commit.is_empty() { return }
-        let at = target.slice(from: 7, to: target.len())
-        let k = at.find(":").unwrap_or(at.len())
-        let path = at.slice(from: 0, to: k)
-        let line = at.slice(from: min(k + 1, at.len()), to: at.len())
-        let url = f"{s.index.repository.as_str()}/blob/{s.index.commit.as_str()}/{path}#L{line}"
-        s.told.push(host::open_link(url.as_str()))
+        let url = href_of(s, target)
+        if !url.is_empty() { s.told.push(host::open_link(url.as_str())) }
         return
     }
     match follow(s.shown.as_str(), target) {
@@ -743,6 +792,11 @@ fn link_at(s: Docs, at: vec2, f: Frame) -> Option<String> {
 /// An assistive technology acted on node `node`: a link is followed, and one it reaches is
 /// brought into view.
 fn assisted(s: mut Docs, node: u32, action: Assist, f: Frame) {
+    // The focus reaching search's box opens search.
+    if node == SEARCH_FIELD {
+        if action == Assist::Focus && !s.searching && !s.finding { open_search(mut s) }
+        return
+    }
     if node >= RESULT_NODES {
         let i = node - RESULT_NODES
         if i >= s.hits.len() { return }
@@ -1119,7 +1173,7 @@ fn draw_header(s: mut Docs, f: Frame) {
     let tx = b.x + 14.0 * u
     let ty = b.y + b.h * 0.5 - 10.0 * u
     if s.finding {
-        let w = s.list.text(
+        let _ = s.list.text(
             s.fonts,
             Face::Sans,
             s.find.as_str(),
@@ -1127,13 +1181,7 @@ fn draw_header(s: mut Docs, f: Frame) {
             vec2(tx, ty),
             hex(STRONG),
         )
-        let on = s.reduced || (s.time * 2.0) - floor(s.time * 2.0) < 0.6
-        if on {
-            s.list.rect(
-                Rect::new(tx + w + 1.0 * u, b.y + 9.0 * u, 1.5 * u, b.h - 18.0 * u),
-                hex(FIELD),
-            )
-        }
+        draw_caret(mut s, tx, b, find: true)
         if s.find.is_empty() {
             let _ = s.list.text(
                 s.fonts,
@@ -1158,7 +1206,7 @@ fn draw_header(s: mut Docs, f: Frame) {
             )
         }
     } else if s.searching {
-        let w = s.list.text(
+        let _ = s.list.text(
             s.fonts,
             Face::Sans,
             s.query.as_str(),
@@ -1166,14 +1214,7 @@ fn draw_header(s: mut Docs, f: Frame) {
             vec2(tx, ty),
             hex(STRONG),
         )
-        // The caret, steady when the system asks for less motion.
-        let on = s.reduced || (s.time * 2.0) - floor(s.time * 2.0) < 0.6
-        if on {
-            s.list.rect(
-                Rect::new(tx + w + 1.0 * u, b.y + 9.0 * u, 1.5 * u, b.h - 18.0 * u),
-                hex(FIELD),
-            )
-        }
+        draw_caret(mut s, tx, b, find: false)
         draw_results(mut s, f)
     } else {
         let _ = s.list.text(
@@ -1193,6 +1234,21 @@ fn draw_header(s: mut Docs, f: Frame) {
             hex(QUIET),
         )
     }
+}
+
+/// The caret in box `b`'s text (find's, or search's), which starts at `tx`: where the host's field
+/// has it, or at the end; steady when the system asks for less motion.
+fn draw_caret(s: mut Docs, tx: f32, b: Rect, find: bool) {
+    let u = s.u
+    let w = if find { caret_x(s, s.find.as_str()) } else { caret_x(s, s.query.as_str()) }
+    let on = s.reduced || (s.time * 2.0) - floor(s.time * 2.0) < 0.6
+    if on { s.list.rect(Rect::new(tx + w + 1.0 * u, b.y + 9.0 * u, 1.5 * u, b.h - 18.0 * u), hex(FIELD)) }
+}
+
+/// How far into `text`, at the box's size, the caret is.
+fn caret_x(s: Docs, text: str) -> f32 {
+    let at = if s.capabilities & host::SEMANTICS != 0 { min(s.caret, text.len()) } else { text.len() }
+    s.fonts.font(Face::Sans).measure(text.slice(from: 0, to: at), 15.0 * s.u)
 }
 
 fn draw_results(s: mut Docs, f: Frame) {
@@ -1301,7 +1357,7 @@ fn tell(s: mut Docs, f: Frame) {
     // While search is open, its box is a text field: an input method composes there, and a
     // screen reader hears what's typed.
     let typing = s.searching || s.finding
-    if typing != s.texting && s.capabilities & host::TEXT_INPUT != 0 {
+    if typing != s.texting && s.capabilities & host::TEXT_INPUT != 0 && s.capabilities & host::SEMANTICS == 0 {
         let b = f.search
         s.told.push(
             host::text_input(
@@ -1322,45 +1378,66 @@ fn tell(s: mut Docs, f: Frame) {
         s.told.push(host::offer(words.as_str(), ""))
         s.offered = take words
     }
-    if s.capabilities & host::ACCESSIBILITY == 0 { return }
-    if s.scroll != s.tree_scroll {
-        s.tree_scroll = s.scroll
-        s.scrolled_at = s.time
-    }
-    if s.time - s.scrolled_at < 0.25 { return }
+    if s.capabilities & host::SEMANTICS == 0 { return }
     let nodes = parts_tree(s, f)
-    if nodes != s.tree {
-        s.told.push(host::accessibility("wrela docs", "Search results", nodes))
-        s.tree = take nodes
-    }
+    let view = vec4(0.0, 0.0, s.screen.x, s.screen.y)
+    host::publish(mut s.told, mut s.tree, "wrela docs", nodes, view)
 }
 
-/// The page's parts for a screen reader, in reading order, whether or not they're on screen: a
-/// node's number is its part's.
+/// The page's parts as a semantic tree, in reading order, whether or not they're on screen (a
+/// node's number is its part's, and a link has its address); then search's and find's boxes, as
+/// fields, and search's results, as a list's options.
 fn parts_tree(s: Docs, f: Frame) -> Vec<Node> {
     var nodes: Vec<Node> = Vec::new()
     for i in 0..s.laid.parts.len() {
         borrow p = s.laid.parts[i]
         let rect = vec4(p.rect.x + f.x, p.rect.y + f.top - s.scroll, p.rect.w, p.rect.h)
+        // The page's parts are under the header, which is drawn over them.
+        let shown = semantics::clip(rect, vec4(0.0, f.header, s.screen.x, s.screen.y - f.header))
         let role = match p.role {
-            Role::Heading => host::Role::Heading,
-            Role::Text => host::Role::Text,
-            Role::Link => host::Role::Link,
-            Role::Code => host::Role::Code,
+            Role::Heading => semantics::Role::Heading,
+            Role::Text => semantics::Role::Text,
+            Role::Link => semantics::Role::Link,
+            Role::Code => semantics::Role::Code,
         }
-        nodes.push(Node { id: i, role, level: p.level, rect, label: p.label.clone() })
+        let href = if p.role == Role::Link { href_of(s, p.target.as_str()) } else { String::new() }
+        nodes.push(Node { id: i, role, level: p.level, rect: shown, label: p.label.clone(), href })
     }
-    // Search's results, as the options of a list, after the page.
+    let b = vec4(f.search.x, f.search.y, f.search.w, f.search.h)
+    nodes.push(
+        Node {
+            id: SEARCH_FIELD,
+            role: semantics::Role::Field,
+            label: String::from("Search the docs"),
+            rect: if s.finding { vec4(0.0) } else { b },
+            focused: s.searching,
+            field: Some(box_field(s.search_box, s.query.as_str(), s.caret)),
+        },
+    )
+    if s.finding {
+        nodes.push(
+            Node {
+                id: FIND_FIELD,
+                role: semantics::Role::Field,
+                label: String::from("Find on this page"),
+                rect: b,
+                focused: true,
+                field: Some(box_field(s.find_box, s.find.as_str(), s.caret)),
+            },
+        )
+    }
     if s.searching && !s.query.is_empty() {
         let row = 58.0 * s.u
         let x = f.search.x - 200.0 * s.u
         let top = f.search.bottom() + 8.0 * s.u
+        nodes.push(Node { id: RESULT_LIST, role: semantics::Role::ListBox, label: String::from("Search results") })
         for i in 0..s.hits.len() {
             let (title, under) = result_text(s.index, s.hits[i])
             nodes.push(
                 Node {
                     id: RESULT_NODES + i,
-                    role: host::Role::Item,
+                    parent: RESULT_LIST,
+                    role: semantics::Role::Option,
                     selected: i == s.chosen,
                     rect: vec4(x, top + f32(i) * row, f.search.right() - x, row),
                     label: f"{title.as_str()}: {under.as_str()}",
@@ -1369,6 +1446,38 @@ fn parts_tree(s: Docs, f: Frame) -> Vec<Node> {
         }
     }
     take nodes
+}
+
+/// A box as the host's field: its text and caret, set when a replacement is asked for.
+fn box_field(k: Kept, text: str, caret: u32) -> Field {
+    let at = min(caret, text.len())
+    Field {
+        kind: FieldKind::Search,
+        text: text.to_string(),
+        start: at,
+        end: at,
+        replace: k.replace,
+        seen: k.seen,
+    }
+}
+
+/// Where link `target` goes, as an address the browser can open in a new tab: a page of these
+/// docs by its fragment, a source file on the repository, or the address itself.
+fn href_of(s: Docs, target: str) -> String {
+    if target.starts_with("source:") {
+        if s.index.repository.is_empty() || s.index.commit.is_empty() { return String::new() }
+        let at = target.slice(from: 7, to: target.len())
+        let k = at.find(":").unwrap_or(at.len())
+        let path = at.slice(from: 0, to: k)
+        let line = at.slice(from: min(k + 1, at.len()), to: at.len())
+        return f"{s.index.repository.as_str()}/blob/{s.index.commit.as_str()}/{path}#L{line}"
+    }
+    match follow(s.shown.as_str(), target) {
+        // The front page has no fragment.
+        Some(Target::Docs(route)) => if route.page.is_empty() { String::from("#") } else { route.fragment() },
+        Some(Target::Out(url)) => url,
+        None => String::new(),
+    }
 }
 
 /// `/` opens search, which types what follows but not the `/`; Backspace takes a character back.

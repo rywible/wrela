@@ -2172,6 +2172,30 @@ export side by side in each release, with stable addresses for the raw files (`/
 `/std/io.md`) that lead to the current release. Writing its tests found a second compiler bug: a
 temporary `String` borrowed inside `assert(...)` is freed before the comparison (#240).
 
+## A semantic tree for web apps, 2026-10-16
+
+Ryan asked what a Wrela web app still lacks that HTML and CSS give a page, and for each gap to
+be closed without breaking Wrela's architecture, the browser still WebGPU only. A plan council
+(Claude leading; OpenAI Codex GPT-6.1-Sol and GPT-6-Astra reviewing, read-only) shaped the
+first step. A program now publishes a semantic tree (`std::semantics`): each node's role, its
+label, its link and its rectangle, with structure and geometry sent apart, and only when they
+change. The browser host keeps a real element for each node over the canvas: links are `<a
+href>` (a plain click is the program's; a modified one opens what the browser opens), fields are
+real `<input>` and `<textarea>` elements in their forms, with `name` and `autocomplete`, so a
+password manager and an input method work as on any page. A field's text is the host's; the
+program hears that it changed (`Event::Field`, by revision), reads it, and replaces it only if it
+has read the newest revision and nothing is being composed, so a person's typing is never
+lost. The keyboard patterns of composite widgets (tabs, menus, a listbox, a slider, a modal
+dialog) are the host's, after the W3C's [ARIA Authoring
+Practices](https://www.w3.org/WAI/ARIA/apg/patterns/); a field's names for its values follow
+HTML's [autofill](https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#autofill)
+tokens. The docs site and the whiteboard publish their trees this way. A real-Chrome test
+clicks, types and composes through it. Whether a password manager saves and fills a form was
+checked by hand only. Writing that test found that each fresh test Chrome held its pages for
+25 s while it waited for the system keyring, and that a scripted page passed before its
+script had run; both are fixed. These are implementation references; nothing was copied.
+Claude (Opus 5.5) wrote it.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

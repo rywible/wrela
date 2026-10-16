@@ -262,7 +262,7 @@ impl Ui {
                 // the widgets.
                 Event::PadButton { .. } | Event::PadAxis { .. } => {},
                 Event::Compose { .. } | Event::Paste { .. } | Event::Assist { .. } => {},
-                Event::Message { .. } | Event::Connection { .. } => {},
+                Event::Message { .. } | Event::Connection { .. } | Event::Field { .. } => {},
             }
         }
         if self.released {
