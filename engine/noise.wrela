@@ -130,7 +130,16 @@ fn kept_at(w: f32) -> f32 {
 /// `noise2` as a sample `w` cells wide sees it: faded to its mean (0.5) as the sample grows past
 /// its cells, so what's cooked or drawn far off doesn't alias. 0 wide, `noise2` itself.
 pub fn noise2_seen(p: vec2, w: f32) -> f32 {
-    mix(0.5, noise2(p), kept_at(w))
+    seen(p, kept_at(w))
+}
+
+/// `noise2` at `p` kept `k` of the way from its mean: a mix's weight of 0 keeps its first value
+/// exactly, so a layer faded out entirely isn't evaluated.
+fn seen(p: vec2, k: f32) -> f32 {
+    if k == 0.0 {
+        return 0.5
+    }
+    mix(0.5, noise2(p), k)
 }
 
 /// `fbm2` as a sample `w` of its first layer's cells wide sees it: each layer finer than the
@@ -147,7 +156,7 @@ pub fn fbm2_seen(p: vec2, octaves: u32, w: f32) -> f32 {
     var total = 0.0
     var f = 1.0
     for _ in 0..octaves {
-        s += a * mix(0.5, noise2(q), kept_at(w * f))
+        s += a * seen(q, kept_at(w * f))
         total += a
         q = vec2(1.6 * q.x - 1.2 * q.y, 1.2 * q.x + 1.6 * q.y) + vec2(17.3, -9.1)
         a *= 0.5
@@ -237,4 +246,33 @@ fn zero_octaves_are_zero() {
     assert(fbm2(p, 0) == 0.0, "zero-octave value noise isn't zero")
     assert(fbm2_seen(p, 0, 2.0) == 0.0, "zero-octave filtered noise isn't zero")
     assert(ridged2(p, 0) == 0.0, "zero-octave ridged noise isn't zero")
+}
+
+/// Faded layers left out (`seen`) give the same bits as every layer mixed toward its mean, over
+/// widths from a fraction of a cell (all kept) to many cells (all faded) and the ramp between.
+@test
+fn faded_layers_left_out_give_the_same_bits() {
+    for i in 0..256 {
+        let p = vec2(rand(i, 0), rand(i, 1)) * 400.0 - vec2(200.0)
+        let w = exp2(rand(i, 2) * 12.0 - 6.0)
+        for octaves in 1..6 {
+            var q = p
+            var s = 0.0
+            var a = 0.5
+            var total = 0.0
+            var f = 1.0
+            for _ in 0..octaves {
+                s += a * mix(0.5, noise2(q), kept_at(w * f))
+                total += a
+                q = vec2(1.6 * q.x - 1.2 * q.y, 1.2 * q.x + 1.6 * q.y) + vec2(17.3, -9.1)
+                a *= 0.5
+                f *= 2.0
+            }
+            assert(fbm2_seen(p, octaves, w) == s / total, "a faded layer left out changed fbm")
+        }
+        assert(
+            noise2_seen(p, w) == mix(0.5, noise2(p), kept_at(w)),
+            "a faded layer left out changed noise",
+        )
+    }
 }
