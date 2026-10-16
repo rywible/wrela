@@ -269,3 +269,57 @@ fn filtered_checkers_are_the_point_up_close_and_grey_far_off() {
         assert(abs(far - 0.5) < 0.1, f"a wide footprint of a checker gave {far}")
     }
 }
+
+fn near(got: f32, want: f32, what: str) {
+    assert(abs(got - want) <= 1.0e-5, f"{what}: {got}, not {want}")
+}
+
+/// Each builtin `filtered` box-filters, over a footprint of `x` itself, against its average
+/// worked out by hand: across a kink or a jump, beside one (a footprint that misses it keeps the
+/// point's value exactly, however large `x`), and just past fract's jump with a footprint of a
+/// few ulps (f32's own: `1 - 2⁻²⁴` and `2⁻¹⁹`, where `f + w/2 - 1` rounds). A clamp whose low
+/// bound moves with `x` has no kink there.
+@test
+fn filtered_builtins_are_their_footprints_average() {
+    let trunc_of = |u: f32| trunc(u)
+    near(filtered(trunc_of, at: 0.0, width: 1.0), 0.0, "trunc across 0")
+    near(filtered(trunc_of, at: 1.0, width: 1.0), 0.5, "trunc across 1")
+    near(filtered(trunc_of, at: -1.0, width: 1.0), -0.5, "trunc across -1")
+    near(filtered(trunc_of, at: -0.5, width: 1.0), 0.0, "trunc below 0")
+    let floor_of = |u: f32| floor(u)
+    near(filtered(floor_of, at: 0.0, width: 1.0), -0.5, "floor across 0")
+    assert(filtered(floor_of, at: 2.5, width: 0.5) == 2.0, "floor beside no jump")
+    let ceil_of = |u: f32| ceil(u)
+    near(filtered(ceil_of, at: 0.0, width: 1.0), 0.5, "ceil across 0")
+    let round_of = |u: f32| round(u)
+    near(filtered(round_of, at: 0.5, width: 1.0), 0.5, "round across a half")
+    let fract_of = |u: f32| fract(u)
+    near(filtered(fract_of, at: 1000.25, width: 0.1), 0.25, "fract far off")
+    near(filtered(fract_of, at: 0.0, width: 1.0), 0.5, "fract across 0")
+    near(
+        filtered(fract_of, at: 1.0 - 1.0 / 16777216.0, width: 1.0 / 524288.0),
+        0.53124994,
+        "fract by ulps",
+    )
+    let abs_of = |u: f32| abs(u)
+    assert(filtered(abs_of, at: 1000000.0, width: 0.01) == 1000000.0, "abs far from its kink")
+    near(filtered(abs_of, at: 0.0, width: 1.0), 0.25, "abs across 0")
+    near(filtered(abs_of, at: 0.25, width: 1.0), 0.3125, "abs beside 0")
+    let min_of = |u: f32| min(u, 0.0)
+    let max_of = |u: f32| max(u, 0.0)
+    assert(filtered(min_of, at: 1000000.0, width: 1.0) == 0.0, "min far from its kink")
+    near(filtered(min_of, at: 0.0, width: 1.0), -0.125, "min across 0")
+    near(filtered(max_of, at: 0.0, width: 1.0), 0.125, "max across 0")
+    let saturate_of = |u: f32| saturate(u)
+    assert(filtered(saturate_of, at: 1000000.0, width: 1.0) == 1.0, "saturate far from its kinks")
+    near(filtered(saturate_of, at: 0.0, width: 1.0), 0.125, "saturate across 0")
+    let clamp_of = |u: f32| clamp(u, -1.0, 1.0)
+    near(filtered(clamp_of, at: 1.0, width: 1.0), 0.875, "clamp across its top")
+    let moving = |u: f32| clamp(u, u - 0.25, 1.0)
+    near(filtered(moving, at: 1.0, width: 1.0), 0.875, "a clamp whose low bound moves with x")
+    let sign_of = |u: f32| sign(u)
+    near(filtered(sign_of, at: 0.0, width: 1.0), 0.0, "sign across 0")
+    near(filtered(sign_of, at: 0.25, width: 1.0), 0.5, "sign beside 0")
+    let step_of = |u: f32| step(0.0, u)
+    near(filtered(step_of, at: 0.25, width: 1.0), 0.75, "step beside 0")
+}

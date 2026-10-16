@@ -648,19 +648,34 @@ impl Ad<'_> {
         sum
     }
 
-    /// `fract(x)` box-filtered over a footprint `w` wide (`w` at least `NARROWEST`): the
-    /// difference of fract's integral (`u²/2` within a period, a half a period) at `x ± w/2`,
-    /// over `w`, from `fract(x)` so large `x` keeps its precision.
+    /// `fract(x)` box-filtered over a footprint `w` wide (`w` at least `NARROWEST`), from
+    /// `f = fract(x)` so large `x` keeps its precision. Under a period wide, `f` corrected by the
+    /// share of the footprint past each of `f`'s jumps (`h - f` below 0, `h - (1 - f)` past 1:
+    /// differences of nearby values, exact), so a footprint crossing none is `f` exactly; wider,
+    /// the difference of fract's integral (`u²/2` within a period, a half a period) at `f ± w/2`,
+    /// over `w`.
     fn filtered_fract(&mut self, out: &mut Block, x: ValueId, w: ValueId, ty: TypeId) -> ValueId {
         let f = self.builtin(out, Builtin::Fract, vec![x], ty);
         let half = self.fc(out, ty, 0.5);
+        let one = self.fc(out, ty, 1.0);
+        let zero = self.zero(out, ty);
         let h = self.bin(out, BinOp::Mul, w, half, ty);
+        let below = self.bin(out, BinOp::Sub, h, f, ty);
+        let below = self.builtin(out, Builtin::Max, vec![below, zero], ty);
+        let to_one = self.bin(out, BinOp::Sub, one, f, ty);
+        let past = self.bin(out, BinOp::Sub, h, to_one, ty);
+        let past = self.builtin(out, Builtin::Max, vec![past, zero], ty);
+        let jumps = self.bin(out, BinOp::Sub, below, past, ty);
+        let jumps = self.bin(out, BinOp::Div, jumps, w, ty);
+        let narrow = self.bin(out, BinOp::Add, f, jumps, ty);
         let hi = self.bin(out, BinOp::Add, f, h, ty);
         let lo = self.bin(out, BinOp::Sub, f, h, ty);
         let ihi = self.fract_integral(out, hi, ty);
         let ilo = self.fract_integral(out, lo, ty);
         let d = self.bin(out, BinOp::Sub, ihi, ilo, ty);
-        self.bin(out, BinOp::Div, d, w, ty)
+        let wide = self.bin(out, BinOp::Div, d, w, ty);
+        let is_wide = self.builtin(out, Builtin::Step, vec![one, w], ty);
+        self.builtin(out, Builtin::Mix, vec![narrow, wide, is_wide], ty)
     }
 
     /// `∫₀ᵘ fract`: `floor(u) / 2 + fract(u)² / 2`.
@@ -673,20 +688,19 @@ impl Ad<'_> {
         self.bin(out, BinOp::Mul, s, half, ty)
     }
 
-    /// `|x|` box-filtered over a footprint `w` wide: `(G(x + w/2) - G(x - w/2)) / w`, where
-    /// `G(u) = u |u| / 2` is |u|'s integral.
-    fn filtered_abs(&mut self, out: &mut Block, x: ValueId, w: ValueId, ty: TypeId) -> ValueId {
+    /// What box-filtering `|d|` over a footprint `w` wide adds to `|d|`: `max(w/2 - |d|, 0)² / w`
+    /// (the filtered value is `(d² + w²/4) / w` within `w/2` of 0, `|d|` beyond). Computed from
+    /// `|d|` and not from the integral's ends, so it's exactly 0 where the footprint misses the
+    /// kink however large `d` is.
+    fn kink(&mut self, out: &mut Block, d: ValueId, w: ValueId, ty: TypeId) -> ValueId {
         let half = self.fc(out, ty, 0.5);
+        let zero = self.zero(out, ty);
         let h = self.bin(out, BinOp::Mul, w, half, ty);
-        let hi = self.bin(out, BinOp::Add, x, h, ty);
-        let lo = self.bin(out, BinOp::Sub, x, h, ty);
-        let ahi = self.builtin(out, Builtin::Abs, vec![hi], ty);
-        let alo = self.builtin(out, Builtin::Abs, vec![lo], ty);
-        let ghi = self.bin(out, BinOp::Mul, hi, ahi, ty);
-        let glo = self.bin(out, BinOp::Mul, lo, alo, ty);
-        let d = self.bin(out, BinOp::Sub, ghi, glo, ty);
-        let d = self.bin(out, BinOp::Mul, d, half, ty);
-        self.bin(out, BinOp::Div, d, w, ty)
+        let a = self.builtin(out, Builtin::Abs, vec![d], ty);
+        let inside = self.bin(out, BinOp::Sub, h, a, ty);
+        let inside = self.builtin(out, Builtin::Max, vec![inside, zero], ty);
+        let sq = self.bin(out, BinOp::Mul, inside, inside, ty);
+        self.bin(out, BinOp::Div, sq, w, ty)
     }
 
     /// `step(0, x)` box-filtered over a footprint `w` wide: the share of it past 0.
@@ -697,30 +711,50 @@ impl Ad<'_> {
         self.builtin(out, Builtin::Saturate, vec![r], ty)
     }
 
+    /// A footprint at least `NARROWEST` wide.
+    fn widened(&mut self, out: &mut Block, w: ValueId, ty: TypeId) -> ValueId {
+        let narrowest = self.fc(out, ty, NARROWEST);
+        self.builtin(out, Builtin::Max, vec![w, narrowest], ty)
+    }
+
     /// `v = b(args)` in a filtering derivation: `b`'s value box-filtered over its operand's
     /// footprint (`footprint`), or its own value where the footprint is narrower than
-    /// `NARROWEST` (a `mix` with a weight of 0 keeps it exactly). `min` and `max` are
-    /// `(a + b ∓ |a - b|) / 2`, the clamps `(lo + hi + |x - lo| - |x - hi|) / 2`, `floor`
-    /// `x - fract(x)`, `ceil` `x + fract(-x)`, `round` `floor(x + 1/2)`, `trunc` a floor or a
-    /// ceil by `x`'s sign, `sign` `2 step(0, x) - 1`.
+    /// `NARROWEST` (a `mix` with a weight of 0 keeps it exactly). The kinked builtins are their
+    /// own value and the corrections their kinks add (`kink`): `abs` `|x| + k(x)`, `min` and
+    /// `max` `∓ k(a - b) / 2`, the clamps `+ (k(x - lo) - k(x - hi)) / 2` (each over its own
+    /// difference's footprint). `floor` is `x - fract(x)`, `ceil` `x + fract(-x)`, `round`
+    /// `floor(x + 1/2)`, `trunc` `floor(x) + 1 - step(0, x)` (they differ only at the
+    /// integers), `sign` `2 step(0, x) - 1`.
     fn filtered_let(&mut self, v: ValueId, b: Builtin, args: &[ValueId], out: &mut Block) {
         use Builtin as B;
         let ty = self.ty(v);
         let own = self.emit(out, ty, Expr::Builtin(b, args.to_vec()));
         // The operand whose footprint matters: a step's edge from its point, min's and max's
-        // difference, the clamps' and the rest's argument.
+        // difference, the clamps' the wider of their argument less each bound's, the rest's
+        // argument.
         let (a, minus) = match b {
             B::Step => (args[1], Some(args[0])),
             B::Min | B::Max => (args[0], Some(args[1])),
             _ => (args[0], None),
         };
-        let Some(w) = self.footprint(out, a, minus, ty) else {
+        let (w, bounds) = if b == B::Clamp {
+            let wl = self.footprint(out, a, Some(args[1]), ty);
+            let wh = self.footprint(out, a, Some(args[2]), ty);
+            let w = match (wl, wh) {
+                (Some(l), Some(h)) => Some(self.builtin(out, B::Max, vec![l, h], ty)),
+                (l, h) => l.or(h),
+            };
+            (w, Some((wl, wh)))
+        } else {
+            (self.footprint(out, a, minus, ty), None)
+        };
+        let Some(w) = w else {
             out.push(Stmt::Let(v, Expr::Builtin(b, args.to_vec())));
             return;
         };
         let narrowest = self.fc(out, ty, NARROWEST);
         let used = self.builtin(out, B::Step, vec![narrowest, w], ty);
-        let w = self.builtin(out, B::Max, vec![w, narrowest], ty);
+        let w = self.widened(out, w, ty);
         let one = self.fc(out, ty, 1.0);
         let half = self.fc(out, ty, 0.5);
         let x = args[0];
@@ -743,12 +777,9 @@ impl Ad<'_> {
             B::Trunc => {
                 let f = self.filtered_fract(out, x, w, ty);
                 let fl = self.bin(out, BinOp::Sub, x, f, ty);
-                let nx = self.emit(out, ty, Expr::Unary(UnOp::Neg, x));
-                let g = self.filtered_fract(out, nx, w, ty);
-                let ce = self.bin(out, BinOp::Add, x, g, ty);
-                let zero = self.zero(out, ty);
-                let pos = self.builtin(out, B::Step, vec![zero, x], ty);
-                self.builtin(out, B::Mix, vec![ce, fl, pos], ty)
+                let st = self.filtered_step(out, x, w, ty);
+                let up = self.bin(out, BinOp::Sub, one, st, ty);
+                self.bin(out, BinOp::Add, fl, up, ty)
             }
             B::Step => {
                 let d = self.bin(out, BinOp::Sub, args[1], args[0], ty);
@@ -760,26 +791,41 @@ impl Ad<'_> {
                 let t = self.bin(out, BinOp::Mul, st, two, ty);
                 self.bin(out, BinOp::Sub, t, one, ty)
             }
-            B::Abs => self.filtered_abs(out, x, w, ty),
+            B::Abs => {
+                let k = self.kink(out, x, w, ty);
+                self.bin(out, BinOp::Add, own, k, ty)
+            }
             B::Min | B::Max => {
                 let d = self.bin(out, BinOp::Sub, args[0], args[1], ty);
-                let ad = self.filtered_abs(out, d, w, ty);
-                let sum = self.bin(out, BinOp::Add, args[0], args[1], ty);
+                let k = self.kink(out, d, w, ty);
+                let k = self.bin(out, BinOp::Mul, k, half, ty);
                 let op = if b == B::Min { BinOp::Sub } else { BinOp::Add };
-                let r = self.bin(out, op, sum, ad, ty);
-                self.bin(out, BinOp::Mul, r, half, ty)
+                self.bin(out, op, own, k, ty)
             }
             B::Clamp | B::Saturate => {
                 let (lo, hi) =
                     if b == B::Clamp { (args[1], args[2]) } else { (self.zero(out, ty), one) };
+                // Each bound's kink over the footprint of `x` less it (a bound with no tangent
+                // shares `x`'s).
+                let (wl, wh) = match bounds {
+                    Some((l, h)) => (l, h),
+                    None => (None, None),
+                };
+                let wl = match wl {
+                    Some(l) => self.widened(out, l, ty),
+                    None => w,
+                };
+                let wh = match wh {
+                    Some(h) => self.widened(out, h, ty),
+                    None => w,
+                };
                 let xl = self.bin(out, BinOp::Sub, x, lo, ty);
                 let xh = self.bin(out, BinOp::Sub, x, hi, ty);
-                let al = self.filtered_abs(out, xl, w, ty);
-                let ah = self.filtered_abs(out, xh, w, ty);
-                let s = self.bin(out, BinOp::Add, lo, hi, ty);
-                let s = self.bin(out, BinOp::Add, s, al, ty);
-                let s = self.bin(out, BinOp::Sub, s, ah, ty);
-                self.bin(out, BinOp::Mul, s, half, ty)
+                let kl = self.kink(out, xl, wl, ty);
+                let kh = self.kink(out, xh, wh, ty);
+                let k = self.bin(out, BinOp::Sub, kl, kh, ty);
+                let k = self.bin(out, BinOp::Mul, k, half, ty);
+                self.bin(out, BinOp::Add, own, k, ty)
             }
             _ => own,
         };
