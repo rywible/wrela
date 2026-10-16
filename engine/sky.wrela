@@ -97,10 +97,35 @@ pub struct Clouds: Copy + GpuData {
     pub phase: u32,
     pub sun: vec3,
     pub blend: f32,
+    /// Where the eye looks, and the cosine of the angle from it within which a tile is in sight
+    /// (`in_sight`; -2 by default: every tile is); and the round (how many times the dome has
+    /// been marched whole).
+    pub forward: vec3 = vec3(0.0, 0.0, 1.0),
+    pub seed: u32,
     /// How far the field has drifted, less the render origin (`view::Camera::keyed`): the
     /// field's frame is render space plus the origin less its drift.
     pub drift: vec2,
-    pub seed: u32,
+    pub sight: f32 = -2.0,
+    pub round: u32 = 0,
+}
+
+/// How many rounds a tile out of sight waits between its marches: it's marched one round in
+/// this many, tiles in turn (`march_dome`). What it holds drifts on meanwhile (`PHASES` frames a
+/// round: at most 13 m, two rounds, half a degree overhead), unseen.
+pub const RESTING: u32 = 2
+
+/// How far past the view's corners a tile counts as in sight (radians): what the eye can turn
+/// in a round of the dome (half a second) without meeting a tile that waited.
+pub const TURN: f32 = 0.5
+
+/// A tile's directions' largest angle from its middle's (radians, a little over).
+const TILE_RADIUS: f32 = 0.02
+
+/// Whether the tile holding the dome's texel `t` is in sight: its middle's direction within
+/// `c.sight`'s angle of where the eye looks.
+fn in_sight(c: Clouds, t: vec2u) -> bool {
+    let middle = (vec2(t / TILE * TILE) + vec2(f32(TILE) * 0.5)) / vec2(f32(SKY_W), f32(SKY_H))
+    dot(sky_dir(middle), c.forward) >= c.sight
 }
 
 /// Where the dome holds direction `dir`: azimuth all round from +z, elevation up.
@@ -520,6 +545,15 @@ pub fn march_dome(
     id: GlobalId,
 ) {
     let t = phase_texel(c, id.x)
+    let old = dome.load(x: t.x, y: t.y)
+    // A tile out of sight is marched one round in `RESTING`, once the dome is whole: the rest of
+    // the time it keeps what it held. Its turn is by its place among its phase's tiles, so each
+    // frame marches its share of them (all of a phase's tiles are the same modulo `PHASES`).
+    let tile = (t.y / TILE) * TILES_W + t.x / TILE
+    if c.blend < 1.0 && !in_sight(c, t) && (c.round + tile / PHASES) % RESTING != 0 {
+        out[id] = old
+        return
+    }
     let uv = (vec2(t) + vec2(0.5)) / vec2(f32(SKY_W), f32(SKY_H))
     // Interleaved gradient noise (Jimenez's): neighbouring texels' jitters spread evenly, so
     // their errors cancel when the sky pass blends them; moved by the golden ratio each round.
@@ -540,7 +574,6 @@ pub fn march_dome(
         rep,
         s,
     )
-    let old = dome.load(x: t.x, y: t.y)
     out[id] = mix(old, new, vec4(c.blend))
 }
 
@@ -731,7 +764,9 @@ impl Sky {
     /// The frame's texels of the dome marched (from the eye at `eye`, the field drifted
     /// `drift`), and put in the dome. The first round (32 frames) replaces what the dome held;
     /// after, each march is 0.75 of the blend with it. `still`: the march's jitter stays the same
-    /// round to round (a test's frames alike once the dome is whole).
+    /// round to round (a test's frames alike once the dome is whole). The eye looks along
+    /// `forward`, its view's corners `view` (radians) from it: tiles out of sight rest
+    /// (`RESTING`).
     pub fn march(
         mut self,
         air: Air,
@@ -742,6 +777,8 @@ impl Sky {
         rep: Sampler,
         s: Sampler,
         still: bool,
+        forward: vec3,
+        view: f32,
     ) -> Clouds {
         let c = Clouds {
             eye,
@@ -750,6 +787,9 @@ impl Sky {
             blend: if self.frames < PHASES { 1.0 } else { 0.75 },
             drift,
             seed: if still { 0 } else { self.frames / PHASES },
+            forward,
+            sight: cos(min(view + TURN + TILE_RADIUS, PI)),
+            round: self.frames / PHASES,
         }
         label("clouds")
         dispatch(
@@ -879,4 +919,38 @@ fn cloud_density_profile_closes_both_edges_without_a_shelf() {
         previous = value
     }
     assert(cloud_profile(0.3) > 0.99, "cloud loses its full-density middle")
+}
+
+/// What the eye looks toward is in sight and what's behind it isn't; a view of a half turn sees
+/// every tile (the clearing's dome, marched whole); and a tile out of sight is marched exactly
+/// once in any `RESTING` rounds running, whatever its place.
+@test
+fn tiles_out_of_sight_rest_and_take_their_turns() {
+    let c = Clouds {
+        eye: vec3(0.0),
+        phase: 0,
+        sun: vec3(0.0, 1.0, 0.0),
+        blend: 0.75,
+        drift: vec2(0.0),
+        seed: 0,
+        forward: vec3(0.0, 0.0, 1.0),
+        sight: cos(0.7 + TURN + TILE_RADIUS),
+    }
+    let ahead = vec2u(SKY_W / 2, SKY_H - 1 - u32(0.08 / (EL_HI - EL_LO) * f32(SKY_H)))
+    let behind = vec2u(8, ahead.y)
+    assert(in_sight(c, ahead), "the tile ahead of the eye is out of sight")
+    assert(!in_sight(c, behind), "the tile behind the eye is in sight")
+    let whole = Clouds { sight: cos(min(std::math::PI + TURN + TILE_RADIUS, std::math::PI)), ..c }
+    assert(in_sight(whole, behind), "a half turn's view leaves a tile out of sight")
+    for tile in [0, 1, 37, 255, TILES_W * (SKY_H / TILE) - 1] {
+        for first in 0..4 {
+            var marched = 0
+            for round in first..first + RESTING {
+                if (round + tile / PHASES) % RESTING == 0 {
+                    marched += 1
+                }
+            }
+            assert(marched == 1, "a resting tile missed its turn or took two")
+        }
+    }
 }
