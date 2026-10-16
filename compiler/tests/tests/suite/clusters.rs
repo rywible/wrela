@@ -24,49 +24,33 @@ fn host(name: &str) -> Host {
     host
 }
 
-/// The frame with the eye at `EYE` looking at `AT`, `pixels` of error, `side` × `side` copies,
-/// once the lists' rooms hold what the frames list (`settled`).
+/// The frame with the eye at `EYE` looking at `AT`, `pixels` of error, `side` × `side` copies:
+/// the third, and every one before it whole (the lists have room for every quad the copies
+/// could list, from the first frame).
 fn frame(host: &mut Host, pixels: f32, side: i32) -> Vec<u8> {
     let mut args: Vec<Value> = EYE.iter().chain(&AT).map(|&x| Value::F32(x)).collect();
     args.push(Value::F32(pixels));
     args.push(Value::I32(side));
     host.call_export("view", &args).expect("view");
-    // (A frame first: the counts read back must be of frames with this view.)
-    host.frame(0.0, W, H).expect("frame");
-    settled(host);
-    host.frame(0.0, W, H).expect("frame");
+    for i in 0..3 {
+        host.frame(i as f32 / 60.0, W, H).expect("frame");
+    }
     host.read_screen().expect("read the screen")
 }
 
-/// Frames until two readings running of the counts (`ask_counts`, `counts`) find the same listed
-/// quads at every level, each within its room: the rooms (the candidates' among them) follow what
-/// the frames need, read back every few frames, and a list cut short by a full one before it
-/// reads as fewer until that grows.
-fn settled(host: &mut Host) {
-    let mut frames = 0;
-    let mut last: Vec<u32> = Vec::new();
-    loop {
-        host.call_export("ask_counts", &[]).expect("ask");
-        let n = loop {
-            host.frame(0.0, W, H).expect("frame");
-            frames += 1;
-            let n = int(&host.call_export("counts", &[]).expect("counts"));
-            if n > 0 {
-                break n;
-            }
-            assert!(frames < 600, "the counts never arrived");
-        };
-        let at = |host: &mut Host, i: u32| {
-            int(&host.call_export("count", &[Value::I32(i as i32)]).expect("count"))
-        };
-        let listed: Vec<u32> = (0..n / 4).map(|l| at(host, 4 * l + 2)).collect();
-        let held = (0..n / 4).all(|l| at(host, 4 * l + 2) <= at(host, 4 * l + 3));
-        if held && listed == last {
-            return;
+/// The clusters' megabytes once cooking's quads and vertices are fitted to what it emitted (read
+/// back a few frames after cooking): frames until two running agree.
+fn settled_megabytes(host: &mut Host) -> u32 {
+    let mut last = u32::MAX;
+    for i in 0..120 {
+        host.frame(2.0 + i as f32 / 60.0, W, H).expect("frame");
+        let mb = int(&host.call_export("megabytes", &[]).expect("megabytes"));
+        if mb == last {
+            return mb;
         }
-        last = listed;
-        assert!(frames < 600, "the rooms never held what was listed");
+        last = mb;
     }
+    panic!("the clusters' buffers never settled");
 }
 
 fn int(v: &[Value]) -> u32 {
@@ -113,8 +97,8 @@ fn levels_listed(host: &mut Host) -> u32 {
 }
 
 /// Every level's quads and listed quads fit their rooms, and the cut over the field of 64
-/// copies takes at least three levels; its buffers, fitted to what cooking emitted and what the
-/// frames list, take under 150 MB.
+/// copies takes at least three levels; its buffers, cooking's fitted to what it emitted and the
+/// frames' with room for every quad, take under 400 MB.
 #[test]
 #[ignore = "needs a GPU"]
 fn a_cut_holds_every_quad_it_wants() {
@@ -122,9 +106,9 @@ fn a_cut_holds_every_quad_it_wants() {
     frame(&mut host, 0.5, 8);
     let levels = levels_listed(&mut host);
     assert!(levels >= 3, "the cut took {levels} levels");
-    let mb = int(&host.call_export("megabytes", &[]).expect("megabytes"));
+    let mb = settled_megabytes(&mut host);
     eprintln!("the clusters take {mb} MB");
-    assert!(mb < 150, "the clusters take {mb} MB");
+    assert!(mb < 400, "the clusters take {mb} MB");
 }
 
 /// Over 9 copies (the finest level drawn everywhere, 669,000 quads a copy, fits its room for 9,
@@ -176,10 +160,10 @@ fn a_cut_opens_no_crack_and_keeps_its_silhouettes() {
     assert_eq!(far, 0, "{far} pixels differ away from the finest level's silhouettes");
 }
 
-/// Chrome draws the moving eye's cut of the 64 copies as the native host does, once the lists'
-/// rooms have followed what's listed: frames within a mean of 0.5/255 (Tint takes the clusters'
-/// shaders, and its atomics keep each cluster's quads together as wgpu's do). Not the same state
-/// hash: the rooms are sized from counts read back, which arrive at a frame each host chooses.
+/// Chrome draws the moving eye's cut of the 64 copies as the native host does: frames within a
+/// mean of 0.5/255 (Tint takes the clusters' shaders, and its atomics keep each cluster's quads
+/// together as wgpu's do). Not the same state hash: cooking's buffers are fitted once its counts
+/// are read back, at a frame each host chooses.
 #[test]
 #[ignore = "needs a GPU and Chrome"]
 fn the_browser_draws_the_native_hosts_clusters() {

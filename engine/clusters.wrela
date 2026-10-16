@@ -101,9 +101,6 @@ pub struct Level {
     /// (`settle`), and what's arrived (`NOT_YET` until it has); empty once they're fitted.
     pub emitted: Vec<Pending<u32>>,
     pub emitted_got: Vec<u32>,
-    /// The picks, listed quads and candidates a recent frame counted, which the frame's lists
-    /// are fitted to (`fit`; `Clusters::follow` reads them back).
-    pub seen: vec3u,
 }
 
 /// A surface's clusters at every level, the frame's instances in view, and the candidates of the
@@ -117,12 +114,6 @@ pub struct Clusters {
     /// Each level's block map (each block's live slot + 1, or 0), kept apart from its level so
     /// the walk reads the level below's while it changes its own.
     pub maps: Vec<GpuBuffer<u32>>,
-    /// Each level's picks, listed quads and candidates this frame, copied together (`follow`),
-    /// and the reading of them under way.
-    pub counted: GpuBuffer<u32>,
-    pub reading: Vec<Pending<u32>>,
-    /// Frames since the last reading was asked for.
-    pub since: u32,
 }
 
 /// The live blocks a grid of `blocks` blocks is expected to hold: a surface's (`realize`'s
@@ -270,7 +261,6 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
                 skirt: grid.cell,
                 emitted: Vec::new(),
                 emitted_got: Vec::new(),
-                seen: vec3u(0),
             },
         )
     }
@@ -299,9 +289,6 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
         visible: append_buffer(1),
         here: empty_list(1),
         below: empty_list(1),
-        counted: buffer(3 * MOST_LEVELS),
-        reading: Vec::new(),
-        since: 0,
         maps,
     }
 }
@@ -871,25 +858,18 @@ pub fn cluster_shade(v: ClusterVertex, look: ClusterLook) -> vec4 {
 const MOST_PICKS: u32 = 1 << 22
 const MOST_LISTED: u32 = 1 << 23
 
-/// The least room a level's picks and listed quads are given, before a frame's counts are seen.
-const FEWEST_PICKS: u32 = 1 << 12
-const FEWEST_LISTED: u32 = 1 << 16
-
 impl Level {
-    /// Room for the picks and the listed quads: twice what a recent frame counted (`seen`), at
-    /// least `FEWEST_PICKS` and `FEWEST_LISTED`, at most every live block's cluster of each of
-    /// `instances` placements (and `MOST_PICKS`, `MOST_LISTED`). A list grows when what's seen
-    /// passes half its room, and shrinks when it's under an eighth: a frame that pushes more
-    /// than its room counts them and keeps none past it (`push_pair`), and the room grows within
-    /// a few frames, as its count is read back.
+    /// Room for the picks and the listed quads of `instances` placements all drawn at this level:
+    /// every live block's cluster of each, and every quad cooking emitted for each, once its
+    /// quads are fitted (`settle`); at most `MOST_PICKS` and `MOST_LISTED`. A frame can't list
+    /// more than that, however the view jumps (a room sized from the counts a frame read back
+    /// dropped what a jump wanted until it grew).
     fn fit(mut self, instances: u32) {
         let n = u64(max(instances, 1))
-        let most_picks = u32(min(u64(self.pairs.len()) * n, u64(MOST_PICKS)))
-        let most_listed = u32(min(u64(self.words.len() / 6) * n, u64(MOST_LISTED)))
-        let picks = clamp(2 * self.seen.x, min(FEWEST_PICKS, most_picks), most_picks)
-        let listed = clamp(2 * self.seen.y, min(FEWEST_LISTED, most_listed), most_listed)
-        refit_list(mut self.picks, picks)
-        refit_list(mut self.list, listed)
+        let picks = min(u64(self.pairs.len()) * n, u64(MOST_PICKS))
+        let listed = min(u64(self.words.len() / 6) * n, u64(MOST_LISTED))
+        fit_list(mut self.picks, u32(picks))
+        fit_list(mut self.list, u32(listed))
     }
 
     /// The quads and vertices cooking emitted, once read back: their buffers fitted to them
@@ -917,9 +897,6 @@ impl Level {
     }
 }
 
-/// How many frames apart the lists' counts are read back (`Clusters::follow`).
-const READ_EVERY: u32 = 8
-
 /// A count not yet read back.
 const NOT_YET: u32 = 0xffffffff
 
@@ -939,10 +916,10 @@ fn answered(asked: mut Vec<Pending<u32>>, got: mut Vec<u32>) -> bool {
     all
 }
 
-/// `list` given room for `room` items: anew if it has less, or more than eight times as much.
-fn refit_list(list: mut GpuBuffer<u32>, room: u32) {
-    let has = (list.len() - 1) / 2
-    if has < room || has > 8 * max(room, 1) {
+/// `list` given room for `room` items, if it hasn't that room exactly (emptied then): it shrinks
+/// when its level's quads are fitted.
+fn fit_list(list: mut GpuBuffer<u32>, room: u32) {
+    if list.len() != 1 + 2 * room {
         list = empty_list(room)
     }
 }
@@ -1003,19 +980,15 @@ impl Clusters {
         )
         let per_metre = cam.screen.y / (2.0 * cam.tan_half)
         let levels = self.levels.len()
-        // Room for candidates: twice as many as a recent frame's most at a level, and at least as
-        // many as any level could pick.
-        var most = FEWEST_PICKS
+        // Room for candidates: as many as any level could pick.
+        var most = 1
         for mut l in self.levels {
             l.settle()
             l.fit(places.len())
-            most = max(most, max(2 * l.seen.z, (l.picks.len() - 1) / 2))
+            most = max(most, (l.picks.len() - 1) / 2)
         }
-        refit_list(mut self.here, min(most, MOST_PICKS))
-        refit_list(mut self.below, min(most, MOST_PICKS))
-        // This frame's counts are read back (`follow`): each level's candidates are copied as its
-        // test begins, before the lists turn over.
-        let reading = self.reading.len() == 0 && self.since + 1 >= READ_EVERY
+        fit_list(mut self.here, most)
+        fit_list(mut self.below, most)
         write(mut self.here, 0, [0])
         // Each level's child grid and block map (the level below's; the finest's own, unused).
         var grids: Vec<Grid> = Vec::new()
@@ -1052,12 +1025,6 @@ impl Clusters {
                         list_counts.bind(list: self.here.items(), args: mut l.select_args),
                         groups: 1,
                     )
-                    if reading {
-                        copy(
-                            self.here.span(start: 0, count: 1),
-                            self.counted.span_mut(start: 3 * k + 2, count: 1),
-                        )
-                    }
                     let cut = Cut {
                         cam,
                         per_metre,
@@ -1099,36 +1066,6 @@ impl Clusters {
             }
             swap(mut self.here, mut self.below)
         }
-        self.follow()
-    }
-
-    /// Each level's picks and listed quads this frame copied into `counted`, and read back, one
-    /// reading every `READ_EVERY` frames at most (a reading a frame cost 0.3 ms of the GPU's
-    /// span); when one arrives, each level's `seen` is its counts.
-    fn follow(mut self) {
-        self.since += 1
-        if self.reading.len() > 0 {
-            if let Some(Ok(v)) = self.reading[0].poll() {
-                var k = 0
-                for mut l in self.levels {
-                    l.seen = vec3u(v[3 * k], v[3 * k + 1], v[3 * k + 2])
-                    k += 1
-                }
-                self.reading = Vec::new()
-            }
-            return
-        }
-        if self.since < READ_EVERY {
-            return
-        }
-        self.since = 0
-        var k = 0
-        for l in self.levels {
-            copy(l.picks.span(start: 0, count: 1), self.counted.span_mut(start: 3 * k, count: 1))
-            copy(l.list.span(start: 0, count: 1), self.counted.span_mut(start: 3 * k + 1, count: 1))
-            k += 1
-        }
-        self.reading.push(read(self.counted.span(start: 0, count: 3 * k)))
     }
 
     /// The frame's clusters drawn into `pass`, lit as `look` says, a level a draw, both faces (a
