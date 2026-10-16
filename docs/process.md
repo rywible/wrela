@@ -2297,6 +2297,20 @@ change is 1.2% more (its blades move rather than smear). It costs 0.86 ms of GPU
 opening (3%), the blades' second draw. It's the motion that a resolve shading a share of the
 pixels each frame would need; that spike isn't done.
 
+Prefiltering derived by the compiler (idea 4) is `std::derive::filtered` (language.md §13): the
+gradient's forward mode with each direction's seed the footprint's width along it, and each
+discontinuous builtin (`fract`, `floor`, `step`, `abs`, `min`, `max`, the clamps and the rest)
+averaged over the range its operand spans, from closed forms of its integral. The idea is Dorn,
+Barnes, Yang and Wolff's ("Automatically Antialiasing Procedural Shaders", 2015) and Yang and
+Barnes's ("Approximate Program Smoothing Using Mean-Variance Statistics", 2018), which carry a
+value's spread through a program and smooth the operations that jump; this one carries first
+order spreads only, so a product of patterns along different axes averages exactly and `abs`
+of a difference of two doesn't (std's test writes a checker as a product). Its gate was the
+council's: judged against supersampling. A checkered ground plane to its horizon at a sample a
+pixel is 13/255 from the mean of 256 samples a pixel, where point samples are 87/255 off (130
+against 12 in the far rows, where they turn to moiré), the same bits in Chrome as natively. No
+code was taken from either paper; its cost per pixel against a point sample wasn't measured.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
