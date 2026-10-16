@@ -89,6 +89,9 @@ pub struct Docs {
     pages: Vec<(String, Vec<Block>, String)>,
     blocks: Vec<Block>,
     markdown: String,
+    /// Why the page shown couldn't be opened, if it couldn't: its page says what may be it, once
+    /// the index is read.
+    missed: String,
     shown: String,
     laid: Laid,
     laid_width: f32,
@@ -201,6 +204,7 @@ pub fn init() -> Docs {
         pages: Vec::new(),
         blocks: Vec::new(),
         markdown: String::new(),
+        missed: String::new(),
         shown: String::from("?"),
         laid: Laid::empty(),
         laid_width: 0.0,
@@ -365,6 +369,14 @@ fn answers(s: mut Docs) {
                     s.nav_dirty = true
                     s.nav_follow = true
                     open_shown_group(mut s)
+                    // A page that couldn't be opened now lists what may be it.
+                    if !s.missed.is_empty() {
+                        let why = s.missed.clone()
+                        let path = s.shown.clone()
+                        let md = missing(s.index, path.as_str(), why.as_str())
+                        show(mut s, path.as_str(), parse(md.as_str()), take md)
+                        s.missed = take why
+                    }
                 },
                 Err(e) => s.trouble = f"The index couldn't be read: {e.as_str()}",
             },
@@ -398,7 +410,13 @@ fn answers(s: mut Docs) {
                 },
                 None => s.trouble = f"{path.as_str()} isn't UTF-8",
             },
-            Err(e) => s.trouble = f"{path.as_str()} couldn't be fetched: {e.message()}",
+            Err(e) => if s.route.page == path {
+                // A page that isn't there, as after a page moved: what may be it, and search.
+                let md = missing(s.index, path.as_str(), e.message())
+                let blocks = parse(md.as_str())
+                show(mut s, path.as_str(), take blocks, take md)
+                s.missed = e.message().to_string()
+            },
         }
     }
     if let Some(Ok(bytes)) = poll(mut s.pasting) {
@@ -528,6 +546,7 @@ fn go_to(s: mut Docs, route: Route, push: bool) {
 fn show(s: mut Docs, path: str, blocks: take Vec<Block>, markdown: take String) {
     s.blocks = take blocks
     s.markdown = take markdown
+    s.missed.clear()
     s.shown = path.to_string()
     s.nav_follow = true
     open_shown_group(mut s)
@@ -615,6 +634,65 @@ fn front(index: Index) -> String {
         }
     }
     take md
+}
+
+/// The page shown for a page that couldn't be opened, at `path`: what went wrong, then the pages
+/// that search finds for the path's last name, as a page that moved may be among them, and how
+/// to search. Its links are relative to `path`.
+fn missing(index: Index, path: str, why: str) -> String {
+    let p = path.slice(from: 0, to: if path.ends_with(".md") { path.len() - 3 } else { path.len() })
+    var md = f"# No page here\n\n`{p}` couldn't be opened ({why}).\n\n"
+    // Up from the page's directory to the docs' root.
+    var up = String::new()
+    for i in 0..p.len() {
+        if p.byte(i) == 47 { up.push_str("../") }
+    }
+    // The path's last name, as words (`6-memory-model`: `6 memory model`); if search finds nothing
+    // for them all, its longest word.
+    var name = String::new()
+    var start = p.len()
+    while start > 0 && p.byte(start - 1) != 47 { start -= 1 }
+    for i in start..p.len() {
+        let b = p.byte(i)
+        name.push_char(if b == 45 || b == 95 { 32 } else { u32(b) })
+    }
+    var hits = index.search(name.as_str(), 8)
+    if hits.is_empty() {
+        var longest = String::new()
+        for (a, b) in name.as_str().split(" ") {
+            if b - a > longest.len() { longest = name.as_str().slice(a, b).to_string() }
+        }
+        hits = index.search(longest.as_str(), 8)
+    }
+    if hits.is_empty() {
+        md.push_str("Press `/` and search for what you're looking for.\n")
+        return md
+    }
+    // Pages of the missing page's own group (`spec`, `std`) first: it moved most likely there.
+    let group = p.slice(from: 0, to: p.find("/").unwrap_or(p.len())).to_string()
+    hits.sort_by(
+        |a, b| page_of(index, a).as_str().starts_with(group.as_str()) &&
+            !page_of(index, b).as_str().starts_with(group.as_str()),
+    )
+    md.push_str(
+        "A page that moved may be one of these. Or press `/` and search for what you're looking for.\n\n## Pages that may be it\n\n",
+    )
+    for h in hits {
+        let (title, under) = result_text(index, h)
+        let (page, anchor) = if h.item {
+            (index.items[h.at].page.clone(), index.items[h.at].anchor.clone())
+        } else { (index.sections[h.at].page.clone(), index.sections[h.at].anchor.clone()) }
+        let place = if anchor.is_empty() { String::new() } else { f"#{anchor.as_str()}" }
+        md.push_str(
+            f"- [{title.as_str()}]({up.as_str()}{page.as_str()}{place.as_str()}): {under.as_str()}\n",
+        )
+    }
+    take md
+}
+
+/// The page a search result is on.
+fn page_of(index: Index, h: Hit) -> String {
+    if h.item { index.items[h.at].page.clone() } else { index.sections[h.at].page.clone() }
 }
 
 /// How many topics the engine's modules are listed under on the front page, so a reader finds the
@@ -968,7 +1046,7 @@ fn glide_by(s: mut Docs, dy: f32, f: Frame) {
 fn glide_on(s: mut Docs, f: Frame, dt: f32) {
     let Some(to) = s.glide else { return }
     let target = clamp(to, 0.0, max_scroll(s, f))
-    s.scroll = glided(s.scroll, target, dt, s.reduced)
+    s.scroll = glided(at: s.scroll, to: target, dt: dt, still: s.reduced)
     if s.scroll == target { s.glide = None }
 }
 
@@ -1493,9 +1571,10 @@ fn outline(s: Docs) -> Vec<(String, String, f32, u32)> {
     take rows
 }
 
-/// Whether the page being read is a module's, whose headings are its items.
+/// Whether the page being read is a module's, whose headings are its items: not the spec's, nor
+/// one that couldn't be opened.
 fn is_module(s: Docs) -> bool {
-    !s.shown.is_empty() && !s.shown.as_str().starts_with("spec/")
+    !s.shown.is_empty() && !s.shown.as_str().starts_with("spec/") && s.missed.is_empty()
 }
 
 /// A path's last name: `insert` of `Arena::insert`.
@@ -1527,6 +1606,8 @@ fn neighbours(s: Docs) -> (Option<(String, String)>, Option<(String, String)>) {
 fn extras(s: Docs, f: Frame) -> Vec<Extra> {
     var out: Vec<Extra> = Vec::new()
     if s.shown.is_empty() || s.shown != s.route.page || s.blocks.is_empty() { return out }
+    // A page that couldn't be opened has no neighbours and no Markdown.
+    if s.index.page(s.shown.as_str()).is_none() { return out }
     let u = s.u
     let markdown = f"file:{s.shown.as_str()}"
     if f.rail.w > 0.0 {
@@ -1544,20 +1625,27 @@ fn extras(s: Docs, f: Frame) -> Vec<Extra> {
         let first = if rows.len() <= fits { 0 } else {
             min(at - min(at, fits / 3), rows.len() - fits)
         }
-        let n = min(rows.len() - first, fits)
-        for i in first..first + n {
+        // Each row as tall as its label's lines, while they fit.
+        var y = top
+        var n = 0
+        for i in first..rows.len() {
+            let lines = outline_lines(s, rows[i].0.as_str(), rows[i].3, f.rail.w).len()
+            let h = row + f32(lines - 1) * OUTLINE_LINE * u
+            if n > 0 && y + h > top + f32(fits) * row { break }
             out.push(
                 Extra {
-                    rect: Rect::new(f.rail.x, top + f32(i - first) * row, f.rail.w, row),
+                    rect: Rect::new(f.rail.x, y, f.rail.w, h),
                     target: f"here:{rows[i].1.as_str()}",
                     label: rows[i].0.clone(),
                     kind: ExtraKind::Outline(here == Some(i)),
                     level: rows[i].3,
                 },
             )
+            y += h
+            n += 1
         }
         // Under the outline, or at its place where the page has no sections.
-        let my = if n == 0 { f.rail.y } else { top + f32(n) * row + 20.0 * u }
+        let my = if n == 0 { f.rail.y } else { y + 20.0 * u }
         out.push(copy_page(s, Rect::new(f.rail.x, my, f.rail.w, row)))
         out.push(
             Extra {
@@ -1672,30 +1760,29 @@ fn draw_extras(s: mut Docs, f: Frame) {
                     )
                 }
                 // A module's items are names, set in the code face; an item under its type is
-                // indented under it.
+                // indented under it. A section's long title takes two lines.
                 let face = if is_module(s) { Face::Mono } else { Face::Sans }
                 let size = (if face == Face::Mono { 12.5 } else { 13.5 }) * u
                 let indent = (14.0 + (if e.level > 2 { 14.0 } else { 0.0 })) * u
-                let shown = fit_in(
-                    s.fonts,
-                    face,
-                    e.label.as_str(),
-                    size,
-                    e.rect.w - indent - 2.0 * u,
-                )
                 let color = if here { hex(s.p.strong) } else if hover { hex(s.p.text) } else {
                     hex(s.p.quiet)
                 }
-                let _ = s.list.text(
-                    s.fonts,
-                    face,
-                    shown.as_str(),
-                    size,
-                    vec2(e.rect.x + indent, e.rect.y + 4.0 * u + (if face == Face::Mono {
-                        1.0
-                    } else { 0.0 }) * u),
-                    color,
-                )
+                let lines = outline_lines(s, e.label.as_str(), e.level, e.rect.w)
+                for k in 0..lines.len() {
+                    let _ = s.list.text(
+                        s.fonts,
+                        face,
+                        lines[k].as_str(),
+                        size,
+                        vec2(
+                            e.rect.x + indent,
+                            e.rect.y + (4.0 + f32(k) * OUTLINE_LINE + (if face == Face::Mono {
+                                1.0
+                            } else { 0.0 })) * u,
+                        ),
+                        color,
+                    )
+                }
             },
             ExtraKind::Previous | ExtraKind::Next => {
                 let next = e.kind == ExtraKind::Next
@@ -1737,6 +1824,18 @@ fn draw_extras(s: mut Docs, f: Frame) {
         }
     }
     s.list.pop_clip()
+}
+
+/// How far apart an outline row's lines are.
+const OUTLINE_LINE: f32 = 19.0
+
+/// An outline row's label as the lines it's set on in a rail `width` wide: a module's item, a
+/// name in the code face, on one line, cut if it must be; a section's title on up to two.
+fn outline_lines(s: Docs, label: str, level: u32, width: f32) -> Vec<String> {
+    let u = s.u
+    let room = width - (14.0 + (if level > 2 { 14.0 } else { 0.0 })) * u - 2.0 * u
+    if is_module(s) { return Vec::from([fit_in(s.fonts, Face::Mono, label, 12.5 * u, room)]) }
+    wrap(s.fonts, label, 13.5 * u, room, 2)
 }
 
 /// The extra under `at`, if there is one: its target.
@@ -3076,7 +3175,64 @@ fn a_glide_eases_to_its_place_and_stops_there() {
         frames += 1
     }
     assert(at == 1000.0 && frames > 6 && frames < 40, f"{frames} frames")
-    assert(glided(0.0, 1000.0, dt: 0.1, still: false) > 800.0)
-    assert(glided(0.0, 1000.0, dt: 1.0 / 60.0, still: true) == 1000.0)
-    assert(glided(500.0, 0.0, dt: 1.0 / 60.0, still: false) < 500.0)
+    assert(glided(at: 0.0, to: 1000.0, dt: 0.1, still: false) > 800.0)
+    assert(glided(at: 0.0, to: 1000.0, dt: 1.0 / 60.0, still: true) == 1000.0)
+    assert(glided(at: 500.0, to: 0.0, dt: 1.0 / 60.0, still: false) < 500.0)
+}
+
+/// A page that couldn't be opened says so, and lists what search finds for its last name, each a
+/// link that leads from where it is to the page found.
+@test
+fn a_missing_page_lists_what_may_be_it() {
+    let doc = "{\"pages\": [{\"path\": \"std/arena.md\", \"title\": \"std::arena\", \"summary\": \"Arenas.\", \"kind\": \"module\"}], \"items\": [{\"path\": \"std::arena::Arena\", \"kind\": \"struct\", \"summary\": \"Values with handles.\", \"page\": \"std/arena.md\", \"anchor\": \"arena\", \"source\": \"compiler/std/arena.wrela\", \"line\": 12}], \"sections\": [{\"page\": \"spec/language/6-memory.md\", \"anchor\": \"6-8-handles-and-arenas\", \"headings\": [\"6. Memory\", \"6.8 Handles and arenas\"], \"text\": \"An arena holds values.\"}]}"
+    var bytes: Vec<u8> = Vec::new()
+    for i in 0..doc.len() { bytes.push(doc.byte(i)) }
+    let Ok(index) = Index::read(bytes) else {
+        assert(false, "the index")
+        return
+    }
+    let md = missing(index, "std/old/arena.md", "HTTP 404")
+    let page = md.as_str()
+    assert(
+        page.starts_with(
+            "# No page here\n\n`std/old/arena` couldn't be opened (HTTP 404).\n\nA page",
+        ),
+        page,
+    )
+    assert(
+        page
+            .find("- [std::arena::Arena](../../std/arena.md#arena): Values with handles.")
+            .is_some(),
+        page,
+    )
+    let link = follow("std/old/arena.md", "../../std/arena.md#arena")
+    assert(
+        link ==
+            Some(
+                Target::Docs(
+                    Route { page: String::from("std/arena.md"), anchor: String::from("arena") },
+                ),
+            ),
+    )
+    // A page of the spec that moved finds the spec's sections first.
+    let spec = missing(index, "spec/old/arena.md", "HTTP 404")
+    let section = spec.as_str().find("(../../spec/language/6-memory.md#6-8-handles-and-arenas)")
+    let item = spec.as_str().find("(../../std/arena.md#arena)")
+    assert(section.is_some() && item.is_some() && section < item, spec.as_str())
+    // A name of several words that finds nothing finds its longest word.
+    let words = missing(index, "std/an-arena-of-ours.md", "HTTP 404")
+    assert(
+        words.as_str().find("- [std::arena::Arena](../std/arena.md#arena)").is_some(),
+        words.as_str(),
+    )
+    // Nothing found: no list, only search.
+    let none = missing(index, "spec/zzz.md", "HTTP 404")
+    assert(
+        none
+            .as_str()
+            .ends_with(
+                "couldn't be opened (HTTP 404).\n\nPress `/` and search for what you're looking for.\n",
+            ),
+        none.as_str(),
+    )
 }
