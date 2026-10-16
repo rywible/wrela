@@ -1,24 +1,35 @@
-// The interest check (M6 §4, from spike 17's): from every place a player can stand on a floor,
-// what draws the eye somewhere new, and how a player who follows the draws gets on. A tape
-// measure for an author, not a judge of beauty: it can say a place is dull, never that it's good.
+// The interest check: from every place a player can stand on a floor, what draws the eye
+// somewhere new, and how a player who follows the draws gets on.
+//
+// It is a tape measure for an author, not a judge of beauty: it can say a place is dull, never
+// that it is good. Run it with `check` on a floor's map and what its history left (`Evidence`);
+// `report` gives what it found as JSON, and `map_image` draws it.
 //
 // What the eye sees is worked out from what a history left (its trees, its light, its trails),
-// on a grid of `Settings::cell`: the ground's height; the crowns' tops and bases, and how much
-// they hide; the trunks and the undergrowth at eye height; the open ground; the trails. A
-// sightline loses light to what it passes through (Beer–Lambert), and the ground stops it. The
-// eye is the camera's, a third person's (#54 Q4): `Settings::eye` above the ground.
+// on a grid of `Settings::cell` (`sight_of`):
+// - the ground's height;
+// - the crowns' tops and bases, and how much they hide;
+// - the trunks and the undergrowth at eye height;
+// - the open ground and the trails.
+// A sightline loses light to what it passes through (Beer–Lambert), and the ground stops it.
+// The eye is a third-person camera's: `Settings::eye` above the ground.
 //
-// A draw is something seen that leads somewhere: a keystone (a site: its size on screen, against
-// the sky or not, how hazy), an opening (light through the trees, seen from under them), a crest
-// (rising ground that hides what's beyond it), a trail running away from the eye, or a small
-// feature (a veteran tree, a silver snag, a big log, a stone). Each has a target, a place to walk
-// to, and a strength (0 to 1).
+// A draw is something seen that leads somewhere. Each has a target, a place to walk to, and a
+// strength (0 to 1). The kinds of draw:
+// - a keystone (a site: its size on screen, against the sky or not, how hazy);
+// - an opening (light through the trees, seen from under them);
+// - a crest (rising ground that hides what is beyond it);
+// - a trail running away from the eye;
+// - a small feature (a veteran tree, a silver snag, a big log, a stone).
 //
-// The checks: the share of the walkable floor where nothing draws (dead); whether each of the
-// map's relations holds; curious walkers, who follow the strongest draw to a place they haven't
-// been, at a player's run, with the times between arrivals (the cadence) and the time they're
-// lost; the critical path's pilgrims, who keep to the trails and the anchors; and whether the
-// sites a player must reach can be reached on foot from the gate (`footing`'s rule).
+// The checks:
+// - the share of the walkable floor where nothing draws (dead);
+// - whether each of the map's relations holds;
+// - curious walkers, who follow the strongest draw to a place they have not been, at a player's
+//   run: the times between arrivals (the cadence) and the time they are lost;
+// - the critical path's pilgrims, who keep to the trails and the anchors;
+// - whether the sites a player must reach can be reached on foot from the gate (`footing`'s
+//   rule).
 
 use footing::{Obstacles, Thing, pace}
 use grow::{Grid, Ground, Habit, Heap, History, State, Tree, canopy}
@@ -42,9 +53,8 @@ pub struct Settings: Copy {
     pub trail_walkers: u32,
 }
 
-/// The check as the floor's tests read it: spike 17's settings (4 m cells, a view each 8 m, 48
-/// directions), its 16 walkers over 0.91 km² scaled to the floor's area, an hour each; at the
-/// third person's eye and a player's run.
+/// The check as the floor's tests read it: 4 m cells, a view each 8 m, 48 directions; 16 walkers
+/// for each 0.91 km² of the floor, an hour each; at the third person's eye and a player's run.
 pub const FULL = Settings {
     cell: 4.0,
     view: 8.0,
@@ -76,11 +86,11 @@ pub const QUICK = Settings {
 /// (on `fields`), the ground's wetness (on `wet_grid`) and the trails' wear (on `wear_grid`).
 /// The same from a history as it ends (`of`) or from its bake read back (`bake`'s tiles). And
 /// each tree as it's drawn, where the floor gives them (`crowns`, a tree each): the eye sees what
-/// the renderer draws (#55 AC3's calibration); none, and they're the history's own (its reach,
-/// a base from its height and light, its girth, its height). And what's built, that the eye
-/// can't see through (`solids`: x, z, radius, height). And the ground's height at each cell of
-/// `fields`, where the history read it (`heights`; empty where it didn't): the check reads it
-/// again only on a grid of its own.
+/// the renderer draws; none, and they're the history's own (its reach, a base from its height
+/// and light, its girth, its height). And what's built, that the eye can't see through
+/// (`solids`: x, z, radius, height). And the ground's height at each cell of `fields`, where
+/// the history read it (`heights`; empty where it didn't): the check reads it again only on a
+/// grid of its own.
 pub struct Evidence {
     pub trees: Vec<Tree>,
     pub crowns: Vec<Drawn>,
@@ -201,9 +211,9 @@ pub struct Spot: Copy {
 }
 
 /// How much a crown's leaves stop a sightline, per metre through it, for a species of shade 1
-/// (the renderer's crowns, cards with gaps between: calibrated against its depth, #55 AC3; with
-/// the Last Green's crowns as built since its owner's tree notes, 0.22 saw past what the renderer
-/// draws at 3 of its 24 places, and 0.38 with `SAPLING` brings all 24 within 0.1).
+/// (the renderer's crowns, cards with gaps between, calibrated against its depth: at 24 test
+/// places, 0.22 saw past what the renderer draws at 3, and 0.38 with `SAPLING` brings all 24
+/// within 0.1).
 const CROWN_DENSITY: f32 = 0.38
 
 /// How much a sapling under the crowns stops a sightline, per metre through it, at 2 m tall
@@ -757,7 +767,7 @@ pub fn view_at(s: Sight, m: Map, set: Settings, at: vec2) -> View {
                             skip: 1.0,
                         )
                         let size = max(min(f.tall, 6.0), f.wide * 0.5) / d
-                        // In shade, a small thing doesn't stand out (spike 17's blind test: the
+                        // In shade, a small thing doesn't stand out (in a blind test, the
                         // rater named none of them); lit, in a gap, it does.
                         let lit = 0.3 + 0.7 * smoothstep(0.35, 0.7, s.open[s.grid.cell_at(f.at)])
                         let st = f.salience * lit * seen * smoothstep(0.02, 0.12, size)
@@ -1598,7 +1608,7 @@ pub struct Checked {
     pub openings: Vec<f32>,
 }
 
-/// A floor's preview (#54 §3): the check on its history at the preview's grain, and the streams
+/// A floor's preview: the check on its history at the preview's grain, and the streams
 /// that history found, for the map lens to draw.
 pub struct Preview {
     pub checked: Checked,
@@ -1862,7 +1872,7 @@ fn cadence_json(c: Cadence) -> String {
     f"{{\"draws_per_hour\": {c.arrivals_per_hour:.2}, \"median_gap\": {c.median_gap:.1}, \"longest_gap\": {c.longest_gap:.1}, \"lost\": {c.lost:.4}, \"blocked\": {c.blocked:.4}, \"keystones_per_hour\": {c.keystones_per_hour:.2}}}"
 }
 
-/// A view as JSON (a lookbook shot's numbers, #54 §9): its strongest draw and how many draw at
+/// A view as JSON (a lookbook shot's numbers): its strongest draw and how many draw at
 /// least `FAINT`, whether it's dead (nothing draws) or quiet (only features draw: no site, opening,
 /// crest or trail), and each draw: what pulls (and the site's name, for a site's), how strongly.
 pub fn view_json(m: Map, v: View) -> String {
@@ -2014,7 +2024,7 @@ pub fn walk_bytes(c: Checked) -> Vec<u8> {
     out
 }
 
-/// The floor's map as an image (the play harness's map, #54 §5): over the map's square, `px`
+/// The floor's map as an image (the play harness's map): over the map's square, `px`
 /// metres a pixel, the ground's relief lit from the north-west, darker under the crowns (the
 /// light at the ground), the trails' earth, open water, what can't be walked greyed, the dead
 /// zones red (a walkable view with no draw `FAINT` or more), the routes yellow and the sites

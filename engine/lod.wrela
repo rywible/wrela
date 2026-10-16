@@ -1,19 +1,21 @@
-// Levels of detail without popping (the owner's ask, beyond #28's scope for M5): a plant is drawn
-// at a level its size on screen and its distance ask (its cards' levels, then an impostor, then
-// a volume, then nothing), and near a switch it's drawn both ways, each keeping its share of the
-// pixels. Which pixels a share holds is an ordered pattern anchored on the plant (where its
-// middle falls on the screen), the same for both ways at a pixel, so the two shares tile the
-// pixel with no gap and no overlap. The pattern moves with the plant as the camera moves, and
-// steps through its 16 places over temporal AA's cycle of 16 frames, so each pixel takes every
-// threshold once and temporal AA blends the two ways. (Held still, a small share was a fixed
-// grid of dots; tied to the screen, it swam over the plant as the camera moved.)
+// Levels of detail for plants without popping: each instance is drawn at the level its size on
+// screen and its distance ask, and near a switch it is drawn both ways, each way keeping its
+// share of the pixels.
 //
+// The levels, finest first: its cards' levels, then an impostor, then a volume, then nothing.
 // One function says where an instance is between its levels (`place`), on the CPU (which lists
-// it's drawn in) and on the GPU (each draw's share of it), so the shares always add to one.
+// it is drawn in) and on the GPU (each draw's share of it), so the shares always add to one.
 //
 //     level:   0 ──── 1 ──── 2 ═══ impostor ═══ volume ┄┄ nothing
 //              cards, by their size on screen ┊ by distance  ┊ by its size on screen
 //     a switch: the middle 20% of each step, a smoothstep of the shares (`SWITCH`)
+//
+// Which pixels a share holds is an ordered pattern anchored on the plant (where its middle falls
+// on the screen, `anchor`), the same for both ways at a pixel, so the two shares tile the pixel
+// with no gap and no overlap. The pattern moves with the plant as the camera moves, and steps
+// through its 16 places over temporal AA's cycle of 16 frames. So each pixel takes every
+// threshold once, and temporal AA blends the two ways. A small share neither stays a fixed grid
+// of dots nor swims over the plant as the camera moves.
 
 use noise::hash2
 use plant::CARD_LEVELS
@@ -91,8 +93,7 @@ pub fn card_width(l: Lod, cam: Camera, at: vec3, scale: f32) -> f32 {
 
 /// How much of each step between two ways an instance is drawn both ways (its middle): over
 /// 80%, a tree was between two of its card levels most of the time, and temporal AA (a fifth of
-/// a pixel from each frame) left their dither as a screen over most crowns (the lookdev
-/// reviews).
+/// a pixel from each frame) left their dither as a screen over most crowns.
 pub const SWITCH: f32 = 0.2
 
 /// How far through a step's switch an instance at `level` is (0 to 1).
@@ -125,8 +126,8 @@ pub fn share(level: f32, faint: f32, way: u32) -> vec2 {
 ///
 /// A middle at or behind the eye's plane (the camera inside the crown) falls on no pixel: its
 /// anchor is the screen's corner, as good as any, since the plant is drawn whole there. (A
-/// player's camera went inside a crown within ten minutes of playing spike 17, and the infinite
-/// pixel trapped where the CPU made it an integer: `packed`.)
+/// player's camera does go inside crowns, and the infinite pixel would trap where the CPU makes
+/// it an integer: `packed`.)
 pub fn anchor(cam: Camera, at: vec3, top: f32, scale: f32) -> vec2 {
     // Its own draw, keyed to where it stands in the world.
     let w = at + cam.keyed()
@@ -185,9 +186,9 @@ pub const CARD_BAND: f32 = 0.1
 /// `h` falls inside the share, gone where it falls outside, and smaller within `CARD_BAND` of
 /// its ends. A crown between two levels, or fading near the eye, then shows most of its cards
 /// whole and the rest gone. (Every card kept the same part of the pixels, so in a settled still,
-/// whose history evens the pattern, each was a see-through leaf: the lookdev reviews. Cards in
-/// the band kept that part of the pixels, and a bush faded near the eye left only them, as
-/// see-through leaves on the ground: shot 15, audit pass 1.)
+/// whose history evens the pattern, each was a see-through leaf. Cards in the band kept that
+/// part of the pixels, and a bush faded near the eye left only them, as see-through leaves on
+/// the ground.)
 pub fn by_card(k: u32, h: f32) -> (u32, f32) {
     let start = f32(k & 16383) / 16383.0
     let end = f32((k >> 14) & 16383) / 16383.0

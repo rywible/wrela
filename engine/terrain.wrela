@@ -1,13 +1,16 @@
-// Terrain (#28 §3): one terrain field for a floor, drawn from a clipmap cooked from it on the
-// GPU, and raycast on the CPU by the sim. The drawn ground and the sim's feet read the one field
-// (M4 had two terrains, which differed by metres).
+// Terrain: one terrain field for a floor, drawn from a clipmap cooked from it on the GPU, and
+// raycast on the CPU by the sim. The drawn ground and the sim's feet read the one field.
+//
+// A game writes a `Terrain` (the ground's height and what covers it) and makes a `Clipmap`
+// (`Clipmap::new`); `Clipmap::follow` moves the levels with the eye and cooks those that moved.
+// The sim raycasts the field itself (`raycast`, `below`).
 //
 // The clipmap is LEVELS nested squares of SIDE × SIDE texels round the eye, each texel the
 // field's height, its normal and its cover (albedo, grass) at a point of the level's grid. Level
 // l's spacing is the finest's times 2^l, so the levels reach from centimetres round the eye to
 // kilometres. A level is cooked again when the eye moves it a cell (its centre is snapped to its
 // grid, two cells at a time, so the finer level's edge lies on its lines). The vertex shader
-// reads the texels and never evaluates the field (AC3).
+// reads the texels and never evaluates the field.
 //
 // No cracks between levels: a level's quads inside the finer level's square are dropped; the
 // finer level's outer band morphs its heights to the coarser level's, so its edge lies on the
@@ -44,8 +47,7 @@ pub trait Terrain: Copy + GpuData {
 
     /// What covers the ground at `at`, given the ground's fields there (`Clipmap::write_fields`:
     /// four numbers a game keeps over the plane, such as a history's light at the ground and its
-    /// trails' wear, each 0 to 1), or -1 in each where they aren't known. By default, `cover`
-    /// (spike 17's `cover_with`).
+    /// trails' wear, each 0 to 1), or -1 in each where they aren't known. By default, `cover`.
     fn cover_with(self, at: vec3, n: vec3, fields: vec4) -> Cover {
         self.cover(at, n)
     }
@@ -73,7 +75,7 @@ pub trait Terrain: Copy + GpuData {
 /// What covers the ground: its albedo (linear); and its meadow, which the grass reads where
 /// it's placed: how much grass grows there and how tall (each 0 to 1), how dry and how deep a
 /// green it is; and its flowers: how much of each of three kinds (weights), and how many grow.
-/// And the wood's floor's own plants, where the grass doesn't grow (#54 §9): how many (0 to 1),
+/// And the wood's floor's own plants, where the grass doesn't grow: how many (0 to 1),
 /// then how much of each kind (weights): ferns, bracken, low herbs. The habitat they grow in
 /// (`flora`: the soil's acidity, its wetness, the light, how worn it is; each 0 to 1), which
 /// chooses their species (`grass::species_of`). And what the ground is made of where it shows
@@ -524,8 +526,7 @@ fn ground_indices() -> Vec<u32> {
 /// A level's texels: the terrain's height, normal and cover at each point of its grid. A
 /// level that moved `moved` cells keeps the texels of the points it held, from where they were
 /// in `from` (its texels before), and cooks only those it brings in: a move of two cells cooks
-/// 258 texels, not 16641 (the cooks' median over the camera's path 0.17 ms, now 0.05; the
-/// most in a frame 1.1, 0.28).
+/// 258 texels, not 16641.
 @compute(8, 8)
 pub fn cook_level<T: Terrain>(
     terrain: T,
@@ -632,9 +633,9 @@ pub struct GroundVertex: Copy {
 }
 
 /// The ground's points: level `v / LEVEL_POINTS`'s (`LEVEL_POINTS`), each shaded once for the
-/// triangles that share it (an indexed draw a level, `Clipmap::draw_args`: six vertices a quad
-/// took 0.52 ms, a point each 0.28). Each reads its level's texels, morphed in the band at the
-/// level's edge to the coarser level's heights; it never evaluates the field.
+/// triangles that share it (an indexed draw a level, `Clipmap::draw_args`). Each reads its
+/// level's texels, morphed in the band at the level's edge to the coarser level's heights; it
+/// never evaluates the field.
 @vertex
 pub fn ground(v: VertexIndex, cam: Camera, levels: Levels, texels: [Texel]) -> GroundVertex {
     let world = ground_world(v.index, levels, texels)
@@ -1024,7 +1025,7 @@ fn detail_texel(pixel: FragCoord, k: u32) -> vec4 {
         }
     } else if k == 1 {
         // Soil: crumbs and clods, damp and dry, and a few small angular stones half sunk in it
-        // (pale round stones in a grid read as polka dots: the round 5 stills).
+        // (pale round stones in a grid read as polka dots).
         let crumbs = noise2_wrapped(uv * 48.0, period: vec2i(48, 48)) * 0.5 +
             noise2_wrapped(uv * 120.0, period: vec2i(120, 120)) * 0.3 +
             noise2_wrapped(uv * 12.0, period: vec2i(12, 12)) * 0.2
@@ -1057,7 +1058,7 @@ fn detail_texel(pixel: FragCoord, k: u32) -> vec4 {
             noise2_wrapped(uv * 160.0, period: vec2i(160, 160)) * 0.5
         c = vec3(0.82 + 0.36 * grain)
         // Cracks: thin, broken into short runs (a noise's level line everywhere read as a maze
-        // of wiggly lines on the crag's top: round 5).
+        // of wiggly lines on the crag's top).
         let crack = 1.0 - abs(noise2_wrapped(uv * 9.0, period: vec2i(9, 9)) - 0.5) * 2.0
         let runs = smoothstep(0.6, 0.75, noise2_wrapped(uv * 5.0 + vec2(2.3), period: vec2i(5, 5)))
         c *= 1.0 - 0.3 * smoothstep(0.96, 0.99, crack) * runs

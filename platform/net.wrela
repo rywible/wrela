@@ -1,6 +1,6 @@
-// Networking (language.md §12): a client's connections to its server's rooms, and a room's
-// journal and connections. The hosts carry the bytes and keep the records durably; `std::net`
-// decides what they are. Each of these is a command the host never answers.
+// Network commands to the host: a client's connections to its server's rooms, and a room's
+// journal and connections (language.md §12). The hosts carry the bytes and keep the records
+// durably; `std::net` decides what they are. The host never answers these commands.
 //
 // A client opens a connection to a room by a number it chooses: a `Connection` event says when
 // it's open, and exactly one says when it's closed, whatever closes it; its messages come between.
@@ -10,7 +10,7 @@
 // it closed (`close`). If it can't keep them, it sends nothing and starts the room again from
 // what it had kept.
 //
-// A server tags a connection (`tag`) with what it learned of it, its peer say: when the host
+// A server tags a connection (`tag`) with what it learned of it, such as its peer: when the host
 // starts the room again on a fresh instance, the `Connection` events that tell it of its open
 // connections carry their tags.
 

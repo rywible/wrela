@@ -1,8 +1,10 @@
-// Sun shadows (#28 §5.1): two static cascades, one over the near land and one over the far,
-// drawn only when something static changes (spike 15: drawing them every frame cost 11 ms); and
-// a dynamic map over the space round what moves (the creature), drawn every frame. A lookup
-// reads both and takes the darker. Four fixed comparison taps soften edges in shadow-map
-// space. A surface keeps the same light as time and the viewing camera change.
+// Sun shadows: shadow maps that say how much of the sun's light reaches each point of the world.
+//
+// Two static cascades cover the land, one over the near land and one over the far; they are
+// drawn only when something static changes. A dynamic map covers the space round what moves
+// (the creature) and is drawn every frame. A lookup (`sunlit`) reads both and takes the darker.
+// Four fixed comparison taps soften edges in shadow-map space. A surface keeps the same light as
+// time and the viewing camera change.
 
 use std::gpu::{ComparisonSampler, DepthBias, DepthTexture}
 use std::transform::{look_at, ortho}

@@ -1,11 +1,16 @@
-// The sky's clouds (#28 §6, #31): a field of cloud that drifts with the wind, marched each frame,
-// lit by the air (`air`'s tables), and its shadows on the land.
+// Clouds: a field of cloud that drifts with the wind, marched on the GPU into a dome round the
+// eye, lit by the air (`air`'s tables), and its shadows on the land.
+//
+// Make a `Sky` (`new_sky`), cook its noise once (`Sky::cook_noise`), cook its weather map and
+// shadow map from a cloudscape (`Sky::cook_weather`), and march a share of the dome each frame
+// (`Sky::march`). `sky_shade` draws the sky's pixels; other passes read the sky with its clouds
+// (`sky_with_clouds`) and the clouds' shadow (`cloud_shadow`).
 //
 // The field: a weather map (where the sky is covered, and how tall the clouds are there) cooked
 // from a cloudscape (cumulus placed by hand, and fair-weather clouds from noise), eroded by
-// noise cooked into two 3D textures (Schneider's for Horizon Zero Dawn: Perlin-Worley shapes,
-// Worley detail). It drifts whole: the clouds at time t are the field moved by the wind, so
-// their shadows are a map cooked once (in the field's frame) and moved with it.
+// noise cooked into two 3D textures (Perlin-Worley shapes, Worley detail). It drifts whole: the
+// clouds at time t are the field moved by the wind, so their shadows are a map cooked once (in
+// the field's frame) and moved with it.
 //
 // The dome: every direction round the eye, by azimuth (all round) and elevation (from a little
 // below the horizon to the zenith). The clouds are kilometres away, so a step of the eye moves
@@ -89,9 +94,9 @@ pub struct Gap: Copy + GpuData {
 }
 
 /// What the dome's march and the clouds' shadows read: where the eye is, which of the dome's
-/// tiles the frame marches (`phase`: those whose number is it, modulo `PHASES`), toward the sun, how much of a texel the march
-/// replaces (`blend`: 1 on the first, less after), how far the field has drifted (m), and the
-/// march's jitter's seed.
+/// tiles the frame marches (`phase`: those whose number is it, modulo `PHASES`), toward the sun,
+/// how much of a texel the march replaces (`blend`: 1 on the first, less after), how far the
+/// field has drifted (m), and the march's jitter's seed.
 pub struct Clouds: Copy + GpuData {
     pub eye: vec3,
     pub phase: u32,
@@ -176,8 +181,8 @@ fn worley3(p: vec3, period: i32) -> f32 {
     1.0 - saturate(-log(sum) * 0.1)
 }
 
-/// Worley noise in three octaves from `cells` a side over the unit cube (tiled), weighted as
-/// Schneider's.
+/// Worley noise in three octaves from `cells` a side over the unit cube (tiled), weighted
+/// 0.625, 0.25 and 0.125.
 fn worley_fbm(q: vec3, cells: i32) -> f32 {
     let a = worley3(q * f32(cells), cells)
     let b = worley3(q * f32(cells * 2), cells * 2)
@@ -185,7 +190,7 @@ fn worley_fbm(q: vec3, cells: i32) -> f32 {
     a * 0.625 + b * 0.25 + c * 0.125
 }
 
-/// Where `x` is between `from` and 1, as a fraction (Schneider's remap to [0, 1]).
+/// Where `x` is between `from` and 1, as a fraction (a remap to [0, 1]).
 fn above(x: f32, from: f32) -> f32 {
     (x - from) / (1.0 - from)
 }
@@ -198,7 +203,7 @@ pub fn cook_noise(detail: bool, out: mut Texels3d<Rgba16Float>, id: GlobalId) {
 }
 
 /// The shape noise's texel: Perlin-Worley (Perlin's billows, Worley's cells) eroded by Worley
-/// noise in three octaves (Schneider's base shape), spread over [0, 1]: it falls in [0.65,
+/// noise in three octaves, spread over [0, 1]: it falls in [0.65,
 /// 0.97], most of it in [0.76, 0.9], where a cover's cut (`field`) would leave it whole.
 fn shape_texel(id: GlobalId) -> vec4 {
     let q = (vec3(f32(id.x), f32(id.y), f32(id.z)) + vec3(0.5)) / f32(SHAPE_SIDE)
@@ -521,7 +526,7 @@ pub fn march_dome(
 ) {
     let t = phase_texel(c, id.x)
     let uv = (vec2(t) + vec2(0.5)) / vec2(f32(SKY_W), f32(SKY_H))
-    // Interleaved gradient noise (Jimenez's): neighbouring texels' jitters spread evenly, so
+    // Interleaved gradient noise: neighbouring texels' jitters spread evenly, so
     // their errors cancel when the sky pass blends them; moved by the golden ratio each round.
     let ign = fract(52.9829189 * fract(0.06711056 * f32(t.x) + 0.00583715 * f32(t.y)))
     let jitter = fract(ign + f32(c.seed) * 0.618034)

@@ -1,16 +1,18 @@
-// Water (#54 §8): the meres, the streams, the waterfalls and the springs, as one surface. Its
-// mesh is laid when the game is built, where the map and the history's flow put the water: a
-// mere at its level, out past its shore (the ground hides what's under it); a stream as a ribbon
-// down its course, a skin over the ground (`SKIN`); a waterfall the same ribbon over the edge
-// and down the slope to a pool at its foot; a spring a pool where it rises. The sim reads its
-// water's height from the same mesh (`WaterMesh::height_at`), so what's drawn is where it is. A stream's
-// bed is under its skin by the history's depth (the sim's player stands on it): the ground isn't
-// cut, and the water's colour gives the depth.
+// Water: the meres, the streams, the waterfalls and the springs, as one surface, laid as a mesh
+// when the game is built and shaded each frame.
+//
+// `laid` lays the mesh where the map and the history's flow put the water: a mere at its level,
+// out past its shore (the ground hides what's under it); a stream as a ribbon down its course, a
+// skin over the ground (`SKIN`); a waterfall the same ribbon over the edge and down the slope to
+// a pool at its foot; a spring a pool where it rises. The sim reads its water's height from the
+// same mesh (`WaterMesh::height_at`), so what's drawn is where it is. A stream's bed is under its
+// skin by the history's depth (the sim's player stands on it): the ground isn't cut, and the
+// water's colour gives the depth.
 //
 // Drawn after the scene, over a copy of it (`below`: its colour and each pixel's distance):
 // what's under the water seen through it, bent by its ripples and dimmed by its depth; the world
 // reflected from the screen where the reflection is on it, and from the probes and the sky where
-// it isn't (spike 08's bounds: no ray is traced through the scene); the sun's glints, and foam
+// it isn't (no ray is traced through the scene); the sun's glints, and foam
 // at the banks and where it falls. No vertex moves: the ripples are the shading's. Three looks
 // (`WaterLook`): clear, peat-dark, and painted.
 
@@ -1207,8 +1209,8 @@ pub struct MistAt: Copy + GpuData {
     pub time: f32,
 }
 
-/// The scene's pixel seen through the falls' mist (#54 §8: "the waterfall is cards with mist";
-/// cards that blend would blend the scene's tags too, so the mist is a volume): along the pixel's
+/// The scene's pixel seen through the falls' mist (a volume, since cards that blend would blend
+/// the scene's tags too): along the pixel's
 /// ray to what it meets, each mist's sphere of drifting, rising noise, the light it scatters (the
 /// sun's, forward most, and the sky's) over what's behind it, the tag kept.
 @fragment

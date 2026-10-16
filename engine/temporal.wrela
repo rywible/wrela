@@ -1,6 +1,6 @@
-// Temporal AA and upscaling (#28 §2): the scene, drawn at a lower resolution and jittered within
-// its pixel each frame (Halton 2, 3), is brought up to the output's resolution by keeping a
-// history at that resolution. Each output pixel reconstructs this frame's colour from the
+// Temporal AA and upscaling: the scene, drawn at a lower resolution and jittered within its
+// pixel each frame (Halton 2, 3), is brought up to the output's resolution by keeping a history
+// at that resolution. Each output pixel reconstructs this frame's colour from the
 // nearest samples (weighted by how near each falls), reprojects the history to where its point
 // was last frame (by the motion target where something moved, else by its depth and the
 // camera), clips that history to this frame's neighbourhood of colours, and blends.
@@ -13,13 +13,11 @@
 // The scene's alpha is a tag (what a pixel shows: its class times 64, plus which one), which
 // can't be blended: the output keeps the nearest sample's.
 //
-// The box is a scene pixel's 3 × 3 samples' (two by two's spread is narrow and noisy: its box
-// let through less of a right history and more of a wrong one, the look's flicker 1.61/255
-// against 1.38). Below the output's size, each scene pixel's is found once, by a kernel
-// (`neighbourhoods`), and the output's pixels read their nearest's (`resolve`): at half the
-// output's size four of them share each one, and a resolve gathering its own 3 × 3 took twice
-// as long. At the output's size each output pixel has its own, and gathers it itself
-// (`resolve_gathered`).
+// The box is a scene pixel's 3 × 3 samples' (a 2 × 2 spread is narrow and noisy: its box lets
+// through less of a right history and more of a wrong one). Below the output's size, each scene
+// pixel's is found once, by a kernel (`neighbourhoods`), and the output's pixels read their
+// nearest's (`resolve`): at half the output's size four of them share each one. At the output's
+// size each output pixel has its own, and gathers it itself (`resolve_gathered`).
 
 use std::gpu::{DepthTexture, FragCoord, GlobalId, Rgba16Float, Sampler, Texels, Texture}
 use view::{Camera, class_of, thin}
@@ -50,10 +48,10 @@ pub struct Resolve: Copy + GpuData {
 /// this many frames' samples (1 / this), not the last few's. Each of the levels' and the near
 /// fades' dithers steps through its 16 places over the jitter's cycle (`lod::anchor`), and a
 /// history of a few frames' (`Resolve::blend`) weighted the last of them most, so a settled
-/// still kept the pattern as a screen over crowns and trunks (the lookdev reviews). A mean of
-/// 16 cycles' frames evens it: each of the jitter's offsets meets each of the pattern's places
-/// (`lod::anchor`; a mean of 64 frames left a grain on pale leaves). What changes in a settled view (a tile streaming in, a leaf
-/// in the wind) is still clipped to this frame's neighbourhood, so it doesn't trail.
+/// still kept the pattern as a screen over crowns and trunks. A mean of 16 cycles' frames evens
+/// it: each of the jitter's offsets meets each of the pattern's places (`lod::anchor`; a mean of
+/// 64 frames left a grain on pale leaves). What changes in a settled view (a tile streaming in,
+/// a leaf in the wind) is still clipped to this frame's neighbourhood, so it doesn't trail.
 pub const SETTLED: f32 = 256.0
 
 /// Whether `cam` sees just what it saw last frame (its view and projection held, its jitter
@@ -101,7 +99,7 @@ fn from_ycocg(c: vec3) -> vec3 {
     vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z)
 }
 
-/// A colour squashed so a bright sample doesn't dominate its neighbours' mean (Karis).
+/// A colour squashed so a bright sample doesn't dominate its neighbours' mean.
 fn tamed(c: vec3) -> vec3 {
     c / (1.0 + max(c.r, max(c.g, c.b)))
 }

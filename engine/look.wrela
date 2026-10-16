@@ -1,6 +1,8 @@
-// How a creature is drawn (sketch 02 §1): ordinary engine data. Game code overrides fields
-// (sketch 01 §5), and the engine's quality profiles override them per device. Nothing here is
-// known to the compiler; struct field defaults (D-048) let a game mention only what it changes.
+// How a creature is drawn: its mesh's accuracy, levels of detail, skinning, shadows and how its
+// field is evaluated, as ordinary engine data (`CreatureLook`).
+//
+// Every field has a default, so game code gives only what it changes, and the engine's quality
+// profiles change fields per device. Nothing here is known to the compiler.
 
 use std::units::{cm, m, mm}
 
@@ -11,7 +13,7 @@ pub struct Mesh: Copy {
     pub largest: f32 = 2cm,
 }
 
-/// Skin weights from each part's own distance, falling off over `falloff` (D-023).
+/// Skin weights from each part's own distance, falling off over `falloff`.
 pub struct ByPart: Copy + GpuData {
     pub falloff: f32,
 }
@@ -28,14 +30,14 @@ pub struct Bricks: Copy {
     pub beyond: f32,
 }
 
-/// How shadows are cast. Creatures deform: shadow maps, not distance fields (D-086).
+/// How shadows are cast. Creatures deform: shadow maps, not distance fields.
 pub enum Shadow: Copy {
     Map { resolution: u32 },
     None,
 }
 
 /// What evaluates the field: the compiled field, or `std::stage::interpret` for fields built at
-/// run time (D-029).
+/// run time.
 pub enum Eval: Copy + Eq {
     Compiled,
     Interpreted,
@@ -48,12 +50,10 @@ pub struct Level: Copy {
     pub cost_us: f32,
 }
 
-/// How a creature type's meshes are kept (#43 §7.6–§7.7): its levels of detail, when to move
+/// How a creature type's meshes are kept: its levels of detail, when to move
 /// between them, and how much realizing a frame may do.
 pub struct Detail: Copy {
-    /// The levels, coarse to fine: spike 01's cell sizes, and our costs, measured (#43 §7.7):
-    /// spike 01's in Chrome (0.34, 0.27 and 0.21) times our realization's time to its at each
-    /// level (#42 AC2: 1.25, 1.11 and 1.07).
+    /// The levels, coarse to fine: their cell sizes, and their costs as measured in Chrome.
     pub levels: Bounded<Level, 4> = Bounded::from(
         [
             Level { cell: 3cm, cost_us: 0.42 },
@@ -71,6 +71,8 @@ pub struct Detail: Copy {
     pub budget_us: f32 = 4000.0,
 }
 
+/// How a creature type is drawn: its mesh, its levels of detail, how it deforms, its far
+/// bricks, its shadows and how its field is evaluated.
 pub struct CreatureLook: Copy {
     pub surface: Mesh = Mesh { tolerance: 2mm },
     /// Levels of detail and realization, for a type drawn by `realize::Realizer`.

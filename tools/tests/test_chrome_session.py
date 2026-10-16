@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -78,6 +79,29 @@ class Session(PageDir, unittest.TestCase):
                 self.assertNotEqual(consoles[0], consoles[1])
                 self.assertTrue(all(line.startswith('tab ') for line, in consoles))
 
+    def test_a_page_that_finishes_before_its_devtools_input_does_waits_for_it(self):
+        def slow(port, target, commands, fail):
+            time.sleep(.5)
+            if fail:
+                raise ValueError('the page never had ready')
+            return []
+        with tempfile.TemporaryDirectory() as temporary:
+            fake = Path(__file__).with_name('fake_cdp.py')
+            commands = Path(temporary) / 'commands.json'
+            commands.write_text('[{"until": "ready"}]')
+            for fail, status in [(True, 1), (False, 0)]:
+                with self.subTest(fail=fail), patch.dict(os.environ, {'WRELA_CHROME': str(fake)}), \
+                        patch.object(headless, 'CHROME', str(fake)), \
+                        patch.object(chrome_session, 'cdp', lambda *a: slow(*a, fail)), \
+                        chrome_session.ChromeSession(Path(tempfile.mkdtemp(dir=temporary))):
+                    # The fake page is done at once; the run is the input's too.
+                    run = subprocess.run([sys.executable, str(Path(headless.__file__)), '--cdp',
+                                          str(commands), self.page, '#run', '5'],
+                                         capture_output=True, text=True, timeout=20)
+                    self.assertEqual(run.returncode, status, run.stdout + run.stderr)
+                    if fail:
+                        self.assertIn('the page never had ready', run.stderr)
+
     def test_a_failed_start_fails_every_waiting_scenario_and_stops_the_browser(self):
         for mode in ['exit', 'hang', 'garbage']:
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
@@ -117,6 +141,7 @@ class ChromeDiscovery(unittest.TestCase):
         self.assertEqual(headless.chrome_binary({}, 'linux', lambda name: None), 'google-chrome-stable')
         self.assertTrue(headless.chrome_binary({}, 'darwin', found).startswith('/Applications/'))
         self.assertIn('--use-angle=vulkan', headless.platform_args('linux'))
+        self.assertIn('--password-store=basic', headless.platform_args('linux'))
         self.assertEqual(headless.platform_args('darwin'), [])
 
 
@@ -195,6 +220,18 @@ class DevTools(unittest.TestCase):
         self.assertEqual(answers, [{'ok': 'Input.insertText'}])
         self.assertEqual([s for s in seen if s != 'pong'], ['Runtime.evaluate', 'Runtime.evaluate', 'Input.insertText'])
         self.assertIn('pong', seen)
+
+    def test_a_page_without_its_context_yet_is_waited_for(self):
+        evaluations = []
+        def answer(message):
+            evaluations.append(1)
+            if len(evaluations) == 1:
+                return {'error': {'message': 'Cannot find default execution context'}}
+            return {'result': {'result': {'value': True}}}
+        port, seen, thread = self.serve(answer)
+        chrome_session.cdp(port, 'tab', [{'until': 'ready'}])
+        thread.join(5)
+        self.assertEqual(len(evaluations), 2)
 
     def test_an_error_or_a_page_never_ready_says_why(self):
         port, _, thread = self.serve(lambda m: {'error': {'message': 'no such key'}})

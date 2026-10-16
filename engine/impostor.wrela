@@ -1,14 +1,16 @@
-// Trees far away (#28 §4): impostors in the mid-distance, density volumes beyond, each cooked
-// at load from a kind's near representation and lit as its cards are, so the levels match where
-// they meet (AC4: the silhouette and the light through it, spike 03).
+// Trees far away: impostors in the mid-distance and density volumes beyond, each cooked at load
+// from a plant kind's near representation and lit as its leaf cards are, so the levels match in
+// silhouette and in light where they meet.
 //
+// `bake` makes a kind's impostor from its cards and limbs; `cook` makes its volume. The `lod`
+// module says which level an instance is drawn at.
 // - An impostor is a set of views of the kind, from directions over the upper hemisphere laid
-//   out on a hemi-octahedral grid (VIEWS × VIEWS cells): each cell an orthographic view of its
-//   cards and limbs, holding their colour and coverage, and their normal and depth in the crown.
-//   A far instance is a quad facing the eye that reads the cell of the view nearest the eye's
-//   direction, and lights what it reads as a leaf is lit.
-// - A volume is the kind's crown as densities on a small grid, from its field; a farther
-//   instance is a quad that marches it.
+//   out on a hemi-octahedral grid (`VIEWS` × `VIEWS` cells). Each cell is an orthographic view of
+//   its cards and limbs, and holds their colour and coverage, their normal and their depth in
+//   the crown. A far instance is a quad facing the eye that reads the cell of the view nearest
+//   the eye's direction, and lights what it reads as a leaf is lit.
+// - A volume is the kind's crown as densities on a small grid (`VOXELS` a side), from its
+//   cards. A farther instance is a quad that marches it.
 
 use light::{Lit, gloss, gloss_occlusion, matte}
 use lod::{draw_packed, keeps_packed}
@@ -78,13 +80,13 @@ pub fn leaf_light(
     leaf: f32,
 ) -> vec3 {
     // Over 2.4 m: a crown's masses are deeper than its old clumps, and over 1.6 m their lit
-    // tops went murk (M6's lookdev, crowns round 2: the mere's woods).
+    // tops went murk.
     let ao = exp(-depth / 2.4)
     let v = normalize(lt.cam.eye - at)
     let facing = if dot(n, v) < 0.0 { -n } else { n }
     // The sun is read from `SELF_SHADE` m toward it, past the leaves of its own mass: each leaf
     // shadowed by its neighbours read as salt and pepper, not as a mass turning from light to
-    // shade (M6's lookdev, forms.md row 1). Other crowns' shadows still fall on it.
+    // shade. Other crowns' shadows still fall on it.
     let (sun, sky, reflected) = sun_sky_and_gloss(
         lt,
         at,
@@ -847,7 +849,7 @@ pub fn cook_pattern_cover(
     out[id] = f32(covered) / 64.0
 }
 
-/// Voxel `id` of a volume cooked from the cards (the near level, spike 03: a far level keeps
+/// Voxel `id` of a volume cooked from the cards (the near level: a far level keeps
 /// the near one's shading statistics, not only its opacity): the leaves' area per cubic metre
 /// round it (each card's leaves spread over a Gaussian as wide as the card, or the voxel), and
 /// their mean normal (times the density); and their mean depth in the crown (times the

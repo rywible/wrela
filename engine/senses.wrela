@@ -1,7 +1,11 @@
-// The senses (vision gap 3: creatures that notice you): what a creature makes of a body near it,
-// by sight and by hearing, and how aware of it that leaves the creature. One layer for every
-// creature: the fawn that lifts its head and flees, and the wolf that stalks the climber. What a
-// creature does about it (graze, watch, flee, stalk) is the game's, read from `Awareness`.
+// The senses: what a creature makes of a body near it, by sight and by hearing, and how aware of
+// it that leaves the creature.
+//
+// `sense` gives a `Stimulus` from a creature's `Senses`, the body's `Presence` and what stands
+// between them; `Awareness::update` turns stimuli into awareness over time. One layer serves
+// every creature: a grazer that lifts its head and flees, and a predator that stalks the player.
+// What a creature does about it (graze, watch, flee, stalk) is the game's, read from
+// `Awareness`.
 //
 // Sight: a body is seen inside the creature's field (keen ahead, weaker to the side, blind
 // behind), less the farther it is, and much less when it's still; what stands between them

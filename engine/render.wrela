@@ -1,10 +1,13 @@
-// Drawing creatures (#43 §8, D-089, D-097): a realized mesh (`realize`), posed on the GPU by its
-// type's `Poser`, skinned by linear blending of four bones, cast into the sun's shadow map, and
-// shaded per pixel by its field: evaluated at the rest position, under the triangle's mask (2 or
-// 3 parts, not 20), with the pixel's footprint, its gradient the normal and its channels what the
-// type's `Look` turns into an albedo and a roughness. Engine code, generic over any creature's
-// field and look: the kernels are monomorphized for their types, and their numbers arrive as
-// uniforms (D-070).
+// Drawing creatures: the GPU kernels that pose, skin, shadow and shade a creature's realized
+// mesh (`realize`).
+//
+// A mesh is posed on the GPU by its type's `Poser` (`pose_instances`), skinned by linear blending
+// of four bones (`skin`), cast into the sun's shadow map (`skin_shadow`), and shaded per pixel by
+// its field (`shade`). The shading evaluates the field at the rest position, under the triangle's
+// mask (2 or 3 parts, not 20), with the pixel's footprint: its gradient is the normal, and the
+// type's `Look` turns its channels into an albedo and a roughness. The kernels are generic over
+// any creature's field and look: they are monomorphized for their types, and their numbers arrive
+// as uniforms.
 
 use creature::{Bone, PartMask, Parts, Skeleton}
 pub use creature::MAX_BONES
@@ -32,8 +35,8 @@ pub struct View: Copy + GpuData {
     pub sun: vec3,
 }
 
-/// The lights (D-089): a sun with a shadow map, a hemisphere's ambient light, normalized
-/// Blinn-Phong specular, and an ACES fit. The numbers are the game's (spike 01's, for the herd).
+/// The lights: a sun with a shadow map, a hemisphere's ambient light, normalized Blinn-Phong
+/// specular, and an ACES fit. The numbers are the game's.
 pub struct Lights: Copy + GpuData {
     pub sun_colour: vec3,
     /// The hemisphere's colour straight up and straight down.
@@ -96,7 +99,7 @@ impl Lights {
     }
 }
 
-/// How a creature type's surface looks (#43 §8.4): from its field's channels at a rest-space
+/// How a creature type's surface looks: from its field's channels at a rest-space
 /// point, seen `fp` wide, an albedo (linear) and a roughness; and the colour written to the
 /// screen from the lit, tonemapped one. Written by the game, run per pixel.
 pub trait Look<C>: Copy + GpuData {
@@ -136,7 +139,7 @@ impl<C: Shaded> Look<C> for ByChannels {
     }
 }
 
-// ---- posing on the GPU (§8.1) ---------------------------------------------------------------------
+// ---- posing on the GPU ----------------------------------------------------------------------------
 
 /// How a creature type poses its skeleton on the GPU: each bone's turn, and where the root goes,
 /// from an instance's pose parameters (the type's: a gait phase, how its head is held). Written
@@ -221,7 +224,7 @@ pub fn pose_instances<P: Poser>(
     palettes[id] = world * translate(-sk.bones[bone].xyz)
 }
 
-// ---- skinning, shadows and shading (§8.2–§8.4) -----------------------------------------------------
+// ---- skinning, shadows and shading -----------------------------------------------------------------
 
 /// What the vertex shader passes on: the clip position, the rest position (shading is in rest
 /// space), the world position, the skinning matrix's linear part (for normals), and the
