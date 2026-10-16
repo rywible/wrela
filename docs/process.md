@@ -2294,6 +2294,37 @@ mere (5.55 to 4.65 ms) and the GPU span 2.4% shorter, in every pair. The stills 
 pixels of the sun's glint. Pairs of steps saved 10.7%; groups held in arrays were slower than
 before, as the arrays' registers cost more than the reads saved.
 
+The virtual geometry spike (S1a, `engine::clusters`, `examples/clusters`) cooks a field's surface
+at six levels, each cell twice the last's (4 mm to 128 mm), on grids from one origin so a coarse
+block covers eight finer ones exactly. Each block's quads are a cluster: extracted as
+`engine::realize` extracts them, kept together, with an error measured from the field (its
+vertices' distance from the surface, at least a quarter of a cell) and raised to its children's.
+Each frame walks down the levels from the coarsest: a cluster whose error looks at most half a
+pixel from its nearest point is drawn, one that doesn't hands its live children down, and a
+cluster with no live parent starts the walk at its level, so the work grows with the cut. Where
+neighbours are drawn at different levels, each cluster's skirt (its boundary edges' quads pushed
+a cell into the surface) covers the gap. The ideas are Nanite's (Karis et al., "Nanite: A Deep
+Dive", SIGGRAPH 2021 Advances in Real-Time Rendering: clusters, a cut by projected error, a
+parent's error never under its children's) and chunked terrain's skirts (Ulrich, "Rendering
+Massive Terrains using Chunked Level of Detail Control", SIGGRAPH 2002); the clusters here are
+extraction's blocks, re-extracted at each level rather than simplified, and no code was taken.
+The subject is spike 13's smooth creature without its bark.
+
+Gates, on this Radeon, 1280×720 unless said: no crack and every silhouette within a pixel of the
+finest level drawn everywhere (GPU test, 9 copies: 0 cracks, 33 pixels differ, all on
+silhouettes); every quad within its room; Chrome draws the native host's frame (the same bits).
+The cut over 64 copies lists 359,000 quads; the finest level is 669,000 quads a copy (43 million
+for the field). Nine copies take 5.2 ms of GPU time drawn as the cut and 21.6 ms as the finest
+level (Chrome: 5.3 and 22.8 ms); 64 copies take 7.0 ms (the finest level overflows its room).
+Hidden copies cost nothing that shows: 0, 1,000, 10,000 and 100,000 more under the ground, 7.08,
+7.02, 7.02 and 7.05 ms. Visible ones cost little: 64, 144 and 256 copies, 7.05, 7.58 and 8.77 ms.
+Detail costs a little: a finest level twice as fine (8 mm to 4 mm, a level more) took 7.05 ms
+against 6.18. Selection is 1.2 ms of the 7.0 (walking the levels from the top took it from 2.0).
+Not yet good enough to ship: the rooms are sized for every copy at the finest level (about 500 MB
+for 64 copies, of which the cut uses about 3 MB of lists); the smooth creature certifies, but
+the clusters' errors are measured, not certified, and noisy fields (bark, stone) aren't tried;
+and no game draws with it.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
