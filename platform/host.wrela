@@ -22,7 +22,8 @@ pub fn word(bytes: [u8], at: u32 = 0) -> Option<u32> {
 /// Where the program runs: byte 0 whether the system asks for reduced motion, then words: the
 /// seconds since 1970 (at 1) and the device pixel ratio × 1024 (at 5); byte 9 whether this page
 /// load reloaded the tab, rather than visiting the page; then the word of what the host has (at
-/// 10, `capabilities`). A host may give fewer bytes.
+/// 10, `capabilities`); byte 14 whether the system asks for a light colour scheme
+/// (`prefers_light`). A host may give fewer bytes.
 pub fn environment() -> Pending<u8> {
     request("environment", [u8(0); 0])
 }
@@ -144,6 +145,12 @@ pub fn capabilities(environment: [u8]) -> u32 {
         Some(w) => w,
         None => 0,
     }
+}
+
+/// Whether an `environment` answer says the system asks for a light colour scheme: false from a
+/// host that says nothing of it.
+pub fn prefers_light(environment: [u8]) -> bool {
+    environment.len() > 14 && environment[14] != 0
 }
 
 fn write_f32(w: mut Writer, x: f32) {
@@ -297,6 +304,9 @@ fn a_paste_has_the_hosts_layout() {
     assert(p == Ok(Pasted { text: String::from("hi"), html: String::from("<b>hi</b>") }))
     assert(read_pasted(Vec::from([u8(9), 0, 0, 0])).is_err(), "a short answer")
     assert(capabilities([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 5, 0, 0, 0]) == 5 && capabilities([0]) == 0)
+    // A host that says nothing of the colour scheme leaves it dark.
+    assert(prefers_light([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 5, 0, 0, 0, 1]))
+    assert(!prefers_light([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 5, 0, 0, 0]))
 }
 
 /// Answers when the parent asks this program to return, as the browser's Back does.

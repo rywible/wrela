@@ -1,6 +1,7 @@
-// The docs' look: the console's dark only in the header band, a quieter slate to read on, silver
-// text, and the mark's silver light for its field and for links. Sizes are CSS pixels; the
-// program multiplies them by the display's pixel ratio.
+// The docs' look: the console's dark only in the header band, and under it a page in the reader's
+// colour scheme: a quiet slate with silver text, or paper with ink, each with the mark's light for
+// its field and for links. Sizes are CSS pixels; the program multiplies them by the display's
+// pixel ratio.
 
 /// A colour from its sRGB hex, as the screen takes it.
 pub fn hex(rgb: u32, alpha: f32 = 1.0) -> vec4 {
@@ -12,21 +13,63 @@ pub fn hex(rgb: u32, alpha: f32 = 1.0) -> vec4 {
     )
 }
 
+/// The ground of the header band and of the mark's field, in either scheme.
 pub const VOID: u32 = 0x000000
-pub const SLATE: u32 = 0x15171B
-pub const SURFACE: u32 = 0x1C1F24
-pub const RULE: u32 = 0x262A31
-pub const TEXT: u32 = 0xC9CED5
-pub const STRONG: u32 = 0xF1F3F5
-pub const QUIET: u32 = 0x8B929C
-pub const FIELD: u32 = 0xA9BCD0
 
-// Code's colours: keywords, types, strings, numbers, comments; the rest is TEXT.
-pub const KEYWORD: u32 = 0xC3B6EE
-pub const TYPE: u32 = 0x9ACBE5
-pub const STRING: u32 = 0xD9C597
-pub const NUMBER: u32 = 0xE6AD8A
-pub const COMMENT: u32 = 0x6F7782
+/// A scheme's colours: the page, code's ground and a table's lines; text, headings and what's
+/// quieter; links and the mark's light; a selection and a chosen row; and code's tokens
+/// (keywords, types, strings, numbers, comments; the rest is `text`). Every colour of text keeps
+/// 4.5:1 or more against `page` and `surface`.
+pub struct Palette: Copy + Eq {
+    pub page: u32,
+    pub surface: u32,
+    pub rule: u32,
+    pub text: u32,
+    pub strong: u32,
+    pub quiet: u32,
+    pub field: u32,
+    pub selection: u32,
+    pub chosen: u32,
+    pub keyword: u32,
+    pub kind: u32,
+    pub string: u32,
+    pub number: u32,
+    pub comment: u32,
+}
+
+pub const DARK: Palette = Palette {
+    page: 0x15171B,
+    surface: 0x1C1F24,
+    rule: 0x262A31,
+    text: 0xC9CED5,
+    strong: 0xF1F3F5,
+    quiet: 0x8B929C,
+    field: 0xA9BCD0,
+    selection: 0x4D6A8C,
+    chosen: 0x262A31,
+    keyword: 0xC3B6EE,
+    kind: 0x9ACBE5,
+    string: 0xD9C597,
+    number: 0xE6AD8A,
+    comment: 0x828A95,
+}
+
+pub const LIGHT: Palette = Palette {
+    page: 0xF8F9FB,
+    surface: 0xEEF0F3,
+    rule: 0xDCE0E5,
+    text: 0x2E333B,
+    strong: 0x0D1015,
+    quiet: 0x5B636E,
+    field: 0x2D5B88,
+    selection: 0x9DBBDD,
+    chosen: 0xE4E8ED,
+    keyword: 0x6142B8,
+    kind: 0x1A6A93,
+    string: 0x7D5F12,
+    number: 0x9C4A22,
+    comment: 0x5F6772,
+}
 
 // The type scale (The Elements of Typographic Style's: 14, 16, 19, 24, 34) and its leading.
 pub const BODY: f32 = 16.0
