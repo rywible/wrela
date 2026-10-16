@@ -18,6 +18,7 @@ MIT-licensed language, compiler, engine and agent-native studio for browser game
 - `docs/vision.md`: goals and architecture. Read "The lore" before story work; add no lore Ryan has not stated.
 - `docs/process.md`: public record of human/AI work and outside sources.
 - Prefer `tools/wrela context <item> <package>`, `tools/wrela query`, `tools/wrela doc` and `tools/wrela primer <area>` for Wrela. Fall back to `rg`; report tool gaps as studio findings.
+- `tools/wrela doc --export <dir> <package-dir>...` writes the reference docs: the spec by section and a page per module, in Markdown, with `index.json` (every item and spec section, with its page, anchor and source) and `llms.txt`. Doc comments and each file's opening comment are that reference; keep them true when you change an item.
 
 | Layer | Location and constraint |
 |---|---|
@@ -39,6 +40,6 @@ MIT-licensed language, compiler, engine and agent-native studio for browser game
 
 ## Records
 
-- `AGENTS.md` is the sole repo instruction file. Add no docs except grammar, lexical spec and `docs/process.md`; remove any temporary task notes before committing. Run checks locally. CI only builds and deploys releases from `main` (`.github/workflows/deploy.yml`); add no checks to it.
+- `AGENTS.md` is the sole repo instruction file. Add no prose docs beyond the spec (`docs/language.md`, `spec/`), `docs/vision.md` and `docs/process.md`: reference docs come from source through `wrela doc --export`; remove any temporary task notes before committing. Run checks locally. CI only builds and deploys releases from `main` (`.github/workflows/deploy.yml`); add no checks to it.
 - Update `docs/process.md` for new references, outside assets/algorithms, AI tools/models or kinds of AI work: source, rights, what it teaches and how used. Keep style references outside the repo. Never trace/sample/recreate specific reference shots, characters or designs; never create assets with generative image/audio/music/voice/video models.
 - Use clear, concrete English, roughly 80% ASD-STE100.

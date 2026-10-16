@@ -2030,6 +2030,18 @@ corpus beside its app so the app's own fetch reads it, and screen-reader documen
 in-page find before the docs are public. These are implementation references; nothing was
 copied.
 
+## Reference docs from source, 2026-10-15
+
+Ryan asked for docs at docs.wrela.dev that agents and people read alike, useful first to the
+agents building the games, and for the plan to go through a council (recorded with the site's
+fixes). The reference comes from the sources: `wrela doc --export` writes the spec by section, a
+page per module of std and of each package, an index of every item and every section of the
+spec with its page, anchor and source, and a map of the pages in the form the
+[llms.txt proposal](https://llmstxt.org/) describes. The council asked that live lookup stay as
+it was (an export would go stale while an item is edited) and that the spec's prose be indexed
+beside the items, so a search finds a rule as well as a name. AGENTS.md now says reference docs
+come from source, and that doc comments are the reference. Claude (Opus 5.5) wrote it.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
