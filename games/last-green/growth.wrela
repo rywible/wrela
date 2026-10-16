@@ -5,7 +5,10 @@
 // people, no herd and no events (those are a later layer's). Drawn in the grown view.
 
 use engine::bake::{bake, unbake}
-use engine::grow::{BAKE, Given, Grain, Grid, Ground, History, Land, Start, State, simulate_given}
+use engine::noise::fbm2_seen
+use engine::grow::{
+    BAKE, Given, Grain, Grid, Ground, History, Land, Start, State, rotate, simulate_given,
+}
 use engine::place::{Character, Herd, Kind, Map, Region, TILE, tile_of}
 use engine::soil::SoilKind
 use engine::terrain::{Cover, Terrain}
@@ -22,6 +25,9 @@ pub struct Grown: Copy + GpuData {
     pub land: Bare,
     pub beds: [u32; SQUARE_SOIL],
 }
+
+/// How much of the talus the wood has grown over (`Grown::covered`).
+const SCREE_GROWN: f32 = 0.75
 
 /// The grown land.
 @fuel(2 ** 36)
@@ -63,13 +69,23 @@ impl Grown {
         self.land.at(x, z) - self.bed_at(vec2(x, z))
     }
 
-    /// Its cover, as a sample `w` metres across sees it: the bare land's (`geology::Bare`), grass
-    /// where its soil shows, and over the forest's fields (`fields`, none where `fields.x` is
-    /// below 0) the wood's floor (`ground::wood_floor`).
+    /// Its cover, as a sample `w` metres across sees it: the bare land's (`geology::Bare`), its
+    /// talus old scree, grown over (`SCREE_GROWN`: moss on its stones, soil between them, which
+    /// the wood's litter covers), grass where its soil shows, and over the forest's fields
+    /// (`fields`) the wood's floor (`ground::wood_floor`). Where no tile's fields are
+    /// (`fields.x` below 0: past the trees streamed in), the wood seen from far off: its canopy's
+    /// greens over all but its rock.
     fn covered(self, at: vec3, n: vec3, fields: vec4, w: f32) -> Cover {
         var c = self.land.bare_cover(at, n, w)
+        let scree = smoothstep(0.05, 0.5, self.land.talus_at(at.xz)) * SCREE_GROWN
+        let hard = c.materials.z * (1.0 - scree)
+        c.materials = vec4(0.0, 1.0 - hard, hard, 0.0)
+        c.albedo = mix(c.albedo, vec3(0.06, 0.07, 0.05), vec3(scree))
         c.grass = 1.0 - c.materials.z
         if fields.x < 0.0 {
+            let tone = fbm2_seen(at.xz * 0.02 + vec2(4.0, -7.0), 3, w * 0.02)
+            let canopy = mix(vec3(0.03, 0.05, 0.022), vec3(0.06, 0.085, 0.035), vec3(tone))
+            c.albedo = mix(c.albedo, canopy, vec3(0.9 * (1.0 - hard)))
             return c
         }
         ground::wood_floor(c, at, n, fields, w, trodden: fields.y, rim: 0.0)
@@ -130,6 +146,16 @@ impl Ground for Grown {
 }
 
 // ---- where no tree stands --------------------------------------------------------------------------
+
+/// Whether `p` is on what no tree stands on (`HARD`).
+fn hard_at(p: vec2) -> bool {
+    let i = ROCKS.ij(p)
+    i.x >= 0 &&
+        i.y >= 0 &&
+        i.x < i32(ROCKS.nx) &&
+        i.y < i32(ROCKS.nz) &&
+        HARD[u32(i.y) * ROCKS.nx + u32(i.x)]
+}
 
 /// The grid where no tree stands is kept on (`ROCK`): what the history grows over, at 2 m.
 pub const ROCKS = Grid {
@@ -327,7 +353,7 @@ pub fn growth_map() -> Map {
 
 /// What the grown land gives the history (`engine::grow::Given`), on its grid at `grain`: its
 /// streams (`geology::Water::streams`); how wet each cell is (`geology::Water::wet`, between the
-/// square's cells); how thin its soil is (from its depth, `geology::soil_layer`: bare rock 1, a
+/// square's cells, to `WETTEST`); how thin its soil is (from its depth, `geology::soil_layer`: bare rock 1, a
 /// soil 10 cm deep nearly, half a metre none, as `engine::soil`'s thin soil is under 35 cm; its
 /// talus, from 30 cm deep to all of it at 2 m); and its ponds' water. Past the square, where the land has no water or soil of its own, it's as damp as
 /// the wildwood's (`OUTSIDE_WET`) and as thin as its slope makes it (`engine::soil::soil`'s), the
@@ -339,7 +365,8 @@ pub fn given(grain: Grain) -> Given {
         streams: WATER.streams.clone(),
         wet: Vec::from_fn(g.cells(), |c| {
             let p = g.centre(c)
-            mix(OUTSIDE_WET, SQUARE.sample(WATER.wet, p), w.land.square.within(p, SQUARE_COLLAR))
+            let within = w.land.square.within(p, SQUARE_COLLAR)
+            WETTEST * mix(OUTSIDE_WET, SQUARE.sample(WATER.wet, p), within)
         }),
         thin: Vec::from_fn(g.cells(), |c| {
             let p = g.centre(c)
@@ -357,6 +384,11 @@ pub fn given(grain: Grain) -> Given {
 
 /// How wet the land past the square is: the wildwood's (`wildwood::decisions`).
 const OUTSIDE_WET: f32 = 0.3
+
+/// The wettest ground short of a stream's bed: its wetness (`geology::wetness`, 1 on every flat
+/// valley floor) is scaled to this, under what the wood's floor reads as a bed (from 0.9,
+/// `ground::wood_floor`); the history marks its streams' beds itself.
+const WETTEST: f32 = 0.88
 
 /// The grown land's history at `grain`.
 pub fn grown(grain: Grain) -> History {
@@ -429,7 +461,7 @@ pub fn wild_decisions(t: vec2i, own: take Vec<engine::grow::Tree>) -> engine::ba
 // ---- its shots -------------------------------------------------------------------------------------
 
 /// The grown view's shots, and their names: the bare view's of the world's places
-/// (`geology::World::shots`), each eye moved off the wood's stems (`off_stems`); and two of the
+/// (`geology::World::shots`), each eye moved to see past the wood (`off_wood`); and two of the
 /// wood itself (`in_wood`): in it, and over it.
 pub struct Shots: Clone {
     pub shots: Vec<Shot>,
@@ -449,9 +481,19 @@ fn shots() -> Shots {
             stems.push(vec3(t.at, t.girth))
         }
     }
+    // What a place's shot sees past: each stem, and each crown low enough to stand at the eye
+    // (`LOW`), its reach round it.
+    var wood: Vec<vec3> = Vec::new()
+    for t in trees::as_drawn(trees) {
+        if t.state == State::Alive && t.tall < LOW {
+            wood.push(vec3(t.at, t.reach))
+        } else if t.state != State::Log && t.state != State::Gone && t.tall > 1.5 {
+            wood.push(vec3(t.at, t.girth))
+        }
+    }
     var out = Shots { shots: Vec::new(), names: Vec::new() }
     for i in 0..w.shots.len() {
-        out.shots.push(off_stems(w.shots[i], stems))
+        out.shots.push(off_wood(w.shots[i], wood))
         out.names.push(w.shot_names[i].clone())
     }
     let (inside, over) = in_wood(trees, stems)
@@ -478,23 +520,50 @@ fn clear_of(stems: [vec3], from: vec2, along: vec2, d: f32) -> bool {
     true
 }
 
-/// Shot `s` with its eye moved the least (a metre at a time, 5 m at most) to where its first
-/// `SIGHT` toward what it looks at is clear of `stems` (x, z, girth); as it was if none is.
-fn off_stems(s: Shot, stems: [vec3]) -> Shot {
+/// How tall a tree is whose crown stands at a shot's eye (m): a shrub's or a young tree's.
+const LOW: f32 = 8.0
+
+/// How far a shot's eye may move off its place to see past the wood (m).
+const MOVE_BY: i32 = 8
+
+/// How far from `from` the way `along` is clear of `wood` (x, z, radius), up to `SIGHT` (m, a
+/// metre at a time).
+fn clear_for(wood: [vec3], from: vec2, along: vec2) -> f32 {
+    var d = 0.0
+    while d < SIGHT && clear_of(wood, from, along, d + 1.0) {
+        d += 1.0
+    }
+    d
+}
+
+/// Shot `s` with its eye moved (a metre at a time, `MOVE_BY` at most, onto ground a tree could
+/// stand on) to where it sees farthest past `wood` (x, z, radius: stems, and low crowns) toward
+/// what it looks at, along its middle and either side of it; the least move of those that see as
+/// far.
+fn off_wood(s: Shot, wood: [vec3]) -> Shot {
     let along = normalize(s.at.xz - s.eye.xz)
     var near: Vec<vec3> = Vec::new()
-    for st in stems {
-        if length(st.xy - s.eye.xz) < SIGHT + 10.0 {
+    for st in wood {
+        if length(st.xy - s.eye.xz) < SIGHT + f32(MOVE_BY) + 10.0 {
             near.push(st)
         }
     }
     var best = s
+    var farthest = -1.0
     var least = 1.0e9
-    for j in -5..6 {
-        for i in -5..6 {
+    for j in -MOVE_BY..MOVE_BY + 1 {
+        for i in -MOVE_BY..MOVE_BY + 1 {
             let d = vec2(f32(i), f32(j))
             let from = s.eye.xz + d
-            if length(d) < least && clear_of(near, from, along, SIGHT) {
+            if hard_at(from) || LAND.bed_at(from) > 0.05 {
+                continue
+            }
+            var seen = 0.0
+            for a in [-0.3, 0.0, 0.3] {
+                seen += clear_for(near, from, rotate(along, a))
+            }
+            if seen > farthest || (seen == farthest && length(d) < least) {
+                farthest = seen
                 least = length(d)
                 best = Shot { eye: vec3(from.x, s.eye.y, from.y), ..s }
             }
@@ -592,16 +661,6 @@ fn shot_files() -> Vec<(String, Vec<u8>)> {
 
 // ---- tests -----------------------------------------------------------------------------------------
 
-/// Whether `p` is on what no tree stands on (`HARD`).
-fn hard_at(p: vec2) -> bool {
-    let i = ROCKS.ij(p)
-    i.x >= 0 &&
-        i.y >= 0 &&
-        i.x < i32(ROCKS.nx) &&
-        i.y < i32(ROCKS.nz) &&
-        HARD[u32(i.y) * ROCKS.nx + u32(i.x)]
-}
-
 /// No standing stem of the grown wood, as it's drawn (`trees::as_drawn`, its trunk's girth round
 /// it), is on a face, a rock's solid or a pond (`HARD`); and every tree is the bake's, within what
 /// its history grows over.
@@ -646,7 +705,8 @@ fn the_bake_and_the_wildwood_share_the_land() {
 }
 
 /// What the grown land gives its history is the land's: on the history's grid, its ponds open
-/// water, its bare rock the thinnest soil, and its streams the geology's.
+/// water, its bare rock the thinnest soil, no ground off a stream as wet as its bed, and its
+/// streams the geology's.
 @test
 fn the_history_is_given_the_lands_water_and_soil() {
     let k = given(BAKE)
@@ -659,6 +719,7 @@ fn the_history_is_given_the_lands_water_and_soil() {
     var ponds = 0
     for c in 0..g.cells() {
         let p = g.centre(c)
+        assert(k.wet[c] <= WETTEST, f"ground at {p} given as wet as a stream's bed")
         if LAND.bed_at(p) > 0.5 {
             assert(k.water[c], f"a pond at {p} given as dry land")
             ponds += 1
@@ -671,12 +732,22 @@ fn the_history_is_given_the_lands_water_and_soil() {
     assert(ponds > 0, "no pond given")
 }
 
-/// The grown view's shots: the bare view's places', and in and over the wood; in the wood within
-/// its bake, its first `SIGHT` clear of the wood's stems.
+/// The grown view's shots: the bare view's places', each eye no farther than `MOVE_BY` each way
+/// from its place's and on ground a tree could stand on, out of water; and in and over the wood;
+/// in the wood within its bake, its first `SIGHT` clear of the wood's stems.
 @test
 fn the_grown_views_shots_see_past_the_stems() {
     let n = WORLD.shots.len()
     assert(SHOTS.shots.len() == n + 2 && SHOTS.names.len() == n + 2, "not a shot a place, and two")
+    for i in 0..n {
+        let (moved, place) = (SHOTS.shots[i].eye.xz, WORLD.shots[i].eye.xz)
+        let off = abs(moved - place)
+        assert(max(off.x, off.y) <= f32(MOVE_BY), f"shot {i}'s eye moved {off} off its place")
+        assert(
+            moved == place || (!hard_at(moved) && LAND.bed_at(moved) <= 0.05),
+            f"shot {i}'s eye on rock or in water",
+        )
+    }
     let inside = SHOTS.shots[n]
     assert(inside.eye.y < 2.0 && SHOTS.shots[n + 1].eye.y > 30.0, "not in and over the wood")
     let p = inside.eye.xz

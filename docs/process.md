@@ -1115,8 +1115,23 @@ shaders stay as they were.
   it and over it. The play view is unchanged: its bake's files and every one of its shaders are
   the same bytes as before, and the wood's floor, now shared, gives the same cover bit for bit.
   The wood holds 192 tiles, not 160, so the grown bake and the wildwood ring at its edge fit.
-- **Still open:** the wood's floor plants (ferns, herbs, grass) hardly show in the grown view,
-  though its cover asks for them as the play floor's does.
+
+Ryan then asked Claude to keep improving it. Claude judged the grown view's stills again.
+- **Ponds' shores:** a pond's sheet ended a cell past its basin, so where the land dipped below
+  its level there its edge showed as straight steps. The sheet now floods out from the basin
+  through every point under its level within a cell, with a row of shore points past them; a
+  hollow its shore cuts off stays dry.
+- **Scree:** the wood now grows on its talus, so the pale scree under it read as bare ground.
+  Under the wood, the talus is old scree: moss on its stones and soil between them, which the
+  wood's litter covers.
+- **Wetness:** the geology's wetness is 1 on every flat valley floor, which the wood's floor read
+  as a stream's gravel bed. The history is given at most 0.88; the streams mark their own beds.
+- **Far land:** past the trees streamed in, the land is drawn in its canopy's greens, so the wood
+  runs on to the horizon.
+- **Shots:** each place's eye moves up to 8 m to see farthest past the stems and the low crowns
+  of shrubs and young trees, across its view, and never onto rock or water.
+- **Floor plants:** the grown view's wood floor is as bare as the play floor's under its beeches;
+  it is the floor's shared look, not this layer's.
 
 ## The climber's robe, darkness and glide, 2026-10-14
 
