@@ -2,11 +2,11 @@
 // them (code's ground, rules, a table's lines), where its links are, where each heading is, and
 // its parts for screen readers, in reading order. Positions are pixels from the page's top left;
 // the program draws only what's on screen, from this.
-use markdown::{BOLD, Block, CODE, ITALIC, Kind, LINK, Run, plain}
+use markdown::{BOLD, Block, CODE, ITALIC, Kind, LINK, MUTED, Run, plain}
 use highlight::{Token, spans}
 use theme::{
-    BODY, CODE as CODE_SIZE, CODE_LEADING, COMMENT, H1, H2, H3, HEADING, KEYWORD, LEADING, NUMBER,
-    QUIET, RULE, SMALL, STRING, STRONG, SURFACE, TEXT, TYPE, FIELD, hex,
+    BODY, CODE as CODE_SIZE, CODE_LEADING, COMMENT, H1, H2, H3, HEADING, KEYWORD, LEAD, LEADING,
+    NUMBER, QUIET, RULE, SMALL, STATEMENT, STRING, STRONG, SURFACE, TEXT, TYPE, FIELD, hex,
 }
 use theme::BOLD as BOLD_WEIGHT
 use ui::draw::Rect
@@ -140,12 +140,15 @@ impl Laid {
 }
 
 /// Lays out `blocks` `width` pixels wide, `u` pixels to the CSS pixel. On a module's page
-/// (`code_headings`), item headings are set in the code face, as the names they are.
+/// (`code_headings`), item headings are set in the code face, as the names they are. A page's
+/// first paragraph, under its title, is its lead, set larger: it's the page's summary. A first
+/// paragraph with no title above it (the front page's) is a statement, larger still.
 pub fn lay_out(blocks: [Block], fonts: Fonts, width: f32, u: f32, code_headings: bool) -> Laid {
     var laid = Laid::empty()
     let measure = min(width, theme::MEASURE * u)
     var y = 0.0
     var previous = Kind::Rule
+    var under_title = false
     for k in 0..blocks.len() {
         borrow b = blocks[k]
         laid.block = k
@@ -162,10 +165,11 @@ pub fn lay_out(blocks: [Block], fonts: Fonts, width: f32, u: f32, code_headings:
                 laid.anchors.push((b.anchor.clone(), y))
                 let s = if face == Face::Mono { size * 0.86 } else { size }
                 let start = y
+                let runs = if face == Face::Mono { b.runs.clone() } else { numbered(b.runs) }
                 y = flow(
                     mut laid,
                     fonts,
-                    b.runs,
+                    runs,
                     0.0,
                     y,
                     measure,
@@ -242,7 +246,14 @@ pub fn lay_out(blocks: [Block], fonts: Fonts, width: f32, u: f32, code_headings:
                 if k > 0 && previous != Kind::Heading { y += 4.0 * u }
                 let indent = if b.kind == Kind::Quote { 18.0 * u } else { 0.0 }
                 let start = y
-                let color = if b.kind == Kind::Quote { hex(QUIET) } else { hex(TEXT) }
+                let statement = k == 0 && b.kind == Kind::Paragraph
+                let lead = under_title && b.kind == Kind::Paragraph
+                let color = if b.kind == Kind::Quote { hex(QUIET) } else if statement {
+                    hex(STRONG)
+                } else { hex(TEXT) }
+                let (size, leading, weight) = if statement {
+                    (STATEMENT, 1.4, HEADING)
+                } else if lead { (LEAD, 1.6, 0.0) } else { (BODY, LEADING, 0.0) }
                 y = flow(
                     mut laid,
                     fonts,
@@ -250,12 +261,13 @@ pub fn lay_out(blocks: [Block], fonts: Fonts, width: f32, u: f32, code_headings:
                     indent,
                     y,
                     measure - indent,
-                    BODY * u,
-                    LEADING,
+                    size * u,
+                    leading,
                     Face::Sans,
                     color,
-                    0.0,
+                    weight,
                 )
+                if statement || lead { y += 10.0 * u }
                 if b.kind == Kind::Quote {
                     laid.shapes.push(
                         Shape {
@@ -339,10 +351,32 @@ pub fn lay_out(blocks: [Block], fonts: Fonts, width: f32, u: f32, code_headings:
                 y += 26.0 * u
             },
         }
+        under_title = b.kind == Kind::Heading && b.level == 1
         previous = b.kind
     }
     laid.height = y
     take laid
+}
+
+/// A heading's runs with its section number (`6.15`, `6.`) apart from its words, to be set
+/// quieter: the number says where the section is, the words what it is.
+fn numbered(runs: [Run]) -> Vec<Run> {
+    var out: Vec<Run> = Vec::new()
+    if runs.is_empty() || runs[0].style != 0 {
+        for r in runs { out.push(r.clone()) }
+        return out
+    }
+    let t = runs[0].text.as_str()
+    var k = 0
+    while k < t.len() && ((t.byte(k) >= 48 && t.byte(k) <= 57) || t.byte(k) == 46) { k += 1 }
+    if k == 0 || k >= t.len() || t.byte(k) != 32 {
+        for r in runs { out.push(r.clone()) }
+        return out
+    }
+    out.push(Run { text: t.slice(from: 0, to: k).to_string(), style: MUTED })
+    out.push(Run { text: t.slice(from: k, to: t.len()).to_string(), style: 0 })
+    for i in 1..runs.len() { out.push(runs[i].clone()) }
+    out
 }
 
 /// A block's text, for a screen reader, and each of its links after it.
@@ -426,9 +460,9 @@ fn flow(
         let code = r.style & CODE != 0
         let f = if code { Face::Mono } else { face }
         let fs = if code && face == Face::Sans { size * 0.88 } else { size }
-        let c = if r.style & LINK != 0 { hex(STRONG) } else if code { hex(TEXT) } else if r.style &
-            (BOLD | ITALIC) !=
-            0 {
+        let c = if r.style & MUTED != 0 { hex(QUIET) } else if r.style & LINK != 0 {
+            hex(STRONG)
+        } else if code { hex(TEXT) } else if r.style & (BOLD | ITALIC) != 0 {
             hex(STRONG)
         } else { color }
         let wt = if r.style & BOLD != 0 { BOLD_WEIGHT } else { weight }
@@ -637,12 +671,15 @@ fn table(laid: mut Laid, fonts: Fonts, b: Block, y: f32, width: f32, u: f32) -> 
     let rows = b.cells.len() / cols
     let size = SMALL * u
     let pad = 10.0 * u
-    // Each column's widest cell, on one line.
+    // Each column's widest cell, on one line, and its longest word, which can't wrap.
     var natural: Vec<f32> = Vec::filled(cols, 0.0)
+    var word: Vec<f32> = Vec::filled(cols, 0.0)
     for i in 0..b.cells.len() {
         let w = runs_width(fonts, b.cells[i], size) + 2.0 * pad
+        let lw = longest_word(fonts, b.cells[i], size) + 2.0 * pad
         let c = i % cols
         if w > natural[c] { natural[c] = w }
+        if lw > word[c] { word[c] = lw }
     }
     var total = 0.0
     for w in natural { total += w }
@@ -651,6 +688,24 @@ fn table(laid: mut Laid, fonts: Fonts, b: Block, y: f32, width: f32, u: f32) -> 
     var widths: Vec<f32> = Vec::filled(cols, 0.0)
     for c in 0..cols {
         widths[c] = if total <= width { natural[c] } else { max(natural[c] * width / total, least) }
+    }
+    // A column narrower than its longest word takes that width from the others, as far as they
+    // keep theirs.
+    var short = 0.0
+    var spare = 0.0
+    for c in 0..cols {
+        let need = min(word[c], width * 0.45)
+        if widths[c] < need {
+            short += need - widths[c]
+            widths[c] = need
+        } else { spare += widths[c] - min(word[c], widths[c]) }
+    }
+    if short > 0.0 && spare > 0.0 {
+        let k = min(short / spare, 1.0)
+        for c in 0..cols {
+            let need = min(word[c], width * 0.45)
+            if widths[c] > need { widths[c] -= (widths[c] - need) * k }
+        }
     }
     var sum = 0.0
     for w in widths { sum += w }
@@ -690,15 +745,24 @@ fn table(laid: mut Laid, fonts: Fonts, b: Block, y: f32, width: f32, u: f32) -> 
             if c > 0 { label.push_str(", ") }
             label.push_str(plain(b.cells[r * cols + c]).as_str())
         }
-        laid.parts.push(
-            Part {
-                role: Role::Text,
-                level: 0,
-                rect: Rect::new(0.0, top, x, bottom - top),
-                label,
-                target: String::new(),
-            },
-        )
+        let rect = Rect::new(0.0, top, x, bottom - top)
+        laid.parts.push(Part { role: Role::Text, level: 0, rect, label, target: String::new() })
+        // Its cells' links after it, as a paragraph's are.
+        for c in 0..cols {
+            for run in b.cells[r * cols + c] {
+                if run.style & LINK != 0 {
+                    laid.parts.push(
+                        Part {
+                            role: Role::Link,
+                            level: 0,
+                            rect,
+                            label: run.text.clone(),
+                            target: run.link.clone(),
+                        },
+                    )
+                }
+            }
+        }
         top = bottom
     }
     top
@@ -713,6 +777,25 @@ fn runs_width(fonts: Fonts, runs: [Run], size: f32) -> f32 {
         w += fonts.font(f).measure(r.text.as_str(), if code { size * 0.88 } else { size })
     }
     w
+}
+
+/// How wide the widest word of runs is: a run's text between spaces.
+fn longest_word(fonts: Fonts, runs: [Run], size: f32) -> f32 {
+    var most = 0.0
+    for r in runs {
+        let code = r.style & CODE != 0
+        let f = if code { Face::Mono } else { Face::Sans }
+        let fs = if code { size * 0.88 } else { size }
+        let t = r.text.as_str()
+        var a = 0
+        while a < t.len() {
+            var e = a
+            while e < t.len() && t.byte(e) != 32 { e += 1 }
+            if e > a { most = max(most, fonts.font(f).measure(t.slice(from: a, to: e), fs)) }
+            a = e + 1
+        }
+    }
+    most
 }
 
 fn laid(src: str, width: f32) -> Laid {
@@ -776,4 +859,20 @@ fn a_table_narrows_to_its_width() {
     for p in page.pieces {
         assert(p.at.x + p.w <= 300.0 + 2.0, f"`{p.text.as_str()}` ends at {p.at.x + p.w}")
     }
+}
+
+@test
+fn a_table_column_keeps_its_longest_word() {
+    let page = laid(
+        "| Page | What it gives |\n|---|---|\n| [engine::impostor](engine/impostor.md) | Trees far away: impostors in the mid-distance and density volumes beyond, each cooked at load from a plant kind's near representation and lit as its leaf cards are, so the levels match. |\n",
+        600.0,
+    )
+    // The name ends before the summary, on its line, starts.
+    var name_end = 0.0
+    var summary_start = 1000.0
+    for p in page.pieces {
+        if p.text.as_str() == "engine::impostor" { name_end = p.at.x + p.w }
+        if p.text.as_str().starts_with("Trees") { summary_start = p.at.x }
+    }
+    assert(name_end > 0.0 && name_end < summary_start, f"{name_end} against {summary_start}")
 }

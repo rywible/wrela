@@ -9,9 +9,11 @@ pub struct Route: Clone + Eq {
     pub anchor: String,
 }
 
-/// Where a link takes the reader: a page of the docs, or a link out.
+/// Where a link takes the reader: a page of the docs, another file of them (`llms.txt`,
+/// `index.json`, by its path from the docs' root), or a link out.
 pub enum Target: Clone + Eq {
     Docs(Route),
+    File(String),
     Out(String),
 }
 
@@ -63,7 +65,8 @@ fn safe(part: str) -> bool {
 }
 
 /// Where a link on page `from` (`std/arena.md`) to `to` leads: another page relative to it
-/// (`io.md`, `../spec/lexical.md#l11`), a place on the same page (`#arena`), or out (`https://`).
+/// (`io.md`, `../spec/lexical.md#l11`), a place on the same page (`#arena`), another file of the
+/// docs (`../llms.txt`), or out (`https://`).
 pub fn follow(from: str, to: str) -> Option<Target> {
     if to.starts_with("https://") || to.starts_with("http://") {
         return Some(Target::Out(to.to_string()))
@@ -93,7 +96,10 @@ pub fn follow(from: str, to: str) -> Option<Target> {
         if !page.is_empty() { page.push_str("/") }
         page.push_str(p.as_str())
     }
-    if !page.as_str().ends_with(".md") || !safe(page.as_str()) || !safe(anchor) { return None }
+    if !safe(page.as_str()) || !safe(anchor) { return None }
+    let p = page.as_str()
+    if p.ends_with(".txt") || p.ends_with(".json") { return Some(Target::File(page.clone())) }
+    if !p.ends_with(".md") { return None }
     Some(Target::Docs(Route { page, anchor: anchor.to_string() }))
 }
 
@@ -144,5 +150,6 @@ fn a_link_leads_relative_to_its_page_or_out() {
     assert(
         follow("a.md", "javascript:alert(1)").is_none() && follow("a.md", "../../x.md").is_none(),
     )
-    assert(follow("std/a.md", "vision.md#x").is_some() && follow("a.md", "b.txt").is_none())
+    assert(follow("std/a.md", "vision.md#x").is_some() && follow("a.md", "b.png").is_none())
+    assert(follow("std/a.md", "../llms.txt") == Some(Target::File(String::from("llms.txt"))))
 }
