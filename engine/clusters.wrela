@@ -1,0 +1,1021 @@
+// Clusters (the rendering moonshots' virtual geometry, spike S1a): a field's surface cooked at
+// several levels of detail, each level cut into the blocks it's extracted in (`realize`), and
+// drawn each frame at the coarsest level whose error on the screen is under a pixel's fraction,
+// block by block, so near parts of one surface are drawn finely and far parts coarsely.
+//
+// - Levels: level k's cells are 2^k times level 0's, on grids from one origin, so a block of
+//   level k + 1 covers eight of level k's exactly (its children).
+// - A cluster is a block's quads: those of the edges leaving its cells' low corners, as
+//   `realize::emit_quads` makes them, kept together. Its error is measured from the field: the
+//   largest distance of its quads' corners and middles from the surface, raised to at least its
+//   children's (so an ancestor's is never less than a descendant's), and to a quarter of a cell.
+// - The cut: a cluster is drawn where its error, as large as it looks from the eye (from its
+//   block's nearest point), is at most `Cut::pixels`, and its parent's, from the parent's block,
+//   is more. Both grow toward the coarse levels, so exactly one level is drawn over each place.
+// - Cracks: neighbours drawn at different levels don't share vertices where they meet. Each
+//   cluster hangs a skirt from the edges it shares with another block's quads, a cell deep into
+//   the surface, so what its neighbour leaves open shows the skirt, not what's behind.
+// - Each frame: the instances in view (`cull_instances`); then down the levels from the
+//   coarsest, each level's candidates tested (`select`): a cluster fine enough is picked, one
+//   that isn't gives its live children to the level below. A level's candidates are those, and
+//   its roots (clusters with no live parent: all of the coarsest level's) of each instance in
+//   view (`seed`), so the work grows with the cut, not with the finest level. Each picked
+//   cluster's quads are gathered into its level's list (`gather`), and drawn, one draw a level,
+//   its vertices pulled from the list.
+// - A list (candidates, picks, listed quads) is a buffer of `u32`s: how many were pushed, then
+//   two a pushed item; one past its room is counted and kept nowhere (`push_pair`).
+
+use creature::{Creature, Parts}
+use realize::{
+    BLOCK, CellWord, Grid, LiveBlock, Mesh, NO_VERTEX, Room, Scratch, SkinVertex, cell_key,
+    record_cull, record_vertices, vertex_at,
+}
+use std::collections::replace
+use std::derive::{Box3, gradient}
+use std::gpu::{
+    Append, AppendBuffer, Atomics, ClipPosition, Cull, DispatchArgs, DrawArgs, GlobalId, GpuBuffer,
+    GpuSpan, LocalId, One, RenderPass, Shared, Slots, VertexIndex, WorkgroupId, append_buffer,
+    barrier, buffer, dispatch, draw, read, write,
+}
+use std::io::Pending
+use view::Camera
+
+/// The most levels a cluster set has.
+pub const MOST_LEVELS: u32 = 8
+
+/// An index's flag in a quad's corner: the vertex pushed into the surface along its normal by the
+/// level's skirt depth (`Level::skirt`).
+pub const SKIRT: u32 = 0x80000000
+
+/// A cluster's range when it didn't fit (`emit_clusters`).
+const NO_ROOM: u32 = 0xffffffff
+
+/// The least error a cluster has, in cells: its vertices are placed within a cell, and a feature
+/// finer than a cell can be missing from it.
+pub const FLOOR: f32 = 0.25
+
+/// A placed copy of the surface: where its rest space's origin is, and its scale.
+pub struct Placed: Copy + GpuData {
+    pub at: vec3,
+    pub scale: f32,
+}
+
+/// How a level's cut is made: the camera, how large a pixel is at a metre (`pixels / metre`),
+/// the error a cluster may show (pixels), the level, its grid, and the grid of the level below
+/// (`parent`: where its children are; the finest level's own).
+pub struct Cut: Copy + GpuData {
+    pub cam: Camera,
+    pub per_metre: f32,
+    pub pixels: f32,
+    pub level: u32,
+    pub grid: Grid,
+    pub parent: Grid,
+}
+
+/// One level: its grid, what extraction left (the live blocks and the block map), its vertices,
+/// its clusters' quads (six `u32`s each, a skirt's corners flagged `SKIRT`), each cluster's
+/// first quad, count and measured error (`spans`, after a count), its error and its parent's
+/// (`pairs`), its roots, and the frame's picks and listed quads (lists) and draw.
+pub struct Level {
+    pub grid: Grid,
+    pub scratch: Scratch,
+    pub mesh: Mesh,
+    pub words: GpuBuffer<u32>,
+    pub spans: GpuBuffer<u32>,
+    pub errors: GpuBuffer<f32>,
+    /// Each cluster's error and its parent's (negative where it has none).
+    pub pairs: GpuBuffer<vec2>,
+    /// The live slots of its clusters with no live parent.
+    pub roots: AppendBuffer<u32>,
+    /// The frame's picks: instance and slot, two `u32`s each (a list).
+    pub picks: GpuBuffer<u32>,
+    /// The frame's quads to draw: the pick's index and the quad's (a list).
+    pub list: GpuBuffer<u32>,
+    pub seed_args: GpuBuffer<DispatchArgs>,
+    pub select_args: GpuBuffer<DispatchArgs>,
+    pub gather_args: GpuBuffer<DispatchArgs>,
+    pub draw_args: GpuBuffer<DrawArgs>,
+    /// How deep its skirts hang (m): a cell.
+    pub skirt: f32,
+}
+
+/// A surface's clusters at every level, the frame's instances in view, and the candidates of the
+/// level being tested and of the level below it (lists, in turn).
+pub struct Clusters {
+    pub levels: Vec<Level>,
+    pub bounds: Box3,
+    pub visible: AppendBuffer<u32>,
+    pub here: GpuBuffer<u32>,
+    pub below: GpuBuffer<u32>,
+    /// Each level's block map (each block's live slot + 1, or 0), kept apart from its level so
+    /// the walk reads the level below's while it changes its own.
+    pub maps: Vec<GpuBuffer<u32>>,
+}
+
+/// The live blocks a grid of `blocks` blocks is expected to hold: a surface's (`realize`'s
+/// estimate: about 7.5 × blocks^(2/3)), a fifth more.
+fn live_room(blocks: u32) -> u32 {
+    min(blocks, u32(9.0 * pow(f32(blocks), 2.0 / 3.0)) + 64)
+}
+
+/// Quads a live block is given room for, on average, its skirts' among them (the smooth creature
+/// at 4 mm cells needs about 13).
+const QUADS_PER_BLOCK: u32 = 24
+
+/// Vertices a live block is given room for, on average (a cell the surface crosses has one).
+const VERTICES_PER_BLOCK: u32 = 12
+
+/// The grid of level `k` round `b` with cells `cell × 2^k`, from the origin every level shares:
+/// two of the coarsest level's cells below `b`'s low corner (`levels` of them).
+pub fn level_grid(b: Box3, cell: f32, k: u32, levels: u32) -> Grid {
+    let coarsest = cell * f32(1 << (levels - 1))
+    let origin = b.lo - vec3(2.0 * coarsest)
+    let size_cell = cell * f32(1 << k)
+    let size = vec3u(ceil((b.hi + vec3(2.0 * coarsest) - origin) / (f32(BLOCK) * size_cell)))
+    Grid { origin, cell: size_cell, size, blocks: size.x * size.y * size.z }
+}
+
+/// Cooks a creature's clusters, from its field within its bounds: `levels` levels from cells `cell` wide, each
+/// extracted (`realize`), its clusters emitted with their errors, and the errors raised to their
+/// children's, finest first.
+pub fn cook_creature<C, K: Creature<C>>(creature: K, cell: f32, levels: u32) -> Clusters {
+    cook(creature.field(), creature.bounds(), cell, levels)
+}
+
+/// `cook_creature` from the field and the box that holds its surface.
+pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> Clusters {
+    var out: Vec<Level> = Vec::new()
+    for k in 0..min(levels, MOST_LEVELS) {
+        let grid = level_grid(bounds, cell, k, levels)
+        let live = live_room(grid.blocks)
+        var scratch = Scratch::new(grid.blocks)
+        var mesh = Mesh::new(Room { vertices: live * VERTICES_PER_BLOCK, quads: 1 })
+        record_cull(field, grid, mut scratch, mut mesh)
+        record_vertices(field, grid, mut scratch, mut mesh)
+        var words: GpuBuffer<u32> = buffer(live * QUADS_PER_BLOCK * 6)
+        var spans: GpuBuffer<u32> = buffer(1 + 3 * live)
+        write(mut spans, 0, [0])
+        dispatch(
+            emit_clusters.bind(
+                field: field,
+                grid: grid,
+                room: mesh.verts.capacity(),
+                blocks: scratch.live.items(),
+                block_map: scratch.block_map.span(0, scratch.block_map.len()),
+                cells: scratch.cells.span(0, scratch.cells.len()),
+                verts: mesh.verts.items(),
+                words: mut words,
+                spans: mut spans,
+            ),
+            groups: scratch.live.count(),
+        )
+        // The cell map and the probes were extraction's: only the live list and the block map
+        // are read after.
+        scratch.cells = buffer(1)
+        scratch.probe = buffer(1)
+        var errors: GpuBuffer<f32> = buffer(live)
+        if k == 0 {
+            dispatch(
+                own_errors.bind(
+                    live: scratch.live.count(),
+                    spans: spans.items(),
+                    cell: grid.cell,
+                    errors: mut errors,
+                ),
+                over: live,
+            )
+        } else {
+            borrow child = out[k - 1]
+            dispatch(
+                inherit_errors.bind(
+                    grid: grid,
+                    child_grid: child.grid,
+                    live: scratch.live.count(),
+                    blocks: scratch.live.items(),
+                    spans: spans.items(),
+                    child_map: child.scratch.block_map.span(0, child.scratch.block_map.len()),
+                    child_errors: child.errors.items(),
+                    errors: mut errors,
+                ),
+                over: live,
+            )
+        }
+        // The level below's pairs of errors, now that its parents' are known; and the coarsest
+        // level's, which has none (its own buffers stand in for a parent's).
+        let map = scratch.block_map.span(0, scratch.block_map.len())
+        for mut c in out {
+            if c.grid.cell * 2.0 == grid.cell {
+                dispatch(
+                    link_parents.bind(
+                        grid: c.grid,
+                        parent: grid,
+                        has_parent: 1,
+                        live: c.scratch.live.count(),
+                        blocks: c.scratch.live.items(),
+                        errors: c.errors.items(),
+                        parent_map: map,
+                        parent_errors: errors.items(),
+                        pairs: mut c.pairs,
+                    ),
+                    over: c.pairs.len(),
+                )
+            }
+        }
+        var pairs: GpuBuffer<vec2> = buffer(live)
+        if k + 1 == min(levels, MOST_LEVELS) {
+            dispatch(
+                link_parents.bind(
+                    grid: grid,
+                    parent: grid,
+                    has_parent: 0,
+                    live: scratch.live.count(),
+                    blocks: scratch.live.items(),
+                    errors: errors.items(),
+                    parent_map: map,
+                    parent_errors: errors.items(),
+                    pairs: mut pairs,
+                ),
+                over: live,
+            )
+        }
+        out.push(
+            Level {
+                grid,
+                scratch,
+                mesh,
+                words,
+                spans,
+                errors,
+                pairs,
+                roots: append_buffer(live),
+                picks: empty_list(1),
+                list: empty_list(1),
+                seed_args: buffer(1),
+                select_args: buffer(1),
+                gather_args: buffer(1),
+                draw_args: buffer(1),
+                skirt: grid.cell,
+            },
+        )
+    }
+    // Each level's roots, now that every level's parents are known.
+    for mut l in out {
+        dispatch(
+            find_roots.bind(
+                live: l.scratch.live.count(),
+                pairs: l.pairs.items(),
+                roots: mut l.roots,
+            ),
+            over: l.pairs.len(),
+        )
+    }
+    var maps: Vec<GpuBuffer<u32>> = Vec::new()
+    for mut l in out {
+        let map = replace(mut l.scratch.block_map, buffer(1))
+        maps.push(take map)
+    }
+    Clusters {
+        levels: out,
+        bounds,
+        visible: append_buffer(1),
+        here: empty_list(1),
+        below: empty_list(1),
+        maps,
+    }
+}
+
+/// A list (see the file's comment) with room for `room` items, empty.
+fn empty_list(room: u32) -> GpuBuffer<u32> {
+    var b: GpuBuffer<u32> = buffer(1 + 2 * room)
+    write(mut b, 0, [0])
+    b
+}
+
+/// A level's roots: its live clusters with no live parent (`pairs`' second, negative).
+@compute(64)
+pub fn find_roots(live: [u32], pairs: [vec2], roots: mut Append<u32>, id: GlobalId) {
+    if id.x >= live[0] {
+        return
+    }
+    if pairs[id.x].y < 0.0 {
+        let _ = roots.push(id.x)
+    }
+}
+
+/// Each cluster's error and its parent's (the block of the level above that holds it): -1 where
+/// there's no level above, or no surface in its parent's block there.
+@compute(64)
+pub fn link_parents(
+    grid: Grid,
+    parent: Grid,
+    has_parent: u32,
+    live: [u32],
+    blocks: [LiveBlock],
+    errors: [f32],
+    parent_map: [u32],
+    parent_errors: [f32],
+    pairs: mut Slots<vec2>,
+    id: GlobalId,
+) {
+    if id.x >= live[0] {
+        return
+    }
+    let pb = grid.block_xyz(blocks[id.x].block) / 2
+    var up = -1.0
+    if has_parent != 0 && pb.x < parent.size.x && pb.y < parent.size.y && pb.z < parent.size.z {
+        let s = parent_map[parent.block_at(pb)]
+        if s != 0 {
+            up = parent_errors[s - 1]
+        }
+    }
+    pairs[id] = vec2(errors[id.x], up)
+}
+
+// ---- cooking -------------------------------------------------------------------------------------
+
+/// The cell word at grid cell `c` (which may be outside the grid): `NO_VERTEX`'s word outside
+/// the grid or in a culled block.
+fn word_at(grid: Grid, block_map: [u32], cells: [u32], blocks: u32, c: vec3i) -> CellWord {
+    let (u, n) = (vec3u(c), grid.size * BLOCK)
+    let none = CellWord { vertex: NO_VERTEX, signs: 0 }
+    if c.x < 0 || c.y < 0 || c.z < 0 || u.x >= n.x || u.y >= n.y || u.z >= n.z {
+        return none
+    }
+    let s = block_map[grid.block_at(u / BLOCK)]
+    if s == 0 {
+        return none
+    }
+    CellWord::of_bits(cells[cell_key(s - 1, u % BLOCK, blocks)])
+}
+
+fn unit(a: u32) -> vec3i {
+    vec3i(i32(a == 0), i32(a == 1), i32(a == 2))
+}
+
+/// Corner `j` of a cell's signs (bit 0 along x, 1 along y, 2 along z) at offsets `x`, `y`, `z`.
+fn sign_at(signs: u32, o: vec3i) -> u32 {
+    (signs >> u32(o.x + 2 * o.y + 4 * o.z)) & 1
+}
+
+/// Whether the quad edge between cells `p` and `p - unit(b)` is on the boundary of block
+/// `owner`'s quads: another crossed grid edge of the face between them (`p`'s low face along
+/// `b`) has its quad owned by another block (an edge is owned by the cell whose low corner it
+/// leaves). `own` is the quad's own grid edge: along `a`, from cell `c`'s low corner.
+fn on_boundary(p: vec3i, b: u32, signs: u32, own_axis: u32, c: vec3i, owner: vec3i) -> bool {
+    let x = (b + 1) % 3
+    let y = (b + 2) % 3
+    var boundary = false
+    // The face's four edges: two along x (at y offsets 0 and 1), two along y (at x offsets 0
+    // and 1). Each one's corners, from p's low corner.
+    for e in 0..4 {
+        let axis = if e < 2 { x } else { y }
+        let across = if e < 2 { y } else { x }
+        let t = i32(e & 1)
+        let low = unit(across) * t
+        let high = low + unit(axis)
+        if sign_at(signs, low) == sign_at(signs, high) {
+            continue
+        }
+        let start = p + low
+        if axis == own_axis && start.x == c.x && start.y == c.y && start.z == c.z {
+            continue
+        }
+        let o = vec3i(
+            start.x / i32(BLOCK),
+            start.y / i32(BLOCK),
+            start.z / i32(BLOCK),
+        )
+        if start.x < 0 ||
+            start.y < 0 ||
+            start.z < 0 ||
+            o.x != owner.x ||
+            o.y != owner.y ||
+            o.z != owner.z {
+            boundary = true
+        }
+    }
+    boundary
+}
+
+/// The quads of cell `g` (grid cells) in block `owner`: for each crossed edge leaving its low
+/// corner, its quad joining the four cells around it, and a skirt from each of the quad's edges
+/// on the block's boundary (`on_boundary`). With `out`, written there from `at`; how many either
+/// way.
+fn cell_quads(
+    grid: Grid,
+    block_map: [u32],
+    cells: [u32],
+    n: u32,
+    room: u32,
+    g: vec3i,
+    cell: CellWord,
+    owner: vec3i,
+    words: mut Atomics<u32>,
+    at: u32,
+    write_out: bool,
+) -> u32 {
+    var count = 0
+    let v0 = cell.vertex
+    if v0 >= room {
+        return 0
+    }
+    let signs = cell.signs
+    let in0 = signs & 1
+    for axis in 0..3 {
+        let in1 = (signs >> (1 << axis)) & 1
+        if in0 == in1 {
+            continue
+        }
+        let a1 = (axis + 1) % 3
+        let a2 = (axis + 2) % 3
+        let u = unit(a1)
+        let w = unit(a2)
+        let corners = [g, g - u, g - u - w, g - w]
+        var vs = [v0, 0, 0, 0]
+        var whole = true
+        for i in 1..4 {
+            vs[i] = vertex_at(grid, block_map, cells, n, room, corners[i])
+            whole = whole && vs[i] != NO_VERTEX
+        }
+        if !whole {
+            continue
+        }
+        // Facing from inside to outside, as `emit_quads` faces them.
+        let order = if in0 == 1 { [0, 1, 2, 3] } else { [0, 3, 2, 1] }
+        if write_out {
+            let base = (at + count) * 6
+            let (a, b, c, d) = (vs[order[0]], vs[order[1]], vs[order[2]], vs[order[3]])
+            words.store(i: base, value: a)
+            words.store(i: base + 1, value: b)
+            words.store(i: base + 2, value: c)
+            words.store(i: base + 3, value: a)
+            words.store(i: base + 4, value: c)
+            words.store(i: base + 5, value: d)
+        }
+        count += 1
+        // Its edges between cells: (g, g - u) and (g - w, g - u - w) cross faces along a1, (g,
+        // g - w) and (g - u, g - u - w) faces along a2; each face is the first cell's low face.
+        for e in 0..4 {
+            let (p, b, i, j) = if e == 0 { (g, a1, 0, 1) } else if e == 1 {
+                (g - w, a1, 3, 2)
+            } else if e == 2 {
+                (g, a2, 0, 3)
+            } else { (g - u, a2, 1, 2) }
+            let ps = word_at(grid, block_map, cells, n, p).signs
+            if !on_boundary(p, b, ps, axis, g, owner) {
+                continue
+            }
+            if write_out {
+                let base = (at + count) * 6
+                let (vi, vj) = (vs[i], vs[j])
+                words.store(i: base, value: vi)
+                words.store(i: base + 1, value: vj)
+                words.store(i: base + 2, value: vj | SKIRT)
+                words.store(i: base + 3, value: vi)
+                words.store(i: base + 4, value: vj | SKIRT)
+                words.store(i: base + 5, value: vi | SKIRT)
+            }
+            count += 1
+        }
+    }
+    count
+}
+
+/// Each live block's cluster: its cells' quads and skirts (`cell_quads`) counted, a range of
+/// `words` taken for them whole (one atomic a block, on `spans`' first `u32`), and written;
+/// and in `spans`, three `u32`s a live slot after that first: its first quad, its count, and its
+/// error's bits (an `f32`, metres: the largest distance of its cells' vertices from the surface).
+@compute(4, 4, 4)
+pub fn emit_clusters<C, F: Parts<C>>(
+    field: F,
+    grid: Grid,
+    room: u32,
+    blocks: [LiveBlock],
+    block_map: [u32],
+    cells: [u32],
+    verts: [SkinVertex],
+    words: mut Atomics<u32>,
+    spans: mut Atomics<u32>,
+    counts: mut Shared<u32, 64>,
+    worst: mut Shared<f32, 64>,
+    base: mut Shared<u32, 1>,
+    block: WorkgroupId,
+    lid: LocalId,
+) {
+    let slot = block.x
+    let n = cells.len() / (BLOCK * BLOCK * BLOCK)
+    let lb = blocks[slot]
+    let b = vec3i(grid.block_xyz(lb.block))
+    let g = b * i32(BLOCK) + vec3i(lid.xyz())
+    let cell = CellWord::of_bits(cells[cell_key(slot, lid.xyz(), n)])
+    let mine = cell_quads(
+        grid,
+        block_map,
+        cells,
+        n,
+        room,
+        g,
+        cell,
+        b,
+        mut words,
+        at: 0,
+        write_out: false,
+    )
+    // The error at the cell's vertex: its distance from the surface (the field's value over its
+    // gradient's length).
+    var err = 0.0
+    if cell.vertex < room {
+        let v = verts[cell.vertex]
+        let (d, n3) = distance_and_normal(field, lb, grid.cell, v.pos)
+        err = abs(d) / max(length(n3), 1.0e-6)
+    }
+    let chunk = counts.chunk(lid)
+    counts.write(chunk, 0, mine)
+    let worst_chunk = worst.chunk(lid)
+    worst.write(worst_chunk, 0, err)
+    barrier(mut counts)
+    barrier(mut worst)
+    let me = lid.x + BLOCK * (lid.y + BLOCK * lid.z)
+    var before = 0
+    var all = 0
+    var largest = 0.0
+    for i in 0..64 {
+        let c = counts.get(i)
+        if i < me {
+            before += c
+        }
+        all += c
+        largest = max(largest, worst.get(i))
+    }
+    // The block's range, taken by the first invocation with one atomic, and shared. One past
+    // the room is counted (`spans`' first `u32` says how many quads were wanted) but kept
+    // nowhere: its cluster is empty.
+    if me == 0 {
+        let first = spans.add(i: 0, value: all)
+        let fits = first + all <= words.len() / 6
+        spans.store(i: 1 + 3 * slot, value: first)
+        spans.store(i: 2 + 3 * slot, value: if fits { all } else { 0 })
+        spans.store(i: 3 + 3 * slot, value: bitcast_u32(largest))
+        base.write(base.chunk(lid), 0, if fits { first } else { NO_ROOM })
+    }
+    barrier(mut base)
+    let first = base.get(0)
+    if first == NO_ROOM {
+        return
+    }
+    let _ = cell_quads(
+        grid,
+        block_map,
+        cells,
+        n,
+        room,
+        g,
+        cell,
+        b,
+        mut words,
+        at: first + before,
+        write_out: true,
+    )
+}
+
+/// The field's distance and gradient at `p`, from the items that matter in live block `lb`.
+fn distance_and_normal<C, F: Parts<C>>(field: F, lb: LiveBlock, fp: f32, p: vec3) -> (f32, vec3) {
+    let d = field.distance_masked(p, lb.mask, fp)
+    (d, gradient(|q: vec3| field.distance_masked(q, lb.mask, fp), p))
+}
+
+/// Level 0's errors: each cluster's measured error, at least `FLOOR` cells.
+@compute(64)
+pub fn own_errors(live: [u32], spans: [u32], cell: f32, errors: mut Slots<f32>, id: GlobalId) {
+    if id.x >= live[0] {
+        return
+    }
+    errors[id] = max(bitcast_f32(spans[3 + 3 * id.x]), FLOOR * cell)
+}
+
+/// A coarser level's errors: each cluster's measured error, at least `FLOOR` cells, and at least
+/// each of its eight children's (the live ones at the level below).
+@compute(64)
+pub fn inherit_errors(
+    grid: Grid,
+    child_grid: Grid,
+    live: [u32],
+    blocks: [LiveBlock],
+    spans: [u32],
+    child_map: [u32],
+    child_errors: [f32],
+    errors: mut Slots<f32>,
+    id: GlobalId,
+) {
+    if id.x >= live[0] {
+        return
+    }
+    var e = max(bitcast_f32(spans[3 + 3 * id.x]), FLOOR * grid.cell)
+    let b = grid.block_xyz(blocks[id.x].block)
+    for i in 0..8 {
+        let c = b * 2 + vec3u(i & 1, (i >> 1) & 1, (i >> 2) & 1)
+        if c.x >= child_grid.size.x || c.y >= child_grid.size.y || c.z >= child_grid.size.z {
+            continue
+        }
+        let s = child_map[child_grid.block_at(c)]
+        if s != 0 {
+            e = max(e, child_errors[s - 1])
+        }
+    }
+    errors[id] = e
+}
+
+// ---- each frame -----------------------------------------------------------------------------------
+
+/// A box's nearest distance from `eye` (0 inside it).
+fn nearest(b: Box3, eye: vec3) -> f32 {
+    length(max(max(b.lo - eye, eye - b.hi), vec3(0.0)))
+}
+
+/// Block `b` of `grid` placed by `p`, as a box in the world.
+fn placed_box(grid: Grid, b: vec3u, p: Placed) -> Box3 {
+    let lo = grid.origin + vec3(b) * (f32(BLOCK) * grid.cell)
+    let hi = lo + vec3(f32(BLOCK) * grid.cell)
+    Box3 { lo: p.at + lo * p.scale, hi: p.at + hi * p.scale }
+}
+
+/// Whether box `b` can be in `cam`'s view: in front of the eye and within the frustum's sides,
+/// tested at its sphere.
+fn in_view(cam: Camera, b: Box3) -> bool {
+    let centre = 0.5 * (b.lo + b.hi)
+    let radius = 0.5 * length(b.hi - b.lo)
+    let to = centre - cam.eye
+    let ahead = dot(to, cam.forward)
+    if ahead < -radius {
+        return false
+    }
+    let x = dot(to, cam.right)
+    let y = dot(to, cam.up)
+    let reach = max(ahead, 0.0)
+    abs(x) <= cam.tan_half * cam.aspect * reach + radius * 1.5 &&
+        abs(y) <= cam.tan_half * reach + radius * 1.5
+}
+
+/// The placements whose bounds can be in view, into `visible`.
+@compute(64)
+pub fn cull_instances(
+    cam: Camera,
+    bounds: Box3,
+    places: [Placed],
+    visible: mut Append<u32>,
+    id: GlobalId,
+) {
+    if id.x >= places.len() {
+        return
+    }
+    let p = places[id.x]
+    let b = Box3 { lo: p.at + bounds.lo * p.scale, hi: p.at + bounds.hi * p.scale }
+    if in_view(cam, b) {
+        let _ = visible.push(id.x)
+    }
+}
+
+/// Pushes the pair (`a`, `b`) onto list `list`: counted always, kept where there's room.
+fn push_pair(list: mut Atomics<u32>, a: u32, b: u32) {
+    let i = list.add(i: 0, value: 1)
+    if 2 + 2 * i < list.len() {
+        list.store(i: 1 + 2 * i, value: a)
+        list.store(i: 2 + 2 * i, value: b)
+    }
+}
+
+/// How many items list `list` holds: those pushed, as many as it has room for.
+fn listed(list: [u32]) -> u32 {
+    min(list[0], (list.len() - 1) / 2)
+}
+
+/// The seed pass's group counts: a group of 64 roots along x, one visible instance along y.
+@compute(1)
+pub fn seed_counts(roots: [u32], visible: [u32], args: mut One<DispatchArgs>, id: GlobalId) {
+    args.set(id, DispatchArgs { x: (roots[0] + 63) / 64, y: visible[0], z: 1 })
+}
+
+/// The level's root `id.x` of visible instance `id.y`, onto the level's candidates.
+@compute(64)
+pub fn seed(
+    roots: [u32],
+    count: [u32],
+    visible: [u32],
+    candidates: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    if id.x >= count[0] {
+        return
+    }
+    push_pair(mut candidates, visible[id.y], roots[id.x])
+}
+
+/// A pass over a list's items' group counts: one invocation an item.
+@compute(1)
+pub fn list_counts(list: [u32], args: mut One<DispatchArgs>, id: GlobalId) {
+    args.set(id, DispatchArgs { x: (listed(list) + 63) / 64, y: 1, z: 1 })
+}
+
+/// Level `cut.level`'s candidate `id.x` (an instance and a live slot): if in view, picked where
+/// its error looks at most `cut.pixels` (or it's of the finest level), else its live children at
+/// the level below (`child_map`, the block map of `cut.parent`, here the level below) pushed
+/// onto that level's candidates. Its error looks as large as it is from its block's nearest
+/// point.
+@compute(64)
+pub fn select(
+    cut: Cut,
+    candidates: [u32],
+    blocks: [LiveBlock],
+    pairs: [vec2],
+    places: [Placed],
+    child_map: [u32],
+    picks: mut Atomics<u32>,
+    next: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    if id.x >= listed(candidates) {
+        return
+    }
+    let instance = candidates[1 + 2 * id.x]
+    let slot = candidates[2 + 2 * id.x]
+    let p = places[instance]
+    let b = cut.grid.block_xyz(blocks[slot].block)
+    let own = placed_box(cut.grid, b, p)
+    if !in_view(cut.cam, own) {
+        return
+    }
+    let near = max(nearest(own, cut.cam.eye), cut.cam.near)
+    if cut.level == 0 || pairs[slot].x * p.scale * cut.per_metre / near <= cut.pixels {
+        push_pair(mut picks, instance, slot)
+        return
+    }
+    // Too coarse here: its live children are tried a level down.
+    let child = cut.parent
+    for i in 0..8 {
+        let c = b * 2 + vec3u(i & 1, (i >> 1) & 1, (i >> 2) & 1)
+        if c.x >= child.size.x || c.y >= child.size.y || c.z >= child.size.z {
+            continue
+        }
+        let s = child_map[child.block_at(c)]
+        if s != 0 {
+            push_pair(mut next, instance, s - 1)
+        }
+    }
+}
+
+/// Each pick's quads into the level's list (a range of it a pick, taken with one atomic): the
+/// pick's index and the quad's.
+@compute(64)
+pub fn gather(picks: [u32], spans: [u32], list: mut Atomics<u32>, id: GlobalId) {
+    if id.x >= listed(picks) {
+        return
+    }
+    let slot = picks[2 + 2 * id.x]
+    let first = spans[1 + 3 * slot]
+    let n = spans[2 + 3 * slot]
+    let room = (list.len() - 1) / 2
+    let at = list.add(i: 0, value: n)
+    for k in 0..n {
+        if at + k >= room {
+            return
+        }
+        list.store(i: 1 + 2 * (at + k), value: id.x)
+        list.store(i: 2 + 2 * (at + k), value: first + k)
+    }
+}
+
+/// The level's draw: six vertices a listed quad.
+@compute(1)
+pub fn draw_counts(list: [u32], args: mut One<DrawArgs>, id: GlobalId) {
+    args.set(
+        id,
+        DrawArgs { vertices: 6 * listed(list), instances: 1, first_vertex: 0, first_instance: 0 },
+    )
+}
+
+/// A cluster vertex as the fragment shader reads it: its clip position, its world position and
+/// its normal.
+pub struct ClusterVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+}
+
+/// What a level's draw reads besides its buffers: the camera and how deep its skirts hang.
+pub struct LevelDraw: Copy + GpuData {
+    pub cam: Camera,
+    pub skirt: f32,
+}
+
+/// Vertex `v` of a level's list: its quad's corner (`v % 6`), placed by its pick's instance, a
+/// skirt's corner pushed into the surface by the level's skirt depth.
+@vertex
+pub fn cluster_vertex(
+    v: VertexIndex,
+    d: LevelDraw,
+    list: [u32],
+    picks: [u32],
+    words: [u32],
+    verts: [SkinVertex],
+    places: [Placed],
+) -> ClusterVertex {
+    let q = v.index / 6
+    let pick = list[1 + 2 * q]
+    let word = words[6 * list[2 + 2 * q] + v.index % 6]
+    let sv = verts[word & (SKIRT - 1)]
+    let p = places[picks[1 + 2 * pick]]
+    let rest = if (word & SKIRT) != 0 { sv.pos - sv.normal * d.skirt } else { sv.pos }
+    let world = p.at + rest * p.scale
+    ClusterVertex { clip: ClipPosition { position: d.cam.clip(world) }, world, normal: sv.normal }
+}
+
+/// How clusters are lit: their colour, the sun's direction, and how much of the sky's light
+/// reaches them.
+pub struct ClusterLook: Copy + GpuData {
+    pub albedo: vec3,
+    pub sun: vec3,
+    pub sky: f32,
+}
+
+/// A cluster's pixel: its colour lit by the sun along its normal and by the sky above it.
+@fragment
+pub fn cluster_shade(v: ClusterVertex, look: ClusterLook) -> vec4 {
+    let n = normalize(v.normal)
+    let diffuse = max(dot(n, look.sun), 0.0)
+    vec4(look.albedo * (look.sky * (0.5 + 0.5 * n.y) + diffuse), 1.0)
+}
+
+/// The most picks and listed quads a level is given room for.
+const MOST_PICKS: u32 = 1 << 22
+const MOST_LISTED: u32 = 1 << 23
+
+/// `list` given room for `room` items, if it hasn't that room (emptied then).
+fn fit_list(list: mut GpuBuffer<u32>, room: u32) {
+    if list.len() < 1 + 2 * room {
+        list = empty_list(room)
+    }
+}
+
+impl Level {
+    /// Room for the picks and the listed quads of `instances` placements all drawn at this level:
+    /// every live block's cluster of each (at most `MOST_PICKS` and `MOST_LISTED`).
+    fn fit(mut self, instances: u32) {
+        let n = u64(max(instances, 1))
+        let picks = min(u64(self.pairs.len()) * n, u64(MOST_PICKS))
+        let listed = min(u64(self.words.len() / 6) * n, u64(MOST_LISTED))
+        fit_list(mut self.picks, u32(picks))
+        fit_list(mut self.list, u32(listed))
+    }
+}
+
+impl Clusters {
+    /// Reads back each level's quads wanted (the clusters' quads and skirts) and the quads its
+    /// last frame listed: two a level, in order, to set beside `rooms`.
+    pub fn counts(self) -> Vec<Pending<u32>> {
+        var out: Vec<Pending<u32>> = Vec::new()
+        for l in self.levels {
+            out.push(read(l.spans.span(start: 0, count: 1)))
+            out.push(read(l.list.span(start: 0, count: 1)))
+        }
+        out
+    }
+
+    /// Each level's room for quads, and for listed quads: two a level.
+    pub fn rooms(self) -> Vec<u32> {
+        var out: Vec<u32> = Vec::new()
+        for l in self.levels {
+            out.push(l.words.len() / 6)
+            out.push((l.list.len() - 1) / 2)
+        }
+        out
+    }
+
+    /// The frame's cut and its draws' lists: the instances of `places` in view, then down the
+    /// levels from the coarsest, each level's candidates tested (see the file's comment), for
+    /// `cam`, at most `pixels` of error.
+    pub fn select(mut self, cam: Camera, places: GpuBuffer<Placed>, pixels: f32) {
+        if self.visible.capacity() < places.len() {
+            self.visible = append_buffer(places.len())
+        }
+        self.visible.clear()
+        dispatch(
+            cull_instances.bind(cam, self.bounds, places.items(), mut self.visible),
+            over: places.len(),
+        )
+        let per_metre = cam.screen.y / (2.0 * cam.tan_half)
+        let levels = self.levels.len()
+        // Room for candidates: as many as any level could pick.
+        var most = 1
+        for mut l in self.levels {
+            l.fit(places.len())
+            most = max(most, (l.picks.len() - 1) / 2)
+        }
+        fit_list(mut self.here, most)
+        fit_list(mut self.below, most)
+        write(mut self.here, 0, [0])
+        // Each level's child grid and block map (the level below's; the finest's own, unused).
+        var grids: Vec<Grid> = Vec::new()
+        for k in 0..levels {
+            grids.push(self.levels[if k == 0 { 0 } else { k - 1 }].grid)
+        }
+        for i in 0..levels {
+            let k = levels - 1 - i
+            let child_k = if k == 0 { 0 } else { k - 1 }
+            let child_map = self.maps[child_k].span(0, self.maps[child_k].len())
+            write(mut self.below, 0, [0])
+            match mut self.levels[k] {
+                l => {
+                    write(mut l.picks, 0, [0])
+                    write(mut l.list, 0, [0])
+                    dispatch(
+                        seed_counts.bind(
+                            roots: l.roots.count(),
+                            visible: self.visible.count(),
+                            args: mut l.seed_args,
+                        ),
+                        groups: 1,
+                    )
+                    dispatch(
+                        seed.bind(
+                            roots: l.roots.items(),
+                            count: l.roots.count(),
+                            visible: self.visible.items(),
+                            candidates: mut self.here,
+                        ),
+                        groups: l.seed_args.items(),
+                    )
+                    dispatch(
+                        list_counts.bind(list: self.here.items(), args: mut l.select_args),
+                        groups: 1,
+                    )
+                    let cut = Cut {
+                        cam,
+                        per_metre,
+                        pixels,
+                        level: k,
+                        grid: l.grid,
+                        parent: grids[k],
+                    }
+                    dispatch(
+                        select.bind(
+                            cut,
+                            candidates: self.here.items(),
+                            blocks: l.scratch.live.items(),
+                            pairs: l.pairs.items(),
+                            places: places.items(),
+                            child_map: child_map,
+                            picks: mut l.picks,
+                            next: mut self.below,
+                        ),
+                        groups: l.select_args.items(),
+                    )
+                    dispatch(
+                        list_counts.bind(list: l.picks.items(), args: mut l.gather_args),
+                        groups: 1,
+                    )
+                    dispatch(
+                        gather.bind(
+                            picks: l.picks.items(),
+                            spans: l.spans.items(),
+                            list: mut l.list,
+                        ),
+                        groups: l.gather_args.items(),
+                    )
+                    dispatch(
+                        draw_counts.bind(list: l.list.items(), args: mut l.draw_args),
+                        groups: 1,
+                    )
+                },
+            }
+            swap(mut self.here, mut self.below)
+        }
+    }
+
+    /// The frame's clusters drawn into `pass`, lit as `look` says, a level a draw, both faces (a
+    /// skirt is seen from either side).
+    pub fn draw<P: RenderPass>(
+        self,
+        pass: P,
+        cam: Camera,
+        places: GpuBuffer<Placed>,
+        look: ClusterLook,
+    ) {
+        for l in self.levels {
+            draw(
+                pass,
+                cluster_vertex.bind(
+                    LevelDraw { cam, skirt: l.skirt },
+                    list: l.list.items(),
+                    picks: l.picks.items(),
+                    words: l.words.items(),
+                    verts: l.mesh.verts.items(),
+                    places: places.items(),
+                ),
+                cluster_shade.bind(look),
+                indirect: l.draw_args.items(),
+                cull: Cull::None,
+                depth: view::NEAREST,
+            )
+        }
+    }
+}
