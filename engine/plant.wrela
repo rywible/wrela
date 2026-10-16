@@ -110,9 +110,10 @@ impl Bark {
     }
 }
 
-/// The most limbs and clumps a plant has.
+/// The most limbs and clumps a plant has (a crown of fine clumps over its whole shell takes over
+/// a hundred).
 pub const MAX_LIMBS: u32 = 40
-pub const MAX_CLUMPS: u32 = 64
+pub const MAX_CLUMPS: u32 = 128
 
 /// A plant: limbs (tubes through four points each) and a crown of clumps, in the plant's own
 /// frame (its base at the origin, +y up).

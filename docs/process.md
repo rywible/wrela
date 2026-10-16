@@ -1133,6 +1133,31 @@ Ryan then asked Claude to keep improving it. Claude judged the grown view's stil
 - **Floor plants:** the grown view's wood floor is as bare as the play floor's under its beeches;
   it is the floor's shared look, not this layer's.
 
+## The ancient wood, 2026-10-16
+
+Ryan said the grown wood didn't read as a mythical elven forest and that its trees and plants
+looked wrong, and asked for a plan council toward AAA quality. Claude led; OpenAI Codex
+GPT-6.1-Sol and GPT-6-Astra reviewed the plan, read-only, in two rounds. They found that the
+grown bake skipped the fork pass the play bake runs; that more tree kinds cost about 12 MiB of
+GPU memory each; that the bake could not store a trunk over 1.02 m or a crown over 12.75 m; that
+a larger trunk had to be drawn as well as simulated; and that the elves' land use is lore for
+Ryan. Ryan then decided: the forest evolves with no people for now, its trees are larger than
+life, and its look should be mythic.
+- **Specimens:** a specimen view (F8's sixth, `tools/lookbook.py --view specimens`) shows each
+  species at 10 to 400 years, open-grown and among others. It showed that every open-grown tree
+  was drawn in its forest form (crowding was judged against its kind's drawn crown), and that
+  crowns were a few puffballs on bare limbs.
+- **Crowns:** a crown is now fine clumps over its whole shell, bulging over its scaffold limbs,
+  open beneath and with gaps for the sky. Pines are whorls of needle plates on a bare stem;
+  hawthorn and sloe are thickets of stems.
+- **Ancient species:** in the grown world each species grows taller, lives longer and thickens
+  further (oak to 34 m, 1200 years and a 2.4 m trunk radius). The bake keeps trunks to 3 m and
+  crowns to 25.5 m; trunks are drawn as thick as they grew; an oak or beech over 1.2 m in radius
+  stands as the great tree. The grown bake now chooses forks as the play bake does.
+- **Floor and light:** the grown wood's shade carries a low carpet of moss, grasses, ferns and
+  herbs; its gentle rock is grown over; sun shafts fall through its canopy and its light glows
+  more.
+
 ## The climber's robe, darkness and glide, 2026-10-14
 
 Ryan found the Last Green's player character clunky to move and its cloth, robe, darkness and
