@@ -2397,6 +2397,18 @@ span -3.0% and -2.5% (five pairs). Its stills are within p99 1–2/255 and p99.9
 rounds' on nine lookbook views. The reversal capture's frame-to-frame change is the same
 (30.556/255 against 30.557), and its frames are within p99.9 4/255 of two rounds'.
 
+The grass's placing (3.49 ms at the opening) was measured before anything was cached, as the
+council asked: ablations, each returning at a later point of `grass::place`, found the cells' walk
+and tests 0.97 ms, the stones and the clipmap's ground 0.67 ms, the meadow's noises and lighting
+0.5 ms, appending 0.1 ms, and the wood's floor's plants (`under_plant`) 1.2 ms, of which choosing a
+herb's species (`species_of`, scoring all 32 species) was 1.05 ms. A species whose acid, wet or
+light range the habitat is more than 0.15 past scores exactly 0 (`smoothstep` is 0 there), so it
+is now passed over before its score is worked out: grass 3.49 -> 3.05 ms at the opening (-12.6%,
+GPU span -1.3%) and -3.4% at the mere (span inconclusive), five pairs. The stills are the same as
+before to within what two runs of one build differ by (at most 3/255 at a handful of pixels), and
+a test checks it chooses what scoring every species chooses over 4096 seeded habitats and on every
+range's edges. Bitmasks of the species each of 32 bins of a habitat's acid, wet and light might admit (so the walk reads only those) gained nothing more (-0.3%, inconclusive): the rest of the choice is scoring the species a habitat is within reach of.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
