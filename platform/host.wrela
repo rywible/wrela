@@ -52,6 +52,14 @@ pub fn cursor(name: str) -> Pending<u8> {
     request("cursor", bytes)
 }
 
+/// Whether the pointer is to be locked to the program (a game's mouse look): on, the host locks
+/// it at the next press on the program (a browser locks only on a person's gesture, and Escape
+/// lets it go until the next); off lets it go. While it's locked, `PointerMove` says so and
+/// carries its movement. A host with no pointer to lock answers with an error.
+pub fn lock_pointer(on: bool) -> Pending<u8> {
+    request("pointer/lock", [if on { 1 } else { 0 }])
+}
+
 /// One of the page's icons: `rel` is `icon` or `apple-touch-icon`, `size` its pixels on a side,
 /// and `path` a square PNG the build shipped (`Shipped::path`).
 pub fn icon(rel: str, size: u32, path: str) -> Pending<u8> {

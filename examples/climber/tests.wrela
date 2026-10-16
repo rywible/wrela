@@ -443,3 +443,45 @@ fn the_sword_at_rest_floats_clear_of_the_cape() {
     assert(clear >= 0.12, f"the sword at rest is only {clear} m clear of the cape")
     assert(high - low > 1.5 * moves::SWORD_BOB, f"the sword at rest bobs only {high - low} m")
 }
+
+/// A cut leaves a trail; the wind-up before it and the floating blade leave none, and a blink
+/// starts it afresh.
+@test
+fn a_cut_leaves_a_trail_and_a_float_none() {
+    let dt = 1.0 / 60.0
+    var t = draw::trail()
+    let blade = |p: moves::Pose| {
+        let (at, aim, _) = p.sword.placed(vec3(0.0), 0.0)
+        (at + aim * 0.7, at + aim * body::POINT_AT)
+    }
+    for k in 0..30 {
+        let p = moves::locomotion(
+            ready: 1.0,
+            speed: 3.0,
+            accel: 0.0,
+            turning: 0.0,
+            drift: f32(k) / 30.0,
+        )
+        let (inner, tip) = blade(p)
+        t.after(inner, tip, afresh: k == 0, dt: dt)
+        assert(!t.showing, "the floating blade leaves a trail")
+    }
+    let f = frames(Act::Slash)
+    var shown_in_windup = false
+    var shown_in_cut = false
+    for k in 0..f.total {
+        let (inner, tip) = blade(moves::pose(Act::Slash, f32(k)))
+        t.after(inner, tip, afresh: false, dt: dt)
+        if k + 2 < f.windup {
+            shown_in_windup = shown_in_windup || t.showing
+        }
+        if f.is_active(k) {
+            shown_in_cut = shown_in_cut || t.showing
+        }
+    }
+    assert(!shown_in_windup, "the wind-up leaves a trail")
+    assert(shown_in_cut, "the cut leaves no trail")
+    let (inner, tip) = blade(moves::GUARD)
+    t.after(inner, tip, afresh: true, dt: dt)
+    assert(!t.showing, "a blink kept the trail")
+}

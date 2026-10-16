@@ -797,7 +797,7 @@ A game already has a suspension point, the tick or the frame, so the language do
 - Examples are an embedded application's message channel and a file that the user selects. These mechanisms are not specific to games.
 
 **Input** (`std::input`) is the pointer, the keyboard and up to four gamepads. `events()` gives the events that the host has queued since the program last read them, oldest first:
-- The pointer moves, a button goes down or up, or the wheel turns.
+- The pointer moves, a button goes down or up, or the wheel turns. A program can ask its host to lock the pointer to it (`platform::host::lock_pointer`, for a mouse look): a locked pointer has no place, so `PointerMove` says that it is locked and its `at` goes on by the pointer's movement.
 - A key goes down or up (a physical key, `Key::A`), or types text (`Event::Text`, a Unicode scalar value).
 - A gamepad's button moves (`Event::PadButton`) or its stick moves (`Event::PadAxis`), named by where it is on the pad (`PadButton::South`, the W3C standard mapping), for pads 0 to 3.
 - `Event::Compose` is one character of the text an input method is composing. Each time that text changes, all of it comes again, one event a character. A `Composer` puts each change together, and ignores a change that a reader fell behind on and saw only part of. Committed text comes as `Text`.

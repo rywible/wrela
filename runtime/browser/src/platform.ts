@@ -346,6 +346,11 @@ export class BrowserPlatform {
       if (!CURSORS.has(name)) throw new Error(`unsupported cursor: ${name.slice(0, 32)}`);
       this.canvas.style.cursor = name; return new Uint8Array();
     }
+    if (service === "pointer/lock") {
+      // The pointer locked to the canvas from its next press (a game's mouse look), or let go.
+      if (!this.#input) throw new Error("this host has no pointer lock");
+      this.#input.lockPointer(new Reader(body).u8() !== 0); return new Uint8Array();
+    }
     if (service === "text/input") {
       // On (with the caret's rectangle, device pixels of the canvas) or off.
       if (!this.#input) throw new Error("this host has no text input yet");

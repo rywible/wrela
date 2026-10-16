@@ -32,7 +32,6 @@ use engine::vegetation::{Kind, Placed, kind}
 use engine::wood::Wood
 use engine::view::{BEHIND, Camera, NEAREST, camera, first_camera}
 use engine::water::{LOOKS, MistAt, WaterVert, copy_below, mist_over, water_shade, water_vertex}
-use climber::body::{HEM_RADIUS, TRAIN_REACH}
 use climber::cape::Plane
 use climber::draw::{CastWolf, Drawn, cast_wolf, drawn, wolf_bones}
 use climber::figure::{Figure, figure}
@@ -50,7 +49,7 @@ use std::gpu::{
 }
 use std::input::{Button, Event, Key, events}
 use std::io::{Pending, print}
-use world::{GATE, World, present as snapshot, spawn_world, tick}
+use world::{GATE, TRAVEL, World, present as snapshot, spawn_world, tick}
 
 /// How far the player goes from the render origin before it moves (m), and the tiles it moves by
 /// (a whole number of the clipmap's coarsest snaps and of its fields' blocks: what's cooked stays).
@@ -62,6 +61,15 @@ const FAWN_DRAWN: f32 = 150.0
 
 /// How long the camera takes to turn fully to the fight's wolf, or back from it (s).
 const FOCUS_EASE: f32 = 0.6
+
+/// How much wider the view opens at a sprint than standing (a share of its field), and how long
+/// it takes to open and close (s).
+const SPRINT_WIDEN: f32 = 0.06
+const WIDEN_EASE: f32 = 0.35
+
+/// How far a hit (given or taken) shakes the camera (m), and how long the shake lasts (s).
+const SHAKE: f32 = 0.05
+const SHAKE_FOR: f32 = 0.25
 
 /// The floor's world in the tower (engine::tower), the stair's build beside it, and the save.
 const WORLD: u32 = 0
@@ -648,10 +656,19 @@ pub struct Floor {
     framing: Framing,
     /// The camera's arm as it was last frame (`engine::player::follow`).
     arm: Arm,
-    /// How much the camera turns to the fight's wolf (`encounter::focus`, eased), and where the
-    /// wolf is (world space).
+    /// How much the camera keeps the fight's wolf in view (`encounter::focus`, eased), and where
+    /// the wolf is (world space).
     focus: f32,
     focus_at: vec3,
+    /// How far the view has opened for a sprint (0 to 1, eased); how much of a hit's shake is
+    /// left (1 to 0), and the hits given and taken so far.
+    widen: f32,
+    shake: f32,
+    hits_seen: u32,
+    /// The pointer locked to the game for its mouse look (`platform::host::lock_pointer`: asked
+    /// for once), and whether it is now, as the last move said.
+    lock: Pending<u8>,
+    locked: bool,
     /// The lookbook's shot the camera's held on (none: the player's), since when, and one being
     /// typed (`keys`).
     shot: Option<u32>,
@@ -944,6 +961,11 @@ pub fn init() -> Floor {
         arm: Arm {},
         focus: 0.0,
         focus_at: vec3(0.0),
+        widen: 0.0,
+        shake: 0.0,
+        hits_seen: 0,
+        lock: platform::host::lock_pointer(true),
+        locked: false,
         shot: None,
         held: None,
         shot_from: 0.0,
@@ -1934,11 +1956,16 @@ fn cook_load(s: mut Floor, eye: vec2) {
 /// the frame as plain rendering; L, a shot's number and Enter hold the camera on a lookbook shot
 /// (Escape lets it go).
 fn keys(s: mut Floor, time: f32) {
+    let _ = s.lock.poll()
     for e in events() {
         s.console.event(e)
         match e {
+            Event::PointerMove { locked, .. } => {
+                s.locked = locked
+            },
+            // A click names what's under it, unless the pointer is the game's (a swing).
             Event::PointerDown { at, button, .. } => {
-                if button == Button::Primary {
+                if button == Button::Primary && !s.locked {
                     s.press = Some(at)
                 }
             },
@@ -3038,6 +3065,10 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         let _ = s.exit.leave(feet2 + o2)
     }
     let c = pb.controls
+    // The look between the ticks, as the feet are: the camera turns smoothly whatever the frame
+    // rate.
+    let yaw = engine::present::lerp_angle(pa.controls.yaw, c.yaw, b.alpha)
+    let pitch = mix(pa.controls.pitch, c.pitch, b.alpha)
     if s.drawn.is_none() {
         s.drawn = Some(drawn())
     }
@@ -3058,6 +3089,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     let moved = s.origin != before
     if moved {
         s.climber.carry(o_was - o)
+        s.arm.carry(o_was - o)
     }
     let w_at = stood.xz + o2
     let slope = vec2(
@@ -3098,7 +3130,9 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
             drift: s.drift,
         )
     }
-    let gone = fighting && fc.gone()
+    // Gone for the frames between a tick gone and the next: the blink's last step is the
+    // garment's carry, not a drag.
+    let gone = fighting && (fc.gone() || b.a.fight.fight.climber.gone())
     s.climber.step(
         stood,
         facing,
@@ -3109,7 +3143,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         dt: s.dt,
     )
     match mut s.drawn {
-        Some(d) => d.write(s.climber, stood, facing, pose, gone: gone, still: moved),
+        Some(d) => d.write(s.climber, stood, facing, pose, gone: gone, still: moved, dt: s.dt),
         None => {},
     }
     // The fawn: where a shot casts it, standing at rest; in play (no shot held), the sim's,
@@ -3143,10 +3177,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     }
     // The cloak bends contacting stems round its hem and along its train; it never clears or
     // lowers the grass roots.
-    s.grass.contact = match s.climber.train_end() {
-        Some(end) if !gone => Contact { at: vec4(stood, HEM_RADIUS), tail: vec4(end, TRAIN_REACH) },
-        _ => Contact {},
-    }
+    s.grass.contact = if gone { Contact {} } else { s.climber.contact(stood) }
     // The fawn's planted footprint, each its place and reach.
     let feet_of = |c: vec3, reach: f32| {
         let p = on_ground(c)
@@ -3169,6 +3200,14 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     let (fb, wanted) = encounter::focus(b.b.fight, (feet + o).xz)
     s.focus_at = mix(fa, fb, vec3(b.alpha))
     s.focus += clamp(wanted - s.focus, -s.dt / FOCUS_EASE, s.dt / FOCUS_EASE)
+    let sprinting = smoothstep(TRAVEL.walk + 0.5, TRAVEL.run, speed)
+    s.widen += clamp(sprinting - s.widen, -s.dt / WIDEN_EASE, s.dt / WIDEN_EASE)
+    let t = b.b.fight.fight.tally
+    if t.hits + t.bites > s.hits_seen {
+        s.shake = 1.0
+    }
+    s.hits_seen = t.hits + t.bites
+    s.shake = max(s.shake - s.dt / SHAKE_FOR, 0.0)
     let ground_r = |p: vec2| height_at(p + o2)
     s.shot_from = shot_clock(s.shot_from, time, s.arriving)
     let (eye, at, fovy) = match s.shot {
@@ -3198,14 +3237,16 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
                 gap / 1000.0,
                 s.framing,
                 feet,
-                yaw: c.yaw,
-                pitch: c.pitch,
+                yaw: yaw,
+                pitch: pitch,
                 focus: Focus { at: s.focus_at - o, weight: s.focus },
                 o: OBSTACLES,
                 o_from: o2,
                 height: ground_r,
             )
-            (e, a, s.framing.fovy)
+            let k = SHAKE * s.shake * s.shake
+            let wobble = vec3(sin(time * 71.0), sin(time * 53.0 + 1.3), sin(time * 61.0 + 2.1)) * k
+            (e + wobble, a + wobble * 0.5, s.framing.fovy * (1.0 + SPRINT_WIDEN * s.widen))
         },
     }
     // A test's held camera (given in the world).

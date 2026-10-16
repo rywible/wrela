@@ -168,7 +168,10 @@ pub const PADS: u32 = 4
 /// An input event. Positions are in pixels from the screen's top left, as `frame`'s width and
 /// height count them.
 pub enum Event: Copy + Eq + StateHash + Serialize {
-    PointerMove { at: vec2, mods: Mods },
+    /// The pointer moved. `locked` is true while the host has locked the pointer to the program
+    /// (`platform::host::lock_pointer`): then it has no place on the screen, and `at` goes on by
+    /// its movement, past the screen's edges.
+    PointerMove { at: vec2, locked: bool, mods: Mods },
     PointerDown { at: vec2, button: Button, mods: Mods },
     PointerUp { at: vec2, button: Button, mods: Mods },
     /// A scroll: right and down are positive, in pixels.
@@ -334,7 +337,7 @@ pub(package) fn event_of(r: RawEvent) -> Option<Event> {
     let at = vec2(bitcast_f32(r.a), bitcast_f32(r.b))
     let mods = mods_of(r.mods)
     match r.kind {
-        1 => Some(Event::PointerMove { at, mods }),
+        1 => Some(Event::PointerMove { at, locked: r.c != 0, mods }),
         2 => Some(Event::PointerDown { at, button: button_of(r.c), mods }),
         3 => Some(Event::PointerUp { at, button: button_of(r.c), mods }),
         4 => Some(Event::Wheel { at, delta: vec2(bitcast_f32(r.c), bitcast_f32(r.d)), mods }),
@@ -581,7 +584,7 @@ impl Input {
     pub fn update(mut self, events: take Vec<Event>) {
         for e in events {
             match e {
-                Event::PointerMove { at, mods } => {
+                Event::PointerMove { at, mods, .. } => {
                     self.pointer = at
                     self.mods = mods
                 },
