@@ -1,9 +1,11 @@
-// The mixer (M5.5, #49: "a mixer on the one stereo voice"): every sound a world makes, mixed on
-// the program's one voice (std::audio). The program pushes cues through a ring, a few each
-// frame: where the listener is and which way it faces, a step, the wind, the water near. The
-// voice keeps a source for each, and mixes them into two channels as a pair of ears there would
-// hear them: each source panned by its direction from the listener's facing (equal power),
-// quieter with distance, and duller with it, as the air takes the highs.
+// The mixer: every sound a world makes, mixed on the program's one stereo voice (`std::audio`).
+//
+// `mixer` gives the voice and a ring; start the voice with `std::audio::play`. The program
+// pushes cues (`Cue`) through the ring, a few each frame: where the listener is and which way
+// it faces, a step, the wind, the water near. The voice keeps a source for each, and mixes them
+// into two channels as a pair of ears there would hear them: each source panned by its
+// direction from the listener's facing (equal power), quieter with distance, and duller with
+// it, as the air takes the highs.
 //
 // It knows no world. A step's surface and a water's kind are the world's own numbers: indexes
 // into the `Palette` the world gives when it starts the voice, which says how each one sounds.
@@ -157,7 +159,7 @@ impl Noise {
     }
 }
 
-/// A state-variable filter (Zavalishin's, trapezoidal): its coefficients, for a centre and a Q.
+/// A state-variable filter (trapezoidal integration): its coefficients, for a centre and a Q.
 struct Band: Copy {
     a1: f32,
     a2: f32,

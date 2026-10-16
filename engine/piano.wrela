@@ -1,53 +1,49 @@
-// A piano (spike 14, #48), synthesized by modes: each string's partials are damped resonators,
-// struck by a hammer and stopped by a damper, as engine::acoustics' strikes are. It plays an
-// engine::perform performance on the program's voice.
+// A synthesized piano that plays an engine::perform performance: each string's partials are
+// damped resonators, struck by a hammer and stopped by a damper.
+//
+// Make one with `piano` (a `Model`, such as engine::piano_grand's `GRAND`, and a performance) on
+// the program's thread, before `std::audio::play`. The audio thread then calls `play_piano` for
+// each quantum of the program's voice.
 //
 // What it models, string by string:
 // - partials stretched by the string's stiffness: the nth is at n f₀ √(1 + B n²), with B the
 //   inharmonicity, and each key tuned as the model's piano was (a tuner stretches the octaves);
 // - each partial twice, a little detuned: the "prompt" sound, which dies fast, and the
-//   "aftersound", which lasts (a unison's strings, coupled at the bridge: Weinreich), so a note
-//   beats and decays in two stages. No two partials beat or decay quite alike: each has its own
-//   detune, decay and aftersound, a little off the model's (seeded, so every run is the same);
+//   "aftersound", which lasts (a unison's strings, coupled at the bridge), so a note beats and
+//   decays in two stages. No two partials beat or decay quite alike: each has its own detune,
+//   decay and aftersound, a little off the model's (seeded, so every run is the same);
 // - a hammer that strikes near an eighth of the string, so the partials with a node there are
-//   quiet, and whose blow is louder and brighter when it's faster: each partial's level comes
+//   quiet, and whose blow is louder and brighter when it is faster: each partial's level comes
 //   from the model's table for its key, its velocity and its frequency;
 // - the blow's onset: the hammer stays on the string for 1 to 4 ms (longer in the bass, and
 //   for a softer blow), and the new sound swells in over that time; each partial reaches the
 //   listener at its own phase, as the board and the air between turn each differently;
 // - in the bass, "phantom" partials at the sums of two partials' frequencies, from the
-//   string's stretching, louder for a harder blow (Conklin);
+//   string's stretching, louder for a harder blow;
 // - dampers that stop a string when its key is up, unless the sustain pedal lifts them: off the
 //   strings by 60% of the pedal's travel, touching them in a half-pedal zone below; the top
-//   strings have none. A damper quickens each partial's decay, as it lands, never cuts it;
-// - with the pedal down, every string free to ring in sympathy with what's played;
+//   strings have none. A damper quickens each partial's decay as it lands, and never cuts it;
+// - with the pedal down, every string free to ring in sympathy with what is played;
 // - the soft pedal, which moves the hammers onto fewer strings: softer, darker, and more of
-//   the aftersound;
+//   the aftersound.
 // Then the strings' sound goes through a soundboard (broad resonances) and a room (a reverb),
 // across two channels: the low strings to the player's left, and each partial a little apart
 // from the others, as a pair of microphones over a soundboard hears them.
 //
 // The model's numbers are measured (engine::piano_grand: a recorded piano, fitted by `wrela
-// audio model`), except what notes recorded one at a time, without the pedal, can't show: the
-// dampers, the sympathy, the soft pedal, the board, the room.
+// audio model`). Notes recorded one at a time, without the pedal, cannot show the dampers, the
+// sympathy, the soft pedal, the board or the room, so those are not measured.
 //
-// At the top of the keyboard, the piano reads the measured tables through the physics they
-// come from, since there the recording's notes are short and its fits fail: decays hit the
-// fit's bounds (50 ms), a loud C6's first partial falls 30 dB in half a second while its
-// overtones outlast it (it thins to a whistle), and the strike's noise in a loud note's high
-// bands reads as partials that ring for seconds (a held fizz over the note). So from
-// `Model::physics_from` up, the decays follow a string's losses (`Losses`), the levels a
-// hammer's spectrum (`held`), and a blow keeps at least the overtones a felt hammer gives
-// (`overtones`), as loud in all as measured. Below, the measured tables are sound: read through
-// the same physics they lost their character (the overtones rang as long as the first partial),
-// and the owner heard the measured ones as the better piano. A fit by `wrela audio model`
-// against renders of the piano measures the top through these.
+// From `Model::physics_from` up, the piano reads the measured tables through the physics they
+// come from: there the recording's notes are short and the fits fail. So the decays follow a
+// string's losses (`Losses`), the levels a hammer's spectrum (`held`), and a blow keeps at least
+// the overtones a felt hammer gives (`overtones`), as loud in all as measured. Below it, the
+// measured tables are used as they are. A fit by `wrela audio model` against renders of the
+// piano measures the top through these.
 //
-// There's no noise of the strike (a keybed's thump, a hammer's click): the strings' own attack
-// comes within 2.7 dB of the recorded piano's sharpness (a note's peak in its first 30 ms over
-// its level from 30 to 300 ms), and filtered noise added to close that gap clicked, at every
-// level tried (`wrela audio clicks`), where the recording's attacks don't. The owner heard the
-// clicks before the tool counted them.
+// There is no noise of the strike (a keybed's thump, a hammer's click): the strings' own attack
+// comes within 2.7 dB of the recorded piano's sharpness, and filtered noise added to close that
+// gap clicked (`wrela audio clicks`).
 //
 // The resonators are kept four to a `vec4`, so the bank's arithmetic is SIMD (language.md §11).
 // Everything the audio thread does is f32 arithmetic in a fixed order, so both hosts give the
@@ -209,7 +205,7 @@ fn level_at(m: Model, at: (u32, f32), v: u32, hz: f32) -> f32 {
 }
 
 /// The measured keys' losses: a string's partial at f falls 60 dB in 1 / (b₁ + b₃ f²) seconds
-/// (f in kHz; Chaigne and Askenfelt, Bank), with b₁ the bridge's coupling and b₃ the string's
+/// (f in kHz), with b₁ the bridge's coupling and b₃ the string's
 /// own losses and the air's, which grow with frequency. Each key's are fitted to its measured
 /// decays, then each is the median of it and its neighbours', smoothed. The aftersound shares
 /// the prompt sound's b₃ (both are one string's); its b₁, lighter, is at least a tenth of the
@@ -1231,8 +1227,7 @@ fn neighbouring_keys_ring_alike() {
 
 @test
 fn below_the_top_the_piano_is_as_measured() {
-    // Read through physics, the middle's overtones rang as long as its first partials, and the
-    // owner heard the measured piano as the better one there.
+    // Read through physics, the middle's overtones rang as long as its first partials.
     let m = piano_grand::GRAND
     let l = losses(m)
     let levels = held(m)

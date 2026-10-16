@@ -1,9 +1,16 @@
-// Characters drawn (#28 §5.4, §7, §8): a creature's realized mesh with its normals and colours
-// cooked in when it's realized, so no pixel evaluates its field; skinned by its palette; shaded
-// in B's cel treatment (two bands, a narrow terminator, a rim where the sun is behind, a line
-// where the form turns away; `cel`); drawn a second time into the motion target, from this
-// frame's palette and the last, so temporal AA reprojects it by its own motion; and cast into
-// the moving shadow map every frame.
+// Characters: creatures drawn as meshes with cel shading, skinned by their bones and cast into
+// the moving shadow map.
+//
+// Make a character with `cast` (a creature, its look and how to realize it). Each frame, call
+// `realize` until it is realized (a slice a frame), give it its bones with `pose`, and draw it:
+// `shadow` into the moving shadow map, `draw` into the scene and `motion` into the motion target.
+//
+// - The mesh has its normals and colours cooked in when it is realized, so no pixel evaluates
+//   the creature's field.
+// - It is shaded in two bands with a narrow terminator, a rim where the sun is behind, and a line
+//   where the form turns away from the eye (`cel`).
+// - It is drawn a second time into the motion target, from this frame's palette and the last,
+//   so temporal AA reprojects it by its own motion.
 
 use creature::Parts
 use light::{Light, Lit, clay_or, gloss}
@@ -222,7 +229,7 @@ pub fn character_shade(c: CharacterVertex, pixel: FragCoord, lt: Lighting) -> ve
     vec4(through_air(lt, colour, c.world), CREATURE + f32(c.part.value % 63))
 }
 
-/// B's cel treatment of a character's point (`albedo` its colour, `n` its normal, `sun` how much
+/// The cel treatment of a character's point (`albedo` its colour, `n` its normal, `sun` how much
 /// sun reaches it, `sky` the sky light there, `open` the open sky's): two bands with a narrow
 /// terminator, the light one where the sun reaches it, the shade a cool blue-grey of its colour;
 /// a thin rim of its own lit colour only where the sun is behind it (never the sky's white, which

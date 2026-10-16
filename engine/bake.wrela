@@ -1,18 +1,26 @@
-// A history baked (M6 §3): "bake the decisions, recompute the consequences" (spike 17). The
-// history's years are the costly part, and what they decide is short: which trees stand where, of
-// what kind, how they died and fell, where the herd wore its trails, how wet the ground is and where
-// the streams run. That's written once when the game is built (a cached constant, shipped as a file
-// a tile: `std::io::Shipped`), fetched as a tile streams in, and read back; what follows from it
-// (light, litter, thorn) is worked out again where the tile is cooked (`grow::canopy`).
+// A history's bake: the decisions a history makes, written into files when the game is built
+// and read back as each tile streams in.
 //
-// A tile's bytes are its own, so it streams alone: a header; its trees, 22 bytes each (a place to
-// 4 mm within the tile, kind, state and cause, height, crown, trunk, lean, light, fall, years, what
-// shaped it), sorted by place and laid out a byte plane at a time; its trails' wear, a byte each
-// 2 m, runs of nothing coded short; its ground's wetness, a byte each 4 m; what its ground
-// remembers (`grow::Memory`), three bytes each 4 m; and the streams' points within it.
+// A history's years are costly, but what they decide is short: which trees stand where, of what
+// kind, how they died and fell, where the herd wore its trails, how wet the ground is and where
+// the streams run. `bake` writes those decisions once, as a file a tile (shipped with the game:
+// `std::io::Shipped`). A floor fetches a tile's file as the tile streams in and reads it back
+// (`decode_tile`). What follows from the decisions (light, litter, thorn) is worked out again
+// where the tile is cooked (`tile_fields`, `grow::canopy`). Build-time code reads a bake in place
+// with `unbake`.
 //
-// And a far layer of the whole floor, in the first frame's payload: each 8 m cell's tallest crown
-// (its height and kind), for what lies past the tiles streamed in.
+// A tile's bytes are its own, so it streams alone:
+// - a header;
+// - its trees, 22 bytes each (a place to 4 mm within the tile, kind, state and cause, height,
+//   crown, trunk, lean, light, fall, years, what shaped it), sorted by place and laid out a
+//   byte plane at a time;
+// - its trails' wear, a byte each 2 m, with runs of nothing coded short;
+// - its ground's wetness, a byte each 4 m;
+// - what its ground remembers (`grow::Memory`), three bytes each 4 m;
+// - the streams' points within it.
+//
+// A far layer of the whole floor, `far.bin`, goes in the first frame's payload: each 8 m cell's
+// tallest crown (its height and kind), for what lies past the tiles streamed in.
 
 use grow::{
     CROWN_PAD, Cause, Grid, Habit, History, Mark, Memory, State, Stream, Tree, UNMARKED,
@@ -389,7 +397,7 @@ pub fn encode_tile(h: History, t: vec2i) -> Vec<u8> {
     }
     // The trees in rows, south to north, each tree's record laid out a byte plane at a time (every
     // tree's first byte, then every tree's second, ...): neighbours' records are alike, byte by
-    // byte, so the planes compress (spike 17's records, one after another: half again larger).
+    // byte, so the planes compress (records one after another: half again larger).
     mine.sort_by(|a, b| {
         let pa = h.trees[a].at
         let pb = h.trees[b].at
