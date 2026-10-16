@@ -1,9 +1,11 @@
-// The tower (vision.md, "The lore"): the worlds it ate, each behind a door off an endless stair.
-// After a world's Warden the player decides its fate once: preserved (it stays, and its door
-// stays open) or freed (it's gone, and its door with it). Either opens the door above. This
-// holds that rule and what the player decided, carries it from build to build (each world, and
-// the stair, is a build of its own, which hands its place to the next: `std::reload`) and saves
-// it. The game names the builds, and decides when to go and what to get ready.
+// The tower: a game of worlds, each behind a door off one stair, where the player decides each
+// world's fate once.
+//
+// A world's fate is preserved (it stays, and its door stays open) or freed (it's gone, and its
+// door with it). Either opens the door above. This module holds that rule and what the player
+// decided (`Tower`). It carries them from build to build and saves them (`Journey`): each world,
+// and the stair, is a build of its own, which hands its place to the next (`std::reload`). The
+// game names the builds, and decides when to go and what to get ready.
 
 use std::io::{IoError, Pending, load, store}
 use std::reload::{hand_over, keep, kept, prepare, unprepare}
@@ -15,7 +17,7 @@ pub const STAIR: u32 = 0xFFFF_FFFF
 
 /// A world's fate.
 pub enum Fate: Copy + Eq + Serialize {
-    /// Its Warden still keeps it.
+    /// Not decided yet.
     Undecided,
     /// Kept as it is: the player can go back down to it.
     Preserved,

@@ -1,18 +1,21 @@
-// Grass (#28 §4): blades of geometry round the eye, placed on the GPU each frame (a kernel into
-// an `Append` buffer, then an indirect draw), so they follow the camera. Beyond them, the
-// terrain's shading is the grass (its cover's colour).
+// Grass: blades of geometry round the eye, with flowers and the wood's floor's plants, placed on
+// the GPU each frame so they follow the camera. Beyond them, the terrain's shading is the grass
+// (its cover's colour).
 //
-// Placement is nested, so the density never thins at a ring's edge as the eye moves (AC4):
-// level k is a world-anchored grid of cells `FINEST · 2^k` apart; a blade's spacing should grow
-// with its distance (`spacing_at`), and level k places the blades whose wanted spacing falls
-// between its cells' and twice that. Each cell of level k + 1 holds the blade of one of its four
-// children at level k (its first by a hash), so where level k hands over to level k + 1, the
-// blades left are those level k + 1 places: the same blades, in the same places. Within a level,
-// a cell's blade is kept while its rank among its siblings is under the density the distance
-// asks, and it shrinks away as it's dropped, so nothing pops.
+// Make one `Grass` (`Grass::new`). Each frame, `Grass::place` runs a kernel that places the
+// blades and flowers round the camera into `Append` buffers, and an indirect draw draws them. A
+// blade's root, height, colour and ground normal come from the terrain's clipmap when it is
+// placed, never from the terrain's field.
 //
-// A blade's root, height, colour and ground normal are cooked when it's placed, from the
-// clipmap (the terrain's cooked meadow), never from the field.
+// Placement is nested, so the density never thins at a ring's edge as the eye moves:
+// - Level k is a world-anchored grid of cells `FINEST · 2^k` apart. A blade's spacing grows with
+//   its distance (`spacing_at`), and level k places the blades whose wanted spacing falls
+//   between its cells' and twice that.
+// - Each cell of level k + 1 holds the blade of one of its four children at level k (its first
+//   by a hash). So where level k hands over to level k + 1, the blades left are those level
+//   k + 1 places: the same blades, in the same places.
+// - Within a level, a cell's blade is kept while its rank among its siblings is under the
+//   density the distance asks, and it shrinks away as it is dropped, so nothing pops.
 
 use light::{Light, Lit}
 use lit::{Lighting, shown, sun_and_gloss, sun_at}
@@ -273,7 +276,7 @@ pub fn place(
     let drift = if grass { bloom_drift(wxz) } else { 0.0 }
     // The sward's drifts (`sward`): the blades' height and lie, and the forbs' and the wood's
     // floor's plants' too where they grow in the grass, so a grazed gap is low all through and
-    // nothing stands out of it as a spike (round 2).
+    // nothing stands out of it as a spike.
     let (lie, swathe) = sward(wxz)
     let lawn = mix(1.0, mix(0.65, 1.2, swathe), smoothstep(0.05, 0.4, cover.a))
     let forb = grass && rand(seed, 15) < FORBS * (0.6 + 0.8 * drift)
@@ -296,7 +299,7 @@ pub fn place(
         )
         return
     }
-    // The sward as a carpet, not a bed of spikes (pass 1): its height set by its drift (keyed
+    // The sward as a carpet, not a bed of spikes: its height set by its drift (keyed
     // to the world, metres to tens of metres across: taller swathes, quiet grazed gaps), little
     // by the blade, so no one blade stands out of its neighbours; a few lit tufts.
     let tuft = noise::noise2(wxz * 1.3 + vec2(-5.0, 8.0))
@@ -397,7 +400,7 @@ struct WoodPlant: Copy {
 
 /// The meadow's drifts at `w` (in the world): which way its blades lie (radians: combed in
 /// swathes, turning slowly across the meadow), and how tall the sward stands, 0 in its quiet
-/// grazed gaps to 1 in its tall swathes (pass 1: one even, spiky height read as a bed of nails).
+/// grazed gaps to 1 in its tall swathes (one even, spiky height reads as a bed of nails).
 pub fn sward(w: vec2) -> (f32, f32) {
     let lie = TAU * noise::fbm2(w * 0.035 + vec2(-13.0, 5.0), 2) * 1.5
     let swathe = smoothstep(0.3, 0.72, noise::fbm2(w * 0.07 + vec2(11.0, 3.0), 3))
@@ -405,15 +408,15 @@ pub fn sward(w: vec2) -> (f32, f32) {
 }
 
 /// How far `w` (in the world) is into one of the meadow's drifts of flowers, 0 to 1: drifts
-/// some metres across with few flowers between them, not flowers scattered evenly (confetti,
-/// pass 1).
+/// some metres across with few flowers between them, not flowers scattered evenly (which read
+/// as confetti).
 pub fn bloom_drift(w: vec2) -> f32 {
     let warped = w + 6.0 * vec2(noise::noise2(w * 0.05), noise::noise2(w * 0.05 + vec2(4.0, 9.0)))
     smoothstep(0.58, 0.74, noise::fbm2(warped * 0.06 + vec2(3.0, -7.0), 2))
 }
 
-/// The share of the grass's places a forb takes (MG5's sward is about a third forbs by cover;
-/// fewer read better among blades this size).
+/// The share of the grass's places a forb takes (a meadow's sward is about a third forbs by
+/// cover; fewer read better among blades this size).
 pub const FORBS: f32 = 0.1
 
 /// The ground a frond of a fern or of bracken covers (m²): the wood's floor's plants' density
@@ -440,10 +443,10 @@ pub const FERN: f32 = 0.34
 pub const BRACKEN: f32 = 0.67
 pub const HERB: f32 = 1.0
 
-/// A species of the wood's floor (after the NVC's woodland communities: beech with bramble, W14;
-/// acid oak and birch with bracken, bramble, bluebell, bilberry and wavy hair-grass, W10 and W16;
-/// ash on richer soil with dog's mercury, ramsons and wood anemone, W8; wet alder with sedges,
-/// yellow pimpernel and bugle, W7; foxglove and nettle in glades and on worn ground): its shape
+/// A species of the wood's floor (beech with bramble; acid oak and birch with bracken, bramble,
+/// bluebell, bilberry and wavy hair-grass; ash on richer soil with dog's mercury, ramsons and
+/// wood anemone; wet alder with sedges, yellow pimpernel and bugle; foxglove and nettle in
+/// glades and on worn ground): its shape
 /// (`HERB`, a broad leaf; `STRAP`, a strap leaf; `BRACKEN`, a frond of leaflets), how tall
 /// and wide (m) and how far it arches, its leaves' colour (linear), its flower (a bloom's kind and
 /// 1, or 0) and how many flower; and the habitat it grows in (`Cover::flora`): its soil's acidity,
@@ -739,8 +742,8 @@ pub const SPECIES = [
         bloom: 2,
         blooms: 0.5,
     },
-    // The open's species (NVC MG5, the knapweed and crested dog's-tail meadow; U4 on acid soil;
-    // M23 rush pasture in the wet), mixed into the grass where the canopy opens.
+    // The open's species (the knapweed and crested dog's-tail meadow; acid grassland on acid
+    // soil; rush pasture in the wet), mixed into the grass where the canopy opens.
     // Common knapweed: purple heads on neutral soil.
     Species {
         colour: vec3(0.05, 0.09, 0.035),
@@ -1020,7 +1023,7 @@ fn rosette_species(flora: Flora, w: vec2, habitat: vec4) -> u32 {
     species_of(flora, rosette_crown(w, HERB_ROSETTE), habitat, seed)
 }
 
-/// One of the wood's floor's plants (#54 §9: ferns, bracken and low herbs where the grass
+/// One of the wood's floor's plants (ferns, bracken and low herbs where the grass
 /// doesn't grow, as the ground's `under` says), as a blade of its own kind: kept with the chance
 /// its density over a blade's spacing here asks, its kind by the weights.
 fn under_plant(
@@ -1066,7 +1069,7 @@ fn under_plant(
         (0.75 + 0.45 * v, 0.32, 0.5 + 0.2 * rand(p.seed, 7))
     } else {
         // A broad leaf, low and spreading (wood sorrel, dog's mercury): upright and narrow, it
-        // read as grass under the beeches (round 1's lookbook).
+        // read as grass under the beeches.
         (0.07 + 0.06 * v, 0.13, 0.65 + 0.25 * rand(p.seed, 7))
     }
     let bend = under_bend(kind, bend)
@@ -1246,7 +1249,7 @@ pub struct Grass {
     /// Each tier's group of blades' indices (`group_indices`).
     indices: GpuBuffer<u32>,
     /// The wood's floor's species (`SPECIES`), where kernels and shaders read them: a constant
-    /// array indexed by a value is copied into each invocation (4.6 ms of the frame).
+    /// array indexed by a value is copied into each invocation.
     species: GpuBuffer<Species>,
 }
 
@@ -1346,7 +1349,7 @@ impl Grass {
 /// What a blade's vertex passes on: where it is across (−1 to 1) and up (0 to 1) the blade, and
 /// which blade. A tile-based GPU writes every vertex's outputs to memory before it draws, and
 /// the grass is millions of vertices, so they carry little: the shading reads the rest from
-/// the blade, and its point from the depth (21 floats a vertex took 1.34 ms, 10 took 0.89).
+/// the blade, and its point from the depth.
 pub struct BladeVertex: Copy {
     pub clip: ClipPosition,
     pub uv: vec2,
@@ -1619,7 +1622,7 @@ pub fn blade_shade(
     let dv = fwidth(v.uv.y)
     // A frond is cut into its leaflets: solid along its stalk, round lobes toward its edges,
     // shallow notches between them (a herb's leaf is whole). A triangle wave's cut read as a
-    // sawtooth band (pass 1: the ring, the windthrow); where a leaflet is under a few pixels
+    // sawtooth band; where a leaflet is under a few pixels
     // the cut fades, so a far frond is a whole soft leaf, never a row of teeth.
     if kind > 0.25 && kind < 0.8 {
         let n = if kind < 0.5 { 11.0 } else { 8.0 }
@@ -1642,7 +1645,7 @@ pub fn blade_shade(
     let sp = if kind > 0.1 { u32(round(colour.z * 255.0)) } else { 0 }
     let albedo = if sp > 0 {
         // A little lighter than its listed colour: at its value the wood's floor's leaves and
-        // the meadow's forbs read as black cut-outs among the grass (round 1: the ring).
+        // the meadow's forbs read as black cut-outs among the grass.
         let c = species[min(sp, species.len() - 1)].colour * 1.5
         mix(c * 0.55, c, vec3(smoothstep(0.0, 0.35, t))) * (0.8 + 0.4 * colour.x)
     } else if kind > 0.1 { under_colour(look, kind, t, colour.x, colour.y) } else {
@@ -1659,7 +1662,7 @@ pub fn blade_shade(
         // through which as much shone as through grass read as white zigzags).
         through: look.through * t * (if kind > 0.1 { 0.35 } else { 1.0 }),
         // Matte, with little glint: against the sun, a blade's glint and its sky's reflection
-        // at a grazing angle turned a backlit meadow white (A5, P7); its glow is the light
+        // at a grazing angle turned a backlit meadow white; its glow is the light
         // through it, which keeps its green.
         rough: 0.9,
         glint: 0.2,

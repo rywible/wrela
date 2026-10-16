@@ -38,10 +38,10 @@ pub enum DeriveKind {
     Interval,
     /// The value box-filtered over a footprint (`filtered`): `f32`.
     Filtered,
-    /// A parameter gradient (§22): the value and its derivative by each of some lifted
+    /// A parameter gradient (§20): the value and its derivative by each of some lifted
     /// literals. `input` is the literals' array type, `output` the result's.
     Literals,
-    /// The lifted literals the callable can read (§22): `output` is the run's type.
+    /// The lifted literals the callable can read (§20): `output` is the run's type.
     Reads,
 }
 

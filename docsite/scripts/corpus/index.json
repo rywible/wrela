@@ -1,0 +1,15 @@
+{
+  "version": "0.1.0",
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "repository": "https://github.com/rywible/wrela",
+  "pages": [
+    {"path": "spec/language/6-memory.md", "title": "6. Memory", "summary": "Memory in Wrela is values, moves and projections.", "kind": "spec"},
+    {"path": "std/io.md", "title": "std::io", "summary": "Requests to the host.", "kind": "module"}
+  ],
+  "items": [
+    {"path": "std::io::fetch", "kind": "fn", "summary": "Fetches a file of the build.", "page": "std/io.md", "anchor": "fetch", "source": "compiler/std/io.wrela", "line": 124}
+  ],
+  "sections": [
+    {"page": "spec/language/6-memory.md", "anchor": "6-1-values", "headings": ["6. Memory", "6.1 Values"], "text": "A value is copied or moved."}
+  ]
+}
