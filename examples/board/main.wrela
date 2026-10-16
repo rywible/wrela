@@ -1126,7 +1126,7 @@ fn handle(s: mut App, e: Event, chrome: Chrome) {
             s.pointer = at
             press(mut s, at, button, mods, chrome)
         },
-        Event::PointerMove { at, mods } => {
+        Event::PointerMove { at, mods, .. } => {
             s.pointer = at
             moved(mut s, at, mods)
         },

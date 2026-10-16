@@ -126,6 +126,10 @@ pub fn step_encounter<G: Terrain + engine::grow::Ground, O: Occluders>(
         heading: p.heading,
         speed: length(p.velocity),
     }
+    // The look turns to keep the wolf ahead (unless the player is turning it): the camera and
+    // the controls turn together, so the stick goes where the screen shows.
+    let (at, weight) = focus(e, feet)
+    engine::player::look_toward(mut p.controls, feet, at.xz, weight, dt)
     bout(ground, mut e.fight, walked, p.controls.yaw, dt)
     let c = e.fight.climber
     let d = c.at.xz - feet

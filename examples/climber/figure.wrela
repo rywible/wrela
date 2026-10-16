@@ -2,8 +2,11 @@
 // and its pose. It's presentation: the frames step it, so the fight's state and its replays
 // don't carry presentation cloth.
 
-use cape::{Cape, Plane, POINTS, body_frame, hang}
+use body::{HEM_RADIUS, TRAIN_REACH}
+use cape::{AROUND, Cape, DOWN, Plane, POINTS, body_frame, hang, point}
+use engine::grass::Contact
 use moves::Pose
+use std::io::print
 
 /// How far the body may move in a frame before the figure is hung afresh where it is, not
 /// stepped (m): a travel, a new shot.
@@ -80,14 +83,60 @@ impl Figure {
         out
     }
 
-    /// Where the end of the robe's train lies (none before the first step).
-    pub fn train_end(self) -> Option<vec3> {
+    /// The grass the garment lies on (`engine::grass::Contact`), for a body at `feet`: round its
+    /// hem, and on along its train to the furthest of the robe's points on the ground, as wide
+    /// all along as the cloth lies there (a train swept round a turn lies wider than the line to
+    /// its end). None before the first step.
+    pub fn contact(self, feet: vec3) -> Contact {
         match self.cape {
-            Some(c) => Some(c.at[cape::point(cape::AROUND / 2, cape::DOWN - 1)]),
-            None => None,
+            Some(c) => lying(c, feet),
+            None => Contact {},
         }
     }
 }
+
+/// The grass the garment `c` lies on, its body at `feet` (`Figure::contact`).
+fn lying(c: Cape, feet: vec3) -> Contact {
+    // The robe's points on the ground (lower than a hand over the feet).
+    let low = |p: vec3| p.y < feet.y + LYING
+    var end = feet
+    var far = 0.0
+    for j in 0..DOWN {
+        for i in 0..AROUND {
+            let p = c.at[point(i, j)]
+            let d = length(p.xz - feet.xz)
+            if low(p) && d > far {
+                far = d
+                end = p
+            }
+        }
+    }
+    if far <= HEM_RADIUS {
+        return Contact { at: vec4(feet, HEM_RADIUS), tail: vec4(feet, HEM_RADIUS) }
+    }
+    // The capsule's radius goes from the hem's at the feet to the tail's at the end: the
+    // tail's is the least that covers every point lying on the ground.
+    let ab = end.xz - feet.xz
+    let l2 = dot(ab, ab)
+    var tail = TRAIN_REACH
+    for j in 0..DOWN {
+        for i in 0..AROUND {
+            let p = c.at[point(i, j)]
+            let s = clamp(dot(p.xz - feet.xz, ab) / l2, 0.0, 1.0)
+            if low(p) && s > 0.1 {
+                let d = length(p.xz - (feet.xz + ab * s)) + COVER
+                tail = max(tail, (d - HEM_RADIUS * (1.0 - s)) / s)
+            }
+        }
+    }
+    Contact { at: vec4(feet, HEM_RADIUS), tail: vec4(end, min(tail, WIDEST)) }
+}
+
+/// How high over the feet a point of the robe may be and still lie on the ground (m), how far
+/// past the cloth the grass is kept down (m), and the widest the train's end may part it.
+const LYING: f32 = 0.2
+const COVER: f32 = 0.12
+const WIDEST: f32 = 1.6
 
 // ---- tests -------------------------------------------------------------------------------------
 
@@ -157,4 +206,38 @@ fn the_sleeves_swing_back_as_it_sets_off_and_settle() {
     }
     let settled = length(cuff(f, at) - hanging)
     assert(settled < 0.05, f"the sleeve hangs {settled} m from where it hung before")
+}
+
+/// Swept round a hard turn, the train lies wide of the line to its end: the grass's contact still
+/// covers every point of the robe on the ground, so no stem stands up through it.
+@test
+fn the_grass_contact_covers_a_train_swept_round_a_turn() {
+    var f = figure()
+    var at = vec3(0.0)
+    for _ in 0..60 {
+        at.z += 5.0 / 60.0
+        still(mut f, at, 0.0)
+    }
+    for k in 0..20 {
+        at.x -= 5.0 / 60.0
+        still(mut f, at, -1.5707964 * min(f32(k + 1) / 6.0, 1.0))
+    }
+    let c = f.contact(at)
+    let ab = c.tail.xz - c.at.xz
+    var worst = 0.0
+    var lying = 0
+    for j in 0..DOWN {
+        for i in 0..AROUND {
+            let p = f.points()[point(i, j)].xyz
+            if p.y < at.y + 0.05 {
+                lying += 1
+                let s = clamp(dot(p.xz - c.at.xz, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
+                let r = mix(c.at.w, c.tail.w, s)
+                worst = max(worst, length(p.xz - (c.at.xz + ab * s)) - r)
+            }
+        }
+    }
+    print(f"after the turn: {lying} points on the ground, the worst {worst} m outside the contact")
+    assert(lying > 20, "the train isn't on the ground")
+    assert(worst <= 0.0, f"a point of the train lies {worst} m outside the grass's contact")
 }

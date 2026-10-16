@@ -204,7 +204,7 @@ export function parseScript(text: string): Scripted[] {
     }
     switch (type) {
       case "move":
-        push(pointerEvent(EventKind.PointerMove, num("x"), num("y"), 0, modifiers));
+        push(pointerEvent(EventKind.PointerMove, num("x"), num("y"), flag("locked") ? 1 : 0, modifiers));
         break;
       case "down":
       case "up":

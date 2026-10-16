@@ -80,7 +80,10 @@ fn every_event_arrives_in_its_frame(game: Game) {
     assert(n == 33, f"{n} events")
     let first = game.log.events[0]
     assert(first.0 == 0)
-    assert(first.1 == Event::PointerMove { at: vec2(100.0, 120.0), mods: std::input::Mods {} })
+    assert(
+        first.1 ==
+            Event::PointerMove { at: vec2(100.0, 120.0), locked: false, mods: std::input::Mods {} },
+    )
     // A drag: down at frame 2, moved at 3 and 4, up at 5 (with Shift held from 2 to 6).
     assert(game.log.held[2] == 3 && game.log.held[4] == 3 && game.log.held[5] == 2)
     assert(game.log.held[7] == 0)

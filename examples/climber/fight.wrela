@@ -5,7 +5,7 @@
 // The climber is driven by a gamepad (a keyboard stands in): the left stick moves it relative to
 // the camera, the right stick turns the camera; East is a blink when tapped (gone, and there again
 // a few metres away) and a sprint when held; the right shoulder (or West) swings the sword, a
-// slash then a backslash. A press is buffered for a few ticks, so a move pressed late in another
+// slash then a backslash. With the mouse locked to the game (its look), its left button swings. A press is buffered for a few ticks, so a move pressed late in another
 // starts when that one can be cancelled. Moves cost stamina, which comes back after a pause.
 //
 // The wolf is a sparring dummy on the engine's gait: it closes in, crouches (its tell), lunges
@@ -28,7 +28,7 @@ use moves::{Act, BLINK_GONE, Pose, REST, drift_rate, frames, locomotion, pose}
 use engine::terrain::{Cover, Terrain}
 use std::field::Blend
 use std::hash::StateHash
-use std::input::{Event, Key, PadAxis, PadButton}
+use std::input::{Button, Event, Key, PadAxis, PadButton}
 use std::math::{PI, TAU}
 use std::serialize::Serialize
 
@@ -44,6 +44,10 @@ pub struct Controls: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub east_pad: bool = false,
     pub attack_pad: bool = false,
     pub west_pad: bool = false,
+    /// Whether the pointer is locked to the game (its last move said so), and its left button
+    /// held while it was.
+    pub locked: bool = false,
+    pub mouse: bool = false,
     /// The keys held: W, A, S, D, the arrows (left, right, up, down), Space and J, a bit each.
     pub keys: u32 = 0,
 }
@@ -122,6 +126,22 @@ impl Controls {
             Event::KeyUp { key, .. } => {
                 self.keys = self.keys & !key_bit(key)
             },
+            Event::PointerMove { locked, .. } => {
+                self.locked = locked
+                if !locked {
+                    self.mouse = false
+                }
+            },
+            Event::PointerDown { button, .. } => {
+                if button == Button::Primary && self.locked {
+                    self.mouse = true
+                }
+            },
+            Event::PointerUp { button, .. } => {
+                if button == Button::Primary {
+                    self.mouse = false
+                }
+            },
             _ => {},
         }
     }
@@ -157,7 +177,7 @@ impl Controls {
     }
 
     pub fn attack(self) -> bool {
-        self.attack_pad || self.west_pad || self.held(K_J)
+        self.attack_pad || self.west_pad || self.mouse || self.held(K_J)
     }
 }
 
