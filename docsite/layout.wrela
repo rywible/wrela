@@ -479,23 +479,49 @@ fn numbered(runs: [Run]) -> Vec<Run> {
     out
 }
 
-/// A block's text, for a screen reader, and each of its links after it.
+/// A block's text, for a screen reader, and each of its links after it, where its words are: a
+/// link takes the pointer only over its own words, so a press beside it selects text.
 fn text_part(laid: mut Laid, b: Block, rect: Rect) {
     laid.parts.push(
         Part { role: Role::Text, level: 0, rect, label: plain(b.runs), target: String::new() },
     )
+    // The block's links' places: the last spots placed, which lie in it.
+    var first = laid.spots.len()
+    while first > 0 && laid.spots[first - 1].rect.y >= rect.y - 0.5 { first -= 1 }
+    var next = first
     for r in b.runs {
-        if r.style & LINK != 0 {
-            laid.parts.push(
-                Part {
-                    role: Role::Link,
-                    level: 0,
-                    rect,
-                    label: r.text.clone(),
-                    target: r.link.clone(),
-                },
-            )
+        if r.style & LINK == 0 { continue }
+        // The run's words: its spots, one a line where it wraps, as one place.
+        var at = rect
+        var found = false
+        while next < laid.spots.len() && !found {
+            if laid.spots[next].target == r.link {
+                at = laid.spots[next].rect
+                found = true
+                while next + 1 < laid.spots.len() && laid.spots[next + 1].target == r.link {
+                    next += 1
+                    borrow more = laid.spots[next].rect
+                    let x = min(at.x, more.x)
+                    let y = min(at.y, more.y)
+                    at = Rect::new(
+                        x,
+                        y,
+                        max(at.right(), more.right()) - x,
+                        max(at.bottom(), more.bottom()) - y,
+                    )
+                }
+            }
+            next += 1
         }
+        laid.parts.push(
+            Part {
+                role: Role::Link,
+                level: 0,
+                rect: at,
+                label: r.text.clone(),
+                target: r.link.clone(),
+            },
+        )
     }
 }
 
@@ -898,7 +924,10 @@ fn next_char(s: str, i: u32) -> u32 {
 /// that say what it is and how to move it. The bottom of those words.
 fn figure(laid: mut Laid, p: Palette, fonts: Fonts, y: f32, width: f32, u: f32) -> f32 {
     let top = y + 10.0 * u
-    let h = clamp(width * 0.5, 220.0 * u, 380.0 * u)
+    // Wide, a short band; on a phone, nearly square, as a field turned by a finger needs room.
+    let h = if width < 560.0 * u { max(width * 0.85, 220.0 * u) } else {
+        clamp(width * 0.5, 220.0 * u, 380.0 * u)
+    }
     laid.figures.push(Figure { rect: Rect::new(0.0, top, width, h), block: laid.block })
     let words = "The field this code builds, drawn live. Drag a number in the code to change it, drag the field to turn it, or choose what the compiler derives from it."
     let runs = Vec::from([Run { text: words.to_string(), style: 0, link: String::new() }])
@@ -1131,6 +1160,19 @@ fn a_block_of_code_keeps_its_text_and_a_section_its_place_for_a_link() {
     borrow t = page.titles[0]
     assert(t.anchor.as_str() == "values-copies-and-moves" && t.rect.y == page.anchors[1].1)
     assert(t.label.as_str() == "Values, copies and moves" && t.line > 20.0 && t.rect.h >= t.line)
+}
+
+@test
+fn a_link_takes_only_its_own_words() {
+    let page = laid("Some words, then [a link](io.md) and [another](arena.md) after them.\n", 600.0)
+    var links: Vec<Part> = Vec::new()
+    for p in page.parts {
+        if p.role == Role::Link { links.push(p.clone()) }
+    }
+    assert(links.len() == 2 && links[0].target.as_str() == "io.md", f"{links.len()} links")
+    // Each over its own words, the first before the second, and neither the paragraph's width.
+    assert(links[0].rect.x > 50.0 && links[0].rect.w < 80.0, f"{links[0].rect.x} {links[0].rect.w}")
+    assert(links[1].rect.x > links[0].rect.right() && links[1].rect.h < 40.0)
 }
 
 @test
