@@ -2506,6 +2506,36 @@ pages do. The docs now open as a whole: their page's colour from the first
 moment, in the page and in a phone's browser bar, then everything fades in together once the first
 page is ready.
 
+## Current-state bug audit, 2026-10-17
+
+Ryan asked Codex and parallel agents to inspect the current code across the repository, reproduce
+bugs and fix them without further approval. The checkout was clean and fast-forwarded from
+`origin/main` to `d832d54a` before work began. The agents reviewed compiler and host mechanisms,
+the standard library, engine, studio, UI, tools, console and game state. Other agents checked the
+larger fixes independently. Each retained fix has a regression that failed before the correction;
+temporary probes stayed outside the shipped sources and were removed.
+
+The fixes cover parser limits and recovery; constant lengths, generic shader types and GPU
+limits; closure captures, build roles and computed values; intervals for vector operations;
+source edits, refactors, mesh queries and numeric comparisons; host failures, clocks, reloads,
+GPU commands and input; journal and network lifecycles; task cleanup, numeric parsing and fields;
+simulation, score ordering, spatial queries and controls; text editing, drags and studio buffers;
+and JSON and HTML documentation. They correct observed failures, rather than change the games'
+art, lore or tuning. No generative media model or new outside asset was used.
+
+Both GPU hosts now require `indirect-first-instance`: valid indirect draw arguments may set it,
+including arguments written by a GPU. A device without the feature gives an explicit error.
+Dropping a task now completes its work and releases its result, slot and heap blocks. A computed
+constant deeper than 256 aggregate containers reports E0704 instead of overflowing the compiler's
+stack. These two resource rules are stated in the language spec and source reference comments.
+
+The regressions use bounded inputs, lifecycle assertions, real hardware GPU pixels where needed,
+and CPU hosts for command and state checks. The complete local gate verifies the combined change.
+This audit does not prove that no bugs remain, nor prolonged play or whole-scene visual quality.
+No paired frame-time or gate-time comparison was made, so there is no performance claim. The
+agent tool finding was that `primer` covers language areas, with no engine, studio or games area;
+the audit used `context` and source inspection for those layers.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

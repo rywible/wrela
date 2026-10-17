@@ -1,0 +1,60 @@
+// A silhouette uses its own ray buffers. Returning to the ordinary views must size their
+// buffers independently of the shared canvas, including after a resize in silhouette mode.
+
+use std::field::sphere
+use studio::lens::{Lens, open, show, silhouette}
+use studio::paint::{Clay, Colours}
+
+pub struct State {
+    lens: Lens,
+    frames: u32,
+    first_rays: u32,
+    first_room: u32,
+}
+
+fn subject() -> Colours {
+    Clay { field: sphere(0.5) }
+}
+
+pub fn init() -> State {
+    State { lens: open(subject), frames: 0, first_rays: 0, first_room: 0 }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let size = if s.frames < 2 { vec2u(1, 1) } else if s.frames < 4 {
+        vec2u(16, 16)
+    } else { vec2u(32, 16) }
+    if s.frames % 2 == 0 {
+        silhouette(mut s.lens, facing: 0, centre: vec3(0.0), half: 1.0, res: 8)
+    } else {
+        show(mut s.lens, facing: 4)
+    }
+    studio::lens::frame(
+        mut s.lens,
+        subject,
+        |_p, _which| (0.0, [0.0; 16]),
+        |_p, _which| (0.0, [0.0; 8]),
+        || Vec::new(),
+        |_p, _part| Vec::new(),
+        |_p| String::new(),
+        || String::from("{}"),
+        |_facing| Vec::new(),
+        width: size.x,
+        height: size.y,
+    )
+    if s.frames == 1 {
+        s.first_room = s.lens.gathered.capacity()
+    }
+    if s.frames == 3 {
+        s.first_rays = s.lens.rays.len()
+    }
+    s.frames += 1
+}
+
+@test(frames: 6)
+fn views_allocate_their_buffers_after_a_silhouette(s: State) {
+    assert(s.first_room == 64, "one pixel still initializes the ordinary views' buffers")
+    assert(s.first_rays == 256, "the first ordinary views have their own ray buffers")
+    assert(s.lens.rays.len() == 512 && s.lens.rays_next.len() == 512)
+    assert(s.lens.corners.len() == 2048 && s.lens.hit_parts.len() == 512)
+}

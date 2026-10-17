@@ -82,9 +82,10 @@ pub fn noise2_wrapped(p: vec2, period: vec2i) -> f32 {
     mix(mix(a, b, u.x), mix(c, d, u.x), u.y)
 }
 
-/// `v` wrapped into 0 to `n`.
+/// `v` wrapped into [0, `n`), for a positive period `n`.
 pub fn wrapped(v: i32, n: i32) -> i32 {
-    ((v % n) + n) % n
+    let r = v % n
+    if r < 0 { r + n } else { r }
 }
 
 /// Value noise in [0, 1], in 3D.
@@ -242,6 +243,14 @@ pub fn surface_draw(p: vec2, seed: u32, k: u32, cell: f32) -> f32 {
 }
 
 // ---- tests ------------------------------------------------------------------------------------
+
+@test
+fn wrapping_large_positive_periods_does_not_overflow() {
+    assert(wrapped(v: 1500000000, n: 2000000000) == 1500000000)
+    assert(wrapped(v: -1500000000, n: 2000000000) == 500000000)
+    assert(wrapped(v: -2147483647 - 1, n: 2147483647) == 2147483646)
+    assert(wrapped(v: 2000000000, n: 2000000000) == 0)
+}
 
 /// An empty fractal has no contribution, rather than dividing its empty sum by an empty weight.
 @test

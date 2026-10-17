@@ -333,7 +333,7 @@ impl Font {
         var end = to
         var first = true
         self.walk(text.slice(from, to), size, 0.0, |i, g, pen| {
-            if !first && pen + self.glyphs[g].advance * size > width {
+            if !first && pen + (self.glyphs[g].advance + self.tracking) * size > width {
                 end = from + i
                 return false
             }
@@ -458,6 +458,19 @@ fn wrapping_breaks_at_spaces_newlines_and_long_words() {
         total += p.1 - p.0
     }
     assert(total == long.len(), "every byte is on a line once")
+}
+
+@test
+fn wrapping_accounts_for_tracking() {
+    var font = Font::of(Face::Sans)
+    font.tracking = 0.25
+    let size = 16.0
+    let text = "aaaa"
+    let width = font.measure("aa", size) - 0.5 * font.tracking * size
+    let lines = font.wrap(text, size, width)
+    for line in lines {
+        assert(font.measure(text.slice(line.0, line.1), size) <= width)
+    }
 }
 
 fn chars(cps: [u32]) -> String {

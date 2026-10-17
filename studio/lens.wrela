@@ -1547,12 +1547,14 @@ fn draw_views<S: Colours>(lens: mut Lens, subject: fn() -> S) {
     let count = width * height
     if !sized {
         lens.canvas = Some(texture::<Rgba8>(width: width, height: height))
+    }
+    let room = max(count / 16, 64)
+    if lens.rays.len() != count || lens.gathered.capacity() != room {
         lens.rays = buffer(count)
         lens.rays_next = buffer(count)
         lens.corners = buffer(4 * count)
         lens.hit_parts = buffer(count)
         std::gpu::write(mut lens.pixel_groups, 0, [(count + 63) / 64, 1, 1])
-        let room = max(count / 16, 64)
         lens.gathered = append_buffer(room)
         lens.gathered_at = buffer(count)
         lens.tail = buffer(room)

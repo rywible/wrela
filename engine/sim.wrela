@@ -224,8 +224,8 @@ pub trait Ground {
     /// The signed distance to the ground's surface (negative below it).
     fn ground(self, p: vec3) -> f32
 
-    /// Sphere tracing from `from` along `dir` (a unit vector), for up to 4 m. The ground's
-    /// distance must not overestimate.
+    /// Sphere tracing from `from` along `dir` (a unit vector), for up to 4 m. The magnitude of
+    /// the ground's distance must not overestimate, including when the ray starts inside.
     fn raycast(self, from: vec3, dir: vec3) -> Hit {
         var t = 0.0
         for _ in 0..64 {
@@ -234,8 +234,8 @@ pub trait Ground {
             if abs(d) < 1mm {
                 return Hit { point: p, normal: self.normal(p), distance: t, hit: true }
             }
-            t += d
-            if t > 4m || t < -1m {
+            t += abs(d)
+            if t > 4m {
                 break
             }
         }
@@ -261,6 +261,22 @@ pub trait Ground {
         let f = at.forward()
         -dot(n, f) / max(n.y, 0.1)
     }
+}
+
+struct RayGround: Copy {}
+
+impl Ground for RayGround {
+    fn ground(self, p: vec3) -> f32 {
+        length(p) - 0.5
+    }
+}
+
+@test
+fn a_ground_raycast_from_inside_moves_forward_to_the_surface() {
+    let hit = RayGround {}.raycast(vec3(0.0), vec3(1.0, 0.0, 0.0))
+    assert(hit.hit && abs(hit.distance - 0.5) < 0.001, "the hit is ahead of the ray's origin")
+    assert(length(hit.point - vec3(0.5, 0.0, 0.0)) < 0.001)
+    assert(hit.normal.x > 0.99)
 }
 
 impl Pose {
