@@ -2480,6 +2480,17 @@ On the Pixel 9 a swipe then scrolled smoothly, but a finger held on the page sho
 the browser's predicted moves overshoot as a finger slows or turns, and the page followed them.
 The program is told where the finger is again, and nothing predicted.
 
+A held finger still stuttered: the main thread hands the program a pointer's moves when the
+browser does, and the worker's frames keep their own clock, so a frame sometimes found no move and
+the next two frames' worth. The host now resamples a held pointer as Chrome does its own scrolling:
+it takes each sample with the time the browser read it (as it's read, with `pointerrawupdate`, or
+from a move's coalesced samples), and gives each frame one move, where the pointer was a little
+before that frame, between the samples around that moment. How far before covers how far a
+frame's newest sample has trailed it over the last two seconds. In a simulation at 120 Hz with the
+moves of one frame in three a frame late, each frame's step was within 1% of the finger's against
+0 or 2 frames' worth before, for about 15 ms more lag behind the finger. A hardware check on the
+Pixel 9 is still to come.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
