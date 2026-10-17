@@ -1,0 +1,20 @@
+[package]
+name = "wrela-service"
+description = "The service host: one server build run as a long-lived program, with files, TCP, processes and a clock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "wrela-service"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+wrela-abi.workspace = true
+# The room a service runs in; a service has no GPU.
+wrela-host = { path = "../native", default-features = false }
+
+[lints]
+workspace = true

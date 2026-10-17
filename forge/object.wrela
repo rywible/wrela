@@ -1,0 +1,414 @@
+// The store's objects (spec/forge.md): blobs (a file's bytes), trees (a directory), revisions (a
+// tree as main held it) and evidence (what a check said of a tree). An object's bytes are its
+// kind's byte, then its kind's payload; its id is the BLAKE3 hash of those bytes, so an object
+// is checked against its id whenever it is read, and the same bytes are always the same object.
+
+use blake3::{Id, hash}
+use codec::{Bad, Dec, Enc}
+
+pub const BLOB: u8 = 1
+pub const TREE: u8 = 2
+pub const REVISION: u8 = 3
+pub const EVIDENCE: u8 = 4
+
+/// A file as a tree or a manifest holds it.
+pub struct File: Copy + Eq {
+    pub id: Id,
+    pub exec: bool,
+    pub size: u64,
+}
+
+/// An object's bytes and its id.
+pub struct Object: Clone {
+    pub id: Id,
+    pub bytes: Vec<u8>,
+}
+
+fn object(kind: u8, payload: [u8]) -> Object {
+    var bytes: Vec<u8> = Vec::with_capacity(payload.len() + 1)
+    bytes.push(kind)
+    bytes::push_run(mut bytes, payload)
+    Object { id: hash(bytes), bytes }
+}
+
+/// A file's bytes as a blob.
+pub fn blob(content: [u8]) -> Object {
+    object(BLOB, content)
+}
+
+/// The id a file's bytes have as a blob.
+pub fn blob_id(content: [u8]) -> Id {
+    blob(content).id
+}
+
+/// What an object's bytes say: its kind, and whether they hash to `id`.
+pub fn check(id: Id, bytes: [u8]) -> Result<u8, Bad> {
+    if bytes.is_empty() {
+        return Err(Bad { why: String::from("an object with no bytes") })
+    }
+    if hash(bytes) != id {
+        return Err(Bad { why: f"the bytes of {id.hex()} hash to another id" })
+    }
+    Ok(bytes[0])
+}
+
+/// A blob's content, from its object's bytes.
+pub fn content(bytes: [u8]) -> Vec<u8> {
+    bytes::slice(bytes, 1, bytes.len())
+}
+
+/// Where object `id` is under the store's root: `objects/ab/cdef...`.
+pub fn path(root: str, id: Id) -> String {
+    let h = id.hex()
+    f"{root}/objects/{h.as_str().slice(from: 0, to: 2)}/{h.as_str().slice(from: 2, to: 64)}"
+}
+
+/// The directory that holds object `id`'s file.
+pub fn dir(root: str, id: Id) -> String {
+    let h = id.hex()
+    f"{root}/objects/{h.as_str().slice(from: 0, to: 2)}"
+}
+
+// ---- trees ------------------------------------------------------------------------------------
+
+pub enum Kind: Copy + Eq {
+    File,
+    Exec,
+    Dir,
+}
+
+/// One name in a directory.
+pub struct Entry: Clone {
+    pub name: String,
+    pub kind: Kind,
+    pub id: Id,
+    /// A file's bytes; a directory's 0.
+    pub size: u64,
+}
+
+fn before(a: Entry, b: Entry) -> bool {
+    a.name.as_str() < b.name.as_str()
+}
+
+/// A directory of `entries` as a tree: its entries by name, each once.
+pub fn tree(entries: take Vec<Entry>) -> Object {
+    var sorted = take entries
+    sorted.sort_by(before)
+    var e = Enc::new()
+    e.u8(1)
+    e.num(u64(sorted.len()))
+    for x in sorted {
+        e.u8(match x.kind {
+            Kind::File => 1,
+            Kind::Exec => 2,
+            Kind::Dir => 3,
+        })
+        e.str(x.name.as_str())
+        e.id(x.id)
+        e.num(x.size)
+    }
+    object(TREE, e.bytes)
+}
+
+/// A tree's entries, from its object's bytes.
+pub fn entries(bytes: [u8]) -> Result<Vec<Entry>, Bad> {
+    var d = Dec::new(content(bytes))
+    let version = d.u8()?
+    if version != 1 {
+        return Err(Bad { why: f"a tree of version {version}" })
+    }
+    let n = d.small()?
+    var out: Vec<Entry> = Vec::new()
+    for _ in 0..n {
+        let kind = match d.u8()? {
+            1 => Kind::File,
+            2 => Kind::Exec,
+            3 => Kind::Dir,
+            k => return Err(Bad { why: f"a tree entry of kind {k}" }),
+        }
+        let name = d.string()?
+        let id = d.id()?
+        let size = d.num()?
+        out.push(Entry { name, kind, id, size })
+    }
+    d.end()?
+    Ok(out)
+}
+
+/// A path's files, by path: what a tree holds, flattened.
+pub type Files = SortedMap<String, File>
+
+/// The trees that hold `files`, deepest first, the root last: the objects to write before the
+/// root's id is used.
+pub fn trees(files: Files) -> Vec<Object> {
+    var out: Vec<Object> = Vec::new()
+    let keys = files.keys()
+    let values = files.values()
+    let _ = dir_tree(keys, values, 0, keys.len(), 0, mut out)
+    if out.is_empty() {
+        out.push(tree(Vec::new()))
+    }
+    out
+}
+
+/// The tree of keys `[from, to)`, which share their first `depth` bytes (a directory's path and
+/// its `/`): its objects added to `out`, and its id.
+fn dir_tree(
+    keys: [String],
+    values: [File],
+    from: u32,
+    to: u32,
+    depth: u32,
+    out: mut Vec<Object>,
+) -> Id {
+    var entries: Vec<Entry> = Vec::new()
+    var i = from
+    while i < to {
+        let k = keys[i].as_str()
+        let rest = k.slice(from: depth, to: k.len())
+        match rest.find("/") {
+            None => {
+                let f = values[i]
+                entries.push(
+                    Entry {
+                        name: rest.to_string(),
+                        kind: if f.exec { Kind::Exec } else { Kind::File },
+                        id: f.id,
+                        size: f.size,
+                    },
+                )
+                i += 1
+            },
+            Some(slash) => {
+                let name = rest.slice(from: 0, to: slash).to_string()
+                let prefix = k.slice(from: 0, to: depth + slash + 1).to_string()
+                var j = i
+                while j < to && keys[j].as_str().starts_with(prefix.as_str()) {
+                    j += 1
+                }
+                let id = dir_tree(keys, values, i, j, depth + slash + 1, mut out)
+                entries.push(Entry { name, kind: Kind::Dir, id, size: 0 })
+                i = j
+            },
+        }
+    }
+    let t = tree(take entries)
+    let id = t.id
+    out.push(take t)
+    id
+}
+
+// ---- revisions --------------------------------------------------------------------------------
+
+/// A tree as main held it: the change that made it and what was said of it.
+pub struct Revision: Clone {
+    pub tree: Id,
+    /// The revision before it on main; zero for the first.
+    pub parent: Id,
+    /// Its place on main: 1 for the first.
+    pub seq: u64,
+    /// The change that landed it, as forge names it; empty for an imported revision.
+    pub change: String,
+    pub author: String,
+    pub intent: String,
+    /// When it landed: milliseconds since 1970.
+    pub time: u64,
+    /// Who made it: the agent's model and session, and the machine; empty if not known.
+    pub model: String,
+    pub session: String,
+    pub machine: String,
+    /// Where it came from, if not from forge: `git <commit>` for an imported commit.
+    pub origin: String,
+    /// The evidence that it passed its checks.
+    pub evidence: Vec<Id>,
+}
+
+pub fn revision(r: Revision) -> Object {
+    var e = Enc::new()
+    e.u8(1)
+    e.id(r.tree)
+    e.id(r.parent)
+    e.num(r.seq)
+    e.str(r.change.as_str())
+    e.str(r.author.as_str())
+    e.str(r.intent.as_str())
+    e.num(r.time)
+    e.str(r.model.as_str())
+    e.str(r.session.as_str())
+    e.str(r.machine.as_str())
+    e.str(r.origin.as_str())
+    e.num(u64(r.evidence.len()))
+    for id in r.evidence {
+        e.id(id)
+    }
+    object(REVISION, e.bytes)
+}
+
+pub fn revision_of(bytes: [u8]) -> Result<Revision, Bad> {
+    var d = Dec::new(content(bytes))
+    let version = d.u8()?
+    if version != 1 {
+        return Err(Bad { why: f"a revision of version {version}" })
+    }
+    var r = Revision {
+        tree: d.id()?,
+        parent: d.id()?,
+        seq: d.num()?,
+        change: d.string()?,
+        author: d.string()?,
+        intent: d.string()?,
+        time: d.num()?,
+        model: d.string()?,
+        session: d.string()?,
+        machine: d.string()?,
+        origin: d.string()?,
+        evidence: Vec::new(),
+    }
+    let n = d.small()?
+    for _ in 0..n {
+        r.evidence.push(d.id()?)
+    }
+    d.end()?
+    Ok(r)
+}
+
+// ---- evidence ---------------------------------------------------------------------------------
+
+/// What a check said of a tree, on a machine.
+pub struct Evidence: Clone {
+    /// The check: `suite`, or one `tools/check.sh` name.
+    pub check: String,
+    pub tree: Id,
+    pub machine: String,
+    /// Its exit status, and whether it ran past its limit.
+    pub status: i32,
+    pub timed_out: bool,
+    pub ms: u64,
+    /// Its output: a blob.
+    pub log: Id,
+    /// When it ended.
+    pub time: u64,
+}
+
+impl Evidence {
+    pub fn passed(self) -> bool {
+        self.status == 0 && !self.timed_out
+    }
+}
+
+pub fn evidence(x: Evidence) -> Object {
+    var e = Enc::new()
+    e.u8(1)
+    e.str(x.check.as_str())
+    e.id(x.tree)
+    e.str(x.machine.as_str())
+    e.num(u64(u32(x.status)))
+    e.bool(x.timed_out)
+    e.num(x.ms)
+    e.id(x.log)
+    e.num(x.time)
+    object(EVIDENCE, e.bytes)
+}
+
+pub fn evidence_of(bytes: [u8]) -> Result<Evidence, Bad> {
+    var d = Dec::new(content(bytes))
+    let version = d.u8()?
+    if version != 1 {
+        return Err(Bad { why: f"evidence of version {version}" })
+    }
+    let check = d.string()?
+    let tree = d.id()?
+    let machine = d.string()?
+    let status = i32(d.small()?)
+    let x = Evidence {
+        check,
+        tree,
+        machine,
+        status,
+        timed_out: d.bool()?,
+        ms: d.num()?,
+        log: d.id()?,
+        time: d.num()?,
+    }
+    d.end()?
+    Ok(x)
+}
+
+fn file(content: str, exec: bool) -> File {
+    let b = bytes::of_str(content)
+    File { id: blob_id(b), exec, size: u64(b.len()) }
+}
+
+@test
+fn a_tree_holds_its_directories_as_trees_of_their_own() {
+    var files: Files = SortedMap::new()
+    let _ = files.insert(String::from("a.txt"), file("a", exec: false))
+    let _ = files.insert(String::from("a/b.txt"), file("b", exec: false))
+    let _ = files.insert(String::from("a/c/d.sh"), file("d", exec: true))
+    let _ = files.insert(String::from("a0"), file("e", exec: false))
+    let objects = trees(files)
+    // a/c, a, then the root.
+    assert(objects.len() == 3, f"{objects.len()} trees")
+    let Ok(root) = entries(objects[2].bytes) else { panic("the root reads") }
+    assert(root.len() == 3, "a, a.txt and a0")
+    assert(
+        root[0].name.as_str() == "a" && root[0].kind == Kind::Dir && root[0].id == objects[1].id,
+        "a",
+    )
+    assert(root[1].name.as_str() == "a.txt" && root[2].name.as_str() == "a0", "by name")
+    let Ok(c) = entries(objects[0].bytes) else { panic("a/c reads") }
+    assert(c.len() == 1 && c[0].kind == Kind::Exec, "the executable")
+    // The same files are the same tree, whatever order they were added in.
+    var again: Files = SortedMap::new()
+    let _ = again.insert(String::from("a0"), file("e", exec: false))
+    let _ = again.insert(String::from("a/c/d.sh"), file("d", exec: true))
+    let _ = again.insert(String::from("a/b.txt"), file("b", exec: false))
+    let _ = again.insert(String::from("a.txt"), file("a", exec: false))
+    assert(trees(again)[2].id == objects[2].id, "the same root")
+}
+
+@test
+fn an_object_is_checked_against_its_id() {
+    let o = blob(bytes::of_str("hello"))
+    assert(check(o.id, o.bytes).ok() == Some(BLOB), "its own id")
+    var tampered = o.bytes.clone()
+    tampered[1] = 72
+    assert(check(o.id, tampered).is_err(), "another id")
+    assert(bytes::same(content(o.bytes), bytes::of_str("hello")), "its content")
+}
+
+@test
+fn a_revision_and_evidence_read_back() {
+    let r = Revision {
+        tree: blob_id(bytes::of_str("t")),
+        parent: blake3::Id::zero(),
+        seq: 7,
+        change: String::from("c12"),
+        author: String::from("ryan"),
+        intent: String::from("Forge reads its own revisions"),
+        time: 1760000000000,
+        model: String::from("claude-opus-5-5"),
+        session: String::from("s1"),
+        machine: String::from("air"),
+        origin: String::new(),
+        evidence: Vec::from([blob_id(bytes::of_str("e"))]),
+    }
+    let o = revision(r.clone())
+    let Ok(back) = revision_of(o.bytes) else { panic("it reads") }
+    assert(
+        back.seq == 7 && back.intent.as_str() == r.intent.as_str() && back.evidence.len() == 1,
+        "fields",
+    )
+    let x = Evidence {
+        check: String::from("suite"),
+        tree: r.tree,
+        machine: String::from("linux-1"),
+        status: -1,
+        timed_out: true,
+        ms: 120000,
+        log: r.parent,
+        time: 5,
+    }
+    let Ok(xb) = evidence_of(evidence(x).bytes) else { panic("evidence reads") }
+    assert(xb.status == -1 && xb.timed_out && !xb.passed(), "a failure")
+}

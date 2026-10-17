@@ -1,0 +1,165 @@
+// Bytes and text: what forge's formats are built from.
+
+/// Adds `s`'s bytes to `out`.
+pub fn push_str(out: mut Vec<u8>, s: str) {
+    for i in 0..s.len() {
+        out.push(s.byte(i))
+    }
+}
+
+/// Adds `b` to `out`.
+pub fn push_run(out: mut Vec<u8>, b: [u8]) {
+    out.reserve(b.len())
+    for x in b {
+        out.push(x)
+    }
+}
+
+/// `s`'s bytes, owned.
+pub fn of_str(s: str) -> Vec<u8> {
+    var out: Vec<u8> = Vec::with_capacity(s.len())
+    push_str(mut out, s)
+    out
+}
+
+/// Bytes `[from, to)` of `b`, owned.
+pub fn slice(b: [u8], from: u32, to: u32) -> Vec<u8> {
+    var out: Vec<u8> = Vec::with_capacity(to - from)
+    for i in from..to {
+        out.push(b[i])
+    }
+    out
+}
+
+/// Where `needle` first starts in `b` at or after `from`.
+pub fn find(b: [u8], needle: [u8], from: u32) -> Option<u32> {
+    let n = needle.len()
+    if n == 0 {
+        return Some(from)
+    }
+    if b.len() < n {
+        return None
+    }
+    var i = from
+    while i + n <= b.len() {
+        if b[i] == needle[0] {
+            var same = true
+            for k in 1..n {
+                if b[i + k] != needle[k] {
+                    same = false
+                    break
+                }
+            }
+            if same {
+                return Some(i)
+            }
+        }
+        i += 1
+    }
+    None
+}
+
+/// Whether `a` and `b` hold the same bytes.
+pub fn same(a: [u8], b: [u8]) -> bool {
+    if a.len() != b.len() {
+        return false
+    }
+    for i in 0..a.len() {
+        if a[i] != b[i] {
+            return false
+        }
+    }
+    true
+}
+
+/// `b` as text: its UTF-8, with each invalid byte as U+FFFD.
+pub fn text_of(b: [u8]) -> String {
+    match String::from_utf8(Vec::from(b)) {
+        Some(s) => s,
+        None => {
+            var s = String::new()
+            for x in b {
+                if x < 128 {
+                    s.push_byte(x)
+                } else {
+                    s.push_char(65533)
+                }
+            }
+            s
+        },
+    }
+}
+
+/// `x` in lowercase ASCII.
+pub fn lower(x: u8) -> u8 {
+    if x >= 65 && x <= 90 { x + 32 } else { x }
+}
+
+/// Whether `a` equals `b`, ignoring ASCII case.
+pub fn same_ignoring_case(a: str, b: str) -> bool {
+    if a.len() != b.len() {
+        return false
+    }
+    for i in 0..a.len() {
+        if lower(a.byte(i)) != lower(b.byte(i)) {
+            return false
+        }
+    }
+    true
+}
+
+/// `x` in decimal.
+pub fn decimal(x: u64) -> String {
+    f"{x}"
+}
+
+/// The whole number that `s` spells in decimal, if it spells one that fits.
+pub fn parse_u64(s: str) -> Option<u64> {
+    if s.is_empty() || s.len() > 20 {
+        return None
+    }
+    var n: u64 = 0
+    for i in 0..s.len() {
+        let b = s.byte(i)
+        if b < 48 || b > 57 {
+            return None
+        }
+        let d = u64(b - 48)
+        if n > (18446744073709551615 - d) / 10 {
+            return None
+        }
+        n = n * 10 + d
+    }
+    Some(n)
+}
+
+/// How many lines `b` holds: its newlines, and one more if it doesn't end in one.
+pub fn line_count(b: [u8]) -> u32 {
+    var n = 0
+    for x in b {
+        if x == 10 {
+            n += 1
+        }
+    }
+    if b.len() > 0 && b[b.len() - 1] != 10 {
+        n += 1
+    }
+    n
+}
+
+@test
+fn find_finds_the_first_match_at_or_after_its_start() {
+    let hay = of_str("abcabc")
+    assert(find(hay, of_str("bc"), 0) == Some(1), "first")
+    assert(find(hay, of_str("bc"), 2) == Some(4), "second")
+    assert(find(hay, of_str("x"), 0).is_none(), "none")
+    assert(find(hay, of_str("abcabcd"), 0).is_none(), "longer than the bytes")
+}
+
+@test
+fn numbers_parse_and_refuse_overflow() {
+    assert(parse_u64("18446744073709551615") == Some(18446744073709551615), "the largest")
+    assert(parse_u64("18446744073709551616").is_none(), "one past")
+    assert(parse_u64("12a").is_none() && parse_u64("").is_none(), "not numbers")
+    assert(line_count(of_str("a\nb")) == 2 && line_count(of_str("a\n")) == 1, "lines")
+}

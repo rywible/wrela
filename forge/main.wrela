@@ -1,0 +1,57 @@
+// forge: wrela's own version control and check service (spec/forge.md).
+use platform::net::{close, send}
+use platform::service::{args, args_of, listen, port_of}
+use std::input::{Event, events, payload}
+use std::io::{Pending, print}
+
+pub struct Service {
+    args: Option<Pending<u8>>,
+    listening: Option<Pending<u8>>,
+    started: bool,
+}
+
+pub fn serve_init() -> Service {
+    Service { args: None, listening: None, started: false }
+}
+
+pub fn serve(s: mut Service, time: f32) {
+    if !s.started {
+        s.started = true
+        s.args = Some(args())
+        s.listening = Some(listen("127.0.0.1:7171"))
+    }
+    match mut s.args {
+        Some(p) => {
+            if let Some(Ok(bytes)) = p.poll() {
+                if let Some(list) = args_of(take bytes) {
+                    print(f"forge: {list.len()} arguments")
+                }
+            }
+        },
+        None => {},
+    }
+    match mut s.listening {
+        Some(p) => match p.poll() {
+            Some(Ok(bytes)) => print(f"forge: listening on {port_of(take bytes).unwrap_or(0)}"),
+            Some(Err(e)) => print(f"forge: can't listen: {e.message()}"),
+            None => {},
+        },
+        None => {},
+    }
+    for e in events() {
+        match e {
+            Event::Message { conn, .. } => {
+                if let Some(_bytes) = payload(e) {
+                    let reply = "HTTP/1.1 200 OK\r\ncontent-length: 6\r\nconnection: close\r\n\r\nforge\n"
+                    var out: Vec<u8> = Vec::new()
+                    for i in 0..reply.len() {
+                        out.push(reply.byte(i))
+                    }
+                    send(conn, out)
+                    close(conn)
+                }
+            },
+            _ => {},
+        }
+    }
+}

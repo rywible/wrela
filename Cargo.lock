@@ -3045,6 +3045,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "wrela-service"
+version = "0.1.0"
+dependencies = [
+ "wrela-abi",
+ "wrela-host",
+]
+
+[[package]]
 name = "wrela-syntax"
 version = "0.1.0"
 dependencies = [

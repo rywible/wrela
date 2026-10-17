@@ -1,7 +1,7 @@
-// JSON read into a flat list of values, as `index.json` is: each value's kind, its text (a
-// string's, or a number as written), and for an array or an object the values it holds, kept
-// together in one list of children. An object's children are its keys and values in turn, in
-// order. A malformed document is an error, never a panic.
+// JSON documents read into a flat list of values: each value's kind, its text (a string's, or a
+// number as written), and for an array or an object the values it holds, kept together in one
+// list of children. An object's children are its keys and values in turn, in order. A malformed
+// document is an error, never a panic. `std::fmt`'s `json_text` and `json_number` write JSON.
 
 pub enum Kind: Copy + Eq {
     Null,
@@ -65,6 +65,27 @@ impl Json {
             n = n * 10 + u32(b - 48)
         }
         Some(n)
+    }
+
+    /// A number as a whole number of 64 bits, if it is one that fits.
+    pub fn whole64(self, v: u32) -> Option<u64> {
+        if self.values[v].kind != Kind::Number { return None }
+        let t = self.values[v].text.as_str()
+        if t.is_empty() || t.len() > 20 { return None }
+        var n: u64 = 0
+        for i in 0..t.len() {
+            let b = t.byte(i)
+            if b < 48 || b > 57 { return None }
+            let d = u64(b - 48)
+            if n > (18446744073709551615 - d) / 10 { return None }
+            n = n * 10 + d
+        }
+        Some(n)
+    }
+
+    /// Whether a value is `true`.
+    pub fn is_true(self, v: u32) -> bool {
+        self.values[v].kind == Kind::True
     }
 
     /// How many values an array holds (keys and values together, for an object).
@@ -295,6 +316,19 @@ fn a_document_reads_into_values_and_their_fields() {
     assert(json.kind(json.get(json.root, "commit").unwrap()) == Kind::Null)
     assert(json.kind(json.get(json.root, "ok").unwrap()) == Kind::True)
     assert(json.get(json.root, "missing").is_none() && json.field(json.root, "missing") == "")
+}
+
+@test
+fn a_whole_number_of_64_bits_reads_and_one_too_large_doesnt() {
+    let Ok(json) = Json::read(bytes("[18446744073709551615, 18446744073709551616, 1.5, -1]")) else {
+        panic("it reads")
+    }
+    assert(json.whole64(json.at(json.root, 0)) == Some(18446744073709551615))
+    assert(json.whole64(json.at(json.root, 1)).is_none())
+    assert(
+        json.whole64(json.at(json.root, 2)).is_none() &&
+            json.whole64(json.at(json.root, 3)).is_none(),
+    )
 }
 
 @test

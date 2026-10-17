@@ -1,0 +1,397 @@
+// HTTP/1.1, as forge speaks it (RFC 9112): requests read from a connection's bytes as they
+// arrive, a body by its `content-length`, and responses with a length too. Connections stay
+// open for the next request unless a side says `connection: close`. A malformed request is an
+// error that its connection answers with 400 and closes; it never panics.
+
+use bytes::{find, lower, of_str, push_run, push_str, same_ignoring_case, slice}
+
+/// The largest request head (its line and headers) a connection may send.
+const MOST_HEAD: u32 = 65536
+/// The largest request body.
+pub const MOST_BODY: u32 = 1073741824
+
+pub struct Header: Clone {
+    pub name: String,
+    pub value: String,
+}
+
+pub struct Request: Clone {
+    pub method: String,
+    /// The path, percent-decoded, without its query.
+    pub path: String,
+    /// The query, as it was sent, without its `?`.
+    pub query: String,
+    pub headers: Vec<Header>,
+    pub body: Vec<u8>,
+}
+
+impl Request {
+    /// The first header named `name` (any case): its value, or empty.
+    pub fn header(self, name: str) -> borrow str {
+        for h in self.headers {
+            if same_ignoring_case(h.name.as_str(), name) {
+                return h.value.as_str()
+            }
+        }
+        self.method.as_str().slice(from: 0, to: 0)
+    }
+
+    /// Whether the client asks to close the connection after this request.
+    pub fn closes(self) -> bool {
+        same_ignoring_case(self.header("connection"), "close")
+    }
+
+    /// The query's parameter `name`, percent-decoded: empty if it isn't there.
+    pub fn param(self, name: str) -> String {
+        let q = self.query.as_str()
+        for (from, to) in q.split("&") {
+            let pair = q.slice(from, to)
+            let key_end = pair.find("=").unwrap_or(pair.len())
+            if decode(pair.slice(0, key_end)).as_str() == name {
+                if key_end < pair.len() {
+                    return decode(pair.slice(key_end + 1, pair.len()))
+                }
+                return String::new()
+            }
+        }
+        String::new()
+    }
+}
+
+fn hex_digit(c: u8) -> Option<u32> {
+    if c >= 48 && c <= 57 {
+        Some(u32(c - 48))
+    } else if c >= 97 && c <= 102 {
+        Some(u32(c - 87))
+    } else if c >= 65 && c <= 70 {
+        Some(u32(c - 55))
+    } else {
+        None
+    }
+}
+
+/// `s` with each `%XY` its byte and each `+` a space; an escape that isn't one stays as it was.
+pub fn decode(s: str) -> String {
+    var out: Vec<u8> = Vec::with_capacity(s.len())
+    var i = 0
+    while i < s.len() {
+        let c = s.byte(i)
+        if c == 37 && i + 2 < s.len() {
+            if let Some(hi) = hex_digit(s.byte(i + 1)) {
+                if let Some(lo) = hex_digit(s.byte(i + 2)) {
+                    out.push(u8(hi * 16 + lo))
+                    i += 3
+                    continue
+                }
+            }
+        }
+        out.push(if c == 43 { 32 } else { c })
+        i += 1
+    }
+    bytes::text_of(out)
+}
+
+/// `s` with every byte but letters, digits and `-._~/` as `%XY`.
+pub fn encode(s: str) -> String {
+    let digits = "0123456789ABCDEF"
+    var out = String::new()
+    for i in 0..s.len() {
+        let c = s.byte(i)
+        let plain = (c >= 48 && c <= 57) ||
+            (c >= 65 && c <= 90) ||
+            (c >= 97 && c <= 122) ||
+            c == 45 ||
+            c == 46 ||
+            c == 95 ||
+            c == 126 ||
+            c == 47
+        if plain {
+            out.push_byte(c)
+        } else {
+            out.push_byte(37)
+            out.push_byte(digits.byte(u32(c >> 4)))
+            out.push_byte(digits.byte(u32(c & 15)))
+        }
+    }
+    out
+}
+
+/// What reading a connection's bytes gave.
+pub enum Read: Clone {
+    /// Nothing whole yet: wait for more bytes.
+    Wait,
+    Got(Request),
+    /// The bytes aren't a request this reader takes: answer `status` and close.
+    Bad { status: u32, why: String },
+}
+
+/// A connection's bytes not read into a request yet.
+pub struct Reader: Clone {
+    buf: Vec<u8>,
+}
+
+fn trimmed(b: [u8], from: u32, to: u32) -> String {
+    var a = from
+    var z = to
+    while a < z && (b[a] == 32 || b[a] == 9) {
+        a += 1
+    }
+    while z > a && (b[z - 1] == 32 || b[z - 1] == 9) {
+        z -= 1
+    }
+    bytes::text_of(slice(b, a, z))
+}
+
+impl Reader {
+    pub fn new() -> Reader {
+        Reader { buf: Vec::new() }
+    }
+
+    pub fn add(mut self, b: [u8]) {
+        push_run(mut self.buf, b)
+    }
+
+    /// How many bytes wait.
+    pub fn held(self) -> u32 {
+        self.buf.len()
+    }
+
+    /// The next request, if its bytes have all come.
+    pub fn next(mut self) -> Read {
+        let Some(end) = find(self.buf, of_str("\r\n\r\n"), 0) else {
+            if self.buf.len() > MOST_HEAD {
+                return Read::Bad {
+                    status: 431,
+                    why: String::from("the request's head is too long"),
+                }
+            }
+            return Read::Wait
+        }
+        if end > MOST_HEAD {
+            return Read::Bad { status: 431, why: String::from("the request's head is too long") }
+        }
+        borrow b = self.buf
+        let line_end = find(b, of_str("\r\n"), 0).unwrap_or(end)
+        let Some(sp1) = find(b, of_str(" "), 0) else {
+            return Read::Bad { status: 400, why: String::from("the request line has no method") }
+        }
+        let Some(sp2) = find(b, of_str(" "), sp1 + 1) else {
+            return Read::Bad { status: 400, why: String::from("the request line has no target") }
+        }
+        if sp2 > line_end {
+            return Read::Bad { status: 400, why: String::from("the request line is malformed") }
+        }
+        let method = bytes::text_of(slice(b, 0, sp1))
+        let target = bytes::text_of(slice(b, sp1 + 1, sp2))
+        let version = bytes::text_of(slice(b, sp2 + 1, line_end))
+        if !version.as_str().starts_with("HTTP/1.") {
+            return Read::Bad { status: 505, why: f"`{version}` isn't HTTP/1" }
+        }
+        var headers: Vec<Header> = Vec::new()
+        var at = line_end + 2
+        while at < end {
+            let stop = find(b, of_str("\r\n"), at).unwrap_or(end)
+            let Some(colon) = find(b, of_str(":"), at) else {
+                return Read::Bad { status: 400, why: String::from("a header has no `:`") }
+            }
+            if colon > stop {
+                return Read::Bad { status: 400, why: String::from("a header has no `:`") }
+            }
+            headers.push(Header { name: trimmed(b, at, colon), value: trimmed(b, colon + 1, stop) })
+            at = stop + 2
+        }
+        var request = Request {
+            method,
+            path: String::new(),
+            query: String::new(),
+            headers,
+            body: Vec::new(),
+        }
+        let t = target.as_str()
+        match t.find("?") {
+            Some(q) => {
+                request.path = decode(t.slice(0, q))
+                request.query = t.slice(q + 1, t.len()).to_string()
+            },
+            None => request.path = decode(t),
+        }
+        if request.header("transfer-encoding").len() > 0 {
+            return Read::Bad {
+                status: 411,
+                why: String::from("send the body with a content-length"),
+            }
+        }
+        let length = request.header("content-length")
+        let n = if length.is_empty() {
+            0
+        } else {
+            match bytes::parse_u64(length) {
+                Some(n) => n,
+                None => return Read::Bad {
+                    status: 400,
+                    why: String::from("a malformed content-length"),
+                },
+            }
+        }
+        if n > u64(MOST_BODY) {
+            return Read::Bad { status: 413, why: String::from("the body is too large") }
+        }
+        let body_at = end + 4
+        if u64(self.buf.len() - body_at) < n {
+            return Read::Wait
+        }
+        request.body = slice(self.buf, body_at, body_at + u32(n))
+        let _ = self.buf.drain_front(body_at + u32(n))
+        Read::Got(request)
+    }
+}
+
+/// The reason phrase of `status`.
+fn reason(status: u32) -> Text {
+    match status {
+        200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
+        204 => "No Content",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        409 => "Conflict",
+        411 => "Length Required",
+        412 => "Precondition Failed",
+        413 => "Content Too Large",
+        422 => "Unprocessable Content",
+        431 => "Request Header Fields Too Large",
+        500 => "Internal Server Error",
+        503 => "Service Unavailable",
+        505 => "HTTP Version Not Supported",
+        _ => "Status",
+    }
+}
+
+/// A response: its status, the type of its body, and the body.
+pub fn response(status: u32, kind: str, body: [u8], close: bool) -> Vec<u8> {
+    var out: Vec<u8> = Vec::with_capacity(body.len() + 128)
+    push_str(mut out, f"HTTP/1.1 {status} {reason(status)}\r\n")
+    push_str(mut out, f"content-type: {kind}\r\ncontent-length: {body.len()}\r\n")
+    if close {
+        push_str(mut out, "connection: close\r\n")
+    }
+    push_str(mut out, "\r\n")
+    push_run(mut out, body)
+    out
+}
+
+/// A request to send: its method, path (with its query) and body.
+pub fn request(method: str, host: str, path: str, kind: str, body: [u8]) -> Vec<u8> {
+    var out: Vec<u8> = Vec::with_capacity(body.len() + 128)
+    push_str(mut out, f"{method} {path} HTTP/1.1\r\nhost: {host}\r\n")
+    push_str(mut out, f"content-type: {kind}\r\ncontent-length: {body.len()}\r\n\r\n")
+    push_run(mut out, body)
+    out
+}
+
+/// A response read from a connection's bytes: its status and body, once all of it has come.
+pub enum Answer: Clone {
+    Wait,
+    Got { status: u32, body: Vec<u8> },
+    Bad(String),
+}
+
+/// Reads one response from `buf`, as `Reader` reads a request.
+pub fn read_response(buf: mut Vec<u8>) -> Answer {
+    let Some(end) = find(buf, of_str("\r\n\r\n"), 0) else { return Answer::Wait }
+    borrow b = buf
+    let line_end = find(b, of_str("\r\n"), 0).unwrap_or(end)
+    let Some(sp) = find(b, of_str(" "), 0) else { return Answer::Bad(String::from("no status")) }
+    let code_end = find(b, of_str(" "), sp + 1).unwrap_or(line_end)
+    let code = bytes::text_of(slice(b, sp + 1, min(code_end, line_end)))
+    let Some(status) = bytes::parse_u64(code.as_str()) else {
+        return Answer::Bad(String::from("a malformed status"))
+    }
+    var length: u64 = 0
+    var at = line_end + 2
+    while at < end {
+        let stop = find(b, of_str("\r\n"), at).unwrap_or(end)
+        if let Some(colon) = find(b, of_str(":"), at) {
+            if colon < stop &&
+                same_ignoring_case(trimmed(b, at, colon).as_str(), "content-length") {
+                length = bytes::parse_u64(trimmed(b, colon + 1, stop).as_str()).unwrap_or(0)
+            }
+        }
+        at = stop + 2
+    }
+    let body_at = end + 4
+    if u64(buf.len() - body_at) < length {
+        return Answer::Wait
+    }
+    let body = slice(buf, body_at, body_at + u32(length))
+    let _ = buf.drain_front(body_at + u32(length))
+    Answer::Got { status: u32(status), body }
+}
+
+@test
+fn a_request_reads_whether_its_bytes_come_at_once_or_a_few_at_a_time() {
+    let wire = "POST /api/x%20y?a=1&b=two%2Bthree HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\nhelloGET / HTTP/1.1\r\n\r\n"
+    let whole = of_str(wire)
+    var r = Reader::new()
+    for i in 0..whole.len() {
+        r.add([whole[i]])
+        if i + 1 < 60 {
+            assert(matches_wait(r.next()), "nothing whole before the head ends")
+        }
+    }
+    match r.next() {
+        Read::Got(q) => {
+            assert(q.method.as_str() == "POST" && q.path.as_str() == "/api/x y", q.path.as_str())
+            assert(q.param("b").as_str() == "two+three" && q.param("a").as_str() == "1", "params")
+            assert(q.header("HOST") == "h" && bytes::same(q.body, of_str("hello")), "head and body")
+        },
+        _ => panic("the first request"),
+    }
+    match r.next() {
+        Read::Got(q) => assert(q.method.as_str() == "GET" && q.body.is_empty(), "the second"),
+        _ => panic("the second request"),
+    }
+    assert(matches_wait(r.next()), "nothing left")
+}
+
+fn matches_wait(r: Read) -> bool {
+    match r {
+        Read::Wait => true,
+        _ => false,
+    }
+}
+
+@test
+fn a_malformed_request_is_refused_with_its_status() {
+    for (wire, want) in [
+        ("GET\r\n\r\n", 400),
+        ("GET / SPDY/3\r\n\r\n", 505),
+        ("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n", 411),
+        ("POST / HTTP/1.1\r\nContent-Length: x\r\n\r\n", 400),
+        ("GET / HTTP/1.1\r\nbad header\r\n\r\n", 400),
+    ] {
+        var r = Reader::new()
+        r.add(of_str(wire))
+        match r.next() {
+            Read::Bad { status, .. } => assert(status == want, wire),
+            _ => panic(wire),
+        }
+    }
+}
+
+@test
+fn a_response_reads_back() {
+    var buf = response(201, "text/plain", of_str("made"), close: false)
+    match read_response(mut buf) {
+        Answer::Got { status, body } => assert(
+            status == 201 && bytes::same(body, of_str("made")),
+            "it",
+        ),
+        _ => panic("a whole response"),
+    }
+    assert(buf.is_empty(), "nothing left")
+}

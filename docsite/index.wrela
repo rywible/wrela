@@ -1,7 +1,7 @@
 // The docs' index (`index.json`, which `wrela doc --export` writes): the pages, every public
 // item with its page and anchor, and every section of the spec's prose. Search ranks items by
 // their names and sections by their headings, then both by their words.
-use json::{Json, Kind}
+use std::json::{Json, Kind}
 
 pub struct Page: Clone {
     /// Where its Markdown is, beside the index: `std/arena.md`.

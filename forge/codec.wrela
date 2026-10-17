@@ -1,0 +1,174 @@
+// The bytes of forge's durable formats (spec/forge.md): whole numbers as LEB128 varints, a run
+// of bytes or text as its length then its bytes, an id as its 32 bytes. Each format is written
+// field by field in a fixed order, behind a version, so a new build reads what an old one wrote.
+
+use blake3::Id
+
+pub struct Enc: Clone {
+    pub bytes: Vec<u8>,
+}
+
+impl Enc {
+    pub fn new() -> Enc {
+        Enc { bytes: Vec::new() }
+    }
+
+    pub fn u8(mut self, x: u8) {
+        self.bytes.push(x)
+    }
+
+    pub fn num(mut self, x: u64) {
+        var v = x
+        loop {
+            let group = u8(v & 127)
+            v = v >> 7
+            if v == 0 {
+                self.bytes.push(group)
+                return
+            }
+            self.bytes.push(group | 128)
+        }
+    }
+
+    pub fn bool(mut self, b: bool) {
+        self.u8(if b { 1 } else { 0 })
+    }
+
+    pub fn run(mut self, b: [u8]) {
+        self.num(u64(b.len()))
+        bytes::push_run(mut self.bytes, b)
+    }
+
+    pub fn str(mut self, s: str) {
+        self.num(u64(s.len()))
+        bytes::push_str(mut self.bytes, s)
+    }
+
+    pub fn id(mut self, id: Id) {
+        for b in id.bytes() {
+            self.bytes.push(b)
+        }
+    }
+}
+
+/// Why bytes aren't what a format reads.
+pub struct Bad: Clone {
+    pub why: String,
+}
+
+pub struct Dec: Clone {
+    bytes: Vec<u8>,
+    at: u32,
+}
+
+fn bad(what: str) -> Bad {
+    Bad { why: what.to_string() }
+}
+
+impl Dec {
+    pub fn new(bytes: take Vec<u8>) -> Dec {
+        Dec { bytes, at: 0 }
+    }
+
+    pub fn at_end(self) -> bool {
+        self.at == self.bytes.len()
+    }
+
+    pub fn u8(mut self) -> Result<u8, Bad> {
+        if self.at >= self.bytes.len() {
+            return Err(bad("the bytes end early"))
+        }
+        self.at += 1
+        Ok(self.bytes[self.at - 1])
+    }
+
+    pub fn num(mut self) -> Result<u64, Bad> {
+        var x: u64 = 0
+        var shift: u32 = 0
+        loop {
+            let b = self.u8()?
+            if shift == 63 && b > 1 {
+                return Err(bad("a number past 64 bits"))
+            }
+            x = x | (u64(b & 127) << shift)
+            if b < 128 {
+                return Ok(x)
+            }
+            shift += 7
+            if shift > 63 {
+                return Err(bad("a number past 64 bits"))
+            }
+        }
+    }
+
+    pub fn small(mut self) -> Result<u32, Bad> {
+        let x = self.num()?
+        if x > 4294967295 {
+            return Err(bad("a count past 32 bits"))
+        }
+        Ok(u32(x))
+    }
+
+    pub fn bool(mut self) -> Result<bool, Bad> {
+        Ok(self.u8()? != 0)
+    }
+
+    pub fn run(mut self) -> Result<Vec<u8>, Bad> {
+        let n = self.small()?
+        if self.bytes.len() - self.at < n {
+            return Err(bad("a run longer than its bytes"))
+        }
+        let out = bytes::slice(self.bytes, self.at, self.at + n)
+        self.at += n
+        Ok(out)
+    }
+
+    pub fn string(mut self) -> Result<String, Bad> {
+        match String::from_utf8(self.run()?) {
+            Some(s) => Ok(s),
+            None => Err(bad("text that isn't UTF-8")),
+        }
+    }
+
+    pub fn id(mut self) -> Result<Id, Bad> {
+        if self.bytes.len() - self.at < 32 {
+            return Err(bad("an id cut short"))
+        }
+        let id = Id::of_bytes(self.bytes, self.at)
+        self.at += 32
+        Ok(id)
+    }
+
+    /// Fails unless every byte was read.
+    pub fn end(self) -> Result<(), Bad> {
+        if self.at_end() { Ok(()) } else { Err(bad("bytes past the end")) }
+    }
+}
+
+@test
+fn a_value_decodes_as_it_was_encoded() {
+    var e = Enc::new()
+    e.num(0)
+    e.num(300)
+    e.num(18446744073709551615)
+    e.str("héllo")
+    e.bool(true)
+    let id = blake3::hash(bytes::of_str("x"))
+    e.id(id)
+    var d = Dec::new(take e.bytes)
+    assert(d.num().ok() == Some(0) && d.num().ok() == Some(300), "small numbers")
+    assert(d.num().ok() == Some(18446744073709551615), "the largest")
+    let Ok(s) = d.string() else { panic("a string") }
+    assert(s.as_str() == "héllo", "text")
+    assert(d.bool().ok() == Some(true), "a bool")
+    let Ok(back) = d.id() else { panic("an id") }
+    assert(back == id && d.end().is_ok(), "the id, then the end")
+}
+
+@test
+fn bad_bytes_are_an_error_not_a_panic() {
+    var d = Dec::new(Vec::from([255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 1]))
+    assert(d.num().is_err(), "a number past 64 bits")
+    var d2 = Dec::new(Vec::from([5, 1]))
+    assert(d2.run().is_err(), "a run past the end")
+}

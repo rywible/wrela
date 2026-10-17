@@ -1,0 +1,453 @@
+// The service host's requests (runtime/service, `wrela-service`): files under the directories it
+// was given, processes, TCP, the clock, and the program's arguments, output and exit. Each is a
+// request (`std::host::request`) that the host answers on a later call; these functions write a
+// request's bytes and read its answer's, in the layouts runtime/service's modules give.
+//
+// A request holds at most 1 MiB, so a file larger than that is written in parts: `write` the
+// first, `append` the rest. An answer may be any size.
+
+use std::host::request
+use std::io::Pending
+
+/// A request's bytes, written in order: little-endian words, and a run as a `u32` length, then
+/// its bytes.
+pub struct Out: Clone {
+    pub bytes: Vec<u8>,
+}
+
+impl Out {
+    pub fn new() -> Out {
+        Out { bytes: Vec::new() }
+    }
+
+    pub fn u8(mut self, x: u8) {
+        self.bytes.push(x)
+    }
+
+    pub fn u32(mut self, x: u32) {
+        for k in 0..4 {
+            self.bytes.push(u8((x >> (8 * k)) & 255))
+        }
+    }
+
+    pub fn u64(mut self, x: u64) {
+        self.u32(u32(x & 4294967295))
+        self.u32(u32(x >> 32))
+    }
+
+    /// A run of bytes: its length, then them.
+    pub fn run(mut self, b: [u8]) {
+        self.u32(b.len())
+        for x in b {
+            self.bytes.push(x)
+        }
+    }
+
+    pub fn str(mut self, s: str) {
+        self.u32(s.len())
+        for k in 0..s.len() {
+            self.bytes.push(s.byte(k))
+        }
+    }
+}
+
+/// An answer's bytes, read in order. A read past the end is `None`.
+pub struct In: Clone {
+    bytes: Vec<u8>,
+    at: u32,
+}
+
+impl In {
+    pub fn new(bytes: take Vec<u8>) -> In {
+        In { bytes, at: 0 }
+    }
+
+    pub fn left(self) -> u32 {
+        self.bytes.len() - self.at
+    }
+
+    pub fn u8(mut self) -> Option<u8> {
+        if self.at >= self.bytes.len() {
+            return None
+        }
+        self.at += 1
+        Some(self.bytes[self.at - 1])
+    }
+
+    pub fn u32(mut self) -> Option<u32> {
+        if self.left() < 4 {
+            return None
+        }
+        var x: u32 = 0
+        for k in 0..4 {
+            x = x | (u32(self.bytes[self.at + k]) << (8 * k))
+        }
+        self.at += 4
+        Some(x)
+    }
+
+    pub fn u64(mut self) -> Option<u64> {
+        let lo = self.u32()?
+        let hi = self.u32()?
+        Some(u64(lo) | (u64(hi) << 32))
+    }
+
+    /// A run of bytes: its length, then them.
+    pub fn run(mut self) -> Option<Vec<u8>> {
+        let n = self.u32()?
+        if self.left() < n {
+            return None
+        }
+        var out: Vec<u8> = Vec::with_capacity(n)
+        for k in 0..n {
+            out.push(self.bytes[self.at + k])
+        }
+        self.at += n
+        Some(out)
+    }
+
+    pub fn string(mut self) -> Option<String> {
+        String::from_utf8(self.run()?)
+    }
+
+    /// The bytes not read yet.
+    pub fn rest(mut self) -> Vec<u8> {
+        var out: Vec<u8> = Vec::with_capacity(self.left())
+        for k in self.at..self.bytes.len() {
+            out.push(self.bytes[k])
+        }
+        self.at = self.bytes.len()
+        out
+    }
+}
+
+fn path_request(service: str, path: str) -> Pending<u8> {
+    var o = Out::new()
+    o.str(path)
+    request(service, o.bytes)
+}
+
+// ---- files: `fs/...`, a root's name then a path inside it ------------------------------------
+
+/// The bytes of the file at `path`.
+pub fn read(path: str) -> Pending<u8> {
+    path_request("fs/read", path)
+}
+
+/// `len` bytes of the file at `path`, from byte `offset` (to its end if it holds fewer).
+pub fn read_range(path: str, offset: u64, len: u64) -> Pending<u8> {
+    var o = Out::new()
+    o.str(path)
+    o.u64(offset)
+    o.u64(len)
+    request("fs/read", o.bytes)
+}
+
+/// Makes the file at `path` hold exactly `bytes`, on disk, whole or not at all.
+pub fn write(path: str, bytes: [u8]) -> Pending<u8> {
+    write_file(path, bytes, exec: false)
+}
+
+/// Makes the file at `path` hold exactly `bytes`, on disk, whole or not at all; `exec` makes it
+/// executable.
+pub fn write_file(path: str, bytes: [u8], exec: bool) -> Pending<u8> {
+    var o = Out::new()
+    o.str(path)
+    o.run(bytes)
+    o.u8(if exec { 1 } else { 0 })
+    request("fs/write", o.bytes)
+}
+
+/// Adds `bytes` at the end of the file at `path` (made if it's missing), on disk. The answer is
+/// the file's new length (`length_of`).
+pub fn append(path: str, bytes: [u8]) -> Pending<u8> {
+    var o = Out::new()
+    o.str(path)
+    o.run(bytes)
+    request("fs/append", o.bytes)
+}
+
+/// Cuts the file at `path` to its first `len` bytes, on disk.
+pub fn truncate(path: str, len: u64) -> Pending<u8> {
+    var o = Out::new()
+    o.str(path)
+    o.u64(len)
+    request("fs/truncate", o.bytes)
+}
+
+/// What `stat` says of a path.
+pub enum Kind: Copy + Eq {
+    Missing,
+    File,
+    Dir,
+    /// A file that is executable.
+    Program,
+}
+
+pub struct Stat: Copy {
+    pub kind: Kind,
+    pub size: u64,
+    /// When it last changed: milliseconds since 1970.
+    pub modified: u64,
+}
+
+/// What the path `path` is: missing, a file or a directory (`stat_of`).
+pub fn stat(path: str) -> Pending<u8> {
+    path_request("fs/stat", path)
+}
+
+pub fn stat_of(bytes: take Vec<u8>) -> Option<Stat> {
+    var i = In::new(take bytes)
+    let kind = match i.u8()? {
+        0 => Kind::Missing,
+        1 => Kind::File,
+        3 => Kind::Program,
+        _ => Kind::Dir,
+    }
+    Some(Stat { kind, size: i.u64()?, modified: i.u64()? })
+}
+
+/// A directory's entry.
+pub struct Entry: Clone {
+    pub name: String,
+    pub dir: bool,
+    /// A file that is executable.
+    pub exec: bool,
+    pub size: u64,
+}
+
+/// The entries of the directory at `path`, by name (`entries_of`).
+pub fn list(path: str) -> Pending<u8> {
+    path_request("fs/list", path)
+}
+
+pub fn entries_of(bytes: take Vec<u8>) -> Option<Vec<Entry>> {
+    var i = In::new(take bytes)
+    let n = i.u32()?
+    var out: Vec<Entry> = Vec::with_capacity(n)
+    for _ in 0..n {
+        let kind = i.u8()?
+        let name = i.string()?
+        let size = i.u64()?
+        out.push(Entry { name, dir: kind == 2, exec: kind == 3, size })
+    }
+    Some(out)
+}
+
+/// Makes the directory at `path`, and its parents.
+pub fn mkdir(path: str) -> Pending<u8> {
+    path_request("fs/mkdir", path)
+}
+
+/// Removes the file or empty directory at `path`; `all` removes a directory and what it holds.
+pub fn remove(path: str, all: bool) -> Pending<u8> {
+    var o = Out::new()
+    o.str(path)
+    o.u8(if all { 1 } else { 0 })
+    request("fs/remove", o.bytes)
+}
+
+/// Renames `from` to `to`, in one root, on disk: `to` is replaced whole.
+pub fn rename(from: str, to: str) -> Pending<u8> {
+    var o = Out::new()
+    o.str(from)
+    o.str(to)
+    request("fs/rename", o.bytes)
+}
+
+/// A file's length, from `append`'s answer.
+pub fn length_of(bytes: take Vec<u8>) -> Option<u64> {
+    In::new(take bytes).u64()
+}
+
+// ---- processes: `proc/run` and `proc/kill` ----------------------------------------------------
+
+/// A process to run.
+pub struct Run: Clone {
+    /// A number the program chooses, which a `kill` names.
+    pub tag: u64,
+    /// The program, found on `PATH`, then its arguments.
+    pub argv: Vec<String>,
+    /// Its working directory: a files path.
+    pub cwd: String,
+    /// Names and values added to the service's environment.
+    pub env: Vec<(String, String)>,
+    /// How long it may run, in milliseconds: 0 for as long as it takes.
+    pub limit_ms: u64,
+    /// The bytes of output kept from each of stdout and stderr.
+    pub cap: u32,
+    pub stdin: Vec<u8>,
+}
+
+/// Runs `r` (`ran_of` reads the answer, once it has ended).
+pub fn run(r: Run) -> Pending<u8> {
+    var o = Out::new()
+    o.u64(r.tag)
+    o.u32(r.argv.len())
+    for a in r.argv {
+        o.str(a.as_str())
+    }
+    o.str(r.cwd.as_str())
+    o.u32(r.env.len())
+    for (k, v) in r.env {
+        o.str(k.as_str())
+        o.str(v.as_str())
+    }
+    o.u64(r.limit_ms)
+    o.u32(r.cap)
+    for b in r.stdin {
+        o.bytes.push(b)
+    }
+    request("proc/run", o.bytes)
+}
+
+/// How a process ended.
+pub struct Ran: Clone {
+    /// Its exit status; -1 if a signal ended it.
+    pub status: i32,
+    pub timed_out: bool,
+    pub killed: bool,
+    /// Whether output past the cap was dropped.
+    pub truncated: bool,
+    pub ms: u64,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+impl Ran {
+    pub fn ok(self) -> bool {
+        self.status == 0 && !self.timed_out && !self.killed
+    }
+}
+
+pub fn ran_of(bytes: take Vec<u8>) -> Option<Ran> {
+    var i = In::new(take bytes)
+    let status = i32(i.u32()?)
+    let flags = i.u8()?
+    let ms = i.u64()?
+    let stdout = i.run()?
+    let stderr = i.run()?
+    Some(
+        Ran {
+            status,
+            timed_out: flags & 1 != 0,
+            killed: flags & 2 != 0,
+            truncated: flags & 4 != 0,
+            ms,
+            stdout,
+            stderr,
+        },
+    )
+}
+
+/// Stops the process tagged `tag`, and its children.
+pub fn kill(tag: u64) {
+    var o = Out::new()
+    o.u64(tag)
+    let _ = request("proc/kill", o.bytes)
+}
+
+// ---- TCP: `tcp/listen`, `tcp/connect` and `tcp/peer` ------------------------------------------
+
+/// Listens on `addr` (`host:port`; port 0 for any free one). The answer is the port
+/// (`port_of`); each connection it accepts opens tagged with it.
+pub fn listen(addr: str) -> Pending<u8> {
+    path_request_raw("tcp/listen", addr)
+}
+
+pub fn port_of(bytes: take Vec<u8>) -> Option<u32> {
+    if bytes.len() < 2 {
+        return None
+    }
+    Some(u32(bytes[0]) | (u32(bytes[1]) << 8))
+}
+
+/// Connects to `addr`. The answer is the connection's number (`conn_of`); its events follow.
+pub fn connect(addr: str) -> Pending<u8> {
+    path_request_raw("tcp/connect", addr)
+}
+
+pub fn conn_of(bytes: take Vec<u8>) -> Option<u32> {
+    In::new(take bytes).u32()
+}
+
+/// Connection `conn`'s peer: its address, `ip:port`, as text.
+pub fn peer(conn: u32) -> Pending<u8> {
+    var o = Out::new()
+    o.u32(conn)
+    request("tcp/peer", o.bytes)
+}
+
+fn path_request_raw(service: str, text: str) -> Pending<u8> {
+    var o = Out::new()
+    o.str(text)
+    request(service, o.bytes)
+}
+
+// ---- the clock --------------------------------------------------------------------------------
+
+/// The time (`millis_of`): milliseconds since 1970.
+pub fn now() -> Pending<u8> {
+    request("time/now", [])
+}
+
+pub fn millis_of(bytes: take Vec<u8>) -> Option<u64> {
+    In::new(take bytes).u64()
+}
+
+/// An answer, with no bytes, after `ms` milliseconds: a wake-up.
+pub fn after(ms: u32) -> Pending<u8> {
+    var o = Out::new()
+    o.u32(ms)
+    request("time/after", o.bytes)
+}
+
+// ---- the program ------------------------------------------------------------------------------
+
+/// The program's arguments (`args_of`).
+pub fn args() -> Pending<u8> {
+    request("service/args", [])
+}
+
+pub fn args_of(bytes: take Vec<u8>) -> Option<Vec<String>> {
+    var i = In::new(take bytes)
+    let n = i.u32()?
+    var out: Vec<String> = Vec::with_capacity(n)
+    for _ in 0..n {
+        out.push(i.string()?)
+    }
+    Some(out)
+}
+
+/// Writes `bytes` to the service's stdout, now.
+pub fn stdout(bytes: [u8]) {
+    let _ = request("service/stdout", bytes)
+}
+
+/// Writes `bytes` to the service's stderr, now.
+pub fn stderr(bytes: [u8]) {
+    let _ = request("service/stderr", bytes)
+}
+
+/// Ends the service after this call, with exit status `code`.
+pub fn exit(code: u32) {
+    var o = Out::new()
+    o.u32(code)
+    let _ = request("service/exit", o.bytes)
+}
+
+@test
+fn a_request_reads_back_as_written() {
+    var o = Out::new()
+    o.u8(7)
+    o.u32(70000)
+    o.u64(1099511627776)
+    o.str("héllo")
+    var i = In::new(take o.bytes)
+    assert(i.u8() == Some(7), "a byte")
+    assert(i.u32() == Some(70000), "a word")
+    assert(i.u64() == Some(1099511627776), "a long")
+    let Some(s) = i.string() else { panic("a string") }
+    assert(s.as_str() == "héllo", "the string")
+    assert(i.u8().is_none(), "nothing past the end")
+}

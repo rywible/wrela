@@ -1,0 +1,293 @@
+// BLAKE3, the hash that names every object in the store (spec/forge.md): 32 bytes of any bytes.
+// This is the algorithm of the BLAKE3 paper (O'Connor, Aumasson, Neves, Wilcox-O'Hearn, 2020),
+// in its plain form: one chunk of 1024 bytes after another, joined into a binary tree of parent
+// nodes, with no key and no extended output.
+
+/// 32 bytes that name some bytes: their BLAKE3 hash, as eight little-endian words.
+pub struct Id: Copy + Eq + Ord + Plain {
+    pub w: [u32; 8],
+}
+
+const IV: [u32; 8] = [
+    1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225,
+]
+
+const PERMUTATION: [u32; 16] = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8]
+
+const CHUNK_START: u32 = 1
+const CHUNK_END: u32 = 2
+const PARENT: u32 = 4
+const ROOT: u32 = 8
+
+const CHUNK: u32 = 1024
+const BLOCK: u32 = 64
+
+fn rotr(x: u32, n: u32) -> u32 {
+    (x >> n) | (x << (32 - n))
+}
+
+fn g(s: mut [u32; 16], at: [u32; 4], x: u32, y: u32) {
+    let a = at[0]
+    let b = at[1]
+    let c = at[2]
+    let d = at[3]
+    s[a] = s[a].wrapping_add(s[b]).wrapping_add(x)
+    s[d] = rotr(s[d] ^ s[a], 16)
+    s[c] = s[c].wrapping_add(s[d])
+    s[b] = rotr(s[b] ^ s[c], 12)
+    s[a] = s[a].wrapping_add(s[b]).wrapping_add(y)
+    s[d] = rotr(s[d] ^ s[a], 8)
+    s[c] = s[c].wrapping_add(s[d])
+    s[b] = rotr(s[b] ^ s[c], 7)
+}
+
+/// The compression function: the 16 words of the state after seven rounds over `m`.
+fn compress(cv: [u32; 8], block: [u32; 16], counter: u64, len: u32, flags: u32) -> [u32; 16] {
+    var s: [u32; 16] = [
+        cv[0],
+        cv[1],
+        cv[2],
+        cv[3],
+        cv[4],
+        cv[5],
+        cv[6],
+        cv[7],
+        IV[0],
+        IV[1],
+        IV[2],
+        IV[3],
+        u32(counter & 4294967295),
+        u32(counter >> 32),
+        len,
+        flags,
+    ]
+    var m = block
+    for r in 0..7 {
+        g(mut s, [0, 4, 8, 12], m[0], m[1])
+        g(mut s, [1, 5, 9, 13], m[2], m[3])
+        g(mut s, [2, 6, 10, 14], m[4], m[5])
+        g(mut s, [3, 7, 11, 15], m[6], m[7])
+        g(mut s, [0, 5, 10, 15], m[8], m[9])
+        g(mut s, [1, 6, 11, 12], m[10], m[11])
+        g(mut s, [2, 7, 8, 13], m[12], m[13])
+        g(mut s, [3, 4, 9, 14], m[14], m[15])
+        if r < 6 {
+            var next: [u32; 16] = [0; 16]
+            for i in 0..16 {
+                next[i] = m[PERMUTATION[i]]
+            }
+            m = next
+        }
+    }
+    for i in 0..8 {
+        s[i] = s[i] ^ s[i + 8]
+        s[i + 8] = s[i + 8] ^ cv[i]
+    }
+    s
+}
+
+fn first8(s: [u32; 16]) -> [u32; 8] {
+    [s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]
+}
+
+/// The block of `bytes` from `at`: up to 64 bytes as little-endian words, zero past the end.
+fn block_at(bytes: [u8], at: u32, len: u32) -> [u32; 16] {
+    var w: [u32; 16] = [0; 16]
+    for i in 0..len {
+        let k = i / 4
+        w[k] = w[k] | (u32(bytes[at + i]) << (8 * (i % 4)))
+    }
+    w
+}
+
+/// What a node gives before its flags are final: what compressing it takes, so the last node
+/// can be compressed with `ROOT`.
+struct Node: Copy {
+    cv: [u32; 8],
+    block: [u32; 16],
+    counter: u64,
+    len: u32,
+    flags: u32,
+}
+
+impl Node {
+    fn chaining(self) -> [u32; 8] {
+        first8(compress(self.cv, self.block, self.counter, self.len, self.flags))
+    }
+
+    fn root(self) -> Id {
+        Id { w: first8(compress(self.cv, self.block, self.counter, self.len, self.flags | ROOT)) }
+    }
+}
+
+fn parent(left: [u32; 8], right: [u32; 8]) -> Node {
+    let block: [u32; 16] = [
+        left[0],
+        left[1],
+        left[2],
+        left[3],
+        left[4],
+        left[5],
+        left[6],
+        left[7],
+        right[0],
+        right[1],
+        right[2],
+        right[3],
+        right[4],
+        right[5],
+        right[6],
+        right[7],
+    ]
+    Node { cv: IV, block, counter: 0, len: BLOCK, flags: PARENT }
+}
+
+/// Chunk `index` of `bytes`, from `at` for `len` bytes (at most 1024), up to its last block.
+fn chunk(bytes: [u8], at: u32, len: u32, index: u64) -> Node {
+    var cv = IV
+    let blocks = if len == 0 { 1 } else { (len + BLOCK - 1) / BLOCK }
+    for b in 0..blocks - 1 {
+        let flags = if b == 0 { CHUNK_START } else { 0 }
+        cv = first8(compress(cv, block_at(bytes, at + b * BLOCK, BLOCK), index, BLOCK, flags))
+    }
+    let last = blocks - 1
+    let last_len = len - last * BLOCK
+    let flags = CHUNK_END | (if last == 0 { CHUNK_START } else { 0 })
+    Node {
+        cv,
+        block: block_at(bytes, at + last * BLOCK, last_len),
+        counter: index,
+        len: last_len,
+        flags,
+    }
+}
+
+/// The BLAKE3 hash of `bytes`.
+pub fn hash(bytes: [u8]) -> Id {
+    let n = bytes.len()
+    let chunks = if n == 0 { 1 } else { (n + CHUNK - 1) / CHUNK }
+    // The chaining values of finished subtrees, largest first, as the chunk count's bits say.
+    var stack: Vec<[u32; 8]> = Vec::new()
+    for c in 0..chunks - 1 {
+        var cv = chunk(bytes, c * CHUNK, CHUNK, u64(c)).chaining()
+        var total = u64(c) + 1
+        while total % 2 == 0 {
+            let Some(left) = stack.pop() else { panic("a chunk's subtree has no left half") }
+            cv = parent(left, cv).chaining()
+            total = total / 2
+        }
+        stack.push(cv)
+    }
+    let last = chunks - 1
+    var node = chunk(bytes, last * CHUNK, n - last * CHUNK, u64(last))
+    while let Some(left) = stack.pop() {
+        node = parent(left, node.chaining())
+    }
+    node.root()
+}
+
+const HEX: Text = "0123456789abcdef"
+
+impl Id {
+    /// The id's 64 lowercase hex digits, its bytes in order.
+    pub fn hex(self) -> String {
+        var out = String::new()
+        for i in 0..32 {
+            let b = (self.w[i / 4] >> (8 * (i % 4))) & 255
+            out.push_byte(HEX.byte(b >> 4))
+            out.push_byte(HEX.byte(b & 15))
+        }
+        out
+    }
+
+    /// The id that 64 hex digits spell, if they spell one.
+    pub fn parse(text: str) -> Option<Id> {
+        if text.len() != 64 {
+            return None
+        }
+        var w: [u32; 8] = [0; 8]
+        for i in 0..64 {
+            let c = text.byte(i)
+            let d = if c >= 48 && c <= 57 {
+                u32(c - 48)
+            } else if c >= 97 && c <= 102 {
+                u32(c - 87)
+            } else {
+                return None
+            }
+            let byte = i / 2
+            let shift = 8 * (byte % 4) + (if i % 2 == 0 { 4 } else { 0 })
+            w[byte / 4] = w[byte / 4] | (d << shift)
+        }
+        Some(Id { w })
+    }
+
+    /// The id's 32 bytes.
+    pub fn bytes(self) -> [u8; 32] {
+        var out: [u8; 32] = [0; 32]
+        for i in 0..32 {
+            out[i] = u8((self.w[i / 4] >> (8 * (i % 4))) & 255)
+        }
+        out
+    }
+
+    /// The id that 32 bytes from `at` hold.
+    pub fn of_bytes(b: [u8], at: u32) -> Id {
+        var w: [u32; 8] = [0; 8]
+        for i in 0..32 {
+            w[i / 4] = w[i / 4] | (u32(b[at + i]) << (8 * (i % 4)))
+        }
+        Id { w }
+    }
+
+    /// The id of nothing: no object has it.
+    pub fn zero() -> Id {
+        Id { w: [0; 8] }
+    }
+
+    pub fn is_zero(self) -> bool {
+        self == Id::zero()
+    }
+}
+
+/// The official test vectors' input: byte `i` is `i % 251`.
+fn vector(n: u32) -> Vec<u8> {
+    var v: Vec<u8> = Vec::with_capacity(n)
+    for i in 0..n {
+        v.push(u8(i % 251))
+    }
+    v
+}
+
+@test
+fn blake3_matches_its_test_vectors() {
+    let cases: [(u32, Text); 13] = [
+        (0, "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"),
+        (1, "2d3adedff11b61f14c886e35afa036736dcd87a74d27b5c1510225d0f592e213"),
+        (63, "e9bc37a594daad83be9470df7f7b3798297c3d834ce80ba85d6e207627b7db7b"),
+        (64, "4eed7141ea4a5cd4b788606bd23f46e212af9cacebacdc7d1f4c6dc7f2511b98"),
+        (65, "de1e5fa0be70df6d2be8fffd0e99ceaa8eb6e8c93a63f2d8d1c30ecb6b263dee"),
+        (1023, "10108970eeda3eb932baac1428c7a2163b0e924c9a9e25b35bba72b28f70bd11"),
+        (1024, "42214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7"),
+        (1025, "d00278ae47eb27b34faecf67b4fe263f82d5412916c1ffd97c8cb7fb814b8444"),
+        (2048, "e776b6028c7cd22a4d0ba182a8bf62205d2ef576467e838ed6f2529b85fba24a"),
+        (2049, "5f4d72f40d7a5f82b15ca2b2e44b1de3c2ef86c426c95c1af0b6879522563030"),
+        (3072, "b98cb0ff3623be03326b373de6b9095218513e64f1ee2edd2525c7ad1e5cffd2"),
+        (4097, "9b4052b38f1c5fc8b1f9ff7ac7b27cd242487b3d890d15c96a1c25b8aa0fb995"),
+        (31744, "62b6960e1a44bcc1eb1a611a8d6235b6b4b78f32e7abc4fb4c6cdcce94895c47"),
+    ]
+    for (n, want) in cases {
+        let got = hash(vector(n)).hex()
+        assert(got.as_str() == want, f"BLAKE3 of {n} bytes: {got}, not {want}")
+    }
+}
+
+@test
+fn an_id_round_trips_through_hex_and_bytes() {
+    let id = hash(vector(100))
+    let Some(back) = Id::parse(id.hex().as_str()) else { panic("its hex doesn't parse") }
+    assert(back == id, "hex round trip")
+    let bytes = id.bytes()
+    assert(Id::of_bytes(bytes, 0) == id, "byte round trip")
+    assert(Id::parse("zz").is_none(), "too short")
+}

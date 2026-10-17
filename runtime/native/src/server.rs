@@ -145,12 +145,19 @@ impl ServerBuild {
 /// the bytes, the answer's bytes or why there's none. It mustn't wait.
 pub type Answers = std::sync::Arc<dyn Fn(&str, &[u8]) -> Result<Vec<u8>, String> + Send + Sync>;
 
+/// What takes a room's requests to answer on a later call ([`Room::answer`]): given a request's
+/// number, its service and its bytes, whether it took the request. A request it doesn't take
+/// goes to the room's [`Answers`]. It mustn't wait: it notes the request, for its host to carry
+/// out once the call has returned.
+pub type Later = std::sync::Arc<dyn Fn(u32, &str, &[u8]) -> bool + Send + Sync>;
+
 /// A room's part of the host.
 struct RoomState {
     limit: usize,
     /// Whether the cap refused the memory the program asked for, in the current call.
     denied: bool,
     answers: Option<Answers>,
+    later: Option<Later>,
     /// Requests answered, which the program may read; and answered during the current call,
     /// which it may read from the next.
     answered: std::collections::HashMap<u32, Result<Vec<u8>, String>>,
@@ -249,10 +256,22 @@ impl Room {
         limits: Limits,
         answers: Option<Answers>,
     ) -> Result<Room, Failure> {
+        Room::start_with(build, limits, answers, None)
+    }
+
+    /// Starts a room as [`Room::start`] does, whose requests `later` may take to answer on a
+    /// later call (`serve_init`'s too).
+    pub fn start_with(
+        build: &ServerBuild,
+        limits: Limits,
+        answers: Option<Answers>,
+        later: Option<Later>,
+    ) -> Result<Room, Failure> {
         let state = RoomState {
             limit: limits.memory,
             denied: false,
             answers,
+            later,
             answered: std::collections::HashMap::new(),
             arriving: Vec::new(),
             refused: None,
@@ -287,6 +306,12 @@ impl Room {
     pub fn serve(&mut self, time: f32) -> Result<(), Failure> {
         let serve = self.serve.clone();
         self.call(|store| serve.call(store, time))
+    }
+
+    /// Answers request `request`, which [`Later`] took: the room reads the answer from its next
+    /// call on.
+    pub fn answer(&mut self, request: u32, answer: Result<Vec<u8>, String>) {
+        self.store.data_mut().answered.insert(request, answer);
     }
 
     /// Queues a message of `bytes` from connection `conn`: the room reads it (`std::input`) from
@@ -436,6 +461,9 @@ fn linker() -> wasmtime::Result<Linker<RoomState>> {
                                     return Err(wasmtime::format_err!(why));
                                 }
                             }
+                            continue;
+                        }
+                        if s.later.as_ref().is_some_and(|later| later(request, service, body)) {
                             continue;
                         }
                         let answer = match &s.answers {
