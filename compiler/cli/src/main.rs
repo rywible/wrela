@@ -45,6 +45,9 @@
 //! wrela context <item> [<package-dir>] [--budget n]
 //!                                         an item's source and what's around it, in a budget,
 //!                                         with errors too
+//! wrela index --json <package-dir> [--std]
+//!                                         every item: kind, place, hashes of its signature
+//!                                         and body, its effects and calls, sorted by path
 //! wrela refactor <package-dir> <change> [--dry-run] [--json]
 //!                                         rename, move, add-param, change-mode: checked
 //!                                         before written, refused on a stale plan
@@ -109,6 +112,7 @@ pub(crate) fn usage() -> ExitCode {
         "wrela solve <package-dir> (--minimize <module>::<function> | --spec) --free <file>[:<lines>]... [--steps n] [--exact] [--write] [--json]",
         "wrela query <package-dir> [<query>...] [--json]",
         "wrela context <item> [<package-dir>] [--budget n]",
+        "wrela index [--json] <package-dir> [--std]",
         "wrela refactor <package-dir> (rename <item> <new-name> | move <item> <module> | add-param <fn> \"<name>: <type>\" (--value <expr> | --default <expr>) | change-mode <fn> <param> <borrow|mut|take> | apply <plan.json>) [--dry-run] [--json]",
         "wrela trace <package-dir> --watch <export>[,<export>...] [--frames n] [--csv] [--fps f] [--size WxH] [--input <script.json>] [--release] [--no-gpu] [--workers N]",
         "wrela bisect <package-dir> --until \"<export> <op> <number>\" [--frames n] [--json] [--fps f] [--size WxH] [--input <script.json>] [--release] [--no-gpu] [--workers N]",
@@ -153,6 +157,7 @@ fn main() -> ExitCode {
         "query" => query::query(rest),
         "refactor" => refactor::run(rest),
         "context" => query::context(rest),
+        "index" => query::index(rest),
         "trace" => trace::trace(rest),
         "bisect" => trace::bisect(rest),
         "--help" | "-h" | "help" => {

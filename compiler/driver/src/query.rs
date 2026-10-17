@@ -444,9 +444,10 @@ pub(crate) struct Index<'a> {
     pub p: &'a Program,
     checked: &'a Checked,
     sources: &'a SourceMap,
-    fns: Vec<(FnId, Vec<String>)>,
-    adts: Vec<(AdtId, Vec<String>)>,
-    traits: Vec<(TraitId, Vec<String>)>,
+    /// Each function's path, by id (a constant's computation has none).
+    pub fns: Vec<(FnId, Vec<String>)>,
+    pub adts: Vec<(AdtId, Vec<String>)>,
+    pub traits: Vec<(TraitId, Vec<String>)>,
 }
 
 /// One of the program's named things.

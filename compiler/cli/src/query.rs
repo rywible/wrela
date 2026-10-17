@@ -11,6 +11,11 @@
 //! about `n` tokens (2,000 unless said). A program with errors gets it too, and what they keep
 //! from being known is said at its end.
 //!
+//! `wrela index [--json] <package-dir> [--std]`: every item of the package (with `--std`, std's
+//! too), with its kind, place, the hashes of its signature and body, and a function's effects
+//! and calls, sorted by path (see `wrela_driver::index`): indented for people, one line with
+//! `--json`. A program with errors is indexed too, its errors printed on standard error.
+//!
 //! Exit status: 0; 1 if the package has errors (they're printed, after the answers) or a query
 //! couldn't be answered; 2 a usage error.
 
@@ -96,6 +101,42 @@ pub fn context(args: &[String]) -> ExitCode {
         }
         Err(why) => {
             eprintln!("error: {}", why.trim_end());
+            ExitCode::from(1)
+        }
+    }
+}
+
+pub fn index(args: &[String]) -> ExitCode {
+    let (mut dir, mut json, mut std) = (None, false, false);
+    for a in args {
+        match a.as_str() {
+            "--json" => json = true,
+            "--std" => std = true,
+            _ if dir.is_none() && !a.starts_with('-') => dir = Some(PathBuf::from(a)),
+            _ => return crate::unknown(a),
+        }
+    }
+    let Some(dir) = dir else { return crate::usage() };
+    if let Err(status) = crate::package_dir(&dir) {
+        return status;
+    }
+    match wrela_driver::index::index(&dir, std) {
+        Ok((index, errors)) => {
+            if json {
+                println!("{index}");
+            } else {
+                println!("{}", serde_json::to_string_pretty(&index).unwrap_or_default());
+            }
+            match errors {
+                Some(errors) => {
+                    eprint!("{errors}");
+                    ExitCode::from(1)
+                }
+                None => ExitCode::SUCCESS,
+            }
+        }
+        Err(errors) => {
+            eprint!("{errors}");
             ExitCode::from(1)
         }
     }

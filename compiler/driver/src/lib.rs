@@ -15,6 +15,7 @@ pub mod edit;
 pub mod explain;
 mod frames;
 mod http;
+pub mod index;
 pub mod lift;
 pub mod live;
 pub mod manifest;

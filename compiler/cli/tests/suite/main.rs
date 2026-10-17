@@ -5,6 +5,7 @@ mod common;
 mod compare;
 mod doc;
 mod fix;
+mod index;
 mod profile;
 mod query;
 mod refactor;
