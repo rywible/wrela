@@ -1,0 +1,1297 @@
+// What agents and people ask forge to do (spec/forge.md): open a change, read, list and search
+// what it sees, write and edit its files, see its status and diff, check its tree, and land it.
+// Each tool is a function of what forge knows (`Core`) and the call's arguments: its answer, as
+// JSON, and what must be made durable before the answer is given (objects, then events). A tool
+// that needs objects not in memory says so (`Need`), and the service loads them and calls again.
+// The same tools answer MCP's `tools/call` (mcp.wrela) and forge's own HTTP API.
+
+use blake3::Id
+use diff::Lines
+use object::{File, Files, Object}
+use out::Json
+use state::{Change, Event, Run, State, Status, apply, file_in, files_of}
+use std::json::{Json as Doc, Kind}
+
+pub struct Core: Clone {
+    pub state: State,
+    /// File contents by blob id: every file main and the open changes hold, and each written since.
+    pub blobs: SortedMap<Id, Vec<u8>>,
+    /// Objects known to be on disk, which needn't be written again.
+    pub stored: SortedMap<Id, bool>,
+    /// The machine forge runs on.
+    pub machine: String,
+}
+
+pub fn core(machine: str) -> Core {
+    Core {
+        state: state::new(),
+        blobs: SortedMap::new(),
+        stored: SortedMap::new(),
+        machine: machine.to_string(),
+    }
+}
+
+/// Who calls, and when.
+pub struct Ctx: Clone {
+    pub who: String,
+    pub now: u64,
+    /// Whether the caller may land changes on main.
+    pub lands: bool,
+}
+
+/// What must be durable before an answer is given: objects first, then events.
+pub struct Durable: Clone {
+    pub objects: Vec<Object>,
+    pub events: Vec<Event>,
+}
+
+pub enum Outcome: Clone {
+    Done { json: String, error: bool, durable: Durable },
+    /// Load these objects into memory, then call again.
+    Need(Vec<Id>),
+}
+
+fn nothing() -> Durable {
+    Durable { objects: Vec::new(), events: Vec::new() }
+}
+
+fn ok(j: take Json) -> Outcome {
+    Outcome::Done { json: take j.text, error: false, durable: nothing() }
+}
+
+fn ok_with(j: take Json, durable: take Durable) -> Outcome {
+    Outcome::Done { json: take j.text, error: false, durable }
+}
+
+/// A tool's error: what the caller did wrong, or what stops it.
+pub fn fail(why: str) -> Outcome {
+    var j = Json::new()
+    j.obj()
+    j.kstr("error", why)
+    j.end_obj()
+    Outcome::Done { json: take j.text, error: true, durable: nothing() }
+}
+
+/// What's wrong with a file's path, if anything: it's relative, `/` between parts, no part
+/// empty, `.` or `..`, and no `\`, NUL or control character.
+pub fn path_problem(p: str) -> Option<Text> {
+    if p.is_empty() || p.len() > 1024 {
+        return Some("a path is 1 to 1024 bytes")
+    }
+    for i in 0..p.len() {
+        let b = p.byte(i)
+        if b < 32 || b == 92 {
+            return Some("a path has no `\\` or control characters")
+        }
+    }
+    for (from, to) in p.split("/") {
+        let part = p.slice(from, to)
+        if part.is_empty() || part == "." || part == ".." {
+            return Some("a path is relative, with `/` between parts, none empty, `.` or `..`")
+        }
+    }
+    None
+}
+
+// ---- reading a call's arguments ----------------------------------------------------------------
+
+fn arg(doc: Doc, args: u32, key: str) -> String {
+    doc.field(args, key).to_string()
+}
+
+fn num_arg(doc: Doc, args: u32, key: str, default: u64) -> u64 {
+    match doc.get(args, key) {
+        Some(v) => doc.whole64(v).unwrap_or(default),
+        None => default,
+    }
+}
+
+fn bool_arg(doc: Doc, args: u32, key: str) -> bool {
+    match doc.get(args, key) {
+        Some(v) => doc.is_true(v),
+        None => false,
+    }
+}
+
+/// The change an argument names: `c12` or `12`.
+fn change_id(name: str) -> Option<u64> {
+    if name.starts_with("c") {
+        return bytes::parse_u64(name.slice(from: 1, to: name.len()))
+    }
+    bytes::parse_u64(name)
+}
+
+/// The open change named by `args.change`, or why there's none.
+fn open_change(c: Core, doc: Doc, args: u32) -> Result<Change, String> {
+    let name = arg(doc, args, "change")
+    let Some(id) = change_id(name.as_str()) else {
+        return Err(f"`change` names a change, as `c12`; not `{name}`")
+    }
+    if !c.state.changes.contains(id) {
+        return Err(f"there is no change c{id}")
+    }
+    let ch = c.state.changes.at(id).clone()
+    if ch.status != Status::Open {
+        return Err(f"c{id} isn't open")
+    }
+    Ok(ch)
+}
+
+/// The change named by `args.change`, if it names one: none reads main.
+fn view(c: Core, doc: Doc, args: u32) -> Result<Option<Change>, String> {
+    if arg(doc, args, "change").is_empty() {
+        return Ok(None)
+    }
+    match open_change(c, doc, args) {
+        Ok(ch) => Ok(Some(ch)),
+        Err(why) => Err(why),
+    }
+}
+
+fn files_in(c: Core, ch: Option<Change>) -> Files {
+    match ch {
+        Some(x) => files_of(c.state, x),
+        None => c.state.files.clone(),
+    }
+}
+
+fn file_at(c: Core, ch: Option<Change>, path: str) -> Option<File> {
+    match ch {
+        Some(x) => file_in(c.state, x, path),
+        None => c.state.files.get(path.to_string()),
+    }
+}
+
+// ---- the tools ---------------------------------------------------------------------------------
+
+/// The tools, for MCP's `tools/list`: each one's name, what it does, and its arguments' schema.
+pub fn tools() -> String {
+    let list: [(Text, Text, Text); 17] = [
+        (
+            "open",
+            "Open a change: an overlay on main that sees main's newest files wherever it hasn't written. Returns its name, as `c12`. Give the intent in one sentence: what the change does and why.",
+            "{\"intent\":{\"type\":\"string\"},\"model\":{\"type\":\"string\"},\"session\":{\"type\":\"string\"}}",
+        ),
+        (
+            "changes",
+            "List the open changes: their names, intents, authors and files touched.",
+            "{}",
+        ),
+        (
+            "read",
+            "Read a file as a change sees it (or main, without `change`): its text, from line `from` (1 first) for `lines` lines. `side: \"main\"` reads main's version of a file the change conflicts on.",
+            "{\"change\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"from\":{\"type\":\"integer\"},\"lines\":{\"type\":\"integer\"},\"side\":{\"type\":\"string\"}}",
+        ),
+        (
+            "list",
+            "List a directory as a change sees it (or main): its files, with sizes, and its directories.",
+            "{\"change\":{\"type\":\"string\"},\"dir\":{\"type\":\"string\"}}",
+        ),
+        (
+            "search",
+            "Find text in the files a change sees (or main): each line that holds `text`, as path, line and the line. `path` limits it to paths that start with it.",
+            "{\"change\":{\"type\":\"string\"},\"text\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"limit\":{\"type\":\"integer\"}}",
+        ),
+        (
+            "write",
+            "Write a whole file in a change. `exec: true` makes it executable.",
+            "{\"change\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"},\"exec\":{\"type\":\"boolean\"}}",
+        ),
+        (
+            "edit",
+            "Replace text in a change's file: `old`, which must be in the file exactly once (or every time, with `all: true`), becomes `new`.",
+            "{\"change\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"old\":{\"type\":\"string\"},\"new\":{\"type\":\"string\"},\"all\":{\"type\":\"boolean\"}}",
+        ),
+        (
+            "remove",
+            "Remove a file in a change.",
+            "{\"change\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"}}",
+        ),
+        (
+            "move",
+            "Move a file in a change, from `from` to `to`.",
+            "{\"change\":{\"type\":\"string\"},\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}}",
+        ),
+        (
+            "status",
+            "A change's state: each file it touched (added, changed, removed, stale while forge merges main's newer version, or conflict), its checks, and why it can't land yet.",
+            "{\"change\":{\"type\":\"string\"}}",
+        ),
+        (
+            "diff",
+            "A change's diff against main, as a unified diff; `path` for one file.",
+            "{\"change\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"}}",
+        ),
+        (
+            "snap",
+            "Name the change's tree as it is now, with a note: a snapshot to come back to.",
+            "{\"change\":{\"type\":\"string\"},\"note\":{\"type\":\"string\"}}",
+        ),
+        (
+            "check",
+            "Run one check (a `tools/check.sh` name, or `suite` for all of them) on the change's tree, on a worker with a hardware GPU. It runs while you work; `job` gives its result.",
+            "{\"change\":{\"type\":\"string\"},\"check\":{\"type\":\"string\"}}",
+        ),
+        (
+            "job",
+            "A check's state and, once it's done, whether it passed and the end of its output.",
+            "{\"job\":{\"type\":\"string\"}}",
+        ),
+        (
+            "submit",
+            "Ask for the change to land: forge runs the suite on its exact tree, and it can land once that passes.",
+            "{\"change\":{\"type\":\"string\"}}",
+        ),
+        (
+            "close",
+            "Close a change without landing it, saying why.",
+            "{\"change\":{\"type\":\"string\"},\"why\":{\"type\":\"string\"}}",
+        ),
+        (
+            "log",
+            "Main's newest landings: what each changed and why.",
+            "{\"limit\":{\"type\":\"integer\"}}",
+        ),
+    ]
+    var j = Json::new()
+    j.arr()
+    for (name, what, props) in list {
+        j.obj()
+        j.kstr("name", f"forge_{name}".as_str())
+        j.kstr("description", what)
+        j.key("inputSchema")
+        j.raw(f"{{\"type\":\"object\",\"properties\":{props}}}".as_str())
+        j.end_obj()
+    }
+    j.end_arr()
+    take j.text
+}
+
+/// Calls tool `name` with the arguments `doc.args` (an object).
+pub fn call(c: Core, ctx: Ctx, name: str, doc: Doc, args: u32) -> Outcome {
+    let n = if name.starts_with("forge_") { 6 } else { 0 }
+    match name.slice(from: n, to: name.len()) {
+        "open" => open(c, ctx, doc, args),
+        "changes" => changes(c),
+        "read" => read(c, doc, args),
+        "list" => list(c, doc, args),
+        "search" => search(c, doc, args),
+        "write" => write(c, ctx, doc, args),
+        "edit" => edit(c, ctx, doc, args),
+        "remove" => remove(c, ctx, doc, args),
+        "move" => move_file(c, ctx, doc, args),
+        "status" => status(c, doc, args),
+        "diff" => diff_of(c, doc, args),
+        "snap" => snap(c, ctx, doc, args),
+        "check" => check(c, ctx, doc, args),
+        "job" => job(c, doc, args),
+        "submit" => submit(c, ctx, doc, args),
+        "close" => close(c, ctx, doc, args),
+        "log" => log(c, doc, args),
+        "land" => land(c, ctx, doc, args),
+        _ => fail(f"forge has no tool `{name}`".as_str()),
+    }
+}
+
+fn open(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
+    let intent = arg(doc, args, "intent")
+    if intent.is_empty() {
+        return fail("give the change's intent: what it does and why, in one sentence")
+    }
+    let id = c.state.next_change
+    var j = Json::new()
+    j.obj()
+    j.kstr("change", f"c{id}".as_str())
+    j.end_obj()
+    let ev = Event::Opened {
+        change: id,
+        intent,
+        author: ctx.who.clone(),
+        model: arg(doc, args, "model"),
+        session: arg(doc, args, "session"),
+        machine: String::new(),
+        time: ctx.now,
+    }
+    ok_with(take j, Durable { objects: Vec::new(), events: Vec::from([take ev]) })
+}
+
+fn changes(c: Core) -> Outcome {
+    var j = Json::new()
+    j.obj()
+    j.key("changes")
+    j.arr()
+    for ch in c.state.changes.values() {
+        if ch.status == Status::Open {
+            j.obj()
+            j.kstr("change", ch.name().as_str())
+            j.kstr("intent", ch.intent.as_str())
+            j.kstr("author", ch.author.as_str())
+            j.knum("files", u64(ch.touches.len()))
+            j.knum("edits", ch.edits)
+            j.kbool("submitted", ch.submitted)
+            j.end_obj()
+        }
+    }
+    j.end_arr()
+    j.end_obj()
+    ok(take j)
+}
+
+fn blob_of(c: Core, f: File) -> Option<Vec<u8>> {
+    c.blobs.get(f.id)
+}
+
+fn read(c: Core, doc: Doc, args: u32) -> Outcome {
+    let path = arg(doc, args, "path")
+    if let Some(why) = path_problem(path.as_str()) {
+        return fail(why)
+    }
+    let ch = match view(c, doc, args) {
+        Ok(x) => take x,
+        Err(why) => return fail(why.as_str()),
+    }
+    let main_side = arg(doc, args, "side").as_str() == "main"
+    let file = if main_side { c.state.files.get(path.clone()) } else {
+        file_at(c, ch, path.as_str())
+    }
+    let Some(f) = file else { return fail(f"no file `{path}`".as_str()) }
+    let Some(content) = blob_of(c, f) else { return Outcome::Need(Vec::from([f.id])) }
+    let t = Lines::of(take content)
+    let total = t.count()
+    let from = max(num_arg(doc, args, "from", 1), 1)
+    let want = num_arg(doc, args, "lines", 2000)
+    let first = min(u32(min(from - 1, 4294967295)), total)
+    let last = min(u64(first) + want, u64(total))
+    var part: Vec<u8> = Vec::new()
+    t.push_lines(first, u32(last), mut part)
+    var j = Json::new()
+    j.obj()
+    j.kstr("path", path.as_str())
+    j.knum("lines", u64(total))
+    j.knum("from", u64(first) + 1)
+    j.knum("size", f.size)
+    j.kbool("exec", f.exec)
+    j.kstr("text", bytes::text_of(part).as_str())
+    j.end_obj()
+    ok(take j)
+}
+
+fn list(c: Core, doc: Doc, args: u32) -> Outcome {
+    let dir = arg(doc, args, "dir")
+    let d = dir.as_str()
+    if !d.is_empty() {
+        if let Some(why) = path_problem(d) {
+            return fail(why)
+        }
+    }
+    let ch = match view(c, doc, args) {
+        Ok(x) => take x,
+        Err(why) => return fail(why.as_str()),
+    }
+    let files = files_in(c, ch)
+    let prefix = if d.is_empty() { String::new() } else { f"{d}/" }
+    var j = Json::new()
+    j.obj()
+    j.kstr("dir", d)
+    j.key("entries")
+    j.arr()
+    var last_dir = String::new()
+    let keys = files.keys()
+    let values = files.values()
+    for i in 0..keys.len() {
+        let k = keys[i].as_str()
+        if !k.starts_with(prefix.as_str()) {
+            continue
+        }
+        let rest = k.slice(from: prefix.len(), to: k.len())
+        match rest.find("/") {
+            Some(slash) => {
+                let name = rest.slice(from: 0, to: slash)
+                if name != last_dir.as_str() {
+                    last_dir = name.to_string()
+                    j.obj()
+                    j.kstr("name", name)
+                    j.kbool("dir", v: true)
+                    j.end_obj()
+                }
+            },
+            None => {
+                j.obj()
+                j.kstr("name", rest)
+                j.knum("size", values[i].size)
+                if values[i].exec {
+                    j.kbool("exec", v: true)
+                }
+                j.end_obj()
+            },
+        }
+    }
+    j.end_arr()
+    j.end_obj()
+    ok(take j)
+}
+
+fn search(c: Core, doc: Doc, args: u32) -> Outcome {
+    let text = arg(doc, args, "text")
+    if text.is_empty() {
+        return fail("give the text to find")
+    }
+    let limit = num_arg(doc, args, "limit", 200)
+    let prefix = arg(doc, args, "path")
+    let ch = match view(c, doc, args) {
+        Ok(x) => take x,
+        Err(why) => return fail(why.as_str()),
+    }
+    let files = files_in(c, ch)
+    let needle = bytes::of_str(text.as_str())
+    var need: Vec<Id> = Vec::new()
+    var j = Json::new()
+    j.obj()
+    j.key("matches")
+    j.arr()
+    var found: u64 = 0
+    let keys = files.keys()
+    let values = files.values()
+    for i in 0..keys.len() {
+        if found >= limit {
+            break
+        }
+        if !keys[i].as_str().starts_with(prefix.as_str()) {
+            continue
+        }
+        let Some(content) = c.blobs.get(values[i].id) else {
+            need.push(values[i].id)
+            continue
+        }
+        if bytes::find(content, needle, 0).is_none() {
+            continue
+        }
+        let t = Lines::of(take content)
+        for l in 0..t.count() {
+            if found >= limit {
+                break
+            }
+            let line = bytes::slice(t.bytes, t.at[l], t.at[l + 1])
+            if bytes::find(line, needle, 0).is_some() {
+                j.obj()
+                j.kstr("path", keys[i].as_str())
+                j.knum("line", u64(l) + 1)
+                j.kstr("text", bytes::text_of(line).as_str().trim())
+                j.end_obj()
+                found += 1
+            }
+        }
+    }
+    if !need.is_empty() {
+        return Outcome::Need(take need)
+    }
+    j.end_arr()
+    j.kbool("more", found >= limit)
+    j.end_obj()
+    ok(take j)
+}
+
+/// Writes `content` at `path` in change `ch`: the blob, and the event.
+fn put(ch: Change, ctx: Ctx, path: str, content: take Vec<u8>, exec: bool) -> Durable {
+    let o = object::blob(content)
+    let file = File { id: o.id, exec, size: u64(content.len()) }
+    let ev = Event::Wrote { change: ch.id, path: path.to_string(), file: Some(file), time: ctx.now }
+    Durable { objects: Vec::from([take o]), events: Vec::from([take ev]) }
+}
+
+fn wrote(path: str, d: Durable) -> Json {
+    var j = Json::new()
+    j.obj()
+    j.kstr("path", path)
+    if !d.objects.is_empty() {
+        j.kstr("id", d.objects[0].id.hex().as_str())
+        j.knum("size", u64(d.objects[0].bytes.len() - 1))
+    }
+    j.end_obj()
+    j
+}
+
+fn write(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
+    let ch = match open_change(c, doc, args) {
+        Ok(x) => take x,
+        Err(why) => return fail(why.as_str()),
+    }
+    let path = arg(doc, args, "path")
+    if let Some(why) = path_problem(path.as_str()) {
+        return fail(why)
+    }
+    let Some(content_at) = doc.get(args, "content") else {
+        return fail("give the file's `content`")
+    }
+    if doc.kind(content_at) != Kind::Text {
+        return fail("`content` is the file's text")
+    }
+    let content = bytes::of_str(doc.text(content_at))
+    let d = put(ch, ctx, path.as_str(), take content, exec: bool_arg(doc, args, "exec"))
+    ok_with(wrote(path.as_str(), d.clone()), take d)
+}
+
+fn edit(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
+    let ch = match open_change(c, doc, args) {
+        Ok(x) => take x,
+        Err(why) => return fail(why.as_str()),
+    }
+    let path = arg(doc, args, "path")
+    if let Some(why) = path_problem(path.as_str()) {
+        return fail(why)
+    }
+    let old = arg(doc, args, "old")
+    if old.is_empty() {
+        return fail("give the `old` text to replace")
+    }
+    let new = arg(doc, args, "new")
+    let all = bool_arg(doc, args, "all")
+    let Some(f) = file_in(c.state, ch.clone(), path.as_str()) else {
+        return fail(f"no file `{path}`".as_str())
+    }
+    let Some(content) = blob_of(c, f) else { return Outcome::Need(Vec::from([f.id])) }
+    let needle = bytes::of_str(old.as_str())
+    var at: Vec<u32> = Vec::new()
+    var from = 0
+    while let Some(i) = bytes::find(content, needle, from) {
+        at.push(i)
+        from = i + needle.len()
+    }
+    if at.is_empty() {
+        return fail(f"`old` isn't in `{path}`".as_str())
+    }
+    if at.len() > 1 && !all {
+        return fail(
+            f"`old` is in `{path}` {at.len()} times: give more of its text, or `all: true`".as_str(),
+        )
+    }
+    var out: Vec<u8> = Vec::with_capacity(content.len() + new.len())
+    var prev = 0
+    for i in at {
+        for k in prev..i {
+            out.push(content[k])
+        }
+        bytes::push_str(mut out, new.as_str())
+        prev = i + needle.len()
+    }
+    for k in prev..content.len() {
+        out.push(content[k])
+    }
+    let d = put(ch, ctx, path.as_str(), take out, exec: f.exec)
+    var j = wrote(path.as_str(), d.clone())
+    let n = j.text.len()
+    j.text.truncate(n - 1)
+    j.text.push_str(f",\"replaced\":{at.len()}}}")
+    ok_with(take j, take d)
+}
+
+fn remove(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
+    let ch = match open_change(c, doc, args) {
+        Ok(x) => take x,
+        Err(why) => return fail(why.as_str()),
+    }
+    let path = arg(doc, args, "path")
+    if file_in(c.state, ch.clone(), path.as_str()).is_none() {
+        return fail(f"no file `{path}`".as_str())
+    }
+    let ev = Event::Wrote { change: ch.id, path: path.clone(), file: None, time: ctx.now }
+    var j = Json::new()
+    j.obj()
+    j.kstr("removed", path.as_str())
+    j.end_obj()
+    ok_with(take j, Durable { objects: Vec::new(), events: Vec::from([take ev]) })
+}
+
+fn move_file(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
+    let ch = match open_change(c, doc, args) {
+        Ok(x) => take x,
+        Err(why) => return fail(why.as_str()),
+    }
+    let from = arg(doc, args, "from")
+    let to = arg(doc, args, "to")
+    if let Some(why) = path_problem(to.as_str()) {
+        return fail(why)
+    }
+    let Some(f) = file_in(c.state, ch.clone(), from.as_str()) else {
+        return fail(f"no file `{from}`".as_str())
+    }
+    if file_in(c.state, ch.clone(), to.as_str()).is_some() {
+        return fail(f"`{to}` is a file already".as_str())
+    }
+    let evs = Vec::from(
+        [
+            Event::Wrote { change: ch.id, path: to.clone(), file: Some(f), time: ctx.now },
+            Event::Wrote { change: ch.id, path: from.clone(), file: None, time: ctx.now },
+        ],
+    )
+    var j = Json::new()
+    j.obj()
+    j.kstr("from", from.as_str())
+    j.kstr("to", to.as_str())
+    j.end_obj()
+    ok_with(take j, Durable { objects: Vec::new(), events: evs })
+}
+
+/// The objects of change `ch`'s tree as it is now, and the tree's id.
+pub fn tree_of(c: Core, ch: Change) -> (Id, Vec<Object>) {
+    let objects = object::trees(files_of(c.state, ch))
+    let root = objects[objects.len() - 1].id
+    var fresh: Vec<Object> = Vec::new()
+    for o in objects {
+        if !c.stored.contains(o.id) {
+            fresh.push(o.clone())
+        }
+    }
+    (root, fresh)
+}
+
+fn touch_state(c: Core, path: str, t: state::Touch) -> Text {
+    let main = c.state.files.get(path.to_string())
+    if t.conflict.is_some() {
+        "conflict"
+    } else if main != t.base {
+        "stale"
+    } else if t.now.is_none() {
+        "removed"
+    } else if t.base.is_none() {
+        "added"
+    } else {
+        "changed"
+    }
+}
+
+fn status(c: Core, doc: Doc, args: u32) -> Outcome {
+    let ch = match open_change(c, doc, args) {
+        Ok(x) => take x,
+        Err(why) => return fail(why.as_str()),
+    }
+    let (tree, _) = tree_of(c, ch.clone())
+    var j = Json::new()
+    j.obj()
+    j.kstr("change", ch.name().as_str())
+    j.kstr("intent", ch.intent.as_str())
+    j.kstr("tree", tree.hex().as_str())
+    j.knum("main", c.state.seq)
+    j.key("files")
+    j.arr()
+    let paths = ch.touches.keys()
+    let touches = ch.touches.values()
+    for i in 0..paths.len() {
+        j.obj()
+        j.kstr("path", paths[i].as_str())
+        j.kstr("state", touch_state(c, paths[i].as_str(), touches[i].clone()))
+        j.end_obj()
+    }
+    j.end_arr()
+    j.key("checks")
+    j.arr()
+    for jb in c.state.jobs.values() {
+        if jb.change == ch.id {
+            job_json(mut j, jb.clone(), tree)
+        }
+    }
+    j.end_arr()
+    match state::why_not_land(c.state, ch.clone(), tree) {
+        Some(why) => j.kstr("blocked", why.as_str()),
+        None => j.kbool("ready", v: true),
+    }
+    j.end_obj()
+    ok(take j)
+}
+
+fn job_json(j: mut Json, jb: state::Job, tree: Id) {
+    j.obj()
+    j.kstr("job", f"j{jb.id}".as_str())
+    j.kstr("check", jb.check.as_str())
+    j.kstr(
+        "state",
+        match jb.run {
+            Run::Queued => "queued",
+            Run::Running => "running",
+            Run::Done => if jb.passed { "passed" } else { "failed" },
+        },
+    )
+    if !tree.is_zero() {
+        j.kbool("this_tree", jb.tree == tree)
+    }
+    if jb.run == Run::Done {
+        j.knum("seconds", (jb.ended - jb.started) / 1000)
+    }
+    j.end_obj()
+}
+
+fn diff_of(c: Core, doc: Doc, args: u32) -> Outcome {
+    let ch = match open_change(c, doc, args) {
+        Ok(x) => take x,
+        Err(why) => return fail(why.as_str()),
+    }
+    let only = arg(doc, args, "path")
+    var need: Vec<Id> = Vec::new()
+    var text = String::new()
+    let paths = ch.touches.keys()
+    let touches = ch.touches.values()
+    for i in 0..paths.len() {
+        let p = paths[i].as_str()
+        if !only.is_empty() && p != only.as_str() {
+            continue
+        }
+        let main = c.state.files.get(paths[i].clone())
+        let a = match main {
+            Some(f) => match c.blobs.get(f.id) {
+                Some(b) => take b,
+                None => {
+                    need.push(f.id)
+                    continue
+                },
+            },
+            None => Vec::new(),
+        }
+        let b = match touches[i].now {
+            Some(f) => match c.blobs.get(f.id) {
+                Some(b) => take b,
+                None => {
+                    need.push(f.id)
+                    continue
+                },
+            },
+            None => Vec::new(),
+        }
+        text.push_str(diff::unified(p, Lines::of(take a), Lines::of(take b)).as_str())
+    }
+    if !need.is_empty() {
+        return Outcome::Need(take need)
+    }
+    var j = Json::new()
+    j.obj()
+    j.kstr("diff", text.as_str())
+    j.end_obj()
+    ok(take j)
+}
+
+fn snap(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
+    let ch = match open_change(c, doc, args) {
+        Ok(x) => take x,
+        Err(why) => return fail(why.as_str()),
+    }
+    let (tree, objects) = tree_of(c, ch.clone())
+    let ev = Event::Snapped { change: ch.id, note: arg(doc, args, "note"), tree, time: ctx.now }
+    var j = Json::new()
+    j.obj()
+    j.kstr("tree", tree.hex().as_str())
+    j.end_obj()
+    ok_with(take j, Durable { objects, events: Vec::from([take ev]) })
+}
+
+/// Queues `check` on change `ch`'s tree as it is now.
+fn queue(c: Core, ctx: Ctx, ch: Change, check: str, more: take Vec<Event>) -> Outcome {
+    let (tree, objects) = tree_of(c, ch.clone())
+    let id = c.state.next_job
+    var events = take more
+    events.push(
+        Event::Queued {
+            job: id,
+            check: check.to_string(),
+            tree,
+            change: ch.id,
+            attempt: 1,
+            time: ctx.now,
+        },
+    )
+    var j = Json::new()
+    j.obj()
+    j.kstr("job", f"j{id}".as_str())
+    j.kstr("tree", tree.hex().as_str())
+    j.end_obj()
+    ok_with(take j, Durable { objects, events })
+}
+
+/// Whether `name` is a check `tools/check.sh` could run: `suite`, or a name of letters, digits
+/// and `_-:./`.
+pub fn check_name(name: str) -> bool {
+    if name.is_empty() || name.len() > 256 || name.starts_with("-") {
+        return false
+    }
+    for i in 0..name.len() {
+        let b = name.byte(i)
+        let fine = (b >= 48 && b <= 57) ||
+            (b >= 65 && b <= 90) ||
+            (b >= 97 && b <= 122) ||
+            b == 95 ||
+            b == 45 ||
+            b == 58 ||
+            b == 46 ||
+            b == 47
+        if !fine {
+            return false
+        }
+    }
+    true
+}
+
+fn check(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
+    let ch = match open_change(c, doc, args) {
+        Ok(x) => take x,
+        Err(why) => return fail(why.as_str()),
+    }
+    let name = arg(doc, args, "check")
+    if !check_name(name.as_str()) {
+        return fail("`check` is `suite` or one `tools/check.sh` name")
+    }
+    queue(c, ctx, ch, name.as_str(), Vec::new())
+}
+
+fn job(c: Core, doc: Doc, args: u32) -> Outcome {
+    let name = arg(doc, args, "job")
+    let n = name.as_str()
+    let parsed = if n.starts_with("j") { bytes::parse_u64(n.slice(from: 1, to: n.len())) } else {
+        bytes::parse_u64(n)
+    }
+    let Some(id) = parsed else { return fail("`job` names a job, as `j3`") }
+    if !c.state.jobs.contains(id) {
+        return fail(f"there is no job j{id}".as_str())
+    }
+    let jb = c.state.jobs.at(id).clone()
+    var j = Json::new()
+    j.obj()
+    j.kstr("job", f"j{id}".as_str())
+    j.kstr("check", jb.check.as_str())
+    j.kstr("tree", jb.tree.hex().as_str())
+    j.kstr("worker", jb.worker.as_str())
+    j.kstr(
+        "state",
+        match jb.run {
+            Run::Queued => "queued",
+            Run::Running => "running",
+            Run::Done => if jb.passed { "passed" } else { "failed" },
+        },
+    )
+    if jb.run == Run::Done && !jb.evidence.is_zero() {
+        j.kstr("evidence", jb.evidence.hex().as_str())
+        // The evidence names the log: its end is what a reader wants.
+        let Some(ev_bytes) = c.blobs.get(jb.evidence) else {
+            return Outcome::Need(Vec::from([jb.evidence]))
+        }
+        if let Ok(x) = object::evidence_of(ev_bytes) {
+            j.knum("seconds", x.ms / 1000)
+            j.key("status")
+            j.int(i64(x.status))
+            let Some(log) = c.blobs.get(x.log) else { return Outcome::Need(Vec::from([x.log])) }
+            let start = if log.len() > 6000 { log.len() - 6000 } else { 0 }
+            j.kstr("output_tail", bytes::text_of(bytes::slice(log, start, log.len())).as_str())
+        }
+    }
+    j.end_obj()
+    ok(take j)
+}
+
+fn submit(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
+    let ch = match open_change(c, doc, args) {
+        Ok(x) => take x,
+        Err(why) => return fail(why.as_str()),
+    }
+    if ch.touches.is_empty() {
+        return fail(f"{ch.name()} changes nothing".as_str())
+    }
+    let more = Vec::from([Event::Submitted { change: ch.id, time: ctx.now }])
+    queue(c, ctx, ch, "suite", take more)
+}
+
+fn close(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
+    let ch = match open_change(c, doc, args) {
+        Ok(x) => take x,
+        Err(why) => return fail(why.as_str()),
+    }
+    let ev = Event::Closed { change: ch.id, why: arg(doc, args, "why"), time: ctx.now }
+    var j = Json::new()
+    j.obj()
+    j.kstr("closed", ch.name().as_str())
+    j.end_obj()
+    ok_with(take j, Durable { objects: Vec::new(), events: Vec::from([take ev]) })
+}
+
+fn log(c: Core, doc: Doc, args: u32) -> Outcome {
+    let limit = num_arg(doc, args, "limit", 20)
+    var j = Json::new()
+    j.obj()
+    j.knum("main", c.state.seq)
+    j.key("landings")
+    j.arr()
+    let n = c.state.landings.len()
+    var k: u64 = 0
+    while k < limit && k < u64(n) {
+        borrow l = c.state.landings[n - 1 - u32(k)]
+        j.obj()
+        j.knum("seq", l.seq)
+        j.kstr("revision", l.revision.hex().as_str())
+        if l.change != 0 {
+            j.kstr("change", f"c{l.change}".as_str())
+        }
+        j.kstr("by", l.by.as_str())
+        j.knum("time", l.time)
+        j.kstr("intent", l.intent.as_str())
+        j.end_obj()
+        k += 1
+    }
+    j.end_arr()
+    j.end_obj()
+    ok(take j)
+}
+
+/// Lands change `args.change` on main, if the caller may and it can: its tree and a revision,
+/// and the landing.
+fn land(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
+    if !ctx.lands {
+        return fail("only those forge lets land changes may land one")
+    }
+    let ch = match open_change(c, doc, args) {
+        Ok(x) => take x,
+        Err(why) => return fail(why.as_str()),
+    }
+    let (tree, objects) = tree_of(c, ch.clone())
+    if let Some(why) = state::why_not_land(c.state, ch.clone(), tree) {
+        return fail(f"{ch.name()} can't land: {why}".as_str())
+    }
+    var evidence: Vec<Id> = Vec::new()
+    if let Some(jb) = state::newest_run(c.state, "suite", tree) {
+        evidence.push(jb.evidence)
+    }
+    let seq = c.state.seq + 1
+    let rev = object::revision(
+        object::Revision {
+            tree,
+            parent: c.state.head,
+            seq,
+            change: ch.name(),
+            author: ch.author.clone(),
+            intent: ch.intent.clone(),
+            time: ctx.now,
+            model: ch.model.clone(),
+            session: ch.session.clone(),
+            machine: ch.machine.clone(),
+            origin: String::new(),
+            evidence,
+        },
+    )
+    var files: Vec<(String, Option<File>)> = Vec::new()
+    let paths = ch.touches.keys()
+    let touches = ch.touches.values()
+    for i in 0..paths.len() {
+        files.push((paths[i].clone(), touches[i].now))
+    }
+    let ev = Event::Landed {
+        seq,
+        change: ch.id,
+        revision: rev.id,
+        tree,
+        time: ctx.now,
+        by: ctx.who.clone(),
+        intent: ch.intent.clone(),
+        files,
+    }
+    var j = Json::new()
+    j.obj()
+    j.knum("seq", seq)
+    j.kstr("revision", rev.id.hex().as_str())
+    j.end_obj()
+    var all = take objects
+    all.push(take rev)
+    ok_with(take j, Durable { objects: all, events: Vec::from([take ev]) })
+}
+
+// ---- carrying changes onto a newer main --------------------------------------------------------
+
+/// The merges that carry change `ch`'s stale touches onto main's files: a merged blob and a
+/// `Merged` event for each, or the blobs to load first.
+pub fn carry(c: Core, ch: Change) -> Outcome {
+    var objects: Vec<Object> = Vec::new()
+    var events: Vec<Event> = Vec::new()
+    var need: Vec<Id> = Vec::new()
+    for path in state::stale(c.state, ch.clone()) {
+        let t = ch.touches.at(path.clone()).clone()
+        let theirs = c.state.files.get(path.clone())
+        let base = content_of(c, t.base, mut need)
+        let ours = content_of(c, t.now, mut need)
+        let main = content_of(c, theirs, mut need)
+        if !need.is_empty() {
+            continue
+        }
+        let merged = if t.now.is_none() || theirs.is_none() || t.base.is_none() {
+            // A removal, or a file added on both sides: no lines to merge.
+            None
+        } else {
+            let m = diff::merge(Lines::of(take base), Lines::of(take ours), Lines::of(take main))
+            if m.conflicts == 0 { Some(take m.bytes) } else { None }
+        }
+        match merged {
+            Some(b) => {
+                let exec = match t.now {
+                    Some(f) => f.exec,
+                    None => false,
+                }
+                let o = object::blob(b)
+                let file = File { id: o.id, exec, size: u64(b.len()) }
+                events.push(
+                    Event::Merged {
+                        change: ch.id,
+                        path: path.clone(),
+                        base: theirs,
+                        now: Some(file),
+                        conflict: None,
+                    },
+                )
+                objects.push(take o)
+            },
+            None => {
+                if t.now == theirs {
+                    // Both sides made the same file: nothing to carry.
+                    events.push(
+                        Event::Merged {
+                            change: ch.id,
+                            path: path.clone(),
+                            base: theirs,
+                            now: theirs,
+                            conflict: None,
+                        },
+                    )
+                } else {
+                    events.push(
+                        Event::Merged {
+                            change: ch.id,
+                            path: path.clone(),
+                            base: t.base,
+                            now: t.now,
+                            conflict: theirs,
+                        },
+                    )
+                }
+            },
+        }
+    }
+    if !need.is_empty() {
+        return Outcome::Need(take need)
+    }
+    Outcome::Done { json: String::new(), error: false, durable: Durable { objects, events } }
+}
+
+fn content_of(c: Core, f: Option<File>, need: mut Vec<Id>) -> Vec<u8> {
+    match f {
+        Some(x) => match c.blobs.get(x.id) {
+            Some(b) => b,
+            None => {
+                need.push(x.id)
+                Vec::new()
+            },
+        },
+        None => Vec::new(),
+    }
+}
+
+/// Folds what a call made durable into the core: its objects' contents and its events.
+pub fn absorb(c: mut Core, d: Durable) -> Result<(), String> {
+    for o in d.objects {
+        let _ = c.stored.insert(o.id, value: true)
+        if o.bytes.len() > 0 && o.bytes[0] == object::BLOB {
+            let _ = c.blobs.insert(o.id, object::content(o.bytes))
+        } else {
+            let _ = c.blobs.insert(o.id, o.bytes.clone())
+        }
+    }
+    for ev in d.events {
+        apply(mut c.state, ev.clone())?
+    }
+    Ok(())
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+fn doc(s: str) -> Doc {
+    match Doc::read(bytes::of_str(s)) {
+        Ok(d) => d,
+        Err(why) => panic(f"bad test JSON: {why}"),
+    }
+}
+
+fn ctx() -> Ctx {
+    Ctx { who: String::from("agent"), now: 100, lands: true }
+}
+
+/// Calls a tool and folds what it made durable: its JSON.
+fn run(c: mut Core, name: str, args: str) -> Doc {
+    let d = doc(args)
+    match call(c, ctx(), name, d, d.root) {
+        Outcome::Done { json, error, durable } => {
+            assert(!error, f"{name} failed: {json}")
+            let Ok(()) = absorb(mut c, durable) else { panic(f"{name}'s events apply") }
+            doc(json.as_str())
+        },
+        Outcome::Need(ids) => panic(f"{name} needs {ids.len()} objects"),
+    }
+}
+
+fn failing(c: Core, name: str, args: str) -> String {
+    let d = doc(args)
+    match call(c, ctx(), name, d, d.root) {
+        Outcome::Done { json, error, .. } => {
+            assert(error, f"{name} should fail: {json}")
+            json
+        },
+        Outcome::Need(_) => panic("it needs objects"),
+    }
+}
+
+/// A core whose main holds `files` (path, text).
+fn seeded(files: [(Text, Text)]) -> Core {
+    var c = core("test")
+    var landed: Vec<(String, Option<File>)> = Vec::new()
+    var objects: Vec<Object> = Vec::new()
+    for (p, t) in files {
+        let o = object::blob(bytes::of_str(t))
+        landed.push((p.to_string(), Some(File { id: o.id, exec: false, size: u64(t.len()) })))
+        objects.push(take o)
+    }
+    let ev = Event::Landed {
+        seq: 1,
+        change: 0,
+        revision: Id::zero(),
+        tree: Id::zero(),
+        time: 1,
+        by: String::from("import"),
+        intent: String::from("the start"),
+        files: landed,
+    }
+    let Ok(()) = absorb(mut c, Durable { objects, events: Vec::from([take ev]) }) else {
+        panic("it seeds")
+    }
+    c
+}
+
+@test
+fn an_agent_opens_a_change_edits_and_reads_its_own_view() {
+    var c = seeded([("src/a.txt", "one\ntwo\nthree\n"), ("src/b.txt", "bee\n"), ("README", "hi\n")])
+    let opened = run(mut c, "forge_open", "{\"intent\":\"Two becomes 2\"}")
+    assert(opened.field(opened.root, "change") == "c1", "the first change")
+    let _ = run(
+        mut c,
+        "edit",
+        "{\"change\":\"c1\",\"path\":\"src/a.txt\",\"old\":\"two\",\"new\":\"2\"}",
+    )
+    let mine = run(mut c, "read", "{\"change\":\"c1\",\"path\":\"src/a.txt\"}")
+    assert(mine.field(mine.root, "text") == "one\n2\nthree\n", mine.field(mine.root, "text"))
+    let mains = run(mut c, "read", "{\"path\":\"src/a.txt\",\"from\":2,\"lines\":1}")
+    assert(mains.field(mains.root, "text") == "two\n", "main's line 2 is unchanged")
+    let listed = run(mut c, "list", "{\"change\":\"c1\"}")
+    let entries = listed.get(listed.root, "entries").unwrap()
+    assert(listed.count(entries) == 2, "README and src")
+    let found = run(mut c, "search", "{\"change\":\"c1\",\"text\":\"2\"}")
+    let matches = found.get(found.root, "matches").unwrap()
+    assert(
+        found.count(matches) == 1 && found.field(found.at(matches, 0), "path") == "src/a.txt",
+        "found",
+    )
+    let d = run(mut c, "diff", "{\"change\":\"c1\"}")
+    assert(d.field(d.root, "diff").find("-two\n+2\n").is_some(), d.field(d.root, "diff"))
+}
+
+@test
+fn an_edit_must_name_its_text_exactly_once() {
+    var c = seeded([("f", "x x\n")])
+    let _ = run(mut c, "open", "{\"intent\":\"edits\"}")
+    let twice = failing(c, "edit", "{\"change\":\"c1\",\"path\":\"f\",\"old\":\"x\",\"new\":\"y\"}")
+    assert(twice.as_str().find("2 times").is_some(), twice.as_str())
+    let _ = failing(c, "edit", "{\"change\":\"c1\",\"path\":\"f\",\"old\":\"z\",\"new\":\"y\"}")
+    let _ = run(
+        mut c,
+        "edit",
+        "{\"change\":\"c1\",\"path\":\"f\",\"old\":\"x\",\"new\":\"y\",\"all\":true}",
+    )
+    let r = run(mut c, "read", "{\"change\":\"c1\",\"path\":\"f\"}")
+    assert(r.field(r.root, "text") == "y y\n", "both replaced")
+    let _ = failing(c, "write", "{\"change\":\"c1\",\"path\":\"../x\",\"content\":\"\"}")
+    let _ = failing(c, "write", "{\"change\":\"c9\",\"path\":\"x\",\"content\":\"\"}")
+}
+
+@test
+fn a_change_lands_after_its_suite_passes_and_others_carry_onto_it() {
+    var c = seeded([("f", "1\n2\n3\n4\n5\n"), ("g", "g\n")])
+    let _ = run(mut c, "open", "{\"intent\":\"first\"}")
+    let _ = run(mut c, "open", "{\"intent\":\"second\"}")
+    let _ = run(
+        mut c,
+        "edit",
+        "{\"change\":\"c1\",\"path\":\"f\",\"old\":\"1\\n\",\"new\":\"one\\n\"}",
+    )
+    let _ = run(
+        mut c,
+        "edit",
+        "{\"change\":\"c2\",\"path\":\"f\",\"old\":\"5\\n\",\"new\":\"five\\n\"}",
+    )
+    let not_yet = failing(c, "land", "{\"change\":\"c1\"}")
+    assert(not_yet.as_str().find("suite").is_some(), not_yet.as_str())
+    let submitted = run(mut c, "submit", "{\"change\":\"c1\"}")
+    assert(submitted.field(submitted.root, "job") == "j1", "the suite is j1")
+    let done = Event::Finished { job: 1, evidence: Id::zero(), passed: true, time: 200 }
+    let Ok(()) = apply(mut c.state, take done) else { panic("it finishes") }
+    let landed = run(mut c, "land", "{\"change\":\"c1\"}")
+    assert(
+        landed.whole(landed.get(landed.root, "seq").unwrap()) == Some(2),
+        "main's second revision",
+    )
+    // c2 touched f too: it's stale until carried, and the carry merges both edits.
+    let c2 = c.state.changes.at(2).clone()
+    assert(state::stale(c.state, c2.clone()).len() == 1, "f is stale")
+    match carry(c, c2) {
+        Outcome::Done { durable, .. } => {
+            let Ok(()) = absorb(mut c, durable) else { panic("the carry applies") }
+        },
+        Outcome::Need(_) => panic("it has every blob"),
+    }
+    let r = run(mut c, "read", "{\"change\":\"c2\",\"path\":\"f\"}")
+    assert(r.field(r.root, "text") == "one\n2\n3\n4\nfive\n", r.field(r.root, "text"))
+    let st = run(mut c, "status", "{\"change\":\"c2\"}")
+    let files = st.get(st.root, "files").unwrap()
+    assert(st.field(st.at(files, 0), "state") == "changed", "carried, not stale")
+}
+
+@test
+fn a_carry_that_conflicts_keeps_both_versions() {
+    var c = seeded([("f", "a\n")])
+    let _ = run(mut c, "open", "{\"intent\":\"one\"}")
+    let _ = run(mut c, "open", "{\"intent\":\"two\"}")
+    let _ = run(mut c, "write", "{\"change\":\"c1\",\"path\":\"f\",\"content\":\"b\\n\"}")
+    let _ = run(mut c, "write", "{\"change\":\"c2\",\"path\":\"f\",\"content\":\"c\\n\"}")
+    let Ok(()) = apply(
+        mut c.state,
+        Event::Queued {
+            job: 1,
+            check: String::from("suite"),
+            tree: tree_of(c, c.state.changes.at(1).clone()).0,
+            change: 1,
+            attempt: 1,
+            time: 1,
+        },
+    ) else {
+        panic("queued")
+    }
+    let Ok(()) = apply(
+        mut c.state,
+        Event::Finished { job: 1, evidence: Id::zero(), passed: true, time: 2 },
+    ) else {
+        panic("finished")
+    }
+    let _ = run(mut c, "land", "{\"change\":\"c1\"}")
+    match carry(c, c.state.changes.at(2).clone()) {
+        Outcome::Done { durable, .. } => {
+            let Ok(()) = absorb(mut c, durable) else { panic("the carry applies") }
+        },
+        Outcome::Need(_) => panic("it has every blob"),
+    }
+    let st = run(mut c, "status", "{\"change\":\"c2\"}")
+    let files = st.get(st.root, "files").unwrap()
+    assert(st.field(st.at(files, 0), "state") == "conflict", "a conflict")
+    let theirs = run(mut c, "read", "{\"change\":\"c2\",\"path\":\"f\",\"side\":\"main\"}")
+    assert(theirs.field(theirs.root, "text") == "b\n", "main's side")
+    let _ = run(mut c, "write", "{\"change\":\"c2\",\"path\":\"f\",\"content\":\"b\\nc\\n\"}")
+    let after = run(mut c, "status", "{\"change\":\"c2\"}")
+    let files2 = after.get(after.root, "files").unwrap()
+    assert(after.field(after.at(files2, 0), "state") == "changed", "resolved by writing it again")
+}

@@ -9,7 +9,7 @@
 //! | Service | Request | Answer |
 //! |---|---|---|
 //! | `fs/read` | path; optionally `u64` offset and `u64` length (`u64::MAX`: to the end) | the bytes |
-//! | `fs/write` | path, bytes, optionally `u8` 1 to make it executable | nothing: the file holds exactly the bytes, on disk |
+//! | `fs/write` | path, bytes, optionally `u8` flags (1: make it executable; 2: don't flush) | nothing: the file holds exactly the bytes, on disk |
 //! | `fs/append` | path, bytes | the file's new length, `u64`, on disk |
 //! | `fs/truncate` | path, `u64` length | nothing |
 //! | `fs/stat` | path | kind `u8` (0 none, 1 file, 2 directory, 3 executable file), size `u64`, modified `u64` ms |
@@ -21,7 +21,11 @@
 //! "On disk" means flushed (`fsync`, a full flush on macOS) before the answer: a write goes to a
 //! file beside its target, which is flushed and renamed into place, and the directory is flushed;
 //! an append flushes the file. So an answered write survives a crash, and a write a crash cut
-//! short leaves the old file whole.
+//! short leaves the old file whole. A write asked not to flush is renamed into place unflushed:
+//! whole or old after a crash of the service, but not after a crash of the machine.
+//!
+//! The host carries out a call's files requests in the order the call made them, each before the
+//! next starts.
 
 use crate::body::{Body, Out};
 use std::collections::BTreeMap;
@@ -106,6 +110,11 @@ fn beside(path: &Path) -> PathBuf {
 /// Replaces `path`'s bytes with `bytes`, on disk: written beside it, flushed, renamed into
 /// place, and its directory flushed. `exec` makes it executable.
 pub fn write_atomically(path: &Path, bytes: &[u8], exec: bool) -> Result<(), String> {
+    write_file(path, bytes, exec, true)
+}
+
+/// Replaces `path`'s bytes with `bytes`, as [`write_atomically`] does; flushed only if `flush`.
+fn write_file(path: &Path, bytes: &[u8], exec: bool, flush: bool) -> Result<(), String> {
     let part = beside(path);
     let written = (|| {
         let mut f = File::create(&part)?;
@@ -115,14 +124,16 @@ pub fn write_atomically(path: &Path, bytes: &[u8], exec: bool) -> Result<(), Str
             use std::os::unix::fs::PermissionsExt;
             f.set_permissions(fs::Permissions::from_mode(if exec { 0o755 } else { 0o644 }))?;
         }
-        f.sync_all()?;
+        if flush {
+            f.sync_all()?;
+        }
         fs::rename(&part, path)
     })();
     if let Err(e) = written {
         let _ = fs::remove_file(&part);
         return Err(io(path, e));
     }
-    sync_dir(path.parent().unwrap_or(Path::new(".")))
+    if flush { sync_dir(path.parent().unwrap_or(Path::new("."))) } else { Ok(()) }
 }
 
 fn millis(t: std::io::Result<std::time::SystemTime>) -> u64 {
@@ -158,9 +169,9 @@ pub fn serve(roots: &Roots, service: &str, body: &[u8]) -> Option<Result<Vec<u8>
             }
             "write" => {
                 let bytes = b.bytes()?;
-                let exec = !b.is_empty() && b.u8()? == 1;
+                let flags = if b.is_empty() { 0 } else { b.u8()? };
                 b.end()?;
-                write_atomically(&path, bytes, exec)?;
+                write_file(&path, bytes, flags & 1 != 0, flags & 2 == 0)?;
                 Ok(Vec::new())
             }
             "append" => {

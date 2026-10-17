@@ -158,6 +158,17 @@ pub fn write_file(path: str, bytes: [u8], exec: bool) -> Pending<u8> {
     request("fs/write", o.bytes)
 }
 
+/// Makes the file at `path` hold exactly `bytes`, whole or not at all, without flushing it to
+/// disk: a crash of the machine may leave the old file. For files that can be made again, as a
+/// worker's checkout can.
+pub fn write_unflushed(path: str, bytes: [u8], exec: bool) -> Pending<u8> {
+    var o = Out::new()
+    o.str(path)
+    o.run(bytes)
+    o.u8(if exec { 3 } else { 2 })
+    request("fs/write", o.bytes)
+}
+
 /// Adds `bytes` at the end of the file at `path` (made if it's missing), on disk. The answer is
 /// the file's new length (`length_of`).
 pub fn append(path: str, bytes: [u8]) -> Pending<u8> {

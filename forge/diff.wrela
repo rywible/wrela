@@ -1,0 +1,444 @@
+// Line diffs and three-way merges of text: how forge shows what a change did to a file, and how
+// it carries a change onto a newer main. A diff matches the lines of two texts by Myers' O(ND)
+// algorithm (Myers, "An O(ND) Difference Algorithm and Its Variations", 1986), after their common
+// first and last lines. A merge is diff3's: the regions where both sides kept the base's lines
+// apart the regions where either changed it; a region both changed, differently, is a conflict.
+
+/// The most edits a diff looks for between the first and last common lines: past it, the lines
+/// between are taken as all changed, which keeps a diff's work bounded.
+const MOST_EDITS: u32 = 2000
+
+/// Where each line of `b` starts, and where the last ends: line `i` is `[at[i], at[i + 1])`,
+/// with its newline.
+pub fn lines(b: [u8]) -> Vec<u32> {
+    var at: Vec<u32> = Vec::from([0])
+    for i in 0..b.len() {
+        if b[i] == 10 {
+            at.push(i + 1)
+        }
+    }
+    if b.len() > 0 && b[b.len() - 1] != 10 {
+        at.push(b.len())
+    }
+    at
+}
+
+/// A text as lines: its bytes, where its lines start, and each line's hash.
+pub struct Lines: Clone {
+    pub bytes: Vec<u8>,
+    pub at: Vec<u32>,
+    hashes: Vec<u64>,
+}
+
+impl Lines {
+    pub fn of(bytes: take Vec<u8>) -> Lines {
+        let at = lines(bytes)
+        var hashes: Vec<u64> = Vec::with_capacity(at.len())
+        for i in 0..at.len() - 1 {
+            // FNV-1a, 64 bits.
+            var h: u64 = 14695981039346656037
+            for k in at[i]..at[i + 1] {
+                h = (h ^ u64(bytes[k])).wrapping_mul(1099511628211)
+            }
+            hashes.push(h)
+        }
+        Lines { bytes, at, hashes }
+    }
+
+    pub fn count(self) -> u32 {
+        self.at.len() - 1
+    }
+
+    fn same_line(self, i: u32, other: Lines, j: u32) -> bool {
+        if self.hashes[i] != other.hashes[j] {
+            return false
+        }
+        let n = self.at[i + 1] - self.at[i]
+        if n != other.at[j + 1] - other.at[j] {
+            return false
+        }
+        for k in 0..n {
+            if self.bytes[self.at[i] + k] != other.bytes[other.at[j] + k] {
+                return false
+            }
+        }
+        true
+    }
+
+    /// Adds lines `[from, to)` to `out`.
+    pub fn push_lines(self, from: u32, to: u32, out: mut Vec<u8>) {
+        for k in self.at[from]..self.at[to] {
+            out.push(self.bytes[k])
+        }
+    }
+}
+
+/// For each line of `a`, the line of `b` it matches, or none (`NONE`): a longest common
+/// subsequence of their lines, so the matches only go up.
+pub const NONE: u32 = 4294967295
+
+pub fn matches(a: Lines, b: Lines) -> Vec<u32> {
+    let n = a.count()
+    let m = b.count()
+    var out: Vec<u32> = Vec::filled(n, NONE)
+    // The lines both start with, and end with.
+    var lead = 0
+    while lead < n && lead < m && a.same_line(lead, b, lead) {
+        out[lead] = lead
+        lead += 1
+    }
+    var tail = 0
+    while tail < n - lead && tail < m - lead && a.same_line(n - 1 - tail, b, m - 1 - tail) {
+        out[n - 1 - tail] = m - 1 - tail
+        tail += 1
+    }
+    myers(a, b, lead, n - tail, lead, m - tail, mut out)
+    out
+}
+
+/// Myers' greedy forward search over `a[a0..a1]` against `b[b0..b1]`, keeping each round's
+/// furthest points so the path can be walked back: its matches written to `out`.
+fn myers(a: Lines, b: Lines, a0: u32, a1: u32, b0: u32, b1: u32, out: mut Vec<u32>) {
+    let n = i32(a1 - a0)
+    let m = i32(b1 - b0)
+    if n == 0 || m == 0 {
+        return
+    }
+    let most = min(u32(n + m), MOST_EDITS)
+    // Round d's furthest x on each diagonal k from -d to d: `rounds[d][k + d]`.
+    var rounds: Vec<Vec<i32>> = Vec::new()
+    var v: Vec<i32> = Vec::filled(3, 0)
+    var found = false
+    var last = 0
+    for d in 0..most + 1 {
+        let di = i32(d)
+        var next: Vec<i32> = Vec::filled(2 * d + 1, 0)
+        var k = -di
+        while k <= di {
+            // The previous round's points are at `v[k + d - 1]`.
+            let from_above = k == -di || (k != di && get(v, k + 1, di - 1) > get(v, k - 1, di - 1))
+            var x = if from_above { get(v, k + 1, di - 1) } else { get(v, k - 1, di - 1) + 1 }
+            if d == 0 {
+                x = 0
+            }
+            var y = x - k
+            while x < n && y < m && a.same_line(a0 + u32(x), b, b0 + u32(y)) {
+                x += 1
+                y += 1
+            }
+            next[u32(k + di)] = x
+            if x >= n && y >= m {
+                found = true
+            }
+            k += 2
+        }
+        rounds.push(next.clone())
+        v = take next
+        last = d
+        if found {
+            break
+        }
+    }
+    if !found {
+        // Too many edits: the lines between are all changed.
+        return
+    }
+    // Walk back from (n, m) through each round's point.
+    var x = n
+    var y = m
+    var d = i32(last)
+    while d > 0 {
+        let k = x - y
+        borrow prev = rounds[u32(d - 1)]
+        let from_above = k == -d || (k != d && get(prev, k + 1, d - 1) > get(prev, k - 1, d - 1))
+        let pk = if from_above { k + 1 } else { k - 1 }
+        let px = get(prev, pk, d - 1)
+        let py = px - pk
+        // The snake from the previous point's step to (x, y) is matches.
+        let sx = if from_above { px } else { px + 1 }
+        let sy = sx - k
+        var cx = x
+        var cy = y
+        while cx > sx && cy > sy {
+            cx -= 1
+            cy -= 1
+            out[a0 + u32(cx)] = b0 + u32(cy)
+        }
+        x = px
+        y = py
+        d -= 1
+    }
+    // Round 0's snake, from (0, 0).
+    while x > 0 && y > 0 {
+        x -= 1
+        y -= 1
+        out[a0 + u32(x)] = b0 + u32(y)
+    }
+}
+
+/// Round `d`'s point on diagonal `k`: `v[k + d]`, and -1 off its diagonals.
+fn get(v: [i32], k: i32, d: i32) -> i32 {
+    if d < 0 || k < -d || k > d {
+        return -1
+    }
+    v[u32(k + d)]
+}
+
+/// The lines of a change: `kept` lines unchanged, the rest removed from `a` and added in `b`.
+pub struct Hunk: Clone {
+    pub a_from: u32,
+    pub a_to: u32,
+    pub b_from: u32,
+    pub b_to: u32,
+}
+
+/// The regions where `a` and `b` differ, in order.
+pub fn hunks(a: Lines, b: Lines) -> Vec<Hunk> {
+    let m = matches(a, b)
+    var out: Vec<Hunk> = Vec::new()
+    var i = 0
+    var j = 0
+    let n = a.count()
+    while i <= n {
+        // The next matched line, or the end.
+        var ni = i
+        while ni < n && m[ni] == NONE {
+            ni += 1
+        }
+        let nj = if ni < n { m[ni] } else { b.count() }
+        if ni > i || nj > j {
+            out.push(Hunk { a_from: i, a_to: ni, b_from: j, b_to: nj })
+        }
+        if ni >= n {
+            break
+        }
+        i = ni + 1
+        j = nj + 1
+    }
+    out
+}
+
+/// A unified diff of `a` (`old`) and `b` (`new`), with three lines of context.
+pub fn unified(name: str, a: Lines, b: Lines) -> String {
+    let hs = hunks(a, b)
+    var out: Vec<u8> = Vec::new()
+    if hs.is_empty() {
+        return String::new()
+    }
+    bytes::push_str(mut out, f"--- a/{name}\n+++ b/{name}\n")
+    var k = 0
+    while k < hs.len() {
+        // Hunks closer than seven lines share their context.
+        var last = k
+        while last + 1 < hs.len() && hs[last + 1].a_from - hs[last].a_to <= 6 {
+            last += 1
+        }
+        let a_from = if hs[k].a_from > 3 { hs[k].a_from - 3 } else { 0 }
+        let a_to = min(hs[last].a_to + 3, a.count())
+        let b_from = hs[k].b_from - (hs[k].a_from - a_from)
+        let b_to = hs[last].b_to + (a_to - hs[last].a_to)
+        bytes::push_str(
+            mut out,
+            f"@@ -{a_from + 1},{a_to - a_from} +{b_from + 1},{b_to - b_from} @@\n",
+        )
+        var at = a_from
+        for h in k..last + 1 {
+            for i in at..hs[h].a_from {
+                out.push(32)
+                a.push_lines(i, i + 1, mut out)
+            }
+            for i in hs[h].a_from..hs[h].a_to {
+                out.push(45)
+                a.push_lines(i, i + 1, mut out)
+                ends(mut out)
+            }
+            for j in hs[h].b_from..hs[h].b_to {
+                out.push(43)
+                b.push_lines(j, j + 1, mut out)
+                ends(mut out)
+            }
+            at = hs[h].a_to
+        }
+        for i in at..a_to {
+            out.push(32)
+            a.push_lines(i, i + 1, mut out)
+            ends(mut out)
+        }
+        k = last + 1
+    }
+    bytes::text_of(out)
+}
+
+/// Ends a diff's line that the text didn't end.
+fn ends(out: mut Vec<u8>) {
+    if out[out.len() - 1] != 10 {
+        bytes::push_str(mut out, "\n\\ No newline at end of file\n")
+    }
+}
+
+/// A three-way merge: the merged text, and how many regions conflict. A conflict is written
+/// between markers, ours then theirs.
+pub struct Merged: Clone {
+    pub bytes: Vec<u8>,
+    pub conflicts: u32,
+}
+
+fn same_lines(x: Lines, x0: u32, x1: u32, y: Lines, y0: u32, y1: u32) -> bool {
+    if x1 - x0 != y1 - y0 {
+        return false
+    }
+    for i in 0..x1 - x0 {
+        if !x.same_line(x0 + i, y, y0 + i) {
+            return false
+        }
+    }
+    true
+}
+
+/// Merges `ours` and `theirs`, two changes of `base`.
+pub fn merge(base: Lines, ours: Lines, theirs: Lines) -> Merged {
+    let mo = matches(base, ours)
+    let mt = matches(base, theirs)
+    var out = Merged { bytes: Vec::new(), conflicts: 0 }
+    var o = 0
+    var a = 0
+    var t = 0
+    let n = base.count()
+    loop {
+        // The next base line both sides kept, or the end.
+        var s = o
+        while s < n && (mo[s] == NONE || mt[s] == NONE) {
+            s += 1
+        }
+        let a_to = if s < n { mo[s] } else { ours.count() }
+        let t_to = if s < n { mt[s] } else { theirs.count() }
+        if s > o || a_to > a || t_to > t {
+            if same_lines(ours, a, a_to, base, o, s) {
+                theirs.push_lines(t, t_to, mut out.bytes)
+            } else if same_lines(theirs, t, t_to, base, o, s) ||
+                same_lines(ours, a, a_to, theirs, t, t_to) {
+                ours.push_lines(a, a_to, mut out.bytes)
+            } else {
+                out.conflicts += 1
+                bytes::push_str(mut out.bytes, "<<<<<<< ours\n")
+                ours.push_lines(a, a_to, mut out.bytes)
+                ends_line(mut out.bytes)
+                bytes::push_str(mut out.bytes, "=======\n")
+                theirs.push_lines(t, t_to, mut out.bytes)
+                ends_line(mut out.bytes)
+                bytes::push_str(mut out.bytes, ">>>>>>> theirs\n")
+            }
+        }
+        if s >= n {
+            return out
+        }
+        base.push_lines(s, s + 1, mut out.bytes)
+        o = s + 1
+        a = a_to + 1
+        t = t_to + 1
+    }
+}
+
+fn ends_line(out: mut Vec<u8>) {
+    if out.len() > 0 && out[out.len() - 1] != 10 {
+        out.push(10)
+    }
+}
+
+fn text(s: str) -> Lines {
+    Lines::of(bytes::of_str(s))
+}
+
+@test
+fn a_diff_matches_the_lines_two_texts_share() {
+    let a = text("a\nb\nc\nd\ne\n")
+    let b = text("a\nc\nd\nx\ne\n")
+    let m = matches(a, b)
+    assert(m[0] == 0 && m[1] == NONE && m[2] == 1 && m[3] == 2 && m[4] == 4, "a, c, d and e")
+    let hs = hunks(a, b)
+    assert(hs.len() == 2, f"{hs.len()} hunks")
+    assert(
+        hs[0].a_from == 1 && hs[0].a_to == 2 && hs[0].b_from == 1 && hs[0].b_to == 1,
+        "b removed",
+    )
+    assert(hs[1].a_from == 4 && hs[1].a_to == 4 && hs[1].b_from == 3 && hs[1].b_to == 4, "x added")
+    let u = unified("f", a, b)
+    assert(u.as_str() == "--- a/f\n+++ b/f\n@@ -1,5 +1,5 @@\n a\n-b\n c\n d\n+x\n e\n", u.as_str())
+}
+
+@test
+fn a_diff_of_texts_with_nothing_in_common_matches_nothing() {
+    let a = text("1\n2\n3\n")
+    let b = text("4\n5\n")
+    let m = matches(a, b)
+    assert(m[0] == NONE && m[1] == NONE && m[2] == NONE, "nothing matched")
+    assert(hunks(a, b).len() == 1 && hunks(a, a).is_empty(), "one hunk, and none against itself")
+}
+
+@test
+fn a_merge_takes_both_sides_changes_and_marks_a_conflict() {
+    let base = text("one\ntwo\nthree\nfour\nfive\n")
+    let ours = text("ONE\ntwo\nthree\nfour\nfive\n")
+    let theirs = text("one\ntwo\nthree\nfour\nFIVE\n")
+    let m = merge(base, ours, theirs)
+    assert(m.conflicts == 0, "no conflict")
+    assert(
+        bytes::same(m.bytes, bytes::of_str("ONE\ntwo\nthree\nfour\nFIVE\n")),
+        bytes::text_of(m.bytes).as_str(),
+    )
+    let clash = merge(
+        base,
+        text("one\nTWO\nthree\nfour\nfive\n"),
+        text("one\n2\nthree\nfour\nfive\n"),
+    )
+    assert(clash.conflicts == 1, "both changed two")
+    let want = "one\n<<<<<<< ours\nTWO\n=======\n2\n>>>>>>> theirs\nthree\nfour\nfive\n"
+    assert(bytes::same(clash.bytes, bytes::of_str(want)), bytes::text_of(clash.bytes).as_str())
+    // The same change on both sides is no conflict.
+    let same = merge(base, ours, ours)
+    assert(same.conflicts == 0 && bytes::same(same.bytes, ours.bytes), "the same change")
+}
+
+@test
+fn a_diff_is_right_on_many_random_edits() {
+    // Seeded edits of a 200-line text: matched lines are equal, go up, and leave the edits.
+    var seed: u32 = 12345
+    for round in 0..20 {
+        var a: Vec<u8> = Vec::new()
+        var b: Vec<u8> = Vec::new()
+        for i in 0..200 {
+            seed = seed.wrapping_mul(1103515245).wrapping_add(12345)
+            let r = (seed >> 16) % 10
+            let line = f"line {i % 37} {round}\n"
+            if r != 0 {
+                bytes::push_str(mut a, line.as_str())
+            }
+            if r != 1 {
+                bytes::push_str(mut b, line.as_str())
+            }
+            if r == 2 {
+                bytes::push_str(mut b, "extra\n")
+            }
+        }
+        let ta = Lines::of(take a)
+        let tb = Lines::of(take b)
+        let m = matches(ta, tb)
+        var prev: u32 = 0
+        var first = true
+        var kept = 0
+        for i in 0..ta.count() {
+            if m[i] != NONE {
+                assert(ta.same_line(i, tb, m[i]), "a match is the same line")
+                assert(first || m[i] > prev, "matches go up")
+                prev = m[i]
+                first = false
+                kept += 1
+            }
+        }
+        // Every line that wasn't removed from one side stays matched: at least 80% here.
+        assert(kept * 10 >= ta.count() * 8, f"round {round} kept {kept} of {ta.count()}")
+        // A merge of the diff with no change on the other side gives the other text.
+        let both = merge(ta, tb, ta)
+        assert(both.conflicts == 0 && bytes::same(both.bytes, tb.bytes), f"round {round}'s merge")
+    }
+}

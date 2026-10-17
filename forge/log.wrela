@@ -1,0 +1,88 @@
+// The store's log (spec/forge.md): what happened, as records appended to one file and flushed
+// before forge says it happened. A record is its payload's length (4 bytes, little-endian), the
+// payload, and the first 8 bytes of the payload's BLAKE3 hash. Reading the log back stops at the
+// first record that isn't whole or whose hash differs: a crash can cut the last record short,
+// and recovery cuts the file back to the records before it.
+
+use blake3::hash
+
+/// The largest payload a record holds.
+pub const MOST: u32 = 67108864
+
+/// `payload` as a record.
+pub fn record(payload: [u8]) -> Vec<u8> {
+    var out: Vec<u8> = Vec::with_capacity(payload.len() + 12)
+    let n = payload.len()
+    for k in 0..4 {
+        out.push(u8((n >> (8 * k)) & 255))
+    }
+    bytes::push_run(mut out, payload)
+    let h = hash(payload).bytes()
+    for k in 0..8 {
+        out.push(h[k])
+    }
+    out
+}
+
+/// What a log's bytes hold: each whole record's payload, and how many bytes they take. Bytes past
+/// them are a torn record (or not the log's), which recovery cuts off.
+pub struct Read: Clone {
+    pub payloads: Vec<Vec<u8>>,
+    pub whole: u32,
+}
+
+pub fn read(b: [u8]) -> Read {
+    var out = Read { payloads: Vec::new(), whole: 0 }
+    var at = 0
+    while at + 12 <= b.len() {
+        var n: u32 = 0
+        for k in 0..4 {
+            n = n | (u32(b[at + k]) << (8 * k))
+        }
+        if n > MOST || b.len() - at - 12 < n {
+            break
+        }
+        let payload = bytes::slice(b, at + 4, at + 4 + n)
+        let h = hash(payload).bytes()
+        var same = true
+        for k in 0..8 {
+            if b[at + 4 + n + k] != h[k] {
+                same = false
+            }
+        }
+        if !same {
+            break
+        }
+        out.payloads.push(take payload)
+        at += n + 12
+        out.whole = at
+    }
+    out
+}
+
+@test
+fn a_log_reads_back_its_records_and_stops_at_a_torn_one() {
+    var log: Vec<u8> = Vec::new()
+    for text in ["one", "", "three"] {
+        bytes::push_run(mut log, record(bytes::of_str(text)))
+    }
+    let whole = log.len()
+    let r = read(log)
+    assert(r.payloads.len() == 3 && r.whole == whole, "three records")
+    assert(
+        bytes::same(r.payloads[2], bytes::of_str("three")) && r.payloads[1].is_empty(),
+        "payloads",
+    )
+    // A crash in the middle of the next record leaves it cut short.
+    let next = record(bytes::of_str("four"))
+    for cut in 0..next.len() {
+        var torn = log.clone()
+        bytes::push_run(mut torn, bytes::slice(next, 0, cut))
+        let t = read(torn)
+        assert(t.payloads.len() == 3 && t.whole == whole, f"cut at {cut}")
+    }
+    // A record whose bytes changed is where the log ends.
+    var bent = log.clone()
+    bent[5] = 0
+    assert(read(bent).payloads.is_empty(), "a changed first record")
+}

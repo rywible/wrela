@@ -1,0 +1,846 @@
+// What forge knows (spec/forge.md): main and its landings, the changes open against it, the
+// checks run on trees, and what they said. It changes only by events, which the log keeps in
+// order: `apply` folds an event into the state, so the state after a start is the fold of the
+// log. Nothing here does IO; the service (main.wrela) writes objects and events and applies them.
+//
+// A change is an overlay on main: the files it touched, each with main's version when it touched
+// it (`base`) and its own (`now`). Its view is main with its touches over it, so main's newer
+// files show through the files it didn't touch. When main lands a new version of a file a change
+// touched, the touch is stale until the service merges the two (`Merged`); a merge that conflicts
+// keeps main's version beside the change's until the change writes the file again.
+
+use blake3::Id
+use codec::{Bad, Dec, Enc}
+use object::{File, Files}
+
+/// A file a change touched.
+pub struct Touch: Clone + Eq {
+    /// Main's version when the change took the file (none: main had no file there).
+    pub base: Option<File>,
+    /// The change's version (none: the change removed the file).
+    pub now: Option<File>,
+    /// Main's newer version, which a merge couldn't carry the change onto.
+    pub conflict: Option<File>,
+}
+
+pub enum Status: Copy + Eq {
+    Open,
+    Landed,
+    Closed,
+}
+
+/// A tree a change named: a snapshot.
+pub struct Snap: Clone {
+    pub note: String,
+    pub tree: Id,
+    pub time: u64,
+}
+
+pub struct Change: Clone {
+    pub id: u64,
+    pub intent: String,
+    pub author: String,
+    pub model: String,
+    pub session: String,
+    pub machine: String,
+    pub opened: u64,
+    pub updated: u64,
+    pub status: Status,
+    pub touches: SortedMap<String, Touch>,
+    pub edits: u64,
+    pub snaps: Vec<Snap>,
+    /// Whether its author asked for it to land.
+    pub submitted: bool,
+    /// Its place on main, once landed.
+    pub seq: u64,
+    pub why_closed: String,
+}
+
+impl Change {
+    /// Its name: `c` and its number.
+    pub fn name(self) -> String {
+        f"c{self.id}"
+    }
+}
+
+/// A revision of main.
+pub struct Landing: Clone {
+    pub seq: u64,
+    pub revision: Id,
+    pub tree: Id,
+    /// The change that landed it; 0 for an imported revision.
+    pub change: u64,
+    pub time: u64,
+    pub by: String,
+    pub intent: String,
+}
+
+pub enum Run: Copy + Eq {
+    Queued,
+    Running,
+    Done,
+}
+
+/// A check of a tree.
+pub struct Job: Clone {
+    pub id: u64,
+    /// `suite`, or one `tools/check.sh` name.
+    pub check: String,
+    pub tree: Id,
+    /// The change whose tree it checks; 0 for main's.
+    pub change: u64,
+    pub run: Run,
+    pub worker: String,
+    pub queued: u64,
+    pub started: u64,
+    pub ended: u64,
+    /// What it said, once done.
+    pub evidence: Id,
+    pub passed: bool,
+    /// Its try: 1, or 2 for a failure tried again to see whether it flakes.
+    pub attempt: u32,
+}
+
+/// What a check has said on main's trees: how often it ran and failed, and how often one tree
+/// both passed and failed.
+pub struct Flakes: Clone {
+    pub runs: u64,
+    pub fails: u64,
+    pub flips: u64,
+}
+
+pub struct State: Clone {
+    pub seq: u64,
+    pub head: Id,
+    pub tree: Id,
+    /// Main's files.
+    pub files: Files,
+    pub landings: Vec<Landing>,
+    pub changes: SortedMap<u64, Change>,
+    pub next_change: u64,
+    pub jobs: SortedMap<u64, Job>,
+    pub next_job: u64,
+    pub flakes: SortedMap<String, Flakes>,
+    /// Checks Ryan let a change land without passing: by check.
+    pub waived: SortedMap<String, String>,
+}
+
+pub fn new() -> State {
+    State {
+        seq: 0,
+        head: Id::zero(),
+        tree: Id::zero(),
+        files: SortedMap::new(),
+        landings: Vec::new(),
+        changes: SortedMap::new(),
+        next_change: 1,
+        jobs: SortedMap::new(),
+        next_job: 1,
+        flakes: SortedMap::new(),
+        waived: SortedMap::new(),
+    }
+}
+
+/// What happened, as the log keeps it.
+pub enum Event: Clone {
+    Opened {
+        change: u64,
+        intent: String,
+        author: String,
+        model: String,
+        session: String,
+        machine: String,
+        time: u64,
+    },
+    /// A change wrote a file (none: removed it).
+    Wrote { change: u64, path: String, file: Option<File>, time: u64 },
+    Snapped { change: u64, note: String, tree: Id, time: u64 },
+    /// The service carried a change's file onto main's newer version: the merge, or a conflict.
+    Merged {
+        change: u64,
+        path: String,
+        base: Option<File>,
+        now: Option<File>,
+        conflict: Option<File>,
+    },
+    Submitted { change: u64, time: u64 },
+    Closed { change: u64, why: String, time: u64 },
+    /// Main moved to a new revision: what it changed.
+    Landed {
+        seq: u64,
+        change: u64,
+        revision: Id,
+        tree: Id,
+        time: u64,
+        by: String,
+        intent: String,
+        files: Vec<(String, Option<File>)>,
+    },
+    Queued { job: u64, check: String, tree: Id, change: u64, attempt: u32, time: u64 },
+    Started { job: u64, worker: String, time: u64 },
+    Finished { job: u64, evidence: Id, passed: bool, time: u64 },
+    Waived { check: String, why: String },
+}
+
+// ---- the log's bytes of an event ---------------------------------------------------------------
+
+fn enc_file(e: mut Enc, f: Option<File>) {
+    match f {
+        Some(x) => {
+            e.u8(if x.exec { 2 } else { 1 })
+            e.id(x.id)
+            e.num(x.size)
+        },
+        None => e.u8(0),
+    }
+}
+
+fn dec_file(d: mut Dec) -> Result<Option<File>, Bad> {
+    let k = d.u8()?
+    if k == 0 {
+        return Ok(None)
+    }
+    let id = d.id()?
+    let size = d.num()?
+    Ok(Some(File { id, exec: k == 2, size }))
+}
+
+/// An event's bytes: a byte for its kind, then its fields in order.
+pub fn encode(ev: Event) -> Vec<u8> {
+    var e = Enc::new()
+    match ev {
+        Event::Opened { change, intent, author, model, session, machine, time } => {
+            e.u8(1)
+            e.num(change)
+            e.str(intent.as_str())
+            e.str(author.as_str())
+            e.str(model.as_str())
+            e.str(session.as_str())
+            e.str(machine.as_str())
+            e.num(time)
+        },
+        Event::Wrote { change, path, file, time } => {
+            e.u8(2)
+            e.num(change)
+            e.str(path.as_str())
+            enc_file(mut e, file)
+            e.num(time)
+        },
+        Event::Snapped { change, note, tree, time } => {
+            e.u8(3)
+            e.num(change)
+            e.str(note.as_str())
+            e.id(tree)
+            e.num(time)
+        },
+        Event::Merged { change, path, base, now, conflict } => {
+            e.u8(4)
+            e.num(change)
+            e.str(path.as_str())
+            enc_file(mut e, base)
+            enc_file(mut e, now)
+            enc_file(mut e, conflict)
+        },
+        Event::Submitted { change, time } => {
+            e.u8(5)
+            e.num(change)
+            e.num(time)
+        },
+        Event::Closed { change, why, time } => {
+            e.u8(6)
+            e.num(change)
+            e.str(why.as_str())
+            e.num(time)
+        },
+        Event::Landed { seq, change, revision, tree, time, by, intent, files } => {
+            e.u8(7)
+            e.num(seq)
+            e.num(change)
+            e.id(revision)
+            e.id(tree)
+            e.num(time)
+            e.str(by.as_str())
+            e.str(intent.as_str())
+            e.num(u64(files.len()))
+            for (path, f) in files {
+                e.str(path.as_str())
+                enc_file(mut e, f)
+            }
+        },
+        Event::Queued { job, check, tree, change, attempt, time } => {
+            e.u8(8)
+            e.num(job)
+            e.str(check.as_str())
+            e.id(tree)
+            e.num(change)
+            e.num(u64(attempt))
+            e.num(time)
+        },
+        Event::Started { job, worker, time } => {
+            e.u8(9)
+            e.num(job)
+            e.str(worker.as_str())
+            e.num(time)
+        },
+        Event::Finished { job, evidence, passed, time } => {
+            e.u8(10)
+            e.num(job)
+            e.id(evidence)
+            e.bool(passed)
+            e.num(time)
+        },
+        Event::Waived { check, why } => {
+            e.u8(11)
+            e.str(check.as_str())
+            e.str(why.as_str())
+        },
+    }
+    take e.bytes
+}
+
+pub fn decode(bytes: take Vec<u8>) -> Result<Event, Bad> {
+    var d = Dec::new(take bytes)
+    let ev = match d.u8()? {
+        1 => Event::Opened {
+            change: d.num()?,
+            intent: d.string()?,
+            author: d.string()?,
+            model: d.string()?,
+            session: d.string()?,
+            machine: d.string()?,
+            time: d.num()?,
+        },
+        2 => Event::Wrote {
+            change: d.num()?,
+            path: d.string()?,
+            file: dec_file(mut d)?,
+            time: d.num()?,
+        },
+        3 => Event::Snapped { change: d.num()?, note: d.string()?, tree: d.id()?, time: d.num()? },
+        4 => Event::Merged {
+            change: d.num()?,
+            path: d.string()?,
+            base: dec_file(mut d)?,
+            now: dec_file(mut d)?,
+            conflict: dec_file(mut d)?,
+        },
+        5 => Event::Submitted { change: d.num()?, time: d.num()? },
+        6 => Event::Closed { change: d.num()?, why: d.string()?, time: d.num()? },
+        7 => {
+            let seq = d.num()?
+            let change = d.num()?
+            let revision = d.id()?
+            let tree = d.id()?
+            let time = d.num()?
+            let by = d.string()?
+            let intent = d.string()?
+            let n = d.small()?
+            var files: Vec<(String, Option<File>)> = Vec::with_capacity(n)
+            for _ in 0..n {
+                let path = d.string()?
+                let file = dec_file(mut d)?
+                files.push((take path, file))
+            }
+            Event::Landed { seq, change, revision, tree, time, by, intent, files }
+        },
+        8 => Event::Queued {
+            job: d.num()?,
+            check: d.string()?,
+            tree: d.id()?,
+            change: d.num()?,
+            attempt: d.small()?,
+            time: d.num()?,
+        },
+        9 => Event::Started { job: d.num()?, worker: d.string()?, time: d.num()? },
+        10 => Event::Finished {
+            job: d.num()?,
+            evidence: d.id()?,
+            passed: d.bool()?,
+            time: d.num()?,
+        },
+        11 => Event::Waived { check: d.string()?, why: d.string()? },
+        k => return Err(Bad { why: f"an event of kind {k}" }),
+    }
+    d.end()?
+    Ok(ev)
+}
+
+// ---- folding events ----------------------------------------------------------------------------
+
+/// Why an event can't apply to the state: the log isn't this state's, or a bug wrote it.
+pub fn apply(s: mut State, ev: take Event) -> Result<(), String> {
+    match take ev {
+        Event::Opened { change, intent, author, model, session, machine, time } => {
+            if s.changes.contains(change) {
+                return Err(f"c{change} opens twice")
+            }
+            let _ = s.changes.insert(
+                change,
+                Change {
+                    id: change,
+                    intent,
+                    author,
+                    model,
+                    session,
+                    machine,
+                    opened: time,
+                    updated: time,
+                    status: Status::Open,
+                    touches: SortedMap::new(),
+                    edits: 0,
+                    snaps: Vec::new(),
+                    submitted: false,
+                    seq: 0,
+                    why_closed: String::new(),
+                },
+            )
+            s.next_change = max(s.next_change, change + 1)
+        },
+        Event::Wrote { change, path, file, time } => {
+            let main = s.files.get(path.clone())
+            if let Some(why) = not_open(s, change) {
+                return Err(why)
+            }
+            mut c = s.changes.at_mut(change)
+            c.edits += 1
+            c.updated = time
+            if c.touches.contains(path.clone()) {
+                mut t = c.touches.at_mut(path.clone())
+                // A write after a conflict takes main's version as its base: the change has seen it.
+                if let Some(theirs) = t.conflict {
+                    t.base = Some(theirs)
+                    t.conflict = None
+                }
+                t.now = file
+                if t.now == t.base {
+                    let _ = c.touches.remove(path)
+                }
+            } else if file != main {
+                let _ = c.touches.insert(take path, Touch { base: main, now: file, conflict: None })
+            }
+        },
+        Event::Snapped { change, note, tree, time } => {
+            if let Some(why) = not_open(s, change) {
+                return Err(why)
+            }
+            mut c = s.changes.at_mut(change)
+            c.snaps.push(Snap { note, tree, time })
+            c.updated = time
+        },
+        Event::Merged { change, path, base, now, conflict } => {
+            if let Some(why) = not_open(s, change) {
+                return Err(why)
+            }
+            mut c = s.changes.at_mut(change)
+            if base == now && conflict.is_none() {
+                let _ = c.touches.remove(path)
+            } else {
+                let _ = c.touches.insert(take path, Touch { base, now, conflict })
+            }
+        },
+        Event::Submitted { change, time } => {
+            if let Some(why) = not_open(s, change) {
+                return Err(why)
+            }
+            mut c = s.changes.at_mut(change)
+            c.submitted = true
+            c.updated = time
+        },
+        Event::Closed { change, why, time } => {
+            if let Some(why) = not_open(s, change) {
+                return Err(why)
+            }
+            mut c = s.changes.at_mut(change)
+            c.status = Status::Closed
+            c.why_closed = take why
+            c.updated = time
+        },
+        Event::Landed { seq, change, revision, tree, time, by, intent, files } => {
+            if seq != s.seq + 1 {
+                return Err(f"revision {seq} lands after {s.seq}")
+            }
+            for (path, f) in files {
+                match f {
+                    Some(x) => {
+                        let _ = s.files.insert(path.clone(), x)
+                    },
+                    None => {
+                        let _ = s.files.remove(path.clone())
+                    },
+                }
+            }
+            if change != 0 {
+                if let Some(why) = not_open(s, change) {
+                    return Err(why)
+                }
+                mut c = s.changes.at_mut(change)
+                c.status = Status::Landed
+                c.seq = seq
+                c.updated = time
+            }
+            s.seq = seq
+            s.head = revision
+            s.tree = tree
+            s.landings.push(Landing { seq, revision, tree, change, time, by, intent })
+        },
+        Event::Queued { job, check, tree, change, attempt, time } => {
+            let _ = s.jobs.insert(
+                job,
+                Job {
+                    id: job,
+                    check,
+                    tree,
+                    change,
+                    run: Run::Queued,
+                    worker: String::new(),
+                    queued: time,
+                    started: 0,
+                    ended: 0,
+                    evidence: Id::zero(),
+                    passed: false,
+                    attempt,
+                },
+            )
+            s.next_job = max(s.next_job, job + 1)
+        },
+        Event::Started { job, worker, time } => {
+            if !s.jobs.contains(job) {
+                return Err(f"j{job} starts but was never queued")
+            }
+            mut j = s.jobs.at_mut(job)
+            j.run = Run::Running
+            j.worker = take worker
+            j.started = time
+        },
+        Event::Finished { job, evidence, passed, time } => {
+            if !s.jobs.contains(job) {
+                return Err(f"j{job} ends but was never queued")
+            }
+            mut j = s.jobs.at_mut(job)
+            j.run = Run::Done
+            j.evidence = evidence
+            j.passed = passed
+            j.ended = time
+            let check = j.check.clone()
+            let tree = j.tree
+            let change = j.change
+            if change == 0 {
+                let flipped = said_otherwise(s, job, check.as_str(), tree, passed)
+                if !s.flakes.contains(check.clone()) {
+                    let _ = s.flakes.insert(check.clone(), Flakes { runs: 0, fails: 0, flips: 0 })
+                }
+                mut f = s.flakes.at_mut(check)
+                f.runs += 1
+                if !passed {
+                    f.fails += 1
+                }
+                if flipped {
+                    f.flips += 1
+                }
+            }
+        },
+        Event::Waived { check, why } => {
+            let _ = s.waived.insert(take check, take why)
+        },
+    }
+    Ok(())
+}
+
+/// Whether another finished run of `check` on `tree` said the opposite of `passed`.
+fn said_otherwise(s: State, job: u64, check: str, tree: Id, passed: bool) -> bool {
+    for j in s.jobs.values() {
+        if j.id != job &&
+            j.run == Run::Done &&
+            j.tree == tree &&
+            j.check.as_str() == check &&
+            j.passed != passed {
+            return true
+        }
+    }
+    false
+}
+
+/// Why change `change` isn't open, if it isn't.
+fn not_open(s: State, change: u64) -> Option<String> {
+    if !s.changes.contains(change) {
+        return Some(f"c{change} isn't a change")
+    }
+    if s.changes.at(change).status != Status::Open {
+        return Some(f"c{change} isn't open")
+    }
+    None
+}
+
+// ---- what a change sees ------------------------------------------------------------------------
+
+/// The file at `path` as change `c` sees it: its own version if it touched the file, else main's.
+pub fn file_in(s: State, c: Change, path: str) -> Option<File> {
+    let key = path.to_string()
+    if c.touches.contains(key.clone()) {
+        return c.touches.at(key).now
+    }
+    s.files.get(key)
+}
+
+/// The files change `c` sees: main's, with its touches over them.
+pub fn files_of(s: State, c: Change) -> Files {
+    var out = s.files.clone()
+    let paths = c.touches.keys()
+    let touches = c.touches.values()
+    for i in 0..paths.len() {
+        match touches[i].now {
+            Some(f) => {
+                let _ = out.insert(paths[i].clone(), f)
+            },
+            None => {
+                let _ = out.remove(paths[i].clone())
+            },
+        }
+    }
+    out
+}
+
+/// The touches of change `c` that main has moved past: main's file isn't the touch's base, and no
+/// conflict holds main's version yet.
+pub fn stale(s: State, c: Change) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    let paths = c.touches.keys()
+    let touches = c.touches.values()
+    for i in 0..paths.len() {
+        let t = touches[i].clone()
+        let main = s.files.get(paths[i].clone())
+        let behind = main != t.base && (t.conflict.is_none() || t.conflict != main)
+        if behind {
+            out.push(paths[i].clone())
+        }
+    }
+    out
+}
+
+/// The paths where change `c` conflicts with main.
+pub fn conflicts(c: Change) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    let paths = c.touches.keys()
+    let touches = c.touches.values()
+    for i in 0..paths.len() {
+        if touches[i].conflict.is_some() {
+            out.push(paths[i].clone())
+        }
+    }
+    out
+}
+
+/// The newest finished run of `check` on `tree`.
+pub fn newest_run(s: State, check: str, tree: Id) -> Option<Job> {
+    var best: Option<Job> = None
+    for j in s.jobs.values() {
+        if j.run == Run::Done && j.tree == tree && j.check.as_str() == check {
+            best = Some(j.clone())
+        }
+    }
+    best
+}
+
+/// Why change `c`, whose tree is `tree`, can't land on main now; none if it can. A change lands
+/// when it touched something, main hasn't moved past any of its files, nothing conflicts, and its
+/// exact tree passed the suite (or the suite was waived).
+pub fn why_not_land(s: State, c: Change, tree: Id) -> Option<String> {
+    if c.status != Status::Open {
+        return Some(f"{c.name()} isn't open")
+    }
+    if c.touches.is_empty() {
+        return Some(f"{c.name()} changes nothing")
+    }
+    let behind = stale(s, c)
+    if !behind.is_empty() {
+        return Some(f"main has moved past {behind.len()} of its files: they're being merged")
+    }
+    let clash = conflicts(c)
+    if !clash.is_empty() {
+        return Some(f"{clash.len()} of its files conflict with main, first {clash[0]}")
+    }
+    if s.waived.contains(String::from("suite")) {
+        return None
+    }
+    match newest_run(s, "suite", tree) {
+        Some(j) => if j.passed { None } else { Some(f"the suite failed on its tree (j{j.id})") },
+        None => Some(String::from("the suite hasn't passed on its exact tree")),
+    }
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+fn f(content: str) -> Option<File> {
+    let b = bytes::of_str(content)
+    Some(File { id: object::blob_id(b), exec: false, size: u64(b.len()) })
+}
+
+fn land(s: mut State, change: u64, files: take Vec<(String, Option<File>)>) {
+    let seq = s.seq + 1
+    let ev = Event::Landed {
+        seq,
+        change,
+        revision: object::blob_id(bytes::of_str(f"r{seq}")),
+        tree: object::blob_id(bytes::of_str(f"t{seq}")),
+        time: seq,
+        by: String::from("ryan"),
+        intent: String::from("land"),
+        files,
+    }
+    let Ok(()) = apply(mut s, take ev) else { panic("it lands") }
+}
+
+fn open(s: mut State, change: u64) {
+    let ev = Event::Opened {
+        change,
+        intent: String::from("an edit"),
+        author: String::from("agent"),
+        model: String::new(),
+        session: String::new(),
+        machine: String::new(),
+        time: 1,
+    }
+    let Ok(()) = apply(mut s, take ev) else { panic("it opens") }
+}
+
+fn write(s: mut State, change: u64, path: str, file: Option<File>) {
+    let ev = Event::Wrote { change, path: path.to_string(), file, time: 2 }
+    let Ok(()) = apply(mut s, take ev) else { panic("it writes") }
+}
+
+@test
+fn a_change_sees_main_through_what_it_didnt_touch() {
+    var s = new()
+    land(mut s, 0, Vec::from([(String::from("a"), f("1")), (String::from("b"), f("2"))]))
+    open(mut s, 1)
+    write(mut s, 1, "a", f("1 changed"))
+    write(mut s, 1, "c", f("new"))
+    let c = s.changes.at(1).clone()
+    assert(file_in(s, c, "a") == f("1 changed") && file_in(s, c, "b") == f("2"), "its a, main's b")
+    // Main lands a new b: the change sees it at once, and nothing it touched is stale.
+    land(mut s, 0, Vec::from([(String::from("b"), f("2 newer"))]))
+    let c2 = s.changes.at(1).clone()
+    assert(file_in(s, c2, "b") == f("2 newer"), "main's newer b")
+    assert(stale(s, c2).is_empty(), "nothing stale")
+    let files = files_of(s, c2)
+    assert(files.len() == 3 && files.get(String::from("c")) == f("new"), "three files")
+    // Writing a file back as main has it is no touch at all.
+    write(mut s, 1, "c", None)
+    write(mut s, 1, "a", f("1"))
+    assert(s.changes.at(1).touches.is_empty(), "nothing touched")
+}
+
+@test
+fn main_moving_past_a_touch_makes_it_stale_until_merged() {
+    var s = new()
+    land(mut s, 0, Vec::from([(String::from("a"), f("1"))]))
+    open(mut s, 1)
+    write(mut s, 1, "a", f("ours"))
+    land(mut s, 0, Vec::from([(String::from("a"), f("theirs"))]))
+    let c = s.changes.at(1).clone()
+    assert(stale(s, c).len() == 1, "a is stale")
+    assert(why_not_land(s, c, Id::zero()).is_some(), "a stale change doesn't land")
+    // The merge conflicts: main's version is kept beside the change's.
+    let merged = Event::Merged {
+        change: 1,
+        path: String::from("a"),
+        base: f("1"),
+        now: f("ours"),
+        conflict: f("theirs"),
+    }
+    let Ok(()) = apply(mut s, take merged) else { panic("it merges") }
+    let c2 = s.changes.at(1).clone()
+    assert(stale(s, c2).is_empty() && conflicts(c2).len() == 1, "a conflict, not stale")
+    // The change writes the file again: the conflict is resolved, with main's as its base.
+    write(mut s, 1, "a", f("both"))
+    let c3 = s.changes.at(1).clone()
+    assert(
+        conflicts(c3).is_empty() && c3.touches.at(String::from("a")).base == f("theirs"),
+        "resolved",
+    )
+}
+
+@test
+fn a_change_lands_only_on_a_passing_suite_of_its_exact_tree() {
+    var s = new()
+    land(mut s, 0, Vec::from([(String::from("a"), f("1"))]))
+    open(mut s, 1)
+    write(mut s, 1, "a", f("2"))
+    let tree = object::blob_id(bytes::of_str("the change's tree"))
+    let c = s.changes.at(1).clone()
+    assert(why_not_land(s, c.clone(), tree).is_some(), "no suite yet")
+    let queued = Event::Queued {
+        job: 1,
+        check: String::from("suite"),
+        tree,
+        change: 1,
+        attempt: 1,
+        time: 3,
+    }
+    let Ok(()) = apply(mut s, take queued) else { panic("queued") }
+    let done = Event::Finished { job: 1, evidence: Id::zero(), passed: true, time: 4 }
+    let Ok(()) = apply(mut s, take done) else { panic("finished") }
+    assert(why_not_land(s, c.clone(), tree).is_none(), "its tree passed")
+    let other = object::blob_id(bytes::of_str("another tree"))
+    assert(why_not_land(s, c, other).is_some(), "another tree's pass isn't its")
+}
+
+@test
+fn events_read_back_as_they_were_written() {
+    let evs: [Event; 4] = [
+        Event::Opened {
+            change: 3,
+            intent: String::from("i"),
+            author: String::from("a"),
+            model: String::from("m"),
+            session: String::from("s"),
+            machine: String::from("x"),
+            time: 9,
+        },
+        Event::Wrote { change: 3, path: String::from("p/q"), file: f("z"), time: 10 },
+        Event::Merged {
+            change: 3,
+            path: String::from("p"),
+            base: None,
+            now: f("1"),
+            conflict: f("2"),
+        },
+        Event::Landed {
+            seq: 1,
+            change: 3,
+            revision: Id::zero(),
+            tree: Id::zero(),
+            time: 11,
+            by: String::from("ryan"),
+            intent: String::from("i"),
+            files: Vec::from([(String::from("p/q"), f("z")), (String::from("gone"), None)]),
+        },
+    ]
+    for ev in evs {
+        let b = encode(ev.clone())
+        let Ok(back) = decode(b.clone()) else { panic("it decodes") }
+        assert(bytes::same(encode(back), b), "the same bytes again")
+    }
+    assert(decode(Vec::from([99])).is_err(), "an unknown kind")
+}
+
+@test
+fn a_check_that_flips_on_one_tree_counts_as_a_flake() {
+    var s = new()
+    let tree = Id::zero()
+    for (job, passed) in [(1, false), (2, true)] {
+        let q = Event::Queued {
+            job,
+            check: String::from("browser"),
+            tree,
+            change: 0,
+            attempt: 1,
+            time: 1,
+        }
+        let Ok(()) = apply(mut s, take q) else { panic("queued") }
+        let d = Event::Finished { job, evidence: Id::zero(), passed, time: 2 }
+        let Ok(()) = apply(mut s, take d) else { panic("finished") }
+    }
+    let fl = s.flakes.at(String::from("browser")).clone()
+    assert(fl.runs == 2 && fl.fails == 1 && fl.flips == 1, "one flip")
+}

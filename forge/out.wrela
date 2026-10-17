@@ -1,0 +1,126 @@
+// JSON written as it goes: an object's or an array's members, separated by commas as they're
+// added. `std::fmt`'s `json_text` writes the strings' bodies.
+
+use std::fmt::json_text
+
+pub struct Json: Clone {
+    pub text: String,
+    /// For each open object or array: whether it has a member yet.
+    open: Vec<bool>,
+}
+
+impl Json {
+    pub fn new() -> Json {
+        Json { text: String::new(), open: Vec::new() }
+    }
+
+    fn comma(mut self) {
+        let n = self.open.len()
+        if n > 0 {
+            if self.open[n - 1] {
+                self.text.push_str(",")
+            }
+            self.open[n - 1] = true
+        }
+    }
+
+    pub fn obj(mut self) {
+        self.comma()
+        self.text.push_str("{")
+        self.open.push(false)
+    }
+
+    pub fn arr(mut self) {
+        self.comma()
+        self.text.push_str("[")
+        self.open.push(false)
+    }
+
+    pub fn end_obj(mut self) {
+        let _ = self.open.pop()
+        self.text.push_str("}")
+    }
+
+    pub fn end_arr(mut self) {
+        let _ = self.open.pop()
+        self.text.push_str("]")
+    }
+
+    /// A member's key: its value comes next.
+    pub fn key(mut self, k: str) {
+        self.comma()
+        self.text.push_str("\"")
+        json_text(mut self.text, k)
+        self.text.push_str("\":")
+        // The value isn't a member of its own.
+        let n = self.open.len()
+        self.open[n - 1] = false
+    }
+
+    pub fn str(mut self, s: str) {
+        self.comma()
+        self.text.push_str("\"")
+        json_text(mut self.text, s)
+        self.text.push_str("\"")
+    }
+
+    pub fn num(mut self, x: u64) {
+        self.comma()
+        self.text.push_str(f"{x}")
+    }
+
+    pub fn int(mut self, x: i64) {
+        self.comma()
+        self.text.push_str(f"{x}")
+    }
+
+    pub fn bool(mut self, b: bool) {
+        self.comma()
+        self.text.push_str(if b { "true" } else { "false" })
+    }
+
+    pub fn null(mut self) {
+        self.comma()
+        self.text.push_str("null")
+    }
+
+    /// JSON already written, as a value.
+    pub fn raw(mut self, json: str) {
+        self.comma()
+        self.text.push_str(json)
+    }
+
+    // A member of each kind, key and value at once.
+
+    pub fn kstr(mut self, k: str, v: str) {
+        self.key(k)
+        self.str(v)
+    }
+
+    pub fn knum(mut self, k: str, v: u64) {
+        self.key(k)
+        self.num(v)
+    }
+
+    pub fn kbool(mut self, k: str, v: bool) {
+        self.key(k)
+        self.bool(v)
+    }
+}
+
+@test
+fn json_is_written_with_its_commas() {
+    var j = Json::new()
+    j.obj()
+    j.kstr("a", "x\"y")
+    j.key("list")
+    j.arr()
+    j.num(1)
+    j.bool(false)
+    j.obj()
+    j.end_obj()
+    j.end_arr()
+    j.knum("n", 3)
+    j.end_obj()
+    assert(j.text.as_str() == "{\"a\":\"x\\\"y\",\"list\":[1,false,{}],\"n\":3}", j.text.as_str())
+}
