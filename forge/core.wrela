@@ -1115,8 +1115,10 @@ fn land(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
 /// What indexing a tree gave: its index's JSON, or why there's none yet.
 enum Indexed: Clone {
     Ready(String),
-    /// Being made: the job, and what to make durable to queue it if it isn't queued yet.
-    Making { job: u64, durable: Durable },
+    /// Being made by job `0`.
+    Making(u64),
+    /// Not asked for yet: the caller queues it.
+    Missing,
     Failed(String),
     Need(Vec<Id>),
 }
@@ -1135,62 +1137,61 @@ fn tree_named(c: Core, doc: Doc, args: u32, seq_key: str) -> Result<Id, String> 
     Ok(c.state.landings[u32(seq - 1)].tree)
 }
 
-/// The index of `package` at `tree`.
-fn index_of(c: Core, ctx: Ctx, tree: Id, pkg: str, next: u64) -> Indexed {
+/// The index of `package` at `tree`: its newest finished index, else the one being made, else
+/// none (`Missing`). It reads what forge knows, and makes nothing.
+fn index_of(c: Core, tree: Id, pkg: str) -> Indexed {
     let check = f"index:{pkg}"
-    var queued: Option<state::Job> = None
+    if let Some(j) = state::newest_run(c.state, check.as_str(), tree) {
+        let Some(xb) = c.blobs.get(j.evidence) else {
+            return Indexed::Need(Vec::from([j.evidence]))
+        }
+        let Ok(x) = object::evidence_of(xb) else {
+            return Indexed::Failed(String::from("the index's evidence is malformed"))
+        }
+        let Some(log) = c.blobs.get(x.log) else { return Indexed::Need(Vec::from([x.log])) }
+        if !j.passed {
+            let start = if log.len() > 2000 { log.len() - 2000 } else { 0 }
+            let tail = bytes::text_of(bytes::slice(log, start, log.len()))
+            return Indexed::Failed(f"indexing failed (j{j.id}): {tail}")
+        }
+        // The index is the job's stdout: what comes before its stderr.
+        let marker = bytes::of_str("\n---- stderr ----\n")
+        let end = bytes::find(log, marker, 0).unwrap_or(log.len())
+        return Indexed::Ready(bytes::text_of(bytes::slice(log, 0, end)))
+    }
     for j in c.state.jobs.values() {
         if j.tree == tree && j.check.as_str() == check.as_str() && j.run != Run::Done {
-            queued = Some(j.clone())
+            return Indexed::Making(j.id)
         }
     }
-    if let Some(j) = queued {
-        return Indexed::Making { job: j.id, durable: nothing() }
-    }
-    match state::newest_run(c.state, check.as_str(), tree) {
-        Some(j) => {
-            let Some(xb) = c.blobs.get(j.evidence) else {
-                return Indexed::Need(Vec::from([j.evidence]))
-            }
-            let Ok(x) = object::evidence_of(xb) else {
-                return Indexed::Failed(String::from("the index's evidence is malformed"))
-            }
-            let Some(log) = c.blobs.get(x.log) else { return Indexed::Need(Vec::from([x.log])) }
-            // The index is the job's stdout: what comes before its stderr.
-            let marker = bytes::of_str("\n---- stderr ----\n")
-            let end = bytes::find(log, marker, 0).unwrap_or(log.len())
-            let text = bytes::text_of(bytes::slice(log, 0, end))
-            if !j.passed {
-                let start = if log.len() > 2000 { log.len() - 2000 } else { 0 }
-                return Indexed::Failed(
-                    f"indexing failed (j{j.id}): {bytes::text_of(bytes::slice(log, start, log.len()))}",
-                )
-            }
-            Indexed::Ready(text)
-        },
-        None => {
-            let ev = Event::Queued { job: next, check, tree, change: 0, attempt: 1, time: ctx.now }
-            Indexed::Making {
-                job: next,
-                durable: Durable { objects: Vec::new(), events: Vec::from([take ev]) },
-            }
-        },
-    }
+    Indexed::Missing
 }
 
-/// An index's answer when it isn't ready: being made, failed, or what to load.
-fn not_ready(i: take Indexed) -> Outcome {
-    match take i {
-        Indexed::Making { job, durable } => {
-            var j = Json::new()
-            j.obj()
-            j.kstr("indexing", f"j{job}".as_str())
-            j.kstr("then", "ask again once the job is done")
-            j.end_obj()
-            Outcome::Done { json: take j.text, error: false, durable }
+/// The answer that an index is being made by job `job`, with what queues it (if anything).
+fn making(job: u64, durable: take Durable) -> Outcome {
+    var j = Json::new()
+    j.obj()
+    j.kstr("indexing", f"j{job}".as_str())
+    j.kstr("then", "ask again once the job is done")
+    j.end_obj()
+    Outcome::Done { json: take j.text, error: false, durable }
+}
+
+/// The event that queues the index of `pkg` at `tree` as job `job`.
+fn queue_index(ctx: Ctx, tree: Id, pkg: str, job: u64) -> Event {
+    Event::Queued { job, check: f"index:{pkg}", tree, change: 0, attempt: 1, time: ctx.now }
+}
+
+/// The answer for an index that isn't ready; `Missing` is queued as job `next`.
+fn not_ready(i: Indexed, ctx: Ctx, tree: Id, pkg: str, next: u64) -> Outcome {
+    match i {
+        Indexed::Making(job) => making(job, nothing()),
+        Indexed::Missing => {
+            let ev = queue_index(ctx, tree, pkg, next)
+            making(next, Durable { objects: Vec::new(), events: Vec::from([take ev]) })
         },
         Indexed::Failed(why) => fail(why.as_str()),
-        Indexed::Need(ids) => Outcome::Need(ids),
+        Indexed::Need(ids) => Outcome::Need(ids.clone()),
         Indexed::Ready(_) => fail("the index is ready"),
     }
 }
@@ -1260,32 +1261,14 @@ fn items(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
         Ok(t) => t,
         Err(why) => return fail(why.as_str()),
     }
-    match index_of(c, ctx, tree, pkg.as_str(), c.state.next_job) {
-        Indexed::Ready(text) => match items_json(text.as_str(), arg(doc, args, "path").as_str()) {
-            Ok(json) => Outcome::Done { json, error: false, durable: nothing() },
-            Err(why) => fail(why.as_str()),
-        },
-        other => not_ready(take other),
+    let i = index_of(c, tree, pkg.as_str())
+    let Indexed::Ready(text) = i else {
+        return not_ready(i, ctx, tree, pkg.as_str(), c.state.next_job)
     }
-}
-
-/// Each item of index `text`: its path, and its signature's and body's hashes.
-fn hashes(text: str) -> Result<SortedMap<String, (String, String)>, String> {
-    let Ok(doc) = Doc::read(bytes::of_str(text)) else {
-        return Err(String::from("the index isn't JSON"))
+    match items_json(text.as_str(), arg(doc, args, "path").as_str()) {
+        Ok(json) => Outcome::Done { json: json.clone(), error: false, durable: nothing() },
+        Err(why) => fail(why.as_str()),
     }
-    let Some(list) = doc.get(doc.root, "items") else {
-        return Err(String::from("the index has no items"))
-    }
-    var out: SortedMap<String, (String, String)> = SortedMap::new()
-    for i in 0..doc.count(list) {
-        let it = doc.at(list, i)
-        let _ = out.insert(
-            doc.field(it, "path").to_string(),
-            (doc.field(it, "signature").to_string(), doc.field(it, "body").to_string()),
-        )
-    }
-    Ok(out)
 }
 
 fn changed(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
@@ -1301,60 +1284,94 @@ fn changed(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
         Ok(t) => t,
         Err(why) => return fail(why.as_str()),
     }
-    let ia = index_of(c, ctx, a, pkg.as_str(), c.state.next_job)
-    // A second index queued in the same call takes the next job's number.
-    let queued_a = match ia {
-        Indexed::Making { durable, .. } => durable.events.len(),
-        _ => 0,
+    let ia = index_of(c, a, pkg.as_str())
+    let ib = index_of(c, b, pkg.as_str())
+    let ta = match ia {
+        Indexed::Ready(t) => t.clone(),
+        _ => String::new(),
     }
-    let ib = index_of(c, ctx, b, pkg.as_str(), c.state.next_job + u64(queued_a))
-    let (ta, tb) = match (take ia, take ib) {
-        (Indexed::Ready(x), Indexed::Ready(y)) => (take x, take y),
-        (Indexed::Making { job, durable }, Indexed::Making { durable: d2, .. }) => {
-            var events = durable.events.clone()
-            for ev in d2.events {
-                events.push(ev.clone())
+    let tb = match ib {
+        Indexed::Ready(t) => t.clone(),
+        _ => String::new(),
+    }
+    if ta.is_empty() || tb.is_empty() {
+        // Queue each index that's missing (the second after the first), and say which job to wait for.
+        var events: Vec<Event> = Vec::new()
+        var job: u64 = 0
+        var next = c.state.next_job
+        for (i, tree) in [(ia.clone(), a), (ib.clone(), b)] {
+            match i {
+                Indexed::Ready(_) => {},
+                Indexed::Making(n) => {
+                    if job == 0 {
+                        job = n
+                    }
+                },
+                Indexed::Missing => {
+                    if a == b && !events.is_empty() {
+                        continue
+                    }
+                    events.push(queue_index(ctx, tree, pkg.as_str(), next))
+                    if job == 0 {
+                        job = next
+                    }
+                    next += 1
+                },
+                Indexed::Failed(why) => return fail(why.as_str()),
+                Indexed::Need(ids) => return Outcome::Need(ids.clone()),
             }
-            return not_ready(
-                Indexed::Making { job, durable: Durable { objects: Vec::new(), events } },
-            )
-        },
-        (Indexed::Ready(_), other) => return not_ready(take other),
-        (other, _) => return not_ready(take other),
+        }
+        return making(job, Durable { objects: Vec::new(), events })
     }
-    let (Ok(ha), Ok(hb)) = (hashes(ta.as_str()), hashes(tb.as_str())) else {
-        return fail("an index isn't JSON")
+    let da = match Doc::read(bytes::of_str(ta.as_str())) {
+        Ok(d) => take d,
+        Err(_) => return fail("an index isn't JSON"),
     }
+    let db = match Doc::read(bytes::of_str(tb.as_str())) {
+        Ok(d) => take d,
+        Err(_) => return fail("an index isn't JSON"),
+    }
+    let Some(la) = da.get(da.root, "items") else { return fail("an index has no items") }
+    let Some(lb) = db.get(db.root, "items") else { return fail("an index has no items") }
+    // Each item of `to` by its path: its place in the list.
+    var at: SortedMap<String, u32> = SortedMap::new()
+    for i in 0..db.count(lb) {
+        let _ = at.insert(db.field(db.at(lb, i), "path").to_string(), i)
+    }
+    var seen: SortedMap<String, bool> = SortedMap::new()
     var j = Json::new()
     j.obj()
     j.key("items")
     j.arr()
-    let ka = ha.keys()
-    let va = ha.values()
-    for i in 0..ka.len() {
-        let what = match hb.get(ka[i].clone()) {
+    for i in 0..da.count(la) {
+        let x = da.at(la, i)
+        let path = da.field(x, "path")
+        let what = match at.get(path.to_string()) {
             None => "removed",
-            Some((sig, body)) => {
-                if sig.as_str() != va[i].0.as_str() {
+            Some(k) => {
+                let y = db.at(lb, k)
+                if da.field(x, "signature") != db.field(y, "signature") {
                     "signature"
-                } else if body.as_str() != va[i].1.as_str() {
+                } else if da.field(x, "body") != db.field(y, "body") {
                     "body"
                 } else {
                     ""
                 }
             },
         }
+        let _ = seen.insert(path.to_string(), value: true)
         if !what.is_empty() {
             j.obj()
-            j.kstr("path", ka[i].as_str())
+            j.kstr("path", path)
             j.kstr("changed", what)
             j.end_obj()
         }
     }
-    for k in hb.keys() {
-        if !ha.contains(k.clone()) {
+    for i in 0..db.count(lb) {
+        let path = db.field(db.at(lb, i), "path")
+        if !seen.contains(path.to_string()) {
             j.obj()
-            j.kstr("path", k.as_str())
+            j.kstr("path", path)
             j.kstr("changed", "added")
             j.end_obj()
         }
@@ -1377,9 +1394,9 @@ fn callers(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
         Ok(t) => t,
         Err(why) => return fail(why.as_str()),
     }
-    let text = match index_of(c, ctx, tree, pkg.as_str(), c.state.next_job) {
-        Indexed::Ready(t) => take t,
-        other => return not_ready(take other),
+    let i = index_of(c, tree, pkg.as_str())
+    let Indexed::Ready(text) = i else {
+        return not_ready(i, ctx, tree, pkg.as_str(), c.state.next_job)
     }
     let Ok(d) = Doc::read(bytes::of_str(text.as_str())) else { return fail("the index isn't JSON") }
     let Some(list) = d.get(d.root, "items") else { return fail("the index has no items") }
@@ -1771,6 +1788,13 @@ fn the_item_index_answers_items_changes_and_callers() {
     // The first ask queues the index of revision 2.
     let first = run(mut c, "items", "{\"package\":\"e\"}")
     assert(first.field(first.root, "indexing").starts_with("j"), "it indexes")
+    assert(
+        c.state.jobs.len() == 1,
+        f"one job queued, not {c.state.jobs.len()}; changes {c.state.changes.len()}",
+    )
+    let queued = c.state.jobs.values()[0].clone()
+    assert(queued.check.as_str() == "index:e", queued.check.as_str())
+    assert(c.state.changes.is_empty(), "no change")
     let one = "{\"errors\":0,\"items\":[{\"path\":\"a::f\",\"kind\":\"function\",\"file\":\"a.wrela\",\"line\":1,\"end_line\":2,\"signature\":\"s1\",\"body\":\"b1\",\"effects\":[],\"calls\":[\"a::g\"]},{\"path\":\"a::g\",\"kind\":\"function\",\"file\":\"a.wrela\",\"line\":3,\"end_line\":4,\"signature\":\"s2\",\"body\":\"b2\",\"effects\":[],\"calls\":[]}]}"
     let two = "{\"errors\":0,\"items\":[{\"path\":\"a::f\",\"kind\":\"function\",\"file\":\"a.wrela\",\"line\":1,\"end_line\":2,\"signature\":\"s1\",\"body\":\"b9\",\"effects\":[],\"calls\":[\"a::g\"]},{\"path\":\"a::h\",\"kind\":\"function\",\"file\":\"a.wrela\",\"line\":3,\"end_line\":4,\"signature\":\"s3\",\"body\":\"b3\",\"effects\":[],\"calls\":[\"a::g\"]}]}"
     indexed(mut c, 1, "e", one)

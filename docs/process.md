@@ -2557,8 +2557,23 @@ for a live layer later (code rooms that apply edits in order exactly once, notic
 agents, a studio view of agents at work), once rooms have a versioned protocol in place of the
 pair id and a wire format that doesn't depend on the build.
 
-Not done yet: replication and the offsite backup, a workspace client for local tools, forge
-keeping and answering the item index, reuse of results, and the cut-over itself.
+A replica (`forge replica`) follows the service's log and holds each landing, objects first,
+before the service answers it (`--acks N`); `forge serve` on a replica's data is the service.
+Workspaces put a change's files on disk for the work that needs them (`forge pull`, `forge push`,
+with `.forgeignore`): on the M4 Air a pull of main's 2,032 files takes 2.7 s and matches
+`git archive`. forge keeps each revision's item index, made by that revision's own compiler on a
+worker (`index:<package>`), and answers `items`, `changed` and `callers` from it: on the engine at
+main's newest revision, 2,939 items in a 15 s job, and 33 callers of `noise::rand`.
+`tools/forge` runs a pinned install of forge, so a broken checkout can't break the command.
+
+Building forge found two compiler bugs that free a value twice: a whole value bound by a catch-all
+`match` arm and moved (`other => take other`), and a temporary an `assert`'s operand borrows. The
+first wrote a corrupted event to a test store's log before forge was changed to copy instead; forge
+now also refuses a change numbered 0. Both have minimal repros, for a fix in the compiler.
+
+Not done yet: the offsite backup and a fence that stops an old service once a replica is promoted;
+callers' identities through tailscale (forge trusts the loopback and `--landers` addresses);
+releases deployed by forge in place of GitHub Actions; reuse of results; and the cut-over itself.
 
 ## Keeping this record
 

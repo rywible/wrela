@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""forge's command (spec/forge.md), run from a pinned install: what agents and people call.
+
+    tools/forge install              build forge and pin it (and its host) under ~/.forge
+    tools/forge help                 every tool, with its arguments
+    tools/forge <tool> key=value...  a call to the service; pull and push use this directory
+    tools/forge serve|work|replica [--data DIR] [--work DIR] ...
+
+The install is pinned: a checkout whose compiler is broken still runs the forge it installed.
+`--data` and `--work` (by default ~/.forge/data and ~/.forge/work) are the store and the checkout
+the service, a worker or a replica keeps; FORGE_HOME moves ~/.forge.
+"""
+import hashlib
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+HOME = Path(os.environ.get("FORGE_HOME", Path.home() / ".forge"))
+ROOT = Path(__file__).resolve().parent.parent
+KEEPS = ("serve", "work", "replica")
+
+
+def install():
+    """Builds the service host and forge, copies both to a directory named by their hash, and
+    points `current` at it: the path of the install."""
+    subprocess.run(["cargo", "build", "-q", "--release", "-p", "wrela", "-p", "wrela-service", "--bins"],
+                   cwd=ROOT, check=True)
+    target = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")).resolve() / "release"
+    subprocess.run([str(target / "wrela"), "build", str(ROOT / "forge")], cwd=ROOT, check=True)
+    host = (target / "wrela-service").read_bytes()
+    wasm = (ROOT / "forge/build/server/game.wasm").read_bytes()
+    digest = hashlib.sha256(host + wasm).hexdigest()[:16]
+    dest = HOME / "builds" / digest
+    (dest / "build/server").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(target / "wrela-service", dest / "wrela-service")
+    (dest / "build/server/game.wasm").write_bytes(wasm)
+    current = HOME / "current"
+    tmp = HOME / f"current.{os.getpid()}"
+    tmp.unlink(missing_ok=True)
+    tmp.symlink_to(dest)
+    tmp.replace(current)
+    return dest
+
+
+def command(args, cwd, home=HOME):
+    """The service host's command line for `args`, run in `cwd`."""
+    installed = home / "current"
+    line = [str(installed / "wrela-service"), str(installed / "build")]
+    rest = list(args)
+    if rest and rest[0] in KEEPS:
+        roots = {"data": home / "data", "work": home / "work"}
+        kept = []
+        i = 1
+        while i < len(rest):
+            if rest[i] in ("--data", "--work") and i + 1 < len(rest):
+                roots[rest[i][2:]] = Path(rest[i + 1]).expanduser().resolve()
+                i += 2
+            else:
+                kept.append(rest[i])
+                i += 1
+        rest = [rest[0], *kept]
+        for name, path in roots.items():
+            path.mkdir(parents=True, exist_ok=True)
+            line += ["--root", f"{name}={path}"]
+    else:
+        line += ["--root", f"here={Path(cwd).resolve()}"]
+    return [*line, "--", *rest]
+
+
+def main(args):
+    if args[:1] == ["install"]:
+        print(f"forge: installed {install()}")
+        return 0
+    if not (HOME / "current" / "wrela-service").exists():
+        print("forge: not installed: run tools/forge install", file=sys.stderr)
+        return 2
+    return subprocess.call(command(args, os.getcwd()))
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

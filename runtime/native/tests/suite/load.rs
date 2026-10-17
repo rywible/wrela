@@ -99,14 +99,20 @@ fn a_server_build_loaded_again_reads_its_compiled_code_and_runs_the_same() {
         room.memory_bytes()
     };
     let first = ServerBuild::load(&dir).expect("the first load compiles it");
-    let cached: Vec<_> = std::fs::read_dir(dir.join("server/.native"))
-        .expect("its code is kept beside it")
+    // Beside the build, or in the shared directory when `WRELA_NATIVE_CACHE` names one.
+    let cache = std::env::var_os("WRELA_NATIVE_CACHE")
+        .filter(|d| !d.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| dir.join("server/.native"));
+    let prefix = wrela_host::compiled_code_prefix(&wasm);
+    let cached: Vec<_> = std::fs::read_dir(&cache)
+        .expect("its code is kept")
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(&prefix) && n.ends_with("-server.cwasm"))
         .collect();
     assert_eq!(cached.len(), 1, "{cached:?}");
-    assert!(cached[0].ends_with("-server.cwasm"), "{cached:?}");
-    let code = dir.join("server/.native").join(&cached[0]);
+    let code = cache.join(&cached[0]);
     let written = std::fs::metadata(&code).and_then(|m| m.modified()).expect("when it was written");
     let again = ServerBuild::load(&dir).expect("the second load reads the code back");
     let still = std::fs::metadata(&code).and_then(|m| m.modified()).expect("when it was written");

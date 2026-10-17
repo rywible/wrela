@@ -371,6 +371,10 @@ pub fn decode(bytes: take Vec<u8>) -> Result<Event, Bad> {
 pub fn apply(s: mut State, ev: take Event) -> Result<(), String> {
     match take ev {
         Event::Opened { change, intent, author, model, session, machine, time } => {
+            // Changes are numbered from 1; 0 is main's.
+            if change == 0 {
+                return Err(String::from("a change numbered 0"))
+            }
             if s.changes.contains(change) {
                 return Err(f"c{change} opens twice")
             }
@@ -822,6 +826,21 @@ fn events_read_back_as_they_were_written() {
         assert(bytes::same(encode(back), b), "the same bytes again")
     }
     assert(decode(Vec::from([99])).is_err(), "an unknown kind")
+}
+
+@test
+fn a_change_numbered_0_is_refused() {
+    var s = new()
+    let ev = Event::Opened {
+        change: 0,
+        intent: String::new(),
+        author: String::new(),
+        model: String::new(),
+        session: String::new(),
+        machine: String::new(),
+        time: 0,
+    }
+    assert(apply(mut s, take ev).is_err() && s.changes.is_empty(), "refused")
 }
 
 @test
