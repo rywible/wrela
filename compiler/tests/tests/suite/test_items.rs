@@ -172,7 +172,8 @@ fn errors_keep_tests_from_running() {
 
 /// A failed `assert` of a comparison shows the operands that aren't literals, each evaluated
 /// once, with their source: numbers, vectors and text (quoted); a type without `Format` isn't
-/// shown. A message given comes first.
+/// shown. A message given comes first. An operand that projects into a temporary
+/// (`made(..).as_str()`) keeps the temporary alive through the comparison.
 #[test]
 fn a_failed_assert_shows_what_it_compared() {
     let src = "struct Id: Copy + Eq {
@@ -186,6 +187,13 @@ fn half(x: f32) -> f32 {
 fn counted(log: mut u32) -> u32 {
     log += 1
     log
+}
+
+fn made(s: str) -> String {
+    var out = String::new()
+    out.push_str(s)
+    out.push_str(\"!\")
+    out
 }
 
 @test
@@ -217,6 +225,16 @@ fn evaluated_once() {
 }
 
 @test
+fn a_temporary_lives_through_the_comparison() {
+    assert(made(\"ab\").as_str() == \"ab!\", \"differs\")
+}
+
+@test
+fn a_temporary_is_shown() {
+    assert(made(\"ab\").as_str() == \"ab\", \"made\")
+}
+
+@test
 fn messages_are_made_only_on_failure() {
     var log = 0
     assert(1 < 2, f\"{counted(mut log)}\")
@@ -240,6 +258,11 @@ fn messages_are_made_only_on_failure() {
         (
             "evaluated_once",
             "the test `evaluated_once` panicked: assertion failed: `counted(mut log)` is 1",
+        ),
+        ("a_temporary_lives_through_the_comparison", ""),
+        (
+            "a_temporary_is_shown",
+            "the test `a_temporary_is_shown` panicked: made: `made(\"ab\").as_str()` is \"ab!\"",
         ),
         ("messages_are_made_only_on_failure", ""),
     ];

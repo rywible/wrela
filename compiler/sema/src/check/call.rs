@@ -1620,6 +1620,9 @@ impl<'p> Checker<'p> {
             } else {
                 LocalKind::Owned { mutable: false }
             };
+            if matches!(kind, LocalKind::Projection { .. }) {
+                self.bind_borrowed_temporaries(e, stmts);
+            }
             let init = std::mem::replace(e, Expr { ty, span: at, kind: ExprKind::Error });
             let l = self.declare_unnamed(ty, kind, at);
             let pat = Pat { ty, kind: PatKind::Bind(l), span: at };
@@ -1628,6 +1631,37 @@ impl<'p> Checker<'p> {
             out.push(Expr { ty, span: at, kind: ExprKind::Local(l) });
         }
         out
+    }
+
+    /// Binds each temporary that the place `e` projects into (an argument that a call returning
+    /// a projection borrows, `make().as_str()`'s `make()`) to a local in `stmts`, which `e` then
+    /// reads. A temporary dies with the statement that made it; a local lives as long as the
+    /// projection `bind_compared` binds `e` to. The arguments are bound in the order they're
+    /// evaluated, so each is still evaluated once, in order.
+    fn bind_borrowed_temporaries(&mut self, e: &mut Expr, stmts: &mut Vec<Stmt>) {
+        let c = match &mut e.kind {
+            ExprKind::Field(b, _) | ExprKind::Swizzle(b, _) | ExprKind::Index(b, _) => {
+                return self.bind_borrowed_temporaries(b, stmts);
+            }
+            ExprKind::Call(c) if c.ret_mode != RetMode::Owned => c,
+            _ => return,
+        };
+        for i in c.order.clone() {
+            if c.modes[i] != ast::Mode::Borrow {
+                continue;
+            }
+            let a = &mut c.args[i];
+            if a.is_place() {
+                self.bind_borrowed_temporaries(a, stmts);
+                continue;
+            }
+            let (ty, at) = (a.ty, a.span);
+            let init = std::mem::replace(a, Expr { ty, span: at, kind: ExprKind::Error });
+            let l = self.declare_unnamed(ty, LocalKind::Owned { mutable: false }, at);
+            let pat = Pat { ty, kind: PatKind::Bind(l), span: at };
+            stmts.push(Stmt { kind: StmtKind::Bind { pat, init, else_: None }, span: at });
+            *a = Expr { ty, span: at, kind: ExprKind::Local(l) };
+        }
     }
 
     /// `t` with each number literal type not settled yet replaced by its default: `i32` for an
