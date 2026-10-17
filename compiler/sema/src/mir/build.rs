@@ -392,8 +392,9 @@ impl<'a> Builder<'a> {
     }
 
     /// After a pattern bound owned names to parts of a temporary (`match make() { Some(v) =>
-    /// .. }`), those parts are the bindings' now: they're moved out of the temporary, which
-    /// leaves zeros there for its drop. Done once the arm is chosen, after its guard.
+    /// .. }`), or to all of it (`other => ..`), those parts are the bindings' now: they're moved
+    /// out of the temporary ([`MoveKind::Bound`]), which leaves zeros there for its drop. Done
+    /// once the arm is chosen, after its guard.
     fn commit_moves(&mut self, pat: &thir::Pat, place: &Place) {
         if !self.owning_temp(place.local) {
             return;
@@ -406,7 +407,7 @@ impl<'a> Builder<'a> {
                 ) && self.needs_drop(pat.ty)
                 {
                     let op = Operand {
-                        kind: OperandKind::Move(place.clone(), MoveKind::Temp),
+                        kind: OperandKind::Move(place.clone(), MoveKind::Bound),
                         ty: pat.ty,
                         span: pat.span,
                     };

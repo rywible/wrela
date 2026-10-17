@@ -181,6 +181,12 @@ fn erased_array_accesses_still_check_bounds() {
 }
 
 #[test]
+fn catch_all_arms_free_their_value_once() {
+    let path = repo_root().join("compiler/tests/run/catch_all_moves.wrela");
+    run_case_named(&path, "catch-all-moves").expect("a value bound whole is freed once");
+}
+
+#[test]
 fn run_pass() {
     let cases = cases(&repo_root().join("compiler/tests/run"));
     let only = std::env::var("WRELA_RUN_ONLY").ok();
