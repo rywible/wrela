@@ -1,5 +1,5 @@
 // Network commands to the host: a client's connections to its server's rooms, and a room's
-// journal and connections (language.md §12). The hosts carry the bytes and keep the records
+// journal and connections (language.md §19). The hosts carry the bytes and keep the records
 // durably; `std::net` decides what they are. The host never answers these commands.
 //
 // A client opens a connection to a room by a number it chooses: a `Connection` event says when

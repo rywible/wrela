@@ -12,7 +12,7 @@
   {"until": "(Array.from(document.querySelectorAll('button')).find((b) => b.textContent === 'Copy code').click(), true)"},
   {"until": "Array.from(document.querySelectorAll('button')).some((b) => b.textContent === 'Copied')"},
   {"until": "(navigator.clipboard.readText().then((t) => { window.copied = t }), window.copied === 'pub fn fetch(url: str) -> Pending<u8>')"},
-  {"until": "(Array.from(document.querySelectorAll('button')).find((b) => b.textContent === 'Copy as Markdown').click(), true)"},
+  {"until": "(Array.from(document.querySelectorAll('button')).find((b) => b.textContent === 'Copy page').click(), true)"},
   {"until": "(navigator.clipboard.readText().then((t) => { window.copied = t }), typeof window.copied === 'string' && window.copied.startsWith('# std::io\\n\\nRequests to the host.'))"},
   {"until": "Array.from(document.querySelectorAll('a')).some((a) => a.textContent === 'Link to fetch' && a.getAttribute('href').endsWith('#std/io:fetch'))"}
 ]

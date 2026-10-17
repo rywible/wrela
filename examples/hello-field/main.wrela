@@ -1,6 +1,6 @@
 // hello field: milestone 1's program. Each frame the CPU records one full-screen draw; the
 // fragment shader sphere-traces the field and lights it with normals from the derived gradient
-// (language.md §13), which nobody wrote by hand. `probe` runs the same shading on the CPU, so a
+// (language.md §14), which nobody wrote by hand. `probe` runs the same shading on the CPU, so a
 // test can check the GPU's pixels against a WASM evaluation of the same field.
 use shape::creature
 use std::derive::Box3

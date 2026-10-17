@@ -19,7 +19,7 @@ use std::input::Event
 use std::par::{Task, spawn}
 use std::tick::{Ticked, start}
 
-/// How a world asks for work off the ticker's thread (language.md §6.17): a job runs on a
+/// How a world asks for work off the ticker's thread (language.md §16.2): a job runs on a
 /// helper, from its ask alone, and its answer comes back in the input of its due tick.
 pub trait Asks {
     /// What a job is given: plain data, which the world keeps until the answer arrives (so a

@@ -18,7 +18,7 @@ use ttf::{Baked, bake}
 /// The fonts, baked from their files: constants, so a build holds each once, and the build's
 /// cache keeps them while the files and the baker are as they were.
 @fuel(2 ** 38)
-const SANS: Baked = bake(embed("fonts/Inter-Regular-Latin1.ttf"), em: 32.0, spread: 4.0)
+pub const SANS: Baked = bake(embed("fonts/Inter-Regular-Latin1.ttf"), em: 32.0, spread: 4.0)
 
 @fuel(2 ** 38)
 pub const MONO: Baked = bake(embed("fonts/JetBrainsMono-Regular-Latin1.ttf"), em: 32.0, spread: 4.0)
