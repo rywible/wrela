@@ -467,10 +467,10 @@ fn run_one(
     }
 }
 
-/// Runs the program package's `@test` functions (§13), after its constants are computed into
 /// A test that ran: which, why it failed if it did, and what it printed and timed.
 pub type Ran = (wrela_sema::ty::FnId, Option<Diagnostic>, wrela_host::Traced);
 
+/// Runs the program package's `@test` functions (§13), after its constants are computed into
 /// `data`: each test that ran (what it printed shown as it was made), with the errors lowering
 /// them found. A failure is E0706 or E0705. Each test runs on new memory, so one test can't
 /// change what another sees.
@@ -481,47 +481,120 @@ pub fn run_tests(
     tests: &[wrela_sema::ty::FnId],
     fuel: u64,
 ) -> (Vec<Ran>, Vec<Diagnostic>) {
-    let (module, diags) = wrela_lower::lower_tests(checked, tests, data);
-    let Some(module) = module.filter(|_| !wrela_diag::has_errors(&diags)) else {
-        return (Vec::new(), diags);
-    };
-    // Its own memory, unshared: each test runs on one thread.
-    let compiled = match compile(engine(), &module.module, !data.no_simd, false) {
-        Ok(c) => c,
-        Err(msg) => return (Vec::new(), vec![Diagnostic::internal(msg)]),
-    };
     // Each test's fuel: its own (`@fuel`), or a test's.
     let fuel_of =
         |f: wrela_sema::ty::FnId| checked.program.func(f).attrs.fuel.map_or(fuel, |(v, _)| v);
-    let exports: Vec<(&str, String, u64)> = module
-        .exports
+    let calls: Vec<Call> = tests
         .iter()
-        .map(|(f, name)| (name.as_str(), checked.program.func(*f).name.clone(), fuel_of(*f)))
+        .map(|&f| (fuel_of(f), Some(format!("{}: ", checked.program.func(f).name))))
         .collect();
-    let ran = each_at_once(&exports, |(export, test, fuel)| {
-        let trace = wrela_host::Trace::new(Some(format!("{test}: ")));
-        let ran = compiled.start(engine(), false, &trace).map(|mut r| r.call(export, *fuel));
-        (ran, trace.take())
-    });
-    let results = module
-        .exports
-        .iter()
-        .zip(ran)
-        .map(|((f, _), (ran, traced))| {
+    let (called, diags) = call_each(checked, data, tests, &calls);
+    let Some((compiled, called)) = called else { return (Vec::new(), diags) };
+    let results = called
+        .into_iter()
+        .map(|(f, ran, traced)| {
             let failed = match ran {
                 Ok(Ok(_)) => None,
                 Err(msg) => Some(Diagnostic::internal(msg)),
                 Ok(Err(CallError::Internal(e))) => Some(Diagnostic::internal(format!("{e:#}"))),
                 Ok(Err(CallError::Failed(e, panic))) => {
                     let fault = Fault::of(&e, panic);
-                    let item = Item::Test(*f, fuel_of(*f));
+                    let item = Item::Test(f, fuel_of(f));
                     Some(failure(checked, sources, &compiled.lines, item, &fault, None))
                 }
             };
-            (*f, failed, traced)
+            (f, failed, traced)
         })
         .collect();
     (results, diags)
+}
+
+/// How a call of build-time code ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ending {
+    Returned,
+    /// It panicked, with this message (a failed `assert`'s too).
+    Panicked(String),
+    /// It trapped: what the trap means in the program's terms (§11.3).
+    Trapped(String),
+    /// It ran past its fuel.
+    OutOfFuel,
+}
+
+/// A call that ended: how (`Err` if the host couldn't make it), and what it printed and timed.
+pub type Ended = (Result<Ending, String>, wrela_host::Traced);
+
+/// Calls each of `fns` (free functions with no parameters and no result) as a test runs, after
+/// the constants are computed into `data`, quietly and with `fuel` each: how each call ended.
+/// With the errors lowering found; no call is made if there are any.
+pub fn run_calls(
+    checked: &Checked,
+    data: &BuildData,
+    fns: &[wrela_sema::ty::FnId],
+    fuel: u64,
+) -> (Vec<Ended>, Vec<Diagnostic>) {
+    let calls: Vec<Call> = fns.iter().map(|_| (fuel, None)).collect();
+    let (called, diags) = call_each(checked, data, fns, &calls);
+    let Some((_, called)) = called else { return (Vec::new(), diags) };
+    let endings = called
+        .into_iter()
+        .map(|(_, ran, traced)| {
+            let ending = match ran {
+                Ok(Ok(_)) => Ok(Ending::Returned),
+                Err(msg) => Err(msg),
+                Ok(Err(CallError::Internal(e))) => Err(format!("{e:#}")),
+                Ok(Err(CallError::Failed(e, panic))) => {
+                    let fault = Fault::of(&e, panic);
+                    Ok(match (fault.trap, fault.panic) {
+                        (Some(wasmtime::Trap::OutOfFuel), _) => Ending::OutOfFuel,
+                        (_, Some(msg)) => Ending::Panicked(msg),
+                        (Some(t), None) => Ending::Trapped(trap_words(t)),
+                        (None, None) => Ending::Trapped(fault.text),
+                    })
+                }
+            };
+            (ending, traced)
+        })
+        .collect();
+    (endings, diags)
+}
+
+/// A call of build-time code: which function, how the call went (or why the host couldn't
+/// make it), and what it printed and timed.
+type Called = (wrela_sema::ty::FnId, Result<Result<u32, CallError>, String>, wrela_host::Traced);
+
+/// How to call a function of build-time code: with how much fuel, and what to show before each
+/// line it prints (`None`: keep them quiet).
+type Call = (u64, Option<String>);
+
+/// Lowers `fns` as tests are lowered, then calls each on new memory of its own, as its `calls`
+/// entry says: the compiled code and each call, in `fns`' order, unless lowering or compiling
+/// failed. With the errors lowering found.
+fn call_each(
+    checked: &Checked,
+    data: &BuildData,
+    fns: &[wrela_sema::ty::FnId],
+    calls: &[Call],
+) -> (Option<(Compiled, Vec<Called>)>, Vec<Diagnostic>) {
+    let (module, mut diags) = wrela_lower::lower_tests(checked, fns, data);
+    let Some(module) = module.filter(|_| !wrela_diag::has_errors(&diags)) else {
+        return (None, diags);
+    };
+    // Its own memory, unshared: each call runs on one thread.
+    let compiled = match compile(engine(), &module.module, !data.no_simd, false) {
+        Ok(c) => c,
+        Err(msg) => {
+            diags.push(Diagnostic::internal(msg));
+            return (None, diags);
+        }
+    };
+    let each: Vec<_> = module.exports.iter().zip(calls).collect();
+    let called = each_at_once(&each, |((f, export), (fuel, shown))| {
+        let trace = wrela_host::Trace::new(shown.clone());
+        let ran = compiled.start(engine(), false, &trace).map(|mut r| r.call(export, *fuel));
+        (*f, ran, trace.take())
+    });
+    (Some((compiled, called)), diags)
 }
 
 /// `run` of each of `items`, on as many threads as the machine has cores: the results in the
@@ -749,8 +822,13 @@ fn trap_words(t: wasmtime::Trap) -> String {
                 .to_string()
         }
         T::IntegerDivisionByZero => "an integer division by zero".to_string(),
-        T::IntegerOverflow => "an integer overflow (`MIN / -1`)".to_string(),
-        T::BadConversionToInteger => "a float out of range for the integer type".to_string(),
+        // WASM's float-to-int conversion traps as an overflow when the float is out of range,
+        // and as a bad conversion when it's a NaN.
+        T::IntegerOverflow => {
+            "an integer overflow (`MIN / -1`), or a float out of range for the integer type"
+                .to_string()
+        }
+        T::BadConversionToInteger => "a NaN converted to an integer".to_string(),
         T::StackOverflow => "the stack overflowed".to_string(),
         other => format!("{other}"),
     }

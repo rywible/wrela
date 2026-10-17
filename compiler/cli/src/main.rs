@@ -48,6 +48,10 @@
 //! wrela index --json <package-dir> [--std]
 //!                                         every item: kind, place, hashes of its signature
 //!                                         and body, its effects and calls, sorted by path
+//! wrela diff-behaviour <old-package-dir> <new-package-dir> <item> [--samples n] [--seed s]
+//!     [--within e] [--json]               where two versions of a free function behave
+//!                                         differently on the same seeded samples; exit 1 if
+//!                                         some sample differs
 //! wrela refactor <package-dir> <change> [--dry-run] [--json]
 //!                                         rename, move, add-param, change-mode: checked
 //!                                         before written, refused on a stale plan
@@ -63,7 +67,7 @@
 //! ```
 //!
 //! Exit status: 0 success, 1 the program has errors (or `fmt --check` found unformatted
-//! files, or a test failed), 2 a usage or I/O error.
+//! files, a test failed, or two versions' behaviour differs), 2 a usage or I/O error.
 
 // A faster allocator than macOS's: the compiler allocates a great deal.
 #[global_allocator]
@@ -75,6 +79,7 @@ use std::process::ExitCode;
 mod audio;
 mod build;
 mod compare;
+mod diff_behaviour;
 mod doc;
 mod edit;
 mod explain;
@@ -113,6 +118,7 @@ pub(crate) fn usage() -> ExitCode {
         "wrela query <package-dir> [<query>...] [--json]",
         "wrela context <item> [<package-dir>] [--budget n]",
         "wrela index [--json] <package-dir> [--std]",
+        "wrela diff-behaviour <old-package-dir> <new-package-dir> <item> [--samples n] [--seed s] [--within e] [--json]",
         "wrela refactor <package-dir> (rename <item> <new-name> | move <item> <module> | add-param <fn> \"<name>: <type>\" (--value <expr> | --default <expr>) | change-mode <fn> <param> <borrow|mut|take> | apply <plan.json>) [--dry-run] [--json]",
         "wrela trace <package-dir> --watch <export>[,<export>...] [--frames n] [--csv] [--fps f] [--size WxH] [--input <script.json>] [--release] [--no-gpu] [--workers N]",
         "wrela bisect <package-dir> --until \"<export> <op> <number>\" [--frames n] [--json] [--fps f] [--size WxH] [--input <script.json>] [--release] [--no-gpu] [--workers N]",
@@ -155,6 +161,7 @@ fn main() -> ExitCode {
         "solve" => solve::run(rest),
         "primer" => primer::run(rest),
         "query" => query::query(rest),
+        "diff-behaviour" => diff_behaviour::run(rest),
         "refactor" => refactor::run(rest),
         "context" => query::context(rest),
         "index" => query::index(rest),

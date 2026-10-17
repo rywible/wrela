@@ -3,6 +3,7 @@
 mod audio;
 mod common;
 mod compare;
+mod diff_behaviour;
 mod doc;
 mod fix;
 mod index;

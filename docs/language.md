@@ -2686,6 +2686,8 @@ It also answers on a program with errors. A function whose body has an error has
 
 **`wrela refactor`** plans the change and checks the new texts before it writes anything. It refuses the change, with the errors, if the program would not check, and refuses it if a call would quietly bind to another function. `--dry-run --json` gives a plan with each file's hash; `apply <plan>` refuses the plan if a file has changed since.
 
+- **`wrela diff-behaviour <old-package> <new-package> <fn>`** calls a free function of both versions on the same boundary values and seeded samples (`--samples n --seed s`), on the CPU as tests run but from a release build's code. Two versions agree on a sample if their result, each `mut` argument's final value and how the call ended (returned, panicked with its message, trapped, out of fuel) are the same, floats bit for bit (or `--within e`). It refuses parameters other than §15.2's numbers, vectors, and structs, tuples and arrays of them, and functions that are `io`, `nondet` or `host`. It reports the samples that differ, or no differences on the samples it names: evidence, not proof. Exit status 1 if a sample differs.
+
 **`wrela reference replica <parts> -o <dir>`** builds the replica from a parts file:
 
 - The parts file names a mesh's manifest in `references/`, landmarks, and each part's axis, angles, station spacing and longest radius. The file's top gives defaults. The manifest's `axes`, `origin` and `metres_per_unit` place the mesh in a creature's frame, and the package carries the manifest's `attribution`.
