@@ -21,6 +21,8 @@ wrela-grammar.workspace = true
 wrela-host.workspace = true
 # The server host and a WebTransport client, for the rooms over the network.
 wrela-serve.workspace = true
+# The service host, for forge (forge.rs).
+wrela-service.workspace = true
 wtransport = { version = "0.7", features = ["self-signed"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 wrela-abi.workspace = true

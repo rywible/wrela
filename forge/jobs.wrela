@@ -1,0 +1,410 @@
+// Checks of trees, run by a worker (spec/forge.md). A worker is a checkout (the `work` root) and
+// the machine it's on: for each job, it makes the checkout hold the job's tree, writing only the
+// files that differ from what it holds (so its build output stays warm), runs `tools/check.sh`
+// with the job's check, and keeps the output as a blob and what it said as evidence. One job runs
+// at a time on a worker; the oldest queued job runs next.
+
+use blake3::Id
+use codec::{Dec, Enc}
+use core::Durable
+use object::{File, Files}
+use platform::service as host
+use service::{For, Service, commit, load, wait}
+use state::{Event, Run}
+use std::io::{IoError, print}
+
+pub const WORK: Text = "work"
+
+/// The most output a check keeps, from each of stdout and stderr.
+const OUTPUT: u32 = 16777216
+/// How long a check may run: three hours.
+const LIMIT_MS: u64 = 10800000
+
+pub struct Worker: Clone {
+    pub name: String,
+    /// What its checkout holds, once its manifest has been read.
+    pub held: Files,
+    pub known: bool,
+    /// The job it runs; 0 when it's idle.
+    pub job: u64,
+    /// What the job's tree holds.
+    pub target: Files,
+    /// The checkout's writes and removals not answered yet.
+    pub left: u32,
+    pub failed: String,
+}
+
+pub fn worker(name: str) -> Worker {
+    Worker {
+        name: name.to_string(),
+        held: SortedMap::new(),
+        known: false,
+        job: 0,
+        target: SortedMap::new(),
+        left: 0,
+        failed: String::new(),
+    }
+}
+
+pub fn manifest_path(name: str) -> String {
+    f"data/workers/{name}"
+}
+
+/// What a checkout holds, as its manifest's bytes.
+pub fn manifest(files: Files) -> Vec<u8> {
+    var e = Enc::new()
+    e.u8(1)
+    e.num(u64(files.len()))
+    let keys = files.keys()
+    let values = files.values()
+    for i in 0..keys.len() {
+        e.str(keys[i].as_str())
+        e.bool(values[i].exec)
+        e.id(values[i].id)
+        e.num(values[i].size)
+    }
+    take e.bytes
+}
+
+pub fn manifest_of(b: take Vec<u8>) -> Option<Files> {
+    var d = Dec::new(take b)
+    if d.u8().ok() != Some(1) {
+        return None
+    }
+    let n = d.small().ok()?
+    var out: Files = SortedMap::new()
+    for _ in 0..n {
+        let path = d.string().ok()?
+        let exec = d.bool().ok()?
+        let id = d.id().ok()?
+        let size = d.num().ok()?
+        let _ = out.insert(take path, File { id, exec, size })
+    }
+    Some(out)
+}
+
+pub fn manifest_read(s: mut Service, r: take Result<Vec<u8>, IoError>) {
+    match take r {
+        Ok(b) => match manifest_of(take b) {
+            Some(files) => s.worker.held = take files,
+            None => print(
+                "forge: the worker's manifest is malformed: its checkout is written whole",
+            ),
+        },
+        // A worker with no manifest has an empty checkout, as far as forge knows.
+        Err(_) => {},
+    }
+    s.worker.known = true
+    service::started_one(mut s, "the worker's manifest", Ok(Vec::new()))
+}
+
+pub fn manifest_saved(s: mut Service, r: take Result<Vec<u8>, IoError>) {
+    if let Err(e) = r {
+        print(f"forge: the worker's manifest wasn't saved: {e.message()}")
+    }
+}
+
+/// The files tree `tree` holds, read from the trees in memory; or the trees and blobs to load.
+pub fn tree_files(c: core::Core, tree: Id) -> Result<Files, Vec<Id>> {
+    var out: Files = SortedMap::new()
+    var need: Vec<Id> = Vec::new()
+    var dirs: Vec<(String, Id)> = Vec::from([(String::new(), tree)])
+    while let Some((prefix, id)) = dirs.pop() {
+        let Some(b) = c.blobs.get(id) else {
+            need.push(id)
+            continue
+        }
+        let Ok(entries) = object::entries(b) else {
+            need.push(id)
+            continue
+        }
+        for e in entries {
+            let path = if prefix.is_empty() { e.name.clone() } else { f"{prefix}/{e.name}" }
+            match e.kind {
+                object::Kind::Dir => dirs.push((take path, e.id)),
+                kind => {
+                    if !c.blobs.contains(e.id) {
+                        need.push(e.id)
+                    }
+                    let _ = out.insert(
+                        take path,
+                        File { id: e.id, exec: kind == object::Kind::Exec, size: e.size },
+                    )
+                },
+            }
+        }
+    }
+    if need.is_empty() { Ok(out) } else { Err(need) }
+}
+
+/// The oldest queued job.
+fn next_job(s: Service) -> Option<state::Job> {
+    for j in s.core.state.jobs.values() {
+        if j.run == Run::Queued {
+            return Some(j.clone())
+        }
+    }
+    None
+}
+
+/// Starts the next job, if the worker is idle and one waits.
+pub fn pump(s: mut Service) {
+    if s.worker.job != 0 || !s.worker.known {
+        return
+    }
+    let Some(job) = next_job(s) else { return }
+    let files = match tree_files(s.core, job.tree) {
+        Ok(f) => take f,
+        Err(need) => {
+            for id in need {
+                let _ = load(mut s, id)
+            }
+            return
+        },
+    }
+    let ev = Event::Started { job: job.id, worker: s.worker.name.clone(), time: service::now(s) }
+    commit(mut s, Durable { objects: Vec::new(), events: Vec::from([take ev]) }, None)
+    s.worker.job = job.id
+    s.worker.failed = String::new()
+    checkout(mut s, take files)
+}
+
+/// Makes the checkout hold `target`: writes what differs, removes what it no longer holds.
+fn checkout(s: mut Service, target: take Files) {
+    var dirs: SortedMap<String, bool> = SortedMap::new()
+    var writes: Vec<(String, File)> = Vec::new()
+    let keys = target.keys()
+    let values = target.values()
+    for i in 0..keys.len() {
+        let held = s.worker.held.get(keys[i].clone())
+        if held != Some(values[i]) {
+            writes.push((keys[i].clone(), values[i]))
+            let p = keys[i].as_str()
+            var last = p.len()
+            var k = 0
+            while k < p.len() {
+                if p.byte(k) == 47 {
+                    last = k
+                }
+                k += 1
+            }
+            if last < p.len() {
+                let _ = dirs.insert(p.slice(from: 0, to: last).to_string(), value: true)
+            }
+        }
+    }
+    var left = 0
+    for d in dirs.keys() {
+        wait(mut s, host::mkdir(f"{WORK}/{d}".as_str()), For::Checkout)
+        left += 1
+    }
+    for (path, f) in writes {
+        let Some(content) = s.core.blobs.get(f.id) else {
+            s.worker.failed = f"the blob of {path} isn't in memory"
+            continue
+        }
+        let at = f"{WORK}/{path}"
+        if content.len() <= 1040000 {
+            wait(mut s, host::write_unflushed(at.as_str(), content, exec: f.exec), For::Checkout)
+            left += 1
+        } else {
+            let part = f"{at}.part"
+            wait(
+                mut s,
+                host::write_unflushed(
+                    part.as_str(),
+                    bytes::slice(content, from: 0, to: 1040000),
+                    exec: f.exec,
+                ),
+                For::Checkout,
+            )
+            left += 1
+            var from = 1040000
+            while from < content.len() {
+                let to = min(from + 1040000, content.len())
+                wait(
+                    mut s,
+                    host::append(part.as_str(), bytes::slice(content, from, to)),
+                    For::Checkout,
+                )
+                left += 1
+                from = to
+            }
+            wait(mut s, host::rename(part.as_str(), at.as_str()), For::Checkout)
+            left += 1
+        }
+    }
+    var gone: Vec<String> = Vec::new()
+    for p in s.worker.held.keys() {
+        if !target.contains(p.clone()) {
+            gone.push(p.clone())
+        }
+    }
+    for p in gone {
+        wait(mut s, host::remove(f"{WORK}/{p}".as_str(), all: false), For::Checkout)
+        left += 1
+    }
+    s.worker.target = take target
+    s.worker.left = left
+    if left == 0 {
+        run(mut s)
+    }
+}
+
+pub fn checkout_done(s: mut Service, r: take Result<Vec<u8>, IoError>) {
+    if let Err(e) = r {
+        if s.worker.failed.is_empty() {
+            s.worker.failed = f"the checkout: {e.message()}"
+        }
+    }
+    s.worker.left -= 1
+    if s.worker.left == 0 {
+        run(mut s)
+    }
+}
+
+/// Runs the job, once the checkout holds its tree.
+fn run(s: mut Service) {
+    let job = s.worker.job
+    s.worker.held = s.worker.target.clone()
+    let m = manifest(s.worker.held)
+    wait(mut s, host::write(manifest_path(s.worker.name.as_str()).as_str(), m), For::ManifestSaved)
+    if !s.worker.failed.is_empty() {
+        let why = s.worker.failed.clone()
+        return finish(
+            mut s,
+            job,
+            -1,
+            timed_out: false,
+            ms: 0,
+            output: bytes::of_str(f"forge couldn't make the checkout: {why}\n".as_str()),
+        )
+    }
+    let check = s.core.state.jobs.at(job).check.clone()
+    var argv: Vec<String> = Vec::from([String::from("tools/check.sh")])
+    if check.as_str() != "suite" {
+        argv.push(check.clone())
+    }
+    let r = host::Run {
+        tag: job,
+        argv,
+        cwd: WORK.to_string(),
+        env: Vec::from([(String::from("FORGE_JOB"), f"j{job}")]),
+        limit_ms: LIMIT_MS,
+        cap: OUTPUT,
+        stdin: Vec::new(),
+    }
+    wait(mut s, host::run(r), For::Ran(job))
+}
+
+pub fn ran(s: mut Service, job: u64, r: take Result<Vec<u8>, IoError>) {
+    match take r {
+        Ok(b) => match host::ran_of(take b) {
+            Some(x) => {
+                var out: Vec<u8> = Vec::new()
+                bytes::push_run(mut out, x.stdout)
+                if !x.stderr.is_empty() {
+                    bytes::push_str(mut out, "\n---- stderr ----\n")
+                    bytes::push_run(mut out, x.stderr)
+                }
+                if x.truncated {
+                    bytes::push_str(mut out, "\n(output past 16 MiB was dropped)\n")
+                }
+                finish(mut s, job, x.status, x.timed_out, x.ms, take out)
+            },
+            None => finish(
+                mut s,
+                job,
+                -1,
+                timed_out: false,
+                ms: 0,
+                output: bytes::of_str("forge couldn't read the check's answer\n"),
+            ),
+        },
+        Err(e) => finish(
+            mut s,
+            job,
+            -1,
+            timed_out: false,
+            ms: 0,
+            output: bytes::of_str(f"the check didn't run: {e.message()}\n".as_str()),
+        ),
+    }
+}
+
+/// Keeps what job `job` said: its output, its evidence, and that it finished.
+fn finish(s: mut Service, job: u64, status: i32, timed_out: bool, ms: u64, output: take Vec<u8>) {
+    let j = s.core.state.jobs.at(job).clone()
+    let log = object::blob(output)
+    let x = object::evidence(
+        object::Evidence {
+            check: j.check.clone(),
+            tree: j.tree,
+            machine: s.worker.name.clone(),
+            status,
+            timed_out,
+            ms,
+            log: log.id,
+            time: service::now(s),
+        },
+    )
+    let passed = status == 0 && !timed_out
+    print(f"forge: j{job} ({j.check}) {if passed { "passed" } else { "failed" }} in {ms / 1000} s")
+    let ev = Event::Finished { job, evidence: x.id, passed, time: service::now(s) }
+    commit(
+        mut s,
+        Durable { objects: Vec::from([take log, take x]), events: Vec::from([take ev]) },
+        None,
+    )
+    s.worker.job = 0
+}
+
+/// A remote worker's call: workers on other machines come with the fleet.
+pub fn remote(s: mut Service, conn: u32, req: take http::Request) {
+    let _ = req
+    service::reply(
+        mut s,
+        conn,
+        501,
+        "text/plain",
+        bytes::of_str("remote workers aren't served yet: this forge runs its checks itself\n"),
+    )
+}
+
+@test
+fn a_manifest_reads_back() {
+    var files: Files = SortedMap::new()
+    let id = object::blob_id(bytes::of_str("x"))
+    let _ = files.insert(String::from("tools/check.sh"), File { id, exec: true, size: 1 })
+    let _ = files.insert(String::from("a/b"), File { id, exec: false, size: 1 })
+    let Some(back) = manifest_of(manifest(files)) else { panic("it reads") }
+    assert(
+        back.len() == 2 &&
+            back.get(String::from("tools/check.sh")) == Some(File { id, exec: true, size: 1 }),
+        "both files",
+    )
+    assert(manifest_of(Vec::from([2])).is_none(), "another version")
+}
+
+@test
+fn a_trees_files_are_read_from_memory_or_named_to_load() {
+    var c = core::core("t")
+    var files: Files = SortedMap::new()
+    let a = object::blob(bytes::of_str("a"))
+    let _ = files.insert(String::from("d/a"), File { id: a.id, exec: false, size: 1 })
+    let trees = object::trees(files)
+    let root = trees[trees.len() - 1].id
+    match tree_files(c, root) {
+        Err(need) => assert(need.len() == 1 && need[0] == root, "the root first"),
+        Ok(_) => panic("nothing is in memory"),
+    }
+    var objects = take trees
+    objects.push(take a)
+    let Ok(()) = core::absorb(mut c, Durable { objects, events: Vec::new() }) else {
+        panic("absorbed")
+    }
+    match tree_files(c, root) {
+        Ok(f) => assert(f.len() == 1 && f.contains(String::from("d/a")), "d/a"),
+        Err(_) => panic("everything is in memory"),
+    }
+}

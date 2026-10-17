@@ -24,6 +24,7 @@ mod doc_examples;
 mod docsite;
 mod encodings;
 mod explain;
+mod forge;
 mod format;
 mod fuzz;
 mod gpu_limits;

@@ -92,6 +92,7 @@ The M4 Air has not been measured; its times are reported separately.
 | [FFmpeg](https://ffmpeg.org/) with x264, GPL | Makes the motion captures' clips and contact sheets from the frames the native host saves (`tools/motion.py`). Not part of the game |
 | [Wrangler](https://developers.cloudflare.com/workers/wrangler/) (Cloudflare, MIT/Apache 2.0) and GitHub Actions | Deploy each release from `main` to Cloudflare Workers (`.github/workflows/deploy.yml`, `tools/deploy.py`) |
 | [Binaryen](https://github.com/WebAssembly/binaryen) (Apache 2.0), `wasm-opt` 133 or later | Shrinks a released build's WASM (`wrela build --optimize`, `-Oz`), carrying its trap locations through as a source map. Runs at build time; nothing of it ships |
+| [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) (CC0 and Apache 2.0): the algorithm and its test vectors | Names forge's objects (`forge/blake3.wrela`); the vectors check it |
 | strace, LGPL; Linux mount namespaces (`unshare`) | Historical gate pass caching, retired 2026-10-11: what each slow test reads, so a pass is reused only while all of it is unchanged, or, for a test that builds a program, while its builds make the same files. The ideas are build systems' (Bazel's action cache, ccache's manifests, tup's and fabricate's traced dependencies, Shake's and Bazel's early cutoff) |
 
 Not used, by decision: Suno or any music model (Ryan, 2026-10-06, #44), and any image, texture,
@@ -2503,6 +2504,38 @@ canvas isn't resized and stretched as the keyboard slides, the likely cause of t
 headless Chrome can't show. The docs now open as a whole: their page's colour from the first
 moment, in the page and in a phone's browser bar, then everything fades in together once the first
 page is ready.
+
+## forge: wrela's own version control and checks, 2026-10-17
+
+Ryan asked for a version control and check service of wrela's own, written in Wrela, on his
+tailscale network, after Anthropic's account of Scion, its source control for agents
+([Redesigning source control at Anthropic](https://www.anthropic.com/engineering/redesigning-source-control)):
+commits made on the server, history and diffs asked of it, review of a change's intent. He asked
+for git and GitHub to be replaced, and for a cut-over once it runs on his Linux machines. Claude
+(Opus 5.5) wrote the plan; a council reviewed it in three rounds, the third after git was ruled
+out: GPT-6.1-Sol and GPT-6-Astra at high reasoning, run read-only through the Codex CLI because
+T3 Code's orchestration wasn't open in that session. Their findings decided much of the design:
+only a revision whose own suite passed deploys, Ryan keeps merging, a retry explains a failure
+and never excuses it, evidence is tied to the exact tree, a write that fails stops the service,
+objects are durable before the events that name them, and checks run on throwaway checkouts.
+
+forge is in `forge/` (spec/forge.md gives its formats) and runs on a new host,
+`runtime/service` (`wrela-service`): one server build run as a long-lived program, with files under
+the directories it's given, processes, TCP and a clock, answered on later calls. Its objects are
+named by BLAKE3 ([the BLAKE3 paper](https://github.com/BLAKE3-team/BLAKE3-specs), CC0 and
+Apache 2.0), written in Wrela and checked against the official test vectors. Diffs are Myers' O(ND)
+algorithm (Myers, "An O(ND) Difference Algorithm and Its Variations", Algorithmica 1986), and
+merges are diff3's, as Khanna, Kunal and Pierce describe it ("A Formal Investigation of Diff3",
+2007). It speaks HTTP/1.1 (RFC 9112) and the Model Context Protocol's JSON-RPC
+([modelcontextprotocol.io](https://modelcontextprotocol.io)), so agents work against it with no
+checkout. It imports git's history with git itself (`log`, `ls-tree`, `cat-file`). docsite's
+JSON reader moved to `std::json`, so forge and the docs share it.
+
+On the M4 Air, forge imported main's 454 commits in 135 s, each commit's objects flushed as it
+landed. A worker's checkout of main then matched `git archive` of the same commit, all 2,032 files
+and their executable bits. Not done yet: workers on other machines, replication and the offsite
+backup, a workspace client for local tools, the temporal item index, reuse of results, and the
+cut-over itself.
 
 ## Keeping this record
 

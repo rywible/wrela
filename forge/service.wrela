@@ -1,0 +1,1060 @@
+// The service (spec/forge.md): forge's state in memory and on disk, its HTTP connections, its
+// commits and its workers, run by the service host (runtime/service). Every host request it makes
+// waits in `waits` with what its answer is for, and `step` polls them on each call.
+//
+// What it keeps on disk, under the `data` root: `objects/ab/cdef...`, each object in a file of
+// its own named by its id; `events`, the log; and `workers/<name>`, what each worker's checkout
+// holds. A start reads the log back (cutting a torn last record), folds it, loads the files main
+// and the open changes hold, and then listens.
+//
+// A commit makes a call's objects and events durable before its answer goes: the objects are
+// written and flushed, then the events are appended to the log and flushed, then the answer is
+// sent. The events are folded into the state when the commit is made, so the next call sees
+// them; commits are written in the order they were made, and many that wait are written
+// together. A write that fails stops the service: a start from the log is the state the answers
+// promised.
+
+use blake3::Id
+use core::{Core, Ctx, Durable, Outcome}
+use http::{Read, Reader, Request}
+use object::{File, Files, Object}
+use platform::net::{close, send}
+use platform::service as host
+use state::{Event, Run, Status}
+use std::input::{Event as Input, events, payload}
+use std::io::{IoError, Pending, print}
+use std::json::{Json as Doc, Kind}
+
+pub const DATA: Text = "data"
+pub const LOG: Text = "data/events"
+/// The most bytes a host request may carry, less room for its path: a larger write goes in parts.
+const PART: u32 = 1040000
+
+pub enum Phase: Copy + Eq {
+    /// Reading the arguments and the time.
+    Begin,
+    /// Making directories and reading the log.
+    Disk,
+    /// Loading the files main and the open changes hold.
+    Loading,
+    Ready,
+    /// Running as a client: one call to a forge service.
+    Client,
+    Stopped,
+}
+
+/// What a host request's answer is for.
+pub enum For: Clone {
+    Args,
+    Now,
+    /// A directory made at the start.
+    Made,
+    ObjectDirs,
+    LogStat,
+    LogRead,
+    Truncated,
+    Object(Id),
+    Listening,
+    /// A write (or a part of one) of the commit in flight.
+    Wrote,
+    /// A part of the commit in flight's append.
+    Appended,
+    Peer(u32),
+    /// A write or a removal in a worker's checkout.
+    Checkout,
+    ManifestRead,
+    ManifestSaved,
+    Ran(u64),
+    /// A step of an import (import.wrela).
+    Import(u32),
+    /// A client's connection (client.wrela).
+    Client(u32),
+}
+
+pub struct Wait {
+    pub p: Pending<u8>,
+    pub what: For,
+}
+
+/// An answer to send on a connection.
+pub struct Reply: Clone {
+    pub conn: u32,
+    pub status: u32,
+    pub kind: Text,
+    pub body: Vec<u8>,
+}
+
+pub struct Conn {
+    pub reader: Reader,
+    /// Whether a request of its waits for its answer: the next is read once it's sent.
+    pub busy: bool,
+    pub closing: bool,
+    pub peer: String,
+}
+
+/// A commit waiting to be written.
+struct Pend: Clone {
+    objects: Vec<Object>,
+    records: Vec<u8>,
+    reply: Option<Reply>,
+}
+
+/// The commits being written: what waits on their writes, and their answers.
+struct Flight: Clone {
+    writes_left: u32,
+    records: Vec<u8>,
+    appends_left: u32,
+    replies: Vec<Reply>,
+}
+
+/// How a call that waits for objects is answered.
+pub enum Route: Copy + Eq {
+    Api,
+    Mcp,
+}
+
+/// A call that waits for objects, to be made again once they're loaded.
+pub struct Parked: Clone {
+    pub conn: u32,
+    pub route: Route,
+    pub body: Vec<u8>,
+    pub waiting: Vec<Id>,
+    pub rounds: u32,
+}
+
+pub struct Service {
+    pub phase: Phase,
+    pub started: bool,
+    /// How many of the arguments and the time have come.
+    begun: u32,
+    pub args: Vec<String>,
+    /// Where it listens, the machine's name, and who may land changes.
+    pub listen: String,
+    pub machine: String,
+    pub landers: Vec<String>,
+    /// The time when the host started: milliseconds since 1970, and the call's seconds since.
+    pub start_ms: u64,
+    pub time: f32,
+    pub core: Core,
+    pub waits: Vec<Wait>,
+    pub conns: SortedMap<u32, Conn>,
+    queue: Vec<Pend>,
+    flight: Option<Flight>,
+    /// Objects written, or being written: not written again.
+    written: SortedMap<Id, bool>,
+    loading: SortedMap<Id, bool>,
+    /// Objects that couldn't be loaded.
+    missing: SortedMap<Id, bool>,
+    pub parked: Vec<Parked>,
+    pub startup_left: u32,
+    pub log_size: u64,
+    pub worker: jobs::Worker,
+    pub import: import::Import,
+    pub client: client::Client,
+    /// Whether main moved since the open changes were last carried onto it.
+    carry_due: bool,
+}
+
+pub fn new() -> Service {
+    Service {
+        phase: Phase::Begin,
+        started: false,
+        begun: 0,
+        args: Vec::new(),
+        listen: String::from("127.0.0.1:7171"),
+        machine: String::from("local"),
+        landers: Vec::new(),
+        start_ms: 0,
+        time: 0.0,
+        core: core::core("local"),
+        waits: Vec::new(),
+        conns: SortedMap::new(),
+        queue: Vec::new(),
+        flight: None,
+        written: SortedMap::new(),
+        loading: SortedMap::new(),
+        missing: SortedMap::new(),
+        parked: Vec::new(),
+        startup_left: 0,
+        log_size: 0,
+        worker: jobs::worker("local"),
+        import: import::idle(),
+        client: client::idle(),
+        carry_due: false,
+    }
+}
+
+pub fn wait(s: mut Service, p: take Pending<u8>, what: take For) {
+    s.waits.push(Wait { p, what })
+}
+
+/// Milliseconds since 1970, now.
+pub fn now(s: Service) -> u64 {
+    s.start_ms + u64(s.time * 1000.0)
+}
+
+/// Stops the service with `why`: a start from the log is what it promised.
+pub fn fatal(s: mut Service, why: str) {
+    print(f"forge: {why}")
+    host::exit(1)
+    s.phase = Phase::Stopped
+}
+
+/// One call of the host: answers, then input, then what waits to be written.
+pub fn step(s: mut Service, time: f32) {
+    s.time = time
+    if s.phase == Phase::Stopped {
+        return
+    }
+    if !s.started {
+        s.started = true
+        wait(mut s, host::args(), For::Args)
+        wait(mut s, host::now(), For::Now)
+    }
+    var i = 0
+    while i < s.waits.len() {
+        let answer = s.waits[i].p.poll()
+        match take answer {
+            Some(r) => {
+                let w = s.waits.remove(i)
+                answered(mut s, take w.what, take r)
+                if s.phase == Phase::Stopped {
+                    return
+                }
+            },
+            None => i += 1,
+        }
+    }
+    for e in events() {
+        match e {
+            Input::Message { conn, .. } => {
+                if let Some(b) = payload(e) {
+                    if s.phase == Phase::Client {
+                        client::bytes(mut s, conn, b)
+                    } else {
+                        bytes_in(mut s, conn, b)
+                    }
+                }
+            },
+            Input::Connection { conn, open, .. } => {
+                if s.phase == Phase::Client {
+                    client::connection(mut s, conn, open)
+                } else if open {
+                    let _ = s.conns.insert(
+                        conn,
+                        Conn {
+                            reader: Reader::new(),
+                            busy: false,
+                            closing: false,
+                            peer: String::new(),
+                        },
+                    )
+                    wait(mut s, host::peer(conn), For::Peer(conn))
+                } else {
+                    let _ = s.conns.remove(conn)
+                }
+            },
+            _ => {},
+        }
+    }
+    if s.phase == Phase::Ready {
+        if s.carry_due {
+            carry_all(mut s)
+        }
+        jobs::pump(mut s)
+        import::pump(mut s)
+    }
+    pump(mut s)
+}
+
+fn answered(s: mut Service, what: take For, r: take Result<Vec<u8>, IoError>) {
+    match take what {
+        For::Args => {
+            if let Ok(b) = take r {
+                s.args = host::args_of(take b).unwrap_or(Vec::new())
+            }
+            begin(mut s)
+        },
+        For::Now => {
+            if let Ok(b) = take r {
+                s.start_ms = host::millis_of(take b).unwrap_or(0)
+            }
+            begin(mut s)
+        },
+        For::Made => started_one(mut s, "making a directory", take r),
+        For::ObjectDirs => {
+            match take r {
+                Ok(b) => {
+                    let have = host::entries_of(take b).unwrap_or(Vec::new())
+                    let hex = "0123456789abcdef"
+                    for hi in 0..16 {
+                        for lo in 0..16 {
+                            var name = String::new()
+                            name.push_byte(hex.byte(hi))
+                            name.push_byte(hex.byte(lo))
+                            var there = false
+                            for e in have {
+                                if e.name.as_str() == name.as_str() {
+                                    there = true
+                                }
+                            }
+                            if !there {
+                                s.startup_left += 1
+                                wait(
+                                    mut s,
+                                    host::mkdir(f"{DATA}/objects/{name}".as_str()),
+                                    For::Made,
+                                )
+                            }
+                        }
+                    }
+                    started_one(mut s, "listing the objects", Ok(Vec::new()))
+                },
+                Err(e) => fatal(mut s, f"can't list data/objects: {e.message()}".as_str()),
+            }
+        },
+        For::LogStat => {
+            match take r {
+                Ok(b) => {
+                    let st = host::stat_of(take b)
+                    match st {
+                        Some(x) => {
+                            if x.kind == host::Kind::Missing {
+                                started_one(mut s, "the log", Ok(Vec::new()))
+                            } else {
+                                s.startup_left += 1
+                                wait(mut s, host::read(LOG), For::LogRead)
+                                started_one(mut s, "the log", Ok(Vec::new()))
+                            }
+                        },
+                        None => fatal(mut s, "the log's stat is malformed"),
+                    }
+                },
+                Err(e) => fatal(mut s, f"can't stat the log: {e.message()}".as_str()),
+            }
+        },
+        For::LogRead => {
+            match take r {
+                Ok(b) => replay(mut s, take b),
+                Err(e) => fatal(mut s, f"can't read the log: {e.message()}".as_str()),
+            }
+        },
+        For::Truncated => started_one(mut s, "cutting the log's torn record", take r),
+        For::Object(id) => loaded(mut s, id, take r),
+        For::Listening => {
+            match take r {
+                Ok(b) => {
+                    print(
+                        f"forge: main at {s.core.state.seq}; listening on {s.listen} (port {host::port_of(take b).unwrap_or(0)})",
+                    )
+                    s.phase = Phase::Ready
+                },
+                Err(e) => fatal(mut s, f"can't listen on {s.listen}: {e.message()}".as_str()),
+            }
+        },
+        For::Wrote => {
+            if let Err(e) = r {
+                return fatal(mut s, f"an object's write failed: {e.message()}".as_str())
+            }
+            wrote_one(mut s)
+        },
+        For::Appended => {
+            match take r {
+                Ok(b) => {
+                    s.log_size = host::length_of(take b).unwrap_or(s.log_size)
+                    appended_one(mut s)
+                },
+                Err(e) => fatal(mut s, f"the log's append failed: {e.message()}".as_str()),
+            }
+        },
+        For::Peer(conn) => {
+            if let Ok(b) = take r {
+                if s.conns.contains(conn) {
+                    s.conns.at_mut(conn).peer = bytes::text_of(b)
+                }
+            }
+        },
+        For::Checkout => jobs::checkout_done(mut s, take r),
+        For::ManifestRead => jobs::manifest_read(mut s, take r),
+        For::ManifestSaved => jobs::manifest_saved(mut s, take r),
+        For::Ran(job) => jobs::ran(mut s, job, take r),
+        For::Import(step) => import::answered(mut s, step, take r),
+        For::Client(step) => client::answered(mut s, step, take r),
+    }
+}
+
+// ---- starting ----------------------------------------------------------------------------------
+
+fn flag(args: [String], name: str) -> Option<String> {
+    for i in 0..args.len() {
+        if args[i].as_str() == name && i + 1 < args.len() {
+            return Some(args[i + 1].clone())
+        }
+    }
+    None
+}
+
+/// Once the arguments and the time have come: serves, or makes one call as a client.
+fn begin(s: mut Service) {
+    s.begun += 1
+    if s.begun < 2 {
+        return
+    }
+    let mode = if s.args.is_empty() { String::from("help") } else { s.args[0].clone() }
+    if mode.as_str() != "serve" {
+        s.phase = Phase::Client
+        return client::start(mut s)
+    }
+    if let Some(l) = flag(s.args, "--listen") {
+        s.listen = take l
+    }
+    if let Some(m) = flag(s.args, "--machine") {
+        s.machine = m.clone()
+        s.core.machine = m.clone()
+        s.worker = jobs::worker(m.as_str())
+    }
+    if let Some(l) = flag(s.args, "--landers") {
+        let text = l.as_str()
+        for (from, to) in text.split(",") {
+            s.landers.push(text.slice(from, to).to_string())
+        }
+    }
+    s.phase = Phase::Disk
+    s.startup_left = 5
+    wait(mut s, host::mkdir("data/objects"), For::Made)
+    wait(mut s, host::mkdir("data/workers"), For::Made)
+    wait(mut s, host::list("data/objects"), For::ObjectDirs)
+    wait(mut s, host::stat(LOG), For::LogStat)
+    wait(mut s, host::read(jobs::manifest_path(s.worker.name.as_str()).as_str()), For::ManifestRead)
+}
+
+/// One request of the start answered: once all have been, the next stage begins.
+pub fn started_one(s: mut Service, what: str, r: take Result<Vec<u8>, IoError>) {
+    if let Err(e) = r {
+        return fatal(mut s, f"{what}: {e.message()}".as_str())
+    }
+    s.startup_left -= 1
+    if s.startup_left > 0 {
+        return
+    }
+    if s.phase == Phase::Disk {
+        load_held(mut s)
+    } else if s.phase == Phase::Loading {
+        // Ready once it listens.
+        s.phase = Phase::Begin
+        wait(mut s, host::listen(s.listen.as_str()), For::Listening)
+        s.carry_due = true
+    }
+}
+
+/// The log's bytes: each whole record folded, a torn last record cut off.
+fn replay(s: mut Service, b: take Vec<u8>) {
+    let read = log::read(b)
+    if read.whole < b.len() {
+        print(f"forge: the log ends in {b.len() - read.whole} bytes of a torn record; cutting them")
+        s.startup_left += 1
+        wait(mut s, host::truncate(LOG, u64(read.whole)), For::Truncated)
+    }
+    s.log_size = u64(read.whole)
+    var n = 0
+    for p in read.payloads {
+        match state::decode(p.clone()) {
+            Ok(ev) => {
+                if let Err(why) = state::apply(mut s.core.state, take ev) {
+                    return fatal(mut s, f"event {n} of the log doesn't apply: {why}".as_str())
+                }
+            },
+            Err(bad) => return fatal(
+                mut s,
+                f"event {n} of the log is malformed: {bad.why}".as_str(),
+            ),
+        }
+        n += 1
+    }
+    print(f"forge: {n} events; main at {s.core.state.seq}")
+    started_one(mut s, "reading the log", Ok(Vec::new()))
+}
+
+/// The objects every start loads: the files main and the open changes hold.
+fn load_held(s: mut Service) {
+    s.phase = Phase::Loading
+    var ids: SortedMap<Id, bool> = SortedMap::new()
+    for f in s.core.state.files.values() {
+        let _ = ids.insert(f.id, value: true)
+    }
+    for c in s.core.state.changes.values() {
+        if c.status == Status::Open {
+            for t in c.touches.values() {
+                for x in [t.base, t.now, t.conflict] {
+                    if let Some(f) = x {
+                        let _ = ids.insert(f.id, value: true)
+                    }
+                }
+            }
+        }
+    }
+    s.startup_left = 1
+    for id in ids.keys() {
+        if load(mut s, id) {
+            s.startup_left += 1
+        }
+    }
+    started_one(mut s, "loading", Ok(Vec::new()))
+}
+
+// ---- objects -----------------------------------------------------------------------------------
+
+/// Loads object `id` into memory, if it isn't and isn't loading: whether a load began.
+pub fn load(s: mut Service, id: Id) -> bool {
+    if s.core.blobs.contains(id) || s.loading.contains(id) || s.missing.contains(id) {
+        return false
+    }
+    let _ = s.loading.insert(id, value: true)
+    wait(mut s, host::read(object::path(DATA, id).as_str()), For::Object(id))
+    true
+}
+
+fn loaded(s: mut Service, id: Id, r: take Result<Vec<u8>, IoError>) {
+    let _ = s.loading.remove(id)
+    let starting = s.phase == Phase::Loading
+    match take r {
+        Ok(b) => match object::check(id, b) {
+            Ok(kind) => {
+                let _ = s.core.stored.insert(id, value: true)
+                let _ = s.written.insert(id, value: true)
+                let _ = s.core.blobs.insert(id, if kind == object::BLOB {
+                    object::content(b)
+                } else { take b })
+            },
+            Err(bad) => {
+                if starting {
+                    return fatal(mut s, f"object {id.hex()}: {bad.why}".as_str())
+                }
+                let _ = s.missing.insert(id, value: true)
+            },
+        },
+        Err(e) => {
+            if starting {
+                return fatal(mut s, f"object {id.hex()} can't be read: {e.message()}".as_str())
+            }
+            let _ = s.missing.insert(id, value: true)
+        },
+    }
+    if starting {
+        return started_one(mut s, "loading an object", Ok(Vec::new()))
+    }
+    unpark(mut s, id)
+    // A carry or a job may have waited for it.
+    s.carry_due = true
+}
+
+/// Makes again each parked call that no longer waits for an object.
+fn unpark(s: mut Service, id: Id) {
+    var i = 0
+    while i < s.parked.len() {
+        var hit = false
+        var k = 0
+        while k < s.parked[i].waiting.len() {
+            if s.parked[i].waiting[k] == id {
+                let _ = s.parked[i].waiting.remove(k)
+                hit = true
+            } else {
+                k += 1
+            }
+        }
+        if hit && s.parked[i].waiting.is_empty() {
+            let p = s.parked.remove(i)
+            if s.missing.contains(id) {
+                reply(
+                    mut s,
+                    p.conn,
+                    500,
+                    "application/json",
+                    bytes::of_str("{\"error\":\"an object forge needs is missing\"}"),
+                )
+            } else {
+                retry(mut s, take p)
+            }
+        } else {
+            i += 1
+        }
+    }
+}
+
+// ---- commits -----------------------------------------------------------------------------------
+
+/// Makes `d` durable, then sends `answer` (if any). Its events are folded in now.
+pub fn commit(s: mut Service, d: take Durable, answer: take Option<Reply>) {
+    if let Err(why) = core::absorb(mut s.core, d.clone()) {
+        print(f"forge: a call's events don't apply: {why}")
+        if let Some(a) = answer {
+            reply(
+                mut s,
+                a.conn,
+                500,
+                "application/json",
+                bytes::of_str("{\"error\":\"forge couldn't apply the call\"}"),
+            )
+        }
+        return
+    }
+    var records: Vec<u8> = Vec::new()
+    for ev in d.events {
+        match ev {
+            Event::Landed { .. } => s.carry_due = true,
+            _ => {},
+        }
+        bytes::push_run(mut records, log::record(state::encode(ev.clone())))
+    }
+    s.queue.push(Pend { objects: take d.objects, records, reply: answer })
+}
+
+/// Writes the commits that wait, if none are being written.
+fn pump(s: mut Service) {
+    if s.flight.is_some() || s.queue.is_empty() || s.phase == Phase::Stopped {
+        return
+    }
+    var f = Flight { writes_left: 0, records: Vec::new(), appends_left: 0, replies: Vec::new() }
+    let pends = replace(mut s.queue, Vec::new())
+    for p in pends {
+        for o in p.objects {
+            if s.written.contains(o.id) {
+                continue
+            }
+            let _ = s.written.insert(o.id, value: true)
+            f.writes_left += write_object(mut s, o.id, o.bytes)
+        }
+        bytes::push_run(mut f.records, p.records)
+        if let Some(r) = p.reply {
+            f.replies.push(r.clone())
+        }
+    }
+    let none_left = f.writes_left == 0
+    s.flight = Some(take f)
+    if none_left {
+        append_flight(mut s)
+    }
+}
+
+/// Writes object `id` to its file, in parts if it's large: how many answers it waits for.
+fn write_object(s: mut Service, id: Id, b: [u8]) -> u32 {
+    let path = object::path(DATA, id)
+    if b.len() <= PART {
+        wait(mut s, host::write(path.as_str(), b), For::Wrote)
+        return 1
+    }
+    // Written beside it in parts, then renamed into place: whole or absent after a crash.
+    let part = f"{path}.part"
+    wait(mut s, host::write(part.as_str(), bytes::slice(b, 0, PART)), For::Wrote)
+    var n = 1
+    var at = PART
+    while at < b.len() {
+        let end = min(at + PART, b.len())
+        wait(mut s, host::append(part.as_str(), bytes::slice(b, at, end)), For::Wrote)
+        n += 1
+        at = end
+    }
+    wait(mut s, host::rename(part.as_str(), path.as_str()), For::Wrote)
+    n + 1
+}
+
+fn wrote_one(s: mut Service) {
+    match mut s.flight {
+        Some(f) => {
+            f.writes_left -= 1
+            if f.writes_left > 0 {
+                return
+            }
+        },
+        None => return fatal(mut s, "a write answered with no commit in flight"),
+    }
+    append_flight(mut s)
+}
+
+/// Appends the flight's records to the log, in parts: a crash between them leaves a torn
+/// record, which the next start cuts off.
+fn append_flight(s: mut Service) {
+    let records = match mut s.flight {
+        Some(f) => replace(mut f.records, Vec::new()),
+        None => return,
+    }
+    if records.is_empty() {
+        return appended_all(mut s)
+    }
+    var n = 0
+    var at = 0
+    while at < records.len() {
+        let end = min(at + PART, records.len())
+        wait(mut s, host::append(LOG, bytes::slice(records, at, end)), For::Appended)
+        n += 1
+        at = end
+    }
+    match mut s.flight {
+        Some(f) => f.appends_left = n,
+        None => {},
+    }
+}
+
+fn appended_one(s: mut Service) {
+    match mut s.flight {
+        Some(f) => {
+            f.appends_left -= 1
+            if f.appends_left > 0 {
+                return
+            }
+        },
+        None => return fatal(mut s, "an append answered with no commit in flight"),
+    }
+    appended_all(mut s)
+}
+
+/// The flight is durable: its answers go.
+fn appended_all(s: mut Service) {
+    let Some(f) = replace(mut s.flight, None) else { return }
+    for r in f.replies {
+        reply(mut s, r.conn, r.status, r.kind, r.body.clone())
+    }
+    pump(mut s)
+}
+
+// ---- carrying changes onto main ----------------------------------------------------------------
+
+/// Carries every open change whose files main has moved past onto main.
+fn carry_all(s: mut Service) {
+    s.carry_due = false
+    var ids: Vec<u64> = Vec::new()
+    for c in s.core.state.changes.values() {
+        if c.status == Status::Open && !state::stale(s.core.state, c.clone()).is_empty() {
+            ids.push(c.id)
+        }
+    }
+    for id in ids {
+        let ch = s.core.state.changes.at(id).clone()
+        match core::carry(s.core, ch) {
+            Outcome::Done { durable, .. } => commit(mut s, take durable, None),
+            Outcome::Need(need) => {
+                for x in need {
+                    let _ = load(mut s, x)
+                }
+                // Carried again once the objects have come.
+                s.carry_due = true
+            },
+        }
+    }
+}
+
+// ---- HTTP --------------------------------------------------------------------------------------
+
+/// Sends an answer on connection `conn`, then reads its next request.
+pub fn reply(s: mut Service, conn: u32, status: u32, kind: Text, body: [u8]) {
+    if !s.conns.contains(conn) {
+        return
+    }
+    let closing = s.conns.at(conn).closing
+    send(conn, http::response(status, kind, body, close: closing))
+    if closing {
+        close(conn)
+        let _ = s.conns.remove(conn)
+        return
+    }
+    s.conns.at_mut(conn).busy = false
+    next_request(mut s, conn)
+}
+
+fn bytes_in(s: mut Service, conn: u32, b: [u8]) {
+    if !s.conns.contains(conn) {
+        return
+    }
+    s.conns.at_mut(conn).reader.add(b)
+    next_request(mut s, conn)
+}
+
+fn next_request(s: mut Service, conn: u32) {
+    if !s.conns.contains(conn) || s.conns.at(conn).busy {
+        return
+    }
+    let got = s.conns.at_mut(conn).reader.next()
+    match take got {
+        Read::Wait => {},
+        Read::Bad { status, why } => {
+            s.conns.at_mut(conn).closing = true
+            s.conns.at_mut(conn).busy = true
+            reply(mut s, conn, status, "text/plain", bytes::of_str(why.as_str()))
+        },
+        Read::Got(req) => {
+            s.conns.at_mut(conn).busy = true
+            if req.closes() {
+                s.conns.at_mut(conn).closing = true
+            }
+            if s.phase != Phase::Ready {
+                return reply(mut s, conn, 503, "text/plain", bytes::of_str("forge is starting"))
+            }
+            route(mut s, conn, take req)
+        },
+    }
+}
+
+fn route(s: mut Service, conn: u32, req: take Request) {
+    let method = req.method.as_str()
+    let path = req.path.as_str()
+    if method == "GET" && path == "/health" {
+        return reply(mut s, conn, 200, "text/plain", bytes::of_str("ok\n"))
+    }
+    if method == "GET" && path == "/" {
+        let page = digest::page(s.core, now(s))
+        return reply(mut s, conn, 200, "text/html; charset=utf-8", bytes::of_str(page.as_str()))
+    }
+    if method == "POST" && path == "/mcp" {
+        return call(
+            mut s,
+            Parked { conn, route: Route::Mcp, body: take req.body, waiting: Vec::new(), rounds: 0 },
+        )
+    }
+    if path == "/mcp" {
+        return reply(
+            mut s,
+            conn,
+            405,
+            "text/plain",
+            bytes::of_str("forge's MCP takes POST: one JSON-RPC message each\n"),
+        )
+    }
+    if method == "POST" && path == "/api/call" {
+        return call(
+            mut s,
+            Parked { conn, route: Route::Api, body: take req.body, waiting: Vec::new(), rounds: 0 },
+        )
+    }
+    if method == "GET" && path.starts_with("/api/object/") {
+        return get_object(mut s, conn, path.slice(from: 12, to: path.len()))
+    }
+    if method == "POST" && path == "/api/object" {
+        let o = object::blob(req.body)
+        let id = o.id
+        let r = Reply {
+            conn,
+            status: 200,
+            kind: "text/plain",
+            body: bytes::of_str(id.hex().as_str()),
+        }
+        return commit(
+            mut s,
+            Durable { objects: Vec::from([take o]), events: Vec::new() },
+            Some(take r),
+        )
+    }
+    if method == "POST" && path == "/api/import" {
+        return import::start(mut s, conn, req.body)
+    }
+    if method == "POST" && path == "/api/stop" {
+        if !ctx_of(s, conn).lands {
+            return reply(
+                mut s,
+                conn,
+                403,
+                "text/plain",
+                bytes::of_str("only a lander stops forge\n"),
+            )
+        }
+        print("forge: stopping")
+        reply(mut s, conn, 200, "text/plain", bytes::of_str("stopping\n"))
+        host::exit(0)
+        s.phase = Phase::Stopped
+        return
+    }
+    if path.starts_with("/api/work") {
+        return jobs::remote(mut s, conn, take req)
+    }
+    reply(
+        mut s,
+        conn,
+        404,
+        "text/plain",
+        bytes::of_str(f"forge has nothing at {method} {path}\n".as_str()),
+    )
+}
+
+fn get_object(s: mut Service, conn: u32, hex: str) {
+    let Some(id) = Id::parse(hex) else {
+        return reply(
+            mut s,
+            conn,
+            400,
+            "text/plain",
+            bytes::of_str("an object's id is 64 hex digits\n"),
+        )
+    }
+    match s.core.blobs.get(id) {
+        Some(b) => reply(mut s, conn, 200, "application/octet-stream", b),
+        None => {
+            if s.missing.contains(id) {
+                return reply(mut s, conn, 404, "text/plain", bytes::of_str("no such object\n"))
+            }
+            let _ = load(mut s, id)
+            // Answered once it's loaded: an API call that reads it.
+            var body = String::from("{\"tool\":\"object\",\"args\":{\"id\":\"")
+            body.push_str(hex)
+            body.push_str("\"}}")
+            s.parked.push(
+                Parked {
+                    conn,
+                    route: Route::Api,
+                    body: bytes::of_str(body.as_str()),
+                    waiting: Vec::from([id]),
+                    rounds: 0,
+                },
+            )
+        },
+    }
+}
+
+/// Who calls on connection `conn`, and whether they may land.
+fn ctx_of(s: Service, conn: u32) -> Ctx {
+    let peer = if s.conns.contains(conn) { s.conns.at(conn).peer.clone() } else { String::new() }
+    let ip_end = peer.as_str().find(":").unwrap_or(peer.len())
+    let ip = peer.as_str().slice(from: 0, to: ip_end).to_string()
+    var lands = ip.as_str() == "127.0.0.1" || ip.as_str() == "::1" || ip.as_str() == "[::1]"
+    for l in s.landers {
+        if l.as_str() == ip.as_str() {
+            lands = true
+        }
+    }
+    Ctx { who: if ip.is_empty() { String::from("unknown") } else { ip }, now: now(s), lands }
+}
+
+/// Makes a tool call (an API call or an MCP message), or parks it until what it needs is loaded.
+fn call(s: mut Service, p: take Parked) {
+    retry(mut s, take p)
+}
+
+fn retry(s: mut Service, p: take Parked) {
+    let doc = match Doc::read(p.body) {
+        Ok(d) => take d,
+        Err(why) => {
+            if p.route == Route::Mcp {
+                let e = mcp::error("null", -32700, f"the message isn't JSON: {why}".as_str())
+                return reply(mut s, p.conn, 200, "application/json", bytes::of_str(e.as_str()))
+            }
+            return reply(
+                mut s,
+                p.conn,
+                400,
+                "application/json",
+                bytes::of_str("{\"error\":\"the body isn't JSON\"}"),
+            )
+        },
+    }
+    let ctx = ctx_of(s, p.conn)
+    var rpc_id = String::from("null")
+    let (name, args) = if p.route == Route::Mcp {
+        let m = mcp::read(doc)
+        rpc_id = m.id.clone()
+        match take m.asked {
+            mcp::Asked::Result(r) => {
+                let out = mcp::result(m.id.as_str(), r.as_str())
+                return reply(mut s, p.conn, 200, "application/json", bytes::of_str(out.as_str()))
+            },
+            mcp::Asked::Notice => return reply(mut s, p.conn, 202, "application/json", Vec::new()),
+            mcp::Asked::Error { code, message } => {
+                let out = mcp::error(m.id.as_str(), code, message.as_str())
+                return reply(mut s, p.conn, 200, "application/json", bytes::of_str(out.as_str()))
+            },
+            mcp::Asked::Tool { name, args } => (take name, args),
+        }
+    } else {
+        let Some(args) = doc.get(doc.root, "args") else {
+            return reply(
+                mut s,
+                p.conn,
+                400,
+                "application/json",
+                bytes::of_str("{\"error\":\"give `tool` and `args`\"}"),
+            )
+        }
+        (doc.field(doc.root, "tool").to_string(), args)
+    }
+    let outcome = if name.as_str() == "object" {
+        object_tool(s, doc, args)
+    } else {
+        core::call(s.core, ctx, name.as_str(), doc, args)
+    }
+    match take outcome {
+        Outcome::Need(ids) => {
+            if p.rounds >= 64 {
+                return reply(
+                    mut s,
+                    p.conn,
+                    500,
+                    "application/json",
+                    bytes::of_str("{\"error\":\"the call kept needing more objects\"}"),
+                )
+            }
+            var waiting: Vec<Id> = Vec::new()
+            for id in ids {
+                if s.missing.contains(id) {
+                    return reply(
+                        mut s,
+                        p.conn,
+                        500,
+                        "application/json",
+                        bytes::of_str("{\"error\":\"an object forge needs is missing\"}"),
+                    )
+                }
+                let _ = load(mut s, id)
+                if !s.core.blobs.contains(id) {
+                    waiting.push(id)
+                }
+            }
+            s.parked.push(
+                Parked {
+                    conn: p.conn,
+                    route: p.route,
+                    body: p.body.clone(),
+                    waiting,
+                    rounds: p.rounds + 1,
+                },
+            )
+        },
+        Outcome::Done { json, error, durable } => {
+            let (status, kind, body) = if p.route == Route::Mcp {
+                let r = mcp::result(
+                    rpc_id.as_str(),
+                    mcp::tool_result(json.as_str(), error).as_str(),
+                )
+                (200, "application/json", bytes::of_str(r.as_str()))
+            } else if name.as_str() == "object" && !error {
+                (200, "application/octet-stream", raw_object(s, json.as_str()))
+            } else {
+                (if error { 422 } else { 200 }, "application/json", bytes::of_str(json.as_str()))
+            }
+            if durable.objects.is_empty() && durable.events.is_empty() {
+                reply(mut s, p.conn, status, kind, body)
+            } else {
+                commit(mut s, take durable, Some(Reply { conn: p.conn, status, kind, body }))
+            }
+        },
+    }
+}
+
+/// The `object` call that a GET of an object parks as: the object's id, once it's in memory.
+fn object_tool(s: Service, doc: Doc, args: u32) -> Outcome {
+    let Some(id) = Id::parse(doc.field(args, "id")) else {
+        return core::fail("an object's id is 64 hex digits")
+    }
+    if s.core.blobs.contains(id) {
+        Outcome::Done {
+            json: id.hex(),
+            error: false,
+            durable: Durable { objects: Vec::new(), events: Vec::new() },
+        }
+    } else {
+        Outcome::Need(Vec::from([id]))
+    }
+}
+
+fn raw_object(s: Service, hex: str) -> Vec<u8> {
+    match Id::parse(hex) {
+        Some(id) => s.core.blobs.get(id).unwrap_or(Vec::new()),
+        None => Vec::new(),
+    }
+}

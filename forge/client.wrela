@@ -1,0 +1,181 @@
+// forge as a command: one call to a forge service, its answer printed.
+//
+//     forge serve [--listen ADDR] [--machine NAME] [--landers IP,...]   run the service
+//     forge <tool> [key=value...] [--server ADDR]                      call a tool: open, read, ...
+//     forge call <tool> '<json>' [--server ADDR]                       call a tool with JSON arguments
+//     forge import <git-dir> [ref] [--server ADDR]                     import a repository's history
+//
+// A value that is all digits is a number, `true` and `false` are booleans, and anything else is
+// text. The service is at 127.0.0.1:7171 unless `--server` says otherwise.
+
+use http::Answer
+use out::Json
+use platform::net::send
+use platform::service as host
+use service::{For, Service, wait}
+use std::io::{IoError, print}
+
+pub struct Client: Clone {
+    conn: u32,
+    request: Vec<u8>,
+    buf: Vec<u8>,
+}
+
+pub fn idle() -> Client {
+    Client { conn: 0, request: Vec::new(), buf: Vec::new() }
+}
+
+const USAGE: Text = "usage:\n  forge serve [--listen ADDR] [--machine NAME] [--landers IP,...]\n  forge <tool> [key=value...] [--server ADDR]   (tools: open changes read list search write edit remove move status diff snap check job submit close log land)\n  forge call <tool> '<json arguments>' [--server ADDR]\n  forge import <git-dir> [ref] [--server ADDR]\n"
+
+fn done(s: mut Service, code: u32, text: str) {
+    if code == 0 {
+        host::stdout(bytes::of_str(text))
+    } else {
+        host::stderr(bytes::of_str(text))
+    }
+    host::exit(code)
+    s.phase = service::Phase::Stopped
+}
+
+fn is_digits(t: str) -> bool {
+    if t.is_empty() || t.len() > 18 {
+        return false
+    }
+    for i in 0..t.len() {
+        if t.byte(i) < 48 || t.byte(i) > 57 {
+            return false
+        }
+    }
+    true
+}
+
+/// The call the arguments ask for: its path and body.
+fn request(args: [String]) -> Result<(Text, String), String> {
+    let tool = args[0].as_str()
+    if tool == "import" {
+        if args.len() < 2 {
+            return Err(String::from("forge import <git-dir> [ref]"))
+        }
+        var j = Json::new()
+        j.obj()
+        j.kstr("git", args[1].as_str())
+        if args.len() > 2 && !args[2].as_str().starts_with("--") {
+            j.kstr("ref", args[2].as_str())
+        }
+        j.end_obj()
+        return Ok(("/api/import", take j.text))
+    }
+    if tool == "call" {
+        if args.len() < 3 {
+            return Err(String::from("forge call <tool> '<json>'"))
+        }
+        return Ok(("/api/call", f"{{\"tool\":\"{args[1]}\",\"args\":{args[2]}}}"))
+    }
+    var j = Json::new()
+    j.obj()
+    j.kstr("tool", tool)
+    j.key("args")
+    j.obj()
+    var i = 1
+    while i < args.len() {
+        let a = args[i].as_str()
+        if a == "--server" {
+            i += 2
+            continue
+        }
+        let Some(eq) = a.find("=") else { return Err(f"`{a}` isn't key=value") }
+        let key = a.slice(from: 0, to: eq)
+        let value = a.slice(from: eq + 1, to: a.len())
+        j.key(key)
+        if is_digits(value) {
+            j.raw(value)
+        } else if value == "true" || value == "false" {
+            j.raw(value)
+        } else {
+            j.str(value)
+        }
+        i += 1
+    }
+    j.end_obj()
+    j.end_obj()
+    Ok(("/api/call", take j.text))
+}
+
+pub fn start(s: mut Service) {
+    if s.args.is_empty() || s.args[0].as_str() == "help" || s.args[0].as_str() == "--help" {
+        return done(mut s, 0, USAGE)
+    }
+    let (path, body) = match request(s.args) {
+        Ok(x) => take x,
+        Err(why) => return done(mut s, 2, f"forge: {why}\n{USAGE}".as_str()),
+    }
+    var server = String::from("127.0.0.1:7171")
+    for i in 0..s.args.len() {
+        if s.args[i].as_str() == "--server" && i + 1 < s.args.len() {
+            server = s.args[i + 1].clone()
+        }
+    }
+    s.client.request = http::request(
+        "POST",
+        server.as_str(),
+        path,
+        "application/json",
+        bytes::of_str(body.as_str()),
+    )
+    wait(mut s, host::connect(server.as_str()), For::Client(1))
+}
+
+pub fn answered(s: mut Service, step: u32, r: take Result<Vec<u8>, IoError>) {
+    let _ = step
+    match take r {
+        Ok(b) => s.client.conn = host::conn_of(take b).unwrap_or(0),
+        Err(e) => done(mut s, 1, f"forge: can't reach the service: {e.message()}\n".as_str()),
+    }
+}
+
+pub fn connection(s: mut Service, conn: u32, open: bool) {
+    if open {
+        send(conn, s.client.request)
+    } else if s.phase != service::Phase::Stopped {
+        done(mut s, 1, "forge: the service closed the connection before it answered\n")
+    }
+}
+
+pub fn bytes(s: mut Service, conn: u32, b: [u8]) {
+    let _ = conn
+    bytes::push_run(mut s.client.buf, b)
+    match http::read_response(mut s.client.buf) {
+        Answer::Wait => {},
+        Answer::Got { status, body } => {
+            var text = bytes::text_of(body)
+            text.push_str("\n")
+            done(mut s, if status < 400 { 0 } else { 1 }, text.as_str())
+        },
+        Answer::Bad(why) => done(mut s, 1, f"forge: a malformed answer: {why}\n".as_str()),
+    }
+}
+
+@test
+fn a_commands_arguments_become_a_tool_call() {
+    let args = Vec::from(
+        [
+            String::from("read"),
+            String::from("change=c3"),
+            String::from("path=a b.txt"),
+            String::from("from=10"),
+            String::from("--server"),
+            String::from("h:1"),
+        ],
+    )
+    let Ok((path, body)) = request(args) else { panic("a request") }
+    assert(path == "/api/call", "a call")
+    assert(
+        body.as_str() ==
+            "{\"tool\":\"read\",\"args\":{\"change\":\"c3\",\"path\":\"a b.txt\",\"from\":10}}",
+        body.as_str(),
+    )
+    let Ok((ipath, ibody)) = request(
+        Vec::from([String::from("import"), String::from("/repo")]),
+    ) else { panic("an import") }
+    assert(ipath == "/api/import" && ibody.as_str() == "{\"git\":\"/repo\"}", ibody.as_str())
+}

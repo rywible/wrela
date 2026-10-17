@@ -1,0 +1,452 @@
+// The import of a git repository's history into an empty store (spec/forge.md): main's commits,
+// first parent first, each a revision of main with its author, time and message. Each commit's
+// files are read with git itself (`ls-tree`, then `cat-file --batch` for the blobs not seen yet),
+// byte for byte, so a revision's files are the commit's. It is forge's one use of git.
+
+use blake3::Id
+use core::Durable
+use object::{File, Files, Object}
+use platform::service as host
+use service::{For, Service, commit, reply, wait}
+use state::Event
+use std::io::{IoError, print}
+use std::json::{Json as Doc}
+
+/// A commit to import.
+pub struct Commit: Clone {
+    pub sha: String,
+    pub author: String,
+    pub time: u64,
+    pub message: String,
+}
+
+/// A path a commit holds, as `ls-tree` lists it.
+struct Entry: Clone {
+    path: String,
+    sha: String,
+    exec: bool,
+}
+
+pub struct Import: Clone {
+    pub active: bool,
+    git: String,
+    reference: String,
+    commits: Vec<Commit>,
+    next: u32,
+    /// Whether a git process runs for it.
+    busy: bool,
+    entries: Vec<Entry>,
+    /// Each git blob seen: its forge file, without its mode.
+    shas: SortedMap<String, File>,
+    files: Files,
+    started: u64,
+}
+
+pub fn idle() -> Import {
+    Import {
+        active: false,
+        git: String::new(),
+        reference: String::new(),
+        commits: Vec::new(),
+        next: 0,
+        busy: false,
+        entries: Vec::new(),
+        shas: SortedMap::new(),
+        files: SortedMap::new(),
+        started: 0,
+    }
+}
+
+const LOG: u32 = 1
+const LIST: u32 = 2
+const BLOBS: u32 = 3
+
+/// `POST /api/import {"git": dir, "ref": "main"}`: imports the repository at `dir` into an empty
+/// store.
+pub fn start(s: mut Service, conn: u32, body: [u8]) {
+    let Ok(doc) = Doc::read(body) else {
+        return reply(
+            mut s,
+            conn,
+            400,
+            "application/json",
+            bytes::of_str("{\"error\":\"the body isn't JSON\"}"),
+        )
+    }
+    let git = doc.field(doc.root, "git").to_string()
+    if git.is_empty() || !git.as_str().starts_with("/") {
+        return reply(
+            mut s,
+            conn,
+            400,
+            "application/json",
+            bytes::of_str("{\"error\":\"give `git`, the repository's absolute path\"}"),
+        )
+    }
+    if s.import.active || s.core.state.seq != 0 || !s.core.state.changes.is_empty() {
+        return reply(
+            mut s,
+            conn,
+            409,
+            "application/json",
+            bytes::of_str("{\"error\":\"forge imports only into an empty store\"}"),
+        )
+    }
+    let reference = doc.field(doc.root, "ref").to_string()
+    s.import = idle()
+    s.import.active = true
+    s.import.git = take git
+    s.import.reference = if reference.is_empty() { String::from("main") } else { take reference }
+    s.import.started = service::now(s)
+    git_run(
+        mut s,
+        LOG,
+        [
+            "log",
+            "--first-parent",
+            "--reverse",
+            "--format=%H%x1f%an <%ae>%x1f%at%x1f%B%x1e",
+        ],
+        Vec::new(),
+    )
+    reply(mut s, conn, 202, "application/json", bytes::of_str("{\"importing\":true}"))
+}
+
+/// Runs `git -C <repo> <args> [ref]` for import step `step`.
+fn git_run(s: mut Service, step: u32, args: [Text], stdin: take Vec<u8>) {
+    var argv: Vec<String> = Vec::from(
+        [String::from("git"), String::from("-C"), s.import.git.clone()],
+    )
+    for a in args {
+        argv.push(a.to_string())
+    }
+    if step == LOG {
+        argv.push(s.import.reference.clone())
+    }
+    run_argv(mut s, step, take argv, take stdin)
+}
+
+fn run_argv(s: mut Service, step: u32, argv: take Vec<String>, stdin: take Vec<u8>) {
+    s.import.busy = true
+    let r = host::Run {
+        tag: 0,
+        argv,
+        cwd: String::from("data"),
+        env: Vec::new(),
+        limit_ms: 600000,
+        cap: 1073741824,
+        stdin,
+    }
+    wait(mut s, host::run(r), For::Import(step))
+}
+
+fn failed(s: mut Service, why: str) {
+    print(f"forge: the import stopped: {why}")
+    s.import.active = false
+    s.import.busy = false
+}
+
+pub fn answered(s: mut Service, step: u32, r: take Result<Vec<u8>, IoError>) {
+    s.import.busy = false
+    let ran = match take r {
+        Ok(b) => host::ran_of(take b),
+        Err(e) => return failed(mut s, e.message()),
+    }
+    let Some(x) = ran else { return failed(mut s, "git's answer is malformed") }
+    if !x.ok() {
+        return failed(mut s, f"git failed ({x.status}): {bytes::text_of(x.stderr)}".as_str())
+    }
+    if step == LOG {
+        s.import.commits = commits_of(x.stdout)
+        print(f"forge: importing {s.import.commits.len()} commits of {s.import.reference}")
+    } else if step == LIST {
+        s.import.entries = entries_of(x.stdout)
+        // The blobs not seen yet.
+        var want: Vec<u8> = Vec::new()
+        var asked: SortedMap<String, bool> = SortedMap::new()
+        for e in s.import.entries {
+            if !s.import.shas.contains(e.sha.clone()) && !asked.contains(e.sha.clone()) {
+                bytes::push_str(mut want, e.sha.as_str())
+                want.push(10)
+                let _ = asked.insert(e.sha.clone(), value: true)
+            }
+        }
+        if !want.is_empty() {
+            return git_run(mut s, BLOBS, ["cat-file", "--batch"], take want)
+        }
+        land_commit(mut s, Vec::new())
+    } else if step == BLOBS {
+        match blobs_of(x.stdout) {
+            Ok(found) => {
+                var objects: Vec<Object> = Vec::new()
+                for (sha, content) in found {
+                    let o = object::blob(content)
+                    let _ = s.import.shas.insert(
+                        sha.clone(),
+                        File { id: o.id, exec: false, size: u64(content.len()) },
+                    )
+                    objects.push(take o)
+                }
+                land_commit(mut s, take objects)
+            },
+            Err(why) => failed(mut s, why.as_str()),
+        }
+    }
+}
+
+/// Lands the commit being imported, with its new blobs.
+fn land_commit(s: mut Service, blobs: take Vec<Object>) {
+    let c = s.import.commits[s.import.next].clone()
+    var files: Files = SortedMap::new()
+    var lost = String::new()
+    for e in s.import.entries {
+        match s.import.shas.get(e.sha.clone()) {
+            Some(f) => {
+                let _ = files.insert(e.path.clone(), File { id: f.id, exec: e.exec, size: f.size })
+            },
+            None => lost = e.sha.clone(),
+        }
+    }
+    if !lost.is_empty() {
+        return failed(mut s, f"git gave no blob {lost}".as_str())
+    }
+    // What the commit changed.
+    var delta: Vec<(String, Option<File>)> = Vec::new()
+    let keys = files.keys()
+    let values = files.values()
+    for i in 0..keys.len() {
+        if s.import.files.get(keys[i].clone()) != Some(values[i]) {
+            delta.push((keys[i].clone(), Some(values[i])))
+        }
+    }
+    for p in s.import.files.keys() {
+        if !files.contains(p.clone()) {
+            delta.push((p.clone(), None))
+        }
+    }
+    var objects = take blobs
+    let trees = object::trees(files)
+    let tree = trees[trees.len() - 1].id
+    for t in trees {
+        if !s.core.stored.contains(t.id) {
+            objects.push(t.clone())
+        }
+    }
+    let seq = s.core.state.seq + 1
+    let subject_end = c.message.as_str().find("\n").unwrap_or(c.message.len())
+    let rev = object::revision(
+        object::Revision {
+            tree,
+            parent: s.core.state.head,
+            seq,
+            change: String::new(),
+            author: c.author.clone(),
+            intent: c.message.clone(),
+            time: c.time,
+            model: String::new(),
+            session: String::new(),
+            machine: String::new(),
+            origin: f"git {c.sha}",
+            evidence: Vec::new(),
+        },
+    )
+    let ev = Event::Landed {
+        seq,
+        change: 0,
+        revision: rev.id,
+        tree,
+        time: c.time,
+        by: c.author.clone(),
+        intent: c.message.as_str().slice(from: 0, to: subject_end).to_string(),
+        files: delta,
+    }
+    objects.push(take rev)
+    commit(mut s, Durable { objects, events: Vec::from([take ev]) }, None)
+    s.import.files = take files
+    s.import.next += 1
+    if s.import.next % 25 == 0 {
+        evict(mut s)
+        print(f"forge: imported {s.import.next} of {s.import.commits.len()}")
+    }
+}
+
+/// Drops from memory the blobs and trees that neither main nor an open change holds: what an
+/// import's older commits held is on disk.
+fn evict(s: mut Service) {
+    var keep: SortedMap<Id, Vec<u8>> = SortedMap::new()
+    for f in s.core.state.files.values() {
+        if let Some(b) = s.core.blobs.get(f.id) {
+            let _ = keep.insert(f.id, take b)
+        }
+    }
+    s.core.blobs = take keep
+}
+
+/// Takes the next step of an import that runs, if no git process runs for it.
+pub fn pump(s: mut Service) {
+    if !s.import.active || s.import.busy || s.import.commits.is_empty() {
+        return
+    }
+    if s.import.next >= s.import.commits.len() {
+        evict(mut s)
+        let secs = (service::now(s) - s.import.started) / 1000
+        print(
+            f"forge: imported {s.import.commits.len()} commits in {secs} s; main at {s.core.state.seq}",
+        )
+        s.import.active = false
+        s.import.shas = SortedMap::new()
+        return
+    }
+    let sha = s.import.commits[s.import.next].sha.clone()
+    var argv: Vec<String> = Vec::from(
+        [String::from("git"), String::from("-C"), s.import.git.clone()],
+    )
+    for a in ["ls-tree", "-r", "-z", "--full-tree"] {
+        argv.push(a.to_string())
+    }
+    argv.push(take sha)
+    run_argv(mut s, LIST, take argv, Vec::new())
+}
+
+// ---- git's output ------------------------------------------------------------------------------
+
+/// `git log`'s records: hash, author, time and message, split by 0x1f, each ended by 0x1e.
+pub fn commits_of(b: [u8]) -> Vec<Commit> {
+    var out: Vec<Commit> = Vec::new()
+    var start = 0
+    for i in 0..b.len() {
+        if b[i] == 30 {
+            var from = start
+            while from < i && (b[from] == 10 || b[from] == 13) {
+                from += 1
+            }
+            var fields: Vec<String> = Vec::new()
+            var f = from
+            for k in from..i + 1 {
+                if k == i || b[k] == 31 {
+                    fields.push(bytes::text_of(bytes::slice(b, f, k)))
+                    f = k + 1
+                }
+            }
+            if fields.len() >= 4 {
+                let secs = bytes::parse_u64(fields[2].as_str()).unwrap_or(0)
+                out.push(
+                    Commit {
+                        sha: fields[0].clone(),
+                        author: fields[1].clone(),
+                        time: secs * 1000,
+                        message: fields[3].as_str().trim().to_string(),
+                    },
+                )
+            }
+            start = i + 1
+        }
+    }
+    out
+}
+
+/// `git ls-tree -r -z`'s entries: "mode type sha\tpath", each ended by NUL; blobs only.
+fn entries_of(b: [u8]) -> Vec<Entry> {
+    var out: Vec<Entry> = Vec::new()
+    var start = 0
+    for i in 0..b.len() {
+        if b[i] != 0 {
+            continue
+        }
+        let line = bytes::slice(b, start, i)
+        start = i + 1
+        let Some(tab) = bytes::find(line, [9], 0) else { continue }
+        let head = bytes::text_of(bytes::slice(line, 0, tab))
+        let parts = head.as_str().split(" ")
+        if parts.len() != 3 {
+            continue
+        }
+        let h = head.as_str()
+        let mode = h.slice(from: parts[0].0, to: parts[0].1)
+        let kind = h.slice(from: parts[1].0, to: parts[1].1)
+        if kind != "blob" {
+            continue
+        }
+        out.push(
+            Entry {
+                path: bytes::text_of(bytes::slice(line, tab + 1, line.len())),
+                sha: h.slice(from: parts[2].0, to: parts[2].1).to_string(),
+                exec: mode == "100755",
+            },
+        )
+    }
+    out
+}
+
+/// `git cat-file --batch`'s objects: "sha type size\n", the bytes, "\n".
+fn blobs_of(b: [u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
+    var out: Vec<(String, Vec<u8>)> = Vec::new()
+    var at = 0
+    while at < b.len() {
+        let Some(nl) = bytes::find(b, [10], at) else {
+            return Err(String::from("cat-file's header has no end"))
+        }
+        let head = bytes::text_of(bytes::slice(b, at, nl))
+        let parts = head.as_str().split(" ")
+        if parts.len() != 3 {
+            return Err(f"cat-file says `{head}`")
+        }
+        let h = head.as_str()
+        let Some(size) = bytes::parse_u64(h.slice(from: parts[2].0, to: parts[2].1)) else {
+            return Err(f"cat-file's size in `{head}`")
+        }
+        let from = nl + 1
+        let to = from + u32(size)
+        if to > b.len() {
+            return Err(String::from("cat-file's output is cut short"))
+        }
+        out.push((h.slice(from: parts[0].0, to: parts[0].1).to_string(), bytes::slice(b, from, to)))
+        at = to + 1
+    }
+    Ok(out)
+}
+
+@test
+fn gits_output_reads_into_commits_entries_and_blobs() {
+    var log: Vec<u8> = Vec::new()
+    bytes::push_str(mut log, "abc")
+    log.push(31)
+    bytes::push_str(mut log, "Ryan <r@x>")
+    log.push(31)
+    bytes::push_str(mut log, "1700000000")
+    log.push(31)
+    bytes::push_str(mut log, "Subject\n\nBody\n")
+    log.push(30)
+    bytes::push_str(mut log, "\ndef")
+    log.push(31)
+    bytes::push_str(mut log, "A <a@x>")
+    log.push(31)
+    bytes::push_str(mut log, "1700000001")
+    log.push(31)
+    bytes::push_str(mut log, "Second")
+    log.push(30)
+    let cs = commits_of(log)
+    assert(
+        cs.len() == 2 && cs[0].sha.as_str() == "abc" && cs[0].message.as_str() == "Subject\n\nBody",
+        "the first",
+    )
+    assert(cs[1].sha.as_str() == "def" && cs[1].time == 1700000001000, "the second")
+    var tree: Vec<u8> = Vec::new()
+    bytes::push_str(mut tree, "100755 blob 1111\ttools/check.sh")
+    tree.push(0)
+    bytes::push_str(mut tree, "160000 commit 2222\tsub")
+    tree.push(0)
+    bytes::push_str(mut tree, "100644 blob 3333\ta b.txt")
+    tree.push(0)
+    let es = entries_of(tree)
+    assert(
+        es.len() == 2 && es[0].exec && es[1].path.as_str() == "a b.txt" && !es[1].exec,
+        "blobs only",
+    )
+    let cat = bytes::of_str("1111 blob 3\nab\n\n3333 blob 0\n\n")
+    let Ok(blobs) = blobs_of(cat) else { panic("they read") }
+    assert(
+        blobs.len() == 2 && bytes::same(blobs[0].1, bytes::of_str("ab\n")) && blobs[1].1.is_empty(),
+        "two blobs",
+    )
+}

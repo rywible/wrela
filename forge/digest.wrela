@@ -1,0 +1,148 @@
+// The digest (spec/forge.md): forge's state as a page, at `/`. What landed on main and why, the
+// changes open now and what stops each from landing, the checks running and done, and the checks
+// that both passed and failed on one tree. It is for reading what agents do without reading their
+// diffs.
+
+use core::Core
+use state::{Run, Status}
+
+/// `s` with HTML's special characters escaped.
+fn esc(s: str) -> String {
+    var out = String::new()
+    for i in 0..s.len() {
+        let b = s.byte(i)
+        if b == 38 {
+            out.push_str("&amp;")
+        } else if b == 60 {
+            out.push_str("&lt;")
+        } else if b == 62 {
+            out.push_str("&gt;")
+        } else if b == 34 {
+            out.push_str("&quot;")
+        } else {
+            out.push_byte(b)
+        }
+    }
+    out
+}
+
+/// How long ago `then` was, at `now` (both in milliseconds), in words.
+fn ago(now: u64, then: u64) -> String {
+    if then == 0 || then > now {
+        return String::from("now")
+    }
+    let s = (now - then) / 1000
+    if s < 60 {
+        return f"{s} s ago"
+    }
+    if s < 3600 {
+        return f"{s / 60} min ago"
+    }
+    if s < 86400 {
+        return f"{s / 3600} h ago"
+    }
+    f"{s / 86400} d ago"
+}
+
+const STYLE: Text = ":root{color-scheme:light dark;--bg:#fbfaf7;--fg:#1d1c1a;--dim:#6b6862;--line:#e3e0d8;--ok:#2f7d4f;--bad:#b3392f;--wait:#8a6d1f}@media (prefers-color-scheme:dark){:root{--bg:#161614;--fg:#ecebe6;--dim:#9a978f;--line:#2c2b28;--ok:#6fc28f;--bad:#e8756a;--wait:#d9b860}}body{background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif;margin:0 auto;max-width:960px;padding:24px 16px}h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:28px 0 8px;border-bottom:1px solid var(--line);padding-bottom:4px}.dim{color:var(--dim)}table{border-collapse:collapse;width:100%}td{padding:6px 8px 6px 0;vertical-align:top;border-bottom:1px solid var(--line)}td.n{white-space:nowrap;font-variant-numeric:tabular-nums}.ok{color:var(--ok)}.bad{color:var(--bad)}.wait{color:var(--wait)}code{font-size:13px}"
+
+/// The page at `now`.
+pub fn page(c: Core, now: u64) -> String {
+    borrow st = c.state
+    var h = String::from(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>forge</title><style>",
+    )
+    h.push_str(STYLE)
+    h.push_str("</style></head><body>")
+    h.push_str(
+        f"<h1>forge</h1><div class=\"dim\">main at {st.seq} · {st.files.len()} files · on {esc(c.machine.as_str())}</div>",
+    )
+    // Open changes.
+    h.push_str("<h2>Open changes</h2><table>")
+    var open = 0
+    for ch in st.changes.values() {
+        if ch.status != Status::Open {
+            continue
+        }
+        open += 1
+        let (tree, _) = core::tree_of(c, ch.clone())
+        let why = state::why_not_land(st, ch.clone(), tree)
+        let (cls, word) = match take why {
+            None => ("ok", String::from("ready to land")),
+            Some(w) => ("wait", take w),
+        }
+        h.push_str(
+            f"<tr><td class=\"n\"><code>{ch.name()}</code></td><td>{esc(ch.intent.as_str())}<div class=\"dim\">{esc(ch.author.as_str())} · {ch.touches.len()} files · {ch.edits} edits · {ago(now, ch.updated)}</div></td><td class=\"{cls}\">{esc(word.as_str())}</td></tr>",
+        )
+    }
+    if open == 0 {
+        h.push_str("<tr><td class=\"dim\">None.</td></tr>")
+    }
+    h.push_str("</table>")
+    // Checks.
+    h.push_str("<h2>Checks</h2><table>")
+    let jobs = st.jobs.values()
+    var shown = 0
+    var k = jobs.len()
+    while k > 0 && shown < 20 {
+        k -= 1
+        let j = jobs[k].clone()
+        let (cls, word) = match j.run {
+            Run::Queued => ("wait", "queued"),
+            Run::Running => ("wait", "running"),
+            Run::Done => if j.passed { ("ok", "passed") } else { ("bad", "failed") },
+        }
+        let whose = if j.change == 0 { String::from("main") } else { f"c{j.change}" }
+        let secs = if j.run == Run::Done { f" · {(j.ended - j.started) / 1000} s" } else {
+            String::new()
+        }
+        h.push_str(
+            f"<tr><td class=\"n\"><code>j{j.id}</code></td><td><code>{esc(j.check.as_str())}</code> on {whose}<div class=\"dim\">{esc(j.worker.as_str())}{secs} · {ago(now, j.queued)}</div></td><td class=\"{cls}\">{word}</td></tr>",
+        )
+        shown += 1
+    }
+    if shown == 0 {
+        h.push_str("<tr><td class=\"dim\">None yet.</td></tr>")
+    }
+    h.push_str("</table>")
+    // Flakes.
+    var flaky = String::new()
+    let checks = st.flakes.keys()
+    let counts = st.flakes.values()
+    for i in 0..checks.len() {
+        if counts[i].flips > 0 {
+            flaky.push_str(
+                f"<tr><td><code>{esc(checks[i].as_str())}</code></td><td class=\"n\">{counts[i].flips} flips in {counts[i].runs} runs on main</td></tr>",
+            )
+        }
+    }
+    if !flaky.is_empty() {
+        h.push_str("<h2>Flaky checks</h2><table>")
+        h.push_str(flaky.as_str())
+        h.push_str("</table>")
+    }
+    // Main.
+    h.push_str("<h2>Main</h2><table>")
+    let n = st.landings.len()
+    var i = 0
+    while i < n && i < 40 {
+        borrow l = st.landings[n - 1 - i]
+        let who = if l.change == 0 { String::from("imported") } else { f"c{l.change}" }
+        h.push_str(
+            f"<tr><td class=\"n\">{l.seq}</td><td>{esc(l.intent.as_str())}<div class=\"dim\">{who} · {esc(l.by.as_str())} · {ago(now, l.time)}</div></td></tr>",
+        )
+        i += 1
+    }
+    h.push_str("</table></body></html>")
+    h
+}
+
+@test
+fn the_digest_escapes_what_agents_wrote() {
+    let escaped = esc("<b>&\"")
+    assert(escaped.as_str() == "&lt;b&gt;&amp;&quot;", "escaped")
+    let minute = ago(now: 100000, then: 40000)
+    assert(minute.as_str() == "1 min ago", "a minute")
+    let page = page(core::core("m"), 0)
+    assert(page.as_str().find("main at 0").is_some(), "an empty forge's page")
+}

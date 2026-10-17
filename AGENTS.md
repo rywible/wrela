@@ -22,10 +22,10 @@ MIT-licensed language, compiler, engine and agent-native studio for browser game
 
 | Layer | Location and constraint |
 |---|---|
-| Hosts | `runtime/native` (Rust: wgpu/wasmtime), `runtime/browser` (TS), `runtime/abi` (shared with compiler); mechanisms here, policy in Wrela |
+| Hosts | `runtime/native` (Rust: wgpu/wasmtime), `runtime/browser` (TS), `runtime/service` (long-lived programs), `runtime/abi` (shared with compiler); mechanisms here, policy in Wrela |
 | Language | `compiler/` (Rust: syntax → sema → IR → lower → WASM/WGSL), `compiler/std` (Wrela); compiler knows no engine |
 | Engine | `engine/` (Wrela); no game names, places or tuning |
-| Studio | `studio/`, `ui/`, `docsite/` (docs.wrela.dev) (Wrela), `tools/` |
+| Studio | `studio/`, `ui/`, `docsite/` (docs.wrela.dev), `forge/` (version control and checks, `spec/forge.md`) (Wrela), `tools/` |
 | Games | `games/<game>/` (Wrela), with its cover; `games/console.toml` lists the released games. Games depend on engine and `examples/`; only studio fixtures depend on a game |
 
 ## Quality and checks
