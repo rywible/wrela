@@ -7,8 +7,8 @@ use bytes::{find, lower, of_str, push_run, push_str, same_ignoring_case, slice}
 
 /// The largest request head (its line and headers) a connection may send.
 const MOST_HEAD: u32 = 65536
-/// The largest request body.
-pub const MOST_BODY: u32 = 1073741824
+/// The largest request body: 32 MiB, so an event it makes fits a record (log.wrela's `MOST`).
+pub const MOST_BODY: u32 = 33554432
 
 pub struct Header: Clone {
     pub name: String,

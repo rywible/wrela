@@ -60,7 +60,7 @@ pub fn log_from(s: mut Service, conn: u32, from: u64, chain: str, epoch: u64, re
             "text/plain",
             bytes::of_str("the replica holds a newer epoch than this service's\n"),
         )
-        return service::fence(mut s, epoch)
+        return service::fence(mut s, epoch, None)
     }
     let at = Id::parse(chain).unwrap_or(Id::zero())
     if !log::holds(s.ends, from, at) {
@@ -75,7 +75,7 @@ pub fn log_from(s: mut Service, conn: u32, from: u64, chain: str, epoch: u64, re
         )
     }
     acked(mut s, replica, from)
-    if from < s.log_size {
+    if from < service::durable(s) {
         return send_log(mut s, conn, from)
     }
     s.asks.push(Ask { conn, from, until: service::now(s) + 20000 })
@@ -83,7 +83,8 @@ pub fn log_from(s: mut Service, conn: u32, from: u64, chain: str, epoch: u64, re
 
 /// Reads the log from `from` for connection `conn`'s answer.
 fn send_log(s: mut Service, conn: u32, from: u64) {
-    let len = min(s.log_size - from, CHUNK)
+    // Whole records: a record larger than a chunk goes whole, alone.
+    let len = log::span(s.ends, from, CHUNK)
     wait(mut s, host::read_range(LOG, from, len), For::LogPart(conn))
 }
 
@@ -126,6 +127,9 @@ fn held_by(s: Service, n: u32) -> u64 {
 
 /// Sends the answers whose landings enough replicas now hold.
 pub fn release(s: mut Service) {
+    if s.acks == 0 || s.fencing {
+        return
+    }
     let held = held_by(s, s.acks)
     var i = 0
     while i < s.awaiting.len() {
@@ -146,7 +150,7 @@ pub fn pump_asks(s: mut Service) {
     var i = 0
     while i < s.asks.len() {
         let a = s.asks[i].clone()
-        if a.from < s.log_size {
+        if a.from < service::durable(s) {
             let _ = s.asks.remove(i)
             send_log(mut s, a.conn, a.from)
         } else if now >= a.until {
@@ -357,16 +361,20 @@ fn own_log(s: mut Service, b: take Vec<u8>) {
         wait(mut s, host::truncate(LOG, u64(read.whole)), For::Replica(CUT))
     }
     for p in read.payloads {
-        match state::decode(p.clone()) {
-            Ok(ev) => match ev {
-                Event::Promoted { epoch, .. } => s.replica.epoch = epoch,
-                Event::Fenced { epoch, .. } => {
-                    return service::fatal(
-                        mut s,
-                        f"this store's service was fenced by epoch {epoch}: a replica starts from an empty store",
-                    )
-                },
-                _ => {},
+        match state::decode_all(p.clone()) {
+            Ok(evs) => {
+                for ev in evs {
+                    match ev {
+                        Event::Promoted { epoch, .. } => s.replica.epoch = epoch,
+                        Event::Fenced { epoch, .. } => {
+                            return service::fatal(
+                                mut s,
+                                f"this store's service was fenced by epoch {epoch}: a replica starts from an empty store",
+                            )
+                        },
+                        _ => {},
+                    }
+                }
             },
             Err(bad) => return service::fatal(
                 mut s,
@@ -733,13 +741,15 @@ pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
         s.replica.next_epoch = s.replica.epoch
         var ids: Vec<Id> = Vec::new()
         for p in read.payloads {
-            match state::decode(p.clone()) {
-                Ok(ev) => {
-                    match ev {
-                        Event::Promoted { epoch, .. } => s.replica.next_epoch = epoch,
-                        _ => {},
+            match state::decode_all(p.clone()) {
+                Ok(evs) => {
+                    for ev in evs {
+                        match ev {
+                            Event::Promoted { epoch, .. } => s.replica.next_epoch = epoch,
+                            _ => {},
+                        }
+                        named(ev, mut ids)
                     }
-                    named(ev, mut ids)
                 },
                 Err(bad) => return service::fatal(
                     mut s,

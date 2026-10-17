@@ -285,7 +285,7 @@ fn a_worker_on_another_machine_runs_a_check_and_the_service_keeps_its_evidence()
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     // The service runs no checks itself: its worker is elsewhere.
-    let service = run_forge(build, data, work, &["serve", "--listen", &listen, "--no-worker"]);
+    let service = run_forge(build, data, work, &["serve", "--listen", &listen, "--machine", "test", "--no-worker"]);
     ready(port);
     http(port, "POST", "/api/import", &serde_json::json!({"git": repo, "ref": "main"}).to_string());
     wait_until("the import", || call(port, "log", serde_json::json!({}))["main"] == 2);
@@ -332,7 +332,7 @@ fn a_replica_holds_each_landing_before_it_is_answered_and_serves_once_promoted()
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     // A landing is answered only once one replica holds it.
-    let service = run_forge(build, data, work, &["serve", "--listen", &listen, "--acks", "1"]);
+    let service = run_forge(build, data, work, &["serve", "--listen", &listen, "--machine", "test", "--acks", "1"]);
     ready(port);
     let replica =
         run_forge(build, rdata, rwork, &["replica", "--server", &listen, "--machine", "r1"]);
@@ -367,7 +367,7 @@ fn a_replica_holds_each_landing_before_it_is_answered_and_serves_once_promoted()
     drop(replica);
     let port2 = free_port();
     let listen2 = format!("127.0.0.1:{port2}");
-    let promoted = run_forge(build, rdata, rwork, &["serve", "--promote", "--listen", &listen2]);
+    let promoted = run_forge(build, rdata, rwork, &["serve", "--promote", "--listen", &listen2, "--machine", "promoted"]);
     ready(port2);
     assert_eq!(call(port2, "log", serde_json::json!({}))["main"], 3);
     let read = call(port2, "read", serde_json::json!({"path": "big.bin", "lines": 1}));
@@ -656,7 +656,7 @@ fn a_store_backed_up_to_a_bucket_is_restored_whole() {
     let port2 = free_port();
     let listen2 = format!("127.0.0.1:{port2}");
     let promoted =
-        run_forge(&build, &restored, &rwork, &["serve", "--promote", "--listen", &listen2]);
+        run_forge(&build, &restored, &rwork, &["serve", "--promote", "--listen", &listen2, "--machine", "promoted"]);
     ready(port2);
     assert_eq!(call(port2, "read", serde_json::json!({"path": "more.txt"}))["text"], "more\n");
     let read = call(port2, "read", serde_json::json!({"path": "big.bin", "lines": 1}));

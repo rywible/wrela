@@ -329,6 +329,61 @@ pub fn encode(ev: Event) -> Vec<u8> {
     take e.bytes
 }
 
+/// The kind of a record that holds a call's events, all of them or none (spec F13).
+pub const BATCH: u8 = 15
+
+/// A record's payload for `events`: the event itself, or, for more than one, a batch: the byte
+/// 15, their count, and each event's bytes as a run.
+pub fn payload(events: [Event]) -> Vec<u8> {
+    if events.len() == 1 {
+        return encode(events[0].clone())
+    }
+    var e = Enc::new()
+    e.u8(BATCH)
+    e.num(u64(events.len()))
+    for ev in events {
+        e.run(encode(ev.clone()))
+    }
+    take e.bytes
+}
+
+/// The events of a record's payload: one, or a batch's.
+pub fn decode_all(bytes: take Vec<u8>) -> Result<Vec<Event>, Bad> {
+    if bytes.is_empty() || bytes[0] != BATCH {
+        let ev = decode(take bytes)?
+        return Ok(Vec::from([take ev]))
+    }
+    var d = Dec::new(take bytes)
+    let _ = d.u8()?
+    let n = d.small()?
+    if n < 2 {
+        return Err(Bad { why: String::from("a batch of fewer than two events") })
+    }
+    var out: Vec<Event> = Vec::with_capacity(n)
+    for _ in 0..n {
+        let b = d.run()?
+        if !b.is_empty() && b[0] == BATCH {
+            return Err(Bad { why: String::from("a batch inside a batch") })
+        }
+        out.push(decode(take b)?)
+    }
+    d.end()?
+    Ok(out)
+}
+
+/// Folds `events` into the state: all of them, or, if one doesn't apply, none.
+pub fn apply_all(s: mut State, events: [Event]) -> Result<(), String> {
+    if events.len() == 1 {
+        return apply(mut s, events[0].clone())
+    }
+    var next = s.clone()
+    for ev in events {
+        apply(mut next, ev.clone())?
+    }
+    s = take next
+    Ok(())
+}
+
 pub fn decode(bytes: take Vec<u8>) -> Result<Event, Bad> {
     var d = Dec::new(take bytes)
     let ev = match d.u8()? {
@@ -1016,4 +1071,23 @@ fn epochs_only_rise_and_a_newer_one_fences() {
         let Ok(back) = decode(b.clone()) else { panic("it decodes") }
         assert(bytes::same(encode(back), b), "the same bytes again")
     }
+}
+
+@test
+fn a_batch_reads_back_as_its_events_and_applies_whole_or_not_at_all() {
+    let one = Event::Waived { check: String::from("x"), why: String::from("y") }
+    let Ok(single) = decode_all(payload([one.clone()])) else { panic("one") }
+    assert(single.len() == 1 && bytes::same(encode(single[0].clone()), encode(one.clone())), "one")
+    let two = [one.clone(), Event::Fenced { epoch: 3, time: 1 }]
+    let b = payload(two)
+    assert(b[0] == BATCH, "a batch")
+    let Ok(back) = decode_all(b.clone()) else { panic("two") }
+    assert(back.len() == 2 && bytes::same(payload(back), b), "both, in order")
+    var cut = b.clone()
+    let _ = cut.pop()
+    assert(decode_all(take cut).is_err(), "a cut batch")
+    // The second event doesn't apply, so the first isn't kept.
+    var s = new()
+    let bad = [take one, Event::Fenced { epoch: 0, time: 1 }]
+    assert(apply_all(mut s, bad).is_err() && s.waived.is_empty(), "none of it")
 }

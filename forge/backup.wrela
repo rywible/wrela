@@ -506,8 +506,12 @@ fn read_log(s: mut Service, r: take Result<Vec<u8>, IoError>) {
             if u64(read.ends[i]) > want {
                 break
             }
-            match state::decode(read.payloads[i].clone()) {
-                Ok(ev) => named(ev, mut s.backup.walk),
+            match state::decode_all(read.payloads[i].clone()) {
+                Ok(evs) => {
+                    for ev in evs {
+                        named(ev, mut s.backup.walk)
+                    }
+                },
                 Err(bad) => return service::fatal(
                     mut s,
                     f"the log holds an event forge can't read: {bad.why}".as_str(),
@@ -558,8 +562,12 @@ fn next(s: mut Service) {
 /// The segment's next record: its objects walked into the pack.
 fn take_record(s: mut Service) {
     let i = s.backup.taken
-    match state::decode(s.backup.payloads[i].clone()) {
-        Ok(ev) => named(ev, mut s.backup.walk),
+    match state::decode_all(s.backup.payloads[i].clone()) {
+        Ok(evs) => {
+            for ev in evs {
+                named(ev, mut s.backup.walk)
+            }
+        },
         Err(bad) => return service::fatal(
             mut s,
             f"the log holds an event forge can't read: {bad.why}".as_str(),

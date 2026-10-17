@@ -166,7 +166,7 @@ fn heard(s: mut Service) {
         return promote(mut s)
     }
     if highest > own {
-        return service::fence(mut s, highest)
+        return service::fence(mut s, highest, None)
     }
     if s.peers.why == AT_START {
         service::listen(mut s)

@@ -45,6 +45,8 @@ pub struct Remote: Clone {
     target: Files,
     fetch: Vec<(String, File)>,
     at: u32,
+    /// The parts of the file being written not answered yet.
+    parts: u32,
     status: i32,
     timed_out: bool,
     ms: u64,
@@ -65,6 +67,7 @@ pub fn idle() -> Remote {
         target: SortedMap::new(),
         fetch: Vec::new(),
         at: 0,
+        parts: 0,
         status: 0,
         timed_out: false,
         ms: 0,
@@ -108,8 +111,12 @@ pub fn answered(s: mut Service, what: u32, r: take Result<Vec<u8>, IoError>) {
                 f"the worker couldn't write its checkout: {e.message()}\n".as_str(),
             )
         }
-        s.remote.at += 1
-        s.remote.waiting = false
+        // A file larger than a request is written in parts: done when the last is.
+        s.remote.parts -= 1
+        if s.remote.parts == 0 {
+            s.remote.at += 1
+            s.remote.waiting = false
+        }
     } else if what == RAN {
         match take r {
             Ok(b) => match host::ran_of(take b) {
@@ -300,10 +307,12 @@ pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
             )
         }
         s.remote.waiting = true
-        wait(
+        s.remote.parts = service::write_unflushed_file(
             mut s,
-            host::write_unflushed(f"{WORK}/{p}".as_str(), body, exec: f.exec),
-            For::Remote(WROTE),
+            f"{WORK}/{p}".as_str(),
+            body,
+            exec: f.exec,
+            what: For::Remote(WROTE),
         )
     } else if purpose == SENDING {
         if status != 200 {

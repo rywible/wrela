@@ -56,6 +56,9 @@ never reused.
   hash differs. The bytes from there on are a torn record: a start cuts the file back to the
   records before it.
 - **F13.** Each record's payload is one event: a byte for its kind, then its fields, in this order.
+  A call that makes more than one event writes them as one record of kind 15, so a crash keeps
+  all of them or none; a record is at most 64 MiB, and a call whose record would be larger is
+  refused.
 
 | Kind | Event | Fields |
 |---|---|---|
@@ -73,6 +76,7 @@ never reused.
 | 12 | A service was promoted | epoch, machine, time |
 | 13 | The service was fenced | epoch, time |
 | 14 | A check went back to the queue | job, why, time |
+| 15 | A call's events, together | the count of events (2 or more), then each event's bytes as a run |
 
 - **F14.** The state is the fold of the log's events from the start, in order. An event that
   doesn't apply (a change that isn't open, a landing out of place) means the log isn't the

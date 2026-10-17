@@ -74,6 +74,30 @@ pub fn chained(before: Id, record_end: [u8]) -> Id {
     hash(b)
 }
 
+/// How many bytes from `from` to read of a log whose records end at `ends`: whole records only,
+/// at most `most` of them, but always the whole next record, however large; 0 at the log's end.
+pub fn span(ends: [(u64, Id)], from: u64, most: u64) -> u64 {
+    var lo = 0
+    var hi = ends.len()
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if ends[mid].0 <= from {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    if lo >= ends.len() {
+        return 0
+    }
+    // The first record past `from` ends at ends[lo]; as many more as fit in `most`.
+    var at = lo
+    while at + 1 < ends.len() && ends[at + 1].0 - from <= most {
+        at += 1
+    }
+    ends[at].0 - from
+}
+
 /// The end and the chain there of each whole record of `b`, which starts at byte `at` of a log
 /// whose chain there is `chain`.
 pub fn ends(b: [u8], r: Read, at: u64, chain: Id) -> Vec<(u64, Id)> {
@@ -103,6 +127,22 @@ pub fn holds(ends: [(u64, Id)], at: u64, chain: Id) -> bool {
         }
     }
     lo < ends.len() && ends[lo].0 == at && ends[lo].1 == chain
+}
+
+@test
+fn a_span_holds_whole_records_and_always_the_next() {
+    var e: Vec<(u64, Id)> = Vec::new()
+    for end in [10, 20, 40, 1000] {
+        e.push((end, Id::zero()))
+    }
+    assert(
+        span(e, from: 0, most: 25) == 20 &&
+            span(e, from: 10, most: 25) == 10 &&
+            span(e, from: 10, most: 30) == 30,
+        "whole records",
+    )
+    assert(span(e, from: 40, most: 25) == 960, "the next record, however large")
+    assert(span(e, from: 1000, most: 25) == 0, "nothing past the end")
 }
 
 @test

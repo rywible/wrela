@@ -1557,14 +1557,8 @@ fn content_of(c: Core, f: Option<File>, need: mut Vec<Id>) -> Vec<u8> {
 /// Folds what a call made durable into the core: its objects' contents and its events. Its events
 /// apply all together or not at all, and nothing of a call whose events don't apply is kept.
 pub fn absorb(c: mut Core, d: Durable) -> Result<(), String> {
-    if d.events.len() == 1 {
-        apply(mut c.state, d.events[0].clone())?
-    } else if d.events.len() > 1 {
-        var next = c.state.clone()
-        for ev in d.events {
-            apply(mut next, ev.clone())?
-        }
-        c.state = take next
+    if !d.events.is_empty() {
+        state::apply_all(mut c.state, d.events)?
     }
     for o in d.objects {
         let _ = c.stored.insert(o.id, value: true)

@@ -201,10 +201,12 @@ pub fn none() -> Rooms {
 }
 
 /// Keeps what events just became durable mean, for the studio.
-pub fn kept(s: mut Service, events: [Event], ends: [(u64, Id)]) {
-    for i in 0..min(events.len(), ends.len()) {
-        let n = notice(events[i].clone(), ends[i].0, s.core.state)
-        s.rooms.recent.push(take n.json)
+pub fn kept(s: mut Service, records: [Vec<Event>], ends: [(u64, Id)]) {
+    for i in 0..min(records.len(), ends.len()) {
+        for ev in records[i] {
+            let n = notice(ev.clone(), ends[i].0, s.core.state)
+            s.rooms.recent.push(take n.json)
+        }
     }
     if s.rooms.recent.len() > KEPT {
         let over = s.rooms.recent.len() - KEPT
@@ -223,13 +225,13 @@ pub fn watch(s: mut Service, conn: u32, room: str, from: str, lines: bool) {
             bytes::of_str("{\"error\":\"a room is main, checks, all or a change (c12)\"}"),
         )
     }
-    let at = if from.is_empty() { s.log_size } else {
+    let at = if from.is_empty() { service::durable(s) } else {
         match bytes::parse_u64(from) {
             Some(x) => x,
-            None => s.log_size + 1,
+            None => service::durable(s) + 1,
         }
     }
-    if at > s.log_size || !(at == 0 || at == s.log_size || ends_at(s, at)) {
+    if at > service::durable(s) || !(at == 0 || at == service::durable(s) || ends_at(s, at)) {
         return service::reply(
             mut s,
             conn,
@@ -304,7 +306,7 @@ pub fn studio(s: mut Service, conn: u32, after: str) {
     let who = service::ctx_of(s, conn).who
     enter(mut s, "studio", who.as_str(), service::now(s) + HOLD + STAY)
     let at = bytes::parse_u64(after).unwrap_or(0)
-    if after.is_empty() || at < s.log_size {
+    if after.is_empty() || at < service::durable(s) {
         return page(mut s, conn)
     }
     s.rooms.watches.push(
@@ -365,7 +367,7 @@ fn page(s: mut Service, conn: u32) {
         top.push_str("<tr><td class=\"dim\">Nothing since forge started.</td></tr>")
     }
     top.push_str("</table>")
-    let refresh = f"<meta http-equiv=\"refresh\" content=\"0;url=/studio?after={s.log_size}\">"
+    let refresh = f"<meta http-equiv=\"refresh\" content=\"0;url=/studio?after={service::durable(s)}\">"
     let html = digest::page_with(s.core, now, refresh.as_str(), top.as_str())
     service::reply(mut s, conn, 200, "text/html; charset=utf-8", bytes::of_str(html.as_str()))
 }
@@ -384,14 +386,14 @@ pub fn pump(s: mut Service) {
             i += 1
             continue
         }
-        if w.page && (w.from < s.log_size || now >= w.until) {
+        if w.page && (w.from < service::durable(s) || now >= w.until) {
             let _ = s.rooms.watches.remove(i)
             page(mut s, w.conn)
             continue
         }
-        if !w.page && w.from < s.log_size {
+        if !w.page && w.from < service::durable(s) {
             s.rooms.watches[i].reading = true
-            let len = min(s.log_size - w.from, READ)
+            let len = log::span(s.ends, w.from, READ)
             wait(mut s, host::read_range(LOG, w.from, len), For::Watched(w.conn))
             i += 1
             continue
@@ -427,10 +429,12 @@ pub fn read(s: mut Service, conn: u32, r: take Result<Vec<u8>, IoError>) {
     let got = log::read(b)
     var notices: Vec<String> = Vec::new()
     for k in 0..got.payloads.len() {
-        let Ok(ev) = state::decode(got.payloads[k].clone()) else { continue }
-        let n = notice(ev, w.from + u64(got.ends[k]), s.core.state)
-        if in_room(n.clone(), w.room.as_str()) {
-            notices.push(take n.json)
+        let Ok(evs) = state::decode_all(got.payloads[k].clone()) else { continue }
+        for ev in evs {
+            let n = notice(ev.clone(), w.from + u64(got.ends[k]), s.core.state)
+            if in_room(n.clone(), w.room.as_str()) {
+                notices.push(take n.json)
+            }
         }
     }
     let next = w.from + u64(got.whole)
