@@ -1,5 +1,5 @@
 // TrueType fonts baked into signed distance fields when the program is built (language.md
-// §10): each Latin-1 glyph's outline as a field, its metrics, and the font's kerning, from the
+// §13): each Latin-1 glyph's outline as a field, its metrics, and the font's kerning, from the
 // font's file (`embed`). A program calls `bake` in a constant; text.wrela's fonts are
 // constants made this way.
 //

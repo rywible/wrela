@@ -9,7 +9,7 @@
 //   one set of pipelines. Its numbers are data.
 // - Bones have positions, not rotations, at rest: a part is placed by its bone's rest position,
 //   and skinning moves it with the bone's pose (`SkinBinding`).
-// - Each part has a name, which tools show (std::field's parts, language.md §20). It joins what
+// - Each part has a name, which tools show (std::field's parts, language.md §23). It joins what
 //   comes before it by its own seam: smoothly over a width, hard, as a cut or as a clip.
 // - A group's parts join each other first, in the group's own space (moved, turned and scaled),
 //   and the group joins the rest as one.
@@ -17,7 +17,7 @@
 //   with the bones the skeleton pairs with its own (the right legs' with the left's).
 // - A modifier changes the distance of everything before it in its group (a cape, the ground).
 // - A creature is built from values, never heap memory, so a lifted build derives gradients
-//   through all of it, its skeleton included (§20).
+//   through all of it, its skeleton included (§23).
 
 use physique
 use physique::{Capsule, Mass, Per}

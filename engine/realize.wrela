@@ -767,7 +767,7 @@ pub struct Whole {
 }
 
 /// Realizes `creature` as `look` says, as `realize_once` does but over frames (language.md
-/// §6.18), so no submission runs long (the GPU safety rule: under 100 ms): its first `resume`
+/// §16.3), so no submission runs long (the GPU safety rule: under 100 ms): its first `resume`
 /// finds its live blocks,
 /// each after places the vertices of `per_frame` slices of them (`SLICE_BLOCKS` blocks each),
 /// then the last finishes the mesh. Its result is the whole mesh; its scratch goes with it.
