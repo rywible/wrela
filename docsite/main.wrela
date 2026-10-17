@@ -57,6 +57,15 @@ const NAV_BUTTONS: u32 = 5000000
 const CONTROL_NODES: u32 = 6000000
 /// How long a copy's result shows, in seconds.
 const SAID: f32 = 1.6
+/// Who holds a figure: a mouse, which turns and tilts it; a finger, until its first move says
+/// which way it goes; a finger that turns it; a finger that scrolls the page past it.
+const HELD_BY_MOUSE: u32 = 0
+const FINGER_UNSURE: u32 = 1
+const FINGER_TURNS: u32 = 2
+const FINGER_SCROLLS: u32 = 3
+/// How far a finger moves before its way counts, in CSS pixels.
+const FINGER_SLOP: f32 = 10.0
+
 /// A live field's numbers, as sliders.
 const KNOB_NODES: u32 = 7000000
 /// Each figure's tabs: its list, then a tab for each of its views.
@@ -153,8 +162,12 @@ pub struct Docs {
     /// The pointer's press on the page: where, whether it has moved, and the link under it.
     press: Option<(vec2, bool, String)>,
     /// A press that scrolls rather than selects (a finger's, which didn't hover first): the
-    /// scroll it began at, and whether it scrolls the list of pages rather than the page.
+    /// scroll it began at, and whether it scrolls the list of pages rather than the page; where
+    /// the finger was in its last moments, and when; and a swipe let go while moving, which
+    /// carries on and slows (its speed in pixels a second, and whether it's the list's).
     swipe: Option<(f32, bool)>,
+    trail: Vec<(f32, f32)>,
+    fling: Option<(f32, bool)>,
     offered: String,
     /// Find on the page: whether it's open, what's typed, where it matches and which is current.
     finding: bool,
@@ -180,10 +193,12 @@ pub struct Docs {
     /// Each live figure's field, in the page's order.
     lives: Vec<Live>,
     /// A number held, to drag: its knob, where the press was and its value then.
-    knob_held: Option<(u32, f32, f32)>,
-    /// A figure held, to turn: its figure, where the press was, its turn and tilt then, and
-    /// whether a finger holds it, whose up and down scroll the page.
-    orbit: Option<(u32, vec2, f32, f32, bool)>,
+    knob_held: Option<(u32, vec2, f32, bool)>,
+    /// A figure held, to turn: its figure, where the press was, its turn and tilt then, and who
+    /// holds it (`HELD_BY_MOUSE`, or a finger before and after it shows its way).
+    orbit: Option<(u32, vec2, f32, f32, u32)>,
+    /// Whether the last press was a finger's: no pointer hovers after it.
+    finger: bool,
 }
 
 /// A live figure's field: its block, its code as the reader's drags have changed it, what it
@@ -276,6 +291,8 @@ pub fn init() -> Docs {
         selected: None,
         press: None,
         swipe: None,
+        trail: Vec::new(),
+        fling: None,
         offered: String::new(),
         finding: false,
         find: String::new(),
@@ -293,6 +310,7 @@ pub fn init() -> Docs {
         lives: Vec::new(),
         knob_held: None,
         orbit: None,
+        finger: false,
     }
 }
 
@@ -317,6 +335,7 @@ pub fn frame(s: mut Docs, time: f32, width: u32, height: u32) {
     keep_laid_out(mut s, frame)
     keep_lives(mut s, frame)
     glide_on(mut s, frame, dt)
+    fling_on(mut s, frame, dt)
     keep_hover(mut s, frame, dt)
     keep_nav(mut s, frame)
     if s.dirty || moving(s, frame) {
@@ -333,7 +352,8 @@ const APPEAR: f32 = 0.22
 /// opening: its disc joins there.
 fn hover_target(s: Docs, f: Frame) -> f32 {
     let p = s.pointer
-    if p.x < 0.0 || s.reduced { return 0.0 }
+    // A finger lifts and leaves no pointer behind.
+    if p.x < 0.0 || s.reduced || s.finger { return 0.0 }
     let band = p.y < f.header && !f.search.contains(p)
     let opening = s.route.page.is_empty() &&
         p.y >= f.header &&
@@ -370,6 +390,7 @@ fn moving(s: Docs, f: Frame) -> bool {
     (lively && !s.reduced) ||
         (live_moves(s, f) && !s.reduced) ||
         s.glide.is_some() ||
+        s.fling.is_some() ||
         s.time - s.copied_at < SAID + 0.25 ||
         s.renderer.waiting()
 }
@@ -877,6 +898,13 @@ fn handle(s: mut Docs, e: Event, f: Frame) {
     let u = s.u
     match e {
         Event::PointerMove { at, .. } => {
+            // A pointer that moves with nothing held is a mouse's.
+            if s.press.is_none() &&
+                s.knob_held.is_none() &&
+                s.orbit.is_none() &&
+                s.thumb.is_none() {
+                s.finger = false
+            }
             s.pointer = at
             // The pointer chooses the result it's over, as the arrow keys do.
             if s.searching {
@@ -885,6 +913,8 @@ fn handle(s: mut Docs, e: Event, f: Frame) {
             drag(mut s, at, f)
         },
         Event::PointerDown { at, button, .. } => {
+            // A press stops a fling, as a finger stops a page that's still moving.
+            s.fling = None
             if button != Button::Primary {
                 s.pointer = at
                 return
@@ -894,6 +924,7 @@ fn handle(s: mut Docs, e: Event, f: Frame) {
         },
         Event::PointerUp { at, button, .. } => if button == Button::Primary {
             s.thumb = None
+            start_fling(mut s)
             if s.knob_held.is_some() || s.orbit.is_some() {
                 s.knob_held = None
                 s.orbit = None
@@ -903,6 +934,7 @@ fn handle(s: mut Docs, e: Event, f: Frame) {
             release(mut s, at)
         },
         Event::Wheel { at, delta, .. } => {
+            s.fling = None
             if over_nav(s, at, f) { s.nav_scroll += delta.y } else if !s.searching {
                 scroll_by(mut s, delta.y, f)
             }
@@ -1194,6 +1226,8 @@ fn press(s: mut Docs, at: vec2, f: Frame) {
         // The mark goes to the front page; on a narrow screen, the button beside it opens the list.
         if !f.beside && at.x < 56.0 * s.u {
             s.nav_open = !s.nav_open
+            // Open, it shows the page being read at its top, its sections under it.
+            if s.nav_open { s.nav_follow = true }
             return
         }
         if at.x < mark_right(s, f) { go_to(mut s, Route::front(), push: true) }
@@ -1211,6 +1245,7 @@ fn press(s: mut Docs, at: vec2, f: Frame) {
         return
     }
     let hovered = length(s.pointer - at) < 2.0
+    s.finger = !hovered
     if over_nav(s, at, f) {
         // A page of the list opens when the press lets go without moving; a finger's drag
         // scrolls the list.
@@ -1236,7 +1271,8 @@ fn press(s: mut Docs, at: vec2, f: Frame) {
     // A live field's number: it drags.
     for i in 0..s.laid.knobs.len() {
         if knob_rect(s, f, i).contains(at) {
-            s.knob_held = Some((i, at.x, knob_value(s, i)))
+            // A finger shows by its first move whether it drags the number or scrolls the page.
+            s.knob_held = Some((i, at, knob_value(s, i), !hovered))
             return
         }
     }
@@ -1249,26 +1285,16 @@ fn press(s: mut Docs, at: vec2, f: Frame) {
             }
         }
     }
-    // A live figure: it turns; a finger's up and down still scroll the page. A slice doesn't
-    // turn.
+    // A live figure: a mouse turns and tilts it, and over a slice shows what the field is where it
+    // is. A finger's first move says its way: across, it turns the field or moves the slice's
+    // probe; up or down, it scrolls the page.
     for i in 0..s.laid.figures.len() {
         if figure_rect(s, f, i).contains(at) {
-            let flat = match live_of(s, s.laid.figures[i].block) {
-                Some(l) => s.lives[l].mode != SURFACE,
-                None => true,
-            }
-            if flat {
-                if !hovered {
-                    s.press = Some((at, false, String::new()))
-                    s.swipe = Some((s.scroll, false))
-                }
-                return
-            }
             let (turn, tilt) = match live_of(s, s.laid.figures[i].block) {
                 Some(l) => (s.lives[l].turn, s.lives[l].tilt),
                 None => (0.0, 0.0),
             }
-            s.orbit = Some((i, at, turn, tilt, !hovered))
+            s.orbit = Some((i, at, turn, tilt, if hovered { HELD_BY_MOUSE } else { FINGER_UNSURE }))
             if !hovered { s.swipe = Some((s.scroll, false)) }
             return
         }
@@ -1297,25 +1323,50 @@ fn place(s: Docs, at: vec2, f: Frame) -> Option<u32> {
 
 /// The pointer moved while it's held on the page: the selection goes to it.
 fn drag(s: mut Docs, at: vec2, f: Frame) {
-    if let Some((i, x0, v0)) = s.knob_held {
+    if let Some((i, from, v0, unsure)) = s.knob_held {
+        if unsure {
+            let d = (at - from) / s.u
+            if length(d) < FINGER_SLOP { return }
+            if abs(d.y) > abs(d.x) {
+                // Up or down: the page scrolls, as anywhere else.
+                s.knob_held = None
+                s.press = Some((from, true, String::new()))
+                s.swipe = Some((s.scroll, false))
+                drag(mut s, at, f)
+                return
+            }
+            s.knob_held = Some((i, from, v0, false))
+        }
         // A pixel's worth of drag: a 250th of the number's size, or of a quarter where it's small.
         let step = max(abs(v0), 0.25) * 0.004
-        var v = v0 + (at.x - x0) / s.u * step
+        var v = v0 + (at.x - from.x) / s.u * step
         if v0 >= 0.0 { v = max(v, 0.0) }
         set_knob(mut s, i, v)
         return
     }
-    if let Some((i, from, turn, tilt, finger)) = s.orbit {
+    if let Some((i, from, turn, tilt, by)) = s.orbit {
         let block = s.laid.figures[i].block
         let Some(l) = live_of(s, block) else { return }
         let d = (at - from) / s.u
-        s.lives[l].turn = turn - d.x * 0.008
-        if finger {
+        var held = by
+        if held == FINGER_UNSURE {
+            if length(d) < FINGER_SLOP { return }
+            held = if abs(d.x) > abs(d.y) { FINGER_TURNS } else { FINGER_SCROLLS }
+            s.orbit = Some((i, from, turn, tilt, held))
+        }
+        // A slice doesn't turn: the pointer is its probe.
+        let surface = s.lives[l].mode == SURFACE
+        if held != FINGER_SCROLLS && surface { s.lives[l].turn = turn - d.x * 0.008 }
+        if held == HELD_BY_MOUSE && surface {
+            s.lives[l].tilt = clamp(tilt + d.y * 0.006, 0.1, 1.3)
+        }
+        if held == FINGER_SCROLLS {
             s.glide = None
             if let Some((start, _)) = s.swipe {
                 s.scroll = clamp(start - (at.y - from.y), 0.0, max_scroll(s, f))
+                follow_finger(mut s, at.y)
             }
-        } else { s.lives[l].tilt = clamp(tilt + d.y * 0.006, 0.1, 1.3) }
+        }
         return
     }
     if let Some((from, start, nav)) = s.thumb {
@@ -1326,7 +1377,9 @@ fn drag(s: mut Docs, at: vec2, f: Frame) {
     }
     let Some((from, moved, held)) = s.press else { return }
     let link = held.clone()
-    let far = length(at - from) > 4.0 * s.u
+    // A finger wavers as it taps: it takes a longer move than a mouse's to be a drag.
+    let slop = if s.swipe.is_some() { 10.0 } else { 4.0 }
+    let far = length(at - from) > slop * s.u
     if !moved && !far { return }
     s.press = Some((from, true, link.clone()))
     if let Some((start, nav)) = s.swipe {
@@ -1336,6 +1389,7 @@ fn drag(s: mut Docs, at: vec2, f: Frame) {
             s.glide = None
             s.scroll = clamp(start - (at.y - from.y), 0.0, max_scroll(s, f))
         }
+        follow_finger(mut s, at.y)
         return
     }
     // A press on the list of pages selects nothing.
@@ -1346,6 +1400,60 @@ fn drag(s: mut Docs, at: vec2, f: Frame) {
     }
     let Some((start, _)) = s.selected else { return }
     if let Some(k) = place(s, at, f) { s.selected = Some((start, k)) }
+}
+
+/// Where a swiping finger is now, kept with the moments before it, a frame apart.
+fn follow_finger(s: mut Docs, y: f32) {
+    let n = s.trail.len()
+    if n > 0 && s.trail[n - 1].1 == s.time {
+        s.trail[n - 1].0 = y
+    } else { s.trail.push((y, s.time)) }
+    if s.trail.len() > 8 { let _ = s.trail.remove(0) }
+}
+
+/// A swipe let go: at the speed its finger had over its last tenth of a second, it carries on.
+fn start_fling(s: mut Docs) {
+    let trail = s.trail.clone()
+    s.trail.clear()
+    let Some((_, nav)) = s.swipe else { return }
+    let moved = match s.press {
+        Some((_, m, _)) => m,
+        None => match s.orbit {
+            Some((_, _, _, _, by)) => by == FINGER_SCROLLS,
+            None => false,
+        },
+    }
+    if !moved || trail.len() < 2 { return }
+    let v = swipe_speed(trail, s.time)
+    if abs(v) > 60.0 * s.u { s.fling = Some((v, nav)) }
+}
+
+/// The speed of a finger along `trail` (where it was, and when), in pixels a second that the page
+/// scrolls: over its last tenth of a second before `now`, and none if it rested longer than that.
+fn swipe_speed(trail: [(f32, f32)], now: f32) -> f32 {
+    let n = trail.len()
+    if n < 2 { return 0.0 }
+    let (y1, t1) = trail[n - 1]
+    if now - t1 > 0.1 { return 0.0 }
+    var k = n - 1
+    while k > 0 && t1 - trail[k - 1].1 <= 0.1 { k -= 1 }
+    if k == n - 1 { k = n - 2 }
+    let (y0, t0) = trail[k]
+    if t1 - t0 < 0.005 { return 0.0 }
+    -(y1 - y0) / (t1 - t0)
+}
+
+/// A fling carries the page, or the list of pages, on, slowing as a page on a phone does, and
+/// stops at either end.
+fn fling_on(s: mut Docs, f: Frame, dt: f32) {
+    let Some((v, nav)) = s.fling else { return }
+    let before = if nav { s.nav_scroll } else { s.scroll }
+    set_scroll(mut s, f, nav, before + v * dt)
+    let after = if nav { s.nav_scroll } else { s.scroll }
+    let slower = v * exp(-dt * 2.4)
+    s.fling = if abs(slower) < 12.0 * s.u || (dt > 0.0 && after == before) { None } else {
+        Some((slower, nav))
+    }
 }
 
 /// The pointer let go: a press that didn't move follows the link it was on, and selects nothing.
@@ -1538,6 +1646,9 @@ struct NavRow: Clone {
     lines: Vec<String>,
     y: f32,
     h: f32,
+    /// A section of the page being read (its anchor), listed under it where the page has no
+    /// outline beside it; empty for a page.
+    anchor: String = String::new(),
 }
 
 /// Lays the list's rows out again when what they show or their room changed: each group's title,
@@ -1552,6 +1663,11 @@ fn keep_nav(s: mut Docs, f: Frame) {
         var rows: Vec<NavRow> = Vec::new()
         var y = 16.0 * u
         var group = String::new()
+        // Over the page, where a finger reads, the rows are a finger's height, and the page being
+        // read has its sections under it: it has no outline beside it.
+        let finger = !f.beside
+        let pad = if finger { 22.0 } else { 8.0 }
+        let title = if finger { 48.0 } else { 36.0 }
         for p in s.index.pages {
             let g = group_of(p.path.as_str(), p.kind.as_str())
             if g != group.as_str() {
@@ -1564,17 +1680,35 @@ fn keep_nav(s: mut Docs, f: Frame) {
                         path: String::new(),
                         lines: Vec::from([take name]),
                         y,
-                        h: 36.0 * u,
+                        h: title * u,
                     },
                 )
-                y += 36.0 * u
+                y += title * u
             }
             if !is_open(s, g) { continue }
             let label = nav_label(p.path.as_str(), p.kind.as_str(), p.title.as_str())
             let lines = wrap(s.fonts, label.as_str(), SMALL * u, f.nav - 48.0 * u, 2)
-            let h = (8.0 + 20.0 * f32(lines.len())) * u
+            let h = (pad + 20.0 * f32(lines.len())) * u
             rows.push(NavRow { group: group.clone(), path: p.path.clone(), lines, y, h })
             y += h
+            if finger && p.path == s.shown {
+                for (label, anchor, _, level) in outline(s) {
+                    if level > 2 && is_module(s) { continue }
+                    let lines = wrap(s.fonts, label.as_str(), 13.0 * u, f.nav - 64.0 * u, 2)
+                    let h = (18.0 + 18.0 * f32(lines.len())) * u
+                    rows.push(
+                        NavRow {
+                            group: group.clone(),
+                            path: p.path.clone(),
+                            lines,
+                            y,
+                            h,
+                            anchor: anchor.clone(),
+                        },
+                    )
+                    y += h
+                }
+            }
         }
         s.nav = take rows
     }
@@ -1686,9 +1820,12 @@ fn nav_at(s: Docs, at: vec2, f: Frame) -> Option<String> {
     if at.y < f.header { return None }
     for row in nav_rows(s, f) {
         if at.y >= row.y && at.y < row.y + row.h {
-            return Some(if row.path.is_empty() { f"group:{row.group.as_str()}" } else {
-                f"nav:{row.path.as_str()}"
-            })
+            return Some(if row.path.is_empty() {
+                f"group:{row.group.as_str()}"
+            } else if !row.anchor
+                .is_empty() {
+                f"here:{row.anchor.as_str()}"
+            } else { f"nav:{row.path.as_str()}" })
         }
     }
     None
@@ -2084,6 +2221,8 @@ fn keep_laid_out(s: mut Docs, f: Frame) {
     s.orbit = None
     // A place kept at another width may be past the page's end at this one.
     s.scroll = clamp(s.scroll, 0.0, max_scroll(s, f))
+    // The list of pages lists the page's sections over the page.
+    if !f.beside { s.nav_dirty = true }
     refresh_matches(mut s, f)
     seek(mut s, f, glide: false)
 }
@@ -2147,7 +2286,7 @@ fn draw_all(s: mut Docs, f: Frame) {
     // The number under the pointer, or held, that drags.
     for i in 0..s.laid.knobs.len() {
         let held = match s.knob_held {
-            Some((k, _, _)) => k == i,
+            Some((k, _, _, unsure)) => k == i && !unsure,
             None => false,
         }
         let r = knob_rect(s, f, i)
@@ -2337,17 +2476,20 @@ fn draw_nav(s: mut Docs, f: Frame) {
         hex(s.p.rule),
     )
     s.list.push_clip(r)
-    // A page just shown is brought into the list's view, a third of the way down.
+    // A page just shown is brought into the list's view, a third of the way down; over the page,
+    // where its sections follow it, to the list's top.
     if s.nav_follow && !s.nav.is_empty() {
         s.nav_follow = false
         for row in nav_rows(s, f) {
+            let out = row.y < f.header + 24.0 * u || row.y + row.h > screen.y - 40.0 * u
             if !row.path.is_empty() &&
+                row.anchor.is_empty() &&
                 row.path == s.shown &&
-                (row.y < f.header + 24.0 * u || row.y + row.h > screen.y - 40.0 * u) {
-                s.nav_scroll = max(
-                    s.nav_scroll + row.y - (f.header + (screen.y - f.header) / 3.0),
-                    0.0,
-                )
+                (out || !f.beside) {
+                let want = if f.beside { f.header + (screen.y - f.header) / 3.0 } else {
+                    f.header + 12.0 * u
+                }
+                s.nav_scroll = max(s.nav_scroll + row.y - want, 0.0)
             }
         }
     }
@@ -2391,6 +2533,24 @@ fn draw_nav(s: mut Docs, f: Frame) {
             }
             continue
         }
+        // A section of the page being read: indented under it, smaller, along a hairline.
+        if !row.anchor.is_empty() {
+            s.list.rect(Rect::new(26.0 * u, row.y, max(1.0, u), row.h), hex(s.p.rule))
+            for k in 0..row.lines.len() {
+                let _ = s.list.text(
+                    s.fonts,
+                    Face::Sans,
+                    row.lines[k].as_str(),
+                    13.0 * u,
+                    vec2(
+                        40.0 * u,
+                        row.y + (row.h - 18.0 * u * f32(row.lines.len())) * 0.5 + f32(k) * 18.0 * u,
+                    ),
+                    hex(if hover { s.p.text } else { s.p.quiet }),
+                )
+            }
+            continue
+        }
         let here = row.path == s.shown
         if here {
             s.list.rect(
@@ -2402,13 +2562,14 @@ fn draw_nav(s: mut Docs, f: Frame) {
         let color = if here { hex(s.p.strong) } else if hover { hex(s.p.text) } else {
             hex(s.p.quiet)
         }
+        let top = (row.h - 20.0 * u * f32(row.lines.len())) * 0.5
         for k in 0..row.lines.len() {
             let _ = s.list.text(
                 s.fonts,
                 Face::Sans,
                 row.lines[k].as_str(),
                 SMALL * u,
-                vec2(24.0 * u, row.y + 4.0 * u + f32(k) * 20.0 * u),
+                vec2(24.0 * u, row.y + top + f32(k) * 20.0 * u),
                 color,
             )
         }
@@ -3033,6 +3194,10 @@ fn figure_tabs(s: Docs, f: Frame, i: u32) -> Vec<(Rect, u32, String)> {
     let r = figure_rect(s, f, i)
     if r.bottom() < f.header || r.y > s.screen.y { return out }
     let u = s.u
+    // A finger's size where the list isn't beside the page.
+    let (size, h, pad, gap) = if f.beside { (12.5, 26.0, 20.0, 4.0) } else {
+        (13.5, 34.0, 18.0, 6.0)
+    }
     var x = r.x + 10.0 * u
     for (mode, name) in [
         (SURFACE, "Surface"),
@@ -3040,9 +3205,9 @@ fn figure_tabs(s: Docs, f: Frame, i: u32) -> Vec<(Rect, u32, String)> {
         (GRADIENT, "Gradient"),
         (BOUNDS, "Bounds"),
     ] {
-        let w = s.fonts.font(Face::Sans).measure(name, 12.5 * u) + 20.0 * u
-        out.push((Rect::new(x, r.y + 10.0 * u, w, 26.0 * u), mode, name.to_string()))
-        x += w + 4.0 * u
+        let w = s.fonts.font(Face::Sans).measure(name, size * u) + pad * u
+        out.push((Rect::new(x, r.y + 10.0 * u, w, h * u), mode, name.to_string()))
+        x += w + gap * u
     }
     out
 }
@@ -3072,18 +3237,22 @@ fn draw_figure_overlays(s: mut Docs, f: Frame) {
             let hover = t.contains(s.pointer)
             s.list.rect(t, hex(if here { s.p.field } else { s.p.page }, if here { 0.9 } else {
                 0.7
-            }), radius: 13.0 * u)
+            }), radius: t.h * 0.5)
+            let size = (if f.beside { 12.5 } else { 13.5 }) * u
+            let tw = s.fonts.font(Face::Sans).measure(name.as_str(), size)
             let _ = s.list.text(
                 s.fonts,
                 Face::Sans,
                 name.as_str(),
-                12.5 * u,
-                vec2(t.x + 10.0 * u, t.y + 5.0 * u),
+                size,
+                vec2(t.x + (t.w - tw) * 0.5, t.y + (t.h - size * 1.35) * 0.5),
                 hex(if here { s.p.page } else if hover { s.p.strong } else { s.p.text }),
             )
         }
         // What the view shows, at its foot.
-        let lines = wrap(s.fonts, view_note(mode).as_str(), 12.5 * u, r.w - 40.0 * u, 2)
+        let lines = wrap(s.fonts, view_note(mode).as_str(), 12.5 * u, r.w - 40.0 * u, if f.beside {
+            2
+        } else { 4 })
         let h = f32(lines.len()) * 18.0 * u + 12.0 * u
         var widest = 0.0
         for line in lines {
@@ -3198,23 +3367,29 @@ fn tell(s: mut Docs, f: Frame) {
     for i in 0..s.laid.knobs.len() {
         if knob_rect(s, f, i).contains(s.pointer) { over_knob = true }
     }
-    var over_figure = false
+    // Over a figure: a hand that turns it, or over a slice the probe's crosshair.
+    var over_figure = ""
     for i in 0..s.laid.figures.len() {
         if figure_rect(s, f, i).contains(s.pointer) && s.pointer.y > f.header {
-            over_figure = true
+            let flat = match live_of(s, s.laid.figures[i].block) {
+                Some(l) => s.lives[l].mode != SURFACE,
+                None => false,
+            }
+            over_figure = if flat { "crosshair" } else { "grab" }
         }
     }
     let over_link = link_at(s, s.pointer, f).is_some() ||
         extra_at(s, s.pointer, f).is_some() ||
         over_control ||
         (over_nav(s, s.pointer, f) && nav_at(s, s.pointer, f).is_some())
-    let want = if over_knob { "ew-resize" } else if s.orbit.is_some() {
+    let want = if over_knob { "ew-resize" } else if s.orbit.is_some() &&
+        over_figure != "crosshair" {
         "grabbing"
     } else if over_link ||
         f.search.contains(s.pointer) ||
         (s.pointer.y < f.header && s.pointer.x < mark_right(s, f)) {
         "pointer"
-    } else if over_figure { "grab" } else { "default" }
+    } else if !over_figure.is_empty() { over_figure } else { "default" }
     if s.cursor.as_str() != want {
         s.cursor = want.to_string()
         s.told.push(host::cursor(want))
@@ -3262,7 +3437,7 @@ fn parts_tree(s: Docs, f: Frame) -> Vec<Node> {
         borrow p = s.laid.parts[i]
         let rect = vec4(p.rect.x + f.x, p.rect.y + f.top - s.scroll, p.rect.w, p.rect.h)
         // The page's parts are under the header, which is drawn over them.
-        let shown = semantics::clip(rect, vec4(0.0, f.header, s.screen.x, s.screen.y - f.header))
+        let shown = semantics::clip(rect, page_view(s, f))
         let role = match p.role {
             Role::Heading => semantics::Role::Heading,
             Role::Text => semantics::Role::Text,
@@ -3324,7 +3499,7 @@ fn parts_tree(s: Docs, f: Frame) -> Vec<Node> {
         }
     }
     // The page's neighbours and its Markdown, and its outline as a group of links.
-    let page = vec4(0.0, f.header, s.screen.x, s.screen.y - f.header)
+    let page = page_view(s, f)
     let ex = extras(s, f)
     var outlined = false
     for i in 0..ex.len() {
@@ -3498,6 +3673,13 @@ fn box_field(k: Kept, text: str, caret: u32, other: u32) -> Field {
         replace: k.replace,
         seen: k.seen,
     }
+}
+
+/// The part of the screen the page is seen in: under the header, and right of the list of pages
+/// where it's open over the page, so the page's links aren't under a finger that taps the list.
+fn page_view(s: Docs, f: Frame) -> vec4 {
+    let left = if !f.beside && s.nav_open { f.nav } else { 0.0 }
+    vec4(left, f.header, s.screen.x - left, s.screen.y - f.header)
 }
 
 /// Where link `target` goes, as an address the browser can open in a new tab: a page of these
@@ -3783,4 +3965,18 @@ fn a_missing_page_lists_what_may_be_it() {
             ),
         none.as_str(),
     )
+}
+
+/// A swipe's speed is its finger's over its last tenth of a second: none if the finger rested
+/// before letting go.
+@test
+fn a_swipe_carries_on_at_its_fingers_last_speed() {
+    // Up 30 pixels a frame for a tenth of a second: the page scrolls down 1800 pixels a second.
+    var trail: Vec<(f32, f32)> = Vec::new()
+    for i in 0..8 { trail.push((600.0 - 30.0 * f32(i), 1.0 + f32(i) / 60.0)) }
+    let v = swipe_speed(trail, now: 1.0 + 7.0 / 60.0)
+    assert(abs(v - 1800.0) < 1.0, f"{v}")
+    // Rested a fifth of a second: no fling.
+    assert(swipe_speed(trail, now: 1.0 + 7.0 / 60.0 + 0.2) == 0.0)
+    assert(swipe_speed(Vec::from([(1.0, 2.0)]), now: 2.0) == 0.0)
 }
