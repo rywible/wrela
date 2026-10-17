@@ -1103,22 +1103,24 @@ pub fn slice_view(v: Vertex, scene: Scene, look: View) -> Over {
     slice_top(scene, look, p, per, d, color)
 }
 
-/// Where a figure's image goes on the screen, and how round its corners are, in pixels.
+/// Where an image goes on the screen, and how round its corners are, in pixels.
 pub struct Shown: Copy + GpuData {
     pub rect: vec4,
     pub round: f32,
+    /// How much it covers what's under it: 1 opaque.
+    pub alpha: f32,
 }
 
-/// A figure's image, drawn once it changed (`view`, into a texture), set where the figure is now:
-/// a page that scrolls moves the image and draws the field no more. Its corners round, as code's
-/// ground's do.
+/// An image drawn before, set where it is now: a figure's (`view`, into a texture), its corners
+/// round as code's ground's are, or a tile of the page. A page that scrolls moves its images and
+/// draws its fields and text no more.
 @fragment
 pub fn shown(v: Vertex, image: Texture<Rgba8>, linear: Sampler, look: Shown) -> Over {
     let size = look.rect.zw
     let c = image.sample(linear, (v.pixel - look.rect.xy) / size)
     let e = abs(v.pixel - look.rect.xy - size * 0.5) - size * 0.5 + vec2(look.round)
     let out = length(max(e, vec2(0.0))) + min(max(e.x, e.y), 0.0) - look.round
-    Over { color: vec4(c.xyz, saturate(0.5 - out)) }
+    Over { color: vec4(c.xyz, saturate(0.5 - out) * look.alpha) }
 }
 
 /// How lit `p` is from `light`, by how near the field comes to the ray toward it: 0 to 1.
