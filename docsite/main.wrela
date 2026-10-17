@@ -79,11 +79,9 @@ const HELD_BY_MOUSE: u32 = 0
 const FINGER_UNSURE: u32 = 1
 const FINGER_TURNS: u32 = 2
 const FINGER_SCROLLS: u32 = 3
-/// How far a finger moves before its way counts, and before it drags the page, in CSS pixels; and
-/// how long a drag takes to make up that way (its time constant, in seconds).
+/// How far a finger moves before its way counts, and before it drags the page, in CSS pixels.
 const FINGER_SLOP: f32 = 10.0
 const PAGE_SLOP: f32 = 8.0
-const CATCH_UP: f32 = 0.06
 /// How long a finger rests on words before it selects them, in seconds.
 const HOLD: f32 = 0.45
 /// How far past the page's top a finger pulls it to load it again, in CSS pixels.
@@ -200,10 +198,9 @@ pub struct Docs {
     /// carries on and slows (its speed in pixels a second, and whether it's the list's).
     swipe: Option<(f32, bool)>,
     trail: Vec<(f32, f32)>,
-    /// A finger's drag: how far it was from where it pressed, and what's left of the way it moved
-    /// before it counted as a drag, which the page makes up over a moment rather than at once.
-    drag_dy: f32,
-    slop_left: f32,
+    /// The way a finger moved before it counted as a drag: the page stays that far from it, as a
+    /// phone's own pages do, rather than jump it or make it up.
+    slop: f32,
     fling: Option<(f32, bool)>,
     /// How far a finger pulls past the page's top (above 0), or stretches it past its end (below
     /// 0), in pixels: let go, it springs back. A pull doesn't move the page; a stretch does.
@@ -471,8 +468,7 @@ pub fn init() -> Docs {
         press_at: 0.0,
         swipe: None,
         trail: Vec::new(),
-        drag_dy: 0.0,
-        slop_left: 0.0,
+        slop: 0.0,
         fling: None,
         pull: 0.0,
         reloading: false,
@@ -535,7 +531,6 @@ pub fn frame(s: mut Docs, time: f32, width: u32, height: u32) {
     glide_on(mut s, frame, dt)
     fling_on(mut s, frame, dt)
     spring_on(mut s, dt)
-    catch_up(mut s, frame, dt)
     keep_nav(mut s, frame)
     keep_glows(mut s, frame, dt)
     let changed = s.dirty || moving(s, frame)
@@ -589,7 +584,6 @@ fn moving(s: Docs, f: Frame) -> bool {
         s.result_glow.moving() ||
         markers_moving(s) ||
         s.time - s.copied_at < SAID + 0.25 ||
-        s.slop_left != 0.0 ||
         figures_drawing(s, f) ||
         s.renderer.waiting()
 }
@@ -1211,7 +1205,7 @@ fn handle(s: mut Docs, e: Event, f: Frame) {
         Event::PointerDown { at, button, .. } => {
             // A press stops a fling, as a finger stops a page that's still moving.
             s.fling = None
-            s.slop_left = 0.0
+            s.slop = 0.0
             if button != Button::Primary {
                 s.pointer = at
                 return
@@ -1775,7 +1769,7 @@ fn drag(s: mut Docs, at: vec2, f: Frame) {
                 s.knob_held = None
                 s.press = Some((from, true, String::new()))
                 s.swipe = Some((s.scroll, false))
-                s.slop_left = at.y - from.y
+                s.slop = at.y - from.y
                 drag(mut s, at, f)
                 return
             }
@@ -1796,7 +1790,7 @@ fn drag(s: mut Docs, at: vec2, f: Frame) {
         if held == FINGER_UNSURE {
             if length(d) < FINGER_SLOP { return }
             held = if abs(d.x) > abs(d.y) { FINGER_TURNS } else { FINGER_SCROLLS }
-            if held == FINGER_SCROLLS { s.slop_left = at.y - from.y }
+            if held == FINGER_SCROLLS { s.slop = at.y - from.y }
             s.orbit = Some((i, from, turn, tilt, held))
         }
         // A slice doesn't turn: the pointer is its probe.
@@ -1826,7 +1820,7 @@ fn drag(s: mut Docs, at: vec2, f: Frame) {
     let far = length(at - from) > slop * s.u
     if !moved && !far { return }
     // The drag begins where it is: the page doesn't jump the way the finger came.
-    if !moved && s.swipe.is_some() { s.slop_left = at.y - from.y }
+    if !moved && s.swipe.is_some() { s.slop = at.y - from.y }
     s.press = Some((from, true, link.clone()))
     if let Some((start, nav)) = s.swipe {
         finger_drag(mut s, f, start, nav, at.y - from.y)
@@ -1844,24 +1838,10 @@ fn drag(s: mut Docs, at: vec2, f: Frame) {
 }
 
 /// A finger drags the page, or the list of pages (`nav`), from `start`, `dy` from where it pressed:
-/// the page follows it, but for what's left of the way it came before the drag began.
+/// the page moves with it, pixel for pixel, the way it came before the drag began behind it.
 fn finger_drag(s: mut Docs, f: Frame, start: f32, nav: bool, dy: f32) {
-    s.drag_dy = dy
-    let y = start - dy + s.slop_left
+    let y = start - dy + s.slop
     if nav { s.nav_scroll = max(y, 0.0) } else { finger_scroll(mut s, f, y) }
-}
-
-/// A drag makes up the way its finger came before it began, over a moment: the page comes under
-/// the finger without a jump. A finger let go, or the system asking for less motion, ends it.
-fn catch_up(s: mut Docs, f: Frame, dt: f32) {
-    if s.slop_left == 0.0 { return }
-    let Some((start, nav)) = s.swipe else {
-        s.slop_left = 0.0
-        return
-    }
-    let left = if s.reduced { 0.0 } else { s.slop_left * exp(-dt / CATCH_UP) }
-    s.slop_left = if abs(left) < 0.1 { 0.0 } else { left }
-    finger_drag(mut s, f, start, nav, s.drag_dy)
 }
 
 /// A finger scrolls the page to `y`: within its ends, and past them it stretches, less the
@@ -5344,20 +5324,12 @@ fn a_swipe_carries_on_at_its_fingers_last_speed() {
     assert(swipe_speed(Vec::from([(1.0, 2.0)]), now: 2.0) == 0.0)
 }
 
-/// A finger's drag doesn't jump the way it came before it counted as a drag: the page starts from
-/// where it was, and makes that way up over a moment, until it's under the finger.
-@test(frames: 5, input: "scripts/drag.json")
-fn a_drag_begins_without_a_jump(docs: Docs) {
-    // The finger crossed the slop 20 pixels up; two frames on, most of that is still to make up.
-    assert(
-        docs.drag_dy == -40.0 && docs.slop_left < -5.0 && docs.slop_left > -20.0,
-        f"{docs.slop_left}",
-    )
-}
-
+/// A finger's drag doesn't jump the way it came before it counted as a drag, nor make it up: the
+/// page starts from where it was and stays that far from the finger, moving with it.
 @test(frames: 40, input: "scripts/drag.json")
-fn a_drag_comes_under_its_finger(docs: Docs) {
-    assert(docs.drag_dy == -40.0 && docs.slop_left == 0.0, f"{docs.slop_left}")
+fn a_drag_keeps_its_distance_from_its_finger(docs: Docs) {
+    // The finger crossed the slop 20 pixels up, and went 20 more.
+    assert(docs.slop == -20.0, f"{docs.slop}")
 }
 
 /// A page loaded again in place, by a pull, stays as it was; another page appears.
