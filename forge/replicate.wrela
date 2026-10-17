@@ -260,6 +260,10 @@ pub struct Replica: Clone {
     servers: Vec<String>,
     seen: Vec<Option<peers::Position>>,
     following: String,
+    /// The epoch of the service it follows, and the highest epoch it promised a promotion: it
+    /// follows no service older than that (F26).
+    following_epoch: u64,
+    promised: u64,
     /// How many times running the service it follows refused its log: twice is a log that
     /// isn't the service's.
     refused: u32,
@@ -286,6 +290,8 @@ pub fn idle() -> Replica {
         servers: Vec::new(),
         seen: Vec::new(),
         following: String::new(),
+        following_epoch: 0,
+        promised: 0,
         refused: 0,
         records: Vec::new(),
         ends: Vec::new(),
@@ -388,7 +394,7 @@ fn found(s: mut Service) {
     var best: Option<(String, u64)> = None
     for i in 0..s.replica.seen.len() {
         let Some(p) = s.replica.seen[i].clone() else { continue }
-        if p.role.as_str() != "service" {
+        if p.role.as_str() != "service" || p.epoch < s.replica.promised {
             continue
         }
         let better = match best {
@@ -406,6 +412,7 @@ fn found(s: mut Service) {
                 s.replica.refused = 0
             }
             s.replica.following = addr.clone()
+            s.replica.following_epoch = epoch
             s.calls.server = addr.clone()
             s.replica.stage = ASK
         },
@@ -427,7 +434,7 @@ pub fn route(s: mut Service, conn: u32, req: take http::Request) {
         let p = peers::Position {
             role: String::from("replica"),
             machine: s.replica.name.clone(),
-            epoch: s.replica.epoch,
+            epoch: max(s.replica.epoch, s.replica.promised),
             size: s.replica.size,
             chain: s.replica.chain,
         }
@@ -466,15 +473,29 @@ pub fn route(s: mut Service, conn: u32, req: take http::Request) {
                 bytes::of_str("only a lander or the fleet fences\n"),
             )
         }
+        // A promise: no service older than `epoch` is followed again, so none can count on this
+        // replica to confirm anything (F26).
         let epoch = service::fence_epoch(req.body)
-        service::reply(mut s, conn, 200, "application/json", bytes::of_str("{\"fenced\":false}"))
-        if epoch > s.replica.epoch && s.replica.stage == ASK {
-            // A newer service: looked for at the next ask.
-            print(f"forge: told of epoch {epoch}; looking for its service")
-            s.replica.stage = FIND
-            s.replica.seen = Vec::new()
+        let promises = epoch > s.replica.epoch && epoch >= s.replica.promised
+        if promises && epoch > s.replica.promised {
+            print(f"forge: promised epoch {epoch}; following no older service")
+            s.replica.promised = epoch
+            if s.replica.stage == FETCH {
+                // Records fetched but not kept: dropped, as the older service never had them
+                // confirmed by this replica.
+                s.replica.records = Vec::new()
+                s.replica.ends = Vec::new()
+                s.replica.want = Vec::new()
+                find(mut s)
+            }
         }
-        return
+        return service::reply(
+            mut s,
+            conn,
+            200,
+            "application/json",
+            bytes::of_str(if promises { "{\"promised\":true}" } else { "{\"promised\":false}" }),
+        )
     }
     service::reply(
         mut s,
@@ -575,6 +596,11 @@ pub fn pump(s: mut Service) {
         let to = s.replica.servers[at].clone()
         s.replica.waiting = true
         return calls::call_to(mut s, to.as_str(), "GET", "/api/position", "", [], PROBE, 5000)
+    }
+    if stage == ASK && s.replica.following_epoch < s.replica.promised {
+        // It promised a newer epoch than its service's: it asks that service for nothing more.
+        find(mut s)
+        return
     }
     if stage == ASK {
         let path = f"/api/log?from={s.replica.size}&chain={s.replica.chain.hex()}&epoch={s.replica.epoch}&replica={http::encode(s.replica.name.as_str())}"

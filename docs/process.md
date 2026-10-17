@@ -93,6 +93,9 @@ The M4 Air has not been measured; its times are reported separately.
 | [Wrangler](https://developers.cloudflare.com/workers/wrangler/) (Cloudflare, MIT/Apache 2.0) and GitHub Actions | Deploy each release from `main` to Cloudflare Workers (`.github/workflows/deploy.yml`, `tools/deploy.py`) |
 | [Binaryen](https://github.com/WebAssembly/binaryen) (Apache 2.0), `wasm-opt` 133 or later | Shrinks a released build's WASM (`wrela build --optimize`, `-Oz`), carrying its trap locations through as a source map. Runs at build time; nothing of it ships |
 | [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) (CC0 and Apache 2.0): the algorithm and its test vectors | Names forge's objects (`forge/blake3.wrela`); the vectors check it |
+| [curl](https://curl.se/) (curl license), with its AWS signature version 4 | Sends forge's backups to Cloudflare R2 and fetches them back (`forge/backup.wrela`); the credentials stay in curl's file |
+| [Tailscale](https://tailscale.com/)'s `tailscale whois` | Says who calls forge from the tailnet: node, login and tags (`forge/who.wrela`) |
+| GPT-6.1-Sol and GPT-6-Astra (OpenAI), through the Codex CLI, read-only | Since 2026-10-17, review forge's code at high reasoning: durability and replication, security and robustness. Claude checks each finding against the source and fixes those that hold |
 | strace, LGPL; Linux mount namespaces (`unshare`) | Historical gate pass caching, retired 2026-10-11: what each slow test reads, so a pass is reused only while all of it is unchanged, or, for a test that builds a program, while its builds make the same files. The ideas are build systems' (Bazel's action cache, ccache's manifests, tup's and fabricate's traced dependencies, Shake's and Bazel's early cutoff) |
 
 Not used, by decision: Suno or any music model (Ryan, 2026-10-06, #44), and any image, texture,
@@ -2554,13 +2557,29 @@ of a function on seeded samples and boundary values (experiment E2). On `noise::
 trapped, and the new one returns or runs out of fuel. On `grass::species_of` (eae13d57) it found
 no differences on 768 samples.
 
-HTTP/1.1 stays forge's transport for its command, workers and replicas. Wrela's rooms are the plan
-for a live layer later (code rooms that apply edits in order exactly once, notices pushed to
-agents, a studio view of agents at work), once rooms have a versioned protocol in place of the
-pair id and a wire format that doesn't depend on the build.
-
-A replica (`forge replica`) follows the service's log and holds each landing, objects first,
-before the service answers it (`--acks N`); `forge serve` on a replica's data is the service.
+A replica (`forge replica`) follows the service's log, objects first, and with `--acks N` the
+service answers nothing that changed until N replicas hold it. Ryan then asked for everything but
+the deploy to his Linux machines: three processes to test the acks, backups to Cloudflare R2, and
+a Codex review, since the code has to be bulletproof. The fleet's stores now carry epochs: a
+replica asks for the log with its chain (a BLAKE3 chain over the records' hashes), so it never
+follows a log it isn't a prefix of; `forge serve --promote` needs a majority of the stores to
+answer and refuses while any holds log the candidate lacks, so with acks from half the replicas
+it can't lose a confirmed landing (Raft's argument, Ongaro and Ousterhout, "In Search of an
+Understandable Consensus Algorithm", 2014, without its elections); and a service that hears of a
+newer epoch is fenced and doesn't serve again. An end-to-end test runs three stores: a landing
+that only one replica held survives the primary's loss, promoting the replica that lacks it is
+refused, and the old primary, back, is fenced before it takes a call. Callers are known through
+tailscale (`tailscale whois`): a node, a login and tags, which rules for writing, landing and the
+fleet name; a worker's evidence names its own node. Backups go to an S3 bucket as segments of log,
+each with a pack of the objects it first names, sent by curl signed with the operator's
+credentials, which forge never reads; a restore checks every object and the log's chain. On the M4
+Air, a backup of the imported store (680 KB of log, 13,851 objects) took 8.5 s to a local
+stand-in, and a restore 119 s, nearly all of it flushing each object as it was written. A check
+that passed on a tree isn't run again on it. Rooms came as views of the log over HTTP, not Wrela's
+WebTransport rooms, which admit only a client of the exact same build and which the command can't
+speak: `forge watch` and `GET /api/watch` hold an ask until a room (main, a change, the checks)
+has a notice, a change's room hears when main moves under it, and `/studio` is a live page with
+no script: each answer is held until the log grows, and the page asks for itself again.
 Workspaces put a change's files on disk for the work that needs them (`forge pull`, `forge push`,
 with `.forgeignore`): on the M4 Air a pull of main's 2,032 files takes 2.7 s and matches
 `git archive`. forge keeps each revision's item index, made by that revision's own compiler on a

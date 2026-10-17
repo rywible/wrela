@@ -380,7 +380,6 @@ pub fn step(s: mut Service, time: f32) {
         replicate::pump_asks(mut s)
         replicate::pump_objects(mut s)
         rooms::pump(mut s)
-        peers::fence_next(mut s)
     }
     // Asks, calls and chores wait on time: a wake-up each second.
     let timed = s.phase == Phase::Ready || s.phase == Phase::Replica || s.calls.busy

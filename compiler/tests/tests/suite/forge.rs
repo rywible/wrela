@@ -517,10 +517,13 @@ fn three_stores_fail_over_without_losing_a_confirmed_landing_and_the_old_service
     stop(pa, ra);
 }
 
+/// What a test bucket holds, by key.
+type Held = std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>>;
+
 /// A bucket as S3 serves one, for a backup's tests: PUT and GET of keys, each request refused
-/// unless curl signed it (AWS signature version 4) with the test's key. What it holds, by key.
-fn bucket() -> (u16, std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>>)
-{
+/// unless curl signed it (AWS signature version 4) with the test's key. Its port, and what it
+/// holds.
+fn bucket() -> (u16, Held) {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");

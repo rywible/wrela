@@ -1,10 +1,11 @@
 // A service's peers (spec/forge.md F26, F26a): the other stores of its fleet, at `--peers`, each a
 // replica or a service that answers `GET /api/position` with its role, its epoch and how much log
 // it holds. A service asks each of them at its start and every 10 s after, and is fenced by an
-// epoch above its own. `forge serve --promote` asks them before it serves: it needs more than half
-// of them and itself to answer, every log it hears of to be a prefix of its own, and then it
-// appends `promoted` with an epoch above every one it saw and tells each peer of it
-// (`POST /api/fence`).
+// epoch above its own. `forge serve --promote` asks them before it serves, as Raft's candidate
+// asks for votes: it looks at their logs, asks each to promise an epoch above every one it saw
+// (`POST /api/fence`: a replica then follows no older service, so no older service can confirm
+// anything more, and an older service stops), looks at their logs again, and promotes itself only
+// if more than half of the stores (itself among them) promised and none holds log it lacks.
 
 use blake3::Id
 use out::Json
@@ -22,6 +23,8 @@ const FENCE: u32 = 101
 const AT_START: u32 = 0
 const TO_PROMOTE: u32 = 1
 const NOW_AND_THEN: u32 = 2
+/// After the peers were asked to promise: their logs looked at again.
+const TO_CONFIRM: u32 = 3
 
 /// What a store says of itself.
 pub struct Position: Clone {
@@ -67,9 +70,9 @@ pub struct Peers: Clone {
     seen: Vec<Option<Position>>,
     pub asking: bool,
     why: u32,
-    /// The peers still to tell of a promotion, and its epoch.
-    to_fence: Vec<String>,
+    /// A promotion's epoch, and whether each peer asked so far promised it.
     fence_epoch: u64,
+    promised: Vec<bool>,
 }
 
 pub fn none() -> Peers {
@@ -78,8 +81,8 @@ pub fn none() -> Peers {
         seen: Vec::new(),
         asking: false,
         why: AT_START,
-        to_fence: Vec::new(),
         fence_epoch: 0,
+        promised: Vec::new(),
     }
 }
 
@@ -125,11 +128,17 @@ pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
         return next(mut s)
     }
     if purpose == FENCE {
-        if status != 200 {
-            print(f"forge: {s.peers.to_fence[0]} wasn't told of epoch {s.peers.fence_epoch}")
+        let text = bytes::text_of(body)
+        let yes = status == 200 &&
+            (text.as_str().find("\"promised\":true").is_some() ||
+                text.as_str().find("\"fenced\":true").is_some())
+        if !yes {
+            print(
+                f"forge: {s.peers.addrs[s.peers.promised.len()]} didn't promise epoch {s.peers.fence_epoch}",
+            )
         }
-        let _ = s.peers.to_fence.remove(0)
-        fence_next(mut s)
+        s.peers.promised.push(yes)
+        promise_next(mut s)
     }
 }
 
@@ -145,7 +154,16 @@ fn heard(s: mut Service) {
         }
     }
     if s.peers.why == TO_PROMOTE {
-        return promote(mut s, highest)
+        // A first look: refused at once if it can't be safe, before any peer is asked to promise.
+        if let Some(why) = unsafe_to_promote(s, Vec::new()) {
+            return service::fatal(mut s, why.as_str())
+        }
+        s.peers.fence_epoch = max(highest, s.peers.fence_epoch) + 1
+        s.peers.promised = Vec::new()
+        return promise_next(mut s)
+    }
+    if s.peers.why == TO_CONFIRM {
+        return promote(mut s)
     }
     if highest > own {
         return service::fence(mut s, highest)
@@ -155,48 +173,40 @@ fn heard(s: mut Service) {
     }
 }
 
-/// Makes this store the service, if it safely can.
-fn promote(s: mut Service, highest: u64) {
-    var answered = 1
+/// Why promoting this store now could lose a landing a service confirmed, if it could: fewer than
+/// half of the stores answered (counting, when `promised` isn't empty, only those that promised),
+/// or one holds log this store lacks.
+fn unsafe_to_promote(s: Service, promised: [bool]) -> Option<String> {
+    var counted = 1
     for i in 0..s.peers.seen.len() {
         let Some(p) = s.peers.seen[i].clone() else { continue }
-        answered += 1
         if !log::holds(s.ends, p.size, p.chain) {
-            return service::fatal(
-                mut s,
+            return Some(
                 f"{s.peers.addrs[i]} ({p.role} on {p.machine}) holds {p.size} bytes of log this store doesn't: promote the store with the most log",
             )
         }
+        if promised.is_empty() || (i < promised.len() && promised[i]) {
+            counted += 1
+        }
     }
     let cluster = s.peers.addrs.len() + 1
-    if answered * 2 <= cluster {
-        return service::fatal(
-            mut s,
-            f"only {answered} of {cluster} stores answered: a promotion needs more than half, or it might lose a landing a service confirmed",
+    if counted * 2 <= cluster {
+        return Some(
+            f"only {counted} of {cluster} stores answered: a promotion needs more than half, or it might lose a landing a service confirmed",
         )
     }
-    let epoch = highest + 1
-    print(f"forge: promoted to epoch {epoch} on {s.machine}")
-    let ev = Event::Promoted { epoch, machine: s.machine.clone(), time: service::now(s) }
-    service::commit(
-        mut s,
-        core::Durable { objects: Vec::new(), events: Vec::from([take ev]) },
-        None,
-    )
-    s.peers.to_fence = s.peers.addrs.clone()
-    s.peers.fence_epoch = epoch
-    service::listen(mut s)
+    None
 }
 
-/// Tells the next peer of the promotion, once it is durable.
-pub fn fence_next(s: mut Service) {
-    if s.peers.to_fence.is_empty() || s.calls.busy || s.core.state.epoch != s.peers.fence_epoch {
-        return
+/// Asks the next peer to promise the new epoch (`POST /api/fence`): a replica then follows no
+/// service of an older one, and an older service stops. Once every peer was asked, their logs are
+/// looked at again.
+fn promise_next(s: mut Service) {
+    let at = s.peers.promised.len()
+    if at >= s.peers.addrs.len() {
+        return round(mut s, TO_CONFIRM)
     }
-    if s.log_size == 0 || !s.flushed() {
-        return
-    }
-    let to = s.peers.to_fence[0].clone()
+    let to = s.peers.addrs[at].clone()
     var j = Json::new()
     j.obj()
     j.knum("epoch", s.peers.fence_epoch)
@@ -212,6 +222,27 @@ pub fn fence_next(s: mut Service) {
         FENCE,
         5000,
     )
+}
+
+/// Makes this store the service, once more than half of the stores promised the new epoch and
+/// none holds log it lacks.
+fn promote(s: mut Service) {
+    let promised = s.peers.promised.clone()
+    if let Some(why) = unsafe_to_promote(s, promised) {
+        return service::fatal(
+            mut s,
+            f"{why} (the peers that promised epoch {s.peers.fence_epoch} follow no older service: promote the right store, and the fleet serves again)".as_str(),
+        )
+    }
+    let epoch = s.peers.fence_epoch
+    print(f"forge: promoted to epoch {epoch} on {s.machine}")
+    let ev = Event::Promoted { epoch, machine: s.machine.clone(), time: service::now(s) }
+    service::commit(
+        mut s,
+        core::Durable { objects: Vec::new(), events: Vec::from([take ev]) },
+        None,
+    )
+    service::listen(mut s)
 }
 
 @test

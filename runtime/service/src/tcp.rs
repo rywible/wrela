@@ -46,10 +46,12 @@ pub enum Net {
 pub struct Conns {
     next: Arc<AtomicU32>,
     to_loop: Sender<crate::Event>,
-    /// Each listener's address, and whether it is to stop: a service that ends stops its
-    /// listeners, so its addresses are free again even while its process goes on.
-    listeners: Arc<Mutex<Vec<(std::net::SocketAddr, Arc<AtomicBool>)>>>,
+    listeners: Arc<Mutex<Vec<Listener>>>,
 }
+
+/// A listener's address, and whether it is to stop: a service that ends stops its listeners, so
+/// its addresses are free again even while its process goes on.
+type Listener = (std::net::SocketAddr, Arc<AtomicBool>);
 
 impl Conns {
     pub fn new(to_loop: Sender<crate::Event>) -> Conns {

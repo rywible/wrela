@@ -108,12 +108,15 @@ never reused.
   - `GET /api/object/<id>`: a blob's bytes, or another object's.
   - `POST /api/object`: the body as a blob; answered with its id.
   - `POST /api/import`: `{"git": dir, "ref": name}`, into an empty store.
-  - `GET /api/log?from=X&replica=NAME`: the log from byte X (at most 8 MiB of it), for a replica;
-    held up to 20 s while the log holds no more.
+  - `GET /api/log?from=X&chain=C&epoch=E&replica=NAME`: the log from byte X (at most 8 MiB of
+    it), for a replica (F25); held up to 20 s while the log holds no more.
+  - `GET /api/position` and `POST /api/fence`: a store's role, epoch and log (F26), and a newer
+    epoch, told (F26a).
   - `POST /api/objects`: for each 32-byte id of the body, the id, its file's length (a `u32`
     little-endian; 4294967295 if the service hasn't it) and its file's bytes.
   - `POST /api/work/next` and `POST /api/work/done`: a worker's asks (F23).
   - `POST /api/stop`: stops the service, for a caller that may land changes.
+  - `GET /api/watch?room=R&from=X` and `GET /studio`: rooms (F33-F35).
   - `GET /`: the digest, a page of what forge holds; `GET /health`.
 - **F22.** What a caller may do is decided by who it is (F28): every caller forge knows may read;
   writing (opening, editing, checking, submitting and closing changes, and storing blobs) is for
@@ -158,11 +161,14 @@ never reused.
   is the machine's that event names. A store's first service appends `promoted` with epoch 1; a
   service serves a store whose epoch is another machine's only to promote it.
   `forge serve --promote` makes a replica's data the service: it asks each of `--peers` for its
-  position (`GET /api/position`: role, epoch, log size and chain), needs more than half of the
-  stores (the peers and itself) to answer, refuses if a peer's log isn't a prefix of its own, appends
-  `promoted` with an epoch above every one it saw, tells each peer it answered about it
-  (`POST /api/fence`), and serves. With `--acks N` at least half of the replicas, a landing a
-  service confirmed is on every majority, so a promotion can't lose it.
+  position (`GET /api/position`: role, epoch, log size and chain); asks each to promise an epoch
+  above every one it saw (`POST /api/fence`), after which a replica follows no service of an older
+  epoch and drops the records it fetched and hasn't kept, and an older service is fenced; asks for
+  their positions again; and, if more than half of the stores (the peers that promised, and
+  itself) answered and no peer's log isn't a prefix of its own, appends `promoted` with that epoch
+  and serves. Else it refuses, and the peers that promised wait for a promotion that succeeds.
+  With `--acks N` at least half of the replicas, a landing a service confirmed is on every
+  majority, so a promotion can't lose it.
 - **F26a.** A service is fenced when it learns of an epoch above its own: from a replica's ask, a
   peer's position, or `POST /api/fence`. A fenced service answers every call after with 503,
   confirms nothing more, appends `fenced` and stops; a store whose log holds `fenced` doesn't serve
@@ -170,9 +176,10 @@ never reused.
   `--peers` asks each for its position at its start and every 10 s, so an old service that comes
   back is fenced before it takes a call.
 - **F26b.** A replica follows the service among `--servers` that is serving with the highest
-  epoch. It looks again when its service fails, answers 409 or 503, or is fenced, and when told of
-  a new epoch (`POST /api/fence` on the replica's own `--listen`, where it also answers
-  `GET /api/position`).
+  epoch, and none older than an epoch it promised. It looks again when its service fails, answers
+  409 or 503, or is fenced, and when it promises a newer epoch (`POST /api/fence` on the replica's
+  own `--listen`, where it also answers `GET /api/position` with the higher of its log's epoch and
+  the one it promised).
 
 ## Workspaces
 
