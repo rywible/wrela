@@ -1,0 +1,286 @@
+// The humanoid's rig: 23 joints in a tree, with a person's proportions (1.79 m tall, its hips
+// 0.98 m up), at rest in a T-pose: standing, its arms straight out to the sides. Every joint's
+// rest turn is none, so a pose is each joint's turn from its parent's frame (a quaternion) and
+// where the hips are; `place` turns a pose into each joint's place and turn in the body's space,
+// and `bones` into the skinning palette.
+//
+// The proportions are 100STYLE's capture skeleton's (CC BY 4.0, docs/process.md), so its motion
+// plays on this rig as captured. Units: metres; +y up, the body faces +z, +x is its left.
+//
+//                      Head
+//                       |
+//                      Neck
+//   R Wrist - Elbow - Shoulder - Collar - Chest4 - Collar - Shoulder - Elbow - Wrist L
+//                                          |
+//                                       Chest3..Chest
+//                                          |
+//                          R Hip ------- Hips ------- Hip L
+//                            |                          |
+//                          Knee                       Knee
+//                            |                          |
+//                          Ankle - Toe          Toe - Ankle
+
+use engine::creature::{MAX_BONES, Skeleton}
+use engine::render::bone_matrix
+use engine::sim::SimState
+use std::hash::StateHash
+use std::serialize::Serialize
+
+/// How many joints the rig has.
+pub const JOINTS: u32 = 23
+
+pub const HIPS: u32 = 0
+pub const CHEST: u32 = 1
+pub const CHEST2: u32 = 2
+pub const CHEST3: u32 = 3
+pub const CHEST4: u32 = 4
+pub const NECK: u32 = 5
+pub const HEAD: u32 = 6
+pub const R_COLLAR: u32 = 7
+pub const R_SHOULDER: u32 = 8
+pub const R_ELBOW: u32 = 9
+pub const R_WRIST: u32 = 10
+pub const L_COLLAR: u32 = 11
+pub const L_SHOULDER: u32 = 12
+pub const L_ELBOW: u32 = 13
+pub const L_WRIST: u32 = 14
+pub const R_HIP: u32 = 15
+pub const R_KNEE: u32 = 16
+pub const R_ANKLE: u32 = 17
+pub const R_TOE: u32 = 18
+pub const L_HIP: u32 = 19
+pub const L_KNEE: u32 = 20
+pub const L_ANKLE: u32 = 21
+pub const L_TOE: u32 = 22
+
+/// Each joint's name, its parent (the hips its own), its mirror image (itself on the middle),
+/// and where it is from its parent at rest (m).
+pub const NAMES: [Text; 23] = [
+    "hips",
+    "chest",
+    "chest 2",
+    "chest 3",
+    "chest 4",
+    "neck",
+    "head",
+    "collar right",
+    "shoulder right",
+    "elbow right",
+    "wrist right",
+    "collar left",
+    "shoulder left",
+    "elbow left",
+    "wrist left",
+    "hip right",
+    "knee right",
+    "ankle right",
+    "toe right",
+    "hip left",
+    "knee left",
+    "ankle left",
+    "toe left",
+]
+pub const PARENTS: [u32; 23] = [
+    0, 0, 1, 2, 3, 4, 5, 4, 7, 8, 9, 4, 11, 12, 13, 0, 15, 16, 17, 0, 19, 20, 21,
+]
+pub const MIRROR: [u32; 23] = [
+    0, 1, 2, 3, 4, 5, 6, 11, 12, 13, 14, 7, 8, 9, 10, 19, 20, 21, 22, 15, 16, 17, 18,
+]
+pub const OFFSETS: [vec3; 23] = [
+    vec3(0.0, 0.0, 0.0),
+    vec3(0.0, 0.129534, -0.000284),
+    vec3(0.0, 0.102803, 0.000516),
+    vec3(0.0, 0.092872, 0.0),
+    vec3(0.0, 0.092872, 0.0),
+    vec3(0.0, 0.132963, 0.0),
+    vec3(0.0, 0.089593, 0.00099),
+    vec3(-0.031935, 0.074514, 0.0),
+    vec3(-0.157921, 0.0, 0.0),
+    vec3(-0.311518, 0.0, 0.0),
+    vec3(-0.255363, 0.0, 0.000023),
+    vec3(0.031935, 0.074514, 0.0),
+    vec3(0.157921, 0.0, 0.0),
+    vec3(0.311518, 0.0, 0.0),
+    vec3(0.255363, 0.0, 0.000023),
+    vec3(-0.107457, 0.001393, 0.000142),
+    vec3(0.0, -0.437439, -0.000061),
+    vec3(0.0, -0.432142, 0.000899),
+    vec3(0.0, -0.096998, 0.191516),
+    vec3(0.107457, 0.001393, 0.000142),
+    vec3(0.0, -0.437439, -0.000061),
+    vec3(0.0, -0.432142, 0.000899),
+    vec3(0.0, -0.096998, 0.191516),
+]
+
+/// Where the hips are at rest, over the ground the feet stand on (m); the head's top, the hand
+/// past the wrist and the toe's tip past the toe joint.
+pub const REST_HIPS = vec3(0.0, 0.9808, 0.0)
+pub const HEAD_TOP = vec3(0.0, 0.171213, 0.000393)
+pub const HAND = vec3(0.191332, 0.0, 0.0)
+pub const TOE_TIP = vec3(0.0, -0.012929, 0.048939)
+
+/// Each joint's place at rest (the T-pose), in the body's space.
+pub fn rest() -> [vec3; 23] {
+    var at = [vec3(0.0); 23]
+    at[HIPS] = REST_HIPS
+    for j in 1..JOINTS {
+        at[j] = at[PARENTS[j]] + OFFSETS[j]
+    }
+    at
+}
+
+pub const REST: [vec3; 23] = rest()
+
+/// The rig as the engine's skeleton (for the body's field and its skinning): each joint at rest,
+/// each side paired with its image.
+pub fn skeleton() -> Skeleton {
+    var s = Skeleton::new()
+    let hips = s.root(NAMES[HIPS], REST[HIPS])
+    var bones = [hips; 23]
+    for j in 1..JOINTS {
+        bones[j] = s.joint(NAMES[j], bones[PARENTS[j]], REST[j])
+    }
+    for j in 0..JOINTS {
+        if MIRROR[j] > j {
+            s.pair(bones[j], bones[MIRROR[j]])
+        }
+    }
+    s
+}
+
+/// A pose: where the hips are (from the ground under the body, m, in the body's space: their
+/// height and their sway), and each joint's turn in its parent's frame.
+pub struct Pose: Copy {
+    pub hips: vec3,
+    pub rot: [Quat; 23],
+}
+
+/// Standing at rest: the T-pose.
+pub fn t_pose() -> Pose {
+    Pose { hips: REST_HIPS, rot: [Quat::identity(); 23] }
+}
+
+/// A turn of `deg.x`, then `deg.y`, then `deg.z` degrees about the parent's axes, applied `z`
+/// first: the rig's keys are written this way.
+pub fn euler(deg: vec3) -> Quat {
+    let r = 0.017453292
+    Quat::axis_angle(vec3(1.0, 0.0, 0.0), deg.x * r)
+        .mul(Quat::axis_angle(vec3(0.0, 1.0, 0.0), deg.y * r))
+        .mul(Quat::axis_angle(vec3(0.0, 0.0, 1.0), deg.z * r))
+}
+
+impl Pose {
+    /// `self` where `t` is 0, `other` where it's 1: the hips mixed, each turn the short way.
+    pub fn blend(self, other: Pose, t: f32) -> Pose {
+        var out = self
+        out.hips = mix(self.hips, other.hips, vec3(t))
+        for j in 0..JOINTS {
+            out.rot[j] = self.rot[j].nlerp(other.rot[j], t)
+        }
+        out
+    }
+
+    /// The pose seen in a mirror at x = 0: left for right.
+    pub fn mirrored(self) -> Pose {
+        var out = self
+        out.hips = vec3(-self.hips.x, self.hips.y, self.hips.z)
+        for j in 0..JOINTS {
+            let q = self.rot[j].v
+            out.rot[MIRROR[j]] = Quat { v: vec4(q.x, -q.y, -q.z, q.w) }
+        }
+        out
+    }
+}
+
+/// A pose placed: each joint's place and its turn, in the body's space.
+pub struct Placed: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub at: [vec3; 23],
+    pub rot: [Quat; 23],
+}
+
+/// Where each joint of `p` is, and how it's turned, in the body's space.
+pub fn place(p: Pose) -> Placed {
+    var at = [vec3(0.0); 23]
+    var rot = [Quat::identity(); 23]
+    at[HIPS] = p.hips
+    rot[HIPS] = p.rot[HIPS]
+    for j in 1..JOINTS {
+        let up = PARENTS[j]
+        rot[j] = rot[up].mul(p.rot[j])
+        at[j] = at[up] + rot[up].rotate(OFFSETS[j])
+    }
+    Placed { at, rot }
+}
+
+/// The skinning palette of `p` (rest space to the world), the body moved into the world by
+/// `body` (its place and its turn about +y).
+pub fn bones(p: Placed, body: mat4) -> [mat4; MAX_BONES] {
+    var out = [body; MAX_BONES]
+    for j in 0..JOINTS {
+        out[j] = body * bone_matrix(p.rot[j], REST[j], p.at[j])
+    }
+    out
+}
+
+/// A body's frame in the world: at `at`, facing `heading` (radians from +z toward +x).
+pub fn body_frame(at: vec3, heading: f32) -> mat4 {
+    let (c, s) = (cos(heading), sin(heading))
+    mat4(vec4(c, 0.0, -s, 0.0), vec4(0.0, 1.0, 0.0, 0.0), vec4(s, 0.0, c, 0.0), vec4(at, 1.0))
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+/// At rest the rig stands on the ground, 1.79 m tall, its arms straight out and level, its two
+/// sides each other's mirror image.
+@test
+fn the_rig_stands_a_persons_height_in_a_t_pose() {
+    let p = place(t_pose())
+    let top = p.at[HEAD] + HEAD_TOP
+    let sole = p.at[L_TOE] + TOE_TIP
+    assert(abs(sole.y) < 0.01, f"the sole is {sole.y} m off the ground")
+    assert(abs(top.y - 1.79) < 0.02, f"the rig stands {top.y} m tall")
+    assert(abs(p.at[L_WRIST].y - p.at[L_SHOULDER].y) < 1.0e-4, "the arms aren't level")
+    for j in 0..JOINTS {
+        let a = p.at[j]
+        let b = p.at[MIRROR[j]]
+        assert(length(a - vec3(-b.x, b.y, b.z)) < 1.0e-4, f"{NAMES[j]} isn't its image's mirror")
+    }
+}
+
+/// A pose mirrored twice is itself; a turn of the left shoulder mirrored is the right's, which
+/// places the right hand where the left hand's mirror image is.
+@test
+fn a_mirrored_pose_puts_each_side_where_the_others_image_was() {
+    var p = t_pose()
+    p.rot[L_SHOULDER] = euler(vec3(-20.0, 10.0, -75.0))
+    p.rot[L_ELBOW] = euler(vec3(0.0, -30.0, 0.0))
+    p.rot[CHEST] = euler(vec3(5.0, 8.0, 2.0))
+    p.hips = vec3(0.03, 0.95, 0.01)
+    let m = p.mirrored()
+    let back = m.mirrored()
+    for j in 0..JOINTS {
+        assert(length(back.rot[j].v - p.rot[j].v) < 1.0e-6, "mirroring twice changed a turn")
+    }
+    let a = place(p)
+    let b = place(m)
+    for j in 0..JOINTS {
+        let x = a.at[j]
+        let y = b.at[MIRROR[j]]
+        assert(length(x - vec3(-y.x, y.y, y.z)) < 1.0e-4, f"{NAMES[j]}'s image isn't mirrored")
+    }
+}
+
+/// The keys' turns read as written: a hip turned by -30° about x swings the foot forward, a knee
+/// by +40° swings the shin back, and the right shoulder by +80° about z lowers the arm to the
+/// side.
+@test
+fn the_keys_turns_go_the_way_they_are_written() {
+    var p = t_pose()
+    p.rot[L_HIP] = euler(vec3(-30.0, 0.0, 0.0))
+    p.rot[R_KNEE] = euler(vec3(40.0, 0.0, 0.0))
+    p.rot[R_SHOULDER] = euler(vec3(0.0, 0.0, 80.0))
+    let q = place(p)
+    assert(q.at[L_ANKLE].z > 0.3, "the hip's flexion didn't bring the foot forward")
+    assert(q.at[R_ANKLE].z < -0.2, "the knee's flexion didn't bring the shin back")
+    assert(q.at[R_WRIST].y < q.at[R_SHOULDER].y - 0.5, "the shoulder didn't lower the arm")
+}

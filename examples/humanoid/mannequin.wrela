@@ -1,0 +1,272 @@
+// The stand-in: a plain articulated mannequin on the rig, its parts each a limb's simple form, for
+// judging motion before the samurai has a design. A plate on its face shows where it looks.
+
+use engine::creature::{Bone, Creature, Skeleton, creature, smooth}
+use engine::render::{Look, Shaded}
+use rig::{
+    CHEST, CHEST2, CHEST3, CHEST4, HEAD, HIPS, L_ANKLE, L_COLLAR, L_ELBOW, L_HIP, L_KNEE,
+    L_SHOULDER, L_TOE, L_WRIST, NECK, REST, TOE_TIP, skeleton,
+}
+use std::derive::Box3
+use std::field::{Blend, ellipsoid, oval, round_cone}
+
+/// A point of the mannequin: its colour (linear) and roughness.
+pub struct Paint: Copy + GpuData + Blend {
+    pub albedo: vec3,
+    pub rough: f32 = 0.6,
+}
+
+impl Shaded for Paint {
+    fn albedo(self) -> vec3 {
+        self.albedo
+    }
+
+    fn roughness(self) -> f32 {
+        self.rough
+    }
+}
+
+/// Its colours: a pale body, and the face's plate dark.
+const BODY = Paint { albedo: vec3(0.55, 0.55, 0.55) }
+const FACE = Paint { albedo: vec3(0.05, 0.05, 0.06), rough: 0.3 }
+
+fn bone(j: u32) -> Bone {
+    Bone { index: j }
+}
+
+/// The mannequin (each part written in its bone's space: from the bone's place at rest): pelvis, belly, ribcage, neck and head, the face's plate; each side's collar,
+/// upper arm, forearm, hand, thigh, shin, foot and toes (written for the left, mirrored).
+pub fn mannequin() -> Creature<Paint> {
+    let r = REST
+    let torso = smooth(0.04)
+    let limb = smooth(0.025)
+    creature(skeleton())
+        .join(
+            "pelvis",
+            bone(HIPS),
+            ellipsoid(vec3(0.16, 0.11, 0.12))
+                .translate(vec3(0.0, -0.02, 0.0))
+                .with(BODY),
+        )
+        .join(
+            "belly",
+            bone(CHEST2),
+            round_cone(
+                r[CHEST3] - r[CHEST2],
+                r[CHEST] - r[CHEST2],
+                r_top: 0.14,
+                r_bottom: 0.12,
+            ).with(BODY),
+            seam: torso,
+        )
+        .join(
+            "ribcage",
+            bone(CHEST4),
+            ellipsoid(vec3(0.165, 0.15, 0.11))
+                .translate(vec3(0.0, -0.03, 0.01))
+                .with(BODY),
+            seam: torso,
+        )
+        .join(
+            "neck",
+            bone(NECK),
+            round_cone(r[HEAD] - r[NECK], vec3(0.0), r_top: 0.05, r_bottom: 0.06).with(
+                BODY,
+            ),
+            seam: limb,
+        )
+        .join(
+            "head",
+            bone(HEAD),
+            ellipsoid(vec3(0.085, 0.105, 0.1))
+                .translate(vec3(0.0, 0.085, 0.01))
+                .with(BODY),
+            seam: limb,
+        )
+        .join(
+            "face",
+            bone(HEAD),
+            ellipsoid(vec3(0.07, 0.07, 0.03))
+                .translate(vec3(0.0, 0.08, 0.085))
+                .with(FACE),
+            seam: smooth(0.01),
+        )
+        .join(
+            "collar",
+            bone(L_COLLAR),
+            round_cone(
+                r[L_SHOULDER] - r[L_COLLAR],
+                vec3(0.0),
+                r_top: 0.065,
+                r_bottom: 0.06,
+            ).with(BODY),
+            seam: torso,
+            mirror: true,
+        )
+        .join(
+            "upper arm",
+            bone(L_SHOULDER),
+            round_cone(
+                vec3(0.0),
+                r[L_ELBOW] - r[L_SHOULDER],
+                r_top: 0.055,
+                r_bottom: 0.045,
+            ).with(BODY),
+            seam: limb,
+            mirror: true,
+        )
+        .join(
+            "forearm",
+            bone(L_ELBOW),
+            round_cone(
+                vec3(0.0),
+                r[L_WRIST] - r[L_ELBOW],
+                r_top: 0.043,
+                r_bottom: 0.033,
+            ).with(BODY),
+            seam: limb,
+            mirror: true,
+        )
+        .join(
+            "hand",
+            bone(L_WRIST),
+            ellipsoid(vec3(0.08, 0.025, 0.045))
+                .translate(vec3(0.085, 0.0, 0.0))
+                .with(BODY),
+            seam: limb,
+            mirror: true,
+        )
+        .join(
+            "thigh",
+            bone(L_HIP),
+            round_cone(
+                vec3(0.0),
+                r[L_KNEE] - r[L_HIP],
+                r_top: 0.085,
+                r_bottom: 0.055,
+            ).with(BODY),
+            seam: torso,
+            mirror: true,
+        )
+        .join(
+            "shin",
+            bone(L_KNEE),
+            round_cone(
+                vec3(0.0),
+                r[L_ANKLE] - r[L_KNEE],
+                r_top: 0.052,
+                r_bottom: 0.036,
+            ).with(BODY),
+            seam: limb,
+            mirror: true,
+        )
+        .join(
+            "foot",
+            bone(L_ANKLE),
+            round_cone(
+                vec3(0.0, -0.06, -0.05),
+                r[L_TOE] - r[L_ANKLE],
+                r_top: 0.045,
+                r_bottom: 0.035,
+            )
+                .with(BODY),
+            seam: limb,
+            mirror: true,
+        )
+        .join(
+            "toes",
+            bone(L_TOE),
+            round_cone(
+                vec3(0.0),
+                TOE_TIP,
+                r_top: 0.033,
+                r_bottom: 0.025,
+            ).with(BODY),
+            seam: limb,
+            mirror: true,
+        )
+        .bounded(Box3 { lo: vec3(-1.0, -0.05, -0.3), hi: vec3(1.0, 1.85, 0.35) })
+}
+
+/// The katana's colours: its steel, its guard's dark iron, its grip's dark wrapping.
+const STEEL = Paint { albedo: vec3(0.62, 0.64, 0.68), rough: 0.22 }
+const IRON = Paint { albedo: vec3(0.07, 0.07, 0.075), rough: 0.45 }
+const WRAP = Paint { albedo: vec3(0.05, 0.04, 0.035), rough: 0.85 }
+
+/// The katana, in its own frame (from the right hand's grip, the blade up +y, its edge toward +z):
+/// a blade 70 cm long from just above its guard, 3 cm wide and (to read at a distance, for now) a
+/// centimetre thick, four long ovals run together; an oval guard; a grip of two hands' width below
+/// it. Its one bone is its frame.
+pub fn katana() -> Creature<Paint> {
+    var s = Skeleton::new()
+    let root = s.root("katana", vec3(0.0))
+    let edge = smooth(0.002)
+    let steel = smooth(0.02)
+    creature(s)
+        .join(
+            "blade",
+            root,
+            oval(vec3(0.0055, 0.125, 0.0155)).translate(vec3(0.0, 0.15, 0.0)).with(STEEL),
+        )
+        .join(
+            "blade",
+            root,
+            oval(vec3(0.0055, 0.125, 0.0155)).translate(vec3(0.0, 0.32, 0.0)).with(STEEL),
+            seam: steel,
+        )
+        .join(
+            "blade",
+            root,
+            oval(vec3(0.0055, 0.125, 0.0155)).translate(vec3(0.0, 0.49, 0.0)).with(STEEL),
+            seam: steel,
+        )
+        .join(
+            "blade",
+            root,
+            oval(vec3(0.0055, 0.125, 0.0155)).translate(vec3(0.0, 0.645, 0.0)).with(STEEL),
+            seam: steel,
+        )
+        .join(
+            "guard",
+            root,
+            ellipsoid(vec3(0.038, 0.005, 0.043)).translate(vec3(0.0, 0.035, 0.0)).with(IRON),
+            seam: edge,
+        )
+        .join(
+            "grip",
+            root,
+            round_cone(vec3(0.0, -0.245, 0.0), vec3(0.0, 0.028, 0.0), r_top: 0.017, r_bottom: 0.016)
+                .with(WRAP),
+            seam: edge,
+        )
+        .bounded(Box3 { lo: vec3(-0.05, -0.27, -0.06), hi: vec3(0.05, 0.78, 0.06) })
+}
+
+/// A fighter's look: the mannequin's colours, tinted (the player cool, its foe warm), so the two
+/// read apart; the swords untinted.
+pub struct Tint: Copy + GpuData {
+    pub colour: vec3,
+}
+
+impl Look<Paint> for Tint {
+    fn surface(self, c: Paint, rest: vec3, fp: f32) -> (vec3, f32) {
+        (c.albedo * self.colour, c.rough)
+    }
+}
+
+pub const PLAYER_TINT = Tint { colour: vec3(0.82, 0.95, 1.2) }
+pub const FOE_TINT = Tint { colour: vec3(1.25, 0.9, 0.75) }
+pub const NO_TINT = Tint { colour: vec3(1.0) }
+
+/// The mannequin stands on the ground, a person's height, its face toward +z.
+@test
+fn the_mannequin_stands_a_persons_height_facing_ahead() {
+    let f = mannequin().field()
+    assert(f.distance(REST[HIPS]) < 0.0, "the hips aren't inside the body")
+    assert(f.distance(vec3(0.0, 1.85, 0.0)) > 0.0, "the head pokes through 1.85 m")
+    assert(f.distance(vec3(0.0, 1.75, 0.0)) < 0.0, "the head is under 1.75 m")
+    assert(f.distance(vec3(0.0, 1.70, 0.11)) < 0.0, "the face's plate isn't in front")
+    assert(f.distance(REST[L_WRIST] + vec3(0.08, 0.0, 0.0)) < 0.0, "the left hand is missing")
+    assert(f.distance(vec3(-REST[L_WRIST].x - 0.08, REST[L_WRIST].y, 0.0)) < 0.0, "no right hand")
+    assert(f.distance(vec3(REST[L_TOE].x, 0.02, 0.2)) < 0.0, "the foot doesn't reach the ground")
+}

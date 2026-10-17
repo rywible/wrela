@@ -1,0 +1,558 @@
+// Rigid bodies, stepped by extended position-based dynamics (XPBD: Müller, Macklin, Chentanez,
+// Jeschke and Kim, "Detailed Rigid Body Simulation with Extended Position Based Dynamics", 2020).
+// A step is cut into short substeps. In each, every body goes on by its velocity and spin
+// (`integrate`); then each constraint moves its bodies back into place (`attach` holds two points
+// together, `align` turns one body toward a turn from another, `collide` and `collide_swept` push
+// two capsules apart); then each body's velocity and spin become what the substep moved and
+// turned it by (`settle`), and joints' dampers slow them (`damp_spin`). The caller runs the
+// constraints in its own order.
+//
+// A constraint can be soft (its compliance: how far a force bends it, m/N or rad/(N m)) and weak
+// (the most force or torque it gives). A drive that is stiff but weak follows its target while the
+// target is slow, and lags and swings past it when the target is fast: what a heavy body moved by
+// a limited muscle does.
+//
+// Units: metres, kilograms, seconds. A body's inertia is about its own axes, through its centre of
+// mass, which is where it is (`at`).
+
+use std::hash::StateHash
+use std::serialize::Serialize
+use sim::SimState
+
+/// A rigid body: its centre of mass, its turn, its velocity and spin (rad/s, about an axis in the
+/// world), its inverse mass and its inverse moments of inertia about its own axes (both 0: it's
+/// fixed, or moved by its owner); and where it was and how it was turned when its substep began.
+pub struct Body: Copy + Eq + StateHash + Serialize + SimState {
+    pub at: vec3,
+    pub rot: Quat,
+    pub vel: vec3 = vec3(0.0),
+    pub spin: vec3 = vec3(0.0),
+    pub inv_mass: f32,
+    pub inv_inertia: vec3,
+    pub was_at: vec3 = vec3(0.0),
+    pub was_rot: Quat = Quat { v: vec4(0.0, 0.0, 0.0, 1.0) },
+}
+
+/// A capsule on a body: a segment in the body's own frame, and the radius round it (m).
+pub struct Capsule: Copy {
+    pub from: vec3,
+    pub to: vec3,
+    pub radius: f32,
+}
+
+/// Where two capsules touched: the point between them, the way from the second to the first
+/// (unit), and how deep they were in each other (m).
+pub struct Contact: Copy {
+    pub at: vec3,
+    pub normal: vec3,
+    pub depth: f32,
+}
+
+impl Body {
+    /// A body of `mass` (kg) at `at`, turned `rot`, with moments of inertia `inertia` about its
+    /// own axes (kg m²).
+    pub fn new(at: vec3, rot: Quat, mass: f32, inertia: vec3) -> Body {
+        Body {
+            at,
+            rot,
+            inv_mass: 1.0 / mass,
+            inv_inertia: vec3(1.0) / inertia,
+            was_at: at,
+            was_rot: rot,
+        }
+    }
+
+    /// A body that constraints don't move: its owner places it.
+    pub fn fixed(at: vec3, rot: Quat) -> Body {
+        Body { at, rot, inv_mass: 0.0, inv_inertia: vec3(0.0), was_at: at, was_rot: rot }
+    }
+
+    /// A point of the body's own frame, in the world.
+    pub fn point(self, local: vec3) -> vec3 {
+        self.at + self.rot.rotate(local)
+    }
+
+    /// How fast a point of the world goes, carried by the body.
+    pub fn velocity_at(self, world: vec3) -> vec3 {
+        self.vel + cross(self.spin, world - self.at)
+    }
+
+    /// `v` (an angular impulse or a turn in the world) through the body's inverse inertia.
+    pub fn inv_i(self, v: vec3) -> vec3 {
+        self.rot.rotate(self.inv_inertia * self.rot.inverse().rotate(v))
+    }
+
+    /// The body's mass as seen by a push along `n` at `r` from its centre: the inverse.
+    fn weight(self, r: vec3, n: vec3) -> f32 {
+        let rn = cross(r, n)
+        self.inv_mass + dot(rn, self.inv_i(rn))
+    }
+
+    /// The body moved by a positional impulse `p` at `r` from its centre (m kg).
+    fn shift(mut self, p: vec3, r: vec3) {
+        self.at += p * self.inv_mass
+        self.rot = turned(self.rot, self.inv_i(cross(r, p)))
+    }
+
+    /// The body struck by impulse `p` (N s) at point `world`: its velocity and spin change.
+    pub fn strike(mut self, p: vec3, world: vec3) {
+        self.vel += p * self.inv_mass
+        self.spin += self.inv_i(cross(world - self.at, p))
+    }
+}
+
+/// `q` turned by `w`, a small turn about an axis in the world (its length the angle, rad).
+fn turned(q: Quat, w: vec3) -> Quat {
+    let d = Quat { v: vec4(w * 0.5, 0.0) }.mul(q)
+    Quat { v: normalize(q.v + d.v) }
+}
+
+/// The turn that takes `from` to `to`, as an axis in the world and the angle (rad, 0 to π).
+fn turn_between(from: Quat, to: Quat) -> (vec3, f32) {
+    let e = to.mul(from.inverse()).v
+    let s = length(e.xyz)
+    if s < 1.0e-9 {
+        return (vec3(0.0, 1.0, 0.0), 0.0)
+    }
+    let axis = if e.w < 0.0 { -e.xyz / s } else { e.xyz / s }
+    (axis, 2.0 * atan2(s, abs(e.w)))
+}
+
+/// The moments of inertia of a rod of `mass` (kg), `length` and `radius` (m) along its own axis
+/// `axis` (0 x, 1 y, 2 z): a solid cylinder's.
+pub fn rod(mass: f32, length: f32, radius: f32, axis: u32) -> vec3 {
+    let along = 0.5 * mass * radius * radius
+    let across = mass * (3.0 * radius * radius + length * length) / 12.0
+    if axis == 0 { vec3(along, across, across) } else if axis == 1 {
+        vec3(across, along, across)
+    } else {
+        vec3(across, across, along)
+    }
+}
+
+/// The moments of inertia of a solid box of `mass` (kg) and sides `size` (m).
+pub fn box_inertia(mass: f32, size: vec3) -> vec3 {
+    let s = size * size
+    vec3(s.y + s.z, s.x + s.z, s.x + s.y) * (mass / 12.0)
+}
+
+/// The start of a substep of `h` seconds: the body goes on by its velocity (after `gravity`
+/// pulls it) and turns by its spin.
+pub fn integrate(b: mut Body, gravity: vec3, h: f32) {
+    b.was_at = b.at
+    b.was_rot = b.rot
+    if b.inv_mass > 0.0 {
+        b.vel += gravity * h
+        b.at += b.vel * h
+    }
+    if dot(b.inv_inertia, b.inv_inertia) > 0.0 {
+        b.rot = turned(b.rot, b.spin * h)
+    }
+}
+
+/// The end of a substep of `h` seconds: the body's velocity and spin are what the substep moved
+/// and turned it by.
+pub fn settle(b: mut Body, h: f32) {
+    if b.inv_mass > 0.0 {
+        b.vel = (b.at - b.was_at) / h
+    }
+    if dot(b.inv_inertia, b.inv_inertia) > 0.0 {
+        let d = b.rot.mul(b.was_rot.inverse()).v
+        b.spin = d.xyz * ((if d.w < 0.0 { -2.0 } else { 2.0 }) / h)
+    }
+}
+
+/// Holds point `pa` of `a` and point `pb` of `b` (each in its body's frame) together, with
+/// `compliance` (m/N; 0 rigid) and at most a force of `most` (N), in a substep of `h` seconds.
+pub fn attach(a: mut Body, b: mut Body, pa: vec3, pb: vec3, compliance: f32, most: f32, h: f32) {
+    let (wa, wb) = (a.point(pa), b.point(pb))
+    let d = wa - wb
+    let c = length(d)
+    if c < 1.0e-9 {
+        return
+    }
+    let n = d / c
+    let (ra, rb) = (wa - a.at, wb - b.at)
+    let w = a.weight(ra, n) + b.weight(rb, n) + compliance / (h * h)
+    if w <= 0.0 {
+        return
+    }
+    let cap = most * h * h
+    let p = n * clamp(-c / w, -cap, cap)
+    a.shift(p, ra)
+    b.shift(-p, rb)
+}
+
+/// Turns `b` toward `a`'s turn followed by `rel` (`b.rot` = `a.rot.mul(rel)`), and `a` the other
+/// way, with `compliance` (rad/(N m); 0 rigid) and at most a torque of `most` (N m), in a substep of
+/// `h` seconds.
+pub fn align(a: mut Body, b: mut Body, rel: Quat, compliance: f32, most: f32, h: f32) {
+    let (n, theta) = turn_between(a.rot.mul(rel), b.rot)
+    if theta < 1.0e-7 {
+        return
+    }
+    // The turn is three constraints at once, solved together through both bodies' inertia (a
+    // scalar solve along `n` turns a long thin body about the wrong axis).
+    let soft = compliance / (h * h)
+    let k = mat3(
+        a.inv_i(vec3(1.0, 0.0, 0.0)) + b.inv_i(vec3(1.0, 0.0, 0.0)) + vec3(soft, 0.0, 0.0),
+        a.inv_i(vec3(0.0, 1.0, 0.0)) + b.inv_i(vec3(0.0, 1.0, 0.0)) + vec3(0.0, soft, 0.0),
+        a.inv_i(vec3(0.0, 0.0, 1.0)) + b.inv_i(vec3(0.0, 0.0, 1.0)) + vec3(0.0, 0.0, soft),
+    )
+    let Some(inv) = inverse3(k) else {
+        return
+    }
+    var p = inv * (n * -theta)
+    let cap = most * h * h
+    let size = length(p)
+    if size > cap {
+        p *= cap / size
+    }
+    a.rot = turned(a.rot, -a.inv_i(p))
+    b.rot = turned(b.rot, b.inv_i(p))
+}
+
+/// The inverse of `m`, if it has one.
+fn inverse3(m: mat3) -> Option<mat3> {
+    let (a, b, c) = (m[0], m[1], m[2])
+    let (x, y, z) = (cross(b, c), cross(c, a), cross(a, b))
+    let det = dot(a, x)
+    if abs(det) < 1.0e-12 {
+        return None
+    }
+    // The rows of the inverse are x, y and z over the determinant; mat3 takes columns.
+    let r = 1.0 / det
+    Some(mat3(vec3(x.x, y.x, z.x) * r, vec3(x.y, y.y, z.y) * r, vec3(x.z, y.z, z.z) * r))
+}
+
+/// Slows `b`'s spin relative to `a`'s by `rate` (the share a second), as a damper across their
+/// joint does; after `settle`, in a substep of `h` seconds.
+pub fn damp_spin(a: mut Body, b: mut Body, rate: f32, h: f32) {
+    let rel = b.spin - a.spin
+    if dot(rel, rel) < 1.0e-18 {
+        return
+    }
+    let k = mat3(
+        a.inv_i(vec3(1.0, 0.0, 0.0)) + b.inv_i(vec3(1.0, 0.0, 0.0)),
+        a.inv_i(vec3(0.0, 1.0, 0.0)) + b.inv_i(vec3(0.0, 1.0, 0.0)),
+        a.inv_i(vec3(0.0, 0.0, 1.0)) + b.inv_i(vec3(0.0, 0.0, 1.0)),
+    )
+    let Some(inv) = inverse3(k) else {
+        return
+    }
+    let p = inv * (rel * min(rate * h, 1.0))
+    a.spin += a.inv_i(p)
+    b.spin -= b.inv_i(p)
+}
+
+/// Where segments `a0`–`a1` and `b0`–`b1` come closest: how far along each (0 to 1).
+pub fn closest(a0: vec3, a1: vec3, b0: vec3, b1: vec3) -> (f32, f32) {
+    let d1 = a1 - a0
+    let d2 = b1 - b0
+    let r = a0 - b0
+    let a = dot(d1, d1)
+    let e = dot(d2, d2)
+    let f = dot(d2, r)
+    if a <= 1.0e-9 && e <= 1.0e-9 {
+        return (0.0, 0.0)
+    }
+    if a <= 1.0e-9 {
+        return (0.0, clamp(f / e, 0.0, 1.0))
+    }
+    let c = dot(d1, r)
+    if e <= 1.0e-9 {
+        return (clamp(-c / a, 0.0, 1.0), 0.0)
+    }
+    let b = dot(d1, d2)
+    let den = a * e - b * b
+    var s = if den > 1.0e-9 { clamp((b * f - c * e) / den, 0.0, 1.0) } else { 0.0 }
+    var t = (b * s + f) / e
+    if t < 0.0 {
+        t = 0.0
+        s = clamp(-c / a, 0.0, 1.0)
+    } else if t > 1.0 {
+        t = 1.0
+        s = clamp((b - c) / a, 0.0, 1.0)
+    }
+    (s, t)
+}
+
+/// Pushes `a` and `b` apart where capsule `ca` of `a` and `cb` of `b` overlap, rigidly, in a
+/// substep; where they touched, if they did.
+pub fn collide(a: mut Body, b: mut Body, ca: Capsule, cb: Capsule) -> Option<Contact> {
+    let (a0, a1) = (a.point(ca.from), a.point(ca.to))
+    let (b0, b1) = (b.point(cb.from), b.point(cb.to))
+    let (s, t) = closest(a0, a1, b0, b1)
+    let pa = mix(a0, a1, vec3(s))
+    let pb = mix(b0, b1, vec3(t))
+    let d = pa - pb
+    let apart = length(d)
+    let depth = ca.radius + cb.radius - apart
+    if depth <= 0.0 || apart < 1.0e-9 {
+        return None
+    }
+    let n = d / apart
+    let (ra, rb) = (pa - n * ca.radius - a.at, pb + n * cb.radius - b.at)
+    let w = a.weight(ra, n) + b.weight(rb, n)
+    if w <= 0.0 {
+        return None
+    }
+    let p = n * (depth / w)
+    a.shift(p, ra)
+    b.shift(-p, rb)
+    Some(Contact { at: (pa + pb) * 0.5, normal: n, depth })
+}
+
+/// Like `collide`, for thin fast capsules that may pass through each other within a substep: `side`
+/// is the way from `cb` to `ca` when they were last apart (zero when unknown). If they have crossed
+/// since (their closest points now the other way round, both within their segments), they're
+/// pushed back to the side they came from. Where they touched, if they did; and the way from `cb`
+/// to `ca` now.
+pub fn collide_swept(
+    a: mut Body,
+    b: mut Body,
+    ca: Capsule,
+    cb: Capsule,
+    side: vec3,
+) -> (Option<Contact>, vec3) {
+    let (a0, a1) = (a.point(ca.from), a.point(ca.to))
+    let (b0, b1) = (b.point(cb.from), b.point(cb.to))
+    let (s, t) = closest(a0, a1, b0, b1)
+    let pa = mix(a0, a1, vec3(s))
+    let pb = mix(b0, b1, vec3(t))
+    let d = pa - pb
+    let apart = length(d)
+    let inside = s > 0.0 && s < 1.0 && t > 0.0 && t < 1.0
+    let crossed = inside && dot(side, side) > 0.5 && dot(d, side) < 0.0
+    let n = if crossed { side } else if apart > 1.0e-9 { d / apart } else { side }
+    let depth = ca.radius + cb.radius - dot(d, n)
+    if depth <= 0.0 || dot(n, n) < 0.5 {
+        return (None, n)
+    }
+    let (ra, rb) = (pa - n * ca.radius - a.at, pb + n * cb.radius - b.at)
+    let w = a.weight(ra, n) + b.weight(rb, n)
+    if w <= 0.0 {
+        return (None, n)
+    }
+    let p = n * (depth / w)
+    a.shift(p, ra)
+    b.shift(-p, rb)
+    (Some(Contact { at: (pa + pb) * 0.5, normal: n, depth }), n)
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// A rod of 1 kg and 1 m, from its end along -y, its centre half a metre from the end.
+fn rod_body(at: vec3) -> Body {
+    Body::new(at, Quat::identity(), 1.0, rod(mass: 1.0, length: 1.0, radius: 0.02, axis: 1))
+}
+
+/// A pendulum let go level swings down and back, its rod's end held to its pivot within a
+/// millimetre, and never gains energy (XPBD loses a little to its substeps, no more).
+@test
+fn a_pendulum_keeps_its_length_and_never_gains_energy() {
+    var pivot = Body::fixed(vec3(0.0), Quat::identity())
+    // Level: the rod along +x from the pivot, turned so its -y end is at the pivot.
+    let level = Quat::axis_angle(vec3(0.0, 0.0, 1.0), -1.5707964)
+    var b = Body::new(
+        vec3(0.5, 0.0, 0.0),
+        level,
+        1.0,
+        rod(mass: 1.0, length: 1.0, radius: 0.02, axis: 1),
+    )
+    let end = vec3(0.0, -0.5, 0.0)
+    let g = vec3(0.0, -9.81, 0.0)
+    let h = 1.0 / 600.0
+    let energy = |x: Body| 9.81 * x.at.y +
+        0.5 * dot(x.vel, x.vel) +
+        0.5 * dot(x.spin, x.spin / x.inv_inertia)
+    let first = energy(b)
+    var worst_gap = 0.0
+    var most = first
+    var lowest = 0.0
+    for _ in 0..1200 {
+        integrate(mut b, g, h)
+        attach(mut pivot, mut b, vec3(0.0), end, compliance: 0.0, most: 1.0e9, h: h)
+        settle(mut b, h)
+        worst_gap = max(worst_gap, length(b.point(end)))
+        most = max(most, energy(b))
+        lowest = min(lowest, b.at.y)
+    }
+    std::io::print(f"the pendulum's end strayed {worst_gap} m; energy {first} -> at most {most}")
+    assert(worst_gap < 1.0e-3, f"the end strayed {worst_gap} m from the pivot")
+    assert(most <= first + 1.0e-3, f"the pendulum gained energy: {first} -> {most}")
+    assert(lowest < -0.49, f"the pendulum didn't swing down ({lowest})")
+}
+
+/// A stiff, strong drive turns a free body to its target turn from a fixed one within a few
+/// hundredths of a second, and holds it there.
+@test
+fn a_strong_drive_turns_a_body_to_its_target() {
+    var base = Body::fixed(vec3(0.0), Quat::identity())
+    var b = rod_body(vec3(0.0))
+    let target = Quat::axis_angle(normalize(vec3(1.0, 0.3, 0.2)), 1.2)
+    let h = 1.0 / 600.0
+    for _ in 0..60 {
+        integrate(mut b, vec3(0.0), h)
+        align(mut base, mut b, target, compliance: 0.0, most: 1.0e6, h: h)
+        settle(mut b, h)
+    }
+    let (_, off) = turn_between(target, b.rot)
+    std::io::print(f"after 0.1 s the drive is {off} rad off its target")
+    assert(off < 0.01, f"the drive is {off} rad off its target")
+}
+
+/// A weak drive can't turn a heavy body faster than its torque allows: its spin grows by at most
+/// the torque over the inertia each second, and it reaches the target late, swinging past it.
+@test
+fn a_weak_drive_lags_and_swings_past_its_target() {
+    var base = Body::fixed(vec3(0.0), Quat::identity())
+    var b = rod_body(vec3(0.0))
+    let axis = vec3(1.0, 0.0, 0.0)
+    let target = Quat::axis_angle(axis, 1.5)
+    let torque = 2.0
+    let inertia = 1.0 / b.inv_inertia.x
+    let h = 1.0 / 600.0
+    var fastest_gain = 0.0
+    var past = 0.0
+    var reached = 0
+    for k in 0..1200 {
+        let was = dot(b.spin, axis)
+        integrate(mut b, vec3(0.0), h)
+        align(mut base, mut b, target, compliance: 0.0, most: torque, h: h)
+        settle(mut b, h)
+        fastest_gain = max(fastest_gain, abs(dot(b.spin, axis) - was) / h)
+        let (n, off) = turn_between(Quat::identity(), b.rot)
+        let angle = off * sign(dot(n, axis))
+        if reached == 0 && angle >= 1.5 {
+            reached = k
+        }
+        past = max(past, angle - 1.5)
+    }
+    std::io::print(
+        f"the weak drive: spin gained at most {fastest_gain} rad/s², reached at {reached}, swung {past} rad past",
+    )
+    assert(fastest_gain <= torque / inertia * 1.01, f"the spin grew {fastest_gain} rad/s²")
+    assert(reached > 100, f"the weak drive reached its target at substep {reached}")
+    assert(past > 0.05, "the weak drive didn't swing past its target")
+}
+
+/// Two capsules pushed into each other end apart, by the sum of their radii, and their momentum
+/// is what it was.
+@test
+fn capsules_pushed_together_end_apart_and_keep_their_momentum() {
+    var a = Body::new(
+        vec3(-0.05, 0.0, 0.0),
+        Quat::identity(),
+        1.0,
+        rod(mass: 1.0, length: 1.0, radius: 0.02, axis: 1),
+    )
+    var b = Body::new(
+        vec3(0.05, 0.1, 0.0),
+        Quat::axis_angle(vec3(1.0, 0.0, 0.0), 1.5707964),
+        2.0,
+        rod(mass: 2.0, length: 1.0, radius: 0.02, axis: 1),
+    )
+    a.vel = vec3(1.0, 0.0, 0.0)
+    b.vel = vec3(-0.5, 0.0, 0.0)
+    let cap = Capsule { from: vec3(0.0, -0.5, 0.0), to: vec3(0.0, 0.5, 0.0), radius: 0.03 }
+    let momentum = a.vel / a.inv_mass + b.vel / b.inv_mass
+    let h = 1.0 / 600.0
+    var touched = 0
+    for _ in 0..60 {
+        integrate(mut a, vec3(0.0), h)
+        integrate(mut b, vec3(0.0), h)
+        if collide(mut a, mut b, cap, cap).is_some() {
+            touched += 1
+        }
+        settle(mut a, h)
+        settle(mut b, h)
+    }
+    let (s, t) = closest(a.point(cap.from), a.point(cap.to), b.point(cap.from), b.point(cap.to))
+    let gap = length(
+        mix(a.point(cap.from), a.point(cap.to), vec3(s)) -
+            mix(b.point(cap.from), b.point(cap.to), vec3(t)),
+    )
+    let now = a.vel / a.inv_mass + b.vel / b.inv_mass
+    std::io::print(f"the capsules touched {touched} substeps and end {gap} m apart")
+    assert(touched > 0, "the capsules never touched")
+    assert(gap >= 0.06 - 1.0e-4, f"the capsules end {gap} m apart, inside each other")
+    assert(length(now - momentum) < 1.0e-3, f"momentum went from {momentum} to {now}")
+}
+
+/// A chain of three rods hanging from a fixed point holds together, each joint within a
+/// millimetre, as it swings for two seconds.
+@test
+fn a_hanging_chain_holds_together() {
+    var top = Body::fixed(vec3(0.0), Quat::identity())
+    let tilt = Quat::axis_angle(vec3(0.0, 0.0, 1.0), 1.0)
+    var links = [rod_body(vec3(0.0)); 3]
+    for i in 0..3 {
+        links[i] = Body::new(
+            tilt.rotate(vec3(0.0, -0.5 - f32(i), 0.0)),
+            tilt,
+            1.0,
+            rod(mass: 1.0, length: 1.0, radius: 0.02, axis: 1),
+        )
+    }
+    let (up, down) = (vec3(0.0, 0.5, 0.0), vec3(0.0, -0.5, 0.0))
+    let h = 1.0 / 600.0
+    var worst = 0.0
+    for _ in 0..1200 {
+        for i in 0..3 {
+            integrate(mut links[i], vec3(0.0, -9.81, 0.0), h)
+        }
+        attach(mut top, mut links[0], vec3(0.0), up, compliance: 0.0, most: 1.0e9, h: h)
+        for i in 1..3 {
+            var x = links[i - 1]
+            var y = links[i]
+            attach(mut x, mut y, down, up, compliance: 0.0, most: 1.0e9, h: h)
+            links[i - 1] = x
+            links[i] = y
+        }
+        for i in 0..3 {
+            settle(mut links[i], h)
+        }
+        worst = max(worst, length(links[0].point(up)))
+        for i in 1..3 {
+            worst = max(worst, length(links[i - 1].point(down) - links[i].point(up)))
+        }
+    }
+    std::io::print(f"the chain's joints strayed {worst} m at most")
+    assert(worst < 1.0e-3, f"a joint strayed {worst} m")
+}
+
+/// A thin rod swept fast through another, farther in a substep than they are thick, is caught by
+/// `collide_swept` (where `collide` lets it pass), and ends on the side it came from.
+@test
+fn a_fast_thin_rod_cant_pass_through_another() {
+    let cap = Capsule { from: vec3(0.0, -0.5, 0.0), to: vec3(0.0, 0.5, 0.0), radius: 0.01 }
+    let across = Quat::axis_angle(vec3(1.0, 0.0, 0.0), 1.5707964)
+    let inertia = rod(mass: 1.0, length: 1.0, radius: 0.01, axis: 1)
+    for swept in [false, true] {
+        var a = Body::new(vec3(-0.2, 0.0, 0.0), Quat::identity(), 1.0, inertia)
+        var b = Body::new(vec3(0.0), across, 1.0, inertia)
+        // 30 m/s: 5 cm a substep, past the two radii's 2 cm.
+        a.vel = vec3(30.0, 0.0, 0.0)
+        var side = vec3(0.0)
+        let h = 1.0 / 600.0
+        for _ in 0..20 {
+            integrate(mut a, vec3(0.0), h)
+            integrate(mut b, vec3(0.0), h)
+            if swept {
+                let (_, now) = collide_swept(mut a, mut b, cap, cap, side)
+                side = now
+            } else {
+                let _ = collide(mut a, mut b, cap, cap)
+            }
+            settle(mut a, h)
+            settle(mut b, h)
+        }
+        std::io::print(f"swept {swept}: the fast rod ends at x {a.at.x}, the other at {b.at.x}")
+        if swept {
+            assert(a.at.x < b.at.x, "the fast rod passed through the other")
+        } else {
+            assert(a.at.x > b.at.x, "plain collide caught it: the test no longer shows the need")
+        }
+    }
+}

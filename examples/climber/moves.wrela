@@ -1,7 +1,8 @@
 // The climber's moves, keyframed as code (#30): each a few poses at the ticks they're reached
 // (60 a second), and its frame data: when it can hit (wind-up, active, recovery), when another
 // move can cancel it, when it can't be hurt, what it costs, and how far it carries the body.
-// Between keys a move eases (smoothstep); the body's travel is a curve of its own.
+// Between keys a move eases (smoothstep); the body's travel is a curve of its own. (The blend
+// into a move eases out, `fight::Climber::pose`, so a press shows on the tick after it.)
 //
 // A pose is two things the climber moves apart: its body's form (it has no arms or legs: it's a
 // cape all the way round over a head and shoulders, so its form is how it sinks, tips, turns and
@@ -153,15 +154,15 @@ pub const GUARD = Pose {
 // ---- the slash: a diagonal cut from high on the right down across to the left ------------------
 
 pub const SLASH_FRAMES = Frames {
-    windup: 13,
+    windup: 9,
     active: 6,
-    total: 40,
-    cancel: 27,
+    total: 36,
+    cancel: 23,
     stamina: 18.0,
     damage: 24.0,
     travel: 0.6,
-    travel_ticks: vec2u(8, 19),
-    turn: 6.0,
+    travel_ticks: vec2u(5, 15),
+    turn: 9.0,
 }
 
 /// The slash's keys: the sword drawn back high over the right shoulder, its point behind (the
@@ -203,28 +204,28 @@ pub fn slash_keys() -> Vec<Key> {
     }
     var k: Vec<Key> = Vec::new()
     k.push(Key { at: 0, pose: g })
-    k.push(Key { at: 11, pose: chamber })
-    k.push(Key { at: 13, pose: chamber })
-    k.push(Key { at: 15, pose: over })
-    k.push(Key { at: 17, pose: strike })
-    k.push(Key { at: 19, pose: follow })
-    k.push(Key { at: 27, pose: follow })
-    k.push(Key { at: 40, pose: g })
+    k.push(Key { at: 7, pose: chamber })
+    k.push(Key { at: 9, pose: chamber })
+    k.push(Key { at: 11, pose: over })
+    k.push(Key { at: 13, pose: strike })
+    k.push(Key { at: 15, pose: follow })
+    k.push(Key { at: 23, pose: follow })
+    k.push(Key { at: 36, pose: g })
     k
 }
 
 // ---- the backslash: the return cut, from low on the left up across to the right ----------------
 
 pub const BACKSLASH_FRAMES = Frames {
-    windup: 10,
+    windup: 8,
     active: 6,
-    total: 42,
-    cancel: 28,
+    total: 40,
+    cancel: 26,
     stamina: 20.0,
     damage: 28.0,
     travel: 0.5,
-    travel_ticks: vec2u(5, 16),
-    turn: 6.0,
+    travel_ticks: vec2u(3, 14),
+    turn: 9.0,
 }
 
 /// The backslash's keys: from the slash's follow-through (where the slash can be cancelled into
@@ -267,13 +268,13 @@ pub fn backslash_keys() -> Vec<Key> {
     }
     var k: Vec<Key> = Vec::new()
     k.push(Key { at: 0, pose: from })
+    k.push(Key { at: 6, pose: wound })
     k.push(Key { at: 8, pose: wound })
-    k.push(Key { at: 10, pose: wound })
-    k.push(Key { at: 11, pose: turning })
-    k.push(Key { at: 13, pose: cut })
-    k.push(Key { at: 16, pose: high })
-    k.push(Key { at: 26, pose: high })
-    k.push(Key { at: 42, pose: g })
+    k.push(Key { at: 9, pose: turning })
+    k.push(Key { at: 11, pose: cut })
+    k.push(Key { at: 14, pose: high })
+    k.push(Key { at: 24, pose: high })
+    k.push(Key { at: 40, pose: g })
     k
 }
 

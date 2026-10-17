@@ -44,6 +44,10 @@ export interface Listener {
   /** Whether the program takes the browser's find keys (Ctrl or Cmd with F or G, and F3) for a
    * find of its own: the browser's finds nothing in a canvas. */
   claimFind(on: boolean): void;
+  /** Whether the program wants the pointer locked to it (a game's mouse look): a press on the
+   * canvas locks it (the browser locks only on a person's gesture, and Escape lets it go until
+   * the next press); off lets it go. */
+  lockPointer(on: boolean): void;
 }
 
 /** What a host's semantic overlay (semantics.ts) gives the listener, and takes from it. */
@@ -112,6 +116,19 @@ export function listen(
     return [(e.clientX - r.left) * sx, (e.clientY - r.top) * sy] as const;
   };
   const put = (event: Uint8Array) => ring.write(event, now());
+  // A locked pointer has no place: where the program has it goes on by its movement.
+  let lockWanted = false;
+  let lockAt: [number, number] = [0, 0];
+  const locked = () => document.pointerLockElement === canvas;
+  const scale = () => {
+    const r = canvas.getBoundingClientRect();
+    const { width, height } = size();
+    return [r.width > 0 ? width / r.width : 1, r.height > 0 ? height / r.height : 1] as const;
+  };
+  const place = (e: MouseEvent) => (locked() ? lockAt : at(e));
+  document.addEventListener("pointerlockchange", () => {
+    put(pointerEvent(EventKind.PointerMove, lockAt[0], lockAt[1], locked() ? 1 : 0, 0));
+  });
   const keys = new Set<number>();
   const pointers = new Map<number, { x: number; y: number; buttons: Set<number> }>();
   const releasePointer = (id: number) => {
@@ -202,15 +219,26 @@ export function listen(
 
   const move = (e: PointerEvent) => {
     // Coalesced moves arrive as one: the program needs where the pointer is, not each step.
-    const [x, y] = at(e);
+    if (locked()) {
+      const [sx, sy] = scale();
+      lockAt = [lockAt[0] + e.movementX * sx, lockAt[1] + e.movementY * sy];
+    } else {
+      lockAt = [...at(e)];
+    }
+    const [x, y] = lockAt;
     const pointer = pointers.get(e.pointerId);
     if (pointer) Object.assign(pointer, { x, y });
-    put(pointerEvent(EventKind.PointerMove, x, y, 0, modifiersOf(e)));
+    put(pointerEvent(EventKind.PointerMove, x, y, locked() ? 1 : 0, modifiersOf(e)));
   };
   canvas.addEventListener("pointermove", move);
   const press = (e: PointerEvent) => {
-    canvas.setPointerCapture(e.pointerId);
-    const [x, y] = at(e);
+    // A locked pointer can't be captured as well: it's the canvas's already.
+    if (!locked()) canvas.setPointerCapture(e.pointerId);
+    if (lockWanted && !locked() && e.pointerType === "mouse") {
+      lockAt = [...at(e)];
+      Promise.resolve(canvas.requestPointerLock()).catch(() => {});
+    }
+    const [x, y] = place(e);
     const button = buttonOf(e.button);
     const pointer = pointers.get(e.pointerId) ?? { x, y, buttons: new Set<number>() };
     Object.assign(pointer, { x, y });
@@ -224,7 +252,7 @@ export function listen(
   };
   canvas.addEventListener("pointerdown", press);
   canvas.addEventListener("pointerup", (e) => {
-    const [x, y] = at(e);
+    const [x, y] = place(e);
     const button = buttonOf(e.button);
     const pointer = pointers.get(e.pointerId);
     pointer?.buttons.delete(button);
@@ -296,6 +324,10 @@ export function listen(
     release,
     claimFind(on) {
       findClaimed = on;
+    },
+    lockPointer(on) {
+      lockWanted = on;
+      if (!on && locked()) document.exitPointerLock();
     },
     textInput(active, caret) {
       if (active) {

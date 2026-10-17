@@ -1,0 +1,539 @@
+// The duel, played: the player (cool) against its foe (warm), each a masked samurai's stand-in, a
+// mannequin with a katana. Its body is simulated (`body`), driven by its intent (`blade`, `reach`)
+// on feet the motion capture plants (`motion`, `mocap`); the fight is `duel`. The camera holds the
+// player and its foe in view, over the player's right shoulder (a lock-on). The ground is
+// chequered a metre a square.
+//
+//     W A S D, the left stick      move: round the foe, toward it, away, always facing it
+//     J, R1                        cut: again as it ends for the next of a chain of three
+//     K, R2                        a heavy cut: straight down, stepping in
+//     L held, L1 held              guard: the blade across the cut that's coming
+//     C                            the camera to the side of the two (a judge's view), or back
+
+use duel::{Asked, Duel, QUIET, STRUCK, start, step, think}
+use engine::creature::MAX_BONES
+use engine::look::{CreatureLook, Mesh as Tolerance}
+use engine::player::{Controls, control, spawn as spawn_player, wish}
+use engine::grow::Ground
+use engine::place::Place
+use engine::present::Snapshots
+use engine::realize::{Mesh, realize_once}
+use engine::render::{Lights, View, bone_matrix, depth_only, shade, skin, skin_shadow, view}
+use engine::run::{Asks, TickInput, run}
+use engine::sim::{SimState, Tick}
+use mannequin::{FOE_TINT, NO_TINT, PLAYER_TINT, katana, mannequin}
+use motion::Source
+use rig::{CHEST3, HEAD, JOINTS, Placed, bones}
+use std::gpu::{
+    ClipPosition, ComparisonSampler, Cull, DepthBias, DepthTexture, GpuBuffer, VertexIndex,
+    begin_depth_pass, begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture, draw,
+    write,
+}
+use std::hash::StateHash
+use std::input::{Event, Key, PadButton}
+use std::io::print
+use std::serialize::Serialize
+
+// ---- the sim -------------------------------------------------------------------------------------
+
+/// The motion both fighters' feet play: the capture's.
+const MOTION: Source = mocap::source()
+
+/// The sim: the duel; the player's controls (its moves, the look the lock-on turns); whether its
+/// guard is held on the keys and on the pad; the last thing that happened and the tick it did;
+/// and the ticks.
+pub struct Sim: Copy + Eq + StateHash + Serialize + SimState {
+    pub duel: Duel,
+    pub controls: Controls,
+    pub guard_key: bool = false,
+    pub guard_pad: bool = false,
+    pub news: u32 = QUIET,
+    pub news_at: vec3 = vec3(0.0),
+    pub news_tick: u32 = 0,
+    pub ticks: u32 = 0,
+}
+
+impl Asks for Sim {
+    type Ask = u32
+    type Answer = u32
+
+    @deterministic
+    fn asks(self, tick: Tick) -> Vec<(u32, Tick)> {
+        Vec::new()
+    }
+
+    @deterministic
+    fn work(ask: u32) -> u32 {
+        ask
+    }
+}
+
+/// Level ground, for the player's controls' spawn.
+pub struct Level: Copy {}
+
+impl Ground for Level {
+    fn height(self, x: f32, z: f32) -> f32 {
+        0.0
+    }
+
+    fn past_edge(self, p: vec2) -> f32 {
+        -1000.0
+    }
+
+    fn rock(self, p: vec2) -> f32 {
+        0.0
+    }
+}
+
+fn spawn_sim() -> Sim {
+    Sim {
+        duel: start(MOTION, 2463534242, duel::BOUT),
+        controls: spawn_player(Level {}, Place::of(vec2(0.0)), 0.0).controls,
+    }
+}
+
+/// A tick: the records turn the controls and ask for cuts and the guard; the look turns to the
+/// foe (so the keys go round it); the foe thinks; the duel steps.
+@deterministic
+fn tick(s: mut Sim, input: TickInput<Sim>) {
+    var asked = Asked {}
+    for e in input.records {
+        control(mut s.controls, e)
+        match e {
+            Event::KeyDown { key, repeat, .. } => {
+                if !repeat && key == Key::J {
+                    asked.cut = true
+                }
+                if !repeat && key == Key::K {
+                    asked.heavy = true
+                }
+                if key == Key::L {
+                    s.guard_key = true
+                }
+            },
+            Event::KeyUp { key, .. } => {
+                if key == Key::L {
+                    s.guard_key = false
+                }
+            },
+            Event::PadButton { pad, button, pressed, .. } => {
+                if pad == 0 {
+                    if button == PadButton::RightShoulder && pressed {
+                        asked.cut = true
+                    }
+                    if button == PadButton::RightTrigger && pressed {
+                        asked.heavy = true
+                    }
+                    if button == PadButton::LeftShoulder {
+                        s.guard_pad = pressed
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+    asked.guard = s.guard_key || s.guard_pad
+    let to = s.duel.fighters[1].at - s.duel.fighters[0].at
+    if length(to) > 1.0e-3 {
+        s.controls.yaw = atan2(to.x, to.y)
+    }
+    let (go, _) = wish(s.controls)
+    asked.go = go
+    let foe = think(mut s.duel)
+    step(mut s.duel, [asked, foe], MOTION, input.dt)
+    if s.duel.news != QUIET {
+        s.news = s.duel.news
+        s.news_at = s.duel.news_at
+        s.news_tick = s.ticks
+    }
+    s.ticks += 1
+}
+
+/// What the frames draw: each fighter's pose in the world, its sword's grip and turn, its health;
+/// the last thing that happened, where, and how many ticks ago; and the bouts each has won.
+pub struct Shown: Copy + Plain {
+    pub poses: [Placed; 2],
+    pub grips: [vec3; 2],
+    pub swords: [Quat; 2],
+    pub health: [f32; 2],
+    pub news: u32,
+    pub news_at: vec3,
+    pub since: u32,
+    pub wins: [u32; 2],
+}
+
+@deterministic
+fn present(s: Sim) -> Shown {
+    let (g0, r0) = s.duel.fighters[0].body.sword()
+    let (g1, r1) = s.duel.fighters[1].body.sword()
+    Shown {
+        poses: s.duel.shown,
+        grips: [g0, g1],
+        swords: [r0, r1],
+        health: [s.duel.fighters[0].health, s.duel.fighters[1].health],
+        news: s.news,
+        news_at: s.news_at,
+        since: s.ticks - s.news_tick,
+        wins: s.duel.wins,
+    }
+}
+
+// ---- the frames ----------------------------------------------------------------------------------
+
+pub struct Arena {
+    snaps: Snapshots<Shown>,
+    body: Mesh,
+    sword: Mesh,
+    palettes: GpuBuffer<mat4>,
+    /// The camera's eye and where it looks, eased; whether it has a frame yet; the frame's time
+    /// when last drawn (s); the bouts each had won when last drawn.
+    eye: vec3,
+    at: vec3,
+    placed: bool,
+    beside: bool,
+    stepped: f32,
+    wins: [u32; 2],
+    depth: DepthTexture,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+    width: u32,
+    height: u32,
+}
+
+const LIGHTS = Lights {
+    sun_colour: vec3(1.6, 1.5, 1.35),
+    sky: vec3(0.55, 0.65, 0.8),
+    ground: vec3(0.3, 0.27, 0.22),
+    ambient: 0.55,
+    exposure: 0.9,
+    f0: 0.04,
+    normal_offset: 3.0e-2,
+    compare_bias: 0.002,
+}
+
+const SUN = vec3(0.45, 0.8, 0.35)
+/// The world's own frame: poses are drawn in it.
+const WORLD = mat4(
+    vec4(1.0, 0.0, 0.0, 0.0),
+    vec4(0.0, 1.0, 0.0, 0.0),
+    vec4(0.0, 0.0, 1.0, 0.0),
+    vec4(0.0, 0.0, 0.0, 1.0),
+)
+const FOVY: f32 = 0.9
+
+pub fn init() -> Arena {
+    let latest = run(spawn_sim(), hz: 60, step: tick, present: present)
+    print(
+        "the duel: W A S D or the stick to move round the foe; J or R1 to cut (again for a chain of three); K or R2 a heavy cut; hold L or L1 to guard",
+    )
+    Arena {
+        snaps: Snapshots::new(take latest, hz: 60),
+        body: realize_once(mannequin(), CreatureLook { surface: Tolerance { tolerance: 3mm } }),
+        sword: realize_once(katana(), CreatureLook { surface: Tolerance { tolerance: 1mm } }),
+        palettes: buffer(4 * MAX_BONES),
+        eye: vec3(0.0),
+        at: vec3(0.0),
+        placed: false,
+        beside: false,
+        stepped: 0.0,
+        wins: [0; 2],
+        depth: depth_texture(width: 1, height: 1),
+        shadow: depth_texture(width: 2048, height: 2048),
+        shadow_sampler: comparison_sampler(),
+        width: 0,
+        height: 0,
+    }
+}
+
+/// What every block drawn here passes on: its world point and normal.
+pub struct Surfel: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+}
+
+/// A unit cube's corner (each side from -1 to 1), six faces of two triangles, moved by `model`.
+@vertex
+fn block(v: VertexIndex, model: mat4, view: View) -> Surfel {
+    let face = v.index / 6
+    let corner = v.index % 6
+    let normals = [
+        vec3(1.0, 0.0, 0.0),
+        vec3(-1.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, -1.0, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(0.0, 0.0, -1.0),
+    ]
+    let us = [
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(1.0, 0.0, 0.0),
+        vec3(1.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+    ]
+    let cu = [-1.0, 1.0, -1.0, -1.0, 1.0, 1.0]
+    let cv = [-1.0, -1.0, 1.0, 1.0, -1.0, 1.0]
+    let n = normals[face]
+    let u = us[face]
+    let w = cross(n, u)
+    let p = n + u * cu[corner] + w * cv[corner]
+    let world = (model * vec4(p, 1.0)).xyz
+    let (x, y, z) = (model[0].xyz, model[1].xyz, model[2].xyz)
+    Surfel {
+        clip: ClipPosition { position: view.view_proj * vec4(world, 1.0) },
+        world,
+        normal: x * (n.x / dot(x, x)) + y * (n.y / dot(y, y)) + z * (n.z / dot(z, z)),
+    }
+}
+
+/// The ground's pixel: `albedo` chequered a metre a square, lit by the sun (in its shadow map)
+/// and the sky.
+@fragment
+fn ground_lit(
+    s: Surfel,
+    albedo: vec3,
+    view: View,
+    lights: Lights,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+) -> vec4 {
+    let n = normalize(s.normal)
+    let c = floor(s.world.x) + floor(s.world.z)
+    let check = if c - 2.0 * floor(c * 0.5) > 0.5 { 0.85 } else { 1.0 }
+    let lit = lights.shadow(view, s.world, n, shadow, shadow_sampler)
+    vec4(lights.light(albedo * check, 0.85, n, s.world, view, lit), 1.0)
+}
+
+/// An unlit pixel of `colour`: the health bars and a blow's flash.
+@fragment
+fn glow(s: Surfel, colour: vec3) -> vec4 {
+    vec4(colour, 1.0)
+}
+
+/// A box: its middle at `at`, its axes `x` and `y` (unit, square to each other), each side `half`
+/// from the middle.
+fn boxed(at: vec3, x: vec3, y: vec3, half: vec3) -> mat4 {
+    let z = cross(x, y)
+    mat4(vec4(x * half.x, 0.0), vec4(y * half.y, 0.0), vec4(z * half.z, 0.0), vec4(at, 1.0))
+}
+
+/// The arena: the ground, and eight posts in a ring 7 m round, to judge where things are.
+fn blocks() -> Vec<mat4> {
+    var out: Vec<mat4> = Vec::new()
+    out.push(
+        boxed(
+            vec3(0.0, -1.0, 0.0),
+            vec3(1.0, 0.0, 0.0),
+            vec3(0.0, 1.0, 0.0),
+            vec3(60.0, 1.0, 60.0),
+        ),
+    )
+    for k in 0..8 {
+        let a = 6.2831855 * f32(k) / 8.0
+        let p = vec3(sin(a) * 7.0, 0.75, cos(a) * 7.0 + 1.5)
+        out.push(boxed(p, vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.06, 0.75, 0.06)))
+    }
+    out
+}
+
+const BLOCKS: Vec<mat4> = blocks()
+const GROUND = vec3(0.32, 0.36, 0.28)
+const POST = vec3(0.4, 0.33, 0.25)
+
+/// `a` where `t` is 0, `b` where it's 1: each joint's place mixed and its turn the short way.
+fn between(a: Placed, b: Placed, t: f32) -> Placed {
+    var out = a
+    for j in 0..JOINTS {
+        out.at[j] = mix(a.at[j], b.at[j], vec3(t))
+        out.rot[j] = a.rot[j].nlerp(b.rot[j], t)
+    }
+    out
+}
+
+pub fn frame(s: mut Arena, time: f32, width: u32, height: u32) {
+    for e in std::input::events() {
+        if let Event::KeyDown { key, repeat, .. } = e {
+            if key == Key::C && !repeat {
+                s.beside = !s.beside
+            }
+        }
+    }
+    s.snaps.update()
+    let snap = s.snaps.at(s.snaps.sim_time(time))
+    let (a, b, k) = (snap.a, snap.b, snap.alpha)
+    let dt = clamp(time - s.stepped, 0.0, 0.1)
+    s.stepped = time
+    if b.wins[0] != s.wins[0] || b.wins[1] != s.wins[1] {
+        print(f"bouts won: you {b.wins[0]}, your foe {b.wins[1]}")
+        s.wins = b.wins
+    }
+    var poses = [a.poses[0]; 2]
+    for i in 0..2 {
+        poses[i] = between(a.poses[i], b.poses[i], k)
+        write(mut s.palettes, i * MAX_BONES, bones(poses[i], WORLD))
+        let grip = mix(a.grips[i], b.grips[i], vec3(k))
+        let turn = a.swords[i].nlerp(b.swords[i], k)
+        write(mut s.palettes, (2 + i) * MAX_BONES, [bone_matrix(turn, vec3(0.0), grip); MAX_BONES])
+    }
+    // The camera: over the player's right shoulder, toward its foe, looking between them.
+    let me = poses[0].at[CHEST3]
+    let foe = poses[1].at[CHEST3]
+    let level = vec3(foe.x - me.x, 0.0, foe.z - me.z)
+    let way = if length(level) > 1.0e-3 { normalize(level) } else { vec3(0.0, 0.0, 1.0) }
+    let right = normalize(cross(way, vec3(0.0, 1.0, 0.0)))
+    let feet = vec3(poses[0].at[rig::HIPS].x, 0.0, poses[0].at[rig::HIPS].z)
+    let middle = mix(me, foe, vec3(0.5))
+    let (eye_wants, at_wants) = if s.beside {
+        (vec3(middle.x, 1.3, middle.z) - right * 4.2, vec3(middle.x, 1.05, middle.z))
+    } else {
+        (
+            feet + vec3(0.0, 1.95, 0.0) - way * 3.4 + right * 1.35,
+            mix(me, foe, vec3(0.62)) - vec3(0.0, 0.15, 0.0),
+        )
+    }
+    if !s.placed {
+        s.eye = eye_wants
+        s.at = at_wants
+        s.placed = true
+    }
+    let ease = 1.0 - exp(-dt / 0.1)
+    s.eye += (eye_wants - s.eye) * ease
+    s.at += (at_wants - s.at) * ease
+    if width != s.width || height != s.height {
+        s.depth = depth_texture(width, height)
+        s.width = width
+        s.height = height
+    }
+    let v = view(s.eye, s.at, fovy: FOVY, aspect: f32(width) / f32(height), sun: SUN, extent: 6.0)
+    // The sun's shadow map: the fighters and their swords.
+    let shadow_pass = begin_depth_pass(mut s.shadow, clear_depth: 1.0)
+    for i in 0..2 {
+        draw(
+            shadow_pass,
+            skin_shadow.bind(
+                verts: s.body.verts.items(),
+                palettes: s.palettes.items(),
+                first: i * MAX_BONES,
+                view: v,
+            ),
+            depth_only,
+            indices: s.body.quads.items(),
+            indirect: s.body.draw.items(),
+            depth_bias: DepthBias { constant: 4, slope: 2.0, clamp: 0.0 },
+        )
+        draw(
+            shadow_pass,
+            skin_shadow.bind(
+                verts: s.sword.verts.items(),
+                palettes: s.palettes.items(),
+                first: (2 + i) * MAX_BONES,
+                view: v,
+            ),
+            depth_only,
+            indices: s.sword.quads.items(),
+            indirect: s.sword.draw.items(),
+            depth_bias: DepthBias { constant: 4, slope: 2.0, clamp: 0.0 },
+        )
+    }
+    shadow_pass.end()
+    let pass = begin_screen_pass_with_depth(mut s.depth, clear: vec4(0.55, 0.65, 0.75, 1.0))
+    for n in 0..BLOCKS.len() {
+        draw(
+            pass,
+            block.bind(model: BLOCKS[n], view: v),
+            ground_lit.bind(
+                albedo: if n == 0 { GROUND } else { POST },
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.shadow_sampler,
+            ),
+            vertices: 36,
+        )
+    }
+    let looks = [PLAYER_TINT, FOE_TINT]
+    for i in 0..2 {
+        draw(
+            pass,
+            skin.bind(
+                verts: s.body.verts.items(),
+                palettes: s.palettes.items(),
+                first: i * MAX_BONES,
+                view: v,
+            ),
+            shade.bind(
+                field: mannequin().field(),
+                look: looks[i],
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.shadow_sampler,
+            ),
+            indices: s.body.quads.items(),
+            indirect: s.body.draw.items(),
+            cull: Cull::Back,
+        )
+        draw(
+            pass,
+            skin.bind(
+                verts: s.sword.verts.items(),
+                palettes: s.palettes.items(),
+                first: (2 + i) * MAX_BONES,
+                view: v,
+            ),
+            shade.bind(
+                field: katana().field(),
+                look: NO_TINT,
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.shadow_sampler,
+            ),
+            indices: s.sword.quads.items(),
+            indirect: s.sword.draw.items(),
+            cull: Cull::Back,
+        )
+    }
+    // Health: a bar over each head, red on a dark track, square to the camera.
+    let across = normalize(cross(s.at - s.eye, vec3(0.0, 1.0, 0.0)))
+    for i in 0..2 {
+        let top = poses[i].at[HEAD] + vec3(0.0, 0.42, 0.0)
+        let h = mix(a.health[i], b.health[i], k) / 100.0
+        draw(
+            pass,
+            block.bind(
+                model: boxed(top, across, vec3(0.0, 1.0, 0.0), vec3(0.32, 0.022, 0.004)),
+                view: v,
+            ),
+            glow.bind(colour: vec3(0.05)),
+            vertices: 36,
+        )
+        if h > 0.0 {
+            let lit = top - across * (0.31 * (1.0 - h)) - normalize(s.at - s.eye) * 0.01
+            draw(
+                pass,
+                block.bind(
+                    model: boxed(lit, across, vec3(0.0, 1.0, 0.0), vec3(0.31 * h, 0.016, 0.004)),
+                    view: v,
+                ),
+                glow.bind(colour: vec3(0.85, 0.08, 0.05)),
+                vertices: 36,
+            )
+        }
+    }
+    // A blow's or a parry's flash, for a few ticks after it.
+    if b.news != QUIET && b.since < 8 {
+        let fade = 1.0 - f32(b.since) / 8.0
+        let size = 0.05 + 0.06 * fade
+        let colour = if b.news == STRUCK { vec3(1.0, 0.25, 0.12) } else { vec3(1.0, 0.95, 0.7) }
+        draw(
+            pass,
+            block.bind(model: boxed(b.news_at, across, vec3(0.0, 1.0, 0.0), vec3(size)), view: v),
+            glow.bind(colour: colour * (1.0 + 2.0 * fade)),
+            vertices: 36,
+        )
+    }
+    pass.present()
+}

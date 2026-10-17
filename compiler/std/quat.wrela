@@ -6,7 +6,7 @@ use std::serialize::Serialize
 
 /// A rotation: a unit quaternion, `v.xyz` its vector part and `v.w` its scalar part. Compose
 /// with `mul`, apply with `rotate`, and mix two with `nlerp` (which is how it `Blend`s).
-pub struct Quat: Copy + GpuData + Eq + StateHash + Serialize {
+pub struct Quat: Copy + GpuData + Plain + Eq + StateHash + Serialize {
     pub v: vec4,
 }
 

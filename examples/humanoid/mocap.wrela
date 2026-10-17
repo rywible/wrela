@@ -1,0 +1,44 @@
+// The motion: motion capture's loops (`clips`, cut from 100STYLE by `tools/bvh.py`) as poses and
+// cycles, for the procedural layer (`motion`).
+
+use clips::{BACK, IDLE, Loop, RUN, SAMPLES, SIDE, WALK}
+use motion::Cycle
+use rig::{JOINTS, Pose, t_pose}
+
+/// A loop's samples as poses, evenly spaced over its cycle.
+pub fn poses(l: Loop) -> Vec<Pose> {
+    var out: Vec<Pose> = Vec::new()
+    for i in 0..SAMPLES {
+        var p = t_pose()
+        p.hips = l.hips[i]
+        for j in 0..JOINTS {
+            p.rot[j] = Quat { v: l.turns[i * JOINTS + j] }
+        }
+        out.push(p)
+    }
+    out
+}
+
+/// A loop as a cycle: its poses, its timing and the way it goes.
+fn cycle_of(l: Loop) -> Cycle {
+    Cycle {
+        poses: poses(l),
+        period: l.period,
+        stance: l.stance,
+        heel: l.heel,
+        way: l.way,
+        stride: l.stride,
+    }
+}
+
+/// The motion: the idle, and the walk, run, sidestep and walk back's cycles.
+pub fn source() -> motion::Source {
+    motion::Source {
+        idle: poses(IDLE),
+        idle_period: IDLE.period,
+        walk: cycle_of(WALK),
+        run: cycle_of(RUN),
+        side: cycle_of(SIDE),
+        back: cycle_of(BACK),
+    }
+}

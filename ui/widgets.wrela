@@ -216,7 +216,7 @@ impl Ui {
         self.dropped = None
         for e in events {
             match e {
-                Event::PointerMove { at, mods } => {
+                Event::PointerMove { at, mods, .. } => {
                     self.pointer = at
                     self.mods = mods
                 },
@@ -1342,7 +1342,7 @@ fn a_tree_starts_keyboard_navigation_at_the_first_or_last_item() {
 @test
 fn a_clipped_widget_is_not_hovered() {
     var ui = Ui::new(Fonts::load())
-    let move = Event::PointerMove { at: vec2(1.0, 51.0), mods: Mods {} }
+    let move = Event::PointerMove { at: vec2(1.0, 51.0), locked: false, mods: Mods {} }
     ui.begin(vec2(200.0, 100.0), [move])
     ui.begin_scroll("scroll", 20.0)
     ui.last_rect = Rect::new(x: 0.0, y: 50.0, w: 100.0, h: 20.0)

@@ -1,0 +1,863 @@
+// The duel: two fighters, the player and its foe. Each is a body of rigid parts (`body`) driven
+// toward the pose its intent asks (`reach`, `blade`), on feet the motion layer plants (`motion`).
+//
+// A tick: each fighter's controls (the player's keys, the foe's mind) choose what it does; it turns
+// to face the other and moves (strafing round it, stepping into a cut); its intent and its trunk
+// give its target pose; then both bodies step together in substeps, their blades colliding, and a
+// blade that reaches the other's body while it cuts strikes it. A cut a guard stops recoils (the
+// guard's blade goes where the cut comes, and the blades meet; a held guard facing the cut meets
+// it though they miss by a hair, as a game's guard does); a strike rocks the body it reaches and
+// slackens it a moment, holds the whole duel still for an instant (hit-stop), and a fighter struck
+// past its poise reels.
+
+use blade::{
+    CUT_REACH, Cut, PELVIS_LEAD, PELVIS_SHARE, Plane, Stance, Wish, guard, high_guard, in_plane,
+    min_jerk, plane, ready, trunk,
+}
+use body::{Physique, Target, targets}
+use engine::rigid::{Contact, closest, collide_swept}
+use engine::sim::SimState
+use motion::{Mover, Source}
+use reach::{Trunk, solve}
+use rig::{HEAD, HIPS, L_SHOULDER, NECK, Placed, R_SHOULDER, body_frame, place}
+use std::hash::StateHash
+use std::serialize::Serialize
+
+/// What a fighter is doing.
+pub const READY: u32 = 0
+pub const CUTTING: u32 = 1
+pub const GUARDING: u32 = 2
+pub const RECOILING: u32 = 3
+pub const REELING: u32 = 4
+
+/// What a fighter's controls ask this tick: where to go (level, in the world, no longer than 1),
+/// whether a cut (or a heavy cut) was pressed, and whether the guard is held.
+pub struct Asked: Copy {
+    pub go: vec2 = vec2(0.0),
+    pub cut: bool = false,
+    pub heavy: bool = false,
+    pub guard: bool = false,
+}
+
+/// A fighter: where its feet are (on the plane, and the ground's height), which way it faces and
+/// how fast it goes; its motion layer and its body; what it's doing, for how long (s) and, cutting,
+/// the cut (its angle, whether heavy, which of a chain), where it aims, how far it has yet to step
+/// in and whether it has struck; the sword it last asked for (where a new move starts from), a
+/// cut asked for while busy; its health and poise; how fast its speed and heading change (eased,
+/// for the motion layer).
+pub struct Fighter: Copy + Eq + StateHash + Serialize + SimState {
+    pub at: vec2,
+    pub y: f32 = 0.0,
+    pub heading: f32,
+    pub velocity: vec2 = vec2(0.0),
+    pub mover: Mover = Mover {},
+    pub body: Physique,
+    pub act: u32 = READY,
+    pub t: f32 = 0.0,
+    pub angle: f32 = 0.0,
+    pub heavy: bool = false,
+    pub chain: u32 = 0,
+    pub aim: vec3 = vec3(0.0),
+    pub step_left: f32 = 0.0,
+    pub stepped: f32 = 0.0,
+    pub struck: bool = false,
+    pub from_grip: vec3 = vec3(0.0),
+    pub from_rot: Quat = Quat { v: vec4(0.0, 0.0, 0.0, 1.0) },
+    pub wish_grip: vec3 = vec3(0.0),
+    pub wish_rot: Quat = Quat { v: vec4(0.0, 0.0, 0.0, 1.0) },
+    pub queued: bool = false,
+    pub health: f32 = 100.0,
+    pub poise: f32 = POISE,
+    pub calm: f32 = 0.0,
+    /// How slack its muscles are after a blow (1 slackest, easing to 0).
+    pub slack: f32 = 0.0,
+    pub accel: f32 = 0.0,
+    pub turning: f32 = 0.0,
+}
+
+/// The foe's mind: what it means to do (circle, close in, cut, keep its guard up, back off), for
+/// how long yet (ticks), which way it circles, how many cuts it has left in its chain, and its
+/// dice.
+pub struct Mind: Copy + Eq + StateHash + Serialize + SimState {
+    pub plan: u32 = CIRCLE,
+    pub left: u32 = 60,
+    pub side: f32 = 1.0,
+    pub cuts: u32 = 0,
+    pub dice: u32 = 2463534242,
+}
+
+pub const CIRCLE: u32 = 0
+pub const CLOSE: u32 = 1
+pub const PRESS: u32 = 2
+pub const HOLD: u32 = 3
+pub const BACK: u32 = 4
+
+/// The duel: its two fighters (0 the player, 1 its foe), the foe's mind, how many ticks it holds
+/// still yet (hit-stop), how many ticks since a fighter fell (0: none has), and what happened this
+/// tick (for the frames: `STRUCK`, `BLOCKED`, `CLASHED`, each with the fighter it happened to).
+pub struct Duel: Copy + Eq + StateHash + Serialize + SimState {
+    pub fighters: [Fighter; 2],
+    pub mind: Mind,
+    pub hold: u32 = 0,
+    pub fallen: u32 = 0,
+    pub news: u32 = 0,
+    pub news_at: vec3 = vec3(0.0),
+    pub wins: [u32; 2] = [0; 2],
+    /// Each fighter's body as it's drawn: its pose in the world.
+    pub shown: [Placed; 2],
+    /// Which way the player's blade was from its foe's when they were last apart (so a blade
+    /// can't pass through the other within a substep).
+    pub blades: vec3 = vec3(0.0),
+}
+
+pub const QUIET: u32 = 0
+pub const STRUCK: u32 = 1
+pub const BLOCKED: u32 = 2
+pub const CLASHED: u32 = 3
+
+/// The pace a fighter strafes at, guarding, and cutting (m/s); how fast it gets up to pace and
+/// slows (m/s²), and turns to face its foe (rad/s).
+pub const STRAFE: f32 = 1.7
+pub const GUARDED: f32 = 1.0
+pub const CUTTING_PACE: f32 = 0.35
+pub const SPEED_UP: f32 = 9.0
+pub const SLOW_DOWN: f32 = 14.0
+pub const FACE: f32 = 9.0
+/// How near two fighters' feet come (m).
+pub const APART: f32 = 1.0
+/// A fighter's poise, how much of it a light and a heavy cut and a blocked one take, how long
+/// it's calm before it comes back (s) and how fast (a second).
+pub const POISE: f32 = 60.0
+pub const LIGHT_POISE: f32 = 25.0
+pub const HEAVY_POISE: f32 = 50.0
+pub const GUARD_POISE: f32 = 18.0
+pub const CALM: f32 = 1.2
+pub const RECOVERS: f32 = 30.0
+/// How slack a blow leaves a body's muscles (the share of their strength lost), and how fast
+/// they firm again (s).
+pub const SLACK: f32 = 0.75
+pub const FIRMS: f32 = 0.25
+/// How hard a blade strikes a body (N s for each m/s it's going, up to `BLOW_MOST` m/s).
+pub const BLOW: f32 = 1.6
+pub const BLOW_MOST: f32 = 25.0
+/// How much a light and a heavy cut harm (of 100); a cut to the head, more.
+pub const LIGHT_HARM: f32 = 16.0
+pub const HEAVY_HARM: f32 = 28.0
+pub const HEAD_HARM: f32 = 1.5
+/// How far apart a bout starts (m), how long a recoil and a reel last (s), and a fall before the
+/// next bout (ticks).
+pub const BOUT: f32 = 3.0
+pub const RECOIL: f32 = 0.38
+pub const REEL: f32 = 0.7
+pub const FALL: u32 = 150
+
+/// A light chain's cuts' angles (from the right, from the left, level from the right); a heavy
+/// cut's, straight down.
+pub const CHAIN: [f32; 3] = [0.785, -0.785, 1.4]
+
+/// The cut a fighter makes: its angle, and its timing (a heavy one winds longer and sweeps
+/// slower, and reaches farther with its step).
+pub fn cut_of(f: Fighter) -> Cut {
+    if f.heavy {
+        Cut { angle: f.angle, raised: 2.8, past: -1.0, wind: 0.5, stroke: 0.42, back: 0.45 }
+    } else {
+        Cut { angle: f.angle }
+    }
+}
+
+/// The ground: level.
+fn level(p: vec2) -> f32 {
+    0.0
+}
+
+/// A step of the dice: a number from 0 to `n - 1` (Marsaglia's xorshift).
+fn roll(m: mut Mind, n: u32) -> u32 {
+    var x = m.dice
+    x ^= x << 13
+    x ^= x >> 17
+    x ^= x << 5
+    m.dice = x
+    x % n
+}
+
+/// Where a fighter's feet are in the world.
+pub fn feet(f: Fighter) -> vec3 {
+    vec3(f.at.x, f.y, f.at.y)
+}
+
+/// The way a fighter faces, level.
+pub fn ahead(f: Fighter) -> vec3 {
+    vec3(sin(f.heading), 0.0, cos(f.heading))
+}
+
+/// Where a fighter's head and shoulders are, as its body has them now.
+pub fn head_of(f: Fighter) -> vec3 {
+    f.body.parts[body::SKULL].point(vec3(0.0, 0.03, 0.0))
+}
+
+/// The stance a fighter fights from: its shoulders, toward its foe.
+fn stance_of(f: Fighter, foe: Fighter) -> Stance {
+    let mid = f.body.parts[body::RIBCAGE].point(vec3(0.0, 0.17, 0.0))
+    let to = foe.at - f.at
+    let way = if length(to) > 1.0e-3 { normalize(to) } else { vec2(sin(f.heading), cos(f.heading)) }
+    Stance { shoulders: mid, ahead: vec3(way.x, 0.0, way.y) }
+}
+
+/// Where a cut at `angle` aims on `foe`: straight down at the head, slanting at the neck and
+/// shoulder, level at the ribs.
+fn aim_on(foe: Fighter, angle: f32) -> vec3 {
+    let head = foe.body.parts[body::SKULL].point(vec3(0.0, 0.1, 0.0))
+    let ribs = foe.body.parts[body::RIBCAGE].point(vec3(0.0, 0.05, 0.0))
+    let neck = foe.body.parts[body::RIBCAGE].point(vec3(0.0, 0.25, 0.0))
+    let a = abs(angle)
+    if a < 0.3 { head } else if a < 1.1 { neck } else { ribs }
+}
+
+/// The wish a fighter last had.
+fn wish_of(f: Fighter) -> Wish {
+    Wish { grip: f.wish_grip, rot: f.wish_rot }
+}
+
+/// Starts fighter `f` on `act`, from the sword it has now.
+fn begin(f: mut Fighter, act: u32) {
+    f.act = act
+    f.t = 0.0
+    f.from_grip = f.wish_grip
+    f.from_rot = f.wish_rot
+}
+
+/// Starts a cut: the next of the chain (or a heavy one), aimed at `foe`, with the step it needs to
+/// reach.
+fn start_cut(f: mut Fighter, foe: Fighter, heavy: bool) {
+    let chained = f.act == CUTTING || (f.act == READY && f.t < 0.25 && f.chain > 0)
+    f.chain = if chained { (f.chain + 1) % 3 } else { 0 }
+    f.heavy = heavy
+    f.angle = if heavy { 0.0 } else { CHAIN[f.chain] }
+    begin(mut f, CUTTING)
+    f.struck = false
+    f.queued = false
+    let s = stance_of(f, foe)
+    f.aim = aim_on(foe, f.angle)
+    let far = length((f.aim - s.shoulders).xz)
+    f.step_left = clamp(far - CUT_REACH * 0.92, 0.0, if heavy { 1.3 } else { 0.8 })
+    f.stepped = 0.0
+}
+
+/// What fighter `i` does this tick, as `asked`: its act's time goes on, and a press or an ended
+/// act starts the next.
+fn decide(d: mut Duel, i: u32, asked: Asked, dt: f32) {
+    var f = d.fighters[i]
+    let foe = d.fighters[1 - i]
+    f.t += dt
+    if asked.cut || asked.heavy {
+        f.queued = true
+    }
+    if f.health <= 0.0 {
+        d.fighters[i] = f
+        return
+    }
+    let busy = f.act == CUTTING || f.act == RECOILING || f.act == REELING
+    if f.act == CUTTING {
+        let c = cut_of(f)
+        // A cut may chain into the next from its stroke's end; it's done at its end.
+        if f.queued && f.t > c.wind + c.stroke * 0.9 && !f.heavy {
+            start_cut(mut f, foe, asked.heavy)
+        } else if f.t >= c.length() {
+            begin(mut f, READY)
+        }
+    } else if f.act == RECOILING && f.t >= RECOIL {
+        begin(mut f, READY)
+        f.chain = 0
+    } else if f.act == REELING && f.t >= REEL {
+        begin(mut f, READY)
+        f.chain = 0
+    }
+    if !(f.act == CUTTING || f.act == RECOILING || f.act == REELING) {
+        if f.queued && !busy {
+            start_cut(mut f, foe, asked.heavy)
+        } else if asked.guard && f.act != GUARDING {
+            begin(mut f, GUARDING)
+        } else if !asked.guard && f.act == GUARDING {
+            begin(mut f, READY)
+        }
+    }
+    // A press long before it can be used is forgotten.
+    if f.queued && f.act != CUTTING {
+        f.queued = false
+    }
+    f.slack *= exp(-dt / FIRMS)
+    // Poise comes back once calm.
+    f.calm += dt
+    if f.calm > CALM {
+        f.poise = min(f.poise + RECOVERS * dt, POISE)
+    }
+    d.fighters[i] = f
+}
+
+/// Fighter `i` turns to face its foe and moves: toward where its controls ask at its act's pace,
+/// stepping in through a cut, never into its foe.
+fn travel(d: mut Duel, i: u32, asked: Asked, dt: f32) {
+    var f = d.fighters[i]
+    let foe = d.fighters[1 - i]
+    let to = foe.at - f.at
+    let was_heading = f.heading
+    if length(to) > 1.0e-3 && f.health > 0.0 {
+        let want = atan2(to.x, to.y)
+        let off = want - f.heading
+        let wrapped = off - 6.2831855 * floor((off + 3.1415927) / 6.2831855)
+        f.heading += clamp(wrapped, -FACE * dt, FACE * dt)
+    }
+    let pace = if f.health <= 0.0 { 0.0 } else if f.act == GUARDING { GUARDED } else if f.act ==
+        CUTTING ||
+        f.act == REELING { CUTTING_PACE } else {
+        STRAFE
+    }
+    let want = asked.go * pace
+    let was_speed = length(f.velocity)
+    let change = want - f.velocity
+    let rate = if length(want) > length(f.velocity) { SPEED_UP } else { SLOW_DOWN }
+    let most = rate * dt
+    f.velocity += if length(change) > most { change * (most / length(change)) } else { change }
+    var moved = f.velocity * dt
+    // The cut's step in, along the way to the foe, eased over its wind-up and the start of its
+    // stroke.
+    if f.act == CUTTING && f.step_left > 0.0 {
+        let c = cut_of(f)
+        let k = min_jerk(f.t / (c.wind + c.stroke * 0.6))
+        let goal = f.step_left * k
+        let way = if length(to) > 1.0e-3 { normalize(to) } else { vec2(0.0) }
+        moved += way * (goal - f.stepped)
+        f.stepped = goal
+    }
+    // Reeling: thrown back, slowing.
+    if f.act == REELING {
+        let way = if length(to) > 1.0e-3 { normalize(to) } else { vec2(0.0) }
+        moved -= way * (1.6 * max(1.0 - f.t / REEL, 0.0) * dt)
+    }
+    f.at += moved
+    // Never into the foe.
+    let gap = f.at - foe.at
+    if length(gap) < APART && length(gap) > 1.0e-4 {
+        f.at = foe.at + normalize(gap) * APART
+    }
+    f.y = level(f.at)
+    // How fast the speed and the heading change, eased over a tenth of a second.
+    let ease = 1.0 - exp(-dt / 0.1)
+    f.accel += ((length(f.velocity) - was_speed) / dt - f.accel) * ease
+    f.turning += ((f.heading - was_heading) / dt - f.turning) * ease
+    d.fighters[i] = f
+}
+
+/// The pose the motion layer gives fighter `f` this tick, in the world: walking, sidestepping or
+/// backing the way it goes from the way it faces, on the ground.
+fn moving(f: mut Fighter, s: Source, dt: f32) -> Placed {
+    let legs = f.heading
+    // Its velocity in its own frame: x its left, y ahead.
+    let ahead = vec2(sin(legs), cos(legs))
+    let left = vec2(cos(legs), -sin(legs))
+    let going = vec2(dot(f.velocity, left), dot(f.velocity, ahead))
+    let (p, reach) = f.mover.pose(s, going, f.accel, f.turning, dt)
+    let frame = body_frame(feet(f), legs)
+    let placed = f.mover.ground(p, reach, frame, level, dt)
+    // The body's space to the world.
+    let turn = Quat::axis_angle(vec3(0.0, 1.0, 0.0), legs)
+    var out = placed
+    for j in 0..rig::JOINTS {
+        out.at[j] = (frame * vec4(placed.at[j], 1.0)).xyz
+        out.rot[j] = turn.mul(placed.rot[j])
+    }
+    out
+}
+
+/// Fighter `i`'s target this tick: its moving pose, its trunk through its act, its sword where its
+/// act asks.
+fn intend(d: mut Duel, i: u32, s: Source, dt: f32) -> Target {
+    var f = d.fighters[i]
+    let foe = d.fighters[1 - i]
+    let walk = moving(mut f, s, dt)
+    let st = stance_of(f, foe)
+    let throat = foe.body.parts[body::RIBCAGE].point(vec3(0.0, 0.3, 0.0))
+    var t = Trunk {}
+    var w = ready(st, throat)
+    let ease = |tau: f32| 1.0 - exp(-dt / tau)
+    if f.health <= 0.0 {
+        // Fallen: the sword lowered, the body bowed.
+        let low = Wish { grip: st.shoulders + st.ahead * 0.2 - vec3(0.0, 0.6, 0.0), rot: w.rot }
+        w = wish_of(f).toward(low, ease(0.3))
+        t.lean = 0.5
+    } else if f.act == READY {
+        w = wish_of(f).toward(w, ease(0.07))
+    } else if f.act == GUARDING {
+        let coming = if foe.act == CUTTING {
+            let c = cut_of(foe)
+            foe.t < c.wind + c.stroke
+        } else {
+            false
+        }
+        let g = if coming {
+            guard(st, plane(stance_of(foe, f), foe.aim, foe.angle), foe.aim)
+        } else {
+            high_guard(st)
+        }
+        w = wish_of(f).toward(g, ease(0.045))
+    } else if f.act == CUTTING {
+        let c = cut_of(f)
+        // The aim follows the foe through the wind-up, then holds.
+        if f.t < c.wind {
+            f.aim = aim_on(foe, f.angle)
+        }
+        let pl = plane(st, f.aim, f.angle)
+        let start = Wish { grip: f.from_grip, rot: f.from_rot }
+        w = if f.t < c.wind {
+            start.toward(in_plane(pl, c.raised), min_jerk(f.t / c.wind))
+        } else if f.t < c.wind + c.stroke {
+            in_plane(pl, c.psi(f.t))
+        } else {
+            in_plane(pl, c.past).toward(w, min_jerk((f.t - c.wind - c.stroke) / c.back))
+        }
+        let through = clamp((f.t - c.wind) / c.stroke, 0.0, 1.0)
+        let now = trunk(f.angle, c.psi(f.t), through)
+        let early = trunk(f.angle, c.psi(f.t + PELVIS_LEAD), through)
+        let fade = 1.0 - min_jerk((f.t - c.wind - c.stroke) / c.back)
+        t = Trunk {
+            pelvis: early.x * PELVIS_SHARE * fade,
+            chest: now.x * fade,
+            lean: now.y * fade,
+            shift: now.z * fade,
+        }
+    } else if f.act == RECOILING {
+        // Thrown back up the way it came, then back to ready.
+        let pl = plane(st, f.aim, f.angle)
+        let back = in_plane(pl, 1.6)
+        let start = Wish { grip: f.from_grip, rot: f.from_rot }
+        w = if f.t < 0.15 { start.toward(back, min_jerk(f.t / 0.15)) } else {
+            back.toward(w, min_jerk((f.t - 0.15) / (RECOIL - 0.15)))
+        }
+        t.lean = -0.1 * (1.0 - f.t / RECOIL)
+    } else {
+        // Reeling: the sword thrown wide, the body bent back.
+        let wide = Wish {
+            grip: st.shoulders + st.ahead * 0.25 - st.left() * 0.25 - vec3(0.0, 0.35, 0.0),
+            rot: w.rot,
+        }
+        w = wish_of(f).toward(if f.t < REEL * 0.6 { wide } else { w }, ease(0.08))
+        t.lean = -0.3 * (1.0 - f.t / REEL)
+    }
+    f.wish_grip = w.grip
+    f.wish_rot = w.rot
+    d.fighters[i] = f
+    solve(walk, st.ahead, head_of(foe), t, w)
+}
+
+/// Whether fighter `a`'s blade cuts in this substep: cutting, in its stroke, not yet having struck.
+fn cutting_now(f: Fighter) -> bool {
+    f.act == CUTTING && !f.struck && cut_of(f).cuts(f.t)
+}
+
+/// A tick of `dt` s of the duel, each fighter as `asked`, its motion from `s`.
+pub fn step(d: mut Duel, asked: [Asked; 2], s: Source, dt: f32) {
+    d.news = QUIET
+    if d.hold > 0 {
+        d.hold -= 1
+        return
+    }
+    if d.fallen > 0 {
+        d.fallen += 1
+        if d.fallen > FALL {
+            let wins = d.wins
+            d = start(s, d.mind.dice, BOUT)
+            d.wins = wins
+            return
+        }
+    }
+    for i in 0..2 {
+        decide(mut d, i, asked[i], dt)
+    }
+    for i in 0..2 {
+        travel(mut d, i, asked[i], dt)
+    }
+    let targets_now = [intend(mut d, 0, s, dt), intend(mut d, 1, s, dt)]
+    let h = dt / f32(body::SUBSTEPS)
+    var a = d.fighters[0].body
+    var b = d.fighters[1].body
+    var clash: Option<Contact> = None
+    var hit: Option<(u32, u32, vec3, vec3)> = None
+    let parts = targets()
+    for k in 0..body::SUBSTEPS {
+        a.integrate(h)
+        b.integrate(h)
+        let into = f32(k + 1) / f32(body::SUBSTEPS)
+        a.drive(targets_now[0], into, h, strength: 1.0 - SLACK * d.fighters[0].slack)
+        b.drive(targets_now[1], into, h, strength: 1.0 - SLACK * d.fighters[1].slack)
+        // The blades meet.
+        var sa = a.parts[body::SWORD]
+        var sb = b.parts[body::SWORD]
+        let (met, side) = collide_swept(mut sa, mut sb, a.blade(), b.blade(), d.blades)
+        d.blades = side
+        if let Some(c) = met {
+            if clash.is_none() {
+                clash = Some(c)
+            }
+        }
+        a.parts[body::SWORD] = sa
+        b.parts[body::SWORD] = sb
+        // A blade cutting reaches the other's body.
+        if hit.is_none() && clash.is_none() {
+            for i in 0..2 {
+                let (me, them) = if i == 0 { (a, b) } else { (b, a) }
+                if !cutting_now(d.fighters[i]) {
+                    continue
+                }
+                let sword = me.parts[body::SWORD]
+                let bl = me.blade()
+                let (b0, b1) = (sword.point(bl.from), sword.point(bl.to))
+                for (part, cap) in parts {
+                    let body_part = them.parts[part]
+                    let (c0, c1) = (body_part.point(cap.from), body_part.point(cap.to))
+                    let (u, v) = closest(b0, b1, c0, c1)
+                    let pb = mix(b0, b1, vec3(u))
+                    let pc = mix(c0, c1, vec3(v))
+                    if length(pb - pc) < cap.radius + bl.radius && hit.is_none() {
+                        hit = Some((i, part, pb, sword.velocity_at(pb)))
+                    }
+                }
+            }
+        }
+        a.settle(h)
+        b.settle(h)
+    }
+    a.stepped(targets_now[0])
+    b.stepped(targets_now[1])
+    d.shown = [a.pose(targets_now[0]), b.pose(targets_now[1])]
+    d.fighters[0].body = a
+    d.fighters[1].body = b
+    if let Some(c) = clash {
+        resolve_clash(mut d, c.at)
+    }
+    if let Some((i, part, at, vel)) = hit {
+        // A held guard facing the cut meets it, though the blades missed by a hair: the blow is
+        // turned at the guard's blade, where it's nearest the cutting one.
+        if guards_against(d.fighters[1 - i], d.fighters[i]) {
+            let mine = d.fighters[i].body
+            let theirs = d.fighters[1 - i].body
+            let (a0, a1) = (mine.sword_point(body::BLADE_FROM), mine.sword_point(body::TIP))
+            let (b0, b1) = (theirs.sword_point(body::BLADE_FROM), theirs.sword_point(body::TIP))
+            let (u, v) = closest(a0, a1, b0, b1)
+            resolve_clash(mut d, (mix(a0, a1, vec3(u)) + mix(b0, b1, vec3(v))) * 0.5)
+        } else {
+            resolve_hit(mut d, i, part, at, vel)
+        }
+    }
+}
+
+/// The blades met at `at`: a cut a guard met recoils, and the guard gives a little; two cuts
+/// meeting both recoil.
+fn resolve_clash(d: mut Duel, at: vec3) {
+    for i in 0..2 {
+        var f = d.fighters[i]
+        var foe = d.fighters[1 - i]
+        if cutting_now(f) || (f.act == CUTTING && !f.struck && f.t > cut_of(f).wind) {
+            f.struck = true
+            if foe.act == GUARDING {
+                foe.poise -= GUARD_POISE * (if f.heavy { 2.0 } else { 1.0 })
+                foe.calm = 0.0
+                foe.slack = max(foe.slack, if f.heavy { 0.7 } else { 0.4 })
+                d.news = BLOCKED
+                if foe.poise <= 0.0 {
+                    begin(mut foe, REELING)
+                    foe.poise = POISE * 0.5
+                }
+                // The guard gives a little: pushed back.
+                let way = normalize(foe.at - f.at)
+                foe.velocity += way * 1.4
+            } else {
+                d.news = CLASHED
+            }
+            begin(mut f, RECOILING)
+            d.fighters[i] = f
+            d.fighters[1 - i] = foe
+        }
+    }
+    if d.news != QUIET {
+        d.news_at = at
+        d.hold = 3
+    }
+}
+
+/// How far round from where a guard faces a cut can come and still be met (rad).
+pub const GUARD_ARC: f32 = 1.2
+
+/// Whether fighter `foe`'s held guard meets a cut from `f`: it's guarding, and the cutter is in
+/// front of it.
+fn guards_against(foe: Fighter, f: Fighter) -> bool {
+    let to = f.at - foe.at
+    foe.act == GUARDING &&
+        length(to) > 1.0e-3 &&
+        dot(normalize(to), vec2(sin(foe.heading), cos(foe.heading))) > cos(GUARD_ARC)
+}
+
+/// Fighter `i`'s blade struck the other's `part` at `at`, going `vel`: the blow rocks it, harms it
+/// and costs it poise; the duel holds still an instant.
+fn resolve_hit(d: mut Duel, i: u32, part: u32, at: vec3, vel: vec3) {
+    var f = d.fighters[i]
+    var foe = d.fighters[1 - i]
+    f.struck = true
+    let speed = length(vel)
+    let push = if speed > 1.0e-3 {
+        vel / speed * min(speed, BLOW_MOST) * BLOW * (if f.heavy { 1.6 } else { 1.0 })
+    } else {
+        vec3(0.0)
+    }
+    foe.body.parts[part].strike(push, at)
+    foe.slack = 1.0
+    // The blade bites: it slows as it cuts.
+    f.body.parts[body::SWORD].vel *= 0.6
+    f.body.parts[body::SWORD].spin *= 0.6
+    let harm = (if f.heavy { HEAVY_HARM } else { LIGHT_HARM }) * (if part == body::SKULL {
+        HEAD_HARM
+    } else { 1.0 })
+    foe.health = max(foe.health - harm, 0.0)
+    foe.poise -= if f.heavy { HEAVY_POISE } else { LIGHT_POISE }
+    foe.calm = 0.0
+    if foe.health <= 0.0 {
+        begin(mut foe, REELING)
+        d.fallen = 1
+        d.wins[i] += 1
+    } else if foe.poise <= 0.0 {
+        begin(mut foe, REELING)
+        foe.poise = POISE
+    } else if foe.act == CUTTING && !foe.heavy {
+        // A light cut is cut short by a blow.
+        begin(mut foe, RECOILING)
+    }
+    d.news = STRUCK
+    d.news_at = at
+    d.hold = if f.heavy { 6 } else { 4 }
+    d.fighters[i] = f
+    d.fighters[1 - i] = foe
+}
+
+/// A fighter at `at` facing `heading`, standing ready, its body as its first target has it.
+fn fighter(at: vec2, heading: f32, foe_at: vec2, s: Source) -> Fighter {
+    var f = Fighter {
+        at,
+        heading,
+        body: body::spawn(
+            Target { pose: place(rig::t_pose()), grip: vec3(0.0), sword: Quat::identity() },
+        ),
+    }
+    var m = Mover {}
+    let (p, reach) = m.pose(s, vec2(0.0), accel: 0.0, turning: 0.0, dt: 1.0 / 60.0)
+    let frame = body_frame(feet(f), heading)
+    let placed = m.ground(p, reach, frame, level, 1.0 / 60.0)
+    var walk = placed
+    let turn = Quat::axis_angle(vec3(0.0, 1.0, 0.0), heading)
+    for j in 0..rig::JOINTS {
+        walk.at[j] = (frame * vec4(placed.at[j], 1.0)).xyz
+        walk.rot[j] = turn.mul(placed.rot[j])
+    }
+    let shoulders = (walk.at[R_SHOULDER] + walk.at[L_SHOULDER]) * 0.5
+    let way = normalize(foe_at - at)
+    let st = Stance { shoulders, ahead: vec3(way.x, 0.0, way.y) }
+    let throat = vec3(foe_at.x, 1.45, foe_at.y)
+    let w = ready(st, throat)
+    let t = solve(walk, st.ahead, throat + vec3(0.0, 0.2, 0.0), Trunk {}, w)
+    f.body = body::spawn(t)
+    f.mover = m
+    f.wish_grip = w.grip
+    f.wish_rot = w.rot
+    f
+}
+
+/// A bout's start: the player at the origin facing +z, its foe `apart` m ahead facing it; the foe's
+/// dice from `dice`.
+pub fn start(s: Source, dice: u32, apart: f32) -> Duel {
+    let (p, q) = (vec2(0.0, 0.0), vec2(0.0, apart))
+    Duel {
+        fighters: [fighter(p, 0.0, q, s), fighter(q, 3.1415927, p, s)],
+        mind: Mind { dice },
+        shown: [place(rig::t_pose()); 2],
+    }
+}
+
+/// The foe's mind for this tick: what its controls ask. It circles its foe at a sword's length and
+/// a half, closes in and presses a chain of cuts, keeps its guard up when it sees a cut coming
+/// (most times), and backs off after.
+pub fn think(d: mut Duel) -> Asked {
+    let me = d.fighters[1]
+    let you = d.fighters[0]
+    var m = d.mind
+    var a = Asked {}
+    let to = you.at - me.at
+    let far = length(to)
+    let way = if far > 1.0e-3 { to / far } else { vec2(0.0, 1.0) }
+    let round = vec2(-way.y, way.x) * m.side
+    // A cut coming: guard, most times, once it's seen (its wind-up half done).
+    if you.act == CUTTING && m.plan != HOLD && m.plan != PRESS {
+        let c = cut_of(you)
+        if you.t > c.wind * 0.4 && you.t < c.wind {
+            if roll(mut m, 100) < 70 {
+                m.plan = HOLD
+                m.left = 40
+            }
+        }
+    }
+    if m.left > 0 {
+        m.left -= 1
+    }
+    if m.plan == CIRCLE {
+        a.go = round + way * clamp((far - 2.5) * 2.0, -1.0, 1.0)
+        if m.left == 0 {
+            m.plan = CLOSE
+            m.left = 90
+            if roll(mut m, 2) == 0 {
+                m.side = -m.side
+            }
+        }
+    } else if m.plan == CLOSE {
+        a.go = way + round * 0.3
+        if far < 2.1 || m.left == 0 {
+            m.plan = PRESS
+            m.cuts = 1 + roll(mut m, 3)
+            m.left = 0
+        }
+    } else if m.plan == PRESS {
+        a.go = way * clamp((far - 1.7) * 2.0, -0.5, 0.5)
+        if me.act == READY ||
+            (me.act == CUTTING && me.t > cut_of(me).wind + cut_of(me).stroke * 0.92 && !me.queued) {
+            if m.cuts > 0 {
+                a.cut = true
+                a.heavy = m.cuts == 1 && roll(mut m, 4) == 0
+                m.cuts -= 1
+            } else if me.act == READY {
+                m.plan = BACK
+                m.left = 40
+            }
+        }
+    } else if m.plan == HOLD {
+        a.guard = true
+        a.go = round * 0.5
+        if m.left == 0 {
+            m.plan = CIRCLE
+            m.left = 30 + roll(mut m, 60)
+        }
+    } else {
+        a.go = -way + round * 0.4
+        if m.left == 0 {
+            m.plan = CIRCLE
+            m.left = 60 + roll(mut m, 90)
+        }
+    }
+    d.mind = m
+    // No faster than the controls' farthest.
+    if length(a.go) > 1.0 {
+        a.go = normalize(a.go)
+    }
+    a
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// The motion the tests use: the capture's.
+fn source() -> Source {
+    mocap::source()
+}
+
+/// A duel left alone stands still: neither fighter moves, both hold the ready stance, and no one
+/// is struck in two seconds.
+@test
+fn a_duel_left_alone_stands_ready() {
+    let s = source()
+    var d = start(s, 1, 2.2)
+    for _ in 0..120 {
+        step(mut d, [Asked {}, Asked {}], s, 1.0 / 60.0)
+    }
+    for i in 0..2 {
+        let f = d.fighters[i]
+        assert(f.act == READY, f"fighter {i} isn't ready")
+        assert(f.health == 100.0, f"fighter {i} was struck")
+        let (grip, _) = f.body.sword()
+        assert(
+            length(grip - f.wish_grip) < 0.03,
+            f"fighter {i}'s sword strays {length(grip - f.wish_grip)} m",
+        )
+    }
+}
+
+/// A cut at a foe that stands still strikes it: within a cut's time the foe is struck, loses
+/// health and is rocked; the cutter stepped in to reach.
+@test
+fn a_cut_at_a_foe_standing_still_strikes_it() {
+    let s = source()
+    var d = start(s, 1, 2.2)
+    var struck_at = 0
+    var rocked = 0.0
+    for k in 0..90 {
+        let you = Asked { cut: k == 0 }
+        step(mut d, [you, Asked {}], s, 1.0 / 60.0)
+        if d.news == STRUCK && struck_at == 0 {
+            struck_at = k
+        }
+        rocked = max(rocked, length(d.fighters[1].body.parts[body::RIBCAGE].vel))
+    }
+    std::io::print(
+        f"the cut struck at tick {struck_at}; the foe rocked at up to {rocked} m/s; health {d.fighters[1].health}",
+    )
+    assert(struck_at > 0, "the cut never struck")
+    assert(d.fighters[1].health < 100.0, "the foe wasn't harmed")
+    assert(rocked > 0.8, f"the foe barely moved ({rocked} m/s)")
+}
+
+/// A guard stops a cut: the foe holding its guard is not struck, the blades meet, and the cut
+/// recoils; at every angle a cut comes from (the chain's and a heavy cut's).
+@test
+fn a_guard_stops_a_cut_from_every_angle() {
+    let s = source()
+    for angle in [CHAIN[0], CHAIN[1], CHAIN[2], 0.0] {
+        var d = start(s, 1, 2.2)
+        var blocked = false
+        // The foe raises its guard first.
+        for k in 0..100 {
+            let you = Asked { cut: k == 20 }
+            let foe = Asked { guard: true }
+            step(mut d, [you, foe], s, 1.0 / 60.0)
+            if k == 20 {
+                d.fighters[0].angle = angle
+            }
+            if d.news == BLOCKED {
+                blocked = true
+            }
+        }
+        std::io::print(
+            f"a cut at {angle}: blocked {blocked}, the foe's health {d.fighters[1].health}",
+        )
+        assert(blocked, f"the cut at {angle} wasn't blocked")
+        assert(d.fighters[1].health == 100.0, f"the cut at {angle} got through the guard")
+    }
+}
+
+/// Heavy cuts break a guard: each blocked costs it twice a light cut's poise, and the guard that
+/// runs out reels, though it's never cut.
+@test
+fn heavy_cuts_break_a_guard() {
+    let s = source()
+    var d = start(s, 1, 2.2)
+    var blocked = 0
+    var reeled = false
+    for k in 0..240 {
+        let you = Asked { heavy: k == 10 || k == 110 }
+        step(mut d, [you, Asked { guard: true }], s, 1.0 / 60.0)
+        if d.news == BLOCKED {
+            blocked += 1
+        }
+        if d.fighters[1].act == REELING {
+            reeled = true
+        }
+    }
+    std::io::print(
+        f"heavy cuts: {blocked} blocked, the guard reeled: {reeled}, its health {d.fighters[1].health}",
+    )
+    assert(blocked == 2, f"{blocked} of the two heavy cuts were blocked")
+    assert(reeled, "two heavy cuts didn't break the guard")
+    assert(d.fighters[1].health == 100.0, "a heavy cut got through the guard")
+}

@@ -1,0 +1,361 @@
+// The fighter's body as rigid bodies (`engine::rigid`): its pelvis, belly, ribcage and skull, each
+// arm's upper arm, forearm and hand, and its sword, held in both hands. Each joint has a muscle
+// that turns it toward a target pose (`reach`): stiff, but no stronger than a person's, so a fast
+// swing of the sword lags its target a little and carries on past where the target stops, and a
+// blow moves what it strikes. The pelvis is held to its target by a strong spring, so a blow can
+// rock it but not knock it over. The legs aren't simulated: they reach from the pelvis to where the
+// motion layer plants the feet (two-bone IK), so the feet never slide.
+//
+// The sword's frame: from the right hand's grip, +y along the blade to its tip, +z the way its
+// edge faces, +x across its flat.
+
+use engine::render::{bend, turn}
+use engine::rigid::{Body, Capsule, align, attach, box_inertia, damp_spin, integrate, rod, settle}
+use rig::{
+    CHEST, CHEST2, CHEST3, CHEST4, HAND, HEAD, HIPS, JOINTS, L_ANKLE, L_COLLAR, L_ELBOW, L_HIP,
+    L_KNEE, L_SHOULDER, L_TOE, L_WRIST, NECK, OFFSETS, PARENTS, Placed, R_ANKLE, R_COLLAR, R_ELBOW,
+    R_HIP, R_KNEE, R_SHOULDER, R_TOE, R_WRIST, REST,
+}
+use std::hash::StateHash
+use std::serialize::Serialize
+use engine::sim::SimState
+
+/// The simulated parts, in order (each after the part it hangs from).
+pub const PELVIS: u32 = 0
+pub const BELLY: u32 = 1
+pub const RIBCAGE: u32 = 2
+pub const SKULL: u32 = 3
+pub const R_UPPER: u32 = 4
+pub const R_FORE: u32 = 5
+pub const R_HAND: u32 = 6
+pub const L_UPPER: u32 = 7
+pub const L_FORE: u32 = 8
+pub const L_HAND: u32 = 9
+pub const SWORD: u32 = 10
+pub const PARTS: u32 = 11
+
+/// The rig joint each part of the body is (its frame is that joint's), and the part it hangs
+/// from (the pelvis from nothing: its own).
+pub const JOINT: [u32; 10] = [
+    HIPS,
+    CHEST,
+    CHEST3,
+    NECK,
+    R_SHOULDER,
+    R_ELBOW,
+    R_WRIST,
+    L_SHOULDER,
+    L_ELBOW,
+    L_WRIST,
+]
+pub const HANGS: [u32; 10] = [0, 0, 1, 2, 2, 4, 5, 2, 7, 8]
+
+/// The sword (m along its blade from the right hand's grip): where the left hand holds it, the
+/// guard, where the blade starts and ends, where it strikes best (the monouchi, a hand's breadth
+/// from the tip), and its centre of mass.
+pub const LEFT_GRIP: f32 = -0.19
+pub const GUARD: f32 = 0.035
+pub const BLADE_FROM: f32 = 0.05
+pub const TIP: f32 = 0.75
+pub const STRIKES: f32 = 0.62
+pub const SWORD_CENTRE: f32 = 0.14
+
+/// Each part's centre of mass from its joint, in its frame (the rig's at rest; the sword's from
+/// its grip), and its mass (kg): a 75 kg person's upper body, and a katana's 1.15 kg.
+pub const CENTRE: [vec3; 11] = [
+    vec3(0.0, -0.02, 0.0),
+    vec3(0.0, 0.1, 0.0),
+    vec3(0.0, 0.12, 0.01),
+    vec3(0.0, 0.13, 0.01),
+    vec3(-0.155, 0.0, 0.0),
+    vec3(-0.128, 0.0, 0.0),
+    vec3(-0.08, -0.01, 0.0),
+    vec3(0.155, 0.0, 0.0),
+    vec3(0.128, 0.0, 0.0),
+    vec3(0.08, -0.01, 0.0),
+    vec3(0.0, SWORD_CENTRE, 0.0),
+]
+pub const MASS: [f32; 11] = [11.0, 9.0, 18.0, 5.5, 2.1, 1.3, 0.5, 2.1, 1.3, 0.5, 1.15]
+
+/// Each part's moments of inertia about its own axes (kg m²).
+pub fn inertia(part: u32) -> vec3 {
+    let m = MASS[part]
+    if part == PELVIS {
+        box_inertia(m, vec3(0.32, 0.2, 0.24))
+    } else if part == BELLY {
+        rod(mass: m, length: 0.2, radius: 0.13, axis: 1)
+    } else if part == RIBCAGE {
+        box_inertia(m, vec3(0.33, 0.3, 0.22))
+    } else if part == SKULL {
+        rod(mass: m, length: 0.24, radius: 0.09, axis: 1)
+    } else if part == R_UPPER || part == L_UPPER {
+        rod(mass: m, length: 0.31, radius: 0.05, axis: 0)
+    } else if part == R_FORE || part == L_FORE {
+        rod(mass: m, length: 0.255, radius: 0.04, axis: 0)
+    } else if part == R_HAND || part == L_HAND {
+        box_inertia(m, vec3(0.18, 0.04, 0.09))
+    } else {
+        // The sword: its blade and grip, 0.99 m, about its balance point.
+        rod(mass: m, length: TIP - LEFT_GRIP + 0.05, radius: 0.015, axis: 1)
+    }
+}
+
+/// Where each hand holds the sword, in the hand's frame (in its fist), and how the sword is
+/// turned from either hand (at rest, palm down and thumb forward: the blade along the thumb, the
+/// edge the way the palm faces).
+pub const R_FIST = vec3(-0.085, -0.025, 0.0)
+pub const L_FIST = vec3(0.085, -0.025, 0.0)
+pub const IN_HAND = Quat { v: vec4(0.70710677, 0.0, 0.0, 0.70710677) }
+
+/// Each joint's muscle: the most torque it gives (N m; the pelvis's spring the most force, N, and
+/// torque). The arms' are a strong person's at speed; the trunk's are its many muscles together.
+pub const STRENGTH: [f32; 10] = [
+    4000.0, 1400.0, 1400.0, 240.0, 360.0, 240.0, 120.0, 360.0, 240.0, 120.0,
+]
+pub const PELVIS_FORCE: f32 = 9000.0
+/// How hard the hands grip the sword's turn (N m), and how fast each joint's muscle damps its
+/// swing (the share a second).
+pub const GRIP: f32 = 280.0
+pub const DAMPING: f32 = 25.0
+
+/// The body's parts, and where its pelvis was asked to be at the last step (for easing the
+/// target across a step's substeps).
+pub struct Physique: Copy + Eq + StateHash + Serialize + SimState {
+    pub parts: [Body; 11],
+    pub was_pelvis: vec3,
+    pub was_pelvis_rot: Quat,
+}
+
+/// What the body is asked to be: a whole pose in the world (each joint's place and turn), and
+/// the sword's grip and turn.
+pub struct Target: Copy {
+    pub pose: Placed,
+    pub grip: vec3,
+    pub sword: Quat,
+}
+
+/// A part's place and turn in the world for a target: its joint's (or the sword's grip's),
+/// moved to its centre of mass.
+fn placed_part(t: Target, part: u32) -> (vec3, Quat) {
+    if part == SWORD {
+        return (t.grip + t.sword.rotate(CENTRE[SWORD]), t.sword)
+    }
+    let j = JOINT[part]
+    let r = t.pose.rot[j]
+    (t.pose.at[j] + r.rotate(CENTRE[part]), r)
+}
+
+/// A body standing as its target has it, still.
+pub fn spawn(t: Target) -> Physique {
+    var parts = [Body::fixed(vec3(0.0), Quat::identity()); 11]
+    for part in 0..PARTS {
+        let (at, rot) = placed_part(t, part)
+        parts[part] = Body::new(at, rot, MASS[part], inertia(part))
+    }
+    let (pelvis, pelvis_rot) = placed_part(t, PELVIS)
+    Physique { parts, was_pelvis: pelvis, was_pelvis_rot: pelvis_rot }
+}
+
+/// Where joint `part`'s parent part holds it, in the parent's frame, for target `t` (the joints
+/// between, which aren't simulated, as the target has them).
+fn anchor(t: Target, part: u32) -> vec3 {
+    let up = HANGS[part]
+    let (ju, j) = (JOINT[up], JOINT[part])
+    t.pose.rot[ju].inverse().rotate(t.pose.at[j] - t.pose.at[ju]) - CENTRE[up]
+}
+
+/// The turn of `part` from its parent part that target `t` asks.
+fn asked(t: Target, part: u32) -> Quat {
+    t.pose.rot[JOINT[HANGS[part]]].inverse().mul(t.pose.rot[JOINT[part]])
+}
+
+impl Physique {
+    /// The start of a substep of `h` s: every part goes on, gravity pulling it.
+    pub fn integrate(mut self, h: f32) {
+        for part in 0..PARTS {
+            integrate(mut self.parts[part], vec3(0.0, -9.81, 0.0), h)
+        }
+    }
+
+    /// The muscles and the joints in a substep of `h` s, `k` of the way through the step toward
+    /// target `t`, the muscles at `strength` of their full (a body struck goes slack a moment):
+    /// the pelvis pulled toward where the target has it (eased from the last step's), each part
+    /// held at its joint and turned toward the target's turn, and the sword held in both hands.
+    pub fn drive(mut self, t: Target, k: f32, h: f32, strength: f32) {
+        let (pelvis, pelvis_rot) = placed_part(t, PELVIS)
+        var hold = Body::fixed(
+            mix(self.was_pelvis, pelvis, vec3(k)),
+            self.was_pelvis_rot.nlerp(pelvis_rot, k),
+        )
+        var p = self.parts[PELVIS]
+        let pelvis_most = PELVIS_FORCE * mix(1.0, strength, 0.5)
+        attach(mut hold, mut p, vec3(0.0), vec3(0.0), compliance: 0.0, most: pelvis_most, h: h)
+        align(
+            mut hold,
+            mut p,
+            Quat::identity(),
+            compliance: 0.0,
+            most: STRENGTH[0] * strength,
+            h: h,
+        )
+        self.parts[PELVIS] = p
+        for part in 1..10 {
+            let up = HANGS[part]
+            var a = self.parts[up]
+            var b = self.parts[part]
+            attach(mut a, mut b, anchor(t, part), -CENTRE[part], compliance: 0.0, most: 1.0e7, h: h)
+            align(
+                mut a,
+                mut b,
+                asked(t, part),
+                compliance: 0.0,
+                most: STRENGTH[part] * strength,
+                h: h,
+            )
+            self.parts[up] = a
+            self.parts[part] = b
+        }
+        // The sword in the right fist, its turn the hand's; the left fist on its grip.
+        var r = self.parts[R_HAND]
+        var s = self.parts[SWORD]
+        let at_grip = vec3(0.0, -SWORD_CENTRE, 0.0)
+        attach(mut r, mut s, R_FIST - CENTRE[R_HAND], at_grip, compliance: 0.0, most: 1.0e7, h: h)
+        align(mut r, mut s, IN_HAND, compliance: 0.0, most: GRIP * strength, h: h)
+        var l = self.parts[L_HAND]
+        let at_left = vec3(0.0, LEFT_GRIP - SWORD_CENTRE, 0.0)
+        attach(mut l, mut s, L_FIST - CENTRE[L_HAND], at_left, compliance: 0.0, most: 1.0e7, h: h)
+        self.parts[R_HAND] = r
+        self.parts[L_HAND] = l
+        self.parts[SWORD] = s
+    }
+
+    /// The end of a substep of `h` s: each part's velocity is what it moved by; each joint's
+    /// swing damped.
+    pub fn settle(mut self, h: f32) {
+        for part in 0..PARTS {
+            settle(mut self.parts[part], h)
+        }
+        for part in 1..10 {
+            let up = HANGS[part]
+            var a = self.parts[up]
+            var b = self.parts[part]
+            damp_spin(mut a, mut b, DAMPING, h)
+            self.parts[up] = a
+            self.parts[part] = b
+        }
+    }
+
+    /// The end of a step toward target `t`: where it asked the pelvis to be, for the next step.
+    pub fn stepped(mut self, t: Target) {
+        let (pelvis, pelvis_rot) = placed_part(t, PELVIS)
+        self.was_pelvis = pelvis
+        self.was_pelvis_rot = pelvis_rot
+    }
+
+    /// Where a point of the sword (`along` its blade from the grip) is in the world.
+    pub fn sword_point(self, along: f32) -> vec3 {
+        self.parts[SWORD].point(vec3(0.0, along - SWORD_CENTRE, 0.0))
+    }
+
+    /// The sword's blade as a capsule on its part (from the guard to the tip), a little thicker
+    /// than the blade, so blades meeting a hair apart meet.
+    pub fn blade(self) -> Capsule {
+        Capsule {
+            from: vec3(0.0, BLADE_FROM - SWORD_CENTRE, 0.0),
+            to: vec3(0.0, TIP - SWORD_CENTRE, 0.0),
+            radius: 0.018,
+        }
+    }
+
+    /// The body as a pose in the world: each simulated part's joint where the part is; the joints
+    /// between as the target turns them; the legs bent from the pelvis to the target's feet.
+    pub fn pose(self, t: Target) -> Placed {
+        var out = t.pose
+        for part in 0..10 {
+            let b = self.parts[part]
+            out.rot[JOINT[part]] = b.rot
+            out.at[JOINT[part]] = b.at - b.rot.rotate(CENTRE[part])
+        }
+        // The joints between, from their simulated parents, as the target turns them.
+        for j in [CHEST2, CHEST4, R_COLLAR, L_COLLAR, HEAD] {
+            let up = PARENTS[j]
+            let local = t.pose.rot[up].inverse().mul(t.pose.rot[j])
+            out.rot[j] = out.rot[up].mul(local)
+            out.at[j] = out.at[up] + out.rot[up].rotate(OFFSETS[j])
+        }
+        // The legs, from the hips to the target's ankles, the feet turned as the target has them.
+        for leg in [[R_HIP, R_KNEE, R_ANKLE, R_TOE], [L_HIP, L_KNEE, L_ANKLE, L_TOE]] {
+            let local = t.pose.rot[HIPS].inverse().mul(t.pose.rot[leg[0]])
+            let hip_rot = out.rot[HIPS].mul(local)
+            let h = out.at[HIPS] + out.rot[HIPS].rotate(OFFSETS[leg[0]])
+            let k_rest = h + hip_rot.rotate(OFFSETS[leg[1]])
+            // The knee bends toward where the target's knee is, from the hip.
+            let pole = h + (t.pose.at[leg[1]] - t.pose.at[leg[0]])
+            let (knee, ankle) = bend(
+                h,
+                pole,
+                pole + (t.pose.at[leg[2]] - t.pose.at[leg[1]]),
+                t.pose.at[leg[2]],
+            )
+            let thigh = turn(normalize(k_rest - h), normalize(knee - h)).mul(hip_rot)
+            let shin_local = t.pose.rot[leg[0]].inverse().mul(t.pose.rot[leg[1]])
+            let shin_was = thigh.mul(shin_local)
+            let shin = turn(
+                shin_was.rotate(normalize(OFFSETS[leg[2]])),
+                normalize(ankle - knee),
+            ).mul(shin_was)
+            out.at[leg[0]] = h
+            out.rot[leg[0]] = thigh
+            out.at[leg[1]] = knee
+            out.rot[leg[1]] = shin
+            out.at[leg[2]] = ankle
+            out.rot[leg[2]] = t.pose.rot[leg[2]]
+            out.at[leg[3]] = ankle + out.rot[leg[2]].rotate(OFFSETS[leg[3]])
+            out.rot[leg[3]] = t.pose.rot[leg[3]]
+        }
+        out
+    }
+
+    /// The sword's grip and turn in the world.
+    pub fn sword(self) -> (vec3, Quat) {
+        let s = self.parts[SWORD]
+        (s.point(vec3(0.0, -SWORD_CENTRE, 0.0)), s.rot)
+    }
+}
+
+/// How many substeps a step of the body is cut into.
+pub const SUBSTEPS: u32 = 16
+
+/// A step of `dt` s of a body alone (no contacts) toward target `t`.
+pub fn step(b: mut Physique, t: Target, dt: f32) {
+    let h = dt / f32(SUBSTEPS)
+    for k in 0..SUBSTEPS {
+        b.integrate(h)
+        b.drive(t, f32(k + 1) / f32(SUBSTEPS), h, strength: 1.0)
+        b.settle(h)
+    }
+    b.stepped(t)
+}
+
+/// A capsule on `part` from `from` to `to` (in its joint's frame), its radius `radius`.
+fn on(part: u32, from: vec3, to: vec3, radius: f32) -> (u32, Capsule) {
+    (part, Capsule { from: from - CENTRE[part], to: to - CENTRE[part], radius })
+}
+
+/// The capsules a blade can strike, on each part (in its frame): the pelvis, belly, ribcage and
+/// head, the upper arms, forearms and hands; with the part each is on.
+pub fn targets() -> [(u32, Capsule); 10] {
+    let r = REST
+    [
+        on(PELVIS, vec3(-0.08, -0.02, 0.0), vec3(0.08, -0.02, 0.0), radius: 0.12),
+        on(BELLY, vec3(0.0), vec3(0.0, 0.2, 0.0), radius: 0.13),
+        on(RIBCAGE, vec3(-0.06, 0.04, 0.01), vec3(0.06, 0.2, 0.01), radius: 0.14),
+        on(SKULL, vec3(0.0, 0.05, 0.0), vec3(0.0, 0.2, 0.01), radius: 0.095),
+        on(R_UPPER, vec3(0.0), r[R_ELBOW] - r[R_SHOULDER], radius: 0.05),
+        on(R_FORE, vec3(0.0), r[R_WRIST] - r[R_ELBOW], radius: 0.04),
+        on(L_UPPER, vec3(0.0), r[L_ELBOW] - r[L_SHOULDER], radius: 0.05),
+        on(L_FORE, vec3(0.0), r[L_WRIST] - r[L_ELBOW], radius: 0.04),
+        on(R_HAND, vec3(0.0), -HAND, radius: 0.04),
+        on(L_HAND, vec3(0.0), HAND, radius: 0.04),
+    ]
+}
