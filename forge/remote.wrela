@@ -39,6 +39,8 @@ pub struct Remote: Clone {
     /// Whether a call or a host request the worker waits on is out.
     waiting: bool,
     job: u64,
+    /// The job's try, which its report names (F23a).
+    attempt: u64,
     check: String,
     target: Files,
     fetch: Vec<(String, File)>,
@@ -58,6 +60,7 @@ pub fn idle() -> Remote {
         stage: IDLE,
         waiting: false,
         job: 0,
+        attempt: 0,
         check: String::new(),
         target: SortedMap::new(),
         fetch: Vec::new(),
@@ -245,6 +248,7 @@ pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
         let Ok(doc) = Doc::read(body) else { return later(mut s, 2000) }
         let Some(job) = doc.get(doc.root, "job") else { return later(mut s, 2000) }
         s.remote.job = doc.whole64(job).unwrap_or(0)
+        s.remote.attempt = doc.whole64(doc.get(doc.root, "attempt").unwrap_or(job)).unwrap_or(0)
         s.remote.check = doc.field(doc.root, "check").to_string()
         var target: Files = SortedMap::new()
         if let Some(files) = doc.get(doc.root, "files") {
@@ -309,6 +313,7 @@ pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
         var j = Json::new()
         j.obj()
         j.knum("job", s.remote.job)
+        j.knum("attempt", s.remote.attempt)
         j.kstr("worker", s.remote.name.as_str())
         j.key("status")
         j.int(i64(s.remote.status))

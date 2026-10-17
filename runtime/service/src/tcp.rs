@@ -11,9 +11,9 @@
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// What a connection's writer is told.
@@ -46,11 +46,23 @@ pub enum Net {
 pub struct Conns {
     next: Arc<AtomicU32>,
     to_loop: Sender<crate::Event>,
+    /// Each listener's address, and whether it is to stop: a service that ends stops its
+    /// listeners, so its addresses are free again even while its process goes on.
+    listeners: Arc<Mutex<Vec<(std::net::SocketAddr, Arc<AtomicBool>)>>>,
 }
 
 impl Conns {
     pub fn new(to_loop: Sender<crate::Event>) -> Conns {
-        Conns { next: Arc::new(AtomicU32::new(1)), to_loop }
+        Conns { next: Arc::new(AtomicU32::new(1)), to_loop, listeners: Arc::default() }
+    }
+
+    /// Stops every listener: each is woken by a connection of its own and closes.
+    pub fn stop(&self) {
+        let all = std::mem::take(&mut *self.listeners.lock().expect("the listeners' lock"));
+        for (addr, stopping) in all {
+            stopping.store(true, Ordering::SeqCst);
+            let _ = TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1));
+        }
     }
 
     fn number(&self) -> u32 {
@@ -94,10 +106,23 @@ impl Conns {
     /// Listens on `addr`: the port, and a thread that accepts each connection.
     pub fn listen(&self, addr: &str) -> Result<u16, String> {
         let listener = TcpListener::bind(addr).map_err(|e| format!("listening on {addr}: {e}"))?;
-        let port = listener.local_addr().map_err(|e| format!("{addr}: {e}"))?.port();
+        let mut local = listener.local_addr().map_err(|e| format!("{addr}: {e}"))?;
+        let port = local.port();
+        if local.ip().is_unspecified() {
+            local.set_ip(if local.is_ipv4() {
+                std::net::Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv6Addr::LOCALHOST.into()
+            });
+        }
+        let stopping = Arc::new(AtomicBool::new(false));
+        self.listeners.lock().expect("the listeners' lock").push((local, Arc::clone(&stopping)));
         let conns = self.clone();
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
+                if stopping.load(Ordering::SeqCst) {
+                    break;
+                }
                 conns.attach(stream, conns.number(), u32::from(port));
             }
         });
@@ -112,7 +137,7 @@ impl Conns {
         done: impl FnOnce(Result<Vec<u8>, String>) + Send + 'static,
     ) {
         let conns = self.clone();
-        thread::spawn(move || match TcpStream::connect(&addr) {
+        thread::spawn(move || match connect_within(&addr, CONNECT_TIMEOUT) {
             Ok(stream) => {
                 let conn = conns.number();
                 done(Ok(conn.to_le_bytes().to_vec()));
@@ -121,4 +146,21 @@ impl Conns {
             Err(e) => done(Err(format!("connecting to {addr}: {e}"))),
         });
     }
+}
+
+/// How long a connection may take to open: a peer that is off the network fails in this, rather
+/// than in the system's minutes.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Connects to `addr` (`host:port`), trying each of its addresses for at most `limit`.
+fn connect_within(addr: &str, limit: std::time::Duration) -> std::io::Result<TcpStream> {
+    use std::net::ToSocketAddrs;
+    let mut last = std::io::Error::new(std::io::ErrorKind::NotFound, "no address");
+    for a in addr.to_socket_addrs()? {
+        match TcpStream::connect_timeout(&a, limit) {
+            Ok(s) => return Ok(s),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
 }

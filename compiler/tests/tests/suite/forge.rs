@@ -366,7 +366,8 @@ fn a_replica_holds_each_landing_before_it_is_answered_and_serves_once_promoted()
     assert_eq!(service.join().expect("the service's thread"), 0);
     drop(replica);
     let port2 = free_port();
-    let promoted = start(build, rdata, rwork, port2);
+    let listen2 = format!("127.0.0.1:{port2}");
+    let promoted = run_forge(build, rdata, rwork, &["serve", "--promote", "--listen", &listen2]);
     ready(port2);
     assert_eq!(call(port2, "log", serde_json::json!({}))["main"], 3);
     let read = call(port2, "read", serde_json::json!({"path": "big.bin", "lines": 1}));
@@ -374,6 +375,146 @@ fn a_replica_holds_each_landing_before_it_is_answered_and_serves_once_promoted()
     assert_eq!(call(port2, "read", serde_json::json!({"path": "README"}))["text"], "forge test\n");
     assert_eq!(http(port2, "POST", "/api/stop", "").0, 200);
     assert_eq!(promoted.join().expect("the promoted service's thread"), 0);
+}
+
+/// A change on `port` that writes `path`, its suite passed: landed, and the landing's place.
+fn land_one(port: u16, path: &str, text: &str) -> u64 {
+    let change =
+        call(port, "open", serde_json::json!({"intent": format!("Adds {path}")}))["change"]
+            .as_str()
+            .expect("a change")
+            .to_string();
+    call(port, "write", serde_json::json!({"change": change, "path": path, "content": text}));
+    let suite = call(port, "submit", serde_json::json!({"change": change}))["job"]
+        .as_str()
+        .expect("a job")
+        .to_string();
+    wait_until("the suite", || job_state(port, &suite)["state"] == "passed");
+    call(port, "land", serde_json::json!({"change": change}))["seq"].as_u64().expect("a place")
+}
+
+fn position(port: u16) -> serde_json::Value {
+    let (status, text) = http(port, "GET", "/api/position", "");
+    assert_eq!(status, 200, "{text}");
+    serde_json::from_str(&text).expect("a position")
+}
+
+fn stop(port: u16, thread: std::thread::JoinHandle<i32>) {
+    assert_eq!(http(port, "POST", "/api/stop", "").0, 200);
+    assert_eq!(thread.join().expect("its thread"), 0, "it stopped cleanly");
+}
+
+#[test]
+fn three_stores_fail_over_without_losing_a_confirmed_landing_and_the_old_service_is_fenced() {
+    let scratch = Scratch::new("fleet");
+    let dir = |d: &str| {
+        let p = scratch.0.join(d);
+        std::fs::create_dir_all(&p).expect("a directory");
+        p
+    };
+    let (repo, build) = (dir("repo"), dir("build"));
+    let (pdata, pwork, adata, awork, bdata, bwork) =
+        (dir("p"), dir("pw"), dir("a"), dir("aw"), dir("b"), dir("bw"));
+    repository(&repo);
+    wrela_tests::must_build(&repo_root().join("forge"), &build);
+    let (pp, pa, pb) = (free_port(), free_port(), free_port());
+    let (p, a, b) =
+        (format!("127.0.0.1:{pp}"), format!("127.0.0.1:{pa}"), format!("127.0.0.1:{pb}"));
+    let peers_of = |x: &str, y: &str| format!("{x},{y}");
+    let replica = |data: &Path, work: &Path, name: &str, listen: &str, servers: String| {
+        run_forge(
+            &build,
+            data,
+            work,
+            &["replica", "--servers", &servers, "--machine", name, "--listen", listen],
+        )
+    };
+
+    // P serves, confirming each answer once one of the replicas A and B holds it.
+    let service = run_forge(
+        &build,
+        &pdata,
+        &pwork,
+        &["serve", "--listen", &p, "--machine", "p", "--acks", "1", "--peers", &peers_of(&a, &b)],
+    );
+    ready(pp);
+    let ra = replica(&adata, &awork, "a", &a, peers_of(&p, &b));
+    let rb = replica(&bdata, &bwork, "b", &b, peers_of(&p, &a));
+    ready(pa);
+    ready(pb);
+    http(pp, "POST", "/api/import", &serde_json::json!({"git": repo, "ref": "main"}).to_string());
+    wait_until("the import", || call(pp, "log", serde_json::json!({}))["main"] == 2);
+    assert_eq!(land_one(pp, "one.txt", "1\n"), 3);
+    let held = position(pp)["size"].clone();
+    wait_until("both replicas", || position(pa)["size"] == held && position(pb)["size"] == held);
+    assert_eq!(position(pa)["chain"], position(pp)["chain"], "A's log is P's");
+    assert_eq!(position(pa)["epoch"], 1, "P's first epoch");
+
+    // A stops; P confirms a landing that only B holds, then P's machine is lost.
+    stop(pa, ra);
+    assert_eq!(land_one(pp, "two.txt", "2\n"), 4);
+    let p_size = position(pp)["size"].clone();
+    assert_eq!(position(pb)["size"], p_size, "B held the landing before it was answered");
+    stop(pp, service);
+
+    // A can't be promoted: B holds a landing A lacks.
+    let a_log = std::fs::read(adata.join("events")).expect("A's log");
+    let refused = run_forge(
+        &build,
+        &adata,
+        &awork,
+        &["serve", "--promote", "--listen", &a, "--machine", "a", "--peers", &peers_of(&p, &b)],
+    );
+    assert_eq!(refused.join().expect("its thread"), 1, "the promotion is refused");
+    assert_eq!(std::fs::read(adata.join("events")).expect("A's log"), a_log, "A is unchanged");
+
+    // B is promoted, with A (a replica again) and B a majority of the three.
+    let ra = replica(&adata, &awork, "a", &a, peers_of(&p, &b));
+    ready(pa);
+    stop(pb, rb);
+    let promoted = run_forge(
+        &build,
+        &bdata,
+        &bwork,
+        &[
+            "serve",
+            "--promote",
+            "--listen",
+            &b,
+            "--machine",
+            "b",
+            "--acks",
+            "1",
+            "--peers",
+            &peers_of(&p, &a),
+        ],
+    );
+    ready(pb);
+    assert_eq!(position(pb)["epoch"], 2);
+    assert_eq!(call(pb, "read", serde_json::json!({"path": "two.txt"}))["text"], "2\n");
+    // A follows B, told of the new epoch, and holds B's landings before they're answered.
+    assert_eq!(land_one(pb, "three.txt", "3\n"), 5);
+    let b_size = position(pb)["size"].clone();
+    wait_until("A to follow B", || position(pa)["size"] == b_size);
+    assert_eq!(position(pa)["epoch"], 2);
+    assert_eq!(
+        std::fs::read(adata.join("events")).expect("A's log"),
+        std::fs::read(bdata.join("events")).expect("B's log"),
+        "A's log is B's"
+    );
+
+    // P comes back: its peers tell it of epoch 2, and it's fenced before it takes a call.
+    let back = run_forge(
+        &build,
+        &pdata,
+        &pwork,
+        &["serve", "--listen", &p, "--machine", "p", "--peers", &peers_of(&a, &b)],
+    );
+    assert_eq!(back.join().expect("its thread"), 1, "the old service is fenced");
+    let again = run_forge(&build, &pdata, &pwork, &["serve", "--listen", &p, "--machine", "p"]);
+    assert_eq!(again.join().expect("its thread"), 1, "a fenced store doesn't serve again");
+    stop(pb, promoted);
+    stop(pa, ra);
 }
 
 /// forge with `args` and the roots `roots`, on a thread of its own: its exit status.

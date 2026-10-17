@@ -137,6 +137,38 @@ pub fn tree_files(c: core::Core, tree: Id) -> Result<Files, Vec<Id>> {
     if need.is_empty() { Ok(out) } else { Err(need) }
 }
 
+/// The jobs running on worker `name`.
+pub fn running_on(s: Service, name: str) -> Vec<u64> {
+    var out: Vec<u64> = Vec::new()
+    for j in s.core.state.jobs.values() {
+        if j.run == Run::Running && j.worker.as_str() == name {
+            out.push(j.id)
+        }
+    }
+    out
+}
+
+/// Sends back to the queue the jobs that ran 10 minutes past their limit (F23a): their worker is
+/// gone, or lost them.
+pub fn expire(s: mut Service) {
+    let now = service::now(s)
+    var events: Vec<Event> = Vec::new()
+    for j in s.core.state.jobs.values() {
+        if j.run == Run::Running && j.started + LIMIT_MS + 600000 < now {
+            events.push(
+                Event::Requeued {
+                    job: j.id,
+                    why: f"it ran past its limit on {j.worker}",
+                    time: now,
+                },
+            )
+        }
+    }
+    if !events.is_empty() {
+        commit(mut s, Durable { objects: Vec::new(), events }, None)
+    }
+}
+
 /// The oldest queued job.
 fn next_job(s: Service) -> Option<state::Job> {
     for j in s.core.state.jobs.values() {
@@ -351,7 +383,12 @@ pub fn ran(s: mut Service, job: u64, r: take Result<Vec<u8>, IoError>) {
 
 /// Keeps what job `job` said: its output, its evidence, and that it finished.
 fn finish(s: mut Service, job: u64, status: i32, timed_out: bool, ms: u64, output: take Vec<u8>) {
+    s.worker.job = 0
     let j = s.core.state.jobs.at(job).clone()
+    if j.run != Run::Running || j.worker.as_str() != s.worker.name.as_str() {
+        // It went back to the queue while it ran: this try's word doesn't count (F23a).
+        return print(f"forge: j{job} ended after it went back to the queue; its result is dropped")
+    }
     let log = object::blob(output)
     let x = object::evidence(
         object::Evidence {
@@ -373,7 +410,6 @@ fn finish(s: mut Service, job: u64, status: i32, timed_out: bool, ms: u64, outpu
         Durable { objects: Vec::from([take log, take x]), events: Vec::from([take ev]) },
         None,
     )
-    s.worker.job = 0
 }
 
 fn json_reply(s: mut Service, conn: u32, status: u32, json: str) {
@@ -390,7 +426,35 @@ pub fn remote(s: mut Service, conn: u32, req: take http::Request) {
     if worker.is_empty() {
         return json_reply(mut s, conn, 400, "{\"error\":\"give the worker's name\"}")
     }
+    // A worker on another machine is named for its node (`NODE`, or `NODE/...` for one of
+    // several), so its evidence says truly where the check ran.
+    let ctx = service::ctx_of(s, conn)
+    let w = worker.as_str()
+    if !service::names_its_own(ctx.clone(), w) {
+        return json_reply(
+            mut s,
+            conn,
+            403,
+            f"{{\"error\":\"a worker on {ctx.node} is named {ctx.node} or {ctx.node}/...\"}}".as_str(),
+        )
+    }
     if req.path.as_str() == "/api/work/next" {
+        // A worker that asks for work runs nothing: what it ran before it started again goes
+        // back to the queue.
+        let lost = running_on(s, w)
+        if !lost.is_empty() {
+            var events: Vec<Event> = Vec::new()
+            for id in lost {
+                events.push(
+                    Event::Requeued {
+                        job: id,
+                        why: f"{w} asked for work again",
+                        time: service::now(s),
+                    },
+                )
+            }
+            commit(mut s, Durable { objects: Vec::new(), events }, None)
+        }
         let Some(job) = next_job(s) else {
             return service::reply(mut s, conn, 204, "application/json", [])
         }
@@ -411,6 +475,7 @@ pub fn remote(s: mut Service, conn: u32, req: take http::Request) {
         var j = out::Json::new()
         j.obj()
         j.knum("job", job.id)
+        j.knum("attempt", u64(job.attempt))
         j.kstr("check", job.check.as_str())
         j.kstr("tree", job.tree.hex().as_str())
         j.key("files")
@@ -446,7 +511,10 @@ pub fn remote(s: mut Service, conn: u32, req: take http::Request) {
             return json_reply(mut s, conn, 404, "{\"error\":\"no such job\"}")
         }
         let j = s.core.state.jobs.at(job).clone()
-        if j.run != Run::Running || j.worker.as_str() != worker.as_str() {
+        let attempt = doc.whole64(doc.get(doc.root, "attempt").unwrap_or(doc.root)).unwrap_or(0)
+        if j.run != Run::Running ||
+            j.worker.as_str() != worker.as_str() ||
+            attempt != u64(j.attempt) {
             return json_reply(
                 mut s,
                 conn,

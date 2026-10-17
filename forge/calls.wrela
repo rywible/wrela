@@ -1,6 +1,8 @@
 // HTTP calls to a forge service, one at a time, each on a connection of its own: what forge's
-// command (client.wrela) and a worker on another machine (remote.wrela) send. A call's answer goes
-// back to its sender with the purpose it was sent for.
+// command (client.wrela), a worker on another machine (remote.wrela), a replica (replicate.wrela),
+// a workspace (workspace.wrela) and a service asking its peers (peers.wrela) send. A call's
+// answer goes back to its sender with the purpose it was sent for. A call that hasn't been
+// answered by its deadline is given up: its answer is status 0, as for a call no answer came to.
 
 use http::Answer
 use platform::net::close
@@ -15,6 +17,10 @@ pub struct Calls: Clone {
     request: Vec<u8>,
     buf: Vec<u8>,
     pub busy: bool,
+    /// The call's number: a connection made for a call given up isn't the next call's.
+    serial: u32,
+    /// When the call is given up: milliseconds since 1970.
+    deadline: u64,
 }
 
 pub fn calls(server: str) -> Calls {
@@ -25,21 +31,71 @@ pub fn calls(server: str) -> Calls {
         request: Vec::new(),
         buf: Vec::new(),
         busy: false,
+        serial: 0,
+        deadline: 0,
     }
 }
 
+/// How long a call may take: a minute, which outlasts a held ask (20 s).
+const PATIENCE: u64 = 60000
+
 /// Sends `method path` with `body` to the service, for `purpose`: its answer comes to `got`.
 pub fn call(s: mut Service, method: str, path: str, kind: str, body: [u8], purpose: u32) {
+    let to = s.calls.server.clone()
+    call_to(mut s, to.as_str(), method, path, kind, body, purpose, PATIENCE)
+}
+
+/// Sends `method path` with `body` to the service at `to`, given up after `ms`.
+pub fn call_to(
+    s: mut Service,
+    to: str,
+    method: str,
+    path: str,
+    kind: str,
+    body: [u8],
+    purpose: u32,
+    ms: u64,
+) {
     s.calls.busy = true
     s.calls.conn = 0
+    s.calls.serial += 1
+    s.calls.deadline = service::now(s) + ms
     s.calls.purpose = purpose
     s.calls.buf = Vec::new()
-    s.calls.request = http::request(method, s.calls.server.as_str(), path, kind, body)
-    wait(mut s, host::connect(s.calls.server.as_str()), For::Client(purpose))
+    s.calls.request = http::request(method, to, path, kind, body)
+    wait(mut s, host::connect(to), For::Client(s.calls.serial))
+}
+
+/// Whether connection `conn` is the call's.
+pub fn owns(s: Service, conn: u32) -> bool {
+    s.calls.busy && conn != 0 && conn == s.calls.conn
+}
+
+/// Gives up the call if its deadline has passed.
+pub fn expire(s: mut Service) {
+    if !s.calls.busy || service::now(s) < s.calls.deadline {
+        return
+    }
+    if s.calls.conn != 0 {
+        close(s.calls.conn)
+    }
+    s.calls.busy = false
+    s.calls.conn = 0
+    s.calls.serial += 1
+    got(mut s, 0, bytes::of_str("the call took too long"))
 }
 
 /// The connection's number, or why there's none.
-pub fn connected(s: mut Service, r: take Result<Vec<u8>, IoError>) {
+pub fn connected(s: mut Service, serial: u32, r: take Result<Vec<u8>, IoError>) {
+    if serial != s.calls.serial || !s.calls.busy {
+        // A call given up: its connection isn't wanted.
+        if let Ok(b) = take r {
+            if let Some(conn) = host::conn_of(take b) {
+                close(conn)
+            }
+        }
+        return
+    }
     match take r {
         Ok(b) => s.calls.conn = host::conn_of(take b).unwrap_or(0),
         Err(e) => {
@@ -88,7 +144,9 @@ pub fn bytes(s: mut Service, conn: u32, b: [u8]) {
 /// An answer, to whatever sent its call: status 0 when no answer came.
 fn got(s: mut Service, status: u32, body: take Vec<u8>) {
     let purpose = s.calls.purpose
-    if s.phase == Phase::Work {
+    if purpose >= peers::FIRST {
+        peers::got(mut s, purpose, status, take body)
+    } else if s.phase == Phase::Work {
         remote::got(mut s, purpose, status, take body)
     } else if s.phase == Phase::Replica {
         replicate::got(mut s, purpose, status, take body)

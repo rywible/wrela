@@ -154,16 +154,19 @@ never reused.
   that chain, else 409, so a replica never follows a log that isn't its own's continuation. The
   ask says the replica holds the first X bytes. A service with `--acks N` sends every answer that
   says something happened only once N replicas hold the log through it.
-- **F26.** A store's epoch is the epoch of the last `promoted` event in its log (0 if none).
+- **F26.** A store's epoch is the epoch of the last `promoted` event in its log (0 if none), and
+  is the machine's that event names. A store's first service appends `promoted` with epoch 1; a
+  service serves a store whose epoch is another machine's only to promote it.
   `forge serve --promote` makes a replica's data the service: it asks each of `--peers` for its
   position (`GET /api/position`: role, epoch, log size and chain), needs more than half of the
-  peers and itself to answer, refuses if a peer's log isn't a prefix of its own, appends
+  stores (the peers and itself) to answer, refuses if a peer's log isn't a prefix of its own, appends
   `promoted` with an epoch above every one it saw, tells each peer it answered about it
   (`POST /api/fence`), and serves. With `--acks N` at least half of the replicas, a landing a
   service confirmed is on every majority, so a promotion can't lose it.
 - **F26a.** A service is fenced when it learns of an epoch above its own: from a replica's ask, a
-  peer's position, or `POST /api/fence`. A fenced service appends `fenced`, answers every call
-  with 503 and stops; a store whose log holds `fenced` doesn't serve again. A service started with
+  peer's position, or `POST /api/fence`. A fenced service answers every call after with 503,
+  confirms nothing more, appends `fenced` and stops; a store whose log holds `fenced` doesn't serve
+  again, nor become a replica. A service started with
   `--peers` asks each for its position at its start and every 10 s, so an old service that comes
   back is fenced before it takes a call.
 - **F26b.** A replica follows the service among `--servers` that is serving with the highest

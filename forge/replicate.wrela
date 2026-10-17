@@ -31,8 +31,9 @@ pub struct Ask: Clone {
     pub until: u64,
 }
 
-/// `GET /api/log?from=X&replica=NAME`: the log from X, once it holds more than X.
-pub fn log_from(s: mut Service, conn: u32, from: u64, replica: str) {
+/// `GET /api/log?from=X&chain=C&epoch=E&replica=NAME`: the log from X, once it holds more than X,
+/// if the replica's log is a prefix of this one's (F25).
+pub fn log_from(s: mut Service, conn: u32, from: u64, chain: str, epoch: u64, replica: str) {
     if replica.is_empty() {
         return service::reply(
             mut s,
@@ -42,14 +43,34 @@ pub fn log_from(s: mut Service, conn: u32, from: u64, replica: str) {
             bytes::of_str("give the replica's name\n"),
         )
     }
-    if from > s.log_size {
+    if !service::names_its_own(service::ctx_of(s, conn), replica) {
+        return service::reply(
+            mut s,
+            conn,
+            403,
+            "text/plain",
+            bytes::of_str("a replica on another machine is named for its node\n"),
+        )
+    }
+    if epoch > s.core.state.epoch {
+        service::reply(
+            mut s,
+            conn,
+            409,
+            "text/plain",
+            bytes::of_str("the replica holds a newer epoch than this service's\n"),
+        )
+        return service::fence(mut s, epoch)
+    }
+    let at = Id::parse(chain).unwrap_or(Id::zero())
+    if !log::holds(s.ends, from, at) {
         return service::reply(
             mut s,
             conn,
             409,
             "text/plain",
             bytes::of_str(
-                "the replica's log is longer than the service's: it isn't this service's replica\n",
+                f"the replica's {from} bytes of log aren't the start of this service's: it isn't this service's replica\n".as_str(),
             ),
         )
     }
@@ -222,15 +243,31 @@ const START: u32 = 0
 const ASK: u32 = 1
 const FETCH: u32 = 2
 const STORE: u32 = 3
+/// Asking each of `--servers` for its position, to follow the newest service (F26b).
+const FIND: u32 = 4
+/// Its calls' purposes beyond the stages': a position asked for.
+const PROBE: u32 = 5
 
 pub struct Replica: Clone {
     name: String,
     stage: u32,
     waiting: bool,
-    /// The length of its log.
+    /// The length of its log, the log's chain there (F25), and its epoch (F26).
     size: u64,
-    /// The whole records it was sent, waiting for their objects.
+    chain: Id,
+    epoch: u64,
+    /// The stores it may follow, what each said in this round of asking, and the one it follows.
+    servers: Vec<String>,
+    seen: Vec<Option<peers::Position>>,
+    following: String,
+    /// How many times running the service it follows refused its log: twice is a log that
+    /// isn't the service's.
+    refused: u32,
+    /// The whole records it was sent, waiting for their objects; their ends and chains.
     records: Vec<u8>,
+    ends: Vec<(u64, Id)>,
+    /// The highest epoch the records promote.
+    next_epoch: u64,
     /// Objects it has, as far as it knows; and those it has asked for.
     have: SortedMap<Id, bool>,
     want: Vec<Id>,
@@ -244,7 +281,15 @@ pub fn idle() -> Replica {
         stage: START,
         waiting: false,
         size: 0,
+        chain: Id::zero(),
+        epoch: 0,
+        servers: Vec::new(),
+        seen: Vec::new(),
+        following: String::new(),
+        refused: 0,
         records: Vec::new(),
+        ends: Vec::new(),
+        next_epoch: 0,
         have: SortedMap::new(),
         want: Vec::new(),
         left: 0,
@@ -252,45 +297,216 @@ pub fn idle() -> Replica {
 }
 
 /// A replica's host requests.
-pub const STAT: u32 = 1
+pub const READ: u32 = 1
 pub const WROTE: u32 = 2
 pub const APPENDED: u32 = 3
 pub const WOKEN: u32 = 4
 pub const MADE: u32 = 5
+pub const CUT: u32 = 6
+pub const LISTENING: u32 = 7
 
+/// `forge replica --servers A,B,... --machine NAME [--listen ADDR]` (or `--server A`).
 pub fn start(s: mut Service) {
-    s.calls = calls::calls(client::server_of(s.args).as_str())
+    s.calls = calls::calls("")
     var name = String::from("replica")
+    var servers: Vec<String> = Vec::new()
+    var listen = String::new()
     for i in 0..s.args.len() {
-        if s.args[i].as_str() == "--machine" && i + 1 < s.args.len() {
+        if i + 1 >= s.args.len() {
+            continue
+        }
+        let a = s.args[i].as_str()
+        if a == "--machine" {
             name = s.args[i + 1].clone()
+        } else if a == "--servers" || a == "--server" {
+            for x in who::rules(s.args[i + 1].as_str()) {
+                servers.push(x.clone())
+            }
+        } else if a == "--listen" {
+            listen = s.args[i + 1].clone()
         }
     }
+    if servers.is_empty() {
+        servers.push(String::from("127.0.0.1:7171"))
+    }
+    s.machine = name.clone()
     s.replica.name = take name
+    s.replica.servers = take servers
     s.replica.waiting = true
     wait(mut s, host::mkdir("data/objects"), For::Replica(MADE))
-    wait(mut s, host::stat(LOG), For::Replica(STAT))
-    print(f"forge: replicating {s.calls.server} as {s.replica.name}")
+    wait(mut s, host::read(LOG), For::Replica(READ))
+    if !listen.is_empty() {
+        s.listen = listen.clone()
+        wait(mut s, host::listen(listen.as_str()), For::Replica(LISTENING))
+    }
+}
+
+/// Its own log, read back at its start: a torn last record cut off (F24), its chain and epoch.
+fn own_log(s: mut Service, b: take Vec<u8>) {
+    let read = log::read(b)
+    if read.whole < b.len() {
+        print(
+            f"forge: the replica's log ends in {b.len() - read.whole} bytes of a torn record; cutting them",
+        )
+        wait(mut s, host::truncate(LOG, u64(read.whole)), For::Replica(CUT))
+    }
+    for p in read.payloads {
+        match state::decode(p.clone()) {
+            Ok(ev) => match ev {
+                Event::Promoted { epoch, .. } => s.replica.epoch = epoch,
+                Event::Fenced { epoch, .. } => {
+                    return service::fatal(
+                        mut s,
+                        f"this store's service was fenced by epoch {epoch}: a replica starts from an empty store",
+                    )
+                },
+                _ => {},
+            },
+            Err(bad) => return service::fatal(
+                mut s,
+                f"the replica's log holds an event it can't read: {bad.why}".as_str(),
+            ),
+        }
+    }
+    let ends = log::ends(b, read.clone(), 0, Id::zero())
+    s.replica.size = u64(read.whole)
+    s.replica.chain = if ends.is_empty() { Id::zero() } else { ends[ends.len() - 1].1 }
+    print(
+        f"forge: replicating as {s.replica.name}: {s.replica.size} bytes of log, epoch {s.replica.epoch}",
+    )
+    find(mut s)
+}
+
+/// Asks each of the servers for its position, to follow the newest service among them.
+fn find(s: mut Service) {
+    s.replica.stage = FIND
+    s.replica.seen = Vec::new()
+    s.replica.waiting = false
+}
+
+fn found(s: mut Service) {
+    var best: Option<(String, u64)> = None
+    for i in 0..s.replica.seen.len() {
+        let Some(p) = s.replica.seen[i].clone() else { continue }
+        if p.role.as_str() != "service" {
+            continue
+        }
+        let better = match best {
+            Some((_, e)) => p.epoch > e,
+            None => true,
+        }
+        if better {
+            best = Some((s.replica.servers[i].clone(), p.epoch))
+        }
+    }
+    match best {
+        Some((addr, epoch)) => {
+            if addr.as_str() != s.replica.following.as_str() {
+                print(f"forge: following {addr} (epoch {epoch})")
+                s.replica.refused = 0
+            }
+            s.replica.following = addr.clone()
+            s.calls.server = addr.clone()
+            s.replica.stage = ASK
+        },
+        None => {
+            find(mut s)
+            later(mut s, 2000)
+        },
+    }
+}
+
+/// A caller's request of a replica: its health, its position, or a fence (F26b).
+pub fn route(s: mut Service, conn: u32, req: take http::Request) {
+    let method = req.method.as_str()
+    let path = req.path.as_str()
+    if method == "GET" && path == "/health" {
+        return service::reply(mut s, conn, 200, "text/plain", bytes::of_str("ok\n"))
+    }
+    if method == "GET" && path == "/api/position" {
+        let p = peers::Position {
+            role: String::from("replica"),
+            machine: s.replica.name.clone(),
+            epoch: s.replica.epoch,
+            size: s.replica.size,
+            chain: s.replica.chain,
+        }
+        return service::reply(
+            mut s,
+            conn,
+            200,
+            "application/json",
+            bytes::of_str(peers::json(p).as_str()),
+        )
+    }
+    if method == "POST" && path == "/api/stop" {
+        if !service::ctx_of(s, conn).lands {
+            return service::reply(
+                mut s,
+                conn,
+                403,
+                "text/plain",
+                bytes::of_str("only a lander stops forge\n"),
+            )
+        }
+        print("forge: the replica stops")
+        service::reply(mut s, conn, 200, "text/plain", bytes::of_str("stopping\n"))
+        host::exit(0)
+        s.phase = service::Phase::Stopped
+        return
+    }
+    if method == "POST" && path == "/api/fence" {
+        let ctx = service::ctx_of(s, conn)
+        if !ctx.lands && !ctx.fleet {
+            return service::reply(
+                mut s,
+                conn,
+                403,
+                "text/plain",
+                bytes::of_str("only a lander or the fleet fences\n"),
+            )
+        }
+        let epoch = service::fence_epoch(req.body)
+        service::reply(mut s, conn, 200, "application/json", bytes::of_str("{\"fenced\":false}"))
+        if epoch > s.replica.epoch && s.replica.stage == ASK {
+            // A newer service: looked for at the next ask.
+            print(f"forge: told of epoch {epoch}; looking for its service")
+            s.replica.stage = FIND
+            s.replica.seen = Vec::new()
+        }
+        return
+    }
+    service::reply(
+        mut s,
+        conn,
+        404,
+        "text/plain",
+        bytes::of_str("a replica answers /health, /api/position, /api/fence and /api/stop\n"),
+    )
 }
 
 pub fn answered(s: mut Service, what: u32, r: take Result<Vec<u8>, IoError>) {
     if what == MADE {
         return
     }
-    if what == STAT {
-        match take r {
-            Ok(b) => {
-                if let Some(st) = host::stat_of(take b) {
-                    s.replica.size = st.size
-                }
-            },
-            Err(e) => return service::fatal(
-                mut s,
-                f"the replica can't stat its log: {e.message()}".as_str(),
-            ),
+    if what == LISTENING {
+        if let Err(e) = r {
+            return service::fatal(mut s, f"the replica can't listen: {e.message()}".as_str())
         }
-        s.replica.stage = ASK
-        s.replica.waiting = false
+        return print(f"forge: the replica answers on {s.listen}")
+    }
+    if what == CUT {
+        if let Err(e) = r {
+            return service::fatal(mut s, f"the replica can't cut its log: {e.message()}".as_str())
+        }
+        return
+    }
+    if what == READ {
+        match take r {
+            Ok(b) => own_log(mut s, take b),
+            // No log yet: an empty one.
+            Err(_) => own_log(mut s, Vec::new()),
+        }
         return
     }
     if what == WROTE {
@@ -313,8 +529,25 @@ pub fn answered(s: mut Service, what: u32, r: take Result<Vec<u8>, IoError>) {
         }
         s.replica.left -= 1
         if s.replica.left == 0 {
+            let n = s.replica.ends.len()
+            if n > 0 {
+                let (end, chain) = s.replica.ends[n - 1]
+                if end != s.replica.size {
+                    return service::fatal(
+                        mut s,
+                        f"the replica's log is {s.replica.size} bytes, not {end}",
+                    )
+                }
+                s.replica.chain = chain
+            }
+            if s.replica.next_epoch > s.replica.epoch {
+                s.replica.epoch = s.replica.next_epoch
+            }
             s.replica.records = Vec::new()
-            s.replica.stage = ASK
+            s.replica.ends = Vec::new()
+            if s.replica.stage == STORE {
+                s.replica.stage = ASK
+            }
             s.replica.waiting = false
         }
         return
@@ -334,8 +567,17 @@ pub fn pump(s: mut Service) {
         return
     }
     let stage = s.replica.stage
+    if stage == FIND {
+        let at = s.replica.seen.len()
+        if at >= s.replica.servers.len() {
+            return found(mut s)
+        }
+        let to = s.replica.servers[at].clone()
+        s.replica.waiting = true
+        return calls::call_to(mut s, to.as_str(), "GET", "/api/position", "", [], PROBE, 5000)
+    }
     if stage == ASK {
-        let path = f"/api/log?from={s.replica.size}&replica={s.replica.name}"
+        let path = f"/api/log?from={s.replica.size}&chain={s.replica.chain.hex()}&epoch={s.replica.epoch}&replica={http::encode(s.replica.name.as_str())}"
         s.replica.waiting = true
         calls::call(mut s, "GET", path.as_str(), "application/octet-stream", [], ASK)
     } else if stage == FETCH {
@@ -421,17 +663,38 @@ fn want(s: mut Service, id: Id) {
 
 pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
     s.replica.waiting = false
+    if purpose == PROBE {
+        let p = if status == 200 { peers::of_json(body) } else { None }
+        s.replica.seen.push(take p)
+        return
+    }
     if status == 0 || status >= 500 {
-        print(f"forge: {bytes::text_of(body)}; the replica tries again in 5 s")
-        return later(mut s, 5000)
+        // Its service is gone, or fenced: the newest service is looked for again.
+        print(
+            f"forge: {s.replica.following}: {bytes::text_of(body).as_str().trim()}; looking again in 2 s",
+        )
+        find(mut s)
+        return later(mut s, 2000)
     }
     if purpose == ASK {
+        if status == 409 {
+            s.replica.refused += 1
+            if s.replica.refused >= 2 {
+                return service::fatal(
+                    mut s,
+                    f"{s.replica.following} refuses this replica's log: {bytes::text_of(body).as_str().trim()}",
+                )
+            }
+            find(mut s)
+            return later(mut s, 1000)
+        }
         if status != 200 {
             return service::fatal(
                 mut s,
                 f"the service won't send its log: {bytes::text_of(body)}".as_str(),
             )
         }
+        s.replica.refused = 0
         if body.is_empty() {
             return
         }
@@ -440,10 +703,18 @@ pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
             return later(mut s, 1000)
         }
         s.replica.records = bytes::slice(body, 0, read.whole)
+        s.replica.ends = log::ends(body, read.clone(), s.replica.size, s.replica.chain)
+        s.replica.next_epoch = s.replica.epoch
         var ids: Vec<Id> = Vec::new()
         for p in read.payloads {
             match state::decode(p.clone()) {
-                Ok(ev) => named(ev, mut ids),
+                Ok(ev) => {
+                    match ev {
+                        Event::Promoted { epoch, .. } => s.replica.next_epoch = epoch,
+                        _ => {},
+                    }
+                    named(ev, mut ids)
+                },
                 Err(bad) => return service::fatal(
                     mut s,
                     f"the service sent an event this replica can't read: {bad.why}".as_str(),

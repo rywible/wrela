@@ -80,9 +80,27 @@ struct Open {
     writer: Sender<tcp::Outgoing>,
 }
 
-/// Runs `config` until the program ends it (its status) or a call fails (70 or 75).
+/// Runs `config` until the program ends it (its status) or a call fails (70 or 75). Its listeners
+/// and connections are closed when it ends.
 pub fn run(config: Config) -> i32 {
     let (to_loop, from_threads): (Sender<Event>, Receiver<Event>) = mpsc::channel();
+    let conns = tcp::Conns::new(to_loop.clone());
+    let mut open: HashMap<u32, Open> = HashMap::new();
+    let code = serve(&config, &conns, &mut open, &to_loop, &from_threads);
+    conns.stop();
+    for o in open.values() {
+        let _ = o.writer.send(tcp::Outgoing::Close);
+    }
+    code
+}
+
+fn serve(
+    config: &Config,
+    conns: &tcp::Conns,
+    open: &mut HashMap<u32, Open>,
+    to_loop: &Sender<Event>,
+    from_threads: &Receiver<Event>,
+) -> i32 {
     let made: Arc<Mutex<Vec<Request>>> = Arc::default();
     let taking = Arc::clone(&made);
     let later: wrela_host::server::Later = Arc::new(move |id, service, body| {
@@ -98,9 +116,7 @@ pub fn run(config: Config) -> i32 {
         Ok(room) => room,
         Err(e) => return failed(&e),
     };
-    let conns = tcp::Conns::new(to_loop.clone());
     let running = process::Running::default();
-    let mut open: HashMap<u32, Open> = HashMap::new();
     let mut exit: Option<i32> = None;
     // The program's first `serve` comes at once, so it can start what it serves.
     let mut first = true;
@@ -109,7 +125,7 @@ pub fn run(config: Config) -> i32 {
         let mut answered = std::mem::take(&mut first);
         let requests = std::mem::take(&mut *made.lock().expect("the requests' lock"));
         for r in requests {
-            let now = carry_out(&config, &r, &conns, &running, &open, &to_loop, &mut exit);
+            let now = carry_out(config, &r, conns, &running, open, to_loop, &mut exit);
             if let Some(answer) = now {
                 room.answer(r.id, answer);
                 answered = true;

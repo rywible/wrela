@@ -4,7 +4,7 @@
 // first record that isn't whole or whose hash differs: a crash can cut the last record short,
 // and recovery cuts the file back to the records before it.
 
-use blake3::hash
+use blake3::{Id, hash}
 
 /// The largest payload a record holds.
 pub const MOST: u32 = 67108864
@@ -28,11 +28,13 @@ pub fn record(payload: [u8]) -> Vec<u8> {
 /// them are a torn record (or not the log's), which recovery cuts off.
 pub struct Read: Clone {
     pub payloads: Vec<Vec<u8>>,
+    /// Where each record ends, from the bytes' start.
+    pub ends: Vec<u32>,
     pub whole: u32,
 }
 
 pub fn read(b: [u8]) -> Read {
-    var out = Read { payloads: Vec::new(), whole: 0 }
+    var out = Read { payloads: Vec::new(), ends: Vec::new(), whole: 0 }
     var at = 0
     while at + 12 <= b.len() {
         var n: u32 = 0
@@ -55,9 +57,74 @@ pub fn read(b: [u8]) -> Read {
         }
         out.payloads.push(take payload)
         at += n + 12
+        out.ends.push(at)
         out.whole = at
     }
     out
+}
+
+/// A log's chain at a record's end (spec F25): BLAKE3 of the chain at the record before it and the
+/// record's 8-byte hash, which ends the record.
+pub fn chained(before: Id, record_end: [u8]) -> Id {
+    var b: Vec<u8> = Vec::with_capacity(40)
+    for x in before.bytes() {
+        b.push(x)
+    }
+    bytes::push_run(mut b, bytes::slice(record_end, record_end.len() - 8, record_end.len()))
+    hash(b)
+}
+
+/// The end and the chain there of each whole record of `b`, which starts at byte `at` of a log
+/// whose chain there is `chain`.
+pub fn ends(b: [u8], r: Read, at: u64, chain: Id) -> Vec<(u64, Id)> {
+    var out: Vec<(u64, Id)> = Vec::with_capacity(r.ends.len())
+    var c = chain
+    for end in r.ends {
+        c = chained(c, bytes::slice(b, end - 8, end))
+        out.push((at + u64(end), c))
+    }
+    out
+}
+
+/// Where in `ends` (a log's record ends, in order) the log is `at` bytes long with chain `chain`;
+/// whether it is. An empty log's chain is zero.
+pub fn holds(ends: [(u64, Id)], at: u64, chain: Id) -> bool {
+    if at == 0 {
+        return chain.is_zero()
+    }
+    var lo = 0
+    var hi = ends.len()
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if ends[mid].0 < at {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    lo < ends.len() && ends[lo].0 == at && ends[lo].1 == chain
+}
+
+@test
+fn a_logs_chain_tells_its_prefixes_apart() {
+    var a: Vec<u8> = Vec::new()
+    for text in ["one", "two", "three"] {
+        bytes::push_run(mut a, record(bytes::of_str(text)))
+    }
+    var b: Vec<u8> = Vec::new()
+    for text in ["one", "zwei", "three"] {
+        bytes::push_run(mut b, record(bytes::of_str(text)))
+    }
+    let ea = ends(a, read(a), 0, Id::zero())
+    let eb = ends(b, read(b), 0, Id::zero())
+    assert(ea.len() == 3 && ea[0] == eb[0], "the same first record, the same chain")
+    assert(ea[1].1 != eb[1].1 && ea[2].1 != eb[2].1, "a record apart, chains apart after it")
+    assert(holds(ea, ea[1].0, ea[1].1) && holds(ea, 0, Id::zero()), "its own prefixes")
+    assert(!holds(ea, eb[1].0, eb[1].1) && !holds(ea, ea[1].0 - 1, ea[1].1), "not another's")
+    // Read from the middle, the chain goes on as it would from the start.
+    let tail = bytes::slice(a, u32(ea[0].0), a.len())
+    let et = ends(tail, read(tail), ea[0].0, ea[0].1)
+    assert(et.len() == 2 && et[1] == ea[2], "the same chain from the middle")
 }
 
 @test

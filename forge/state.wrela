@@ -702,6 +702,20 @@ pub fn conflicts(c: Change) -> Vec<String> {
     out
 }
 
+/// A job of `check` on `tree` that a new one would repeat: one that passed and is the newest to
+/// finish, or one queued or running (F23b).
+pub fn same_check(s: State, check: str, tree: Id) -> Option<Job> {
+    for j in s.jobs.values() {
+        if j.run != Run::Done && j.tree == tree && j.check.as_str() == check {
+            return Some(j.clone())
+        }
+    }
+    match newest_run(s, check, tree) {
+        Some(j) => if j.passed { Some(j) } else { None },
+        None => None,
+    }
+}
+
 /// The newest finished run of `check` on `tree`.
 pub fn newest_run(s: State, check: str, tree: Id) -> Option<Job> {
     var best: Option<Job> = None

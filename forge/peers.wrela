@@ -1,0 +1,230 @@
+// A service's peers (spec/forge.md F26, F26a): the other stores of its fleet, at `--peers`, each a
+// replica or a service that answers `GET /api/position` with its role, its epoch and how much log
+// it holds. A service asks each of them at its start and every 10 s after, and is fenced by an
+// epoch above its own. `forge serve --promote` asks them before it serves: it needs more than half
+// of them and itself to answer, every log it hears of to be a prefix of its own, and then it
+// appends `promoted` with an epoch above every one it saw and tells each peer of it
+// (`POST /api/fence`).
+
+use blake3::Id
+use out::Json
+use service::{Phase, Service}
+use state::Event
+use std::io::print
+use std::json::{Json as Doc}
+
+/// The calls' purposes (calls.wrela): from here on, a peer's.
+pub const FIRST: u32 = 100
+const PROBE: u32 = 100
+const FENCE: u32 = 101
+
+/// Why a round of asking runs.
+const AT_START: u32 = 0
+const TO_PROMOTE: u32 = 1
+const NOW_AND_THEN: u32 = 2
+
+/// What a store says of itself.
+pub struct Position: Clone {
+    /// `service` or `replica`.
+    pub role: String,
+    pub machine: String,
+    pub epoch: u64,
+    /// How long its log is, and the log's chain there (F25).
+    pub size: u64,
+    pub chain: Id,
+}
+
+/// A position's JSON.
+pub fn json(p: Position) -> String {
+    var j = Json::new()
+    j.obj()
+    j.kstr("role", p.role.as_str())
+    j.kstr("machine", p.machine.as_str())
+    j.knum("epoch", p.epoch)
+    j.knum("size", p.size)
+    j.kstr("chain", p.chain.hex().as_str())
+    j.end_obj()
+    take j.text
+}
+
+pub fn of_json(b: [u8]) -> Option<Position> {
+    let doc = Doc::read(b).ok()?
+    let chain = Id::parse(doc.field(doc.root, "chain"))?
+    Some(
+        Position {
+            role: doc.field(doc.root, "role").to_string(),
+            machine: doc.field(doc.root, "machine").to_string(),
+            epoch: doc.whole64(doc.get(doc.root, "epoch")?)?,
+            size: doc.whole64(doc.get(doc.root, "size")?)?,
+            chain,
+        },
+    )
+}
+
+pub struct Peers: Clone {
+    pub addrs: Vec<String>,
+    /// What each peer said in this round, in `addrs`' order: none if it didn't answer.
+    seen: Vec<Option<Position>>,
+    pub asking: bool,
+    why: u32,
+    /// The peers still to tell of a promotion, and its epoch.
+    to_fence: Vec<String>,
+    fence_epoch: u64,
+}
+
+pub fn none() -> Peers {
+    Peers {
+        addrs: Vec::new(),
+        seen: Vec::new(),
+        asking: false,
+        why: AT_START,
+        to_fence: Vec::new(),
+        fence_epoch: 0,
+    }
+}
+
+/// Before it listens: asks the peers, to promote this store (`--promote`) or to learn that a newer
+/// epoch has fenced it. With no peers and no promotion, it listens at once.
+pub fn at_start(s: mut Service, promote: bool) {
+    if s.peers.addrs.is_empty() && !promote {
+        return service::listen(mut s)
+    }
+    s.phase = Phase::Probing
+    round(mut s, if promote { TO_PROMOTE } else { AT_START })
+}
+
+/// Every 10 s while it serves: asks the peers again, if it has any.
+pub fn now_and_then(s: mut Service) {
+    if s.peers.addrs.is_empty() || s.peers.asking || s.calls.busy {
+        return
+    }
+    round(mut s, NOW_AND_THEN)
+}
+
+fn round(s: mut Service, why: u32) {
+    s.peers.asking = true
+    s.peers.why = why
+    s.peers.seen = Vec::new()
+    next(mut s)
+}
+
+fn next(s: mut Service) {
+    let at = s.peers.seen.len()
+    if at < s.peers.addrs.len() {
+        let to = s.peers.addrs[at].clone()
+        return calls::call_to(mut s, to.as_str(), "GET", "/api/position", "", [], PROBE, 5000)
+    }
+    s.peers.asking = false
+    heard(mut s)
+}
+
+pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
+    if purpose == PROBE {
+        let p = if status == 200 { of_json(body) } else { None }
+        s.peers.seen.push(take p)
+        return next(mut s)
+    }
+    if purpose == FENCE {
+        if status != 200 {
+            print(f"forge: {s.peers.to_fence[0]} wasn't told of epoch {s.peers.fence_epoch}")
+        }
+        let _ = s.peers.to_fence.remove(0)
+        fence_next(mut s)
+    }
+}
+
+/// The round is over: what the peers said decides.
+fn heard(s: mut Service) {
+    let own = s.core.state.epoch
+    var highest = own
+    for p in s.peers.seen {
+        if let Some(x) = p {
+            if x.epoch > highest {
+                highest = x.epoch
+            }
+        }
+    }
+    if s.peers.why == TO_PROMOTE {
+        return promote(mut s, highest)
+    }
+    if highest > own {
+        return service::fence(mut s, highest)
+    }
+    if s.peers.why == AT_START {
+        service::listen(mut s)
+    }
+}
+
+/// Makes this store the service, if it safely can.
+fn promote(s: mut Service, highest: u64) {
+    var answered = 1
+    for i in 0..s.peers.seen.len() {
+        let Some(p) = s.peers.seen[i].clone() else { continue }
+        answered += 1
+        if !log::holds(s.ends, p.size, p.chain) {
+            return service::fatal(
+                mut s,
+                f"{s.peers.addrs[i]} ({p.role} on {p.machine}) holds {p.size} bytes of log this store doesn't: promote the store with the most log",
+            )
+        }
+    }
+    let cluster = s.peers.addrs.len() + 1
+    if answered * 2 <= cluster {
+        return service::fatal(
+            mut s,
+            f"only {answered} of {cluster} stores answered: a promotion needs more than half, or it might lose a landing a service confirmed",
+        )
+    }
+    let epoch = highest + 1
+    print(f"forge: promoted to epoch {epoch} on {s.machine}")
+    let ev = Event::Promoted { epoch, machine: s.machine.clone(), time: service::now(s) }
+    service::commit(
+        mut s,
+        core::Durable { objects: Vec::new(), events: Vec::from([take ev]) },
+        None,
+    )
+    s.peers.to_fence = s.peers.addrs.clone()
+    s.peers.fence_epoch = epoch
+    service::listen(mut s)
+}
+
+/// Tells the next peer of the promotion, once it is durable.
+pub fn fence_next(s: mut Service) {
+    if s.peers.to_fence.is_empty() || s.calls.busy || s.core.state.epoch != s.peers.fence_epoch {
+        return
+    }
+    if s.log_size == 0 || !s.flushed() {
+        return
+    }
+    let to = s.peers.to_fence[0].clone()
+    var j = Json::new()
+    j.obj()
+    j.knum("epoch", s.peers.fence_epoch)
+    j.kstr("primary", s.advertise.as_str())
+    j.end_obj()
+    calls::call_to(
+        mut s,
+        to.as_str(),
+        "POST",
+        "/api/fence",
+        "application/json",
+        bytes::of_str(j.text.as_str()),
+        FENCE,
+        5000,
+    )
+}
+
+@test
+fn a_position_reads_back() {
+    let p = Position {
+        role: String::from("replica"),
+        machine: String::from("pop-os"),
+        epoch: 3,
+        size: 9000,
+        chain: blake3::hash(bytes::of_str("x")),
+    }
+    let Some(back) = of_json(bytes::of_str(json(p.clone()).as_str())) else { panic("it reads") }
+    assert(back.role.as_str() == "replica" && back.epoch == 3 && back.size == 9000, "fields")
+    assert(back.chain == p.chain && back.machine.as_str() == "pop-os", "chain and machine")
+    assert(of_json(bytes::of_str("{\"epoch\":1}")).is_none(), "not a position")
+}

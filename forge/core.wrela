@@ -32,11 +32,16 @@ pub fn core(machine: str) -> Core {
 }
 
 /// Who calls, and when.
+/// Who calls and what they may do (spec F22): write changes, land them, and work or replicate.
 pub struct Ctx: Clone {
+    /// `local`, or `LOGIN@NODE` (F29).
     pub who: String,
+    /// The caller's machine.
+    pub node: String,
     pub now: u64,
-    /// Whether the caller may land changes on main.
+    pub writes: bool,
     pub lands: bool,
+    pub fleet: bool,
 }
 
 /// What must be durable before an answer is given: objects first, then events.
@@ -171,6 +176,21 @@ pub struct Tool: Copy {
     pub what: Text,
     pub args: Text,
 }
+
+/// The tools that change something: for writers (F22). `land` is for landers.
+const WRITES: [Text; 11] = [
+    "open",
+    "write",
+    "edit",
+    "remove",
+    "move",
+    "snap",
+    "check",
+    "submit",
+    "close",
+    "land",
+    "put",
+]
 
 /// Every tool, in the order `forge help` lists them.
 pub const TOOLS: [Tool; 23] = [
@@ -324,6 +344,15 @@ pub fn tool(name: str) -> Option<Tool> {
 
 /// Calls tool `name` with the arguments `doc.args` (an object).
 pub fn call(c: Core, ctx: Ctx, name: str, doc: Doc, args: u32) -> Outcome {
+    var writing = false
+    for w in WRITES {
+        if w == name {
+            writing = true
+        }
+    }
+    if writing && !ctx.writes {
+        return fail(f"only writers (--writers) may {name}".as_str())
+    }
     match name {
         "open" => open(c, ctx, doc, args),
         "changes" => changes(c),
@@ -368,7 +397,7 @@ fn open(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
         author: ctx.who.clone(),
         model: arg(doc, args, "model"),
         session: arg(doc, args, "session"),
-        machine: String::new(),
+        machine: ctx.node.clone(),
         time: ctx.now,
     }
     ok_with(take j, Durable { objects: Vec::new(), events: Vec::from([take ev]) })
@@ -897,6 +926,19 @@ fn snap(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
 /// Queues `check` on change `ch`'s tree as it is now.
 fn queue(c: Core, ctx: Ctx, ch: Change, check: str, more: take Vec<Event>) -> Outcome {
     let (tree, objects) = tree_of(c, ch.clone())
+    // A check that passed on this exact tree isn't run again, and one queued or running on it
+    // isn't queued twice (F23b): the call answers with that job.
+    if let Some(jb) = state::same_check(c.state, check, tree) {
+        var j = Json::new()
+        j.obj()
+        j.kstr("job", f"j{jb.id}".as_str())
+        j.kstr("tree", tree.hex().as_str())
+        if jb.run == Run::Done {
+            j.kbool("reused", v: true)
+        }
+        j.end_obj()
+        return ok_with(take j, Durable { objects, events: more })
+    }
     let id = c.state.next_job
     var events = take more
     events.push(
@@ -1187,6 +1229,9 @@ fn not_ready(i: Indexed, ctx: Ctx, tree: Id, pkg: str, next: u64) -> Outcome {
     match i {
         Indexed::Making(job) => making(job, nothing()),
         Indexed::Missing => {
+            if !ctx.writes {
+                return fail("that index isn't made yet, and only writers may queue it")
+            }
             let ev = queue_index(ctx, tree, pkg, next)
             making(next, Durable { objects: Vec::new(), events: Vec::from([take ev]) })
         },
@@ -1542,7 +1587,14 @@ fn doc(s: str) -> Doc {
 }
 
 fn ctx() -> Ctx {
-    Ctx { who: String::from("agent"), now: 100, lands: true }
+    Ctx {
+        who: String::from("agent"),
+        node: String::from("t"),
+        now: 100,
+        writes: true,
+        lands: true,
+        fleet: true,
+    }
 }
 
 /// Calls a tool and folds what it made durable: its JSON.

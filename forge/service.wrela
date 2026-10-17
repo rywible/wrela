@@ -37,6 +37,8 @@ pub enum Phase: Copy + Eq {
     Disk,
     /// Loading the files main and the open changes hold.
     Loading,
+    /// Asking its peers, before it listens (peers.wrela).
+    Probing,
     Ready,
     /// Running as a client: one call to a forge service.
     Client,
@@ -66,6 +68,8 @@ pub enum For: Clone {
     /// A part of the commit in flight's append.
     Appended,
     Peer(u32),
+    /// What tailscale said of the caller on connection `conn`, at address `addr` (who.wrela).
+    Whois(u32, String),
     /// A write or a removal in a worker's checkout.
     Checkout,
     ManifestRead,
@@ -109,6 +113,8 @@ pub struct Conn {
     /// Whether its peer is known: its requests wait until it is, since who calls decides what
     /// they may do.
     pub known: bool,
+    /// Who calls, once known; none for a caller forge refuses (F28).
+    pub who: Option<who::Who>,
 }
 
 /// A commit waiting to be written.
@@ -116,17 +122,19 @@ struct Pend: Clone {
     objects: Vec<Object>,
     records: Vec<u8>,
     reply: Option<Reply>,
-    /// Whether it lands a revision: its answer waits for the replicas (`--acks`).
-    lands: bool,
+    /// Whether the service stops once it is durable: it fences the service (F26a).
+    stops: bool,
 }
 
 /// The commits being written: what waits on their writes, and their answers.
 struct Flight: Clone {
     writes_left: u32,
     records: Vec<u8>,
+    /// Where each of its records will end in the log, and the log's chain there (F25).
+    ends: Vec<(u64, Id)>,
     appends_left: u32,
     replies: Vec<Reply>,
-    lands: bool,
+    stops: bool,
 }
 
 /// A call that waits for objects, to be made again once they're loaded.
@@ -146,7 +154,15 @@ pub struct Service {
     /// Where it listens, the machine's name, and who may land changes.
     pub listen: String,
     pub machine: String,
+    /// Who may write, land and work or replicate (F22): rules who.wrela reads. With no
+    /// `--writers`, every caller forge knows may write.
+    pub writers: Option<Vec<String>>,
     pub landers: Vec<String>,
+    pub fleet: Vec<String>,
+    /// The program that says who a tailnet address is, and what it said of each address lately:
+    /// who, and until when it holds (milliseconds since 1970).
+    pub whois: String,
+    known: SortedMap<String, (who::Who, u64)>,
     /// The time when the host started: milliseconds since 1970, and the call's seconds since.
     pub start_ms: u64,
     pub time: f32,
@@ -163,6 +179,15 @@ pub struct Service {
     pub parked: Vec<Parked>,
     pub startup_left: u32,
     pub log_size: u64,
+    /// Where each record of the log ends, and the log's chain there (F25): what a replica's ask
+    /// is checked against.
+    pub ends: Vec<(u64, Id)>,
+    /// The other stores of the fleet (`--peers`), and the address they know this one by.
+    pub peers: peers::Peers,
+    pub advertise: String,
+    /// Whether it learned of a newer epoch: it answers nothing more, and stops once that's
+    /// durable.
+    pub fencing: bool,
     pub worker: jobs::Worker,
     pub import: import::Import,
     pub calls: calls::Calls,
@@ -180,6 +205,8 @@ pub struct Service {
     pub replica: replicate::Replica,
     pub desk: workspace::Workspace,
     ticking: bool,
+    /// When the chores that wait on time are next done: jobs past their limit, peers' epochs.
+    chores_at: u64,
     /// Whether main moved since the open changes were last carried onto it.
     carry_due: bool,
 }
@@ -192,7 +219,11 @@ pub fn new() -> Service {
         args: Vec::new(),
         listen: String::from("127.0.0.1:7171"),
         machine: String::from("local"),
+        writers: None,
         landers: Vec::new(),
+        fleet: Vec::new(),
+        whois: String::from("tailscale"),
+        known: SortedMap::new(),
         start_ms: 0,
         time: 0.0,
         core: core::core("local"),
@@ -206,6 +237,10 @@ pub fn new() -> Service {
         parked: Vec::new(),
         startup_left: 0,
         log_size: 0,
+        ends: Vec::new(),
+        peers: peers::none(),
+        advertise: String::new(),
+        fencing: false,
         worker: jobs::worker("local"),
         import: import::idle(),
         calls: calls::calls(""),
@@ -219,6 +254,7 @@ pub fn new() -> Service {
         replica: replicate::idle(),
         desk: workspace::idle(),
         ticking: false,
+        chores_at: 0,
         carry_due: false,
     }
 }
@@ -237,15 +273,6 @@ pub fn fatal(s: mut Service, why: str) {
     print(f"forge: {why}")
     host::exit(1)
     s.phase = Phase::Stopped
-}
-
-/// Whether the program calls a service (as a command, a worker, a replica or a workspace), so its
-/// connections are its calls', not callers'.
-fn calls_out(s: Service) -> bool {
-    s.phase == Phase::Client ||
-        s.phase == Phase::Work ||
-        s.phase == Phase::Replica ||
-        s.phase == Phase::Workspace
 }
 
 /// One call of the host: answers, then input, then what waits to be written.
@@ -275,17 +302,19 @@ pub fn step(s: mut Service, time: f32) {
     }
     for e in events() {
         match e {
+            // A connection a listener accepted is a caller's (its tag is the port); one the
+            // program made (tag 0) is a call's.
             Input::Message { conn, .. } => {
                 if let Some(b) = payload(e) {
-                    if calls_out(s) {
-                        calls::bytes(mut s, conn, b)
-                    } else {
+                    if s.conns.contains(conn) {
                         bytes_in(mut s, conn, b)
+                    } else {
+                        calls::bytes(mut s, conn, b)
                     }
                 }
             },
-            Input::Connection { conn, open, .. } => {
-                if calls_out(s) {
+            Input::Connection { conn, open, tag } => {
+                if tag == 0 {
                     calls::connection(mut s, conn, open)
                 } else if open {
                     let _ = s.conns.insert(
@@ -296,6 +325,7 @@ pub fn step(s: mut Service, time: f32) {
                             closing: false,
                             peer: String::new(),
                             known: false,
+                            who: None,
                         },
                     )
                     wait(mut s, host::peer(conn), For::Peer(conn))
@@ -314,6 +344,11 @@ pub fn step(s: mut Service, time: f32) {
             jobs::pump(mut s)
         }
         import::pump(mut s)
+        if now(s) >= s.chores_at {
+            s.chores_at = now(s) + 10000
+            jobs::expire(mut s)
+            peers::now_and_then(mut s)
+        }
     }
     if s.phase == Phase::Work {
         remote::pump(mut s)
@@ -325,13 +360,17 @@ pub fn step(s: mut Service, time: f32) {
         workspace::pump(mut s)
     }
     pump(mut s)
+    calls::expire(mut s)
     if s.phase == Phase::Ready {
         replicate::pump_asks(mut s)
         replicate::pump_objects(mut s)
-        if !s.asks.is_empty() && !s.ticking {
-            s.ticking = true
-            wait(mut s, host::after(1000), For::Tick)
-        }
+        peers::fence_next(mut s)
+    }
+    // Asks, calls and chores wait on time: a wake-up each second.
+    let timed = s.phase == Phase::Ready || s.phase == Phase::Replica || s.calls.busy
+    if timed && !s.ticking && s.phase != Phase::Stopped {
+        s.ticking = true
+        wait(mut s, host::after(1000), For::Tick)
     }
 }
 
@@ -440,16 +479,16 @@ fn answered(s: mut Service, what: take For, r: take Result<Vec<u8>, IoError>) {
                 if let Ok(b) = take r {
                     s.conns.at_mut(conn).peer = bytes::text_of(b)
                 }
-                s.conns.at_mut(conn).known = true
-                next_request(mut s, conn)
+                identify(mut s, conn)
             }
         },
+        For::Whois(conn, addr) => whois_said(mut s, conn, addr.as_str(), take r),
         For::Checkout => jobs::checkout_done(mut s, take r),
         For::ManifestRead => jobs::manifest_read(mut s, take r),
         For::ManifestSaved => jobs::manifest_saved(mut s, take r),
         For::Ran(job) => jobs::ran(mut s, job, take r),
         For::Import(step) => import::answered(mut s, step, take r),
-        For::Client(_) => calls::connected(mut s, take r),
+        For::Client(serial) => calls::connected(mut s, serial, take r),
         For::Remote(what) => remote::answered(mut s, what, take r),
         For::Replica(what) => replicate::answered(mut s, what, take r),
         For::LogPart(conn) => replicate::log_read(mut s, conn, take r),
@@ -510,12 +549,30 @@ fn begin(s: mut Service) {
         s.core.machine = m.clone()
         s.worker = jobs::worker(m.as_str())
     }
-    if let Some(l) = flag(s.args, "--landers") {
-        let text = l.as_str()
-        for (from, to) in text.split(",") {
-            s.landers.push(text.slice(from, to).to_string())
+    for (name, which) in [("--writers", 0), ("--landers", 1), ("--fleet", 2)] {
+        let Some(l) = flag(s.args, name) else { continue }
+        if let Some(bad) = who::bad_rule(l.as_str()) {
+            return fatal(
+                mut s,
+                f"{name}: `{bad}` isn't node:NAME, user:LOGIN, tag:TAG or an address".as_str(),
+            )
+        }
+        let rules = who::rules(l.as_str())
+        if which == 0 {
+            s.writers = Some(take rules)
+        } else if which == 1 {
+            s.landers = take rules
+        } else {
+            s.fleet = take rules
         }
     }
+    if let Some(w) = flag(s.args, "--whois") {
+        s.whois = take w
+    }
+    if let Some(p) = flag(s.args, "--peers") {
+        s.peers.addrs = who::rules(p.as_str())
+    }
+    s.advertise = flag(s.args, "--advertise").unwrap_or(s.listen.clone())
     s.phase = Phase::Disk
     s.startup_left = 5
     wait(mut s, host::mkdir("data/objects"), For::Made)
@@ -537,10 +594,79 @@ pub fn started_one(s: mut Service, what: str, r: take Result<Vec<u8>, IoError>) 
     if s.phase == Phase::Disk {
         load_held(mut s)
     } else if s.phase == Phase::Loading {
-        // Ready once it listens.
-        s.phase = Phase::Begin
-        wait(mut s, host::listen(s.listen.as_str()), For::Listening)
-        s.carry_due = true
+        if s.core.state.fenced > 0 {
+            return fatal(
+                mut s,
+                f"epoch {s.core.state.fenced} fenced this store's service: it serves no more (make it a replica again from an empty store)".as_str(),
+            )
+        }
+        // What this service's worker ran when it stopped runs again, as a new try (F23a).
+        var events: Vec<Event> = Vec::new()
+        for id in jobs::running_on(s, s.worker.name.as_str()) {
+            events.push(
+                Event::Requeued {
+                    job: id,
+                    why: String::from("the service started again"),
+                    time: now(s),
+                },
+            )
+        }
+        if !events.is_empty() {
+            commit(mut s, Durable { objects: Vec::new(), events }, None)
+        }
+        var promote = false
+        for a in s.args {
+            if a.as_str() == "--promote" {
+                promote = true
+            }
+        }
+        if !promote {
+            // A store's first service begins its first epoch; a store whose epoch is another
+            // machine's is that service's replica, which serves only once promoted (F26).
+            if s.core.state.epoch == 0 {
+                let ev = Event::Promoted { epoch: 1, machine: s.machine.clone(), time: now(s) }
+                commit(mut s, Durable { objects: Vec::new(), events: Vec::from([take ev]) }, None)
+            } else if s.core.state.primary.as_str() != s.machine.as_str() {
+                return fatal(
+                    mut s,
+                    f"epoch {s.core.state.epoch} is {s.core.state.primary}'s, not {s.machine}'s: `forge serve --promote` makes this store the service".as_str(),
+                )
+            }
+        }
+        peers::at_start(mut s, promote)
+    }
+}
+
+/// Listens for callers: ready once it does.
+pub fn listen(s: mut Service) {
+    s.phase = Phase::Begin
+    wait(mut s, host::listen(s.listen.as_str()), For::Listening)
+    s.carry_due = true
+}
+
+/// Fenced by epoch `epoch` (F26a): answers nothing more, and stops once that's in the log.
+pub fn fence(s: mut Service, epoch: u64) {
+    if s.fencing {
+        return
+    }
+    s.fencing = true
+    print(f"forge: epoch {epoch} is newer than this service's ({s.core.state.epoch}): stopping")
+    let ev = Event::Fenced { epoch, time: now(s) }
+    let d = Durable { objects: Vec::new(), events: Vec::from([take ev]) }
+    if let Err(why) = core::absorb(mut s.core, d.clone()) {
+        return fatal(mut s, f"the fence doesn't apply: {why}".as_str())
+    }
+    var records: Vec<u8> = Vec::new()
+    for ev in d.events {
+        bytes::push_run(mut records, log::record(state::encode(ev.clone())))
+    }
+    s.queue.push(Pend { objects: Vec::new(), records, reply: None, stops: true })
+}
+
+impl Service {
+    /// Whether every commit made is durable.
+    pub fn flushed(self) -> bool {
+        self.queue.is_empty() && self.flight.is_none()
     }
 }
 
@@ -553,6 +679,7 @@ fn replay(s: mut Service, b: take Vec<u8>) {
         wait(mut s, host::truncate(LOG, u64(read.whole)), For::Truncated)
     }
     s.log_size = u64(read.whole)
+    s.ends = log::ends(b, read.clone(), 0, Id::zero())
     var n = 0
     for p in read.payloads {
         match state::decode(p.clone()) {
@@ -696,18 +823,14 @@ pub fn commit(s: mut Service, d: take Durable, answer: take Option<Reply>) {
         return
     }
     var records: Vec<u8> = Vec::new()
-    var lands = false
     for ev in d.events {
         match ev {
-            Event::Landed { .. } => {
-                s.carry_due = true
-                lands = true
-            },
+            Event::Landed { .. } => s.carry_due = true,
             _ => {},
         }
         bytes::push_run(mut records, log::record(state::encode(ev.clone())))
     }
-    s.queue.push(Pend { objects: take d.objects, records, reply: answer, lands })
+    s.queue.push(Pend { objects: take d.objects, records, reply: answer, stops: false })
 }
 
 /// Writes the commits that wait, if none are being written.
@@ -718,9 +841,10 @@ fn pump(s: mut Service) {
     var f = Flight {
         writes_left: 0,
         records: Vec::new(),
+        ends: Vec::new(),
         appends_left: 0,
         replies: Vec::new(),
-        lands: false,
+        stops: false,
     }
     let pends = replace(mut s.queue, Vec::new())
     for p in pends {
@@ -732,11 +856,12 @@ fn pump(s: mut Service) {
             f.writes_left += write_object(mut s, o.id, o.bytes)
         }
         bytes::push_run(mut f.records, p.records)
-        f.lands = f.lands || p.lands
+        f.stops = f.stops || p.stops
         if let Some(r) = p.reply {
             f.replies.push(r.clone())
         }
     }
+    f.ends = log::ends(f.records, log::read(f.records), s.log_size, chain_of(s))
     let none_left = f.writes_left == 0
     s.flight = Some(take f)
     if none_left {
@@ -843,11 +968,19 @@ fn appended_one(s: mut Service) {
     appended_all(mut s)
 }
 
-/// The flight is durable: its answers go.
+/// The flight is durable: its answers go, once enough replicas hold it too (`--acks`).
 fn appended_all(s: mut Service) {
     let Some(f) = replace(mut s.flight, None) else { return }
-    if f.lands && s.acks > 0 {
-        // Answered once enough replicas hold it (replicate.wrela).
+    for e in f.ends {
+        s.ends.push(e)
+    }
+    if f.stops {
+        print("forge: fenced")
+        host::exit(1)
+        s.phase = Phase::Stopped
+        return
+    }
+    if s.acks > 0 && !f.replies.is_empty() {
         s.awaiting.push((s.log_size, f.replies.clone()))
         replicate::release(mut s)
     } else {
@@ -856,6 +989,11 @@ fn appended_all(s: mut Service) {
         }
     }
     pump(mut s)
+}
+
+/// The log's chain at its durable end (F25).
+pub fn chain_of(s: Service) -> Id {
+    if s.ends.is_empty() { Id::zero() } else { s.ends[s.ends.len() - 1].1 }
 }
 
 // ---- carrying changes onto main ----------------------------------------------------------------
@@ -927,6 +1065,21 @@ fn next_request(s: mut Service, conn: u32) {
     if !s.conns.contains(conn) || s.conns.at(conn).busy || !s.conns.at(conn).known {
         return
     }
+    if s.conns.at(conn).who.is_none() {
+        // A caller forge can't name: refused, whatever it asks.
+        s.conns.at_mut(conn).closing = true
+        s.conns.at_mut(conn).busy = true
+        let peer = s.conns.at(conn).peer.clone()
+        return reply(
+            mut s,
+            conn,
+            403,
+            "text/plain",
+            bytes::of_str(
+                f"forge serves the machine itself and callers tailscale names; not {peer}\n".as_str(),
+            ),
+        )
+    }
     let got = s.conns.at_mut(conn).reader.next()
     match take got {
         Read::Wait => {},
@@ -939,6 +1092,18 @@ fn next_request(s: mut Service, conn: u32) {
             s.conns.at_mut(conn).busy = true
             if req.closes() {
                 s.conns.at_mut(conn).closing = true
+            }
+            if s.phase == Phase::Replica {
+                return replicate::route(mut s, conn, take req)
+            }
+            if s.fencing {
+                return reply(
+                    mut s,
+                    conn,
+                    503,
+                    "text/plain",
+                    bytes::of_str("forge was fenced by a newer epoch: ask its new service\n"),
+                )
             }
             if s.phase != Phase::Ready {
                 return reply(mut s, conn, 503, "text/plain", bytes::of_str("forge is starting"))
@@ -967,7 +1132,11 @@ fn route(s: mut Service, conn: u32, req: take Request) {
     if method == "GET" && path.starts_with("/api/object/") {
         return get_object(mut s, conn, path.slice(from: 12, to: path.len()))
     }
+    let ctx = ctx_of(s, conn)
     if method == "POST" && path == "/api/object" {
+        if !allowed(mut s, conn, ctx.writes, "only writers store blobs") {
+            return
+        }
         let o = object::blob(req.body)
         let id = o.id
         let r = Reply {
@@ -983,17 +1152,14 @@ fn route(s: mut Service, conn: u32, req: take Request) {
         )
     }
     if method == "POST" && path == "/api/import" {
+        if !allowed(mut s, conn, ctx.lands, "only a lander imports") {
+            return
+        }
         return import::start(mut s, conn, req.body)
     }
     if method == "POST" && path == "/api/stop" {
-        if !ctx_of(s, conn).lands {
-            return reply(
-                mut s,
-                conn,
-                403,
-                "text/plain",
-                bytes::of_str("only a lander stops forge\n"),
-            )
+        if !allowed(mut s, conn, ctx.lands, "only a lander stops forge") {
+            return
         }
         print("forge: stopping")
         reply(mut s, conn, 200, "text/plain", bytes::of_str("stopping\n"))
@@ -1001,9 +1167,49 @@ fn route(s: mut Service, conn: u32, req: take Request) {
         s.phase = Phase::Stopped
         return
     }
+    if (path == "/api/log" || path == "/api/objects" || path.starts_with("/api/work")) &&
+        !allowed(mut s, conn, ctx.fleet, "only the fleet (--fleet) works and replicates") {
+        return
+    }
+    if method == "GET" && path == "/api/position" {
+        let p = peers::Position {
+            role: String::from("service"),
+            machine: s.machine.clone(),
+            epoch: s.core.state.epoch,
+            size: s.log_size,
+            chain: chain_of(s),
+        }
+        return reply(mut s, conn, 200, "application/json", bytes::of_str(peers::json(p).as_str()))
+    }
+    if method == "POST" && path == "/api/fence" {
+        if !allowed(mut s, conn, ctx.lands || ctx.fleet, "only a lander or the fleet fences") {
+            return
+        }
+        let epoch = fence_epoch(req.body)
+        let newer = epoch > s.core.state.epoch
+        reply(
+            mut s,
+            conn,
+            200,
+            "application/json",
+            bytes::of_str(if newer { "{\"fenced\":true}" } else { "{\"fenced\":false}" }),
+        )
+        if newer {
+            fence(mut s, epoch)
+        }
+        return
+    }
     if method == "GET" && path == "/api/log" {
         let from = bytes::parse_u64(req.param("from").as_str()).unwrap_or(0)
-        return replicate::log_from(mut s, conn, from, req.param("replica").as_str())
+        let epoch = bytes::parse_u64(req.param("epoch").as_str()).unwrap_or(0)
+        return replicate::log_from(
+            mut s,
+            conn,
+            from,
+            req.param("chain").as_str(),
+            epoch,
+            req.param("replica").as_str(),
+        )
     }
     if method == "POST" && path == "/api/objects" {
         return replicate::objects(mut s, conn, req.body)
@@ -1018,6 +1224,26 @@ fn route(s: mut Service, conn: u32, req: take Request) {
         "text/plain",
         bytes::of_str(f"forge has nothing at {method} {path}\n".as_str()),
     )
+}
+
+/// The epoch a fence's body names; 0 if it names none.
+pub fn fence_epoch(body: [u8]) -> u64 {
+    match Doc::read(body) {
+        Ok(doc) => match doc.get(doc.root, "epoch") {
+            Some(v) => doc.whole64(v).unwrap_or(0),
+            None => 0,
+        },
+        Err(_) => 0,
+    }
+}
+
+/// Whether a worker or a replica named `name` may be the caller's: the machine itself names its
+/// own as it likes; another names its for its node, `NODE` or `NODE/...`.
+pub fn names_its_own(ctx: Ctx, name: str) -> bool {
+    let node = ctx.node.as_str()
+    ctx.who.as_str() == "local" ||
+        name == node ||
+        (name.starts_with(node) && name.len() > node.len() && name.byte(node.len()) == 47)
 }
 
 fn get_object(s: mut Service, conn: u32, hex: str) {
@@ -1053,18 +1279,99 @@ fn get_object(s: mut Service, conn: u32, hex: str) {
     }
 }
 
-/// Who calls on connection `conn`, and whether they may land.
-fn ctx_of(s: Service, conn: u32) -> Ctx {
-    let peer = if s.conns.contains(conn) { s.conns.at(conn).peer.clone() } else { String::new() }
-    let ip_end = peer.as_str().find(":").unwrap_or(peer.len())
-    let ip = peer.as_str().slice(from: 0, to: ip_end).to_string()
-    var lands = ip.as_str() == "127.0.0.1" || ip.as_str() == "::1" || ip.as_str() == "[::1]"
-    for l in s.landers {
-        if l.as_str() == ip.as_str() {
-            lands = true
+/// Who calls on connection `conn`, and what they may do (F22).
+pub fn ctx_of(s: Service, conn: u32) -> Ctx {
+    let found = if s.conns.contains(conn) { s.conns.at(conn).who.clone() } else { None }
+    let Some(w) = found else {
+        return Ctx {
+            who: String::from("unknown"),
+            node: String::new(),
+            now: now(s),
+            writes: false,
+            lands: false,
+            fleet: false,
         }
     }
-    Ctx { who: if ip.is_empty() { String::from("unknown") } else { ip }, now: now(s), lands }
+    let writes = match s.writers {
+        Some(rules) => who::named(w.clone(), rules),
+        None => true,
+    }
+    Ctx {
+        who: who::name(w.clone()),
+        node: if w.local { s.machine.clone() } else { w.node.clone() },
+        now: now(s),
+        writes,
+        lands: who::named(w.clone(), s.landers),
+        fleet: who::named(w, s.fleet),
+    }
+}
+
+/// Learns who calls on connection `conn`, from its peer's address: the machine itself, a
+/// tailnet caller tailscale names (asked once a minute at most), or a caller refused (F28).
+fn identify(s: mut Service, conn: u32) {
+    let addr = who::addr_of(s.conns.at(conn).peer.as_str())
+    if who::is_loopback(addr.as_str()) {
+        return known_as(mut s, conn, Some(who::local(addr.as_str())))
+    }
+    if !who::is_tailnet(addr.as_str()) {
+        return known_as(mut s, conn, None)
+    }
+    if s.known.contains(addr.clone()) {
+        let (w, until) = s.known.at(addr.clone()).clone()
+        if now(s) < until {
+            return known_as(mut s, conn, Some(take w))
+        }
+    }
+    let r = host::Run {
+        tag: 0,
+        argv: Vec::from(
+            [s.whois.clone(), String::from("whois"), String::from("--json"), addr.clone()],
+        ),
+        cwd: DATA.to_string(),
+        env: Vec::new(),
+        limit_ms: 10000,
+        cap: 1048576,
+        stdin: Vec::new(),
+    }
+    wait(mut s, host::run(r), For::Whois(conn, take addr))
+}
+
+fn whois_said(s: mut Service, conn: u32, addr: str, r: take Result<Vec<u8>, IoError>) {
+    var w: Option<who::Who> = None
+    match take r {
+        Ok(b) => match host::ran_of(take b) {
+            Some(x) => {
+                if x.ok() {
+                    w = who::of_whois(addr, x.stdout)
+                }
+                if w.is_none() {
+                    print(f"forge: tailscale doesn't name {addr}; refusing it")
+                }
+            },
+            None => print("forge: the whois answer is malformed"),
+        },
+        Err(e) => print(f"forge: whois didn't run: {e.message()}"),
+    }
+    if let Some(x) = w.clone() {
+        let _ = s.known.insert(addr.to_string(), (take x, now(s) + 60000))
+    }
+    if s.conns.contains(conn) {
+        known_as(mut s, conn, take w)
+    }
+}
+
+fn known_as(s: mut Service, conn: u32, w: take Option<who::Who>) {
+    s.conns.at_mut(conn).who = take w
+    s.conns.at_mut(conn).known = true
+    next_request(mut s, conn)
+}
+
+/// Answers `conn` with 403 unless its caller may do what `may` says; whether it may.
+fn allowed(s: mut Service, conn: u32, may: bool, what: str) -> bool {
+    if !may {
+        reply(mut s, conn, 403, "text/plain", bytes::of_str(f"{what}\n".as_str()))
+    }
+    may
 }
 
 /// Makes a tool call, or parks it until what it needs is loaded.
