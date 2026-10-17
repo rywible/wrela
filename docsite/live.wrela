@@ -10,12 +10,11 @@
 // `smooth_union`, `intersect`, `smooth_intersect`, `smooth_subtract`, `translate`, `scale`). A
 // block it can't read is shown as code alone.
 use field::Vertex
-use std::derive::{Box3, interval}
 use std::field::{Bound, Surface, cuboid, ellipsoid, oval, round_cone, smax, smin, sphere}
 use std::gpu::{Over, Rgba8, Sampler, Texture}
 
 /// The most nodes a scene holds.
-pub const NODES: u32 = 24
+pub const NODES: u32 = 32
 
 // A node's kinds: primitives, then combinators.
 const SPHERE: u32 = 0
@@ -45,7 +44,7 @@ pub struct Node: Copy + GpuData {
 
 /// A field as data: its nodes in order, each after those it combines; the last is the field.
 pub struct Scene: Copy + GpuData {
-    nodes: [Node; 24],
+    nodes: [Node; 32],
     len: u32,
 }
 
@@ -61,7 +60,7 @@ impl Scene {
                 size: 1.0,
                 p: vec4(0.0),
                 q: vec4(0.0),
-            }; 24],
+            }; 32],
             len: 0,
         }
     }
@@ -74,7 +73,7 @@ impl Scene {
 /// The distance of `scene`'s field at `p`: each node in order, a primitive by std::field's own
 /// `distance`, a combinator as std::field's combines its parts.
 pub fn evaluate(scene: Scene, p: vec3) -> f32 {
-    var r = [0.0; 24]
+    var r = [0.0; 32]
     for i in 0..scene.len {
         let n = scene.nodes[i]
         let q = (p - n.at) / n.size
@@ -131,30 +130,89 @@ pub fn read(code: str, time: f32) -> Option<Read> {
     Some(Read { scene, knobs, moves: r.moves, centre, radius, floor })
 }
 
-/// A sphere that holds `scene`'s field, from std::field's bounds of its primitives, and the
-/// height of their lowest point.
+/// A sphere that holds `scene`'s field, and the height of its lowest point. The sphere is from
+/// std::field's bounds of its primitives, joined as its combinators join them: a union is held by
+/// a sphere round both parts', an intersection by the smaller part's, a cut by what it cuts from.
+/// The lowest point is where the field is first met marching up columns through that sphere.
 fn framing(scene: Scene) -> (vec3, f32, f32) {
-    var lo = vec3(1.0e9)
-    var hi = vec3(-1.0e9)
+    var at = [vec3(); 32]
+    var radius = [0.0; 32]
     for i in 0..scene.len {
         let n = scene.nodes[i]
+        if n.kind == UNION || n.kind == SMOOTH_UNION {
+            // The smallest sphere round both.
+            let (ca, ra, cb, rb) = (at[n.a], radius[n.a], at[n.b], radius[n.b])
+            let d = length(cb - ca)
+            if d + rb <= ra {
+                at[i] = ca
+                radius[i] = ra
+            } else if d + ra <= rb {
+                at[i] = cb
+                radius[i] = rb
+            } else {
+                let r = (d + ra + rb) * 0.5
+                at[i] = ca + (cb - ca) / max(d, 0.000001) * (r - ra)
+                radius[i] = r
+            }
+            radius[i] += n.k
+            continue
+        }
+        if n.kind == INTERSECT || n.kind == SMOOTH_INTERSECT {
+            let k = if radius[n.a] <= radius[n.b] { n.a } else { n.b }
+            at[i] = at[k]
+            radius[i] = radius[k]
+            continue
+        }
+        if n.kind >= UNION {
+            at[i] = at[n.a]
+            radius[i] = radius[n.a]
+            continue
+        }
         let b = match n.kind {
             SPHERE => sphere(radius: n.p.x).bound(),
             ROUND_CONE => round_cone(n.p.xyz, n.q.xyz, r_top: n.p.w, r_bottom: n.q.w).bound(),
             CUBOID => cuboid(half: n.p.xyz).bound(),
             ELLIPSOID => ellipsoid(radii: n.p.xyz).bound(),
-            OVAL => oval(radii: n.p.xyz).bound(),
-            _ => continue,
+            _ => oval(radii: n.p.xyz).bound(),
         }
-        let c = n.at + b.centre * n.size
-        let r = b.radius * abs(n.size)
-        if r > 1.0e6 { continue }
-        lo = min(lo, c - vec3(r))
-        hi = max(hi, c + vec3(r))
+        at[i] = n.at + b.centre * n.size
+        radius[i] = min(b.radius * abs(n.size), 1.0e6)
     }
-    if lo.x > hi.x { return (vec3(), 1.0, -1.0) }
-    let centre = (lo + hi) * 0.5
-    (centre, max(length(hi - lo) * 0.5, 0.05), lo.y)
+    let centre = at[scene.len - 1]
+    let r = radius[scene.len - 1]
+    if r > 1.0e5 { return (vec3(), 1.0, -1.0) }
+    // Up nine by nine columns across the sphere, from its foot, to where the surface is near
+    // the column (within half the columns' spacing, so a thin bar between them is met); then
+    // onto the surface, along the field's gradient: the lowest place met.
+    var floor = centre.y + r
+    let cell = r * 1.6 / 8.0
+    for i in 0..81 {
+        let x = centre.x + (f32(i % 9) / 8.0 - 0.5) * r * 1.6
+        let z = centre.z + (f32(i / 9) / 8.0 - 0.5) * r * 1.6
+        var y = centre.y - r
+        for _ in 0..64 {
+            let d = evaluate(scene, vec3(x, y, z))
+            if d < cell * 0.75 {
+                var p = vec3(x, y, z)
+                for _ in 0..6 {
+                    let e = r * 0.001
+                    let g = vec3(
+                        evaluate(scene, p + vec3(x: e)) - evaluate(scene, p - vec3(x: e)),
+                        evaluate(scene, p + vec3(y: e)) - evaluate(scene, p - vec3(y: e)),
+                        evaluate(scene, p + vec3(z: e)) - evaluate(scene, p - vec3(z: e)),
+                    ) /
+                        (2.0 * e)
+                    p = p - g * evaluate(scene, p) / max(dot(g, g), 0.0001)
+                }
+                if abs(evaluate(scene, p)) < r * 0.01 { floor = min(floor, p.y) }
+                break
+            }
+            y += max(d - cell * 0.5, r * 0.004)
+            if y > floor { break }
+        }
+    }
+    if floor > centre.y + r * 0.99 { floor = centre.y - r }
+    (centre, max(r, 0.05), floor)
 }
 
 /// A token: an identifier, a number, a string, or one character of punctuation.
@@ -308,9 +366,14 @@ impl Reader {
         }
     }
 
-    /// The block's field: the last call to one of its functions that returns a `Surface`, made at
-    /// the top level; else the last top-level `let` that is a shape.
+    /// The block's field: the last top-level `let` that is a shape; else, as in a program that
+    /// draws a field it doesn't name, the last call to one of its functions that returns a
+    /// `Surface`, made at the top level.
     fn result(mut self) -> Option<u32> {
+        if let Some(n) = self.last_shape() { return Some(n) }
+        self.used.clear()
+        self.nodes.clear()
+        self.failed = false
         var call: Option<u32> = None
         var i = 0
         while i < self.tokens.len() {
@@ -329,46 +392,27 @@ impl Reader {
             }
             i += 1
         }
-        if let Some(t) = call {
-            // The call alone: what's done with its field after (`.distance(p)`) isn't the field.
-            self.at = t
-            return match self.primary() {
-                Some(Value::Shape(n)) => Some(n),
-                _ => None,
-            }
+        let Some(t) = call else { return None }
+        // The call alone: what's done with its field after (`.distance(p)`) isn't the field.
+        self.at = t
+        match self.primary() {
+            Some(Value::Shape(n)) => Some(n),
+            _ => None,
         }
-        var last: Option<u32> = None
-        for k in 0..self.names.len() {
-            let start = self.names[k].1
-            self.at = start
-            let before = self.used.len()
-            let nodes = self.nodes.len()
-            match self.expression() {
-                Some(Value::Shape(n)) => last = Some(n),
-                _ => {
-                    // Not a shape: its numbers aren't the field's.
-                    self.used.truncate(before)
-                    self.nodes.truncate(nodes)
-                },
-            }
-            self.failed = false
-        }
-        // Reading every `let` noted the numbers of those the last one doesn't use: read it again
-        // alone.
-        let Some(_) = last else { return None }
-        self.used.clear()
-        self.nodes.clear()
+    }
+
+    /// The last top-level `let` that is a shape, read alone, so only its numbers are noted.
+    fn last_shape(mut self) -> Option<u32> {
         var k = self.names.len()
         while k > 0 {
             k -= 1
+            self.used.clear()
+            self.nodes.clear()
+            self.failed = false
             self.at = self.names[k].1
-            let before = self.used.len()
             match self.expression() {
-                Some(Value::Shape(n)) => return Some(n),
-                _ => {
-                    self.used.truncate(before)
-                    self.failed = false
-                },
+                Some(Value::Shape(n)) => if !self.failed { return Some(n) },
+                _ => {},
             }
         }
         None
@@ -861,16 +905,19 @@ pub fn written(v: f32, decimals: u32) -> String {
 
 // ---- drawing -----------------------------------------------------------------------------------
 
-/// What a figure shows: the field lit (`SURFACE`), or on a slice through its centre, its
-/// distance (`DISTANCE`), its derived gradient (`GRADIENT`) or its derived bounds over boxes
-/// (`BOUNDS`).
+/// What a figure shows: the field's shape, lit (`SURFACE`), or its distance on a slice through
+/// its centre (`DISTANCE`).
 pub const SURFACE: u32 = 0
 pub const DISTANCE: u32 = 1
-pub const GRADIENT: u32 = 2
-pub const BOUNDS: u32 = 3
 
-/// How deep the bounds' boxes divide.
-const DEPTH: u32 = 7
+/// What view `mode` shows and what a reader can do with it, said under the figure.
+pub fn caption(mode: u32) -> String {
+    String::from(if mode == DISTANCE {
+        "A slice through the field. Each line is a step farther from the surface. Point at the slice or touch it: the circle there is as wide as the distance, so it just reaches the surface."
+    } else {
+        "The shape this code builds, lit by the gradient the compiler derives from it. Drag the shape to turn it, or drag a highlighted number in the code to change it."
+    })
+}
 
 /// The point of the slice at pixel `pixel` of a figure at `rect`: the slice through the field's
 /// centre, facing the camera's start, the field's size a little under the figure's height.
@@ -910,7 +957,7 @@ pub fn view(v: Vertex, scene: Scene, look: View) -> Over {
     let size = look.rect.zw
     let uv = (v.pixel - look.rect.xy - size * 0.5) / size.y
     // The camera: on a sphere about the field's centre, looking at it.
-    let reach = look.radius * 3.2
+    let reach = look.radius * 3.9
     let eye = look.centre +
         vec3(sin(look.turn) * cos(look.tilt), sin(look.tilt), cos(look.turn) * cos(look.tilt)) *
             reach
@@ -932,7 +979,7 @@ pub fn view(v: Vertex, scene: Scene, look: View) -> Over {
         let s = sqrt(h)
         var t = max(-bq - s, 0.0)
         let far = -bq + s
-        for _ in 0..72 {
+        for _ in 0..96 {
             let p = eye + dir * t
             let d = evaluate(scene, p)
             if d / t < closest {
@@ -981,16 +1028,19 @@ pub fn view(v: Vertex, scene: Scene, look: View) -> Over {
         let p = eye + dir * hit
         let n = normalize(scene.gradient(p))
         let body = linear(look.body.xyz)
+        // A key light from above at the left, a cooler sky over all, a little bounced from the
+        // floor, and a shine: faces that turn from the key darken, so the form reads.
         let diffuse = max(dot(n, light), 0.0)
-        let fill = 0.5 + 0.5 * n.y
+        let sky = 0.5 + 0.5 * n.y
+        let bounce = saturate(-n.y) * 0.12
         let sh = shadow(scene, p + n * 0.002, light, look.radius)
         let ao = occlusion(scene, p, n, look.radius)
         let half = normalize(light - dir)
-        let shine = pow(max(dot(n, half), 0.0), 48.0) * sh
-        let rim = pow(1.0 - max(dot(n, -dir), 0.0), 3.0)
-        color = body * (diffuse * sh * 0.85 + fill * 0.35 * ao) +
-            vec3(shine * 0.35) +
-            linear(look.rim.xyz) * rim * 0.55 * ao
+        let shine = pow(max(dot(n, half), 0.0), 64.0) * sh
+        let rim = pow(1.0 - max(dot(n, -dir), 0.0), 4.0)
+        color = body * (diffuse * sh * 0.95 + (sky * 0.16 + bounce) * ao) +
+            vec3(shine * 0.3) +
+            linear(look.rim.xyz) * rim * 0.35 * ao
     } else if closest < 0.004 && closest_t > 0.0 {
         // The silhouette's edge, softened over about a pixel.
         let pixel = 1.6 / (size.y * 1.9)
@@ -1003,14 +1053,14 @@ pub fn view(v: Vertex, scene: Scene, look: View) -> Over {
     // A soft fall-off at the figure's edges, into its ground, and its corners round, as code's
     // ground's are.
     let corner = abs(uv) * vec2(size.y / size.x, 1.0) * 2.0
-    let vignette = 1.0 - 0.18 * dot(corner, corner)
+    let vignette = 1.0 - 0.08 * dot(corner, corner)
     Over { color: vec4(srgb(color * vignette), 1.0) }
 }
 
 /// What a slice through the field shows under all else: its distance as lines a fixed step
-/// apart, quieter but for the distance's own view, and its inside tinted. The point the pixel is
-/// on, world units to the pixel, the distance there, the colour and the lines' strength.
-fn slice_ground(v: Vertex, scene: Scene, look: View) -> (vec3, f32, f32, vec3, f32) {
+/// apart, and its inside tinted. The point the pixel is on, world units to the pixel, the
+/// distance there and the colour.
+fn slice_ground(v: Vertex, scene: Scene, look: View) -> (vec3, f32, f32, vec3) {
     let size = look.rect.zw
     let p = slice_point(vec4(look.rect.xy, size), look.centre, look.radius, v.pixel)
     // World units to the pixel.
@@ -1023,10 +1073,9 @@ fn slice_ground(v: Vertex, scene: Scene, look: View) -> (vec3, f32, f32, vec3, f
     let step = look.radius * 0.08
     let f = d / step - floor(d / step)
     let off = min(f, 1.0 - f) * step
-    let quiet = if look.mode == DISTANCE { 1.0 } else { 0.45 }
-    let lines = saturate(1.0 - off / (per * 1.1)) * exp(-abs(d) / (look.radius * 1.2)) * quiet
+    let lines = saturate(1.0 - off / (per * 1.1)) * exp(-abs(d) / (look.radius * 1.2))
     color = mix(color, line, lines * look.line.w)
-    (p, per, d, color, lines)
+    (p, per, d, color)
 }
 
 /// Over a slice, last: the surface, a line twice a pixel wide, and at the pointer the circle as
@@ -1036,7 +1085,7 @@ fn slice_top(scene: Scene, look: View, p: vec3, per: f32, d: f32, color: vec3) -
     var c = color
     // The surface: a line twice a pixel wide.
     c = mix(c, rim, saturate(1.6 - abs(d) / per) * 0.9)
-    if look.probe.w > 0.0 && look.mode == DISTANCE {
+    if look.probe.w > 0.0 {
         let q = look.probe.xyz
         let dq = evaluate(scene, q)
         let ring = saturate(1.3 - abs(length(p - q) - abs(dq)) / per)
@@ -1046,83 +1095,11 @@ fn slice_top(scene: Scene, look: View, p: vec3, per: f32, d: f32, color: vec3) -
     Over { color: vec4(srgb(c), 1.0) }
 }
 
-/// A slice through the field: its distance, with the circle at the pointer, or its derived
-/// gradient as arrows. Its own pipeline, apart from the lit field's and the bounds': one shader
-/// that held them all was ten times slower at each.
+/// A slice through the field: its distance, with the circle at the pointer. Its own pipeline,
+/// apart from the lit field's: one shader that held both was several times slower at each.
 @fragment
 pub fn slice_view(v: Vertex, scene: Scene, look: View) -> Over {
-    let size = look.rect.zw
-    let (p, per, d, ground_color, _) = slice_ground(v, scene, look)
-    var color = ground_color
-    let rim = linear(look.rim.xyz)
-    if look.mode == GRADIENT {
-        // An arrow in each cell, from the derived gradient at the cell's centre: as long as the
-        // gradient is, a cell's width at 1, fading away from the surface.
-        let cell = 26.0 * look.u
-        let at = (floor((v.pixel - look.rect.xy) / cell) + 0.5) * cell + look.rect.xy
-        let c = slice_point(vec4(look.rect.xy, size), look.centre, look.radius, at)
-        let g = scene.gradient(c)
-        let dir = vec2(g.x, -g.y)
-        let n = length(dir)
-        if n > 0.0001 {
-            let u = dir / n
-            let half = cell * 0.36 * min(n, 1.5)
-            let a = at - u * half
-            let b = at + u * half
-            let side = vec2(-u.y, u.x)
-            let head = cell * 0.16
-            let w = min(
-                segment(v.pixel, a, b),
-                min(
-                    segment(v.pixel, b, b - u * head + side * head * 0.7),
-                    segment(v.pixel, b, b - u * head - side * head * 0.7),
-                ),
-            )
-            let near = exp(-abs(evaluate(scene, c)) / (look.radius * 0.9))
-            color = mix(color, rim, saturate(1.2 * look.u - w) * (0.25 + 0.7 * near))
-        }
-    }
-    slice_top(scene, look, p, per, d, color)
-}
-
-/// A slice through the field, with the bounds the compiler derives over boxes: from a square over
-/// the figure down, a box whose bounds hold no zero is wholly in or out, and stops; one whose
-/// bounds may is cut in four, to `DEPTH`.
-@fragment
-pub fn bounds_view(v: Vertex, scene: Scene, look: View) -> Over {
-    let size = look.rect.zw
-    let (p, per, d, ground_color, lines) = slice_ground(v, scene, look)
-    var color = ground_color
-    let ground = linear(look.ground.xyz)
-    let line = linear(look.line.xyz)
-    let rim = linear(look.rim.xyz)
-    let body = linear(look.body.xyz)
-    // From a square over the figure down: a box whose bounds hold no zero is wholly in or
-    // out, and stops; one whose bounds may is cut in four, to `DEPTH`.
-    let side = max(size.x, size.y) * per
-    var lo = vec2(look.centre.x - side * 0.5, look.centre.y - side * 0.5)
-    var s = side
-    for depth in 0..DEPTH + 1 {
-        let b = Box3 {
-            lo: vec3(lo.x, lo.y, look.centre.z),
-            hi: vec3(lo.x + s, lo.y + s, look.centre.z),
-        }
-        let r = interval(|q: vec3| evaluate(scene, q), b)
-        // The box's edge, a pixel wide.
-        let local = (p.xy - lo) / per
-        let edge = min(min(local.x, local.y), min(s / per - local.x, s / per - local.y))
-        let outline = saturate(1.0 - edge)
-        if r.lo > 0.0 || r.hi < 0.0 || depth == DEPTH {
-            let fill = if r.hi < 0.0 { mix(ground, body, 0.3) } else if r.lo > 0.0 {
-                ground
-            } else { mix(ground, rim, 0.55) }
-            color = mix(fill, line, outline * 0.45 + lines * 0.35)
-            break
-        }
-        s *= 0.5
-        if p.x >= lo.x + s { lo.x += s }
-        if p.y >= lo.y + s { lo.y += s }
-    }
+    let (p, per, d, color) = slice_ground(v, scene, look)
     slice_top(scene, look, p, per, d, color)
 }
 
@@ -1142,33 +1119,6 @@ pub fn shown(v: Vertex, image: Texture<Rgba8>, linear: Sampler, look: Shown) -> 
     let e = abs(v.pixel - look.rect.xy - size * 0.5) - size * 0.5 + vec2(look.round)
     let out = length(max(e, vec2(0.0))) + min(max(e.x, e.y), 0.0) - look.round
     Over { color: vec4(c.xyz, saturate(0.5 - out)) }
-}
-
-/// The bounds the compiler derives for `scene` over the smallest box of the bounds' view that
-/// holds `q`, a point on the slice of a figure `aspect` times as wide as it is high: as the
-/// view's boxes divide.
-pub fn box_bounds(scene: Scene, centre: vec3, radius: f32, aspect: f32, q: vec3) -> (f32, f32) {
-    let side = radius * 2.4 * max(aspect, 1.0)
-    var lo = vec2(centre.x - side * 0.5, centre.y - side * 0.5)
-    var s = side
-    var last = (0.0, 0.0)
-    for depth in 0..DEPTH + 1 {
-        let b = Box3 { lo: vec3(lo.x, lo.y, centre.z), hi: vec3(lo.x + s, lo.y + s, centre.z) }
-        let r = interval(|p: vec3| evaluate(scene, p), b)
-        last = (r.lo, r.hi)
-        if r.lo > 0.0 || r.hi < 0.0 || depth == DEPTH { break }
-        s *= 0.5
-        if q.x >= lo.x + s { lo.x += s }
-        if q.y >= lo.y + s { lo.y += s }
-    }
-    last
-}
-
-/// The distance from `p` to the segment from `a` to `b`.
-fn segment(p: vec2, a: vec2, b: vec2) -> f32 {
-    let ab = b - a
-    let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 0.000001), 0.0, 1.0)
-    length(p - a - ab * t)
 }
 
 /// How lit `p` is from `light`, by how near the field comes to the ray toward it: 0 to 1.
@@ -1205,24 +1155,55 @@ fn srgb(c: vec3) -> vec3 {
     pow(max(c, vec3(0.0)), vec3(1.0 / 2.2))
 }
 
+/// The front page's field: a tesseract at rest, its near cell a cube round its far one, each
+/// corner of one joined to its twin in the other.
+pub fn tesseract() -> String {
+    String::from(
+        "// A tesseract at rest: one cube inside another, each corner joined to its twin.\nfn frame(h: f32, t: f32) -> Surface {\n    cuboid(half: vec3(h))\n        .smooth_subtract(cuboid(half: vec3(h - t, h - t, 2.0)), k: 0.01)\n        .smooth_subtract(cuboid(half: vec3(h - t, 2.0, h - t)), k: 0.01)\n        .smooth_subtract(cuboid(half: vec3(2.0, h - t, h - t)), k: 0.01)\n}\n\nfn struts(h: f32, r: f32) -> Surface {\n    round_cone(vec3(-h), vec3(h), r_top: r, r_bottom: r)\n        .union(round_cone(vec3(-h, -h, h), vec3(h, h, -h), r_top: r, r_bottom: r))\n        .union(round_cone(vec3(-h, h, -h), vec3(h, -h, h), r_top: r, r_bottom: r))\n        .union(round_cone(vec3(h, -h, -h), vec3(-h, h, h), r_top: r, r_bottom: r))\n}\n\nlet near = frame(1.0, 0.07)\nlet far = frame(0.42, 0.05)\nlet joins = struts(1.0, 0.035).smooth_subtract(cuboid(half: vec3(0.42)), k: 0.01)\nlet tesseract = near.union(far).union(joins)\n",
+    )
+}
+
 @test
-fn a_blob_reads_as_std_builds_it() {
-    let code = "let cone = round_cone(vec3(), vec3(y: 1.0), r_top: 0.3, r_bottom: 0.1)\nlet blob = sphere(radius: 0.5).smooth_union(cone, k: 0.1)\n"
-    let Some(r) = read(code, 0.0) else {
+fn the_front_pages_tesseract_reads_as_std_builds_it() {
+    let code = tesseract()
+    let Some(r) = read(code.as_str(), 0.0) else {
         assert(false, "it reads")
         return
     }
-    let field = sphere(radius: 0.5)
-        .smooth_union(round_cone(vec3(), vec3(y: 1.0), r_top: 0.3, r_bottom: 0.1), k: 0.1)
-    for p in [vec3(0.3, 0.2, 0.1), vec3(0.0, 1.2, 0.0), vec3(-0.8, 0.5, 0.4), vec3()] {
-        let d = evaluate(r.scene, p)
-        assert(abs(d - field.distance(p)) < 0.00001, f"{d} at {p.x}, {p.y}")
+    let frame = |h: f32, t: f32| {
+        cuboid(half: vec3(h))
+            .smooth_subtract(cuboid(half: vec3(h - t, h - t, 2.0)), k: 0.01)
+            .smooth_subtract(cuboid(half: vec3(h - t, 2.0, h - t)), k: 0.01)
+            .smooth_subtract(cuboid(half: vec3(2.0, h - t, h - t)), k: 0.01)
     }
-    // Its numbers, in order: 1.0, 0.3, 0.1, 0.5, 0.1.
-    assert(r.knobs.len() == 5 && !r.moves, f"{r.knobs.len()} knobs")
-    assert(code.slice(from: r.knobs[0].0, to: r.knobs[0].1) == "1.0")
-    assert(code.slice(from: r.knobs[4].0, to: r.knobs[4].1) == "0.1")
-    assert(r.radius > 0.5 && r.floor < -0.4)
+    let r_ = 0.035
+    let struts = round_cone(vec3(-1.0), vec3(1.0), r_top: r_, r_bottom: r_)
+        .union(round_cone(vec3(-1.0, -1.0, 1.0), vec3(1.0, 1.0, -1.0), r_top: r_, r_bottom: r_))
+        .union(round_cone(vec3(-1.0, 1.0, -1.0), vec3(1.0, -1.0, 1.0), r_top: r_, r_bottom: r_))
+        .union(round_cone(vec3(1.0, -1.0, -1.0), vec3(-1.0, 1.0, 1.0), r_top: r_, r_bottom: r_))
+    let field = frame(1.0, 0.07)
+        .union(frame(0.42, 0.05))
+        .union(struts.smooth_subtract(cuboid(half: vec3(0.42)), k: 0.01))
+    for p in [
+        vec3(0.97, 0.97, 0.2),
+        vec3(0.0, 0.0, 0.0),
+        vec3(0.7, 0.7, 0.7),
+        vec3(0.41, -0.41, 0.1),
+        vec3(-0.5, 0.2, 0.9),
+    ] {
+        let d = evaluate(r.scene, p)
+        assert(abs(d - field.distance(p)) < 0.00001, f"{d} at {p.x}, {p.y}, {p.z}")
+    }
+    // On an edge of the near cube and a strut it's inside; at the middle, between the cells,
+    // it's not.
+    assert(evaluate(r.scene, vec3(0.97, 0.97, 0.2)) < 0.0 && evaluate(r.scene, vec3(0.7)) < 0.0)
+    assert(evaluate(r.scene, vec3()) > 0.0 && evaluate(r.scene, vec3(0.0, 0.0, 0.7)) > 0.0)
+    assert(r.scene.len() <= NODES && !r.moves, f"{r.scene.len()} nodes")
+    // Framed round the near cube, and standing on its foot.
+    assert(
+        r.radius > 1.6 && r.radius < 2.2 && r.floor < -0.95 && r.floor > -1.05,
+        f"{r.radius} {r.floor}",
+    )
 }
 
 @test

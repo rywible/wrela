@@ -2415,11 +2415,28 @@ Ryan asked for docs that show what only Wrela can draw. A block of code that bui
 the field drawn live under it: the docs read the block into a scene of std::field's own primitives
 and combinators, evaluated on the GPU by their own `distance`, and lit by the gradient the
 compiler derives. A reader drags the code's numbers and the field follows, and can see the
-field's distance, its derived gradient and its derived bounds over boxes on a slice through it.
+field's distance on a slice through it.
 The shading's soft shadows (the nearest approach of a ray toward the light) and its ambient
 occlusion (a few samples along the normal) follow [Inigo Quilez's articles on soft
 shadows](https://iquilezles.org/articles/rmshadows/) and on raymarched [occlusion](https://iquilezles.org/articles/nvscene2008/),
 reimplemented; nothing was copied. Claude (Opus 5.5) wrote it.
+
+Ryan then found the docs slow to scroll on a Pixel 9, the front page's blob unclear, its four
+views hard to read, and the whole short of a careful web page's polish; he asked for the polish of
+[shadcn/ui's documentation](https://ui.shadcn.com/docs), and then for better than it, while the
+docs stay a canvas program. Claude (Opus 5.5) redid the look in that manner without copying its
+code: Inter for all text, the neutral greys of [Tailwind CSS's zinc palette](https://tailwindcss.com/docs/colors)
+(MIT) for the page, hairlines, rounded cards and buttons, a search dialog over the page, and a
+sidebar whose highlight glides between rows. The front page's field is now the console's
+tesseract at rest, a cube inside a cube with their corners joined, built from a few of
+std::field's fields; its views are two, its shape and its distance. On a phone the page stretches
+at its ends, a pull past its top loads it again (a new host service, `nav/reload`), and a finger
+held on words selects them for a copy. While a finger moves the page the program tells the host
+nothing of where its parts are, and the front page draws nothing while it's still. In headless
+Chrome on an M4 Air at three device pixels to the CSS pixel, with the CPU slowed six times: the
+longest main-thread task over four swipes went from about 30 ms to 7.7 ms on the front page (8.9
+ms on a spec page), and the idle front page's GPU thread went from 16.4% busy to too little to
+list, its worker from 6.5% to 0.8%. These aren't a Pixel 9's own numbers.
 
 ## Keeping this record
 
