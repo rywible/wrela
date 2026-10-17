@@ -2500,7 +2500,9 @@ they come trail by 6 to 9 ms with steps up to 50% uneven. A drag no longer jumps
 finger moved before it counted as a drag: it begins where it is and makes them up over a tenth of a
 second. A phone's keyboard now opens over the page (`interactive-widget=resizes-visual`), so the
 canvas isn't resized and stretched as the keyboard slides, the likely cause of the shake, which
-headless Chrome can't show. The docs now open as a whole: their page's colour from the first
+headless Chrome can't show. On the phone the making up felt uncanny, the page sliding under a held
+finger at the start of a drag, so a drag now keeps that distance from its finger, as a phone's own
+pages do. The docs now open as a whole: their page's colour from the first
 moment, in the page and in a phone's browser bar, then everything fades in together once the first
 page is ready.
 
