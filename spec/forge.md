@@ -70,10 +70,14 @@ never reused.
 | 9 | A check started | job, worker, time |
 | 10 | A check finished | job, evidence, passed, time |
 | 11 | A check was waived | check, why |
+| 12 | A service was promoted | epoch, machine, time |
+| 13 | The service was fenced | epoch, time |
+| 14 | A check went back to the queue | job, why, time |
 
 - **F14.** The state is the fold of the log's events from the start, in order. An event that
   doesn't apply (a change that isn't open, a landing out of place) means the log isn't the
-  state's: a start stops and says which.
+  state's: a start stops and says which. An event that doesn't apply changes nothing, and a
+  call's events apply all together or not at all.
 - **F15.** A kind not in F13 is an error. A new layout of an event is a new kind.
 
 ## Changes
@@ -111,8 +115,12 @@ never reused.
   - `POST /api/work/next` and `POST /api/work/done`: a worker's asks (F23).
   - `POST /api/stop`: stops the service, for a caller that may land changes.
   - `GET /`: the digest, a page of what forge holds; `GET /health`.
-- **F22.** A caller lands changes only if forge lets it: a caller from the machine itself, or one
-  `--landers` names.
+- **F22.** What a caller may do is decided by who it is (F28): every caller forge knows may read;
+  writing (opening, editing, checking, submitting and closing changes, and storing blobs) is for
+  every caller forge knows unless `--writers` is given, then only for those it names; landing,
+  waiving, importing, fencing and stopping are for `--landers`; working (F23) and replicating
+  (F24) are for `--fleet`. The machine itself may do everything. Each of those flags is a list,
+  separated by commas, of `node:NAME`, `user:LOGIN`, `tag:TAG` and addresses.
 
 ## Workers
 
@@ -124,19 +132,44 @@ never reused.
   `callers` tools read.
   `workers/<name>` is what its checkout holds: the byte 1, the count of its files, then each path,
   whether it is executable, its blob's id and its size.
+- **F23a.** A job runs on one worker at a time, as one try (its `attempt`). A worker's report
+  counts only for the job's current try on that worker, while it runs. A job goes back to the
+  queue (event 14), as a new try, when its worker starts again without it (the service's own
+  worker at a start, a worker on another machine when it next asks for work), and when it has
+  run 10 minutes past its limit.
+- **F23b.** A check queued on a tree where the same check already passed isn't run again: the
+  queuing answers with the job that passed (`reused`). A failure is always run again.
 
 ## Replicas
 
 - **F24.** A replica is a store that follows a service: it asks for the log from where its own
   ends, fetches every object the new events name (a tree's, a revision's and evidence's objects
   too), writes each flushed, and then appends the events, as they came, to its own log, flushed. So
-  its log is a prefix of the service's, and every object it names is on its disk.
-- **F25.** Asking for the log from byte X says the replica holds the first X bytes. A service with
-  `--acks N` answers a call that lands a revision only once N replicas hold the log through it;
-  other calls are answered as F19 says.
-- **F26.** A replica becomes the service by running `forge serve` on its data: its state is the
-  fold of its log (F14). The old service must not take calls after that; nothing yet stops it but
-  its operator.
+  its log is a prefix of the service's, and every object it names is on its disk. A replica's
+  start cuts a torn record off its log, as a service's does (F12).
+- **F25.** A log's chain at a record's end is BLAKE3 of the chain at the record before it (32 zero
+  bytes before the first record) and the record's 8-byte hash: so equal chains at equal ends mean
+  equal logs, as far as their hashes tell. A replica asks for the log from byte X with its chain
+  there and its epoch (F26); the service answers only if a record of its own log ends at X with
+  that chain, else 409, so a replica never follows a log that isn't its own's continuation. The
+  ask says the replica holds the first X bytes. A service with `--acks N` sends every answer that
+  says something happened only once N replicas hold the log through it.
+- **F26.** A store's epoch is the epoch of the last `promoted` event in its log (0 if none).
+  `forge serve --promote` makes a replica's data the service: it asks each of `--peers` for its
+  position (`GET /api/position`: role, epoch, log size and chain), needs more than half of the
+  peers and itself to answer, refuses if a peer's log isn't a prefix of its own, appends
+  `promoted` with an epoch above every one it saw, tells each peer it answered about it
+  (`POST /api/fence`), and serves. With `--acks N` at least half of the replicas, a landing a
+  service confirmed is on every majority, so a promotion can't lose it.
+- **F26a.** A service is fenced when it learns of an epoch above its own: from a replica's ask, a
+  peer's position, or `POST /api/fence`. A fenced service appends `fenced`, answers every call
+  with 503 and stops; a store whose log holds `fenced` doesn't serve again. A service started with
+  `--peers` asks each for its position at its start and every 10 s, so an old service that comes
+  back is fenced before it takes a call.
+- **F26b.** A replica follows the service among `--servers` that is serving with the highest
+  epoch. It looks again when its service fails, answers 409 or 503, or is fenced, and when told of
+  a new epoch (`POST /api/fence` on the replica's own `--listen`, where it also answers
+  `GET /api/position`).
 
 ## Workspaces
 
@@ -148,3 +181,43 @@ never reused.
   `.forgeignore` is written as `.gitignore` is: parts between `/`, `*` within a part, `**` for any
   parts; a rule with a `/` before its end is anchored at the root, and one that ends in `/` names
   directories.
+
+## Callers
+
+- **F28.** A caller is known by its connection's peer address. An address of the machine itself
+  (`127.0.0.1`, `::1`) is the machine. An address of the tailnet (`100.64.0.0/10`,
+  `fd7a:115c:a1e0::/48`) is known by asking tailscale whose it is (`tailscale whois --json ADDR`,
+  or the program `--whois` names, with the same answer): its node is the first label of
+  `Node.Name`, its login `UserProfile.LoginName`, and its tags `Node.Tags`. forge keeps an answer
+  for 60 s. Any other caller, and a tailnet caller tailscale can't name, is refused with 403.
+- **F29.** A call's author and a landing's `by` are the caller's login and node (`LOGIN@NODE`), or
+  `local` for the machine; an author the call gives is kept beside it, not in its place.
+
+## Backups
+
+- **F30.** `forge backup --to URL --auth FILE` copies a store (its `data` root, which a service or
+  a replica may be using) to an S3 bucket (Cloudflare R2), and keeps copying what is added. It
+  sends each request with curl, signed as S3 asks (`--aws-sigv4 aws:amz:auto:s3`), with the
+  credentials curl reads from FILE (`user = "KEY:SECRET"`), so forge never holds them.
+- **F31.** A backup is segments. Segment X holds the log's whole records from byte X
+  (`log/<X as 16 hex digits>`) and every object those records name that no earlier segment holds
+  (`pack/<X as 16 hex digits>`: for each, its id, its file's length as a `u32` little-endian, and
+  its file's bytes). `head` holds the byte 1, the end of the last segment, and the log's chain
+  there (F25). A segment's pack is sent before its log, and both before `head` names it.
+- **F32.** `forge restore --from URL --auth FILE` makes an empty `data` root a store again: it reads
+  `head`, then each segment in turn, checks each object against its id, writes the objects and
+  then the records, flushed, and checks that the log's chain at its end is `head`'s.
+
+## Rooms
+
+- **F33.** A room is a view of the log that callers watch: `main` (landings and main's checks),
+  `cN` (change N: its writes, carries, conflicts, checks and landing, and main moving past its
+  files), and `checks` (every job). A notice is an event's meaning in a room, at the event's
+  record's end in the log.
+- **F34.** `GET /api/watch?room=R&from=X` answers with R's notices from X on (at most 8 MiB of log),
+  the end they reach (`next`), and who is in the room. It is held up to 20 s while there are
+  none. A caller is in a room while it watches it and for 30 s after.
+- **F35.** `GET /studio` is a page of who works on what: the rooms and who is in them, the open
+  changes, the jobs and the newest landings and notices. `GET /studio?after=X` is held, as a
+  watch of every room is, until the log passes X, and the page asks for itself again after each
+  answer, so it shows what happens as it happens.

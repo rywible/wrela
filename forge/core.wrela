@@ -1509,8 +1509,18 @@ fn content_of(c: Core, f: Option<File>, need: mut Vec<Id>) -> Vec<u8> {
     }
 }
 
-/// Folds what a call made durable into the core: its objects' contents and its events.
+/// Folds what a call made durable into the core: its objects' contents and its events. Its events
+/// apply all together or not at all, and nothing of a call whose events don't apply is kept.
 pub fn absorb(c: mut Core, d: Durable) -> Result<(), String> {
+    if d.events.len() == 1 {
+        apply(mut c.state, d.events[0].clone())?
+    } else if d.events.len() > 1 {
+        var next = c.state.clone()
+        for ev in d.events {
+            apply(mut next, ev.clone())?
+        }
+        c.state = take next
+    }
     for o in d.objects {
         let _ = c.stored.insert(o.id, value: true)
         if o.bytes.len() > 0 && o.bytes[0] == object::BLOB {
@@ -1518,9 +1528,6 @@ pub fn absorb(c: mut Core, d: Durable) -> Result<(), String> {
         } else {
             let _ = c.blobs.insert(o.id, o.bytes.clone())
         }
-    }
-    for ev in d.events {
-        apply(mut c.state, ev.clone())?
     }
     Ok(())
 }
@@ -1652,6 +1659,8 @@ fn a_change_lands_after_its_suite_passes_and_others_carry_onto_it() {
     assert(not_yet.as_str().find("suite").is_some(), not_yet.as_str())
     let submitted = run(mut c, "submit", "{\"change\":\"c1\"}")
     assert(submitted.field(submitted.root, "job") == "j1", "the suite is j1")
+    let started = Event::Started { job: 1, worker: String::from("w"), time: 150 }
+    let Ok(()) = apply(mut c.state, take started) else { panic("it starts") }
     let done = Event::Finished { job: 1, evidence: Id::zero(), passed: true, time: 200 }
     let Ok(()) = apply(mut c.state, take done) else { panic("it finishes") }
     let landed = run(mut c, "land", "{\"change\":\"c1\"}")
@@ -1694,6 +1703,12 @@ fn a_carry_that_conflicts_keeps_both_versions() {
         },
     ) else {
         panic("queued")
+    }
+    let Ok(()) = apply(
+        mut c.state,
+        Event::Started { job: 1, worker: String::from("w"), time: 2 },
+    ) else {
+        panic("started")
     }
     let Ok(()) = apply(
         mut c.state,
@@ -1761,6 +1776,7 @@ fn indexed(c: mut Core, seq: u64, pkg: str, index: str) {
     let evs = Vec::from(
         [
             Event::Queued { job, check: f"index:{pkg}", tree, change: 0, attempt: 1, time: 1 },
+            Event::Started { job, worker: String::from("t"), time: 2 },
             Event::Finished { job, evidence: x.id, passed: true, time: 2 },
         ],
     )

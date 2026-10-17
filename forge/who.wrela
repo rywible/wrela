@@ -1,0 +1,240 @@
+// Who calls (spec/forge.md F28): a connection's peer address, and what tailscale says of it. The
+// machine itself (a loopback address) may do everything; a tailnet address is known by its node,
+// its login and its tags, from `tailscale whois --json ADDR`; any other address is refused. What a
+// known caller may do is decided by rules (`--writers`, `--landers`, `--fleet`): each names
+// `node:NAME`, `user:LOGIN`, `tag:TAG` or an address.
+
+use std::json::{Json as Doc, Kind}
+
+/// A caller forge knows.
+pub struct Who: Clone {
+    /// Whether it is the machine itself.
+    pub local: bool,
+    /// Its address, without its port.
+    pub addr: String,
+    pub node: String,
+    pub login: String,
+    pub tags: Vec<String>,
+}
+
+/// The address of a peer (`ip:port`, `[ipv6]:port`), without its port or brackets; an IPv4
+/// address an IPv6 socket saw as `::ffff:a.b.c.d` is that IPv4 address.
+pub fn addr_of(peer: str) -> String {
+    var a = if peer.starts_with("[") {
+        let end = peer.find("]").unwrap_or(peer.len())
+        peer.slice(from: 1, to: end).to_string()
+    } else {
+        let end = peer.find(":").unwrap_or(peer.len())
+        peer.slice(from: 0, to: end).to_string()
+    }
+    if a.as_str().starts_with("::ffff:") && a.as_str().find(".").is_some() {
+        a = a.as_str().slice(from: 7, to: a.len()).to_string()
+    }
+    a
+}
+
+/// The four numbers of an IPv4 address, if `a` is one.
+fn ipv4(a: str) -> Option<[u32; 4]> {
+    var out: [u32; 4] = [0, 0, 0, 0]
+    var n = 0
+    for (from, to) in a.split(".") {
+        let part = a.slice(from, to)
+        if n >= 4 || part.is_empty() || part.len() > 3 {
+            return None
+        }
+        let v = bytes::parse_u64(part)?
+        if v > 255 {
+            return None
+        }
+        out[n] = u32(v)
+        n += 1
+    }
+    if n == 4 { Some(out) } else { None }
+}
+
+/// Whether `a` is an address of the machine itself.
+pub fn is_loopback(a: str) -> bool {
+    if a == "::1" {
+        return true
+    }
+    match ipv4(a) {
+        Some(x) => x[0] == 127,
+        None => false,
+    }
+}
+
+/// Whether `a` is a tailnet address: `100.64.0.0/10` or `fd7a:115c:a1e0::/48`.
+pub fn is_tailnet(a: str) -> bool {
+    match ipv4(a) {
+        Some(x) => x[0] == 100 && x[1] >= 64 && x[1] < 128,
+        None => {
+            let lower = lowered(a)
+            lower.as_str().starts_with("fd7a:115c:a1e0:")
+        },
+    }
+}
+
+fn lowered(a: str) -> String {
+    var out = String::new()
+    for i in 0..a.len() {
+        out.push_byte(bytes::lower(a.byte(i)))
+    }
+    out
+}
+
+/// The machine itself, at `addr`.
+pub fn local(addr: str) -> Who {
+    Who {
+        local: true,
+        addr: addr.to_string(),
+        node: String::new(),
+        login: String::new(),
+        tags: Vec::new(),
+    }
+}
+
+/// What `tailscale whois --json` said of `addr`: its node (the first label of `Node.Name`), its
+/// login and its tags; none if it names no node or no login.
+pub fn of_whois(addr: str, json: [u8]) -> Option<Who> {
+    let doc = Doc::read(json).ok()?
+    let node = doc.get(doc.root, "Node")?
+    let full = doc.field(node, "Name")
+    let dot = full.find(".").unwrap_or(full.len())
+    let name = full.slice(from: 0, to: dot).to_string()
+    var tags: Vec<String> = Vec::new()
+    if let Some(t) = doc.get(node, "Tags") {
+        if doc.kind(t) == Kind::Array {
+            for i in 0..doc.count(t) {
+                tags.push(doc.text(doc.at(t, i)).to_string())
+            }
+        }
+    }
+    let login = match doc.get(doc.root, "UserProfile") {
+        Some(u) => doc.field(u, "LoginName").to_string(),
+        None => String::new(),
+    }
+    // A tagged node has no person's login: its tags name it.
+    if name.is_empty() || (login.is_empty() && tags.is_empty()) {
+        return None
+    }
+    Some(Who { local: false, addr: addr.to_string(), node: name, login, tags })
+}
+
+/// How a caller is named in the log: `local`, or `LOGIN@NODE` (`tagged@NODE` for a tagged node).
+pub fn name(w: Who) -> String {
+    if w.local {
+        return String::from("local")
+    }
+    let login = if w.login.is_empty() { String::from("tagged") } else { w.login.clone() }
+    f"{login}@{w.node}"
+}
+
+/// A rule list's rules: the text between its commas, without blanks.
+pub fn rules(text: str) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for (from, to) in text.split(",") {
+        let r = text.slice(from, to).trim()
+        if !r.is_empty() {
+            out.push(r.to_string())
+        }
+    }
+    out
+}
+
+/// Whether a rule of `rules` names `w`. The machine itself matches every list.
+pub fn named(w: Who, rules: [String]) -> bool {
+    if w.local {
+        return true
+    }
+    for r in rules {
+        let x = r.as_str()
+        if x.starts_with("node:") {
+            if x.slice(from: 5, to: x.len()) == w.node.as_str() {
+                return true
+            }
+        } else if x.starts_with("user:") {
+            if !w.login.is_empty() && x.slice(from: 5, to: x.len()) == w.login.as_str() {
+                return true
+            }
+        } else if x.starts_with("tag:") {
+            for t in w.tags {
+                if t.as_str() == x {
+                    return true
+                }
+            }
+        } else if x == w.addr.as_str() {
+            return true
+        }
+    }
+    false
+}
+
+/// Whether every rule of `text` is one forge reads: `node:`, `user:`, `tag:` and a name, or an
+/// address; the first that isn't, if one isn't.
+pub fn bad_rule(text: str) -> Option<String> {
+    for r in rules(text) {
+        let x = r.as_str()
+        let named = x.starts_with("node:") || x.starts_with("user:") || x.starts_with("tag:")
+        if named {
+            if x.find(":").unwrap_or(0) + 1 >= x.len() {
+                return Some(r.clone())
+            }
+        } else if ipv4(x).is_none() && x.find(":").is_none() {
+            return Some(r.clone())
+        }
+    }
+    None
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+@test
+fn a_peer_address_loses_its_port() {
+    assert(addr_of("127.0.0.1:5000").as_str() == "127.0.0.1", "IPv4")
+    assert(addr_of("[::1]:5000").as_str() == "::1", "IPv6")
+    assert(addr_of("[::ffff:100.74.48.38]:7").as_str() == "100.74.48.38", "IPv4 in IPv6")
+    assert(addr_of("[fd7a:115c:a1e0::df34:3027]:9").as_str() == "fd7a:115c:a1e0::df34:3027", "v6")
+}
+
+@test
+fn loopback_and_tailnet_addresses_are_told_apart() {
+    assert(is_loopback("127.0.0.1") && is_loopback("127.4.0.9") && is_loopback("::1"), "loopback")
+    assert(!is_loopback("10.0.0.1") && !is_loopback("::2"), "not loopback")
+    assert(is_tailnet("100.64.0.1") && is_tailnet("100.127.255.255"), "the tailnet's IPv4")
+    assert(!is_tailnet("100.63.0.1") && !is_tailnet("100.128.0.1"), "beside it")
+    assert(is_tailnet("FD7A:115C:A1E0::1") && !is_tailnet("fd7a:115c:a1e1::1"), "IPv6")
+    assert(!is_tailnet("1.2.3") && !is_tailnet("100.64.0.256"), "not addresses")
+}
+
+@test
+fn whois_names_a_node_its_login_and_its_tags() {
+    let json = "{\"Node\":{\"Name\":\"pop-os.tail2be46f.ts.net.\",\"Tags\":null},\"UserProfile\":{\"LoginName\":\"ryan@example.com\"}}"
+    let Some(w) = of_whois("100.106.117.94", bytes::of_str(json)) else { panic("named") }
+    assert(w.node.as_str() == "pop-os" && w.login.as_str() == "ryan@example.com", "node, login")
+    assert(name(w.clone()).as_str() == "ryan@example.com@pop-os", "its name")
+    let tagged = "{\"Node\":{\"Name\":\"ci.ts.net.\",\"Tags\":[\"tag:fleet\"]},\"UserProfile\":{\"LoginName\":\"\"}}"
+    let Some(t) = of_whois("100.64.0.9", bytes::of_str(tagged)) else { panic("tagged") }
+    assert(t.tags.len() == 1 && name(t).as_str() == "tagged@ci", "a tagged node")
+    assert(of_whois("100.64.0.9", bytes::of_str("{\"Node\":{}}")).is_none(), "no name")
+    assert(of_whois("100.64.0.9", bytes::of_str("no such peer")).is_none(), "not JSON")
+}
+
+@test
+fn rules_name_nodes_logins_tags_and_addresses() {
+    let w = Who {
+        local: false,
+        addr: String::from("100.64.0.2"),
+        node: String::from("pop-os"),
+        login: String::from("ryan@example.com"),
+        tags: Vec::from([String::from("tag:fleet")]),
+    }
+    assert(named(w.clone(), rules("node:pop-os")), "by node")
+    assert(named(w.clone(), rules(" user:ryan@example.com ,node:x")), "by login")
+    assert(named(w.clone(), rules("tag:fleet")), "by tag")
+    assert(named(w.clone(), rules("100.64.0.2")), "by address")
+    assert(!named(w.clone(), rules("node:pop,user:ryan,tag:fle,100.64.0.3")), "no near misses")
+    assert(!named(w, rules("")), "an empty list names no one")
+    assert(named(local("127.0.0.1"), rules("")), "the machine is on every list")
+    assert(bad_rule("node:a,user:b@c,tag:x,100.64.0.1,fd7a::1").is_none(), "good rules")
+    assert(bad_rule("node:a,pop-os").is_some() && bad_rule("node:").is_some(), "bad rules")
+}

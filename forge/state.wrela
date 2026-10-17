@@ -97,7 +97,7 @@ pub struct Job: Clone {
     /// What it said, once done.
     pub evidence: Id,
     pub passed: bool,
-    /// Its try: 1, or 2 for a failure tried again to see whether it flakes.
+    /// Its try: 1 at first, one more each time it goes back to the queue.
     pub attempt: u32,
 }
 
@@ -123,6 +123,11 @@ pub struct State: Clone {
     pub flakes: SortedMap<String, Flakes>,
     /// Checks Ryan let a change land without passing: by check.
     pub waived: SortedMap<String, String>,
+    /// The store's epoch and the machine promoted to it (spec F26); the epoch that fenced this
+    /// store's service, 0 if none has (F26a).
+    pub epoch: u64,
+    pub primary: String,
+    pub fenced: u64,
 }
 
 pub fn new() -> State {
@@ -138,6 +143,9 @@ pub fn new() -> State {
         next_job: 1,
         flakes: SortedMap::new(),
         waived: SortedMap::new(),
+        epoch: 0,
+        primary: String::new(),
+        fenced: 0,
     }
 }
 
@@ -180,6 +188,12 @@ pub enum Event: Clone {
     Started { job: u64, worker: String, time: u64 },
     Finished { job: u64, evidence: Id, passed: bool, time: u64 },
     Waived { check: String, why: String },
+    /// A replica's data became the service, for `machine` (spec F26).
+    Promoted { epoch: u64, machine: String, time: u64 },
+    /// The service learned of a newer epoch than its own and stopped (F26a).
+    Fenced { epoch: u64, time: u64 },
+    /// A running job went back to the queue, as a new try (F23a).
+    Requeued { job: u64, why: String, time: u64 },
 }
 
 // ---- the log's bytes of an event ---------------------------------------------------------------
@@ -294,6 +308,23 @@ pub fn encode(ev: Event) -> Vec<u8> {
             e.str(check.as_str())
             e.str(why.as_str())
         },
+        Event::Promoted { epoch, machine, time } => {
+            e.u8(12)
+            e.num(epoch)
+            e.str(machine.as_str())
+            e.num(time)
+        },
+        Event::Fenced { epoch, time } => {
+            e.u8(13)
+            e.num(epoch)
+            e.num(time)
+        },
+        Event::Requeued { job, why, time } => {
+            e.u8(14)
+            e.num(job)
+            e.str(why.as_str())
+            e.num(time)
+        },
     }
     take e.bytes
 }
@@ -359,6 +390,9 @@ pub fn decode(bytes: take Vec<u8>) -> Result<Event, Bad> {
             time: d.num()?,
         },
         11 => Event::Waived { check: d.string()?, why: d.string()? },
+        12 => Event::Promoted { epoch: d.num()?, machine: d.string()?, time: d.num()? },
+        13 => Event::Fenced { epoch: d.num()?, time: d.num()? },
+        14 => Event::Requeued { job: d.num()?, why: d.string()?, time: d.num()? },
         k => return Err(Bad { why: f"an event of kind {k}" }),
     }
     d.end()?
@@ -463,6 +497,11 @@ pub fn apply(s: mut State, ev: take Event) -> Result<(), String> {
             if seq != s.seq + 1 {
                 return Err(f"revision {seq} lands after {s.seq}")
             }
+            if change != 0 {
+                if let Some(why) = not_open(s, change) {
+                    return Err(why)
+                }
+            }
             for (path, f) in files {
                 match f {
                     Some(x) => {
@@ -474,9 +513,6 @@ pub fn apply(s: mut State, ev: take Event) -> Result<(), String> {
                 }
             }
             if change != 0 {
-                if let Some(why) = not_open(s, change) {
-                    return Err(why)
-                }
                 mut c = s.changes.at_mut(change)
                 c.status = Status::Landed
                 c.seq = seq
@@ -488,6 +524,9 @@ pub fn apply(s: mut State, ev: take Event) -> Result<(), String> {
             s.landings.push(Landing { seq, revision, tree, change, time, by, intent })
         },
         Event::Queued { job, check, tree, change, attempt, time } => {
+            if job == 0 || s.jobs.contains(job) {
+                return Err(f"j{job} is queued twice")
+            }
             let _ = s.jobs.insert(
                 job,
                 Job {
@@ -511,6 +550,9 @@ pub fn apply(s: mut State, ev: take Event) -> Result<(), String> {
             if !s.jobs.contains(job) {
                 return Err(f"j{job} starts but was never queued")
             }
+            if s.jobs.at(job).run != Run::Queued {
+                return Err(f"j{job} starts but isn't queued")
+            }
             mut j = s.jobs.at_mut(job)
             j.run = Run::Running
             j.worker = take worker
@@ -519,6 +561,9 @@ pub fn apply(s: mut State, ev: take Event) -> Result<(), String> {
         Event::Finished { job, evidence, passed, time } => {
             if !s.jobs.contains(job) {
                 return Err(f"j{job} ends but was never queued")
+            }
+            if s.jobs.at(job).run != Run::Running {
+                return Err(f"j{job} ends but isn't running")
             }
             mut j = s.jobs.at_mut(job)
             j.run = Run::Done
@@ -545,6 +590,29 @@ pub fn apply(s: mut State, ev: take Event) -> Result<(), String> {
         },
         Event::Waived { check, why } => {
             let _ = s.waived.insert(take check, take why)
+        },
+        Event::Promoted { epoch, machine, time: _ } => {
+            if epoch <= s.epoch {
+                return Err(f"epoch {epoch} is promoted after epoch {s.epoch}")
+            }
+            s.epoch = epoch
+            s.primary = take machine
+        },
+        Event::Fenced { epoch, time: _ } => {
+            if epoch <= s.epoch {
+                return Err(f"epoch {s.epoch} is fenced by epoch {epoch}")
+            }
+            s.fenced = epoch
+        },
+        Event::Requeued { job, why: _, time: _ } => {
+            if !s.jobs.contains(job) || s.jobs.at(job).run != Run::Running {
+                return Err(f"j{job} goes back to the queue but isn't running")
+            }
+            mut j = s.jobs.at_mut(job)
+            j.run = Run::Queued
+            j.worker = String::new()
+            j.started = 0
+            j.attempt += 1
         },
     }
     Ok(())
@@ -782,6 +850,8 @@ fn a_change_lands_only_on_a_passing_suite_of_its_exact_tree() {
         time: 3,
     }
     let Ok(()) = apply(mut s, take queued) else { panic("queued") }
+    let started = Event::Started { job: 1, worker: String::from("w"), time: 3 }
+    let Ok(()) = apply(mut s, take started) else { panic("started") }
     let done = Event::Finished { job: 1, evidence: Id::zero(), passed: true, time: 4 }
     let Ok(()) = apply(mut s, take done) else { panic("finished") }
     assert(why_not_land(s, c.clone(), tree).is_none(), "its tree passed")
@@ -857,9 +927,79 @@ fn a_check_that_flips_on_one_tree_counts_as_a_flake() {
             time: 1,
         }
         let Ok(()) = apply(mut s, take q) else { panic("queued") }
+        let st = Event::Started { job, worker: String::from("w"), time: 1 }
+        let Ok(()) = apply(mut s, take st) else { panic("started") }
         let d = Event::Finished { job, evidence: Id::zero(), passed, time: 2 }
         let Ok(()) = apply(mut s, take d) else { panic("finished") }
     }
     let fl = s.flakes.at(String::from("browser")).clone()
     assert(fl.runs == 2 && fl.fails == 1 && fl.flips == 1, "one flip")
+}
+
+@test
+fn an_event_that_doesnt_apply_changes_nothing() {
+    var s = new()
+    land(mut s, 0, Vec::from([(String::from("a"), f("1"))]))
+    // A landing of a change that isn't open: main's files stay as they were.
+    let bad = Event::Landed {
+        seq: 2,
+        change: 7,
+        revision: Id::zero(),
+        tree: Id::zero(),
+        time: 3,
+        by: String::from("ryan"),
+        intent: String::from("i"),
+        files: Vec::from([(String::from("a"), f("2"))]),
+    }
+    assert(apply(mut s, take bad).is_err(), "refused")
+    assert(s.seq == 1 && s.files.get(String::from("a")) == f("1"), "main is unchanged")
+}
+
+@test
+fn a_job_runs_once_a_try_and_goes_back_to_the_queue_as_a_new_one() {
+    var s = new()
+    let q = Event::Queued {
+        job: 1,
+        check: String::from("suite"),
+        tree: Id::zero(),
+        change: 0,
+        attempt: 1,
+        time: 1,
+    }
+    let Ok(()) = apply(mut s, q.clone()) else { panic("queued") }
+    assert(apply(mut s, q.clone()).is_err(), "a job is queued once")
+    let done = Event::Finished { job: 1, evidence: Id::zero(), passed: true, time: 2 }
+    assert(apply(mut s, done.clone()).is_err(), "it can't end before it starts")
+    let start = Event::Started { job: 1, worker: String::from("w"), time: 2 }
+    let Ok(()) = apply(mut s, start.clone()) else { panic("started") }
+    assert(apply(mut s, start.clone()).is_err(), "it starts once a try")
+    let back = Event::Requeued { job: 1, why: String::from("its worker started again"), time: 3 }
+    let Ok(()) = apply(mut s, back.clone()) else { panic("back in the queue") }
+    borrow j = s.jobs.at(1)
+    assert(j.run == Run::Queued && j.attempt == 2 && j.worker.is_empty(), "a new try")
+    assert(apply(mut s, take back).is_err(), "only a running job goes back")
+    let Ok(()) = apply(mut s, take start) else { panic("started again") }
+    let Ok(()) = apply(mut s, done.clone()) else { panic("finished") }
+    assert(apply(mut s, take done).is_err(), "it ends once")
+}
+
+@test
+fn epochs_only_rise_and_a_newer_one_fences() {
+    var s = new()
+    let p = Event::Promoted { epoch: 1, machine: String::from("a"), time: 1 }
+    let Ok(()) = apply(mut s, p.clone()) else { panic("promoted") }
+    assert(s.epoch == 1 && s.primary.as_str() == "a", "epoch 1 is a's")
+    assert(apply(mut s, take p).is_err(), "an epoch is promoted once")
+    assert(apply(mut s, Event::Fenced { epoch: 1, time: 2 }).is_err(), "not by its own epoch")
+    let Ok(()) = apply(mut s, Event::Fenced { epoch: 2, time: 2 }) else { panic("fenced") }
+    assert(s.fenced == 2, "fenced by epoch 2")
+    for ev in [
+        Event::Promoted { epoch: 3, machine: String::from("b"), time: 4 },
+        Event::Fenced { epoch: 4, time: 5 },
+        Event::Requeued { job: 9, why: String::from("w"), time: 6 },
+    ] {
+        let b = encode(ev.clone())
+        let Ok(back) = decode(b.clone()) else { panic("it decodes") }
+        assert(bytes::same(encode(back), b), "the same bytes again")
+    }
 }
