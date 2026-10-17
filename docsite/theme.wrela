@@ -35,6 +35,8 @@ pub struct Palette: Copy + Eq {
     pub string: u32,
     pub number: u32,
     pub comment: u32,
+    /// A live field's body, which its rim takes `field` over.
+    pub figure: u32,
 }
 
 pub const DARK: Palette = Palette {
@@ -52,6 +54,7 @@ pub const DARK: Palette = Palette {
     string: 0xD9C597,
     number: 0xE6AD8A,
     comment: 0x828A95,
+    figure: 0xDDE2E8,
 }
 
 pub const LIGHT: Palette = Palette {
@@ -69,6 +72,7 @@ pub const LIGHT: Palette = Palette {
     string: 0x7D5F12,
     number: 0x9C4A22,
     comment: 0x5F6772,
+    figure: 0xB9C3CF,
 }
 
 // The type scale (The Elements of Typographic Style's: 14, 16, 19, 24, 34) and its leading.
