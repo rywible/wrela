@@ -19,11 +19,17 @@ use brand::manrope::MANROPE
 use field::{Look, field, quad}
 use index::{Hit, Index, lower}
 use layout::{Laid, Role, lay_out}
-use live::{BOUNDS, DISTANCE, GRADIENT, Read, SURFACE, View, read, slice_point, view, with_number}
+use live::{
+    BOUNDS, DISTANCE, GRADIENT, Read, SURFACE, Shown, View, bounds_view, read, shown, slice_point,
+    slice_view, view, with_number,
+}
 use markdown::{Block, Kind, parse, plain}
 use platform::host
 use route::{Route, Target, follow}
-use std::gpu::{GpuBuffer, begin_screen_pass, buffer_of, draw}
+use std::gpu::{
+    GpuBuffer, Rgba8, Sampler, Texture, begin_pass, begin_screen_pass, buffer_of, draw, sampler,
+    texture,
+}
 use std::input::{Assist, Button, Event, Key, events}
 use std::io::{Pending, fetch}
 use std::semantics
@@ -184,14 +190,21 @@ pub struct Docs {
     thumb: Option<(f32, f32, bool)>,
     /// Whether the picture changed since it was last drawn: an answer, input, a new size.
     dirty: bool,
+    /// The scrolls the semantic tree was last told of, and when.
+    told_at: (f32, f32, f32),
+    owed: bool,
     /// The pointer's disc in the mark's field: where it is, following the pointer, and how much
     /// it joins, rising while the pointer is over the field.
     hover_at: vec2,
     hover: f32,
     /// When the page being read was shown: it comes in over a moment.
     shown_at: f32,
-    /// Each live figure's field, in the page's order.
+    /// Each live figure's field, in the page's order; each figure's image as last drawn; and how
+    /// many times a field has changed, which numbers each change.
     lives: Vec<Live>,
+    images: Vec<FigureImage>,
+    linear: Sampler,
+    changes: u32,
     /// A number held, to drag: its knob, where the press was and its value then.
     knob_held: Option<(u32, vec2, f32, bool)>,
     /// A figure held, to turn: its figure, where the press was, its turn and tilt then, and who
@@ -211,6 +224,30 @@ struct Live: Clone {
     tilt: f32,
     /// What it shows (live.wrela's `SURFACE`, `DISTANCE`, `GRADIENT`, `BOUNDS`).
     mode: u32,
+    /// Which change of its field this is: its image is drawn again when it changes.
+    version: u32,
+}
+
+/// A figure's image: the field drawn into a texture, which the screen shows where the figure is,
+/// and what it was drawn for. A page that scrolls moves the image; it's drawn again only when
+/// what it shows changes, as raymarching a field every frame costs a phone's GPU dearly.
+struct FigureImage {
+    block: u32,
+    image: Texture<Rgba8>,
+    key: ImageKey,
+}
+
+/// What a figure's image shows: its field's change, the camera, its view, the probe, its size in
+/// texels, and the scheme.
+struct ImageKey: Copy + Eq {
+    version: u32,
+    turn: f32,
+    tilt: f32,
+    mode: u32,
+    probe: vec4,
+    w: u32,
+    h: u32,
+    light: bool,
 }
 
 /// A box the host keeps as a field (std::semantics): the newest revision heard of, the newest read,
@@ -304,10 +341,15 @@ pub fn init() -> Docs {
         copy_ok: false,
         thumb: None,
         dirty: true,
+        told_at: (-1.0, -1.0, -10.0),
+        owed: false,
         hover_at: vec2(-1000.0),
         hover: 0.0,
         shown_at: -10.0,
         lives: Vec::new(),
+        images: Vec::new(),
+        linear: sampler(),
+        changes: 0,
         knob_held: None,
         orbit: None,
         finger: false,
@@ -338,11 +380,12 @@ pub fn frame(s: mut Docs, time: f32, width: u32, height: u32) {
     fling_on(mut s, frame, dt)
     keep_hover(mut s, frame, dt)
     keep_nav(mut s, frame)
-    if s.dirty || moving(s, frame) {
+    let changed = s.dirty || moving(s, frame)
+    if changed {
         draw_all(mut s, frame)
         s.dirty = false
     }
-    tell(mut s, frame)
+    tell(mut s, frame, changed)
 }
 
 /// How long a page takes to come in, in seconds.
@@ -2214,9 +2257,21 @@ fn keep_laid_out(s: mut Docs, f: Frame) {
             }
         }
         let r = read(code.as_str(), 0.0)
-        lives.push(Live { block: fig.block, code, read: r, turn, tilt, mode })
+        s.changes += 1
+        lives.push(Live { block: fig.block, code, read: r, turn, tilt, mode, version: s.changes })
     }
     s.lives = take lives
+    // Images of figures no longer on the page go.
+    var kept: Vec<FigureImage> = Vec::new()
+    while !s.images.is_empty() {
+        let image = s.images.pop().unwrap()
+        var shown = false
+        for fig in s.laid.figures {
+            if fig.block == image.block { shown = true }
+        }
+        if shown { kept.push(take image) }
+    }
+    s.images = take kept
     s.knob_held = None
     s.orbit = None
     // A place kept at another width may be past the page's end at this one.
@@ -2338,6 +2393,8 @@ fn draw_all(s: mut Docs, f: Frame) {
     if s.page_load.is_some() && s.trouble.is_empty() { draw_loading(mut s, f) }
     s.renderer.fetch(mut s.fonts, s.list)
     s.renderer.upload(s.list)
+    // Figures whose image is out of date, into their images, before the screen's pass.
+    draw_images(mut s, f)
     let pass = begin_screen_pass(clear: hex(s.p.page))
     // The fields first, under the quads: the front page's opening, then the header band.
     if s.route.page.is_empty() {
@@ -3109,6 +3166,8 @@ fn set_knob(s: mut Docs, i: u32, value: f32) {
     }
     s.blocks[k.block].code = code.clone()
     s.lives[l].read = read(code.as_str(), live_time(s))
+    s.changes += 1
+    s.lives[l].version = s.changes
     s.lives[l].code = take code
     let (text, starts) = s.laid.text()
     s.lowered = lower(text.as_str())
@@ -3146,45 +3205,116 @@ fn keep_lives(s: mut Docs, f: Frame) {
             Some(rd) => rd.moves,
             None => false,
         }
-        if moves { s.lives[l].read = read(s.lives[l].code.as_str(), s.time) }
+        if moves {
+            s.lives[l].read = read(s.lives[l].code.as_str(), s.time)
+            s.changes += 1
+            s.lives[l].version = s.changes
+        }
     }
 }
 
 /// Each figure on the screen: its field, drawn under the page's text and clipped under the
 /// header, its corners round.
 fn draw_figures(s: Docs, pass: std::gpu::ScreenPass, f: Frame) {
+    for i in 0..s.laid.figures.len() {
+        let r = figure_rect(s, f, i)
+        if r.bottom() < f.header || r.y > s.screen.y { continue }
+        let block = s.laid.figures[i].block
+        for k in 0..s.images.len() {
+            if s.images[k].block != block { continue }
+            let top = max(r.y, f.header)
+            let visible = vec4(r.x, top, r.w, min(r.bottom(), s.screen.y) - top)
+            let look = Shown { rect: vec4(r.x, r.y, r.w, r.h), round: 6.0 * s.u }
+            draw(
+                pass,
+                quad.bind(screen: s.screen, rect: visible),
+                shown.bind(image: s.images[k].image, linear: s.linear, look: look),
+                vertices: 6,
+            )
+        }
+    }
+}
+
+/// How finely a figure's image is drawn, in texels to the screen's pixel: the screen's own
+/// up to twice the CSS pixel, and finer screens (a phone's three) a little softer, for less than
+/// half the work; while a hand moves it, or while it moves with time, half as fine again, and
+/// finely once it's still.
+fn image_scale(u: f32, moving: bool) -> f32 {
+    min(1.0, 2.0 / u) * (if moving { 0.5 } else { 1.0 })
+}
+
+/// Draws again, into its image, each figure on the screen whose field, camera, view, probe, size
+/// or scheme changed since it was last drawn; before the screen's pass.
+fn draw_images(s: mut Docs, f: Frame) {
     let light = s.p == theme::LIGHT
     for i in 0..s.laid.figures.len() {
         let r = figure_rect(s, f, i)
         if r.bottom() < f.header || r.y > s.screen.y { continue }
-        let Some(l) = live_of(s, s.laid.figures[i].block) else { continue }
-        let Some(rd) = s.lives[l].read else { continue }
-        let top = max(r.y, f.header)
-        let shown = vec4(r.x, top, r.w, min(r.bottom(), s.screen.y) - top)
-        let look = View {
-            rect: vec4(r.x, r.y, r.w, r.h),
+        let block = s.laid.figures[i].block
+        let Some(l) = live_of(s, block) else { continue }
+        let Some(rd) = s.lives[l].read.clone() else { continue }
+        // Held: a number of its being dragged, or the figure turned.
+        let held = match s.knob_held {
+            Some((k, _, _, unsure)) => !unsure && s.laid.knobs[k].block == block,
+            None => false,
+        } || match s.orbit {
+            Some((j, _, _, _, by)) => j == i && by != FINGER_SCROLLS,
+            None => false,
+        }
+        // A field that moves with time is drawn each frame: softer, as a held one is.
+        let scale = image_scale(s.u, held || (rd.moves && !s.reduced))
+        let w = max(u32(r.w * scale), 1)
+        let h = max(u32(r.h * scale), 1)
+        let mode = s.lives[l].mode
+        // A slice's probe is the pointer's place on it, where the pointer is over it.
+        let probe = if mode != SURFACE && r.contains(s.pointer) && s.pointer.y > f.header {
+            vec4(slice_point(vec4(r.x, r.y, r.w, r.h), rd.centre, rd.radius, s.pointer), 1.0)
+        } else { vec4(0.0) }
+        let key = ImageKey {
+            version: s.lives[l].version,
             turn: s.lives[l].turn,
             tilt: s.lives[l].tilt,
+            mode,
+            probe,
+            w,
+            h,
+            light,
+        }
+        var k = s.images.len()
+        for j in 0..s.images.len() {
+            if s.images[j].block == block { k = j }
+        }
+        if k < s.images.len() && s.images[k].key == key { continue }
+        if k == s.images.len() || s.images[k].key.w != w || s.images[k].key.h != h {
+            let image = FigureImage { block, image: texture::<Rgba8>(width: w, height: h), key }
+            if k == s.images.len() { s.images.push(take image) } else { s.images[k] = take image }
+        }
+        s.images[k].key = key
+        let look = View {
+            rect: vec4(0.0, 0.0, f32(w), f32(h)),
+            turn: key.turn,
+            tilt: key.tilt,
             centre: rd.centre,
             radius: rd.radius,
             floor: rd.floor,
-            u: s.u,
+            u: s.u * scale,
             light: if light { 1.0 } else { 0.0 },
             ground: hex(s.p.surface),
             line: hex(s.p.field, if light { 0.55 } else { 0.5 }),
             body: hex(s.p.figure),
             rim: hex(s.p.field),
-            mode: s.lives[l].mode,
-            probe: if r.contains(s.pointer) && s.pointer.y > f.header {
-                vec4(slice_point(vec4(r.x, r.y, r.w, r.h), rd.centre, rd.radius, s.pointer), 1.0)
-            } else { vec4(0.0) },
+            mode,
+            probe,
         }
-        draw(
-            pass,
-            quad.bind(screen: s.screen, rect: shown),
-            view.bind(scene: rd.scene, look: look),
-            vertices: 6,
-        )
+        // Each view is a pipeline of its own.
+        let p = begin_pass(mut s.images[k].image)
+        let corners = quad.bind(screen: vec2(f32(w), f32(h)), rect: look.rect)
+        if mode == SURFACE {
+            draw(p, corners, view.bind(scene: rd.scene, look: look), vertices: 6)
+        } else if mode == BOUNDS {
+            draw(p, corners, bounds_view.bind(scene: rd.scene, look: look), vertices: 6)
+        } else { draw(p, corners, slice_view.bind(scene: rd.scene, look: look), vertices: 6) }
+        p.end()
     }
 }
 
@@ -3358,7 +3488,7 @@ fn draw_scrollbar(s: mut Docs, f: Frame, nav: bool) {
 
 // ---- what the host is told ---------------------------------------------------------------------
 
-fn tell(s: mut Docs, f: Frame) {
+fn tell(s: mut Docs, f: Frame, changed: bool) {
     var over_control = false
     for c in controls(s, f, s.pointer, all: false) {
         if c.rect.contains(s.pointer) { over_control = true }
@@ -3420,7 +3550,19 @@ fn tell(s: mut Docs, f: Frame) {
         s.told.push(host::offer(words.as_str(), ""))
         s.offered = take words
     }
-    if s.capabilities & host::SEMANTICS == 0 { return }
+    // The tree is told what changed, and only then; a change held back while the page moved is
+    // told once it stops.
+    if s.capabilities & host::SEMANTICS == 0 || !(changed || s.owed) { return }
+    // While the page moves, its parts' places go to the host ten times a second, not each frame:
+    // the host moves an element for each, on the thread a phone's touches arrive on.
+    let moved = s.scroll != s.told_at.0 || s.nav_scroll != s.told_at.1
+    let moving = s.fling.is_some() || s.swipe.is_some() || s.glide.is_some()
+    if moved && moving && s.time - s.told_at.2 < 0.1 {
+        s.owed = true
+        return
+    }
+    s.owed = false
+    s.told_at = (s.scroll, s.nav_scroll, s.time)
     let nodes = parts_tree(s, f)
     let view = vec4(0.0, 0.0, s.screen.x, s.screen.y)
     let title = title_of(s)
@@ -3979,4 +4121,13 @@ fn a_swipe_carries_on_at_its_fingers_last_speed() {
     // Rested a fifth of a second: no fling.
     assert(swipe_speed(trail, now: 1.0 + 7.0 / 60.0 + 0.2) == 0.0)
     assert(swipe_speed(Vec::from([(1.0, 2.0)]), now: 2.0) == 0.0)
+}
+
+/// A figure's image is as fine as the screen up to twice the CSS pixel, softer on a phone's three,
+/// and half as fine again while it moves.
+@test
+fn a_figures_image_is_finest_when_still() {
+    assert(image_scale(1.0, moving: false) == 1.0 && image_scale(2.0, moving: false) == 1.0)
+    assert(abs(image_scale(3.0, moving: false) - 2.0 / 3.0) < 0.0001)
+    assert(abs(image_scale(3.0, moving: true) - 1.0 / 3.0) < 0.0001)
 }
