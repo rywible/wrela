@@ -865,7 +865,7 @@ fn front_blocks(index: Index) -> Vec<Block> {
             ),
         },
     )
-    let field = f"## A field, drawn live\n\nA field is a function over space, such as the distance from a point to a surface. `std::field` joins, cuts, moves and displaces fields, and the compiler derives each field's gradient and its bounds over a box from the field's own code ([§13](spec/language/13-derived-interpretations.md)). Below, a tesseract at rest, the console's artifact made of a few such fields, is drawn from this code as you change it; [a complete program](spec/language/19-a-complete-program.md) draws a field with a shader of its own.\n\n```wrela\n{live::tesseract().as_str()}```\n\n## Browse the docs\n"
+    let field = f"## A field, drawn live\n\nA field is a function over space, such as the distance from a point to a surface. `std::field` joins, cuts, moves and displaces fields, and the compiler derives each field's gradient and its bounds over a box from the field's own code ([§14](spec/language/14-derived-interpretations.md)). Below, a tesseract at rest, the console's artifact made of a few such fields, is drawn from this code as you change it; [a complete program](spec/language/22-a-complete-program.md) draws a field with a shader of its own.\n\n```wrela\n{live::tesseract().as_str()}```\n\n## Browse the docs\n"
     for b in parse(field.as_str()) { out.push(b.clone()) }
     for g in groups_in(index) {
         let (name, pkg) = group_title(g.as_str())

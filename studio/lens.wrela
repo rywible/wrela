@@ -5,7 +5,7 @@
 // four functions to the actions that need them, since a lens function can't keep a function
 // in a closure: `subject()`, which builds the subject's field from its literals (in a lifted
 // build an edit is a write to the table, and the next call sees it); `grad(p, which)`, the
-// distance at `p` and its derivatives by up to 16 literals (language.md §20); `reached()`, the
+// distance at `p` and its derivatives by up to 16 literals (language.md §23); `reached()`, the
 // literals the distance reads; and `channels(p)`, the channels at `p` as JSON.
 //
 // Each action prints its answer as one line of JSON (`std::io::print`). A person types the

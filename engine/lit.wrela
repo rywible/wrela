@@ -1,5 +1,5 @@
 // The lighting that every shading pass reads, as one parameter (`Lighting`, a group:
-// language.md §12): the frame's camera and light, the sun's shadows, the probes' sky light, the
+// language.md §18): the frame's camera and light, the sun's shadows, the probes' sky light, the
 // clouds' shadows and the air.
 //
 // A shading pass binds a `Lighting`, then asks how much sun reaches a point (`sun_at`, or

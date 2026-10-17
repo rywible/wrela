@@ -2438,6 +2438,21 @@ longest main-thread task over four swipes went from about 30 ms to 7.7 ms on the
 ms on a spec page), and the idle front page's GPU thread went from 16.4% busy to too little to
 list, its worker from 6.5% to 0.8%. These aren't a Pixel 9's own numbers.
 
+## The spec regrouped for reading, 2026-10-16
+
+Ryan asked for the spec (`docs/language.md`) to be reviewed and tightened into a technical
+specification that reads easily, and for its rule IDs and section numbers to make sense. Claude
+(Opus 5.5) regrouped its sections by topic, in the order a reader learns the language: §6 holds the
+memory model alone, and threads, ticks, tasks, jobs and the audio thread moved to §16, requests,
+input and the clock to a new §17 (Host services), the GPU's buffers and bindings to §18, programs,
+hosts and client and server builds to a new §15, and rooms to §19. Every subsection is numbered.
+The spec opens with how to read it and its contents; long table cells became subsections; §10
+lists the diagnostic codes' ranges; and §15 names the three hosts. Rule IDs left the prose for one
+index at the end, *The rules by ID*, whose words are the primer's: the conformance test checks
+that they agree. A script moved the repository's references to the new numbers (about 490 lines in 195
+files), and each reference to a section that split was checked by hand. §22's complete program now builds the
+console's tesseract at rest in place of the blob.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

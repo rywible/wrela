@@ -18,7 +18,7 @@
 // their derivatives hardly change, and each step derives the drag's rows alone.
 //
 // The derivatives come from the glue's `grad8` and `grad16`: forward mode by 8 or 16 literals
-// at once (language.md §20).
+// at once (language.md §23).
 
 use std::collections::Vec
 use std::field::Surface
