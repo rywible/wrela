@@ -48,6 +48,8 @@ pub enum Phase: Copy + Eq {
     Replica,
     /// Pulling or pushing a workspace (workspace.wrela).
     Workspace,
+    /// Backing a store up, or restoring one (backup.wrela).
+    Backup,
     Stopped,
 }
 
@@ -89,6 +91,9 @@ pub enum For: Clone {
     Tick,
     /// A request of a workspace (workspace.wrela): what it's for, and for which file.
     Desk(u32, u32),
+    /// A request of a backup or a restore (backup.wrela); an object it reads, and its kind.
+    Backup(u32),
+    BackupObject(Id, u8),
 }
 
 pub struct Wait {
@@ -204,6 +209,7 @@ pub struct Service {
     pub object_asks: Vec<(u32, Vec<u8>)>,
     pub replica: replicate::Replica,
     pub desk: workspace::Workspace,
+    pub backup: backup::Backup,
     ticking: bool,
     /// When the chores that wait on time are next done: jobs past their limit, peers' epochs.
     chores_at: u64,
@@ -253,6 +259,7 @@ pub fn new() -> Service {
         object_asks: Vec::new(),
         replica: replicate::idle(),
         desk: workspace::idle(),
+        backup: backup::idle(),
         ticking: false,
         chores_at: 0,
         carry_due: false,
@@ -494,6 +501,8 @@ fn answered(s: mut Service, what: take For, r: take Result<Vec<u8>, IoError>) {
         For::LogPart(conn) => replicate::log_read(mut s, conn, take r),
         For::Tick => s.ticking = false,
         For::Desk(what, i) => workspace::answered(mut s, what, i, take r),
+        For::Backup(what) => backup::answered(mut s, what, take r),
+        For::BackupObject(id, kind) => backup::read_object(mut s, id, kind, take r),
     }
 }
 
@@ -522,6 +531,10 @@ fn begin(s: mut Service) {
     if mode.as_str() == "replica" {
         s.phase = Phase::Replica
         return replicate::start(mut s)
+    }
+    if mode.as_str() == "backup" || mode.as_str() == "restore" {
+        s.phase = Phase::Backup
+        return backup::start(mut s, mode.as_str() == "restore")
     }
     if mode.as_str() == "pull" || mode.as_str() == "push" {
         s.phase = Phase::Workspace

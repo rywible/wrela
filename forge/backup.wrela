@@ -1,0 +1,864 @@
+// Backups (spec/forge.md F30-F32): a store copied to an S3 bucket (Cloudflare R2) as segments, and
+// made again from them.
+//
+// `forge backup --to URL --auth FILE [--every S] [--once]`, with the store as its `data` root and
+// a `work` root for the files it sends, follows the store's log as a replica follows a service's:
+// segment X holds the log's whole records from byte X (`log/<X>`) and every object they name that
+// no earlier segment holds (`pack/<X>`), and `head` names the end of the last segment and the
+// log's chain there. A pack is sent before its log, and both before `head`, so a backup cut short
+// is the one before it. A segment holds at most 8 MiB of log, and ends after the record that
+// takes its pack past 64 MiB. curl sends every request, signed as S3 asks, with the credentials it
+// reads from FILE: forge never holds them.
+//
+// `forge restore --from URL --auth FILE` makes an empty `data` root the store again: each segment
+// in turn, every object checked against its id, written flushed before the records that name it,
+// and the log's chain checked at each segment's end and at `head`'s. Last, every object the log
+// names is checked to be there.
+
+use blake3::Id
+use codec::{Dec, Enc}
+use object::{File}
+use platform::service as host
+use service::{DATA, For, LOG, Service, wait}
+use state::Event
+use std::io::{IoError, print}
+
+const WORK: Text = "work"
+/// The most log a segment holds, and the pack size past which it ends.
+const SEGMENT: u64 = 8388608
+const PACK: u32 = 67108864
+/// How many object reads may be out at once.
+const READS: u32 = 64
+
+// What each host request is for.
+const CURLED: u32 = 1
+const READ_LOG: u32 = 2
+const WROTE: u32 = 4
+const WOKEN: u32 = 5
+const READ_GOT: u32 = 6
+const STATTED: u32 = 7
+const APPENDED: u32 = 8
+const MADE: u32 = 9
+const MADE_DIR: u32 = 10
+
+// Stages.
+const HEAD: u32 = 1
+const SENT: u32 = 2
+const NEXT: u32 = 3
+const PACKING: u32 = 4
+const PUT_PACK: u32 = 5
+const PUT_LOG: u32 = 6
+const PUT_HEAD: u32 = 7
+const IDLE: u32 = 8
+const GET_PACK: u32 = 9
+const GET_LOG: u32 = 10
+const VERIFY: u32 = 11
+
+pub struct Backup: Clone {
+    restoring: bool,
+    url: String,
+    auth: String,
+    every_ms: u32,
+    once: bool,
+    stage: u32,
+    /// Host requests out.
+    left: u32,
+    /// The log backed up (or restored) so far: its end and its chain there; and `head`'s.
+    end: u64,
+    chain: Id,
+    head_end: u64,
+    head_chain: Id,
+    /// The objects earlier segments hold.
+    sent: SortedMap<Id, bool>,
+    /// Objects to visit, with their kinds, and those visited for this segment.
+    walk: Vec<(Id, u8)>,
+    seen: SortedMap<Id, bool>,
+    /// Whether this walk packs what it visits (else it only learns what was sent).
+    packing: bool,
+    /// The segment being made: its records, their payloads still to walk, its end and chain,
+    /// and its pack.
+    records: Vec<u8>,
+    payloads: Vec<Vec<u8>>,
+    ends: Vec<(u64, Id)>,
+    taken: u32,
+    pack: Vec<u8>,
+}
+
+pub fn idle() -> Backup {
+    Backup {
+        restoring: false,
+        url: String::new(),
+        auth: String::new(),
+        every_ms: 60000,
+        once: false,
+        stage: 0,
+        left: 0,
+        end: 0,
+        chain: Id::zero(),
+        head_end: 0,
+        head_chain: Id::zero(),
+        sent: SortedMap::new(),
+        walk: Vec::new(),
+        seen: SortedMap::new(),
+        packing: false,
+        records: Vec::new(),
+        payloads: Vec::new(),
+        ends: Vec::new(),
+        taken: 0,
+        pack: Vec::new(),
+    }
+}
+
+/// A position in the log as a key's last part: 16 hex digits.
+pub fn hex16(x: u64) -> String {
+    let digits = "0123456789abcdef"
+    var out = String::new()
+    for k in 0..16 {
+        out.push_byte(digits.byte(u32((x >> (4 * (15 - k))) & 15)))
+    }
+    out
+}
+
+/// `head`'s bytes: the byte 1, the end of the last segment, and the log's chain there.
+pub fn head(end: u64, chain: Id) -> Vec<u8> {
+    var e = Enc::new()
+    e.u8(1)
+    e.num(end)
+    e.id(chain)
+    take e.bytes
+}
+
+pub fn head_of(b: take Vec<u8>) -> Option<(u64, Id)> {
+    var d = Dec::new(take b)
+    if d.u8().ok() != Some(1) {
+        return None
+    }
+    let end = d.num().ok()?
+    let chain = d.id().ok()?
+    d.end().ok()?
+    Some((end, chain))
+}
+
+/// The objects an event names, with their kinds.
+pub fn named(ev: Event, out: mut Vec<(Id, u8)>) {
+    match ev {
+        Event::Wrote { file: f, .. } => file_of(f, mut out),
+        Event::Snapped { tree, .. } => out.push((tree, object::TREE)),
+        Event::Merged { base, now, conflict, .. } => {
+            file_of(base, mut out)
+            file_of(now, mut out)
+            file_of(conflict, mut out)
+        },
+        Event::Landed { revision, tree, files, .. } => {
+            out.push((revision, object::REVISION))
+            out.push((tree, object::TREE))
+            for (_, f) in files {
+                file_of(f, mut out)
+            }
+        },
+        Event::Queued { tree, .. } => out.push((tree, object::TREE)),
+        Event::Finished { evidence, .. } => {
+            if !evidence.is_zero() {
+                out.push((evidence, object::EVIDENCE))
+            }
+        },
+        _ => {},
+    }
+}
+
+fn file_of(f: Option<File>, out: mut Vec<(Id, u8)>) {
+    if let Some(x) = f {
+        out.push((x.id, object::BLOB))
+    }
+}
+
+/// The objects an object names, with their kinds: a tree's entries, a revision's tree and
+/// evidence, evidence's output.
+pub fn children(kind: u8, raw: [u8], out: mut Vec<(Id, u8)>) {
+    if kind == object::TREE {
+        if let Ok(entries) = object::entries(raw) {
+            for e in entries {
+                out.push((e.id, if e.kind == object::Kind::Dir { object::TREE } else {
+                    object::BLOB
+                }))
+            }
+        }
+    } else if kind == object::REVISION {
+        if let Ok(r) = object::revision_of(raw) {
+            out.push((r.tree, object::TREE))
+            for x in r.evidence {
+                out.push((x, object::EVIDENCE))
+            }
+        }
+    } else if kind == object::EVIDENCE {
+        if let Ok(x) = object::evidence_of(raw) {
+            out.push((x.log, object::BLOB))
+        }
+    }
+}
+
+/// curl's arguments for a request of `key`: a PUT of `file` (in the `work` root), or a GET into
+/// it. curl prints the answer's status.
+pub fn curl(url: str, auth: str, key: str, file: str, put: bool) -> Vec<String> {
+    var argv = Vec::from(
+        [
+            String::from("curl"),
+            String::from("-sS"),
+            String::from("--retry"),
+            String::from("3"),
+            String::from("--max-time"),
+            String::from("3600"),
+            String::from("-K"),
+            auth.to_string(),
+            String::from("--aws-sigv4"),
+            String::from("aws:amz:auto:s3"),
+            String::from("-H"),
+            String::from("Expect:"),
+            String::from("-w"),
+            String::from("%{http_code}"),
+        ],
+    )
+    if put {
+        for a in ["-o", "/dev/null", "-T"] {
+            argv.push(a.to_string())
+        }
+        argv.push(file.to_string())
+    } else {
+        argv.push(String::from("-o"))
+        argv.push(file.to_string())
+    }
+    let cut = if url.ends_with("/") { url.len() - 1 } else { url.len() }
+    argv.push(f"{url.slice(from: 0, to: cut)}/{key}")
+    argv
+}
+
+fn flag(args: [String], name: str) -> Option<String> {
+    for i in 0..args.len() {
+        if args[i].as_str() == name && i + 1 < args.len() {
+            return Some(args[i + 1].clone())
+        }
+    }
+    None
+}
+
+/// `forge backup` and `forge restore`.
+pub fn start(s: mut Service, restoring: bool) {
+    let url = flag(s.args, if restoring { "--from" } else { "--to" }).unwrap_or(String::new())
+    let auth = flag(s.args, "--auth").unwrap_or(String::new())
+    if url.is_empty() || !auth.as_str().starts_with("/") {
+        return service::fatal(
+            mut s,
+            if restoring {
+                "forge restore --from URL --auth /FILE: the bucket's URL, and curl's file of its credentials"
+            } else {
+                "forge backup --to URL --auth /FILE [--every SECONDS] [--once]: the bucket's URL, and curl's file of its credentials"
+            },
+        )
+    }
+    s.backup.restoring = restoring
+    s.backup.url = take url
+    s.backup.auth = take auth
+    if let Some(e) = flag(s.args, "--every") {
+        s.backup.every_ms = u32(min(bytes::parse_u64(e.as_str()).unwrap_or(60), 86400) * 1000)
+    }
+    for a in s.args {
+        if a.as_str() == "--once" {
+            s.backup.once = true
+        }
+    }
+    if restoring {
+        // Into an empty store only.
+        s.backup.left = 1
+        return wait(mut s, host::stat(LOG), For::Backup(STATTED))
+    }
+    get_head(mut s)
+}
+
+fn get_head(s: mut Service) {
+    s.backup.stage = HEAD
+    let argv = curl(
+        s.backup.url.as_str(),
+        s.backup.auth.as_str(),
+        "head",
+        "backup-head",
+        put: false,
+    )
+    run_curl(mut s, take argv)
+}
+
+fn run_curl(s: mut Service, argv: take Vec<String>) {
+    let r = host::Run {
+        tag: 0,
+        argv,
+        cwd: WORK.to_string(),
+        env: Vec::new(),
+        limit_ms: 3700000,
+        cap: 65536,
+        stdin: Vec::new(),
+    }
+    s.backup.left += 1
+    wait(mut s, host::run(r), For::Backup(CURLED))
+}
+
+/// What a curl said: the answer's status, or why it didn't run.
+fn status_of(r: take Result<Vec<u8>, IoError>) -> Result<u32, String> {
+    match take r {
+        Ok(b) => match host::ran_of(take b) {
+            Some(x) => {
+                let code = bytes::parse_u64(bytes::text_of(x.stdout).as_str().trim()).unwrap_or(0)
+                if !x.ok() && code == 0 {
+                    return Err(f"curl failed: {bytes::text_of(x.stderr).as_str().trim()}")
+                }
+                Ok(u32(code))
+            },
+            None => Err(String::from("curl's answer is malformed")),
+        },
+        Err(e) => Err(f"curl didn't run: {e.message()}"),
+    }
+}
+
+pub fn answered(s: mut Service, what: u32, r: take Result<Vec<u8>, IoError>) {
+    s.backup.left -= 1
+    if what == STATTED {
+        if let Ok(b) = take r {
+            if let Some(st) = host::stat_of(take b) {
+                if st.kind != host::Kind::Missing && st.size > 0 {
+                    return service::fatal(mut s, "forge restores only into an empty store")
+                }
+            }
+        }
+        s.backup.left += 2
+        wait(mut s, host::mkdir("data/objects"), For::Backup(MADE))
+        wait(mut s, host::mkdir("data/workers"), For::Backup(MADE))
+        return
+    }
+    if what == MADE || what == MADE_DIR {
+        if let Err(e) = r {
+            return service::fatal(
+                mut s,
+                f"can't make the store's directories: {e.message()}".as_str(),
+            )
+        }
+        if s.backup.left == 0 {
+            if what == MADE {
+                // The 256 directories of objects, then the head.
+                let hex = "0123456789abcdef"
+                for hi in 0..16 {
+                    for lo in 0..16 {
+                        var name = String::new()
+                        name.push_byte(hex.byte(hi))
+                        name.push_byte(hex.byte(lo))
+                        s.backup.left += 1
+                        wait(
+                            mut s,
+                            host::mkdir(f"{DATA}/objects/{name}".as_str()),
+                            For::Backup(MADE_DIR),
+                        )
+                    }
+                }
+            } else {
+                get_head(mut s)
+            }
+        }
+        return
+    }
+    if what == WOKEN {
+        return next(mut s)
+    }
+    if what == CURLED {
+        return curled(mut s, take r)
+    }
+    if what == READ_GOT {
+        return got_file(mut s, take r)
+    }
+    if what == READ_LOG {
+        return read_log(mut s, take r)
+    }
+    if what == WROTE || what == APPENDED {
+        if let Err(e) = r {
+            return service::fatal(mut s, f"a write failed: {e.message()}".as_str())
+        }
+        if s.backup.left == 0 {
+            wrote_all(mut s)
+        }
+    }
+}
+
+/// A curl ended: the stage it was for goes on.
+fn curled(s: mut Service, r: take Result<Vec<u8>, IoError>) {
+    let code = match status_of(take r) {
+        Ok(c) => c,
+        Err(why) => return trouble(mut s, why.as_str()),
+    }
+    let stage = s.backup.stage
+    if stage == HEAD {
+        if code == 404 {
+            if s.backup.restoring {
+                return service::fatal(mut s, f"there's no backup at {s.backup.url}".as_str())
+            }
+            // A new backup: from the log's start.
+            s.backup.head_end = 0
+            s.backup.head_chain = Id::zero()
+            return read_whole_log(mut s)
+        }
+        if code != 200 {
+            return trouble(mut s, f"the bucket answered {code} for head".as_str())
+        }
+        s.backup.left += 1
+        return wait(mut s, host::read("work/backup-head"), For::Backup(READ_GOT))
+    }
+    if stage == PUT_PACK || stage == PUT_LOG || stage == PUT_HEAD {
+        if code != 200 {
+            return trouble(mut s, f"the bucket answered {code} to a write".as_str())
+        }
+        return sent_part(mut s)
+    }
+    if stage == GET_PACK || stage == GET_LOG {
+        if code != 200 {
+            return service::fatal(
+                mut s,
+                f"the bucket answered {code} for segment {hex16(s.backup.end)}".as_str(),
+            )
+        }
+        s.backup.left += 1
+        wait(mut s, host::read("work/backup-segment"), For::Backup(READ_GOT))
+    }
+}
+
+/// A backup's trouble with the bucket: it tries again in a minute (a restore stops).
+fn trouble(s: mut Service, why: str) {
+    if s.backup.restoring {
+        return service::fatal(mut s, why)
+    }
+    print(f"forge: backup: {why}; trying again in 60 s")
+    s.backup.stage = IDLE
+    s.backup.left += 1
+    wait(mut s, host::after(60000), For::Backup(WOKEN))
+}
+
+/// A file curl fetched: `head`, or a segment's pack or log.
+fn got_file(s: mut Service, r: take Result<Vec<u8>, IoError>) {
+    let b = match take r {
+        Ok(b) => take b,
+        Err(e) => return service::fatal(
+            mut s,
+            f"can't read what curl fetched: {e.message()}".as_str(),
+        ),
+    }
+    let stage = s.backup.stage
+    if stage == HEAD {
+        let Some((end, chain)) = head_of(take b) else {
+            return service::fatal(mut s, "the bucket's head isn't a forge backup's")
+        }
+        s.backup.head_end = end
+        s.backup.head_chain = chain
+        print(f"forge: the backup holds {end} bytes of log")
+        if s.backup.restoring {
+            return get_segment(mut s)
+        }
+        return read_whole_log(mut s)
+    }
+    if stage == GET_PACK {
+        return restore_pack(mut s, take b)
+    }
+    if stage == GET_LOG {
+        restore_log(mut s, take b)
+    }
+}
+
+// ---- backing up --------------------------------------------------------------------------------
+
+/// The store's log, to learn what the backup already holds.
+fn read_whole_log(s: mut Service) {
+    s.backup.stage = SENT
+    s.backup.left += 1
+    wait(mut s, host::read(LOG), For::Backup(READ_LOG))
+}
+
+fn read_log(s: mut Service, r: take Result<Vec<u8>, IoError>) {
+    let b = match take r {
+        Ok(b) => take b,
+        Err(e) => {
+            if s.backup.stage == NEXT {
+                // No log yet: nothing to back up.
+                return caught_up(mut s)
+            }
+            if s.backup.stage == SENT && s.backup.head_end == 0 {
+                Vec::new()
+            } else {
+                return service::fatal(mut s, f"can't read the log: {e.message()}".as_str())
+            }
+        },
+    }
+    if s.backup.stage == SENT || s.backup.stage == VERIFY {
+        // From the log's start: what the backup holds (or, restored, what the store must).
+        let read = log::read(b)
+        let ends = log::ends(b, read.clone(), 0, Id::zero())
+        let want = s.backup.head_end
+        if !log::holds(ends, want, s.backup.head_chain) {
+            return service::fatal(
+                mut s,
+                f"the bucket's backup isn't of this store: its {want} bytes of log aren't this store's",
+            )
+        }
+        s.backup.walk = Vec::new()
+        for i in 0..read.payloads.len() {
+            if u64(read.ends[i]) > want {
+                break
+            }
+            match state::decode(read.payloads[i].clone()) {
+                Ok(ev) => named(ev, mut s.backup.walk),
+                Err(bad) => return service::fatal(
+                    mut s,
+                    f"the log holds an event forge can't read: {bad.why}".as_str(),
+                ),
+            }
+        }
+        s.backup.end = want
+        s.backup.chain = s.backup.head_chain
+        s.backup.packing = false
+        s.backup.seen = SortedMap::new()
+        return walk(mut s)
+    }
+    // NEXT: the log from the backup's end.
+    let read = log::read(b)
+    if read.whole == 0 {
+        return caught_up(mut s)
+    }
+    s.backup.records = bytes::slice(b, 0, read.whole)
+    s.backup.ends = log::ends(b, read.clone(), s.backup.end, s.backup.chain)
+    s.backup.payloads = take read.payloads
+    s.backup.taken = 0
+    s.backup.pack = Vec::new()
+    s.backup.seen = SortedMap::new()
+    s.backup.packing = true
+    s.backup.stage = PACKING
+    take_record(mut s)
+}
+
+/// The backup holds the whole log: it looks again in a while, or, once, stops.
+fn caught_up(s: mut Service) {
+    if s.backup.once {
+        print(f"forge: backed up {s.backup.end} bytes of log")
+        host::exit(0)
+        s.phase = service::Phase::Stopped
+        return
+    }
+    s.backup.stage = IDLE
+    s.backup.left += 1
+    wait(mut s, host::after(s.backup.every_ms), For::Backup(WOKEN))
+}
+
+fn next(s: mut Service) {
+    s.backup.stage = NEXT
+    s.backup.left += 1
+    wait(mut s, host::read_range(LOG, s.backup.end, SEGMENT), For::Backup(READ_LOG))
+}
+
+/// The segment's next record: its objects walked into the pack.
+fn take_record(s: mut Service) {
+    let i = s.backup.taken
+    match state::decode(s.backup.payloads[i].clone()) {
+        Ok(ev) => named(ev, mut s.backup.walk),
+        Err(bad) => return service::fatal(
+            mut s,
+            f"the log holds an event forge can't read: {bad.why}".as_str(),
+        ),
+    }
+    s.backup.taken += 1
+    walk(mut s)
+}
+
+/// Visits the objects to walk, reading those it must: a few at a time.
+fn walk(s: mut Service) {
+    while s.backup.left < READS && !s.backup.walk.is_empty() {
+        let (id, kind) = s.backup.walk.pop().unwrap()
+        if s.backup.sent.contains(id) || s.backup.seen.contains(id) {
+            continue
+        }
+        let _ = s.backup.seen.insert(id, value: true)
+        if kind == object::BLOB && !s.backup.packing {
+            continue
+        }
+        s.backup.left += 1
+        // Its kind, as a number the answer carries.
+        wait(mut s, host::read(object::path(DATA, id).as_str()), For::BackupObject(id, kind))
+    }
+    if s.backup.left == 0 && s.backup.walk.is_empty() {
+        walked(mut s)
+    }
+}
+
+/// An object read for the walk: its children walked in turn, and, backing up, it packed.
+pub fn read_object(s: mut Service, id: Id, kind: u8, r: take Result<Vec<u8>, IoError>) {
+    s.backup.left -= 1
+    let raw = match take r {
+        Ok(b) => take b,
+        Err(e) => return service::fatal(
+            mut s,
+            f"object {id.hex()} can't be read: {e.message()}".as_str(),
+        ),
+    }
+    match object::check(id, raw) {
+        Ok(k) => {
+            if k != kind {
+                return service::fatal(
+                    mut s,
+                    f"object {id.hex()} isn't of the kind that names it".as_str(),
+                )
+            }
+        },
+        Err(bad) => return service::fatal(mut s, f"object {id.hex()}: {bad.why}".as_str()),
+    }
+    children(kind, raw, mut s.backup.walk)
+    if s.backup.packing {
+        for b in id.bytes() {
+            s.backup.pack.push(b)
+        }
+        let n = raw.len()
+        for k in 0..4 {
+            s.backup.pack.push(u8((n >> (8 * k)) & 255))
+        }
+        bytes::push_run(mut s.backup.pack, raw)
+    }
+    walk(mut s)
+}
+
+/// Every object to walk was visited.
+fn walked(s: mut Service) {
+    if s.backup.stage == SENT {
+        // What the backup holds is known: the objects visited.
+        s.backup.sent = replace(mut s.backup.seen, SortedMap::new())
+        print(f"forge: backing up to {s.backup.url} from byte {s.backup.end}")
+        return next(mut s)
+    }
+    if s.backup.stage == VERIFY {
+        return verified(mut s)
+    }
+    // A record's objects are packed: the segment ends here if its pack is large or its records
+    // are done.
+    let i = s.backup.taken
+    if i < s.backup.payloads.len() && s.backup.pack.len() < PACK {
+        return take_record(mut s)
+    }
+    let (end, chain) = s.backup.ends[i - 1]
+    s.backup.records = bytes::slice(s.backup.records, 0, u32(end - s.backup.end))
+    s.backup.ends = Vec::from([(end, chain)])
+    s.backup.stage = PUT_PACK
+    write_part(mut s, "backup-pack", s.backup.pack.clone())
+}
+
+/// Writes `b` to `name` in the `work` root, for curl to send.
+fn write_part(s: mut Service, name: str, b: [u8]) {
+    s.backup.left += service::write_unflushed_file(
+        mut s,
+        f"{WORK}/{name}".as_str(),
+        b,
+        exec: false,
+        what: For::Backup(WROTE),
+    )
+}
+
+fn wrote_all(s: mut Service) {
+    let stage = s.backup.stage
+    if stage == GET_LOG && s.backup.records.is_empty() {
+        // The pack's objects are written: the segment's log next.
+        return restored_pack(mut s)
+    }
+    if stage == GET_LOG {
+        // The segment's records are appended: the next segment.
+        let (end, chain) = s.backup.ends[0]
+        print(f"forge: restored segment {hex16(s.backup.end)}")
+        s.backup.end = end
+        s.backup.chain = chain
+        s.backup.records = Vec::new()
+        return get_segment(mut s)
+    }
+    let at = hex16(s.backup.end)
+    let (file, key) = if stage == PUT_PACK {
+        ("backup-pack", f"pack/{at}")
+    } else if stage == PUT_LOG {
+        ("backup-log", f"log/{at}")
+    } else if stage == PUT_HEAD {
+        ("backup-head", String::from("head"))
+    } else {
+        return
+    }
+    let argv = curl(s.backup.url.as_str(), s.backup.auth.as_str(), key.as_str(), file, put: true)
+    run_curl(mut s, take argv)
+}
+
+/// A part of the segment is in the bucket: the next goes.
+fn sent_part(s: mut Service) {
+    let stage = s.backup.stage
+    if stage == PUT_PACK {
+        s.backup.stage = PUT_LOG
+        return write_part(mut s, "backup-log", s.backup.records.clone())
+    }
+    if stage == PUT_LOG {
+        let (end, chain) = s.backup.ends[0]
+        s.backup.stage = PUT_HEAD
+        return write_part(mut s, "backup-head", head(end, chain))
+    }
+    // The head names the segment: it's backed up.
+    let (end, chain) = s.backup.ends[0]
+    print(
+        f"forge: backed up segment {hex16(s.backup.end)}: {end - s.backup.end} bytes of log, {s.backup.pack.len()} bytes of objects",
+    )
+    for id in s.backup.seen.keys() {
+        let _ = s.backup.sent.insert(id, value: true)
+    }
+    s.backup.end = end
+    s.backup.chain = chain
+    s.backup.pack = Vec::new()
+    s.backup.records = Vec::new()
+    next(mut s)
+}
+
+// ---- restoring ---------------------------------------------------------------------------------
+
+fn get_segment(s: mut Service) {
+    if s.backup.end >= s.backup.head_end {
+        if s.backup.chain != s.backup.head_chain {
+            return service::fatal(mut s, "the restored log's chain isn't the backup's head's")
+        }
+        // Every object the log names must be in the store: they're walked again from disk.
+        s.backup.stage = VERIFY
+        s.backup.left += 1
+        return wait(mut s, host::read(LOG), For::Backup(READ_LOG))
+    }
+    s.backup.stage = GET_PACK
+    let argv = curl(
+        s.backup.url.as_str(),
+        s.backup.auth.as_str(),
+        f"pack/{hex16(s.backup.end)}".as_str(),
+        "backup-segment",
+        put: false,
+    )
+    run_curl(mut s, take argv)
+}
+
+/// A segment's pack: each object checked against its id and written, flushed.
+fn restore_pack(s: mut Service, b: take Vec<u8>) {
+    var at = 0
+    var n = 0
+    while at < b.len() {
+        if at + 36 > b.len() {
+            return service::fatal(mut s, "a pack ends inside an object")
+        }
+        let id = Id::of_bytes(b, at)
+        var len: u32 = 0
+        for k in 0..4 {
+            len = len | (u32(b[at + 32 + k]) << (8 * k))
+        }
+        at += 36
+        if len > b.len() - at {
+            return service::fatal(mut s, "a pack ends inside an object")
+        }
+        let raw = bytes::slice(b, at, at + len)
+        at += len
+        if object::check(id, raw).is_err() {
+            return service::fatal(mut s, f"object {id.hex()} came with other bytes".as_str())
+        }
+        let _ = s.backup.sent.insert(id, value: true)
+        s.backup.left += service::write_file(
+            mut s,
+            object::path(DATA, id).as_str(),
+            raw,
+            For::Backup(WROTE),
+        )
+        n += 1
+    }
+    s.backup.taken = n
+    s.backup.stage = GET_LOG
+    s.backup.records = Vec::new()
+    if s.backup.left == 0 {
+        restored_pack(mut s)
+    }
+}
+
+fn restored_pack(s: mut Service) {
+    let argv = curl(
+        s.backup.url.as_str(),
+        s.backup.auth.as_str(),
+        f"log/{hex16(s.backup.end)}".as_str(),
+        "backup-segment",
+        put: false,
+    )
+    run_curl(mut s, take argv)
+}
+
+/// A segment's log: whole records that go on from the store's log, appended flushed.
+fn restore_log(s: mut Service, b: take Vec<u8>) {
+    let read = log::read(b)
+    if read.whole != b.len() || read.whole == 0 {
+        return service::fatal(mut s, f"segment {hex16(s.backup.end)}'s log isn't whole records")
+    }
+    let ends = log::ends(b, read, s.backup.end, s.backup.chain)
+    let (end, chain) = ends[ends.len() - 1]
+    s.backup.records = take b
+    s.backup.ends = Vec::from([(end, chain)])
+    var at = 0
+    while at < s.backup.records.len() {
+        let to = min(at + 1040000, s.backup.records.len())
+        s.backup.left += 1
+        wait(
+            mut s,
+            host::append(LOG, bytes::slice(s.backup.records, at, to)),
+            For::Backup(APPENDED),
+        )
+        at = to
+    }
+}
+
+fn verified(s: mut Service) {
+    // Every object the log names was visited, and each is in the store (a read of each but the
+    // blobs, which the trees name; those are checked to be among what was written).
+    for id in s.backup.seen.keys() {
+        if !s.backup.sent.contains(id) {
+            return service::fatal(mut s, f"the backup lacks object {id.hex()}".as_str())
+        }
+    }
+    print(
+        f"forge: restored {s.backup.end} bytes of log and {s.backup.sent.len()} objects; serve it with `forge serve --promote`",
+    )
+    host::exit(0)
+    s.phase = service::Phase::Stopped
+}
+
+@test
+fn a_head_and_a_position_read_back() {
+    let c = blake3::hash(bytes::of_str("chain"))
+    let Some((end, chain)) = head_of(head(123456789, c)) else { panic("it reads") }
+    assert(end == 123456789 && chain == c, "the same head")
+    assert(head_of(Vec::from([2])).is_none(), "another version")
+    assert(hex16(0).as_str() == "0000000000000000", "zero")
+    assert(hex16(4096 + 255).as_str() == "00000000000010ff", "hex")
+}
+
+@test
+fn curl_sends_signed_requests_with_the_operators_credentials() {
+    let put = curl(
+        "https://x.r2.cloudflarestorage.com/forge/",
+        "/etc/r2.conf",
+        "head",
+        "f",
+        put: true,
+    )
+    let text = put.len()
+    assert(
+        text > 10 && put[put.len() - 1].as_str() == "https://x.r2.cloudflarestorage.com/forge/head",
+        "one slash",
+    )
+    var signed = false
+    var auth = false
+    for i in 0..put.len() - 1 {
+        if put[i].as_str() == "--aws-sigv4" && put[i + 1].as_str() == "aws:amz:auto:s3" {
+            signed = true
+        }
+        if put[i].as_str() == "-K" && put[i + 1].as_str() == "/etc/r2.conf" {
+            auth = true
+        }
+    }
+    assert(signed && auth, "signed, with the file's credentials")
+}

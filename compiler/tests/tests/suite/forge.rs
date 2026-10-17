@@ -517,6 +517,150 @@ fn three_stores_fail_over_without_losing_a_confirmed_landing_and_the_old_service
     stop(pa, ra);
 }
 
+/// A bucket as S3 serves one, for a backup's tests: PUT and GET of keys, each request refused
+/// unless curl signed it (AWS signature version 4) with the test's key. What it holds, by key.
+fn bucket() -> (u16, std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>>)
+{
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let port = listener.local_addr().expect("its address").port();
+    let held: Arc<Mutex<BTreeMap<String, Vec<u8>>>> = Arc::default();
+    let keys = Arc::clone(&held);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let keys = Arc::clone(&keys);
+            std::thread::spawn(move || {
+                let mut s = stream;
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 65536];
+                let head_end = loop {
+                    if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break i + 4;
+                    }
+                    match s.read(&mut chunk) {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                };
+                let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
+                let mut lines = head.lines();
+                let first: Vec<&str> = lines.next().unwrap_or("").split(' ').collect();
+                let (method, path) = (first[0].to_string(), first[1].to_string());
+                let header = |name: &str| {
+                    head.lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case(name).then(|| v.trim().to_string())
+                        })
+                        .unwrap_or_default()
+                };
+                let length: usize = header("content-length").parse().unwrap_or(0);
+                while buf.len() < head_end + length {
+                    match s.read(&mut chunk) {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                let body = buf[head_end..head_end + length].to_vec();
+                let signed = header("authorization")
+                    .starts_with("AWS4-HMAC-SHA256 Credential=test/")
+                    && !header("x-amz-date").is_empty();
+                let key = path.trim_start_matches("/bucket/").to_string();
+                let (status, out) = if !signed {
+                    ("403 Forbidden", b"unsigned".to_vec())
+                } else if method == "PUT" {
+                    keys.lock().expect("the keys").insert(key, body);
+                    ("200 OK", Vec::new())
+                } else {
+                    match keys.lock().expect("the keys").get(&key) {
+                        Some(b) => ("200 OK", b.clone()),
+                        None => ("404 Not Found", b"NoSuchKey".to_vec()),
+                    }
+                };
+                let reply = format!(
+                    "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    out.len()
+                );
+                let _ = s.write_all(reply.as_bytes());
+                let _ = s.write_all(&out);
+            });
+        }
+    });
+    (port, held)
+}
+
+#[test]
+fn a_store_backed_up_to_a_bucket_is_restored_whole() {
+    let scratch = Scratch::new("backup");
+    let dir = |d: &str| {
+        let p = scratch.0.join(d);
+        std::fs::create_dir_all(&p).expect("a directory");
+        p
+    };
+    let (repo, build, data, work, bwork) =
+        (dir("repo"), dir("build"), dir("data"), dir("work"), dir("bwork"));
+    let (restored, rwork, other) = (dir("restored"), dir("rwork"), dir("other"));
+    repository(&repo);
+    wrela_tests::must_build(&repo_root().join("forge"), &build);
+    let auth = scratch.0.join("r2.conf");
+    std::fs::write(&auth, "user = \"test:secret\"\n").expect("curl's credentials");
+    let (bport, held) = bucket();
+    let url = format!("http://127.0.0.1:{bport}/bucket");
+    let backup = |data: &Path, extra: &[&str]| {
+        let mut args = vec!["backup", "--to", &url, "--auth", auth.to_str().expect("a path")];
+        args.extend_from_slice(extra);
+        run_forge(&build, data, &bwork, &args).join().expect("the backup's thread")
+    };
+
+    let port = free_port();
+    let service = start(&build, &data, &work, port);
+    ready(port);
+    http(port, "POST", "/api/import", &serde_json::json!({"git": repo, "ref": "main"}).to_string());
+    wait_until("the import", || call(port, "log", serde_json::json!({}))["main"] == 2);
+    land_one(port, "big.bin", &"x".repeat(3_000_000));
+    // Backed up while the service runs, then again once it has landed more.
+    assert_eq!(backup(&data, &["--once"]), 0);
+    let first: Vec<String> = held.lock().expect("the keys").keys().cloned().collect();
+    assert!(first.contains(&"head".to_string()), "{first:?}");
+    assert!(
+        first.iter().any(|k| k.starts_with("pack/"))
+            && first.contains(&"log/0000000000000000".into())
+    );
+    land_one(port, "more.txt", "more\n");
+    assert_eq!(backup(&data, &["--once"]), 0);
+    let logs = held.lock().expect("the keys").keys().filter(|k| k.starts_with("log/")).count();
+    assert_eq!(logs, 2, "a second segment, from where the first ended");
+    let big = held.lock().expect("the keys").values().map(Vec::len).max().unwrap_or(0);
+    assert!(big > 3_000_000, "the big file is in a pack");
+    stop(port, service);
+
+    // Another store's backup isn't this bucket's.
+    assert_eq!(backup(&other, &["--once"]), 1, "a store whose log isn't the backup's is refused");
+
+    // Restored into an empty store: the same log, and a service that serves it once promoted.
+    let restore = |into: &Path| {
+        let args = ["restore", "--from", &url, "--auth", auth.to_str().expect("a path")];
+        run_forge(&build, into, &rwork, &args).join().expect("the restore's thread")
+    };
+    assert_eq!(restore(&restored), 0);
+    assert_eq!(
+        std::fs::read(restored.join("events")).expect("the restored log"),
+        std::fs::read(data.join("events")).expect("the log"),
+        "the restored log is the store's"
+    );
+    assert_eq!(restore(&restored), 1, "a restore into a store that isn't empty is refused");
+    let port2 = free_port();
+    let listen2 = format!("127.0.0.1:{port2}");
+    let promoted =
+        run_forge(&build, &restored, &rwork, &["serve", "--promote", "--listen", &listen2]);
+    ready(port2);
+    assert_eq!(call(port2, "read", serde_json::json!({"path": "more.txt"}))["text"], "more\n");
+    let read = call(port2, "read", serde_json::json!({"path": "big.bin", "lines": 1}));
+    assert_eq!(read["size"], 3_000_000);
+    stop(port2, promoted);
+}
+
 /// forge with `args` and the roots `roots`, on a thread of its own: its exit status.
 fn run_with_roots(
     build: &Path,
