@@ -44,6 +44,8 @@ pub enum Phase: Copy + Eq {
     Work,
     /// Running as a replica of a forge service (replicate.wrela).
     Replica,
+    /// Pulling or pushing a workspace (workspace.wrela).
+    Workspace,
     Stopped,
 }
 
@@ -81,6 +83,8 @@ pub enum For: Clone {
     LogPart(u32),
     /// A wake-up, for what waits on time.
     Tick,
+    /// A request of a workspace (workspace.wrela): what it's for, and for which file.
+    Desk(u32, u32),
 }
 
 pub struct Wait {
@@ -174,6 +178,7 @@ pub struct Service {
     pub awaiting: Vec<(u64, Vec<Reply>)>,
     pub object_asks: Vec<(u32, Vec<u8>)>,
     pub replica: replicate::Replica,
+    pub desk: workspace::Workspace,
     ticking: bool,
     /// Whether main moved since the open changes were last carried onto it.
     carry_due: bool,
@@ -212,6 +217,7 @@ pub fn new() -> Service {
         awaiting: Vec::new(),
         object_asks: Vec::new(),
         replica: replicate::idle(),
+        desk: workspace::idle(),
         ticking: false,
         carry_due: false,
     }
@@ -231,6 +237,15 @@ pub fn fatal(s: mut Service, why: str) {
     print(f"forge: {why}")
     host::exit(1)
     s.phase = Phase::Stopped
+}
+
+/// Whether the program calls a service (as a command, a worker, a replica or a workspace), so its
+/// connections are its calls', not callers'.
+fn calls_out(s: Service) -> bool {
+    s.phase == Phase::Client ||
+        s.phase == Phase::Work ||
+        s.phase == Phase::Replica ||
+        s.phase == Phase::Workspace
 }
 
 /// One call of the host: answers, then input, then what waits to be written.
@@ -262,9 +277,7 @@ pub fn step(s: mut Service, time: f32) {
         match e {
             Input::Message { conn, .. } => {
                 if let Some(b) = payload(e) {
-                    if s.phase == Phase::Client ||
-                        s.phase == Phase::Work ||
-                        s.phase == Phase::Replica {
+                    if calls_out(s) {
                         calls::bytes(mut s, conn, b)
                     } else {
                         bytes_in(mut s, conn, b)
@@ -272,7 +285,7 @@ pub fn step(s: mut Service, time: f32) {
                 }
             },
             Input::Connection { conn, open, .. } => {
-                if s.phase == Phase::Client || s.phase == Phase::Work || s.phase == Phase::Replica {
+                if calls_out(s) {
                     calls::connection(mut s, conn, open)
                 } else if open {
                     let _ = s.conns.insert(
@@ -307,6 +320,9 @@ pub fn step(s: mut Service, time: f32) {
     }
     if s.phase == Phase::Replica {
         replicate::pump(mut s)
+    }
+    if s.phase == Phase::Workspace {
+        workspace::pump(mut s)
     }
     pump(mut s)
     if s.phase == Phase::Ready {
@@ -438,6 +454,7 @@ fn answered(s: mut Service, what: take For, r: take Result<Vec<u8>, IoError>) {
         For::Replica(what) => replicate::answered(mut s, what, take r),
         For::LogPart(conn) => replicate::log_read(mut s, conn, take r),
         For::Tick => s.ticking = false,
+        For::Desk(what, i) => workspace::answered(mut s, what, i, take r),
     }
 }
 
@@ -466,6 +483,10 @@ fn begin(s: mut Service) {
     if mode.as_str() == "replica" {
         s.phase = Phase::Replica
         return replicate::start(mut s)
+    }
+    if mode.as_str() == "pull" || mode.as_str() == "push" {
+        s.phase = Phase::Workspace
+        return workspace::start(mut s)
     }
     if let Some(n) = flag(s.args, "--acks") {
         s.acks = u32(bytes::parse_u64(n.as_str()).unwrap_or(0))
@@ -726,6 +747,28 @@ fn pump(s: mut Service) {
 /// Writes object `id` to its file, in parts if it's large: how many answers it waits for.
 fn write_object(s: mut Service, id: Id, b: [u8]) -> u32 {
     write_file(mut s, object::path(DATA, id).as_str(), b, For::Wrote)
+}
+
+/// Writes `b` to the file at `path`, whole or not at all but not flushed (a crash of the machine
+/// may leave the old file), in parts if it's large; `exec` makes it executable. How many answers
+/// (each for `what`) it waits for.
+pub fn write_unflushed_file(s: mut Service, path: str, b: [u8], exec: bool, what: For) -> u32 {
+    if b.len() <= PART {
+        wait(mut s, host::write_unflushed(path, b, exec), what.clone())
+        return 1
+    }
+    let part = f"{path}.part"
+    wait(mut s, host::write_unflushed(part.as_str(), bytes::slice(b, 0, PART), exec), what.clone())
+    var n = 1
+    var at = PART
+    while at < b.len() {
+        let end = min(at + PART, b.len())
+        wait(mut s, host::append(part.as_str(), bytes::slice(b, at, end)), what.clone())
+        n += 1
+        at = end
+    }
+    wait(mut s, host::rename(part.as_str(), path), what.clone())
+    n + 1
 }
 
 /// Writes `b` to the file at `path`, flushed, whole or not at all, in parts if it's large: how

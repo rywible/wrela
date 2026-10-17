@@ -9,7 +9,7 @@ use out::Json
 use platform::service as host
 use service::Service
 
-const COMMANDS: Text = "forge holds wrela's source and runs its checks. A change is an overlay on main: open one,\nread, search and edit its files (it sees main's newest files wherever it hasn't written), check\nits tree on a GPU worker while you work, and submit it; it lands once the suite passes on its\nexact tree. Every tool prints JSON.\n\n  forge <tool> [key=value...] [--server ADDR]\n  forge help <tool>\n  forge call <tool> '<json arguments>' [--server ADDR]\n  forge import <git-dir> [ref] [--server ADDR]\n  forge serve [--listen ADDR] [--machine NAME] [--landers IP,...] [--no-worker]\n  forge work --server ADDR --machine NAME [--jobs N]\n\nTools:\n"
+const COMMANDS: Text = "forge holds wrela's source and runs its checks. A change is an overlay on main: open one,\nread, search and edit its files (it sees main's newest files wherever it hasn't written), check\nits tree on a GPU worker while you work, and submit it; it lands once the suite passes on its\nexact tree. Every tool prints JSON.\n\n  forge <tool> [key=value...] [--server ADDR]\n  forge help <tool>\n  forge call <tool> '<json arguments>' [--server ADDR]\n  forge pull change=<cN> [--server ADDR]      make this directory hold a change's files\n  forge push [--server ADDR]                  send back what changed here\n  forge import <git-dir> [ref] [--server ADDR]\n  forge serve [--listen ADDR] [--machine NAME] [--landers IP,...] [--no-worker]\n  forge work --server ADDR --machine NAME [--jobs N]\n  forge replica --server ADDR --machine NAME\n\nTools:\n"
 
 /// What `forge help` prints: the commands, then each tool's usage and what it does.
 pub fn help() -> String {

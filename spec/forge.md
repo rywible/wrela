@@ -134,3 +134,14 @@ never reused.
 - **F26.** A replica becomes the service by running `forge serve` on its data: its state is the
   fold of its log (F14). The old service must not take calls after that; nothing yet stops it but
   its operator.
+
+## Workspaces
+
+- **F27.** A workspace is a directory that holds a change's files, with what it holds in
+  `.forge/state`: the byte 1, the change's name, and a run holding F23's list of files. A pull
+  writes the files that differ from what it held and removes the ones the change no longer holds. A
+  push sends every file that differs from what it held, and every new file that `.forgeignore`
+  doesn't name, into the change, and removes from the change the files that are gone.
+  `.forgeignore` is written as `.gitignore` is: parts between `/`, `*` within a part, `**` for any
+  parts; a rule with a `/` before its end is anchored at the root, and one that ends in `/` names
+  directories.

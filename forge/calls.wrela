@@ -92,6 +92,8 @@ fn got(s: mut Service, status: u32, body: take Vec<u8>) {
         remote::got(mut s, purpose, status, take body)
     } else if s.phase == Phase::Replica {
         replicate::got(mut s, purpose, status, take body)
+    } else if s.phase == Phase::Workspace {
+        workspace::got(mut s, purpose, status, take body)
     } else {
         client::got(mut s, status, take body)
     }

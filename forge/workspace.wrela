@@ -1,0 +1,589 @@
+// Workspaces (spec/forge.md): a change's files in a directory, for the work that needs them on
+// disk (profiling, the lookbook, playing). Run where the workspace is (its `here` root):
+//
+//     forge pull change=c3 [--server ADDR]   make the directory hold the change's files
+//     forge push [--server ADDR]             send back what changed in it
+//
+// A pull writes only the files that differ from what the workspace held, removes the ones the
+// change no longer holds, and keeps what it holds in `.forge/state`. A push reads every file the
+// workspace holds and every new one that `.forgeignore` doesn't name, sends each changed one as a
+// blob and writes it into the change (`put`), and removes from the change the files that are gone.
+
+use blake3::Id
+use codec::{Dec, Enc}
+use object::{File, Files}
+use out::Json
+use platform::service as host
+use service::{For, Service, wait}
+use std::io::{IoError, print}
+use std::json::{Json as Doc}
+
+pub const HERE: Text = "here"
+const STATE: Text = "here/.forge/state"
+
+// ---- ignore rules ------------------------------------------------------------------------------
+
+/// A rule of `.forgeignore`, as `.gitignore` writes them: parts between `/`, `*` within a part,
+/// `**` for any parts; a rule with a `/` before its end is anchored at the root, and one ending
+/// in `/` names directories.
+pub struct Rule: Clone {
+    parts: Vec<String>,
+    dir: bool,
+}
+
+pub fn rules(text: str) -> Vec<Rule> {
+    var out: Vec<Rule> = Vec::new()
+    for (from, to) in text.lines() {
+        let line = text.slice(from, to).trim()
+        if line.is_empty() || line.starts_with("#") {
+            continue
+        }
+        let dir = line.ends_with("/")
+        let end = if dir { line.len() - 1 } else { line.len() }
+        let body = line.slice(from: 0, to: end)
+        let anchored = body.starts_with("/") ||
+            body.slice(from: 0, to: max(body.len(), 1) - 1).find("/").is_some()
+        let start = if body.starts_with("/") { 1 } else { 0 }
+        let trimmed = body.slice(from: start, to: body.len())
+        var parts: Vec<String> = Vec::new()
+        if !anchored {
+            parts.push(String::from("**"))
+        }
+        for (a, b) in trimmed.split("/") {
+            parts.push(trimmed.slice(a, b).to_string())
+        }
+        out.push(Rule { parts, dir })
+    }
+    out
+}
+
+/// Whether `name` matches part `pat`, where `*` is any run of characters.
+fn part_matches(pat: str, name: str) -> bool {
+    let Some(star) = pat.find("*") else { return pat == name }
+    let head = pat.slice(from: 0, to: star)
+    let rest = pat.slice(from: star + 1, to: pat.len())
+    if !name.starts_with(head) {
+        return false
+    }
+    var i = head.len()
+    while i <= name.len() {
+        if part_matches(rest, name.slice(from: i, to: name.len())) {
+            return true
+        }
+        i += 1
+    }
+    false
+}
+
+/// Whether the path's parts `[at..]` match the rule's `[k..]`.
+fn matches_from(parts: [String], k: u32, path: [String], at: u32) -> bool {
+    if k == parts.len() {
+        return at == path.len()
+    }
+    if parts[k].as_str() == "**" {
+        var i = at
+        while i <= path.len() {
+            if matches_from(parts, k + 1, path, i) {
+                return true
+            }
+            i += 1
+        }
+        return false
+    }
+    at < path.len() &&
+        part_matches(parts[k].as_str(), path[at].as_str()) &&
+        matches_from(parts, k + 1, path, at + 1)
+}
+
+/// Whether `path` (a directory if `dir`) is ignored: a rule names it, or one of the directories
+/// that hold it.
+pub fn ignored(rules: [Rule], path: str, dir: bool) -> bool {
+    var parts: Vec<String> = Vec::new()
+    for (a, b) in path.split("/") {
+        parts.push(path.slice(a, b).to_string())
+    }
+    for r in rules {
+        // The path itself, then each directory that holds it.
+        var n = parts.len()
+        while n > 0 {
+            let is_dir = n < parts.len() || dir
+            if (!r.dir || is_dir) && matches_from(r.parts, 0, bytes_parts(parts, n), 0) {
+                return true
+            }
+            n -= 1
+        }
+    }
+    false
+}
+
+fn bytes_parts(parts: [String], n: u32) -> Vec<String> {
+    var out: Vec<String> = Vec::with_capacity(n)
+    for i in 0..n {
+        out.push(parts[i].clone())
+    }
+    out
+}
+
+// ---- a workspace's state -----------------------------------------------------------------------
+
+fn state_bytes(change: str, files: Files) -> Vec<u8> {
+    var e = Enc::new()
+    e.u8(1)
+    e.str(change)
+    e.run(jobs::manifest(files))
+    take e.bytes
+}
+
+fn state_of(b: take Vec<u8>) -> Option<(String, Files)> {
+    var d = Dec::new(take b)
+    if d.u8().ok() != Some(1) {
+        return None
+    }
+    let change = d.string().ok()?
+    let files = jobs::manifest_of(d.run().ok()?)?
+    Some((change, files))
+}
+
+// ---- pulling and pushing -----------------------------------------------------------------------
+
+const START: u32 = 0
+const LISTING: u32 = 1
+const FETCHING: u32 = 2
+const SCANNING: u32 = 3
+const READING: u32 = 4
+const SENDING: u32 = 5
+const PUTTING: u32 = 6
+const REMOVING: u32 = 7
+const DONE: u32 = 8
+
+pub struct Workspace: Clone {
+    push: bool,
+    stage: u32,
+    waiting: u32,
+    calling: bool,
+    change: String,
+    held: Files,
+    target: Files,
+    todo: Vec<(String, File)>,
+    at: u32,
+    rules: Vec<Rule>,
+    dirs: Vec<String>,
+    found: Vec<(String, bool)>,
+    /// What each found file holds, by its place in `found`.
+    seen: Vec<File>,
+    content: Vec<Vec<u8>>,
+    gone: Vec<String>,
+    wrote: u32,
+    /// The directories a pull has made.
+    made: SortedMap<String, bool>,
+}
+
+pub fn idle() -> Workspace {
+    Workspace {
+        push: false,
+        stage: START,
+        waiting: 0,
+        calling: false,
+        change: String::new(),
+        held: SortedMap::new(),
+        target: SortedMap::new(),
+        todo: Vec::new(),
+        at: 0,
+        rules: Vec::new(),
+        dirs: Vec::new(),
+        found: Vec::new(),
+        seen: Vec::new(),
+        content: Vec::new(),
+        gone: Vec::new(),
+        wrote: 0,
+        made: SortedMap::new(),
+    }
+}
+
+/// A workspace's host requests.
+pub const STATE_READ: u32 = 1
+pub const IGNORE_READ: u32 = 2
+pub const WROTE: u32 = 3
+pub const LISTED: u32 = 4
+pub const READ: u32 = 5
+pub const SAVED: u32 = 6
+
+fn finish(s: mut Service, code: u32, text: str) {
+    if code == 0 {
+        host::stdout(bytes::of_str(text))
+    } else {
+        host::stderr(bytes::of_str(text))
+    }
+    host::exit(code)
+    s.phase = service::Phase::Stopped
+}
+
+pub fn start(s: mut Service) {
+    s.calls = calls::calls(client::server_of(s.args).as_str())
+    s.desk.push = s.args[0].as_str() == "push"
+    for a in s.args {
+        if a.as_str().starts_with("change=") {
+            s.desk.change = a.as_str().slice(from: 7, to: a.len()).to_string()
+        }
+    }
+    s.desk.waiting = 3
+    wait(mut s, host::read(STATE), For::Desk(STATE_READ, 0))
+    wait(mut s, host::read("here/.forgeignore"), For::Desk(IGNORE_READ, 0))
+    wait(mut s, host::mkdir("here/.forge"), For::Desk(WROTE, 0))
+}
+
+pub fn answered(s: mut Service, what: u32, i: u32, r: take Result<Vec<u8>, IoError>) {
+    if what == STATE_READ {
+        if let Ok(b) = take r {
+            if let Some((change, files)) = state_of(take b) {
+                if s.desk.change.is_empty() {
+                    s.desk.change = take change
+                }
+                s.desk.held = take files
+            }
+        }
+    } else if what == IGNORE_READ {
+        if let Ok(b) = take r {
+            s.desk.rules = rules(bytes::text_of(b).as_str())
+        }
+    } else if what == WROTE {
+        if let Err(e) = r {
+            return finish(
+                mut s,
+                1,
+                f"forge: a write in the workspace failed: {e.message()}\n".as_str(),
+            )
+        }
+    } else if what == LISTED {
+        let prefix = s.desk.dirs[i].clone()
+        if let Ok(b) = take r {
+            for e in host::entries_of(take b).unwrap_or(Vec::new()) {
+                let path = if prefix.is_empty() { e.name.clone() } else { f"{prefix}/{e.name}" }
+                if path.as_str() == ".forge" ||
+                    path.as_str() == ".git" ||
+                    ignored(s.desk.rules, path.as_str(), dir: e.dir) {
+                    continue
+                }
+                if e.dir {
+                    s.desk.dirs.push(path.clone())
+                    s.desk.waiting += 1
+                    let n = s.desk.dirs.len() - 1
+                    wait(mut s, host::list(f"{HERE}/{path}".as_str()), For::Desk(LISTED, n))
+                } else {
+                    s.desk.found.push((take path, e.exec))
+                }
+            }
+        }
+    } else if what == READ {
+        match take r {
+            Ok(b) => {
+                let exec = s.desk.found[i].1
+                s.desk.seen[i] = File { id: object::blob_id(b), exec, size: u64(b.len()) }
+                s.desk.content[i] = take b
+            },
+            Err(e) => return finish(
+                mut s,
+                1,
+                f"forge: can't read {s.desk.found[i].0}: {e.message()}\n".as_str(),
+            ),
+        }
+    } else if what == SAVED {
+        if let Err(e) = r {
+            return finish(
+                mut s,
+                1,
+                f"forge: the workspace's state wasn't saved: {e.message()}\n".as_str(),
+            )
+        }
+    }
+    s.desk.waiting -= 1
+}
+
+/// The workspace's next steps, once what they wait on has come: as many as don't wait on the
+/// host or the service, since nothing else would wake it for the next.
+pub fn pump(s: mut Service) {
+    loop {
+        let before = s.desk.stage
+        step(mut s)
+        if s.desk.stage == before ||
+            s.desk.waiting > 0 ||
+            s.calls.busy ||
+            s.phase == service::Phase::Stopped {
+            return
+        }
+    }
+}
+
+fn step(s: mut Service) {
+    if s.desk.waiting > 0 || s.calls.busy || s.phase == service::Phase::Stopped {
+        return
+    }
+    let stage = s.desk.stage
+    if stage == START {
+        if s.desk.change.is_empty() {
+            return finish(mut s, 2, "forge: give change=cN, or pull one first\n")
+        }
+        if s.desk.push {
+            s.desk.stage = SCANNING
+            s.desk.dirs.push(String::new())
+            s.desk.waiting = 1
+            wait(mut s, host::list(HERE), For::Desk(LISTED, 0))
+        } else {
+            s.desk.stage = LISTING
+            tool(mut s, "files", f"{{\"change\":\"{s.desk.change}\"}}".as_str(), LISTING)
+        }
+    } else if stage == FETCHING {
+        if s.desk.at < s.desk.todo.len() {
+            // At most 256 files a call (`POST /api/objects`).
+            var body: Vec<u8> = Vec::new()
+            var k = s.desk.at
+            while k < s.desk.todo.len() && k < s.desk.at + 256 {
+                for b in s.desk.todo[k].1.id.bytes() {
+                    body.push(b)
+                }
+                k += 1
+            }
+            calls::call(mut s, "POST", "/api/objects", "application/octet-stream", body, FETCHING)
+            return
+        }
+        var gone: Vec<String> = Vec::new()
+        for p in s.desk.held.keys() {
+            if !s.desk.target.contains(p.clone()) {
+                gone.push(p.clone())
+            }
+        }
+        for p in gone {
+            s.desk.waiting += 1
+            wait(mut s, host::remove(f"{HERE}/{p}".as_str(), all: false), For::Desk(WROTE, 0))
+        }
+        s.desk.held = s.desk.target.clone()
+        save(mut s)
+        s.desk.stage = DONE
+    } else if stage == SCANNING {
+        // Every file found is read, and hashed as it comes.
+        s.desk.stage = READING
+        let n = s.desk.found.len()
+        s.desk.seen = Vec::filled(n, File { id: Id::zero(), exec: false, size: 0 })
+        s.desk.content = Vec::from_fn(n, |_| Vec::new())
+        s.desk.waiting = n
+        for i in 0..n {
+            let path = s.desk.found[i].0.clone()
+            wait(mut s, host::read(f"{HERE}/{path}".as_str()), For::Desk(READ, i))
+        }
+    } else if stage == READING {
+        // What changed goes as a blob, then into the change.
+        var todo: Vec<(String, File)> = Vec::new()
+        for i in 0..s.desk.found.len() {
+            let path = s.desk.found[i].0.clone()
+            if s.desk.held.get(path.clone()) != Some(s.desk.seen[i]) {
+                todo.push((take path, s.desk.seen[i]))
+            }
+        }
+        var here: SortedMap<String, bool> = SortedMap::new()
+        for (p, _) in s.desk.found {
+            let _ = here.insert(p.clone(), value: true)
+        }
+        var gone: Vec<String> = Vec::new()
+        for p in s.desk.held.keys() {
+            if !here.contains(p.clone()) {
+                gone.push(p.clone())
+            }
+        }
+        s.desk.todo = take todo
+        s.desk.gone = take gone
+        s.desk.at = 0
+        s.desk.stage = SENDING
+    } else if stage == SENDING {
+        if s.desk.at >= s.desk.todo.len() {
+            s.desk.at = 0
+            s.desk.stage = REMOVING
+            return
+        }
+        let path = s.desk.todo[s.desk.at].0.clone()
+        var k = 0
+        for i in 0..s.desk.found.len() {
+            if s.desk.found[i].0.as_str() == path.as_str() {
+                k = i
+            }
+        }
+        let body = s.desk.content[k].clone()
+        calls::call(mut s, "POST", "/api/object", "application/octet-stream", body, SENDING)
+    } else if stage == REMOVING {
+        if s.desk.at >= s.desk.gone.len() {
+            // The workspace holds what it found.
+            var held: Files = SortedMap::new()
+            for i in 0..s.desk.found.len() {
+                let _ = held.insert(s.desk.found[i].0.clone(), s.desk.seen[i])
+            }
+            s.desk.held = take held
+            save(mut s)
+            s.desk.stage = DONE
+            return
+        }
+        let p = s.desk.gone[s.desk.at].clone()
+        var j = Json::new()
+        j.obj()
+        j.kstr("change", s.desk.change.as_str())
+        j.kstr("path", p.as_str())
+        j.end_obj()
+        tool(mut s, "remove", j.text.as_str(), REMOVING)
+    } else if stage == DONE {
+        var j = Json::new()
+        j.obj()
+        j.kstr("change", s.desk.change.as_str())
+        j.knum(if s.desk.push { "sent" } else { "fetched" }, u64(if s.desk.push {
+            s.desk.wrote
+        } else { s.desk.todo.len() }))
+        j.knum("removed", u64(s.desk.gone.len()))
+        j.knum("files", u64(s.desk.held.len()))
+        j.end_obj()
+        j.text.push_str("\n")
+        finish(mut s, 0, j.text.as_str())
+    }
+}
+
+fn save(s: mut Service) {
+    s.desk.waiting += 1
+    wait(
+        mut s,
+        host::write(STATE, state_bytes(s.desk.change.as_str(), s.desk.held)),
+        For::Desk(SAVED, 0),
+    )
+}
+
+fn tool(s: mut Service, name: str, args: str, purpose: u32) {
+    let body = f"{{\"tool\":\"{name}\",\"args\":{args}}}"
+    calls::call(
+        mut s,
+        "POST",
+        "/api/call",
+        "application/json",
+        bytes::of_str(body.as_str()),
+        purpose,
+    )
+}
+
+pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
+    if status == 0 || status >= 400 {
+        return finish(mut s, 1, f"forge: {bytes::text_of(body)}\n".as_str())
+    }
+    if purpose == LISTING {
+        let Ok(doc) = Doc::read(body) else {
+            return finish(mut s, 1, "forge: the files came malformed\n")
+        }
+        var target: Files = SortedMap::new()
+        if let Some(files) = doc.get(doc.root, "files") {
+            for i in 0..doc.count(files) {
+                let f = doc.at(files, i)
+                let Some(id) = Id::parse(doc.text(doc.at(f, 1))) else { continue }
+                let file = File {
+                    id,
+                    exec: doc.whole(doc.at(f, 2)) == Some(1),
+                    size: doc.whole64(doc.at(f, 3)).unwrap_or(0),
+                }
+                let _ = target.insert(doc.text(doc.at(f, 0)).to_string(), file)
+            }
+        }
+        var todo: Vec<(String, File)> = Vec::new()
+        let keys = target.keys()
+        let values = target.values()
+        for i in 0..keys.len() {
+            if s.desk.held.get(keys[i].clone()) != Some(values[i]) {
+                todo.push((keys[i].clone(), values[i]))
+            }
+        }
+        s.desk.target = take target
+        s.desk.todo = take todo
+        s.desk.at = 0
+        s.desk.stage = FETCHING
+    } else if purpose == FETCHING {
+        // Each object: its id, its file's length and bytes (a blob's kind byte, then the file).
+        var at = 0
+        while at + 36 <= body.len() && s.desk.at < s.desk.todo.len() {
+            let (path, f) = s.desk.todo[s.desk.at].clone()
+            let id = blake3::Id::of_bytes(body, at)
+            var n: u32 = 0
+            for k in 0..4 {
+                n = n | (u32(body[at + 32 + k]) << (8 * k))
+            }
+            at += 36
+            if id != f.id || n == 4294967295 || at + n > body.len() {
+                return finish(mut s, 1, f"forge: the service sent {path} wrong\n".as_str())
+            }
+            let raw = bytes::slice(body, at, at + n)
+            at += n
+            if object::check(id, raw).ok() != Some(object::BLOB) {
+                return finish(mut s, 1, f"forge: the service sent {path} wrong\n".as_str())
+            }
+            let p = path.as_str()
+            var slash = p.len()
+            for k in 0..p.len() {
+                if p.byte(k) == 47 {
+                    slash = k
+                }
+            }
+            let dir = p.slice(from: 0, to: slash).to_string()
+            if slash < p.len() && !s.desk.made.contains(dir.clone()) {
+                let _ = s.desk.made.insert(dir.clone(), value: true)
+                s.desk.waiting += 1
+                wait(mut s, host::mkdir(f"{HERE}/{dir}".as_str()), For::Desk(WROTE, 0))
+            }
+            // A workspace can be pulled again: its files aren't flushed one by one.
+            s.desk.waiting += service::write_unflushed_file(
+                mut s,
+                f"{HERE}/{p}".as_str(),
+                object::content(raw),
+                f.exec,
+                For::Desk(WROTE, 0),
+            )
+            s.desk.at += 1
+        }
+    } else if purpose == SENDING {
+        let (path, f) = s.desk.todo[s.desk.at].clone()
+        var j = Json::new()
+        j.obj()
+        j.kstr("change", s.desk.change.as_str())
+        j.kstr("path", path.as_str())
+        j.kstr("id", f.id.hex().as_str())
+        j.kbool("exec", f.exec)
+        j.end_obj()
+        tool(mut s, "put", j.text.as_str(), PUTTING)
+    } else if purpose == PUTTING {
+        s.desk.wrote += 1
+        s.desk.at += 1
+    } else if purpose == REMOVING {
+        s.desk.at += 1
+    }
+}
+
+@test
+fn ignore_rules_match_as_gitignore_writes_them() {
+    let r = rules(
+        "# c\n**/results/*.png\n/target/\n**/build/\nnode_modules/\n.DS_Store\ncompiler/tests/spike01/pipelines/results/\n",
+    )
+    assert(ignored(r, "games/x/results/a.png", dir: false), "a run's still")
+    assert(!ignored(r, "tools/agent-test/results/m1.json", dir: false), "a kept result")
+    assert(
+        ignored(r, "target", dir: true) && !ignored(r, "a/target", dir: true),
+        "the root's target only",
+    )
+    assert(ignored(r, "forge/build/server/game.wasm", dir: false), "inside a build directory")
+    assert(ignored(r, "runtime/browser/node_modules/x/y.js", dir: false), "node_modules anywhere")
+    assert(ignored(r, "a/b/.DS_Store", dir: false), "a name anywhere")
+    assert(
+        ignored(r, "compiler/tests/spike01/pipelines/results/x", dir: false),
+        "an anchored directory",
+    )
+    assert(!ignored(r, "compiler/tests/spike01/pipelines/main.wrela", dir: false), "beside it")
+}
+
+@test
+fn a_workspaces_state_reads_back() {
+    var files: Files = SortedMap::new()
+    let _ = files.insert(
+        String::from("a"),
+        File { id: object::blob_id(bytes::of_str("a")), exec: false, size: 1 },
+    )
+    let Some((change, back)) = state_of(state_bytes("c3", files)) else { panic("it reads") }
+    assert(change.as_str() == "c3" && back.len() == 1, "the change and its file")
+}

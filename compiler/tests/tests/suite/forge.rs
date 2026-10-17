@@ -375,3 +375,107 @@ fn a_replica_holds_each_landing_before_it_is_answered_and_serves_once_promoted()
     assert_eq!(http(port2, "POST", "/api/stop", "").0, 200);
     assert_eq!(promoted.join().expect("the promoted service's thread"), 0);
 }
+
+/// forge with `args` and the roots `roots`, on a thread of its own: its exit status.
+fn run_with_roots(
+    build: &Path,
+    roots: &[(&str, &Path)],
+    args: &[&str],
+) -> std::thread::JoinHandle<i32> {
+    let mut r = wrela_service::files::Roots::default();
+    for (name, dir) in roots {
+        r.add(name, dir).expect("a root");
+    }
+    let build = ServerBuild::load(build).expect("forge's server build");
+    let args = args.iter().map(|s| s.to_string()).collect();
+    std::thread::spawn(move || {
+        wrela_service::run(wrela_service::Config {
+            build,
+            roots: r,
+            args,
+            limits: wrela_service::limits(),
+        })
+    })
+}
+
+#[test]
+fn a_workspace_pulls_a_change_and_pushes_back_what_changed_in_it() {
+    let scratch = Scratch::new("workspace");
+    let dirs: Vec<PathBuf> =
+        ["repo", "build", "data", "work", "desk"].iter().map(|d| scratch.0.join(d)).collect();
+    for d in &dirs {
+        std::fs::create_dir_all(d).expect("a directory");
+    }
+    let (repo, build, data, work, desk) = (&dirs[0], &dirs[1], &dirs[2], &dirs[3], &dirs[4]);
+    repository(repo);
+    wrela_tests::must_build(&repo_root().join("forge"), build);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    let service = start(build, data, work, port);
+    ready(port);
+    http(port, "POST", "/api/import", &serde_json::json!({"git": repo, "ref": "main"}).to_string());
+    wait_until("the import", || call(port, "log", serde_json::json!({}))["main"] == 2);
+    let change = call(port, "open", serde_json::json!({"intent": "Edited on disk"}))["change"]
+        .as_str()
+        .expect("a change")
+        .to_string();
+    let pull = |what: &str| {
+        let arg = format!("change={change}");
+        let args: Vec<&str> = if what == "pull" {
+            vec!["pull", &arg, "--server", &listen]
+        } else {
+            vec!["push", "--server", &listen]
+        };
+        run_with_roots(build, &[("here", desk.as_path())], &args)
+            .join()
+            .expect("the command's thread")
+    };
+    assert_eq!(pull("pull"), 0, "the pull");
+    assert_eq!(std::fs::read_to_string(desk.join("a.txt")).expect("a.txt"), "one\ntwo\nthree\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode =
+            std::fs::metadata(desk.join("tools/check.sh")).expect("check.sh").permissions().mode();
+        assert_ne!(mode & 0o111, 0, "check.sh is executable");
+    }
+    // Edits on disk: one changed, one new and binary, one removed, and build output to ignore.
+    std::fs::write(desk.join("a.txt"), "one\nTWO\nthree\n").expect("an edit");
+    std::fs::write(desk.join("new.bin"), (0..=255u8).collect::<Vec<u8>>()).expect("a binary file");
+    std::fs::remove_file(desk.join("b.txt")).expect("a removal");
+    std::fs::write(desk.join(".forgeignore"), "**/build/\n").expect("the ignore rules");
+    std::fs::create_dir_all(desk.join("pkg/build")).expect("build output");
+    std::fs::write(desk.join("pkg/build/out.wasm"), "not source").expect("build output");
+    assert_eq!(pull("push"), 0, "the push");
+    let status = call(port, "status", serde_json::json!({"change": change}));
+    let files: Vec<(String, String)> = status["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .map(|f| {
+            (
+                f["path"].as_str().unwrap_or("").to_string(),
+                f["state"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    let want: Vec<(String, String)> = [
+        (".forgeignore", "added"),
+        ("a.txt", "changed"),
+        ("b.txt", "removed"),
+        ("new.bin", "added"),
+    ]
+    .iter()
+    .map(|(a, b)| (a.to_string(), b.to_string()))
+    .collect();
+    assert_eq!(files, want, "{status}");
+    let read = call(port, "read", serde_json::json!({"change": change, "path": "a.txt"}));
+    assert_eq!(read["text"], "one\nTWO\nthree\n");
+    let bin =
+        call(port, "read", serde_json::json!({"change": change, "path": "new.bin", "lines": 1}));
+    assert_eq!(bin["size"], 256);
+    // Nothing changed since: a second push sends nothing.
+    assert_eq!(pull("push"), 0, "a second push");
+    assert_eq!(http(port, "POST", "/api/stop", "").0, 200);
+    assert_eq!(service.join().expect("the service's thread"), 0);
+}

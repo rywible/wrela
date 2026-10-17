@@ -1,0 +1,15 @@
+# What forge's workspaces don't send back (spec/forge.md F27): paths that builds and runs make.
+# Run artefacts from tools/headless.py and tools/serve.py
+**/results/DONE
+**/results/console.log
+**/results/*.png
+**/results/*.tmp
+# The spike's cold-pipelines page runs where it is (herd::the_herds_pipelines_load_cold_as_fast)
+compiler/tests/spike01/pipelines/results/
+__pycache__/
+/target/
+**/build/
+node_modules/
+# The native host's compiled code, kept beside a build it loads (runtime/native cache.rs)
+.native/
+.DS_Store

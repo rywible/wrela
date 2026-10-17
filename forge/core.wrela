@@ -173,7 +173,7 @@ pub struct Tool: Copy {
 }
 
 /// Every tool, in the order `forge help` lists them.
-pub const TOOLS: [Tool; 18] = [
+pub const TOOLS: [Tool; 20] = [
     Tool {
         name: "open",
         what: "Open a change: an overlay on main that sees main's newest files wherever it hasn't written. Prints its name, as c12. Give the intent in one sentence: what the change does and why.",
@@ -210,6 +210,16 @@ pub const TOOLS: [Tool; 18] = [
         args: "change path old new all?:b",
     },
     Tool { name: "remove", what: "Remove a file in a change.", args: "change path" },
+    Tool {
+        name: "files",
+        what: "Every file a change sees (or main): each path, its blob's id, whether it's executable, and its size. `forge pull` uses it.",
+        args: "change?",
+    },
+    Tool {
+        name: "put",
+        what: "Write a file in a change from a blob already sent (POST /api/object): binary files, and `forge push`.",
+        args: "change path id exec?:b",
+    },
     Tool {
         name: "move",
         what: "Move a file in a change, from `from` to `to`.",
@@ -318,6 +328,8 @@ pub fn call(c: Core, ctx: Ctx, name: str, doc: Doc, args: u32) -> Outcome {
         "close" => close(c, ctx, doc, args),
         "log" => log(c, doc, args),
         "land" => land(c, ctx, doc, args),
+        "files" => files(c, doc, args),
+        "put" => put_blob(c, ctx, doc, args),
         _ => fail(f"forge has no tool `{name}`: `forge help` lists them".as_str()),
     }
 }
@@ -612,6 +624,59 @@ fn edit(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
     j.text.truncate(n - 1)
     j.text.push_str(f",\"replaced\":{at.len()}}}")
     ok_with(take j, take d)
+}
+
+fn files(c: Core, doc: Doc, args: u32) -> Outcome {
+    let ch = match view(c, doc, args) {
+        Ok(x) => take x,
+        Err(why) => return fail(why.as_str()),
+    }
+    let all = files_in(c, ch)
+    var j = Json::new()
+    j.obj()
+    j.key("files")
+    j.arr()
+    let keys = all.keys()
+    let values = all.values()
+    for i in 0..keys.len() {
+        j.arr()
+        j.str(keys[i].as_str())
+        j.str(values[i].id.hex().as_str())
+        j.num(if values[i].exec { 1 } else { 0 })
+        j.num(values[i].size)
+        j.end_arr()
+    }
+    j.end_arr()
+    j.end_obj()
+    ok(take j)
+}
+
+fn put_blob(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
+    let ch = match open_change(c, doc, args) {
+        Ok(x) => take x,
+        Err(why) => return fail(why.as_str()),
+    }
+    let path = arg(doc, args, "path")
+    if let Some(why) = path_problem(path.as_str()) {
+        return fail(why)
+    }
+    let Some(id) = Id::parse(doc.field(args, "id")) else {
+        return fail("`id` is a blob's 64 hex digits")
+    }
+    let Some(content) = c.blobs.get(id) else {
+        if c.stored.contains(id) {
+            return Outcome::Need(Vec::from([id]))
+        }
+        return fail("send the blob first: POST /api/object")
+    }
+    let file = File { id, exec: bool_arg(doc, args, "exec"), size: u64(content.len()) }
+    let ev = Event::Wrote { change: ch.id, path: path.clone(), file: Some(file), time: ctx.now }
+    var j = Json::new()
+    j.obj()
+    j.kstr("path", path.as_str())
+    j.kstr("id", id.hex().as_str())
+    j.end_obj()
+    ok_with(take j, Durable { objects: Vec::new(), events: Vec::from([take ev]) })
 }
 
 fn remove(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
