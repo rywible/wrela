@@ -646,6 +646,12 @@ impl<'p> Effects<'p> {
         self.open = ids.iter().enumerate().filter(|(i, _)| open[*i]).map(|(_, &b)| b).collect();
     }
 
+    /// `f`'s effects, everything it reaches included, in [`Effect::ALL`]'s order. `None` if `f`
+    /// has no body here.
+    pub fn of(&self, f: FnId) -> Option<&[Effect]> {
+        self.all.get(&BodyId { func: f, closure: None }).map(Vec::as_slice)
+    }
+
     /// `f`'s effects, each with why it has it, and whether it calls something whose effects
     /// depend on how it's instantiated (lowering checks those). `None` if `f` has no body here.
     pub fn explain(&self, f: FnId) -> Option<(Vec<EffectWhy>, bool)> {

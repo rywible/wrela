@@ -2663,6 +2663,7 @@ These commands let an agent read what the compiler knows about a package, instea
 |---|---|
 | `wrela query <package> <query>...` | Answers a batch of queries with one check (below) |
 | `wrela context <item> [<package>] --budget n` | Gives the item's source, the types it names, what it calls, where it is called and its impls, in about `n` tokens. On a program with errors, it says at the end what the errors keep from being known |
+| `wrela index --json <package>` | Lists every item of the package by path: its kind, file and lines, hashes of its signature and body (comments and whitespace do not change them), and a function's effects and the functions it calls. `--std` adds std's items |
 | `wrela refactor <package> <change>` | Makes a change across the package: `rename`, `move`, `add-param` or `change-mode` (below) |
 | `wrela fix <package-dir> [--json]` | Makes every fix a tool can make, and reports each one; a fix that is the author's choice is listed, not made (§6.13) |
 | `wrela solve <package> --minimize <fn> --free <file>:<lines>` | Minimizes a function of no arguments over the literals on those lines, and rounds them to their decimals. It builds a program around the function that uses `std::lift::Minimize` (BFGS on `std::lift::gradient`). `--write` writes the literals through `wrela edit` |
