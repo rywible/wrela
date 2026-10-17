@@ -8,6 +8,7 @@
 //! The compiler recurses over syntax trees, so it runs on its own thread with a stack sized for
 //! the deepest tree the parser accepts (`wrela_syntax::MAX_NESTING`, `MAX_EXPR_DEPTH`).
 
+pub mod behaviour;
 pub mod build;
 pub mod const_cache;
 pub mod consts;

@@ -584,7 +584,7 @@ impl<'a> Index<'a> {
         }
     }
 
-    fn one_fn(&self, name: &str) -> Result<(FnId, String), String> {
+    pub(crate) fn one_fn(&self, name: &str) -> Result<(FnId, String), String> {
         let fns: Vec<(Item, String)> =
             self.find(name).into_iter().filter(|(i, _)| matches!(i, Item::Fn(_))).collect();
         match fns.as_slice() {
