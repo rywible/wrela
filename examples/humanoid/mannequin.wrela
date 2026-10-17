@@ -1,14 +1,14 @@
 // The stand-in: a plain articulated mannequin on the rig, its parts each a limb's simple form, for
 // judging motion before the samurai has a design. A plate on its face shows where it looks.
 
-use engine::creature::{Bone, Creature, creature, smooth}
+use engine::creature::{Bone, Creature, Skeleton, creature, smooth}
 use engine::render::{Look, Shaded}
 use rig::{
     CHEST, CHEST2, CHEST3, CHEST4, HEAD, HIPS, L_ANKLE, L_COLLAR, L_ELBOW, L_HIP, L_KNEE,
     L_SHOULDER, L_TOE, L_WRIST, NECK, REST, TOE_TIP, skeleton,
 }
 use std::derive::Box3
-use std::field::{Blend, ellipsoid, round_cone}
+use std::field::{Blend, ellipsoid, oval, round_cone}
 
 /// A point of the mannequin: its colour (linear) and roughness.
 pub struct Paint: Copy + GpuData + Blend {
@@ -188,7 +188,62 @@ pub fn mannequin() -> Creature<Paint> {
         .bounded(Box3 { lo: vec3(-1.0, -0.05, -0.3), hi: vec3(1.0, 1.85, 0.35) })
 }
 
-/// A side's look: the mannequin's colours, tinted (A cool, B warm), so the two read apart.
+/// The katana's colours: its steel, its guard's dark iron, its grip's dark wrapping.
+const STEEL = Paint { albedo: vec3(0.62, 0.64, 0.68), rough: 0.22 }
+const IRON = Paint { albedo: vec3(0.07, 0.07, 0.075), rough: 0.45 }
+const WRAP = Paint { albedo: vec3(0.05, 0.04, 0.035), rough: 0.85 }
+
+/// The katana, in its own frame (from the right hand's grip, the blade up +y, its edge toward +z):
+/// a blade 70 cm long from just above its guard, 3 cm wide and (to read at a distance, for now) a
+/// centimetre thick, four long ovals run together; an oval guard; a grip of two hands' width below
+/// it. Its one bone is its frame.
+pub fn katana() -> Creature<Paint> {
+    var s = Skeleton::new()
+    let root = s.root("katana", vec3(0.0))
+    let edge = smooth(0.002)
+    let steel = smooth(0.02)
+    creature(s)
+        .join(
+            "blade",
+            root,
+            oval(vec3(0.0055, 0.125, 0.0155)).translate(vec3(0.0, 0.15, 0.0)).with(STEEL),
+        )
+        .join(
+            "blade",
+            root,
+            oval(vec3(0.0055, 0.125, 0.0155)).translate(vec3(0.0, 0.32, 0.0)).with(STEEL),
+            seam: steel,
+        )
+        .join(
+            "blade",
+            root,
+            oval(vec3(0.0055, 0.125, 0.0155)).translate(vec3(0.0, 0.49, 0.0)).with(STEEL),
+            seam: steel,
+        )
+        .join(
+            "blade",
+            root,
+            oval(vec3(0.0055, 0.125, 0.0155)).translate(vec3(0.0, 0.645, 0.0)).with(STEEL),
+            seam: steel,
+        )
+        .join(
+            "guard",
+            root,
+            ellipsoid(vec3(0.038, 0.005, 0.043)).translate(vec3(0.0, 0.035, 0.0)).with(IRON),
+            seam: edge,
+        )
+        .join(
+            "grip",
+            root,
+            round_cone(vec3(0.0, -0.245, 0.0), vec3(0.0, 0.028, 0.0), r_top: 0.017, r_bottom: 0.016)
+                .with(WRAP),
+            seam: edge,
+        )
+        .bounded(Box3 { lo: vec3(-0.05, -0.27, -0.06), hi: vec3(0.05, 0.78, 0.06) })
+}
+
+/// A fighter's look: the mannequin's colours, tinted (the player cool, its foe warm), so the two
+/// read apart; the swords untinted.
 pub struct Tint: Copy + GpuData {
     pub colour: vec3,
 }
@@ -199,8 +254,9 @@ impl Look<Paint> for Tint {
     }
 }
 
-pub const A_TINT = Tint { colour: vec3(0.82, 0.95, 1.2) }
-pub const B_TINT = Tint { colour: vec3(1.2, 1.02, 0.8) }
+pub const PLAYER_TINT = Tint { colour: vec3(0.82, 0.95, 1.2) }
+pub const FOE_TINT = Tint { colour: vec3(1.25, 0.9, 0.75) }
+pub const NO_TINT = Tint { colour: vec3(1.0) }
 
 /// The mannequin stands on the ground, a person's height, its face toward +z.
 @test

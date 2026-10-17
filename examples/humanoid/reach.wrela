@@ -1,0 +1,241 @@
+// The target pose a fighter's muscles drive toward: the motion layer's pose (its legs and its
+// trunk's sway), the trunk turned to face the fight and through its cut, the weight shifted, the
+// head toward the foe, both arms reaching the sword (two-bone IK) and the sword where its intent
+// (`blade`) asks.
+
+use blade::{Wish, left_grip}
+use body::{IN_HAND, L_FIST, R_FIST, Target}
+use engine::render::bend
+use rig::{
+    CHEST, CHEST3, HEAD, HIPS, JOINTS, L_ELBOW, L_HIP, L_SHOULDER, L_WRIST, NECK, OFFSETS, PARENTS,
+    Placed, R_ELBOW, R_HIP, R_SHOULDER, R_WRIST,
+}
+
+/// What the trunk does: how far the pelvis and the chest turn toward the fighter's left (rad,
+/// about the world's up, the chest's counted from the pelvis's start: so it includes the
+/// pelvis's), how far the chest leans forward (rad), and how far the weight goes toward the foe
+/// (m).
+pub struct Trunk: Copy {
+    pub pelvis: f32 = 0.0,
+    pub chest: f32 = 0.0,
+    pub lean: f32 = 0.0,
+    pub shift: f32 = 0.0,
+}
+
+/// The share of the turn from where the legs face to the fight that the pelvis takes (the spine
+/// takes the rest), and the most the head turns from the chest to look at the foe (rad).
+pub const PELVIS_FOLLOWS: f32 = 0.3
+pub const HEAD_MOST: f32 = 1.0
+
+/// Whether joint `j` is `root` or under it.
+fn under(j: u32, root: u32) -> bool {
+    var k = j
+    for _ in 0..JOINTS {
+        if k == root {
+            return true
+        }
+        if k == 0 {
+            return false
+        }
+        k = PARENTS[k]
+    }
+    false
+}
+
+/// Whether joint `j` is in a leg.
+fn in_leg(j: u32) -> bool {
+    under(j, R_HIP) || under(j, L_HIP)
+}
+
+/// `p` with joint `root` and all under it (but the legs) turned by `q` about `pivot`.
+fn turn_under(p: mut Placed, root: u32, pivot: vec3, q: Quat) {
+    for j in 0..JOINTS {
+        if under(j, root) && !in_leg(j) {
+            p.at[j] = pivot + q.rotate(p.at[j] - pivot)
+            p.rot[j] = q.mul(p.rot[j])
+        }
+    }
+}
+
+/// An angle in (-π, π].
+fn wrap(a: f32) -> f32 {
+    a - 6.2831855 * floor((a + 3.1415927) / 6.2831855)
+}
+
+/// The turn that takes `a1` to `b1` and `a2` to `b2` (each pair square, unit).
+fn frame_turn(a1: vec3, a2: vec3, b1: vec3, b2: vec3) -> Quat {
+    let from = mat3(a1, a2, cross(a1, a2))
+    let to = mat3(b1, b2, cross(b1, b2))
+    // from is a rotation, so its inverse is its transpose.
+    let ft = mat3(
+        vec3(from[0].x, from[1].x, from[2].x),
+        vec3(from[0].y, from[1].y, from[2].y),
+        vec3(from[0].z, from[1].z, from[2].z),
+    )
+    Quat::from_mat3(to * ft)
+}
+
+/// One arm (shoulder, elbow, wrist joints) reaching for `wrist_at`, its hand turned `hand`; the
+/// elbow toward `out` (unit, from the shoulder: down and out from the body).
+fn reach_arm(p: mut Placed, arm: [u32; 3], wrist_at: vec3, hand: Quat, out: vec3) {
+    let (s, e, w) = (arm[0], arm[1], arm[2])
+    let (l1, l2) = (length(OFFSETS[e]), length(OFFSETS[w]))
+    let shoulder = p.at[s]
+    let hint = shoulder + out * l1
+    let (elbow, wrist) = bend(shoulder, hint, hint + vec3(0.0, -l2, 0.0), wrist_at)
+    let upper = normalize(elbow - shoulder)
+    let fore = normalize(wrist - elbow)
+    // The elbow bends about the axis square to both bones (at rest, the arm out, it would swing
+    // the forearm forward); nearly straight, about the axis square to the bone and the hint.
+    var flex = cross(upper, fore)
+    if length(flex) < 1.0e-3 {
+        flex = cross(upper, out)
+    }
+    flex = normalize(flex)
+    let rest_dir = normalize(OFFSETS[e])
+    let rest_flex = normalize(cross(rest_dir, vec3(0.0, 0.0, 1.0)))
+    p.rot[s] = frame_turn(rest_dir, rest_flex, upper, flex)
+    p.rot[e] = frame_turn(rest_dir, rest_flex, fore, normalize(flex - fore * dot(flex, fore)))
+    p.rot[w] = hand
+    p.at[e] = elbow
+    p.at[w] = wrist
+}
+
+/// The target pose: from the motion layer's pose in the world (`moving`), facing the fight along
+/// `ahead` (level, unit), looking at `look_at`, the trunk as `trunk` says, holding the sword as
+/// `w` asks.
+pub fn solve(moving: Placed, ahead: vec3, look_at: vec3, trunk: Trunk, w: Wish) -> Target {
+    var p = moving
+    let up = vec3(0.0, 1.0, 0.0)
+    // How far the chest must turn to face the fight, as the legs leave it.
+    let chest_ahead = p.rot[CHEST3].rotate(vec3(0.0, 0.0, 1.0))
+    let off = wrap(atan2(ahead.x, ahead.z) - atan2(chest_ahead.x, chest_ahead.z))
+    let pelvis = off * PELVIS_FOLLOWS + trunk.pelvis
+    let rest = off + trunk.chest - pelvis
+    turn_under(mut p, HIPS, p.at[HIPS], Quat::axis_angle(up, pelvis))
+    turn_under(mut p, CHEST, p.at[CHEST], Quat::axis_angle(up, rest * 0.5))
+    turn_under(mut p, CHEST3, p.at[CHEST3], Quat::axis_angle(up, rest * 0.5))
+    // Leaning forward from the belly, and the weight toward the foe.
+    turn_under(mut p, CHEST, p.at[CHEST], Quat::axis_angle(cross(up, ahead), trunk.lean))
+    for j in 0..JOINTS {
+        if !in_leg(j) {
+            p.at[j] += ahead * trunk.shift
+        }
+    }
+    // The head toward the foe, no farther round than `HEAD_MOST`.
+    let face = p.rot[HEAD].rotate(vec3(0.0, 0.0, 1.0))
+    let want = normalize(look_at - p.at[HEAD])
+    let angle = acos(clamp(dot(face, want), -1.0, 1.0))
+    if angle > 1.0e-4 {
+        let axis = normalize(cross(face, want))
+        turn_under(mut p, NECK, p.at[NECK], Quat::axis_angle(axis, min(angle, HEAD_MOST)))
+    }
+    // Both hands on the sword.
+    let hand = w.rot.mul(IN_HAND.inverse())
+    let chest = p.rot[CHEST3]
+    reach_arm(
+        mut p,
+        [R_SHOULDER, R_ELBOW, R_WRIST],
+        w.grip - hand.rotate(R_FIST),
+        hand,
+        normalize(chest.rotate(vec3(-0.45, -0.85, -0.15))),
+    )
+    reach_arm(
+        mut p,
+        [L_SHOULDER, L_ELBOW, L_WRIST],
+        left_grip(w) - hand.rotate(L_FIST),
+        hand,
+        normalize(chest.rotate(vec3(0.45, -0.85, -0.15))),
+    )
+    Target { pose: p, grip: w.grip, sword: w.rot }
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// A body standing at the origin facing +z (its arms as the target puts them), its shoulders, and
+/// a foe's throat 2.2 m ahead.
+fn standing() -> (Placed, blade::Stance, vec3) {
+    let moving = rig::place(rig::t_pose())
+    let shoulders = (moving.at[R_SHOULDER] + moving.at[L_SHOULDER]) * 0.5
+    (moving, blade::Stance { shoulders, ahead: vec3(0.0, 0.0, 1.0) }, vec3(0.0, 1.45, 2.2))
+}
+
+/// In the ready stance the body holds still: its sword stays within 2 cm of where it's asked to be,
+/// and nothing jitters (every part slower than 5 cm/s) after a second.
+@test
+fn the_body_holds_the_ready_stance_still() {
+    let (moving, s, throat) = standing()
+    let w = blade::ready(s, throat)
+    let t = solve(moving, s.ahead, throat, Trunk {}, w)
+    var b = body::spawn(t)
+    var worst = 0.0
+    var fastest = 0.0
+    for k in 0..120 {
+        body::step(mut b, t, 1.0 / 60.0)
+        if k >= 60 {
+            let (grip, _) = b.sword()
+            worst = max(worst, length(grip - w.grip))
+            for part in 0..body::PARTS {
+                fastest = max(fastest, length(b.parts[part].vel))
+            }
+        }
+    }
+    std::io::print(
+        f"holding the ready stance: the grip strays {worst} m, the fastest part goes {fastest} m/s",
+    )
+    assert(worst < 0.02, f"the grip strays {worst} m from the stance's")
+    assert(fastest < 0.05, f"a part jitters at {fastest} m/s")
+}
+
+/// A cut from the ready stance strikes where it's aimed: the sword's striking part passes within
+/// 8 cm of the point, no more than 60 ms after the intent says (the sword's weight lags its
+/// muscles); and as the stroke stops, the sword carries on past it.
+@test
+fn a_cut_strikes_where_it_is_aimed_a_little_late() {
+    let (moving, s, throat) = standing()
+    let at = s.shoulders + normalize(vec3(-0.1, -0.05, 1.0)) * blade::CUT_REACH
+    let start = blade::ready(s, throat)
+    let dt = 1.0 / 60.0
+    for angle in [0.0, 0.785, 1.571, -0.785] {
+        let c = blade::Cut { angle }
+        let pl = blade::plane(s, at, angle)
+        let raised = blade::in_plane(pl, c.raised)
+        var b = body::spawn(solve(moving, s.ahead, throat, Trunk {}, start))
+        var nearest = 1.0
+        var nearest_t = 0.0
+        var was = b.sword_point(body::STRIKES)
+        var past = 0.0
+        var t = 0.0
+        while t < c.wind + c.stroke + 0.2 {
+            t += dt
+            let w = if t < c.wind {
+                start.toward(raised, blade::min_jerk(t / c.wind))
+            } else {
+                blade::in_plane(pl, c.psi(t))
+            }
+            body::step(mut b, solve(moving, s.ahead, throat, Trunk {}, w), dt)
+            // The striking part sweeps ~30 cm a tick: the nearest it came on its way.
+            let now = b.sword_point(body::STRIKES)
+            let (u, _) = engine::rigid::closest(was, now, at, at)
+            let d = length(mix(was, now, vec3(u)) - at)
+            was = now
+            if d < nearest {
+                nearest = d
+                nearest_t = t
+            }
+            // How far the blade points past the stroke's end, along the way it was sweeping.
+            let end = blade::in_plane(pl, c.past)
+            let along = b.parts[body::SWORD].rot.rotate(vec3(0.0, 1.0, 0.0))
+            if t > c.wind + c.stroke {
+                past = max(past, dot(along, end.edge()))
+            }
+        }
+        let late = nearest_t - c.strikes_at()
+        std::io::print(
+            f"cut at {angle}: passes {nearest} m from the point, {late * 1000.0} ms late; carries {past} past",
+        )
+        assert(nearest < 0.08, f"the cut at {angle} passes {nearest} m from its point")
+        assert(late < 0.06, f"the cut at {angle} strikes {late} s late")
+        assert(past > 0.01, f"the cut at {angle} stops dead where its stroke does")
+    }
+}

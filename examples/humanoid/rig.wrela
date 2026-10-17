@@ -22,6 +22,9 @@
 
 use engine::creature::{MAX_BONES, Skeleton}
 use engine::render::bone_matrix
+use engine::sim::SimState
+use std::hash::StateHash
+use std::serialize::Serialize
 
 /// How many joints the rig has.
 pub const JOINTS: u32 = 23
@@ -190,7 +193,7 @@ impl Pose {
 }
 
 /// A pose placed: each joint's place and its turn, in the body's space.
-pub struct Placed: Copy {
+pub struct Placed: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub at: [vec3; 23],
     pub rot: [Quat; 23],
 }

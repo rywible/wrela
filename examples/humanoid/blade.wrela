@@ -1,0 +1,380 @@
+// Where the sword is asked to be: its intent, aimed by the fight, never keyed for the body.
+//
+// A cut is a line through the foe. Its plane holds the line from the cutter's shoulders to the
+// point it cuts, turned about that line by the cut's angle (0 straight down, a quarter turn level
+// from the cutter's right, negative from its left). The blade sweeps through the plane, from
+// raised behind (its wind-up) through pointing at the foe (where it strikes) to past it (its
+// follow-through), the hands sweeping a shorter arc and reaching out as the blade comes through.
+// So the same cut aims itself wherever the foe stands, from whatever the cutter was doing.
+//
+// A guard puts the blade across the plane the foe's cut sweeps, where its blade will come
+// through, the edge toward it: a cut from above meets a level blade, a cut from the side an
+// upright one. With no cut coming, the guard is high and in front.
+//
+// The body's part in a cut, from motion capture of strikes (ACCAD's crosses, hooks and uppercuts,
+// docs/process.md): the trunk winds against the cut and turns through it, the pelvis two-thirds as
+// far as the chest and a twenty-fifth of a second before it; the weight goes a hand's breadth
+// toward the cut.
+
+use body::{BLADE_FROM, LEFT_GRIP, STRIKES, TIP}
+
+/// A sword asked for: the right hand's grip in the world, and the sword's turn.
+pub struct Wish: Copy {
+    pub grip: vec3,
+    pub rot: Quat,
+}
+
+impl Wish {
+    /// `self` where `t` is 0, `other` where it's 1: the grip mixed, the turn the short way.
+    pub fn toward(self, other: Wish, t: f32) -> Wish {
+        Wish { grip: mix(self.grip, other.grip, vec3(t)), rot: self.rot.nlerp(other.rot, t) }
+    }
+
+    /// Where the blade points, and the way its edge faces.
+    pub fn along(self) -> vec3 {
+        self.rot.rotate(vec3(0.0, 1.0, 0.0))
+    }
+
+    pub fn edge(self) -> vec3 {
+        self.rot.rotate(vec3(0.0, 0.0, 1.0))
+    }
+}
+
+/// The sword's turn for a blade pointing `along` with its edge facing `edge` (made square to it).
+pub fn sword_turn(along: vec3, edge: vec3) -> Quat {
+    let y = normalize(along)
+    let z = normalize(edge - y * dot(edge, y))
+    Quat::from_mat3(mat3(cross(y, z), y, z))
+}
+
+/// Where a fight is seen from: the shoulders' middle, the way to the foe (level, unit) and the
+/// world's up, and so the fighter's left.
+pub struct Stance: Copy {
+    pub shoulders: vec3,
+    pub ahead: vec3,
+}
+
+impl Stance {
+    pub fn left(self) -> vec3 {
+        cross(vec3(0.0, 1.0, 0.0), self.ahead)
+    }
+}
+
+/// The ready stance (chudan): the grip a forearm in front of the navel, the blade pointing up at
+/// `throat` (the foe's), its edge down.
+pub fn ready(s: Stance, throat: vec3) -> Wish {
+    let up = vec3(0.0, 1.0, 0.0)
+    let grip = s.shoulders + s.ahead * 0.32 - up * 0.42 - s.left() * 0.03
+    var along = normalize(throat - grip)
+    // No higher than a third of a right angle, no lower than level.
+    let rise = clamp(asin(clamp(along.y, -1.0, 1.0)), 0.0, 0.5)
+    let flat = normalize(vec3(along.x, 0.0, along.z))
+    along = flat * cos(rise) + up * sin(rise)
+    Wish { grip, rot: sword_turn(along, -up) }
+}
+
+/// A cut's plane: from the shoulders, toward the point it cuts (`toward`, unit), and up it (`up`,
+/// unit, square to `toward`): the blade at angle ψ points `toward` cos ψ + `up` sin ψ.
+pub struct Plane: Copy {
+    pub from: vec3,
+    pub toward: vec3,
+    pub up: vec3,
+}
+
+/// The plane of a cut at `angle` (rad: 0 down from above, positive from the cutter's upper
+/// right) from stance `s` through point `at`.
+pub fn plane(s: Stance, at: vec3, angle: f32) -> Plane {
+    let toward = normalize(at - s.shoulders)
+    let world_up = vec3(0.0, 1.0, 0.0)
+    let up0 = normalize(world_up - toward * dot(world_up, toward))
+    let right = cross(toward, up0)
+    Plane { from: s.shoulders, toward, up: up0 * cos(angle) + right * sin(angle) }
+}
+
+/// How far the grip is from the shoulders with the blade at ψ: drawn in, raised, and reaching
+/// out as it points at the foe.
+pub fn reach_at(psi: f32) -> f32 {
+    let c = cos(psi * 0.5)
+    0.32 + 0.18 * c * c
+}
+
+/// The sword in plane `p` with its blade at ψ (rad): the hands at a little over half the blade's
+/// angle, `reach_at` out; the edge leading (the way the blade sweeps, toward lower ψ).
+pub fn in_plane(p: Plane, psi: f32) -> Wish {
+    let along = p.toward * cos(psi) + p.up * sin(psi)
+    let edge = p.toward * sin(psi) - p.up * cos(psi)
+    let hands = psi * 0.55
+    let grip = p.from + (p.toward * cos(hands) + p.up * sin(hands)) * reach_at(psi)
+    Wish { grip, rot: sword_turn(along, edge) }
+}
+
+/// How far the blade's striking part reaches from the shoulders when it points at the foe.
+pub const CUT_REACH: f32 = 1.12
+
+/// A cut's shape: its angle, its wind-up's and its follow-through's blade angles (rad), how long
+/// its wind-up and its stroke take (s), and how long it takes to come back to the ready stance.
+pub struct Cut: Copy {
+    pub angle: f32,
+    pub raised: f32 = 2.6,
+    pub past: f32 = -1.2,
+    pub wind: f32 = 0.28,
+    pub stroke: f32 = 0.38,
+    pub back: f32 = 0.35,
+}
+
+/// Minimum jerk from 0 to 1 (Flash and Hogan's): a reach's smooth start and stop, fastest midway.
+pub fn min_jerk(u: f32) -> f32 {
+    let x = clamp(u, 0.0, 1.0)
+    x * x * x * (10.0 + x * (6.0 * x - 15.0))
+}
+
+impl Cut {
+    /// How long the whole cut takes (s).
+    pub fn length(self) -> f32 {
+        self.wind + self.stroke + self.back
+    }
+
+    /// Its blade's angle `t` s into the cut (rad): raised through the wind-up, then sweeping down
+    /// through the stroke to past, fastest about where it strikes (ψ = 0).
+    pub fn psi(self, t: f32) -> f32 {
+        self.raised + (self.past - self.raised) * min_jerk((t - self.wind) / self.stroke)
+    }
+
+    /// Whether the blade cuts at `t` s: in its stroke, from a little before it points at the foe
+    /// to a little after.
+    pub fn cuts(self, t: f32) -> bool {
+        let psi = self.psi(t)
+        t > self.wind && psi < 1.3 && psi > self.past * 0.6
+    }
+
+    /// How far into the cut it strikes (the blade at ψ = 0), s.
+    pub fn strikes_at(self) -> f32 {
+        let goal = self.raised / (self.raised - self.past)
+        var lo = 0.0
+        var hi = 1.0
+        for _ in 0..30 {
+            let mid = 0.5 * (lo + hi)
+            if min_jerk(mid) < goal {
+                lo = mid
+            } else {
+                hi = mid
+            }
+        }
+        self.wind + self.stroke * 0.5 * (lo + hi)
+    }
+}
+
+/// The trunk's part in a cut at `angle` with its blade at ψ: how far the chest is wound round
+/// (rad, to the fighter's left positive) and leans forward (rad); and how far the weight goes
+/// toward the foe (m), given the share of the stroke that's done (`through`, 0 to 1).
+pub fn trunk(angle: f32, psi: f32, through: f32) -> vec3 {
+    let side = sin(angle)
+    let wound = if psi > 0.0 { -0.55 * side * min(psi / 2.6, 1.0) } else {
+        0.5 * side * min(-psi / 1.2, 1.0)
+    }
+    let lean = 0.22 * cos(angle) * smoothstep(0.0, 1.0, through)
+    vec3(wound, lean, 0.12 * smoothstep(0.0, 1.0, through))
+}
+
+/// The pelvis's share of the chest's turn, and how far it leads it (s).
+pub const PELVIS_SHARE: f32 = 0.65
+pub const PELVIS_LEAD: f32 = 0.04
+
+/// How far a fist reaches from its shoulder (m), and how far each shoulder is from their middle.
+pub const FIST_REACH: f32 = 0.6
+pub const SHOULDER_SPAN: f32 = 0.19
+
+/// `w` moved, unturned, until both fists can reach it from their shoulders (stance `s`): each
+/// fist that can't is brought in toward its shoulder, a few times over.
+pub fn reachable(s: Stance, w: Wish) -> Wish {
+    let right = s.shoulders - s.left() * SHOULDER_SPAN
+    let left = s.shoulders + s.left() * SHOULDER_SPAN
+    var grip = w.grip
+    let down = w.along() * LEFT_GRIP
+    for _ in 0..4 {
+        let r = grip - right
+        if length(r) > FIST_REACH {
+            grip = right + r * (FIST_REACH / length(r))
+        }
+        let l = grip + down - left
+        if length(l) > FIST_REACH {
+            grip -= l * (1.0 - FIST_REACH / length(l))
+        }
+    }
+    Wish { grip, rot: w.rot }
+}
+
+/// A guard against a cut in plane `foe` aimed at `at` on a fighter in stance `s`: the blade across
+/// the plane where the foe's blade will come through on its way (where the arc between the foe's
+/// grip and its striking part crosses, a little before the strike), its forte there; its tip
+/// whichever way leaves the grip nearer the body's middle; the grip in front, within both fists'
+/// reach, the blade turned to pass through that point still; its edge toward the foe.
+pub fn guard(s: Stance, foe: Plane, at: vec3) -> Wish {
+    let up = vec3(0.0, 1.0, 0.0)
+    let r = length(at - foe.from) * 0.78
+    let meet = foe.from + (foe.toward * cos(0.4) + foe.up * sin(0.4)) * r
+    let across = normalize(cross(foe.toward, foe.up))
+    let easy = s.shoulders + s.ahead * 0.35 - up * 0.15
+    let along = if length(meet - across * 0.25 - easy) < length(meet + across * 0.25 - easy) {
+        across
+    } else {
+        -across
+    }
+    var w = Wish { grip: meet - along * 0.25, rot: sword_turn(along, -foe.toward) }
+    // Aimed through the point at a point past it along the guard's line: the grip drawn in to reach
+    // can come near the point itself, but never near this.
+    let past = meet + along * 0.35
+    for _ in 0..3 {
+        // In front, within reach, and through the point.
+        let ahead = dot(w.grip - s.shoulders, s.ahead)
+        w.grip += s.ahead * max(0.3 - ahead, 0.0)
+        w = reachable(s, w)
+        w.rot = sword_turn(normalize(past - w.grip), -foe.toward)
+    }
+    w
+}
+
+/// Where a guard's blade crosses the foe's plane, if it does (between its guard and its tip).
+fn crossing(g: Wish, foe: Plane) -> Option<vec3> {
+    let n = cross(foe.toward, foe.up)
+    let a = g.grip + g.along() * BLADE_FROM
+    let b = g.grip + g.along() * TIP
+    let (da, db) = (dot(a - foe.from, n), dot(b - foe.from, n))
+    if da * db > 0.0 {
+        return None
+    }
+    Some(mix(a, b, vec3(da / (da - db))))
+}
+
+/// The guard with no cut coming: the grip before the face, the blade up and to the left across the
+/// body, its edge ahead.
+pub fn high_guard(s: Stance) -> Wish {
+    let up = vec3(0.0, 1.0, 0.0)
+    let grip = s.shoulders + s.ahead * 0.38 + up * 0.02 - s.left() * 0.08
+    Wish { grip, rot: sword_turn(up * 0.6 + s.left() * 0.75 + s.ahead * 0.25, s.ahead) }
+}
+
+/// The left hand's grip on a sword wished for.
+pub fn left_grip(w: Wish) -> vec3 {
+    w.grip + w.along() * LEFT_GRIP
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+fn facing_z() -> Stance {
+    Stance { shoulders: vec3(0.0, 1.43, 0.0), ahead: vec3(0.0, 0.0, 1.0) }
+}
+
+/// A cut strikes where it's aimed: at ψ = 0 the blade points at the point it cuts and its striking
+/// part reaches it (at `CUT_REACH`), whatever the cut's angle; raised, the blade points back.
+@test
+fn a_cut_strikes_where_it_is_aimed() {
+    let s = facing_z()
+    for angle in [0.0, 0.785, -0.785, 1.571] {
+        let at = s.shoulders + normalize(vec3(0.3, 0.2, 1.0)) * CUT_REACH
+        let p = plane(s, at, angle)
+        let w = in_plane(p, 0.0)
+        let tip = w.grip + w.along() * STRIKES
+        assert(
+            length(tip - at) < 1.0e-3,
+            f"at angle {angle} the cut strikes {length(tip - at)} m off",
+        )
+        let raised = in_plane(p, 2.6)
+        assert(dot(raised.along(), p.toward) < -0.5, "the raised blade doesn't point back")
+        // The edge leads: square to the blade, in the plane, toward lower ψ.
+        assert(abs(dot(w.edge(), w.along())) < 1.0e-4, "the edge isn't square to the blade")
+    }
+}
+
+/// A cut from the right comes down from the cutter's right; a cut from above from over its head.
+@test
+fn a_cuts_angle_says_where_it_comes_from() {
+    let s = facing_z()
+    let at = s.shoulders + vec3(0.0, 0.0, CUT_REACH)
+    let from_right = in_plane(plane(s, at, 0.785), 1.2)
+    assert(from_right.grip.x < -0.1, f"a cut from the right is wound up at x {from_right.grip.x}")
+    let from_above = in_plane(plane(s, at, 0.0), 1.2)
+    assert(from_above.grip.y > s.shoulders.y + 0.2, "a cut from above isn't wound up high")
+    assert(abs(from_above.grip.x) < 1.0e-3, "a cut from above is wound up to one side")
+}
+
+/// The stroke sweeps the blade down without a jump or a turn back: its angle falls all through,
+/// passes 0 when `strikes_at` says, ends past, and strikes at nearly its fastest.
+@test
+fn a_strokes_blade_falls_smoothly_through_the_strike() {
+    let c = Cut { angle: 0.0 }
+    let dt = 0.001
+    var last = c.psi(0.0)
+    var fastest = 0.0
+    var t = dt
+    while t < c.wind + c.stroke {
+        let now = c.psi(t)
+        assert(now <= last + 1.0e-5, f"the blade rose at {t} s")
+        fastest = max(fastest, last - now)
+        last = now
+        t += dt
+    }
+    assert(abs(c.psi(c.wind + c.stroke) - c.past) < 1.0e-4, "the stroke ends off")
+    assert(
+        abs(c.psi(c.strikes_at())) < 1.0e-3,
+        f"at strikes_at the blade is at {c.psi(c.strikes_at())}",
+    )
+    // Where it strikes, it goes nearly as fast as it ever does.
+    let at_strike = c.psi(c.strikes_at() - dt) - c.psi(c.strikes_at())
+    std::io::print(
+        f"the blade sweeps at most {fastest / dt} rad/s, {at_strike / dt} where it strikes",
+    )
+    assert(at_strike > 0.85 * fastest, f"the blade strikes at {at_strike / fastest} of its speed")
+}
+
+/// A guard meets a cut from every angle: its blade crosses the foe's plane where the foe's blade
+/// comes through (within 15 cm of the arc between its grip and its striking part, before the
+/// strike), in front of the guard's fighter and within its reach; a cut from above meets a blade
+/// across it (slanting up no more than 37°, as its reach allows), a cut from the side one nearer
+/// upright than level.
+@test
+fn a_guard_crosses_the_cut_coming() {
+    let me = facing_z()
+    let foe_at = Stance { shoulders: vec3(0.0, 1.43, 1.4), ahead: vec3(0.0, 0.0, -1.0) }
+    for angle in [0.0, 0.785, -0.785, 1.4, -1.4] {
+        let at = me.shoulders + vec3(0.0, 0.1, 0.0)
+        let p = plane(foe_at, at, angle)
+        let g = guard(me, p, at)
+        let Some(x) = crossing(g, p) else {
+            panic(f"the guard against a cut at {angle} doesn't cross its plane")
+        }
+        // On the arc: as far from the foe's shoulders as between its grip and striking part.
+        let r = length(x - p.from)
+        let ang = atan2(dot(x - p.from, p.up), dot(x - p.from, p.toward))
+        std::io::print(f"a guard against {angle}: crosses {r} m out at {ang} rad")
+        assert(r > 0.3 && r < length(at - p.from) + 0.15, f"the guard crosses {r} m from the foe")
+        assert(
+            ang > -0.1 && ang < 1.2,
+            f"the guard crosses the cut at {ang} rad, not before the strike",
+        )
+        let ahead = dot(g.grip - me.shoulders, me.ahead)
+        assert(ahead > 0.25, f"the guard's grip is {ahead} m ahead")
+        let right = me.shoulders - me.left() * SHOULDER_SPAN
+        let left = me.shoulders + me.left() * SHOULDER_SPAN
+        assert(
+            length(g.grip - right) <= FIST_REACH + 0.01,
+            "the guard's right fist is out of reach",
+        )
+        assert(
+            length(left_grip(g) - left) <= FIST_REACH + 0.03,
+            "the guard's left fist is out of reach",
+        )
+        if angle == 0.0 {
+            assert(
+                abs(g.along().y) < 0.6,
+                "a cut from above meets a blade more upright than slanting",
+            )
+        }
+        if abs(angle) == 1.4 {
+            assert(
+                abs(g.along().y) > 0.5,
+                "a cut from the side meets a blade nearer level than upright",
+            )
+        }
+    }
+}

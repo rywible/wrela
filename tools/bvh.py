@@ -3,15 +3,16 @@
 locomotion needs, written as a wrela module of constants.
 
     tools/bvh.py stats <file.bvh>...
-    tools/bvh.py loops <out.wrela> <idle.bvh> <walk.bvh> <run.bvh>
+    tools/bvh.py loops <out.wrela> <idle.bvh> <walk.bvh> <run.bvh> <side.bvh> <back.bvh>
 
 `stats` prints a clip's frames, its speeds and its foot contacts. `loops` cuts each clip into
-loops and writes them: the idle's quietest stretch, and for the walk and the run the average of
-their steadiest straight cycles, each from the left foot's contact to its next, time-normalized
-to `SAMPLES` samples. A loop keeps every joint's local rotation (a unit quaternion, x y z w), the
-hips' height and their sway across and along the way they go (m), and the distance a cycle covers
-(its stride) and the time it takes; the yaw of the way it goes is taken out, so it plays in
-place, facing +z. Units are metres; +y is up and the figure faces +z, its left +x.
+loops and writes them: the idle's quietest stretch, and for the walk, the run, the sidestep and
+the walk backward the average of their steadiest straight cycles, each from the left foot's
+contact to its next, time-normalized to `SAMPLES` samples. A loop keeps every joint's local
+rotation (a unit quaternion, x y z w), the hips' height and their sway (m), the distance a cycle
+covers (its stride), the time it takes and the way it goes; the yaw of the way the body faces is
+taken out, so it plays in place, facing +z. Units are metres; +y is up and the figure faces +z,
+its left +x.
 
 The clips read are data (100STYLE, CC BY 4.0: see docs/process.md): parse them, don't run them.
 """
@@ -229,6 +230,15 @@ class Clip:
         b = self.root[min(k + half, len(self.root) - 1)]
         return math.atan2(b[0] - a[0], b[2] - a[2])
 
+    def facing(self, k, half=30):
+        """Where the body faces at frame `k`: its upper chest's heading (the pelvis opens toward a
+        sidestep; the chest stays square), averaged over a second round it (its sway taken out)."""
+        hips = self.index("Chest4")
+        lo, hi = max(k - half, 0), min(k + half, len(self.rot) - 1)
+        x = sum(math.sin(heading(self.rot[i][hips])) for i in range(lo, hi + 1))
+        z = sum(math.cos(heading(self.rot[i][hips])) for i in range(lo, hi + 1))
+        return math.atan2(x, z)
+
     def path_at(self, k, half=30):
         """The hips' path at frame `k`, smoothed over a second round it (their sway taken out)."""
         lo, hi = max(k - half, 0), min(k + half, len(self.root) - 1)
@@ -288,10 +298,10 @@ def q_nlerp(a, b, u):
 
 def in_place(c, t):
     """The pose at fractional frame `t` in place: the hips' turn with the yaw of the way the body
-    goes taken out, and their place from their smoothed path (their height kept), in the frame of
-    the way it goes."""
+    faces taken out, and their place from their smoothed path (their height kept), in the frame of
+    the way it faces (so a sidestep stays a sidestep)."""
     local, root, k = frame_at(c, t)
-    yaw = c.path_yaw(k)
+    yaw = c.facing(k)
     unturn = q_axis((0, 1, 0), -math.degrees(yaw))
     local = list(local)
     local[0] = q_norm(q_mul(unturn, local[0]))
@@ -345,11 +355,21 @@ def close(samples):
     return out
 
 
-def cycle_loop(c, count=6):
-    """The walk's or the run's loop: the average of its `count` fastest near-straight cycles
-    (the clips were captured in a small room: their fastest are the nearest a game's pace), each
-    from the left foot's contact to its next."""
-    cyc = [x for x in c.cycles() if x[3] < 0.25]
+def going(c, a, b):
+    """The way a cycle from frame `a` to `b` goes from the way the body faces (rad, toward its
+    left positive)."""
+    go = math.atan2(c.root[b][0] - c.root[a][0], c.root[b][2] - c.root[a][2])
+    return wrap(go - c.facing((a + b) // 2))
+
+
+def cycle_loop(c, aim=0.0, count=6):
+    """A cycle's loop: the average of its `count` fastest near-straight cycles going within 15° of
+    `aim` (degrees from the way the body faces: a sidestep clip goes both ways), each from the
+    left foot's contact to its next. The clips were captured in a small room: their fastest are
+    the nearest a game's pace."""
+    near = math.radians(15.0)
+    cyc = [x for x in c.cycles()
+           if x[3] < 0.25 and abs(wrap(going(c, x[0], x[1]) - math.radians(aim))) < near]
     assert cyc, "the clip has no straight cycles"
     best = sorted(cyc, key=lambda x: -x[2])[:count]
     samples = []
@@ -357,7 +377,15 @@ def cycle_loop(c, count=6):
         samples.append([in_place(c, a + (b - a) * i / SAMPLES) for i in range(SAMPLES + 1)])
     stride = sum(x[4] for x in best) / len(best)
     period = sum((x[1] - x[0]) * c.dt for x in best) / len(best)
-    return close(average(samples)), stride, period, stance(c, best), heel(c, best)
+    # The way it goes, in the frame of the way it faces (x its left, z ahead).
+    wx = wz = 0.0
+    for a, b, _, _, _ in best:
+        d = (c.root[b][0] - c.root[a][0], 0.0, c.root[b][2] - c.root[a][2])
+        d = q_rotate(q_axis((0, 1, 0), -math.degrees(c.facing((a + b) // 2))), d)
+        wx += d[0]
+        wz += d[2]
+    n = math.hypot(wx, wz)
+    return close(average(samples)), stride, period, stance(c, best), heel(c, best), (wx / n, wz / n)
 
 
 def heel(c, cycles):
@@ -411,7 +439,7 @@ def idle_loop(c):
         local[0] = q_norm(q_mul(unturn, local[0]))
         d = q_rotate(unturn, (root[0] - centre[0], 0.0, root[2] - centre[2]))
         samples.append((local, (d[0], root[1], d[2])))
-    return close(samples), 0.0, span * c.dt, 1.0, 1.0
+    return close(samples), 0.0, span * c.dt, 1.0, 1.0, (0.0, 1.0)
 
 
 RIG = ["Hips", "Chest", "Chest2", "Chest3", "Chest4", "Neck", "Head", "RightCollar",
@@ -421,43 +449,51 @@ RIG = ["Hips", "Chest", "Chest2", "Chest3", "Chest4", "Neck", "Head", "RightColl
 
 
 def wrela_loop(name, doc, loop):
-    samples, stride, period, share, heel_share = loop
+    samples, stride, period, share, heel_share, way = loop
     hips = ",\n".join(f"        vec3({h[0]:.4f}, {h[1]:.4f}, {h[2]:.4f})" for _, h in samples)
     turns = ",\n".join(f"        vec4({q[0]:.4f}, {q[1]:.4f}, {q[2]:.4f}, {q[3]:.4f})"
                        for t, _ in samples for q in t)
     return (f"/// {doc}\npub const {name} = Loop {{\n    stride: {stride:.4f},\n"
             f"    period: {period:.4f},\n    stance: {share:.4f},\n    heel: {heel_share:.4f},\n"
+            f"    way: vec2({way[0]:.4f}, {way[1]:.4f}),\n"
             f"    hips: [\n{hips},\n    ],\n"
             f"    turns: [\n{turns},\n    ],\n}}\n")
 
 
-def loops(out, idle, walk, run):
-    clips = [Clip(p) for p in (idle, walk, run)]
+def loops(out, idle, walk, run, side, back):
+    clips = [Clip(p) for p in (idle, walk, run, side, back)]
     for c in clips:
         assert c.names == RIG, f"the clip's joints aren't the rig's: {c.names}"
-    i, w, r = idle_loop(clips[0]), cycle_loop(clips[1]), cycle_loop(clips[2])
-    for name, (s, stride, period, share, h) in (("idle", i), ("walk", w), ("run", r)):
+    i = idle_loop(clips[0])
+    w, r = cycle_loop(clips[1]), cycle_loop(clips[2])
+    # The sidestep to the right (the left is its mirror image), the walk back straight back.
+    sd, bk = cycle_loop(clips[3], aim=-80.0), cycle_loop(clips[4], aim=180.0)
+    for name, (s, stride, period, share, h, way) in (("idle", i), ("walk", w), ("run", r),
+                                                     ("side", sd), ("back", bk)):
         print(f"{name}: {len(s)} samples, stride {stride:.2f} m in {period:.2f} s "
               f"({stride / period if period else 0:.2f} m/s), the foot down {share:.2f} of it, "
-              f"the heel {h:.2f}")
-    text = f"""// The motion capture's loops (`mocap`): an idle, a walk and a run, cut from 100STYLE's Neutral
+              f"the heel {h:.2f}, going ({way[0]:.2f}, {way[1]:.2f})")
+    text = f"""// The motion capture's loops (`mocap`): an idle, a walk, a run, a sidestep and a walk backward, cut from 100STYLE's Neutral
 // clips (Ian Mason et al., CC BY 4.0: docs/process.md) by `tools/bvh.py loops` and written
 // here. Don't edit it: cut it again. Each loop is {SAMPLES} samples of every joint's turn (x, y, z,
-// w; `rig`'s joints in order) and of where the hips are (in place: from the way the body goes,
-// their height from the ground); a walk's or a run's from the left foot's contact to its next,
+// w; `rig`'s joints in order) and of where the hips are (in place, in the frame of the way the
+// body faces: their height from the ground); a cycle's from the left foot's contact to its next,
 // the average of its fastest near-straight cycles, with the distance a cycle covers (its stride,
-// m), the time it takes (s) and the share of it a foot is down and its heel is; the idle's a still stretch of {IDLE_SECONDS:.0f} s.
+// m), the time it takes (s), the share of it a foot is down and its heel is, and the way it goes;
+// the idle's a still stretch of {IDLE_SECONDS:.0f} s.
 
 /// How many samples a loop has.
 pub const SAMPLES: u32 = {SAMPLES}
 
 /// A loop: its stride (m: 0 for the idle), its period (s), the share of it a foot is on the
-/// ground and the share its heel is (1 for the idle), and its samples.
+/// ground and the share its heel is (1 for the idle), the way it goes (level, unit, in the frame
+/// of the way the body faces: x its left, y ahead), and its samples.
 pub struct Loop: Copy {{
     pub stride: f32,
     pub period: f32,
     pub stance: f32,
     pub heel: f32,
+    pub way: vec2,
     pub hips: [vec3; {SAMPLES}],
     pub turns: [vec4; {SAMPLES * len(RIG)}],
 }}
@@ -465,7 +501,9 @@ pub struct Loop: Copy {{
 """
     text += wrela_loop("IDLE", "Standing: Neutral_ID's stillest stretch.", i) + "\n"
     text += wrela_loop("WALK", "Walking: Neutral_FW's fastest near-straight cycles.", w) + "\n"
-    text += wrela_loop("RUN", "Jogging: Neutral_FR's fastest near-straight cycles.", r)
+    text += wrela_loop("RUN", "Jogging: Neutral_FR's fastest near-straight cycles.", r) + "\n"
+    text += wrela_loop("SIDE", "Sidestepping to the right: Neutral_SW's fastest near-straight cycles that way.", sd) + "\n"
+    text += wrela_loop("BACK", "Walking backward: Neutral_BW's fastest near-straight cycles.", bk)
     open(out, "w").write(text)
 
 
@@ -476,7 +514,7 @@ def main():
     if args[0] == "stats":
         for p in args[1:]:
             stats(p)
-    elif args[0] == "loops" and len(args) == 5:
+    elif args[0] == "loops" and len(args) == 7:
         loops(*args[1:])
     else:
         sys.exit(__doc__)
